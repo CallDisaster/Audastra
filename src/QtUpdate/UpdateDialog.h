@@ -9,7 +9,7 @@
 class QLabel;
 class QCheckBox;
 class QComboBox;
-class QPlainTextEdit;
+class QTextEdit;
 class QProgressBar;
 class QPushButton;
 
@@ -33,6 +33,7 @@ signals:
 private:
     UpdateDialog(UpdateClient& client, std::optional<UpdatePreferences> draftPreferences, QWidget* parent);
     void Refresh(const UpdateStatus& status);
+    void ShowNotes(const QString& notes);
     void RefreshPreferences();
     UpdateClient& client_;
     std::optional<UpdatePreferences> draftPreferences_;
@@ -42,7 +43,8 @@ private:
     QLabel* current_ = nullptr;
     QLabel* available_ = nullptr;
     QLabel* message_ = nullptr;
-    QPlainTextEdit* notes_ = nullptr;
+    QTextEdit* notes_ = nullptr;
+    QString shownNotes_;
     QProgressBar* progress_ = nullptr;
     QLabel* progressText_ = nullptr;
     QPushButton* check_ = nullptr;

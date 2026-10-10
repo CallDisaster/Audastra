@@ -4,19 +4,79 @@
 #include <QComboBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QImage>
 #include <QLabel>
-#include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSizePolicy>
+#include <QTextCursor>
+#include <QTextDocument>
+#include <QTextEdit>
+#include <QTextTable>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <set>
 #include <utility>
+#include <vector>
 
 namespace War3Map::QtUpdate {
 namespace {
+// 说明里的图片、样式等资源一律给空内容：QTextDocument 会在资源提供器之前自行读取本机文件，只能在这里拦住。
+class ReleaseNotesView final : public QTextEdit {
+public:
+    using QTextEdit::QTextEdit;
+protected:
+    QVariant loadResource(int type, const QUrl&) override {
+        return type == QTextDocument::ImageResource ? QVariant(QImage()) : QVariant(QByteArray());
+    }
+};
+// 在未排版的文档里整理说明：图片换成文字（排版时 Qt 会按文件名直接读取本机图片），表格加边框并统一对齐。
+void TidyReleaseNotes(QTextDocument& document, const QColor& border) {
+    std::vector<std::pair<int, int>> images;
+    std::set<QTextTable*> tables;
+    for (auto block = document.begin(); block.isValid(); block = block.next()) {
+        if (auto* table = QTextCursor(block).currentTable()) tables.insert(table);
+        for (auto it = block.begin(); !it.atEnd(); ++it)
+            if (it.fragment().charFormat().isImageFormat()) images.emplace_back(it.fragment().position(), it.fragment().length());
+    }
+    for (auto it = images.rbegin(); it != images.rend(); ++it) {
+        QTextCursor cursor(&document);
+        cursor.setPosition(it->first); cursor.setPosition(it->first + it->second, QTextCursor::KeepAnchor);
+        cursor.insertText(QObject::tr("[图片]"), QTextCharFormat());
+    }
+    for (auto* table : tables) {
+        auto format = table->format();
+        format.setBorder(1); format.setBorderStyle(QTextFrameFormat::BorderStyle_Solid); format.setBorderBrush(border);
+        format.setBorderCollapse(true); format.setCellSpacing(0); format.setCellPadding(5);
+        table->setFormat(format);
+        // Qt 导入表格时会在首格前留空段落，先删掉多余空段落，避免表头错位。
+        for (int cellIndex = table->rows() * table->columns() - 1; cellIndex >= 0; --cellIndex) {
+            const auto cell = table->cellAt(cellIndex / table->columns(), cellIndex % table->columns());
+            std::vector<int> empty;
+            for (auto block = document.findBlock(cell.firstPosition()); block.isValid() && block.next().isValid()
+                     && block.next().position() <= cell.lastPosition(); block = block.next())
+                if (block.length() == 1) empty.push_back(block.position());
+            for (auto it = empty.rbegin(); it != empty.rend(); ++it) { QTextCursor cursor(&document); cursor.setPosition(*it); cursor.deleteChar(); }
+        }
+        // 合并边框模式只画单元格自己的边框；单元格段落去掉外边距。GitHub 表格固定首行为表头，Qt 导入时不标记，这里整行加粗。
+        QTextBlockFormat flat; flat.setTopMargin(0); flat.setBottomMargin(0);
+        QTextCharFormat heading; heading.setFontWeight(QFont::Bold);
+        for (int row = 0; row < table->rows(); ++row)
+            for (int column = 0; column < table->columns(); ++column) {
+                auto cell = table->cellAt(row, column);
+                auto cellFormat = cell.format().toTableCellFormat();
+                cellFormat.setBorder(1); cellFormat.setBorderStyle(QTextFrameFormat::BorderStyle_Solid); cellFormat.setBorderBrush(border);
+                cellFormat.setPadding(5); cellFormat.setVerticalAlignment(QTextCharFormat::AlignMiddle);
+                cell.setFormat(cellFormat);
+                auto contents = cell.firstCursorPosition();
+                contents.setPosition(cell.lastCursorPosition().position(), QTextCursor::KeepAnchor);
+                contents.mergeBlockFormat(flat);
+                if (row == 0) contents.mergeCharFormat(heading);
+            }
+    }
+}
 QString SizeText(qint64 bytes) {
     if (bytes < 1024) return QObject::tr("%1 字节").arg(bytes);
     if (bytes < 1024 * 1024) return QObject::tr("%1 KiB").arg(double(bytes) / 1024, 0, 'f', 1);
@@ -69,7 +129,9 @@ UpdateDialog::UpdateDialog(UpdateClient& client, std::optional<UpdatePreferences
     versions->addRow(tr("当前版本："), current_); versions->addRow(tr("可用版本："), available_); layout->addLayout(versions);
     message_ = PlainLabel(this, QStringLiteral("updateStatus")); layout->addWidget(message_);
     auto* notesCaption = PlainLabel(this, QStringLiteral("paneHint"), tr("更新说明")); layout->addWidget(notesCaption);
-    notes_ = new QPlainTextEdit(this); notes_->setObjectName(QStringLiteral("updateReleaseNotes")); notes_->setReadOnly(true);
+    notes_ = new ReleaseNotesView(this); notes_->setObjectName(QStringLiteral("updateReleaseNotes")); notes_->setReadOnly(true);
+    // 发布说明来自网络：按 GitHub Markdown 排版，但不渲染原始 HTML、不跟随链接，也不读取任何图片或本机文件。
+    notes_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     notes_->setPlaceholderText(tr("检查更新后显示发布说明")); notes_->setMinimumHeight(100); layout->addWidget(notes_, 1);
     progress_ = new QProgressBar(this); progress_->setObjectName(QStringLiteral("updateDownloadProgress")); progress_->setTextVisible(false); layout->addWidget(progress_);
     progressText_ = PlainLabel(this, QStringLiteral("updateDownloadBytes")); layout->addWidget(progressText_);
@@ -143,14 +205,25 @@ void UpdateDialog::RefreshPreferences() {
     channel_->setCurrentIndex(preferences.channel == Update::UpdateChannel::Beta ? 1 : 0);
 }
 void UpdateDialog::reject() { if (client_.IsBusy()) client_.Cancel(); QDialog::reject(); }
+void UpdateDialog::ShowNotes(const QString& notes) {
+    shownNotes_ = notes;
+    if (notes.isEmpty()) { notes_->clear(); return; }
+    QTextDocument parsed;
+    parsed.setMarkdown(notes, QTextDocument::MarkdownFeatures(QTextDocument::MarkdownDialectGitHub | QTextDocument::MarkdownNoHTML));
+    auto border = notes_->palette().color(QPalette::Text); border.setAlphaF(0.3F);
+    TidyReleaseNotes(parsed, border);
+    auto* shown = parsed.clone(notes_);
+    shown->setDefaultFont(notes_->font());
+    notes_->setDocument(shown);  // 上一份说明文档以编辑框为父对象，由 setDocument 自行删除。
+}
 void UpdateDialog::Refresh(const UpdateStatus& status) {
     channel_->setEnabled(!client_.IsBusy());
     const bool channelMatches = !draftPreferences_ || draftPreferences_->channel == status.channel;
     current_->setText(status.currentVersion); available_->setText(status.availableVersion.isEmpty() ? tr("尚未检查") : status.availableVersion);
     message_->setText(status.message.isEmpty() ? tr("检查公开发布的版本信息。") : status.message);
-    if (notes_->toPlainText() != status.releaseNotes) notes_->setPlainText(status.releaseNotes);
+    if (shownNotes_ != status.releaseNotes) ShowNotes(status.releaseNotes);
     if (!channelMatches) {
-        available_->setText(tr("尚未检查")); notes_->clear();
+        available_->setText(tr("尚未检查")); ShowNotes({});
         message_->setText(tr("渠道已暂存为 %1，请重新检查更新。").arg(draftPreferences_->channel == Update::UpdateChannel::Beta ? tr("测试版") : tr("稳定版")));
     } else if (draftPreferences_ && status.state == UpdateState::Skipped) {
         message_->setText(tr("已在本页暂存跳过版本 %1；保存设置后生效。").arg(status.availableVersion));

@@ -15,7 +15,12 @@
 #include <QLabel>
 #include <QLibraryInfo>
 #include <QLocale>
-#include <QPlainTextEdit>
+#include <QTextDocument>
+#include <QTextEdit>
+#include <QTextTable>
+#include <QImage>
+#include <QTextCursor>
+#include <QUrl>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QScreen>
@@ -63,6 +68,25 @@ void Capture(QWidget& widget, const QString& name) {
     QVERIFY2(metadataFile.flush(), "Cannot flush the capture metadata");
     qInfo().noquote() << "Update Qt original-fixture capture:" << path << "metadata:" << metadataFile.fileName();
 }
+bool HasAnchor(const QTextDocument& document) {
+    for (auto block = document.begin(); block != document.end(); block = block.next())
+        for (auto fragment = block.begin(); !fragment.atEnd(); ++fragment)
+            if (fragment.fragment().charFormat().isAnchor()) return true;
+    return false;
+}
+bool HasImage(const QTextDocument& document) {
+    for (auto block = document.begin(); block != document.end(); block = block.next())
+        for (auto fragment = block.begin(); !fragment.atEnd(); ++fragment)
+            if (fragment.fragment().charFormat().isImageFormat()) return true;
+    return false;
+}
+bool HasTable(const QTextDocument& document) {
+    for (auto block = document.begin(); block != document.end(); block = block.next()) {
+        QTextCursor cursor(block);
+        if (cursor.currentTable()) return true;
+    }
+    return false;
+}
 } // namespace
 
 class UpdateDialogTests final : public QObject {
@@ -74,6 +98,7 @@ private slots:
     void init();
     void ConstructionUsesNativeThemeAndDoesNotStartNetwork();
     void AvailableVersionIsPlainTextAndSkipPersistsWithoutDownloading();
+    void ReleaseNotesRenderMarkdownWithoutLoadingResources();
     void FailedCheckStaysAnErrorAtNarrowWidthAndCanRetry();
     void DownloadShowsRealProgressAndTheCancelButtonStopsIt();
     void SettingsPageStagesOptionsAndReusesItsManualDialog();
@@ -111,7 +136,7 @@ void UpdateDialogTests::ConstructionUsesNativeThemeAndDoesNotStartNetwork() {
     QVERIFY(current && primary && automatic && channel); QCOMPARE(current->text(), QStringLiteral("0.1.0")); QVERIFY(!primary->isVisible());
     QVERIFY(automatic->isChecked()); QCOMPARE(channel->currentText(), QStringLiteral("稳定版"));
     QVERIFY(dialog.styleSheet().isEmpty()); // 继承应用工作台主题，模块没有另设颜色或字体。
-    QCOMPARE(dialog.findChild<QPlainTextEdit*>("updateReleaseNotes")->isReadOnly(), true);
+    QCOMPARE(dialog.findChild<QTextEdit*>("updateReleaseNotes")->isReadOnly(), true);
     Capture(dialog, QStringLiteral("update-idle-graphite"));
 }
 
@@ -124,11 +149,45 @@ void UpdateDialogTests::AvailableVersionIsPlainTextAndSkipPersistsWithoutDownloa
     QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
     auto* primary = dialog.findChild<QPushButton*>("primaryButton"); auto* skip = dialog.findChild<QPushButton*>("updateSkipButton");
     QVERIFY(primary->isVisible() && primary->isEnabled()); QCOMPARE(primary->text(), QStringLiteral("更新")); QVERIFY(skip->isVisible());
-    QCOMPARE(dialog.findChild<QPlainTextEdit*>("updateReleaseNotes")->toPlainText(), notes);
+    // 原始 HTML 只按文字显示，不生成可点击的链接。
+    const auto* shown = dialog.findChild<QTextEdit*>("updateReleaseNotes");
+    QVERIFY(shown->toPlainText().contains(QStringLiteral("<a href=\"https://example.invalid\">")));
+    QVERIFY(shown->toPlainText().contains(QStringLiteral("第二行发布内容")));
+    QVERIFY(!HasAnchor(*shown->document()));
     QCOMPARE(dialog.findChild<QLabel*>("updateStatus")->textFormat(), Qt::PlainText); QCOMPARE(server.requests.size(), 1);
     Capture(dialog, QStringLiteral("update-available-graphite"));
     QTest::mouseClick(skip, Qt::LeftButton); QCOMPARE(client.Status().state, UpdateState::Skipped);
     QCOMPARE(settings.value("update/skippedVersion").toString(), QStringLiteral("0.2.0")); QCOMPARE(server.requests.size(), 1); QVERIFY(!primary->isVisible());
+}
+
+void UpdateDialogTests::ReleaseNotesRenderMarkdownWithoutLoadingResources() {
+    QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start()); server.Publish(bundle);
+    // 本机图片文件存在也不能被说明里的图片语法读取。
+    const auto image = directory.filePath(QStringLiteral("local.png"));
+    QImage pixel(4, 4, QImage::Format_ARGB32); pixel.fill(Qt::red); QVERIFY(pixel.save(image));
+    const auto notes = QStringLiteral("## 下载\n\n> **请在副本上试用。**\n\n| 文件 | 用途 |\n|---|---|\n| `a.zip` | **下载这个** |\n\n")
+        + QStringLiteral("![图](") + QUrl::fromLocalFile(image).toString() + QStringLiteral(")\n\n[项目](https://example.invalid)\n");
+    server.routes["/repos/fixture/editor/releases/latest"] = server.Release(bundle, QStringLiteral("0.2.0"), false, notes);
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.path()), settings);
+    UpdateDialog dialog(client); dialog.resize(760, 640); dialog.show(); dialog.CheckNow();
+    QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
+    auto* shown = dialog.findChild<QTextEdit*>("updateReleaseNotes"); QVERIFY(shown);
+    const auto text = shown->toPlainText();
+    QVERIFY2(!text.contains(QStringLiteral("##")) && !text.contains(QStringLiteral("**")) && !text.contains(QStringLiteral("|---")), qPrintable(text));
+    QVERIFY(text.contains(QStringLiteral("下载这个")) && text.contains(QStringLiteral("项目")));
+    QVERIFY(HasTable(*shown->document()));
+    // 表头格只有表头文字一段且加粗，不留导入时的空段落。
+    QTextTable* table = nullptr;
+    for (auto block = shown->document()->begin(); block.isValid() && !table; block = block.next()) table = QTextCursor(block).currentTable();
+    const auto header = shown->document()->findBlock(table->cellAt(0, 0).firstPosition());
+    QCOMPARE(header.text(), QStringLiteral("文件"));
+    QCOMPARE(QTextCursor(header).charFormat().fontWeight(), int(QFont::Bold));
+    QVERIFY(!HasImage(*shown->document()) && text.contains(QStringLiteral("[图片]")));
+    QCOMPARE(shown->textInteractionFlags() & Qt::LinksAccessibleByMouse, Qt::TextInteractionFlags{});
+    const auto resource = shown->document()->resource(QTextDocument::ImageResource, QUrl::fromLocalFile(image));
+    QVERIFY(resource.value<QImage>().isNull());
+    QCOMPARE(server.requests.size(), 1);
+    Capture(dialog, QStringLiteral("update-markdown-notes-graphite"));
 }
 
 void UpdateDialogTests::FailedCheckStaysAnErrorAtNarrowWidthAndCanRetry() {
