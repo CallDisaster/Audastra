@@ -1,0 +1,40 @@
+cmake_minimum_required(VERSION 3.24)
+get_filename_component(_mdx_scan_root "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    project(War3MdxScan LANGUAGES CXX)
+    # Linux 独立入口只支持磁盘清单；Windows 游戏归档通过编辑器全量工程链接已有 Core。
+    if(WIN32)
+        message(FATAL_ERROR "Build war3-mdx-scan from the FORGE root on Windows (existing Core/MPQ source)")
+    endif()
+    include("${_mdx_scan_root}/cmake/War3RenderCore.cmake")
+endif()
+add_executable(war3-mdx-scan ScanMain.cpp ScanRun.cpp ScanSources.cpp
+    ScanProcess.cpp ScanSamples.cpp ScanCompare.cpp ScanOracle.cpp)
+target_link_libraries(war3-mdx-scan PRIVATE War3RenderCore::CPU)
+target_compile_features(war3-mdx-scan PRIVATE cxx_std_20)
+set_target_properties(war3-mdx-scan PROPERTIES CXX_EXTENSIONS OFF)
+if(MSVC)
+    target_compile_definitions(war3-mdx-scan PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    target_compile_options(war3-mdx-scan PRIVATE /W4 /WX /permissive- /utf-8 /fp:precise)
+    target_link_libraries(war3-mdx-scan PRIVATE War3MapEditor::RenderSupport)
+else()
+    target_compile_options(war3-mdx-scan PRIVATE -Wall -Wextra -Werror -ffp-contract=off)
+    target_link_libraries(war3-mdx-scan PRIVATE War3RenderCore::MDX)
+endif()
+# 不登记到 CTest：真实游戏数据与扫描预算由本机显式指定，不能冒充默认回归。
+
+# 人工验证时才显式构建，不进 ALL / CTest，不随编辑器部署。
+add_executable(war3-mdx-scan-fixtures EXCLUDE_FROM_ALL
+    "${_mdx_scan_root}/tests/MdxScanToolFixtures.cpp" ScanProcess.cpp)
+target_include_directories(war3-mdx-scan-fixtures PRIVATE "${_mdx_scan_root}/include")
+target_compile_features(war3-mdx-scan-fixtures PRIVATE cxx_std_20)
+if(MSVC)
+    target_compile_definitions(war3-mdx-scan-fixtures PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    target_compile_options(war3-mdx-scan-fixtures PRIVATE /W4 /WX /permissive- /utf-8)
+else()
+    target_compile_options(war3-mdx-scan-fixtures PRIVATE -Wall -Wextra -Werror)
+endif()
+
+target_link_libraries(war3-mdx-scan PRIVATE War3RenderCore::ScanData)
+target_link_libraries(war3-mdx-scan-fixtures PRIVATE War3RenderCore::ScanData)
+target_include_directories(war3-mdx-scan-fixtures PRIVATE "${WAR3_RENDER_CORE_SOURCE_DIR}/tests")

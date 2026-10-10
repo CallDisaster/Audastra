@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" fill="none">
+  <title>原创示例头像 · 守卫步兵</title>
+  <defs><linearGradient id="bg" x2="96" y2="96" gradientUnits="userSpaceOnUse"><stop stop-color="#263945"/><stop offset="1" stop-color="#111b23"/></linearGradient><linearGradient id="steel" x1="29" y1="17" x2="65" y2="65" gradientUnits="userSpaceOnUse"><stop stop-color="#b7c9cf"/><stop offset=".48" stop-color="#7c929f"/><stop offset="1" stop-color="#334c5b"/></linearGradient></defs>
+  <path fill="url(#bg)" d="M0 0h96v96H0z"/><circle cx="49" cy="39" r="33" stroke="#9cb6c3" stroke-opacity=".12"/>
+  <path d="M77 17v70" stroke="#c4c8bd" stroke-width="3"/><path d="m77 7-5 15 5-3 5 3-5-15Z" fill="#a5b6ba"/>
+  <path d="M10 96v-9c2-16 16-26 36-26s34 10 36 26v9" fill="#1b2832"/>
+  <path d="m30 64 17 7 18-7 10 17-6 15H23l-5-14 12-18Z" fill="#385878"/>
+  <path d="m28 63-15 9-4 17 20-3 9-15-10-8Zm38 0 16 9 6 17-23-3-9-15 10-8Z" fill="url(#steel)"/>
+  <path d="m15 74 13-7 5 5-8 9-12 2 2-9Zm52-6 12 7 3 8-14-2-7-9 6-4Z" fill="#afc0c7" opacity=".65"/>
+  <path d="m37 56 1 14 9 8 10-8 1-14" fill="#846b56"/><path d="M32 32h31v19L53 66H42L32 51V32Z" fill="#bd9976"/>
+  <path d="M31 34c0-15 6-23 17-23 12 0 19 9 19 23v12l-8 13-3-24H40l-3 24-8-13 2-12Z" fill="url(#steel)"/>
+  <path d="m47 12-6 22h16L50 12" fill="#d3dadd"/><path d="M29 31h39v8H29z" fill="#8ca2ae"/>
+  <path d="m32 40 12 1v5l-10-2-2-4Zm31 0-12 1v5l10-2 2-4Z" fill="#1c2a30"/>
+  <path d="M46 35h5v22l-3 3-3-3 1-22Z" fill="#bfcbd0"/><path d="m42 61 6 2 6-2" stroke="#785841" stroke-width="2"/>
+  <path d="M30 91V78l17 5 18-5v13" stroke="#7c98b0" stroke-width="2"/><path d="m47 80 4 5-4 6-4-6 4-5Z" fill="#b2c0bf"/>
+  <rect x=".5" y=".5" width="95" height="95" rx="5.5" stroke="#8197a8" stroke-opacity=".22"/>
+</svg>

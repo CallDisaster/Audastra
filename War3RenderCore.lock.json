@@ -1,0 +1,512 @@
+{
+  "schema": 1,
+  "version": "0.1.19",
+  "repository": "https://github.com/CallDisaster/Audastra-RenderCore.git",
+  "commit": "bc4c90c92a613969db86dbecf48280a0a1fd4fdd",
+  "files": [
+    {
+      "path": ".gitattributes",
+      "sha256": "80df82d7ee49d2d0e5c63bd4ea0cc7630c5e9fc5fe142b5a89ccb2f9eda21276"
+    },
+    {
+      "path": ".gitignore",
+      "sha256": "1560ed97bef2712639610f0618fe4b15147f668076d7799a2a67f883d814dbe5"
+    },
+    {
+      "path": "CMakeLists.txt",
+      "sha256": "7c94c6050e8ec320f77c5102fd5054f227743509775f42328c51137f19bfd7d8"
+    },
+    {
+      "path": "COPYRIGHT.md",
+      "sha256": "70614ac6e3a326e5b115c16e4fd32561415225a84f446ea97bda2e6e825a0e4d"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    },
+    {
+      "path": "README.md",
+      "sha256": "ec7795d12c7483632ca1915ea7b9de1fa007f5a4b649a59a46fb153fd022bcf1"
+    },
+    {
+      "path": "docs/DRAW_ASSET_VIEW.md",
+      "sha256": "e8ca31e487b8a17dd18ac4432213badaf773d7ba160c83aa1af781c74f28c3f2"
+    },
+    {
+      "path": "docs/EXTERNAL_FRAME.md",
+      "sha256": "ba405c9b3b267a6be2ae3889f1efb2264f13044ce211a3fcb0207ce58d758b9e"
+    },
+    {
+      "path": "docs/EXTRACTION.md",
+      "sha256": "f382a3e4015d2e5a5489023a97d8a2ae95b041cfa7ceba72d3cbd09230ff6892"
+    },
+    {
+      "path": "docs/FOOTMAN_GOLDEN.md",
+      "sha256": "95a9a6e3af81e42e86dafc209a851908c61064a1fcdfcbf07076c0623e118401"
+    },
+    {
+      "path": "docs/KMTA_PREM_PREVIEW.md",
+      "sha256": "9631b7a1465791d6a842b0536db2877cebe1af5af0e6b6fbc5c6f70e9f483546"
+    },
+    {
+      "path": "docs/MIGRATION.tsv",
+      "sha256": "1294412fcceb20a92e867cab997c2da9dff23aaa9ebe7072dc44ac15ee49a883"
+    },
+    {
+      "path": "docs/PROVENANCE.md",
+      "sha256": "b46e967d1f56feed2b160f91c8b2aac849a24ce0cacdead4a697932c405422c8"
+    },
+    {
+      "path": "docs/RIGID_STATIC_PREVIEW.md",
+      "sha256": "fcd7f50871f39058453b2440a329d0919dc692bee38d9b09c738d8e04eeefc8c"
+    },
+    {
+      "path": "docs/SOURCE_ORDER_NODE_PREVIEW.md",
+      "sha256": "af3a4a1dac72de707893a7ce564dde198c1034cc9e3508b51d27bb782d8806ad"
+    },
+    {
+      "path": "docs/UPDATES_0_1_1.md",
+      "sha256": "6f18304f9b36efdd4ff61bf4f2e5d9cde6c935fe0d102964f08f7af2ba78f541"
+    },
+    {
+      "path": "fixtures/footman-v1.txt",
+      "sha256": "b4b0cac19f670557128a21efaf4a95285cd9880e3a7be8a14b52a0adc02853bd"
+    },
+    {
+      "path": "include/War3MapCore/Render/MdxModel.h",
+      "sha256": "e50fd37d72a405e46b0d53a9bada72183e6f4634e343d8eabbfb3362cef70b40"
+    },
+    {
+      "path": "include/War3MapCore/Render/MdxPose.h",
+      "sha256": "953a7fbc0d8cab4f2d3db5792e058d9debd0408e4748f368a43eac0c20ea87cd"
+    },
+    {
+      "path": "include/War3MapCore/RenderPlugin.h",
+      "sha256": "b7e5721153db47e4cdd703589cf8817e44a0d7e6f4154b3780c6ea73e78b94e0"
+    },
+    {
+      "path": "include/War3MapCore/RenderPluginEditorVisibility.h",
+      "sha256": "28338518a56149303aa8885fb4feb99a43b33e8e4d7241c24be0a93bc2ab47b7"
+    },
+    {
+      "path": "include/War3MapCore/RenderPluginFrameMetrics.h",
+      "sha256": "b3ad8f4e31dfd0a1d33b8f036e858bbbcaea4dc2cf884ea250b9b2a5173b6104"
+    },
+    {
+      "path": "include/War3MapCore/RenderPluginInstanceRoster.h",
+      "sha256": "93dfc7797da88c8b0dc34506d52f969217204b4690b37a93383cfe34260f912e"
+    },
+    {
+      "path": "include/War3MapCore/RenderPluginMaterialAlpha.h",
+      "sha256": "f6177b3c96c13b364b7eca1db2bee648e8f5cc45d73314bfb8cb2375357a5fef"
+    },
+    {
+      "path": "include/War3MapCore/RenderPluginMaterialState.h",
+      "sha256": "41f2ddd8af35c5a7c8820ea722f61bd322b3c7a6629d17f5a017fdf90709a261"
+    },
+    {
+      "path": "include/War3MapCore/RenderPluginModelColor.h",
+      "sha256": "ecf64be6a5ed723f3ec0916202fb1a4b5d5f3337d318e5c689a50737c743fe48"
+    },
+    {
+      "path": "include/War3MapCore/RenderPluginModelLayers.h",
+      "sha256": "8b7716a1f01f29e4447391bf7e86f463e5dfdc5ec911147a0cc548b9baccdd32"
+    },
+    {
+      "path": "include/War3MapCore/RenderPluginV2.h",
+      "sha256": "11df6469256f341b6c63e80045cd7637ba04046e118021014ea98391ec4143a2"
+    },
+    {
+      "path": "include/War3RenderCore/CompiledModel.h",
+      "sha256": "d0ebefcf1dd14674779efcfe2fd876b7cbab7b8be2385e01aee4c7c9abe97703"
+    },
+    {
+      "path": "include/War3RenderCore/ExternalFrame.h",
+      "sha256": "753efe3a01348be2c296106f0e8351601301fd368f3e3f0d5af8f1d0a52850dc"
+    },
+    {
+      "path": "include/War3RenderCore/GameKeyRanges.h",
+      "sha256": "4fefc825ab2f3a474e76252a0b03c7d486d71bf310625e2ecbe520fd82e7eebf"
+    },
+    {
+      "path": "include/War3RenderCore/GeosetColor.h",
+      "sha256": "ecad73fb4b4ac6ec94a1a1fa5acdd7b2b41ea6fcd780bdf2779edcea686a80a5"
+    },
+    {
+      "path": "include/War3RenderCore/Legacy/MdxModel.h",
+      "sha256": "30fef3d98d23de1631c88b1e1f15d89dbe2e6f3f427e0c5718bfa722b7f33805"
+    },
+    {
+      "path": "include/War3RenderCore/Legacy/MdxPose.h",
+      "sha256": "ddb3f0950d27b587fab56aa8adc71e09fd0c435aac41f1515c15c20ab0fd9e71"
+    },
+    {
+      "path": "include/War3RenderCore/Legacy/ModelSceneData.h",
+      "sha256": "c50aa407898a1c875f6b498047640f1d712a02496447de88b45ad70664bf5b90"
+    },
+    {
+      "path": "include/War3RenderCore/Legacy/ModelSkinInput.h",
+      "sha256": "4f02392f47ea543656dd9e62262cd03f6b62c106a5fc4becc83e95b9e44b0c1d"
+    },
+    {
+      "path": "include/War3RenderCore/Legacy/RenderPlugin.h",
+      "sha256": "c73f0eebae47ea77b993f9a9673ac0e4212a595b71017685d8a6a9bb10baf2a6"
+    },
+    {
+      "path": "include/War3RenderCore/Legacy/RenderPluginEditorVisibility.h",
+      "sha256": "76338c4d6a1c8741708c72086d60e3909a15b94b051e70c3ea2df3b16351b1d4"
+    },
+    {
+      "path": "include/War3RenderCore/Legacy/RenderPluginFrameMetrics.h",
+      "sha256": "fe5a76fd24d48257f41664aaf3ba2bfae676ee48c4a83043e55e33f9882b8a24"
+    },
+    {
+      "path": "include/War3RenderCore/Legacy/RenderPluginInstanceRoster.h",
+      "sha256": "d7de4823637a3f94d909fd670f6dfa209ef02dd335e22417338ef3e8233d3fca"
+    },
+    {
+      "path": "include/War3RenderCore/Legacy/RenderPluginMaterialAlpha.h",
+      "sha256": "c81800f17aa708c18e2b754ac765b628b96a583ecbbc2e75764f442fcb9d617b"
+    },
+    {
+      "path": "include/War3RenderCore/Legacy/RenderPluginMaterialState.h",
+      "sha256": "fbba749fb7abaa0ddabebe56a7b2abbaf08e8dab336131e7387d318da45f6b69"
+    },
+    {
+      "path": "include/War3RenderCore/Legacy/RenderPluginModelColor.h",
+      "sha256": "cc62d466094e2de87b21a553e827001df803350dcac4b6331ea49aaea16be1e2"
+    },
+    {
+      "path": "include/War3RenderCore/Legacy/RenderPluginModelLayers.h",
+      "sha256": "37520428cfbe707dba7f63dff1fe112281ca831ec5ff77ca379fa2a8ba70543e"
+    },
+    {
+      "path": "include/War3RenderCore/Legacy/RenderPluginV2.h",
+      "sha256": "455de569f4c1026ec801feb6c9a3bd248d69a92d0eff0e247071eb1635ab9fc0"
+    },
+    {
+      "path": "include/War3RenderCore/Legacy/ScanDetail.h",
+      "sha256": "9247dcfd6db159b580664d02a9adfd91c82dc73dace60845256d6d0d916fe66f"
+    },
+    {
+      "path": "include/War3RenderCore/Legacy/ScanTypes.h",
+      "sha256": "f77b59e26dc648a503888fa4656e6d872a29091287bf0d5fba6b0ce7a87b1e59"
+    },
+    {
+      "path": "include/War3RenderCore/MaterialAlphaKeySamplingPolicy.h",
+      "sha256": "bf33499c5c820afcf556fc9d6420f2751f09770aedcefd3dd646172b0c2cecf4"
+    },
+    {
+      "path": "include/War3RenderCore/MaterialChannels.h",
+      "sha256": "dd9b5595e5fa01bd7638e69fabb79bc378a57dcfb8d15a99f7264ab0b0d787bd"
+    },
+    {
+      "path": "include/War3RenderCore/MaterialTextures.h",
+      "sha256": "bee621e5093cfc8742ffde4a53e3aa0f43b8ccd613cf5747270b5c2d22aa53aa"
+    },
+    {
+      "path": "include/War3RenderCore/ModelContent.h",
+      "sha256": "5bd72eb366988881fe18b65de60f402b5dc24b7c9735f7eafa330e5aaba9312e"
+    },
+    {
+      "path": "include/War3RenderCore/NodeKeySamplingPolicy.h",
+      "sha256": "702d7bfe92a49b10116f690aef81f7d299a02481c903794e9fad3eed8778a229"
+    },
+    {
+      "path": "include/War3RenderCore/PoseBatch.h",
+      "sha256": "31f5530c318d9173f3115a976598e0a4cbf810a1675230b7ccda1405e234e25e"
+    },
+    {
+      "path": "include/War3RenderCore/PoseTypes.h",
+      "sha256": "c93300552fa060c613b9693272bf6b9c0b3eac97d27dc46cc2a4be827564e60e"
+    },
+    {
+      "path": "include/War3RenderCore/Result.h",
+      "sha256": "2647e36c37506d56a73a122007f1954b0c05f45d95b2407939ef6391839157f6"
+    },
+    {
+      "path": "src/Render/Assets/MdxGeosetRead.inl",
+      "sha256": "646802ed8691329eeea3aa6806a0474f3a265e97ad5c7a22ac6424a96eb3b727"
+    },
+    {
+      "path": "src/Render/Assets/MdxGeosetSample.inl",
+      "sha256": "e38b8e8eed7846c3aa00b3708fa95a99443de2d7b1af16daa3a3798c307326a7"
+    },
+    {
+      "path": "src/Render/Assets/MdxInheritanceReference.inl",
+      "sha256": "84f543990205061846c127b455be4b768f28692c9774fea4351668b6fe4e6972"
+    },
+    {
+      "path": "src/Render/Assets/MdxModel.cpp",
+      "sha256": "1f5005697f29fda06e6c10b42fe3ca382aed95e018dcb9025e785c665d5a401c"
+    },
+    {
+      "path": "src/Render/Assets/MdxNodeRead.h",
+      "sha256": "83d864617755ee7f60b0b981618295e78092e6492855bd7dd24ee19688e33c0b"
+    },
+    {
+      "path": "src/Render/Assets/MdxNormalPreview.h",
+      "sha256": "c8edcac415cb9eb0570c0a4c51e2b872290a373f5284b21e429c845ebb934eda"
+    },
+    {
+      "path": "src/Render/Assets/MdxPose.cpp",
+      "sha256": "58c4475a7ae758e4d3ed3c48dff1e413f497375d5ba4e3f85ddd0d9429753fb6"
+    },
+    {
+      "path": "src/Render/Assets/MdxPremRead.h",
+      "sha256": "74d8042720aa0b7bfcf2274b51c8503d350e59198ffd1ac6bc99bba921aca377"
+    },
+    {
+      "path": "src/Render/Assets/MdxReadInternal.h",
+      "sha256": "13fd72146b4625d2407ce33e1809797bf7917168ec1e0a6894c1ea91f227b9ea"
+    },
+    {
+      "path": "src/Render/Assets/MdxRigidStaticPreviewInternal.h",
+      "sha256": "331e973df7b7ac791c1bf8de7dfc5c4d6a2807924afc39bedafe98e71c6d7452"
+    },
+    {
+      "path": "src/Render/Scene/ModelSceneData.h",
+      "sha256": "3985b452cdc25a392f067826050ea4fb708c996600396dea2efb8f1465f2898a"
+    },
+    {
+      "path": "src/Render/Scene/ModelSkinInput.cpp",
+      "sha256": "d2a2def831e39bff49cb8d0f86471f0741109a75935d3511d3d895f598561bae"
+    },
+    {
+      "path": "src/Render/Scene/ModelSkinInput.h",
+      "sha256": "1f82f5bf8c2f913f1dad64ce33229dff324290ed64b87d895f8c36dca105896f"
+    },
+    {
+      "path": "src/Render/Tools/MdxScan/ScanDetail.cpp",
+      "sha256": "a8bc8008b0fee128f257f9a52cd48a40a8db2807cfe4fb28dd661f72aebf1664"
+    },
+    {
+      "path": "src/Render/Tools/MdxScan/ScanDetail.h",
+      "sha256": "98669df582128d85baf1d43c2171954faeaa6fe813b1123df8e43b2372b543df"
+    },
+    {
+      "path": "src/Render/Tools/MdxScan/ScanRecord.cpp",
+      "sha256": "6c3f9a71c106f206c35c0edab141a2803254a3097ba108ad8b015b43c698e424"
+    },
+    {
+      "path": "src/Render/Tools/MdxScan/ScanTypes.h",
+      "sha256": "93c423d79101061439e9e662d09ab6950db50c4f6f50158d40abb842223e2da3"
+    },
+    {
+      "path": "src/RenderCore/CMakeLists.txt",
+      "sha256": "19a9ad8337240d80e8d0948e46f0372d24d74f55ee325f325c37ef8f39f2b07b"
+    },
+    {
+      "path": "src/RenderCore/CompiledModel.cpp",
+      "sha256": "2e151fc43aaa5105ae93f4a5005e74448ff5374cec704969d65123967cea0437"
+    },
+    {
+      "path": "src/RenderCore/Diagnostics.cpp",
+      "sha256": "bd853e684e0442f67a3b7e2a24b47a109698b84c278fd008e89dc056a67a4f0a"
+    },
+    {
+      "path": "src/RenderCore/GeosetChannels.cpp",
+      "sha256": "080e2042575f28c3cd7ed1e26e0cc1f554d9d9c967e1e7394e7415d65b9234af"
+    },
+    {
+      "path": "src/RenderCore/GeosetChannels.h",
+      "sha256": "1af691dbc40bad80bc2aff9fcbd3e12870389e075b906b618845063f888d34f3"
+    },
+    {
+      "path": "src/RenderCore/Inheritance.md",
+      "sha256": "24992c3240608102937055016ab4dbe45fa251cd01c8e5e787e24c3675649e89"
+    },
+    {
+      "path": "src/RenderCore/MaterialChannels.cpp",
+      "sha256": "1444c4d12ef0421355470740551ef9551fdb6d7c6cc1797837a0ec41bf7bee6f"
+    },
+    {
+      "path": "src/RenderCore/MaterialChannels.h",
+      "sha256": "434fb0db13c988ea55846192d3d0afb445dfa9ac768e1af506ecfed724f5c0d0"
+    },
+    {
+      "path": "src/RenderCore/MaterialTextures.cpp",
+      "sha256": "204c11f394751ebee217d7692448c51b5bc1025e48f32b44049ebb34eb4f8a18"
+    },
+    {
+      "path": "src/RenderCore/MaterialTextures.h",
+      "sha256": "4671d9a3eaf7ab43dc484868a521b5a034e1ef2a335b9c5c3c1a1e170a9903d3"
+    },
+    {
+      "path": "src/RenderCore/ModelData.h",
+      "sha256": "56c3469e4513c55088043bef66aba8b32b2d031c9b5a52fd4c07efc27f0b8980"
+    },
+    {
+      "path": "src/RenderCore/NodeTrackCompile.h",
+      "sha256": "3b5febc985265fce0265bfa6028f9a9d0c84898e6d57969a33f1afcb8ec39b8d"
+    },
+    {
+      "path": "src/RenderCore/PoseBatch.cpp",
+      "sha256": "5b9b462318d8eb8a6f57c3087b715bee926cc75de5330231f2347b2200e8bda3"
+    },
+    {
+      "path": "src/RenderCore/PoseInheritance.cpp",
+      "sha256": "85981e091f852a540de4812ee96893d6a8a688825f790fa5ea95bc1bf1544b2d"
+    },
+    {
+      "path": "src/RenderCore/PoseMath.cpp",
+      "sha256": "9dbe3f21486d1a62fe8975392ea604046fb6c23534c90766946df22e57539825"
+    },
+    {
+      "path": "src/RenderCore/PoseMath.h",
+      "sha256": "0ca7b1f14509549aace400670f3f53e15ff0630423e9d2b96106a25c8e80ef93"
+    },
+    {
+      "path": "src/RenderCore/PoseTracks.cpp",
+      "sha256": "3adad6ec147347e6999e8ef1e81854d729e7616ecb7c13a70561a75c9ff41838"
+    },
+    {
+      "path": "src/RenderCore/PoseTracks.h",
+      "sha256": "4c2bed49b046309132efd73b11638aea6742e21f73f1fa10f14d70fb07fdead1"
+    },
+    {
+      "path": "src/RenderCore/PreviewSkin.cpp",
+      "sha256": "41fb9b042355ee0c6ca872f8a1b2408544ee4d982b2031e0a6af744418f07819"
+    },
+    {
+      "path": "src/RenderCore/README.md",
+      "sha256": "3a71e5ff85706b25a0106d0f0b879e2664b4dec900fe9eea4d84540eea8d190a"
+    },
+    {
+      "path": "src/RenderCore/SourceOrderNodeTrack.h",
+      "sha256": "19d5ab4c69d1dbdc983816fae335cde67dcc9f589719ec7398991813e33c4058"
+    },
+    {
+      "path": "src/RenderCore/Step4Validation.md",
+      "sha256": "2a694e69e20cc35c185a606d2dac96ad9f6594167cc5811dd8b8495c5438e2f7"
+    },
+    {
+      "path": "src/RenderCore/TestTargets.cmake",
+      "sha256": "5648207b3e1cf4ae519211803ab4ae4bf9d2cb9cceacceb89615c916810ff75f"
+    },
+    {
+      "path": "tests/ExternalFrameTests.cpp",
+      "sha256": "d78cd2b42c5fad63db4ed6933c829008f693ee14c656ae0179ff4e07ca85ff05"
+    },
+    {
+      "path": "tests/GeosetChannelFixture.h",
+      "sha256": "54ed97eb30f2347e5153dd95ff410c0d2b771c7cf94b19c996390a5999fe5b33"
+    },
+    {
+      "path": "tests/GeosetChannelTests.cpp",
+      "sha256": "f96af2d0316788d02f6a1946f3b78da91ed48b621bb789bbe19f345d3a1ae22a"
+    },
+    {
+      "path": "tests/GeosetColorCoreTests.cpp",
+      "sha256": "c076dda53306b1c36967d8343dee1d4dc30037732f32007508a198badf2ea203"
+    },
+    {
+      "path": "tests/GeosetColorTests.cpp",
+      "sha256": "c93f8fd78a90db659c49b65377e8dbecdb002acab4f1af5d8bebe3ef798be8bb"
+    },
+    {
+      "path": "tests/MaterialAlphaDuplicatePreviewTests.cpp",
+      "sha256": "09102ce58cc75db15e1a4f92325d1d2e58d7e54ee9790b7527bcf9ccfc477d2f"
+    },
+    {
+      "path": "tests/MaterialChannelTests.cpp",
+      "sha256": "782acc30598b81fca0a8f626219c7f0542cfd3a376505cb6421072c02b7f9a66"
+    },
+    {
+      "path": "tests/MaterialTextureTests.cpp",
+      "sha256": "e4b54e678cedd5f57c0a1174e3749a8717ae8f22b4e2daeaa7ac2452a5e2f30c"
+    },
+    {
+      "path": "tests/MaterialUvAnimationTests.cpp",
+      "sha256": "6c3e07805a01572de7ff08c6e36aa2ed6851141bee6ef44ea5398ee4eae4921e"
+    },
+    {
+      "path": "tests/MdxModelTests.cpp",
+      "sha256": "eda3e9fd6940452d8ba7659da5e37f0a0bd702adc28a4dcb296cea10d0dcc4bb"
+    },
+    {
+      "path": "tests/MdxTestModel.h",
+      "sha256": "34b8ba8ff358e89e2ae860dcd3905a40b386f71aa6c35fdf724173d7b5279cc8"
+    },
+    {
+      "path": "tests/PremReadTests.cpp",
+      "sha256": "f930e30e89c2e188e938cdaf18f18d7f4e590a430f174df51e67ec0a9e1b556f"
+    },
+    {
+      "path": "tests/RenderCoreAllocProbe.cpp",
+      "sha256": "07410f9d1d9bc8f74f75fd8e3988a71c3c3d4c1f0f196fee441dc870fcd4fef4"
+    },
+    {
+      "path": "tests/RenderCoreAllocProbe.h",
+      "sha256": "8b78b26ad82eebf25e273d07318fb9854c46462b503fafb88a21d61d228ecda2"
+    },
+    {
+      "path": "tests/RenderCoreCompactTests.cpp",
+      "sha256": "49c8e5b6d687eca6bae0a732f55d3b5dff5fabce9f2a0b71eee7aa697129884b"
+    },
+    {
+      "path": "tests/RenderCoreTests.cpp",
+      "sha256": "655c56e90be5d76098a5a11763728a70ed4bf7c27119acbcd08284ca2d8a919d"
+    },
+    {
+      "path": "tests/RenderCoverageNodes.h",
+      "sha256": "a51379cf0155c77f763b83b1d837f7acee79c23227f0d3e7a4b3623512c11a20"
+    },
+    {
+      "path": "tests/RenderCoverageNormals.h",
+      "sha256": "8519348d69e7e4bd64b040fe695deb829bcf4b6e70b16dfa1a9e9fa3ec875731"
+    },
+    {
+      "path": "tests/RenderCoverageParticles.h",
+      "sha256": "c25bd41ee943aed6712c23eb4192a195c7ff1e2b52ff1713b305a4d358e8d9d0"
+    },
+    {
+      "path": "tests/RenderCoverageScan.h",
+      "sha256": "34288af7aad904b61051934be5521ebb267ec338c59706b5fb96ec4b2ef5233d"
+    },
+    {
+      "path": "tests/RenderCoverageTests.cpp",
+      "sha256": "dd503dcb97e23beb81b011163118a372996e05c07d271161df25b180251e685f"
+    },
+    {
+      "path": "tests/RenderCoverageTransforms.h",
+      "sha256": "66ab42837951183d533d33345e343e7f32576c8c0c0edfca738abf8b0a1187df"
+    },
+    {
+      "path": "tests/RenderSkinAssetAppendTests.cpp",
+      "sha256": "36a87b5f8c2e2275d7856cd6d963efaa302c31e7b38cb95b7d1f5e4f626171a4"
+    },
+    {
+      "path": "tests/RenderSkinFixture.h",
+      "sha256": "76450dabf2bf52630274278b05a37f3737d1f641fe5bd2df89df2a0d4a115601"
+    },
+    {
+      "path": "tests/RenderSkinInputTests.cpp",
+      "sha256": "86719a6e75572ab7c3f619443d70495ab670fe91be95aeaee02b6951476e4afa"
+    },
+    {
+      "path": "tests/RenderSkinRosterTests.cpp",
+      "sha256": "79557a0a41920f7713f289a4525a16f3e6ada51384746bdd56f85a31ed7d352f"
+    },
+    {
+      "path": "tests/RigidStaticPreviewFixture.h",
+      "sha256": "6cca1dc18fb8398d8dabb5289fb1f75cbc6c1919e32ae4fad4e449b9569bc4af"
+    },
+    {
+      "path": "tests/SourceOrderPreviewFixture.h",
+      "sha256": "755a106322774f04c2222ce9b61e8700beffdd1a60aa7e4669f9a698e60a779c"
+    },
+    {
+      "path": "tests/SourceOrderPreviewRealTests.py",
+      "sha256": "168cf90ab0c4762e3515fbb7afddd31b1a6793e6aab782cfb8fe860c8d8e0a42"
+    },
+    {
+      "path": "tests/SourceOrderPreviewTests.cpp",
+      "sha256": "29b567b2486a4b873e59036372e867ab76765aef359f2a346c5772cb498ed4a4"
+    },
+    {
+      "path": "tools/FootmanGolden.cpp",
+      "sha256": "918007b66fd1169aa047489aada3a3ea55735dd1cde16ed20da37cc0834e9bfe"
+    }
+  ]
+}

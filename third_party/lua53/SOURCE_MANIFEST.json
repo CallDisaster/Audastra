@@ -1,0 +1,186 @@
+{
+  "version": "5.3.6",
+  "archiveSha256": "fc5fd69bb8736323f026672b1b7235da613d7177e72558893a0bdcd320466d60",
+  "files": [
+    {
+      "path": "lapi.c",
+      "sha256": "82d3ef91b436dbff1e4f24db99872613f87daa3bf81541e2809fec2bcd242e77"
+    },
+    {
+      "path": "lapi.h",
+      "sha256": "e3047f6c9b8eafd1bece0e4984be29ddb440a449ecaf27c6e9c0bdf37c05a237"
+    },
+    {
+      "path": "lauxlib.h",
+      "sha256": "b402036cde8fcc9180d28ead326cdac20381a352561c4cfd4fc11cf92aeea85b"
+    },
+    {
+      "path": "lcode.c",
+      "sha256": "6f99ec620c52847cf561fede4a379ed79da68a1e5e4ea7db26962d8cddcfe163"
+    },
+    {
+      "path": "lcode.h",
+      "sha256": "16dcc44abd4c09d54fb78d44aac1a4e15691c90409260cd45aeee4add48d8cee"
+    },
+    {
+      "path": "lctype.c",
+      "sha256": "ef7689da632ef6c1498f07622059d082b8f10db7f807e836308121304680dbeb"
+    },
+    {
+      "path": "lctype.h",
+      "sha256": "8af05e71837aa8ad8539c4ebd0e17f8a46e02e7b01e7ff1b5c13bf569f64805b"
+    },
+    {
+      "path": "ldebug.c",
+      "sha256": "65f67d06b13dfd77757caa38152f56ddab1dfed6afbf89a30b5219bdbc5d4779"
+    },
+    {
+      "path": "ldebug.h",
+      "sha256": "79c3ffcf75a66b1ee832ec7b3a2c4ecd9609b729eab0ed5bb4fe3807248cd261"
+    },
+    {
+      "path": "ldo.c",
+      "sha256": "2d0a7727deef66a04a455a4616c92931d2fafc08b140b4a3f3afa805e9921dab"
+    },
+    {
+      "path": "ldo.h",
+      "sha256": "e2f95025af7c0430375704655deb737446ca16680593a5a3a9eae545c1da34a5"
+    },
+    {
+      "path": "ldump.c",
+      "sha256": "a49a25e1358d49cc18bbe1b9e2b58ac3b661bc59326299b16227db41c3530823"
+    },
+    {
+      "path": "lfunc.c",
+      "sha256": "6bf0b54c3a55120986a1b84e8bd2ab651933df57ca27d1c2136ed9af1cfbb195"
+    },
+    {
+      "path": "lfunc.h",
+      "sha256": "93d06a45223101d7c65e617e808d70e7b2bbd166840c6898ae89f7ba5b9f3c0c"
+    },
+    {
+      "path": "lgc.c",
+      "sha256": "2946af80a79c3744b0fd04cf82d2b3d6bb304f4d66280d43a30f7ace741fe1e6"
+    },
+    {
+      "path": "lgc.h",
+      "sha256": "e50b1ae3f53d0bc88d9a3c1a139622fba6d80bd00a41e6205fa2bd6e1b599326"
+    },
+    {
+      "path": "llex.c",
+      "sha256": "1445cdf2ce87725450ecc3f7d092673989e0581b2e7413cdbdaac689a98c7dc4"
+    },
+    {
+      "path": "llex.h",
+      "sha256": "cf38677869f342c6495886bd7b883926bcceecdf111918e77951efcf98a59592"
+    },
+    {
+      "path": "llimits.h",
+      "sha256": "040e379fe01874d6955160d7cbbc4de8c6a603477282b46c09a030e8228cba8e"
+    },
+    {
+      "path": "lmem.c",
+      "sha256": "d98f0b5065198ba10f3c4a34f1945502732450e44bf9765a5523e9f8a5594f2a"
+    },
+    {
+      "path": "lmem.h",
+      "sha256": "647d7abb4c1409e3d2737c938b5b3e880e3675d061f39cd2ad5ff7ea2b743a35"
+    },
+    {
+      "path": "lobject.c",
+      "sha256": "2b1be9b1bb9729899e14e2833adaa268e249d462ccf5b4407bee8313212259af"
+    },
+    {
+      "path": "lobject.h",
+      "sha256": "dcf71ef0b0b262db8620eab9bb5c299e4c74d9039c0647fa85ff2771df7b8eba"
+    },
+    {
+      "path": "lopcodes.c",
+      "sha256": "01ec54f3c53e2485e2ed43e396e9460f393e3db21782901dc656df6f41cee7e7"
+    },
+    {
+      "path": "lopcodes.h",
+      "sha256": "f6ed980dc9cab58f1392757baabc9f1fecf5823148ca10c968c6f79fad7cda36"
+    },
+    {
+      "path": "lparser.c",
+      "sha256": "8877d5d8bc6344eec579b7171b248c7b5dd84362e991e2585d520f9b96fc720f"
+    },
+    {
+      "path": "lparser.h",
+      "sha256": "dd8a2820db595f5caf8df670bc95f4d98d09ebcc4614352283c5f14d71dc1881"
+    },
+    {
+      "path": "lprefix.h",
+      "sha256": "e0c0fcc19ae3d98f87df6a55b9ae7b4aaee1a0173f8aecd2c0fbfac5aba1ddd2"
+    },
+    {
+      "path": "lstate.c",
+      "sha256": "65d3410a7881118a7a54184b857c88ae9142d5df8f8321ede300e1ad449d491f"
+    },
+    {
+      "path": "lstate.h",
+      "sha256": "cd2b5dbed9a56b1fb2008e5cc59908ad2a0cf1d74316deb6aef347bc856b6ae8"
+    },
+    {
+      "path": "lstring.c",
+      "sha256": "1fe5411f41a41f4613d7d199fd9c77c17a6dfbdb568bb4b6b90abd628470b89a"
+    },
+    {
+      "path": "lstring.h",
+      "sha256": "19ed50c84d033c5a2ced831c1a0bb1ec50e7605db912455100488645c6746f1c"
+    },
+    {
+      "path": "ltable.c",
+      "sha256": "e927bd16a56bd2fef893cdbea4d06232c807c942dd4c09505578923b6090aada"
+    },
+    {
+      "path": "ltable.h",
+      "sha256": "fc2d833300726ed3f196a986d8e21a02344df27e6061147078a129cb92905620"
+    },
+    {
+      "path": "ltm.c",
+      "sha256": "aa755ae6bf963c9bd7a63b9ccb8c3c4797e45a385afcae9bfe550b6c2be02c07"
+    },
+    {
+      "path": "ltm.h",
+      "sha256": "af6f29d9a877f44789b07bb57083d442601f919a39f72591acd9ae08f4465fa4"
+    },
+    {
+      "path": "lua.h",
+      "sha256": "d05e8e3b199aa51fec7c3d40f058a1e4f9aa76bb0587a9fe211f00c800f71a9d"
+    },
+    {
+      "path": "luaconf.h",
+      "sha256": "3c8b9d0205af7020728e345a69799b0aa25c662eec28ea04efcca65c4dac7a7d"
+    },
+    {
+      "path": "lualib.h",
+      "sha256": "ff460960aad15065580bbd64a49dcd73e9b9d728209a1d0dfedee4817c6f0543"
+    },
+    {
+      "path": "lundump.c",
+      "sha256": "1183d9a46a06baf33af6900203aed8c04b3e59128f6645af0a2a6d7dd8da3a7c"
+    },
+    {
+      "path": "lundump.h",
+      "sha256": "2a6431d92cbddb2026f400d42f023747df0a96b286c3fc394a7622b38667bd35"
+    },
+    {
+      "path": "lvm.c",
+      "sha256": "70b57c5a2f2ba8f19d48b0dacd1ee23ee28323ba084bef2a2686348cee5d96a4"
+    },
+    {
+      "path": "lvm.h",
+      "sha256": "adc7d6a0514d85c871323ecc393528d6724a8517664d8c4a0d627477f887076c"
+    },
+    {
+      "path": "lzio.c",
+      "sha256": "3e08652a4178d4d8bab91309f138ae1caa2d804774f6a72ce28162e41a49e113"
+    },
+    {
+      "path": "lzio.h",
+      "sha256": "6321310217c0de5f1a9ea8fd526aa612af3e30c7ce8263acd75a4cea9d3a34c2"
+    }
+  ]
+}

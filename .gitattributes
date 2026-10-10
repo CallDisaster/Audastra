@@ -1,0 +1,19 @@
+* text=auto
+*.cpp text eol=crlf
+*.h text eol=crlf
+*.cmake text eol=lf
+CMakeLists.txt text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+# 本原创 oracle 的字节 SHA 是验收身份，禁止 checkout 自动改换行。
+tests/fixtures/slk_lni_oracle_cases.lua -text
+tests/fixtures/slk_creation_oracle_cases.lua -text
+# 完整模板事务的四份源码也进入固定来源 manifest，保留已验证的实际字节。
+src/ScriptBuild/LuaTemplateHost.lua -text
+tests/fixtures/slk_transaction_cases.lua -text
+tools/dev/slk_transaction_oracle.lua -text
+tools/dev/slk_transaction_oracle.ps1 -text
+# 作者批准的 SVG 以字节 SHA 绑定导出身份，禁止 Windows checkout 改换行。
+assets/brand/audastra.svg -text

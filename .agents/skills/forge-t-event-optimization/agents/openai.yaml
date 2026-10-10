@@ -1,0 +1,6 @@
+interface:
+  display_name: "自然 T 事件优化"
+  short_description: "按类型与实例订阅迁移真实事件业务，保留自然语言 T 和生命周期语义"
+  default_prompt: "使用 $forge-t-event-optimization 盘点并优化这张地图的高频事件，交付可编辑自然 T、实际业务迁移和剩余清单。"
+policy:
+  allow_implicit_invocation: true

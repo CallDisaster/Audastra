@@ -1,0 +1,6 @@
+<!-- Audastra原创帮助图标；沿用现有24px、currentColor及1.75px描边。 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="12" r="9.5"/>
+  <path d="M9.4 8.8a2.7 2.7 0 0 1 5.3.7c0 1.8-2.7 2.1-2.7 4.1"/>
+  <path d="M12 17.1h.01"/>
+</svg>

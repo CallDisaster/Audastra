@@ -1,0 +1,37 @@
+{
+  "version": "5.3.6",
+  "archiveSha256": "fc5fd69bb8736323f026672b1b7235da613d7177e72558893a0bdcd320466d60",
+  "sourceUrl": "https://www.lua.org/ftp/lua-5.3.6.tar.gz",
+  "scope": "test-only-standard-libraries-for-original-runtime-probe-policy",
+  "applicationCompileOnlyDependencyUnchanged": true,
+  "files": [
+    {
+      "path": "lauxlib.c",
+      "sha256": "032f0b05e878eac032b080c921480c99f05bb76bd1bd115b0cb53f7b36e50a90"
+    },
+    {
+      "path": "lbaselib.c",
+      "sha256": "82859824326ca8e74dcabcca73003c18cde1cad3109c143a980fd7dbf4c56d68"
+    },
+    {
+      "path": "ldblib.c",
+      "sha256": "6f22c4d8384af630d1c701041ff874bcca8ae53a5788405000df0be77e526c71"
+    },
+    {
+      "path": "loadlib.c",
+      "sha256": "0517816a39ed07ae05ba51ba236f789cea2f9e50a8a884448d0aefcbb969edb1"
+    },
+    {
+      "path": "lstrlib.c",
+      "sha256": "4a9e9ce6722e7e3432cc3c7381d20088c47b5276062605596dda3a30b72e22b2"
+    },
+    {
+      "path": "ltablib.c",
+      "sha256": "604e43b05b4bf1a9b25c5f023c000022875d792410ff1895083d9f6a051ce283"
+    },
+    {
+      "path": "lualib.h",
+      "sha256": "ff460960aad15065580bbd64a49dcd73e9b9d728209a1d0dfedee4817c6f0543"
+    }
+  ]
+}

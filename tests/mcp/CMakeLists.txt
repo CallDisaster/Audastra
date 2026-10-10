@@ -1,0 +1,106 @@
+add_executable(war3-map-mcp-workspace-tests McpWorkspaceTests.cpp)
+target_link_libraries(
+    war3-map-mcp-workspace-tests
+    PRIVATE War3MapEditor::McpWorkspace)
+target_compile_definitions(
+    war3-map-mcp-workspace-tests
+    PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(
+    war3-map-mcp-workspace-tests
+    PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME mcp-safe-workspace COMMAND war3-map-mcp-workspace-tests)
+
+add_executable(war3-map-mcp-workspace-map-data-tests McpWorkspaceMapDataTests.cpp)
+target_link_libraries(war3-map-mcp-workspace-map-data-tests PRIVATE War3MapEditor::McpWorkspace)
+target_compile_definitions(war3-map-mcp-workspace-map-data-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(war3-map-mcp-workspace-map-data-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME mcp-workspace-map-data COMMAND war3-map-mcp-workspace-map-data-tests)
+
+add_executable(war3-map-mcp-workspace-placements-tests McpWorkspacePlacementTests.cpp)
+target_link_libraries(war3-map-mcp-workspace-placements-tests PRIVATE War3MapEditor::McpWorkspace)
+target_compile_definitions(war3-map-mcp-workspace-placements-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(war3-map-mcp-workspace-placements-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME mcp-workspace-placements COMMAND war3-map-mcp-workspace-placements-tests)
+
+add_executable(war3-map-mcp-object-reference-tests McpMapObjectReferenceTests.cpp)
+target_link_libraries(war3-map-mcp-object-reference-tests PRIVATE War3MapEditor::McpWorkspace)
+target_compile_definitions(war3-map-mcp-object-reference-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(war3-map-mcp-object-reference-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME mcp-map-object-references COMMAND war3-map-mcp-object-reference-tests)
+
+if(TARGET War3MapMcpProtocol)
+    add_executable(war3-map-mcp-product-tools-tests McpProductToolsTests.cpp)
+    target_link_libraries(war3-map-mcp-product-tools-tests PRIVATE War3MapEditor::McpProtocol)
+    target_compile_definitions(war3-map-mcp-product-tools-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+    target_compile_options(war3-map-mcp-product-tools-tests PRIVATE /W4 /permissive- /utf-8)
+    add_test(NAME mcp-product-tools COMMAND war3-map-mcp-product-tools-tests)
+    set_tests_properties(mcp-product-tools PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    add_executable(war3-map-mcp-import-tools-tests McpImportToolsTests.cpp)
+    target_link_libraries(war3-map-mcp-import-tools-tests PRIVATE War3MapEditor::McpProtocol)
+    target_compile_definitions(war3-map-mcp-import-tools-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+    target_compile_options(war3-map-mcp-import-tools-tests PRIVATE /W4 /permissive- /utf-8)
+    add_test(NAME mcp-import-tools COMMAND war3-map-mcp-import-tools-tests)
+    set_tests_properties(mcp-import-tools PROPERTIES ENVIRONMENT_MODIFICATION
+        "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    add_executable(war3-map-mcp-placement-tools-tests McpPlacementToolsTests.cpp)
+    target_link_libraries(war3-map-mcp-placement-tools-tests PRIVATE War3MapEditor::McpProtocol)
+    target_compile_definitions(war3-map-mcp-placement-tools-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+    target_compile_options(war3-map-mcp-placement-tools-tests PRIVATE /W4 /permissive- /utf-8)
+    add_test(NAME mcp-placement-tools COMMAND war3-map-mcp-placement-tools-tests)
+    set_tests_properties(mcp-placement-tools PROPERTIES ENVIRONMENT_MODIFICATION
+        "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    add_executable(war3-map-mcp-map-data-tools-tests McpMapDataToolsTests.cpp)
+    target_link_libraries(war3-map-mcp-map-data-tools-tests PRIVATE War3MapEditor::McpProtocol)
+    target_compile_definitions(war3-map-mcp-map-data-tools-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+    target_compile_options(war3-map-mcp-map-data-tools-tests PRIVATE /W4 /permissive- /utf-8)
+    add_test(NAME mcp-map-data-tools COMMAND war3-map-mcp-map-data-tools-tests)
+    set_tests_properties(mcp-map-data-tools PROPERTIES ENVIRONMENT_MODIFICATION
+        "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    add_executable(war3-map-mcp-variable-tools-tests McpVariableToolsTests.cpp)
+    target_link_libraries(war3-map-mcp-variable-tools-tests PRIVATE War3MapEditor::McpProtocol)
+    target_compile_definitions(war3-map-mcp-variable-tools-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+    target_compile_options(war3-map-mcp-variable-tools-tests PRIVATE /W4 /permissive- /utf-8)
+    add_test(NAME mcp-variable-tools COMMAND war3-map-mcp-variable-tools-tests)
+    set_tests_properties(mcp-variable-tools PROPERTIES ENVIRONMENT_MODIFICATION
+        "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    add_executable(war3-map-mcp-object-tools-tests McpObjectToolsTests.cpp)
+    target_link_libraries(war3-map-mcp-object-tools-tests PRIVATE War3MapEditor::McpProtocol)
+    target_compile_definitions(war3-map-mcp-object-tools-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+    target_compile_options(war3-map-mcp-object-tools-tests PRIVATE /W4 /permissive- /utf-8)
+    add_test(NAME mcp-object-tools COMMAND war3-map-mcp-object-tools-tests)
+    set_tests_properties(mcp-object-tools PROPERTIES ENVIRONMENT_MODIFICATION
+        "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    add_executable(war3-map-mcp-terrain-tests McpTerrainTests.cpp)
+    target_link_libraries(war3-map-mcp-terrain-tests PRIVATE War3MapEditor::McpProtocol)
+    target_compile_definitions(war3-map-mcp-terrain-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+    target_compile_options(war3-map-mcp-terrain-tests PRIVATE /W4 /permissive- /utf-8)
+    add_test(NAME mcp-terrain-readonly COMMAND war3-map-mcp-terrain-tests)
+    set_tests_properties(mcp-terrain-readonly PROPERTIES ENVIRONMENT_MODIFICATION
+        "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    add_executable(war3-map-mcp-protocol-tests McpProtocolTests.cpp)
+    target_link_libraries(
+        war3-map-mcp-protocol-tests
+        PRIVATE War3MapEditor::McpProtocol)
+    target_compile_definitions(
+        war3-map-mcp-protocol-tests
+        PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+    target_compile_options(
+        war3-map-mcp-protocol-tests
+        PRIVATE /W4 /permissive- /utf-8)
+    add_test(NAME mcp-safe-tool-surface COMMAND war3-map-mcp-protocol-tests)
+    set_tests_properties(
+        mcp-safe-tool-surface
+        PROPERTIES
+            ENVIRONMENT_MODIFICATION
+                "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+endif()
+
+if(TARGET War3MapMcpProtocol)
+    add_executable(war3-map-mcp-project-search-tests McpProjectSearchToolsTests.cpp)
+    target_link_libraries(war3-map-mcp-project-search-tests PRIVATE War3MapEditor::McpProtocol)
+    target_compile_definitions(war3-map-mcp-project-search-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+    target_compile_options(war3-map-mcp-project-search-tests PRIVATE /W4 /permissive- /utf-8)
+    add_test(NAME mcp-project-search COMMAND war3-map-mcp-project-search-tests)
+    set_tests_properties(mcp-project-search PROPERTIES TIMEOUT 30
+        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+endif()

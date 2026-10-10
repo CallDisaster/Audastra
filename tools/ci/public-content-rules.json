@@ -1,0 +1,60 @@
+{
+  "comment": "公开仓库内容扫描规则：CI 每次推送和 PR 运行 tools/ci/scan-public-content.ps1。私有词（地图名、账号等）不入库，由本机文件或 CI 机密 AUDASTRA_PRIVATE_PATTERNS 提供。",
+  "forbiddenExtensions": [
+    ".w3x",
+    ".w3m",
+    ".w3n",
+    ".mpq",
+    ".mdx",
+    ".mdl",
+    ".blp",
+    ".dds",
+    ".dll",
+    ".exe",
+    ".lib",
+    ".pdb",
+    ".obj",
+    ".ai",
+    ".slk",
+    ".zip",
+    ".7z",
+    ".rar"
+  ],
+  "maxFileBytes": 2097152,
+  "forbiddenPatterns": [
+    {
+      "regex": "(?i)\\b[A-Z]:[\\\\/]+(Users|Work|Mycode|Environment|Apps|Dev|tmp|Maps|Games)\\b",
+      "reason": "本机绝对路径"
+    },
+    {
+      "regex": "(?i)Administrator",
+      "reason": "本机用户名"
+    },
+    {
+      "regex": "(?i)AppData[\\\\/]",
+      "reason": "本机用户目录"
+    },
+    {
+      "regex": "(?i)[A-Z0-9._%+-]+@gmail\\.com",
+      "reason": "个人邮箱"
+    },
+    {
+      "regex": "(?i)(ghp_|github_pat_|sk-[a-z0-9]{20,}|AKIA[0-9A-Z]{16})",
+      "reason": "疑似令牌"
+    }
+  ],
+  "allowPatterns": [
+    {
+      "regex": "Synthetic|O'Connor",
+      "reason": "测试用虚构路径"
+    },
+    {
+      "regex": "(?i)\\b[A-Z]:[\\\\/]+(Games|Maps|Tools)[\\\\/]",
+      "reason": "文档示例路径"
+    },
+    {
+      "regex": "StartsInsensitive\\(token",
+      "reason": "隐私清理器自身的令牌前缀表"
+    }
+  ]
+}

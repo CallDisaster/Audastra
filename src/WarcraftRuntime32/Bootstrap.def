@@ -1,0 +1,3 @@
+LIBRARY audastra-warcraft-bootstrap
+EXPORTS
+    AudastraBootstrapAnchor @1

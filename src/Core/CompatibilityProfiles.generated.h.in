@@ -1,0 +1,9 @@
+#pragma once
+
+#include <string_view>
+
+namespace War3Map::GeneratedProfiles {
+
+inline constexpr std::string_view Default = R"War3Profile(@DEFAULT_PROFILE_JSON@)War3Profile";
+
+} // namespace War3Map::GeneratedProfiles

@@ -1,0 +1,6 @@
+interface:
+  display_name: "FORGE 地图 MCP"
+  short_description: "发现 FORGE 地图工具并用同一事务编辑自然 T、验证保存与独立回读"
+  default_prompt: "使用 $forge-editor-mcp 连接当前 FORGE 地图工具，核验身份后完成我的地图查询或自然 T 编辑并回读保存结果。"
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "id": "war3-1.27a-zhCN",
+  "displayName": "Warcraft III 1.27a (zhCN)",
+  "warcraftVersion": "1.27a",
+  "locale": "zhCN",
+  "unknownDataPolicy": "preserve-framed-fail-closed-structure"
+}

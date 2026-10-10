@@ -1,0 +1,2 @@
+#define IDI_AUDASTRA 101
+IDI_AUDASTRA ICON DISCARDABLE "@PROJECT_SOURCE_DIR@/assets/brand/audastra.ico"

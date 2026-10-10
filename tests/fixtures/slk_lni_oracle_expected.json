@@ -1,0 +1,2005 @@
+{
+  "schema": "slk-lni-typed-golden-v1",
+  "provenance": "Observed fixed lni.dll output on original fixtures; not C++ differential evidence",
+  "targetLniSha256": "84CEBB73E348C457C88A24A4BCC3A9F037CFC699429533558B498291A44F0E54",
+  "fixtureSha256": "81DFE6EBD02DEE38057F01CC98A2733FD36894061E2E9CD67A4FF6A344322D61",
+  "cases": [
+    {
+      "caseId": "decimal_types",
+      "cppPolicy": "supported",
+      "inputHex": "5b503030315d0a696e74656765723d370a7265616c3d372e300a6e656761746976657a65726f3d2d302e300a696e74656765727a65726f3d2d300a6578706f6e656e743d3165320a6672616374696f6e3d2e350a747261696c696e67706f696e743d312e0a6c656164696e677a65726f3d303030370a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 8,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 8,
+                    "hex": "6578706f6e656e74"
+                  },
+                  "value": {
+                    "kind": "float",
+                    "hex": "0x1.9p+6",
+                    "ieee754le": "0000000000005940"
+                  }
+                },
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 8,
+                    "hex": "6672616374696f6e"
+                  },
+                  "value": {
+                    "kind": "float",
+                    "hex": "0x1p-1",
+                    "ieee754le": "000000000000e03f"
+                  }
+                },
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 7,
+                    "hex": "696e7465676572"
+                  },
+                  "value": {
+                    "kind": "integer",
+                    "decimal": "7"
+                  }
+                },
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 11,
+                    "hex": "696e74656765727a65726f"
+                  },
+                  "value": {
+                    "kind": "integer",
+                    "decimal": "0"
+                  }
+                },
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 11,
+                    "hex": "6c656164696e677a65726f"
+                  },
+                  "value": {
+                    "kind": "integer",
+                    "decimal": "7"
+                  }
+                },
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 12,
+                    "hex": "6e656761746976657a65726f"
+                  },
+                  "value": {
+                    "kind": "float",
+                    "hex": "-0x0p+0",
+                    "ieee754le": "0000000000000080"
+                  }
+                },
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 4,
+                    "hex": "7265616c"
+                  },
+                  "value": {
+                    "kind": "float",
+                    "hex": "0x1.cp+2",
+                    "ieee754le": "0000000000001c40"
+                  }
+                },
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 13,
+                    "hex": "747261696c696e67706f696e74"
+                  },
+                  "value": {
+                    "kind": "float",
+                    "hex": "0x1p+0",
+                    "ieee754le": "000000000000f03f"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "integer_bounds",
+      "cppPolicy": "supported",
+      "inputHex": "5b503030315d0a6d6178696d756d3d393232333337323033363835343737353830370a6d696e696d756d3d2d393232333337323033363835343737353830380a65786163743d393030373139393235343734303939330a726f756e6465643d393030373139393235343734303939332e300a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 4,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 5,
+                    "hex": "6578616374"
+                  },
+                  "value": {
+                    "kind": "integer",
+                    "decimal": "9007199254740993"
+                  }
+                },
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 7,
+                    "hex": "6d6178696d756d"
+                  },
+                  "value": {
+                    "kind": "integer",
+                    "decimal": "9223372036854775807"
+                  }
+                },
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 7,
+                    "hex": "6d696e696d756d"
+                  },
+                  "value": {
+                    "kind": "integer",
+                    "decimal": "-9223372036854775808"
+                  }
+                },
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 7,
+                    "hex": "726f756e646564"
+                  },
+                  "value": {
+                    "kind": "float",
+                    "hex": "0x1p+53",
+                    "ieee754le": "0000000000004043"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "quoted_strings",
+      "cppPolicy": "supported",
+      "inputHex": "5b503030315d0a646f75626c653d22615c74625c6e635c725c5c5c225c27220a73696e676c653d276f6e655c2774776f5c2274687265655c5c270a757466383d22e58e9fe5889be7b1bbe59e8be6a0b7e4be8b220a656d7074793d22220a71756f746564636f6d6d656e743d22666978747572652d2d64617461220a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 5,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 6,
+                    "hex": "646f75626c65"
+                  },
+                  "value": {
+                    "kind": "string",
+                    "byteCount": 9,
+                    "hex": "6109620a630d5c2227"
+                  }
+                },
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 5,
+                    "hex": "656d707479"
+                  },
+                  "value": {
+                    "kind": "string",
+                    "byteCount": 0,
+                    "hex": ""
+                  }
+                },
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 13,
+                    "hex": "71756f746564636f6d6d656e74"
+                  },
+                  "value": {
+                    "kind": "string",
+                    "byteCount": 13,
+                    "hex": "666978747572652d2d64617461"
+                  }
+                },
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 6,
+                    "hex": "73696e676c65"
+                  },
+                  "value": {
+                    "kind": "string",
+                    "byteCount": 14,
+                    "hex": "6f6e652774776f2274687265655c"
+                  }
+                },
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 4,
+                    "hex": "75746638"
+                  },
+                  "value": {
+                    "kind": "string",
+                    "byteCount": 18,
+                    "hex": "e58e9fe5889be7b1bbe59e8be6a0b7e4be8b"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "dense_arrays",
+      "cppPolicy": "supported",
+      "inputHex": "5b503030315d0a7965733d747275650a6e6f3d66616c73650a61727261793d7b312c322e302c22222c66616c73657d0a656d7074793d7b7d0a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 4,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 5,
+                    "hex": "6172726179"
+                  },
+                  "value": {
+                    "kind": "table",
+                    "count": 4,
+                    "entries": [
+                      {
+                        "key": {
+                          "kind": "integer",
+                          "decimal": "1"
+                        },
+                        "value": {
+                          "kind": "integer",
+                          "decimal": "1"
+                        }
+                      },
+                      {
+                        "key": {
+                          "kind": "integer",
+                          "decimal": "2"
+                        },
+                        "value": {
+                          "kind": "float",
+                          "hex": "0x1p+1",
+                          "ieee754le": "0000000000000040"
+                        }
+                      },
+                      {
+                        "key": {
+                          "kind": "integer",
+                          "decimal": "3"
+                        },
+                        "value": {
+                          "kind": "string",
+                          "byteCount": 0,
+                          "hex": ""
+                        }
+                      },
+                      {
+                        "key": {
+                          "kind": "integer",
+                          "decimal": "4"
+                        },
+                        "value": {
+                          "kind": "boolean",
+                          "value": false
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 5,
+                    "hex": "656d707479"
+                  },
+                  "value": {
+                    "kind": "table",
+                    "count": 0,
+                    "entries": []
+                  }
+                },
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 2,
+                    "hex": "6e6f"
+                  },
+                  "value": {
+                    "kind": "boolean",
+                    "value": false
+                  }
+                },
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 3,
+                    "hex": "796573"
+                  },
+                  "value": {
+                    "kind": "boolean",
+                    "value": true
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "metadata_layers",
+      "cppPolicy": "supported",
+      "inputHex": "5b6162696c6974795d0a5b2e64617461615d0a6669656c643d44617461410a69643d443030310a6b65793d64617461610a747970653d300a7265706561743d340a70726f66696c653d66616c73650a5b503030315d0a5b2e64617461615d0a6669656c643d44617461410a69643d443030320a6b65793d64617461610a747970653d320a5b466f6e7453636f70655d0a747970653d6d6973630a5b2e6865696768745d0a6669656c643d4865696768740a69643d483030310a6b65793d6865696768740a747970653d310a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 3,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 9,
+              "hex": "466f6e7453636f7065"
+            },
+            "value": {
+              "kind": "table",
+              "count": 2,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 6,
+                    "hex": "686569676874"
+                  },
+                  "value": {
+                    "kind": "table",
+                    "count": 4,
+                    "entries": [
+                      {
+                        "key": {
+                          "kind": "string",
+                          "byteCount": 5,
+                          "hex": "6669656c64"
+                        },
+                        "value": {
+                          "kind": "string",
+                          "byteCount": 6,
+                          "hex": "486569676874"
+                        }
+                      },
+                      {
+                        "key": {
+                          "kind": "string",
+                          "byteCount": 2,
+                          "hex": "6964"
+                        },
+                        "value": {
+                          "kind": "string",
+                          "byteCount": 4,
+                          "hex": "48303031"
+                        }
+                      },
+                      {
+                        "key": {
+                          "kind": "string",
+                          "byteCount": 3,
+                          "hex": "6b6579"
+                        },
+                        "value": {
+                          "kind": "string",
+                          "byteCount": 6,
+                          "hex": "686569676874"
+                        }
+                      },
+                      {
+                        "key": {
+                          "kind": "string",
+                          "byteCount": 4,
+                          "hex": "74797065"
+                        },
+                        "value": {
+                          "kind": "integer",
+                          "decimal": "1"
+                        }
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 4,
+                    "hex": "74797065"
+                  },
+                  "value": {
+                    "kind": "string",
+                    "byteCount": 4,
+                    "hex": "6d697363"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 5,
+                    "hex": "6461746161"
+                  },
+                  "value": {
+                    "kind": "table",
+                    "count": 4,
+                    "entries": [
+                      {
+                        "key": {
+                          "kind": "string",
+                          "byteCount": 5,
+                          "hex": "6669656c64"
+                        },
+                        "value": {
+                          "kind": "string",
+                          "byteCount": 5,
+                          "hex": "4461746141"
+                        }
+                      },
+                      {
+                        "key": {
+                          "kind": "string",
+                          "byteCount": 2,
+                          "hex": "6964"
+                        },
+                        "value": {
+                          "kind": "string",
+                          "byteCount": 4,
+                          "hex": "44303032"
+                        }
+                      },
+                      {
+                        "key": {
+                          "kind": "string",
+                          "byteCount": 3,
+                          "hex": "6b6579"
+                        },
+                        "value": {
+                          "kind": "string",
+                          "byteCount": 5,
+                          "hex": "6461746161"
+                        }
+                      },
+                      {
+                        "key": {
+                          "kind": "string",
+                          "byteCount": 4,
+                          "hex": "74797065"
+                        },
+                        "value": {
+                          "kind": "integer",
+                          "decimal": "2"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 7,
+              "hex": "6162696c697479"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 5,
+                    "hex": "6461746161"
+                  },
+                  "value": {
+                    "kind": "table",
+                    "count": 6,
+                    "entries": [
+                      {
+                        "key": {
+                          "kind": "string",
+                          "byteCount": 5,
+                          "hex": "6669656c64"
+                        },
+                        "value": {
+                          "kind": "string",
+                          "byteCount": 5,
+                          "hex": "4461746141"
+                        }
+                      },
+                      {
+                        "key": {
+                          "kind": "string",
+                          "byteCount": 2,
+                          "hex": "6964"
+                        },
+                        "value": {
+                          "kind": "string",
+                          "byteCount": 4,
+                          "hex": "44303031"
+                        }
+                      },
+                      {
+                        "key": {
+                          "kind": "string",
+                          "byteCount": 3,
+                          "hex": "6b6579"
+                        },
+                        "value": {
+                          "kind": "string",
+                          "byteCount": 5,
+                          "hex": "6461746161"
+                        }
+                      },
+                      {
+                        "key": {
+                          "kind": "string",
+                          "byteCount": 7,
+                          "hex": "70726f66696c65"
+                        },
+                        "value": {
+                          "kind": "boolean",
+                          "value": false
+                        }
+                      },
+                      {
+                        "key": {
+                          "kind": "string",
+                          "byteCount": 6,
+                          "hex": "726570656174"
+                        },
+                        "value": {
+                          "kind": "integer",
+                          "decimal": "4"
+                        }
+                      },
+                      {
+                        "key": {
+                          "kind": "string",
+                          "byteCount": 4,
+                          "hex": "74797065"
+                        },
+                        "value": {
+                          "kind": "integer",
+                          "decimal": "0"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "config_bare",
+      "cppPolicy": "supported",
+      "inputHex": "5b676c6f62616c5d0a646174613d666978747572652d646174610a646174615f75693d247b594457457d0a646174615f6d6574613d247b44454641554c547d0a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 6,
+              "hex": "676c6f62616c"
+            },
+            "value": {
+              "kind": "table",
+              "count": 3,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 4,
+                    "hex": "64617461"
+                  },
+                  "value": {
+                    "kind": "string",
+                    "byteCount": 12,
+                    "hex": "666978747572652d64617461"
+                  }
+                },
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 9,
+                    "hex": "646174615f6d657461"
+                  },
+                  "value": {
+                    "kind": "string",
+                    "byteCount": 10,
+                    "hex": "247b44454641554c547d"
+                  }
+                },
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 7,
+                    "hex": "646174615f7569"
+                  },
+                  "value": {
+                    "kind": "string",
+                    "byteCount": 7,
+                    "hex": "247b594457457d"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "numeric_section",
+      "cppPolicy": "supported",
+      "inputHex": "5b313030315d0a6e616d653d226e756d6265722d73656374696f6e220a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "31303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 4,
+                    "hex": "6e616d65"
+                  },
+                  "value": {
+                    "kind": "string",
+                    "byteCount": 14,
+                    "hex": "6e756d6265722d73656374696f6e"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "crlf",
+      "cppPolicy": "supported",
+      "inputHex": "5b503030315d0d0a76616c75653d330d0a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 5,
+                    "hex": "76616c7565"
+                  },
+                  "value": {
+                    "kind": "integer",
+                    "decimal": "3"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "last_line_no_newline",
+      "cppPolicy": "supported",
+      "inputHex": "5b503030315d0a76616c75653d33",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 5,
+                    "hex": "76616c7565"
+                  },
+                  "value": {
+                    "kind": "integer",
+                    "decimal": "3"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "present_empty_file",
+      "cppPolicy": "supported",
+      "inputHex": "",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 0,
+        "entries": []
+      }
+    },
+    {
+      "caseId": "bare_inline_comment",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b676c6f62616c5d0a646174613d666978747572652d2d646174610a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 6,
+              "hex": "676c6f62616c"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 4,
+                    "hex": "64617461"
+                  },
+                  "value": {
+                    "kind": "string",
+                    "byteCount": 7,
+                    "hex": "66697874757265"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "metadata_inline_comment",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b6162696c6974795d0a5b2e6e616d655d0a646973706c61796e616d653d4c4142454c2d2d636f6d6d656e740a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 7,
+              "hex": "6162696c697479"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 4,
+                    "hex": "6e616d65"
+                  },
+                  "value": {
+                    "kind": "table",
+                    "count": 1,
+                    "entries": [
+                      {
+                        "key": {
+                          "kind": "string",
+                          "byteCount": 11,
+                          "hex": "646973706c61796e616d65"
+                        },
+                        "value": {
+                          "kind": "string",
+                          "byteCount": 5,
+                          "hex": "4c4142454c"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "numeric_key",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b503030315d0a31303d370a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "integer",
+                    "decimal": "10"
+                  },
+                  "value": {
+                    "kind": "integer",
+                    "decimal": "7"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "numeric_prefix_key",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b503030315d0a316e616d653d370a",
+      "parseOk": false,
+      "typed": null
+    },
+    {
+      "caseId": "inheritance",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b435d0a783d310a5b41423a435d0a793d320a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 2,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 2,
+              "hex": "4142"
+            },
+            "value": {
+              "kind": "table",
+              "count": 2,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 1,
+                    "hex": "78"
+                  },
+                  "value": {
+                    "kind": "integer",
+                    "decimal": "1"
+                  }
+                },
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 1,
+                    "hex": "79"
+                  },
+                  "value": {
+                    "kind": "integer",
+                    "decimal": "2"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 1,
+              "hex": "43"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 1,
+                    "hex": "78"
+                  },
+                  "value": {
+                    "kind": "integer",
+                    "decimal": "1"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "dotted_section",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b412e42305d0a783d310a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 1,
+              "hex": "41"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 2,
+                    "hex": "4230"
+                  },
+                  "value": {
+                    "kind": "table",
+                    "count": 1,
+                    "entries": [
+                      {
+                        "key": {
+                          "kind": "string",
+                          "byteCount": 1,
+                          "hex": "78"
+                        },
+                        "value": {
+                          "kind": "integer",
+                          "decimal": "1"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "quoted_section",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b2250303031225d0a783d310a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 1,
+                    "hex": "78"
+                  },
+                  "value": {
+                    "kind": "integer",
+                    "decimal": "1"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "angle_section",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b413c30305d0a783d310a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "413c3030"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 1,
+                    "hex": "78"
+                  },
+                  "value": {
+                    "kind": "integer",
+                    "decimal": "1"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "duplicate_section",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b503030315d0a783d310a5b503030315d0a793d320a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 1,
+                    "hex": "79"
+                  },
+                  "value": {
+                    "kind": "integer",
+                    "decimal": "2"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "duplicate_field",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b503030315d0a783d310a783d320a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 1,
+                    "hex": "78"
+                  },
+                  "value": {
+                    "kind": "integer",
+                    "decimal": "2"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "scope_child_collision",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b466f6e7453636f70655d0a747970653d6d6973630a5b2e747970655d0a6669656c643d547970650a69643d543030310a6b65793d747970650a747970653d330a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 9,
+              "hex": "466f6e7453636f7065"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 4,
+                    "hex": "74797065"
+                  },
+                  "value": {
+                    "kind": "table",
+                    "count": 4,
+                    "entries": [
+                      {
+                        "key": {
+                          "kind": "string",
+                          "byteCount": 5,
+                          "hex": "6669656c64"
+                        },
+                        "value": {
+                          "kind": "string",
+                          "byteCount": 4,
+                          "hex": "54797065"
+                        }
+                      },
+                      {
+                        "key": {
+                          "kind": "string",
+                          "byteCount": 2,
+                          "hex": "6964"
+                        },
+                        "value": {
+                          "kind": "string",
+                          "byteCount": 4,
+                          "hex": "54303031"
+                        }
+                      },
+                      {
+                        "key": {
+                          "kind": "string",
+                          "byteCount": 3,
+                          "hex": "6b6579"
+                        },
+                        "value": {
+                          "kind": "string",
+                          "byteCount": 4,
+                          "hex": "74797065"
+                        }
+                      },
+                      {
+                        "key": {
+                          "kind": "string",
+                          "byteCount": 4,
+                          "hex": "74797065"
+                        },
+                        "value": {
+                          "kind": "integer",
+                          "decimal": "3"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "missing_value",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b503030315d0a783d0a",
+      "parseOk": false,
+      "typed": null
+    },
+    {
+      "caseId": "nil_field",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b503030315d0a783d6e696c0a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 0,
+              "entries": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "integer_overflow_to_float",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b503030315d0a783d393232333337323033363835343737353830380a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 1,
+                    "hex": "78"
+                  },
+                  "value": {
+                    "kind": "float",
+                    "hex": "0x1p+63",
+                    "ieee754le": "000000000000e043"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "float_underflow",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b503030315d0a783d31652d3939390a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 1,
+                    "hex": "78"
+                  },
+                  "value": {
+                    "kind": "float",
+                    "hex": "0x0p+0",
+                    "ieee754le": "0000000000000000"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "float_overflow",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b503030315d0a783d31653939390a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 1,
+                    "hex": "78"
+                  },
+                  "value": {
+                    "kind": "float",
+                    "hex": "inf",
+                    "ieee754le": "000000000000f07f"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "hexadecimal",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b503030315d0a783d307831300a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 1,
+                    "hex": "78"
+                  },
+                  "value": {
+                    "kind": "integer",
+                    "decimal": "16"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "decimal_escape",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b503030315d0a783d22615c30303062220a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 1,
+                    "hex": "78"
+                  },
+                  "value": {
+                    "kind": "string",
+                    "byteCount": 3,
+                    "hex": "610062"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "unknown_escape",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b503030315d0a783d226261645c71220a",
+      "parseOk": false,
+      "typed": null
+    },
+    {
+      "caseId": "trailing_comma",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b503030315d0a783d7b312c7d0a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 1,
+                    "hex": "78"
+                  },
+                  "value": {
+                    "kind": "table",
+                    "count": 1,
+                    "entries": [
+                      {
+                        "key": {
+                          "kind": "integer",
+                          "decimal": "1"
+                        },
+                        "value": {
+                          "kind": "integer",
+                          "decimal": "1"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "nested_array",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b503030315d0a783d7b312c7b327d7d0a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 1,
+                    "hex": "78"
+                  },
+                  "value": {
+                    "kind": "table",
+                    "count": 2,
+                    "entries": [
+                      {
+                        "key": {
+                          "kind": "integer",
+                          "decimal": "1"
+                        },
+                        "value": {
+                          "kind": "integer",
+                          "decimal": "1"
+                        }
+                      },
+                      {
+                        "key": {
+                          "kind": "integer",
+                          "decimal": "2"
+                        },
+                        "value": {
+                          "kind": "table",
+                          "count": 1,
+                          "entries": [
+                            {
+                              "key": {
+                                "kind": "integer",
+                                "decimal": "1"
+                              },
+                              "value": {
+                                "kind": "integer",
+                                "decimal": "2"
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "sparse_table",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b503030315d0a783d7b333d327d0a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 1,
+                    "hex": "78"
+                  },
+                  "value": {
+                    "kind": "table",
+                    "count": 1,
+                    "entries": [
+                      {
+                        "key": {
+                          "kind": "integer",
+                          "decimal": "3"
+                        },
+                        "value": {
+                          "kind": "integer",
+                          "decimal": "2"
+                        }
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "whole_line_comment",
+      "cppPolicy": "must-reject",
+      "inputHex": "2d2d206f726967696e616c20636f6d6d656e740a5b503030315d0a783d310a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 1,
+                    "hex": "78"
+                  },
+                  "value": {
+                    "kind": "integer",
+                    "decimal": "1"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "long_string",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b503030315d0a783d5b3d5b6c696e65206f6e650a6c696e652074776f5d3d5d0a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 1,
+                    "hex": "78"
+                  },
+                  "value": {
+                    "kind": "string",
+                    "byteCount": 17,
+                    "hex": "6c696e65206f6e650a6c696e652074776f"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "numeric_expression",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b503030315d0a783d31202b20320a",
+      "parseOk": false,
+      "typed": null
+    },
+    {
+      "caseId": "call_is_bare_data",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b503030315d0a783d696f2e6f70656e28226e657665722d6372656174656422290a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 1,
+                    "hex": "78"
+                  },
+                  "value": {
+                    "kind": "string",
+                    "byteCount": 24,
+                    "hex": "696f2e6f70656e28226e657665722d637265617465642229"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "unquoted_prebuilt_string",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b503030315d0a783d6c69746572616c0a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 1,
+                    "hex": "78"
+                  },
+                  "value": {
+                    "kind": "string",
+                    "byteCount": 7,
+                    "hex": "6c69746572616c"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "keyword_field_keys",
+      "cppPolicy": "supported",
+      "inputHex": "5b503030315d0a747275653d310a66616c73653d320a6e696c3d330a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 3,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 5,
+                    "hex": "66616c7365"
+                  },
+                  "value": {
+                    "kind": "integer",
+                    "decimal": "2"
+                  }
+                },
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 3,
+                    "hex": "6e696c"
+                  },
+                  "value": {
+                    "kind": "integer",
+                    "decimal": "3"
+                  }
+                },
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 4,
+                    "hex": "74727565"
+                  },
+                  "value": {
+                    "kind": "integer",
+                    "decimal": "1"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "negative_fraction",
+      "cppPolicy": "supported",
+      "inputHex": "5b503030315d0a783d2d2e350a793d2d322e35652d320a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 2,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 1,
+                    "hex": "78"
+                  },
+                  "value": {
+                    "kind": "float",
+                    "hex": "-0x1p-1",
+                    "ieee754le": "000000000000e0bf"
+                  }
+                },
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 1,
+                    "hex": "79"
+                  },
+                  "value": {
+                    "kind": "float",
+                    "hex": "-0x1.999999999999ap-6",
+                    "ieee754le": "9a999999999999bf"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "caseId": "bare_nan_is_string",
+      "cppPolicy": "must-reject",
+      "inputHex": "5b503030315d0a783d6e616e0a",
+      "parseOk": true,
+      "typed": {
+        "kind": "table",
+        "count": 1,
+        "entries": [
+          {
+            "key": {
+              "kind": "string",
+              "byteCount": 4,
+              "hex": "50303031"
+            },
+            "value": {
+              "kind": "table",
+              "count": 1,
+              "entries": [
+                {
+                  "key": {
+                    "kind": "string",
+                    "byteCount": 1,
+                    "hex": "78"
+                  },
+                  "value": {
+                    "kind": "string",
+                    "byteCount": 3,
+                    "hex": "6e616e"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

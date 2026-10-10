@@ -1,0 +1,2859 @@
+#include "EditorProject.h"
+#include "WorldModule.h"
+#include "MapEntitiesModule.h"
+#include "MapSettingsModule.h"
+#include "WorldAnimationPlayer.h"
+#include "WorldAnimationPlaybackContractChecks.h"
+#include "WorldViewport.h"
+#include "WorldOutlinerModel.h"
+#include "WorldNavigationBookmark.h"
+#include "WorldAssetBrowser.h"
+#include "WorldTerrainAssets.h"
+#include "WorldSelectionPresenter.h"
+#include "WorldPlacementPreview.h"
+#include "WorldPlacementModels.h"
+#include "War3MapCore/MapArchiveSession.h"
+#include "War3MapCore/MapData/MapAuxiliary.h"
+#include "War3MapCore/MapData/TerrainEditing.h"
+#include "War3MapCore/Hash.h"
+#include "War3MapCore/Workspace.h"
+#include "War3MapCore/Game/GameDataSource.h"
+#include "War3MapCore/ObjectData/StandardObjectCatalog.h"
+#include "War3MapCore/ObjectData/LniObjectCodec.h"
+#include "Widgets/ObjectCatalogWidgets.h"
+#include "Fonts/FontLoader.h"
+#include "../MapDataFixtures.h"
+#include "../AnimationParticleContinuityTests.h"
+#include "MdxTestModel.h"
+#include "EditorPresentationFixture.h"
+
+#include <QApplication>
+#include <QCheckBox>
+#include <QDockWidget>
+#include <QMainWindow>
+#include <QListWidget>
+#include "Theme/ThemeManager.h"
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QImage>
+#include <QComboBox>
+#include <QLabel>
+#include <QLineEdit>
+#include <QJsonArray>
+#include <QScrollBar>
+#include <QMouseEvent>
+#include <QPushButton>
+#include <QSignalSpy>
+#include <QSemaphore>
+#include <QSpinBox>
+#include <QToolButton>
+#include <QTreeView>
+#include <QTableWidget>
+#include <QItemSelectionModel>
+#include <QDoubleSpinBox>
+#include <QElapsedTimer>
+#include <QTemporaryDir>
+#include <QTest>
+#include <QThread>
+#include <QUndoStack>
+#include <QWheelEvent>
+
+#include <bit>
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <memory>
+
+using namespace War3Map;
+using namespace War3Map::Modules;
+
+namespace {
+struct BackendState {
+    EditorPresentationState editor;
+    std::uint64_t skinScene = 0, skinContent = 0, skinUploads = 0, matrixUploads = 0;
+    std::uint64_t layerParent = 7, layerRevision = 0, layersRevision = 1, layerId = 0;
+    int layerSubmits = 0, layerUpdates = 0, layerRemoves = 0;
+    std::uint32_t layerParticleVertices = 0;
+    std::uint64_t layerScene = 0, layerContent = 0;
+    std::uint64_t rosterSubmits = 0;
+    std::uint64_t rosterAssetIdentity = 0, rosterAssetAppends = 0;
+    War3RenderAssetPrefixV2 rosterAssets{};
+    War3RenderInstanceRosterResultV2 roster{sizeof(roster)};
+    float layerX = 0;
+    int creates = 0, destroys = 0, frames = 0;
+    std::uint32_t width = 0, height = 0;
+    std::uint64_t revision = 0;
+    std::size_t vertices = 0;
+    WorldViewport* viewport = nullptr;
+    bool destroyedBeforeWindow = true;
+    bool stoppedBeforeDestroy = true;
+    War3RenderCameraV2 camera{};
+    int viewReads = 0, captures = 0;
+    int terrainSubmits = 0;
+    int mipSubmits = 0;
+    std::uint32_t mipCount = 0, maxSampleMip = 0, atlasColumns = 0, atlasRows = 0;
+    std::vector<std::byte> mipOneBytes;
+    bool rejectTerrain = false;
+    bool autoComplete = true, pending = false, staleRevision = false, staleSize = false;
+    std::int32_t statusResult = 0, viewResult = 0;
+    std::uint64_t surfaceEpoch = 1, sceneEpoch = 1, viewEpoch = 1;
+    War3RenderViewInfoV2 completed{sizeof(War3RenderViewInfoV2)};
+    // 明确的原创顶视正交 MVP。射线从 Z=100 到 -100，覆盖 X±128、Y±64。
+    std::array<float, 16> viewProjection{1.0f / 128, 0, 0, 0, 0, 1.0f / 64, 0, 0, 0, 0, -0.005f, 0, 0, 0, 0.5f, 1};
+};
+BackendState* activeBackend = nullptr;
+War3RendererHandle WAR3_RENDER_CALL Create(const War3RenderCreateInfoV2* info) {
+    ++activeBackend->creates;
+    activeBackend->width = info->width; activeBackend->height = info->height;
+    return activeBackend;
+}
+void WAR3_RENDER_CALL Destroy(War3RendererHandle handle) {
+    auto& state = *static_cast<BackendState*>(handle);
+    ++state.destroys;
+    state.destroyedBeforeWindow = state.destroyedBeforeWindow && state.viewport && state.viewport->internalWinId() != 0;
+    state.stoppedBeforeDestroy = state.stoppedBeforeDestroy && state.viewport && !state.viewport->FrameTimerActive();
+}
+std::int32_t WAR3_RENDER_CALL Attach(War3RendererHandle handle, void* native) {
+    ++static_cast<BackendState*>(handle)->surfaceEpoch; return native ? 0 : 1;
+}
+std::int32_t WAR3_RENDER_CALL Resize(War3RendererHandle handle, std::uint32_t width, std::uint32_t height) {
+    auto& state = *static_cast<BackendState*>(handle); state.width = width; state.height = height; ++state.surfaceEpoch; return 0;
+}
+std::int32_t WAR3_RENDER_CALL Mesh(War3RendererHandle handle, const War3RenderMeshV2* mesh) {
+    auto& state = *static_cast<BackendState*>(handle); state.revision = mesh->documentRevision; state.vertices = mesh->vertexCount; ++state.sceneEpoch; return 0;
+}
+std::int32_t WAR3_RENDER_CALL Camera(War3RendererHandle handle, const War3RenderCameraV2* camera) {
+    auto& state = *static_cast<BackendState*>(handle); state.camera = *camera; ++state.viewEpoch; return 0;
+}
+void WAR3_RENDER_CALL Frame(War3RendererHandle handle) {
+    auto& state = *static_cast<BackendState*>(handle);
+    ++state.frames;
+    if (state.autoComplete) {
+        state.completed = {sizeof(War3RenderViewInfoV2), state.width, state.height, static_cast<std::uint64_t>(state.frames),
+            state.revision, state.surfaceEpoch, state.sceneEpoch, state.viewEpoch, {}};
+        std::copy(state.viewProjection.begin(), state.viewProjection.end(), state.completed.viewProjection);
+        EditorPresentationFixture<BackendState>::Draw(handle);
+    }
+}
+std::int32_t WAR3_RENDER_CALL Status(War3RendererHandle handle, War3RenderStatusV2* status) {
+    auto& state = *static_cast<BackendState*>(handle);
+    status->result = state.statusResult;
+    status->deviceReady = 1; status->width = state.width; status->height = state.height;
+    status->frameCount = state.frames; status->documentRevision = state.revision; return 0;
+}
+std::int32_t WAR3_RENDER_CALL Capture(War3RendererHandle handle, void*, std::uint64_t, War3RenderCaptureInfoV2*) {
+    ++static_cast<BackendState*>(handle)->captures; return 1;
+}
+std::int32_t WAR3_RENDER_CALL ViewInfo(War3RendererHandle handle, War3RenderViewInfoV2* output) {
+    auto& state = *static_cast<BackendState*>(handle); ++state.viewReads;
+    if (state.viewResult != 0) return state.viewResult;
+    if (state.pending || state.completed.frameCount == 0 || state.completed.surfaceEpoch != state.surfaceEpoch ||
+        state.completed.sceneEpoch != state.sceneEpoch || state.completed.viewEpoch != state.viewEpoch) return 2;
+    *output = state.completed;
+    if (state.staleRevision) ++output->documentRevision;
+    if (state.staleSize) ++output->width;
+    return 0;
+}
+std::int32_t WAR3_RENDER_CALL TerrainScene(War3RendererHandle handle, const War3RenderTerrainSceneV2* scene) {
+    auto& state = *static_cast<BackendState*>(handle);
+    ++state.terrainSubmits;
+    if (state.rejectTerrain) return 1;
+    state.revision = scene->documentRevision; state.vertices = scene->vertexCount; ++state.sceneEpoch;
+    return 0;
+}
+const War3RenderPluginApiV2 backend{sizeof(War3RenderPluginApiV2), WAR3_RENDER_PLUGIN_API_V2,
+    Create, Destroy, Attach, Resize, Mesh, Camera, Frame, Status, Capture, ViewInfo, TerrainScene};
+struct EnvironmentRecord { int submits = 0; std::uint32_t fogMode = 0; float fogEnd = 0; };
+EnvironmentRecord environmentRecord;
+std::int32_t WAR3_RENDER_CALL Environment(War3RendererHandle, const War3RenderEnvironmentV2* environment) {
+    ++environmentRecord.submits;
+    environmentRecord.fogMode = environment->fogMode;
+    environmentRecord.fogEnd = environment->fogEnd;
+    return 0;
+}
+const War3RenderPluginApiV2 environmentBackend = [] {
+    auto api = backend;
+    api.setEnvironment = Environment;
+    return api;
+}();
+std::int32_t WAR3_RENDER_CALL ModelScene(War3RendererHandle handle, const War3RenderModelSceneV2*) {
+    ++static_cast<BackendState*>(handle)->sceneEpoch;
+    return 0;
+}
+const War3RenderPluginApiV2 modelBackend = [] {
+    auto api = backend;
+    api.submitModelScene = ModelScene;
+    return api;
+}();
+std::int32_t WAR3_RENDER_CALL SkinScene(War3RendererHandle h, const War3RenderSkinnedModelSceneV2* input) {
+    auto& s = *static_cast<BackendState*>(h);
+    s.skinScene = input->initialPose->sceneVersion; s.skinContent = input->initialPose->contentVersion;
+    s.rosterAssets = {input->vertexCount, input->indexCount, input->layerCount, input->meshCount,
+        input->modelCount, input->textureCount, 0};
+    ++s.rosterAssetIdentity;
+    ++s.skinUploads; ++s.matrixUploads; ++s.sceneEpoch; return 0;
+}
+std::int32_t WAR3_RENDER_CALL SkinUpdate(War3RendererHandle h, const War3RenderSkinUpdateV2* input) {
+    auto& s = *static_cast<BackendState*>(h);
+    if (input->sceneVersion != s.skinScene || input->contentVersion <= s.skinContent) return 1;
+    // 与生产插件一致：姿势更新推进content，不替换静态场景/视图sceneEpoch。
+    s.skinContent = input->contentVersion; ++s.matrixUploads; return 0;
+}
+std::int32_t WAR3_RENDER_CALL SkinStatus(War3RendererHandle h, War3RenderSkinStatusV2* out) {
+    const auto& s = *static_cast<BackendState*>(h);
+    *out = {sizeof(*out), 0, s.skinScene ? 1u : 0u, 0, static_cast<std::uint64_t>(s.frames),
+        s.skinScene, s.skinContent, s.skinUploads, s.matrixUploads}; return 0;
+}
+std::int32_t WAR3_RENDER_CALL SkinCapture(War3RendererHandle, void*, std::uint64_t, War3RenderSkinnedCapturedFrameV2*) { return 1; }
+std::int32_t WAR3_RENDER_CALL LayerTarget(War3RendererHandle h, War3RenderModelLayersTargetV2* out) {
+    const auto& s = *static_cast<BackendState*>(h);
+    *out = {sizeof(*out), s.layerId ? 1u : 0u, s.layerParent, s.layersRevision}; return 0;
+}
+std::int32_t WAR3_RENDER_CALL LayerSubmit(War3RendererHandle h, const War3RenderModelSceneLayerV2* in) {
+    auto& s = *static_cast<BackendState*>(h);
+    const auto* models = in->particles ? in->particles->models : in->models;
+    if (!models || !models->initialPose || in->parentModelEpoch != s.layerParent
+        || in->expectedRevision != s.layerRevision || in->revision != s.layerRevision + 1) return 1;
+    const auto& pose = *models->initialPose;
+    if (!pose.instanceCount && !in->particles) return 1;
+    s.layerId = in->layerId; s.layerRevision = in->revision; ++s.layersRevision; ++s.layerSubmits;
+    s.layerScene = pose.sceneVersion; s.layerContent = pose.contentVersion;
+    s.layerParticleVertices = in->particles ? in->particles->initialFrame->vertexCount : 0;
+    s.layerX = pose.instanceCount ? pose.instances[0].instance.transform[3] : 0; return 0;
+}
+std::int32_t WAR3_RENDER_CALL LayerUpdate(War3RendererHandle h, const War3RenderModelLayerUpdateV2* in) {
+    auto& s = *static_cast<BackendState*>(h);
+    const auto* pose = in->particles ? in->particles->modelPose : in->pose;
+    if (!pose || (!pose->instanceCount && !in->particles) || in->layerId != s.layerId || in->parentModelEpoch != s.layerParent
+        || in->expectedRevision != s.layerRevision || in->revision != s.layerRevision + 1) return 1;
+    if (pose->sceneVersion != s.layerScene || pose->contentVersion <= s.layerContent) return 1;
+    s.layerRevision = in->revision; ++s.layersRevision; ++s.layerUpdates;
+    s.layerContent = pose->contentVersion;
+    s.layerParticleVertices = in->particles ? in->particles->vertexCount : 0;
+    s.layerX = pose->instanceCount ? pose->instances[0].instance.transform[3] : 0; return 0;
+}
+std::int32_t WAR3_RENDER_CALL LayerRemove(War3RendererHandle h, std::uint64_t id,
+    std::uint64_t parent, std::uint64_t expected) {
+    auto& s = *static_cast<BackendState*>(h);
+    if (id != s.layerId || parent != s.layerParent || expected != s.layerRevision) return 1;
+    s.layerId = s.layerRevision = 0; ++s.layersRevision; ++s.layerRemoves; return 0;
+}
+std::int32_t WAR3_RENDER_CALL LayerCapture(War3RendererHandle, std::uint64_t, void*, std::uint64_t,
+    War3RenderLayeredCapturedFrameV2*) { return 1; }
+const War3RenderPluginApiV2 layerBackend = [] {
+    auto api = backend;
+    api.submitModelSceneLayer = LayerSubmit; api.updateModelSceneLayer = LayerUpdate;
+    api.removeModelSceneLayer = LayerRemove; api.getModelLayersTarget = LayerTarget;
+    api.captureLayeredFrameRgba = LayerCapture; return api;
+}();
+const War3RenderPluginApiV2 particleLayerBackend = [] {
+    auto api = layerBackend;
+    api.submitModelScene = ModelScene;
+    api.submitSkinnedModelScene = SkinScene; api.updateSkinMatrices = SkinUpdate;
+    api.getSkinStatus = SkinStatus; api.captureSkinnedFrameRgba = SkinCapture;
+    api.submitParticleModelScene = [](War3RendererHandle h, const War3RenderParticleSceneV2* in) -> std::int32_t {
+        return SkinScene(h, in->models);
+    };
+    api.updateParticleModelFrame = [](War3RendererHandle h, const War3RenderParticleUpdateV2* in) -> std::int32_t {
+        return SkinUpdate(h, in->modelPose);
+    };
+    api.captureParticleFrameRgba = [](War3RendererHandle, void*, std::uint64_t,
+        War3RenderParticleCapturedFrameV2*) -> std::int32_t { return 1; };
+    return api;
+}();
+// 调度夹具只核验提交/Draw身份；不产生模型像素，也不代替生产插件的GPU事务测试。
+std::int32_t WAR3_RENDER_CALL SubmitRoster(War3RendererHandle handle,
+    const War3RenderEditorInstanceRosterV2* input, std::uint64_t* ticket) {
+    auto& state = *static_cast<BackendState*>(handle);
+    auto& editor = state.editor;
+    if (!input || !ticket || !input->candidatePose || input->candidateParticles || !input->visibility
+        || (input->flags != 0 && input->flags != WAR3_RENDER_ROSTER_APPEND_ASSETS)
+        || input->structSize != (input->flags ? sizeof(War3RenderEditorAssetRosterV2) : sizeof(*input))
+        || input->reserved[0] || input->reserved[1]
+        || !EditorPresentationFixture<BackendState>::Matches(input->expected, editor.target)
+        || input->expectedAssetIdentity != state.rosterAssetIdentity || input->expectedLayersRevision != state.layersRevision
+        || input->expectedPresentationRevision != editor.presentation.presentationRevision) return 1;
+    if (input->flags == WAR3_RENDER_ROSTER_APPEND_ASSETS) {
+        const auto* append = reinterpret_cast<const War3RenderEditorAssetRosterV2*>(input)->assets;
+        if (!append || append->structSize != sizeof(*append) || append->reserved || append->particleTextureCount
+            || (append->vertexCount && !append->vertices) || (append->indexCount && !append->indices)
+            || (append->layerCount && !append->layers) || (append->meshCount && !append->meshes)
+            || (append->modelCount && !append->models) || (append->modelTextureCount && !append->modelTextures)
+            || (append->colorCount && (append->colorCount != append->meshCount || !append->colors))) return 1;
+        const auto& before = state.rosterAssets;
+        const auto& prefix = append->prefix;
+        if (prefix.vertexCount != before.vertexCount || prefix.indexCount != before.indexCount
+            || prefix.layerCount != before.layerCount || prefix.meshCount != before.meshCount
+            || prefix.modelCount != before.modelCount || prefix.modelTextureCount != before.modelTextureCount
+            || prefix.particleTextureCount != before.particleTextureCount) return 1;
+        // 只核验本调度夹具的资产前缀/后缀和身份；不实现GPU上传，也不伪造模型像素。
+        state.rosterAssets = {prefix.vertexCount + append->vertexCount, prefix.indexCount + append->indexCount,
+            prefix.layerCount + append->layerCount, prefix.meshCount + append->meshCount,
+            prefix.modelCount + append->modelCount, prefix.modelTextureCount + append->modelTextureCount,
+            prefix.particleTextureCount};
+        ++state.rosterAssetIdentity; ++state.rosterAssetAppends;
+    }
+    const auto& pose = *input->candidatePose;
+    state.skinScene = pose.sceneVersion; state.skinContent = pose.contentVersion;
+    ++state.matrixUploads; ++state.sceneEpoch; ++state.layersRevision;
+    ++editor.target.modelEpoch;
+    editor.target.sceneVersion = pose.sceneVersion; editor.target.contentVersion = pose.contentVersion;
+    editor.target.instanceCount = pose.instanceCount;
+    EditorPresentationFixture<BackendState>::Publish(editor, *input->visibility);
+    state.roster = {}; state.roster.structSize = sizeof(state.roster);
+    state.roster.state = WAR3_RENDER_ROSTER_QUEUED; state.roster.ticket = ++state.rosterSubmits;
+    state.roster.assetIdentity = state.rosterAssetIdentity; state.roster.layersRevision = state.layersRevision;
+    state.roster.target = editor.target; state.roster.presentationRevision = editor.presentation.presentationRevision;
+    *ticket = state.roster.ticket; return 0;
+}
+std::int32_t WAR3_RENDER_CALL RosterResult(War3RendererHandle handle, std::uint64_t ticket,
+    War3RenderInstanceRosterResultV2* output) {
+    auto& state = *static_cast<BackendState*>(handle);
+    if (!output) return 1;
+    if (!ticket) {
+        *output = {}; output->structSize = sizeof(*output); output->state = WAR3_RENDER_ROSTER_TARGET;
+        output->assetIdentity = state.rosterAssetIdentity; output->layersRevision = state.layersRevision;
+        output->target = state.editor.target;
+        output->presentationRevision = state.editor.presentation.presentationRevision; return 0;
+    }
+    if (ticket != state.roster.ticket) return 1;
+    const auto& completed = state.editor.completed;
+    if (state.roster.state == WAR3_RENDER_ROSTER_QUEUED && !state.editor.pending
+        && completed.presentation.modelEpoch == state.roster.target.modelEpoch
+        && completed.skin.sceneVersion == state.roster.target.sceneVersion
+        && completed.skin.contentVersion == state.roster.target.contentVersion) {
+        state.roster.state = WAR3_RENDER_ROSTER_COMPLETED; state.roster.completed = completed;
+    }
+    *output = state.roster; return 0;
+}
+struct CatalogWorkerGate {
+    QSemaphore entered, release, finished;
+};
+struct ReleaseCatalogWorker {
+    std::shared_ptr<CatalogWorkerGate> gate;
+    ~ReleaseCatalogWorker() { gate->release.release(); }
+};
+std::int32_t WAR3_RENDER_CALL MipScene(War3RendererHandle handle, const War3RenderTerrainMipSceneV2* scene) {
+    auto& state = *static_cast<BackendState*>(handle);
+    ++state.mipSubmits;
+    if (state.rejectTerrain) return 1;
+    if (scene->textureCount) {
+        const auto& chain = scene->textures[0];
+        state.mipCount = chain.mipCount; state.maxSampleMip = chain.maxSampleMip;
+        state.atlasColumns = chain.atlasColumns; state.atlasRows = chain.atlasRows;
+        if (chain.mipCount > 1) {
+            const auto* pixels = static_cast<const std::byte*>(chain.mips[1].rgba);
+            state.mipOneBytes.assign(pixels, pixels + chain.mips[1].rgbaByteCount);
+        }
+    }
+    state.revision = scene->documentRevision; state.vertices = scene->vertexCount; ++state.sceneEpoch;
+    return 0;
+}
+const War3RenderPluginApiV2 mipBackend{sizeof(War3RenderPluginApiV2), WAR3_RENDER_PLUGIN_API_V2,
+    Create, Destroy, Attach, Resize, Mesh, Camera, Frame, Status, Capture, ViewInfo, TerrainScene, MipScene};
+const War3RenderPluginApiV2 legacyBackend{static_cast<std::uint32_t>(offsetof(War3RenderPluginApiV2, getViewInfo)), WAR3_RENDER_PLUGIN_API_V2,
+    Create, Destroy, Attach, Resize, Mesh, Camera, Frame, Status, Capture, ViewInfo}; // 尾部虽在内存中，旧 size 禁止读取/调用。
+
+void Append32(QByteArray& bytes, std::uint32_t value) {
+    for (int shift = 0; shift < 32; shift += 8) bytes.append(static_cast<char>((value >> shift) & 0xffu));
+}
+void AppendFloat(QByteArray& bytes, float value) { Append32(bytes, std::bit_cast<std::uint32_t>(value)); }
+void Append16(QByteArray& bytes, std::uint16_t value) {
+    bytes.append(static_cast<char>(value & 0xffu)); bytes.append(static_cast<char>(value >> 8));
+}
+QByteArray TerrainBytes(float offsetX = -128) {
+    QByteArray bytes("W3E!", 4);
+    Append32(bytes, 11); bytes.append('A'); Append32(bytes, 0);
+    Append32(bytes, 1); bytes.append("Ldrt", 4);
+    Append32(bytes, 1); bytes.append("Cldi", 4);
+    Append32(bytes, 3); Append32(bytes, 2); AppendFloat(bytes, offsetX); AppendFloat(bytes, -64);
+    for (std::uint16_t index = 0; index < 6; ++index) {
+        Append16(bytes, static_cast<std::uint16_t>(8192 + 4 * index)); Append16(bytes, 8192);
+        bytes.append('\0'); bytes.append('\0'); bytes.append('\2');
+    }
+    return bytes;
+}
+bool Write(const QString& path, const QByteArray& bytes) {
+    QFile file(path); return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
+}
+void Mouse(WorldViewport& viewport, QEvent::Type type, QPointF position, Qt::MouseButton button,
+    Qt::MouseButtons buttons, Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+    QMouseEvent event(type, position, position, button, buttons, modifiers);
+    QApplication::sendEvent(&viewport, &event);
+}
+std::shared_ptr<const MapData::TerrainGridSnapshot> TestTerrain() {
+    const auto bytes = TerrainBytes();
+    const auto parsed = MapData::ParseMapTerrain(std::span<const std::byte>(reinterpret_cast<const std::byte*>(bytes.constData()), static_cast<std::size_t>(bytes.size())));
+    return parsed.Succeeded() ? parsed.value->Snapshot() : nullptr;
+}
+std::shared_ptr<MapData::TerrainGridSnapshot> FlatGrid(std::uint32_t width, std::uint32_t height) {
+    auto grid = std::make_shared<MapData::TerrainGridSnapshot>();
+    grid->header.width = width; grid->header.height = height; grid->header.offset = {-128, -64};
+    grid->minimum = {-128, -64, 0};
+    grid->maximum = {-128 + static_cast<float>(width - 1) * 128, -64 + static_cast<float>(height - 1) * 128, 0};
+    for (std::uint32_t y = 0; y < height; ++y) for (std::uint32_t x = 0; x < width; ++x) {
+        MapData::TerrainVertex vertex;
+        vertex.groundHeightRaw = 8192; vertex.waterHeightAndFlagsRaw = 8192; vertex.cliffAndLayerRaw = 2;
+        vertex.position = {-128 + static_cast<float>(x) * 128, -64 + static_cast<float>(y) * 128, 0};
+        grid->vertices.push_back(vertex);
+        if (x + 1 < width && y + 1 < height) {
+            const auto sw = y * width + x;
+            grid->tiles.push_back({{sw, sw + 1, sw + width, sw + width + 1}});
+        }
+    }
+    return grid;
+}
+bool BindTerrain(WorldViewport& viewport, std::shared_ptr<const MapData::TerrainGridSnapshot> terrain, std::uint64_t revision = 12) {
+    if (!terrain) return false;
+    auto mesh = BuildWorldTerrainMesh(*terrain);
+    if (!mesh.Succeeded()) return false;
+    const auto stride = mesh.value->stride;
+    return viewport.SetMesh(std::move(mesh.value->vertices), std::move(mesh.value->indices), revision)
+        && viewport.SetPickingTerrain(std::move(terrain), stride, revision);
+}
+
+bool InstallAuxiliaryEditFixture(QtProject::EditorProject& project, const QString& root,
+    const MapData::RegionRecord& region, const MapData::CameraRecord& camera) {
+    auto grid = FlatGrid(5, 5);
+    grid->header.mainTileset = 'A';
+    grid->header.groundTilesets = {"Ldrt"}; grid->header.cliffTilesets = {"Cldi"};
+    const auto terrain = MapData::SerializeMapTerrain(*grid);
+    const auto regions = MapData::RegionsDocument{5, {region}, {}}.Serialize();
+    const auto cameras = MapData::CamerasDocument{0, {camera}, {}}.Serialize();
+    if (!terrain.Succeeded() || !regions.Succeeded() || !cameras.Succeeded()) return false;
+    if (!Write(root + "/war3map.w3e", QByteArray(reinterpret_cast<const char*>(terrain.value->data()),
+        static_cast<qsizetype>(terrain.value->size())))) return false;
+    project.projectRoot_ = root.toStdWString();
+    auto opened = DirectoryWorkspace::Open(project.projectRoot_);
+    if (!opened.Succeeded()) return false;
+    project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*opened.value));
+    const std::vector<MapArchiveMember> members{{"war3map.w3r", *regions.value}, {"war3map.w3c", *cameras.value}};
+    project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(members));
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+    if (!project.mapEdits_->AttachTerrain(*terrain.value).Succeeded()) return false;
+    project.ResetEditTracking();
+    return true;
+}
+
+bool SelectAuxiliaryRow(QWidget& page, const Services::WorldObjectId& id, Qt::KeyboardModifiers modifiers = {}) {
+    auto* outliner = page.findChild<QTreeView*>("worldOutliner");
+    auto* model = outliner ? dynamic_cast<WorldOutlinerModel*>(outliner->model()) : nullptr;
+    if (!model) return false;
+    const auto index = model->Find(id);
+    if (!index.isValid()) return false;
+    outliner->expandAll(); outliner->scrollTo(index); outliner->doItemsLayout();
+    const auto rect = outliner->visualRect(index);
+    if (!rect.isValid()) return false;
+    QTest::mouseClick(outliner->viewport(), Qt::LeftButton, modifiers, rect.center());
+    return true;
+}
+QPointF AuxiliaryScreenPoint(const WorldViewport& viewport, const BackendState& state, QPointF world, float span = 192) {
+    // 拾取使用完成帧的物理尺寸；1.25 DPR 会将尺寸取整，不能用逻辑宽高直接反投影。
+    const auto scale = viewport.devicePixelRatioF();
+    return {((world.x() - 64) / span + 1) * state.completed.width / (2 * scale),
+        (1 - (world.y() - 64) / span) * state.completed.height / (2 * scale)};
+}
+QPointF MoveAuxiliaryPointer(WorldViewport& viewport, const BackendState& state, QPointF world) {
+    QPointF point;
+    // 首次悬停会更新页脚并触发布局。只在本次指针所借完成帧的几何保持不变时开始手势，
+    // 不把旧尺寸反投影出的点交给新尺寸帧，也不放宽世界坐标断言。
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        const auto before = state.completed;
+        const auto ratio = viewport.devicePixelRatioF();
+        point = AuxiliaryScreenPoint(viewport, state, world);
+        Mouse(viewport, QEvent::MouseMove, point, Qt::NoButton, Qt::NoButton);
+        QTest::qWait(75); // 覆盖生产的 50 ms 悬停合并及其后布局事件。
+        const auto& after = state.completed;
+        if (ratio == viewport.devicePixelRatioF() && before.width == after.width && before.height == after.height
+            && before.surfaceEpoch == after.surfaceEpoch && before.sceneEpoch == after.sceneEpoch
+            && before.viewEpoch == after.viewEpoch) return point;
+    }
+    return point; // 仍由调用方的精确坐标和事务断言拒绝不稳定的夹具。
+}
+QModelIndex FindWorldObject(WorldOutlinerModel& model, const Services::WorldObjectId& id) {
+    for (int page = 0; page < 64 && !model.Find(id).isValid() && model.canFetchMore({}); ++page) model.fetchMore({});
+    return model.Find(id);
+}
+std::vector<MapArchiveMember> PlacementPreviewMembers(bool pureParticle = false) {
+    auto model = AnimationParticleContinuityTest::Model();
+    if (pureParticle) {
+        std::vector<std::byte> particleModel(model.begin(), model.begin() + 4);
+        for (std::size_t offset = 4; offset + 8 <= model.size();) {
+            std::uint32_t size = 0;
+            for (unsigned i = 0; i < 4; ++i) size |= std::to_integer<std::uint32_t>(model[offset + 4 + i]) << (8 * i);
+            const std::string_view tag(reinterpret_cast<const char*>(model.data() + offset), 4);
+            if (tag != "GEOS" && tag != "GEOA") particleModel.insert(particleModel.end(),
+                model.begin() + static_cast<std::ptrdiff_t>(offset), model.begin() + static_cast<std::ptrdiff_t>(offset + 8 + size));
+            offset += 8 + size;
+        }
+        model = std::move(particleModel);
+    }
+    const auto terrain = TerrainBytes();
+    const auto* terrainBegin = reinterpret_cast<const std::byte*>(terrain.constData());
+    return {{"war3map.w3i", MapDataFixtures::FullMapSettingsV25().bytes},
+        {"war3map.w3e", {terrainBegin, terrainBegin + terrain.size()}},
+        {"war3mapUnits.doo", MapDataFixtures::EmptyUnitsV8Sub11()},
+        {"war3map.doo", MapDataFixtures::EmptyDoodadsV8Sub11()},
+        {"Synthetic\\Arcane.mdx", std::move(model)},
+        {"Textures\\Crate.blp", AnimationParticleContinuityTest::Texture()},
+        {"ReplaceableTextures\\TeamColor\\TeamColor00.blp", AnimationParticleContinuityTest::Texture()}};
+}
+bool InstallPlacementCatalog(QtProject::EditorProject& project) {
+    const std::string slk = "ID;PWXL\nC;X1;Y1;K\"alias\"\nC;X2;K\"Name\"\n"
+        "C;X1;Y2;K\"hsan\"\nC;X2;K\"Synthetic sanctuary\"\nE\n";
+    ObjectData::CatalogLoadOptions options; options.stringFiles.clear();
+    options.sources = {{ObjectData::ObjectType::Unit, {"unit.slk"}, {}, {"name"}, {"art"}}};
+    auto catalog = ObjectData::StandardObjectCatalog::Load([&](const std::string&) {
+        const auto bytes = std::as_bytes(std::span(slk.data(), slk.size()));
+        return Result<std::vector<std::byte>>::Success({bytes.begin(), bytes.end()});
+    }, options);
+    if (!catalog.Succeeded()) return false;
+    project.standardCatalog_ = std::make_unique<ObjectData::StandardObjectCatalog>(std::move(*catalog.value));
+    const std::string lni = "[hsan]\nunam=\"神秘圣地合成夹具\"\nfile=\"Synthetic/Arcane.mdx\"\n";
+    auto parsed = ObjectData::LniObjectCodec(ObjectData::ObjectType::Unit).Parse(std::as_bytes(std::span(lni.data(), lni.size())));
+    if (!parsed.Succeeded()) return false;
+    project.objectDocuments_[0].reset(dynamic_cast<ObjectData::LniObjectDocument*>(parsed.document.release()));
+    return project.objectDocuments_[0] != nullptr;
+}
+} // namespace
+
+class WorldModuleTests final : public QObject {
+    Q_OBJECT
+private slots:
+    void HeroLevelEditsOnlyHeroes();
+    void TerrainFogFollowsMapSettingsFlag();
+    void MeshBoundsAndSampling();
+    void ViewportLifecycleAndInput();
+    void MapSwitchDoesNotEdit();
+    void PlaybackSnapshotKeepsServiceAndRetainedPictureDistinct();
+    void InstanceCatalogStartsBesidePose_data();
+    void InstanceCatalogStartsBesidePose();
+    void AmbiguousTerrainAndDeferredLoad();
+    void OversizedViewportDoesNotCreate();
+    void HoverClickAndPendingFrames();
+    void ResizeDprAndLegacyFallback();
+    void SimplifiedAndMismatchedPickingDisabled();
+    void GroundSceneKeepsPickingAndRejectsDifferentGeometry();
+    void TerrainResourceOverlayAndSourceIdentity();
+    void SelectionLayerWaitsForRosterTerminal();
+    void MipSceneUsesOriginalChainAndClampsAtlas();
+    void PlacementClickDragAndKeys();
+    void TerrainBrushPreservesCameraAndModels();
+    void TerrainBrushUsesSharedTransactionAndUndo();
+    void InspectorEditsPreserveOtherFloatBits();
+    void RegionEdgesUseSharedTableTransaction_data();
+    void RegionEdgesUseSharedTableTransaction();
+    void AuxiliaryDragCancellationAndIdentity();
+    void CameraDragUsesSharedTableTransaction();
+    void TypedMultiSelectionWithoutModelsUsesOneUndo();
+    void NavigationTypedBookmarkCodecKeepsAllIdentityBytes();
+    void NavigationBookmarkRestoresPagedOutlinePrimaryAndCamera();
+    void PlacementCaptureFileScopeMatchesFullCapture();
+    void BrowserSelectionSynchronizesPlacementTool();
+    void HiddenOutlinerKeepsTypedEditsAndRefreshesOnce();
+    void PlacementParticleClock_data();
+    void PlacementParticleClock();
+    void NativePlacementFrames();
+    void DockWorkspaceUsesLeftTabsAndRestoresBottomAssets();
+};
+
+void WorldModuleTests::PlacementCaptureFileScopeMatchesFullCapture() {
+    QtProject::EditorProject project;
+    const auto install = [&](ObjectData::ObjectType type, const std::string& text) {
+        auto parsed = ObjectData::LniObjectCodec(type).Parse(
+            std::span(reinterpret_cast<const std::byte*>(text.data()), text.size()));
+        if (!parsed.document) return false;
+        auto& target = project.objectDocuments_[static_cast<std::size_t>(type)];
+        target.reset(dynamic_cast<ObjectData::LniObjectDocument*>(parsed.document.release()));
+        return target != nullptr;
+    };
+    QVERIFY(install(ObjectData::ObjectType::Unit, "[u001]\nfile=\"Unit.mdl\"\nusca=2\n"));
+    QVERIFY(install(ObjectData::ObjectType::Item, "[i001]\nfile=\"Item.mdl\"\nisca=1.5\n"));
+    QVERIFY(install(ObjectData::ObjectType::Doodad, "[d001]\ndfil=\"Doodad.mdl\"\n"));
+    QVERIFY(install(ObjectData::ObjectType::Destructable, "[b001]\nbcat=\"P\"\nbuch=1\nbfil=\"\"\nbptx=\"_\"\n"));
+    auto units = MapData::ParseUnitPlacements(MapDataFixtures::EmptyUnitsV8Sub11());
+    auto doodads = MapData::ParseDoodadPlacements(MapDataFixtures::EmptyDoodadsV8Sub11());
+    QVERIFY(units.Succeeded() && doodads.Succeeded());
+    MapData::UnitPlacement unit; unit.rawcode = "u001"; unit.creationId = 1;
+    unit.position = {10, 20, 30}; unit.scale = {1, 2, 3}; unit.owner = 4;
+    units.value->units.push_back(unit);
+    unit.rawcode = "i001"; unit.creationId = 2; units.value->units.push_back(unit);
+    unit.rawcode = "zzzz"; unit.creationId = 3; units.value->units.push_back(unit);
+    MapData::DoodadPlacement doodad; doodad.rawcode = "d001"; doodad.creationId = 4;
+    doodad.position = {40, 50, 60}; doodad.scale = {3, 2, 1}; doodads.value->doodads.push_back(doodad);
+    doodad.rawcode = "b001"; doodad.creationId = 5; doodads.value->doodads.push_back(doodad);
+    auto unitBytes = units.value->Serialize(); auto doodadBytes = doodads.value->Serialize();
+    QVERIFY(unitBytes.Succeeded() && doodadBytes.Succeeded());
+    const std::vector<MapArchiveMember> members{{"war3mapUnits.doo", *unitBytes.value}, {"war3map.doo", *doodadBytes.value}};
+    const auto document = MapDocument::FromMembers(members);
+    const auto full = CaptureWorldPlacements(project, document);
+    const auto unitCapture = CaptureWorldPlacements(project, document, MapData::PlacementFile::Units);
+    const auto doodadCapture = CaptureWorldPlacements(project, document, MapData::PlacementFile::Doodads);
+    QCOMPARE(full.requests.size(), std::size_t{4}); QCOMPARE(full.unresolved, std::size_t{1});
+    QCOMPARE(unitCapture.requests.size(), std::size_t{2}); QCOMPARE(unitCapture.units, std::size_t{1});
+    QCOMPARE(unitCapture.items, std::size_t{1}); QCOMPARE(unitCapture.unresolved, std::size_t{1});
+    QCOMPARE(unitCapture.doodads + unitCapture.destructibles, std::size_t{0});
+    QCOMPARE(doodadCapture.requests.size(), std::size_t{2}); QCOMPARE(doodadCapture.doodads, std::size_t{1});
+    QCOMPARE(doodadCapture.destructibles, std::size_t{1}); QCOMPARE(doodadCapture.unresolved, std::size_t{0});
+    QCOMPARE(doodadCapture.units + doodadCapture.items, std::size_t{0});
+    const auto sameRequest = [](const Render::ModelInstanceRequest& left, const Render::ModelInstanceRequest& right) {
+        return left.modelPath == right.modelPath && left.replaceableTexture == right.replaceableTexture
+            && left.position == right.position && left.angle == right.angle && left.scale == right.scale
+            && left.tint == right.tint && left.teamColor == right.teamColor && left.previewGhost == right.previewGhost
+            && left.animationProperties == right.animationProperties && left.selection.has_value() == right.selection.has_value();
+    };
+    for (std::size_t index = 0; index < doodadCapture.requests.size(); ++index) {
+        QVERIFY(sameRequest(full.requests[index], doodadCapture.requests[index]));
+        QVERIFY(full.ids[index] == doodadCapture.ids[index]);
+    }
+    for (std::size_t index = 0; index < unitCapture.requests.size(); ++index) {
+        QVERIFY(sameRequest(full.requests[index + 2], unitCapture.requests[index]));
+        QVERIFY(full.ids[index + 2] == unitCapture.ids[index]);
+    }
+    QVERIFY(unitCapture.presentations.empty()); QCOMPARE(doodadCapture.presentations.size(), std::size_t{1});
+    QCOMPARE(doodadCapture.presentations[0].requestIndex, std::uint32_t{1});
+    QVERIFY(doodadCapture.presentations[0].owner == doodadCapture.ids[1]);
+    QVERIFY(doodadCapture.presentations[0].owner == full.presentations[0].owner);
+    QCOMPARE(doodadCapture.presentations[0].fields->modelPath.value, full.presentations[0].fields->modelPath.value);
+
+    // 只捕获被改成员时，仍由真实回执和两个成员SHA证明另一个成员可以保留。
+    MapData::MapDataEditSession edits(document);
+    const Services::WorldInstanceBinding binding{7, 0, edits.SessionIdentity(), 0, "capture-scope-source"};
+    const auto registry = Services::WorldInstanceRegistry::Create(document, binding, full.requests, full.ids);
+    QVERIFY(registry.Succeeded());
+    unit.rawcode = "u001"; unit.position = {70, 80, 90};
+    QVERIFY(MapData::AddUnitPlacement(edits, unit).Succeeded());
+    const auto changed = edits.Snapshot();
+    const auto changedUnits = CaptureWorldPlacements(project, changed, MapData::PlacementFile::Units);
+    auto requests = doodadCapture.requests; requests.insert(requests.end(), changedUnits.requests.begin(), changedUnits.requests.end());
+    auto ids = doodadCapture.ids; ids.insert(ids.end(), changedUnits.ids.begin(), changedUnits.ids.end());
+    const auto prepared = (*registry.value)->Prepare(edits.LastAppliedEdit(), binding, edits.Revision(), changed, requests, ids);
+    QVERIFY(prepared.Succeeded()); QCOMPARE(prepared.value->delta.additions.size(), std::size_t{1});
+    QVERIFY(prepared.value->delta.removals.empty());
+    auto tamperedDoodads = *changed.Doodads(); tamperedDoodads.doodads[0].position[2] += 1;
+    const auto tamperedBytes = tamperedDoodads.Serialize(); const auto changedUnitBytes = changed.Units()->Serialize();
+    QVERIFY(tamperedBytes.Succeeded() && changedUnitBytes.Succeeded());
+    const std::vector<MapArchiveMember> tamperedMembers{{"war3mapUnits.doo", *changedUnitBytes.value}, {"war3map.doo", *tamperedBytes.value}};
+    const auto tampered = MapDocument::FromMembers(tamperedMembers);
+    const auto rejected = (*registry.value)->Prepare(edits.LastAppliedEdit(), binding, edits.Revision(), tampered, requests, ids);
+    QVERIFY(!rejected.Succeeded());
+    QVERIFY(std::any_of(rejected.diagnostics.begin(), rejected.diagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.code == "WORLD_INSTANCE_MEMBER_STALE";
+    }));
+
+    // capture没有暗藏跨物编版本缓存；目录刷新后必须取得实际新字段。
+    QVERIFY(install(ObjectData::ObjectType::Unit, "[u001]\nfile=\"Changed.mdl\"\nusca=3\n"));
+    const auto refreshed = CaptureWorldPlacements(project, document, MapData::PlacementFile::Units);
+    QCOMPARE(refreshed.requests[0].modelPath, std::string("Changed.mdx"));
+    QVERIFY(refreshed.requests[0].scale != unitCapture.requests[0].scale);
+}
+
+void WorldModuleTests::BrowserSelectionSynchronizesPlacementTool() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const auto mapPath = directory.filePath(QStringLiteral("browser-placement.w3x"));
+    QVERIFY(WriteVerifiedArchive(mapPath.toStdWString(), PlacementPreviewMembers()).Succeeded());
+    auto archive = MapArchiveSession::Open(mapPath.toStdWString()); QVERIFY(archive.Succeeded());
+    QtProject::EditorProject project; QVERIFY(InstallPlacementCatalog(project));
+    project.sourceArchivePath_ = mapPath.toStdWString();
+    project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*archive.value));
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(MapDocument::FromArchive(*project.archiveSession_));
+    const auto editableTerrain = TerrainBytes();
+    QVERIFY(project.mapEdits_->AttachTerrain(std::span<const std::byte>(
+        reinterpret_cast<const std::byte*>(editableTerrain.constData()), static_cast<std::size_t>(editableTerrain.size()))).Succeeded());
+    project.ResetEditTracking(); QVERIFY(project.editTrackingReady_);
+    BackendState state; activeBackend = &state;
+    auto api = particleLayerBackend; EditorPresentationFixture<BackendState>::Enable(api, state.editor);
+    WorldModule module(project, &api); auto* page = module.Widget(); state.viewport = module.Viewport();
+    page->resize(1280, 800); page->show();
+    auto* viewport = module.Viewport();
+    auto* select = page->findChild<QPushButton*>("worldSelectTool");
+    auto* place = page->findChild<QPushButton*>("worldPlaceToggle");
+    auto* terrain = page->findChild<QPushButton*>("worldTerrainToggle");
+    auto* rows = page->findChild<QListWidget*>("worldAssetRows");
+    auto* assets = page->findChild<QDockWidget*>("worldAssetDock");
+    QVERIFY(select && place && terrain && rows && assets);
+    assets->show(); assets->raise(); // 切资源标签不等于提前切换为摆放工具。
+    QTRY_VERIFY(viewport->RendererReady() && viewport->VertexCount() > 0);
+    QListWidgetItem* sanctuary = nullptr;
+    const auto findItem = [&] {
+        for (int i = 0; i < rows->count(); ++i) if (rows->item(i)->data(Qt::UserRole).toString() == "hsan") {
+            sanctuary = rows->item(i); return true;
+        }
+        return false;
+    };
+    QTRY_VERIFY(findItem());
+    const auto choose = [&] {
+        assets->raise();
+        rows->scrollToItem(sanctuary);
+        QTest::mouseClick(rows->viewport(), Qt::LeftButton, Qt::NoModifier, rows->visualItemRect(sanctuary).center());
+    };
+    QVERIFY(select->isChecked() && !place->isChecked() && !viewport->Placing());
+    choose(); // 从选择工具直接选目录，不提前勾选摆放来绕开作者实际入口。
+    QVERIFY(place->isChecked() && place->property("current").toBool() && !select->isChecked());
+    QVERIFY(viewport->Placing() && !viewport->BrushMode());
+    auto* preview = module.findChild<WorldPlacementPreview*>(); QVERIFY(preview);
+    viewport->PlacementHovered(0, 0, 0, false);
+    QTRY_VERIFY(preview->ModelSubmitted() && state.layerId != 0);
+    QTRY_VERIFY(preview->CurrentFrame() && !preview->CurrentFrame()->particleVertices.empty());
+    QTest::mouseClick(select, Qt::LeftButton);
+    QVERIFY(select->isChecked() && !place->isChecked() && !viewport->Placing());
+    QVERIFY(!preview->PlaybackActive());
+    QTRY_VERIFY(!preview->Busy() && state.layerId == 0);
+    QVERIFY(terrain->isEnabled());
+    QTest::mouseClick(terrain, Qt::LeftButton);
+    QVERIFY(terrain->isChecked());
+    choose();
+    QVERIFY(place->isChecked() && !terrain->isChecked() && !select->isChecked());
+    QVERIFY(viewport->Placing() && !viewport->BrushMode());
+    viewport->PlacementHovered(0, 0, 0, false);
+    QTRY_VERIFY(preview->ModelSubmitted());
+    QTest::keyClick(viewport, Qt::Key_Escape);
+    QVERIFY(select->isChecked() && !place->isChecked() && !preview->PlaybackActive());
+    QTRY_VERIFY(!preview->Busy() && state.layerId == 0);
+    QVERIFY(!project.mapEdits_->IsDirty());
+}
+
+void WorldModuleTests::HiddenOutlinerKeepsTypedEditsAndRefreshesOnce() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    auto members = PlacementPreviewMembers();
+    auto units = MapData::ParseUnitPlacements(MapDataFixtures::EmptyUnitsV8Sub11()); QVERIFY(units.Succeeded());
+    MapData::UnitPlacement initial; initial.rawcode = "hsan"; initial.flags = 2;
+    initial.creationId = 7; initial.scale = {1, 1, 1}; initial.position = {-32, 0, 0};
+    units.value->units.push_back(initial);
+    const auto unitBytes = units.value->Serialize(); QVERIFY(unitBytes.Succeeded());
+    for (auto& member : members) if (member.name == "war3mapUnits.doo") member.data = *unitBytes.value;
+    const auto mapPath = directory.filePath(QStringLiteral("hidden-outliner.w3x"));
+    QVERIFY(WriteVerifiedArchive(mapPath.toStdWString(), members).Succeeded());
+    auto archive = MapArchiveSession::Open(mapPath.toStdWString()); QVERIFY(archive.Succeeded());
+    QtProject::EditorProject project; QVERIFY(InstallPlacementCatalog(project));
+    project.sourceArchivePath_ = mapPath.toStdWString();
+    project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*archive.value));
+    project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromArchive(*project.archiveSession_));
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+    const auto terrainBytes = TerrainBytes();
+    QVERIFY(project.mapEdits_->AttachTerrain(std::as_bytes(std::span(terrainBytes.constData(),
+        static_cast<std::size_t>(terrainBytes.size())))).Succeeded());
+    project.ResetEditTracking(); QVERIFY(project.editTrackingReady_);
+    BackendState state; activeBackend = &state;
+    WorldModule module(project, &modelBackend); auto* page = module.Widget(); state.viewport = module.Viewport();
+    page->resize(1280, 800); page->show();
+    auto* viewport = module.Viewport();
+    auto* select = page->findChild<QPushButton*>("worldSelectTool");
+    auto* tree = page->findChild<QTreeView*>("worldOutliner");
+    auto* model = tree ? dynamic_cast<WorldOutlinerModel*>(tree->model()) : nullptr;
+    auto* search = page->findChild<QLineEdit*>("worldOutlinerFilter");
+    auto* category = page->findChild<QComboBox*>("worldOutlinerCategory");
+    auto* toolDock = page->findChild<QDockWidget*>("worldToolDock");
+    auto* assets = page->findChild<QDockWidget*>("worldAssetDock");
+    auto* rows = page->findChild<QListWidget*>("worldAssetRows");
+    QVERIFY(select && tree && model && search && category && toolDock && assets && rows);
+    QTRY_VERIFY(viewport->RendererReady() && viewport->VertexCount() > 0);
+    const Services::WorldObjectId initialId = MapData::MakePlacementId(MapData::PlacementFile::Units, 0, initial);
+    QTRY_VERIFY(FindWorldObject(*model, initialId).isValid());
+    category->setCurrentIndex(category->findData(static_cast<int>(Services::WorldCategory::Unit)));
+    search->setText(QStringLiteral("hsan"));
+    QTRY_VERIFY(FindWorldObject(*model, initialId).isValid());
+    assets->show(); assets->raise();
+    QListWidgetItem* sanctuary = nullptr;
+    const auto findAsset = [&] {
+        for (int i = 0; i < rows->count(); ++i) if (rows->item(i)->data(Qt::UserRole).toString() == "hsan") {
+            sanctuary = rows->item(i); return true;
+        }
+        return false;
+    };
+    QTRY_VERIFY(findAsset());
+    rows->scrollToItem(sanctuary);
+    QTest::mouseClick(rows->viewport(), Qt::LeftButton, Qt::NoModifier, rows->visualItemRect(sanctuary).center());
+    QVERIFY(viewport->Placing()); QVERIFY(!tree->isVisible());
+    QSignalSpy resets(model, &QAbstractItemModel::modelReset);
+    viewport->PlaceRequested(0, 0, false);
+    QTRY_COMPARE(project.mapDataUndoStack_->count(), 1);
+    QCOMPARE(project.mapEdits_->Snapshot().Units()->units.size(), std::size_t{2});
+    project.mapDataUndoStack_->undo();
+    QCOMPARE(project.mapEdits_->Snapshot().Units()->units.size(), std::size_t{1});
+    project.mapDataUndoStack_->redo();
+    QCOMPARE(project.mapEdits_->Snapshot().Units()->units.size(), std::size_t{2});
+    // 隐藏时只保留最终筛选，不查询中间目录；撤销/重做仍由同一地图事务执行。
+    search->setText(QStringLiteral("神秘"));
+    QCOMPARE(resets.size(), 0);
+    QVERIFY(model->Version() && model->Version()->document.revision != project.mapEdits_->Revision());
+    QTest::mouseClick(select, Qt::LeftButton); toolDock->show(); toolDock->raise();
+    QTRY_VERIFY(tree->isVisible() && model->Version()
+        && model->Version()->document.revision == project.mapEdits_->Revision());
+    QCOMPARE(resets.size(), 1);
+    QCOMPARE(search->text(), QStringLiteral("神秘"));
+    QCOMPARE(category->currentData().toInt(), static_cast<int>(Services::WorldCategory::Unit));
+    const auto placedDocument = project.mapEdits_->Snapshot();
+    const auto placed = placedDocument.Units()->units.back();
+    const Services::WorldObjectId placedId = MapData::MakePlacementId(MapData::PlacementFile::Units, 1, placed);
+    QTRY_VERIFY(FindWorldObject(*model, placedId).isValid());
+    tree->expandAll(); tree->scrollTo(model->Find(placedId)); tree->doItemsLayout();
+    QTest::mouseClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier, tree->visualRect(model->Find(placedId)).center());
+    QTRY_COMPARE(tree->selectionModel()->selectedRows().size(), 1);
+    auto* x = page->findChild<QDoubleSpinBox*>("worldFieldX"); QVERIFY(x);
+    QTRY_VERIFY(x->isEnabled());
+    // 隐藏目录后连续两次编辑可用，证明第二次使用的是已同步的新 typed 修订。
+    toolDock->hide(); QVERIFY(!tree->isVisible()); resets.clear();
+    viewport->NudgeRequested(1, 0); viewport->NudgeRequested(1, 0);
+    QCOMPARE(project.mapEdits_->Snapshot().Units()->units[1].position[0], placed.position[0] + 2.0f);
+    project.mapDataUndoStack_->undo(); project.mapDataUndoStack_->undo();
+    QCOMPARE(project.mapEdits_->Snapshot().Units()->units[1].position[0], placed.position[0]);
+    project.mapDataUndoStack_->redo(); project.mapDataUndoStack_->redo();
+    QCOMPARE(project.mapEdits_->Snapshot().Units()->units[1].position[0], placed.position[0] + 2.0f);
+    QCOMPARE(resets.size(), 0);
+    toolDock->show(); toolDock->raise();
+    QTRY_VERIFY(tree->isVisible() && model->Version()
+        && model->Version()->document.revision == project.mapEdits_->Revision());
+    QCOMPARE(resets.size(), 1);
+    QTRY_COMPARE(tree->selectionModel()->selectedRows().size(), 1);
+    const auto* selected = model->RowAt(tree->selectionModel()->selectedRows().front());
+    QVERIFY(selected && selected->id == std::optional(placedId));
+    QCOMPARE(search->text(), QStringLiteral("神秘"));
+    // 没有地图或过滤变化时重复显示不重建，也不丢失当前选择。
+    toolDock->hide(); toolDock->show(); toolDock->raise(); QApplication::processEvents();
+    QCOMPARE(resets.size(), 1);
+    QCOMPARE(tree->selectionModel()->selectedRows().size(), 1);
+}
+
+void WorldModuleTests::PlacementParticleClock_data() {
+    QTest::addColumn<bool>("pureParticle");
+    QTest::newRow("mesh-and-particles") << false;
+    QTest::newRow("particles-without-mesh") << true;
+}
+void WorldModuleTests::PlacementParticleClock() {
+    QFETCH(bool, pureParticle);
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const auto mapPath = directory.filePath(QStringLiteral("particle-preview.w3x"));
+    QVERIFY(WriteVerifiedArchive(mapPath.toStdWString(), PlacementPreviewMembers(pureParticle)).Succeeded());
+    auto archive = MapArchiveSession::Open(mapPath.toStdWString()); QVERIFY(archive.Succeeded());
+    QtProject::EditorProject project; project.sourceArchivePath_ = mapPath.toStdWString();
+    project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*archive.value));
+    auto sources = CaptureWorldTerrainSources(project); QVERIFY(sources.Succeeded());
+    BackendState state; activeBackend = &state;
+    WorldViewport viewport(nullptr, &particleLayerBackend); state.viewport = &viewport;
+    viewport.resize(320, 240); QVERIFY(BindTerrain(viewport, TestTerrain())); viewport.show();
+    QTRY_VERIFY(viewport.RendererReady() && state.frames > 0);
+    WorldPlacementPreview preview(viewport, &viewport);
+    QSignalSpy messages(&preview, &WorldPlacementPreview::Message);
+    QString previewMessage;
+    connect(&preview, &WorldPlacementPreview::Message, &preview, [&](const QString& text) {
+        previewMessage = text; qInfo().noquote() << "Placement preview:" << text;
+    });
+    Render::ModelInstanceRequest request; request.modelPath = "Synthetic\\Arcane.mdx";
+    auto transform = Render::ModelInstanceTransform(request);
+    preview.Show({request}, *sources.value, 12, [] { return true; }, {transform});
+    QTRY_VERIFY2(preview.ModelSubmitted() && preview.CurrentFrame(), qPrintable(previewMessage));
+    const auto scene = preview.CurrentScene(); const auto first = preview.CurrentFrame();
+    QVERIFY(scene && first->particleCheckpoint && scene->particleInstanceCount == 1);
+    QCOMPARE(first->states.size(), std::size_t{1});
+    QCOMPARE(first->states[0].sequenceIndex, std::uint32_t{0}); // 共享夹具按时间顺序，Stand 为第 0 个动作
+    QCOMPARE(first->states[0].elapsedMs - first->states[0].globalMs, std::uint64_t{500});
+    if (pureParticle) QVERIFY(first->instances.empty()); else QVERIFY(!first->instances.empty());
+    QVERIFY(preview.PlaybackActive());
+    QElapsedTimer actualElapsed; actualElapsed.start();
+    const auto previousGlobal = first->states[0].globalMs;
+    QTRY_VERIFY(preview.CurrentFrame()->states[0].globalMs >= previousGlobal + 100
+        && state.layerParticleVertices > 0);
+    const auto running = preview.CurrentFrame();
+    QVERIFY(running->states[0].globalMs - previousGlobal <= static_cast<std::uint64_t>(actualElapsed.elapsed()) + 150);
+    QVERIFY(running->particleLinks[0].resetReason.empty());
+    QCOMPARE(preview.CurrentScene(), scene); // 鼠标不动：同一资产和实例继续求值，不能靠鼠标伪造时间。
+    QCOMPARE(state.layerSubmits, 1);
+    QVERIFY(state.layerUpdates >= 1);
+    const auto beforeCamera = running->states[0].globalMs;
+    auto camera = viewport.SaveCamera(); camera["yaw"] = camera["yaw"].toDouble() + 0.2;
+    QVERIFY(viewport.RestoreCamera(camera));
+    QTRY_VERIFY(preview.CurrentFrame()->states[0].globalMs > beforeCamera);
+    QCOMPARE(preview.CurrentScene(), scene);
+    QVERIFY(preview.CurrentFrame()->particleLinks[0].resetReason.empty());
+    for (int i = 1; i <= 20; ++i) { transform[3] = static_cast<float>(i); preview.SetTransforms({transform}); }
+    QTRY_VERIFY(preview.ModelSubmitted() && preview.CurrentFrame()->states[0].transform[3] == 20);
+    QVERIFY(preview.CurrentFrame()->particleCheckpoint);
+    viewport.hide();
+    QVERIFY(!preview.PlaybackActive());
+    QTRY_VERIFY(!preview.Busy());
+    QCOMPARE(state.layerId, std::uint64_t{0});
+    const auto hiddenGlobal = preview.CurrentFrame()->states[0].globalMs;
+    QTest::qWait(80);
+    QCOMPARE(preview.CurrentFrame()->states[0].globalMs, hiddenGlobal);
+    viewport.show();
+    QTRY_VERIFY(preview.ModelSubmitted() && preview.PlaybackActive());
+    QTRY_VERIFY(preview.CurrentFrame()->states[0].globalMs > hiddenGlobal);
+    QCOMPARE(preview.CurrentScene(), scene);
+    transform[3] = 40; preview.SetTransforms({transform}); preview.CancelRequest();
+    QVERIFY(!preview.PlaybackActive());
+    QTRY_VERIFY(!preview.Busy());
+    QCOMPARE(state.layerId, std::uint64_t{0});
+    QVERIFY(!preview.ModelSubmitted());
+    const auto resident = preview.CurrentFrame(); QVERIFY(resident && resident->particleCheckpoint);
+    transform = resident->states[0].transform;
+    const auto submitsBeforeRestore = state.layerSubmits;
+    preview.Show({request}, *sources.value, 12, [] { return true; }, {transform});
+    // 热选相同落点直接提交完整旧帧，不等待worker，也不改检查点/版本来伪造一个新姿势。
+    QVERIFY(preview.ModelSubmitted());
+    QCOMPARE(preview.CurrentFrame(), resident);
+    QCOMPARE(preview.CurrentFrame()->particleCheckpoint, resident->particleCheckpoint);
+    QCOMPARE(state.layerContent, resident->contentVersion);
+    QCOMPARE(state.layerSubmits, submitsBeforeRestore + 1);
+    QTRY_VERIFY(preview.CurrentFrame()->states[0].globalMs > resident->states[0].globalMs);
+    QVERIFY(preview.CurrentFrame()->particleLinks[0].resetReason.empty());
+    preview.CancelRequest(); QTRY_VERIFY(!preview.Busy());
+    camera["yaw"] = camera["yaw"].toDouble() + 0.3;
+    QVERIFY(viewport.RestoreCamera(camera));
+    preview.Show({request}, *sources.value, 12, [] { return true; }, {transform});
+    QVERIFY(!preview.ModelSubmitted()); // 镜头不同：旧朝向的粒子几何不能通过热缓存快路径。
+    QTRY_VERIFY(preview.ModelSubmitted());
+    preview.CancelRequest(); QTRY_VERIFY(!preview.Busy());
+    QCOMPARE(state.layerId, std::uint64_t{0});
+    for (const auto& entry : messages) {
+        const auto text = entry.front().toString();
+        QVERIFY2(!text.contains("PARTICLE_GLOBAL_REPLAY_UNSUPPORTED") && !text.contains("CHECKPOINT"), qPrintable(text));
+    }
+}
+
+// 显式运行的本机画面验收；常规 CTest 不读本机游戏，也不占用用户窗口。
+// 仅用独立地图副本、游戏根和输出目录；窗口移出桌面可见范围并禁止抢焦点。
+void WorldModuleTests::NativePlacementFrames() {
+    const auto output = qEnvironmentVariable("FORGE_H1_CAPTURE_DIR");
+    if (output.isEmpty()) return;
+    const auto gamePath = qEnvironmentVariable("FORGE_H1_GAME_ROOT");
+    QVERIFY(!gamePath.isEmpty() && QDir().mkpath(output));
+    QTemporaryDir synthetic;
+    QVERIFY(synthetic.isValid());
+    auto units = MapData::ParseUnitPlacements(MapDataFixtures::EmptyUnitsV8Sub11());
+    auto doodads = MapData::ParseDoodadPlacements(MapDataFixtures::EmptyDoodadsV8Sub11());
+    QVERIFY(units.Succeeded() && doodads.Succeeded());
+    MapData::UnitPlacement footman;
+    footman.rawcode = "hfoo"; footman.scale = {1, 1, 1}; footman.owner = 0;
+    footman.creationId = 1; footman.position = {-48, 0, 0};
+    units.value->units.push_back(footman);
+    footman.creationId = 2; footman.position = {48, 0, 0};
+    units.value->units.push_back(footman);
+    MapData::DoodadPlacement tree;
+    tree.rawcode = "LTlt"; tree.scale = {1, 1, 1}; tree.flags = 2;
+    tree.creationId = 3; tree.position = {-120, -60, 0};
+    doodads.value->doodads.push_back(tree);
+    auto unitBytes = units.value->Serialize();
+    auto doodadBytes = doodads.value->Serialize();
+    QVERIFY(unitBytes.Succeeded() && doodadBytes.Succeeded());
+    const auto terrain = TerrainBytes();
+    const auto asBytes = [](const QByteArray& value) {
+        return std::vector<std::byte>(reinterpret_cast<const std::byte*>(value.constData()),
+            reinterpret_cast<const std::byte*>(value.constData() + value.size()));
+    };
+    const auto mapPath = synthetic.filePath(QStringLiteral("h1-synthetic.w3x"));
+    const std::vector<MapArchiveMember> members{{"war3map.w3i", MapDataFixtures::FullMapSettingsV25().bytes},
+        {"war3map.w3e", asBytes(terrain)}, {"war3mapUnits.doo", *unitBytes.value},
+        {"war3map.doo", *doodadBytes.value}};
+    QVERIFY(WriteVerifiedArchive(mapPath.toStdWString(), members).Succeeded());
+    auto archive = MapArchiveSession::Open(mapPath.toStdWString());
+    QVERIFY2(archive.Succeeded(), "independent map copy could not be opened");
+    auto game = Game::GameDataSource::Mount(gamePath.toStdWString());
+    QVERIFY2(game.Succeeded(), "game assets could not be mounted");
+    auto catalog = ObjectData::StandardObjectCatalog::Load(*game.value);
+    QVERIFY2(catalog.Succeeded(), "standard model fields could not be loaded");
+    QtProject::EditorProject project;
+    project.sourceArchivePath_ = mapPath.toStdWString();
+    project.war3GameRoot_ = gamePath.toStdWString();
+    project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*archive.value));
+    project.standardCatalog_ = std::make_unique<ObjectData::StandardObjectCatalog>(std::move(*catalog.value));
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(MapDocument::FromArchive(*project.archiveSession_));
+    project.ResetEditTracking();
+    QVERIFY(project.editTrackingReady_);
+    WorldModule module(project);
+    auto* page = module.Widget();
+    page->resize(1440, 900);
+    page->setWindowFlag(Qt::Tool);
+    page->setWindowFlag(Qt::WindowDoesNotAcceptFocus);
+    page->setAttribute(Qt::WA_ShowWithoutActivating);
+    page->move(-3000, -3000); // 自有原生窗口留在可见桌面之外，不抢用户焦点。
+    page->show();
+    auto* viewport = module.Viewport();
+    QTRY_VERIFY_WITH_TIMEOUT(viewport->RendererReady() && viewport->VertexCount() > 0
+        && viewport->HasAnimationScene(), 60000);
+    auto camera = viewport->SaveCamera(); camera["distance"] = 600;
+    QVERIFY(viewport->RestoreCamera(camera));
+    const auto revision = viewport->DocumentRevision();
+    const auto save = [&](const QString& name, std::size_t expectedStates, std::uint64_t minimumVersion,
+        std::size_t previewInstances = 0) {
+        for (int attempt = 0; attempt < 15; ++attempt) {
+            auto frame = viewport->CaptureCompletedFrame(revision);
+            if (frame.Succeeded() && frame.value) {
+                const auto& image = *frame.value;
+                if (!image.animation || image.animation->states.size() != expectedStates ||
+                    image.animation->contentVersion < minimumVersion) {
+                    QTest::qWait(300);
+                    continue;
+                }
+                if (previewInstances && (image.modelLayerFrames.size() != 1 || image.modelLayerFrames.front()->states.size() != previewInstances)) {
+                    QTest::qWait(300); continue;
+                }
+                const auto width = static_cast<int>(image.view.physicalWidth);
+                const auto height = static_cast<int>(image.view.physicalHeight);
+                if (width <= 0 || height <= 0 || image.rgba.size() != static_cast<std::size_t>(width) * height * 4)
+                    return false;
+                const QImage pixels(reinterpret_cast<const uchar*>(image.rgba.data()), width, height,
+                    width * 4, QImage::Format_RGBA8888);
+                return pixels.save(QDir(output).filePath(name));
+            }
+            QTest::qWait(300);
+        }
+        return false;
+    };
+    auto* place = page->findChild<QPushButton*>("worldPlaceToggle");
+    auto* objects = page->findChild<WorldAssetBrowser*>("worldAssetBrowser");
+    QVERIFY(place && objects);
+    const auto baselineInstances = viewport->AnimationTarget()->states.size();
+    place->setChecked(true);
+    auto* rows = objects->findChild<QListWidget*>("worldAssetRows"); QVERIFY(rows);
+    QListWidgetItem* footmanItem = nullptr;
+    const auto findFootman = [&] {
+        for (int i = 0; i < rows->count(); ++i) if (rows->item(i)->data(Qt::UserRole).toString() == QStringLiteral("hfoo")) {
+            footmanItem = rows->item(i); return true;
+        }
+        return false;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(findFootman(), 20000);
+    rows->setCurrentItem(footmanItem); rows->scrollToItem(footmanItem);
+    QTest::mouseClick(rows->viewport(), Qt::LeftButton, Qt::NoModifier, rows->visualItemRect(footmanItem).center());
+    QTest::qWait(6000);
+    const auto afterChoose = viewport->AnimationTarget();
+    const auto* modelStatus = page->findChild<QLabel*>("worldModelStatus");
+    qInfo().noquote() << "H1 preview state" << baselineInstances
+        << (afterChoose ? afterChoose->states.size() : 0)
+        << "viewport" << viewport->StatusText()
+        << "model" << (modelStatus ? modelStatus->text() : QStringLiteral("missing"))
+        << "detail" << (modelStatus ? modelStatus->toolTip() : QStringLiteral("missing"));
+    QVERIFY(afterChoose && afterChoose->states.size() == baselineInstances);
+    const auto previewReady = [&](std::size_t count) {
+        const auto captured = viewport->CaptureCompletedFrame(revision);
+        if (!captured.Succeeded()) return false;
+        const auto& layers = captured.value->modelLayerFrames;
+        if (!count) return layers.empty();
+        if (layers.size() != 1 || layers.front()->states.size() != count) return false;
+        return std::all_of(layers.front()->states.begin(), layers.front()->states.end(), [](const auto& state) {
+            return state.transform[11] > -64 && state.transform[11] < 64;
+        });
+    };
+    const auto center = QPointF(viewport->width() / 2.0, viewport->height() / 2.0);
+    Mouse(*viewport, QEvent::MouseMove, center, Qt::NoButton, Qt::NoButton);
+    QTRY_VERIFY_WITH_TIMEOUT(viewport->HoverCoordinate().has_value(), 15000);
+    const auto placeHover = *viewport->HoverCoordinate();
+    viewport->PlacementHovered(placeHover.position[0], placeHover.position[1], placeHover.position[2], false);
+    QTRY_VERIFY_WITH_TIMEOUT(previewReady(1), 15000);
+    QVERIFY2(save(QStringLiteral("placement-ghost.png"), baselineInstances,
+        viewport->AnimationTarget()->contentVersion, 1), "placement ghost completed frame unavailable");
+    viewport->PlacingCancelled();
+    QTRY_VERIFY_WITH_TIMEOUT(viewport->AnimationTarget()
+        && viewport->AnimationTarget()->states.size() == baselineInstances, 20000);
+    QTRY_VERIFY_WITH_TIMEOUT(previewReady(0), 15000);
+    int first = -1;
+    for (int index = 1; index < 3 && first < 0; ++index) {
+        viewport->InstanceClicked(index, 0);
+        if (viewport->SelectedInstance()) first = index;
+    }
+    QVERIFY(first >= 0);
+    QVERIFY(viewport->SelectedInstance());
+    const auto beforeRotationVersion = viewport->AnimationTarget()->contentVersion;
+    viewport->RotateStarted(0, 0);
+    viewport->RotateDragged(256, 128);
+    QTRY_VERIFY_WITH_TIMEOUT(viewport->AnimationTarget()
+        && viewport->AnimationTarget()->contentVersion > beforeRotationVersion, 15000);
+    QVERIFY2(save(QStringLiteral("rotation-draft.png"), baselineInstances,
+        viewport->AnimationTarget()->contentVersion), "rotation completed frame unavailable");
+    viewport->RotateCancelled();
+    int second = -1;
+    for (int index = 1; index < 3 && second < 0; ++index) {
+        if (index == first) continue;
+        viewport->InstanceClicked(index, static_cast<int>(Qt::ShiftModifier));
+        if (viewport->SelectedInstance() && *viewport->SelectedInstance() != static_cast<std::uint32_t>(first))
+            second = index;
+    }
+    QVERIFY(second >= 0);
+    QTest::keyClick(viewport, Qt::Key_C, Qt::ControlModifier);
+    QTest::keyClick(viewport, Qt::Key_V, Qt::ControlModifier);
+    QVERIFY(viewport->Placing());
+    QCOMPARE(viewport->AnimationTarget()->states.size(), baselineInstances);
+    // 让组预览与原单位错开，截图中能同时辨认两份半透明实例。
+    viewport->PlacementHovered(0, -40, 0, false);
+    QTRY_VERIFY_WITH_TIMEOUT(previewReady(2), 15000);
+    QVERIFY2(save(QStringLiteral("group-paste-ghost.png"), baselineInstances,
+        viewport->AnimationTarget()->contentVersion, 2), "group paste completed frame unavailable");
+    QVERIFY(!project.mapEdits_->IsDirty()); // 三张图都只是预览，尚未提交地图修改。
+    viewport->PlacingCancelled();
+    QTRY_VERIFY_WITH_TIMEOUT(previewReady(0), 15000);
+}
+
+// 显式运行（需本机游戏根）：雾只由“使用地形迷雾”启用，样式 0 为线性；
+// 地图设置的应用/撤销/重做只重算环境，不重新读取地形。
+void WorldModuleTests::TerrainFogFollowsMapSettingsFlag() {
+    const auto gamePath = qEnvironmentVariable("FORGE_WORLD_GAME_ROOT");
+    if (gamePath.isEmpty()) QSKIP("需要 FORGE_WORLD_GAME_ROOT 指向本机游戏根目录");
+    QTemporaryDir synthetic;
+    QVERIFY(synthetic.isValid());
+    auto settings = MapData::MapSettings::Parse(MapDataFixtures::FullMapSettingsV25().bytes);
+    QVERIFY(settings.Succeeded() && settings.value);
+    settings.value->flags &= ~MapData::kMapFlagTerrainFog;
+    settings.value->environment.fogStyle = 0;
+    settings.value->environment.fogStart = 1000;
+    settings.value->environment.fogEnd = 5000;
+    const auto settingsBytes = settings.value->Serialize();
+    QVERIFY(settingsBytes.Succeeded() && settingsBytes.value);
+    const auto terrain = TerrainBytes();
+    const std::vector<MapArchiveMember> members{{"war3map.w3i", *settingsBytes.value},
+        {"war3map.w3e", std::vector<std::byte>(reinterpret_cast<const std::byte*>(terrain.constData()),
+            reinterpret_cast<const std::byte*>(terrain.constData() + terrain.size()))}};
+    const auto mapPath = synthetic.filePath(QStringLiteral("fog-synthetic.w3x"));
+    QVERIFY(WriteVerifiedArchive(mapPath.toStdWString(), members).Succeeded());
+    auto archive = MapArchiveSession::Open(mapPath.toStdWString());
+    QVERIFY(archive.Succeeded());
+    QtProject::EditorProject project;
+    project.sourceArchivePath_ = mapPath.toStdWString();
+    project.war3GameRoot_ = gamePath.toStdWString();
+    project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*archive.value));
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(MapDocument::FromArchive(*project.archiveSession_));
+    project.ResetEditTracking();
+    BackendState state; activeBackend = &state; environmentRecord = {};
+    WorldModule module(project, &environmentBackend); auto* page = module.Widget(); state.viewport = module.Viewport();
+    page->resize(640, 480); page->show();
+    QTRY_VERIFY_WITH_TIMEOUT(environmentRecord.submits > 0, 60000);
+    QCOMPARE(environmentRecord.fogMode, std::uint32_t{WAR3_RENDER_FOG_NONE});
+    const auto terrainSubmits = state.terrainSubmits;
+    const auto revision = state.revision;
+
+    Modules::MapSettingsModule settingsPage(project);
+    auto* fog = settingsPage.Widget()->findChild<QCheckBox*>("mapSettingsFlag_use_terrain_fog");
+    QVERIFY(fog && !fog->isChecked());
+    fog->setChecked(true);
+    QVERIFY(settingsPage.ApplyDraft());
+    QCOMPARE(environmentRecord.fogMode, std::uint32_t{WAR3_RENDER_FOG_LINEAR});
+    QCOMPARE(environmentRecord.fogEnd, 5000.0f);
+    project.mapDataUndoStack_->undo();
+    QCOMPARE(environmentRecord.fogMode, std::uint32_t{WAR3_RENDER_FOG_NONE});
+    project.mapDataUndoStack_->redo();
+    QCOMPARE(environmentRecord.fogMode, std::uint32_t{WAR3_RENDER_FOG_LINEAR});
+    QTest::qWait(200);
+    QCOMPARE(state.terrainSubmits, terrainSubmits);
+    QCOMPARE(state.revision, revision);
+}
+
+void WorldModuleTests::DockWorkspaceUsesLeftTabsAndRestoresBottomAssets() {
+    QtProject::EditorProject project; BackendState state; activeBackend = &state;
+    WorldModule module(project, &backend); auto* page = module.Widget(); state.viewport = module.Viewport();
+    page->resize(640, 480); page->show();
+    auto* host = page->findChild<QMainWindow*>("worldDockHost");
+    auto* tool = page->findChild<QDockWidget*>("worldToolDock");
+    auto* assets = page->findChild<QDockWidget*>("worldAssetDock");
+    auto* browser = page->findChild<WorldAssetBrowser*>("worldAssetBrowser");
+    QVERIFY(host && tool && assets && browser);
+    QVERIFY(!host->isWindow());
+    QVERIFY(host->isVisible());
+    QVERIFY(module.Viewport()->isVisible());
+    QVERIFY(module.Viewport()->width() > 0 && module.Viewport()->height() > 0);
+    QCOMPARE(host->dockWidgetArea(assets), Qt::LeftDockWidgetArea);
+    QVERIFY(host->tabifiedDockWidgets(tool).contains(assets)); QVERIFY(browser->Compact());
+    host->addDockWidget(Qt::BottomDockWidgetArea, assets);
+    QCOMPARE(host->dockWidgetArea(assets), Qt::BottomDockWidgetArea); QVERIFY(!browser->Compact());
+    const auto dockState = host->saveState(1);
+    host->addDockWidget(Qt::LeftDockWidgetArea, assets); host->tabifyDockWidget(tool, assets);
+    module.RestoreViewState({{"version", 2}, {"docks", QString::fromLatin1(dockState.toBase64())}});
+    QCOMPARE(host->dockWidgetArea(assets), Qt::BottomDockWidgetArea);
+    QCOMPARE(project.mapDataUndoStack_->count(), 0);
+}
+
+void WorldModuleTests::MeshBoundsAndSampling() {
+    auto owned = FlatGrid(513, 513);
+    auto& grid = *owned;
+    const auto mesh = BuildWorldTerrainMesh(grid);
+    QVERIFY(mesh.Succeeded());
+    QCOMPARE(mesh.value->stride, 2u);
+    QCOMPARE(mesh.value->vertices.size(), std::size_t{257 * 257});
+    QCOMPARE(mesh.value->indices.size(), std::size_t{256 * 256 * 6});
+    QCOMPARE(mesh.value->vertices.front().x, grid.minimum[0]);
+    QCOMPARE(mesh.value->vertices.back().x, grid.maximum[0]);
+    QCOMPARE(mesh.value->vertices.back().y, grid.maximum[1]);
+    // 非整除边界仍包含最后一行和一列。
+    grid.header.width = 512; grid.vertices.resize(512 * 513);
+    grid.vertices.back().position = {65408, 65472, 0};
+    const auto uneven = BuildWorldTerrainMesh(grid);
+    QVERIFY(uneven.Succeeded());
+    QCOMPARE(uneven.value->vertices.back().x, 65408.0f);
+    grid.header.width = 1;
+    QVERIFY(!BuildWorldTerrainMesh(grid).Succeeded());
+}
+
+void WorldModuleTests::ViewportLifecycleAndInput() {
+    BackendState state; activeBackend = &state;
+    QWidget first, second; first.resize(640, 480); second.resize(640, 480);
+    auto viewport = std::make_unique<WorldViewport>(&first, &backend);
+    state.viewport = viewport.get(); viewport->resize(320, 240);
+    QVERIFY(viewport->SetMesh({{0, 0, 0, 0, 1, 0}, {128, 0, 0, 0, 1, 0}, {0, 128, 64, 0, 1, 0}}, {0, 1, 2}, 9));
+    first.show(); viewport->show();
+    QTRY_VERIFY(state.frames > 0);
+    QCOMPARE(state.creates, 1);
+    QCOMPARE(state.width, static_cast<std::uint32_t>(qRound(viewport->width() * viewport->devicePixelRatioF())));
+    QCOMPARE(state.revision, std::uint64_t{9});
+    const auto home = viewport->SaveCamera();
+    Mouse(*viewport, QEvent::MouseButtonPress, {80, 80}, Qt::LeftButton, Qt::LeftButton, Qt::AltModifier);
+    Mouse(*viewport, QEvent::MouseMove, {120, 95}, Qt::NoButton, Qt::LeftButton, Qt::AltModifier);
+    Mouse(*viewport, QEvent::MouseButtonRelease, {120, 95}, Qt::LeftButton, Qt::NoButton, Qt::AltModifier);
+    QVERIFY(viewport->SaveCamera()["yaw"] != home["yaw"]);
+    Mouse(*viewport, QEvent::MouseButtonPress, {80, 80}, Qt::MiddleButton, Qt::MiddleButton);
+    Mouse(*viewport, QEvent::MouseMove, {100, 110}, Qt::NoButton, Qt::MiddleButton);
+    Mouse(*viewport, QEvent::MouseButtonRelease, {100, 110}, Qt::MiddleButton, Qt::NoButton);
+    QVERIFY(viewport->SaveCamera()["x"] != home["x"] || viewport->SaveCamera()["y"] != home["y"]);
+    const auto distance = viewport->Camera().distance;
+    QWheelEvent wheel({100, 100}, {100, 100}, {}, {0, 120}, Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(viewport.get(), &wheel);
+    QVERIFY(viewport->Camera().distance < distance);
+    viewport->ResetCamera(); QCOMPARE(viewport->SaveCamera(), home);
+    // 默认是原版游戏视角：对准地图中心、朝北、俯角 56°，距离不随视口尺寸变化（不按全图取景）。
+    QCOMPARE(home["x"].toDouble(), 64.0); QCOMPARE(home["y"].toDouble(), 64.0);
+    QVERIFY(std::abs(home["yaw"].toDouble() + 1.5707963) < 1e-5 && std::abs(home["pitch"].toDouble() - 0.9773844) < 1e-5);
+    viewport->resize(160, 480); viewport->ResetCamera(); QCOMPARE(viewport->SaveCamera(), home);
+    viewport->resize(320, 240); viewport->ResetCamera(); QCOMPARE(viewport->SaveCamera(), home);
+    auto invalid = home; invalid["distance"] = 500000;
+    QVERIFY(!viewport->RestoreCamera(invalid)); QCOMPARE(viewport->SaveCamera(), home);
+    viewport->hide(); const int frames = state.frames;
+    QTest::qWait(90); QCOMPARE(state.frames, frames); QVERIFY(!viewport->FrameTimerActive());
+    viewport->setParent(&second); second.show(); viewport->show();
+    QTRY_COMPARE(state.creates, 2);
+    QCOMPARE(state.destroys, 1);
+    QVERIFY(state.destroyedBeforeWindow && state.stoppedBeforeDestroy);
+    viewport.reset();
+    QCOMPARE(state.destroys, 2);
+    QVERIFY(state.destroyedBeforeWindow && state.stoppedBeforeDestroy);
+}
+
+void WorldModuleTests::MapSwitchDoesNotEdit() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    QVERIFY(Write(directory.filePath("war3map.w3e"), TerrainBytes()));
+    QtProject::EditorProject project;
+    project.projectRoot_ = directory.path().toStdWString();
+    auto snapshot = DirectoryWorkspace::Open(project.projectRoot_); QVERIFY(snapshot.Succeeded());
+    project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*snapshot.value));
+    project.ResetEditTracking(); QVERIFY(project.editTrackingReady_);
+    BackendState state; activeBackend = &state;
+    WorldModule module(project, &backend);
+    auto* page = module.Widget(); state.viewport = module.Viewport(); page->resize(800, 600); page->show();
+    // 原后端没有动画尾部：控件可发现但不可用，不用假播放替代能力拒绝。
+    auto* play = page->findChild<QPushButton*>("worldAnimationPlay");
+    auto* pause = page->findChild<QPushButton*>("worldAnimationPause");
+    auto* step = page->findChild<QPushButton*>("worldAnimationStep");
+    QVERIFY(play && pause && step);
+    QVERIFY(!play->isEnabled() && !pause->isEnabled() && !step->isEnabled());
+    QVERIFY(!module.Viewport()->HasAnimationSupport());
+    QTRY_COMPARE(module.Viewport()->VertexCount(), std::size_t{6});
+    QTRY_VERIFY(module.PlaybackDiagnosticSnapshot()["player"].toObject()["last_diagnostic"].toString().contains("世界动画能力"));
+    const auto playback = module.PlaybackDiagnosticSnapshot();
+    QVERIFY(!playback["player"].toObject()["ready"].toBool());
+    for (const auto* key : {"play", "pause", "step"}) {
+        const auto button = playback["buttons"].toObject()[key].toObject();
+        QVERIFY(!button["effective_enabled"].toBool()); QVERIFY(button["locally_disabled"].toBool());
+    }
+    QCOMPARE(module.Viewport()->TriangleCount(), std::size_t{4});
+    QCOMPARE(module.Viewport()->Camera().targetX, 0.0f);
+    Mouse(*module.Viewport(), QEvent::MouseMove, {module.Viewport()->width() / 4.0, module.Viewport()->height() / 2.0}, Qt::NoButton, Qt::NoButton);
+    QTRY_VERIFY(module.Viewport()->HoverCoordinate().has_value());
+    const QPointF selectedPoint(module.Viewport()->width() / 4.0, module.Viewport()->height() / 2.0);
+    Mouse(*module.Viewport(), QEvent::MouseButtonPress, selectedPoint, Qt::LeftButton, Qt::LeftButton);
+    Mouse(*module.Viewport(), QEvent::MouseButtonRelease, selectedPoint, Qt::LeftButton, Qt::NoButton);
+    QVERIFY(module.Viewport()->SelectedCoordinate().has_value());
+    QCOMPARE(page->findChild<QLabel*>("worldSelectedCoordinates")->text(), module.Viewport()->SelectionText());
+    auto camera = module.Viewport()->SaveCamera(); camera["distance"] = 1024;
+    QVERIFY(module.Viewport()->RestoreCamera(camera));
+    (void)module.SaveViewState(); module.Viewport()->ResetCamera();
+    QVERIFY(project.ObserveEditState("只读地形视角"));
+    QCOMPARE(project.editRevision_.Revision(), std::uint64_t{0});
+    QVERIFY(!project.editRevision_.IsDirty(EditSaveTarget::Map));
+    QVERIFY(!project.editRevision_.IsDirty(EditSaveTarget::Project));
+    QCOMPARE(project.mapDataUndoStack_->count(), 0); QVERIFY(module.UndoStack() == project.mapDataUndoStack_);
+    // 连续地图切换合并到最新 generation，不允许旧解码覆盖新地图；同一张地图重新读取（如保存后）保留当前视角。
+    QVERIFY(module.Viewport()->RestoreCamera(camera));
+    QVERIFY(Write(directory.filePath("war3map.w3e"), TerrainBytes(800)));
+    const auto stale = project.ReadMapMember("war3map.w3e");
+    QVERIFY(!stale.Succeeded() && !stale.diagnostics.empty()
+        && stale.diagnostics.front().code == "VERIFIED_FILE_SHA_MISMATCH");
+    // 模拟重新打开已变化的工作区；旧快照不能被用于读取新的地图字节。
+    auto switched = DirectoryWorkspace::Open(project.projectRoot_); QVERIFY(switched.Succeeded());
+    project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*switched.value));
+    project.MapDocumentChanged(); project.MapDocumentChanged();
+    QVERIFY(!module.Viewport()->HoverCoordinate() && !module.Viewport()->SelectedCoordinate());
+    QTRY_VERIFY(module.Viewport()->VertexCount() == 6 && module.Viewport()->Camera().distance == 1024.0f);
+    QCOMPARE(module.Viewport()->Camera().targetX, 0.0f);
+    // 视图状态记录所属地图：其他地图与旧版本（不分地图）的状态不恢复。
+    const auto saved = module.SaveViewState();
+    QCOMPARE(saved["map"].toString(), QString::fromStdWString(project.projectRoot_.lexically_normal().wstring()));
+    module.Viewport()->ResetCamera(); QCOMPARE(module.Viewport()->Camera().targetX, 928.0f);
+    auto other = saved; other["map"] = QStringLiteral("other.w3x"); module.RestoreViewState(other);
+    QCOMPARE(module.Viewport()->Camera().targetX, 928.0f);
+    auto legacy = saved; legacy.remove("version"); module.RestoreViewState(legacy);
+    QCOMPARE(module.Viewport()->Camera().targetX, 928.0f);
+    module.RestoreViewState(saved);
+    QVERIFY(module.Viewport()->Camera().targetX == 0.0f && module.Viewport()->Camera().distance == 1024.0f);
+    QVERIFY(Write(directory.filePath("war3map.w3e"), QByteArray("broken")));
+    project.MapDocumentChanged();
+    QTRY_COMPARE(module.Viewport()->VertexCount(), std::size_t{0});
+    QTRY_VERIFY(!page->findChild<QLabel*>("worldTerrainStatus")->text().contains(QStringLiteral("正在")));
+}
+
+void WorldModuleTests::PlaybackSnapshotKeepsServiceAndRetainedPictureDistinct() {
+    QtProject::EditorProject project; BackendState state; activeBackend = &state;
+    auto api = modelBackend; api.submitSkinnedModelScene = SkinScene; api.updateSkinMatrices = SkinUpdate;
+    api.getSkinStatus = SkinStatus; api.captureSkinnedFrameRgba = SkinCapture;
+    WorldModule module(project, &api); auto* page = module.Widget(); state.viewport = module.Viewport();
+    QVERIFY(BindTerrain(*state.viewport, TestTerrain())); page->resize(800, 600); page->show();
+    Render::AnimationInstanceSpec spec; spec.identity = {1, 8}; spec.hostKey = "snapshot-model"; spec.model.modelPath = "synthetic.mdx";
+    const auto service = Render::ModelAnimationService::Create({8, 12, "Qt-playback-snapshot"}, std::span(&spec, 1),
+        [](auto, auto) { return Result<Render::AnimationResource>::Success({
+            AnimationTest::WithoutSyntheticConstantKmtf(MdxTest::BuildTestMdx()), "synthetic", std::string(64, 'a')}); });
+    QVERIFY(service.Succeeded()); const auto first = (*service.value)->Prepare(nullptr); QVERIFY(first.Succeeded());
+    bool current = true; auto* player = module.AnimationPlayer();
+    QVERIFY(player->Install(*service.value, *first.value, {}, [&] { return current; }));
+    const auto matchesButtons = [&] {
+        const auto snapshot = module.PlaybackDiagnosticSnapshot()["buttons"].toObject();
+        for (const auto& key : {QStringLiteral("play"), QStringLiteral("pause"), QStringLiteral("step")}) {
+            const auto* button = page->findChild<QPushButton*>("worldAnimation" + key.left(1).toUpper() + key.mid(1));
+            if (!button || snapshot[key].toObject()["effective_enabled"].toBool() != button->isEnabled()) return false;
+        }
+        return true;
+    };
+    QVERIFY(player->Ready()); QVERIFY(matchesButtons());
+    const auto installed = module.PlaybackDiagnosticSnapshot();
+    QVERIFY(installed["player"].toObject()["playing"].toBool());
+    QCOMPARE(installed["service_scene"].toObject()["animated_instances"].toString(), QStringLiteral("1"));
+    QCOMPARE(installed["accepted_frame"].toObject()["scene_version"].toString(), QString::number((*first.value)->sceneVersion));
+    page->findChild<QPushButton*>("worldAnimationPause")->click();
+    QVERIFY(!player->Playing()); QVERIFY(matchesButtons()); QVERIFY(page->findChild<QPushButton*>("worldAnimationPlay")->isEnabled());
+    current = false; page->findChild<QPushButton*>("worldAnimationPlay")->click();
+    const auto failed = module.PlaybackDiagnosticSnapshot();
+    QVERIFY(!failed["player"].toObject()["ready"].toBool()); QVERIFY(state.viewport->HasAnimationScene());
+    QVERIFY(failed["player"].toObject()["last_diagnostic"].toString().contains("身份已变化"));
+    QVERIFY(!failed["accepted_frame"].toObject()["present"].toBool()); QVERIFY(matchesButtons());
+    for (const auto* key : {"play", "pause", "step"}) QVERIFY(!failed["buttons"].toObject()[key].toObject()["effective_enabled"].toBool());
+}
+
+void WorldModuleTests::InstanceCatalogStartsBesidePose_data() {
+    QTest::addColumn<bool>("cancelAndReplace");
+    QTest::addColumn<bool>("planBeforePose");
+    QTest::addColumn<QString>("prefetchDisposition");
+    QTest::newRow("latest-pose-and-next-roster") << false << false << QString{};
+    QTest::newRow("clear-replace-and-late-catalog") << true << false << QString{};
+    QTest::newRow("ready-roster-overlaps-accepted-pose-notification") << false << true << QString{};
+    QTest::newRow("prefetch-completed-before-ui-dispatch") << false << false << QStringLiteral("consume");
+    QTest::newRow("prefetch-cancel-completed-before-ui-dispatch") << false << false << QStringLiteral("cancel");
+    QTest::newRow("prefetch-invalidate-completed-before-ui-dispatch") << false << false << QStringLiteral("invalidate");
+    QTest::newRow("prefetch-replace-variant-before-ui-dispatch") << false << false << QStringLiteral("variant");
+}
+void WorldModuleTests::InstanceCatalogStartsBesidePose() {
+    QFETCH(bool, cancelAndReplace);
+    QFETCH(bool, planBeforePose);
+    QFETCH(QString, prefetchDisposition);
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const auto mapPath = directory.filePath(QStringLiteral("catalog-scheduling.w3x"));
+    auto members = PlacementPreviewMembers();
+    // 此夹具验证目录/预取调度，后端只有骨架能力；KMTF有独立的完整材质能力回归。
+    const auto skeletonOnly = AnimationTest::WithoutSyntheticConstantKmtf(MdxTest::BuildTestMdx());
+    for (auto& member : members) if (member.name == "Synthetic\\Arcane.mdx") member.data = skeletonOnly;
+    if (!prefetchDisposition.isEmpty()) members.push_back({"Synthetic\\Prefetched.mdx", skeletonOnly});
+    QVERIFY(WriteVerifiedArchive(mapPath.toStdWString(), members).Succeeded());
+    auto archive = MapArchiveSession::Open(mapPath.toStdWString()); QVERIFY(archive.Succeeded());
+    QtProject::EditorProject project; project.sourceArchivePath_ = mapPath.toStdWString();
+    project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*archive.value));
+    const auto captured = CaptureWorldTerrainSources(project); QVERIFY(captured.Succeeded());
+    auto opened = WorldResourceReader::Open(*captured.value); QVERIFY(opened.Succeeded());
+    auto source = std::shared_ptr<WorldResourceReader>(std::move(*opened.value));
+    BackendState state; activeBackend = &state;
+    auto api = modelBackend; api.submitSkinnedModelScene = SkinScene; api.updateSkinMatrices = SkinUpdate;
+    api.getSkinStatus = SkinStatus; api.captureSkinnedFrameRgba = SkinCapture;
+    EditorPresentationFixture<BackendState>::Enable(api, state.editor);
+    api.submitEditorInstanceRoster = SubmitRoster; api.getEditorInstanceRosterResult = RosterResult;
+    api.getEditorRosterCapabilities = [](War3RendererHandle, std::uint32_t* flags) -> std::int32_t {
+        if (!flags) return 1;
+        *flags = WAR3_RENDER_ROSTER_APPEND_ASSETS; return 0;
+    };
+    WorldViewport viewport(nullptr, &api); state.viewport = &viewport;
+    viewport.resize(320, 240); QVERIFY(BindTerrain(viewport, TestTerrain())); viewport.show();
+    QTRY_VERIFY(viewport.RendererReady() && state.frames > 0);
+    WorldAnimationPlayer player(viewport); player.SetPlaying(false);
+    Render::AnimationInstanceSpec spec; spec.identity = {1, 77}; spec.hostKey = "catalog-survivor";
+    spec.model.modelPath = "Synthetic\\Arcane.mdx"; spec.elapsedMs = 0;
+    const auto install = [&](std::uint64_t revision) {
+        const auto service = Render::ModelAnimationService::Create({spec.identity.generation, revision, captured.value->archiveSha},
+            std::span(&spec, 1), [&](auto path, auto budget) { return source->ReadAnimationResource(path, budget); });
+        if (!service.Succeeded()) return false;
+        Render::AnimationAdvance advance; advance.playAll = false; advance.worldView = viewport.AnimationViewSnapshot();
+        const auto first = (*service.value)->Prepare(nullptr, advance);
+        return first.Succeeded() && player.Install(*service.value, *first.value, source, [] { return true; });
+    };
+    QVERIFY(install(12)); QVERIFY(!player.Busy());
+    const auto originalScene = player.Scene()->sceneVersion;
+    auto gate = std::make_shared<CatalogWorkerGate>(); ReleaseCatalogWorker release{gate};
+    struct Completion { int calls = 0; bool accepted = false; War3Map::Status status; };
+    auto completion = std::make_shared<Completion>();
+    const auto makeChange = [&](std::uint64_t revision, std::shared_ptr<Completion> result) {
+        WorldAnimationPlayer::InstanceChange change;
+        change.delta.session = {spec.identity.generation, revision, captured.value->archiveSha};
+        change.timing.generation = spec.identity.generation; change.timing.editSessionIdentity = 2307;
+        change.timing.documentRevision = revision; change.timing.commandIdentity = revision + 1000;
+        change.sources = *captured.value; change.valid = [] { return true; };
+        change.completed = [result](bool accepted, const War3Map::Status& status) {
+            ++result->calls; result->accepted = accepted; result->status = status;
+        };
+        return change;
+    };
+    auto change = makeChange(13, completion);
+    auto added = spec; added.identity.value = 2; added.hostKey = "catalog-added";
+    WorldInstanceTiming completedPrefetch;
+    auto firstInstanceReader = std::make_shared<std::shared_ptr<WorldResourceReader>>();
+    if (!prefetchDisposition.isEmpty()) {
+        // 冷模型不属于原目录，不能用已驻留模型的NOT_NEEDED路径假装预取命中。
+        added.model.modelPath = "Synthetic\\Prefetched.mdx";
+        auto prefetchValid = std::make_shared<bool>(true);
+        const auto valid = [prefetchValid] { return *prefetchValid; };
+        const auto framesBeforePrefetch = state.frames;
+        const auto contentBeforePrefetch = player.Frame()->contentVersion;
+        player.PrefetchPlacementAsset(added.model, *captured.value, valid);
+        QElapsedTimer elapsed; elapsed.start();
+        do {
+            completedPrefetch = player.PlacementAssetPrefetchTiming();
+            if (completedPrefetch.prefetchFinishedNs) break;
+            QThread::msleep(1); // 不泵Qt：finished回调必须仍在UI队列中，worker结果已经独立发布。
+        } while (elapsed.elapsed() < 2000);
+        QVERIFY2(completedPrefetch.prefetchFinishedNs, "formal prefetch worker did not finish within the bounded no-UI-dispatch wait");
+        QVERIFY(completedPrefetch.prefetchRequestedNs && completedPrefetch.prefetchStartedNs);
+        QVERIFY(completedPrefetch.prefetchRequestedNs <= completedPrefetch.prefetchStartedNs);
+        QVERIFY(completedPrefetch.prefetchStartedNs <= completedPrefetch.prefetchFinishedNs);
+        QCOMPARE(completedPrefetch.prefetchState, std::string("ready"));
+        QCOMPARE(state.frames, framesBeforePrefetch);
+        QCOMPARE(player.Frame()->contentVersion, contentBeforePrefetch);
+        // 只读查询不能消费/取消结果；正式QueueInstances仍必须拿到同一份已完成的静态包。
+        QCOMPARE(player.PlacementAssetPrefetchTiming().prefetchFinishedNs, completedPrefetch.prefetchFinishedNs);
+        if (prefetchDisposition == QStringLiteral("cancel")) {
+            player.CancelAssetPrefetch();
+            QCOMPARE(player.PlacementAssetPrefetchTiming().prefetchRequestedNs, std::uint64_t{0});
+        } else if (prefetchDisposition == QStringLiteral("invalidate")) {
+            *prefetchValid = false;
+            QCOMPARE(player.PlacementAssetPrefetchTiming().prefetchState, std::string("stale"));
+        } else if (prefetchDisposition == QStringLiteral("variant")) {
+            // 旧worker已经完成但其UI清理回调未跑，新变体仍排队；不得把旧包当成新包。
+            added.model.teamColor = 5;
+            player.PrefetchPlacementAsset(added.model, *captured.value, valid);
+            const auto replacement = player.PlacementAssetPrefetchTiming();
+            QVERIFY(replacement.prefetchRequestedNs >= completedPrefetch.prefetchFinishedNs);
+            QCOMPARE(replacement.prefetchFinishedNs, std::uint64_t{0});
+        }
+        QCOMPARE(state.frames, framesBeforePrefetch);
+    }
+    change.delta.additions.push_back(added);
+    change.prepareOwnedAssets = [gate, firstInstanceReader](auto&, auto reader, auto&) {
+        *firstInstanceReader = std::move(reader);
+        auto* thread = QThread::currentThread();
+        QObject::connect(thread, &QThread::finished, thread, [gate] { gate->finished.release(); }, Qt::DirectConnection);
+        gate->entered.release(); gate->release.acquire(); return War3Map::Status::Ok();
+    };
+    const auto operationIdentity = change.timing;
+    const auto beforeEdit = player.LatestTimingSequence();
+    std::unique_ptr<WorldAnimationPlaybackContractChecks::ReadyRosterNotificationProbe> notification;
+    if (planBeforePose) notification = std::make_unique<WorldAnimationPlaybackContractChecks::ReadyRosterNotificationProbe>(player);
+    bool intercepted = false, queued = false, startedBesidePose = false, catalogFinished = false;
+    const auto connection = connect(&player, &WorldAnimationPlayer::Changed, &player, [&] {
+        if (intercepted || !player.Busy()) return;
+        intercepted = true;
+        // Changed在旧pose worker启动之前同步发出；此时等待资源worker的真执行信号，
+        // 不处理GUI事件，因而旧pose完成回调不可能先替我们释放调度门。
+        queued = player.QueueInstances(std::move(change));
+        if (queued) startedBesidePose = gate->entered.tryAcquire(1, 2000);
+        if (planBeforePose && startedBesidePose) {
+            gate->release.release();
+            catalogFinished = gate->finished.tryAcquire(1, 2000);
+            // catalog先完成并消费其plan，旧pose线程尚未start；不靠睡眠碰巧制造次序。
+            if (catalogFinished) QCoreApplication::sendPostedEvents(&player, QEvent::MetaCall);
+        }
+    });
+    Render::AnimationEdit edit; edit.identity = spec.identity; edit.elapsedMs = 500; edit.globalMs = 500;
+    player.Edit(std::move(edit)); disconnect(connection);
+    QVERIFY(intercepted && queued); QVERIFY(startedBesidePose);
+    if (planBeforePose) QVERIFY(catalogFinished);
+    // 排队后UI补录目录耗时，不允许旧会话/旧修订把统计写到另一次实例事务。
+    auto staleIdentity = operationIdentity; ++staleIdentity.editSessionIdentity;
+    QVERIFY(!player.RecordInstanceOutlinerTiming(staleIdentity, 9000));
+    staleIdentity = operationIdentity; ++staleIdentity.documentRevision;
+    QVERIFY(!player.RecordInstanceOutlinerTiming(staleIdentity, 9000));
+    QVERIFY(player.RecordInstanceOutlinerTiming(operationIdentity, 1234567));
+    if (!planBeforePose) {
+        QTRY_VERIFY(!player.Busy());
+        QCOMPARE(player.Frame()->states[0].elapsedMs, std::uint64_t{500});
+        QCOMPARE(state.rosterSubmits, std::uint64_t{0}); // catalog等待期间旧pose已被接受，尚未重基/提交名单。
+        QVERIFY(player.InstancesBusy());
+    }
+    if (cancelAndReplace) {
+        player.Clear(); QCOMPARE(completion->calls, 1); QVERIFY(!completion->accepted);
+        QVERIFY(!completion->status.diagnostics.empty());
+        QCOMPARE(completion->status.diagnostics.front().code, std::string("WORLD_INSTANCE_CANCELLED"));
+        QVERIFY(!player.Ready()); QVERIFY(player.InstancesBusy()); // 被取消worker仍持有自己的来源和档案。
+        spec.identity.generation = 88;
+        QVERIFY(install(100)); QVERIFY(player.Scene()->sceneVersion != originalScene);
+    }
+    const auto acceptedBeforeCatalog = player.LatestTimingSequence();
+    if (!planBeforePose) {
+        gate->release.release();
+        // finished直连运行于资源线程，确保其函数已经退出，但故意不处理GUI完成回调。
+        // 在这个窄窗口再次排入姿势编辑，必须等名单重基，不能多求值一遍旧场景。
+        QVERIFY(gate->finished.tryAcquire(1, 2000));
+    }
+    if (!cancelAndReplace && !planBeforePose) {
+        QSignalSpy startedPose(&player, &WorldAnimationPlayer::Changed);
+        Render::AnimationEdit pendingEdit; pendingEdit.identity = spec.identity;
+        pendingEdit.elapsedMs = 500; pendingEdit.globalMs = 500;
+        player.Edit(std::move(pendingEdit));
+        QCOMPARE(startedPose.count(), 0);
+    }
+    QTRY_VERIFY(!player.InstancesBusy());
+    QTRY_VERIFY(!player.Busy());
+    QCOMPARE(completion->calls, 1);
+    const auto instanceHistory = player.InstanceTimingHistory();
+    QCOMPARE(instanceHistory.size(), std::size_t{1});
+    QCOMPARE(instanceHistory.front().refresh.outlinerNs, std::uint64_t{1234567});
+    QVERIFY(instanceHistory.front().refresh.outlinerAfterQueue);
+    if (!prefetchDisposition.isEmpty()) {
+        const auto& timing = instanceHistory.front();
+        const bool expectedHit = prefetchDisposition == QStringLiteral("consume");
+        QCOMPARE(timing.catalogDetail.preparedAssetHit, expectedHit);
+        QCOMPARE(timing.resourceReaderReused, expectedHit);
+        QVERIFY(completedPrefetch.prefetchFinishedNs <= timing.queuedNs);
+        if (expectedHit) {
+            QCOMPARE(timing.prefetchState, std::string("ready"));
+            QCOMPARE(timing.prefetchRequestedNs, completedPrefetch.prefetchRequestedNs);
+            QCOMPARE(timing.prefetchStartedNs, completedPrefetch.prefetchStartedNs);
+            QCOMPARE(timing.prefetchFinishedNs, completedPrefetch.prefetchFinishedNs);
+            QVERIFY(timing.catalogDetail.preparedAssetMissReason.empty());
+        }
+        // 取消、失效和变体切换均走正常正式准备，旧queued finished不能重新发布被丢弃的包。
+        std::string failure = timing.diagnosticCode;
+        for (const auto& diagnostic : completion->status.diagnostics)
+            failure += "\n" + diagnostic.code + ": " + diagnostic.message;
+        QVERIFY2(timing.accepted, failure.c_str());
+        QVERIFY(timing.assetsChanged);
+        QCOMPARE(state.rosterAssetAppends, std::uint64_t{1});
+        QCOMPARE(state.rosterAssets.modelCount, std::uint32_t{2});
+        QCOMPARE(state.roster.assetIdentity, state.rosterAssetIdentity);
+        QCOMPARE(player.Scene()->specs[0].hostKey, std::string("catalog-survivor"));
+        QCOMPARE(player.Scene()->specs[1].model.modelPath, added.model.modelPath);
+        QCOMPARE(player.Scene()->specs[1].model.teamColor, added.model.teamColor);
+        QCOMPARE(player.Frame()->states[0].identity.value, std::uint64_t{1});
+        QCOMPARE(player.Frame()->states[0].elapsedMs, std::uint64_t{500});
+    }
+    if (notification) {
+        notification->VerifyOverlap(instanceHistory.front());
+        const auto attempts = player.TimingHistory(beforeEdit);
+        QVERIFY(std::any_of(attempts.begin(), attempts.end(), [&](const auto& attempt) {
+            return attempt.sceneVersion == originalScene && attempt.contentVersion == notification->AcceptedContent()
+                && attempt.outcome == WorldAnimationTimingOutcome::Accepted;
+        })); // 允许合法旧pose先接收；它的最新500ms状态才是名单重基来源。
+    }
+    // 同步目录通知可重入完成回调；终态补录也只更新同一身份的历史，不能污染下一笔。
+    QVERIFY(player.RecordInstanceOutlinerTiming(operationIdentity, 11));
+    QCOMPARE(player.InstanceTimingHistory().front().refresh.outlinerNs, std::uint64_t{1234578});
+    if (cancelAndReplace) {
+        QVERIFY(!completion->accepted); QCOMPARE(state.rosterSubmits, std::uint64_t{0});
+        QCOMPARE(player.Scene()->documentRevision, std::uint64_t{100});
+        QCOMPARE(player.Frame()->states.size(), std::size_t{1});
+        QCOMPARE(player.Frame()->states[0].identity.generation, std::uint64_t{88});
+    } else {
+        QVERIFY2(completion->accepted, completion->status.diagnostics.empty() ? "no roster completion" : completion->status.diagnostics.front().message.c_str());
+        QCOMPARE(player.Scene()->documentRevision, std::uint64_t{13});
+        QCOMPARE(player.Frame()->states.size(), std::size_t{2});
+        QCOMPARE(player.Frame()->states[0].elapsedMs, std::uint64_t{500}); // 重基必须使用catalog准备期间接受的最新帧。
+        QCOMPARE(state.rosterSubmits, std::uint64_t{1});
+        const auto attempts = player.TimingHistory(acceptedBeforeCatalog);
+        QVERIFY(!attempts.empty());
+        for (const auto& attempt : attempts) {
+            if (planBeforePose && attempt.sceneVersion == originalScene) continue;
+            QCOMPARE(attempt.sceneVersion, player.Scene()->sceneVersion);
+        }
+        if (planBeforePose) {
+            Render::AnimationEdit nextPose; nextPose.identity = spec.identity;
+            nextPose.elapsedMs = 600; nextPose.globalMs = 600;
+            player.Edit(std::move(nextPose));
+            QTRY_VERIFY(!player.Busy() && player.Frame()->states[0].elapsedMs == 600);
+        }
+    }
+    // 成功roster和Clear后替换都须发布各自的新档案；旧revision/旧代次不能用于下一笔。
+    auto nextCompletion = std::make_shared<Completion>();
+    auto next = makeChange(cancelAndReplace ? 101 : 14, nextCompletion);
+    auto nextInstanceReader = std::make_shared<std::shared_ptr<WorldResourceReader>>();
+    next.prepareOwnedAssets = [nextInstanceReader](auto&, auto reader, auto&) {
+        *nextInstanceReader = std::move(reader); return War3Map::Status::Ok();
+    };
+    if (cancelAndReplace) {
+        added.identity.generation = spec.identity.generation;
+        next.delta.additions.push_back(added);
+    } else next.delta.removals.push_back(added.identity);
+    QVERIFY(player.QueueInstances(std::move(next)));
+    QTRY_COMPARE(nextCompletion->calls, 1);
+    QVERIFY2(nextCompletion->accepted, nextCompletion->status.diagnostics.empty() ? "no next roster completion" : nextCompletion->status.diagnostics.front().message.c_str());
+    QCOMPARE(player.InstanceTimingHistory().back().refresh.outlinerNs, std::uint64_t{0});
+    QCOMPARE(player.InstanceTimingHistory().back().resourceReaderReused, !cancelAndReplace);
+    QVERIFY(*firstInstanceReader && *nextInstanceReader);
+    QCOMPARE(*firstInstanceReader == *nextInstanceReader, !cancelAndReplace);
+    QCOMPARE(player.Scene()->documentRevision, std::uint64_t{cancelAndReplace ? 101u : 14u});
+    QCOMPARE(player.Frame()->states.size(), std::size_t{cancelAndReplace ? 2u : 1u});
+    // 同一归档SHA仍不足以复用解析器：主地形/覆盖配置变化必须取得独立的新reader。
+    auto changedSourceCompletion = std::make_shared<Completion>();
+    auto changedSource = makeChange(cancelAndReplace ? 102 : 15, changedSourceCompletion);
+    changedSource.sources.mainTileset = static_cast<std::uint8_t>('L');
+    QVERIFY(!(*nextInstanceReader)->MatchesSources(changedSource.sources));
+    auto changedInstanceReader = std::make_shared<std::shared_ptr<WorldResourceReader>>();
+    changedSource.prepareOwnedAssets = [changedInstanceReader](auto&, auto reader, auto&) {
+        *changedInstanceReader = std::move(reader); return War3Map::Status::Ok();
+    };
+    QVERIFY(player.QueueInstances(std::move(changedSource)));
+    QTRY_COMPARE(changedSourceCompletion->calls, 1);
+    QVERIFY(changedSourceCompletion->accepted);
+    QVERIFY(!player.InstanceTimingHistory().back().resourceReaderReused);
+    QVERIFY(*changedInstanceReader && *changedInstanceReader != *nextInstanceReader);
+    player.Clear(); QVERIFY(!player.Ready()); QVERIFY(!player.Busy()); QVERIFY(!player.InstancesBusy());
+}
+
+void WorldModuleTests::AmbiguousTerrainAndDeferredLoad() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    QVERIFY(QDir(directory.path()).mkpath("map"));
+    QVERIFY(Write(directory.filePath("war3map.w3e"), TerrainBytes()));
+    QVERIFY(Write(directory.filePath("map/war3map.w3e"), TerrainBytes(512)));
+    QtProject::EditorProject project; project.projectRoot_ = directory.path().toStdWString();
+    auto snapshot = DirectoryWorkspace::Open(project.projectRoot_); QVERIFY(snapshot.Succeeded());
+    project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*snapshot.value));
+    BackendState state; activeBackend = &state;
+    WorldModule module(project, &backend);
+    auto* page = module.Widget(); state.viewport = module.Viewport();
+    project.MapDocumentChanged(); QTest::qWait(50);
+    QCOMPARE(module.Viewport()->VertexCount(), std::size_t{0}); QCOMPARE(state.creates, 0);
+    page->show();
+    QTRY_VERIFY(page->findChild<QLabel*>("worldTerrainStatus")->text().contains(QStringLiteral("来源不明确")));
+    QCOMPARE(module.Viewport()->VertexCount(), std::size_t{0});
+}
+
+void WorldModuleTests::OversizedViewportDoesNotCreate() {
+    BackendState state; activeBackend = &state;
+    WorldViewport viewport(nullptr, &backend); state.viewport = &viewport;
+    viewport.resize(4200, 240); viewport.show();
+    QTest::qWait(80); QCOMPARE(state.creates, 0); QVERIFY(!viewport.FrameTimerActive());
+    QVERIFY(viewport.StatusText().contains("4096"));
+    viewport.resize(320, 240);
+    QTRY_COMPARE(state.creates, 1);
+    QTRY_VERIFY(state.frames > 0);
+}
+
+void WorldModuleTests::HoverClickAndPendingFrames() {
+    BackendState state; activeBackend = &state;
+    WorldViewport viewport(nullptr, &backend); state.viewport = &viewport;
+    viewport.resize(320, 240);
+    QVERIFY(BindTerrain(viewport, TestTerrain()));
+    viewport.show(); QTRY_VERIFY(state.frames > 0);
+    const QPointF point(viewport.width() / 4.0, viewport.height() / 2.0);
+    // 鼠标事件只更新最新点；这一批不能每次都读取回执/求交。
+    const auto reads = state.viewReads;
+    for (int i = 0; i < 50; ++i) Mouse(viewport, QEvent::MouseMove, {10.0 + i, 50}, Qt::NoButton, Qt::NoButton);
+    Mouse(viewport, QEvent::MouseMove, point, Qt::NoButton, Qt::NoButton);
+    QCOMPARE(state.viewReads, reads);
+    QTRY_VERIFY(viewport.HoverCoordinate().has_value());
+    QCOMPARE(viewport.HoverCoordinate()->tileIndex, std::size_t{0});
+    QVERIFY(std::abs(viewport.HoverCoordinate()->position[0] + 64) < 1e-5);
+    QVERIFY(std::abs(viewport.HoverCoordinate()->position[1]) < 1e-5);
+    QVERIFY(std::abs(viewport.HoverCoordinate()->position[2] - 2) < 1e-5);
+    const auto camera = viewport.SaveCamera();
+    Mouse(viewport, QEvent::MouseButtonPress, point, Qt::LeftButton, Qt::LeftButton);
+    Mouse(viewport, QEvent::MouseMove, point + QPointF(1, 1), Qt::NoButton, Qt::LeftButton);
+    Mouse(viewport, QEvent::MouseButtonRelease, point + QPointF(1, 1), Qt::LeftButton, Qt::NoButton);
+    QVERIFY(viewport.SelectedCoordinate().has_value());
+    QCOMPARE(viewport.SaveCamera(), camera); // 短点不能先产生微小旋转。
+    QVERIFY(viewport.SelectionText().startsWith(QStringLiteral("已选：X")));
+    QEvent leave(QEvent::Leave); QApplication::sendEvent(&viewport, &leave);
+    QVERIFY(!viewport.HoverCoordinate()); QVERIFY(viewport.SelectedCoordinate().has_value());
+    QTest::keyClick(&viewport, Qt::Key_Escape); QVERIFY(!viewport.SelectedCoordinate());
+    Mouse(viewport, QEvent::MouseButtonPress, point, Qt::LeftButton, Qt::LeftButton);
+    Mouse(viewport, QEvent::MouseButtonRelease, point + QPointF(60, 40), Qt::LeftButton, Qt::NoButton);
+    QVERIFY(!viewport.SelectedCoordinate()); // 缺失中间 move 事件也不能将远处松开当短点。
+
+    Mouse(viewport, QEvent::MouseMove, point, Qt::NoButton, Qt::NoButton);
+    QTRY_VERIFY(viewport.HoverCoordinate().has_value());
+    state.pending = true;
+    QTRY_VERIFY(!viewport.HoverCoordinate() && viewport.HoverText().contains(QStringLiteral("等待完成帧")));
+    Mouse(viewport, QEvent::MouseButtonPress, point, Qt::LeftButton, Qt::LeftButton);
+    Mouse(viewport, QEvent::MouseButtonRelease, point, Qt::LeftButton, Qt::NoButton);
+    QVERIFY(!viewport.SelectedCoordinate());
+    state.pending = false;
+    QTRY_VERIFY(viewport.HoverCoordinate().has_value());
+    state.staleRevision = true;
+    QTRY_VERIFY(!viewport.HoverCoordinate() && viewport.HoverText().contains(QStringLiteral("不匹配")));
+    state.staleRevision = false;
+    QTRY_VERIFY(viewport.HoverCoordinate().has_value());
+    state.staleSize = true;
+    QTRY_VERIFY(!viewport.HoverCoordinate() && viewport.HoverText().contains(QStringLiteral("不匹配")));
+    state.staleSize = false;
+    QTRY_VERIFY(viewport.HoverCoordinate().has_value());
+
+    Mouse(viewport, QEvent::MouseButtonPress, point, Qt::LeftButton, Qt::LeftButton);
+    ++state.viewEpoch; Frame(&state); // 模拟按下/松开之间已有另一完成视角。
+    Mouse(viewport, QEvent::MouseButtonRelease, point, Qt::LeftButton, Qt::NoButton);
+    QVERIFY(!viewport.SelectedCoordinate()); QVERIFY(viewport.HoverText().contains(QStringLiteral("取消")));
+    Mouse(viewport, QEvent::MouseButtonPress, point, Qt::LeftButton, Qt::LeftButton, Qt::AltModifier);
+    Mouse(viewport, QEvent::MouseMove, point + QPointF(40, 20), Qt::NoButton, Qt::LeftButton, Qt::AltModifier);
+    QVERIFY(!viewport.HoverCoordinate());
+    Mouse(viewport, QEvent::MouseButtonRelease, point + QPointF(40, 20), Qt::LeftButton, Qt::NoButton, Qt::AltModifier);
+    QVERIFY(viewport.SaveCamera()["yaw"] != camera["yaw"]); QVERIFY(!viewport.SelectedCoordinate());
+    QTRY_VERIFY(viewport.HoverCoordinate().has_value());
+    state.viewResult = 7;
+    QTRY_VERIFY(!viewport.HoverCoordinate() && viewport.HoverText().contains(QStringLiteral("暂停")));
+    state.viewResult = 0;
+    QTRY_VERIFY(viewport.HoverCoordinate().has_value());
+    state.statusResult = 7;
+    QTRY_VERIFY(!viewport.FrameTimerActive() && !viewport.HoverCoordinate() && !viewport.SelectedCoordinate());
+    QCOMPARE(state.captures, 0);
+}
+
+void WorldModuleTests::ResizeDprAndLegacyFallback() {
+    const auto terrain = TestTerrain(); QVERIFY(terrain != nullptr);
+    {
+        BackendState state; activeBackend = &state;
+        WorldViewport viewport(nullptr, &backend); state.viewport = &viewport;
+        viewport.resize(321, 241); QVERIFY(BindTerrain(viewport, terrain)); viewport.show();
+        QTRY_VERIFY(state.frames > 0);
+        QVERIFY(viewport.devicePixelRatioF() > 1); // 本测试进程使用真实 Qt 1.25 倍缩放。
+        QCOMPARE(state.width, static_cast<std::uint32_t>(qRound(viewport.width() * viewport.devicePixelRatioF())));
+        const auto center = [&] { return QPointF(state.width * 0.5 / viewport.devicePixelRatioF(), state.height * 0.5 / viewport.devicePixelRatioF()); };
+        Mouse(viewport, QEvent::MouseMove, center(), Qt::NoButton, Qt::NoButton);
+        QTRY_VERIFY(viewport.HoverCoordinate().has_value());
+        QVERIFY(std::abs(viewport.HoverCoordinate()->position[0]) < 1e-5);
+        QVERIFY(std::abs(viewport.HoverCoordinate()->position[1]) < 1e-5);
+        state.autoComplete = false;
+        viewport.resize(423, 277);
+        QVERIFY(!viewport.HoverCoordinate());
+        Mouse(viewport, QEvent::MouseMove, center(), Qt::NoButton, Qt::NoButton);
+        QTRY_VERIFY(viewport.HoverText().contains(QStringLiteral("等待完成帧")));
+        state.autoComplete = true; Frame(&state);
+        QTRY_VERIFY(viewport.HoverCoordinate().has_value());
+        QVERIFY(std::abs(viewport.HoverCoordinate()->position[0]) < 1e-5);
+        state.autoComplete = false;
+        const auto surface = state.surfaceEpoch;
+        QEvent dprChanged(QEvent::DevicePixelRatioChange); QApplication::sendEvent(&viewport, &dprChanged);
+        QVERIFY(state.surfaceEpoch > surface); QVERIFY(!viewport.HoverCoordinate());
+        QTRY_VERIFY(viewport.HoverText().contains(QStringLiteral("等待完成帧")));
+        state.autoComplete = true; Frame(&state);
+        QTRY_VERIFY(viewport.HoverCoordinate().has_value());
+        Mouse(viewport, QEvent::MouseButtonPress, center(), Qt::LeftButton, Qt::LeftButton);
+        Mouse(viewport, QEvent::MouseButtonRelease, center(), Qt::LeftButton, Qt::NoButton);
+        QVERIFY(viewport.SelectedCoordinate().has_value());
+        QVERIFY(std::abs(viewport.SelectedCoordinate()->position[0]) < 1e-5);
+        QCOMPARE(state.captures, 0);
+    }
+    {
+        BackendState state; activeBackend = &state;
+        WorldViewport viewport(nullptr, &legacyBackend); state.viewport = &viewport;
+        viewport.resize(320, 240); QVERIFY(BindTerrain(viewport, terrain)); viewport.show();
+        QTRY_VERIFY(state.frames > 0);
+        Mouse(viewport, QEvent::MouseMove, {160, 120}, Qt::NoButton, Qt::NoButton);
+        QTest::qWait(80);
+        QVERIFY(viewport.FrameTimerActive() && viewport.VertexCount() == 6);
+        QVERIFY(!viewport.HoverCoordinate() && !viewport.SelectedCoordinate());
+        QVERIFY(viewport.HoverText().contains(QStringLiteral("缺少完成帧回执")));
+        QCOMPARE(state.viewReads, 0); QCOMPARE(state.captures, 0);
+    }
+}
+
+void WorldModuleTests::SimplifiedAndMismatchedPickingDisabled() {
+    BackendState state; activeBackend = &state;
+    WorldViewport viewport(nullptr, &backend); state.viewport = &viewport;
+    viewport.resize(320, 240);
+    QVERIFY(BindTerrain(viewport, FlatGrid(513, 513), 14)); viewport.show();
+    QTRY_VERIFY(state.frames > 0);
+    Mouse(viewport, QEvent::MouseMove, {160, 120}, Qt::NoButton, Qt::NoButton);
+    Mouse(viewport, QEvent::MouseButtonPress, {160, 120}, Qt::LeftButton, Qt::LeftButton);
+    Mouse(viewport, QEvent::MouseButtonRelease, {160, 120}, Qt::LeftButton, Qt::NoButton);
+    QVERIFY(!viewport.HoverCoordinate() && !viewport.SelectedCoordinate());
+    QVERIFY(viewport.HoverText().contains(QStringLiteral("精确拾取")));
+    QCOMPARE(state.viewReads, 0);
+    const auto terrain = TestTerrain(); QVERIFY(terrain != nullptr);
+    QVERIFY(BindTerrain(viewport, terrain, 14));
+    auto changed = std::make_shared<MapData::TerrainGridSnapshot>(*terrain);
+    changed->vertices[0].position[2] += 10;
+    QVERIFY(!viewport.SetPickingTerrain(changed, 1, 14));
+    QVERIFY(viewport.HoverText().contains(QStringLiteral("不一致")));
+    QVERIFY(!viewport.SetPickingTerrain(terrain, 1, 13));
+    QVERIFY(!viewport.HoverCoordinate() && !viewport.SelectedCoordinate());
+    QCOMPARE(state.captures, 0);
+}
+
+void WorldModuleTests::GroundSceneKeepsPickingAndRejectsDifferentGeometry() {
+    BackendState state; activeBackend = &state;
+    WorldViewport viewport(nullptr, &backend); state.viewport = &viewport;
+    const auto terrain = TestTerrain(); QVERIFY(terrain);
+    viewport.resize(320, 240); QVERIFY(BindTerrain(viewport, terrain)); viewport.show();
+    QTRY_VERIFY(state.frames > 0);
+    const std::vector<std::shared_ptr<const Render::TerrainAtlasSnapshot>> missing(terrain->header.groundTilesets.size());
+    auto built = Render::BuildTerrainGroundMesh(*terrain, missing);
+    QVERIFY(built.Succeeded());
+    auto ground = std::make_shared<const Render::TerrainGroundMesh>(std::move(*built.value));
+    const auto camera = viewport.Camera();
+    QVERIFY(viewport.SetGroundMesh(ground)); QVERIFY(viewport.HasGroundMesh());
+    QCOMPARE(state.terrainSubmits, 1); QCOMPARE(viewport.Camera().distance, camera.distance);
+    QTRY_VERIFY(state.completed.sceneEpoch == state.sceneEpoch);
+    Mouse(viewport, QEvent::MouseButtonPress, {240, 120}, Qt::LeftButton, Qt::LeftButton);
+    Mouse(viewport, QEvent::MouseButtonRelease, {240, 120}, Qt::LeftButton, Qt::NoButton);
+    QVERIFY(viewport.SelectedCoordinate()); QCOMPARE(viewport.SelectedCoordinate()->tileX, 1u);
+    auto changed = std::make_shared<Render::TerrainGroundMesh>(*ground);
+    changed->vertices[0].z += 1;
+    QVERIFY(!viewport.SetGroundMesh(changed)); QCOMPARE(state.terrainSubmits, 1);
+    changed = std::make_shared<Render::TerrainGroundMesh>(*ground);
+    std::copy_n(changed->indices.begin(), 6, changed->indices.begin() + 6);
+    QVERIFY(!viewport.SetGroundMesh(changed)); QCOMPARE(state.terrainSubmits, 1);
+    state.rejectTerrain = true;
+    QVERIFY(!viewport.SetGroundMesh(ground)); QVERIFY(viewport.HasGroundMesh());
+    state.rejectTerrain = false;
+    QVERIFY(BindTerrain(viewport, terrain, 15)); QVERIFY(!viewport.HasGroundMesh());
+    const auto count = state.terrainSubmits;
+    WorldViewport legacy(nullptr, &legacyBackend);
+    QVERIFY(BindTerrain(legacy, terrain)); QVERIFY(!legacy.SetGroundMesh(ground));
+    QCOMPARE(state.terrainSubmits, count);
+}
+
+void WorldModuleTests::SelectionLayerWaitsForRosterTerminal() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const auto bytes = [](std::string_view text) { return std::vector<std::byte>(reinterpret_cast<const std::byte*>(text.data()),
+        reinterpret_cast<const std::byte*>(text.data() + text.size())); };
+    Image::DecodedImage image{2, 2, std::vector<std::byte>(16, std::byte{255})};
+    const auto texture = Image::EncodeBlpPaletted(image); QVERIFY(texture.Succeeded());
+    const auto path = std::filesystem::path(directory.filePath(QStringLiteral("circles.w3x")).toStdWString());
+    const std::vector<MapArchiveMember> members{
+        {"UI/MiscData.txt", bytes("[SelectionCircle]\nNumSizes=1\nScaleFactor=72\nTexture00=Original/Circle\nColorFriend=255,0,255,0\n")},
+        {"Units/MiscData.txt", bytes("[Misc]\nSelectionCircleBaseZ=16\n")}, {"Original/Circle.blp", *texture.value}};
+    QVERIFY(WriteVerifiedArchive(path, members).Succeeded());
+    const auto sha = Sha256File(path); QVERIFY(sha.Succeeded());
+    WorldTerrainSources sources; sources.archivePath = path; sources.archiveSha = *sha.value;
+    for (const auto& member : members) sources.entries.push_back({member.name, member.name, {}});
+    BackendState state; activeBackend = &state;
+    WorldViewport viewport(nullptr, &layerBackend); state.viewport = &viewport;
+    viewport.resize(320, 240); viewport.show(); QTRY_VERIFY(viewport.RendererReady());
+    WorldSelectionPresenter presenter(viewport);
+    Render::ModelInstanceRequest selected; selected.position = {10, 20, 25};
+    selected.selection = Render::ModelSelectionDescription{1, 0, true};
+    const std::vector<MapData::PlacementId> ids{{MapData::PlacementFile::Units, 0, "hfoo", 1}};
+    presenter.SetSource(sources, {1, 7, "selection-wait-fixture"}, [] { return true; });
+    QVERIFY(presenter.Preparing()); // 真实MPQ素材读取已经启动，尚未投递finished。
+    presenter.Show({selected}, nullptr, {}, ids);
+    presenter.SetSubmissionDeferred(true);
+    QTRY_VERIFY(!presenter.Preparing()); // 素材worker实际finished，不能在此改layersRevision。
+    QCOMPARE(state.layerSubmits + state.layerUpdates + state.layerRemoves, 0);
+    presenter.SetSubmissionDeferred(false);
+    QTRY_COMPARE(state.layerSubmits, 1); QCOMPARE(state.layerX, 10.0f);
+    const auto frozenLayers = state.layersRevision;
+    selected.position[0] = 30;
+    presenter.Show({selected}, nullptr, {}, ids); QVERIFY(presenter.Preparing());
+    presenter.SetSubmissionDeferred(true);
+    QTRY_VERIFY(!presenter.Preparing());
+    QCOMPARE(state.layersRevision, frozenLayers);
+    presenter.SetSubmissionDeferred(false);
+    QTRY_COMPARE(state.layerUpdates, 1); QCOMPARE(state.layerX, 30.0f); QCOMPARE(state.layerSubmits, 1);
+    const auto unchangedParentLayers = state.layersRevision;
+    presenter.SetSubmissionDeferred(true);
+    presenter.Hide(); selected.position[0] = 50; presenter.Show({selected}, nullptr, {}, ids);
+    QCOMPARE(state.layersRevision, unchangedParentLayers); // 取消/改选均延期，旧完成层仍驻留。
+    presenter.SetSubmissionDeferred(false); // 拒绝终态：在原parent处理延期删除和最新选择。
+    QTRY_COMPARE(state.layerSubmits, 2); QCOMPARE(state.layerRemoves, 1); QCOMPARE(state.layerX, 50.0f);
+    const auto oldParent = state.layerParent;
+    presenter.SetSubmissionDeferred(true); selected.position[0] = 70; presenter.Show({selected}, nullptr, {}, ids);
+    // 成功roster已在同一完成帧清掉旧parent的层；宿主此时才RebindParent。
+    ++state.layerParent; state.layerId = state.layerRevision = 0; ++state.layersRevision;
+    const auto completedLayers = state.layersRevision;
+    presenter.RebindParent(); QCOMPARE(state.layersRevision, completedLayers);
+    presenter.SetSubmissionDeferred(false);
+    QTRY_COMPARE(state.layerSubmits, 3); QCOMPARE(state.layerParent, oldParent + 1);
+    QCOMPARE(state.layerRemoves, 1); QCOMPARE(state.layerX, 70.0f);
+}
+
+void WorldModuleTests::TerrainResourceOverlayAndSourceIdentity() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const auto bytes = [](std::string_view text) { return std::vector<std::byte>(reinterpret_cast<const std::byte*>(text.data()),
+        reinterpret_cast<const std::byte*>(text.data() + text.size())); };
+    const auto path = std::filesystem::path(directory.filePath(QStringLiteral("source.w3x")).toStdWString());
+    Image::DecodedImage image{16, 16, std::vector<std::byte>(16 * 16 * 4)};
+    for (std::size_t i = 0; i < image.rgba.size(); i += 4) { image.rgba[i] = std::byte{255}; image.rgba[i + 3] = std::byte{255}; }
+    const auto red = Image::EncodeBlpPaletted(image); QVERIFY(red.Succeeded());
+    const std::vector<MapArchiveMember> members{{"TerrainArt/Terrain.slk", bytes("broken-original")},
+        {"TerrainArt/CliffTypes.slk", bytes("ID;PWXL;N;E\nC;X1;Y1;K\"cliffID\"\nE\n")},
+        {"TerrainArt/Water.slk", bytes("ID;PWXL;N;E\nC;X1;Y1;K\"waterID\"\nE\n")},
+        {"Terrain/Test/stone.blp", *red.value}};
+    const auto written = WriteVerifiedArchive(path, members); QVERIFY(written.Succeeded());
+    auto opened = MapArchiveSession::Open(path); QVERIFY(opened.Succeeded());
+    QtProject::EditorProject project;
+    project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*opened.value));
+    project.war3GameRoot_ = directory.filePath(QStringLiteral("nonexistent-game-root")).toStdWString();
+    const auto pending = directory.filePath(QStringLiteral("pending.slk"));
+    QVERIFY(Write(pending, "ID;PWXL;N;E\nC;X1;Y1;K\"tileID\"\nC;X2;Y1;K\"dir\"\nC;X3;Y1;K\"file\"\nC;X1;Y2;K\"Ldrt\"\nC;X2;Y2;K\"Terrain/Test\"\nC;X3;Y2;K\"stone\"\nE\n"));
+    for (std::size_t i = 0; i < image.rgba.size(); i += 4) { image.rgba[i] = std::byte{0}; image.rgba[i + 2] = std::byte{255}; }
+    const auto blue = Image::EncodeBlpPaletted(image); QVERIFY(blue.Succeeded());
+    const auto pendingTexture = directory.filePath(QStringLiteral("pending.blp"));
+    QVERIFY(Write(pendingTexture, QByteArray(reinterpret_cast<const char*>(blue.value->data()), static_cast<qsizetype>(blue.value->size()))));
+    const auto worldEditData = directory.filePath(QStringLiteral("WorldEditData.txt"));
+    QVERIFY(Write(worldEditData, "[TileSets]\nA=Name,TerrainArt/Blight/Ashen_Blight\n"));
+    Image::DecodedImage blightImage{32, 16, std::vector<std::byte>(32 * 16 * 4, std::byte{0})};
+    for (std::size_t pixel = 0; pixel < 32 * 16; ++pixel) blightImage.rgba[pixel * 4 + 3] = std::byte{255};
+    const auto opaqueBlight = Image::EncodeBlpPaletted(blightImage); QVERIFY(opaqueBlight.Succeeded());
+    const auto opaquePath = directory.filePath(QStringLiteral("opaque-blight.blp"));
+    QVERIFY(Write(opaquePath, QByteArray(reinterpret_cast<const char*>(opaqueBlight.value->data()),
+        static_cast<qsizetype>(opaqueBlight.value->size()))));
+    for (std::uint32_t y = 0; y < 16; ++y) for (std::uint32_t x = 0; x < 16; ++x) {
+        const auto mask = (y / 4) * 4 + x / 4;
+        if (mask > 0 && mask < 15 && x % 4 < 2)
+            blightImage.rgba[(static_cast<std::size_t>(y) * 32 + x) * 4 + 3] = std::byte{0};
+    }
+    const auto maskedBlight = Image::EncodeBlpPaletted(blightImage); QVERIFY(maskedBlight.Succeeded());
+    const auto maskedPath = directory.filePath(QStringLiteral("masked-blight.blp"));
+    QVERIFY(Write(maskedPath, QByteArray(reinterpret_cast<const char*>(maskedBlight.value->data()),
+        static_cast<qsizetype>(maskedBlight.value->size()))));
+    project.pendingImports_ = {{QStringLiteral("terrainart/terrain.slk"), pending, QFileInfo(pending).size()},
+        {QStringLiteral("terrain/test/stone.blp"), pendingTexture, QFileInfo(pendingTexture).size()},
+        {QStringLiteral("ui/worldeditdata.txt"), worldEditData, QFileInfo(worldEditData).size()},
+        {QStringLiteral("terrainart/blight/ashen_blight.blp"), opaquePath, QFileInfo(opaquePath).size()}};
+    const auto captured = CaptureWorldTerrainSources(project); QVERIFY(captured.Succeeded());
+    auto sources = *captured.value;
+    const auto terrain = TestTerrain(); QVERIFY(terrain);
+    const auto pendingResult = LoadWorldTerrainAtlases(sources, terrain->header);
+    QVERIFY2(pendingResult.Succeeded(), pendingResult.diagnostics.empty() ? "no result" : pendingResult.diagnostics.front().message.c_str());
+    QCOMPARE(pendingResult.value->size(), std::size_t{1});
+    QCOMPARE(pendingResult.value->front()->image.rgba, image.rgba);
+    const auto blueSha = Sha256(*blue.value); QVERIFY(blueSha.Succeeded());
+    QCOMPARE(pendingResult.value->front()->sourceSha256, *blueSha.value);
+    std::shared_ptr<const Render::TerrainAtlasSnapshot> blightAtlas;
+    const auto opaqueResult = LoadWorldTerrainAtlases(sources, terrain->header, nullptr, &blightAtlas);
+    QVERIFY(opaqueResult.Succeeded()); QVERIFY(!blightAtlas);
+    QVERIFY(std::any_of(opaqueResult.diagnostics.begin(), opaqueResult.diagnostics.end(), [](const auto& note) {
+        return note.code == "WORLD_BLIGHT_MASK_ALPHA";
+    }));
+    const auto blightEntry = std::find_if(sources.entries.begin(), sources.entries.end(), [](const auto& entry) {
+        return entry.path == "terrainart/blight/ashen_blight.blp";
+    });
+    QVERIFY(blightEntry != sources.entries.end());
+    blightEntry->diskPath = maskedPath.toStdWString();
+    const auto maskedResult = LoadWorldTerrainAtlases(sources, terrain->header, nullptr, &blightAtlas);
+    QVERIFY(maskedResult.Succeeded()); QVERIFY(blightAtlas);
+    QCOMPARE(blightAtlas->columns, 8u);
+    const auto maskedSha = Sha256(*maskedBlight.value); QVERIFY(maskedSha.Succeeded());
+    QCOMPARE(blightAtlas->sourceSha256, *maskedSha.value);
+    std::erase_if(sources.entries, [](const auto& entry) { return entry.path == "Terrain/Test/stone.blp"; });
+    const auto reimported = LoadWorldTerrainAtlases(sources, terrain->header);
+    QVERIFY(reimported.Succeeded());
+    QCOMPARE(reimported.value->front()->sourceSha256, *blueSha.value);
+    const auto pendingEntry = std::find_if(sources.entries.begin(), sources.entries.end(), [](const auto& entry) { return !entry.diskPath.empty(); });
+    QVERIFY(pendingEntry != sources.entries.end());
+    sources.entries.push_back(*pendingEntry);
+    const auto conflict = LoadWorldTerrainAtlases(sources, terrain->header);
+    QVERIFY(!conflict.Succeeded()); QCOMPARE(conflict.diagnostics.front().code, std::string("WORLD_ASSET_CONFLICT"));
+    sources.entries.pop_back();
+    // 部分材质损坏不能隐藏已成功的材质，也不能改用原归档的低优先级材质。
+    const auto brokenTexture = directory.filePath(QStringLiteral("broken.blp"));
+    QVERIFY(Write(brokenTexture, "not-a-blp"));
+    const auto stone = std::find_if(sources.entries.begin(), sources.entries.end(), [](const auto& e) {
+        return e.path == "terrain/test/stone.blp";
+    });
+    QVERIFY(stone != sources.entries.end());
+    const auto savedPending = stone->diskPath;
+    stone->diskPath = brokenTexture.toStdWString();
+    const auto broken = LoadWorldTerrainAtlases(sources, terrain->header);
+    QVERIFY(broken.Succeeded()); QVERIFY(!broken.value->front()); QVERIFY(!broken.diagnostics.empty());
+    stone->diskPath = savedPending;
+    auto partialGrid = FlatGrid(4, 2);
+    partialGrid->header.groundTilesets = {"Ldrt", "Lrok"};
+    for (std::uint32_t y = 0; y < 2; ++y) for (std::uint32_t x = 2; x < 4; ++x)
+        partialGrid->vertices[y * 4 + x].textureAndFlagsRaw = 1;
+    const auto partial = LoadWorldTerrainAtlases(sources, partialGrid->header);
+    QVERIFY(partial.Succeeded()); QCOMPARE(partial.value->size(), std::size_t{2});
+    QVERIFY(partial.value->front()); QVERIFY(!partial.value->back()); QVERIFY(!partial.diagnostics.empty());
+    const auto ground = Render::BuildTerrainGroundMesh(*partialGrid, *partial.value);
+    // 中间格一角用到缺失材质：其过渡层画不出，整格回退高度色，不只画基础层冒充完整。
+    QVERIFY(ground.Succeeded()); QCOMPARE(ground.value->texturedTiles, std::size_t{1});
+    QCOMPARE(ground.value->fallback.missingAtlasTiles, std::size_t{2});
+    sources.archiveSha.assign(64, '0');
+    const auto changed = LoadWorldTerrainAtlases(sources, terrain->header);
+    QVERIFY(!changed.Succeeded()); QCOMPARE(changed.diagnostics.front().code, std::string("WORLD_ASSET_SOURCE_CHANGED"));
+    const auto after = Sha256File(path); QVERIFY(after.Succeeded()); QCOMPARE(*after.value, written.value->sha256);
+}
+
+void WorldModuleTests::MipSceneUsesOriginalChainAndClampsAtlas() {
+    Image::DecodedImage image{16, 16, std::vector<std::byte>(16 * 16 * 4, std::byte{127})};
+    const auto encoded = Image::EncodeBlpPaletted(image); QVERIFY(encoded.Succeeded());
+    Resources::ResolvedResource resource; resource.bytes = *encoded.value;
+    const auto decoded = Render::DecodeTerrainTextureAtlas(resource); QVERIFY(decoded.Succeeded());
+    const auto terrain = TestTerrain(); QVERIFY(terrain);
+    const std::vector<std::shared_ptr<const Render::TerrainAtlasSnapshot>> atlases{*decoded.value};
+    const auto built = Render::BuildTerrainGroundMesh(*terrain, atlases); QVERIFY(built.Succeeded());
+    auto ground = std::make_shared<const Render::TerrainGroundMesh>(*built.value);
+    BackendState state; activeBackend = &state;
+    WorldViewport viewport(nullptr, &mipBackend); state.viewport = &viewport;
+    viewport.resize(320, 240); QVERIFY(BindTerrain(viewport, terrain)); viewport.show();
+    QTRY_VERIFY(state.frames > 0);
+    QVERIFY(viewport.HasTerrainMips()); QVERIFY(viewport.SetGroundMesh(ground));
+    QCOMPARE(state.mipSubmits, 1); QCOMPARE(state.terrainSubmits, 0);
+    QCOMPARE(state.mipCount, 5u); QCOMPARE(state.maxSampleMip, 2u);
+    QCOMPARE(state.atlasColumns, 4u); QCOMPARE(state.atlasRows, 4u);
+    QCOMPARE(state.mipOneBytes, (*decoded.value)->additionalMips[0].rgba);
+    state.rejectTerrain = true; QVERIFY(!viewport.SetGroundMesh(ground));
+    QVERIFY(viewport.HasGroundMesh()); QCOMPARE(state.terrainSubmits, 0);
+    // 可选尾入口不存在时继续使用旧 mip0，绝不读取 size 之外的函数指针。
+    state.rejectTerrain = false;
+    auto old = mipBackend;
+    old.structSize = static_cast<std::uint32_t>(offsetof(War3RenderPluginApiV2, submitTerrainMipScene));
+    {
+        struct RestoreViewport {
+            BackendState& state;
+            WorldViewport* previous;
+            ~RestoreViewport() { state.viewport = previous; }
+        } restore{state, &viewport};
+        WorldViewport legacy(nullptr, &old); state.viewport = &legacy;
+        legacy.resize(320, 240); QVERIFY(BindTerrain(legacy, terrain)); legacy.show();
+        QTRY_VERIFY(state.creates == 2);
+        QVERIFY(!legacy.HasTerrainMips()); QVERIFY(legacy.SetGroundMesh(ground)); QCOMPARE(state.terrainSubmits, 1);
+    }
+}
+
+// 摆放点选与拖动：单击命中实例、按在选中实例上拖动发出目标 XY 且不转镜头、Esc 取消、Delete 请求删除。
+void WorldModuleTests::PlacementClickDragAndKeys() {
+    using namespace Render;
+    BackendState state; activeBackend = &state;
+    auto api = modelBackend;
+    api.submitSkinnedModelScene = SkinScene; api.updateSkinMatrices = SkinUpdate;
+    api.getSkinStatus = SkinStatus; api.captureSkinnedFrameRgba = SkinCapture;
+    EditorPresentationFixture<BackendState>::Enable(api, state.editor);
+    WorldViewport viewport(nullptr, &api); state.viewport = &viewport;
+    viewport.resize(320, 240);
+    QVERIFY(BindTerrain(viewport, TestTerrain()));
+    std::vector<AnimationInstanceSpec> specs(38);
+    for (std::size_t i = 0; i < specs.size(); ++i) {
+        specs[i].identity = {i + 1, 8}; specs[i].hostKey = std::to_string(i);
+        specs[i].model.modelPath = i == 37 ? "synthetic.mdx" : "missing.mdx";
+    }
+    specs[37].model.scale = {3.2f, 3.2f, 3.2f}; specs[37].model.position = {-16, -16, 0};
+    AnimationLimits limits; limits.retainUnsupportedStatic = true;
+    const auto service = ModelAnimationService::Create({8, 12, "Qt-placement-synthetic"}, specs,
+        [](auto path, auto) -> Result<AnimationResource> {
+            if (path != "synthetic.mdx") return Result<AnimationResource>::Failure("Test", "RESOURCE_NOT_FOUND", "原创夹具无此资源。");
+            return Result<AnimationResource>::Success({
+                AnimationTest::WithoutSyntheticConstantKmtf(MdxTest::BuildTestMdx()), "synthetic", std::string(64, 'a')});
+        }, limits);
+    QVERIFY(service.Succeeded());
+    auto prepared = (*service.value)->Prepare(nullptr); QVERIFY(prepared.Succeeded());
+    auto current = *prepared.value;
+    auto scene = AnimationPickingScene(*(*service.value)->Scene(), *current);
+    QVERIFY(viewport.SetAnimationScene((*service.value)->Scene(), current, scene));
+    const auto transform = [&](std::array<float, 12> value) {
+        AnimationAdvance advance; AnimationEdit edit; edit.identity = specs[37].identity; edit.transform = value;
+        advance.edits.push_back(edit); const auto next = (*service.value)->Prepare(current.get(), advance);
+        if (!next.Succeeded() || !viewport.UpdateAnimationFrame(*next.value, scene)) return false;
+        current = *next.value; Frame(&state); return true;
+    };
+    viewport.show(); QTRY_VERIFY(state.frames > 0);
+    QSignalSpy clicked(&viewport, &WorldViewport::InstanceClicked);
+    QSignalSpy started(&viewport, &WorldViewport::MoveStarted);
+    QSignalSpy dragged(&viewport, &WorldViewport::MoveDragged);
+    QSignalSpy finished(&viewport, &WorldViewport::MoveFinished);
+    QSignalSpy cancelled(&viewport, &WorldViewport::MoveCancelled);
+    QSignalSpy deleted(&viewport, &WorldViewport::DeleteRequested);
+    QSignalSpy copy(&viewport, &WorldViewport::CopyRequested);
+    QSignalSpy paste(&viewport, &WorldViewport::PasteRequested);
+    const QPointF center(160, 120), right(240, 120), empty(20, 120);
+    Mouse(viewport, QEvent::MouseMove, center, Qt::NoButton, Qt::NoButton);
+    QTRY_VERIFY(viewport.HoverCoordinate().has_value()); // 等到当前视图的完成帧
+    Mouse(viewport, QEvent::MouseButtonPress, center, Qt::LeftButton, Qt::LeftButton);
+    Mouse(viewport, QEvent::MouseButtonRelease, center, Qt::LeftButton, Qt::NoButton);
+    QCOMPARE(clicked.count(), 1); QCOMPARE(clicked.takeFirst().at(0).toInt(), 0);
+    viewport.SetSelectedInstance(0u);
+    const auto camera = viewport.SaveCamera();
+    Mouse(viewport, QEvent::MouseButtonPress, center, Qt::LeftButton, Qt::LeftButton);
+    Mouse(viewport, QEvent::MouseMove, right, Qt::NoButton, Qt::LeftButton);
+    QVERIFY(viewport.Moving());
+    Mouse(viewport, QEvent::MouseButtonRelease, right, Qt::LeftButton, Qt::NoButton);
+    QVERIFY(started.count() == 1 && dragged.count() >= 1 && finished.count() == 1 && cancelled.isEmpty());
+    QVERIFY(std::abs(started.first().at(0).toDouble()) < 1e-3 && std::abs(started.first().at(1).toDouble()) < 1e-3);
+    QVERIFY(std::abs(dragged.last().at(0).toDouble() - 64) < 1e-3 && std::abs(dragged.last().at(1).toDouble()) < 1e-3);
+    QCOMPARE(viewport.SaveCamera(), camera); // 拖动物体不旋转镜头
+    Mouse(viewport, QEvent::MouseButtonPress, center, Qt::LeftButton, Qt::LeftButton);
+    Mouse(viewport, QEvent::MouseMove, right, Qt::NoButton, Qt::LeftButton);
+    QTest::keyClick(&viewport, Qt::Key_Escape);
+    QCOMPARE(cancelled.count(), 1); QVERIFY(!viewport.Moving());
+    Mouse(viewport, QEvent::MouseButtonRelease, right, Qt::LeftButton, Qt::NoButton);
+    QCOMPARE(finished.count(), 1);
+    QSignalSpy rotateStart(&viewport, &WorldViewport::RotateStarted);
+    QSignalSpy rotateDrag(&viewport, &WorldViewport::RotateDragged);
+    QSignalSpy rotateFinish(&viewport, &WorldViewport::RotateFinished);
+    QSignalSpy rotateCancel(&viewport, &WorldViewport::RotateCancelled);
+    Mouse(viewport, QEvent::MouseButtonPress, center, Qt::LeftButton, Qt::LeftButton, Qt::AltModifier);
+    Mouse(viewport, QEvent::MouseMove, right, Qt::NoButton, Qt::LeftButton, Qt::AltModifier);
+    Mouse(viewport, QEvent::MouseButtonRelease, right, Qt::LeftButton, Qt::NoButton, Qt::AltModifier);
+    QCOMPARE(rotateStart.count(), 1); QVERIFY(rotateDrag.count() >= 1); QCOMPARE(rotateFinish.count(), 1);
+    QCOMPARE(started.count(), 2); QCOMPARE(finished.count(), 1); // Alt 手势绝不走平移信号。
+    QCOMPARE(viewport.SaveCamera(), camera);
+    Mouse(viewport, QEvent::MouseButtonPress, center, Qt::LeftButton, Qt::LeftButton, Qt::AltModifier);
+    Mouse(viewport, QEvent::MouseMove, right, Qt::NoButton, Qt::LeftButton, Qt::AltModifier);
+    QTest::keyClick(&viewport, Qt::Key_Escape);
+    QCOMPARE(rotateCancel.count(), 1);
+    Mouse(viewport, QEvent::MouseButtonRelease, right, Qt::LeftButton, Qt::NoButton, Qt::AltModifier);
+    QCOMPARE(rotateFinish.count(), 1);
+    QTest::keyClick(&viewport, Qt::Key_Delete);
+    QCOMPARE(deleted.count(), 1);
+    QTest::keyClick(&viewport, Qt::Key_C, Qt::ControlModifier);
+    QTest::keyClick(&viewport, Qt::Key_V, Qt::ControlModifier);
+    QCOMPARE(copy.count(), 1); QCOMPARE(paste.count(), 1);
+    QSignalSpy duplicate(&viewport, &WorldViewport::DuplicateRequested), all(&viewport, &WorldViewport::SelectAllRequested);
+    QSignalSpy focus(&viewport, &WorldViewport::FocusSelectionRequested), nudge(&viewport, &WorldViewport::NudgeRequested);
+    QTest::keyClick(&viewport, Qt::Key_D, Qt::ControlModifier); QTest::keyClick(&viewport, Qt::Key_A, Qt::ControlModifier);
+    QTest::keyClick(&viewport, Qt::Key_F); QTest::keyClick(&viewport, Qt::Key_Right); QTest::keyClick(&viewport, Qt::Key_Up, Qt::ShiftModifier);
+    QCOMPARE(duplicate.count(), 1); QCOMPARE(all.count(), 1); QCOMPARE(focus.count(), 1); QCOMPARE(nudge.count(), 2);
+    QCOMPARE(nudge[0][0].toDouble(), 16.0); QCOMPARE(nudge[1][1].toDouble(), 64.0);
+    // Alt + 空处拖动旋转镜头；普通空处单击清除选择。
+    Mouse(viewport, QEvent::MouseButtonPress, empty, Qt::LeftButton, Qt::LeftButton, Qt::AltModifier);
+    Mouse(viewport, QEvent::MouseMove, empty + QPointF(40, 20), Qt::NoButton, Qt::LeftButton, Qt::AltModifier);
+    Mouse(viewport, QEvent::MouseButtonRelease, empty + QPointF(40, 20), Qt::LeftButton, Qt::NoButton, Qt::AltModifier);
+    QVERIFY(viewport.SaveCamera()["yaw"] != camera["yaw"]);
+    viewport.ResetCamera();
+    Mouse(viewport, QEvent::MouseMove, empty, Qt::NoButton, Qt::NoButton);
+    QTRY_VERIFY(viewport.HoverCoordinate().has_value());
+    clicked.clear();
+    QSignalSpy groundClicked(&viewport, &WorldViewport::GroundClicked);
+    Mouse(viewport, QEvent::MouseButtonPress, empty, Qt::LeftButton, Qt::LeftButton);
+    Mouse(viewport, QEvent::MouseButtonRelease, empty, Qt::LeftButton, Qt::NoButton);
+    QVERIFY(clicked.isEmpty()); QCOMPARE(groundClicked.count(), 1); QCOMPARE(groundClicked[0][2].toInt(), 0);
+    // 地面手柄：判断通过时空处拖动也改为移动。
+    viewport.SetSelectedInstance(std::nullopt);
+    viewport.SetHandleTest([](double x, double) { return x < -80; });
+    started.clear(); finished.clear();
+    Mouse(viewport, QEvent::MouseButtonPress, empty, Qt::LeftButton, Qt::LeftButton);
+    Mouse(viewport, QEvent::MouseMove, empty + QPointF(40, 0), Qt::NoButton, Qt::LeftButton);
+    Mouse(viewport, QEvent::MouseButtonRelease, empty + QPointF(40, 0), Qt::LeftButton, Qt::NoButton);
+    QVERIFY(started.count() == 1 && finished.count() == 1);
+    // 摆放模式：单击地面发出摆放请求，不做实例点选；Esc 退出。
+    QSignalSpy place(&viewport, &WorldViewport::PlaceRequested);
+    QSignalSpy placingCancelled(&viewport, &WorldViewport::PlacingCancelled);
+    viewport.SetPlacing(true); clicked.clear();
+    Mouse(viewport, QEvent::MouseMove, center, Qt::NoButton, Qt::NoButton);
+    QTRY_VERIFY(viewport.HoverCoordinate().has_value());
+    Mouse(viewport, QEvent::MouseButtonPress, center, Qt::LeftButton, Qt::LeftButton);
+    Mouse(viewport, QEvent::MouseButtonRelease, center, Qt::LeftButton, Qt::NoButton);
+    QVERIFY(place.count() == 1 && clicked.isEmpty());
+    QTest::keyClick(&viewport, Qt::Key_Escape);
+    QVERIFY(placingCancelled.count() == 1 && !viewport.Placing());
+    viewport.SetPlacing(true);
+    Mouse(viewport, QEvent::MouseButtonPress, center, Qt::RightButton, Qt::RightButton);
+    QCOMPARE(placingCancelled.count(), 2); QVERIFY(!viewport.Placing());
+    QSignalSpy box(&viewport, &WorldViewport::InstancesBoxSelected);
+    Mouse(viewport, QEvent::MouseButtonPress, {100, 70}, Qt::LeftButton, Qt::LeftButton, Qt::ShiftModifier);
+    Mouse(viewport, QEvent::MouseMove, {210, 170}, Qt::NoButton, Qt::LeftButton, Qt::ShiftModifier);
+    Mouse(viewport, QEvent::MouseButtonRelease, {210, 170}, Qt::LeftButton, Qt::NoButton, Qt::ShiftModifier);
+    QCOMPARE(box.count(), 1);
+    QCOMPARE(box.first().at(0).value<QVector<int>>(), QVector<int>{0});
+    QCOMPARE(box.first().at(1).toInt(), static_cast<int>(Qt::ShiftModifier));
+    // 巨大模型盒只擦到矩形边不算框选；摆放中心在矩形外。
+    scene->modelBounds[0] = {-128, -64, 0, 128, 64, 32};
+    auto moved = current->states[37].transform; moved[3] = 80; QVERIFY(transform(moved)); box.clear();
+    Mouse(viewport, QEvent::MouseButtonPress, {100, 70}, Qt::LeftButton, Qt::LeftButton, Qt::ShiftModifier);
+    Mouse(viewport, QEvent::MouseMove, {210, 170}, Qt::NoButton, Qt::LeftButton, Qt::ShiftModifier);
+    Mouse(viewport, QEvent::MouseButtonRelease, {210, 170}, Qt::LeftButton, Qt::NoButton, Qt::ShiftModifier);
+    QCOMPARE(box.count(), 1); QVERIFY(box[0][0].value<QVector<int>>().isEmpty());
+    // 小模型只按真实三角点选；predicate 收到来源编号37，不以 6px 扩大盒制造命中。
+    QVERIFY(transform({0.02f, 0, 0, -0.1f, 0, 0.02f, 0, -0.1f, 0, 0, 0.02f, 0}));
+    const auto contentBeforePolicy = viewport.AnimationTarget()->contentVersion;
+    const auto uploadsBeforePolicy = state.matrixUploads;
+    const auto framesBeforePolicy = state.frames;
+    std::uint32_t request = 0; viewport.SetInstanceSelectable([&](std::uint32_t value) { request = value; return value == 37; });
+    clicked.clear(); groundClicked.clear();
+    Mouse(viewport, QEvent::MouseButtonPress, center, Qt::LeftButton, Qt::LeftButton);
+    Mouse(viewport, QEvent::MouseButtonRelease, center, Qt::LeftButton, Qt::NoButton);
+    QCOMPARE(request, std::uint32_t{37}); QCOMPARE(clicked.count(), 1); QCOMPARE(clicked[0][0].toInt(), 0);
+    // 锁定/选择规则改变后仍能取同一完成姿势，不靠新pose上传或伪造Draw恢复点选。
+    QCOMPARE(viewport.AnimationTarget()->contentVersion, contentBeforePolicy);
+    QCOMPARE(state.matrixUploads, uploadsBeforePolicy); QCOMPARE(state.frames, framesBeforePolicy);
+    Mouse(viewport, QEvent::MouseButtonPress, center + QPointF(5, 0), Qt::LeftButton, Qt::LeftButton, Qt::ShiftModifier);
+    Mouse(viewport, QEvent::MouseButtonRelease, center + QPointF(5, 0), Qt::LeftButton, Qt::NoButton, Qt::ShiftModifier);
+    QCOMPARE(clicked.count(), 1); QCOMPARE(groundClicked.count(), 1); QCOMPARE(groundClicked[0][2].toInt(), int(Qt::ShiftModifier));
+    viewport.SetInstanceSelectable([](std::uint32_t) { return false; }); clicked.clear(); groundClicked.clear();
+    Mouse(viewport, QEvent::MouseButtonPress, center, Qt::LeftButton, Qt::LeftButton);
+    Mouse(viewport, QEvent::MouseButtonRelease, center, Qt::LeftButton, Qt::NoButton);
+    QVERIFY(clicked.isEmpty()); QCOMPARE(groundClicked.count(), 1);
+}
+
+void WorldModuleTests::TerrainBrushPreservesCameraAndModels() {
+    BackendState state; activeBackend = &state;
+    WorldViewport viewport(nullptr, &modelBackend); state.viewport = &viewport;
+    viewport.resize(320, 240);
+    auto terrain = TestTerrain(); QVERIFY(BindTerrain(viewport, terrain));
+    auto scene = std::make_shared<Render::WorldModelScene>();
+    QVERIFY(viewport.SetModelScene(scene));
+    auto camera = viewport.SaveCamera(); camera["distance"] = 1024;
+    QVERIFY(viewport.RestoreCamera(camera));
+    viewport.show(); QTRY_VERIFY(state.frames > 0);
+    QSignalSpy started(&viewport, &WorldViewport::TerrainStrokeStarted);
+    QSignalSpy moved(&viewport, &WorldViewport::TerrainStrokeMoved);
+    QSignalSpy finished(&viewport, &WorldViewport::TerrainStrokeFinished);
+    QSignalSpy cancelled(&viewport, &WorldViewport::TerrainStrokeCancelled);
+    viewport.SetBrushMode(true);
+    const QPointF center(160, 120), right(170, 120);
+    Mouse(viewport, QEvent::MouseMove, center, Qt::NoButton, Qt::NoButton);
+    QTRY_VERIFY(viewport.HoverCoordinate().has_value());
+    Mouse(viewport, QEvent::MouseButtonPress, center, Qt::LeftButton, Qt::LeftButton);
+    QCOMPARE(started.count(), 1); QVERIFY(viewport.StrokeActive());
+    auto edited = std::make_shared<MapData::TerrainGridSnapshot>(*terrain);
+    edited->vertices[1].groundHeightRaw += 16;
+    MapData::RefreshTerrainDerived(*edited, 0, 0, edited->header.width, edited->header.height);
+    auto mesh = BuildWorldTerrainMesh(*edited); QVERIFY(mesh.Succeeded());
+    QVERIFY(viewport.ReplaceTerrainPresentation(std::move(mesh.value->vertices), std::move(mesh.value->indices),
+        edited, mesh.value->stride, nullptr, 13));
+    QCOMPARE(viewport.SaveCamera(), camera);
+    QVERIFY(viewport.HasModelScene());
+    QCOMPARE(viewport.DocumentRevision(), std::uint64_t{13});
+    QTRY_VERIFY(state.frames > 1);
+    Mouse(viewport, QEvent::MouseButtonRelease, center, Qt::LeftButton, Qt::NoButton);
+    QCOMPARE(finished.count(), 1); QCOMPARE(cancelled.count(), 0);
+    QCOMPARE(moved.count(), 0); // 预览抬高后同一屏幕像素不能沿新表面产生额外笔刷点。
+    QVERIFY(!viewport.StrokeActive());
+    Mouse(viewport, QEvent::MouseMove, center, Qt::NoButton, Qt::NoButton);
+    QTRY_VERIFY(viewport.HoverCoordinate().has_value());
+    Mouse(viewport, QEvent::MouseButtonPress, center, Qt::LeftButton, Qt::LeftButton);
+    QTRY_VERIFY(viewport.StrokeActive());
+    Mouse(viewport, QEvent::MouseMove, right, Qt::NoButton, Qt::LeftButton);
+    QTest::keyClick(&viewport, Qt::Key_Escape);
+    QCOMPARE(cancelled.count(), 1);
+    Mouse(viewport, QEvent::MouseButtonRelease, right, Qt::LeftButton, Qt::NoButton);
+    QCOMPARE(finished.count(), 1);
+    QCOMPARE(viewport.SaveCamera(), camera);
+}
+
+void WorldModuleTests::TerrainBrushUsesSharedTransactionAndUndo() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const auto source = TerrainBytes();
+    QVERIFY(Write(directory.filePath("war3map.w3e"), source));
+    QtProject::EditorProject project;
+    project.projectRoot_ = directory.path().toStdWString();
+    auto opened = DirectoryWorkspace::Open(project.projectRoot_); QVERIFY(opened.Succeeded());
+    project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*opened.value));
+    project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(std::span<const MapArchiveMember>{}));
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+    QVERIFY(project.mapEdits_->AttachTerrain(std::span<const std::byte>(
+        reinterpret_cast<const std::byte*>(source.constData()), static_cast<std::size_t>(source.size()))).Succeeded());
+    project.ResetEditTracking();
+    BackendState state; activeBackend = &state;
+    WorldModule module(project, &backend);
+    auto* page = module.Widget(); state.viewport = module.Viewport(); page->resize(900, 600); page->show();
+    QTRY_COMPARE(module.Viewport()->VertexCount(), std::size_t{6});
+    auto* toggle = page->findChild<QPushButton*>("worldTerrainToggle"); QVERIFY(toggle && toggle->isEnabled());
+    toggle->click(); QVERIFY(module.Viewport()->BrushMode());
+    auto* raise = page->findChild<QToolButton*>("worldTerrainBrushRaise"); QVERIFY(raise);
+    raise->click(); QVERIFY(raise->isChecked());
+    auto* radius = page->findChild<QSpinBox*>("worldTerrainRadius"); QVERIFY(radius); radius->setValue(0);
+    auto* strength = page->findChild<QDoubleSpinBox*>("worldTerrainStrength"); QVERIFY(strength); strength->setValue(6.25);
+    auto original = MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()); QVERIFY(original.Succeeded());
+    const QPointF center(module.Viewport()->width() / 2.0, module.Viewport()->height() / 2.0);
+    const auto overlayBeforeHover = module.Viewport()->OverlayLineCount();
+    Mouse(*module.Viewport(), QEvent::MouseMove, center, Qt::NoButton, Qt::NoButton);
+    QTRY_VERIFY(module.Viewport()->HoverCoordinate().has_value());
+    QTRY_VERIFY(module.Viewport()->OverlayLineCount() > overlayBeforeHover); // 悬停时画出笔刷落点
+    const auto revisionBeforeStroke = module.Viewport()->DocumentRevision();
+    Mouse(*module.Viewport(), QEvent::MouseButtonPress, center, Qt::LeftButton, Qt::LeftButton);
+    Mouse(*module.Viewport(), QEvent::MouseButtonRelease, center, Qt::LeftButton, Qt::NoButton);
+    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QVERIFY(!toggle->isChecked()); // 提交后等待最终地形，不允许继续在旧视图下笔。
+    QVERIFY(!module.Viewport()->BrushMode());
+    QTRY_VERIFY(module.Viewport()->DocumentRevision() > revisionBeforeStroke);
+    QTRY_VERIFY(toggle->isChecked()); // push() 的 indexChanged 不能吞掉提交后的恢复请求。
+    QVERIFY(module.Viewport()->BrushMode());
+    QCOMPARE(radius->value(), 0);
+    QCOMPARE(strength->value(), 6.25); // 最终地形刷新不能把用户强度重置为 32。
+    QVERIFY(project.mapEdits_->IsDirty());
+    const auto changed = MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()); QVERIFY(changed.Succeeded());
+    QVERIFY(*changed.value != *original.value);
+    auto* pathingWarning = page->findChild<QLabel*>("worldTerrainPathingWarning"); QVERIFY(pathingWarning);
+    QTRY_VERIFY(pathingWarning->isVisible());
+    project.mapDataUndoStack_->undo();
+    QVERIFY(!toggle->isChecked()); // 外部 Undo 也暂停笔刷，直到回退地形展示完毕。
+    const auto restored = MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()); QVERIFY(restored.Succeeded());
+    QVERIFY(*restored.value == *original.value);
+    const auto revisionBeforeUndoRender = module.Viewport()->DocumentRevision();
+    QTRY_VERIFY(module.Viewport()->DocumentRevision() > revisionBeforeUndoRender);
+    QTRY_VERIFY(toggle->isChecked());
+    QVERIFY(module.Viewport()->BrushMode());
+    QCOMPARE(radius->value(), 0);
+    QCOMPARE(strength->value(), 6.25);
+    QTRY_VERIFY(!pathingWarning->isVisible());
+    QTRY_VERIFY(module.Viewport()->HoverCoordinate().has_value());
+    // 第二次提交尚未展示时立即从外部 Undo；已过时的提交不得随后恢复笔刷。
+    Mouse(*module.Viewport(), QEvent::MouseButtonPress, center, Qt::LeftButton, Qt::LeftButton);
+    Mouse(*module.Viewport(), QEvent::MouseButtonRelease, center, Qt::LeftButton, Qt::NoButton);
+    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QVERIFY(!toggle->isChecked());
+    project.mapDataUndoStack_->undo();
+    const auto revisionBeforeInterruptedUndo = module.Viewport()->DocumentRevision();
+    QTRY_VERIFY(module.Viewport()->DocumentRevision() > revisionBeforeInterruptedUndo);
+    QVERIFY(!toggle->isChecked());
+    QVERIFY(!module.Viewport()->BrushMode());
+    toggle->click(); QVERIFY(module.Viewport()->BrushMode());
+    Mouse(*module.Viewport(), QEvent::MouseButtonPress, center, Qt::LeftButton, Qt::LeftButton);
+    QTest::keyClick(module.Viewport(), Qt::Key_Escape);
+    Mouse(*module.Viewport(), QEvent::MouseButtonRelease, center, Qt::LeftButton, Qt::NoButton);
+    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    const auto cancelled = MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()); QVERIFY(cancelled.Succeeded());
+    QVERIFY(*cancelled.value == *original.value);
+    auto* smooth = page->findChild<QToolButton*>("worldTerrainBrushSmooth"); QVERIFY(smooth);
+    smooth->click(); QVERIFY(smooth->isChecked());
+    QCOMPARE(radius->value(), 0);
+    QCOMPARE(strength->value(), 0.5); // 切换到不同强度域时才应用平滑默认值。
+}
+
+void WorldModuleTests::InspectorEditsPreserveOtherFloatBits() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const auto terrain = TerrainBytes(); QVERIFY(Write(directory.filePath("war3map.w3e"), terrain));
+    const MapData::RegionRecord region{-64.25f, -32.125f, 32.375f, 32.875f,
+        "RegionOne", 1, {}, "", {0, 0, 0, 255}};
+    const MapData::CameraRecord camera{0.125f, 1.125f, 0, 0, 0, 1650, 0, 70, 5000, 100, "CameraOne"};
+    const auto w3r = MapData::RegionsDocument{5, {region}, {}}.Serialize();
+    const auto w3c = MapData::CamerasDocument{0, {camera}, {}}.Serialize();
+    QVERIFY(w3r.Succeeded() && w3r.value && w3c.Succeeded() && w3c.value);
+    const std::vector<MapArchiveMember> members{{"war3map.w3r", *w3r.value}, {"war3map.w3c", *w3c.value}};
+    QtProject::EditorProject project; project.projectRoot_ = directory.path().toStdWString();
+    auto opened = DirectoryWorkspace::Open(project.projectRoot_); QVERIFY(opened.Succeeded());
+    project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*opened.value));
+    project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(members));
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+    QVERIFY(project.mapEdits_->AttachTerrain(std::span<const std::byte>(
+        reinterpret_cast<const std::byte*>(terrain.constData()), static_cast<std::size_t>(terrain.size()))).Succeeded());
+    project.ResetEditTracking();
+    BackendState state; activeBackend = &state;
+    WorldModule module(project, &modelBackend);
+    auto* page = module.Widget(); state.viewport = module.Viewport(); page->resize(1000, 650); page->show();
+    auto* outliner = page->findChild<QTreeView*>("worldOutliner"); QVERIFY(outliner);
+    auto* model = dynamic_cast<WorldOutlinerModel*>(outliner->model()); QVERIFY(model);
+    const Services::WorldObjectId regionId = MapData::MakeRegionId(0, region), cameraId = MapData::MakeCameraId(0, camera);
+    QTRY_VERIFY(FindWorldObject(*model, regionId).isValid() && FindWorldObject(*model, cameraId).isValid()); outliner->expandAll();
+    QTest::mouseClick(outliner->viewport(), Qt::LeftButton, {},
+        outliner->visualRect(model->Find(regionId)).center());
+    auto* left = page->findChild<QDoubleSpinBox*>("worldRegionLeft");
+    auto* top = page->findChild<QDoubleSpinBox*>("worldRegionTop");
+    QVERIFY(left && top);
+    left->setFocus(); left->clearFocus();
+    QVERIFY(!project.mapEdits_->IsDirty());
+    top->setFocus(); top->setValue(50.0); QTest::keyClick(top, Qt::Key_Return);
+    const auto afterRegion = project.mapEdits_->Snapshot(); QVERIFY(afterRegion.Regions());
+    const auto& savedRegion = afterRegion.Regions()->entries.front();
+    QCOMPARE(savedRegion.top, 50.0f);
+    QCOMPARE(std::bit_cast<std::uint32_t>(savedRegion.left), std::bit_cast<std::uint32_t>(region.left));
+    QCOMPARE(std::bit_cast<std::uint32_t>(savedRegion.bottom), std::bit_cast<std::uint32_t>(region.bottom));
+    QCOMPARE(std::bit_cast<std::uint32_t>(savedRegion.right), std::bit_cast<std::uint32_t>(region.right));
+    const auto cameraIndex = FindWorldObject(*model, cameraId);
+    QVERIFY(cameraIndex.isValid()); outliner->expandAll(); outliner->scrollTo(cameraIndex); outliner->doItemsLayout();
+    QVERIFY(outliner->visualRect(cameraIndex).isValid());
+    QTest::mouseClick(outliner->viewport(), Qt::LeftButton, {}, outliner->visualRect(cameraIndex).center());
+    auto* x = page->findChild<QDoubleSpinBox*>("worldCameraX"); QVERIFY(x);
+    QVERIFY(x->isVisible() && x->isEnabled());
+    x->setFocus(); x->setValue(10.0); QTest::keyClick(x, Qt::Key_Return);
+    const auto afterCamera = project.mapEdits_->Snapshot(); QVERIFY(afterCamera.Cameras());
+    QCOMPARE(afterCamera.Cameras()->entries.front().targetX, 10.0f);
+    QCOMPARE(std::bit_cast<std::uint32_t>(afterCamera.Cameras()->entries.front().targetY),
+        std::bit_cast<std::uint32_t>(camera.targetY));
+    auto* duplicate = page->findChild<QPushButton*>("worldDuplicateAuxiliary"); QVERIFY(duplicate);
+    duplicate->click();
+    QTRY_VERIFY(project.mapEdits_->Snapshot().Cameras()->entries.size() == 2);
+    QCOMPARE(project.mapEdits_->Snapshot().Cameras()->entries[1].name, std::string("CameraOne_copy1"));
+    QCOMPARE(project.mapEdits_->Snapshot().Cameras()->entries[1].targetX, 10.0f);
+    project.mapDataUndoStack_->undo();
+    QCOMPARE(project.mapEdits_->Snapshot().Cameras()->entries.size(), std::size_t{1});
+    project.mapDataUndoStack_->redo();
+    QTRY_VERIFY(project.mapEdits_->Snapshot().Cameras()->entries.size() == 2);
+    const auto regionIndex = FindWorldObject(*model, regionId);
+    QVERIFY(regionIndex.isValid()); outliner->expandAll(); outliner->scrollTo(regionIndex); outliner->doItemsLayout();
+    QVERIFY(outliner->visualRect(regionIndex).isValid());
+    QTest::mouseClick(outliner->viewport(), Qt::LeftButton, {}, outliner->visualRect(regionIndex).center());
+    duplicate->click();
+    QTRY_VERIFY(project.mapEdits_->Snapshot().Regions()->entries.size() == 2);
+    QCOMPARE(project.mapEdits_->Snapshot().Regions()->entries[1].name, std::string("RegionOne_copy1"));
+    QCOMPARE(project.mapEdits_->Snapshot().Regions()->entries[1].creationNumber, 2);
+    QCOMPARE(project.mapEdits_->Snapshot().Regions()->entries[1].top, 50.0f);
+}
+
+void WorldModuleTests::RegionEdgesUseSharedTableTransaction_data() {
+    QTest::addColumn<QPointF>("start");
+    QTest::addColumn<QPointF>("end");
+    QTest::addColumn<QList<float>>("expected");
+    QTest::addColumn<float>("right");
+    QTest::addColumn<float>("span");
+    const auto row = [](const char* name, QPointF start, QPointF end, QList<float> expected, float right = 128) {
+        // 两份真实拾取矩阵的缩放比例，不把只改相机字段当成缩放回归。
+        for (const float span : {192.0f, 384.0f}) {
+            const auto label = QByteArray(name) + '-' + QByteArray::number(span);
+            QTest::newRow(label.constData()) << start << end << expected << right << span;
+        }
+    };
+    row("left", {0, 64}, {45, 77}, {32, 0, 128, 128});
+    row("near-left", {4, 64}, {49, 77}, {32, 0, 128, 128});
+    row("bottom", {64, 0}, {77, 45}, {0, 32, 128, 128});
+    row("right", {128, 64}, {83, 77}, {0, 0, 96, 128});
+    row("top", {64, 128}, {77, 83}, {0, 0, 128, 96});
+    row("left-cross", {0, 64}, {192, 77}, {96, 0, 128, 128});
+    row("bottom-cross", {64, 0}, {77, 192}, {0, 96, 128, 128});
+    row("right-cross", {128, 64}, {-32, 77}, {0, 0, 32, 128});
+    row("top-cross", {64, 128}, {77, -32}, {0, 0, 128, 32});
+    row("southwest-priority", {0, 0}, {45, 45}, {32, 32, 128, 128});
+    row("southeast-priority", {128, 0}, {83, 45}, {0, 32, 96, 128});
+    row("northeast-priority", {128, 128}, {83, 83}, {0, 0, 96, 96});
+    row("northwest-priority", {0, 128}, {45, 83}, {32, 0, 128, 96});
+    row("fractional-opposite", {0, 64}, {192, 77}, {96, 0, 129.25f, 128}, 129.25f);
+    row("parallel-noop", {0, 64}, {0, 96}, {0, 0, 128, 128});
+}
+
+void WorldModuleTests::RegionEdgesUseSharedTableTransaction() {
+    QFETCH(QPointF, start); QFETCH(QPointF, end); QFETCH(QList<float>, expected);
+    QFETCH(float, right); QFETCH(float, span);
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const MapData::RegionRecord region{0, 0, right, 128, "EdgeRegion", 17, {}, "", {10, 20, 30, 255}};
+    const MapData::CameraRecord camera{256, 256, 7, 0, 0, 1650, 0, 70, 5000, 100, "CameraOne"};
+    QtProject::EditorProject project;
+    QVERIFY(InstallAuxiliaryEditFixture(project, directory.path(), region, camera));
+    const auto original = project.mapEdits_->Snapshot().Regions()->Serialize(); QVERIFY(original.Succeeded());
+    const auto cameraOriginal = project.mapEdits_->Snapshot().Cameras()->Serialize(); QVERIFY(cameraOriginal.Succeeded());
+    BackendState state; activeBackend = &state;
+    state.viewProjection[0] = state.viewProjection[5] = 1 / span;
+    state.viewProjection[12] = state.viewProjection[13] = -64 / span;
+    WorldModule module(project, &modelBackend);
+    MapEntitiesModule tableModule(project);
+    auto* table = tableModule.Widget()->findChild<QTableWidget*>("mapEntitiesTable2"); QVERIFY(table);
+    auto* page = module.Widget(); auto* viewport = module.Viewport(); state.viewport = viewport;
+    page->resize(1200, 760); page->show();
+    auto* outliner = page->findChild<QTreeView*>("worldOutliner"); QVERIFY(outliner);
+    auto* model = dynamic_cast<WorldOutlinerModel*>(outliner->model()); QVERIFY(model);
+    const Services::WorldObjectId id = MapData::MakeRegionId(0, region);
+    QTRY_VERIFY(FindWorldObject(*model, id).isValid());
+    QVERIFY(SelectAuxiliaryRow(*page, id));
+    QTRY_VERIFY(viewport->VertexCount() > 0 && state.frames > 0);
+    const auto screen = [&](QPointF world) {
+        return AuxiliaryScreenPoint(*viewport, state, world, span);
+    };
+    Mouse(*viewport, QEvent::MouseMove, screen(start), Qt::NoButton, Qt::NoButton);
+    QTRY_VERIFY(viewport->HoverCoordinate().has_value());
+    const auto beforeCamera = viewport->SaveCamera();
+    const auto beforeRevision = project.mapEdits_->Revision();
+    QSignalSpy started(viewport, &WorldViewport::MoveStarted);
+    QSignalSpy finished(viewport, &WorldViewport::MoveFinished);
+    QSignalSpy cancelled(viewport, &WorldViewport::MoveCancelled);
+    Mouse(*viewport, QEvent::MouseButtonPress, screen(start), Qt::LeftButton, Qt::LeftButton);
+    Mouse(*viewport, QEvent::MouseMove, screen(end), Qt::NoButton, Qt::LeftButton);
+    QTest::keyClick(viewport, Qt::Key_Escape);
+    Mouse(*viewport, QEvent::MouseButtonRelease, screen(end), Qt::LeftButton, Qt::NoButton);
+    QCOMPARE(cancelled.count(), 1); QCOMPARE(finished.count(), 0);
+    QCOMPARE(project.mapEdits_->Revision(), beforeRevision); QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    started.clear();
+    Mouse(*viewport, QEvent::MouseButtonPress, screen(start), Qt::LeftButton, Qt::LeftButton);
+    Mouse(*viewport, QEvent::MouseMove, screen(end), Qt::NoButton, Qt::LeftButton);
+    QCOMPARE(started.count(), 1);
+    QCOMPARE(project.mapEdits_->Revision(), beforeRevision);
+    QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    QCOMPARE(table->item(0, 1)->text().toFloat(), region.left); // 表格仍是已提交数据
+    auto* draftLeft = page->findChild<QDoubleSpinBox*>("worldRegionLeft"); QVERIFY(draftLeft);
+    QCOMPARE(draftLeft->value(), double(expected[0]));
+    Mouse(*viewport, QEvent::MouseButtonRelease, screen(end), Qt::LeftButton, Qt::NoButton);
+    QCOMPARE(finished.count(), 1);
+    QCOMPARE(viewport->SaveCamera(), beforeCamera);
+    const auto after = project.mapEdits_->Snapshot().Regions()->Serialize(); QVERIFY(after.Succeeded());
+    const auto currentCamera = project.mapEdits_->Snapshot().Cameras()->Serialize(); QVERIFY(currentCamera.Succeeded());
+    QVERIFY(*currentCamera.value == *cameraOriginal.value);
+    const auto saved = project.mapEdits_->Snapshot().Regions()->entries.front();
+    const QList<float> actual{saved.left, saved.bottom, saved.right, saved.top};
+    QCOMPARE(actual, expected);
+    for (int i = 0; i < 4; ++i) QCOMPARE(table->item(0, i + 1)->text().toFloat(), expected[i]);
+    QVERIFY(saved.right - saved.left >= 32 && saved.top - saved.bottom >= 32);
+    const bool changed = *after.value != *original.value;
+    QCOMPARE(project.mapDataUndoStack_->count(), changed ? 1 : 0);
+    if (!changed) {
+        // 零变更释放不能残留草稿，从而阻止下一次正常属性提交。
+        draftLeft->setFocus(); draftLeft->setValue(32); QTest::keyClick(draftLeft, Qt::Key_Return);
+        QCOMPARE(project.mapDataUndoStack_->count(), 1);
+        QCOMPARE(project.mapEdits_->Snapshot().Regions()->entries.front().left, 32.0f);
+        return;
+    }
+    project.mapDataUndoStack_->undo();
+    const auto undone = project.mapEdits_->Snapshot().Regions()->Serialize(); QVERIFY(undone.Succeeded());
+    QVERIFY(*undone.value == *original.value);
+    QCOMPARE(table->item(0, 3)->text().toFloat(), right);
+    project.mapDataUndoStack_->redo();
+    const auto redone = project.mapEdits_->Snapshot().Regions()->Serialize(); QVERIFY(redone.Succeeded());
+    QVERIFY(*redone.value == *after.value);
+    project.mapDataUndoStack_->undo();
+    constexpr std::array<std::string_view, 4> fields{"left", "bottom", "right", "top"};
+    const QList<float> before{region.left, region.bottom, region.right, region.top};
+    for (int i = 0; i < 4; ++i) if (before[i] != expected[i])
+        QVERIFY(tableModule.EditCell(MapDataKind::Regions, 0, fields[i], QString::number(expected[i]).toStdString()).Succeeded());
+    const auto fromTable = project.mapEdits_->Snapshot().Regions()->Serialize(); QVERIFY(fromTable.Succeeded());
+    QVERIFY(*fromTable.value == *after.value); // 两入口最终原生成员字节完全相同
+}
+
+void WorldModuleTests::AuxiliaryDragCancellationAndIdentity() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const MapData::RegionRecord region{0, 0, 128, 128, "EdgeRegion", 17, {}, "", {0, 0, 0, 255}};
+    const MapData::CameraRecord camera{256, 256, 0, 0, 0, 1650, 0, 70, 5000, 100, "CameraOne"};
+    QtProject::EditorProject project;
+    QVERIFY(InstallAuxiliaryEditFixture(project, directory.path(), region, camera));
+    BackendState state; activeBackend = &state;
+    state.viewProjection[0] = state.viewProjection[5] = 1.0f / 192;
+    state.viewProjection[12] = state.viewProjection[13] = -64.0f / 192;
+    WorldModule module(project, &modelBackend); MapEntitiesModule tableModule(project);
+    (void)tableModule.Widget();
+    auto* page = module.Widget(); auto* viewport = module.Viewport(); state.viewport = viewport;
+    page->resize(1200, 760); page->show();
+    auto* model = dynamic_cast<WorldOutlinerModel*>(page->findChild<QTreeView*>("worldOutliner")->model()); QVERIFY(model);
+    const Services::WorldObjectId regionId = MapData::MakeRegionId(0, region), cameraId = MapData::MakeCameraId(0, camera);
+    QTRY_VERIFY(FindWorldObject(*model, regionId).isValid());
+    QVERIFY(SelectAuxiliaryRow(*page, regionId));
+    QTRY_VERIFY(viewport->VertexCount() > 0 && state.frames > 0);
+    const auto before = project.mapEdits_->Revision();
+    const auto original = project.mapEdits_->Snapshot().Regions()->Serialize(); QVERIFY(original.Succeeded());
+    // 外角方形内、圆形手柄外的点没有可拖动边，不能退化成整区域移动。
+    const auto screen = [&](QPointF world) {
+        return AuxiliaryScreenPoint(*viewport, state, world);
+    };
+    QSignalSpy started(viewport, &WorldViewport::MoveStarted);
+    const auto cornerPoint = MoveAuxiliaryPointer(*viewport, state, {-24, -24});
+    QTRY_VERIFY(viewport->HoverCoordinate().has_value());
+    QVERIFY(std::abs(viewport->HoverCoordinate()->position[0] + 24) < 0.01);
+    QVERIFY2(std::abs(viewport->HoverCoordinate()->position[1] + 24) < 0.01,
+        qPrintable(QStringLiteral("actual y=%1; viewport=%2x%3; completed=%4x%5; dpr=%6")
+            .arg(viewport->HoverCoordinate()->position[1], 0, 'g', 12).arg(viewport->width()).arg(viewport->height())
+            .arg(state.completed.width).arg(state.completed.height).arg(viewport->devicePixelRatioF(), 0, 'g', 12)));
+    Mouse(*viewport, QEvent::MouseButtonPress, cornerPoint, Qt::LeftButton, Qt::LeftButton);
+    Mouse(*viewport, QEvent::MouseMove, screen({21, 21}), Qt::NoButton, Qt::LeftButton);
+    QTest::keyClick(viewport, Qt::Key_Escape);
+    Mouse(*viewport, QEvent::MouseButtonRelease, screen({21, 21}), Qt::LeftButton, Qt::NoButton);
+    QCOMPARE(started.count(), 0);
+    QCOMPARE(project.mapEdits_->Revision(), before); QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    QVERIFY(SelectAuxiliaryRow(*page, regionId));
+    viewport->MoveStarted(0, 64); viewport->MoveDragged(64, 64); viewport->MoveCancelled(); viewport->MoveFinished();
+    QCOMPARE(project.mapEdits_->Revision(), before); QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    // 选择身份在草稿期间变化，不允许把旧区域草稿提交给新选择。
+    viewport->MoveStarted(0, 64); viewport->MoveDragged(64, 64);
+    QVERIFY(SelectAuxiliaryRow(*page, cameraId)); viewport->MoveFinished();
+    QCOMPARE(project.mapEdits_->Revision(), before); QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    QVERIFY(SelectAuxiliaryRow(*page, regionId));
+    QVERIFY(SelectAuxiliaryRow(*page, cameraId, Qt::ShiftModifier));
+    QVERIFY(page->findChild<QTreeView*>("worldOutliner")->selectionModel()->selectedRows().size() >= 2);
+    viewport->MoveStarted(0, 64); viewport->MoveDragged(64, 64); viewport->MoveFinished();
+    QCOMPARE(project.mapEdits_->Revision(), before); QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    // 地图身份变化时拒绝旧草稿，即便文档指针尚未替换。
+    QVERIFY(SelectAuxiliaryRow(*page, regionId));
+    viewport->MoveStarted(0, 64); viewport->MoveDragged(64, 64);
+    const auto mapRoot = project.projectRoot_; project.projectRoot_ /= L"changed";
+    viewport->MoveFinished(); project.projectRoot_ = mapRoot;
+    QCOMPARE(project.mapEdits_->Revision(), before); QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    // 表格在拖动期间已发布新修订，释放不能覆盖它，也不能追加第二项Undo。
+    QVERIFY(SelectAuxiliaryRow(*page, regionId));
+    viewport->MoveStarted(0, 64); viewport->MoveDragged(64, 64);
+    QVERIFY(tableModule.EditCell(MapDataKind::Regions, 0, "right", "160").Succeeded());
+    const auto newerRevision = project.mapEdits_->Revision();
+    viewport->MoveFinished();
+    QCOMPARE(project.mapEdits_->Revision(), newerRevision); QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QCOMPARE(project.mapEdits_->Snapshot().Regions()->entries.front().left, 0.0f);
+    QCOMPARE(project.mapEdits_->Snapshot().Regions()->entries.front().right, 160.0f);
+    project.mapDataUndoStack_->undo();
+    const auto restored = project.mapEdits_->Snapshot().Regions()->Serialize(); QVERIFY(restored.Succeeded());
+    QVERIFY(*restored.value == *original.value);
+}
+
+void WorldModuleTests::CameraDragUsesSharedTableTransaction() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const MapData::RegionRecord region{0, 0, 128, 128, "EdgeRegion", 17, {}, "", {0, 0, 0, 255}};
+    const MapData::CameraRecord camera{64, 64, 7, 0, 0, 1650, 0, 70, 5000, 100, "CameraOne"};
+    QtProject::EditorProject project;
+    QVERIFY(InstallAuxiliaryEditFixture(project, directory.path(), region, camera));
+    BackendState state; activeBackend = &state;
+    state.viewProjection[0] = state.viewProjection[5] = 1.0f / 192;
+    state.viewProjection[12] = state.viewProjection[13] = -64.0f / 192;
+    WorldModule module(project, &modelBackend); MapEntitiesModule tableModule(project);
+    auto* table = tableModule.Widget()->findChild<QTableWidget*>("mapEntitiesTable3"); QVERIFY(table);
+    auto* page = module.Widget(); auto* viewport = module.Viewport(); state.viewport = viewport;
+    page->resize(1200, 760); page->show();
+    auto* model = dynamic_cast<WorldOutlinerModel*>(page->findChild<QTreeView*>("worldOutliner")->model()); QVERIFY(model);
+    const Services::WorldObjectId id = MapData::MakeCameraId(0, camera);
+    QTRY_VERIFY(FindWorldObject(*model, id).isValid()); QVERIFY(SelectAuxiliaryRow(*page, id));
+    QTRY_VERIFY(viewport->VertexCount() > 0 && state.frames > 0);
+    const auto start = MoveAuxiliaryPointer(*viewport, state, {64, 64});
+    const auto end = AuxiliaryScreenPoint(*viewport, state, {96, 80});
+    QTRY_VERIFY(viewport->HoverCoordinate().has_value());
+    const auto original = project.mapEdits_->Snapshot().Cameras()->Serialize(); QVERIFY(original.Succeeded());
+    const auto originalRegion = project.mapEdits_->Snapshot().Regions()->Serialize(); QVERIFY(originalRegion.Succeeded());
+    const auto viewCamera = viewport->SaveCamera();
+    QSignalSpy started(viewport, &WorldViewport::MoveStarted);
+    QSignalSpy dragged(viewport, &WorldViewport::MoveDragged);
+    Mouse(*viewport, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+    Mouse(*viewport, QEvent::MouseMove, end, Qt::NoButton, Qt::LeftButton);
+    QCOMPARE(started.count(), 1); QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    QVERIFY(std::abs(started.front().at(0).toDouble() - 64) < 0.001);
+    QVERIFY2(std::abs(started.front().at(1).toDouble() - 64) < 0.001,
+        qPrintable(QStringLiteral("actual start y=%1; viewport=%2x%3; completed=%4x%5; dpr=%6; mouse=(%7,%8)")
+            .arg(started.front().at(1).toDouble(), 0, 'g', 12).arg(viewport->width()).arg(viewport->height())
+            .arg(state.completed.width).arg(state.completed.height).arg(viewport->devicePixelRatioF(), 0, 'g', 12)
+            .arg(start.x(), 0, 'g', 12).arg(start.y(), 0, 'g', 12)));
+    QVERIFY(!dragged.empty());
+    QVERIFY(std::abs(dragged.back().at(0).toDouble() - 96) < 0.001);
+    QVERIFY(std::abs(dragged.back().at(1).toDouble() - 80) < 0.001);
+    QTest::keyClick(viewport, Qt::Key_Escape);
+    Mouse(*viewport, QEvent::MouseButtonRelease, end, Qt::LeftButton, Qt::NoButton);
+    QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    Mouse(*viewport, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+    Mouse(*viewport, QEvent::MouseMove, end, Qt::NoButton, Qt::LeftButton);
+    Mouse(*viewport, QEvent::MouseButtonRelease, end, Qt::LeftButton, Qt::NoButton);
+    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QCOMPARE(viewport->SaveCamera(), viewCamera);
+    const auto saved = project.mapEdits_->Snapshot().Cameras()->entries.front();
+    QVERIFY(std::abs(saved.targetX - 96) < 0.001f && std::abs(saved.targetY - 80) < 0.001f);
+    QCOMPARE(table->item(0, 1)->text().toFloat(), saved.targetX);
+    QCOMPARE(table->item(0, 2)->text().toFloat(), saved.targetY);
+    const auto after = project.mapEdits_->Snapshot().Cameras()->Serialize(); QVERIFY(after.Succeeded());
+    const auto unchangedRegion = project.mapEdits_->Snapshot().Regions()->Serialize(); QVERIFY(unchangedRegion.Succeeded());
+    QVERIFY(*unchangedRegion.value == *originalRegion.value);
+    project.mapDataUndoStack_->undo();
+    const auto undone = project.mapEdits_->Snapshot().Cameras()->Serialize(); QVERIFY(undone.Succeeded());
+    QVERIFY(*undone.value == *original.value);
+    QCOMPARE(table->item(0, 1)->text().toFloat(), camera.targetX);
+    project.mapDataUndoStack_->redo();
+    const auto redone = project.mapEdits_->Snapshot().Cameras()->Serialize(); QVERIFY(redone.Succeeded());
+    QVERIFY(*redone.value == *after.value);
+    project.mapDataUndoStack_->undo();
+    QVERIFY(tableModule.EditCell(MapDataKind::Cameras, 0, "targetX", QString::number(saved.targetX, 'g', 9).toStdString()).Succeeded());
+    QVERIFY(tableModule.EditCell(MapDataKind::Cameras, 0, "targetY", QString::number(saved.targetY, 'g', 9).toStdString()).Succeeded());
+    const auto fromTable = project.mapEdits_->Snapshot().Cameras()->Serialize(); QVERIFY(fromTable.Succeeded());
+    QVERIFY(*fromTable.value == *after.value);
+}
+
+// 显式运行（需本机游戏根以识别英雄）：选中英雄可改等级并撤销；混选非英雄时不可改。
+void WorldModuleTests::HeroLevelEditsOnlyHeroes() {
+    const auto gamePath = qEnvironmentVariable("FORGE_WORLD_GAME_ROOT");
+    if (gamePath.isEmpty()) QSKIP("需要 FORGE_WORLD_GAME_ROOT 指向本机游戏根目录");
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const auto terrain = TerrainBytes(); QVERIFY(Write(directory.filePath("war3map.w3e"), terrain));
+    auto units = MapData::ParseUnitPlacements(MapDataFixtures::EmptyUnitsV8Sub11()); QVERIFY(units.Succeeded());
+    MapData::UnitPlacement hero; hero.rawcode = "Hpal"; hero.flags = 2; hero.scale = {1, 1, 1};
+    hero.creationId = 7; hero.position = {-32, -16, 0}; hero.heroLevel = 1; hero.hitPoints = -1; hero.mana = -1;
+    auto footman = hero; footman.rawcode = "hfoo"; footman.creationId = 8; footman.position = {32, 16, 0};
+    units.value->units = {hero, footman}; const auto unitBytes = units.value->Serialize(); QVERIFY(unitBytes.Succeeded());
+    const std::array<MapArchiveMember, 1> members{{{"war3mapUnits.doo", *unitBytes.value}}};
+    auto game = Game::GameDataSource::Mount(gamePath.toStdWString()); QVERIFY(game.Succeeded());
+    auto catalog = ObjectData::StandardObjectCatalog::Load(*game.value); QVERIFY(catalog.Succeeded());
+    QtProject::EditorProject project; project.projectRoot_ = directory.path().toStdWString();
+    project.war3GameRoot_ = gamePath.toStdWString();
+    project.standardCatalog_ = std::make_unique<ObjectData::StandardObjectCatalog>(std::move(*catalog.value));
+    auto workspace = DirectoryWorkspace::Open(project.projectRoot_); QVERIFY(workspace.Succeeded());
+    project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*workspace.value));
+    project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(members));
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+    QVERIFY(project.mapEdits_->AttachTerrain(std::span<const std::byte>(reinterpret_cast<const std::byte*>(terrain.constData()),
+        static_cast<std::size_t>(terrain.size()))).Succeeded()); project.ResetEditTracking();
+    BackendState state; activeBackend = &state; WorldModule module(project, &modelBackend);
+    auto* page = module.Widget(); state.viewport = module.Viewport(); page->resize(1200, 760); page->show();
+    auto* outliner = page->findChild<QTreeView*>("worldOutliner"); QVERIFY(outliner);
+    auto* model = dynamic_cast<WorldOutlinerModel*>(outliner->model()); QVERIFY(model);
+    const Services::WorldObjectId heroId = MapData::MakePlacementId(MapData::PlacementFile::Units, 0, hero);
+    const Services::WorldObjectId footmanId = MapData::MakePlacementId(MapData::PlacementFile::Units, 1, footman);
+    QTRY_VERIFY(FindWorldObject(*model, heroId).isValid() && FindWorldObject(*model, footmanId).isValid());
+    QTRY_VERIFY(state.frames > 0); outliner->expandAll();
+    QTest::mouseClick(outliner->viewport(), Qt::LeftButton, {}, outliner->visualRect(model->Find(heroId)).center());
+    auto* level = page->findChild<QLineEdit*>("worldSelectionLevel"); QVERIFY(level);
+    QTRY_VERIFY(level->isVisible() && level->isEnabled());
+    QCOMPARE(level->text(), QStringLiteral("1"));
+    level->setText(QStringLiteral("0")); level->setProperty("worldEdited", true); emit level->editingFinished();
+    QCOMPARE(project.mapEdits_->Snapshot().Units()->units[0].heroLevel, 1);
+    QTRY_COMPARE(level->text(), QStringLiteral("1"));
+    level->setText(QStringLiteral("5")); level->setProperty("worldEdited", true); emit level->editingFinished();
+    QCOMPARE(project.mapEdits_->Snapshot().Units()->units[0].heroLevel, 5);
+    QCOMPARE(project.mapEdits_->Snapshot().Units()->units[1].heroLevel, 1);
+    QTRY_COMPARE(level->text(), QStringLiteral("5"));
+    project.mapDataUndoStack_->undo();
+    QCOMPARE(project.mapEdits_->Snapshot().Units()->units[0].heroLevel, 1);
+    QTest::mouseClick(outliner->viewport(), Qt::LeftButton, Qt::ShiftModifier, outliner->visualRect(model->Find(footmanId)).center());
+    QTRY_COMPARE(outliner->selectionModel()->selectedRows().size(), 2);
+    QTRY_VERIFY(!level->isEnabled());
+}
+
+void WorldModuleTests::TypedMultiSelectionWithoutModelsUsesOneUndo() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const auto terrain = TerrainBytes(); QVERIFY(Write(directory.filePath("war3map.w3e"), terrain));
+    auto units = MapData::ParseUnitPlacements(MapDataFixtures::EmptyUnitsV8Sub11()); QVERIFY(units.Succeeded());
+    MapData::UnitPlacement first; first.rawcode = "hfoo"; first.flags = 2; first.scale = {1, 1, 1};
+    first.creationId = 7; first.position = {-32, -16, 0};
+    auto second = first; second.creationId = 8; second.position = {32, 16, 0}; second.rotation = 0.5f;
+    units.value->units = {first, second}; const auto unitBytes = units.value->Serialize(); QVERIFY(unitBytes.Succeeded());
+    const QByteArray sourceBytes(reinterpret_cast<const char*>(unitBytes.value->data()), static_cast<qsizetype>(unitBytes.value->size()));
+    const auto sourcePath = directory.filePath("war3mapUnits.doo"); QVERIFY(Write(sourcePath, sourceBytes));
+    const std::array<MapArchiveMember, 1> members{{{"war3mapUnits.doo", *unitBytes.value}}};
+    QtProject::EditorProject project; project.projectRoot_ = directory.path().toStdWString();
+    auto workspace = DirectoryWorkspace::Open(project.projectRoot_); QVERIFY(workspace.Succeeded());
+    project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*workspace.value));
+    project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(members));
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+    QVERIFY(project.mapEdits_->AttachTerrain(std::span<const std::byte>(reinterpret_cast<const std::byte*>(terrain.constData()),
+        static_cast<std::size_t>(terrain.size()))).Succeeded()); project.ResetEditTracking();
+    BackendState state; activeBackend = &state; WorldModule module(project, &modelBackend);
+    auto* page = module.Widget(); state.viewport = module.Viewport(); page->resize(1200, 760); page->show();
+    auto* outliner = page->findChild<QTreeView*>("worldOutliner"); QVERIFY(outliner);
+    auto* model = dynamic_cast<WorldOutlinerModel*>(outliner->model()); QVERIFY(model);
+    const Services::WorldObjectId firstId = MapData::MakePlacementId(MapData::PlacementFile::Units, 0, first);
+    const Services::WorldObjectId secondId = MapData::MakePlacementId(MapData::PlacementFile::Units, 1, second);
+    QTRY_VERIFY(FindWorldObject(*model, firstId).isValid() && FindWorldObject(*model, secondId).isValid());
+    QTRY_VERIFY(state.frames > 0); outliner->expandAll();
+    QTest::mouseClick(outliner->viewport(), Qt::LeftButton, {}, outliner->visualRect(model->Find(firstId)).center());
+    auto* x = page->findChild<QDoubleSpinBox*>("worldFieldX"); QVERIFY(x);
+    QTRY_VERIFY(x->isEnabled()); QVERIFY(x->isVisible()); QCOMPARE(x->value(), -32.0);
+    QVERIFY(!module.Viewport()->SelectedInstance()); // 没有游戏目录/模型路径，typed 属性仍可选择编辑。
+    auto* note = page->findChild<QLabel*>("worldSelectionNote"); QVERIFY(note && note->text().contains("模型"));
+    QTest::mouseClick(outliner->viewport(), Qt::LeftButton, Qt::ShiftModifier, outliner->visualRect(model->Find(secondId)).center());
+    QTRY_COMPARE(outliner->selectionModel()->selectedRows().size(), 2);
+    auto* input = x->findChild<QLineEdit*>(); QVERIFY(input);
+    QTRY_VERIFY(input->placeholderText().contains("多个值"));
+    const auto output = qEnvironmentVariable("FORGE_R08_WORLD_SCREENSHOT_DIR");
+    if (!output.isEmpty()) {
+        QVERIFY(QDir().mkpath(output));
+        for (const auto size : {QSize(1920, 1080), QSize(2560, 1440)}) {
+            const qreal ratio = page->devicePixelRatioF(); page->resize(qRound(size.width() / ratio), qRound(size.height() / ratio));
+            QApplication::processEvents(); const auto image = page->grab().toImage(); QCOMPARE(image.size(), size);
+            QVERIFY(image.save(QDir(output).filePath(QStringLiteral("world-stub-layout-%1x%2.png").arg(size.width()).arg(size.height()))));
+        } // 仅真实 Qt 布局截图，桩后端没有 D3D 游戏画面。
+    }
+    x->setFocus(); QTest::keyClick(x, Qt::Key_A, Qt::ControlModifier); QTest::keyClicks(x, "64");
+    QCOMPARE(input->text(), QStringLiteral("64"));
+    QTest::keyClick(x, Qt::Key_Return); QTRY_COMPARE(project.mapDataUndoStack_->count(), 1);
+    QCOMPARE(project.mapEdits_->Snapshot().Units()->units[0].position[0], 64.0f);
+    QCOMPARE(project.mapEdits_->Snapshot().Units()->units[1].position[0], 64.0f);
+    QCOMPARE(project.mapEdits_->Snapshot().Units()->units[0].position[1], first.position[1]);
+    QCOMPARE(project.mapEdits_->Snapshot().Units()->units[1].position[1], second.position[1]);
+    project.mapDataUndoStack_->undo(); QCOMPARE(project.mapDataUndoStack_->index(), 0); QVERIFY(!project.mapEdits_->IsDirty());
+    QCOMPARE(project.mapEdits_->Snapshot().Units()->units[0].position[0], first.position[0]);
+    QCOMPARE(project.mapEdits_->Snapshot().Units()->units[1].position[0], second.position[0]);
+    project.mapDataUndoStack_->redo(); QCOMPARE(project.mapDataUndoStack_->index(), 1);
+    QCOMPARE(project.mapEdits_->Snapshot().Units()->units[0].position[0], 64.0f);
+    QCOMPARE(project.mapEdits_->Snapshot().Units()->units[1].position[0], 64.0f);
+    const auto revision = project.mapEdits_->Revision(); const auto history = project.mapDataUndoStack_->count();
+    QVERIFY(FindWorldObject(*model, firstId).isValid() && FindWorldObject(*model, secondId).isValid());
+    QVERIFY(model->setData(model->Find(firstId).siblingAtColumn(1), Qt::Unchecked, Qt::CheckStateRole));
+    QTRY_VERIFY(model->RowAt(FindWorldObject(*model, firstId)) && !model->RowAt(model->Find(firstId))->flags.visible);
+    QTRY_VERIFY(!(model->flags(model->Find(firstId)) & Qt::ItemIsSelectable));
+    QVERIFY(model->setData(model->Find(secondId).siblingAtColumn(2), Qt::Checked, Qt::CheckStateRole));
+    QTRY_VERIFY(model->RowAt(FindWorldObject(*model, secondId)) && model->RowAt(model->Find(secondId))->flags.locked);
+    QTRY_VERIFY(outliner->selectionModel()->selectedRows().isEmpty());
+    QCOMPARE(project.mapEdits_->Revision(), revision); QCOMPARE(project.mapDataUndoStack_->count(), history);
+    QCOMPARE(project.mapDataUndoStack_->index(), 1); QVERIFY(project.mapEdits_->IsDirty());
+    QFile source(sourcePath); QVERIFY(source.open(QIODevice::ReadOnly)); QCOMPARE(source.readAll(), sourceBytes);
+}
+
+void WorldModuleTests::NavigationTypedBookmarkCodecKeepsAllIdentityBytes() {
+    MapData::RegionRecord region{}; region.name = std::string("same\xff", 5); region.creationNumber = -9;
+    MapData::CameraRecord camera{}; camera.name = region.name;
+    MapData::UnitPlacement unit; unit.rawcode = std::string("h\xff\0o", 4); unit.creationId = -5;
+    for (const Services::WorldObjectId& id : std::array<Services::WorldObjectId, 3>{
+        MapData::MakePlacementId(MapData::PlacementFile::Units, 4, unit),
+        MapData::MakeRegionId(7, region), MapData::MakeCameraId(8, camera)}) {
+        const auto encoded = WorldNavigation::Encode(id);
+        const auto decoded = WorldNavigation::Decode(encoded);
+        QVERIFY(decoded && *decoded == id);
+        auto malformed = encoded; malformed.insert("index", 0.5); QVERIFY(!WorldNavigation::Decode(malformed));
+        malformed = encoded; malformed.insert("index", QStringLiteral("7")); QVERIFY(!WorldNavigation::Decode(malformed));
+        malformed = encoded; malformed.insert("index", 4294967296.0); QVERIFY(!WorldNavigation::Decode(malformed));
+        malformed = encoded; malformed.remove("kind"); QVERIFY(!WorldNavigation::Decode(malformed));
+        malformed = encoded; malformed.insert(encoded.contains("rawcodeBytes") ? "rawcodeBytes" : "nameBytes", "zz");
+        QVERIFY(!WorldNavigation::Decode(malformed));
+    }
+    auto record = WorldNavigation::Encode(MapData::MakeRegionId(0, region));
+    record.remove("creation"); QVERIFY(!WorldNavigation::Decode(record));
+    record = WorldNavigation::Encode(MapData::MakePlacementId(MapData::PlacementFile::Units, 0, unit));
+    record.insert("file", 2); QVERIFY(!WorldNavigation::Decode(record));
+    record.insert("file", 0); record.insert("rawcodeBytes", "00"); QVERIFY(!WorldNavigation::Decode(record));
+    QJsonObject oversized{{"padding", QString(512 * 1024, QLatin1Char('x'))}};
+    QVERIFY(!WorldNavigation::Bounded(oversized));
+}
+
+void WorldModuleTests::NavigationBookmarkRestoresPagedOutlinePrimaryAndCamera() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    MapData::RegionRecord first{0, 0, 128, 128, "Region000", 100, {}, "", {0, 0, 0, 255}};
+    const MapData::CameraRecord camera{256, 256, 0, 0, 0, 1650, 0, 70, 5000, 100, "CameraOne"};
+    QtProject::EditorProject project; QVERIFY(InstallAuxiliaryEditFixture(project, directory.path(), first, camera));
+    auto regions = *project.mapEdits_->Snapshot().Regions();
+    for (int index = 1; index < 160; ++index) {
+        auto region = first; region.name = QStringLiteral("Region%1").arg(index, 3, 10, QLatin1Char('0')).toStdString();
+        region.creationNumber = 100 + index; regions.entries.push_back(std::move(region));
+    }
+    QVERIFY(project.mapEdits_->EditRegions(regions).Succeeded());
+    const auto revision = project.mapEdits_->Revision();
+    const auto regionBytes = project.mapEdits_->Snapshot().Regions()->Serialize(); QVERIFY(regionBytes.Succeeded());
+    BackendState state; activeBackend = &state;
+    WorldModule module(project, &modelBackend); auto* page = module.Widget(); auto* viewport = module.Viewport(); state.viewport = viewport;
+    page->resize(1200, 760); page->show();
+    auto* tree = page->findChild<QTreeView*>("worldOutliner");
+    auto* model = tree ? dynamic_cast<WorldOutlinerModel*>(tree->model()) : nullptr;
+    auto* search = page->findChild<QLineEdit*>("worldOutlinerFilter");
+    auto* category = page->findChild<QComboBox*>("worldOutlinerCategory");
+    QVERIFY(tree && model && search && category);
+    QTRY_VERIFY(viewport->VertexCount() > 0 && state.frames > 0);
+    const Services::WorldObjectId regionId = MapData::MakeRegionId(128, regions.entries[128]);
+    const Services::WorldObjectId cameraId = MapData::MakeCameraId(0, camera);
+    QTRY_VERIFY(model->Version().has_value());
+    for (int count = 0; !model->Find(regionId).isValid() && model->canFetchMore({}) && count < 16; ++count) model->fetchMore({});
+    QVERIFY(model->Find(regionId).isValid()); QVERIFY(SelectAuxiliaryRow(*page, regionId));
+    auto cameraPose = viewport->SaveCamera(); cameraPose.insert("yaw", 0.75); cameraPose.insert("distance", 1700.0);
+    QVERIFY(viewport->RestoreCamera(cameraPose));
+    tree->expandAll(); tree->verticalScrollBar()->setValue(tree->verticalScrollBar()->maximum() / 2);
+    const auto saved = module.CaptureNavigationBookmark(); QVERIFY(saved);
+    QVERIFY(saved->value("loadedRows").toInt() > 64);
+    auto multi = *saved; multi.insert("selection", QJsonArray{WorldNavigation::Encode(regionId), WorldNavigation::Encode(cameraId)});
+    multi.insert("primary", WorldNavigation::Encode(regionId)); // primary 不必等于集合最后一项。
+    search->setText("Region000"); category->setCurrentIndex(category->findData(static_cast<int>(Services::WorldCategory::Region)));
+    QTRY_VERIFY(model->Find(MapData::MakeRegionId(0, first)).isValid());
+    auto otherCamera = viewport->SaveCamera(); otherCamera.insert("yaw", 1.25); QVERIFY(viewport->RestoreCamera(otherCamera));
+    QCOMPARE(module.RestoreNavigationBookmark(multi), Shell::NavigationRestoreResult::Restored);
+    const auto restored = module.CaptureNavigationBookmark(); QVERIFY(restored);
+    QCOMPARE(restored->value("selection"), multi.value("selection")); QCOMPARE(restored->value("primary"), multi.value("primary"));
+    QCOMPARE(restored->value("camera"), saved->value("camera")); QCOMPARE(search->text(), saved->value("search").toString());
+    QCOMPARE(category->currentData().toInt(), saved->value("category").toInt());
+    QVERIFY(restored->value("loadedRows").toInt() >= saved->value("loadedRows").toInt());
+    QCOMPARE(restored->value("vertical").toInt(), saved->value("vertical").toInt());
+    QCOMPARE(restored->value("expanded"), saved->value("expanded"));
+    QCOMPARE(project.mapEdits_->Revision(), revision); QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    const auto after = project.mapEdits_->Snapshot().Regions()->Serialize(); QVERIFY(after.Succeeded()); QVERIFY(*after.value == *regionBytes.value);
+    for (const auto* field : {"creation", "index"}) {
+        auto invalid = multi; auto selected = invalid.value("selection").toArray(); auto id = selected[0].toObject();
+        id.insert(QLatin1String(field), field == std::string_view("creation") ? 999 : 0); selected[0] = id; invalid.insert("selection", selected);
+        const auto before = module.CaptureNavigationBookmark(); QVERIFY(before);
+        QCOMPARE(module.RestoreNavigationBookmark(invalid), Shell::NavigationRestoreResult::Invalid);
+        QVERIFY(module.CaptureNavigationBookmark() == before);
+    }
+    auto invalid = multi; auto invalidCamera = saved->value("camera").toObject(); invalidCamera.insert("distance", 0.0); invalid.insert("camera", invalidCamera);
+    const auto beforeCamera = module.CaptureNavigationBookmark();
+    QCOMPARE(module.RestoreNavigationBookmark(invalid), Shell::NavigationRestoreResult::Invalid);
+    QVERIFY(module.CaptureNavigationBookmark() == beforeCamera);
+    QCOMPARE(module.RestoreNavigationBookmark(*saved), Shell::NavigationRestoreResult::Restored);
+    viewport->MoveStarted(0, 64); viewport->MoveDragged(32, 64);
+    QVERIFY(!module.PrepareNavigationLeave());
+    const auto duringDraft = module.CaptureNavigationBookmark();
+    QCOMPARE(module.RestoreNavigationBookmark(multi), Shell::NavigationRestoreResult::Blocked);
+    QVERIFY(module.CaptureNavigationBookmark() == duringDraft);
+    viewport->MoveCancelled(); viewport->MoveFinished();
+    QVERIFY(module.PrepareNavigationLeave()); QCOMPARE(project.mapEdits_->Revision(), revision);
+    regions.entries[128].creationNumber = 999; QVERIFY(project.mapEdits_->EditRegions(regions).Succeeded());
+    QCOMPARE(module.RestoreNavigationBookmark(*saved), Shell::NavigationRestoreResult::Invalid);
+}
+
+int main(int argc, char** argv) {
+    if (qEnvironmentVariable("FORGE_H1_CAPTURE_DIR").isEmpty()) qputenv("QT_QPA_PLATFORM", "offscreen");
+    qputenv("QT_SCALE_FACTOR", "1.25"); // 仅当前测试进程，覆盖真实 Qt 分数 DPR，不修改机器配置。
+    QApplication application(argc, argv);
+    if (!qEnvironmentVariable("FORGE_R08_WORLD_SCREENSHOT_DIR").isEmpty())
+        UiKit::ApplyApplicationFont(UiKit::LoadFonts(UiKit::DefaultFontDirectory()));
+    UiKit::ThemeManager theme;
+    if (!qEnvironmentVariable("FORGE_R08_WORLD_SCREENSHOT_DIR").isEmpty()) theme.ApplyTheme(QStringLiteral("graphite"));
+    WorldModuleTests tests;
+    return QTest::qExec(&tests, argc, argv);
+}
+
+#include "WorldModuleTests.moc"

@@ -1,0 +1,5 @@
+add_executable(war3-map-ui-library-tests UiLibraryTests.cpp)
+target_link_libraries(war3-map-ui-library-tests PRIVATE War3MapEditor::UiLibrary)
+target_compile_definitions(war3-map-ui-library-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(war3-map-ui-library-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME ui-library-two-layer COMMAND war3-map-ui-library-tests)

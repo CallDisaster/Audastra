@@ -1,0 +1,55 @@
+add_executable(War3MapObjectDataTests ObjectDataTests.cpp)
+target_link_libraries(War3MapObjectDataTests PRIVATE War3MapEditor::ObjectData)
+
+if(MSVC)
+    target_compile_options(War3MapObjectDataTests PRIVATE /W4 /permissive- /utf-8)
+endif()
+
+add_test(NAME object-data-synthetic COMMAND War3MapObjectDataTests)
+
+add_executable(War3MapObjectBatchEditTests ObjectBatchEditTests.cpp)
+target_link_libraries(War3MapObjectBatchEditTests PRIVATE War3MapEditor::ObjectData)
+target_compile_options(War3MapObjectBatchEditTests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME object-batch-edit COMMAND War3MapObjectBatchEditTests)
+
+add_executable(War3MapObjectInheritanceFlattenTests ObjectInheritanceFlattenTests.cpp)
+target_link_libraries(War3MapObjectInheritanceFlattenTests PRIVATE War3MapEditor::ObjectData)
+target_compile_options(War3MapObjectInheritanceFlattenTests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME object-inheritance-flatten COMMAND War3MapObjectInheritanceFlattenTests)
+
+add_executable(War3MapNativeObjectDataTests NativeObjectCodecTests.cpp)
+target_link_libraries(War3MapNativeObjectDataTests PRIVATE War3MapEditor::ObjectData)
+
+if(MSVC)
+    target_compile_options(War3MapNativeObjectDataTests PRIVATE /W4 /permissive- /utf-8)
+endif()
+
+add_test(NAME native-object-data-synthetic COMMAND War3MapNativeObjectDataTests)
+
+add_executable(War3MapStandardObjectCatalogTests StandardObjectCatalogTests.cpp)
+target_link_libraries(War3MapStandardObjectCatalogTests PRIVATE War3MapEditor::ObjectData)
+if(MSVC)
+    target_compile_options(War3MapStandardObjectCatalogTests PRIVATE /W4 /permissive- /utf-8)
+endif()
+add_test(NAME standard-object-catalog-synthetic COMMAND War3MapStandardObjectCatalogTests)
+
+add_executable(War3MapObjectFieldSchemaTests ObjectFieldSchemaTests.cpp)
+target_link_libraries(War3MapObjectFieldSchemaTests PRIVATE War3MapEditor::ObjectData)
+if(MSVC)
+    target_compile_options(War3MapObjectFieldSchemaTests PRIVATE /W4 /permissive- /utf-8)
+endif()
+add_test(NAME object-field-schema-synthetic COMMAND War3MapObjectFieldSchemaTests)
+add_executable(War3MapObjectReferenceIndexTests ObjectReferenceIndexTests.cpp)
+target_link_libraries(War3MapObjectReferenceIndexTests PRIVATE War3MapEditor::ObjectData)
+if(MSVC)
+    target_compile_options(War3MapObjectReferenceIndexTests PRIVATE /W4 /permissive- /utf-8)
+endif()
+add_test(NAME object-reference-index-synthetic COMMAND War3MapObjectReferenceIndexTests)
+
+add_executable(War3MapSlkOptimizerTests SlkOptimizerTests.cpp)
+target_link_libraries(War3MapSlkOptimizerTests PRIVATE War3MapEditor::ObjectData)
+target_compile_definitions(War3MapSlkOptimizerTests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+if(MSVC)
+    target_compile_options(War3MapSlkOptimizerTests PRIVATE /W4 /permissive- /utf-8)
+endif()
+add_test(NAME object-slk-optimizer COMMAND War3MapSlkOptimizerTests)

@@ -1,0 +1,3 @@
+LIBRARY Game
+EXPORTS
+    StartFakeGame

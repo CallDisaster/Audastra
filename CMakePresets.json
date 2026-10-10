@@ -1,0 +1,101 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "windows-x64-core-vs2026",
+      "displayName": "Windows x64 Core (Visual Studio 2026)",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/vs2026-core",
+      "cacheVariables": {
+        "WAR3MAPEDITOR_BUILD_QT": "OFF",
+        "WAR3MAPEDITOR_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "windows-x64-vs2026",
+      "displayName": "Windows x64 Desktop (Visual Studio 2026)",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/vs2026",
+      "cacheVariables": {
+        "WAR3MAPEDITOR_BUILD_QT": "ON",
+        "WAR3MAPEDITOR_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "windows-x64-vs2022",
+      "displayName": "Windows x64 CI (Visual Studio 2022)",
+      "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/vs2022",
+      "cacheVariables": {
+        "WAR3MAPEDITOR_BUILD_QT": "ON",
+        "WAR3MAPEDITOR_BUILD_TESTS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "core-debug",
+      "configurePreset": "windows-x64-core-vs2026",
+      "configuration": "Debug"
+    },
+    {
+      "name": "core-release",
+      "configurePreset": "windows-x64-core-vs2026",
+      "configuration": "Release"
+    },
+    {
+      "name": "desktop-debug",
+      "configurePreset": "windows-x64-vs2026",
+      "configuration": "Debug"
+    },
+    {
+      "name": "desktop-release",
+      "configurePreset": "windows-x64-vs2026",
+      "configuration": "Release"
+    },
+    {
+      "name": "ci-debug",
+      "configurePreset": "windows-x64-vs2022",
+      "configuration": "Debug"
+    },
+    {
+      "name": "ci-release",
+      "configurePreset": "windows-x64-vs2022",
+      "configuration": "Release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "core-debug",
+      "configurePreset": "windows-x64-core-vs2026",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "core-release",
+      "configurePreset": "windows-x64-core-vs2026",
+      "configuration": "Release",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "ci-debug",
+      "configurePreset": "windows-x64-vs2022",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "ci-release",
+      "configurePreset": "windows-x64-vs2022",
+      "configuration": "Release",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

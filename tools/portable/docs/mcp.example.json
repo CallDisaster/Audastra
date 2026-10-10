@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "forge": {
+      "command": "C:/Tools/FORGE-Agent/bin/war3-map-mcp.exe",
+      "args": [
+        "--workspace",
+        "C:/Maps/MyMap-Expanded",
+        "--ui-data",
+        "C:/Games/YDWE/ui"
+      ],
+      "env": {
+        "FORGE_MCP_YDWE_ROOT": "C:/Games/YDWE",
+        "FORGE_MCP_WAR3_ROOT": "C:/Games/Warcraft III"
+      }
+    }
+  }
+}

@@ -1,0 +1,45 @@
+async (page) => {
+    const passed = [];
+    const assert = (condition, message) => { if (!condition) throw new Error(message); passed.push(message); };
+    await page.getByRole('button', { name: '定义管理', exact: true }).click();
+    const definitions = ['9857', '9527'].map(id => ({ id: `external.${id}`, namespace: `plugin.${id}`, version: '1.0', title: `扩展函数 ${id}`, kind: 'action', ports: [{ id: 'in', label: '执行', type: 'exec', direction: 'in' }, { id: 'out', label: '完成', type: 'exec', direction: 'out' }], fields: [{ id: 'value', label: '参数', type: 'text', default: 'original' }], opaque: { preserved: true } }));
+    await page.getByRole('textbox', { name: '节点定义 JSON', exact: true }).fill(JSON.stringify(definitions));
+    await page.getByRole('button', { name: '应用定义', exact: true }).click();
+    await page.getByRole('button', { name: '扩展', exact: true }).click();
+    assert(await page.getByRole('button', { name: '添加 扩展函数 9857', exact: true }).isEnabled(), '9857 定义可创建');
+    await page.getByRole('button', { name: '添加 扩展函数 9857', exact: true }).click();
+    await page.getByRole('textbox', { name: '参数', exact: true }).fill('修改后的参数');
+    await page.getByRole('textbox', { name: '参数', exact: true }).press('Tab');
+    assert(await page.getByRole('textbox', { name: '参数', exact: true }).inputValue() === '修改后的参数', '9857 参数可修改');
+    await page.getByRole('button', { name: '扩展', exact: true }).click();
+    await page.getByRole('button', { name: '添加 扩展函数 9527', exact: true }).click();
+    assert(await page.getByRole('heading', { name: '扩展函数 9527', exact: true }).isVisible(), '9527 定义可创建与选中');
+    await page.getByRole('button', { name: '文档', exact: true }).click();
+    let graph = JSON.parse(await page.getByRole('textbox', { name: '蓝图 JSON 文档', exact: true }).inputValue());
+    assert(graph.nodes.some(n => n.definition === 'external.9857' && n.values.value === '修改后的参数'), '蓝图文档包含参数修改');
+    graph.nodes.push({ id: 'unknown-fixture', definition: 'unknown.fixture', x: 100, y: 620, values: { keep: ['opaque', 5] }, future: { retained: true } });
+    await page.getByRole('textbox', { name: '蓝图 JSON 文档', exact: true }).fill(JSON.stringify(graph));
+    await page.getByRole('button', { name: '应用修改', exact: true }).click();
+    await page.getByRole('button', { name: '保存', exact: true }).click();
+    const downloadPromise = page.waitForEvent('download');
+    await page.getByRole('button', { name: '导出工程', exact: true }).click();
+    const download = await downloadPromise;
+    await download.saveAs('output/playwright/roundtrip.forge.json');
+    await page.reload();
+    await page.getByRole('button', { name: '文档', exact: true }).click();
+    graph = JSON.parse(await page.getByRole('textbox', { name: '蓝图 JSON 文档', exact: true }).inputValue());
+    assert(graph.nodes.some(n => n.definition === 'external.9857' && n.values.value === '修改后的参数'), '本地保存并重开保留扩展参数');
+    assert(graph.nodes.find(n => n.id === 'unknown-fixture').future.retained, '未知节点及字段保存重开保留');
+    await page.getByRole('navigation', { name: '编辑模块' }).getByRole('button', { name: '数据', exact: true }).click();
+    await page.getByRole('spinbutton', { name: '对象生命值', exact: true }).fill('999');
+    await page.getByRole('spinbutton', { name: '对象生命值', exact: true }).press('Tab');
+    assert(await page.getByRole('cell', { name: '999', exact: true }).isVisible(), '对象属性同步表格');
+    await page.getByRole('button', { name: '撤销', exact: true }).click();
+    assert(await page.getByRole('spinbutton', { name: '对象生命值', exact: true }).inputValue() === '420', '对象变更可撤销');
+    await page.getByRole('navigation', { name: '编辑模块' }).getByRole('button', { name: '脚本', exact: true }).click();
+    await page.getByRole('textbox', { name: '脚本内容', exact: true }).fill('-- browser verification');
+    await page.getByRole('button', { name: '撤销', exact: true }).click();
+    assert((await page.getByRole('textbox', { name: '脚本内容', exact: true }).inputValue()).includes('maxWaves'), '脚本编辑可撤销');
+    return { passed: passed.length, checks: passed };
+}
+

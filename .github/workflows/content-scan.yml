@@ -1,0 +1,21 @@
+name: content-scan
+
+# 每次推送和 PR 扫描已跟踪文件：禁用文件类型、超大文件、本机路径/账号/令牌和私有词。
+# 私有词（地图名等）不入库，来自仓库机密 AUDASTRA_PRIVATE_PATTERNS；来自 fork 的 PR 拿不到机密，只做通用扫描。
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan public content
+        shell: pwsh
+        env:
+          AUDASTRA_PRIVATE_PATTERNS: ${{ secrets.AUDASTRA_PRIVATE_PATTERNS }}
+        run: ./tools/ci/scan-public-content.ps1

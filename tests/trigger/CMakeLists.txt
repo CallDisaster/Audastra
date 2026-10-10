@@ -1,0 +1,58 @@
+if(NOT TARGET War3MapTrigger)
+    message(FATAL_ERROR "tests/trigger requires the War3MapTrigger target")
+endif()
+
+add_executable(War3MapTriggerTests TriggerCodecTests.cpp TriggerDirectoryTests.cpp TriggerTypesTests.cpp TriggerDataTextTests.cpp WtgSourceTests.cpp)
+target_link_libraries(War3MapTriggerTests PRIVATE War3MapTrigger)
+
+if(MSVC)
+    target_compile_options(War3MapTriggerTests PRIVATE /W4 /permissive- /utf-8)
+endif()
+
+add_test(NAME trigger-codec-synthetic COMMAND War3MapTriggerTests)
+
+add_executable(war3-map-wct-source-tests WctSourceTests.cpp)
+target_link_libraries(war3-map-wct-source-tests PRIVATE War3MapTrigger)
+if(MSVC)
+    target_compile_options(war3-map-wct-source-tests PRIVATE /W4 /permissive- /utf-8)
+endif()
+add_test(NAME trigger-wct-source COMMAND war3-map-wct-source-tests)
+
+add_executable(war3-map-trigger-scalar-guard-tests TriggerScalarReplacementGuardTests.cpp)
+target_link_libraries(war3-map-trigger-scalar-guard-tests PRIVATE War3MapTrigger)
+if(MSVC)
+    target_compile_options(war3-map-trigger-scalar-guard-tests PRIVATE /W4 /permissive- /utf-8)
+endif()
+add_test(NAME trigger-scalar-replacement-guards COMMAND war3-map-trigger-scalar-guard-tests)
+set_tests_properties(trigger-scalar-replacement-guards PROPERTIES TIMEOUT 60)
+
+# U4: compact scalar receipt shares the existing graph editing validation.
+add_executable(war3-map-trigger-scalar-replay-tests TriggerGraphScalarReplayTests.cpp)
+target_link_libraries(war3-map-trigger-scalar-replay-tests PRIVATE War3MapTrigger)
+if(MSVC)
+    target_compile_options(war3-map-trigger-scalar-replay-tests PRIVATE /W4 /permissive- /utf-8)
+endif()
+add_test(NAME trigger-scalar-replay COMMAND war3-map-trigger-scalar-replay-tests)
+set_tests_properties(trigger-scalar-replay PROPERTIES TIMEOUT 60)
+
+# U4：独立分配故障夹具，避免改变既有 ordinary-new 观察器。
+add_executable(war3-map-trigger-codec-id-reservation-tests TriggerCodecStableIdReservationTests.cpp)
+target_link_libraries(war3-map-trigger-codec-id-reservation-tests PRIVATE War3MapTrigger)
+if(MSVC)
+    target_compile_options(war3-map-trigger-codec-id-reservation-tests PRIVATE /W4 /permissive- /utf-8)
+endif()
+add_test(NAME trigger-codec-id-reservation COMMAND war3-map-trigger-codec-id-reservation-tests)
+set_tests_properties(trigger-codec-id-reservation PROPERTIES TIMEOUT 60 RUN_SERIAL TRUE)
+
+# F1：转代码/撤销分段耗时测量，手动运行，不登记 CTest。
+add_executable(war3-map-trigger-conversion-bench TriggerConversionBench.cpp)
+target_link_libraries(war3-map-trigger-conversion-bench PRIVATE War3MapTrigger War3MapEditor::ScriptBuild War3MapEditor::Services)
+if(MSVC)
+    target_compile_options(war3-map-trigger-conversion-bench PRIVATE /W4 /permissive- /utf-8)
+endif()
+
+add_executable(war3-map-trigger-recovery-coverage TriggerRecoveryCoverage.cpp)
+target_link_libraries(war3-map-trigger-recovery-coverage PRIVATE War3MapTrigger War3MapEditor::ScriptBuild War3MapEditor::Services)
+if(MSVC)
+    target_compile_options(war3-map-trigger-recovery-coverage PRIVATE /W4 /permissive- /utf-8)
+endif()

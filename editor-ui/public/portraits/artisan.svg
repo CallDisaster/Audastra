@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" fill="none">
+  <title>原创示例头像 · 筑城工匠</title>
+  <defs><linearGradient id="bg" x2="96" y2="96" gradientUnits="userSpaceOnUse"><stop stop-color="#4a3c2d"/><stop offset="1" stop-color="#221f1c"/></linearGradient><linearGradient id="cloth" x1="24" y1="63" x2="74" y2="96" gradientUnits="userSpaceOnUse"><stop stop-color="#9e8d6f"/><stop offset="1" stop-color="#5b594e"/></linearGradient></defs>
+  <path fill="url(#bg)" d="M0 0h96v96H0z"/><circle cx="47" cy="42" r="32" stroke="#cab18a" stroke-opacity=".13"/>
+  <path d="m70 41 9 54" stroke="#8b6644" stroke-width="6"/><path d="m59 29 28-5 4 15-29 5-3-15Z" fill="#88918f"/><path d="m61 29 5 13-4 2-3-15 2 0Z" fill="#b1b9b0"/><path d="m83 26 4 13 4-1-4-14-4 2Z" fill="#4a5556"/>
+  <path d="M8 96V83c3-12 18-20 37-20 18 0 30 7 36 22l3 11H8Z" fill="url(#cloth)"/>
+  <path d="m31 65-4 31h37l-5-31-7 5H38l-7-5Z" fill="#785139"/><path d="m31 66 6 1-2 17h-7l3-18Zm22 1 5-2 5 19h-7l-3-17Z" fill="#af8958"/>
+  <path d="M34 37h26v20L50 69H39L28 55l6-18Z" fill="#caa17a"/><path d="m25 40 6-6 6 10-7 7-5-11Zm35 0 5-3 3 9-8 7v-13Z" fill="#b58b66"/>
+  <path d="m29 36-2-10 9-13 18-1 13 15-3 13-35-4Z" fill="#a77847"/><path d="m26 31 40-3 3 8-40 8-6-5 3-8Z" fill="#c29761"/><path d="m30 28 6-10 18-1 7 8-31 3Z" fill="#b99059"/>
+  <path d="m27 32 37-4" stroke="#493f34" stroke-width="4"/><circle cx="36" cy="32" r="7" fill="#342f29" stroke="#bfab84" stroke-width="2"/><circle cx="54" cy="30" r="7" fill="#342f29" stroke="#bfab84" stroke-width="2"/><path d="m32 31 6-3m12 1 5-2" stroke="#849599" stroke-width="2"/>
+  <path d="m33 46 7-1m9 0h6" stroke="#594434" stroke-width="2.5"/><path d="m44 45-3 10 7 1" stroke="#af7957" stroke-width="2"/>
+  <path d="m31 51 5 7 8-3 9 3 7-8-1 14-10 11h-9L29 61l2-10Z" fill="#765038"/><path d="m34 57 9 4 11-3-4 11-8 2-8-14Z" fill="#96704a"/><path d="m40 59 8 1" stroke="#352e27" stroke-width="2"/>
+  <path d="M35 85h18v11H35z" fill="#5c4435"/><path d="M40 88v8m7-8v8" stroke="#aa8a60" stroke-width="2"/><circle cx="33" cy="80" r="2" fill="#cfb47e"/><circle cx="60" cy="81" r="2" fill="#cfb47e"/>
+  <rect x=".5" y=".5" width="95" height="95" rx="5.5" stroke="#bcaa8c" stroke-opacity=".22"/>
+</svg>

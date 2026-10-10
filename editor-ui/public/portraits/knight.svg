@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" fill="none">
+  <title>原创示例头像 · 黎明骑士</title>
+  <defs><linearGradient id="bg" x2="96" y2="96" gradientUnits="userSpaceOnUse"><stop stop-color="#333e50"/><stop offset="1" stop-color="#151c2a"/></linearGradient><linearGradient id="metal" x1="25" y1="28" x2="66" y2="80" gradientUnits="userSpaceOnUse"><stop stop-color="#d3dbdc"/><stop offset=".5" stop-color="#97aab7"/><stop offset="1" stop-color="#465d73"/></linearGradient></defs>
+  <path fill="url(#bg)" d="M0 0h96v96H0z"/><circle cx="48" cy="40" r="31" stroke="#a1b8d5" stroke-opacity=".14"/>
+  <path d="M44 27c-4-9-2-17 7-23 13 3 21 13 17 28L58 21l-4-5-2 14-8-3Z" fill="#7291ba"/><path d="M51 6c9 5 13 10 14 18" stroke="#b2bfd6" stroke-width="2"/>
+  <path d="M7 96c1-23 13-34 37-34s40 11 45 34H7Z" fill="#253b5b"/>
+  <path d="m31 61 16 7 18-7 16 18-4 17H17l-3-17 17-18Z" fill="url(#metal)"/>
+  <path d="m31 65 16 15 19-16-6 32H35l-4-31Z" fill="#36567b"/><path d="m43 83 5-5 5 5-5 9-5-9Z" fill="#d4c089"/>
+  <path d="m13 73 14-8 10 10-5 10-22-1 3-11Zm53-9 15 10 5 10-23 2-6-11 9-11Z" fill="url(#metal)"/>
+  <path d="m12 81 19 2 5-7m24-1 4 8 20-1" stroke="#c1ad76" stroke-width="3"/>
+  <path d="M30 28 47 19l19 10 2 22-11 17H41L28 50l2-22Z" fill="url(#metal)"/>
+  <path d="m48 22-2 43 11-1 8-14-1-19-16-9Z" fill="#627d94"/>
+  <path d="m30 38 17 5 19-5-2 8-17 4-17-5v-7Z" fill="#172935"/>
+  <path d="m48 32 1 17-2 17" stroke="#d9d9cc" stroke-width="3"/><path d="m32 51 9 3m-7 2 8 3m14-5 7-3m-8 8 7-4" stroke="#435967" stroke-width="2"/>
+  <path d="m29 30 18-8 18 8" stroke="#c9b47b" stroke-width="3"/>
+  <path d="M80 22v61" stroke="#d5d9cf" stroke-width="4"/><path d="m80 15-3 10h6l-3-10Z" fill="#e4e5dc"/><path d="M72 73h16" stroke="#bfa96f" stroke-width="4"/><path d="M79 77v16" stroke="#6f5b45" stroke-width="4"/>
+  <rect x=".5" y=".5" width="95" height="95" rx="5.5" stroke="#9dabcb" stroke-opacity=".22"/>
+</svg>

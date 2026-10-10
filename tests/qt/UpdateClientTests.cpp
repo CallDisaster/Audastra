@@ -1,0 +1,295 @@
+#include "UpdateClient.h"
+#include "UpdateFixtures.h"
+
+#include <QDate>
+#include <QDir>
+#include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSettings>
+#include <QSignalSpy>
+#include <QTemporaryDir>
+#include <QtTest>
+
+using namespace War3Map::QtUpdate;
+using namespace UpdateFixtures;
+
+class UpdateClientTests final : public QObject {
+    Q_OBJECT
+private slots:
+    void SignedLoopbackDownloadKeepsExactInputsAndOnlyPreparesInstallation();
+    void HttpAndParseFailuresNeverReportLatest_data();
+    void HttpAndParseFailuresNeverReportLatest();
+    void StartupCheckIsDelayedDailyAndSkippedVersionOnlySuppressesAutomaticPrompt();
+    void StableAndBetaUseDifferentEndpointsAndSemver();
+    void SignatureAndPackageFailuresNeverPrepareInstallation_data();
+    void SignatureAndPackageFailuresNeverPrepareInstallation();
+    void CancellingARealPartialDownloadRemovesItsOwnedTemporaryFiles();
+    void RedirectsStayOnExplicitLoopbackAndNeverCarryCredentials();
+    void ConfigurationWithoutTrustedKeyCanReadVersionButCannotDownload();
+    void ResponseBudgetTimeoutAndRedirectLoopAreBounded();
+    void CommittedPreferencesNeverWriteAndStagedChecksKeepTheSavedChannel();
+    void ReadyFilesAreRemovedUnlessTheInstallerRetainsTheExactReceipt();
+    void InvalidReleaseAssetsNeverDownload_data();
+    void InvalidReleaseAssetsNeverDownload();
+};
+
+void UpdateClientTests::SignedLoopbackDownloadKeepsExactInputsAndOnlyPreparesInstallation() {
+    QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start()); server.Publish(bundle);
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat);
+    UpdateClient client(server.Source(bundle, directory.filePath("downloads")), settings);
+    QSignalSpy ready(&client, &UpdateClient::PackagePrepared); QSignalSpy progress(&client, &UpdateClient::DownloadProgress);
+    QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
+    QVERIFY(client.Status().canDownload); QCOMPARE(server.requests.size(), 1);
+    // 检查只取版本JSON；作者点击下载前未请求任何清单、签名或ZIP。
+    QVERIFY(client.Download()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Ready, 5000);
+    QCOMPARE(ready.count(), 1); QVERIFY(!client.IsBusy()); QVERIFY(client.Prepared().has_value());
+    const auto prepared = *client.Prepared(); QCOMPARE(prepared.version, QStringLiteral("0.2.0"));
+    QCOMPARE(Read(prepared.manifestPath), bundle.manifest); QCOMPARE(Read(prepared.signaturePath), bundle.signature); QCOMPARE(Read(prepared.packagePath), bundle.package);
+    QCOMPARE(prepared.manifestSha256.toLatin1(), Hash(bundle.manifest)); QCOMPARE(prepared.packageSha256.toLatin1(), Hash(bundle.package));
+    QCOMPARE(server.requests.size(), 4); QVERIFY(progress.count() >= 2);
+    const auto final = progress.last(); QCOMPARE(final[0].toLongLong(), qint64(bundle.package.size())); QCOMPARE(final[1].toLongLong(), qint64(bundle.package.size()));
+    for (const auto& request : server.requests) {
+        QVERIFY(!request.toLower().contains("authorization:")); QVERIFY(!request.toLower().contains("cookie:"));
+        QVERIFY(!request.contains("0.1.0")); QVERIFY(!request.contains("preferences.ini"));
+    }
+    // 夹具文件不是可执行程序；这里只验证准备回执，没有启动或安装任何程序。
+    QVERIFY(QFileInfo(prepared.packagePath).absoluteFilePath().contains(QStringLiteral("downloads")));
+}
+
+void UpdateClientTests::CommittedPreferencesNeverWriteAndStagedChecksKeepTheSavedChannel() {
+    QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start()); server.Publish(bundle);
+    server.routes["/repos/fixture/editor/releases?per_page=100"] = QJsonDocument(QJsonArray{
+        QJsonDocument::fromJson(server.Release(bundle)).object()}).toJson();
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat);
+    settings.setValue("unrelated/value", QStringLiteral("保留")); settings.sync(); const auto before = Read(settings.fileName());
+    UpdateClient client(server.Source(bundle, directory.path()), settings);
+    UpdatePreferences draft{false, War3Map::Update::UpdateChannel::Beta, QStringLiteral("0.2.0")};
+    QVERIFY(client.CheckWithPreferences(draft)); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
+    QCOMPARE(client.Status().channel, War3Map::Update::UpdateChannel::Beta); QCOMPARE(client.Channel(), War3Map::Update::UpdateChannel::Stable);
+    QVERIFY(client.AutomaticCheckEnabled()); QVERIFY(client.SkippedVersion().isEmpty());
+    QVERIFY(client.SkipThisVersionInSession()); settings.sync(); QCOMPARE(Read(settings.fileName()), before);
+    // Apply只更新运行时；它本身永远不能成为另一个写盘路径。
+    QString error; QVERIFY(client.ApplyCommittedPreferences(draft, &error)); settings.sync(); QCOMPARE(Read(settings.fileName()), before);
+    QVERIFY(client.Preferences() == draft);
+    auto invalid = draft; invalid.channel = static_cast<War3Map::Update::UpdateChannel>(77);
+    QVERIFY(!client.ApplyCommittedPreferences(invalid, &error)); QVERIFY(!error.isEmpty()); QVERIFY(client.Preferences() == draft);
+    invalid = draft; invalid.skippedVersion = QStringLiteral("TRIGSTR_123");
+    QVERIFY(!UpdateClient::WritePreferences(settings, invalid, &error)); settings.sync(); QCOMPARE(Read(settings.fileName()), before);
+    QVERIFY(UpdateClient::WritePreferences(settings, draft, &error)); settings.sync(); QCOMPARE(settings.status(), QSettings::NoError);
+    QVERIFY(UpdateClient::ReadPreferences(settings) == draft); QCOMPARE(settings.value("unrelated/value").toString(), QStringLiteral("保留"));
+    QCOMPARE(server.requests.size(), 1);
+}
+
+void UpdateClientTests::ReadyFilesAreRemovedUnlessTheInstallerRetainsTheExactReceipt() {
+    QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start()); server.Publish(bundle);
+    for (const bool retain : {false, true}) {
+        QSettings settings(directory.filePath(retain ? "retained.ini" : "unretained.ini"), QSettings::IniFormat);
+        PreparedUpdate receipt;
+        {
+            UpdateClient client(server.Source(bundle, directory.filePath(retain ? "retained" : "unretained")), settings);
+            QString error; QVERIFY(!client.RetainPreparedForInstaller(receipt, &error)); QVERIFY(!error.isEmpty());
+            QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
+            QVERIFY(client.Download()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Ready, 5000);
+            QVERIFY(client.Prepared()); receipt = *client.Prepared();
+            auto wrong = receipt; wrong.packageSha256 = QString(64, QLatin1Char('0'));
+            QVERIFY(!client.RetainPreparedForInstaller(wrong, &error)); QVERIFY(!error.isEmpty());
+            wrong = receipt; wrong.packagePath = directory.filePath("unverified.zip");
+            QVERIFY(!client.RetainPreparedForInstaller(wrong, &error));
+            if (retain) QVERIFY(client.RetainPreparedForInstaller(receipt, &error));
+            QCOMPARE(Read(receipt.packagePath), bundle.package);
+        }
+        QCOMPARE(QFileInfo::exists(receipt.packagePath), retain);
+        QCOMPARE(QFileInfo::exists(receipt.manifestPath), retain);
+        QCOMPARE(QFileInfo::exists(receipt.signaturePath), retain);
+    }
+}
+
+void UpdateClientTests::InvalidReleaseAssetsNeverDownload_data() {
+    QTest::addColumn<QString>("mutation");
+    QTest::newRow("duplicate-name") << QStringLiteral("duplicate");
+    QTest::newRow("fractional-size") << QStringLiteral("fractional");
+    QTest::newRow("negative-size") << QStringLiteral("negative");
+    QTest::newRow("excessive-size") << QStringLiteral("excessive");
+}
+void UpdateClientTests::InvalidReleaseAssetsNeverDownload() {
+    QFETCH(QString, mutation);
+    QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start()); server.Publish(bundle);
+    auto release = QJsonDocument::fromJson(server.Release(bundle)).object(); auto assets = release.value("assets").toArray();
+    if (mutation == "duplicate") assets.append(assets.at(0));
+    else {
+        auto asset = assets[0].toObject();
+        asset["size"] = mutation == "fractional" ? 64.5 : mutation == "negative" ? -1.0 : 2147483649.0;
+        assets[0] = asset;
+    }
+    release["assets"] = assets; server.routes["/repos/fixture/editor/releases/latest"] = QJsonDocument(release).toJson();
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.path()), settings);
+    QSignalSpy prepared(&client, &UpdateClient::PackagePrepared); QVERIFY(client.Check());
+    QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Failed, 3000);
+    QCOMPARE(client.Status().errorCode, QStringLiteral("UPDATE_RELEASE_ASSET")); QVERIFY(!client.Download());
+    QCOMPARE(server.requests.size(), 1); QCOMPARE(prepared.count(), 0);
+}
+
+void UpdateClientTests::HttpAndParseFailuresNeverReportLatest_data() {
+    QTest::addColumn<int>("http"); QTest::addColumn<QByteArray>("body"); QTest::addColumn<QString>("code");
+    QTest::newRow("private404") << 404 << QByteArray("private repo") << QStringLiteral("UPDATE_HTTP_404");
+    QTest::newRow("forbidden403") << 403 << QByteArray("rate limited") << QStringLiteral("UPDATE_RATE_LIMIT");
+    QTest::newRow("limited429") << 429 << QByteArray("rate limited") << QStringLiteral("UPDATE_RATE_LIMIT");
+    QTest::newRow("server500") << 500 << QByteArray("failure") << QStringLiteral("UPDATE_HTTP_ERROR");
+    QTest::newRow("invalid-json") << 200 << QByteArray("{broken") << QStringLiteral("UPDATE_RELEASE_JSON");
+    QTest::newRow("wrong-shape") << 200 << QByteArray("[]") << QStringLiteral("UPDATE_RELEASE_JSON");
+    QTest::newRow("missing-fields") << 200 << QByteArray("{}") << QStringLiteral("UPDATE_RELEASE_INVALID");
+}
+void UpdateClientTests::HttpAndParseFailuresNeverReportLatest() {
+    QFETCH(int, http); QFETCH(QByteArray, body); QFETCH(QString, code);
+    QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start());
+    server.responder = [http, body](QTcpSocket* socket, const QByteArray&) { socket->write(Http(body, http)); socket->disconnectFromHost(); };
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.path()), settings);
+    QSignalSpy ready(&client, &UpdateClient::PackagePrepared);
+    QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Failed, 3000);
+    QCOMPARE(client.Status().errorCode, code); QVERIFY(!client.Status().message.isEmpty()); QVERIFY(!client.Status().message.contains(QStringLiteral("已是")));
+    QVERIFY(!client.Status().canDownload); QVERIFY(!client.Download()); QCOMPARE(ready.count(), 0); QVERIFY(!client.Prepared());
+}
+
+void UpdateClientTests::StartupCheckIsDelayedDailyAndSkippedVersionOnlySuppressesAutomaticPrompt() {
+    QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start()); server.Publish(bundle);
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.path()), settings);
+    QVERIFY(client.AutomaticCheckEnabled()); QCOMPARE(client.Channel(), War3Map::Update::UpdateChannel::Stable);
+    client.ScheduleAutomaticCheck(40); QCOMPARE(server.requests.size(), 0);
+    QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000); QVERIFY(!client.Status().manual);
+    QCOMPARE(settings.value("update/lastAutomaticCheckDate").toString(), QDate::currentDate().toString(Qt::ISODate));
+    QCOMPARE(server.requests.size(), 1); QVERIFY(!client.Check(false)); QCOMPARE(server.requests.size(), 1);
+    QVERIFY(client.SkipThisVersion()); QCOMPARE(client.SkippedVersion(), QStringLiteral("0.2.0"));
+    // 原创设置模拟下一日，不改系统时间或正式应用设置。
+    settings.setValue("update/lastAutomaticCheckDate", QDate::currentDate().addDays(-1).toString(Qt::ISODate)); settings.sync();
+    QVERIFY(client.Check(false)); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Skipped, 3000); QCOMPARE(server.requests.size(), 2);
+    QVERIFY(client.Check(true)); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000); QCOMPARE(server.requests.size(), 3);
+    QVERIFY(client.SetAutomaticCheckEnabled(false)); client.ScheduleAutomaticCheck(0); QVERIFY(!client.Check(false)); QCOMPARE(server.requests.size(), 3);
+    server.Publish(bundle, QStringLiteral("0.3.0")); QVERIFY(client.Check()); QTRY_COMPARE_WITH_TIMEOUT(client.Status().availableVersion, QStringLiteral("0.3.0"), 3000);
+    QCOMPARE(client.Status().state, UpdateState::Available);
+}
+
+void UpdateClientTests::StableAndBetaUseDifferentEndpointsAndSemver() {
+    QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle stable; Bundle beta(QStringLiteral("0.3.0-beta.2")); Server server; QVERIFY(server.Start()); server.Publish(stable);
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat);
+    UpdateClient client(server.Source(stable, directory.path(), QStringLiteral("0.2.0")), settings);
+    QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::UpToDate, 3000);
+    QVERIFY(server.requests.back().startsWith("GET /repos/fixture/editor/releases/latest "));
+    QJsonArray releases{QJsonDocument::fromJson(server.Release(beta, QStringLiteral("0.3.0-beta.2"), true)).object(),
+        QJsonDocument::fromJson(server.Release(beta, QStringLiteral("0.3.0-beta.10"), true)).object(), QJsonDocument::fromJson(server.Release(stable)).object()};
+    server.routes.insert("/repos/fixture/editor/releases?per_page=100", QJsonDocument(releases).toJson());
+    QVERIFY(client.SetChannel(War3Map::Update::UpdateChannel::Beta)); QVERIFY(client.Check());
+    QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000); QCOMPARE(client.Status().availableVersion, QStringLiteral("0.3.0-beta.10"));
+    QVERIFY(server.requests.back().startsWith("GET /repos/fixture/editor/releases?per_page=100 "));
+    QVERIFY(client.SetChannel(War3Map::Update::UpdateChannel::Stable)); server.Publish(beta, QStringLiteral("0.3.0-beta.2"), true);
+    QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Failed, 3000);
+    QCOMPARE(client.Status().errorCode, QStringLiteral("UPDATE_RELEASE_UNAVAILABLE"));
+}
+
+void UpdateClientTests::SignatureAndPackageFailuresNeverPrepareInstallation_data() {
+    QTest::addColumn<QString>("mutation"); QTest::addColumn<QString>("code");
+    QTest::newRow("wrong-signature") << QStringLiteral("signature") << QStringLiteral("UPDATE_SIGNATURE_INVALID");
+    QTest::newRow("missing-signature") << QStringLiteral("missing") << QStringLiteral("UPDATE_SIGNATURE_MISSING_OR_INVALID");
+    QTest::newRow("raw-manifest-change") << QStringLiteral("raw") << QStringLiteral("UPDATE_SIGNATURE_INVALID");
+    QTest::newRow("wrong-package-sha") << QStringLiteral("sha") << QStringLiteral("UPDATE_PACKAGE_SHA_MISMATCH");
+    QTest::newRow("short-package") << QStringLiteral("short") << QStringLiteral("UPDATE_PACKAGE_SIZE");
+    QTest::newRow("long-package") << QStringLiteral("long") << QStringLiteral("UPDATE_PACKAGE_SIZE");
+    QTest::newRow("new-version-race") << QStringLiteral("version") << QStringLiteral("UPDATE_RELEASE_MANIFEST_VERSION");
+    QTest::newRow("upgrade-too-old") << QStringLiteral("minimum") << QStringLiteral("UPDATE_DIRECT_UPGRADE");
+    QTest::newRow("extra-zip-file") << QStringLiteral("extra") << QStringLiteral("UPDATE_ZIP_EXTRA_MEMBER");
+}
+void UpdateClientTests::SignatureAndPackageFailuresNeverPrepareInstallation() {
+    QFETCH(QString, mutation); QFETCH(QString, code);
+    QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start());
+    if (mutation == "version") bundle = Bundle(QStringLiteral("0.3.0"));
+    if (mutation == "minimum") bundle = Bundle(QStringLiteral("0.2.0"), QStringLiteral("0.1.5"));
+    if (mutation == "extra") {
+        bundle.package = Zip({{QStringLiteral("war3-map-editor.exe"), QByteArray("original fixture executable data")},
+            {QStringLiteral("plugins/fixture.txt"), QByteArray("original fixture plugin data")}, {QStringLiteral("extra.bin"), QByteArray("not allowed")}});
+        auto json = QJsonDocument::fromJson(bundle.manifest).object(); auto zip = json.value("zip").toObject();
+        zip.insert("bytes", qint64(bundle.package.size())); zip.insert("sha256", QString::fromLatin1(Hash(bundle.package))); json.insert("zip", zip);
+        bundle.manifest = QJsonDocument(json).toJson(); bundle.signature = bundle.signer.Sign(bundle.manifest);
+    }
+    server.Publish(bundle);
+    if (mutation == "signature") { auto bad = bundle.signature; bad[0] = char(bad.at(0) ^ 1); server.routes["/assets/update-manifest.json.sig"] = bad; }
+    if (mutation == "missing") server.routes["/assets/update-manifest.json.sig"].clear();
+    if (mutation == "raw") server.routes["/assets/update-manifest.json"] += " ";
+    if (mutation == "sha") { auto bad = bundle.package; bad[0] = char(bad.at(0) ^ 1); server.routes["/assets/fixture.zip"] = bad; }
+    if (mutation == "short") server.routes["/assets/fixture.zip"].chop(1);
+    if (mutation == "long") server.routes["/assets/fixture.zip"] += "x";
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.filePath("downloads")), settings);
+    QSignalSpy ready(&client, &UpdateClient::PackagePrepared); QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
+    QVERIFY(client.Download()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Failed, 5000);
+    QCOMPARE(client.Status().errorCode, code); QCOMPARE(ready.count(), 0); QVERIFY(!client.Prepared());
+    QCOMPARE(QDir(directory.filePath("downloads")).entryList(QDir::Dirs | QDir::NoDotAndDotDot).size(), 0);
+}
+
+void UpdateClientTests::CancellingARealPartialDownloadRemovesItsOwnedTemporaryFiles() {
+    QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start()); server.Publish(bundle);
+    server.responder = [&server, &bundle](QTcpSocket* socket, const QByteArray& path) {
+        if (path == "/assets/fixture.zip") {
+            socket->write(QByteArray("HTTP/1.1 200 OK\r\nContent-Length: ") + QByteArray::number(bundle.package.size()) + "\r\n\r\n" + bundle.package.left(32));
+            return; // 保持真实TCP连接，等待客户端取消；不是伪造的完成回执。
+        }
+        socket->write(Http(server.routes.value(path))); socket->disconnectFromHost();
+    };
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.filePath("downloads")), settings);
+    QSignalSpy ready(&client, &UpdateClient::PackagePrepared); QSignalSpy progress(&client, &UpdateClient::DownloadProgress);
+    QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000); QVERIFY(client.Download());
+    QTRY_VERIFY_WITH_TIMEOUT(!progress.empty() && progress.last()[0].toLongLong() == 32, 3000);
+    client.Cancel(); QCOMPARE(client.Status().state, UpdateState::Cancelled); QVERIFY(!client.IsBusy()); QCOMPARE(ready.count(), 0);
+    QCOMPARE(QDir(directory.filePath("downloads")).entryList(QDir::Dirs | QDir::NoDotAndDotDot).size(), 0);
+    QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
+}
+
+void UpdateClientTests::RedirectsStayOnExplicitLoopbackAndNeverCarryCredentials() {
+    QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; Server escaped; QVERIFY(server.Start()); QVERIFY(escaped.Start()); server.Publish(bundle);
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.path()), settings);
+    server.responder = [&server, &escaped](QTcpSocket* socket, const QByteArray& path) {
+        const auto body = path.endsWith("latest") ? Http({}, 302, "Location: " + escaped.Url("/escape").toEncoded() + "\r\n") : Http(server.routes.value(path));
+        socket->write(body); socket->disconnectFromHost();
+    };
+    QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Failed, 3000);
+    QCOMPARE(client.Status().errorCode, QStringLiteral("UPDATE_SOURCE_URL")); QCOMPARE(escaped.requests.size(), 0);
+    server.responder = [&server](QTcpSocket* socket, const QByteArray&) {
+        socket->write(Http({}, 302, "Location: " + server.Url("/credential?access_token=fixture-secret").toEncoded() + "\r\n")); socket->disconnectFromHost();
+    };
+    QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Failed, 3000);
+    QCOMPARE(client.Status().errorCode, QStringLiteral("UPDATE_SOURCE_URL")); QCOMPARE(server.requests.size(), 2);
+    QVERIFY(!client.Status().message.contains(QStringLiteral("fixture-secret")));
+    server.responder = [&server](QTcpSocket* socket, const QByteArray& path) {
+        socket->write(path.endsWith("latest") ? Http({}, 302, "Location: /same-origin\r\n") : Http(server.routes.value("/repos/fixture/editor/releases/latest"))); socket->disconnectFromHost();
+    };
+    QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000); QCOMPARE(server.requests.size(), 4);
+}
+
+void UpdateClientTests::ConfigurationWithoutTrustedKeyCanReadVersionButCannotDownload() {
+    QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start()); server.Publish(bundle);
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); auto source = server.Source(bundle, directory.path()); source.trustedPublicKeyHex.clear();
+    UpdateClient client(source, settings); QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
+    QVERIFY(!client.Status().canDownload); QVERIFY(!client.Download()); QCOMPARE(server.requests.size(), 1); QVERIFY(!client.Prepared());
+    source.apiRoot = QUrl(QStringLiteral("http://192.0.2.1/repos/fixture/editor"));
+    UpdateClient rejected(source, settings); QVERIFY(!rejected.Check()); QCOMPARE(rejected.Status().state, UpdateState::Failed);
+    QCOMPARE(rejected.Status().errorCode, QStringLiteral("UPDATE_CONFIGURATION")); QCOMPARE(server.requests.size(), 1);
+}
+
+void UpdateClientTests::ResponseBudgetTimeoutAndRedirectLoopAreBounded() {
+    QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start());
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); auto source = server.Source(bundle, directory.path()); source.requestTimeoutMs = 80;
+    UpdateClient client(source, settings);
+    server.responder = [](QTcpSocket*, const QByteArray&) {};
+    QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Failed, 3000);
+    QCOMPARE(client.Status().errorCode, QStringLiteral("UPDATE_NETWORK_TIMEOUT"));
+    server.responder = [](QTcpSocket* socket, const QByteArray&) { socket->write(Http({}, 302, "Location: /loop\r\n")); socket->disconnectFromHost(); };
+    QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Failed, 3000);
+    QCOMPARE(client.Status().errorCode, QStringLiteral("UPDATE_REDIRECT_LIMIT")); QCOMPARE(server.requests.size(), 7);
+    server.responder = [](QTcpSocket* socket, const QByteArray&) { socket->write(Http(QByteArray(2 * 1024 * 1024 + 1, 'x'))); socket->disconnectFromHost(); };
+    // 单响应预算不依赖短测试超时，换用常规测试源验证真正的字节拒绝。
+    source.requestTimeoutMs = 1000; UpdateClient bounded(source, settings);
+    QVERIFY(bounded.Check()); QTRY_VERIFY_WITH_TIMEOUT(bounded.Status().state == UpdateState::Failed, 3000);
+    QCOMPARE(bounded.Status().errorCode, QStringLiteral("UPDATE_RESPONSE_LIMIT")); QVERIFY(!bounded.Prepared());
+}
+
+QTEST_GUILESS_MAIN(UpdateClientTests)
+#include "UpdateClientTests.moc"

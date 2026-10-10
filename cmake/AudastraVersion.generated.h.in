@@ -1,0 +1,12 @@
+#pragma once
+
+#include <string_view>
+
+namespace War3Map::BuildInfo {
+inline constexpr std::string_view Version = "@AUD_VERSION@";
+inline constexpr std::string_view Commit = "@AUD_COMMIT@";
+inline constexpr std::string_view ReleaseOwner = "@RELEASE_OWNER@";
+inline constexpr std::string_view ReleaseRepository = "@RELEASE_REPOSITORY@";
+inline constexpr std::string_view UpdatePublicKeyHex = "@UPDATE_PUBLIC_KEY_HEX@";
+inline constexpr std::string_view FeedbackEndpoint = "@FEEDBACK_ENDPOINT@";
+}

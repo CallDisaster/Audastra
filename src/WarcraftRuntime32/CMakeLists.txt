@@ -1,0 +1,81 @@
+cmake_minimum_required(VERSION 3.24)
+project(AudastraWarcraftRuntime32 LANGUAGES CXX)
+
+if(NOT WIN32 OR NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
+    message(FATAL_ERROR "Warcraft runtime bridge requires Windows Win32 (-A Win32).")
+endif()
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_compile_options(/utf-8)
+set(detours "${CMAKE_CURRENT_LIST_DIR}/../../third_party/detours/src")
+add_library(audastra-detours STATIC
+    ${detours}/detours.cpp ${detours}/modules.cpp ${detours}/disasm.cpp
+    ${detours}/image.cpp ${detours}/creatwth.cpp ${detours}/disolx86.cpp
+    ${detours}/disolx64.cpp ${detours}/disolia64.cpp ${detours}/disolarm.cpp ${detours}/disolarm64.cpp)
+target_include_directories(audastra-detours PUBLIC "${detours}")
+target_compile_definitions(audastra-detours PRIVATE WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0601)
+# 上游旧实现跨过仅有平凡析构的局部初始化；兼容选项仅作用于此第三方目标。
+# https://learn.microsoft.com/cpp/build/reference/zc-gotoscope
+set_property(TARGET audastra-detours PROPERTY CXX_STANDARD 14)
+target_compile_options(audastra-detours PRIVATE /Zc:gotoScope-)
+
+add_executable(audastra-warcraft-launcher Launcher.cpp)
+add_library(audastra-warcraft-bootstrap SHARED Bootstrap.cpp Bootstrap.def RuntimeLuaProbe.cpp RuntimeLuaProbe.h)
+target_link_libraries(audastra-warcraft-launcher PRIVATE audastra-detours bcrypt)
+target_link_libraries(audastra-warcraft-bootstrap PRIVATE audastra-detours bcrypt)
+foreach(target audastra-warcraft-launcher audastra-warcraft-bootstrap)
+    target_compile_definitions(${target} PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
+    target_compile_options(${target} PRIVATE /utf-8 /W4 /permissive-)
+endforeach()
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(audastra-runtime-fixture-war3 fixtures/FakeWar3.cpp)
+    set_target_properties(audastra-runtime-fixture-war3 PROPERTIES OUTPUT_NAME war3 RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/fixtures")
+    add_library(audastra-runtime-fixture-game SHARED fixtures/FakeGame.cpp fixtures/FakeGame.def)
+    set_target_properties(audastra-runtime-fixture-game PROPERTIES OUTPUT_NAME Game RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/fixtures")
+    foreach(name ydbase lua53 ydwar3 yd_loader yd_jass_api yd_lua_engine)
+        add_library(audastra-runtime-fixture-${name} SHARED fixtures/FakePlugin.cpp)
+        set_target_properties(audastra-runtime-fixture-${name} PROPERTIES OUTPUT_NAME ${name} RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/fixtures/runtime")
+        target_compile_definitions(audastra-runtime-fixture-${name} PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+        if(name STREQUAL "lua53")
+            target_sources(audastra-runtime-fixture-${name} PRIVATE fixtures/FakeLua.cpp fixtures/FakeLua.def)
+        endif()
+        if(name STREQUAL "yd_jass_api" OR name STREQUAL "yd_lua_engine")
+            target_sources(audastra-runtime-fixture-${name} PRIVATE fixtures/FakePlugin.def)
+            if(name STREQUAL "yd_jass_api")
+                target_compile_definitions(audastra-runtime-fixture-${name} PRIVATE AUDASTRA_FIXTURE_PLUGIN_BIT=1)
+            else()
+                target_compile_definitions(audastra-runtime-fixture-${name} PRIVATE AUDASTRA_FIXTURE_PLUGIN_BIT=2)
+            endif()
+        endif()
+    endforeach()
+    add_executable(audastra-runtime-fixture-tests fixtures/RuntimeTests.cpp)
+    add_dependencies(audastra-runtime-fixture-tests audastra-warcraft-launcher audastra-warcraft-bootstrap
+        audastra-runtime-fixture-war3 audastra-runtime-fixture-game audastra-runtime-fixture-ydbase
+        audastra-runtime-fixture-lua53 audastra-runtime-fixture-ydwar3 audastra-runtime-fixture-yd_loader
+        audastra-runtime-fixture-yd_jass_api audastra-runtime-fixture-yd_lua_engine)
+    target_compile_definitions(audastra-runtime-fixture-tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(audastra-runtime-fixture-tests PRIVATE /utf-8 /W4 /permissive-)
+    target_link_libraries(audastra-runtime-fixture-tests PRIVATE bcrypt)
+    add_test(NAME audastra-runtime32-fixtures COMMAND audastra-runtime-fixture-tests
+        $<TARGET_FILE:audastra-warcraft-launcher> $<TARGET_FILE:audastra-warcraft-bootstrap>
+        $<TARGET_FILE:audastra-runtime-fixture-war3> $<TARGET_FILE:audastra-runtime-fixture-game>
+        $<TARGET_FILE_DIR:audastra-runtime-fixture-ydbase>)
+    set_tests_properties(audastra-runtime32-fixtures PROPERTIES TIMEOUT 60)
+    # 显式 hidden-window 取证独立运行；默认33-case suite不启用窗口。
+    add_executable(audastra-runtime-witness-tests fixtures/WitnessTests.cpp)
+    add_dependencies(audastra-runtime-witness-tests audastra-warcraft-launcher audastra-warcraft-bootstrap
+        audastra-runtime-fixture-war3 audastra-runtime-fixture-game audastra-runtime-fixture-ydbase
+        audastra-runtime-fixture-lua53 audastra-runtime-fixture-ydwar3 audastra-runtime-fixture-yd_loader
+        audastra-runtime-fixture-yd_jass_api audastra-runtime-fixture-yd_lua_engine)
+    target_compile_definitions(audastra-runtime-witness-tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(audastra-runtime-witness-tests PRIVATE /utf-8 /W4 /permissive-)
+    target_link_libraries(audastra-runtime-witness-tests PRIVATE bcrypt)
+    add_test(NAME audastra-runtime32-witness COMMAND audastra-runtime-witness-tests
+        $<TARGET_FILE:audastra-warcraft-launcher> $<TARGET_FILE:audastra-warcraft-bootstrap>
+        $<TARGET_FILE:audastra-runtime-fixture-war3> $<TARGET_FILE:audastra-runtime-fixture-game>
+        $<TARGET_FILE_DIR:audastra-runtime-fixture-ydbase>)
+    set_tests_properties(audastra-runtime32-witness PROPERTIES TIMEOUT 45)
+endif()

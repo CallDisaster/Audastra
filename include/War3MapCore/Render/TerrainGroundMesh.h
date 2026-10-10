@@ -1,0 +1,151 @@
+#pragma once
+
+#include "War3MapCore/MapData/MapTerrain.h"
+#include "War3MapCore/Render/TerrainTextureAtlas.h"
+
+#include <array>
+#include <limits>
+#include <optional>
+#include <string>
+
+namespace War3Map::Render {
+
+inline constexpr std::uint32_t TerrainGroundHeightColor = std::numeric_limits<std::uint32_t>::max();
+
+struct TerrainGroundMeshLimits {
+    // 默认值也是硬上限，只能收紧；超预算失败，不发布部分网格或把粗格拉伸贴图。
+    // 含过渡层：256×256 原格基础层 262144 顶点，另留过渡层余量。
+    std::size_t maxVertices = 1048576;
+    std::size_t maxIndices = 6291456;
+    std::size_t maxTextures = 16;
+    std::size_t maxTextureDimension = 2048;
+    std::size_t maxTextureBytes = 16 * 1024 * 1024;
+    std::size_t maxTextureChainBytes = 24 * 1024 * 1024;
+    std::size_t maxRgbaBytes = 64 * 1024 * 1024;
+    std::size_t maxBatches = 4096;
+    // 输出载荷、保活 RGBA、块元数据和本函数 scratch；不含借入地形及分配器管理开销。
+    std::size_t maxWorkingBytes = 128 * 1024 * 1024;
+};
+
+// 地表逐顶点光照（与原版地形相同的顶点光照：高度场法线 · 方向光 + 环境光）。
+// 平地亮度为 flatShade；朝光坡面更亮（上限 1，渲染 ABI 的颜色范围）、背光坡面更暗，
+// 悬崖回退格同样按坡度明暗。
+// 顶点颜色 = ambient + diffuse × max(法线·光向, 0)，逐分量夹到 [0,1]。原版昼夜光照由
+// SampleDayNight 给出；默认值为无 DNC 数据时的中性灰光（平地 0.9，背光面 0.35）。
+struct TerrainLighting {
+    bool enabled = true;
+    std::array<float, 3> towardLight{-0.45f, 0.35f, 0.82f}; // 指向光源，不必归一化，z 须 > 0
+    std::array<float, 3> ambient{0.35f, 0.35f, 0.35f};
+    std::array<float, 3> diffuse{0.6698592f, 0.6698592f, 0.6698592f};
+};
+
+// 水面样式：取自 Water.slk 中当前 tileset 的一行（waterID = 主 tileset 字母 + "Sha"）。
+struct TerrainWaterStyle {
+    float heightOffset = 0; // height × 128，与 W3E waterBaseHeight 相加
+    // RGBA 0..255：浅水/深水在各自深度区间两端的颜色与不透明度。
+    std::array<std::uint8_t, 4> shallowMinimum{}, shallowMaximum{}, deepMinimum{}, deepMaximum{};
+    // 明确选中的 Water.slk 帧；初始帧为 0，空纹理沿用历史白色回退并附带宿主诊断。
+    std::shared_ptr<const Image::DecodedImage> texture;
+    std::uint32_t frameIndex = 0, frameCount = 1;
+    std::string frameSourcePath, frameSourceSha256;
+};
+
+struct TerrainGroundVertex {
+    float x, y, z, red, green, blue, u, v;
+};
+
+struct TerrainGroundBatch {
+    std::uint32_t firstIndex = 0;
+    std::uint32_t indexCount = 0;
+    std::uint32_t textureIndex = TerrainGroundHeightColor;
+    bool alphaBlend = false; // 过渡层：按贴图 alpha 叠在之前的批次上
+    bool translucent = false; // 水面：半透明，渲染器在不透明模型之后绘制、不写深度
+};
+
+struct TerrainGroundBlock {
+    std::uint32_t tileX = 0, tileY = 0, tileWidth = 0, tileHeight = 0;
+    std::array<float, 3> minimum{}, maximum{};
+};
+
+struct TerrainGroundFallbackCounts {
+    std::size_t totalTiles = 0;
+    // 各原因可重叠，不能相加代替 totalTiles。荒芜标记本身不再触发高度色回退。
+    std::size_t blightTiles = 0; // 原格至少一角有荒芜标记；也包含因其它原因回退的格
+    std::size_t mixedCliffLayerTiles = 0;
+    std::size_t neighboringCliffTiles = 0;
+    std::size_t invalidGroundIndexTiles = 0;
+    std::size_t missingAtlasTiles = 0;
+    std::size_t invalidAtlasTiles = 0;
+};
+
+struct TerrainGroundMesh {
+    std::uint32_t sourceWidth = 0, sourceHeight = 0;
+    static constexpr std::uint32_t blockTileSize = 16;
+    // 前 tileCount×4 个顶点：每个原 tile 连续四个，固定 SW/SE/NW/NE；原 tile = vertexIndex / 4。
+    // 其后每个过渡层 quad 也是四个顶点，所属原 tile 见 overlayTiles。
+    // 只复制原始 XYZ，不调整坡道、悬崖或水面高度，不降采样。
+    std::vector<TerrainGroundVertex> vertices;
+    // 基础层按纹理稳定归组，地表过渡、荒芜和水面批次依次在后；每个 quad 为 (SW,SE,NW)、(SE,NE,NW)。
+    std::vector<std::uint32_t> indices;
+    std::vector<TerrainGroundBatch> batches;
+    // textureIndex 索引此列表；仅保活真正使用的 atlas，相同 shared_ptr 只占一个槽。
+    std::vector<std::shared_ptr<const TerrainAtlasSnapshot>> textures;
+    // 按块 row-major，末块可不足 16 格；本批 GPU 仍按纹理归组，没有宣称块剔除。
+    std::vector<TerrainGroundBlock> blocks;
+    // 第 i 个地表过渡或荒芜 quad（顶点从 tileCount×4 + i×4 起）所属的原 tile。
+    std::vector<std::uint32_t> overlayTiles;
+    // 水面 quad 排在过渡层之后，第 i 个所属的原 tile；XY 与原格相同，Z 为水面高度。
+    std::vector<std::uint32_t> waterTiles;
+    // 被悬崖模型覆盖的原 tile（与 tile 同序，空表示未提供覆盖）：保留四个顶点，但不写索引。
+    std::vector<std::uint8_t> hiddenTiles;
+    std::size_t hiddenTileCount = 0;
+    bool waterOmitted = false; // 有水但纹理槽已满或未提供样式，未画水面
+    std::optional<std::uint32_t> waterTextureIndex; // 合成水面透明度 atlas 的纹理槽，供来源审计区分原始图集
+    std::uint32_t waterFrameIndex = 0, waterFrameCount = 0; // 本网格实际选取的 Water.slk 帧身份
+    std::string waterFrameSourcePath, waterFrameSourceSha256;
+    std::size_t texturedTiles = 0;
+    // 使用已验证 8x4 布局的荒芜 atlas 覆盖的格数；不含高度色/悬崖回退格。
+    std::size_t blightTexturedTiles = 0;
+    // 原版荒芜 atlas 不可用或纹理预算不足时，以原地表贴图轻度逐角色调表示的格数。
+    std::size_t blightApproximationTiles = 0;
+    std::size_t waterFlaggedTiles = 0; // 仍只绘制地面，没有水面。
+    std::size_t mixedGroundTextureTiles = 0; // 四角材质不同的格子（贴图格以过渡层混合）
+    bool lit = false; // 顶点颜色已乘光照明暗
+    TerrainGroundFallbackCounts fallback;
+};
+
+// groundAtlases 必须与 header.groundTilesets 同序同长度；null 明确表示资源不可用。
+// 基础层取四角最小 ground 索引及 SW variation；其余每个更大的索引按所在角取 atlas 遮罩格
+// （东南 1、西南 2、东北 4、西北 8），按索引升序作为 alpha 过渡层叠加。
+// 荒芜 atlas 非空且为有效 8x4 时，按四角荒芜位在普通地表层之后绘制透明遮罩；全荒芜
+// 格取右侧基础变体。atlas 不可用或纹理槽不足时仍保留原地表贴图，仅对荒芜角做轻度色调近似，
+// 并分别记录 blightTexturedTiles / blightApproximationTiles。异 cliff layer、其八邻域、无效
+// ground 索引、四角任一缺失或无效 atlas 仍逐 tile 保留高度色。
+// 提供水面样式时，四角任一有水的格子追加一个半透明水面 quad（颜色按各角深度，透明度取四角平均，
+// 量化为合成 4×4 atlas 的 16 级；每格是明确选择的水面帧乘该级透明度，不推测播放时钟）。预算/结构错误无部分结果。
+// UV 左上原点，以实际尺寸半像素内缩；纹理 RGB 不做高度染色，基础层按不透明采样。
+// 顶点颜色：贴图格为灰度明暗（光照关闭时为 1），高度色格为高度色 × 明暗；渲染器以颜色乘贴图。
+// 法线取原格高度的中心差分（边缘单侧），与拼接后的显示高度一致，不修改 XYZ。
+// coveredTiles（可空，与 tile 同序）标记已由悬崖模型覆盖的格：这些格不画地面、不参与回退计数，
+// 其邻格也不再因“邻近悬崖”回退高度色；未覆盖的悬崖格（坡道、缺模型）仍按高度色显示。
+// 纯 CPU，只读，不执行资源 I/O、GPU、地图编辑或撤销；宿主负责 whole-map 高度回退。
+// effectiveGroundIndices 可空（沿用 raw）；非空必须与 vertices 同序，新派生索引必须合法。
+// 未改变的未知 raw 值保持逐 tile 高度色回退；全部基础/过渡
+// 材质读取共用它，不修改原始顶点或 palette。调用方负责派生语义与覆盖诊断。
+[[nodiscard]] Result<TerrainGroundMesh> BuildTerrainGroundMesh(
+    const MapData::TerrainGridSnapshot& terrain,
+    std::span<const std::shared_ptr<const TerrainAtlasSnapshot>> groundAtlases,
+    const TerrainGroundMeshLimits& limits = {}, const TerrainLighting& lighting = {},
+    const TerrainWaterStyle* water = nullptr, std::span<const std::uint8_t> coveredTiles = {},
+    std::shared_ptr<const TerrainAtlasSnapshot> blightAtlas = {},
+    std::span<const std::uint8_t> effectiveGroundIndices = {});
+
+// 水面在给定深度（水面高度 − 地面高度，世界单位）处的 RGBA（0..1）。
+// 深度 ≤ 64 在浅水两色间插值（10 以下取最小值），64–72 在深水两色间插值，再深取深水最大值。
+[[nodiscard]] std::array<float, 4> TerrainWaterColor(const TerrainWaterStyle& style, float depth);
+
+// 高度场在原格顶点 (x, y) 处的光照颜色（供网格与测试共用）；光照关闭时为白色。
+[[nodiscard]] std::array<float, 3> TerrainVertexShade(const MapData::TerrainGridSnapshot& terrain,
+    std::uint32_t x, std::uint32_t y, const TerrainLighting& lighting);
+
+} // namespace War3Map::Render

@@ -1,0 +1,93 @@
+{
+  "schema": 1,
+  "master": "audastra.svg",
+  "master_sha256": "dc52fcb428a365266f3ba801ddf731a431523045334fa982357dda61ffcf4944",
+  "approval": "Author approved geometric revision 2 in this conversation on 2026-10-05",
+  "adaptation": {
+    "viewBox": [
+      78.5,
+      70.5,
+      1097,
+      1097
+    ],
+    "background_clip": "frame-clip",
+    "geometry": "All approved paths, colors, and proportions preserved"
+  },
+  "renderer": {
+    "sharp": "0.35.4",
+    "vips": "8.18.6",
+    "workers": 1
+  },
+  "exports": [
+    {
+      "file": "icon-16.png",
+      "width": 16,
+      "height": 16,
+      "bytes": 565,
+      "sha256": "203116949ad150ded127dc1ff216720b29d46fc5329a9d841ade8f13f0eced12"
+    },
+    {
+      "file": "icon-24.png",
+      "width": 24,
+      "height": 24,
+      "bytes": 1018,
+      "sha256": "8d357c4a29025716446c4401e3bf2d7ae5e8423474f64c7c289a3dfbf71b83ca"
+    },
+    {
+      "file": "icon-32.png",
+      "width": 32,
+      "height": 32,
+      "bytes": 1516,
+      "sha256": "d628fef244bda3f66999fa8a589ac6cc959f0d075b22d8f1509de643c5fced5f"
+    },
+    {
+      "file": "icon-48.png",
+      "width": 48,
+      "height": 48,
+      "bytes": 3117,
+      "sha256": "d57ecc1246857e10dfa92094fa83f5ad570f7dab2eedc0a50967eced44976ced"
+    },
+    {
+      "file": "icon-64.png",
+      "width": 64,
+      "height": 64,
+      "bytes": 4918,
+      "sha256": "3e7d891d6c6d1ec2fbb457fc0c4db9a48b37bff4dea48d6ac7630d4938e4e410"
+    },
+    {
+      "file": "icon-128.png",
+      "width": 128,
+      "height": 128,
+      "bytes": 13546,
+      "sha256": "e2a47ead2afbd1115c2167d88320216f53e9437820bd1dc45d1cfba68deb192b"
+    },
+    {
+      "file": "icon-256.png",
+      "width": 256,
+      "height": 256,
+      "bytes": 36374,
+      "sha256": "7b17f91e7f89a50ba6dc45ffa9c9c763cd4c8a86ad6f7308d72129345095b366"
+    },
+    {
+      "file": "audastra-512.png",
+      "width": 512,
+      "height": 512,
+      "bytes": 104323,
+      "sha256": "0d8521afbc1cb106de33cccdcd9234be4b7165a332d7c355befd82018e24d48e"
+    },
+    {
+      "file": "audastra.ico",
+      "sizes": [
+        16,
+        24,
+        32,
+        48,
+        64,
+        128,
+        256
+      ],
+      "bytes": 61172,
+      "sha256": "9d427090edcc4c738e7a9c2ed67bfddfb1d2fd9e3c5c1450e18b24a67933bd96"
+    }
+  ]
+}

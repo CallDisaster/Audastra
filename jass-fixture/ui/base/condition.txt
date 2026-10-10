@@ -1,0 +1,8 @@
+[IsUnitAlive]
+returns=boolean
+[[.args]]
+type=unit
+[AndMultiple]
+returns=boolean
+[OrMultiple]
+returns=boolean

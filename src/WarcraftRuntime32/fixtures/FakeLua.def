@@ -1,0 +1,9 @@
+EXPORTS
+    CreateFakeLuaProbeState
+    DeleteFakeLuaProbeState
+    lua_pcallk
+    lua_gettop
+    lua_settop
+    lua_type
+    lua_tolstring
+    luaL_loadbufferx

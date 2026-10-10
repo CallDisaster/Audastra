@@ -1,0 +1,21 @@
+#pragma once
+
+#include <string_view>
+
+// 仅原创端到端测试使用；目标不得安装、打包或进入生产generated include目录。
+// 公钥对应UpdateFixtures::Signer固定原创seed，不是作者发布密钥。
+#ifndef AUDASTRA_UPDATE_HEALTH_FIXTURE_VERSION
+#define AUDASTRA_UPDATE_HEALTH_FIXTURE_VERSION "0.1.0"
+#endif
+#ifndef AUDASTRA_UPDATE_HEALTH_FIXTURE_COMMIT
+#define AUDASTRA_UPDATE_HEALTH_FIXTURE_COMMIT "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+#endif
+
+namespace War3Map::BuildInfo {
+inline constexpr std::string_view Version = AUDASTRA_UPDATE_HEALTH_FIXTURE_VERSION;
+inline constexpr std::string_view Commit = AUDASTRA_UPDATE_HEALTH_FIXTURE_COMMIT;
+inline constexpr std::string_view ReleaseOwner = "original-fixture";
+inline constexpr std::string_view ReleaseRepository = "test-only";
+inline constexpr std::string_view UpdatePublicKeyHex = "5e423033044f56a13a686799487bcbfa63dd1e39204cec27dd39a26daa615628";
+inline constexpr std::string_view FeedbackEndpoint = "";
+} // namespace War3Map::BuildInfo

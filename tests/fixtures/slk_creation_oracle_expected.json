@@ -1,0 +1,30 @@
+{
+  "schema": "slk-creation-authored-expectations-v1",
+  "provenance": "AuthoredExpectationsOnly",
+  "coverage": "OriginalInjectedOldNewFillRefreshOnly",
+  "note": "These small-case expectations were authored before execution. They are not an observed typed golden or a frontend/backend oracle. Per-step typed values and paths are authored in the SHA-bound Lua fixture.",
+  "targetLibrarySha256": "9BA2C9B8E5B53005CF5714E5188E533186D97F770C398E47E998B2B3D3CC74F1",
+  "fixtureSha256": "C95F11B9A7216EFB4F1C613C73BB2C402A39D14DDA5BF88A75799A15691329E8",
+  "cases": [
+    { "id": "initial_new", "cppPolicy": "supported", "operations": 1, "checks": 8, "save": 1, "remove": 0, "errors": 0 },
+    { "id": "scalar_types", "cppPolicy": "supported", "operations": 10, "checks": 9, "save": 1, "remove": 0, "errors": 0 },
+    { "id": "drop_then_grow", "cppPolicy": "supported", "operations": 4, "checks": 4, "save": 1, "remove": 0, "errors": 0 },
+    { "id": "grow_without_drop", "cppPolicy": "supported", "operations": 3, "checks": 1, "save": 1, "remove": 0, "errors": 0 },
+    { "id": "common_fill_first", "cppPolicy": "supported", "operations": 4, "checks": 2, "save": 1, "remove": 0, "errors": 0 },
+    { "id": "zero_and_regrow", "cppPolicy": "supported", "operations": 3, "checks": 3, "save": 1, "remove": 0, "errors": 0 },
+    { "id": "dense_extra_trimmed", "cppPolicy": "supported", "operations": 4, "checks": 2, "save": 1, "remove": 0, "errors": 0 },
+    { "id": "indexed_gap_repeat", "cppPolicy": "reject", "operations": 2, "checks": 2, "save": 1, "remove": 0, "errors": 0 },
+    { "id": "indexed_continuous", "cppPolicy": "supported", "operations": 2, "checks": 2, "save": 1, "remove": 0, "errors": 0 },
+    { "id": "indexed_gap_fallback", "cppPolicy": "supported", "operations": 2, "checks": 2, "save": 1, "remove": 0, "errors": 0 },
+    { "id": "old_generated_equal", "cppPolicy": "supported", "operations": 1, "checks": 2, "save": 0, "remove": 0, "errors": 0 },
+    { "id": "old_generated_changed", "cppPolicy": "supported", "operations": 1, "checks": 1, "save": 1, "remove": 0, "errors": 0 },
+    { "id": "old_generated_removed", "cppPolicy": "supported", "operations": 0, "checks": 1, "save": 0, "remove": 1, "errors": 0 },
+    { "id": "ordinary_collision", "cppPolicy": "reject", "operations": 2, "checks": 2, "save": 0, "remove": 0, "errors": 1 },
+    { "id": "standard_collision", "cppPolicy": "reject", "operations": 2, "checks": 1, "save": 0, "remove": 0, "errors": 1 },
+    { "id": "long_string_truncated", "cppPolicy": "reject", "operations": 2, "checks": 1, "save": 1, "remove": 0, "errors": 1 },
+    { "id": "sparse_level", "cppPolicy": "reject", "operations": 2, "checks": 2, "save": 1, "remove": 0, "errors": 0 },
+    { "id": "unknown_field", "cppPolicy": "reject", "operations": 2, "checks": 1, "save": 1, "remove": 0, "errors": 0 },
+    { "id": "floating_levels", "cppPolicy": "reject", "operations": 2, "checks": 3, "save": 1, "remove": 0, "errors": 0 },
+    { "id": "false_profile_default", "cppPolicy": "supported", "operations": 3, "checks": 2, "save": 1, "remove": 0, "errors": 0 }
+  ]
+}

@@ -1,0 +1,98 @@
+/* 由 tools/design_tokens.py 从 assets/design/tokens.json 生成，请勿手改。 */
+
+.studio,
+.studio-dialog,
+.design-sheet {
+  --bg: #151719;
+  --panel: #1b1e20;
+  --raised: #232729;
+  --hover: #2a3031;
+  --line: #303538;
+  --text: #e5e9e7;
+  --text-body: #c9cfcc;
+  --inline-code-accent: #aecbb9;
+  --muted: #9ba5a0;
+  --dim: #78837d;
+  --disabled: #69736e;
+  --accent: #8ad6b0;
+  --accent-soft: #8ad6b012;
+  --accent-line: #527b65;
+  --selection: #283d33;
+  --scrollbar: #49544e;
+  --amber: #cfb67c;
+  --violet: #b3a0d3;
+  --blue: #88b7ce;
+  --red: #e28e86;
+  --font-ui: "Microsoft YaHei UI", "Microsoft YaHei", "Source Han Sans SC VF", "Source Han Sans SC", "Segoe UI Variable", "Segoe UI", sans-serif;
+  --font-code: "JetBrains Mono", "Cascadia Mono", "Consolas", monospace;
+  --font-tiny: 11px;
+  --font-small: 12px;
+  --font-body: 13px;
+  --font-title: 16px;
+  --font-heading: 20px;
+  --radius-none: 0px;
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-pill: 999px;
+  --radius-small: 6px;
+  --radius: 8px;
+  --radius-large: 12px;
+  --shadow-popover: 8px;
+  --shadow-dialog: 12px;
+  --popover-padding: 6px;
+  --menu-item-height: 32px;
+  --row-height: 28px;
+  --header-height: 48px;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-bold: 700;
+}
+
+.studio.theme-midnight {
+  --bg: #111922;
+  --panel: #16212c;
+  --raised: #1d2b38;
+  --hover: #253a49;
+  --line: #304352;
+  --text: #e5e9e7;
+  --text-body: #c9cfcc;
+  --inline-code-accent: #b0cbc3;
+  --muted: #9ba5a0;
+  --dim: #78837d;
+  --disabled: #66747f;
+  --accent: #97c9e8;
+  --accent-soft: #97c9e812;
+  --accent-line: #547185;
+  --selection: #293946;
+  --scrollbar: #43566a;
+  --amber: #cfb67c;
+  --violet: #b3a0d3;
+  --blue: #88b7ce;
+  --red: #e28e86;
+}
+
+.studio.theme-paper {
+  --bg: #e9edeb;
+  --panel: #f7f9f8;
+  --raised: #ffffff;
+  --hover: #dfe8e2;
+  --line: #ced8d1;
+  --text: #25332d;
+  --text-body: #3c4d43;
+  --inline-code-accent: #426e56;
+  --muted: #55695e;
+  --dim: #62746a;
+  --disabled: #829087;
+  --accent: #276f50;
+  --accent-soft: #276f5010;
+  --accent-line: #91b39d;
+  --selection: #deeee3;
+  --scrollbar: #b4c2b9;
+  --amber: #81652a;
+  --violet: #7255a0;
+  --blue: #367591;
+  --red: #b33d36;
+}

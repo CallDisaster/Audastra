@@ -1,0 +1,351 @@
+#include "War3MapCore/Hash.h"
+#include "War3MapCore/MapArchiveSession.h"
+#include "War3MapCore/MapDocument.h"
+#include "War3MapCore/MapData/MapSettings.h"
+#include "War3MapCore/Services/CodeCheckProject.h"
+#include "War3MapCore/Trigger/TriggerCodec.h"
+#include "../MapDataFixtures.h"
+
+#include <Windows.h>
+
+#include <algorithm>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+namespace {
+
+using namespace War3Map;
+using namespace War3Map::Services;
+
+void Require(bool condition, std::string_view reason) {
+    if (!condition) throw std::runtime_error(std::string(reason));
+}
+
+std::vector<std::byte> OriginalBytes(std::string_view text) {
+    const auto* first = reinterpret_cast<const std::byte*>(text.data());
+    return {first, first + text.size()};
+}
+
+std::string PathText(const std::filesystem::path& path) {
+    const auto text = path.generic_u8string();
+    return {reinterpret_cast<const char*>(text.data()), text.size()};
+}
+
+void WriteOriginalText(const std::filesystem::path& path, std::string_view text) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    Require(output.good(), "create original temporary text source");
+    output.write(text.data(), static_cast<std::streamsize>(text.size()));
+    output.close();
+    Require(output.good(), "write complete original temporary text source");
+}
+
+class TemporaryDirectory final {
+public:
+    TemporaryDirectory() {
+        static std::atomic<unsigned> sequence{0};
+        parent_ = std::filesystem::absolute(std::filesystem::temp_directory_path()).lexically_normal();
+        path_ = parent_ / (std::string(kPrefix) + std::to_string(GetCurrentProcessId()) + "-"
+            + std::to_string(GetTickCount64()) + "-" + std::to_string(sequence.fetch_add(1)));
+        Require(std::filesystem::create_directory(path_), "create sole original modern-project fixture directory");
+    }
+    ~TemporaryDirectory() {
+        // 只删除本测试创建的、已核对绝对父目录与唯一前缀的临时目录。
+        if (path_.is_absolute() && path_.parent_path() == parent_
+            && path_.filename().string().starts_with(kPrefix)) {
+            std::error_code error;
+            std::filesystem::remove_all(path_, error);
+        }
+    }
+    const std::filesystem::path& Path() const noexcept { return path_; }
+private:
+    static constexpr std::string_view kPrefix = "Forge-modern-project-check-original-";
+    std::filesystem::path parent_, path_;
+};
+
+std::vector<std::byte> OriginalEmptyWtg() {
+    MapDataFixtures::Fixture fixture;
+    fixture.Raw("WTG!"); fixture.Int(7); fixture.Int(0); fixture.Int(2); fixture.Int(0); fixture.Int(0);
+    return std::move(fixture.bytes);
+}
+
+std::vector<std::byte> OriginalHeaderWct(std::string_view header) {
+    MapDataFixtures::Fixture fixture;
+    fixture.Int(1); fixture.String(""); fixture.Int(static_cast<std::int32_t>(header.size() + 1));
+    fixture.String(header); fixture.Int(0);
+    return std::move(fixture.bytes);
+}
+
+std::vector<std::byte> OriginalClassicSettings() {
+    auto parsed = MapData::MapSettings::Parse(MapDataFixtures::FullMapSettingsV25().bytes);
+    Require(parsed.Succeeded() && parsed.value && parsed.value->FullyParsed(), "parse original complete W3I v25 fixture");
+    auto& settings = *parsed.value;
+    settings.mapName = "Original modern checker fixture";
+    settings.author = "Original service regression";
+    settings.description = "No authored map data or Warcraft runtime is used";
+    settings.recommendedPlayers = "0";
+    settings.flags = 0;
+    settings.environment = {};
+    settings.players.clear(); settings.forces.clear(); settings.custom.emplace();
+    auto encoded = settings.Serialize();
+    Require(encoded.Succeeded() && encoded.value, "serialize minimal original W3I v25 through production codec");
+    const auto verified = MapData::MapSettings::Parse(*encoded.value);
+    Require(verified.Succeeded() && verified.value && verified.value->FullyParsed()
+        && verified.value->SourceFormatVersion() == 25 && verified.value->scriptLanguage == 0,
+        "original settings must retain the fully parsed classic JASS layout");
+    return std::move(*encoded.value);
+}
+
+// 原创最小声明仅覆盖本夹具生产整图生成器实际发射的空地图初始化调用；不是运行库替代品。
+constexpr std::string_view kOriginalCommon =
+    "type player extends handle\n"
+    "type unit extends handle\n"
+    "type trigger extends handle\n"
+    "type sound extends handle\n"
+    "type rect extends handle\n"
+    "type weathereffect extends handle\n"
+    "globals\n"
+    "constant integer CAMERA_MARGIN_LEFT = 0\n"
+    "constant integer CAMERA_MARGIN_RIGHT = 1\n"
+    "constant integer CAMERA_MARGIN_TOP = 2\n"
+    "constant integer CAMERA_MARGIN_BOTTOM = 3\n"
+    "constant integer MAP_PLACEMENT_USE_MAP_SETTINGS = 0\n"
+    "endglobals\n"
+    "native GetCameraMargin takes integer side returns real\n"
+    "native SetCameraBounds takes real a, real b, real c, real d, real e, real f, real g, real h returns nothing\n"
+    "native SetDayNightModels takes string terrainModel, string unitModel returns nothing\n"
+    "native NewSoundEnvironment takes string name returns nothing\n"
+    "native SetAmbientDaySound takes string name returns nothing\n"
+    "native SetAmbientNightSound takes string name returns nothing\n"
+    "native SetMapMusic takes string name, boolean looping, integer index returns nothing\n"
+    "native SetMapName takes string name returns nothing\n"
+    "native SetMapDescription takes string description returns nothing\n"
+    "native SetPlayers takes integer count returns nothing\n"
+    "native SetTeams takes integer count returns nothing\n"
+    "native SetGamePlacement takes integer placement returns nothing\n";
+
+constexpr std::string_view kOriginalBlizzard =
+    "function InitBlizzard takes nothing returns nothing\nendfunction\n"
+    "function InitGenericPlayerSlots takes nothing returns nothing\nendfunction\n";
+
+// cfg 注入实际追加在整图正文之后。原创库显式声明 vJass 依赖，由生产展开器排序；
+// 不能让作者正文前向调用稍后才定义的普通 JASS 函数，也不能通过补 native 绕过顺序守卫。
+constexpr std::string_view kBaseInjection =
+    "library BaseProbe\n"
+    "function BaseInjectedProbe takes nothing returns integer\nreturn 3\nendfunction\n"
+    "endlibrary\n";
+constexpr std::string_view kAddonInjection =
+    "library AddonProbe\n"
+    "function AddonInjectedProbe takes nothing returns integer\nreturn 7\nendfunction\n"
+    "endlibrary\n";
+constexpr std::string_view kChangedAddonInjection =
+    "library AddonProbe\n"
+    "function AddonInjectedProbe takes nothing returns integer\nreturn 1907\nendfunction\n"
+    "endlibrary\n";
+constexpr std::string_view kQuotedInclude =
+    "function IncludedProbe takes nothing returns integer\nreturn 11\nendfunction\n";
+constexpr std::string_view kAuthorHeader =
+    "library AuthorFixture requires BaseProbe, AddonProbe\n"
+    "#include \"Nested/IncludedProbe.h\"\n"
+    "function AuthorProbe takes nothing returns integer\n"
+    "return BaseInjectedProbe() + AddonInjectedProbe() + IncludedProbe()\n"
+    "endfunction\n"
+    "endlibrary\n";
+
+class ModernProjectFixture final {
+public:
+    ModernProjectFixture() {
+        tool = temporary.Path() / "tool";
+        source = temporary.Path() / "maps" / "original.w3x";
+        baseLibrary = tool / "ui/base/jass/BaseProbe.j";
+        addonLibrary = tool / "ui/addon/jass/AddonProbe.j";
+        quotedInclude = tool / "ui/addon/jass/Nested/IncludedProbe.h";
+        WriteOriginalText(tool / "ui/config", "base\naddon\n");
+        WriteOriginalText(tool / "ui/base/define.txt", "[TriggerTypes]\ntrigger=0,1,1,触发器\n");
+        WriteOriginalText(tool / "ui/addon/define.txt", "[TriggerTypes]\nProbeInteger=0,1,1,原创类型,integer\n");
+        WriteOriginalText(tool / "compiler/jass/24/common.j", kOriginalCommon);
+        WriteOriginalText(tool / "compiler/jass/24/blizzard.j", kOriginalBlizzard);
+        WriteOriginalText(tool / "compiler/include/WaveForce.i", "// original forced include\n");
+        for (const auto* name : {"YDTrigger.h", "Globals.h", "Function.h"}) {
+            WriteOriginalText(tool / "compiler/include/YDTrigger" / name, "// original empty generator include\n");
+        }
+        WriteOriginalText(tool / "ui/base/jass/BaseProbe.cfg", "[general]\nBaseInjectedProbe\n");
+        WriteOriginalText(baseLibrary, kBaseInjection);
+        WriteOriginalText(tool / "ui/addon/jass/AddonProbe.cfg", "[general]\nAddonInjectedProbe\n");
+        WriteOriginalText(addonLibrary, kAddonInjection);
+        WriteOriginalText(quotedInclude, kQuotedInclude);
+        auto catalog = Trigger::UiCatalog::Load(tool);
+        Require(catalog.Succeeded() && catalog.value && catalog.value->Layers().size() == 2,
+            "load the actual two enabled original modern UI layers");
+        originalWtg = OriginalEmptyWtg(); originalWct = OriginalHeaderWct(kAuthorHeader);
+        auto document = Trigger::WtgWctCodec{}.Parse(originalWtg, originalWct, *catalog.value);
+        Require(document.Succeeded() && document.value, "parse the original sealed WTG and WCT together");
+        const std::vector<MapArchiveMember> members{{"war3map.w3i", OriginalClassicSettings()},
+            {"war3mapUnits.doo", MapDataFixtures::EmptyUnitsV8Sub11()},
+            {"war3map.doo", MapDataFixtures::EmptyDoodadsV8Sub11()},
+            {"war3map.wtg", originalWtg}, {"war3map.wct", originalWct},
+            {"war3map.j", OriginalBytes("// original source script; shared checker must generate its own private candidate\n")}};
+        std::filesystem::create_directories(source.parent_path());
+        const auto written = WriteVerifiedArchive(source, members);
+        Require(written.Succeeded() && written.value, "write and read back the sole original small map archive");
+        sourceSha = written.value->sha256;
+        const auto opened = MapArchiveSession::Open(source);
+        Require(opened.Succeeded() && opened.value && opened.value->SourceSha256() == sourceSha,
+            "bind the actual original archive SHA");
+        auto map = MapDocument::FromArchive(*opened.value);
+        const auto initialization = map.InitializationSourceStatus();
+        if (!initialization.Succeeded()) {
+            std::string reason = "source archive supplies complete classic initialization data";
+            for (const auto& diagnostic : initialization.diagnostics) reason += "\n" + diagnostic.code + " " + diagnostic.message;
+            throw std::runtime_error(reason);
+        }
+        Require(map.Settings() && map.Settings()->formatVersion == 25
+            && map.Units() && map.Units()->units.empty()
+            && map.Doodads() && map.Doodads()->doodads.empty() && map.Doodads()->specialDoodads.empty(),
+            "source archive supplies parsed W3I25 and actual empty native placement members");
+        auto snapshot = std::make_shared<CodeCheckProjectSnapshot>();
+        snapshot->binding = "original-modern-project/" + sourceSha;
+        snapshot->revision = 1; snapshot->sourcePath = source; snapshot->sourceSha256 = sourceSha;
+        snapshot->toolRoot = tool; snapshot->uiRoot = tool / "ui";
+        snapshot->triggers = std::make_shared<const Trigger::TriggerDocument>(std::move(*document.value));
+        snapshot->catalog = std::make_shared<const Trigger::UiCatalog>(std::move(*catalog.value));
+        snapshot->map = std::move(map);
+        frozen = std::move(snapshot);
+    }
+
+    void RequireSourceUnchanged() const {
+        const auto hash = Sha256File(source);
+        Require(hash.Succeeded() && hash.value && *hash.value == sourceSha, "shared checks must not modify the original map bytes");
+        const auto encoded = Trigger::WtgWctCodec{}.Serialize(*frozen->triggers, *frozen->catalog);
+        Require(encoded.Succeeded() && encoded.value && encoded.value->wtg == originalWtg && encoded.value->wct == originalWct,
+            "private draft checking must not publish changes to the sealed live trigger document");
+    }
+
+    TemporaryDirectory temporary;
+    std::filesystem::path tool, source, baseLibrary, addonLibrary, quotedInclude;
+    std::string sourceSha;
+    std::vector<std::byte> originalWtg, originalWct;
+    std::shared_ptr<const CodeCheckProjectSnapshot> frozen;
+};
+
+void RequireFull(const CodeCheckResult& result, std::string_view label) {
+    if (result.Succeeded() && result.completed && result.syntaxChecked && result.semanticChecked
+        && result.contextComplete && !result.cancelled && result.declarations.completed) return;
+    std::string message(label);
+    message += ": reason=" + result.reason;
+    for (const auto& diagnostic : result.diagnostics) {
+        message += "\n" + diagnostic.code + " " + diagnostic.source + ":" + std::to_string(diagnostic.line)
+            + " " + diagnostic.message;
+    }
+    throw std::runtime_error(message);
+}
+
+bool HasOwnedSource(const CodeCheckResult& result, const std::filesystem::path& path, std::string_view text) {
+    return std::any_of(result.externalSources.begin(), result.externalSources.end(), [&](const auto& source) {
+        return source.name == PathText(path) && source.text == text;
+    });
+}
+
+bool HasActualDeclaration(const CodeCheckResult& result, std::string_view name, const std::filesystem::path& path,
+    std::uint32_t sourceLine = 1) {
+    return std::any_of(result.declarations.symbols.begin(), result.declarations.symbols.end(), [&](const auto& symbol) {
+        return symbol.name == name && symbol.source == PathText(path) && symbol.line == sourceLine
+            && symbol.kind == Jass::DeclarationKind::Function && symbol.type == "integer";
+    });
+}
+
+void ActualModernLayerSourcesAndRepeatedCache() {
+    ModernProjectFixture fixture;
+    CodeCheckProjectCache cache;
+    for (const auto generation : {101u, 102u}) {
+        const auto checked = CheckProjectCode(fixture.frozen, cache, {}, std::string(kAuthorHeader), CodeLanguage::VJass, generation);
+        RequireFull(checked, "quoted enabled-layer include and both actual cfg libraries must have complete project semantics");
+        Require(checked.generation == generation && checked.contextBinding == fixture.frozen->binding,
+            "same cache recheck must retain the requested generation and actual snapshot binding");
+        Require(checked.externalSourcesComplete && HasOwnedSource(checked, fixture.baseLibrary, kBaseInjection)
+            && HasOwnedSource(checked, fixture.addonLibrary, kAddonInjection)
+            && HasOwnedSource(checked, fixture.quotedInclude, kQuotedInclude),
+            "actual checked injection and quoted include bytes must be owned and navigable");
+        Require(HasActualDeclaration(checked, "BaseInjectedProbe", fixture.baseLibrary, 2)
+            && HasActualDeclaration(checked, "AddonInjectedProbe", fixture.addonLibrary, 2)
+            && HasActualDeclaration(checked, "IncludedProbe", fixture.quotedInclude),
+            "shared production parser must index real library/include declarations at their own source lines");
+        fixture.RequireSourceUnchanged();
+    }
+}
+
+void ActualLayerLibraryChangeRejectsOldContextThenRecaptures() {
+    ModernProjectFixture fixture;
+    CodeCheckProjectCache cache;
+    RequireFull(CheckProjectCode(fixture.frozen, cache, {}, std::string(kAuthorHeader), CodeLanguage::VJass, 201),
+        "freeze original modern library identity");
+    WriteOriginalText(fixture.addonLibrary, kChangedAddonInjection);
+    const auto stale = CheckProjectCode(fixture.frozen, cache, {}, std::string(kAuthorHeader), CodeLanguage::VJass, 202);
+    Require(!stale.semanticChecked && !stale.contextComplete && !stale.reason.empty()
+        && !HasOwnedSource(stale, fixture.addonLibrary, kAddonInjection),
+        "changed actual UI J source must not reuse old full-semantic context or stale navigation bytes");
+    fixture.RequireSourceUnchanged();
+    const auto recaptured = CheckProjectCode(fixture.frozen, cache, {}, std::string(kAuthorHeader), CodeLanguage::VJass, 203);
+    RequireFull(recaptured, "next actual request must explicitly recapture changed enabled-layer source");
+    Require(HasOwnedSource(recaptured, fixture.addonLibrary, kChangedAddonInjection)
+        && !HasOwnedSource(recaptured, fixture.addonLibrary, kAddonInjection)
+        && HasActualDeclaration(recaptured, "AddonInjectedProbe", fixture.addonLibrary, 2),
+        "recaptured full context must carry only the actual new library bytes and original source identity");
+    fixture.RequireSourceUnchanged();
+}
+
+void UnboundRootsCannotSupplyQuotedIncludesOrInjection() {
+    ModernProjectFixture fixture;
+    CodeCheckProjectCache cache;
+    const auto outside = fixture.temporary.Path() / "unbound/Leak.h";
+    constexpr std::string_view leak = "function UnboundIncludeProbe takes nothing returns integer\nreturn 71\nendfunction\n";
+    WriteOriginalText(outside, leak);
+    const auto unenabled = fixture.tool / "ui/unenabled/jass/UnboundProbe.j";
+    constexpr std::string_view unboundInjection = "function UnboundInjectedProbe takes nothing returns integer\nreturn 73\nendfunction\n";
+    WriteOriginalText(unenabled.parent_path() / "UnboundProbe.cfg", "[general]\nUnboundInjectedProbe\n");
+    WriteOriginalText(unenabled, unboundInjection);
+    // 文件确实存在；拒绝依赖来源资格，而不是碰巧找不到测试文件。
+    Require(std::filesystem::is_regular_file(outside) && std::filesystem::is_regular_file(unenabled),
+        "original unbound negative sources really exist on disk");
+    const std::string outsideDraft = "#include \"../unbound/Leak.h\"\n"
+        "function AuthorProbe takes nothing returns integer\nreturn UnboundIncludeProbe()\nendfunction\n";
+    const auto include = CheckProjectCode(fixture.frozen, cache, {}, outsideDraft, CodeLanguage::VJass, 301);
+    Require(!include.contextComplete && !include.semanticChecked && !include.reason.empty()
+        && !HasOwnedSource(include, outside, leak)
+        && !HasActualDeclaration(include, "UnboundIncludeProbe", outside),
+        "quoted parent traversal cannot read an existing external root without a binding");
+    const std::string injectionDraft = "function AuthorProbe takes nothing returns integer\n"
+        "return UnboundInjectedProbe()\nendfunction\n";
+    const auto injection = CheckProjectCode(fixture.frozen, cache, {}, injectionDraft, CodeLanguage::VJass, 302);
+    Require(injection.completed && injection.syntaxChecked && injection.semanticChecked && injection.contextComplete
+        && !injection.Succeeded() && !HasOwnedSource(injection, unenabled, unboundInjection)
+        && std::any_of(injection.diagnostics.begin(), injection.diagnostics.end(), [](const auto& diagnostic) {
+            return diagnostic.message.find("UnboundInjectedProbe") != std::string::npos;
+        }), "a disabled UI layer must not inject a real but unauthorized function to satisfy semantics");
+    fixture.RequireSourceUnchanged();
+}
+
+} // namespace
+
+int main() {
+    try {
+        ActualModernLayerSourcesAndRepeatedCache();
+        ActualLayerLibraryChangeRejectsOldContextThenRecaptures();
+        UnboundRootsCannotSupplyQuotedIncludesOrInjection();
+        std::cout << "Original modern project: enabled UI injection, quoted include, repeated cache, changed identity and unbound roots passed\n";
+        return 0;
+    } catch (const std::exception& error) {
+        std::cerr << error.what() << '\n';
+        return 1;
+    }
+}

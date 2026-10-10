@@ -1,0 +1,8 @@
+# UTF-8 TSV（字段间是 TAB）；同进程连续三帧，两实例使用同一模型及队伍色。
+# instance: id model action elapsedMs x y z angleRadians scaleX scaleY scaleZ team
+instance	1	Units\Human\Footman\Footman.mdx	Stand	500	-140	0	0	0	1	1	1	0
+instance	2	Units\Human\Footman\Footman.mdx	Walk	250	140	0	0	0	1	1	1	0
+capture	initial
+time	2	283
+capture	walk_plus33
+capture	repeat

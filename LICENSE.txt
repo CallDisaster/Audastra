@@ -1,0 +1,8 @@
+PolyForm Noncommercial License 1.0.0
+
+本软件的许可证条款见：
+https://polyformproject.org/licenses/noncommercial/1.0.0
+
+Required Notice: Copyright (c) 2026 CallDisaster. Audastra. Commercial use requires a separate written license from the copyright holder. Contact: https://github.com/CallDisaster
+
+Additional permission: maps, campaigns and other works you make with the software may be used, published and sold for any purpose, including commercial purposes; see NOTICE.md for the full text. Selling or commercially distributing the software itself still requires a separate written license.

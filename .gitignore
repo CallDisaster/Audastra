@@ -1,0 +1,78 @@
+# Build trees
+/build/
+/build-*/
+/out/
+/artifacts/
+/cmake-build-*/
+
+# IDE / editor
+/.vs/
+/.vscode/
+/.idea/
+CMakeUserPresets.json
+*.user
+*.suo
+*.VC.db
+*.VC.VC.opendb
+*.ncb
+*.aps
+*.opensdf
+*.sdf
+*.sln.docstates
+
+# Compiled / binary artifacts (never commit)
+__pycache__/
+*.py[cod]
+*.obj
+*.o
+*.a
+*.lib
+*.dll
+*.so
+*.dylib
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.idb
+*.ipdb
+*.iobj
+*.tlog
+*.lastbuildstate
+*.recipe
+*.pch
+*.gch
+
+# Map / archive binaries
+*.w3x
+*.w3m
+*.mpq
+*.w3n
+
+# Local-only validation material
+/private-fixtures/
+/local-validation/
+# Warcraft/YDWE/UI 库可能包含第三方或地图专用定义，只允许作为本机数据根。
+/data/ui/
+*.local.md
+.env
+.env.*
+*.pem
+*.key
+credentials*
+secrets*
+# 凭据存储的产品源码不属于真实凭据文件；只放行这两个明确路径。
+!src/QtAgent/CredentialStore.cpp
+!src/QtAgent/CredentialStore.h
+
+# OS junk
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# 字体文件由 tools/fetch-fonts.ps1 下载，不入库（仓库只保留清单与授权文本）
+/third_party/fonts/files/
+
+# 本机工具输出
+.playwright-cli/
+editor-ui/lint.local.json

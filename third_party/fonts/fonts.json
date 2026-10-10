@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "note": "字体文件不入库：由 tools/fetch-fonts.ps1 按固定版本与 SHA-256 下载到 third_party/fonts/files/（已忽略），发布时打包。",
+  "fonts": [
+    {
+      "id": "source-han-sans-sc",
+      "family": "Source Han Sans SC",
+      "role": "ui",
+      "version": "2.005R",
+      "license": "OFL-1.1",
+      "licenseFile": "LICENSES/SourceHanSans-OFL-1.1.txt",
+      "homepage": "https://github.com/adobe-fonts/source-han-sans",
+      "url": "https://raw.githubusercontent.com/adobe-fonts/source-han-sans/2.005R/Variable/TTF/SourceHanSansSC-VF.ttf",
+      "sha256": "68f866374d8ff04d2103c5b2907f1cab2dbec91ac0fb6ad0b801c6db0c1faa80",
+      "size": 36035552,
+      "files": [
+        { "output": "SourceHanSansSC-VF.ttf", "sha256": "68f866374d8ff04d2103c5b2907f1cab2dbec91ac0fb6ad0b801c6db0c1faa80" }
+      ]
+    },
+    {
+      "id": "jetbrains-mono",
+      "family": "JetBrains Mono",
+      "role": "code",
+      "version": "2.304",
+      "license": "OFL-1.1",
+      "licenseFile": "LICENSES/JetBrainsMono-OFL-1.1.txt",
+      "homepage": "https://github.com/JetBrains/JetBrainsMono",
+      "url": "https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip",
+      "sha256": "6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf",
+      "size": 5622857,
+      "files": [
+        { "member": "fonts/variable/JetBrainsMono[wght].ttf", "output": "JetBrainsMono-VF.ttf", "sha256": "662a196d58f1183bf2d77428b6d5283fe3f45161ab021bea4036bc98e5cac016" },
+        { "member": "fonts/variable/JetBrainsMono-Italic[wght].ttf", "output": "JetBrainsMono-Italic-VF.ttf", "sha256": "f115aaa12113718c02ce72864fe6823b87241bc23d3e44cf1220155f861063f2" }
+      ]
+    }
+  ]
+}

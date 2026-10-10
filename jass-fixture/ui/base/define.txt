@@ -1,0 +1,4 @@
+[TriggerParams]
+Footman=0,unitcode,'hfoo',步兵
+PresetInteger=0,integer,7,七
+PresetPlayer=0,player,Player(0),玩家一

@@ -1,0 +1,6 @@
+[TimerEvent]
+script_name=TriggerRegisterTimerEvent
+[[.args]]
+type=real
+[[.args]]
+type=boolean
