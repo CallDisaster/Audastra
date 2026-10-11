@@ -40,7 +40,7 @@ inline HANDLE OpenLockedFile(const std::filesystem::path& path) {
     }
     return handle;
 }
-inline std::string Sha256(HANDLE file) {
+inline std::string Sha256(HANDLE file, std::uint64_t maxBytes = 64ull * 1024 * 1024) {
     BCRYPT_ALG_HANDLE algorithm = nullptr;
     BCRYPT_HASH_HANDLE hash = nullptr;
     DWORD size = 0, returned = 0;
@@ -58,7 +58,7 @@ inline std::string Sha256(HANDLE file) {
         if (!ReadFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr)) { ok = false; break; }
         if (read == 0) break;
         total += read;
-        if (total > 64ull * 1024 * 1024 || BCryptHashData(hash, bytes.data(), read, 0) < 0) { ok = false; break; }
+        if (total > maxBytes || BCryptHashData(hash, bytes.data(), read, 0) < 0) { ok = false; break; }
     }
     if (ok) ok = BCryptFinishHash(hash, digest.data(), static_cast<ULONG>(digest.size()), 0) >= 0;
     if (hash) BCryptDestroyHash(hash);
