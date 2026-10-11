@@ -15,6 +15,7 @@
 #include "War3MapCore/Render/EditorOverlay.h"
 #include "War3MapCore/Render/ModelPicking.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
+#include "War3MapCore/MapData/TerrainRampEditing.h"
 #include "Widgets/ElidedLabel.h"
 
 #include <QAbstractButton>
@@ -814,7 +815,7 @@ void WorldModule::StartTerrainStroke(double x, double y) {
     brush.shape = static_cast<MapData::TerrainBrushShape>(std::max(0, terrainShapes_->checkedId()));
     brush.size = static_cast<std::uint32_t>(terrainRadius_->value());
     brush.strength = static_cast<float>(terrainStrength_->value());
-    brush.value = terrainBlightModes_->checkedId() != 0;
+    brush.value = (brush.kind == MapData::TerrainBrushKind::Ramp ? terrainRampModes_ : terrainBlightModes_)->checkedId() != 0;
     brush.levelDelta = terrainCliffDeltas_->checkedId();
     brush.cliffTexture = static_cast<std::uint8_t>(terrainCliffTexture_->currentIndex());
     brush.waterHeight = static_cast<float>(terrainWaterHeight_->value());
@@ -832,6 +833,13 @@ void WorldModule::StartTerrainStroke(double x, double y) {
         return;
     }
     const MapData::TerrainStrokePoint first{x, y};
+    if (brush.kind == MapData::TerrainBrushKind::Ramp) {
+        const auto plan = MapData::PlanTerrainRamp(*source, first);
+        if (!plan.Succeeded()) {
+            selectionStatus_->setText(tr("不能创建或移除坡道：%1").arg(WorldDiagnosticText(plan.diagnostics)));
+            return;
+        }
+    }
     const auto anchor = MapData::CaptureTerrainStrokeAnchor(*source, first);
     if (!anchor.Succeeded()) {
         selectionStatus_->setText(tr("不能从按下位置建立笔刷锚点：%1").arg(WorldDiagnosticText(anchor.diagnostics)));
@@ -848,6 +856,30 @@ void WorldModule::StartTerrainStroke(double x, double y) {
 
 void WorldModule::ExtendTerrainStroke(double x, double y) {
     if (!strokeBase_ || !std::isfinite(x) || !std::isfinite(y)) return;
+    if (strokeBrush_.kind == MapData::TerrainBrushKind::Ramp) {
+        // 坡道按所在悬崖格取法向；吸附到最近顶点会把高侧半格错误移到平地。
+        // 保留原落点，拖动按半格补采样；Core 仍对整笔预检，坏点不能留下半笔修改。
+        if (strokePoints_.empty()) strokePoints_.push_back({x, y});
+        else {
+            const auto last = strokePoints_.back();
+            const double distance = std::hypot(x - last.x, y - last.y);
+            if (distance < 0.01) return;
+            const double steps = std::ceil(distance / (MapData::TerrainGridSnapshot::tileSize * 0.5));
+            const auto available = 65536 - strokePoints_.size();
+            if (!std::isfinite(steps) || steps > static_cast<double>(available)) {
+                CancelTerrainStroke();
+                selectionStatus_->setText(tr("坡道笔划超过采样预算，本笔已取消"));
+                return;
+            }
+            const auto count = static_cast<std::size_t>(steps);
+            for (std::size_t step = 1; step <= count; ++step) {
+                const double t = static_cast<double>(step) / static_cast<double>(count);
+                strokePoints_.push_back({last.x + (x - last.x) * t, last.y + (y - last.y) * t});
+            }
+        }
+        QueueTerrainRender(strokeBase_, true);
+        return;
+    }
     const auto& header = strokeBase_->header;
     const auto grid = [&](double world, float offset, std::uint32_t extent) {
         const double coordinate = (world - offset) / MapData::TerrainGridSnapshot::tileSize;
@@ -1020,11 +1052,19 @@ void WorldModule::UpdateOverlay() {
     if (brushCursor_ && terrain && CurrentTool() == Tool::Terrain) {
         const double size = MapData::TerrainGridSnapshot::tileSize;
         MapData::TerrainBrush brush;
+        brush.kind = CurrentBrushKind();
         brush.size = static_cast<std::uint32_t>(terrainRadius_->value());
         if (const auto footprint = MapData::GetTerrainBrushFootprint(*terrain, brush,
                 {(*brushCursor_)[0], (*brushCursor_)[1]})) {
             const double cx = footprint->centerX, cy = footprint->centerY, extent = footprint->radius;
-            if (terrainShapes_->checkedId() == static_cast<int>(MapData::TerrainBrushShape::Square))
+            if (brush.kind == MapData::TerrainBrushKind::Ramp) {
+                const auto& origin = terrain->header.offset;
+                Render::AppendGroundRectangle(lines, terrain,
+                    static_cast<float>(origin[0] + (footprint->x0 - 0.5) * size),
+                    static_cast<float>(origin[1] + (footprint->y0 - 0.5) * size),
+                    static_cast<float>(origin[0] + (footprint->x1 - 0.5) * size),
+                    static_cast<float>(origin[1] + (footprint->y1 - 0.5) * size), kSelected, 6.0f);
+            } else if (terrainShapes_->checkedId() == static_cast<int>(MapData::TerrainBrushShape::Square))
                 Render::AppendGroundRectangle(lines, terrain, static_cast<float>(cx - extent), static_cast<float>(cy - extent),
                     static_cast<float>(cx + extent), static_cast<float>(cy + extent), kSelected, 6.0f);
             else Render::AppendGroundCircle(lines, terrain, cx, cy, extent, kSelected, 6.0f);

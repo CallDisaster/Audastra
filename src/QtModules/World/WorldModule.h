@@ -300,6 +300,8 @@ private:
     QButtonGroup* terrainCliffDeltas_ = nullptr;
     QWidget* terrainWaterSection_ = nullptr;
     QDoubleSpinBox* terrainWaterHeight_ = nullptr;
+    QWidget* terrainRampSection_ = nullptr;
+    QButtonGroup* terrainRampModes_ = nullptr;
     QWidget* terrainBlightSection_ = nullptr;
     QButtonGroup* terrainBlightModes_ = nullptr;
     QButtonGroup* terrainShapes_ = nullptr;

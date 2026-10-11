@@ -37,6 +37,7 @@ add_library(War3MapCore STATIC
     MapData/MapTerrain.cpp
     MapData/MapPathing.cpp
     MapData/TerrainEditing.cpp
+    MapData/TerrainRampEditing.cpp
     Text/TextUtil.cpp
     Text/SourceEncoding.cpp
     Text/SlkCells.cpp

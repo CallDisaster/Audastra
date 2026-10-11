@@ -109,6 +109,9 @@ public:
             path.moveTo(3, 15); path.cubicTo(6, 9, 9, 21, 12, 15); path.cubicTo(15, 9, 18, 21, 21, 15);
             path.moveTo(12, 11); path.lineTo(12, 3); path.moveTo(9, 6); path.lineTo(12, 3); path.lineTo(15, 6);
             break;
+        case MapData::TerrainBrushKind::Ramp:
+            path.moveTo(3, 18); path.lineTo(7, 18); path.lineTo(17, 6); path.lineTo(21, 6);
+            break;
         }
         painter->drawPath(path);
         painter->restore();
@@ -179,7 +182,8 @@ QWidget* WorldModule::BuildTerrainPage() {
         std::tuple{tr("悬崖"), MapData::TerrainBrushKind::CliffLevel, "Cliff"},
         std::tuple{tr("噪波"), MapData::TerrainBrushKind::Noise, "Noise"},
         std::tuple{tr("悬崖类型"), MapData::TerrainBrushKind::CliffTexture, "CliffTexture"},
-        std::tuple{tr("水面高度"), MapData::TerrainBrushKind::WaterHeight, "WaterHeight"}};
+        std::tuple{tr("水面高度"), MapData::TerrainBrushKind::WaterHeight, "WaterHeight"},
+        std::tuple{tr("直坡"), MapData::TerrainBrushKind::Ramp, "Ramp"}};
     for (std::size_t index = 0; index < brushes.size(); ++index) {
         const auto& [label, kind, name] = brushes[index];
         auto* button = new QToolButton(terrainPalette_);
@@ -260,6 +264,18 @@ QWidget* WorldModule::BuildTerrainPage() {
     auto* waterHint = new QLabel(tr("只调整已有水面，不生成浅水或深水。水面通行性联动待核验，修改后可保存工程，暂不能保存地图。"), terrainWaterSection_);
     waterHint->setWordWrap(true); water->addWidget(waterHint);
     column->addWidget(terrainWaterSection_);
+
+    terrainRampSection_ = Surface(terrainPalette_);
+    auto* ramp = new QVBoxLayout(terrainRampSection_);
+    ramp->setContentsMargins(0, 8, 0, 0); ramp->setSpacing(8);
+    ramp->addWidget(SectionLabel(tr("一级干地直坡"), terrainRampSection_));
+    terrainRampModes_ = new QButtonGroup(terrainRampSection_);
+    ramp->addWidget(Segment(terrainRampSection_, terrainRampModes_, {{tr("创建"), 1}, {tr("移除"), 0}},
+        "worldTerrainRampMode"));
+    terrainRampModes_->button(1)->setChecked(true);
+    auto* rampHint = new QLabel(tr("在一级直线台阶上涂刷，范围自动取整段三点。暂不支持拐角、多级台阶和水中坡道。通行性联动待核验，修改后可保存工程，暂不能保存地图。"), terrainRampSection_);
+    rampHint->setWordWrap(true); ramp->addWidget(rampHint);
+    column->addWidget(terrainRampSection_);
 
     // 荒芜：铺设 / 清除
     terrainBlightSection_ = Surface(terrainPalette_);
@@ -444,6 +460,7 @@ void WorldModule::UpdateTerrainBrushControls() {
     const std::array sections{std::pair{terrainTextureSection_, kind == MapData::TerrainBrushKind::Texture},
         std::pair{terrainCliffSection_, kind == MapData::TerrainBrushKind::CliffLevel || kind == MapData::TerrainBrushKind::CliffTexture},
         std::pair{terrainWaterSection_, kind == MapData::TerrainBrushKind::WaterHeight},
+        std::pair{terrainRampSection_, kind == MapData::TerrainBrushKind::Ramp},
         std::pair{terrainBlightSection_, kind == MapData::TerrainBrushKind::Blight},
         std::pair{terrainStrengthSection_, shaping}};
     for (const auto& [section, shown] : sections) {
@@ -452,6 +469,9 @@ void WorldModule::UpdateTerrainBrushControls() {
         if (appearing) UiKit::FadeIn(section, 160, 0.2);
     }
     for (auto* button : terrainCliffDeltas_->buttons()) button->setVisible(kind == MapData::TerrainBrushKind::CliffLevel);
+    const bool sized = kind != MapData::TerrainBrushKind::Ramp;
+    terrainRadius_->setEnabled(sized); terrainRadiusSlider_->setEnabled(sized);
+    for (auto* button : terrainShapes_->buttons()) button->setEnabled(sized);
     if (shaping) {
         const QSignalBlocker block(terrainStrength_);
         const bool smooth = kind == MapData::TerrainBrushKind::Smooth;

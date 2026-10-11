@@ -544,6 +544,7 @@ private slots:
     void TerrainBrushPreservesCameraAndModels();
     void TerrainBrushUsesSharedTransactionAndUndo();
     void TerrainTextureSlotUsesSharedTransaction();
+    void TerrainRampKeepsCellAndWholeStroke();
     void InspectorEditsPreserveOtherFloatBits();
     void RegionEdgesUseSharedTableTransaction_data();
     void RegionEdgesUseSharedTableTransaction();
@@ -2379,6 +2380,65 @@ void WorldModuleTests::TerrainTextureSlotUsesSharedTransaction() {
     QCOMPARE(project.mapEdits_->Revision(), before + 1);
     QCOMPARE(project.mapEdits_->Terrain()->header.groundTilesets.front(), std::string("Lrok"));
     QCOMPARE(project.mapDataUndoStack_->count(), 1); // 过期对话框不能覆盖外部编辑或增加撤销项。
+}
+
+void WorldModuleTests::TerrainRampKeepsCellAndWholeStroke() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    auto terrain = FlatGrid(17, 17);
+    terrain->header.version = 11; terrain->header.mainTileset = 'L'; terrain->header.offset = {-1024, -1024};
+    terrain->header.groundTilesets = {"Ldrt"}; terrain->header.cliffTilesets = {"CLdi"};
+    for (std::uint32_t y = 0; y < 17; ++y) for (std::uint32_t x = 0; x < 17; ++x)
+        terrain->vertices[y * 17 + x].cliffAndLayerRaw = static_cast<std::uint8_t>(x >= 8 ? 3 : 2);
+    MapData::RefreshTerrainDerived(*terrain, 0, 0, 17, 17);
+    const auto original = MapData::SerializeMapTerrain(*terrain); QVERIFY(original.Succeeded());
+    const QByteArray source(reinterpret_cast<const char*>(original.value->data()), static_cast<qsizetype>(original.value->size()));
+    QVERIFY(Write(directory.filePath("war3map.w3e"), source));
+    QtProject::EditorProject project; project.projectRoot_ = directory.path().toStdWString();
+    auto opened = DirectoryWorkspace::Open(project.projectRoot_); QVERIFY(opened.Succeeded());
+    project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*opened.value));
+    project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(std::span<const MapArchiveMember>{}));
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+    QVERIFY(project.mapEdits_->AttachTerrain(*original.value).Succeeded());
+    project.ResetEditTracking();
+    BackendState state; activeBackend = &state;
+    WorldModule module(project, &backend);
+    auto* page = module.Widget(); auto* viewport = module.Viewport(); state.viewport = viewport;
+    page->resize(900, 600); page->show();
+    QTRY_COMPARE(viewport->VertexCount(), std::size_t{289});
+    auto* toggle = page->findChild<QPushButton*>("worldTerrainToggle"); QVERIFY(toggle && toggle->isEnabled());
+    toggle->click(); QVERIFY(viewport->BrushMode());
+    auto* ramp = page->findChild<QToolButton*>("worldTerrainBrushRamp"); QVERIFY(ramp); ramp->click();
+    auto* size = page->findChild<QSpinBox*>("worldTerrainRadius"); QVERIFY(size && !size->isEnabled());
+    // x=-32 位于悬崖格的高侧半格；旧顶点吸附会错误落到 x=0 的平地格。
+    viewport->TerrainStrokeStarted(-32, 32);
+    viewport->TerrainStrokeMoved(-32, 160);
+    viewport->TerrainStrokeFinished();
+    const auto changed = *MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value;
+    QVERIFY(changed != *original.value);
+    QCOMPARE(std::count_if(project.mapEdits_->Terrain()->vertices.begin(), project.mapEdits_->Terrain()->vertices.end(),
+        [](const auto& vertex) { return vertex.IsRamp(); }), 6);
+    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QVERIFY(!project.mapEdits_->VerifyTerrainPathingForSave().Succeeded());
+    QTRY_VERIFY(toggle->isEnabled() && toggle->isChecked());
+    project.mapDataUndoStack_->undo();
+    QCOMPARE(*MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, *original.value);
+    QTRY_VERIFY(toggle->isEnabled() && toggle->isChecked());
+    project.mapDataUndoStack_->redo();
+    QCOMPARE(*MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, changed);
+    QTRY_VERIFY(toggle->isEnabled() && toggle->isChecked());
+    auto* remove = page->findChild<QPushButton*>("worldTerrainRampMode1"); QVERIFY(remove); remove->click();
+    viewport->TerrainStrokeStarted(-32, 32);
+    viewport->TerrainStrokeMoved(-32, 160);
+    viewport->TerrainStrokeFinished();
+    QCOMPARE(*MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, *original.value);
+    QTRY_VERIFY(toggle->isEnabled() && toggle->isChecked());
+    auto* create = page->findChild<QPushButton*>("worldTerrainRampMode0"); QVERIFY(create); create->click();
+    const auto beforeRejected = project.mapEdits_->Revision();
+    viewport->TerrainStrokeStarted(-32, 32);
+    viewport->TerrainStrokeMoved(-640, 32); // 后续坏点使整笔拒绝，不能留下最初的坡道。
+    viewport->TerrainStrokeFinished();
+    QCOMPARE(project.mapEdits_->Revision(), beforeRejected);
+    QCOMPARE(*MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, *original.value);
 }
 
 void WorldModuleTests::InspectorEditsPreserveOtherFloatBits() {

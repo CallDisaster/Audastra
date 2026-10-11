@@ -1,6 +1,7 @@
 #include "War3MapCore/Render/TerrainCliffs.h"
 
 #include "War3MapCore/Render/MdxModel.h"
+#include "War3MapCore/MapData/TerrainRampEditing.h"
 
 #include <algorithm>
 #include <array>
@@ -201,24 +202,12 @@ std::optional<std::string> CliffShapeName(std::uint8_t southWest, std::uint8_t n
 std::size_t ApplyRampHeights(MapData::TerrainGridSnapshot& terrain) {
     const auto width = terrain.header.width, height = terrain.header.height;
     if (width == 0 || height == 0 || static_cast<std::uint64_t>(width) * height != terrain.vertices.size()) return 0;
-    const auto at = [&](std::uint32_t x, std::uint32_t y) -> const MapData::TerrainVertex& {
-        return terrain.vertices[static_cast<std::size_t>(y) * width + x];
-    };
     std::vector<float> lift(terrain.vertices.size(), 0.0f);
     std::size_t lifted = 0;
     for (std::uint32_t y = 0; y < height; ++y) for (std::uint32_t x = 0; x < width; ++x) {
-        const auto& vertex = at(x, y);
-        if (!vertex.IsRamp()) continue;
-        const std::array<std::pair<bool, std::array<const MapData::TerrainVertex*, 2>>, 2> axes{{
-            {x > 0 && x + 1 < width, {x > 0 ? &at(x - 1, y) : nullptr, x + 1 < width ? &at(x + 1, y) : nullptr}},
-            {y > 0 && y + 1 < height, {y > 0 ? &at(x, y - 1) : nullptr, y + 1 < height ? &at(x, y + 1) : nullptr}}}};
-        for (const auto& [inside, neighbors] : axes) {
-            if (!inside || !neighbors[0]->IsRamp() || !neighbors[1]->IsRamp()) continue;
-            const int a = neighbors[0]->CliffLevel(), b = neighbors[1]->CliffLevel(), level = vertex.CliffLevel();
-            if (a == b || level < std::min(a, b) || level > std::max(a, b)) continue;
-            lift[static_cast<std::size_t>(y) * width + x] = 64.0f * static_cast<float>(a + b - 2 * level);
+        if (const auto heightOffset = MapData::TerrainRampHeightOffset(terrain, x, y)) {
+            lift[static_cast<std::size_t>(y) * width + x] = *heightOffset;
             ++lifted;
-            break;
         }
     }
     if (lifted == 0) return 0;

@@ -300,24 +300,26 @@ Result<TerrainStrokeResult> MapDataEditSession::EditTerrain(const TerrainBrush& 
     }
     const bool shaping = brush.kind == TerrainBrushKind::Raise || brush.kind == TerrainBrushKind::Lower
         || brush.kind == TerrainBrushKind::Plateau || brush.kind == TerrainBrushKind::Smooth
-        || brush.kind == TerrainBrushKind::CliffLevel || brush.kind == TerrainBrushKind::Noise;
+        || brush.kind == TerrainBrushKind::CliffLevel || brush.kind == TerrainBrushKind::Noise
+        || brush.kind == TerrainBrushKind::Ramp;
     const auto& doodadBytes = current_[Index(MapDataKind::Doodads)];
     if (followDoodads && shaping && !command.terrain.empty() && doodadBytes) {
         auto doodads = ParseDoodadPlacements(*doodadBytes);
         if (!doodads.Succeeded() || !doodads.value)
             return Result<TerrainStrokeResult>::Failure("MapData.Edit", "MAP_DOODADS_UNSAFE",
                 "装饰物放置无法解析，不能让装饰物随地面高度变化");
-        // 改动范围外扩一格：顶点变化会影响相邻格内的地面插值。
+        // 层级变化还可能改变相邻坡道中点；再外扩一格覆盖这些中点周围的地面插值。
         const double tile = TerrainGridSnapshot::tileSize;
-        const double left = next->header.offset[0] + (static_cast<double>(changed.x0) - 1) * tile;
-        const double bottom = next->header.offset[1] + (static_cast<double>(changed.y0) - 1) * tile;
-        const double right = next->header.offset[0] + static_cast<double>(changed.x1) * tile;
-        const double top = next->header.offset[1] + static_cast<double>(changed.y1) * tile;
+        const double left = next->header.offset[0] + (static_cast<double>(changed.x0) - 2) * tile;
+        const double bottom = next->header.offset[1] + (static_cast<double>(changed.y0) - 2) * tile;
+        const double right = next->header.offset[0] + (static_cast<double>(changed.x1) + 1) * tile;
+        const double top = next->header.offset[1] + (static_cast<double>(changed.y1) + 1) * tile;
         bool moved = false;
         for (auto& doodad : doodads.value->doodads) {
             const double x = doodad.position[0], y = doodad.position[1];
             if (x < left || x > right || y < bottom || y > top) continue;
-            const auto before = SampleGroundHeight(*terrain_, x, y), after = SampleGroundHeight(*next, x, y);
+            const auto before = SampleGroundHeight(*terrain_, x, y, TerrainHeightSource::RawWithRamps);
+            const auto after = SampleGroundHeight(*next, x, y, TerrainHeightSource::RawWithRamps);
             if (!before || !after || *before == *after) continue;
             doodad.position[2] += *after - *before;
             moved = true;

@@ -1,4 +1,5 @@
 #include "War3MapCore/MapData/TerrainEditing.h"
+#include "War3MapCore/MapData/TerrainRampEditing.h"
 
 #include <algorithm>
 #include <array>
@@ -207,7 +208,7 @@ Status Validate(const TerrainGridSnapshot& terrain, const TerrainBrush& brush, s
         if (!std::isfinite(brush.waterHeight) || brush.waterHeight < -2048.0f || brush.waterHeight > 2047.75f)
             return Failure("TERRAIN_BRUSH_WATER_HEIGHT", "水面基础高度必须在 -2048 到 2047.75 之间");
         break;
-    case TerrainBrushKind::Blight: case TerrainBrushKind::Plateau:
+    case TerrainBrushKind::Blight: case TerrainBrushKind::Plateau: case TerrainBrushKind::Ramp:
         break;
     default:
         return Failure("TERRAIN_BRUSH_KIND", "未知的地形笔刷");
@@ -221,6 +222,10 @@ std::optional<TerrainBrushFootprint> GetTerrainBrushFootprint(
     const TerrainGridSnapshot& terrain, const TerrainBrush& brush, const TerrainStrokePoint& point) {
     if (!Consistent(terrain) || brush.radius > kMaximumRadius
         || (brush.size && (*brush.size == 0 || *brush.size > 8))) return std::nullopt;
+    if (brush.kind == TerrainBrushKind::Ramp) {
+        const auto plan = PlanTerrainRamp(terrain, point);
+        return plan.Succeeded() && plan.value ? std::optional{plan.value->footprint} : std::nullopt;
+    }
     const auto at = FootprintAt(terrain, point, brush.radius, brush.size);
     if (!at) return std::nullopt;
     const double tile = TerrainGridSnapshot::tileSize;
@@ -278,17 +283,22 @@ void RefreshTerrainDerived(TerrainGridSnapshot& terrain, std::uint32_t x0, std::
     }
 }
 
-std::optional<float> SampleGroundHeight(const TerrainGridSnapshot& terrain, double x, double y) {
+std::optional<float> SampleGroundHeight(const TerrainGridSnapshot& terrain, double x, double y, TerrainHeightSource source) {
     const auto width = terrain.header.width, height = terrain.header.height;
-    if (!Consistent(terrain) || !std::isfinite(x) || !std::isfinite(y)) return std::nullopt;
-    const auto& origin = terrain.vertices.front().position;
-    const double u = (x - origin[0]) / TerrainGridSnapshot::tileSize;
-    const double v = (y - origin[1]) / TerrainGridSnapshot::tileSize;
+    if (!Consistent(terrain) || !std::isfinite(x) || !std::isfinite(y)
+        || (source != TerrainHeightSource::StoredPositions && source != TerrainHeightSource::RawWithRamps)) return std::nullopt;
+    const bool raw = source == TerrainHeightSource::RawWithRamps;
+    const auto& position = terrain.vertices.front().position;
+    const double u = (x - (raw ? terrain.header.offset[0] : position[0])) / TerrainGridSnapshot::tileSize;
+    const double v = (y - (raw ? terrain.header.offset[1] : position[1])) / TerrainGridSnapshot::tileSize;
     if (!(u >= 0 && v >= 0 && u <= width - 1 && v <= height - 1)) return std::nullopt;
     const auto column = std::min(static_cast<std::uint32_t>(u), width - 2), row = std::min(static_cast<std::uint32_t>(v), height - 2);
     const double fu = u - column, fv = v - row;
     const auto z = [&](std::uint32_t dx, std::uint32_t dy) {
-        return static_cast<double>(terrain.vertices[static_cast<std::size_t>(row + dy) * width + column + dx].position[2]);
+        const auto vx = column + dx, vy = row + dy;
+        const auto& vertex = terrain.vertices[static_cast<std::size_t>(vy) * width + vx];
+        return raw ? GroundZ(vertex.groundHeightRaw, vertex.CliffLevel()) + TerrainRampHeightOffset(terrain, vx, vy).value_or(0)
+                   : static_cast<double>(vertex.position[2]);
     };
     const double result = fu + fv <= 1 ? z(0, 0) + fu * (z(1, 0) - z(0, 0)) + fv * (z(0, 1) - z(0, 0))
                                         : z(1, 1) + (1 - fu) * (z(0, 1) - z(1, 1)) + (1 - fv) * (z(1, 0) - z(1, 1));
@@ -318,6 +328,7 @@ Result<TerrainStrokeResult> ApplyTerrainStroke(
         failed.diagnostics = std::move(status.diagnostics);
         return failed;
     }
+    if (brush.kind == TerrainBrushKind::Ramp) return ApplyTerrainRampStroke(terrain, brush.value, points);
     auto& header = terrain.header;
     const auto width = header.width;
     // 先确定第一个有效落点；地图外的整笔是纯空操作，不追加未使用的贴图表项。
@@ -412,6 +423,8 @@ Result<TerrainStrokeResult> ApplyTerrainStroke(
                     if (vertex.HasWater()) vertex.waterHeightAndFlagsRaw = static_cast<std::uint16_t>(
                         (vertex.waterHeightAndFlagsRaw & 0xc000u) | static_cast<std::uint16_t>(std::lround(brush.waterHeight * 4.0 + 8192.0)));
                     break;
+                case TerrainBrushKind::Ramp:
+                    break; // 三点形态已在上方独立预检并返回。
                 }
                 if (SameRaw(vertex, terrain.vertices[index])) continue;
                 pending.emplace_back(index, vertex);
