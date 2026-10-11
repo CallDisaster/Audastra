@@ -436,7 +436,7 @@ struct RunReceipt {
     std::string stage;
     std::string gameSha, bootstrapSha, probeMapSha, probeScriptSha;
     std::string probeGraphicsBackendRequested;
-    bool minimizedNoActivateRequested = false;
+    bool minimizedNoActivateRequested = false, visibleNoActivateRequested = false;
     std::vector<std::wstring> gameArgv;
     bool Write() {
         if (file == INVALID_HANDLE_VALUE) return false;
@@ -463,6 +463,7 @@ struct RunReceipt {
             json += ",\"ownedLua\":{\"mapSha256\":" + Json(owned.mapSha256) + ",\"nonce\":" + Json(owned.nonce);
             json += ",\"observerInstalled\":" + std::string(flag(owned.observerInstalled != 0));
             json += ",\"minimizedNoActivateRequested\":" + std::string(flag(minimizedNoActivateRequested));
+            json += ",\"visibleNoActivateRequested\":" + std::string(flag(visibleNoActivateRequested));
             json += ",\"ready\":" + std::string(flag(owned.ready != 0));
             json += ",\"mainThreadId\":" + std::to_string(owned.mainThreadId) + ",\"nativeCount\":" + std::to_string(owned.nativeCount);
             json += ",\"modules\":" + std::to_string(owned.modules) + ",\"callbacks\":" + std::to_string(owned.callbacks);
@@ -546,7 +547,7 @@ int Run(int argc, wchar_t** argv) {
     bool layoutSpecified = false;
     RuntimeMode mode = RuntimeMode::ExternalYdwe;
     bool modeSpecified = false, hotReload = false;
-    std::wstring ownedMapSha, ownedNonce, ownedMailboxHandle;
+    std::wstring ownedMapSha, ownedNonce, ownedMailboxHandle, ownedWindowPolicy;
     DWORD ownedTimeout = 0;
     std::wstring probeNonce, expectedProbeMapSha, desktop, probeRenderer;
     bool desktopWitnessRequested = false, windowDiagnosticsRequested = false;
@@ -586,6 +587,10 @@ int Run(int argc, wchar_t** argv) {
             if (value.empty() || value.size() > 6 || !std::all_of(value.begin(), value.end(), [](wchar_t c) { return c >= L'0' && c <= L'9'; })) return 64;
             ownedTimeout = static_cast<DWORD>(wcstoul(value.c_str(), nullptr, 10));
             if (ownedTimeout < 1000 || ownedTimeout > 120000) return 64;
+        }
+        else if (key == L"--owned-window-policy" && ownedWindowPolicy.empty()) {
+            ownedWindowPolicy = argv[index + 1];
+            if (ownedWindowPolicy != L"minimized-no-activate" && ownedWindowPolicy != L"visible-no-activate") return 64;
         }
         else if (key == L"--lua-api-probe" && probeNonce.empty()) probeNonce = argv[index + 1];
         else if (key == L"--probe-map-sha256" && expectedProbeMapSha.empty()) expectedProbeMapSha = argv[index + 1];
@@ -634,6 +639,7 @@ int Run(int argc, wchar_t** argv) {
     };
     if (owned) {
         if (probe || !runtime.empty() || layoutSpecified || !lowercaseHex(ownedMapSha, 64) || !lowercaseHex(ownedNonce, 32)) return 64;
+        if (!ownedWindowPolicy.empty() && !ownedTimeout) return 64;
         if (!desktop.empty()) {
             if (desktop != L"WinSta0\\AudastraOwnedLua-" + ownedNonce) return 64;
             std::array<wchar_t, 256> actualDesktop{}; DWORD returned = 0;
@@ -641,7 +647,7 @@ int Run(int argc, wchar_t** argv) {
                 static_cast<DWORD>(actualDesktop.size() * sizeof(wchar_t)), &returned)
                 || std::wstring(actualDesktop.data()) != L"AudastraOwnedLua-" + ownedNonce) return 64;
         }
-    } else if (!ownedMapSha.empty() || !ownedNonce.empty() || !ownedMailboxHandle.empty() || hotReload || ownedTimeout) return 64;
+    } else if (!ownedMapSha.empty() || !ownedNonce.empty() || !ownedMailboxHandle.empty() || hotReload || ownedTimeout || !ownedWindowPolicy.empty()) return 64;
     if (probe) {
         // 探针必须先由调度者放在独立 Desktop 和 Job；严禁默默落到用户桌面。
         if (!lowercaseHex(probeNonce, 32) || !lowercaseHex(expectedProbeMapSha, 64)
@@ -658,7 +664,8 @@ int Run(int argc, wchar_t** argv) {
     ProbeDesktopWitness witness;
     ProbeWindowDiagnostics windowDiagnostics; windowDiagnostics.requested = windowDiagnosticsRequested;
     RunReceipt result; result.file = output.value; result.witness = &witness; result.windowDiagnostics = &windowDiagnostics;
-    result.minimizedNoActivateRequested = owned && ownedTimeout != 0;
+    result.visibleNoActivateRequested = owned && ownedTimeout != 0 && ownedWindowPolicy == L"visible-no-activate";
+    result.minimizedNoActivateRequested = owned && ownedTimeout != 0 && !result.visibleNoActivateRequested;
     if (probe) result.probeGraphicsBackendRequested = probeRenderer.empty() ? "game-default" : "opengl";
     const auto fail = [&](const char* stage, DWORD error = GetLastError()) {
         result.stage = stage; result.error = error; result.bridgeExit = kRuntimeFailure;
@@ -773,11 +780,12 @@ int Run(int argc, wchar_t** argv) {
     for (std::size_t index = 1; index < result.gameArgv.size(); ++index)
         command += L" " + (index + 1 == result.gameArgv.size() ? Quote(result.gameArgv[index]) : result.gameArgv[index]);
     STARTUPINFOEXW startup{}; startup.StartupInfo.cb = sizeof(startup); startup.lpAttributeList = attributes.value;
-    if (result.minimizedNoActivateRequested) {
+    if (result.minimizedNoActivateRequested || result.visibleNoActivateRequested) {
         // 显式观察窗口供无人值守开发验证；普通 F9 没有观察期限，不改变其窗口显示。
-        // 此处只请求最小化且不激活，不能把它当成游戏不抢焦点的运行证据。
+        // 默认仍最小化；可见但不激活只用于显式图形初始化对照。两者都是请求，
+        // 调度者仍须监测真实前台归属，不能把此标志当成游戏不抢焦点的证据。
         startup.StartupInfo.dwFlags |= STARTF_USESHOWWINDOW;
-        startup.StartupInfo.wShowWindow = SW_SHOWMINNOACTIVE;
+        startup.StartupInfo.wShowWindow = result.visibleNoActivateRequested ? SW_SHOWNOACTIVATE : SW_SHOWMINNOACTIVE;
     }
     if (!desktop.empty()) startup.StartupInfo.lpDesktop = desktop.data();
     PROCESS_INFORMATION process{};

@@ -106,7 +106,10 @@ int wmain(int argc, wchar_t** argv) {
     try {
         Check(argc == 5, "fixture arguments");
         Fixture fixture(argv);
-        const auto independent = fixture.Run(fixture.Owned());
+        const auto defaultDisplay = std::filesystem::path(L"Maps\\Audastra\\default-display.w3x");
+        Check(std::filesystem::copy_file(fixture.root / Fixture::map, fixture.root / defaultDisplay), "original default display fixture map");
+        fixture.Record(fixture.root / defaultDisplay);
+        const auto independent = fixture.Run(fixture.Owned(), nullptr, true, defaultDisplay.wstring());
         Check(independent.exit != 0 && independent.receipt.find("owned-lua-game-identity") != std::string::npos
             && independent.receipt.find("\"runtimeMode\":\"owned-lua\"") != std::string::npos
             && independent.receipt.find("\"processCreated\":true") != std::string::npos
@@ -117,10 +120,36 @@ int wmain(int argc, wchar_t** argv) {
         fixture.Record(fixture.root / minimized);
         const auto inactive = fixture.Run(fixture.Owned() + L" --owned-timeout-ms 1000", nullptr, true, minimized.wstring());
         Check(inactive.receipt.find("owned-lua-game-identity") != std::string::npos
-            && inactive.receipt.find("\"minimizedNoActivateRequested\":true") != std::string::npos,
+            && inactive.receipt.find("\"minimizedNoActivateRequested\":true") != std::string::npos
+            && inactive.receipt.find("\"visibleNoActivateRequested\":false") != std::string::npos,
             "observation child receives actual minimized no-activate STARTUPINFO before Game loads");
-        Check(independent.receipt.find("\"minimizedNoActivateRequested\":false") != std::string::npos,
+        Check(independent.receipt.find("\"minimizedNoActivateRequested\":false") != std::string::npos
+            && independent.receipt.find("\"visibleNoActivateRequested\":false") != std::string::npos,
             "default launch keeps original display behavior");
+        const auto explicitMinimized = fixture.Run(fixture.Owned()
+            + L" --owned-timeout-ms 1000 --owned-window-policy minimized-no-activate", nullptr, true, minimized.wstring());
+        Check(explicitMinimized.receipt.find("owned-lua-game-identity") != std::string::npos
+            && explicitMinimized.receipt.find("\"minimizedNoActivateRequested\":true") != std::string::npos,
+            "explicit minimized observation keeps its actual child startup policy");
+        const auto visible = std::filesystem::path(L"Maps\\Audastra\\visible-no-activate.w3x");
+        Check(std::filesystem::copy_file(fixture.root / Fixture::map, fixture.root / visible), "original visible observation fixture map");
+        fixture.Record(fixture.root / visible);
+        const auto visibleInactive = fixture.Run(fixture.Owned()
+            + L" --owned-timeout-ms 1000 --owned-window-policy visible-no-activate", nullptr, true, visible.wstring());
+        Check(visibleInactive.receipt.find("owned-lua-game-identity") != std::string::npos
+            && visibleInactive.receipt.find("\"minimizedNoActivateRequested\":false") != std::string::npos
+            && visibleInactive.receipt.find("\"visibleNoActivateRequested\":true") != std::string::npos,
+            "explicit visible observation child receives no-activate STARTUPINFO before Game loads");
+        Check(fixture.Run(fixture.Owned() + L" --owned-window-policy visible-no-activate").exit == 64,
+            "window policy requires an explicit bounded owned observation");
+        Check(fixture.Run(fixture.Owned() + L" --owned-timeout-ms 1000 --owned-window-policy visible").exit == 64,
+            "unknown observation window policy refused");
+        Check(fixture.Run(fixture.Owned() + L" --owned-timeout-ms 1000 --owned-window-policy visible-no-activate"
+            L" --owned-window-policy minimized-no-activate").exit == 64,
+            "ambiguous repeated observation window policy refused");
+        Check(fixture.Run(L" --runtime \"" + fixture.root.wstring()
+            + L"\" --owned-window-policy visible-no-activate").exit == 64,
+            "external runtime cannot use the owned observation window option");
         const auto mismatch = fixture.Run(fixture.Owned(std::string(64, 'b')));
         Check(mismatch.receipt.find("owned-lua-map-sha") != std::string::npos
             && mismatch.receipt.find("\"processCreated\":false") != std::string::npos, "wrong frozen map refused before game");
