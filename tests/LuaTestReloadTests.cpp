@@ -156,6 +156,14 @@ void Controller(const std::filesystem::path& root) {
         && sent.value->baselineScriptSha256 == firstSha, "queued request advanced baseline");
     Require(!controller.Submit(next, "map-facts").Succeeded(), "pending request was overwritten");
     auto request = mailbox.runtime->Take(); Require(request.has_value(), "no request received");
+    Require(mailbox.runtime->Report(Audastra::Runtime32::LuaReloadResult::RuntimeError, "timer.lua:7: asynchronous failure"),
+        "runtime diagnostic failed");
+    const auto asynchronous = controller.Poll();
+    Require(asynchronous.Succeeded() && asynchronous.value->outcome == Services::LuaReloadOutcome::Pending
+        && asynchronous.value->baselineScriptSha256 == firstSha && asynchronous.value->runtimeDiagnosticSequence == 1
+        && asynchronous.value->runtimeDiagnosticCode == Audastra::Runtime32::LuaReloadResult::RuntimeError
+        && asynchronous.value->runtimeMessage == "timer.lua:7: asynchronous failure", "runtime diagnostic overwrote pending ACK/baseline");
+    Require(controller.Poll().value->runtimeDiagnosticSequence == 1, "polling created duplicate runtime diagnostics");
     Host host; host.Run(baseline.text); host.Run("InitGlobals(); InitCustomTriggers()"); host.Run(request->source);
     host.Run("ConditionalTriggerExecute(gg_trg_F42); assert(recorded==17)");
     Require(controller.Poll().value->baselineScriptSha256 == firstSha, "running request advanced baseline");
@@ -165,7 +173,8 @@ void Controller(const std::filesystem::path& root) {
     mailbox.view->resultSequence -= 1;
     auto done = controller.Poll();
     Require(done.Succeeded() && done.value->outcome == Services::LuaReloadOutcome::Succeeded
-        && done.value->baselineScriptSha256 == nextSha, "success ACK did not advance baseline");
+        && done.value->baselineScriptSha256 == nextSha && done.value->runtimeDiagnosticSequence == 1,
+        "success ACK did not advance baseline or erased independent diagnostic");
     Require(controller.Submit(next, "map-facts").value->outcome == Services::LuaReloadOutcome::NoChanges, "noop queued source");
     Require(!controller.Submit(next, "changed-map-facts").Succeeded(), "map changes passed controller");
     fixture.document.argumentNodes[fixture.amount].value.text = "18"; next = fixture.Generate();

@@ -304,6 +304,8 @@ private:
     std::shared_ptr<War3Map::Services::LuaTestReloadController> luaReloadController_;
     std::uint64_t luaTestGeneration_ = 0;
     QTimer* luaReloadPoll_ = nullptr;
+    std::uint32_t luaRuntimeDiagnosticSequence_ = 0;
+    QString luaReloadLastStatus_;
     QAction* exportAction_ = nullptr;
     QAction* mapDataAction_ = nullptr;
     QToolBar* projectNoticeBar_ = nullptr;

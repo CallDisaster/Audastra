@@ -15,6 +15,11 @@ struct LuaReloadControllerSnapshot {
     std::string message, baselineScriptSha256;
     double seconds = 0;
     std::optional<Script::LuaTestReloadLocation> location;
+    // 回调异常单独报告，绝不覆盖热重载ACK或改变已确认的基线。
+    std::uint32_t runtimeDiagnosticSequence = 0;
+    Audastra::Runtime32::LuaReloadResult runtimeDiagnosticCode = Audastra::Runtime32::LuaReloadResult::NotReady;
+    std::string runtimeMessage;
+    bool runtimeDiagnosticTruncated = false;
 };
 
 // 一局测试拥有一份基线。UI/MCP共用控制器；只接受生成单元，不接受外部任意Lua文本。

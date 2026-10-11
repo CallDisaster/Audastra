@@ -56,6 +56,10 @@ Result<LuaReloadControllerSnapshot> LuaTestReloadController::Poll() {
     const auto queried = QueryLuaTestReload(*state.mailbox, state.pending ? state.snapshot.sequence : 0);
     if (!queried.Succeeded() || !queried.value) return {std::nullopt, queried.diagnostics};
     const auto& result = *queried.value;
+    state.snapshot.runtimeDiagnosticSequence = result.runtimeDiagnosticSequence;
+    state.snapshot.runtimeDiagnosticCode = result.runtimeDiagnosticCode;
+    state.snapshot.runtimeMessage = result.runtimeMessage;
+    state.snapshot.runtimeDiagnosticTruncated = result.runtimeDiagnosticTruncated;
     if (result.state == LuaTestReloadState::Starting) {
         state.snapshot.message = "测试运行时正在初始化，尚未允许热重载。";
     } else if (!result.processActive || result.state == LuaTestReloadState::Stopped) {

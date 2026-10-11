@@ -28,6 +28,10 @@ QJsonObject Snapshot(const Services::LuaReloadControllerSnapshot& snapshot) {
         {"baseline_script_sha256", QString::fromStdString(snapshot.baselineScriptSha256)}, {"seconds", snapshot.seconds}};
     if (snapshot.location) result.insert("location", QJsonObject{{"trigger_id", QString::number(snapshot.location->triggerId)},
         {"node_id", QString::number(snapshot.location->nodeId)}, {"source_line", QString::number(snapshot.location->sourceLine)}});
+    result.insert("runtime_diagnostic_sequence", QString::number(snapshot.runtimeDiagnosticSequence));
+    result.insert("runtime_diagnostic_code", static_cast<int>(snapshot.runtimeDiagnosticCode));
+    result.insert("runtime_message", QString::fromStdString(snapshot.runtimeMessage));
+    result.insert("runtime_diagnostic_truncated", snapshot.runtimeDiagnosticTruncated);
     return result;
 }
 }
@@ -105,9 +109,26 @@ QJsonObject MainWindow::LuaTestReload(bool submit) {
 
 void MainWindow::PollLuaTestReload() {
     const auto result = LuaTestReload(false);
+    if (!result.value("ok").toBool() || result.value("state").toString() == "stopped") {
+        if (luaReloadPoll_) luaReloadPoll_->stop();
+    }
+    const auto diagnosticSequence = result.value("runtime_diagnostic_sequence").toString().toUInt();
+    const bool freshDiagnostic = diagnosticSequence && diagnosticSequence != luaRuntimeDiagnosticSequence_;
+    if (freshDiagnostic) {
+        luaRuntimeDiagnosticSequence_ = diagnosticSequence;
+        const auto message = result.value("runtime_message").toString();
+        project_->AddDiagnostics({War3Map::Diagnostic{War3Map::DiagnosticSeverity::Error, "Lua.Test",
+            "LUA_TEST_RUNTIME_ERROR", message.toStdString()}});
+        ShowStatusMessage(message);
+    }
+    // 一局持续查询回调异常；相同ACK/等待提示不反复刷状态栏或跳转代码。
+    const auto status = result.value("state").toString() + ":" + result.value("sequence").toString()
+        + ":" + result.value("message").toString();
+    if (status == luaReloadLastStatus_) return;
+    luaReloadLastStatus_ = status;
     if (result.value("state").toString() == "pending") return;
-    if (luaReloadPoll_) luaReloadPoll_->stop();
-    ShowStatusMessage(tr("%1 · %2 秒").arg(result.value("message").toString()).arg(result.value("seconds").toDouble(), 0, 'f', 2));
+    if (!freshDiagnostic)
+        ShowStatusMessage(tr("%1 · %2 秒").arg(result.value("message").toString()).arg(result.value("seconds").toDouble(), 0, 'f', 2));
     const auto location = result.value("location").toObject();
     bool valid = false; const auto trigger = location.value("trigger_id").toString().toULongLong(&valid);
     if (valid && trigger) {

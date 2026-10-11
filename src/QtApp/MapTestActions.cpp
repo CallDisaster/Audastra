@@ -57,6 +57,7 @@ void MainWindow::TestMap() {
     QSettings settings;
     const bool testHotReload = project_->luaMapTarget_.has_value() && settings.value("mapTest/hotReloadEnabled", true).toBool();
     luaTestGenerated_.reset(); luaTestMapBinding_.clear(); luaReloadController_.reset();
+    luaRuntimeDiagnosticSequence_ = 0; luaReloadLastStatus_.clear();
     if (luaReloadPoll_) luaReloadPoll_->stop();
     const auto gameRoot = settings.value(QStringLiteral("war3/gameRoot")).toString();
     const auto runtimeRoot = settings.value(QStringLiteral("mapTest/runtimeRoot")).toString().trimmed();
@@ -186,6 +187,11 @@ void MainWindow::TestMap() {
         luaReloadController_ = std::make_shared<Services::LuaTestReloadController>(launched.value->luaMailbox,
             std::move(*luaTestGenerated_), std::move(luaTestMapBinding_));
         luaTestGenerated_.reset(); luaTestGeneration_ = project_->editRevision_.Generation();
+        if (!luaReloadPoll_) {
+            luaReloadPoll_ = new QTimer(this); luaReloadPoll_->setInterval(100);
+            connect(luaReloadPoll_, &QTimer::timeout, this, &MainWindow::PollLuaTestReload);
+        }
+        luaReloadPoll_->start();
     }
     UpdateExportAvailability();
     ShowStatusMessage(request.optimizeSlk ? tr("已启动地图测试 · SLK 测试副本 · 原图与当前编辑保留")
