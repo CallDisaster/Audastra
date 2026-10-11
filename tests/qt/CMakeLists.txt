@@ -644,6 +644,7 @@ target_include_directories(war3-map-object-resource-picker-tests PRIVATE "${PROJ
 target_link_libraries(war3-map-object-resource-picker-tests PRIVATE
     War3MapEditor::ObjectResourceAdapter Qt6::Test)
 target_compile_options(war3-map-object-resource-picker-tests PRIVATE /W4 /permissive- /utf-8)
+target_compile_definitions(war3-map-object-resource-picker-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 war3map_deploy_fonts(war3-map-object-resource-picker-tests)
 add_test(NAME qt-object-resource-picker COMMAND war3-map-object-resource-picker-tests -o -,txt)
 set_tests_properties(qt-object-resource-picker PROPERTIES TIMEOUT 60
