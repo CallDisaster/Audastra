@@ -2,6 +2,7 @@
 #include "War3MapCore/Script/ScriptSaveBundle.h"
 #include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/Services/MapSaveService.h"
+#include "War3MapCore/Services/ClassicLuaMapSources.h"
 #include "War3MapCore/Services/ScriptSavePreparation.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "../MapDataFixtures.h"
@@ -496,6 +497,12 @@ void ClassicSaveTransactions(Fixture& fixture) {
         target.constants.push_back({name, "alliancetype"});
     auto libraries = ClassicLibraries();
     const auto source = fixture.MakeSource("classic-complete", 25, 0, {"war3map.j"}, false, libraries);
+    const auto firstArchive = MapArchiveSession::Open(source.path);
+    Require(firstArchive.Succeeded() && firstArchive.value, Codes(firstArchive));
+    Require(VerifyClassicLuaGeneratedSources(*firstArchive.value, source.hash,
+        ClassicLuaSourcePolicy::AllowAbsentForFirstSave).Succeeded(), "first save source was refused");
+    Require(HasCode(VerifyClassicLuaGeneratedSources(*firstArchive.value, source.hash),
+        "CLASSIC_LUA_MANIFEST_REQUIRED"), "runtime accepted an unsealed first-save source");
     MapSaveTask task;
     fixture.Freeze(task, source); task.requireGeneratedNativeByteEquality = true;
     fixture.RequirePrepared(task, selection); Run(task);
@@ -503,6 +510,10 @@ void ClassicSaveTransactions(Fixture& fixture) {
     PreservedSource(source);
     const auto reopened = MapArchiveSession::Open(task.target);
     Require(reopened.Succeeded() && reopened.value, Codes(reopened));
+    Require(VerifyClassicLuaGeneratedSources(*reopened.value, FileHash(task.target)).Succeeded(),
+        "runtime and save do not accept the same complete generated bundle");
+    Require(!VerifyClassicLuaGeneratedSources(*reopened.value, source.hash).Succeeded(),
+        "runtime verification accepted the wrong source map identity");
     const auto savedSettings = reopened.value->ReadMember("war3map.w3i");
     Require(savedSettings.Succeeded() && savedSettings.value && *savedSettings.value == source.settings,
         "classic save changed source W3I bytes");
@@ -561,6 +572,26 @@ void ClassicSaveTransactions(Fixture& fixture) {
         "edited typed T globals did not reach classic saved module");
 
     Source second{task.target, FileHash(task.target), source.settings, {reopened.value->Members().begin(), reopened.value->Members().end()}};
+    for (const auto* mutation : {"missing-module", "changed-manifest", "missing-manifest", "oversized-manifest"}) {
+        auto members = second.members;
+        if (std::string_view(mutation) == "missing-module")
+            std::erase_if(members, [](const auto& member) { return member.name == "audastra\\continue.lua"; });
+        else if (std::string_view(mutation) == "missing-manifest")
+            std::erase_if(members, [](const auto& member) { return member.name == "audastra\\generated.manifest"; });
+        else for (auto& member : members) if (member.name == "audastra\\generated.manifest") {
+            if (std::string_view(mutation) == "changed-manifest") member.data.push_back(std::byte{'\n'});
+            else member.data.assign(8193, std::byte{'x'});
+        }
+        const auto path = fixture.root / (std::string("runtime-") + mutation + ".w3x");
+        Require(WriteVerifiedArchive(path, members).Succeeded(), "write original rejected runtime bundle");
+        const auto hash = FileHash(path), originalHash = FileHash(second.path);
+        const auto archive = MapArchiveSession::Open(path);
+        Require(archive.Succeeded() && archive.value, Codes(archive));
+        const auto checked = VerifyClassicLuaGeneratedSources(*archive.value, hash);
+        Require(!checked.Succeeded(), std::string("runtime accepted ") + mutation);
+        Require(FileHash(path) == hash && FileHash(second.path) == originalHash,
+            "read-only runtime validation modified its fixture or the saved map");
+    }
     MapSaveTask repeated;
     fixture.Freeze(repeated, second); repeated.target = task.target.parent_path() / "candidate-second.w3x";
     repeated.requireGeneratedNativeByteEquality = true;
@@ -574,6 +605,10 @@ void ClassicSaveTransactions(Fixture& fixture) {
     for (auto& member : tampered.members) if (member.name == "audastra\\map.lua") member.data.push_back(std::byte{'\n'});
     Require(WriteVerifiedArchive(tampered.path, tampered.members).Succeeded(), "write original modified-module fixture");
     tampered.hash = FileHash(tampered.path);
+    const auto tamperedArchive = MapArchiveSession::Open(tampered.path);
+    Require(tamperedArchive.Succeeded() && tamperedArchive.value, Codes(tamperedArchive));
+    Require(HasCode(VerifyClassicLuaGeneratedSources(*tamperedArchive.value, tampered.hash),
+        "CLASSIC_LUA_GENERATED_SOURCE_CHANGED"), "runtime accepted a changed generated module");
     MapSaveTask changedSource;
     fixture.Freeze(changedSource, tampered); fixture.RequirePrepared(changedSource, selection); Run(changedSource);
     Require(HasCode(changedSource, "CLASSIC_LUA_GENERATED_SOURCE_CHANGED"), Codes(changedSource));

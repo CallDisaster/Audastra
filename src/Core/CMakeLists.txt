@@ -9,6 +9,7 @@ add_library(War3MapCore STATIC
     CapabilityRegistry.cpp
     MapArchiveInPlace.cpp
     MapArchiveSession.cpp
+    Services/ClassicLuaMapSources.cpp
     Services/MapTestService.cpp
     Services/MapTestWorkspace.cpp
     Services/LuaTestMailboxSession.cpp
