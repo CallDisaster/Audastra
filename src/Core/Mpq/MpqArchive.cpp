@@ -892,7 +892,11 @@ Result<std::vector<MpqStrictFileInfo>> MpqArchive::ListFilesValidated(bool allow
     }
 
     std::vector<std::string> names = impl_->rawListNames;
-    names.emplace_back("(listfile)");
+    // (listfile) 自身已读到；部分编辑器也把它写进清单，此时不能再补一次。
+    const bool listfileListed = std::any_of(names.begin(), names.end(), [](const std::string& name) {
+        return _stricmp(name.c_str(), "(listfile)") == 0;
+    });
+    if (!listfileListed) names.emplace_back("(listfile)");
     // 元数据成员通常不在 (listfile) 中；存在且未被列出时按约定名补入，
     // 使严格清单仍能证明每个块都有名字。
     for (const char* metadata : {"(attributes)", "(signature)"}) {
