@@ -93,6 +93,7 @@ add_library(War3MapRenderSupport STATIC
     Scene/WorldModelScene.cpp
     Scene/OwnedStaticModels.cpp
     Scene/BuildingSplatPreview.cpp
+      Scene/BuildingSplatProjection.cpp
     Scene/TerrainCliffs.cpp
     Scene/DayNightLighting.cpp
     Scene/SceneEnvironment.cpp

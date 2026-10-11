@@ -2,9 +2,11 @@
 
 #include "War3MapCore/Render/TerrainPicking.h"
 #include "War3MapCore/Resources/ImportTable.h"
+#include "BuildingSplatProjection.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <exception>
 #include <map>
 #include <set>
@@ -23,7 +25,7 @@ bool LimitsValid(const BuildingSplatPreviewLimits& limits) {
     return limits.maxAssetBytes <= MaximumBytes && limits.maxFrameBytes <= MaximumBytes
         && limits.maxIssueBytes <= 64 * 1024 && limits.maxIssues <= 128
         && std::isfinite(limits.maximumCellSize) && limits.maximumCellSize >= 1 && limits.maximumCellSize <= 128
-        && std::isfinite(limits.previewHeightOffset) && std::abs(limits.previewHeightOffset) <= 128;
+        && limits.previewHeightOffset == 0;
 }
 bool Charge(std::size_t& bytes, std::size_t needed, std::size_t maximum) {
     if (bytes > maximum || needed > maximum - bytes) return false;
@@ -141,6 +143,7 @@ std::shared_ptr<AnimatedModelScene> NewScene(const AnimatedModelScene& source) {
     scene->sceneVersion = NextAnimationSerial();
     scene->geometry.indices.clear(); scene->geometry.layers.clear(); scene->geometry.meshes.clear();
     scene->geometry.models.clear(); scene->geometry.modelBounds.clear(); scene->meshes.clear(); scene->models.clear();
+    scene->vertices.clear(); scene->geometry.vertices.clear();
     return scene;
 }
 }
@@ -247,7 +250,7 @@ Result<BuildingSplatPreviewFrame> BuildBuildingSplatPreviewFrame(
     BuildingSplatPreviewFrame output; output.binding = binding; output.terrain = std::move(displayedTerrain); output.requested = instances.size();
     std::size_t issueBytes = 0;
     Issue(output, {{}, 0, {}, "BUILDING_SPLAT_PREVIEW_APPROXIMATE",
-        "固定UV网格/显示地形三角高度/源alpha混合仅为PreviewApproximate；原版精确裁剪、GE4、法线、depth bias与跨pass排序未实现。", false}, limits, issueBytes);
+        "贴画已按显示地形三角面裁切；源alpha混合仍为PreviewApproximate，原版水/悬崖投影、GE4、depth bias与跨pass排序尚未全部证明。", false}, limits, issueBytes);
     std::map<std::string, const BuildingSplatPreviewAssets::Grid*> grids;
     for (const auto& grid : assets.grids) {
         if (!grid.vertexCount || !grid.indexCount || grid.firstVertex > assets.scene->vertices.size()
@@ -257,10 +260,8 @@ Result<BuildingSplatPreviewFrame> BuildBuildingSplatPreviewFrame(
             return Output::Failure("BuildingSplat.Preview", "BUILDING_SPLAT_ASSET_INVALID", "贴画常驻网格范围或key身份无效。");
     }
     auto frame = std::make_shared<AnimationFrame>(); frame->contentVersion = contentVersion;
+    auto scene = NewScene(*assets.scene);
     std::set<OwnerKey> owners; std::set<std::uint64_t> stableIds;
-    struct Entry { const BuildingSplatPreviewAssets::Grid* grid; std::uint32_t model; };
-    std::vector<Entry> entries; std::uint64_t indexCount = 0; std::uint32_t runCount = 0;
-    std::string previousKey;
     const bool terrainValid = output.terrain && GridValid(*output.terrain);
     for (const auto& input : instances) {
         const auto& row = input.row;
@@ -292,81 +293,78 @@ Result<BuildingSplatPreviewFrame> BuildBuildingSplatPreviewFrame(
         if (!terrainValid) {
             ++output.unavailable; Issue(output, RowIssue(input, "BUILDING_SPLAT_TERRAIN_UNAVAILABLE", "没有合法冻结显示地形；未回退dooZ或Z0。"), limits, issueBytes); continue;
         }
-        const float centerX = static_cast<float>((static_cast<double>(shape.minimum[0]) + shape.maximum[0]) / 2);
-        const float centerY = static_cast<float>((static_cast<double>(shape.minimum[1]) + shape.maximum[1]) / 2);
-        auto coverage = shape;
-        coverage.minimum[0] = std::min(shape.minimum[0], centerX - layout.fullWidth / 2);
-        coverage.minimum[1] = std::min(shape.minimum[1], centerY - layout.fullHeight / 2);
-        coverage.maximum[0] = std::max(shape.maximum[0], centerX + layout.fullWidth / 2);
-        coverage.maximum[1] = std::max(shape.maximum[1], centerY + layout.fullHeight / 2);
-        const bool newRun = entries.empty() || previousKey != row.splatKey;
-        const std::size_t needed = sizeof(BuildingSplatPreviewOwner) + *OriginBytes(row)
-            + sizeof(War3RenderSkinnedModelInstanceV2) + sizeof(float)
-            + static_cast<std::size_t>(layout.vertexCount) * sizeof(War3RenderGroupMatrixV2)
-            + sizeof(Entry) + sizeof(OwnerKey) + 96
-            + (newRun ? static_cast<std::size_t>(layout.indexCount) * sizeof(std::uint16_t)
-                + sizeof(War3RenderModelLayerV2) + sizeof(War3RenderModelMeshV2) + sizeof(War3RenderSkinnedModelMeshV2)
-                + sizeof(War3RenderModelV2) + sizeof(War3RenderSkinnedModelV2) + 6 * sizeof(float) : 0);
-        if (layout.vertexCount > MaximumGroups - frame->groups.size() || (newRun && (runCount == MaximumModels
-            || layout.indexCount > MaximumIndices - indexCount)) || !Charge(output.logicalBytes, needed, limits.maxFrameBytes)) {
-            ++output.omittedBudget; Issue(output, RowIssue(input, "BUILDING_SPLAT_FRAME_BUDGET", "本次真实矩阵/owned字节或辅助层布局预算不足，省略此实例；不是地图数量门禁。"), limits, issueBytes); continue;
+        const std::size_t baseBytes = sizeof(BuildingSplatPreviewOwner) + *OriginBytes(row)
+            + sizeof(War3RenderSkinnedModelInstanceV2) + sizeof(float) + sizeof(War3RenderGroupMatrixV2)
+            + sizeof(OwnerKey) + 96 + sizeof(War3RenderModelLayerV2) + sizeof(War3RenderModelMeshV2)
+            + sizeof(War3RenderSkinnedModelMeshV2) + sizeof(War3RenderModelV2) + sizeof(War3RenderSkinnedModelV2) + 6*sizeof(float);
+        if (frame->groups.size() == MaximumGroups || scene->models.size() == MaximumModels
+            || output.logicalBytes > limits.maxFrameBytes || baseBytes > limits.maxFrameBytes-output.logicalBytes) {
+            ++output.omittedBudget; Issue(output, RowIssue(input,"BUILDING_SPLAT_FRAME_BUDGET","投影owned帧预算不足，省略此实例。"),limits,issueBytes); continue;
         }
-        // 先核算owned帧载荷；预算省略项不继续遍历其全部覆盖tile或采样历史状态。
-        if (const auto reason = SurfaceIssue(*output.terrain, coverage)) {
-            output.logicalBytes -= needed; ++output.unavailable;
-            Issue(output, RowIssue(input, reason->first, reason->second), limits, issueBytes); continue;
+        if (const auto reason = SurfaceIssue(*output.terrain, shape)) {
+            ++output.unavailable; Issue(output,RowIssue(input,reason->first,reason->second),limits,issueBytes); continue;
         }
-        const auto firstGroup = static_cast<std::uint32_t>(frame->groups.size());
-        bool validHeight = true;
-        for (std::uint32_t i = 0; i < layout.vertexCount; ++i) {
-            const auto& vertex = assets.scene->vertices[layout.firstVertex + i].vertex;
-            const auto height = SampleTerrainHeight(*output.terrain, static_cast<double>(centerX) + vertex.x, static_cast<double>(centerY) + vertex.y);
-            if (!height || !std::isfinite(*height + limits.previewHeightOffset) || std::abs(*height + limits.previewHeightOffset) > 65536) { validHeight = false; break; }
-            frame->groups.push_back({{1,0,0,0,1,0,0,0,1,0,0,*height + limits.previewHeightOffset}});
+        const auto remaining = limits.maxFrameBytes-output.logicalBytes-baseBytes;
+        // 包含完整投影临时量；不先分配几何再核算其字节。
+        constexpr auto vertexBytes=sizeof(War3RenderSkinnedModelVertexV2)+2*sizeof(War3RenderModelVertexV2);
+        const auto projected=Detail::ProjectBuildingSplat(*output.terrain,shape,limits.maximumCellSize,
+            std::min<std::size_t>(MaximumVertices-scene->vertices.size(),remaining/vertexBytes),
+            std::min<std::size_t>(MaximumIndices-scene->geometry.indices.size(),remaining/(2*sizeof(std::uint16_t))));
+        if (!projected.Succeeded() || !projected.value) {
+            ++output.omittedBudget;
+            const auto& diagnostic=projected.diagnostics.back();
+            Issue(output,RowIssue(input,diagnostic.code,diagnostic.message),limits,issueBytes); continue;
         }
-        if (!validHeight) {
-            frame->groups.resize(firstGroup); output.logicalBytes -= needed; ++output.unavailable;
-            Issue(output, RowIssue(input, "BUILDING_SPLAT_SAMPLE_INVALID", "访问网格高度无效或超范围；未生成部分贴画或回退Z0。"), limits, issueBytes); continue;
+        const auto& geometry=*projected.value;
+        const auto needed=baseBytes+geometry.vertices.size()*vertexBytes+geometry.indices.size()*2*sizeof(std::uint16_t);
+        if (geometry.vertices.empty() || !Charge(output.logicalBytes,needed,limits.maxFrameBytes)) {
+            ++output.omittedBudget; Issue(output,RowIssue(input,"BUILDING_SPLAT_FRAME_BUDGET","完整投影owned帧预算不足，省略此实例。"),limits,issueBytes); continue;
         }
+        const auto firstGroup=static_cast<std::uint32_t>(frame->groups.size());
+        // 地形世界坐标直接进入几何，不用 local+center 再舍入，也不按dooZ抬高。
+        frame->groups.push_back({{1,0,0,0,1,0,0,0,1,0,0,0}});
         if (!owners.emplace(row.owner.file, row.owner.index, row.owner.rawcode, row.owner.creationId).second
             || !stableIds.emplace(input.stablePlacementId).second)
             return Output::Failure("BuildingSplat.Preview", "BUILDING_SPLAT_OWNER_DUPLICATE", "本帧有效贴画owner或registry身份重复。");
-        if (newRun) { ++runCount; indexCount += layout.indexCount; previousKey = row.splatKey; }
-        const auto model = runCount - 1, rendered = static_cast<std::uint32_t>(frame->instances.size());
-        frame->instances.push_back({{model, {1,0,0,centerX,0,1,0,centerY,0,0,1,0},
+        const auto model=static_cast<std::uint32_t>(scene->models.size()), rendered=static_cast<std::uint32_t>(frame->instances.size());
+        frame->instances.push_back({{model, {1,0,0,0,0,1,0,0,0,0,1,0},
             {static_cast<float>(shape.color[0]) / 255, static_cast<float>(shape.color[1]) / 255, static_cast<float>(shape.color[2]) / 255}},
             firstGroup, static_cast<std::uint32_t>(frame->alphas.size())});
         frame->alphas.push_back(static_cast<float>(shape.color[3]) / 255);
-        output.owners.push_back({row.owner, input.stablePlacementId, row.inputIndex, rendered, firstGroup, layout.vertexCount, row.splatKey, row.origins});
-        entries.push_back({&layout, model}); ++output.displayed;
+        output.owners.push_back({row.owner,input.stablePlacementId,row.inputIndex,rendered,firstGroup,1,row.splatKey,row.origins});
+        const auto firstVertex=static_cast<std::uint32_t>(scene->vertices.size());
+        const auto firstIndex=static_cast<std::uint32_t>(scene->geometry.indices.size());
+        std::array<float,6> bounds{shape.minimum[0],shape.minimum[1],65536,shape.maximum[0],shape.maximum[1],-65536};
+        for (const auto& vertex:geometry.vertices) {
+            scene->vertices.push_back({vertex,0}); scene->geometry.vertices.push_back(vertex);
+            bounds[2]=std::min(bounds[2],vertex.z); bounds[5]=std::max(bounds[5],vertex.z);
+        }
+        for (const auto index:geometry.indices) scene->geometry.indices.push_back(index);
+        scene->geometry.layers.push_back({layout.texture,2,5,1});
+        const auto vertexCount=static_cast<std::uint32_t>(geometry.vertices.size());
+        const War3RenderModelMeshV2 mesh{firstIndex,static_cast<std::uint32_t>(geometry.indices.size()),firstVertex,model,1};
+        scene->geometry.meshes.push_back(mesh); scene->geometry.models.push_back({model,1});
+        scene->meshes.push_back({mesh,0,vertexCount}); scene->models.push_back({{model,1},1});
+        scene->geometry.modelBounds.push_back(bounds); ++output.displayed;
     }
     bool reuse = previous && previous->scene && previous->frame
         && previous->scene->generation == assets.scene->generation && previous->scene->sourceIdentity == assets.scene->sourceIdentity
-        && previous->scene->vertices.SharesStorageWith(assets.scene->vertices)
+        && previous->scene->geometry.textures.SharesStorageWith(assets.scene->geometry.textures)
         && previous->binding.catalogIdentity == binding.catalogIdentity && previous->owners.size() == output.owners.size()
-        && previous->frame->instances.size() == previous->owners.size();
+        && previous->frame->instances.size() == previous->owners.size()
+        && previous->scene->vertices.size()==scene->vertices.size()
+        && previous->scene->geometry.indices==scene->geometry.indices;
     if (reuse) for (std::size_t i = 0; i < output.owners.size(); ++i) {
         if (previous->owners[i].splatKey != output.owners[i].splatKey
+            || previous->owners[i].stablePlacementId != output.owners[i].stablePlacementId
             || previous->frame->instances[i].instance.model != frame->instances[i].instance.model) { reuse = false; break; }
     }
+    if (reuse) for (std::size_t i=0;i<scene->vertices.size();++i)
+        if (std::memcmp(&previous->scene->vertices[i],&scene->vertices[i],sizeof(War3RenderSkinnedModelVertexV2))!=0) { reuse=false; break; }
     if (reuse) output.scene = previous->scene;
     else {
-        auto scene = NewScene(*assets.scene);
-        if (entries.empty()) { // canonical空roster不能携带未使用的静态资产；assets仍在调用方保活。
+        if (output.owners.empty()) { // canonical空roster不携带未使用的静态资产。
             scene->vertices.clear(); scene->geometry.vertices.clear(); scene->geometry.textures.clear();
-        }
-        std::uint32_t previousModel = UINT32_MAX;
-        for (const auto& entry : entries) {
-            if (entry.model == previousModel) continue;
-            previousModel = entry.model; const auto& grid = *entry.grid;
-            const auto firstIndex = static_cast<std::uint32_t>(scene->geometry.indices.size());
-            for (auto i = grid.firstIndex; i < grid.firstIndex + grid.indexCount; ++i)
-                scene->geometry.indices.push_back(assets.scene->geometry.indices[i]);
-            scene->geometry.layers.push_back({grid.texture, 2, 5, 1});
-            const War3RenderModelMeshV2 mesh{firstIndex, grid.indexCount, grid.firstVertex, entry.model, 1};
-            scene->geometry.meshes.push_back(mesh); scene->geometry.models.push_back({entry.model, 1});
-            scene->meshes.push_back({mesh, 0, grid.vertexCount}); scene->models.push_back({{entry.model, 1}, grid.vertexCount});
-            scene->geometry.modelBounds.push_back({-grid.fullWidth/2,-grid.fullHeight/2,0,grid.fullWidth/2,grid.fullHeight/2,0});
         }
         output.scene = std::move(scene);
     }

@@ -53,6 +53,35 @@ std::vector<BuildingSplatPreviewInstance> Inputs(const std::shared_ptr<const Bui
 bool Has(const BuildingSplatPreviewFrame& frame, std::string_view code) {
     return std::any_of(frame.issues.begin(),frame.issues.end(),[&](const auto& issue){return issue.code==code;});
 }
+void CheckProjection(const BuildingSplatPreviewFrame& frame,
+    std::span<const BuildingSplatPreviewInstance> inputs) {
+    for (const auto& owner:frame.owners) {
+        const auto& mesh=frame.scene->geometry.meshes[owner.renderedInstance];
+        const auto& footprint=*inputs[owner.inputIndex].row.footprint;
+        double area=0;
+        for (std::uint32_t i=0;i<mesh.indexCount;i+=3) {
+            std::array<War3RenderModelVertexV2,3> vertices;
+            for (std::size_t c=0;c<3;++c) {
+                vertices[c]=frame.scene->geometry.vertices[mesh.baseVertex+frame.scene->geometry.indices[mesh.firstIndex+i+c]];
+                const auto& v=vertices[c];
+                Require(v.x>=footprint.minimum[0] && v.x<=footprint.maximum[0]
+                    && v.y>=footprint.minimum[1] && v.y<=footprint.maximum[1],"projected face exceeds footprint");
+                Require(v.u>=0 && v.u<=1 && v.v>=0 && v.v<=1,"projected UV exceeds source");
+            }
+            // 不只检查顶点：折面内部及边上的采样也必须落在同一真实地形面。
+            for (const auto weights:{std::array<double,3>{.2,.3,.5},std::array<double,3>{.5,.5,0},
+                std::array<double,3>{0,.5,.5},std::array<double,3>{1,0,0}}) {
+                double x=0,y=0,z=0;
+                for (std::size_t c=0;c<3;++c) { x+=vertices[c].x*weights[c]; y+=vertices[c].y*weights[c]; z+=vertices[c].z*weights[c]; }
+                const auto height=SampleTerrainHeight(*frame.terrain,x,y);
+                Require(height && std::abs(z-*height)<.001,"triangle interior crosses terrain fold");
+            }
+            area+=((vertices[1].x-vertices[0].x)*(vertices[2].y-vertices[0].y)
+                -(vertices[1].y-vertices[0].y)*(vertices[2].x-vertices[0].x))*.5;
+        }
+        Require(std::abs(area-footprint.fullWidth*footprint.fullHeight)<.05,"projection has gaps or overlapping faces");
+    }
+}
 }
 int main() try {
     const auto catalog=Catalog(); const WorldSelectionVersion version{{"fixture-map",11,7,"source-sha"},3,4};
@@ -75,10 +104,23 @@ int main() try {
         && first.frame->instances[2].instance.model==2 && first.owners[2].stablePlacementId==102,"owner identity mixed");
     Require(first.scene->geometry.layers[0].filterMode==2 && first.scene->geometry.layers[0].flags==5
         && first.frame->alphas[0]==1 && first.frame->instances[0].instance.color[2]==203.0f/255,"actual tint/alpha mode lost");
-    const auto& vertex=assets.scene->vertices[assets.grids[0].firstVertex].vertex;
-    const auto ground=SampleTerrainHeight(*terrain,384+vertex.x,384+vertex.y);
-    Require(ground && first.frame->groups.front().values[11]==*ground && first.frame->instances[0].instance.transform[11]==0,"source dooZ used or slope lost");
-    Require(vertex.u==0 && vertex.v==1 && first.scene->vertices.SharesStorageWith(assets.scene->vertices),"original UV grid not shared");
+    Require(first.frame->groups.front().values[11]==0 && first.frame->instances[0].instance.transform[11]==0,"source dooZ used");
+    CheckProjection(first,inputs);
+    auto folded=std::make_shared<MapData::TerrainGridSnapshot>(*terrain);
+    for (std::uint32_t y=0;y<9;++y) for (std::uint32_t x=0;x<9;++x) {
+        const auto z=(x+y)%2?173.0f:0.0f;
+        folded->vertices[y*9+x].position[2]=z;
+        folded->vertices[y*9+x].groundHeightRaw=static_cast<std::uint16_t>(8192+z*4);
+    }
+    auto foldedFrame=BuildBuildingSplatPreviewFrame(assets,inputs,binding,folded,51);
+    Require(foldedFrame.Succeeded() && foldedFrame.value->displayed==3,"folded terrain projection rejected");
+    CheckProjection(*foldedFrame.value,inputs);
+    auto refinedLimits=BuildingSplatPreviewLimits{}; refinedLimits.maximumCellSize=32;
+    auto refinedAssets=BuildBuildingSplatPreviewAssets(catalog,textures,session,refinedLimits);
+    Require(refinedAssets.Succeeded(),"refined assets failed");
+    auto refined=BuildBuildingSplatPreviewFrame(*refinedAssets.value,inputs,binding,folded,52,refinedLimits);
+    Require(refined.Succeeded() && refined.value->displayed==3,"refined terrain projection rejected");
+    CheckProjection(*refined.value,inputs);
     auto duplicateTextures=textures; duplicateTextures.push_back(textures.front());
     Require(!BuildBuildingSplatPreviewAssets(catalog,duplicateTextures,session).Succeeded(),"conflicting source accepted");
     auto badTextures=textures; auto badImage=std::make_shared<ModelTextureRgba>(*textures[0].image); badImage->rgba.pop_back(); badTextures[0].image=badImage;
@@ -88,9 +130,31 @@ int main() try {
     for (auto& input:inputs) input.row.version=binding.version;
     inputs[0].row.footprint->minimum[0]+=16; inputs[0].row.footprint->maximum[0]+=16; inputs[0].row.footprint->color[0]=91;
     auto moved=BuildBuildingSplatPreviewFrame(assets,inputs,binding,terrain,51,{},&first);
-    Require(moved.Succeeded() && moved.value->scene==first.scene && moved.value->frame->documentRevision==5
-        && moved.value->binding.version.document.revision==8 && moved.value->frame->groups.front().values[11]!=first.frame->groups.front().values[11]
-        && moved.value->frame->instances[0].instance.color[0]==91.0f/255,"move reuploaded static scene or mixed revision namespaces");
+    Require(moved.Succeeded() && moved.value->scene!=first.scene && moved.value->frame->documentRevision==5
+        && moved.value->binding.version.document.revision==8 && moved.value->frame->instances[0].instance.color[0]==91.0f/255,
+        "move did not rebuild projected scene or mixed revision namespaces");
+    CheckProjection(*moved.value,inputs);
+    inputs[0].row.footprint->color[0]=42;
+    auto recolored=BuildBuildingSplatPreviewFrame(assets,inputs,binding,terrain,52,{},&*moved.value);
+    Require(recolored.Succeeded() && recolored.value->scene==moved.value->scene,"color-only edit rebuilt projected geometry");
+    auto replacementTextures=textures;
+    auto replacementImage=std::make_shared<ModelTextureRgba>(*textures[0].image);
+    replacementImage->rgba[0]=17; replacementTextures[0].image=replacementImage; replacementTextures[0].digest="new-texture-sha";
+    auto replacementAssets=BuildBuildingSplatPreviewAssets(catalog,replacementTextures,session);
+    Require(replacementAssets.Succeeded(),"replacement texture assets failed");
+    auto replaced=BuildBuildingSplatPreviewFrame(*replacementAssets.value,inputs,binding,terrain,53,{},&*recolored.value);
+    Require(replaced.Succeeded() && replaced.value->scene!=recolored.value->scene,"old texture reused after source replacement");
+    auto shiftedTerrain=std::make_shared<MapData::TerrainGridSnapshot>(*folded);
+    shiftedTerrain->header.offset={-256.25f,-128.5f};
+    shiftedTerrain->minimum[0]=-256.25f; shiftedTerrain->minimum[1]=-128.5f;
+    shiftedTerrain->maximum[0]=767.75f; shiftedTerrain->maximum[1]=895.5f;
+    for (auto& point:shiftedTerrain->vertices) {point.position[0]-=256.25f; point.position[1]-=128.5f;}
+    auto shiftedInputs=inputs;
+    for (auto& input:shiftedInputs) {input.row.footprint->minimum[0]-=256.25f;input.row.footprint->maximum[0]-=256.25f;
+        input.row.footprint->minimum[1]-=128.5f;input.row.footprint->maximum[1]-=128.5f;}
+    auto shifted=BuildBuildingSplatPreviewFrame(assets,shiftedInputs,binding,shiftedTerrain,54);
+    Require(shifted.Succeeded() && shifted.value->displayed==3,"fractional terrain origin rejected");
+    CheckProjection(*shifted.value,shiftedInputs);
     auto stale=inputs; stale[0].row.version=version;
     Require(!BuildBuildingSplatPreviewFrame(assets,stale,binding,terrain,52).Succeeded(),"stale row accepted");
     auto missingTint=inputs; missingTint[0].row.origins.pop_back();
@@ -118,7 +182,9 @@ int main() try {
     omitted=BuildBuildingSplatPreviewFrame(assets,inputs,binding,terrain,52,limits);
     Require(omitted.Succeeded() && omitted.value->omittedBudget==3 && omitted.value->scene->vertices.empty()
         && omitted.value->frame->instances.empty(),"budget omitted count or empty scene wrong");
-    Require(first.frame->groups.front().values[11]==*ground && first.terrain==terrain,"old frame owner mutated");
+    auto offsetLimits=BuildingSplatPreviewLimits{}; offsetLimits.previewHeightOffset=1;
+    Require(!BuildBuildingSplatPreviewFrame(assets,inputs,binding,terrain,53,offsetLimits).Succeeded(),"blanket height offset accepted");
+    Require(first.frame->groups.front().values[11]==0 && first.terrain==terrain,"old frame owner mutated");
     std::cout<<"building-splat-preview: three instances/two keys, independent tint, slope and source identity; unsupported surfaces omitted; PreviewApproximate\n";
     return 0;
 } catch (const std::exception& error) { std::cerr<<error.what()<<'\n'; return 1; }
