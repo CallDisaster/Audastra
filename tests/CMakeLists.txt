@@ -195,6 +195,13 @@ target_compile_options(war3-map-lua-map-script-tests PRIVATE /W4 /permissive- /u
 add_test(NAME script-lua-map-script COMMAND war3-map-lua-map-script-tests)
 set_tests_properties(script-lua-map-script PROPERTIES TIMEOUT 30)
 
+add_executable(audastra-classic-lua-compatibility-tests ClassicLuaCompatibilityTests.cpp)
+target_link_libraries(audastra-classic-lua-compatibility-tests PRIVATE War3MapEditor::ScriptBuild audastra-lua53-core)
+target_compile_definitions(audastra-classic-lua-compatibility-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-classic-lua-compatibility-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME script-classic-lua-compatibility COMMAND audastra-classic-lua-compatibility-tests)
+set_tests_properties(script-classic-lua-compatibility PROPERTIES TIMEOUT 30)
+
 add_executable(war3-map-lua-map-pipeline-tests LuaMapPipelineTests.cpp)
 target_link_libraries(war3-map-lua-map-pipeline-tests PRIVATE War3MapEditor::ScriptBuild)
 target_compile_definitions(war3-map-lua-map-pipeline-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)

@@ -6,6 +6,7 @@ add_library(War3MapScriptBuild STATIC
     MapTestRuntime.cpp
     LuaTemplateTransaction.cpp
     LuaMapScript.cpp
+    ClassicLuaCompatibility.cpp
     LuaAuthorCode.cpp
     LuaCustomReloadAnalysis.cpp
     LuaMapPipeline.cpp
