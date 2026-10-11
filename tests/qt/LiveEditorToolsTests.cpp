@@ -1335,9 +1335,18 @@ void LiveEditorToolsTests::PlacementCreateDeleteUseRealSourcesAndPurePreview() {
     QVERIFY(restored.value->Member(MapDataKind::Doodads).sources[0].data == *doodadBytes.value);
     QVERIFY(!originalSession->IsDirty());
     Mcp::ToolPolicy readOnly; readOnly.allowEdit = false; f.tools->SetPolicy(readOnly);
-    QVERIFY(!f.tools->RegisteredToolNames().contains("entities_create"));
-    QVERIFY(!f.tools->RegisteredToolNames().contains("entities_delete"));
-    QVERIFY(!f.tools->Invoke("entities_create", redoPreview).value("ok").toBool());
+    const auto visibleTools = Names(f.tools->Tools());
+    QVERIFY(!visibleTools.contains("entities_create") && !visibleTools.contains("entities_delete"));
+    // 注册表保留已禁用工具；面向助手的发现列表和实际调用受权限约束。
+    QVERIFY(f.tools->RegisteredToolNames().contains("entities_create") && f.tools->RegisteredToolNames().contains("entities_delete"));
+    auto deniedPreview = base("units");
+    deniedPreview.insert("placements", QJsonArray{item("unit", "u001")}); deniedPreview.insert("dry_run", true);
+    const auto deniedIdentity = f.Context(); const auto deniedSubmits = draftSubmits;
+    QVERIFY(!f.tools->Invoke("entities_create", deniedPreview).value("ok").toBool());
+    QCOMPARE(f.Context(), deniedIdentity); QCOMPARE(draftSubmits, deniedSubmits);
+    f.tools->SetPolicy({});
+    QVERIFY(f.tools->Invoke("entities_create", deniedPreview).value("ok").toBool());
+    QCOMPARE(f.Context(), deniedIdentity); QCOMPARE(draftSubmits, deniedSubmits);
     const auto reloaded = DirectoryWorkspace::Open(f.project.projectRoot_); QVERIFY(reloaded.Succeeded());
     QCOMPARE(reloaded.value->Snapshot().aggregateSha256, sourceSha);
     QCOMPARE(f.project.mapEdits_.get(), originalSession); QCOMPARE(f.project.mapDataUndoStack_, undo);
