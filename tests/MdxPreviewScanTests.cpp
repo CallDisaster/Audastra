@@ -47,6 +47,9 @@ void Run(){
     Check(PreviewDiagnosticCategory("PARTICLE_REPLAY_BUDGET")=="budget_uncovered","budget treated as bad model");
     Check(PreviewDiagnosticCategory("SCAN_SOURCE_TERRAIN_W3E_INVALID")=="resource_source","invalid terrain context treated as bad model");
     Check(PreviewDiagnosticCategory("SCAN_SOURCE_TERRAIN_MPQ_READ_LIMIT")=="budget_uncovered","terrain read budget treated as bad model");
+    for(const auto* missing:{"file-not-found","WORLD_ASSET_MISSING","RESOURCE_NOT_FOUND"})
+        Check(PreviewDiagnosticCategory(missing)=="resource_source","known missing resource lost source classification");
+    Check(PreviewDiagnosticCategory("SCAN_READ_RESOURCE_FAILED")=="resource_source","resource I/O failure treated as bad model");
     Check(PreviewDiagnosticCategory("MDX_UNKNOWN_NEW_CODE")=="needs_investigation","unknown treated as bad model");
 }
 }

@@ -14,7 +14,8 @@ std::string_view PreviewDiagnosticCategory(std::string_view code) noexcept {
     if (code == "MDX_GEOA_DUPLICATE" || code.find("GAME_ORDER") != std::string_view::npos ||
         code.find("SOURCE_ORDER") != std::string_view::npos || code.find("IDENTICAL_KEYS") != std::string_view::npos)
         return "compatibility_notice";
-    if (code.find("SOURCE") != std::string_view::npos || code.find("RESOURCE") != std::string_view::npos ||
+    if (code == "file-not-found" || code == "WORLD_ASSET_MISSING" ||
+        code.find("SOURCE") != std::string_view::npos || code.find("RESOURCE") != std::string_view::npos ||
         code.starts_with("MPQ_") || code.starts_with("SCAN_READ") || code.starts_with("GAME_"))
         return "resource_source";
     if (code.find("UNSUPPORTED") != std::string_view::npos || code.find("UNIMPLEMENTED") != std::string_view::npos ||
