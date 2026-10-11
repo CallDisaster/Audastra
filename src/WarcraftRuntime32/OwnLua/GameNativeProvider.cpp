@@ -38,7 +38,7 @@ struct Arguments {
 bool Unsupported(std::string_view name) {
     // coroutine 与另开地图/任意文件输入输出未接入此受限宿主。未知能力明确拒绝。
     constexpr std::array names{
-        "TriggerSleepAction", "TriggerWaitForSound", "TriggerExecuteWait", "SyncSelections",
+        "TriggerSleepAction", "TriggerWaitForSound", "TriggerExecuteWait", "TriggerSyncReady", "SyncSelections",
         "Preloader", "Preload", "PreloadEnd", "PreloadEndEx", "PreloadGenStart", "PreloadGenClear", "PreloadGenEnd",
         "PreloadStart", "PreloadRefresh", "EndGame", "ChangeLevel", "RestartGame", "ReloadGame",
         "SaveGame", "LoadGame", "RenameSaveDirectory", "RemoveSaveDirectory", "CopySaveGame", "SaveGameExists",

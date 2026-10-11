@@ -93,9 +93,13 @@ assert(j.Sync(function() return not j.Run(2) end))
         Success(host.Execute("j.StoreAction(1,nil); j.Remove(2); j.StoreCondition(5,function() return 1 end)", "@nil-and-bool.lua"), "nil removes callback");
         Check(!scheduler->Run(5).succeeded, "conditions cannot return truthy non-booleans");
         Success(host.Execute("j.StoreAction(6,function() error('callback failure marker') end)", "@callback-error.lua"), "capture failing callback");
+        Success(host.Execute("errorCount=0; runtime=require('jass.runtime'); runtime.error_handle=function(message) errorCount=errorCount+1; callbackError=message end", "@async-handler.lua"), "configure callback error handler");
         const auto error = scheduler->Run(6);
         Check(!error.succeeded && error.error.find("callback-error.lua") != std::string::npos
             && error.error.find("stack traceback") != std::string::npos, "async errors preserve source and stack");
+        Success(host.Execute("assert(errorCount==1 and callbackError:find('callback failure marker',1,true))", "@async-handler-count.lua"), "async handler runs exactly once");
+        Check(!host.Execute("j.Run(6)", "@sync-callback-error.lua").Succeeded(), "synchronous callback propagates failure");
+        Success(host.Execute("assert(errorCount==2); runtime.error_handle=nil", "@sync-handler-count.lua"), "nested error handler called once by outer execution");
         Success(host.Execute("local n=0; local function nested() n=n+1; if n==4 then return true end; return j.Sync(nested) end; assert(j.Sync(nested)); assert(n==4)", "@nested.lua"), "bounded synchronous reentry");
         const auto recursion = host.Execute("local function loop() return j.Sync(loop) end; j.Sync(loop)", "@depth.lua");
         Check(!recursion.Succeeded() && recursion.message.find("32") != std::string::npos, "unbounded reentry rejected");

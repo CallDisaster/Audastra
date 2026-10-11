@@ -1,6 +1,7 @@
 #include "LuaHost.h"
 #include "LuaNativeBindings.h"
 #include "LuaCallbacks.h"
+#include "LuaBehaviorModules.h"
 #include "LuaModulePath.h"
 #include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
 
@@ -41,6 +42,7 @@ struct LuaHost::Impl {
     std::unordered_set<std::string> readModules;
     std::unique_ptr<LuaNativeBindings> natives;
     LuaCallbacks callbacks;
+    LuaBehaviorModules behavior;
     explicit Impl(LuaModuleReader value, LuaHostLimits configured) : reader(std::move(value)), limits(configured) {}
     ~Impl() { callbacks.Close(); if (state) lua_close(state); }
     static Impl& Host(lua_State* lua) { return **static_cast<Impl**>(lua_getextraspace(lua)); }
@@ -97,6 +99,7 @@ struct LuaHost::Impl {
     }
     static int Print(lua_State* lua) {
         auto& self = Host(lua);
+        if (!self.behavior.ConsoleEnabled()) return 0;
         const int count = lua_gettop(lua);
         for (int index = 1; index <= count; ++index) {
             std::size_t size = 0;
@@ -204,6 +207,7 @@ struct LuaHost::Impl {
         lua_pushcfunction(lua, Require); lua_setglobal(lua, "require");
         luaL_getsubtable(lua, LUA_REGISTRYINDEX, LUA_LOADED_TABLE);
         lua_rawsetp(lua, LUA_REGISTRYINDEX, &loadedModulesKey);
+        Host(lua).behavior.Install(lua);
         return 0;
     }
     static int InitializeNatives(lua_State* lua) { Host(lua).natives->Install(lua); return 0; }
@@ -267,7 +271,10 @@ struct LuaHost::Impl {
         const int code = lua_pcall(state, 0, returns == NativeCallbackReturn::Boolean ? 1 : 0, previousTop + 1);
         if (code != LUA_OK) {
             const char* message = lua_tostring(state, -1);
-            return {false, false, message ? message : "Lua 回调无法取得错误堆栈。"};
+            std::string error = message ? message : "Lua 回调无法取得错误堆栈。";
+            // 同步回调的错误由外层 chunk 统一通知，异步回调在这里通知一次。
+            if (root) AppendErrorHandler(error);
+            return {false, false, std::move(error)};
         }
         if (Expired()) return {false, false, "Lua 回调超出预算；已发生的副作用没有回滚。"};
         if (returns == NativeCallbackReturn::Boolean && !lua_isboolean(state, -1))
@@ -278,8 +285,15 @@ struct LuaHost::Impl {
         const char* message = lua_tostring(state, -1);
         LuaHostResult result{budgetExceeded || code == LUA_ERRMEM ? LuaReloadResult::BudgetExceeded : fallback,
             message ? message : "Lua 宿主无法取得错误文本。"};
+        if (executing) AppendErrorHandler(result.message);
         lua_settop(state, 0);
         return result;
+    }
+    void AppendErrorHandler(std::string& message) {
+        // 编译错误还没有装指令 hook；错误回调同样不能无限执行。
+        lua_sethook(state, Hook, LUA_MASKCOUNT, budgetExceeded ? 1 : kHookInterval);
+        const auto handler = behavior.NotifyError(state, message, !Expired());
+        if (!handler.empty()) { message += '\n'; message += handler; }
     }
 };
 

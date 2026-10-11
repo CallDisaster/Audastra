@@ -24,7 +24,7 @@ void TextOnlyAndSandbox() {
     Success(host.Initialize(), "initialize");
     Success(host.Execute("value = 1; assert(type(string.sub) == 'function'); assert(require('math') == math)", "@first.lua"), "base libraries");
     Success(host.Execute("value = value + 1; assert(value == 2); assert(_VERSION == 'Lua 5.3')", "@second.lua"), "persistent state");
-    Success(host.Execute("assert(io == nil and os == nil and package == nil and debug == nil and coroutine == nil); assert(string.dump == nil)", "@sandbox.lua"), "no external capabilities");
+    Success(host.Execute("assert(io == nil and os == nil and package == nil and coroutine == nil); assert(string.dump == nil); assert(type(debug.traceback)=='function' and debug.getregistry==nil and debug.getupvalue==nil)", "@sandbox.lua"), "no external capabilities");
     Success(host.Execute("local t=setmetatable({}, {__index=function() return 7 end}); assert(t.value==7)", "@class.lua"), "ordinary metatables allowed");
     Check(host.Execute("setmetatable({}, {__gc=function() while true do end end})", "@finalizer.lua").code == LuaReloadResult::RuntimeError,
         "unbounded author finalizers refused before registration");
@@ -122,6 +122,60 @@ void BudgetsAndRandom() {
     Check(host.ConsoleText().find("预算后仍可执行") != std::string_view::npos, "bounded console captured");
 }
 
+void RuntimeBehaviorModules() {
+    LuaHost host({}); Success(host.Initialize(), "behavior initialize");
+    Success(host.Execute(R"lua(
+        runtime = require('jass.runtime')
+        assert(runtime == require('jass.runtime'))
+        assert(runtime.handle_level == 2 and runtime.catch_crash and runtime.sleep == false)
+        runtime.handle_level = 2
+        runtime.catch_crash = true
+        runtime.sleep = false
+        assert(runtime.error_handle == nil)
+        runtime.error_handle = function(message)
+            errors = (errors or 0) + 1
+            lastError = message
+            assert(type(debug.traceback()) == 'string')
+        end
+    )lua", "@configure.lua"), "supported runtime properties");
+    const auto original = host.Execute("error('original failure')", "@origin.lua");
+    Check(original.code == LuaReloadResult::RuntimeError && original.message.find("origin.lua:1") != std::string::npos,
+        "error handler cannot consume original failure");
+    Success(host.Execute("assert(errors==1 and lastError:find('original failure',1,true))", "@error-count.lua"), "single error delivery");
+    Check(host.Execute("local broken = )", "@broken.lua").code == LuaReloadResult::SyntaxError, "syntax remains syntax after handler");
+    Success(host.Execute("assert(errors==2 and lastError:find('broken.lua:1',1,true))", "@syntax-count.lua"), "syntax delivered when handler registered");
+    Success(host.Execute("runtime.error_handle=function() error('handler failure') end", "@handler.lua"), "replace handler");
+    const auto nested = host.Execute("error('primary failure')", "@primary.lua");
+    Check(nested.message.find("primary failure") != std::string::npos && nested.message.find("handler failure") != std::string::npos,
+        "handler failure preserves both errors without recursion");
+    Success(host.Execute("runtime.error_handle=nil; assert(runtime.error_handle==nil)", "@clear.lua"), "clear handler");
+    for (const auto source : {"runtime.handle_level=0", "runtime.catch_crash=false", "runtime.sleep=true", "runtime.unknown=true", "runtime.error_handle=1"}) {
+        const auto rejected = host.Execute(source, "@unsupported.lua");
+        Check(rejected.code == LuaReloadResult::RuntimeError && rejected.message.find("jass.runtime.") != std::string::npos,
+            "unsupported property names itself and does not pretend success");
+    }
+    Success(host.Execute("console=require('jass.console'); console.enable=false; print('hidden-output'); console.enable=true; print('visible-output')", "@console.lua"),
+        "console toggle routes bounded log without a window");
+    Check(host.ConsoleText().find("visible-output") != std::string::npos && host.ConsoleText().find("hidden-output") == std::string::npos,
+        "console disable changes actual output");
+    Check(host.Execute("console.enable=1", "@console-type.lua").code == LuaReloadResult::RuntimeError, "console strict boolean");
+    Check(host.Execute("console.write('unknown')", "@console-unknown.lua").message.find("jass.console.write") != std::string::npos,
+        "unverified console API refused by name");
+    Check(host.Execute("debug.traceback({},1)", "@thread.lua").code == LuaReloadResult::RuntimeError, "no arbitrary stack/thread access");
+    for (const auto module : {"jass.japi", "jass.debug", "jass.slk", "jass.message", "jass.hook"}) {
+        const auto rejected = host.Execute(std::string("require('") + module + "')", "@unimplemented.lua");
+        Check(rejected.code == LuaReloadResult::RuntimeError && rejected.message.find(module) != std::string::npos,
+            "remaining modules explicit without stub behavior");
+    }
+    LuaHostLimits limits; limits.instructions = 5000;
+    LuaHost bounded({}, limits); Success(bounded.Initialize(), "handler budget initialize");
+    Success(bounded.Execute("runtime=require('jass.runtime'); runtime.error_handle=function() while true do end end", "@infinite-handler.lua"), "bounded handler configured");
+    const auto budget = bounded.Execute("error('preserved')", "@budget-handler.lua");
+    Check(budget.message.find("preserved") != std::string::npos && budget.message.find("jass.runtime.error_handle") != std::string::npos,
+        "handler inherits execution budget and cannot hang host");
+    Success(bounded.Execute("runtime.error_handle=nil; value=1", "@after-handler.lua"), "failed handler unwinds host");
+}
+
 void MailboxExecutesRealLua() {
     auto mailbox = std::make_unique<LuaTestMailbox>();
     const std::string nonce(32, '1'), sha(64, '2');
@@ -151,7 +205,7 @@ void MailboxExecutesRealLua() {
 
 int main() {
     try {
-        TextOnlyAndSandbox(); ArchiveModules(); ClassicEntrySyntax(); BudgetsAndRandom(); MailboxExecutesRealLua();
+        TextOnlyAndSandbox(); ArchiveModules(); ClassicEntrySyntax(); BudgetsAndRandom(); RuntimeBehaviorModules(); MailboxExecutesRealLua();
         std::cout << "Own Lua 5.3 host passed; original in-memory archive/native-free fixture; game_evidence=0\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
