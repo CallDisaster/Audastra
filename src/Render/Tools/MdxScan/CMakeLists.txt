@@ -46,4 +46,12 @@ if(MSVC AND WAR3MAPEDITOR_BUILD_TESTS)
     target_include_directories(war3-mdx-preview-scan-tests PRIVATE "${WAR3_RENDER_CORE_SOURCE_DIR}/tests")
     target_compile_definitions(war3-mdx-preview-scan-tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
     target_compile_options(war3-mdx-preview-scan-tests PRIVATE /W4 /WX /permissive- /utf-8 /fp:precise)
+
+    add_executable(war3-mdx-preview-scope-tests "${_mdx_scan_root}/tests/MdxPreviewScanScopeTests.cpp"
+        ScanPreview.cpp ScanPreviewModel.cpp ScanProcess.cpp)
+    target_link_libraries(war3-mdx-preview-scope-tests PRIVATE War3MapEditor::RenderSupport War3RenderCore::ScanData)
+    target_include_directories(war3-mdx-preview-scope-tests PRIVATE "${WAR3_RENDER_CORE_SOURCE_DIR}/tests")
+    target_compile_definitions(war3-mdx-preview-scope-tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    target_compile_options(war3-mdx-preview-scope-tests PRIVATE /W4 /WX /permissive- /utf-8 /fp:precise)
+    add_dependencies(war3-mdx-preview-scope-tests war3-mdx-scan)
 endif()
