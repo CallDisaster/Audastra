@@ -15,6 +15,10 @@ add_library(War3MapServices STATIC
     ProjectReferenceIndex.cpp
     ObjectDeletionAssessment.cpp
     ObjectCommands.cpp
+    ObjectResourceQuery.cpp
+    ObjectResourceCatalog.cpp
+    ObjectResourceFiles.cpp
+    ObjectResourceInfo.cpp
     ObjectTransactionSnapshot.cpp
     ObjectTransactionSaveGuards.cpp
     MapSaveService.cpp

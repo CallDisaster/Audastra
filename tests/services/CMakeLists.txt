@@ -173,6 +173,13 @@ target_compile_definitions(war3-map-object-commands-tests PRIVATE NOMINMAX UNICO
 target_compile_options(war3-map-object-commands-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-object-commands COMMAND war3-map-object-commands-tests)
 
+add_executable(war3-map-object-resource-query-tests ObjectResourceQueryTests.cpp)
+target_link_libraries(war3-map-object-resource-query-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(war3-map-object-resource-query-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(war3-map-object-resource-query-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-object-resource-query COMMAND war3-map-object-resource-query-tests)
+set_tests_properties(services-object-resource-query PROPERTIES TIMEOUT 60)
+
 add_executable(war3-map-save-service-tests MapSaveServiceTests.cpp)
 target_link_libraries(war3-map-save-service-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(war3-map-save-service-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
