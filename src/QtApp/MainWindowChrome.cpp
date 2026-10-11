@@ -132,7 +132,7 @@ void MainWindow::BuildHeader() {
     connect(testMapAction_, &QAction::triggered, this, &MainWindow::TestMap);
     fileMenu->addAction(testMapAction_);
     RegisterCommandAction("map.test", testMapAction_, tr("地图"));
-    luaReloadAction_ = MenuAction(this, "lucide/refresh-cw", tr("热重载"), tr("热重载当前 Lua 测试"));
+    luaReloadAction_ = MenuAction(this, "lucide/rotate-ccw", tr("热重载"), tr("热重载当前 Lua 测试"));
     luaReloadAction_->setObjectName("luaTestReloadAction"); luaReloadAction_->setEnabled(false);
     connect(luaReloadAction_, &QAction::triggered, this, [this] { (void)LuaTestReload(true); });
     fileMenu->addAction(luaReloadAction_);
