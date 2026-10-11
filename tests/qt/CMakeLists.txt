@@ -438,6 +438,14 @@ target_link_libraries(war3-map-project-watch-tests PRIVATE War3MapEditor::QtModu
 target_link_libraries(war3-map-project-watch-tests PRIVATE War3MapEditor::QtModuleWorld)
 target_link_libraries(war3-map-project-watch-tests PRIVATE War3MapEditor::QtModuleCampaign)
 
+qt_add_executable(audastra-object-context-provider-tests ObjectContextProviderTests.cpp)
+target_link_libraries(audastra-object-context-provider-tests PRIVATE War3MapEditor::QtProject)
+target_compile_definitions(audastra-object-context-provider-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-object-context-provider-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME qt-object-context-provider COMMAND audastra-object-context-provider-tests)
+set_tests_properties(qt-object-context-provider PROPERTIES TIMEOUT 60
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+
 qt_add_executable(war3-map-world-module-tests WorldModuleTests.cpp)
 target_link_libraries(war3-map-world-module-tests PRIVATE War3MapEditor::QtModuleWorld
     War3MapEditor::QtModuleMapEntities War3MapEditor::QtModuleMapSettings Qt6::Test)

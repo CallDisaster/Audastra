@@ -10,6 +10,8 @@
 #include "WorldViewport.h"
 #include "EditorProject.h"
 #include "ObjectNames.h"
+#include "ObjectContextProvider.h"
+#include "War3MapCore/Services/PlacementCreation.h"
 #include "ObjectViewEntries.h"
 #include "Commands/MapDataCommands.h"
 #include "War3MapCore/Render/EditorOverlay.h"
@@ -573,11 +575,22 @@ void WorldModule::PlaceAt(double x, double y, bool snap) {
     if (snap) { x = Snap(x); y = Snap(y); }
     if (pasting_) { PasteAt(x, y); return; }
     if (!placing_ || !project_.mapEdits_ || !terrain_) return;
-    const auto ground = Render::SampleTerrainHeight(*terrain_, x, y);
-    if (!ground) return;
+    const auto report = [&](const std::vector<Diagnostic>& diagnostics) {
+        project_.AddDiagnostics(diagnostics);
+        selectionStatus_->setText(tr("不能摆放：%1").arg(WorldDiagnosticText(diagnostics)));
+    };
+    const auto ground = project_.mapEdits_->InspectTerrainPoint({x, y});
+    if (!ground.Succeeded()) { report(ground.diagnostics); return; }
+    auto context = QtProject::MakeObjectContextProvider(project_);
+    const auto object = context(placing_->first);
+    if (!object.Succeeded()) { report(object.diagnostics); return; }
     const auto owner = owner_ ? owner_->currentData().toInt() : 0;
-    auto placement = MakeNewPlacement(placing_->first, placing_->second, owner,
-        {static_cast<float>(x), static_cast<float>(y), *ground});
+    Services::PlacementCreateRequest creation;
+    creation.type = placing_->first; creation.rawcode = placing_->second; creation.point = {x, y};
+    if (creation.type == ObjectData::ObjectType::Unit) creation.owner = owner;
+    auto prepared = Services::PreparePlacementCreation(creation, *object.value, *ground.value);
+    if (!prepared.Succeeded()) { report(prepared.diagnostics); return; }
+    auto placement = std::move(*prepared.value);
     // 只读取刚创建记录的同一物编父链，不为即时占位解析整个doo。
     const auto& transform = std::visit([](const auto& value) -> const MapData::PlacementTransform& { return value; }, placement);
     auto model = CapturePlacementPreview(project_, placing_->first, transform, owner);

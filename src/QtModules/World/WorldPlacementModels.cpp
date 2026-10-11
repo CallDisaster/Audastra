@@ -2,6 +2,7 @@
 
 #include "EditorProject.h"
 #include "ObjectNames.h"
+#include "War3MapCore/Services/PlacementCreation.h"
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
@@ -539,21 +540,7 @@ std::optional<Render::ModelInstanceRequest> CapturePlacementPreview(const QtProj
 
 std::variant<MapData::UnitPlacement, MapData::DoodadPlacement> MakeNewPlacement(
     ObjectData::ObjectType type, const std::string& rawcode, std::int32_t owner, const std::array<float, 3>& position) {
-    constexpr float kFacing = 4.71238898f; // 270°
-    if (type == ObjectType::Doodad || type == ObjectType::Destructable) {
-        MapData::DoodadPlacement doodad;
-        doodad.rawcode = rawcode; doodad.position = position; doodad.rotation = kFacing; doodad.scale = {1, 1, 1};
-        doodad.flags = 2; doodad.lifePercent = 100; doodad.droppedItemTable = -1;
-        return doodad;
-    }
-    MapData::UnitPlacement unit;
-    unit.rawcode = rawcode; unit.position = position; unit.rotation = kFacing; unit.scale = {1, 1, 1};
-    unit.flags = 2; unit.owner = type == ObjectType::Item ? 15 : owner;
-    unit.hitPoints = -1; unit.mana = -1; unit.droppedItemTable = -1; unit.gold = 12500;
-    unit.targetAcquisition = -1; unit.heroLevel = 1;
-    unit.random = MapData::RandomAnyUnit{1, 0};
-    unit.teamColor = -1; unit.waygateRegionId = -1;
-    return unit;
+    return Services::MakeDefaultPlacement(type, rawcode, owner, position);
 }
 
 } // namespace War3Map::Modules

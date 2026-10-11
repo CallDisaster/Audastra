@@ -1,5 +1,6 @@
 #include "LiveObjectTools.h"
 #include "EditorProject.h"
+#include "ObjectContextProvider.h"
 #include "Commands/ObjectSnapshotCommand.h"
 #include "McpObjectTools.h"
 #include "McpToolInternal.h"
@@ -24,7 +25,8 @@ using QtProject::EditorProject;
 
 class LiveObjectHost {
 public:
-    LiveObjectHost(EditorProject& project, QJsonObject identity) : project_(project), identity_(std::move(identity)) {}
+    LiveObjectHost(EditorProject& project, QJsonObject identity) : project_(project), identity_(std::move(identity)),
+        context_(QtProject::MakeObjectContextProvider(project)) {}
     Mcp::ObjectToolHost Host() {
         return {
             [this] {
@@ -37,49 +39,7 @@ public:
         };
     }
     Result<Services::ObjectCommandContext> Context(ObjectType type) {
-        if (!project_.standardCatalog_ || !project_.objectFieldSchema_)
-            return Result<Services::ObjectCommandContext>::Failure("Object.Live", "OBJECT_METADATA_UNAVAILABLE",
-                "当前地图没有完整的标准目录/字段元数据；先在设置中选择真实游戏来源。");
-        const auto index = static_cast<std::size_t>(type);
-        if (index >= project_.objectDocuments_.size())
-            return Result<Services::ObjectCommandContext>::Failure("Object.Live", "OBJECT_KIND_INVALID", "物编类别无效。");
-        if (!project_.objectDocuments_[index] && !empty_[index]) {
-            if (project_.nativeObjectDocuments_[index])
-                return Result<Services::ObjectCommandContext>::Failure("Object.Live", "OBJECT_DOCUMENT_UNAVAILABLE",
-                    "原生物编存在但未完整转换，不能用空文档替代。");
-            if (!project_.sourceArchivePath_.empty()) {
-                const auto archive = Mpq::MpqArchive::OpenReadOnly(project_.sourceArchivePath_);
-                if (!archive.Succeeded()) return {{}, archive.diagnostics};
-                if (archive.value->HasFile(std::string(NativeFileName(type))))
-                    return Result<Services::ObjectCommandContext>::Failure("Object.Live", "OBJECT_DOCUMENT_UNAVAILABLE",
-                        "地图中已有此类物编文件，但没有可编辑文档；原文件保持不变。");
-                const auto inventory = archive.value->ListFilesStrict();
-                if (!inventory.Succeeded()) return {{}, inventory.diagnostics};
-            } else if (project_.directorySnapshot_) {
-                std::error_code error;
-                for (const auto& path : {project_.projectRoot_ / "table" / LniFileName(type),
-                    project_.projectRoot_ / LniFileName(type), project_.projectRoot_ / "map" / NativeFileName(type),
-                    project_.projectRoot_ / NativeFileName(type)}) {
-                    const bool exists = std::filesystem::exists(path, error);
-                    if (error || exists)
-                        return Result<Services::ObjectCommandContext>::Failure("Object.Live", "OBJECT_DOCUMENT_UNAVAILABLE",
-                            "此类物编来源存在或无法确认，不能创建猜测的空文档。");
-                }
-            } else return Result<Services::ObjectCommandContext>::Failure("Object.Live", "OBJECT_MAP_UNAVAILABLE", "先打开地图。");
-            const auto parsed = LniObjectCodec(type).Parse({});
-            const auto* empty = parsed.Succeeded() ? dynamic_cast<LniObjectDocument*>(parsed.document.get()) : nullptr;
-            if (!empty) return Result<Services::ObjectCommandContext>::Failure("Object.Live", "OBJECT_EMPTY_DOCUMENT_FAILED", "无法建立空物编快照。");
-            empty_[index] = *empty;
-        }
-        Services::ObjectCommandContext context;
-        context.type = type; context.standard = project_.standardCatalog_.get(); context.schema = project_.objectFieldSchema_.get();
-        context.document = project_.objectDocuments_[index] ? project_.objectDocuments_[index].get() : &*empty_[index];
-        for (std::size_t i = 0; i < context.documents.size(); ++i)
-            context.documents[i] = project_.objectDocuments_[i].get();
-        context.documents[index] = context.document;
-        if (!nameMap_ && project_.MapEdits()) nameMap_ = std::make_shared<MapDocument>(project_.MapEdits()->Snapshot());
-        context.nameMap = nameMap_ ? nameMap_.get() : project_.mapDocument_.get();
-        return Result<Services::ObjectCommandContext>::Success(context);
+        return context_(type);
     }
 private:
     Status Commit(const Services::ObjectCommandPlan& plan) {
@@ -127,18 +87,13 @@ private:
     }
     EditorProject& project_;
     QJsonObject identity_;
-    std::array<std::optional<LniObjectDocument>, 7> empty_;
-    std::shared_ptr<MapDocument> nameMap_;
+    QtProject::ObjectContextProvider context_;
 };
 } // namespace
 
 LiveObjectContextProvider MakeLiveObjectContextProvider(EditorProject& project, const QJsonObject& currentIdentity) {
-    auto host = std::make_shared<LiveObjectHost>(project, currentIdentity);
-    const QPointer<EditorProject> owner(&project);
-    return [host = std::move(host), owner](ObjectType type) {
-        if (!owner) return Result<Services::ObjectCommandContext>::Failure("Object.Live", "OBJECT_MAP_UNAVAILABLE", "地图已关闭。");
-        return host->Context(type);
-    };
+    Q_UNUSED(currentIdentity);
+    return QtProject::MakeObjectContextProvider(project);
 }
 
 QJsonObject InvokeLiveObjectTool(EditorProject& project, const QString& name, const QJsonObject& arguments,

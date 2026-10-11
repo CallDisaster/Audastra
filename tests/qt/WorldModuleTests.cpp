@@ -23,6 +23,7 @@
 #include "Widgets/ObjectCatalogWidgets.h"
 #include "Fonts/FontLoader.h"
 #include "../MapDataFixtures.h"
+#include "../services/ObjectCommandsFixture.h"
 #include "../AnimationParticleContinuityTests.h"
 #include "MdxTestModel.h"
 #include "EditorPresentationFixture.h"
@@ -510,6 +511,8 @@ std::vector<MapArchiveMember> PlacementPreviewMembers(bool pureParticle = false)
         {"ReplaceableTextures\\TeamColor\\TeamColor00.blp", AnimationParticleContinuityTest::Texture()}};
 }
 bool InstallPlacementCatalog(QtProject::EditorProject& project) {
+    Tests::ObjectCommandsFixture fields;
+    project.objectFieldSchema_ = std::make_unique<ObjectData::ObjectFieldSchema>(std::move(fields.schema));
     const std::string slk = "ID;PWXL\nC;X1;Y1;K\"alias\"\nC;X2;K\"Name\"\n"
         "C;X1;Y2;K\"hsan\"\nC;X2;K\"Synthetic sanctuary\"\nE\n";
     ObjectData::CatalogLoadOptions options; options.stringFiles.clear();

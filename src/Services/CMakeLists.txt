@@ -12,6 +12,7 @@ add_library(War3MapServices STATIC
     BuildingSplatService.cpp
     WorldModelBugPlaceholderService.cpp
     PlacementPresentationService.cpp
+    PlacementCreation.cpp
     ProjectReferenceIndex.cpp
     ObjectDeletionAssessment.cpp
     ObjectCommands.cpp
