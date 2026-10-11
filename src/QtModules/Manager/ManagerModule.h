@@ -24,7 +24,7 @@ class QTreeWidgetItem;
 
 namespace War3Map::Modules {
 
-// 物体管理（对应 Web 原型 ObjectManager.tsx）：地图概况、七类物体、触发器、函数、变量；
+// 物体管理：地图概况、七类物体、触发器、函数、变量；
 // 右侧列出被引用 / 放置 / 使用了 / 调用的函数，双击跳到对应模块。只读，不修改任何文档。
 class ManagerModule final : public QObject, public Shell::EditorModule {
     Q_OBJECT

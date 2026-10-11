@@ -1,4 +1,4 @@
-"""由 assets/design/tokens.json 生成 Web 原型的 CSS 变量与 C++ 主题常量。
+"""由 assets/design/tokens.json 生成 C++ 主题常量。
 
 用法：
     python tools/design_tokens.py          # 重新生成
@@ -15,22 +15,17 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "assets" / "design" / "tokens.json"
-CSS_OUT = ROOT / "editor-ui" / "src" / "studio" / "tokens.generated.css"
 CPP_OUT = ROOT / "src" / "QtUiKit" / "Theme" / "DesignTokens.generated.h"
 
 BANNER = "由 tools/design_tokens.py 从 assets/design/tokens.json 生成，请勿手改。"
 HEX = re.compile(r"^#([0-9a-fA-F]{6})([0-9a-fA-F]{2})?$")
 IDENT = re.compile(r"^[a-z][A-Za-z0-9]*$")
-# 数值令牌：分组名 → CSS 单位。
-NUMERIC_SECTIONS = {"size": "px", "weight": ""}
+# 数值令牌分组。
+NUMERIC_SECTIONS = ("size", "weight")
 
 
 def fail(message: str) -> None:
     raise SystemExit(f"design_tokens: {message}")
-
-
-def kebab(name: str) -> str:
-    return re.sub(r"([A-Z])", lambda m: "-" + m.group(1).lower(), name)
 
 
 def load() -> dict:
@@ -59,37 +54,6 @@ def load() -> dict:
             if not IDENT.match(name) or not isinstance(value, int):
                 fail(f"{section} {name} must be an integer")
     return data
-
-
-def css_family(names: list[str]) -> str:
-    generic = {"sans-serif", "serif", "monospace"}
-    return ", ".join(name if name in generic else f'"{name}"' for name in names)
-
-
-def render_css(data: dict) -> str:
-    order = data["colorOrder"]
-    default = data["defaultTheme"]
-    lines = [f"/* {BANNER} */", ""]
-
-    def block(selector: str, colors: dict, extra: list[str]) -> None:
-        lines.append(f"{selector} {{")
-        lines.extend(f"  --{kebab(name)}: {colors[name]};" for name in order)
-        lines.extend(extra)
-        lines.append("}")
-
-    shared = [
-        f"  --font-ui: {css_family(data['font']['ui'])};",
-        f"  --font-code: {css_family(data['font']['code'])};",
-    ]
-    for section, unit in NUMERIC_SECTIONS.items():
-        shared += [f"  --{kebab(name)}: {value}{unit};" for name, value in data[section].items()]
-    block(".studio,\n.studio-dialog,\n.design-sheet", data["themes"][default]["colors"], shared)
-    for theme_id, theme in data["themes"].items():
-        if theme_id == default:
-            continue
-        lines.append("")
-        block(f".studio.theme-{theme_id}", theme["colors"], [])
-    return "\n".join(lines) + "\n"
 
 
 def cpp_color(value: str) -> str:
@@ -172,7 +136,7 @@ def main() -> int:
     args = parser.parse_args()
 
     data = load()
-    outputs = {CSS_OUT: (render_css(data), "\n"), CPP_OUT: (render_cpp(data), "\r\n")}
+    outputs = {CPP_OUT: (render_cpp(data), "\r\n")}
     stale = []
     for path, (text, newline) in outputs.items():
         current = path.read_text(encoding="utf-8") if path.exists() else None

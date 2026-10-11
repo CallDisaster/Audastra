@@ -37,7 +37,7 @@ EditorParts::EditorParts(bool persistentSettings)
     if (persistentSettings) {
         shellSettings_ = std::make_unique<QSettings>();
     }
-    // 登记顺序即顶栏切换器顺序，与 Web 原型 R07c 一致。
+    // 登记顺序即顶栏切换器顺序。
     using War3Map::Shell::PlaceholderModule;
     const QString pending = QCoreApplication::translate("EditorParts", "原生模块尚未接通");
     const auto key = [](Qt::Key k) { return QKeySequence(Qt::ALT | k); };

@@ -75,4 +75,11 @@ Desktop.ini
 
 # 本机工具输出
 .playwright-cli/
-editor-ui/lint.local.json
+
+# 开发文档、交接记录、调研资料、AI 助手约定和 Web 原型只留在本机，不上传
+/internal/
+/editor-ui/
+/AGENTS.md
+/CLAUDE.md
+/.claude/
+/.codex/

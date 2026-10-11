@@ -13,7 +13,7 @@
 
 namespace War3Map::QtProject { class EditorProject; }
 
-// 物体管理的行数据（对应 Web 原型 ObjectManager.tsx 的各页）。只读投影：工程文档与引用索引
+// 物体管理各页的行数据。只读投影：工程文档与引用索引
 // 都在工程层，这里只把它们整理成表格行与详情所需的引用列表。
 namespace War3Map::Modules::Manager {
 

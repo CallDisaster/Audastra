@@ -46,7 +46,7 @@ qt_add_resources(War3MapQtUiKit "war3map_uikit_style"
     BASE "${CMAKE_CURRENT_SOURCE_DIR}/Theme"
     FILES "${CMAKE_CURRENT_SOURCE_DIR}/Theme/Workbench.qss")
 
-# 图标源文件与 Web 原型共用 assets/icons；资源路径为 :/war3map/icons/<相对路径>.svg。
+# 图标源文件在 assets/icons；资源路径为 :/war3map/icons/<相对路径>.svg。
 file(GLOB_RECURSE war3map_uikit_icons CONFIGURE_DEPENDS
     RELATIVE "${PROJECT_SOURCE_DIR}/assets/icons"
     "${PROJECT_SOURCE_DIR}/assets/icons/*.svg")

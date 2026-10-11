@@ -15,7 +15,7 @@ namespace War3Map::UiKit {
 [[nodiscard]] QString ToCss(Tokens::Color color);
 
 // 按设计令牌切换主题：同步更新 QPalette、Qt 样式表与 SVG 图标配色。
-// 主题 ID 与 Web 原型一致（graphite / midnight / paper）。
+// 主题 ID：graphite / midnight / paper。
 class ThemeManager final : public QObject {
     Q_OBJECT
 

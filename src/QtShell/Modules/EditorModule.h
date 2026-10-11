@@ -17,7 +17,7 @@ class ModuleHost;
 enum class NavigationRestoreResult { Restored, Invalid, Blocked };
 
 struct ModuleInfo {
-    ModuleId id;             // 稳定 ID，与 Web 原型一致：triggers、objects、variables……
+    ModuleId id;             // 稳定 ID：triggers、objects、variables……
     QString label;           // 切换器文字
     QString icon;            // SVG 图标名（assets/icons 下的相对路径）
     QKeySequence shortcut;

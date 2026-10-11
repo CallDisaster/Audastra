@@ -19,7 +19,7 @@ class TriggerDocument;
 class UiCatalog;
 } // namespace War3Map::Trigger
 
-// 工程级静态引用索引（对应 Web 原型 referenceIndex.ts，与 R11 的 ObjectReferenceIndex 合并）：
+// 工程级静态引用索引（与 ObjectReferenceIndex 合并）：
 // 一次遍历触发器语句、物编字段、放置实例与变量初值，建立“记号 → 引用位置”“函数 → 调用位置”
 // 与“引用者 → 使用的记号”。物体管理器、物编静态引用与删除前检查共用同一份索引。
 // 只收录工程数据中的直接引用；自定义脚本文本与动态拼接不在其中，零命中不能作为安全删除依据。

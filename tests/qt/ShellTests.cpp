@@ -175,7 +175,6 @@ private slots:
     void viewStatesPersistAcrossWindows();
 };
 
-// 与 editor-ui/tools/check-workbench.mjs 的停靠布局用例一一对应。
 void ShellTests::layoutKeepsEachModuleInOnePlace() {
     DockLayout l = DefaultLayout();
     QCOMPARE(*MainShown(l, kAll), ModuleId("triggers"));

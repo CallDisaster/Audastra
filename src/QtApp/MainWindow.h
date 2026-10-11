@@ -95,7 +95,7 @@ struct TriggerRecord;
 
 class QAction;
 
-// 编辑器主窗口：R07c 外壳（顶栏模块切换器 + 停靠区）加工程生命周期的组装。
+// 编辑器主窗口：外壳（顶栏模块切换器 + 停靠区）加工程生命周期的组装。
 // 模块、工程与撤销栈在 EditorParts 中先于外壳构造；这里只负责顶栏操作、状态栏与打开 / 保存流程。
 class MainWindow final : private EditorParts, public War3Map::Shell::ShellWindow {
     friend class NativeWorkbenchTests;

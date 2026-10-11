@@ -397,7 +397,7 @@ add_test(NAME qt-uikit COMMAND war3-map-uikit-tests)
 set_tests_properties(qt-uikit PROPERTIES TIMEOUT 45
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
-# 外壳：停靠布局规则（与 Web 原型同一套用例）、布局持久化、模块移动时控件与状态保留、撤销路由。
+# 外壳：停靠布局规则、布局持久化、模块移动时控件与状态保留、撤销路由。
 qt_add_executable(war3-map-shell-tests ShellTests.cpp)
 target_link_libraries(war3-map-shell-tests PRIVATE War3MapEditor::QtShell Qt6::Test)
 target_compile_definitions(war3-map-shell-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)

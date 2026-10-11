@@ -7497,7 +7497,7 @@ void NativeWorkbenchTests::ChangesPanelObjectsAndTriggerUseSharedInverse() {
     QCOMPARE(ReadFile(source), sourceBytes);
 }
 
-// R07c 外壳：常见窗口尺寸下任何区域都不能把主窗口撑得比窗口本身更宽（否则右侧内容被裁掉）。
+// 外壳：常见窗口尺寸下任何区域都不能把主窗口撑得比窗口本身更宽（否则右侧内容被裁掉）。
 void NativeWorkbenchTests::CommandExecutionMayDeleteWindowOwner() {
     QPointer<MainWindow> window = new MainWindow(MainWindow::StartupMode::HeadlessProbe);
     War3Map::Services::CommandDefinition close;
