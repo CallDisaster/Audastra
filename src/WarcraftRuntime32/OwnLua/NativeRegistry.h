@@ -19,6 +19,7 @@ public:
     [[nodiscard]] std::size_t Size() const noexcept { return entries_.size(); }
     [[nodiscard]] bool Valid() const noexcept { return !failed_; }
     [[nodiscard]] std::string_view Error() const noexcept { return error_; }
+    [[nodiscard]] const auto& Entries() const noexcept { return entries_; }
 private:
     std::map<std::string, NativeRegistration, std::less<>> entries_;
     bool failed_ = false;

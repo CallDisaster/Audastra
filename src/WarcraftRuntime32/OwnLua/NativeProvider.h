@@ -15,11 +15,14 @@ public:
     [[nodiscard]] virtual bool Alive() const noexcept = 0;
 };
 
+enum class NativeHandleKind { Reference, Scalar };
 struct NativeHandle {
     std::uint32_t value = 0;
     std::uint64_t generation = 0;
     std::string type;
     std::shared_ptr<NativeHandleOwner> owner;
+    // ConvertPlayerColor(0) 等返回有效的零值常量；不能将其当作 agent/null 或跨类型合并。
+    NativeHandleKind kind = NativeHandleKind::Reference;
 };
 
 enum class NativeCallbackReturn { Nothing, Boolean };

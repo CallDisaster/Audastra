@@ -51,7 +51,9 @@ LuaNativeBindings::LuaNativeBindings(std::shared_ptr<NativeProvider> provider, L
     : provider_(std::move(provider)), callbacks_(callbacks), generation_(provider_ ? provider_->Generation() : 0) {}
 
 bool LuaNativeBindings::ValidHandle(const NativeHandle& handle, std::string_view expected) const noexcept {
-    return handle.value && handle.generation == generation_ && provider_->Generation() == generation_
+    return (handle.kind == NativeHandleKind::Reference || handle.kind == NativeHandleKind::Scalar)
+        && (handle.value || handle.kind == NativeHandleKind::Scalar)
+        && handle.generation == generation_ && provider_->Generation() == generation_
         && handle.owner && handle.owner->Alive() && NativeIdentifier(handle.type)
         && provider_->IsHandleType(handle.type, expected);
 }
@@ -79,7 +81,9 @@ int LuaNativeBindings::EqualHandle(lua_State* lua) {
     lua_pushboolean(lua, first && second && first->bindings == second->bindings
         && first->bindings->ValidHandle(first->Value(), first->Value().type)
         && second->bindings->ValidHandle(second->Value(), second->Value().type)
-        && first->Value().generation == second->Value().generation && first->Value().value == second->Value().value);
+        && first->Value().generation == second->Value().generation && first->Value().value == second->Value().value
+        && first->Value().kind == second->Value().kind
+        && (first->Value().kind == NativeHandleKind::Reference || first->Value().type == second->Value().type));
     return 1;
 }
 int LuaNativeBindings::DescribeHandle(lua_State* lua) {
@@ -90,10 +94,13 @@ int LuaNativeBindings::DescribeHandle(lua_State* lua) {
     return 1;
 }
 void LuaNativeBindings::PushHandle(lua_State* lua, const NativeHandle& value) {
+    const auto key = value.kind == NativeHandleKind::Reference ? "reference:" + std::to_string(value.value)
+        : "scalar:" + value.type + ":" + std::to_string(value.value);
     lua_rawgetp(lua, LUA_REGISTRYINDEX, &handleCacheKey);
-    lua_rawgeti(lua, -1, static_cast<lua_Integer>(value.value));
+    lua_pushlstring(lua, key.data(), key.size()); lua_rawget(lua, -2);
     if (auto* cached = GetHandle(lua, -1); cached && cached->bindings == this
         && cached->Value().generation == value.generation && cached->Value().value == value.value
+        && cached->Value().kind == value.kind
         && ValidHandle(cached->Value(), cached->Value().type)) {
         if (ValidHandle(cached->Value(), value.type)) { lua_remove(lua, -2); return; }
         if (provider_->IsHandleType(value.type, cached->Value().type)) {
@@ -107,7 +114,7 @@ void LuaNativeBindings::PushHandle(lua_State* lua, const NativeHandle& value) {
     // 在可能分配失败的元表设置前注册 __gc；随后构造失败时 alive=false，不析构未构造对象。
     luaL_setmetatable(lua, kHandleMetatable);
     ::new (handle->storage) NativeHandle(value); handle->alive = true;
-    lua_pushvalue(lua, -1); lua_rawseti(lua, -3, static_cast<lua_Integer>(value.value));
+    lua_pushlstring(lua, key.data(), key.size()); lua_pushvalue(lua, -2); lua_rawset(lua, -4);
     lua_remove(lua, -2);
 }
 

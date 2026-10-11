@@ -13,3 +13,9 @@ target_link_libraries(audastra-own-lua-game-data PUBLIC audastra-own-lua-mpq PRI
 target_include_directories(audastra-own-lua-game-data PUBLIC "${CMAKE_CURRENT_LIST_DIR}")
 target_compile_definitions(audastra-own-lua-game-data PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_compile_options(audastra-own-lua-game-data PRIVATE /utf-8 /W4 /permissive-)
+
+add_library(audastra-own-lua-game STATIC "${CMAKE_CURRENT_LIST_DIR}/GameVm127.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/GameNativeProvider.cpp")
+target_link_libraries(audastra-own-lua-game PUBLIC audastra-own-lua-game-data audastra-own-lua-host PRIVATE bcrypt)
+target_compile_definitions(audastra-own-lua-game PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(audastra-own-lua-game PRIVATE /utf-8 /W4 /permissive-)

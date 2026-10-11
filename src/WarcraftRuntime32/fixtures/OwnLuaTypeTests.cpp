@@ -1,4 +1,5 @@
 #include "../OwnLua/NativeTypeHierarchy.h"
+#include "../OwnLua/GameNativeProvider.h"
 #include "War3MapCore/Mpq/MpqWriter.h"
 
 #include <windows.h>
@@ -59,9 +60,19 @@ constant native Example takes widget w returns nothing
     std::ofstream bad(temp.root / "war3patch.mpq", std::ios::binary); bad << "corrupt fixture"; bad.close();
     Check(!NativeTypeHierarchy::ReadGame(temp.root).types, "corrupt high-priority archive never falls back");
 }
+void ProductionIdentityGates() {
+    Check(!GameVm127::OpenAtScriptEntry(nullptr, 1).vm, "null game refused without ABI access");
+    Check(!GameVm127::OpenAtScriptEntry(GetModuleHandleW(nullptr), 0).vm, "zero generation refused");
+    const auto wrongImage = GameVm127::OpenAtScriptEntry(GetModuleHandleW(nullptr), 1);
+    Check(!wrongImage.vm && wrongImage.error.find("1.27a") != std::string::npos, "fixture PE cannot masquerade as known Game image");
+    GameNativeProvider absent({}, std::make_shared<NativeRegistry>(), {});
+    Check(!absent.Generation() && !absent.Lookup("Example") && !absent.Invoke("Example", {}).succeeded,
+        "missing production VM never invokes arbitrary registered address");
+    Check(!GameVm127::ReadStringObject(0) && !GameVm127::ReadStringObject(1), "invalid string objects safely rejected");
+}
 }
 
 int main() {
-    try { ParseAndSources(); std::cout << "own Lua type source tests passed\n"; return 0; }
+    try { ParseAndSources(); ProductionIdentityGates(); std::cout << "own Lua type source tests passed\n"; return 0; }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

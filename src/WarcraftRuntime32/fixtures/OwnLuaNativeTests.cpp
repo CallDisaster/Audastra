@@ -50,7 +50,8 @@ public:
         {"UseTimer", "(Htimer;)I"}, {"UseHandle", "(Hhandle;)I"},
         {"Callback", "(C)V"}, {"ReturnedCode", "()C"}, {"Void", "()V"},
         {"WrongResult", "()I"}, {"WrongHandle", "()Htimer;"}, {"StaleHandle", "()Htimer;"},
-        {"BadReal", "()R"}, {"BadString", "()S"}, {"Throw", "(Htimer;)V"}, {"Fail", "()V"}
+        {"BadReal", "()R"}, {"BadString", "()S"}, {"Throw", "(Htimer;)V"}, {"Fail", "()V"},
+        {"Red", "()Hplayercolor;"}, {"ZeroRace", "()Hrace;"}, {"ColorValue", "(Hplayercolor;)I"}
     };
     std::uint64_t Generation() const noexcept override { return generation; }
     std::optional<NativeSignature> Lookup(std::string_view name) const override {
@@ -59,7 +60,7 @@ public:
         return found == signatures.end() ? std::optional<NativeSignature>{} : ParseNativeSignature(found->second);
     }
     bool IsHandleType(std::string_view actual, std::string_view expected) const noexcept override {
-        const bool known = actual == "timer" || actual == "unit" || actual == "handle";
+        const bool known = actual == "timer" || actual == "unit" || actual == "handle" || actual == "playercolor" || actual == "race";
         return known && (actual == expected || expected == "handle");
     }
     NativeHandle Handle(std::uint32_t value, std::string type, const std::shared_ptr<HandleLife>& life) {
@@ -68,6 +69,12 @@ public:
     NativeCallResult Invoke(std::string_view name, std::span<const NativeValue> args) override {
         ++calls;
         if (name == "Integer" || name == "String" || name == "Boolean") return {true, args[0], {}};
+        if (name == "Red" || name == "ZeroRace") {
+            auto handle = Handle(0, name == "Red" ? "playercolor" : "race", unit);
+            handle.kind = NativeHandleKind::Scalar;
+            return {true, std::move(handle), {}};
+        }
+        if (name == "ColorValue") return {true, static_cast<std::int32_t>(std::get<NativeHandle>(args[0]).value), {}};
         if (name == "Real") {
             const auto a = std::get<float>(args[0]), b = std::get<float>(args[1]);
             const std::array words{reinterpret_cast<std::uint32_t>(&a), reinterpret_cast<std::uint32_t>(&b)};
@@ -150,6 +157,8 @@ void ConversionAndLifetimes() {
         provider->timer = std::make_shared<HandleLife>();
         Success(host.Execute("replacement=j.Timer(); assert(not rawequal(timer,replacement)); assert(keys[replacement]==nil); assert(j.UseTimer(replacement)==42)", "@reuse.lua"), "reused handle ID does not revive stale Lua identity");
         Check(previous->references == 1 && provider->timer->references == 1, "both retained identities release independently");
+        Success(host.Execute("red=j.Red(); racezero=j.ZeroRace(); assert(red~=nil and j.ColorValue(red)==0); assert(rawequal(red,j.Red())); assert(red~=racezero); assert(not rawequal(red,racezero)); enumkeys={[red]='red',[racezero]='race'}; assert(enumkeys[j.Red()]=='red')", "@scalar-handles.lua"), "zero-valued native enums preserve type and Lua table identity");
+        Check(!host.Execute("j.ColorValue(racezero)", "@wrong-enum.lua").Succeeded(), "different zero-valued native enum types do not interchange");
         Success(host.Execute("cached=j.Integer", "@cache.lua"), "cache native closure");
         ++provider->generation;
         const auto beforeStale = provider->calls;
