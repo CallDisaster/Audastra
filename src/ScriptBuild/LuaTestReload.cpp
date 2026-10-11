@@ -2,8 +2,10 @@
 #include "War3MapCore/Hash.h"
 #include "LuaTriggerEmitter.h"
 #include "LuaCustomReloadAnalysis.h"
+#include "LuaDeclarationScan.h"
 
 #include <algorithm>
+#include <chrono>
 #include <map>
 #include <new>
 #include <stdexcept>
@@ -39,6 +41,38 @@ Result<lua::CustomReloadContext> AuthorContext(const LuaTriggerUnit& unit, const
                 "作者原文不能重新生成本局实际转发代码，不能授予热重载资格。");
     }
     return context;
+}
+Result<bool> CapturesChangedGuiFunction(const LuaTriggerUnit& baseline,
+    const std::map<std::string_view, bool>& changedNames, const Lua::SyntaxOptions& requested) {
+    try {
+        auto syntax = requested;
+        syntax.deadline = (std::min)(syntax.deadline, std::chrono::steady_clock::now()
+            + (std::clamp)(syntax.maxDuration, std::chrono::milliseconds::zero(), std::chrono::milliseconds{30000}));
+        std::size_t bytes = 0;
+        const auto captures = [&](std::string_view text) {
+            if (text.size() > 8 * 1024 * 1024 - bytes) throw std::length_error("author reference scan budget");
+            bytes += text.size();
+            const auto tokens = lua::ScanDeclarationTokens(text, syntax);
+            for (std::size_t i = 0; i < tokens.size(); ++i) {
+                const auto name = tokens[i].text;
+                const auto found = changedNames.find(name);
+                if (found == changedNames.end()) continue;
+                // 稳定全局名称的直接调用会取得新实现；保存、传参、字段、重定义和改名后的旧调用都不授予资格。
+                const bool direct = i + 1 < tokens.size() && tokens[i + 1].text == "("
+                    && (!i || (tokens[i - 1].text != "." && tokens[i - 1].text != ":" && tokens[i - 1].text != "function"));
+                if (!found->second || !direct) return true;
+            }
+            return false;
+        };
+        if (captures(baseline.testSharedSource)) return Result<bool>::Success(true);
+        // 使用已核对属于实际脚本的片段，不能用可篡改的 authorSource 元数据掩盖旧函数引用。
+        for (const auto& chunk : baseline.testTriggers)
+            if (chunk.customCode && captures(chunk.functions)) return Result<bool>::Success(true);
+        return Result<bool>::Success(false);
+    } catch (const Diagnostic& diagnostic) { return {std::nullopt, {diagnostic}}; }
+    catch (const std::length_error&) {
+        return Result<bool>::Failure("Script.LuaReload", "LUA_RELOAD_AUTHOR_REFERENCE_BUDGET", "作者代码引用扫描超过 8 MiB 预算。");
+    }
 }
 }
 
@@ -93,6 +127,24 @@ Result<LuaTestReloadPatch> PrepareLuaTestReload(const LuaTriggerUnit& baseline, 
             if (next == newGlobals.end() || next->second->shape != old->shape
                 || next->second->variableId != old->variableId) {
                 reject("LUA_RELOAD_GLOBAL_CHANGED", "已有变量 " + name + " 的名称、类型、范围或初始化值发生变化。"); return result;
+            }
+        }
+        std::map<std::string_view, bool> changedGuiNames;
+        for (const auto& next : current.testTriggers) {
+            const auto found = oldTriggers.find(next.symbol.triggerId);
+            if (found == oldTriggers.end() || next.customCode || found->second->customCode
+                || found->second->functions == next.functions) continue;
+            const auto& old = found->second->symbol;
+            changedGuiNames.emplace(old.actions, old.actions == next.symbol.actions);
+            changedGuiNames.emplace(old.conditions, old.conditions == next.symbol.conditions);
+        }
+        if (!changedGuiNames.empty()) {
+            // 批量改动也只扫描一次作者上下文，避免每个 GUI 再扫描全部 WCT。
+            const auto captured = CapturesChangedGuiFunction(baseline, changedGuiNames, syntax);
+            if (!captured.Succeeded() || *captured.value) {
+                reject("LUA_RELOAD_AUTHOR_GUI_REFERENCE", captured.Succeeded()
+                    ? "作者代码保存或传递了本次被改 GUI 触发器的函数，旧回调无法自动替换。"
+                    : "作者代码的 GUI 回调引用检查未完成。"); return result;
             }
         }
         LuaTestReloadPatch patch;

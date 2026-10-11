@@ -2,6 +2,7 @@
 #include "War3MapCore/Script/LuaAuthorCode.h"
 #include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
+#include "War3MapCore/Trigger/TriggerEditing.h"
 #include "../src/ScriptBuild/LuaCustomReloadAnalysis.h"
 
 extern "C" {
@@ -53,6 +54,7 @@ struct Fixture {
         };
         write("ui/config", "base\n"); write("ui/base/define.txt", "[TriggerTypes]\ninteger=0,1,1,Integer\n");
         for (const auto* file : {"event", "condition", "action", "call"}) write("ui/base/" + std::string(file) + ".txt", "");
+        write("ui/base/action.txt", "[Record]\n[[.args]]\ntype=integer\ndefault=0\n");
         catalog = Take(Trigger::UiCatalog::Load(root)); document = Take(Trigger::WtgWctCodec{}.CreateEmpty(catalog));
         MapData::MapSettings map; map.formatVersion = 31; map.scriptLanguage = 1; map.custom.emplace(); map.tileset = 'L';
         map.gameVersion = {1, 32, 0, 0}; map.graphicsModes = 3; map.gameDataVersion = 1; settings = Take(map.Serialize());
@@ -61,8 +63,11 @@ struct Fixture {
             Trigger::TriggerCodeEditor::kDefaultMaxEditedBytes, "Original"));
         (void)Take(Trigger::TriggerCodeEditor::Apply(document, catalog, plan)); id = document.triggers.front().id;
         target.identity = "original-custom-lua53-test-host";
-        for (const auto* name : {"trigger", "boolexpr"}) target.handleTypes.emplace_back(name, "handle");
-        target.apis = {{"DestroyTrigger", "nothing", {"trigger"}}, {"DestroyBoolExpr", "nothing", {"boolexpr"}}};
+        for (const auto* name : {"trigger", "boolexpr", "triggercondition", "triggeraction"}) target.handleTypes.emplace_back(name, "handle");
+        target.apis = {{"DestroyTrigger", "nothing", {"trigger"}}, {"DestroyBoolExpr", "nothing", {"boolexpr"}},
+            {"CreateTrigger", "trigger", {}}, {"Condition", "boolexpr", {"code"}},
+            {"TriggerAddAction", "triggeraction", {"trigger", "code"}},
+            {"TriggerAddCondition", "triggercondition", {"trigger", "boolexpr"}}, {"Record", "nothing", {"integer"}}};
     }
     ~Fixture() { std::error_code error; std::filesystem::remove_all(root, error); }
     void Header(std::string_view source) {
@@ -72,6 +77,21 @@ struct Fixture {
     void Set(std::string_view source) {
         const auto plan = Take(LuaAuthorCodeEditor::PrepareText(settings, document, catalog, {Trigger::CodeBlockKind::CustomTrigger, id}, source));
         (void)Take(Trigger::TriggerCodeEditor::Apply(document, catalog, plan));
+    }
+    struct Gui { StableId id, argument; };
+    Gui AddGui(std::string name, int amount) {
+        Require(!document.categories.empty(), "custom fixture category missing");
+        const auto trigger = Take(Trigger::TriggerDocumentEditor::AddTrigger(document, document.categories.front().categoryId, std::move(name)));
+        const auto receipt = Take(Trigger::TriggerDocumentEditor::AppendRootEca(document, catalog, trigger,
+            Trigger::UiDefinitionKind::Action, "Record"));
+        const auto* eca = Trigger::TriggerDocumentEditor::FindEca(document, receipt.rootEcaId);
+        Require(eca && eca->arguments.size() == 1, "GUI action fixture missing argument");
+        const auto argument = document.argumentNodes[eca->arguments.front()].id;
+        SetGui({trigger, argument}, amount); return {trigger, argument};
+    }
+    void SetGui(Gui gui, int amount) {
+        Require(Trigger::TriggerDocumentEditor::SetScalarArgument(document, gui.argument, 3, std::to_string(amount)).Succeeded(),
+            "GUI action fixture edit failed");
     }
     LuaTriggerUnit Generate(bool enabled = true) {
         target.nativeAuthorCode = std::make_shared<const PreparedLuaAuthorCode>(Take(CaptureNativeLuaAuthorCode(settings, document, catalog)));
@@ -228,10 +248,51 @@ void ParsingBoundariesAndSiblingScope() {
     const std::array<Script::lua::CustomReloadSource, 1> sources{{{source, "InitTrig_Custom"}}};
     Require(!Script::lua::CaptureCustomReloadContext({}, sources, cancelled).Succeeded(), "cancelled custom scan succeeded");
 }
+void CapturedGuiFunctionsRequireRetest() {
+    Fixture fixture; const auto first = fixture.AddGui("FirstGui", 5); const auto second = fixture.AddGui("SecondGui", 6);
+    const auto generated = fixture.Generate();
+    const auto symbol = std::find_if(generated.symbols.begin(), generated.symbols.end(), [&](const auto& value) { return value.triggerId == first.id; });
+    Require(symbol != generated.symbols.end(), "GUI fixture symbol missing");
+    const auto action = symbol->actions; const auto condition = symbol->conditions;
+    const auto requireReject = [&](const LuaTriggerUnit& baseline) {
+        fixture.SetGui(first, 7); const auto result = PrepareLuaTestReload(baseline, fixture.Generate(), "same", "same");
+        Require(!result.Succeeded() && !result.diagnostics.empty()
+            && result.diagnostics.front().code == "LUA_RELOAD_AUTHOR_GUI_REFERENCE", "saved GUI function accepted");
+        fixture.SetGui(first, 5);
+    };
+    for (const auto& expression : {"savedGui = " + action, "local callback = " + action + "; SaveCallback(callback)",
+        "SaveCallback(" + condition + ")"}) {
+        fixture.Set(Replace(Code(), "Record(1)", expression)); const auto baseline = fixture.Generate(); requireReject(baseline);
+        // 作者保存的是 FirstGui；修改另一个 GUI 仍应通过，不能禁用整张图的 GUI 热重载。
+        fixture.SetGui(second, 9); Require(PrepareLuaTestReload(baseline, fixture.Generate(), "same", "same").Succeeded(),
+            "unrelated GUI incorrectly blocked"); fixture.SetGui(second, 6);
+        auto forged = baseline;
+        for (auto& chunk : forged.testTriggers) if (chunk.customCode) chunk.authorSource = Code();
+        requireReject(forged);
+    }
+    fixture.Set(Code()); fixture.Header("initCalls = 0\ntimerValue = 0\nfunction RetainGui() return " + action + " end\n");
+    requireReject(fixture.Generate()); fixture.Header("initCalls = 0\ntimerValue = 0\n");
+    // 直接按稳定的全局名称调用，不保留旧对象；改动后调用会取得新动作。
+    fixture.Set(Replace(Code(), "Record(1)", action + "()")); const auto direct = fixture.Generate();
+    Host host; host.Run(direct.text); host.Run("InitGlobals(); InitCustomTriggers(); gg_trg_Custom.action(); assert(recorded==5)");
+    fixture.SetGui(first, 7); const auto patch = Patch(direct, fixture.Generate()); host.Run(patch.source);
+    host.Run("gg_trg_Custom.action(); assert(recorded==7)"); fixture.SetGui(first, 5);
+    // 词法扫描跳过字符串和注释中的同名文本。
+    fixture.Set(Replace(Code(), "Record(1)", "local label = '" + action + "' -- " + condition + "\n    Record(1)"));
+    const auto literal = fixture.Generate(); fixture.SetGui(first, 7);
+    Require(PrepareLuaTestReload(literal, fixture.Generate(), "same", "same").Succeeded(), "GUI name in literal/comment incorrectly blocked");
+    fixture.SetGui(first, 5); fixture.Set(Replace(Code(), "Record(1)", action + "()")); const auto beforeRename = fixture.Generate();
+    Require(Trigger::TriggerDocumentEditor::RenameTrigger(fixture.document, first.id, "RenamedGui").Succeeded(), "GUI rename fixture failed");
+    // GUI 脚本名由稳定 ID 生成，显示名称变化不会让直接调用失效。
+    const auto renamed = fixture.Generate();
+    const auto renamedSymbol = std::find_if(renamed.symbols.begin(), renamed.symbols.end(), [&](const auto& value) { return value.triggerId == first.id; });
+    Require(renamedSymbol != renamed.symbols.end() && renamedSymbol->actions == action
+        && PrepareLuaTestReload(beforeRename, renamed, "same", "same").Succeeded(), "display rename changed stable GUI call semantics");
+}
 }
 int main() {
     try { ActionsConditionsTimersAndFormalBytes(); RejectedShapesAndUnchangedUnsupportedBlocks();
-        CrossBlockForwardingAndManifest(); ParsingBoundariesAndSiblingScope();
+        CrossBlockForwardingAndManifest(); ParsingBoundariesAndSiblingScope(); CapturedGuiFunctionsRequireRetest();
         std::cout << "Custom Lua reload tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
