@@ -140,6 +140,18 @@ void TestMapUsageChecks(const std::filesystem::path& root) {
     Expect(ToString(checks[2].status) == "missing", "status names are stable");
 }
 
+// 中文包目录：包 ID 是 UTF-8，拼回路径时不能按系统 ANSI 代码页解读。
+void TestNonAsciiPackageId(const std::filesystem::path& root) {
+    const std::u8string name = u8"中文库 - 副本";
+    WriteText(root / "ui" / std::filesystem::path(name) / "action.txt", "[WideAction]\r\ntitle=\"Wide\"\r\n");
+    auto discovered = DiscoverPackages(root);
+    Expect(discovered.Succeeded(), "discovery failed with a non-ASCII package directory");
+    const std::string id(reinterpret_cast<const char*>(name.data()), name.size());
+    const auto found = std::find_if(discovered.value->begin(), discovered.value->end(),
+        [&](const PackageInfo& package) { return package.id == id; });
+    Expect(found != discovered.value->end() && found->fileCount == 1, "non-ASCII package not read");
+}
+
 } // namespace
 
 int main() {
@@ -151,6 +163,7 @@ int main() {
         TestGlobalLayerAndEffectiveLayers(root);
         TestCatalogFromLayersAndConflicts(root);
         TestMapUsageChecks(root);
+        TestNonAsciiPackageId(root);
         std::filesystem::remove_all(root);
         std::cout << "UiLibrary two-layer tests passed\n";
         return 0;
