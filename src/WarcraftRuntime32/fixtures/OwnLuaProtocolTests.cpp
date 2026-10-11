@@ -48,10 +48,20 @@ void Mailbox() {
     std::memcpy(channel->sessionNonce, nonce.c_str(), nonce.size() + 1);
     std::memcpy(channel->mapSha256, sha.c_str(), sha.size() + 1);
     LuaMailboxRuntime runtime(*channel);
+    channel->version = 1;
+    Check(!runtime.Attach(nonce, sha), "old mailbox protocol accepted");
+    channel->version = kLuaMailboxVersion;
     Check(!runtime.Attach(std::string(32, 'c'), sha), "wrong launch nonce accepted");
     Check(runtime.Attach(nonce, sha), "owned mailbox attach");
     Check(!runtime.Attach(nonce, sha), "duplicate attach accepted");
     Check(channel->gameProcessId == GetCurrentProcessId() && channel->mainThreadId == GetCurrentThreadId(), "thread identity");
+    Check(runtime.Report(LuaReloadResult::RuntimeError, "@main.lua:1: runtime error"), "runtime diagnostic");
+    Check(channel->runtimeDiagnosticSequence == 1 && channel->runtimeDiagnosticRevision == 2
+        && channel->resultSequence == 0 && channel->state == static_cast<LONG>(LuaMailboxState::Empty),
+        "runtime diagnostic stole request ACK");
+    bool otherReported = true;
+    std::thread reporter([&] { otherReported = runtime.Report(LuaReloadResult::HostFailure, "worker"); });
+    reporter.join(); Check(!otherReported, "worker published runtime diagnostic");
     for (std::uint32_t seq = 1; seq <= 20; ++seq) {
         Publish(*channel, seq);
         if (seq == 1) {
@@ -81,6 +91,7 @@ void Mailbox() {
         && LuaMailboxUtf8({channel->result, channel->resultBytes}), "result splits UTF-8");
     runtime.Stop();
     Check(channel->runtimeState == static_cast<LONG>(LuaRuntimeState::Stopped) && !runtime.Take(), "stopped runtime resumed");
+    Check(!runtime.Report(LuaReloadResult::RuntimeError, "after stop"), "stopped runtime wrote diagnostic");
     Check(!LuaMailboxUtf8("\xc0\x80") && !LuaMailboxUtf8("\xed\xa0\x80")
         && !LuaMailboxUtf8("\xf4\x90\x80\x80") && !LuaMailboxUtf8("\xe4\xb8"), "invalid UTF-8 accepted");
 }

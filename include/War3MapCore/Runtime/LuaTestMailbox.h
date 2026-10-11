@@ -7,7 +7,7 @@
 namespace Audastra::Runtime32 {
 
 inline constexpr std::uint32_t kLuaMailboxMagic = 0x414c5541;
-inline constexpr std::uint32_t kLuaMailboxVersion = 1;
+inline constexpr std::uint32_t kLuaMailboxVersion = 2;
 inline constexpr std::size_t kLuaReloadSourceCapacity = 1024 * 1024;
 inline constexpr std::size_t kLuaReloadResultCapacity = 16 * 1024;
 inline constexpr std::size_t kLuaReloadChunkCapacity = 256;
@@ -46,6 +46,14 @@ struct alignas(4) LuaTestMailbox {
     char chunkName[kLuaReloadChunkCapacity]{};
     char source[kLuaReloadSourceCapacity]{};
     char result[kLuaReloadResultCapacity]{};
+    // 单独的运行时诊断槽：地图入口、异步回调不能占用热重载 ACK。
+    // revision 奇数表示写入中，偶数表示已发布；正文按对齐的32位原子字访问。
+    std::uint32_t runtimeDiagnosticRevision = 0;
+    std::uint32_t runtimeDiagnosticSequence = 0;
+    LuaReloadResult runtimeDiagnosticCode = LuaReloadResult::NotReady;
+    std::uint32_t runtimeDiagnosticBytes = 0;
+    std::uint32_t runtimeDiagnosticTruncated = 0;
+    char runtimeDiagnosticText[kLuaReloadResultCapacity]{};
 };
 
 static_assert(std::is_standard_layout_v<LuaTestMailbox>);
@@ -55,6 +63,8 @@ static_assert(offsetof(LuaTestMailbox, state) == 12);
 static_assert(offsetof(LuaTestMailbox, sessionNonce) == 56);
 static_assert(offsetof(LuaTestMailbox, chunkName) == 252);
 static_assert(offsetof(LuaTestMailbox, source) == 508);
-static_assert(sizeof(LuaTestMailbox) == 1065468);
+static_assert(offsetof(LuaTestMailbox, runtimeDiagnosticRevision) == 1065468);
+static_assert(offsetof(LuaTestMailbox, runtimeDiagnosticText) == 1065488);
+static_assert(sizeof(LuaTestMailbox) == 1081872);
 
 } // namespace Audastra::Runtime32

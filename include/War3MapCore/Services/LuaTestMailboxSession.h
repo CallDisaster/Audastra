@@ -42,6 +42,10 @@ struct LuaTestReloadSnapshot {
     std::string message;
     bool resultTruncated = false;
     bool processActive = false;
+    std::uint32_t runtimeDiagnosticSequence = 0;
+    Audastra::Runtime32::LuaReloadResult runtimeDiagnosticCode = Audastra::Runtime32::LuaReloadResult::NotReady;
+    std::string runtimeMessage;
+    bool runtimeDiagnosticTruncated = false;
 };
 
 // 只创建匿名映射，不启动进程、不开放运行时门禁。SHA 必须是64位小写十六进制。

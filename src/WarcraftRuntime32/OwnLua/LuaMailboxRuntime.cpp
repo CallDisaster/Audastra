@@ -1,7 +1,9 @@
 #include "LuaMailboxRuntime.h"
 #include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
 #include <windows.h>
+#include <algorithm>
 #include <cstring>
+#include <limits>
 #include <new>
 
 namespace Audastra::Runtime32::OwnLua {
@@ -12,6 +14,9 @@ LONG Read(const std::int32_t& value) noexcept {
 void Store(std::int32_t& value, std::int32_t next) noexcept {
     InterlockedExchange(reinterpret_cast<volatile LONG*>(&value), next);
 }
+void StoreDiagnostic(void* value, std::uint32_t next) noexcept {
+    InterlockedExchange(static_cast<volatile LONG*>(value), static_cast<LONG>(next));
+}
 }
 
 bool LuaMailboxRuntime::Attach(std::string_view nonce, std::string_view sha) noexcept {
@@ -19,7 +24,8 @@ bool LuaMailboxRuntime::Attach(std::string_view nonce, std::string_view sha) noe
         || nonce != std::string_view(mailbox_.sessionNonce, 32) || sha != std::string_view(mailbox_.mapSha256, 64)
         || Read(mailbox_.runtimeState) != static_cast<LONG>(LuaRuntimeState::Starting)
         || Read(mailbox_.state) != static_cast<LONG>(LuaMailboxState::Empty)
-        || mailbox_.requestSequence || mailbox_.resultSequence) return false;
+        || mailbox_.requestSequence || mailbox_.resultSequence || mailbox_.runtimeDiagnosticRevision
+        || mailbox_.runtimeDiagnosticSequence) return false;
     std::memcpy(nonce_, nonce.data(), nonce.size());
     std::memcpy(mapSha_, sha.data(), sha.size());
     threadId_ = GetCurrentThreadId();
@@ -83,6 +89,33 @@ bool LuaMailboxRuntime::Complete(std::uint32_t sequence, LuaReloadResult result,
     mailbox_.resultCode = result;
     mailbox_.resultSequence = sequence;
     Store(mailbox_.state, static_cast<LONG>(LuaMailboxState::Complete));
+    return true;
+}
+
+bool LuaMailboxRuntime::Report(LuaReloadResult result, std::string_view message) noexcept {
+    if (!MainThread() || !Identity()
+        || Read(mailbox_.runtimeState) == static_cast<LONG>(LuaRuntimeState::Stopped)
+        || diagnosticSequence_ == std::numeric_limits<std::uint32_t>::max() / 2) return false;
+    if (!LuaMailboxUtf8(message)
+        || static_cast<std::uint32_t>(result) > static_cast<std::uint32_t>(LuaReloadResult::HostFailure)) {
+        message = "运行时返回了无效诊断。";
+        result = LuaReloadResult::HostFailure;
+    }
+    const auto bytes = LuaMailboxUtf8Prefix(message, kLuaReloadResultCapacity - 1);
+    const auto sequence = ++diagnosticSequence_;
+    StoreDiagnostic(&mailbox_.runtimeDiagnosticRevision, sequence * 2 - 1);
+    StoreDiagnostic(&mailbox_.runtimeDiagnosticSequence, sequence);
+    StoreDiagnostic(&mailbox_.runtimeDiagnosticCode, static_cast<std::uint32_t>(result));
+    StoreDiagnostic(&mailbox_.runtimeDiagnosticBytes, static_cast<std::uint32_t>(bytes));
+    StoreDiagnostic(&mailbox_.runtimeDiagnosticTruncated, bytes != message.size());
+    // 原子字正文让同进程 fixture 也没有与读取方的普通内存数据竞争。
+    for (std::size_t offset = 0; offset <= bytes; offset += sizeof(std::uint32_t)) {
+        std::uint32_t word = 0;
+        const auto count = (std::min)(sizeof(word), bytes - offset);
+        if (count) std::memcpy(&word, message.data() + offset, count);
+        StoreDiagnostic(mailbox_.runtimeDiagnosticText + offset, word);
+    }
+    StoreDiagnostic(&mailbox_.runtimeDiagnosticRevision, sequence * 2);
     return true;
 }
 

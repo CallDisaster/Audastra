@@ -3,6 +3,7 @@
 #include "LuaTestMailboxSessionInternal.h"
 
 #include <array>
+#include <algorithm>
 #include <cstring>
 #include <limits>
 #include <mutex>
@@ -27,6 +28,44 @@ bool Change(std::int32_t& value, LuaMailboxState from, LuaMailboxState to) noexc
 template<class T> Result<T> Failure(const char* code, const char* message) {
     return Result<T>::Failure("Lua.Test", code, message);
 }
+std::uint32_t ReadDiagnostic(const void* value) noexcept {
+    return static_cast<std::uint32_t>(InterlockedCompareExchange(
+        static_cast<volatile LONG*>(const_cast<void*>(value)), 0, 0));
+}
+
+struct RuntimeDiagnostic {
+    std::uint32_t sequence = 0;
+    LuaReloadResult code = LuaReloadResult::NotReady;
+    std::string message;
+    bool truncated = false;
+};
+
+bool ReadRuntimeDiagnostic(const LuaTestMailbox& mailbox, RuntimeDiagnostic& saved) {
+    // 有界重试；游戏连续报错时返回上次稳定快照，下次轮询再接收，不能卡住界面。
+    for (unsigned attempt = 0; attempt < 3; ++attempt) {
+        const auto revision = ReadDiagnostic(&mailbox.runtimeDiagnosticRevision);
+        if (revision & 1) continue;
+        if (!revision) return saved.sequence == 0;
+        const auto sequence = ReadDiagnostic(&mailbox.runtimeDiagnosticSequence);
+        const auto code = ReadDiagnostic(&mailbox.runtimeDiagnosticCode);
+        const auto bytes = ReadDiagnostic(&mailbox.runtimeDiagnosticBytes);
+        const auto truncated = ReadDiagnostic(&mailbox.runtimeDiagnosticTruncated);
+        std::array<char, kLuaReloadResultCapacity> text{};
+        if (bytes < text.size()) {
+            for (std::size_t offset = 0; offset <= bytes; offset += sizeof(std::uint32_t)) {
+                const auto word = ReadDiagnostic(mailbox.runtimeDiagnosticText + offset);
+                std::memcpy(text.data() + offset, &word, sizeof(word));
+            }
+        }
+        if (ReadDiagnostic(&mailbox.runtimeDiagnosticRevision) != revision) continue;
+        if (sequence != revision / 2 || sequence < saved.sequence || bytes >= text.size()
+            || truncated > 1 || code > static_cast<std::uint32_t>(LuaReloadResult::HostFailure)
+            || text[bytes] || !LuaMailboxUtf8({text.data(), bytes})) return false;
+        saved = {sequence, static_cast<LuaReloadResult>(code), std::string(text.data(), bytes), truncated != 0};
+        return true;
+    }
+    return true;
+}
 }
 
 struct LuaTestMailboxSession::Impl {
@@ -35,6 +74,7 @@ struct LuaTestMailboxSession::Impl {
     std::string nonce, sha;
     std::mutex mutex;
     std::uint32_t lastSequence = 0;
+    RuntimeDiagnostic diagnostic;
     detail::LuaTestProcessVerifier verify;
     ~Impl() {
         // 不修改仍由游戏执行的槽；关闭编辑器不会终止游戏，也不会伪报正在执行的结果。
@@ -131,6 +171,12 @@ static Result<LuaTestReloadSnapshot> Query(LuaTestMailboxSession& session, std::
     if (ownership == detail::LuaTestProcessOwnership::Unconfirmed)
         return Failure<LuaTestReloadSnapshot>("LUA_TEST_PROCESS_UNCONFIRMED", "Lua 运行时尚未与本次启动的原进程身份对应。");
     snapshot.processActive = ownership == detail::LuaTestProcessOwnership::OwnedRunning;
+    if (!ReadRuntimeDiagnostic(mailbox, impl.diagnostic))
+        return Failure<LuaTestReloadSnapshot>("LUA_TEST_RUNTIME_DIAGNOSTIC", "Lua 运行时诊断的序号或正文无效。");
+    snapshot.runtimeDiagnosticSequence = impl.diagnostic.sequence;
+    snapshot.runtimeDiagnosticCode = impl.diagnostic.code;
+    snapshot.runtimeMessage = impl.diagnostic.message;
+    snapshot.runtimeDiagnosticTruncated = impl.diagnostic.truncated;
     const auto state = static_cast<LuaMailboxState>(Read(mailbox.state));
     if (state == LuaMailboxState::Complete) {
         // Complete 由运行时 release 发布，编辑器持本地互斥后不会被另一 Submit 覆盖。

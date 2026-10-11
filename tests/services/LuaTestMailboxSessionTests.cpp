@@ -112,11 +112,61 @@ void ConcurrencyAndUtf8() {
     auto stopped = QueryLuaTestReload(*fixture.session);
     Check(stopped.Succeeded() && stopped.value->state == LuaTestReloadState::Stopped, "runtime stopped");
 }
+
+void RuntimeDiagnostics() {
+    Fixture fixture;
+    auto sent = SubmitLuaTestReload(*fixture.session, {"@pending.lua", "return 1"});
+    Check(sent.Succeeded(), "queue diagnostic overlap");
+    Check(fixture.runtime->Report(LuaReloadResult::RuntimeError, "@timer.lua:3: first"), "separate diagnostic");
+    auto queued = QueryLuaTestReload(*fixture.session, *sent.value);
+    Check(queued.Succeeded() && queued.value->state == LuaTestReloadState::Queued
+        && queued.value->runtimeDiagnosticSequence == 1
+        && queued.value->runtimeDiagnosticCode == LuaReloadResult::RuntimeError
+        && queued.value->runtimeMessage == "@timer.lua:3: first", "diagnostic preserves queued request");
+    auto chunk = fixture.runtime->Take();
+    Check(chunk.has_value(), "take after diagnostic");
+    Check(fixture.runtime->Complete(chunk->sequence, LuaReloadResult::Success, "ack"), "ACK after diagnostic");
+    std::string large;
+    for (unsigned i = 0; i < 6000; ++i) large += "错";
+    Check(fixture.runtime->Report(LuaReloadResult::BudgetExceeded, large), "bounded UTF8 diagnostic");
+    auto complete = QueryLuaTestReload(*fixture.session, *sent.value);
+    Check(complete.Succeeded() && complete.value->message == "ack"
+        && complete.value->resultCode == LuaReloadResult::Success
+        && complete.value->runtimeDiagnosticSequence == 2
+        && complete.value->runtimeDiagnosticTruncated && complete.value->runtimeMessage.size() % 3 == 0,
+        "runtime error leaves exact ACK intact");
+    std::atomic<bool> finished{false}, failed{false};
+    std::thread reader([&] {
+        std::uint32_t prior = 2;
+        while (!finished.load()) {
+            const auto value = QueryLuaTestReload(*fixture.session);
+            if (!value.Succeeded() || value.value->runtimeDiagnosticSequence < prior
+                || value.value->message != "ack") { failed.store(true); break; }
+            prior = value.value->runtimeDiagnosticSequence;
+            if (prior > 2 && value.value->runtimeMessage != "error-" + std::to_string(prior)) {
+                failed.store(true); break;
+            }
+        }
+    });
+    for (unsigned sequence = 3; sequence <= 300; ++sequence)
+        if (!fixture.runtime->Report(LuaReloadResult::RuntimeError, "error-" + std::to_string(sequence))) failed.store(true);
+    finished.store(true); reader.join();
+    Check(!failed.load(), "concurrent diagnostic snapshot not torn");
+    Check(QueryLuaTestReload(*fixture.session).value->runtimeDiagnosticSequence == 300, "latest diagnostic");
+    // 模拟读到正在发布：保留上一份已核对记录，不读半份正文，也不阻塞 UI。
+    fixture.mailbox->runtimeDiagnosticRevision = 601;
+    Check(QueryLuaTestReload(*fixture.session).value->runtimeDiagnosticSequence == 300, "busy diagnostic uses prior snapshot");
+    fixture.mailbox->runtimeDiagnosticRevision = 600;
+    fixture.mailbox->runtimeDiagnosticBytes = static_cast<std::uint32_t>(kLuaReloadResultCapacity);
+    Check(!QueryLuaTestReload(*fixture.session).Succeeded(), "invalid stable diagnostic rejected");
+    fixture.mailbox->version = 1;
+    Check(!QueryLuaTestReload(*fixture.session).Succeeded(), "old mailbox version rejected");
+}
 }
 
 int main() {
     try {
-        Lifecycle(); RejectionsAndUnknown(); ConcurrencyAndUtf8();
+        Lifecycle(); RejectionsAndUnknown(); ConcurrencyAndUtf8(); RuntimeDiagnostics();
         std::cout << "Lua mailbox service fixture passed; simulated receiver only; game_evidence=0\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
