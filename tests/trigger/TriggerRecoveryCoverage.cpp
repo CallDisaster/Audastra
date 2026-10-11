@@ -15,6 +15,7 @@
 #include <iterator>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace War3Map;
@@ -36,6 +37,31 @@ std::string Reason(const std::vector<Diagnostic>& diagnostics) {
     }
     return message;
 }
+
+// 只记录最慢的 20 个目标，输出在计时之后；名字来自运行输入，不写入源码或统计分母。
+// 行内控制字符转义，UTF-8 名字最多保留 160 字节且不截断多字节字符。
+std::string ReportName(std::string_view name) {
+    auto length = (std::min<std::size_t>)(name.size(), 160);
+    while (length < name.size() && length && (static_cast<unsigned char>(name[length]) & 0xc0) == 0x80) --length;
+    std::string result = "\"";
+    for (const char c : name.substr(0, length)) {
+        if (c == '\n') result += "\\n";
+        else if (c == '\r') result += "\\r";
+        else if (c == '\t') result += "\\t";
+        else if (c == '\\' || c == '"') { result += '\\'; result += c; }
+        else if (static_cast<unsigned char>(c) < 0x20) result += '?';
+        else result += c;
+    }
+    if (length < name.size()) result += "...";
+    return result + '"';
+}
+struct RecoveryTiming {
+    StableId id;
+    std::size_t guiIndex, sourceBytes, ecaCount, argumentCount;
+    double milliseconds;
+    const char* status;
+    std::string name;
+};
 } // namespace
 
 int main(int argc, char** argv) {
@@ -56,6 +82,10 @@ int main(int argc, char** argv) {
     std::size_t parseAttempts = 0, parsedAccepted = 0, prepareFailed = 0, applyFailed = 0, snapshotFailed = 0, commitAttempts = 0;
     std::map<std::string, std::size_t> reasons;
     std::map<std::string, std::string> examples;
+    constexpr std::size_t kSlowestTimings = 20;
+    std::vector<RecoveryTiming> slowest;
+    slowest.reserve(kSlowestTimings);
+    std::size_t guiIndex = 0;
     double recoverMs = 0, maxMs = 0, commitMs = 0, maxCommitMs = 0;
     const auto recordFailure = [&](const std::string& stage, const std::vector<Diagnostic>& diagnostics) {
         const auto reason = stage + ": " + Reason(diagnostics);
@@ -81,6 +111,7 @@ int main(int argc, char** argv) {
         return finish(true);
     };
     for (const auto id : ids) {
+        ++guiIndex;
         Script::MapScriptInputs inputs; inputs.triggers = &document; inputs.catalog = &*catalog.value;
         auto generated = Script::GenerateGuiTriggerSource(inputs, id);
         if (!generated.Succeeded() || !generated.value) { ++generatedFail; continue; }
@@ -89,11 +120,24 @@ int main(int argc, char** argv) {
         if (!plan.Succeeded()) { ++generatedFail; continue; }
         auto receipt = Trigger::TriggerCodeEditor::Apply(document, *catalog.value, *plan.value);
         if (!receipt.Succeeded()) { ++generatedFail; continue; }
-        const auto start = std::chrono::steady_clock::now();
+        const auto recoverStart = std::chrono::steady_clock::now();
         ++parseAttempts;
         auto recovered = Script::RecoverGuiTrigger(inputs, id);
-        const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - recoverStart).count();
         recoverMs += ms; maxMs = (std::max)(maxMs, ms);
+        const auto fastest = std::min_element(slowest.begin(), slowest.end(), [](const auto& left, const auto& right) {
+            return left.milliseconds < right.milliseconds;
+        });
+        if (slowest.size() < kSlowestTimings || ms > fastest->milliseconds) {
+            const auto* target = Trigger::TriggerDocumentEditor::FindTrigger(document, id);
+            const auto* value = recovered.Succeeded() && recovered.value ? &*recovered.value : nullptr;
+            RecoveryTiming timing{id, guiIndex, generated.value->text.size(), value ? value->fragment.ecas.size() : 0,
+                value ? value->fragment.arguments.size() : 0, ms,
+                value ? value->preservedCodeLines || value->preservedCodeExpressions ? "partial" : "complete" : "rejected",
+                ReportName(target ? target->name.text : "")};
+            if (slowest.size() < kSlowestTimings) slowest.push_back(std::move(timing));
+            else *fastest = std::move(timing);
+        }
         if (recovered.Succeeded() && recovered.value) {
             ++parsedAccepted;
             if (commitAndUndo(id, recovered.value->fragment, "parsed")) {
@@ -152,5 +196,15 @@ int main(int argc, char** argv) {
     for (const auto& [reason, count] : reasons) sorted.emplace_back(count, reason);
     std::sort(sorted.rbegin(), sorted.rend());
     for (const auto& [count, reason] : sorted) std::printf("%5zu  %s\n       e.g. %s\n", count, reason.c_str(), examples[reason].c_str());
+    std::sort(slowest.begin(), slowest.end(), [](const auto& left, const auto& right) {
+        return left.milliseconds != right.milliseconds ? left.milliseconds > right.milliseconds : left.guiIndex < right.guiIndex;
+    });
+    std::printf("recover-profiled=%zu slowest-limit=%zu (includes parse/probe/regeneration; excludes commit/undo)\n", parseAttempts, kSlowestTimings);
+    for (std::size_t rank = 0; rank < slowest.size(); ++rank) {
+        const auto& timing = slowest[rank];
+        std::printf("recover-slow rank=%zu gui-index=%zu trigger-id=%llu recover-ms=%.3f source-bytes=%zu candidate-ecas=%zu candidate-arguments=%zu status=%s name=%s\n",
+            rank + 1, timing.guiIndex, static_cast<unsigned long long>(timing.id), timing.milliseconds,
+            timing.sourceBytes, timing.ecaCount, timing.argumentCount, timing.status, timing.name.c_str());
+    }
     return exact && !undoMismatch && !prepareFailed && !applyFailed ? 0 : 1;
 }
