@@ -2,6 +2,7 @@
 #include "MapSaveJob.h"
 #include "TriggerModule.h"
 #include "War3MapCore/Services/ScriptSavePreparation.h"
+#include "War3MapCore/Services/MapTestWorkspace.h"
 
 #include <QAction>
 #include <QEventLoop>
@@ -60,8 +61,19 @@ QJsonObject MainWindow::LuaTestReload(bool submit) {
     const QPointer<MainWindow> window(this);
     auto worker = std::unique_ptr<QThread>(QThread::create([&task, &result, controller] {
         try {
+            // PrepareMapPreflight 刚创建的独占空目录；先持有原句柄，成功后只清理本次拥有的文件。
+            const auto workspace = Services::FreezeMapTestWorkspace(task->scriptWorkspace);
+            if (!workspace.Succeeded() || !workspace.value) {
+                result.diagnostics = workspace.diagnostics; return;
+            }
             const auto checked = Services::MapSaveService::Preflight(*task);
             if (!checked.Succeeded()) { result.diagnostics = checked.diagnostics; return; }
+            const auto captured = (*workspace.value)->Refresh();
+            task->diagnostics.insert(task->diagnostics.end(), captured.diagnostics.begin(), captured.diagnostics.end());
+            if (captured.Succeeded()) {
+                const auto cleanup = (*workspace.value)->Cleanup(true);
+                task->diagnostics.insert(task->diagnostics.end(), cleanup.diagnostics.begin(), cleanup.diagnostics.end());
+            }
             if (!task->generatedLuaTestUnit || task->luaTestMapBinding.empty()) {
                 result = War3Map::Result<Services::LuaReloadControllerSnapshot>::Failure("Lua.Test", "LUA_RELOAD_GENERATION_MISSING",
                     "没有本次实际生成的 Lua 测试单元，差异没有发送。"); return;
@@ -76,7 +88,7 @@ QJsonObject MainWindow::LuaTestReload(bool submit) {
     worker->start(QThread::LowPriority); progress.show(); loop.exec(); worker->wait(); progress.hide();
     if (!window) return Failure("LUA_RELOAD_WINDOW_CLOSED", "编辑器窗口已关闭。");
     project_->AddDiagnostics(task->diagnostics); project_->AddDiagnostics(result.diagnostics);
-    // 预检没有地图发布点，不以此路径标记正式保存或清理未提交的编译目录。
+    // 预检没有地图发布点，不把差异准备标记为正式保存；失败目录保留诊断。
     if (!result.Succeeded() || !result.value) {
         const auto failure = Failure(result.diagnostics); ShowStatusMessage(failure.value("message").toString()); return failure;
     }
