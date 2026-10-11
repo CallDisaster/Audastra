@@ -1,4 +1,5 @@
 #include "LuaHost.h"
+#include "LuaNativeBindings.h"
 #include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
 
 // 此独立 Lua 库全体以 C++ 编译，使用上游支持的异常展开，不能包 extern "C"。
@@ -52,6 +53,7 @@ struct LuaHost::Impl {
     std::string console;
     std::unordered_set<std::string> loading;
     std::unordered_set<std::string> readModules;
+    std::unique_ptr<LuaNativeBindings> natives;
     explicit Impl(LuaModuleReader value, LuaHostLimits configured) : reader(std::move(value)), limits(configured) {}
     ~Impl() { if (state) lua_close(state); }
     static Impl& Host(lua_State* lua) { return **static_cast<Impl**>(lua_getextraspace(lua)); }
@@ -166,11 +168,11 @@ struct LuaHost::Impl {
         const std::string name(raw, size);
         const auto member = ModuleMember(name);
         if (member.empty()) return luaL_error(lua, "require 模块名不属于地图内有效相对成员。");
-        if (name.starts_with("jass.")) return luaL_error(lua, "自有 Lua 运行时尚未实现模块 %s。", name.c_str());
         lua_rawgetp(lua, LUA_REGISTRYINDEX, &loadedModulesKey);
         lua_getfield(lua, -1, name.c_str());
         if (lua_toboolean(lua, -1)) return 1;
         lua_pop(lua, 1);
+        if (name.starts_with("jass.")) return luaL_error(lua, "自有 Lua 运行时尚未实现模块 %s。", name.c_str());
         if (self.loading.contains(member)) return luaL_error(lua, "Lua 模块循环依赖：%s。", name.c_str());
         if (self.loading.size() >= self.limits.requireDepth || self.readModules.size() >= self.limits.moduleCount
             || self.totalRead >= self.limits.totalModuleBytes) {
@@ -217,6 +219,7 @@ struct LuaHost::Impl {
         lua_rawsetp(lua, LUA_REGISTRYINDEX, &loadedModulesKey);
         return 0;
     }
+    static int InitializeNatives(lua_State* lua) { Host(lua).natives->Install(lua); return 0; }
     LuaHostResult Error(int code, LuaReloadResult fallback) {
         const char* message = lua_tostring(state, -1);
         LuaHostResult result{budgetExceeded || code == LUA_ERRMEM ? LuaReloadResult::BudgetExceeded : fallback,
@@ -269,6 +272,17 @@ LuaHostResult LuaHost::Execute(std::string_view source, std::string_view chunkNa
     code = lua_pcall(self.state, 0, 0, 1);
     if (code != LUA_OK) return self.Error(code, LuaReloadResult::RuntimeError);
     if (self.Expired()) return Failure(LuaReloadResult::BudgetExceeded, "Lua 执行超出时间或内存预算；已发生的副作用没有回滚。");
+    return {LuaReloadResult::Success, {}};
+}
+LuaHostResult LuaHost::BindNatives(std::shared_ptr<NativeProvider> provider) {
+    auto& self = *impl_;
+    if (!self.state || self.thread != GetCurrentThreadId() || self.executing || self.natives || !provider || !provider->Generation())
+        return Failure(LuaReloadResult::NotReady, "Lua native 提供者未就绪、线程不符或已经绑定。");
+    self.natives = std::make_unique<LuaNativeBindings>(std::move(provider));
+    self.budgetExceeded = false;
+    lua_pushcfunction(self.state, Impl::InitializeNatives);
+    const int code = lua_pcall(self.state, 0, 0, 0);
+    if (code != LUA_OK) return self.Error(code, LuaReloadResult::HostFailure);
     return {LuaReloadResult::Success, {}};
 }
 std::size_t LuaHost::MemoryBytes() const noexcept { return impl_->memory; }
