@@ -354,6 +354,49 @@ void TextureSlotsAreUndoable() {
     Require(!ReplaceTerrainTextureSlot(*full, TerrainTextureTable::Ground, 16, "Lrok").Succeeded(), "slot encoding remains capped at sixteen");
 }
 
+void BoundaryDraftPreservesRawFieldsAndRestores() {
+    auto grid = Grid();
+    auto& center = grid->vertices[40];
+    center.textureAndFlagsRaw = 0x71; // 地面1、坡道、荒芜、水面全部保留。
+    center.waterHeightAndFlagsRaw |= 0xc000; // 外缘与未知水位位不是边界笔刷的目标。
+    const auto original = *SerializeMapTerrain(*grid).value;
+    std::vector<std::byte> pathing(16 + 32 * 32, std::byte{0});
+    pathing[0] = std::byte{'M'}; pathing[1] = std::byte{'P'}; pathing[2] = std::byte{'3'}; pathing[3] = std::byte{'W'};
+    pathing[8] = std::byte{32}; pathing[12] = std::byte{32};
+    MapDataEditSession edits(MapDocument::FromMembers({}));
+    Require(edits.AttachTerrain(original).Succeeded() && edits.AttachPathing(pathing).Succeeded(), "boundary sources attach");
+    TerrainBrush brush; brush.kind = TerrainBrushKind::Boundary; brush.size = 1;
+    const TerrainStrokePoint point{256, 256};
+    const auto prepared = edits.PrepareTerrainEdit(brush, std::span(&point, 1), false);
+    Require(prepared.Succeeded() && prepared.value->HasChanges() && !prepared.value->TerrainPathingGate().Succeeded(),
+        "boundary preview is supported but cannot claim verified native pathing");
+    Require(edits.Revision() == 0 && !edits.CanUndo() && *SerializeMapTerrain(*edits.Terrain()).value == original,
+        "boundary preview is read only");
+    Require(edits.ApplyPreparedTerrainEdit(*prepared.value).Succeeded(), "boundary uses the sealed shared command");
+    const auto changed = *SerializeMapTerrain(*edits.Terrain()).value;
+    std::size_t differences = 0;
+    for (std::size_t index = 0; index < original.size(); ++index) if (original[index] != changed[index]) {
+        ++differences;
+        Require((original[index] ^ changed[index]) == std::byte{0x80}, "boundary only changes its own W3E bit");
+    }
+    Require(differences == 1 && edits.Terrain()->vertices[40].IsBoundary(), "one-point boundary affects exactly one vertex");
+    const auto replacements = edits.Replacements();
+    Require(replacements.size() == 1 && replacements.front().name == "war3map.w3e",
+        "boundary draft only exposes W3E as an overlay, not WPM");
+    Require(!edits.VerifyTerrainPathingForSave().Succeeded(), "boundary native save remains rejected");
+    Require(edits.Undo() && *SerializeMapTerrain(*edits.Terrain()).value == original && edits.Redo(),
+        "boundary undo and redo restore exact bytes");
+    MapDataEditSession restored(MapDocument::FromMembers({}));
+    Require(restored.AttachTerrain(original).Succeeded() && restored.AttachPathing(pathing).Succeeded(), "restoration source attaches");
+    Require(restored.SetTerrainAndPathing(changed, pathing).Succeeded(), "boundary draft restores through project joint overlay path");
+    Require(*SerializeMapTerrain(*restored.Terrain()).value == changed && !restored.VerifyTerrainPathingForSave().Succeeded(),
+        "restored boundary remains exact and retains its save refusal");
+    brush.value = false;
+    Require(restored.EditTerrain(brush, std::span(&point, 1), false).Succeeded(), "clear also accepts marked vertices");
+    Require(*SerializeMapTerrain(*restored.Terrain()).value == original && restored.VerifyTerrainPathingForSave().Succeeded(),
+        "clearing the boundary returns to the original net bytes and eligibility");
+}
+
 } // namespace
 
 int main() {
@@ -369,7 +412,8 @@ int main() {
         NoiseIsBoundedPerStroke();
         WaterAndCliffPreserveOtherFields();
         TextureSlotsAreUndoable();
-        std::cout << "TerrainEditing: 11 scenario groups passed\n";
+        BoundaryDraftPreservesRawFieldsAndRestores();
+        std::cout << "TerrainEditing: 12 scenario groups passed\n";
         return 0;
     } catch (const std::exception& exception) {
         std::cerr << "TerrainEditing: " << exception.what() << '\n';

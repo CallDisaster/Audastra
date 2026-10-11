@@ -1,5 +1,6 @@
 #include "LiveEditorTools.h"
 #include "EditorProject.h"
+#include "ProjectOpen.h"
 #include "Commands/TriggerCommands.h"
 #include "Commands/ObjectSnapshotCommand.h"
 #include "McpObjectTools.h"
@@ -195,6 +196,7 @@ private slots:
     void SettingsAndStringsKeepOriginalGuiUndoAndPolicy();
     void PlacementToolsKeepAuthorEditsAndOriginalUndo();
     void TerrainToolsKeepSessionPreviewAndOriginalUndo();
+    void BoundaryDraftSavesAndReopensAsProject();
     void ImportMetadataUsesSourceAndCurrentAssetOverlay();
     void ResourceToolsUseActualAsyncSourceAndRejectStaleResults();
     void ProjectSearchUsesInjectedOwnedPagesAndStrictRevision();
@@ -738,6 +740,45 @@ void LiveEditorToolsTests::VariableFailuresPreserveRevisionAndUndo() {
     auto rename = erase; rename.insert("name", "night_renamed");
     QVERIFY(!f.tools->Invoke("variables_rename", rename).value("ok").toBool());
     QCOMPARE(f.Fingerprint(), after); QCOMPARE(f.Context(), context); QCOMPARE(f.project.triggerUndoStack_->count(), 1);
+}
+
+void LiveEditorToolsTests::BoundaryDraftSavesAndReopensAsProject() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    MapData::TerrainGridSnapshot grid;
+    grid.header.width = 5; grid.header.height = 5; grid.header.offset = {-256, -256}; grid.header.mainTileset = 'L';
+    grid.header.groundTilesets = {"Ldrt"}; grid.header.cliffTilesets = {"CLdi"}; grid.vertices.resize(25);
+    for (auto& vertex : grid.vertices) { vertex.groundHeightRaw = 8192; vertex.waterHeightAndFlagsRaw = 7936; vertex.cliffAndLayerRaw = 2; }
+    MapData::RefreshTerrainDerived(grid, 0, 0, 5, 5);
+    const auto terrain = MapData::SerializeMapTerrain(grid); QVERIFY(terrain.Succeeded());
+    std::vector<std::byte> pathing{std::byte{'M'}, std::byte{'P'}, std::byte{'3'}, std::byte{'W'}};
+    for (const auto value : {0u, 16u, 16u}) for (unsigned shift = 0; shift < 32; shift += 8)
+        pathing.push_back(static_cast<std::byte>((value >> shift) & 0xff));
+    pathing.resize(16 + 16 * 16, std::byte{2});
+    QVERIFY(WriteFile(f.source.filePath("map/war3map.w3e"), Bytes(*terrain.value)));
+    QVERIFY(WriteFile(f.source.filePath("map/war3map.wpm"), Bytes(pathing)));
+    auto directory = DirectoryWorkspace::Open(f.project.projectRoot_); QVERIFY(directory.Succeeded());
+    f.project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*directory.value));
+    f.project.LoadMapDocument(); f.project.ResetEditTracking();
+    const auto state = f.tools->Invoke("get_terrain_edit_state", {}); QVERIFY(state.value("ok").toBool());
+    auto request = f.Context(); request.insert("terrain_binding", state.value("terrain_binding"));
+    request.insert("dry_run", false); request.insert("brush", QJsonObject{{"kind", "boundary"}, {"size", 1}, {"value", true}});
+    request.insert("points", QJsonArray{QJsonObject{{"x", 0}, {"y", 0}}});
+    const auto applied = f.tools->Invoke("edit_terrain_stroke", request);
+    QVERIFY2(applied.value("ok").toBool(), qPrintable(Explain(applied)));
+    QVERIFY(!applied.value("terrain_pathing_gate").toObject().value("passed").toBool());
+    QCOMPARE(f.project.mapDataUndoStack_->count(), 1);
+    const auto changed = MapData::SerializeMapTerrain(*f.project.mapEdits_->Terrain()); QVERIFY(changed.Succeeded());
+    const auto target = std::filesystem::path(f.outputs.filePath("boundary.forge").toStdWString());
+    const auto saved = f.project.SaveProjectToPath(target);
+    QVERIFY2(saved.Succeeded(), saved.diagnostics.empty() ? "save boundary project" : saved.diagnostics.front().message.c_str());
+    auto restored = QtProject::PrepareProjectOpen(target);
+    QVERIFY2(restored.Succeeded(), restored.diagnostics.empty() ? "reopen boundary project" : restored.diagnostics.front().message.c_str());
+    auto* edits = (*restored.value)->mapDataEdits.get(); QVERIFY(edits && edits->Terrain());
+    QCOMPARE(*MapData::SerializeMapTerrain(*edits->Terrain()).value, *changed.value);
+    QCOMPARE(edits->InspectTerrainPoint({0, 0}).value->pathingFlags, std::optional<std::uint8_t>{2});
+    QVERIFY(!edits->VerifyTerrainPathingForSave().Succeeded());
+    QFile source(f.source.filePath("map/war3map.w3e")); QVERIFY(source.open(QIODevice::ReadOnly));
+    QCOMPARE(source.readAll(), Bytes(*terrain.value));
 }
 
 void LiveEditorToolsTests::TerrainToolsKeepSessionPreviewAndOriginalUndo() {

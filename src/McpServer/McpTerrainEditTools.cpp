@@ -106,7 +106,8 @@ TerrainBrush Brush(const QJsonValue& value) {
         {"texture", TerrainBrushKind::Texture}, {"blight", TerrainBrushKind::Blight}, {"raise", TerrainBrushKind::Raise},
         {"lower", TerrainBrushKind::Lower}, {"plateau", TerrainBrushKind::Plateau}, {"smooth", TerrainBrushKind::Smooth},
         {"cliff_level", TerrainBrushKind::CliffLevel}, {"noise", TerrainBrushKind::Noise},
-        {"cliff_texture", TerrainBrushKind::CliffTexture}, {"water_height", TerrainBrushKind::WaterHeight}, {"ramp", TerrainBrushKind::Ramp}};
+        {"cliff_texture", TerrainBrushKind::CliffTexture}, {"water_height", TerrainBrushKind::WaterHeight},
+        {"ramp", TerrainBrushKind::Ramp}, {"boundary", TerrainBrushKind::Boundary}};
     const auto matched = std::find_if(std::begin(kinds), std::end(kinds), [&](const auto& entry) { return kind == entry.first; });
     if (matched == std::end(kinds)) throw ArgumentError("TERRAIN_BRUSH_KIND", "未知地形笔刷；浅水和深水生成尚不支持。");
     TerrainBrush brush; brush.kind = matched->second; brush.size = 1;
@@ -120,7 +121,7 @@ TerrainBrush Brush(const QJsonValue& value) {
             brush.shape = shape == "square" ? TerrainBrushShape::Square : TerrainBrushShape::Circle;
         }
     }
-    if (brush.kind == TerrainBrushKind::Blight || brush.kind == TerrainBrushKind::Ramp) {
+    if (brush.kind == TerrainBrushKind::Blight || brush.kind == TerrainBrushKind::Ramp || brush.kind == TerrainBrushKind::Boundary) {
         allowed.insert("value", {}); brush.value = Boolean(object, "value", true);
     }
     if (brush.kind == TerrainBrushKind::Raise || brush.kind == TerrainBrushKind::Lower
@@ -169,6 +170,7 @@ QJsonObject SampleJson(const TerrainPointSample& point) {
             {"texture_flags_raw", vertex.textureAndFlagsRaw}, {"variation_raw", vertex.variationRaw},
             {"cliff_layer_raw", vertex.cliffAndLayerRaw}, {"cliff_level", vertex.CliffLevel()},
             {"ramp", vertex.IsRamp()}, {"water", vertex.HasWater()}, {"blight", vertex.IsBlight()},
+            {"boundary", vertex.IsBoundary()}, {"map_edge", vertex.IsMapEdge()},
             {"ground_texture", Rawcode(point.groundTexture)}, {"cliff_texture", Rawcode(point.cliffTexture)}}},
         {"pathing", pathing}};
 }
@@ -200,7 +202,7 @@ std::vector<ToolDefinition> TerrainEditToolDefinitions() {
             {"items", BasicSchema({{"x", QJsonObject{{"type", "number"}}}, {"y", QJsonObject{{"type", "number"}}}}, {"x", "y"})}};
     };
     const auto brush = BasicSchema({{"kind", QJsonObject{{"type", "string"}, {"enum", QJsonArray{
-        "texture", "blight", "raise", "lower", "plateau", "smooth", "cliff_level", "noise", "cliff_texture", "water_height", "ramp"}}}},
+        "texture", "blight", "raise", "lower", "plateau", "smooth", "cliff_level", "noise", "cliff_texture", "water_height", "ramp", "boundary"}}}},
         {"size", IntegerSchema(1, 8)}, {"shape", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"circle", "square"}}}},
         {"ground_texture", TextSchema(4)}, {"cliff_texture", IntegerSchema(0, 14)}, {"level_delta", IntegerSchema(-1, 1)},
         {"strength", QJsonObject{{"type", "number"}, {"exclusiveMinimum", 0}, {"maximum", 1024}}},
@@ -220,7 +222,7 @@ std::vector<ToolDefinition> TerrainEditToolDefinitions() {
     add("query_terrain_points", "按原terrain_binding查询1..256个世界坐标的地高、最近原顶点、贴图、悬崖和静态WPM原始通行位。缺WPM、超出WPM半开边界分别报告；不等同游戏动态寻路。", query, {"terrain_binding", "points"}, ToolPermission::Query);
     auto edit = identity; edit.insert("terrain_binding", binding); edit.insert("points", points(4096)); edit.insert("brush", brush);
     edit.insert("dry_run", QJsonObject{{"type", "boolean"}}); edit.insert("follow_doodads", QJsonObject{{"type", "boolean"}});
-    add("edit_terrain_stroke", "使用界面同一Core命令预览或提交一笔1..4096点地形。必须显式dry_run，提交沿原Undo/活动事务，不自行保存；默认尺寸1、圆形、装饰物不跟随。坡道仅一级干地直坡；water_height只调已有水面。未知派生规则保持原生保存门关闭；越界和旧修订整笔拒绝。", edit,
+    add("edit_terrain_stroke", "使用界面同一Core命令预览或提交一笔1..4096点地形。必须显式dry_run，提交沿原Undo/活动事务，不自行保存；默认尺寸1、圆形、装饰物不跟随。坡道仅一级干地直坡；water_height只调已有水面；boundary只改边界标志，保留外缘与WPM。未知派生规则保持原生保存门关闭，独立宿主不可提交尚未通过保存门的笔划；越界和旧修订整笔拒绝。", edit,
         {"project_identity", "expected_revision", "terrain_binding", "points", "brush", "dry_run"}, ToolPermission::Edit);
     return definitions;
 }

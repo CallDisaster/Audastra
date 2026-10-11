@@ -234,6 +234,7 @@ private:
     void RefreshPalette();
     void ValidateSelection();
     void UpdateOverlay();
+    void AppendTerrainBoundaryOverlay(std::vector<War3RenderOverlayLineV2>& lines);
     void UpdateSelectionText();
     // 选中摆放在 requests_ 中的序号、在当前场景中的实例序号（未显示为空）。
     [[nodiscard]] std::optional<std::uint32_t> SelectedRequest() const;
@@ -304,6 +305,11 @@ private:
     QButtonGroup* terrainRampModes_ = nullptr;
     QWidget* terrainBlightSection_ = nullptr;
     QButtonGroup* terrainBlightModes_ = nullptr;
+    QWidget* terrainBoundarySection_ = nullptr;
+    QButtonGroup* terrainBoundaryModes_ = nullptr;
+    QLabel* terrainBoundaryStatus_ = nullptr;
+    std::weak_ptr<const MapData::TerrainGridSnapshot> boundaryOverlaySource_;
+    std::vector<War3RenderOverlayLineV2> boundaryOverlay_;
     QButtonGroup* terrainShapes_ = nullptr;
     QSpinBox* terrainRadius_ = nullptr;
     QSlider* terrainRadiusSlider_ = nullptr;

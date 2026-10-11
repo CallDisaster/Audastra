@@ -37,6 +37,7 @@ enum class TerrainBrushKind {
     CliffTexture, // 仅替换悬崖类型，保留各顶点层级与地高
     WaterHeight,  // 仅调整已有水面的基础高度，不生成浅水/深水或修改通行性
     Ramp,         // 一级干地直坡：整段三点创建/移除，value 决定是否创建，不使用尺寸或形状
+    Boundary,     // 边界标志：仅修改 W3E 0x80；保留外缘与 WPM，原生保存仍须通过派生数据门
 };
 
 enum class TerrainBrushShape { Circle, Square };
@@ -56,7 +57,7 @@ struct TerrainBrush {
     std::string groundTexture;       // Texture：地面贴图 rawcode（不在表中时追加，表最多 16 项）
     std::uint8_t cliffTexture = 0;   // CliffLevel：悬崖贴图表索引
     int levelDelta = 0;              // CliffLevel：-1、0、+1
-    bool value = true;               // Blight/Ramp：置位或清除
+    bool value = true;               // Blight/Ramp/Boundary：置位或清除
     float strength = 32.0f;          // Raise/Lower：世界单位；Smooth：0..1
     std::uint32_t seed = 0;          // Texture 变体随机种子，同一输入得到同一结果
     std::optional<TerrainStrokeAnchor> anchor; // Plateau/CliffLevel：拖动起点的固定基准
@@ -91,7 +92,7 @@ struct TerrainStrokeResult {
 };
 
 // 依次在每个点上施加笔刷，直接修改 terrain（含派生值）。输入非法时不修改并返回错误。
-// 地图边界顶点只接受贴图与荒芜，不改高度与悬崖。
+// 地图边界顶点只接受贴图、荒芜与边界标志，不改高度与悬崖。
 [[nodiscard]] Result<TerrainStrokeResult> ApplyTerrainStroke(
     TerrainGridSnapshot& terrain, const TerrainBrush& brush, std::span<const TerrainStrokePoint> points);
 

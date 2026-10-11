@@ -112,6 +112,11 @@ public:
         case MapData::TerrainBrushKind::Ramp:
             path.moveTo(3, 18); path.lineTo(7, 18); path.lineTo(17, 6); path.lineTo(21, 6);
             break;
+        case MapData::TerrainBrushKind::Boundary:
+            path.addRect(QRectF(4, 4, 16, 16));
+            path.moveTo(4, 12); path.lineTo(20, 12); path.moveTo(12, 4); path.lineTo(12, 20);
+            painter->fillRect(QRectF(4, 4, 8, 8), soft); painter->fillRect(QRectF(12, 12, 8, 8), soft);
+            break;
         }
         painter->drawPath(path);
         painter->restore();
@@ -183,7 +188,8 @@ QWidget* WorldModule::BuildTerrainPage() {
         std::tuple{tr("噪波"), MapData::TerrainBrushKind::Noise, "Noise"},
         std::tuple{tr("悬崖类型"), MapData::TerrainBrushKind::CliffTexture, "CliffTexture"},
         std::tuple{tr("水面高度"), MapData::TerrainBrushKind::WaterHeight, "WaterHeight"},
-        std::tuple{tr("直坡"), MapData::TerrainBrushKind::Ramp, "Ramp"}};
+        std::tuple{tr("直坡"), MapData::TerrainBrushKind::Ramp, "Ramp"},
+        std::tuple{tr("边界"), MapData::TerrainBrushKind::Boundary, "Boundary"}};
     for (std::size_t index = 0; index < brushes.size(); ++index) {
         const auto& [label, kind, name] = brushes[index];
         auto* button = new QToolButton(terrainPalette_);
@@ -287,6 +293,21 @@ QWidget* WorldModule::BuildTerrainPage() {
         "worldTerrainBlightMode"));
     terrainBlightModes_->button(1)->setChecked(true);
     column->addWidget(terrainBlightSection_);
+
+    terrainBoundarySection_ = Surface(terrainPalette_);
+    auto* boundary = new QVBoxLayout(terrainBoundarySection_);
+    boundary->setContentsMargins(0, 8, 0, 0); boundary->setSpacing(8);
+    boundary->addWidget(SectionLabel(tr("边界标志"), terrainBoundarySection_));
+    terrainBoundaryModes_ = new QButtonGroup(terrainBoundarySection_);
+    boundary->addWidget(Segment(terrainBoundarySection_, terrainBoundaryModes_, {{tr("设置"), 1}, {tr("清除"), 0}},
+        "worldTerrainBoundaryMode"));
+    terrainBoundaryModes_->button(1)->setChecked(true);
+    auto* boundaryHint = new QLabel(tr("橙色十字标记边界顶点。只设置或清除边界标志，保留地图外缘。通行性联动待核验，修改后可保存工程，暂不能保存地图。"), terrainBoundarySection_);
+    boundaryHint->setWordWrap(true); boundary->addWidget(boundaryHint);
+    terrainBoundaryStatus_ = new QLabel(terrainBoundarySection_);
+    terrainBoundaryStatus_->setObjectName(QStringLiteral("worldTerrainBoundaryStatus"));
+    terrainBoundaryStatus_->setWordWrap(true); boundary->addWidget(terrainBoundaryStatus_);
+    column->addWidget(terrainBoundarySection_);
     column->addSpacing(8);
 
     // 尺寸：半径滑条 + 数值，形状分段
@@ -452,6 +473,40 @@ void WorldModule::RefreshTerrainSwatches() {
     else swatchName_->setText(tr("当前地图没有地面贴图"));
 }
 
+void WorldModule::AppendTerrainBoundaryOverlay(std::vector<War3RenderOverlayLineV2>& lines) {
+    if (!terrain_ || !terrainBoundaryStatus_) return;
+    if (!viewport_ || !viewport_->HasOverlaySupport()) {
+        boundaryOverlaySource_.reset(); boundaryOverlay_.clear();
+        terrainBoundaryStatus_->setText(tr("当前渲染器不支持边界标记。"));
+        terrainBoundaryStatus_->setProperty("boundaryMarkerCount", QVariant::fromValue(qulonglong{0}));
+        return;
+    }
+    if (boundaryOverlaySource_.lock() != terrain_) {
+        boundaryOverlaySource_ = terrain_;
+        boundaryOverlay_.clear();
+        const auto count = static_cast<std::size_t>(std::count_if(terrain_->vertices.begin(), terrain_->vertices.end(),
+            [](const auto& vertex) { return vertex.IsBoundary(); }));
+        constexpr std::size_t maximumMarkers = 4096;
+        const auto stride = std::max(std::size_t{1}, (count + maximumMarkers - 1) / maximumMarkers);
+        boundaryOverlay_.reserve(std::min(count, maximumMarkers) * 2);
+        std::size_t ordinal = 0;
+        for (const auto& vertex : terrain_->vertices) {
+            if (!vertex.IsBoundary() || ordinal++ % stride != 0) continue;
+            const auto& p = vertex.position;
+            const float z = p[2] + 8.0f;
+            boundaryOverlay_.push_back({{p[0] - 20, p[1], z}, {p[0] + 20, p[1], z}, {1.0f, 0.57f, 0.22f}});
+            boundaryOverlay_.push_back({{p[0], p[1] - 20, z}, {p[0], p[1] + 20, z}, {1.0f, 0.57f, 0.22f}});
+        }
+        const auto shown = boundaryOverlay_.size() / 2;
+        terrainBoundaryStatus_->setText(shown == count ? tr("边界顶点：%1").arg(count)
+            : tr("边界顶点：%1，均匀抽样显示 %2 个").arg(count).arg(shown));
+        terrainBoundaryStatus_->setProperty("boundaryVertexCount", QVariant::fromValue(static_cast<qulonglong>(count)));
+        terrainBoundaryStatus_->setProperty("boundaryMarkerCount", QVariant::fromValue(static_cast<qulonglong>(shown)));
+    }
+    // 地形修订不变时只追加缓存；鼠标每次移动不再扫描整张地形。
+    lines.insert(lines.end(), boundaryOverlay_.begin(), boundaryOverlay_.end());
+}
+
 void WorldModule::UpdateTerrainBrushControls() {
     if (!terrainKinds_) return;
     const auto kind = CurrentBrushKind();
@@ -462,6 +517,7 @@ void WorldModule::UpdateTerrainBrushControls() {
         std::pair{terrainWaterSection_, kind == MapData::TerrainBrushKind::WaterHeight},
         std::pair{terrainRampSection_, kind == MapData::TerrainBrushKind::Ramp},
         std::pair{terrainBlightSection_, kind == MapData::TerrainBrushKind::Blight},
+        std::pair{terrainBoundarySection_, kind == MapData::TerrainBrushKind::Boundary},
         std::pair{terrainStrengthSection_, shaping}};
     for (const auto& [section, shown] : sections) {
         const bool appearing = shown && section->isHidden();
@@ -485,6 +541,7 @@ void WorldModule::UpdateTerrainBrushControls() {
         const double top = smooth ? 1.0 : 256.0;
         terrainStrengthSlider_->setValue(static_cast<int>(std::lround(terrainStrength_->value() / top * kStrengthSteps)));
     }
+    UpdateOverlay();
 }
 
 } // namespace War3Map::Modules

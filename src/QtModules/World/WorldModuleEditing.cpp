@@ -815,7 +815,8 @@ void WorldModule::StartTerrainStroke(double x, double y) {
     brush.shape = static_cast<MapData::TerrainBrushShape>(std::max(0, terrainShapes_->checkedId()));
     brush.size = static_cast<std::uint32_t>(terrainRadius_->value());
     brush.strength = static_cast<float>(terrainStrength_->value());
-    brush.value = (brush.kind == MapData::TerrainBrushKind::Ramp ? terrainRampModes_ : terrainBlightModes_)->checkedId() != 0;
+    brush.value = (brush.kind == MapData::TerrainBrushKind::Ramp ? terrainRampModes_
+        : brush.kind == MapData::TerrainBrushKind::Boundary ? terrainBoundaryModes_ : terrainBlightModes_)->checkedId() != 0;
     brush.levelDelta = terrainCliffDeltas_->checkedId();
     brush.cliffTexture = static_cast<std::uint8_t>(terrainCliffTexture_->currentIndex());
     brush.waterHeight = static_cast<float>(terrainWaterHeight_->value());
@@ -1048,6 +1049,8 @@ void WorldModule::UpdateOverlay() {
         lines.push_back({{point[0], point[1] - 16.0f, z}, {point[0], point[1] + 16.0f, z},
             {kCameraColor[0], kCameraColor[1], kCameraColor[2]}});
     }
+    if (CurrentTool() == Tool::Terrain && CurrentBrushKind() == MapData::TerrainBrushKind::Boundary)
+        AppendTerrainBoundaryOverlay(lines);
     // 笔刷落点：吸附到最近顶点，按实际作用范围画出（半径外半格为边界）。
     if (brushCursor_ && terrain && CurrentTool() == Tool::Terrain) {
         const double size = MapData::TerrainGridSnapshot::tileSize;

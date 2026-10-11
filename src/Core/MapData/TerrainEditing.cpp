@@ -209,6 +209,7 @@ Status Validate(const TerrainGridSnapshot& terrain, const TerrainBrush& brush, s
             return Failure("TERRAIN_BRUSH_WATER_HEIGHT", "水面基础高度必须在 -2048 到 2047.75 之间");
         break;
     case TerrainBrushKind::Blight: case TerrainBrushKind::Plateau: case TerrainBrushKind::Ramp:
+    case TerrainBrushKind::Boundary:
         break;
     default:
         return Failure("TERRAIN_BRUSH_KIND", "未知的地形笔刷");
@@ -368,7 +369,8 @@ Result<TerrainStrokeResult> ApplyTerrainStroke(
                 if (!weight) continue;
                 const auto index = static_cast<std::size_t>(y) * width + x;
                 auto vertex = terrain.vertices[index];
-                const bool shaping = brush.kind != TerrainBrushKind::Texture && brush.kind != TerrainBrushKind::Blight;
+                const bool shaping = brush.kind != TerrainBrushKind::Texture && brush.kind != TerrainBrushKind::Blight
+                    && brush.kind != TerrainBrushKind::Boundary;
                 if (shaping && vertex.IsBoundary()) continue;
                 const int level = vertex.CliffLevel();
                 switch (brush.kind) {
@@ -382,6 +384,10 @@ Result<TerrainStrokeResult> ApplyTerrainStroke(
                 case TerrainBrushKind::Blight:
                     vertex.textureAndFlagsRaw = static_cast<std::uint8_t>(brush.value ? (vertex.textureAndFlagsRaw | 0x20)
                                                                                       : (vertex.textureAndFlagsRaw & ~0x20));
+                    break;
+                case TerrainBrushKind::Boundary:
+                    vertex.textureAndFlagsRaw = static_cast<std::uint8_t>(brush.value ? (vertex.textureAndFlagsRaw | 0x80)
+                                                                                      : (vertex.textureAndFlagsRaw & ~0x80));
                     break;
                 case TerrainBrushKind::Raise: case TerrainBrushKind::Lower: {
                     const double delta = (brush.kind == TerrainBrushKind::Raise ? 1.0 : -1.0) * brush.strength * *weight;

@@ -96,6 +96,7 @@ struct BackendState {
     int mipSubmits = 0;
     std::uint32_t mipCount = 0, maxSampleMip = 0, atlasColumns = 0, atlasRows = 0;
     std::vector<std::byte> mipOneBytes;
+    std::vector<War3RenderOverlayLineV2> overlayLines;
     bool rejectTerrain = false;
     bool autoComplete = true, pending = false, staleRevision = false, staleSize = false;
     std::int32_t statusResult = 0, viewResult = 0;
@@ -166,6 +167,13 @@ std::int32_t WAR3_RENDER_CALL TerrainScene(War3RendererHandle handle, const War3
 }
 const War3RenderPluginApiV2 backend{sizeof(War3RenderPluginApiV2), WAR3_RENDER_PLUGIN_API_V2,
     Create, Destroy, Attach, Resize, Mesh, Camera, Frame, Status, Capture, ViewInfo, TerrainScene};
+std::int32_t WAR3_RENDER_CALL BoundaryOverlay(War3RendererHandle handle,
+    const War3RenderOverlayLineV2* lines, std::uint32_t count) {
+    auto& state = *static_cast<BackendState*>(handle);
+    state.overlayLines.clear();
+    if (count != 0) state.overlayLines.assign(lines, lines + count);
+    return 0;
+}
 struct EnvironmentRecord { int submits = 0; std::uint32_t fogMode = 0; float fogEnd = 0; };
 EnvironmentRecord environmentRecord;
 std::int32_t WAR3_RENDER_CALL Environment(War3RendererHandle, const War3RenderEnvironmentV2* environment) {
@@ -545,6 +553,8 @@ private slots:
     void TerrainBrushUsesSharedTransactionAndUndo();
     void TerrainTextureSlotUsesSharedTransaction();
     void TerrainRampKeepsCellAndWholeStroke();
+    void TerrainBoundaryMarksAndRestores_data();
+    void TerrainBoundaryMarksAndRestores();
     void InspectorEditsPreserveOtherFloatBits();
     void RegionEdgesUseSharedTableTransaction_data();
     void RegionEdgesUseSharedTableTransaction();
@@ -2380,6 +2390,57 @@ void WorldModuleTests::TerrainTextureSlotUsesSharedTransaction() {
     QCOMPARE(project.mapEdits_->Revision(), before + 1);
     QCOMPARE(project.mapEdits_->Terrain()->header.groundTilesets.front(), std::string("Lrok"));
     QCOMPARE(project.mapDataUndoStack_->count(), 1); // 过期对话框不能覆盖外部编辑或增加撤销项。
+}
+
+void WorldModuleTests::TerrainBoundaryMarksAndRestores_data() {
+    QTest::addColumn<bool>("overlaySupported");
+    QTest::newRow("overlay-supported") << true;
+    QTest::newRow("overlay-unavailable") << false;
+}
+
+void WorldModuleTests::TerrainBoundaryMarksAndRestores() {
+    QFETCH(bool, overlaySupported);
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const auto source = TerrainBytes();
+    QVERIFY(Write(directory.filePath("war3map.w3e"), source));
+    QtProject::EditorProject project; project.projectRoot_ = directory.path().toStdWString();
+    auto opened = DirectoryWorkspace::Open(project.projectRoot_); QVERIFY(opened.Succeeded());
+    project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*opened.value));
+    project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(std::span<const MapArchiveMember>{}));
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+    const std::span<const std::byte> bytes(reinterpret_cast<const std::byte*>(source.constData()), static_cast<std::size_t>(source.size()));
+    QVERIFY(project.mapEdits_->AttachTerrain(bytes).Succeeded());
+    project.ResetEditTracking();
+    BackendState state; activeBackend = &state;
+    auto api = backend;
+    if (overlaySupported) api.setOverlayLines = BoundaryOverlay;
+    WorldModule module(project, &api); auto* page = module.Widget(); auto* viewport = module.Viewport();
+    state.viewport = viewport; page->resize(900, 600); page->show();
+    QTRY_COMPARE(viewport->VertexCount(), std::size_t{6});
+    auto* toggle = page->findChild<QPushButton*>("worldTerrainToggle"); QVERIFY(toggle && toggle->isEnabled()); toggle->click();
+    auto* boundary = page->findChild<QToolButton*>("worldTerrainBrushBoundary"); QVERIFY(boundary); boundary->click();
+    auto* radius = page->findChild<QSpinBox*>("worldTerrainRadius"); QVERIFY(radius); radius->setValue(1);
+    auto* status = page->findChild<QLabel*>("worldTerrainBoundaryStatus"); QVERIFY(status);
+    QCOMPARE(viewport->HasOverlaySupport(), overlaySupported);
+    if (!overlaySupported) QVERIFY(status->text().contains(QStringLiteral("不支持边界标记")));
+    QCOMPARE(status->property("boundaryVertexCount").toULongLong(), qulonglong{0});
+    viewport->TerrainStrokeStarted(0, -64); viewport->TerrainStrokeFinished();
+    QVERIFY(project.mapEdits_->Terrain()->vertices[1].IsBoundary());
+    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QVERIFY(!project.mapEdits_->VerifyTerrainPathingForSave().Succeeded());
+    QTRY_COMPARE(status->property("boundaryMarkerCount").toULongLong(), overlaySupported ? qulonglong{1} : qulonglong{0});
+    QTRY_VERIFY(toggle->isEnabled() && toggle->isChecked());
+    QCOMPARE(state.overlayLines.size(), overlaySupported ? std::size_t{2} : std::size_t{0});
+    project.mapDataUndoStack_->undo();
+    QTRY_COMPARE(status->property("boundaryMarkerCount").toULongLong(), qulonglong{0});
+    QCOMPARE(*MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, std::vector<std::byte>(bytes.begin(), bytes.end()));
+    QTRY_VERIFY(toggle->isEnabled() && toggle->isChecked()); project.mapDataUndoStack_->redo();
+    QTRY_COMPARE(status->property("boundaryMarkerCount").toULongLong(), overlaySupported ? qulonglong{1} : qulonglong{0});
+    QTRY_VERIFY(toggle->isEnabled() && toggle->isChecked());
+    auto* clear = page->findChild<QPushButton*>("worldTerrainBoundaryMode1"); QVERIFY(clear); clear->click();
+    viewport->TerrainStrokeStarted(0, -64); viewport->TerrainStrokeFinished();
+    QCOMPARE(*MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, std::vector<std::byte>(bytes.begin(), bytes.end()));
+    QTRY_COMPARE(status->property("boundaryMarkerCount").toULongLong(), qulonglong{0});
 }
 
 void WorldModuleTests::TerrainRampKeepsCellAndWholeStroke() {

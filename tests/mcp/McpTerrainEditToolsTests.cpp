@@ -219,6 +219,37 @@ QJsonObject Current(McpServer& server) {
     Expect(state.value("ok").toBool(), "actual MCP terrain state available"); return state;
 }
 
+void BoundaryDraftSchemaAndNativeGateStaySeparate() {
+    Fixture fixture;
+    auto request = Stroke(State(fixture));
+    request["brush"] = QJsonObject{{"kind", "boundary"}, {"size", 1}, {"value", true}};
+    auto response = InvokeTerrainEditTool("edit_terrain_stroke", request, fixture.Host());
+    Expect(response.value("ok").toBool() && !response.value("terrain_pathing_gate").toObject().value("passed").toBool()
+        && !fixture.edits.CanUndo(), "boundary schema previews a draft without granting native save");
+    request["dry_run"] = false;
+    response = InvokeTerrainEditTool("edit_terrain_stroke", request, fixture.Host());
+    Expect(response.value("ok").toBool() && response.value("applied").toBool(), "draft-capable host applies the shared boundary command");
+    auto query = InvokeTerrainEditTool("query_terrain_points", {{"terrain_binding", State(fixture).value("terrain_binding")},
+        {"points", request.value("points")}}, fixture.Host());
+    const auto point = query.value("points").toArray()[0].toObject();
+    Expect(point.value("nearest_vertex").toObject().value("boundary").toBool()
+        && !point.value("nearest_vertex").toObject().value("map_edge").toBool()
+        && point.value("pathing").toObject().value("raw_flags").toInt() == 2, "query separates boundary, outer edge and unchanged WPM");
+    Expect(fixture.edits.Undo() && !fixture.edits.IsDirty(), "boundary draft uses original undo");
+
+    McpServer server; OpenWorkspace(fixture, server);
+    auto* workspace = server.Workspace();
+    const auto transaction = workspace->BeginEdit(workspace->Revision());
+    Expect(transaction.Succeeded(), "standalone boundary transaction opens");
+    request = Stroke(Current(server));
+    request["brush"] = QJsonObject{{"kind", "boundary"}, {"value", true}};
+    const auto before = Current(server);
+    Expect(Call(server, "edit_terrain_stroke", request).value("ok").toBool(), "standalone boundary preview is supported");
+    request["dry_run"] = false;
+    Expect(!Call(server, "edit_terrain_stroke", request).value("ok").toBool(), "standalone candidate host refuses unproven boundary before mutation");
+    Expect(Current(server) == before, "rejected boundary candidate retains source, generation and original typed session");
+}
+
 void RegisteredHostRetainsTransactionAndPublishesDirectory() {
     Fixture fixture; McpServer server; OpenWorkspace(fixture, server);
     auto* workspace = server.Workspace();
@@ -368,7 +399,8 @@ int main(int argc, char** argv) {
         HostRejectsWithoutPartialOverlayOrSourceWrites();
         MissingPathingRemainsReadableAndSourceDriftRejects();
         ArchiveExportBindsPathingAndCompanionMembers();
-        std::cout << "8 terrain MCP and sealed transaction scenarios passed\n";
+        BoundaryDraftSchemaAndNativeGateStaySeparate();
+        std::cout << "9 terrain MCP and sealed transaction scenarios passed\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
