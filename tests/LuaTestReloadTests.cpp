@@ -144,6 +144,10 @@ struct MailboxFixture {
 void Controller(const std::filesystem::path& root) {
     Fixture fixture(root); MailboxFixture mailbox;
     auto baseline = fixture.Generate(); const auto firstSha = baseline.scriptSha256;
+    const auto starting = Services::CreateLuaTestMailboxSession(std::string(64, 'b'));
+    Require(starting.Succeeded(), "starting fixture failed");
+    Services::LuaTestReloadController startingController(*starting.value, baseline, "map-facts");
+    Require(startingController.Poll().value->outcome == Services::LuaReloadOutcome::Ready, "starting runtime falsely stopped");
     Services::LuaTestReloadController controller(mailbox.session, baseline, "map-facts");
     fixture.document.argumentNodes[fixture.amount].value.text = "17";
     auto next = fixture.Generate(); const auto nextSha = next.scriptSha256;

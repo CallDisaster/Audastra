@@ -56,7 +56,9 @@ Result<LuaReloadControllerSnapshot> LuaTestReloadController::Poll() {
     const auto queried = QueryLuaTestReload(*state.mailbox, state.pending ? state.snapshot.sequence : 0);
     if (!queried.Succeeded() || !queried.value) return {std::nullopt, queried.diagnostics};
     const auto& result = *queried.value;
-    if (!result.processActive || result.state == LuaTestReloadState::Stopped) {
+    if (result.state == LuaTestReloadState::Starting) {
+        state.snapshot.message = "测试运行时正在初始化，尚未允许热重载。";
+    } else if (!result.processActive || result.state == LuaTestReloadState::Stopped) {
         state.snapshot.outcome = LuaReloadOutcome::Stopped;
         state.snapshot.message = "本次测试游戏已退出。";
         state.pending.reset();
