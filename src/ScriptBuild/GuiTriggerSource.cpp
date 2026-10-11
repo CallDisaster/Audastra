@@ -1,4 +1,4 @@
-#include "War3MapCore/Script/MapScript.h"
+#include "GuiTriggerSource.h"
 
 #include "ScriptText.h"
 #include "TriggerEmitter.h"
@@ -7,7 +7,9 @@
 #include <exception>
 
 namespace War3Map::Script {
-Result<GuiTriggerSource> GenerateGuiTriggerSource(const MapScriptInputs& inputs, StableId triggerId) {
+namespace {
+Result<GuiTriggerSource> Generate(const MapScriptInputs& inputs, StableId triggerId,
+    const Trigger::TriggerTypeSystem* sharedTypes) {
     try {
         if (!inputs.triggers || !inputs.catalog)
             return Result<GuiTriggerSource>::Failure("Script.Trigger", "CODE_CONVERSION_CONTEXT", "转换缺少当前触发器文档或函数库。");
@@ -24,7 +26,7 @@ Result<GuiTriggerSource> GenerateGuiTriggerSource(const MapScriptInputs& inputs,
         ScriptText output;
         std::vector<Diagnostic> diagnostics;
         detail::TriggerEmitter emitter(*inputs.triggers, *inputs.catalog, output, diagnostics,
-            inputs.debug, inputs.nullSafeHandleSet);
+            inputs.debug, inputs.nullSafeHandleSet, sharedTypes);
         GuiTriggerSource source;
         source.triggerVariable = emitter.TriggerVariable(*target);
         source.initFunction = emitter.InitTriggerName(*target);
@@ -37,5 +39,15 @@ Result<GuiTriggerSource> GenerateGuiTriggerSource(const MapScriptInputs& inputs,
     } catch (const std::exception& error) {
         return Result<GuiTriggerSource>::Failure("Script.Trigger", "CODE_CONVERSION_FAILED", error.what());
     }
+}
+} // namespace
+
+Result<GuiTriggerSource> GenerateGuiTriggerSource(const MapScriptInputs& inputs, StableId triggerId) {
+    return Generate(inputs, triggerId, nullptr);
+}
+
+Result<GuiTriggerSource> detail::GenerateGuiTriggerSourceWithTypes(const MapScriptInputs& inputs,
+    StableId triggerId, const Trigger::TriggerTypeSystem& types) {
+    return Generate(inputs, triggerId, &types);
 }
 } // namespace War3Map::Script
