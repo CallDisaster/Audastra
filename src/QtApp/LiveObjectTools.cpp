@@ -36,7 +36,6 @@ public:
             [this](const ObjectKey& key) { return project_.AssessDeletion(key); }
         };
     }
-private:
     Result<Services::ObjectCommandContext> Context(ObjectType type) {
         if (!project_.standardCatalog_ || !project_.objectFieldSchema_)
             return Result<Services::ObjectCommandContext>::Failure("Object.Live", "OBJECT_METADATA_UNAVAILABLE",
@@ -82,6 +81,7 @@ private:
         context.nameMap = nameMap_ ? nameMap_.get() : project_.mapDocument_.get();
         return Result<Services::ObjectCommandContext>::Success(context);
     }
+private:
     Status Commit(const Services::ObjectCommandPlan& plan) {
         const auto index = static_cast<std::size_t>(plan.subject.type);
         const auto current = Context(plan.subject.type);
@@ -131,6 +131,15 @@ private:
     std::shared_ptr<MapDocument> nameMap_;
 };
 } // namespace
+
+LiveObjectContextProvider MakeLiveObjectContextProvider(EditorProject& project, const QJsonObject& currentIdentity) {
+    auto host = std::make_shared<LiveObjectHost>(project, currentIdentity);
+    const QPointer<EditorProject> owner(&project);
+    return [host = std::move(host), owner](ObjectType type) {
+        if (!owner) return Result<Services::ObjectCommandContext>::Failure("Object.Live", "OBJECT_MAP_UNAVAILABLE", "地图已关闭。");
+        return host->Context(type);
+    };
+}
 
 QJsonObject InvokeLiveObjectTool(EditorProject& project, const QString& name, const QJsonObject& arguments,
     const QJsonObject& currentIdentity) {
