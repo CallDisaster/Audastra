@@ -398,6 +398,15 @@ set_tests_properties(qt-uikit PROPERTIES TIMEOUT 45
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
 # 外壳：停靠布局规则、布局持久化、模块移动时控件与状态保留、撤销路由。
+qt_add_executable(war3-map-responsive-toolbar-tests ResponsiveToolbarTests.cpp)
+target_link_libraries(war3-map-responsive-toolbar-tests PRIVATE War3MapEditor::QtShell Qt6::Test)
+target_compile_options(war3-map-responsive-toolbar-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME qt-responsive-toolbar COMMAND war3-map-responsive-toolbar-tests -o -,txt)
+add_test(NAME qt-responsive-toolbar-dpr150 COMMAND war3-map-responsive-toolbar-tests -o -,txt)
+set_tests_properties(qt-responsive-toolbar qt-responsive-toolbar-dpr150 PROPERTIES TIMEOUT 60
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_PLUGIN_PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>/../plugins")
+set_tests_properties(qt-responsive-toolbar-dpr150 PROPERTIES ENVIRONMENT "QT_SCALE_FACTOR=1.5")
+
 qt_add_executable(war3-map-shell-tests ShellTests.cpp)
 target_link_libraries(war3-map-shell-tests PRIVATE War3MapEditor::QtShell Qt6::Test)
 target_compile_definitions(war3-map-shell-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)

@@ -13,6 +13,7 @@
 #include "Icons/SvgIcons.h"
 #include "Widgets/ElidedLabel.h"
 #include "Widgets/Motion.h"
+#include "Widgets/ResponsiveToolBar.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
 #include "War3MapCore/Render/EditorOverlay.h"
 #include "War3MapCore/Render/TerrainPicking.h"
@@ -157,13 +158,14 @@ QString Integer(double value) { return QString::number(static_cast<long long>(st
 // ── 顶栏 ──
 
 void WorldModule::BuildToolbar(QVBoxLayout* layout) {
-    auto* toolbar = new QFrame(page_);
+    auto* toolbar = new UiKit::ResponsiveToolBar(page_);
     toolbar->setObjectName(QStringLiteral("worldToolbar"));
     toolbar->installEventFilter(this);
-    auto* row = new QHBoxLayout(toolbar);
+    auto* row = toolbar->ContentLayout();
     row->setContentsMargins(10, 7, 10, 7); row->setSpacing(8);
     auto* segment = new QFrame(toolbar);
     segment->setObjectName(QStringLiteral("worldToolSegment"));
+    segment->setProperty("toolbarPriority", 100);
     auto* tools = new QHBoxLayout(segment);
     tools->setContentsMargins(3, 3, 3, 3); tools->setSpacing(2);
     toolIndicator_ = new UiKit::SlidingHighlight(segment);

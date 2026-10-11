@@ -1,6 +1,7 @@
 #include "EditorProject.h"
 #include "Fonts/FontLoader.h"
 #include "Theme/ThemeManager.h"
+#include "Widgets/ResponsiveToolBar.h"
 #include "TriggerBlueprint.h"
 #include "TriggerDialogs.h"
 #include "TriggerModels.h"
@@ -592,14 +593,14 @@ void TriggerModuleTests::CommandOverflowKeepsFindReplaceKeyboardAndMouseReachabl
     QVERIFY(InstallCodeProject(project, root.path().toStdWString()));
     Modules::TriggerModule module(project);
     auto* page = module.Widget();
-    auto* viewport = page->findChild<QScrollArea*>("triggerCommandViewport");
+    auto* toolbar = page->findChild<UiKit::ResponsiveToolBar*>("triggerCommandBar");
     QPushButton* replace = nullptr;
     QPushButton* variables = nullptr;
     for (auto* button : page->findChildren<QPushButton*>()) {
         if (button->property("triggerFindReplaceButton").toBool()) replace = button;
         if (button->text() == QStringLiteral("变量…")) variables = button;
     }
-    QVERIFY(viewport && replace && variables);
+    QVERIFY(toolbar && replace && variables);
     const auto before = Trigger::WtgWctCodec{}.Serialize(*project.triggerDocument_, *project.uiCatalog_);
     QVERIFY(before.Succeeded() && before.value);
     // 真 Undo 文案进入原命令按钮；长作者动作不能撑宽宿主或让后续命令失去入口。
@@ -607,17 +608,26 @@ void TriggerModuleTests::CommandOverflowKeepsFindReplaceKeyboardAndMouseReachabl
     for (const int width : {1080, 1920}) {
         page->resize(width, 900); page->show(); QApplication::processEvents();
         QCOMPARE(page->width(), width);
-        QVERIFY(viewport->horizontalScrollBar()->maximum() > 0);
-        QCOMPARE(viewport->verticalScrollBar()->maximum(), 0);
-        viewport->horizontalScrollBar()->setValue(0);
+        toolbar->Refresh(); QApplication::processEvents();
+        QVERIFY(toolbar->width() <= page->width());
         // 离屏插件不会在关闭工具对话框后自动激活父窗口；先恢复真实键盘输入宿主。
         QApplication::setActiveWindow(page);
-        variables->setFocus();
-        QTRY_COMPARE(QApplication::focusWidget(), static_cast<QWidget*>(variables));
-        QTest::keyClick(variables, Qt::Key_Tab);
-        QTRY_COMPARE(QApplication::focusWidget(), static_cast<QWidget*>(replace));
-        QTRY_VERIFY(viewport->viewport()->rect().contains(QRect(replace->mapTo(viewport->viewport(), QPoint()), replace->size())));
-        QTest::mouseClick(replace, Qt::LeftButton);
+        if (!variables->isHidden() && !replace->isHidden()) {
+            variables->setFocus();
+            QTRY_COMPARE(QApplication::focusWidget(), static_cast<QWidget*>(variables));
+            QTest::keyClick(variables, Qt::Key_Tab);
+            QTRY_COMPARE(QApplication::focusWidget(), static_cast<QWidget*>(replace));
+            QVERIFY(toolbar->rect().contains(QRect(replace->mapTo(toolbar, QPoint()), replace->size())));
+            QVERIFY(replace->width() >= replace->sizeHint().width());
+            QTest::mouseClick(replace, Qt::LeftButton);
+        } else {
+            auto* more = toolbar->findChild<QToolButton*>("responsiveToolbarMore"); QVERIFY(more && more->isVisible());
+            QAction* action = nullptr;
+            for (auto* item : toolbar->OverflowMenu()->actions()) if (item->text() == QStringLiteral("查找/替换…")) action = item;
+            QVERIFY(action && action->isEnabled());
+            more->setFocus(); QTRY_COMPARE(QApplication::focusWidget(), static_cast<QWidget*>(more));
+            action->trigger();
+        }
         auto* dialog = page->findChild<QDialog*>("triggerReplaceDialog");
         QTRY_VERIFY(dialog && dialog->isVisible());
         dialog->reject();

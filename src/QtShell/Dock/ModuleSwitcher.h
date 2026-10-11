@@ -23,6 +23,7 @@ public:
     void SetPlacement(Area area);
     // “图标 + 文字”模式所需宽度（含样式表内边距）；切换器据此决定是否只显示图标。
     [[nodiscard]] int TextModeWidth() const;
+    [[nodiscard]] int IconModeWidth() const;
     [[nodiscard]] QSize sizeHint() const override;
 
 signals:
@@ -50,6 +51,7 @@ public:
 
     void SetModules(const std::vector<ModuleInfo>& modules);
     void SetState(const DockLayout& layout, const std::vector<ModuleId>& all);
+    void SetCompact(bool compact);
     [[nodiscard]] ModuleChip* Chip(const ModuleId& id) const;
     [[nodiscard]] QSize sizeHint() const override;
     [[nodiscard]] QSize minimumSizeHint() const override;
@@ -69,6 +71,7 @@ private:
     QHBoxLayout* layout_ = nullptr;
     std::vector<ModuleChip*> chips_;
     bool compact_ = false;
+    bool forceCompact_ = false;
 };
 
 } // namespace War3Map::Shell

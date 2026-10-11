@@ -9,6 +9,8 @@ class QHBoxLayout;
 class QLabel;
 class QToolButton;
 
+namespace War3Map::UiKit { class ResponsiveToolBar; }
+
 namespace War3Map::Shell {
 
 class ModuleSwitcher;
@@ -42,7 +44,8 @@ private:
 
     QLabel* project_ = nullptr;
     ModuleSwitcher* switcher_ = nullptr;
-    QHBoxLayout* actions_ = nullptr;
+    UiKit::ResponsiveToolBar* actions_ = nullptr;
+    bool updatingLayout_ = false;
 };
 
 } // namespace War3Map::Shell

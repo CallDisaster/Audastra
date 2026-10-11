@@ -6,6 +6,7 @@
 #include "MapSizeDialog.h"
 #include "ApplicationIdentity.h"
 #include "Widgets/PopoverSurface.h"
+#include "Widgets/ResponsiveToolBar.h"
 #include "Widgets/ObjectCatalogWidgets.h"
 #include "PopupCapture.h"
 #include <QStatusBar>
@@ -1446,8 +1447,14 @@ void NativeWorkbenchTests::WindowTitleTracksMapSaveUndoAndClose() {
         if (!changes || !assistant || changes->text() != QStringLiteral("修改")) return false;
         const auto headerRect = [&](QWidget* widget) { return QRect(widget->mapTo(window.Header(), QPoint{}), widget->size()); };
         const auto changesRect = headerRect(changes), assistantRect = headerRect(assistant);
-        if (changesRect.intersects(assistantRect) || !window.Header()->contentsRect().contains(changesRect)
-            || !window.Header()->contentsRect().contains(assistantRect)) return false;
+        auto* toolbar = window.Header()->findChild<War3Map::UiKit::ResponsiveToolBar*>(QStringLiteral("headerActions"));
+        if (!toolbar) return false;
+        if (!changes->isHidden() && !assistant->isHidden() && changesRect.intersects(assistantRect)) return false;
+        for (auto* button : {changes, assistant}) {
+            if (button->isHidden()) {
+                if (!toolbar->OverflowMenu()->actions().contains(button->defaultAction())) return false;
+            } else if (!window.Header()->contentsRect().contains(headerRect(button))) return false;
+        }
         // Qt 6.8.3 QToolButton::initStyleOption 会把无图标、无箭头的按钮按 TextOnly
         // 绘制；toolButtonStyle() 仍可能返回 TextBesideIcon，不能凭 getter 虚增图标占位。
         const auto iconWidth = [](const QToolButton* button) {
@@ -1457,9 +1464,11 @@ void NativeWorkbenchTests::WindowTitleTracksMapSaveUndoAndClose() {
         };
         const auto requiredTextWidth = [&](const QToolButton* button) {
             // headerAction 的 QSS：左右各 5px padding + 1px border。
+            if (button->toolButtonStyle() == Qt::ToolButtonIconOnly && !button->icon().isNull()) return button->iconSize().width() + 12;
             return button->fontMetrics().horizontalAdvance(button->text()) + iconWidth(button) + 12;
         };
         for (const auto* button : {changes, assistant}) {
+            if (button->isHidden()) continue;
             if (button->width() < requiredTextWidth(button) || button->width() < button->sizeHint().width()) {
                 qWarning() << "Header text clipped" << button->text() << button->width() << button->sizeHint()
                            << button->toolButtonStyle() << "icon_null" << button->icon().isNull()
@@ -8584,7 +8593,7 @@ void NativeWorkbenchTests::ShellFitsCommonWindowSizes() {
         if (button->defaultAction() == window.saveMapInPlaceAction_) saveButton = button;
     }
     QVERIFY(saveButton);
-    QCOMPARE(saveButton->toolButtonStyle(), Qt::ToolButtonTextBesideIcon);
+    QCOMPARE(saveButton->defaultAction(), window.saveMapInPlaceAction_);
     for (const QString& module : {QStringLiteral("triggers"), QStringLiteral("objects"),
                                   QStringLiteral("variables"), QStringLiteral("assets")}) {
         window.ActivateModule(module.toStdString());

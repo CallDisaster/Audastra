@@ -5,6 +5,8 @@
 #include "Modules/ModuleHost.h"
 #include "ObjectModels.h"
 #include "Widgets/ObjectTreeBrowser.h"
+#include "Widgets/ResponsiveToolBar.h"
+#include "Icons/SvgIcons.h"
 
 #include "War3MapCore/Game/GameDataSource.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
@@ -220,7 +222,9 @@ void ObjectModule::BuildPage() {
     auto* layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
-    auto* toolbar = new QHBoxLayout;
+    auto* commandBar = new UiKit::ResponsiveToolBar(page);
+    commandBar->setObjectName(QStringLiteral("objectCommandBar"));
+    auto* toolbar = commandBar->ContentLayout();
     toolbar->setContentsMargins(12, 8, 12, 8);
     auto* title = new QLabel(tr("物体编辑器"));
     title->setObjectName("paneTitle");
@@ -232,18 +236,22 @@ void ObjectModule::BuildPage() {
     showRawFields_->setToolTip(tr("切换字段显示名 · Alt+D"));
     toolbar->addWidget(showRawFields_);
     auto* resourceButton = new QPushButton(tr("资源目录…"));
+    resourceButton->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/folder-open")));
     toolbar->addWidget(resourceButton);
     connect(resourceButton, &QPushButton::clicked, this, &ObjectModule::GameRootRequested);
     auto* batchButton = new QPushButton(tr("批量修改…"));
+    batchButton->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/layers")));
     batchButton->setObjectName("batchEditObjectsButton");
     batchButton->setToolTip(tr("选择同类地图对象，共同修改一个字段"));
     toolbar->addWidget(batchButton);
     connect(batchButton, &QPushButton::clicked, this, &ObjectModule::BatchEditObjects);
     createObjectButton_ = new QPushButton(tr("新建自定义物体"));
+    createObjectButton_->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/plus")));
+    createObjectButton_->setProperty("toolbarPriority", 100);
     createObjectButton_->setObjectName("createCustomObjectButton");
     toolbar->addWidget(createObjectButton_);
     connect(createObjectButton_, &QPushButton::clicked, this, &ObjectModule::CreateNewCustomObject);
-    layout->addLayout(toolbar);
+    layout->addWidget(commandBar);
 
     objectCategories_ = new QListWidget;
     objectCategories_->setObjectName("objectKinds");
