@@ -1,5 +1,5 @@
 #include "GameVm127.h"
-#include "../RuntimeFiles.h"
+#include "GameImage127.h"
 #include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
 
 #include <array>
@@ -8,7 +8,6 @@
 
 namespace Audastra::Runtime32::OwnLua {
 namespace {
-constexpr char kVerifiedGameSha[] = "e04d1716603c075eb0c8e1e21cf1093a664adc5249efab396bfa08d7b09d0c3a";
 constexpr std::uintptr_t kGameGlobal = 0xbe4238;
 constexpr std::uint32_t kFirstHandle = 0x100000;
 constexpr std::size_t kTextLimit = 1024 * 1024;
@@ -24,15 +23,6 @@ CurrentIdentity Identity(std::uintptr_t base) noexcept {
         current.vm = getVm(static_cast<std::uint32_t>(Word(current.game + 8)));
     } __except (EXCEPTION_EXECUTE_HANDLER) { return {}; }
     return current;
-}
-bool VerifiedImage(std::uintptr_t base) noexcept {
-    __try {
-        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
-        if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0 || dos->e_lfanew > 1024 * 1024) return false;
-        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS32*>(base + dos->e_lfanew);
-        return nt->Signature == IMAGE_NT_SIGNATURE && nt->FileHeader.Machine == IMAGE_FILE_MACHINE_I386
-            && nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC && nt->OptionalHeader.SizeOfImage > kGameGlobal + 4;
-    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 struct TextSpan { const char* data = nullptr; std::size_t size = 0; };
 TextSpan BoundedText(std::uintptr_t object) noexcept {
@@ -51,31 +41,28 @@ bool CopyText(TextSpan input, char* output) noexcept {
 }
 
 struct GameVm127::Impl {
-    Handle file;
+    std::shared_ptr<GameImage127> image;
     std::uintptr_t base = 0;
     CurrentIdentity identity;
     DWORD thread = 0;
     std::uint64_t generation = 0;
     mutable std::atomic<bool> active{true};
-    Impl(HANDLE lease, std::uintptr_t image, CurrentIdentity current, std::uint64_t value)
-        : file(lease), base(image), identity(current), thread(GetCurrentThreadId()), generation(value) {}
+    Impl(std::shared_ptr<GameImage127> mapped, CurrentIdentity current, std::uint64_t value)
+        : image(std::move(mapped)), base(image->Base()), identity(current), thread(GetCurrentThreadId()), generation(value) {}
 };
 GameVm127::GameVm127(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 GameVm127::~GameVm127() = default;
 GameVm127::OpenResult GameVm127::OpenAtScriptEntry(HMODULE game, std::uint64_t generation) {
     if (!game || !generation) return {{}, "Game VM 附着需要明确的映像与非零地图代际。"};
-    std::array<wchar_t, 4096> path{};
-    const auto length = GetModuleFileNameW(game, path.data(), static_cast<DWORD>(path.size()));
-    if (!length || length >= path.size()) return {{}, "无法核对 Game.dll 的实际映像来源。"};
-    Handle lease(OpenLockedFile(path.data()));
-    if (lease.value == INVALID_HANDLE_VALUE || Sha256(lease.value) != kVerifiedGameSha)
-        return {{}, "Game.dll 不是已核验的经典 1.27a 映像；拒绝调用内部 ABI。"};
-    const auto base = reinterpret_cast<std::uintptr_t>(game);
-    if (!VerifiedImage(base)) return {{}, "Game.dll 的已映射 PE 结构无效。"};
-    const auto current = Identity(base);
+    auto loaded = GameImage127::Open(game);
+    if (!loaded.image) return {{}, std::move(loaded.error)};
+    return OpenAtScriptEntry(std::move(loaded.image), generation);
+}
+GameVm127::OpenResult GameVm127::OpenAtScriptEntry(std::shared_ptr<GameImage127> image, std::uint64_t generation) {
+    if (!image || !generation) return {{}, "Game VM 附着需要明确的映像与非零地图代际。"};
+    const auto current = Identity(image->Base());
     if (!current.game || !current.state || !current.vm) return {{}, "当前线程没有已初始化的游戏脚本 VM。"};
-    auto impl = std::make_unique<Impl>(lease.value, base, current, generation);
-    lease.value = INVALID_HANDLE_VALUE;
+    auto impl = std::make_unique<Impl>(std::move(image), current, generation);
     return {std::shared_ptr<GameVm127>(new GameVm127(std::move(impl))), {}};
 }
 bool GameVm127::Alive() const noexcept {

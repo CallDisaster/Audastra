@@ -1,5 +1,6 @@
 #include "../OwnLua/NativeTypeHierarchy.h"
 #include "../OwnLua/GameNativeProvider.h"
+#include "../OwnLua/GameNativeObserver.h"
 #include "War3MapCore/Mpq/MpqWriter.h"
 
 #include <windows.h>
@@ -61,7 +62,7 @@ constant native Example takes widget w returns nothing
     Check(!NativeTypeHierarchy::ReadGame(temp.root).types, "corrupt high-priority archive never falls back");
 }
 void ProductionIdentityGates() {
-    Check(!GameVm127::OpenAtScriptEntry(nullptr, 1).vm, "null game refused without ABI access");
+    Check(!GameVm127::OpenAtScriptEntry(static_cast<HMODULE>(nullptr), 1).vm, "null game refused without ABI access");
     Check(!GameVm127::OpenAtScriptEntry(GetModuleHandleW(nullptr), 0).vm, "zero generation refused");
     const auto wrongImage = GameVm127::OpenAtScriptEntry(GetModuleHandleW(nullptr), 1);
     Check(!wrongImage.vm && wrongImage.error.find("1.27a") != std::string::npos, "fixture PE cannot masquerade as known Game image");
@@ -69,6 +70,10 @@ void ProductionIdentityGates() {
     Check(!absent.Generation() && !absent.Lookup("Example") && !absent.Invoke("Example", {}).succeeded,
         "missing production VM never invokes arbitrary registered address");
     Check(!GameVm127::ReadStringObject(0) && !GameVm127::ReadStringObject(1), "invalid string objects safely rejected");
+    Check(!GameImage127::Open(nullptr).image && !GameImage127::Open(GetModuleHandleW(nullptr)).image,
+        "observation identity cannot use an unverified fixture image");
+    std::string error;
+    Check(!InstallGameNativeObserver({}, {}, error) && !error.empty(), "observer never patches without verified image and lifecycle handlers");
 }
 }
 

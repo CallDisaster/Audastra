@@ -9,12 +9,15 @@
 
 namespace Audastra::Runtime32::OwnLua {
 
+class GameImage127;
+
 // 原创 1.27a ABI 适配。只在已核对映像的真实脚本主线程入口附着，不在 DLL attach 调用。
 // 创建成功只证明身份/入口数据成立，不证明地图或全部 native 兼容。
 class GameVm127 final {
 public:
     struct OpenResult { std::shared_ptr<GameVm127> vm; std::string error; };
     [[nodiscard]] static OpenResult OpenAtScriptEntry(HMODULE game, std::uint64_t generation);
+    [[nodiscard]] static OpenResult OpenAtScriptEntry(std::shared_ptr<GameImage127> image, std::uint64_t generation);
     ~GameVm127();
     GameVm127(const GameVm127&) = delete;
     GameVm127& operator=(const GameVm127&) = delete;

@@ -1,6 +1,7 @@
 #include "LuaHost.h"
 #include "LuaNativeBindings.h"
 #include "LuaCallbacks.h"
+#include "LuaModulePath.h"
 #include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
 
 // 此独立 Lua 库全体以 C++ 编译，使用上游支持的异常展开，不能包 extern "C"。
@@ -22,24 +23,6 @@ constexpr int kHookInterval = 1000;
 constexpr std::size_t kConsoleBytes = 16 * 1024;
 LuaHostResult Failure(LuaReloadResult code, std::string message) { return {code, std::move(message)}; }
 
-std::string ModuleMember(std::string_view name) {
-    if (name.empty() || name.size() > 240 || !LuaMailboxUtf8(name)) return {};
-    std::string result;
-    bool separator = true;
-    for (const auto ch : name) {
-        if (ch == '.' || ch == '/' || ch == '\\') {
-            if (separator) return {};
-            result += '\\'; separator = true;
-        } else {
-            if (static_cast<unsigned char>(ch) < 0x20 || ch == 0x7f || ch == ':' || ch == '*' || ch == '?'
-                || ch == '"' || ch == '<' || ch == '>' || ch == '|') return {};
-            result += ch; separator = false;
-        }
-    }
-    if (separator) return {};
-    result += ".lua";
-    return result;
-}
 }
 
 struct LuaHost::Impl {
@@ -53,6 +36,7 @@ struct LuaHost::Impl {
     bool executing = false, budgetExceeded = false;
     std::uint32_t callbackDepth = 0;
     std::string console;
+    std::string_view requestedModule;
     std::unordered_set<std::string> loading;
     std::unordered_set<std::string> readModules;
     std::unique_ptr<LuaNativeBindings> natives;
@@ -169,7 +153,7 @@ struct LuaHost::Impl {
         std::size_t size = 0;
         const auto* raw = lua_tolstring(lua, 1, &size);
         const std::string name(raw, size);
-        const auto member = ModuleMember(name);
+        const auto member = LuaModuleMember(name);
         if (member.empty()) return luaL_error(lua, "require 模块名不属于地图内有效相对成员。");
         lua_rawgetp(lua, LUA_REGISTRYINDEX, &loadedModulesKey);
         lua_getfield(lua, -1, name.c_str());
@@ -223,6 +207,40 @@ struct LuaHost::Impl {
         return 0;
     }
     static int InitializeNatives(lua_State* lua) { Host(lua).natives->Install(lua); return 0; }
+    static int RequireRequested(lua_State* lua) {
+        const auto name = Host(lua).requestedModule;
+        lua_pushlstring(lua, name.data(), name.size());
+        return Require(lua);
+    }
+    LuaHostResult Run(std::string_view source, std::string_view name, bool module) {
+        if (!state || !thread || GetCurrentThreadId() != thread || executing)
+            return Failure(LuaReloadResult::NotReady, "Lua 宿主尚未就绪、线程不符或正处于执行中。");
+        callbacks.Drain();
+        executing = true; budgetExceeded = false;
+        instructionsLeft = limits.instructions; started = GetTickCount64();
+        struct Execution {
+            Impl& host;
+            ~Execution() {
+                lua_sethook(host.state, nullptr, 0, 0); lua_settop(host.state, 0);
+                host.executing = false; host.requestedModule = {};
+            }
+        } execution{*this};
+        lua_pushcfunction(state, Traceback);
+        if (module) {
+            requestedModule = name;
+            lua_pushcfunction(state, RequireRequested);
+        } else {
+            const std::string chunk(name);
+            const int loaded = luaL_loadbufferx(state, source.data(), source.size(), chunk.c_str(), "t");
+            if (loaded != LUA_OK) return Error(loaded, LuaReloadResult::SyntaxError);
+        }
+        if (Expired()) return Failure(LuaReloadResult::BudgetExceeded, "Lua 编译超出时间预算，代码尚未执行。");
+        lua_sethook(state, Hook, LUA_MASKCOUNT, kHookInterval);
+        const int code = lua_pcall(state, 0, 0, 1);
+        if (code != LUA_OK) return Error(code, LuaReloadResult::RuntimeError);
+        if (Expired()) return Failure(LuaReloadResult::BudgetExceeded, "Lua 执行超出时间或内存预算；已发生的副作用没有回滚。");
+        return {LuaReloadResult::Success, {}};
+    }
     NativeCallbackResult InvokeCallback(int reference, NativeCallbackReturn returns) {
         if (!state || GetCurrentThreadId() != thread || callbackDepth >= 32)
             return {false, false, "Lua 回调线程不符、宿主未就绪或重入超过 32 层。"};
@@ -292,27 +310,13 @@ LuaHostResult LuaHost::Initialize() {
 
 LuaHostResult LuaHost::Execute(std::string_view source, std::string_view chunkName) {
     auto& self = *impl_;
-    if (!self.state || !self.thread || GetCurrentThreadId() != self.thread || self.executing)
-        return Failure(LuaReloadResult::NotReady, "Lua 宿主尚未就绪、线程不符或正处于执行中。");
     if (source.empty() || source.size() > self.limits.sourceBytes || !LuaMailboxUtf8(source) || !LuaMailboxChunkName(chunkName))
         return Failure(LuaReloadResult::InvalidRequest, "Lua 代码或名称不是有效的有界 UTF-8 文本。");
-    self.callbacks.Drain();
-    self.executing = true; self.budgetExceeded = false;
-    self.instructionsLeft = self.limits.instructions; self.started = GetTickCount64();
-    struct Execution {
-        Impl& host;
-        ~Execution() { lua_sethook(host.state, nullptr, 0, 0); lua_settop(host.state, 0); host.executing = false; }
-    } execution{self};
-    const std::string name(chunkName);
-    lua_pushcfunction(self.state, Impl::Traceback);
-    int code = luaL_loadbufferx(self.state, source.data(), source.size(), name.c_str(), "t");
-    if (code != LUA_OK) return self.Error(code, LuaReloadResult::SyntaxError);
-    if (self.Expired()) return Failure(LuaReloadResult::BudgetExceeded, "Lua 编译超出时间预算，代码尚未执行。");
-    lua_sethook(self.state, Impl::Hook, LUA_MASKCOUNT, kHookInterval);
-    code = lua_pcall(self.state, 0, 0, 1);
-    if (code != LUA_OK) return self.Error(code, LuaReloadResult::RuntimeError);
-    if (self.Expired()) return Failure(LuaReloadResult::BudgetExceeded, "Lua 执行超出时间或内存预算；已发生的副作用没有回滚。");
-    return {LuaReloadResult::Success, {}};
+    return self.Run(source, chunkName, false);
+}
+LuaHostResult LuaHost::ExecuteModule(std::string_view module) {
+    if (LuaModuleMember(module).empty()) return Failure(LuaReloadResult::InvalidRequest, "Lua 入口模块不是有效的地图内成员。");
+    return impl_->Run({}, module, true);
 }
 LuaHostResult LuaHost::BindNatives(std::shared_ptr<NativeProvider> provider) {
     auto& self = *impl_;

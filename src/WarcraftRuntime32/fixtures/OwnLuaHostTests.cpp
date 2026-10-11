@@ -1,5 +1,6 @@
 #include "../OwnLua/LuaHost.h"
 #include "../OwnLua/LuaMailboxRuntime.h"
+#include "../OwnLua/LuaEntryCommand.h"
 #include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
 
 #include <windows.h>
@@ -66,6 +67,9 @@ void ArchiveModules() {
     Success(host.Initialize(), "module initialize");
     Success(host.Execute("local m=require('main'); assert(m.value==42); assert(require('main')==m and loads==1); assert(require('empty')==true)", "@loader.lua"), "root and nested modules");
     Check(reads == 3, "cache avoids repeated reader calls");
+    Success(host.ExecuteModule("main"), "classic entry shares require cache");
+    Check(reads == 3, "classic entry cannot execute a second copy of a loaded module");
+    Check(host.ExecuteModule("../outside").code == LuaReloadResult::InvalidRequest, "classic entry refuses escaping map path");
     for (const auto name : {"../outside", "/absolute", "C:outside", "a..b", "a\\\\b"}) {
         const auto before = reads;
         const auto result = host.Execute(std::string("require([[") + name + "]])", "@path.lua");
@@ -78,6 +82,29 @@ void ArchiveModules() {
     Check(failed.code == LuaReloadResult::RuntimeError && failed.message.find("failure.lua:1:") != std::string::npos, "module source preserved");
     // C++ 异常展开必须释放 require 的 loading 标记，失败后重试仍报告原错，不是假循环。
     Check(host.Execute("require('failure')", "@retry.lua").message.find("module rejected") != std::string::npos, "failed loader unwinds");
+}
+
+void ClassicEntrySyntax() {
+    for (const auto ordinary : {"", "whosyourdaddy", "EXEC-LUA:\"main\"", "other:exec-lua:\"main\""})
+        Check(!ParseLuaEntryCommand(ordinary).recognized, "ordinary Cheat command remains original game behavior");
+    for (const auto accepted : {"exec-lua:\"main\"", "exec-lua: \"main\"", "exec-lua:\t\"lib.value\" \t"}) {
+        const auto result = ParseLuaEntryCommand(accepted);
+        Check(result.recognized && !result.module.empty() && result.error.empty(), "documented quoted module entry");
+    }
+    for (const auto bad : {"exec-lua:", "exec-lua:main", "exec-lua:'main'", "exec-lua:\"\"", "exec-lua:\"../escape\"",
+        "exec-lua:\"main\"; error('executed')", "exec-lua:\"C:/outside\"", "exec-lua:\"a..b\"", "exec-lua:\"a/\""}) {
+        const auto result = ParseLuaEntryCommand(bad);
+        Check(result.recognized && result.module.empty() && !result.error.empty(), "malformed Lua entry never falls back to ordinary Cheat");
+    }
+    Check(!ParseLuaEntryCommand("exec-lua:\"" + std::string(241, 'x') + "\"").error.empty(), "entry byte budget");
+    LuaHost host([](std::string_view member, std::size_t) {
+        return member == "entry.lua" ? LuaModuleRead{true, "entrySeen=true; error('entry failed')", {}} : LuaModuleRead{};
+    });
+    Success(host.Initialize(), "classic entry host");
+    const auto error = host.ExecuteModule("entry");
+    Check(error.code == LuaReloadResult::RuntimeError && error.message.find("entry.lua:1:") != std::string::npos
+        && error.message.find("stack traceback") != std::string::npos, "classic entry keeps actual module line and trace");
+    Success(host.Execute("assert(entrySeen)", "@after-entry.lua"), "failed classic entry unwinds host state");
 }
 
 void BudgetsAndRandom() {
@@ -124,7 +151,7 @@ void MailboxExecutesRealLua() {
 
 int main() {
     try {
-        TextOnlyAndSandbox(); ArchiveModules(); BudgetsAndRandom(); MailboxExecutesRealLua();
+        TextOnlyAndSandbox(); ArchiveModules(); ClassicEntrySyntax(); BudgetsAndRandom(); MailboxExecutesRealLua();
         std::cout << "Own Lua 5.3 host passed; original in-memory archive/native-free fixture; game_evidence=0\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
