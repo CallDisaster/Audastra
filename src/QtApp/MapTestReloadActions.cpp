@@ -37,8 +37,26 @@ QJsonObject Snapshot(const Services::LuaReloadControllerSnapshot& snapshot) {
 }
 
 QJsonObject MainWindow::LuaTestReload(bool submit) {
-    if (!luaReloadController_ || luaTestGeneration_ != project_->editRevision_.Generation())
+    if (luaTestGeneration_ != project_->editRevision_.Generation())
         return Failure("LUA_RELOAD_NO_SESSION", "请先在当前地图启动启用热重载的 Lua 单人测试。");
+    if (!luaReloadController_) {
+        if (submit || !luaRuntimeMailbox_)
+            return Failure("LUA_RELOAD_NO_SESSION", "请先在当前地图启动启用热重载的 Lua 单人测试。");
+        // 关闭热重载只关闭差异发送；地图入口和异步回调错误仍必须回传。
+        const auto result = Services::QueryLuaTestReload(*luaRuntimeMailbox_);
+        if (!result.Succeeded() || !result.value) return Failure(result.diagnostics);
+        Services::LuaReloadControllerSnapshot snapshot;
+        const bool starting = result.value->state == Services::LuaTestReloadState::Starting;
+        snapshot.outcome = starting || (result.value->processActive && result.value->state != Services::LuaTestReloadState::Stopped)
+            ? Services::LuaReloadOutcome::Ready : Services::LuaReloadOutcome::Stopped;
+        snapshot.message = snapshot.outcome == Services::LuaReloadOutcome::Stopped
+            ? "本次测试游戏已退出。" : starting ? "测试运行时正在初始化。" : "本次Lua测试未开启热重载。";
+        snapshot.runtimeDiagnosticSequence = result.value->runtimeDiagnosticSequence;
+        snapshot.runtimeDiagnosticCode = result.value->runtimeDiagnosticCode;
+        snapshot.runtimeMessage = result.value->runtimeMessage;
+        snapshot.runtimeDiagnosticTruncated = result.value->runtimeDiagnosticTruncated;
+        return Snapshot(snapshot);
+    }
     if (!submit) {
         const auto result = luaReloadController_->Poll();
         return result.Succeeded() && result.value ? Snapshot(*result.value) : Failure(result.diagnostics);

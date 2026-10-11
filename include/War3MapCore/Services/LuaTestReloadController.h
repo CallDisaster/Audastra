@@ -24,10 +24,12 @@ struct LuaReloadControllerSnapshot {
 
 // 一局测试拥有一份基线。UI/MCP共用控制器；只接受生成单元，不接受外部任意Lua文本。
 // 提交后不前推，只有对应成功ACK前推；部分执行失败必须重新测试。
+// 有限bootstrap须传实际全图安装的白名单；未安装依赖在写邮箱前拒绝，白名单不随ACK变化。
 class LuaTestReloadController final {
 public:
     LuaTestReloadController(std::shared_ptr<LuaTestMailboxSession> mailbox,
-        Script::LuaTriggerUnit baseline, std::string mapBinding);
+        Script::LuaTriggerUnit baseline, std::string mapBinding,
+        std::optional<std::vector<std::string>> installedBindings = std::nullopt);
     ~LuaTestReloadController();
     LuaTestReloadController(const LuaTestReloadController&) = delete;
     LuaTestReloadController& operator=(const LuaTestReloadController&) = delete;

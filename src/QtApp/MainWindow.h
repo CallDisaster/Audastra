@@ -300,8 +300,10 @@ private:
     QAction* luaReloadAction_ = nullptr;
     QAction* luaAutoReloadAction_ = nullptr;
     std::optional<War3Map::Script::LuaTriggerUnit> luaTestGenerated_;
+    std::optional<std::vector<std::string>> luaTestInstalledBindings_;
     std::string luaTestMapBinding_;
     std::shared_ptr<War3Map::Services::LuaTestReloadController> luaReloadController_;
+    std::shared_ptr<War3Map::Services::LuaTestMailboxSession> luaRuntimeMailbox_;
     std::uint64_t luaTestGeneration_ = 0;
     QTimer* luaReloadPoll_ = nullptr;
     std::uint32_t luaRuntimeDiagnosticSequence_ = 0;

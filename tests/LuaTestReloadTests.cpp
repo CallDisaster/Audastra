@@ -37,7 +37,7 @@ struct Fixture {
         Write(root / "ui/base/event.txt", "[TimerEvent]\nscript_name=TriggerRegisterTimerEvent\n"
             "[[.args]]\ntype=real\n[[.args]]\ntype=boolean\n");
         Write(root / "ui/base/condition.txt", "[CheckFlag]\nreturns=boolean\n[[.args]]\ntype=boolean\n");
-        Write(root / "ui/base/action.txt", "[Record]\n[[.args]]\ntype=integer\n");
+        Write(root / "ui/base/action.txt", "[Record]\n[[.args]]\ntype=integer\n[RecordOther]\n[[.args]]\ntype=integer\n");
         Write(root / "ui/base/call.txt", "");
         auto loaded = Trigger::UiCatalog::Load(root);
         if (!loaded.Succeeded() || !loaded.value) {
@@ -54,7 +54,8 @@ struct Fixture {
             {"TriggerAddAction", "triggeraction", {"trigger", "code"}}, {"DisableTrigger", "nothing", {"trigger"}},
             {"ConditionalTriggerExecute", "nothing", {"trigger"}},
             {"TriggerRegisterTimerEvent", "event", {"trigger", "real", "boolean"}},
-            {"Record", "nothing", {"integer"}}, {"CheckFlag", "boolean", {"boolean"}}};
+            {"Record", "nothing", {"integer"}}, {"RecordOther", "nothing", {"integer"}},
+            {"CheckFlag", "boolean", {"boolean"}}};
         const auto argument = [&](std::string text) {
             Trigger::ArgumentNode node; node.id = 100 + document.argumentNodes.size(); node.type = 3; node.value.text = std::move(text);
             document.argumentNodes.push_back(std::move(node)); return static_cast<std::uint32_t>(document.argumentNodes.size() - 1);
@@ -192,6 +193,47 @@ void Controller(const std::filesystem::path& root) {
     mailbox.running = false;
     Require(controller.Poll().value->outcome == Services::LuaReloadOutcome::Stopped, "owned exit not observed");
 }
+void FrozenBindings(const std::filesystem::path& root) {
+    Fixture fixture(root); MailboxFixture mailbox;
+    auto baseline = fixture.Generate();
+    std::vector<std::string> installed;
+    for (const auto* names : {&baseline.requiredApis, &baseline.requiredGlobals, &baseline.requiredConstants})
+        installed.insert(installed.end(), names->begin(), names->end());
+    Services::LuaTestReloadController controller(mailbox.session, baseline, "map-facts", installed);
+    fixture.document.ecaNodes[2].name.text = "RecordOther";
+    auto next = fixture.Generate();
+    Require(next.targetSha256 == baseline.targetSha256 && next.uiCatalogSha256 == baseline.uiCatalogSha256,
+        "dependency fixture changed target or catalog");
+    const auto rejected = controller.Submit(next, "map-facts");
+    Require(!rejected.Succeeded() && !rejected.diagnostics.empty()
+        && rejected.diagnostics.back().code == "LUA_RELOAD_BINDING_NOT_INSTALLED"
+        && rejected.diagnostics.back().message.find("RecordOther") != std::string::npos
+        && mailbox.view->requestSequence == 0 && !mailbox.runtime->Take()
+        && controller.Poll().value->baselineScriptSha256 == baseline.scriptSha256,
+        "uninstalled native was queued, executed or advanced the baseline");
+    fixture.document.ecaNodes[2].name.text = "Record";
+    for (const bool constant : {false, true}) {
+        next = fixture.Generate();
+        (constant ? next.requiredConstants : next.requiredGlobals).push_back("NewUninstalledSymbol");
+        Require(!controller.Submit(next, "map-facts").Succeeded() && mailbox.view->requestSequence == 0,
+            "uninstalled constant/global reached the mailbox");
+    }
+    // 全图初始化已安装的API可以使用，即使初始T未引用它。白名单不能只取T的依赖。
+    installed.push_back("RecordOther");
+    Services::LuaTestReloadController fullMapController(mailbox.session, baseline, "map-facts", installed);
+    fixture.document.ecaNodes[2].name.text = "RecordOther";
+    next = fixture.Generate();
+    const auto sent = fullMapController.Submit(next, "map-facts");
+    Require(sent.Succeeded() && sent.value->outcome == Services::LuaReloadOutcome::Pending,
+        "installed full-map API was incorrectly refused");
+    const auto request = mailbox.runtime->Take(); Require(request.has_value(), "installed dependency request missing");
+    Require(mailbox.runtime->Complete(request->sequence, Audastra::Runtime32::LuaReloadResult::Success, "updated")
+        && fullMapController.Poll().value->baselineScriptSha256 == next.scriptSha256, "installed dependency ACK failed");
+    const auto sequence = mailbox.view->requestSequence;
+    next.requiredConstants.push_back("StillUninstalledAfterAck");
+    Require(!fullMapController.Submit(next, "map-facts").Succeeded() && mailbox.view->requestSequence == sequence,
+        "success ACK expanded the installed dependency set");
+}
 void MapFacts(const std::filesystem::path& root) {
     const std::vector<MapArchiveMember> original{{"resource.bin", {std::byte{1}}}, {"war3map.wtg", {std::byte{2}}},
         {"war3map.lua", {std::byte{3}}}, {"main.lua", {std::byte{4}}}};
@@ -272,7 +314,7 @@ void Check(const std::filesystem::path& root) {
 int main() {
     try {
         const auto root = std::filesystem::temp_directory_path() / ("audastra-reload-fixture-" + std::to_string(GetCurrentProcessId()));
-        Check(root); Controller(root / "controller"); MapFacts(root); std::filesystem::remove_all(root);
+        Check(root); Controller(root / "controller"); FrozenBindings(root / "bindings"); MapFacts(root); std::filesystem::remove_all(root);
         std::cout << "Lua test generation/diff and 20 original offline host updates passed; game evidence=0\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

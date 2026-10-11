@@ -215,6 +215,7 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         // 不调用 CommitMapSave：不改变 sourceArchivePath、编辑基线、dirty 或撤销栈。
         if (testHotReload) {
             luaTestGenerated_ = std::move(job->generatedLuaTestUnit);
+            luaTestInstalledBindings_ = std::move(job->luaTestInstalledBindings);
             luaTestMapBinding_ = std::move(job->luaTestMapBinding);
         }
         return true;

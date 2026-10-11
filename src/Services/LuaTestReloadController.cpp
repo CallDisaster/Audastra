@@ -13,6 +13,8 @@ struct LuaTestReloadController::State {
     std::mutex mutex;
     std::shared_ptr<LuaTestMailboxSession> mailbox;
     Script::LuaTriggerUnit baseline;
+    std::optional<std::set<std::string>> installedBindings;
+    bool bindingsValid = true;
     std::string binding;
     std::optional<Script::LuaTriggerUnit> pending;
     Script::LuaTestReloadPatch patch;
@@ -20,8 +22,18 @@ struct LuaTestReloadController::State {
     std::chrono::steady_clock::time_point started;
 };
 LuaTestReloadController::LuaTestReloadController(std::shared_ptr<LuaTestMailboxSession> mailbox,
-    Script::LuaTriggerUnit baseline, std::string binding) : state_(std::make_unique<State>()) {
+    Script::LuaTriggerUnit baseline, std::string binding,
+    std::optional<std::vector<std::string>> installedBindings) : state_(std::make_unique<State>()) {
     state_->mailbox = std::move(mailbox); state_->baseline = std::move(baseline); state_->binding = std::move(binding);
+    if (installedBindings) {
+        auto& installed = state_->installedBindings.emplace();
+        // 与完整Lua生成器的API4096、常量4096、全局65536上限一致，不缩小大图资格。
+        state_->bindingsValid = installedBindings->size() <= 4096 + 4096 + 65536;
+        if (state_->bindingsValid) for (const auto& name : *installedBindings) {
+            if (name.empty() || name.size() > 256) { state_->bindingsValid = false; break; }
+            installed.insert(name);
+        }
+    }
     state_->snapshot.baselineScriptSha256 = state_->baseline.scriptSha256;
 }
 LuaTestReloadController::~LuaTestReloadController() = default;
@@ -36,6 +48,15 @@ Result<LuaReloadControllerSnapshot> LuaTestReloadController::Submit(Script::LuaT
         return Result<LuaReloadControllerSnapshot>::Failure("Lua.Test", "LUA_RELOAD_RESTART_REQUIRED", "本局状态不能可靠继续，请重新测试。");
     auto prepared = Script::PrepareLuaTestReload(state.baseline, current, state.binding, binding, syntax);
     if (!prepared.Succeeded() || !prepared.value) return {std::nullopt, std::move(prepared.diagnostics)};
+    if (!state.bindingsValid)
+        return Result<LuaReloadControllerSnapshot>::Failure("Lua.Test", "LUA_RELOAD_BINDINGS_INVALID",
+            "本局安装的符号白名单不完整或超出预算；差异没有发送，需要重新测试。");
+    if (state.installedBindings) {
+        for (const auto* names : {&current.requiredApis, &current.requiredGlobals, &current.requiredConstants})
+            for (const auto& name : *names) if (!state.installedBindings->contains(name))
+                return Result<LuaReloadControllerSnapshot>::Failure("Lua.Test", "LUA_RELOAD_BINDING_NOT_INSTALLED",
+                    "本局尚未安装符号 " + name + "；差异没有发送，需要重新测试以安装新依赖。");
+    }
     if (prepared.value->source.empty()) {
         state.baseline = std::move(current);
         state.snapshot = {LuaReloadOutcome::NoChanges, 0, "没有需要执行的触发器差异。", state.baseline.scriptSha256};

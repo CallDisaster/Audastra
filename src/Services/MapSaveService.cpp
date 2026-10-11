@@ -308,8 +308,16 @@ void RebuildScript(MapSaveTask& task, const MapSaveService::Progress& progress) 
     task.diagnostics.push_back({DiagnosticSeverity::Info, "构建", "SCRIPT_REBUILT",
         "游戏脚本已重建：" + std::to_string(triggerCount) + " 个触发器，检查方式："
             + checkedBy + "（" + Seconds(task.scriptSeconds) + " 秒）；各阶段文件在 " + workDir});
-    if (frozen.luaTestOptions.testHotReload && result.luaGenerated)
+    if (frozen.luaTestOptions.testHotReload && result.luaGenerated) {
+        if (frozen.luaTarget->Profile()->dialect == Script::LuaMapSaveDialect::Classic127YDWE) {
+            auto& installed = task.luaTestInstalledBindings.emplace();
+            for (const auto* names : {&result.luaGenerated->requiredApis, &result.luaGenerated->requiredGlobals,
+                &result.luaGenerated->requiredConstants}) installed.insert(installed.end(), names->begin(), names->end());
+            std::sort(installed.begin(), installed.end());
+            installed.erase(std::unique(installed.begin(), installed.end()), installed.end());
+        }
         task.generatedLuaTestUnit = std::move(result.luaGenerated->triggers);
+    }
     task.script.reset();
 }
 

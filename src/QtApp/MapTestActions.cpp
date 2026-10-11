@@ -55,8 +55,12 @@ void MainWindow::TestMap() {
         return;
     }
     QSettings settings;
-    const bool testHotReload = project_->luaMapTarget_.has_value() && settings.value("mapTest/hotReloadEnabled", true).toBool();
+    const bool ownedLua = project_->luaMapTarget_
+        && project_->luaMapTarget_->dialect == Script::LuaMapSaveDialect::Classic127YDWE;
+    const bool testHotReload = ownedLua && settings.value("mapTest/hotReloadEnabled", true).toBool();
     luaTestGenerated_.reset(); luaTestMapBinding_.clear(); luaReloadController_.reset();
+    luaTestInstalledBindings_.reset();
+    luaRuntimeMailbox_.reset();
     luaRuntimeDiagnosticSequence_ = 0; luaReloadLastStatus_.clear();
     if (luaReloadPoll_) luaReloadPoll_->stop();
     const auto gameRoot = settings.value(QStringLiteral("war3/gameRoot")).toString();
@@ -119,7 +123,7 @@ void MainWindow::TestMap() {
     request.runtimeBootstrap = std::filesystem::path(program.filePath(QStringLiteral("audastra-warcraft-bootstrap.dll")).toStdWString());
     request.workspace = std::filesystem::path(QDir(runDirectory).filePath(QStringLiteral("prepared")).toStdWString());
     request.optimizeSlk = QtCommon::ReadExplicitLocalConsent(settings, QStringLiteral("mapTest/slkEnabled"));
-    request.useOwnedLuaRuntime = project_->luaMapTarget_.has_value();
+    request.useOwnedLuaRuntime = ownedLua;
     request.enableLuaHotReload = testHotReload;
     if (!snapshot) request.expectedInputSha256 = project_->archiveSession_->SourceSha256();
 
@@ -183,10 +187,16 @@ void MainWindow::TestMap() {
     }
     // 仅用户点击测试时发起游戏；预检、SHA与复制均在低优先级worker完成。
     mapTestLease_ = launched.value->lease;
+    if (ownedLua && launched.value->luaMailbox) {
+        luaRuntimeMailbox_ = launched.value->luaMailbox;
+        luaTestGeneration_ = project_->editRevision_.Generation();
+    }
     if (testHotReload && launched.value->luaMailbox && luaTestGenerated_ && !luaTestMapBinding_.empty()) {
         luaReloadController_ = std::make_shared<Services::LuaTestReloadController>(launched.value->luaMailbox,
-            std::move(*luaTestGenerated_), std::move(luaTestMapBinding_));
+            std::move(*luaTestGenerated_), std::move(luaTestMapBinding_), std::move(luaTestInstalledBindings_));
         luaTestGenerated_.reset(); luaTestGeneration_ = project_->editRevision_.Generation();
+    }
+    if (luaRuntimeMailbox_) {
         if (!luaReloadPoll_) {
             luaReloadPoll_ = new QTimer(this); luaReloadPoll_->setInterval(100);
             connect(luaReloadPoll_, &QTimer::timeout, this, &MainWindow::PollLuaTestReload);
@@ -232,8 +242,14 @@ void MainWindow::TestMap() {
         });
         connect(worker, &QThread::finished, worker, &QObject::deleteLater);
         worker->start(QThread::LowPriority);
-        if (mapTestLease_ == lease) mapTestLease_.reset();
-        if (luaReloadAction_) luaReloadAction_->setEnabled(false);
+        if (mapTestLease_ == lease) {
+            // Starting时尚无game PID；启动失败也须停止本局轮询，不能留下永久初始化提示。
+            if (luaRuntimeMailbox_) PollLuaTestReload();
+            if (luaReloadPoll_) luaReloadPoll_->stop();
+            luaRuntimeMailbox_.reset(); luaReloadController_.reset();
+            mapTestLease_.reset();
+            if (luaReloadAction_) luaReloadAction_->setEnabled(false);
+        }
         cleanup->deleteLater();
     });
     cleanup->start();

@@ -444,7 +444,7 @@ void OpaqueMemHackPresenceRejectsLua(Fixture& fixture) {
 std::vector<MapArchiveMember> ClassicLibraries() {
     // 原创小型声明夹具；不复制游戏或YDWE脚本，也不执行这些空函数。
     std::string common =
-        "type placement extends handle\ntype player extends handle\ntype trigger extends handle\ntype alliancetype extends handle\n"
+        "type placement extends handle\ntype player extends handle\ntype trigger extends handle\ntype alliancetype extends handle\ntype boolexpr extends handle\n"
         "native ConvertPlacement takes integer i returns placement\n"
         "native ConvertAllianceType takes integer i returns alliancetype\n"
         "native Cheat takes string text returns nothing\n"
@@ -461,6 +461,9 @@ std::vector<MapArchiveMember> ClassicLibraries() {
         "native SetPlayerAlliance takes player a, player b, alliancetype kind, boolean value returns nothing\n"
         "native TriggerEvaluate takes trigger which returns boolean\n"
         "native TriggerExecute takes trigger which returns nothing\n"
+        "native DestroyTrigger takes trigger which returns nothing\n"
+        "native DestroyBoolExpr takes boolexpr which returns nothing\n"
+        "native DisableTrigger takes trigger which returns nothing\n"
         "globals\nconstant placement MAP_PLACEMENT_USE_MAP_SETTINGS = ConvertPlacement(0)\n";
     for (const auto* name : {"CAMERA_MARGIN_LEFT", "CAMERA_MARGIN_RIGHT", "CAMERA_MARGIN_BOTTOM", "CAMERA_MARGIN_TOP"})
         common += std::string("constant integer ") + name + " = 0\n";
@@ -483,6 +486,10 @@ void ClassicSaveTransactions(Fixture& fixture) {
     target.handleTypes.insert(target.handleTypes.end(), {{"player", "handle"}, {"trigger", "handle"}, {"alliancetype", "handle"}});
     target.apis.push_back({"TriggerEvaluate", "boolean", {"trigger"}});
     target.apis.push_back({"TriggerExecute", "nothing", {"trigger"}});
+    target.handleTypes.push_back({"boolexpr", "handle"});
+    target.apis.push_back({"DestroyTrigger", "nothing", {"trigger"}});
+    target.apis.push_back({"DestroyBoolExpr", "nothing", {"boolexpr"}});
+    target.apis.push_back({"DisableTrigger", "nothing", {"trigger"}});
     target.apis.push_back({"SetPlayerAlliance", "nothing", {"player", "player", "alliancetype", "boolean"}});
     for (const auto* name : {"ALLIANCE_PASSIVE", "ALLIANCE_HELP_REQUEST", "ALLIANCE_HELP_RESPONSE", "ALLIANCE_SHARED_XP",
             "ALLIANCE_SHARED_SPELLS", "ALLIANCE_SHARED_VISION", "ALLIANCE_SHARED_CONTROL", "ALLIANCE_SHARED_ADVANCED_CONTROL"})
@@ -503,6 +510,33 @@ void ClassicSaveTransactions(Fixture& fixture) {
             "audastra\\objects.lua", "audastra\\continue.lua", "audastra\\generated.manifest"})
         Require(reopened.value->HasMember(name), std::string("missing classic saved member ") + name);
     Require(!reopened.value->HasMember("war3map.lua"), "classic save accidentally emitted v31 root Lua script");
+    Require(!task.luaTestInstalledBindings, "formal save retained test-only binding state");
+    MapSaveTask reloadTask;
+    fixture.Freeze(reloadTask, source); fixture.RequirePrepared(reloadTask, selection);
+    reloadTask.target = source.path.parent_path() / "reload-candidate.w3x";
+    reloadTask.testCopyOnly = true; reloadTask.script->luaTestOptions.testHotReload = true;
+    reloadTask.requireGeneratedNativeByteEquality = true; Run(reloadTask);
+    Require(reloadTask.succeeded && reloadTask.generatedLuaTestUnit && reloadTask.luaTestInstalledBindings,
+        "classic test save omitted its installed runtime bindings: " + Codes(reloadTask));
+    const auto reloadArchive = MapArchiveSession::Open(reloadTask.target);
+    Require(reloadArchive.Succeeded() && reloadArchive.value, Codes(reloadArchive));
+    const auto bootstrapBytes = reloadArchive.value->ReadMember("audastra\\bootstrap.lua");
+    Require(bootstrapBytes.Succeeded() && bootstrapBytes.value, Codes(bootstrapBytes));
+    const std::string bootstrap(reinterpret_cast<const char*>(bootstrapBytes.value->data()), bootstrapBytes.value->size());
+    std::vector<std::string> actualBindings;
+    std::size_t at = 0;
+    const std::string marker = "    ['", ending = "'] = true,\n";
+    while ((at = bootstrap.find(marker, at)) != std::string::npos) {
+        const auto begin = at + marker.size(), end = bootstrap.find(ending, begin);
+        Require(end != std::string::npos, "saved bootstrap has an incomplete whitelist entry");
+        actualBindings.push_back(bootstrap.substr(begin, end - begin)); at = end + ending.size();
+    }
+    Require(actualBindings == *reloadTask.luaTestInstalledBindings,
+        "controller bindings differ from the actual saved full-map bootstrap whitelist");
+    Require(actualBindings.size() > reloadTask.generatedLuaTestUnit->requiredApis.size()
+        + reloadTask.generatedLuaTestUnit->requiredGlobals.size() + reloadTask.generatedLuaTestUnit->requiredConstants.size(),
+        "fixture did not distinguish map initialization dependencies from trigger dependencies");
+    PreservedSource(source);
     std::vector<MemberReplacement> owned;
     for (const auto* name : {"war3map.j", "audastra\\map.lua", "audastra\\compat.lua", "audastra\\bootstrap.lua",
             "audastra\\objects.lua", "audastra\\continue.lua", "audastra\\generated.manifest"}) {
