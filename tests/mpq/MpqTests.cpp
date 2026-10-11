@@ -1320,6 +1320,19 @@ void TestStrictListfileListsItself() {
             "a listfile that lists itself is a valid strict inventory with one member");
 }
 
+void TestStrictStaleListfileName() {
+    TempDirectory temp;
+    // 原创清单含已经不存在的metadata。不存在和多个hash是不同根因；均不准入严格写出。
+    const auto path = BuildSyntheticMpq(temp.Path(), "(listfile)", "(listfile)\r\n(attributes)\r\n");
+    auto archive = MpqArchive::OpenReadOnly(path);
+    Require(archive.Succeeded(), "stale listfile archive still opens read-only");
+    const auto strict = archive.value->ListFilesStrict();
+    Require(!strict.Succeeded() && !strict.diagnostics.empty()
+        && strict.diagnostics.front().code == "LISTFILE_MEMBER_MISSING", "missing member has precise diagnostic");
+    const auto preserved = ReadAll(path);
+    Require(!archive.value->HasFile("(attributes)") && ReadAll(path) == preserved, "missing metadata is not fabricated or changed");
+}
+
 void TestStrictCanonicalListfileCollision() {
     TempDirectory temp;
     const auto archivePath = temp.Path() / "canonical-collision.w3x";
@@ -1952,6 +1965,7 @@ int main() {
         TestStrictEncryptedTableMutations();
         TestArchiveCandidateResourceBudgets();
         TestStrictListfileListsItself();
+        TestStrictStaleListfileName();
         TestStrictCanonicalListfileCollision();
         TestBoundedArchiveReads();
         TestEmptySectorChecksumLayout();
