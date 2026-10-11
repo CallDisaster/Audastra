@@ -45,6 +45,7 @@ public:
     // 调用线程绑定到 Initialize；不创建后台执行线程，不执行二进制 chunk。
     [[nodiscard]] LuaHostResult Execute(std::string_view source, std::string_view chunkName);
     [[nodiscard]] std::size_t MemoryBytes() const noexcept;
+    [[nodiscard]] std::size_t CallbackCount() const noexcept;
     [[nodiscard]] std::string_view ConsoleText() const noexcept;
 private:
     struct Impl;

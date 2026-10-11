@@ -1,4 +1,5 @@
 #include "LuaNativeBindings.h"
+#include "LuaCallbacks.h"
 #include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
 
 #include <lua.h>
@@ -26,10 +27,28 @@ LuaHandle* GetHandle(lua_State* lua, int index) {
 LuaNativeBindings& Bindings(lua_State* lua) {
     return *static_cast<LuaNativeBindings*>(lua_touserdata(lua, lua_upvalueindex(1)));
 }
+class GenerationBoundCallback final : public NativeCallback {
+public:
+    GenerationBoundCallback(std::weak_ptr<NativeProvider> provider, std::uint64_t generation,
+        std::shared_ptr<NativeCallback> callback)
+        : provider_(std::move(provider)), generation_(generation), callback_(std::move(callback)) {}
+    NativeCallbackReturn Returns() const noexcept override { return callback_->Returns(); }
+    NativeCallbackResult Invoke() override {
+        const auto provider = provider_.lock();
+        const auto callback = callback_;
+        if (!provider || provider->Generation() != generation_)
+            return {false, false, "Lua 回调所属地图代际已经结束。"};
+        return callback->Invoke();
+    }
+private:
+    std::weak_ptr<NativeProvider> provider_;
+    std::uint64_t generation_;
+    std::shared_ptr<NativeCallback> callback_;
+};
 }
 
-LuaNativeBindings::LuaNativeBindings(std::shared_ptr<NativeProvider> provider)
-    : provider_(std::move(provider)), generation_(provider_ ? provider_->Generation() : 0) {}
+LuaNativeBindings::LuaNativeBindings(std::shared_ptr<NativeProvider> provider, LuaCallbacks& callbacks)
+    : provider_(std::move(provider)), callbacks_(callbacks), generation_(provider_ ? provider_->Generation() : 0) {}
 
 bool LuaNativeBindings::ValidHandle(const NativeHandle& handle, std::string_view expected) const noexcept {
     return handle.value && handle.generation == generation_ && provider_->Generation() == generation_
@@ -156,8 +175,23 @@ int LuaNativeBindings::Call(lua_State* lua) {
                 return luaL_error(lua, "native %s 第%d参数需要本局有效的 %s handle。", name, stack, type.handleType.c_str());
             arguments.emplace_back(handle->Value()); break;
         }
-        case NativeKind::Code:
-            return luaL_error(lua, "native %s 第%d参数需要 code 回调，当前提供者尚未建立经过验证的回调桥。", name, stack);
+        case NativeKind::Code: {
+            std::optional<NativeCallbackReturn> returns;
+            std::string callbackError;
+            try { returns = self.provider_->CallbackReturn(name, index); }
+            catch (const std::exception& error) { callbackError = error.what(); }
+            catch (...) { callbackError = "回调能力查询发生未知异常。"; }
+            if (!returns) return luaL_error(lua, "native %s 第%d参数尚未建立经过验证的回调桥：%s", name, stack,
+                callbackError.empty() ? "提供者未声明回调语义。" : callbackError.c_str());
+            if (lua_isnil(lua, stack)) { arguments.emplace_back(std::monostate{}); break; }
+            if (!lua_isfunction(lua, stack)) return luaL_error(lua, "native %s 第%d参数需要 Lua 函数或 nil。", name, stack);
+            try {
+                arguments.emplace_back(std::make_shared<GenerationBoundCallback>(self.provider_, self.generation_,
+                    self.callbacks_.Capture(lua, stack, *returns)));
+            }
+            catch (const std::exception& error) { return luaL_error(lua, "native %s 无法捕获回调：%s", name, error.what()); }
+            break;
+        }
         case NativeKind::Nothing:
             return luaL_error(lua, "native %s 含无效参数签名。", name);
         }

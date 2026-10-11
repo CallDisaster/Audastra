@@ -1,5 +1,6 @@
 #include "LuaHost.h"
 #include "LuaNativeBindings.h"
+#include "LuaCallbacks.h"
 #include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
 
 // 此独立 Lua 库全体以 C++ 编译，使用上游支持的异常展开，不能包 extern "C"。
@@ -50,12 +51,14 @@ struct LuaHost::Impl {
     std::uint64_t instructionsLeft = 0, started = 0;
     std::uint32_t random = 0x41d05327;
     bool executing = false, budgetExceeded = false;
+    std::uint32_t callbackDepth = 0;
     std::string console;
     std::unordered_set<std::string> loading;
     std::unordered_set<std::string> readModules;
     std::unique_ptr<LuaNativeBindings> natives;
+    LuaCallbacks callbacks;
     explicit Impl(LuaModuleReader value, LuaHostLimits configured) : reader(std::move(value)), limits(configured) {}
-    ~Impl() { if (state) lua_close(state); }
+    ~Impl() { callbacks.Close(); if (state) lua_close(state); }
     static Impl& Host(lua_State* lua) { return **static_cast<Impl**>(lua_getextraspace(lua)); }
     static void* Allocate(void* user, void* pointer, std::size_t oldSize, std::size_t size) noexcept {
         auto& self = *static_cast<Impl*>(user);
@@ -220,6 +223,39 @@ struct LuaHost::Impl {
         return 0;
     }
     static int InitializeNatives(lua_State* lua) { Host(lua).natives->Install(lua); return 0; }
+    NativeCallbackResult InvokeCallback(int reference, NativeCallbackReturn returns) {
+        if (!state || GetCurrentThreadId() != thread || callbackDepth >= 32)
+            return {false, false, "Lua 回调线程不符、宿主未就绪或重入超过 32 层。"};
+        const bool root = !executing;
+        const int previousTop = lua_gettop(state);
+        if (root) {
+            executing = true; budgetExceeded = false;
+            instructionsLeft = limits.instructions; started = GetTickCount64();
+            lua_sethook(state, Hook, LUA_MASKCOUNT, kHookInterval);
+        }
+        ++callbackDepth;
+        struct Restore {
+            Impl& host; int top; bool root;
+            ~Restore() {
+                lua_settop(host.state, top); --host.callbackDepth;
+                if (root) { lua_sethook(host.state, nullptr, 0, 0); host.executing = false; }
+            }
+        } restore{*this, previousTop, root};
+        if (Expired()) return {false, false, "Lua 回调继承的指令或时间预算已耗尽。"};
+        if (!lua_checkstack(state, 4)) return {false, false, "Lua 回调无法在预算内扩展栈。"};
+        lua_pushcfunction(state, Traceback);
+        lua_rawgeti(state, LUA_REGISTRYINDEX, reference);
+        if (!lua_isfunction(state, -1)) return {false, false, "Lua 回调引用已经失效。"};
+        const int code = lua_pcall(state, 0, returns == NativeCallbackReturn::Boolean ? 1 : 0, previousTop + 1);
+        if (code != LUA_OK) {
+            const char* message = lua_tostring(state, -1);
+            return {false, false, message ? message : "Lua 回调无法取得错误堆栈。"};
+        }
+        if (Expired()) return {false, false, "Lua 回调超出预算；已发生的副作用没有回滚。"};
+        if (returns == NativeCallbackReturn::Boolean && !lua_isboolean(state, -1))
+            return {false, false, "Lua 条件／过滤器回调必须返回 boolean。"};
+        return {true, returns == NativeCallbackReturn::Boolean && lua_toboolean(state, -1) != 0, {}};
+    }
     LuaHostResult Error(int code, LuaReloadResult fallback) {
         const char* message = lua_tostring(state, -1);
         LuaHostResult result{budgetExceeded || code == LUA_ERRMEM ? LuaReloadResult::BudgetExceeded : fallback,
@@ -248,6 +284,9 @@ LuaHostResult LuaHost::Initialize() {
     lua_pushcfunction(self.state, Impl::InitializeLibraries);
     const int code = lua_pcall(self.state, 0, 0, 0);
     if (code != LUA_OK) { auto result = self.Error(code, LuaReloadResult::HostFailure); lua_close(self.state); self.state = nullptr; return result; }
+    self.callbacks.Initialize(self.state, [&self](int reference, NativeCallbackReturn returns) {
+        return self.InvokeCallback(reference, returns);
+    });
     return {LuaReloadResult::Success, {}};
 }
 
@@ -257,6 +296,7 @@ LuaHostResult LuaHost::Execute(std::string_view source, std::string_view chunkNa
         return Failure(LuaReloadResult::NotReady, "Lua 宿主尚未就绪、线程不符或正处于执行中。");
     if (source.empty() || source.size() > self.limits.sourceBytes || !LuaMailboxUtf8(source) || !LuaMailboxChunkName(chunkName))
         return Failure(LuaReloadResult::InvalidRequest, "Lua 代码或名称不是有效的有界 UTF-8 文本。");
+    self.callbacks.Drain();
     self.executing = true; self.budgetExceeded = false;
     self.instructionsLeft = self.limits.instructions; self.started = GetTickCount64();
     struct Execution {
@@ -278,7 +318,7 @@ LuaHostResult LuaHost::BindNatives(std::shared_ptr<NativeProvider> provider) {
     auto& self = *impl_;
     if (!self.state || self.thread != GetCurrentThreadId() || self.executing || self.natives || !provider || !provider->Generation())
         return Failure(LuaReloadResult::NotReady, "Lua native 提供者未就绪、线程不符或已经绑定。");
-    self.natives = std::make_unique<LuaNativeBindings>(std::move(provider));
+    self.natives = std::make_unique<LuaNativeBindings>(std::move(provider), self.callbacks);
     self.budgetExceeded = false;
     lua_pushcfunction(self.state, Impl::InitializeNatives);
     const int code = lua_pcall(self.state, 0, 0, 0);
@@ -286,6 +326,7 @@ LuaHostResult LuaHost::BindNatives(std::shared_ptr<NativeProvider> provider) {
     return {LuaReloadResult::Success, {}};
 }
 std::size_t LuaHost::MemoryBytes() const noexcept { return impl_->memory; }
+std::size_t LuaHost::CallbackCount() const noexcept { return impl_->callbacks.Count(); }
 std::string_view LuaHost::ConsoleText() const noexcept { return impl_->console; }
 
 } // namespace Audastra::Runtime32::OwnLua

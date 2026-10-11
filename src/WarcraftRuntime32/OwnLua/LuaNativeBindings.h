@@ -6,9 +6,10 @@ struct lua_State;
 
 namespace Audastra::Runtime32::OwnLua {
 
+class LuaCallbacks;
 class LuaNativeBindings final {
 public:
-    explicit LuaNativeBindings(std::shared_ptr<NativeProvider> provider);
+    LuaNativeBindings(std::shared_ptr<NativeProvider> provider, LuaCallbacks& callbacks);
     // 必须在 lua_pcall 内调用；宿主拥有本实例直到 lua_close 完成。
     void Install(lua_State* lua);
 private:
@@ -22,6 +23,7 @@ private:
     [[nodiscard]] std::optional<NativeSignature> Signature(std::string_view name, std::string& error) const;
     [[nodiscard]] NativeCallResult CallProvider(std::string_view name, std::span<const NativeValue> arguments);
     std::shared_ptr<NativeProvider> provider_;
+    LuaCallbacks& callbacks_;
     std::uint64_t generation_ = 0;
 };
 
