@@ -39,6 +39,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(WAR3MAPEDITOR_BUILD_QT "Build the Qt 6 desktop application" ON)
 option(WAR3MAPEDITOR_BUILD_TESTS "Build the test suite" ON)
+# 开发构建可从源码树找 Agent 技能与运行时；发布构建须关闭，避免把本机源码路径编进程序。
+option(AUDASTRA_DEV_SOURCE_FALLBACKS "Let development builds find agent skills and runtime in the source tree" ON)
 
 # Vulkan SDK 只在构建期使用（头文件与 glslc / dxc 着色器编译器，供渲染后端）；不随程序分发。
 # 未设置 VULKAN_SDK 环境变量时，配置时传 -DWAR3MAPEDITOR_VULKAN_SDK=<SDK 根目录>。

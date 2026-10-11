@@ -108,6 +108,8 @@ add_custom_command(TARGET war3-map-editor POST_BUILD
     VERBATIM)
 
 target_compile_definitions(war3-map-editor PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
-target_compile_definitions(war3-map-editor PRIVATE WAR3MAP_AGENT_SKILL_SOURCE_DIR="${PROJECT_SOURCE_DIR}/.agents/skills")
+if(AUDASTRA_DEV_SOURCE_FALLBACKS)
+    target_compile_definitions(war3-map-editor PRIVATE WAR3MAP_AGENT_SKILL_SOURCE_DIR="${PROJECT_SOURCE_DIR}/.agents/skills")
+endif()
 target_compile_options(war3-map-editor PRIVATE /W4 /permissive- /utf-8)
 target_include_directories(war3-map-editor PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
