@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "CampaignModule.h"
 #include "TriggerReplaceRealCase.h"
 #include "TriggerReplaceDialog.h"
 #include <QUndoGroup>
@@ -8144,7 +8145,7 @@ void NativeWorkbenchTests::StartupPageSharesEditorAndAssistantHost() {
     QVERIFY(window.findChild<QAction*>(QStringLiteral("openMapAction")));
     QVERIFY(window.findChild<QAction*>(QStringLiteral("createMapAction")));
     // 无效或尚未提供的模块不能把启动页变成空编辑区。
-    for (const War3Map::Shell::ModuleId id : {"missing", "campaign"}) {
+    for (const War3Map::Shell::ModuleId id : {"missing", "ai"}) {
         window.ActivateModule(id);
         QCOMPARE(pages->currentWidget(), startup);
         QVERIFY(!window.startupDismissed_);
@@ -8255,6 +8256,25 @@ void NativeWorkbenchTests::StartupPageSharesEditorAndAssistantHost() {
         QVERIFY(!revealAction->isChecked());
         QCOMPARE(revealWindow.statusBar()->isHidden(), revealStatusWasHidden);
         QCOMPARE(revealWindow.findChildren<War3Map::Agent::AgentWindow*>().size(), 1);
+    }
+    // 战役现已提供；首次进入模块复用原 Dock，但不能悄悄创建空战役会话。
+    for (const bool navigate : {false, true}) {
+        MainWindow campaignWindow(MainWindow::StartupMode::StartupProbe);
+        auto* campaignPages = qobject_cast<QStackedWidget*>(campaignWindow.centralWidget());
+        auto* campaignStartup = campaignWindow.findChild<QWidget*>(QStringLiteral("startupPage"));
+        auto* campaignDock = campaignWindow.Dock();
+        QVERIFY(campaignPages && campaignStartup && campaignWindow.campaignModule_);
+        QCOMPARE(campaignPages->currentWidget(), campaignStartup);
+        QVERIFY(!campaignWindow.startupDismissed_);
+        QVERIFY(!campaignWindow.campaignModule_->Session());
+        if (navigate) campaignWindow.Navigate({"campaign", {}, {}, {}});
+        else campaignWindow.ActivateModule("campaign");
+        QCOMPARE(campaignWindow.centralWidget(), campaignPages);
+        QCOMPARE(campaignWindow.Dock(), campaignDock);
+        QCOMPARE(campaignPages->currentWidget(), static_cast<QWidget*>(campaignDock));
+        QVERIFY(campaignWindow.CurrentModule() == "campaign");
+        QVERIFY(campaignWindow.startupDismissed_);
+        QVERIFY(!campaignWindow.campaignModule_->Session());
     }
 }
 
