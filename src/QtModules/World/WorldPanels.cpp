@@ -640,7 +640,7 @@ void WorldModule::UpdateToolHint() {
     const auto tool = CurrentTool();
     if (tool == Tool::Terrain) {
         const auto* kind = terrainKinds_->checkedButton();
-        toolSubtitle_->setText(tr("%1 · 半径 %2 格").arg(kind ? kind->text() : QString{}).arg(terrainRadius_->value()));
+        toolSubtitle_->setText(tr("%1 · 尺寸 %2").arg(kind ? kind->text() : QString{}).arg(terrainRadius_->value()));
         selectionStatus_->setText(strokeBase_ ? tr("拖动涂刷中 · 松开提交 · Esc 取消本笔")
             : tr("左键涂刷 · [ ] 调半径 · 中键或右键平移 · Esc 退出"));
         return;

@@ -183,6 +183,7 @@ private:
     void RefreshTerrainPalette();
     void RefreshTerrainSwatches();
     void UpdateTerrainBrushControls();
+    void EditTerrainTextureSlot(bool cliff, bool append);
     [[nodiscard]] MapData::TerrainBrushKind CurrentBrushKind() const;
     [[nodiscard]] QString TerrainName(const std::string& raw, const std::string& rawcode) const;
     // 右侧属性（WorldInspector.cpp）：选中对象的可编辑属性与地图概况。
@@ -291,11 +292,14 @@ private:
     QWidget* swatchGrid_ = nullptr;
     QButtonGroup* terrainSwatches_ = nullptr;
     QLabel* swatchName_ = nullptr;
+    QComboBox* terrainVariation_ = nullptr;
     std::vector<std::string> swatchIds_; // 与按钮 id 同序的地面贴图 rawcode
     const void* swatchSource_ = nullptr; // 生成缩略图所用的材质缓存（换代时重建）
     QWidget* terrainCliffSection_ = nullptr;
     QComboBox* terrainCliffTexture_ = nullptr;
     QButtonGroup* terrainCliffDeltas_ = nullptr;
+    QWidget* terrainWaterSection_ = nullptr;
+    QDoubleSpinBox* terrainWaterHeight_ = nullptr;
     QWidget* terrainBlightSection_ = nullptr;
     QButtonGroup* terrainBlightModes_ = nullptr;
     QButtonGroup* terrainShapes_ = nullptr;

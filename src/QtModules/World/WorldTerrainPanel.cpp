@@ -95,10 +95,19 @@ public:
             painter->restore();
             break;
         case MapData::TerrainBrushKind::CliffLevel:
+        case MapData::TerrainBrushKind::CliffTexture:
             path.moveTo(3, 19); path.lineTo(9, 19); path.lineTo(11, 8); path.lineTo(21, 8);
             painter->save(); pen.setColor(soft); pen.setWidthF(1.25); painter->setPen(pen);
             for (const qreal y : {11.0, 14.0, 17.0}) painter->drawLine(QPointF(10.2, y), QPointF(13.5, y));
             painter->restore();
+            break;
+        case MapData::TerrainBrushKind::Noise:
+            path.moveTo(3, 16); path.lineTo(6, 8); path.lineTo(9, 15); path.lineTo(12, 5);
+            path.lineTo(15, 18); path.lineTo(18, 10); path.lineTo(21, 14);
+            break;
+        case MapData::TerrainBrushKind::WaterHeight:
+            path.moveTo(3, 15); path.cubicTo(6, 9, 9, 21, 12, 15); path.cubicTo(15, 9, 18, 21, 21, 15);
+            path.moveTo(12, 11); path.lineTo(12, 3); path.moveTo(9, 6); path.lineTo(12, 3); path.lineTo(15, 6);
             break;
         }
         painter->drawPath(path);
@@ -167,7 +176,10 @@ QWidget* WorldModule::BuildTerrainPage() {
         std::tuple{tr("降低"), MapData::TerrainBrushKind::Lower, "Lower"},
         std::tuple{tr("高原"), MapData::TerrainBrushKind::Plateau, "Plateau"},
         std::tuple{tr("平滑"), MapData::TerrainBrushKind::Smooth, "Smooth"},
-        std::tuple{tr("悬崖"), MapData::TerrainBrushKind::CliffLevel, "Cliff"}};
+        std::tuple{tr("悬崖"), MapData::TerrainBrushKind::CliffLevel, "Cliff"},
+        std::tuple{tr("噪波"), MapData::TerrainBrushKind::Noise, "Noise"},
+        std::tuple{tr("悬崖类型"), MapData::TerrainBrushKind::CliffTexture, "CliffTexture"},
+        std::tuple{tr("水面高度"), MapData::TerrainBrushKind::WaterHeight, "WaterHeight"}};
     for (std::size_t index = 0; index < brushes.size(); ++index) {
         const auto& [label, kind, name] = brushes[index];
         auto* button = new QToolButton(terrainPalette_);
@@ -203,6 +215,19 @@ QWidget* WorldModule::BuildTerrainPage() {
     swatchName_->setObjectName(QStringLiteral("worldSwatchName"));
     swatchName_->setWordWrap(true);
     texture->addWidget(swatchName_);
+    terrainVariation_ = new QComboBox(terrainTextureSection_);
+    terrainVariation_->setObjectName(QStringLiteral("worldTerrainVariation"));
+    terrainVariation_->addItem(tr("随机变体"), -1);
+    for (int value = 0; value <= 17; ++value) terrainVariation_->addItem(tr("变体 %1").arg(value), value);
+    texture->addWidget(terrainVariation_);
+    auto* slotButtons = new QHBoxLayout;
+    auto* replaceSlot = new QPushButton(tr("替换贴图…"), terrainTextureSection_);
+    auto* addSlot = new QPushButton(tr("添加贴图…"), terrainTextureSection_);
+    replaceSlot->setObjectName(QStringLiteral("worldTerrainReplaceTexture"));
+    addSlot->setObjectName(QStringLiteral("worldTerrainAddTexture"));
+    slotButtons->addWidget(replaceSlot); slotButtons->addWidget(addSlot); texture->addLayout(slotButtons);
+    connect(replaceSlot, &QPushButton::clicked, this, [this] { EditTerrainTextureSlot(false, false); });
+    connect(addSlot, &QPushButton::clicked, this, [this] { EditTerrainTextureSlot(false, true); });
     column->addWidget(terrainTextureSection_);
 
     // 悬崖：类型与层级变化
@@ -217,7 +242,24 @@ QWidget* WorldModule::BuildTerrainPage() {
     cliff->addWidget(Segment(terrainCliffSection_, terrainCliffDeltas_,
         {{tr("降低一级"), -1}, {tr("保持"), 0}, {tr("升高一级"), 1}}, "worldTerrainCliffDelta"));
     terrainCliffDeltas_->button(1)->setChecked(true);
+    auto* replaceCliff = new QPushButton(tr("替换悬崖贴图…"), terrainCliffSection_);
+    replaceCliff->setObjectName(QStringLiteral("worldTerrainReplaceCliffTexture"));
+    cliff->addWidget(replaceCliff);
+    connect(replaceCliff, &QPushButton::clicked, this, [this] { EditTerrainTextureSlot(true, false); });
     column->addWidget(terrainCliffSection_);
+
+    terrainWaterSection_ = Surface(terrainPalette_);
+    auto* water = new QVBoxLayout(terrainWaterSection_);
+    water->setContentsMargins(0, 8, 0, 0); water->setSpacing(8);
+    water->addWidget(SectionLabel(tr("已有水面基础高度"), terrainWaterSection_));
+    terrainWaterHeight_ = new QDoubleSpinBox(terrainWaterSection_);
+    terrainWaterHeight_->setObjectName(QStringLiteral("worldTerrainWaterHeight"));
+    terrainWaterHeight_->setRange(-2048, 2047.75); terrainWaterHeight_->setDecimals(2);
+    terrainWaterHeight_->setSingleStep(0.25);
+    water->addWidget(terrainWaterHeight_);
+    auto* waterHint = new QLabel(tr("只调整已有水面，不生成浅水或深水。水面通行性联动待核验，修改后可保存工程，暂不能保存地图。"), terrainWaterSection_);
+    waterHint->setWordWrap(true); water->addWidget(waterHint);
+    column->addWidget(terrainWaterSection_);
 
     // 荒芜：铺设 / 清除
     terrainBlightSection_ = Surface(terrainPalette_);
@@ -237,12 +279,12 @@ QWidget* WorldModule::BuildTerrainPage() {
     radiusRow->setSpacing(8);
     terrainRadiusSlider_ = new QSlider(Qt::Horizontal, terrainPalette_);
     terrainRadiusSlider_->setObjectName(QStringLiteral("worldTerrainRadiusSlider"));
-    terrainRadiusSlider_->setRange(0, 16);
+    terrainRadiusSlider_->setRange(1, 8);
     terrainRadius_ = new QSpinBox(terrainPalette_);
     terrainRadius_->setObjectName(QStringLiteral("worldTerrainRadius"));
-    terrainRadius_->setRange(0, 16); terrainRadius_->setSuffix(tr(" 格"));
-    terrainRadius_->setToolTip(tr("笔刷半径（地形格，1 格 = 128）；[ 与 ] 键调整"));
-    terrainRadius_->setValue(2); terrainRadiusSlider_->setValue(2);
+    terrainRadius_->setRange(1, 8);
+    terrainRadius_->setToolTip(tr("经典笔刷尺寸 1–8：半径为尺寸减一格，1 格 = 128；[ 与 ] 键调整。"));
+    terrainRadius_->setValue(3); terrainRadiusSlider_->setValue(3);
     radiusRow->addWidget(terrainRadiusSlider_, 1); radiusRow->addWidget(terrainRadius_);
     column->addLayout(radiusRow);
     terrainShapes_ = new QButtonGroup(terrainPalette_);
@@ -398,9 +440,10 @@ void WorldModule::UpdateTerrainBrushControls() {
     if (!terrainKinds_) return;
     const auto kind = CurrentBrushKind();
     const bool shaping = kind == MapData::TerrainBrushKind::Raise || kind == MapData::TerrainBrushKind::Lower
-        || kind == MapData::TerrainBrushKind::Smooth;
+        || kind == MapData::TerrainBrushKind::Smooth || kind == MapData::TerrainBrushKind::Noise;
     const std::array sections{std::pair{terrainTextureSection_, kind == MapData::TerrainBrushKind::Texture},
-        std::pair{terrainCliffSection_, kind == MapData::TerrainBrushKind::CliffLevel},
+        std::pair{terrainCliffSection_, kind == MapData::TerrainBrushKind::CliffLevel || kind == MapData::TerrainBrushKind::CliffTexture},
+        std::pair{terrainWaterSection_, kind == MapData::TerrainBrushKind::WaterHeight},
         std::pair{terrainBlightSection_, kind == MapData::TerrainBrushKind::Blight},
         std::pair{terrainStrengthSection_, shaping}};
     for (const auto& [section, shown] : sections) {
@@ -408,6 +451,7 @@ void WorldModule::UpdateTerrainBrushControls() {
         section->setVisible(shown);
         if (appearing) UiKit::FadeIn(section, 160, 0.2);
     }
+    for (auto* button : terrainCliffDeltas_->buttons()) button->setVisible(kind == MapData::TerrainBrushKind::CliffLevel);
     if (shaping) {
         const QSignalBlocker block(terrainStrength_);
         const bool smooth = kind == MapData::TerrainBrushKind::Smooth;

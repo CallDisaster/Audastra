@@ -22,13 +22,16 @@ void RefreshTerrainDerived(TerrainGridSnapshot& terrain, std::uint32_t x0, std::
 [[nodiscard]] std::optional<float> SampleGroundHeight(const TerrainGridSnapshot& terrain, double x, double y);
 
 enum class TerrainBrushKind {
-    Texture,      // 地面贴图：设定贴图并按原版分布随机变体
+    Texture,      // 地面贴图：设定贴图并按静态地图统计权重随机变体
     Blight,       // 荒芜：置位或清除（value 为 0 时清除）
     Raise,        // 升高：每个笔刷点按余弦衰减加 strength 世界单位
     Lower,        // 降低
     Plateau,      // 高原：把地面原始高度设为第一个笔刷点处的值
     Smooth,       // 平滑：与 3×3 邻域平均高度按 strength（0..1）混合
     CliffLevel,   // 悬崖：把层级设为第一个笔刷点处层级 + levelDelta（-1/0/+1），相邻层级差限制在 2 以内
+    Noise,        // 噪波：一笔内每个顶点只施加一次确定性有界高度扰动
+    CliffTexture, // 仅替换悬崖类型，保留各顶点层级与地高
+    WaterHeight,  // 仅调整已有水面的基础高度，不生成浅水/深水或修改通行性
 };
 
 enum class TerrainBrushShape { Circle, Square };
@@ -52,9 +55,24 @@ struct TerrainBrush {
     float strength = 32.0f;          // Raise/Lower：世界单位；Smooth：0..1
     std::uint32_t seed = 0;          // Texture 变体随机种子，同一输入得到同一结果
     std::optional<TerrainStrokeAnchor> anchor; // Plateau/CliffLevel：拖动起点的固定基准
+    // 指定时优先于 radius：经典编辑器尺寸 1..8 对应顶点半径 size-1。
+    // 圆形严格裁剪到该半径；方形每边覆盖 2*size-1 个顶点。
+    std::optional<std::uint32_t> size;
+    std::optional<std::uint8_t> variation; // Texture：0..17；未指定时使用坐标种子
+    bool randomizeVariation = false;     // Texture：同贴图也重选变体；默认保留旧协议行为
+    float waterHeight = 0;               // WaterHeight：W3E 基础世界高度，范围 -2048..2047.75
 };
 
 struct TerrainStrokePoint { double x = 0, y = 0; };
+
+struct TerrainBrushFootprint {
+    double centerX = 0, centerY = 0, radius = 0; // 世界坐标；radius 包含外侧半格
+    std::uint32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0; // 已裁剪的顶点半开范围
+};
+
+// 界面范围预览和 Core 笔刷共用吸附/尺寸规则；无效输入或地图外落点返回空。
+[[nodiscard]] std::optional<TerrainBrushFootprint> GetTerrainBrushFootprint(
+    const TerrainGridSnapshot& terrain, const TerrainBrush& brush, const TerrainStrokePoint& point);
 
 // 从笔划起点取原始高度和悬崖层级；越界、非有限坐标或无效快照明确报错。
 [[nodiscard]] Result<TerrainStrokeAnchor> CaptureTerrainStrokeAnchor(
@@ -71,5 +89,12 @@ struct TerrainStrokeResult {
 // 地图边界顶点只接受贴图与荒芜，不改高度与悬崖。
 [[nodiscard]] Result<TerrainStrokeResult> ApplyTerrainStroke(
     TerrainGridSnapshot& terrain, const TerrainBrush& brush, std::span<const TerrainStrokePoint> points);
+
+enum class TerrainTextureTable { Ground, Cliff };
+
+// 替换既有槽位或在尾部追加一个槽位；原始顶点索引不改。
+// 地面最多 16 项，悬崖最多 15 项（索引 15 为哨兵）；拒绝重复 rawcode。
+[[nodiscard]] Result<TerrainStrokeResult> ReplaceTerrainTextureSlot(TerrainGridSnapshot& terrain,
+    TerrainTextureTable table, std::uint32_t slot, const std::string& rawcode);
 
 } // namespace War3Map::MapData

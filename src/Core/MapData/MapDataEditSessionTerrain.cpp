@@ -298,7 +298,9 @@ Result<TerrainStrokeResult> MapDataEditSession::EditTerrain(const TerrainBrush& 
             command.pathingAfter = std::move(*patched.value);
         }
     }
-    const bool shaping = brush.kind != TerrainBrushKind::Texture && brush.kind != TerrainBrushKind::Blight;
+    const bool shaping = brush.kind == TerrainBrushKind::Raise || brush.kind == TerrainBrushKind::Lower
+        || brush.kind == TerrainBrushKind::Plateau || brush.kind == TerrainBrushKind::Smooth
+        || brush.kind == TerrainBrushKind::CliffLevel || brush.kind == TerrainBrushKind::Noise;
     const auto& doodadBytes = current_[Index(MapDataKind::Doodads)];
     if (followDoodads && shaping && !command.terrain.empty() && doodadBytes) {
         auto doodads = ParseDoodadPlacements(*doodadBytes);
@@ -334,6 +336,23 @@ Result<TerrainStrokeResult> MapDataEditSession::EditTerrain(const TerrainBrush& 
         return failed;
     }
     return stroke;
+}
+
+Result<TerrainStrokeResult> MapDataEditSession::EditTerrainTextureSlot(TerrainTextureTable table,
+    std::uint32_t slot, const std::string& rawcode) {
+    if (!terrain_) return Result<TerrainStrokeResult>::Failure("MapData.Edit", "MAP_TERRAIN_UNAVAILABLE", "地形不可编辑");
+    auto next = std::make_shared<TerrainGridSnapshot>(*terrain_);
+    auto result = ReplaceTerrainTextureSlot(*next, table, slot, rawcode);
+    if (!result.Succeeded() || !result.value || !result.value->headerChanged) return result;
+    Command command;
+    command.headerBefore = terrain_->header;
+    command.headerAfter = next->header;
+    if (const auto status = CommitCommand(std::move(command)); !status.Succeeded()) {
+        Result<TerrainStrokeResult> failed;
+        failed.diagnostics = status.diagnostics;
+        return failed;
+    }
+    return result;
 }
 
 bool MapDataEditSession::TerrainMatches(const Command& command, bool forward) const {

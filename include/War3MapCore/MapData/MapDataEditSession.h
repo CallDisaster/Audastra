@@ -97,6 +97,9 @@ public:
     // followDoodads 为真时，改动范围内的装饰物随地面高度变化（同一事务）。
     [[nodiscard]] Result<TerrainStrokeResult> EditTerrain(const TerrainBrush& brush,
         std::span<const TerrainStrokePoint> points, bool followDoodads = true);
+    // 贴图槽替换/追加也进入同一撤销、工程恢复和原生地图保存门。
+    [[nodiscard]] Result<TerrainStrokeResult> EditTerrainTextureSlot(TerrainTextureTable table,
+        std::uint32_t slot, const std::string& rawcode);
     // 正式地图保存门禁：仅证实原地形荒芜位与 WPM bit5 的逐格同步；其它地形改动拒绝保存。
     [[nodiscard]] Status VerifyTerrainPathingForSave() const;
     [[nodiscard]] EditReceipt LastEdit() const;

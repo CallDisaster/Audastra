@@ -37,6 +37,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
+#include <QInputDialog>
 #include <QComboBox>
 #include <QLabel>
 #include <QLineEdit>
@@ -56,6 +57,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QThread>
+#include <QTimer>
 #include <QUndoStack>
 #include <QWheelEvent>
 
@@ -541,6 +543,7 @@ private slots:
     void PlacementClickDragAndKeys();
     void TerrainBrushPreservesCameraAndModels();
     void TerrainBrushUsesSharedTransactionAndUndo();
+    void TerrainTextureSlotUsesSharedTransaction();
     void InspectorEditsPreserveOtherFloatBits();
     void RegionEdgesUseSharedTableTransaction_data();
     void RegionEdgesUseSharedTableTransaction();
@@ -2265,7 +2268,15 @@ void WorldModuleTests::TerrainBrushUsesSharedTransactionAndUndo() {
     toggle->click(); QVERIFY(module.Viewport()->BrushMode());
     auto* raise = page->findChild<QToolButton*>("worldTerrainBrushRaise"); QVERIFY(raise);
     raise->click(); QVERIFY(raise->isChecked());
-    auto* radius = page->findChild<QSpinBox*>("worldTerrainRadius"); QVERIFY(radius); radius->setValue(0);
+    auto* radius = page->findChild<QSpinBox*>("worldTerrainRadius"); QVERIFY(radius);
+    QCOMPARE(radius->minimum(), 1); QCOMPARE(radius->maximum(), 8); radius->setValue(1);
+    QVERIFY(page->findChild<QToolButton*>("worldTerrainBrushNoise"));
+    QVERIFY(page->findChild<QToolButton*>("worldTerrainBrushCliffTexture"));
+    QVERIFY(page->findChild<QToolButton*>("worldTerrainBrushWaterHeight"));
+    auto* variation = page->findChild<QComboBox*>("worldTerrainVariation"); QVERIFY(variation);
+    QCOMPARE(variation->count(), 19); // 随机和 0..17 共 18 种显式变体。
+    auto* waterHeight = page->findChild<QDoubleSpinBox*>("worldTerrainWaterHeight"); QVERIFY(waterHeight);
+    QCOMPARE(waterHeight->minimum(), -2048.0); QCOMPARE(waterHeight->maximum(), 2047.75);
     auto* strength = page->findChild<QDoubleSpinBox*>("worldTerrainStrength"); QVERIFY(strength); strength->setValue(6.25);
     auto original = MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()); QVERIFY(original.Succeeded());
     const QPointF center(module.Viewport()->width() / 2.0, module.Viewport()->height() / 2.0);
@@ -2282,7 +2293,7 @@ void WorldModuleTests::TerrainBrushUsesSharedTransactionAndUndo() {
     QTRY_VERIFY(module.Viewport()->DocumentRevision() > revisionBeforeStroke);
     QTRY_VERIFY(toggle->isChecked()); // push() 的 indexChanged 不能吞掉提交后的恢复请求。
     QVERIFY(module.Viewport()->BrushMode());
-    QCOMPARE(radius->value(), 0);
+    QCOMPARE(radius->value(), 1);
     QCOMPARE(strength->value(), 6.25); // 最终地形刷新不能把用户强度重置为 32。
     QVERIFY(project.mapEdits_->IsDirty());
     const auto changed = MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()); QVERIFY(changed.Succeeded());
@@ -2297,7 +2308,7 @@ void WorldModuleTests::TerrainBrushUsesSharedTransactionAndUndo() {
     QTRY_VERIFY(module.Viewport()->DocumentRevision() > revisionBeforeUndoRender);
     QTRY_VERIFY(toggle->isChecked());
     QVERIFY(module.Viewport()->BrushMode());
-    QCOMPARE(radius->value(), 0);
+    QCOMPARE(radius->value(), 1);
     QCOMPARE(strength->value(), 6.25);
     QTRY_VERIFY(!pathingWarning->isVisible());
     QTRY_VERIFY(module.Viewport()->HoverCoordinate().has_value());
@@ -2320,8 +2331,54 @@ void WorldModuleTests::TerrainBrushUsesSharedTransactionAndUndo() {
     QVERIFY(*cancelled.value == *original.value);
     auto* smooth = page->findChild<QToolButton*>("worldTerrainBrushSmooth"); QVERIFY(smooth);
     smooth->click(); QVERIFY(smooth->isChecked());
-    QCOMPARE(radius->value(), 0);
+    QCOMPARE(radius->value(), 1);
     QCOMPARE(strength->value(), 0.5); // 切换到不同强度域时才应用平滑默认值。
+}
+
+void WorldModuleTests::TerrainTextureSlotUsesSharedTransaction() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const auto source = TerrainBytes(); QVERIFY(Write(directory.filePath("war3map.w3e"), source));
+    QtProject::EditorProject project; project.projectRoot_ = directory.path().toStdWString();
+    auto opened = DirectoryWorkspace::Open(project.projectRoot_); QVERIFY(opened.Succeeded());
+    project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*opened.value));
+    project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(std::span<const MapArchiveMember>{}));
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+    QVERIFY(project.mapEdits_->AttachTerrain(std::span<const std::byte>(
+        reinterpret_cast<const std::byte*>(source.constData()), static_cast<std::size_t>(source.size()))).Succeeded());
+    project.ResetEditTracking();
+    BackendState state; activeBackend = &state;
+    WorldModule module(project, &backend);
+    auto* page = module.Widget(); state.viewport = module.Viewport(); page->resize(900, 600); page->show();
+    QTRY_COMPARE(module.Viewport()->VertexCount(), std::size_t{6});
+    auto* replace = page->findChild<QPushButton*>("worldTerrainReplaceTexture"); QVERIFY(replace);
+    const auto original = *MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value;
+    bool accepted = false;
+    QTimer::singleShot(0, page, [&] {
+        if (auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget())) {
+            dialog->setTextValue(QStringLiteral("Lgrs")); accepted = true; dialog->accept();
+        }
+    });
+    replace->click(); QVERIFY(accepted);
+    QCOMPARE(project.mapEdits_->Terrain()->header.groundTilesets.front(), std::string("Lgrs"));
+    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    project.mapDataUndoStack_->undo();
+    QCOMPARE(*MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, original);
+    project.mapDataUndoStack_->redo();
+    QCOMPARE(project.mapEdits_->Terrain()->header.groundTilesets.front(), std::string("Lgrs"));
+    QTRY_VERIFY(page->findChild<QPushButton*>("worldTerrainToggle")->isEnabled());
+    const auto before = project.mapEdits_->Revision();
+    accepted = false;
+    bool externalChanged = false;
+    QTimer::singleShot(0, page, [&] {
+        if (auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget())) {
+            externalChanged = project.mapEdits_->EditTerrainTextureSlot(MapData::TerrainTextureTable::Ground, 0, "Lrok").Succeeded();
+            dialog->setTextValue(QStringLiteral("Ldrt")); accepted = true; dialog->accept();
+        }
+    });
+    replace->click(); QVERIFY(accepted && externalChanged);
+    QCOMPARE(project.mapEdits_->Revision(), before + 1);
+    QCOMPARE(project.mapEdits_->Terrain()->header.groundTilesets.front(), std::string("Lrok"));
+    QCOMPARE(project.mapDataUndoStack_->count(), 1); // 过期对话框不能覆盖外部编辑或增加撤销项。
 }
 
 void WorldModuleTests::InspectorEditsPreserveOtherFloatBits() {

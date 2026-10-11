@@ -50,12 +50,26 @@ bool Textured(const WorldTerrainLoaded& loaded) {
 void Surface(WorldTerrainLoaded& loaded, WorldTerrainCache& cache, std::shared_ptr<const Render::TerrainCliffs> keepCliffs,
     const Render::TerrainWaterStyle* selectedWater = nullptr) {
     const auto& header = loaded.terrain->header;
-    if (header.groundTilesets != cache.header.groundTilesets || header.mainTileset != cache.header.mainTileset) {
+    const bool groundChanged = header.groundTilesets != cache.header.groundTilesets || header.mainTileset != cache.header.mainTileset;
+    const bool cliffsChanged = header.cliffTilesets != cache.header.cliffTilesets;
+    if (cliffsChanged) {
+        cache.cliffTypes.clear();
+        if (auto types = LoadWorldCliffTypes(cache.reader->Resolver(), header); types.Succeeded())
+            cache.cliffTypes = std::move(*types.value);
+        else cache.notes << WorldDiagnosticText(types.diagnostics) + QObject::tr("（悬崖保留高度色）");
+        keepCliffs.reset();
+    }
+    if (groundChanged) {
         cache.atlases.clear(); cache.blightAtlas.reset(); cache.atlasNotes.clear();
         auto atlases = LoadWorldTerrainAtlases(cache.reader->Resolver(), header, &cache.water, &cache.blightAtlas,
             &cache.waterDefinition);
         if (!atlases.Succeeded()) cache.atlasNotes << WorldDiagnosticText(atlases.diagnostics);
         else { cache.atlases = std::move(*atlases.value); cache.atlasNotes << Messages(atlases.diagnostics); }
+    }
+    if (groundChanged || cliffsChanged) {
+        cache.names = {};
+        if (auto names = LoadWorldTerrainNames(cache.reader->Resolver(), header); names.Succeeded())
+            cache.names = std::move(*names.value);
         cache.header = header;
     }
     QStringList notes = cache.notes;

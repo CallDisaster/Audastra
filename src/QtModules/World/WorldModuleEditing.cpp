@@ -21,7 +21,9 @@
 #include <QButtonGroup>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QInputDialog>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -810,16 +812,21 @@ void WorldModule::StartTerrainStroke(double x, double y) {
     MapData::TerrainBrush brush;
     brush.kind = CurrentBrushKind();
     brush.shape = static_cast<MapData::TerrainBrushShape>(std::max(0, terrainShapes_->checkedId()));
-    brush.radius = static_cast<std::uint32_t>(terrainRadius_->value());
+    brush.size = static_cast<std::uint32_t>(terrainRadius_->value());
     brush.strength = static_cast<float>(terrainStrength_->value());
     brush.value = terrainBlightModes_->checkedId() != 0;
     brush.levelDelta = terrainCliffDeltas_->checkedId();
     brush.cliffTexture = static_cast<std::uint8_t>(terrainCliffTexture_->currentIndex());
+    brush.waterHeight = static_cast<float>(terrainWaterHeight_->value());
+    const int variation = terrainVariation_->currentData().toInt();
+    if (variation >= 0) brush.variation = static_cast<std::uint8_t>(variation);
+    brush.randomizeVariation = variation < 0;
     if (const auto swatch = terrainSwatches_->checkedId(); swatch >= 0 && static_cast<std::size_t>(swatch) < swatchIds_.size())
         brush.groundTexture = swatchIds_[static_cast<std::size_t>(swatch)];
     brush.seed = static_cast<std::uint32_t>(project_.mapEdits_->Revision());
     if ((brush.kind == MapData::TerrainBrushKind::Texture && brush.groundTexture.size() != 4) ||
-        (brush.kind == MapData::TerrainBrushKind::CliffLevel && terrainCliffTexture_->currentIndex() < 0)) {
+        ((brush.kind == MapData::TerrainBrushKind::CliffLevel || brush.kind == MapData::TerrainBrushKind::CliffTexture)
+            && terrainCliffTexture_->currentIndex() < 0)) {
         selectionStatus_->setText(tr("当前地图没有可用的笔刷贴图"));
         terrainToggle_->setChecked(false);
         return;
@@ -843,8 +850,9 @@ void WorldModule::ExtendTerrainStroke(double x, double y) {
     if (!strokeBase_ || !std::isfinite(x) || !std::isfinite(y)) return;
     const auto& header = strokeBase_->header;
     const auto grid = [&](double world, float offset, std::uint32_t extent) {
-        return static_cast<int>(std::clamp(std::llround((world - offset) / MapData::TerrainGridSnapshot::tileSize),
-            0LL, static_cast<long long>(extent - 1)));
+        const double coordinate = (world - offset) / MapData::TerrainGridSnapshot::tileSize;
+        const double snapped = std::round(coordinate);
+        return static_cast<int>(std::clamp(snapped, 0.0, static_cast<double>(extent - 1)));
     };
     const int tx = grid(x, header.offset[0], header.width), ty = grid(y, header.offset[1], header.height);
     const auto point = [&](int gx, int gy) {
@@ -911,6 +919,45 @@ void WorldModule::CancelTerrainStroke() {
     UpdateSelectionText();
 }
 
+void WorldModule::EditTerrainTextureSlot(bool cliff, bool append) {
+    if (!project_.mapEdits_ || strokeBase_) return;
+    const auto source = project_.mapEdits_->Terrain();
+    if (!source || source != rawTerrain_) return;
+    const auto& table = cliff ? source->header.cliffTilesets : source->header.groundTilesets;
+    const int slot = append ? static_cast<int>(table.size())
+        : (cliff ? terrainCliffTexture_->currentIndex() : terrainSwatches_->checkedId());
+    if (slot < 0 || (!append && static_cast<std::size_t>(slot) >= table.size())) return;
+    const auto before = project_.mapEdits_->Revision();
+    const QString previous = append ? QString{} : QString::fromLatin1(table[static_cast<std::size_t>(slot)].data(),
+        static_cast<qsizetype>(table[static_cast<std::size_t>(slot)].size()));
+    bool accepted = false;
+    const QString value = QInputDialog::getText(page_, append ? tr("添加地形贴图") : tr("替换地形贴图"),
+        tr("输入四字符贴图 ID。替换会影响此槽位的所有地形，可撤销。\n贴图通行性联动待核验，修改后可保存工程，暂不能保存地图。"),
+        QLineEdit::Normal, previous, &accepted).trimmed();
+    if (!accepted) return;
+    if (!project_.mapEdits_ || project_.mapEdits_->Terrain() != source || project_.mapEdits_->Revision() != before) {
+        selectionStatus_->setText(tr("地形来源已变化，请重新选择贴图槽"));
+        return;
+    }
+    const auto edited = project_.mapEdits_->EditTerrainTextureSlot(
+        cliff ? MapData::TerrainTextureTable::Cliff : MapData::TerrainTextureTable::Ground,
+        static_cast<std::uint32_t>(slot), value.toStdString());
+    if (!edited.Succeeded()) {
+        project_.AddDiagnostics(edited.diagnostics);
+        selectionStatus_->setText(tr("贴图未修改：%1").arg(WorldDiagnosticText(edited.diagnostics)));
+        return;
+    }
+    if (project_.mapEdits_->Revision() == before) return;
+    terrainPathingPending_ = !project_.mapEdits_->VerifyTerrainPathingForSave().Succeeded();
+    (void)project_.ObserveMapDataEdit("替换地形贴图");
+    pushingTerrainStrokeUndo_ = true;
+    QtProject::PushMapDataEdit(project_, tr("地形贴图槽"), "替换地形贴图");
+    pushingTerrainStrokeUndo_ = false;
+    QueueTerrainRender(project_.mapEdits_->Terrain(), false);
+    RefreshTerrainPalette();
+    UpdateStatusIndicators();
+}
+
 // ── 显示 ──
 
 void WorldModule::UpdateOverlay() {
@@ -971,16 +1018,18 @@ void WorldModule::UpdateOverlay() {
     }
     // 笔刷落点：吸附到最近顶点，按实际作用范围画出（半径外半格为边界）。
     if (brushCursor_ && terrain && CurrentTool() == Tool::Terrain) {
-        const auto& header = terrain->header;
         const double size = MapData::TerrainGridSnapshot::tileSize;
-        const double cx = header.offset[0] + std::round(((*brushCursor_)[0] - header.offset[0]) / size) * size;
-        const double cy = header.offset[1] + std::round(((*brushCursor_)[1] - header.offset[1]) / size) * size;
-        const double extent = (terrainRadius_->value() + 0.5) * size;
-        if (terrainShapes_->checkedId() == static_cast<int>(MapData::TerrainBrushShape::Square))
-            Render::AppendGroundRectangle(lines, terrain, static_cast<float>(cx - extent), static_cast<float>(cy - extent),
-                static_cast<float>(cx + extent), static_cast<float>(cy + extent), kSelected, 6.0f);
-        else Render::AppendGroundCircle(lines, terrain, cx, cy, extent, kSelected, 6.0f);
-        Render::AppendGroundCircle(lines, terrain, cx, cy, size * 0.12, kSelected, 6.0f);
+        MapData::TerrainBrush brush;
+        brush.size = static_cast<std::uint32_t>(terrainRadius_->value());
+        if (const auto footprint = MapData::GetTerrainBrushFootprint(*terrain, brush,
+                {(*brushCursor_)[0], (*brushCursor_)[1]})) {
+            const double cx = footprint->centerX, cy = footprint->centerY, extent = footprint->radius;
+            if (terrainShapes_->checkedId() == static_cast<int>(MapData::TerrainBrushShape::Square))
+                Render::AppendGroundRectangle(lines, terrain, static_cast<float>(cx - extent), static_cast<float>(cy - extent),
+                    static_cast<float>(cx + extent), static_cast<float>(cy + extent), kSelected, 6.0f);
+            else Render::AppendGroundCircle(lines, terrain, cx, cy, extent, kSelected, 6.0f);
+            Render::AppendGroundCircle(lines, terrain, cx, cy, size * 0.12, kSelected, 6.0f);
+        }
     }
     if (const auto binding = CurrentPlacementBinding())
         pendingPlacements_.AppendLines(lines, *binding, placementCompletedScene_.get(), placementCompletedFrame_.get(),

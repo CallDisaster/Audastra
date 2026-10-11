@@ -833,7 +833,9 @@ void WorldModule::StartTerrainRender() {
     if (!terrainCache_) terrainCache_ = std::make_shared<WorldTerrainCache>(); // 没有原版材质时仍可更新高度预览。
     auto cache = terrainCache_;
     const auto selectedWaterFrame = request.selectedWaterFrame;
-    const auto keepCliffs = request.preview || selectedWaterFrame ? cliffs_ : nullptr;
+    const bool keepPreviewCliffs = request.preview && (request.brush.kind == MapData::TerrainBrushKind::Texture
+        || request.brush.kind == MapData::TerrainBrushKind::Blight || request.brush.kind == MapData::TerrainBrushKind::WaterHeight);
+    const auto keepCliffs = keepPreviewCliffs || selectedWaterFrame ? cliffs_ : nullptr;
     const auto generation = generation_;
     const auto serial = request.serial;
     const bool preview = request.preview;

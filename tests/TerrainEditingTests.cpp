@@ -230,6 +230,130 @@ void SessionUndoAndDoodadsFollow() {
     Require(!restored.SetTerrain(Terrain(11)).Succeeded(), "a terrain overlay of a different size is rejected");
 }
 
+void ExplicitSizesAndVariation() {
+    const TerrainStrokePoint point{768, 768};
+    for (std::uint32_t size = 1; size <= 8; ++size) {
+        auto grid = Grid(17);
+        TerrainBrush brush;
+        brush.kind = TerrainBrushKind::Texture; brush.groundTexture = "TxAa";
+        brush.shape = TerrainBrushShape::Square; brush.size = size; brush.variation = std::uint8_t{17};
+        const auto footprint = GetTerrainBrushFootprint(*grid, brush, point);
+        const std::uint32_t side = 2 * size - 1;
+        Require(footprint && footprint->x1 - footprint->x0 == side && footprint->y1 - footprint->y0 == side,
+            "classic size 1..8 uses vertex radius size minus one");
+        Require(footprint->centerX == 768.0, "all brush sizes preview the same snapped vertex center");
+        Require(ApplyTerrainStroke(*grid, brush, std::span(&point, 1)).Succeeded(), "explicit size stroke succeeds");
+        std::size_t changed = 0;
+        for (const auto& vertex : grid->vertices) {
+            Require((vertex.variationRaw & 0xe0) == 0xa0, "texture variation preserves cliff variation bits");
+            changed += (vertex.variationRaw & 0x1f) == 17;
+        }
+        Require(changed == side * side, "core changes exactly the previewed square footprint");
+    }
+    {
+        auto circle = Grid();
+        TerrainBrush brush; brush.groundTexture = "TxAa"; brush.size = 3; brush.variation = std::uint8_t{17};
+        const TerrainStrokePoint center{256, 256};
+        Require(ApplyTerrainStroke(*circle, brush, std::span(&center, 1)).Succeeded(), "explicit circular size succeeds");
+        Require(At(*circle, 6, 4).GroundVariation() == 17 && At(*circle, 6, 5).GroundVariation() != 17,
+            "classic circular brush includes the radius edge but clips the outside diagonal");
+    }
+    auto grid = Grid();
+    const auto before = *SerializeMapTerrain(*grid).value;
+    TerrainBrush brush; brush.groundTexture = "TxAa"; brush.size = 9;
+    Require(!ApplyTerrainStroke(*grid, brush, std::span(&point, 1)).Succeeded(), "size above eight rejects");
+    brush.size = 2; brush.variation = std::uint8_t{18};
+    Require(!ApplyTerrainStroke(*grid, brush, std::span(&point, 1)).Succeeded(), "unknown variation rejects");
+    brush.variation.reset(); brush.shape = static_cast<TerrainBrushShape>(44);
+    Require(!ApplyTerrainStroke(*grid, brush, std::span(&point, 1)).Succeeded(), "unknown shape rejects");
+    Require(*SerializeMapTerrain(*grid).value == before, "invalid new controls do not mutate terrain");
+}
+
+void NoiseIsBoundedPerStroke() {
+    const TerrainStrokePoint point{256, 256};
+    const std::array<TerrainStrokePoint, 3> repeated{point, point, point};
+    TerrainBrush brush; brush.kind = TerrainBrushKind::Noise; brush.size = 2; brush.strength = 39; brush.seed = 17;
+    auto once = Grid(), multiple = Grid();
+    Require(ApplyTerrainStroke(*once, brush, std::span(&point, 1)).Succeeded(), "noise stroke succeeds");
+    Require(ApplyTerrainStroke(*multiple, brush, repeated).Succeeded(), "overlapping noise stroke succeeds");
+    Require(*SerializeMapTerrain(*once).value == *SerializeMapTerrain(*multiple).value,
+        "repeated stamps in one noise stroke do not compound the amplitude");
+    bool changed = false;
+    for (const auto& vertex : once->vertices) {
+        const auto delta = static_cast<int>(vertex.groundHeightRaw) - 8192;
+        Require(std::abs(delta) <= 156, "noise raw height remains within the requested world amplitude");
+        changed |= delta != 0;
+    }
+    Require(changed, "noise makes actual height changes");
+    std::vector<std::byte> pathing(16 + 32 * 32, std::byte{0});
+    pathing[0] = std::byte{'M'}; pathing[1] = std::byte{'P'}; pathing[2] = std::byte{'3'}; pathing[3] = std::byte{'W'};
+    pathing[4] = std::byte{0}; pathing[8] = std::byte{32}; pathing[12] = std::byte{32};
+    const auto document = MapDocument::FromMembers({});
+    MapDataEditSession edits(document);
+    Require(edits.AttachTerrain(Terrain()).Succeeded() && edits.AttachPathing(pathing).Succeeded(), "attach clean dry terrain and pathing");
+    Require(edits.EditTerrain(brush, repeated, false).Succeeded(), "noise uses the shared transaction");
+    Require(edits.VerifyTerrainPathingForSave().Succeeded(), "bounded dry noise retains the existing height save gate");
+    const auto output = *SerializeMapTerrain(*edits.Terrain()).value;
+    Require(edits.Undo() && !edits.IsDirty() && edits.Redo(), "noise undo and redo are one stroke");
+    Require(*SerializeMapTerrain(*edits.Terrain()).value == output, "noise redo restores exact bytes");
+}
+
+void WaterAndCliffPreserveOtherFields() {
+    auto grid = Grid();
+    const TerrainStrokePoint point{256, 256};
+    auto& center = grid->vertices[4 * 9 + 4];
+    center.textureAndFlagsRaw |= 0x40; center.waterHeightAndFlagsRaw |= 0xc000;
+    center.cliffAndLayerRaw = 0x04;
+    RefreshTerrainDerived(*grid, 4, 4, 5, 5);
+    TerrainBrush brush; brush.kind = TerrainBrushKind::WaterHeight; brush.radius = 1; brush.waterHeight = 17.25f;
+    Require(ApplyTerrainStroke(*grid, brush, std::span(&point, 1)).Succeeded(), "existing water height edit succeeds");
+    Require(center.waterBaseHeight == 17.25f && (center.waterHeightAndFlagsRaw & 0xc000u) == 0xc000u,
+        "water height updates derived height and preserves both high flags");
+    Require(!At(*grid, 3, 4).HasWater() && At(*grid, 3, 4).waterHeightAndFlagsRaw == 7936,
+        "water height tool does not turn dry vertices into water");
+    brush.kind = TerrainBrushKind::CliffTexture; brush.cliffTexture = 1; brush.levelDelta = -1;
+    const auto height = center.groundHeightRaw;
+    Require(ApplyTerrainStroke(*grid, brush, std::span(&point, 1)).Succeeded(), "cliff-only texture stroke succeeds");
+    Require(center.CliffLevel() == 4 && center.CliffTextureIndex() == 1 && center.groundHeightRaw == height,
+        "cliff texture edit preserves per-vertex level and height");
+    Require(At(*grid, 3, 4).CliffLevel() == 2, "cliff texture tool never normalizes neighboring levels");
+    const auto bytes = *SerializeMapTerrain(*grid).value;
+    const auto read = ParseMapTerrain(bytes);
+    Require(read.Succeeded() && *SerializeMapTerrain(*read.value->Snapshot()).value == bytes,
+        "water and cliff fields round trip byte for byte");
+    MapDataEditSession edits(MapDocument::FromMembers({}));
+    Require(edits.AttachTerrain(bytes).Succeeded(), "water session attaches");
+    brush.kind = TerrainBrushKind::WaterHeight; brush.waterHeight = 32;
+    Require(edits.EditTerrain(brush, std::span(&point, 1), false).Succeeded(), "water uses the shared transaction");
+    const auto revision = edits.Revision();
+    brush.waterHeight = std::numeric_limits<float>::infinity();
+    Require(!edits.EditTerrain(brush, std::span(&point, 1), false).Succeeded() && edits.Revision() == revision,
+        "invalid water height cannot partially commit");
+    Require(!edits.VerifyTerrainPathingForSave().Succeeded(), "water edits retain the derived-data save gate");
+    Require(edits.Undo() && *SerializeMapTerrain(*edits.Terrain()).value == bytes && edits.Redo(),
+        "water undo restores exact bytes and redo restores the stroke");
+}
+
+void TextureSlotsAreUndoable() {
+    const auto document = MapDocument::FromMembers({});
+    MapDataEditSession edits(document);
+    Require(edits.AttachTerrain(Terrain()).Succeeded(), "slot session source attaches");
+    const auto original = *SerializeMapTerrain(*edits.Terrain()).value;
+    Require(edits.EditTerrainTextureSlot(TerrainTextureTable::Ground, 0, "Lgrs").Succeeded(), "replace existing slot");
+    Require(edits.Terrain()->header.groundTilesets[0] == "Lgrs" && edits.Terrain()->header.usesCustomTileset,
+        "slot replacement changes header and marks custom tileset");
+    Require(edits.Terrain()->vertices[40].GroundTextureIndex() == 0, "slot replacement retains raw vertex indices");
+    Require(!edits.VerifyTerrainPathingForSave().Succeeded(), "header edits do not bypass derived-data save gate");
+    Require(edits.Undo() && *SerializeMapTerrain(*edits.Terrain()).value == original && edits.Redo(), "slot undo restores exact original header");
+    const auto revision = edits.Revision();
+    Require(!edits.EditTerrainTextureSlot(TerrainTextureTable::Ground, 1, "Lgrs").Succeeded(), "duplicate slots reject");
+    Require(edits.Revision() == revision, "rejected slot edit leaves revision and history unchanged");
+    Require(edits.EditTerrainTextureSlot(TerrainTextureTable::Ground, 2, "Ldrt").Succeeded(), "append next ground slot");
+    Require(!edits.EditTerrainTextureSlot(TerrainTextureTable::Ground, 4, "Lrok").Succeeded(), "sparse slot append rejects");
+    auto full = Grid(9, 16);
+    Require(!ReplaceTerrainTextureSlot(*full, TerrainTextureTable::Ground, 16, "Lrok").Succeeded(), "slot encoding remains capped at sixteen");
+}
+
 } // namespace
 
 int main() {
@@ -241,7 +365,11 @@ int main() {
         AnchoredStrokeKeepsDragStartAndRawHeight();
         InvalidInputChangesNothing();
         SessionUndoAndDoodadsFollow();
-        std::cout << "TerrainEditing: 7 scenario groups passed\n";
+        ExplicitSizesAndVariation();
+        NoiseIsBoundedPerStroke();
+        WaterAndCliffPreserveOtherFields();
+        TextureSlotsAreUndoable();
+        std::cout << "TerrainEditing: 11 scenario groups passed\n";
         return 0;
     } catch (const std::exception& exception) {
         std::cerr << "TerrainEditing: " << exception.what() << '\n';
