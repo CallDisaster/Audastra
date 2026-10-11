@@ -11,6 +11,7 @@ struct LuaMapTargetRequest {
     Script::LuaSyntaxChecker checker;
     // 仅明确选择时允许v31内部从JASS切换Lua；不升级W3I版本或猜玩家档位。
     bool changeLanguageToLua = false;
+    Script::LuaMapSaveDialect dialect = Script::LuaMapSaveDialect::NativeV31;
 };
 
 // 仅可信宿主（CLI选项、GUI选择、MCP进程配置）调用；地图内容与MCP请求不能指定执行器。

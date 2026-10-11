@@ -7,6 +7,7 @@
 #include "War3MapCore/Script/LuaTemplateTransaction.h"
 #include "War3MapCore/Script/ScriptQueries.h"
 #include "War3MapCore/Script/ScriptFrameworkInputs.h"
+#include "War3MapCore/Script/ClassicLuaEntryPipeline.h"
 
 #include <algorithm>
 #include <cctype>
@@ -72,6 +73,8 @@ bool HasError(const std::vector<Diagnostic>& diagnostics) {
 } // namespace
 
 bool MapScriptBuildResult::Succeeded() const noexcept {
+    if (classicLuaBundle) return !HasError(diagnostics) && luaGenerated && luaGenerated->Succeeded()
+        && classicLuaBundle->Succeeded() && (!pipeline || pipeline->Succeeded());
     if (luaGenerated) return !HasError(diagnostics) && luaGenerated->Succeeded()
         && (!luaPipeline || luaPipeline->Succeeded());
     if (HasError(diagnostics) || !generated.Succeeded()) return false;
@@ -79,6 +82,7 @@ bool MapScriptBuildResult::Succeeded() const noexcept {
 }
 
 const std::string* MapScriptBuildResult::FinalScript() const noexcept {
+    if (classicLuaBundle) return Succeeded() && pipeline && pipeline->Succeeded() ? &pipeline->script : nullptr;
     if (luaGenerated) return Succeeded() && luaPipeline && luaPipeline->Succeeded() ? &luaPipeline->script : nullptr;
     return Succeeded() && pipeline && pipeline->Succeeded() ? &pipeline->script : nullptr;
 }
@@ -105,6 +109,7 @@ MapScriptBuildResult BuildMapScript(const MapScriptBuildRequest& request) {
     }
     auto options = request.toolchain;
     const bool luaMode = request.luaTarget != nullptr;
+    const bool classicLua = luaMode && request.luaTarget->dialect == LuaMapSaveDialect::Classic127YDWE;
     if (request.compile && !luaMode && !options.layout) {
         auto layout = ResolveScriptToolchainLayout({options.toolRoot, options.warcraftVersion, options.actualVersionMacro});
         diagnostics.insert(diagnostics.end(), layout.diagnostics.begin(), layout.diagnostics.end());
@@ -180,9 +185,10 @@ MapScriptBuildResult BuildMapScript(const MapScriptBuildRequest& request) {
         diagnostics.push_back({DiagnosticSeverity::Error, "Script.Build", "MAP_SETTINGS_MISSING", "地图缺少可解析的 war3map.w3i", {}});
     }
     if (HasError(diagnostics)) return result;
-    if (luaMode && (settings->formatVersion != 31 || settings->scriptLanguage != 1)) {
+    if (luaMode && (settings->formatVersion != (classicLua ? 25 : 31)
+        || settings->SourceFormatVersion() != (classicLua ? 25 : 31) || settings->scriptLanguage != (classicLua ? 0 : 1))) {
         diagnostics.push_back({DiagnosticSeverity::Error, "Script.Build", "LUA_MAP_LANGUAGE_MISMATCH",
-            "完整Lua生成需要本次最终W3I为v31且语言为Lua；不会自动升级地图格式。", {}});
+            "最终W3I的版本和语言必须与明确选择的Lua档案一致；不会自动升级地图格式。", {}});
         return result;
     }
     if (!luaMode && settings->formatVersion != 25) {
@@ -248,7 +254,24 @@ MapScriptBuildResult BuildMapScript(const MapScriptBuildRequest& request) {
         diagnostics.insert(diagnostics.end(), plan.diagnostics.begin(), plan.diagnostics.end());
         if (!plan.Succeeded()) return result;
         result.luaGenerated = GenerateLuaMapScript(*plan.value, *request.triggers, *request.catalog,
-            request.luaTarget->target, request.luaTarget->callbacks, request.luaTestOptions);
+            request.luaTarget->target, request.luaTarget->callbacks, request.luaTestOptions, {classicLua});
+        if (classicLua && result.luaGenerated->Succeeded()) {
+            result.classicLuaBundle = BuildClassicLuaSaveBundle(*plan.value, *result.luaGenerated, request.luaTarget->target);
+            if (request.compile && result.classicLuaBundle->Succeeded()) {
+                const auto bases = CaptureScriptBaseInputs({nullptr, ScriptBasePolicy::MapGameOnly, &archive,
+                    edits, removals, request.game, 24, request.documentRevision});
+                diagnostics.insert(diagnostics.end(), bases.diagnostics.begin(), bases.diagnostics.end());
+                if (!bases.Succeeded() || !bases.value) return result;
+                const auto ownedBases = std::make_shared<const ScriptBaseInputs>(*bases.value);
+                const auto dependencies = ValidateClassicLuaDependencies(*plan.value, *result.luaGenerated,
+                    request.luaTarget->target, *ownedBases);
+                diagnostics.insert(diagnostics.end(), dependencies.diagnostics.begin(), dependencies.diagnostics.end());
+                if (!dependencies.Succeeded()) return result;
+                result.pipeline = CheckClassicLuaEntryScript(result.classicLuaBundle->jassEntry,
+                    ownedBases, {}, options.onStage);
+            }
+            return result;
+        }
         if (request.compile && result.luaGenerated->Succeeded()) {
             result.luaPipeline = CheckLuaMapScript(*result.luaGenerated, request.luaTarget->checker,
                 options.workDir / "lua-check", options.timeout, options.onStage);

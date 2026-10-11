@@ -108,6 +108,7 @@ Result<LuaMapTargetRequest> LoadLuaMapTargetConfiguration(const std::filesystem:
         std::vector<std::filesystem::path> runtimeDirectories;
         constexpr std::array<std::string_view, 5> required{"schema", "profile", "checker", "player_layout", "language"};
         std::array<bool, required.size()> present{};
+        bool dialectPresent = false;
         std::size_t cursor = text.starts_with("\xef\xbb\xbf") ? 3 : 0;
         std::size_t lineNumber = 0;
         while (cursor < text.size()) {
@@ -134,12 +135,16 @@ Result<LuaMapTargetRequest> LoadLuaMapTargetConfiguration(const std::filesystem:
             }
             const auto key = columns[0];
             const auto found = std::find(required.begin(), required.end(), key);
-            if (found == required.end() && key != "runtime")
+            if (found == required.end() && key != "runtime" && key != "dialect")
                 return fail("LUA_MAP_CONFIGURATION_FIELD_UNKNOWN", "未知配置字段。");
             if (found != required.end()) {
                 const auto index = static_cast<std::size_t>(found - required.begin());
                 if (present[index]) return fail("LUA_MAP_CONFIGURATION_FIELD_DUPLICATE", "唯一字段重复。");
                 present[index] = true;
+            }
+            if (key == "dialect") {
+                if (dialectPresent) return fail("LUA_MAP_CONFIGURATION_FIELD_DUPLICATE", "唯一字段重复。");
+                dialectPresent = true;
             }
             if (columnCount != (key == "profile" || key == "checker" ? 3u : 2u))
                 return fail("LUA_MAP_CONFIGURATION_FORMAT", "字段列数不匹配。");
@@ -154,6 +159,10 @@ Result<LuaMapTargetRequest> LoadLuaMapTargetConfiguration(const std::filesystem:
                 if (columns[1] == "preserve") request.changeLanguageToLua = false;
                 else if (columns[1] == "select-lua") request.changeLanguageToLua = true;
                 else return fail("LUA_MAP_CONFIGURATION_FORMAT", "language必须为preserve或select-lua。");
+            } else if (key == "dialect") {
+                if (columns[1] == "native-v31") request.dialect = Script::LuaMapSaveDialect::NativeV31;
+                else if (columns[1] == "classic-127-ydwe") request.dialect = Script::LuaMapSaveDialect::Classic127YDWE;
+                else return fail("LUA_MAP_CONFIGURATION_FORMAT", "dialect必须为native-v31或classic-127-ydwe。");
             } else {
                 std::filesystem::path path;
                 if (!NormalizePath(Utf8Path(columns[1]), path))
@@ -173,9 +182,14 @@ Result<LuaMapTargetRequest> LoadLuaMapTargetConfiguration(const std::filesystem:
                 }
             }
         }
-        if (!std::all_of(present.begin(), present.end(), [](bool value) { return value; }))
+        if (!present[0] || !present[1] || !present[3] || !present[4]
+            || (request.dialect == Script::LuaMapSaveDialect::NativeV31 && !present[2]))
             return Fail(configuration, "LUA_MAP_CONFIGURATION_REQUIRED_FIELD_MISSING",
-                "配置必须包含schema、profile、checker、player_layout和language五个唯一字段。");
+                "配置缺少唯一必填字段；原生v31还需checker，经典档案使用内置Lua5.3检查。");
+        if (request.dialect == Script::LuaMapSaveDialect::Classic127YDWE
+            && (request.changeLanguageToLua || request.playerLayout != Script::MapInitializationPlayerLayout::Classic12))
+            return Fail(configuration, "LUA_MAP_CONFIGURATION_CLASSIC_CONFLICT",
+                "经典Lua档案必须保留W3I语言并使用classic12。");
 
         const auto profileBytes = ReadVerifiedFile(profilePath, profileHash, kProfileBytes);
         if (!profileBytes.Succeeded() || !profileBytes.value)
@@ -188,12 +202,18 @@ Result<LuaMapTargetRequest> LoadLuaMapTargetConfiguration(const std::filesystem:
         if (!profile.Succeeded() || !profile.value)
             return NestedFailure(profilePath, "LUA_MAP_CONFIGURATION_PROFILE_INVALID",
                 "目标档案格式无效。", std::move(profile.diagnostics));
-        auto checker = Script::CaptureLuaSyntaxChecker(checkerPath, checkerHash, runtimeDirectories);
-        if (!checker.Succeeded() || !checker.value)
-            return NestedFailure(checkerPath, "LUA_MAP_CONFIGURATION_CHECKER_INVALID",
-                "检查器或运行时目录未通过身份捕获。", std::move(checker.diagnostics));
         request.profile = std::move(*profile.value);
-        request.checker = std::move(*checker.value);
+        if (request.dialect == Script::LuaMapSaveDialect::Classic127YDWE) {
+            if (present[2] || !runtimeDirectories.empty())
+                return Fail(configuration, "LUA_MAP_CONFIGURATION_CLASSIC_CHECKER_CONFLICT",
+                    "经典档案使用内置Lua5.3检查，不接受外部checker或runtime字段。");
+        } else {
+            auto checker = Script::CaptureLuaSyntaxChecker(checkerPath, checkerHash, runtimeDirectories);
+            if (!checker.Succeeded() || !checker.value)
+                return NestedFailure(checkerPath, "LUA_MAP_CONFIGURATION_CHECKER_INVALID",
+                    "检查器或运行时目录未通过身份捕获。", std::move(checker.diagnostics));
+            request.checker = std::move(*checker.value);
+        }
         // 捕获身份不执行配置、档案或检查器，也不证明所选文件确实是Lua解释器。
         return LoadResult::Success(std::move(request));
     } catch (const std::bad_alloc&) {

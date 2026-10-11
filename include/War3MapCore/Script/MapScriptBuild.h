@@ -5,6 +5,7 @@
 #include "War3MapCore/ObjectData/StandardObjectCatalog.h"
 #include "War3MapCore/Script/MapScript.h"
 #include "War3MapCore/Script/LuaMapPipeline.h"
+#include "War3MapCore/Script/ClassicLuaSaveBundle.h"
 #include "War3MapCore/Script/ScriptPipeline.h"
 #include "War3MapCore/Script/SlkMapSourceSnapshot.h"
 
@@ -60,6 +61,7 @@ struct MapScriptBuildResult {
     std::optional<PipelineResult> pipeline;
     std::optional<LuaMapScriptResult> luaGenerated;
     std::optional<LuaMapPipelineResult> luaPipeline;
+    std::optional<ClassicLuaSaveBundle> classicLuaBundle;
     std::vector<Diagnostic> diagnostics; // 读取地图成员等准备阶段的诊断
     // 实际 wholechunk 使用的原始/最终来源；也供 native 三方祖先核验使用。
     // 拒绝路径可保留诊断快照；有此值不授予跳过模板或保存权限。

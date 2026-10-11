@@ -2,6 +2,7 @@
 #include "War3MapCore/ObjectData/ObjectImport.h"
 #include "War3MapCore/Resources/ImportTable.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/Lua/LuaSyntax.h"
 
 #include <map>
 #include <algorithm>
@@ -28,6 +29,11 @@ std::string Key(std::string_view name) {
     return Take(Resources::CanonicalImportPath(name));
 }
 bool ScriptName(std::string_view name) { return name == "WAR3MAP.J" || name == "SCRIPTS\\WAR3MAP.J"; }
+bool ClassicLuaMember(std::string_view name) {
+    constexpr std::array<std::string_view, 6> names{"AUDASTRA\\MAP.LUA", "AUDASTRA\\COMPAT.LUA",
+        "AUDASTRA\\BOOTSTRAP.LUA", "AUDASTRA\\OBJECTS.LUA", "AUDASTRA\\CONTINUE.LUA", "AUDASTRA\\GENERATED.MANIFEST"};
+    return std::find(names.begin(), names.end(), name) != names.end();
+}
 } // namespace
 
 Result<ScriptSaveBundle> PrepareScriptSaveBundle(const PipelineResult& pipeline, std::string_view scriptMember) {
@@ -90,6 +96,44 @@ Result<ScriptSaveBundle> PrepareScriptSaveBundle(const LuaMapPipelineResult& pip
         Result<ScriptSaveBundle> result; result.diagnostics = failure.diagnostics; return result;
     } catch (const std::exception&) {
         return Result<ScriptSaveBundle>::Failure("Script.SaveBundle", "SCRIPT_BUNDLE_RESOURCE", "无法准备完整Lua保存结果，未返回部分结果。");
+    }
+}
+
+Result<ScriptSaveBundle> PrepareScriptSaveBundle(const PipelineResult& pipeline,
+    const ClassicLuaSaveBundle& bundle, std::string_view scriptMember) {
+    try {
+        if (scriptMember != "war3map.j" || !bundle.Succeeded() || !pipeline.baseInputs
+            || pipeline.script != bundle.jassEntry || !pipeline.objectMembers.empty()
+            || Take(Sha256Text(pipeline.script)) != bundle.jassSha256)
+            Reject("CLASSIC_LUA_BUNDLE_UNCHECKED", "经典Lua入口、基础库或生成字节未绑定完整检查结果。");
+        auto output = Take(PrepareScriptSaveBundle(pipeline, scriptMember));
+        constexpr std::array<std::string_view, 5> expected{
+            "audastra\\map.lua", "audastra\\compat.lua", "audastra\\bootstrap.lua",
+            "audastra\\objects.lua", "audastra\\continue.lua"};
+        std::size_t total = 0;
+        std::string manifest = "audastra-classic-lua-v1\nwar3map.j\t" + bundle.jassSha256 + "\n";
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            const auto& module = bundle.modules[index];
+            if (module.member != expected[index] || module.text.size() > kByteLimit - total
+                || Take(Sha256Text(module.text)) != module.sha256)
+                Reject("CLASSIC_LUA_BUNDLE_CHANGED", "经典Lua模块名称、预算或字节在检查后变化。");
+            total += module.text.size();
+            Lua::SyntaxOptions options;
+            options.maxSourceBytes = kByteLimit; options.maxMemoryBytes = 256 * 1024 * 1024;
+            if (!Lua::CheckSyntax(module.text, "@" + module.member, options).Succeeded())
+                Reject("CLASSIC_LUA_MODULE_SYNTAX", "经典Lua模块未通过内置Lua5.3编译检查。");
+            const auto* first = reinterpret_cast<const std::byte*>(module.text.data());
+            output.members.push_back({module.member, {first, first + module.text.size()}});
+            manifest += module.member + "\t" + module.sha256 + "\n";
+        }
+        const auto* first = reinterpret_cast<const std::byte*>(manifest.data());
+        output.members.push_back({"audastra\\generated.manifest", {first, first + manifest.size()}});
+        return Result<ScriptSaveBundle>::Success(std::move(output));
+    } catch (const Rejection& failure) {
+        return {{}, failure.diagnostics};
+    } catch (const std::exception&) {
+        return Result<ScriptSaveBundle>::Failure("Script.SaveBundle", "CLASSIC_LUA_BUNDLE_RESOURCE",
+            "经典Lua保存准备失败，未返回部分成员。");
     }
 }
 
@@ -173,9 +217,16 @@ Status PreflightScriptSaveBaselineReplacement(const ScriptSaveBundle& bundle,
         "无法完成编辑基线替换预检，生成结果和当前文档均未修改。"); }
 }
 
-Status MergeScriptSaveMembers(std::vector<MemberReplacement>& pending,
-    const std::vector<std::string>& removals, std::vector<MemberReplacement>& generated) {
+static Status MergeSaveMembers(std::vector<MemberReplacement>& pending,
+    const std::vector<std::string>& removals, std::vector<MemberReplacement>& generated, bool classic) {
     try {
+        if (classic) {
+            constexpr std::array<std::string_view, 7> names{"war3map.j", "audastra\\map.lua", "audastra\\compat.lua",
+                "audastra\\bootstrap.lua", "audastra\\objects.lua", "audastra\\continue.lua", "audastra\\generated.manifest"};
+            if (generated.size() != names.size()) Reject("SCRIPT_BUNDLE_CONFLICT", "经典Lua必须提交完整入口、模块和清单。");
+            for (std::size_t index = 0; index < names.size(); ++index)
+                if (generated[index].name != names[index]) Reject("SCRIPT_BUNDLE_CONFLICT", "经典Lua成员名或顺序无效。");
+        }
         if (&pending == &generated || pending.size() > 65536 || removals.size() > 65536 || generated.size() > 8)
             Reject("SCRIPT_BUNDLE_LIMIT", "成员合并输入无效或超过数量预算。");
         std::map<std::string, std::size_t> existing;
@@ -190,7 +241,7 @@ Status MergeScriptSaveMembers(std::vector<MemberReplacement>& pending,
         std::vector<std::size_t> slots;
         for (const auto& member : generated) {
             const auto key = Key(member.name);
-            if ((!ScriptName(key) && key != "WAR3MAP.LUA" && std::find(kNative.begin(), kNative.end(), key) == kNative.end()) ||
+            if ((!ScriptName(key) && key != "WAR3MAP.LUA" && !(classic && ClassicLuaMember(key)) && std::find(kNative.begin(), kNative.end(), key) == kNative.end()) ||
                 !additions.insert(key).second || deleted.contains(key)) Reject("SCRIPT_BUNDLE_CONFLICT", "生成成员无效、重复或同时被删除。");
             const auto found = existing.find(key);
             slots.push_back(found == existing.end() ? pending.size() : found->second);
@@ -208,4 +259,14 @@ Status MergeScriptSaveMembers(std::vector<MemberReplacement>& pending,
     catch (const std::exception&) { Status result; result.diagnostics.push_back({DiagnosticSeverity::Error,
         "Script.SaveBundle", "SCRIPT_BUNDLE_RESOURCE", "无法准备成员合并，原待保存列表保持不变。", {}}); return result; }
 }
+Status MergeScriptSaveMembers(std::vector<MemberReplacement>& pending,
+    const std::vector<std::string>& removals, std::vector<MemberReplacement>& generated) {
+    return MergeSaveMembers(pending, removals, generated, false);
+}
+
+Status MergeClassicLuaSaveMembers(std::vector<MemberReplacement>& pending,
+    const std::vector<std::string>& removals, std::vector<MemberReplacement>& generated) {
+    return MergeSaveMembers(pending, removals, generated, true);
+}
+
 } // namespace War3Map::Script

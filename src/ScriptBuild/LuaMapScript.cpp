@@ -626,9 +626,19 @@ Result<std::string> ComputeLuaMapSourceMapSha256(const LuaMapScriptResult& resul
     }
     std::string identity = "forge-complete-lua-source-map-v1:" + *scriptHash.value;
     if (!result.classicMainContinuation.empty()) {
-        AppendString(identity, "classic-jass-init-split-v1");
+        AppendString(identity, "classic-jass-init-split-v2");
         AppendString(identity, result.classicObjectsContinuation);
         AppendString(identity, result.classicMainContinuation);
+        if (result.requiredApis.size() > 4096 || result.requiredConstants.size() > 4096
+            || result.requiredGlobals.size() > 65536)
+            return failure("LUA_MAP_DEPENDENCY_LIMIT", "经典Lua依赖名单超过来源身份预算。");
+        for (const auto* names : {&result.requiredApis, &result.requiredGlobals, &result.requiredConstants}) {
+            AppendNumber(identity, names->size());
+            for (const auto& name : *names) {
+                if (!Identifier(name)) return failure("LUA_MAP_DEPENDENCY_INVALID", "经典Lua依赖名单包含无效符号。");
+                AppendString(identity, name);
+            }
+        }
     }
     AppendString(identity, result.targetSha256);
     AppendNumber(identity, result.sourceSpans.size());
@@ -654,6 +664,9 @@ void MapWriter::Finish() {
     result_.scriptSha256 = *scriptHash.value;
     result_.objectSpans = std::move(objectSpans_);
     result_.text = out_.Take();
+    result_.requiredApis.assign(requiredApis_.begin(), requiredApis_.end());
+    result_.requiredGlobals.assign(requiredGlobals_.begin(), requiredGlobals_.end());
+    result_.requiredConstants.assign(requiredConstants_.begin(), requiredConstants_.end());
     const auto mapHash = ComputeLuaMapSourceMapSha256(result_);
     if (!mapHash.Succeeded()) throw mapHash.diagnostics.front();
     result_.sourceMapSha256 = *mapHash.value;

@@ -74,7 +74,7 @@ void Capture(const std::filesystem::path& root) {
     auto captured = CaptureScriptBaseInputs(request);
     Require(captured.Succeeded(), Codes(captured));
     Require(captured.value->common.origin == ScriptBaseOrigin::MapArchive && Text(captured.value->common) == kCommon
-        && captured.value->common.sourceRoot == path && captured.value->sourceMapSha256 == archive.value->SourceSha256()
+        && captured.value->common.sourceRoot == archive.value->SourcePath() && captured.value->sourceMapSha256 == archive.value->SourceSha256()
         && captured.value->documentRevision == 83, "no-layout capture freezes actual map source and revision");
     Require(captured.value->blizzard.origin == ScriptBaseOrigin::GameArchive
         && captured.value->blizzard.archiveName == "war3.mpq" && Text(captured.value->blizzard) == "// lower priority\n",
@@ -262,8 +262,8 @@ void Dependencies() {
     for (auto& [name, parent] : copy.target.handleTypes) if (name == "rect") parent = "player";
     Require(HasCode(copy.Validate(copy.Generate()), "CLASSIC_LUA_DEPENDENCY_API"), "self-reported handle ancestry must match actual common declarations");
     copy = fixture;
-    Changed(copy.common, "native GetCameraMargin takes integer p0 returns real\n",
-        "function GetCameraMargin takes integer p0 returns real\nreturn 0.0\nendfunction\n");
+    Changed(copy.common, "native GetCameraMargin takes integer p0 returns real\n", "");
+    copy.common += "function GetCameraMargin takes integer p0 returns real\nreturn 0.0\nendfunction\n";
     Require(HasCode(copy.Validate(generated), "CLASSIC_LUA_DEPENDENCY_API"), "ordinary JASS functions are not Lua-callable natives");
     copy = fixture; copy.plan.symbols.front().type = "handle";
     Require(HasCode(copy.Validate(generated), "CLASSIC_LUA_DEPENDENCY_GLOBAL"), "map global must match exact generated object type");

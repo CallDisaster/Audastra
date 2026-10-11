@@ -208,6 +208,8 @@ target_compile_definitions(war3-map-lua-map-save-tests PRIVATE NOMINMAX UNICODE 
 target_compile_options(war3-map-lua-map-save-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-lua-map-save COMMAND war3-map-lua-map-save-tests)
 set_tests_properties(services-lua-map-save PROPERTIES TIMEOUT 60)
+add_test(NAME services-classic-lua-map-save COMMAND war3-map-lua-map-save-tests --classic)
+set_tests_properties(services-classic-lua-map-save PROPERTIES TIMEOUT 60)
 
 add_executable(war3-map-lua-map-target-configuration-tests LuaMapTargetConfigurationTests.cpp)
 target_link_libraries(war3-map-lua-map-target-configuration-tests PRIVATE War3MapEditor::Services)

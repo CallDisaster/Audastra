@@ -2,6 +2,7 @@
 
 #include "War3MapCore/Script/ScriptPipeline.h"
 #include "War3MapCore/Script/LuaMapPipeline.h"
+#include "War3MapCore/Script/ClassicLuaSaveBundle.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
 
@@ -24,6 +25,10 @@ struct ScriptSaveBundle {
 [[nodiscard]] Result<ScriptSaveBundle> PrepareScriptSaveBundle(
     const LuaMapPipelineResult& pipeline, std::string_view scriptMember);
 
+// 经典Lua的JASS入口必须完成同一套语义检查，所有模块重核语法与摘要后原子交入保存事务。
+[[nodiscard]] Result<ScriptSaveBundle> PrepareScriptSaveBundle(
+    const PipelineResult& pipeline, const ClassicLuaSaveBundle& bundle, std::string_view scriptMember);
+
 // 仅供需要规范 LNI 整类替换的调用方使用的保守预检。
 // currentEditable 必须来自本次保存冻结的完整七类快照；nullptr 只表示该类原本不存在，
 // 不能用 nullptr 代替未捕获/未知文档。仅检查 bundle 实际生成的类别，输入均不修改。
@@ -38,6 +43,10 @@ struct ScriptSaveBundle {
 // 已有同名待保存版本被最终生成版本替换，不重复追加。最终生成成员不能被同时删除。
 // 不复制与本次生成无关的大型导入字节。成功消耗generated，调用方才切换对应基线。
 [[nodiscard]] Status MergeScriptSaveMembers(std::vector<MemberReplacement>& pending,
+    const std::vector<std::string>& removals, std::vector<MemberReplacement>& generated);
+
+// 只接受完整经典Lua入口、五模块和清单；保留普通脚本合并的原白名单。
+[[nodiscard]] Status MergeClassicLuaSaveMembers(std::vector<MemberReplacement>& pending,
     const std::vector<std::string>& removals, std::vector<MemberReplacement>& generated);
 
 } // namespace War3Map::Script

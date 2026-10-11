@@ -26,12 +26,15 @@ private:
 [[nodiscard]] Result<LuaSyntaxChecker> CaptureLuaSyntaxChecker(const std::filesystem::path& executable,
     std::string_view expectedSha256, std::span<const std::filesystem::path> runtimeDirectories = {});
 
+enum class LuaMapSaveDialect : std::uint8_t { NativeV31, Classic127YDWE };
+
 struct LuaMapBuildProfile {
     LuaTargetProfile target;
     std::vector<LuaCallbackBinding> callbacks;
     MapInitializationOptions initialization;
     LuaSyntaxChecker checker;
     std::string requestSha256;
+    LuaMapSaveDialect dialect = LuaMapSaveDialect::NativeV31;
 };
 
 // 与JASS流水线结果分型；Lua语法通过不伪装成JASS类型检查或游戏运行通过。
