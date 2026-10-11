@@ -556,6 +556,26 @@ void ClassicSaveTransactions(Fixture& fixture) {
     }
     std::vector<MemberReplacement> pending{{"resource/owned.bin", Bytes("untouched")}};
     const auto originalOwned = owned;
+    std::vector<ArchiveExactMemberIdentity> identities;
+    for (const auto& member : originalOwned) {
+        const auto sha = Sha256(member.data); Require(sha.Succeeded() && sha.value, Codes(sha));
+        identities.push_back({member.name, true, member.data.size(), *sha.value});
+    }
+    Require(VerifyClassicLuaGeneratedIdentities(identities, originalOwned.back().data).Succeeded(),
+        "streamed identities do not share the save manifest contract");
+    const auto originalIdentities = identities;
+    std::swap(identities[1], identities[2]);
+    Require(!VerifyClassicLuaGeneratedIdentities(identities, originalOwned.back().data).Succeeded(),
+        "reordered identity list bypassed exact names");
+    identities = originalIdentities; identities[1].sha256 = std::string(64, 'z');
+    Require(!VerifyClassicLuaGeneratedIdentities(identities, originalOwned.back().data).Succeeded(),
+        "malformed member identity bypassed the shared verifier");
+    identities = originalIdentities; ++*identities.back().byteSize;
+    Require(!VerifyClassicLuaGeneratedIdentities(identities, originalOwned.back().data).Succeeded(),
+        "inconsistent manifest size was accepted");
+    identities = originalIdentities; identities.back().sha256 = std::string(64, '0');
+    Require(!VerifyClassicLuaGeneratedIdentities(identities, originalOwned.back().data).Succeeded(),
+        "inconsistent manifest hash was accepted");
     Require(!Script::MergeScriptSaveMembers(pending, {}, owned).Succeeded()
         && pending.size() == 1 && owned.front().data == originalOwned.front().data,
         "ordinary merge must retain its original resource rejection and atomicity");
