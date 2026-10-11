@@ -598,7 +598,9 @@ Result<InPlaceSaveResult> MapArchiveSession::SaveInPlace(std::span<const MemberR
         return Fail<InPlaceSaveResult>("REPLACE_FAILED", "无法创建源卷恢复位置，地图未保存。" + FailureDetails("recovery-directory-create", code, recoveryDirectory));
     }
     const auto recovery = recoveryDirectory / (L"original" + extension);
-    FileHandle recoveryRoot(CreateFileW(WindowsApiPath(recoveryDirectory).c_str(), FILE_READ_ATTRIBUTES | DELETE,
+    // 只读属性句柄：不共享删除，目录不能被他人改名或删除。不能带 DELETE 访问：
+    // Windows 10 上目录存在带 DELETE 的句柄时，ReplaceFileW 无法把原图移入（1175）。
+    FileHandle recoveryRoot(CreateFileW(WindowsApiPath(recoveryDirectory).c_str(), FILE_READ_ATTRIBUTES,
         FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     BY_HANDLE_FILE_INFORMATION recoveryInfo{};
@@ -612,8 +614,23 @@ Result<InPlaceSaveResult> MapArchiveSession::SaveInPlace(std::span<const MemberR
     if (recoveryKnown && !recoveryOwned) recoveryError = ERROR_INVALID_DATA;
     std::vector<Diagnostic> cleanupDiagnostics;
     bool recoveryDispositionAccepted = false;
+    // 关闭锁定句柄后按卷号与文件号重开同一目录再删除；只删除空目录，仍有恢复文件时保留。
+    const auto deleteRecoveryDirectory = [&] {
+        recoveryRoot.Close();
+        FileHandle reopened(CreateFileW(WindowsApiPath(recoveryDirectory).c_str(), FILE_READ_ATTRIBUTES | DELETE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+        BY_HANDLE_FILE_INFORMATION current{};
+        if (!reopened.Valid() || !GetFileInformationByHandle(reopened.Get(), &current)) return false;
+        if (current.dwVolumeSerialNumber != recoveryInfo.dwVolumeSerialNumber || FileId(current) != FileId(recoveryInfo)
+            || !(current.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || (current.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+            SetLastError(ERROR_INVALID_DATA);
+            return false;
+        }
+        return reopened.Delete();
+    };
     const auto discardRecoveryDirectory = [&] {
-        if (recoveryOwned && !recoveryRoot.Delete()) { // 只删除句柄绑定的空目录；仍有恢复文件时保留。
+        if (recoveryOwned && !deleteRecoveryDirectory()) {
             const DWORD code = GetLastError();
             Warn(cleanupDiagnostics, "RECOVERY_DIRECTORY_CLEANUP_FAILED", "源卷恢复目录未能清理。"
                 + FailureDetails("recovery-directory-disposition", code, recoveryDirectory)
