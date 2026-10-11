@@ -8,15 +8,18 @@
 #include "War3MapCore/Script/ScriptBaseInputs.h"
 #include "War3MapCore/Script/ScriptFrameworkInputs.h"
 #include "War3MapCore/Script/ScriptInjectionSources.h"
+#include "War3MapCore/Script/ScriptPipeline.h"
 #include "War3MapCore/Script/ScriptQueries.h"
 #include "War3MapCore/Services/ScriptSavePreparation.h"
 #include "War3MapCore/Trigger/TriggerEditing.h"
 
 #include <algorithm>
 #include <chrono>
+#include <iterator>
 #include <map>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 
 namespace War3Map::Services {
@@ -198,6 +201,78 @@ Jass::SourceMap MapPreprocessed(const Jass::PreprocessResult& preprocessed, cons
     }
     return output;
 }
+// 模板求值输出行 → 求值前（预处理后）行。模板块外的文本逐字节原样复制；模板自身输出的各行
+// （例如 YDNL 展开出的换行）都指向模板所在的输入行。换行规则与 LineCount 一致。
+Jass::SourceMap MapTemplateOutput(std::string_view input, const Script::TemplateResult& evaluated,
+    std::stop_token cancel, Clock::time_point deadline) {
+    Jass::SourceMap map;
+    const auto file = map.AddFile("template-input");
+    std::size_t span = 0, inputAt = 0;
+    std::uint32_t inputLine = 1, outputLine = 1;
+    const auto inputLineAt = [&](std::size_t offset) {
+        for (; inputAt < offset && inputAt < input.size(); ++inputAt) {
+            if ((inputAt & 4095u) == 0) Poll(cancel, deadline);
+            if (input[inputAt] == '\n' || (input[inputAt] == '\r' && (inputAt + 1 >= input.size() || input[inputAt + 1] != '\n'))) ++inputLine;
+        }
+        return inputLine;
+    };
+    const auto& output = evaluated.text;
+    for (std::size_t start = 0;;) {
+        const auto& spans = evaluated.spans;
+        while (span + 1 < spans.size() && spans[span + 1].outputBegin <= start) ++span;
+        std::size_t source = start;
+        if (!spans.empty() && spans[span].outputBegin <= start)
+            source = start < spans[span].outputEnd ? spans[span].sourceBegin : spans[span].sourceEnd + (start - spans[span].outputEnd);
+        map.Map(outputLine, {file, inputLineAt(source)});
+        auto at = start;
+        while (at < output.size() && output[at] != '\r' && output[at] != '\n') {
+            if ((at & 4095u) == 0) Poll(cancel, deadline);
+            ++at;
+        }
+        if (at == output.size()) break;
+        if (output[at++] == '\r' && at < output.size() && output[at] == '\n') ++at;
+        start = at; ++outputLine;
+    }
+    return map;
+}
+// 整图含编辑器不执行的模板块（如物编生成）时：取同次生产预处理结果中本代码块的行段（宏已按保存链展开），
+// 只对这一段做模板求值并检查正文语法，行号经同一映射回到作者原行。本段自身含不能求值的模板时返回空。
+std::optional<CodeCheckResult> CheckAuthorSection(CodeCheckRequest request, std::string_view preprocessed,
+    const Script::TemplateContext& templates, const std::string& reason, std::stop_token cancel, Clock::time_point deadline) {
+    const auto& map = request.sourceMap;
+    std::uint32_t first = 0, last = 0;
+    const auto lines = LineCount(preprocessed, cancel, deadline);
+    for (std::uint32_t line = 1; line <= lines; ++line) {
+        if ((line & 255u) == 0) Poll(cancel, deadline);
+        const auto origin = map.Find(line);
+        if (origin && origin->file < map.Files().size() && map.Files()[origin->file] == request.source.name) {
+            if (first == 0) first = line;
+            last = line;
+        }
+    }
+    if (first == 0) return std::nullopt;
+    std::vector<std::uint32_t> wanted(last - first + 1);
+    for (std::uint32_t index = 0; index < wanted.size(); ++index) wanted[index] = first + index;
+    std::string section;
+    for (const auto& line : RequestedLines(preprocessed, std::move(wanted), cancel, deadline)) {
+        if (line.line != first) section += '\n';
+        section.append(line.text);
+    }
+    auto evaluated = Script::EvaluateTemplates(section, templates);
+    if (!evaluated.Succeeded()) return std::nullopt;
+    Jass::SourceMap offset; // 本段第 k 行 → 整图预处理第 first+k-1 行
+    offset.Map(1, {offset.AddFile("preprocessed"), first});
+    const auto evaluatedLines = LineCount(evaluated.text, cancel, deadline);
+    request.sourceMap = MapTemplateOutput(section, evaluated, cancel, deadline)
+        .ComposeWith(offset, evaluatedLines).ComposeWith(map, evaluatedLines);
+    request.source.text = std::move(evaluated.text);
+    request.language = CodeLanguage::VJass; request.preprocessed = true;
+    request.context.complete = false;
+    request.context.reason = "仅检查本段语法：" + reason + "；本段已按保存链展开宏与模板，整图检查由保存链完成。";
+    auto checked = CheckCode(request, cancel);
+    checked.reason = request.context.reason;
+    return checked;
+}
 void AddExternalSource(CodeCheckResult& result, std::string name, std::string text, std::size_t& bytes) {
     if (std::any_of(result.externalSources.begin(), result.externalSources.end(),
         [&](const auto& source) { return source.name == name; })) return;
@@ -221,12 +296,13 @@ struct CodeCheckProjectCache::Impl {
     std::optional<Script::ScriptUserSourcePlan> entry;
     std::optional<Script::ScriptInjectionSources> injection;
     Script::ObjectQuerySources objects;
+    std::optional<Script::TemplateContext> templates; // 与保存链同一构造：工具链命令表 + 原版与本图技能
     std::string incomplete;
     bool captureFinished = false;
 
     void Capture(const std::shared_ptr<const CodeCheckProjectSnapshot>& next, std::stop_token cancel, Clock::time_point deadline) {
         snapshot = next; archive.reset(); map.reset(); game.reset(); standard.reset(); layout.reset(); bases.reset();
-        framework.reset(); entry.reset(); injection.reset(); objects = {};
+        framework.reset(); entry.reset(); injection.reset(); objects = {}; templates.reset();
         incomplete = "上下文捕获尚未完成。"; captureFinished = false;
         const auto fail = [&](std::string reason) { incomplete = std::move(reason); captureFinished = true; };
         if (!next || !next->triggers || !next->catalog || next->binding.empty()) { fail("工程没有完整的冻结触发器来源。"); return; }
@@ -296,6 +372,7 @@ struct CodeCheckProjectCache::Impl {
             injection.emplace(std::move(*sources.value));
         }
         Poll(cancel, deadline);
+        templates = Script::BuildTemplateContext(next->toolRoot, standard ? &*standard : nullptr, objects.abilities);
         incomplete.clear(); captureFinished = true;
     }
 };
@@ -462,8 +539,24 @@ CodeCheckResult CheckProjectCode(const std::shared_ptr<const CodeCheckProjectSna
         }
         Poll(cancel, deadline);
         if (!preprocessed.Succeeded()) return fallback(Reason(preprocessed.diagnostics, "预处理未能完成。"));
-        if (preprocessed.text.find("<?") != std::string::npos) return fallback("本次整图含模板求值，编辑器原行映射尚不覆盖该阶段；保存链仍完整执行并检查。");
         request.sourceMap = MapPreprocessed(preprocessed, author, cancel, deadline);
+        if (preprocessed.text.find("<?") != std::string::npos) {
+            // 与保存链相同的内置模板求值（如 YDNL 展开为换行）；需要整段执行的块（物编生成等）不在编辑器里执行。
+            auto evaluated = Script::EvaluateTemplates(preprocessed.text, *owned.templates);
+            if (!evaluated.Succeeded()) {
+                std::vector<Diagnostic> errors;
+                std::copy_if(evaluated.diagnostics.begin(), evaluated.diagnostics.end(), std::back_inserter(errors),
+                    [](const auto& diagnostic) { return diagnostic.severity == DiagnosticSeverity::Error; });
+                const auto reason = Reason(errors, "模板求值未能完成");
+                if (auto section = CheckAuthorSection(request, preprocessed.text, *owned.templates, reason, cancel, deadline))
+                    return std::move(*section);
+                return fallback(reason + "；编辑器不执行该模板，保存链仍完整执行并检查。");
+            }
+            Poll(cancel, deadline);
+            const auto lines = LineCount(evaluated.text, cancel, deadline);
+            request.sourceMap = MapTemplateOutput(preprocessed.text, evaluated, cancel, deadline).ComposeWith(request.sourceMap, lines);
+            preprocessed.text = std::move(evaluated.text);
+        }
         request.source.text = std::move(preprocessed.text);
         request.context.declarations = {{"Save/common.j", BytesText(owned.bases->common.bytes)}, {"Save/blizzard.j", BytesText(owned.bases->blizzard.bytes)}};
         request.context.complete = true; request.jass.returnBug = owned.bases->allowReturnBug;

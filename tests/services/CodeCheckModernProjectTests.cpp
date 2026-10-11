@@ -162,9 +162,14 @@ constexpr std::string_view kAuthorHeader =
     "endfunction\n"
     "endlibrary\n";
 
+// 原创强制包含：与 YDWE 框架公开的写法相同，YDNL 先宏展开为模板，再由模板求值输出换行。
+constexpr std::string_view kTemplateForcedInclude =
+    "#define YDNL <?='\\n'?>\n"
+    "#define UNSUPPORTED_TEMPLATE <? local slk = require 'slk' ?>\n";
+
 class ModernProjectFixture final {
 public:
-    ModernProjectFixture() {
+    explicit ModernProjectFixture(std::string_view forcedInclude = "// original forced include\n") {
         tool = temporary.Path() / "tool";
         source = temporary.Path() / "maps" / "original.w3x";
         baseLibrary = tool / "ui/base/jass/BaseProbe.j";
@@ -175,7 +180,7 @@ public:
         WriteOriginalText(tool / "ui/addon/define.txt", "[TriggerTypes]\nProbeInteger=0,1,1,原创类型,integer\n");
         WriteOriginalText(tool / "compiler/jass/24/common.j", kOriginalCommon);
         WriteOriginalText(tool / "compiler/jass/24/blizzard.j", kOriginalBlizzard);
-        WriteOriginalText(tool / "compiler/include/WaveForce.i", "// original forced include\n");
+        WriteOriginalText(tool / "compiler/include/WaveForce.i", forcedInclude);
         for (const auto* name : {"YDTrigger.h", "Globals.h", "Function.h"}) {
             WriteOriginalText(tool / "compiler/include/YDTrigger" / name, "// original empty generator include\n");
         }
@@ -335,6 +340,79 @@ void UnboundRootsCannotSupplyQuotedIncludesOrInjection() {
     fixture.RequireSourceUnchanged();
 }
 
+// 作者代码里的 YDNL 必须像保存链一样展开后再检查，不能把未展开的宏名当成多余的词；
+// 展开出的行仍报在作者原行，编辑器不执行的模板如实退回。
+void TemplateMacrosExpandBeforeCheckingAndKeepAuthorLines() {
+    ModernProjectFixture fixture(kTemplateForcedInclude);
+    CodeCheckProjectCache cache;
+    const std::string expanded =
+        "library AuthorFixture requires BaseProbe, AddonProbe\n"
+        "#include \"Nested/IncludedProbe.h\"\n"
+        "function AuthorProbe takes nothing returns integer\n"
+        "local integer base = BaseInjectedProbe() YDNL return base + AddonInjectedProbe() + IncludedProbe()\n"
+        "endfunction\n"
+        "endlibrary\n";
+    RequireFull(CheckProjectCode(fixture.frozen, cache, {}, expanded, CodeLanguage::VJass, 401),
+        "YDNL must expand through the production template stage and keep complete project semantics");
+
+    std::string broken = expanded;
+    broken.replace(broken.find("IncludedProbe()\n"), std::string("IncludedProbe()").size(), "MissingTemplateProbe()");
+    const auto failed = CheckProjectCode(fixture.frozen, cache, {}, broken, CodeLanguage::VJass, 402);
+    Require(failed.completed && failed.contextComplete && failed.semanticChecked && !failed.Succeeded(),
+        "an error after YDNL must come from the complete expanded check");
+    Require(std::any_of(failed.diagnostics.begin(), failed.diagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.message.find("MissingTemplateProbe") != std::string::npos
+            && diagnostic.source == "WCT/header.j" && diagnostic.line == 4;
+    }), "the error on the line produced by YDNL must map back to the author's original line 4");
+    Require(std::none_of(failed.diagnostics.begin(), failed.diagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.message.find("YDNL") != std::string::npos;
+    }), "the expanded macro name must never be reported as a stray token");
+
+    std::string unsupported = expanded;
+    unsupported.replace(unsupported.find("endfunction"), 0, "UNSUPPORTED_TEMPLATE\n");
+    const auto skipped = CheckProjectCode(fixture.frozen, cache, {}, unsupported, CodeLanguage::VJass, 403);
+    Require(!skipped.contextComplete && !skipped.semanticChecked
+        && skipped.reason.find("TEMPLATE_SLK_SKIPPED") != std::string::npos,
+        "a template block the editor does not execute must fall back with its actual reason");
+    fixture.RequireSourceUnchanged();
+}
+
+// 整图别处有编辑器不执行的模板（真实大图的物编生成块）时，本段仍按保存链展开 YDNL 后检查语法，
+// 不把宏名当成多余的词，错误报在作者原行。
+void UnexecutedTemplateElsewhereStillExpandsAuthorSection() {
+    ModernProjectFixture fixture(kTemplateForcedInclude);
+    WriteOriginalText(fixture.addonLibrary, std::string(kAddonInjection) + "UNSUPPORTED_TEMPLATE\n");
+    CodeCheckProjectCache cache;
+    // 与作者截图一致的普通触发器函数写法（不是 vJass 库）。
+    const std::string valid =
+        "function DoNothingProbe takes nothing returns nothing\n"
+        "endfunction\n"
+        "function AuthorProbe takes nothing returns integer\n"
+        "local integer base = AddonInjectedProbe()\n"
+        "set base = base + 1 YDNL set base = base + 2\n"
+        "call DoNothingProbe() YDNL return base + 3\n"
+        "endfunction\n";
+    const auto checked = CheckProjectCode(fixture.frozen, cache, {}, valid, CodeLanguage::VJass, 501);
+    std::string details = checked.reason;
+    for (const auto& diagnostic : checked.diagnostics) details += "\n" + diagnostic.source + ":" + std::to_string(diagnostic.line) + " " + diagnostic.message;
+    Require(checked.completed && checked.syntaxChecked && !checked.contextComplete && checked.Succeeded()
+        && checked.reason.find("仅检查本段语法") != std::string::npos
+        && checked.reason.find("TEMPLATE_SLK_SKIPPED") != std::string::npos,
+        "the author section must expand YDNL and pass its own syntax check: " + details);
+
+    std::string broken = valid;
+    broken.replace(broken.find("return base + 3"), std::string("return base + 3").size(), "return base 3");
+    const auto failed = CheckProjectCode(fixture.frozen, cache, {}, broken, CodeLanguage::VJass, 502);
+    details = failed.reason;
+    for (const auto& diagnostic : failed.diagnostics) details += "\n" + diagnostic.source + ":" + std::to_string(diagnostic.line) + " " + diagnostic.message;
+    Require(failed.completed && !failed.Succeeded() && std::any_of(failed.diagnostics.begin(), failed.diagnostics.end(),
+        [](const auto& diagnostic) { return diagnostic.severity == DiagnosticSeverity::Error
+            && diagnostic.source == "WCT/header.j" && diagnostic.line == 6; }),
+        "a real syntax error after YDNL must be reported on the author's original line 6: " + details);
+    Require(details.find("YDNL") == std::string::npos, "the macro name must never be reported: " + details);
+    fixture.RequireSourceUnchanged();
+}
+
 } // namespace
 
 int main() {
@@ -342,7 +420,9 @@ int main() {
         ActualModernLayerSourcesAndRepeatedCache();
         ActualLayerLibraryChangeRejectsOldContextThenRecaptures();
         UnboundRootsCannotSupplyQuotedIncludesOrInjection();
-        std::cout << "Original modern project: enabled UI injection, quoted include, repeated cache, changed identity and unbound roots passed\n";
+        TemplateMacrosExpandBeforeCheckingAndKeepAuthorLines();
+        UnexecutedTemplateElsewhereStillExpandsAuthorSection();
+        std::cout << "Original modern project: enabled UI injection, quoted include, repeated cache, changed identity, unbound roots and template macros passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

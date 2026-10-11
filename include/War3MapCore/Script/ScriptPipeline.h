@@ -78,9 +78,16 @@ struct TemplateContext {
     std::function<Result<TemplateTransactionOutput>(std::string_view preprocessed)> wholeChunk;
 };
 
+// 一个模板块在输入与输出中的字节范围 [begin, end)。块外文本逐字节原样复制，调用方可据此把输出位置映射回输入。
+struct TemplateSpan {
+    std::size_t sourceBegin = 0, sourceEnd = 0;
+    std::size_t outputBegin = 0, outputEnd = 0;
+};
+
 struct TemplateResult {
     std::string text;
     std::vector<Diagnostic> diagnostics;
+    std::vector<TemplateSpan> spans; // 按出现顺序；未闭合的模板不登记（其后文本原样保留）
     std::size_t expressions = 0;
     std::size_t skippedBlocks = 0;
 

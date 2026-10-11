@@ -1,5 +1,6 @@
 #include "EditorProject.h"
 
+#include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/Trigger/UiCatalog.h"
 
 #include <QFileSystemWatcher>
@@ -94,7 +95,7 @@ void EditorProject::WatchUiLibraries() {
     QStringList paths{PathText(uiRoot)};
     if (std::filesystem::is_regular_file(uiRoot / "config", error)) paths << PathText(uiRoot / "config");
     for (const auto& package : uiLibraryPackages_) {
-        const std::filesystem::path directory = uiRoot / std::filesystem::path(package.id);
+        const std::filesystem::path directory = uiRoot / IO::PathFromUtf8(package.id);
         if (!std::filesystem::is_directory(directory, error)) continue;
         paths << PathText(directory);
         for (std::filesystem::recursive_directory_iterator it(directory, std::filesystem::directory_options::skip_permission_denied, error), end;

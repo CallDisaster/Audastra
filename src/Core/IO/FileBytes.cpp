@@ -33,6 +33,10 @@ std::string GenericPathUtf8(const std::filesystem::path& path) {
     return {reinterpret_cast<const char*>(utf8.data()), utf8.size()};
 }
 
+std::filesystem::path PathFromUtf8(std::string_view utf8) {
+    return std::filesystem::path(std::u8string(utf8.begin(), utf8.end()));
+}
+
 Result<std::vector<std::byte>> ReadFileBytes(const std::filesystem::path& path, std::uint64_t maxBytes) {
     try {
         if (path.empty()) return ReadFailure(path, "FILE_PATH_EMPTY", "文件路径不能为空。");

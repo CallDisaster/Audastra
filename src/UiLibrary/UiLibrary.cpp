@@ -41,7 +41,7 @@ bool IsLibraryFile(const std::filesystem::path& path) {
 // 只读取文本类库文件；包内程序、脚本与动态库不参与，也不会被打开。
 Result<PackageInfo> Fingerprint(const std::filesystem::path& uiRoot, std::string id, bool listed, std::size_t order) {
     PackageInfo info{std::move(id), listed, order};
-    const std::filesystem::path directory = uiRoot / std::filesystem::path(info.id);
+    const std::filesystem::path directory = uiRoot / IO::PathFromUtf8(info.id);
     std::map<std::string, std::string> files;
     std::error_code error;
     for (auto it = std::filesystem::recursive_directory_iterator(directory, error);
@@ -102,7 +102,7 @@ Result<std::vector<PackageInfo>> DiscoverPackages(const std::filesystem::path& t
         for (std::size_t order = 0; order < listed.value->size(); ++order) {
             const std::string& id = (*listed.value)[order];
             if (!seen.insert(Text::LowerCType(id)).second) continue;
-            if (!std::filesystem::is_directory(uiRoot / std::filesystem::path(id), error)) {
+            if (!std::filesystem::is_directory(uiRoot / IO::PathFromUtf8(id), error)) {
                 result.diagnostics.push_back({DiagnosticSeverity::Warning, "UiLibrary", "UI_PACKAGE_LISTED_MISSING",
                     "config 列出的包在数据根中不存在：" + id, std::nullopt});
                 continue;
