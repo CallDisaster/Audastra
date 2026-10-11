@@ -42,6 +42,7 @@ if(TARGET Qt6::Core)
         McpToolMapEdit.cpp
         McpToolTriggerGraph.cpp
         McpToolMapCreate.cpp
+        McpToolCampaign.cpp
         McpToolReadOnly.cpp
         McpToolProjectSearch.cpp McpProjectSearchTools.cpp McpProjectSearchTools.h
         McpToolArchiveIdentity.cpp

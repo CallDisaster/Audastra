@@ -6,8 +6,12 @@
 namespace War3Map::Resources {
 namespace {
 
-constexpr std::string_view kStandardPrefix = "war3mapImported\\";
-constexpr std::string_view kCanonicalPrefix = "WAR3MAPIMPORTED\\";
+std::string_view StandardPrefix(ImportScope scope) {
+    return scope == ImportScope::Campaign ? "war3campaignImported\\" : "war3mapImported\\";
+}
+std::string_view CanonicalPrefix(ImportScope scope) {
+    return scope == ImportScope::Campaign ? "WAR3CAMPAIGNIMPORTED\\" : "WAR3MAPIMPORTED\\";
+}
 constexpr std::size_t kMaxFileBytes = 64u * 1024u * 1024u;
 
 std::uint32_t ReadU32(std::span<const std::byte> bytes, std::size_t offset) {
@@ -86,14 +90,14 @@ Result<std::string> CanonicalImportPath(std::string_view path) {
     return Result<std::string>::Success(std::move(canonical));
 }
 
-Result<std::string> ResolveArchivePath(const ImportRecord& record, const ImportMemberExists& exists) {
+Result<std::string> ResolveArchivePath(const ImportRecord& record, const ImportMemberExists& exists, ImportScope scope) {
     const auto directCanonical = CanonicalImportPath(record.path);
     if (!directCanonical.Succeeded()) return directCanonical;
     const auto direct = NormalizeSeparators(record.path);
     if (record.flags == 10 || record.flags == 13) {
         return Result<std::string>::Success(direct);
     }
-    const std::string prefixed = std::string(kStandardPrefix) + direct;
+    const std::string prefixed = std::string(StandardPrefix(scope)) + direct;
     const bool isStandard = record.flags == 5 || record.flags == 8;
     if (exists) {
         const bool directExists = exists(direct);
@@ -106,19 +110,19 @@ Result<std::string> ResolveArchivePath(const ImportRecord& record, const ImportM
         return Result<std::string>::Failure("ImportTable", "IMPORT_FLAGS_UNSUPPORTED",
             "导入记录的路径标志尚未确认且缺少唯一归档成员证据：" + std::to_string(record.flags));
     }
-    if (directCanonical.value->starts_with(kCanonicalPrefix)) return AmbiguousPath(record);
+    if (directCanonical.value->starts_with(CanonicalPrefix(scope))) return AmbiguousPath(record);
     return Result<std::string>::Success(prefixed);
 }
 
 // 有归档证据的未知标志或双路径歧义记录：只有两种安全候选均非本次目标时才能原样保留。
 // 不选择其中一个路径，不改写该记录；缺少证据、任一候选相关或其它错误仍拒绝。
-Result<bool> MatchesRecord(const ImportRecord& record, const std::string& wanted, const ImportMemberExists& exists) {
+Result<bool> MatchesRecord(const ImportRecord& record, const std::string& wanted, const ImportMemberExists& exists, ImportScope scope) {
     const auto fail = [](std::vector<Diagnostic> diagnostics) {
         Result<bool> output;
         output.diagnostics = std::move(diagnostics);
         return output;
     };
-    const auto resolved = ResolveArchivePath(record, exists);
+    const auto resolved = ResolveArchivePath(record, exists, scope);
     if (resolved.Succeeded()) {
         const auto canonical = CanonicalImportPath(*resolved.value);
         if (!canonical.Succeeded()) return fail(canonical.diagnostics);
@@ -128,13 +132,13 @@ Result<bool> MatchesRecord(const ImportRecord& record, const std::string& wanted
         (resolved.diagnostics.front().code == "IMPORT_FLAGS_UNSUPPORTED" || resolved.diagnostics.front().code == "IMPORT_PATH_AMBIGUOUS");
     if (!canExcludeTarget || !exists) return fail(resolved.diagnostics);
     const auto direct = CanonicalImportPath(record.path);
-    const auto prefixed = CanonicalImportPath(std::string(kStandardPrefix) + NormalizeSeparators(record.path));
+    const auto prefixed = CanonicalImportPath(std::string(StandardPrefix(scope)) + NormalizeSeparators(record.path));
     if (!direct.Succeeded() || !prefixed.Succeeded()) return fail(resolved.diagnostics);
     if (*direct.value == wanted || *prefixed.value == wanted) return fail(resolved.diagnostics);
     return Result<bool>::Success(false);
 }
 
-Result<ImportTable> ImportTable::Parse(std::span<const std::byte> bytes) {
+Result<ImportTable> ImportTable::Parse(std::span<const std::byte> bytes, ImportScope scope) {
     if (bytes.size() < 8) {
         return Result<ImportTable>::Failure("ImportTable", "IMPORT_HEADER_TRUNCATED", "导入清单头部不完整");
     }
@@ -149,6 +153,7 @@ Result<ImportTable> ImportTable::Parse(std::span<const std::byte> bytes) {
         return Result<ImportTable>::Failure("ImportTable", "IMPORT_COUNT_INVALID", "导入记录数量超出文件边界");
     }
     ImportTable table;
+    table.scope_ = scope;
     table.originalBytes_.assign(bytes.begin(), bytes.end());
     table.entries_.reserve(count);
     std::size_t position = 8;
@@ -172,8 +177,9 @@ Result<ImportTable> ImportTable::Parse(std::span<const std::byte> bytes) {
     return Result<ImportTable>::Success(std::move(table));
 }
 
-ImportTable ImportTable::CreateEmpty() {
+ImportTable ImportTable::CreateEmpty(ImportScope scope) {
     ImportTable table;
+    table.scope_ = scope;
     AppendU32(table.originalBytes_, 1);
     AppendU32(table.originalBytes_, 0);
     return table;
@@ -187,7 +193,7 @@ Status ImportTable::Upsert(std::string_view archivePath, const ImportMemberExist
     if (!wanted.Succeeded()) return FailureStatus(wanted);
     bool found = false;
     for (const auto& entry : entries_) {
-        const auto matches = MatchesRecord(entry, *wanted.value, exists);
+        const auto matches = MatchesRecord(entry, *wanted.value, exists, scope_);
         if (!matches.Succeeded()) return FailureStatus(matches);
         found = found || *matches.value;
     }
@@ -213,7 +219,7 @@ Status ImportTable::Remove(std::string_view archivePath, const ImportMemberExist
     // 先全部解析成功再修改，失败时清单保持原样。
     std::vector<bool> matches(entries_.size(), false);
     for (std::size_t index = 0; index < entries_.size(); ++index) {
-        const auto match = MatchesRecord(entries_[index], *wanted.value, exists);
+        const auto match = MatchesRecord(entries_[index], *wanted.value, exists, scope_);
         if (!match.Succeeded()) return FailureStatus(match);
         matches[index] = *match.value;
     }

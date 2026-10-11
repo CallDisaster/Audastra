@@ -137,6 +137,9 @@ public:
     // （内容会过期）；原字节追加保存路径下仍原样保留在源字节中。
     [[nodiscard]] std::span<const std::string> MetadataMembers() const noexcept { return metadataMembers_; }
     [[nodiscard]] std::span<const std::byte> Prefix() const noexcept { return prefix_; }
+    // 产生保存快照，不更改当前会话或源文件。保留源租约身份；匿名追加路径不能改外头。
+    // 只接受同长度头部，或无头归档新增一个经典 512 字节头部。
+    [[nodiscard]] Result<MapArchiveSession> WithLeadingHeader(std::span<const std::byte> header) const;
     [[nodiscard]] const std::filesystem::path& SourcePath() const noexcept { return sourcePath_; }
     [[nodiscard]] const std::string& SourceSha256() const noexcept { return sourceSha256_; }
     // removals：不写入候选的成员（改名 / 移动后的旧路径、删除的资源）。含匿名成员的归档不能删除成员。

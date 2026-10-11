@@ -9,6 +9,7 @@
 
 namespace War3Map::Modules {
 class AssetsModule;
+class CampaignModule;
 class ManagerModule;
 class MapSettingsModule;
 class MapEntitiesModule;
@@ -36,6 +37,7 @@ struct EditorParts {
     War3Map::Modules::ObjectModule* objectsModule_ = nullptr;
     War3Map::Modules::VariablesModule* variablesModule_ = nullptr;
     War3Map::Modules::AssetsModule* assetsModule_ = nullptr;
+    War3Map::Modules::CampaignModule* campaignModule_ = nullptr;
     War3Map::Modules::ManagerModule* managerModule_ = nullptr;
     War3Map::Modules::MapSettingsModule* settingsModule_ = nullptr;
     War3Map::Modules::MapEntitiesModule* entitiesModule_ = nullptr;

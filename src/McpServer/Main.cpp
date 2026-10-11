@@ -4,6 +4,7 @@
 #include "McpProductTools.h"
 #include "McpHttpTransport.h"
 #include "AudastraVersion.generated.h"
+#include "../QtCommon/MapBackupPaths.h"
 
 #include <QCoreApplication>
 #include <QCommandLineParser>
@@ -44,6 +45,12 @@ int main(int argc, char* argv[]) {
     parser.process(app);
 
     War3Map::Mcp::McpServer server;
+    server.SetCampaignBackupOptionsProvider([] {
+        // 独立 MCP 的应用名不同于 GUI，明确只读产品的同一份备份配置。
+        const QSettings preferences(QSettings::defaultFormat(), QSettings::UserScope, "CallDisaster", "Audastra");
+        return War3Map::QtCommon::ReadMapInPlaceSaveOptions(preferences,
+            QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation));
+    });
     if (parser.isSet(luaTargetOpt)) {
         auto target = War3Map::Services::LoadLuaMapTargetConfiguration(
             std::filesystem::path(parser.value(luaTargetOpt).toStdWString()));

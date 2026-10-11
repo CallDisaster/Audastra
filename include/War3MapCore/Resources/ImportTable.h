@@ -20,6 +20,7 @@ struct ImportRecord {
 };
 
 using ImportMemberExists = std::function<bool(std::string_view)>;
+enum class ImportScope { Map, Campaign };
 
 // 与当前严格 MPQ 写入器一致：相对 ASCII 虚拟路径，统一反斜杠及大小写用于比较。
 [[nodiscard]] Result<std::string> CanonicalImportPath(std::string_view path);
@@ -28,14 +29,15 @@ using ImportMemberExists = std::function<bool(std::string_view)>;
 // 未知 flags 不猜测语义；有唯一的实际成员证据时允许解析，但不改写原 flags。
 [[nodiscard]] Result<std::string> ResolveArchivePath(
     const ImportRecord& record,
-    const ImportMemberExists& exists = {});
+    const ImportMemberExists& exists = {}, ImportScope scope = ImportScope::Map);
 
 // classic war3map.imp v1。解析不修改路径、flags、顺序和尾部未知字节。
 // 缺失成员由调用方显式 CreateEmpty；损坏或未知版本绝不降级为空清单。
 class ImportTable {
 public:
-    [[nodiscard]] static Result<ImportTable> Parse(std::span<const std::byte> bytes);
-    [[nodiscard]] static ImportTable CreateEmpty();
+    [[nodiscard]] static Result<ImportTable> Parse(std::span<const std::byte> bytes,
+        ImportScope scope = ImportScope::Map);
+    [[nodiscard]] static ImportTable CreateEmpty(ImportScope scope = ImportScope::Map);
 
     [[nodiscard]] const std::vector<ImportRecord>& Entries() const noexcept { return entries_; }
     [[nodiscard]] const std::vector<std::byte>& OriginalBytes() const noexcept { return originalBytes_; }
@@ -58,6 +60,7 @@ private:
     std::vector<std::byte> originalBytes_;
     std::vector<std::byte> trailing_;
     bool modified_ = false;
+    ImportScope scope_ = ImportScope::Map;
 };
 
 } // namespace War3Map::Resources

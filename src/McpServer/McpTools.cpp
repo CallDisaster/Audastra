@@ -9,6 +9,7 @@
 
 namespace War3Map::Mcp {
 void RegisterModelAnimationTool(McpServer& server);
+void RegisterCampaignTools(McpServer& server);
 
 void RegisterAllTools(McpServer& server) {
     RegisterProductTools(server);
@@ -19,6 +20,7 @@ void RegisterAllTools(McpServer& server) {
     RegisterProjectSearchTools(server);
     RegisterTerrainTools(server);
     RegisterModelAnimationTool(server);
+    RegisterCampaignTools(server);
     RegisterMapEditSaveTool(server);
     RegisterMapCreateTool(server);
     RegisterRevisionTools(server);

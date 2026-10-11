@@ -2,6 +2,7 @@
 
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapArchiveSession.h"
+#include "War3MapCore/Services/CampaignService.h"
 #include "War3MapCore/VerifiedFile.h"
 #include "War3MapCore/Workspace.h"
 #include "War3MapCore/Script/ReadOnlyScriptSource.h"
@@ -38,7 +39,11 @@ Result<OwnedAssetSource> ReadOwnedAsset(const EditorProject& project, const QStr
         if (!read.Succeeded()) return {std::nullopt, read.diagnostics};
         bytes = std::make_shared<const std::vector<std::byte>>(std::move(*read.value));
     } else {
-        if (project.archiveSession_) {
+        if (project.campaignScope_) {
+            auto read = project.campaignScope_->ReadMember(project.campaignScope_->Revision(), found->originalPath.toStdString());
+            if (!read.Succeeded() || !read.value) return {std::nullopt, std::move(read.diagnostics)};
+            bytes = std::make_shared<const std::vector<std::byte>>(std::move(*read.value));
+        } else if (project.archiveSession_) {
             auto read = project.archiveSession_->ReadMember(found->originalPath.toStdString());
             if (!read.Succeeded()) return {std::nullopt, std::move(read.diagnostics)};
             bytes = std::make_shared<const std::vector<std::byte>>(std::move(*read.value));
