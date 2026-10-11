@@ -96,28 +96,41 @@ struct MapDataQueryPage {
     std::size_t logicalBytes = 0;
 };
 
-struct MapDataUnitFilter {
-    std::optional<std::string> typeIdBytes; // 恰好四个原始字节，区分大小写，不查对象目录。
-    std::optional<std::int32_t> player; // 精确匹配 native owner，不套用字段写入范围。
+// 世界坐标闭矩形；点或线范围合法，NaN/Inf 和颠倒边界拒绝。
+struct MapDataWorldRect {
+    double left = 0, bottom = 0, right = 0, top = 0;
 
-    [[nodiscard]] bool operator==(const MapDataUnitFilter&) const = default;
+    [[nodiscard]] bool operator==(const MapDataWorldRect&) const = default;
 };
 
-struct MapDataUnitQueryCursor {
+struct MapDataEntityFilter {
+    std::optional<std::string> typeIdBytes; // 恰好四个原始字节，区分大小写，不查对象目录。
+    std::optional<std::int32_t> player; // 精确匹配 native owner，不套用字段写入范围。
+    std::optional<MapDataWorldRect> worldRect;
+
+    [[nodiscard]] bool operator==(const MapDataEntityFilter&) const = default;
+};
+
+struct MapDataEntityQueryCursor {
     MapDataQueryCursor source;
-    MapDataUnitFilter filter;
+    MapDataEntityFilter filter;
     std::optional<std::string> memberSha256; // null 只绑定实际 Missing；已有成员绑定真实 SHA。
 };
 
-struct MapDataUnitQueryPage {
+struct MapDataEntityQueryPage {
     MapDataQueryBinding binding;
     MapDataQueryMember member;
     std::vector<MapDataQueryRow> rows;
-    std::optional<MapDataUnitQueryCursor> next;
+    std::optional<MapDataEntityQueryCursor> next;
     std::size_t examined = 0, logicalBytes = 0;
     std::optional<std::uint64_t> matchedTotal;
     bool scanBudgetExhausted = false;
 };
+
+// 保留已有单位查询调用方；所有筛选仍由同一个实体查询实现执行。
+using MapDataUnitFilter = MapDataEntityFilter;
+using MapDataUnitQueryCursor = MapDataEntityQueryCursor;
+using MapDataUnitQueryPage = MapDataEntityQueryPage;
 
 class MapDataQuerySnapshot {
 public:
@@ -148,9 +161,9 @@ private:
     friend Result<MapDataQueryPage> QueryMapDataPage(
         const MapDataQuerySnapshot&, const MapDataQueryBinding&, MapDataKind,
         const std::optional<MapDataQueryCursor>&, std::size_t, std::size_t);
-    friend Result<MapDataUnitQueryPage> QueryMapDataUnitsPage(
-        const MapDataQuerySnapshot&, const MapDataQueryBinding&, const MapDataUnitFilter&,
-        const std::optional<MapDataUnitQueryCursor>&, std::size_t, std::size_t, std::size_t);
+    friend Result<MapDataEntityQueryPage> QueryMapDataEntitiesPage(
+        const MapDataQuerySnapshot&, const MapDataQueryBinding&, MapDataKind, const MapDataEntityFilter&,
+        const std::optional<MapDataEntityQueryCursor>&, std::size_t, std::size_t, std::size_t);
 };
 
 [[nodiscard]] Result<MapDataQuerySnapshot> CaptureMapDataSnapshot(
@@ -167,10 +180,20 @@ private:
     MapDataKind kind, const std::optional<MapDataQueryCursor>& cursor = std::nullopt,
     std::size_t limit = 64, std::size_t maxLogicalBytes = 256 * 1024);
 
-// 仅筛选 units.doo 原行，最多 128 条、4096 次 native 谓词检查和 252 KiB 逻辑正文。
+// 筛选 units/doodads/regions/cameras 原行，最多 128 条、4096 次谓词检查和 252 KiB 逻辑正文。
 // 全表行数不超过扫描预算时，每页从原行 0 计可信全局总数；更大表始终不报告总数。
 // 零行且有 next 不表示全表零匹配；游标绑定原索引、过滤条件、完整身份及成员 SHA/presence。
 // 来源状态规则与无过滤查询一致；不构造未命中行，不改变快照或任何编辑会话。
+// 类型只用于 units/doodads，玩家只用于 units。空间范围匹配摆放 XY、镜头 target XY、
+// 区域闭矩形相交；特殊地物只有网格坐标，空间筛选遇到它时拒绝猜测世界位置。
+[[nodiscard]] Result<MapDataEntityQueryPage> QueryMapDataEntitiesPage(
+    const MapDataQuerySnapshot& snapshot, const MapDataQueryBinding& expected, MapDataKind kind,
+    const MapDataEntityFilter& filter,
+    const std::optional<MapDataEntityQueryCursor>& cursor = std::nullopt,
+    std::size_t limit = 64, std::size_t maxExamined = 4096,
+    std::size_t maxLogicalBytes = 252 * 1024);
+
+// 兼容已有单位查询接口，直接使用公共实体查询，不再维护单独循环。
 [[nodiscard]] Result<MapDataUnitQueryPage> QueryMapDataUnitsPage(
     const MapDataQuerySnapshot& snapshot, const MapDataQueryBinding& expected,
     const MapDataUnitFilter& filter,

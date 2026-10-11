@@ -19,6 +19,7 @@
 #include "War3MapCore/MapData/MapDataFieldEditing.h"
 #include "../services/ObjectCommandsFixture.h"
 #include "../MapDataFixtures.h"
+#include "../MapDataSpatialFixtures.h"
 
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/ProjectStore.h"
@@ -195,6 +196,7 @@ private slots:
     void VariableToolsShareSchemasAndOriginalUndo();
     void VariableFailuresPreserveRevisionAndUndo();
     void EntityFieldsUseOriginalSessionAndAtomicUndo();
+    void SpatialEntityQueriesShareSchemasAndObserveOriginalUndo();
     void SettingsAndStringsKeepOriginalGuiUndoAndPolicy();
     void PlacementToolsKeepAuthorEditsAndOriginalUndo();
     void TerrainToolsKeepSessionPreviewAndOriginalUndo();
@@ -1163,6 +1165,86 @@ void LiveEditorToolsTests::PlacementToolsKeepAuthorEditsAndOriginalUndo() {
     QCOMPARE(f.project.mapDocument_.get(), originalDocument); QCOMPARE(f.project.mapEdits_.get(), originalSession);
     QCOMPARE(f.project.mapDataUndoStack_, undo); QCOMPARE(f.Fingerprint(), triggerSha);
     QCOMPARE(f.project.triggerUndoStack_->count(), 0);
+}
+
+void LiveEditorToolsTests::SpatialEntityQueriesShareSchemasAndObserveOriginalUndo() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    const auto members = MapDataSpatialFixtures::Members();
+    for (const auto& member : members)
+        QVERIFY(WriteFile(f.source.filePath("map/" + QString::fromStdString(member.name)), Bytes(member.data)));
+    auto directory = DirectoryWorkspace::Open(f.project.projectRoot_); QVERIFY(directory.Succeeded());
+    f.project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*directory.value));
+    f.project.LoadMapDocument(); f.project.ResetEditTracking();
+    QVERIFY(f.project.mapEdits_ && f.project.mapDataUndoStack_);
+    auto* const session = f.project.mapEdits_.get(); auto* const undo = f.project.mapDataUndoStack_;
+    const auto context = f.Context();
+    const auto triggerSha = QString::fromStdString(f.Fingerprint());
+    int beforeWrites = 0; f.tools->SetBeforeWrite([&] { ++beforeWrites; return false; });
+    for (const auto& definition : Mcp::MapDataToolDefinitions()) {
+        if (definition.name != "entities_query") continue;
+        bool found = false;
+        for (const auto& value : f.tools->Tools()) {
+            const auto tool = value.toObject(); if (tool.value("name") != definition.name) continue;
+            found = true; QCOMPARE(tool.value("inputSchema").toObject(), definition.inputSchema);
+            QVERIFY(definition.inputSchema.value("properties").toObject().value("filter").toObject()
+                .value("properties").toObject().contains("world_rect"));
+        }
+        QVERIFY(found);
+    }
+    const QJsonObject rectangle{{"left", -32}, {"bottom", -16}, {"right", 32}, {"top", 16}};
+    const QJsonObject filter{{"type_id", "hfoo"}, {"player", 0}, {"world_rect", rectangle}};
+    const auto request = [&](const QJsonObject& cursor = {}) {
+        auto arguments = f.Context(); arguments["kind"] = "units"; arguments["filter"] = filter;
+        QJsonObject page{{"limit", 1}}; if (!cursor.isEmpty()) page["cursor"] = cursor;
+        arguments["page"] = page; return arguments;
+    };
+    const auto first = f.tools->Invoke("entities_query", request());
+    QVERIFY2(first.value("ok").toBool(), qPrintable(Explain(first)));
+    QCOMPARE(first.value("matched_total").toString(), QStringLiteral("3"));
+    QCOMPARE(first.value("rows").toArray().first().toObject().value("source_index").toString(), QStringLiteral("0"));
+    const auto cursor = first.value("next_cursor").toObject(); const auto oldNextRequest = request(cursor);
+    const auto second = f.tools->Invoke("entities_query", oldNextRequest);
+    QVERIFY2(second.value("ok").toBool(), qPrintable(Explain(second)));
+    QCOMPARE(second.value("rows").toArray().first().toObject().value("source_index").toString(), QStringLiteral("3"));
+    for (const auto kind : {"doodads", "regions", "cameras"}) {
+        auto arguments = f.Context(); arguments["kind"] = kind;
+        arguments["filter"] = QJsonObject{{"world_rect", rectangle}};
+        const auto page = f.tools->Invoke("entities_query", arguments);
+        QVERIFY2(page.value("ok").toBool(), qPrintable(Explain(page)));
+        arguments.remove("filter"); arguments["page"] = QJsonObject{{"limit", 1}};
+        const auto head = f.tools->Invoke("entities_query", arguments); QVERIFY(head.value("ok").toBool());
+        arguments["page"] = QJsonObject{{"limit", 1}, {"cursor", head.value("next_cursor")}};
+        const auto next = f.tools->Invoke("entities_query", arguments);
+        QVERIFY2(next.value("ok").toBool(), qPrintable(Explain(next)));
+        QCOMPARE(next.value("rows").toArray().first().toObject().value("source_index").toString(), QStringLiteral("1"));
+        QCOMPARE(next.value("total"), head.value("total"));
+    }
+    QCOMPARE(beforeWrites, 0); QCOMPARE(f.Context(), context); QCOMPARE(undo->count(), 0);
+    QCOMPARE(session->Revision(), std::uint64_t{0});
+    f.tools->SetBeforeWrite({});
+    const auto row = first.value("rows").toArray().first().toObject();
+    auto edit = f.Context(); edit["kind"] = "units";
+    edit["expected_member_sha256"] = first.value("member").toObject().value("member_sha256");
+    edit["changes"] = QJsonArray{QJsonObject{{"source_index", row.value("source_index")}, {"row_key", row.value("row_key")},
+        {"field", "owner"}, {"expected_raw", "0"}, {"value", "1"}}};
+    const auto changed = f.tools->Invoke("entities_set_fields", edit);
+    QVERIFY2(changed.value("ok").toBool(), qPrintable(Explain(changed))); QCOMPARE(undo->count(), 1);
+    const auto after = f.tools->Invoke("entities_query", request());
+    QVERIFY(after.value("ok").toBool()); QCOMPARE(after.value("matched_total").toString(), QStringLiteral("2"));
+    QCOMPARE(ErrorCode(f.tools->Invoke("entities_query", oldNextRequest)), QStringLiteral("LIVE_EDITOR_REVISION_CONFLICT"));
+    QCOMPARE(ErrorCode(f.tools->Invoke("entities_query", request(cursor))), QStringLiteral("ENTITY_QUERY_CURSOR_STALE"));
+    QCOMPARE(undo->count(), 1); QCOMPARE(f.project.mapEdits_.get(), session);
+    undo->undo();
+    const auto restored = f.tools->Invoke("entities_query", request());
+    QVERIFY(restored.value("ok").toBool()); QCOMPARE(restored.value("matched_total").toString(), QStringLiteral("3"));
+    const auto current = MapData::ProjectMapData(*f.project.mapDocument_, *session); QVERIFY(current.Succeeded());
+    for (const auto& member : members) {
+        const auto actual = std::find_if(current.value->Members().begin(), current.value->Members().end(),
+            [&](const auto& value) { return value.memberName == member.name; });
+        QVERIFY(actual != current.value->Members().end()); QCOMPARE(actual->sources.size(), std::size_t{1});
+        QCOMPARE(actual->sources.front().data, member.data);
+    }
+    QCOMPARE(QString::fromStdString(f.Fingerprint()), triggerSha); QCOMPARE(f.project.triggerUndoStack_->count(), 0);
 }
 
 void LiveEditorToolsTests::ImportMetadataUsesSourceAndCurrentAssetOverlay() {

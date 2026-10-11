@@ -2,6 +2,7 @@
 #include "McpMapDataJson.h"
 #include "War3MapCore/Hash.h"
 #include "../MapDataFixtures.h"
+#include "../MapDataSpatialFixtures.h"
 
 #include <QJsonDocument>
 
@@ -603,6 +604,118 @@ void FilterScanCapContinuesWithoutInventingGlobalTotals() {
         && second.value("matched_total").isNull() && !second.value("matched_total_complete").toBool(), "last sparse page ends continuation without claiming global count");
     Require(f.attempts == 0 && f.session->Revision() == 0 && f.current->Member(MapDataKind::Units).sources.front().data == bytes, "bounded scan is readonly");
 }
+
+QJsonObject WorldRect(double left = -32, double bottom = -16, double right = 32, double top = 16) {
+    return {{"left", left}, {"bottom", bottom}, {"right", right}, {"top", top}};
+}
+
+void SpatialFiltersUseSameBoundsAndOriginalRowsAcrossHosts() {
+    for (const bool independent : {false, true}) {
+        Fixture f(independent, MapDataSpatialFixtures::Members(true));
+        const QJsonObject filter{{"type_id", "hfoo"}, {"player", 0}, {"world_rect", WorldRect()}};
+        const auto original = f.current;
+        const auto query = [&](const char* kind, QJsonObject selected, int limit = 1, QJsonObject cursor = {}) {
+            auto args = FilterRequest(f, selected, limit, cursor); args["kind"] = kind;
+            return InvokeMapDataTool("entities_query", args, f.host);
+        };
+        auto first = query("units", filter);
+        Require(first.value("ok").toBool() && first.value("matched_total") == "3"
+            && first.value("rows").toArray().first().toObject().value("source_index") == "0",
+            "spatial/type/player intersection is applied before page length in both host modes");
+        auto cursor = first.value("next_cursor").toObject();
+        Require(cursor.value("filter").toObject().value("world_rect").toObject() == WorldRect()
+            && cursor.value("kind") == "units", "cursor carries exact world rectangle and kind");
+        for (const auto expectedIndex : {"3", "6"}) {
+            auto page = query("units", filter, 1, cursor);
+            Require(page.value("ok").toBool() && page.value("matched_total") == "3"
+                && page.value("rows").toArray().first().toObject().value("source_index") == expectedIndex,
+                "filtered sparse native indices are not replaced by page ordinals");
+            cursor = page.value("next_cursor").toObject();
+        }
+        Require(cursor.isEmpty(), "spatial last page has no cursor");
+        const auto counts = [&](const char* kind, QJsonObject selected, const char* expectedCount) {
+            const auto page = query(kind, selected, 128);
+            const auto context = std::string("shared facade spatial meaning: ") + kind + " " + Code(page).toStdString();
+            Require(page.value("ok").toBool() && page.value("matched_total") == expectedCount,
+                context.c_str());
+        };
+        counts("units", {{"type_id", "hfoo"}, {"player", 0}, {"world_rect", WorldRect(-32, -16, -32, -16)}}, "1");
+        counts("doodads", {{"type_id", "LTlt"}, {"world_rect", WorldRect()}}, "2");
+        counts("regions", {{"world_rect", WorldRect()}}, "4");
+        counts("cameras", {{"world_rect", WorldRect()}}, "2");
+        counts("doodads", {{"type_id", "YTfb"}}, "1");
+        Require(Code(query("doodads", {{"world_rect", WorldRect()}})) == "MAP_DATA_QUERY_SPATIAL_UNAVAILABLE",
+            "unknown special-doodad world position is explicit rather than dropped");
+        Require(Code(query("doodads", {{"player", 0}, {"world_rect", WorldRect()}})) == "ENTITY_FILTER_KIND",
+            "owner selector cannot silently exclude all doodads");
+        Require(Code(query("cameras", {{"type_id", "hfoo"}, {"world_rect", WorldRect()}})) == "ENTITY_FILTER_KIND",
+            "rawcode selector cannot silently exclude all cameras");
+        const auto regionFirst = query("regions", {{"world_rect", WorldRect()}}, 1);
+        const auto regionNext = query("regions", {{"world_rect", WorldRect()}}, 1, regionFirst.value("next_cursor").toObject());
+        Require(regionNext.value("ok").toBool()
+            && regionNext.value("rows").toArray().first().toObject().value("source_index") == "1",
+            "non-unit cursor binds the real member kind and resumes filtered rows");
+        for (const auto kind : {"units", "doodads", "regions", "cameras"}) {
+            auto plain = f.IdentityArguments(); plain["kind"] = kind; plain["page"] = QJsonObject{{"limit", 1}};
+            const auto head = InvokeMapDataTool("entities_query", plain, f.host);
+            const auto next = head.value("next_cursor").toObject();
+            Require(head.value("ok").toBool() && next.value("filter").isObject()
+                && next.value("filter").toObject().isEmpty() && next.value("member_sha256").isString(),
+                "unfiltered first page emits the same complete entity cursor rather than an unusable shorthand");
+            plain["page"] = QJsonObject{{"limit", 1}, {"cursor", next}};
+            const auto page = InvokeMapDataTool("entities_query", plain, f.host);
+            Require(page.value("ok").toBool() && page.value("rows").toArray().first().toObject().value("source_index") == "1"
+                && page.value("total") == head.value("total"), "unfiltered cursors roundtrip unchanged for all four entity kinds");
+        }
+        Require(f.attempts == 0 && f.publishes == 0 && f.session->Revision() == 0,
+            "spatial queries never publish into either host transaction");
+        for (const auto& member : original->Members()) {
+            const auto& current = f.current->Member(member.kind);
+            Require(current.state == member.state && current.sources.size() == member.sources.size(), "query retains all source presences");
+            for (std::size_t i = 0; i < member.sources.size(); ++i)
+                Require(current.sources[i].data == member.sources[i].data, "query retains every original member byte");
+        }
+    }
+}
+
+void SpatialInvalidCoordinatesCursorsAndScanLimitsRefusePrecisely() {
+    Fixture f(false, MapDataSpatialFixtures::Members());
+    const QJsonObject filter{{"type_id", "hfoo"}, {"player", 0}, {"world_rect", WorldRect()}};
+    const auto first = InvokeMapDataTool("entities_query", FilterRequest(f, filter), f.host);
+    const auto cursor = first.value("next_cursor").toObject();
+    Require(first.value("ok").toBool() && !cursor.isEmpty(), "spatial cursor baseline");
+    const auto rejectRect = [&](QJsonValue rectangle, const char* code = "ENTITY_FILTER_RECT") {
+        auto selected = filter; selected["world_rect"] = rectangle;
+        Require(Code(InvokeMapDataTool("entities_query", FilterRequest(f, selected), f.host)) == code,
+            "malformed world rectangle has an explicit refusal");
+    };
+    rejectRect(QJsonValue::Null); rejectRect(WorldRect(33, -16, 32, 16)); rejectRect(WorldRect(-32, 17, 32, 16));
+    auto rectangle = WorldRect(); rectangle["left"] = "-32"; rejectRect(rectangle);
+    rectangle = WorldRect(); rectangle["left"] = std::numeric_limits<double>::quiet_NaN(); rejectRect(rectangle);
+    rectangle = WorldRect(); rectangle["top"] = std::numeric_limits<double>::infinity(); rejectRect(rectangle);
+    rectangle = WorldRect(); rectangle.remove("right"); rejectRect(rectangle, "ENTITY_ARGUMENT_REQUIRED");
+    rectangle = WorldRect(); rectangle["ignore_unknown"] = true; rejectRect(rectangle, "ENTITY_ARGUMENT_UNKNOWN");
+    auto changed = filter; changed["world_rect"] = WorldRect(-32, -16, 33, 16);
+    Require(Code(InvokeMapDataTool("entities_query", FilterRequest(f, changed, 1, cursor), f.host)) == "ENTITY_QUERY_CURSOR_STALE",
+        "changed rectangle invalidates an old cursor");
+    auto wrongKind = cursor; wrongKind["kind"] = "doodads";
+    Require(Code(InvokeMapDataTool("entities_query", FilterRequest(f, filter, 1, wrongKind), f.host)) == "ENTITY_QUERY_CURSOR_STALE",
+        "cursor member kind cannot be rebound");
+    ++f.generation;
+    Require(Code(InvokeMapDataTool("entities_query", FilterRequest(f, filter, 1, cursor), f.host)) == "ENTITY_QUERY_CURSOR_STALE",
+        "refreshed outer identity does not make the old spatial cursor current");
+    Require(f.attempts == 0 && f.publishes == 0 && f.session->Revision() == 0, "all refusals remain read-only");
+    Fixture large(false, FilterMembers(true));
+    const QJsonObject lastFilter{{"type_id", "hbar"}, {"player", 1}, {"world_rect", WorldRect(0, 0, 0, 0)}};
+    const auto head = InvokeMapDataTool("entities_query", FilterRequest(large, lastFilter), large.host);
+    Require(head.value("ok").toBool() && head.value("rows").toArray().isEmpty() && head.value("examined") == "4096"
+        && head.value("matched_total").isNull() && head.value("scan_budget_exhausted").toBool(),
+        "spatial query preserves bounded scan and honest unknown total");
+    const auto tail = InvokeMapDataTool("entities_query", FilterRequest(large, lastFilter, 1, head.value("next_cursor").toObject()), large.host);
+    Require(tail.value("ok").toBool() && tail.value("examined") == "1" && tail.value("matched_total").isNull()
+        && tail.value("rows").toArray().first().toObject().value("source_index") == "4096" && tail.value("next_cursor").isNull(),
+        "spatial continuation reaches the last original row without widening scan budget");
+}
 void UnitPositionsUseOriginalAtomicFieldsAndRowCapabilities() {
     auto members = Members();
     auto table = ParseUnitPlacements(members[1].data);
@@ -864,9 +977,10 @@ int main() {
         GuiFieldsPreservePriorAuthorEditsAndOriginalUndo(); PagingReadonlyAndUnsafePresence(); StandaloneCumulativeLimitAndRestoreToOriginal();
         FilterPaginationIsExactAndPreservesCurrentOriginalSession(); InvalidFilterAndCursorNeverBecomeSilentEmptyTables();
         FilterScanCapContinuesWithoutInventingGlobalTotals();
+        SpatialFiltersUseSameBoundsAndOriginalRowsAcrossHosts(); SpatialInvalidCoordinatesCursorsAndScanLimitsRefusePrecisely();
         UnitPositionsUseOriginalAtomicFieldsAndRowCapabilities();
         DWireLiteralSharedStringsAndOriginalUndo(); DSettingsReferencesRequireExplicitSharedModeAndUseOriginalUndo(); DFailuresPagingAndUnresolvedText();
         SoundsUseStableRawNamesTypedValuesAndOriginalUndo(); SoundFailuresNeverPublishOrCoerceTypes(); SoundQueriesBindPaginationCoverageAndBudgets();
-        std::cout << "实体、地图文字与声音工具：16 组场景通过\n"; return 0;
+        std::cout << "实体、地图文字与声音工具：18 组场景通过\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
