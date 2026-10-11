@@ -166,7 +166,12 @@ void WorldViewportTests::ModelPreviewRealSequences() {
     auto* play = preview.findChild<QPushButton*>(QStringLiteral("worldUnitPreviewPlayPause")); QVERIFY(play);
     auto* viewport = preview.findChild<WorldViewport*>(); QVERIFY(viewport);
     auto* message = preview.findChild<QLabel*>(QStringLiteral("worldUnitPreviewMessage")); QVERIFY(message);
-    QTRY_VERIFY_WITH_TIMEOUT(player->Ready(), 15000);
+    const auto readinessDiagnostic = [&] {
+        return QStringLiteral("message=%1; player=%2; ready=%3; busy=%4; viewport=%5; renderer_failed=%6; actions=%7")
+            .arg(message->text(), player->LastDiagnostic()).arg(player->Ready()).arg(player->Busy())
+            .arg(viewport->StatusText()).arg(viewport->RendererFailed()).arg(actions->count());
+    };
+    QTRY_VERIFY2_WITH_TIMEOUT(player->Ready(), qPrintable(readinessDiagnostic()), 15000);
     player->SetPlaying(false); QTRY_VERIFY(!player->Busy());
     QCOMPARE(actions->count(), static_cast<int>(parsed.value->sequences.size()));
     std::size_t movedSequences = 0;
