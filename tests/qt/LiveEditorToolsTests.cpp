@@ -8,6 +8,7 @@
 #include "McpImportTools.h"
 #include "McpPlacementTools.h"
 #include "McpCodeCheckTools.h"
+#include "McpCampaignTools.h"
 #include "McpProjectSearchTools.h"
 #include "Commands/MapDataCommands.h"
 #include "War3MapCore/MapData/MapDataFieldEditing.h"
@@ -172,6 +173,7 @@ class LiveEditorToolsTests final : public QObject {
     Q_OBJECT
 private slots:
     void OnlyLiveToolsAndActualCatalogAreExposed();
+    void CampaignToolsShareSchemasAndPolicy();
     void BatchKeepsDocumentAndExistingUndoCommands();
     void StaleAndInvalidBatchesAreAtomic();
     void SourceAndUiDriftRefuseBeforePublishing();
@@ -197,19 +199,22 @@ private slots:
 
 void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
     Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
-    const QStringList expected{"code.check", "editor_edit_trigger_graph", "editor_get_ui_catalog", "editor_query_trigger_graph", "editor_save_map", "editor_state",
+    const QStringList expected{"code.check", "create_campaign", "edit_campaign",
+        "editor_edit_trigger_graph", "editor_get_ui_catalog", "editor_query_trigger_graph", "editor_save_map", "editor_state",
         "entities_copy", "entities_query", "entities_rotate", "entities_set_fields",
+        "export_campaign_member",
         "feedback.draft", "feedback.list", "feedback.status",
         "imports_get", "imports_list",
         "map_settings_get", "map_settings_set",
         "objects_create", "objects_delete", "objects_field_options", "objects_get", "objects_list", "objects_set_fields",
-        "project_search", "sounds_get", "sounds_list", "sounds_update",
+        "open_campaign", "project_search", "query_campaign", "query_campaign_objects", "redo_campaign", "save_campaign",
+        "sounds_get", "sounds_list", "sounds_update",
         "strings_query", "strings_set",
-        "update.status",
+        "undo_campaign", "update.status",
         "variables_create", "variables_delete", "variables_get", "variables_list", "variables_rename", "variables_update"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{36});
+    QCOMPARE(expected.size(), qsizetype{45});
     const auto codeDefinition = Mcp::CodeCheckToolDefinition();
     QCOMPARE(codeDefinition.permission, Mcp::ToolPermission::Query);
     bool foundCodeCheck = false;
@@ -270,6 +275,43 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
     QCOMPARE(f.Fingerprint(), original);
     QCOMPARE(f.Context(), context);
     QCOMPARE(f.project.triggerUndoStack_->count(), 0);
+}
+
+void LiveEditorToolsTests::CampaignToolsShareSchemasAndPolicy() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    const QStringList queryNames{"query_campaign", "query_campaign_objects"};
+    const QStringList saveNames{"export_campaign_member", "save_campaign"};
+    const QStringList editNames{"create_campaign", "edit_campaign", "open_campaign", "redo_campaign", "undo_campaign"};
+    QStringList expected = queryNames + saveNames + editNames; expected.sort();
+    const auto definitions = Mcp::CampaignToolDefinitions(f.tools->Server());
+    const auto liveTools = f.tools->Tools();
+    QStringList actual;
+    for (const auto& definition : definitions) {
+        actual.append(definition.name);
+        QVERIFY2(expected.contains(definition.name), qPrintable(definition.name));
+        const auto permission = queryNames.contains(definition.name) ? Mcp::ToolPermission::Query
+            : saveNames.contains(definition.name) ? Mcp::ToolPermission::Save : Mcp::ToolPermission::Edit;
+        QCOMPARE(definition.permission, permission);
+        int matches = 0;
+        for (const auto& value : liveTools) {
+            const auto tool = value.toObject();
+            if (tool.value("name").toString() != definition.name) continue;
+            ++matches; QCOMPARE(tool.value("inputSchema").toObject(), definition.inputSchema);
+        }
+        QCOMPARE(matches, 1);
+    }
+    actual.sort(); QCOMPARE(actual, expected);
+
+    int writes = 0;
+    f.tools->Server().SetCampaignCallbacks([&] { ++writes; return true; }, {});
+    Mcp::ToolPolicy policy; policy.allowEdit = false; policy.allowSave = false; f.tools->SetPolicy(policy);
+    const auto visible = Names(f.tools->Tools());
+    for (const auto& name : expected) {
+        QCOMPARE(visible.contains(name), queryNames.contains(name));
+        QVERIFY(f.tools->RegisteredToolNames().contains(name));
+    }
+    QVERIFY(!f.tools->Invoke("create_campaign", {}).value("ok").toBool());
+    QCOMPARE(writes, 0); QVERIFY(!f.tools->Server().Campaign());
 }
 
 void LiveEditorToolsTests::BatchKeepsDocumentAndExistingUndoCommands() {
