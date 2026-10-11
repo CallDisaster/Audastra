@@ -8,6 +8,7 @@ add_library(War3MapScriptBuild STATIC
     LuaMapScript.cpp
     ClassicLuaCompatibility.cpp
     ClassicLuaSaveBundle.cpp
+    ClassicLuaEntryPipeline.cpp
     LuaAuthorCode.cpp
     LuaCustomReloadAnalysis.cpp
     LuaMapPipeline.cpp
