@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <chrono>
 #include <exception>
 #include <optional>
 #include <string>
@@ -27,6 +28,20 @@ namespace War3Map::Script {
 namespace {
 using Trigger::UiDefinition;
 using Trigger::UiDefinitionKind;
+
+template<class Action>
+decltype(auto) RecoveryPhase(GuiTriggerRecoveryProfile* profile, GuiTriggerRecoveryProfile::Phase phase, Action&& action) {
+    if (!profile) return action();
+    struct Measurement {
+        GuiTriggerRecoveryProfile::Timing& timing;
+        std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        ~Measurement() {
+            timing.milliseconds += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        }
+    } measurement{profile->phases[static_cast<std::size_t>(phase)]};
+    ++measurement.timing.calls;
+    return action();
+}
 
 enum class Tok { Ident, Number, String, RawCode, Op, Comment };
 struct Token {
@@ -1184,11 +1199,15 @@ Status Mismatch(std::size_t line, std::string reason) {
 
 // 候选回生成并与正文核对；一致才算可转回。
 Status Verify(const MapScriptInputs& inputs, const Trigger::TriggerRecord& record, const Trigger::GuiTriggerFragment& fragment,
-    std::string_view text) {
-    auto probe = Trigger::TriggerCodeEditor::RecoveryProbe(*inputs.triggers, *inputs.catalog, record.id, fragment);
+    std::string_view text, GuiTriggerRecoveryProfile* profile) {
+    auto probe = RecoveryPhase(profile, GuiTriggerRecoveryProfile::Phase::Probe, [&] {
+        return Trigger::TriggerCodeEditor::RecoveryProbe(*inputs.triggers, *inputs.catalog, record.id, fragment);
+    });
     if (!probe.Succeeded() || !probe.value) return {std::move(probe.diagnostics)};
     auto probeInputs = inputs; probeInputs.triggers = &*probe.value;
-    auto generated = GenerateGuiTriggerSource(probeInputs, record.id);
+    auto generated = RecoveryPhase(profile, GuiTriggerRecoveryProfile::Phase::Generate, [&] {
+        return GenerateGuiTriggerSource(probeInputs, record.id);
+    });
     if (!generated.Succeeded() || !generated.value) return {std::move(generated.diagnostics)};
     for (const auto& diagnostic : generated.diagnostics)
         if (diagnostic.severity == DiagnosticSeverity::Warning)
@@ -1196,14 +1215,18 @@ Status Verify(const MapScriptInputs& inputs, const Trigger::TriggerRecord& recor
     if (generated.value->effectiveRunOnInit != (record.runOnInit != 0))
         return Status::Failure("Script.Trigger", "CODE_RECOVERY_INIT", "“地图初始化时运行”与转回后的事件不一致。");
     std::string expected;
-    if (const auto line = FirstMismatch(text, generated.value->text, expected); line != 0)
+    const auto line = RecoveryPhase(profile, GuiTriggerRecoveryProfile::Phase::Compare, [&] {
+        return FirstMismatch(text, generated.value->text, expected);
+    });
+    if (line != 0)
         return Mismatch(line, "与按 T 重新生成的代码不一致（此处应为“" + expected + "”）。");
     return Status::Ok();
 }
 } // namespace
 
 Result<GuiTriggerRecovery> RecoverGuiTrigger(const MapScriptInputs& inputs, StableId triggerId,
-    const Trigger::GuiTriggerFragment* snapshot) {
+    const Trigger::GuiTriggerFragment* snapshot, GuiTriggerRecoveryProfile* profile) {
+    if (profile) *profile = {};
     try {
         if (!inputs.triggers || !inputs.catalog)
             return Result<GuiTriggerRecovery>::Failure("Script.Trigger", "CODE_RECOVERY_CONTEXT", "转回缺少当前触发器文档或函数库。");
@@ -1215,19 +1238,24 @@ Result<GuiTriggerRecovery> RecoverGuiTrigger(const MapScriptInputs& inputs, Stab
         }
         if (!record || record->type != 0 || record->customTextFlag != 1 || !record->ecas.empty())
             return Result<GuiTriggerRecovery>::Failure("Script.Trigger", "CODE_RECOVERY_CUSTOM_REQUIRED", "只能把自定义代码触发器转回 T。");
-        const auto text = Trigger::TriggerCodeEditor::NormalizedText(record->customText);
+        const auto text = RecoveryPhase(profile, GuiTriggerRecoveryProfile::Phase::Normalize, [&] {
+            return Trigger::TriggerCodeEditor::NormalizedText(record->customText);
+        });
         // 转换前快照：正文没改、引用的变量和函数库也没变时，回生成与正文一致，原样恢复（含禁用行与注释）。
         if (snapshot) {
             auto exact = *snapshot; exact.runOnInit = snapshot->runOnInit;
-            if (Verify(inputs, *record, exact, text).Succeeded()) {
+            if (Verify(inputs, *record, exact, text, profile).Succeeded()) {
                 GuiTriggerRecovery recovery; recovery.fragment = std::move(exact); recovery.fromSnapshot = true;
                 return Result<GuiTriggerRecovery>::Success(std::move(recovery));
             }
         }
-        Parser parser(*inputs.triggers, *inputs.catalog, *record);
-        auto fragment = parser.Parse(text);
+        auto parser = RecoveryPhase(profile, GuiTriggerRecoveryProfile::Phase::Catalog, [&] {
+            return Parser(*inputs.triggers, *inputs.catalog, *record);
+        });
+        auto fragment = RecoveryPhase(profile, GuiTriggerRecoveryProfile::Phase::Parse, [&] { return parser.Parse(text); });
+        if (profile) profile->parserProducedCandidate = fragment.has_value();
         if (!fragment) return {std::nullopt, Mismatch(parser.FailLine(), parser.FailReason()).diagnostics};
-        if (auto verified = Verify(inputs, *record, *fragment, text); !verified.Succeeded()) return {std::nullopt, std::move(verified.diagnostics)};
+        if (auto verified = Verify(inputs, *record, *fragment, text, profile); !verified.Succeeded()) return {std::nullopt, std::move(verified.diagnostics)};
         GuiTriggerRecovery recovery; recovery.fragment = std::move(*fragment);
         for (const auto& eca : recovery.fragment.ecas) {
             if (eca.name.text == "CustomScriptCode") ++recovery.preservedCodeLines;

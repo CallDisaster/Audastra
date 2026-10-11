@@ -8,6 +8,7 @@
 #include "War3MapCore/Trigger/UiCatalog.h"
 #include "War3MapCore/Types.h"
 
+#include <array>
 #include <functional>
 #include <cstddef>
 #include <optional>
@@ -130,10 +131,18 @@ struct GuiTriggerRecovery {
     std::size_t preservedCodeLines = 0;
     std::size_t preservedCodeExpressions = 0;
 };
+// 显式诊断时才采样；默认不读时钟。分段结果不改变 RecoverGuiTrigger 外层总耗时的计量范围，
+// 也不能从主指标扣除。多次尝试（如快照失败后解析）按实际调用累计，不保存作者代码。
+struct GuiTriggerRecoveryProfile {
+    enum class Phase : std::size_t { Normalize, Catalog, Parse, Probe, Generate, Compare, Count };
+    struct Timing { std::size_t calls = 0; double milliseconds = 0; };
+    std::array<Timing, static_cast<std::size_t>(Phase::Count)> phases{};
+    bool parserProducedCandidate = false;
+};
 // 代码转回 T：先试转换前快照，再按生产生成器的写法解析当前正文；候选必须经同一生成器回生成、
 // 与正文逐词一致（空白不计，辅助函数可整体改名）才返回，否则指出第一处不一致或无法识别的行。
 [[nodiscard]] Result<GuiTriggerRecovery> RecoverGuiTrigger(const MapScriptInputs& inputs, StableId triggerId,
-    const Trigger::GuiTriggerFragment* snapshot = nullptr);
+    const Trigger::GuiTriggerFragment* snapshot = nullptr, GuiTriggerRecoveryProfile* profile = nullptr);
 
 // WE 对触发器 / 区域 / 声音等对象名称的标识符转换（非字母数字字节替换为 '_'，结尾补 'u'）。
 [[nodiscard]] std::string ConvertObjectName(std::string_view name);
