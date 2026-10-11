@@ -121,6 +121,9 @@ void PreviewKeepsSaveRestrictionsAndRejectsWholeStroke() {
     state = CaptureTerrainEditState(session, document);
     const std::array points{point, TerrainStrokePoint{std::numeric_limits<double>::infinity(), 0}};
     Require(!PrepareTerrainEdit(session, document, state.value->binding, HeightBrush(), points).Succeeded(), "invalid later sample rejects full preview");
+    const std::array outsidePoints{point, TerrainStrokePoint{1025, 0}};
+    Require(!PrepareTerrainEdit(session, document, state.value->binding, HeightBrush(), outsidePoints).Succeeded(),
+        "finite outside agent point rejects instead of being silently ignored like a UI drag");
     Require(*SerializeMapTerrain(*session.Terrain()).value == bytes && session.Revision() == 1, "failed full preview has no partial writes");
     const std::vector<TerrainStrokePoint> tooMany(TerrainEditMaximumPoints + 1);
     Require(!PrepareTerrainEdit(session, document, state.value->binding, HeightBrush(), tooMany).Succeeded(), "edit budget enforced before copying terrain");

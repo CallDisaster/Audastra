@@ -23,6 +23,7 @@ if(TARGET Qt6::Core)
         McpServer.cpp
         McpHttpTransport.cpp
         McpTerrain.cpp
+        McpTerrainEditTools.cpp
         McpTools.cpp
         McpObjectTools.cpp
         McpToolObjects.cpp

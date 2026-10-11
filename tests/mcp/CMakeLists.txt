@@ -29,6 +29,13 @@ target_compile_options(war3-map-mcp-object-reference-tests PRIVATE /W4 /permissi
 add_test(NAME mcp-map-object-references COMMAND war3-map-mcp-object-reference-tests)
 
 if(TARGET War3MapMcpProtocol)
+    add_executable(audastra-mcp-terrain-edit-tests McpTerrainEditToolsTests.cpp)
+    target_link_libraries(audastra-mcp-terrain-edit-tests PRIVATE War3MapEditor::McpProtocol)
+    target_compile_definitions(audastra-mcp-terrain-edit-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+    target_compile_options(audastra-mcp-terrain-edit-tests PRIVATE /W4 /permissive- /utf-8)
+    add_test(NAME mcp-terrain-edit COMMAND audastra-mcp-terrain-edit-tests)
+    set_tests_properties(mcp-terrain-edit PROPERTIES ENVIRONMENT_MODIFICATION
+        "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
     add_executable(war3-map-mcp-campaign-tests McpCampaignTests.cpp)
     target_link_libraries(war3-map-mcp-campaign-tests PRIVATE War3MapEditor::McpProtocol)
     target_compile_definitions(war3-map-mcp-campaign-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)

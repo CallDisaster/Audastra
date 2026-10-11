@@ -69,6 +69,11 @@ Result<PreparedTerrainEdit> PrepareTerrainEdit(const MapData::MapDataEditSession
     if (const auto checked = CheckExpected(session, document, expected); !checked.Succeeded()) return {{}, checked.diagnostics};
     if (points.empty() || points.size() > TerrainEditMaximumPoints)
         return Result<PreparedTerrainEdit>::Failure("Terrain.Edit", "TERRAIN_EDIT_POINT_BUDGET", "单次地形编辑需要 1 到 4096 个采样点。");
+    // UI 拖动可以掠过视口外；Agent 的显式坐标不能被静默忽略或裁成另一笔。
+    for (const auto& point : points) {
+        const auto checked = session.InspectTerrainPoint(point);
+        if (!checked.Succeeded() || !checked.value) return {{}, checked.diagnostics};
+    }
     auto plan = session.PrepareTerrainEdit(brush, points, followDoodads);
     if (!plan.Succeeded() || !plan.value) return {{}, std::move(plan.diagnostics)};
     return Result<PreparedTerrainEdit>::Success(PreparedTerrainEdit(expected, std::move(*plan.value)));

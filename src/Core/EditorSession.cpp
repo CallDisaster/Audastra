@@ -87,6 +87,12 @@ bool IsMapDataFieldMember(const std::filesystem::path& path) {
     });
 }
 
+bool IsTerrainMember(const std::filesystem::path& path) {
+    const auto value = LowerGenericPath(path);
+    return value == "war3map.w3e" || value == "map/war3map.w3e"
+        || value == "war3map.wpm" || value == "map/war3map.wpm";
+}
+
 bool IsSafeRelativePath(const std::filesystem::path& path) {
     if (path.empty() || path.is_absolute() || path.has_root_path()) {
         return false;
@@ -508,6 +514,12 @@ Status EditorSession::ApplyMapDataPatch(TransactionId transactionId, MapDataPatc
     if (patch.files_.empty() || patch.files_.size() > 6)
         return Status::Failure("MapData", "MAP_FIELD_PATCH_SCOPE_INVALID", "密封地图数据事务只能替换一到六个已有地图设置、字符串、单位、地物、区域、镜头或声音成员。");
     return impl_->ApplyFiles(transactionId, std::move(patch.files_), "map-data", &IsMapDataFieldMember);
+}
+
+Status EditorSession::ApplyTerrainPatch(TransactionId transactionId, TerrainPatch patch) {
+    if (patch.files_.size() != 2)
+        return Status::Failure("Terrain.Patch", "TERRAIN_PATCH_SCOPE_INVALID", "密封地形事务必须同时绑定已有 W3E 和 WPM。");
+    return impl_->ApplyFiles(transactionId, std::move(patch.files_), "terrain", &IsTerrainMember);
 }
 
 Status EditorSession::CreateObjectMember(TransactionId transactionId, ObjectPatch patch) {

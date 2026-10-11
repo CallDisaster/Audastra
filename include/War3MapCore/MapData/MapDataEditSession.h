@@ -155,6 +155,7 @@ public:
         std::size_t maximumBytes = std::numeric_limits<std::size_t>::max()) const;
 
 private:
+    friend class TerrainPatchCodec;
     friend struct detail::PlacementEditingAccess;
     friend struct detail::TerrainInspectionAccess;
     friend struct detail::MapDataFieldEditingAccess;
