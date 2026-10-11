@@ -355,6 +355,11 @@ void Coverage() {
     for (const bool particles : {false, true}) for (const bool prem : {false, true}) {
         auto limits = Limits(); limits.enableParticles = particles; limits.enablePremPreview = prem;
         const auto service = Good(fixture.Create(limits)); const auto scene = service->Scene();
+        const auto legacyNotice = std::any_of(scene->geometry.warnings.begin(), scene->geometry.warnings.end(), [](const auto& item) {
+            return item.code == "PARTICLE_PREM_UNSUPPORTED";
+        });
+        Check(legacyNotice == (particles && !prem),
+            "enabled PREM host kept the PRE2 reader's unsupported notice, or disabled PREM lost its notice");
         const auto view = AnimationParticleContinuityTest::View(fixture.spec.model.position[0]);
         auto camera = view.worldView->camera;
         camera.targetY = fixture.spec.model.position[1]; camera.targetZ = fixture.spec.model.position[2];
@@ -381,6 +386,22 @@ void Coverage() {
             << " preparedPrem=" << coverage.preparedPrem << " unsupportedPrem=" << coverage.unsupportedPrem
             << " disabled=" << coverage.disabled << " notShown=" << coverage.notShown << '\n';
     }
+    Fixture unsupported; unsupported.Add(std::string(kParentPath), MixedParentModel(), "original-mixed-unsupported-child");
+    unsupported.Add(std::string(kChildPath), ParentModel(), "original-recursive-child");
+    auto limits = Limits(); limits.enableParticles = true;
+    const auto rejectedService = Good(unsupported.Create(limits));
+    AnimationAdvance camera; camera.worldCamera = War3RenderCore::LocalCamera{{0,-100,100},{0,0,1}};
+    const auto rejectedFrame = Good(rejectedService->Prepare(nullptr, camera));
+    const auto& rejected = Prem(*rejectedService->Scene(), *rejectedFrame);
+    Check(rejected.capabilities->size() == 1 && !rejected.capabilities->front().prepared &&
+        rejected.capabilities->front().rejectionCode == "PREM_CHILD_RECURSIVE_UNSUPPORTED" &&
+        rejected.unsupportedEmitterInstances == 1 && rejectedService->Scene()->particleCapabilities[0].rejectionCode ==
+            "PREM_CHILD_RECURSIVE_UNSUPPORTED",
+        "removing the generic reader notice hid the actual PREM host rejection");
+    Check(std::none_of(rejectedService->Scene()->geometry.warnings.begin(), rejectedService->Scene()->geometry.warnings.end(),
+        [](const auto& item) { return item.code == "PARTICLE_PREM_UNSUPPORTED"; }),
+        "actual PREM rejection still carried the incorrect generic unimplemented claim");
+    unsupported.Unchanged();
     fixture.Unchanged();
 }
 
