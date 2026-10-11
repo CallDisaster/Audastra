@@ -20,6 +20,8 @@ target_compile_definitions(audastra-detours PRIVATE WIN32_LEAN_AND_MEAN _WIN32_W
 set_property(TARGET audastra-detours PROPERTY CXX_STANDARD 14)
 target_compile_options(audastra-detours PRIVATE /Zc:gotoScope-)
 
+include(OwnLua/VerifiedLua.cmake)
+
 add_executable(audastra-warcraft-launcher Launcher.cpp)
 add_library(audastra-warcraft-bootstrap SHARED Bootstrap.cpp Bootstrap.def RuntimeLuaProbe.cpp RuntimeLuaProbe.h)
 target_link_libraries(audastra-warcraft-launcher PRIVATE audastra-detours bcrypt)
@@ -31,6 +33,12 @@ endforeach()
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(audastra-own-lua-host-tests fixtures/OwnLuaHostTests.cpp)
+    target_link_libraries(audastra-own-lua-host-tests PRIVATE audastra-own-lua-host)
+    target_compile_definitions(audastra-own-lua-host-tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(audastra-own-lua-host-tests PRIVATE /utf-8 /W4 /permissive-)
+    add_test(NAME audastra-own-lua-host COMMAND audastra-own-lua-host-tests)
+    set_tests_properties(audastra-own-lua-host PROPERTIES TIMEOUT 30)
     add_executable(audastra-own-lua-protocol-tests fixtures/OwnLuaProtocolTests.cpp
         OwnLua/NativeSignature.cpp OwnLua/LuaMailboxRuntime.cpp)
     target_include_directories(audastra-own-lua-protocol-tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../../include")
