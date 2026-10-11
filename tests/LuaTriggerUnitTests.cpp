@@ -242,6 +242,8 @@ void TestLuaObjectCodeRoles(const std::filesystem::path& root) {
     f.Root(1, f.Eca("RecordAbility", {f.Value("ZeroAbility", 0)}));
     f.Root(1, f.Eca("RecordAbility", {f.Var("CodeValue")}));
     const auto decimal = f.Value("1234"); f.Root(1, f.Eca("RecordDecimal", {decimal}));
+    f.Root(1, f.Eca("RecordDecimal", {f.Value("0xFF000000")}));
+    f.Root(1, f.Eca("RecordDecimal", {f.Value("$FFFFFFFF")}));
     f.Root(1, f.Eca("RecordAbility", {f.Call("GetUnitAbilityLevel", {f.Call("GetTriggerUnit", {}), f.Value("A0E0")})}));
     f.Root(1, f.Eca("RecordAbility", {f.Call("GetUnitAbilityLevel", {f.Value("null"), f.Value("A0E0")})}));
     const auto generated = GenerateLuaTriggerUnit(f.doc, f.catalog, f.profile, {});
@@ -271,13 +273,17 @@ function GetUnitAbilityLevel(unit, ability)
     return unit == source and 7 or 8
 end
 function RecordAbility(value) seen[#seen + 1] = value end
-function RecordDecimal(value) assert(value == 1234); decimal = true end
+function RecordDecimal(value)
+    assert(value == 1234 or value == -16777216 or value == -1)
+    source[#source + 1] = value; decimal = true
+end
 assert(loadfile(arg[1], "t", _G))()
 InitGlobals()
 assert(udg_CodeValue == FourCC("1234"))
 Trig_F101_Actions()
 local expected = {FourCC("A0E0"), FourCC("1234"), FourCC("A0E0"), 1234, 0, FourCC("1234"), 7, 8}
 assert(#seen == #expected and decimal)
+assert(#source == 3 and source[1] == 1234 and source[2] == -16777216 and source[3] == -1)
 for i, value in ipairs(expected) do assert(seen[i] == value, "object source role changed at " .. i) end
 print("object rawcode, multi-level alias, numeric preset, decimal and nil handle runtime passed")
 )lua");

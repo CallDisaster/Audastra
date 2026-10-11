@@ -216,6 +216,13 @@ void TestTriggerTypes() {
     Check(types.ValidateLiteral("integer", "1234").Succeeded()
         && !types.ValidateLiteral("integer", "A0E0").Succeeded()
         && !types.ValidateLiteral("integer", "2147483648").Succeeded(), "ordinary integer remains strict decimal int32");
+    for (const auto& [text, expected] : std::vector<std::pair<std::string, std::int32_t>>{
+        {"0xFF000000", -16777216}, {"0X80000000", INT32_MIN}, {"$FFFFFFFF", -1}, {"0x7fffffff", INT32_MAX}, {"0x0", 0}}) {
+        Check(types.ValidateLiteral("integer", text).Succeeded()
+            && TriggerTypeSystem::ParseIntegerLiteral(text) == expected, "hexadecimal uses exact JASS int32 bit pattern");
+    }
+    for (const auto text : {"0x", "$", "0x100000000", "$100000000", "0x1+1", "0xGG", "0x1);evil()", "1e2"})
+        Check(!types.ValidateLiteral("integer", text).Succeeded(), "hex prefix does not admit overflow or expressions");
     Check(types.ValidateLiteral("unit", "null").Succeeded()
         && types.ValidateLiteral("typename", "legacy-selector-text").Succeeded()
         && types.ValidateLiteral("UnknownLegacyType", "legacy-other-text").Succeeded(), "non-object rules remain unchanged");

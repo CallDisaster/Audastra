@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cctype>
 #include <charconv>
 #include <cmath>
@@ -170,10 +171,23 @@ bool TriggerTypeSystem::IsObjectCodeLiteral(std::string_view value) {
 }
 
 bool TriggerTypeSystem::IsIntegerLiteral(std::string_view value) {
-    if (value.empty()) return false;
+    return ParseIntegerLiteral(value).has_value();
+}
+
+std::optional<std::int32_t> TriggerTypeSystem::ParseIntegerLiteral(std::string_view value) {
+    if (value.empty()) return {};
+    if (value.starts_with("0x") || value.starts_with("0X") || value.starts_with('$')) {
+        value.remove_prefix(value.front() == '$' ? 1 : 2);
+        if (value.empty()) return {};
+        std::uint32_t bits = 0;
+        const auto result = std::from_chars(value.data(), value.data() + value.size(), bits, 16);
+        if (result.ec == std::errc{} && result.ptr == value.data() + value.size()) return std::bit_cast<std::int32_t>(bits);
+        return {};
+    }
     std::int32_t parsed = 0;
     const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
-    return result.ec == std::errc{} && result.ptr == value.data() + value.size();
+    if (result.ec == std::errc{} && result.ptr == value.data() + value.size()) return parsed;
+    return {};
 }
 
 bool TriggerTypeSystem::IsRealLiteral(std::string_view value) {
@@ -201,7 +215,7 @@ Status TriggerTypeSystem::ValidateLiteral(std::string_view type, std::string_vie
     else if (kind == Literal::ObjectCode && !IsObjectCodeLiteral(value))
         message = "对象编号固定值必须是四个可打印 ASCII 字节；不加引号、不使用反斜杠、转义或 null。";
     else if (kind == Literal::Integer && !IsIntegerLiteral(value))
-        message = "请输入 -2147483648 至 2147483647 的十进制整数；固定值不接受表达式。";
+        message = "请输入 int32 十进制或32位十六进制整数（0x 或 $ 前缀）；固定值不接受表达式。";
     else if (kind == Literal::Real && !IsRealLiteral(value))
         message = "请输入有限的十进制实数；固定值不接受指数、NaN 或表达式。";
     else if (kind == Literal::Boolean && value != "true" && value != "false")
