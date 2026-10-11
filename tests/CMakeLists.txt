@@ -55,6 +55,8 @@ add_test(NAME services-map-test-slk COMMAND war3-map-test-slk-tests)
 set_tests_properties(services-map-test-slk PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
 
 add_executable(war3-map-test-launch-fixture services/MapTestLaunchFixture.cpp)
+target_sources(war3-map-test-launch-fixture PRIVATE "${PROJECT_SOURCE_DIR}/src/WarcraftRuntime32/OwnLua/LuaMailboxRuntime.cpp")
+target_include_directories(war3-map-test-launch-fixture PRIVATE "${PROJECT_SOURCE_DIR}/include")
 target_compile_definitions(war3-map-test-launch-fixture PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-test-launch-fixture PRIVATE /W4 /permissive- /utf-8)
 target_link_options(war3-map-test-launch-fixture PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:wmainCRTStartup)

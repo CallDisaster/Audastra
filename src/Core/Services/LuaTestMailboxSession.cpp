@@ -76,6 +76,7 @@ struct LuaTestMailboxSession::Impl {
     std::uint32_t lastSequence = 0;
     RuntimeDiagnostic diagnostic;
     detail::LuaTestProcessVerifier verify;
+    bool enableReload = true;
     ~Impl() {
         // 不修改仍由游戏执行的槽；关闭编辑器不会终止游戏，也不会伪报正在执行的结果。
         if (mailbox) UnmapViewOfFile(mailbox);
@@ -126,6 +127,8 @@ static Result<std::uint32_t> Submit(LuaTestMailboxSession& session, const LuaTes
     auto& impl = *session.impl_;
     std::lock_guard lock(impl.mutex);
     auto& mailbox = *impl.mailbox;
+    if (!impl.enableReload)
+        return Failure<std::uint32_t>("LUA_TEST_RELOAD_DISABLED", "本次测试未开启热重载；运行时诊断仍可查询。");
     if (!impl.Identity()) return Failure<std::uint32_t>("LUA_TEST_IDENTITY", "Lua 测试会话或地图身份已变化。");
     if (Read(mailbox.runtimeState) != static_cast<LONG>(LuaRuntimeState::Ready)
         || impl.Ownership() != detail::LuaTestProcessOwnership::OwnedRunning)
@@ -244,7 +247,7 @@ std::uint64_t LuaTestMailboxLaunchHandle::Value() const noexcept {
 }
 std::string_view LuaTestMailboxLaunchHandle::Nonce() const noexcept { return impl_->nonce; }
 Result<std::unique_ptr<LuaTestMailboxLaunchHandle>> LuaTestMailboxLaunchAccess::Prepare(
-    const std::shared_ptr<LuaTestMailboxSession>& session, LuaTestProcessVerifier verify) {
+    const std::shared_ptr<LuaTestMailboxSession>& session, LuaTestProcessVerifier verify, bool enableReload) {
     using Handle = std::unique_ptr<LuaTestMailboxLaunchHandle>;
     if (!session || !verify) return Failure<Handle>("LUA_TEST_OWNER", "Lua 测试启动缺少原进程归属验证。");
     auto& impl = *session->impl_;
@@ -258,6 +261,7 @@ Result<std::unique_ptr<LuaTestMailboxLaunchHandle>> LuaTestMailboxLaunchAccess::
         return Failure<Handle>("LUA_TEST_HANDLE", "无法准备 Lua 测试邮箱的继承句柄。");
     auto result = Handle(new LuaTestMailboxLaunchHandle(std::move(handle)));
     impl.verify = std::move(verify);
+    impl.enableReload = enableReload;
     return Result<Handle>::Success(std::move(result));
 }
 } // namespace detail

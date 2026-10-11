@@ -8,6 +8,8 @@
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
 #include "War3MapCore/MapData/MapSettings.h"
+#include "War3MapCore/Services/ClassicLuaMapSources.h"
+#include "War3MapCore/Lua/LuaSyntax.h"
 
 #include <algorithm>
 #include <array>
@@ -132,8 +134,49 @@ Status CollectSymbols(const ProgramFile& file, std::string_view name, Symbols& s
 }
 
 struct RuntimeRequirement { std::set<std::string, std::less<>> missing; };
+struct RuntimeMember { bool present = false; std::vector<std::byte> bytes; };
 
-// 持续只读租约绑定同一文件对象；一轮流式SHA后，只读取五个明确成员。
+Status InspectOwnedLuaSources(std::span<const RuntimeMember> members) {
+    std::vector<ArchiveExactMemberIdentity> identities;
+    for (std::size_t index = 0; index < Services::kClassicLuaGeneratedMembers.size(); ++index) {
+        const auto& member = members[index == 0 ? 0 : index + 4];
+        ArchiveExactMemberIdentity identity;
+        identity.name = Services::kClassicLuaGeneratedMembers[index]; identity.present = member.present;
+        if (member.present) {
+            const auto hash = Sha256(member.bytes);
+            if (!hash.Succeeded()) return {hash.diagnostics};
+            identity.byteSize = member.bytes.size(); identity.sha256 = *hash.value;
+        }
+        identities.push_back(std::move(identity));
+    }
+    const auto identity = Services::VerifyClassicLuaGeneratedIdentities(identities, members[10].bytes);
+    if (!identity.Succeeded()) return identity;
+    const auto& settingsMember = members[4];
+    const auto settings = settingsMember.present ? MapData::MapSettings::Parse(settingsMember.bytes)
+        : Result<MapData::MapSettings>{};
+    if (!settings.Succeeded() || settings.value->formatVersion != 25 || !settings.value->HasClassicLayout()
+        || settings.value->scriptLanguage != 0)
+        return Status::Failure("Map.Test.Runtime", "MAP_TEST_OWN_LUA_CLASSIC_REQUIRED",
+            "自有 Lua 测试需要经典 1.27a 的地图信息与 JASS 入口；请使用经典 1.27a + Lua 档案保存。");
+    for (std::size_t index = 1; index + 1 < Services::kClassicLuaGeneratedMembers.size(); ++index) {
+        const auto& member = members[index + 4];
+        const auto name = std::string(Services::kClassicLuaGeneratedMembers[index]);
+        if (!member.present || member.bytes.empty())
+            return Status::Failure("Map.Test.Runtime", "MAP_TEST_OWN_LUA_SOURCE_MISSING", "经典 Lua 生成模块为空或缺失。");
+        const auto syntax = Lua::CheckSyntax(View(member.bytes), "@" + name);
+        if (!syntax.Succeeded()) {
+            auto result = Status::Failure("Map.Test.Runtime", "MAP_TEST_OWN_LUA_SYNTAX",
+                "经典 Lua 模块未通过完整语法检查：" + name);
+            for (const auto& diagnostic : syntax.diagnostics)
+                result.diagnostics.push_back({DiagnosticSeverity::Error, "Map.Test.Runtime", diagnostic.code,
+                    name + ":" + std::to_string(diagnostic.line) + " " + diagnostic.message, std::nullopt});
+            return result;
+        }
+    }
+    return Status::Ok();
+}
+
+// 持续只读租约绑定同一文件对象；一轮流式SHA后，只读取所选档案的明确成员。
 // 不建立编辑会话、不解码模型/贴图/音频，也不再把整张地图读入vector。
 class RuntimeMapLease {
 public:
@@ -206,9 +249,12 @@ Result<RuntimeRequirement> InspectMapRuntime(const Services::MapTestArtifact& ar
     if (lease.Size() != map.value->ArchivePrefixSize() + map.value->DeclaredArchiveSize())
         return Failure<RuntimeRequirement>("ARCHIVE_TRAILING_DATA", "地图归档声明范围外存在未识别数据，测试预检已停止。");
     if (progress) progress("read-scripts");
-    constexpr std::array<const char*, 5> names{"war3map.j", "scripts\\war3map.j", "war3map.lua", "scripts\\war3map.lua", "war3map.w3i"};
+    std::vector<std::string> names{"war3map.j", "scripts\\war3map.j", "war3map.lua", "scripts\\war3map.lua", "war3map.w3i"};
+    if (artifact.useOwnedLuaRuntime)
+        for (std::size_t index = 1; index < Services::kClassicLuaGeneratedMembers.size(); ++index)
+            names.emplace_back(Services::kClassicLuaGeneratedMembers[index]);
     // 匿名块未经过listfile的明确名字检查；复用CaptureExactMembers的hash/标志门禁，
-    // 仅核对这五个成员，不枚举或解码其他资源。
+    // 仅核对本档案的明确成员，不枚举或解码其他资源。
     const auto hashes = map.value->HashTableEntries();
     const auto blocks = map.value->BlockTableEntries();
     const auto& crypt = Mpq::MpqCrypt::Instance();
@@ -218,8 +264,7 @@ Result<RuntimeRequirement> InspectMapRuntime(const Services::MapTestArtifact& ar
                 crypt.HashString(names[i], Mpq::MpqCrypt::HashType::NameB)}, i).second)
             return Failure<RuntimeRequirement>("EXACT_MEMBER_HASH_CONFLICT", "不同明确来源名字具有相同的 MPQ hash 对。");
     }
-    std::array<std::uint32_t, names.size()> queriedBlocks;
-    queriedBlocks.fill(Mpq::kMpqHashEmpty);
+    std::vector<std::uint32_t> queriedBlocks(names.size(), Mpq::kMpqHashEmpty);
     for (const auto& hash : hashes) {
         if (hash.blockIndex == Mpq::kMpqHashEmpty || hash.blockIndex == Mpq::kMpqHashDeleted) continue;
         const auto wanted = queriedHashes.find({hash.name1, hash.name2});
@@ -227,9 +272,9 @@ Result<RuntimeRequirement> InspectMapRuntime(const Services::MapTestArtifact& ar
     }
     constexpr auto knownFlags = Mpq::kFileImplode | Mpq::kFileCompress | Mpq::kFileEncrypted |
         Mpq::kFileFixKey | Mpq::kFilePatch | Mpq::kFileSingleUnit | Mpq::kFileSectorCrc | Mpq::kFileExists;
-    struct Member { bool present = false; std::vector<std::byte> bytes; };
-    std::array<Member, 5> members;
+    std::vector<RuntimeMember> members(names.size());
     std::size_t remaining = kScriptBudget;
+    std::size_t luaRemaining = 32u * 1024u * 1024u;
     for (std::size_t i = 0; i < names.size(); ++i) {
         const auto blockIndex = queriedBlocks[i];
         const bool present = map.value->HasFile(names[i]);
@@ -246,11 +291,19 @@ Result<RuntimeRequirement> InspectMapRuntime(const Services::MapTestArtifact& ar
         if ((block.flags & (Mpq::kFilePatch | Mpq::kFileSectorCrc)) != 0)
             return Failure<RuntimeRequirement>("EXACT_MEMBER_ENCODING_UNSUPPORTED",
                 std::string("明确来源为未支持的增量补丁或扇区 CRC 块：") + names[i]);
-        auto read = map.value->ReadFileBounded(names[i], remaining);
+        // 自有 Lua 与实际宿主保持单模块4MiB、总32MiB，W3I和清单独立有界。
+        const auto maximum = i == 10 ? std::size_t{8192} : i >= 5 ? (std::min)(luaRemaining, std::size_t{4u * 1024u * 1024u})
+            : artifact.useOwnedLuaRuntime && i == 4 ? std::size_t{1024u * 1024u} : remaining;
+        auto read = map.value->ReadFileBounded(names[i], maximum);
         if (!read.Succeeded()) return Failure<RuntimeRequirement>("MAP_TEST_SCRIPT_BUDGET",
-            "地图脚本成员损坏、不可读或超过 16 MiB 总读取预算，测试已停止。");
+            "地图脚本、信息或清单成员损坏、不可读或超过对应运行时读取预算，测试已停止。");
         members[i].present = true; members[i].bytes = std::move(*read.value);
-        remaining -= members[i].bytes.size();
+        if (i >= 5 && i < 10) luaRemaining -= members[i].bytes.size();
+        else if (i < 4 || (!artifact.useOwnedLuaRuntime && i == 4)) remaining -= members[i].bytes.size();
+    }
+    if (artifact.useOwnedLuaRuntime) {
+        const auto sources = InspectOwnedLuaSources(members);
+        if (!sources.Succeeded()) return {std::nullopt, sources.diagnostics};
     }
     int language = 0;
     if (members[4].present) {
@@ -300,7 +353,7 @@ Result<RuntimeRequirement> InspectMapRuntime(const Services::MapTestArtifact& ar
     for (const auto& [file, name, output] : {
             std::tuple{&*commonFile.value, "game/common.j", &base},
             std::tuple{&*blizzardFile.value, "game/blizzard.j", &original},
-            std::tuple{&*mapFile.value, names[index], &mapSymbols}}) {
+            std::tuple{&*mapFile.value, names[index].c_str(), &mapSymbols}}) {
         const auto collected = CollectSymbols(*file, name, *output);
         if (!collected.Succeeded()) return {std::nullopt, collected.diagnostics};
     }
@@ -457,8 +510,6 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
     const Services::MapTestProgress& progress) {
     if (artifact.enableLuaHotReload && !artifact.useOwnedLuaRuntime)
         return Failure<LaunchPlan>("MAP_TEST_LUA_RELOAD_RUNTIME", "Lua 热重载不能附加到普通 JASS 或外部扩展运行时。");
-    if (artifact.useOwnedLuaRuntime)
-        return Failure<LaunchPlan>("MAP_TEST_OWN_LUA_RUNTIME_NOT_READY", "自有 Lua 的游戏 native 与主线程入口尚未接通，当前不能启动测试。");
     try {
         if (progress) progress("verify");
         auto requirements = InspectMapRuntime(artifact, progress);
@@ -466,6 +517,13 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
         if (progress) progress("check-runtime");
         const bool required = !requirements.value->missing.empty();
         auto selected = artifact;
+        if (selected.useOwnedLuaRuntime) {
+            if (required)
+                return Failure<LaunchPlan>("MAP_TEST_OWN_LUA_EXTENSION_UNSUPPORTED",
+                    "经典 Lua 入口引用了所选原版游戏没有的接口：" + requirements.value->missing.begin()->substr(0, 80)
+                    + "。自有运行时不会自动改用外部扩展 DLL。");
+            selected.runtimeRoot.clear(); selected.runtimeYdweRoot.clear();
+        }
         if (required && selected.runtimeRoot.empty() && !selected.runtimeYdweRoot.empty()) {
             selected.runtimeRoot = Services::MapTestYdweInstallRoot(selected.runtimeYdweRoot);
             selected.runtimeLayout = Services::MapTestRuntimeLayout::YdweTree;
@@ -491,13 +549,17 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
                 const auto status = CheckRuntimePe(path / name, true, initialize);
                 if (!status.Succeeded()) return {std::nullopt, status.diagnostics};
             }
+        }
+        if (selected.useOwnedLuaRuntime || !selected.runtimeRoot.empty()) {
             for (const auto& [file, dll] : {std::pair{selected.runtimeBridge, false}, std::pair{selected.runtimeBootstrap, true},
                     std::pair{selected.gameRoot / "war3.exe", false}, std::pair{selected.gameRoot / "Game.dll", true}}) {
                 const auto status = CheckRuntimePe(file, dll, false);
                 if (!status.Succeeded()) return {std::nullopt, status.diagnostics};
             }
             plan.diagnostics.push_back({DiagnosticSeverity::Info, "Map.Test.Runtime", "MAP_TEST_RUNTIME_PROFILE",
-                "独立 x86 Lua 5.3 扩展运行时预检通过；实际 Game.dll 身份与插件初始化由独立启动器及 bootstrap 回执确认。", std::nullopt});
+                selected.useOwnedLuaRuntime
+                    ? "自有经典 Lua 运行时来源与语法预检通过；实际 Game.dll 身份与 Lua 初始化由独立启动器及 bootstrap 回执确认。"
+                    : "独立 x86 Lua 5.3 扩展运行时预检通过；实际 Game.dll 身份与插件初始化由独立启动器及 bootstrap 回执确认。", std::nullopt});
         }
         return plan;
     } catch (const std::bad_alloc&) {

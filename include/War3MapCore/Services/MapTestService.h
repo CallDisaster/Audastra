@@ -84,6 +84,9 @@ struct MapTestLaunchPlan {
     MapTestRuntimeLayout runtimeLayout = MapTestRuntimeLayout::Flat;
     bool useOwnedLuaRuntime = false;
     bool enableLuaHotReload = false;
+    // 与启动器、Game.dll一同持有到进程终态，防止预检后替换注入库。
+    std::filesystem::path runtimeBootstrap;
+    std::string runtimeBootstrapSha256;
 };
 
 // 核验所选游戏和本轮短路径复制目标；不启动进程、不写安装配置或注册表。

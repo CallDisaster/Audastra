@@ -435,8 +435,21 @@ void OwnedLuaOptionsDoNotFallBack() {
     const auto prepared = PrepareMapTest(request);
     Require(prepared.Succeeded() && prepared.value->useOwnedLuaRuntime && prepared.value->enableLuaHotReload,
         "explicit runtime and reload choice survive frozen map preparation");
-    Require(Code(BuildMapTestLaunchPlan(*prepared.value), "MAP_TEST_OWN_LUA_RUNTIME_NOT_READY"),
-        "unimplemented owned runtime never falls back to direct game or six DLL path");
+    Require(Code(BuildMapTestLaunchPlan(*prepared.value), "MAP_TEST_RUNTIME_PATH"),
+        "owned runtime without its helpers never falls back to direct game or six DLL path");
+    auto configured = *prepared.value;
+    configured.runtimeBridge = f.root / "helpers/launcher.exe";
+    configured.runtimeBootstrap = f.root / "helpers/bootstrap.dll";
+    Write(configured.runtimeBridge); Write(configured.runtimeBootstrap);
+    configured.runtimeRoot = "unused-relative-external-runtime";
+    configured.runtimeYdweRoot = "unused-relative-ydwe";
+    const auto plan = BuildMapTestLaunchPlan(configured);
+    Require(plan.Succeeded() && plan.value->useOwnedLuaRuntime && plan.value->enableLuaHotReload
+        && plan.value->runtimeRoot.empty() && plan.value->runtimeBootstrapSha256 == *Sha256File(configured.runtimeBootstrap).value,
+        "owned plan freezes bootstrap and mode without external DLL selection");
+    Require(ArgumentValue(*plan.value, L"--runtime-mode") == L"owned-lua"
+        && std::find(plan.value->arguments.begin(), plan.value->arguments.end(), L"--runtime") == plan.value->arguments.end(),
+        "owned launch arguments explicitly use owned runtime without YDWE");
     auto changed = *prepared.value; changed.useOwnedLuaRuntime = false;
     Require(Code(BuildMapTestLaunchPlan(changed), "MAP_TEST_LUA_RELOAD_RUNTIME"), "invalid artifact mode refused");
     Require(*Sha256File(f.source).value == f.sha, "new runtime choices never modify source map");

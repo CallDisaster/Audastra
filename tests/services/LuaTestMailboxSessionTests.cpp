@@ -19,12 +19,12 @@ struct Fixture {
     LuaTestMailbox* mailbox = nullptr;
     std::unique_ptr<OwnLua::LuaMailboxRuntime> runtime;
     std::atomic<detail::LuaTestProcessOwnership> ownership{detail::LuaTestProcessOwnership::OwnedRunning};
-    Fixture() {
+    explicit Fixture(bool enableReload = true) {
         auto created = CreateLuaTestMailboxSession(std::string(64, 'a'));
         Check(created.Succeeded(), "create"); session = *created.value;
         auto prepared = detail::LuaTestMailboxLaunchAccess::Prepare(session, [this](std::uint32_t id) {
             return id == GetCurrentProcessId() ? ownership.load() : detail::LuaTestProcessOwnership::Unconfirmed;
-        });
+        }, enableReload);
         Check(prepared.Succeeded(), "prepare"); inherited = std::move(*prepared.value);
         mailbox = static_cast<LuaTestMailbox*>(MapViewOfFile(reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(inherited->Value())),
             FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(LuaTestMailbox)));
@@ -66,6 +66,22 @@ void Lifecycle() {
     Check(cancelled.Succeeded() && CancelLuaTestReload(*fixture.session, *cancelled.value).Succeeded(), "cancel before running");
     Check(!fixture.runtime->Take(), "cancelled request not executed");
     Check(QueryLuaTestReload(*fixture.session, *cancelled.value).value->resultCode == LuaReloadResult::Cancelled, "cancel ack");
+}
+
+void DiagnosticsWithoutReload() {
+    Fixture fixture(false);
+    const auto refused = SubmitLuaTestReload(*fixture.session, {"@disabled.lua", "error('must not run')"});
+    Check(!refused.Succeeded() && refused.diagnostics.front().code == "LUA_TEST_RELOAD_DISABLED",
+        "diagnostics-only session cannot queue code");
+    Check(!fixture.runtime->Take(), "disabled submit leaves mailbox untouched");
+    Check(fixture.runtime->Report(LuaReloadResult::RuntimeError, "original asynchronous error"), "report without reload");
+    const auto active = QueryLuaTestReload(*fixture.session);
+    Check(active.Succeeded() && active.value->runtimeMessage == "original asynchronous error" && active.value->processActive,
+        "diagnostics remain visible while reload disabled");
+    fixture.ownership.store(detail::LuaTestProcessOwnership::OwnedExited);
+    const auto ended = QueryLuaTestReload(*fixture.session);
+    Check(ended.Succeeded() && !ended.value->processActive && ended.value->runtimeMessage == active.value->runtimeMessage,
+        "last error remains readable after proven process exit");
 }
 
 void RejectionsAndUnknown() {
@@ -166,7 +182,7 @@ void RuntimeDiagnostics() {
 
 int main() {
     try {
-        Lifecycle(); RejectionsAndUnknown(); ConcurrencyAndUtf8(); RuntimeDiagnostics();
+        Lifecycle(); RejectionsAndUnknown(); ConcurrencyAndUtf8(); RuntimeDiagnostics(); DiagnosticsWithoutReload();
         std::cout << "Lua mailbox service fixture passed; simulated receiver only; game_evidence=0\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

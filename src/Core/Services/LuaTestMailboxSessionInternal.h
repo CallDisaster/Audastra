@@ -28,7 +28,8 @@ public:
     // 一个会话只绑定一次启动。返回的可继承句柄必须放入显式 HANDLE_LIST；
     // CreateProcess 返回后销毁此局部拥有者，游戏保有自己的映射引用。
     [[nodiscard]] static Result<std::unique_ptr<LuaTestMailboxLaunchHandle>> Prepare(
-        const std::shared_ptr<LuaTestMailboxSession>& session, LuaTestProcessVerifier verify);
+        const std::shared_ptr<LuaTestMailboxSession>& session, LuaTestProcessVerifier verify,
+        bool enableReload = true);
 };
 
 } // namespace War3Map::Services::detail
