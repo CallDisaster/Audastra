@@ -25,9 +25,10 @@ include(OwnLua/MapArchive.cmake)
 include(OwnLua/GameData.cmake)
 
 add_executable(audastra-warcraft-launcher Launcher.cpp)
+target_include_directories(audastra-warcraft-launcher PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../../include")
 add_library(audastra-warcraft-bootstrap SHARED Bootstrap.cpp Bootstrap.def RuntimeLuaProbe.cpp RuntimeLuaProbe.h)
 target_link_libraries(audastra-warcraft-launcher PRIVATE audastra-detours bcrypt)
-target_link_libraries(audastra-warcraft-bootstrap PRIVATE audastra-detours bcrypt)
+target_link_libraries(audastra-warcraft-bootstrap PRIVATE audastra-detours audastra-own-lua-game bcrypt)
 foreach(target audastra-warcraft-launcher audastra-warcraft-bootstrap)
     target_compile_definitions(${target} PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
     target_compile_options(${target} PRIVATE /utf-8 /W4 /permissive-)
@@ -35,6 +36,11 @@ endforeach()
 
 include(CTest)
 if(BUILD_TESTING)
+    # 手动真实进图辅助工具；不自动运行游戏，也不参加无人值守 CTest。
+    add_executable(audastra-own-lua-game-map EXCLUDE_FROM_ALL fixtures/OwnLuaGameMap.cpp)
+    target_link_libraries(audastra-own-lua-game-map PRIVATE audastra-own-lua-mpq bcrypt)
+    target_compile_definitions(audastra-own-lua-game-map PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(audastra-own-lua-game-map PRIVATE /utf-8 /W4 /permissive-)
     add_executable(audastra-own-lua-code-tests fixtures/OwnLuaCodeTests.cpp)
     target_link_libraries(audastra-own-lua-code-tests PRIVATE audastra-own-lua-host)
     target_compile_definitions(audastra-own-lua-code-tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -111,6 +117,17 @@ if(BUILD_TESTING)
         $<TARGET_FILE:audastra-runtime-fixture-war3> $<TARGET_FILE:audastra-runtime-fixture-game>
         $<TARGET_FILE_DIR:audastra-runtime-fixture-ydbase>)
     set_tests_properties(audastra-runtime32-fixtures PROPERTIES TIMEOUT 60)
+    add_executable(audastra-own-lua-launch-tests fixtures/OwnLuaLaunchTests.cpp)
+    add_dependencies(audastra-own-lua-launch-tests audastra-warcraft-launcher audastra-warcraft-bootstrap
+        audastra-runtime-fixture-war3 audastra-runtime-fixture-game)
+    target_include_directories(audastra-own-lua-launch-tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../../include")
+    target_compile_definitions(audastra-own-lua-launch-tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(audastra-own-lua-launch-tests PRIVATE /utf-8 /W4 /permissive-)
+    target_link_libraries(audastra-own-lua-launch-tests PRIVATE bcrypt)
+    add_test(NAME audastra-own-lua-launch COMMAND audastra-own-lua-launch-tests
+        $<TARGET_FILE:audastra-warcraft-launcher> $<TARGET_FILE:audastra-warcraft-bootstrap>
+        $<TARGET_FILE:audastra-runtime-fixture-war3> $<TARGET_FILE:audastra-runtime-fixture-game>)
+    set_tests_properties(audastra-own-lua-launch PROPERTIES TIMEOUT 60)
     # 显式 hidden-window 取证独立运行；默认33-case suite不启用窗口。
     add_executable(audastra-runtime-witness-tests fixtures/WitnessTests.cpp)
     add_dependencies(audastra-runtime-witness-tests audastra-warcraft-launcher audastra-warcraft-bootstrap

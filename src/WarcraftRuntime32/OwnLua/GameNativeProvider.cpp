@@ -160,6 +160,7 @@ NativeCallResult GameNativeProvider::Invoke(std::string_view name, std::span<con
         vm_->Invalidate();
         return Failure("游戏 native 触发异常，会话已停止：" + std::to_string(call.exception));
     }
+    ++invocationCount_;
     if (!vm_->Alive()) return Failure("native 返回时地图 VM 已经结束或变化。");
     if (callbackLease && (timerOwner || name == "Condition" || name == "Filter" || name == "TriggerAddAction")) {
         const auto owner = timerOwner ? timerOwner : vm_->CodeOwner(call.value);

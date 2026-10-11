@@ -20,6 +20,7 @@ public:
     [[nodiscard]] NativeCallResult Invoke(std::string_view name, std::span<const NativeValue> arguments) override;
     [[nodiscard]] std::optional<NativeCallbackResult> DispatchCode(std::uint32_t vmIndex, std::uint32_t code, bool parameters);
     void BeforeVmDestroy(std::uintptr_t vm) noexcept;
+    [[nodiscard]] std::uint64_t InvocationCount() const noexcept { return invocationCount_; }
 private:
     std::shared_ptr<GameVm127> vm_;
     std::shared_ptr<const NativeRegistry> registry_;
@@ -27,6 +28,7 @@ private:
     std::set<std::string, std::less<>> scalarTypes_;
     std::unique_ptr<NativeCodeRegistry> codes_;
     std::uint64_t callbackFailures_ = 0;
+    std::uint64_t invocationCount_ = 0;
     std::string callbackError_;
 };
 

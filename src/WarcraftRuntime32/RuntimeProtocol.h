@@ -9,7 +9,7 @@
 
 namespace Audastra::Runtime32 {
 inline constexpr std::uint32_t kMagic = 0x41555254;
-inline constexpr std::uint32_t kVersion = 5;
+inline constexpr std::uint32_t kVersion = 6;
 inline constexpr DWORD kRuntimeFailure = 0xA001;
 inline constexpr std::size_t kPathCapacity = 4096;
 inline constexpr std::size_t kLuaProbePayloadCapacity = 512 * 1024;
@@ -19,6 +19,10 @@ inline constexpr std::size_t kNonfatalBlockedPathCapacity = 4;
 inline constexpr std::array<const wchar_t*, 6> kModules = {
     L"ydbase.dll", L"lua53.dll", L"ydwar3.dll", L"yd_loader.dll", L"yd_jass_api.dll", L"yd_lua_engine.dll"};
 enum class RuntimeLayout : std::uint32_t { Flat = 0, YdweTree = 1 };
+enum class RuntimeMode : std::uint32_t { ExternalYdwe = 0, OwnedLua = 1 };
+inline bool ValidMode(RuntimeMode mode) {
+    return mode == RuntimeMode::ExternalYdwe || mode == RuntimeMode::OwnedLua;
+}
 inline bool ValidLayout(RuntimeLayout layout) {
     return layout == RuntimeLayout::Flat || layout == RuntimeLayout::YdweTree;
 }
@@ -43,11 +47,31 @@ struct BlockedWriteEvidence {
     LONG nonfatal = 0;
     LONG ready = 0;
 };
+struct OwnedLuaEvidence {
+    wchar_t mapPath[kPathCapacity]{};
+    char mapSha256[65]{};
+    char nonce[33]{};
+    // Win32游戏只接受显式 HANDLE_LIST 继承的匿名邮箱，不根据名字或PID重开。
+    std::uint32_t mailboxHandle = 0;
+    LONG hotReload = 0;
+    LONG observerInstalled = 0;
+    LONG ready = 0;
+    DWORD mainThreadId = 0;
+    DWORD nativeCount = 0;
+    DWORD modules = 0;
+    DWORD callbacks = 0;
+    DWORD polls = 0;
+    DWORD errors = 0;
+    std::uint64_t nativeCalls = 0;
+    char failureText[4096]{};
+};
 struct SharedEvidence {
     std::uint32_t magic = kMagic;
     std::uint32_t version = kVersion;
     wchar_t runtimeRoot[kPathCapacity]{};
     RuntimeLayout runtimeLayout = RuntimeLayout::Flat;
+    RuntimeMode runtimeMode = RuntimeMode::ExternalYdwe;
+    OwnedLuaEvidence ownedLua{};
     LONG hookInstalled = 0;
     LONG gameObserved = 0;
     LONG runtimeInitialized = 0;
@@ -93,7 +117,8 @@ inline SharedEvidence* OpenChannel() {
     const auto value = wcstoul(text, &end, 10);
     if (!end || *end || value == 0) return nullptr;
     auto* shared = static_cast<SharedEvidence*>(MapViewOfFile(reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(value)), FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedEvidence)));
-    if (shared && (shared->magic != kMagic || shared->version != kVersion || !ValidLayout(shared->runtimeLayout))) { UnmapViewOfFile(shared); return nullptr; }
+    if (shared && (shared->magic != kMagic || shared->version != kVersion || !ValidLayout(shared->runtimeLayout)
+        || !ValidMode(shared->runtimeMode))) { UnmapViewOfFile(shared); return nullptr; }
     return shared;
 }
 } // namespace Audastra::Runtime32

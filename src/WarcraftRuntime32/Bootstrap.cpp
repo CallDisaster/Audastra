@@ -1,6 +1,8 @@
 #include "RuntimeProtocol.h"
 #include "RuntimeFiles.h"
 #include "RuntimeLuaProbe.h"
+#include "OwnLua/OwnedLuaSession.h"
+#include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
 #include <detours.h>
 #include <cstring>
 #include <type_traits>
@@ -33,6 +35,44 @@ LONG initializeThreadId = 0;
 bool CallInitialize(FARPROC function) {
     __try { reinterpret_cast<void (WINAPI*)()>(function)(); return true; }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+void InitializeOwnedRuntime(HMODULE game) {
+    auto& owned = evidence->ownedLua;
+    const auto record = [&owned](std::string_view message) {
+        if (!LuaMailboxUtf8(message)) message = "自有 Lua 启动失败。";
+        const auto count = LuaMailboxUtf8Prefix(message, sizeof(owned.failureText) - 1);
+        std::memcpy(owned.failureText, message.data(), count); owned.failureText[count] = 0;
+    };
+    auto image = OwnLua::GameImage127::Open(game);
+    if (!image.image) { record(image.error); Fail("owned-lua-game-identity", ERROR_BAD_EXE_FORMAT); }
+    if (!owned.mailboxHandle || owned.hotReload < 0 || owned.hotReload > 1
+        || owned.mapSha256[64] || owned.nonce[32]
+        || !LuaMailboxHex(owned.mapSha256, 64) || !LuaMailboxHex(owned.nonce, 32))
+        Fail("owned-lua-launch-identity", ERROR_INVALID_DATA);
+    auto* mailbox = static_cast<LuaTestMailbox*>(MapViewOfFile(
+        reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(owned.mailboxHandle)), FILE_MAP_ALL_ACCESS, 0, 0, sizeof(LuaTestMailbox)));
+    if (!mailbox || !LuaMailboxHeader(*mailbox)) Fail("owned-lua-mailbox-view", ERROR_INVALID_DATA);
+    OwnLua::OwnedLuaSessionConfig config;
+    config.mapPath = owned.mapPath; config.mapSha256 = owned.mapSha256;
+    config.nonce = owned.nonce; config.mailbox = mailbox; config.hotReload = owned.hotReload != 0;
+    OwnLua::OwnedLuaSessionEvents events;
+    events.observe = [&owned](const OwnLua::OwnedLuaObservation& state) {
+        owned.mainThreadId = state.threadId; owned.nativeCount = state.nativeCount;
+        owned.modules = state.modules; owned.callbacks = state.callbacks; owned.polls = state.polls;
+        owned.errors = state.errors;
+        owned.nativeCalls = state.nativeCalls;
+        InterlockedExchange(&owned.ready, state.ready ? 1 : 0);
+    };
+    events.fatal = [record](std::string_view message) { record(message); Fail("owned-lua-session-failed", ERROR_INVALID_DATA); };
+    std::string error;
+    if (!OwnLua::InstallOwnedLuaSession(std::move(image.image), std::move(config), std::move(events), error)) {
+        record(error);
+        UnmapViewOfFile(mailbox);
+        Fail("owned-lua-session-install", ERROR_INVALID_DATA);
+    }
+    // 成功后映射与已安装会话由当前测试进程共同持有，不在 loader lock 下析构。
+    InterlockedExchange(&owned.observerInstalled, 1);
+    InterlockedExchange(&evidence->runtimeInitialized, 1);
 }
 void InitializeRuntime() {
     if (!InstallLuaProbeWriteGuard(evidence)) Fail("lua-probe-write-guard-install", ERROR_ACCESS_DENIED);
@@ -101,7 +141,8 @@ void ObserveModule(HMODULE loaded, bool requestedGame) {
         strcpy_s(game.actualSha256, sha.c_str());
         InterlockedExchange(&game.loaded, 1);
         InterlockedExchange(&evidence->gameObserved, 1);
-        InitializeRuntime();
+        if (evidence->runtimeMode == RuntimeMode::OwnedLua) InitializeOwnedRuntime(loaded);
+        else InitializeRuntime();
     } catch (...) { Fail("runtime-cpp-exception", ERROR_UNHANDLED_EXCEPTION); }
 }
 HMODULE WINAPI ObserveLoadLibraryA(LPCSTR name) {

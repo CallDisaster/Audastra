@@ -7,7 +7,7 @@ if(WAR3MAPEDITOR_BUILD_TESTS)
     set(runtime_targets audastra-runtime-fixture-tests audastra-runtime-witness-tests
         audastra-own-lua-protocol-tests audastra-own-lua-host-tests audastra-own-lua-native-tests
         audastra-own-lua-archive-tests audastra-own-lua-callback-tests audastra-own-lua-type-tests
-        audastra-own-lua-code-tests)
+        audastra-own-lua-code-tests audastra-own-lua-launch-tests)
 endif()
 ExternalProject_Add(audastra-runtime32
     SOURCE_DIR "${PROJECT_SOURCE_DIR}/src/WarcraftRuntime32"
