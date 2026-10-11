@@ -81,11 +81,12 @@ struct ReadLimits {
     std::uint64_t maxBytes = 32ull * 1024 * 1024;
     std::uint32_t maxEmitters = 256, maxKeys = 65536;
 };
-enum class ReadMode { Strict, PreviewSkipInvalidEmitters };
+enum class ReadMode { Strict, PreviewSkipInvalidEmitters, PreviewGameOrder };
 // 不改变 MdxModel/RenderCore。只读 PRE2/RIBB 负载；Node 的图与 TRS 仍由现有读取器提供。
 // 预览隔离仅跳过安全边界内已知局部内容错误；外层结构、未知布局和资源预算仍整次拒绝。
 // 同帧同值的窄KP2V恢复保留全部源键与原预算；Strict仍要求严格递增。
 // 预览模式的其他非全局逆序键按原版逐动作区间取值（GameOrderTrack 记录来源），全局轨迹仍须递增。
+// PreviewGameOrder 只启用上述取键规则，不隔离无效发射器；材质、数值、布局与预算仍必须有效。
 [[nodiscard]] Result<Asset> Read(std::span<const std::byte> bytes, ReadLimits limits = {},
     ReadMode mode = ReadMode::Strict);
 struct Timeline {

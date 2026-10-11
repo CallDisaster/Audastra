@@ -91,35 +91,70 @@ inline void GameOrderRanges() {
     const auto fixture=Binary(options);
     const auto strict=Read(fixture.bytes);
     Check(!strict.Succeeded() && strict.diagnostics.front().code=="PARTICLE_KEYS_INVALID","strict accepted descending KP2V");
-    const auto read=Read(fixture.bytes,{},ReadMode::PreviewSkipInvalidEmitters);
-    Check(read.Succeeded() && read.value->emitters.size()==2 && read.value->skippedEmitters.empty() &&
-        read.value->gameOrderTracks.size()==1 && read.value->recoveredVisibilityTracks.empty(),"preview did not accept game-order keys");
-    const auto& order=read.value->gameOrderTracks.front();
-    Check(order.left==2800 && order.right==2500 && order.sourceByteOffset==fixture.trackOffset && order.parameter==Parameter::Visibility &&
-        read.diagnostics.size()==1 && read.diagnostics.front().code=="PARTICLE_KEYS_GAME_ORDER_PREVIEW" &&
-        read.diagnostics.front().origin && read.diagnostics.front().origin->offset==fixture.trackOffset,"game-order source location lost");
-    const auto& asset=*read.value;
-    const auto& track=asset.emitters[0].tracks[static_cast<std::size_t>(Parameter::Visibility)];
-    Check(track.keys.size()==5 && track.keys[4].frame==2500,"source keys were sorted or removed");
-    Check(track.ranges.size()==3 && track.ranges[0].first==0 && track.ranges[0].count==2 && track.ranges[0].ascending &&
-        track.ranges[1].first==2 && track.ranges[1].count==3 && !track.ranges[1].ascending && track.ranges[2].count==0,
-        "per-sequence game ranges differ from the shared forward cursor");
-    const Vec3 fallback{.75f,0,0};
-    const auto at=[&](std::uint32_t sequence,std::uint64_t ms) {
-        Timeline clock;clock.start=options.sequences[sequence][0];clock.end=options.sequences[sequence][1];clock.sequenceIndex=sequence;
-        return Sample(track,fallback,asset,clock,ms)[0];
-    };
-    Check(at(0,0)==1 && at(0,700)==0,"sorted range lookup changed");
-    // 首键前按动作终点重查到末键（.5）；2800 时扫描越过 2800 与逆序键 2500，取 .5。
-    Check(at(1,100)==.5f && at(1,300)==1 && at(1,600)==1 && at(1,800)==.5f && at(1,900)==.5f,"descending range ordered lookup");
-    // 排在后面的早期动作：游标已越过，区间为空，取默认值。
-    Check(at(2,50)==.75f,"empty game range must use the default");
+    for(const auto mode:{ReadMode::PreviewSkipInvalidEmitters,ReadMode::PreviewGameOrder}) {
+        const auto read=Read(fixture.bytes,{},mode);
+        Check(read.Succeeded() && read.value->emitters.size()==2 && read.value->skippedEmitters.empty() &&
+            read.value->gameOrderTracks.size()==1 && read.value->recoveredVisibilityTracks.empty(),"preview did not accept game-order keys");
+        const auto& order=read.value->gameOrderTracks.front();
+        Check(order.left==2800 && order.right==2500 && order.sourceByteOffset==fixture.trackOffset && order.parameter==Parameter::Visibility &&
+            read.diagnostics.size()==1 && read.diagnostics.front().code=="PARTICLE_KEYS_GAME_ORDER_PREVIEW" &&
+            read.diagnostics.front().origin && read.diagnostics.front().origin->offset==fixture.trackOffset,"game-order source location lost");
+        const auto& asset=*read.value;
+        const auto& track=asset.emitters[0].tracks[static_cast<std::size_t>(Parameter::Visibility)];
+        Check(track.keys.size()==5 && track.keys[4].frame==2500,"source keys were sorted or removed");
+        Check(track.ranges.size()==3 && track.ranges[0].first==0 && track.ranges[0].count==2 && track.ranges[0].ascending &&
+            track.ranges[1].first==2 && track.ranges[1].count==3 && !track.ranges[1].ascending && track.ranges[2].count==0,
+            "per-sequence game ranges differ from the shared forward cursor");
+        const Vec3 fallback{.75f,0,0};
+        const auto at=[&](std::uint32_t sequence,std::uint64_t ms) {
+            Timeline clock;clock.start=options.sequences[sequence][0];clock.end=options.sequences[sequence][1];clock.sequenceIndex=sequence;
+            return Sample(track,fallback,asset,clock,ms)[0];
+        };
+        Check(at(0,0)==1 && at(0,700)==0,"sorted range lookup changed");
+        // 首键前按动作终点重查到末键（.5）；2800 时扫描越过 2800 与逆序键 2500，取 .5。
+        Check(at(1,100)==.5f && at(1,300)==1 && at(1,600)==1 && at(1,800)==.5f && at(1,900)==.5f,"descending range ordered lookup");
+        // 排在后面的早期动作：游标已越过，区间为空，取默认值。
+        Check(at(2,50)==.75f,"empty game range must use the default");
+    }
     auto global=options;global.globalSequence=0;
     const auto rejected=Read(Binary(global).bytes,{},ReadMode::PreviewSkipInvalidEmitters);
     Check(rejected.Succeeded() && rejected.value->skippedEmitters.size()==1 &&
         rejected.value->skippedEmitters[0].code=="PARTICLE_KEYS_INVALID" && rejected.value->gameOrderTracks.empty(),
         "global descending keys must stay rejected");
     std::cout<<"game_order_ranges=1 shared_cursor=1 ordered_lookup=1 empty_range_default=1 global_still_rejected=1\n";
+}
+inline void PreviewGameOrderContracts() {
+    const Options options;const auto fixture=Binary(options);
+    const auto recovered=Read(fixture.bytes,{},ReadMode::PreviewGameOrder);
+    Check(recovered.Succeeded() && recovered.value->emitters.size()==2 && recovered.value->skippedEmitters.empty() &&
+        recovered.value->recoveredVisibilityTracks.size()==1,"game-order mode lost the narrow identical-visibility recovery");
+    const auto reject=[](const std::vector<std::byte>& bytes,std::string_view code,ReadLimits limits={}) {
+        const auto result=Read(bytes,limits,ReadMode::PreviewGameOrder);
+        Check(!result.Succeeded() && !result.value && !result.diagnostics.empty() && result.diagnostics.front().code==code,
+            "game-order mode skipped an invalid emitter or weakened a structural/resource rejection");
+    };
+    for(const std::uint32_t bits:{0x7fc00001u,0x7f800000u}) {
+        auto invalid=options;invalid.keys[1].bits=invalid.keys[2].bits=bits;
+        reject(Binary(invalid).bytes,"PARTICLE_NUMBER_INVALID");
+    }
+    auto invalid=options;invalid.filter=99;reject(Binary(invalid).bytes,"PARTICLE_FILTER_UNSUPPORTED");
+    invalid=options;invalid.interpolation=4;reject(Binary(invalid).bytes,"PARTICLE_INTERPOLATION_UNSUPPORTED");
+    invalid=options;invalid.tag="XXXX";reject(Binary(invalid).bytes,"PARTICLE_TRACK_UNSUPPORTED");
+    invalid=options;invalid.globalSequence=0;reject(Binary(invalid).bytes,"PARTICLE_KEYS_INVALID");
+    invalid=options;invalid.invalidTrailingGlobal=true;reject(Binary(invalid).bytes,"PARTICLE_GLOBAL_INVALID");
+    // 逆序或非同值的重复键没有 SEQS 时不能猜动作区间；有 SEQS 的全局轨迹仍须严格递增。
+    invalid=options;invalid.keys[2].frame=89;reject(Binary(invalid).bytes,"PARTICLE_KEYS_INVALID");
+    invalid=options;invalid.keys[2].bits=std::bit_cast<std::uint32_t>(.25f);
+    reject(Binary(invalid).bytes,"PARTICLE_KEYS_INVALID");
+    invalid=options;invalid.sequences={{0,1000}};invalid.globalSequence=0;invalid.keys[2].frame=89;
+    reject(Binary(invalid).bytes,"PARTICLE_KEYS_INVALID");
+    ReadLimits limits;limits.maxKeys=static_cast<std::uint32_t>(options.keys.size()-1);
+    reject(fixture.bytes,"PARTICLE_KEY_BUDGET",limits);
+    limits={};limits.maxBytes=fixture.bytes.size()-1;reject(fixture.bytes,"PARTICLE_READ_BUDGET",limits);
+    limits={};limits.maxEmitters=1;reject(fixture.bytes,"PARTICLE_EMITTER_BUDGET",limits);
+    auto truncated=fixture.bytes;truncated.pop_back();reject(truncated,"PARTICLE_TRUNCATED");
+    Check(!Read(fixture.bytes,{},static_cast<ReadMode>(99)).Succeeded(),"unknown particle read mode accepted");
+    std::cout<<"game_order_without_skipping=1 invalid_data_still_fatal=1 global_and_budget_checks_preserved=1\n";
 }
 inline void ReadContracts() {
     const Options options;const auto fixture=Binary(options);const auto original=fixture.bytes;
@@ -173,6 +208,7 @@ inline void ReadContracts() {
     Check(!broken.Succeeded() && broken.diagnostics.front().code=="PARTICLE_TRUNCATED","recovery swallowed a later structural truncation");
     std::cout<<"visibility_same_frame_preview=1 strict_still_rejects=1 original_keys_and_offsets=1 scoped_rejections=1 budgets_preserved=1\n";
     GameOrderRanges();
+    PreviewGameOrderContracts();
 }
 template<std::size_t N> inline bool SameBits(const std::array<float,N>& left,const std::array<float,N>& right) {
     for(std::size_t i=0;i<N;++i)if(std::bit_cast<std::uint32_t>(left[i])!=std::bit_cast<std::uint32_t>(right[i]))return false;

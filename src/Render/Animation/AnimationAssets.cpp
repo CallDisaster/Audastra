@@ -445,8 +445,7 @@ Result<std::unique_ptr<ModelAnimationService::State>> ModelAnimationService::Bui
                                 !asset.parsed->materials[geoset.materialId].layers.empty();
                         }
                         asset.drawable = drawable;
-                        auto particleStatus = ReadAnimationParticleAsset(asset, resource.value->bytes,
-                            limits.enableParticles, limits.retainUnsupportedStatic);
+                        auto particleStatus = ReadAnimationParticleAsset(asset, resource.value->bytes, limits);
                         if (!particleStatus.Succeeded()) {
                             if (!limits.retainUnsupportedStatic || !OnlyErrors(particleStatus.diagnostics,
                                 [](std::string_view code) { return AnimationLocalDataFailure(code); }))

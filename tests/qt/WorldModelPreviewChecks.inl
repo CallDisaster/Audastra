@@ -113,6 +113,52 @@ void WorldViewportTests::ModelPreviewUsesGameOrderAndSubmitsMotion() {
     QCOMPARE(Sha256File(sources.archivePath).value, std::optional{sources.archiveSha});
 }
 
+void WorldViewportTests::ModelPreviewParticleGameOrderStaysStrictAboutInvalidData() {
+    using namespace Render;
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const auto root = std::filesystem::path(directory.path().toStdWString());
+    const auto model = AnimationParticleVisibilityPreviewTest::Model(false, true).bytes;
+    const auto sources = PreviewFixtureArchive(root / L"ordered.w3x", model);
+    BackendState state; active = &state;
+    auto api = PreviewBackend(true);
+    WorldModelPreview preview(nullptr, &api); preview.resize(400, 280);
+    ModelInstanceRequest request; request.modelPath = "preview-model.mdx";
+    preview.ShowSelection(QStringLiteral("original-particles"), 1, 0, {}, "original-emitter", request,
+        Result<WorldTerrainSources>::Success(sources), [] { return true; });
+    auto* player = preview.findChild<WorldAnimationPlayer*>(); QVERIFY(player);
+    auto* actions = preview.findChild<QComboBox*>(QStringLiteral("worldUnitPreviewAction")); QVERIFY(actions);
+    auto* step = preview.findChild<QPushButton*>(QStringLiteral("worldUnitPreviewStep")); QVERIFY(step);
+    auto* message = preview.findChild<QLabel*>(QStringLiteral("worldUnitPreviewMessage")); QVERIFY(message);
+    QTRY_VERIFY2_WITH_TIMEOUT(player->Ready(), qPrintable(message->text()), 5000);
+    player->SetPlaying(false); QTRY_VERIFY(!player->Busy());
+    QCOMPARE(actions->count(), 2);
+    const auto initial = player->Frame();
+    const auto uploads = state.particles.dynamicUploadCount;
+    step->click(); QTRY_VERIFY(player->Frame()->contentVersion > initial->contentVersion && !player->Busy());
+    QCOMPARE(player->Frame()->states.front().elapsedMs, std::uint64_t{33});
+    QVERIFY(!player->Frame()->poses.front().hidden);
+    QVERIFY(player->Frame()->poses.front().matrixHash != initial->poses.front().matrixHash);
+    QCOMPARE(player->Frame()->particleLinks.size(), std::size_t{1});
+    QVERIFY(player->Frame()->particleLinks.front().simulated);
+    QVERIFY(!player->Frame()->particleLinks.front().partial);
+    QVERIFY(!player->Frame()->particleVertices.empty());
+    QVERIFY(state.particles.dynamicUploadCount > uploads);
+    QCOMPARE(state.particles.vertexCount, static_cast<std::uint32_t>(player->Frame()->particleVertices.size()));
+    actions->setCurrentIndex(1);
+    QTRY_VERIFY(player->Frame()->states.front().sequenceIndex == 1 && !player->Busy());
+    QCOMPARE(player->Frame()->states.front().elapsedMs, std::uint64_t{0});
+
+    // UI 不能通过把 retainUnsupportedStatic 打开来修复：真实无效材质必须整体拒绝。
+    const auto invalid = AnimationParticleVisibilityPreviewTest::Model(true, true).bytes;
+    const auto invalidSources = PreviewFixtureArchive(root / L"invalid.w3x", invalid);
+    preview.ShowSelection(QStringLiteral("invalid-particles"), 2, 0, {}, "invalid-emitter", request,
+        Result<WorldTerrainSources>::Success(invalidSources), [] { return true; });
+    QTRY_VERIFY_WITH_TIMEOUT(message->text().contains(QStringLiteral("PARTICLE_TEXTURE_INVALID")), 5000);
+    QVERIFY(!player->Ready());
+    QCOMPARE(Sha256File(sources.archivePath).value, std::optional{sources.archiveSha});
+    QCOMPARE(Sha256File(invalidSources.archivePath).value, std::optional{invalidSources.archiveSha});
+}
+
 void WorldViewportTests::ModelPreviewRealSequences() {
     using namespace Render;
     const auto input = qEnvironmentVariable("FORGE_PREVIEW_REAL_MODEL");
