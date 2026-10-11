@@ -14,7 +14,8 @@ bool RuntimeGlobal(std::string_view name) {
 bool MapFunction(std::string_view name) {
     constexpr std::string_view names[]{"config", "main", "InitGlobals", "InitCustomTriggers", "RunInitializationTriggers",
         "InitSounds", "CreateRegions", "CreateCameras", "InitUpgrades", "InitTechTree", "CreateAllDestructables",
-        "CreateAllItems", "CreateAllUnits", "InitCustomPlayerSlots", "InitCustomTeams", "InitAllyPriorities"};
+        "CreateAllItems", "CreateAllUnits", "InitCustomPlayerSlots", "InitCustomTeams", "InitAllyPriorities",
+        "AudastraMainObjects", "AudastraMainAfterBlizzard"};
     return std::find(std::begin(names), std::end(names), name) != std::end(names);
 }
 }

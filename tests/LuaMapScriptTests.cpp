@@ -322,6 +322,50 @@ int main(int argc, char** argv) {
             "typed constant dependency absent");
         Write(root / "map.lua", generated.text);
 
+        const auto defaults = GenerateLuaMapScript(fixture.plan, fixture.document, fixture.catalog, fixture.target, {}, {});
+        Require(defaults.text == generated.text && defaults.scriptSha256 == generated.scriptSha256
+            && defaults.sourceMapSha256 == generated.sourceMapSha256 && defaults.classicMainContinuation.empty()
+            && defaults.classicObjectsContinuation.empty(),
+            "default native Lua path and source mapping must remain unchanged");
+        auto classicTarget = fixture.target;
+        std::erase_if(classicTarget.apis, [](const auto& value) {
+            return value.name == "InitBlizzard" || value.name == "SetAmbientDaySound" || value.name == "SetAmbientNightSound"
+                || value.name == "SetMapMusic" || value.name == "InitGenericPlayerSlots" || value.name == "SetPlayerSlotAvailable"
+                || value.name.starts_with("SetPlayerAllianceState");
+        });
+        const auto split = GenerateLuaMapScript(fixture.plan, fixture.document, fixture.catalog, classicTarget, {}, {true});
+        Require(split.Succeeded() && split.classicMainContinuation == kClassicLuaMainContinuation
+            && split.classicObjectsContinuation == kClassicLuaObjectsContinuation, Diagnostics(split.diagnostics));
+        for (const auto name : {"InitBlizzard", "SetAmbientDaySound", "SetAmbientNightSound", "SetMapMusic",
+                "InitGenericPlayerSlots", "SetPlayerSlotAvailable"})
+            Require(std::find(split.requiredApis.begin(), split.requiredApis.end(), name) == split.requiredApis.end(),
+                std::string("classic JASS stage must not require a Lua substitute for ") + name);
+        Require(split.text.find("function config()") == std::string::npos
+            && split.text.find("function InitCustomPlayerSlots()") == std::string::npos
+            && split.text.find("function InitCustomTeams()") == std::string::npos,
+            "classic player config is owned by the production JASS generator");
+        const auto mainBegin = split.text.find("function main()"), objects = split.text.find("function AudastraMainObjects()");
+        const auto continuation = split.text.find("function AudastraMainAfterBlizzard()");
+        const auto globalsAfter = split.text.find("InitGlobals()", continuation);
+        const auto triggersAfter = split.text.find("InitCustomTriggers()", continuation);
+        const auto initializersAfter = split.text.find("RunInitializationTriggers()", continuation);
+        Require(mainBegin != std::string::npos && objects != std::string::npos && continuation != std::string::npos
+            && split.text.find("NewSoundEnvironment(", mainBegin) < objects
+            && split.text.find("InitSounds()", objects) > objects && split.text.find("InitSounds()", objects) < continuation
+            && split.text.find("CreateAllUnits()", objects) > objects && split.text.find("CreateAllUnits()", objects) < continuation
+            && globalsAfter != std::string::npos && globalsAfter > continuation
+            && triggersAfter != std::string::npos && triggersAfter > globalsAfter
+            && initializersAfter != std::string::npos && initializersAfter > triggersAfter,
+            "classic Lua phases preserve environment, objects, globals and trigger ordering around JASS stages");
+        auto reforgedLayout = fixture.plan;
+        reforgedLayout.playerSlotCount = 24; reforgedLayout.neutralAggressive = 24; reforgedLayout.neutralPassive = 27;
+        const auto invalidClassic = GenerateLuaMapScript(reforgedLayout, fixture.document, fixture.catalog, classicTarget, {}, {true});
+        Require(!invalidClassic.Succeeded() && invalidClassic.text.empty() && invalidClassic.classicObjectsContinuation.empty()
+            && invalidClassic.classicMainContinuation.empty()
+            && std::any_of(invalidClassic.diagnostics.begin(), invalidClassic.diagnostics.end(), [](const auto& value) {
+                return value.code == "CLASSIC_LUA_PLAYER_LAYOUT";
+            }), "classic phase split rejects modern 24-slot layout without partial stages");
+
         auto plan = fixture.plan; plan.mainOrder[0] = MapInitStage::Units; Reject(fixture, plan, fixture.target, "LUA_MAP_INIT_ORDER");
         plan = fixture.plan; plan.symbols.pop_back(); Reject(fixture, plan, fixture.target, "LUA_MAP_SYMBOL_DIRECTORY");
         plan = fixture.plan; plan.symbols.front().type = "unit"; Reject(fixture, plan, fixture.target, "LUA_MAP_SYMBOL_DIRECTORY");

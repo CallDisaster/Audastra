@@ -45,8 +45,8 @@ void AppendString(std::string& target, std::string_view value) {
 
 MapWriter::MapWriter(const MapInitializationPlan& plan, const Trigger::TriggerDocument& document,
     const Trigger::UiCatalog& catalog, const LuaTargetProfile& target, std::span<const LuaCallbackBinding> callbacks,
-    LuaTriggerBuildOptions options)
-    : plan_(plan), document_(document), catalog_(catalog), target_(target), callbacks_(callbacks), options_(options) {}
+    LuaTriggerBuildOptions options, const LuaMapScriptOptions& mapOptions)
+    : plan_(plan), document_(document), catalog_(catalog), target_(target), callbacks_(callbacks), options_(options), mapOptions_(mapOptions) {}
 
 [[noreturn]] void MapWriter::Fail(std::string code, std::string message) const {
     if (!currentObject_.empty()) message = currentObject_ + ": " + message;
@@ -69,6 +69,8 @@ void MapWriter::Prepare() {
     if ((plan_.playerSlotCount != 12 && plan_.playerSlotCount != 24)
         || plan_.neutralAggressive != plan_.playerSlotCount || plan_.neutralPassive != plan_.playerSlotCount + 3)
         Fail("LUA_MAP_PLAYER_LAYOUT", "玩家与中立槽位不是显式支持的12/24槽位布局。");
+    if (mapOptions_.splitClassicMainForJass && plan_.playerSlotCount != 12)
+        Fail("CLASSIC_LUA_PLAYER_LAYOUT", "经典JASS/Lua阶段衔接只支持12个玩家槽。");
     for (const auto& api : target_.apis) apis_.emplace(api.name, &api);
     for (const auto& constant : target_.constants) constants_.emplace(constant.name, constant.type);
     for (const auto& [name, parent] : target_.handleTypes) parents_.emplace(name, parent);
@@ -540,12 +542,23 @@ void MapWriter::Main() {
         Call("EnableWeatherEffect", {Api("AddWeatherEffect", "weathereffect", {rect, Rawcode(weather)}), Boolean(true)});
     }
     Call("NewSoundEnvironment", {String(environment.soundEnvironment.empty() ? "Default" : environment.soundEnvironment)});
-    Call("SetAmbientDaySound", {String(plan_.ambientSound + "Day")});
-    Call("SetAmbientNightSound", {String(plan_.ambientSound + "Night")});
-    Call("SetMapMusic", {String("Music"), Boolean(true), Integer(0)});
+    if (mapOptions_.splitClassicMainForJass) {
+        // 两个环境音BJ写入原版昼夜触发器所依赖的JASS全局；必须交给JASS入口执行。
+        End();
+        result_.classicObjectsContinuation = kClassicLuaObjectsContinuation;
+        Begin(kClassicLuaObjectsContinuation);
+    } else {
+        Call("SetAmbientDaySound", {String(plan_.ambientSound + "Day")});
+        Call("SetAmbientNightSound", {String(plan_.ambientSound + "Night")});
+        Call("SetMapMusic", {String("Music"), Boolean(true), Integer(0)});
+    }
     currentOrigin_ = {};
     for (const auto stage : plan_.mainOrder) {
-        if (stage == MapInitStage::Blizzard) Call("InitBlizzard");
+        if (stage == MapInitStage::Blizzard && mapOptions_.splitClassicMainForJass) {
+            End();
+            result_.classicMainContinuation = kClassicLuaMainContinuation;
+            Begin(kClassicLuaMainContinuation);
+        } else if (stage == MapInitStage::Blizzard) Call("InitBlizzard");
         else Line(std::string(kFunctions[static_cast<std::size_t>(stage)]) + "()");
     }
     End();
@@ -591,6 +604,10 @@ Result<std::string> ComputeLuaMapSourceMapSha256(const LuaMapScriptResult& resul
     if (!scriptHash.Succeeded()) return scriptHash;
     if (*scriptHash.value != result.scriptSha256)
         return failure("LUA_MAP_SCRIPT_CHANGED", "完整Lua实际字节与生成时的SHA不一致。");
+    if (result.classicObjectsContinuation.empty() != result.classicMainContinuation.empty()
+        || (!result.classicObjectsContinuation.empty() && result.classicObjectsContinuation != kClassicLuaObjectsContinuation)
+        || (!result.classicMainContinuation.empty() && result.classicMainContinuation != kClassicLuaMainContinuation))
+        return failure("CLASSIC_LUA_CONTINUATION_INVALID", "经典Lua初始化阶段入口名称无效或缺失。");
     const auto validRange = [&](std::size_t offset, std::size_t length) {
         return length != 0 && offset <= result.text.size() && length <= result.text.size() - offset;
     };
@@ -608,6 +625,11 @@ Result<std::string> ComputeLuaMapSourceMapSha256(const LuaMapScriptResult& resul
             return failure("LUA_MAP_SOURCE_SPAN_INVALID", "对象来源映射范围或身份无效。");
     }
     std::string identity = "forge-complete-lua-source-map-v1:" + *scriptHash.value;
+    if (!result.classicMainContinuation.empty()) {
+        AppendString(identity, "classic-jass-init-split-v1");
+        AppendString(identity, result.classicObjectsContinuation);
+        AppendString(identity, result.classicMainContinuation);
+    }
     AppendString(identity, result.targetSha256);
     AppendNumber(identity, result.sourceSpans.size());
     for (const auto& span : result.sourceSpans) {
@@ -657,10 +679,15 @@ LuaMapScriptResult MapWriter::Run() {
         const auto triggerOffset = out_.Size();
         out_.Raw(result_.triggers.text);
         for (auto span : result_.triggers.sourceSpans) { span.byteOffset += triggerOffset; result_.sourceSpans.push_back(span); }
-        Sounds(); Regions(); Cameras(); Destructables(); Items(); Units(); Upgrades(); TechTree(); Players(); Main(); Config();
+        Sounds(); Regions(); Cameras(); Destructables(); Items(); Units(); Upgrades(); TechTree();
+        if (!mapOptions_.splitClassicMainForJass) Players();
+        Main();
+        if (!mapOptions_.splitClassicMainForJass) Config();
         Finish();
         result_.diagnostics.push_back({DiagnosticSeverity::Warning, "Script.LuaMap", "LUA_MAP_RUNTIME_UNVERIFIED",
-            "已生成整图config/main、对象初始化与T；实际Lua执行的native替身不是游戏或联机签收，实数不承诺经典float32逐位等价。", {}});
+            mapOptions_.splitClassicMainForJass
+                ? "已生成经典Lua的环境、对象与T阶段；必须与JASS配置和原版初始化入口成套保存，仍需真实游戏核验。"
+                : "已生成整图config/main、对象初始化与T；实际Lua执行的native替身不是游戏或联机签收，实数不承诺经典float32逐位等价。", {}});
     } catch (const Diagnostic& failure) {
         result_.diagnostics.push_back(failure);
     } catch (const std::bad_alloc&) {
@@ -671,6 +698,8 @@ LuaMapScriptResult MapWriter::Run() {
     result_.requiredConstants.assign(requiredConstants_.begin(), requiredConstants_.end());
     if (!result_.Succeeded()) {
         result_.text.clear();
+        result_.classicObjectsContinuation.clear();
+        result_.classicMainContinuation.clear();
         result_.sourceSpans.clear(); result_.objectSpans.clear();
         result_.scriptSha256.clear(); result_.sourceMapSha256.clear();
     }
@@ -687,7 +716,7 @@ bool LuaMapScriptResult::Succeeded() const noexcept {
 }
 LuaMapScriptResult GenerateLuaMapScript(const MapInitializationPlan& plan, const Trigger::TriggerDocument& document,
     const Trigger::UiCatalog& catalog, const LuaTargetProfile& target, std::span<const LuaCallbackBinding> callbacks,
-    LuaTriggerBuildOptions options) {
-    return lua::MapWriter(plan, document, catalog, target, callbacks, options).Run();
+    LuaTriggerBuildOptions options, const LuaMapScriptOptions& mapOptions) {
+    return lua::MapWriter(plan, document, catalog, target, callbacks, options, mapOptions).Run();
 }
 } // namespace War3Map::Script
