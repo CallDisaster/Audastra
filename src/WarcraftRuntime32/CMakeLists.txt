@@ -31,6 +31,13 @@ endforeach()
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(audastra-own-lua-protocol-tests fixtures/OwnLuaProtocolTests.cpp
+        OwnLua/NativeSignature.cpp OwnLua/LuaMailboxRuntime.cpp)
+    target_include_directories(audastra-own-lua-protocol-tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../../include")
+    target_compile_definitions(audastra-own-lua-protocol-tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(audastra-own-lua-protocol-tests PRIVATE /utf-8 /W4 /permissive-)
+    add_test(NAME audastra-own-lua-protocol COMMAND audastra-own-lua-protocol-tests)
+    set_tests_properties(audastra-own-lua-protocol PROPERTIES TIMEOUT 30)
     add_executable(audastra-runtime-fixture-war3 fixtures/FakeWar3.cpp)
     set_target_properties(audastra-runtime-fixture-war3 PROPERTIES OUTPUT_NAME war3 RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/fixtures")
     add_library(audastra-runtime-fixture-game SHARED fixtures/FakeGame.cpp fixtures/FakeGame.def)

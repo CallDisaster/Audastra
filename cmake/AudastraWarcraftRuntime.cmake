@@ -4,7 +4,7 @@ set(AUDASTRA_RUNTIME32_BINARY_DIR "${CMAKE_BINARY_DIR}/warcraft-runtime32")
 set(AUDASTRA_RUNTIME32_OUTPUT_DIR "${AUDASTRA_RUNTIME32_BINARY_DIR}/$<CONFIG>")
 set(runtime_targets audastra-warcraft-launcher audastra-warcraft-bootstrap)
 if(WAR3MAPEDITOR_BUILD_TESTS)
-    set(runtime_targets audastra-runtime-fixture-tests audastra-runtime-witness-tests)
+    set(runtime_targets audastra-runtime-fixture-tests audastra-runtime-witness-tests audastra-own-lua-protocol-tests)
 endif()
 ExternalProject_Add(audastra-runtime32
     SOURCE_DIR "${PROJECT_SOURCE_DIR}/src/WarcraftRuntime32"
