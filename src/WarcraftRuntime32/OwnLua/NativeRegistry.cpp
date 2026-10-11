@@ -40,6 +40,7 @@ bool NativeRegistry::Observe(std::string_view name, std::string_view signatureTe
             + DescribeNativeRegistration(entries_.size(), name, signatureText, function);
         return false;
     };
+    if (!Collecting()) return fail(Sealed() ? "sealed" : "registration-phase", "native 表当前不允许修改。");
     if (!NativeIdentifier(name)) return fail("name", "native 注册名称无效。");
     const auto signature = ParseNativeSignature(signatureText);
     if (!signature) return fail("signature", "native 注册签名无效。");
@@ -54,6 +55,33 @@ bool NativeRegistry::Observe(std::string_view name, std::string_view signatureTe
     entries_.emplace(key, NativeRegistration{key, *signature, function});
     return true;
 }
+
+bool NativeRegistry::Advance(Phase expected, Phase next) {
+    if (failed_) return false;
+    if (phase_ != expected) {
+        failed_ = true;
+        error_ = "native 登记阶段顺序无效，不能复用不完整或已交给 Lua 的快照。";
+        return false;
+    }
+    phase_ = next;
+    return true;
+}
+bool NativeRegistry::CompleteStock() { return Advance(Phase::Stock, Phase::StockReady); }
+bool NativeRegistry::BeginSupplement() { return Advance(Phase::StockReady, Phase::Supplement); }
+bool NativeRegistry::CompleteSupplement() { return Advance(Phase::Supplement, Phase::SupplementReady); }
+bool NativeRegistry::Seal() {
+    if (failed_) return false;
+    if (phase_ == Phase::Sealed) return true;
+    // 某些脚本入口只使用 stock 表；只接受已经完整退出的明确登记阶段。
+    return Advance(phase_ == Phase::StockReady ? Phase::StockReady : Phase::SupplementReady, Phase::Sealed);
+}
+bool NativeRegistry::Collecting() const noexcept {
+    return !failed_ && (phase_ == Phase::Stock || phase_ == Phase::Supplement);
+}
+bool NativeRegistry::Ready() const noexcept {
+    return !failed_ && (phase_ == Phase::StockReady || phase_ == Phase::SupplementReady || phase_ == Phase::Sealed);
+}
+bool NativeRegistry::Sealed() const noexcept { return phase_ == Phase::Sealed; }
 
 const NativeRegistration* NativeRegistry::Find(std::string_view name) const noexcept {
     if (failed_) return nullptr;

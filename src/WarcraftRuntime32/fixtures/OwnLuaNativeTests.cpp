@@ -153,6 +153,49 @@ void NativeCalls() {
         "registration refusal distinguishes the null function address");
 }
 
+void RegistrationPhases() {
+    NativeRegistry registry;
+    Check(registry.Collecting() && !registry.Ready() && !registry.Sealed(), "stock registration starts unready");
+    Check(registry.Observe("Stock", "()I", 1) && registry.CompleteStock(), "complete stock batch");
+    Check(!registry.Collecting() && registry.Ready(), "between batches does not permit arbitrary registration");
+    Check(registry.BeginSupplement() && registry.Collecting() && !registry.Ready(), "supplement suspends readiness");
+    Check(registry.Observe("Extra", "(S)V", 2) && registry.CompleteSupplement(), "complete explicit supplement batch");
+    Check(registry.Size() == 2 && registry.Ready() && !registry.Collecting(), "both batches share one complete registry");
+    Check(registry.Seal() && registry.Sealed() && registry.Ready() && !registry.Collecting(), "first Lua entry freezes registry");
+    const NativeRegistry& providerView = registry;
+    Check(providerView.Find("Stock") && providerView.Find("Extra") && registry.Seal(), "repeated module entry preserves frozen lookup");
+    Check(!registry.Observe("Stock", "()I", 1) && !registry.Valid() && !providerView.Find("Stock")
+        && registry.Error().find("gate=sealed") != std::string_view::npos,
+        "even identical registration after Lua binding invalidates the shared provider snapshot");
+
+    NativeRegistry between;
+    Check(between.CompleteStock() && !between.Observe("Outside", "()V", 1)
+        && between.Error().find("gate=registration-phase") != std::string_view::npos,
+        "known signature outside an explicit batch still fails");
+    NativeRegistry tooEarly;
+    Check(!tooEarly.BeginSupplement() && !tooEarly.Valid(), "supplement requires completed stock batch");
+    NativeRegistry partialStock;
+    Check(!partialStock.Seal() && !partialStock.Valid(), "Lua cannot bind during stock registration");
+    NativeRegistry partialSupplement;
+    Check(partialSupplement.CompleteStock() && partialSupplement.BeginSupplement()
+        && !partialSupplement.Seal() && !partialSupplement.Valid(), "Lua cannot bind a partial supplement");
+    NativeRegistry nested;
+    Check(nested.CompleteStock() && nested.BeginSupplement() && !nested.BeginSupplement() && !nested.Valid(),
+        "nested supplement fails rather than reusing the collecting batch");
+    NativeRegistry repeated;
+    Check(repeated.CompleteStock() && repeated.BeginSupplement() && repeated.CompleteSupplement()
+        && !repeated.BeginSupplement() && !repeated.Valid(), "completed supplement cannot begin again");
+    NativeRegistry bound;
+    Check(bound.CompleteStock() && bound.Seal() && !bound.BeginSupplement() && !bound.Valid(),
+        "stock-only Lua binding also forbids later supplemental mutation");
+    NativeRegistry corrupt;
+    Check(corrupt.CompleteStock() && corrupt.BeginSupplement() && !corrupt.Observe("Bad", "(?)V", 1),
+        "bad supplemental entry latches its original refusal");
+    const std::string firstFailure(corrupt.Error());
+    Check(!corrupt.CompleteSupplement() && !corrupt.Ready() && corrupt.Error() == firstFailure,
+        "ending a failed batch cannot restore readiness or overwrite the first error");
+}
+
 void ConversionAndLifetimes() {
     const auto provider = std::make_shared<FixtureProvider>();
     {
@@ -254,7 +297,7 @@ void GlobalReads() {
 
 int main() {
     try {
-        NativeCalls(); ConversionAndLifetimes(); GlobalReads();
+        NativeCalls(); RegistrationPhases(); ConversionAndLifetimes(); GlobalReads();
         std::cout << "Own Lua native conversions passed; original cdecl/handle fixture only; game_evidence=0\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

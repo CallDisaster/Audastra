@@ -60,7 +60,7 @@ GameNativeProvider::GameNativeProvider(std::shared_ptr<GameVm127> vm, std::share
     }
 }
 std::uint64_t GameNativeProvider::Generation() const noexcept {
-    return vm_ && registry_ && registry_->Valid() && types_ ? vm_->Generation() : 0;
+    return vm_ && registry_ && registry_->Valid() && registry_->Sealed() && types_ ? vm_->Generation() : 0;
 }
 std::optional<NativeSignature> GameNativeProvider::Lookup(std::string_view name) const {
     if (!Generation()) return {};
