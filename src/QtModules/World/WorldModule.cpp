@@ -756,6 +756,9 @@ void WorldModule::RefreshMapEdits() {
         else needsRefresh_ = true;
     }
     RefreshPlacements();
+    // WPM 草稿和撤销不换 W3E 快照；仍须按会话修订刷新当前通行格标记。
+    if (CurrentTool() == Tool::Terrain && CurrentBrushKind() == MapData::TerrainBrushKind::PathingRestriction)
+        UpdateOverlay();
 }
 
 bool WorldModule::RefreshEnvironment() {

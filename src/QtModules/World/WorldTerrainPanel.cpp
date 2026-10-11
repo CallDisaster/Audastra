@@ -117,6 +117,11 @@ public:
             path.moveTo(4, 12); path.lineTo(20, 12); path.moveTo(12, 4); path.lineTo(12, 20);
             painter->fillRect(QRectF(4, 4, 8, 8), soft); painter->fillRect(QRectF(12, 12, 8, 8), soft);
             break;
+        case MapData::TerrainBrushKind::PathingRestriction:
+            path.addRect(QRectF(4, 4, 16, 16));
+            path.moveTo(4, 20); path.lineTo(20, 4);
+            path.moveTo(4, 4); path.lineTo(20, 20);
+            break;
         }
         painter->drawPath(path);
         painter->restore();
@@ -189,7 +194,8 @@ QWidget* WorldModule::BuildTerrainPage() {
         std::tuple{tr("悬崖类型"), MapData::TerrainBrushKind::CliffTexture, "CliffTexture"},
         std::tuple{tr("水面高度"), MapData::TerrainBrushKind::WaterHeight, "WaterHeight"},
         std::tuple{tr("直坡"), MapData::TerrainBrushKind::Ramp, "Ramp"},
-        std::tuple{tr("边界"), MapData::TerrainBrushKind::Boundary, "Boundary"}};
+        std::tuple{tr("边界"), MapData::TerrainBrushKind::Boundary, "Boundary"},
+        std::tuple{tr("通行限制"), MapData::TerrainBrushKind::PathingRestriction, "PathingRestriction"}};
     for (std::size_t index = 0; index < brushes.size(); ++index) {
         const auto& [label, kind, name] = brushes[index];
         auto* button = new QToolButton(terrainPalette_);
@@ -308,6 +314,7 @@ QWidget* WorldModule::BuildTerrainPage() {
     terrainBoundaryStatus_->setObjectName(QStringLiteral("worldTerrainBoundaryStatus"));
     terrainBoundaryStatus_->setWordWrap(true); boundary->addWidget(terrainBoundaryStatus_);
     column->addWidget(terrainBoundarySection_);
+    column->addWidget(BuildPathingRestrictionControls(terrainPalette_));
     column->addSpacing(8);
 
     // 尺寸：半径滑条 + 数值，形状分段
@@ -518,6 +525,7 @@ void WorldModule::UpdateTerrainBrushControls() {
         std::pair{terrainRampSection_, kind == MapData::TerrainBrushKind::Ramp},
         std::pair{terrainBlightSection_, kind == MapData::TerrainBrushKind::Blight},
         std::pair{terrainBoundarySection_, kind == MapData::TerrainBrushKind::Boundary},
+        std::pair{terrainPathingSection_, kind == MapData::TerrainBrushKind::PathingRestriction},
         std::pair{terrainStrengthSection_, shaping}};
     for (const auto& [section, shown] : sections) {
         const bool appearing = shown && section->isHidden();

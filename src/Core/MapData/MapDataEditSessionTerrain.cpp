@@ -242,6 +242,18 @@ Status MapDataEditSession::SetPathing(std::span<const std::byte> bytes) {
 
 Status MapDataEditSession::SetTerrainAndPathing(std::span<const std::byte> terrainBytes,
     std::span<const std::byte> pathingBytes) {
+    return SetTerrainAndPathingInternal(terrainBytes, pathingBytes, {});
+}
+
+Status MapDataEditSession::SetTerrainAndPathingDraft(std::span<const std::byte> terrainBytes,
+    std::span<const std::byte> pathingBytes, std::span<const std::byte> restrictionDraft) {
+    if (restrictionDraft.empty())
+        return Status::Failure("MapData.Edit", "PATHING_DRAFT_MISSING", "附加通行限制缺少工程声明，拒绝恢复。");
+    return SetTerrainAndPathingInternal(terrainBytes, pathingBytes, restrictionDraft);
+}
+
+Status MapDataEditSession::SetTerrainAndPathingInternal(std::span<const std::byte> terrainBytes,
+    std::span<const std::byte> pathingBytes, std::span<const std::byte> restrictionDraft) {
     if (!terrain_ || !terrainOriginal_ || !pathing_ || !pathingOriginal_)
         return Status::Failure("MapData.Edit", "MAP_PATHING_UNAVAILABLE",
             "须先附上唯一的源地形与源通行性，才能联合恢复两种覆盖");
@@ -259,7 +271,14 @@ Status MapDataEditSession::SetTerrainAndPathing(std::span<const std::byte> terra
         || std::bit_cast<std::uint64_t>(next.header.offset) != std::bit_cast<std::uint64_t>(header.offset))
         return Status::Failure("MapData.Edit", "MAP_TERRAIN_SHAPE_CHANGED",
             "地形覆盖的尺寸或原点与源地形不同，不能联合恢复");
-    if (const auto status = ValidatePathingOverlay(pathingBytes, *pathingOriginal_, *terrainOriginal_, next);
+    std::vector<std::byte> withoutRestrictions;
+    if (!restrictionDraft.empty()) {
+        auto checked = StripPathingRestrictionDraft(*terrainOriginal_, *pathingOriginal_, pathingBytes, restrictionDraft);
+        if (!checked.Succeeded() || !checked.value) return {checked.diagnostics};
+        withoutRestrictions = std::move(*checked.value);
+    }
+    const auto rawOverlay = restrictionDraft.empty() ? pathingBytes : std::span<const std::byte>(withoutRestrictions);
+    if (const auto status = ValidatePathingOverlay(rawOverlay, *pathingOriginal_, *terrainOriginal_, next);
         !status.Succeeded()) return status;
     Command command;
     command.terrain = DiffChunks<TerrainChunk>(*terrain_, next, 0, 0, header.width, header.height);
@@ -302,6 +321,8 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
     if (!terrain_) return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "MAP_TERRAIN_UNAVAILABLE", "地形不可编辑");
     if (terrainSourceRevision_ == std::numeric_limits<std::uint64_t>::max())
         return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "TERRAIN_SOURCE_REVISION_EXHAUSTED", "地形来源修订已用尽，请重新打开地图。");
+    if (brush.kind == TerrainBrushKind::PathingRestriction)
+        return PreparePathingRestrictionEdit(brush, points, followDoodads, inspectSaveGate);
     if (brush.kind == TerrainBrushKind::Blight && !pathing_)
         return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "MAP_PATHING_UNAVAILABLE",
             "荒芜笔刷需要唯一且可解析的源 WPM；不能让地形与通行性数据失配");

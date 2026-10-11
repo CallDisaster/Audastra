@@ -829,7 +829,9 @@ void WorldModule::StartTerrainStroke(double x, double y) {
     brush.size = static_cast<std::uint32_t>(terrainRadius_->value());
     brush.strength = static_cast<float>(terrainStrength_->value());
     brush.value = (brush.kind == MapData::TerrainBrushKind::Ramp ? terrainRampModes_
-        : brush.kind == MapData::TerrainBrushKind::Boundary ? terrainBoundaryModes_ : terrainBlightModes_)->checkedId() != 0;
+        : brush.kind == MapData::TerrainBrushKind::Boundary ? terrainBoundaryModes_
+        : brush.kind == MapData::TerrainBrushKind::PathingRestriction ? terrainPathingModes_ : terrainBlightModes_)->checkedId() != 0;
+    brush.pathingRestrictions = static_cast<std::uint8_t>(terrainPathingTypes_->checkedId());
     brush.levelDelta = terrainCliffDeltas_->checkedId();
     brush.cliffTexture = static_cast<std::uint8_t>(terrainCliffTexture_->currentIndex());
     brush.waterHeight = static_cast<float>(terrainWaterHeight_->value());
@@ -847,6 +849,11 @@ void WorldModule::StartTerrainStroke(double x, double y) {
         return;
     }
     const MapData::TerrainStrokePoint first{x, y};
+    if (brush.kind == MapData::TerrainBrushKind::PathingRestriction
+        && (!project_.mapEdits_->HasTerrainPathing() || !MapData::GetPathingRestrictionFootprint(source->header, brush, first))) {
+        selectionStatus_->setText(tr("通行图缺失或落点超出通行格范围，未修改地图"));
+        return;
+    }
     if (brush.kind == MapData::TerrainBrushKind::Ramp) {
         const auto plan = MapData::PlanTerrainRamp(*source, first);
         if (!plan.Succeeded()) {
@@ -862,6 +869,7 @@ void WorldModule::StartTerrainStroke(double x, double y) {
     }
     brush.anchor = *anchor.value;
     strokeBase_ = std::move(source);
+    strokeRevision_ = project_.mapEdits_->Revision();
     strokeBrush_ = std::move(brush);
     strokePoints_.clear();
     ExtendTerrainStroke(x, y);
@@ -895,22 +903,32 @@ void WorldModule::ExtendTerrainStroke(double x, double y) {
         return;
     }
     const auto& header = strokeBase_->header;
+    const bool pathing = strokeBrush_.kind == MapData::TerrainBrushKind::PathingRestriction;
+    if (pathing && !MapData::GetPathingRestrictionFootprint(header, strokeBrush_, {x, y})) {
+        CancelTerrainStroke();
+        selectionStatus_->setText(tr("落点超出通行格范围，本笔已取消"));
+        return;
+    }
+    const double stepSize = pathing ? MapData::kPathingCellSize : MapData::TerrainGridSnapshot::tileSize;
     const auto grid = [&](double world, float offset, std::uint32_t extent) {
-        const double coordinate = (world - offset) / MapData::TerrainGridSnapshot::tileSize;
-        const double snapped = std::round(coordinate);
+        const double coordinate = (world - offset) / stepSize;
+        const double snapped = pathing ? std::floor(coordinate) : std::round(coordinate);
         return static_cast<int>(std::clamp(snapped, 0.0, static_cast<double>(extent - 1)));
     };
-    const int tx = grid(x, header.offset[0], header.width), ty = grid(y, header.offset[1], header.height);
+    const auto width = pathing ? (header.width - 1) * 4 : header.width;
+    const auto height = pathing ? (header.height - 1) * 4 : header.height;
+    const int tx = grid(x, header.offset[0], width), ty = grid(y, header.offset[1], height);
     const auto point = [&](int gx, int gy) {
-        return MapData::TerrainStrokePoint{header.offset[0] + gx * double(MapData::TerrainGridSnapshot::tileSize),
-            header.offset[1] + gy * double(MapData::TerrainGridSnapshot::tileSize)};
+        const double center = pathing ? 0.5 : 0;
+        return MapData::TerrainStrokePoint{header.offset[0] + (gx + center) * stepSize,
+            header.offset[1] + (gy + center) * stepSize};
     };
     bool added = false;
     if (strokePoints_.empty()) { strokePoints_.push_back(point(tx, ty)); added = true; }
     else {
         const auto& last = strokePoints_.back();
-        int gx = grid(last.x, header.offset[0], header.width);
-        int gy = grid(last.y, header.offset[1], header.height);
+        int gx = grid(last.x, header.offset[0], width);
+        int gy = grid(last.y, header.offset[1], height);
         const int dx = std::abs(tx - gx), dy = std::abs(ty - gy);
         int err = dx - dy;
         const int sx = gx < tx ? 1 : -1, sy = gy < ty ? 1 : -1;
@@ -921,9 +939,17 @@ void WorldModule::ExtendTerrainStroke(double x, double y) {
             strokePoints_.push_back(point(gx, gy));
             added = true;
         }
-        if (strokePoints_.size() == 65536) selectionStatus_->setText(tr("笔划已达到 65536 个采样点，请松开后继续"));
+        if (strokePoints_.size() == 65536) {
+            if (pathing && (gx != tx || gy != ty)) {
+                CancelTerrainStroke(); selectionStatus_->setText(tr("通行笔划超过采样预算，本笔已取消")); return;
+            }
+            selectionStatus_->setText(tr("笔划已达到 65536 个采样点，请松开后继续"));
+        }
     }
-    if (added) QueueTerrainRender(strokeBase_, true);
+    if (added) {
+        if (pathing) UpdateOverlay();
+        else QueueTerrainRender(strokeBase_, true);
+    }
 }
 
 void WorldModule::FinishTerrainStroke() {
@@ -931,20 +957,27 @@ void WorldModule::FinishTerrainStroke() {
         CancelTerrainStroke(); return;
     }
     const auto before = project_.mapEdits_->Revision();
+    const bool pathing = strokeBrush_.kind == MapData::TerrainBrushKind::PathingRestriction;
+    if (pathing && before != strokeRevision_) {
+        CancelTerrainStroke(); selectionStatus_->setText(tr("通行性来源已变化，请重新落笔")); return;
+    }
     auto edited = project_.mapEdits_->EditTerrain(strokeBrush_, strokePoints_, true);
     strokeBase_.reset(); strokePoints_.clear();
-    resumeBrushAfterRender_ = terrainToggle_ && terrainToggle_->isChecked();
-    if (resumeBrushAfterRender_) terrainToggle_->setChecked(false);
-    if (terrainToggle_) terrainToggle_->setEnabled(false);
+    if (!pathing) {
+        resumeBrushAfterRender_ = terrainToggle_ && terrainToggle_->isChecked();
+        if (resumeBrushAfterRender_) terrainToggle_->setChecked(false);
+        if (terrainToggle_) terrainToggle_->setEnabled(false);
+    }
     UpdateSelectionText();
     if (!edited.Succeeded()) {
         project_.AddDiagnostics(edited.diagnostics);
         selectionStatus_->setText(tr("地形未修改：%1").arg(WorldDiagnosticText(edited.diagnostics)));
-        QueueTerrainRender(project_.mapEdits_->Terrain(), false);
+        if (!pathing) QueueTerrainRender(project_.mapEdits_->Terrain(), false);
         return;
     }
     const auto next = project_.mapEdits_->Terrain();
-    QueueTerrainRender(next, false);
+    if (pathing) UpdateOverlay();
+    else QueueTerrainRender(next, false);
     if (project_.mapEdits_->Revision() == before) return; // 未改变字节，不生成空撤销项。
     terrainPathingPending_ = !project_.mapEdits_->VerifyTerrainPathingForSave().Succeeded();
     UpdateStatusIndicators();
@@ -958,6 +991,9 @@ void WorldModule::FinishTerrainStroke() {
 void WorldModule::CancelTerrainStroke() {
     if (!strokeBase_) return;
     strokeBase_.reset(); strokePoints_.clear();
+    if (strokeBrush_.kind == MapData::TerrainBrushKind::PathingRestriction) {
+        UpdateOverlay(); UpdateSelectionText(); return;
+    }
     resumeBrushAfterRender_ = terrainToggle_ && terrainToggle_->isChecked();
     if (resumeBrushAfterRender_) terrainToggle_->setChecked(false);
     if (terrainToggle_) terrainToggle_->setEnabled(false);
@@ -1064,14 +1100,18 @@ void WorldModule::UpdateOverlay() {
     }
     if (CurrentTool() == Tool::Terrain && CurrentBrushKind() == MapData::TerrainBrushKind::Boundary)
         AppendTerrainBoundaryOverlay(lines);
+    if (CurrentTool() == Tool::Terrain && CurrentBrushKind() == MapData::TerrainBrushKind::PathingRestriction)
+        AppendPathingRestrictionOverlay(lines);
     // 笔刷落点：吸附到最近顶点，按实际作用范围画出（半径外半格为边界）。
     if (brushCursor_ && terrain && CurrentTool() == Tool::Terrain) {
-        const double size = MapData::TerrainGridSnapshot::tileSize;
         MapData::TerrainBrush brush;
         brush.kind = CurrentBrushKind();
         brush.size = static_cast<std::uint32_t>(terrainRadius_->value());
-        if (const auto footprint = MapData::GetTerrainBrushFootprint(*terrain, brush,
-                {(*brushCursor_)[0], (*brushCursor_)[1]})) {
+        const bool pathing = brush.kind == MapData::TerrainBrushKind::PathingRestriction;
+        const double size = pathing ? MapData::kPathingCellSize : MapData::TerrainGridSnapshot::tileSize;
+        const MapData::TerrainStrokePoint point{(*brushCursor_)[0], (*brushCursor_)[1]};
+        if (const auto footprint = pathing ? MapData::GetPathingRestrictionFootprint(terrain->header, brush, point)
+                                          : MapData::GetTerrainBrushFootprint(*terrain, brush, point)) {
             const double cx = footprint->centerX, cy = footprint->centerY, extent = footprint->radius;
             if (brush.kind == MapData::TerrainBrushKind::Ramp) {
                 const auto& origin = terrain->header.offset;

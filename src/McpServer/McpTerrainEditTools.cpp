@@ -107,7 +107,8 @@ TerrainBrush Brush(const QJsonValue& value) {
         {"lower", TerrainBrushKind::Lower}, {"plateau", TerrainBrushKind::Plateau}, {"smooth", TerrainBrushKind::Smooth},
         {"cliff_level", TerrainBrushKind::CliffLevel}, {"noise", TerrainBrushKind::Noise},
         {"cliff_texture", TerrainBrushKind::CliffTexture}, {"water_height", TerrainBrushKind::WaterHeight},
-        {"ramp", TerrainBrushKind::Ramp}, {"boundary", TerrainBrushKind::Boundary}};
+        {"ramp", TerrainBrushKind::Ramp}, {"boundary", TerrainBrushKind::Boundary},
+        {"pathing_restriction", TerrainBrushKind::PathingRestriction}};
     const auto matched = std::find_if(std::begin(kinds), std::end(kinds), [&](const auto& entry) { return kind == entry.first; });
     if (matched == std::end(kinds)) throw ArgumentError("TERRAIN_BRUSH_KIND", "未知地形笔刷；浅水和深水生成尚不支持。");
     TerrainBrush brush; brush.kind = matched->second; brush.size = 1;
@@ -121,8 +122,17 @@ TerrainBrush Brush(const QJsonValue& value) {
             brush.shape = shape == "square" ? TerrainBrushShape::Square : TerrainBrushShape::Circle;
         }
     }
-    if (brush.kind == TerrainBrushKind::Blight || brush.kind == TerrainBrushKind::Ramp || brush.kind == TerrainBrushKind::Boundary) {
+    if (brush.kind == TerrainBrushKind::Blight || brush.kind == TerrainBrushKind::Ramp
+        || brush.kind == TerrainBrushKind::Boundary || brush.kind == TerrainBrushKind::PathingRestriction) {
         allowed.insert("value", {}); brush.value = Boolean(object, "value", true);
+    }
+    if (brush.kind == TerrainBrushKind::PathingRestriction) {
+        allowed.insert("blocked_type", {});
+        const auto type = Text(object, "blocked_type", 8);
+        if (type == "walk") brush.pathingRestrictions = 0x02;
+        else if (type == "fly") brush.pathingRestrictions = 0x04;
+        else if (type == "build") brush.pathingRestrictions = 0x08;
+        else throw ArgumentError("PATHING_RESTRICTION_FLAGS", "blocked_type 只接受 walk、fly 或 build。");
     }
     if (brush.kind == TerrainBrushKind::Raise || brush.kind == TerrainBrushKind::Lower
         || brush.kind == TerrainBrushKind::Noise || brush.kind == TerrainBrushKind::Smooth) {
@@ -162,7 +172,9 @@ QJsonObject SampleJson(const TerrainPointSample& point) {
     const auto& vertex = point.vertex;
     QJsonObject pathing{{"state", point.pathingState == TerrainPathingState::Available ? "available"
         : point.pathingState == TerrainPathingState::Outside ? "outside" : "unavailable"},
-        {"raw_flags", point.pathingFlags ? QJsonValue(*point.pathingFlags) : QJsonValue(QJsonValue::Null)}};
+        {"raw_flags", point.pathingFlags ? QJsonValue(*point.pathingFlags) : QJsonValue(QJsonValue::Null)},
+        {"source_flags", point.originalPathingFlags ? QJsonValue(*point.originalPathingFlags) : QJsonValue(QJsonValue::Null)},
+        {"added_restrictions", point.addedPathingRestrictions}};
     if (point.pathingFlags) { pathing.insert("x", static_cast<int>(point.pathingX)); pathing.insert("y", static_cast<int>(point.pathingY)); }
     return {{"x", point.point.x}, {"y", point.point.y}, {"ground_height", point.groundHeight},
         {"nearest_vertex", QJsonObject{{"x", static_cast<int>(point.vertexX)}, {"y", static_cast<int>(point.vertexY)},
@@ -202,7 +214,8 @@ std::vector<ToolDefinition> TerrainEditToolDefinitions() {
             {"items", BasicSchema({{"x", QJsonObject{{"type", "number"}}}, {"y", QJsonObject{{"type", "number"}}}}, {"x", "y"})}};
     };
     const auto brush = BasicSchema({{"kind", QJsonObject{{"type", "string"}, {"enum", QJsonArray{
-        "texture", "blight", "raise", "lower", "plateau", "smooth", "cliff_level", "noise", "cliff_texture", "water_height", "ramp", "boundary"}}}},
+        "texture", "blight", "raise", "lower", "plateau", "smooth", "cliff_level", "noise", "cliff_texture", "water_height", "ramp", "boundary", "pathing_restriction"}}}},
+        {"blocked_type", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"walk", "fly", "build"}}}},
         {"size", IntegerSchema(1, 8)}, {"shape", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"circle", "square"}}}},
         {"ground_texture", TextSchema(4)}, {"cliff_texture", IntegerSchema(0, 14)}, {"level_delta", IntegerSchema(-1, 1)},
         {"strength", QJsonObject{{"type", "number"}, {"exclusiveMinimum", 0}, {"maximum", 1024}}},
@@ -222,7 +235,7 @@ std::vector<ToolDefinition> TerrainEditToolDefinitions() {
     add("query_terrain_points", "按原terrain_binding查询1..256个世界坐标的地高、最近原顶点、贴图、悬崖和静态WPM原始通行位。缺WPM、超出WPM半开边界分别报告；不等同游戏动态寻路。", query, {"terrain_binding", "points"}, ToolPermission::Query);
     auto edit = identity; edit.insert("terrain_binding", binding); edit.insert("points", points(4096)); edit.insert("brush", brush);
     edit.insert("dry_run", QJsonObject{{"type", "boolean"}}); edit.insert("follow_doodads", QJsonObject{{"type", "boolean"}});
-    add("edit_terrain_stroke", "使用界面同一Core命令预览或提交一笔1..4096点地形。必须显式dry_run，提交沿原Undo/活动事务，不自行保存；默认尺寸1、圆形、装饰物不跟随。坡道仅一级干地直坡；water_height只调已有水面；boundary只改边界标志，保留外缘与WPM。未知派生规则保持原生保存门关闭，独立宿主不可提交尚未通过保存门的笔划；越界和旧修订整笔拒绝。", edit,
+    add("edit_terrain_stroke", "使用界面同一Core命令预览或提交一笔1..4096点地形。必须显式dry_run，提交沿原Undo/活动事务，不自行保存；默认尺寸1、圆形、装饰物不跟随。坡道仅一级干地直坡；water_height只调已有水面；boundary只改边界标志。pathing_restriction按32单位WPM格工作，必须指定blocked_type=walk/fly/build；value=false只撤回本工程新增限制，源限制全部保留。未知派生规则保持原生保存门关闭，独立宿主不可提交尚未通过保存门的笔划；越界和旧修订整笔拒绝。", edit,
         {"project_identity", "expected_revision", "terrain_binding", "points", "brush", "dry_run"}, ToolPermission::Edit);
     return definitions;
 }

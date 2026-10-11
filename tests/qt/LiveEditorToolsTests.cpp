@@ -21,6 +21,7 @@
 #include "../MapDataFixtures.h"
 
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/ProjectStore.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
@@ -197,6 +198,7 @@ private slots:
     void SettingsAndStringsKeepOriginalGuiUndoAndPolicy();
     void PlacementToolsKeepAuthorEditsAndOriginalUndo();
     void TerrainToolsKeepSessionPreviewAndOriginalUndo();
+    void BoundaryDraftSavesAndReopensAsProject_data();
     void BoundaryDraftSavesAndReopensAsProject();
     void ImportMetadataUsesSourceAndCurrentAssetOverlay();
     void ResourceToolsUseActualAsyncSourceAndRejectStaleResults();
@@ -745,7 +747,14 @@ void LiveEditorToolsTests::VariableFailuresPreserveRevisionAndUndo() {
     QCOMPARE(f.Fingerprint(), after); QCOMPARE(f.Context(), context); QCOMPARE(f.project.triggerUndoStack_->count(), 1);
 }
 
+void LiveEditorToolsTests::BoundaryDraftSavesAndReopensAsProject_data() {
+    QTest::addColumn<bool>("pathing");
+    QTest::newRow("boundary") << false;
+    QTest::newRow("pathing-restriction") << true;
+}
+
 void LiveEditorToolsTests::BoundaryDraftSavesAndReopensAsProject() {
+    QFETCH(bool, pathing);
     Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
     MapData::TerrainGridSnapshot grid;
     grid.header.width = 5; grid.header.height = 5; grid.header.offset = {-256, -256}; grid.header.mainTileset = 'L';
@@ -753,18 +762,21 @@ void LiveEditorToolsTests::BoundaryDraftSavesAndReopensAsProject() {
     for (auto& vertex : grid.vertices) { vertex.groundHeightRaw = 8192; vertex.waterHeightAndFlagsRaw = 7936; vertex.cliffAndLayerRaw = 2; }
     MapData::RefreshTerrainDerived(grid, 0, 0, 5, 5);
     const auto terrain = MapData::SerializeMapTerrain(grid); QVERIFY(terrain.Succeeded());
-    std::vector<std::byte> pathing{std::byte{'M'}, std::byte{'P'}, std::byte{'3'}, std::byte{'W'}};
+    std::vector<std::byte> sourcePathing{std::byte{'M'}, std::byte{'P'}, std::byte{'3'}, std::byte{'W'}};
     for (const auto value : {0u, 16u, 16u}) for (unsigned shift = 0; shift < 32; shift += 8)
-        pathing.push_back(static_cast<std::byte>((value >> shift) & 0xff));
-    pathing.resize(16 + 16 * 16, std::byte{2});
+        sourcePathing.push_back(static_cast<std::byte>((value >> shift) & 0xff));
+    sourcePathing.resize(16 + 16 * 16, std::byte{2});
     QVERIFY(WriteFile(f.source.filePath("map/war3map.w3e"), Bytes(*terrain.value)));
-    QVERIFY(WriteFile(f.source.filePath("map/war3map.wpm"), Bytes(pathing)));
+    QVERIFY(WriteFile(f.source.filePath("map/war3map.wpm"), Bytes(sourcePathing)));
     auto directory = DirectoryWorkspace::Open(f.project.projectRoot_); QVERIFY(directory.Succeeded());
     f.project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*directory.value));
     f.project.LoadMapDocument(); f.project.ResetEditTracking();
     const auto state = f.tools->Invoke("get_terrain_edit_state", {}); QVERIFY(state.value("ok").toBool());
     auto request = f.Context(); request.insert("terrain_binding", state.value("terrain_binding"));
-    request.insert("dry_run", false); request.insert("brush", QJsonObject{{"kind", "boundary"}, {"size", 1}, {"value", true}});
+    request.insert("dry_run", false);
+    request.insert("brush", pathing
+        ? QJsonObject{{"kind", "pathing_restriction"}, {"blocked_type", "fly"}, {"size", 1}, {"value", true}}
+        : QJsonObject{{"kind", "boundary"}, {"size", 1}, {"value", true}});
     request.insert("points", QJsonArray{QJsonObject{{"x", 0}, {"y", 0}}});
     const auto applied = f.tools->Invoke("edit_terrain_stroke", request);
     QVERIFY2(applied.value("ok").toBool(), qPrintable(Explain(applied)));
@@ -778,10 +790,40 @@ void LiveEditorToolsTests::BoundaryDraftSavesAndReopensAsProject() {
     QVERIFY2(restored.Succeeded(), restored.diagnostics.empty() ? "reopen boundary project" : restored.diagnostics.front().message.c_str());
     auto* edits = (*restored.value)->mapDataEdits.get(); QVERIFY(edits && edits->Terrain());
     QCOMPARE(*MapData::SerializeMapTerrain(*edits->Terrain()).value, *changed.value);
-    QCOMPARE(edits->InspectTerrainPoint({0, 0}).value->pathingFlags, std::optional<std::uint8_t>{2});
+    QCOMPARE(edits->InspectTerrainPoint({0, 0}).value->pathingFlags,
+        std::optional<std::uint8_t>{static_cast<std::uint8_t>(pathing ? 6 : 2)});
     QVERIFY(!edits->VerifyTerrainPathingForSave().Succeeded());
     QFile source(f.source.filePath("map/war3map.w3e")); QVERIFY(source.open(QIODevice::ReadOnly));
     QCOMPARE(source.readAll(), Bytes(*terrain.value));
+    QFile originalPathing(f.source.filePath("map/war3map.wpm")); QVERIFY(originalPathing.open(QIODevice::ReadOnly));
+    QCOMPARE(originalPathing.readAll(), Bytes(sourcePathing));
+    if (pathing) {
+        auto package = MapArchiveSession::Open(target); QVERIFY(package.Succeeded()); QVERIFY(!package.value->HasOpaqueMembers());
+        for (int scenario = 0; scenario < 3; ++scenario) {
+            std::vector<MapArchiveMember> members;
+            for (const auto& item : package.value->Members()) {
+                if (scenario != 2 && item.name == "overlay/editor/pathing-restrictions.bin") continue;
+                auto bytes = package.value->ReadMember(item.name); QVERIFY(bytes.Succeeded());
+                if (item.name == "project.json" && scenario != 0) {
+                    auto manifest = QJsonDocument::fromJson(Bytes(*bytes.value)).object();
+                    if (scenario == 1) manifest.remove("pathingRestrictions");
+                    else manifest["pathingRestrictions"] = 2;
+                    const auto json = QJsonDocument(manifest).toJson(QJsonDocument::Compact);
+                    bytes.value->assign(reinterpret_cast<const std::byte*>(json.constData()),
+                        reinterpret_cast<const std::byte*>(json.constData()) + json.size());
+                }
+                members.push_back({item.name, std::move(*bytes.value)});
+            }
+            const auto broken = std::filesystem::path(f.outputs.filePath(QStringLiteral("unbound-%1.forge").arg(scenario)).toStdWString());
+            QVERIFY(ProjectStore::Save(broken, members).Succeeded());
+            QVERIFY(!QtProject::PrepareProjectOpen(broken).Succeeded());
+        }
+        MapData::TerrainBrush clear; clear.kind = MapData::TerrainBrushKind::PathingRestriction;
+        clear.pathingRestrictions = 0x0e; clear.value = false; clear.size = 1;
+        const MapData::TerrainStrokePoint point{0, 0};
+        QVERIFY(edits->EditTerrain(clear, std::span(&point, 1)).Succeeded());
+        QCOMPARE(edits->InspectTerrainPoint(point).value->pathingFlags, std::optional<std::uint8_t>{2});
+    }
 }
 
 void LiveEditorToolsTests::TerrainToolsKeepSessionPreviewAndOriginalUndo() {

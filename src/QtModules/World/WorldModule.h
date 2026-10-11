@@ -238,6 +238,8 @@ private:
     void ValidateSelection();
     void UpdateOverlay();
     void AppendTerrainBoundaryOverlay(std::vector<War3RenderOverlayLineV2>& lines);
+    QWidget* BuildPathingRestrictionControls(QWidget* parent);
+    void AppendPathingRestrictionOverlay(std::vector<War3RenderOverlayLineV2>& lines);
     void UpdateSelectionText();
     // 选中摆放在 requests_ 中的序号、在当前场景中的实例序号（未显示为空）。
     [[nodiscard]] std::optional<std::uint32_t> SelectedRequest() const;
@@ -313,6 +315,13 @@ private:
     QLabel* terrainBoundaryStatus_ = nullptr;
     std::weak_ptr<const MapData::TerrainGridSnapshot> boundaryOverlaySource_;
     std::vector<War3RenderOverlayLineV2> boundaryOverlay_;
+    QWidget* terrainPathingSection_ = nullptr;
+    QButtonGroup* terrainPathingTypes_ = nullptr;
+    QButtonGroup* terrainPathingModes_ = nullptr;
+    QLabel* terrainPathingStatus_ = nullptr;
+    std::weak_ptr<const MapData::TerrainGridSnapshot> pathingOverlaySource_;
+    std::array<std::uint64_t, 3> pathingOverlayIdentity_{};
+    std::vector<War3RenderOverlayLineV2> pathingOverlay_;
     QButtonGroup* terrainShapes_ = nullptr;
     QSpinBox* terrainRadius_ = nullptr;
     QSlider* terrainRadiusSlider_ = nullptr;
@@ -457,6 +466,7 @@ private:
     };
     std::optional<TerrainRenderRequest> pendingTerrainRender_;
     std::shared_ptr<const MapData::TerrainGridSnapshot> strokeBase_;
+    std::uint64_t strokeRevision_ = 0;
     MapData::TerrainBrush strokeBrush_;
     std::vector<MapData::TerrainStrokePoint> strokePoints_;
     std::uint64_t terrainRenderSerial_ = 0;

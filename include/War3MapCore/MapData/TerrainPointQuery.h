@@ -16,6 +16,8 @@ struct TerrainPointSample {
     TerrainPathingState pathingState = TerrainPathingState::Unavailable;
     std::uint32_t pathingX = 0, pathingY = 0;
     std::optional<std::uint8_t> pathingFlags; // 当前静态 WPM 原始位，不等于游戏动态寻路结果。
+    std::optional<std::uint8_t> originalPathingFlags;
+    std::uint8_t addedPathingRestrictions = 0; // 只计当前工程追加的 0x02/0x04/0x08。
 };
 
 } // namespace War3Map::MapData

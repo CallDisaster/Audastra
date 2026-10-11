@@ -558,6 +558,8 @@ private slots:
     void TerrainRampKeepsCellAndWholeStroke();
     void TerrainBoundaryMarksAndRestores_data();
     void TerrainBoundaryMarksAndRestores();
+    void TerrainPathingUsesCellsAndPreservesSource_data();
+    void TerrainPathingUsesCellsAndPreservesSource();
     void InspectorEditsPreserveOtherFloatBits();
     void RegionEdgesUseSharedTableTransaction_data();
     void RegionEdgesUseSharedTableTransaction();
@@ -2444,6 +2446,90 @@ void WorldModuleTests::TerrainBoundaryMarksAndRestores() {
     viewport->TerrainStrokeStarted(0, -64); viewport->TerrainStrokeFinished();
     QCOMPARE(*MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, std::vector<std::byte>(bytes.begin(), bytes.end()));
     QTRY_COMPARE(status->property("boundaryMarkerCount").toULongLong(), qulonglong{0});
+}
+
+void WorldModuleTests::TerrainPathingUsesCellsAndPreservesSource_data() {
+    QTest::addColumn<bool>("overlaySupported");
+    QTest::addColumn<bool>("hasPathing");
+    QTest::newRow("pathing-and-overlay") << true << true;
+    QTest::newRow("overlay-unavailable") << false << true;
+    QTest::newRow("pathing-unavailable") << true << false;
+}
+
+void WorldModuleTests::TerrainPathingUsesCellsAndPreservesSource() {
+    QFETCH(bool, overlaySupported); QFETCH(bool, hasPathing);
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const auto source = TerrainBytes(); QVERIFY(Write(directory.filePath("war3map.w3e"), source));
+    QByteArray wpm("MP3W", 4); Append32(wpm, 0); Append32(wpm, 8); Append32(wpm, 4);
+    wpm.append(QByteArray(32, static_cast<char>(0x82))); // 原图不可走和未知位都须保留。
+    if (hasPathing) QVERIFY(Write(directory.filePath("war3map.wpm"), wpm));
+    QtProject::EditorProject project; project.projectRoot_ = directory.path().toStdWString();
+    auto opened = DirectoryWorkspace::Open(project.projectRoot_); QVERIFY(opened.Succeeded());
+    project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*opened.value));
+    project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(std::span<const MapArchiveMember>{}));
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+    const std::span<const std::byte> bytes(reinterpret_cast<const std::byte*>(source.constData()), static_cast<std::size_t>(source.size()));
+    QVERIFY(project.mapEdits_->AttachTerrain(bytes).Succeeded());
+    if (hasPathing) QVERIFY(project.mapEdits_->AttachPathing(std::span<const std::byte>(
+        reinterpret_cast<const std::byte*>(wpm.constData()), static_cast<std::size_t>(wpm.size()))).Succeeded());
+    project.ResetEditTracking();
+    BackendState state; activeBackend = &state;
+    auto api = backend; if (overlaySupported) api.setOverlayLines = BoundaryOverlay;
+    WorldModule module(project, &api); auto* page = module.Widget(); auto* viewport = module.Viewport();
+    state.viewport = viewport; page->resize(900, 600); page->show();
+    QTRY_COMPARE(viewport->VertexCount(), std::size_t{6});
+    auto* toggle = page->findChild<QPushButton*>("worldTerrainToggle"); QVERIFY(toggle && toggle->isEnabled()); toggle->click();
+    auto* tool = page->findChild<QToolButton*>("worldTerrainBrushPathingRestriction"); QVERIFY(tool); tool->click();
+    auto* radius = page->findChild<QSpinBox*>("worldTerrainRadius"); QVERIFY(radius); radius->setValue(1);
+    auto* fly = page->findChild<QPushButton*>("worldTerrainPathingType1"); QVERIFY(fly); fly->click();
+    auto* status = page->findChild<QLabel*>("worldTerrainPathingStatus"); QVERIFY(status);
+    if (!hasPathing) {
+        QVERIFY(status->text().contains(QStringLiteral("缺少")));
+        viewport->TerrainStrokeStarted(-112, -48); viewport->TerrainStrokeFinished();
+        QCOMPARE(project.mapDataUndoStack_->count(), 0); QCOMPARE(project.mapEdits_->Revision(), std::uint64_t{0});
+        return;
+    }
+    if (!overlaySupported) QVERIFY(status->text().contains(QStringLiteral("不支持通行格标记")));
+    const auto originalTerrain = project.mapEdits_->Terrain();
+    const auto flags = [&](double x) { return project.mapEdits_->InspectTerrainPoint({x, -48}).value->pathingFlags; };
+    // 两格都靠近同一 W3E 顶点；必须按 32 单位 WPM 格连续落笔，不能吸附到 128 单位顶点。
+    viewport->TerrainStrokeStarted(-112, -48); viewport->TerrainStrokeMoved(-80, -48); viewport->TerrainStrokeFinished();
+    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QCOMPARE(flags(-112), std::optional<std::uint8_t>{0x86}); QCOMPARE(flags(-80), std::optional<std::uint8_t>{0x86});
+    QCOMPARE(flags(-48), std::optional<std::uint8_t>{0x82}); QCOMPARE(project.mapEdits_->Terrain().get(), originalTerrain.get());
+    QVERIFY(toggle->isChecked() && viewport->BrushMode());
+    QVERIFY(!project.mapEdits_->VerifyTerrainPathingForSave().Succeeded());
+    QTRY_COMPARE(status->property("pathingMarkerCount").toULongLong(), overlaySupported ? qulonglong{2} : qulonglong{0});
+    if (overlaySupported) { QCOMPARE(status->property("pathingAddedCellCount").toULongLong(), qulonglong{2}); QVERIFY(!state.overlayLines.empty()); }
+    project.mapDataUndoStack_->undo();
+    QCOMPARE(flags(-112), std::optional<std::uint8_t>{0x82}); QCOMPARE(flags(-80), std::optional<std::uint8_t>{0x82});
+    QTRY_COMPARE(status->property("pathingMarkerCount").toULongLong(), qulonglong{0});
+    project.mapDataUndoStack_->redo();
+    QCOMPARE(flags(-112), std::optional<std::uint8_t>{0x86});
+    QTRY_COMPARE(status->property("pathingMarkerCount").toULongLong(), overlaySupported ? qulonglong{2} : qulonglong{0});
+    auto* clear = page->findChild<QPushButton*>("worldTerrainPathingMode1"); QVERIFY(clear); clear->click();
+    auto* walk = page->findChild<QPushButton*>("worldTerrainPathingType0"); QVERIFY(walk); walk->click();
+    const auto beforeOriginalClear = project.mapEdits_->Revision();
+    viewport->TerrainStrokeStarted(-112, -48); viewport->TerrainStrokeFinished();
+    QCOMPARE(project.mapEdits_->Revision(), beforeOriginalClear); QCOMPARE(flags(-112), std::optional<std::uint8_t>{0x86});
+    fly->click();
+    viewport->TerrainStrokeStarted(-112, -48); viewport->TerrainStrokeMoved(-80, -48); viewport->TerrainStrokeFinished();
+    QCOMPARE(project.mapDataUndoStack_->count(), 2); QCOMPARE(flags(-112), std::optional<std::uint8_t>{0x82});
+    QCOMPARE(flags(-80), std::optional<std::uint8_t>{0x82});
+    QTRY_COMPARE(status->property("pathingMarkerCount").toULongLong(), qulonglong{0});
+    project.mapDataUndoStack_->undo(); QCOMPARE(flags(-112), std::optional<std::uint8_t>{0x86});
+    viewport->TerrainStrokeStarted(-112, -48);
+    MapData::TerrainBrush external; external.kind = MapData::TerrainBrushKind::PathingRestriction;
+    external.pathingRestrictions = 0x08; external.size = 1;
+    const MapData::TerrainStrokePoint elsewhere{-16, -48};
+    QVERIFY(project.mapEdits_->EditTerrain(external, std::span(&elsewhere, 1)).Succeeded());
+    const auto externallyChanged = project.mapEdits_->Revision();
+    viewport->TerrainStrokeFinished();
+    QCOMPARE(project.mapEdits_->Revision(), externallyChanged); QCOMPARE(flags(-112), std::optional<std::uint8_t>{0x86});
+    QCOMPARE(flags(-16), std::optional<std::uint8_t>{0x8a}); // 拒绝过期笔划，保留外部编辑。
+    viewport->TerrainStrokeStarted(-112, -48); viewport->TerrainStrokeMoved(-112, 64); viewport->TerrainStrokeFinished();
+    QCOMPARE(project.mapEdits_->Revision(), externallyChanged); // 北边界半开，坏后续点整笔取消。
+    QCOMPARE(*MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, std::vector<std::byte>(bytes.begin(), bytes.end()));
 }
 
 void WorldModuleTests::TerrainRampKeepsCellAndWholeStroke() {

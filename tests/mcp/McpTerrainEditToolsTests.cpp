@@ -250,6 +250,37 @@ void BoundaryDraftSchemaAndNativeGateStaySeparate() {
     Expect(Current(server) == before, "rejected boundary candidate retains source, generation and original typed session");
 }
 
+void PathingRestrictionsKeepSourceBitsAndNativeRefusal() {
+    Fixture fixture;
+    auto request = Stroke(State(fixture));
+    request["brush"] = QJsonObject{{"kind", "pathing_restriction"}, {"blocked_type", "fly"}, {"value", true}};
+    auto response = InvokeTerrainEditTool("edit_terrain_stroke", request, fixture.Host());
+    Expect(response.value("ok").toBool() && !response.value("terrain_pathing_gate").toObject().value("passed").toBool()
+        && !fixture.edits.CanUndo(), "pathing draft previews without a native save claim");
+    request["dry_run"] = false;
+    response = InvokeTerrainEditTool("edit_terrain_stroke", request, fixture.Host());
+    Expect(response.value("ok").toBool() && response.value("applied").toBool(), "draft-capable host applies pathing via shared command");
+    const auto query = InvokeTerrainEditTool("query_terrain_points", {{"terrain_binding", State(fixture).value("terrain_binding")},
+        {"points", request.value("points")}}, fixture.Host());
+    const auto flags = query.value("points").toArray()[0].toObject().value("pathing").toObject();
+    Expect(flags.value("raw_flags").toInt() == 6 && flags.value("source_flags").toInt() == 2
+        && flags.value("added_restrictions").toInt() == 4, "query identifies original and added restrictions");
+    auto remove = Stroke(State(fixture)); remove["dry_run"] = false;
+    remove["brush"] = QJsonObject{{"kind", "pathing_restriction"}, {"blocked_type", "walk"}, {"value", false}};
+    Expect(InvokeTerrainEditTool("edit_terrain_stroke", remove, fixture.Host()).value("ok").toBool()
+        && fixture.edits.InspectTerrainPoint({0, 0}).value->pathingFlags == 6, "removal cannot erase original walk bit");
+    Expect(fixture.edits.Undo() && !fixture.edits.IsDirty(), "pathing uses the original undo stack");
+    McpServer server; OpenWorkspace(fixture, server);
+    Expect(server.Workspace()->BeginEdit(server.Workspace()->Revision()).Succeeded(), "standalone transaction opens");
+    request = Stroke(Current(server));
+    request["brush"] = QJsonObject{{"kind", "pathing_restriction"}, {"blocked_type", "build"}};
+    const auto before = Current(server);
+    Expect(Call(server, "edit_terrain_stroke", request).value("ok").toBool(), "standalone preview accepts typed pathing intent");
+    request["dry_run"] = false;
+    Expect(!Call(server, "edit_terrain_stroke", request).value("ok").toBool() && Current(server) == before,
+        "standalone does not publish an unproven pathing candidate");
+}
+
 void RegisteredHostRetainsTransactionAndPublishesDirectory() {
     Fixture fixture; McpServer server; OpenWorkspace(fixture, server);
     auto* workspace = server.Workspace();
@@ -400,7 +431,8 @@ int main(int argc, char** argv) {
         MissingPathingRemainsReadableAndSourceDriftRejects();
         ArchiveExportBindsPathingAndCompanionMembers();
         BoundaryDraftSchemaAndNativeGateStaySeparate();
-        std::cout << "9 terrain MCP and sealed transaction scenarios passed\n";
+        PathingRestrictionsKeepSourceBitsAndNativeRefusal();
+        std::cout << "10 terrain MCP and sealed transaction scenarios passed\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

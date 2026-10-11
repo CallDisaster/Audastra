@@ -1,5 +1,7 @@
 #pragma once
 
+#include "War3MapCore/MapData/PathingRestrictionEditing.h"
+
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
 #include "War3MapCore/MapData/TerrainPointQuery.h"
@@ -114,6 +116,11 @@ public:
     // 工程恢复：两种覆盖一起预检并作为一条撤销命令提交；任一失败时两者都不改。
     [[nodiscard]] Status SetTerrainAndPathing(std::span<const std::byte> terrainBytes,
         std::span<const std::byte> pathingBytes);
+    // 新增通行限制只能携带来源绑定的工程声明恢复；原有 raw 覆盖入口不放宽。
+    [[nodiscard]] Status SetTerrainAndPathingDraft(std::span<const std::byte> terrainBytes,
+        std::span<const std::byte> pathingBytes, std::span<const std::byte> restrictionDraft);
+    [[nodiscard]] Result<std::vector<std::byte>> SerializePathingRestrictionDraft() const;
+    [[nodiscard]] Result<PathingRestrictionPreview> QueryPathingRestrictions(std::size_t maximumCells = 4096) const;
     [[nodiscard]] std::shared_ptr<const TerrainGridSnapshot> Terrain() const noexcept { return terrain_; }
     [[nodiscard]] bool HasTerrainPathing() const noexcept { return pathing_.has_value(); }
     // 附上来源或保存为新基线会变化；这些操作不消耗正常编辑/撤销 Revision。
@@ -192,6 +199,10 @@ private:
     [[nodiscard]] bool TerrainDirty() const noexcept;
     [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainEditInternal(const TerrainBrush& brush,
         std::span<const TerrainStrokePoint> points, bool followDoodads, bool inspectSaveGate) const;
+    [[nodiscard]] Result<PreparedTerrainEdit> PreparePathingRestrictionEdit(const TerrainBrush& brush,
+        std::span<const TerrainStrokePoint> points, bool followDoodads, bool inspectSaveGate) const;
+    [[nodiscard]] Status SetTerrainAndPathingInternal(std::span<const std::byte> terrainBytes,
+        std::span<const std::byte> pathingBytes, std::span<const std::byte> restrictionDraft);
     [[nodiscard]] Status VerifyTerrainCandidateForSave(
         const std::shared_ptr<const TerrainGridSnapshot>& terrain,
         const std::optional<std::vector<std::byte>>& pathing,

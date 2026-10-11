@@ -38,6 +38,7 @@ enum class TerrainBrushKind {
     WaterHeight,  // 仅调整已有水面的基础高度，不生成浅水/深水或修改通行性
     Ramp,         // 一级干地直坡：整段三点创建/移除，value 决定是否创建，不使用尺寸或形状
     Boundary,     // 边界标志：仅修改 W3E 0x80；保留外缘与 WPM，原生保存仍须通过派生数据门
+    PathingRestriction, // WPM 附加限制草稿：仅由 MapDataEditSession 应用，不改变 W3E
 };
 
 enum class TerrainBrushShape { Circle, Square };
@@ -67,6 +68,7 @@ struct TerrainBrush {
     std::optional<std::uint8_t> variation; // Texture：0..17；未指定时使用坐标种子
     bool randomizeVariation = false;     // Texture：同贴图也重选变体；默认保留旧协议行为
     float waterHeight = 0;               // WaterHeight：W3E 基础世界高度，范围 -2048..2047.75
+    std::uint8_t pathingRestrictions = 0x02; // PathingRestriction：0x02/0x04/0x08 的非空组合
 };
 
 struct TerrainStrokePoint { double x = 0, y = 0; };

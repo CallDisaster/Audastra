@@ -211,6 +211,8 @@ Status Validate(const TerrainGridSnapshot& terrain, const TerrainBrush& brush, s
     case TerrainBrushKind::Blight: case TerrainBrushKind::Plateau: case TerrainBrushKind::Ramp:
     case TerrainBrushKind::Boundary:
         break;
+    case TerrainBrushKind::PathingRestriction:
+        return Failure("PATHING_BRUSH_SESSION_REQUIRED", "通行限制须通过包含源 WPM 的地图编辑会话提交。");
     default:
         return Failure("TERRAIN_BRUSH_KIND", "未知的地形笔刷");
     }

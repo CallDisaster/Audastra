@@ -34,6 +34,11 @@ Result<TerrainPointSample> MapDataEditSession::InspectTerrainPoint(const Terrain
                 return Result<TerrainPointSample>::Failure("MapData.Edit", "MAP_PATHING_SHAPE_CHANGED", "当前 WPM 长度与地形不一致。");
             output.pathingState = TerrainPathingState::Available;
             output.pathingFlags = std::to_integer<std::uint8_t>((*pathing_)[index]);
+            if (pathingOriginal_ && index < pathingOriginal_->size()) {
+                output.originalPathingFlags = std::to_integer<std::uint8_t>((*pathingOriginal_)[index]);
+                output.addedPathingRestrictions = static_cast<std::uint8_t>(
+                    *output.pathingFlags & ~*output.originalPathingFlags & kPathingRestrictionBits);
+            }
         }
     }
     return Result<TerrainPointSample>::Success(std::move(output));
