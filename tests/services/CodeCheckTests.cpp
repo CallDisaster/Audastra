@@ -175,6 +175,37 @@ void CheckDeclarationMessagesUseAuthorLocations() {
         && diagnostic->message.find("定义于 Save/external.j:4") != std::string::npos,
         "External definition was incorrectly mapped as main author body");
 }
+void CheckVJassRequiresInPartialContext() {
+    auto request = Full("library Local requires Other\nfunction Work takes nothing returns nothing\n"
+        "endfunction\nendlibrary\n");
+    request.language = CodeLanguage::VJass;
+    auto checked = CheckCode(request);
+    Require(!checked.Succeeded() && Has(checked, "VJASS_REQUIRES")
+        && !Has(checked, "VJASS_REQUIRES_UNCHECKED"), "Full check relaxed a missing required library");
+    request.context.complete = false;
+    checked = CheckCode(request);
+    Require(checked.Succeeded() && !checked.semanticChecked && Has(checked, "VJASS_REQUIRES_UNCHECKED")
+        && !Has(checked, "VJASS_REQUIRES"), "Partial syntax check treated an unseen dependency as an error");
+    const auto info = std::find_if(checked.diagnostics.begin(), checked.diagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.code == "VJASS_REQUIRES_UNCHECKED";
+    });
+    Require(info != checked.diagnostics.end() && info->severity == DiagnosticSeverity::Info
+        && info->line == 1 && info->source == request.source.name, "Unchecked dependency lost its author location or info severity");
+    request.source.text = "library Local requires optional Other\nendlibrary\n";
+    checked = CheckCode(request);
+    Require(checked.Succeeded() && !Has(checked, "VJASS_REQUIRES_UNCHECKED"), "Optional dependency changed behavior");
+    request.context.complete = true;
+    checked = CheckCode(request);
+    Require(checked.Succeeded(), "Full check rejected an optional missing dependency");
+    request.context.complete = false;
+    request.source.text = "library A requires B\nendlibrary\nlibrary B requires A\nendlibrary\n";
+    checked = CheckCode(request);
+    Require(!checked.Succeeded() && Has(checked, "VJASS_REQUIRES"), "Known local dependency cycle was ignored");
+    request.source.text = "library Local requires Other\nfunction Work takes nothing returns nothing\nlocal =\n"
+        "endfunction\nendlibrary\n";
+    checked = CheckCode(request);
+    Require(!checked.Succeeded(), "Partial dependency handling hid an actual syntax error");
+}
 void CheckDisabledDraftIsActuallyParsed() {
     auto document = std::make_shared<Trigger::TriggerDocument>();
     Trigger::TriggerRecord trigger;
@@ -201,6 +232,7 @@ int main() {
     try {
         CheckSemanticsAndActualIndex(); CheckOriginsAndGeneratedContext(); CheckVJassLuaAndHardStops();
         CheckDeclarationMessagesUseAuthorLocations();
+        CheckVJassRequiresInPartialContext();
         CheckDisabledDraftIsActuallyParsed();
         std::cout << "Shared code-check semantics, emitter origins, vJass mapping, Lua compile-only and hard stops passed\n";
         return 0;
