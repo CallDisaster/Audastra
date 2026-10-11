@@ -1,3 +1,11 @@
+add_executable(audastra-lua-test-mailbox-tests LuaTestMailboxSessionTests.cpp
+    "${PROJECT_SOURCE_DIR}/src/WarcraftRuntime32/OwnLua/LuaMailboxRuntime.cpp")
+target_link_libraries(audastra-lua-test-mailbox-tests PRIVATE War3MapEditor::Core)
+target_compile_definitions(audastra-lua-test-mailbox-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-lua-test-mailbox-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-lua-test-mailbox COMMAND audastra-lua-test-mailbox-tests)
+set_tests_properties(services-lua-test-mailbox PROPERTIES TIMEOUT 30)
+
 add_executable(audastra-campaign-service-tests CampaignServiceTests.cpp)
 target_link_libraries(audastra-campaign-service-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(audastra-campaign-service-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
