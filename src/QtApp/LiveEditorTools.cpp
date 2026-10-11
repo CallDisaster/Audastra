@@ -1,5 +1,6 @@
 #include "LiveEditorTools.h"
 #include "McpLuaTestTools.h"
+#include "McpWorldViewportTools.h"
 #include "McpCampaignTools.h"
 #include "LiveObjectTools.h"
 #include "EditorProject.h"
@@ -242,6 +243,9 @@ public:
     Mcp::McpServer& Server() noexcept { return server_; }
     void SetSaveHandler(std::function<bool(const std::filesystem::path&, bool)> handler) { save_ = std::move(handler); }
     void SetLuaTestHandler(std::function<QJsonObject(bool)> handler) { luaTest_ = std::move(handler); }
+    void SetWorldViewportHandler(std::function<QJsonObject(const QString&, const QJsonObject&)> handler) {
+        worldViewport_ = std::move(handler);
+    }
     void SetBeforeWrite(std::function<bool()> handler) { beforeWrite_ = std::move(handler); }
     void SetProjectSearchQuery(ProjectSearchRevisionQuery revision, ProjectSearchPageQuery query) {
         // 每次重绑定切换不可复用的 token；执行中的 callback 有自己的拥有副本。
@@ -265,7 +269,14 @@ public:
         const auto content = response->result.toObject().value("content").toArray();
         if (content.isEmpty()) return Mcp::Failure("LIVE_EDITOR_RESPONSE_MISSING", "工具结果缺少结构化正文。");
         const auto parsed = QJsonDocument::fromJson(content[0].toObject().value("text").toString().toUtf8());
-        return parsed.isObject() ? parsed.object() : Mcp::Failure("LIVE_EDITOR_RESPONSE_INVALID", "工具结果不是结构化对象。");
+        if (!parsed.isObject()) return Mcp::Failure("LIVE_EDITOR_RESPONSE_INVALID", "工具结果不是结构化对象。");
+        auto body = parsed.object();
+        for (const auto& block : content) {
+            const auto image = block.toObject();
+            if (image.value("type") == QJsonValue("image") && image.value("mimeType") == QJsonValue("image/png"))
+                body.insert("image", QJsonObject{{"mime_type", "image/png"}, {"encoding", "base64"}, {"data", image.value("data")}});
+        }
+        return body;
     }
 
     QJsonArray Tools() {
@@ -747,12 +758,13 @@ private:
 
     void AddTool(QString name, QString title, Mcp::ToolPermission permission, QJsonObject schema,
         std::function<QJsonObject(const QJsonObject&)> handler, std::size_t maxRequestIdBytes = 0,
-        std::size_t maxResponseBytes = 1024 * 1024) {
+        std::size_t maxResponseBytes = 1024 * 1024, bool pngImageResult = false) {
         registeredNames_.append(name);
         Mcp::ToolDefinition tool;
         tool.name = name; tool.description = title; tool.permission = permission; tool.inputSchema = std::move(schema);
         tool.maxResponseBytes = maxResponseBytes;
         tool.maxRequestIdBytes = maxRequestIdBytes;
+        tool.pngImageResult = pngImageResult;
         tool.handler = [this, name = std::move(name), title = std::move(title), handler = std::move(handler)](const QJsonObject& arguments) -> QJsonValue {
             const auto owner = ownerHandle_;
             const auto invoke = handler;
@@ -767,9 +779,15 @@ private:
             try { result = invoke(arguments); }
             catch (const std::exception& failure) { result = Mcp::Failure("LIVE_EDITOR_EXCEPTION", failure.what()); }
             if (!owner) return result;
+            // PNG仅交付请求方；活动日志不再次复制Base64正文。
+            auto details = result;
+            if (details.contains("image")) {
+                details.remove("image");
+                details.insert("image_returned", true);
+            }
             emit owner->Activity(QJsonObject{{"type", "tool_end"}, {"id", id}, {"tool_name", toolName}, {"title", toolTitle},
                 {"success", result.value("ok").toBool()}, {"is_error", !result.value("ok").toBool()},
-                {"elapsed_ms", timer.elapsed()}, {"details", result}});
+                {"elapsed_ms", timer.elapsed()}, {"details", details}});
             if (owner && result.value("ok").toBool() && result.value("changes").isObject()) {
                 auto changes = result.value("changes").toObject();
                 changes.insert("type", "changes"); changes.insert("tool_call_id", id);
@@ -781,6 +799,15 @@ private:
     }
 
     void RegisterTools() {
+        for (auto definition : Mcp::WorldViewportToolDefinitions()) {
+            const auto name = definition.name;
+            AddTool(name, definition.description, definition.permission, definition.inputSchema,
+                [this, name](const QJsonObject& args) {
+                    const auto check = CheckContext(args, false, false);
+                    if (!check.value("ok").toBool()) return check;
+                    return Mcp::InvokeWorldViewportTool(name, args, {worldViewport_});
+                }, definition.maxRequestIdBytes, definition.maxResponseBytes, definition.pngImageResult);
+        }
         for (auto definition : Mcp::LuaTestToolDefinitions()) {
             const auto name = definition.name;
             AddTool(name, definition.description, definition.permission, definition.inputSchema,
@@ -958,6 +985,7 @@ private:
     std::function<bool(const std::filesystem::path&, bool)> save_;
     std::function<bool()> beforeWrite_;
     std::function<QJsonObject(bool)> luaTest_;
+    std::function<QJsonObject(const QString&, const QJsonObject&)> worldViewport_;
     ProjectSearchRevisionQuery projectSearchRevision_;
     ProjectSearchPageQuery projectSearchQuery_;
     std::shared_ptr<const int> projectSearchToken_;
@@ -980,6 +1008,9 @@ LiveEditorTools::~LiveEditorTools() = default;
 Mcp::McpServer& LiveEditorTools::Server() noexcept { return impl_->Server(); }
 void LiveEditorTools::SetSaveHandler(std::function<bool(const std::filesystem::path&, bool)> handler) { impl_->SetSaveHandler(std::move(handler)); }
 void LiveEditorTools::SetLuaTestHandler(std::function<QJsonObject(bool)> handler) { impl_->SetLuaTestHandler(std::move(handler)); }
+void LiveEditorTools::SetWorldViewportHandler(std::function<QJsonObject(const QString&, const QJsonObject&)> handler) {
+    impl_->SetWorldViewportHandler(std::move(handler));
+}
 void LiveEditorTools::SetBeforeWrite(std::function<bool()> handler) { impl_->SetBeforeWrite(std::move(handler)); }
 void LiveEditorTools::SetProjectSearchQuery(ProjectSearchRevisionQuery revision, ProjectSearchPageQuery query) {
     impl_->SetProjectSearchQuery(std::move(revision), std::move(query));

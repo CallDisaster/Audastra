@@ -36,6 +36,13 @@ if(TARGET War3MapMcpProtocol)
     add_test(NAME mcp-terrain-edit COMMAND audastra-mcp-terrain-edit-tests)
     set_tests_properties(mcp-terrain-edit PROPERTIES ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    add_executable(audastra-mcp-world-viewport-tests McpWorldViewportToolsTests.cpp)
+    target_link_libraries(audastra-mcp-world-viewport-tests PRIVATE War3MapEditor::McpProtocol)
+    target_compile_definitions(audastra-mcp-world-viewport-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+    target_compile_options(audastra-mcp-world-viewport-tests PRIVATE /W4 /permissive- /utf-8)
+    add_test(NAME mcp-world-viewport COMMAND audastra-mcp-world-viewport-tests)
+    set_tests_properties(mcp-world-viewport PROPERTIES TIMEOUT 30
+        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
     add_executable(audastra-mcp-object-resource-tests McpObjectResourceToolsTests.cpp)
     target_link_libraries(audastra-mcp-object-resource-tests PRIVATE War3MapEditor::McpProtocol)
     target_compile_definitions(audastra-mcp-object-resource-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)

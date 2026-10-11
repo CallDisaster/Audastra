@@ -261,6 +261,11 @@ QString WorldModule::MapKey() const {
     return path.empty() ? QString{} : QString::fromStdWString(path.lexically_normal().wstring());
 }
 
+WorldViewport* WorldModule::ViewportForTools() const {
+    return viewport_ && !shownMap_.isEmpty() && shownMap_ == MapKey() && !reloadQueued_
+        && !worker_ && !pendingTerrainRender_ ? viewport_ : nullptr;
+}
+
 void WorldModule::Refresh() {
     ++selectionCatalogRevision_;
     if (premPresenter_) premPresenter_->Clear();

@@ -95,6 +95,8 @@ public:
     [[nodiscard]] Shell::NavigationRestoreResult RestoreNavigationBookmark(const QJsonObject& state) override;
     [[nodiscard]] bool PrepareNavigationLeave() override;
     [[nodiscard]] WorldViewport* Viewport() const noexcept { return viewport_; }
+    // 切图或重建期间拒绝向工具暴露保留的旧画面。
+    [[nodiscard]] WorldViewport* ViewportForTools() const;
     [[nodiscard]] WorldAnimationPlayer* AnimationPlayer() const noexcept { return animation_; }
     // 读取真实控件/播放器状态；保留的旧画面不能替代服务就绪或完成帧证据。
     [[nodiscard]] QJsonObject PlaybackDiagnosticSnapshot() const;
@@ -118,6 +120,7 @@ protected:
 
 private:
     [[nodiscard]] Result<std::vector<std::byte>> ReadTerrain() const;
+    // 工具不得把切图/地形重建期间保留的旧画面绑定到新工程。
     // 地形显示后在后台读取摆放模型；换代时丢弃过期结果。
     void StartModels(std::uint64_t generation);
     void StartAnimatedModels(std::uint64_t generation);

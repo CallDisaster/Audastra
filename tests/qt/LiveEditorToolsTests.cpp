@@ -14,6 +14,7 @@
 #include "McpCampaignTools.h"
 #include "McpProjectSearchTools.h"
 #include "McpLuaTestTools.h"
+#include "McpWorldViewportTools.h"
 #include "Commands/MapDataCommands.h"
 #include "War3MapCore/MapData/MapDataFieldEditing.h"
 #include "../services/ObjectCommandsFixture.h"
@@ -202,6 +203,7 @@ private slots:
     void ProjectSearchUsesInjectedOwnedPagesAndStrictRevision();
     void ProjectSearchCallbackReplacementStopsOldRequest();
     void ProjectSearchOwnerDeletionKeepsInvocationAlive();
+    void ViewportToolsUseActualHostAndRejectStaleIdentity();
 };
 
 void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
@@ -220,10 +222,11 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "sounds_get", "sounds_list", "sounds_update",
         "strings_query", "strings_set",
         "undo_campaign", "update.status",
-        "variables_create", "variables_delete", "variables_get", "variables_list", "variables_rename", "variables_update"};
+        "variables_create", "variables_delete", "variables_get", "variables_list", "variables_rename", "variables_update",
+        "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{53});
+    QCOMPARE(expected.size(), qsizetype{57});
     const auto luaDefinitions = Mcp::LuaTestToolDefinitions();
     QCOMPARE(luaDefinitions.size(), std::size_t{2});
     QCOMPARE(luaDefinitions[0].permission, Mcp::ToolPermission::External);
@@ -1339,6 +1342,31 @@ void LiveEditorToolsTests::ProjectSearchOwnerDeletionKeepsInvocationAlive() {
     QCOMPARE(events.size(), 1); QCOMPARE(events[0][0].toJsonObject().value("type").toString(), QStringLiteral("tool_start"));
     QCOMPARE(f.Fingerprint(), fingerprint); QCOMPARE(f.project.editRevision_.Revision(), revision);
     QCOMPARE(f.project.triggerUndoStack_->count(), 0);
+}
+
+void LiveEditorToolsTests::ViewportToolsUseActualHostAndRejectStaleIdentity() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    const auto state = f.tools->Invoke("editor_state", {});
+    QJsonObject args{{"project_identity", state.value("project_identity")}, {"expected_revision", state.value("revision")}};
+    QCOMPARE(ErrorCode(f.tools->Invoke("world_viewport_camera_read", args)), QString("WORLD_VIEWPORT_UNSUPPORTED"));
+    int calls = 0;
+    QSignalSpy events(f.tools.get(), &QtApp::LiveEditorTools::Activity);
+    f.tools->SetWorldViewportHandler([&calls](const QString&, const QJsonObject&) {
+        ++calls;
+        return QJsonObject{{"ok", true}, {"status", "ready"}, {"image", QJsonObject{{"data", "fixture-payload"}}}};
+    });
+    auto result = f.tools->Invoke("world_viewport_camera_read", args);
+    QVERIFY(result.value("ok").toBool()); QVERIFY(result.contains("image")); QCOMPARE(calls, 1);
+    const auto details = events.last()[0].toJsonObject().value("details").toObject();
+    QVERIFY(!details.contains("image")); QVERIFY(details.value("image_returned").toBool());
+    auto stale = args; stale["expected_revision"] = "9999";
+    QCOMPARE(ErrorCode(f.tools->Invoke("world_viewport_camera_read", stale)), QString("LIVE_EDITOR_REVISION_CONFLICT"));
+    QCOMPARE(calls, 1);
+    auto invalid = args; invalid["path"] = "injected";
+    QVERIFY(!f.tools->Invoke("world_viewport_camera_read", invalid).value("ok").toBool()); QCOMPARE(calls, 1);
+    Mcp::ToolPolicy policy; policy.allowEdit = false; f.tools->SetPolicy(policy);
+    QVERIFY(!Names(f.tools->Tools()).contains("world_viewport_camera_set"));
+    QVERIFY(Names(f.tools->Tools()).contains("world_viewport_camera_read"));
 }
 
 QTEST_GUILESS_MAIN(LiveEditorToolsTests)

@@ -153,6 +153,7 @@ public:
     // Camera() 是当前请求状态；完成帧实际使用的相机只以 CaptureCompletedFrame 回执为准。
     [[nodiscard]] War3RenderCameraV2 Camera() const noexcept { return camera_; }
     [[nodiscard]] Result<War3RenderCameraV2> ReadCamera(std::uint64_t expectedRevision) const;
+    [[nodiscard]] Status CheckCameraChange(const War3RenderCameraV2& camera, std::uint64_t expectedRevision) const;
     // 供服务层使用的修订绑定相机命令；成功仅表示已提交给渲染器，仍须等待完成帧。
     [[nodiscard]] Status SetCamera(const War3RenderCameraV2& camera, std::uint64_t expectedRevision);
     // 显式读回真实完成帧。单次调用沿用插件的 10 秒等待上限，绝不拼接旧版截图与后查视图。

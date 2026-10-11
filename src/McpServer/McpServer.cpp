@@ -389,7 +389,26 @@ JsonRpcResponse McpServer::HandleToolsCall(const JsonRpcRequest& req) {
     }
 
     try {
-        const QJsonValue toolResult = it->second.handler(arguments);
+        QJsonValue toolResult = it->second.handler(arguments);
+        QJsonObject imageContent;
+        if (it->second.pngImageResult && toolResult.isObject()) {
+            auto body = toolResult.toObject();
+            if (body.contains("image")) {
+                const auto image = body.take("image").toObject();
+                const auto data = image.value("data").toString();
+                const auto decoded = data.size() <= 6 * 1024 * 1024
+                    ? QByteArray::fromBase64Encoding(data.toLatin1(), QByteArray::AbortOnBase64DecodingErrors)
+                    : QByteArray::FromBase64Result{};
+                if (!body.value("ok").toBool() || image.value("mime_type") != QJsonValue("image/png")
+                    || image.value("encoding") != QJsonValue("base64") || data.isEmpty()
+                    || !decoded || decoded.decoded.size() > 4 * 1024 * 1024
+                    || !decoded.decoded.startsWith(QByteArray::fromHex("89504e470d0a1a0a"))) {
+                    body = {{"ok", false}, {"diagnostics", QJsonArray{QJsonObject{{"code", "MCP_IMAGE_RESULT_INVALID"},
+                        {"message", "宿主图像结果不是有界PNG，未交付图像。"}}}}};
+                } else imageContent = {{"type", "image"}, {"mimeType", "image/png"}, {"data", data}};
+                toolResult = body;
+            }
+        }
         QJsonObject result;
         QJsonArray content;
         QJsonObject textContent;
@@ -398,6 +417,7 @@ JsonRpcResponse McpServer::HandleToolsCall(const JsonRpcRequest& req) {
             toolResult.isObject() ? toolResult.toObject() : QJsonObject{{"value", toolResult}}
         ).toJson(QJsonDocument::Compact));
         content.append(textContent);
+        if (!imageContent.isEmpty()) content.append(imageContent);
         result["content"] = content;
         result["isError"] = toolResult.isObject() &&
             toolResult.toObject().value("ok").isBool() &&

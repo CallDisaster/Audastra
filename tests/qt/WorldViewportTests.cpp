@@ -1,4 +1,5 @@
 #include "WorldViewport.h"
+#include "WorldViewportToolService.h"
 #include "WorldAnimationPlayer.h"
 #include "WorldAnimationViewContractChecks.h"
 #include "WorldAnimationPlaybackContractChecks.h"
@@ -17,6 +18,8 @@
 #include <QComboBox>
 #include <QFile>
 #include <QLabel>
+#include <QImage>
+#include <QJsonArray>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QSignalSpy>
@@ -292,6 +295,7 @@ private slots:
     void CaptureViewPendingKeepsStaleResultWithoutProgramFailure_data();
     void CaptureViewPendingKeepsStaleResultWithoutProgramFailure();
     void CameraAndCompletedFrameStayBound();
+    void ViewportServiceFreezesCompletedFrameAndRejectsReplacedContext();
     void CaptureRejectsUnsupportedStaleAndBudget();
     void LayeredCaptureBindsAdditionalLayersAndRejectsMalformedReceipts_data();
     void LayeredCaptureBindsAdditionalLayersAndRejectsMalformedReceipts();
@@ -537,6 +541,61 @@ void WorldViewportTests::CameraAndCompletedFrameStayBound() {
     QVERIFY(!rejected.Succeeded());
     QCOMPARE(rejected.diagnostics.front().code, std::string("WORLD_CAMERA_REJECTED"));
     QCOMPARE(viewport.Camera().targetX, 72.0f);
+}
+
+void WorldViewportTests::ViewportServiceFreezesCompletedFrameAndRejectsReplacedContext() {
+    BackendState state; active = &state;
+    WorldViewport viewport(nullptr, &backend);
+    viewport.resize(320, 240); QVERIFY(Bind(viewport, 17));
+    viewport.show(); QApplication::processEvents();
+    WorldViewport* current = &viewport;
+    WorldViewportToolService service([&current] { return current; });
+    QJsonObject args{{"project_identity", "fixture"}, {"expected_revision", "3"}};
+    const auto read = service.Invoke("world_viewport_camera_read", args);
+    QVERIFY(read.value("ok").toBool());
+    QCOMPARE(read.value("viewport_revision").toString(), QString("17"));
+    QCOMPARE(read.value("camera_state").toString(), QString("requested"));
+    args["expected_viewport_revision"] = "17";
+    auto camera = read.value("camera").toObject(); camera["target_x"] = 72;
+    args["camera"] = camera; args["dry_run"] = true;
+    const auto previousX = viewport.Camera().targetX;
+    QVERIFY(service.Invoke("world_viewport_camera_set", args).value("ok").toBool());
+    QCOMPARE(viewport.Camera().targetX, previousX);
+    args["dry_run"] = false;
+    QVERIFY(service.Invoke("world_viewport_camera_set", args).value("ok").toBool());
+    QCOMPARE(viewport.Camera().targetX, 72.f);
+    args.remove("camera"); args.remove("dry_run"); args["max_rgba_bytes"] = 4;
+    QVERIFY(!service.Invoke("world_viewport_capture", args).value("ok").toBool());
+    args.remove("max_rgba_bytes");
+    const auto start = service.Invoke("world_viewport_capture", args);
+    QVERIFY(start.value("ok").toBool()); QCOMPARE(start.value("status").toString(), QString("pending"));
+    QJsonObject resultArgs{{"project_identity", "fixture"}, {"expected_revision", "3"},
+        {"capture_id", start.value("capture_id")}};
+    QJsonObject result;
+    QTRY_VERIFY(([&] {
+        result = service.Invoke("world_viewport_capture_result", resultArgs);
+        return result.value("status").toString() == "ready";
+    })());
+    QVERIFY(result.value("ok").toBool()); QVERIFY(!result.contains("image"));
+    const auto completion = result.value("metadata").toObject().value("completion").toObject();
+    QCOMPARE(completion.value("camera").toObject().value("target_x").toDouble(), 72.0);
+    QCOMPARE(completion.value("viewport_revision").toString(), QString("17"));
+    QVERIFY(completion.value("map_edit_revision").isNull());
+    const auto frame = completion.value("frame_number");
+    auto nextCamera = viewport.Camera(); nextCamera.targetX = 100;
+    QVERIFY(viewport.SetCamera(nextCamera, 17).Succeeded());
+    resultArgs["include_png"] = true;
+    result = service.Invoke("world_viewport_capture_result", resultArgs);
+    const auto image = QImage::fromData(QByteArray::fromBase64(result.value("image").toObject().value("data").toString().toLatin1()), "PNG");
+    QVERIFY(!image.isNull()); QCOMPARE(image.width(), static_cast<int>(state.width));
+    QCOMPARE(result.value("metadata").toObject().value("completion").toObject().value("frame_number"), frame);
+    QCOMPARE(result.value("metadata").toObject().value("completion").toObject().value("camera").toObject().value("target_x").toDouble(), 72.0);
+    auto stale = resultArgs; stale["expected_revision"] = "4";
+    const auto rejected = service.Invoke("world_viewport_capture_result", stale);
+    QVERIFY(!rejected.value("ok").toBool()); QVERIFY(!rejected.contains("image"));
+    QCOMPARE(rejected.value("diagnostics").toArray().first().toObject().value("code").toString(), QString("WORLD_CAPTURE_CONTEXT_CHANGED"));
+    current = nullptr;
+    QVERIFY(!service.Invoke("world_viewport_capture_result", resultArgs).value("ok").toBool());
 }
 
 void WorldViewportTests::CaptureRejectsUnsupportedStaleAndBudget() {
