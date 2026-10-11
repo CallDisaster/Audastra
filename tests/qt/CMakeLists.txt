@@ -109,6 +109,7 @@ foreach(agent_unit IN ITEMS Settings Window Controller)
     set_tests_properties(qt-agent-${agent_unit_lower} PROPERTIES TIMEOUT 60
         ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 endforeach()
+war3map_deploy_fonts(war3-map-agent-window-tests)
 qt_add_executable(war3-map-agent-ui-capture AgentUiCapture.cpp)
 target_link_libraries(war3-map-agent-ui-capture PRIVATE War3MapEditor::QtAgent)
 target_compile_definitions(war3-map-agent-ui-capture PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
