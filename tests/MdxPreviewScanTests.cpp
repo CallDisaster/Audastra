@@ -4,6 +4,7 @@
 #include "AnimationParticleContinuityTests.h"
 #include "War3MapCore/Hash.h"
 #include <iostream>
+#include <set>
 #include <stdexcept>
 
 namespace {
@@ -18,7 +19,9 @@ std::vector<std::byte> PureParticleModel() {
         std::uint32_t size = 0; std::memcpy(&size, source.data() + at + 4, 4);
         Check(size <= source.size() - at - 8, "original particle fixture chunk truncated");
         const std::string_view tag(reinterpret_cast<const char*>(source.data() + at), 4);
-        if (tag != "GEOS" && tag != "GEOA" && tag != "BONE") out.Raw(source.data() + at, size + 8);
+        // 无网格不等于无骨架：PRE2 2 -> BONE 0 -> HELP 1 的父链必须保留。
+        // 原创 BONE 的两个 geoset 引用均为 UINT32_MAX，本身不引入任何几何。
+        if (tag != "GEOS" && tag != "GEOA") out.Raw(source.data() + at, size + 8);
         at += size + 8;
     }
     return std::move(out.bytes);
@@ -109,11 +112,31 @@ void Run(){
     const auto pureParticle = PureParticleModel();
     const auto particleParsed = ParseMdx(pureParticle);
     Check(particleParsed.Succeeded() && particleParsed.value->geosets.empty(), "particle-only fixture has geometry");
+    const auto& particleModel = *particleParsed.value;
+    Check(particleModel.bones.size() == 1 && particleModel.bones[0].objectId == 0 &&
+        particleModel.bones[0].parentId == 1 && particleModel.bones[0].geosetId == UINT32_MAX &&
+        particleModel.bones[0].geosetAnimationId == UINT32_MAX && particleModel.helpers.size() == 1 &&
+        particleModel.helpers[0].objectId == 1 && particleModel.helpers[0].parentId == -1 &&
+        particleModel.otherNodes.size() == 1 && particleModel.otherNodes[0].objectId == 2 &&
+        particleModel.otherNodes[0].parentId == 0, "particle-only fixture lost its original emitter parent chain");
+    std::set<std::uint32_t> nodeIds;
+    ForEachMdxNode(particleModel, [&](const auto& node) {
+        Check(nodeIds.insert(node.objectId).second, "particle-only fixture has duplicate node IDs");
+    });
+    ForEachMdxNode(particleModel, [&](const auto& node) {
+        Check(node.parentId == -1 || (node.parentId >= 0 && nodeIds.contains(static_cast<std::uint32_t>(node.parentId))),
+            "particle-only fixture has a dangling parent");
+    });
     const auto particleScan = Evaluate(pureParticle);
     Check(particleScan.sha256 == *Sha256(pureParticle).value && particleScan.source == "original-fixture",
         "particle-only scan discarded the verified model identity");
     Check(particleScan.policies.size() == 2, "particle-only scan lost a policy");
     for (const auto& policy : particleScan.policies) {
+        if (policy.sampled != 6 || policy.planned != 6) {
+            std::cerr << "particle-only policy=" << policy.policy << " state=" << policy.state
+                << " planned=" << policy.planned << " sampled=" << policy.sampled << '\n';
+            for (const auto& [code, issue] : policy.issues) std::cerr << code << ": " << issue.message << '\n';
+        }
         Check(policy.sampled == 6 && policy.planned == 6, "particle-only scan lost declared samples");
         Check(policy.issues.contains("SCAN_EXPLICIT_CAMERA_NO_GEOMETRY"), "particle-only scan did not declare its camera");
         Check(!policy.issues.contains("ANIMATION_CAMERA_EMPTY_SCENE"), "particle-only scan still required a mesh camera fit");
