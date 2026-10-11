@@ -71,7 +71,7 @@ void TestToolSurface() {
             "describe_map_data", "query_map_data_page", "save_map_edit_candidate", "query_map_trigger_text", "capture_model_animation", "project_search",
             "query_map_archive_member_identities", "query_trigger_graph", "edit_trigger_graph",
             "variables_list", "variables_get", "variables_create", "variables_update", "variables_rename", "variables_delete",
-            "entities_query", "entities_set_fields", "entities_copy", "entities_rotate",
+            "entities_query", "entities_set_fields", "entities_copy", "entities_rotate", "entities_create", "entities_delete",
             "feedback.draft", "feedback.list", "feedback.status", "update.status",
             "lua_test_hot_reload", "lua_test_reload_result",
             "object_resource_state", "object_resource_query", "object_resource_inspect"}) {

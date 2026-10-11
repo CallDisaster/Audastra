@@ -17,7 +17,7 @@
 #include "McpWorldViewportTools.h"
 #include "Commands/MapDataCommands.h"
 #include "War3MapCore/MapData/MapDataFieldEditing.h"
-#include "../services/ObjectCommandsFixture.h"
+#include "../PlacementCreationFixtures.h"
 #include "../MapDataFixtures.h"
 #include "../MapDataSpatialFixtures.h"
 
@@ -141,8 +141,9 @@ struct Fixture {
         return true;
     }
     bool Fail(const char* reason) { error = QString::fromUtf8(reason); return false; }
-    void InstallObjects(bool missing = false) {
+    void InstallObjects(bool missing = false, bool custom = false) {
         Tests::ObjectCommandsFixture fixture;
+        if (custom) Tests::AddPlacementCustomObjects(fixture);
         project.standardCatalog_ = std::make_unique<ObjectData::StandardObjectCatalog>(std::move(fixture.standard));
         project.objectFieldSchema_ = std::make_unique<ObjectData::ObjectFieldSchema>(std::move(fixture.schema));
         for (std::size_t i = 0; i < fixture.documents.size(); ++i) {
@@ -199,6 +200,7 @@ private slots:
     void SpatialEntityQueriesShareSchemasAndObserveOriginalUndo();
     void SettingsAndStringsKeepOriginalGuiUndoAndPolicy();
     void PlacementToolsKeepAuthorEditsAndOriginalUndo();
+    void PlacementCreateDeleteUseRealSourcesAndPurePreview();
     void TerrainToolsKeepSessionPreviewAndOriginalUndo();
     void BoundaryDraftSavesAndReopensAsProject_data();
     void BoundaryDraftSavesAndReopensAsProject();
@@ -214,7 +216,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
     Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
     const QStringList expected{"code.check", "create_campaign", "edit_campaign", "edit_terrain_stroke",
         "editor_edit_trigger_graph", "editor_get_ui_catalog", "editor_query_trigger_graph", "editor_save_map", "editor_state",
-        "entities_copy", "entities_query", "entities_rotate", "entities_set_fields",
+        "entities_copy", "entities_create", "entities_delete", "entities_query", "entities_rotate", "entities_set_fields",
         "export_campaign_member",
         "feedback.draft", "feedback.list", "feedback.status",
         "get_terrain_edit_state",
@@ -230,7 +232,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{57});
+    QCOMPARE(expected.size(), qsizetype{59});
     const auto luaDefinitions = Mcp::LuaTestToolDefinitions();
     QCOMPARE(luaDefinitions.size(), std::size_t{2});
     QCOMPARE(luaDefinitions[0].permission, Mcp::ToolPermission::External);
@@ -1245,6 +1247,101 @@ void LiveEditorToolsTests::SpatialEntityQueriesShareSchemasAndObserveOriginalUnd
         QCOMPARE(actual->sources.front().data, member.data);
     }
     QCOMPARE(QString::fromStdString(f.Fingerprint()), triggerSha); QCOMPARE(f.project.triggerUndoStack_->count(), 0);
+}
+
+void LiveEditorToolsTests::PlacementCreateDeleteUseRealSourcesAndPurePreview() {
+    using namespace MapData;
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error)); f.InstallObjects(false, true);
+    const auto unitBytes = UnitPlacements{}.Serialize(), doodadBytes = DoodadPlacements{}.Serialize();
+    QVERIFY(unitBytes.Succeeded() && doodadBytes.Succeeded());
+    const auto terrainBytes = Tests::PlacementTerrainBytes();
+    QVERIFY(WriteFile(f.source.filePath("map/war3mapUnits.doo"), Bytes(*unitBytes.value)));
+    QVERIFY(WriteFile(f.source.filePath("map/war3map.doo"), Bytes(*doodadBytes.value)));
+    QVERIFY(WriteFile(f.source.filePath("map/war3map.w3i"), Bytes(MapDataFixtures::FullMapSettingsV25().bytes)));
+    QVERIFY(WriteFile(f.source.filePath("map/war3map.w3e"), Bytes(terrainBytes)));
+    auto directory = DirectoryWorkspace::Open(f.project.projectRoot_); QVERIFY(directory.Succeeded());
+    auto document = MapDocument::FromDirectory(*directory.value); QVERIFY(document.Succeeded());
+    f.project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*directory.value));
+    f.project.mapDocument_ = std::make_unique<MapDocument>(std::move(*document.value));
+    f.project.mapEdits_ = std::make_unique<MapDataEditSession>(*f.project.mapDocument_);
+    QVERIFY(f.project.mapEdits_->AttachTerrain(terrainBytes).Succeeded());
+    f.project.ResetEditTracking(); QVERIFY(f.project.editTrackingReady_);
+    auto* const originalSession = f.project.mapEdits_.get();
+    auto* const undo = f.project.mapDataUndoStack_; QVERIFY(undo);
+    const auto sourceSha = f.project.directorySnapshot_->Snapshot().aggregateSha256;
+    const auto originalIdentity = f.Context(); const auto triggerSha = f.Fingerprint();
+    const auto current = [&] { return ProjectMapData(*f.project.mapDocument_, *originalSession); };
+    const auto base = [&](const char* kind) {
+        const auto page = f.tools->Invoke("entities_query", {{"kind", kind}});
+        auto args = f.Context(); args.insert("kind", kind);
+        args.insert("expected_member_sha256", page.value("member").toObject().value("member_sha256"));
+        return args;
+    };
+    const auto item = [](const char* kind, const char* id) {
+        return QJsonObject{{"object_kind", kind}, {"object_id", id}, {"x", 64}, {"y", -128}};
+    };
+    auto units = base("units");
+    units.insert("placements", QJsonArray{item("unit", "u001"), item("unit", "U001"), item("item", "i001"), item("item", "I001")});
+    auto previewArgs = units; previewArgs.insert("dry_run", true);
+    int draftSubmits = 0;
+    f.tools->SetBeforeWrite([&] { ++draftSubmits; return false; });
+    const auto preview = f.tools->Invoke("entities_create", previewArgs);
+    QVERIFY2(preview.value("ok").toBool(), qPrintable(Explain(preview)));
+    QVERIFY(preview.value("dry_run").toBool()); QVERIFY(!preview.value("applied").toBool());
+    QCOMPARE(preview.value("candidate_ids").toArray().size(), 4); QVERIFY(preview.value("new_ids").toArray().isEmpty());
+    QVERIFY(!preview.contains("session_identity") && !preview.contains("command_identity"));
+    QCOMPARE(draftSubmits, 0); QCOMPARE(undo->count(), 0); QCOMPARE(originalSession->Revision(), std::uint64_t{0});
+    QCOMPARE(f.Context(), originalIdentity); QVERIFY(current().value->Units()->units.empty());
+    f.tools->SetBeforeWrite([&] { ++draftSubmits; return true; });
+    const auto created = f.tools->Invoke("entities_create", units);
+    QVERIFY2(created.value("ok").toBool(), qPrintable(Explain(created)));
+    QCOMPARE(draftSubmits, 1); QCOMPARE(undo->count(), 1);
+    QCOMPARE(created.value("session_identity").toString(), QString::number(originalSession->SessionIdentity()));
+    QCOMPARE(current().value->Units()->units.size(), std::size_t{4});
+    auto doodads = base("doodads");
+    doodads.insert("placements", QJsonArray{item("doodad", "D001"), item("doodad", "D101"), item("destructable", "b001"), item("destructable", "b101")});
+    const auto ground = f.tools->Invoke("entities_create", doodads);
+    QVERIFY2(ground.value("ok").toBool(), qPrintable(Explain(ground)));
+    QCOMPARE(undo->count(), 2); QCOMPARE(current().value->Doodads()->doodads.size(), std::size_t{4});
+    const auto createIds = created.value("new_ids").toArray();
+    auto remove = base("units"); QJsonArray sources;
+    for (const auto index : {3, 1}) {
+        const auto id = createIds[index].toObject();
+        sources.append(QJsonObject{{"source_index", id.value("source_index")}, {"row_key", id.value("row_key")}});
+    }
+    remove.insert("sources", sources);
+    const auto deleted = f.tools->Invoke("entities_delete", remove);
+    QVERIFY2(deleted.value("ok").toBool(), qPrintable(Explain(deleted)));
+    QCOMPARE(undo->count(), 3);
+    auto after = current(); QVERIFY(after.Succeeded()); QCOMPARE(after.value->Units()->units.size(), std::size_t{2});
+    QCOMPARE(after.value->Units()->units[0].rawcode, std::string("u001")); QCOMPARE(after.value->Units()->units[1].rawcode, std::string("i001"));
+    QVERIFY(deleted.value("after").toObject().value("rows").toArray().isEmpty());
+    // 无效末项不影响前项；预览也不触发草稿提交，陈旧请求继续拒绝。
+    auto invalid = base("units"); auto outside = item("unit", "u001"); outside.insert("x", 1025);
+    invalid.insert("placements", QJsonArray{item("unit", "u001"), outside}); invalid.insert("dry_run", true);
+    const auto beforeInvalid = f.Context(); const auto submits = draftSubmits;
+    QVERIFY(!f.tools->Invoke("entities_create", invalid).value("ok").toBool());
+    QCOMPARE(f.Context(), beforeInvalid); QCOMPARE(draftSubmits, submits); QCOMPARE(undo->count(), 3);
+    QCOMPARE(ErrorCode(f.tools->Invoke("entities_create", previewArgs)), QStringLiteral("LIVE_EDITOR_REVISION_CONFLICT"));
+    undo->undo(); QCOMPARE(current().value->Units()->units.size(), std::size_t{4});
+    const auto previewIdentity = f.Context(); auto redoPreview = base("units");
+    redoPreview.insert("placements", QJsonArray{item("unit", "u001")}); redoPreview.insert("dry_run", true);
+    QVERIFY(f.tools->Invoke("entities_create", redoPreview).value("ok").toBool());
+    QVERIFY(undo->canRedo()); QCOMPARE(f.Context(), previewIdentity); QCOMPARE(draftSubmits, submits);
+    undo->redo(); QCOMPARE(current().value->Units()->units.size(), std::size_t{2});
+    undo->undo(); undo->undo(); undo->undo();
+    const auto restored = current(); QVERIFY(restored.Succeeded());
+    QVERIFY(restored.value->Member(MapDataKind::Units).sources[0].data == *unitBytes.value);
+    QVERIFY(restored.value->Member(MapDataKind::Doodads).sources[0].data == *doodadBytes.value);
+    QVERIFY(!originalSession->IsDirty());
+    Mcp::ToolPolicy readOnly; readOnly.allowEdit = false; f.tools->SetPolicy(readOnly);
+    QVERIFY(!f.tools->RegisteredToolNames().contains("entities_create"));
+    QVERIFY(!f.tools->RegisteredToolNames().contains("entities_delete"));
+    QVERIFY(!f.tools->Invoke("entities_create", redoPreview).value("ok").toBool());
+    const auto reloaded = DirectoryWorkspace::Open(f.project.projectRoot_); QVERIFY(reloaded.Succeeded());
+    QCOMPARE(reloaded.value->Snapshot().aggregateSha256, sourceSha);
+    QCOMPARE(f.project.mapEdits_.get(), originalSession); QCOMPARE(f.project.mapDataUndoStack_, undo);
+    QCOMPARE(f.Fingerprint(), triggerSha); QCOMPARE(f.project.triggerUndoStack_->count(), 0);
 }
 
 void LiveEditorToolsTests::ImportMetadataUsesSourceAndCurrentAssetOverlay() {

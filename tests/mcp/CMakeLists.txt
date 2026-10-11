@@ -69,7 +69,7 @@ if(TARGET War3MapMcpProtocol)
     add_test(NAME mcp-import-tools COMMAND war3-map-mcp-import-tools-tests)
     set_tests_properties(mcp-import-tools PROPERTIES ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
-    add_executable(war3-map-mcp-placement-tools-tests McpPlacementToolsTests.cpp)
+    add_executable(war3-map-mcp-placement-tools-tests McpPlacementToolsTests.cpp McpPlacementHostTests.cpp)
     target_link_libraries(war3-map-mcp-placement-tools-tests PRIVATE War3MapEditor::McpProtocol)
     target_compile_definitions(war3-map-mcp-placement-tools-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
     target_compile_options(war3-map-mcp-placement-tools-tests PRIVATE /W4 /permissive- /utf-8)

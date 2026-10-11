@@ -609,10 +609,16 @@ private:
     }
 
     QJsonObject PlacementTool(const QString& name, const QJsonObject& arguments) {
-        return Write(arguments, false, [&] {
+        const auto invoke = [&] {
             Mcp::PlacementToolHost host;
             host.identity = [this] { return State(); };
             host.context = [this] { return VisibleMapDataContext(); };
+            host.objectContext = MakeLiveObjectContextProvider(project_, State());
+            host.terrainPoint = [this](const MapData::TerrainStrokePoint& point) -> Result<MapData::TerrainPointSample> {
+                if (!project_.mapEdits_) return Result<MapData::TerrainPointSample>::Failure("QtApp.Live",
+                    "ENTITY_CREATE_HOST_UNAVAILABLE", "当前地图没有可用的地形会话。");
+                return project_.mapEdits_->InspectTerrainPoint(point);
+            };
             host.apply = [this](const MapData::PreparedMapDataPlacement& plan,
                 const Mcp::PlacementPrepublishValidator& validate) -> Result<MapData::MapDataEditSession::EditReceipt> {
                 using Receipt = MapData::MapDataEditSession::EditReceipt;
@@ -631,7 +637,15 @@ private:
                 return Result<Receipt>::Success(receipt);
             };
             return Mcp::InvokePlacementTool(name, arguments, host);
-        });
+        };
+        if (arguments.contains("dry_run") && !arguments.value("dry_run").isBool())
+            return Mcp::Failure("ENTITY_ARGUMENT_TYPE", "dry_run 须为布尔值。");
+        if (!arguments.value("dry_run").toBool()) return Write(arguments, false, invoke);
+        // 预览只读当前已提交到工程的 UI 状态，不能因提交草稿而改变修订或撤销历史。
+        if (busy_ || project_.savingMap_) return Mcp::Failure("LIVE_EDITOR_BUSY", "地图写任务正在执行。");
+        const auto checked = CheckContext(arguments, false, true);
+        if (!checked.value("ok").toBool()) return checked;
+        return invoke();
     }
 
     QJsonObject TerrainTool(const QString& name, const QJsonObject& arguments, bool write) {
