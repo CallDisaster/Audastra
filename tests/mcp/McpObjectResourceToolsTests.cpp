@@ -19,6 +19,7 @@ void Contract() {
     for (int i = 0; i < 5; ++i) {
         ObjectResourceCandidate row; row.id = std::to_string(i); row.title = "Unit" + row.id;
         row.value = "model" + row.id + ".mdx"; row.kind = ObjectResourceKind::Model; catalog->rows.push_back(row);
+        catalog->rows.back().object = ObjectData::ObjectKey{ObjectData::ObjectType::Unit, "u00" + row.id};
     }
     int loads = 0, reads = 0; bool drift = false;
     ObjectResourceToolHost host;
