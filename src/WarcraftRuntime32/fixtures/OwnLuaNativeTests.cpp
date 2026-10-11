@@ -42,6 +42,11 @@ public:
     std::uint64_t generation = 7;
     std::size_t calls = 0;
     bool throwLookup = false;
+    bool throwGlobalLookup = false;
+    std::size_t globalReads = 0;
+    bool expireOnGlobalRead = false;
+    std::map<std::string, NativeGlobalDeclaration, std::less<>> globalDeclarations;
+    std::map<std::string, NativeValue, std::less<>> globals;
     std::shared_ptr<HandleLife> timer = std::make_shared<HandleLife>();
     std::shared_ptr<HandleLife> unit = std::make_shared<HandleLife>();
     const std::map<std::string, std::string, std::less<>> signatures{
@@ -58,6 +63,17 @@ public:
         if (throwLookup) throw std::runtime_error("fixture lookup failure");
         const auto found = signatures.find(name);
         return found == signatures.end() ? std::optional<NativeSignature>{} : ParseNativeSignature(found->second);
+    }
+    std::optional<NativeGlobalDeclaration> LookupGlobal(std::string_view name) const override {
+        if (throwGlobalLookup) throw std::runtime_error("fixture global lookup failure");
+        const auto found = globalDeclarations.find(name);
+        return found == globalDeclarations.end() ? std::nullopt : std::optional<NativeGlobalDeclaration>(found->second);
+    }
+    NativeCallResult ReadGlobal(std::string_view name) override {
+        ++globalReads;
+        if (expireOnGlobalRead) ++generation;
+        const auto found = globals.find(name);
+        return found == globals.end() ? NativeCallResult{false, {}, "fixture global absent"} : NativeCallResult{true, found->second, {}};
     }
     bool IsHandleType(std::string_view actual, std::string_view expected) const noexcept override {
         const bool known = actual == "timer" || actual == "unit" || actual == "handle" || actual == "playercolor" || actual == "race";
@@ -170,11 +186,57 @@ void ConversionAndLifetimes() {
     std::thread worker([&] { refused = !wrongThread.BindNatives(provider).Succeeded(); }); worker.join();
     Check(refused, "only initialize thread may bind provider");
 }
+void GlobalReads() {
+    auto provider = std::make_shared<FixtureProvider>();
+    provider->globalDeclarations = {
+        {"Integer", {{NativeKind::Integer, {}}, false, true}},
+        {"FixtureFlag", {{NativeKind::Boolean, {}}, false, false}},
+        {"FixtureText", {{NativeKind::String, {}}, false, false}},
+        {"FixtureReal", {{NativeKind::Real, {}}, false, false}},
+        {"FixtureTimer", {{NativeKind::Handle, "timer"}, false, false}},
+        {"FixtureArray", {{NativeKind::Integer, {}}, true, false}},
+        {"FixtureCode", {{NativeKind::Code, {}}, false, false}},
+        {"FixtureBad", {{NativeKind::Integer, {}}, false, false}},
+        {"FixtureAbsent", {{NativeKind::String, {}}, false, false}}
+    };
+    provider->globals = {{"Integer", std::int32_t{17}}, {"FixtureFlag", false}, {"FixtureText", std::monostate{}},
+        {"FixtureReal", 1.5f}, {"FixtureTimer", provider->Handle(42, "timer", provider->timer)},
+        {"FixtureBad", std::string("wrong type")}};
+    LuaHost host({}); Success(host.Initialize(), "global host initialize");
+    Success(host.Execute("savedRawset=rawset; local t={}; assert(rawequal(rawset(t,'name',7),t) and t.name==7)", "@rawset-before-bind.lua"),
+        "normal user rawset remains available before native binding");
+    Success(host.BindNatives(provider), "global provider");
+    Success(host.Execute("j=require('jass.common'); g=require('jass.globals'); assert(j.Integer(3)==3); assert(g.Integer==17); assert(j.FixtureFlag==false and g.FixtureFlag==false); assert(j.FixtureText==nil and g.FixtureText==nil); assert(j.FixtureReal==1.5); assert(rawequal(g.FixtureTimer,j.Timer()))", "@globals.lua"),
+        "native priority, globals-only view, primitive null and shared handle identity");
+    provider->globals["FixtureFlag"] = true;
+    Success(host.Execute("assert(j.FixtureFlag==true and g.FixtureFlag==true)", "@current-global.lua"), "global values are read each time, not cached");
+    const auto before = provider->globalReads;
+    for (const auto source : {"return g.FixtureArray", "return g.FixtureCode", "return g.Unknown", "j.FixtureFlag=false", "g.Integer=5",
+            "rawset(g,'Integer',5)", "rawset(j,'Integer',5)", "savedRawset(g,'Integer',5)", "savedRawset(j,'Integer',5)"})
+        Check(!host.Execute(source, "@global-rejected.lua").Succeeded(), "unsupported reads and all writes explicitly refused");
+    Check(before == provider->globalReads && std::get<bool>(provider->globals["FixtureFlag"])
+        && std::get<std::int32_t>(provider->globals["Integer"]) == 17, "rejected access never calls provider or shadows a global");
+    for (const auto source : {"return g.FixtureBad", "return g.FixtureAbsent"})
+        Check(!host.Execute(source, "@global-provider.lua").Succeeded(), "bad global provider value refused");
+    provider->throwGlobalLookup = true;
+    Check(host.Execute("return g.Integer", "@global-throw.lua").message.find("fixture global lookup failure") != std::string::npos,
+        "global lookup exception reaches source diagnostic");
+    provider->throwGlobalLookup = false;
+    provider->expireOnGlobalRead = true;
+    Check(!host.Execute("return g.Integer", "@global-expire-during-read.lua").Succeeded(),
+        "primitive global cannot escape a provider that expires while reading");
+    provider->expireOnGlobalRead = false;
+    ++provider->generation;
+    const auto expiredReads = provider->globalReads;
+    Check(!host.Execute("return g.Integer", "@global-expired.lua").Succeeded()
+        && !host.Execute("return j.FixtureFlag", "@global-expired.lua").Succeeded()
+        && expiredReads == provider->globalReads, "expired globals never reach the provider");
+}
 }
 
 int main() {
     try {
-        NativeCalls(); ConversionAndLifetimes();
+        NativeCalls(); ConversionAndLifetimes(); GlobalReads();
         std::cout << "Own Lua native conversions passed; original cdecl/handle fixture only; game_evidence=0\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

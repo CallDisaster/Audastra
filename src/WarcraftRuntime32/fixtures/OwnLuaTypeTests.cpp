@@ -30,6 +30,15 @@ type base extends handle
 type widget extends base
 type unit extends widget
 type timer extends base
+globals
+    constant integer FixtureCount = 17
+    real FixtureScale = 1.5
+    boolean FixtureEnabled = false
+    string FixtureText = null
+    unit FixtureUnit = null
+    timer array FixtureTimers
+    code FixtureCallback = null
+endglobals
 constant native Example takes widget w returns nothing
 )");
     if (!original.types) throw std::runtime_error(original.error);
@@ -37,10 +46,23 @@ constant native Example takes widget w returns nothing
         && original.types->IsA("unit", "handle") && original.types->IsA("timer", "base"), "declared transitive parents");
     Check(!original.types->IsA("unit", "timer") && !original.types->IsA("widget", "unit")
         && !original.types->IsA("invented", "handle") && !original.types->IsA("unit", "invented"), "unknown and wrong direction refused");
+    const auto count = original.types->Global("FixtureCount"), timers = original.types->Global("FixtureTimers");
+    Check(count && count->constant && !count->array && count->type.kind == NativeKind::Integer,
+        "constant global declaration is metadata, not a guessed runtime value");
+    Check(timers && timers->array && timers->type.kind == NativeKind::Handle && timers->type.handleType == "timer",
+        "array and concrete handle type preserved for later capability rejection");
+    Check(original.types->Global("FixtureScale")->type.kind == NativeKind::Real
+        && original.types->Global("FixtureEnabled")->type.kind == NativeKind::Boolean
+        && original.types->Global("FixtureText")->type.kind == NativeKind::String
+        && original.types->Global("FixtureCallback")->type.kind == NativeKind::Code
+        && !original.types->Global("Absent"), "primitive declarations and unknown name");
     for (const auto source : {"", "native X takes nothing returns nothing", "type a extends missing",
         "type a extends a", "type a extends handle\ntype a extends handle", "type handle extends handle",
         "type a extends handle\ntype b extends", "type a extends b\ntype b extends a"})
         Check(!NativeTypeHierarchy::Parse(source).types, "incomplete, cyclic, duplicate declarations rejected");
+    for (const auto declarations : {"unknown x", "integer x\nreal x", "nothing x"})
+        Check(!NativeTypeHierarchy::Parse(std::string("type a extends handle\nglobals\n") + declarations + "\nendglobals").types,
+            "unknown and duplicate global declarations rejected");
     Check(!NativeTypeHierarchy::Parse(std::string(4 * 1024 * 1024 + 1, ' ')).types, "source budget");
     Temp temp;
     Archive(temp.root / "war3.mpq", "type frombase extends handle");

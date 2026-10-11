@@ -53,6 +53,9 @@ public:
     virtual ~NativeProvider() = default;
     [[nodiscard]] virtual std::uint64_t Generation() const noexcept = 0;
     [[nodiscard]] virtual std::optional<NativeSignature> Lookup(std::string_view name) const = 0;
+    // 全局声明来自同一受信脚本来源；没有声明时不能仅凭 VM 中的数值猜类型。
+    [[nodiscard]] virtual std::optional<NativeGlobalDeclaration> LookupGlobal(std::string_view) const { return {}; }
+    [[nodiscard]] virtual NativeCallResult ReadGlobal(std::string_view) { return {false, {}, "全局读取尚未实现。"}; }
     // 只能根据已取得的真实类型父链判断；未知子类型不能猜成 handle 兼容。
     [[nodiscard]] virtual bool IsHandleType(std::string_view actual, std::string_view expected) const noexcept = 0;
     // 原生 C 签名不包含 code 返回类型，必须由经过核验的调用行为提供，未知时拒绝。

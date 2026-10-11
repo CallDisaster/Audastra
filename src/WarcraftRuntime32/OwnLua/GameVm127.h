@@ -17,6 +17,7 @@ class GameImage127;
 class GameVm127 final {
 public:
     struct OpenResult { std::shared_ptr<GameVm127> vm; std::string error; };
+    struct GlobalValue { std::uint32_t type = 0, declaredType = 0, value = 0; };
     [[nodiscard]] static OpenResult OpenAtScriptEntry(HMODULE game, std::uint64_t generation);
     [[nodiscard]] static OpenResult OpenAtScriptEntry(std::shared_ptr<GameImage127> image, std::uint64_t generation);
     ~GameVm127();
@@ -43,6 +44,7 @@ public:
     [[nodiscard]] std::uintptr_t ResolveCode(std::uint32_t vmIndex, std::uint32_t id) const noexcept;
     [[nodiscard]] std::optional<NativeCodeOwner> CodeOwner(std::uint32_t handle) const noexcept;
     [[nodiscard]] bool CodeOwnerAlive(const NativeCodeOwner& owner) const noexcept;
+    [[nodiscard]] std::optional<GlobalValue> ReadGlobal(std::string_view name) const;
 private:
     struct Impl;
     explicit GameVm127(std::unique_ptr<Impl> impl);

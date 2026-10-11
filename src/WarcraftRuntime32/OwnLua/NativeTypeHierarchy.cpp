@@ -45,9 +45,28 @@ NativeTypesResult NativeTypeHierarchy::Parse(std::string_view source) {
                 return {{}, {}, "common.j 第 " + std::to_string(type.line) + " 行含重复、未知父类型或非 handle 类型声明。"};
             hierarchy->parents_.emplace(type.name, type.parent);
         }
+        if (program.globals.size() > 16384) return {{}, {}, "common.j 全局声明超过 16384 项预算。"};
+        for (const auto& global : program.globals) {
+            NativeGlobalDeclaration declaration;
+            declaration.array = global.array; declaration.constant = global.constant;
+            if (global.type == "integer") declaration.type.kind = NativeKind::Integer;
+            else if (global.type == "real") declaration.type.kind = NativeKind::Real;
+            else if (global.type == "boolean") declaration.type.kind = NativeKind::Boolean;
+            else if (global.type == "string") declaration.type.kind = NativeKind::String;
+            else if (global.type == "code") declaration.type.kind = NativeKind::Code;
+            else if (hierarchy->parents_.contains(global.type)) {
+                declaration.type.kind = NativeKind::Handle; declaration.type.handleType = global.type;
+            } else return {{}, {}, "common.j 全局声明包含未知类型：" + std::string(global.type)};
+            if (!NativeIdentifier(global.name) || !hierarchy->globals_.emplace(global.name, std::move(declaration)).second)
+                return {{}, {}, "common.j 全局声明包含无效或重复名称。"};
+        }
         return {std::move(hierarchy), {}, {}};
     } catch (const std::exception& error) { return {{}, {}, std::string("解析游戏类型来源失败：") + error.what()}; }
     catch (...) { return {{}, {}, "解析游戏类型来源失败。"}; }
+}
+std::optional<NativeGlobalDeclaration> NativeTypeHierarchy::Global(std::string_view name) const {
+    const auto found = globals_.find(name);
+    return found == globals_.end() ? std::nullopt : std::optional<NativeGlobalDeclaration>(found->second);
 }
 bool NativeTypeHierarchy::IsA(std::string_view actual, std::string_view expected) const noexcept {
     if (!parents_.contains(expected)) return false;

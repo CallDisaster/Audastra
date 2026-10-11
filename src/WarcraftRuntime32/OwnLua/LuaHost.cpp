@@ -199,6 +199,7 @@ struct LuaHost::Impl {
         luaL_requiref(lua, "utf8", luaopen_utf8, 1); lua_pop(lua, 1);
         for (const auto name : {"dofile", "loadfile", "load", "collectgarbage"}) Disable(lua, name);
         lua_getglobal(lua, "setmetatable"); lua_pushcclosure(lua, SetMetatable, 1); lua_setglobal(lua, "setmetatable");
+        LuaNativeBindings::InstallTableWriteGuard(lua);
         lua_getglobal(lua, "string"); lua_pushnil(lua); lua_setfield(lua, -2, "dump"); lua_pop(lua, 1);
         lua_getglobal(lua, "math");
         lua_pushcfunction(lua, Random); lua_setfield(lua, -2, "random");

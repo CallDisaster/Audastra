@@ -1,5 +1,7 @@
 #pragma once
 
+#include "NativeSignature.h"
+
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -22,8 +24,10 @@ public:
     [[nodiscard]] static NativeTypesResult Parse(std::string_view commonSource);
     [[nodiscard]] bool IsA(std::string_view actual, std::string_view expected) const noexcept;
     [[nodiscard]] std::size_t Size() const noexcept { return parents_.size(); }
+    [[nodiscard]] std::optional<NativeGlobalDeclaration> Global(std::string_view name) const;
 private:
     std::map<std::string, std::string, std::less<>> parents_;
+    std::map<std::string, NativeGlobalDeclaration, std::less<>> globals_;
 };
 
 } // namespace Audastra::Runtime32::OwnLua

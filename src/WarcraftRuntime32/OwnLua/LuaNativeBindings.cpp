@@ -13,6 +13,7 @@ namespace Audastra::Runtime32::OwnLua {
 namespace {
 constexpr char kHandleMetatable[] = "Audastra.OwnLua.NativeHandle";
 char handleCacheKey;
+char globalTableGuardKey;
 struct LuaHandle {
     alignas(NativeHandle) std::byte storage[sizeof(NativeHandle)];
     LuaNativeBindings* bindings = nullptr;
@@ -121,16 +122,59 @@ void LuaNativeBindings::PushHandle(lua_State* lua, const NativeHandle& value) {
 int LuaNativeBindings::Lookup(lua_State* lua) {
     auto& self = Bindings(lua);
     if (self.provider_->Generation() != self.generation_) return luaL_error(lua, "jass.common 所属地图代际已经结束。");
-    if (lua_type(lua, 2) != LUA_TSTRING) return luaL_error(lua, "jass.common 需要 native 名称文本。");
+    if (lua_type(lua, 2) != LUA_TSTRING) return luaL_error(lua, "jass.common 需要 native 或全局名称文本。");
     std::size_t size = 0; const auto* value = lua_tolstring(lua, 2, &size);
     const std::string name(value, size);
-    if (!NativeIdentifier(name)) return luaL_error(lua, "jass.common 的 native 名称无效。");
+    if (!NativeIdentifier(name)) return luaL_error(lua, "jass.common 的查询名称无效。");
     std::string error;
-    if (!self.Signature(name, error)) return luaL_error(lua, "jass.common 无法查询 native %s：%s", name.c_str(),
-        error.empty() ? "尚未注册。" : error.c_str());
+    if (!self.Signature(name, error)) {
+        if (!error.empty()) return luaL_error(lua, "jass.common 无法查询 native %s：%s", name.c_str(), error.c_str());
+        return self.ReadGlobal(lua, name);
+    }
     lua_pushlightuserdata(lua, &self); lua_pushlstring(lua, name.data(), name.size());
     lua_pushcclosure(lua, Call, 2);
     return 1;
+}
+int LuaNativeBindings::LookupGlobal(lua_State* lua) {
+    if (lua_type(lua, 2) != LUA_TSTRING) return luaL_error(lua, "jass.globals 需要全局名称文本。");
+    std::size_t size = 0; const auto* value = lua_tolstring(lua, 2, &size);
+    if (!NativeIdentifier({value, size})) return luaL_error(lua, "jass.globals 的查询名称无效。");
+    return Bindings(lua).ReadGlobal(lua, {value, size});
+}
+int LuaNativeBindings::RejectGlobalWrite(lua_State* lua) {
+    return luaL_error(lua, "自有 Lua 运行时尚未实现 JASS 全局写入；未修改变量，也未建立 Lua 遮蔽字段。");
+}
+int LuaNativeBindings::RawSet(lua_State* lua) {
+    luaL_checktype(lua, 1, LUA_TTABLE); luaL_checkany(lua, 2); luaL_checkany(lua, 3);
+    if (lua_getmetatable(lua, 1)) {
+        lua_rawgetp(lua, -1, &globalTableGuardKey);
+        const bool protectedTable = lua_toboolean(lua, -1) != 0;
+        lua_pop(lua, 2);
+        if (protectedTable) return RejectGlobalWrite(lua);
+    }
+    lua_settop(lua, 3); lua_rawset(lua, 1); lua_pushvalue(lua, 1); return 1;
+}
+void LuaNativeBindings::InstallTableWriteGuard(lua_State* lua) {
+    lua_pushcfunction(lua, RawSet); lua_setglobal(lua, "rawset");
+}
+int LuaNativeBindings::ReadGlobal(lua_State* lua, std::string_view key) {
+    if (provider_->Generation() != generation_) return luaL_error(lua, "JASS 全局变量所属地图代际已经结束。");
+    const std::string name(key);
+    std::optional<NativeGlobalDeclaration> declaration;
+    std::string error;
+    try { declaration = provider_->LookupGlobal(name); }
+    catch (const std::exception& exception) { error = exception.what(); }
+    catch (...) { error = "全局声明查询发生未知异常。"; }
+    if (!declaration) return luaL_error(lua, "JASS 全局 %s 没有可信声明：%s", name.c_str(),
+        error.empty() ? "未知名称或尚未提供此脚本来源。" : error.c_str());
+    if (declaration->array || declaration->type.kind == NativeKind::Code || declaration->type.kind == NativeKind::Nothing)
+        return luaL_error(lua, "JASS 全局 %s 的数组或 code 转换尚未实现。", name.c_str());
+    NativeCallResult result;
+    try { result = provider_->ReadGlobal(name); }
+    catch (const std::exception& exception) { result.error = exception.what(); }
+    catch (...) { result.error = "全局读取发生未知异常。"; }
+    if (!result.succeeded) return luaL_error(lua, "读取 JASS 全局 %s 失败：%s", name.c_str(), result.error.c_str());
+    return PushValue(lua, declaration->type, result.value, name.c_str());
 }
 
 int LuaNativeBindings::Call(lua_State* lua) {
@@ -205,35 +249,38 @@ int LuaNativeBindings::Call(lua_State* lua) {
     }
     const auto result = self.CallProvider(name, arguments);
     if (!result.succeeded) return luaL_error(lua, "native %s 失败：%s", name, result.error.empty() ? "提供者未返回诊断。" : result.error.c_str());
-    const auto& returned = signature->returns;
+    return self.PushValue(lua, signature->returns, result.value, name);
+}
+int LuaNativeBindings::PushValue(lua_State* lua, const NativeType& returned, const NativeValue& result, const char* name) {
+    if (provider_->Generation() != generation_) return luaL_error(lua, "%s 返回时地图代际已经结束。", name);
     switch (returned.kind) {
     case NativeKind::Nothing:
-        if (std::holds_alternative<std::monostate>(result.value)) return 0;
+        if (std::holds_alternative<std::monostate>(result)) return 0;
         break;
     case NativeKind::Integer:
-        if (const auto* value = std::get_if<std::int32_t>(&result.value)) { lua_pushinteger(lua, *value); return 1; }
+        if (const auto* value = std::get_if<std::int32_t>(&result)) { lua_pushinteger(lua, *value); return 1; }
         break;
     case NativeKind::Real:
-        if (const auto* value = std::get_if<float>(&result.value); value && std::isfinite(*value)) { lua_pushnumber(lua, *value); return 1; }
+        if (const auto* value = std::get_if<float>(&result); value && std::isfinite(*value)) { lua_pushnumber(lua, *value); return 1; }
         break;
     case NativeKind::Boolean:
-        if (const auto* value = std::get_if<bool>(&result.value)) { lua_pushboolean(lua, *value); return 1; }
+        if (const auto* value = std::get_if<bool>(&result)) { lua_pushboolean(lua, *value); return 1; }
         break;
     case NativeKind::String:
-        if (std::holds_alternative<std::monostate>(result.value)) { lua_pushnil(lua); return 1; }
-        if (const auto* value = std::get_if<std::string>(&result.value);
+        if (std::holds_alternative<std::monostate>(result)) { lua_pushnil(lua); return 1; }
+        if (const auto* value = std::get_if<std::string>(&result);
             value && value->size() <= 1024 * 1024 && LuaMailboxUtf8(*value)) { lua_pushlstring(lua, value->data(), value->size()); return 1; }
         break;
     case NativeKind::Handle:
-        if (std::holds_alternative<std::monostate>(result.value)) { lua_pushnil(lua); return 1; }
-        if (const auto* value = std::get_if<NativeHandle>(&result.value); value && self.ValidHandle(*value, returned.handleType)) {
-            self.PushHandle(lua, *value); return 1;
+        if (std::holds_alternative<std::monostate>(result)) { lua_pushnil(lua); return 1; }
+        if (const auto* value = std::get_if<NativeHandle>(&result); value && ValidHandle(*value, returned.handleType)) {
+            PushHandle(lua, *value); return 1;
         }
         break;
     case NativeKind::Code:
-        return luaL_error(lua, "native %s 返回 code 的转换尚未实现。", name);
+        return luaL_error(lua, "%s 的 code 转换尚未实现。", name);
     }
-    return luaL_error(lua, "native %s 返回值与可信签名不符，结果已拒绝。", name);
+    return luaL_error(lua, "%s 的值与可信类型不符，结果已拒绝。", name);
 }
 
 void LuaNativeBindings::Install(lua_State* lua) {
@@ -248,9 +295,17 @@ void LuaNativeBindings::Install(lua_State* lua) {
     lua_rawsetp(lua, LUA_REGISTRYINDEX, &handleCacheKey);
     luaL_getsubtable(lua, LUA_REGISTRYINDEX, LUA_LOADED_TABLE);
     lua_newtable(lua); lua_newtable(lua);
+    lua_pushboolean(lua, true); lua_rawsetp(lua, -2, &globalTableGuardKey);
     lua_pushlightuserdata(lua, this); lua_pushcclosure(lua, Lookup, 1); lua_setfield(lua, -2, "__index");
+    lua_pushcfunction(lua, RejectGlobalWrite); lua_setfield(lua, -2, "__newindex");
     lua_pushliteral(lua, "jass.common"); lua_setfield(lua, -2, "__metatable"); lua_setmetatable(lua, -2);
-    lua_setfield(lua, -2, "jass.common"); lua_pop(lua, 1);
+    lua_setfield(lua, -2, "jass.common");
+    lua_newtable(lua); lua_newtable(lua);
+    lua_pushboolean(lua, true); lua_rawsetp(lua, -2, &globalTableGuardKey);
+    lua_pushlightuserdata(lua, this); lua_pushcclosure(lua, LookupGlobal, 1); lua_setfield(lua, -2, "__index");
+    lua_pushcfunction(lua, RejectGlobalWrite); lua_setfield(lua, -2, "__newindex");
+    lua_pushliteral(lua, "jass.globals"); lua_setfield(lua, -2, "__metatable"); lua_setmetatable(lua, -2);
+    lua_setfield(lua, -2, "jass.globals"); lua_pop(lua, 1);
 }
 
 } // namespace Audastra::Runtime32::OwnLua

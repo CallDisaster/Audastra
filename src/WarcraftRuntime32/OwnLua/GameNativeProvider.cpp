@@ -67,6 +67,56 @@ std::optional<NativeSignature> GameNativeProvider::Lookup(std::string_view name)
     const auto* entry = registry_->Find(name);
     return entry ? std::optional<NativeSignature>(entry->signature) : std::nullopt;
 }
+std::optional<NativeGlobalDeclaration> GameNativeProvider::LookupGlobal(std::string_view name) const {
+    return Generation() ? types_->Global(name) : std::nullopt;
+}
+NativeCallResult GameNativeProvider::ReadGlobal(std::string_view name) {
+    const auto declaration = LookupGlobal(name);
+    if (!declaration) return Failure("全局变量没有同一游戏来源的可信声明。");
+    if (declaration->array || declaration->type.kind == NativeKind::Code)
+        return Failure("全局数组与 code 值的生命周期桥尚未实现。");
+    const auto raw = vm_->ReadGlobal(name);
+    if (!raw) return Failure("当前地图 VM 中没有有效的全局变量记录。");
+    const auto kind = declaration->type.kind;
+    const auto expected = kind == NativeKind::Integer ? 4u : kind == NativeKind::Real ? 5u
+        : kind == NativeKind::String ? 6u : kind == NativeKind::Handle ? 7u : kind == NativeKind::Boolean ? 8u : 0u;
+    if (!expected || raw->declaredType != expected || (raw->type != expected && raw->type != 2))
+        return Failure("VM 全局值类型与可信声明不符，拒绝猜测或强制转换。");
+    if (raw->type == 2) {
+        if (!raw->value && (kind == NativeKind::String || kind == NativeKind::Handle)) return {true, {}, {}};
+        return Failure("VM 全局 null 的值或声明类型无效。");
+    }
+    switch (kind) {
+    case NativeKind::Integer: return {true, std::bit_cast<std::int32_t>(raw->value), {}};
+    case NativeKind::Real: {
+        const auto value = std::bit_cast<float>(raw->value);
+        return std::isfinite(value) ? NativeCallResult{true, value, {}} : Failure("VM 全局 real 非有限。");
+    }
+    case NativeKind::Boolean: return {true, raw->value != 0, {}};
+    case NativeKind::String: {
+        if (!raw->value) return {true, {}, {}};
+        // 借用全局已经持有的字符串引用，只复制文字，不能按 native 返回值释放它。
+        const auto text = vm_->ReadString(raw->value);
+        return text ? NativeCallResult{true, *text, {}} : Failure("VM 全局字符串无效或超过预算。");
+    }
+    case NativeKind::Handle: return ReadHandle(raw->value, declaration->type);
+    default: return Failure("VM 全局类型尚未实现。");
+    }
+}
+NativeCallResult GameNativeProvider::ReadHandle(std::uint32_t value, const NativeType& declared) {
+    const auto& type = declared.handleType;
+    if (!IsHandleType(type, type) || type == "handle") return Failure("handle 缺少可信具体类型。");
+    const bool reference = IsHandleType(type, "agent") || type == "triggeraction";
+    if (!reference && !scalarTypes_.contains(type)) return Failure("此非 agent 对象尚未建立生命周期桥。");
+    if (reference && !value) return {true, {}, {}};
+    const auto object = reference ? vm_->HandleObject(value) : 0;
+    if (reference && (!object || !vm_->RetainHandle(value))) return Failure("无法持有有效的游戏 agent 引用。");
+    std::shared_ptr<NativeHandleOwner> owner;
+    try { owner = std::make_shared<HandleOwner>(vm_, value, object); }
+    catch (...) { if (reference) vm_->ReleaseHandle(value, object); throw; }
+    return {true, NativeHandle{value, Generation(), type, std::move(owner),
+        reference ? NativeHandleKind::Reference : NativeHandleKind::Scalar}, {}};
+}
 bool GameNativeProvider::IsHandleType(std::string_view actual, std::string_view expected) const noexcept {
     return types_ && types_->IsA(actual, expected);
 }
@@ -186,19 +236,7 @@ NativeCallResult GameNativeProvider::Invoke(std::string_view name, std::span<con
         vm_->ReleaseString(call.value);
         return text ? NativeCallResult{true, *text, {}} : Failure("游戏 native 返回无效或超预算字符串。");
     }
-    case NativeKind::Handle: {
-        const auto& type = signature.returns.handleType;
-        if (!IsHandleType(type, type) || type == "handle") return Failure("native 返回的 handle 缺少可信具体类型。");
-        const bool reference = IsHandleType(type, "agent") || actionObject;
-        if (reference && !call.value) return {true, {}, {}};
-        const auto object = reference ? vm_->HandleObject(call.value) : 0;
-        if (reference && (!object || !vm_->RetainHandle(call.value))) return Failure("无法持有游戏 native 返回的有效 agent 引用。");
-        std::shared_ptr<NativeHandleOwner> owner;
-        try { owner = std::make_shared<HandleOwner>(vm_, call.value, object); }
-        catch (...) { if (reference) vm_->ReleaseHandle(call.value, object); throw; }
-        return {true, NativeHandle{call.value, Generation(), type, std::move(owner),
-            reference ? NativeHandleKind::Reference : NativeHandleKind::Scalar}, {}};
-    }
+    case NativeKind::Handle: return ReadHandle(call.value, signature.returns);
     case NativeKind::Code: return Failure("native code 返回值尚未接通。");
     }
     return Failure("native 返回类型未知。");

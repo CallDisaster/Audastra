@@ -19,6 +19,12 @@ struct NativeSignature {
     NativeType returns;
     bool operator==(const NativeSignature&) const = default;
 };
+struct NativeGlobalDeclaration {
+    NativeType type;
+    bool array = false;
+    bool constant = false;
+    bool operator==(const NativeGlobalDeclaration&) const = default;
+};
 
 // 游戏实际注册签名，例如 (Htimer;RBC)V。解析失败不猜参数数量或 ABI。
 [[nodiscard]] std::optional<NativeSignature> ParseNativeSignature(std::string_view text);

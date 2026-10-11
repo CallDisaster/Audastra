@@ -1,5 +1,6 @@
 #include "GameVm127.h"
 #include "GameImage127.h"
+#include "NativeSignature.h"
 #include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
 
 #include <array>
@@ -193,6 +194,27 @@ bool GameVm127::CodeOwnerAlive(const NativeCodeOwner& owner) const noexcept {
         // 不解引用可能已释放的旧对象地址；两个弱身份由游戏分配器生成。
         return weak && Word(weak + 12) == 727803756 && !Word(weak + 32);
     } __except (EXCEPTION_EXECUTE_HANDLER) { impl_->active = false; return false; }
+}
+std::optional<GameVm127::GlobalValue> GameVm127::ReadGlobal(std::string_view name) const {
+    if (!Alive() || !NativeIdentifier(name)) return {};
+    const std::string terminated(name);
+    const auto read = [](std::uintptr_t base, std::uintptr_t vm, const char* key,
+        GlobalValue& output, bool& fault) noexcept {
+        __try {
+            const auto table = Word(vm + 0x285c);
+            if (!table) return false;
+            const auto record = reinterpret_cast<std::uintptr_t(__thiscall*)(std::uintptr_t, const char*)>
+                (base + 0x7e5820)(table, key);
+            if (!record) return false;
+            output = {static_cast<std::uint32_t>(Word(record + 0x18)),
+                static_cast<std::uint32_t>(Word(record + 0x1c)), static_cast<std::uint32_t>(Word(record + 0x20))};
+            return true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) { fault = true; return false; }
+    };
+    GlobalValue value; bool fault = false;
+    const bool found = read(impl_->base, impl_->identity.vm, terminated.c_str(), value, fault);
+    if (fault) impl_->active = false;
+    return found && Alive() ? std::optional<GlobalValue>(value) : std::nullopt;
 }
 
 } // namespace Audastra::Runtime32::OwnLua
