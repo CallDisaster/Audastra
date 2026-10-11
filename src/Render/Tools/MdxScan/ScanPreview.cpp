@@ -74,9 +74,16 @@ struct Sources {
             // 模型清单路径可以是绝对路径；模型内部资源只允许位于同一目录下的安全相对名。
             const auto model = FromUtf8(options.model);
             const auto disk = path == options.model ? model : model.parent_path() / FromUtf8(Key(path));
-            Good(guard.Watch(disk));
+            // 记录缺失文件的身份，让 PREM 的同源 .mdl → .mdx 回退也受来源租约约束。
+            Good(guard.Watch(disk, true));
             std::ifstream stream(disk, std::ios::binary | std::ios::ate);
-            if (!stream) throw std::runtime_error("SCAN_READ_RESOURCE_MISSING");
+            if (!stream) {
+                std::error_code error;
+                const bool exists = std::filesystem::exists(disk, error);
+                if (!error && !exists) throw std::runtime_error("RESOURCE_NOT_FOUND");
+                // 权限或 I/O 失败不是缺失，不能据此允许换扩展名读取。
+                throw std::runtime_error("SCAN_READ_RESOURCE_FAILED");
+            }
             const auto size = stream.tellg();
             if (size < 0 || static_cast<std::uint64_t>(size) > limit) throw std::runtime_error("SCAN_RESOURCE_LIMIT");
             resource.bytes.resize(static_cast<std::size_t>(size)); stream.seekg(0);
@@ -89,7 +96,7 @@ struct Sources {
         } else if (game) {
             auto read = Good(game->ReadFileBoundedWithSource(std::string(path), static_cast<std::size_t>(limit)));
             resource.bytes = std::move(read.bytes); resource.sourceLayer = "game:" + read.archiveName;
-        } else throw std::runtime_error("SCAN_READ_RESOURCE_MISSING");
+        } else throw std::runtime_error("RESOURCE_NOT_FOUND");
         Good(guard.Verify()); resource.digest = Good(Sha256(resource.bytes));
         if (cache.size() >= 4096 || resource.bytes.size() > 256ull * 1024 * 1024 - cacheBytes)
             throw std::runtime_error("SCAN_RESOURCE_CACHE_LIMIT");
