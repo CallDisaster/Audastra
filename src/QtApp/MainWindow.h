@@ -6,6 +6,7 @@
 #include "War3MapCore/Services/CommandRegistry.h"
 #include "War3MapCore/Services/ProjectSearch.h"
 #include "War3MapCore/Services/MapSizeAnalysis.h"
+#include "War3MapCore/Services/LuaTestReloadController.h"
 #include "ProjectSearchCapture.h"
 #include "War3MapCore/Services/ProjectChanges.h"
 #include "Theme/ThemeManager.h"
@@ -132,7 +133,8 @@ public:
     // 无模态旁路写入；仅在完整输出成功后提交来源路径、基线和脏状态。
     bool SaveMapArchiveToPath(const std::filesystem::path& outputPath);
     // 地图保存（MapSaveActions.cpp）：background 为真时在工作线程执行并显示进度框。
-    bool RunMapSave(const std::filesystem::path& target, bool inPlace, bool background, bool testSnapshot = false);
+    bool RunMapSave(const std::filesystem::path& target, bool inPlace, bool background, bool testSnapshot = false,
+        bool testHotReload = false);
     bool SaveEditorProjectToPath(const std::filesystem::path& outputPath, bool recovery = false);
     bool OpenEditorProjectPath(const std::filesystem::path& path);
 
@@ -214,6 +216,8 @@ private:
     void SaveAsMap();
     void SaveMapInPlace();
     void TestMap();
+    QJsonObject LuaTestReload(bool submit);
+    void PollLuaTestReload();
     void SaveEditorProject();
     void SaveEditorProjectAs();
     void OpenEditorProject();
@@ -293,6 +297,13 @@ private:
     QAction* buildMapAction_ = nullptr;
     QAction* testMapAction_ = nullptr;
     std::shared_ptr<War3Map::Script::MapTestLaunchLease> mapTestLease_;
+    QAction* luaReloadAction_ = nullptr;
+    QAction* luaAutoReloadAction_ = nullptr;
+    std::optional<War3Map::Script::LuaTriggerUnit> luaTestGenerated_;
+    std::string luaTestMapBinding_;
+    std::shared_ptr<War3Map::Services::LuaTestReloadController> luaReloadController_;
+    std::uint64_t luaTestGeneration_ = 0;
+    QTimer* luaReloadPoll_ = nullptr;
     QAction* exportAction_ = nullptr;
     QAction* mapDataAction_ = nullptr;
     QToolBar* projectNoticeBar_ = nullptr;

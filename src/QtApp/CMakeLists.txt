@@ -33,6 +33,7 @@ qt_add_executable(war3-map-editor WIN32
     ResourceSettingsActions.cpp
     MapSaveActions.cpp
     MapTestActions.cpp
+    MapTestReloadActions.cpp
     MapTestSettingsPage.cpp
     MapTestSettingsPage.h
     RecoverySettingsPage.cpp

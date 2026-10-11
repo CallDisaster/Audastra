@@ -8,6 +8,7 @@
 #include "McpProductTools.h"
 #include "McpCodeCheckTools.h"
 #include "McpTerrainEditTools.h"
+#include "McpLuaTestTools.h"
 
 namespace War3Map::Mcp {
 void RegisterModelAnimationTool(McpServer& server);
@@ -16,6 +17,7 @@ void RegisterCampaignTools(McpServer& server);
 void RegisterAllTools(McpServer& server) {
     RegisterProductTools(server);
     RegisterCodeCheckTool(server);
+    RegisterLuaTestTools(server);
     RegisterReadOnlyTools(server);
     RegisterArchiveIdentityTools(server);
     RegisterImportTools(server);

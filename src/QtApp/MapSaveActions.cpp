@@ -4,6 +4,7 @@
 #include "MapSaveJob.h"
 #include "ProgramIssueReporter.h"
 #include "War3MapCore/Services/ScriptSavePreparation.h"
+#include "War3MapCore/Services/LuaTestReloadController.h"
 #include "ObjectModule.h"
 #include "TriggerModule.h"
 #include "MapSettingsModule.h"
@@ -73,9 +74,9 @@ QString ChangedMembers(const MapSaveJob& job) {
 }
 }
 
-bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, bool background, bool testSnapshot) {
+bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, bool background, bool testSnapshot, bool testHotReload) {
     // 测试快照绝不能进入原地保存分支，也不能把当前工程切换到测试副本。
-    if (testSnapshot && inPlace) return false;
+    if ((testSnapshot && inPlace) || (testHotReload && !testSnapshot)) return false;
     if (project_->savingMap_) return false;
     if (writingRecovery_ && recoveryWorker_) {
         // 恢复 Store 持有来源保护句柄，Ctrl+S 要等它释放后才可替换原图。
@@ -133,6 +134,15 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         UpdateEditDirtyFlags();
         reportFailure(tr("地图未保存：保存准备未通过"));
         return false;
+    }
+    if (testHotReload) {
+        if (!job->script || !job->script->luaTarget) {
+            project_->AddDiagnostic(tr("错误"), tr("测试"), QStringLiteral("LUA_RELOAD_PROFILE_REQUIRED"),
+                tr("热重载需要当前地图明确的 Lua 保存档案，请先选择档案再测试。"));
+            return false;
+        }
+        job->testCopyOnly = true;
+        job->script->luaTestOptions.testHotReload = true;
     }
     project_->savingMap_ = true;
     const auto execute = [reporter = programIssueReporter_](MapSaveJob& task) {
@@ -203,6 +213,10 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
             return false;
         }
         // 不调用 CommitMapSave：不改变 sourceArchivePath、编辑基线、dirty 或撤销栈。
+        if (testHotReload) {
+            luaTestGenerated_ = std::move(job->generatedLuaTestUnit);
+            luaTestMapBinding_ = std::move(job->luaTestMapBinding);
+        }
         return true;
     }
     const auto saved = project_->CommitMapSave(*job);
@@ -229,6 +243,8 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
     const auto summary = (saved->inPlace ? tr("地图已保存 · %1 秒") : tr("地图已另存为 · %1 秒")).arg(saved->seconds, 0, 'f', 1);
     project_->AddDiagnostic(tr("信息"), tr("地图"), QStringLiteral("MAP_SAVE_COMPLETED"), details.join(QLatin1Char('\n')));
     SaveNotice(*this, background, true, summary, details);
+    if (luaReloadController_ && luaAutoReloadAction_ && luaAutoReloadAction_->isChecked())
+        QTimer::singleShot(0, this, [this] { (void)LuaTestReload(true); });
     return true;
 }
 

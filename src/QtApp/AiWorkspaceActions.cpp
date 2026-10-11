@@ -276,6 +276,7 @@ void MainWindow::SetupAgentWorkspace(bool readUserConfiguration) {
     state->tools->SetSaveHandler([this](const std::filesystem::path& path, bool inPlace) {
         return RunMapSave(path, inPlace, true);
     });
+    state->tools->SetLuaTestHandler([this](bool submit) { return LuaTestReload(submit); });
     connect(state->controller.get(), &War3Map::Agent::AgentController::Event, state, [state](const QJsonObject& event) {
         // Live broker already emits authoritative changes for both AI and HTTP calls.
         if (state->window && event.value(QStringLiteral("type")).toString() != QStringLiteral("changes")) {

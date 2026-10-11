@@ -1,4 +1,5 @@
 #include "LiveEditorTools.h"
+#include "McpLuaTestTools.h"
 #include "McpCampaignTools.h"
 #include "LiveObjectTools.h"
 #include "EditorProject.h"
@@ -240,6 +241,7 @@ public:
 
     Mcp::McpServer& Server() noexcept { return server_; }
     void SetSaveHandler(std::function<bool(const std::filesystem::path&, bool)> handler) { save_ = std::move(handler); }
+    void SetLuaTestHandler(std::function<QJsonObject(bool)> handler) { luaTest_ = std::move(handler); }
     void SetBeforeWrite(std::function<bool()> handler) { beforeWrite_ = std::move(handler); }
     void SetProjectSearchQuery(ProjectSearchRevisionQuery revision, ProjectSearchPageQuery query) {
         // 每次重绑定切换不可复用的 token；执行中的 callback 有自己的拥有副本。
@@ -779,6 +781,15 @@ private:
     }
 
     void RegisterTools() {
+        for (auto definition : Mcp::LuaTestToolDefinitions()) {
+            const auto name = definition.name;
+            AddTool(name, definition.description, definition.permission, definition.inputSchema,
+                [this, name](const QJsonObject& args) {
+                    const auto check = CheckContext(args, true, name == "lua_test_hot_reload");
+                    if (!check.value("ok").toBool()) return check;
+                    return Mcp::InvokeLuaTestTool(name, args, {luaTest_});
+                }, definition.maxRequestIdBytes, definition.maxResponseBytes);
+        }
         for (auto definition : Mcp::CampaignToolDefinitions(server_)) {
             AddTool(definition.name, definition.description, definition.permission, definition.inputSchema,
                 [handler = definition.handler](const QJsonObject& arguments) { return handler(arguments).toObject(); },
@@ -946,6 +957,7 @@ private:
     Mcp::McpServer server_;
     std::function<bool(const std::filesystem::path&, bool)> save_;
     std::function<bool()> beforeWrite_;
+    std::function<QJsonObject(bool)> luaTest_;
     ProjectSearchRevisionQuery projectSearchRevision_;
     ProjectSearchPageQuery projectSearchQuery_;
     std::shared_ptr<const int> projectSearchToken_;
@@ -967,6 +979,7 @@ LiveEditorTools::LiveEditorTools(QtProject::EditorProject& project, QObject* par
 LiveEditorTools::~LiveEditorTools() = default;
 Mcp::McpServer& LiveEditorTools::Server() noexcept { return impl_->Server(); }
 void LiveEditorTools::SetSaveHandler(std::function<bool(const std::filesystem::path&, bool)> handler) { impl_->SetSaveHandler(std::move(handler)); }
+void LiveEditorTools::SetLuaTestHandler(std::function<QJsonObject(bool)> handler) { impl_->SetLuaTestHandler(std::move(handler)); }
 void LiveEditorTools::SetBeforeWrite(std::function<bool()> handler) { impl_->SetBeforeWrite(std::move(handler)); }
 void LiveEditorTools::SetProjectSearchQuery(ProjectSearchRevisionQuery revision, ProjectSearchPageQuery query) {
     impl_->SetProjectSearchQuery(std::move(revision), std::move(query));

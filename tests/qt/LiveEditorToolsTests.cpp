@@ -12,6 +12,7 @@
 #include "McpCodeCheckTools.h"
 #include "McpCampaignTools.h"
 #include "McpProjectSearchTools.h"
+#include "McpLuaTestTools.h"
 #include "Commands/MapDataCommands.h"
 #include "War3MapCore/MapData/MapDataFieldEditing.h"
 #include "../services/ObjectCommandsFixture.h"
@@ -208,7 +209,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "export_campaign_member",
         "feedback.draft", "feedback.list", "feedback.status",
         "get_terrain_edit_state",
-        "imports_get", "imports_list",
+        "imports_get", "imports_list", "lua_test_hot_reload", "lua_test_reload_result",
         "map_settings_get", "map_settings_set",
         "object_resource_inspect", "object_resource_query", "object_resource_state",
         "objects_create", "objects_delete", "objects_field_options", "objects_get", "objects_list", "objects_set_fields",
@@ -219,7 +220,24 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "variables_create", "variables_delete", "variables_get", "variables_list", "variables_rename", "variables_update"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{48});
+    QCOMPARE(expected.size(), qsizetype{53});
+    const auto luaDefinitions = Mcp::LuaTestToolDefinitions();
+    QCOMPARE(luaDefinitions.size(), std::size_t{2});
+    QCOMPARE(luaDefinitions[0].permission, Mcp::ToolPermission::External);
+    QCOMPARE(luaDefinitions[1].permission, Mcp::ToolPermission::Query);
+    const auto editorState = f.tools->Invoke("editor_state", {});
+    QJsonObject luaArgs{{"project_identity", editorState.value("project_identity")}, {"expected_revision", editorState.value("revision")}};
+    QCOMPARE(ErrorCode(f.tools->Invoke("lua_test_hot_reload", luaArgs)), QString("LUA_RELOAD_NO_SESSION"));
+    int calls = 0;
+    f.tools->SetLuaTestHandler([&calls](bool submit) { ++calls; return QJsonObject{{"ok", true}, {"submit", submit}, {"sequence", "7"}}; });
+    auto reload = f.tools->Invoke("lua_test_hot_reload", luaArgs);
+    QVERIFY(reload.value("ok").toBool() && reload.value("submit").toBool());
+    QVERIFY(!f.tools->Invoke("lua_test_reload_result", luaArgs).value("submit").toBool());
+    QCOMPARE(calls, 2);
+    auto arbitrary = luaArgs; arbitrary.insert("source", "print('unexpected')");
+    QVERIFY(!f.tools->Invoke("lua_test_hot_reload", arbitrary).value("ok").toBool()); QCOMPARE(calls, 2);
+    auto stale = luaArgs; stale.insert("expected_revision", "9999");
+    QCOMPARE(ErrorCode(f.tools->Invoke("lua_test_hot_reload", stale)), QString("LIVE_EDITOR_REVISION_CONFLICT")); QCOMPARE(calls, 2);
     const auto codeDefinition = Mcp::CodeCheckToolDefinition();
     QCOMPARE(codeDefinition.permission, Mcp::ToolPermission::Query);
     bool foundCodeCheck = false;

@@ -73,6 +73,7 @@ void TestToolSurface() {
             "variables_list", "variables_get", "variables_create", "variables_update", "variables_rename", "variables_delete",
             "entities_query", "entities_set_fields", "entities_copy", "entities_rotate",
             "feedback.draft", "feedback.list", "feedback.status", "update.status",
+            "lua_test_hot_reload", "lua_test_reload_result",
             "object_resource_state", "object_resource_query", "object_resource_inspect"}) {
         Expect(names.contains(required), "required safe MCP tool is missing");
     }

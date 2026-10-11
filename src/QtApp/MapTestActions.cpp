@@ -11,6 +11,7 @@
 #include "War3MapCore/Script/MapTestToolchain.h"
 
 #include <QDir>
+#include <QAction>
 #include <QCoreApplication>
 #include <QEventLoop>
 #include <QFileInfo>
@@ -54,6 +55,9 @@ void MainWindow::TestMap() {
         return;
     }
     QSettings settings;
+    const bool testHotReload = project_->luaMapTarget_.has_value() && settings.value("mapTest/hotReloadEnabled", true).toBool();
+    luaTestGenerated_.reset(); luaTestMapBinding_.clear(); luaReloadController_.reset();
+    if (luaReloadPoll_) luaReloadPoll_->stop();
     const auto gameRoot = settings.value(QStringLiteral("war3/gameRoot")).toString();
     const auto runtimeRoot = settings.value(QStringLiteral("mapTest/runtimeRoot")).toString().trimmed();
     const auto runtimeYdweRoot = settings.value(QStringLiteral("ui/dataRoot")).toString().trimmed();
@@ -101,7 +105,7 @@ void MainWindow::TestMap() {
     auto input = project_->sourceArchivePath_;
     if (snapshot) {
         input = std::filesystem::path(QDir(runDirectory).filePath(QStringLiteral("input.w3x")).toStdWString());
-        if (!RunMapSave(input, false, true, true)) { cleanupUnstarted(true); return; }
+        if (!RunMapSave(input, false, true, true, testHotReload)) { cleanupUnstarted(true); return; }
     }
     Services::MapTestRequest request;
     request.inputMap = input;
@@ -114,6 +118,8 @@ void MainWindow::TestMap() {
     request.runtimeBootstrap = std::filesystem::path(program.filePath(QStringLiteral("audastra-warcraft-bootstrap.dll")).toStdWString());
     request.workspace = std::filesystem::path(QDir(runDirectory).filePath(QStringLiteral("prepared")).toStdWString());
     request.optimizeSlk = QtCommon::ReadExplicitLocalConsent(settings, QStringLiteral("mapTest/slkEnabled"));
+    request.useOwnedLuaRuntime = project_->luaMapTarget_.has_value();
+    request.enableLuaHotReload = testHotReload;
     if (!snapshot) request.expectedInputSha256 = project_->archiveSession_->SourceSha256();
 
     QProgressDialog dialog(tr("正在准备测试地图…"), QString(), 0, 0, this);
@@ -176,6 +182,12 @@ void MainWindow::TestMap() {
     }
     // 仅用户点击测试时发起游戏；预检、SHA与复制均在低优先级worker完成。
     mapTestLease_ = launched.value->lease;
+    if (testHotReload && launched.value->luaMailbox && luaTestGenerated_ && !luaTestMapBinding_.empty()) {
+        luaReloadController_ = std::make_shared<Services::LuaTestReloadController>(launched.value->luaMailbox,
+            std::move(*luaTestGenerated_), std::move(luaTestMapBinding_));
+        luaTestGenerated_.reset(); luaTestGeneration_ = project_->editRevision_.Generation();
+    }
+    UpdateExportAvailability();
     ShowStatusMessage(request.optimizeSlk ? tr("已启动地图测试 · SLK 测试副本 · 原图与当前编辑保留")
         : tr("已启动地图测试 · 独立副本 · 原图与当前编辑保留"));
     auto* cleanup = new QTimer(this);
@@ -215,6 +227,7 @@ void MainWindow::TestMap() {
         connect(worker, &QThread::finished, worker, &QObject::deleteLater);
         worker->start(QThread::LowPriority);
         if (mapTestLease_ == lease) mapTestLease_.reset();
+        if (luaReloadAction_) luaReloadAction_->setEnabled(false);
         cleanup->deleteLater();
     });
     cleanup->start();

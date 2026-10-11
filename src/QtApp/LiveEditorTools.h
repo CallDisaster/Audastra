@@ -34,6 +34,7 @@ public:
     [[nodiscard]] Mcp::McpServer& Server() noexcept;
     void SetSaveHandler(std::function<bool(const std::filesystem::path&, bool)> handler);
     void SetBeforeWrite(std::function<bool()> handler);
+    void SetLuaTestHandler(std::function<QJsonObject(bool submit)> handler);
     // 可信窗口注入与 UI 相同的同步 owned-page 查询；不存借用 context 或跨调用 span。
     void SetProjectSearchQuery(ProjectSearchRevisionQuery revision, ProjectSearchPageQuery query);
     void SetPolicy(Mcp::ToolPolicy policy);

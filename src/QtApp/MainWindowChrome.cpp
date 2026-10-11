@@ -132,6 +132,18 @@ void MainWindow::BuildHeader() {
     connect(testMapAction_, &QAction::triggered, this, &MainWindow::TestMap);
     fileMenu->addAction(testMapAction_);
     RegisterCommandAction("map.test", testMapAction_, tr("地图"));
+    luaReloadAction_ = MenuAction(this, "lucide/refresh-cw", tr("热重载"), tr("热重载当前 Lua 测试"));
+    luaReloadAction_->setObjectName("luaTestReloadAction"); luaReloadAction_->setEnabled(false);
+    connect(luaReloadAction_, &QAction::triggered, this, [this] { (void)LuaTestReload(true); });
+    fileMenu->addAction(luaReloadAction_);
+    RegisterCommandAction("map.test.lua.reload", luaReloadAction_, tr("地图"));
+    luaAutoReloadAction_ = fileMenu->addAction(tr("保存后自动热重载"));
+    luaAutoReloadAction_->setObjectName("luaTestAutoReloadAction"); luaAutoReloadAction_->setCheckable(true);
+    luaAutoReloadAction_->setChecked(QSettings{}.value("mapTest/autoHotReload", false).toBool());
+    connect(luaAutoReloadAction_, &QAction::toggled, this, [](bool enabled) { QSettings{}.setValue("mapTest/autoHotReload", enabled); });
+    auto* enableReload = fileMenu->addAction(tr("Lua 测试启用热重载"));
+    enableReload->setCheckable(true); enableReload->setChecked(QSettings{}.value("mapTest/hotReloadEnabled", true).toBool());
+    connect(enableReload, &QAction::toggled, this, [](bool enabled) { QSettings{}.setValue("mapTest/hotReloadEnabled", enabled); });
     fileMenu->addSeparator();
     saveProjectAction_ = MenuAction(this, "lucide/save", tr("保存工程"), tr("保存工程（编辑状态存档）"));
     saveProjectAction_->setObjectName("saveEditorProjectAction");
@@ -161,6 +173,7 @@ void MainWindow::BuildHeader() {
     auto* testButton = header->AddAction(testMapAction_);
     testButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     testButton->setProperty("headerKeepIcon", true);
+    header->AddAction(luaReloadAction_)->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     addAction(openMap);
     addAction(saveAs);
     header->AddSeparator();
