@@ -43,22 +43,29 @@ struct Sources {
     std::optional<Mpq::MpqArchive> map;
     std::optional<Game::GameDataSource> game;
     std::optional<std::uint8_t> mainTileset;
+    std::vector<Diagnostic> gameDiagnostics;
     std::map<std::string, AnimationResource, std::less<>> cache;
     std::uint64_t cacheBytes = 0;
-    explicit Sources(const Options& input, std::filesystem::path archive) : options(input), mapPath(std::move(archive)) {
+    explicit Sources(const Options& input, std::filesystem::path archive,
+        std::optional<std::uint8_t> tileset) : options(input), mapPath(std::move(archive)), mainTileset(tileset) {
         if (!mapPath.empty()) {
             Good(guard.Watch(mapPath)); map.emplace(Good(Mpq::MpqArchive::OpenReadOnly(mapPath)));
             if (map->HasFile("war3map.w3e")) {
                 // 与世界资源读取器使用同一已解析地形集，不从文件名猜嵌套包。
                 const auto bytes = Good(map->ReadFileBounded("war3map.w3e", 64ull * 1024 * 1024), "SCAN_SOURCE_TERRAIN_");
                 const auto terrain = Good(MapData::ParseMapTerrain(bytes), "SCAN_SOURCE_TERRAIN_");
-                mainTileset = terrain.Snapshot()->header.mainTileset;
+                const auto declared = terrain.Snapshot()->header.mainTileset;
+                if (mainTileset && *mainTileset != declared)
+                    throw std::runtime_error("SCAN_SOURCE_TILESET_MAP_CONFLICT");
+                mainTileset = declared;
             }
         }
         if (!options.gameRoot.empty()) {
             Good(guard.WatchGameRoot(options.gameRoot));
-            game.emplace(Good(mainTileset ? Game::GameDataSource::MountStrict(options.gameRoot, *mainTileset) :
-                Game::GameDataSource::MountStrict(options.gameRoot)));
+            auto mounted = mainTileset ? Game::GameDataSource::MountStrict(options.gameRoot, *mainTileset) :
+                Game::GameDataSource::MountStrict(options.gameRoot);
+            gameDiagnostics = mounted.diagnostics;
+            game.emplace(Good(std::move(mounted)));
         }
     }
     AnimationResource Read(std::string_view path, std::uint64_t limit) {
@@ -135,10 +142,10 @@ PreviewModelReport Failure(const Options& options, std::string code) {
     }
     return model;
 }
-int One(const Options& options, const std::filesystem::path& mapPath) {
+int One(const Options& options, const std::filesystem::path& mapPath, std::optional<std::uint8_t> tileset) {
     const auto start = Clock::now();
     try {
-        Sources source(options, mapPath);
+        Sources source(options, mapPath, tileset);
         auto model = source.Read(options.model, static_cast<std::uint64_t>(options.limits.fileMiB) * 1024 * 1024);
         const auto checkpoint = [&] {
             Good(source.guard.Verify());
@@ -161,8 +168,9 @@ int One(const Options& options, const std::filesystem::path& mapPath) {
     catch (const std::exception& error) { Write(options.tsv, Failure(options, error.what())); }
     return 0;
 }
-int EnumeratePreview(const Options& options, const std::filesystem::path& mapPath) {
-    Sources source(options, mapPath);
+int EnumeratePreview(const Options& options, const std::filesystem::path& mapPath,
+    std::optional<std::uint8_t> tileset) {
+    Sources source(options, mapPath, tileset);
     std::vector<std::string> names, scope;
     if (!options.list.empty()) {
         names = ReadLines(options.list, 16ull * 1024 * 1024, 100000);
@@ -209,7 +217,20 @@ int EnumeratePreview(const Options& options, const std::filesystem::path& mapPat
         selected.resize(options.limits.maxModels); scope.push_back("scope_notice=SCAN_MODEL_COUNT_LIMIT");
     }
     scope.push_back("selected_models=" + std::to_string(selected.size()));
-    if (source.mainTileset) scope.push_back("main_tileset=" + std::to_string(*source.mainTileset));
+    if (source.mainTileset) {
+        const auto letter = std::string(1, static_cast<char>(*source.mainTileset));
+        scope.push_back("main_tileset=" + std::to_string(*source.mainTileset));
+        scope.push_back("main_tileset_letter=" + letter);
+        scope.push_back(std::string("tileset_selection=") + (tileset ? "explicit" : "map-terrain"));
+        if (source.game) {
+            scope.push_back("game_context=tileset:" + letter);
+            scope.push_back("tileset_archive_member=" + letter + ".mpq");
+            const bool absent = std::any_of(source.gameDiagnostics.begin(), source.gameDiagnostics.end(),
+                [](const auto& diagnostic) { return diagnostic.code == "tileset-archive-absent"; });
+            scope.push_back(std::string("tileset_archive_state=") + (absent ? "absent" : "mounted"));
+        }
+    } else if (source.game) scope.push_back("game_context=default");
+    for (const auto& diagnostic : source.gameDiagnostics) scope.push_back("scope_notice=" + diagnostic.code);
     Good(source.guard.Verify());
     std::ofstream list(options.tsv, std::ios::binary | std::ios::trunc);
     std::ofstream info(Companion(options.tsv, ".scope.txt"), std::ios::binary | std::ios::trunc);
@@ -240,10 +261,13 @@ std::vector<std::string> Cells(const std::string& line) {
     return cells;
 }
 }
-int RunPreview(const Options& options, const std::filesystem::path& mapPath) {
-    if (options.mode == "model") return One(options, mapPath);
+int RunPreview(const Options& options, const std::filesystem::path& mapPath,
+    std::optional<std::uint8_t> tileset) {
+    if (tileset && (*tileset < 'A' || *tileset > 'Z')) throw std::runtime_error("SCAN_TILESET_INVALID");
+    if (tileset && options.gameRoot.empty()) throw std::runtime_error("SCAN_TILESET_REQUIRES_GAME_ROOT");
+    if (options.mode == "model") return One(options, mapPath, tileset);
     if (options.mode == "enumerate") {
-        try { return EnumeratePreview(options, mapPath); }
+        try { return EnumeratePreview(options, mapPath, tileset); }
         catch (const std::exception& error) {
             // 父进程只接收子进程退出码；单独保留有界来源错误，避免只剩 CHILD_EXIT_1。
             std::ofstream diagnostic(Companion(options.tsv, ".error.txt"), std::ios::binary | std::ios::trunc);
@@ -269,6 +293,7 @@ int RunPreview(const Options& options, const std::filesystem::path& mapPath) {
         if (!options.gameRoot.empty()) args.insert(args.end(), {"--game-root", Utf8(options.gameRoot)});
         if (!mapPath.empty()) args.insert(args.end(), {"--map", Utf8(mapPath)});
         if (!options.list.empty()) args.insert(args.end(), {"--list", Utf8(options.list)});
+        if (tileset) args.insert(args.end(), {"--tileset", std::string(1, static_cast<char>(*tileset))});
         return args;
     };
     Scratch scratch;

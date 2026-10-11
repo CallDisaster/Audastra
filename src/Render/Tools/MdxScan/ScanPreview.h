@@ -2,6 +2,7 @@
 #include "ScanTypes.h"
 #include "War3MapCore/Render/ModelAnimation.h"
 #include <map>
+#include <optional>
 #include <string_view>
 
 namespace War3Map::Render::Scan {
@@ -25,5 +26,7 @@ struct PreviewModelReport {
 [[nodiscard]] PreviewModelReport EvaluatePreviewModel(std::string path, const AnimationResource& model,
     const AnimationResourceReader& reader, const Limits& limits, const Checkpoint& checkpoint);
 // Windows 宿主模式；严格 Core 差分扫描的 Options/Record/入口保持原合同。
-int RunPreview(const Options& options, const std::filesystem::path& mapPath);
+// 显式地形集只改变宿主资源上下文；与地图 W3E 不一致时拒绝，不覆盖地图声明。
+int RunPreview(const Options& options, const std::filesystem::path& mapPath,
+    std::optional<std::uint8_t> tileset = std::nullopt);
 }
