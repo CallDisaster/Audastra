@@ -1323,12 +1323,14 @@ void TestStrictListfileListsItself() {
 void TestStrictStaleListfileName() {
     TempDirectory temp;
     // 原创清单含已经不存在的metadata。不存在和多个hash是不同根因；均不准入严格写出。
-    const auto path = BuildSyntheticMpq(temp.Path(), "(listfile)", "(listfile)\r\n(attributes)\r\n");
+    // 该最小加密构造器要求正文按dword对齐；16字节清单避免先命中加密尾字节拒绝。
+    const auto path = BuildSyntheticMpq(temp.Path(), "(listfile)", "(attributes)\r\nx\n");
     auto archive = MpqArchive::OpenReadOnly(path);
     Require(archive.Succeeded(), "stale listfile archive still opens read-only");
     const auto strict = archive.value->ListFilesStrict();
     Require(!strict.Succeeded() && !strict.diagnostics.empty()
-        && strict.diagnostics.front().code == "LISTFILE_MEMBER_MISSING", "missing member has precise diagnostic");
+        && strict.diagnostics.front().code == "LISTFILE_MEMBER_MISSING",
+        "missing member has precise diagnostic: " + DiagnosticsText(strict.diagnostics));
     const auto preserved = ReadAll(path);
     Require(!archive.value->HasFile("(attributes)") && ReadAll(path) == preserved, "missing metadata is not fabricated or changed");
 }
