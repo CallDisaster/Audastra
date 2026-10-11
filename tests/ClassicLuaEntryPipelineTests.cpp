@@ -261,23 +261,27 @@ void Dependencies() {
     copy = fixture;
     for (auto& [name, parent] : copy.target.handleTypes) if (name == "rect") parent = "player";
     Require(HasCode(copy.Validate(copy.Generate()), "CLASSIC_LUA_DEPENDENCY_API"), "self-reported handle ancestry must match actual common declarations");
-    copy = fixture; copy.target.apis.push_back({"UnsupportedBJ", "nothing", {}});
-    copy.common += "function UnsupportedBJ takes nothing returns nothing\nendfunction\n";
-    auto dependency = copy.Generate(); dependency.requiredApis.push_back("UnsupportedBJ");
-    Require(HasCode(copy.Validate(dependency), "CLASSIC_LUA_DEPENDENCY_API"), "ordinary JASS functions are not Lua-callable natives");
+    copy = fixture;
+    Changed(copy.common, "native GetCameraMargin takes integer p0 returns real\n",
+        "function GetCameraMargin takes integer p0 returns real\nreturn 0.0\nendfunction\n");
+    Require(HasCode(copy.Validate(generated), "CLASSIC_LUA_DEPENDENCY_API"), "ordinary JASS functions are not Lua-callable natives");
     copy = fixture; copy.plan.symbols.front().type = "handle";
     Require(HasCode(copy.Validate(generated), "CLASSIC_LUA_DEPENDENCY_GLOBAL"), "map global must match exact generated object type");
     copy = fixture; copy.target.identity += "-changed";
     Require(HasCode(copy.Validate(generated), "CLASSIC_LUA_DEPENDENCY_INPUT"), "target identity cannot change after generation");
     copy = fixture; copy.target.apis.push_back({"UnusedNative", "nothing", {}});
     Require(HasCode(copy.Validate(generated), "CLASSIC_LUA_DEPENDENCY_TARGET_CHANGED"), "full target fingerprint is rebound even for changed unused API");
-    dependency = generated; dependency.text += "-- changed\n";
+    auto dependency = generated; dependency.text += "-- changed\n";
     Require(!fixture.Validate(dependency).Succeeded(), "modified generated Lua does not retain its dependency binding");
-    dependency = generated; dependency.requiredGlobals.push_back("Counter");
-    Require(fixture.Validate(dependency).Succeeded(), "actual common scalar can supply an engine global");
-    for (const auto* name : {"Counters", "Callback", "MissingGlobal"}) {
-        dependency = generated; dependency.requiredGlobals.push_back(name);
-        Require(HasCode(fixture.Validate(dependency), "CLASSIC_LUA_DEPENDENCY_GLOBAL"), "array/code/missing global is rejected");
+    for (const auto member : {&LuaMapScriptResult::requiredApis, &LuaMapScriptResult::requiredGlobals,
+            &LuaMapScriptResult::requiredConstants}) {
+        Require(!(generated.*member).empty(), "production fixture generates all three dependency classes");
+        dependency = generated; (dependency.*member).erase((dependency.*member).begin());
+        Require(HasCode(fixture.Validate(dependency), "CLASSIC_LUA_DEPENDENCY_GENERATED_CHANGED"),
+            "removing a required dependency cannot keep the generated source identity");
+        dependency = generated; (dependency.*member).push_back("ForgedRequirement");
+        Require(HasCode(fixture.Validate(dependency), "CLASSIC_LUA_DEPENDENCY_GENERATED_CHANGED"),
+            "adding a required dependency cannot keep the generated source identity");
     }
     copy = fixture; copy.common = "//# +rb\n" + copy.common;
     Require(HasCode(copy.Validate(generated), "CLASSIC_LUA_ENTRY_PRAGMA_UNSUPPORTED"), "trusted common declarations cannot relax checks with pragmas");
