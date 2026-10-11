@@ -295,8 +295,12 @@ void Run(const std::filesystem::path& root) {
         const auto brokenCatalog = UiCatalog::Load(broken.ui); Require(brokenCatalog.Succeeded(), "fault catalog");
         const auto brokenOwned = CaptureOwned(broken, *brokenCatalog.value);
         if (fault == Fault::MissingLibrary) {
-            Require(!brokenOwned.Succeeded() && HasCode(brokenOwned.diagnostics, "INJECTION_SOURCE_LIBRARY_MISSING"),
-                "owned capture rejects a cfg with no corresponding source library");
+            Require(brokenOwned.Succeeded() && HasCode(brokenOwned.diagnostics, "INJECTION_SOURCE_LIBRARY_MISSING"),
+                "owned capture warns about a cfg with no corresponding source library: " + Details(brokenOwned.diagnostics));
+            std::vector<std::filesystem::path> brokenLibraries;
+            const auto refused = InjectScriptFramework(generated.text, *brokenOwned.value, brokenLibraries);
+            Require(!refused.Succeeded() && HasCode(refused.diagnostics, "INJECTION_LIBRARY_MISSING_USED") && brokenLibraries.empty(),
+                "owned injection fails only when the script uses the missing library");
             std::vector<Diagnostic> diagnostics;
             const auto table = ScanInjectTable({broken.libraries}, true, diagnostics);
             const auto output = InjectCode(generated.text, table, diagnostics);

@@ -128,6 +128,8 @@ Result<std::string> InjectOwnedCode(std::string_view script, const ScriptInjecti
         budget.PollOccasionally(++visits);
         if (token.kind == Jass::detail::TokenKind::Identifier) identifiers.insert(token.text);
     }
+    if (auto missing = CheckMissingInjectionLibraries(sources, identifiers); !missing.Succeeded())
+        return Output{{}, std::move(missing.diagnostics)};
     std::map<std::filesystem::path, const ScriptInjectionSourceFile*> files;
     for (const auto& choice : sources.choices) {
         budget.PollOccasionally(++visits);

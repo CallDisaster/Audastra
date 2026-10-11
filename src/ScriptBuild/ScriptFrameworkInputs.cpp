@@ -399,6 +399,8 @@ Result<std::string> InjectScriptFramework(std::string_view script, const ScriptF
     std::unordered_set<std::string_view> identifiers;
     for (const auto& token : *tokens.value)
         if (token.kind == Jass::detail::PpKind::Identifier) identifiers.insert(token.text);
+    if (auto missing = CheckMissingInjectionLibraries(inputs.injection, identifiers); !missing.Succeeded())
+        return {{}, std::move(missing.diagnostics)};
     std::set<std::size_t> files;
     for (const auto& choice : inputs.injection.choices) {
         if (choice.selectedFile >= inputs.injection.files.size())

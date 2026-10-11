@@ -515,7 +515,13 @@ void TestInjectionSources(const std::filesystem::path& root, ScriptUserSourceReq
     std::filesystem::last_write_time(library / "A.j", older); std::filesystem::last_write_time(library / "B.j", older);
     Require(!CaptureScriptInjectionSources(*entry.value, request, true).Succeeded(), "equal mtime across different J files cannot choose a winner");
     std::filesystem::last_write_time(library / "B.j", newer);
-    Require(std::filesystem::remove(library / "B.j") && !CaptureScriptInjectionSources(*entry.value, request, true).Succeeded(), "cfg without matching library is rejected");
+    Require(std::filesystem::remove(library / "B.j"), "remove B.j");
+    const auto withoutB = CaptureScriptInjectionSources(*entry.value, request, true);
+    const auto sharedWithoutB = withoutB.Succeeded() ? choice(*withoutB.value, "Shared") : snapshot.choices.end();
+    Require(withoutB.Succeeded() && HasCode(withoutB.diagnostics, "INJECTION_SOURCE_LIBRARY_MISSING")
+        && withoutB.value->missingLibraries.empty() && sharedWithoutB != withoutB.value->choices.end()
+        && withoutB.value->files.at(sharedWithoutB->selectedFile).binding.path == library / "A.j",
+        "a cfg without its library is a warning and keys still served by another library keep that library");
     WriteText(library / "B.j", "// newer shared library\n"); std::filesystem::last_write_time(library / "B.j", newer);
     WriteText(library / "Cr.cfg", "Dot.Call\n");
     const auto pattern = CaptureScriptInjectionSources(*entry.value, request, true);
@@ -621,6 +627,34 @@ void TestFrameworkProfile(const std::filesystem::path& root, ScriptUserSourceReq
     Require(!refused.Succeeded() && !refused.value && std::any_of(refused.diagnostics.begin(), refused.diagnostics.end(), [&](const auto& diagnostic) {
         return diagnostic.code == "INJECTION_FRAMEWORK_CONTROL_BYTE" && diagnostic.origin && diagnostic.origin->offset == offset;
     }), "middle CTRL-Z is diagnosed at its original offset, never truncated into a successful snapshot");
+
+    // 坏条目只影响自身：非函数名键跳过；缺 J 的 cfg 登记后仅在主文用到时报错；规范化提示整框架一次。
+    WriteText(library / "Only.cfg", cfg);
+    WriteText(library / "Pattern.cfg", "[MNXT]\r\nPatternCall\r\n"); WriteText(library / "Pattern.j", script);
+    WriteText(library / "Orphan.cfg", "OrphanCall\r\nFirst\r\n");
+    const auto tolerantEntry = CaptureScriptUserSourcePlan(request);
+    Require(tolerantEntry.Succeeded(), "recapture the framework plan after adding cfgs");
+    const auto tolerant = CaptureScriptInjectionSources(*tolerantEntry.value, request, true);
+    Require(tolerant.Succeeded(), "an invalid key or a missing library does not fail the whole framework");
+    const auto& tolerantRegistrations = tolerant.value->registrations;
+    Require(HasCode(tolerant.diagnostics, "INJECTION_FRAMEWORK_KEY_INVALID") && HasCode(tolerant.diagnostics, "INJECTION_SOURCE_LIBRARY_MISSING")
+        && std::none_of(tolerantRegistrations.begin(), tolerantRegistrations.end(), [](const auto& entry) { return entry.key == "[MNXT]"; })
+        && std::any_of(tolerantRegistrations.begin(), tolerantRegistrations.end(), [](const auto& entry) { return entry.key == "PatternCall"; }),
+        "a non-identifier key is skipped with a warning, never matched as a Lua pattern");
+    Require(tolerant.value->missingLibraries.size() == 1 && tolerant.value->missingLibraries[0].key == "OrphanCall",
+        "only keys without any real library are recorded as missing");
+    const auto crlfNotes = std::count_if(tolerant.diagnostics.begin(), tolerant.diagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.code == "INJECTION_FRAMEWORK_TEXT_NORMALIZED" && diagnostic.message.find("CRLF") != std::string::npos;
+    });
+    Require(crlfNotes == 1 && std::all_of(tolerant.diagnostics.begin(), tolerant.diagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.code != "INJECTION_FRAMEWORK_TEXT_NORMALIZED" || diagnostic.severity == DiagnosticSeverity::Info;
+    }), "CRLF normalization is one info note for the whole framework");
+    const std::unordered_set<std::string_view> unused{"PatternCall", "First"}, used{"OrphanCall"};
+    Require(CheckMissingInjectionLibraries(*tolerant.value, unused).Succeeded(), "an unused missing library is not an error");
+    const auto usedMissing = CheckMissingInjectionLibraries(*tolerant.value, used);
+    Require(!usedMissing.Succeeded() && HasCode(usedMissing.diagnostics, "INJECTION_LIBRARY_MISSING_USED"),
+        "using a key whose library is missing is an error naming the cfg");
+    for (const auto* name : {"Pattern.cfg", "Pattern.j", "Orphan.cfg"}) std::filesystem::remove(library / name);
 }
 
 void TestScriptUserSources(const std::filesystem::path& root, const ScriptToolchainLayout& modern) {

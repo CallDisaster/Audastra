@@ -2,6 +2,9 @@
 
 #include "War3MapCore/Script/ScriptUserSourcePlan.h"
 
+#include <string_view>
+#include <unordered_set>
+
 namespace War3Map::Script {
 
 enum class ScriptInjectionCoverage { InjectionConfigAndLibraries };
@@ -26,6 +29,14 @@ struct ScriptInjectionRegistration {
     bool patternUnsupported = false;
     [[nodiscard]] bool operator==(const ScriptInjectionRegistration&) const = default;
 };
+// cfg 对应的 J 不存在时，注册的 libraryFile 取此值。
+inline constexpr std::size_t kScriptInjectionNoLibrary = static_cast<std::size_t>(-1);
+// 只来自 J 缺失 cfg 的当前版本键；与 YDWE 一致，主文实际用到时才报错，不拖垮整个框架。
+struct ScriptInjectionMissingLibrary {
+    std::string key;
+    std::size_t configFile = 0;
+    [[nodiscard]] bool operator==(const ScriptInjectionMissingLibrary&) const = default;
+};
 struct ScriptInjectionChoice {
     std::string key;
     std::size_t selectedFile = 0; // files 索引；不同 J 的相同 mtime 必须拒绝。
@@ -49,6 +60,7 @@ struct ScriptInjectionSources {
     std::vector<ScriptInjectionSourceFile> files; // 全部 cfg 与同路径 J 的 owned 原字节。
     std::vector<ScriptInjectionRegistration> registrations; // 包括未选版本段。
     std::vector<ScriptInjectionChoice> choices; // 当前版本有效键，含所选与遮蔽来源。
+    std::vector<ScriptInjectionMissingLibrary> missingLibraries; // 不与 choices 重复。
     std::uint64_t totalFileBytes = 0;
     ScriptInjectionLinePolicy linePolicy = ScriptInjectionLinePolicy::ExistingLfControlTrim;
     std::vector<ScriptInjectionTextBoundary> textBoundaries; // 至多每 cfg 一条；受同一索引预算约束。
@@ -58,7 +70,8 @@ struct ScriptInjectionSources {
 // 注册<=16384、key<=4096字节、索引估算<=64MiB；不含 include/native 内容冻结，不授予执行。
 // 显式Lua535WindowsTextC只模拟独立Lua5.3.5 Windows C文本读取，不转码，不改原文件/J字节。
 // FrameworkText解释首UTF8 BOM及CRLF/LF/CR、空格/HT、#与行尾//；原字节完整保留。
-// key仅支持ASCII标识符；非法控制字节或未知编码明确拒绝。profile绑定强制FrameworkText。
+// key仅支持ASCII标识符：其他键（含非ASCII）跳过该行并警告，不按Lua模式解释；非法控制字节拒绝整个cfg。
+// cfg对应J缺失只警告并登记到missingLibraries。profile绑定强制FrameworkText。
 // 有profile时默认Existing自动选择FrameworkText，显式Lua535WindowsTextC明确拒绝。
 [[nodiscard]] Result<ScriptInjectionSources> CaptureScriptInjectionSources(const ScriptUserSourcePlan& entryPlan,
     const ScriptUserSourceRequest& currentRequest, bool version24,
@@ -68,5 +81,8 @@ struct ScriptInjectionSources {
 [[nodiscard]] Status VerifyScriptInjectionSources(const ScriptInjectionSources& sources,
     const ScriptUserSourcePlan& entryPlan, const ScriptUserSourceRequest& currentRequest, bool version24,
     ScriptInjectionLinePolicy linePolicy = ScriptInjectionLinePolicy::ExistingLfControlTrim);
+// 主文标识符用到只来自 J 缺失 cfg 的键时失败，并指出 cfg；未用到则成功。
+[[nodiscard]] Status CheckMissingInjectionLibraries(const ScriptInjectionSources& sources,
+    const std::unordered_set<std::string_view>& identifiers);
 
 } // namespace War3Map::Script
