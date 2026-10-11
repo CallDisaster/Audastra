@@ -28,10 +28,28 @@ void Run(){
         Check(policy.animated==6&&policy.moving>0,"animated fixture did not reach production pose samples");
     }
     const auto inverse=Evaluate(AnimationPreviewFixture::InverseKeys());
-    Check(inverse.policies[0].animated==0&&!inverse.policies[0].issues.empty(),"strict scan accepted descending node keys");
-    Check(inverse.policies[1].sampled==6&&inverse.policies[1].animated==6&&inverse.policies[1].moving>0,
+    Check(inverse.policies.size()==2,"inverse fixture lost a scan policy");
+    const auto& strict=inverse.policies[0];
+    const auto& interactive=inverse.policies[1];
+    // 逆序边只属于 Stand；严格求值逐动作拒绝，不能把仍合法的 Walk 一起算成拒绝。
+    // scanner 保留局部失败并继续采样，complete 表示六次观察结束，不表示没有模型错误。
+    Check(strict.policy=="strict"&&strict.state=="complete"&&strict.planned==6&&strict.sampled==6,
+        "strict scan did not observe both sequence ranges");
+    Check(strict.animated==3&&strict.visible==3&&strict.moving==1,
+        "strict scan did not isolate rejected Stand from valid Walk");
+    Check(strict.issues.contains("MDX_POSE_KEYS_INVALID"),"strict scan lost descending-key rejection");
+    Check(strict.issues.at("MDX_POSE_KEYS_INVALID").firstSequence==0,
+        "strict descending-key rejection was attributed to the wrong sequence");
+    Check(!strict.issues.contains("MDX_POSE_SOURCE_ORDER_PREVIEW"),"strict scan enabled source-order preview");
+    Check(interactive.policy=="interactive"&&interactive.state=="complete"&&interactive.planned==6&&
+        interactive.sampled==6&&interactive.animated==6&&interactive.visible==6&&interactive.moving==2,
         "interactive scan lost source-order sequence evaluation");
+    Check(!interactive.issues.contains("MDX_POSE_KEYS_INVALID"),"interactive scan still rejected the source-order range");
+    Check(interactive.issues.contains("MDX_POSE_SOURCE_ORDER_PREVIEW"),"interactive scan lost source-order provenance");
+    Check(interactive.issues.at("MDX_POSE_SOURCE_ORDER_PREVIEW").firstSequence==0,
+        "interactive source-order notice was attributed to the wrong sequence");
     Check(AnimationLimits{}.playbackPolicy==AnimationPlaybackPolicy::StrictReplay,"scan changed strict defaults");
+    Check(!AnimationLimits{}.allowSourceOrderNodePreview,"scan changed default node-key policy");
     Limits bounded;bounded.maxSamples=1;
     const auto partial=Evaluate(AnimationTest::Bytes(),bounded);
     for(const auto& policy:partial.policies)
@@ -43,7 +61,7 @@ void Run(){
         Check(policy.state=="uncovered"&&policy.issues.contains("SCAN_MODEL_COMPLEXITY_LIMIT"),"complexity budget lost");
     const auto invalid=Evaluate(std::vector<std::byte>(8));
     for(const auto& policy:invalid.policies)Check(policy.state=="parse_rejected"&&!policy.issues.empty(),"bad magic accepted");
-    Check(PreviewDiagnosticCategory("MDX_NODE_SOURCE_ORDER_PREVIEW")=="compatibility_notice","source-order notice treated as source error");
+    Check(PreviewDiagnosticCategory("MDX_POSE_SOURCE_ORDER_PREVIEW")=="compatibility_notice","source-order notice treated as source error");
     Check(PreviewDiagnosticCategory("PARTICLE_REPLAY_BUDGET")=="budget_uncovered","budget treated as bad model");
     Check(PreviewDiagnosticCategory("SCAN_SOURCE_TERRAIN_W3E_INVALID")=="resource_source","invalid terrain context treated as bad model");
     Check(PreviewDiagnosticCategory("SCAN_SOURCE_TERRAIN_MPQ_READ_LIMIT")=="budget_uncovered","terrain read budget treated as bad model");
