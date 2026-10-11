@@ -129,6 +129,8 @@ void NativeCalls() {
     Check(registry.Observe("Mix", "(III)I", reinterpret_cast<std::uintptr_t>(&FixtureMix)), "registration");
     Check(registry.Observe("Mix", "(III)I", reinterpret_cast<std::uintptr_t>(&FixtureMix)), "identical registration");
     Check(registry.Size() == 1 && registry.Find("Mix") && !registry.Find("Missing"), "lookup");
+    Check(registry.Observe("Mix", "(III)I;", reinterpret_cast<std::uintptr_t>(&FixtureMix)) && registry.Size() == 1,
+        "actual scalar terminator normalizes to the same registered signature without skipping an entry");
     Check(!registry.Observe("Mix", "()I", reinterpret_cast<std::uintptr_t>(&FixtureNone)), "changed registration refused");
     Check(!registry.Valid() && !registry.Error().empty() && !registry.Find("Mix"), "registry failure latches");
     NativeRegistry invalid;

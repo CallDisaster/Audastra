@@ -47,7 +47,13 @@ std::optional<NativeSignature> ParseNativeSignature(std::string_view text) {
     }
     if (offset >= text.size() || text[offset++] != ')') return {};
     auto returns = ReadType(text, offset, true);
-    if (!returns || offset != text.size()) return {};
+    if (!returns) return {};
+    // 经典游戏的实际登记表允许标量返回类型附带一个终结分号。
+    // 只识别已核实的四种标量；参数、handle 终结符和额外尾文本仍严格校验。
+    const bool scalar = returns->kind == NativeKind::Integer || returns->kind == NativeKind::Real
+        || returns->kind == NativeKind::Boolean || returns->kind == NativeKind::String;
+    if (scalar && offset + 1 == text.size() && text[offset] == ';') ++offset;
+    if (offset != text.size()) return {};
     result.returns = std::move(*returns);
     return result;
 }

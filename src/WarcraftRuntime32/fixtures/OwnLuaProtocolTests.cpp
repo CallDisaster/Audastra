@@ -22,10 +22,20 @@ void Signature() {
     Check(conversion && conversion->returns.kind == NativeKind::Handle && conversion->returns.handleType == "player",
         "typed handle return");
     Check(ParseNativeSignature("()S").has_value() && ParseNativeSignature("(SS)B").has_value(), "empty/string args");
+    for (const char scalar : std::string_view("IRBS")) {
+        const auto canonical = std::string("(Hhandle;II)") + scalar;
+        const auto terminated = ParseNativeSignature(canonical + ';');
+        const auto ordinary = ParseNativeSignature(canonical);
+        Check(ordinary && terminated && *ordinary == *terminated,
+            "single scalar return terminator preserves argument and return semantics");
+        Check(ParseNativeSignature(std::string("()") + scalar + ';').has_value(), "empty-argument scalar return terminator");
+    }
     for (const auto text : {"", "()", "(I)Vjunk", "(V)V", "(H;)V", "(Hunit)V", "(Z)V", "(R)r",
-        "(Hunit; )V", "(H../unit;)V", "()V\n", "()I()I"})
+        "(Hunit; )V", "(H../unit;)V", "()V\n", "()I()I", "()I;;", "()R;I", "()B;\n", "()S; ",
+        "(I;)I", "()Hhandle;;", "()V;", "()C;", "()Z;"})
         Check(!ParseNativeSignature(text), "malformed signature accepted");
     Check(!ParseNativeSignature("(" + std::string(33, 'I') + ")V"), "unbounded args accepted");
+    Check(!ParseNativeSignature("(" + std::string(33, 'I') + ")I;"), "scalar terminator cannot bypass argument budget");
     Check(!NativeIdentifier("9unit") && !NativeIdentifier(std::string(129, 'A')), "identifier budget");
 }
 
