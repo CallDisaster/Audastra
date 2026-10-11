@@ -25,6 +25,6 @@ struct LuaMapScriptResult {
 // 直接从owned地图事实和类型化T生成；不把生成JASS或WCT代码转译成Lua。
 [[nodiscard]] LuaMapScriptResult GenerateLuaMapScript(const MapInitializationPlan& plan,
     const Trigger::TriggerDocument& document, const Trigger::UiCatalog& catalog,
-    const LuaTargetProfile& target, std::span<const LuaCallbackBinding> callbacks = {});
+    const LuaTargetProfile& target, std::span<const LuaCallbackBinding> callbacks = {}, LuaTriggerBuildOptions options = {});
 
 } // namespace War3Map::Script

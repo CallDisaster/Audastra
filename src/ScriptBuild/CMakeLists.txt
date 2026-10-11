@@ -9,6 +9,7 @@ add_library(War3MapScriptBuild STATIC
     LuaAuthorCode.cpp
     LuaMapPipeline.cpp
     LuaTriggerEmitter.cpp
+    LuaTestReload.cpp
     LuaTriggerExpressions.cpp
     LuaTriggerTypes.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/LuaTriggerRuntimeSource.cpp

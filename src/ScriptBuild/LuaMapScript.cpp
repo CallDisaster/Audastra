@@ -44,8 +44,9 @@ void AppendString(std::string& target, std::string_view value) {
 }
 
 MapWriter::MapWriter(const MapInitializationPlan& plan, const Trigger::TriggerDocument& document,
-    const Trigger::UiCatalog& catalog, const LuaTargetProfile& target, std::span<const LuaCallbackBinding> callbacks)
-    : plan_(plan), document_(document), catalog_(catalog), target_(target), callbacks_(callbacks) {}
+    const Trigger::UiCatalog& catalog, const LuaTargetProfile& target, std::span<const LuaCallbackBinding> callbacks,
+    LuaTriggerBuildOptions options)
+    : plan_(plan), document_(document), catalog_(catalog), target_(target), callbacks_(callbacks), options_(options) {}
 
 [[noreturn]] void MapWriter::Fail(std::string code, std::string message) const {
     if (!currentObject_.empty()) message = currentObject_ + ": " + message;
@@ -643,7 +644,7 @@ LuaMapScriptResult MapWriter::Run() {
         std::vector<LuaGlobalBinding> globals;
         globals.reserve(plan_.symbols.size());
         for (const auto& symbol : plan_.symbols) globals.push_back({symbol.name, symbol.type});
-        result_.triggers = GenerateLuaTriggerUnit(document_, catalog_, target_, callbacks_, globals);
+        result_.triggers = GenerateLuaTriggerUnit(document_, catalog_, target_, callbacks_, globals, options_);
         for (const auto& diagnostic : result_.triggers.diagnostics) {
             if (diagnostic.diagnostic.code != "LUA_RUNTIME_UNVERIFIED") result_.diagnostics.push_back(diagnostic.diagnostic);
         }
@@ -685,7 +686,8 @@ bool LuaMapScriptResult::Succeeded() const noexcept {
     });
 }
 LuaMapScriptResult GenerateLuaMapScript(const MapInitializationPlan& plan, const Trigger::TriggerDocument& document,
-    const Trigger::UiCatalog& catalog, const LuaTargetProfile& target, std::span<const LuaCallbackBinding> callbacks) {
-    return lua::MapWriter(plan, document, catalog, target, callbacks).Run();
+    const Trigger::UiCatalog& catalog, const LuaTargetProfile& target, std::span<const LuaCallbackBinding> callbacks,
+    LuaTriggerBuildOptions options) {
+    return lua::MapWriter(plan, document, catalog, target, callbacks, options).Run();
 }
 } // namespace War3Map::Script

@@ -23,7 +23,7 @@ class Emitter {
 public:
     Emitter(const Trigger::TriggerDocument& document, const Trigger::UiCatalog& catalog,
         const LuaTargetProfile& target, std::span<const LuaCallbackBinding> callbacks,
-        std::span<const LuaGlobalBinding> globals = {});
+        std::span<const LuaGlobalBinding> globals = {}, LuaTriggerBuildOptions options = {});
     LuaTriggerUnit Run();
 
 private:
@@ -75,6 +75,7 @@ private:
     const LuaTargetProfile& target_;
     std::span<const LuaCallbackBinding> callbacks_;
     std::span<const LuaGlobalBinding> globals_;
+    LuaTriggerBuildOptions options_;
     LuaTriggerUnit result_;
     MappedText output_;
     std::map<std::string, const Trigger::VariableRecord*> variables_;

@@ -61,6 +61,24 @@ struct LuaSourceSpan {
     [[nodiscard]] bool operator==(const LuaSourceSpan&) const noexcept = default;
 };
 
+// 只用于编辑器自己启动的 Lua 单人测试；正式生成的默认选项不改变任何文本。
+struct LuaTriggerBuildOptions { bool testHotReload = false; };
+
+struct LuaTestTriggerChunk {
+    LuaTriggerSymbol symbol;
+    std::string functions, initializer, events;
+    bool initialization = false;
+    bool customCode = false;
+    std::size_t functionsOffset = 0, initializerOffset = 0;
+};
+
+struct LuaTestGlobalChunk {
+    StableId variableId = 0;
+    std::string name, declaration, initialization;
+    std::string shape; // 类型、数组范围与默认值；既有变量不能借热重载改变结构。
+    std::size_t declarationOffset = 0, initializationOffset = 0;
+};
+
 struct LuaTriggerUnit {
     // 编译失败时为空；不是完整 war3map.lua（不含 config/main 或预放对象初始化）。
     std::string text;
@@ -80,6 +98,10 @@ struct LuaTriggerUnit {
     // 按起点、外层到内层稳定排序；仅 AuthorHeader 使用全局代码块的零身份，helper 没有映射。
     // 表达式及匿名回调内部定位到外部语句/触发器，不声称是逐字符反编译映射。失败时为空。
     std::vector<LuaSourceSpan> sourceSpans;
+    bool testHotReload = false;
+    std::string testSharedSource;
+    std::vector<LuaTestTriggerChunk> testTriggers;
+    std::vector<LuaTestGlobalChunk> testGlobals;
     [[nodiscard]] bool Succeeded() const noexcept;
 };
 
@@ -88,6 +110,6 @@ struct LuaTriggerUnit {
 [[nodiscard]] LuaTriggerUnit GenerateLuaTriggerUnit(const Trigger::TriggerDocument& document,
     const Trigger::UiCatalog& catalog, const LuaTargetProfile& target,
     std::span<const LuaCallbackBinding> callbacks = {},
-    std::span<const LuaGlobalBinding> globals = {});
+    std::span<const LuaGlobalBinding> globals = {}, LuaTriggerBuildOptions options = {});
 
 } // namespace War3Map::Script
