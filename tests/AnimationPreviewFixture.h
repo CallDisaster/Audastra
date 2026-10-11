@@ -28,6 +28,7 @@ inline std::vector<std::byte> InverseKeys() {
                 throw std::runtime_error("original preview track layout changed");
             MdxTest::Writer replacement;
             replacement.Tag("KGTR"); replacement.U32(6); replacement.U32(1); replacement.U32(UINT32_MAX);
+            // 仅 Stand [0,1000] 含 600→400 逆序；Walk [2000,3000] 保持合法，验证局部拒绝。
             for (const auto frame : {0u, 600u, 400u, 1000u, 2000u, 3000u}) {
                 replacement.U32(frame); replacement.F32(static_cast<float>(frame) / 100.0f);
                 replacement.F32(0); replacement.F32(0);
