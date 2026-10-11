@@ -161,6 +161,19 @@ bool SameHeader(const TerrainHeader& a, const TerrainHeader& b) {
         && a.height == b.height && std::bit_cast<std::uint64_t>(a.offset) == std::bit_cast<std::uint64_t>(b.offset);
 }
 
+bool TerrainDiffers(const std::shared_ptr<const TerrainGridSnapshot>& terrain,
+    const std::shared_ptr<const TerrainGridSnapshot>& original) noexcept {
+    if (terrain == original) return false;
+    if (!terrain || !original) return true;
+    if (!SameHeader(terrain->header, original->header)) return true;
+    return !std::equal(terrain->vertices.begin(), terrain->vertices.end(),
+        original->vertices.begin(), original->vertices.end(), [](const TerrainVertex& a, const TerrainVertex& b) {
+            return a.groundHeightRaw == b.groundHeightRaw && a.waterHeightAndFlagsRaw == b.waterHeightAndFlagsRaw
+                && a.textureAndFlagsRaw == b.textureAndFlagsRaw && a.variationRaw == b.variationRaw
+                && a.cliffAndLayerRaw == b.cliffAndLayerRaw;
+        });
+}
+
 // 比较 [x0,x1)×[y0,y1) 覆盖的区块，只记录有差异的区块。
 template <typename Chunk>
 std::vector<Chunk> DiffChunks(const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
@@ -181,6 +194,8 @@ std::vector<Chunk> DiffChunks(const TerrainGridSnapshot& before, const TerrainGr
 } // namespace
 
 Status MapDataEditSession::AttachTerrain(std::span<const std::byte> bytes) {
+    if (terrainSourceRevision_ == std::numeric_limits<std::uint64_t>::max())
+        return Status::Failure("MapData.Edit", "TERRAIN_SOURCE_REVISION_EXHAUSTED", "地形来源修订已用尽，请重新打开地图。");
     if (!history_.empty() || terrain_)
         return Status::Failure("MapData.Edit", "MAP_TERRAIN_ATTACH_LATE", "只能在编辑前附上一次地形来源");
     auto parsed = ParseMapTerrain(bytes);
@@ -192,10 +207,13 @@ Status MapDataEditSession::AttachTerrain(std::span<const std::byte> bytes) {
     if (parsed.value->Snapshot()->header.version != 11)
         return Status::Failure("MapData.Edit", "MAP_TERRAIN_READ_ONLY", "新版地形只读，不能附入经典地形编辑事务");
     terrainOriginal_ = terrain_ = parsed.value->Snapshot();
+    ++terrainSourceRevision_;
     return Status::Ok();
 }
 
 Status MapDataEditSession::AttachPathing(std::span<const std::byte> bytes) {
+    if (terrainSourceRevision_ == std::numeric_limits<std::uint64_t>::max())
+        return Status::Failure("MapData.Edit", "TERRAIN_SOURCE_REVISION_EXHAUSTED", "地形来源修订已用尽，请重新打开地图。");
     if (!terrain_) return Status::Failure("MapData.Edit", "MAP_TERRAIN_UNAVAILABLE", "须先附上源地形才能验证通行性尺寸");
     if (!history_.empty() || pathing_)
         return Status::Failure("MapData.Edit", "MAP_PATHING_ATTACH_LATE", "只能在编辑前附上一次通行性来源");
@@ -206,6 +224,7 @@ Status MapDataEditSession::AttachPathing(std::span<const std::byte> bytes) {
         return status;
     }
     pathingOriginal_ = pathing_ = parsed.value->OriginalBytes();
+    ++terrainSourceRevision_;
     return Status::Ok();
 }
 
@@ -273,15 +292,22 @@ Status MapDataEditSession::SetTerrain(std::span<const std::byte> bytes) {
     return CommitCommand(std::move(command));
 }
 
-Result<TerrainStrokeResult> MapDataEditSession::EditTerrain(const TerrainBrush& brush,
-    std::span<const TerrainStrokePoint> points, bool followDoodads) {
-    if (!terrain_) return Result<TerrainStrokeResult>::Failure("MapData.Edit", "MAP_TERRAIN_UNAVAILABLE", "地形不可编辑");
+Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerrainEdit(const TerrainBrush& brush,
+    std::span<const TerrainStrokePoint> points, bool followDoodads) const {
+    return PrepareTerrainEditInternal(brush, points, followDoodads, true);
+}
+
+Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerrainEditInternal(const TerrainBrush& brush,
+    std::span<const TerrainStrokePoint> points, bool followDoodads, bool inspectSaveGate) const {
+    if (!terrain_) return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "MAP_TERRAIN_UNAVAILABLE", "地形不可编辑");
+    if (terrainSourceRevision_ == std::numeric_limits<std::uint64_t>::max())
+        return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "TERRAIN_SOURCE_REVISION_EXHAUSTED", "地形来源修订已用尽，请重新打开地图。");
     if (brush.kind == TerrainBrushKind::Blight && !pathing_)
-        return Result<TerrainStrokeResult>::Failure("MapData.Edit", "MAP_PATHING_UNAVAILABLE",
+        return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "MAP_PATHING_UNAVAILABLE",
             "荒芜笔刷需要唯一且可解析的源 WPM；不能让地形与通行性数据失配");
     auto next = std::make_shared<TerrainGridSnapshot>(*terrain_);
     auto stroke = ApplyTerrainStroke(*next, brush, points);
-    if (!stroke.Succeeded() || !stroke.value) return stroke;
+    if (!stroke.Succeeded() || !stroke.value) return {{}, std::move(stroke.diagnostics)};
     const auto& changed = *stroke.value;
     Command command;
     if (!changed.Empty()) command.terrain = DiffChunks<TerrainChunk>(*terrain_, *next, changed.x0, changed.y0, changed.x1, changed.y1);
@@ -289,7 +315,7 @@ Result<TerrainStrokeResult> MapDataEditSession::EditTerrain(const TerrainBrush& 
     if (brush.kind == TerrainBrushKind::Blight && !changed.Empty()) {
         auto patched = PatchBlightPathing(*terrain_, *next, changed, *pathing_);
         if (!patched.Succeeded() || !patched.value) {
-            Result<TerrainStrokeResult> failed;
+            Result<PreparedTerrainEdit> failed;
             failed.diagnostics = std::move(patched.diagnostics);
             return failed;
         }
@@ -306,7 +332,7 @@ Result<TerrainStrokeResult> MapDataEditSession::EditTerrain(const TerrainBrush& 
     if (followDoodads && shaping && !command.terrain.empty() && doodadBytes) {
         auto doodads = ParseDoodadPlacements(*doodadBytes);
         if (!doodads.Succeeded() || !doodads.value)
-            return Result<TerrainStrokeResult>::Failure("MapData.Edit", "MAP_DOODADS_UNSAFE",
+            return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "MAP_DOODADS_UNSAFE",
                 "装饰物放置无法解析，不能让装饰物随地面高度变化");
         // 层级变化还可能改变相邻坡道中点；再外扩一格覆盖这些中点周围的地面插值。
         const double tile = TerrainGridSnapshot::tileSize;
@@ -326,18 +352,53 @@ Result<TerrainStrokeResult> MapDataEditSession::EditTerrain(const TerrainBrush& 
         }
         if (moved) {
             if (const auto status = Prepare(MapDataKind::Doodads, doodads.value->Serialize(), command.changes); !status.Succeeded()) {
-                Result<TerrainStrokeResult> failed;
+                Result<PreparedTerrainEdit> failed;
                 failed.diagnostics = status.diagnostics;
                 return failed;
             }
         }
     }
-    if (const auto status = CommitCommand(std::move(command)); !status.Succeeded()) {
-        Result<TerrainStrokeResult> failed;
-        failed.diagnostics = status.diagnostics;
-        return failed;
-    }
-    return stroke;
+    const auto doodadChange = std::find_if(command.changes.begin(), command.changes.end(),
+        [](const auto& change) { return change.kind == MapDataKind::Doodads; });
+    PreparedTerrainEdit prepared;
+    prepared.before_ = terrain_;
+    prepared.sessionIdentity_ = sessionIdentity_; prepared.revision_ = revision_;
+    prepared.sourceRevision_ = terrainSourceRevision_;
+    prepared.changed_ = changed;
+    // 交互落笔没有预览回执需要，沿用原路径的成本；显式 dry-run 才做完整来源净差检查。
+    // 两者实际保存仍必经同一个 VerifyTerrainPathingForSave，未检查不能报成通过。
+    prepared.terrainPathingGate_ = inspectSaveGate ? VerifyTerrainCandidateForSave(next,
+        command.pathingAfter ? command.pathingAfter : pathing_,
+        doodadChange == command.changes.end() ? doodadBytes : doodadChange->after)
+        : Status::Failure("MapData.Edit", "TERRAIN_SAVE_GATE_NOT_INSPECTED", "此落笔尚未检查地形保存资格。");
+    prepared.brush_ = brush;
+    prepared.points_.assign(points.begin(), points.end());
+    prepared.followDoodads_ = followDoodads;
+    prepared.command_ = std::make_shared<const Command>(std::move(command));
+    return Result<PreparedTerrainEdit>::Success(std::move(prepared));
+}
+
+bool MapDataEditSession::PreparedTerrainEdit::HasChanges() const noexcept {
+    return command_ && (!command_->changes.empty() || !command_->terrain.empty()
+        || command_->headerAfter || command_->pathingAfter);
+}
+
+Result<TerrainStrokeResult> MapDataEditSession::ApplyPreparedTerrainEdit(const PreparedTerrainEdit& plan,
+    const std::function<Status(const EditReceipt&)>& prepublish) {
+    if (!plan.command_ || plan.sessionIdentity_ != sessionIdentity_ || plan.revision_ != revision_
+        || plan.sourceRevision_ != terrainSourceRevision_ || plan.before_ != terrain_)
+        return Result<TerrainStrokeResult>::Failure("MapData.Edit", "TERRAIN_EDIT_STALE",
+            "地形候选不属于当前会话、修订或来源，请重新预览。");
+    const auto status = CommitCommand(*plan.command_, prepublish);
+    if (!status.Succeeded()) return {{}, status.diagnostics};
+    return Result<TerrainStrokeResult>::Success(plan.changed_);
+}
+
+Result<TerrainStrokeResult> MapDataEditSession::EditTerrain(const TerrainBrush& brush,
+    std::span<const TerrainStrokePoint> points, bool followDoodads) {
+    auto prepared = PrepareTerrainEditInternal(brush, points, followDoodads, false);
+    if (!prepared.Succeeded() || !prepared.value) return {{}, std::move(prepared.diagnostics)};
+    return ApplyPreparedTerrainEdit(*prepared.value);
 }
 
 Result<TerrainStrokeResult> MapDataEditSession::EditTerrainTextureSlot(TerrainTextureTable table,
@@ -367,37 +428,35 @@ bool MapDataEditSession::TerrainMatches(const Command& command, bool forward) co
 }
 
 bool MapDataEditSession::TerrainDirty() const noexcept {
-    if (terrain_ == terrainOriginal_) return false;
-    if (!terrain_ || !terrainOriginal_) return true;
-    if (!SameHeader(terrain_->header, terrainOriginal_->header)) return true;
-    const auto& a = terrain_->vertices;
-    const auto& b = terrainOriginal_->vertices;
-    return !std::equal(a.begin(), a.end(), b.begin(), b.end(), [](const TerrainVertex& first, const TerrainVertex& second) {
-        return first.groundHeightRaw == second.groundHeightRaw && first.waterHeightAndFlagsRaw == second.waterHeightAndFlagsRaw
-            && first.textureAndFlagsRaw == second.textureAndFlagsRaw && first.variationRaw == second.variationRaw
-            && first.cliffAndLayerRaw == second.cliffAndLayerRaw;
-    });
+    return TerrainDiffers(terrain_, terrainOriginal_);
 }
 
 Status MapDataEditSession::VerifyTerrainPathingForSave() const {
+    return VerifyTerrainCandidateForSave(terrain_, pathing_, current_[Index(MapDataKind::Doodads)]);
+}
+
+Status MapDataEditSession::VerifyTerrainCandidateForSave(
+    const std::shared_ptr<const TerrainGridSnapshot>& terrain,
+    const std::optional<std::vector<std::byte>>& pathing,
+    const std::optional<std::vector<std::byte>>& doodads) const {
     const auto reject = [](const char* reason) {
         return Status::Failure("MapData.Edit", "MAP_TERRAIN_PATHING_UNVERIFIED", reason);
     };
-    if (!TerrainDirty()) {
-        return pathing_ == pathingOriginal_ ? Status::Ok()
+    if (!TerrainDiffers(terrain, terrainOriginal_)) {
+        return pathing == pathingOriginal_ ? Status::Ok()
             : reject("W3E 与基线相同但 WPM 已改变，拒绝无地形对应的通行性覆盖");
     }
-    if (!terrain_ || !terrainOriginal_ || !pathing_ || !pathingOriginal_)
+    if (!terrain || !terrainOriginal_ || !pathing || !pathingOriginal_)
         return reject("已修改地形但缺少源 W3E 或唯一可验证的 WPM，拒绝正式地图保存");
-    if (!SameHeader(terrain_->header, terrainOriginal_->header)
-        || terrain_->vertices.size() != terrainOriginal_->vertices.size())
+    if (!SameHeader(terrain->header, terrainOriginal_->header)
+        || terrain->vertices.size() != terrainOriginal_->vertices.size())
         return reject("W3E 头部、贴图表或顶点数量已改变，尚无对应 WPM 生成规则");
     // 按源图到当前 W3E 的最终原始净差判定；工程恢复没有可靠的笔刷来源身份，
     // 不能只检查 Raise/Lower/Smooth 枚举来保护 UI 与 Agent 共用的保存路径。
     bool heightChanged = false;
-    for (std::size_t index = 0; index < terrain_->vertices.size(); ++index) {
+    for (std::size_t index = 0; index < terrain->vertices.size(); ++index) {
         const auto& before = terrainOriginal_->vertices[index];
-        const auto& after = terrain_->vertices[index];
+        const auto& after = terrain->vertices[index];
         if (before.waterHeightAndFlagsRaw != after.waterHeightAndFlagsRaw
             || before.variationRaw != after.variationRaw
             || before.cliffAndLayerRaw != after.cliffAndLayerRaw
@@ -409,18 +468,18 @@ Status MapDataEditSession::VerifyTerrainPathingForSave() const {
                 ? before.groundHeightRaw - after.groundHeightRaw : after.groundHeightRaw - before.groundHeightRaw;
             if (delta > kVerifiedHeightDeltaRaw)
                 return reject("高度变化超过原版真保存已取证的每顶点 raw 净差 156（39 世界单位）");
-            if (!HeightNeighborhoodSafe(*terrainOriginal_, *terrain_, index))
+            if (!HeightNeighborhoodSafe(*terrainOriginal_, *terrain, index))
                 return reject("高度变化周边一格存在水面、坡道、悬崖边界或未识别标志");
         }
     }
-    if (heightChanged && current_[Index(MapDataKind::Doodads)] != original_[Index(MapDataKind::Doodads)])
+    if (heightChanged && doodads != original_[Index(MapDataKind::Doodads)])
         return reject("高度变化联动了装饰物成员；装饰物通行性尚未取证");
-    const auto width = (terrain_->header.width - 1) * 4, height = (terrain_->header.height - 1) * 4;
+    const auto width = (terrain->header.width - 1) * 4, height = (terrain->header.height - 1) * 4;
     const auto expectedBytes = kPathingHeaderBytes + static_cast<std::size_t>(width) * height;
-    if (pathing_->size() != expectedBytes || pathingOriginal_->size() != expectedBytes
-        || !std::equal(pathing_->begin(), pathing_->begin() + kPathingHeaderBytes, pathingOriginal_->begin()))
+    if (pathing->size() != expectedBytes || pathingOriginal_->size() != expectedBytes
+        || !std::equal(pathing->begin(), pathing->begin() + kPathingHeaderBytes, pathingOriginal_->begin()))
         return reject("WPM 头部或格子数量与原成员不同");
-    if (!PathingBlightDeltaMatchesTerrain(*pathingOriginal_, *pathing_, *terrainOriginal_, *terrain_))
+    if (!PathingBlightDeltaMatchesTerrain(*pathingOriginal_, *pathing, *terrainOriginal_, *terrain))
         return reject("WPM 改动未逐格对应 W3E 荒芜位，或原始通行位发生变化");
     return Status::Ok();
 }
