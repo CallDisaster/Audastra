@@ -71,7 +71,8 @@ void TestToolSurface() {
             "query_map_archive_member_identities", "query_trigger_graph", "edit_trigger_graph",
             "variables_list", "variables_get", "variables_create", "variables_update", "variables_rename", "variables_delete",
             "entities_query", "entities_set_fields", "entities_copy", "entities_rotate",
-            "feedback.draft", "feedback.list", "feedback.status", "update.status"}) {
+            "feedback.draft", "feedback.list", "feedback.status", "update.status",
+            "object_resource_state", "object_resource_query", "object_resource_inspect"}) {
         Expect(names.contains(required), "required safe MCP tool is missing");
     }
     for (const QJsonValue& value : tools) {

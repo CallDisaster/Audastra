@@ -1,3 +1,14 @@
+add_library(War3MapObjectResourceAdapter STATIC
+    ObjectResourcePickerAdapter.cpp ObjectResourcePickerAdapter.h
+    ObjectResourcePreview.cpp ObjectResourcePreview.h
+    LiveObjectResourceTools.cpp LiveObjectResourceTools.h)
+add_library(War3MapEditor::ObjectResourceAdapter ALIAS War3MapObjectResourceAdapter)
+target_include_directories(War3MapObjectResourceAdapter PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(War3MapObjectResourceAdapter PUBLIC War3MapEditor::QtProject
+    War3MapEditor::QtModuleWorld War3MapEditor::QtModuleObjects War3MapEditor::QtModuleSounds War3MapEditor::McpProtocol)
+target_compile_definitions(War3MapObjectResourceAdapter PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(War3MapObjectResourceAdapter PRIVATE /W4 /permissive- /utf-8)
+
 qt_add_executable(war3-map-editor WIN32
     Main.cpp
     AcceptanceObjectProbe.cpp
@@ -34,8 +45,6 @@ qt_add_executable(war3-map-editor WIN32
     AppHelpers.h
     EditorParts.cpp
     EditorParts.h
-    ObjectResourcePickerAdapter.cpp ObjectResourcePickerAdapter.h
-    ObjectResourcePreview.cpp ObjectResourcePreview.h
     NativeWorkbench.cpp
     ProjectActions.cpp
     RecoveryExitDialog.cpp RecoveryExitDialog.h
@@ -77,6 +86,7 @@ target_sources(war3-map-editor PRIVATE "${WAR3MAP_BUILD_INFO_CPP}")
 
 target_link_libraries(war3-map-editor
     PRIVATE
+        War3MapEditor::ObjectResourceAdapter
         War3MapEditor::Core
         War3MapEditor::ObjectData
         War3MapEditor::MapSizeAnalysis

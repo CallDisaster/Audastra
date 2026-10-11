@@ -34,6 +34,7 @@ if(TARGET Qt6::Core)
         McpCodeCheckTools.cpp
         McpToolEntities.cpp
         McpImportTools.cpp
+        McpObjectResourceTools.cpp McpObjectResourceTools.h McpToolObjectResources.cpp
         McpToolImports.cpp
         McpPlacementTools.cpp
         McpToolPlacements.cpp

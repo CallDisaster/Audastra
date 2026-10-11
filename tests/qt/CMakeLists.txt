@@ -130,7 +130,7 @@ qt_add_executable(war3-map-live-editor-tools-tests LiveEditorToolsTests.cpp
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorTools.cpp"
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorTools.h")
 target_include_directories(war3-map-live-editor-tools-tests PRIVATE "${PROJECT_SOURCE_DIR}/src/QtApp")
-target_link_libraries(war3-map-live-editor-tools-tests PRIVATE War3MapEditor::QtProject War3MapEditor::McpProtocol Qt6::Test)
+target_link_libraries(war3-map-live-editor-tools-tests PRIVATE War3MapEditor::QtProject War3MapEditor::McpProtocol War3MapEditor::ObjectResourceAdapter Qt6::Test)
 target_compile_definitions(war3-map-live-editor-tools-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-live-editor-tools-tests PRIVATE /W4 /permissive- /utf-8)
 war3map_deploy_qt_runtime(war3-map-live-editor-tools-tests)
@@ -631,12 +631,10 @@ target_link_libraries(war3-map-object-direct-edit-tests PRIVATE War3MapEditor::Q
 target_compile_options(war3-map-object-direct-edit-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME qt-object-direct-edit COMMAND war3-map-object-direct-edit-tests)
 
-qt_add_executable(war3-map-object-resource-picker-tests ObjectResourcePickerTests.cpp
-    "${PROJECT_SOURCE_DIR}/src/QtApp/ObjectResourcePickerAdapter.cpp"
-    "${PROJECT_SOURCE_DIR}/src/QtApp/ObjectResourcePreview.cpp")
+qt_add_executable(war3-map-object-resource-picker-tests ObjectResourcePickerTests.cpp)
 target_include_directories(war3-map-object-resource-picker-tests PRIVATE "${PROJECT_SOURCE_DIR}/src/QtApp")
 target_link_libraries(war3-map-object-resource-picker-tests PRIVATE
-    War3MapEditor::QtModuleObjects War3MapEditor::QtModuleWorld War3MapEditor::QtModuleSounds Qt6::Test)
+    War3MapEditor::ObjectResourceAdapter Qt6::Test)
 target_compile_options(war3-map-object-resource-picker-tests PRIVATE /W4 /permissive- /utf-8)
 war3map_deploy_fonts(war3-map-object-resource-picker-tests)
 add_test(NAME qt-object-resource-picker COMMAND war3-map-object-resource-picker-tests -o -,txt)
@@ -799,7 +797,7 @@ qt_add_executable(war3-map-trigger-rename-tests TriggerRenameTests.cpp
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorTools.h")
 target_include_directories(war3-map-trigger-rename-tests PRIVATE "${PROJECT_SOURCE_DIR}/src/QtApp")
 target_link_libraries(war3-map-trigger-rename-tests PRIVATE
-    War3MapEditor::QtModuleTriggers War3MapEditor::QtProject War3MapEditor::McpProtocol Qt6::Test)
+    War3MapEditor::QtModuleTriggers War3MapEditor::QtProject War3MapEditor::McpProtocol War3MapEditor::ObjectResourceAdapter Qt6::Test)
 target_compile_definitions(war3-map-trigger-rename-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-trigger-rename-tests PRIVATE /W4 /permissive- /utf-8)
 war3map_deploy_qt_runtime(war3-map-trigger-rename-tests)

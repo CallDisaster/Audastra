@@ -10,6 +10,8 @@
 #include "McpVariableTools.h"
 #include "McpMapDataTools.h"
 #include "McpImportTools.h"
+#include "McpObjectResourceTools.h"
+#include "LiveObjectResourceTools.h"
 #include "McpPlacementTools.h"
 #include "McpProductTools.h"
 #include "McpCodeCheckTools.h"
@@ -227,6 +229,7 @@ const char* RecordKind(Trigger::GraphRecordKind kind) {
 class LiveEditorTools::Impl {
 public:
     Impl(EditorProject& project, LiveEditorTools& owner) : project_(project), owner_(owner), ownerHandle_(&owner) {
+        objectResources_ = std::make_unique<LiveObjectResourceTools>(project_);
         RegisterTools();
         QObject::connect(&project_, &EditorProject::TriggerDocumentChanged, &owner_, [this] { emit owner_.Changed(); });
         QObject::connect(&project_, &EditorProject::ObjectDocumentsReplaced, &owner_, [this] { emit owner_.Changed(); });
@@ -804,6 +807,14 @@ private:
                 [this, name](const QJsonObject& arguments) { return ImportTool(name, arguments); },
                 definition.maxRequestIdBytes, definition.maxResponseBytes);
         }
+        for (auto definition : Mcp::ObjectResourceToolDefinitions()) {
+            const auto name = definition.name;
+            AddTool(name, definition.description, definition.permission, definition.inputSchema,
+                [this, name](const QJsonObject& arguments) {
+                    if (busy_ || project_.savingMap_) return Mcp::Failure("LIVE_EDITOR_BUSY", "地图写任务正在执行。");
+                    return objectResources_->Invoke(name, arguments, [this] { return State(); });
+                }, definition.maxRequestIdBytes, definition.maxResponseBytes);
+        }
         for (auto definition : Mcp::VariableToolDefinitions()) {
             const auto name = definition.name;
             const bool write = definition.permission == Mcp::ToolPermission::Edit;
@@ -894,6 +905,7 @@ private:
     Trigger::UiCatalog* catalog_ = nullptr;
     std::string configSha_;
     Mcp::CodeCheckToolSession codeChecks_;
+    std::unique_ptr<LiveObjectResourceTools> objectResources_;
     std::shared_ptr<Services::CodeCheckProjectCache> codeCheckCache_ = std::make_shared<Services::CodeCheckProjectCache>();
 };
 

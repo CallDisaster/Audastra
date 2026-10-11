@@ -30,6 +30,7 @@ struct ObjectResourcePickerServices {
     std::function<Result<std::shared_ptr<const Services::ObjectResourceCatalog>>(
         Services::ObjectResourceOrigin, const std::function<bool(std::size_t)>&)> load;
     std::function<bool()> isCurrent;
+    std::function<Result<Services::ObjectResourceInfo>(std::string_view, Services::ObjectResourceKind)> inspect;
     std::function<ObjectResourcePreviewHandle(QWidget*)> preview;
 };
 using ObjectResourcePickerFactory = std::function<ObjectResourcePickerServices()>;

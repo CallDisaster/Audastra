@@ -6,6 +6,7 @@
 #include "McpVariableTools.h"
 #include "McpMapDataTools.h"
 #include "McpImportTools.h"
+#include "McpObjectResourceTools.h"
 #include "McpPlacementTools.h"
 #include "McpCodeCheckTools.h"
 #include "McpCampaignTools.h"
@@ -206,6 +207,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "feedback.draft", "feedback.list", "feedback.status",
         "imports_get", "imports_list",
         "map_settings_get", "map_settings_set",
+        "object_resource_inspect", "object_resource_query", "object_resource_state",
         "objects_create", "objects_delete", "objects_field_options", "objects_get", "objects_list", "objects_set_fields",
         "open_campaign", "project_search", "query_campaign", "query_campaign_objects", "redo_campaign", "save_campaign",
         "sounds_get", "sounds_list", "sounds_update",
@@ -214,7 +216,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "variables_create", "variables_delete", "variables_get", "variables_list", "variables_rename", "variables_update"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{45});
+    QCOMPARE(expected.size(), qsizetype{48});
     const auto codeDefinition = Mcp::CodeCheckToolDefinition();
     QCOMPARE(codeDefinition.permission, Mcp::ToolPermission::Query);
     bool foundCodeCheck = false;

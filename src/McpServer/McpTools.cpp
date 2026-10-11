@@ -1,6 +1,7 @@
 #include "McpTools.h"
 #include "McpToolInternal.h"
 #include "McpObjectTools.h"
+#include "McpObjectResourceTools.h"
 #include "McpVariableTools.h"
 #include "McpMapDataTools.h"
 #include "McpPlacementTools.h"
@@ -17,6 +18,7 @@ void RegisterAllTools(McpServer& server) {
     RegisterReadOnlyTools(server);
     RegisterArchiveIdentityTools(server);
     RegisterImportTools(server);
+    RegisterObjectResourceTools(server);
     RegisterProjectSearchTools(server);
     RegisterTerrainTools(server);
     RegisterModelAnimationTool(server);
