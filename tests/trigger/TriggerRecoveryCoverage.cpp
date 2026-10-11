@@ -120,10 +120,10 @@ int main(int argc, char** argv) {
         if (!plan.Succeeded()) { ++generatedFail; continue; }
         auto receipt = Trigger::TriggerCodeEditor::Apply(document, *catalog.value, *plan.value);
         if (!receipt.Succeeded()) { ++generatedFail; continue; }
-        const auto start = std::chrono::steady_clock::now();
+        const auto recoverStart = std::chrono::steady_clock::now();
         ++parseAttempts;
         auto recovered = Script::RecoverGuiTrigger(inputs, id);
-        const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - recoverStart).count();
         recoverMs += ms; maxMs = (std::max)(maxMs, ms);
         const auto fastest = std::min_element(slowest.begin(), slowest.end(), [](const auto& left, const auto& right) {
             return left.milliseconds < right.milliseconds;

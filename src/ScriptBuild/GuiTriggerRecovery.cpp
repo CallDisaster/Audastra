@@ -6,6 +6,7 @@
 #include "War3MapCore/Trigger/TriggerTypes.h"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <exception>
 #include <optional>
@@ -229,7 +230,7 @@ public:
             std::size_t j = i + 1;
             while (j < lines.size() && !Is(lines[j].tokens, 0, "endfunction")) {
                 if (Is(lines[j].tokens, 0, "function")) return Fail(lines[j].number, "函数缺少 endfunction。");
-                function.body.push_back(lines[j]); ++j;
+                function.body.push_back(std::move(lines[j])); ++j;
             }
             if (j >= lines.size()) return Fail(lines[i].number, "函数缺少 endfunction。");
             if (lines[j].tokens.size() != 1) return Fail(lines[j].number, "endfunction 之后不能再有代码。");
@@ -306,6 +307,16 @@ private:
         bool used = false;
     };
     struct Preset { Tokens script; std::string name; };
+    struct DefinitionInfo {
+        std::optional<std::vector<std::string>> slots;
+        std::string returns;
+    };
+    struct StoragePatterns {
+        std::array<Tokens, 5> pages;
+        std::array<Tokens, 2> handles;
+        std::vector<Tokens> initialization;
+        Tokens reset, execute;
+    };
     struct DepthScope {
         std::size_t& depth;
         explicit DepthScope(std::size_t& value) : depth(value) { ++depth; }
@@ -360,6 +371,52 @@ private:
         if (e - b != script.size()) return false;
         for (std::size_t i = 0; i < script.size(); ++i) if (t[b + i].text != script[i].text) return false;
         return true;
+    }
+    // 只缓存本次恢复持有的 const 函数库；不跨编辑修订、文档或函数库保留定义指针。
+    const DefinitionInfo& Definition(const UiDefinition& definition) {
+        const auto [found, added] = definitionInfo_.try_emplace(&definition);
+        if (added) {
+            found->second.slots = SlotTypes(definition);
+            found->second.returns = Unquote(Field(definition, "returns"));
+        }
+        return found->second;
+    }
+    const std::vector<const UiDefinition*>& OperatorDefinitions(bool comparison) {
+        auto& ready = comparison ? comparisonDefinitionsReady_ : binaryDefinitionsReady_;
+        auto& definitions = comparison ? comparisonDefinitions_ : binaryDefinitions_;
+        if (!ready) {
+            // Definitions 会扫描并排序全库，因此每种候选集合在一次恢复中只建立一次。
+            // 顺序和原逐次扫描一致，同分时仍保留原先的第一个候选。
+            for (const auto* definition : catalog_.Definitions(comparison ? UiDefinitionKind::Condition : UiDefinitionKind::Call)) {
+                const auto& slots = Definition(*definition).slots;
+                if (!slots) continue;
+                const bool candidate = comparison
+                    ? slots->size() == 3 && ((*slots)[1] == "ComparisonOperator" || (*slots)[1] == "EqualNotEqualOperator")
+                    : (slots->size() == 3 && (*slots)[1] == "ArithmeticOperator")
+                        || (definition->name == "OperatorString" && slots->size() == 2);
+                if (candidate) definitions.push_back(definition);
+            }
+            ready = true;
+        }
+        return definitions;
+    }
+    static const StoragePatterns& FrameworkPatterns() {
+        // 全部模式来自同一生产生成器的固定框架，无作者文本、UI 定义或修订相关状态。
+        static const auto patterns = [] {
+            const auto tokens = [](std::string_view text) {
+                std::vector<Line> lines; std::size_t bad = 0;
+                return Lex(text, lines, bad) && lines.size() == 1 ? std::move(lines.front().tokens) : Tokens{};
+            };
+            StoragePatterns result;
+            for (std::size_t i = 0; i < result.pages.size(); ++i) result.pages[i] = tokens(detail::LocalPage(static_cast<int>(i + 1)));
+            result.handles[0] = tokens(detail::HandlePage("ydl_timer"));
+            result.handles[1] = tokens(detail::HandlePage("ydl_trigger"));
+            for (const auto line : detail::LocalInitializeLines()) result.initialization.push_back(tokens(line));
+            result.reset = tokens(detail::LocalResetCall());
+            result.execute = tokens(detail::LocalExecuteTrigger("ydl_trigger"));
+            return result;
+        }();
+        return patterns;
     }
     std::string BaseType(const std::string& type) const {
         const auto* info = types_.Find(type);
@@ -466,10 +523,6 @@ private:
         PArg text; text.value = Text(t, b, e); call.args.push_back(std::move(text));
         PArg arg; arg.type = 2; arg.value = call.name; arg.call.push_back(std::move(call)); return arg;
     }
-    static bool Matches(const Tokens& t, std::size_t b, std::size_t e, std::string_view text) {
-        std::vector<Line> lines; std::size_t bad = 0;
-        return Lex(text, lines, bad) && lines.size() == 1 && SameTokens(t, b, e, lines.front().tokens);
-    }
     bool IntegerToken(const Token& token) const {
         if (token.kind != Tok::Number) return false;
         if (types_.ValidateLiteral("integer", token.text).Succeeded()) return true;
@@ -484,8 +537,8 @@ private:
         if (slot == "hashtable" && e - b == 1 && (Is(t, b, "YDLOC") || Is(t, b, "YDHT"))) return true;
         if (slot == "integer") {
             for (const auto* variable : {"ydl_localvar_step", "ydl_triggerstep"}) if (e - b == 1 && Is(t, b, variable)) return true;
-            for (int page = 1; page <= 5; ++page) if (Matches(t, b, e, detail::LocalPage(page))) return true;
-            for (const auto* handle : {"ydl_timer", "ydl_trigger"}) if (Matches(t, b, e, detail::HandlePage(handle))) return true;
+            for (const auto& page : FrameworkPatterns().pages) if (SameTokens(t, b, e, page)) return true;
+            for (const auto& handle : FrameworkPatterns().handles) if (SameTokens(t, b, e, handle)) return true;
             // 数组子键是编译期哈希 + (索引)。仅接受整数/全局整数/局部循环索引，
             // 复杂下标要由常规函数/算术解析完成，不能任意吞掉表达式。
             if (e - b == 5 && IntegerToken(t[b]) && Is(t, b + 1, "+") && Is(t, b + 2, "(") && Is(t, b + 4, ")")) {
@@ -504,7 +557,7 @@ private:
         // 仅此页读取无法结构化时保留。任意未识别的 Load 参数不能由这条路径吞掉。
         if (args.size() != 3 || args[0].second - args[0].first != 1 || !Is(t, args[0].first, "YDLOC")) return false;
         bool pageKnown = false;
-        for (int page = 1; page <= 5; ++page) pageKnown |= Matches(t, args[1].first, args[1].second, detail::LocalPage(page));
+        for (const auto& page : FrameworkPatterns().pages) pageKnown |= SameTokens(t, args[1].first, args[1].second, page);
         const auto [kb, ke] = args[2];
         return pageKnown && ke - kb == 1 && IntegerToken(t[kb]);
     }
@@ -555,7 +608,7 @@ private:
     std::optional<PArg> Call(const Tokens& t, std::size_t b, std::size_t e, const std::string& slot, int& score) {
         const auto* definition = catalog_.Find(UiDefinitionKind::Call, t[b].text);
         if (!definition) return std::nullopt;
-        const auto returns = Unquote(Field(*definition, "returns"));
+        const auto& returns = Definition(*definition).returns;
         if (!types_.Accepts(slot, returns)) return std::nullopt;
         auto eca = Invocation(*definition, 3, t, b + 2, e - 1, score);
         if (!eca) return std::nullopt;
@@ -574,10 +627,11 @@ private:
                 || token.text.size() != 1 || t[i - 1].kind == Tok::Op && t[i - 1].text != ")" && t[i - 1].text != "]") continue;
             std::optional<PArg> best; int bestScore = -1;
             auto candidates = BeginCandidates();
-            for (const auto* definition : catalog_.Definitions(UiDefinitionKind::Call)) {
+            for (const auto* definition : OperatorDefinitions(false)) {
                 ResetCandidate(candidates);
-                const auto slots = SlotTypes(*definition);
-                const auto returns = Unquote(Field(*definition, "returns"));
+                const auto& info = Definition(*definition);
+                const auto& slots = info.slots;
+                const auto& returns = info.returns;
                 if (!slots || !types_.Accepts(slot, returns)) continue;
                 std::vector<std::pair<std::size_t, std::size_t>> spans;
                 if (slots->size() == 3 && (*slots)[1] == "ArithmeticOperator") spans = {{b + 1, i}, {i, i + 1}, {i + 1, e - 1}};
@@ -606,7 +660,7 @@ private:
     // 定义的全部参数：逗号分隔，与参数槽一一对应。
     std::optional<PEca> Invocation(const UiDefinition& definition, std::int32_t type, const Tokens& t, std::size_t b, std::size_t e,
         int& score, const Line* line = nullptr) {
-        const auto slots = SlotTypes(definition);
+        const auto& slots = Definition(definition).slots;
         if (!slots) return std::nullopt;
         const auto spans = b == e ? std::vector<std::pair<std::size_t, std::size_t>>{} : SplitTop(t, b, e, ",");
         if (spans.size() != slots->size()) return std::nullopt;
@@ -689,17 +743,19 @@ private:
                 if (std::find(std::begin(kComparisons), std::end(kComparisons), token.text) == std::end(kComparisons)) continue;
                 std::optional<PEca> best; int bestScore = -1;
                 auto candidates = BeginCandidates();
-                for (const auto* definition : catalog_.Definitions(UiDefinitionKind::Condition)) {
+                for (const auto* definition : OperatorDefinitions(true)) {
                     ResetCandidate(candidates);
-                    const auto slots = SlotTypes(*definition);
+                    const auto& slots = Definition(*definition).slots;
                     if (!slots || slots->size() != 3 || ((*slots)[1] != "ComparisonOperator" && (*slots)[1] != "EqualNotEqualOperator")) continue;
                     // 比较式没有逗号，按运算符位置逐个取值。
                     PEca compare; compare.type = 1; compare.name = definition->name;
                     int score = 0;
                     auto left = Value(t, b + 1, i, (*slots)[0], score, {});
+                    if (!left) continue;
                     auto op = Value(t, i, i + 1, (*slots)[1], score, {});
+                    if (!op || op->type != 0) continue;
                     auto right = Value(t, i + 1, e - 1, (*slots)[2], score, {});
-                    if (!left || !op || !right || op->type != 0) continue;
+                    if (!right) continue;
                     compare.args = {std::move(*left), std::move(*op), std::move(*right)};
                     if (score > bestScore) { best = std::move(compare); bestScore = score; ChooseCandidate(candidates); }
                 }
@@ -748,8 +804,8 @@ private:
         return action;
     }
     bool FrameworkLine(const Tokens& t) const {
-        for (const auto line : detail::LocalInitializeLines()) if (Matches(t, 0, t.size(), line)) return true;
-        return Matches(t, 0, t.size(), detail::LocalResetCall());
+        for (const auto& line : FrameworkPatterns().initialization) if (SameTokens(t, 0, t.size(), line)) return true;
+        return SameTokens(t, 0, t.size(), FrameworkPatterns().reset);
     }
     bool Actions(const std::vector<Line>& body, std::size_t b, std::size_t e, std::vector<PEca>& out, std::optional<std::int32_t> block) {
         if (depth_ >= 128) return Fail(b < e ? body[b].number : 1, "动作或闭包嵌套超过 128 层解析预算。"), false;
@@ -903,7 +959,7 @@ private:
         PEca closure; closure.name = name; closure.args.push_back(std::move(*handle));
         if (timer) {
             const auto spans = SplitTop(call, 3, call.size() - 1, ",");
-            const auto slots = SlotTypes(*definition);
+            const auto& slots = Definition(*definition).slots;
             if (spans.size() != 4 || !slots || slots->size() != 3 || spans[3].second - spans[3].first != 2
                 || !Is(call, spans[3].first, "function")) return Fail(body[end].number, "计时器闭包参数不完整。"), false;
             for (std::size_t n = 1; n < 3; ++n) {
@@ -915,9 +971,9 @@ private:
             if (!helper || helper->returnsBoolean || !Actions(body, i + 1, end, closure.children, 0)
                 || !FunctionActions(*helper, closure.children, 1)) return Fail(body[end].number, "计时器闭包正文不能识别。"), false;
         } else if (execute) {
-            if (i + 1 >= end || !Matches(body[i + 1].tokens, 0, body[i + 1].tokens.size(), detail::LocalExecuteTrigger("ydl_trigger")))
+            if (i + 1 >= end || !SameTokens(body[i + 1].tokens, 0, body[i + 1].tokens.size(), FrameworkPatterns().execute))
                 return Fail(body[i].number, "运行触发器缺少局部变量页分配。"), false;
-            const auto slots = SlotTypes(*definition);
+            const auto& slots = Definition(*definition).slots;
             if (executeConditional && (end <= i + 2 || end + 2 >= e || !SameText(body[end - 1].tokens, {"call", "DoNothing", "(", ")"})
                 || !SameText(body[end + 1].tokens, {"call", "TriggerExecute", "(", "ydl_trigger", ")"})
                 || !SameText(body[end + 2].tokens, {"endif"}))) return Fail(body[end].number, "运行触发器的条件检查形状不符。"), false;
@@ -1068,6 +1124,9 @@ private:
     const Trigger::TriggerRecord& record_;
     std::string prefix_, triggerVar_, init_;
     std::unordered_map<std::string, std::vector<const UiDefinition*>> events_, conditions_, actions_;
+    std::unordered_map<const UiDefinition*, DefinitionInfo> definitionInfo_;
+    std::vector<const UiDefinition*> binaryDefinitions_, comparisonDefinitions_;
+    bool binaryDefinitionsReady_ = false, comparisonDefinitionsReady_ = false;
     std::unordered_map<std::string, std::vector<Preset>> presets_;
     std::unordered_map<std::string, const Trigger::VariableRecord*> variables_;
     std::unordered_map<std::string, Function> functions_;

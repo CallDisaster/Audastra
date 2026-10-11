@@ -265,6 +265,72 @@ void VerifyParsed(const UiCatalog& catalog, const GuiTriggerFragment& fragment, 
     Require(original.wtg == restored.wtg && original.wct == restored.wct, "YDWE 转码/转回全部撤销须整图逐字节恢复。");
 }
 
+void RepeatedOperatorsKeepCatalogOrder(const std::filesystem::path& root, const UiCatalog& originalCatalog) {
+    Builder b;
+    const auto expression = [&] {
+        auto value = b.Arg(1, "Count");
+        for (int depth = 0; depth < 4; ++depth) {
+            const auto op = b.Eca(3, "OperatorInt", {value, b.Arg(0, "OperatorAdd"), b.Arg(3, std::to_string(depth + 1))});
+            value = b.Arg(2, "OperatorInt", op);
+        }
+        return value;
+    };
+    for (int row = 0; row < 12; ++row)
+        b.fragment.roots.push_back(b.Eca(1, "OperatorCompareInteger", {expression(), b.Arg(0, "OperatorLess"), b.Arg(3, "100")}));
+    for (int row = 0; row < 12; ++row)
+        b.fragment.roots.push_back(b.Eca(2, "SetVariable", {b.Arg(1, "Count"), expression()}));
+
+    // 两个完全同分的候选：库排序中靠前者应胜出；切换函数库后不能沿用另一库的索引。
+    // 无关定义模拟真实函数库的干扰，不设机器速度门限。
+    std::string calls = "[AArithmeticFirst]\nreturns=integer\n[[.args]]\ntype=integer\n"
+        "[[.args]]\ntype=ArithmeticOperator\n[[.args]]\ntype=integer\n";
+    std::string conditions = "[AComparisonFirst]\n[[.args]]\ntype=integer\n"
+        "[[.args]]\ntype=ComparisonOperator\n[[.args]]\ntype=integer\n";
+    for (int index = 0; index < 64; ++index) {
+        calls += "[UnrelatedCall" + std::to_string(index) + "]\nreturns=string\n[[.args]]\ntype=string\n";
+        conditions += "[UnrelatedCondition" + std::to_string(index) + "]\n[[.args]]\ntype=string\n";
+    }
+    Write(root / "ui/operator-order/call.txt", calls);
+    Write(root / "ui/operator-order/condition.txt", conditions);
+    const std::vector<std::string> layers{"base", "shapes", "operator-order"};
+    auto aliasedCatalog = Take(UiCatalog::LoadLayers(root, layers));
+    const auto check = [&](const UiCatalog& catalog, const std::string& arithmetic, const std::string& comparison) {
+        auto fixture = FragmentFixture(catalog, b.fragment);
+        const auto original = Wire(fixture.document, catalog);
+        Script::MapScriptInputs inputs; inputs.triggers = &fixture.document; inputs.catalog = &catalog;
+        const auto source = Take(Script::GenerateGuiTriggerSource(inputs, fixture.id));
+        const auto conversion = Take(TriggerCodeEditor::PrepareConversion(fixture.document, catalog, fixture.id,
+            source.text, source.effectiveRunOnInit));
+        const auto converted = Take(TriggerCodeEditor::Apply(fixture.document, catalog, conversion));
+        const auto recovered = Take(Recover(fixture, catalog));
+        Require(!recovered.fromSnapshot && recovered.preservedCodeLines == 0 && recovered.preservedCodeExpressions == 0,
+            "重复的结构化运算不应被改成保留代码或使用快照。");
+        std::size_t arithmeticCount = 0, comparisonCount = 0;
+        for (const auto& node : recovered.fragment.ecas) {
+            if (node.type == 3) { Require(node.name.text == arithmetic, "算术候选同分时须保持函数库顺序。"); ++arithmeticCount; }
+            if (node.type == 1) { Require(node.name.text == comparison, "比较候选同分时须保持函数库顺序。"); ++comparisonCount; }
+        }
+        Require(arithmeticCount == 96 && comparisonCount == 12, "重复和嵌套运算树不能被遗漏或共享。");
+        const auto recovery = Take(TriggerCodeEditor::PrepareRecovery(fixture.document, catalog, fixture.id, recovered.fragment));
+        const auto applied = Take(TriggerCodeEditor::Apply(fixture.document, catalog, recovery));
+        Check(TriggerCodeEditor::Replay(fixture.document, catalog, applied, false));
+        Check(TriggerCodeEditor::Replay(fixture.document, catalog, converted, false));
+        const auto restored = Wire(fixture.document, catalog);
+        Require(restored.wtg == original.wtg && restored.wct == original.wct, "多次候选选择后撤销须逐字节还原。");
+
+        Convert(fixture, catalog);
+        SetText(fixture, catalog, Replace(source.text, " + 1)", " * 1)"));
+        const auto beforeRejected = Wire(fixture.document, catalog);
+        Require(!Recover(fixture, catalog).Succeeded(), "正文改为函数库没有的运算符后不能沿用上次成功结果。");
+        const auto afterRejected = Wire(fixture.document, catalog);
+        Require(beforeRejected.wtg == afterRejected.wtg && beforeRejected.wct == afterRejected.wct,
+            "重复解析后的拒绝仍须保留原正文。");
+    };
+    check(originalCatalog, "OperatorInt", "OperatorCompareInteger");
+    check(aliasedCatalog, "AArithmeticFirst", "AComparisonFirst");
+    check(originalCatalog, "OperatorInt", "OperatorCompareInteger");
+}
+
 void YdweStructuredShapes(const UiCatalog& catalog) {
     {
         Builder b;
@@ -605,6 +671,7 @@ int main() {
         EditedValues(catalog);
         Rejections(catalog);
         SnapshotRestoresDisabledLines(catalog);
+        RepeatedOperatorsKeepCatalogOrder(root, catalog);
         YdweStructuredShapes(catalog);
         YdweStorageIsHonestPartialRecovery(catalog);
         ProjectSnapshotsBindSourceAndDocument(catalog);
