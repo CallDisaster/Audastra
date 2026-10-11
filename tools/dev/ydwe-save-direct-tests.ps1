@@ -1,7 +1,12 @@
 # 原创 direct-loader 合同回归；只用临时文件及本次 PowerShell 自有 Win32 窗口。
-param([string]$WorkDirectory)
+param([string]$WorkDirectory, [string]$ExpectedDesktop, [string]$ExpectedJobName)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+if ([bool]$ExpectedDesktop -ne [bool]$ExpectedJobName) { throw '隔离 Desktop 和 Job 身份必须同时提供' }
+$isolatedHost = [bool]$ExpectedDesktop
+$desktopIdentitySource = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../tests/native/DesktopIdentity.cs'))
+$pythonIdentitySource = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../tests/native/desktop_identity.py'))
+if ($isolatedHost) { Add-Type -TypeDefinition ([IO.File]::ReadAllText($desktopIdentitySource)) }
 $source = Join-Path $PSScriptRoot 'ydwe-save.ps1'
 $tokens = $null
 $parseErrors = $null
@@ -25,6 +30,8 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 public static class YdweFixtureWin {
+    // 默认观察测试不设置回调，仍保持原来的 Default Desktop 合同。
+    public static Action<IntPtr> WindowCreated;
     [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] private struct WindowClass {
         public uint Size, Style; public IntPtr Procedure; public int ClassExtra, WindowExtra;
         public IntPtr Instance, Icon, Cursor, Background; public string Menu, Name; public IntPtr SmallIcon;
@@ -61,14 +68,14 @@ public static class YdweFixtureWin {
             0x80000000u | (visible ? 0x10000000u : 0u), -30000, -30000, 200, 100,
             owner, IntPtr.Zero, GetModuleHandleW(null), IntPtr.Zero);
         if (value==IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
-        Owned.Add(value); return value;
+        Owned.Add(value); if (WindowCreated != null) WindowCreated(value); return value;
     }
     public static IntPtr Child(IntPtr parent, string cls, string text, int id, bool visible) {
         AssertOwned(parent);
         IntPtr value=CreateWindowExW(0, cls, text, 0x40000000u | (visible ? 0x10000000u : 0u),
             0, 0, 50, 20, parent, new IntPtr(id), GetModuleHandleW(null), IntPtr.Zero);
         if (value==IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
-        Owned.Add(value); return value;
+        Owned.Add(value); if (WindowCreated != null) WindowCreated(value); return value;
     }
     private static void AssertOwned(IntPtr value) {
         uint pid; GetWindowThreadProcessId(value, out pid);
@@ -101,6 +108,7 @@ $taskOwner = Join-Path $taskRoot 'owner.local.txt'
 [IO.File]::WriteAllText($taskOwner, $taskToken)
 $script:passed = 0
 $script:failed = [Collections.Generic.List[object]]::new()
+$script:processIdentities = [Collections.Generic.List[object]]::new()
 $script:fixtureNumber = 0
 $taskEditorPid = [Diagnostics.Process]::GetCurrentProcess().Id
 $versionText = '该地图是由一个版本更新的编辑器保存的.或者它包含了一些现有版本并不支持的数据.继续载入地图吗'
@@ -108,6 +116,28 @@ $foregroundBefore = [YdweFixtureWin]::GetForegroundWindow()
 $started = [DateTime]::UtcNow
 
 function Check([bool]$Value, [string]$Message) { if (-not $Value) { throw $Message } }
+function Write-IsolationWitness([string]$Stage, [IntPtr]$Window = [IntPtr]::Zero) {
+    if (-not $isolatedHost) { return }
+    $path = Join-Path $taskRoot 'desktop-identities.local.jsonl'
+    try {
+        $identity = [NativeDesktopIdentity]::Capture($Stage, $ExpectedJobName, $Window)
+        [IO.File]::AppendAllText($path, ($identity | ConvertTo-Json -Compress) + "`n")
+        $identity.RequirePrivateDesktop($ExpectedDesktop)
+        if ($Stage -ceq 'before-initialize') { $script:processIdentities.Add($identity) }
+    } catch {
+        $unknown = @{Stage=$Stage;Status='unknown-or-invalid';Error=$_.Exception.Message}
+        [IO.File]::AppendAllText($path, ($unknown | ConvertTo-Json -Compress) + "`n")
+        throw
+    }
+}
+function Check-IsolationReceipt($Identity, [int]$ChildId, [ulong]$Created) {
+    Check ($Identity.ProcessId -eq $ChildId -and $Identity.ProcessCreated -eq $Created -and
+        $Identity.ThreadId -gt 0 -and $Identity.InExpectedJob -eq $true -and
+        $Identity.JobName -ceq $ExpectedJobName -and
+        [string]::Equals($Identity.ThreadDesktop,$ExpectedDesktop,[StringComparison]::OrdinalIgnoreCase) -and
+        -not [string]::Equals($Identity.ThreadDesktop,$Identity.InputDesktop,[StringComparison]::OrdinalIgnoreCase)) '子进程实际 Desktop/Job/创建时间身份不符'
+    $script:processIdentities.Add($Identity)
+}
 function Refuses([scriptblock]$Action, [string]$Pattern) {
     $rejected = $false
     try { & $Action | Out-Null } catch {
@@ -176,6 +206,10 @@ function NativeDialog([IntPtr]$Handle) {
 }
 
 try {
+    if ($isolatedHost) {
+        Write-IsolationWitness 'before-initialize'
+        [YdweFixtureWin]::WindowCreated = [Action[IntPtr]] { param([IntPtr]$Handle) Write-IsolationWitness 'window-created' $Handle }
+    }
     [YdweFixtureWin]::Initialize()
     Case 'plain complete nested-host receipt passes' {
         $f=Fixture; Check ((Validate $f) -ceq (Join-Path $f.Game 'worldeditydwe.exe')) 'loader 返回值不符'
@@ -259,19 +293,28 @@ try {
         $base=Join-Path $taskRoot 'launch-environment'
         # PowerShell 启动后会给 PATH 再加自身目录，故这里使用不会重写 PATH 的原创 Python 夹具。
         $helper=Join-Path $base 'original-env-fixture.py'; $receipt=Join-Path $base 'environment.local.json'
-        $helperSource='import os, sys, json' + "`n" +
+        $helperSource='import os, sys, json, runpy' + "`n" +
+            'row = {"Path": os.environ.get("PATH"), "Name": os.environ.get("ydwe-process-name"), "Cwd": os.getcwd()}' + "`n" +
+            'if len(sys.argv) > 2:' + "`n" +
+            '    witness = runpy.run_path(sys.argv[2])' + "`n" +
+            '    row["Identity"] = witness["capture"]("python-environment-child", sys.argv[4])' + "`n" +
             'with open(sys.argv[1], "x", encoding="utf-8") as f:' + "`n" +
-            '    json.dump({"Path": os.environ.get("PATH"), "Name": os.environ.get("ydwe-process-name"), "Cwd": os.getcwd()}, f)'
+            '    json.dump(row, f)' + "`n" +
+            'if len(sys.argv) > 2: witness["require_private_desktop"](row["Identity"], sys.argv[3])'
         Write-New $helper ([Text.Encoding]::UTF8.GetBytes($helperSource))
         $prefix=Join-Path $base 'bin'; $oldPath=$env:PATH
         $oldName=[Environment]::GetEnvironmentVariable('ydwe-process-name','Process')
         $child=$null
+        $childCreated=0
         try {
             $env:PATH=$prefix+[IO.Path]::PathSeparator+$oldPath
             [Environment]::SetEnvironmentVariable('ydwe-process-name','ydwe','Process')
+            $arguments = @('-B',('"'+$helper+'"'),('"'+$receipt+'"'))
+            if ($isolatedHost) { $arguments += @(('"'+$pythonIdentitySource+'"'),('"'+$ExpectedDesktop+'"'),('"'+$ExpectedJobName+'"')) }
             $child=Start-Process -FilePath (@(Get-Command python -CommandType Application)[0].Source) `
-                -ArgumentList @('-B',('"'+$helper+'"'),('"'+$receipt+'"')) `
+                -ArgumentList $arguments `
                 -WorkingDirectory $base -WindowStyle Hidden -PassThru
+            if ($isolatedHost) { $childCreated=$child.StartTime.ToFileTimeUtc() }
         } finally {
             $env:PATH=$oldPath; [Environment]::SetEnvironmentVariable('ydwe-process-name',$oldName,'Process')
         }
@@ -281,7 +324,21 @@ try {
             Check ($row.Path.StartsWith($prefix+[IO.Path]::PathSeparator,[StringComparison]::Ordinal) -and
                 $row.Name -ceq 'ydwe' -and
                 [string]::Equals($row.Cwd,[IO.Path]::GetFullPath($base),[StringComparison]::OrdinalIgnoreCase)) 'Start-Process实际环境/cwd不符'
+            if ($isolatedHost) { Check-IsolationReceipt $row.Identity $child.Id $childCreated }
         } finally { if($child){$child.Dispose()} }
+    }
+    if ($isolatedHost) {
+        $exitFixture = Join-Path $taskRoot 'original-exit-fixture.ps1'
+        $exitSource = @'
+param([string]$WitnessSource, [string]$Receipt, [string]$Desktop, [string]$Job, [int]$Code)
+$ErrorActionPreference = 'Stop'
+Add-Type -TypeDefinition ([IO.File]::ReadAllText($WitnessSource))
+$identity = [NativeDesktopIdentity]::Capture('powershell-exit-child', $Job, [IntPtr]::Zero)
+[IO.File]::WriteAllText($Receipt, ($identity | ConvertTo-Json -Compress))
+$identity.RequirePrivateDesktop($Desktop)
+exit $Code
+'@
+        Write-New $exitFixture ([Text.Encoding]::UTF8.GetBytes($exitSource))
     }
     foreach ($exitSpec in @(
         [pscustomobject]@{Code=37;Hex='0x00000025'},
@@ -290,11 +347,19 @@ try {
             $start=[Diagnostics.ProcessStartInfo]::new()
             $start.FileName=[Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
             $start.UseShellExecute=$false; $start.CreateNoWindow=$true; $start.WindowStyle='Hidden'
-            foreach($arg in @('-NoProfile','-NonInteractive','-Command',('exit '+$exitSpec.Code))) { $start.ArgumentList.Add($arg) }
+            if ($isolatedHost) {
+                $exitReceipt = Join-Path $taskRoot ('exit-' + $exitSpec.Hex + '.local.json')
+                $arguments = @('-NoProfile','-NonInteractive','-File',$exitFixture,
+                    '-WitnessSource',$desktopIdentitySource,'-Receipt',$exitReceipt,
+                    '-Desktop',$ExpectedDesktop,'-Job',$ExpectedJobName,'-Code',[string]$exitSpec.Code)
+            } else { $arguments = @('-NoProfile','-NonInteractive','-Command',('exit '+$exitSpec.Code)) }
+            foreach($arg in $arguments) { $start.ArgumentList.Add($arg) }
             $child=[Diagnostics.Process]::Start($start)
             try {
+                $childCreated = if ($isolatedHost) { $child.StartTime.ToFileTimeUtc() } else { 0 }
                 Check ($child.WaitForExit(10000)) '原创退出夹具未在10秒内完成'
                 Check ($child.ExitCode -eq $exitSpec.Code) '实际退出码与原创夹具不符'
+                if ($isolatedHost) { Check-IsolationReceipt ([IO.File]::ReadAllText($exitReceipt) | ConvertFrom-Json) $child.Id $childCreated }
                 Refuses { Assert-DirectLauncherRunning $child $true } ('actualExitCode='+$exitSpec.Code+' exitHex='+$exitSpec.Hex)
                 Assert-DirectLauncherRunning $child $false
             } finally { $child.Dispose() }
@@ -459,12 +524,19 @@ try {
         } finally { foreach ($handle in @($dialog,$middle,$other,$frame)) { [YdweFixtureWin]::Remove($handle) } }
     }
 } finally {
-    [YdweFixtureWin]::Cleanup()
+    try { [YdweFixtureWin]::Cleanup() }
+    finally {
+        [YdweFixtureWin]::WindowCreated = $null
+        Write-IsolationWitness 'after-cleanup'
+    }
 }
 Case 'fixtures did not take foreground focus' { Check ([YdweFixtureWin]::GetForegroundWindow() -eq $foregroundBefore) '前台窗口发生变化' }
 $summary = [pscustomobject]@{Schema='ydwe-save-direct-tests-v1';Passed=$script:passed;Failed=$script:failed.Count;
     Failures=$script:failed.ToArray();StartedUtc=$started.ToString('o');CompletedUtc=[DateTime]::UtcNow.ToString('o');
-    ActualEditorOrGameLaunched=$false;AuthorWindowsOperated=$false;AuthorRegistryWritten=$false;SourceSha256=(Hash $source)}
+    ActualEditorOrGameLaunched=$false;AuthorWindowsOperated=$false;AuthorRegistryWritten=$false;SourceSha256=(Hash $source);
+    ExpectedDesktop=$ExpectedDesktop;ExpectedJobName=$ExpectedJobName;
+    ProcessIdentities=$script:processIdentities.ToArray();
+    IdentityReceipt=$(if ($isolatedHost) { 'desktop-identities.local.jsonl' } else { $null })}
 [IO.File]::WriteAllText((Join-Path $taskRoot 'summary.local.json'),($summary|ConvertTo-Json -Depth 8))
 $summary | ConvertTo-Json -Depth 8 -Compress
 if ($autoCleanup) {
