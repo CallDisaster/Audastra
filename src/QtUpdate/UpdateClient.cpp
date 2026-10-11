@@ -37,6 +37,22 @@ constexpr char kAutomaticKey[] = "update/automaticEnabled";
 constexpr char kChannelKey[] = "update/channel";
 constexpr char kSkipKey[] = "update/skippedVersion";
 constexpr char kAttemptKey[] = "update/lastAutomaticCheckDate";
+// GitHub 资源 CDN 经代理时常见十几秒停顿或断线；包下载只要有进展就重新计数。
+constexpr int kMetadataRetries = 3;
+constexpr int kPackageRetries = 8;
+
+bool RetryableNetworkError(QNetworkReply::NetworkError error) {
+    switch (error) {
+    case QNetworkReply::RemoteHostClosedError: case QNetworkReply::HostNotFoundError: case QNetworkReply::ConnectionRefusedError:
+    case QNetworkReply::TimeoutError: case QNetworkReply::OperationCanceledError: case QNetworkReply::TemporaryNetworkFailureError:
+    case QNetworkReply::NetworkSessionFailedError: case QNetworkReply::UnknownNetworkError: case QNetworkReply::ProxyConnectionClosedError:
+    case QNetworkReply::ProxyTimeoutError: case QNetworkReply::InternalServerError: case QNetworkReply::ServiceUnavailableError:
+    case QNetworkReply::UnknownServerError:
+        return true;
+    default:
+        return false;
+    }
+}
 
 QString Text(std::string_view value) { return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size())); }
 std::span<const std::byte> Bytes(const QByteArray& value) {
@@ -119,7 +135,9 @@ void UpdateClient::Initialize() {
     requestTimer_ = new QTimer(this); requestTimer_->setSingleShot(true);
     automaticTimer_ = new QTimer(this); automaticTimer_->setSingleShot(true);
     deadlineTimer_ = new QTimer(this); deadlineTimer_->setSingleShot(true);
-    connect(requestTimer_, &QTimer::timeout, this, [this] { Fail(QStringLiteral("UPDATE_NETWORK_TIMEOUT"), tr("检查或下载更新超时，请稍后重试。")); });
+    retryTimer_ = new QTimer(this); retryTimer_->setSingleShot(true);
+    connect(requestTimer_, &QTimer::timeout, this, [this] { RetryOrFail(QStringLiteral("UPDATE_NETWORK_TIMEOUT"), tr("检查或下载更新超时，请稍后重试。")); });
+    connect(retryTimer_, &QTimer::timeout, this, [this] { Request(stageUrl_, stage_); });
     connect(deadlineTimer_, &QTimer::timeout, this, [this] { Fail(QStringLiteral("UPDATE_OPERATION_TIMEOUT"), tr("更新操作超过允许的总时间，已停止请求。")); });
     connect(automaticTimer_, &QTimer::timeout, this, [this] { (void)Check(false); });
 }
@@ -273,7 +291,7 @@ bool UpdateClient::CheckUsing(const UpdatePreferences& preferences, bool manual)
         }
     }
     ClearStaging(); verifiedManifest_.reset(); prepared_.reset(); assets_.clear();
-    checkPreferences_ = preferences; status_.channel = preferences.channel;
+    checkPreferences_ = preferences; status_.channel = preferences.channel; attempts_ = 0;
     status_.manual = manual; status_.availableVersion.clear(); status_.releaseNotes.clear(); status_.canDownload = false;
     if (!configurationError_.isEmpty()) { Fail(QStringLiteral("UPDATE_CONFIGURATION"), configurationError_); return false; }
     Publish(UpdateState::Checking, tr("正在检查 %1更新…").arg(checkPreferences_.channel == Update::UpdateChannel::Stable ? tr("稳定版") : tr("测试版")));
@@ -290,6 +308,7 @@ void UpdateClient::Publish(UpdateState state, const QString& message, const QStr
 }
 void UpdateClient::ClearReply() {
     if (requestTimer_) requestTimer_->stop();
+    if (retryTimer_) retryTimer_->stop();
     if (reply_) { auto* reply = reply_; reply_ = nullptr; disconnect(reply, nullptr, this, nullptr); reply->abort(); reply->deleteLater(); }
 }
 bool UpdateClient::ClearStaging() {
@@ -348,8 +367,16 @@ bool UpdateClient::UrlAllowed(const QUrl& url, bool redirect) const {
 
 void UpdateClient::Request(const QUrl& url, RequestStage stage, int redirects) {
     if (!UrlAllowed(url, redirects != 0)) { Fail(QStringLiteral("UPDATE_SOURCE_URL"), tr("更新来源或重定向地址不符合当前发布源配置。")); return; }
-    ClearReply(); stage_ = stage; redirects_ = redirects; response_.clear();
+    ClearReply();
+    if (redirects == 0) {
+        // 新阶段从零计数；重试回到阶段起点（GitHub 下载地址），重新取得短期 CDN 签名。
+        if (stage != stage_ || url != stageUrl_) attempts_ = 0;
+        stageUrl_ = url; attemptStart_ = received_;
+    }
+    stage_ = stage; redirects_ = redirects; response_.clear(); responseStarted_ = false;
     QNetworkRequest request(url);
+    if (stage == RequestStage::Package && received_ > 0)
+        request.setRawHeader("Range", QByteArray("bytes=") + QByteArray::number(received_) + '-');
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
     request.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::AlwaysNetwork);
     request.setAttribute(QNetworkRequest::CookieLoadControlAttribute, QNetworkRequest::Manual);
@@ -371,10 +398,21 @@ void UpdateClient::Consume(QNetworkReply* reply) {
     const int http = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     const auto bytes = reply->readAll();
     // 错误正文不缓存、不回显，HTTP错误始终在FinishRequest按状态码明确归因。
-    if (http != 200 && http > 0) return;
+    if (http != 200 && http != 206 && http > 0) return;
     if (stage_ == RequestStage::Package) {
-        if (http != 200) return;
+        if (http != 200 && http != 206) return;
         const auto expected = static_cast<qint64>(verifiedManifest_->Manifest().packageBytes);
+        if (!responseStarted_) {
+            responseStarted_ = true;
+            if (http == 206) {
+                // 只接受从已收字节到包尾的续传；其他区间无法拼成签名清单声明的整包。
+                const auto range = reply->rawHeader("Content-Range");
+                const auto wanted = QByteArray("bytes ") + QByteArray::number(received_) + '-' + QByteArray::number(expected - 1) + '/' + QByteArray::number(expected);
+                if (received_ == 0 || range != wanted) { Fail(QStringLiteral("UPDATE_PACKAGE_RANGE"), tr("下载服务器返回的续传区间与已下载部分不符，已停止下载。")); return; }
+            } else if (received_ > 0 && !OpenPackageFile()) return; // 服务器不支持续传时从头重下。
+            if (attempts_ > 0) Publish(UpdateState::Downloading, tr("正在下载版本 %1…").arg(status_.availableVersion));
+            if (status_.state != UpdateState::Downloading) return;
+        }
         if (received_ > expected - bytes.size()) { Fail(QStringLiteral("UPDATE_PACKAGE_SIZE"), tr("下载包超过签名清单声明的大小，已停止下载。")); return; }
         if (!packageFile_ || packageFile_->write(bytes) != bytes.size()) { Fail(QStringLiteral("UPDATE_DOWNLOAD_WRITE"), tr("无法写入更新临时目录，请检查磁盘空间与权限。")); return; }
         received_ += bytes.size(); emit DownloadProgress(received_, expected);
@@ -395,9 +433,17 @@ void UpdateClient::FinishRequest(QNetworkReply* reply) {
         const auto next = reply->url().resolved(redirect); const auto stage = stage_; const int count = redirects_ + 1;
         Request(next, stage, count); return;
     }
-    if (http != 200 || reply->error() != QNetworkReply::NoError) {
-        if (reply->error() == QNetworkReply::TimeoutError || reply->error() == QNetworkReply::OperationCanceledError)
-            Fail(QStringLiteral("UPDATE_NETWORK_TIMEOUT"), tr("检查或下载更新超时，请稍后重试。"));
+    const bool success = http == 200 || (http == 206 && stage_ == RequestStage::Package);
+    if (!success || reply->error() != QNetworkReply::NoError) {
+        const bool timeout = reply->error() == QNetworkReply::TimeoutError || reply->error() == QNetworkReply::OperationCanceledError;
+        // 传输中断时状态码可能已是 200/206；4xx 与来源校验错误不重试。
+        const bool transport = RetryableNetworkError(reply->error()) && (http == 0 || http == 200 || http == 206);
+        if (transport || http >= 500) {
+            if (timeout) RetryOrFail(QStringLiteral("UPDATE_NETWORK_TIMEOUT"), tr("检查或下载更新超时，请稍后重试。"));
+            else if (http >= 500) RetryOrFail(QStringLiteral("UPDATE_HTTP_ERROR"), tr("更新服务器返回 HTTP %1，请稍后重试。").arg(http));
+            else RetryOrFail(QStringLiteral("UPDATE_NETWORK_ERROR"), tr("无法连接更新服务器或验证 TLS，请检查网络后重试。"));
+        }
+        else if (timeout) Fail(QStringLiteral("UPDATE_NETWORK_TIMEOUT"), tr("检查或下载更新超时，请稍后重试。"));
         else if (http == 404) Fail(QStringLiteral("UPDATE_HTTP_404"), tr("暂时无法检查或下载更新：发布仓库可能尚未公开，或此版本资源不存在（HTTP 404）。"));
         else if (http == 403 || http == 429) Fail(QStringLiteral("UPDATE_RATE_LIMIT"), tr("GitHub 暂时拒绝请求或请求已限流（HTTP %1），请稍后重试。").arg(http));
         else if (http > 0) Fail(QStringLiteral("UPDATE_HTTP_ERROR"), tr("更新服务器返回 HTTP %1，请稍后重试。").arg(http));
@@ -485,7 +531,7 @@ bool UpdateClient::Download() {
     if (stagingRoot_.isEmpty()) { Fail(QStringLiteral("UPDATE_STAGING_DIRECTORY"), tr("无法确认更新临时目录的本机身份。")); return false; }
     staging_ = std::make_unique<QTemporaryDir>(QDir(stagingRoot_).filePath(QStringLiteral("download-XXXXXX")));
     if (!staging_->isValid()) { Fail(QStringLiteral("UPDATE_STAGING_DIRECTORY"), tr("无法创建独立的更新下载目录。")); return false; }
-    Publish(UpdateState::Downloading, tr("正在下载并验证更新清单…"));
+    attempts_ = 0; Publish(UpdateState::Downloading, tr("正在下载并验证更新清单…"));
     if (status_.state != UpdateState::Downloading) return true;
     emit DownloadProgress(0, 0);
     if (status_.state == UpdateState::Downloading) {
@@ -514,12 +560,32 @@ void UpdateClient::FinishSignature() {
         Fail(QStringLiteral("UPDATE_DOWNLOAD_WRITE"), tr("无法保存已验证的更新清单。")); return;
     }
     verifiedManifest_ = std::move(*verified.value);
-    packageFile_ = std::make_unique<QSaveFile>(staging_->filePath(QStringLiteral("package.zip"))); packageFile_->setDirectWriteFallback(false);
-    if (!packageFile_->open(QIODevice::WriteOnly)) { Fail(QStringLiteral("UPDATE_DOWNLOAD_WRITE"), tr("无法写入更新包临时文件。")); return; }
-    received_ = 0; Publish(UpdateState::Downloading, tr("正在下载版本 %1…").arg(status_.availableVersion));
+    if (!OpenPackageFile()) return;
+    Publish(UpdateState::Downloading, tr("正在下载版本 %1…").arg(status_.availableVersion));
     if (status_.state != UpdateState::Downloading) return;
     emit DownloadProgress(0, static_cast<qint64>(packageBytes));
     if (status_.state == UpdateState::Downloading) Request(assets_[filename].url, RequestStage::Package);
+}
+
+bool UpdateClient::OpenPackageFile() {
+    if (packageFile_) packageFile_->cancelWriting();
+    packageFile_ = std::make_unique<QSaveFile>(staging_->filePath(QStringLiteral("package.zip"))); packageFile_->setDirectWriteFallback(false);
+    received_ = 0; attemptStart_ = 0;
+    if (!packageFile_->open(QIODevice::WriteOnly)) { Fail(QStringLiteral("UPDATE_DOWNLOAD_WRITE"), tr("无法写入更新包临时文件。")); return false; }
+    if (verifiedManifest_) emit DownloadProgress(0, static_cast<qint64>(verifiedManifest_->Manifest().packageBytes));
+    return true;
+}
+
+void UpdateClient::RetryOrFail(const QString& code, const QString& message) {
+    const bool package = stage_ == RequestStage::Package;
+    if (package && received_ > attemptStart_) attempts_ = 0; // 本次有进展，只累计连续无进展的失败。
+    if (attempts_ >= (package ? kPackageRetries : kMetadataRetries)) { Fail(code, message); return; }
+    ++attempts_;
+    ClearReply(); response_.clear();
+    if (status_.state == UpdateState::Downloading)
+        Publish(UpdateState::Downloading, tr("网络中断，正在重试（第 %1 次）…").arg(attempts_));
+    if (status_.state != UpdateState::Downloading && status_.state != UpdateState::Checking) return;
+    retryTimer_->start(loopback_ ? 10 : std::min(1000 << (attempts_ - 1), 8000));
 }
 
 void UpdateClient::StartPackageVerification() {

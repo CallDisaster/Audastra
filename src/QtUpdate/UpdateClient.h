@@ -117,6 +117,9 @@ private:
     void ClearReply();
     bool ClearStaging();
     void Request(const QUrl& url, RequestStage stage, int redirects = 0);
+    // 超时、断线和5xx按阶段有限重试；更新包从已收字节续传，最终仍按签名清单校验整包。
+    void RetryOrFail(const QString& code, const QString& message);
+    bool OpenPackageFile();
     void Consume(QNetworkReply* reply);
     void FinishRequest(QNetworkReply* reply);
     bool UrlAllowed(const QUrl& url, bool redirect) const;
@@ -129,6 +132,7 @@ private:
     QTimer* requestTimer_ = nullptr;
     QTimer* automaticTimer_ = nullptr;
     QTimer* deadlineTimer_ = nullptr;
+    QTimer* retryTimer_ = nullptr;
     QThread* verifier_ = nullptr;
     QSettings* settings_ = nullptr;
     QUrl apiRoot_;
@@ -142,6 +146,10 @@ private:
     int timeoutMs_ = 15000;
     RequestStage stage_ = RequestStage::Releases;
     int redirects_ = 0;
+    QUrl stageUrl_;
+    int attempts_ = 0;
+    qint64 attemptStart_ = 0;
+    bool responseStarted_ = false;
     QByteArray response_;
     QByteArray manifestBytes_;
     QByteArray signatureBytes_;

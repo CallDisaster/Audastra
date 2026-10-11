@@ -26,6 +26,8 @@ private slots:
     void SignatureAndPackageFailuresNeverPrepareInstallation_data();
     void SignatureAndPackageFailuresNeverPrepareInstallation();
     void CancellingARealPartialDownloadRemovesItsOwnedTemporaryFiles();
+    void InterruptedPackageDownloadResumesFromReceivedBytes_data();
+    void InterruptedPackageDownloadResumesFromReceivedBytes();
     void RedirectsStayOnExplicitLoopbackAndNeverCarryCredentials();
     void ConfigurationWithoutTrustedKeyCanReadVersionButCannotDownload();
     void ResponseBudgetTimeoutAndRedirectLoopAreBounded();
@@ -243,6 +245,55 @@ void UpdateClientTests::CancellingARealPartialDownloadRemovesItsOwnedTemporaryFi
     QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
 }
 
+void UpdateClientTests::InterruptedPackageDownloadResumesFromReceivedBytes_data() {
+    QTest::addColumn<QString>("interruption"); QTest::addColumn<QString>("resume");
+    QTest::newRow("closed-range") << QStringLiteral("close") << QStringLiteral("range");
+    QTest::newRow("stalled-range") << QStringLiteral("stall") << QStringLiteral("range");
+    QTest::newRow("closed-full") << QStringLiteral("close") << QStringLiteral("full");
+    QTest::newRow("wrong-range") << QStringLiteral("close") << QStringLiteral("wrong");
+}
+void UpdateClientTests::InterruptedPackageDownloadResumesFromReceivedBytes() {
+    QFETCH(QString, interruption); QFETCH(QString, resume);
+    QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start()); server.Publish(bundle);
+    int packageRequests = 0; QByteArray resumedRequest;
+    server.responder = [&](QTcpSocket* socket, const QByteArray& path) {
+        if (path != "/assets/fixture.zip") { socket->write(Http(server.routes.value(path))); socket->disconnectFromHost(); return; }
+        const auto& package = bundle.package; const auto total = QByteArray::number(package.size());
+        if (++packageRequests == 1) {
+            // 真实发出声明完整长度的头和前32字节后断开或停住，模拟 CDN 中途停顿。
+            socket->write(QByteArray("HTTP/1.1 200 OK\r\nContent-Length: ") + total + "\r\n\r\n" + package.left(32));
+            if (interruption == QStringLiteral("close")) { socket->flush(); socket->abort(); }
+            return;
+        }
+        resumedRequest = server.requests.last();
+        if (resume == QStringLiteral("full")) socket->write(Http(package));
+        else {
+            const qsizetype from = resume == QStringLiteral("wrong") ? 16 : 32;
+            const auto rest = package.mid(from);
+            socket->write(QByteArray("HTTP/1.1 206 Partial Content\r\nContent-Length: ") + QByteArray::number(rest.size())
+                + "\r\nContent-Range: bytes " + QByteArray::number(from) + '-' + QByteArray::number(package.size() - 1) + '/' + total
+                + "\r\nConnection: close\r\n\r\n" + rest);
+        }
+        socket->disconnectFromHost();
+    };
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat);
+    auto source = server.Source(bundle, directory.filePath("downloads")); source.requestTimeoutMs = 300;
+    UpdateClient client(source, settings); QSignalSpy ready(&client, &UpdateClient::PackagePrepared);
+    QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
+    QVERIFY(client.Download());
+    if (resume == QStringLiteral("wrong")) {
+        QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Failed, 5000);
+        QCOMPARE(client.Status().errorCode, QStringLiteral("UPDATE_PACKAGE_RANGE")); QCOMPARE(ready.count(), 0);
+        QCOMPARE(QDir(directory.filePath("downloads")).entryList(QDir::Dirs | QDir::NoDotAndDotDot).size(), 0);
+        return;
+    }
+    QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Ready || client.Status().state == UpdateState::Failed, 5000);
+    QCOMPARE(client.Status().errorCode, QString()); QCOMPARE(client.Status().state, UpdateState::Ready);
+    // Qt 6.7 起请求头名按小写发送。
+    QCOMPARE(packageRequests, 2); QVERIFY2(resumedRequest.toLower().contains("\r\nrange: bytes=32-\r\n"), resumedRequest.constData());
+    QVERIFY(client.Prepared()); QCOMPARE(Read(client.Prepared()->packagePath), bundle.package);
+}
+
 void UpdateClientTests::RedirectsStayOnExplicitLoopbackAndNeverCarryCredentials() {
     QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; Server escaped; QVERIFY(server.Start()); QVERIFY(escaped.Start()); server.Publish(bundle);
     QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.path()), settings);
@@ -283,7 +334,8 @@ void UpdateClientTests::ResponseBudgetTimeoutAndRedirectLoopAreBounded() {
     QCOMPARE(client.Status().errorCode, QStringLiteral("UPDATE_NETWORK_TIMEOUT"));
     server.responder = [](QTcpSocket* socket, const QByteArray&) { socket->write(Http({}, 302, "Location: /loop\r\n")); socket->disconnectFromHost(); };
     QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Failed, 3000);
-    QCOMPARE(client.Status().errorCode, QStringLiteral("UPDATE_REDIRECT_LIMIT")); QCOMPARE(server.requests.size(), 7);
+    // 超时检查共 4 次请求（首次 + 3 次重试），重定向循环 6 次（首次 + 5 次跳转），重定向上限不重试。
+    QCOMPARE(client.Status().errorCode, QStringLiteral("UPDATE_REDIRECT_LIMIT")); QCOMPARE(server.requests.size(), 10);
     server.responder = [](QTcpSocket* socket, const QByteArray&) { socket->write(Http(QByteArray(2 * 1024 * 1024 + 1, 'x'))); socket->disconnectFromHost(); };
     // 单响应预算不依赖短测试超时，换用常规测试源验证真正的字节拒绝。
     source.requestTimeoutMs = 1000; UpdateClient bounded(source, settings);
