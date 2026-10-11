@@ -2,6 +2,7 @@
 
 #include "McpWorkspace.h"
 #include "McpTerrain.h"
+#include "AudastraVersion.generated.h"
 
 #include "War3MapCore/EditorSession.h"
 
@@ -316,8 +317,8 @@ JsonRpcResponse McpServer::HandleInitialize(const JsonRpcRequest& req) {
     result["capabilities"] = capabilities;
 
     QJsonObject serverInfo;
-    serverInfo["name"] = "War3MapEditor64-MCP";
-    serverInfo["version"] = "0.1.0";
+    serverInfo["name"] = "Audastra-MCP";
+    serverInfo["version"] = QString::fromUtf8(BuildInfo::Version);
     result["serverInfo"] = serverInfo;
     result["instructions"] = QStringLiteral(
         "通过 resources/list 发现版本化 Audastra Skill；先读 forge://skills/manifest，"
