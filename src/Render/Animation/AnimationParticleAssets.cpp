@@ -128,6 +128,11 @@ Status ReadAnimationParticleAsset(AnimationAsset& a, std::span<const std::byte> 
     }
     capability.available = !particles->emitters.empty();
     if (a.particleUnfoggedPreview && capability.rejectionCode.empty()) capability.rejectionCode = "PARTICLE_UNFOGGED_PREVIEW";
+    // PRE2/RIBB 读取器不实现 PREM，但启用的独立 PREM 主机会随后给出逐发射器能力结果。
+    // 只撤掉读取器这条笼统提示；主机拒绝、子资产失败及其它粒子诊断保持原样。
+    if (limits.enablePremPreview) std::erase_if(read.diagnostics, [](const auto& diagnostic) {
+        return diagnostic.code == "PARTICLE_PREM_UNSUPPORTED";
+    });
     for (auto& diagnostic : read.diagnostics) {
         if ((diagnostic.code != "PARTICLE_VISIBILITY_DUPLICATE_PREVIEW"
                 && diagnostic.code != "PARTICLE_KEYS_GAME_ORDER_PREVIEW") || !diagnostic.origin) continue;

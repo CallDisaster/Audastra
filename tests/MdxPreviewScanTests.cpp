@@ -1,4 +1,5 @@
 #include "../src/Render/Tools/MdxScan/ScanPreview.h"
+#include "../src/Render/Tools/MdxScan/ScanPreviewRead.h"
 #include "AnimationPreviewFixture.h"
 #include "AnimationParticleContinuityTests.h"
 #include "War3MapCore/Hash.h"
@@ -32,7 +33,50 @@ PreviewModelReport Evaluate(std::vector<std::byte> bytes,Limits limits={}) {
     };
     return EvaluatePreviewModel("sample.mdx",model,reader,limits,[]{});
 }
+void ReadFailures() {
+    const std::vector<Diagnostic> original{
+        {DiagnosticSeverity::Error,"OriginalArchive","SOURCE_CHECKSUM_FAILED","原始扇区校验失败。",
+            OriginSpan{"original.mpq",32,8,std::string(64,'b')}},
+        {DiagnosticSeverity::Warning,"OriginalArchive","SOURCE_BLOCK_DETAIL","保留原始块诊断。",
+            OriginSpan{"original-member.blp",64,4,std::string(64,'c')}}};
+    const auto path=std::string_view("Textures/Requested.blp");
+    const auto rejected=PreviewRead::Resource(path,[&]() -> AnimationResource {
+        return PreviewRead::Take(Result<AnimationResource>{std::nullopt,original});
+    });
+    Check(!rejected.Succeeded() && !rejected.value && rejected.diagnostics.size()==original.size(),
+        "source failure became success or discarded additional diagnostics");
+    for(std::size_t i=0;i<original.size();++i) {
+        const auto& before=original[i];const auto& after=rejected.diagnostics[i];
+        Check(after.code==before.code && after.subsystem==before.subsystem && after.severity==before.severity &&
+            after.message.starts_with(before.message) && after.message.find(path)!=std::string::npos &&
+            after.origin && before.origin && after.origin->source==before.origin->source &&
+            after.origin->offset==before.origin->offset && after.origin->length==before.origin->length &&
+            after.origin->fingerprint==before.origin->fingerprint,
+            "source diagnostic lost its code, message, origin, fingerprint or requested child path");
+    }
+    Check(original[0].message.find(path)==std::string::npos,"resource decoration changed original diagnostics");
+    const auto guarded=PreviewRead::Resource(path,[&]() -> AnimationResource {
+        PreviewRead::Take(Status{original});return {};
+    });
+    Check(!guarded.Succeeded() && guarded.diagnostics.size()==2 && guarded.diagnostics[0].origin,
+        "source guard status lost its full diagnostic set");
+    const auto budget=PreviewRead::Resource(path,[]() -> AnimationResource { throw std::runtime_error("SCAN_RESOURCE_LIMIT"); });
+    Check(!budget.Succeeded() && budget.diagnostics.size()==1 && budget.diagnostics[0].code=="SCAN_RESOURCE_LIMIT" &&
+        budget.diagnostics[0].message.find(path)!=std::string::npos,"plain budget failure lost code or child path");
+    const AnimationResource good{{std::byte{0x11}},"original-layer",std::string(64,'a')};
+    const auto accepted=PreviewRead::Resource(path,[&] { return good; });
+    Check(accepted.Succeeded() && accepted.diagnostics.empty() && accepted.value->bytes==good.bytes &&
+        accepted.value->sourceLayer==good.sourceLayer && accepted.value->digest==good.digest,"resource helper changed valid input");
+    bool contextual=false;
+    try { static_cast<void>(PreviewRead::Take(Result<AnimationResource>{std::nullopt,original},"SCAN_SOURCE_TERRAIN_")); }
+    catch(const PreviewRead::Failure& failure) {
+        contextual=std::string_view(failure.what())=="SCAN_SOURCE_TERRAIN_SOURCE_CHECKSUM_FAILED" &&
+            failure.diagnostics.size()==2 && failure.diagnostics[0].code=="SOURCE_CHECKSUM_FAILED";
+    }
+    Check(contextual,"enumeration exception changed its contextual code or original diagnostic code");
+}
 void Run(){
+    ReadFailures();
     const auto original=Evaluate(AnimationTest::Bytes());
     Check(original.policies.size()==2&&!original.sha256.empty(),"scanner lost policy or identity");
     for(const auto& policy:original.policies){

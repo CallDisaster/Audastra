@@ -1,4 +1,5 @@
 #include "ScanPreview.h"
+#include "ScanPreviewRead.h"
 #include "War3MapCore/Game/GameDataSource.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapData/MapTerrain.h"
@@ -18,12 +19,10 @@
 namespace War3Map::Render::Scan {
 namespace {
 template<class T> T Good(Result<T> result, std::string_view context = {}) {
-    if (!result.Succeeded()) throw std::runtime_error(std::string(context) +
-        (result.diagnostics.empty() ? "SCAN_READ_FAILED" : result.diagnostics.front().code));
-    return std::move(*result.value);
+    return PreviewRead::Take(std::move(result), context);
 }
 void Good(Status status) {
-    if (!status.Succeeded()) throw std::runtime_error(status.diagnostics.empty() ? "SCAN_SOURCE_FAILED" : status.diagnostics.front().code);
+    PreviewRead::Take(std::move(status));
 }
 bool Mdx(std::string_view name) {
     if (name.size() < 4) return false;
@@ -156,8 +155,7 @@ int One(const Options& options, const std::filesystem::path& mapPath, std::optio
                 if (model.bytes.size() > maximum) return Result<AnimationResource>::Failure("PreviewScan", "SCAN_RESOURCE_LIMIT", "模型超过资源预算。");
                 return Result<AnimationResource>::Success(model);
             }
-            try { return Result<AnimationResource>::Success(source.Read(path, maximum)); }
-            catch (const std::exception& error) { return Result<AnimationResource>::Failure("PreviewScan", error.what(), "只读资源取得失败。"); }
+            return PreviewRead::Resource(path, [&] { return source.Read(path, maximum); });
         };
         // 服务内始终用合法的虚拟成员名，绝对磁盘路径只进入报告，不伪装成 MPQ 资源路径。
         auto report = EvaluatePreviewModel("scan-model.mdx", model, reader, options.limits, checkpoint);
