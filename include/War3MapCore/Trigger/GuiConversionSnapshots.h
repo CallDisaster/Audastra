@@ -36,6 +36,10 @@ public:
     // 在确认或文档发布前完成分配；取消/拒绝时直接丢弃，不更改已有快照或修订。
     [[nodiscard]] static Result<PreparedSnapshot> Prepare(const TriggerDocument& document,
         const UiCatalog& catalog, StableId id, std::string_view generatedCode);
+    // 删除或新建同编号记录时，空槽也须参与撤销交换，避免生成域 ID 复用错绑旧快照。
+    [[nodiscard]] static PreparedSnapshot PrepareRemoval(StableId id) noexcept {
+        PreparedSnapshot result; result.id_ = id; return result;
+    }
     void Publish(PreparedSnapshot&& snapshot) noexcept;
     // 和同一个代码转换收据一起交换；暂存上一份，撤销/重做均不复制或重新分配子树。
     void Swap(PreparedSnapshot& snapshot) noexcept;

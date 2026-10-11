@@ -185,7 +185,8 @@ void TriggerModule::AddDirectoryTrigger(bool comment) {
     if (needsCategory) {
         stack->push(new TriggerDirectoryUndoCommand(document, before, withCategory, tr("新建类别")));
     }
-    stack->push(new AddTriggerUndoCommand(document, *added.value, comment ? tr("新建注释") : tr("新建触发器")));
+    stack->push(new AddTriggerUndoCommand(document, *added.value, comment ? tr("新建注释") : tr("新建触发器"),
+        nullptr, &project_.guiConversionSnapshots_));
     stack->endMacro();
     SelectDirectoryItem({false, *added.value, *categoryId}, true);
 }
@@ -430,7 +431,8 @@ void TriggerModule::DeleteDirectoryItem(const TriggerDirectoryItem& item) {
         ShowStatus(tr("删除后未通过 WTG/WCT 图验证，已回滚。"), 8000);
         return;
     }
-    project_.triggerUndoStack_->push(new RemoveTriggerUndoCommand(document, std::move(*removed.value), tr("删除触发器 %1").arg(name)));
+    project_.triggerUndoStack_->push(new RemoveTriggerUndoCommand(document, std::move(*removed.value), tr("删除触发器 %1").arg(name),
+        nullptr, &project_.guiConversionSnapshots_));
     SelectDirectoryItem(neighbour);
     ShowSelectedTrigger();
     ShowStatus(tr("已删除 %1 · Ctrl+Z 撤销").arg(name), 5000);
@@ -494,7 +496,7 @@ void TriggerModule::DeleteCategory(std::int32_t categoryId) {
         auto* stack = project_.triggerUndoStack_;
         stack->beginMacro(tr("删除类别 %1").arg(name));
         for (auto& receipt : receipts) {
-            stack->push(new RemoveTriggerUndoCommand(document, std::move(receipt), tr("删除触发器")));
+            stack->push(new RemoveTriggerUndoCommand(document, std::move(receipt), tr("删除触发器"), nullptr, &project_.guiConversionSnapshots_));
         }
         stack->push(new TriggerDirectoryUndoCommand(document, std::move(before), Directory::CaptureLayout(*document), tr("删除类别")));
         stack->endMacro();
@@ -580,7 +582,7 @@ void TriggerModule::PasteSnapshot(const Trigger::TriggerSnapshot& snapshot, std:
         ShowStatus(tr("粘贴后未通过 WTG/WCT 图验证，已回滚。"), 8000);
         return;
     }
-    project_.triggerUndoStack_->push(new AddTriggerUndoCommand(document, *pasted.value, tr("粘贴触发器")));
+    project_.triggerUndoStack_->push(new AddTriggerUndoCommand(document, *pasted.value, tr("粘贴触发器"), nullptr, &project_.guiConversionSnapshots_));
     SelectDirectoryItem({false, *pasted.value, categoryId});
 }
 

@@ -194,6 +194,9 @@ bool TriggerModule::ApplyCodePlan(const Trigger::TriggerCodeEditPlan& plan, cons
     if (!project_.triggerDocument_ || !project_.uiCatalog_ || !project_.triggerUndoStack_) return false;
     // 先分配 Qt 命令；共用服务发布成功后只移动已签发的收据。
     auto command = std::make_unique<QtProject::TriggerCodeEditCommand>(project_, Trigger::TriggerCodeEditReceipt{}, label);
+    if (plan.Target().kind == Trigger::CodeBlockKind::CustomTrigger
+        && !Trigger::TriggerDocumentEditor::FindTrigger(*project_.triggerDocument_, plan.Target().triggerId))
+        snapshot = Trigger::GuiConversionSnapshots::PrepareRemoval(plan.Target().triggerId);
     command->SetSnapshot(std::move(snapshot));
     if (const auto before = project_.ObservedTriggerFingerprint()) command->SetBeforeFingerprint(*before);
     auto applied = Trigger::TriggerCodeEditor::Apply(*project_.triggerDocument_, *project_.uiCatalog_, plan);

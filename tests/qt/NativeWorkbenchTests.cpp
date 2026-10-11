@@ -687,6 +687,7 @@ private slots:
     void DirectoryProjectAndInvalidOpenPreserveEdits();
     void CodeDraftDirectoryCtrlSSavesProject();
     void GuiConversionSnapshotSurvivesProjectReopen();
+    void GuiConversionSnapshotDoesNotBindReusedTriggerIdentity();
     void CodeDraftFailureKeepsSourceAndExplicitDiscardWorks();
     void IncompleteLuaDraftSurvivesApplyHostRecoveryAndMapGate();
     void MapDataOnlyChangesProduceAutomaticRecovery();
@@ -6073,6 +6074,72 @@ void NativeWorkbenchTests::GuiConversionSnapshotSurvivesProjectReopen() {
     mapRestored.project_->triggerUndoStack_->redo();
     QVERIFY(mapRestored.project_->guiConversionSnapshots_.ActiveFingerprint(
         *mapRestored.project_->triggerDocument_, *mapRestored.project_->uiCatalog_).empty());
+}
+
+void NativeWorkbenchTests::GuiConversionSnapshotDoesNotBindReusedTriggerIdentity() {
+    using namespace War3Map;
+    using namespace War3Map::Trigger;
+    QTemporaryDir fixture; QVERIFY(fixture.isValid());
+    const auto root = fixture.filePath("identity-workspace");
+    QVERIFY(WriteText(root + "/ui/config", "base\n"));
+    QVERIFY(WriteText(root + "/ui/base/action.txt", "[DoNothing]\n"));
+    auto catalog = UiCatalog::Load(NativePath(root)); QVERIFY(catalog.Succeeded());
+    auto initial = WtgWctCodec{}.CreateEmpty(*catalog.value); QVERIFY(initial.Succeeded());
+    QVERIFY(TriggerDirectoryEditor::AddCategory(*initial.value, "Synthetic").Succeeded());
+    const auto initialWire = WtgWctCodec{}.Serialize(*initial.value, *catalog.value); QVERIFY(initialWire.Succeeded());
+    const auto bytes = [](const auto& data) { return QByteArray(reinterpret_cast<const char*>(data.data()), static_cast<qsizetype>(data.size())); };
+    QVERIFY(WriteText(root + "/map/war3map.wtg", bytes(initialWire.value->wtg)));
+    QVERIFY(WriteText(root + "/map/war3map.wct", bytes(initialWire.value->wct)));
+    MainWindow window(MainWindow::StartupMode::HeadlessProbe);
+    QVERIFY(window.OpenWorkspacePath(NativePath(root)));
+    window.triggersModule_->SetConfirmHandler([](const auto&, const auto&, const auto&) { return true; });
+    // A 在会话中新建，使用可复用的生成域 ID；不能以源文件解析出的 ID 代替此反例。
+    QVERIFY(window.triggersModule_->CreateCustomTrigger(QStringLiteral("ReusedSnapshot")));
+    auto& document = *window.project_->triggerDocument_;
+    const auto originalId = document.triggers.front().id;
+    GuiTriggerFragment disabledGui;
+    EcaNode disabled; disabled.type = 2; disabled.name.text = "DoNothing"; disabled.enabled = 0;
+    disabledGui.ecas.push_back(disabled); disabledGui.roots.push_back(0);
+    const auto seedGui = TriggerCodeEditor::PrepareRecovery(document, *window.project_->uiCatalog_, originalId, disabledGui);
+    QVERIFY(seedGui.Succeeded()); QVERIFY(TriggerCodeEditor::Apply(document, *window.project_->uiCatalog_, *seedGui.value).Succeeded());
+    window.project_->triggerUndoStack_->clear();
+    window.project_->ObserveTriggerEdit(); window.triggersModule_->RefreshEditor();
+    QVERIFY(window.triggersModule_->Reveal({"triggers", "trigger", "ReusedSnapshot", {}}));
+    const auto originalGui = WtgWctCodec{}.Serialize(document, *window.project_->uiCatalog_); QVERIFY(originalGui.Succeeded());
+    QVERIFY(window.triggersModule_->ConvertCurrentTriggerToCustomCode());
+    const auto code = TriggerCodeEditor::NormalizedText(document.triggers.front().customText);
+    QVERIFY(window.project_->guiConversionSnapshots_.Find(document, *window.project_->uiCatalog_, originalId));
+    window.triggersModule_->DeleteCurrentItem();
+    QVERIFY(document.triggers.empty()); QVERIFY(window.project_->guiConversionSnapshots_.Empty());
+    QVERIFY(window.triggersModule_->CreateCustomTrigger(QStringLiteral("ReusedSnapshot")));
+    QCOMPARE(document.triggers.front().id, originalId);
+    window.triggersModule_->CodeEditor()->setPlainText(QString::fromStdString(code));
+    QVERIFY(window.triggersModule_->CommitPendingEdits());
+    QVERIFY(!window.project_->guiConversionSnapshots_.Find(document, *window.project_->uiCatalog_, originalId));
+    QVERIFY(window.triggersModule_->ConvertCurrentCodeToTrigger());
+    QVERIFY(document.triggers.front().ecas.empty()); // B 只能从代码解析，不能复活 A 的禁用动作。
+    for (int step = 0; step < 4; ++step) window.project_->triggerUndoStack_->undo(); // 转回、贴正文、新建 B、删除 A。
+    QCOMPARE(TriggerCodeEditor::NormalizedText(document.triggers.front().customText), code);
+    const auto* restored = window.project_->guiConversionSnapshots_.Find(document, *window.project_->uiCatalog_, originalId);
+    QVERIFY(restored && restored->ecas.size() == 1 && restored->ecas.front().enabled == 0);
+    window.project_->triggerUndoStack_->redo(); // 重做删除 A，快照再次随命令移走。
+    QVERIFY(document.triggers.empty()); QVERIFY(window.project_->guiConversionSnapshots_.Empty());
+    window.project_->triggerUndoStack_->undo();
+    QVERIFY(window.triggersModule_->Reveal({"triggers", "trigger", "ReusedSnapshot", {}}));
+    QVERIFY(window.triggersModule_->ConvertCurrentCodeToTrigger());
+    const auto restoredGui = WtgWctCodec{}.Serialize(document, *window.project_->uiCatalog_); QVERIFY(restoredGui.Succeeded());
+    QCOMPARE(restoredGui.value->wtg, originalGui.value->wtg); QCOMPARE(restoredGui.value->wct, originalGui.value->wct);
+    // 转回 GUI 后缓存仍存在；UI/MCP 共用的整图命令删除该记录时也必须暂存它。
+    auto before = document, after = document;
+    QVERIFY(TriggerDocumentEditor::RemoveTrigger(after, originalId).Succeeded());
+    auto command = std::make_unique<QtProject::TriggerGraphSnapshotUndoCommand>(*window.project_, std::move(before),
+        std::move(after), QStringLiteral("Remove cached snapshot via common graph command"));
+    QVERIFY(command->Ready()); window.project_->triggerUndoStack_->push(command.release());
+    QVERIFY(document.triggers.empty()); QVERIFY(window.project_->guiConversionSnapshots_.Empty());
+    window.project_->triggerUndoStack_->undo(); // 恢复 GUI 与缓存。
+    window.project_->triggerUndoStack_->undo(); // 撤销此前转回，恢复 A 的代码态。
+    restored = window.project_->guiConversionSnapshots_.Find(document, *window.project_->uiCatalog_, originalId);
+    QVERIFY(restored && restored->ecas.size() == 1 && restored->ecas.front().enabled == 0);
 }
 
 void NativeWorkbenchTests::IncompleteLuaDraftSurvivesApplyHostRecoveryAndMapGate() {
