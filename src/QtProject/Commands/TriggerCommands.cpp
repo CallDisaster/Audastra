@@ -225,10 +225,12 @@ AddTriggerUndoCommand::AddTriggerUndoCommand(
     War3Map::Trigger::TriggerDocument* document,
     War3Map::StableId triggerId,
     QString text,
-    QUndoCommand* parent)
+    QUndoCommand* parent,
+    War3Map::Trigger::GuiConversionSnapshots* snapshots)
     : QUndoCommand(std::move(text), parent),
       document_(document),
-      triggerId_(triggerId) {
+      triggerId_(triggerId), snapshots_(snapshots),
+      snapshot_(War3Map::Trigger::GuiConversionSnapshots::PrepareRemoval(triggerId)) {
 }
 
 void AddTriggerUndoCommand::undo() {
@@ -245,11 +247,13 @@ void AddTriggerUndoCommand::undo() {
         return;
     }
     removal_ = std::move(*removed.value);
+    if (snapshots_) snapshots_->Swap(snapshot_);
 }
 
 void AddTriggerUndoCommand::redo() {
     if (firstRedo_) {
         firstRedo_ = false;
+        if (snapshots_) snapshots_->Swap(snapshot_);
         return;
     }
     if (document_ == nullptr || !removal_.has_value()) {
@@ -263,7 +267,9 @@ void AddTriggerUndoCommand::redo() {
                     << (status.diagnostics.empty()
                         ? QStringLiteral("未知错误")
                         : QString::fromUtf8(status.diagnostics.front().message));
+        return;
     }
+    if (snapshots_) snapshots_->Swap(snapshot_);
 }
 
 RenameTriggerUndoCommand::RenameTriggerUndoCommand(
@@ -311,10 +317,12 @@ RemoveTriggerUndoCommand::RemoveTriggerUndoCommand(
     War3Map::Trigger::TriggerDocument* document,
     TriggerRemoveReceipt receipt,
     QString text,
-    QUndoCommand* parent)
+    QUndoCommand* parent,
+    War3Map::Trigger::GuiConversionSnapshots* snapshots)
     : QUndoCommand(std::move(text), parent),
       document_(document),
-      receipt_(std::move(receipt)) {
+      receipt_(std::move(receipt)), snapshots_(snapshots),
+      snapshot_(War3Map::Trigger::GuiConversionSnapshots::PrepareRemoval(receipt_.trigger.id)) {
 }
 
 void RemoveTriggerUndoCommand::undo() {
@@ -331,11 +339,13 @@ void RemoveTriggerUndoCommand::undo() {
                         : QString::fromUtf8(status.diagnostics.front().message));
         return;
     }
+    if (snapshots_) snapshots_->Swap(snapshot_);
 }
 
 void RemoveTriggerUndoCommand::redo() {
     if (firstRedo_) {
         firstRedo_ = false;
+        if (snapshots_) snapshots_->Swap(snapshot_);
         return;
     }
     if (document_ == nullptr) {
@@ -351,6 +361,7 @@ void RemoveTriggerUndoCommand::redo() {
         return;
     }
     receipt_ = std::move(*removed.value);
+    if (snapshots_) snapshots_->Swap(snapshot_);
 }
 
 AddVariableUndoCommand::AddVariableUndoCommand(
@@ -560,7 +571,17 @@ TriggerGraphSnapshotUndoCommand::TriggerGraphSnapshotUndoCommand(EditorProject& 
         && storage.before.UiCatalogSha256() == storage.after.UiCatalogSha256()) {
         storage.beforeBinding = *beforeIdentity.value;
         storage.afterBinding = *afterIdentity.value;
-        try { storage.preparedFirst.emplace(storage.after); }
+        try {
+            storage.preparedFirst.emplace(storage.after);
+            std::set<StableId> changed;
+            for (const auto& record : storage.before.triggers) changed.insert(record.id);
+            for (const auto& record : storage.after.triggers) {
+                if (!changed.erase(record.id)) changed.insert(record.id);
+            }
+            // 图事务在同一批次内从初始最高 ID 递增分配，不复用该批删除的 ID。
+            // 跨批次增删的记录在发布前一并暂存快照，覆盖 UI 与 MCP 共用图命令。
+            for (const auto id : changed) storage.changedSnapshots.push_back(Trigger::GuiConversionSnapshots::PrepareRemoval(id));
+        }
         catch (...) { storage.beforeBinding.reset(); storage.afterBinding.reset(); }
     }
 }
@@ -640,6 +661,7 @@ void TriggerGraphSnapshotUndoCommand::Apply(bool forward) {
     }
     static_assert(std::is_nothrow_swappable_v<Trigger::TriggerDocument>);
     std::swap(*document_, *candidate);
+    for (auto& snapshot : storage.changedSnapshots) project_->guiConversionSnapshots_.Swap(snapshot);
     storage.preparedFirst.reset();
     if (forward) *firstPublication_ = true;
     project_->ObserveTriggerEdit();

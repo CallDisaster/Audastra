@@ -189,10 +189,15 @@ void TriggerModule::DiscardPendingCodeDraft() {
     else ShowSelectedTrigger();
 }
 
-bool TriggerModule::ApplyCodePlan(const Trigger::TriggerCodeEditPlan& plan, const QString& label) {
+bool TriggerModule::ApplyCodePlan(const Trigger::TriggerCodeEditPlan& plan, const QString& label,
+    Trigger::GuiConversionSnapshots::PreparedSnapshot snapshot) {
     if (!project_.triggerDocument_ || !project_.uiCatalog_ || !project_.triggerUndoStack_) return false;
     // 先分配 Qt 命令；共用服务发布成功后只移动已签发的收据。
     auto command = std::make_unique<QtProject::TriggerCodeEditCommand>(project_, Trigger::TriggerCodeEditReceipt{}, label);
+    if (plan.Target().kind == Trigger::CodeBlockKind::CustomTrigger
+        && !Trigger::TriggerDocumentEditor::FindTrigger(*project_.triggerDocument_, plan.Target().triggerId))
+        snapshot = Trigger::GuiConversionSnapshots::PrepareRemoval(plan.Target().triggerId);
+    command->SetSnapshot(std::move(snapshot));
     if (const auto before = project_.ObservedTriggerFingerprint()) command->SetBeforeFingerprint(*before);
     auto applied = Trigger::TriggerCodeEditor::Apply(*project_.triggerDocument_, *project_.uiCatalog_, plan);
     if (!applied.Succeeded() || !applied.value) {
@@ -203,6 +208,7 @@ bool TriggerModule::ApplyCodePlan(const Trigger::TriggerCodeEditPlan& plan, cons
     }
     if (!applied.value->Changed()) return true;
     command->SetReceipt(std::move(*applied.value));
+    command->PublishSnapshot();
     const QScopedValueRollback publishing(publishingCode_, true);
     project_.triggerUndoStack_->push(command.release());
     return true;
@@ -323,15 +329,15 @@ bool TriggerModule::ConvertCurrentTriggerToCustomCode() {
         generated.value->text, generated.value->effectiveRunOnInit);
     if (!plan.Succeeded() || !plan.value) { project_.AddDiagnostics(plan.diagnostics); ShowStatus(CodeMessage(plan.diagnostics), 10000); return false; }
     // 先生成并密封计划，确认对话框之后只能发布同一计划，不能重新绑定已变化的图。
+    auto snapshot = Trigger::GuiConversionSnapshots::Prepare(*project_.triggerDocument_, *project_.uiCatalog_, id, generated.value->text);
+    if (!snapshot.Succeeded() || !snapshot.value) { project_.AddDiagnostics(snapshot.diagnostics); ShowStatus(CodeMessage(snapshot.diagnostics), 10000); return false; }
     const auto title = tr("转换为自定义代码");
     const auto body = tr("将“%1”转换为 JASS / vJass 代码。此操作可撤销；应用后不能直接切回 GUI，后续在代码中编辑。继续转换？").arg(name);
     const bool confirmed = confirm_ ? confirm_(title, body, {})
         : QMessageBox::question(page_, title, body, QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Yes;
     if (!confirmed) return false;
-    // 转换前快照：之后代码没改时可原样转回（含禁用行与注释）。
-    auto snapshot = Trigger::TriggerCodeEditor::CaptureGuiFragment(*project_.triggerDocument_, id);
-    if (!ApplyCodePlan(*plan.value, title)) return false;
-    if (snapshot.Succeeded() && snapshot.value) convertedSnapshots_.insert_or_assign(id, std::move(*snapshot.value));
+    // 快照和同一转换收据一起进入撤销栈；取消或过期拒绝不会更改现有快照。
+    if (!ApplyCodePlan(*plan.value, title, std::move(*snapshot.value))) return false;
     RefreshExplorer(id);
     RefreshEditor();
     return true;
@@ -363,22 +369,24 @@ bool TriggerModule::ConvertCurrentCodeToTrigger() {
         ShowStatus(message, 15000);
         return false;
     };
-    const auto snapshot = convertedSnapshots_.find(id);
-    auto recovered = Script::RecoverGuiTrigger(CodeConversionInputs(), id,
-        snapshot == convertedSnapshots_.end() ? nullptr : &snapshot->second);
+    const auto* snapshot = project_.guiConversionSnapshots_.Find(*project_.triggerDocument_, *project_.uiCatalog_, id);
+    auto recovered = Script::RecoverGuiTrigger(CodeConversionInputs(), id, snapshot);
     if (!recovered.Succeeded() || !recovered.value) return reject(recovered.diagnostics);
     auto plan = Trigger::TriggerCodeEditor::PrepareRecovery(*project_.triggerDocument_, *project_.uiCatalog_, id,
         recovered.value->fragment);
     if (!plan.Succeeded() || !plan.value) return reject(plan.diagnostics);
     const auto title = tr("转回 T");
+    const auto retained = recovered.value->preservedCodeLines || recovered.value->preservedCodeExpressions
+        ? tr("其中 %1 行、%2 个表达式保留为自定义代码（哈希键原名无法从编译后的整数恢复）。")
+            .arg(recovered.value->preservedCodeLines).arg(recovered.value->preservedCodeExpressions) : QString{};
     const auto body = tr("将“%1”转回传统事件 / 条件 / 动作。%2此操作可撤销。继续？").arg(name,
         recovered.value->fromSnapshot ? tr("代码未改动，按转换前原样恢复。")
-            : tr("按代码重建，已与按 T 重新生成的代码逐词核对一致；代码里看不到的禁用行不会出现。"));
+            : tr("按代码重建，已与按 T 重新生成的代码逐词核对一致；代码里看不到的禁用行不会出现。") + retained);
     const bool confirmed = confirm_ ? confirm_(title, body, {})
         : QMessageBox::question(page_, title, body, QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel) == QMessageBox::Yes;
     if (!confirmed) return false;
     if (!ApplyCodePlan(*plan.value, title)) return false;
-    convertedSnapshots_.erase(id);
+    // 保留绑定的工程快照；撤销“转回”时正文恢复，原快照仍能继续使用。
     RefreshExplorer(id);
     RefreshEditor();
     return true;

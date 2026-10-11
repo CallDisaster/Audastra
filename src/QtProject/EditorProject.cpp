@@ -51,6 +51,7 @@ EditorProject::~EditorProject() {
 
 void EditorProject::ReplaceTriggerDocument(std::unique_ptr<Trigger::TriggerDocument> document) {
     emit TriggerDocumentAboutToChange();
+    guiConversionSnapshots_.Clear();
     triggerDocument_ = std::move(document);
     emit TriggerDocumentChanged();
 }

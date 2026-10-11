@@ -36,6 +36,7 @@ add_library(War3MapTrigger STATIC
     JassBackend/JassCompiler.cpp
     TriggerCodec.cpp
     TriggerCodeEditing.cpp
+    GuiConversionSnapshots.cpp
     WctSource.cpp
     WtgDecoder.cpp
     WtgSource.cpp

@@ -255,7 +255,6 @@ void TriggerModule::ReleaseDocument() {
     scriptView_->hide();
     codeActions_->hide();
     convertCodeButton_->hide(); recoverCodeButton_->hide();
-    convertedSnapshots_.clear();
     codeTools_->hide(); codeProblems_->hide();
     ecaView_->setVisible(!BlueprintVisible());
     blueprint_->SetSource(nullptr, nullptr, {});

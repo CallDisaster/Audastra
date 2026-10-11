@@ -126,6 +126,9 @@ struct GuiTriggerSource {
 struct GuiTriggerRecovery {
     Trigger::GuiTriggerFragment fragment;
     bool fromSnapshot = false;
+    // 已辨认的框架展开仍需原样表达的部分；不能把它们计为完整结构化 T 覆盖。
+    std::size_t preservedCodeLines = 0;
+    std::size_t preservedCodeExpressions = 0;
 };
 // 代码转回 T：先试转换前快照，再按生产生成器的写法解析当前正文；候选必须经同一生成器回生成、
 // 与正文逐词一致（空白不计，辅助函数可整体改名）才返回，否则指出第一处不一致或无法识别的行。

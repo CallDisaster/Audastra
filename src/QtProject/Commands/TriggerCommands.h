@@ -6,6 +6,7 @@
 #include <QPointer>
 #include <memory>
 #include "War3MapCore/Trigger/TriggerCodeEditing.h"
+#include "War3MapCore/Trigger/GuiConversionSnapshots.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
 
 #include <cstdint>
@@ -61,7 +62,8 @@ public:
         War3Map::Trigger::TriggerDocument* document,
         War3Map::StableId triggerId,
         QString text,
-        QUndoCommand* parent = nullptr);
+        QUndoCommand* parent = nullptr,
+        War3Map::Trigger::GuiConversionSnapshots* snapshots = nullptr);
 
     void undo() override;
     void redo() override;
@@ -70,6 +72,8 @@ private:
     War3Map::Trigger::TriggerDocument* document_ = nullptr;
     War3Map::StableId triggerId_ = 0;
     std::optional<TriggerRemoveReceipt> removal_;
+    War3Map::Trigger::GuiConversionSnapshots* snapshots_ = nullptr;
+    War3Map::Trigger::GuiConversionSnapshots::PreparedSnapshot snapshot_;
     bool firstRedo_ = true;
 };
 
@@ -102,7 +106,8 @@ public:
         War3Map::Trigger::TriggerDocument* document,
         TriggerRemoveReceipt receipt,
         QString text,
-        QUndoCommand* parent = nullptr);
+        QUndoCommand* parent = nullptr,
+        War3Map::Trigger::GuiConversionSnapshots* snapshots = nullptr);
 
     void undo() override;
     void redo() override;
@@ -110,6 +115,8 @@ public:
 private:
     War3Map::Trigger::TriggerDocument* document_ = nullptr;
     TriggerRemoveReceipt receipt_;
+    War3Map::Trigger::GuiConversionSnapshots* snapshots_ = nullptr;
+    War3Map::Trigger::GuiConversionSnapshots::PreparedSnapshot snapshot_;
     bool firstRedo_ = true;
 };
 
@@ -315,6 +322,7 @@ private:
         Trigger::TriggerDocument before, after;
         std::optional<Trigger::TriggerGraphReplayIdentity> beforeBinding, afterBinding;
         std::optional<Trigger::TriggerDocument> preparedFirst;
+        std::vector<Trigger::GuiConversionSnapshots::PreparedSnapshot> changedSnapshots;
     };
     // 标量模式不构造 SnapshotStorage，也不拥有任何完整图候选。
     std::optional<SnapshotStorage> snapshot_;

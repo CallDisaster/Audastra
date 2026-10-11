@@ -1,5 +1,5 @@
 // 代码转回 T 的覆盖测量（手动运行，不登记 CTest）：对每个 GUI 触发器“转换为代码 → 不带快照按正文转回”，
-// 统计可转回数量与拒绝原因，并核对带快照时全部原样恢复、每次撤销后整图逐字节还原。用法：
+// 统计实际可提交且可撤销的转回数量与拒绝原因，最后核对整图逐字节还原。解析耗时单独计量。用法：
 //   war3-map-trigger-recovery-coverage <ui-root> <war3map.wtg> <war3map.wct>
 #include "War3MapCore/Script/MapScript.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
@@ -51,10 +51,35 @@ int main(int argc, char** argv) {
     std::vector<StableId> ids;
     for (const auto& trigger : document.triggers)
         if (trigger.type == 0 && trigger.customTextFlag == 0 && !trigger.ecas.empty()) ids.push_back(trigger.id);
-    std::size_t generatedFail = 0, parsed_ok = 0, snapshotOk = 0, undoMismatch = 0;
+    std::size_t generatedFail = 0, parsed_ok = 0, parsedPartial = 0, snapshotOk = 0, undoMismatch = 0;
+    std::size_t preservedLines = 0, preservedExpressions = 0;
+    std::size_t parseAttempts = 0, parsedAccepted = 0, prepareFailed = 0, applyFailed = 0, snapshotFailed = 0, commitAttempts = 0;
     std::map<std::string, std::size_t> reasons;
     std::map<std::string, std::string> examples;
-    double recoverMs = 0, maxMs = 0;
+    double recoverMs = 0, maxMs = 0, commitMs = 0, maxCommitMs = 0;
+    const auto recordFailure = [&](const std::string& stage, const std::vector<Diagnostic>& diagnostics) {
+        const auto reason = stage + ": " + Reason(diagnostics);
+        if (++reasons[reason] == 1) examples[reason] = diagnostics.empty() ? "（无诊断）" : diagnostics.front().message;
+    };
+    const auto commitAndUndo = [&](StableId id, const Trigger::GuiTriggerFragment& fragment, const std::string& mode) {
+        const auto started = std::chrono::steady_clock::now();
+        ++commitAttempts;
+        const auto finish = [&](bool result) {
+            const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+            commitMs += elapsed; maxCommitMs = (std::max)(maxCommitMs, elapsed); return result;
+        };
+        auto recoveryPlan = Trigger::TriggerCodeEditor::PrepareRecovery(document, *catalog.value, id, fragment);
+        if (!recoveryPlan.Succeeded() || !recoveryPlan.value) {
+            ++prepareFailed; recordFailure(mode + " prepare", recoveryPlan.diagnostics); return finish(false);
+        }
+        auto applied = Trigger::TriggerCodeEditor::Apply(document, *catalog.value, *recoveryPlan.value);
+        if (!applied.Succeeded() || !applied.value) {
+            ++applyFailed; recordFailure(mode + " apply", applied.diagnostics); return finish(false);
+        }
+        const auto undone = Trigger::TriggerCodeEditor::Replay(document, *catalog.value, *applied.value, false);
+        if (!undone.Succeeded()) { ++undoMismatch; recordFailure(mode + " undo", undone.diagnostics); return finish(false); }
+        return finish(true);
+    };
     for (const auto id : ids) {
         Script::MapScriptInputs inputs; inputs.triggers = &document; inputs.catalog = &*catalog.value;
         auto generated = Script::GenerateGuiTriggerSource(inputs, id);
@@ -65,14 +90,23 @@ int main(int argc, char** argv) {
         auto receipt = Trigger::TriggerCodeEditor::Apply(document, *catalog.value, *plan.value);
         if (!receipt.Succeeded()) { ++generatedFail; continue; }
         const auto start = std::chrono::steady_clock::now();
+        ++parseAttempts;
         auto recovered = Script::RecoverGuiTrigger(inputs, id);
         const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         recoverMs += ms; maxMs = (std::max)(maxMs, ms);
-        if (recovered.Succeeded()) ++parsed_ok;
+        if (recovered.Succeeded() && recovered.value) {
+            ++parsedAccepted;
+            if (commitAndUndo(id, recovered.value->fragment, "parsed")) {
+                if (recovered.value->preservedCodeLines || recovered.value->preservedCodeExpressions) ++parsedPartial;
+                else ++parsed_ok;
+                preservedLines += recovered.value->preservedCodeLines;
+                preservedExpressions += recovered.value->preservedCodeExpressions;
+            }
+        }
         else {
             auto reason = Reason(recovered.diagnostics);
             // 无法识别的动作行：按该行开头两个词归类。
-            const auto& message = recovered.diagnostics.front().message;
+            const auto message = recovered.diagnostics.empty() ? std::string{} : recovered.diagnostics.front().message;
             if ((message.find("无法识别为 T 动作") != std::string::npos || message.find("无法切分") != std::string::npos)
                 && message.rfind("第 ", 0) == 0) {
                 const auto line = std::stoul(message.substr(std::string("第 ").size()));
@@ -88,19 +122,35 @@ int main(int argc, char** argv) {
                     reason += " " + row.substr(0, lexical ? 60 : cut == std::string::npos ? 40 : (std::min<std::size_t>)(cut, 40));
                 }
             }
-            if (++reasons[reason] == 1) examples[reason] = document.triggers.empty() ? "" : recovered.diagnostics.front().message;
+            if (++reasons[reason] == 1) examples[reason] = message;
         }
-        if (snapshot.Succeeded() && Script::RecoverGuiTrigger(inputs, id, &*snapshot.value).Succeeded()) ++snapshotOk;
-        if (!Trigger::TriggerCodeEditor::Replay(document, *catalog.value, *receipt.value, false).Succeeded()) ++undoMismatch;
+        if (undoMismatch) break; // 撤销链已断，禁止继续在不确定状态上累计覆盖数。
+        if (snapshot.Succeeded() && snapshot.value) {
+            const auto fromSnapshot = Script::RecoverGuiTrigger(inputs, id, &*snapshot.value);
+            if (fromSnapshot.Succeeded() && fromSnapshot.value && fromSnapshot.value->fromSnapshot) {
+                if (commitAndUndo(id, fromSnapshot.value->fragment, "snapshot")) ++snapshotOk;
+            } else { ++snapshotFailed; recordFailure("snapshot recover", fromSnapshot.diagnostics); }
+        } else { ++snapshotFailed; recordFailure("snapshot capture", snapshot.diagnostics); }
+        if (undoMismatch) break;
+        const auto conversionUndo = Trigger::TriggerCodeEditor::Replay(document, *catalog.value, *receipt.value, false);
+        if (!conversionUndo.Succeeded()) { ++undoMismatch; recordFailure("conversion undo", conversionUndo.diagnostics); break; }
     }
     auto encoded = codec.Serialize(document, *catalog.value);
     const bool exact = encoded.Succeeded() && encoded.value->wtg == wtg && encoded.value->wct == wct;
     std::printf("gui-triggers=%zu generate-or-convert-failed=%zu parsed-recovered=%zu snapshot-recovered=%zu undo-failed=%zu\n",
         ids.size(), generatedFail, parsed_ok, snapshotOk, undoMismatch);
+    std::printf("parsed-partial=%zu preserved-code-lines=%zu preserved-code-expressions=%zu (not counted in parsed-recovered)\n",
+        parsedPartial, preservedLines, preservedExpressions);
+    std::printf("parsed-accepted-before-commit=%zu recovery-prepare-failed=%zu recovery-apply-failed=%zu snapshot-failed=%zu\n",
+        parsedAccepted, prepareFailed, applyFailed, snapshotFailed);
     std::printf("recover-avg=%.2f ms recover-max=%.2f ms final-byte-exact=%d\n", ids.empty() ? 0.0 : recoverMs / ids.size(), maxMs, exact ? 1 : 0);
+    std::printf("parse-attempts=%zu parse-attempt-avg=%.2f ms (recover-avg retains all-GUI denominator; both exclude commit/undo)\n",
+        parseAttempts, parseAttempts ? recoverMs / parseAttempts : 0.0);
+    std::printf("commit-undo-attempts=%zu commit-undo-avg=%.2f ms commit-undo-max=%.2f ms\n",
+        commitAttempts, commitAttempts ? commitMs / commitAttempts : 0.0, maxCommitMs);
     std::vector<std::pair<std::size_t, std::string>> sorted;
     for (const auto& [reason, count] : reasons) sorted.emplace_back(count, reason);
     std::sort(sorted.rbegin(), sorted.rend());
     for (const auto& [count, reason] : sorted) std::printf("%5zu  %s\n       e.g. %s\n", count, reason.c_str(), examples[reason].c_str());
-    return exact ? 0 : 1;
+    return exact && !undoMismatch && !prepareFailed && !applyFailed ? 0 : 1;
 }
