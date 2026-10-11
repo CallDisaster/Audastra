@@ -183,10 +183,10 @@ Modules::ObjectResourcePickerFactory MakeObjectResourcePickerFactory(QtProject::
         services.revision = inputs->revision;
         services.isCurrent = [owner, stamp] { return owner && !owner->sourceChangeSuspected_ && !owner->sourceChangeConfirmed_ && Stamp(*owner) == stamp; };
         services.load = [inputs](auto origin, const auto& progress) { return Load(*inputs, origin, progress); };
-        services.inspect = [inputs, current = services.isCurrent](std::string_view value, Services::ObjectResourceKind kind)
+        services.inspect = [inputs](std::string_view value, Services::ObjectResourceKind kind)
             -> Result<Services::ObjectResourceInfo> {
             using Return = Result<Services::ObjectResourceInfo>;
-            if (!current()) return Return::Failure("Object.Resource", "OBJECT_RESOURCE_STALE", "资源来源已变化。");
+            // 只读冻结输入和来源租约；QObject修订只由调用方在所属线程前后复核。
             if (!inputs->previewSources.Succeeded()) return {{}, inputs->previewSources.diagnostics};
             auto reader = Modules::WorldResourceReader::Open(*inputs->previewSources.value);
             if (!reader.Succeeded()) return {{}, reader.diagnostics};
@@ -195,7 +195,6 @@ Modules::ObjectResourcePickerFactory MakeObjectResourcePickerFactory(QtProject::
             auto result = Services::InspectObjectResource((*reader.value)->Resolver(), value, kind);
             const auto after = (*reader.value)->VerifyCurrentSource();
             if (!after.Succeeded()) return {{}, after.diagnostics};
-            if (!current()) return Return::Failure("Object.Resource", "OBJECT_RESOURCE_STALE", "读取期间资源来源已变化。");
             return result;
         };
         services.preview = [inputs, stamp, current = services.isCurrent](QWidget* parent) {
