@@ -1,6 +1,6 @@
 // 代码转回 T 的覆盖测量（手动运行，不登记 CTest）：对每个 GUI 触发器“转换为代码 → 不带快照按正文转回”，
 // 统计实际可提交且可撤销的转回数量与拒绝原因，最后核对整图逐字节还原。解析耗时单独计量。用法：
-//   war3-map-trigger-recovery-coverage <ui-root> <war3map.wtg> <war3map.wct>
+//   war3-map-trigger-recovery-coverage <ui-root> <war3map.wtg> <war3map.wct> [--profile-phases]
 #include "War3MapCore/Script/MapScript.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/Trigger/TriggerCodeEditing.h"
@@ -8,6 +8,7 @@
 #include "War3MapCore/Trigger/UiCatalog.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <fstream>
@@ -61,11 +62,39 @@ struct RecoveryTiming {
     double milliseconds;
     const char* status;
     std::string name;
+    Script::GuiTriggerRecoveryProfile profile;
 };
+struct ProfileGroup {
+    std::size_t attempts = 0;
+    double totalMilliseconds = 0;
+    Script::GuiTriggerRecoveryProfile profile;
+    void Add(double milliseconds, const Script::GuiTriggerRecoveryProfile& value) {
+        ++attempts; totalMilliseconds += milliseconds;
+        for (std::size_t i = 0; i < profile.phases.size(); ++i) {
+            profile.phases[i].calls += value.phases[i].calls;
+            profile.phases[i].milliseconds += value.phases[i].milliseconds;
+        }
+    }
+};
+void PrintPhases(const Script::GuiTriggerRecoveryProfile& profile, double totalMilliseconds) {
+    static constexpr std::array names{"normalize", "catalog", "parse", "probe", "generate", "compare"};
+    static_assert(names.size() == static_cast<std::size_t>(Script::GuiTriggerRecoveryProfile::Phase::Count));
+    double attributed = 0;
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        const auto& phase = profile.phases[i];
+        std::printf(" %s-calls=%zu %s-total-ms=%.3f", names[i], phase.calls, names[i], phase.milliseconds);
+        attributed += phase.milliseconds;
+    }
+    // 包含析构、查找目标、诊断构造与采样本身；保留原总耗时，不扣这部分或计时开销。
+    std::printf(" other-total-ms=%.3f\n", totalMilliseconds - attributed);
+}
 } // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 4) { std::cerr << "usage: <ui-root> <wtg> <wct>\n"; return 2; }
+    if (argc < 4 || argc > 5 || (argc == 5 && std::string_view(argv[4]) != "--profile-phases")) {
+        std::cerr << "usage: <ui-root> <wtg> <wct> [--profile-phases]\n"; return 2;
+    }
+    const bool profilePhases = argc == 5;
     Trigger::TriggerCodeEditor::SetFullReplayVerification(false);
     auto catalog = Trigger::UiCatalog::Load(argv[1]);
     if (!catalog.Succeeded()) return 1;
@@ -85,6 +114,7 @@ int main(int argc, char** argv) {
     constexpr std::size_t kSlowestTimings = 20;
     std::vector<RecoveryTiming> slowest;
     slowest.reserve(kSlowestTimings);
+    std::array<ProfileGroup, 3> phaseGroups;
     std::size_t guiIndex = 0;
     double recoverMs = 0, maxMs = 0, commitMs = 0, maxCommitMs = 0;
     const auto recordFailure = [&](const std::string& stage, const std::vector<Diagnostic>& diagnostics) {
@@ -120,11 +150,16 @@ int main(int argc, char** argv) {
         if (!plan.Succeeded()) { ++generatedFail; continue; }
         auto receipt = Trigger::TriggerCodeEditor::Apply(document, *catalog.value, *plan.value);
         if (!receipt.Succeeded()) { ++generatedFail; continue; }
+        Script::GuiTriggerRecoveryProfile profile;
         const auto recoverStart = std::chrono::steady_clock::now();
         ++parseAttempts;
-        auto recovered = Script::RecoverGuiTrigger(inputs, id);
+        auto recovered = Script::RecoverGuiTrigger(inputs, id, nullptr, profilePhases ? &profile : nullptr);
         const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - recoverStart).count();
         recoverMs += ms; maxMs = (std::max)(maxMs, ms);
+        if (profilePhases) {
+            const auto group = recovered.Succeeded() && recovered.value ? 2 : profile.parserProducedCandidate ? 1 : 0;
+            phaseGroups[group].Add(ms, profile);
+        }
         const auto fastest = std::min_element(slowest.begin(), slowest.end(), [](const auto& left, const auto& right) {
             return left.milliseconds < right.milliseconds;
         });
@@ -134,7 +169,7 @@ int main(int argc, char** argv) {
             RecoveryTiming timing{id, guiIndex, generated.value->text.size(), value ? value->fragment.ecas.size() : 0,
                 value ? value->fragment.arguments.size() : 0, ms,
                 value ? value->preservedCodeLines || value->preservedCodeExpressions ? "partial" : "complete" : "rejected",
-                ReportName(target ? target->name.text : "")};
+                ReportName(target ? target->name.text : ""), profile};
             if (slowest.size() < kSlowestTimings) slowest.push_back(std::move(timing));
             else *fastest = std::move(timing);
         }
@@ -205,6 +240,18 @@ int main(int argc, char** argv) {
         std::printf("recover-slow rank=%zu gui-index=%zu trigger-id=%llu recover-ms=%.3f source-bytes=%zu candidate-ecas=%zu candidate-arguments=%zu status=%s name=%s\n",
             rank + 1, timing.guiIndex, static_cast<unsigned long long>(timing.id), timing.milliseconds,
             timing.sourceBytes, timing.ecaCount, timing.argumentCount, timing.status, timing.name.c_str());
+        if (profilePhases) {
+            std::printf("recover-slow-phases rank=%zu", rank + 1);
+            PrintPhases(timing.profile, timing.milliseconds);
+        }
+    }
+    if (profilePhases) {
+        static constexpr std::array names{"parse-rejected", "verify-rejected", "accepted"};
+        for (std::size_t i = 0; i < phaseGroups.size(); ++i) {
+            const auto& group = phaseGroups[i];
+            std::printf("recover-phase-group group=%s attempts=%zu recover-total-ms=%.3f", names[i], group.attempts, group.totalMilliseconds);
+            PrintPhases(group.profile, group.totalMilliseconds);
+        }
     }
     return exact && !undoMismatch && !prepareFailed && !applyFailed ? 0 : 1;
 }
