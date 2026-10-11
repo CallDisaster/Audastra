@@ -383,8 +383,7 @@ void ExecuteSaveTask(MapSaveTask& task, const MapSaveService::Progress& progress
         // 模板产物可能替换分类成员；必须对最终成员再校验，不能只信编译前的类型。
         if (!verifyObjects()) return;
         if (task.generatedLuaTestUnit) {
-            const std::vector<std::string> scripts{"war3map.lua", "war3map.j", "scripts/war3map.j", "scripts/war3map.lua"};
-            const auto binding = CaptureLuaTestMapBinding(*task.archive, task.replacements, task.removals, scripts);
+            const auto binding = CaptureLuaTestMapBinding(*task.archive, task.replacements, task.removals, task.generatedScriptMembers);
             Append(task.diagnostics, binding.diagnostics);
             if (!binding.Succeeded() || !binding.value) return;
             task.luaTestMapBinding = *binding.value;

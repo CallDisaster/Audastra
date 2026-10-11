@@ -89,8 +89,11 @@ Status MergeCompletedScript(MapSaveTask& task, std::vector<MemberReplacement>& s
     const auto old = task.archive->DescribeExactMemberIdentities(task.sourceSha256, oldNames);
     if (!old.Succeeded() || !old.value) return {old.diagnostics};
     auto removals = task.removals;
+    std::vector<std::string> generatedScripts;
+    generatedScripts.reserve(scripts.size()+old.value->members.size());
+    for (const auto& member:scripts) generatedScripts.push_back(member.name);
     for (const auto& member : old.value->members)
-        if (member.present) removals.push_back(member.name);
+        if (member.present) { removals.push_back(member.name); generatedScripts.push_back(member.name); }
     const auto selected = task.script->luaTarget->SelectedSettings();
     MemberReplacement settings{"war3map.w3i", {selected.begin(), selected.end()}};
     const auto existing = std::find_if(task.replacements.begin(), task.replacements.end(),
@@ -105,6 +108,7 @@ Status MergeCompletedScript(MapSaveTask& task, std::vector<MemberReplacement>& s
     if (appendSettings) task.replacements.push_back(std::move(settings));
     else task.replacements[slot] = std::move(settings);
     task.removals.swap(removals);
+    task.generatedScriptMembers.swap(generatedScripts);
     return Status::Ok();
 }
 

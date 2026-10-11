@@ -309,6 +309,8 @@ void SavesLuaAndExplicitlySwitchesLanguage(Fixture& fixture) {
     fixture.RequirePrepared(task, fixture.request);
     Run(task);
     SuccessfulReopen(fixture, lua, task);
+    Require(task.generatedScriptMembers == std::vector<std::string>{"war3map.lua"},
+        "generated script binding excluded members not owned by this save");
 
     const auto jass = fixture.MakeSource("jass-to-lua-v31", 31, 0,
         {"war3map.j", "scripts\\war3map.j", "scripts\\war3map.lua"});
@@ -321,6 +323,11 @@ void SavesLuaAndExplicitlySwitchesLanguage(Fixture& fixture) {
         "target preparation prematurely staged language or old-script removal");
     Run(switched);
     SuccessfulReopen(fixture, jass, switched);
+    Require(switched.generatedScriptMembers.size() == 4 && switched.generatedScriptMembers.front() == "war3map.lua",
+        "language switch lost generated or explicitly removed script members");
+    for (const auto* name:{"war3map.j","scripts\\war3map.j","scripts\\war3map.lua"})
+        Require(std::find(switched.generatedScriptMembers.begin(),switched.generatedScriptMembers.end(),name)
+            !=switched.generatedScriptMembers.end(), "removed script was not bound to save chain");
 }
 
 void FailedBuildKeepsOriginalTransaction(Fixture& fixture) {
