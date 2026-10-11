@@ -1,5 +1,6 @@
 #include "War3MapCore/Render/BuildingSplatPreview.h"
 #include "War3MapCore/Render/TerrainPicking.h"
+#include "War3RenderCore/Legacy/ModelSkinInput.h"
 
 #include <algorithm>
 #include <cmath>
@@ -55,6 +56,9 @@ bool Has(const BuildingSplatPreviewFrame& frame, std::string_view code) {
 }
 void CheckProjection(const BuildingSplatPreviewFrame& frame,
     std::span<const BuildingSplatPreviewInstance> inputs) {
+    AnimatedSceneDescriptor descriptor; descriptor.Refresh(*frame.scene,*frame.frame);
+    ModelScene accepted; std::uint64_t bytes=0;
+    Require(CopySkinnedModelInput(descriptor.scene,accepted,bytes),"actual renderer rejected projection descriptor");
     for (const auto& owner:frame.owners) {
         const auto& mesh=frame.scene->geometry.meshes[owner.renderedInstance];
         const auto& footprint=*inputs[owner.inputIndex].row.footprint;

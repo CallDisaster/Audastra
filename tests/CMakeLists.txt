@@ -274,7 +274,7 @@ foreach(render_part IN ITEMS TerrainTable TerrainMaterials TerrainTextureAtlas T
     add_test(NAME render-${render_part} COMMAND war3-map-${render_part}-tests)
 endforeach()
 
-target_link_libraries(war3-map-BuildingSplatPreview-tests PRIVATE War3MapEditor::Services)
+target_link_libraries(war3-map-BuildingSplatPreview-tests PRIVATE War3MapEditor::Services War3RenderCore::SkinInput)
 
 add_executable(war3-jass-budget-tests jass/JassBudgetTests.cpp)
 target_link_libraries(war3-jass-budget-tests PRIVATE War3MapEditor::Jass)

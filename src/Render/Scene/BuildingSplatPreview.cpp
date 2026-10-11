@@ -341,10 +341,9 @@ Result<BuildingSplatPreviewFrame> BuildBuildingSplatPreviewFrame(
         }
         for (const auto index:geometry.indices) scene->geometry.indices.push_back(index);
         scene->geometry.layers.push_back({layout.texture,2,5,1});
-        const auto vertexCount=static_cast<std::uint32_t>(geometry.vertices.size());
         const War3RenderModelMeshV2 mesh{firstIndex,static_cast<std::uint32_t>(geometry.indices.size()),firstVertex,model,1};
         scene->geometry.meshes.push_back(mesh); scene->geometry.models.push_back({model,1});
-        scene->meshes.push_back({mesh,0,vertexCount}); scene->models.push_back({{model,1},1});
+        scene->meshes.push_back({mesh,0,1}); scene->models.push_back({{model,1},1});
         scene->geometry.modelBounds.push_back(bounds); ++output.displayed;
     }
     bool reuse = previous && previous->scene && previous->frame
