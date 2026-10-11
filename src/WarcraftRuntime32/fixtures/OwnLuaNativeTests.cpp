@@ -133,6 +133,19 @@ void NativeCalls() {
     Check(!registry.Valid() && !registry.Error().empty() && !registry.Find("Mix"), "registry failure latches");
     NativeRegistry invalid;
     Check(!invalid.Observe("Invalid", "(V)V", 1), "invalid signature refuses registry");
+    Check(invalid.Error().find("gate=signature; acceptedEntries=0; name=\"Invalid\"; signature=\"(V)V\"; address=0x1") != std::string_view::npos,
+        "registration refusal identifies the exact gate and bounded offending entry");
+    const std::string firstFailure(invalid.Error());
+    Check(!invalid.Observe("Later", "()V", 2) && invalid.Error() == firstFailure, "first refusal remains stable");
+    NativeRegistry badName;
+    Check(!badName.Observe(std::string(10000, '\n'), "()V", 1)
+        && badName.Error().find("gate=name") != std::string_view::npos
+        && badName.Error().find("\\x0a") != std::string_view::npos
+        && badName.Error().find('\n') == std::string_view::npos && badName.Error().size() < 2048,
+        "untrusted registration text is escaped and bounded in diagnostics");
+    NativeRegistry badAddress;
+    Check(!badAddress.Observe("Missing", "()V", 0) && badAddress.Error().find("gate=address") != std::string_view::npos,
+        "registration refusal distinguishes the null function address");
 }
 
 void ConversionAndLifetimes() {

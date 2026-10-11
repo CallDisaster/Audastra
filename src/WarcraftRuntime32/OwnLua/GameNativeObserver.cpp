@@ -81,8 +81,13 @@ int __fastcall ObserveRegistration(std::uintptr_t function, const char* name, co
     try {
         std::array<char, 256> copiedName{};
         std::array<char, 4096> copiedSignature{};
-        if (!self->image->Executable(function) || !CopyText(name, copiedName) || !CopyText(signature, copiedSignature)) {
-            self->Fail("native 登记地址不属于已核验映像，或名字／签名超过预算。");
+        const auto executable = self->image->Executable(function);
+        const auto nameReadable = CopyText(name, copiedName);
+        const auto signatureReadable = CopyText(signature, copiedSignature);
+        if (!executable || !nameReadable || !signatureReadable) {
+            self->Fail("native 登记输入不能读取或不属于已核验映像：address-in-image=" + std::to_string(executable)
+                + "; name-readable=" + std::to_string(nameReadable) + "; signature-readable=" + std::to_string(signatureReadable)
+                + "; address=" + std::to_string(function));
         } else {
             std::string failure;
             {
@@ -93,7 +98,8 @@ int __fastcall ObserveRegistration(std::uintptr_t function, const char* name, co
                 } else {
                     auto& current = found->second;
                     if (!current.registry->Observe(copiedName.data(), copiedSignature.data(), function)) {
-                        failure = current.registry->Error();
+                        failure = std::string(current.registry->Error()) + "; thread=" + std::to_string(GetCurrentThreadId())
+                            + "; generation=" + std::to_string(current.generation) + "; collecting=true";
                     } else if (std::string_view(copiedName.data()) == "Cheat") {
                         if (std::string_view(copiedSignature.data()) != "(S)V") failure = "Cheat 实际签名与已核对的地图入口不符。";
                         else {
