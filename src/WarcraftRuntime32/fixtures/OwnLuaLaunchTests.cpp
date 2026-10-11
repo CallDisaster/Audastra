@@ -47,9 +47,9 @@ struct Fixture {
         return L" --runtime-mode owned-lua --lua-map-sha256 " + std::wstring(hash.begin(), hash.end())
             + L" --lua-session-nonce aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     }
-    Result Run(std::wstring arguments, HANDLE mailbox = nullptr, bool inheritMailbox = true) {
+    Result Run(std::wstring arguments, HANDLE mailbox = nullptr, bool inheritMailbox = true, std::wstring_view requestedMap = map) {
         const auto receipt = root / (L"receipt-" + std::to_wstring(++sequence) + L".json");
-        auto command = Quote(launcher) + L" --game " + Quote(root / L"war3.exe") + L" --map \"" + map
+        auto command = Quote(launcher) + L" --game " + Quote(root / L"war3.exe") + L" --map \"" + std::wstring(requestedMap)
             + L"\" --bootstrap " + Quote(bootstrap) + L" --receipt " + Quote(receipt) + arguments;
         if (mailbox) command += L" --lua-mailbox-handle " + std::to_wstring(reinterpret_cast<ULONG_PTR>(mailbox));
         Handle job(CreateJobObjectW(nullptr, nullptr));
@@ -112,6 +112,15 @@ int wmain(int argc, wchar_t** argv) {
             && independent.receipt.find("\"processCreated\":true") != std::string::npos
             && independent.receipt.find("runtime-preflight") == std::string::npos,
             "owned mode bypasses six external DLLs but rejects unverified Game image");
+        const auto minimized = std::filesystem::path(L"Maps\\Audastra\\minimized.w3x");
+        Check(std::filesystem::copy_file(fixture.root / Fixture::map, fixture.root / minimized), "original startup-policy fixture map");
+        fixture.Record(fixture.root / minimized);
+        const auto inactive = fixture.Run(fixture.Owned() + L" --owned-timeout-ms 1000", nullptr, true, minimized.wstring());
+        Check(inactive.receipt.find("owned-lua-game-identity") != std::string::npos
+            && inactive.receipt.find("\"minimizedNoActivateRequested\":true") != std::string::npos,
+            "observation child receives actual minimized no-activate STARTUPINFO before Game loads");
+        Check(independent.receipt.find("\"minimizedNoActivateRequested\":false") != std::string::npos,
+            "default launch keeps original display behavior");
         const auto mismatch = fixture.Run(fixture.Owned(std::string(64, 'b')));
         Check(mismatch.receipt.find("owned-lua-map-sha") != std::string::npos
             && mismatch.receipt.find("\"processCreated\":false") != std::string::npos, "wrong frozen map refused before game");

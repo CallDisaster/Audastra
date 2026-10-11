@@ -436,6 +436,7 @@ struct RunReceipt {
     std::string stage;
     std::string gameSha, bootstrapSha, probeMapSha, probeScriptSha;
     std::string probeGraphicsBackendRequested;
+    bool minimizedNoActivateRequested = false;
     std::vector<std::wstring> gameArgv;
     bool Write() {
         if (file == INVALID_HANDLE_VALUE) return false;
@@ -461,6 +462,7 @@ struct RunReceipt {
             const auto& owned = evidence->ownedLua;
             json += ",\"ownedLua\":{\"mapSha256\":" + Json(owned.mapSha256) + ",\"nonce\":" + Json(owned.nonce);
             json += ",\"observerInstalled\":" + std::string(flag(owned.observerInstalled != 0));
+            json += ",\"minimizedNoActivateRequested\":" + std::string(flag(minimizedNoActivateRequested));
             json += ",\"ready\":" + std::string(flag(owned.ready != 0));
             json += ",\"mainThreadId\":" + std::to_string(owned.mainThreadId) + ",\"nativeCount\":" + std::to_string(owned.nativeCount);
             json += ",\"modules\":" + std::to_string(owned.modules) + ",\"callbacks\":" + std::to_string(owned.callbacks);
@@ -656,6 +658,7 @@ int Run(int argc, wchar_t** argv) {
     ProbeDesktopWitness witness;
     ProbeWindowDiagnostics windowDiagnostics; windowDiagnostics.requested = windowDiagnosticsRequested;
     RunReceipt result; result.file = output.value; result.witness = &witness; result.windowDiagnostics = &windowDiagnostics;
+    result.minimizedNoActivateRequested = owned && ownedTimeout != 0;
     if (probe) result.probeGraphicsBackendRequested = probeRenderer.empty() ? "game-default" : "opengl";
     const auto fail = [&](const char* stage, DWORD error = GetLastError()) {
         result.stage = stage; result.error = error; result.bridgeExit = kRuntimeFailure;
@@ -770,6 +773,12 @@ int Run(int argc, wchar_t** argv) {
     for (std::size_t index = 1; index < result.gameArgv.size(); ++index)
         command += L" " + (index + 1 == result.gameArgv.size() ? Quote(result.gameArgv[index]) : result.gameArgv[index]);
     STARTUPINFOEXW startup{}; startup.StartupInfo.cb = sizeof(startup); startup.lpAttributeList = attributes.value;
+    if (result.minimizedNoActivateRequested) {
+        // 显式观察窗口供无人值守开发验证；普通 F9 没有观察期限，不改变其窗口显示。
+        // 此处只请求最小化且不激活，不能把它当成游戏不抢焦点的运行证据。
+        startup.StartupInfo.dwFlags |= STARTF_USESHOWWINDOW;
+        startup.StartupInfo.wShowWindow = SW_SHOWMINNOACTIVE;
+    }
     if (!desktop.empty()) startup.StartupInfo.lpDesktop = desktop.data();
     PROCESS_INFORMATION process{};
     if (!CreateProcessW(game.c_str(), command.data(), nullptr, nullptr, TRUE, CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
