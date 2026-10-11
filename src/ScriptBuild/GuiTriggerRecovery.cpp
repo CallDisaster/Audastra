@@ -1,5 +1,6 @@
 #include "War3MapCore/Script/MapScript.h"
 
+#include "GuiTriggerSource.h"
 #include "ScriptNames.h"
 #include "YDTriggerStorage.h"
 #include "War3MapCore/Trigger/TriggerCodeEditing.h"
@@ -211,19 +212,6 @@ public:
         for (const auto* definition : catalog.Definitions(UiDefinitionKind::Event)) events_[ScriptNameOf(*definition)].push_back(definition);
         for (const auto* definition : catalog.Definitions(UiDefinitionKind::Condition)) conditions_[ScriptNameOf(*definition)].push_back(definition);
         for (const auto* definition : catalog.Definitions(UiDefinitionKind::Action)) actions_[ScriptNameOf(*definition)].push_back(definition);
-        for (const auto* definition : catalog.Definitions(UiDefinitionKind::Define)) {
-            if (definition->group != "TriggerParams") continue;
-            const auto type = types_.PresetType(definition->name);
-            const auto value = Field(*definition, "value");
-            if (!type || value.empty()) continue;
-            const auto parts = detail::SplitDefineValue(value);
-            if (parts.size() < 3 || parts[2].empty()) continue;
-            std::string script = parts[2];
-            std::replace(script.begin(), script.end(), '`', '"');
-            std::vector<Line> lines; std::size_t bad = 0;
-            if (!Lex(script, lines, bad) || lines.size() != 1) continue;
-            presets_[*type].push_back({std::move(lines.front().tokens), definition->name});
-        }
         for (const auto& variable : document.variables) variables_.emplace(variable.name.text, &variable);
     }
 
@@ -313,6 +301,7 @@ public:
 
     std::size_t FailLine() const { return failLine_; }
     const std::string& FailReason() const { return failReason_; }
+    const Trigger::TriggerTypeSystem& Types() const { return types_; }
 
 private:
     struct Function {
@@ -396,6 +385,33 @@ private:
         }
         return found->second;
     }
+    const std::vector<Preset>& Presets(const std::string& type) {
+        const auto [found, added] = presets_.try_emplace(type);
+        if (!added) return found->second;
+        if (!presetDefinitionsReady_) {
+            // 仍按 Definitions 的稳定顺序分组。只记本次调用持有的定义，未用类型不分词。
+            for (const auto* definition : catalog_.Definitions(UiDefinitionKind::Define)) {
+                if (definition->group != "TriggerParams") continue;
+                const auto presetType = types_.PresetType(definition->name);
+                if (presetType) presetDefinitions_[*presetType].push_back(definition);
+            }
+            presetDefinitionsReady_ = true;
+        }
+        const auto definitions = presetDefinitions_.find(type);
+        if (definitions == presetDefinitions_.end()) return found->second;
+        for (const auto* definition : definitions->second) {
+            const auto value = Field(*definition, "value");
+            if (value.empty()) continue;
+            const auto parts = detail::SplitDefineValue(value);
+            if (parts.size() < 3 || parts[2].empty()) continue;
+            std::string script = parts[2];
+            std::replace(script.begin(), script.end(), '`', '"');
+            std::vector<Line> lines; std::size_t bad = 0;
+            if (!Lex(script, lines, bad) || lines.size() != 1) continue;
+            found->second.push_back({std::move(lines.front().tokens), definition->name});
+        }
+        return found->second;
+    }
     const std::vector<const UiDefinition*>& OperatorDefinitions(bool comparison) {
         auto& ready = comparison ? comparisonDefinitionsReady_ : binaryDefinitionsReady_;
         auto& definitions = comparison ? comparisonDefinitions_ : binaryDefinitions_;
@@ -447,9 +463,8 @@ private:
         if (slot == "boolexpr" || slot == "boolcall" || slot == "code") return FunctionValue(t, b, e, slot);
         if (slot == "eventcall") return std::nullopt;
         if (slot == "scriptcode") { PArg arg; arg.value = raw.empty() ? Text(t, b, e) : std::string(raw); return arg; }
-        if (const auto found = presets_.find(slot); found != presets_.end())
-            for (const auto& preset : found->second)
-                if (SameTokens(t, b, e, preset.script)) { score += 2; PArg arg; arg.type = 0; arg.value = preset.name; return arg; }
+        for (const auto& preset : Presets(slot))
+            if (SameTokens(t, b, e, preset.script)) { score += 2; PArg arg; arg.type = 0; arg.value = preset.name; return arg; }
         const auto kind = types_.LiteralKind(slot);
         using Literal = Trigger::TriggerTypeSystem::Literal;
         const auto literal = [&](std::string value) -> std::optional<PArg> {
@@ -1142,6 +1157,8 @@ private:
     std::unordered_map<const UiDefinition*, DefinitionInfo> definitionInfo_;
     std::vector<const UiDefinition*> binaryDefinitions_, comparisonDefinitions_;
     bool binaryDefinitionsReady_ = false, comparisonDefinitionsReady_ = false;
+    std::unordered_map<std::string, std::vector<const UiDefinition*>> presetDefinitions_;
+    bool presetDefinitionsReady_ = false;
     std::unordered_map<std::string, std::vector<Preset>> presets_;
     std::unordered_map<std::string, const Trigger::VariableRecord*> variables_;
     std::unordered_map<std::string, Function> functions_;
@@ -1199,13 +1216,14 @@ Status Mismatch(std::size_t line, std::string reason) {
 
 // 候选回生成并与正文核对；一致才算可转回。
 Status Verify(const MapScriptInputs& inputs, const Trigger::TriggerRecord& record, const Trigger::GuiTriggerFragment& fragment,
-    std::string_view text, GuiTriggerRecoveryProfile* profile) {
+    std::string_view text, GuiTriggerRecoveryProfile* profile, const Trigger::TriggerTypeSystem* sharedTypes = nullptr) {
     auto probe = RecoveryPhase(profile, GuiTriggerRecoveryProfile::Phase::Probe, [&] {
         return Trigger::TriggerCodeEditor::RecoveryProbe(*inputs.triggers, *inputs.catalog, record.id, fragment);
     });
     if (!probe.Succeeded() || !probe.value) return {std::move(probe.diagnostics)};
     auto probeInputs = inputs; probeInputs.triggers = &*probe.value;
     auto generated = RecoveryPhase(profile, GuiTriggerRecoveryProfile::Phase::Generate, [&] {
+        if (sharedTypes) return detail::GenerateGuiTriggerSourceWithTypes(probeInputs, record.id, *sharedTypes);
         return GenerateGuiTriggerSource(probeInputs, record.id);
     });
     if (!generated.Succeeded() || !generated.value) return {std::move(generated.diagnostics)};
@@ -1255,7 +1273,8 @@ Result<GuiTriggerRecovery> RecoverGuiTrigger(const MapScriptInputs& inputs, Stab
         auto fragment = RecoveryPhase(profile, GuiTriggerRecoveryProfile::Phase::Parse, [&] { return parser.Parse(text); });
         if (profile) profile->parserProducedCandidate = fragment.has_value();
         if (!fragment) return {std::nullopt, Mismatch(parser.FailLine(), parser.FailReason()).diagnostics};
-        if (auto verified = Verify(inputs, *record, *fragment, text, profile); !verified.Succeeded()) return {std::nullopt, std::move(verified.diagnostics)};
+        if (auto verified = Verify(inputs, *record, *fragment, text, profile, &parser.Types()); !verified.Succeeded())
+            return {std::nullopt, std::move(verified.diagnostics)};
         GuiTriggerRecovery recovery; recovery.fragment = std::move(*fragment);
         for (const auto& eca : recovery.fragment.ecas) {
             if (eca.name.text == "CustomScriptCode") ++recovery.preservedCodeLines;

@@ -6,6 +6,7 @@
 #include "War3MapCore/Trigger/GuiConversionSnapshots.h"
 
 #include <Windows.h>
+#include <algorithm>
 #include <filesystem>
 #include <functional>
 #include <fstream>
@@ -329,6 +330,76 @@ void RepeatedOperatorsKeepCatalogOrder(const std::filesystem::path& root, const 
     check(originalCatalog, "OperatorInt", "OperatorCompareInteger");
     check(aliasedCatalog, "AArithmeticFirst", "AComparisonFirst");
     check(originalCatalog, "OperatorInt", "OperatorCompareInteger");
+}
+
+void PresetsKeepTypeOrderAndCurrentCatalog(const std::filesystem::path& root) {
+    Write(root / "ui/preset-order/define.txt",
+        "[TriggerTypes]\nRouteKind=0,0,0,Route\nOtherKind=0,0,0,Other\nUnusedKind=0,0,0,Unused\n"
+        "[TriggerParams]\nARouteBroken=0,RouteKind,`,Broken\n"
+        "BRouteFirst=0,RouteKind,ROUTE_A,First\nZRouteAlias=0,RouteKind,ROUTE_A,Alias\n"
+        "AOtherFirst=0,OtherKind,ROUTE_A,Other\nAQuoted=0,string,`(original)`,Quoted\n"
+        "UnusedBroken=0,UnusedKind,`,Unused\n");
+    Write(root / "ui/preset-order/action.txt", "[ChoosePreset]\ntitle=\"Choose\"\n"
+        "[[.args]]\ntype=RouteKind\n[[.args]]\ntype=OtherKind\n[[.args]]\ntype=string\n");
+    const std::vector<std::string> originalLayers{"base", "shapes", "preset-order"};
+    const auto originalCatalog = Take(UiCatalog::LoadLayers(root, originalLayers));
+    Write(root / "ui/preset-changed/define.txt", "[TriggerParams]\n"
+        "BRouteFirst=0,RouteKind,ROUTE_B,First\nZRouteAlias=0,RouteKind,ROUTE_B,Alias\n"
+        "AQuoted=0,string,`(changed)`,Quoted\n");
+    const std::vector<std::string> changedLayers{"base", "shapes", "preset-order", "preset-changed"};
+    const auto changedCatalog = Take(UiCatalog::LoadLayers(root, changedLayers));
+    Builder b;
+    for (int row = 0; row < 4; ++row)
+        b.fragment.roots.push_back(b.Eca(2, "ChoosePreset", {b.Arg(0, "ZRouteAlias"), b.Arg(0, "AOtherFirst"), b.Arg(0, "AQuoted")}));
+    const auto check = [&](const UiCatalog& catalog, std::string_view route, std::string_view quoted) {
+        auto fixture = FragmentFixture(catalog, b.fragment);
+        const auto original = Wire(fixture.document, catalog);
+        Script::MapScriptInputs inputs; inputs.triggers = &fixture.document; inputs.catalog = &catalog;
+        const auto source = Take(Script::GenerateGuiTriggerSource(inputs, fixture.id));
+        Require(source.text.find(route) != std::string::npos && source.text.find(quoted) != std::string::npos,
+            "测试库必须生成当前层的预设值。");
+        const auto conversion = Take(TriggerCodeEditor::PrepareConversion(fixture.document, catalog, fixture.id,
+            source.text, source.effectiveRunOnInit));
+        const auto converted = Take(TriggerCodeEditor::Apply(fixture.document, catalog, conversion));
+        const auto recovered = Take(Recover(fixture, catalog));
+        Require(!recovered.fromSnapshot && recovered.preservedCodeLines == 0 && recovered.preservedCodeExpressions == 0,
+            "预设应按真实参数类型完整恢复，不应变为保留代码。");
+        Require(recovered.fragment.roots.size() == 4, "重复预设动作不能遗漏。");
+        for (const auto index : recovered.fragment.roots) {
+            const auto& eca = recovered.fragment.ecas[index];
+            Require(eca.name.text == "ChoosePreset" && eca.arguments.size() == 3, "恢复预设动作的参数槽不能改变。");
+            std::size_t slot = 0;
+            for (const auto name : {"BRouteFirst", "AOtherFirst", "AQuoted"}) {
+                const auto& argument = recovered.fragment.arguments[eca.arguments[slot++]];
+                Require(argument.type == 0 && argument.value.text == name,
+                    "须跳过坏预设，并按当前参数类型选同词候选中排序最前者。");
+            }
+        }
+        const auto plan = Take(TriggerCodeEditor::PrepareRecovery(fixture.document, catalog, fixture.id, recovered.fragment));
+        const auto applied = Take(TriggerCodeEditor::Apply(fixture.document, catalog, plan));
+        Require(Take(Script::GenerateGuiTriggerSource(inputs, fixture.id)).text == source.text,
+            "借用类型目录回生成与独立准备目录的生产生成结果须一致。");
+        Check(TriggerCodeEditor::Replay(fixture.document, catalog, applied, false));
+        Check(TriggerCodeEditor::Replay(fixture.document, catalog, converted, false));
+        const auto restored = Wire(fixture.document, catalog);
+        Require(restored.wtg == original.wtg && restored.wct == original.wct, "预设别名转回后全部撤销须逐字节恢复。");
+
+        Convert(fixture, catalog);
+        const auto changedAt = source.text.find(route);
+        const auto line = std::count(source.text.begin(), source.text.begin() + static_cast<std::ptrdiff_t>(changedAt), '\n') + 1;
+        SetText(fixture, catalog, Replace(source.text, route, "MISSING_ROUTE"));
+        const auto beforeRejected = Wire(fixture.document, catalog);
+        const auto rejected = Recover(fixture, catalog);
+        Require(!rejected.Succeeded() && !rejected.diagnostics.empty()
+            && rejected.diagnostics.front().message.find("第 " + std::to_string(line) + " 行") != std::string::npos,
+            "不存在的预设仍须拒绝并指向作者改动的原行。");
+        const auto afterRejected = Wire(fixture.document, catalog);
+        Require(beforeRejected.wtg == afterRejected.wtg && beforeRejected.wct == afterRejected.wct,
+            "预设恢复失败不能改写正文。");
+    };
+    check(originalCatalog, "ROUTE_A", "\"(original)\"");
+    check(changedCatalog, "ROUTE_B", "\"(changed)\"");
+    check(originalCatalog, "ROUTE_A", "\"(original)\"");
 }
 
 void YdweStructuredShapes(const UiCatalog& catalog) {
@@ -672,6 +743,7 @@ int main() {
         Rejections(catalog);
         SnapshotRestoresDisabledLines(catalog);
         RepeatedOperatorsKeepCatalogOrder(root, catalog);
+        PresetsKeepTypeOrderAndCurrentCatalog(root);
         YdweStructuredShapes(catalog);
         YdweStorageIsHonestPartialRecovery(catalog);
         ProjectSnapshotsBindSourceAndDocument(catalog);
