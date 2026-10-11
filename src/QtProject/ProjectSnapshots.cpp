@@ -113,6 +113,8 @@ std::string EditorProject::ProjectFingerprint(std::span<const std::string> impor
         if (!encoded.Succeeded() || !encoded.value) return {};
         hash.addData(Array(encoded.value->wtg)); hash.addData(Array(encoded.value->wct));
     }
+    add("gui-conversion-snapshots:" + (triggerDocument_ && uiCatalog_
+        ? guiConversionSnapshots_.ActiveFingerprint(*triggerDocument_, *uiCatalog_) : std::string{}));
     for (std::size_t index = 0; index < pendingImports_.size(); ++index) {
         const auto& entry = pendingImports_[index];
         add(entry.archivePath.toStdString());

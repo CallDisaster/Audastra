@@ -18,6 +18,7 @@
 #include "War3MapCore/ProjectStore.h"
 #include "War3MapCore/Script/ScriptToolchainProfile.h"
 #include "War3MapCore/Services/MapScriptTargetSelection.h"
+#include "War3MapCore/Trigger/GuiConversionSnapshots.h"
 
 #include <array>
 #include <filesystem>
@@ -394,6 +395,7 @@ public:
     std::uint64_t luaMapTargetGeneration_ = 0;
     std::unique_ptr<Trigger::UiCatalog> uiCatalog_;
     std::unique_ptr<Trigger::TriggerDocument> triggerDocument_;
+    Trigger::GuiConversionSnapshots guiConversionSnapshots_;
     QUndoStack* triggerUndoStack_ = nullptr;
     bool triggerDirty_ = false;
     bool restoredTriggerOverlay_ = false;

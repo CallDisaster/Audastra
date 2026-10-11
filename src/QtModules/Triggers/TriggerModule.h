@@ -5,6 +5,7 @@
 #include "War3MapCore/Trigger/TriggerDirectory.h"
 #include "War3MapCore/Script/MapScript.h"
 #include "War3MapCore/Trigger/TriggerCodeEditing.h"
+#include "War3MapCore/Trigger/GuiConversionSnapshots.h"
 #include "War3MapCore/Trigger/TriggerPresentation.h"
 #include "War3MapCore/Types.h"
 
@@ -177,7 +178,8 @@ private:
     void PopulateProperties(const Trigger::TriggerRecord* trigger);
     void CommitProperties();
     bool CommitCodeDraft();
-    bool ApplyCodePlan(const Trigger::TriggerCodeEditPlan& plan, const QString& label);
+    bool ApplyCodePlan(const Trigger::TriggerCodeEditPlan& plan, const QString& label,
+        Trigger::GuiConversionSnapshots::PreparedSnapshot snapshot = {});
     void LoadCodeTarget(Trigger::CodeBlockTarget target);
     void RefreshCodeFromDocument();
     void UpdateCodeDraftState();
@@ -315,7 +317,6 @@ private:
     QPushButton* convertCodeButton_ = nullptr;
     QPushButton* recoverCodeButton_ = nullptr;
     // 本次会话转换为代码前的 GUI 快照，按触发器身份保存；文档释放时清空。
-    std::unordered_map<StableId, Trigger::GuiTriggerFragment> convertedSnapshots_;
     QLabel* codeDraftNote_ = nullptr;
     std::optional<Trigger::CodeBlockTarget> codeTarget_;
     std::optional<Trigger::TriggerCodeEditPlan> codeBaselinePlan_;

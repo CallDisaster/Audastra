@@ -686,6 +686,7 @@ private slots:
     void LuaMapTargetOnlyInPlaceSaveWritesCopyAndBacksUp();
     void DirectoryProjectAndInvalidOpenPreserveEdits();
     void CodeDraftDirectoryCtrlSSavesProject();
+    void GuiConversionSnapshotSurvivesProjectReopen();
     void CodeDraftFailureKeepsSourceAndExplicitDiscardWorks();
     void IncompleteLuaDraftSurvivesApplyHostRecoveryAndMapGate();
     void MapDataOnlyChangesProduceAutomaticRecovery();
@@ -5959,6 +5960,119 @@ void NativeWorkbenchTests::CodeDraftDirectoryCtrlSSavesProject() {
     auto reopened = War3Map::Trigger::WtgWctCodec{}.Parse(*savedWtg.value, *savedWct.value, *window.project_->uiCatalog_);
     QVERIFY(reopened.Succeeded());
     QCOMPARE(reopened.value->wct.customCode.text, window.project_->triggerDocument_->wct.customCode.text);
+}
+
+void NativeWorkbenchTests::GuiConversionSnapshotSurvivesProjectReopen() {
+    QTemporaryDir fixture; QVERIFY(fixture.isValid());
+    const auto root = fixture.filePath("snapshot-workspace");
+    QVERIFY(WriteText(root + "/ui/config", "base\n"));
+    QVERIFY(WriteText(root + "/ui/base/action.txt", "[DoNothing]\n"));
+    auto catalog = War3Map::Trigger::UiCatalog::Load(NativePath(root)); QVERIFY(catalog.Succeeded());
+    auto document = War3Map::Trigger::WtgWctCodec{}.CreateEmpty(*catalog.value); QVERIFY(document.Succeeded());
+    const auto category = War3Map::Trigger::TriggerDirectoryEditor::AddCategory(*document.value, "Synthetic"); QVERIFY(category.Succeeded());
+    auto plan = War3Map::Trigger::TriggerCodeEditor::PrepareNewCustom(*document.value, *catalog.value,
+        document.value->categories.front().categoryId, "SnapshotExample"); QVERIFY(plan.Succeeded());
+    QVERIFY(War3Map::Trigger::TriggerCodeEditor::Apply(*document.value, *catalog.value, *plan.value).Succeeded());
+    War3Map::Trigger::GuiTriggerFragment fragment;
+    War3Map::Trigger::EcaNode disabled; disabled.type = 2; disabled.name.text = "DoNothing"; disabled.enabled = 0;
+    fragment.ecas.push_back(disabled); fragment.roots.push_back(0);
+    const auto id = plan.value->Target().triggerId;
+    auto gui = War3Map::Trigger::TriggerCodeEditor::PrepareRecovery(*document.value, *catalog.value, id, fragment); QVERIFY(gui.Succeeded());
+    QVERIFY(War3Map::Trigger::TriggerCodeEditor::Apply(*document.value, *catalog.value, *gui.value).Succeeded());
+    const auto original = War3Map::Trigger::WtgWctCodec{}.Serialize(*document.value, *catalog.value); QVERIFY(original.Succeeded());
+    const auto bytes = [](const auto& data) { return QByteArray(reinterpret_cast<const char*>(data.data()), static_cast<qsizetype>(data.size())); };
+    QVERIFY(WriteText(root + "/map/war3map.wtg", bytes(original.value->wtg)));
+    QVERIFY(WriteText(root + "/map/war3map.wct", bytes(original.value->wct)));
+    MainWindow window(MainWindow::StartupMode::HeadlessProbe);
+    QVERIFY(window.OpenWorkspacePath(NativePath(root)));
+    window.triggersModule_->SetConfirmHandler([](const auto&, const auto&, const auto&) { return true; });
+    QVERIFY(window.triggersModule_->Reveal({"triggers", "trigger", "SnapshotExample", {}}));
+    const auto initialFingerprint = window.project_->ProjectFingerprint(); QVERIFY(!initialFingerprint.empty());
+    QVERIFY(window.triggersModule_->ConvertCurrentTriggerToCustomCode());
+    const auto codeFingerprint = window.project_->ProjectFingerprint(); QVERIFY(codeFingerprint != initialFingerprint);
+    window.project_->triggerUndoStack_->undo();
+    QVERIFY(window.project_->guiConversionSnapshots_.Empty());
+    QCOMPARE(window.project_->ProjectFingerprint(), initialFingerprint);
+    window.project_->triggerUndoStack_->redo();
+    QCOMPARE(window.project_->ProjectFingerprint(), codeFingerprint);
+    const auto codeWire = War3Map::Trigger::WtgWctCodec{}.Serialize(*window.project_->triggerDocument_, *window.project_->uiCatalog_);
+    QVERIFY(codeWire.Succeeded());
+    const auto projectPath = NativePath(fixture.filePath("snapshot.forge"));
+    QVERIFY(window.SaveEditorProjectToPath(projectPath));
+    auto archive = War3Map::MapArchiveSession::Open(projectPath); QVERIFY(archive.Succeeded());
+    QVERIFY(archive.value->HasMember("overlay/editor/gui-conversion-snapshots.bin"));
+    MainWindow restored(MainWindow::StartupMode::HeadlessProbe);
+    QVERIFY(restored.OpenEditorProjectPath(projectPath));
+    QVERIFY(!restored.project_->guiConversionSnapshots_.Empty());
+    restored.triggersModule_->SetConfirmHandler([](const auto&, const auto&, const auto&) { return true; });
+    QVERIFY(restored.triggersModule_->Reveal({"triggers", "trigger", "SnapshotExample", {}}));
+    QVERIFY(restored.triggersModule_->ConvertCurrentCodeToTrigger());
+    const auto recovered = War3Map::Trigger::WtgWctCodec{}.Serialize(*restored.project_->triggerDocument_, *restored.project_->uiCatalog_);
+    QVERIFY(recovered.Succeeded());
+    QCOMPARE(recovered.value->wtg, original.value->wtg); QCOMPARE(recovered.value->wct, original.value->wct);
+    restored.project_->triggerUndoStack_->undo();
+    QVERIFY(restored.triggersModule_->ConvertCurrentCodeToTrigger()); // 恢复后撤销不丢快照。
+    QCOMPARE(ReadFile(NativePath(root + "/map/war3map.wtg")), bytes(original.value->wtg));
+    QCOMPARE(ReadFile(NativePath(root + "/map/war3map.wct")), bytes(original.value->wct));
+    // 损坏边车在切换会话前拒绝，原来已经恢复的编辑仍保留。
+    std::vector<War3Map::MapArchiveMember> members(archive.value->Members().begin(), archive.value->Members().end());
+    for (auto& member : members) if (member.name == "overlay/editor/gui-conversion-snapshots.bin") member.data.pop_back();
+    const auto bad = NativePath(fixture.filePath("broken-snapshot.forge"));
+    QVERIFY(War3Map::WriteVerifiedArchive(bad, members).Succeeded());
+    auto* current = restored.project_->triggerDocument_.get();
+    QVERIFY(!restored.OpenEditorProjectPath(bad)); QCOMPARE(restored.project_->triggerDocument_.get(), current);
+    const auto missing = NativePath(fixture.filePath("absent/failed.forge"));
+    QVERIFY(!restored.SaveEditorProjectToPath(missing));
+    QVERIFY(!restored.project_->guiConversionSnapshots_.Empty());
+
+    // 原创的代码态地图与工程快照。普通地图保存不携带快照；同一会话继续保存 .forge 仍需保留它。
+    // 此处只改导入文本，走现有纯数据保存链，不以合成脚本冒充编译器或游戏验收。
+    const auto mapSource = NativePath(fixture.filePath("snapshot-source.w3x"));
+    const std::vector<War3Map::MapArchiveMember> mapMembers{
+        {"war3map.wtg", codeWire.value->wtg}, {"war3map.wct", codeWire.value->wct},
+        {"war3map.j", Bytes("// original synthetic script\n")}};
+    QVERIFY(War3Map::WriteVerifiedArchive(mapSource, mapMembers).Succeeded());
+    const auto sourceBytes = ReadFile(mapSource);
+    MainWindow mapWindow(MainWindow::StartupMode::HeadlessProbe);
+    QVERIFY(mapWindow.UseUiDataRoot(NativePath(root)));
+    QVERIFY(mapWindow.OpenMapArchivePath(mapSource));
+    QVERIFY(mapWindow.project_->triggerDocument_ && mapWindow.project_->uiCatalog_);
+    mapWindow.project_->compilerDataRoot_ = NativePath(fixture.filePath("missing-toolchain"));
+    const auto sourceIdentity = "archive:" + mapWindow.project_->archiveSession_->SourceSha256();
+    const auto transport = window.project_->guiConversionSnapshots_.Serialize(*window.project_->triggerDocument_,
+        *window.project_->uiCatalog_, sourceIdentity); QVERIFY(transport.Succeeded());
+    auto mapSnapshots = War3Map::Trigger::GuiConversionSnapshots::Parse(*transport.value,
+        *mapWindow.project_->triggerDocument_, *mapWindow.project_->uiCatalog_, sourceIdentity); QVERIFY(mapSnapshots.Succeeded());
+    mapWindow.project_->guiConversionSnapshots_ = std::move(*mapSnapshots.value);
+    const auto beforeMapProject = NativePath(fixture.filePath("before-map-save.forge"));
+    QVERIFY(mapWindow.SaveEditorProjectToPath(beforeMapProject));
+    const auto imported = fixture.filePath("snapshot-note.txt"); QVERIFY(WriteText(imported, "original imported note"));
+    mapWindow.assetsModule_->AddFiles({imported});
+    QVERIFY(mapWindow.project_->HasPendingAssetEdits());
+    const auto mapCopy = NativePath(fixture.filePath("snapshot-saved.w3x"));
+    QVERIFY2(mapWindow.SaveMapArchiveToPath(mapCopy), qPrintable(LastMapSaveDiagnostics(*mapWindow.project_->diagnosticsModel_)));
+    QCOMPARE(ReadFile(mapSource), sourceBytes);
+    const auto savedMap = War3Map::MapArchiveSession::Open(mapCopy); QVERIFY(savedMap.Succeeded());
+    QVERIFY(savedMap.value->SourceSha256() != sourceIdentity.substr(std::string("archive:").size()));
+    QVERIFY(!savedMap.value->HasMember("overlay/editor/gui-conversion-snapshots.bin"));
+    const auto mapId = mapWindow.project_->triggerDocument_->triggers.front().id;
+    QVERIFY(mapWindow.project_->guiConversionSnapshots_.Find(*mapWindow.project_->triggerDocument_, *mapWindow.project_->uiCatalog_, mapId));
+    const auto resavedProject = NativePath(fixture.filePath("after-map-save.forge"));
+    QVERIFY(mapWindow.SaveEditorProjectToPath(resavedProject));
+    MainWindow mapRestored(MainWindow::StartupMode::HeadlessProbe);
+    QVERIFY(mapRestored.OpenEditorProjectPath(resavedProject));
+    const auto savedCodeFingerprint = mapRestored.project_->ProjectFingerprint();
+    mapRestored.triggersModule_->SetConfirmHandler([](const auto&, const auto&, const auto&) { return true; });
+    QVERIFY(mapRestored.triggersModule_->Reveal({"triggers", "trigger", "SnapshotExample", {}}));
+    QVERIFY(mapRestored.triggersModule_->ConvertCurrentCodeToTrigger());
+    const auto mapRecovered = War3Map::Trigger::WtgWctCodec{}.Serialize(*mapRestored.project_->triggerDocument_, *mapRestored.project_->uiCatalog_);
+    QVERIFY(mapRecovered.Succeeded());
+    QCOMPARE(mapRecovered.value->wtg, original.value->wtg); QCOMPARE(mapRecovered.value->wct, original.value->wct);
+    mapRestored.project_->triggerUndoStack_->undo();
+    QCOMPARE(mapRestored.project_->ProjectFingerprint(), savedCodeFingerprint);
+    mapRestored.project_->triggerUndoStack_->redo();
+    QVERIFY(mapRestored.project_->guiConversionSnapshots_.ActiveFingerprint(
+        *mapRestored.project_->triggerDocument_, *mapRestored.project_->uiCatalog_).empty());
 }
 
 void NativeWorkbenchTests::IncompleteLuaDraftSurvivesApplyHostRecoveryAndMapGate() {
