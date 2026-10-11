@@ -22,7 +22,7 @@ class AssetPropertiesDialog final : public QDialog {
 public:
     // check 返回新路径的问题（空 = 可用）；disabledIconState 为按钮图标的暂停图标说明（非按钮图标为空）。
     AssetPropertiesDialog(const QtProject::AssetEntry& entry, std::function<QString(const QString&)> check,
-        const QString& disabledIconState, QWidget* parent = nullptr, bool directorySource = false);
+        const QString& disabledIconState, QWidget* parent = nullptr, bool directorySource = false, bool campaignSource = false);
 
     [[nodiscard]] QString Path() const;
 
@@ -31,6 +31,7 @@ private:
 
     QString original_;
     QString fileName_;
+    QString standardFolder_;
     std::function<QString(const QString&)> check_;
     QCheckBox* custom_ = nullptr;
     QLineEdit* path_ = nullptr;

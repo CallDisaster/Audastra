@@ -140,6 +140,7 @@ void MainWindow::BuildHeader() {
     fileMenu->addAction(saveProjectAction_);
     RegisterCommandAction("file.save.project", saveProjectAction_, tr("工程"));
     auto* saveAs = fileMenu->addAction(tr("另存工程…"), this, &MainWindow::SaveEditorProjectAs);
+    saveAs->setObjectName("saveEditorProjectAsAction");
     RegisterCommandAction("file.save.project.copy", saveAs, tr("工程"));
     fileMenu->addSeparator();
     buildMapAction_ = fileMenu->addAction(tr("构建地图"), this, &MainWindow::CheckGameBuild);

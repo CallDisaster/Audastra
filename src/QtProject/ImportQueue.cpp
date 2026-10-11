@@ -60,7 +60,9 @@ int EditorProject::AddImportFiles(AssetState& state, const QStringList& diskPath
         }
         PendingImport entry;
         entry.diskPath = QDir::toNativeSeparators(path);
-        entry.archivePath = folder.isEmpty() ? SuggestImportPath(path) : folder + QLatin1Char('\\') + info.fileName();
+        entry.archivePath = folder.isEmpty()
+            ? (campaignScope_ ? QStringLiteral("war3campaignImported\\") + info.fileName() : SuggestImportPath(path))
+            : folder + QLatin1Char('\\') + info.fileName();
         entry.size = info.size();
         // 同一归档路径（大小写与斜杠等价）只保留最后一次选择。
         const auto previous = std::find_if(state.imports.begin(), state.imports.end(), [&entry](const auto& value) {

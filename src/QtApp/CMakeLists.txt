@@ -11,6 +11,7 @@ qt_add_executable(war3-map-editor WIN32
     LiveObjectTools.cpp
     LiveObjectTools.h
     MapDropActions.cpp
+    CampaignActions.cpp
     MainWindow.h
     MainWindowChrome.cpp
     MainWindowCommands.cpp
@@ -80,6 +81,7 @@ target_link_libraries(war3-map-editor
         War3MapEditor::Trigger
         War3MapEditor::QtModuleVariables
         War3MapEditor::QtModuleAssets
+        War3MapEditor::QtModuleCampaign
         War3MapEditor::QtModuleTriggers
         War3MapEditor::QtModuleObjects
         War3MapEditor::QtModuleManager

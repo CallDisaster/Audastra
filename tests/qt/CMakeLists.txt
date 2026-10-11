@@ -420,12 +420,14 @@ target_link_libraries(war3-map-native-workbench-tests PRIVATE War3MapEditor::QtM
 target_link_libraries(war3-map-native-workbench-tests PRIVATE War3MapEditor::QtModuleMapSettings)
 target_link_libraries(war3-map-native-workbench-tests PRIVATE War3MapEditor::QtModuleSounds)
 target_link_libraries(war3-map-native-workbench-tests PRIVATE War3MapEditor::QtModuleWorld)
+target_link_libraries(war3-map-native-workbench-tests PRIVATE War3MapEditor::QtModuleCampaign)
 
 target_link_libraries(war3-map-project-watch-tests PRIVATE War3MapEditor::QtProject)
 target_link_libraries(war3-map-project-watch-tests PRIVATE War3MapEditor::QtModuleMapEntities)
 target_link_libraries(war3-map-project-watch-tests PRIVATE War3MapEditor::QtModuleMapSettings)
 target_link_libraries(war3-map-project-watch-tests PRIVATE War3MapEditor::QtModuleSounds)
 target_link_libraries(war3-map-project-watch-tests PRIVATE War3MapEditor::QtModuleWorld)
+target_link_libraries(war3-map-project-watch-tests PRIVATE War3MapEditor::QtModuleCampaign)
 
 qt_add_executable(war3-map-world-module-tests WorldModuleTests.cpp)
 target_link_libraries(war3-map-world-module-tests PRIVATE War3MapEditor::QtModuleWorld
@@ -547,6 +549,13 @@ set_tests_properties(qt-variables-module PROPERTIES TIMEOUT 40
 # 资源模块：导入队列去重 / 移除 / 清空、标签切换、在真实 Shell 中移动保持同一控件。
 qt_add_executable(war3-map-assets-module-tests AssetsModuleTests.cpp)
 target_link_libraries(war3-map-assets-module-tests PRIVATE War3MapEditor::QtModuleAssets Qt6::Test)
+qt_add_executable(war3-map-campaign-module-tests CampaignModuleTests.cpp)
+target_link_libraries(war3-map-campaign-module-tests PRIVATE War3MapEditor::QtModuleCampaign Qt6::Test)
+target_compile_definitions(war3-map-campaign-module-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(war3-map-campaign-module-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME qt-campaign-module COMMAND war3-map-campaign-module-tests)
+set_tests_properties(qt-campaign-module PROPERTIES TIMEOUT 120 ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 target_compile_options(war3-map-assets-module-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME qt-assets-module COMMAND war3-map-assets-module-tests)
 set_tests_properties(qt-assets-module PROPERTIES TIMEOUT 40

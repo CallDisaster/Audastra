@@ -13,16 +13,10 @@
 
 namespace War3Map::Modules {
 
-namespace {
-
-constexpr char kStandardFolder[] = "war3mapImported\\";
-
-} // namespace
-
 AssetPropertiesDialog::AssetPropertiesDialog(const QtProject::AssetEntry& entry,
-    std::function<QString(const QString&)> check, const QString& disabledIconState, QWidget* parent, bool directorySource)
+    std::function<QString(const QString&)> check, const QString& disabledIconState, QWidget* parent, bool directorySource, bool campaignSource)
     : QDialog(parent), original_(AssetsDetail::Normalized(entry.path)), fileName_(AssetsDetail::FileName(entry.path)),
-      check_(std::move(check)) {
+      standardFolder_(campaignSource ? "war3campaignImported\\" : "war3mapImported\\"), check_(std::move(check)) {
     setObjectName("assetPropertiesDialog");
     setWindowTitle(tr("导入文件属性"));
     setMinimumWidth(520);
@@ -33,6 +27,7 @@ AssetPropertiesDialog::AssetPropertiesDialog(const QtProject::AssetEntry& entry,
     form->addRow(tr("大小："), new QLabel(AssetsDetail::SizeText(entry.size), this));
     auto* source = new QLabel(entry.ownedPayload ? tr("工程草稿 · 内容保存在工程中") : entry.Pending() ? tr("待导入 · %1").arg(entry.diskPath)
         : directorySource ? tr("目录快照（原路径 %1）").arg(entry.originalPath)
+        : campaignSource ? tr("战役归档（原路径 %1）").arg(entry.originalPath)
         : entry.originalPath == entry.path ? tr("地图归档") : tr("地图归档（原路径 %1，保存时移动）").arg(entry.originalPath), this);
     source->setObjectName("assetSource");
     source->setWordWrap(true);
@@ -46,10 +41,10 @@ AssetPropertiesDialog::AssetPropertiesDialog(const QtProject::AssetEntry& entry,
     }
     layout->addLayout(form);
 
-    // 原版规则：未勾选自定义路径时文件放在 war3mapImported\ 下。
+    // 使用当前文档作用域的原版默认目录。
     custom_ = new QCheckBox(tr("使用自定义路径"), this);
     custom_->setObjectName("assetCustomPath");
-    const bool standard = original_.compare(QString::fromLatin1(kStandardFolder) + fileName_, Qt::CaseInsensitive) == 0;
+    const bool standard = original_.compare(standardFolder_ + fileName_, Qt::CaseInsensitive) == 0;
     custom_->setChecked(!standard);
     layout->addWidget(custom_);
     path_ = new QLineEdit(original_, this);
@@ -67,7 +62,7 @@ AssetPropertiesDialog::AssetPropertiesDialog(const QtProject::AssetEntry& entry,
 
     connect(custom_, &QCheckBox::toggled, this, [this](bool checked) {
         path_->setEnabled(checked);
-        if (!checked) path_->setText(QString::fromLatin1(kStandardFolder) + fileName_);
+        if (!checked) path_->setText(standardFolder_ + fileName_);
         Validate();
     });
     connect(path_, &QLineEdit::textChanged, this, &AssetPropertiesDialog::Validate);

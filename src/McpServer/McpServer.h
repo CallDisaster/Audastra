@@ -2,6 +2,7 @@
 
 #include "JsonRpc.h"
 #include "War3MapCore/Types.h"
+#include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/Services/MapScriptTargetSelection.h"
 
 #include <QJsonObject>
@@ -20,6 +21,7 @@ namespace War3Map {
 class EditorSession;
 namespace ObjectData { class LniObjectDocument; }
 namespace Trigger { class TriggerDocument; class UiCatalog; }
+namespace Services { class CampaignSession; }
 }
 
 namespace War3Map::Mcp {
@@ -108,6 +110,18 @@ public:
     [[nodiscard]] McpWorkspace* Workspace() const noexcept;
     [[nodiscard]] EditorSession* Session() const noexcept;
     [[nodiscard]] McpTerrain* Terrain() const noexcept;
+    // 可信 GUI 宿主可注入活动战役；独立 MCP 打开时也使用同一服务，不能另写归档。
+    void SetCampaign(std::shared_ptr<Services::CampaignSession> campaign) { campaign_ = std::move(campaign); }
+    [[nodiscard]] const std::shared_ptr<Services::CampaignSession>& Campaign() const noexcept { return campaign_; }
+    void SetCampaignCallbacks(std::function<bool()> beforeWrite, std::function<void()> changed) {
+        campaignBeforeWrite_ = std::move(beforeWrite); campaignChanged_ = std::move(changed);
+    }
+    [[nodiscard]] bool PrepareCampaignWrite() const { return !campaignBeforeWrite_ || campaignBeforeWrite_(); }
+    void NotifyCampaignChanged() const { if (campaignChanged_) campaignChanged_(); }
+    void SetCampaignBackupOptionsProvider(std::function<Result<InPlaceSaveOptions>()> provider) {
+        campaignBackupOptions_ = std::move(provider);
+    }
+    [[nodiscard]] Result<InPlaceSaveOptions> CampaignBackupOptions() const;
     [[nodiscard]] const std::string& DocumentId() const noexcept { return documentId_; }
     [[nodiscard]] std::uint64_t DocumentGeneration() const noexcept { return terrainGeneration_; }
     [[nodiscard]] const std::vector<Diagnostic>& InitializationDiagnostics() const noexcept {
@@ -123,6 +137,10 @@ private:
     void NotifyToolsChanged();
 
     std::unique_ptr<McpWorkspace> workspace_;
+    std::shared_ptr<Services::CampaignSession> campaign_;
+    std::function<bool()> campaignBeforeWrite_;
+    std::function<void()> campaignChanged_;
+    std::function<Result<InPlaceSaveOptions>()> campaignBackupOptions_;
     std::optional<Services::LuaMapTargetRequest> luaMapTarget_;
     // 后声明，保证先销毁借用 workspace 的只读地形适配器。
     std::unique_ptr<McpTerrain> terrain_;

@@ -43,7 +43,7 @@ class DirectoryWorkspace;
 class EditorSession;
 class MapArchiveSession;
 class MapDocument;
-namespace Services { struct CodeCheckProjectSnapshot; struct CodeCheckResult; }
+namespace Services { struct CodeCheckProjectSnapshot; struct CodeCheckResult; class CampaignSession; }
 namespace MapData { class MapDataEditSession; }
 
 namespace ObjectData {
@@ -373,6 +373,8 @@ public:
     [[nodiscard]] std::filesystem::path AuthorMapPath() const;
     std::unique_ptr<EditorSession> session_;
     std::shared_ptr<MapArchiveSession> archiveSession_;
+    // 战役模块拥有的独立物编/资源上下文；非空时资源读取和发布由同一战役会话负责。
+    std::shared_ptr<Services::CampaignSession> campaignScope_;
     std::unique_ptr<MapDocument> mapDocument_;
     std::unique_ptr<MapData::MapDataEditSession> mapEdits_;
     QUndoStack* mapDataUndoStack_ = nullptr; // 设置、实例、声音共用一次序列化编辑历史。

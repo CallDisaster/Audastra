@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "CampaignModule.h"
 #include "LegacyMapBackupCheck.h"
 #include "../QtCommon/ApplicationPaths.h"
 #include "RecoveryPreferences.h"
@@ -137,6 +138,7 @@ MainWindow::MainWindow(StartupMode startupMode, QWidget* parent, const QString& 
     SetupCommandPalette();
     SetupChangesPanel();
     SetupMapFileDrop();
+    SetupCampaignActions();
 
     const QPointer<War3Map::QtProject::EditorProject> triggerObserverProject(project_.get());
     const QPointer<QUndoStack> triggerObserverStack(project_->triggerUndoStack_);
@@ -203,6 +205,7 @@ MainWindow::MainWindow(StartupMode startupMode, QWidget* parent, const QString& 
         if (project_->savingMap_ || changesChecking_) return false;
         if (!WaitForRecoveryExit() || !window) return false;
         if (!window->ConfirmDiscardPendingEdits(window->productUpdateExit_ ? tr("更新") : tr("关闭"), !window->productUpdateExit_)) return false;
+        if (!window || !window->campaignModule_->ConfirmClose(window->productUpdateExit_ ? tr("更新") : tr("关闭"), !window->productUpdateExit_)) return false;
         return window && (!window->productUpdateExit_ || window->CommitProductUpdateExit());
     });
 }
@@ -411,6 +414,12 @@ void MainWindow::ResetProjectState() {
 }
 
 void MainWindow::UpdateWindowTitle() {
+    if (CurrentModule() == "campaign" && campaignModule_->Session()) {
+        const auto& session = *campaignModule_->Session();
+        setWindowTitle(tr("%1%2 — 战役 — Audastra").arg(campaignModule_->Dirty() ? "● " : "",
+            QString::fromUtf8(session.Info().name).isEmpty() ? tr("未命名战役") : QString::fromUtf8(session.Info().name)));
+        return;
+    }
     const auto& path = project_->sourceArchivePath_.empty() ? project_->projectRoot_ : project_->sourceArchivePath_;
     if (path.empty()) {
         setWindowTitle(QStringLiteral("Audastra · Per Audacia Ad Astra"));
@@ -481,13 +490,21 @@ bool MainWindow::ConfirmDiscardPendingEdits(const QString& action, bool allowDis
 
 void MainWindow::UpdateExportAvailability() {
     const bool open = !project_->projectRoot_.empty();
-    saveProjectAction_->setEnabled(open);
-    buildMapAction_->setEnabled(open);
+    const bool campaign = CurrentModule() == "campaign" && campaignModule_->Session();
+    saveProjectAction_->setEnabled(open && !campaign);
+    if (auto* saveAs = findChild<QAction*>("saveEditorProjectAsAction")) saveAs->setEnabled(open && !campaign);
+    saveProjectAction_->setToolTip(campaign ? tr("战役请保存为 .w3n；地图工程不包含战役会话。") : tr("保存地图工程（编辑状态存档）"));
+    buildMapAction_->setEnabled(open && !campaign);
     if (auto* button = assetsModule_->Widget()->findChild<QPushButton*>("addImportButton")) button->setEnabled(open);
-    saveMapAction_->setEnabled(project_->archiveSession_ != nullptr);
-    testMapAction_->setEnabled(project_->archiveSession_ != nullptr && !project_->savingMap_);
-    saveMapInPlaceAction_->setEnabled(project_->archiveSession_ != nullptr || open);
+    saveMapAction_->setEnabled(campaign || project_->archiveSession_ != nullptr);
+    saveMapAction_->setText(campaign ? tr("另存战役为…") : tr("另存地图为…"));
+    saveMapInPlaceAction_->setText(campaign ? tr("保存战役") : tr("保存地图"));
+    saveMapInPlaceAction_->setToolTip(campaign
+        ? tr("保存当前战役；备份目录和保留数量可在应用设置中调整")
+        : tr("重建并检查游戏脚本，重新打包后写回打开的地图；备份目录和保留数量可在应用设置中调整"));
+    testMapAction_->setEnabled(!campaign && project_->archiveSession_ != nullptr && !project_->savingMap_);
+    saveMapInPlaceAction_->setEnabled(campaign || project_->archiveSession_ != nullptr || open);
     const bool objectDirty = std::any_of(
         project_->objectDirty_.begin(), project_->objectDirty_.end(), [](bool dirty) { return dirty; });
-    exportAction_->setEnabled(open && (objectDirty || project_->triggerDirty_));
+    exportAction_->setEnabled(open && !campaign && (objectDirty || project_->triggerDirty_));
 }

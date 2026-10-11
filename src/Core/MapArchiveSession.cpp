@@ -673,6 +673,21 @@ Status MapArchiveSession::VerifySourceIdentity() const {
     return VerifyIdentity(source.Get(), volumeSerial_, fileId_);
 }
 
+Result<MapArchiveSession> MapArchiveSession::WithLeadingHeader(std::span<const std::byte> header) const {
+    if (header.size() != prefix_.size() && !(prefix_.empty() && header.size() == 512))
+        return Result<MapArchiveSession>::Failure("MapArchiveSession", "ARCHIVE_HEADER_SIZE", "外头大小不受支持，源归档保持不变。");
+    const bool changed = header.size() != prefix_.size() || !std::equal(header.begin(), header.end(), prefix_.begin());
+    if (changed && opaqueMembers_)
+        return Result<MapArchiveSession>::Failure("MapArchiveSession", "OPAQUE_HEADER_EDIT_UNSUPPORTED", "归档含有未命名成员，当前无损追加保存不能更改外头；请先提供完整成员清单。");
+    try {
+        auto result = *this;
+        result.prefix_.assign(header.begin(), header.end());
+        return Result<MapArchiveSession>::Success(std::move(result));
+    } catch (const std::bad_alloc&) {
+        return Result<MapArchiveSession>::Failure("MapArchiveSession", "ARCHIVE_HEADER_MEMORY", "无法准备外头保存快照。");
+    }
+}
+
 Result<ArchiveSaveResult> MapArchiveSession::SaveCandidate(
     const std::filesystem::path& targetPath, std::span<const MemberReplacement> replacements,
     std::span<const std::string> removals) const {

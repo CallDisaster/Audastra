@@ -131,7 +131,8 @@ void AssetsModule::EditProperties(const QString& path) {
     QString iconState;
     if (const QString disabled = QtProject::EditorProject::DisabledIconPath(found->path); !disabled.isEmpty()) {
         const bool missing = project_.MissingDisabledIcons().contains(found->path);
-        iconState = missing ? tr("⚠ 缺少 %1，保存地图时自动生成（去色压暗）。").arg(disabled) : tr("已有 %1").arg(disabled);
+        iconState = missing ? (project_.campaignScope_ ? tr("⚠ 缺少 %1；请导入对应暂停图标。").arg(disabled)
+            : tr("⚠ 缺少 %1，保存地图时自动生成（去色压暗）。").arg(disabled)) : tr("已有 %1").arg(disabled);
     }
     const QString original = found->path;
     AssetPropertiesDialog dialog(*found, [this, original](const QString& candidate) -> QString {
@@ -141,7 +142,7 @@ void AssetsModule::EditProperties(const QString& path) {
             if (QtProject::EditorProject::AssetKey(entry.path) == key && !SameFolder(entry.path, original)) return tr("已有同名资源。");
         }
         return {};
-    }, iconState, page_, project_.directorySnapshot_ != nullptr && project_.archiveSession_ == nullptr);
+    }, iconState, page_, project_.directorySnapshot_ != nullptr && project_.archiveSession_ == nullptr, project_.campaignScope_ != nullptr);
     if (dialog.exec() == QDialog::Accepted && dialog.Path() != Normalized(original)) {
         (void)RenameAsset(original, dialog.Path());
     }

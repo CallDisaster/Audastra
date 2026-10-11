@@ -18,7 +18,8 @@ namespace {
 bool IsMapUrl(const QUrl& url) {
     const auto suffix = QFileInfo(url.path()).suffix();
     return suffix.compare(QStringLiteral("w3x"), Qt::CaseInsensitive) == 0
-        || suffix.compare(QStringLiteral("w3m"), Qt::CaseInsensitive) == 0;
+        || suffix.compare(QStringLiteral("w3m"), Qt::CaseInsensitive) == 0
+        || suffix.compare(QStringLiteral("w3n"), Qt::CaseInsensitive) == 0;
 }
 
 // 原生世界窗口、目录及停靠页各自接收拖放。仅截获本主窗口里的外部地图URL，
