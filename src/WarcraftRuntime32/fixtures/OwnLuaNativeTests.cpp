@@ -126,6 +126,9 @@ void NativeCalls() {
     Check(!InvokeNativeX86(0, {}).succeeded, "null function refused");
 
     NativeRegistry registry;
+    Check(DescribeNativeRegistration(1167, "Outside", "()V", 17)
+        == "acceptedEntries=1167; name=\"Outside\"; signature=\"()V\"; address=0x11",
+        "scope diagnostics reuse the bounded native registration description");
     Check(registry.Observe("Mix", "(III)I", reinterpret_cast<std::uintptr_t>(&FixtureMix)), "registration");
     Check(registry.Observe("Mix", "(III)I", reinterpret_cast<std::uintptr_t>(&FixtureMix)), "identical registration");
     Check(registry.Size() == 1 && registry.Find("Mix") && !registry.Find("Missing"), "lookup");

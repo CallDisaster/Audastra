@@ -3,6 +3,7 @@
 #include "LuaEntryCommand.h"
 
 #include <detours.h>
+#include <intrin.h>
 #include <array>
 #include <atomic>
 #include <mutex>
@@ -77,6 +78,7 @@ std::uint32_t __cdecl ObserveCheat(std::uintptr_t stringObject) noexcept {
 int __fastcall ObserveRegistration(std::uintptr_t function, const char* name, const char* signature) noexcept {
     auto* self = observer.load();
     if (!self || !self->registerNative) return 0;
+    const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
     auto registered = function;
     try {
         std::array<char, 256> copiedName{};
@@ -94,7 +96,16 @@ int __fastcall ObserveRegistration(std::uintptr_t function, const char* name, co
                 std::lock_guard lock(self->mutex);
                 const auto found = self->threads.find(GetCurrentThreadId());
                 if (found == self->threads.end() || !found->second.collecting || !found->second.registry) {
-                    failure = "native 登记发生在完整初始化观察范围之外。";
+                    const auto* current = found == self->threads.end() ? nullptr : &found->second;
+                    failure = "native 登记发生在完整初始化观察范围之外。 gate=initialization-scope; "
+                        + DescribeNativeRegistration(current && current->registry ? current->registry->Size() : 0,
+                            copiedName.data(), copiedSignature.data(), function)
+                        + "; thread=" + std::to_string(GetCurrentThreadId())
+                        + "; generation=" + std::to_string(current ? current->generation : 0)
+                        + "; collecting=" + std::to_string(current && current->collecting)
+                        + "; ready=" + std::to_string(current && current->ready)
+                        + "; caller-in-image=" + std::to_string(self->image->Executable(caller))
+                        + "; caller-rva=" + std::to_string(self->image->Executable(caller) ? caller - self->image->Base() : 0);
                 } else {
                     auto& current = found->second;
                     if (!current.registry->Observe(copiedName.data(), copiedSignature.data(), function)) {

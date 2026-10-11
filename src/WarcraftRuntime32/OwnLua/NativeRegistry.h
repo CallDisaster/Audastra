@@ -11,6 +11,9 @@ struct NativeRegistration {
     std::uintptr_t function = 0;
 };
 
+[[nodiscard]] std::string DescribeNativeRegistration(std::size_t acceptedEntries, std::string_view name,
+    std::string_view signature, std::uintptr_t function);
+
 // 由经过 SHA 身份检查的游戏注册观察器填充。不是硬编码 native 地址表。
 class NativeRegistry final {
 public:

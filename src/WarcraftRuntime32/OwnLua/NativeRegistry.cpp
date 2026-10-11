@@ -25,14 +25,19 @@ std::string Address(std::uintptr_t value) {
 }
 }
 
+std::string DescribeNativeRegistration(std::size_t acceptedEntries, std::string_view name,
+    std::string_view signature, std::uintptr_t function) {
+    return "acceptedEntries=" + std::to_string(acceptedEntries) + "; name=" + DiagnosticText(name, 128)
+        + "; signature=" + DiagnosticText(signature, 192) + "; address=" + Address(function);
+}
+
 bool NativeRegistry::Observe(std::string_view name, std::string_view signatureText, std::uintptr_t function) {
     if (failed_) return false;
     const auto fail = [&](const char* gate, const char* message) {
         failed_ = true;
         // 只保留第一个失败条目。转义控制字符，明确记录被哪一道检查拒绝，不输出完整登记表。
-        error_ = std::string(message) + " gate=" + gate + "; acceptedEntries=" + std::to_string(entries_.size())
-            + "; name=" + DiagnosticText(name, 128) + "; signature=" + DiagnosticText(signatureText, 192)
-            + "; address=" + Address(function);
+        error_ = std::string(message) + " gate=" + gate + "; "
+            + DescribeNativeRegistration(entries_.size(), name, signatureText, function);
         return false;
     };
     if (!NativeIdentifier(name)) return fail("name", "native 注册名称无效。");
