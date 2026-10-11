@@ -77,6 +77,7 @@ std::uint64_t GameVm127::Generation() const noexcept { return Alive() ? impl_->g
 void GameVm127::Invalidate() noexcept { impl_->active = false; }
 std::uintptr_t GameVm127::Base() const noexcept { return impl_->base; }
 std::uintptr_t GameVm127::Vm() const noexcept { return Alive() ? impl_->identity.vm : 0; }
+bool GameVm127::IsMainVm(std::uintptr_t vm) const noexcept { return vm && vm == impl_->identity.vm && impl_->thread == GetCurrentThreadId(); }
 
 std::optional<std::uint32_t> GameVm127::InternString(std::string_view text) const {
     if (!Alive() || text.size() > kTextLimit || !LuaMailboxUtf8(text)) return {};
@@ -166,6 +167,32 @@ void GameVm127::ReleaseCode(std::uint32_t id) const noexcept {
     if (!id || !Alive()) return;
     __try { reinterpret_cast<void(__thiscall*)(std::uintptr_t, std::uint32_t)>(impl_->base + 0x7f03d0)(impl_->identity.vm, id); }
     __except (EXCEPTION_EXECUTE_HANDLER) { impl_->active = false; }
+}
+std::uintptr_t GameVm127::ResolveCode(std::uint32_t vmIndex, std::uint32_t id) const noexcept {
+    if (!id || !Alive()) return 0;
+    __try {
+        const auto selected = reinterpret_cast<std::uintptr_t(__fastcall*)(std::uint32_t)>(impl_->base + 0x7e1100)(vmIndex);
+        if (!selected) return 0;
+        const auto table = Word(selected + 0x2888);
+        // 1.27a 创建子 VM 时共享 code 表；不接受其它映射碰巧复用的数字 ID。
+        if (!table || table != Word(impl_->identity.vm + 0x2888) || id >= Word(table + 4)) return 0;
+        return Word(Word(table + 8) + 4 * id);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { impl_->active = false; return 0; }
+}
+std::optional<NativeCodeOwner> GameVm127::CodeOwner(std::uint32_t handle) const noexcept {
+    const auto object = HandleObject(handle);
+    if (!object || !HandleAlive(handle, object)) return {};
+    __try { return NativeCodeOwner{object, static_cast<std::uint32_t>(Word(object + 12)), static_cast<std::uint32_t>(Word(object + 16))}; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { impl_->active = false; return {}; }
+}
+bool GameVm127::CodeOwnerAlive(const NativeCodeOwner& owner) const noexcept {
+    if (!owner.object || !Alive()) return false;
+    __try {
+        const auto weak = reinterpret_cast<std::uintptr_t(__fastcall*)(std::uint32_t, std::uint32_t)>(impl_->base + 0x037350)
+            (owner.tokenA, owner.tokenB);
+        // 不解引用可能已释放的旧对象地址；两个弱身份由游戏分配器生成。
+        return weak && Word(weak + 12) == 727803756 && !Word(weak + 32);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { impl_->active = false; return false; }
 }
 
 } // namespace Audastra::Runtime32::OwnLua

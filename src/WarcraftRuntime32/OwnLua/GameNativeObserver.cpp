@@ -12,7 +12,10 @@ namespace {
 using RegisterFunction = int(__fastcall*)(std::uintptr_t, const char*, const char*);
 using InitializeFunction = void(__cdecl*)();
 using CheatFunction = std::uint32_t(__cdecl*)(std::uintptr_t);
+using RunFunction = int(__fastcall*)(std::uint32_t, std::uint32_t, std::uintptr_t, std::uint32_t*, int, int, int);
+using DestroyVmFunction = std::uintptr_t(__thiscall*)(std::uintptr_t);
 constexpr std::uintptr_t kRegisterRva = 0x7e3710, kInitializeRva = 0x1e9a50;
+constexpr std::uintptr_t kRunRva = 0x7e2fa0, kDestroyVmRva = 0x7dd070;
 struct ThreadRegistration {
     std::shared_ptr<NativeRegistry> registry;
     std::uint64_t generation = 0;
@@ -24,6 +27,8 @@ struct Observer {
     GameNativeHandlers handlers;
     RegisterFunction registerNative = nullptr;
     InitializeFunction initialize = nullptr;
+    RunFunction run = nullptr;
+    DestroyVmFunction destroyVm = nullptr;
     std::mutex mutex;
     std::map<DWORD, ThreadRegistration> threads;
     std::uint64_t generation = 0;
@@ -65,7 +70,7 @@ std::uint32_t __cdecl ObserveCheat(std::uintptr_t stringObject) noexcept {
         if (self->failed || !current.ready || !current.registry || !current.registry->Valid() || !self->handlers.module) {
             self->Fail("Lua 入口的实际 native 注册快照尚未就绪或已经失效。"); return 0;
         }
-        self->handlers.module({self->image, current.registry, current.generation}, parsed.module);
+        self->handlers.module({self->image, current.registry, current.generation, true}, parsed.module);
     } catch (...) { self->Fail("处理游戏 Lua 入口时发生异常。"); }
     return 0;
 }
@@ -137,19 +142,55 @@ void __cdecl ObserveInitialize() noexcept {
         if (!ready) self->Fail("完整 native 初始化未产生有效的 Lua 入口登记。");
     } catch (...) { self->Fail("完成实际 native 登记观察时发生异常。"); }
 }
+bool WriteCodeResult(std::uint32_t* destination, std::uint32_t value) noexcept {
+    if (!destination) return true;
+    __try { *destination = value; return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+int __fastcall ObserveRun(std::uint32_t vmIndex, std::uint32_t code, std::uintptr_t parameters,
+    std::uint32_t* result, int budget, int option1, int option2) noexcept {
+    auto* self = observer.load();
+    if (!self) return 6;
+    try {
+        const auto own = self->handlers.code(vmIndex, code, parameters != 0);
+        if (own) {
+            if (!WriteCodeResult(result, own->succeeded && own->booleanValue ? 1 : 0)) {
+                self->Fail("Lua code 返回缓冲无效。"); return 6;
+            }
+            // 上层游戏入口已建立 GetExpiredTimer/GetTriggerUnit 等上下文。
+            // 没有构造 JASS 解释栈，因此不修改它；正常结束/错误由上层按原协议清理子 VM。
+            return own->succeeded ? 1 : 6;
+        }
+    } catch (...) { self->Fail("分派游戏 Lua code 时发生异常。"); return 6; }
+    return self->run(vmIndex, code, parameters, result, budget, option1, option2);
+}
+std::uintptr_t __fastcall ObserveVmDestroy(std::uintptr_t vm, std::uintptr_t) noexcept {
+    auto* self = observer.load();
+    if (!self) return 0;
+    try { self->handlers.beforeVmDestroy(vm); }
+    catch (...) { self->Fail("清理 Lua 所属游戏 VM 时发生异常。"); }
+    return self->destroyVm(vm);
+}
 }
 
 bool InstallGameNativeObserver(std::shared_ptr<GameImage127> image, GameNativeHandlers handlers, std::string& error) {
-    if (!image || !handlers.module || !handlers.reset || !handlers.failure) { error = "游戏 native 观察器缺少来源或生命周期处理器。"; return false; }
+    if (!image || !handlers.module || !handlers.reset || !handlers.failure || !handlers.code || !handlers.beforeVmDestroy) {
+        error = "游戏 native 观察器缺少来源或生命周期处理器。"; return false;
+    }
     // 入口固定字节均已在命中 SHA 的映像中只读核对；不覆盖未知第三方已有 hook。
     constexpr unsigned char registration[]{0x55, 0x8b, 0xec, 0x81, 0xec, 0x0c, 0x01, 0x00, 0x00};
     constexpr unsigned char initialization[]{0xe8, 0x5b, 0x96, 0x5f, 0x00, 0x68};
-    if (!image->Matches(kRegisterRva, registration) || !image->Matches(kInitializeRva, initialization)) {
+    constexpr unsigned char run[]{0x55, 0x8b, 0xec, 0x56, 0x57, 0x8b, 0xf2};
+    constexpr unsigned char destroy[]{0x55, 0x8b, 0xec, 0x6a, 0xff};
+    if (!image->Matches(kRegisterRva, registration) || !image->Matches(kInitializeRva, initialization)
+        || !image->Matches(kRunRva, run) || !image->Matches(kDestroyVmRva, destroy)) {
         error = "Game.dll 的 native 观察入口已变化，拒绝覆盖。"; return false;
     }
     auto owned = std::make_unique<Observer>();
     owned->registerNative = reinterpret_cast<RegisterFunction>(image->Base() + kRegisterRva);
     owned->initialize = reinterpret_cast<InitializeFunction>(image->Base() + kInitializeRva);
+    owned->run = reinterpret_cast<RunFunction>(image->Base() + kRunRva);
+    owned->destroyVm = reinterpret_cast<DestroyVmFunction>(image->Base() + kDestroyVmRva);
     owned->image = std::move(image); owned->handlers = std::move(handlers);
     Observer* absent = nullptr;
     if (!observer.compare_exchange_strong(absent, owned.get())) { error = "游戏 native 观察器已经安装。"; return false; }
@@ -158,6 +199,8 @@ bool InstallGameNativeObserver(std::shared_ptr<GameImage127> image, GameNativeHa
         code = DetourUpdateThread(GetCurrentThread());
         if (code == NO_ERROR) code = DetourAttach(reinterpret_cast<PVOID*>(&owned->registerNative), ObserveRegistration);
         if (code == NO_ERROR) code = DetourAttach(reinterpret_cast<PVOID*>(&owned->initialize), ObserveInitialize);
+        if (code == NO_ERROR) code = DetourAttach(reinterpret_cast<PVOID*>(&owned->run), ObserveRun);
+        if (code == NO_ERROR) code = DetourAttach(reinterpret_cast<PVOID*>(&owned->destroyVm), ObserveVmDestroy);
         if (code == NO_ERROR) code = DetourTransactionCommit();
         else DetourTransactionAbort();
     }

@@ -2,6 +2,7 @@
 
 #include "GameImage127.h"
 #include "NativeRegistry.h"
+#include "NativeProvider.h"
 #include <functional>
 
 namespace Audastra::Runtime32::OwnLua {
@@ -9,11 +10,14 @@ struct GameNativeContext {
     std::shared_ptr<GameImage127> image;
     std::shared_ptr<const NativeRegistry> registry;
     std::uint64_t registrationGeneration = 0;
+    bool codeDispatchReady = false;
 };
 struct GameNativeHandlers {
     // 三个回调都在触发该动作的游戏线程调用；调用方不能在其中另建 Lua 执行线程。
     std::function<void()> reset;
     std::function<void(const GameNativeContext&, std::string_view module)> module;
+    std::function<std::optional<NativeCallbackResult>(std::uint32_t vmIndex, std::uint32_t code, bool hasParameters)> code;
+    std::function<void(std::uintptr_t vm)> beforeVmDestroy;
     std::function<void(std::string_view error)> failure;
 };
 

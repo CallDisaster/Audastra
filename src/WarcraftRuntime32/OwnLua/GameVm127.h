@@ -6,6 +6,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include "NativeCodeRegistry.h"
 
 namespace Audastra::Runtime32::OwnLua {
 
@@ -27,6 +28,7 @@ public:
     void Invalidate() noexcept;
     [[nodiscard]] std::uintptr_t Base() const noexcept;
     [[nodiscard]] std::uintptr_t Vm() const noexcept;
+    [[nodiscard]] bool IsMainVm(std::uintptr_t vm) const noexcept;
     [[nodiscard]] std::optional<std::uint32_t> InternString(std::string_view text) const;
     [[nodiscard]] std::uintptr_t StringObject(std::uint32_t id) const noexcept;
     [[nodiscard]] std::optional<std::string> ReadString(std::uint32_t id) const;
@@ -38,6 +40,9 @@ public:
     void ReleaseHandle(std::uint32_t id, std::uintptr_t object) const noexcept;
     [[nodiscard]] std::optional<std::uint32_t> RegisterCode(std::uintptr_t token) const noexcept;
     void ReleaseCode(std::uint32_t id) const noexcept;
+    [[nodiscard]] std::uintptr_t ResolveCode(std::uint32_t vmIndex, std::uint32_t id) const noexcept;
+    [[nodiscard]] std::optional<NativeCodeOwner> CodeOwner(std::uint32_t handle) const noexcept;
+    [[nodiscard]] bool CodeOwnerAlive(const NativeCodeOwner& owner) const noexcept;
 private:
     struct Impl;
     explicit GameVm127(std::unique_ptr<Impl> impl);

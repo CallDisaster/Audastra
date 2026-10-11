@@ -12,16 +12,22 @@ namespace Audastra::Runtime32::OwnLua {
 class GameNativeProvider final : public NativeProvider {
 public:
     GameNativeProvider(std::shared_ptr<GameVm127> vm, std::shared_ptr<const NativeRegistry> registry,
-        std::shared_ptr<const NativeTypeHierarchy> types);
+        std::shared_ptr<const NativeTypeHierarchy> types, bool codeDispatchReady = false);
     [[nodiscard]] std::uint64_t Generation() const noexcept override;
     [[nodiscard]] std::optional<NativeSignature> Lookup(std::string_view name) const override;
     [[nodiscard]] bool IsHandleType(std::string_view actual, std::string_view expected) const noexcept override;
+    [[nodiscard]] std::optional<NativeCallbackReturn> CallbackReturn(std::string_view name, std::size_t argument) const override;
     [[nodiscard]] NativeCallResult Invoke(std::string_view name, std::span<const NativeValue> arguments) override;
+    [[nodiscard]] std::optional<NativeCallbackResult> DispatchCode(std::uint32_t vmIndex, std::uint32_t code, bool parameters);
+    void BeforeVmDestroy(std::uintptr_t vm) noexcept;
 private:
     std::shared_ptr<GameVm127> vm_;
     std::shared_ptr<const NativeRegistry> registry_;
     std::shared_ptr<const NativeTypeHierarchy> types_;
     std::set<std::string, std::less<>> scalarTypes_;
+    std::unique_ptr<NativeCodeRegistry> codes_;
+    std::uint64_t callbackFailures_ = 0;
+    std::string callbackError_;
 };
 
 } // namespace Audastra::Runtime32::OwnLua
