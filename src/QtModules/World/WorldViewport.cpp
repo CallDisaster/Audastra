@@ -802,6 +802,7 @@ void WorldViewport::mousePressEvent(QMouseEvent* event) {
         selectionBox_ = false;
         selectionModifiers_ = hoverModifiers_ = event->modifiers();
         ClearSelectionOutline();
+        pressCameraSerial_ = cameraSerial_;
         dragButton_ = event->button(); mousePosition_ = pressPosition_ = hoverPosition_ = event->position();
         pointerInside_ = true; dragging_ = dragButton_ != Qt::LeftButton; pressView_.reset(); pressModelPolicy_.reset();
         hoverTimer_.stop(); ClearCoordinates(tr("拖动时暂停悬停坐标"), false, true);
@@ -827,7 +828,7 @@ void WorldViewport::mousePressEvent(QMouseEvent* event) {
                 } else if (dragButton_ == Qt::LeftButton &&
                     !(event->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier)))
                     BeginMove(pressPosition_, *frame.value, event->modifiers().testFlag(Qt::AltModifier));
-            } else ClearCoordinates(PickDiagnostic(frame.diagnostics));
+            } else ClearCoordinates(PickDiagnostic(frame.diagnostics), false, placing_);
         }
         event->accept(); return;
     }
@@ -952,8 +953,11 @@ void WorldViewport::mouseReleaseEvent(QMouseEvent* event) {
         moving_ = rotating_ = false;
         const auto displacement = event->position() - pressPosition_;
         if (dragButton_ == Qt::LeftButton && !brushMode_ && !dragging_ &&
-            std::abs(displacement.x()) + std::abs(displacement.y()) < QApplication::startDragDistance())
-            FinishClick(event->position(), event->modifiers());
+            std::abs(displacement.x()) + std::abs(displacement.y()) < QApplication::startDragDistance()) {
+            if (placing_) FinishPlacement(event->position(), event->modifiers().testFlag(Qt::ControlModifier),
+                selectionGestureSerial_, pressCameraSerial_, 0);
+            else FinishClick(event->position(), event->modifiers());
+        }
         dragButton_ = Qt::NoButton; dragging_ = false; pressView_.reset();
         ScheduleHover(); event->accept(); return;
     }

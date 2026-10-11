@@ -18,6 +18,12 @@ bool SameView(const Render::ViewProjectionFrame& first, const Render::ViewProjec
     return SameView(first.identity, second.identity) && first.physicalWidth == second.physicalWidth &&
         first.physicalHeight == second.physicalHeight && first.rowMajorViewProjection == second.rowMajorViewProjection;
 }
+// 不比较场景编号：模型姿势/图层更新会推进它，但不改变镜头投影。
+bool SameCamera(const Render::ViewProjectionFrame& first, const Render::ViewProjectionFrame& second) {
+    return first.identity.surfaceEpoch == second.identity.surfaceEpoch && first.identity.viewEpoch == second.identity.viewEpoch
+        && first.physicalWidth == second.physicalWidth && first.physicalHeight == second.physicalHeight
+        && first.rowMajorViewProjection == second.rowMajorViewProjection;
+}
 bool PickPending(const std::vector<Diagnostic>& diagnostics) {
     if (diagnostics.empty()) return false;
     const auto& code = diagnostics.front().code;
@@ -84,7 +90,7 @@ Result<Render::ViewProjectionFrame> WorldViewport::ReadPickingFrame() const {
 }
 
 Result<Render::TerrainPickResult> WorldViewport::PickAt(QPointF point, const Render::ViewProjectionFrame& frame,
-    const MapData::TerrainGridSnapshot* fixedTerrain) const {
+    const MapData::TerrainGridSnapshot* fixedTerrain, bool cameraOnly) const {
     const auto ray = Render::MakeViewRayFromLogical(frame,
         {static_cast<std::uint32_t>(width()), static_cast<std::uint32_t>(height()), devicePixelRatioF()}, {point.x(), point.y()});
     if (!ray.Succeeded()) return {std::nullopt, ray.diagnostics};
@@ -95,7 +101,7 @@ Result<Render::TerrainPickResult> WorldViewport::PickAt(QPointF point, const Ren
     if (!picked.Succeeded()) return picked;
     const auto completed = ReadPickingFrame();
     if (!completed.Succeeded()) return {std::nullopt, completed.diagnostics};
-    if (!SameView(frame.identity, completed.value->identity)) {
+    if (cameraOnly ? !SameCamera(frame, *completed.value) : !SameView(frame.identity, completed.value->identity)) {
         return Result<Render::TerrainPickResult>::Failure("World", "WORLD_PICK_FRAME_STALE", "视图已改变，坐标结果已丢弃。");
     }
     return picked;
@@ -438,7 +444,7 @@ void WorldViewport::UpdateHover() {
         ClearCoordinates(PickDiagnostic(frame.diagnostics), !pending, pending); return;
     }
     if (hoverView_ && SameView(*hoverView_, frame.value->identity) && sampledPosition_ == hoverPosition_) return;
-    const auto picked = PickAt(hoverPosition_, *frame.value);
+    const auto picked = PickAt(hoverPosition_, *frame.value, nullptr, placing_);
     if (!picked.Succeeded()) {
         ClearCoordinates(PickDiagnostic(picked.diagnostics), true); return;
     }
@@ -475,6 +481,30 @@ bool WorldViewport::DeferSelection(QPointF point, Qt::KeyboardModifiers modifier
     return true;
 }
 
+void WorldViewport::FinishPlacement(QPointF point, bool snap, std::uint64_t serial, std::uint64_t cameraSerial,
+    unsigned attempt) {
+    if (serial != selectionGestureSerial_ || !placing_ || destroying_) return;
+    if (cameraSerial != cameraSerial_) {
+        ClearCoordinates(tr("按下后镜头已改变，本次摆放已取消"), false, true); return;
+    }
+    // 预览模型和动作在持续出帧，读取可能正处于“等待完成帧”；同一单击短暂重试，不让作者反复点。
+    const auto retry = [&](const std::vector<Diagnostic>& diagnostics) {
+        if (PickPending(diagnostics) && attempt < 60) {
+            QTimer::singleShot(16, this, [this, point, snap, serial, cameraSerial, attempt] {
+                if (dragButton_ == Qt::NoButton) FinishPlacement(point, snap, serial, cameraSerial, attempt + 1);
+            });
+            return;
+        }
+        ClearCoordinates(PickDiagnostic(diagnostics), false, true);
+    };
+    const auto frame = ReadPickingFrame();
+    if (!frame.Succeeded()) { retry(frame.diagnostics); return; }
+    const auto ground = PickAt(point, *frame.value, nullptr, true);
+    if (!ground.Succeeded()) { retry(ground.diagnostics); return; }
+    if (!ground.value->hit) { ClearCoordinates(tr("鼠标处未命中地形"), false, true); return; }
+    emit PlaceRequested(ground.value->hit->position[0], ground.value->hit->position[1], snap);
+}
+
 void WorldViewport::FinishClick(QPointF point, Qt::KeyboardModifiers modifiers) {
     if (!pressView_ || pressRevision_ != revision_) {
         const auto available = ReadPickingFrame();
@@ -487,13 +517,6 @@ void WorldViewport::FinishClick(QPointF point, Qt::KeyboardModifiers modifiers) 
     }
     if (!SameView(*pressView_, frame.value->identity)) {
         ClearCoordinates(tr("按下后视图已改变，本次坐标选择已取消")); return;
-    }
-    if (placing_) {
-        const auto ground = PickAt(point, *frame.value);
-        if (ground.Succeeded() && ground.value->hit)
-            emit PlaceRequested(ground.value->hit->position[0], ground.value->hit->position[1],
-                modifiers.testFlag(Qt::ControlModifier));
-        return;
     }
     const auto picked = PickAt(point, *frame.value);
     if (!picked.Succeeded()) { ClearCoordinates(PickDiagnostic(picked.diagnostics), true); return; }

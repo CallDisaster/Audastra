@@ -281,13 +281,15 @@ private:
     [[nodiscard]] bool CanRender() const;
     [[nodiscard]] bool HasViewInfo() const;
     [[nodiscard]] Result<Render::ViewProjectionFrame> ReadPickingFrame() const;
+    // cameraOnly：只核对镜头与画布未变（地面拾取用 CPU 地形，不依赖模型姿势）。
     [[nodiscard]] Result<Render::TerrainPickResult> PickAt(QPointF point, const Render::ViewProjectionFrame& frame,
-        const MapData::TerrainGridSnapshot* fixedTerrain = nullptr) const;
+        const MapData::TerrainGridSnapshot* fixedTerrain = nullptr, bool cameraOnly = false) const;
     void ScheduleHover();
     void UpdateHover();
     void ClearCoordinates(QString reason, bool clearSelection = false, bool preservePlacementPreview = false);
     void SetCoordinateTexts(QString hover, QString selection);
     void FinishClick(QPointF point, Qt::KeyboardModifiers modifiers);
+    void FinishPlacement(QPointF point, bool snap, std::uint64_t serial, std::uint64_t cameraSerial, unsigned attempt);
     void FinishSelectionBox(QPointF point);
     bool DeferSelection(QPointF point, Qt::KeyboardModifiers modifiers, bool box);
     bool SubmitOverlay();
@@ -424,6 +426,8 @@ private:
     std::optional<ModelPickPolicy> pressModelPolicy_; // 仅 CPU 编辑器标志快照；不是完成帧回执。
     std::uint64_t pressRevision_ = 0;
     std::uint64_t selectionGestureSerial_ = 0;
+    // 每次提交镜头加一。摆放只要求按下后镜头未变：预览模型与动作每帧推进场景编号，不能因此丢弃单击。
+    std::uint64_t cameraSerial_ = 0, pressCameraSerial_ = 0;
     unsigned selectionRetries_ = 0; // 一个待完成手势，禁止不断排队或无限等待GPU。
     QString status_;
     QString hoverText_, selectionText_;
