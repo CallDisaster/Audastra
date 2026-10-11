@@ -305,6 +305,7 @@ private:
     std::shared_ptr<War3Map::Services::LuaTestReloadController> luaReloadController_;
     std::shared_ptr<War3Map::Services::LuaTestMailboxSession> luaRuntimeMailbox_;
     std::uint64_t luaTestGeneration_ = 0;
+    std::optional<std::array<std::uint64_t, 2>> luaReloadSubmittedRevision_;
     QTimer* luaReloadPoll_ = nullptr;
     std::uint32_t luaRuntimeDiagnosticSequence_ = 0;
     QString luaReloadLastStatus_;

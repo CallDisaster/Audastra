@@ -41,7 +41,7 @@ std::vector<std::byte> Settings(int language, std::string name = "Original nativ
     value.gameVersion = {1, 32, 0, 0}; value.graphicsModes = 3; value.gameDataVersion = 1; value.mapName = std::move(name);
     return Take(value.Serialize());
 }
-void Install(QtProject::EditorProject& project, const std::filesystem::path& root, bool archive, int language = 1) {
+void Install(QtProject::EditorProject& project, const std::filesystem::path& root, bool archive, int language = 1, bool largeCode = false) {
     Write(root / "catalog/ui/config", "base\n");
     Write(root / "catalog/ui/base/define.txt", "[TriggerTypes]\ninteger=0,1,1,整数,integer\n");
     for (const auto* name : {"event.txt", "condition.txt", "action.txt", "call.txt"}) Write(root / "catalog/ui/base" / name, "");
@@ -57,6 +57,12 @@ void Install(QtProject::EditorProject& project, const std::filesystem::path& roo
         : Trigger::TriggerCodeEditor::PrepareNewCustom(document, catalog, -1, "OriginalJass", {},
             Trigger::TriggerCodeEditor::kDefaultMaxEditedBytes, "Original");
     (void)Take(Trigger::TriggerCodeEditor::Apply(document, catalog, Take(std::move(plan))));
+    if (largeCode) {
+        // 原创大块来源验证异步展示；不扩大作者编辑或热重载预算。
+        document.triggers.front().customText = Trigger::RawText{
+            "--" + std::string(2 * 1024 * 1024 + 128, 'x')
+                + "\nfunction InitTrig_OriginalLua()\n    NativeCounter = 42\nend\n"};
+    }
     const auto pair = Take(Trigger::WtgWctCodec{}.Serialize(document, catalog));
     document = Take(Trigger::WtgWctCodec{}.Parse(pair.wtg, pair.wct, catalog));
     const std::vector<MapArchiveMember> members{{"war3map.w3i", settings}, {"war3map.wtg", pair.wtg}, {"war3map.wct", pair.wct}};
@@ -73,8 +79,17 @@ void Install(QtProject::EditorProject& project, const std::filesystem::path& roo
     project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>(std::move(document));
     project.triggerUndoStack_ = new QUndoStack(&project);
     project.LoadMapDocument();
+    QObject::connect(project.triggerUndoStack_, &QUndoStack::indexChanged, &project,
+        [&project] { project.ObserveTriggerEdit(); });
+    project.ResetEditTracking();
+    if (!project.editTrackingReady_ || project.editTrackingFailed_) throw std::runtime_error("original fixture edit tracking failed");
 }
 UiKit::CodeView* Code(Modules::TriggerModule& module) { return qobject_cast<UiKit::CodeView*>(module.CodeEditor()); }
+Shell::NavigationTarget RuntimeLine(const QtProject::EditorProject& project, StableId triggerId, int line) {
+    return {"triggers", "runtime-code", QString::number(triggerId),
+        {{"generation", QString::number(project.editRevision_.Generation())},
+            {"revision", QString::number(project.editRevision_.Revision())}, {"line", line}}};
+}
 }
 
 // 全程 offscreen / 原创微型 fixture；语法检查编译不执行，未启动游戏或外部编译器。
@@ -85,6 +100,10 @@ private slots:
     void LuaCheckingDoesNotExecuteAndDraftFailuresPreserveText();
     void OriginalSourceSettingsIdentityBlocksReboundDraft();
     void EditedLanguageOrManualComboDoesNotGrantNativeAuthority();
+    void RuntimeLineNavigationPreservesDraftsAndIdentity();
+    void RuntimeLineNavigationWaitsForTextAndCancels();
+    void RuntimeLineNavigationRejectsDisplayLineChanges();
+    void RuntimeLineNavigationPreservesPropertyDrafts();
 };
 
 void NativeLuaCodeTests::SourceArchiveAndDirectorySelectLuaAndUndo() {
@@ -165,6 +184,97 @@ void NativeLuaCodeTests::EditedLanguageOrManualComboDoesNotGrantNativeAuthority(
     QVERIFY(!module.CreateCustomTrigger(QStringLiteral("ForbiddenNativeLua")));
     project.luaMapTarget_.emplace(); QVERIFY(!module.CreateCustomTrigger(QStringLiteral("TargetOnlyLua")));
     QCOMPARE(project.triggerUndoStack_->count(), count);
+}
+
+void NativeLuaCodeTests::RuntimeLineNavigationPreservesDraftsAndIdentity() {
+    QTemporaryDir root; QtProject::EditorProject project; Install(project, root.path().toStdWString(), true);
+    Modules::TriggerModule module(project); (void)module.Widget(); QVERIFY(module.ShowGlobalCustomCode());
+    const auto triggerId = project.triggerDocument_->triggers.front().id;
+    const auto target = RuntimeLine(project, triggerId, 2);
+    QVERIFY(!project.CurrentCodeCheckIndex()); // 真实测试回执无需先建立检查索引。
+    QVERIFY(module.Reveal(target));
+    auto* code = Code(module); QVERIFY(code);
+    QCOMPARE(code->SourceName(), QString::fromStdString("WCT/trigger-" + std::to_string(triggerId) + ".lua"));
+    QCOMPARE(code->textCursor().blockNumber(), 1);
+    QCOMPARE(project.triggerUndoStack_->count(), 0);
+    const auto original = code->toPlainText();
+    code->appendPlainText(QStringLiteral("-- 作者尚未应用的草稿"));
+    const auto draft = code->toPlainText(); const auto draftCursor = code->textCursor().position();
+    QVERIFY(module.HasPendingCodeDraft()); QVERIFY(!module.Reveal(target));
+    QCOMPARE(code->toPlainText(), draft); QCOMPARE(code->textCursor().position(), draftCursor);
+    QCOMPARE(project.triggerUndoStack_->count(), 0);
+    module.DiscardPendingCodeDraft(); QCOMPARE(code->toPlainText(), original);
+    for (const auto* key : {"generation", "revision"}) {
+        auto stale = target;
+        stale.extra[key] = QString::number(target.extra.value(key).toString().toULongLong() + 1);
+        QVERIFY(!module.Reveal(stale));
+    }
+    for (const auto line : {0, -1, 1000}) QVERIFY(!module.Reveal(RuntimeLine(project, triggerId, line)));
+    auto malformed = target; malformed.extra["line"] = QStringLiteral("2"); QVERIFY(!module.Reveal(malformed));
+    malformed = target; malformed.id = QStringLiteral("00") + QString::number(triggerId); QVERIFY(!module.Reveal(malformed));
+    auto& row = project.triggerDocument_->triggers.front();
+    row.customTextFlag = 0;
+    QVERIFY(!module.Reveal(RuntimeLine(project, triggerId, 2))); // 运行时位置不能将 GUI 转为代码。
+    QCOMPARE(row.customTextFlag, 0); row.customTextFlag = 1;
+    code->appendPlainText(QStringLiteral("-- 已应用的新正文")); QVERIFY(module.CommitPendingEdits());
+    QVERIFY(!module.Reveal(target));
+    const auto fresh = RuntimeLine(project, triggerId, 2); QVERIFY(module.Reveal(fresh));
+    QCOMPARE(code->textCursor().blockNumber(), 1);
+    project.sourceChangeSuspected_ = true;
+    QVERIFY(!module.Reveal(fresh));
+    project.sourceChangeSuspected_ = false;
+    QVERIFY(project.editRevision_.Reset(project.editRevision_.Current()).Succeeded());
+    QVERIFY(!module.Reveal(fresh));
+}
+
+void NativeLuaCodeTests::RuntimeLineNavigationWaitsForTextAndCancels() {
+    QTemporaryDir root; QtProject::EditorProject project; Install(project, root.path().toStdWString(), true, 1, true);
+    Modules::TriggerModule module(project); (void)module.Widget(); QVERIFY(module.ShowGlobalCustomCode());
+    const auto target = RuntimeLine(project, project.triggerDocument_->triggers.front().id, 3);
+    QVERIFY(module.Reveal(target));
+    auto* code = Code(module); QVERIFY(code && code->IsLoading());
+    QTRY_VERIFY_WITH_TIMEOUT(!code->IsLoading(), 15000);
+    QCOMPARE(code->textCursor().blockNumber(), 2);
+    QVERIFY(module.ShowGlobalCustomCode());
+    QVERIFY(module.Reveal(target)); QVERIFY(code->IsLoading());
+    module.CancelNavigationRestoration();
+    QTRY_VERIFY_WITH_TIMEOUT(!code->IsLoading(), 15000);
+    QCOMPARE(code->textCursor().position(), 0);
+    QCOMPARE(project.triggerUndoStack_->count(), 0);
+}
+
+void NativeLuaCodeTests::RuntimeLineNavigationRejectsDisplayLineChanges() {
+    QTemporaryDir root; QtProject::EditorProject project; Install(project, root.path().toStdWString(), true);
+    auto& trigger = project.triggerDocument_->triggers.front();
+    // Lua把U+2028保留在这一行注释中；Qt会改变其展示分行，不能声称定位到原行。
+    trigger.customText = Trigger::RawText{"-- source" "\xE2\x80\xA8" "comment\nfunction InitTrig_OriginalLua()\nend\n"};
+    const auto original = trigger.customText.text;
+    Modules::TriggerModule module(project); (void)module.Widget(); QVERIFY(module.ShowGlobalCustomCode());
+    QVERIFY(!module.Reveal(RuntimeLine(project, trigger.id, 2)));
+    QVERIFY(Code(module)->isReadOnly());
+    QCOMPARE(Code(module)->textCursor().position(), 0);
+    QCOMPARE(trigger.customText.text, original);
+    QCOMPARE(project.triggerUndoStack_->count(), 0);
+}
+
+void NativeLuaCodeTests::RuntimeLineNavigationPreservesPropertyDrafts() {
+    QTemporaryDir root; QtProject::EditorProject project; Install(project, root.path().toStdWString(), true);
+    Modules::TriggerModule module(project); auto* page = module.Widget();
+    const auto triggerId = project.triggerDocument_->triggers.front().id;
+    const auto target = RuntimeLine(project, triggerId, 2); QVERIFY(module.Reveal(target));
+    auto* comment = page->findChild<QPlainTextEdit*>("triggerCommentEdit"); QVERIFY(comment);
+    const auto before = project.triggerDocument_->triggers.front().description.text;
+    const auto revision = project.editRevision_.Revision();
+    const auto undo = project.triggerUndoStack_->count();
+    comment->setPlainText(QStringLiteral("作者仍在编辑的触发器说明"));
+    const auto draft = comment->toPlainText(); const auto cursor = Code(module)->textCursor().position();
+    QVERIFY(!module.HasPendingCodeDraft()); QVERIFY(module.HasPendingNavigationDraft());
+    QVERIFY(!module.Reveal(target));
+    QCOMPARE(comment->toPlainText(), draft); QCOMPARE(Code(module)->textCursor().position(), cursor);
+    QCOMPARE(project.triggerDocument_->triggers.front().description.text, before);
+    QCOMPARE(project.triggerUndoStack_->count(), undo); QCOMPARE(project.editRevision_.Revision(), revision);
+    comment->setPlainText(QString::fromUtf8(before));
+    QVERIFY(!module.HasPendingNavigationDraft()); QVERIFY(module.Reveal(target));
 }
 
 int main(int argc, char** argv) {

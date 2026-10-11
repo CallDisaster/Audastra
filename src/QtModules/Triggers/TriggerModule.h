@@ -94,6 +94,7 @@ public:
     // 保存、关闭、恢复点之前提交属性区草稿（例如仍在编辑的注释）。
     bool CommitPendingEdits();
     [[nodiscard]] bool HasPendingCodeDraft() const;
+    [[nodiscard]] bool HasPendingNavigationDraft() const;
     void DiscardPendingCodeDraft();
     [[nodiscard]] QPlainTextEdit* CodeEditor() const;
     [[nodiscard]] TriggerLuaScripts* LuaScripts() const noexcept { return luaScripts_; }

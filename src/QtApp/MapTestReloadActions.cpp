@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 #include "MapSaveJob.h"
 #include "TriggerModule.h"
+#include "War3MapCore/Script/MapTestToolchain.h"
 #include "War3MapCore/Services/ScriptSavePreparation.h"
 #include "War3MapCore/Services/MapTestWorkspace.h"
 
@@ -11,6 +12,8 @@
 #include <QScopedValueRollback>
 #include <QThread>
 #include <QTimer>
+
+#include <limits>
 
 namespace {
 namespace Services = War3Map::Services;
@@ -70,6 +73,8 @@ QJsonObject MainWindow::LuaTestReload(bool submit) {
     if (current.value->outcome == Services::LuaReloadOutcome::Stopped
         || current.value->outcome == Services::LuaReloadOutcome::RestartRequired)
         return Failure("LUA_RELOAD_RESTART_REQUIRED", current.value->message);
+    const std::array<std::uint64_t, 2> submittedRevision{
+        project_->editRevision_.Generation(), project_->editRevision_.Revision()};
     auto task = project_->PrepareMapPreflight();
     if (!task || !task->script || !task->script->luaTarget)
         return Failure("LUA_RELOAD_PROFILE_REQUIRED", "当前 Lua 保存档案不可用，差异没有发送。");
@@ -116,6 +121,7 @@ QJsonObject MainWindow::LuaTestReload(bool submit) {
     }
     ShowStatusMessage(QString::fromStdString(result.value->message));
     if (result.value->outcome == Services::LuaReloadOutcome::Pending) {
+        luaReloadSubmittedRevision_ = submittedRevision;
         if (!luaReloadPoll_) {
             luaReloadPoll_ = new QTimer(this); luaReloadPoll_->setInterval(100);
             connect(luaReloadPoll_, &QTimer::timeout, this, &MainWindow::PollLuaTestReload);
@@ -126,7 +132,13 @@ QJsonObject MainWindow::LuaTestReload(bool submit) {
 }
 
 void MainWindow::PollLuaTestReload() {
+    const auto lease = mapTestLease_;
     const auto result = LuaTestReload(false);
+    // 游戏可能先发布就绪、Job观察器后捕获原句柄。只等待本局归属确认，
+    // 不读取未确认回执、不放行发送；实际终态仍交同一租约的清理流程报告。
+    if (!result.value("ok").toBool() && result.value("code").toString() == QLatin1String("LUA_TEST_PROCESS_UNCONFIRMED")
+        && lease && mapTestLease_ == lease && luaTestGeneration_ == project_->editRevision_.Generation()
+        && lease->IsActive()) return;
     if (!result.value("ok").toBool() || result.value("state").toString() == "stopped") {
         if (luaReloadPoll_) luaReloadPoll_->stop();
     }
@@ -150,6 +162,22 @@ void MainWindow::PollLuaTestReload() {
     const auto location = result.value("location").toObject();
     bool valid = false; const auto trigger = location.value("trigger_id").toString().toULongLong(&valid);
     if (valid && trigger) {
+        // 回执位置属于已发送正文；只在当前触发器模块定位，不切换模块提交其它草稿。
+        if (CurrentModule() != "triggers" || !luaReloadSubmittedRevision_
+            || !project_->editTrackingReady_ || project_->editTrackingFailed_
+            || triggersModule_->HasPendingNavigationDraft()) return;
+        const auto& identity = *luaReloadSubmittedRevision_;
+        if (project_->editRevision_.Generation() != identity[0]
+            || project_->editRevision_.Revision() != identity[1]) return;
+        bool lineValid = false;
+        const auto line = location.value("source_line").toString().toULongLong(&lineValid);
+        if (lineValid && line) {
+            if (line > static_cast<qulonglong>((std::numeric_limits<int>::max)())) return;
+            Navigate({"triggers", "runtime-code", QString::number(trigger),
+                {{"generation", QString::number(identity[0])}, {"revision", QString::number(identity[1])},
+                    {"line", static_cast<int>(line)}}});
+            return;
+        }
         const auto node = location.value("node_id").toString();
         Navigate({"triggers", node.isEmpty() || node == "0" || node == QString::number(trigger) ? "trigger" : "eca",
             node.isEmpty() || node == "0" || node == QString::number(trigger) ? QString::number(trigger) : node,

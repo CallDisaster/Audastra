@@ -487,6 +487,17 @@ bool TriggerModule::CommitPendingEdits() {
     return true;
 }
 
+bool TriggerModule::HasPendingNavigationDraft() const {
+    if (HasPendingCodeDraft()) return true;
+    if (!page_ || !propertyTriggerId_) return false;
+    if (commentEdit_->toPlainText() != propertyCommentBaseline_) return true;
+    const auto* trigger = project_.triggerDocument_
+        ? Trigger::TriggerDocumentEditor::FindTrigger(*project_.triggerDocument_, propertyTriggerId_) : nullptr;
+    return trigger && (trigger->enabled != (enabledCheck_->isChecked() ? 1 : 0)
+        || trigger->initiallyClosed != (initiallyOnCheck_->isChecked() ? 0 : 1)
+        || trigger->runOnInit != (runOnInitCheck_->isChecked() ? 1 : 0));
+}
+
 void TriggerModule::CommitProperties() {
     auto* document = project_.triggerDocument_.get();
     if (suppressPropertySignals_ || document == nullptr || project_.triggerUndoStack_ == nullptr ||
@@ -680,6 +691,70 @@ void TriggerModule::UpdateLogicColumns() {
 bool TriggerModule::Reveal(const Shell::NavigationTarget& target) {
     if (target.module != "triggers") {
         return false;
+    }
+    if (target.kind == QLatin1String("runtime-code")) {
+        // 运行时回执绑定发送时的工程身份，不依赖可能尚未建立的代码检查索引。
+        const auto identity = [](const QVariant& value) -> std::optional<std::uint64_t> {
+            if (value.typeId() != QMetaType::QString) return std::nullopt;
+            const auto text = value.toString();
+            bool valid = false; const auto number = text.toULongLong(&valid);
+            return valid && text.size() <= 20 && QString::number(number) == text
+                ? std::optional<std::uint64_t>(number) : std::nullopt;
+        };
+        const auto triggerId = SearchIdentity(QVariant(target.id));
+        const auto generation = identity(target.extra.value("generation"));
+        const auto revision = identity(target.extra.value("revision"));
+        const auto lineValue = target.extra.value("line");
+        const int line = lineValue.toInt();
+        const auto current = [&] {
+            return generation && revision && project_.editTrackingReady_ && !project_.editTrackingFailed_
+                && project_.editRevision_.Generation() == *generation
+                && project_.editRevision_.Revision() == *revision
+                && !project_.sourceChangeSuspected_ && !project_.sourceChangeConfirmed_ && !HasPendingNavigationDraft();
+        };
+        auto* document = project_.triggerDocument_.get();
+        if (!triggerId || target.extra.size() != 3 || lineValue.typeId() != QMetaType::Int || line <= 0
+            || !current() || !document || !project_.uiCatalog_ || document->triggers.size() > 250000) return false;
+        if (std::count_if(document->triggers.begin(), document->triggers.end(),
+                [&](const auto& row) { return row.id == *triggerId; }) != 1) return false;
+        const auto* trigger = Trigger::TriggerDocumentEditor::FindTrigger(*document, *triggerId);
+        if (!trigger || trigger->type != 0 || !trigger->customTextFlag) return false;
+        std::size_t lines = 1;
+        const auto& text = trigger->customText.text;
+        for (std::size_t i = 0; i < text.size(); ++i)
+            if (text[i] == '\n' || (text[i] == '\r' && (i + 1 == text.size() || text[i + 1] != '\n'))) ++lines;
+        if (static_cast<std::size_t>(line) > lines) return false;
+        (void)Widget();
+        if (!CommitPendingEdits() || !current() || project_.triggerDocument_.get() != document) return false;
+        CancelNavigationRestoration();
+        workspaceTabs_->setCurrentIndex(0); explorerSearch_->clear(); SelectTrigger(*triggerId);
+        if (!codeTarget_ || codeTarget_->kind != Trigger::CodeBlockKind::CustomTrigger
+            || codeTarget_->triggerId != *triggerId || showingGlobalCode_) ShowSelectedTrigger();
+        if (!codeTarget_ || codeTarget_->kind != Trigger::CodeBlockKind::CustomTrigger
+            || codeTarget_->triggerId != *triggerId || !codeNativeLua_ || !sourceDisplayLossless_) return false;
+        const auto token = navigationRestoreGeneration_, documentGeneration = navigationDocumentGeneration_;
+        const auto codeGeneration = scriptView_->Generation();
+        const auto source = scriptView_->SourceName();
+        const auto host = host_; const auto epoch = host ? host->NavigationEpoch() : 0;
+        const QPointer<UiKit::CodeView> view(scriptView_);
+        const auto jump = [this, view, token, documentGeneration, codeGeneration, source, host, epoch,
+            generation = *generation, revision = *revision, triggerId = *triggerId, line] {
+            if (!view || view->IsLoading() || navigationRestoreGeneration_ != token
+                || navigationDocumentGeneration_ != documentGeneration || host_ != host
+                || (host_ && host_->NavigationEpoch() != epoch) || view->Generation() != codeGeneration
+                || view->SourceName() != source || !project_.editTrackingReady_ || project_.editTrackingFailed_
+                || project_.editRevision_.Generation() != generation
+                || project_.editRevision_.Revision() != revision || HasPendingNavigationDraft()
+                || project_.sourceChangeSuspected_ || project_.sourceChangeConfirmed_
+                || workspaceTabs_->currentIndex() != 0 || showingGlobalCode_ || showingMapScript_ || selectedTrigger_ != triggerId
+                || !codeTarget_ || codeTarget_->kind != Trigger::CodeBlockKind::CustomTrigger
+                || codeTarget_->triggerId != triggerId || !codeNativeLua_ || !sourceDisplayLossless_) return;
+            view->GoToUtf8ByteColumn(line, 1);
+        };
+        if (view->IsLoading()) navigationTextLoaded_ = connect(view, &UiKit::CodeView::TextLoaded,
+            this, jump, Qt::SingleShotConnection);
+        else jump();
+        return true;
     }
     if (target.kind == QLatin1String("find-replace")) {
         // 此目标只授权Shell激活现有模块；MainWindow在导航成功后才弹查找替换面板。
