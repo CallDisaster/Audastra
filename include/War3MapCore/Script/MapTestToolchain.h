@@ -4,6 +4,8 @@
 
 #include <memory>
 
+namespace War3Map::Services { class LuaTestMailboxSession; }
+
 namespace War3Map::Script {
 
 // 原生测试 SLK 优化：从游戏目录读取原版物编表，调用 ObjectData::OptimizeObjectDataToSlk，
@@ -40,6 +42,8 @@ private:
 struct MapTestLaunchReceipt {
     std::uint32_t launcherProcessId = 0;
     std::shared_ptr<MapTestLaunchLease> lease;
+    // 只有自有 Lua 且原 Job/游戏句柄归属得到验证时才提供；UI/MCP 不接触共享内存。
+    std::shared_ptr<Services::LuaTestMailboxSession> luaMailbox;
 };
 
 // 只发起已验证的独立计划；返回不代表游戏进图。挂起主线程在Job归属成立后才恢复。

@@ -53,6 +53,10 @@ struct Temp {
 int wmain(int argc, wchar_t** argv) {
     try {
         Require(argc == 2, "console fixture executable path argument");
+        Services::MapTestLaunchPlan pendingRuntime;
+        pendingRuntime.useOwnedLuaRuntime = true; pendingRuntime.enableLuaHotReload = true;
+        Require(Code(Script::detail::LaunchVerifiedMapTestPlan(pendingRuntime), "MAP_TEST_OWN_LUA_RUNTIME_NOT_READY"),
+            "internal execution entry refuses unconnected owned runtime before copying files or starting a process");
         Temp temp;
         const auto helper = temp.root / "fakeWarcraftConsole.exe";
         Require(CopyFileW(argv[1], helper.c_str(), TRUE) != FALSE, "copy only original tiny console fixture into owned temp directory");

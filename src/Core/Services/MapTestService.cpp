@@ -81,6 +81,8 @@ std::filesystem::path MapTestYdweInstallRoot(const std::filesystem::path& config
 
 Result<MapTestArtifact> PrepareMapTest(const MapTestRequest& request,
     const MapTestSlkConverter& converter, const MapTestProgress& progress) {
+    if (request.enableLuaHotReload && !request.useOwnedLuaRuntime)
+        return Fail<MapTestArtifact>("MAP_TEST_LUA_RELOAD_RUNTIME", "Lua 热重载只能用于显式选择的自有 Lua 测试运行时。");
     std::error_code ec;
     if (!request.inputMap.is_absolute() || !request.workspace.is_absolute() || !request.gameRoot.is_absolute()
         || (!request.sourceMap.empty() && !request.sourceMap.is_absolute())
@@ -164,11 +166,17 @@ Result<MapTestArtifact> PrepareMapTest(const MapTestRequest& request,
     auto prepared = Result<MapTestArtifact>::Success({target, workspace, game,
         request.expectedInputSha256, std::move(outputSha), request.optimizeSlk, request.sourceMap, input,
         runtime, request.runtimeBridge, request.runtimeBootstrap, ydwe});
+    prepared.value->useOwnedLuaRuntime = request.useOwnedLuaRuntime;
+    prepared.value->enableLuaHotReload = request.enableLuaHotReload;
     prepared.diagnostics.insert(prepared.diagnostics.end(), slkNotes.begin(), slkNotes.end());
     return prepared;
 }
 
 Result<MapTestLaunchPlan> BuildMapTestLaunchPlan(const MapTestArtifact& artifact) {
+    if (artifact.enableLuaHotReload && !artifact.useOwnedLuaRuntime)
+        return Fail<MapTestLaunchPlan>("MAP_TEST_LUA_RELOAD_RUNTIME", "Lua 热重载不能附加到普通 JASS 或外部扩展运行时。");
+    if (artifact.useOwnedLuaRuntime)
+        return Fail<MapTestLaunchPlan>("MAP_TEST_OWN_LUA_RUNTIME_NOT_READY", "自有 Lua 的游戏 native 与主线程入口尚未接通，当前不能启动测试。");
     if (!artifact.testMap.is_absolute() || !artifact.workspace.is_absolute() || !artifact.gameRoot.is_absolute())
         return Fail<MapTestLaunchPlan>("MAP_TEST_PATH", "测试地图、独占目录和游戏目录必须是绝对路径。");
     auto verified = ReadVerifiedFile(artifact.testMap, artifact.testMapSha256, 1024ull * 1024 * 1024);

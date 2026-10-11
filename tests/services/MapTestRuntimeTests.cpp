@@ -738,6 +738,11 @@ void OptionalRealNativeMapPlan() {
 } // namespace
 int main() {
     try {
+        Services::MapTestArtifact owned;
+        owned.enableLuaHotReload = true;
+        FailureCode(Script::BuildIndependentMapTestLaunchPlan(owned), "MAP_TEST_LUA_RELOAD_RUNTIME", "reload needs explicit owned runtime before inspecting map");
+        owned.useOwnedLuaRuntime = true;
+        FailureCode(Script::BuildIndependentMapTestLaunchPlan(owned), "MAP_TEST_OWN_LUA_RUNTIME_NOT_READY", "owned runtime cannot silently choose external DLLs");
         NativeMapsNeedNoToolsOrRuntime(); LexicalTextAndLocalPrefixesAreNotExtensions();
         CompiledJassOpaqueBytesPreserveRuntimeClassification(); CompiledJassByteRawcodesAndMalformedBoundaries();
         ExplicitAndUnknownInterfacesNeedRuntime(); RuntimeFilesAndProfileAreCheckedWithoutExecution();

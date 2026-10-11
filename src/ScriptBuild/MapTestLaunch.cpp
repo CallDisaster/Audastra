@@ -177,6 +177,9 @@ Result<MapTestLaunchReceipt> LaunchMapTest(const Services::MapTestArtifact& arti
 namespace detail {
 struct MapTestLaunchAccess {
 static Result<MapTestLaunchReceipt> Run(const Services::MapTestLaunchPlan& plan) {
+    if (plan.enableLuaHotReload || plan.useOwnedLuaRuntime)
+        return Result<MapTestLaunchReceipt>::Failure("Map.Test", "MAP_TEST_OWN_LUA_RUNTIME_NOT_READY",
+            "自有 Lua 的游戏启动链尚未接通，不能绕过预检发起进程。");
 #ifdef _WIN32
     auto destinationIdentity = IO::GenericPathUtf8(plan.workingDirectory.lexically_normal());
     for (auto& c : destinationIdentity) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');

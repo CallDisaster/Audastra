@@ -455,6 +455,10 @@ Status CheckRuntimePe(const std::filesystem::path& path, bool dll, bool initiali
 
 Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Services::MapTestArtifact& artifact,
     const Services::MapTestProgress& progress) {
+    if (artifact.enableLuaHotReload && !artifact.useOwnedLuaRuntime)
+        return Failure<LaunchPlan>("MAP_TEST_LUA_RELOAD_RUNTIME", "Lua 热重载不能附加到普通 JASS 或外部扩展运行时。");
+    if (artifact.useOwnedLuaRuntime)
+        return Failure<LaunchPlan>("MAP_TEST_OWN_LUA_RUNTIME_NOT_READY", "自有 Lua 的游戏 native 与主线程入口尚未接通，当前不能启动测试。");
     try {
         if (progress) progress("verify");
         auto requirements = InspectMapRuntime(artifact, progress);
