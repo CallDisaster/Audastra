@@ -118,8 +118,10 @@ void CampaignModule::BuildPage() {
     };
     action(tr("新建战役"), "newCampaign", [this] { (void)New(); });
     action(tr("打开战役…"), "openCampaign", [this] {
+        const auto context = FreezeContext();
+        const QScopedValueRollback guard(modalOperation_, true);
         const auto path = QFileDialog::getOpenFileName(page_, tr("打开战役"), {}, tr("Warcraft III 战役 (*.w3n)"));
-        if (!path.isEmpty()) (void)Open(std::filesystem::path(path.toStdWString()));
+        if (!path.isEmpty() && CheckContext(context)) (void)Open(std::filesystem::path(path.toStdWString()));
     });
     action(tr("保存"), "saveCampaign", [this] { (void)Save(); });
     action(tr("另存为…"), "saveCampaignAs", [this] { (void)Save(true); });
@@ -225,6 +227,27 @@ bool CampaignModule::ApplyCommand(const Services::CampaignCommand& command) {
     if (!applied.Succeeded()) return Failed(applied.diagnostics);
     RefreshFromService(); emit Changed(); return true;
 }
+CampaignModule::FrozenContext CampaignModule::FreezeContext() const {
+    return {session_, session_ ? displayedRevision_ : Services::CampaignRevision{}};
+}
+bool CampaignModule::CheckContext(const FrozenContext& context) {
+    if (session_ != context.session || (session_ && session_->Revision() != context.revision)) {
+        lastError_ = tr("战役会话或内容已在其他入口改变，本次操作未应用。请保留所填内容，重新核对后再编辑。");
+        Notice(lastError_); return false;
+    }
+    return true;
+}
+bool CampaignModule::ApplyFrozenCommand(const FrozenContext& context, const Services::CampaignCommand& command) {
+    if (!CheckContext(context) || !context.session) return false;
+    // 模态框打开前已提交共享/设置草稿；不能让回调中新出现的草稿在刷新时丢失。
+    if (HasDraft()) {
+        lastError_ = tr("战役出现了新的共享或设置草稿，本次操作未应用；请先处理草稿。");
+        Notice(lastError_); return false;
+    }
+    const auto applied = context.session->Apply(context.revision, command);
+    if (!applied.Succeeded()) return Failed(applied.diagnostics);
+    RefreshFromService(); emit Changed(); return true;
+}
 void CampaignModule::RebuildHistory() {
     const QScopedValueRollback guard(rebuildingHistory_, true);
     history_->clear();
@@ -260,12 +283,15 @@ bool CampaignModule::FlushDraft() {
 }
 bool CampaignModule::ConfirmClose(const QString& action, bool allowDiscard) {
     if (!Dirty()) return true;
+    const auto context = FreezeContext();
+    const QScopedValueRollback guard(modalOperation_, true);
     QMessageBox prompt(QMessageBox::Warning, tr("战役尚未保存"), HasUncommittedChapter()
         ? tr("章节副本尚未更新到战役。请先保存章节；选择保存战役会先把章节副本更新到战役，再%1。").arg(action)
         : tr("保存当前战役后%1？").arg(action), QMessageBox::NoButton, page_);
     auto* save = prompt.addButton(tr("保存战役"), QMessageBox::AcceptRole);
     auto* discard = allowDiscard ? prompt.addButton(tr("放弃战役修改"), QMessageBox::DestructiveRole) : nullptr;
     auto* cancel = prompt.addButton(tr("继续编辑"), QMessageBox::RejectRole); prompt.setDefaultButton(qobject_cast<QPushButton*>(cancel)); prompt.exec();
+    if (!CheckContext(context)) return false;
     if (prompt.clickedButton() == save) return (!HasUncommittedChapter() || UpdateOpenedChapter()) && Save();
     if (discard && prompt.clickedButton() == discard) return true;
     return false;
@@ -273,8 +299,11 @@ bool CampaignModule::ConfirmClose(const QString& action, bool allowDiscard) {
 bool CampaignModule::Save(bool saveAs) {
     if (!session_) { Notice(tr("没有可保存的战役。")); return false; }
     if (saveAs || session_->SourcePath().empty()) {
+        if (!FlushDraft()) return false;
+        const auto context = FreezeContext();
+        const QScopedValueRollback guard(modalOperation_, true);
         const auto target = QFileDialog::getSaveFileName(page_, tr("另存战役为"), Path(session_->SourcePath()), tr("Warcraft III 战役 (*.w3n)"));
-        if (target.isEmpty()) return false;
+        if (target.isEmpty() || !CheckContext(context)) return false;
         return SaveTo(std::filesystem::path(target.toStdWString()));
     }
     return SaveTo({}, true);
