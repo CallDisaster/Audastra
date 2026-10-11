@@ -3,6 +3,7 @@
 #include "War3MapCore/Script/LuaTriggerUnit.h"
 #include "War3MapCore/Trigger/TriggerTypes.h"
 #include "LuaMappedText.h"
+#include "LuaCustomReloadAnalysis.h"
 
 #include <map>
 #include <set>
@@ -76,6 +77,7 @@ private:
     std::span<const LuaCallbackBinding> callbacks_;
     std::span<const LuaGlobalBinding> globals_;
     LuaTriggerBuildOptions options_;
+    std::optional<CustomReloadContext> customReloadContext_;
     LuaTriggerUnit result_;
     MappedText output_;
     std::map<std::string, const Trigger::VariableRecord*> variables_;

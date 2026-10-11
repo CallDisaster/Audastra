@@ -173,6 +173,14 @@ target_compile_options(audastra-lua-test-reload-tests PRIVATE /W4 /permissive- /
 add_test(NAME script-lua-test-reload COMMAND audastra-lua-test-reload-tests)
 set_tests_properties(script-lua-test-reload PROPERTIES TIMEOUT 30)
 
+add_executable(audastra-lua-custom-reload-tests LuaCustomReloadTests.cpp
+    "${AUD_LUA53_SOURCE_DIR}/lauxlib.c" "${AUD_LUA53_SOURCE_DIR}/lbaselib.c" "${AUD_LUA53_SOURCE_DIR}/lmathlib.c")
+target_link_libraries(audastra-lua-custom-reload-tests PRIVATE War3MapEditor::Services audastra-lua53-core)
+target_compile_definitions(audastra-lua-custom-reload-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+target_compile_options(audastra-lua-custom-reload-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME script-lua-custom-reload COMMAND audastra-lua-custom-reload-tests)
+set_tests_properties(script-lua-custom-reload PROPERTIES TIMEOUT 30)
+
 add_executable(war3-map-initialization-plan-tests MapInitializationPlanTests.cpp)
 target_link_libraries(war3-map-initialization-plan-tests PRIVATE War3MapEditor::ScriptBuild)
 target_compile_definitions(war3-map-initialization-plan-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)

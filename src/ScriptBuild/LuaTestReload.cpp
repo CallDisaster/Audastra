@@ -1,6 +1,7 @@
 #include "War3MapCore/Script/LuaTestReload.h"
 #include "War3MapCore/Hash.h"
 #include "LuaTriggerEmitter.h"
+#include "LuaCustomReloadAnalysis.h"
 
 #include <algorithm>
 #include <map>
@@ -23,6 +24,21 @@ bool Identity(const LuaTriggerUnit& unit) {
 bool Slice(const LuaTriggerUnit& unit, std::size_t offset, std::string_view text) {
     return offset <= unit.text.size() && text.size() <= unit.text.size() - offset
         && std::string_view(unit.text).substr(offset, text.size()) == text;
+}
+Result<lua::CustomReloadContext> AuthorContext(const LuaTriggerUnit& unit, const Lua::SyntaxOptions& syntax) {
+    std::vector<lua::CustomReloadSource> sources;
+    for (const auto& chunk : unit.testTriggers) if (chunk.customCode)
+        sources.push_back({chunk.authorSource, chunk.symbol.initializer});
+    auto context = lua::CaptureCustomReloadContext(unit.testSharedSource, sources, syntax);
+    if (!context.Succeeded()) return context;
+    for (const auto& chunk : unit.testTriggers) if (chunk.customCode) {
+        const auto proof = lua::AnalyzeCustomReload({chunk.authorSource, chunk.symbol.initializer}, *context.value, syntax);
+        if (!proof.Succeeded()) return {std::nullopt, proof.diagnostics};
+        if (proof.value->text != chunk.functions)
+            return Result<lua::CustomReloadContext>::Failure("Script.LuaReload", "LUA_RELOAD_CUSTOM_MANIFEST",
+                "作者原文不能重新生成本局实际转发代码，不能授予热重载资格。");
+    }
+    return context;
 }
 }
 
@@ -106,13 +122,32 @@ Result<LuaTestReloadPatch> PrepareLuaTestReload(const LuaTriggerUnit& baseline, 
             appendDefinition(current, chunk.initializationOffset, chunk.initialization);
             patch.newGlobals.push_back(chunk.variableId);
         }
+        std::optional<Result<lua::CustomReloadContext>> oldAuthorContext, newAuthorContext;
         for (const auto& next : current.testTriggers) {
             const auto previous = oldTriggers.find(next.symbol.triggerId);
             const auto* old = previous == oldTriggers.end() ? nullptr : previous->second;
             if (old && old->functions == next.functions && old->initializer == next.initializer
                 && old->initialization == next.initialization) continue;
             if (next.customCode || (old && old->customCode)) {
-                reject("LUA_RELOAD_CUSTOM_UNSUPPORTED", "自定义 Lua 块尚不能证明只重定义函数，不能重复执行其顶层副作用。"); return result;
+                if (!old || !old->customCode || !next.customCode || old->initialization != next.initialization
+                    || old->symbol.variable != next.symbol.variable || old->symbol.initializer != next.symbol.initializer) {
+                    reject("LUA_RELOAD_CUSTOM_STRUCTURE", "自定义 Lua 块的新增、类型转换或初始化身份变化尚不支持热重载。"); return result;
+                }
+                if (!oldAuthorContext) oldAuthorContext = AuthorContext(baseline, syntax);
+                if (!newAuthorContext) newAuthorContext = AuthorContext(current, syntax);
+                if (!oldAuthorContext->Succeeded() || !newAuthorContext->Succeeded()) {
+                    const auto& failed = !oldAuthorContext->Succeeded() ? *oldAuthorContext : *newAuthorContext;
+                    reject("LUA_RELOAD_CUSTOM_UNSUPPORTED", failed.diagnostics.empty()
+                        ? "自定义 Lua 上下文未完成安全分析。" : failed.diagnostics.front().message); return result;
+                }
+                const auto before = lua::AnalyzeCustomReload({old->authorSource, old->symbol.initializer}, *oldAuthorContext->value, syntax);
+                const auto after = lua::AnalyzeCustomReload({next.authorSource, next.symbol.initializer}, *newAuthorContext->value, syntax);
+                if (!before.Succeeded() || !after.Succeeded() || before.value->shape != after.value->shape) {
+                    reject("LUA_RELOAD_CUSTOM_STRUCTURE", "只支持具名函数体更新；函数声明、形参、顺序或 InitTrig 初始化正文发生变化。"); return result;
+                }
+                appendDefinition(current, next.functionsOffset, next.functions);
+                patch.changes.push_back({next.symbol.triggerId, LuaTestReloadChangeKind::Functions});
+                continue;
             }
             const bool recreate = !old || old->initializer != next.initializer || old->initialization != next.initialization
                 || old->symbol.variable != next.symbol.variable || old->symbol.initializer != next.symbol.initializer;

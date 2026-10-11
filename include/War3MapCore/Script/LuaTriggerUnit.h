@@ -70,6 +70,8 @@ struct LuaTestTriggerChunk {
     bool initialization = false;
     bool customCode = false;
     std::size_t functionsOffset = 0, initializerOffset = 0;
+    // 测试转发前的作者原文；重载时重新分析并核对实际 functions，不能单独充当可信资格。
+    std::string authorSource;
 };
 
 struct LuaTestGlobalChunk {

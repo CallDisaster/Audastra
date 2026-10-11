@@ -39,6 +39,13 @@ void Emitter::Prepare() {
             const auto& diagnostic = verified.diagnostics.front();
             Fail(diagnostic.code, diagnostic.message);
         }
+        if (options_.testHotReload) {
+            std::vector<CustomReloadSource> sources;
+            for (const auto& block : target_.nativeAuthorCode->Triggers()) sources.push_back({block.text, block.initializer});
+            auto captured = CaptureCustomReloadContext(target_.nativeAuthorCode->Header(), sources);
+            // 不能证明的作者块仍可正常测试；其后热重载明确要求重新测试。
+            if (captured.Succeeded()) customReloadContext_ = std::move(*captured.value);
+        }
     } else if (!document_.wct.customCode.text.empty())
         Fail("LUA_SOURCE_UNTRANSLATED", "地图自定义 JASS 尚未转换，原文仍保留。");
     for (const auto& [type, parent] : target_.handleTypes) {
@@ -159,10 +166,16 @@ void Emitter::AuthorTrigger(const Trigger::TriggerRecord& trigger, const LuaTrig
     const auto block = std::find_if(blocks.begin(), blocks.end(), [&](const auto& value) { return value.triggerId == trigger.id; });
     if (block == blocks.end()) Fail("LUA_AUTHOR_TRIGGER_MISSING", "活动 Lua 作者块不在冻结凭据中。");
     const auto start = output_.Size();
-    output_.Raw(block->text);
+    std::string text = block->text;
+    if (customReloadContext_) {
+        const auto analyzed = AnalyzeCustomReload({block->text, block->initializer}, *customReloadContext_);
+        if (analyzed.Succeeded()) text = analyzed.value->text;
+    }
+    output_.Raw(text);
     if (options_.testHotReload)
-        result_.testTriggers.push_back({symbol, block->text, {}, {}, trigger.runOnInit != 0, true, start, 0});
-    output_.RecordAuthor(start, block->text.size(), trigger.id, LuaSourceSpanKind::AuthorCustom);
+        result_.testTriggers.push_back({symbol, text, {}, {}, trigger.runOnInit != 0, true, start, 0, block->text});
+    // 转发只插入同一行内的表达式，保持作者的一基行号。
+    output_.RecordAuthor(start, text.size(), trigger.id, LuaSourceSpanKind::AuthorCustom);
     if (trigger.runOnInit) initializers_.emplace_back(trigger.id, symbol.variable);
 }
 
