@@ -196,6 +196,7 @@ private slots:
     void PlacementToolsKeepAuthorEditsAndOriginalUndo();
     void TerrainToolsKeepSessionPreviewAndOriginalUndo();
     void ImportMetadataUsesSourceAndCurrentAssetOverlay();
+    void ResourceToolsUseActualAsyncSourceAndRejectStaleResults();
     void ProjectSearchUsesInjectedOwnedPagesAndStrictRevision();
     void ProjectSearchCallbackReplacementStopsOldRequest();
     void ProjectSearchOwnerDeletionKeepsInvocationAlive();
@@ -1125,6 +1126,62 @@ void LiveEditorToolsTests::ImportMetadataUsesSourceAndCurrentAssetOverlay() {
     QCOMPARE(f.Fingerprint(), triggerSha); QCOMPARE(f.project.triggerUndoStack_->count(), 0);
     QVERIFY(WriteFile(f.source.filePath("resource/alpha.bin"), "external source change"));
     QVERIFY(!f.tools->Invoke("imports_list", {}).value("ok").toBool());
+}
+
+void LiveEditorToolsTests::ResourceToolsUseActualAsyncSourceAndRejectStaleResults() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    QByteArray texture(21, '\0');
+    texture[2] = 2; texture[12] = 1; texture[14] = 1; texture[16] = 24; texture[17] = 32;
+    texture[18] = 17; texture[19] = 33; texture[20] = 65;
+    QVERIFY(WriteFile(f.source.filePath("resource/icon.tga"), texture));
+    auto source = DirectoryWorkspace::Open(f.project.projectRoot_); QVERIFY(source.Succeeded());
+    f.project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*source.value));
+    f.project.ResetEditTracking();
+    const auto fingerprint = f.Fingerprint();
+    const auto state = f.tools->Invoke("object_resource_state", {});
+    QVERIFY2(state.value("ok").toBool(), qPrintable(Explain(state)));
+    QJsonObject query{{"project_identity", state.value("project_identity")}, {"expected_revision", state.value("revision")},
+        {"resource_revision", state.value("resource_revision")}, {"origin", "import"}, {"kind", "texture"}};
+    auto result = f.tools->Invoke("object_resource_query", query);
+    QCOMPARE(ErrorCode(result), QString("OBJECT_RESOURCE_INDEX_PENDING"));
+    QTRY_VERIFY_WITH_TIMEOUT((result = f.tools->Invoke("object_resource_query", query)).value("ok").toBool(), 3000);
+    QCOMPARE(result.value("rows").toArray().size(), 1);
+    const auto value = result.value("rows").toArray()[0].toObject().value("value");
+    QJsonObject inspect{{"project_identity", state.value("project_identity")}, {"expected_revision", state.value("revision")},
+        {"resource_revision", state.value("resource_revision")}, {"kind", "texture"}, {"value", value}};
+    QCOMPARE(ErrorCode(f.tools->Invoke("object_resource_inspect", inspect)), QString("OBJECT_RESOURCE_INSPECT_PENDING"));
+    QTRY_VERIFY_WITH_TIMEOUT(ErrorCode(result = f.tools->Invoke("object_resource_inspect", inspect)) != "OBJECT_RESOURCE_INSPECT_PENDING", 3000);
+    QVERIFY2(result.value("ok").toBool(), qPrintable(Explain(result)));
+    QVERIFY(result.value("source_verified").toBool());
+    QVERIFY(!result.value("payload_included").toBool());
+    QCOMPARE(result.value("bytes").toString(), QString("21"));
+    QCOMPARE(result.value("width").toInt(), 1); QCOMPARE(result.value("height").toInt(), 1);
+    QCOMPARE(f.Fingerprint(), fingerprint); QCOMPARE(f.project.triggerUndoStack_->count(), 0);
+
+    QVERIFY(f.tools->Invoke("editor_edit_trigger_graph", f.DescriptionRequest()).value("ok").toBool());
+    QCOMPARE(ErrorCode(f.tools->Invoke("object_resource_inspect", inspect)), QString("OBJECT_RESOURCE_STALE"));
+    const auto nextState = f.tools->Invoke("object_resource_state", {});
+    QVERIFY(nextState.value("resource_revision") != state.value("resource_revision"));
+    inspect["project_identity"] = nextState.value("project_identity");
+    inspect["expected_revision"] = nextState.value("revision"); inspect["resource_revision"] = nextState.value("resource_revision");
+    // 旧修订的结果不可复用；新身份重新后台读真实文件。
+    QCOMPARE(ErrorCode(f.tools->Invoke("object_resource_inspect", inspect)), QString("OBJECT_RESOURCE_INSPECT_PENDING"));
+    QTRY_VERIFY_WITH_TIMEOUT(ErrorCode(result = f.tools->Invoke("object_resource_inspect", inspect)) != "OBJECT_RESOURCE_INSPECT_PENDING", 3000);
+    QVERIFY2(result.value("ok").toBool(), qPrintable(Explain(result)));
+    QtProject::AssetState renamed;
+    renamed.edits.push_back({"resource/icon.tga", "resource/moved.tga"});
+    f.project.RestoreAssets(renamed);
+    const auto renamedState = f.tools->Invoke("object_resource_state", {});
+    inspect["project_identity"] = renamedState.value("project_identity");
+    inspect["expected_revision"] = renamedState.value("revision");
+    inspect["resource_revision"] = renamedState.value("resource_revision");
+    inspect["value"] = "resource/moved.tga";
+    QCOMPARE(ErrorCode(f.tools->Invoke("object_resource_inspect", inspect)), QString("OBJECT_RESOURCE_INSPECT_PENDING"));
+    QTRY_VERIFY_WITH_TIMEOUT(ErrorCode(result = f.tools->Invoke("object_resource_inspect", inspect)) != "OBJECT_RESOURCE_INSPECT_PENDING", 3000);
+    QVERIFY2(result.value("ok").toBool(), qPrintable(Explain(result)));
+    QCOMPARE(result.value("source_path").toString(), QString("resource/icon.tga"));
+    QVERIFY(WriteFile(f.source.filePath("resource/icon.tga"), "changed"));
+    QVERIFY(!f.tools->Invoke("object_resource_inspect", inspect).value("ok").toBool());
 }
 
 void LiveEditorToolsTests::ProjectSearchUsesInjectedOwnedPagesAndStrictRevision() {

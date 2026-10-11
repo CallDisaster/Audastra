@@ -6,6 +6,7 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/ObjectData/StandardObjectCatalog.h"
 #include "War3MapCore/Services/ImportInventoryQuery.h"
+#include "War3MapCore/Services/ObjectResourceDirectory.h"
 #include <mutex>
 #include <type_traits>
 
@@ -187,6 +188,8 @@ Modules::ObjectResourcePickerFactory MakeObjectResourcePickerFactory(QtProject::
             -> Result<Services::ObjectResourceInfo> {
             using Return = Result<Services::ObjectResourceInfo>;
             // 只读冻结输入和来源租约；QObject修订只由调用方在所属线程前后复核。
+            if (inputs->directory) return Services::InspectDirectoryObjectResource(*inputs->directory,
+                inputs->game, inputs->importBinding, inputs->overlay, value, kind);
             if (!inputs->previewSources.Succeeded()) return {{}, inputs->previewSources.diagnostics};
             auto reader = Modules::WorldResourceReader::Open(*inputs->previewSources.value);
             if (!reader.Succeeded()) return {{}, reader.diagnostics};

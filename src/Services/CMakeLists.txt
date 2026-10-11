@@ -19,6 +19,7 @@ add_library(War3MapServices STATIC
     ObjectResourceCatalog.cpp
     ObjectResourceFiles.cpp
     ObjectResourceInfo.cpp
+    ObjectResourceDirectory.cpp
     ObjectTransactionSnapshot.cpp
     ObjectTransactionSaveGuards.cpp
     MapSaveService.cpp

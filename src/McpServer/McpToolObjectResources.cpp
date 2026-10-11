@@ -1,12 +1,9 @@
 #include "McpObjectResourceTools.h"
 #include "McpToolInternal.h"
 #include "War3MapCore/Game/GameDataSource.h"
-#include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
-#include "War3MapCore/Resources/ImportTable.h"
 #include "War3MapCore/Services/ImportInventoryQuery.h"
-#include "War3MapCore/VerifiedFile.h"
-#include <map>
+#include "War3MapCore/Services/ObjectResourceDirectory.h"
 
 namespace War3Map::Mcp {
 namespace {
@@ -51,57 +48,9 @@ Result<ObjectResourceInfo> Inspect(McpWorkspace& workspace, std::string_view val
     if (!directory.Succeeded()) return {{}, directory.diagnostics};
     if (directory.value->Snapshot().aggregateSha256 != workspace.Revision().sourceSha256)
         return Return::Failure("Object.Resource", "OBJECT_RESOURCE_SOURCE_CHANGED", "目录来源已变化。");
-    std::map<std::string, std::vector<const WorkspaceFile*>> paths;
-    for (const auto& file : directory.value->Snapshot().files) {
-        auto path = Resources::CanonicalImportPath(IO::GenericPathUtf8(file.relativePath));
-        if (path.Succeeded()) paths[*path.value].push_back(&file);
-    }
-    constexpr std::size_t maximum = 32 * 1024 * 1024;
-    Resources::ResourceResolver resolver;
-    Resources::ResourceSource map;
-    map.id = "map-directory"; map.layer = Resources::ResourceLayer::MapImport; map.priority = Resources::ResourcePriority::MapDirectory;
-    map.probe = [&](std::string_view path) {
-        auto found = paths.find(std::string(path));
-        if (found == paths.end()) return Result<Resources::ResourceProbe>::Success({});
-        if (found->second.size() != 1) return Result<Resources::ResourceProbe>::Success({Resources::ResourceProbeState::Conflict, std::string(path)});
-        return Result<Resources::ResourceProbe>::Success({Resources::ResourceProbeState::Found, IO::GenericPathUtf8(found->second.front()->relativePath)});
-    };
-    map.read = [&](std::string_view path) -> Result<std::vector<std::byte>> {
-        auto canonical = Resources::CanonicalImportPath(path);
-        if (!canonical.Succeeded()) return {{}, canonical.diagnostics};
-        const auto found = paths.find(*canonical.value);
-        if (found == paths.end() || found->second.size() != 1)
-            return Result<std::vector<std::byte>>::Failure("Object.Resource", "OBJECT_RESOURCE_SOURCE_CHANGED", "目录资源身份不再唯一。");
-        const auto& file = *found->second.front();
-        return ReadVerifiedFile(directory.value->Snapshot().root / file.relativePath, file.sha256, maximum);
-    };
-    auto added = resolver.AddSource(std::move(map)); if (!added.Succeeded()) return {{}, added.diagnostics};
-    std::optional<Game::GameDataSource> game;
-    std::map<std::string, std::string> gameSources;
-    if (!workspace.GameRoot().empty()) {
-        auto mounted = Game::GameDataSource::MountStrict(workspace.GameRoot());
-        if (!mounted.Succeeded()) return {{}, mounted.diagnostics};
-        game = std::move(*mounted.value);
-        Resources::ResourceSource source;
-        source.id = "game"; source.layer = Resources::ResourceLayer::Game; source.priority = Resources::ResourcePriority::GameBase;
-        source.probe = [&](std::string_view path) { return Result<Resources::ResourceProbe>::Success(
-            {game->HasFile(std::string(path)) ? Resources::ResourceProbeState::Found : Resources::ResourceProbeState::Missing, std::string(path)}); };
-        source.read = [&](std::string_view path) -> Result<std::vector<std::byte>> {
-            auto read = game->ReadFileBoundedWithSource(std::string(path), maximum);
-            if (!read.Succeeded()) return {{}, read.diagnostics};
-            gameSources[std::string(path)] = read.value->archiveName;
-            return Result<std::vector<std::byte>>::Success(std::move(read.value->bytes));
-        };
-        added = resolver.AddSource(std::move(source)); if (!added.Succeeded()) return {{}, added.diagnostics};
-    }
-    auto result = InspectObjectResource(resolver, value, kind, maximum);
-    if (result.Succeeded() && result.value->source.sourceId == "game") {
-        const auto found = gameSources.find(result.value->source.sourcePath);
-        if (found == gameSources.end()) return Return::Failure("Object.Resource", "OBJECT_RESOURCE_SOURCE_UNKNOWN", "资源没有实际读取来源。");
-        result.value->source.sourceId = found->second;
-    }
-    const auto current = directory.value->VerifyUnchanged();
-    return current.Succeeded() ? result : Return{{}, current.diagnostics};
+    ImportInventoryBinding binding{"resource-inspect", 1, workspace.ObjectRevision(),
+        workspace.Revision().sourceSha256, workspace.ObjectRevision(), "committed-source"};
+    return InspectDirectoryObjectResource(*directory.value, workspace.GameRoot(), binding, {}, value, kind);
 }
 }
 void RegisterObjectResourceTools(McpServer& server) {
