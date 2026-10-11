@@ -241,7 +241,6 @@ void MainWindow::TestMap() {
             }
         });
         connect(worker, &QThread::finished, worker, &QObject::deleteLater);
-        worker->start(QThread::LowPriority);
         if (mapTestLease_ == lease) {
             // Starting时尚无game PID；启动失败也须停止本局轮询，不能留下永久初始化提示。
             if (luaRuntimeMailbox_) PollLuaTestReload();
@@ -250,6 +249,9 @@ void MainWindow::TestMap() {
             mapTestLease_.reset();
             if (luaReloadAction_) luaReloadAction_->setEnabled(false);
         }
+        // 末次诊断查询先完成，随后才允许清理持有生命周期锁核验大图。
+        // 否则后台清理先获锁时，GUI上的邮箱归属查询会等待整图SHA。
+        worker->start(QThread::LowPriority);
         cleanup->deleteLater();
     });
     cleanup->start();
