@@ -11,7 +11,7 @@ std::string_view PreviewDiagnosticCategory(std::string_view code) noexcept {
         code.find("LIMIT") != std::string_view::npos || code.find("TIMEOUT") != std::string_view::npos ||
         code.find("ALLOCATION") != std::string_view::npos || code.find("MEMORY") != std::string_view::npos)
         return "budget_uncovered";
-    if (code == "MDX_GEOA_DUPLICATE" || code.find("GAME_ORDER") != std::string_view::npos ||
+    if (code == "SCAN_EXPLICIT_CAMERA_NO_GEOMETRY" || code == "MDX_GEOA_DUPLICATE" || code.find("GAME_ORDER") != std::string_view::npos ||
         code.find("SOURCE_ORDER") != std::string_view::npos || code.find("IDENTICAL_KEYS") != std::string_view::npos)
         return "compatibility_notice";
     if (code == "file-not-found" || code == "WORLD_ASSET_MISSING" ||
@@ -97,6 +97,14 @@ PreviewModelReport EvaluatePreviewModel(std::string path, const AnimationResourc
             if (capability.skippedEmitters) for (const auto& issue : *capability.skippedEmitters)
                 Add(report, issue.code, issue.message, "notice");
         }
+        // 纯粒子/节点模型没有网格取景框。扫描器使用声明的观察相机继续数值采样，
+        // 不能让 Fit 的异常丢掉已取得的模型身份与此前诊断，也不声称此视点覆盖画面。
+        const bool withoutGeometry = service->Scene()->geometry.instances.empty();
+        const War3RenderCameraV2 camera = withoutGeometry
+            ? War3RenderCameraV2{sizeof(War3RenderCameraV2), 0, 0, 0, 500, -1.1f, 0.5f}
+            : FitAnimationSceneCamera(*service->Scene());
+        if (withoutGeometry)
+            Add(report, "SCAN_EXPLICIT_CAMERA_NO_GEOMETRY", "没有可取景网格；使用目标(0,0,0)、距离500、偏航-1.1、俯仰0.5的显式相机进行CPU采样，不证明可见画面。", "notice");
         const auto& sequences = parsed.value->sequences;
         report.planned = sequences.size() * 3;
         bool premCapabilitiesCaptured = false;
@@ -113,7 +121,7 @@ PreviewModelReport EvaluatePreviewModel(std::string path, const AnimationResourc
                 AnimationEdit edit; edit.identity = instance.identity; edit.sequenceIndex = sequence;
                 edit.elapsedMs = elapsed; edit.globalMs = elapsed;
                 request.edits.push_back(edit);
-                request.worldCamera = AnimationWorldCamera(FitAnimationSceneCamera(*service->Scene()));
+                request.worldCamera = AnimationWorldCamera(camera);
                 const auto sampled = service->Prepare(nullptr, request); ++report.sampled;
                 Add(report, sampled.diagnostics, sequence, elapsed);
                 if (!sampled.Succeeded()) continue;
