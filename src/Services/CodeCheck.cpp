@@ -404,6 +404,8 @@ CodeCheckResult CheckCode(const CodeCheckRequest& request, std::stop_token cance
         const std::string_view input = request.language == CodeLanguage::VJass ? emissionOrigins.text : combined;
         sources.push_back({request.source.name, input});
         cursors.push_back({request.source.name, input});
+        options.diagnosticSourceName = request.source.name;
+        options.diagnosticSourceMap = actualMap;
         auto checked = Jass::CheckJass(sources, options);
         result.completed = checked.completed;
         result.syntaxChecked = checked.completed;

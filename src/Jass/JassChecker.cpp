@@ -123,7 +123,7 @@ private:
         if (NameTaken(decl.name, decl.line)) return;
         const auto definition = collector_ ? collector_->Define(decl.name, decl.type, SymbolKind::Global,
             decl.array, decl.constant) : std::optional<SymbolKey>{};
-        context_.globals.emplace(decl.name, GlobalSymbol{type, decl.array, decl.constant, order, decl.line, definition});
+        context_.globals.emplace(decl.name, GlobalSymbol{type, decl.array, decl.constant, order, decl.line, definition, file_});
     }
 
     void AddNative(const NativeDecl& decl, std::uint32_t order) {
@@ -289,6 +289,7 @@ JassCheckResult CheckJass(std::span<const JassSource> sources, const JassCheckOp
         budget.Poll();
 
         CheckContext context;
+        context.options = &options;
         std::vector<Located> located;
         std::vector<FunctionWork> work;
         SymbolCollectionBudget symbolBudget(sources, options.maxSymbolDefinitions,
@@ -381,7 +382,7 @@ JassCheckResult CheckJass(std::span<const JassSource> sources, const JassCheckOp
                 ++sourceLine; lineEnd = endOfLine(lineStart);
             }
             Diagnostic diagnostic{DiagnosticSeverity::Error, std::string(kSubsystem), item.issue.code,
-                DiagnosticText(context.files[item.file]) + ":" + std::to_string(item.line) + ": " + item.issue.message, std::nullopt};
+                context.DisplayLocation(static_cast<std::uint32_t>(item.file), item.line) + ": " + item.issue.message, std::nullopt};
             bool exactOrigin = false;
             if (sourceLine == item.line) {
                 diagnostic.origin = OriginSpan{context.files[item.file], lineStart, lineEnd - lineStart, {}};

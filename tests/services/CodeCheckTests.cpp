@@ -134,6 +134,47 @@ void CheckVJassLuaAndHardStops() {
     Require(checked.Succeeded() && !checked.contextComplete && !checked.semanticChecked && checked.generation == 19,
         "Unbound project fabricated full context or lost safe syntax fallback");
 }
+void CheckDeclarationMessagesUseAuthorLocations() {
+    auto request = Full("function Early takes nothing returns nothing\ncall Later()\nendfunction\n"
+        "function Later takes nothing returns nothing\nendfunction\n");
+    request.prefix = "globals\ninteger generated = 0\nendglobals\n";
+    auto checked = CheckCode(request);
+    const auto order = [](const CodeCheckResult& result) -> const CodeCheckDiagnostic* {
+        const auto found = std::find_if(result.diagnostics.begin(), result.diagnostics.end(),
+            [](const auto& diagnostic) { return diagnostic.code == "JASS_DECLARATION_ORDER"; });
+        return found == result.diagnostics.end() ? nullptr : &*found;
+    };
+    const auto* diagnostic = order(checked);
+    Require(diagnostic && diagnostic->line == 2
+        && diagnostic->message.find("定义于 WCT/trigger-17.j:4") != std::string::npos
+        && diagnostic->message.find("WCT/trigger-17.j:7") == std::string::npos,
+        "Embedded definition line still includes generated prefix");
+
+    request.prefix.clear();
+    const auto author = request.sourceMap.AddFile("WCT/header.j");
+    request.sourceMap.Map(1, {author, 80});
+    checked = CheckCode(request); diagnostic = order(checked);
+    Require(diagnostic && diagnostic->line == 81
+        && diagnostic->message.find("定义于 WCT/header.j:83") != std::string::npos,
+        "Embedded definition location ignored the frozen emitter source map");
+
+    request = Full("library Example\nfunction Early takes nothing returns nothing\ncall Later()\nendfunction\n"
+        "function Later takes nothing returns nothing\nendfunction\nendlibrary\n");
+    request.language = CodeLanguage::VJass;
+    checked = CheckCode(request); diagnostic = order(checked);
+    Require(diagnostic && diagnostic->line == 3
+        && diagnostic->message.find("定义于 WCT/trigger-17.j:5") != std::string::npos,
+        "vJass generated declaration position was not mapped back into author source");
+
+    request = Full("function Fine takes nothing returns nothing\nendfunction\n");
+    request.context.declarations = {{"Save/external.j", "function ExternalEarly takes nothing returns nothing\n"
+        "call ExternalLater()\nendfunction\nfunction ExternalLater takes nothing returns nothing\nendfunction\n"}};
+    const auto mapped = request.sourceMap.AddFile("WCT/other.j"); request.sourceMap.Map(1, {mapped, 200});
+    checked = CheckCode(request); diagnostic = order(checked);
+    Require(diagnostic && diagnostic->source == "Save/external.j"
+        && diagnostic->message.find("定义于 Save/external.j:4") != std::string::npos,
+        "External definition was incorrectly mapped as main author body");
+}
 void CheckDisabledDraftIsActuallyParsed() {
     auto document = std::make_shared<Trigger::TriggerDocument>();
     Trigger::TriggerRecord trigger;
@@ -159,6 +200,7 @@ void CheckDisabledDraftIsActuallyParsed() {
 int main() {
     try {
         CheckSemanticsAndActualIndex(); CheckOriginsAndGeneratedContext(); CheckVJassLuaAndHardStops();
+        CheckDeclarationMessagesUseAuthorLocations();
         CheckDisabledDraftIsActuallyParsed();
         std::cout << "Shared code-check semantics, emitter origins, vJass mapping, Lua compile-only and hard stops passed\n";
         return 0;
