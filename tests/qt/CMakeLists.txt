@@ -305,7 +305,7 @@ qt_add_executable(war3-map-native-workbench-tests ${native_workbench_test_source
 target_include_directories(war3-map-native-workbench-tests PRIVATE "${PROJECT_SOURCE_DIR}/src/QtApp")
 target_link_libraries(war3-map-native-workbench-tests PRIVATE
     War3MapEditor::Core War3MapEditor::ObjectData War3MapEditor::Trigger War3MapEditor::QtUiKit
-    War3MapEditor::MapSizeAnalysis
+    War3MapEditor::MapSizeAnalysis War3MapEditor::ObjectResourceAdapter
     War3MapEditor::QtAgent War3MapEditor::McpProtocol War3MapEditor::QtFeedback War3MapEditor::QtUpdate
     Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
 target_compile_definitions(war3-map-native-workbench-tests PRIVATE
@@ -347,7 +347,7 @@ qt_add_executable(war3-map-project-watch-tests ${project_watch_test_sources})
 target_include_directories(war3-map-project-watch-tests PRIVATE "${PROJECT_SOURCE_DIR}/src/QtApp")
 target_link_libraries(war3-map-project-watch-tests PRIVATE
     War3MapEditor::Core War3MapEditor::ObjectData War3MapEditor::Trigger War3MapEditor::QtUiKit
-    War3MapEditor::MapSizeAnalysis
+    War3MapEditor::MapSizeAnalysis War3MapEditor::ObjectResourceAdapter
     War3MapEditor::QtAgent War3MapEditor::McpProtocol War3MapEditor::QtFeedback War3MapEditor::QtUpdate
     Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
 target_compile_definitions(war3-map-project-watch-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
