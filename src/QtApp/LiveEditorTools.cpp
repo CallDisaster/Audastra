@@ -666,7 +666,9 @@ private:
             };
             return Mcp::InvokeTerrainEditTool(name, arguments, host);
         };
-        if (write) return Write(arguments, false, invoke);
+        // 预览不触发界面草稿提交；dry_run 无效时也不能先写入再由 façade 拒绝。
+        const auto dryRun = arguments.value("dry_run");
+        if (write && dryRun.isBool() && !dryRun.toBool()) return Write(arguments, false, invoke);
         if (busy_ || project_.savingMap_) return Mcp::Failure("LIVE_EDITOR_BUSY", "地图写任务正在执行。");
         auto bound = arguments;
         if (!bound.contains("project_identity") && !bound.contains("expected_revision")) {
