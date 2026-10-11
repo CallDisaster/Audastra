@@ -5,6 +5,7 @@
 #include "WorldModelPreview.h"
 #include "../AnimationTestModel.h"
 #include "../AnimationParticleContinuityTests.h"
+#include "../AnimationParticleVisibilityPreviewTests.h"
 #include "../AnimationPreviewFixture.h"
 #include "EditorPresentationFixture.h"
 #include "War3MapCore/Hash.h"
@@ -300,6 +301,7 @@ private slots:
     void AnimationPickHistoryReusesOnlyRetiredUnborrowedStorage();
     void AnimationPickHistoryChargesRetainedCapacity();
     void ModelPreviewUsesGameOrderAndSubmitsMotion();
+    void ModelPreviewParticleGameOrderStaysStrictAboutInvalidData();
     void ModelPreviewRealSequences();
 };
 

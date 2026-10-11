@@ -44,7 +44,8 @@ bool OnlyMissingResource(std::span<const Diagnostic> diagnostics) {
 }
 } // namespace
 Status ReadAnimationParticleAsset(AnimationAsset& a, std::span<const std::byte> bytes,
-    bool enabled, bool retainUnsupportedStatic) {
+    const AnimationLimits& limits) {
+    const bool retainUnsupportedStatic = limits.retainUnsupportedStatic;
     auto& capability = a.particleCapability;
     ForEachMdxNode(*a.parsed, [&](const MdxNode& n) {
         capability.particle2Count += n.kind == MdxNodeKind::ParticleEmitter2;
@@ -52,12 +53,16 @@ Status ReadAnimationParticleAsset(AnimationAsset& a, std::span<const std::byte> 
         capability.premCount += n.kind == MdxNodeKind::ParticleEmitter;
     });
     if (!capability.particle2Count && !capability.ribbonCount && !capability.premCount) return {};
-    if (!enabled) { capability.rejectionCode = "PARTICLE_PREVIEW_DISABLED"; return {}; }
+    if (!limits.enableParticles) { capability.rejectionCode = "PARTICLE_PREVIEW_DISABLED"; return {}; }
     if (capability.premCount) capability.rejectionCode = "PARTICLE_PREM_UNSUPPORTED";
     if (!capability.particle2Count && !capability.ribbonCount) return {};
     if (!a.compiled.Valid()) return AnimationFailure("PARTICLE_ANCHOR_UNAVAILABLE", "粒子需要完整的已编译节点图。");
-    auto read = Particles::Read(bytes, {}, retainUnsupportedStatic
-        ? Particles::ReadMode::PreviewSkipInvalidEmitters : Particles::ReadMode::Strict);
+    // 原版取键顺序与隔离坏发射器是两个独立选择。模型动作窗口必须能使用原版顺序，
+    // 同时保留无效数值、全局序列、材质和结构的失败，不静默退回部分显示。
+    const auto mode = retainUnsupportedStatic ? Particles::ReadMode::PreviewSkipInvalidEmitters :
+        limits.playbackPolicy == AnimationPlaybackPolicy::InteractivePreview
+            ? Particles::ReadMode::PreviewGameOrder : Particles::ReadMode::Strict;
+    auto read = Particles::Read(bytes, {}, mode);
     if (!read.Succeeded()) return {std::move(read.diagnostics)};
     auto particles = std::make_shared<Particles::Asset>(std::move(*read.value));
     std::unordered_map<std::uint32_t, std::uint32_t> nodes;
