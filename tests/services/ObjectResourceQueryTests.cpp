@@ -99,6 +99,12 @@ void CaptureAndInheritance() {
     auto conflict = CaptureObjectResourceCatalog(context); Require(conflict.Succeeded() && !(*conflict.value)->complete, "duplicate resource reported partial");
     Require(std::none_of((*conflict.value)->rows.begin(), (*conflict.value)->rows.end(), [](const auto& row) {
         return row.object->rawcode == "u002" && row.fieldId == "umdl"; }), "ambiguous override does not expose base model");
+    source.state = ProjectSearchState::Partial;
+    auto partial = CaptureObjectResourceCatalog(context);
+    Require(partial.Succeeded() && (*partial.value)->rows.empty() && !(*partial.value)->complete,
+        "partial map cannot prove absent overrides and must not expose standard fallbacks");
+    Require(std::any_of((*partial.value)->diagnostics.begin(), (*partial.value)->diagnostics.end(), [](const auto& note) {
+        return note.code == "OBJECT_RESOURCE_SOURCE_PARTIAL"; }), "partial source remains visible as a diagnostic");
     source.state = ProjectSearchState::Unavailable;
     auto unavailable = CaptureObjectResourceCatalog(context);
     Require(unavailable.Succeeded() && (*unavailable.value)->rows.empty() && !(*unavailable.value)->complete, "unknown map override does not silently fall back");

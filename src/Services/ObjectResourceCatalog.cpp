@@ -30,8 +30,7 @@ ObjectFieldContext Context(const ObjectKey& key, const StandardObjectEntry* base
 }
 bool HasKnownSource(const ObjectResourceContext& context, ObjectType type) {
     for (const auto& source : context.names.objects) if (source.type == type
-        && source.state != ProjectSearchState::Ready && source.state != ProjectSearchState::Missing
-        && source.state != ProjectSearchState::Partial) return false;
+        && source.state != ProjectSearchState::Ready && source.state != ProjectSearchState::Missing) return false;
     return true;
 }
 void StoreSourceFields(const ObjectResourceContext& context, const ObjectKey& key, const ObjectFieldContext& fieldContext,
@@ -130,14 +129,16 @@ Result<std::shared_ptr<const ObjectResourceCatalog>> CaptureObjectResourceCatalo
         builder.Diagnose(Warning("OBJECT_RESOURCE_STANDARD_MISSING", "原版物体目录未加载；只列可确定的地图资源字段。"));
     }
     for (const auto& source : context.names.objects) {
+        if (source.state == ProjectSearchState::Partial) {
+            builder.Catalog().complete = false;
+            builder.Diagnose(Warning("OBJECT_RESOURCE_SOURCE_PARTIAL", "物编只部分可读，不能证明未列出的覆盖不存在；该类别未回退原版候选："
+                + std::string(ObjectData::ToString(source.type))));
+            continue;
+        }
         if (!HasKnownSource(context, source.type)) {
             builder.Catalog().complete = false;
             builder.Diagnose(Warning("OBJECT_RESOURCE_SOURCE_UNAVAILABLE", "物编覆盖状态未知，不回退原版候选：" + std::string(ObjectData::ToString(source.type))));
             continue;
-        }
-        if (source.state == ProjectSearchState::Partial) {
-            builder.Catalog().complete = false;
-            builder.Diagnose(Warning("OBJECT_RESOURCE_SOURCE_PARTIAL", "物编只部分可读：" + std::string(ObjectData::ToString(source.type))));
         }
         for (const auto& record : source.records) {
             if (!builder.Tick()) return builder.Finish();
