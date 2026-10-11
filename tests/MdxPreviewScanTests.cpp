@@ -10,6 +10,18 @@ using namespace War3Map;
 using namespace War3Map::Render;
 using namespace War3Map::Render::Scan;
 void Check(bool value,const char* message){if(!value)throw std::runtime_error(message);}
+std::vector<std::byte> PureParticleModel() {
+    const auto source = AnimationParticleContinuityTest::Model();
+    MdxTest::Writer out; out.Tag("MDLX");
+    for (std::size_t at = 4; at + 8 <= source.size();) {
+        std::uint32_t size = 0; std::memcpy(&size, source.data() + at + 4, 4);
+        Check(size <= source.size() - at - 8, "original particle fixture chunk truncated");
+        const std::string_view tag(reinterpret_cast<const char*>(source.data() + at), 4);
+        if (tag != "GEOS" && tag != "GEOA" && tag != "BONE") out.Raw(source.data() + at, size + 8);
+        at += size + 8;
+    }
+    return std::move(out.bytes);
+}
 PreviewModelReport Evaluate(std::vector<std::byte> bytes,Limits limits={}) {
     const auto sha=Sha256(bytes);Check(sha.Succeeded(),"fixture digest failed");
     AnimationResource model{std::move(bytes),"original-fixture",*sha.value};
@@ -50,6 +62,18 @@ void Run(){
         "interactive source-order notice was attributed to the wrong sequence");
     Check(AnimationLimits{}.playbackPolicy==AnimationPlaybackPolicy::StrictReplay,"scan changed strict defaults");
     Check(!AnimationLimits{}.allowSourceOrderNodePreview,"scan changed default node-key policy");
+    const auto pureParticle = PureParticleModel();
+    const auto particleParsed = ParseMdx(pureParticle);
+    Check(particleParsed.Succeeded() && particleParsed.value->geosets.empty(), "particle-only fixture has geometry");
+    const auto particleScan = Evaluate(pureParticle);
+    Check(particleScan.sha256 == *Sha256(pureParticle).value && particleScan.source == "original-fixture",
+        "particle-only scan discarded the verified model identity");
+    Check(particleScan.policies.size() == 2, "particle-only scan lost a policy");
+    for (const auto& policy : particleScan.policies) {
+        Check(policy.sampled == 6 && policy.planned == 6, "particle-only scan lost declared samples");
+        Check(policy.issues.contains("SCAN_EXPLICIT_CAMERA_NO_GEOMETRY"), "particle-only scan did not declare its camera");
+        Check(!policy.issues.contains("ANIMATION_CAMERA_EMPTY_SCENE"), "particle-only scan still required a mesh camera fit");
+    }
     Limits bounded;bounded.maxSamples=1;
     const auto partial=Evaluate(AnimationTest::Bytes(),bounded);
     for(const auto& policy:partial.policies)
