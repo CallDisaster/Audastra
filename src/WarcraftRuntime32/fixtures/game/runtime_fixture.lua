@@ -45,15 +45,27 @@ check(actions == 1, 'action-code')
 common.DestroyTrigger(trigger)
 common.DestroyBoolExpr(condition)
 
+-- 通用 widget 死亡与单位死亡是不同的原版事件；GetDyingUnit 只属于后者。
+local widgetDeathTrigger = common.CreateTrigger()
+common.TriggerRegisterDeathEvent(widgetDeathTrigger, unit)
+local widgetDeaths = 0
+common.TriggerAddAction(widgetDeathTrigger, function()
+    assert(common.GetTriggerWidget() == unit, 'widget death context')
+    assert(common.GetDyingUnit() == nil, 'widget death has no dying unit context')
+    widgetDeaths = widgetDeaths + 1
+end)
+
 local deathTrigger = common.CreateTrigger()
-common.TriggerRegisterDeathEvent(deathTrigger, unit)
+common.TriggerRegisterUnitEvent(deathTrigger, unit, common.EVENT_UNIT_DEATH)
 local deaths = 0
 common.TriggerAddAction(deathTrigger, function()
     assert(common.GetDyingUnit() == unit, 'unit death context')
     deaths = deaths + 1
 end)
 common.KillUnit(unit)
+check(widgetDeaths == 1, 'widget-event')
 check(deaths == 1, 'unit-event')
+common.DestroyTrigger(widgetDeathTrigger)
 common.DestroyTrigger(deathTrigger)
 common.RemoveUnit(unit)
 
