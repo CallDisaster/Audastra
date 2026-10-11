@@ -466,6 +466,7 @@ TemplateResult EvaluateTemplates(std::string_view text, const TemplateContext& c
         }
         const bool expression = open + 2 < text.size() && text[open + 2] == '=';
         const std::string_view code = text.substr(open + (expression ? 3 : 2), close - open - (expression ? 3 : 2));
+        const auto outputBegin = result.text.size();
         std::string error;
         if (expression) {
             ++result.expressions;
@@ -490,6 +491,7 @@ TemplateResult EvaluateTemplates(std::string_view text, const TemplateContext& c
             // 失败结果仅供诊断；保留原块，避免独立模板命令输出看似完整但缺少行为的脚本。
             result.text.append(text.substr(open, close + 2 - open));
         }
+        result.spans.push_back({open, close + 2, outputBegin, result.text.size()});
         at = close + 2;
     }
     return result;

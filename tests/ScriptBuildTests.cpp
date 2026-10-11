@@ -140,6 +140,18 @@ void TestTemplates() {
         "tail";
     Require(result.text == expected, "template output mismatch:\n" + result.text);
     Require(result.skippedBlocks == 0, "supported templates must not skip blocks");
+    // 每个模板块登记输入/输出范围；块外文本逐字节对应，调用方据此把输出行映射回输入行。
+    Require(result.spans.size() == 9, "every template block must record its source and output range");
+    Require(result.spans[0].sourceBegin == 1 && result.spans[0].sourceEnd == 10
+        && result.spans[0].outputBegin == 1 && result.spans[0].outputEnd == 2, "YDNL-style newline span");
+    std::size_t source = 0, output = 0;
+    for (const auto& span : result.spans) {
+        Require(span.sourceBegin - source == span.outputBegin - output
+            && input.compare(source, span.sourceBegin - source, result.text, output, span.outputBegin - output) == 0,
+            "text between template blocks must be copied verbatim");
+        source = span.sourceEnd; output = span.outputEnd;
+    }
+    Require(input.compare(source, std::string::npos, result.text, output, std::string::npos) == 0, "trailing text copied verbatim");
 
     // 原创合成物编模板：固定循环和字段写入也不能在未实现解释器时假报成功。
     const std::string objectTemplate =

@@ -5,12 +5,15 @@
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
+#include "War3MapCore/Script/MapScript.h"
 #include "War3MapCore/Services/CodeCheckProject.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
+#include "War3MapCore/Trigger/TriggerCodeEditing.h"
 
 #include <QApplication>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QUndoCommand>
@@ -104,6 +107,43 @@ int main(int argc, char** argv) {
                     return frozen.name == declaration.source;
                 }), "A complete real declaration index advertises a missing frozen navigation source");
         }
+        // 可选：检查指定触发器的代码（GUI 触发器先走与“转代码”相同的生成与应用，YDWE 动作会生成 YDNL），
+        // 宏名不得被报成多余的词。只改内存中的工程文档，不保存。
+        QJsonObject triggerReceipt;
+        if (const auto wanted = qEnvironmentVariable("FORGE_CODE_PROJECT_TRIGGER"); !wanted.isEmpty()) {
+            auto& document = *project.triggerDocument_;
+            const auto found = std::find_if(document.triggers.begin(), document.triggers.end(), [&](const auto& trigger) {
+                return QString::fromStdString(trigger.name.text) == wanted;
+            });
+            Require(found != document.triggers.end(), "Requested trigger not found");
+            const auto id = found->id;
+            if (found->customTextFlag == 0) {
+                Script::MapScriptInputs inputs; inputs.triggers = &document; inputs.catalog = project.uiCatalog_.get();
+                const auto generated = Script::GenerateGuiTriggerSource(inputs, id);
+                Require(generated.Succeeded() && generated.value, Codes(generated.diagnostics).c_str());
+                const auto plan = Trigger::TriggerCodeEditor::PrepareConversion(document, *project.uiCatalog_, id,
+                    generated.value->text, generated.value->effectiveRunOnInit);
+                Require(plan.Succeeded() && plan.value, Codes(plan.diagnostics).c_str());
+                Require(Trigger::TriggerCodeEditor::Apply(document, *project.uiCatalog_, *plan.value).Succeeded(), "Conversion apply failed");
+                project.triggerUndoStack_->push(new QUndoCommand("owned conversion"));
+            }
+            const auto converted = project.CaptureCodeCheckSnapshot();
+            const auto& frozen = converted->triggers->triggers;
+            const auto trigger = std::find_if(frozen.begin(), frozen.end(), [&](const auto& record) { return record.id == id; });
+            Require(trigger != frozen.end() && trigger->customTextFlag != 0, "Converted trigger has no custom code");
+            const auto text = Trigger::TriggerCodeEditor::NormalizedText(trigger->customText);
+            const auto checked = Services::CheckProjectCode(converted, cache,
+                {Trigger::CodeBlockKind::CustomTrigger, id}, text, Services::CodeLanguage::VJass, 2);
+            QJsonArray diagnostics;
+            for (const auto& diagnostic : checked.diagnostics) {
+                diagnostics.append(QString::fromStdString(diagnostic.source + ":" + std::to_string(diagnostic.line) + " " + diagnostic.message));
+                Require(diagnostic.message.find("YDNL") == std::string::npos, "A YDWE macro name was reported as a stray token");
+            }
+            triggerReceipt = {{"trigger", wanted}, {"completed", checked.completed}, {"passed", checked.Succeeded()},
+                {"contextComplete", checked.contextComplete}, {"reason", QString::fromStdString(checked.reason)},
+                {"lines", static_cast<qint64>(std::count(text.begin(), text.end(), '\n') + 1)},
+                {"ydnl", static_cast<qint64>(QString::fromStdString(text).count(QStringLiteral("YDNL")))}, {"diagnostics", diagnostics}};
+        }
         const auto script = project.archiveSession_->ReadMember("war3map.j");
         Require(script.Succeeded() && script.value && script.value->size() >= 7 * 1024 * 1024,
             "Actual performance source is not a 7MiB or larger war3map.j");
@@ -148,7 +188,7 @@ int main(int argc, char** argv) {
             {"completed", result.completed}, {"passed", result.Succeeded()}, {"semanticChecked", result.semanticChecked},
             {"contextComplete", result.contextComplete}, {"declarations", static_cast<qint64>(result.declarations.symbols.size())},
             {"reason", QString::fromStdString(result.reason)},
-            {"sourceUnchanged", true}, {"evidence", "actual author map readonly; UI snapshot timing and common worker only; no save, compiler process or game"}};
+            {"triggerCheck", triggerReceipt}, {"sourceUnchanged", true}, {"evidence", "actual author map readonly; UI snapshot timing and common worker only; no save, compiler process or game"}};
         const auto output = qEnvironmentVariable("FORGE_CODE_PROJECT_RECEIPT");
         if (!output.isEmpty()) {
             QFile file(output); Require(file.open(QIODevice::WriteOnly), "Timing receipt open failed");
