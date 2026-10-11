@@ -408,8 +408,9 @@ public:
     std::array<std::unique_ptr<ObjectData::NativeObjectDocument>, kObjectTypeCount> nativeObjectDocuments_;
     std::array<bool, kObjectTypeCount> objectDirty_{};
     std::array<QUndoStack*, kObjectTypeCount> objectUndoStacks_{};
-    std::unique_ptr<ObjectData::StandardObjectCatalog> standardCatalog_;
-    std::unique_ptr<ObjectData::ObjectFieldSchema> objectFieldSchema_;
+    // 目录加载后只读；后台资源索引持有同一不可变快照，避免UI复制整份原版字段。
+    std::shared_ptr<const ObjectData::StandardObjectCatalog> standardCatalog_;
+    std::shared_ptr<const ObjectData::ObjectFieldSchema> objectFieldSchema_;
 
     // ── 导入资源 ──
     std::vector<PendingImport> pendingImports_;

@@ -24,6 +24,7 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSignalBlocker>
+#include <QShortcut>
 #include <QSortFilterProxyModel>
 #include <QSplitter>
 #include <QStackedWidget>
@@ -61,6 +62,10 @@ ObjectModule::ObjectModule(QtProject::EditorProject& project)
 ObjectModule::~ObjectModule() {
     delete newObjectPicker_.data();
     delete page_.data();
+}
+void ObjectModule::SetResourcePickerFactory(ObjectResourcePickerFactory factory) {
+    resourcePickerFactory_ = std::move(factory);
+    if (objectFieldDelegate_) objectFieldDelegate_->SetResourcePickerFactory(resourcePickerFactory_);
 }
 
 Shell::ModuleInfo ObjectModule::Info() const {
@@ -392,6 +397,17 @@ void ObjectModule::BuildPage() {
         if (index.flags() & Qt::ItemIsEditable) standardFields->edit(index);
         else BeginStandardReferenceEdit(index);
     });
+    for (const auto key : {Qt::Key_Return, Qt::Key_Enter}) {
+        auto* activate = new QShortcut(QKeySequence(key), standardFields);
+        activate->setContext(Qt::WidgetShortcut);
+        connect(activate, &QShortcut::activated, this, [this, standardFields] {
+            const auto index = standardFields->currentIndex().siblingAtColumn(1);
+            if (!index.isValid()) return;
+            standardFields->setCurrentIndex(index);
+            if (index.flags() & Qt::ItemIsEditable) standardFields->edit(index);
+            else BeginStandardReferenceEdit(index);
+        });
+    }
     connect(standardFieldModel_, &QStandardItemModel::itemChanged,
         this, &ObjectModule::OnStandardFieldChanged);
     ConfigureTable(standardFields);
@@ -406,6 +422,7 @@ void ObjectModule::BuildPage() {
     objectFieldModel_->SetEditCallback([this]() { MarkCurrentObjectDocumentDirty(); });
     objectFieldView_->setModel(objectFieldModel_);
     objectFieldDelegate_ = new ObjectFieldDelegate(objectFieldView_);
+    objectFieldDelegate_->SetResourcePickerFactory(resourcePickerFactory_);
     objectFieldView_->setItemDelegate(objectFieldDelegate_);
     ConfigureTable(objectFieldView_);
     for (int column : {1, 2, 4}) objectFieldView_->hideColumn(column);

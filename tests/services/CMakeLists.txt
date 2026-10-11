@@ -174,6 +174,7 @@ target_compile_options(war3-map-object-commands-tests PRIVATE /W4 /permissive- /
 add_test(NAME services-object-commands COMMAND war3-map-object-commands-tests)
 
 add_executable(war3-map-object-resource-query-tests ObjectResourceQueryTests.cpp)
+target_include_directories(war3-map-object-resource-query-tests PRIVATE "${WAR3_RENDER_CORE_SOURCE_DIR}/tests")
 target_link_libraries(war3-map-object-resource-query-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(war3-map-object-resource-query-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-object-resource-query-tests PRIVATE /W4 /permissive- /utf-8)

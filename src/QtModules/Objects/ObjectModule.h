@@ -2,6 +2,7 @@
 
 #include "Modules/EditorModule.h"
 #include "Widgets/ObjectCatalogWidgets.h"
+#include "Widgets/ObjectResourcePicker.h"
 #include "War3MapCore/ObjectData/ObjectTypes.h"
 
 #include <QObject>
@@ -72,6 +73,7 @@ public:
     void RefreshStandardCatalog();
     void RefreshIcons();
     void SetSearchText(const QString& text);
+    void SetResourcePickerFactory(ObjectResourcePickerFactory factory);
     [[nodiscard]] bool HasLoadedContent() const;
     [[nodiscard]] int CurrentObjectType() const noexcept { return currentObjectType_; }
     [[nodiscard]] bool EditingMapObjects() const;
@@ -161,6 +163,7 @@ private:
     QVector<QtApp::ObjectViewEntry> objectViewEntries_;
     std::array<QString, 7> lastSelectedObject_; // 每个分类记住上次选中的 rawcode
     int currentObjectType_ = 0;
+    ObjectResourcePickerFactory resourcePickerFactory_;
 };
 
 } // namespace War3Map::Modules

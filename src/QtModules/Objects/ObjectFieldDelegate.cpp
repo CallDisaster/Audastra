@@ -2,6 +2,7 @@
 #include "ObjectModelsDetail.h"
 #include "Widgets/RoundedPopups.h"
 #include "Widgets/WarcraftTextPreview.h"
+#include "Widgets/TablePopupAnchor.h"
 
 #include <QPlainTextEdit>
 #include <QAbstractItemView>
@@ -12,64 +13,6 @@
 
 using namespace War3Map::ObjectData;
 using namespace ObjectModelsDetail;
-
-namespace {
-// 浮层随实际模型行移动；生命周期归浮层，不在字段模型保存任何窗口状态。
-class FieldPopupAnchor final : public QObject {
-public:
-    FieldPopupAnchor(QWidget* panel, QAbstractItemView* view, const QModelIndex& index, QWidget* cellAnchor)
-        : QObject(panel), panel_(panel), view_(view), cellAnchor_(cellAnchor), index_(index) {
-        qApp->installEventFilter(this);
-        connect(view->verticalScrollBar(), &QScrollBar::valueChanged, this, [this] { Reposition(); });
-        connect(view->horizontalScrollBar(), &QScrollBar::valueChanged, this, [this] { Reposition(); });
-        connect(view->selectionModel(), &QItemSelectionModel::currentChanged, this, [this](const QModelIndex& current) {
-            if (current != index_) panel_->close();
-        });
-        connect(view->model(), &QAbstractItemModel::modelAboutToBeReset, panel, &QWidget::close);
-        QTimer::singleShot(0, this, [this] { Reposition(); });
-    }
-    ~FieldPopupAnchor() override { if (qApp) qApp->removeEventFilter(this); }
-    bool eventFilter(QObject* object, QEvent* event) override {
-        if (!panel_->isVisible()) return false;
-        if (!view_) { panel_->close(); return false; }
-        if (event->type() == QEvent::KeyPress && static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape) {
-            auto* widget = qobject_cast<QWidget*>(object);
-            if (widget && (widget == panel_ || panel_->isAncestorOf(widget) || widget == view_ || view_->isAncestorOf(widget))) {
-                panel_->close(); return true;
-            }
-        }
-        if (event->type() == QEvent::MouseButtonPress) {
-            auto* widget = qobject_cast<QWidget*>(object);
-            if (widget && widget != panel_ && !panel_->isAncestorOf(widget)) panel_->close();
-        }
-        if ((object == view_ || object == view_->viewport() || object == view_->window()) &&
-            (event->type() == QEvent::Move || event->type() == QEvent::Resize || event->type() == QEvent::Hide)) Reposition();
-        return false;
-    }
-private:
-    void Reposition() {
-        if (!view_ || !index_.isValid() || !view_->isVisible()) { panel_->close(); return; }
-        const auto rect = view_->visualRect(index_);
-        if (rect.isEmpty() || !view_->viewport()->rect().intersects(rect)) { panel_->close(); return; }
-        // 单选选择器也会在窗口移动时读取锚点，必须同步它持有的单元格位置。
-        if (cellAnchor_) cellAnchor_->setGeometry(rect);
-        if (!view_->screen()) return;
-        const auto available = view_->screen()->availableGeometry();
-        const auto origin = view_->viewport()->mapToGlobal(rect.topRight());
-        panel_->move(std::clamp(origin.x(), available.left(), std::max(available.left(), available.right() - panel_->width() + 1)),
-            std::clamp(origin.y(), available.top(), std::max(available.top(), available.bottom() - panel_->height() + 1)));
-    }
-    QWidget* panel_;
-    QPointer<QAbstractItemView> view_;
-    QPointer<QWidget> cellAnchor_;
-    QPersistentModelIndex index_;
-};
-void AnchorFieldPopup(QWidget* panel, QWidget* anchor, const QModelIndex& index, QWidget* cellAnchor = nullptr) {
-    for (auto* parent = anchor; parent; parent = parent->parentWidget()) {
-        if (auto* view = qobject_cast<QAbstractItemView*>(parent)) { new FieldPopupAnchor(panel, view, index, cellAnchor); return; }
-    }
-}
-}
 
 // 字段编辑委托：按字段类型提供编辑器与引用选择。
 
@@ -84,6 +27,16 @@ bool ObjectFieldDelegate::eventFilter(QObject* object, QEvent* event) {
         auto* view = qobject_cast<QAbstractItemView*>(object);
         if (view && event->type() == QEvent::KeyPress) {
             const auto* key = static_cast<QKeyEvent*>(event);
+            if (resourcePickerFactory_ && (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter)) {
+                const auto current = view->currentIndex().siblingAtColumn(3);
+                const auto* fields = qobject_cast<const ObjectFieldModel*>(current.model());
+                const auto* definition = fields ? fields->DefinitionAt(current.row()) : nullptr;
+                if (definition && War3Map::Services::DescribeObjectResourceField(*definition)) {
+                    view->setCurrentIndex(current);
+                    QStyleOptionViewItem option; option.widget = view->viewport(); option.rect = view->visualRect(current);
+                    return editorEvent(event, view->model(), option, current);
+                }
+            }
             const auto text = key->text();
             const bool numeric = !text.isEmpty() && (text.front().isDigit() || text.front() == '-' || text.front() == '+' || text.front() == '.');
             if (!(key->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier)) &&
@@ -108,6 +61,7 @@ QWidget* ObjectFieldDelegate::createEditor(QWidget* parent, const QStyleOptionVi
     const auto* definition = model->DefinitionAt(index.row());
     const auto value = model->EditorValueAt(index.row());
     if (!value) return nullptr;
+    if (definition && resourcePickerFactory_ && War3Map::Services::DescribeObjectResourceField(*definition)) return nullptr;
     if (definition && (!definition->referenceTypes.empty() || IsMultilineTextField(definition, value))) return nullptr;
     if (definition && !definition->choices.empty()) {
         auto* choices = new QComboBox(parent);
@@ -159,12 +113,13 @@ bool ObjectFieldDelegate::editorEvent(QEvent* event, QAbstractItemModel* abstrac
     if (!model || index.column() != 3 || !definition ||
         !(model->flags(index) & Qt::ItemIsEditable)) return QStyledItemDelegate::editorEvent(event, abstractModel, option, index);
     const auto value = model->EditorValueAt(index.row());
+    const auto resource = resourcePickerFactory_ ? War3Map::Services::DescribeObjectResourceField(*definition) : std::nullopt;
     const bool multiline = IsMultilineTextField(definition, value);
-    if (!multiline && definition->referenceTypes.empty())
+    if (!resource && !multiline && definition->referenceTypes.empty())
         return QStyledItemDelegate::editorEvent(event, abstractModel, option, index);
     const auto* mouse = dynamic_cast<QMouseEvent*>(event);
     const auto* key = dynamic_cast<QKeyEvent*>(event);
-    if (!((event->type() == QEvent::MouseButtonRelease && mouse && mouse->button() == Qt::LeftButton) ||
+    if (!((event->type() == (resource ? QEvent::MouseButtonDblClick : QEvent::MouseButtonRelease) && mouse && mouse->button() == Qt::LeftButton) ||
         (event->type() == QEvent::KeyPress && key &&
             (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter || key->key() == Qt::Key_F2 || key->key() == Qt::Key_Space)))) return false;
     if (referenceEditor_) { referenceEditor_->close(); referenceEditor_->deleteLater(); }
@@ -172,6 +127,22 @@ bool ObjectFieldDelegate::editorEvent(QEvent* event, QAbstractItemModel* abstrac
     if (!anchor || !anchor->screen()) return false;
     const QPersistentModelIndex persistent(index);
     const QPointer<ObjectFieldModel> guard(model);
+    if (resource && value) {
+        const auto original = ToQString(ValueToDisplayString(*value));
+        const QPointer<ObjectFieldDelegate> self(this);
+        const QPointer<QWidget> anchorGuard(anchor);
+        const auto factory = resourcePickerFactory_;
+        auto services = factory();
+        if (!self || !guard || !persistent.isValid() || !anchorGuard) return false;
+        auto* picker = new War3Map::Modules::ObjectResourcePicker(*resource,
+            original, std::move(services), anchor);
+        picker->SetCommit([guard, persistent](const QString& submitted) {
+            return guard && persistent.isValid() && guard->setData(persistent, submitted, Qt::EditRole);
+        });
+        referenceEditor_ = picker;
+        picker->show(); War3Map::UiKit::AnchorTablePopup(picker, anchor, index); picker->raise();
+        return true;
+    }
     if (multiline) {
         if (!value) return false;
         const QPointer<ObjectFieldDelegate> self(this);
@@ -232,7 +203,7 @@ bool ObjectFieldDelegate::editorEvent(QEvent* event, QAbstractItemModel* abstrac
             std::clamp(origin.y(), available.top(), available.bottom() - size.height() + 1)), size));
         War3Map::UiKit::ConfigureRoundedPopup(*panel);
         panel->show();
-        AnchorFieldPopup(panel, anchor, index);
+        War3Map::UiKit::AnchorTablePopup(panel, anchor, index);
         panel->raise();
         text->setFocus();
         return true;
@@ -264,7 +235,7 @@ bool ObjectFieldDelegate::editorEvent(QEvent* event, QAbstractItemModel* abstrac
         cellAnchor->setAttribute(Qt::WA_TransparentForMouseEvents);
         connect(picker, &QObject::destroyed, cellAnchor, &QObject::deleteLater);
         picker->OpenAt(cellAnchor);
-        AnchorFieldPopup(picker, anchor, index, cellAnchor);
+        War3Map::UiKit::AnchorTablePopup(picker, anchor, index, cellAnchor);
     } else {
         auto* panel = new QFrame(anchor, Qt::Tool | Qt::FramelessWindowHint);
         panel->setObjectName(QStringLiteral("objectReferenceEditor"));
@@ -296,7 +267,7 @@ bool ObjectFieldDelegate::editorEvent(QEvent* event, QAbstractItemModel* abstrac
             std::clamp(origin.y(), available.top(), available.bottom() - size.height() + 1)), size));
         War3Map::UiKit::ConfigureRoundedPopup(*panel);
         panel->show();
-        AnchorFieldPopup(panel, anchor, index);
+        War3Map::UiKit::AnchorTablePopup(panel, anchor, index);
         panel->raise();
     }
     return true;

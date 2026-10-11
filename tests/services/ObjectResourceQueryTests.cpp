@@ -6,6 +6,7 @@
 #include "War3MapCore/Image/TextureImage.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
+#include "MdxTestModel.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -159,6 +160,37 @@ void TgaPacketsAndOrientation() {
     Require(image.Succeeded() && image.value->rgba[0] == std::byte{255} && image.value->rgba[4] == std::byte{255}, "RLE repeated packet decoded");
     data.pop_back(); Require(!Image::DecodeTexture("pair.tga", data).Succeeded(), "truncated packet rejected");
 }
+void ModelSequencesAndSoundLabels() {
+    std::map<std::string, std::vector<std::byte>> files{
+        {"Models/Fixture.mdx", MdxTest::BuildTestMdx({.animatedHelper = true})},
+        {"UI/SoundInfo/AbilitySounds.slk", Bytes(Table({{{"ID", "SyntheticSound"}, {"DirectoryBase", "Sound/Units/"}, {"FileNames", "First.wav,Second.wav"}}}))},
+        {"Sound/Units/First.wav", Bytes("owned sound fixture")}};
+    Resources::ResourceResolver resolver;
+    Require(resolver.AddSource({"owned-map", Resources::ResourceLayer::MapImport, 500,
+        [&](std::string_view path) {
+            for (const auto& [name, bytes] : files) {
+                const auto canonical = Resources::CanonicalImportPath(name);
+                if (canonical.Succeeded() && *canonical.value == path)
+                    return Result<Resources::ResourceProbe>::Success({Resources::ResourceProbeState::Found, name});
+            }
+            return Result<Resources::ResourceProbe>::Success({Resources::ResourceProbeState::Missing, {}});
+        },
+        [&](std::string_view path) { return Result<std::vector<std::byte>>::Success(files.at(std::string(path))); }}).Succeeded(), "owned resource fixtures");
+    auto model = InspectObjectResource(resolver, "Models/Fixture.mdl", ObjectResourceKind::Model);
+    Require(model.Succeeded() && model.value->resourcePath == "Models/Fixture.mdx", "model uses same MDL to MDX normalization");
+    Require(model.value->sequences.size() == 2 && model.value->sequences[0].name == "Stand - 1"
+        && model.value->sequences[0].startMs == 0 && model.value->sequences[0].endMs == 1000
+        && model.value->sequences[0].loops && model.value->sequences[0].usable, "actual parsed animation interval and playback flags");
+    auto sound = InspectObjectResource(resolver, "SyntheticSound", ObjectResourceKind::SoundLabel);
+    Require(sound.Succeeded() && sound.value->requestedValue == "SyntheticSound" && sound.value->resourcePath == "Sound/Units/First.wav"
+        && sound.value->source.sourceId == "owned-map" && !sound.value->diagnostics.empty(), "sound label resolves first actual file and reports selection rule");
+    files["UI/SoundInfo/UISounds.slk"] = Bytes(Table({{{"ID", "SyntheticSound"}, {"DirectoryBase", "Sound/Other"}, {"FileNames", "Other.wav"}}}));
+    sound = InspectObjectResource(resolver, "SyntheticSound", ObjectResourceKind::SoundLabel);
+    Require(!sound.Succeeded() && sound.diagnostics.front().code == "OBJECT_RESOURCE_SOUND_LABEL_AMBIGUOUS", "conflicting sound table definitions rejected");
+    files["UI/SoundInfo/UISounds.slk"] = Bytes("damaged table");
+    Require(!InspectObjectResource(resolver, "SyntheticSound", ObjectResourceKind::SoundLabel).Succeeded(), "corrupt upper table cannot fall back to another matching label");
+    Require(!InspectObjectResource(resolver, "SyntheticGroup", ObjectResourceKind::UnitSoundSet).Succeeded(), "group name is not guessed as a sound file");
+}
 struct Temp {
     std::filesystem::path root = std::filesystem::temp_directory_path() / ("Audastra-resource-query-"
         + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -197,6 +229,6 @@ void ImportAndGameFolders() {
 }
 }
 int main() {
-    try { CaptureAndInheritance(); PaginationAndIdentity(); SourceFailureAndInfo(); TgaPacketsAndOrientation(); ImportAndGameFolders(); std::cout << "Object resource query tests passed\n"; return 0; }
+    try { CaptureAndInheritance(); PaginationAndIdentity(); SourceFailureAndInfo(); TgaPacketsAndOrientation(); ModelSequencesAndSoundLabels(); ImportAndGameFolders(); std::cout << "Object resource query tests passed\n"; return 0; }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

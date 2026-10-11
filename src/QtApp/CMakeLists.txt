@@ -34,6 +34,8 @@ qt_add_executable(war3-map-editor WIN32
     AppHelpers.h
     EditorParts.cpp
     EditorParts.h
+    ObjectResourcePickerAdapter.cpp ObjectResourcePickerAdapter.h
+    ObjectResourcePreview.cpp ObjectResourcePreview.h
     NativeWorkbench.cpp
     ProjectActions.cpp
     RecoveryExitDialog.cpp RecoveryExitDialog.h

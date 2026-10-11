@@ -630,6 +630,19 @@ qt_add_executable(war3-map-object-direct-edit-tests ObjectDirectEditTests.cpp)
 target_link_libraries(war3-map-object-direct-edit-tests PRIVATE War3MapEditor::QtModuleObjects Qt6::Test)
 target_compile_options(war3-map-object-direct-edit-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME qt-object-direct-edit COMMAND war3-map-object-direct-edit-tests)
+
+qt_add_executable(war3-map-object-resource-picker-tests ObjectResourcePickerTests.cpp
+    "${PROJECT_SOURCE_DIR}/src/QtApp/ObjectResourcePickerAdapter.cpp"
+    "${PROJECT_SOURCE_DIR}/src/QtApp/ObjectResourcePreview.cpp")
+target_include_directories(war3-map-object-resource-picker-tests PRIVATE "${PROJECT_SOURCE_DIR}/src/QtApp")
+target_link_libraries(war3-map-object-resource-picker-tests PRIVATE
+    War3MapEditor::QtModuleObjects War3MapEditor::QtModuleWorld War3MapEditor::QtModuleSounds Qt6::Test)
+target_compile_options(war3-map-object-resource-picker-tests PRIVATE /W4 /permissive- /utf-8)
+war3map_deploy_fonts(war3-map-object-resource-picker-tests)
+add_test(NAME qt-object-resource-picker COMMAND war3-map-object-resource-picker-tests -o -,txt)
+set_tests_properties(qt-object-resource-picker PROPERTIES TIMEOUT 60
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_PLUGIN_PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>/../plugins")
 set_tests_properties(qt-object-direct-edit PROPERTIES TIMEOUT 45
     ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_PLUGIN_PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>/../plugins")
