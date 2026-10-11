@@ -1444,6 +1444,82 @@ void TestBoundedArchiveReads() {
             "sector table must fit the bounded member before its allocation/read");
 }
 
+void TestEmptySectorChecksumLayout() {
+    using namespace War3Map::Mpq;
+    TempDirectory temp;
+    const std::string member = "models/synthetic.bin";
+    std::vector<std::byte> original(5000);
+    for (std::size_t i = 0; i < original.size(); ++i) original[i] = static_cast<std::byte>(i % 19);
+    // 两个数据扇区，另一个末偏移描述明确为空的校验区。两扇区都真正压缩。
+    std::vector<std::byte> raw(16);
+    PutU32(raw, 0, 16);
+    for (std::size_t sector = 0; sector < 2; ++sector) {
+        const auto start = sector * kMpqWriterSectorSize;
+        const auto source = std::span(original).subspan(start, (std::min)(original.size() - start,
+            static_cast<std::size_t>(kMpqWriterSectorSize)));
+        const auto compressed = Deflate(source);
+        Require(compressed.size() + 1 < source.size(), "checksum-layout fixture must exercise compressed sectors");
+        raw.push_back(std::byte{0x02}); raw.insert(raw.end(), compressed.begin(), compressed.end());
+        PutU32(raw, (sector + 1) * 4, static_cast<std::uint32_t>(raw.size()));
+    }
+    PutU32(raw, 12, static_cast<std::uint32_t>(raw.size()));
+    const auto write = [&](const std::string& name, std::vector<std::byte> bytes, std::uint32_t flags) {
+        const auto path = temp.Path() / (name + ".mpq");
+        const std::vector<MpqBuildFile> files{{member, {}, false, MpqRawBlock{
+            std::move(bytes), static_cast<std::uint32_t>(original.size()), flags, kMpqWriterSectorSize}}};
+        Require(WriteMpqArchive(path, files).Succeeded(), "write original checksum-layout fixture");
+        return path;
+    };
+    const auto flags = kFileExists | kFileCompress | kFileSectorCrc;
+    for (const bool encrypted : {false, true}) {
+        auto bytes = raw;
+        if (encrypted) {
+            const auto key = MpqCrypt::Instance().HashString("synthetic.bin", MpqCrypt::HashType::FileKey);
+            for (std::size_t sector = 0; sector < 2; ++sector) {
+                const auto start = GetU32(raw, sector * 4), end = GetU32(raw, (sector + 1) * 4);
+                EncryptBlock(bytes, start, end - start, key + static_cast<std::uint32_t>(sector));
+            }
+            EncryptBlock(bytes, 0, 16, key - 1);
+        }
+        auto archive = MpqArchive::OpenReadOnly(write(encrypted ? "encrypted-empty" : "empty", std::move(bytes),
+            flags | (encrypted ? kFileEncrypted : 0)));
+        Require(archive.Succeeded(), "empty checksum fixture opens");
+        const auto read = archive.value->ReadFileBounded(member, original.size());
+        Require(read.Succeeded() && *read.value == original, "explicit empty checksum layout must decode complete original bytes");
+        const auto head = archive.value->ReadFileHead(member, 17);
+        Require(head.Succeeded() && *head.value == std::vector<std::byte>(original.begin(), original.begin() + 17),
+            "empty checksum layout must retain prefix reading");
+        const auto strict = archive.value->ListFilesStrict();
+        Require(!strict.Succeeded() && HasDiagnostic(strict.diagnostics, "SECTOR_CRC_UNSUPPORTED"),
+            "read compatibility must not enable unchecked strict side-write");
+        const auto bounded = archive.value->ReadFileBounded(member, original.size() - 1);
+        Require(!bounded.Succeeded() && HasDiagnostic(bounded.diagnostics, "FILE_READ_BUDGET_EXCEEDED"),
+            "checksum flag must not bypass decoded size budget");
+    }
+    const auto rejects = [&](const std::string& name, std::vector<std::byte> bytes, std::uint32_t blockFlags,
+        const std::string& code) {
+        const auto archive = MpqArchive::OpenReadOnly(write(name, std::move(bytes), blockFlags));
+        Require(archive.Succeeded(), "invalid checksum fixture metadata may open");
+        const auto read = archive.value->ReadFileBounded(member, original.size());
+        Require(!read.Succeeded() && HasDiagnostic(read.diagnostics, code), name + " must reject full reading");
+        const auto head = archive.value->ReadFileHead(member, 1);
+        Require(!head.Succeeded() && HasDiagnostic(head.diagnostics, code), name + " must reject prefix reading too");
+    };
+    auto invalid = raw; PutU32(invalid, 0, 17);
+    rejects("table-gap", invalid, flags, "SECTOR_OFFSET_INVALID");
+    invalid = raw; PutU32(invalid, 8, GetU32(invalid, 4));
+    rejects("empty-data-sector", invalid, flags, "SECTOR_OFFSET_INVALID");
+    invalid = raw; PutU32(invalid, 8, static_cast<std::uint32_t>(invalid.size() + 1));
+    rejects("checksum-offset-outside-member", invalid, flags, "SECTOR_OFFSET_INVALID");
+    invalid = raw; PutU32(invalid, 12, static_cast<std::uint32_t>(invalid.size() - 1));
+    rejects("checksum-end-outside-block", invalid, flags, "SECTOR_OFFSET_INVALID");
+    rejects("extra-offset-without-flag", raw, flags & ~kFileSectorCrc, "SECTOR_OFFSET_INVALID");
+    rejects("truncated-offset-table", std::vector<std::byte>(12), flags, "SECTOR_OFFSET_INVALID");
+    invalid = raw; invalid.insert(invalid.end(), 8, std::byte{});
+    PutU32(invalid, 12, static_cast<std::uint32_t>(invalid.size()));
+    rejects("nonempty-checksums", invalid, flags, "SECTOR_CRC_UNSUPPORTED");
+}
+
 void TestGameBoundedReadPriority() {
     using namespace War3Map::Mpq;
     TempDirectory temp;
@@ -1878,6 +1954,7 @@ int main() {
         TestStrictListfileListsItself();
         TestStrictCanonicalListfileCollision();
         TestBoundedArchiveReads();
+        TestEmptySectorChecksumLayout();
         TestGameBoundedReadPriority();
         TestGameStrictMount();
         TestOwnedTilesetArchive();
