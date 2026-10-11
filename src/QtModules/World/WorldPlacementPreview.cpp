@@ -262,9 +262,8 @@ void WorldPlacementPreview::BeginNext() {
                     spec.playing = true;
                     specs.push_back(std::move(spec));
                 }
-                Render::AnimationLimits limits; limits.retainUnsupportedStatic = true; limits.enableParticles = particles;
-                limits.allowRigidStaticPreview = true;
-                limits.playbackPolicy = Render::AnimationPlaybackPolicy::InteractivePreview;
+                auto limits = Render::InteractiveAnimationPreviewLimits();
+                limits.retainUnsupportedStatic = true; limits.enableParticles = particles;
                 auto service = Render::ModelAnimationService::Create({epoch, pending->revision, pending->sources.archiveSha}, specs,
                     [&](auto path, auto maximum) { return work->source->ReadAnimationResource(path, maximum); }, limits);
                 if (!service.Succeeded()) { work->diagnostics = std::move(service.diagnostics); return; }

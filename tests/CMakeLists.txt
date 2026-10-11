@@ -463,3 +463,9 @@ foreach(warcraft_text_group IN ITEMS format budgets source)
     add_test(NAME warcraft-text-${warcraft_text_group} COMMAND war3-map-warcraft-text-tests ${warcraft_text_group})
     set_tests_properties(warcraft-text-${warcraft_text_group} PROPERTIES TIMEOUT 30)
 endforeach()
+
+# 扫描器目标在 Render 中定义；测试必须在根 enable_testing() 之后登记。
+if(TARGET war3-mdx-preview-scan-tests)
+    add_test(NAME render-mdx-preview-scan COMMAND war3-mdx-preview-scan-tests)
+    set_tests_properties(render-mdx-preview-scan PROPERTIES TIMEOUT 60)
+endif()

@@ -148,6 +148,9 @@ struct Vertex { Vec3 position{}; std::array<float,2> uv{}; std::array<float,4> c
 struct Draw { std::uint32_t first = 0, count = 0, emitter = 0; Filter filter = Filter::Blend; };
 struct Geometry { std::vector<Vertex> vertices; std::vector<Draw> draws; };
 // 全部动态顶点为世界空间；头/尾用同一粒子状态，RIBB为相邻历史边连接，绝不连跨实例条带。
+// ModelSpace 粒子需要当前几何时刻的全部发射器锚点；不得使用发射时或固定步尾的旧节点矩阵。
+// 无 ModelSpace 粒子时可以不提供锚点；缺失/无效的必需锚点明确拒绝。
 [[nodiscard]] Result<Geometry> Build(const Asset& asset, const State& state, const Timeline& timeline,
-    const Vec3& eye, const Vec3& up, std::uint32_t maxVertices = 1048576);
+    const Vec3& eye, const Vec3& up, std::uint32_t maxVertices = 1048576,
+    std::span<const Anchor> currentAnchors = {});
 } // namespace War3Map::Render::Particles

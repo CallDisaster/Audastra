@@ -28,7 +28,8 @@ void Quad(Geometry& g,const std::array<Vec3,4>& p,const std::array<std::array<fl
     }
 }
 }
-Result<Geometry> Build(const Asset& a,const State& s,const Timeline& t,const Vec3& eye,const Vec3& up,std::uint32_t maxVertices) try {
+Result<Geometry> Build(const Asset& a,const State& s,const Timeline& t,const Vec3& eye,const Vec3& up,std::uint32_t maxVertices,
+    std::span<const Anchor> currentAnchors) try {
     Require(s.emitters.size()==a.emitters.size()&&maxVertices<=1048576&&Finite(eye)&&Finite(up),"PARTICLE_GEOMETRY_INPUT","粒子绘制输入无效。");
     Geometry g;const float remainder=static_cast<float>(s.timeMs-s.tickMs)*0.001f;
     std::uint64_t capacity=0;
@@ -38,14 +39,37 @@ Result<Geometry> Build(const Asset& a,const State& s,const Timeline& t,const Vec
     g.draws.reserve(a.emitters.size());
     for(std::uint32_t index=0;index<a.emitters.size();++index){
         const auto& e=a.emitters[index];const auto& q=s.emitters[index];const auto first=static_cast<std::uint32_t>(g.vertices.size());
+        const bool modelSpace=e.kind==Kind::Particle2&&(e.flags&0x80000u)!=0;
+        const Anchor* anchor=nullptr;
+        if(modelSpace&&!q.particles.empty()){
+            Require(currentAnchors.size()==a.emitters.size(),"PARTICLE_ANCHOR_INVALID","ModelSpace 绘制缺少当前发射器锚点。");
+            anchor=&currentAnchors[index];
+            Require(Finite(anchor->pivot),"PARTICLE_ANCHOR_INVALID","ModelSpace 绘制 pivot 无效。");
+            for(const auto f:anchor->model)Require(std::isfinite(f)&&std::abs(f)<=1e7f,"PARTICLE_ANCHOR_INVALID","ModelSpace 当前节点矩阵无效。");
+        }
+        const auto toWorld=[&](const Vec3& value,bool point){
+            return Transform(t.world,Transform(anchor->model,point?Add(anchor->pivot,value):value,point),point);
+        };
         for(const auto& p:q.particles){
             const float age=p.age+remainder;if(age>=p.life||p.life<=0)continue;
             auto center=Add(p.position,Mul(p.velocity,remainder));center[2]-=0.5f*p.gravity*remainder*remainder;
             auto velocity=p.velocity;velocity[2]-=p.gravity*remainder;
-            if(e.flags&0x80000u){center=Transform(t.world,center);velocity=Transform(t.world,velocity,false);}
+            const auto localVelocity=velocity;
+            if(modelSpace){center=toWorld(center,true);velocity=toWorld(velocity,false);}
             float scale=1,phase=0;bool decay=false;const auto c=Tint(e,age/p.life,scale,phase,decay);
             Vec3 z=Unit(Sub(eye,center),{0,0,1}),x=Unit(Cross(up,z),{1,0,0}),y=Unit(Cross(z,x),{0,1,0});
-            if(e.flags&0x100000u){x={1,0,0};y={0,1,0};if(e.flags&0x80000u){x=Unit(Transform(t.world,x,false),{1,0,0});y=Unit(Transform(t.world,y,false),{0,1,0});}}
+            if(e.flags&0x100000u){
+                // 1.27a 6F19E1D0：XYQuad 取速度的 XY 投影及其顺时针垂线，非固定 X/Y。
+                // ModelSpace 状态已折入 +90°，这里不重复旋转；普通粒子直接取世界速度 XY。
+                const auto direction=modelSpace?localVelocity:velocity;
+                x={direction[0],direction[1],0};y={direction[1],-direction[0],0};
+                if(modelSpace){x=toWorld(x,false);y=toWorld(y,false);}
+                // 原版只按第一轴作此门限；接近零时两轴保留原值，零 XY 速度产生退化面。
+                const auto lengthSquared=Dot(x,x);
+                if(lengthSquared>=0x1p-22f){
+                    x=Mul(x,1.0f/std::sqrt(lengthSquared));y=Mul(y,1.0f/std::sqrt(Dot(y,y)));
+                }
+            }
             x=Mul(x,scale);y=Mul(y,scale);
             if(e.headOrTail!=1)Quad(g,{{Sub(Sub(center,x),y),Add(Sub(center,y),x),Add(Add(center,x),y),Add(Sub(center,x),y)}},
                 {{c,c,c,c}},Cell(e.intervals[decay?1:0],phase),e,maxVertices);

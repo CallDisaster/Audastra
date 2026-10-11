@@ -43,7 +43,8 @@ WorldModelPreview::WorldModelPreview(QWidget* parent,const War3RenderPluginApiV2
         if (identity_->isCurrent && !identity_->isCurrent()) { ClearSelection(); return; }
         player_->SetPlaying(false);
         Render::AnimationEdit edit; edit.identity=player_->Frame()->states.front().identity; edit.sequenceIndex=sequence;
-        if (player_->Scene()->particlesEnabled) { edit.elapsedMs=0; edit.globalMs=0; }
+        // 动作选择始终从头开始，不能由当前插件是否支持粒子决定起点。
+        edit.elapsedMs=0; edit.globalMs=0;
         player_->Edit(std::move(edit));
     });
     connect(player_,&WorldAnimationPlayer::Changed,this,[this] {
@@ -127,9 +128,9 @@ void WorldModelPreview::BeginNext() {
             if (!reader.Succeeded()) { work->error=QString::fromUtf8(reader.diagnostics.front().message); return; }
             work->source=std::shared_ptr<WorldResourceReader>(std::move(*reader.value));
             Render::AnimationInstanceSpec spec; spec.identity={1,epoch}; spec.hostKey=input.identity.rowKey; spec.model=input.request;
-            if (particles) { spec.elapsedMs=0; spec.globalMs=0; }
-            Render::AnimationLimits limits; limits.geometry.maxModels=1; limits.geometry.maxInstances=1;
-            limits.allowRigidStaticPreview=true;
+            spec.elapsedMs=0; spec.globalMs=0;
+            auto limits=Render::InteractiveAnimationPreviewLimits();
+            limits.geometry.maxModels=1; limits.geometry.maxInstances=1;
             limits.enableParticles=particles;
             limits.geometry.maxVertices=262144; limits.geometry.maxIndices=786432;
             limits.geometry.maxTextureDimension=256; limits.geometry.maxTotalTextureBytes=32ull*1024*1024;
@@ -185,11 +186,10 @@ void WorldModelPreview::Present(const Built& built) {
             if (index==built.frame->states.front().sequenceIndex) selected=action_->count()-1;
         }
         action_->setCurrentIndex(selected); action_->setEnabled(true);
-        action_->setToolTip(built.service->Scene()->particlesEnabled?tr("切换动作从局部/全局 0/0 ms 开始。"):QString{});
+        action_->setToolTip(tr("切换动作从局部/全局 0/0 ms 开始。"));
     }
     QStringList diagnostics;
-    if (built.service->Scene()->particlesEnabled)
-        diagnostics<<tr("新建预览和切换动作从局部/全局 0/0 ms 开始。");
+    diagnostics<<tr("新建预览和切换动作从局部/全局 0/0 ms 开始。");
     for (const auto& d:built.service->Scene()->geometry.warnings) diagnostics<<QString::fromUtf8(d.message);
     message_->setToolTip(diagnostics.join(QLatin1Char('\n')));
     action_->show(); playPause_->show(); step_->show(); viewport_->show();

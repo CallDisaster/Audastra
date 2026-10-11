@@ -104,7 +104,7 @@ Status Advance(const Asset& a,State& s,const Timeline& t,std::uint64_t target,co
             const auto active=e.kind==Kind::Particle2?q.particles.size():q.segments.size();
             const auto allowed=std::min<std::uint64_t>(desired,q.quota-std::min<std::size_t>(active,q.quota));
             q.dropped+=desired-allowed;
-            const auto worldPoint=[&](const Vec3& p){const auto v=Transform(anchor.model,p);return e.kind==Kind::Particle2&&(e.flags&0x80000u)?v:Transform(t.world,v);};
+            const auto worldPoint=[&](const Vec3& p){return Transform(t.world,Transform(anchor.model,p));};
             if(e.kind==Kind::Particle2){
                 const float speed=Value(e,Parameter::Speed,e.speed,a,t,next),variation=Value(e,Parameter::Variation,e.variation,a,t,next);
                 const float latitude=Value(e,Parameter::Latitude,e.latitude,a,t,next),gravity=Value(e,Parameter::Gravity,e.gravity,a,t,next);
@@ -115,13 +115,17 @@ Status Advance(const Asset& a,State& s,const Timeline& t,std::uint64_t target,co
                     // 6F19F640 在此坐标系取 X=宽(KP2W)×随机、Y=长(KP2N)×随机；折回节点本地为 (-y, x, 0)，即长度沿节点 X。
                     const auto x=(Random(q.random)-0.5f)*width,y=(Random(q.random)-0.5f)*length;
                     const auto along=(e.flags&0x20000u)?0.0f:y;
-                    p.position=worldPoint(Add(anchor.pivot,{-along,x,0}));
+                    // 1.27a 6F13E283 将 MDX 0x80000 映射到运行时 0x200。
+                    // 6F19F640 对该标志保留发射器局部状态；6F19DFF0 绘制时才组合当前矩阵。
+                    // 此处已折入 +90°，但不折入 pivot/骨骼；它们由 Build 在当前帧各应用一次。
+                    const bool modelSpace=(e.flags&0x80000u)!=0;
+                    p.position=modelSpace?Vec3{-along,x,0}:worldPoint(Add(anchor.pivot,{-along,x,0}));
                     const auto azimuth=Random(q.random)*2*std::numbers::pi_v<float>;
                     const auto angle=Random(q.random)*latitude*std::numbers::pi_v<float>/180.0f;
                     const auto v=speed*(1+(Random(q.random)*2-1)*variation);
                     // 速度与位置同属该旋转后的发射器坐标系：(a,b,c) -> 节点本地 (-b,a,c)。
-                    p.velocity=Transform(anchor.model,{-v*std::sin(angle)*std::sin(azimuth),v*std::sin(angle)*std::cos(azimuth),v*std::cos(angle)},false);
-                    if(!(e.flags&0x80000u))p.velocity=Transform(t.world,p.velocity,false);
+                    p.velocity={-v*std::sin(angle)*std::sin(azimuth),v*std::sin(angle)*std::cos(azimuth),v*std::cos(angle)};
+                    if(!modelSpace)p.velocity=Transform(t.world,Transform(anchor.model,p.velocity,false),false);
                     Require(Finite(p.position)&&Finite(p.velocity),"PARTICLE_NUMBER_BUDGET","粒子发射位置/速度超限。");q.particles.push_back(p);++q.spawned;
                 }
             }else{
