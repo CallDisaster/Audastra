@@ -38,6 +38,7 @@ bool SameParticleFrame(const War3RenderParticleStatusV2& particles, const Render
 } // namespace
 
 void WorldViewport::SubmitCamera() {
+    ++cameraSerial_;
     pressView_.reset(); ClearCoordinates(tr("视图更新中，等待完成帧"), false, true);
     pickingSuspended_ = false;
     const auto result = renderer_ ? api_->setCamera(renderer_, &camera_) : 0;

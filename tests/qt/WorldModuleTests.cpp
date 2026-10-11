@@ -2141,6 +2141,22 @@ void WorldModuleTests::PlacementClickDragAndKeys() {
     Mouse(viewport, QEvent::MouseButtonPress, center, Qt::LeftButton, Qt::LeftButton);
     Mouse(viewport, QEvent::MouseButtonRelease, center, Qt::LeftButton, Qt::NoButton);
     QVERIFY(place.count() == 1 && clicked.isEmpty());
+    // 预览模型/动作在按下与松开之间推进场景编号，且松开时仍在等待完成帧：同一单击等到完成帧后摆放，不要求再点。
+    state.autoComplete = false;
+    Mouse(viewport, QEvent::MouseButtonPress, center, Qt::LeftButton, Qt::LeftButton);
+    ++state.sceneEpoch;
+    Mouse(viewport, QEvent::MouseButtonRelease, center, Qt::LeftButton, Qt::NoButton);
+    QCOMPARE(place.count(), 1);
+    state.autoComplete = true;
+    QTRY_COMPARE(place.count(), 2);
+    // 镜头在按下后改变则取消，不按新镜头落点。
+    state.autoComplete = false;
+    Mouse(viewport, QEvent::MouseButtonPress, center, Qt::LeftButton, Qt::LeftButton);
+    viewport.ResetCamera();
+    Mouse(viewport, QEvent::MouseButtonRelease, center, Qt::LeftButton, Qt::NoButton);
+    state.autoComplete = true;
+    QTest::qWait(100);
+    QCOMPARE(place.count(), 2);
     QTest::keyClick(&viewport, Qt::Key_Escape);
     QVERIFY(placingCancelled.count() == 1 && !viewport.Placing());
     viewport.SetPlacing(true);

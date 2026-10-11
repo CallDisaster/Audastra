@@ -1309,6 +1309,17 @@ void TestArchiveCandidateResourceBudgets() {
     }
 }
 
+// 部分编辑器把 (listfile) 自身也写进清单；严格清单不能把它再补一次后误报重名。
+void TestStrictListfileListsItself() {
+    TempDirectory temp;
+    const auto archivePath = BuildSyntheticMpq(temp.Path(), "(listfile)", "(listfile)\r\n");
+    auto opened = MpqArchive::OpenReadOnly(archivePath);
+    Require(opened.Succeeded() && opened.value.has_value(), "self-listing archive must open");
+    const auto strict = opened.value->ListFilesStrict();
+    Require(strict.Succeeded() && strict.value && strict.value->size() == 1,
+            "a listfile that lists itself is a valid strict inventory with one member");
+}
+
 void TestStrictCanonicalListfileCollision() {
     TempDirectory temp;
     const auto archivePath = temp.Path() / "canonical-collision.w3x";
@@ -1864,6 +1875,7 @@ int main() {
         TestStrictMissingListfileAndBounds();
         TestStrictEncryptedTableMutations();
         TestArchiveCandidateResourceBudgets();
+        TestStrictListfileListsItself();
         TestStrictCanonicalListfileCollision();
         TestBoundedArchiveReads();
         TestGameBoundedReadPriority();

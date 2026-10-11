@@ -1,5 +1,6 @@
 #include "War3MapCore/Script/ScriptInjectionSources.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/Text/TextUtil.h"
 #include "ScriptSourceBinding.h"
 
@@ -62,7 +63,7 @@ bool Equal(const ScriptInjectionSources& a, const ScriptInjectionSources& b) {
     if (a.coverage != b.coverage || a.executionSupported != b.executionSupported || a.version24 != b.version24 ||
         a.literalLookupSupported != b.literalLookupSupported || a.legacyLineSemanticsProven != b.legacyLineSemanticsProven ||
         a.entryPlanIdentitySha256 != b.entryPlanIdentitySha256 || a.totalFileBytes != b.totalFileBytes ||
-        a.tree != b.tree || a.registrations != b.registrations || a.choices != b.choices ||
+        a.tree != b.tree || a.registrations != b.registrations || a.choices != b.choices || a.missingLibraries != b.missingLibraries ||
         a.linePolicy != b.linePolicy || a.textBoundaries != b.textBoundaries ||
         a.orderedRoots.size() != b.orderedRoots.size() || a.files.size() != b.files.size()) return false;
     for (std::size_t i = 0; i < a.orderedRoots.size(); ++i) if (!BindingEqual(a.orderedRoots[i], b.orderedRoots[i])) return false;
@@ -128,21 +129,30 @@ public:
         for (const auto& config : configs) {
             std::size_t cfgIndex = 0, jIndex = 0;
             auto library = config; library.replace_extension(".j");
-            if (!nodes_.contains(library) || nodes_.at(library) != Kind::RegularFile) {
-                return Error("INJECTION_SOURCE_LIBRARY_MISSING", "cfg对应J缺失或不在完整普通文件清单中。", library);
+            const bool present = nodes_.contains(library) && nodes_.at(library) == Kind::RegularFile;
+            if (!present) {
+                if (!Charge(512 + library.native().size() * 4, library)) return false;
+                Diagnose(diagnostics, "INJECTION_SOURCE_LIBRARY_MISSING", "注入配置" + IO::PathUtf8(config.filename())
+                    + "没有对应的J文件：" + IO::PathUtf8(library) + "；地图用到其中的函数时才会报错。", library, DiagnosticSeverity::Warning);
             }
-            if (!Own(config, kCfgBytes, cfgIndex, false) || !Own(library, kJBytes, jIndex, true) || !Parse(cfgIndex, jIndex)) return false;
+            if (!Own(config, kCfgBytes, cfgIndex, false) || (present && !Own(library, kJBytes, jIndex, true))
+                || !Parse(cfgIndex, present ? jIndex : kScriptInjectionNoLibrary)) return false;
         }
         for (auto& [key, choice] : choices_) { (void)key; sources.choices.push_back(std::move(choice)); }
+        for (const auto& [key, config] : missing_)
+            if (!choices_.contains(key)) sources.missingLibraries.push_back({key, config});
         return true;
     }
 private:
     std::map<std::filesystem::path, Kind, PathLess> nodes_;
     std::map<std::filesystem::path, std::size_t, PathLess> owned_;
     std::map<std::string, ScriptInjectionChoice> choices_;
+    std::map<std::string, std::size_t> missing_; // 键 → 首个 J 缺失的 cfg。
     std::uint64_t indexBytes_ = 0;
     std::size_t libraryCount_ = 0;
     bool nonstandardReported_ = false;
+    // 文本规范化在整个框架只提示一次，不按 cfg 逐个重复。
+    bool bomReported_ = false, crlfReported_ = false, crReported_ = false, commentReported_ = false;
     bool Error(std::string code, std::string message, const std::filesystem::path& path) {
         Diagnose(diagnostics, std::move(code), std::move(message), path); return false;
     }
@@ -227,16 +237,16 @@ private:
             }
         }
         const auto normalized = [&](std::string message, std::size_t offset, std::size_t length) {
-            return FrameworkDiagnostic("INJECTION_FRAMEWORK_TEXT_NORMALIZED", std::move(message), path, offset, length, DiagnosticSeverity::Warning);
+            return FrameworkDiagnostic("INJECTION_FRAMEWORK_TEXT_NORMALIZED", std::move(message), path, offset, length, DiagnosticSeverity::Info);
         };
         std::size_t cursor = 0;
         if (text.starts_with("\xef\xbb\xbf")) {
-            if (!normalized("首UTF8 BOM仅用于配置解释；owned原字节及SHA保持不变。", 0, 3)) return false;
+            if (!bomReported_ && !normalized("cfg开头的UTF8 BOM只用于识别编码；原文件不变。", 0, 3)) return false;
+            bomReported_ = true;
             cursor = 3;
         }
         ScriptInjectionSection section = ScriptInjectionSection::General;
         std::uint32_t lineNumber = 0;
-        bool crlfReported = false, crReported = false, commentReported = false;
         while (cursor < text.size()) {
             ++lineNumber;
             const auto begin = cursor;
@@ -245,10 +255,10 @@ private:
             cursor = end;
             if (cursor < text.size()) {
                 const bool crlf = text[cursor] == '\r' && cursor + 1 < text.size() && text[cursor + 1] == '\n';
-                if (text[cursor] == '\r' && !(crlf ? crlfReported : crReported)) {
-                    if (!normalized(crlf ? "按正常CRLF换行解释配置；owned原字节及SHA保持不变。" :
-                        "按正常CR换行解释配置，不沿用旧仅LF分行行为。", cursor, crlf ? 2 : 1)) return false;
-                    (crlf ? crlfReported : crReported) = true;
+                if (text[cursor] == '\r' && !(crlf ? crlfReported_ : crReported_)) {
+                    if (!normalized(crlf ? "cfg按正常的Windows换行（CRLF）读取；原文件不变。" :
+                        "cfg按正常的CR换行读取，不沿用旧版只认LF的分行；原文件不变。", cursor, crlf ? 2 : 1)) return false;
+                    (crlf ? crlfReported_ : crReported_) = true;
                 }
                 cursor += crlf ? 2 : 1;
             }
@@ -257,24 +267,34 @@ private:
             if (key.empty() || key.front() == '#') continue;
             const auto comment = key.find("//");
             if (comment != std::string_view::npos) {
-                if (!commentReported && !normalized("按cfg行尾//注释解释；不会作为旧模式键参与匹配。",
+                if (!commentReported_ && !normalized("cfg行尾的//按注释处理，不参与匹配。",
                     static_cast<std::size_t>(key.data() - text.data()) + comment, 2)) return false;
-                commentReported = true;
+                commentReported_ = true;
                 key = key.substr(0, comment);
             }
             while (!key.empty() && (key.back() == ' ' || key.back() == '\t')) key.remove_suffix(1);
             if (key.empty()) continue;
             const auto offset = static_cast<std::size_t>(key.data() - text.data());
             if (key.size() > 4096) return Error("INJECTION_SOURCE_BUDGET", "配置键超过4096字节。", path);
+            // 不是函数名的键只跳过本行：YDWE 会把它当 Lua 模式匹配（如 [MNXT] 几乎总命中），这里不复刻。
             if (key != "[general]" && key != "[new]" && key != "[old]") {
-                for (std::size_t i = 0; i < key.size(); ++i) {
+                bool skipped = false;
+                for (std::size_t i = 0; i < key.size() && !skipped; ++i) {
                     const auto c = static_cast<unsigned char>(key[i]);
-                    if (c >= 0x80) return FrameworkDiagnostic("INJECTION_FRAMEWORK_KEY_ENCODING_UNKNOWN",
-                        "注入键含非ASCII字节；中文及来源编码尚未支持，未猜测GBK或静默改写。", path, offset + i, 1);
                     const bool alpha = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_';
-                    if (!alpha && !(i > 0 && c >= '0' && c <= '9')) return FrameworkDiagnostic("INJECTION_FRAMEWORK_KEY_INVALID",
-                        "注入键必须是ASCII标识符，未作为Lua模式解释。", path, offset + i, 1);
+                    if (c >= 0x80) {
+                        if (!FrameworkDiagnostic("INJECTION_FRAMEWORK_KEY_ENCODING_UNKNOWN",
+                            "注入键含非ASCII字节，已跳过该行；中文键尚未支持，未猜测GBK。", path, offset + i, 1,
+                            DiagnosticSeverity::Warning)) return false;
+                        skipped = true;
+                    } else if (!alpha && !(i > 0 && c >= '0' && c <= '9')) {
+                        if (!FrameworkDiagnostic("INJECTION_FRAMEWORK_KEY_INVALID",
+                            "注入键「" + std::string(key) + "」不是函数名，已跳过该行；分组标题只认[general]、[new]、[old]。",
+                            path, offset + i, 1, DiagnosticSeverity::Warning)) return false;
+                        skipped = true;
+                    }
                 }
+                if (skipped) continue;
             }
             if (!Register(std::string(key), section, lineNumber, configIndex, libraryIndex)) return false;
         }
@@ -306,6 +326,7 @@ private:
         const auto registrationIndex = sources.registrations.size();
         sources.registrations.push_back({key, configIndex, libraryIndex, lineNumber, section, pattern});
         if (section != ScriptInjectionSection::General && section != (sources.version24 ? ScriptInjectionSection::New : ScriptInjectionSection::Old)) return true;
+        if (libraryIndex == kScriptInjectionNoLibrary) { missing_.try_emplace(key, configIndex); return true; }
         auto [entry, inserted] = choices_.try_emplace(key, ScriptInjectionChoice{key, libraryIndex, {}, {}});
         auto& choice = entry->second;
         choice.registrationIndexes.push_back(registrationIndex);
@@ -358,5 +379,19 @@ Status VerifyScriptInjectionSources(const ScriptInjectionSources& sources, const
         return Status{std::move(current.diagnostics)};
     }
     return Status{std::move(current.diagnostics)};
+}
+Status CheckMissingInjectionLibraries(const ScriptInjectionSources& sources,
+    const std::unordered_set<std::string_view>& identifiers) {
+    for (const auto& missing : sources.missingLibraries) {
+        if (!identifiers.contains(missing.key)) continue;
+        if (missing.configFile >= sources.files.size()) return Status::Failure("Script.Inject",
+            "INJECTION_LIBRARY_MISSING_USED", "冻结注入来源无效。");
+        auto library = sources.files[missing.configFile].binding.path; library.replace_extension(".j");
+        auto status = Status::Failure("Script.Inject", "INJECTION_LIBRARY_MISSING_USED",
+            "脚本用到「" + missing.key + "」，但声明它的注入配置没有对应的J文件：" + IO::PathUtf8(library));
+        status.diagnostics.back().origin = OriginSpan{sources.files[missing.configFile].binding.path};
+        return status;
+    }
+    return Status::Ok();
 }
 } // namespace War3Map::Script
