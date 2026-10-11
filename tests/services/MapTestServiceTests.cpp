@@ -448,8 +448,15 @@ void OwnedLuaOptionsDoNotFallBack() {
         && plan.value->runtimeRoot.empty() && plan.value->runtimeBootstrapSha256 == *Sha256File(configured.runtimeBootstrap).value,
         "owned plan freezes bootstrap and mode without external DLL selection");
     Require(ArgumentValue(*plan.value, L"--runtime-mode") == L"owned-lua"
+        && ArgumentValue(*plan.value, L"--lua-hot-reload") == L"enabled"
         && std::find(plan.value->arguments.begin(), plan.value->arguments.end(), L"--runtime") == plan.value->arguments.end(),
         "owned launch arguments explicitly use owned runtime without YDWE");
+    configured.enableLuaHotReload = false;
+    const auto diagnosticsOnly = BuildMapTestLaunchPlan(configured);
+    Require(diagnosticsOnly.Succeeded() && !diagnosticsOnly.value->enableLuaHotReload
+        && std::find(diagnosticsOnly.value->arguments.begin(), diagnosticsOnly.value->arguments.end(), L"--lua-hot-reload")
+            == diagnosticsOnly.value->arguments.end(),
+        "disabled reload omits the launcher option; unsupported disabled token must never be emitted");
     auto changed = *prepared.value; changed.useOwnedLuaRuntime = false;
     Require(Code(BuildMapTestLaunchPlan(changed), "MAP_TEST_LUA_RELOAD_RUNTIME"), "invalid artifact mode refused");
     Require(*Sha256File(f.source).value == f.sha, "new runtime choices never modify source map");

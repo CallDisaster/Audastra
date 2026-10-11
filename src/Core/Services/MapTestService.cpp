@@ -251,8 +251,10 @@ Result<MapTestLaunchPlan> BuildMapTestLaunchPlan(const MapTestArtifact& artifact
             L"--receipt", plan.runtimeReceipt.wstring()};
         if (artifact.useOwnedLuaRuntime) {
             plan.arguments.insert(plan.arguments.end(), {L"--runtime-mode", L"owned-lua",
-                L"--lua-map-sha256", std::wstring(plan.testMapSha256.begin(), plan.testMapSha256.end()),
-                L"--lua-hot-reload", artifact.enableLuaHotReload ? L"enabled" : L"disabled"});
+                L"--lua-map-sha256", std::wstring(plan.testMapSha256.begin(), plan.testMapSha256.end())});
+            // 启动器只接受显式 enabled；省略选项才是其关闭合同。
+            if (artifact.enableLuaHotReload)
+                plan.arguments.insert(plan.arguments.end(), {L"--lua-hot-reload", L"enabled"});
         } else {
             plan.arguments.insert(plan.arguments.end(), {L"--runtime", artifact.runtimeRoot.wstring()});
         }
