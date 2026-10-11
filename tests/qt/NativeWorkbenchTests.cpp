@@ -603,6 +603,7 @@ class NativeWorkbenchTests final : public QObject {
     Q_OBJECT
 
 private slots:
+    void CampaignModuleMainWindowRouting();
     void TriggerReplaceOwnedLargeMapMainHost256();
     void TriggerConversionOwnedLargeMapMainHost();
     void RecentMapsUserOriginAndPrivateRestore();
@@ -8954,4 +8955,5 @@ int main(int argc, char** argv) {
     return result;
 }
 
+#include "CampaignWorkbenchChecks.inl"
 #include "NativeWorkbenchTests.moc"
