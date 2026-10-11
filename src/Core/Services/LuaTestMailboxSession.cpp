@@ -181,8 +181,9 @@ static Result<LuaTestReloadSnapshot> Query(LuaTestMailboxSession& session, std::
     snapshot.runtimeMessage = impl.diagnostic.message;
     snapshot.runtimeDiagnosticTruncated = impl.diagnostic.truncated;
     const auto state = static_cast<LuaMailboxState>(Read(mailbox.state));
-    if (state == LuaMailboxState::Complete) {
-        // Complete 由运行时 release 发布，编辑器持本地互斥后不会被另一 Submit 覆盖。
+    if (state == LuaMailboxState::Complete || (state == LuaMailboxState::Stopped && mailbox.resultSequence)) {
+        // Complete / Stop 由运行时 release 发布。Stop只改状态，仍须核验并读取已发布的末次ACK；
+        // 没有resultSequence的中断请求不能冒认为完成，编辑器互斥也禁止此时另一Submit覆盖正文。
         if (!impl.lastSequence || mailbox.requestSequence != impl.lastSequence || mailbox.resultSequence != impl.lastSequence
             || std::memcmp(mailbox.requestNonce, impl.nonce.c_str(), impl.nonce.size() + 1)
             || std::memcmp(mailbox.requestMapSha256, impl.sha.c_str(), impl.sha.size() + 1)

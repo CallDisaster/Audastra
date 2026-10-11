@@ -126,7 +126,42 @@ void ConcurrencyAndUtf8() {
         "truncated at full UTF8 boundary");
     fixture.runtime->Stop();
     auto stopped = QueryLuaTestReload(*fixture.session);
-    Check(stopped.Succeeded() && stopped.value->state == LuaTestReloadState::Stopped, "runtime stopped");
+    Check(stopped.Succeeded() && stopped.value->state == LuaTestReloadState::Complete
+        && stopped.value->runtimeState == LuaRuntimeState::Stopped && stopped.value->resultTruncated
+        && stopped.value->message == response.value->message, "stopped runtime preserves bounded completed request");
+}
+
+void FinalAcknowledgment() {
+    for (const bool stopRuntime : {false, true}) {
+        Fixture fixture;
+        const auto sent = SubmitLuaTestReload(*fixture.session, {"@final.lua", "return 1"});
+        Check(sent.Succeeded() && fixture.runtime->Take().has_value(), "final request started");
+        Check(fixture.runtime->Complete(*sent.value, LuaReloadResult::RuntimeError, "@final.lua:1: original failure"), "final error ACK");
+        if (stopRuntime) fixture.runtime->Stop();
+        fixture.ownership.store(detail::LuaTestProcessOwnership::Unconfirmed);
+        Check(!QueryLuaTestReload(*fixture.session, *sent.value).Succeeded(), "terminal ACK bypassed process ownership");
+        fixture.ownership.store(detail::LuaTestProcessOwnership::OwnedExited);
+        const auto ended = QueryLuaTestReload(*fixture.session, *sent.value);
+        Check(ended.Succeeded() && ended.value->state == LuaTestReloadState::Complete && !ended.value->processActive
+            && ended.value->resultCode == LuaReloadResult::RuntimeError
+            && ended.value->message == "@final.lua:1: original failure", "final ACK lost after exit");
+        Check(!SubmitLuaTestReload(*fixture.session, {"@late.lua", "return 2"}).Succeeded(), "terminal request allowed submission");
+        ++fixture.mailbox->resultSequence;
+        Check(!QueryLuaTestReload(*fixture.session, *sent.value).Succeeded(), "terminal result sequence mismatch accepted");
+        --fixture.mailbox->resultSequence;
+        fixture.mailbox->resultTruncated = 2;
+        Check(!QueryLuaTestReload(*fixture.session, *sent.value).Succeeded(), "invalid terminal truncation accepted");
+        fixture.mailbox->resultTruncated = 0;
+        fixture.mailbox->resultBytes = static_cast<std::uint32_t>(kLuaReloadResultCapacity);
+        Check(!QueryLuaTestReload(*fixture.session, *sent.value).Succeeded(), "terminal oversized ACK accepted");
+    }
+    Fixture queued;
+    const auto sent = SubmitLuaTestReload(*queued.session, {"@queued.lua", "return 1"});
+    Check(sent.Succeeded(), "queued exit request");
+    queued.runtime->Stop(); queued.ownership.store(detail::LuaTestProcessOwnership::OwnedExited);
+    const auto ended = QueryLuaTestReload(*queued.session, *sent.value);
+    Check(ended.Succeeded() && ended.value->state == LuaTestReloadState::Stopped
+        && ended.value->resultCode != LuaReloadResult::Success && ended.value->message.empty(), "unexecuted request forged ACK");
 }
 
 void RuntimeDiagnostics() {
@@ -182,7 +217,7 @@ void RuntimeDiagnostics() {
 
 int main() {
     try {
-        Lifecycle(); RejectionsAndUnknown(); ConcurrencyAndUtf8(); RuntimeDiagnostics(); DiagnosticsWithoutReload();
+        Lifecycle(); RejectionsAndUnknown(); ConcurrencyAndUtf8(); FinalAcknowledgment(); RuntimeDiagnostics(); DiagnosticsWithoutReload();
         std::cout << "Lua mailbox service fixture passed; simulated receiver only; game_evidence=0\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

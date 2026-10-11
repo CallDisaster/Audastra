@@ -193,6 +193,89 @@ void Controller(const std::filesystem::path& root) {
     mailbox.running = false;
     Require(controller.Poll().value->outcome == Services::LuaReloadOutcome::Stopped, "owned exit not observed");
 }
+void FinalAckAfterExit(const std::filesystem::path& root) {
+    Fixture fixture(root);
+    const auto baseline = fixture.Generate();
+    fixture.document.argumentNodes[fixture.amount].value.text = "17";
+    const auto next = fixture.Generate();
+    using Audastra::Runtime32::LuaRuntimeState;
+    using Audastra::Runtime32::LuaReloadResult;
+    struct ExitCase { LuaRuntimeState runtime; bool processActive; };
+    const ExitCase cases[]{{LuaRuntimeState::Ready, false}, {LuaRuntimeState::Stopped, false},
+        {LuaRuntimeState::Stopped, true}, {LuaRuntimeState::Failed, true}};
+    for (const auto& ending : cases) for (const auto result : {LuaReloadResult::Success, LuaReloadResult::RuntimeError,
+            LuaReloadResult::SyntaxError}) {
+        const bool succeeded = result == LuaReloadResult::Success;
+        MailboxFixture mailbox;
+        Services::LuaTestReloadController controller(mailbox.session, baseline, "map-facts");
+        const auto sent = controller.Submit(next, "map-facts"); Require(sent.Succeeded(), "final ACK submit");
+        const auto request = mailbox.runtime->Take(); Require(request.has_value(), "final ACK take");
+        const auto generatedLine = 1 + std::count(request->source.begin(), request->source.begin()
+            + request->source.find("Record"), '\n');
+        const auto message = succeeded ? std::string("final update confirmed")
+            : "Audastra/test-reload.lua:" + std::to_string(generatedLine) + ": final request error";
+        Require(mailbox.runtime->Complete(request->sequence, result, message), "final ACK completion");
+        if (ending.runtime == LuaRuntimeState::Stopped) mailbox.runtime->Stop();
+        else if (ending.runtime == LuaRuntimeState::Failed)
+            InterlockedExchange(reinterpret_cast<volatile LONG*>(&mailbox.view->runtimeState), static_cast<LONG>(ending.runtime));
+        mailbox.running = ending.processActive; // 首次Poll前已退出，或VM已停止但进程仍存活。
+        ++mailbox.view->resultSequence;
+        Require(!controller.Poll().Succeeded(), "wrong terminal ACK accepted");
+        --mailbox.view->resultSequence;
+        const auto done = controller.Poll();
+        Require(done.Succeeded() && done.value->outcome == Services::LuaReloadOutcome::Stopped
+            && done.value->message.find(message) != std::string::npos
+            && done.value->baselineScriptSha256 == (succeeded ? next.scriptSha256 : baseline.scriptSha256),
+            "terminal ACK message or confirmed baseline lost");
+        Require(succeeded ? !done.value->location : done.value->location && done.value->location->triggerId == 42
+            && done.value->location->nodeId == 202, "terminal error source location lost");
+        for (unsigned poll = 0; poll < 3; ++poll) {
+            const auto again = controller.Poll();
+            Require(again.Succeeded() && again.value->outcome == Services::LuaReloadOutcome::Stopped
+                && again.value->message == done.value->message
+                && again.value->baselineScriptSha256 == done.value->baselineScriptSha256
+                && again.value->location.has_value() == done.value->location.has_value(), "terminal ACK changed on repeated poll");
+            if (done.value->location) Require(again.value->location->triggerId == done.value->location->triggerId
+                && again.value->location->nodeId == done.value->location->nodeId
+                && again.value->location->sourceLine == done.value->location->sourceLine, "terminal location changed on repeated poll");
+        }
+        Require(!controller.Submit(next, "map-facts").Succeeded()
+            && mailbox.view->requestSequence == request->sequence, "terminal ACK reopened submission");
+    }
+    for (const auto& ending : cases) {
+        MailboxFixture mailbox;
+        Services::LuaTestReloadController controller(mailbox.session, baseline, "map-facts");
+        if (ending.runtime == LuaRuntimeState::Stopped) mailbox.runtime->Stop();
+        else if (ending.runtime == LuaRuntimeState::Failed)
+            InterlockedExchange(reinterpret_cast<volatile LONG*>(&mailbox.view->runtimeState), static_cast<LONG>(ending.runtime));
+        mailbox.running = ending.processActive;
+        Require(!controller.Submit(baseline, "map-facts").Succeeded() && !mailbox.view->requestSequence,
+            "unpolled terminal NoChanges accepted");
+        Require(controller.Poll().value->outcome == Services::LuaReloadOutcome::Stopped,
+            "unpolled terminal NoChanges did not preserve stopped state");
+    }
+    MailboxFixture unconfirmed;
+    Services::LuaTestReloadController unconfirmedController(unconfirmed.session, baseline, "map-facts");
+    unconfirmed.view->gameProcessId = 0;
+    Require(!unconfirmedController.Submit(baseline, "map-facts").Succeeded() && !unconfirmed.view->requestSequence,
+        "NoChanges bypassed unknown process identity");
+    const auto starting = Services::CreateLuaTestMailboxSession(std::string(64, 'b'));
+    Require(starting.Succeeded(), "unpolled starting fixture");
+    Services::LuaTestReloadController startingController(*starting.value, baseline, "map-facts");
+    Require(!startingController.Submit(baseline, "map-facts").Succeeded()
+        && startingController.Poll().value->outcome == Services::LuaReloadOutcome::Ready,
+        "Starting became NoChanges or falsely stopped");
+    MailboxFixture unknown;
+    Services::LuaTestReloadController controller(unknown.session, baseline, "map-facts");
+    Require(controller.Submit(next, "map-facts").Succeeded() && unknown.runtime->Take().has_value(), "unknown exit setup");
+    unknown.runtime->Stop(); unknown.running = false;
+    const auto stopped = controller.Poll();
+    Require(stopped.Succeeded() && stopped.value->outcome == Services::LuaReloadOutcome::Stopped
+        && stopped.value->baselineScriptSha256 == baseline.scriptSha256 && !stopped.value->location,
+        "unacknowledged exit advanced baseline or forged source");
+    Require(!controller.Submit(next, "map-facts").Succeeded(), "unacknowledged exit reopened submission");
+}
+
 void FrozenBindings(const std::filesystem::path& root) {
     Fixture fixture(root); MailboxFixture mailbox;
     auto baseline = fixture.Generate();
@@ -314,7 +397,8 @@ void Check(const std::filesystem::path& root) {
 int main() {
     try {
         const auto root = std::filesystem::temp_directory_path() / ("audastra-reload-fixture-" + std::to_string(GetCurrentProcessId()));
-        Check(root); Controller(root / "controller"); FrozenBindings(root / "bindings"); MapFacts(root); std::filesystem::remove_all(root);
+        Check(root); Controller(root / "controller"); FinalAckAfterExit(root / "final-ack");
+        FrozenBindings(root / "bindings"); MapFacts(root); std::filesystem::remove_all(root);
         std::cout << "Lua test generation/diff and 20 original offline host updates passed; game evidence=0\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

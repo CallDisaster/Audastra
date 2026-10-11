@@ -20,6 +20,16 @@ struct LuaTestReloadController::State {
     Script::LuaTestReloadPatch patch;
     LuaReloadControllerSnapshot snapshot;
     std::chrono::steady_clock::time_point started;
+    void MarkStopped() {
+        if (snapshot.outcome != LuaReloadOutcome::Stopped) {
+            const bool acknowledged = snapshot.outcome == LuaReloadOutcome::Succeeded
+                || snapshot.outcome == LuaReloadOutcome::Failed || snapshot.outcome == LuaReloadOutcome::RestartRequired;
+            snapshot.message = acknowledged && !snapshot.message.empty()
+                ? snapshot.message + "\n本次 Lua 测试会话已结束。" : "本次 Lua 测试会话已结束。";
+        }
+        snapshot.outcome = LuaReloadOutcome::Stopped;
+        pending.reset(); patch = {};
+    }
 };
 LuaTestReloadController::LuaTestReloadController(std::shared_ptr<LuaTestMailboxSession> mailbox,
     Script::LuaTriggerUnit baseline, std::string binding,
@@ -58,6 +68,18 @@ Result<LuaReloadControllerSnapshot> LuaTestReloadController::Submit(Script::LuaT
                     "本局尚未安装符号 " + name + "；差异没有发送，需要重新测试以安装新依赖。");
     }
     if (prepared.value->source.empty()) {
+        // 无差异也不能绕过真实会话身份和终态；共享API调用方不一定先Poll。
+        const auto live = QueryLuaTestReload(*state.mailbox);
+        if (!live.Succeeded() || !live.value) return {std::nullopt, live.diagnostics};
+        if (live.value->state == LuaTestReloadState::Starting)
+            return Result<LuaReloadControllerSnapshot>::Failure("Lua.Test", "LUA_TEST_NOT_READY",
+                "测试运行时仍在初始化，尚不能确认热重载。");
+        if (!live.value->processActive || live.value->state == LuaTestReloadState::Stopped
+            || live.value->runtimeState != Audastra::Runtime32::LuaRuntimeState::Ready) {
+            state.MarkStopped();
+            return Result<LuaReloadControllerSnapshot>::Failure("Lua.Test", "LUA_RELOAD_RESTART_REQUIRED",
+                "本次测试会话已经结束，请重新测试。");
+        }
         state.baseline = std::move(current);
         state.snapshot = {LuaReloadOutcome::NoChanges, 0, "没有需要执行的触发器差异。", state.baseline.scriptSha256};
         return Result<LuaReloadControllerSnapshot>::Success(state.snapshot);
@@ -83,10 +105,6 @@ Result<LuaReloadControllerSnapshot> LuaTestReloadController::Poll() {
     state.snapshot.runtimeDiagnosticTruncated = result.runtimeDiagnosticTruncated;
     if (result.state == LuaTestReloadState::Starting) {
         state.snapshot.message = "测试运行时正在初始化，尚未允许热重载。";
-    } else if (!result.processActive || result.state == LuaTestReloadState::Stopped) {
-        state.snapshot.outcome = LuaReloadOutcome::Stopped;
-        state.snapshot.message = "本次测试游戏已退出。";
-        state.pending.reset();
     } else if (state.pending) {
         state.snapshot.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - state.started).count();
         if (result.state == LuaTestReloadState::Complete) {
@@ -119,6 +137,12 @@ Result<LuaReloadControllerSnapshot> LuaTestReloadController::Poll() {
             state.snapshot.message = "游戏暂未确认差异；基线没有前推，请继续查询或重新测试。";
         }
     }
+    // 先消费匹配的末次ACK，再标记终态；退出不能抹掉错误正文/原行，也不能重新开放发送。
+    const bool stopped = result.state != LuaTestReloadState::Starting
+        && (!result.processActive || result.state == LuaTestReloadState::Stopped
+            || result.runtimeState == Audastra::Runtime32::LuaRuntimeState::Failed
+            || result.runtimeState == Audastra::Runtime32::LuaRuntimeState::Stopped);
+    if (stopped) state.MarkStopped();
     return Result<LuaReloadControllerSnapshot>::Success(state.snapshot);
 }
 
