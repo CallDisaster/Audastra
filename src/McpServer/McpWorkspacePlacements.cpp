@@ -54,6 +54,8 @@ Result<MapData::MapDataEditSession::EditReceipt> McpWorkspace::ApplyPlacementPla
     using Receipt = MapData::MapDataEditSession::EditReceipt;
     const auto checked = CheckActive(ActiveTransactionId(), Revision());
     if (!checked.Succeeded()) return Failed<Receipt>(checked);
+    const auto terrain = CheckTerrainMixingAllowed();
+    if (!terrain.Succeeded()) return Failed<Receipt>(terrain);
     const auto captured = CaptureMapDataSources();
     if (!captured.Succeeded()) return Failed<Receipt>(captured);
     if (!plan.OriginalReplayIntent())

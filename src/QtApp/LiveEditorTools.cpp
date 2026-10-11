@@ -13,6 +13,7 @@
 #include "McpObjectResourceTools.h"
 #include "LiveObjectResourceTools.h"
 #include "McpPlacementTools.h"
+#include "McpTerrainEditTools.h"
 #include "McpProductTools.h"
 #include "McpCodeCheckTools.h"
 #include "McpProjectSearchTools.h"
@@ -620,6 +621,51 @@ private:
         });
     }
 
+    QJsonObject TerrainTool(const QString& name, const QJsonObject& arguments, bool write) {
+        const auto context = [this]() -> Result<Mcp::TerrainEditToolContext> {
+            if (!project_.mapEdits_ || !project_.mapEdits_->Terrain())
+                return Result<Mcp::TerrainEditToolContext>::Failure("QtApp.Live", "LIVE_EDITOR_TERRAIN_UNAVAILABLE",
+                    "当前地图没有可读取的原地形会话。");
+            const auto identity = State();
+            return Result<Mcp::TerrainEditToolContext>::Success({project_.mapEdits_.get(),
+                {projectIdentity_.toStdString(), generation_, project_.editRevision_.Revision(),
+                    identity.value("source_sha256").toString().toStdString()}, false, project_.mapEdits_->IsDirty()});
+        };
+        const auto invoke = [&] {
+            Mcp::TerrainEditToolHost host;
+            host.identity = [this] { return State(); };
+            host.context = context;
+            host.apply = [this, &context](const Services::PreparedTerrainEdit& plan,
+                const std::function<Status(const MapData::MapDataEditSession::EditReceipt&)>& validate)
+                -> Result<MapData::TerrainStrokeResult> {
+                if (!project_.mapEdits_ || !project_.mapDataUndoStack_)
+                    return Result<MapData::TerrainStrokeResult>::Failure("QtApp.Live", "LIVE_EDITOR_UNDO_UNAVAILABLE",
+                        "当前地图没有共用地图数据撤销栈。");
+                const auto current = context();
+                if (!current.Succeeded()) return {{}, current.diagnostics};
+                const auto applied = Services::ApplyTerrainEdit(*project_.mapEdits_, current.value->document, plan, validate);
+                if (!applied.Succeeded()) return applied;
+                (void)project_.ObserveMapDataEdit("MCP 修改地形");
+                // 原世界页监听此撤销栈的 indexChanged，按同一地形快照增量重建；不发整图重新加载信号。
+                QtProject::PushMapDataEdit(project_, QObject::tr("AI 地形笔刷"), "MCP 修改地形");
+                emit owner_.Changed();
+                return applied;
+            };
+            return Mcp::InvokeTerrainEditTool(name, arguments, host);
+        };
+        if (write) return Write(arguments, false, invoke);
+        if (busy_ || project_.savingMap_) return Mcp::Failure("LIVE_EDITOR_BUSY", "地图写任务正在执行。");
+        auto bound = arguments;
+        if (!bound.contains("project_identity") && !bound.contains("expected_revision")) {
+            const auto identity = State();
+            bound.insert("project_identity", identity.value("project_identity"));
+            bound.insert("expected_revision", identity.value("revision"));
+        }
+        const auto checked = CheckContext(bound, false, true);
+        if (!checked.value("ok").toBool()) return checked;
+        return invoke();
+    }
+
     QJsonObject Save(const QJsonObject& arguments) {
         return Write(arguments, false, [&] {
             if (!save_) return Mcp::Failure("LIVE_EDITOR_SAVE_UNAVAILABLE", "宿主尚未接通原地图保存服务。");
@@ -834,6 +880,13 @@ private:
             AddTool(name, definition.description, definition.permission, definition.inputSchema,
                 [this, name](const QJsonObject& arguments) { return PlacementTool(name, arguments); },
                 definition.maxRequestIdBytes);
+        }
+        for (auto definition : Mcp::TerrainEditToolDefinitions()) {
+            const auto name = definition.name;
+            const bool write = definition.permission == Mcp::ToolPermission::Edit;
+            AddTool(name, definition.description, definition.permission, definition.inputSchema,
+                [this, name, write](const QJsonObject& arguments) { return TerrainTool(name, arguments, write); },
+                definition.maxRequestIdBytes, definition.maxResponseBytes);
         }
         for (auto definition : Mcp::ObjectToolDefinitions()) {
             const auto name = definition.name;

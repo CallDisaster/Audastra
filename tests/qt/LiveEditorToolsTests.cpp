@@ -8,6 +8,7 @@
 #include "McpImportTools.h"
 #include "McpObjectResourceTools.h"
 #include "McpPlacementTools.h"
+#include "McpTerrainEditTools.h"
 #include "McpCodeCheckTools.h"
 #include "McpCampaignTools.h"
 #include "McpProjectSearchTools.h"
@@ -192,6 +193,7 @@ private slots:
     void EntityFieldsUseOriginalSessionAndAtomicUndo();
     void SettingsAndStringsKeepOriginalGuiUndoAndPolicy();
     void PlacementToolsKeepAuthorEditsAndOriginalUndo();
+    void TerrainToolsKeepSessionPreviewAndOriginalUndo();
     void ImportMetadataUsesSourceAndCurrentAssetOverlay();
     void ProjectSearchUsesInjectedOwnedPagesAndStrictRevision();
     void ProjectSearchCallbackReplacementStopsOldRequest();
@@ -200,16 +202,17 @@ private slots:
 
 void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
     Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
-    const QStringList expected{"code.check", "create_campaign", "edit_campaign",
+    const QStringList expected{"code.check", "create_campaign", "edit_campaign", "edit_terrain_stroke",
         "editor_edit_trigger_graph", "editor_get_ui_catalog", "editor_query_trigger_graph", "editor_save_map", "editor_state",
         "entities_copy", "entities_query", "entities_rotate", "entities_set_fields",
         "export_campaign_member",
         "feedback.draft", "feedback.list", "feedback.status",
+        "get_terrain_edit_state",
         "imports_get", "imports_list",
         "map_settings_get", "map_settings_set",
         "object_resource_inspect", "object_resource_query", "object_resource_state",
         "objects_create", "objects_delete", "objects_field_options", "objects_get", "objects_list", "objects_set_fields",
-        "open_campaign", "project_search", "query_campaign", "query_campaign_objects", "redo_campaign", "save_campaign",
+        "open_campaign", "project_search", "query_campaign", "query_campaign_objects", "query_terrain_points", "redo_campaign", "save_campaign",
         "sounds_get", "sounds_list", "sounds_update",
         "strings_query", "strings_set",
         "undo_campaign", "update.status",
@@ -716,6 +719,75 @@ void LiveEditorToolsTests::VariableFailuresPreserveRevisionAndUndo() {
     auto rename = erase; rename.insert("name", "night_renamed");
     QVERIFY(!f.tools->Invoke("variables_rename", rename).value("ok").toBool());
     QCOMPARE(f.Fingerprint(), after); QCOMPARE(f.Context(), context); QCOMPARE(f.project.triggerUndoStack_->count(), 1);
+}
+
+void LiveEditorToolsTests::TerrainToolsKeepSessionPreviewAndOriginalUndo() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    MapData::TerrainGridSnapshot grid;
+    grid.header.width = 5; grid.header.height = 5; grid.header.offset = {-256, -256}; grid.header.mainTileset = 'L';
+    grid.header.groundTilesets = {"Ldrt", "Lgrs"}; grid.header.cliffTilesets = {"CLdi"}; grid.vertices.resize(25);
+    for (auto& vertex : grid.vertices) { vertex.groundHeightRaw = 8192; vertex.waterHeightAndFlagsRaw = 7936; vertex.cliffAndLayerRaw = 2; }
+    MapData::RefreshTerrainDerived(grid, 0, 0, 5, 5);
+    const auto terrain = MapData::SerializeMapTerrain(grid); QVERIFY(terrain.Succeeded());
+    std::vector<std::byte> pathing{std::byte{'M'}, std::byte{'P'}, std::byte{'3'}, std::byte{'W'}};
+    for (const auto value : {0u, 16u, 16u}) for (unsigned shift = 0; shift < 32; shift += 8)
+        pathing.push_back(static_cast<std::byte>((value >> shift) & 0xff));
+    pathing.resize(16 + 16 * 16, std::byte{2});
+    QVERIFY(WriteFile(f.source.filePath("map/war3map.w3e"), Bytes(*terrain.value)));
+    QVERIFY(WriteFile(f.source.filePath("map/war3map.wpm"), Bytes(pathing)));
+    auto directory = DirectoryWorkspace::Open(f.project.projectRoot_); QVERIFY(directory.Succeeded());
+    f.project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*directory.value));
+    f.project.LoadMapDocument(); f.project.ResetEditTracking();
+    QVERIFY(f.project.editTrackingReady_ && !f.project.editTrackingFailed_);
+    auto* session = f.project.mapEdits_.get(); auto* undo = f.project.mapDataUndoStack_;
+    QVERIFY(session && undo && session->Terrain());
+    const auto originalTerrain = session->Terrain();
+    const auto triggers = f.Fingerprint();
+    const auto state = f.tools->Invoke("get_terrain_edit_state", {});
+    QVERIFY2(state.value("ok").toBool(), qPrintable(Explain(state)));
+    QVERIFY(state.value("pathing_available").toBool());
+    for (const auto& definition : Mcp::TerrainEditToolDefinitions()) {
+        bool found = false;
+        for (const auto& entry : f.tools->Tools()) if (entry.toObject().value("name") == definition.name) {
+            QCOMPARE(entry.toObject().value("inputSchema").toObject(), definition.inputSchema); found = true;
+        }
+        QVERIFY(found);
+    }
+    auto request = f.Context(); request.insert("terrain_binding", state.value("terrain_binding"));
+    request.insert("dry_run", true);
+    request.insert("brush", QJsonObject{{"kind", "raise"}, {"size", 1}, {"strength", 16}});
+    request.insert("points", QJsonArray{QJsonObject{{"x", 0}, {"y", 0}}});
+    const auto context = f.Context();
+    const auto preview = f.tools->Invoke("edit_terrain_stroke", request);
+    QVERIFY2(preview.value("ok").toBool(), qPrintable(Explain(preview)));
+    QVERIFY(!preview.value("applied").toBool()); QCOMPARE(undo->count(), 0); QCOMPARE(session->Revision(), std::uint64_t{0});
+    QCOMPARE(session->Terrain().get(), originalTerrain.get()); QCOMPARE(f.Context(), context);
+    QSignalSpy documentReload(&f.project, &EditorProject::MapDocumentChanged);
+    QSignalSpy undoEvents(undo, &QUndoStack::indexChanged);
+    request["dry_run"] = false;
+    const auto applied = f.tools->Invoke("edit_terrain_stroke", request);
+    QVERIFY2(applied.value("ok").toBool(), qPrintable(Explain(applied)));
+    QVERIFY(applied.value("applied").toBool()); QVERIFY(!applied.value("map_saved").toBool());
+    QCOMPARE(f.project.mapEdits_.get(), session); QCOMPARE(f.project.mapDataUndoStack_, undo);
+    QCOMPARE(undo->count(), 1); QCOMPARE(undoEvents.count(), 1); QCOMPARE(documentReload.count(), 0);
+    QCOMPARE(session->InspectTerrainPoint({0, 0}).value->groundHeight, 16.f);
+    QVERIFY(!f.tools->Invoke("edit_terrain_stroke", request).value("ok").toBool()); QCOMPARE(undo->count(), 1);
+    undo->undo(); QCOMPARE(session->InspectTerrainPoint({0, 0}).value->groundHeight, 0.f);
+    QVERIFY(!session->IsDirty()); undo->redo(); QCOMPARE(session->InspectTerrainPoint({0, 0}).value->groundHeight, 16.f);
+    QCOMPARE(f.Fingerprint(), triggers);
+    const auto current = f.tools->Invoke("get_terrain_edit_state", {});
+    auto query = QJsonObject{{"terrain_binding", current.value("terrain_binding")}, {"points", request.value("points")}};
+    QVERIFY(f.tools->Invoke("query_terrain_points", query).value("ok").toBool());
+    Mcp::ToolPolicy policy; policy.allowEdit = false; f.tools->SetPolicy(policy);
+    auto forbidden = f.Context(); forbidden.insert("terrain_binding", current.value("terrain_binding"));
+    forbidden.insert("dry_run", false); forbidden.insert("brush", request.value("brush")); forbidden.insert("points", request.value("points"));
+    QVERIFY(!f.tools->Invoke("edit_terrain_stroke", forbidden).value("ok").toBool());
+    QVERIFY(f.tools->Invoke("query_terrain_points", query).value("ok").toBool()); QCOMPARE(undo->count(), 1);
+    QFile input(f.source.filePath("map/war3map.w3e")); QVERIFY(input.open(QIODevice::ReadOnly)); QCOMPARE(input.readAll(), Bytes(*terrain.value)); input.close();
+    auto altered = *terrain.value; altered.back() = std::byte{3};
+    QVERIFY(WriteFile(f.source.filePath("map/war3map.w3e"), Bytes(altered)));
+    QVERIFY(!f.tools->Invoke("get_terrain_edit_state", {}).value("ok").toBool());
+    QCOMPARE(session->InspectTerrainPoint({0, 0}).value->groundHeight, 16.f); QCOMPARE(undo->count(), 1);
 }
 
 void LiveEditorToolsTests::EntityFieldsUseOriginalSessionAndAtomicUndo() {

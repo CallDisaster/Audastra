@@ -1,5 +1,6 @@
 #include "War3MapCore/MapData/TerrainPatchCodec.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/IO/FileBytes.h"
 
 #include <algorithm>
 #include <cctype>
@@ -11,7 +12,7 @@ Result<BinaryFilePatch> BindMember(const WorkspaceSnapshot& source, const char* 
     std::span<const std::byte> before, std::vector<std::byte> after) {
     const WorkspaceFile* found = nullptr;
     for (const auto& file : source.files) {
-        auto path = file.relativePath.generic_string();
+        auto path = IO::GenericPathUtf8(file.relativePath);
         std::transform(path.begin(), path.end(), path.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         if (path != name && path != std::string("map/") + name) continue;
         if (found) return Result<BinaryFilePatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_SOURCE_AMBIGUOUS", "地形原生成员有多个来源。");

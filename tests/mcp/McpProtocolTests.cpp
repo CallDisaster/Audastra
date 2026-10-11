@@ -67,6 +67,7 @@ void TestToolSurface() {
             "append_argument_call", "set_scalar_argument", "preview_edit",
             "validate_edit", "export_map_candidate", "rollback_edit",
             "install_generated_warvk_module", "save_terrain_blight_candidate",
+            "get_terrain_edit_state", "query_terrain_points", "edit_terrain_stroke",
             "describe_map_data", "query_map_data_page", "save_map_edit_candidate", "query_map_trigger_text", "capture_model_animation", "project_search",
             "query_map_archive_member_identities", "query_trigger_graph", "edit_trigger_graph",
             "variables_list", "variables_get", "variables_create", "variables_update", "variables_rename", "variables_delete",

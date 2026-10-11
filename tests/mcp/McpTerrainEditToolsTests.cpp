@@ -1,13 +1,18 @@
 #include "McpTerrainEditTools.h"
+#include "McpTools.h"
+#include "McpWorkspace.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/TerrainPatchCodec.h"
+#include "War3MapCore/Trigger/TriggerDirectory.h"
 
 #include <QCoreApplication>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QTemporaryDir>
 
 #include <fstream>
+#include <algorithm>
 #include <iostream>
 #include <stdexcept>
 
@@ -183,6 +188,173 @@ void SealedTerrainUsesExistingDirectoryTransaction() {
     Expect(*IO::ReadFileBytes(fixture.source / "war3map.w3e").value == fixture.terrain, "candidate publication preserves original source");
 }
 
+void OpenWorkspace(Fixture& fixture, McpServer& server) {
+    const auto ui = std::filesystem::path(fixture.temporary.path().toStdWString()) / "ui";
+    const auto text = [&](const auto& path, const std::string& value) { Fixture::Write(path, std::as_bytes(std::span(value))); };
+    text(ui / "config", "base\n"); text(ui / "base/action.txt", "[DoNothing]\ntitle=Do nothing\n");
+    const auto catalog = Trigger::UiCatalog::Load(ui);
+    Expect(catalog.Succeeded(), "original terrain test catalog loads");
+    auto document = Trigger::WtgWctCodec{}.CreateEmpty(*catalog.value);
+    Expect(document.Succeeded() && Trigger::TriggerDirectoryEditor::AddCategory(*document.value, "合成地形").Succeeded(), "original terrain trigger document");
+    const auto pair = Trigger::WtgWctCodec{}.Serialize(*document.value, *catalog.value);
+    Expect(pair.Succeeded(), "original trigger pair encodes");
+    Fixture::Write(fixture.source / "war3map.wtg", pair.value->wtg);
+    Fixture::Write(fixture.source / "war3map.wct", pair.value->wct);
+    server.SetWorkspace(fixture.source, ui); RegisterAllTools(server);
+    Expect(server.Workspace() != nullptr, "standalone terrain host opens actual workspace");
+}
+
+QJsonObject Call(McpServer& server, const char* tool, const QJsonObject& arguments = {}) {
+    const auto message = QJsonDocument(QJsonObject{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/call"},
+        {"params", QJsonObject{{"name", tool}, {"arguments", arguments}}}}).toJson(QJsonDocument::Compact);
+    const auto reply = server.HandleMessage(message);
+    Expect(reply && !reply->error, "actual MCP tool accepts schema and dispatches");
+    const auto content = reply->result.toObject().value("content").toArray();
+    Expect(content.size() == 1, "MCP returns one bounded receipt");
+    return QJsonDocument::fromJson(content.first().toObject().value("text").toString().toUtf8()).object();
+}
+
+QJsonObject Current(McpServer& server) {
+    auto state = Call(server, "get_terrain_edit_state");
+    Expect(state.value("ok").toBool(), "actual MCP terrain state available"); return state;
+}
+
+void RegisteredHostRetainsTransactionAndPublishesDirectory() {
+    Fixture fixture; McpServer server; OpenWorkspace(fixture, server);
+    auto* workspace = server.Workspace();
+    const auto initial = Current(server), dry = Call(server, "edit_terrain_stroke", Stroke(initial));
+    Expect(dry.value("ok").toBool() && !workspace->HasActiveTransaction(), "outside-transaction preview must not acquire a writer");
+    Expect(!Call(server, "edit_terrain_stroke", Stroke(initial, false)).value("ok").toBool(), "actual write needs explicit transaction");
+    const auto revision = workspace->Revision(); const auto transaction = workspace->BeginEdit(revision);
+    Expect(transaction.Succeeded(), "existing directory transaction opens");
+    Expect(!Call(server, "edit_terrain_stroke", Stroke(initial, false)).value("ok").toBool(), "begin invalidates old terrain identity");
+    const auto before = workspace->TerrainContext(server.DocumentId(), server.DocumentGeneration());
+    const auto request = Stroke(Current(server), false);
+    const auto applied = Call(server, "edit_terrain_stroke", request);
+    Expect(applied.value("ok").toBool() && applied.value("applied").toBool(), "registered tool writes common typed command");
+    const auto after = workspace->TerrainContext(server.DocumentId(), server.DocumentGeneration());
+    Expect(before.value->session == after.value->session && after.value->session->Revision() == 1
+        && after.value->session->InspectTerrainPoint({0, 0}).value->groundHeight == 16,
+        "publication keeps original typed session and undo history");
+    Expect(!Call(server, "edit_terrain_stroke", request).value("ok").toBool(), "same request cannot be replayed on new revision");
+    auto blight = Stroke(Current(server), false); blight["brush"] = QJsonObject{{"kind", "blight"}, {"size", 1}, {"value", true}};
+    blight["points"] = QJsonArray{QJsonObject{{"x", 128}, {"y", 0}}};
+    Expect(Call(server, "edit_terrain_stroke", blight).value("ok").toBool(), "second stroke accumulates into same terrain transaction");
+    const auto category = workspace->VisibleDocument().categories.front().categoryId;
+    Expect(!workspace->CreateTrigger(*transaction.value, revision, category, "不应混入").Succeeded(), "unproven mixed trigger edit rejects before publishing");
+    const auto preview = workspace->PreviewEdit(*transaction.value, revision);
+    Expect(preview.Succeeded() && preview.value->changes.size() == 2 && workspace->ValidateEdit(*transaction.value, revision).satisfied,
+        "normal preview and validation prove exactly two replayed terrain members");
+    const auto output = std::filesystem::path(fixture.temporary.path().toStdWString()) / "host-candidate";
+    Expect(workspace->ExportCandidate(*transaction.value, revision, output).Succeeded(), "normal directory candidate exporter publishes terrain");
+    MapDataEditSession reopened(fixture.document);
+    const auto w3e = IO::ReadFileBytes(output / "war3map.w3e"), wpm = IO::ReadFileBytes(output / "war3map.wpm");
+    Expect(w3e.Succeeded() && wpm.Succeeded() && reopened.AttachTerrain(*w3e.value).Succeeded()
+        && reopened.AttachPathing(*wpm.value).Succeeded() && reopened.InspectTerrainPoint({0, 0}).value->groundHeight == 16
+        && reopened.InspectTerrainPoint({128, 0}).value->vertex.IsBlight(), "candidate readback retains both cumulative commands");
+    Expect(*IO::ReadFileBytes(fixture.source / "war3map.w3e").value == fixture.terrain
+        && *IO::ReadFileBytes(fixture.source / "war3map.wpm").value == fixture.pathing, "host never writes original directory");
+    const auto nextRevision = workspace->Revision(); const auto next = workspace->BeginEdit(nextRevision);
+    Expect(next.Succeeded(), "new transaction retains prior candidate overlay");
+    const auto continued = workspace->TerrainContext(server.DocumentId(), server.DocumentGeneration());
+    Expect(continued.value->session != after.value->session && continued.value->session->InspectTerrainPoint({0, 0}).value->groundHeight == 16,
+        "new transaction has fresh session identity and full retained stroke recipe");
+    auto lower = Stroke(Current(server), false); lower["brush"] = QJsonObject{{"kind", "lower"}, {"size", 1}, {"strength", 16}};
+    Expect(Call(server, "edit_terrain_stroke", lower).value("ok").toBool(), "continuation may restore original terrain bytes");
+    auto clear = Stroke(Current(server), false); clear["brush"] = QJsonObject{{"kind", "blight"}, {"size", 1}, {"value", false}};
+    clear["points"] = QJsonArray{QJsonObject{{"x", 128}, {"y", 0}}};
+    Expect(Call(server, "edit_terrain_stroke", clear).value("ok").toBool(), "continuation restores original WPM bits too");
+    const auto restored = workspace->PreviewEdit(*next.value, nextRevision);
+    Expect(restored.Succeeded() && restored.value->changes.size() == 2
+        && std::all_of(restored.value->changes.begin(), restored.value->changes.end(), [](const auto& change) { return change.beforeSha256 == change.afterSha256; })
+        && workspace->ValidateEdit(*next.value, nextRevision).satisfied, "explicit restoration replaces prior overlays with exact original bytes");
+    Expect(workspace->Rollback(*next.value, nextRevision).Succeeded(), "rollback preserves prior published candidate");
+    const auto retained = workspace->TerrainContext(server.DocumentId(), server.DocumentGeneration());
+    Expect(retained.value->session->InspectTerrainPoint({0, 0}).value->groundHeight == 16, "rollback discards active edits only");
+}
+
+void HostRejectsWithoutPartialOverlayOrSourceWrites() {
+    Fixture fixture; McpServer server; OpenWorkspace(fixture, server); auto* workspace = server.Workspace();
+    const auto revision = workspace->Revision(); const auto transaction = workspace->BeginEdit(revision);
+    Expect(transaction.Succeeded(), "terrain failure fixture transaction starts");
+    const auto context = workspace->TerrainContext(server.DocumentId(), server.DocumentGeneration());
+    const auto state = CaptureTerrainEditState(*context.value->session, context.value->document);
+    const auto stroke = Raise();
+    const auto plan = PrepareTerrainEdit(*context.value->session, context.value->document, state.value->binding, stroke.brush, stroke.points, false);
+    Expect(plan.Succeeded(), "sealed host plan prepares");
+    auto zero = stroke.brush; zero.kind = TerrainBrushKind::Plateau;
+    const auto unchanged = PrepareTerrainEdit(*context.value->session, context.value->document, state.value->binding, zero, stroke.points, false);
+    const auto unchangedRevision = workspace->ObjectRevision();
+    Expect(unchanged.Succeeded() && !unchanged.value->Plan().HasChanges() && workspace->ApplyTerrainPlan(*unchanged.value).Succeeded()
+        && workspace->ObjectRevision() == unchangedRevision && workspace->Session()->PreviewEdit(*transaction.value).value->changes.empty(),
+        "direct host no-op does not seed terrain overlay or consume generation");
+    auto rejected = workspace->ApplyTerrainPlan(*plan.value, [&](const auto&) {
+        Expect(!workspace->Rollback(*transaction.value, revision).Succeeded(), "prepublish reentry cannot destroy owning transaction");
+        return Status::Failure("Test", "TEST_DENIED", "拒绝地形发布。");
+    });
+    Expect(!rejected.Succeeded() && context.value->session->Revision() == 0 && !context.value->session->CanUndo()
+        && workspace->Session()->PreviewEdit(*transaction.value).value->changes.empty(), "callback rejection leaves both typed session and EditorSession overlay untouched");
+    auto texture = Stroke(Current(server), false); texture["brush"] = QJsonObject{{"kind", "texture"}, {"size", 1}, {"ground_texture", "Lgrs"}};
+    Expect(!Call(server, "edit_terrain_stroke", texture).value("ok").toBool() && context.value->session->Revision() == 0,
+        "unproven texture save gate rejects before actual typed commit");
+    Expect(workspace->ApplyTerrainPlan(*plan.value).Succeeded(), "rejected publish does not consume the original plan");
+    Expect(workspace->Rollback(*transaction.value, revision).Succeeded(), "real command rolls back through original transaction");
+    const auto second = workspace->BeginEdit(revision);
+    Expect(second.Succeeded(), "next transaction from original source opens");
+    const auto trigger = workspace->CreateTrigger(*second.value, revision, workspace->VisibleDocument().categories.front().categoryId, "原事务触发器");
+    Expect(trigger.Succeeded() && !Call(server, "edit_terrain_stroke", Stroke(Current(server), false)).value("ok").toBool(),
+        "terrain cannot overwrite an existing trigger transaction");
+    Expect(workspace->Session()->PreviewEdit(*second.value).value->changes.size() == 2, "rejected terrain preserves original trigger pair only");
+}
+
+void MissingPathingRemainsReadableAndSourceDriftRejects() {
+    Fixture fixture;
+    Expect(std::filesystem::remove(fixture.source / "war3map.wpm"), "remove own synthetic WPM for missing-source scenario");
+    McpServer server; OpenWorkspace(fixture, server); auto* workspace = server.Workspace();
+    const auto state = Current(server);
+    Expect(!state.value("pathing_available").toBool(), "missing WPM is explicit in query state");
+    const auto points = Call(server, "query_terrain_points", {{"terrain_binding", state.value("terrain_binding")},
+        {"points", QJsonArray{QJsonObject{{"x", 0}, {"y", 0}}}}});
+    Expect(points.value("ok").toBool(), "missing pathing does not prevent reading terrain height");
+    const auto transaction = workspace->BeginEdit(workspace->Revision());
+    Expect(transaction.Succeeded() && !Call(server, "edit_terrain_stroke", Stroke(Current(server), false)).value("ok").toBool(),
+        "missing WPM cannot become a saveable terrain transaction");
+    auto changed = fixture.terrain; changed.back() = std::byte{3}; Fixture::Write(fixture.source / "war3map.w3e", changed);
+    Expect(!Call(server, "get_terrain_edit_state").value("ok").toBool(), "readonly source drift invalidates cached terrain state");
+}
+
+void ArchiveExportBindsPathingAndCompanionMembers() {
+    Fixture fixture; McpServer server; OpenWorkspace(fixture, server); auto* workspace = server.Workspace();
+    const auto revision = workspace->Revision(); const auto transaction = workspace->BeginEdit(revision);
+    Expect(transaction.Succeeded() && Call(server, "edit_terrain_stroke", Stroke(Current(server), false)).value("ok").toBool(), "archive fixture terrain edit applies");
+    Expect(workspace->PreviewEdit(*transaction.value, revision).Succeeded() && workspace->ValidateEdit(*transaction.value, revision).satisfied,
+        "archive fixture uses normal preview and validation");
+    const auto outputRoot = std::filesystem::path(fixture.temporary.path().toStdWString());
+    std::vector<MapArchiveMember> members{{"war3map.w3e", fixture.terrain}, {"war3map.wpm", fixture.pathing},
+        {"war3map.wtg", *IO::ReadFileBytes(fixture.source / "war3map.wtg").value},
+        {"war3map.wct", *IO::ReadFileBytes(fixture.source / "war3map.wct").value}};
+    const auto mismatch = [&](const char* name, const std::vector<MapArchiveMember>& inputs) {
+        const auto source = outputRoot / (std::string(name) + ".w3x");
+        const auto archive = WriteVerifiedArchive(source, inputs);
+        Expect(archive.Succeeded(), "original synthetic archive generated");
+        MapEditSaveRequest request; request.sourceMap = source; request.expectedSourceSha256 = archive.value->sha256;
+        request.targetCandidate = outputRoot / (std::string(name) + "-candidate.w3x");
+        request.toolRoot = outputRoot; request.gameRoot = outputRoot;
+        const auto result = workspace->ExportArchiveCandidate(*transaction.value, revision, request);
+        Expect(!result.Succeeded() && !std::filesystem::exists(request.targetCandidate), "mismatched or script-incomplete synthetic archive never publishes");
+        return std::any_of(result.diagnostics.begin(), result.diagnostics.end(), [](const auto& item) { return item.code == "MCP_TERRAIN_ARCHIVE_SOURCE_MISMATCH"; });
+    };
+    auto wrong = members; wrong[1].data.back() ^= std::byte{1};
+    Expect(mismatch("changed-pathing", wrong), "same W3E with different WPM must not borrow directory terrain proof");
+    wrong = members; wrong[2].data.back() ^= std::byte{1};
+    Expect(mismatch("changed-trigger", wrong), "different trigger source is not the directory companion");
+    wrong = members; wrong.push_back({"war3mapUnits.doo", {std::byte{0}}});
+    Expect(mismatch("extra-placement", wrong), "missing source member cannot be replaced with an unbound archive member");
+    Expect(!mismatch("matching-source", members), "same raw members pass source gate and continue into unchanged script-save checks");
+    Expect(workspace->HasActiveTransaction() && workspace->Session()->PreviewEdit(*transaction.value).value->changes.size() == 2,
+        "archive failures retain active directory edits");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -192,7 +364,11 @@ int main(int argc, char** argv) {
         FacadeRejectsUnknownTypesBoundsAndStaleSources();
         CodecProvesSourceIntentAndNetBytes();
         SealedTerrainUsesExistingDirectoryTransaction();
-        std::cout << "4 terrain MCP and sealed transaction scenarios passed\n";
+        RegisteredHostRetainsTransactionAndPublishesDirectory();
+        HostRejectsWithoutPartialOverlayOrSourceWrites();
+        MissingPathingRemainsReadableAndSourceDriftRejects();
+        ArchiveExportBindsPathingAndCompanionMembers();
+        std::cout << "8 terrain MCP and sealed transaction scenarios passed\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

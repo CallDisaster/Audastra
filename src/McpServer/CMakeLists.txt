@@ -1,4 +1,4 @@
-add_library(War3MapMcpWorkspace STATIC McpWorkspace.cpp McpWorkspaceObjects.cpp McpWorkspaceMapData.cpp McpWorkspacePlacements.cpp McpWorkspaceProjectSearchCache.cpp)
+add_library(War3MapMcpWorkspace STATIC McpWorkspace.cpp McpWorkspaceObjects.cpp McpWorkspaceMapData.cpp McpWorkspacePlacements.cpp McpWorkspaceProjectSearchCache.cpp McpWorkspaceTerrain.cpp)
 add_library(War3MapEditor::McpWorkspace ALIAS War3MapMcpWorkspace)
 
 target_include_directories(
@@ -24,6 +24,7 @@ if(TARGET Qt6::Core)
         McpHttpTransport.cpp
         McpTerrain.cpp
         McpTerrainEditTools.cpp
+        McpToolTerrainEdit.cpp
         McpTools.cpp
         McpObjectTools.cpp
         McpToolObjects.cpp
