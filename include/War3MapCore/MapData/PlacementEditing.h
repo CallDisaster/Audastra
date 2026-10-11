@@ -7,6 +7,8 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <variant>
+#include <vector>
 
 namespace War3Map::MapData {
 
@@ -44,6 +46,11 @@ struct PlacementMove {
 // 返回新摆放的标识（追加在文件末尾）。
 [[nodiscard]] Result<PlacementId> AddUnitPlacement(MapDataEditSession& session, UnitPlacement placement);
 [[nodiscard]] Result<PlacementId> AddDoodadPlacement(MapDataEditSession& session, DoodadPlacement placement);
+// 一批同类完整记录只提交一次；创建编号由共用算法分配，忽略输入中的 creationId。
+// 类型存在、贴地与地图边界由拥有真实物编/地形来源的上层命令验证。
+using PlacementCreationRecords = std::variant<std::vector<UnitPlacement>, std::vector<DoodadPlacement>>;
+[[nodiscard]] Result<std::vector<PlacementId>> AddPlacements(
+    MapDataEditSession& session, const PlacementCreationRecords& records);
 
 // 按同一世界坐标偏移复制最多 4096 个单位/物品/装饰物/可破坏物，可跨两个文件。
 // 所有身份、坐标、创建编号及起始位置规则先校验，再一次提交；返回标识与请求顺序一致。
@@ -52,7 +59,7 @@ struct PlacementMove {
     std::span<const PlacementId> ids, std::array<float, 3> offset);
 
 namespace detail {
-// UI、保存与 prepared facade 共用唯一移动/复制算法；仅在来源/预算预检后构造副本。
+// UI、保存与 prepared facade 共用唯一摆放算法；仅在来源/预算预检后构造副本。
 struct PlacementEditCandidate {
     std::optional<UnitPlacements> units;
     std::optional<DoodadPlacements> doodads;
@@ -63,6 +70,10 @@ struct PlacementEditCandidate {
     const MapDocument& document, std::span<const PlacementMove> moves);
 [[nodiscard]] Result<PlacementEditCandidate> PreparePlacementCopies(
     const MapDocument& document, std::span<const PlacementId> ids, std::array<float, 3> offset);
+[[nodiscard]] Result<PlacementEditCandidate> PreparePlacementCreations(
+    const MapDocument& document, const PlacementCreationRecords& records);
+[[nodiscard]] Result<PlacementEditCandidate> PreparePlacementDeletions(
+    const MapDocument& document, std::span<const PlacementId> ids);
 }
 
 // 区域与镜头：序号与名称（区域另核创建编号）同时吻合才修改，否则判为过期。

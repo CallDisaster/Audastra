@@ -120,6 +120,13 @@ struct PlacementWireProjection {
 [[nodiscard]] Result<PlacementWireProjection> MeasureClassicPlacementWire(
     const DoodadPlacements& placements, std::span<const std::uint32_t> appendedSourceRows = {},
     const PlacementReadLimits& limits = {});
+// 新建记录沿用同一 writer 字段流；先计量原表与完整新记录，禁止复制后才检查嵌套/wire 预算。
+[[nodiscard]] Result<PlacementWireProjection> MeasureClassicPlacementAppend(
+    const UnitPlacements& placements, std::span<const UnitPlacement> appended,
+    const PlacementReadLimits& limits = {});
+[[nodiscard]] Result<PlacementWireProjection> MeasureClassicPlacementAppend(
+    const DoodadPlacements& placements, std::span<const DoodadPlacement> appended,
+    const PlacementReadLimits& limits = {});
 
 // 可编辑入口只识别经典 TFT v8/subversion 11 的无皮肤布局。
 // 带 SkinId 的 8/11 布局仅由下方版本化读取入口识别，不能经 Serialize 写出。

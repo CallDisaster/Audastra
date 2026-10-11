@@ -12,11 +12,7 @@ namespace War3Map::Mcp {
 namespace {
 template<class T, class U> Result<T> Failed(const U& source) { return {{}, source.diagnostics}; }
 MapDataKind IntentKind(const MapData::MapDataPlacementIntent& intent) {
-    const auto file = std::visit([](const auto& operation) {
-        using Operation = std::decay_t<decltype(operation)>;
-        if constexpr (std::is_same_v<Operation, MapData::MapDataPlacementRotation>) return operation.source.id.file;
-        else return operation.sources.front().id.file;
-    }, intent);
+    const auto file = MapData::PlacementIntentFile(intent);
     return file == MapData::PlacementFile::Units ? MapDataKind::Units : MapDataKind::Doodads;
 }
 bool SameRotationSource(const MapData::MapDataPlacementIntent& previous, const MapData::MapDataPlacementIntent& next) {
@@ -70,7 +66,7 @@ Result<MapData::MapDataEditSession::EditReceipt> McpWorkspace::ApplyPlacementPla
     if (beforeIntent) {
         if (!SameRotationSource(*beforeIntent, *plan.OriginalReplayIntent()))
             return Result<Receipt>::Failure("MCP", "MCP_PLACEMENT_COMBINATION_UNSUPPORTED",
-                "本原来源只支持一次同类复制，或同一原行重复绝对朝向；暂不组合其它预放操作。");
+                "本原来源只支持一批同类新建、删除或复制，或同一原行重复绝对朝向；暂不组合其它预放操作。");
         const auto prior = MapData::FreezeOriginalMapDataPlacement(*initialMapData_, *before, *beforeIntent);
         if (!prior.Succeeded()) return Failed<Receipt>(prior);
         priorMembers.assign(prior.value->Members().begin(), prior.value->Members().end());
@@ -149,11 +145,17 @@ Result<Services::MapEditSaveReceipt> McpWorkspace::ExportPlacementArchiveCandida
         using Operation = std::decay_t<decltype(operation)>;
         if constexpr (std::is_same_v<Operation, MapData::MapDataPlacementRotation>)
             request.placementEdit = Services::MapEditPlacementRotation{source(operation.source), operation.facingRadians};
-        else {
+        else if constexpr (std::is_same_v<Operation, MapData::MapDataPlacementCopy>) {
             Services::MapEditPlacementCopy copy;
             copy.offset = operation.offset;
             for (const auto& input : operation.sources) copy.sources.push_back(source(input));
             request.placementEdit = std::move(copy);
+        } else if constexpr (std::is_same_v<Operation, MapData::MapDataPlacementCreate>) {
+            request.placementEdit = Services::MapEditPlacementCreate{operation.expectedMemberSha256, operation.records};
+        } else {
+            Services::MapEditPlacementDelete removed;
+            for (const auto& input : operation.sources) removed.sources.push_back(source(input));
+            request.placementEdit = std::move(removed);
         }
     }, frozen.value->Intent());
     const auto guard = [this, transactionId, expectedRevision, document, intent, generation]() -> Status {

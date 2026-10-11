@@ -69,6 +69,21 @@ Status ValidatePlacementOperation(const MapEditPlacementOperation& operation) {
         }
         return Status::Ok();
     }
+    if (const auto* created = std::get_if<MapEditPlacementCreate>(&operation)) {
+        const auto count = std::visit([](const auto& records) { return records.size(); }, created->records);
+        if (!ValidSha(created->expectedMemberSha256) || !count || count > 32)
+            return Status::Failure("MapEdit.Save", "SAVE_PLACEMENT_REQUEST_INVALID", "新增摆放须为 1..32 条同类记录并绑定原成员 SHA。");
+        const auto* units = std::get_if<std::vector<MapData::UnitPlacement>>(&created->records);
+        const auto starts = units && std::any_of(units->begin(), units->end(), [](const auto& record) { return record.rawcode == "sloc"; });
+        if (starts) return Status::Failure("MapEdit.Save", "SAVE_PLACEMENT_START_UNSUPPORTED", "新增起始位置须走玩家设置联动命令。");
+        return Status::Ok();
+    }
+    if (const auto* removed = std::get_if<MapEditPlacementDelete>(&operation)) {
+        if (removed->sources.empty() || removed->sources.size() > 32
+            || std::any_of(removed->sources.begin(), removed->sources.end(), [&](const auto& source) { return !validSource(source); }))
+            return Status::Failure("MapEdit.Save", "SAVE_PLACEMENT_REQUEST_INVALID", "删除摆放须为 1..32 个绑定来源行。");
+        return Status::Ok();
+    }
     return Status::Failure("MapEdit.Save", "SAVE_PLACEMENT_REQUEST_INVALID", "未提供摆放编辑操作。");
 }
 

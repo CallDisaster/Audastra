@@ -215,7 +215,48 @@ Result<T> Failure(std::string_view member, const Detail::WriteFailure& error) {
         std::string(member) + "：" + error.message);
 }
 
+template<class Table, class Record>
+Result<PlacementWireProjection> MeasureAppend(const Table& placements, std::span<const Record> appended,
+    const PlacementReadLimits& limits) {
+    constexpr bool units = std::is_same_v<Record, UnitPlacement>;
+    constexpr auto member = units ? "war3mapUnits.doo" : "war3map.doo";
+    try {
+        RequireClassicLayout(placements.recordLayout);
+        PlacementWireSink writer(limits);
+        if constexpr (units) {
+            Header(writer, placements.version, placements.subversion,
+                AppendedPlacementCount(placements.units.size(), appended.size()), limits);
+            for (const auto& record : placements.units) Unit(writer, record, limits);
+            for (const auto& record : appended) Unit(writer, record, limits);
+        } else {
+            Header(writer, placements.version, placements.subversion,
+                AppendedPlacementCount(placements.doodads.size(), appended.size()), limits);
+            for (const auto& record : placements.doodads) Doodad(writer, record, limits);
+            for (const auto& record : appended) Doodad(writer, record, limits);
+            SpecialDoodads(writer, placements, limits);
+        }
+        return Result<PlacementWireProjection>::Success(writer.Finish());
+    } catch (const Detail::WriteFailure& error) {
+        return Failure<PlacementWireProjection>(member, error);
+    } catch (const std::bad_alloc&) {
+        return Result<PlacementWireProjection>::Failure("MapPlacements.Write", "PLACEMENT_ALLOCATION_FAILED",
+            "新增摆放计量诊断内存分配失败");
+    } catch (const std::length_error&) {
+        return Result<PlacementWireProjection>::Failure("MapPlacements.Write", "PLACEMENT_CONTAINER_LIMIT",
+            "新增摆放计量诊断超过容器容量");
+    }
+}
+
 } // namespace
+
+Result<PlacementWireProjection> MeasureClassicPlacementAppend(const UnitPlacements& placements,
+    std::span<const UnitPlacement> appended, const PlacementReadLimits& limits) {
+    return MeasureAppend(placements, appended, limits);
+}
+Result<PlacementWireProjection> MeasureClassicPlacementAppend(const DoodadPlacements& placements,
+    std::span<const DoodadPlacement> appended, const PlacementReadLimits& limits) {
+    return MeasureAppend(placements, appended, limits);
+}
 
 Result<PlacementWireProjection> MeasureClassicPlacementWire(const UnitPlacements& placements,
     std::span<const std::uint32_t> appendedSourceRows, const PlacementReadLimits& limits) {
