@@ -99,8 +99,8 @@ struct Worker {
             resident->viewRevision = Render::NextAnimationSerial();
             Render::AnimationInstanceSpec spec; spec.identity = {1, resident->viewRevision};
             spec.hostKey = variant.toStdString(); spec.model = request; spec.action = "Stand"; spec.elapsedMs = 0;
-            Render::AnimationLimits limits; limits.maxInstances = 1; limits.maxAssetBytes = 16 * 1024 * 1024;
-            limits.allowRigidStaticPreview = true;
+            auto limits = Render::InteractiveAnimationPreviewLimits();
+            limits.maxInstances = 1; limits.maxAssetBytes = 16 * 1024 * 1024;
             limits.maxFrameBytes = 8 * 1024 * 1024; limits.geometry.maxModels = limits.geometry.maxInstances = 1;
             limits.geometry.maxVertices = 262144; limits.geometry.maxIndices = 786432;
             limits.geometry.maxTextures = 64; limits.geometry.maxTextureDimension = 256;

@@ -71,6 +71,16 @@ struct AnimationLimits {
     // 基础 PREM 子模型层，独立有界预览；默认旧服务不读取子资源。
     bool enablePremPreview = false;
 };
+// 所有编辑器交互入口共用已核实的 1.27a 按动作原序取键政策；不能用于
+// 严格回放、保存或兼容性认证。几何、粒子、内存预算及坏模型保留仍由宿主显式选择。
+[[nodiscard]] inline AnimationLimits InteractiveAnimationPreviewLimits() {
+    AnimationLimits limits;
+    limits.playbackPolicy = AnimationPlaybackPolicy::InteractivePreview;
+    limits.allowSourceOrderNodePreview = true;
+    limits.allowIdenticalMaterialAlphaKeysPreview = true;
+    limits.allowRigidStaticPreview = true;
+    return limits;
+}
 struct AnimationInstanceState {
     War3RenderCore::InstanceIdentity identity;
     std::uint32_t sequenceIndex = 0;

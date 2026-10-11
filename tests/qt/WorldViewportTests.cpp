@@ -2,12 +2,24 @@
 #include "WorldAnimationPlayer.h"
 #include "WorldAnimationViewContractChecks.h"
 #include "WorldAnimationPlaybackContractChecks.h"
+#include "WorldModelPreview.h"
 #include "../AnimationTestModel.h"
+#include "../AnimationParticleContinuityTests.h"
+#include "../AnimationPreviewFixture.h"
 #include "EditorPresentationFixture.h"
+#include "War3MapCore/Hash.h"
+#include "War3MapCore/MapData/MapTerrain.h"
+#include "War3MapCore/Mpq/MpqArchive.h"
+#include "War3MapCore/Mpq/MpqWriter.h"
 
 #include <QApplication>
+#include <QComboBox>
+#include <QFile>
+#include <QLabel>
 #include <QMouseEvent>
+#include <QPushButton>
 #include <QSignalSpy>
+#include <QTemporaryDir>
 #include <QTest>
 
 #include <algorithm>
@@ -15,6 +27,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <string_view>
@@ -286,6 +299,8 @@ private slots:
     void AnimationPauseStepAndCaptureStayBound();
     void AnimationPickHistoryReusesOnlyRetiredUnborrowedStorage();
     void AnimationPickHistoryChargesRetainedCapacity();
+    void ModelPreviewUsesGameOrderAndSubmitsMotion();
+    void ModelPreviewRealSequences();
 };
 
 void WorldViewportTests::PluginFailuresPreserveOperationAndBoundedRawStatus_data() {
@@ -1035,6 +1050,8 @@ void WorldViewportTests::AnimationPauseStepAndCaptureStayBound() {
     QVERIFY(viewport.SetCamera(particleCamera, 99).Succeeded());
     QVERIFY(!viewport.CaptureCompletedFrame(99).Succeeded());
 }
+
+#include "WorldModelPreviewChecks.inl"
 
 QTEST_MAIN(WorldViewportTests)
 #include "WorldViewportTests.moc"

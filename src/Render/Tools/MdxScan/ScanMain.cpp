@@ -4,6 +4,7 @@
 #include <set>
 #include <stdexcept>
 #ifdef _WIN32
+#include "ScanPreview.h"
 #include <Windows.h>
 #else
 #include <array>
@@ -29,6 +30,7 @@ int Main(const std::vector<std::string>& args) {
         if (args.size() == 1 && args[0] == "--help") {
             std::cout << "war3-mdx-scan --game-root <游戏根> [--list <UTF-8虚拟路径清单>] --tsv <新报告.tsv>\n"
                 "war3-mdx-scan --list <UTF-8磁盘模型路径清单> --tsv <新报告.tsv>\n"
+                "Windows 宿主：--preview 1 [--map <只读地图副本>]，同时报告 strict/interactive 诊断分类。\n"
                 "预算：--model-ms 5000 --total-seconds 300 --memory-mib 512 --max-models 10000\n"
                 "      --file-mib 32 --max-samples 4096 --max-nodes 4096 --max-vertices 262144\n"
                 "只读、分进程；每动作起点/中点/非按键点，分别无相机及显式模型局部相机。\n"
@@ -37,6 +39,8 @@ int Main(const std::vector<std::string>& args) {
             return 0;
         }
         Options options; options.executable = Executable(); std::set<std::string> seen;
+        bool preview = false;
+        std::filesystem::path mapPath;
         for (std::size_t i = 0; i < args.size(); i += 2) {
             if (i+1 == args.size() || !seen.insert(args[i]).second) throw std::runtime_error("SCAN_ARGUMENT_INVALID");
             const auto& key = args[i]; const auto& value = args[i+1];
@@ -45,6 +49,8 @@ int Main(const std::vector<std::string>& args) {
             else if (key == "--tsv") options.tsv = std::filesystem::absolute(FromUtf8(value));
             else if (key == "--model") options.model = value;
             else if (key == "--internal") options.mode = value;
+            else if (key == "--preview" && value == "1") preview = true;
+            else if (key == "--map") mapPath = std::filesystem::absolute(FromUtf8(value));
             else {
                 std::uint32_t number = 0;
                 const auto parsed = std::from_chars(value.data(),value.data()+value.size(),number);
@@ -62,8 +68,14 @@ int Main(const std::vector<std::string>& args) {
             }
         }
         if (options.tsv.empty() || (!options.mode.empty() && options.mode != "model" && options.mode != "enumerate")
-            || (options.mode == "model" ? options.model.empty() : options.gameRoot.empty() && options.list.empty()))
+            || (options.mode == "model" ? options.model.empty() : options.gameRoot.empty() && options.list.empty() && mapPath.empty()))
             throw std::runtime_error("SCAN_REQUIRED_ARGUMENT_MISSING");
+        if (!mapPath.empty() && !preview) throw std::runtime_error("SCAN_MAP_REQUIRES_PREVIEW");
+#ifdef _WIN32
+        if (preview) return RunPreview(options, mapPath);
+#else
+        if (preview) throw std::runtime_error("SCAN_PREVIEW_REQUIRES_WINDOWS");
+#endif
         return Run(options);
     } catch (const std::exception& e) { std::cerr << "SCAN_ERROR " << e.what() << '\n'; return 1; }
 }

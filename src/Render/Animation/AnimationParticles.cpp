@@ -392,7 +392,7 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
         simulationPhase.Stop();
         CpuPhase geometryPhase{frame.timings.particleGeometryNs};
         auto geometry = Particles::Build(*asset.particles, candidate.state, timeline, frame.worldCamera->eye,
-            frame.worldCamera->up, host.limits.maxVertices - static_cast<std::uint32_t>(frame.particleVertices.size()));
+            frame.worldCamera->up, host.limits.maxVertices - static_cast<std::uint32_t>(frame.particleVertices.size()), currentAnchors);
         if (!geometry.Succeeded()) {
             if (auto result = reject(geometry.diagnostics); !result.Succeeded()) return result;
             frame.particleLinks.push_back(std::move(link)); continue;

@@ -1032,11 +1032,8 @@ void WorldModule::StartAnimatedModels(std::uint64_t generation) {
                 spec.elapsedMs=0; spec.globalMs=1000;
                 specs.push_back(std::move(spec));
             }
-            Render::AnimationLimits limits; limits.retainUnsupportedStatic=true; limits.enableParticles=particles;
-            limits.allowRigidStaticPreview=true;
-            limits.playbackPolicy=Render::AnimationPlaybackPolicy::InteractivePreview;
-            limits.allowSourceOrderNodePreview=true;
-            limits.allowIdenticalMaterialAlphaKeysPreview=true;
+            auto limits=Render::InteractiveAnimationPreviewLimits();
+            limits.retainUnsupportedStatic=true; limits.enableParticles=particles;
             limits.enablePremPreview=true;
             // 整张世界共用一份帧预算：上万实例的姿势会占满默认 64 MiB，粒子几乎全被预算拒绝。
             // 世界页放宽到 256 MiB（仍是有界活跃预算，独立预览/缩略图保持原默认）。
