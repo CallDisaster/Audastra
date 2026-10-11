@@ -4,10 +4,8 @@
 #include <QStatusBar>
 
 void MainWindow::SetupCampaignActions() {
-    connect(campaignModule_, &War3Map::Modules::CampaignModule::ChapterOpenRequested, this, [this](const QString& path) {
-        // 章节始终打开为受管临时副本。战役会话保持活动，由“更新已打开章节”显式收回修改。
-        if (OpenMapArchivePath(std::filesystem::path(path.toStdWString()))) ActivateModule("triggers");
-    });
+    connect(campaignModule_, &War3Map::Modules::CampaignModule::ChapterOpenRequested,
+        this, &MainWindow::OpenCampaignChapterPath);
     connect(campaignModule_, &War3Map::Modules::CampaignModule::SessionChanged, this, [this] {
         if (campaignModule_->Session()) { DismissStartupPage(); ActivateModule("campaign"); }
         UpdateExportAvailability(); UpdateWindowTitle();
@@ -18,6 +16,14 @@ void MainWindow::SetupCampaignActions() {
     connect(this, &ShellWindow::CurrentModuleChanged, this, [this] {
         UpdateExportAvailability(); UpdateWindowTitle();
     });
+}
+
+void MainWindow::OpenCampaignChapterPath(const QString& path) {
+    // 章节始终打开为受管临时副本。战役会话保持活动，由“更新已打开章节”显式收回修改。
+    const std::wstring nativePath = path.toStdWString();
+    const std::filesystem::path archivePath(nativePath);
+    const bool opened = OpenMapArchivePath(archivePath);
+    if (opened) ActivateModule("triggers");
 }
 
 bool MainWindow::OpenCampaignPath(const std::filesystem::path& path) {

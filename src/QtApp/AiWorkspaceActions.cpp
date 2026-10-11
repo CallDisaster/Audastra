@@ -240,7 +240,8 @@ void MainWindow::SetupAgentWorkspace(bool readUserConfiguration) {
         return War3Map::QtProject::ReadMapInPlaceSaveOptions();
     });
     state->tools->Server().SetCampaignCallbacks(
-        [this] { return !project_->savingMap_ && !campaignModule_->HasDraft() && !campaignModule_->HasUncommittedChapter(); },
+        [this] { return !project_->savingMap_ && !campaignModule_->HasModalOperation()
+            && !campaignModule_->HasDraft() && !campaignModule_->HasUncommittedChapter(); },
         [this, state] {
             const auto session = state->tools->Server().Campaign();
             if (campaignModule_->Session() != session) campaignModule_->SetSession(session);

@@ -158,6 +158,7 @@ public:
 
 private:
     void SetupCampaignActions();
+    void OpenCampaignChapterPath(const QString& path);
     War3Map::QtApp::AiWorkspace* aiWorkspace_ = nullptr;
     void SetupAgentWorkspace(bool readUserConfiguration = true);
     // 仅离屏探针的 friend 测试使用：同工作区 HTTP，临时端口与内存凭据。

@@ -46,6 +46,7 @@ public:
     [[nodiscard]] bool ConfirmClose(const QString& action, bool allowDiscard = true);
     [[nodiscard]] bool Dirty() const;
     [[nodiscard]] bool HasDraft() const;
+    [[nodiscard]] bool HasModalOperation() const { return modalOperation_; }
     [[nodiscard]] bool FlushDraft();
     [[nodiscard]] std::shared_ptr<Services::CampaignSession> Session() const { return session_; }
     // MCP 同服务发布后刷新；有本地草稿时宿主必须先调用 FlushDraft，或拒绝外部写入。
@@ -56,7 +57,7 @@ public:
     [[nodiscard]] bool OpenChapter(StableId id);
     [[nodiscard]] bool UpdateOpenedChapter();
     // 地图保存宿主在确实写出章节副本后通知；保存战役前须显式更新章节。
-    void NoteChapterSaved(const std::filesystem::path& path);
+    void NoteChapterSaved(const std::filesystem::path& source, const std::filesystem::path& target);
     [[nodiscard]] bool HasUncommittedChapter() const;
     [[nodiscard]] QString LastError() const { return lastError_; }
 signals:
@@ -64,6 +65,13 @@ signals:
     void SessionChanged();
     void Changed();
 private:
+    struct FrozenContext {
+        std::shared_ptr<Services::CampaignSession> session;
+        Services::CampaignRevision revision;
+    };
+    [[nodiscard]] FrozenContext FreezeContext() const;
+    [[nodiscard]] bool CheckContext(const FrozenContext& context);
+    [[nodiscard]] bool ApplyFrozenCommand(const FrozenContext& context, const Services::CampaignCommand& command);
     void BuildPage();
     QWidget* BuildSettings();
     void RefreshTables();
@@ -106,6 +114,7 @@ private:
     QPointer<QCheckBox> variableDifficulty_, expansion_;
     QUndoStack* history_ = nullptr;
     bool rebuildingHistory_ = false, refreshing_ = false, settingsDirty_ = false;
+    bool modalOperation_ = false;
     QString lastError_;
 };
 } // namespace War3Map::Modules

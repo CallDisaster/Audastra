@@ -127,6 +127,7 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         reportFailure(tr("代码草稿未能提交，保存已取消；当前代码仍然保留"));
         return false;
     }
+    const auto sourceBeforeSave = project_->sourceArchivePath_;
     auto job = project_->PrepareMapSave(target, inPlace);
     if (!job) {
         UpdateEditDirtyFlags();
@@ -210,6 +211,8 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         reportFailure(tr("地图保存未完成"), job.get());
         return false;
     }
+    // 先登记章节来源迁移，再显示可能进入嵌套事件循环的保存提示。
+    campaignModule_->NoteChapterSaved(sourceBeforeSave, saved->target);
     mapDataAction_->setEnabled(project_->mapDocument_ != nullptr);
     objectsModule_->RefreshIcons();
     objectsModule_->UpdateObjectReferenceEntries();
@@ -226,7 +229,6 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
     const auto summary = (saved->inPlace ? tr("地图已保存 · %1 秒") : tr("地图已另存为 · %1 秒")).arg(saved->seconds, 0, 'f', 1);
     project_->AddDiagnostic(tr("信息"), tr("地图"), QStringLiteral("MAP_SAVE_COMPLETED"), details.join(QLatin1Char('\n')));
     SaveNotice(*this, background, true, summary, details);
-    campaignModule_->NoteChapterSaved(saved->target);
     return true;
 }
 
