@@ -22,6 +22,7 @@ add_library(War3MapServices STATIC
     ObjectTransactionSnapshot.cpp
     ObjectTransactionSaveGuards.cpp
     MapSaveService.cpp
+    LuaTestReloadController.cpp
     MapCreateService.cpp
     ScriptSavePreparation.cpp
     CodeCheck.cpp

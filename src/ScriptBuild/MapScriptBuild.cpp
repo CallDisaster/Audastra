@@ -248,7 +248,7 @@ MapScriptBuildResult BuildMapScript(const MapScriptBuildRequest& request) {
         diagnostics.insert(diagnostics.end(), plan.diagnostics.begin(), plan.diagnostics.end());
         if (!plan.Succeeded()) return result;
         result.luaGenerated = GenerateLuaMapScript(*plan.value, *request.triggers, *request.catalog,
-            request.luaTarget->target, request.luaTarget->callbacks);
+            request.luaTarget->target, request.luaTarget->callbacks, request.luaTestOptions);
         if (request.compile && result.luaGenerated->Succeeded()) {
             result.luaPipeline = CheckLuaMapScript(*result.luaGenerated, request.luaTarget->checker,
                 options.workDir / "lua-check", options.timeout, options.onStage);

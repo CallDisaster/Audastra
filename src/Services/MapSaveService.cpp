@@ -1,4 +1,5 @@
 #include "War3MapCore/Services/MapSaveService.h"
+#include "War3MapCore/Services/LuaTestReloadController.h"
 #include "War3MapCore/Services/MapObjectReferenceCapture.h"
 #include "War3MapCore/Services/ObjectTransactionSnapshot.h"
 #include "War3MapCore/Services/ObjectTransactionSaveGuards.h"
@@ -152,13 +153,14 @@ void RebuildScript(MapSaveTask& task, const MapSaveService::Progress& progress) 
     request.layers = frozen.layers;
     request.toolchain = frozen.toolchain;
     request.luaTarget = frozen.luaTarget ? frozen.luaTarget->Profile() : nullptr;
+    request.luaTestOptions = frozen.luaTestOptions;
     if (frozen.luaTarget) request.selectedLuaSettings = frozen.luaTarget->SelectedSettings();
     request.toolchain.preprocessCache = nullptr;
     request.toolchain.onStage = [&progress](std::string_view stage) { Report(progress, stage); };
 
     const auto started = std::chrono::steady_clock::now();
     const auto firstScriptDiagnostic = task.diagnostics.size();
-    const auto result = Script::BuildMapScript(request);
+    auto result = Script::BuildMapScript(request);
     // BuildMapScript 已消费最终成员视图。合并生成物会扩容 replacements，先清除旧 span。
     request.finalSaveMembers.reset();
     Append(task.diagnostics, result.diagnostics);
@@ -295,6 +297,8 @@ void RebuildScript(MapSaveTask& task, const MapSaveService::Progress& progress) 
     task.diagnostics.push_back({DiagnosticSeverity::Info, "构建", "SCRIPT_REBUILT",
         "游戏脚本已重建：" + std::to_string(triggerCount) + " 个触发器，检查方式："
             + checkedBy + "（" + Seconds(task.scriptSeconds) + " 秒）；各阶段文件在 " + workDir});
+    if (frozen.luaTestOptions.testHotReload && result.luaGenerated)
+        task.generatedLuaTestUnit = std::move(result.luaGenerated->triggers);
     task.script.reset();
 }
 
@@ -345,6 +349,16 @@ void ExecuteSaveTask(MapSaveTask& task, const MapSaveService::Progress& progress
             Error(task, "SAVE_TARGET_INVALID", "地图保存目标路径为空。");
             return;
         }
+        if (task.script && task.script->luaTestOptions.testHotReload) {
+            std::error_code equivalentError;
+            const bool same = !task.target.empty()
+                && std::filesystem::equivalent(task.target, task.sourcePath, equivalentError);
+            if (!task.testCopyOnly || task.inPlace || same || task.target.lexically_normal() == task.sourcePath.lexically_normal()
+                || !task.script->luaTarget) {
+                Error(task, "LUA_TEST_SAVE_REQUIRED", "热重载登记层只能用于明确的独立 Lua 测试副本，不能写回原图或正式保存。");
+                return;
+            }
+        }
         if (task.inPlace && !task.target.empty()) {
             std::error_code pathError;
             if (!std::filesystem::equivalent(task.target, task.sourcePath, pathError) || pathError) {
@@ -368,6 +382,13 @@ void ExecuteSaveTask(MapSaveTask& task, const MapSaveService::Progress& progress
         if (HasError(task.diagnostics)) return;
         // 模板产物可能替换分类成员；必须对最终成员再校验，不能只信编译前的类型。
         if (!verifyObjects()) return;
+        if (task.generatedLuaTestUnit) {
+            const std::vector<std::string> scripts{"war3map.lua", "war3map.j", "scripts/war3map.j", "scripts/war3map.lua"};
+            const auto binding = CaptureLuaTestMapBinding(*task.archive, task.replacements, task.removals, scripts);
+            Append(task.diagnostics, binding.diagnostics);
+            if (!binding.Succeeded() || !binding.value) return;
+            task.luaTestMapBinding = *binding.value;
+        }
 
         if (task.beforePublish) {
             const auto guard = task.beforePublish();

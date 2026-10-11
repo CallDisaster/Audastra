@@ -52,6 +52,7 @@ struct MapScriptBuildRequest {
     const LuaMapBuildProfile* luaTarget = nullptr;
     // 保存服务已验证的明确语言选择，只在luaTarget存在时借用；其他成员仍取最终视图。
     std::span<const std::byte> selectedLuaSettings;
+    LuaTriggerBuildOptions luaTestOptions;
 };
 
 struct MapScriptBuildResult {
