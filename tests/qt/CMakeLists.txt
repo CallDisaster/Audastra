@@ -402,6 +402,7 @@ set_tests_properties(qt-uikit PROPERTIES TIMEOUT 45
 qt_add_executable(war3-map-responsive-toolbar-tests ResponsiveToolbarTests.cpp)
 target_link_libraries(war3-map-responsive-toolbar-tests PRIVATE War3MapEditor::QtShell Qt6::Test)
 target_compile_options(war3-map-responsive-toolbar-tests PRIVATE /W4 /permissive- /utf-8)
+war3map_deploy_fonts(war3-map-responsive-toolbar-tests)
 add_test(NAME qt-responsive-toolbar COMMAND war3-map-responsive-toolbar-tests -o -,txt)
 add_test(NAME qt-responsive-toolbar-dpr150 COMMAND war3-map-responsive-toolbar-tests -o -,txt)
 set_tests_properties(qt-responsive-toolbar qt-responsive-toolbar-dpr150 PROPERTIES TIMEOUT 60

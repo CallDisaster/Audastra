@@ -1,8 +1,10 @@
 #include "Dock/ModuleSwitcher.h"
+#include "Fonts/FontLoader.h"
 #include "Shell/HeaderBar.h"
 #include "Icons/SvgIcons.h"
 #include "Theme/ThemeManager.h"
 #include "Widgets/ResponsiveToolBar.h"
+#include "PopupCapture.h"
 
 #include <QAction>
 #include <QApplication>
@@ -11,9 +13,11 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QPushButton>
+#include <QSaveFile>
 #include <QSignalSpy>
 #include <QStyle>
 #include <QStyleOptionToolButton>
+#include <QTimer>
 #include <QtTest>
 
 using namespace War3Map;
@@ -35,8 +39,18 @@ void Capture(const QWidget& widget, const QString& name) {
     const auto output = qEnvironmentVariable("AUD_TOOLBAR_CAPTURE_DIR");
     if (output.isEmpty()) return;
     QVERIFY(QDir::isAbsolutePath(output)); QVERIFY(QDir().mkpath(output));
-    const auto file = QDir(output).filePath(name + QStringLiteral("-dpr%1.png").arg(widget.devicePixelRatioF()));
-    QVERIFY(const_cast<QWidget&>(widget).grab().save(file));
+    const auto stem = QDir(output).filePath(name + QStringLiteral("-dpr%1").arg(widget.devicePixelRatioF()));
+    QVERIFY(!QFileInfo::exists(stem + QStringLiteral(".png")));
+    const auto pixels = const_cast<QWidget&>(widget).grab();
+    QVERIFY(pixels.save(stem + QStringLiteral(".png")));
+    const QJsonObject receipt{{"scope", "production-components"}, {"capture_method", "QWidget::grab"},
+        {"resampled", false}, {"qt_platform", QGuiApplication::platformName()},
+        {"logical_width", widget.width()}, {"logical_height", widget.height()},
+        {"physical_width", pixels.width()}, {"physical_height", pixels.height()},
+        {"dpr", widget.devicePixelRatioF()}, {"font_families", QJsonArray::fromStringList(widget.font().families())}};
+    QSaveFile file(stem + QStringLiteral(".json"));
+    const auto bytes = QJsonDocument(receipt).toJson(QJsonDocument::Indented);
+    QVERIFY(file.open(QIODevice::WriteOnly)); QCOMPARE(file.write(bytes), bytes.size()); QVERIFY(file.commit());
 }
 
 } // namespace
@@ -44,6 +58,7 @@ void Capture(const QWidget& widget, const QString& name) {
 class ResponsiveToolbarTests final : public QObject {
     Q_OBJECT
 private slots:
+    void initTestCase();
     void HeaderWidths_data();
     void HeaderWidths();
     void OverflowRetainsCommandsAndState();
@@ -51,6 +66,13 @@ private slots:
     void SplitButtonStates_data();
     void SplitButtonStates();
 };
+
+void ResponsiveToolbarTests::initTestCase() {
+    // 不能用缺字方框的宽度给工具栏的中文可读性背书。
+    const QFontMetrics metrics(QApplication::font());
+    for (const QChar character : QStringLiteral("Audastra触发器保存地图搜索新建"))
+        QVERIFY2(metrics.inFont(character), qPrintable(QStringLiteral("Missing UI glyph U+%1").arg(character.unicode(), 4, 16, QLatin1Char('0'))));
+}
 
 void ResponsiveToolbarTests::HeaderWidths_data() {
     QTest::addColumn<QString>("theme"); QTest::addColumn<int>("width");
@@ -96,6 +118,21 @@ void ResponsiveToolbarTests::HeaderWidths() {
         QVERIFY(chip->width() >= (chip->toolButtonStyle() == Qt::ToolButtonIconOnly ? chip->IconModeWidth() : chip->TextModeWidth()));
     }
     Capture(header, theme + QStringLiteral("-header-%1").arg(width));
+    if (width == 1024) {
+        auto* more = toolbar->findChild<QToolButton*>("responsiveToolbarMore");
+        QVERIFY(more && more->isVisible());
+        bool opened = false;
+        QString failure;
+        QTimer::singleShot(10, &header, [&] {
+            auto* menu = toolbar->OverflowMenu();
+            opened = menu->isVisible() && !menu->actions().isEmpty();
+            if (opened) failure = PopupCapture::Save(header, *menu, more,
+                qEnvironmentVariable("AUD_TOOLBAR_CAPTURE_DIR"), theme + QStringLiteral("-overflow-dpr%1").arg(header.devicePixelRatioF()));
+            menu->close();
+        });
+        QTest::mouseClick(more, Qt::LeftButton);
+        QVERIFY(opened); QVERIFY2(failure.isEmpty(), qPrintable(failure));
+    }
 }
 
 void ResponsiveToolbarTests::OverflowRetainsCommandsAndState() {
@@ -172,6 +209,7 @@ void ResponsiveToolbarTests::SplitButtonStates() {
 int main(int argc, char** argv) {
     qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("offscreen"));
     QApplication application(argc, argv); application.setQuitOnLastWindowClosed(false);
+    UiKit::ApplyApplicationFont(UiKit::LoadFonts(UiKit::DefaultFontDirectory()));
     ResponsiveToolbarTests tests; return QTest::qExec(&tests, argc, argv);
 }
 

@@ -265,9 +265,12 @@ void ResponsiveToolBar::Refresh() {
     more_->setVisible(std::any_of(entries_.begin(), entries_.end(), [](const auto& entry) { return entry->overflow; }));
     for (auto& entry : entries_) if (entry->widget && !entry->widget->isHidden()) {
         // 保证可见命令拿到完整sizeHint，布局不能再通过压文字来挤出空间。
-        if (!entry->search) entry->widget->setMinimumWidth(entry->widget->sizeHint().width());
+        if (!entry->search && !entry->separator)
+            entry->widget->setMinimumWidth(std::max(0, entry->widget->sizeHint().width()));
     }
     RebuildMenu();
+    // 显隐和宽度已变更，同步更新子项位置；避免本次刷新仍沿用折叠前的布局。
+    row_->activate();
     if (previousPreferred != preferredWidth_) updateGeometry();
 }
 

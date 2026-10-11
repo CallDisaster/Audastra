@@ -120,7 +120,8 @@ MainWindow::MainWindow(StartupMode startupMode, QWidget* parent, const QString& 
     if (startupMode == StartupMode::Normal || !recentMapsDataDirectory.isEmpty())
         recentMapsStore_ = std::make_unique<War3Map::QtProject::RecentMapsStore>(recentMapsDataDirectory, 0);
     UpdateWindowTitle();
-    setMinimumSize(1080, 680);
+    // 宽度沿用共享外壳的下限，让响应式工具栏在1024宽度下正常折叠。
+    setMinimumHeight(680);
     setDockOptions(AllowNestedDocks | AllowTabbedDocks | AnimatedDocks);
     // 实际模块的控件先全部创建：打开地图、切换游戏资源时可以直接刷新任何模块，
     // 不必等它第一次显示。控件仍由外壳按布局安置。
