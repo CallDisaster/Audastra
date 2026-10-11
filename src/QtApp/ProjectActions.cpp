@@ -139,6 +139,7 @@ bool MainWindow::OpenEditorProjectPath(const std::filesystem::path& path) {
             project_->activeUiDataRoot_ = restoredRoot;
         }
         project_->ReplaceTriggerWorkspace(std::move(catalog), std::move(triggers));
+        project_->guiConversionSnapshots_ = std::move(candidate.guiConversionSnapshots);
         project_->triggerDirty_ = true; project_->restoredTriggerOverlay_ = true;
         triggersModule_->RefreshEditor(); RefreshVariablesPage();
     }

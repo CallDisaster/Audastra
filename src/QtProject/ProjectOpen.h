@@ -27,6 +27,7 @@ struct PreparedProjectOpen {
     std::string journalJson;
     std::array<std::unique_ptr<ObjectData::LniObjectDocument>, kObjectTypeCount> objects;
     std::unique_ptr<Trigger::TriggerDocument> triggers;
+    Trigger::GuiConversionSnapshots guiConversionSnapshots;
     std::unique_ptr<Trigger::UiCatalog> catalog;
     std::vector<PendingImport> imports;
     std::vector<AssetEdit> assetEdits;

@@ -56,6 +56,7 @@ void EditorProject::ReplaceTriggerWorkspace(std::unique_ptr<Trigger::UiCatalog> 
     std::unique_ptr<Trigger::TriggerDocument> document) {
     // 目录与文档一起替换：先通知界面解除对旧目录 / 文档的引用，再释放旧对象。
     emit TriggerDocumentAboutToChange();
+    guiConversionSnapshots_.Clear();
     if (catalog) ApplyWorldEditStrings(*catalog);
     triggerDocument_ = std::move(document);
     uiCatalog_ = std::move(catalog);

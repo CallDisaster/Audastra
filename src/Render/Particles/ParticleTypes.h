@@ -81,11 +81,12 @@ struct ReadLimits {
     std::uint64_t maxBytes = 32ull * 1024 * 1024;
     std::uint32_t maxEmitters = 256, maxKeys = 65536;
 };
-enum class ReadMode { Strict, PreviewSkipInvalidEmitters };
+enum class ReadMode { Strict, PreviewSkipInvalidEmitters, PreviewGameOrder };
 // 不改变 MdxModel/RenderCore。只读 PRE2/RIBB 负载；Node 的图与 TRS 仍由现有读取器提供。
 // 预览隔离仅跳过安全边界内已知局部内容错误；外层结构、未知布局和资源预算仍整次拒绝。
 // 同帧同值的窄KP2V恢复保留全部源键与原预算；Strict仍要求严格递增。
 // 预览模式的其他非全局逆序键按原版逐动作区间取值（GameOrderTrack 记录来源），全局轨迹仍须递增。
+// PreviewGameOrder 只启用上述取键规则，不隔离无效发射器；材质、数值、布局与预算仍必须有效。
 [[nodiscard]] Result<Asset> Read(std::span<const std::byte> bytes, ReadLimits limits = {},
     ReadMode mode = ReadMode::Strict);
 struct Timeline {
@@ -148,6 +149,9 @@ struct Vertex { Vec3 position{}; std::array<float,2> uv{}; std::array<float,4> c
 struct Draw { std::uint32_t first = 0, count = 0, emitter = 0; Filter filter = Filter::Blend; };
 struct Geometry { std::vector<Vertex> vertices; std::vector<Draw> draws; };
 // 全部动态顶点为世界空间；头/尾用同一粒子状态，RIBB为相邻历史边连接，绝不连跨实例条带。
+// ModelSpace 粒子需要当前几何时刻的全部发射器锚点；不得使用发射时或固定步尾的旧节点矩阵。
+// 无 ModelSpace 粒子时可以不提供锚点；缺失/无效的必需锚点明确拒绝。
 [[nodiscard]] Result<Geometry> Build(const Asset& asset, const State& state, const Timeline& timeline,
-    const Vec3& eye, const Vec3& up, std::uint32_t maxVertices = 1048576);
+    const Vec3& eye, const Vec3& up, std::uint32_t maxVertices = 1048576,
+    std::span<const Anchor> currentAnchors = {});
 } // namespace War3Map::Render::Particles

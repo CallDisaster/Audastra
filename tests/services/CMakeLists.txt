@@ -1,3 +1,10 @@
+add_executable(audastra-campaign-service-tests CampaignServiceTests.cpp)
+target_link_libraries(audastra-campaign-service-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(audastra-campaign-service-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-campaign-service-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-campaign COMMAND audastra-campaign-service-tests)
+set_tests_properties(services-campaign PROPERTIES TIMEOUT 60)
+
 add_executable(war3-hash-stream-tests HashStreamTests.cpp)
 target_link_libraries(war3-hash-stream-tests PRIVATE War3MapEditor::Core)
 target_compile_definitions(war3-hash-stream-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)

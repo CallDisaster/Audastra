@@ -144,6 +144,13 @@ Result<std::unique_ptr<ProjectSaveJob>> EditorProject::PrepareProjectSave(
             if (!encoded.Succeeded() || !encoded.value) return fail(tr("触发器未通过结构检查"));
             if (!append("overlay/map/war3map.wtg", std::move(encoded.value->wtg))
                 || !append("overlay/map/war3map.wct", std::move(encoded.value->wct))) return fail(tr("工程超过容量限制"));
+            if (!guiConversionSnapshots_.Empty()) {
+                const auto source = std::string(archiveSession_ ? "archive:" : "directory:") + job->sourceSha256_;
+                auto snapshots = guiConversionSnapshots_.Serialize(*triggerDocument_, *uiCatalog_, source);
+                if (!snapshots.Succeeded() || !snapshots.value) return fail(tr("转换前快照不能完整保存"));
+                if (!append("overlay/editor/gui-conversion-snapshots.bin", std::move(*snapshots.value))) return fail(tr("工程超过容量限制"));
+                job->manifest_["guiConversionSnapshots"] = 1;
+            }
         }
         QJsonArray mapDataRemovals;
         if (mapEdits_) {

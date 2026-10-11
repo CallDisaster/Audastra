@@ -14,7 +14,7 @@ struct Fixture {
     std::vector<std::byte> bytes;
     std::size_t trackOffset=0;
 };
-inline Fixture Model(bool invalidRecoveredTexture=false) {
+inline Fixture Model(bool invalidRecoveredTexture=false,bool gameOrder=false) {
     const auto source=AnimationTest::Bytes();MdxTest::Writer writer;writer.Tag("MDLX");
     bool pivots=false;
     for(std::size_t at=4;at+8<=source.size();) {
@@ -40,8 +40,11 @@ inline Fixture Model(bool invalidRecoveredTexture=false) {
         for(unsigned interval=0;interval<4;++interval) { writer.U32(0);writer.U32(0);writer.U32(1); }
         writer.U32(invalidRecoveredTexture && i==0?99u:0u);writer.U32(0);writer.U32(0);writer.U32(0);
         if(i==0) {
-            fixture.trackOffset=writer.bytes.size();writer.Tag("KP2V");writer.U32(5);writer.U32(0);writer.U32(UINT32_MAX);
-            for(const auto frame:{0u,100u,100u,500u,1000u}) { writer.U32(frame);writer.F32(frame==500?0.f:1.f); }
+            std::vector<std::uint32_t> frames{0,100,100,500,1000};
+            if(gameOrder)frames={0,100,100,600,400,1000,2000,3000};
+            fixture.trackOffset=writer.bytes.size();writer.Tag("KP2V");
+            writer.U32(static_cast<std::uint32_t>(frames.size()));writer.U32(0);writer.U32(UINT32_MAX);
+            for(const auto frame:frames) { writer.U32(frame);writer.F32(frame==500 || frame==600?0.f:1.f); }
         }
         writer.EndInclusive(object);
     }
@@ -52,7 +55,45 @@ inline std::size_t Recoveries(std::span<const Diagnostic> diagnostics) {
         return value.code==RecoveryCode;
     }));
 }
+inline void InteractiveWithoutIsolation() {
+    const auto fixture=Model(false,true),invalid=Model(true,true);
+    const auto texture=AnimationParticleContinuityTest::Texture();
+    const auto read=[&](std::string_view path,std::uint64_t) {
+        const auto& bytes=path=="ordered.mdx"?fixture.bytes:path=="invalid.mdx"?invalid.bytes:texture;
+        return Result<AnimationResource>::Success({bytes,"original-game-order-layer",Good(Sha256(bytes))});
+    };
+    AnimationInstanceSpec spec;spec.identity={1,7};spec.hostKey="ordered-preview";spec.model.modelPath="ordered.mdx";
+    spec.sequenceIndex=0;spec.elapsedMs=0;spec.globalMs=0;spec.playing=true;
+    auto limits=InteractiveAnimationPreviewLimits();limits.enableParticles=true;
+    Check(!limits.retainUnsupportedStatic,"interactive preview unexpectedly enables invalid-emitter isolation");
+    const auto service=Good(ModelAnimationService::Create({7,1,"original-game-order"},std::span(&spec,1),read,limits));
+    const auto scene=service->Scene();
+    Check(scene->particleInstanceCount==1 && scene->particleCapabilities.size()==1 &&
+        scene->particleCapabilities[0].available && scene->particleCapabilities[0].particle2Count==2 &&
+        (!scene->particleCapabilities[0].skippedEmitters || scene->particleCapabilities[0].skippedEmitters->empty()),
+        "interactive model service lost game-order particles or silently skipped an emitter");
+    const auto notice=std::find_if(scene->geometry.warnings.begin(),scene->geometry.warnings.end(),[](const auto& item) {
+        return item.code=="PARTICLE_KEYS_GAME_ORDER_PREVIEW";
+    });
+    Check(notice!=scene->geometry.warnings.end() && notice->origin && notice->origin->offset==fixture.trackOffset,
+        "interactive model service lost game-order key provenance");
+    AnimationAdvance advance;advance.worldCamera=War3RenderCore::LocalCamera{{0,-100,100},{0,0,1}};
+    auto frame=Good(service->Prepare(nullptr,advance));advance.deltaMs=33;
+    frame=Good(service->Prepare(frame.get(),advance));
+    Check(frame->states[0].elapsedMs==33 && !frame->poses[0].hidden && frame->particleLinks.size()==1 && frame->particleLinks[0].simulated &&
+        !frame->particleLinks[0].partial && !frame->particleVertices.empty() &&
+        frame->particleCheckpoint->instances[0]->state.emitters.size()==2 &&
+        frame->particleCheckpoint->instances[0]->state.emitters[0].spawned>0,
+        "interactive service could not advance original game-order particles without isolation");
+    spec.model.modelPath="invalid.mdx";
+    const auto rejected=ModelAnimationService::Create({7,2,"original-game-order"},std::span(&spec,1),read,limits);
+    Check(!rejected.Succeeded() && !rejected.value && !rejected.diagnostics.empty() &&
+        rejected.diagnostics.front().code=="PARTICLE_TEXTURE_INVALID",
+        "game-order preview weakened material validation or retained only the valid sibling emitter");
+    std::cout<<"interactive_game_order_service=1 invalid_material_still_rejected=1 actual_particles_advanced=1 CPU_service_only=1\n";
+}
 inline void Run() {
+    InteractiveWithoutIsolation();
     const auto fixture=Model(),invalidTexture=Model(true);
     const auto digest=Good(Sha256(fixture.bytes)),invalidDigest=Good(Sha256(invalidTexture.bytes));
     const auto image=AnimationParticleContinuityTest::Texture();

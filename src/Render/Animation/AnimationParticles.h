@@ -40,7 +40,7 @@ struct AnimationParticleHost {
     bool omitRejectedLinks = false; // 逐实例原因仍在不可变 capability/query；不为无模拟实例超额分配帧回执。
 };
 [[nodiscard]] Status ReadAnimationParticleAsset(AnimationAsset& asset, std::span<const std::byte> bytes,
-    bool enabled, bool retainUnsupportedStatic);
+    const AnimationLimits& limits);
 [[nodiscard]] Result<std::shared_ptr<AnimationParticleHost>> CreateAnimationParticles(AnimatedModelScene& scene,
     std::span<const AnimationAsset> assets, std::span<const std::uint32_t> requestAssets,
     std::span<const War3RenderCore::CompiledModel> compiled, const AnimationResourceReader& read,

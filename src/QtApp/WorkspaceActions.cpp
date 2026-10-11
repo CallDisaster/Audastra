@@ -138,7 +138,7 @@ void MainWindow::OpenMapArchive() {
         project_->projectRoot_.empty()
             ? QString{}
             : QString::fromStdWString(project_->projectRoot_.wstring()),
-        tr("Warcraft III 地图 (*.w3x *.w3m);;所有文件 (*.*)"));
+        tr("Warcraft III 地图与战役 (*.w3x *.w3m *.w3n);;所有文件 (*.*)"));
     if (selected.isEmpty()) {
         return;
     }
@@ -146,6 +146,8 @@ void MainWindow::OpenMapArchive() {
 }
 
 bool MainWindow::OpenUserMapArchivePath(const std::filesystem::path& archivePath) {
+    if (QString::fromStdWString(archivePath.extension().wstring()).compare(".w3n", Qt::CaseInsensitive) == 0)
+        return OpenCampaignPath(archivePath);
     const QPointer<MainWindow> liveWindow(this);
     const QPointer<War3Map::QtProject::EditorProject> liveProject(project_.get());
     const bool opened = OpenMapArchivePath(archivePath);
@@ -155,6 +157,8 @@ bool MainWindow::OpenUserMapArchivePath(const std::filesystem::path& archivePath
 }
 
 bool MainWindow::OpenMapArchivePath(const std::filesystem::path& archivePath) {
+    if (QString::fromStdWString(archivePath.extension().wstring()).compare(".w3n", Qt::CaseInsensitive) == 0)
+        return OpenCampaignPath(archivePath);
     if (project_->savingMap_ || changesChecking_) {
         statusBar()->showMessage(tr("保存或检查进行中，完成后再打开地图"), 5000);
         return false;

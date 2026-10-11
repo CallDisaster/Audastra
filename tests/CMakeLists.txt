@@ -376,8 +376,13 @@ set_tests_properties(p1-acceptance-scripts p1-ydwe-host-utf8 p1-native-loader-sc
 set_tests_properties(p1-ydwe-host-utf8 PROPERTIES SKIP_RETURN_CODE 77)
 if(WIN32)
     find_program(FORGE_TEST_PWSH NAMES pwsh REQUIRED)
+    # 只隔离原创 direct-save 窗口夹具；Default Desktop 观察合同保留原入口。
+    add_executable(audastra-native-desktop-test-host native/NativeDesktopTestHost.cpp)
+    target_compile_definitions(audastra-native-desktop-test-host PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+    target_compile_options(audastra-native-desktop-test-host PRIVATE /W4 /permissive- /utf-8)
+    target_link_libraries(audastra-native-desktop-test-host PRIVATE user32 bcrypt)
     add_test(NAME p1-ydwe-direct-save-contract
-        COMMAND "${FORGE_TEST_PWSH}" -NoLogo -NoProfile -File
+        COMMAND audastra-native-desktop-test-host --powershell "${FORGE_TEST_PWSH}" --script
             "${PROJECT_SOURCE_DIR}/tools/dev/ydwe-save-direct-tests.ps1")
     set_tests_properties(p1-ydwe-direct-save-contract PROPERTIES TIMEOUT 120)
     add_test(NAME p1-input-desktop-ownership
@@ -463,3 +468,13 @@ foreach(warcraft_text_group IN ITEMS format budgets source)
     add_test(NAME warcraft-text-${warcraft_text_group} COMMAND war3-map-warcraft-text-tests ${warcraft_text_group})
     set_tests_properties(warcraft-text-${warcraft_text_group} PROPERTIES TIMEOUT 30)
 endforeach()
+
+# 扫描器目标在 Render 中定义；测试必须在根 enable_testing() 之后登记。
+if(TARGET war3-mdx-preview-scan-tests)
+    add_test(NAME render-mdx-preview-scan COMMAND war3-mdx-preview-scan-tests)
+    set_tests_properties(render-mdx-preview-scan PROPERTIES TIMEOUT 60)
+endif()
+if(TARGET war3-mdx-preview-scope-tests)
+    add_test(NAME render-mdx-preview-scope COMMAND war3-mdx-preview-scope-tests $<TARGET_FILE:war3-mdx-scan>)
+    set_tests_properties(render-mdx-preview-scope PROPERTIES TIMEOUT 60)
+endif()

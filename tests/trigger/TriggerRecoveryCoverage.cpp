@@ -1,6 +1,6 @@
 // 代码转回 T 的覆盖测量（手动运行，不登记 CTest）：对每个 GUI 触发器“转换为代码 → 不带快照按正文转回”，
-// 统计可转回数量与拒绝原因，并核对带快照时全部原样恢复、每次撤销后整图逐字节还原。用法：
-//   war3-map-trigger-recovery-coverage <ui-root> <war3map.wtg> <war3map.wct>
+// 统计实际可提交且可撤销的转回数量与拒绝原因，最后核对整图逐字节还原。解析耗时单独计量。用法：
+//   war3-map-trigger-recovery-coverage <ui-root> <war3map.wtg> <war3map.wct> [--profile-phases]
 #include "War3MapCore/Script/MapScript.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/Trigger/TriggerCodeEditing.h"
@@ -8,6 +8,7 @@
 #include "War3MapCore/Trigger/UiCatalog.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <fstream>
@@ -15,6 +16,7 @@
 #include <iterator>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace War3Map;
@@ -36,10 +38,63 @@ std::string Reason(const std::vector<Diagnostic>& diagnostics) {
     }
     return message;
 }
+
+// 只记录最慢的 20 个目标，输出在计时之后；名字来自运行输入，不写入源码或统计分母。
+// 行内控制字符转义，UTF-8 名字最多保留 160 字节且不截断多字节字符。
+std::string ReportName(std::string_view name) {
+    auto length = (std::min<std::size_t>)(name.size(), 160);
+    while (length < name.size() && length && (static_cast<unsigned char>(name[length]) & 0xc0) == 0x80) --length;
+    std::string result = "\"";
+    for (const char c : name.substr(0, length)) {
+        if (c == '\n') result += "\\n";
+        else if (c == '\r') result += "\\r";
+        else if (c == '\t') result += "\\t";
+        else if (c == '\\' || c == '"') { result += '\\'; result += c; }
+        else if (static_cast<unsigned char>(c) < 0x20) result += '?';
+        else result += c;
+    }
+    if (length < name.size()) result += "...";
+    return result + '"';
+}
+struct RecoveryTiming {
+    StableId id;
+    std::size_t guiIndex, sourceBytes, ecaCount, argumentCount;
+    double milliseconds;
+    const char* status;
+    std::string name;
+    Script::GuiTriggerRecoveryProfile profile;
+};
+struct ProfileGroup {
+    std::size_t attempts = 0;
+    double totalMilliseconds = 0;
+    Script::GuiTriggerRecoveryProfile profile;
+    void Add(double milliseconds, const Script::GuiTriggerRecoveryProfile& value) {
+        ++attempts; totalMilliseconds += milliseconds;
+        for (std::size_t i = 0; i < profile.phases.size(); ++i) {
+            profile.phases[i].calls += value.phases[i].calls;
+            profile.phases[i].milliseconds += value.phases[i].milliseconds;
+        }
+    }
+};
+void PrintPhases(const Script::GuiTriggerRecoveryProfile& profile, double totalMilliseconds) {
+    static constexpr std::array names{"normalize", "catalog", "parse", "probe", "generate", "compare"};
+    static_assert(names.size() == static_cast<std::size_t>(Script::GuiTriggerRecoveryProfile::Phase::Count));
+    double attributed = 0;
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        const auto& phase = profile.phases[i];
+        std::printf(" %s-calls=%zu %s-total-ms=%.3f", names[i], phase.calls, names[i], phase.milliseconds);
+        attributed += phase.milliseconds;
+    }
+    // 包含析构、查找目标、诊断构造与采样本身；保留原总耗时，不扣这部分或计时开销。
+    std::printf(" other-total-ms=%.3f\n", totalMilliseconds - attributed);
+}
 } // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 4) { std::cerr << "usage: <ui-root> <wtg> <wct>\n"; return 2; }
+    if (argc < 4 || argc > 5 || (argc == 5 && std::string_view(argv[4]) != "--profile-phases")) {
+        std::cerr << "usage: <ui-root> <wtg> <wct> [--profile-phases]\n"; return 2;
+    }
+    const bool profilePhases = argc == 5;
     Trigger::TriggerCodeEditor::SetFullReplayVerification(false);
     auto catalog = Trigger::UiCatalog::Load(argv[1]);
     if (!catalog.Succeeded()) return 1;
@@ -51,11 +106,42 @@ int main(int argc, char** argv) {
     std::vector<StableId> ids;
     for (const auto& trigger : document.triggers)
         if (trigger.type == 0 && trigger.customTextFlag == 0 && !trigger.ecas.empty()) ids.push_back(trigger.id);
-    std::size_t generatedFail = 0, parsed_ok = 0, snapshotOk = 0, undoMismatch = 0;
+    std::size_t generatedFail = 0, parsed_ok = 0, parsedPartial = 0, snapshotOk = 0, undoMismatch = 0;
+    std::size_t preservedLines = 0, preservedExpressions = 0;
+    std::size_t parseAttempts = 0, parsedAccepted = 0, prepareFailed = 0, applyFailed = 0, snapshotFailed = 0, commitAttempts = 0;
     std::map<std::string, std::size_t> reasons;
     std::map<std::string, std::string> examples;
-    double recoverMs = 0, maxMs = 0;
+    constexpr std::size_t kSlowestTimings = 20;
+    std::vector<RecoveryTiming> slowest;
+    slowest.reserve(kSlowestTimings);
+    std::array<ProfileGroup, 3> phaseGroups;
+    std::size_t guiIndex = 0;
+    double recoverMs = 0, maxMs = 0, commitMs = 0, maxCommitMs = 0;
+    const auto recordFailure = [&](const std::string& stage, const std::vector<Diagnostic>& diagnostics) {
+        const auto reason = stage + ": " + Reason(diagnostics);
+        if (++reasons[reason] == 1) examples[reason] = diagnostics.empty() ? "（无诊断）" : diagnostics.front().message;
+    };
+    const auto commitAndUndo = [&](StableId id, const Trigger::GuiTriggerFragment& fragment, const std::string& mode) {
+        const auto started = std::chrono::steady_clock::now();
+        ++commitAttempts;
+        const auto finish = [&](bool result) {
+            const auto elapsed = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+            commitMs += elapsed; maxCommitMs = (std::max)(maxCommitMs, elapsed); return result;
+        };
+        auto recoveryPlan = Trigger::TriggerCodeEditor::PrepareRecovery(document, *catalog.value, id, fragment);
+        if (!recoveryPlan.Succeeded() || !recoveryPlan.value) {
+            ++prepareFailed; recordFailure(mode + " prepare", recoveryPlan.diagnostics); return finish(false);
+        }
+        auto applied = Trigger::TriggerCodeEditor::Apply(document, *catalog.value, *recoveryPlan.value);
+        if (!applied.Succeeded() || !applied.value) {
+            ++applyFailed; recordFailure(mode + " apply", applied.diagnostics); return finish(false);
+        }
+        const auto undone = Trigger::TriggerCodeEditor::Replay(document, *catalog.value, *applied.value, false);
+        if (!undone.Succeeded()) { ++undoMismatch; recordFailure(mode + " undo", undone.diagnostics); return finish(false); }
+        return finish(true);
+    };
     for (const auto id : ids) {
+        ++guiIndex;
         Script::MapScriptInputs inputs; inputs.triggers = &document; inputs.catalog = &*catalog.value;
         auto generated = Script::GenerateGuiTriggerSource(inputs, id);
         if (!generated.Succeeded() || !generated.value) { ++generatedFail; continue; }
@@ -64,15 +150,42 @@ int main(int argc, char** argv) {
         if (!plan.Succeeded()) { ++generatedFail; continue; }
         auto receipt = Trigger::TriggerCodeEditor::Apply(document, *catalog.value, *plan.value);
         if (!receipt.Succeeded()) { ++generatedFail; continue; }
-        const auto start = std::chrono::steady_clock::now();
-        auto recovered = Script::RecoverGuiTrigger(inputs, id);
-        const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        Script::GuiTriggerRecoveryProfile profile;
+        const auto recoverStart = std::chrono::steady_clock::now();
+        ++parseAttempts;
+        auto recovered = Script::RecoverGuiTrigger(inputs, id, nullptr, profilePhases ? &profile : nullptr);
+        const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - recoverStart).count();
         recoverMs += ms; maxMs = (std::max)(maxMs, ms);
-        if (recovered.Succeeded()) ++parsed_ok;
+        if (profilePhases) {
+            const auto group = recovered.Succeeded() && recovered.value ? 2 : profile.parserProducedCandidate ? 1 : 0;
+            phaseGroups[group].Add(ms, profile);
+        }
+        const auto fastest = std::min_element(slowest.begin(), slowest.end(), [](const auto& left, const auto& right) {
+            return left.milliseconds < right.milliseconds;
+        });
+        if (slowest.size() < kSlowestTimings || ms > fastest->milliseconds) {
+            const auto* target = Trigger::TriggerDocumentEditor::FindTrigger(document, id);
+            const auto* value = recovered.Succeeded() && recovered.value ? &*recovered.value : nullptr;
+            RecoveryTiming timing{id, guiIndex, generated.value->text.size(), value ? value->fragment.ecas.size() : 0,
+                value ? value->fragment.arguments.size() : 0, ms,
+                value ? value->preservedCodeLines || value->preservedCodeExpressions ? "partial" : "complete" : "rejected",
+                ReportName(target ? target->name.text : ""), profile};
+            if (slowest.size() < kSlowestTimings) slowest.push_back(std::move(timing));
+            else *fastest = std::move(timing);
+        }
+        if (recovered.Succeeded() && recovered.value) {
+            ++parsedAccepted;
+            if (commitAndUndo(id, recovered.value->fragment, "parsed")) {
+                if (recovered.value->preservedCodeLines || recovered.value->preservedCodeExpressions) ++parsedPartial;
+                else ++parsed_ok;
+                preservedLines += recovered.value->preservedCodeLines;
+                preservedExpressions += recovered.value->preservedCodeExpressions;
+            }
+        }
         else {
             auto reason = Reason(recovered.diagnostics);
             // 无法识别的动作行：按该行开头两个词归类。
-            const auto& message = recovered.diagnostics.front().message;
+            const auto message = recovered.diagnostics.empty() ? std::string{} : recovered.diagnostics.front().message;
             if ((message.find("无法识别为 T 动作") != std::string::npos || message.find("无法切分") != std::string::npos)
                 && message.rfind("第 ", 0) == 0) {
                 const auto line = std::stoul(message.substr(std::string("第 ").size()));
@@ -88,19 +201,57 @@ int main(int argc, char** argv) {
                     reason += " " + row.substr(0, lexical ? 60 : cut == std::string::npos ? 40 : (std::min<std::size_t>)(cut, 40));
                 }
             }
-            if (++reasons[reason] == 1) examples[reason] = document.triggers.empty() ? "" : recovered.diagnostics.front().message;
+            if (++reasons[reason] == 1) examples[reason] = message;
         }
-        if (snapshot.Succeeded() && Script::RecoverGuiTrigger(inputs, id, &*snapshot.value).Succeeded()) ++snapshotOk;
-        if (!Trigger::TriggerCodeEditor::Replay(document, *catalog.value, *receipt.value, false).Succeeded()) ++undoMismatch;
+        if (undoMismatch) break; // 撤销链已断，禁止继续在不确定状态上累计覆盖数。
+        if (snapshot.Succeeded() && snapshot.value) {
+            const auto fromSnapshot = Script::RecoverGuiTrigger(inputs, id, &*snapshot.value);
+            if (fromSnapshot.Succeeded() && fromSnapshot.value && fromSnapshot.value->fromSnapshot) {
+                if (commitAndUndo(id, fromSnapshot.value->fragment, "snapshot")) ++snapshotOk;
+            } else { ++snapshotFailed; recordFailure("snapshot recover", fromSnapshot.diagnostics); }
+        } else { ++snapshotFailed; recordFailure("snapshot capture", snapshot.diagnostics); }
+        if (undoMismatch) break;
+        const auto conversionUndo = Trigger::TriggerCodeEditor::Replay(document, *catalog.value, *receipt.value, false);
+        if (!conversionUndo.Succeeded()) { ++undoMismatch; recordFailure("conversion undo", conversionUndo.diagnostics); break; }
     }
     auto encoded = codec.Serialize(document, *catalog.value);
     const bool exact = encoded.Succeeded() && encoded.value->wtg == wtg && encoded.value->wct == wct;
     std::printf("gui-triggers=%zu generate-or-convert-failed=%zu parsed-recovered=%zu snapshot-recovered=%zu undo-failed=%zu\n",
         ids.size(), generatedFail, parsed_ok, snapshotOk, undoMismatch);
+    std::printf("parsed-partial=%zu preserved-code-lines=%zu preserved-code-expressions=%zu (not counted in parsed-recovered)\n",
+        parsedPartial, preservedLines, preservedExpressions);
+    std::printf("parsed-accepted-before-commit=%zu recovery-prepare-failed=%zu recovery-apply-failed=%zu snapshot-failed=%zu\n",
+        parsedAccepted, prepareFailed, applyFailed, snapshotFailed);
     std::printf("recover-avg=%.2f ms recover-max=%.2f ms final-byte-exact=%d\n", ids.empty() ? 0.0 : recoverMs / ids.size(), maxMs, exact ? 1 : 0);
+    std::printf("parse-attempts=%zu parse-attempt-avg=%.2f ms (recover-avg retains all-GUI denominator; both exclude commit/undo)\n",
+        parseAttempts, parseAttempts ? recoverMs / parseAttempts : 0.0);
+    std::printf("commit-undo-attempts=%zu commit-undo-avg=%.2f ms commit-undo-max=%.2f ms\n",
+        commitAttempts, commitAttempts ? commitMs / commitAttempts : 0.0, maxCommitMs);
     std::vector<std::pair<std::size_t, std::string>> sorted;
     for (const auto& [reason, count] : reasons) sorted.emplace_back(count, reason);
     std::sort(sorted.rbegin(), sorted.rend());
     for (const auto& [count, reason] : sorted) std::printf("%5zu  %s\n       e.g. %s\n", count, reason.c_str(), examples[reason].c_str());
-    return exact ? 0 : 1;
+    std::sort(slowest.begin(), slowest.end(), [](const auto& left, const auto& right) {
+        return left.milliseconds != right.milliseconds ? left.milliseconds > right.milliseconds : left.guiIndex < right.guiIndex;
+    });
+    std::printf("recover-profiled=%zu slowest-limit=%zu (includes parse/probe/regeneration; excludes commit/undo)\n", parseAttempts, kSlowestTimings);
+    for (std::size_t rank = 0; rank < slowest.size(); ++rank) {
+        const auto& timing = slowest[rank];
+        std::printf("recover-slow rank=%zu gui-index=%zu trigger-id=%llu recover-ms=%.3f source-bytes=%zu candidate-ecas=%zu candidate-arguments=%zu status=%s name=%s\n",
+            rank + 1, timing.guiIndex, static_cast<unsigned long long>(timing.id), timing.milliseconds,
+            timing.sourceBytes, timing.ecaCount, timing.argumentCount, timing.status, timing.name.c_str());
+        if (profilePhases) {
+            std::printf("recover-slow-phases rank=%zu", rank + 1);
+            PrintPhases(timing.profile, timing.milliseconds);
+        }
+    }
+    if (profilePhases) {
+        static constexpr std::array names{"parse-rejected", "verify-rejected", "accepted"};
+        for (std::size_t i = 0; i < phaseGroups.size(); ++i) {
+            const auto& group = phaseGroups[i];
+            std::printf("recover-phase-group group=%s attempts=%zu recover-total-ms=%.3f", names[i], group.attempts, group.totalMilliseconds);
+            PrintPhases(group.profile, group.totalMilliseconds);
+        }
+    }
+    return exact && !undoMismatch && !prepareFailed && !applyFailed ? 0 : 1;
 }

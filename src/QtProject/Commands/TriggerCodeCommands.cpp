@@ -15,6 +15,10 @@ void TriggerCodeEditCommand::redo() {
     Apply(true);
 }
 
+void TriggerCodeEditCommand::PublishSnapshot() noexcept {
+    project_.guiConversionSnapshots_.Swap(snapshot_);
+}
+
 void TriggerCodeEditCommand::Apply(bool forward) {
     if (!project_.triggerDocument_ || !project_.uiCatalog_) return;
     // 离开的状态即上次观察到的状态；撤销栈后进先出，到达的状态与此前观察到的同一位置内容相同。
@@ -22,6 +26,7 @@ void TriggerCodeEditCommand::Apply(bool forward) {
     const auto status = Trigger::TriggerCodeEditor::Replay(
         *project_.triggerDocument_, *project_.uiCatalog_, receipt_, forward);
     if (!status.Succeeded()) { project_.AddDiagnostics(status.diagnostics); return; }
+    PublishSnapshot();
     if (leaving) (forward ? beforeFingerprint_ : afterFingerprint_) = *leaving;
     const auto& arriving = forward ? afterFingerprint_ : beforeFingerprint_;
     // QUndoStack 在命令返回后才移动位置并发出 indexChanged。

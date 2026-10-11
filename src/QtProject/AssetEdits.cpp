@@ -6,6 +6,7 @@
 
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/Resources/ImportTable.h"
+#include "War3MapCore/Services/CampaignService.h"
 #include "War3MapCore/Workspace.h"
 
 #include <algorithm>
@@ -61,7 +62,31 @@ std::vector<AssetEntry> EditorProject::AssetEntries(const AssetState& state, std
         if (edits.contains(key)) duplicateEdits.insert(key);
         else edits.insert(key, &edit);
     }
-    if (archiveSession_) {
+    if (campaignScope_) {
+        std::size_t offset = 0;
+        for (;;) {
+            const auto page = campaignScope_->Members(campaignScope_->Revision(), offset, 256);
+            if (!page.Succeeded() || !page.value) break;
+            for (const auto& member : page.value->members) {
+                const auto name = QString::fromUtf8(member.path);
+                const auto sourceKey = AssetKey(name);
+                if (IsMapDataPath(sourceKey) || sourceKey.endsWith(".w3x") || sourceKey.endsWith(".w3m")) continue;
+                QString path = name;
+                if (const auto edit = edits.constFind(sourceKey); edit != edits.cend()) {
+                    if ((*edit)->to.isEmpty()) continue;
+                    path = (*edit)->to;
+                }
+                const auto key = AssetKey(path);
+                if (const auto found = rows.constFind(key); found != rows.cend()) entries[*found].ambiguous = true;
+                else {
+                    rows.insert(key, entries.size());
+                    entries.push_back({path, name, static_cast<qint64>(member.size), {}, duplicateEdits.contains(sourceKey)});
+                }
+            }
+            if (page.value->nextOffset >= page.value->total) break;
+            offset = page.value->nextOffset;
+        }
+    } else if (archiveSession_) {
         for (const auto& member : archiveSession_->Members()) {
             const QString name = QString::fromUtf8(member.name);
             if (IsMapDataPath(AssetKey(name))) continue;

@@ -5,6 +5,7 @@
 #include "War3MapCore/Script/MapScript.h"
 
 #include <cstdio>
+#include <stdexcept>
 #include <string_view>
 
 namespace War3Map::Script::detail {
@@ -64,9 +65,14 @@ bool InlinesCodeSlots(Gui gui) {
 } // namespace
 
 TriggerEmitter::TriggerEmitter(const Trigger::TriggerDocument& document, const Trigger::UiCatalog& catalog,
-    ScriptText& out, std::vector<Diagnostic>& diagnostics, bool debug, bool nullSafeHandleSet)
-    : document_(document), catalog_(catalog), types_(catalog), out_(out), diagnostics_(diagnostics), debug_(debug),
+    ScriptText& out, std::vector<Diagnostic>& diagnostics, bool debug, bool nullSafeHandleSet,
+    const Trigger::TriggerTypeSystem* sharedTypes)
+    : document_(document), catalog_(catalog),
+      ownedTypes_(sharedTypes ? std::optional<Trigger::TriggerTypeSystem>{}
+                             : std::optional<Trigger::TriggerTypeSystem>{std::in_place, catalog}),
+      types_(sharedTypes ? *sharedTypes : *ownedTypes_), out_(out), diagnostics_(diagnostics), debug_(debug),
       nullSafeHandleSet_(nullSafeHandleSet) {
+    if (&types_.Catalog() != &catalog_) throw std::invalid_argument("共享类型目录与当前函数库不一致。");
     for (const auto& variable : document_.variables) variables_.emplace(variable.name.text, &variable);
 }
 

@@ -57,7 +57,11 @@ constexpr std::uint32_t kParamsFlag = 0x10000;
 class TriggerEmitter {
 public:
     TriggerEmitter(const Trigger::TriggerDocument& document, const Trigger::UiCatalog& catalog,
-        ScriptText& out, std::vector<Diagnostic>& diagnostics, bool debug = false, bool nullSafeHandleSet = false);
+        ScriptText& out, std::vector<Diagnostic>& diagnostics, bool debug = false, bool nullSafeHandleSet = false,
+        const Trigger::TriggerTypeSystem* sharedTypes = nullptr);
+    // 生成器只在一个调用栈内使用，借用的类型目录须覆盖整个生成过程。
+    TriggerEmitter(const TriggerEmitter&) = delete;
+    TriggerEmitter& operator=(const TriggerEmitter&) = delete;
 
     void EmitGuiTrigger(const Trigger::TriggerRecord& trigger);
     [[nodiscard]] std::string TriggerVariable(const Trigger::TriggerRecord& trigger) const;
@@ -160,7 +164,8 @@ private:
 
     const Trigger::TriggerDocument& document_;
     const Trigger::UiCatalog& catalog_;
-    const Trigger::TriggerTypeSystem types_;
+    const std::optional<Trigger::TriggerTypeSystem> ownedTypes_;
+    const Trigger::TriggerTypeSystem& types_;
     ScriptText& out_;
     std::vector<Diagnostic>& diagnostics_;
     std::unordered_map<std::string, const Trigger::VariableRecord*> variables_;

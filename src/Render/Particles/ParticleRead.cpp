@@ -92,6 +92,7 @@ const char* TagName(Kind kind,Parameter p) {
 }
 void ReadEmitters(Reader r,Kind kind,Asset& out,std::uint32_t& keys,
     std::array<std::uint32_t,2>& sourceCounts,const ReadLimits& limits,ReadMode mode) {
+    const bool previewKeys=mode==ReadMode::PreviewSkipInvalidEmitters || mode==ReadMode::PreviewGameOrder;
     while(r.Remaining()) {
         Require(sourceCounts[0]+sourceCounts[1]<limits.maxEmitters,"PARTICLE_EMITTER_BUDGET","发射器数量超限。");
         const auto n=r.U32();Require(n>=4,"PARTICLE_SIZE_INVALID","发射器包含式长度无效。");auto v=r.Take(n-4);
@@ -148,11 +149,11 @@ void ReadEmitters(Reader r,Kind kind,Asset& out,std::uint32_t& keys,
             const auto p=Param(v.Tag(),kind);v.LocalRequire(seen.insert(p).second,"PARTICLE_TRACK_DUPLICATE","重复粒子轨迹。");
             auto& track=e.tracks[static_cast<std::size_t>(p)];
             RecoveredVisibilityTrack recovery{kind,e.sourceIndex,e.nodeId,0,sourceByteOffset,{}};
-            const bool recover=mode==ReadMode::PreviewSkipInvalidEmitters && kind==Kind::Particle2 &&
+            const bool recover=previewKeys && kind==Kind::Particle2 &&
                 p==Parameter::Visibility && e.squirt==0;
             std::optional<std::array<std::int32_t,2>> gameOrder;
             track=ReadTrack(v,p==Parameter::Color?3u:1u,p==Parameter::TextureSlot,keys,limits,recover?&recovery:nullptr,
-                mode==ReadMode::PreviewSkipInvalidEmitters?&gameOrder:nullptr);
+                previewKeys?&gameOrder:nullptr);
             // 同一轨迹既有同帧重复又有逆序边时，按原版区间取值已覆盖重复键，只记录逆序来源。
             if(gameOrder)orders.push_back({kind,p,e.sourceIndex,e.nodeId,sourceByteOffset,(*gameOrder)[0],(*gameOrder)[1]});
             else if(!recovery.duplicateKeys.empty())recoveries.push_back(std::move(recovery));
@@ -171,7 +172,7 @@ void ReadEmitters(Reader r,Kind kind,Asset& out,std::uint32_t& keys,
 }
 }
 Result<Asset> Read(std::span<const std::byte> bytes,ReadLimits limits,ReadMode mode) try {
-    Require(mode==ReadMode::Strict||mode==ReadMode::PreviewSkipInvalidEmitters,
+    Require(mode==ReadMode::Strict||mode==ReadMode::PreviewSkipInvalidEmitters||mode==ReadMode::PreviewGameOrder,
         "PARTICLE_READ_MODE_INVALID","未知粒子只读预览模式。");
     Require(limits.maxBytes<=32ull*1024*1024&&limits.maxEmitters<=256&&limits.maxKeys<=65536&&bytes.size()<=limits.maxBytes,
         "PARTICLE_READ_BUDGET","粒子读取超限，不能放宽硬上限。");

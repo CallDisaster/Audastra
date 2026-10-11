@@ -220,6 +220,19 @@ Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(const std::files
         if (!parsed.Succeeded()) return fail(QObject::tr("触发器覆盖校验失败"));
         triggers = std::make_unique<Trigger::TriggerDocument>(std::move(*parsed.value));
     }
+    Trigger::GuiConversionSnapshots guiSnapshots;
+    constexpr std::string_view snapshotMember = "overlay/editor/gui-conversion-snapshots.bin";
+    const bool hasSnapshots = archive.HasMember(snapshotMember);
+    if (manifest.contains("guiConversionSnapshots") || hasSnapshots) {
+        if (manifest["guiConversionSnapshots"].toInt(-1) != 1 || !hasSnapshots || !triggers || !catalog)
+            return fail(QObject::tr("转换前快照版本未知或成员不完整"));
+        const auto bytes = archive.ReadMember(snapshotMember);
+        if (!bytes.Succeeded() || !bytes.value) return fail(QObject::tr("转换前快照不能读取"));
+        const auto source = map ? "archive:" + baseline->SourceSha256() : "directory:" + workspace->Snapshot().aggregateSha256;
+        auto restored = Trigger::GuiConversionSnapshots::Parse(*bytes.value, *triggers, *catalog, source);
+        if (!restored.Succeeded() || !restored.value) return fail(QObject::tr("转换前快照已损坏或与工程来源、触发器正文不符"));
+        guiSnapshots = std::move(*restored.value);
+    }
     std::vector<PendingImport> imports;
     for (const auto& value : manifest["imports"].toArray()) {
         const auto record = value.toObject();
@@ -343,6 +356,7 @@ Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(const std::files
     candidate->journalJson = QJsonDocument(manifest["journal"].toArray()).toJson(QJsonDocument::Compact).toStdString();
     candidate->objects = std::move(objects);
     candidate->triggers = std::move(triggers);
+    candidate->guiConversionSnapshots = std::move(guiSnapshots);
     candidate->catalog = std::move(catalog);
     candidate->imports = std::move(imports);
     candidate->mapDataEdits = std::move(mapDataEdits);

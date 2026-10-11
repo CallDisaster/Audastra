@@ -292,10 +292,17 @@ public:
             return Result<std::vector<std::byte>>::Success(std::move(raw));
         }
 
-        // 读扇区偏移表（sectorCount+1 个 uint32，相对 dataPos）。
-        const std::size_t offsetCount = sectorCount + 1;
+        // 经典校验标志会多存一个校验区末偏移；原版包也会保留标志但让校验区为空。
+        const bool sectorChecksums = (block.flags & kFileSectorCrc) != 0;
+        const std::size_t offsetCount = static_cast<std::size_t>(sectorCount) + (sectorChecksums ? 2 : 1);
+        const std::size_t offsetTableBytes = offsetCount * sizeof(std::uint32_t);
+        // 所有入口（包括预读清单和只读文件头）都先核对成员边界，不能读到下一成员。
+        if (offsetTableBytes > block.compressedSize) {
+            return Result<std::vector<std::byte>>::Failure(
+                "Mpq", "SECTOR_OFFSET_INVALID", "sector offset table exceeds member storage");
+        }
         std::vector<std::byte> offsetBytes;
-        if (!ReadAt(dataPos, offsetCount * 4, offsetBytes, control)) {
+        if (!ReadAt(dataPos, offsetTableBytes, offsetBytes, control)) {
             return Result<std::vector<std::byte>>::Failure(
                 "Mpq", "READ_FAILED", "failed to read sector offset table");
         }
@@ -308,12 +315,22 @@ public:
                 return {{}, ProjectSaveCancelledStatus().diagnostics};
             offsets[i] = ReadU32(offsetBytes.data() + i * 4);
         }
-        const std::size_t offsetTableBytes = offsetCount * 4;
         if (offsets.front() != offsetTableBytes ||
             offsets.back() != block.compressedSize) {
             return Result<std::vector<std::byte>>::Failure(
                 "Mpq", "SECTOR_OFFSET_INVALID",
                 "sector offsets must start exactly after the table and end at compressedSize");
+        }
+        for (std::uint32_t i = 0; i < sectorCount; ++i) {
+            if (offsets[i + 1] <= offsets[i] || offsets[i + 1] > block.compressedSize) {
+                return Result<std::vector<std::byte>>::Failure(
+                    "Mpq", "SECTOR_OFFSET_INVALID", "sector offset table is inconsistent");
+            }
+        }
+        if (sectorChecksums && offsets[sectorCount] != offsets.back()) {
+            // 非空校验数组尚未实现，必须明确拒绝，不能把未校验的内容交给调用方。
+            return Result<std::vector<std::byte>>::Failure(
+                "Mpq", "SECTOR_CRC_UNSUPPORTED", "non-empty sector checksum tables are unsupported");
         }
 
         std::vector<std::byte> out;
@@ -321,10 +338,6 @@ public:
         for (std::uint32_t i = 0; i < sectorCount && out.size() < limit; ++i) {
             if (control && !control->Checkpoint(ProjectSaveStage::Verify, out.size()))
                 return {{}, ProjectSaveCancelledStatus().diagnostics};
-            if (offsets[i + 1] <= offsets[i] || offsets[i + 1] > block.compressedSize) {
-                return Result<std::vector<std::byte>>::Failure(
-                    "Mpq", "SECTOR_OFFSET_INVALID", "sector offset table is inconsistent");
-            }
             const std::uint32_t rawLen = offsets[i + 1] - offsets[i];
             std::vector<std::byte> sector;
             if (!ReadAt(dataPos + offsets[i], rawLen, sector, control)) {
@@ -711,7 +724,8 @@ Result<std::vector<std::byte>> MpqArchive::ReadFileBounded(
             (static_cast<std::uint64_t>(block->fileSize) + impl_->sectorSize - 1) /
             impl_->sectorSize;
         // 在 ReadFileBlock 分配偏移表前拒绝连偏移表也装不下的块，避免越过成员边界。
-        if ((sectorCount + 1) * sizeof(std::uint32_t) > block->compressedSize) {
+        const auto offsetCount = sectorCount + ((block->flags & kFileSectorCrc) ? 2 : 1);
+        if (offsetCount * sizeof(std::uint32_t) > block->compressedSize) {
             return Result<std::vector<std::byte>>::Failure(
                 "Mpq", "SECTOR_OFFSET_INVALID", "sector offset table exceeds member storage");
         }

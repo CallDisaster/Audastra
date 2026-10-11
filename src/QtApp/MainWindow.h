@@ -125,6 +125,7 @@ public:
     bool OpenMapArchivePath(const std::filesystem::path& archivePath);
     // 只有真实用户打开成功才登记；默认外部/探针/工程私有基线入口不登记历史。
     bool OpenUserMapArchivePath(const std::filesystem::path& archivePath);
+    bool OpenCampaignPath(const std::filesystem::path& path);
 
     // 将当前工作区重打包为 .w3x（另存为）。
     bool SaveAsMapArchive();
@@ -156,6 +157,8 @@ public:
     bool EnableWorldMeasurement(const QString& newOutputDirectory, int backgroundSeconds = 0, bool cameraTour = false);
 
 private:
+    void SetupCampaignActions();
+    void OpenCampaignChapterPath(const QString& path);
     War3Map::QtApp::AiWorkspace* aiWorkspace_ = nullptr;
     void SetupAgentWorkspace(bool readUserConfiguration = true);
     // 仅离屏探针的 friend 测试使用：同工作区 HTTP，临时端口与内存凭据。

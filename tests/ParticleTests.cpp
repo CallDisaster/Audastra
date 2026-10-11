@@ -4,6 +4,7 @@
 #include <limits>
 #include "MdxTestModel.h"
 #include "ParticleVisibilityPreviewTests.h"
+#include "ParticleModelSpaceTests.h"
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -304,5 +305,6 @@ void Parsing(){
 }
 }
 int main(int argc,char** argv){try{Check(argc==2,"group");const std::string group=argv[1];
-    if(group=="deterministic")Deterministic();else if(group=="emission")Emission();else if(group=="parsing")Parsing();else Check(false,"unknown");
+    if(group=="deterministic")Deterministic();else if(group=="emission")Emission();else if(group=="parsing")Parsing();
+    else if(group=="model-space")ParticleModelSpaceTest::Run();else Check(false,"unknown");
     std::cout<<"PASS "<<group<<'\n';return 0;}catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<'\n';return 1;}}

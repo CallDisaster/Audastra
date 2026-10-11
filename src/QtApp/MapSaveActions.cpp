@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "CampaignModule.h"
 
 #include "MapSaveJob.h"
 #include "ProgramIssueReporter.h"
@@ -126,6 +127,7 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         reportFailure(tr("代码草稿未能提交，保存已取消；当前代码仍然保留"));
         return false;
     }
+    const auto sourceBeforeSave = project_->sourceArchivePath_;
     auto job = project_->PrepareMapSave(target, inPlace);
     if (!job) {
         UpdateEditDirtyFlags();
@@ -209,6 +211,8 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         reportFailure(tr("地图保存未完成"), job.get());
         return false;
     }
+    // 先登记章节来源迁移，再显示可能进入嵌套事件循环的保存提示。
+    campaignModule_->NoteChapterSaved(sourceBeforeSave, saved->target);
     mapDataAction_->setEnabled(project_->mapDocument_ != nullptr);
     objectsModule_->RefreshIcons();
     objectsModule_->UpdateObjectReferenceEntries();
@@ -229,6 +233,7 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
 }
 
 void MainWindow::SaveMapInPlace() {
+    if (CurrentModule() == "campaign" && campaignModule_->Session()) { (void)campaignModule_->Save(); return; }
     if (project_->archiveSession_ == nullptr) {
         // 从展开目录打开时没有地图归档，Ctrl+S 保存工程。
         if (!project_->projectRoot_.empty()) SaveEditorProject();
@@ -257,6 +262,7 @@ void MainWindow::SaveMapInPlace() {
 }
 
 bool MainWindow::SaveAsMapArchive() {
+    if (CurrentModule() == "campaign" && campaignModule_->Session()) return campaignModule_->Save(true);
     // 先完成路径选择；取消时不读取、回灌或修改任何会话文档。
     // 恢复副本不提示临时目录；放在作者原图旁边，文件名加“恢复”避免与原图重名（另存为不覆盖已有文件）。
     auto suggested = project_->sourceArchivePath_;

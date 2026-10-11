@@ -1,4 +1,5 @@
 #include "LiveEditorTools.h"
+#include "McpCampaignTools.h"
 #include "LiveObjectTools.h"
 #include "EditorProject.h"
 #include "ObjectNames.h"
@@ -729,6 +730,11 @@ private:
     }
 
     void RegisterTools() {
+        for (auto definition : Mcp::CampaignToolDefinitions(server_)) {
+            AddTool(definition.name, definition.description, definition.permission, definition.inputSchema,
+                [handler = definition.handler](const QJsonObject& arguments) { return handler(arguments).toObject(); },
+                definition.maxRequestIdBytes, definition.maxResponseBytes);
+        }
         for (auto definition : Mcp::ProjectSearchToolDefinitions()) {
             const auto name = definition.name;
             AddTool(name, definition.description, definition.permission, definition.inputSchema,

@@ -1,10 +1,12 @@
 #pragma once
 
 #include "War3MapCore/Types.h"
+#include "War3MapCore/MapArchiveSession.h"
 
 #include <QDir>
 #include <QString>
 #include <QStandardPaths>
+#include <QSettings>
 
 namespace War3Map::QtCommon {
 
@@ -52,6 +54,25 @@ namespace War3Map::QtCommon {
 
 [[nodiscard]] inline Result<QString> DefaultMapBackupDirectory() {
     return DefaultMapBackupDirectory(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation));
+}
+
+// GUI 地图、战役与独立 MCP 共同读取同一份备份偏好；这里只解析，不创建目录。
+[[nodiscard]] inline Result<InPlaceSaveOptions> ReadMapInPlaceSaveOptions(
+    const QSettings& settings, const QString& genericDataRoot) {
+    using Output = Result<InPlaceSaveOptions>;
+    if (!settings.group().isEmpty()) return Output::Failure("MapSave.Preferences", "MAP_SAVE_PREFERENCES_UNAVAILABLE",
+        "无法从设置子组读取地图保存偏好，保存已中止。");
+    const auto configured = settings.value(QStringLiteral("mapSave/backupDirectory")).toString();
+    bool valid = false;
+    const auto limit = settings.value(QStringLiteral("mapSave/backupLimit"), 10).toInt(&valid);
+    if (settings.status() != QSettings::NoError) return Output::Failure("MapSave.Preferences", "MAP_SAVE_PREFERENCES_UNAVAILABLE",
+        "无法读取地图保存偏好，保存已中止。");
+    const auto directory = ResolveMapBackupDirectory(configured, genericDataRoot);
+    if (!directory.Succeeded()) return {std::nullopt, directory.diagnostics};
+    InPlaceSaveOptions options;
+    options.backupDirectory = std::filesystem::path(directory.value->toStdWString());
+    options.keepBackups = valid && limit >= 0 && limit <= 1000 ? static_cast<std::size_t>(limit) : 10;
+    return Output::Success(std::move(options));
 }
 
 } // namespace War3Map::QtCommon

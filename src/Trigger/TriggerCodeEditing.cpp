@@ -749,28 +749,38 @@ Result<TriggerCodeEditPlan> TriggerCodeEditor::PrepareRecovery(const TriggerDocu
         const auto ecaCount = fragment.ecas.size(), argumentCount = fragment.arguments.size();
         if (ecaCount >= kInvalidNodeIndex - document.ecaNodes.size() || argumentCount >= kInvalidNodeIndex - document.argumentNodes.size())
             return fail("CODE_EDIT_NODE_LIMIT", "转回 T 后节点数量超过格式上限。");
-        // 片段必须是一棵树：每个节点恰好被引用一次，没有共享、环或孤立节点；顶层为事件/条件/动作，函数调用为调用节点。
+        // 片段必须是一棵树：每个节点恰好被引用一次，没有共享、环或孤立节点。
+        // code / 条件 / eventcall 参数使用动作 / 条件 / 事件 ECA；普通值才使用 type 3。
         std::vector<char> seenEca(ecaCount, 0), seenArgument(argumentCount, 0);
-        std::vector<std::pair<std::uint32_t, bool>> pending; // (ECA 局部下标, 是否为函数调用)
-        for (const auto root : fragment.roots) pending.emplace_back(root, false);
+        std::vector<std::pair<std::uint32_t, int>> pending; // (ECA 局部下标, 参数所需 ECA 类型；-1 为根/子动作)
+        for (const auto root : fragment.roots) pending.emplace_back(root, -1);
         while (!pending.empty()) {
-            const auto [index, call] = pending.back(); pending.pop_back();
+            const auto [index, expectedType] = pending.back(); pending.pop_back();
+            const bool call = expectedType >= 0;
             if (index >= ecaCount || seenEca[index]) return fail("CODE_EDIT_FRAGMENT", "转回 T 的候选子树引用了不存在或重复的节点。");
             seenEca[index] = 1;
             const auto& eca = fragment.ecas[index];
             const bool root = !call && std::find(fragment.roots.begin(), fragment.roots.end(), index) != fragment.roots.end();
-            if ((call ? eca.type != 3 : (eca.type < 0 || eca.type > 2)) || (root && eca.childId))
+            // 保留原来允许的普通调用（例如 Null / 返回条件的函数），再开放声明匹配的函数槽 ECA。
+            if ((call ? eca.type != 3 && eca.type != expectedType : (eca.type < 0 || eca.type > 2)) || ((root || call) && eca.childId))
                 return fail("CODE_EDIT_FRAGMENT", "转回 T 的候选节点类型与位置不符：" + eca.name.text);
-            if (!catalog.Find(eca.type, eca.name.text)) return fail("CODE_EDIT_FRAGMENT", "函数库中没有“" + eca.name.text + "”的定义。");
-            for (const auto child : eca.children) pending.emplace_back(child, false);
-            for (auto argumentIndex : eca.arguments) {
+            const auto* definition = catalog.Find(eca.type, eca.name.text);
+            if (!definition) return fail("CODE_EDIT_FRAGMENT", "函数库中没有“" + eca.name.text + "”的定义。");
+            for (const auto child : eca.children) pending.emplace_back(child, -1);
+            for (std::size_t slot = 0; slot < eca.arguments.size(); ++slot) {
+                auto argumentIndex = eca.arguments[slot];
+                const auto& slots = definition->Active().arguments;
+                if (slot >= slots.size()) return fail("CODE_EDIT_FRAGMENT", "转回 T 的候选参数超出函数库声明。");
+                const auto& type = slots[slot].type;
+                int required = type == "code" ? 2 : type == "boolexpr" || type == "boolcall" ? 1 : type == "eventcall" ? 0 : 3;
                 for (;;) {
                     if (argumentIndex >= argumentCount || seenArgument[argumentIndex]) return fail("CODE_EDIT_FRAGMENT", "转回 T 的候选参数引用无效。");
                     seenArgument[argumentIndex] = 1;
                     const auto& argument = fragment.arguments[argumentIndex];
-                    if (argument.callEca) pending.emplace_back(*argument.callEca, true);
+                    if (argument.callEca) pending.emplace_back(*argument.callEca, required);
                     if (!argument.indexArgument) break;
                     argumentIndex = *argument.indexArgument;
+                    required = 3; // 数组下标只能是整数值调用，不能借用所属参数的函数槽。
                 }
             }
         }

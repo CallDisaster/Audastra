@@ -1,10 +1,15 @@
 #include "War3MapCore/Script/MapScript.h"
 
+#include "GuiTriggerSource.h"
 #include "ScriptNames.h"
+#include "YDTriggerStorage.h"
 #include "War3MapCore/Trigger/TriggerCodeEditing.h"
 #include "War3MapCore/Trigger/TriggerTypes.h"
 
 #include <algorithm>
+#include <array>
+#include <charconv>
+#include <chrono>
 #include <exception>
 #include <optional>
 #include <string>
@@ -18,11 +23,26 @@
 // 支持范围（与 YDWE 生成写法一致）：事件注册、条件函数、普通调用、设置变量、注释、返回、
 // 多重 If、A/B/整数变量循环、单位组 / 玩家组 / 可破坏物 / 物品的“多个动作”遍历，以及
 // 参数中的预设、变量（含数组下标）、字面量、函数调用与四则 / 字符串运算。
-// 其余写法（YDWE 局部变量、计时器 / 触发器闭包、自定义代码行、条件函数参数等）指出行号后拒绝。
+// YDWE 存储展开中的哈希键不可逆：只恢复可证明的原生哈希表操作，不猜局部变量原名。
+// 必须保留为代码的表达式单独计数；未知控制流、未知函数仍定位拒绝，不能作为代码行兜底。
 namespace War3Map::Script {
 namespace {
 using Trigger::UiDefinition;
 using Trigger::UiDefinitionKind;
+
+template<class Action>
+decltype(auto) RecoveryPhase(GuiTriggerRecoveryProfile* profile, GuiTriggerRecoveryProfile::Phase phase, Action&& action) {
+    if (!profile) return action();
+    struct Measurement {
+        GuiTriggerRecoveryProfile::Timing& timing;
+        std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        ~Measurement() {
+            timing.milliseconds += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        }
+    } measurement{profile->phases[static_cast<std::size_t>(phase)]};
+    ++measurement.timing.calls;
+    return action();
+}
 
 enum class Tok { Ident, Number, String, RawCode, Op, Comment };
 struct Token {
@@ -158,7 +178,11 @@ std::string ScriptNameOf(const UiDefinition& definition) {
 std::optional<std::vector<std::string>> SlotTypes(const UiDefinition& definition) {
     std::vector<std::string> slots;
     for (const auto& argument : definition.Active().arguments) {
-        if (argument.type == "nothing") return std::nullopt;
+        if (argument.type == "nothing") {
+            // YDWE 的零参数哨兵不占 WTG 参数槽；混用才属于不明确的定义。
+            if (definition.Active().arguments.size() == 1) return slots;
+            return std::nullopt;
+        }
         slots.push_back(Unquote(argument.type));
     }
     return slots;
@@ -188,23 +212,12 @@ public:
         for (const auto* definition : catalog.Definitions(UiDefinitionKind::Event)) events_[ScriptNameOf(*definition)].push_back(definition);
         for (const auto* definition : catalog.Definitions(UiDefinitionKind::Condition)) conditions_[ScriptNameOf(*definition)].push_back(definition);
         for (const auto* definition : catalog.Definitions(UiDefinitionKind::Action)) actions_[ScriptNameOf(*definition)].push_back(definition);
-        for (const auto* definition : catalog.Definitions(UiDefinitionKind::Define)) {
-            if (definition->group != "TriggerParams") continue;
-            const auto type = types_.PresetType(definition->name);
-            const auto value = Field(*definition, "value");
-            if (!type || value.empty()) continue;
-            const auto parts = detail::SplitDefineValue(value);
-            if (parts.size() < 3 || parts[2].empty()) continue;
-            std::string script = parts[2];
-            std::replace(script.begin(), script.end(), '`', '"');
-            std::vector<Line> lines; std::size_t bad = 0;
-            if (!Lex(script, lines, bad) || lines.size() != 1) continue;
-            presets_[*type].push_back({std::move(lines.front().tokens), definition->name});
-        }
         for (const auto& variable : document.variables) variables_.emplace(variable.name.text, &variable);
     }
 
     std::optional<Trigger::GuiTriggerFragment> Parse(std::string_view text) {
+        if (text.size() > Trigger::TriggerCodeEditor::kDefaultMaxEditedBytes)
+            return Fail(1, "单个触发器超过 2 MiB 解析预算，请先拆分代码。");
         std::vector<Line> lines; std::size_t bad = 0;
         if (!Lex(text, lines, bad)) return Fail(bad, "无法切分这一行（字符串或字符未闭合）。");
         // 函数划分：函数之外只允许注释。
@@ -220,7 +233,7 @@ public:
             std::size_t j = i + 1;
             while (j < lines.size() && !Is(lines[j].tokens, 0, "endfunction")) {
                 if (Is(lines[j].tokens, 0, "function")) return Fail(lines[j].number, "函数缺少 endfunction。");
-                function.body.push_back(lines[j]); ++j;
+                function.body.push_back(std::move(lines[j])); ++j;
             }
             if (j >= lines.size()) return Fail(lines[i].number, "函数缺少 endfunction。");
             if (lines[j].tokens.size() != 1) return Fail(lines[j].number, "endfunction 之后不能再有代码。");
@@ -230,6 +243,16 @@ public:
         auto* init = Take(init_);
         if (!init) return Fail(lines.empty() ? 1 : lines.back().number, "找不到初始化函数 " + init_ + "（T 生成写法）。");
         std::vector<PEca> roots;
+        if (init->body.empty()) {
+            init = Take(init_ + "_Orig");
+            if (!init || !catalog_.Find(UiDefinitionKind::Event, "YDWEDisableRegister"))
+                return Fail(lines.empty() ? 1 : lines.back().number, "空初始化函数缺少 YDWEDisableRegister 的原注册函数。");
+            PEca disabled; disabled.type = 0; disabled.name = "YDWEDisableRegister";
+            roots.push_back(std::move(disabled));
+        }
+        if (record_.runOnInit != 0 && catalog_.Find(UiDefinitionKind::Event, "MapInitializationEvent")) {
+            PEca startup; startup.type = 0; startup.name = "MapInitializationEvent"; roots.push_back(std::move(startup));
+        }
         std::string conditionFunction, actionFunction;
         const auto& body = init->body;
         if (body.empty() || !SameText(body.front().tokens, {"set", triggerVar_, "=", "CreateTrigger", "(", ")"}))
@@ -265,7 +288,10 @@ public:
         if (actionFunction.empty()) return Fail(init->line, "初始化函数缺少 TriggerAddAction。");
         auto* actions = Take(actionFunction);
         if (!actions || actions->returnsBoolean) return Fail(init->line, "动作函数 " + actionFunction + " 不存在。");
-        if (!Actions(actions->body, 0, actions->body.size(), roots, std::nullopt)) return std::nullopt;
+        if (!FunctionActions(*actions, roots, std::nullopt)) {
+            if (!failLine_) Fail(actions->line, "动作正文不属于可恢复的 T 写法。");
+            return std::nullopt;
+        }
         for (const auto& [name, function] : functions_)
             if (!function.used) return Fail(function.line, "函数 " + name + " 不属于这个触发器的 T 写法。");
         Trigger::GuiTriggerFragment fragment; fragment.runOnInit = record_.runOnInit != 0;
@@ -275,6 +301,7 @@ public:
 
     std::size_t FailLine() const { return failLine_; }
     const std::string& FailReason() const { return failReason_; }
+    const Trigger::TriggerTypeSystem& Types() const { return types_; }
 
 private:
     struct Function {
@@ -284,6 +311,26 @@ private:
         bool used = false;
     };
     struct Preset { Tokens script; std::string name; };
+    struct DefinitionInfo {
+        std::optional<std::vector<std::string>> slots;
+        std::string returns;
+    };
+    struct StoragePatterns {
+        std::array<Tokens, 5> pages;
+        std::array<Tokens, 2> handles;
+        std::vector<Tokens> initialization;
+        Tokens reset, execute;
+    };
+    struct DepthScope {
+        std::size_t& depth;
+        explicit DepthScope(std::size_t& value) : depth(value) { ++depth; }
+        ~DepthScope() { --depth; }
+    };
+    struct CandidateState {
+        std::size_t used, line;
+        std::string reason;
+        std::vector<std::string> chosen;
+    };
 
     std::nullopt_t Fail(std::size_t line, std::string reason) {
         if (failLine_ == 0) { failLine_ = line; failReason_ = std::move(reason); }
@@ -293,7 +340,25 @@ private:
         const auto found = functions_.find(name);
         if (found == functions_.end() || found->second.used) return nullptr;
         found->second.used = true;
+        consumedFunctions_.push_back(name);
         return &found->second;
+    }
+    void RewindFunctions(std::size_t size) {
+        while (consumedFunctions_.size() > size) {
+            functions_.at(consumedFunctions_.back()).used = false;
+            consumedFunctions_.pop_back();
+        }
+    }
+    CandidateState BeginCandidates() const { return {consumedFunctions_.size(), failLine_, failReason_, {}}; }
+    void ResetCandidate(const CandidateState& state) {
+        RewindFunctions(state.used); failLine_ = state.line; failReason_ = state.reason;
+    }
+    void ChooseCandidate(CandidateState& state) {
+        state.chosen.assign(consumedFunctions_.begin() + static_cast<std::ptrdiff_t>(state.used), consumedFunctions_.end());
+    }
+    void FinishCandidates(const CandidateState& state) {
+        ResetCandidate(state);
+        for (const auto& name : state.chosen) { functions_.at(name).used = true; consumedFunctions_.push_back(name); }
     }
     static bool SameText(const Tokens& t, std::initializer_list<std::string_view> expected) {
         if (t.size() != expected.size()) return false;
@@ -311,6 +376,79 @@ private:
         for (std::size_t i = 0; i < script.size(); ++i) if (t[b + i].text != script[i].text) return false;
         return true;
     }
+    // 只缓存本次恢复持有的 const 函数库；不跨编辑修订、文档或函数库保留定义指针。
+    const DefinitionInfo& Definition(const UiDefinition& definition) {
+        const auto [found, added] = definitionInfo_.try_emplace(&definition);
+        if (added) {
+            found->second.slots = SlotTypes(definition);
+            found->second.returns = Unquote(Field(definition, "returns"));
+        }
+        return found->second;
+    }
+    const std::vector<Preset>& Presets(const std::string& type) {
+        const auto [found, added] = presets_.try_emplace(type);
+        if (!added) return found->second;
+        if (!presetDefinitionsReady_) {
+            // 仍按 Definitions 的稳定顺序分组。只记本次调用持有的定义，未用类型不分词。
+            for (const auto* definition : catalog_.Definitions(UiDefinitionKind::Define)) {
+                if (definition->group != "TriggerParams") continue;
+                const auto presetType = types_.PresetType(definition->name);
+                if (presetType) presetDefinitions_[*presetType].push_back(definition);
+            }
+            presetDefinitionsReady_ = true;
+        }
+        const auto definitions = presetDefinitions_.find(type);
+        if (definitions == presetDefinitions_.end()) return found->second;
+        for (const auto* definition : definitions->second) {
+            const auto value = Field(*definition, "value");
+            if (value.empty()) continue;
+            const auto parts = detail::SplitDefineValue(value);
+            if (parts.size() < 3 || parts[2].empty()) continue;
+            std::string script = parts[2];
+            std::replace(script.begin(), script.end(), '`', '"');
+            std::vector<Line> lines; std::size_t bad = 0;
+            if (!Lex(script, lines, bad) || lines.size() != 1) continue;
+            found->second.push_back({std::move(lines.front().tokens), definition->name});
+        }
+        return found->second;
+    }
+    const std::vector<const UiDefinition*>& OperatorDefinitions(bool comparison) {
+        auto& ready = comparison ? comparisonDefinitionsReady_ : binaryDefinitionsReady_;
+        auto& definitions = comparison ? comparisonDefinitions_ : binaryDefinitions_;
+        if (!ready) {
+            // Definitions 会扫描并排序全库，因此每种候选集合在一次恢复中只建立一次。
+            // 顺序和原逐次扫描一致，同分时仍保留原先的第一个候选。
+            for (const auto* definition : catalog_.Definitions(comparison ? UiDefinitionKind::Condition : UiDefinitionKind::Call)) {
+                const auto& slots = Definition(*definition).slots;
+                if (!slots) continue;
+                const bool candidate = comparison
+                    ? slots->size() == 3 && ((*slots)[1] == "ComparisonOperator" || (*slots)[1] == "EqualNotEqualOperator")
+                    : (slots->size() == 3 && (*slots)[1] == "ArithmeticOperator")
+                        || (definition->name == "OperatorString" && slots->size() == 2);
+                if (candidate) definitions.push_back(definition);
+            }
+            ready = true;
+        }
+        return definitions;
+    }
+    static const StoragePatterns& FrameworkPatterns() {
+        // 全部模式来自同一生产生成器的固定框架，无作者文本、UI 定义或修订相关状态。
+        static const auto patterns = [] {
+            const auto tokens = [](std::string_view text) {
+                std::vector<Line> lines; std::size_t bad = 0;
+                return Lex(text, lines, bad) && lines.size() == 1 ? std::move(lines.front().tokens) : Tokens{};
+            };
+            StoragePatterns result;
+            for (std::size_t i = 0; i < result.pages.size(); ++i) result.pages[i] = tokens(detail::LocalPage(static_cast<int>(i + 1)));
+            result.handles[0] = tokens(detail::HandlePage("ydl_timer"));
+            result.handles[1] = tokens(detail::HandlePage("ydl_trigger"));
+            for (const auto line : detail::LocalInitializeLines()) result.initialization.push_back(tokens(line));
+            result.reset = tokens(detail::LocalResetCall());
+            result.execute = tokens(detail::LocalExecuteTrigger("ydl_trigger"));
+            return result;
+        }();
+        return patterns;
+    }
     std::string BaseType(const std::string& type) const {
         const auto* info = types_.Find(type);
         return info && !info->baseType.empty() ? info->baseType : type;
@@ -320,11 +458,13 @@ private:
     // score 累加类型证据：类型完全一致 +2，可接受 +1，字面量 0；候选间取证据最多者。
     std::optional<PArg> Value(const Tokens& t, std::size_t b, std::size_t e, const std::string& slot, int& score, std::string_view raw) {
         if (b >= e) return std::nullopt;
-        if (slot == "boolexpr" || slot == "boolcall" || slot == "code" || slot == "eventcall") return std::nullopt;
-        if (slot == "scriptcode") { PArg arg; arg.value = std::string(raw); return arg; }
-        if (const auto found = presets_.find(slot); found != presets_.end())
-            for (const auto& preset : found->second)
-                if (SameTokens(t, b, e, preset.script)) { score += 2; PArg arg; arg.type = 0; arg.value = preset.name; return arg; }
+        if (depth_ >= 128) return Fail(t[b].line, "表达式或闭包嵌套超过 128 层解析预算。");
+        const DepthScope depth(depth_);
+        if (slot == "boolexpr" || slot == "boolcall" || slot == "code") return FunctionValue(t, b, e, slot);
+        if (slot == "eventcall") return std::nullopt;
+        if (slot == "scriptcode") { PArg arg; arg.value = raw.empty() ? Text(t, b, e) : std::string(raw); return arg; }
+        for (const auto& preset : Presets(slot))
+            if (SameTokens(t, b, e, preset.script)) { score += 2; PArg arg; arg.type = 0; arg.value = preset.name; return arg; }
         const auto kind = types_.LiteralKind(slot);
         using Literal = Trigger::TriggerTypeSystem::Literal;
         const auto literal = [&](std::string value) -> std::optional<PArg> {
@@ -336,17 +476,120 @@ private:
             if (token.kind == Tok::String && (kind == Literal::String || BaseType(slot) == "string" || slot == "StringExt"))
                 return literal(UnescapeJassString(token.text));
             if (token.kind == Tok::RawCode && kind == Literal::ObjectCode) return literal(token.text.substr(1, token.text.size() - 2));
-            if (token.kind == Tok::Number && (kind == Literal::Integer || kind == Literal::Real)) return literal(token.text);
+            if (token.kind == Tok::Number && (kind == Literal::Integer || kind == Literal::Real)) {
+                if (auto value = literal(token.text)) return value;
+                if (kind == Literal::Integer && (token.text.starts_with("0x") || token.text.starts_with('$'))) {
+                    const auto begin = token.text.data() + (token.text.front() == '$' ? 1 : 2);
+                    const auto end = token.text.data() + token.text.size();
+                    std::uint32_t integer = 0;
+                    const auto parsed = std::from_chars(begin, end, integer, 16);
+                    if (begin != end && parsed.ec == std::errc{} && parsed.ptr == end) return ScriptValue(t, b, e);
+                }
+                return std::nullopt;
+            }
             if (token.kind == Tok::Ident && (token.text == "true" || token.text == "false") && kind == Literal::Boolean) return literal(token.text);
         }
         if (e - b == 2 && Is(t, b, "-") && t[b + 1].kind == Tok::Number && (kind == Literal::Integer || kind == Literal::Real))
             return literal("-" + t[b + 1].text);
         if (t[b].kind == Tok::Ident) {
             if (auto variable = Variable(t, b, e, slot, score)) return variable;
-            if (Is(t, b + 1, "(") && Close(t, b + 1, e) == e - 1) return Call(t, b, e, slot, score);
+            if (inRange_ && slot == "unit" && e - b == 1 && Is(t, b, "ydl_unit")
+                && catalog_.Find(UiDefinitionKind::Call, "GetEnumUnit")) {
+                PEca call; call.type = 3; call.name = "GetEnumUnit";
+                PArg arg; arg.type = 2; arg.value = call.name; arg.call.push_back(std::move(call)); return arg;
+            }
+            if (e - b == 1 && Is(t, b, "null") && catalog_.Find(UiDefinitionKind::Call, "Null")) {
+                PEca call; call.type = 3; call.name = "Null";
+                PArg arg; arg.type = 2; arg.value = call.name; arg.call.push_back(std::move(call)); return arg;
+            }
+            if (e - b == 1 && t[b].text.starts_with("ydul_") && slot == "integer"
+                && catalog_.Find(UiDefinitionKind::Call, "YDWEForLoopLocVarIndex")) {
+                PEca call; call.type = 3; call.name = "YDWEForLoopLocVarIndex";
+                PArg name; name.value = t[b].text.substr(5); call.args.push_back(std::move(name));
+                PArg arg; arg.type = 2; arg.value = call.name; arg.call.push_back(std::move(call)); return arg;
+            }
+            if (Is(t, b + 1, "(") && Close(t, b + 1, e) == e - 1) {
+                if (auto call = Call(t, b, e, slot, score)) return call;
+            }
         }
-        if (Is(t, b, "(") && Close(t, b, e) == e - 1) return Binary(t, b, e, slot, score);
+        if (Is(t, b, "(") && Close(t, b, e) == e - 1)
+            if (auto binary = Binary(t, b, e, slot, score)) return binary;
+        // 生成器页表达式含不带括号的乘法，普通 T 算术会增加括号，不能逐词一致。
+        // 只允许已识别的框架符号 / 存储读取，显式保留表达式并计入部分恢复。
+        if (StorageExpression(t, b, e, slot)) return ScriptValue(t, b, e);
         return std::nullopt;
+    }
+
+    std::optional<PArg> FunctionValue(const Tokens& t, std::size_t b, std::size_t e, const std::string& slot) {
+        if (e - b == 1 && Is(t, b, "null") && catalog_.Find(UiDefinitionKind::Call, "Null")) {
+            PEca call; call.type = 3; call.name = "Null";
+            PArg arg; arg.type = 2; arg.value = call.name; arg.call.push_back(std::move(call)); return arg;
+        }
+        std::string name;
+        if (slot == "code" && e - b == 2 && Is(t, b, "function")) name = t[b + 1].text;
+        else if (slot == "boolcall" && e - b == 3 && Is(t, b + 1, "(") && Is(t, b + 2, ")")) name = t[b].text;
+        else if (slot == "boolexpr" && e - b == 5 && Is(t, b, "Condition") && Is(t, b + 1, "(")
+            && Is(t, b + 2, "function") && Is(t, b + 4, ")")) name = t[b + 3].text;
+        if (name.empty()) return std::nullopt;
+        const auto mark = consumedFunctions_.size();
+        auto* helper = Take(name);
+        if (!helper) return std::nullopt;
+        std::optional<PEca> child;
+        if (slot == "code" && !helper->returnsBoolean) {
+            std::vector<PEca> body;
+            if (Actions(helper->body, 0, helper->body.size(), body, std::nullopt) && body.size() == 1) child = std::move(body.front());
+        } else if (slot != "code" && helper->returnsBoolean && helper->body.size() == 1) {
+            const auto& expression = helper->body.front().tokens;
+            if (Is(expression, 0, "return") && Is(expression, 1, "(") && Close(expression, 1, expression.size()) == expression.size() - 1)
+                child = Condition(expression, 2, expression.size() - 1);
+        }
+        if (!child) { RewindFunctions(mark); return std::nullopt; }
+        PArg arg; arg.type = 2; arg.value = child->name; arg.call.push_back(std::move(*child)); return arg;
+    }
+
+    std::optional<PArg> ScriptValue(const Tokens& t, std::size_t b, std::size_t e) {
+        if (!catalog_.Find(UiDefinitionKind::Call, "YDWECustomScriptCode")) return std::nullopt;
+        PEca call; call.type = 3; call.name = "YDWECustomScriptCode";
+        PArg text; text.value = Text(t, b, e); call.args.push_back(std::move(text));
+        PArg arg; arg.type = 2; arg.value = call.name; arg.call.push_back(std::move(call)); return arg;
+    }
+    bool IntegerToken(const Token& token) const {
+        if (token.kind != Tok::Number) return false;
+        if (types_.ValidateLiteral("integer", token.text).Succeeded()) return true;
+        if (!token.text.starts_with("0x") && !token.text.starts_with('$')) return false;
+        const auto* begin = token.text.data() + (token.text.front() == '$' ? 1 : 2);
+        const auto* end = token.text.data() + token.text.size();
+        std::uint32_t value = 0;
+        const auto parsed = std::from_chars(begin, end, value, 16);
+        return begin != end && parsed.ec == std::errc{} && parsed.ptr == end;
+    }
+    bool StorageExpression(const Tokens& t, std::size_t b, std::size_t e, const std::string& slot) const {
+        if (slot == "hashtable" && e - b == 1 && (Is(t, b, "YDLOC") || Is(t, b, "YDHT"))) return true;
+        if (slot == "integer") {
+            for (const auto* variable : {"ydl_localvar_step", "ydl_triggerstep"}) if (e - b == 1 && Is(t, b, variable)) return true;
+            for (const auto& page : FrameworkPatterns().pages) if (SameTokens(t, b, e, page)) return true;
+            for (const auto& handle : FrameworkPatterns().handles) if (SameTokens(t, b, e, handle)) return true;
+            // 数组子键是编译期哈希 + (索引)。仅接受整数/全局整数/局部循环索引，
+            // 复杂下标要由常规函数/算术解析完成，不能任意吞掉表达式。
+            if (e - b == 5 && IntegerToken(t[b]) && Is(t, b + 1, "+") && Is(t, b + 2, "(") && Is(t, b + 4, ")")) {
+                if (IntegerToken(t[b + 3])) return true;
+                if (t[b + 3].kind == Tok::Ident && t[b + 3].text.starts_with("ydul_")) return true;
+                const auto found = variables_.find(t[b + 3].text.starts_with("udg_") ? t[b + 3].text.substr(4) : "");
+                return found != variables_.end() && found->second->typeName.text == "integer" && found->second->isArray == 0;
+            }
+        }
+        if ((slot == "timer" && e - b == 1 && Is(t, b, "ydl_timer"))
+            || (slot == "trigger" && e - b == 1 && Is(t, b, "ydl_trigger"))) return true;
+        if (e - b < 8 || !Is(t, b + 1, "(") || Close(t, b + 1, e) != e - 1) return false;
+        const auto natives = detail::StorageFor(slot, false);
+        if (!natives.known || t[b].text != natives.load) return false;
+        const auto args = SplitTop(t, b + 2, e - 1, ",");
+        // 仅此页读取无法结构化时保留。任意未识别的 Load 参数不能由这条路径吞掉。
+        if (args.size() != 3 || args[0].second - args[0].first != 1 || !Is(t, args[0].first, "YDLOC")) return false;
+        bool pageKnown = false;
+        for (const auto& page : FrameworkPatterns().pages) pageKnown |= SameTokens(t, args[1].first, args[1].second, page);
+        const auto [kb, ke] = args[2];
+        return pageKnown && ke - kb == 1 && IntegerToken(t[kb]);
     }
     // udg_ 变量（可带数组下标）或预生成的 gg_ 全局量。
     std::optional<PArg> Variable(const Tokens& t, std::size_t b, std::size_t e, const std::string& slot, int& score,
@@ -395,7 +638,7 @@ private:
     std::optional<PArg> Call(const Tokens& t, std::size_t b, std::size_t e, const std::string& slot, int& score) {
         const auto* definition = catalog_.Find(UiDefinitionKind::Call, t[b].text);
         if (!definition) return std::nullopt;
-        const auto returns = Unquote(Field(*definition, "returns"));
+        const auto& returns = Definition(*definition).returns;
         if (!types_.Accepts(slot, returns)) return std::nullopt;
         auto eca = Invocation(*definition, 3, t, b + 2, e - 1, score);
         if (!eca) return std::nullopt;
@@ -413,9 +656,12 @@ private:
             if (depth != 0 || token.kind != Tok::Op || i == b + 1 || std::string_view("+-*/").find(token.text) == std::string_view::npos
                 || token.text.size() != 1 || t[i - 1].kind == Tok::Op && t[i - 1].text != ")" && t[i - 1].text != "]") continue;
             std::optional<PArg> best; int bestScore = -1;
-            for (const auto* definition : catalog_.Definitions(UiDefinitionKind::Call)) {
-                const auto slots = SlotTypes(*definition);
-                const auto returns = Unquote(Field(*definition, "returns"));
+            auto candidates = BeginCandidates();
+            for (const auto* definition : OperatorDefinitions(false)) {
+                ResetCandidate(candidates);
+                const auto& info = Definition(*definition);
+                const auto& slots = info.slots;
+                const auto& returns = info.returns;
                 if (!slots || !types_.Accepts(slot, returns)) continue;
                 std::vector<std::pair<std::size_t, std::size_t>> spans;
                 if (slots->size() == 3 && (*slots)[1] == "ArithmeticOperator") spans = {{b + 1, i}, {i, i + 1}, {i + 1, e - 1}};
@@ -432,8 +678,10 @@ private:
                 if (ok && candidateScore > bestScore) {
                     PArg arg; arg.type = 2; arg.value = definition->name; arg.call.push_back(std::move(eca));
                     best = std::move(arg); bestScore = candidateScore;
+                    ChooseCandidate(candidates);
                 }
             }
+            FinishCandidates(candidates);
             if (best) { score += bestScore; return best; }
             return std::nullopt;
         }
@@ -442,7 +690,7 @@ private:
     // 定义的全部参数：逗号分隔，与参数槽一一对应。
     std::optional<PEca> Invocation(const UiDefinition& definition, std::int32_t type, const Tokens& t, std::size_t b, std::size_t e,
         int& score, const Line* line = nullptr) {
-        const auto slots = SlotTypes(definition);
+        const auto& slots = Definition(definition).slots;
         if (!slots) return std::nullopt;
         const auto spans = b == e ? std::vector<std::pair<std::size_t, std::size_t>>{} : SplitTop(t, b, e, ",");
         if (spans.size() != slots->size()) return std::nullopt;
@@ -462,11 +710,17 @@ private:
         std::size_t b, std::size_t e, const Line* line = nullptr) {
         if (!candidates) return std::nullopt;
         std::optional<PEca> best; int bestScore = -1;
+        auto state = BeginCandidates();
         for (const auto* definition : *candidates) {
+            ResetCandidate(state);
             int score = 0;
             auto eca = Invocation(*definition, type, t, b, e, score, line);
-            if (eca && score > bestScore) { best = std::move(eca); bestScore = score; }
+            if (eca && score > bestScore) {
+                best = std::move(eca); bestScore = score;
+                ChooseCandidate(state);
+            }
         }
+        FinishCandidates(state);
         return best;
     }
     template<class Map> static const std::vector<const UiDefinition*>* Lookup(const Map& map, const std::string& name) {
@@ -475,9 +729,10 @@ private:
     }
 
     // —— 事件、条件、动作 ——
-    std::optional<PEca> Event(const Tokens& t, std::size_t line) {
-        if (t.size() < 6 || !Is(t, 0, "call") || t[1].kind != Tok::Ident || !Is(t, 2, "(") || Close(t, 2, t.size()) != t.size() - 1
-            || !Is(t, 3, triggerVar_))
+    std::optional<PEca> Event(const Tokens& t, std::size_t line, std::string_view target = {}) {
+        if (target.empty()) target = triggerVar_;
+        if (t.size() < 5 || !Is(t, 0, "call") || t[1].kind != Tok::Ident || !Is(t, 2, "(") || Close(t, 2, t.size()) != t.size() - 1
+            || !Is(t, 3, target))
             return Fail(line, "无法识别为 T 事件注册。");
         const bool more = Is(t, 4, ",");
         if (!more && !Is(t, 4, ")")) return Fail(line, "无法识别为 T 事件注册。");
@@ -487,6 +742,8 @@ private:
     }
     std::optional<PEca> Condition(const Tokens& t, std::size_t b, std::size_t e) {
         if (b >= e) return std::nullopt;
+        if (depth_ >= 128) return Fail(t[b].line, "条件或闭包嵌套超过 128 层解析预算。");
+        const DepthScope nesting(depth_);
         if (Is(t, b, "(") && Close(t, b, e) == e - 1) {
             // (条件 and 条件) / (条件 or 条件)：多个条件；(true) / (false) 为空的“且 / 或”。
             for (const auto* junction : {"and", "or"}) {
@@ -515,19 +772,24 @@ private:
                 static constexpr std::string_view kComparisons[] = {"==", "!=", "<", ">", "<=", ">="};
                 if (std::find(std::begin(kComparisons), std::end(kComparisons), token.text) == std::end(kComparisons)) continue;
                 std::optional<PEca> best; int bestScore = -1;
-                for (const auto* definition : catalog_.Definitions(UiDefinitionKind::Condition)) {
-                    const auto slots = SlotTypes(*definition);
+                auto candidates = BeginCandidates();
+                for (const auto* definition : OperatorDefinitions(true)) {
+                    ResetCandidate(candidates);
+                    const auto& slots = Definition(*definition).slots;
                     if (!slots || slots->size() != 3 || ((*slots)[1] != "ComparisonOperator" && (*slots)[1] != "EqualNotEqualOperator")) continue;
                     // 比较式没有逗号，按运算符位置逐个取值。
                     PEca compare; compare.type = 1; compare.name = definition->name;
                     int score = 0;
                     auto left = Value(t, b + 1, i, (*slots)[0], score, {});
+                    if (!left) continue;
                     auto op = Value(t, i, i + 1, (*slots)[1], score, {});
+                    if (!op || op->type != 0) continue;
                     auto right = Value(t, i + 1, e - 1, (*slots)[2], score, {});
-                    if (!left || !op || !right || op->type != 0) continue;
+                    if (!right) continue;
                     compare.args = {std::move(*left), std::move(*op), std::move(*right)};
-                    if (score > bestScore) { best = std::move(compare); bestScore = score; }
+                    if (score > bestScore) { best = std::move(compare); bestScore = score; ChooseCandidate(candidates); }
                 }
+                FinishCandidates(candidates);
                 return best;
             }
             return std::nullopt;
@@ -542,12 +804,50 @@ private:
         return std::nullopt;
     }
     // 动作行 [b, e)；parent 非空时为块内子动作的分支号。
+    bool FunctionActions(const Function& function, std::vector<PEca>& out, std::optional<std::int32_t> block) {
+        auto body = function.body;
+        // 这些声明和句柄清理由生成器 LocalBegin/LocalEnd 根据恢复后的闭包/循环补回。
+        // 删除仅是提出候选，缺声明、多声明、错顺序均会被最终逐词核对拒绝。
+        body.erase(std::remove_if(body.begin(), body.end(), [](const Line& line) {
+            const auto& t = line.tokens;
+            if (t.size() == 3 && Is(t, 0, "local")) {
+                return (Is(t, 1, "timer") && Is(t, 2, "ydl_timer"))
+                    || (Is(t, 1, "trigger") && Is(t, 2, "ydl_trigger"))
+                    || (Is(t, 1, "group") && Is(t, 2, "ydl_group"))
+                    || (Is(t, 1, "unit") && Is(t, 2, "ydl_unit"))
+                    || (Is(t, 1, "integer") && (Is(t, 2, "ydl_triggerstep") || t[2].text.starts_with("ydul_")));
+            }
+            return false;
+        }), body.end());
+        while (!body.empty()) {
+            const auto& t = body.back().tokens;
+            if (t.size() == 4 && Is(t, 0, "set") && Is(t, 2, "=") && Is(t, 3, "null")
+                && (Is(t, 1, "ydl_timer") || Is(t, 1, "ydl_trigger") || Is(t, 1, "ydl_group") || Is(t, 1, "ydl_unit"))) body.pop_back();
+            else break;
+        }
+        return Actions(body, 0, body.size(), out, block);
+    }
+    std::optional<PEca> ScriptAction(const Line& line) {
+        if (!catalog_.Find(UiDefinitionKind::Action, "CustomScriptCode")) return std::nullopt;
+        PEca action; action.name = "CustomScriptCode";
+        PArg text; text.value = std::string(Trim(line.text)); action.args.push_back(std::move(text));
+        return action;
+    }
+    bool FrameworkLine(const Tokens& t) const {
+        for (const auto& line : FrameworkPatterns().initialization) if (SameTokens(t, 0, t.size(), line)) return true;
+        return SameTokens(t, 0, t.size(), FrameworkPatterns().reset);
+    }
     bool Actions(const std::vector<Line>& body, std::size_t b, std::size_t e, std::vector<PEca>& out, std::optional<std::int32_t> block) {
+        if (depth_ >= 128) return Fail(b < e ? body[b].number : 1, "动作或闭包嵌套超过 128 层解析预算。"), false;
+        const DepthScope depth(depth_);
         for (std::size_t i = b; i < e; ++i) {
             const auto& t = body[i].tokens;
             const auto line = body[i].number;
             std::optional<PEca> action;
-            if (t.size() == 1 && t.front().kind == Tok::Comment) {
+            if (FrameworkLine(t)) {
+                action = ScriptAction(body[i]);
+                if (!action) return Fail(line, "函数库缺少框架展开所需的自定义代码行。"), false;
+            } else if (t.size() == 1 && t.front().kind == Tok::Comment) {
                 if (!catalog_.Find(UiDefinitionKind::Action, "CommentString")) return Fail(line, "函数库中没有“注释”动作。"), false;
                 PEca comment; comment.name = "CommentString";
                 PArg text; text.value = t.front().text; comment.args.push_back(std::move(text));
@@ -572,10 +872,22 @@ private:
                 i = endLine;
             } else if (Is(t, 0, "set")) {
                 std::size_t consumed = 0;
-                if (!Assignment(body, i, e, action, consumed)) return false;
+                if (Is(t, 1, "ydl_timer") || Is(t, 1, "ydl_trigger")) {
+                    if (!Closure(body, i, e, action, consumed)) return false;
+                } else if (Is(t, 1, "ydl_group")) {
+                    if (!RangeEnumeration(body, i, e, action, consumed)) return false;
+                } else if (!Assignment(body, i, e, action, consumed)) return false;
                 i += consumed - 1;
             } else if (Is(t, 0, "call") && t.size() >= 4 && t[1].kind == Tok::Ident && Is(t, 2, "(") && Close(t, 2, t.size()) == t.size() - 1) {
-                action = CallAction(body[i]);
+                if (i + 1 < e && SameText(t, {"call", "FlushChildHashtable", "(", "YDLOC", ",", "GetHandleId", "(", "GetExpiredTimer", "(", ")", ")", ")"})
+                    && SameText(body[i + 1].tokens, {"call", "DestroyTimer", "(", "GetExpiredTimer", "(", ")", ")"})
+                    && catalog_.Find(UiDefinitionKind::Action, "YDWETimerStartFlush")) {
+                    PEca flush; flush.name = "YDWETimerStartFlush"; action = std::move(flush); ++i;
+                } else if (i + 1 < e && SameText(t, {"call", "FlushChildHashtable", "(", "YDLOC", ",", "GetHandleId", "(", "GetTriggeringTrigger", "(", ")", ")", ")"})
+                    && SameText(body[i + 1].tokens, {"call", "DestroyTrigger", "(", "GetTriggeringTrigger", "(", ")", ")"})
+                    && catalog_.Find(UiDefinitionKind::Action, "YDWERegisterTriggerFlush")) {
+                    PEca flush; flush.name = "YDWERegisterTriggerFlush"; action = std::move(flush); ++i;
+                } else action = CallAction(body[i]);
                 if (!action) return false;
             } else {
                 return Fail(line, "无法识别为 T 动作。"), false;
@@ -600,6 +912,22 @@ private:
     std::optional<PEca> CallAction(const Line& line) {
         const auto& t = line.tokens;
         const auto& name = t[1].text;
+        // 较新 YDTrigger 的句柄保存包装器用于 null 安全。函数名本身不在 UI 动作表中；
+        // 先按其确定的哈希表/页/键/值签名解析，再明确保留这一行，绝不改写成普通 Save*。
+        if (name.starts_with("YDTRIGGER_SET_")) {
+            const auto type = name.substr(std::string_view("YDTRIGGER_SET_").size());
+            const auto native = detail::StorageFor(type, true);
+            const auto spans = SplitTop(t, 3, t.size() - 1, ",");
+            if (native.known && native.save == name && spans.size() == 4
+                && spans[0].second - spans[0].first == 1 && (Is(t, spans[0].first, "YDLOC") || Is(t, spans[0].first, "YDHT"))) {
+                int score = 0;
+                const auto page = Value(t, spans[1].first, spans[1].second, "integer", score, {});
+                const auto key = Value(t, spans[2].first, spans[2].second, "integer", score, {});
+                const auto value = Value(t, spans[3].first, spans[3].second, type, score, {});
+                if (page && key && value) return ScriptAction(line);
+            }
+            return Fail(line.number, "YDTrigger 句柄保存包装器的表、页、键或值不完整。");
+        }
         // 遍历的“多个动作”：最后一个参数为 function <名>A，子动作在该函数里。
         static const std::unordered_map<std::string_view, std::string_view> kEnumerations = {
             {"ForGroupBJ", "ForGroupMultiple"}, {"ForForce", "ForForceMultiple"},
@@ -613,13 +941,119 @@ private:
             int score = 0;
             auto eca = Invocation(*definition, 2, t, 3, t.size() - 4, score, &line);
             if (!eca) return Fail(line.number, std::string(found->second) + " 的参数与函数库定义不符。");
-            if (!Actions(helper->body, 0, helper->body.size(), eca->children, 0)) return std::nullopt;
+            if (!FunctionActions(*helper, eca->children, 0)) return std::nullopt;
             return eca;
+        }
+        // “添加事件”把 eventcall 参数内联为实际注册，第一参数不一定是当前触发器。
+        if (events_.contains(name) && catalog_.Find(UiDefinitionKind::Action, "AddTriggerEvent")) {
+            const auto spans = SplitTop(t, 3, t.size() - 1, ",");
+            if (!spans.empty()) {
+                int score = 0;
+                auto target = Value(t, spans[0].first, spans[0].second, "trigger", score, {});
+                auto event = Best(Lookup(events_, name), 0, t, spans.size() == 1 ? t.size() - 1 : spans[1].first, t.size() - 1);
+                if (target && event) {
+                    PArg parameter; parameter.type = 2; parameter.value = event->name; parameter.call.push_back(std::move(*event));
+                    PEca add; add.name = "AddTriggerEvent"; add.args = {std::move(*target), std::move(parameter)}; return add;
+                }
+            }
         }
         auto action = Best(Lookup(actions_, name), 2, t, 3, t.size() - 1, &line);
         if (!action) return Fail(line.number, actions_.contains(name) ? name + " 的参数与函数库定义不符（或含函数 / 条件参数）。"
             : "函数库中没有脚本名为 " + name + " 的动作。");
         return action;
+    }
+
+    bool Closure(const std::vector<Line>& body, std::size_t i, std::size_t e, std::optional<PEca>& result, std::size_t& consumed) {
+        const auto& t = body[i].tokens;
+        const bool timer = Is(t, 1, "ydl_timer");
+        if (!Is(t, 2, "=")) return Fail(body[i].number, "闭包句柄赋值不完整。"), false;
+        std::size_t end = i + 1;
+        // 闭包边界只取同层 TimerStart / TriggerAddCondition / TriggerExecute；参数区不跨控制流。
+        for (; end < e; ++end) {
+            const auto& row = body[end].tokens;
+            if (timer && Is(row, 0, "call") && Is(row, 1, "TimerStart") && Is(row, 3, "ydl_timer")) break;
+            if (!timer && Is(row, 0, "call") && (Is(row, 1, "TriggerAddCondition") || Is(row, 1, "TriggerExecute"))
+                && Is(row, 3, "ydl_trigger")) break;
+            if (Is(row, 0, "if") || Is(row, 0, "loop") || (Is(row, 0, "set") && (Is(row, 1, "ydl_timer") || Is(row, 1, "ydl_trigger")))) break;
+        }
+        if (end >= e) return Fail(body[i].number, "无法找到闭包运行或注册调用。"), false;
+        const auto& call = body[end].tokens;
+        const bool executeConditional = !timer && SameText(call, {"if", "TriggerEvaluate", "(", "ydl_trigger", ")", "then"});
+        const bool execute = !timer && (Is(call, 1, "TriggerExecute") || executeConditional);
+        const std::string name = timer ? "YDWETimerStartMultiple" : execute ? "YDWEExecuteTriggerMultiple" : "YDWERegisterTriggerMultiple";
+        const auto* definition = catalog_.Find(UiDefinitionKind::Action, name);
+        if (!definition) return Fail(body[i].number, "函数库缺少 " + name + "。"), false;
+        int score = 0;
+        auto handle = Value(t, 3, t.size(), timer ? "timer" : "trigger", score, {});
+        if (!handle) return Fail(body[i].number, "闭包句柄不是可识别的 T 参数。"), false;
+        PEca closure; closure.name = name; closure.args.push_back(std::move(*handle));
+        if (timer) {
+            const auto spans = SplitTop(call, 3, call.size() - 1, ",");
+            const auto& slots = Definition(*definition).slots;
+            if (spans.size() != 4 || !slots || slots->size() != 3 || spans[3].second - spans[3].first != 2
+                || !Is(call, spans[3].first, "function")) return Fail(body[end].number, "计时器闭包参数不完整。"), false;
+            for (std::size_t n = 1; n < 3; ++n) {
+                auto value = Value(call, spans[n].first, spans[n].second, (*slots)[n], score, {});
+                if (!value) return Fail(body[end].number, "计时器闭包时间或模式无法识别。"), false;
+                closure.args.push_back(std::move(*value));
+            }
+            auto* helper = Take(call[spans[3].first + 1].text);
+            if (!helper || helper->returnsBoolean || !Actions(body, i + 1, end, closure.children, 0)
+                || !FunctionActions(*helper, closure.children, 1)) return Fail(body[end].number, "计时器闭包正文不能识别。"), false;
+        } else if (execute) {
+            if (i + 1 >= end || !SameTokens(body[i + 1].tokens, 0, body[i + 1].tokens.size(), FrameworkPatterns().execute))
+                return Fail(body[i].number, "运行触发器缺少局部变量页分配。"), false;
+            const auto& slots = Definition(*definition).slots;
+            if (executeConditional && (end <= i + 2 || end + 2 >= e || !SameText(body[end - 1].tokens, {"call", "DoNothing", "(", ")"})
+                || !SameText(body[end + 1].tokens, {"call", "TriggerExecute", "(", "ydl_trigger", ")"})
+                || !SameText(body[end + 2].tokens, {"endif"}))) return Fail(body[end].number, "运行触发器的条件检查形状不符。"), false;
+            std::vector<Line> booleanLines; std::size_t bad = 0; Lex(executeConditional ? "true" : "false", booleanLines, bad);
+            auto check = slots && slots->size() == 2 ? Value(booleanLines[0].tokens, 0, 1, (*slots)[1], score, {}) : std::nullopt;
+            if (!check) return Fail(body[end].number, "运行触发器的检查条件模式与函数库不一致。"), false;
+            if (!Actions(body, i + 2, executeConditional ? end - 1 : end, closure.children, 0)) return false;
+            closure.args.push_back(std::move(*check));
+        } else {
+            if (call.size() != 11 || !SameText(call, {"call", "TriggerAddCondition", "(", "ydl_trigger", ",", "Condition", "(", "function", call[8].text, ")", ")"}))
+                return Fail(body[end].number, "触发器闭包注册形状不符。"), false;
+            auto* helper = Take(call[8].text);
+            if (!helper || helper->returnsBoolean) return Fail(body[end].number, "触发器闭包正文不存在。"), false;
+            std::size_t eventStart = i + 1;
+            while (eventStart < end && !(body[eventStart].tokens.size() > 1 && Is(body[eventStart].tokens, 0, "call")
+                && events_.contains(body[eventStart].tokens[1].text))) ++eventStart;
+            if (!Actions(body, i + 1, eventStart, closure.children, 1)) return false;
+            for (std::size_t row = eventStart; row < end; ++row) {
+                auto event = Event(body[row].tokens, body[row].number, "ydl_trigger");
+                if (!event) return false;
+                event->childId = 0; closure.children.push_back(std::move(*event));
+            }
+            if (!FunctionActions(*helper, closure.children, 2)) return false;
+        }
+        consumed = end - i + (executeConditional ? 3 : 1); result = std::move(closure); return true;
+    }
+
+    bool RangeEnumeration(const std::vector<Line>& body, std::size_t i, std::size_t e, std::optional<PEca>& result, std::size_t& consumed) {
+        if (i + 6 >= e || !SameText(body[i].tokens, {"set", "ydl_group", "=", "CreateGroup", "(", ")"})
+            || !Is(body[i + 1].tokens, 1, "GroupEnumUnitsInRange") || !SameText(body[i + 2].tokens, {"loop"})
+            || !SameText(body[i + 3].tokens, {"set", "ydl_unit", "=", "FirstOfGroup", "(", "ydl_group", ")"})
+            || !SameText(body[i + 4].tokens, {"exitwhen", "ydl_unit", "==", "null"})
+            || !SameText(body[i + 5].tokens, {"call", "GroupRemoveUnit", "(", "ydl_group", ",", "ydl_unit", ")"}))
+            return Fail(body[i].number, "圆形范围遍历的框架代码不完整。"), false;
+        std::size_t end = e;
+        if (!Block(body, i + 2, e, "loop", "endloop", nullptr, end) || end + 1 >= e
+            || !SameText(body[end + 1].tokens, {"call", "DestroyGroup", "(", "ydl_group", ")"}))
+            return Fail(body[i].number, "圆形范围遍历缺少清理。"), false;
+        const auto* definition = catalog_.Find(UiDefinitionKind::Action, "YDWEEnumUnitsInRangeMultiple");
+        const auto& call = body[i + 1].tokens;
+        const auto spans = SplitTop(call, 3, call.size() - 1, ",");
+        if (!definition || spans.size() != 5 || !Is(call, spans.back().first, "null"))
+            return Fail(body[i + 1].number, "圆形范围遍历的范围参数或过滤器无法识别。"), false;
+        int score = 0;
+        auto enumeration = Invocation(*definition, 2, call, spans[1].first, spans[3].second, score);
+        if (!enumeration) return Fail(body[i + 1].number, "圆形范围遍历的坐标或半径无法识别。"), false;
+        const auto saved = inRange_; inRange_ = true;
+        const auto valid = Actions(body, i + 6, end, enumeration->children, 0); inRange_ = saved;
+        if (!valid) return false;
+        result = std::move(enumeration); consumed = end - i + 2; return true;
     }
     // set 行：普通赋值，或 A/B/整数变量循环的开头。consumed 为用掉的行数。
     bool Assignment(const std::vector<Line>& body, std::size_t i, std::size_t e, std::optional<PEca>& action, std::size_t& consumed) {
@@ -667,11 +1101,13 @@ private:
             if (last.size() != 2 * lhs.size() + 4 || !SameTokens(last, 1, 1 + lhs.size(), lhs) || !Is(last, 1 + lhs.size(), "=")
                 || !SameTokens(last, 2 + lhs.size(), 2 + 2 * lhs.size(), lhs) || !Is(last, 2 + 2 * lhs.size(), "+") || !Is(last, 3 + 2 * lhs.size(), "1"))
                 return Fail(line, "整数变量循环缺少 T 写法的递增。"), false;
-            const auto* definition = catalog_.Find(UiDefinitionKind::Action, "ForLoopVarMultiple");
+            const bool local = target.starts_with("ydul_") && equals == 2;
+            const auto* definition = catalog_.Find(UiDefinitionKind::Action, local ? "YDWEForLoopLocVarMultiple" : "ForLoopVarMultiple");
             const auto slots = definition ? SlotTypes(*definition) : std::nullopt;
             if (!slots || slots->size() != 3) return Fail(line, "函数库中没有整数变量循环动作。"), false;
             int score = 0;
             auto variable = Variable(t, 1, equals, "integer", score);
+            if (local) { PArg name; name.value = target.substr(5); variable = std::move(name); }
             auto from = Value(t, equals + 1, t.size(), (*slots)[1], score, {});
             auto to = Value(exit, 2 + lhs.size(), exit.size(), (*slots)[2], score, {});
             if (!variable || !from || !to) return Fail(line, "整数变量循环的变量、起点或终点无法识别。"), false;
@@ -718,9 +1154,17 @@ private:
     const Trigger::TriggerRecord& record_;
     std::string prefix_, triggerVar_, init_;
     std::unordered_map<std::string, std::vector<const UiDefinition*>> events_, conditions_, actions_;
+    std::unordered_map<const UiDefinition*, DefinitionInfo> definitionInfo_;
+    std::vector<const UiDefinition*> binaryDefinitions_, comparisonDefinitions_;
+    bool binaryDefinitionsReady_ = false, comparisonDefinitionsReady_ = false;
+    std::unordered_map<std::string, std::vector<const UiDefinition*>> presetDefinitions_;
+    bool presetDefinitionsReady_ = false;
     std::unordered_map<std::string, std::vector<Preset>> presets_;
     std::unordered_map<std::string, const Trigger::VariableRecord*> variables_;
     std::unordered_map<std::string, Function> functions_;
+    std::vector<std::string> consumedFunctions_;
+    std::size_t depth_ = 0;
+    bool inRange_ = false;
     std::size_t failLine_ = 0;
     std::string failReason_;
 };
@@ -772,11 +1216,16 @@ Status Mismatch(std::size_t line, std::string reason) {
 
 // 候选回生成并与正文核对；一致才算可转回。
 Status Verify(const MapScriptInputs& inputs, const Trigger::TriggerRecord& record, const Trigger::GuiTriggerFragment& fragment,
-    std::string_view text) {
-    auto probe = Trigger::TriggerCodeEditor::RecoveryProbe(*inputs.triggers, *inputs.catalog, record.id, fragment);
+    std::string_view text, GuiTriggerRecoveryProfile* profile, const Trigger::TriggerTypeSystem* sharedTypes = nullptr) {
+    auto probe = RecoveryPhase(profile, GuiTriggerRecoveryProfile::Phase::Probe, [&] {
+        return Trigger::TriggerCodeEditor::RecoveryProbe(*inputs.triggers, *inputs.catalog, record.id, fragment);
+    });
     if (!probe.Succeeded() || !probe.value) return {std::move(probe.diagnostics)};
     auto probeInputs = inputs; probeInputs.triggers = &*probe.value;
-    auto generated = GenerateGuiTriggerSource(probeInputs, record.id);
+    auto generated = RecoveryPhase(profile, GuiTriggerRecoveryProfile::Phase::Generate, [&] {
+        if (sharedTypes) return detail::GenerateGuiTriggerSourceWithTypes(probeInputs, record.id, *sharedTypes);
+        return GenerateGuiTriggerSource(probeInputs, record.id);
+    });
     if (!generated.Succeeded() || !generated.value) return {std::move(generated.diagnostics)};
     for (const auto& diagnostic : generated.diagnostics)
         if (diagnostic.severity == DiagnosticSeverity::Warning)
@@ -784,14 +1233,18 @@ Status Verify(const MapScriptInputs& inputs, const Trigger::TriggerRecord& recor
     if (generated.value->effectiveRunOnInit != (record.runOnInit != 0))
         return Status::Failure("Script.Trigger", "CODE_RECOVERY_INIT", "“地图初始化时运行”与转回后的事件不一致。");
     std::string expected;
-    if (const auto line = FirstMismatch(text, generated.value->text, expected); line != 0)
+    const auto line = RecoveryPhase(profile, GuiTriggerRecoveryProfile::Phase::Compare, [&] {
+        return FirstMismatch(text, generated.value->text, expected);
+    });
+    if (line != 0)
         return Mismatch(line, "与按 T 重新生成的代码不一致（此处应为“" + expected + "”）。");
     return Status::Ok();
 }
 } // namespace
 
 Result<GuiTriggerRecovery> RecoverGuiTrigger(const MapScriptInputs& inputs, StableId triggerId,
-    const Trigger::GuiTriggerFragment* snapshot) {
+    const Trigger::GuiTriggerFragment* snapshot, GuiTriggerRecoveryProfile* profile) {
+    if (profile) *profile = {};
     try {
         if (!inputs.triggers || !inputs.catalog)
             return Result<GuiTriggerRecovery>::Failure("Script.Trigger", "CODE_RECOVERY_CONTEXT", "转回缺少当前触发器文档或函数库。");
@@ -803,20 +1256,30 @@ Result<GuiTriggerRecovery> RecoverGuiTrigger(const MapScriptInputs& inputs, Stab
         }
         if (!record || record->type != 0 || record->customTextFlag != 1 || !record->ecas.empty())
             return Result<GuiTriggerRecovery>::Failure("Script.Trigger", "CODE_RECOVERY_CUSTOM_REQUIRED", "只能把自定义代码触发器转回 T。");
-        const auto text = Trigger::TriggerCodeEditor::NormalizedText(record->customText);
+        const auto text = RecoveryPhase(profile, GuiTriggerRecoveryProfile::Phase::Normalize, [&] {
+            return Trigger::TriggerCodeEditor::NormalizedText(record->customText);
+        });
         // 转换前快照：正文没改、引用的变量和函数库也没变时，回生成与正文一致，原样恢复（含禁用行与注释）。
         if (snapshot) {
             auto exact = *snapshot; exact.runOnInit = snapshot->runOnInit;
-            if (Verify(inputs, *record, exact, text).Succeeded()) {
+            if (Verify(inputs, *record, exact, text, profile).Succeeded()) {
                 GuiTriggerRecovery recovery; recovery.fragment = std::move(exact); recovery.fromSnapshot = true;
                 return Result<GuiTriggerRecovery>::Success(std::move(recovery));
             }
         }
-        Parser parser(*inputs.triggers, *inputs.catalog, *record);
-        auto fragment = parser.Parse(text);
+        auto parser = RecoveryPhase(profile, GuiTriggerRecoveryProfile::Phase::Catalog, [&] {
+            return Parser(*inputs.triggers, *inputs.catalog, *record);
+        });
+        auto fragment = RecoveryPhase(profile, GuiTriggerRecoveryProfile::Phase::Parse, [&] { return parser.Parse(text); });
+        if (profile) profile->parserProducedCandidate = fragment.has_value();
         if (!fragment) return {std::nullopt, Mismatch(parser.FailLine(), parser.FailReason()).diagnostics};
-        if (auto verified = Verify(inputs, *record, *fragment, text); !verified.Succeeded()) return {std::nullopt, std::move(verified.diagnostics)};
+        if (auto verified = Verify(inputs, *record, *fragment, text, profile, &parser.Types()); !verified.Succeeded())
+            return {std::nullopt, std::move(verified.diagnostics)};
         GuiTriggerRecovery recovery; recovery.fragment = std::move(*fragment);
+        for (const auto& eca : recovery.fragment.ecas) {
+            if (eca.name.text == "CustomScriptCode") ++recovery.preservedCodeLines;
+            if (eca.name.text == "YDWECustomScriptCode") ++recovery.preservedCodeExpressions;
+        }
         return Result<GuiTriggerRecovery>::Success(std::move(recovery));
     } catch (const std::exception& error) {
         return Result<GuiTriggerRecovery>::Failure("Script.Trigger", "CODE_RECOVERY_FAILED", error.what());

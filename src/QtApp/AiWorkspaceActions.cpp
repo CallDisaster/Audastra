@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "CampaignModule.h"
 #include "LiveEditorTools.h"
 #include "AgentController.h"
 #include "AgentSettingsDialog.h"
@@ -6,6 +7,7 @@
 #include "ApplicationSettingsTransfer.h"
 #include "ApplicationSettingsCommit.h"
 #include "MapTestSettingsPage.h"
+#include "MapSavePreferences.h"
 #include "LegacyMapBackupCheck.h"
 #include "RecoverySettingsPage.h"
 #include "WorldEffectsSettingsPage.h"
@@ -233,6 +235,21 @@ void MainWindow::SetupAgentWorkspace(bool readUserConfiguration) {
     // 离屏宿主测试显式用空配置；不接触作者设置、凭据、端口或站点。
     if (readUserConfiguration) state->settings = state->store.Load(&loadError);
     state->tools = std::make_unique<War3Map::QtApp::LiveEditorTools>(*project_);
+    state->tools->Server().SetCampaign(campaignModule_->Session());
+    state->tools->Server().SetCampaignBackupOptionsProvider([] {
+        return War3Map::QtProject::ReadMapInPlaceSaveOptions();
+    });
+    state->tools->Server().SetCampaignCallbacks(
+        [this] { return !project_->savingMap_ && !campaignModule_->HasModalOperation()
+            && !campaignModule_->HasDraft() && !campaignModule_->HasUncommittedChapter(); },
+        [this, state] {
+            const auto session = state->tools->Server().Campaign();
+            if (campaignModule_->Session() != session) campaignModule_->SetSession(session);
+            else { campaignModule_->RefreshFromService(); UpdateExportAvailability(); UpdateWindowTitle(); }
+        });
+    connect(campaignModule_, &War3Map::Modules::CampaignModule::SessionChanged, state, [this, state] {
+        state->tools->Server().SetCampaign(campaignModule_->Session());
+    });
     const QPointer<MainWindow> searchWindow(this);
     state->tools->SetProjectSearchQuery(
         [searchWindow]() { return searchWindow ? searchWindow->CommandContextRevision() : std::string{}; },

@@ -29,6 +29,13 @@ target_compile_options(war3-map-mcp-object-reference-tests PRIVATE /W4 /permissi
 add_test(NAME mcp-map-object-references COMMAND war3-map-mcp-object-reference-tests)
 
 if(TARGET War3MapMcpProtocol)
+    add_executable(war3-map-mcp-campaign-tests McpCampaignTests.cpp)
+    target_link_libraries(war3-map-mcp-campaign-tests PRIVATE War3MapEditor::McpProtocol)
+    target_compile_definitions(war3-map-mcp-campaign-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+    target_compile_options(war3-map-mcp-campaign-tests PRIVATE /W4 /permissive- /utf-8)
+    add_test(NAME mcp-campaign COMMAND war3-map-mcp-campaign-tests)
+    set_tests_properties(mcp-campaign PROPERTIES TIMEOUT 120
+        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
     add_executable(war3-map-mcp-product-tools-tests McpProductToolsTests.cpp)
     target_link_libraries(war3-map-mcp-product-tools-tests PRIVATE War3MapEditor::McpProtocol)
     target_compile_definitions(war3-map-mcp-product-tools-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
