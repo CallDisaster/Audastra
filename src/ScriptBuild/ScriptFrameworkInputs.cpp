@@ -94,6 +94,25 @@ ScriptProfileEncoding EncodingForRoots(const std::vector<ScriptProfileSourceRoot
     }
     return selected ? selected->encoding : fallback;
 }
+// 两种编码下分词完全相同，且每个非 ASCII 字节都落在注释（不在任何记号内）、字符串或 rawcode 记号中。
+bool NonAsciiOnlyOpaque(std::string_view original) {
+    const auto utf = Jass::detail::LexPp(original, Text::SourceEncoding::Utf8);
+    const auto gbk = Jass::detail::LexPp(original, Text::SourceEncoding::Gbk);
+    if (!utf.Succeeded() || !gbk.Succeeded() || utf.value->size() != gbk.value->size()) return false;
+    const auto& tokens = *utf.value;
+    for (std::size_t index = 0; index < tokens.size(); ++index) {
+        const auto& a = tokens[index]; const auto& b = (*gbk.value)[index];
+        if (a.offset != b.offset || a.End() != b.End() || a.kind != b.kind) return false;
+    }
+    std::size_t index = 0;
+    for (std::uint32_t at = 0; at < original.size(); ++at) {
+        if (static_cast<unsigned char>(original[at]) < 0x80) continue;
+        while (index < tokens.size() && tokens[index].End() <= at) ++index;
+        if (index < tokens.size() && tokens[index].offset <= at && tokens[index].kind != Jass::detail::PpKind::String
+            && tokens[index].kind != Jass::detail::PpKind::Char) return false;
+    }
+    return true;
+}
 ScriptProfileEncoding EncodingFor(const ScriptFrameworkInputs& inputs, const std::filesystem::path& path) {
     return EncodingForRoots(inputs.profile.sourceRoots, inputs.profile.mainEncoding, path);
 }
@@ -134,6 +153,16 @@ Result<Jass::SourceLexicalView> MakeFrameworkLexicalView(std::string_view origin
     if (declaration == ScriptProfileEncoding::UniqueUtf8OrGbk) {
         const auto utf = validate(Text::SourceEncoding::Utf8), gbk = validate(Text::SourceEncoding::Gbk);
         const auto first = std::find_if(original.begin(), original.end(), [](unsigned char c) { return c >= 0x80; });
+        if (utf.Succeeded() && gbk.Succeeded() && first != original.end() && NonAsciiOnlyOpaque(original)) {
+            // 两种读法都合法，但分词一致且中文只在注释、字符串、rawcode 里：编码选择不改变代码含义。
+            // 按原字节保留（UTF-8 视图不改写文本），只提示；中文出现在标识符等代码里时仍须显式声明编码。
+            Jass::SourceLexicalView view; view.text = original;
+            auto result = R::Success(std::move(view));
+            result.diagnostics.push_back({DiagnosticSeverity::Info, "Script.Framework", "SCRIPT_FRAMEWORK_SOURCE_ENCODING_OPAQUE",
+                "该来源按 UTF-8 和 GBK 都能读通，中文只出现在注释、字符串或 rawcode 中，不影响代码含义；已按原字节保留。",
+                OriginSpan{source}});
+            return result;
+        }
         if (utf.Succeeded() && gbk.Succeeded() && first != original.end()) {
             const auto offset = static_cast<std::size_t>(first - original.begin());
             const auto scalar = Text::ReadSourceScalar(original, static_cast<std::uint32_t>(offset), Text::SourceEncoding::Utf8);

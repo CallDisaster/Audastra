@@ -1066,12 +1066,17 @@ void TestFrameworkPipeline(const std::filesystem::path& root) {
         "JASS hexadecimal expressions are distinct from line-start dollar directives");
     Require(ValidateFrameworkSourceEncoding("// \xd6\xd0\n", map / "gbk.j", ScriptProfileEncoding::Gbk).Succeeded(),
         "declared GBK comments retain original bytes through a verified lexical-only view");
-    const auto ambiguous = MakeFrameworkLexicalView("// \xe4\xb8\xad\xe6\x96\x87\n", map / "ambiguous.j", ScriptProfileEncoding::UniqueUtf8OrGbk);
+    // 中文只在注释/字符串里时编码选择不影响代码含义：原字节保留并提示；出现在标识符里仍须显式声明。
+    const auto opaqueOnly = MakeFrameworkLexicalView("// \xe4\xb8\xad\xe6\x96\x87\nset s = \"\xe4\xb8\xad\xe6\x96\x87\"\n", map / "comment.j", ScriptProfileEncoding::UniqueUtf8OrGbk);
+    Require(opaqueOnly.Succeeded() && opaqueOnly.value->text == "// \xe4\xb8\xad\xe6\x96\x87\nset s = \"\xe4\xb8\xad\xe6\x96\x87\"\n" && opaqueOnly.value->opaque.empty() &&
+        HasCode(opaqueOnly.diagnostics, "SCRIPT_FRAMEWORK_SOURCE_ENCODING_OPAQUE"),
+        "ambiguous bytes only in comments and strings keep original bytes with an info note");
+    const auto ambiguous = MakeFrameworkLexicalView("function \xe4\xb8\xad\xe6\x96\x87 takes nothing returns nothing\n", map / "ambiguous.j", ScriptProfileEncoding::UniqueUtf8OrGbk);
     Require(!ambiguous.Succeeded() && HasCode(ambiguous.diagnostics, "SCRIPT_FRAMEWORK_SOURCE_ENCODING_AMBIGUOUS") &&
         ambiguous.diagnostics.front().origin && ambiguous.diagnostics.front().origin->source == map / "ambiguous.j" &&
-        ambiguous.diagnostics.front().origin->offset == 3 && ambiguous.diagnostics.front().origin->length == 3 &&
+        ambiguous.diagnostics.front().origin->offset == 9 && ambiguous.diagnostics.front().origin->length == 3 &&
         ambiguous.diagnostics.front().message.find("ambiguous.j:1") != std::string::npos &&
-        ambiguous.diagnostics.front().message.find("原字节偏移 3") != std::string::npos,
+        ambiguous.diagnostics.front().message.find("原字节偏移 9") != std::string::npos,
         "an ambiguous encoding retains the actual source and first original scalar location in every host's message");
     auto explicitEncoding = *profile.value; explicitEncoding.sourceEncodings.push_back({map / "ambiguous.j", ScriptProfileEncoding::Utf8});
     const auto explicitCaptured = CaptureScriptFrameworkInputs(explicitEncoding, *layout.value, *catalog.value);

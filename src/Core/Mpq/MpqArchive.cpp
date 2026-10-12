@@ -924,6 +924,8 @@ Result<std::vector<MpqStrictFileInfo>> MpqArchive::ListFilesValidated(bool allow
         }
     }
     std::set<std::string> canonicalNames;
+    std::size_t duplicateNames = 0;
+    std::string firstDuplicate;
     std::map<std::uint32_t, std::string> blockNames;
     std::vector<MpqStrictFileInfo> result;
     result.reserve(names.size());
@@ -936,9 +938,9 @@ Result<std::vector<MpqStrictFileInfo>> MpqArchive::ListFilesValidated(bool allow
             return failure;
         }
         if (!canonicalNames.insert(*canonical.value).second) {
-            return Result<std::vector<MpqStrictFileInfo>>::Failure(
-                "Mpq", "LISTFILE_NAME_DUPLICATE",
-                "(listfile) contains a duplicate case/slash canonical name: " + name);
+            // 名字哈希不分大小写、正反斜杠，规范名相同必然指向同一成员；重复行只是清单冗余，保留首次写法。
+            if (duplicateNames++ == 0) firstDuplicate = name;
+            continue;
         }
 
         const std::uint32_t n1 = crypt.HashString(name, MpqCrypt::HashType::NameA);
@@ -1009,7 +1011,13 @@ Result<std::vector<MpqStrictFileInfo>> MpqArchive::ListFilesValidated(bool allow
             "Mpq", "ANONYMOUS_BLOCK_REJECTED",
             "(listfile) does not uniquely name every existing block");
     }
-    return Result<std::vector<MpqStrictFileInfo>>::Success(std::move(result));
+    auto success = Result<std::vector<MpqStrictFileInfo>>::Success(std::move(result));
+    if (duplicateNames > 0) {
+        success.diagnostics.push_back({DiagnosticSeverity::Warning, "Mpq", "LISTFILE_NAME_DUPLICATE",
+            "地图文件清单 (listfile) 中有 " + std::to_string(duplicateNames) + " 行与前面的名字重复（不分大小写和斜杠方向），"
+            "它们指向同一个文件；已按首次出现的写法处理，保存时清单不再重复。首个重复：" + firstDuplicate, {}});
+    }
+    return success;
 }
 
 Result<std::vector<std::uint32_t>> MpqArchive::PrepareOpaquePreservingPatchInputs(

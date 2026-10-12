@@ -1362,8 +1362,10 @@ void TestStrictCanonicalListfileCollision() {
     Require(opened.Succeeded() && opened.value.has_value(),
             "canonical-collision archive should open before strict inventory");
     const auto strict = opened.value->ListFilesStrict();
-    Require(!strict.Succeeded() && HasDiagnostic(strict.diagnostics, "LISTFILE_NAME_DUPLICATE"),
-            "case-only duplicate listfile names must fail strict canonical inventory");
+    // 重复行本身只是冗余；这里失败的根因是 bravo.bin 没有任何名字，仍不准入严格清单。
+    Require(!strict.Succeeded() && HasDiagnostic(strict.diagnostics, "ANONYMOUS_BLOCK_REJECTED")
+                && !HasDiagnostic(strict.diagnostics, "LISTFILE_NAME_DUPLICATE"),
+            "a case-only duplicate that leaves another block unnamed still fails as anonymous block: " + DiagnosticsText(strict.diagnostics));
     opened.value.reset();
     std::filesystem::rename(archivePath, temp.Path() / "war3patch.mpq");
     auto game = War3Map::Game::GameDataSource::Mount(temp.Path());
@@ -1374,6 +1376,35 @@ void TestStrictCanonicalListfileCollision() {
     Require(HasDiagnostic(inventory.diagnostics, "GAME_LISTFILE_NAME_CONFLICT"),
             "game catalog must report canonical listfile conflicts");
     Require(inventory.value->empty(), "ambiguous game names must not be offered as resources");
+}
+
+void TestStrictListfileRedundantDuplicate() {
+    // 原创两成员归档，把清单原地改成 "a\nA\nb\n"：名字哈希不分大小写，重复行指向同一成员，
+    // 每个块仍有名字，严格清单应成功、按首次写法保留并给出警告。
+    TempDirectory temp;
+    const auto archivePath = temp.Path() / "redundant-listfile.w3x";
+    const std::vector<War3Map::Mpq::MpqBuildFile> files{{"a", TextBytes("alpha"), false}, {"b", TextBytes("bravo"), false}};
+    Require(War3Map::Mpq::WriteMpqArchive(archivePath, files).Succeeded(), "redundant listfile fixture must be written");
+    auto image = ReadAll(archivePath);
+    const auto tables = ReadMutableTables(image);
+    constexpr std::size_t kListfileBlock = 2;
+    const std::uint32_t listfilePos = GetU32(tables.block, kListfileBlock * 16);
+    const std::string original = "a\r\nb\r\n", replacement = "a\nA\nb\n";
+    Require(GetU32(tables.block, kListfileBlock * 16 + 4) == original.size() + 8
+                && std::memcmp(image.data() + tables.archiveBase + listfilePos + 8, original.data(), original.size()) == 0,
+            "small synthetic listfile must be one raw sector with the expected names");
+    std::memcpy(image.data() + tables.archiveBase + listfilePos + 8, replacement.data(), replacement.size());
+    WriteAll(archivePath, image);
+
+    auto opened = MpqArchive::OpenReadOnly(archivePath);
+    Require(opened.Succeeded() && opened.value.has_value(), "redundant listfile archive opens");
+    const auto strict = opened.value->ListFilesStrict();
+    Require(strict.Succeeded() && strict.value && HasDiagnostic(strict.diagnostics, "LISTFILE_NAME_DUPLICATE"),
+            "redundant duplicate is a warning, not a failure: " + DiagnosticsText(strict.diagnostics));
+    std::vector<std::string> names;
+    for (const auto& file : *strict.value) names.push_back(file.name);
+    std::sort(names.begin(), names.end());
+    Require(names == std::vector<std::string>{"(listfile)", "a", "b"}, "each member listed once with its first spelling");
 }
 
 void TestBoundedArchiveReads() {
@@ -1969,6 +2000,7 @@ int main() {
         TestStrictListfileListsItself();
         TestStrictStaleListfileName();
         TestStrictCanonicalListfileCollision();
+        TestStrictListfileRedundantDuplicate();
         TestBoundedArchiveReads();
         TestEmptySectorChecksumLayout();
         TestGameBoundedReadPriority();
