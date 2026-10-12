@@ -2,6 +2,7 @@
 #include "War3MapCore/Resources/ImportTable.h"
 
 #include <algorithm>
+#include <array>
 
 namespace War3Map::Services {
 using namespace ObjectResourceDetail;
@@ -61,6 +62,20 @@ Result<std::shared_ptr<const ObjectResourceCatalog>> ObjectResourceDetail::Build
     return Return::Success(std::move(catalog_));
 }
 
+namespace {
+// 原版 WE 的图标选择只列命令按钮与被动按钮目录；游戏包里的其他贴图不是图标。
+constexpr std::array<std::string_view, 2> kGameIconDirectories{"replaceabletextures/commandbuttons", "replaceabletextures/passivebuttons"};
+bool GameIconRow(const ObjectResourceCandidate& row) {
+    const auto path = Text::LowerAscii(Slash(row.value));
+    if (row.directory) return std::any_of(kGameIconDirectories.begin(), kGameIconDirectories.end(), [&](std::string_view icon) {
+        return icon == path || (icon.starts_with(path) && icon.size() > path.size() && icon[path.size()] == '/');
+    });
+    const auto slash = path.rfind('/');
+    const auto parent = slash == std::string::npos ? std::string_view{} : std::string_view(path).substr(0, slash);
+    return std::find(kGameIconDirectories.begin(), kGameIconDirectories.end(), parent) != kGameIconDirectories.end();
+}
+} // namespace
+
 Result<ObjectResourcePage> QueryObjectResources(const ObjectResourceCatalog& catalog,
     const ObjectResourceQuery& query, const std::optional<ObjectResourceCursor>& cursor) {
     using Return = Result<ObjectResourcePage>;
@@ -97,6 +112,7 @@ Result<ObjectResourcePage> QueryObjectResources(const ObjectResourceCatalog& cat
         const bool compatibleImage = catalog.origin != ObjectResourceOrigin::Object
             && query.kind == ObjectResourceKind::Icon && row.kind == ObjectResourceKind::Texture;
         if (row.kind != query.kind && !compatibleImage) continue;
+        if (compatibleImage && catalog.origin == ObjectResourceOrigin::Game && !GameIconRow(row)) continue;
         if (query.objectType && (!row.object || row.object->type != *query.objectType)) continue;
         if (!query.directory && row.directory) continue;
         if (query.directory) {

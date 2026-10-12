@@ -77,7 +77,9 @@ public:
         : QWidget(parent), reader_(std::make_shared<Reader>()), sources_(std::move(sources)), revision_(std::move(revision)),
           generation_(generation), editRevision_(editRevision), current_(std::move(current)) {
         reader_->sources = sources_;
-        auto* layout = new QVBoxLayout(this); layout->setContentsMargins(0, 0, 0, 0);
+        setObjectName(QStringLiteral("resourcePreviewPanel"));
+        setAttribute(Qt::WA_StyledBackground); // 圆角底与边框由主题表绘制
+        auto* layout = new QVBoxLayout(this); layout->setContentsMargins(8, 8, 8, 8); layout->setSpacing(6);
         picture_ = new QLabel(this); picture_->setAlignment(Qt::AlignCenter); picture_->setMinimumSize(160, 160);
         picture_->setObjectName(QStringLiteral("resourceTexturePreview")); layout->addWidget(picture_);
         name_ = new QLabel(this); name_->setTextFormat(Qt::PlainText); name_->setAlignment(Qt::AlignHCenter);

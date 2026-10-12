@@ -420,6 +420,10 @@ void SessionUnitsFollowAndStandability() {
     Require(edits.EditTerrain(brush, std::span(&center, 1)).Succeeded(), "raise through the session");
     const auto moved = edits.Snapshot().Units()->units;
     Require(moved[0].position[2] == 42.0f && moved[1].position[2] == 5.0f, "only units in the changed area follow the ground");
+    const auto receipt = edits.LastEdit();
+    Require(receipt.ChangesPlacements() && receipt.HasPlacementLineage() && receipt.PlacementLineage().size() == 1
+        && receipt.PlacementLineage()[0].kind == MapDataKind::Units && receipt.PlacementLineage()[0].beforeToAfter[1] == 1u,
+        "followed rows keep their identities so the world view can update incrementally");
     Require(edits.Undo() && edits.Snapshot().Units()->units[0].position[2] == 10.0f, "undo restores the unit height");
     MapDataEditSession still(MapDocument::FromMembers(members));
     Require(still.AttachTerrain(Terrain()).Succeeded(), "terrain attaches");

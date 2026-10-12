@@ -40,7 +40,7 @@ struct ImportInventoryRow {
     std::optional<std::string> sourcePath; // 唯一解析出的原来源成员；歧义不选择。
     std::optional<std::string> archivePath; // 叠加现有资产改名后的目标路径；删除为 null。
     std::string sourceLayer;
-    std::string state; // present / missing / unresolved / queued-unfrozen / oversized（存在但超过核对预算，无摘要）
+    std::string state; // present / missing / unresolved / queued-unfrozen / oversized（存在但超过核对预算，无摘要）/ listed（仅名单）
     std::string overlayState = "original"; // original / moved / removed / queued
     std::optional<std::uint64_t> bytes;
     std::optional<std::string> sha256;
@@ -91,6 +91,9 @@ public:
     [[nodiscard]] Result<ImportInventoryPage> Query(const ImportInventoryBinding& expected,
         std::string query = {}, const std::optional<ImportInventoryCursor>& cursor = {},
         std::size_t limit = 64, std::size_t maxExamined = 4096) const;
+    // 只按捕获时的成员名单列出全部行，不读取成员内容、不计算摘要：state 为 listed / missing / unresolved / queued-unfrozen。
+    // 供选择器等只需要名字的界面使用；需要内容身份时仍用 Query/Get。来源前后各核对一次。
+    [[nodiscard]] Result<std::vector<ImportInventoryRow>> ListNames(const ImportInventoryBinding& expected) const;
     [[nodiscard]] Result<ImportInventoryRow> Get(const ImportInventoryBinding& expected,
         std::string_view expectedInventorySha256, std::string_view importId) const;
 private:

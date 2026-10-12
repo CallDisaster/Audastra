@@ -268,6 +268,54 @@ ImportInventorySnapshot::ImportInventorySnapshot(std::shared_ptr<const Impl> imp
 const ImportInventoryDescription& ImportInventorySnapshot::Description() const noexcept { return impl_->description; }
 Status ImportInventorySnapshot::VerifyCurrent() const { return impl_->verify(); }
 
+Result<std::vector<ImportInventoryRow>> ImportInventorySnapshot::ListNames(const ImportInventoryBinding& expected) const {
+    using Output = Result<std::vector<ImportInventoryRow>>;
+    if (expected != Description().binding) return Fail<std::vector<ImportInventoryRow>>("IMPORT_REVISION_CONFLICT", "导入快照身份已变化。");
+    const auto current = VerifyCurrent(); if (!current.Succeeded()) return {{}, current.diagnostics};
+    const auto& impl = *impl_;
+    std::map<std::string, std::uint64_t> physical;
+    for (const auto& seed : impl.rows) if (seed.kind == "physical-member") {
+        const auto key = Resources::CanonicalImportPath(seed.path);
+        if (key.Succeeded()) physical.emplace(*key.value, seed.reportedBytes.value_or(0));
+    }
+    const auto present = [&physical](std::string_view path) {
+        const auto key = Resources::CanonicalImportPath(path);
+        return key.Succeeded() && physical.contains(*key.value);
+    };
+    std::vector<ImportInventoryRow> rows;
+    rows.reserve(impl.rows.size());
+    for (const auto& seed : impl.rows) {
+        ImportInventoryRow row;
+        row.importId = seed.id; row.kind = seed.kind; row.rawPath = seed.path; row.flags = seed.flags;
+        row.sourceLayer = impl.description.sourceKind == "archive" ? "map-archive" : "map-directory";
+        if (seed.kind == "queued-unfrozen") {
+            row.sourceLayer = "session-queue"; row.state = "queued-unfrozen"; row.overlayState = "queued";
+            row.reportedBytes = seed.reportedBytes;
+            if (Resources::CanonicalImportPath(seed.path).Succeeded()) row.archivePath = seed.path;
+            rows.push_back(std::move(row)); continue;
+        }
+        auto resolved = seed.flags ? Resources::ResolveArchivePath({*seed.flags, seed.path}, present)
+                                   : Resources::CanonicalImportPath(seed.path);
+        if (!resolved.Succeeded() || Reserved(*resolved.value)) {
+            row.state = "unresolved"; row.diagnostics = resolved.diagnostics;
+            rows.push_back(std::move(row)); continue;
+        }
+        const auto key = Resources::CanonicalImportPath(*resolved.value);
+        row.sourcePath = seed.flags ? *resolved.value : seed.path; row.archivePath = row.sourcePath;
+        // 有无名成员时，名单里找不到不能证明缺失。
+        const auto found = key.Succeeded() ? physical.find(*key.value) : physical.end();
+        row.state = found != physical.end() ? "listed" : impl.description.hasOpaqueArchiveMembers ? "unresolved" : "missing";
+        if (found != physical.end()) row.bytes = found->second;
+        if (key.Succeeded()) if (const auto edited = impl.pathEdits.find(*key.value); edited != impl.pathEdits.end()) {
+            row.overlayState = edited->second.empty() ? "removed" : "moved";
+            row.archivePath = edited->second.empty() ? std::nullopt : std::optional<std::string>(edited->second);
+        }
+        rows.push_back(std::move(row));
+    }
+    const auto after = VerifyCurrent(); if (!after.Succeeded()) return {{}, after.diagnostics};
+    return Output::Success(std::move(rows));
+}
+
 Result<ImportInventoryPage> ImportInventorySnapshot::Query(const ImportInventoryBinding& expected,
     std::string query, const std::optional<ImportInventoryCursor>& cursor, std::size_t limit, std::size_t maxExamined) const {
     if (expected != Description().binding) return Fail<ImportInventoryPage>("IMPORT_REVISION_CONFLICT", "导入快照身份已变化。");

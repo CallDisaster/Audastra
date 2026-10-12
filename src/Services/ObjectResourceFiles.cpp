@@ -21,8 +21,8 @@ bool AddFile(Builder& builder, ObjectResourceCandidate row, std::set<std::string
     const auto key = *canonical.value + ':' + row.state;
     if (!files.insert(key).second) return true;
     row.kind = *kind; row.previewPath = row.value;
-    if (row.title.empty()) row.title = row.value;
     const auto path = Slash(row.value);
+    if (row.title.empty()) { const auto slash = path.rfind('/'); row.title = slash == std::string::npos ? row.value : row.value.substr(slash + 1); }
     const auto origin = row.origin;
     if (!builder.Add(std::move(row))) return false;
     for (auto end = path.find('/'); end != std::string::npos; end = path.find('/', end + 1)) {
@@ -117,22 +117,20 @@ Result<std::shared_ptr<const ObjectResourceCatalog>> CaptureImportResourceCatalo
     const ImportInventorySnapshot& source, const ImportInventoryBinding& expected, const ObjectResourceCatalogLimits& limits) {
     Builder builder(expected.revision, ObjectResourceOrigin::Import, limits);
     if (!builder.Valid()) return builder.Finish();
-    std::optional<ImportInventoryCursor> cursor;
     std::set<std::string> directories, files;
-    do {
-        auto page = source.Query(expected, {}, cursor, 128, 4096);
-        if (!page.Succeeded()) return {std::nullopt, std::move(page.diagnostics)};
-        builder.Catalog().complete = builder.Catalog().complete && !page.value->description.hasOpaqueArchiveMembers;
-        for (const auto& file : page.value->rows) {
-            if (file.overlayState == "removed") continue;
-            ObjectResourceCandidate row;
-            row.id = "import:" + file.importId; row.value = file.archivePath.value_or(file.rawPath);
-            row.sourceId = file.sourceLayer; row.state = file.state; row.origin = ObjectResourceOrigin::Import;
-            row.sourceVerified = file.state == "present";
-            if (!AddFile(builder, std::move(row), directories, files)) return builder.Finish();
-        }
-        cursor = page.value->next;
-    } while (cursor);
+    // 选择器只需要名字：一次按名单列出，不逐页读取成员内容（大地图逐页核对会反复散列整个归档）。
+    auto listed = source.ListNames(expected);
+    if (!listed.Succeeded()) return {std::nullopt, std::move(listed.diagnostics)};
+    builder.Catalog().complete = builder.Catalog().complete && !source.Description().hasOpaqueArchiveMembers;
+    for (const auto& file : *listed.value) {
+        if (file.overlayState == "removed") continue;
+        ObjectResourceCandidate row;
+        row.id = "import:" + file.importId; row.value = file.archivePath.value_or(file.rawPath);
+        row.sourceId = file.sourceLayer; row.state = file.state == "listed" ? "present" : file.state;
+        row.origin = ObjectResourceOrigin::Import;
+        row.sourceVerified = false; // 名单存在不等于内容已核对；预览读取时再按来源核对。
+        if (!AddFile(builder, std::move(row), directories, files)) return builder.Finish();
+    }
     if (source.Description().hasOpaqueArchiveMembers)
         builder.Diagnose(Warning("OBJECT_RESOURCE_OPAQUE_MEMBERS", "地图包含无名字的成员，未宣称已枚举全部导入资源。"));
     return builder.Finish();

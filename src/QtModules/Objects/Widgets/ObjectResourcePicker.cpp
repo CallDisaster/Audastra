@@ -10,6 +10,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QThread>
@@ -116,6 +117,10 @@ ObjectResourcePicker::ObjectResourcePicker(Services::ObjectResourceField field, 
     connect(search_, &QLineEdit::textChanged, searchDelay, qOverload<>(&QTimer::start));
     connect(searchDelay, &QTimer::timeout, this, &ObjectResourcePicker::Requery);
     connect(more_, &QPushButton::clicked, this, &ObjectResourcePicker::AppendPage);
+    // 滚到列表底部时自动接着加载，不必反复点“加载更多”。
+    connect(candidates_->verticalScrollBar(), &QScrollBar::valueChanged, this, [this](int value) {
+        if (cursor_ && more_->isVisible() && value >= candidates_->verticalScrollBar()->maximum() - 2) AppendPage();
+    });
     connect(up_, &QPushButton::clicked, this, [this] {
         const auto slash = directory_.lastIndexOf('/'); directory_ = slash < 0 ? QString{} : directory_.left(slash); Requery();
     });
@@ -150,7 +155,7 @@ void ObjectResourcePicker::SelectSource() {
         : browse_->currentIndex() == 1 ? Services::ObjectResourceOrigin::Game : Services::ObjectResourceOrigin::Object;
     browse_->setVisible(tabs_->currentIndex() == 0);
     category_->setVisible(tabs_->currentIndex() == 0 && origin_ == Services::ObjectResourceOrigin::Object);
-    const bool directories = origin_ != Services::ObjectResourceOrigin::Object && field_.storesPath;
+    const bool directories = BrowsesDirectories();
     up_->setVisible(directories); location_->setVisible(directories);
     if (preview_.widget) {
         // 自定义页没有候选列表，预览占满主体；其他页预览固定在右侧。
@@ -204,6 +209,11 @@ void ObjectResourcePicker::StartLoad(Services::ObjectResourceOrigin origin) {
     progressTimer->start();
     worker->start(QThread::LowPriority);
 }
+bool ObjectResourcePicker::BrowsesDirectories() const {
+    // 图标在游戏文件里按原版 WE 方式平铺列出（命令按钮与被动按钮目录），其余路径类资源按目录浏览。
+    if (origin_ == Services::ObjectResourceOrigin::Object || !field_.storesPath) return false;
+    return !(origin_ == Services::ObjectResourceOrigin::Game && field_.kind == Services::ObjectResourceKind::Icon);
+}
 void ObjectResourcePicker::Requery() {
     candidates_->clear(); cursor_.reset(); location_->setText(directory_.isEmpty() ? tr("根目录") : directory_);
     up_->setEnabled(!directory_.isEmpty());
@@ -216,8 +226,8 @@ void ObjectResourcePicker::AppendPage() {
     query.expectedRevision = services_.revision; query.kind = field_.kind; query.search = search_->text().toStdString();
     if (origin_ == Services::ObjectResourceOrigin::Object && category_->currentData().toInt() >= 0)
         query.objectType = static_cast<ObjectData::ObjectType>(category_->currentData().toInt());
-    if (origin_ != Services::ObjectResourceOrigin::Object && search_->text().isEmpty()
-        && field_.storesPath) query.directory = directory_.toStdString();
+    if (BrowsesDirectories() && search_->text().isEmpty()) query.directory = directory_.toStdString();
+    query.limit = 128;
     auto page = Services::QueryObjectResources(*catalog_, query, cursor_);
     if (!page.Succeeded()) { status_->setText(Notes(page.diagnostics)); more_->hide(); return; }
     for (const auto& row : page.value->rows) {
@@ -236,8 +246,9 @@ void ObjectResourcePicker::AppendPage() {
     cursor_ = page.value->next; more_->setVisible(cursor_.has_value());
     status_->setText(tr("已显示 %1 项%2").arg(candidates_->topLevelItemCount())
         .arg(page.value->complete ? QString{} : tr(" · 目录或结果尚未全部列出")));
+    // 来源说明（例如某个游戏包没有文件清单）放在悬停详情，状态行只提示列表可能不完整。
     status_->setToolTip(Notes(page.value->diagnostics));
-    if (!page.value->diagnostics.empty()) status_->setText(status_->text() + QStringLiteral("\n") + U8(page.value->diagnostics.front().message));
+    if (!page.value->diagnostics.empty()) status_->setText(status_->text() + tr(" · 部分来源没有完整文件清单，悬停查看"));
 }
 void ObjectResourcePicker::Choose(QTreeWidgetItem* item, bool activate) {
     if (!item) return;

@@ -215,13 +215,24 @@ void ImportAndGameFolders() {
     ImportInventoryOverlay overlay{true, {}, {{"Models/Pending.mdx", 123}}};
     auto inventory = CaptureImportInventory(*directory.value, binding, overlay); Require(inventory.Succeeded(), "capture actual import inventory");
     auto catalog = CaptureImportResourceCatalog(**inventory.value, binding); Require(catalog.Succeeded(), "capture imported resources");
+    // 导入名单：一次列出全部行，不读取成员内容。
+    auto listed = (*inventory.value)->ListNames(binding);
+    const auto rowState = [&listed](std::string_view kind) {
+        const auto found = std::find_if(listed.value->begin(), listed.value->end(), [kind](const auto& row) { return row.kind == kind; });
+        return found == listed.value->end() ? std::string("absent") : found->state;
+    };
+    Require(listed.Succeeded() && rowState("imp-record") == "missing" && rowState("queued-unfrozen") == "queued-unfrozen"
+        && std::any_of(listed.value->begin(), listed.value->end(), [](const auto& row) {
+            return row.state == "listed" && row.rawPath.find("Present.tga") != std::string::npos; }),
+        "listing marks the physical image present and the IMP-only path missing");
     ObjectResourceQuery query; query.expectedRevision = binding.revision; query.kind = ObjectResourceKind::Icon;
     auto page = QueryObjectResources(**catalog.value, query); Require(page.Succeeded() && page.value->rows.size() == 2, "IMP missing and physical image both listed");
     Require(std::any_of(page.value->rows.begin(), page.value->rows.end(), [](const auto& row) { return row.state == "missing"; }), "missing resource not suppressed");
     query.kind = ObjectResourceKind::Model;
     page = QueryObjectResources(**catalog.value, query); Require(page.Succeeded() && page.value->rows.size() == 1
         && page.value->rows.front().state == "queued-unfrozen", "pending resource retains unfrozen state");
-    const std::vector<Mpq::MpqBuildFile> baseFiles{{"Models/Basic.mdx", Bytes("base"), false}, {"Icons/Basic.blp", Bytes("base image"), false}};
+    const std::vector<Mpq::MpqBuildFile> baseFiles{{"Models/Basic.mdx", Bytes("base"), false}, {"Icons/Basic.blp", Bytes("base image"), false},
+        {"ReplaceableTextures/CommandButtons/BTNBasic.blp", Bytes("base icon"), false}};
     const std::vector<Mpq::MpqBuildFile> patchFiles{{"Models/Basic.mdx", Bytes("patch"), false}};
     Require(Mpq::WriteMpqArchive(temp.root / "war3.mpq", baseFiles).Succeeded(), "write synthetic base archive");
     Require(Mpq::WriteMpqArchive(temp.root / "war3patch.mpq", patchFiles).Succeeded(), "write synthetic patch archive");
@@ -232,6 +243,14 @@ void ImportAndGameFolders() {
     query.directory = "Models";
     page = QueryObjectResources(**gameCatalog.value, query); Require(page.Succeeded() && page.value->rows.size() == 1
         && page.value->rows.front().sourceId == "war3patch.mpq", "game directory retains patch source and deduplicates base");
+    // 图标只列命令按钮/被动按钮目录里的图，名称列为文件名；其他贴图不当图标。
+    query.kind = ObjectResourceKind::Icon; query.directory.reset();
+    page = QueryObjectResources(**gameCatalog.value, query);
+    Require(page.Succeeded() && page.value->rows.size() == 1 && page.value->rows.front().title == "BTNBasic.blp",
+        "game icons come only from the icon directories");
+    query.kind = ObjectResourceKind::Texture;
+    page = QueryObjectResources(**gameCatalog.value, query);
+    Require(page.Succeeded() && page.value->rows.size() == 2, "texture fields still list every game image");
 }
 }
 int main() {

@@ -116,6 +116,16 @@ QComboBox::down-arrow { image: url(:/war3map/icons/qss/chevron-down.svg); width:
 QComboBox QAbstractItemView { background: @panel; color: @text; border: 1px solid @line; selection-background-color: @selection; selection-color: @accent; outline: 0; padding: 2px; }
 QComboBox QAbstractItemView::item { min-height: 22px; padding: 2px 10px; margin: 1px 0; border: 0; border-radius: @radiusSm; }
 QComboBox QAbstractItemView::item:hover, QComboBox QAbstractItemView::item:selected { background: @selection; color: @accent; }
+/* 圆角浮层里的标签栏、列表、预览区也用圆角，不在圆角面板里留方角块。 */
+QWidget[forgeRoundedSurface="true"] QTabBar { background: transparent; }
+QWidget[forgeRoundedSurface="true"] QTabWidget::pane { border: 0; background: transparent; }
+QWidget[forgeRoundedSurface="true"] QTabBar::tab { background: transparent; border-top-left-radius: @radiusSm; border-top-right-radius: @radiusSm; }
+QWidget[forgeRoundedSurface="true"] QTabBar::tab:hover { background: @raised; }
+QWidget[forgeRoundedSurface="true"] QTabBar::tab:selected { background: transparent; }
+QWidget[forgeRoundedSurface="true"] QTreeView, QWidget[forgeRoundedSurface="true"] QListView, QWidget[forgeRoundedSurface="true"] QTableView,
+QWidget[forgeRoundedSurface="true"] QTextEdit, QWidget[forgeRoundedSurface="true"] QPlainTextEdit { border-radius: @radiusMd; }
+QWidget[forgeRoundedSurface="true"] QHeaderView, QWidget[forgeRoundedSurface="true"] QHeaderView::section { background: transparent; }
+QWidget#resourcePreviewPanel { background: @bg; border: 1px solid @line; border-radius: @radiusMd; }
 QWidget#resourcePreviewPanel QLabel#resourcePreviewName { font-weight: 600; }
 QWidget#resourcePreviewPanel QLabel#resourcePreviewSource { color: @muted; }
 QSpinBox, QDoubleSpinBox, QDateTimeEdit { padding-right: 22px; }

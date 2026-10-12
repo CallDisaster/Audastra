@@ -375,14 +375,25 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
         const auto fail = [](std::vector<Diagnostic> diagnostics) {
             Result<PreparedTerrainEdit> failed; failed.diagnostics = std::move(diagnostics); return failed;
         };
+        // 随地面升降只改 Z，行身份全部原位保留；记录逐行谱系，世界视图据此增量更新，不整张重建。
+        std::vector<PlacementRowLineage> lineage;
+        const auto keepRows = [&lineage](MapDataKind kind, std::size_t count) {
+            PlacementRowLineage map; map.kind = kind;
+            map.beforeCount = map.afterCount = static_cast<std::uint32_t>(count);
+            map.beforeToAfter.reserve(count);
+            for (std::uint32_t row = 0; row < count; ++row) map.beforeToAfter.emplace_back(row);
+            lineage.push_back(std::move(map));
+        };
         if (doodadBytes) {
             auto doodads = ParseDoodadPlacements(*doodadBytes);
             if (!doodads.Succeeded() || !doodads.value)
                 return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "MAP_DOODADS_UNSAFE",
                     "装饰物放置无法解析，不能让装饰物随地面高度变化");
-            if (follow(doodads.value->doodads))
+            if (follow(doodads.value->doodads)) {
                 if (const auto status = Prepare(MapDataKind::Doodads, doodads.value->Serialize(), command.changes); !status.Succeeded())
                     return fail(status.diagnostics);
+                keepRows(MapDataKind::Doodads, doodads.value->doodads.size());
+            }
         }
         // 单位与物品同在 war3mapUnits.doo；原版 WE 改地形时它们也随地面升降，不能被埋进地里或悬空。
         if (unitBytes) {
@@ -390,10 +401,13 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
             if (!units.Succeeded() || !units.value)
                 return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "MAP_UNITS_UNSAFE",
                     "单位放置无法解析，不能让单位随地面高度变化");
-            if (follow(units.value->units))
+            if (follow(units.value->units)) {
                 if (const auto status = Prepare(MapDataKind::Units, units.value->Serialize(), command.changes); !status.Succeeded())
                     return fail(status.diagnostics);
+                keepRows(MapDataKind::Units, units.value->units.size());
+            }
         }
+        if (!lineage.empty()) command.placements = std::make_shared<const std::vector<PlacementRowLineage>>(std::move(lineage));
     }
     const auto doodadChange = std::find_if(command.changes.begin(), command.changes.end(),
         [](const auto& change) { return change.kind == MapDataKind::Doodads; });

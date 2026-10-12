@@ -51,6 +51,7 @@ signals:
 private:
     void SelectSource();
     void StartLoad(Services::ObjectResourceOrigin origin);
+    [[nodiscard]] bool BrowsesDirectories() const;
     void Requery();
     void AppendPage();
     void Choose(QTreeWidgetItem* item, bool activate);
