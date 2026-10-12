@@ -194,12 +194,21 @@ void TriggerEmitter::PutCallAction(const Eca& eca, const std::string& name) {
     out_.End();
 }
 
-// 回调块：块内动作写成独立函数。它在之后某个时刻由函数库调用，拥有自己的一帧局部变量，
-// 不读写外层触发器的局部变量（与“运行触发器”动作函数的局部变量规则相同）。
+// 回调块：块内动作写成独立函数。遍历类在调用时立即执行，与“选取单位组做动作”的 A 函数一样共用外层局部变量；
+// 其余之后才由函数库调用，拥有自己的一帧局部变量（与“运行触发器”动作函数的规则相同）。
 void TriggerEmitter::PutCallbackFunction(const Eca& eca, const std::string& name) {
     bool any = false;
     for (const auto index : eca.children) any = any || Enabled(EcaAt(index));
     if (!any) return;
+    if (CallbackOf(eca)->sharesLocals) {
+        out_.Line("function " + name + "A takes nothing returns nothing");
+        LocalBegin(eca.children, false, false);
+        PutBlockAction(eca, name, -1);
+        LocalEnd(false, true);
+        out_.Line("endfunction");
+        out_.Line("");
+        return;
+    }
     const LocvarState saved = locvar_;
     const bool savedEnum = enumUnitsInRange_;
     locvar_ = {};
@@ -208,7 +217,7 @@ void TriggerEmitter::PutCallbackFunction(const Eca& eca, const std::string& name
     LocalBegin(eca.children, false, true);
     if (localInMainProc_) {
         // 无法从声明判断回调是立即执行（遍历类）还是之后执行（注册类），只能统一独立；明确提示差异。
-        Warn("callback-local-scope", "回调块“" + eca.name.text + "”内使用了局部变量：回调有自己的一组局部变量，"
+        Warn("callback-local-scope", "回调块“" + eca.name.text + "”内使用了局部变量：它在之后才执行，有自己的一组局部变量，"
             "读不到也改不了外层触发器的同名局部变量。需要在内外之间传值时请改用全局变量。");
     }
     PutBlockAction(eca, name, -1);

@@ -81,9 +81,16 @@ Fixture MakeFixture(const std::filesystem::path& root) {
     result.libraries = result.tool / "jass";
     std::filesystem::create_directories(result.map);
     WriteText(result.ui / "config", "probe\n");
-    WriteText(result.ui / "probe/define.txt", "[TriggerTypes]\ninteger=0,1,1,Integer,integer\n");
+    WriteText(result.ui / "probe/define.txt", "[TriggerTypes]\ninteger=0,1,1,Integer,integer\n"
+        "typename=1,0,0,Type,string\nstring=0,1,1,String,string\nscriptcode=1,0,0,Code,string\nNull=0,0,0,Value\nAnyReturnType=0,0,0,Any\n"
+        "[TriggerParams]\ntypename01_integer=0,typename,1,Integer\n");
+    WriteText(result.ui / "probe/call.txt",
+        "[YDWEGetAnyTypeLocalVariable]\nreturns=AnyReturnType\n[[.args]]\ntype=scriptcode\n");
     WriteText(result.ui / "probe/action.txt",
-        "[ProbeModuleCreate]\n[[.args]]\ntype=integer\n[[.args]]\ntype=integer\n"
+        "[ProbeModuleCreate]\ntitle=\"Probe - create module\"\n[[.args]]\ntype=integer\n[[.args]]\ntype=integer\n"
+        "[ProbeEnum]\ntitle=\"Probe - 选取探针做动作 (多项)\"\n[[.args]]\ntype=integer\n"
+        // 局部变量名在 YDWE 中是代码参数；公共 T 图批次不接受代码参数，合成库改用字符串，生成时同样取原值。
+        "[YDWESetAnyTypeLocalVariable]\n[[.args]]\ntype=typename\n[[.args]]\ntype=string\n[[.args]]\ntype=Null\n"
         "[RecordInteger]\n[[.args]]\ntype=integer\n"
         "[ProbePlain]\n[[.args]]\ntype=integer\n"
         "[ProbeCodeFirst]\n[[.args]]\ntype=integer\n"
@@ -109,12 +116,15 @@ Fixture MakeFixture(const std::filesystem::path& root) {
     WriteText(result.include / "YDTrigger/Globals.h", "// original empty global header\n");
     WriteText(result.include / "YDTrigger/Function.h", "// original empty function header\n");
     // 注入入口在根目录，真实声明在子目录（与按 #include 组织的函数库一致）。
-    WriteText(result.libraries / "ProbeModule.cfg", "ProbeModuleCreate\n");
+    WriteText(result.libraries / "ProbeModule.cfg", "ProbeModuleCreate\nProbeEnum\n");
     WriteText(result.libraries / "ProbeModule.j", "#include \"addon/module.j\"\n");
     WriteText(result.libraries / "addon/module.j", "#ifndef PROBE_MODULE_DECLARED\n#define PROBE_MODULE_DECLARED\n"
         "library ProbeModuleLibrary\n"
         "    function ProbeModuleCreate takes integer parentKey, integer childKey, code callback returns nothing\n"
         "        call RecordInteger(parentKey + childKey)\n"
+        "    endfunction\n"
+        "    function ProbeEnum takes integer value, code callback returns nothing\n"
+        "        call RecordInteger(value)\n"
         "    endfunction\n"
         "endlibrary\n#endif\n");
     // 不是回调块：code 不在末尾；同名声明参数不一致。这些文件只参与识别，不被注入。
@@ -175,10 +185,13 @@ Jass::JassCheckResult RunPipeline(std::string_view generated, const Fixture& fix
 
 void TestCatalog(const Fixture& fixture, const UiCatalog& catalog, const std::vector<Diagnostic>& loadDiagnostics) {
     const auto& index = catalog.CallbackActions();
-    Require(index.complete && index.actions.size() == 1, "only ProbeModuleCreate is a callback block");
+    Require(index.complete && index.actions.size() == 2, "only ProbeModuleCreate and ProbeEnum are callback blocks");
     const auto* module = index.Find("ProbeModuleCreate");
-    Require(module != nullptr && module->codeArgument == 2 && module->source.filename() == "module.j",
-        "declaration found below the legacy jass root through its real file");
+    Require(module != nullptr && module->codeArgument == 2 && module->source.filename() == "module.j" && !module->sharesLocals,
+        "declaration found below the legacy jass root through its real file; a deferred callback owns its locals");
+    const auto* enumeration = index.Find("ProbeEnum");
+    Require(enumeration != nullptr && enumeration->codeArgument == 1 && enumeration->sharesLocals,
+        "a title with 做动作 marks an immediate enumeration that shares outer locals");
     Require(index.Find("ProbePlain") == nullptr && index.Find("ProbeCodeFirst") == nullptr && index.Find("ProbeAmbiguous") == nullptr,
         "same-count, code-first and inconsistent declarations are ordinary actions");
     Require(HasCode(loadDiagnostics, "ui.callback.ambiguous"), "inconsistent declarations are reported: " + Details(loadDiagnostics));
@@ -239,6 +252,35 @@ void Run(const std::filesystem::path& root) {
     const auto refused = GenerateMapScript(plainInputs);
     Require(!refused.Succeeded() && HasCode(refused.diagnostics, "TRIGGER_CHILDREN_UNSUPPORTED"),
         "children under a non-callback action are an explicit error");
+
+    // 局部变量：遍历类共用外层的一帧（读外层保存的步号），之后执行的回调自建一帧并给出提示。
+    const auto local = [](const char* value) {
+        return Child(Action("YDWESetAnyTypeLocalVariable", {Scalar(0, "typename01_integer"), Scalar(3, "score"), Scalar(3, value)}));
+    };
+    auto locals = MakeDocument(*catalog.value, {
+        Action("ProbeEnum", {Scalar(3, "1")}, {local("8")}),
+        Action("ProbeModuleCreate", {Scalar(3, "1"), Scalar(3, "2")}, {local("9")}),
+    });
+    MapScriptInputs localInputs; localInputs.catalog = &*catalog.value; localInputs.triggers = &locals;
+    const auto scoped = GenerateMapScript(localInputs);
+    Require(scoped.Succeeded(), "local generation: " + Details(scoped.diagnostics));
+    const auto bodyOf = [&](std::string_view function) {
+        const auto begin = scoped.text.find("function " + std::string(function) + " takes");
+        Require(begin != std::string::npos, "missing " + std::string(function));
+        return scoped.text.substr(begin, scoped.text.find("endfunction", begin) - begin);
+    };
+    const auto shared = bodyOf("Trig_CallbackFunc001A");
+    const auto own = bodyOf("Trig_CallbackFunc002A");
+    const auto main = bodyOf("Trig_CallbackActions");
+    Require(shared.find("ydl_localvar_step") == std::string::npos && shared.find("0xECE825E7)") != std::string::npos,
+        "enumeration callback reads the outer frame's current step instead of opening its own: " + shared);
+    Require(main.find("local integer ydl_localvar_step") != std::string::npos,
+        "outer actions open the frame because the shared block uses locals: " + main);
+    Require(own.find("local integer ydl_localvar_step") != std::string::npos,
+        "deferred callback opens its own local frame: " + own);
+    std::size_t notes = 0;
+    for (const auto& diagnostic : scoped.diagnostics) notes += diagnostic.code == "callback-local-scope" ? 1 : 0;
+    Require(notes == 1, "only the deferred callback warns about separate locals: " + Details(scoped.diagnostics));
 }
 } // namespace
 

@@ -1,5 +1,6 @@
 #include "War3MapCore/Trigger/UiCallbackActions.h"
 
+#include "War3MapCore/Trigger/TriggerDataText.h"
 #include "War3MapCore/Trigger/UiCatalog.h"
 
 #include <algorithm>
@@ -72,6 +73,13 @@ std::string ScriptNameOf(const UiDefinition& definition) {
     return definition.name;
 }
 
+// 标题是作者可见的唯一语义线索；只认三个关键词，空白差异（“做动作 (多项)”“做动作(多项)”）不影响。
+bool EnumeratesImmediately(const UiCatalog& catalog, const UiDefinition& definition) {
+    const auto title = DefinitionTitle(catalog, definition);
+    return title.find("做动作") != std::string::npos || title.find("做多动作") != std::string::npos ||
+        title.find("遍历") != std::string::npos;
+}
+
 bool SameTypes(const UiJassDeclaration& left, const UiJassDeclaration& right) {
     return left.parameterTypes == right.parameterTypes;
 }
@@ -135,7 +143,8 @@ UiCallbackActionIndex BuildUiCallbackActionIndex(const UiCatalog& catalog, std::
                 "动作 " + definition->name + " 在函数库 J 中有参数不一致的多份声明，不按回调块处理。", first.source));
             continue;
         }
-        index.actions.emplace(definition->name, UiCallbackAction{uiArguments, first.source, first.line});
+        index.actions.emplace(definition->name,
+            UiCallbackAction{uiArguments, EnumeratesImmediately(catalog, *definition), first.source, first.line});
     }
     return index;
 }

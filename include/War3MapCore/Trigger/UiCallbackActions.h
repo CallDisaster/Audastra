@@ -26,6 +26,9 @@ struct UiJassDeclaration {
 // 该参数不让作者填写，而由块内动作生成的独立函数传入（与“注册触发器”的回调一样）。
 struct UiCallbackAction {
     std::size_t codeArgument = 0; // JASS 参数下标，等于 UI 参数个数。
+    // 遍历类（标题含“做动作”“做多动作”或“遍历”）在调用时立即逐个执行回调，与“选取单位组做动作”一样
+    // 共用外层触发器的局部变量；其余（创建模块、注册监听、设置回调等）之后才执行，局部变量独立。
+    bool sharesLocals = false;
     std::filesystem::path source;
     std::uint32_t line = 0;
 };

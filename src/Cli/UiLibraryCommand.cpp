@@ -60,7 +60,8 @@ int RunUiLibraryInspect(const std::filesystem::path& toolRoot,
     for (const auto& name : callbackNames) {
         const auto& action = callbacks.actions.at(name);
         const auto source = action.source.u8string();
-        std::cout << "  callback " << name << " codeArgument=" << action.codeArgument << " source="
+        std::cout << "  callback " << name << " codeArgument=" << action.codeArgument
+                  << (action.sharesLocals ? " locals=shared" : " locals=own") << " source="
                   << std::string(source.begin(), source.end()) << ':' << action.line << '\n';
     }
     if (wtgPath == nullptr || wctPath == nullptr) return 0;

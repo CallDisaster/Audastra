@@ -137,6 +137,9 @@ void TriggerEmitter::LocalSearch(Children children, bool searchHash, long block)
             if (searchHash) localInMainProc_ = true;
             break;
         default:
+            // 遍历类回调块共用外层局部变量：外层函数需要据块内用法建立局部变量帧。
+            if (const auto* callback = CallbackOf(eca); callback != nullptr && callback->sharesLocals && searchHash)
+                LocalSearch(eca.children, searchHash, -1);
             break;
         }
     }

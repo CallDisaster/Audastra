@@ -328,9 +328,10 @@ void RegisterReadOnlyTools(McpServer& server) {
                         {"arguments", arguments},
                     };
                     // 回调块：真实声明末尾多一个 code 参数，块内动作放在 child_branch 0，生成为独立函数传入。
-                    if (kind == Trigger::UiDefinitionKind::Action &&
-                        workspace->Catalog().CallbackActions().Find(definition->name) != nullptr) {
-                        item.insert("callback_block", QJsonObject{{"child_branch", 0}, {"child_kind", "action"}});
+                    if (const auto* callback = kind == Trigger::UiDefinitionKind::Action
+                            ? workspace->Catalog().CallbackActions().Find(definition->name) : nullptr) {
+                        item.insert("callback_block", QJsonObject{{"child_branch", 0}, {"child_kind", "action"},
+                            {"shares_outer_locals", callback->sharesLocals}});
                     }
                     definitions.append(item);
                     if (definitions.size() >= 100) break;
