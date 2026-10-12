@@ -169,10 +169,31 @@ Result<std::vector<ImportInventoryRow>> Materialize(const ImportInventorySnapsho
         const auto key = Resources::CanonicalImportPath(path);
         if (key.Succeeded()) requested.emplace(*key.value, path);
     }
-    std::vector<std::string> names;
-    for (const auto& [key, path] : requested) { (void)key; names.push_back(path); }
+    // 一页成员的实际字节可能超过单次精确核对的累计预算（大音乐文件常见）。按已知物理大小分批核对，
+    // 单个就超过单项预算的成员不读取，行标为 oversized，其余行照常列出；不能因一个大文件让整页失败。
+    std::map<std::string, std::uint64_t> knownBytes;
+    for (const auto& seed : impl.rows) {
+        if (seed.kind != "physical-member" || !seed.reportedBytes) continue;
+        const auto key = Resources::CanonicalImportPath(seed.path);
+        if (key.Succeeded()) knownBytes[*key.value] = std::max(knownBytes[*key.value], *seed.reportedBytes);
+    }
+    const ArchiveExactMemberLimits budget;
+    const std::uint64_t batchBytes = budget.totalBytes / 4 * 3;
+    std::set<std::string> oversized;
+    std::vector<std::vector<std::string>> batches(1);
+    std::uint64_t batchTotal = 0;
+    for (const auto& [key, path] : requested) {
+        const auto known = knownBytes.find(key);
+        const auto bytes = known == knownBytes.end() ? 0 : known->second;
+        if (bytes > budget.memberBytes) { oversized.insert(key); continue; }
+        if (!batches.back().empty() && (batches.back().size() >= budget.memberCount || bytes > batchBytes - std::min(batchTotal, batchBytes))) {
+            batches.emplace_back(); batchTotal = 0;
+        }
+        batches.back().push_back(path); batchTotal += bytes;
+    }
     std::map<std::string, ArchiveExactMemberIdentity> identities;
-    if (!names.empty()) {
+    for (const auto& names : batches) {
+        if (names.empty()) continue;
         const auto result = impl.exact(names);
         if (!result.Succeeded()) return {{}, result.diagnostics};
         if (result.value->sourceSha256 != impl.description.binding.sourceSha256 || result.value->members.size() != names.size())
@@ -205,10 +226,23 @@ Result<std::vector<ImportInventoryRow>> Materialize(const ImportInventorySnapsho
         }
         auto resolved = seed.flags ? Resources::ResolveArchivePath({*seed.flags, seed.path}, [&](std::string_view path) {
             const auto key = Resources::CanonicalImportPath(path);
-            return key.Succeeded() && identities.contains(*key.value) && identities.at(*key.value).present;
+            return key.Succeeded() && (oversized.contains(*key.value)
+                || (identities.contains(*key.value) && identities.at(*key.value).present));
         }) : Resources::CanonicalImportPath(seed.path);
         if (resolved.Succeeded() && !Reserved(*resolved.value)) {
             const auto key = Resources::CanonicalImportPath(*resolved.value);
+            if (oversized.contains(*key.value)) {
+                row.sourcePath = seed.flags ? *resolved.value : seed.path;
+                row.archivePath = row.sourcePath; row.state = "oversized";
+                row.bytes = knownBytes.at(*key.value);
+                row.diagnostics.push_back({DiagnosticSeverity::Warning, "Imports.Query", "IMPORT_MEMBER_OVER_IDENTITY_BUDGET",
+                    "成员超过单个文件核对预算，未计算内容摘要。"});
+                if (const auto edited = impl.pathEdits.find(*key.value); edited != impl.pathEdits.end()) {
+                    row.overlayState = edited->second.empty() ? "removed" : "moved";
+                    row.archivePath = edited->second.empty() ? std::nullopt : std::optional<std::string>(edited->second);
+                }
+                rows.push_back(std::move(row)); continue;
+            }
             const auto found = identities.find(*key.value);
             if (found == identities.end())
                 return Fail<std::vector<ImportInventoryRow>>("IMPORT_SOURCE_IDENTITY", "解析路径没有对应的精确成员身份。");

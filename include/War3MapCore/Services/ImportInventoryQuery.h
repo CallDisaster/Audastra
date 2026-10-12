@@ -40,7 +40,7 @@ struct ImportInventoryRow {
     std::optional<std::string> sourcePath; // 唯一解析出的原来源成员；歧义不选择。
     std::optional<std::string> archivePath; // 叠加现有资产改名后的目标路径；删除为 null。
     std::string sourceLayer;
-    std::string state; // present / missing / unresolved / queued-unfrozen
+    std::string state; // present / missing / unresolved / queued-unfrozen / oversized（存在但超过核对预算，无摘要）
     std::string overlayState = "original"; // original / moved / removed / queued
     std::optional<std::uint64_t> bytes;
     std::optional<std::string> sha256;

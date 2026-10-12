@@ -10,6 +10,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QThread>
 #include <QTimer>
@@ -34,42 +35,45 @@ ObjectResourcePicker::ObjectResourcePicker(Services::ObjectResourceField field, 
     setObjectName(QStringLiteral("objectResourcePicker"));
     setAttribute(Qt::WA_DeleteOnClose); setWindowModality(Qt::NonModal);
     UiKit::ConfigureRoundedPopup(*this);
-    auto* column = new QVBoxLayout(this);
-    tabs_ = new QTabWidget(this); tabs_->setObjectName(QStringLiteral("resourceSourceTabs"));
-    auto* select = new QWidget(tabs_); auto* selectRow = new QHBoxLayout(select);
-    selectRow->setContentsMargins(4, 4, 4, 4);
-    browse_ = new QComboBox(select); browse_->setObjectName(QStringLiteral("resourceBrowseMode"));
-    browse_->addItems({tr("物体使用的资源"), tr("游戏文件")}); selectRow->addWidget(browse_);
-    category_ = new QComboBox(select); category_->setObjectName(QStringLiteral("resourceObjectCategory"));
+    auto* column = new QVBoxLayout(this); column->setSpacing(8);
+    // 三种来源只是切换，不需要各自的说明页；标签栏只占一行，筛选条按来源显示需要的控件。
+    tabs_ = new QTabWidget(this); tabs_->setObjectName(QStringLiteral("resourceSourceTabs")); tabs_->setDocumentMode(true);
+    for (const auto& label : {tr("选择"), tr("导入"), tr("自定义")}) tabs_->addTab(new QWidget(tabs_), label);
+    tabs_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    tabs_->setFixedHeight(tabs_->tabBar()->sizeHint().height());
+    column->addWidget(tabs_);
+    filterBar_ = new QWidget(this); filterBar_->setObjectName(QStringLiteral("resourceFilterBar"));
+    auto* filter = new QHBoxLayout(filterBar_); filter->setContentsMargins(0, 0, 0, 0); filter->setSpacing(6);
+    browse_ = new QComboBox(filterBar_); browse_->setObjectName(QStringLiteral("resourceBrowseMode"));
+    browse_->addItems({tr("物体使用的资源"), tr("游戏文件")}); filter->addWidget(browse_);
+    category_ = new QComboBox(filterBar_); category_->setObjectName(QStringLiteral("resourceObjectCategory"));
     category_->addItem(tr("全部类别"), -1);
     const QStringList categories{tr("单位"), tr("技能"), tr("物品"), tr("魔法效果"), tr("科技"), tr("装饰物"), tr("可破坏物")};
     for (int i = 0; i < categories.size(); ++i) category_->addItem(categories[i], i);
-    selectRow->addWidget(category_); selectRow->addStretch(); tabs_->addTab(select, tr("选择"));
-    auto* imported = new QWidget(tabs_); auto* importedRow = new QHBoxLayout(imported);
-    importedRow->addWidget(new QLabel(field_.storesPath ? tr("当前地图导入表与实际成员")
-        : tr("此字段保存声音标签，不能写入导入文件路径"), imported));
-    tabs_->addTab(imported, tr("导入"));
-    auto* custom = new QWidget(tabs_); auto* customRow = new QHBoxLayout(custom);
-    customRow->addWidget(new QLabel(field_.storesPath ? tr("输入地图或游戏中的资源路径") : tr("输入原版声音标签或组名"), custom));
-    tabs_->addTab(custom, tr("自定义")); column->addWidget(tabs_);
-    auto* filter = new QHBoxLayout;
-    auto* up = new QPushButton(tr("上级目录"), this); up->setObjectName(QStringLiteral("resourceDirectoryUp"));
-    filter->addWidget(up);
-    location_ = new QLabel(this); location_->setObjectName(QStringLiteral("resourceDirectory")); filter->addWidget(location_);
-    search_ = new QLineEdit(this); search_->setObjectName(QStringLiteral("resourceSearch"));
-    search_->setPlaceholderText(tr("搜索名称、四字码或路径")); filter->addWidget(search_, 1); column->addLayout(filter);
-    auto* body = new QHBoxLayout;
+    filter->addWidget(category_);
+    up_ = new QPushButton(tr("上级"), filterBar_); up_->setObjectName(QStringLiteral("resourceDirectoryUp"));
+    up_->setToolTip(tr("返回上级目录")); filter->addWidget(up_);
+    location_ = new QLabel(filterBar_); location_->setObjectName(QStringLiteral("resourceDirectory"));
+    location_->setTextFormat(Qt::PlainText); location_->setMinimumWidth(40); filter->addWidget(location_);
+    search_ = new QLineEdit(filterBar_); search_->setObjectName(QStringLiteral("resourceSearch"));
+    search_->setPlaceholderText(tr("搜索名称、四字码或路径")); search_->setClearButtonEnabled(true);
+    filter->addWidget(search_, 1); column->addWidget(filterBar_);
+    auto* body = new QHBoxLayout; body->setSpacing(8);
     candidates_ = new QTreeWidget(this); candidates_->setObjectName(QStringLiteral("resourceCandidates"));
-    candidates_->setColumnCount(3); candidates_->setHeaderLabels({tr("名称"), tr("资源"), tr("来源 / 状态")});
+    candidates_->setColumnCount(3); candidates_->setHeaderLabels({tr("名称"), tr("资源"), tr("来源")});
     candidates_->setRootIsDecorated(false); candidates_->setMouseTracking(true); candidates_->setMinimumWidth(220);
     candidates_->header()->setSectionResizeMode(QHeaderView::Interactive);
-    candidates_->header()->setStretchLastSection(false);
-    candidates_->setColumnWidth(0, 135); candidates_->setColumnWidth(1, 245); candidates_->setColumnWidth(2, 150);
-    body->addWidget(candidates_, 3);
+    candidates_->header()->setStretchLastSection(true);
+    candidates_->setColumnWidth(0, 130); candidates_->setColumnWidth(1, 250);
+    body->addWidget(candidates_, 1);
     if (services_.preview) preview_ = services_.preview(this);
-    if (preview_.widget) { preview_.widget->setMinimumWidth(180); body->addWidget(preview_.widget, 2); }
+    if (preview_.widget) { preview_.widget->setFixedWidth(240); body->addWidget(preview_.widget); }
     column->addLayout(body, 1);
-    more_ = new QPushButton(tr("加载更多"), this); more_->setObjectName(QStringLiteral("resourceMore")); column->addWidget(more_);
+    auto* statusRow = new QHBoxLayout;
+    status_ = new QLabel(this); status_->setObjectName(QStringLiteral("resourceStatus")); status_->setWordWrap(true);
+    status_->setTextFormat(Qt::PlainText); statusRow->addWidget(status_, 1);
+    more_ = new QPushButton(tr("加载更多"), this); more_->setObjectName(QStringLiteral("resourceMore")); statusRow->addWidget(more_);
+    column->addLayout(statusRow);
     if (field_.orderedList) {
         auto* listRow = new QHBoxLayout;
         selected_ = new QListWidget(this); selected_->setObjectName(QStringLiteral("resourceOrderedValues"));
@@ -94,6 +98,7 @@ ObjectResourcePicker::ObjectResourcePicker(Services::ObjectResourceField field, 
     auto* pathRow = new QHBoxLayout;
     path_ = new QLineEdit(this); path_->setObjectName(QStringLiteral("resourcePath"));
     path_->setText(field_.orderedList ? QString{} : original_); path_->setClearButtonEnabled(true);
+    path_->setPlaceholderText(field_.storesPath ? tr("地图或游戏中的资源路径") : tr("原版声音标签或组名"));
     if (selected_) connect(selected_, &QListWidget::currentTextChanged, this, [this](const QString& value) { path_->setText(value); ShowPreview(value); });
     pathRow->addWidget(path_, 1);
     if (field_.orderedList) {
@@ -101,8 +106,6 @@ ObjectResourcePicker::ObjectResourcePicker(Services::ObjectResourceField field, 
         connect(add, &QPushButton::clicked, this, [this] { replacing_ = false; AddOrReplace(); });
     }
     column->addLayout(pathRow);
-    status_ = new QLabel(this); status_->setObjectName(QStringLiteral("resourceStatus")); status_->setWordWrap(true);
-    status_->setTextFormat(Qt::PlainText); column->addWidget(status_);
     auto* actions = new QDialogButtonBox(QDialogButtonBox::Apply | QDialogButtonBox::Cancel, this); column->addWidget(actions);
     connect(actions->button(QDialogButtonBox::Apply), &QPushButton::clicked, this, &ObjectResourcePicker::Apply);
     connect(actions, &QDialogButtonBox::rejected, this, &QWidget::close);
@@ -113,7 +116,7 @@ ObjectResourcePicker::ObjectResourcePicker(Services::ObjectResourceField field, 
     connect(search_, &QLineEdit::textChanged, searchDelay, qOverload<>(&QTimer::start));
     connect(searchDelay, &QTimer::timeout, this, &ObjectResourcePicker::Requery);
     connect(more_, &QPushButton::clicked, this, &ObjectResourcePicker::AppendPage);
-    connect(up, &QPushButton::clicked, this, [this] {
+    connect(up_, &QPushButton::clicked, this, [this] {
         const auto slash = directory_.lastIndexOf('/'); directory_ = slash < 0 ? QString{} : directory_.left(slash); Requery();
     });
     connect(candidates_, &QTreeWidget::itemClicked, this, [this](auto* item) { Choose(item, false); });
@@ -142,10 +145,18 @@ QString ObjectResourcePicker::Value() const {
 }
 void ObjectResourcePicker::SelectSource() {
     const bool custom = tabs_->currentIndex() == 2;
-    candidates_->setVisible(!custom); search_->setVisible(!custom); more_->hide();
+    candidates_->setVisible(!custom); filterBar_->setVisible(!custom); more_->hide();
     origin_ = tabs_->currentIndex() == 1 ? Services::ObjectResourceOrigin::Import
         : browse_->currentIndex() == 1 ? Services::ObjectResourceOrigin::Game : Services::ObjectResourceOrigin::Object;
-    category_->setEnabled(origin_ == Services::ObjectResourceOrigin::Object);
+    browse_->setVisible(tabs_->currentIndex() == 0);
+    category_->setVisible(tabs_->currentIndex() == 0 && origin_ == Services::ObjectResourceOrigin::Object);
+    const bool directories = origin_ != Services::ObjectResourceOrigin::Object && field_.storesPath;
+    up_->setVisible(directories); location_->setVisible(directories);
+    if (preview_.widget) {
+        // 自定义页没有候选列表，预览占满主体；其他页预览固定在右侧。
+        if (custom) { preview_.widget->setMinimumWidth(240); preview_.widget->setMaximumWidth(QWIDGETSIZE_MAX); }
+        else preview_.widget->setFixedWidth(240);
+    }
     directory_.clear(); catalog_.reset(); candidates_->clear();
     if (custom) { status_->clear(); path_->setFocus(); return; }
     if (origin_ == Services::ObjectResourceOrigin::Import && !field_.storesPath) {
@@ -195,6 +206,7 @@ void ObjectResourcePicker::StartLoad(Services::ObjectResourceOrigin origin) {
 }
 void ObjectResourcePicker::Requery() {
     candidates_->clear(); cursor_.reset(); location_->setText(directory_.isEmpty() ? tr("根目录") : directory_);
+    up_->setEnabled(!directory_.isEmpty());
     if (catalog_) AppendPage();
 }
 void ObjectResourcePicker::AppendPage() {
@@ -212,9 +224,11 @@ void ObjectResourcePicker::AppendPage() {
         auto* item = new QTreeWidgetItem(candidates_);
         item->setText(0, row.directory ? tr("目录 · %1").arg(U8(row.title)) : U8(row.title));
         item->setText(1, U8(row.value));
+        // 正常行只写来源；缺失、歧义等需要作者注意的状态才追加。
         const auto state = row.state == "missing" ? tr("缺失") : row.state == "unresolved" ? tr("来源歧义")
-            : row.state == "queued-unfrozen" ? tr("待导入") : row.sourceVerified ? tr("已核对") : tr("预览时核对");
-        item->setText(2, U8(row.sourceId) + QStringLiteral(" · ") + state);
+            : row.state == "oversized" ? tr("文件过大，未核对") : QString{};
+        const auto source = ObjectResourceSourceText(row.sourceId);
+        item->setText(2, state.isEmpty() ? source : source + QStringLiteral(" · ") + state);
         item->setData(0, Qt::UserRole, U8(row.value)); item->setData(0, Qt::UserRole + 1, row.directory);
         const auto tip = U8(row.title) + QStringLiteral("\n") + U8(row.value) + QStringLiteral("\n") + item->text(2);
         for (int column = 0; column < 3; ++column) item->setToolTip(column, tip);
@@ -262,5 +276,18 @@ void ObjectResourcePicker::Apply() {
     if (!self) return;
     if (accepted) { emit ValueCommitted(value); if (self) close(); }
     else status_->setText(tr("字段未写入；当前值或字段结构无法安全编辑。"));
+}
+QString ObjectResourceSourceText(std::string_view sourceId) {
+    const auto starts = [sourceId](std::string_view prefix) { return sourceId.substr(0, prefix.size()) == prefix; };
+    if (starts("world-map-") || sourceId == "map-archive") return QObject::tr("当前地图");
+    if (sourceId == "map-directory") return QObject::tr("地图目录");
+    if (sourceId == "session-queue") return QObject::tr("待导入");
+    if (sourceId == "map-object") return QObject::tr("地图物体");
+    if (sourceId == "standard-object") return QObject::tr("原版物体");
+    if (starts("world-game")) return QObject::tr("游戏资源");
+    // 游戏文件行是所在 MPQ 名，声音标签行是“MPQ:表路径”；只显示 MPQ 名。
+    const auto colon = sourceId.find(':');
+    const auto archive = colon == std::string_view::npos ? sourceId : sourceId.substr(0, colon);
+    return archive.empty() ? QObject::tr("未知来源") : QObject::tr("游戏 · %1").arg(U8(archive));
 }
 } // namespace War3Map::Modules

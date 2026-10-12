@@ -228,12 +228,37 @@ void OpaqueArchiveExactEvidence() {
     }), "exact lookup does not fabricate complete listfile inventory");
     Require(Sha256File(temporary.root / "opaque.w3x").value == Sha256(bytes).value, "opaque source bytes unchanged");
 }
+// 一页成员总字节超过单次精确核对预算时分批核对；单个超过单项预算的成员列为 oversized，不让整页失败。
+void LargeMembersDoNotFailPage() {
+    Temp temporary;
+    const auto filled = [](std::size_t size, unsigned char value) { return std::vector<std::byte>(size, std::byte{value}); };
+    const ArchiveExactMemberLimits budget;
+    const auto medium = filled(budget.totalBytes / 2 - 1024, 0x11), medium2 = filled(budget.totalBytes / 2 - 1024, 0x22);
+    const auto huge = filled(budget.memberBytes + 4096, 0x33);
+    const std::vector<MapArchiveMember> members{{"a.mp3", medium}, {"b.mp3", medium2},
+        {"huge.mp3", huge}, {"small.blp", Bytes("small")}};
+    const auto written = WriteVerifiedArchive(temporary.root / "large.w3x", members);
+    Require(written.Succeeded(), "create large-member archive");
+    const auto opened = MapArchiveSession::Open(written.value->path); Require(opened.Succeeded(), "open large-member archive");
+    const auto binding = Binding(opened.value->SourceSha256());
+    const auto captured = CaptureImportInventory(*opened.value, binding); Require(captured.Succeeded(), "capture large-member inventory");
+    const auto page = (*captured.value)->Query(binding, {}, {}, 128);
+    Require(page.Succeeded(), "page larger than one exact budget still lists");
+    const auto& a = Find(*page.value, "physical-member", "a.mp3");
+    const auto& b = Find(*page.value, "physical-member", "b.mp3");
+    Require(a.state == "present" && a.sha256 == Sha256(medium).value && b.state == "present" && b.sha256 == Sha256(medium2).value,
+        "batched members keep exact identities");
+    const auto& large = Find(*page.value, "physical-member", "huge.mp3");
+    Require(large.state == "oversized" && !large.sha256 && large.bytes == huge.size() && Code(large, "IMPORT_MEMBER_OVER_IDENTITY_BUDGET"),
+        "oversized member is listed without fabricated digest");
+    Require(Find(*page.value, "physical-member", "small.blp").state == "present", "small member unaffected");
+}
 } // namespace
 
 int main() {
     try {
         ArchiveFlagsAndRawIdentity(); DirectoryAliasOverlayAndStaleness(); MissingDamagedAndAmbiguousImp();
-        PaginationAndAtomicBoundaries(); OpaqueArchiveExactEvidence();
+        PaginationAndAtomicBoundaries(); OpaqueArchiveExactEvidence(); LargeMembersDoNotFailPage();
         std::cout << "PASS import inventory: flags/identities, directory overlay, source gates, pagination, opaque exact evidence\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

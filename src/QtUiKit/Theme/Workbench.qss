@@ -113,7 +113,11 @@ QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabl
 QComboBox { padding-right: 24px; combobox-popup: 0; }
 QComboBox::drop-down { width: 22px; border: 0; border-left: 1px solid @line; }
 QComboBox::down-arrow { image: url(:/war3map/icons/qss/chevron-down.svg); width: 12px; height: 12px; }
-QComboBox QAbstractItemView { background: @panel; color: @text; border: 1px solid @line; selection-background-color: @selection; selection-color: @accent; }
+QComboBox QAbstractItemView { background: @panel; color: @text; border: 1px solid @line; selection-background-color: @selection; selection-color: @accent; outline: 0; padding: 2px; }
+QComboBox QAbstractItemView::item { min-height: 22px; padding: 2px 10px; margin: 1px 0; border: 0; border-radius: @radiusSm; }
+QComboBox QAbstractItemView::item:hover, QComboBox QAbstractItemView::item:selected { background: @selection; color: @accent; }
+QWidget#resourcePreviewPanel QLabel#resourcePreviewName { font-weight: 600; }
+QWidget#resourcePreviewPanel QLabel#resourcePreviewSource { color: @muted; }
 QSpinBox, QDoubleSpinBox, QDateTimeEdit { padding-right: 22px; }
 QSpinBox::up-button, QDoubleSpinBox::up-button, QDateTimeEdit::up-button,
 QSpinBox::down-button, QDoubleSpinBox::down-button, QDateTimeEdit::down-button { width: 18px; border: 0; border-left: 1px solid @line; background: @raised; }

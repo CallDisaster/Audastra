@@ -34,6 +34,8 @@ struct ObjectResourcePickerServices {
     std::function<ObjectResourcePreviewHandle(QWidget*)> preview;
 };
 using ObjectResourcePickerFactory = std::function<ObjectResourcePickerServices()>;
+// 资源来源标识（地图归档身份、游戏包名等）转为作者可读的来源名；内部标识只放在悬停详情里。
+[[nodiscard]] QString ObjectResourceSourceText(std::string_view sourceId);
 
 class ObjectResourcePicker final : public QFrame {
     Q_OBJECT
@@ -63,6 +65,8 @@ private:
     std::function<bool(const QString&)> commit_;
     ObjectResourcePreviewHandle preview_;
     QTabWidget* tabs_ = nullptr;
+    QWidget* filterBar_ = nullptr;
+    QPushButton* up_ = nullptr;
     QComboBox* browse_ = nullptr;
     QComboBox* category_ = nullptr;
     QLineEdit* search_ = nullptr;

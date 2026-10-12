@@ -8,6 +8,7 @@
 #include <QPushButton>
 #include <QThread>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <mutex>
 #include <exception>
 
@@ -77,9 +78,12 @@ public:
           generation_(generation), editRevision_(editRevision), current_(std::move(current)) {
         reader_->sources = sources_;
         auto* layout = new QVBoxLayout(this); layout->setContentsMargins(0, 0, 0, 0);
-        picture_ = new QLabel(this); picture_->setAlignment(Qt::AlignCenter); picture_->setMinimumSize(160, 128);
+        picture_ = new QLabel(this); picture_->setAlignment(Qt::AlignCenter); picture_->setMinimumSize(160, 160);
         picture_->setObjectName(QStringLiteral("resourceTexturePreview")); layout->addWidget(picture_);
+        name_ = new QLabel(this); name_->setTextFormat(Qt::PlainText); name_->setAlignment(Qt::AlignHCenter);
+        name_->setObjectName(QStringLiteral("resourcePreviewName")); layout->addWidget(name_);
         source_ = new QLabel(this); source_->setTextFormat(Qt::PlainText); source_->setWordWrap(true);
+        source_->setAlignment(Qt::AlignHCenter);
         source_->setObjectName(QStringLiteral("resourcePreviewSource")); layout->addWidget(source_);
         auto* controls = new QHBoxLayout;
         play_ = new QPushButton(tr("试听"), this); play_->setObjectName(QStringLiteral("resourceSoundPlay")); controls->addWidget(play_);
@@ -99,6 +103,7 @@ public:
     void Show(const QString& value, Services::ObjectResourceKind kind) {
         ++serial_; pending_ = std::pair{value, kind}; sound_.clear(); play_->setEnabled(false);
         if (audio_) audio_->Stop();
+        name_->clear();
         if (!Current()) { source_->setText(tr("来源已变化，请重新打开资源选择器。")); return; }
         const bool model = kind == Services::ObjectResourceKind::Model;
         picture_->setVisible(!model); picture_->setPixmap({});
@@ -131,12 +136,23 @@ private:
             if (serial == serial_ && Current()) {
                 if (!result->error.isEmpty()) source_->setText(tr("资源不可用：%1\n保留原值仍可保存。").arg(result->error));
                 else {
-                    QString text = result->source + QStringLiteral("\n") + result->path;
+                    // 名称、来源、尺寸分开显示；内部来源身份与完整路径只放悬停详情。
+                    const auto slash = std::max(result->path.lastIndexOf('\\'), result->path.lastIndexOf('/'));
+                    name_->setText(result->path.mid(slash + 1));
+                    QString text = Modules::ObjectResourceSourceText(result->source.toStdString());
                     if (!result->image.isNull()) {
-                        text += tr("\n%1 × %2").arg(result->image.width()).arg(result->image.height());
-                        picture_->setPixmap(QPixmap::fromImage(result->image).scaled(240, 200, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                        const auto size = result->image.size();
+                        text += tr(" · %1 × %2").arg(size.width()).arg(size.height());
+                        // 小图标按整数倍放大（最多 3 倍），避免任意比例插值发糊；大贴图缩到面板内。
+                        constexpr int box = 192;
+                        const auto pixmap = QPixmap::fromImage(result->image);
+                        const int factor = std::clamp(std::min(box / std::max(1, size.width()), box / std::max(1, size.height())), 1, 3);
+                        picture_->setPixmap(size.width() > box || size.height() > box
+                            ? pixmap.scaled(box, box, Qt::KeepAspectRatio, Qt::SmoothTransformation)
+                            : pixmap.scaled(size * factor, Qt::KeepAspectRatio, Qt::FastTransformation));
                     }
-                    source_->setText(text); source_->setToolTip(text);
+                    source_->setText(text);
+                    source_->setToolTip(result->path + QStringLiteral("\n") + result->source);
                     sound_ = std::move(result->sound); soundPath_ = result->path; play_->setEnabled(!sound_.empty());
                 }
             }
@@ -155,6 +171,7 @@ private:
     Modules::WorldModelPreview* model_ = nullptr;
     Modules::SoundPreviewPlayer* audio_ = nullptr;
     QLabel* picture_;
+    QLabel* name_;
     QLabel* source_;
     QPushButton* play_;
     QPushButton* stop_;

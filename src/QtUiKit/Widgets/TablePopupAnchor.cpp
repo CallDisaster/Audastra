@@ -36,12 +36,18 @@ public:
             && widget && (widget == panel_ || panel_->isAncestorOf(widget) || widget == view_ || view_->isAncestorOf(widget))) {
             panel_->close(); return true;
         }
-        if (event->type() == QEvent::MouseButtonPress && widget && widget != panel_ && !panel_->isAncestorOf(widget)) panel_->close();
+        // 面板内的下拉、菜单是独立顶层窗口，isAncestorOf 不跨窗口；沿父链判断，避免选下拉项就关掉整个面板。
+        if (event->type() == QEvent::MouseButtonPress && widget && !OwnedByPanel(widget)) panel_->close();
         if ((object == view_ || object == view_->viewport() || object == view_->window())
             && (event->type() == QEvent::Move || event->type() == QEvent::Resize || event->type() == QEvent::Hide)) Reposition();
         return false;
     }
 private:
+    bool OwnedByPanel(const QWidget* widget) const {
+        for (auto* current = widget; current; current = current->parentWidget())
+            if (current == panel_) return true;
+        return false;
+    }
     void Reposition() {
         if (!view_ || !index_.isValid() || !view_->isVisible()) { panel_->close(); return; }
         const auto local = view_->visualRect(index_);

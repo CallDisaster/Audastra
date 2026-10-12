@@ -104,6 +104,7 @@ private slots:
     void OrderedValuesAndUnchangedOriginal();
     void StaleDraftDoesNotCommit();
     void FieldDelegateUsesSameUndoAndSerialization();
+    void ComboPopupDoesNotCloseAnchoredPicker();
     void StandardFieldUsesSameCommand();
     void CommitMayCloseOwner();
     void AdapterOwnsSnapshotAndRejectsOversizedSource();
@@ -177,6 +178,33 @@ void ObjectResourcePickerTests::FieldDelegateUsesSameUndoAndSerialization() {
     QCOMPARE(QString::fromStdString(ValueToDisplayString(recovered->Objects().front().modifications.front().value)), QStringLiteral("Changed.mdx"));
     undo.undo(); QCOMPARE(model.data(model.index(row, 3), Qt::EditRole).toString(), QStringLiteral("Missing.mdx"));
     undo.redo(); QCOMPARE(model.data(model.index(row, 3), Qt::EditRole).toString(), QStringLiteral("Changed.mdx"));
+}
+void ObjectResourcePickerTests::ComboPopupDoesNotCloseAnchoredPicker() {
+    // 面板内下拉列表是独立顶层窗口；在其中选项不能被锚点当作“点到面板外”而关掉面板。
+    using namespace ObjectData;
+    QtProject::EditorProject project; QVERIFY(InstallModelDefinitions(project));
+    auto parsed = LniObjectCodec(ObjectType::Unit).Parse(Bytes("[u001]\n_parent = \"u001\"\nfile = \"Missing.mdx\"\n"));
+    QVERIFY(parsed.Succeeded()); auto* document = dynamic_cast<LniObjectDocument*>(parsed.document.get()); QVERIFY(document);
+    const ObjectKey object{ObjectType::Unit, "u001"}; QUndoStack undo; ObjectFieldModel model;
+    model.SetUndoStack(&undo); model.SetContext(project.standardCatalog_.get(), project.objectFieldSchema_.get()); model.SetDocument(document, &object);
+    int row = -1; for (int i = 0; i < model.rowCount(); ++i) if (model.DefinitionAt(i) && model.DefinitionAt(i)->fieldId == "umdl") row = i;
+    QVERIFY(row >= 0);
+    QTableView view; view.setModel(&model); auto* delegate = new ObjectFieldDelegate(&view); view.setItemDelegate(delegate);
+    bool current = true; delegate->SetResourcePickerFactory([&] { return ServicesFor(&current); });
+    view.resize(760, 480); view.show(); view.setCurrentIndex(model.index(row, 3)); QTest::keyClick(&view, Qt::Key_Return);
+    QTRY_VERIFY(view.findChild<ObjectResourcePicker*>());
+    auto* picker = view.findChild<ObjectResourcePicker*>(); QPointer<ObjectResourcePicker> guard(picker);
+    auto* category = picker->findChild<QComboBox*>("resourceObjectCategory"); QVERIFY(category && category->isVisible());
+    category->showPopup();
+    auto* popupView = category->view(); QTRY_VERIFY(popupView->isVisible());
+    QVERIFY(popupView->window() != picker->window());
+    const auto target = popupView->visualRect(category->model()->index(2, 0)).center();
+    QTest::mouseClick(popupView->viewport(), Qt::LeftButton, Qt::NoModifier, target);
+    QTRY_COMPARE(category->currentIndex(), 2);
+    QTest::qWait(50);
+    QVERIFY(guard && picker->isVisible());
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(5, 5)); // 真正点到面板外仍然关闭。
+    QTRY_VERIFY(!guard || !picker->isVisible());
 }
 void ObjectResourcePickerTests::StandardFieldUsesSameCommand() {
     using namespace ObjectData;
@@ -392,7 +420,7 @@ void ObjectResourcePickerTests::OwnedProductionResourceEvidence() {
                 path->setFocus(); path->selectAll(); QTest::keyClicks(path, chosen);
             }
             const bool ready = waitUntil([&] { return !source->text().contains(QStringLiteral("正在读取"))
-                && source->text().contains(QStringLiteral("world-map-")); });
+                && source->text().contains(QStringLiteral("当前地图")) && source->toolTip().contains(QStringLiteral("world-map-")); });
             sources.append(QJsonObject{{"field", int(field)}, {"tab", origin}, {"source_text", source->text()},
                 {"candidate_rows", list->topLevelItemCount()}, {"status", status->text()}, {"selected_path", path->text()}, {"preview_ready", ready}});
             if (!ready) captureWidget(*picker, QStringLiteral("failed-field-%1-source-%2").arg(field).arg(origin));
