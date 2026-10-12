@@ -8,6 +8,7 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <mutex>
 #include <array>
 #include <cctype>
 #include <cwctype>
@@ -1035,12 +1036,7 @@ Result<UiCatalog> UiCatalog::LoadFromConfig(
             return result;
         }
         catalog.sha256_ = *aggregateHash.value;
-        // 回调块识别只依赖已启用层的函数库 J；扫描诊断随载入结果返回，不使载入失败。
-        auto scan = ScanUiJassRoots(UiCallbackScanRoots(uiRoot, catalog.layers_));
-        result.diagnostics.insert(result.diagnostics.end(), scan.diagnostics.begin(), scan.diagnostics.end());
-        catalog.SetCallbackDeclarations(scan.declarations, scan.complete);
-        result.diagnostics.insert(result.diagnostics.end(), catalog.callbackActions_->diagnostics.begin(),
-            catalog.callbackActions_->diagnostics.end());
+        catalog.callbackActions_ = std::make_shared<CallbackState>();
         result.value.emplace(std::move(catalog));
     } catch (const std::exception& error) {
         result.diagnostics.push_back(MakeDiagnostic(
@@ -1052,15 +1048,32 @@ Result<UiCatalog> UiCatalog::LoadFromConfig(
     return result;
 }
 
-const UiCallbackActionIndex& UiCatalog::CallbackActions() const noexcept {
+struct UiCatalog::CallbackState {
+    std::once_flag once;
+    UiCallbackActionIndex index;
+};
+
+const UiCallbackActionIndex& UiCatalog::CallbackActions() const {
     static const UiCallbackActionIndex empty;
-    return callbackActions_ ? *callbackActions_ : empty;
+    if (!callbackActions_) return empty;
+    // 回调块识别只依赖已启用层的函数库 J；扫描失败只使结果不完整，不影响目录本身。
+    std::call_once(callbackActions_->once, [this] {
+        auto scan = ScanUiJassRoots(UiCallbackScanRoots(root_, layers_));
+        auto& index = callbackActions_->index;
+        index = BuildUiCallbackActionIndex(*this, scan.declarations);
+        index.complete = scan.complete;
+        index.diagnostics.insert(index.diagnostics.begin(), scan.diagnostics.begin(), scan.diagnostics.end());
+    });
+    return callbackActions_->index;
 }
 
 void UiCatalog::SetCallbackDeclarations(std::span<const UiJassDeclaration> declarations, bool complete) {
-    auto index = std::make_shared<UiCallbackActionIndex>(BuildUiCallbackActionIndex(*this, declarations));
-    index->complete = complete;
-    callbackActions_ = std::move(index);
+    auto state = std::make_shared<CallbackState>();
+    std::call_once(state->once, [&] {
+        state->index = BuildUiCallbackActionIndex(*this, declarations);
+        state->index.complete = complete;
+    });
+    callbackActions_ = std::move(state);
 }
 
 const UiDefinition* UiCatalog::Find(std::int32_t ecaType, std::string_view name) const {

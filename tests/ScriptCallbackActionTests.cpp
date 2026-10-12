@@ -194,7 +194,11 @@ void TestCatalog(const Fixture& fixture, const UiCatalog& catalog, const std::ve
         "a title with 做动作 marks an immediate enumeration that shares outer locals");
     Require(index.Find("ProbePlain") == nullptr && index.Find("ProbeCodeFirst") == nullptr && index.Find("ProbeAmbiguous") == nullptr,
         "same-count, code-first and inconsistent declarations are ordinary actions");
-    Require(HasCode(loadDiagnostics, "ui.callback.ambiguous"), "inconsistent declarations are reported: " + Details(loadDiagnostics));
+    Require(HasCode(index.diagnostics, "ui.callback.ambiguous") && !HasCode(loadDiagnostics, "ui.callback.ambiguous"),
+        "inconsistent declarations are reported with the lazily built index, not as catalog load noise: " + Details(index.diagnostics));
+    // 同一次载入的拷贝共用同一份识别结果。
+    const UiCatalog copy = catalog;
+    Require(&copy.CallbackActions() == &index, "catalog copies share one callback index");
 
     // 现代布局：<ui>/<层>/jass 下的声明同样参与，规则不依赖函数名或某个函数库。
     const auto modern = fixture.tool.parent_path() / "modern/ui";
@@ -246,12 +250,14 @@ void Run(const std::filesystem::path& root) {
         Count(translated, "function ProbeModuleCreate takes integer parentKey, integer childKey, code callback returns nothing") == 1,
         "the real three-parameter declaration comes from the included library");
 
-    // 普通动作下的子动作不能静默丢弃。
+    // 普通动作下的子节点：与原版生成器一致只写调用本身，但必须逐个警告，不能静默丢弃。
     auto plain = MakeDocument(*catalog.value, {Action("ProbePlain", {Scalar(3, "1")}, {record("2")})});
     MapScriptInputs plainInputs; plainInputs.catalog = &*catalog.value; plainInputs.triggers = &plain;
-    const auto refused = GenerateMapScript(plainInputs);
-    Require(!refused.Succeeded() && HasCode(refused.diagnostics, "TRIGGER_CHILDREN_UNSUPPORTED"),
-        "children under a non-callback action are an explicit error");
+    const auto ignored = GenerateMapScript(plainInputs);
+    Require(ignored.Succeeded() && HasCode(ignored.diagnostics, "children-not-generated"),
+        "children under a non-callback action are reported: " + Details(ignored.diagnostics));
+    Require(Count(ignored.text, "call ProbePlain(1)") == 1 && Count(ignored.text, "RecordInteger(2)") == 0,
+        "the plain call is still emitted and its children are not");
 
     // 局部变量：遍历类共用外层的一帧（读外层保存的步号），之后执行的回调自建一帧并给出提示。
     const auto local = [](const char* value) {

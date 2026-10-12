@@ -169,9 +169,10 @@ public:
         return bytes;
     }
 
-    // 回调块动作（UI 定义少末尾 code 参数）的识别结果；载入时按已启用层的函数库 J 声明计算，
+    // 回调块动作（UI 定义少末尾 code 参数）的识别结果：首次查询时按已启用层的函数库 J 声明计算一次，
+    // 同一次载入的各份拷贝共用结果；只做身份比较的载入不付扫描代价。扫描诊断在结果的 diagnostics 中。
     // 树、蓝图、脚本生成与 Agent 工具共用同一份结果。
-    [[nodiscard]] const UiCallbackActionIndex& CallbackActions() const noexcept;
+    [[nodiscard]] const UiCallbackActionIndex& CallbackActions() const;
     // 供测试或宿主用另一组声明重新计算（与载入时使用同一规则）。
     void SetCallbackDeclarations(std::span<const UiJassDeclaration> declarations, bool complete = true);
 
@@ -198,7 +199,8 @@ private:
     std::unordered_map<std::string, UiDefinition> definitions_;
     std::string sha256_;
     std::shared_ptr<const Game::WorldEditStrings> strings_;
-    std::shared_ptr<const UiCallbackActionIndex> callbackActions_;
+    struct CallbackState;
+    std::shared_ptr<CallbackState> callbackActions_;
 };
 
 [[nodiscard]] UiDefinitionKind UiDefinitionKindFromEcaType(std::int32_t type) noexcept;

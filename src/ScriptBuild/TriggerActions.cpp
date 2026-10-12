@@ -172,11 +172,15 @@ void TriggerEmitter::PutForLoop(const Eca& eca, const std::string& name, Gui gui
 void TriggerEmitter::PutCallAction(const Eca& eca, const std::string& name) {
     const auto* callback = CallbackOf(eca);
     if (callback == nullptr && !eca.children.empty()) {
-        // 子动作只有块语句或回调块才能生成；不能静默丢掉作者写的动作。
-        diagnostics_.push_back({DiagnosticSeverity::Error, "Script.Trigger", "TRIGGER_CHILDREN_UNSUPPORTED",
-            (trigger_ != nullptr ? "触发器“" + trigger_->name.text + "”：" : std::string{}) + "动作 " + eca.name.text +
-                " 不是块语句，也未在函数库 J 中找到多一个末尾 code 参数的声明，其下的子动作无法生成。", eca.origin});
-        return;
+        // 原版与 YDWE 生成器同样只写这个调用、不生成其下的子节点；照此生成，但逐个说明，不静默丢弃。
+        std::string children;
+        for (std::size_t i = 0; i < eca.children.size() && i < 4; ++i) {
+            const auto& child = EcaAt(eca.children[i]);
+            children += (i ? "、" : "") + child.name.text + (Enabled(child) ? "" : "（已禁用）");
+        }
+        if (eca.children.size() > 4) children += " 等";
+        Warn("children-not-generated", "动作 " + eca.name.text + " 不是块语句，其下 " + std::to_string(eca.children.size()) +
+            " 个子节点（" + children + "）不会生成代码，与原版编辑器一致。");
     }
     out_.Begin();
     out_.Put("call " + ScriptName(eca) + "(");

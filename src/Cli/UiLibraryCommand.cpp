@@ -53,6 +53,7 @@ int RunUiLibraryInspect(const std::filesystem::path& toolRoot,
     }
     // 回调块动作：UI 定义少末尾 code 参数，块内动作生成为独立函数传入。
     const auto& callbacks = catalog.value->CallbackActions();
+    Print(callbacks.diagnostics);
     std::vector<std::string> callbackNames;
     for (const auto& [name, action] : callbacks.actions) callbackNames.push_back(name);
     std::sort(callbackNames.begin(), callbackNames.end());
