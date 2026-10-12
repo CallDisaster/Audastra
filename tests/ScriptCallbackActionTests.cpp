@@ -11,6 +11,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -246,6 +247,40 @@ void Run(const std::filesystem::path& root) {
     std::string translated;
     const auto checked = RunPipeline(text, fixture, translated);
     Require(checked.Succeeded() && checked.errorsIgnored == 0, "actual strict final JASS check: " + Details(checked.diagnostics));
+
+    // 函数库里没有 .cfg 的文件不会自动注入；最终检查报未声明时提示作者 #include 哪个文件。
+    // 声明在子目录文件里、由根目录入口文件包含；文档目录里的同名副本无人包含，不能被提示。
+    WriteText(fixture.libraries / "extra/probe_extra.j", "function ProbeExtraOne takes nothing returns nothing\nendfunction\n"
+        "function ProbeExtraTwo takes nothing returns nothing\nendfunction\n");
+    WriteText(fixture.libraries / "extra/doc/function.j", "function ProbeExtraOne takes nothing returns nothing\nendfunction\n");
+    WriteText(fixture.libraries / "extra_base.j", "// original empty base\n");
+    WriteText(fixture.libraries / "extra_entry.j", "#include \"extra_base.j\"\n  #  include \"extra/probe_extra.j\"\n");
+    const std::array<Jass::JassSource, 2> undeclaredSources{{{"common.j", fixture.common},
+        {"war3map.j", "function main takes nothing returns nothing\ncall ProbeExtraOne()\ncall ProbeExtraTwo()\ncall ProbeNowhere()\nendfunction\n"}}};
+    Jass::JassCheckOptions undeclaredOptions; undeclaredOptions.threads = 1;
+    auto undeclared = Jass::CheckJass(undeclaredSources, undeclaredOptions).diagnostics;
+    const auto before = undeclared.size();
+    AppendMissingIncludeHints(undeclared, 0, {fixture.libraries});
+    Require(undeclared.size() == before + 1 && undeclared.back().code == "JASS_MISSING_INCLUDE_HINT"
+        && undeclared.back().severity == DiagnosticSeverity::Warning
+        && undeclared.back().message.find("#include \"extra_entry.j\"") != std::string::npos
+        && undeclared.back().message.find("ProbeExtraOne") != std::string::npos
+        && undeclared.back().message.find("ProbeExtraTwo") != std::string::npos
+        && undeclared.back().message.find("ProbeNowhere") == std::string::npos,
+        "one include hint names the declaring library file and only its functions: " + Details(undeclared));
+    // 可选：本机真实 kkwe 函数库（只读）。MemHack 两组函数应分别指向各自的入口文件，不指向 api/ 或文档副本。
+#pragma warning(suppress : 4996) // 只读取一次测试开关，不保存指针。
+    if (const auto* real = std::getenv("AUDASTRA_KKWE_JASS_DIR"); real != nullptr && *real != '\0') {
+        std::vector<Diagnostic> diagnostics{
+            {DiagnosticSeverity::Error, "Jass.Check", "JASS_UNDECLARED", "war3map.j:9: 未声明的函数 “MHDebug_ShowLeakMessage”", {}},
+            {DiagnosticSeverity::Error, "Jass.Check", "JASS_UNDECLARED", "war3map.j:12: 未声明的函数 “MHModule_Create”", {}}};
+        AppendMissingIncludeHints(diagnostics, 0, {std::filesystem::path(real)});
+        std::cout << Details(diagnostics);
+        Require(Count(Details(diagnostics), "JASS_MISSING_INCLUDE_HINT") == 2
+            && Details(diagnostics).find("#include \"memory_hack.j\"") != std::string::npos
+            && Details(diagnostics).find("#include \"memory_hack_addon.j\"") != std::string::npos,
+            "real kkwe MemHack hints name the two entry files");
+    }
     Require(Count(translated, "function ProbeModuleCreate takes integer parentKey,integer childKey,code callback returns nothing") +
         Count(translated, "function ProbeModuleCreate takes integer parentKey, integer childKey, code callback returns nothing") == 1,
         "the real three-parameter declaration comes from the included library");

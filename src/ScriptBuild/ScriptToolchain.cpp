@@ -5,6 +5,7 @@
 #include "ScriptSourceBinding.h"
 
 #include "War3MapCore/Jass/JassChecker.h"
+#include "War3MapCore/Trigger/UiCallbackActions.h"
 #include "War3MapCore/Jass/VJass.h"
 #include "War3MapCore/Jass/IdentifierRewrite.h"
 #include "War3MapCore/Hash.h"
@@ -16,6 +17,7 @@
 #include <fstream>
 #include <algorithm>
 #include <map>
+#include <set>
 #include <sstream>
 #include <system_error>
 
@@ -485,7 +487,13 @@ bool RunBuiltinCheck(PipelineResult& result, const ToolchainOptions& options, co
     if (options.frameworkInputs && checked.errorsIgnored != 0)
         Fail(result, "SCRIPT_FRAMEWORK_CHECK_ERRORS_IGNORED", "Strict档案不接受由pragma忽略的最终JASS错误。");
     stage.exitCode = succeeded ? 0 : 1;
+    const auto firstCheckDiagnostic = result.diagnostics.size();
     for (auto& diagnostic : checked.diagnostics) result.diagnostics.push_back(std::move(diagnostic));
+    if (!succeeded) {
+        auto roots = options.jassDirs;
+        if (options.layout) roots.push_back(options.layout->root / "jass");
+        AppendMissingIncludeHints(result.diagnostics, firstCheckDiagnostic, roots);
+    }
     return succeeded;
 }
 
@@ -836,6 +844,121 @@ PipelineResult CompileMapScript(std::string_view generated, const ToolchainOptio
     result.syntaxChecked = true;
     VerifyLayout(result, options);
     return result;
+}
+
+namespace {
+// 只为提示服务的轻量 #include 展开：按行识别 #include "x" / <x>，先相对包含者目录、再相对库根目录解析，
+// 只跟随库根目录内的文件；有文件数、单文件大小和深度上限，超出时按已知部分给提示。
+using IncludeClosure = std::set<std::filesystem::path>;
+std::vector<std::filesystem::path> IncludedFiles(const std::filesystem::path& file, const std::filesystem::path& root) {
+    std::vector<std::filesystem::path> result;
+    std::error_code error;
+    const auto size = std::filesystem::file_size(file, error);
+    if (error || size > 8 * 1024 * 1024) return result;
+    std::ifstream stream(file, std::ios::binary);
+    for (std::string line; std::getline(stream, line);) {
+        auto at = line.find_first_not_of(" \t");
+        if (at == std::string::npos || line[at] != '#') continue;
+        at = line.find_first_not_of(" \t", at + 1);
+        if (at == std::string::npos || line.compare(at, 7, "include") != 0) continue;
+        const auto open = line.find_first_of("\"<", at + 7);
+        if (open == std::string::npos) continue;
+        const auto close = line.find(line[open] == '"' ? '"' : '>', open + 1);
+        if (close == std::string::npos) continue;
+        const auto raw = line.substr(open + 1, close - open - 1);
+        const std::filesystem::path name(std::u8string(raw.begin(), raw.end()));
+        for (const auto& base : {file.parent_path(), root}) {
+            auto candidate = (base / name).lexically_normal();
+            const auto relative = candidate.lexically_relative(root);
+            if (relative.empty() || *relative.begin() == "..") continue;
+            if (std::filesystem::is_regular_file(candidate, error)) { result.push_back(std::move(candidate)); break; }
+        }
+    }
+    return result;
+}
+IncludeClosure EntryClosure(const std::filesystem::path& entry, const std::filesystem::path& root, std::size_t& budget) {
+    IncludeClosure closure;
+    std::vector<std::pair<std::filesystem::path, int>> pending{{entry.lexically_normal(), 0}};
+    while (!pending.empty() && budget > 0) {
+        auto [file, depth] = std::move(pending.back());
+        pending.pop_back();
+        if (!closure.insert(file).second) continue;
+        --budget;
+        if (depth >= 32) continue;
+        for (auto& next : IncludedFiles(file, root)) pending.emplace_back(std::move(next), depth + 1);
+    }
+    return closure;
+}
+} // namespace
+
+// 最终检查报“未声明的函数”而该函数在函数库 jass 目录的某个文件里有声明时，说明那个文件不会被自动注入
+// （例如没有对应 .cfg 的 MemHack 库），提示作者在自定义脚本区 #include；只提示，不替作者添加。
+void AppendMissingIncludeHints(std::vector<Diagnostic>& diagnostics, std::size_t first,
+    const std::vector<std::filesystem::path>& jassDirs) {
+    constexpr std::string_view prefix = "未声明的函数 “";
+    constexpr std::string_view suffix = "”";
+    std::set<std::string> missing;
+    for (std::size_t index = first; index < diagnostics.size(); ++index) {
+        const auto& message = diagnostics[index].message;
+        // 消息带“文件:行: ”前缀，按片段查找函数名。
+        const auto at = diagnostics[index].code == "JASS_UNDECLARED" ? message.find(prefix) : std::string::npos;
+        if (at == std::string::npos) continue;
+        const auto begin = at + prefix.size(), end = message.find(suffix, begin);
+        if (end != std::string::npos) missing.insert(message.substr(begin, end - begin));
+    }
+    if (missing.empty()) return;
+    std::vector<std::filesystem::path> roots;
+    auto addRoot = [&roots](std::filesystem::path root) {
+        root = root.lexically_normal();
+        if (std::find(roots.begin(), roots.end(), root) == roots.end()) roots.push_back(std::move(root));
+    };
+    for (const auto& root : jassDirs) addRoot(root);
+    const auto scan = Trigger::ScanUiJassRoots(roots);
+    // 声明所在文件常由库根目录下的入口文件（如 memory_hack.j）间接包含，文档目录里的副本则无人包含；
+    // 所以提示能包含到它的入口文件，而不是声明所在的文件本身。多个入口都能包含时取不被其他入口包含的最外层。
+    std::map<std::filesystem::path, std::vector<std::string>> declaredIn;
+    for (const auto& declaration : scan.declarations) {
+        if (!missing.contains(declaration.name)) continue;
+        auto& names = declaredIn[declaration.source.lexically_normal()];
+        if (std::find(names.begin(), names.end(), declaration.name) == names.end()) names.push_back(declaration.name);
+    }
+    if (declaredIn.empty()) return;
+    std::map<std::string, std::vector<std::string>> byInclude;
+    std::set<std::string> hinted;
+    std::size_t budget = 4096;
+    for (const auto& root : roots) {
+        std::vector<std::pair<std::filesystem::path, IncludeClosure>> entries;
+        std::error_code error;
+        for (std::filesystem::directory_iterator it(root, error), last; !error && it != last; it.increment(error)) {
+            auto extension = it->path().extension().generic_u8string();
+            std::transform(extension.begin(), extension.end(), extension.begin(), [](auto c) { return static_cast<decltype(c)>(std::tolower(static_cast<unsigned char>(c))); });
+            if (!it->is_regular_file(error) || extension != u8".j") continue;
+            entries.emplace_back(it->path().lexically_normal(), EntryClosure(it->path(), root, budget));
+        }
+        std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        for (const auto& [source, names] : declaredIn) {
+            for (const auto& [entry, closure] : entries) {
+                if (!closure.contains(source)) continue;
+                const bool nested = std::any_of(entries.begin(), entries.end(), [&](const auto& other) {
+                    return other.first != entry && other.second.contains(entry) && other.second.contains(source);
+                });
+                if (nested) continue;
+                const auto text = entry.lexically_relative(root).generic_u8string();
+                auto& list = byInclude[std::string(text.begin(), text.end())];
+                for (const auto& name : names) {
+                    if (hinted.insert(name).second) list.push_back(name);
+                }
+            }
+        }
+    }
+    for (const auto& [include, names] : byInclude) {
+        if (names.empty()) continue;
+        std::string list;
+        for (std::size_t index = 0; index < names.size() && index < 3; ++index) list += (index ? "、" : "") + names[index];
+        if (names.size() > 3) list += " 等 " + std::to_string(names.size()) + " 个函数";
+        diagnostics.push_back({DiagnosticSeverity::Warning, "Script.Pipeline", "JASS_MISSING_INCLUDE_HINT", list + " 由函数库文件 " + include +
+            " 提供，但这次没有引入这个文件（不在自动注入列表里的库需要手动引入）。请在地图的自定义脚本区加入 #include \"" + include + "\"。", {}});
+    }
 }
 
 } // namespace War3Map::Script

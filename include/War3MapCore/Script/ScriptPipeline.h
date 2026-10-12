@@ -47,6 +47,12 @@ struct InjectTable {
 [[nodiscard]] InjectTable ScanInjectTable(const std::vector<std::filesystem::path>& jassDirs, bool version24,
     std::vector<Diagnostic>& diagnostics);
 
+// 对 diagnostics[first..] 中“未声明的函数”错误：若在给定函数库 jass 目录（递归）里找到声明该函数的文件，
+// 说明那个文件不会自动注入（例如没有 .cfg 的 MemHack 库），追加警告提示作者 #include（相对目录的路径）。
+// 只提示，不替作者添加；同一文件的多个函数合并为一条。
+void AppendMissingIncludeHints(std::vector<Diagnostic>& diagnostics, std::size_t first,
+    const std::vector<std::filesystem::path>& jassDirs);
+
 // 返回注入后的脚本；追加的文件按路径排序，每个文件后补 CRLF。
 [[nodiscard]] std::string InjectCode(std::string script, const InjectTable& table, std::vector<Diagnostic>& diagnostics,
     std::vector<std::filesystem::path>* injected = nullptr);
