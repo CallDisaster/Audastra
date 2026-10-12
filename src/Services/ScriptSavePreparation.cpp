@@ -320,7 +320,8 @@ Result<ScriptSavePreparationState> PrepareScriptSaveInputs(
             return Fail("SCRIPT_INPUT_MISSING", "缺少已解析的触发器、函数目录或游戏脚本成员。");
         }
         if (sources.scriptMember != Script::MapScriptMemberName(*task.archive)
-            && !(sources.luaTarget && sources.scriptMember == "war3map.lua")) {
+            && !(sources.luaTarget && sources.scriptMember ==
+                (sources.luaTarget->dialect == Script::LuaMapSaveDialect::Classic127YDWE ? "war3map.j" : "war3map.lua"))) {
             return Fail("SCRIPT_MEMBER_MISMATCH", "脚本成员名称与冻结的源归档不一致。");
         }
         if (sources.layers.empty() || sources.layers != sources.catalog->Layers()) {
@@ -369,7 +370,8 @@ Result<ScriptSavePreparationState> PrepareScriptSaveInputs(
                 return Forward(std::move(selected.diagnostics), "LUA_MAP_TARGET_INVALID");
             result.diagnostics.insert(result.diagnostics.end(), selected.diagnostics.begin(), selected.diagnostics.end());
             frozen.luaTarget = std::move(*selected.value);
-            frozen.scriptMember = "war3map.lua";
+            frozen.scriptMember = frozen.luaTarget->Profile()->dialect == Script::LuaMapSaveDialect::Classic127YDWE
+                ? "war3map.j" : "war3map.lua";
         } else if (frozen.toolchain.layout->executionPolicy == Script::ScriptToolchainExecutionPolicy::FrameworkInputsRequired) {
             auto profile = Script::MakeLegacyFrameworkProfile(*frozen.toolchain.layout, *frozen.catalog,
                 Trigger::UiCatalog::ResolveUiRoot(frozen.toolchain.uiRoot), task.archive->SourcePath().parent_path());

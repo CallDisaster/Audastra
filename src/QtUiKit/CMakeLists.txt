@@ -37,6 +37,10 @@ qt_add_library(War3MapQtUiKit STATIC
     Widgets/RoundedPopups.h
     Widgets/SearchField.cpp
     Widgets/SearchField.h
+    Widgets/ResponsiveToolBar.cpp
+    Widgets/TablePopupAnchor.cpp
+    Widgets/TablePopupAnchor.h
+    Widgets/ResponsiveToolBar.h
     Widgets/WarcraftTextPreview.cpp
     Widgets/WarcraftTextPreview.h)
 add_library(War3MapEditor::QtUiKit ALIAS War3MapQtUiKit)

@@ -34,6 +34,14 @@ void RegisterPlacementTools(McpServer& server) {
                 };
                 return Result<MapDataToolContext>::Success(std::move(context));
             };
+            host.objectContext = [workspace](ObjectData::ObjectType type) { return workspace->ObjectContext(type); };
+            host.terrainPoint = [&server, workspace](const MapData::TerrainStrokePoint& point) -> Result<MapData::TerrainPointSample> {
+                const auto terrain = workspace->TerrainContext(server.DocumentId(), server.DocumentGeneration());
+                if (!terrain.Succeeded()) return {{}, terrain.diagnostics};
+                if (!terrain.value->session) return Result<MapData::TerrainPointSample>::Failure("MCP.Placements",
+                    "ENTITY_CREATE_HOST_UNAVAILABLE", "当前地图没有可用的地形会话。");
+                return terrain.value->session->InspectTerrainPoint(point);
+            };
             host.apply = [workspace](const MapData::PreparedMapDataPlacement& plan,
                 const PlacementPrepublishValidator& validate) {
                 return workspace->ApplyPlacementPlan(plan, [&](const auto& before, const auto& after, const auto& receipt) {

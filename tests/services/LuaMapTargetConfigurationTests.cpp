@@ -255,12 +255,32 @@ void EnforcesBudgetsAndBindings(Fixture& fixture) {
 
 } // namespace
 
+void ClassicConfigurationUsesEmbeddedChecker(Fixture& fixture) {
+    auto lines = fixture.Lines();
+    std::erase_if(lines, [](const auto& line) { return line.starts_with("checker\t") || line.starts_with("runtime\t"); });
+    lines.push_back("dialect\tclassic-127-ydwe");
+    const auto loaded = fixture.Load(lines);
+    Require(loaded.Succeeded() && loaded.value
+        && loaded.value->dialect == Script::LuaMapSaveDialect::Classic127YDWE
+        && !loaded.value->checker.Identity(), "classic configuration cannot depend on an external Lua checker");
+    auto invalid = fixture.Lines(); invalid.push_back("dialect\tclassic-127-ydwe");
+    Rejected(fixture.Load(invalid), "LUA_MAP_CONFIGURATION_CLASSIC_CHECKER_CONFLICT");
+    invalid = lines; invalid.push_back("runtime\t" + Utf8(fixture.runtimes.front()));
+    Rejected(fixture.Load(invalid), "LUA_MAP_CONFIGURATION_CLASSIC_CHECKER_CONFLICT");
+    invalid = lines;
+    for (auto& line : invalid) if (line.starts_with("language\t")) line = "language\tselect-lua";
+    Rejected(fixture.Load(invalid), "LUA_MAP_CONFIGURATION_CLASSIC_CONFLICT");
+    invalid = lines; invalid.push_back("dialect\tnative-v31");
+    Rejected(fixture.Load(invalid), "LUA_MAP_CONFIGURATION_FIELD_DUPLICATE");
+}
+
 int main() {
     try {
         Fixture fixture;
         AcceptsExplicitOwnedInputs(fixture);
         RejectsMalformedRecords(fixture);
         RejectsTextAndAmbiguousPaths(fixture);
+        ClassicConfigurationUsesEmbeddedChecker(fixture);
         EnforcesBudgetsAndBindings(fixture);
         fixture.RemoveSuccessfulFixture();
         std::cout << "Lua map configuration: strict UTF8 TSV, normal newlines, explicit paths/SHA, budgets and owned identity passed; no checker executed.\n";

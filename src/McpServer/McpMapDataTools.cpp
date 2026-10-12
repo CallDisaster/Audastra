@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cmath>
 #include <limits>
 #include <set>
 #include <stdexcept>
@@ -222,14 +223,17 @@ QJsonObject ReadonlySettings(const MapDocument& document) {
         {"random_unit_tables", settings.custom ? QJsonValue(QString::number(settings.custom->randomUnits.size())) : QJsonValue(QJsonValue::Null)},
         {"random_item_tables", settings.custom ? QJsonValue(QString::number(settings.custom->randomItems.size())) : QJsonValue(QJsonValue::Null)}};
 }
-QJsonObject UnitFilterSchema() {
+QJsonObject EntityFilterSchema() {
+    const auto number = QJsonObject{{"type", "number"}};
     return BasicSchema({{"type_id", TextSchema(12)},
         {"player", QJsonObject{{"type", "integer"}, {"minimum", std::numeric_limits<std::int32_t>::min()},
-            {"maximum", std::numeric_limits<std::int32_t>::max()}}}});
+            {"maximum", std::numeric_limits<std::int32_t>::max()}}},
+        {"world_rect", BasicSchema({{"left", number}, {"bottom", number}, {"right", number}, {"top", number}},
+            {"left", "bottom", "right", "top"})}});
 }
-MapDataUnitFilter UnitFilter(const QJsonObject& object) {
-    Keys(object, UnitFilterSchema().value("properties").toObject());
-    MapDataUnitFilter filter;
+MapDataEntityFilter EntityFilter(const QJsonObject& object) {
+    Keys(object, EntityFilterSchema().value("properties").toObject());
+    MapDataEntityFilter filter;
     if (object.contains("type_id")) {
         auto bytes = Text(object, "type_id", 12);
         if (bytes.size() == 12 && bytes.starts_with("hex:")) {
@@ -247,26 +251,48 @@ MapDataUnitFilter UnitFilter(const QJsonObject& object) {
         if (!player.Succeeded() || !player.value) throw EntityJsonError("ENTITY_FILTER_PLAYER", "player 须为精确int32整数，不限制到写入用的0..15。");
         filter.player = *player.value;
     }
+    if (object.contains("world_rect")) {
+        if (!object.value("world_rect").isObject())
+            throw EntityJsonError("ENTITY_FILTER_RECT", "world_rect 须为有限世界坐标矩形对象。");
+        const auto raw = object.value("world_rect").toObject();
+        const auto schema = EntityFilterSchema().value("properties").toObject().value("world_rect").toObject();
+        Keys(raw, schema.value("properties").toObject(), schema.value("required").toArray());
+        const auto number = [&](const char* key) {
+            const auto value = raw.value(QLatin1String(key));
+            if (!value.isDouble() || !std::isfinite(value.toDouble()))
+                throw EntityJsonError("ENTITY_FILTER_RECT", "world_rect 的四边必须为有限数值。");
+            return value.toDouble();
+        };
+        MapDataWorldRect rectangle{number("left"), number("bottom"), number("right"), number("top")};
+        if (rectangle.left > rectangle.right || rectangle.bottom > rectangle.top)
+            throw EntityJsonError("ENTITY_FILTER_RECT", "world_rect 须满足 left≤right、bottom≤top；四边均包含。");
+        filter.worldRect = rectangle;
+    }
     return filter;
 }
-QJsonObject UnitFilterJson(const MapDataUnitFilter& filter) {
+QJsonObject EntityFilterJson(const MapDataEntityFilter& filter) {
     QJsonObject result;
     if (filter.typeIdBytes) result.insert("type_id", "hex:" + Hex(*filter.typeIdBytes));
     if (filter.player) result.insert("player", *filter.player);
+    if (filter.worldRect) {
+        const auto& rect = *filter.worldRect;
+        result.insert("world_rect", QJsonObject{{"left", rect.left}, {"bottom", rect.bottom},
+            {"right", rect.right}, {"top", rect.top}});
+    }
     return result;
 }
-QJsonObject UnitCursorSchema() {
+QJsonObject EntityCursorSchema() {
     const auto binding = BasicSchema({{"document_id", TextSchema(4096)}, {"document_generation", IndexSchema()},
         {"revision", IndexSchema()}, {"source_sha256", ShaSchema()}},
         {"document_id", "document_generation", "revision", "source_sha256"});
-    return BasicSchema({{"binding", binding}, {"kind", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"units"}}}},
-        {"member_sha256", ShaSchema(true)}, {"filter", UnitFilterSchema()}, {"next_index", IndexSchema()}},
+    return BasicSchema({{"binding", binding}, {"kind", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"units", "doodads", "regions", "cameras"}}}},
+        {"member_sha256", ShaSchema(true)}, {"filter", EntityFilterSchema()}, {"next_index", IndexSchema()}},
         {"binding", "kind", "member_sha256", "filter", "next_index"});
 }
-QJsonObject UnitCursorJson(const MapDataUnitQueryCursor& cursor) {
-    return {{"binding", BindingJson(cursor.source.binding)}, {"kind", "units"},
+QJsonObject EntityCursorJson(const MapDataEntityQueryCursor& cursor) {
+    return {{"binding", BindingJson(cursor.source.binding)}, {"kind", QString::fromStdString(std::string(MapDataKindId(cursor.source.kind)))},
         {"member_sha256", cursor.memberSha256 ? QString::fromStdString(*cursor.memberSha256) : QStringLiteral("missing")},
-        {"filter", UnitFilterJson(cursor.filter)}, {"next_index", QString::number(cursor.source.nextIndex)}};
+        {"filter", EntityFilterJson(cursor.filter)}, {"next_index", QString::number(cursor.source.nextIndex)}};
 }
 Result<QJsonObject> SelectedRows(const MapDataQuerySnapshot& snapshot, MapDataKind kind, const std::set<std::uint64_t>& selected) {
     auto described = DescribeMapData(snapshot, snapshot.Binding());
@@ -291,7 +317,7 @@ Result<QJsonObject> SelectedRows(const MapDataQuerySnapshot& snapshot, MapDataKi
 
 namespace {
 QJsonObject SoundCursorSchema() {
-    return BasicSchema({{"binding", UnitCursorSchema().value("properties").toObject().value("binding").toObject()},
+    return BasicSchema({{"binding", EntityCursorSchema().value("properties").toObject().value("binding").toObject()},
         {"kind", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"sounds"}}}}, {"member_sha256", ShaSchema(true)},
         {"query", TextSchema(4096)}, {"next_index", IndexSchema()}}, {"binding", "kind", "member_sha256", "query", "next_index"});
 }
@@ -433,10 +459,10 @@ std::vector<ToolDefinition> MapDataToolDefinitions() {
         definition.maxResponseBytes = 1024U * 1024U; definition.maxRequestIdBytes = 4096; result.push_back(std::move(definition));
     };
     auto query = identity; query.insert("kind", kind); query.insert("expected_member_sha256", ShaSchema(true));
-    query.insert("filter", UnitFilterSchema());
-    query.insert("page", BasicSchema({{"start_index", IndexSchema()}, {"cursor", UnitCursorSchema()},
+    query.insert("filter", EntityFilterSchema());
+    query.insert("page", BasicSchema({{"start_index", IndexSchema()}, {"cursor", EntityCursorSchema()},
         {"limit", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 128}}}}));
-    add("entities_query", "查询当前原会话/活动事务的单位、地物、区域或镜头；默认64、最多128行，完整JSON最多256KiB。仅units支持filter：type_id精确四字节、区分大小写（可用hex:xxxxxxxx），player精确int32；每次最多扫描4096条，未知总匹配数返回null。续页须回传原cursor及同filter，不能同时传start_index。行索引和row_key只在返回修订内有效。查询不编辑或保存，地物和未知布局保持只读。", query, {"kind"}, ToolPermission::Query);
+    add("entities_query", "查询当前原会话/活动事务的单位、地物、区域或镜头；默认64、最多128行，完整JSON最多256KiB。filter条件取交集：type_id精确四字节且区分大小写（可用hex:xxxxxxxx），仅units/doodads可用；player精确int32，仅units可用。world_rect={left,bottom,right,top}为有限世界坐标闭矩形，匹配摆放XY、镜头targetXY或相交区域；匹配到只有网格坐标的特殊地物或非有限位置时明确拒绝，不猜坐标。先筛选再分页，每次最多扫描4096条，未知总数为null。续页回传原cursor和同filter，不同时传start_index。source_index和row_key仅在返回修订内有效；查询不编辑或保存。", query, {"kind"}, ToolPermission::Query);
     auto write = identity; write.insert("kind", kind); write.insert("expected_member_sha256", ShaSchema());
     write.insert("changes", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 32}, {"items", change}});
     add("entities_set_fields", "原子修改已有单位owner/facing/hit_points/mana、普通classic单位绝对native世界x/y/z、区域四边或经典镜头target_x/target_y/z_offset/distance。单位XYZ有限±1000000，不采样地形或自动改其它轴，sloc/SkinId/不完整来源拒绝XYZ。1..32项同类字段须绑定真实身份、成员SHA、行身份和精确前值；沿原Undo/活动事务，不保存。尚不支持create/delete/rename，地物字段只读。", write,
@@ -452,7 +478,7 @@ std::vector<ToolDefinition> MapDataToolDefinitions() {
     add("map_settings_set", "原子修改经典完整v25 W3I既有地图名/作者/描述/建议玩家/game_data_set，1..32项。文字value是UTF-8字面量，最多4096字节、不接受TRIGSTR_开头。作者/描述/建议玩家原值是TRIGSTR时保留原引用并改写对应唯一WTS正文，所有同编号引用一并受影响；须显式write_mode=shared_string。同时改W3I literal/数值时用mixed；只改W3I用literal。地图名沿用非空literal写入。expected_raw绑定原wire字节而非解析文字。setting_id=w3i、expected_revision和原W3I SHA必填；原WTS来源另行绑定，缺失/重复/漂移拒绝，沿原Undo/密封事务，不保存。", settingsWrite,
         {"project_identity", "expected_revision", "expected_member_sha256", "setting_id", "write_mode", "changes"}, ToolPermission::Edit);
     auto stringsRead = identity; stringsRead.insert("expected_member_sha256", ShaSchema(true));
-    const auto stringCursor = BasicSchema({{"binding", UnitCursorSchema().value("properties").toObject().value("binding").toObject()},
+    const auto stringCursor = BasicSchema({{"binding", EntityCursorSchema().value("properties").toObject().value("binding").toObject()},
         {"kind", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"strings"}}}}, {"member_sha256", ShaSchema(true)}, {"next_index", IndexSchema()}},
         {"binding", "kind", "member_sha256", "next_index"});
     stringsRead.insert("page", BasicSchema({{"start_index", IndexSchema()}, {"cursor", stringCursor},
@@ -560,27 +586,30 @@ QJsonObject InvokeMapDataTool(const QString& name, const QJsonObject& arguments,
                 start = Index(cursor, "next_index");
             }
             if (arguments.contains("filter") || (pageInput.contains("cursor") && !stringsTool)) {
-                if (kind != MapDataKind::Units) return Failure("ENTITY_FILTER_KIND", "filter和有界筛选cursor仅支持units。");
                 if (arguments.contains("filter") && !arguments.value("filter").isObject())
                     return Failure("ENTITY_FILTER_INVALID", "filter须为对象。");
-                const auto filter = UnitFilter(arguments.value("filter").toObject());
-                std::optional<MapDataUnitQueryCursor> cursor;
+                const auto filter = EntityFilter(arguments.value("filter").toObject());
+                if ((filter.player && kind != MapDataKind::Units)
+                    || (filter.typeIdBytes && kind != MapDataKind::Units && kind != MapDataKind::Doodads))
+                    return Failure("ENTITY_FILTER_KIND", "player仅适用于units，type_id仅适用于units/doodads。");
+                std::optional<MapDataEntityQueryCursor> cursor;
                 if (pageInput.contains("cursor")) {
                     if (pageInput.contains("start_index") || !pageInput.value("cursor").isObject())
                         return Failure("ENTITY_QUERY_CURSOR_INVALID", "cursor须为对象，且不能同时提供start_index。");
                     const auto raw = pageInput.value("cursor").toObject();
-                    const auto schema = UnitCursorSchema();
+                    const auto schema = EntityCursorSchema();
                     Keys(raw, schema.value("properties").toObject(), schema.value("required").toArray());
                     if (!raw.value("binding").isObject() || !raw.value("filter").isObject()
                         || !raw.value("kind").isString() || !raw.value("member_sha256").isString())
                         return Failure("ENTITY_QUERY_CURSOR_INVALID", "cursor身份和filter类型无效。");
-                    const auto cursorFilter = UnitFilter(raw.value("filter").toObject());
-                    if (raw.value("binding").toObject() != BindingJson(context.binding) || raw.value("kind") != "units"
+                    const auto cursorFilter = EntityFilter(raw.value("filter").toObject());
+                    if (raw.value("binding").toObject() != BindingJson(context.binding)
+                        || raw.value("kind") != QString::fromStdString(std::string(MapDataKindId(kind)))
                         || raw.value("member_sha256") != QString::fromStdString(memberSha) || cursorFilter != filter)
                         return Failure("ENTITY_QUERY_CURSOR_STALE", "cursor的文档修订、成员SHA/presence或筛选条件已变化。");
-                    cursor = MapDataUnitQueryCursor{{context.binding, kind, Index(raw, "next_index")}, filter, member.memberSha256};
-                } else cursor = MapDataUnitQueryCursor{{context.binding, kind, start}, filter, member.memberSha256};
-                auto page = QueryMapDataUnitsPage(*snapshot.value, context.binding, filter, cursor, limit, 4096,
+                    cursor = MapDataEntityQueryCursor{{context.binding, kind, Index(raw, "next_index")}, filter, member.memberSha256};
+                } else cursor = MapDataEntityQueryCursor{{context.binding, kind, start}, filter, member.memberSha256};
+                auto page = QueryMapDataEntitiesPage(*snapshot.value, context.binding, kind, filter, cursor, limit, 4096,
                     kResponseBytes - kIdentityBytes);
                 if (!page.Succeeded() || !page.value) {
                     auto failure = Failure(page); failure.insert("member", MemberJson(member)); return Stamp(std::move(failure), identity);
@@ -589,9 +618,11 @@ QJsonObject InvokeMapDataTool(const QString& name, const QJsonObject& arguments,
                 for (const auto& row : page.value->rows) rows.append(EntityRowJson(row, *context.document, kind));
                 auto body = Scope(context); body.insert("ok", true); body.insert("schema_version", 1);
                 body.insert("binding", BindingJson(context.binding)); body.insert("member", MemberJson(page.value->member));
-                body.insert("rows", rows); body.insert("filter", UnitFilterJson(filter));
-                body.insert("next_cursor", page.value->next ? QJsonValue(UnitCursorJson(*page.value->next)) : QJsonValue(QJsonValue::Null));
+                body.insert("rows", rows); body.insert("filter", EntityFilterJson(filter));
+                body.insert("next_cursor", page.value->next ? QJsonValue(EntityCursorJson(*page.value->next)) : QJsonValue(QJsonValue::Null));
                 body.insert("matched_total", page.value->matchedTotal ? QJsonValue(QString::number(*page.value->matchedTotal)) : QJsonValue(QJsonValue::Null));
+                if (!arguments.contains("filter"))
+                    body.insert("total", page.value->member.recordCount ? QJsonValue(QString::number(*page.value->member.recordCount)) : QJsonValue(QJsonValue::Null));
                 body.insert("matched_total_complete", page.value->matchedTotal.has_value());
                 body.insert("examined", QString::number(page.value->examined));
                 body.insert("scan_budget_exhausted", page.value->scanBudgetExhausted);
@@ -611,6 +642,8 @@ QJsonObject InvokeMapDataTool(const QString& name, const QJsonObject& arguments,
             QJsonValue next(QJsonValue::Null);
             if (page.value->next) next = QJsonObject{{"binding", BindingJson(page.value->next->binding)},
                 {"kind", MapKindName(kind)}, {"next_index", QString::number(page.value->next->nextIndex)}};
+            if (name == "entities_query" && page.value->next)
+                next = EntityCursorJson({*page.value->next, {}, member.memberSha256});
             if (stringsTool && next.isObject()) {
                 auto cursor = next.toObject(); cursor.insert("member_sha256", QString::fromStdString(memberSha)); next = cursor;
             }

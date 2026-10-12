@@ -6,6 +6,7 @@
 #include "War3MapCore/Services/MapDataQuery.h"
 #include "War3MapCore/Services/ProjectSearch.h"
 #include "War3MapCore/Services/MapEditSaveService.h"
+#include "War3MapCore/Services/TerrainEditService.h"
 #include "War3MapCore/Services/ObjectCommands.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/Trigger/TriggerEditing.h"
@@ -27,6 +28,14 @@ namespace War3Map::Trigger { class TriggerTypeSystem; }
 namespace War3Map::Mcp {
 
 struct McpObjectWorkspaceState;
+struct McpTerrainWorkspaceState;
+struct McpTerrainOverlay;
+
+struct McpWorkspaceTerrainContext {
+    const MapData::MapDataEditSession* session = nullptr;
+    Services::MapDataQueryBinding document;
+    bool includesActiveTransactionOverlay = false;
+};
 
 struct McpWorkspaceMapDataContext {
     std::shared_ptr<const MapDocument> original;
@@ -49,8 +58,8 @@ struct VerifiedWarVKModule {
     std::string wrapperText;
 };
 
-// MCP 的唯一写入状态。它不暴露裸文档写入口；每次成功编辑都会先由
-// WtgWctCodec 生成带来源身份的密封 TriggerPatch，再进入 EditorSession overlay。
+// MCP 的唯一写入状态。不暴露裸文档写入口；每次成功编辑先由对应领域 Codec
+// 生成带来源身份的密封补丁，再进入同一个 EditorSession overlay。
 class McpWorkspace {
 public:
     McpWorkspace(McpWorkspace&&) noexcept;
@@ -89,6 +98,7 @@ public:
         std::uintmax_t maxSourceBytes = 32ULL * 1024 * 1024);
     [[nodiscard]] const Trigger::TriggerTypeSystem* PreparedProjectSearchTypes() const noexcept;
     [[nodiscard]] const std::filesystem::path& SourceRoot() const noexcept { return projectRoot_; }
+    [[nodiscard]] const std::filesystem::path& GameRoot() const noexcept { return gameRoot_; }
 
     // 同一领域命令在 GUI 与独立 MCP 使用；独立宿主仍只写 EditorSession overlay。
     [[nodiscard]] std::string ObjectRevision() const;
@@ -100,6 +110,11 @@ public:
         const MapData::PreparedMapDataFields& plan, const MapData::MapDataPublishValidator& prepublish = {});
     [[nodiscard]] Result<MapData::MapDataEditSession::EditReceipt> ApplyPlacementPlan(
         const MapData::PreparedMapDataPlacement& plan, const MapData::MapDataPublishValidator& prepublish = {});
+    [[nodiscard]] Result<McpWorkspaceTerrainContext> TerrainContext(std::string documentId,
+        std::uint64_t documentGeneration);
+    [[nodiscard]] Result<MapData::TerrainStrokeResult> ApplyTerrainPlan(
+        const Services::PreparedTerrainEdit& plan,
+        const std::function<Status(const MapData::MapDataEditSession::EditReceipt&)>& prepublish = {});
     [[nodiscard]] Services::ObjectDeletionAssessment AssessObjectDeletion(const ObjectData::ObjectKey& key);
 
     [[nodiscard]] Result<TransactionId> BeginEdit(
@@ -172,6 +187,7 @@ private:
         std::array<std::shared_ptr<const ObjectData::LniObjectDocument>, 7> objects;
         std::shared_ptr<const MapDocument> mapData;
         std::shared_ptr<const MapData::MapDataPlacementIntent> placementIntent;
+        std::shared_ptr<McpTerrainOverlay> terrain;
     };
 
     McpWorkspace(
@@ -196,6 +212,15 @@ private:
     [[nodiscard]] Status CaptureMapDataSources();
     [[nodiscard]] Status SeedMapDataOverlay(ActiveEdit& edit);
     [[nodiscard]] Status ValidateMapDataOverlay() const;
+    [[nodiscard]] Status CaptureTerrainSources();
+    [[nodiscard]] Status SeedTerrainOverlay(ActiveEdit& edit);
+    [[nodiscard]] Status ValidateTerrainOverlay() const;
+    [[nodiscard]] Status CheckTerrainMixingAllowed() const;
+    [[nodiscard]] bool HasTerrainOverlay() const noexcept;
+    void CommitTerrainOverlay();
+    [[nodiscard]] Result<Services::MapEditSaveReceipt> ExportTerrainArchiveCandidate(
+        TransactionId transactionId, const ProjectRevision& expectedRevision,
+        Services::MapEditSaveRequest request);
     [[nodiscard]] Result<Services::MapEditSaveReceipt> ExportMapDataArchiveCandidate(
         TransactionId transactionId, const ProjectRevision& expectedRevision,
         Services::MapEditSaveRequest request);
@@ -243,6 +268,7 @@ private:
     std::optional<ActiveEdit> activeEdit_;
     std::unique_ptr<McpObjectWorkspaceState> objectState_;
     std::unique_ptr<DirectoryWorkspace> mapDataSource_;
+    std::shared_ptr<McpTerrainWorkspaceState> terrainState_;
     std::shared_ptr<const MapDocument> initialMapData_, committedMapData_;
     std::shared_ptr<const Services::MapDataQuerySnapshot> projectSearchMapCache_;
     std::shared_ptr<const MapData::MapDataPlacementIntent> committedPlacementIntent_;

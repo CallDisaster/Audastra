@@ -150,18 +150,16 @@ Expression Emitter::Literal(std::string value, const std::string& expectedSlot, 
         if (preset && value.size() == 6 && value.front() == '\'' && value.back() == '\'') {
             value = value.substr(1, 4);
         } else if (preset && Trigger::TriggerTypeSystem::IsIntegerLiteral(value)) {
-            std::int32_t integer = 0;
-            (void)std::from_chars(value.data(), value.data() + value.size(), integer);
-            return {"integer", std::to_string(integer), {}};
+            const auto integer = Trigger::TriggerTypeSystem::ParseIntegerLiteral(value);
+            return {"integer", std::to_string(*integer), {}};
         }
         if (!Trigger::TriggerTypeSystem::IsObjectCodeLiteral(value))
             Fail("LUA_LITERAL_UNTRANSLATED", "对象编号固定值必须是四个安全字节，不加引号或转义。");
         return Native("FourCC", {{"string", Quote(value), value}}, "integer");
     }
     if (expected == "integer") {
-        std::int32_t integer = 0;
-        const auto parsed = std::from_chars(value.data(), value.data() + value.size(), integer);
-        if (parsed.ec == std::errc{} && parsed.ptr == value.data() + value.size()) return {expected, std::to_string(integer), {}};
+        if (const auto integer = Trigger::TriggerTypeSystem::ParseIntegerLiteral(value))
+            return {expected, std::to_string(*integer), {}};
     }
     if (expected == "real") {
         double real = 0;

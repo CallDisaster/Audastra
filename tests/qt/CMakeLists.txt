@@ -109,6 +109,7 @@ foreach(agent_unit IN ITEMS Settings Window Controller)
     set_tests_properties(qt-agent-${agent_unit_lower} PROPERTIES TIMEOUT 60
         ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 endforeach()
+war3map_deploy_fonts(war3-map-agent-window-tests)
 qt_add_executable(war3-map-agent-ui-capture AgentUiCapture.cpp)
 target_link_libraries(war3-map-agent-ui-capture PRIVATE War3MapEditor::QtAgent)
 target_compile_definitions(war3-map-agent-ui-capture PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
@@ -130,7 +131,7 @@ qt_add_executable(war3-map-live-editor-tools-tests LiveEditorToolsTests.cpp
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorTools.cpp"
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorTools.h")
 target_include_directories(war3-map-live-editor-tools-tests PRIVATE "${PROJECT_SOURCE_DIR}/src/QtApp")
-target_link_libraries(war3-map-live-editor-tools-tests PRIVATE War3MapEditor::QtProject War3MapEditor::McpProtocol Qt6::Test)
+target_link_libraries(war3-map-live-editor-tools-tests PRIVATE War3MapEditor::QtProject War3MapEditor::McpProtocol War3MapEditor::ObjectResourceAdapter Qt6::Test)
 target_compile_definitions(war3-map-live-editor-tools-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-live-editor-tools-tests PRIVATE /W4 /permissive- /utf-8)
 war3map_deploy_qt_runtime(war3-map-live-editor-tools-tests)
@@ -305,7 +306,7 @@ qt_add_executable(war3-map-native-workbench-tests ${native_workbench_test_source
 target_include_directories(war3-map-native-workbench-tests PRIVATE "${PROJECT_SOURCE_DIR}/src/QtApp")
 target_link_libraries(war3-map-native-workbench-tests PRIVATE
     War3MapEditor::Core War3MapEditor::ObjectData War3MapEditor::Trigger War3MapEditor::QtUiKit
-    War3MapEditor::MapSizeAnalysis
+    War3MapEditor::MapSizeAnalysis War3MapEditor::ObjectResourceAdapter
     War3MapEditor::QtAgent War3MapEditor::McpProtocol War3MapEditor::QtFeedback War3MapEditor::QtUpdate
     Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
 target_compile_definitions(war3-map-native-workbench-tests PRIVATE
@@ -347,7 +348,7 @@ qt_add_executable(war3-map-project-watch-tests ${project_watch_test_sources})
 target_include_directories(war3-map-project-watch-tests PRIVATE "${PROJECT_SOURCE_DIR}/src/QtApp")
 target_link_libraries(war3-map-project-watch-tests PRIVATE
     War3MapEditor::Core War3MapEditor::ObjectData War3MapEditor::Trigger War3MapEditor::QtUiKit
-    War3MapEditor::MapSizeAnalysis
+    War3MapEditor::MapSizeAnalysis War3MapEditor::ObjectResourceAdapter
     War3MapEditor::QtAgent War3MapEditor::McpProtocol War3MapEditor::QtFeedback War3MapEditor::QtUpdate
     Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
 target_compile_definitions(war3-map-project-watch-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
@@ -398,6 +399,16 @@ set_tests_properties(qt-uikit PROPERTIES TIMEOUT 45
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
 # 外壳：停靠布局规则、布局持久化、模块移动时控件与状态保留、撤销路由。
+qt_add_executable(war3-map-responsive-toolbar-tests ResponsiveToolbarTests.cpp)
+target_link_libraries(war3-map-responsive-toolbar-tests PRIVATE War3MapEditor::QtShell Qt6::Test)
+target_compile_options(war3-map-responsive-toolbar-tests PRIVATE /W4 /permissive- /utf-8)
+war3map_deploy_fonts(war3-map-responsive-toolbar-tests)
+add_test(NAME qt-responsive-toolbar COMMAND war3-map-responsive-toolbar-tests -o -,txt)
+add_test(NAME qt-responsive-toolbar-dpr150 COMMAND war3-map-responsive-toolbar-tests -o -,txt)
+set_tests_properties(qt-responsive-toolbar qt-responsive-toolbar-dpr150 PROPERTIES TIMEOUT 60
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_PLUGIN_PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>/../plugins")
+set_tests_properties(qt-responsive-toolbar-dpr150 PROPERTIES ENVIRONMENT "QT_SCALE_FACTOR=1.5")
+
 qt_add_executable(war3-map-shell-tests ShellTests.cpp)
 target_link_libraries(war3-map-shell-tests PRIVATE War3MapEditor::QtShell Qt6::Test)
 target_compile_definitions(war3-map-shell-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
@@ -428,6 +439,14 @@ target_link_libraries(war3-map-project-watch-tests PRIVATE War3MapEditor::QtModu
 target_link_libraries(war3-map-project-watch-tests PRIVATE War3MapEditor::QtModuleSounds)
 target_link_libraries(war3-map-project-watch-tests PRIVATE War3MapEditor::QtModuleWorld)
 target_link_libraries(war3-map-project-watch-tests PRIVATE War3MapEditor::QtModuleCampaign)
+
+qt_add_executable(audastra-object-context-provider-tests ObjectContextProviderTests.cpp)
+target_link_libraries(audastra-object-context-provider-tests PRIVATE War3MapEditor::QtProject)
+target_compile_definitions(audastra-object-context-provider-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-object-context-provider-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME qt-object-context-provider COMMAND audastra-object-context-provider-tests)
+set_tests_properties(qt-object-context-provider PROPERTIES TIMEOUT 60
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
 qt_add_executable(war3-map-world-module-tests WorldModuleTests.cpp)
 target_link_libraries(war3-map-world-module-tests PRIVATE War3MapEditor::QtModuleWorld
@@ -621,6 +640,18 @@ qt_add_executable(war3-map-object-direct-edit-tests ObjectDirectEditTests.cpp)
 target_link_libraries(war3-map-object-direct-edit-tests PRIVATE War3MapEditor::QtModuleObjects Qt6::Test)
 target_compile_options(war3-map-object-direct-edit-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME qt-object-direct-edit COMMAND war3-map-object-direct-edit-tests)
+
+qt_add_executable(war3-map-object-resource-picker-tests ObjectResourcePickerTests.cpp)
+target_include_directories(war3-map-object-resource-picker-tests PRIVATE "${PROJECT_SOURCE_DIR}/src/QtApp")
+target_link_libraries(war3-map-object-resource-picker-tests PRIVATE
+    War3MapEditor::ObjectResourceAdapter Qt6::Test)
+target_compile_options(war3-map-object-resource-picker-tests PRIVATE /W4 /permissive- /utf-8)
+target_compile_definitions(war3-map-object-resource-picker-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+war3map_deploy_fonts(war3-map-object-resource-picker-tests)
+add_test(NAME qt-object-resource-picker COMMAND war3-map-object-resource-picker-tests -o -,txt)
+set_tests_properties(qt-object-resource-picker PROPERTIES TIMEOUT 60
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_PLUGIN_PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>/../plugins")
 set_tests_properties(qt-object-direct-edit PROPERTIES TIMEOUT 45
     ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_PLUGIN_PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>/../plugins")
@@ -777,7 +808,7 @@ qt_add_executable(war3-map-trigger-rename-tests TriggerRenameTests.cpp
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorTools.h")
 target_include_directories(war3-map-trigger-rename-tests PRIVATE "${PROJECT_SOURCE_DIR}/src/QtApp")
 target_link_libraries(war3-map-trigger-rename-tests PRIVATE
-    War3MapEditor::QtModuleTriggers War3MapEditor::QtProject War3MapEditor::McpProtocol Qt6::Test)
+    War3MapEditor::QtModuleTriggers War3MapEditor::QtProject War3MapEditor::McpProtocol War3MapEditor::ObjectResourceAdapter Qt6::Test)
 target_compile_definitions(war3-map-trigger-rename-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-trigger-rename-tests PRIVATE /W4 /permissive- /utf-8)
 war3map_deploy_qt_runtime(war3-map-trigger-rename-tests)

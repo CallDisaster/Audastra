@@ -3,6 +3,7 @@
 #include "EditorProject.h"
 #include "Icons/SvgIcons.h"
 #include "Widgets/ColumnLayout.h"
+#include "Widgets/ResponsiveToolBar.h"
 #include "Modules/ModuleHost.h"
 #include "ObjectNames.h"
 #include "TriggerModels.h"
@@ -42,31 +43,6 @@
 
 // 触发器模块的页面搭建与信号连接（布局对应原型 TriggerWorkspace：左目录、上信息条、右逻辑区）。
 namespace War3Map::Modules {
-namespace {
-
-// 命令仍用原按钮和焦点链；窄宿主时可横向滚动，不将全部命令宽度传给编辑区。
-class TriggerCommandViewport final : public QScrollArea {
-public:
-    using QScrollArea::QScrollArea;
-
-    QSize sizeHint() const override {
-        return {QScrollArea::minimumSizeHint().width(), CommandHeight()};
-    }
-
-    QSize minimumSizeHint() const override {
-        return {QScrollArea::minimumSizeHint().width(), CommandHeight()};
-    }
-
-private:
-    int CommandHeight() const {
-        const auto* commands = widget();
-        return (commands ? commands->sizeHint().height() : 0)
-            + horizontalScrollBar()->sizeHint().height() + 2 * frameWidth();
-    }
-};
-
-} // namespace
-
 void TriggerModule::BuildPage() {
     page_ = new QWidget;
     page_->setObjectName("triggerWorkspace");
@@ -85,15 +61,19 @@ void TriggerModule::BuildPage() {
     heading->addWidget(summary_);
     layout->addLayout(heading);
 
-    auto* commandBar = new QFrame(page_);
+    auto* commandBar = new UiKit::ResponsiveToolBar(page_);
     commandBar->setObjectName("triggerCommandBar");
-    auto* commands = new QHBoxLayout(commandBar);
+    auto* commands = commandBar->ContentLayout();
     commands->setContentsMargins(8, 7, 8, 7);
     commands->setSpacing(6);
     addEventButton_ = new QPushButton(tr("＋ 事件"), commandBar);
     addConditionButton_ = new QPushButton(tr("＋ 条件"), commandBar);
     addActionButton_ = new QPushButton(tr("＋ 动作"), commandBar);
     editEcaButton_ = new QPushButton(tr("编辑参数"), commandBar);
+    addEventButton_->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/zap")));
+    addConditionButton_->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/list-filter")));
+    addActionButton_->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/plus")));
+    editEcaButton_->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/pencil")));
     addActionButton_->setObjectName("primaryButton");
     editEcaButton_->setObjectName("accentButton");
     for (QPushButton* button : {addEventButton_, addConditionButton_, addActionButton_, editEcaButton_}) {
@@ -107,6 +87,8 @@ void TriggerModule::BuildPage() {
     // 撤销 / 重做按钮保留在命令条上，显示将要撤销的动作名称。
     auto* undoButton = new QPushButton(tr("撤销"), commandBar);
     auto* redoButton = new QPushButton(tr("重做"), commandBar);
+    undoButton->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/undo-2")));
+    redoButton->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/redo-2")));
     undoButton->setEnabled(false);
     redoButton->setEnabled(false);
     commands->addWidget(undoButton);
@@ -139,15 +121,7 @@ void TriggerModule::BuildPage() {
     selectUiRoot->setObjectName("quietButton");
     commands->addWidget(selectUiRoot);
     connect(libraries, &QPushButton::clicked, this, &TriggerModule::OpenUiLibraries);
-    auto* commandViewport = new TriggerCommandViewport(page_);
-    commandViewport->setObjectName(QStringLiteral("triggerCommandViewport"));
-    commandViewport->setFrameShape(QFrame::NoFrame);
-    commandViewport->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    commandViewport->setWidgetResizable(true);
-    commandViewport->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    commandViewport->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    commandViewport->setWidget(commandBar);
-    layout->addWidget(commandViewport);
+    layout->addWidget(commandBar);
 
     auto* splitter = new QSplitter(page_);
     splitter->setObjectName("triggerSplitter");

@@ -1261,19 +1261,30 @@ void TestBuildingSplatLayer(const War3RenderPluginApiV2* api, const War3RenderCr
     const War3RenderMeshV2 backgroundMesh{sizeof(backgroundMesh), 3, 3, 71, background, backgroundIndices};
     Require(api->submitMesh(renderer.handle, &backgroundMesh) == 0, "splat controlled background rejected");
     const auto original = capture(); const auto worldUploads = receipt.world.skin.staticUploadCount;
+    const auto parentEpoch = target.parentModelEpoch;
+    const auto worldIdentity = receipt.world;
     RequireWorldColor(original, receipt.world.frame.view, -400, 0, {11, 15, 19}, 1);
     ModelSceneLayerRenderer layer(api, renderer.handle, 502);
     Require(layer.Submit(first.scene, first.frame).Succeeded(), "builder splat layer rejected");
     const auto added = capture();
     const auto checkIdentity = [&](const BuildingSplatPreviewFrame& frame) {
         Require(receipt.layerCount == 1 && receipt.layers[0].layerId == 502
-            && receipt.layers[0].parentModelEpoch == target.parentModelEpoch
+            && receipt.layers[0].parentModelEpoch == parentEpoch && target.parentModelEpoch == parentEpoch
             && receipt.layers[0].revision == layer.Revision() && receipt.layers[0].result == 0
             && receipt.layers[0].skin.result == 0 && receipt.layers[0].skin.sceneVersion == frame.scene->sceneVersion
             && receipt.layers[0].skin.contentVersion == frame.frame->contentVersion
             && receipt.layers[0].skin.frameCount == receipt.world.frame.capture.frameCount
             && layer.Target() == frame.frame && receipt.world.skin.staticUploadCount == worldUploads,
             "splat completed pixels not bound to accepted owner/parent/frame");
+        Require(receipt.world.skin.sceneVersion == worldIdentity.skin.sceneVersion
+            && receipt.world.skin.contentVersion == worldIdentity.skin.contentVersion
+            && receipt.world.skin.matrixUploadCount == worldIdentity.skin.matrixUploadCount
+            && receipt.world.frame.capture.documentRevision == worldIdentity.frame.capture.documentRevision
+            && receipt.world.frame.view.surfaceEpoch == worldIdentity.frame.view.surfaceEpoch
+            && receipt.world.frame.view.viewEpoch == worldIdentity.frame.view.viewEpoch
+            && std::memcmp(receipt.world.frame.view.viewProjection, worldIdentity.frame.view.viewProjection,
+                sizeof(worldIdentity.frame.view.viewProjection)) == 0,
+            "splat edit changed parent model, terrain or camera identity");
     };
     checkIdentity(first);
     Require(added != original, "builder splat has no visible pixels");
@@ -1284,20 +1295,51 @@ void TestBuildingSplatLayer(const War3RenderPluginApiV2* api, const War3RenderCr
     const auto staticUploads = receipt.layers[0].skin.staticUploadCount;
     Require(staticUploads == 1, "splat static assets were not installed exactly once");
     const auto poseUploads = receipt.layers[0].skin.matrixUploadCount;
-    ++version.document.revision; unit.version = version; unit.position[0] = -400; binding.version = version;
+    // 同一投影几何上的改色仍须复用场景；保留动态更新不重新上传的完成帧门禁。
+    ++version.document.revision; unit.version = version; unit.fields.tint[1] = 128; binding.version = version;
     requested = inputs();
-    const auto moved = BuildBuildingSplatPreviewFrame(*loaded.value, requested, binding, terrain, 51, {}, &first);
-    Require(moved.Succeeded() && moved.value->scene == first.scene
-        && moved.value->owners[0].stablePlacementId == 917, "same-layout splat failed to retain assets/owner");
-    Require(moved.value->frame->instances[0].instance.transform[3] == -400
+    const auto recolored = BuildBuildingSplatPreviewFrame(*loaded.value, requested, binding, terrain, 51, {}, &first);
+    Require(recolored.Succeeded() && recolored.value->scene == first.scene && recolored.value->owners.size() == 1
+        && recolored.value->owners[0].owner == first.owners[0].owner && recolored.value->owners[0].stablePlacementId == 917,
+        "color-only splat failed to retain projected assets/owner");
+    Require(layer.Update(recolored.value->frame).Succeeded(), "splat color-only update rejected");
+    const auto recoloredPixels = capture(); checkIdentity(*recolored.value);
+    Require(recoloredPixels != added && receipt.layers[0].skin.staticUploadCount == staticUploads
+        && receipt.layers[0].skin.matrixUploadCount == poseUploads + 1, "splat color-only edit uploaded static assets");
+    RequireWorldColor(recoloredPixels, receipt.world.frame.view, 0, 0, {6, 72, 9}, 2);
+    RequireWorldColor(recoloredPixels, receipt.world.frame.view, -400, 0, {11, 15, 19}, 1);
+    const auto colorRevision = layer.Revision();
+    // 位置改变会改变沿地形三角面裁切的世界顶点；必须重新绑定静态场景，不能只移矩阵。
+    ++version.document.revision; unit.version = version; unit.position[0] = -400; binding.version = version;
+    unit.fields.tint[1] = 255;
+    requested = inputs();
+    const auto moved = BuildBuildingSplatPreviewFrame(*loaded.value, requested, binding, terrain, 52, {}, &*recolored.value);
+    Require(moved.Succeeded() && moved.value->scene != recolored.value->scene && moved.value->owners.size() == 1
+        && moved.value->scene->sceneVersion != recolored.value->scene->sceneVersion
+        && moved.value->scene->geometry.textures.SharesStorageWith(first.scene->geometry.textures)
+        && moved.value->owners[0].owner == first.owners[0].owner && moved.value->owners[0].stablePlacementId == 917,
+        "moved projected splat did not rebuild geometry while retaining texture/owner");
+    Require(moved.value->frame->instances[0].instance.transform[3] == 0
         && std::all_of(std::begin(moved.value->frame->instances[0].instance.color),
             std::end(moved.value->frame->instances[0].instance.color), [](float value) { return value == 1; }),
-        "builder moved splat transform/tint changed");
-    Require(layer.Update(moved.value->frame).Succeeded(), "builder splat update rejected");
+        "projected world geometry was translated twice or retained old tint");
+    Require(!moved.value->scene->geometry.vertices.empty()
+        && std::all_of(moved.value->scene->geometry.vertices.begin(), moved.value->scene->geometry.vertices.end(),
+            [&](const auto& vertex) { return vertex.x >= requested[0].row.footprint->minimum[0]
+                && vertex.x <= requested[0].row.footprint->maximum[0]
+                && vertex.y >= requested[0].row.footprint->minimum[1]
+                && vertex.y <= requested[0].row.footprint->maximum[1] && vertex.z == 0; }),
+        "moved projected vertices left the actual flat terrain footprint");
+    Require(!layer.Update(moved.value->frame).Succeeded() && layer.Target() == recolored.value->frame
+        && layer.Revision() == colorRevision, "new static splat geometry bypassed the layer rebind guard");
+    Require(capture() == recoloredPixels, "rejected matrix-only move changed accepted pixels");
+    Require(layer.Submit(moved.value->scene, moved.value->frame).Succeeded() && layer.Revision() == colorRevision + 1,
+        "projected splat scene rebind rejected");
     const auto movedPixels = capture(); checkIdentity(*moved.value);
     reportPixel(movedPixels, -400, 0, "moved-owned-frame");
-    Require(movedPixels != added && receipt.layers[0].skin.staticUploadCount == staticUploads
-        && receipt.layers[0].skin.matrixUploadCount == poseUploads + 1, "splat move uploaded static assets");
+    // 替换静态模型建立新的层 GPU 容器；这两个计数针对该容器，不是跨重建累计值。
+    Require(movedPixels != added && receipt.layers[0].skin.staticUploadCount == 1
+        && receipt.layers[0].skin.matrixUploadCount == 1, "rebound projected geometry was not uploaded exactly once");
     RequireWorldColor(movedPixels, receipt.world.frame.view, -400, 0, {6, 135, 9}, 2);
     RequireWorldColor(movedPixels, receipt.world.frame.view, 0, 0, {11, 15, 19}, 1);
     const auto acceptedRevision = layer.Revision();
@@ -1306,9 +1348,9 @@ void TestBuildingSplatLayer(const War3RenderPluginApiV2* api, const War3RenderCr
     Require(!layer.Update(invalid).Succeeded() && !layer.Update(first.frame).Succeeded()
         && layer.Target() == moved.value->frame && layer.Revision() == acceptedRevision, "bad/stale splat replaced accepted owner");
     auto stale = requested; stale[0].row.version.document.revision = 7;
-    Require(!BuildBuildingSplatPreviewFrame(*loaded.value, stale, binding, terrain, 52).Succeeded(), "stale map splat candidate accepted");
-    Require(capture() == movedPixels && receipt.layers[0].skin.staticUploadCount == staticUploads
-        && receipt.layers[0].skin.matrixUploadCount == poseUploads + 1, "rejected splat changed pixels/uploads");
+    Require(!BuildBuildingSplatPreviewFrame(*loaded.value, stale, binding, terrain, 53).Succeeded(), "stale map splat candidate accepted");
+    Require(capture() == movedPixels && receipt.layers[0].skin.staticUploadCount == 1
+        && receipt.layers[0].skin.matrixUploadCount == 1, "rejected splat changed pixels/uploads");
     checkIdentity(*moved.value);
     Require(layer.Remove().Succeeded() && capture() == original && receipt.layerCount == 0,
         "removing builder splat did not restore parent pixels");

@@ -5,6 +5,8 @@
 #include "Modules/ModuleHost.h"
 #include "ObjectModels.h"
 #include "Widgets/ObjectTreeBrowser.h"
+#include "Widgets/ResponsiveToolBar.h"
+#include "Icons/SvgIcons.h"
 
 #include "War3MapCore/Game/GameDataSource.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
@@ -22,6 +24,7 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSignalBlocker>
+#include <QShortcut>
 #include <QSortFilterProxyModel>
 #include <QSplitter>
 #include <QStackedWidget>
@@ -59,6 +62,10 @@ ObjectModule::ObjectModule(QtProject::EditorProject& project)
 ObjectModule::~ObjectModule() {
     delete newObjectPicker_.data();
     delete page_.data();
+}
+void ObjectModule::SetResourcePickerFactory(ObjectResourcePickerFactory factory) {
+    resourcePickerFactory_ = std::move(factory);
+    if (objectFieldDelegate_) objectFieldDelegate_->SetResourcePickerFactory(resourcePickerFactory_);
 }
 
 Shell::ModuleInfo ObjectModule::Info() const {
@@ -220,7 +227,9 @@ void ObjectModule::BuildPage() {
     auto* layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
-    auto* toolbar = new QHBoxLayout;
+    auto* commandBar = new UiKit::ResponsiveToolBar(page);
+    commandBar->setObjectName(QStringLiteral("objectCommandBar"));
+    auto* toolbar = commandBar->ContentLayout();
     toolbar->setContentsMargins(12, 8, 12, 8);
     auto* title = new QLabel(tr("物体编辑器"));
     title->setObjectName("paneTitle");
@@ -232,18 +241,22 @@ void ObjectModule::BuildPage() {
     showRawFields_->setToolTip(tr("切换字段显示名 · Alt+D"));
     toolbar->addWidget(showRawFields_);
     auto* resourceButton = new QPushButton(tr("资源目录…"));
+    resourceButton->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/folder-open")));
     toolbar->addWidget(resourceButton);
     connect(resourceButton, &QPushButton::clicked, this, &ObjectModule::GameRootRequested);
     auto* batchButton = new QPushButton(tr("批量修改…"));
+    batchButton->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/layers")));
     batchButton->setObjectName("batchEditObjectsButton");
     batchButton->setToolTip(tr("选择同类地图对象，共同修改一个字段"));
     toolbar->addWidget(batchButton);
     connect(batchButton, &QPushButton::clicked, this, &ObjectModule::BatchEditObjects);
     createObjectButton_ = new QPushButton(tr("新建自定义物体"));
+    createObjectButton_->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/plus")));
+    createObjectButton_->setProperty("toolbarPriority", 100);
     createObjectButton_->setObjectName("createCustomObjectButton");
     toolbar->addWidget(createObjectButton_);
     connect(createObjectButton_, &QPushButton::clicked, this, &ObjectModule::CreateNewCustomObject);
-    layout->addLayout(toolbar);
+    layout->addWidget(commandBar);
 
     objectCategories_ = new QListWidget;
     objectCategories_->setObjectName("objectKinds");
@@ -384,6 +397,17 @@ void ObjectModule::BuildPage() {
         if (index.flags() & Qt::ItemIsEditable) standardFields->edit(index);
         else BeginStandardReferenceEdit(index);
     });
+    for (const auto key : {Qt::Key_Return, Qt::Key_Enter}) {
+        auto* activate = new QShortcut(QKeySequence(key), standardFields);
+        activate->setContext(Qt::WidgetShortcut);
+        connect(activate, &QShortcut::activated, this, [this, standardFields] {
+            const auto index = standardFields->currentIndex().siblingAtColumn(1);
+            if (!index.isValid()) return;
+            standardFields->setCurrentIndex(index);
+            if (index.flags() & Qt::ItemIsEditable) standardFields->edit(index);
+            else BeginStandardReferenceEdit(index);
+        });
+    }
     connect(standardFieldModel_, &QStandardItemModel::itemChanged,
         this, &ObjectModule::OnStandardFieldChanged);
     ConfigureTable(standardFields);
@@ -398,6 +422,7 @@ void ObjectModule::BuildPage() {
     objectFieldModel_->SetEditCallback([this]() { MarkCurrentObjectDocumentDirty(); });
     objectFieldView_->setModel(objectFieldModel_);
     objectFieldDelegate_ = new ObjectFieldDelegate(objectFieldView_);
+    objectFieldDelegate_->SetResourcePickerFactory(resourcePickerFactory_);
     objectFieldView_->setItemDelegate(objectFieldDelegate_);
     ConfigureTable(objectFieldView_);
     for (int column : {1, 2, 4}) objectFieldView_->hideColumn(column);

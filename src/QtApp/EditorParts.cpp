@@ -8,6 +8,7 @@
 #include "SoundsModule.h"
 #include "Modules/PlaceholderModule.h"
 #include "ObjectModule.h"
+#include "ObjectResourcePickerAdapter.h"
 #include "TriggerModule.h"
 #include "VariablesModule.h"
 #include "WorldModule.h"
@@ -44,6 +45,7 @@ EditorParts::EditorParts(bool persistentSettings)
     const auto key = [](Qt::Key k) { return QKeySequence(Qt::ALT | k); };
     triggersModule_ = Add(modules_, std::make_unique<War3Map::Modules::TriggerModule>(*project_));
     objectsModule_ = Add(modules_, std::make_unique<War3Map::Modules::ObjectModule>(*project_));
+    objectsModule_->SetResourcePickerFactory(War3Map::QtApp::MakeObjectResourcePickerFactory(*project_));
     variablesModule_ = Add(modules_, std::make_unique<War3Map::Modules::VariablesModule>(*project_));
     soundsModule_ = Add(modules_, std::make_unique<War3Map::Modules::SoundsModule>(*project_));
     assetsModule_ = Add(modules_, std::make_unique<War3Map::Modules::AssetsModule>(*project_));

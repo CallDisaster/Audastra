@@ -5,6 +5,7 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
 
 namespace War3Map::MapData {
 namespace {
@@ -16,7 +17,9 @@ template<class T, class U> Result<T> Failed(const U& result) { return {std::null
 std::vector<const MapDataPlacementSource*> Sources(const MapDataPlacementIntent& intent) {
     if (const auto* rotation = std::get_if<MapDataPlacementRotation>(&intent)) return {&rotation->source};
     std::vector<const MapDataPlacementSource*> result;
-    for (const auto& source : std::get<MapDataPlacementCopy>(intent).sources) result.push_back(&source);
+    const auto append = [&](const auto& sources) { for (const auto& source : sources) result.push_back(&source); };
+    if (const auto* copy = std::get_if<MapDataPlacementCopy>(&intent)) append(copy->sources);
+    if (const auto* removed = std::get_if<MapDataPlacementDelete>(&intent)) append(removed->sources);
     return result;
 }
 MapDataKind Kind(PlacementFile file) { return file == PlacementFile::Units ? MapDataKind::Units : MapDataKind::Doodads; }
@@ -48,9 +51,14 @@ Status Roundtrip(const MapDocument& document, MapDataKind kind) {
         ? Status::Ok() : Status::Failure("MapData.Placement", "MAP_PLACEMENT_ROUNDTRIP_UNSAFE", "摆放来源未通过完整 native 字节往返。");
 }
 Result<PlacementWireProjection> Projection(const MapDocument& document, MapDataKind kind,
-    std::span<const std::uint32_t> copied, PlacementCommandLimits limits) {
+    std::span<const std::uint32_t> copied, PlacementCommandLimits limits, const MapDataPlacementCreate* created = nullptr) {
     PlacementReadLimits wireLimits; wireLimits.maxBytes = limits.maximumWireBytes;
-    auto measured = kind == MapDataKind::Units ? MeasureClassicPlacementWire(*document.Units(), copied, wireLimits)
+    auto measured = created ? std::visit([&](const auto& records) {
+        using Record = typename std::decay_t<decltype(records)>::value_type;
+        if constexpr (std::is_same_v<Record, UnitPlacement>)
+            return MeasureClassicPlacementAppend(*document.Units(), records, wireLimits);
+        else return MeasureClassicPlacementAppend(*document.Doodads(), records, wireLimits);
+    }, created->records) : kind == MapDataKind::Units ? MeasureClassicPlacementWire(*document.Units(), copied, wireLimits)
         : MeasureClassicPlacementWire(*document.Doodads(), copied, wireLimits);
     if (!measured.Succeeded() && std::any_of(measured.diagnostics.begin(), measured.diagnostics.end(),
         [](const auto& diagnostic) { return diagnostic.code == "MAP_WRITE_BUDGET"; }))
@@ -64,10 +72,13 @@ Result<detail::PlacementEditCandidate> Execute(const MapDocument& document, cons
         const PlacementMove move{rotation->source.id, transform.value->position, rotation->facingRadians};
         return detail::PreparePlacementMoves(document, std::span(&move, 1));
     }
-    const auto& copy = std::get<MapDataPlacementCopy>(intent);
+    if (const auto* created = std::get_if<MapDataPlacementCreate>(&intent))
+        return detail::PreparePlacementCreations(document, created->records);
     std::vector<PlacementId> ids;
-    for (const auto& source : copy.sources) ids.push_back(source.id);
-    return detail::PreparePlacementCopies(document, ids, copy.offset);
+    for (const auto* source : Sources(intent)) ids.push_back(source->id);
+    if (const auto* copy = std::get_if<MapDataPlacementCopy>(&intent))
+        return detail::PreparePlacementCopies(document, ids, copy->offset);
+    return detail::PreparePlacementDeletions(document, ids);
 }
 Result<MapDocument> ProjectCandidate(const MapDocument& before, const detail::PlacementEditCandidate& candidate) {
     std::vector<MapArchiveMember> replacements;
@@ -95,7 +106,17 @@ std::optional<MapDataPlacementIntent> OriginalIntent(const MapDocument& original
     };
     if (auto* rotation = std::get_if<MapDataPlacementRotation>(&rebound)) {
         if (!rebind(rotation->source)) return std::nullopt;
-    } else for (auto& source : std::get<MapDataPlacementCopy>(rebound).sources) if (!rebind(source)) return std::nullopt;
+    } else if (auto* copy = std::get_if<MapDataPlacementCopy>(&rebound)) {
+        for (auto& source : copy->sources) if (!rebind(source)) return std::nullopt;
+    } else if (auto* removed = std::get_if<MapDataPlacementDelete>(&rebound)) {
+        for (auto& source : removed->sources) if (!rebind(source)) return std::nullopt;
+    } else if (auto* created = std::get_if<MapDataPlacementCreate>(&rebound)) {
+        const auto kind = Kind(PlacementIntentFile(rebound));
+        if (!SourceStatus(original, kind).Succeeded()) return std::nullopt;
+        const auto sha = Sha256(original.Member(kind).sources.front().data);
+        if (!sha.Succeeded()) return std::nullopt;
+        created->expectedMemberSha256 = *sha.value;
+    }
     return rebound;
 }
 } // namespace
@@ -104,13 +125,13 @@ namespace detail {
 struct MapDataPlacementEditingAccess {
     static Result<PreparedMapDataPlacement> Prepare(const MapDocument& original, const MapDocument& current,
         const MapDataPlacementIntent& intent, PlacementCommandLimits limits) {
-        const auto sourceCount = std::holds_alternative<MapDataPlacementRotation>(intent)
-            ? 1 : std::get<MapDataPlacementCopy>(intent).sources.size();
+        const auto* created = std::get_if<MapDataPlacementCreate>(&intent);
+        const auto sources = Sources(intent);
+        const auto sourceCount = created ? std::visit([](const auto& records) { return records.size(); }, created->records) : sources.size();
         if (!limits.maximumSources || limits.maximumSources > 32 || !limits.maximumWireBytes
             || limits.maximumWireBytes > 64U * 1024U * 1024U || !sourceCount || sourceCount > limits.maximumSources)
             return Failure<PreparedMapDataPlacement>("MAP_PLACEMENT_LIMIT", "C2 单批须为 1..32 来源，wire 预算只能收紧 64MiB 上限。");
-        const auto sources = Sources(intent);
-        const auto file = sources.front()->id.file;
+        const auto file = PlacementIntentFile(intent);
         if (file != PlacementFile::Units && file != PlacementFile::Doodads)
             return Failure<PreparedMapDataPlacement>("MAP_PLACEMENT_KIND_UNSUPPORTED", "C2 只支持单位与普通地物。");
         const auto kind = Kind(file);
@@ -126,7 +147,7 @@ struct MapDataPlacementEditingAccess {
             if (copy) copied.push_back(source->id.index);
         }
         // 第一次整表复制、来源 Serialize、逐记录 clone 前，按真正 writer traversal 计量。
-        const auto projected = Projection(current, kind, copied, limits);
+        const auto projected = Projection(current, kind, copied, limits, created);
         if (!projected.Succeeded()) return Failed<PreparedMapDataPlacement>(projected);
         if (current.Member(kind).sources.front().data.size() > limits.maximumWireBytes)
             return Failure<PreparedMapDataPlacement>("MAP_PLACEMENT_WIRE_BUDGET", "当前 native 来源超过 C2 wire 预算。");
@@ -137,6 +158,13 @@ struct MapDataPlacementEditingAccess {
         if (const auto status = Roundtrip(current, kind); !status.Succeeded()) return Failed<PreparedMapDataPlacement>(status);
         const auto beforeSha = Sha256(current.Member(kind).sources.front().data);
         if (!beforeSha.Succeeded()) return Failed<PreparedMapDataPlacement>(beforeSha);
+        if (created) {
+            if (created->expectedMemberSha256 != *beforeSha.value)
+                return Failure<PreparedMapDataPlacement>("MAP_PLACEMENT_MEMBER_STALE", "新增摆放绑定的成员 SHA 与当前来源不同。");
+            const auto* units = std::get_if<std::vector<UnitPlacement>>(&created->records);
+            const auto start = units && std::any_of(units->begin(), units->end(), [](const auto& record) { return record.rawcode == "sloc"; });
+            if (start) return Failure<PreparedMapDataPlacement>("MAP_PLACEMENT_START_CREATE_UNSUPPORTED", "起始位置需要同步玩家设置，不能经普通实体新建命令创建。");
+        }
         for (const auto* source : sources) {
             if (source->expectedMemberSha256 != *beforeSha.value)
                 return Failure<PreparedMapDataPlacement>("MAP_PLACEMENT_MEMBER_STALE", "摆放成员 SHA 与当前来源不同。");
@@ -176,6 +204,16 @@ struct MapDataPlacementEditingAccess {
     }
 };
 } // namespace detail
+
+PlacementFile PlacementIntentFile(const MapDataPlacementIntent& intent) {
+    return std::visit([](const auto& operation) {
+        using Operation = std::decay_t<decltype(operation)>;
+        if constexpr (std::is_same_v<Operation, MapDataPlacementRotation>) return operation.source.id.file;
+        else if constexpr (std::is_same_v<Operation, MapDataPlacementCreate>)
+            return std::holds_alternative<std::vector<UnitPlacement>>(operation.records) ? PlacementFile::Units : PlacementFile::Doodads;
+        else return operation.sources.empty() ? PlacementFile::Units : operation.sources.front().id.file;
+    }, intent);
+}
 
 std::span<const std::byte> PreparedMapDataPlacement::BeforeMemberBytes() const noexcept { return Before().Member(kind_).sources.front().data; }
 std::span<const std::byte> PreparedMapDataPlacement::AfterMemberBytes() const noexcept { return After().Member(kind_).sources.front().data; }

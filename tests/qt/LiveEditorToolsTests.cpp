@@ -1,21 +1,28 @@
 #include "LiveEditorTools.h"
 #include "EditorProject.h"
+#include "ProjectOpen.h"
 #include "Commands/TriggerCommands.h"
 #include "Commands/ObjectSnapshotCommand.h"
 #include "McpObjectTools.h"
 #include "McpVariableTools.h"
 #include "McpMapDataTools.h"
 #include "McpImportTools.h"
+#include "McpObjectResourceTools.h"
 #include "McpPlacementTools.h"
+#include "McpTerrainEditTools.h"
 #include "McpCodeCheckTools.h"
 #include "McpCampaignTools.h"
 #include "McpProjectSearchTools.h"
+#include "McpLuaTestTools.h"
+#include "McpWorldViewportTools.h"
 #include "Commands/MapDataCommands.h"
 #include "War3MapCore/MapData/MapDataFieldEditing.h"
-#include "../services/ObjectCommandsFixture.h"
+#include "../PlacementCreationFixtures.h"
 #include "../MapDataFixtures.h"
+#include "../MapDataSpatialFixtures.h"
 
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/ProjectStore.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
@@ -134,8 +141,9 @@ struct Fixture {
         return true;
     }
     bool Fail(const char* reason) { error = QString::fromUtf8(reason); return false; }
-    void InstallObjects(bool missing = false) {
+    void InstallObjects(bool missing = false, bool custom = false) {
         Tests::ObjectCommandsFixture fixture;
+        if (custom) Tests::AddPlacementCustomObjects(fixture);
         project.standardCatalog_ = std::make_unique<ObjectData::StandardObjectCatalog>(std::move(fixture.standard));
         project.objectFieldSchema_ = std::make_unique<ObjectData::ObjectFieldSchema>(std::move(fixture.schema));
         for (std::size_t i = 0; i < fixture.documents.size(); ++i) {
@@ -189,32 +197,59 @@ private slots:
     void VariableToolsShareSchemasAndOriginalUndo();
     void VariableFailuresPreserveRevisionAndUndo();
     void EntityFieldsUseOriginalSessionAndAtomicUndo();
+    void SpatialEntityQueriesShareSchemasAndObserveOriginalUndo();
     void SettingsAndStringsKeepOriginalGuiUndoAndPolicy();
     void PlacementToolsKeepAuthorEditsAndOriginalUndo();
+    void PlacementCreateDeleteUseRealSourcesAndPurePreview();
+    void TerrainToolsKeepSessionPreviewAndOriginalUndo();
+    void BoundaryDraftSavesAndReopensAsProject_data();
+    void BoundaryDraftSavesAndReopensAsProject();
     void ImportMetadataUsesSourceAndCurrentAssetOverlay();
+    void ResourceToolsUseActualAsyncSourceAndRejectStaleResults();
     void ProjectSearchUsesInjectedOwnedPagesAndStrictRevision();
     void ProjectSearchCallbackReplacementStopsOldRequest();
     void ProjectSearchOwnerDeletionKeepsInvocationAlive();
+    void ViewportToolsUseActualHostAndRejectStaleIdentity();
 };
 
 void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
     Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
-    const QStringList expected{"code.check", "create_campaign", "edit_campaign",
+    const QStringList expected{"code.check", "create_campaign", "edit_campaign", "edit_terrain_stroke",
         "editor_edit_trigger_graph", "editor_get_ui_catalog", "editor_query_trigger_graph", "editor_save_map", "editor_state",
-        "entities_copy", "entities_query", "entities_rotate", "entities_set_fields",
+        "entities_copy", "entities_create", "entities_delete", "entities_query", "entities_rotate", "entities_set_fields",
         "export_campaign_member",
         "feedback.draft", "feedback.list", "feedback.status",
-        "imports_get", "imports_list",
+        "get_terrain_edit_state",
+        "imports_get", "imports_list", "lua_test_hot_reload", "lua_test_reload_result",
         "map_settings_get", "map_settings_set",
+        "object_resource_inspect", "object_resource_query", "object_resource_state",
         "objects_create", "objects_delete", "objects_field_options", "objects_get", "objects_list", "objects_set_fields",
-        "open_campaign", "project_search", "query_campaign", "query_campaign_objects", "redo_campaign", "save_campaign",
+        "open_campaign", "project_search", "query_campaign", "query_campaign_objects", "query_terrain_points", "redo_campaign", "save_campaign",
         "sounds_get", "sounds_list", "sounds_update",
         "strings_query", "strings_set",
         "undo_campaign", "update.status",
-        "variables_create", "variables_delete", "variables_get", "variables_list", "variables_rename", "variables_update"};
+        "variables_create", "variables_delete", "variables_get", "variables_list", "variables_rename", "variables_update",
+        "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{45});
+    QCOMPARE(expected.size(), qsizetype{59});
+    const auto luaDefinitions = Mcp::LuaTestToolDefinitions();
+    QCOMPARE(luaDefinitions.size(), std::size_t{2});
+    QCOMPARE(luaDefinitions[0].permission, Mcp::ToolPermission::External);
+    QCOMPARE(luaDefinitions[1].permission, Mcp::ToolPermission::Query);
+    const auto editorState = f.tools->Invoke("editor_state", {});
+    QJsonObject luaArgs{{"project_identity", editorState.value("project_identity")}, {"expected_revision", editorState.value("revision")}};
+    QCOMPARE(ErrorCode(f.tools->Invoke("lua_test_hot_reload", luaArgs)), QString("LUA_RELOAD_NO_SESSION"));
+    int calls = 0;
+    f.tools->SetLuaTestHandler([&calls](bool submit) { ++calls; return QJsonObject{{"ok", true}, {"submit", submit}, {"sequence", "7"}}; });
+    auto reload = f.tools->Invoke("lua_test_hot_reload", luaArgs);
+    QVERIFY(reload.value("ok").toBool() && reload.value("submit").toBool());
+    QVERIFY(!f.tools->Invoke("lua_test_reload_result", luaArgs).value("submit").toBool());
+    QCOMPARE(calls, 2);
+    auto arbitrary = luaArgs; arbitrary.insert("source", "print('unexpected')");
+    QVERIFY(!f.tools->Invoke("lua_test_hot_reload", arbitrary).value("ok").toBool()); QCOMPARE(calls, 2);
+    auto stale = luaArgs; stale.insert("expected_revision", "9999");
+    QCOMPARE(ErrorCode(f.tools->Invoke("lua_test_hot_reload", stale)), QString("LIVE_EDITOR_REVISION_CONFLICT")); QCOMPARE(calls, 2);
     const auto codeDefinition = Mcp::CodeCheckToolDefinition();
     QCOMPARE(codeDefinition.permission, Mcp::ToolPermission::Query);
     bool foundCodeCheck = false;
@@ -716,6 +751,163 @@ void LiveEditorToolsTests::VariableFailuresPreserveRevisionAndUndo() {
     QCOMPARE(f.Fingerprint(), after); QCOMPARE(f.Context(), context); QCOMPARE(f.project.triggerUndoStack_->count(), 1);
 }
 
+void LiveEditorToolsTests::BoundaryDraftSavesAndReopensAsProject_data() {
+    QTest::addColumn<bool>("pathing");
+    QTest::newRow("boundary") << false;
+    QTest::newRow("pathing-restriction") << true;
+}
+
+void LiveEditorToolsTests::BoundaryDraftSavesAndReopensAsProject() {
+    QFETCH(bool, pathing);
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    MapData::TerrainGridSnapshot grid;
+    grid.header.width = 5; grid.header.height = 5; grid.header.offset = {-256, -256}; grid.header.mainTileset = 'L';
+    grid.header.groundTilesets = {"Ldrt"}; grid.header.cliffTilesets = {"CLdi"}; grid.vertices.resize(25);
+    for (auto& vertex : grid.vertices) { vertex.groundHeightRaw = 8192; vertex.waterHeightAndFlagsRaw = 7936; vertex.cliffAndLayerRaw = 2; }
+    MapData::RefreshTerrainDerived(grid, 0, 0, 5, 5);
+    const auto terrain = MapData::SerializeMapTerrain(grid); QVERIFY(terrain.Succeeded());
+    std::vector<std::byte> sourcePathing{std::byte{'M'}, std::byte{'P'}, std::byte{'3'}, std::byte{'W'}};
+    for (const auto value : {0u, 16u, 16u}) for (unsigned shift = 0; shift < 32; shift += 8)
+        sourcePathing.push_back(static_cast<std::byte>((value >> shift) & 0xff));
+    sourcePathing.resize(16 + 16 * 16, std::byte{2});
+    QVERIFY(WriteFile(f.source.filePath("map/war3map.w3e"), Bytes(*terrain.value)));
+    QVERIFY(WriteFile(f.source.filePath("map/war3map.wpm"), Bytes(sourcePathing)));
+    auto directory = DirectoryWorkspace::Open(f.project.projectRoot_); QVERIFY(directory.Succeeded());
+    f.project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*directory.value));
+    f.project.LoadMapDocument(); f.project.ResetEditTracking();
+    const auto state = f.tools->Invoke("get_terrain_edit_state", {}); QVERIFY(state.value("ok").toBool());
+    auto request = f.Context(); request.insert("terrain_binding", state.value("terrain_binding"));
+    request.insert("dry_run", false);
+    request.insert("brush", pathing
+        ? QJsonObject{{"kind", "pathing_restriction"}, {"blocked_type", "fly"}, {"size", 1}, {"value", true}}
+        : QJsonObject{{"kind", "boundary"}, {"size", 1}, {"value", true}});
+    request.insert("points", QJsonArray{QJsonObject{{"x", 0}, {"y", 0}}});
+    const auto applied = f.tools->Invoke("edit_terrain_stroke", request);
+    QVERIFY2(applied.value("ok").toBool(), qPrintable(Explain(applied)));
+    QVERIFY(!applied.value("terrain_pathing_gate").toObject().value("passed").toBool());
+    QCOMPARE(f.project.mapDataUndoStack_->count(), 1);
+    const auto changed = MapData::SerializeMapTerrain(*f.project.mapEdits_->Terrain()); QVERIFY(changed.Succeeded());
+    const auto target = std::filesystem::path(f.outputs.filePath("boundary.forge").toStdWString());
+    const auto saved = f.project.SaveProjectToPath(target);
+    QVERIFY2(saved.Succeeded(), saved.diagnostics.empty() ? "save boundary project" : saved.diagnostics.front().message.c_str());
+    auto restored = QtProject::PrepareProjectOpen(target);
+    QVERIFY2(restored.Succeeded(), restored.diagnostics.empty() ? "reopen boundary project" : restored.diagnostics.front().message.c_str());
+    auto* edits = (*restored.value)->mapDataEdits.get(); QVERIFY(edits && edits->Terrain());
+    QCOMPARE(*MapData::SerializeMapTerrain(*edits->Terrain()).value, *changed.value);
+    QCOMPARE(edits->InspectTerrainPoint({0, 0}).value->pathingFlags,
+        std::optional<std::uint8_t>{static_cast<std::uint8_t>(pathing ? 6 : 2)});
+    QVERIFY(!edits->VerifyTerrainPathingForSave().Succeeded());
+    QFile source(f.source.filePath("map/war3map.w3e")); QVERIFY(source.open(QIODevice::ReadOnly));
+    QCOMPARE(source.readAll(), Bytes(*terrain.value));
+    QFile originalPathing(f.source.filePath("map/war3map.wpm")); QVERIFY(originalPathing.open(QIODevice::ReadOnly));
+    QCOMPARE(originalPathing.readAll(), Bytes(sourcePathing));
+    if (pathing) {
+        auto package = MapArchiveSession::Open(target); QVERIFY(package.Succeeded()); QVERIFY(!package.value->HasOpaqueMembers());
+        for (int scenario = 0; scenario < 3; ++scenario) {
+            std::vector<MapArchiveMember> members;
+            for (const auto& item : package.value->Members()) {
+                if (scenario != 2 && item.name == "overlay/editor/pathing-restrictions.bin") continue;
+                auto bytes = package.value->ReadMember(item.name); QVERIFY(bytes.Succeeded());
+                if (item.name == "project.json" && scenario != 0) {
+                    auto manifest = QJsonDocument::fromJson(Bytes(*bytes.value)).object();
+                    if (scenario == 1) manifest.remove("pathingRestrictions");
+                    else manifest["pathingRestrictions"] = 2;
+                    const auto json = QJsonDocument(manifest).toJson(QJsonDocument::Compact);
+                    bytes.value->assign(reinterpret_cast<const std::byte*>(json.constData()),
+                        reinterpret_cast<const std::byte*>(json.constData()) + json.size());
+                }
+                members.push_back({item.name, std::move(*bytes.value)});
+            }
+            const auto broken = std::filesystem::path(f.outputs.filePath(QStringLiteral("unbound-%1.forge").arg(scenario)).toStdWString());
+            QVERIFY(ProjectStore::Save(broken, members).Succeeded());
+            QVERIFY(!QtProject::PrepareProjectOpen(broken).Succeeded());
+        }
+        MapData::TerrainBrush clear; clear.kind = MapData::TerrainBrushKind::PathingRestriction;
+        clear.pathingRestrictions = 0x0e; clear.value = false; clear.size = 1;
+        const MapData::TerrainStrokePoint point{0, 0};
+        QVERIFY(edits->EditTerrain(clear, std::span(&point, 1)).Succeeded());
+        QCOMPARE(edits->InspectTerrainPoint(point).value->pathingFlags, std::optional<std::uint8_t>{2});
+    }
+}
+
+void LiveEditorToolsTests::TerrainToolsKeepSessionPreviewAndOriginalUndo() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    MapData::TerrainGridSnapshot grid;
+    grid.header.width = 5; grid.header.height = 5; grid.header.offset = {-256, -256}; grid.header.mainTileset = 'L';
+    grid.header.groundTilesets = {"Ldrt", "Lgrs"}; grid.header.cliffTilesets = {"CLdi"}; grid.vertices.resize(25);
+    for (auto& vertex : grid.vertices) { vertex.groundHeightRaw = 8192; vertex.waterHeightAndFlagsRaw = 7936; vertex.cliffAndLayerRaw = 2; }
+    MapData::RefreshTerrainDerived(grid, 0, 0, 5, 5);
+    const auto terrain = MapData::SerializeMapTerrain(grid); QVERIFY(terrain.Succeeded());
+    std::vector<std::byte> pathing{std::byte{'M'}, std::byte{'P'}, std::byte{'3'}, std::byte{'W'}};
+    for (const auto value : {0u, 16u, 16u}) for (unsigned shift = 0; shift < 32; shift += 8)
+        pathing.push_back(static_cast<std::byte>((value >> shift) & 0xff));
+    pathing.resize(16 + 16 * 16, std::byte{2});
+    QVERIFY(WriteFile(f.source.filePath("map/war3map.w3e"), Bytes(*terrain.value)));
+    QVERIFY(WriteFile(f.source.filePath("map/war3map.wpm"), Bytes(pathing)));
+    auto directory = DirectoryWorkspace::Open(f.project.projectRoot_); QVERIFY(directory.Succeeded());
+    f.project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*directory.value));
+    f.project.LoadMapDocument(); f.project.ResetEditTracking();
+    QVERIFY(f.project.editTrackingReady_ && !f.project.editTrackingFailed_);
+    auto* session = f.project.mapEdits_.get(); auto* undo = f.project.mapDataUndoStack_;
+    QVERIFY(session && undo && session->Terrain());
+    const auto originalTerrain = session->Terrain();
+    const auto triggers = f.Fingerprint();
+    const auto state = f.tools->Invoke("get_terrain_edit_state", {});
+    QVERIFY2(state.value("ok").toBool(), qPrintable(Explain(state)));
+    QVERIFY(state.value("pathing_available").toBool());
+    for (const auto& definition : Mcp::TerrainEditToolDefinitions()) {
+        bool found = false;
+        for (const auto& entry : f.tools->Tools()) if (entry.toObject().value("name") == definition.name) {
+            QCOMPARE(entry.toObject().value("inputSchema").toObject(), definition.inputSchema); found = true;
+        }
+        QVERIFY(found);
+    }
+    auto request = f.Context(); request.insert("terrain_binding", state.value("terrain_binding"));
+    request.insert("dry_run", true);
+    request.insert("brush", QJsonObject{{"kind", "raise"}, {"size", 1}, {"strength", 16}});
+    request.insert("points", QJsonArray{QJsonObject{{"x", 0}, {"y", 0}}});
+    const auto context = f.Context();
+    int beforeWrites = 0;
+    f.tools->SetBeforeWrite([&] { ++beforeWrites; return false; });
+    const auto preview = f.tools->Invoke("edit_terrain_stroke", request);
+    QVERIFY2(preview.value("ok").toBool(), qPrintable(Explain(preview)));
+    QVERIFY(!preview.value("applied").toBool()); QCOMPARE(undo->count(), 0); QCOMPARE(session->Revision(), std::uint64_t{0});
+    QCOMPARE(session->Terrain().get(), originalTerrain.get()); QCOMPARE(f.Context(), context);
+    QCOMPARE(beforeWrites, 0);
+    auto malformed = request; malformed["dry_run"] = "true";
+    QVERIFY(!f.tools->Invoke("edit_terrain_stroke", malformed).value("ok").toBool()); QCOMPARE(beforeWrites, 0);
+    auto rejectedWrite = request; rejectedWrite["dry_run"] = false;
+    QVERIFY(!f.tools->Invoke("edit_terrain_stroke", rejectedWrite).value("ok").toBool()); QCOMPARE(beforeWrites, 1);
+    QCOMPARE(undo->count(), 0); QCOMPARE(f.Context(), context);
+    f.tools->SetBeforeWrite({});
+    QSignalSpy documentReload(&f.project, &EditorProject::MapDocumentChanged);
+    QSignalSpy undoEvents(undo, &QUndoStack::indexChanged);
+    request["dry_run"] = false;
+    const auto applied = f.tools->Invoke("edit_terrain_stroke", request);
+    QVERIFY2(applied.value("ok").toBool(), qPrintable(Explain(applied)));
+    QVERIFY(applied.value("applied").toBool()); QVERIFY(!applied.value("map_saved").toBool());
+    QCOMPARE(f.project.mapEdits_.get(), session); QCOMPARE(f.project.mapDataUndoStack_, undo);
+    QCOMPARE(undo->count(), 1); QCOMPARE(undoEvents.count(), 1); QCOMPARE(documentReload.count(), 0);
+    QCOMPARE(session->InspectTerrainPoint({0, 0}).value->groundHeight, 16.f);
+    QVERIFY(!f.tools->Invoke("edit_terrain_stroke", request).value("ok").toBool()); QCOMPARE(undo->count(), 1);
+    undo->undo(); QCOMPARE(session->InspectTerrainPoint({0, 0}).value->groundHeight, 0.f);
+    QVERIFY(!session->IsDirty()); undo->redo(); QCOMPARE(session->InspectTerrainPoint({0, 0}).value->groundHeight, 16.f);
+    QCOMPARE(f.Fingerprint(), triggers);
+    const auto current = f.tools->Invoke("get_terrain_edit_state", {});
+    auto query = QJsonObject{{"terrain_binding", current.value("terrain_binding")}, {"points", request.value("points")}};
+    QVERIFY(f.tools->Invoke("query_terrain_points", query).value("ok").toBool());
+    Mcp::ToolPolicy policy; policy.allowEdit = false; f.tools->SetPolicy(policy);
+    auto forbidden = f.Context(); forbidden.insert("terrain_binding", current.value("terrain_binding"));
+    forbidden.insert("dry_run", false); forbidden.insert("brush", request.value("brush")); forbidden.insert("points", request.value("points"));
+    QVERIFY(!f.tools->Invoke("edit_terrain_stroke", forbidden).value("ok").toBool());
+    QVERIFY(f.tools->Invoke("query_terrain_points", query).value("ok").toBool()); QCOMPARE(undo->count(), 1);
+    QFile input(f.source.filePath("map/war3map.w3e")); QVERIFY(input.open(QIODevice::ReadOnly)); QCOMPARE(input.readAll(), Bytes(*terrain.value)); input.close();
+    auto altered = *terrain.value; altered.back() = std::byte{3};
+    QVERIFY(WriteFile(f.source.filePath("map/war3map.w3e"), Bytes(altered)));
+    QVERIFY(!f.tools->Invoke("get_terrain_edit_state", {}).value("ok").toBool());
+    QCOMPARE(session->InspectTerrainPoint({0, 0}).value->groundHeight, 16.f); QCOMPARE(undo->count(), 1);
+}
+
 void LiveEditorToolsTests::EntityFieldsUseOriginalSessionAndAtomicUndo() {
     Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
     MapData::RegionsDocument regions;
@@ -977,6 +1169,190 @@ void LiveEditorToolsTests::PlacementToolsKeepAuthorEditsAndOriginalUndo() {
     QCOMPARE(f.project.triggerUndoStack_->count(), 0);
 }
 
+void LiveEditorToolsTests::SpatialEntityQueriesShareSchemasAndObserveOriginalUndo() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    const auto members = MapDataSpatialFixtures::Members();
+    for (const auto& member : members)
+        QVERIFY(WriteFile(f.source.filePath("map/" + QString::fromStdString(member.name)), Bytes(member.data)));
+    auto directory = DirectoryWorkspace::Open(f.project.projectRoot_); QVERIFY(directory.Succeeded());
+    f.project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*directory.value));
+    f.project.LoadMapDocument(); f.project.ResetEditTracking();
+    QVERIFY(f.project.mapEdits_ && f.project.mapDataUndoStack_);
+    auto* const session = f.project.mapEdits_.get(); auto* const undo = f.project.mapDataUndoStack_;
+    const auto context = f.Context();
+    const auto triggerSha = QString::fromStdString(f.Fingerprint());
+    int beforeWrites = 0; f.tools->SetBeforeWrite([&] { ++beforeWrites; return false; });
+    for (const auto& definition : Mcp::MapDataToolDefinitions()) {
+        if (definition.name != "entities_query") continue;
+        bool found = false;
+        for (const auto& value : f.tools->Tools()) {
+            const auto tool = value.toObject(); if (tool.value("name") != definition.name) continue;
+            found = true; QCOMPARE(tool.value("inputSchema").toObject(), definition.inputSchema);
+            QVERIFY(definition.inputSchema.value("properties").toObject().value("filter").toObject()
+                .value("properties").toObject().contains("world_rect"));
+        }
+        QVERIFY(found);
+    }
+    const QJsonObject rectangle{{"left", -32}, {"bottom", -16}, {"right", 32}, {"top", 16}};
+    const QJsonObject filter{{"type_id", "hfoo"}, {"player", 0}, {"world_rect", rectangle}};
+    const auto request = [&](const QJsonObject& cursor = {}) {
+        auto arguments = f.Context(); arguments["kind"] = "units"; arguments["filter"] = filter;
+        QJsonObject page{{"limit", 1}}; if (!cursor.isEmpty()) page["cursor"] = cursor;
+        arguments["page"] = page; return arguments;
+    };
+    const auto first = f.tools->Invoke("entities_query", request());
+    QVERIFY2(first.value("ok").toBool(), qPrintable(Explain(first)));
+    QCOMPARE(first.value("matched_total").toString(), QStringLiteral("3"));
+    QCOMPARE(first.value("rows").toArray().first().toObject().value("source_index").toString(), QStringLiteral("0"));
+    const auto cursor = first.value("next_cursor").toObject(); const auto oldNextRequest = request(cursor);
+    const auto second = f.tools->Invoke("entities_query", oldNextRequest);
+    QVERIFY2(second.value("ok").toBool(), qPrintable(Explain(second)));
+    QCOMPARE(second.value("rows").toArray().first().toObject().value("source_index").toString(), QStringLiteral("3"));
+    for (const auto kind : {"doodads", "regions", "cameras"}) {
+        auto arguments = f.Context(); arguments["kind"] = kind;
+        arguments["filter"] = QJsonObject{{"world_rect", rectangle}};
+        const auto page = f.tools->Invoke("entities_query", arguments);
+        QVERIFY2(page.value("ok").toBool(), qPrintable(Explain(page)));
+        arguments.remove("filter"); arguments["page"] = QJsonObject{{"limit", 1}};
+        const auto head = f.tools->Invoke("entities_query", arguments); QVERIFY(head.value("ok").toBool());
+        arguments["page"] = QJsonObject{{"limit", 1}, {"cursor", head.value("next_cursor")}};
+        const auto next = f.tools->Invoke("entities_query", arguments);
+        QVERIFY2(next.value("ok").toBool(), qPrintable(Explain(next)));
+        QCOMPARE(next.value("rows").toArray().first().toObject().value("source_index").toString(), QStringLiteral("1"));
+        QCOMPARE(next.value("total"), head.value("total"));
+    }
+    QCOMPARE(beforeWrites, 0); QCOMPARE(f.Context(), context); QCOMPARE(undo->count(), 0);
+    QCOMPARE(session->Revision(), std::uint64_t{0});
+    f.tools->SetBeforeWrite({});
+    const auto row = first.value("rows").toArray().first().toObject();
+    auto edit = f.Context(); edit["kind"] = "units";
+    edit["expected_member_sha256"] = first.value("member").toObject().value("member_sha256");
+    edit["changes"] = QJsonArray{QJsonObject{{"source_index", row.value("source_index")}, {"row_key", row.value("row_key")},
+        {"field", "owner"}, {"expected_raw", "0"}, {"value", "1"}}};
+    const auto changed = f.tools->Invoke("entities_set_fields", edit);
+    QVERIFY2(changed.value("ok").toBool(), qPrintable(Explain(changed))); QCOMPARE(undo->count(), 1);
+    const auto after = f.tools->Invoke("entities_query", request());
+    QVERIFY(after.value("ok").toBool()); QCOMPARE(after.value("matched_total").toString(), QStringLiteral("2"));
+    QCOMPARE(ErrorCode(f.tools->Invoke("entities_query", oldNextRequest)), QStringLiteral("LIVE_EDITOR_REVISION_CONFLICT"));
+    QCOMPARE(ErrorCode(f.tools->Invoke("entities_query", request(cursor))), QStringLiteral("ENTITY_QUERY_CURSOR_STALE"));
+    QCOMPARE(undo->count(), 1); QCOMPARE(f.project.mapEdits_.get(), session);
+    undo->undo();
+    const auto restored = f.tools->Invoke("entities_query", request());
+    QVERIFY(restored.value("ok").toBool()); QCOMPARE(restored.value("matched_total").toString(), QStringLiteral("3"));
+    const auto current = MapData::ProjectMapData(*f.project.mapDocument_, *session); QVERIFY(current.Succeeded());
+    for (const auto& member : members) {
+        const auto actual = std::find_if(current.value->Members().begin(), current.value->Members().end(),
+            [&](const auto& value) { return value.memberName == member.name; });
+        QVERIFY(actual != current.value->Members().end()); QCOMPARE(actual->sources.size(), std::size_t{1});
+        QCOMPARE(actual->sources.front().data, member.data);
+    }
+    QCOMPARE(QString::fromStdString(f.Fingerprint()), triggerSha); QCOMPARE(f.project.triggerUndoStack_->count(), 0);
+}
+
+void LiveEditorToolsTests::PlacementCreateDeleteUseRealSourcesAndPurePreview() {
+    using namespace MapData;
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error)); f.InstallObjects(false, true);
+    const auto unitBytes = UnitPlacements{}.Serialize(), doodadBytes = DoodadPlacements{}.Serialize();
+    QVERIFY(unitBytes.Succeeded() && doodadBytes.Succeeded());
+    const auto terrainBytes = Tests::PlacementTerrainBytes();
+    QVERIFY(WriteFile(f.source.filePath("map/war3mapUnits.doo"), Bytes(*unitBytes.value)));
+    QVERIFY(WriteFile(f.source.filePath("map/war3map.doo"), Bytes(*doodadBytes.value)));
+    QVERIFY(WriteFile(f.source.filePath("map/war3map.w3i"), Bytes(MapDataFixtures::FullMapSettingsV25().bytes)));
+    QVERIFY(WriteFile(f.source.filePath("map/war3map.w3e"), Bytes(terrainBytes)));
+    auto directory = DirectoryWorkspace::Open(f.project.projectRoot_); QVERIFY(directory.Succeeded());
+    auto document = MapDocument::FromDirectory(*directory.value); QVERIFY(document.Succeeded());
+    f.project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*directory.value));
+    f.project.mapDocument_ = std::make_unique<MapDocument>(std::move(*document.value));
+    f.project.mapEdits_ = std::make_unique<MapDataEditSession>(*f.project.mapDocument_);
+    QVERIFY(f.project.mapEdits_->AttachTerrain(terrainBytes).Succeeded());
+    f.project.ResetEditTracking(); QVERIFY(f.project.editTrackingReady_);
+    auto* const originalSession = f.project.mapEdits_.get();
+    auto* const undo = f.project.mapDataUndoStack_; QVERIFY(undo);
+    const auto sourceSha = f.project.directorySnapshot_->Snapshot().aggregateSha256;
+    const auto originalIdentity = f.Context(); const auto triggerSha = f.Fingerprint();
+    const auto current = [&] { return ProjectMapData(*f.project.mapDocument_, *originalSession); };
+    const auto base = [&](const char* kind) {
+        const auto page = f.tools->Invoke("entities_query", {{"kind", kind}});
+        auto args = f.Context(); args.insert("kind", kind);
+        args.insert("expected_member_sha256", page.value("member").toObject().value("member_sha256"));
+        return args;
+    };
+    const auto item = [](const char* kind, const char* id) {
+        return QJsonObject{{"object_kind", kind}, {"object_id", id}, {"x", 64}, {"y", -128}};
+    };
+    auto units = base("units");
+    units.insert("placements", QJsonArray{item("unit", "u001"), item("unit", "U001"), item("item", "i001"), item("item", "I001")});
+    auto previewArgs = units; previewArgs.insert("dry_run", true);
+    int draftSubmits = 0;
+    f.tools->SetBeforeWrite([&] { ++draftSubmits; return false; });
+    const auto preview = f.tools->Invoke("entities_create", previewArgs);
+    QVERIFY2(preview.value("ok").toBool(), qPrintable(Explain(preview)));
+    QVERIFY(preview.value("dry_run").toBool()); QVERIFY(!preview.value("applied").toBool());
+    QCOMPARE(preview.value("candidate_ids").toArray().size(), 4); QVERIFY(preview.value("new_ids").toArray().isEmpty());
+    QVERIFY(!preview.contains("session_identity") && !preview.contains("command_identity"));
+    QCOMPARE(draftSubmits, 0); QCOMPARE(undo->count(), 0); QCOMPARE(originalSession->Revision(), std::uint64_t{0});
+    QCOMPARE(f.Context(), originalIdentity); QVERIFY(current().value->Units()->units.empty());
+    f.tools->SetBeforeWrite([&] { ++draftSubmits; return true; });
+    const auto created = f.tools->Invoke("entities_create", units);
+    QVERIFY2(created.value("ok").toBool(), qPrintable(Explain(created)));
+    QCOMPARE(draftSubmits, 1); QCOMPARE(undo->count(), 1);
+    QCOMPARE(created.value("session_identity").toString(), QString::number(originalSession->SessionIdentity()));
+    QCOMPARE(current().value->Units()->units.size(), std::size_t{4});
+    auto doodads = base("doodads");
+    doodads.insert("placements", QJsonArray{item("doodad", "D001"), item("doodad", "D101"), item("destructable", "b001"), item("destructable", "b101")});
+    const auto ground = f.tools->Invoke("entities_create", doodads);
+    QVERIFY2(ground.value("ok").toBool(), qPrintable(Explain(ground)));
+    QCOMPARE(undo->count(), 2); QCOMPARE(current().value->Doodads()->doodads.size(), std::size_t{4});
+    const auto createIds = created.value("new_ids").toArray();
+    auto remove = base("units"); QJsonArray sources;
+    for (const auto index : {3, 1}) {
+        const auto id = createIds[index].toObject();
+        sources.append(QJsonObject{{"source_index", id.value("source_index")}, {"row_key", id.value("row_key")}});
+    }
+    remove.insert("sources", sources);
+    const auto deleted = f.tools->Invoke("entities_delete", remove);
+    QVERIFY2(deleted.value("ok").toBool(), qPrintable(Explain(deleted)));
+    QCOMPARE(undo->count(), 3);
+    auto after = current(); QVERIFY(after.Succeeded()); QCOMPARE(after.value->Units()->units.size(), std::size_t{2});
+    QCOMPARE(after.value->Units()->units[0].rawcode, std::string("u001")); QCOMPARE(after.value->Units()->units[1].rawcode, std::string("i001"));
+    QVERIFY(deleted.value("after").toObject().value("rows").toArray().isEmpty());
+    // 无效末项不影响前项；预览也不触发草稿提交，陈旧请求继续拒绝。
+    auto invalid = base("units"); auto outside = item("unit", "u001"); outside.insert("x", 1025);
+    invalid.insert("placements", QJsonArray{item("unit", "u001"), outside}); invalid.insert("dry_run", true);
+    const auto beforeInvalid = f.Context(); const auto submits = draftSubmits;
+    QVERIFY(!f.tools->Invoke("entities_create", invalid).value("ok").toBool());
+    QCOMPARE(f.Context(), beforeInvalid); QCOMPARE(draftSubmits, submits); QCOMPARE(undo->count(), 3);
+    QCOMPARE(ErrorCode(f.tools->Invoke("entities_create", previewArgs)), QStringLiteral("LIVE_EDITOR_REVISION_CONFLICT"));
+    undo->undo(); QCOMPARE(current().value->Units()->units.size(), std::size_t{4});
+    const auto previewIdentity = f.Context(); auto redoPreview = base("units");
+    redoPreview.insert("placements", QJsonArray{item("unit", "u001")}); redoPreview.insert("dry_run", true);
+    QVERIFY(f.tools->Invoke("entities_create", redoPreview).value("ok").toBool());
+    QVERIFY(undo->canRedo()); QCOMPARE(f.Context(), previewIdentity); QCOMPARE(draftSubmits, submits);
+    undo->redo(); QCOMPARE(current().value->Units()->units.size(), std::size_t{2});
+    undo->undo(); undo->undo(); undo->undo();
+    const auto restored = current(); QVERIFY(restored.Succeeded());
+    QVERIFY(restored.value->Member(MapDataKind::Units).sources[0].data == *unitBytes.value);
+    QVERIFY(restored.value->Member(MapDataKind::Doodads).sources[0].data == *doodadBytes.value);
+    QVERIFY(!originalSession->IsDirty());
+    Mcp::ToolPolicy readOnly; readOnly.allowEdit = false; f.tools->SetPolicy(readOnly);
+    const auto visibleTools = Names(f.tools->Tools());
+    QVERIFY(!visibleTools.contains("entities_create") && !visibleTools.contains("entities_delete"));
+    // 注册表保留已禁用工具；面向助手的发现列表和实际调用受权限约束。
+    QVERIFY(f.tools->RegisteredToolNames().contains("entities_create") && f.tools->RegisteredToolNames().contains("entities_delete"));
+    auto deniedPreview = base("units");
+    deniedPreview.insert("placements", QJsonArray{item("unit", "u001")}); deniedPreview.insert("dry_run", true);
+    const auto deniedIdentity = f.Context(); const auto deniedSubmits = draftSubmits;
+    QVERIFY(!f.tools->Invoke("entities_create", deniedPreview).value("ok").toBool());
+    QCOMPARE(f.Context(), deniedIdentity); QCOMPARE(draftSubmits, deniedSubmits);
+    f.tools->SetPolicy({});
+    QVERIFY(f.tools->Invoke("entities_create", deniedPreview).value("ok").toBool());
+    QCOMPARE(f.Context(), deniedIdentity); QCOMPARE(draftSubmits, deniedSubmits);
+    const auto reloaded = DirectoryWorkspace::Open(f.project.projectRoot_); QVERIFY(reloaded.Succeeded());
+    QCOMPARE(reloaded.value->Snapshot().aggregateSha256, sourceSha);
+    QCOMPARE(f.project.mapEdits_.get(), originalSession); QCOMPARE(f.project.mapDataUndoStack_, undo);
+    QCOMPARE(f.Fingerprint(), triggerSha); QCOMPARE(f.project.triggerUndoStack_->count(), 0);
+}
+
 void LiveEditorToolsTests::ImportMetadataUsesSourceAndCurrentAssetOverlay() {
     Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
     QVERIFY(WriteFile(f.source.filePath("resource/alpha.bin"), "original opaque payload"));
@@ -1033,6 +1409,62 @@ void LiveEditorToolsTests::ImportMetadataUsesSourceAndCurrentAssetOverlay() {
     QCOMPARE(f.Fingerprint(), triggerSha); QCOMPARE(f.project.triggerUndoStack_->count(), 0);
     QVERIFY(WriteFile(f.source.filePath("resource/alpha.bin"), "external source change"));
     QVERIFY(!f.tools->Invoke("imports_list", {}).value("ok").toBool());
+}
+
+void LiveEditorToolsTests::ResourceToolsUseActualAsyncSourceAndRejectStaleResults() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    QByteArray texture(21, '\0');
+    texture[2] = 2; texture[12] = 1; texture[14] = 1; texture[16] = 24; texture[17] = 32;
+    texture[18] = 17; texture[19] = 33; texture[20] = 65;
+    QVERIFY(WriteFile(f.source.filePath("resource/icon.tga"), texture));
+    auto source = DirectoryWorkspace::Open(f.project.projectRoot_); QVERIFY(source.Succeeded());
+    f.project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*source.value));
+    f.project.ResetEditTracking();
+    const auto fingerprint = f.Fingerprint();
+    const auto state = f.tools->Invoke("object_resource_state", {});
+    QVERIFY2(state.value("ok").toBool(), qPrintable(Explain(state)));
+    QJsonObject query{{"project_identity", state.value("project_identity")}, {"expected_revision", state.value("revision")},
+        {"resource_revision", state.value("resource_revision")}, {"origin", "import"}, {"kind", "texture"}};
+    auto result = f.tools->Invoke("object_resource_query", query);
+    QCOMPARE(ErrorCode(result), QString("OBJECT_RESOURCE_INDEX_PENDING"));
+    QTRY_VERIFY_WITH_TIMEOUT((result = f.tools->Invoke("object_resource_query", query)).value("ok").toBool(), 3000);
+    QCOMPARE(result.value("rows").toArray().size(), 1);
+    const auto value = result.value("rows").toArray()[0].toObject().value("value");
+    QJsonObject inspect{{"project_identity", state.value("project_identity")}, {"expected_revision", state.value("revision")},
+        {"resource_revision", state.value("resource_revision")}, {"kind", "texture"}, {"value", value}};
+    QCOMPARE(ErrorCode(f.tools->Invoke("object_resource_inspect", inspect)), QString("OBJECT_RESOURCE_INSPECT_PENDING"));
+    QTRY_VERIFY_WITH_TIMEOUT(ErrorCode(result = f.tools->Invoke("object_resource_inspect", inspect)) != "OBJECT_RESOURCE_INSPECT_PENDING", 3000);
+    QVERIFY2(result.value("ok").toBool(), qPrintable(Explain(result)));
+    QVERIFY(result.value("source_verified").toBool());
+    QVERIFY(!result.value("payload_included").toBool());
+    QCOMPARE(result.value("bytes").toString(), QString("21"));
+    QCOMPARE(result.value("width").toInt(), 1); QCOMPARE(result.value("height").toInt(), 1);
+    QCOMPARE(f.Fingerprint(), fingerprint); QCOMPARE(f.project.triggerUndoStack_->count(), 0);
+
+    QVERIFY(f.tools->Invoke("editor_edit_trigger_graph", f.DescriptionRequest()).value("ok").toBool());
+    QCOMPARE(ErrorCode(f.tools->Invoke("object_resource_inspect", inspect)), QString("OBJECT_RESOURCE_STALE"));
+    const auto nextState = f.tools->Invoke("object_resource_state", {});
+    QVERIFY(nextState.value("resource_revision") != state.value("resource_revision"));
+    inspect["project_identity"] = nextState.value("project_identity");
+    inspect["expected_revision"] = nextState.value("revision"); inspect["resource_revision"] = nextState.value("resource_revision");
+    // 旧修订的结果不可复用；新身份重新后台读真实文件。
+    QCOMPARE(ErrorCode(f.tools->Invoke("object_resource_inspect", inspect)), QString("OBJECT_RESOURCE_INSPECT_PENDING"));
+    QTRY_VERIFY_WITH_TIMEOUT(ErrorCode(result = f.tools->Invoke("object_resource_inspect", inspect)) != "OBJECT_RESOURCE_INSPECT_PENDING", 3000);
+    QVERIFY2(result.value("ok").toBool(), qPrintable(Explain(result)));
+    QtProject::AssetState renamed;
+    renamed.edits.push_back({"resource/icon.tga", "resource/moved.tga"});
+    f.project.RestoreAssets(renamed);
+    const auto renamedState = f.tools->Invoke("object_resource_state", {});
+    inspect["project_identity"] = renamedState.value("project_identity");
+    inspect["expected_revision"] = renamedState.value("revision");
+    inspect["resource_revision"] = renamedState.value("resource_revision");
+    inspect["value"] = "resource/moved.tga";
+    QCOMPARE(ErrorCode(f.tools->Invoke("object_resource_inspect", inspect)), QString("OBJECT_RESOURCE_INSPECT_PENDING"));
+    QTRY_VERIFY_WITH_TIMEOUT(ErrorCode(result = f.tools->Invoke("object_resource_inspect", inspect)) != "OBJECT_RESOURCE_INSPECT_PENDING", 3000);
+    QVERIFY2(result.value("ok").toBool(), qPrintable(Explain(result)));
+    QCOMPARE(result.value("source_path").toString(), QString("resource/icon.tga"));
+    QVERIFY(WriteFile(f.source.filePath("resource/icon.tga"), "changed"));
+    QVERIFY(!f.tools->Invoke("object_resource_inspect", inspect).value("ok").toBool());
 }
 
 void LiveEditorToolsTests::ProjectSearchUsesInjectedOwnedPagesAndStrictRevision() {
@@ -1149,6 +1581,31 @@ void LiveEditorToolsTests::ProjectSearchOwnerDeletionKeepsInvocationAlive() {
     QCOMPARE(events.size(), 1); QCOMPARE(events[0][0].toJsonObject().value("type").toString(), QStringLiteral("tool_start"));
     QCOMPARE(f.Fingerprint(), fingerprint); QCOMPARE(f.project.editRevision_.Revision(), revision);
     QCOMPARE(f.project.triggerUndoStack_->count(), 0);
+}
+
+void LiveEditorToolsTests::ViewportToolsUseActualHostAndRejectStaleIdentity() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    const auto state = f.tools->Invoke("editor_state", {});
+    QJsonObject args{{"project_identity", state.value("project_identity")}, {"expected_revision", state.value("revision")}};
+    QCOMPARE(ErrorCode(f.tools->Invoke("world_viewport_camera_read", args)), QString("WORLD_VIEWPORT_UNSUPPORTED"));
+    int calls = 0;
+    QSignalSpy events(f.tools.get(), &QtApp::LiveEditorTools::Activity);
+    f.tools->SetWorldViewportHandler([&calls](const QString&, const QJsonObject&) {
+        ++calls;
+        return QJsonObject{{"ok", true}, {"status", "ready"}, {"image", QJsonObject{{"data", "fixture-payload"}}}};
+    });
+    auto result = f.tools->Invoke("world_viewport_camera_read", args);
+    QVERIFY(result.value("ok").toBool()); QVERIFY(result.contains("image")); QCOMPARE(calls, 1);
+    const auto details = events.last()[0].toJsonObject().value("details").toObject();
+    QVERIFY(!details.contains("image")); QVERIFY(details.value("image_returned").toBool());
+    auto stale = args; stale["expected_revision"] = "9999";
+    QCOMPARE(ErrorCode(f.tools->Invoke("world_viewport_camera_read", stale)), QString("LIVE_EDITOR_REVISION_CONFLICT"));
+    QCOMPARE(calls, 1);
+    auto invalid = args; invalid["path"] = "injected";
+    QVERIFY(!f.tools->Invoke("world_viewport_camera_read", invalid).value("ok").toBool()); QCOMPARE(calls, 1);
+    Mcp::ToolPolicy policy; policy.allowEdit = false; f.tools->SetPolicy(policy);
+    QVERIFY(!Names(f.tools->Tools()).contains("world_viewport_camera_set"));
+    QVERIFY(Names(f.tools->Tools()).contains("world_viewport_camera_read"));
 }
 
 QTEST_GUILESS_MAIN(LiveEditorToolsTests)

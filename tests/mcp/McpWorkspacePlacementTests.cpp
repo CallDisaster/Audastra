@@ -374,6 +374,35 @@ void NoImplicitBeginPrepublishCopyAndRollback() {
     Require(!f.workspace->HasActiveTransaction(), "rollback 必须关闭原活动事务"); f.SourceUntouched();
 }
 
+void CreateDeleteUseOriginalSealedTransaction() {
+    for (const bool creating : {false, true}) {
+        Fixture f; const auto original = f.Context(); const auto transaction = f.Begin();
+        MapDataPlacementIntent intent = MapDataPlacementDelete{{f.Source(*original.document, 0)}};
+        if (creating) {
+            auto unit = original.document->Units()->units.front(); unit.rawcode = "H001"; unit.position = {32, 48, 16};
+            const auto sha = Sha256(Native(*original.document)); Succeeded(sha, "新增成员绑定 SHA");
+            intent = MapDataPlacementCreate{*sha.value, std::vector<UnitPlacement>{unit}};
+        }
+        auto plan = PrepareMapDataPlacement(*original.original, *original.document, intent);
+        Succeeded(plan, "实际新增/删除密封计划");
+        const auto before = f.Observe();
+        RefusedUnchanged(f, before, f.workspace->ApplyPlacementPlan(*plan.value, [](const auto&, const auto&, const auto&) {
+            return Status::Failure("Test", "PLACEMENT_RECEIPT_REJECTED", "新建/删除完整回执拒绝");
+        }), "PLACEMENT_RECEIPT_REJECTED");
+        Succeeded(f.workspace->ApplyPlacementPlan(*plan.value), "原事务应用新增/删除");
+        SameMembers(plan.value->After(), *f.Context().document);
+        const auto current = f.Context();
+        Require(current.document->Units()->units.size() == (creating ? 3U : 1U), "新增/删除记录数量错误");
+        const auto frozen = FreezeOriginalMapDataPlacement(*current.original, *current.document, *plan.value->OriginalReplayIntent());
+        Succeeded(frozen, "新增/删除必须可从唯一原意图重放");
+        const auto stable = f.Observe();
+        RefusedUnchanged(f, stable, f.workspace->ApplyPlacementPlan(f.Placement(true)), creating
+            ? "MCP_PLACEMENT_COMBINATION_UNSUPPORTED" : "MCP_PLACEMENT_ORIGINAL_SOURCE_REQUIRED");
+        Succeeded(f.workspace->Rollback(transaction.id, transaction.base), "新增/删除仍走原 rollback");
+        SameMembers(*original.document, *f.Context().document); f.SourceUntouched();
+    }
+}
+
 void FieldsThenPlacementsRefuseBothCommands() {
     Fixture f; const auto original = f.Context(); const auto transaction = f.Begin();
     Succeeded(f.workspace->ApplyMapDataPlan(f.RegionField()), "实际 C1 区域净变化");
@@ -620,6 +649,7 @@ int main() {
     const auto run = [&](const char* name, void (*test)()) { scenario = name; test(); };
     try {
         run("NoImplicitBeginPrepublishCopyAndRollback", NoImplicitBeginPrepublishCopyAndRollback);
+        run("CreateDeleteUseOriginalSealedTransaction", CreateDeleteUseOriginalSealedTransaction);
         run("FieldsThenPlacementsRefuseBothCommands", FieldsThenPlacementsRefuseBothCommands);
         run("RepeatedAbsoluteRotationFreezesLastRequestedFloat", RepeatedAbsoluteRotationFreezesLastRequestedFloat);
         run("RestoredRotationClearsRecipeAndAllowsFreshCopy", RestoredRotationClearsRecipeAndAllowsFreshCopy);

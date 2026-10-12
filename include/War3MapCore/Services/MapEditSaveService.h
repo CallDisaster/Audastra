@@ -60,7 +60,15 @@ struct MapEditPlacementRotation {
     float facingRadians = 0;
 };
 
-using MapEditPlacementOperation = std::variant<std::monostate, MapEditPlacementCopy, MapEditPlacementRotation>;
+struct MapEditPlacementCreate {
+    std::string expectedMemberSha256;
+    MapData::PlacementCreationRecords records;
+};
+struct MapEditPlacementDelete {
+    std::vector<MapEditPlacementSource> sources;
+};
+using MapEditPlacementOperation = std::variant<std::monostate, MapEditPlacementCopy, MapEditPlacementRotation,
+    MapEditPlacementCreate, MapEditPlacementDelete>;
 
 struct MapEditSaveRequest {
     std::filesystem::path sourceMap;

@@ -238,6 +238,8 @@ Status McpWorkspace::ApplyObjectOverlay(ObjectType type, const LniObjectDocument
 
 Status McpWorkspace::ApplyObjectPlan(const Services::ObjectCommandPlan& plan) {
     if (publishing_) return Failure("MCP_PUBLISH_IN_PROGRESS", "归档候选正在发布；不能变更物编事务。");
+    const auto terrain = CheckTerrainMixingAllowed();
+    if (!terrain.Succeeded()) return terrain;
     const auto context = ObjectContext(plan.subject.type);
     if (!context.Succeeded()) return {context.diagnostics};
     if (!context.value->document || context.value->document->DocumentFingerprint() != plan.before.DocumentFingerprint())

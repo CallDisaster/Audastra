@@ -101,6 +101,41 @@ std::wstring InputDesktopName() {
     return name;
 }
 
+// 某些外部进程的线程桌面句柄无法查询；改用输入桌面的窗口枚举取得独立归属证据。
+// 只读桌面和窗口身份，不切换桌面、不设置焦点，也不把查询失败判成外部窗口。
+std::wstring InputDesktopWindowName(HWND window, DWORD pid, DWORD tid) {
+    struct Evidence {
+        HWND window;
+        DWORD pid, tid;
+        std::size_t count = 0;
+        bool found = false, budgetExceeded = false;
+    } evidence{window, pid, tid};
+    const auto desktop = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS);
+    Require(desktop != nullptr, "open input Desktop for window attribution");
+    try {
+        const auto name = UserObjectName(desktop);
+        const auto enumerated = EnumDesktopWindows(desktop, [](HWND candidate, LPARAM state) -> BOOL {
+            auto& item = *reinterpret_cast<Evidence*>(state);
+            if (++item.count > 16384) {
+                item.budgetExceeded = true;
+                SetLastError(ERROR_NOT_ENOUGH_QUOTA);
+                return FALSE;
+            }
+            if (candidate == item.window) {
+                DWORD candidatePid = 0;
+                const auto candidateTid = GetWindowThreadProcessId(candidate, &candidatePid);
+                item.found = candidateTid == item.tid && candidatePid == item.pid;
+            }
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(&evidence));
+        Require(enumerated != FALSE && !evidence.budgetExceeded, "enumerate input Desktop windows for attribution");
+        Require(evidence.found, "foreground HWND/thread not proven on input Desktop");
+        Require(InputDesktopName() == name, "input Desktop changed during window attribution");
+        Require(CloseDesktop(desktop) != FALSE, "close window attribution Desktop query handle");
+        return name;
+    } catch (...) { CloseDesktop(desktop); throw; }
+}
+
 enum class Ownership { External, Owned, Unknown };
 struct IdentityEvidence {
     DWORD pid = 0, tid = 0;
@@ -245,6 +280,7 @@ private:
         DWORD pid = 0, tid = 0;
         std::uint64_t created = 0;
         std::wstring desktop;
+        const char* desktopEvidence = "unavailable";
         Ownership ownership = Ownership::Unknown;
         IdentityEvidence evidence;
         std::string reason;
@@ -257,10 +293,18 @@ private:
             created = ProcessCreated(identity.process.value);
             Require(IsProcessInJob(identity.process.value, job_, &inJob) != FALSE, "recheck foreground owner Job membership");
             identity.everInJob = identity.everInJob || inJob != FALSE;
-            desktop = UserObjectName(GetThreadDesktop(tid));
+            const auto threadDesktop = GetThreadDesktop(tid);
+            if (threadDesktop) {
+                desktop = UserObjectName(threadDesktop);
+                desktopEvidence = "thread-desktop-handle";
+            } else {
+                desktop = InputDesktopWindowName(window, pid, tid);
+                desktopEvidence = "input-desktop-window-enumeration";
+            }
             DWORD confirmedPid = 0;
             Require(GetWindowThreadProcessId(window, &confirmedPid) == tid && confirmedPid == pid,
                 "foreground window changed while reading identity");
+            Require(ProcessCreated(identity.process.value) == created, "foreground process identity changed during Desktop query");
             Require(desktop == inputDesktop_, "foreground event Desktop differs from observed input Desktop");
             evidence = {pid, tid, created, identity.created, true, true, true, identity.everInJob};
             ownership = Classify(evidence, GetCurrentProcessId());
@@ -272,6 +316,7 @@ private:
              << ",\"eventTime\":" << eventTime << ",\"hwnd\":" << reinterpret_cast<std::uintptr_t>(window)
              << ",\"eventThread\":" << eventThread << ",\"pid\":" << pid << ",\"tid\":" << tid
              << ",\"processCreated\":" << created << ",\"desktop\":" << Json(Utf8(desktop))
+             << ",\"desktopEvidence\":" << Json(desktopEvidence)
              << ",\"inExpectedJob\":" << (inJob ? "true" : "false") << ",\"ownership\":" << Json(kind)
              << ",\"everInExpectedJob\":" << (evidence.everInJob ? "true" : "false")
              << ",\"reason\":" << Json(reason) << "}\n";

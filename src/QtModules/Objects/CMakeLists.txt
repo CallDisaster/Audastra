@@ -10,6 +10,7 @@ qt_add_library(War3MapQtModuleObjects STATIC
     ObjectViewEntries.cpp ObjectViewEntries.h
     ObjectModels.cpp ObjectModels.h ObjectModelsDetail.h ObjectFieldModel.cpp ObjectFieldDelegate.cpp
     ObjectColourPreviewSource.cpp ObjectColourPreviewSource.h
+    Widgets/ObjectResourcePicker.cpp Widgets/ObjectResourcePicker.h
     Widgets/ObjectCatalogWidgets.cpp Widgets/ObjectCatalogWidgets.h Widgets/ObjectCatalogDetail.h Widgets/ObjectPickerWidgets.cpp
     Widgets/ObjectTreeBrowser.cpp Widgets/ObjectTreeBrowser.h)
 add_library(War3MapEditor::QtModuleObjects ALIAS War3MapQtModuleObjects)

@@ -65,7 +65,7 @@ Result<War3RenderCameraV2> WorldViewport::ReadCamera(std::uint64_t expectedRevis
     return Result<War3RenderCameraV2>::Success(camera_);
 }
 
-Status WorldViewport::SetCamera(const War3RenderCameraV2& requested, std::uint64_t expectedRevision) {
+Status WorldViewport::CheckCameraChange(const War3RenderCameraV2& requested, std::uint64_t expectedRevision) const {
     if (QThread::currentThread() != thread()) return Status::Failure("World", "WORLD_CAMERA_THREAD",
         "视角命令必须由世界视口所属线程执行。");
     if (expectedRevision != revision_) return Status::Failure("World", "WORLD_CAMERA_REVISION",
@@ -73,6 +73,12 @@ Status WorldViewport::SetCamera(const War3RenderCameraV2& requested, std::uint64
     if (!ValidCamera(requested)) return Status::Failure("World", "WORLD_CAMERA_INVALID", "视角参数无效或超出范围。");
     if (strokeActive_ || moving_ || dragButton_ != Qt::NoButton)
         return Status::Failure("World", "WORLD_CAMERA_BUSY", "正在交互编辑，暂不能从服务层改动视角。");
+    return Status::Ok();
+}
+
+Status WorldViewport::SetCamera(const War3RenderCameraV2& requested, std::uint64_t expectedRevision) {
+    const auto check = CheckCameraChange(requested, expectedRevision);
+    if (!check.Succeeded()) return check;
     auto candidate = requested;
     candidate.yawRadians = std::remainder(candidate.yawRadians, 2.0f * std::numbers::pi_v<float>);
     const auto previous = camera_;

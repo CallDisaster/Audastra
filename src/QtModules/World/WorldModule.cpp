@@ -261,6 +261,11 @@ QString WorldModule::MapKey() const {
     return path.empty() ? QString{} : QString::fromStdWString(path.lexically_normal().wstring());
 }
 
+WorldViewport* WorldModule::ViewportForTools() const {
+    return viewport_ && !shownMap_.isEmpty() && shownMap_ == MapKey() && !reloadQueued_
+        && !worker_ && !pendingTerrainRender_ ? viewport_ : nullptr;
+}
+
 void WorldModule::Refresh() {
     ++selectionCatalogRevision_;
     if (premPresenter_) premPresenter_->Clear();
@@ -751,6 +756,9 @@ void WorldModule::RefreshMapEdits() {
         else needsRefresh_ = true;
     }
     RefreshPlacements();
+    // WPM 草稿和撤销不换 W3E 快照；仍须按会话修订刷新当前通行格标记。
+    if (CurrentTool() == Tool::Terrain && CurrentBrushKind() == MapData::TerrainBrushKind::PathingRestriction)
+        UpdateOverlay();
 }
 
 bool WorldModule::RefreshEnvironment() {
@@ -833,7 +841,9 @@ void WorldModule::StartTerrainRender() {
     if (!terrainCache_) terrainCache_ = std::make_shared<WorldTerrainCache>(); // 没有原版材质时仍可更新高度预览。
     auto cache = terrainCache_;
     const auto selectedWaterFrame = request.selectedWaterFrame;
-    const auto keepCliffs = request.preview || selectedWaterFrame ? cliffs_ : nullptr;
+    const bool keepPreviewCliffs = request.preview && (request.brush.kind == MapData::TerrainBrushKind::Texture
+        || request.brush.kind == MapData::TerrainBrushKind::Blight || request.brush.kind == MapData::TerrainBrushKind::WaterHeight);
+    const auto keepCliffs = keepPreviewCliffs || selectedWaterFrame ? cliffs_ : nullptr;
     const auto generation = generation_;
     const auto serial = request.serial;
     const bool preview = request.preview;

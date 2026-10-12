@@ -1,6 +1,7 @@
 #include "ObjectModule.h"
 #include "ObjectModuleShared.h"
 #include "Widgets/RoundedPopups.h"
+#include "Widgets/TablePopupAnchor.h"
 
 #include "EditorProject.h"
 #include "Modules/ModuleHost.h"
@@ -220,10 +221,11 @@ void ObjectModule::ShowStandardObject(const ObjectViewEntry& entry) {
         QString tip = tr("原始字段：%1\n原始值：%2").arg(U8(key), U8(value));
         if (definition) tip += tr("\n字段 ID：%1\n类型：%2\n来源：%3")
             .arg(U8(definition->fieldId), U8(definition->valueType), U8(definition->sourceTable));
+        const bool resource = definition && resourcePickerFactory_ && Services::DescribeObjectResourceField(*definition).has_value();
         const bool editable = !project_->projectRoot_.empty() && definition && match.safeToEdit &&
-            definition->nativeValueType && definition->referenceTypes.empty();
+            definition->nativeValueType && definition->referenceTypes.empty() && !resource;
         const bool reference = !project_->projectRoot_.empty() && definition && match.safeToEdit &&
-            definition->nativeValueType && !definition->referenceTypes.empty();
+            definition->nativeValueType && (!definition->referenceTypes.empty() || resource);
         if (editable || reference) tip += tr("\n双击修改：首次提交时自动建立地图覆盖");
         display.push_back({U8(key), label, shownValue, U8(value), category, tip, referenceIcon, editable, reference});
     }
@@ -297,7 +299,7 @@ void ObjectModule::BeginStandardReferenceEdit(const QModelIndex& proxyIndex) {
     context.building = base->category == "building";
     context.item = type == ObjectType::Item;
     const auto match = project_->objectFieldSchema_->MatchSourceField(type, sourceField.toStdString(), context);
-    if (!match.definition || !match.safeToEdit || match.definition->referenceTypes.empty()) return;
+    if (!match.definition || !match.safeToEdit) return;
 
     QVector<ObjectViewEntry> candidates;
     for (const auto& entry : objectViewEntries_) {
@@ -317,6 +319,20 @@ void ObjectModule::BeginStandardReferenceEdit(const QModelIndex& proxyIndex) {
         return currentObjectType_ == typeIndex && objectSourceTabs_->currentIndex() == 0 &&
             now && now->id == rawcode;
     };
+    if (const auto resource = resourcePickerFactory_ ? Services::DescribeObjectResourceField(*match.definition) : std::nullopt) {
+        const QPointer<ObjectModule> self(this);
+        const QPointer<QTableView> viewGuard(view);
+        const QPersistentModelIndex persistent(proxyIndex);
+        const auto factory = resourcePickerFactory_;
+        auto services = factory();
+        if (!self || !viewGuard || !persistent.isValid() || !stillSelected()) return;
+        auto* picker = new ObjectResourcePicker(*resource, rawValue, std::move(services), view);
+        picker->SetCommit([self, stillSelected, rawcode, sourceField](const QString& submitted) {
+            return self && stillSelected() && self->CommitStandardFieldValue(rawcode, sourceField, submitted);
+        });
+        picker->show(); UiKit::AnchorTablePopup(picker, view, proxyIndex); picker->raise(); return;
+    }
+    if (match.definition->referenceTypes.empty()) return;
     if (!match.definition->isList) {
         auto* picker = new ObjectPickerPopup(project_->iconProvider_.get(), view);
         picker->setAttribute(Qt::WA_DeleteOnClose);
@@ -333,6 +349,7 @@ void ObjectModule::BeginStandardReferenceEdit(const QModelIndex& proxyIndex) {
         cellAnchor->setAttribute(Qt::WA_TransparentForMouseEvents);
         connect(picker, &QObject::destroyed, cellAnchor, &QObject::deleteLater);
         picker->OpenAt(cellAnchor);
+        UiKit::AnchorTablePopup(picker, view, proxyIndex, cellAnchor);
         return;
     }
 
@@ -369,6 +386,7 @@ void ObjectModule::BeginStandardReferenceEdit(const QModelIndex& proxyIndex) {
         std::clamp(origin.y(), available.top(), available.bottom() - size.height() + 1)), size));
     War3Map::UiKit::ConfigureRoundedPopup(*panel);
     panel->show();
+    UiKit::AnchorTablePopup(panel, view, proxyIndex);
     panel->raise();
 }
 

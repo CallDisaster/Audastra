@@ -1,4 +1,5 @@
 #include "War3MapCore/MapData/TerrainEditing.h"
+#include "War3MapCore/MapData/TerrainRampEditing.h"
 
 #include <algorithm>
 #include <array>
@@ -46,15 +47,19 @@ std::uint16_t GroundRaw(double z, int level) {
     return static_cast<std::uint16_t>(std::clamp(raw, 0.0, static_cast<double>(kMaximumGroundRaw)));
 }
 
-// 原版编辑器实测分布（多张暴雪对战图统计）：0/4/8/12/16/17 各约 15%，其余逐级递减。
-std::uint8_t RandomVariation(std::uint32_t seed, std::uint32_t x, std::uint32_t y) {
+std::uint64_t CoordinateRandom(std::uint32_t seed, std::uint32_t x, std::uint32_t y) {
     std::uint64_t value = (static_cast<std::uint64_t>(seed) << 32) ^ (static_cast<std::uint64_t>(x) << 16) ^ y;
     value += 0x9e3779b97f4a7c15ull;
     value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ull;
     value = (value ^ (value >> 27)) * 0x94d049bb133111ebull;
     value ^= value >> 31;
+    return value;
+}
+
+// 多张静态对战图的变体频率统计；不声称复刻原版编辑器 PRNG。
+std::uint8_t RandomVariation(std::uint32_t seed, std::uint32_t x, std::uint32_t y) {
     constexpr std::array<std::uint32_t, 4> kWeights{150, 17, 7, 2};
-    std::uint32_t pick = static_cast<std::uint32_t>(value % 1004);
+    std::uint32_t pick = static_cast<std::uint32_t>(CoordinateRandom(seed, x, y) % 1004);
     for (std::uint8_t variation = 0; variation < 18; ++variation) {
         const auto weight = variation >= 16 ? 150u : kWeights[variation % 4];
         if (pick < weight) return variation;
@@ -64,32 +69,34 @@ std::uint8_t RandomVariation(std::uint32_t seed, std::uint32_t x, std::uint32_t 
 }
 
 struct Footprint {
-    std::int64_t cx = 0, cy = 0;
+    double cx = 0, cy = 0, radius = 0;
     std::uint32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0; // 包含范围 [x0,x1]×[y0,y1]
 };
 
-std::optional<Footprint> FootprintAt(const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point, std::uint32_t radius) {
+std::optional<Footprint> FootprintAt(const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point,
+    std::uint32_t radius, std::optional<std::uint32_t> size = std::nullopt) {
     const auto& header = terrain.header;
     const double u = (point.x - header.offset[0]) / TerrainGridSnapshot::tileSize;
     const double v = (point.y - header.offset[1]) / TerrainGridSnapshot::tileSize;
     // 有限的世界坐标仍可能远超 llround 的整数范围；先按地图范围裁剪。
     if (!std::isfinite(u) || !std::isfinite(v) || u < -0.5 || v < -0.5
         || u >= static_cast<double>(header.width) - 0.5 || v >= static_cast<double>(header.height) - 0.5) return std::nullopt;
-    const auto cx = static_cast<std::int64_t>(std::llround(u)), cy = static_cast<std::int64_t>(std::llround(v));
+    const double cx = std::round(u), cy = std::round(v);
     if (cx < 0 || cy < 0 || cx >= header.width || cy >= header.height) return std::nullopt;
-    const auto low = [&](std::int64_t c) { return static_cast<std::uint32_t>(std::max<std::int64_t>(0, c - radius)); };
-    return Footprint{cx, cy, low(cx), low(cy),
-        static_cast<std::uint32_t>(std::min<std::int64_t>(header.width - 1, cx + radius)),
-        static_cast<std::uint32_t>(std::min<std::int64_t>(header.height - 1, cy + radius))};
+    const double half = size ? static_cast<double>(*size - 1) : radius;
+    const auto low = [&](double c) { return static_cast<std::uint32_t>(std::max(0.0, c - half)); };
+    return Footprint{cx, cy, half, low(cx), low(cy),
+        static_cast<std::uint32_t>(std::min(static_cast<double>(header.width - 1), cx + half)),
+        static_cast<std::uint32_t>(std::min(static_cast<double>(header.height - 1), cy + half))};
 }
 
 // 笔刷内的权重：方形恒为 1；圆形在半径外为空；falloff 为余弦衰减（升降、平滑用）。
 std::optional<double> Weight(const TerrainBrush& brush, const Footprint& at, std::uint32_t x, std::uint32_t y, bool falloff) {
     const double dx = static_cast<double>(x) - at.cx, dy = static_cast<double>(y) - at.cy;
     const double distance = std::hypot(dx, dy);
-    const double r = brush.radius;
-    if (brush.shape == TerrainBrushShape::Circle && distance > r + 0.25) return std::nullopt;
-    if (!falloff || brush.radius == 0) return 1.0;
+    const double r = at.radius;
+    if (brush.shape == TerrainBrushShape::Circle && distance > r + (brush.size ? 0.0 : 0.25)) return std::nullopt;
+    if (!falloff || r == 0) return 1.0;
     const double edge = brush.shape == TerrainBrushShape::Circle ? r + 1.0 : r * std::numbers::sqrt2 + 1.0;
     return 0.5 * (1.0 + std::cos(std::numbers::pi * std::min(distance / edge, 1.0)));
 }
@@ -164,6 +171,10 @@ Status Validate(const TerrainGridSnapshot& terrain, const TerrainBrush& brush, s
     if (!Consistent(terrain)) return Failure("TERRAIN_EDIT_INCONSISTENT", "地形快照的宽高与顶点数量不一致");
     if (!ClassicLayout(terrain)) return Failure("TERRAIN_BRUSH_READ_ONLY", "该地形布局只读；笔刷只支持经典 W3E v11");
     if (brush.radius > kMaximumRadius) return Failure("TERRAIN_BRUSH_RADIUS", "笔刷半径超过 16 个顶点");
+    if (brush.size && (*brush.size == 0 || *brush.size > 8))
+        return Failure("TERRAIN_BRUSH_SIZE", "笔刷尺寸必须在 1 到 8 之间");
+    if (brush.shape != TerrainBrushShape::Circle && brush.shape != TerrainBrushShape::Square)
+        return Failure("TERRAIN_BRUSH_SHAPE", "未知的笔刷形状");
     if (points.empty() || points.size() > kMaximumPoints) return Failure("TERRAIN_STROKE_POINTS", "笔刷点数量必须在 1 到 65536 之间");
     for (const auto& point : points)
         if (!std::isfinite(point.x) || !std::isfinite(point.y)) return Failure("TERRAIN_STROKE_POINTS", "笔刷点坐标不是有限数");
@@ -171,12 +182,14 @@ Status Validate(const TerrainGridSnapshot& terrain, const TerrainBrush& brush, s
         return Failure("TERRAIN_STROKE_ANCHOR", "笔划基准包含不支持的地面原始高度或悬崖层级");
     switch (brush.kind) {
     case TerrainBrushKind::Texture:
+        if (brush.variation && *brush.variation > 17)
+            return Failure("TERRAIN_BRUSH_VARIATION", "地面贴图变体必须在 0 到 17 之间");
         if (brush.groundTexture.size() != 4) return Failure("TERRAIN_BRUSH_TEXTURE", "地面贴图必须是四字符 rawcode");
         if (std::find(terrain.header.groundTilesets.begin(), terrain.header.groundTilesets.end(), brush.groundTexture)
                 == terrain.header.groundTilesets.end() && terrain.header.groundTilesets.size() >= kMaximumGroundTilesets)
             return Failure("TERRAIN_TILESET_FULL", "地图已使用 16 种地面贴图，不能再加入新的贴图");
         break;
-    case TerrainBrushKind::Raise: case TerrainBrushKind::Lower:
+    case TerrainBrushKind::Raise: case TerrainBrushKind::Lower: case TerrainBrushKind::Noise:
         if (!std::isfinite(brush.strength) || brush.strength <= 0 || brush.strength > 1024)
             return Failure("TERRAIN_BRUSH_STRENGTH", "升降幅度必须在 0 到 1024 之间");
         break;
@@ -186,11 +199,20 @@ Status Validate(const TerrainGridSnapshot& terrain, const TerrainBrush& brush, s
         break;
     case TerrainBrushKind::CliffLevel:
         if (brush.levelDelta < -1 || brush.levelDelta > 1) return Failure("TERRAIN_BRUSH_LEVEL", "悬崖层级只能升降一级或保持同级");
-        if (brush.cliffTexture >= terrain.header.cliffTilesets.size())
+        [[fallthrough]];
+    case TerrainBrushKind::CliffTexture:
+        if (brush.cliffTexture >= terrain.header.cliffTilesets.size() || brush.cliffTexture >= 15)
             return Failure("TERRAIN_BRUSH_CLIFF_TEXTURE", "悬崖贴图不在地图悬崖贴图表中");
         break;
-    case TerrainBrushKind::Blight: case TerrainBrushKind::Plateau:
+    case TerrainBrushKind::WaterHeight:
+        if (!std::isfinite(brush.waterHeight) || brush.waterHeight < -2048.0f || brush.waterHeight > 2047.75f)
+            return Failure("TERRAIN_BRUSH_WATER_HEIGHT", "水面基础高度必须在 -2048 到 2047.75 之间");
         break;
+    case TerrainBrushKind::Blight: case TerrainBrushKind::Plateau: case TerrainBrushKind::Ramp:
+    case TerrainBrushKind::Boundary:
+        break;
+    case TerrainBrushKind::PathingRestriction:
+        return Failure("PATHING_BRUSH_SESSION_REQUIRED", "通行限制须通过包含源 WPM 的地图编辑会话提交。");
     default:
         return Failure("TERRAIN_BRUSH_KIND", "未知的地形笔刷");
     }
@@ -198,6 +220,22 @@ Status Validate(const TerrainGridSnapshot& terrain, const TerrainBrush& brush, s
 }
 
 } // namespace
+
+std::optional<TerrainBrushFootprint> GetTerrainBrushFootprint(
+    const TerrainGridSnapshot& terrain, const TerrainBrush& brush, const TerrainStrokePoint& point) {
+    if (!Consistent(terrain) || brush.radius > kMaximumRadius
+        || (brush.size && (*brush.size == 0 || *brush.size > 8))) return std::nullopt;
+    if (brush.kind == TerrainBrushKind::Ramp) {
+        const auto plan = PlanTerrainRamp(terrain, point);
+        return plan.Succeeded() && plan.value ? std::optional{plan.value->footprint} : std::nullopt;
+    }
+    const auto at = FootprintAt(terrain, point, brush.radius, brush.size);
+    if (!at) return std::nullopt;
+    const double tile = TerrainGridSnapshot::tileSize;
+    return TerrainBrushFootprint{terrain.header.offset[0] + at->cx * tile,
+        terrain.header.offset[1] + at->cy * tile, (at->radius + 0.5) * tile,
+        at->x0, at->y0, at->x1 + 1, at->y1 + 1};
+}
 
 Result<std::vector<std::byte>> SerializeMapTerrain(const TerrainGridSnapshot& terrain) {
     const auto& header = terrain.header;
@@ -248,17 +286,22 @@ void RefreshTerrainDerived(TerrainGridSnapshot& terrain, std::uint32_t x0, std::
     }
 }
 
-std::optional<float> SampleGroundHeight(const TerrainGridSnapshot& terrain, double x, double y) {
+std::optional<float> SampleGroundHeight(const TerrainGridSnapshot& terrain, double x, double y, TerrainHeightSource source) {
     const auto width = terrain.header.width, height = terrain.header.height;
-    if (!Consistent(terrain) || !std::isfinite(x) || !std::isfinite(y)) return std::nullopt;
-    const auto& origin = terrain.vertices.front().position;
-    const double u = (x - origin[0]) / TerrainGridSnapshot::tileSize;
-    const double v = (y - origin[1]) / TerrainGridSnapshot::tileSize;
+    if (!Consistent(terrain) || !std::isfinite(x) || !std::isfinite(y)
+        || (source != TerrainHeightSource::StoredPositions && source != TerrainHeightSource::RawWithRamps)) return std::nullopt;
+    const bool raw = source == TerrainHeightSource::RawWithRamps;
+    const auto& position = terrain.vertices.front().position;
+    const double u = (x - (raw ? terrain.header.offset[0] : position[0])) / TerrainGridSnapshot::tileSize;
+    const double v = (y - (raw ? terrain.header.offset[1] : position[1])) / TerrainGridSnapshot::tileSize;
     if (!(u >= 0 && v >= 0 && u <= width - 1 && v <= height - 1)) return std::nullopt;
     const auto column = std::min(static_cast<std::uint32_t>(u), width - 2), row = std::min(static_cast<std::uint32_t>(v), height - 2);
     const double fu = u - column, fv = v - row;
     const auto z = [&](std::uint32_t dx, std::uint32_t dy) {
-        return static_cast<double>(terrain.vertices[static_cast<std::size_t>(row + dy) * width + column + dx].position[2]);
+        const auto vx = column + dx, vy = row + dy;
+        const auto& vertex = terrain.vertices[static_cast<std::size_t>(vy) * width + vx];
+        return raw ? GroundZ(vertex.groundHeightRaw, vertex.CliffLevel()) + TerrainRampHeightOffset(terrain, vx, vy).value_or(0)
+                   : static_cast<double>(vertex.position[2]);
     };
     const double result = fu + fv <= 1 ? z(0, 0) + fu * (z(1, 0) - z(0, 0)) + fv * (z(0, 1) - z(0, 0))
                                         : z(1, 1) + (1 - fu) * (z(0, 1) - z(1, 1)) + (1 - fv) * (z(1, 0) - z(1, 1));
@@ -288,6 +331,7 @@ Result<TerrainStrokeResult> ApplyTerrainStroke(
         failed.diagnostics = std::move(status.diagnostics);
         return failed;
     }
+    if (brush.kind == TerrainBrushKind::Ramp) return ApplyTerrainRampStroke(terrain, brush.value, points);
     auto& header = terrain.header;
     const auto width = header.width;
     // 先确定第一个有效落点；地图外的整笔是纯空操作，不追加未使用的贴图表项。
@@ -312,32 +356,40 @@ Result<TerrainStrokeResult> ApplyTerrainStroke(
     }
     const int targetLevel = std::clamp(static_cast<int>(anchor.cliffLevel) + brush.levelDelta, 0, kMaximumCliffLevel);
     std::vector<std::uint32_t> levelChanged;
+    std::vector<bool> noiseTouched;
+    if (brush.kind == TerrainBrushKind::Noise) noiseTouched.resize(terrain.vertices.size());
     for (const auto& point : points) {
-        const auto at = FootprintAt(terrain, point, brush.radius);
+        const auto at = FootprintAt(terrain, point, brush.radius, brush.size);
         if (!at) continue;
         // 平滑需要施加前的邻域高度：先算完整个笔刷范围再写入。
         std::vector<std::pair<std::size_t, TerrainVertex>> pending;
         for (std::uint32_t y = at->y0; y <= at->y1; ++y) {
             for (std::uint32_t x = at->x0; x <= at->x1; ++x) {
                 const bool falloff = brush.kind == TerrainBrushKind::Raise || brush.kind == TerrainBrushKind::Lower
-                    || brush.kind == TerrainBrushKind::Smooth;
+                    || brush.kind == TerrainBrushKind::Smooth || brush.kind == TerrainBrushKind::Noise;
                 const auto weight = Weight(brush, *at, x, y, falloff);
                 if (!weight) continue;
                 const auto index = static_cast<std::size_t>(y) * width + x;
                 auto vertex = terrain.vertices[index];
-                const bool shaping = brush.kind != TerrainBrushKind::Texture && brush.kind != TerrainBrushKind::Blight;
+                const bool shaping = brush.kind != TerrainBrushKind::Texture && brush.kind != TerrainBrushKind::Blight
+                    && brush.kind != TerrainBrushKind::Boundary;
                 if (shaping && vertex.IsBoundary()) continue;
                 const int level = vertex.CliffLevel();
                 switch (brush.kind) {
                 case TerrainBrushKind::Texture:
-                    if (vertex.GroundTextureIndex() != textureIndex) {
+                    if (vertex.GroundTextureIndex() != textureIndex || brush.variation || brush.randomizeVariation) {
                         vertex.textureAndFlagsRaw = static_cast<std::uint8_t>((vertex.textureAndFlagsRaw & 0xf0) | textureIndex);
-                        vertex.variationRaw = static_cast<std::uint8_t>((vertex.variationRaw & 0xe0) | RandomVariation(brush.seed, x, y));
+                        vertex.variationRaw = static_cast<std::uint8_t>((vertex.variationRaw & 0xe0)
+                            | brush.variation.value_or(RandomVariation(brush.seed, x, y)));
                     }
                     break;
                 case TerrainBrushKind::Blight:
                     vertex.textureAndFlagsRaw = static_cast<std::uint8_t>(brush.value ? (vertex.textureAndFlagsRaw | 0x20)
                                                                                       : (vertex.textureAndFlagsRaw & ~0x20));
+                    break;
+                case TerrainBrushKind::Boundary:
+                    vertex.textureAndFlagsRaw = static_cast<std::uint8_t>(brush.value ? (vertex.textureAndFlagsRaw | 0x80)
+                                                                                      : (vertex.textureAndFlagsRaw & ~0x80));
                     break;
                 case TerrainBrushKind::Raise: case TerrainBrushKind::Lower: {
                     const double delta = (brush.kind == TerrainBrushKind::Raise ? 1.0 : -1.0) * brush.strength * *weight;
@@ -364,6 +416,23 @@ Result<TerrainStrokeResult> ApplyTerrainStroke(
                 case TerrainBrushKind::CliffLevel:
                     SetLevel(vertex, targetLevel, brush.cliffTexture);
                     break;
+                case TerrainBrushKind::Noise: {
+                    if (noiseTouched[index]) break;
+                    noiseTouched[index] = true;
+                    const double random = static_cast<double>(CoordinateRandom(brush.seed, x, y) & 0xffffu) / 32767.5 - 1.0;
+                    vertex.groundHeightRaw = GroundRaw(GroundZ(vertex.groundHeightRaw, level)
+                        + random * brush.strength * *weight, level);
+                    break;
+                }
+                case TerrainBrushKind::CliffTexture:
+                    SetLevel(vertex, level, brush.cliffTexture);
+                    break;
+                case TerrainBrushKind::WaterHeight:
+                    if (vertex.HasWater()) vertex.waterHeightAndFlagsRaw = static_cast<std::uint16_t>(
+                        (vertex.waterHeightAndFlagsRaw & 0xc000u) | static_cast<std::uint16_t>(std::lround(brush.waterHeight * 4.0 + 8192.0)));
+                    break;
+                case TerrainBrushKind::Ramp:
+                    break; // 三点形态已在上方独立预检并返回。
                 }
                 if (SameRaw(vertex, terrain.vertices[index])) continue;
                 pending.emplace_back(index, vertex);
@@ -386,6 +455,32 @@ Result<TerrainStrokeResult> ApplyTerrainStroke(
     auto result = changes.Result(headerChanged);
     if (!result.Empty() || headerChanged) RefreshTerrainDerived(terrain, result.x0, result.y0, result.x1, result.y1);
     return Result<TerrainStrokeResult>::Success(result);
+}
+
+Result<TerrainStrokeResult> ReplaceTerrainTextureSlot(TerrainGridSnapshot& terrain,
+    TerrainTextureTable table, std::uint32_t slot, const std::string& rawcode) {
+    const auto fail = [](const char* code, const char* message) {
+        return Result<TerrainStrokeResult>::Failure("MapTerrain.Edit", code, message);
+    };
+    if (!Consistent(terrain)) return fail("TERRAIN_EDIT_INCONSISTENT", "地形宽高与顶点数量不一致");
+    if (!ClassicLayout(terrain)) return fail("TERRAIN_BRUSH_READ_ONLY", "贴图表编辑只支持经典 W3E v11");
+    if (table != TerrainTextureTable::Ground && table != TerrainTextureTable::Cliff)
+        return fail("TERRAIN_TILESET_TABLE", "未知的地形贴图表");
+    if (rawcode.size() != 4 || std::any_of(rawcode.begin(), rawcode.end(),
+            [](unsigned char c) { return c < 0x20 || c > 0x7e; }))
+        return fail("TERRAIN_BRUSH_TEXTURE", "贴图必须是四个可显示的 ASCII 字符");
+    auto& list = table == TerrainTextureTable::Ground ? terrain.header.groundTilesets : terrain.header.cliffTilesets;
+    const std::size_t maximum = table == TerrainTextureTable::Ground ? 16 : 15;
+    if (slot > list.size() || slot >= maximum)
+        return fail("TERRAIN_TILESET_SLOT", "槽位必须为已有槽位或表尾的下一个可编码槽位");
+    if (slot < list.size() && list[slot] == rawcode) return Result<TerrainStrokeResult>::Success({});
+    if (std::find(list.begin(), list.end(), rawcode) != list.end())
+        return fail("TERRAIN_TILESET_DUPLICATE", "该贴图已在另一个槽位，不能产生重复槽位");
+    if (slot == list.size()) list.push_back(rawcode);
+    else list[slot] = rawcode;
+    terrain.header.usesCustomTileset = true;
+    RefreshTerrainDerived(terrain, 0, 0, terrain.header.width, terrain.header.height);
+    return Result<TerrainStrokeResult>::Success({0, 0, terrain.header.width, terrain.header.height, true});
 }
 
 } // namespace War3Map::MapData

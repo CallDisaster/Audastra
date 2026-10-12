@@ -1,7 +1,10 @@
 #pragma once
 
+#include "War3MapCore/MapData/PathingRestrictionEditing.h"
+
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
+#include "War3MapCore/MapData/TerrainPointQuery.h"
 
 #include <array>
 #include <cstdint>
@@ -56,6 +59,27 @@ public:
         bool appliedForward_ = true;
         bool restoring_ = false;
     };
+    // 纯准备得到的不可伪造候选；只能向原会话、原修订和原地形来源提交。
+    class PreparedTerrainEdit {
+    public:
+        [[nodiscard]] const TerrainStrokeResult& Changed() const noexcept { return changed_; }
+        [[nodiscard]] const Status& TerrainPathingGate() const noexcept { return terrainPathingGate_; }
+        [[nodiscard]] bool HasChanges() const noexcept;
+        [[nodiscard]] const TerrainBrush& Brush() const noexcept { return brush_; }
+        [[nodiscard]] std::span<const TerrainStrokePoint> Points() const noexcept { return points_; }
+        [[nodiscard]] bool FollowDoodads() const noexcept { return followDoodads_; }
+    private:
+        friend class MapDataEditSession;
+        PreparedTerrainEdit() = default;
+        std::shared_ptr<const Command> command_;
+        std::shared_ptr<const TerrainGridSnapshot> before_;
+        std::uint64_t sessionIdentity_ = 0, revision_ = 0, sourceRevision_ = 0;
+        TerrainStrokeResult changed_;
+        Status terrainPathingGate_;
+        TerrainBrush brush_;
+        std::vector<TerrainStrokePoint> points_;
+        bool followDoodads_ = false;
+    };
     explicit MapDataEditSession(const MapDocument& source);
     MapDataEditSession(const MapDataEditSession&) = delete; // 会话身份与回执地址不能被复制。
     MapDataEditSession& operator=(const MapDataEditSession&) = delete;
@@ -92,11 +116,27 @@ public:
     // 工程恢复：两种覆盖一起预检并作为一条撤销命令提交；任一失败时两者都不改。
     [[nodiscard]] Status SetTerrainAndPathing(std::span<const std::byte> terrainBytes,
         std::span<const std::byte> pathingBytes);
+    // 新增通行限制只能携带来源绑定的工程声明恢复；原有 raw 覆盖入口不放宽。
+    [[nodiscard]] Status SetTerrainAndPathingDraft(std::span<const std::byte> terrainBytes,
+        std::span<const std::byte> pathingBytes, std::span<const std::byte> restrictionDraft);
+    [[nodiscard]] Result<std::vector<std::byte>> SerializePathingRestrictionDraft() const;
+    [[nodiscard]] Result<PathingRestrictionPreview> QueryPathingRestrictions(std::size_t maximumCells = 4096) const;
     [[nodiscard]] std::shared_ptr<const TerrainGridSnapshot> Terrain() const noexcept { return terrain_; }
+    [[nodiscard]] bool HasTerrainPathing() const noexcept { return pathing_.has_value(); }
+    // 附上来源或保存为新基线会变化；这些操作不消耗正常编辑/撤销 Revision。
+    [[nodiscard]] std::uint64_t TerrainSourceRevision() const noexcept { return terrainSourceRevision_; }
+    [[nodiscard]] Result<TerrainPointSample> InspectTerrainPoint(const TerrainStrokePoint& point) const;
+    [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainEdit(const TerrainBrush& brush,
+        std::span<const TerrainStrokePoint> points, bool followDoodads = true) const;
+    [[nodiscard]] Result<TerrainStrokeResult> ApplyPreparedTerrainEdit(const PreparedTerrainEdit& plan,
+        const std::function<Status(const EditReceipt&)>& prepublish = {});
     // 一笔地形笔刷为一次事务，撤销按 16×16 顶点区块保存前后原始字段。
     // followDoodads 为真时，改动范围内的装饰物随地面高度变化（同一事务）。
     [[nodiscard]] Result<TerrainStrokeResult> EditTerrain(const TerrainBrush& brush,
         std::span<const TerrainStrokePoint> points, bool followDoodads = true);
+    // 贴图槽替换/追加也进入同一撤销、工程恢复和原生地图保存门。
+    [[nodiscard]] Result<TerrainStrokeResult> EditTerrainTextureSlot(TerrainTextureTable table,
+        std::uint32_t slot, const std::string& rawcode);
     // 正式地图保存门禁：仅证实原地形荒芜位与 WPM bit5 的逐格同步；其它地形改动拒绝保存。
     [[nodiscard]] Status VerifyTerrainPathingForSave() const;
     [[nodiscard]] EditReceipt LastEdit() const;
@@ -122,6 +162,7 @@ public:
         std::size_t maximumBytes = std::numeric_limits<std::size_t>::max()) const;
 
 private:
+    friend class TerrainPatchCodec;
     friend struct detail::PlacementEditingAccess;
     friend struct detail::TerrainInspectionAccess;
     friend struct detail::MapDataFieldEditingAccess;
@@ -156,6 +197,16 @@ private:
         const std::function<Status(const EditReceipt&)>& prepublish = {});
     [[nodiscard]] bool TerrainMatches(const Command& command, bool forward) const;
     [[nodiscard]] bool TerrainDirty() const noexcept;
+    [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainEditInternal(const TerrainBrush& brush,
+        std::span<const TerrainStrokePoint> points, bool followDoodads, bool inspectSaveGate) const;
+    [[nodiscard]] Result<PreparedTerrainEdit> PreparePathingRestrictionEdit(const TerrainBrush& brush,
+        std::span<const TerrainStrokePoint> points, bool followDoodads, bool inspectSaveGate) const;
+    [[nodiscard]] Status SetTerrainAndPathingInternal(std::span<const std::byte> terrainBytes,
+        std::span<const std::byte> pathingBytes, std::span<const std::byte> restrictionDraft);
+    [[nodiscard]] Status VerifyTerrainCandidateForSave(
+        const std::shared_ptr<const TerrainGridSnapshot>& terrain,
+        const std::optional<std::vector<std::byte>>& pathing,
+        const std::optional<std::vector<std::byte>>& doodads) const;
     [[nodiscard]] Status PrepareUnits(const UnitPlacements& value, std::vector<MemberChange>& changes) const;
     [[nodiscard]] Status DeserializeAndApply(MapDataKind kind, std::span<const std::byte> bytes,
         bool linkStartLocations);
@@ -170,6 +221,7 @@ private:
     std::size_t cursor_ = 0;
     std::uint64_t revision_ = 0;
     std::uint64_t sessionIdentity_ = 0, nextCommandIdentity_ = 1;
+    std::uint64_t terrainSourceRevision_ = 0;
     EditReceipt lastApplied_;
     std::shared_ptr<const TerrainGridSnapshot> terrainOriginal_;
     std::shared_ptr<const TerrainGridSnapshot> terrain_;

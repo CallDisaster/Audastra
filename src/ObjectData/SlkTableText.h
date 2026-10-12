@@ -4,6 +4,7 @@
 // 解析规则与物编目录（ParseSlkCells 严格模式、ParseProfile）一致，保证读写两侧对同一文件看法相同。
 
 #include "War3MapCore/Types.h"
+#include "War3MapCore/ObjectData/ProfileList.h"
 
 #include <map>
 #include <optional>
@@ -48,12 +49,5 @@ struct RawProfileFile {
 
 [[nodiscard]] RawProfileFile ParseRawProfile(std::string text);
 [[nodiscard]] std::string AppendProfileSections(const RawProfileFile& file, const std::vector<ProfileSection>& sections);
-
-// profile 逗号列表：引号内的逗号不分隔；解码时去掉每项外层引号。
-[[nodiscard]] std::vector<std::string> SplitProfileList(std::string_view value);
-[[nodiscard]] std::string DecodeProfileItem(std::string_view item);
-// 单项记号：含逗号时加引号；含引号、换行或首尾空白时无法写出，返回空。
-[[nodiscard]] std::optional<std::string> ProfileItemToken(std::string_view text);
-[[nodiscard]] std::string JoinProfileList(const std::vector<std::string>& items);
 
 } // namespace War3Map::ObjectData::SlkText

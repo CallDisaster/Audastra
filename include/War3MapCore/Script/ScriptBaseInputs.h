@@ -11,7 +11,7 @@ namespace War3Map::Game { class GameDataSource; }
 namespace War3Map::Script {
 
 // 默认保持现代工具链的既有来源。地图/游戏优先级必须由兼容 profile 显式选择。
-enum class ScriptBasePolicy { BoundLayout, MapGameThenLayout };
+enum class ScriptBasePolicy { BoundLayout, MapGameThenLayout, MapGameOnly };
 enum class ScriptBaseOrigin { Layout, MapArchive, MapReplacement, GameArchive };
 
 struct ScriptBaseInput {
@@ -42,6 +42,7 @@ struct ScriptBaseInputsRequest {
     const Game::GameDataSource* game = nullptr;
     // 由调用者验证的游戏基础库策略：20=return bug，24=Post124；不从版本宏猜测。
     // 未提供时不读取游戏层，仍允许地图→绑定工具链。策略不同也跳过游戏层。
+    // MapGameOnly 必须显式提供，不读取或回退到 layout；可只从地图最终保存视图取源。
     std::optional<int> gameLibraryVersion;
     std::uint64_t documentRevision = 0;
 };
@@ -51,5 +52,8 @@ struct ScriptBaseInputsRequest {
 [[nodiscard]] Result<ScriptBaseInputs> CaptureScriptBaseInputs(const ScriptBaseInputsRequest& request);
 [[nodiscard]] Status VerifyScriptBaseInputs(const ScriptBaseInputs& inputs,
     const ScriptToolchainLayout& layout, ScriptBasePolicy policy);
+// 仅供显式 MapGameOnly 使用：核验冻结字节、来源和校验策略，不要求 YDWE 工具链。
+// 不重新读取源文件；保存服务仍须验证文档修订和地图来源没有变化。
+[[nodiscard]] Status VerifyScriptBaseInputs(const ScriptBaseInputs& inputs, ScriptBasePolicy policy);
 
 } // namespace War3Map::Script

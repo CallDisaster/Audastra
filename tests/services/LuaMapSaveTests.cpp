@@ -1,6 +1,8 @@
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/Script/ScriptSaveBundle.h"
 #include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/Services/MapSaveService.h"
+#include "War3MapCore/Services/ClassicLuaMapSources.h"
 #include "War3MapCore/Services/ScriptSavePreparation.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "../MapDataFixtures.h"
@@ -145,7 +147,8 @@ public:
     Trigger::EncodedTriggerDocument originalPair, editedPair;
     LuaMapTargetRequest request;
 
-    explicit Fixture(std::filesystem::path directory) : root(std::move(directory)), request(Target(ActualChecker())) {
+    explicit Fixture(std::filesystem::path directory, bool classicOnly = false)
+        : root(std::move(directory)), request(Target(classicOnly ? Script::LuaSyntaxChecker{} : ActualChecker())) {
         Require(std::filesystem::create_directories(root), "use a new private test artifact directory");
         Write(root / "catalog/ui/config", "base\n");
         Write(root / "catalog/ui/base/define.txt", "[TriggerTypes]\ninteger=0,1,1,整数,integer\n");
@@ -173,7 +176,8 @@ public:
     }
 
     Source MakeSource(std::string_view name, std::int32_t version, std::int32_t language,
-        std::initializer_list<std::string_view> scripts, bool payload = false) const {
+        std::initializer_list<std::string_view> scripts, bool payload = false,
+        std::span<const MapArchiveMember> extra = {}) const {
         const auto directory = root / name;
         std::filesystem::create_directory(directory);
         Source source;
@@ -190,6 +194,7 @@ public:
             source.members.push_back({"tiara.ai", {std::byte{0xff}, std::byte{0}, std::byte{0x41}}});
             source.members.push_back({"tiara.blp", {std::byte{0x17}, std::byte{0}, std::byte{0x92}}});
         }
+        source.members.insert(source.members.end(), extra.begin(), extra.end());
         const auto written = WriteVerifiedArchive(source.path, source.members);
         Require(written.Succeeded(), Codes(written));
         source.hash = FileHash(source.path);
@@ -216,7 +221,7 @@ public:
         sources.expectedEffectiveLayers = catalog.Layers();
         sources.uiRoot = root / "catalog";
         sources.luaTarget = std::move(selected);
-        sources.scriptMember = "war3map.lua";
+        sources.scriptMember = sources.luaTarget->dialect == Script::LuaMapSaveDialect::Classic127YDWE ? "war3map.j" : "war3map.lua";
         sources.documentRevision = 17;
         return PrepareScriptSaveInputs(task, std::move(sources));
     }
@@ -309,6 +314,8 @@ void SavesLuaAndExplicitlySwitchesLanguage(Fixture& fixture) {
     fixture.RequirePrepared(task, fixture.request);
     Run(task);
     SuccessfulReopen(fixture, lua, task);
+    Require(task.generatedScriptMembers == std::vector<std::string>{"war3map.lua"},
+        "generated script binding excluded members not owned by this save");
 
     const auto jass = fixture.MakeSource("jass-to-lua-v31", 31, 0,
         {"war3map.j", "scripts\\war3map.j", "scripts\\war3map.lua"});
@@ -321,6 +328,11 @@ void SavesLuaAndExplicitlySwitchesLanguage(Fixture& fixture) {
         "target preparation prematurely staged language or old-script removal");
     Run(switched);
     SuccessfulReopen(fixture, jass, switched);
+    Require(switched.generatedScriptMembers.size() == 4 && switched.generatedScriptMembers.front() == "war3map.lua",
+        "language switch lost generated or explicitly removed script members");
+    for (const auto* name:{"war3map.j","scripts\\war3map.j","scripts\\war3map.lua"})
+        Require(std::find(switched.generatedScriptMembers.begin(),switched.generatedScriptMembers.end(),name)
+            !=switched.generatedScriptMembers.end(), "removed script was not bound to save chain");
 }
 
 void FailedBuildKeepsOriginalTransaction(Fixture& fixture) {
@@ -430,14 +442,235 @@ void OpaqueMemHackPresenceRejectsLua(Fixture& fixture) {
     RejectedWithoutPublication(task, source);
 }
 
+std::vector<MapArchiveMember> ClassicLibraries() {
+    // 原创小型声明夹具；不复制游戏或YDWE脚本，也不执行这些空函数。
+    std::string common =
+        "type placement extends handle\ntype player extends handle\ntype trigger extends handle\ntype alliancetype extends handle\ntype boolexpr extends handle\n"
+        "native ConvertPlacement takes integer i returns placement\n"
+        "native ConvertAllianceType takes integer i returns alliancetype\n"
+        "native Cheat takes string text returns nothing\n"
+        "native SetMapName takes string text returns nothing\n"
+        "native SetMapDescription takes string text returns nothing\n"
+        "native SetPlayers takes integer count returns nothing\n"
+        "native SetTeams takes integer count returns nothing\n"
+        "native SetGamePlacement takes placement mode returns nothing\n"
+        "native SetMapMusic takes string music, boolean random, integer index returns nothing\n"
+        "native GetCameraMargin takes integer margin returns real\n"
+        "native SetCameraBounds takes real a, real b, real c, real d, real e, real f, real g, real h returns nothing\n"
+        "native SetDayNightModels takes string day, string night returns nothing\n"
+        "native NewSoundEnvironment takes string environment returns nothing\n"
+        "native SetPlayerAlliance takes player a, player b, alliancetype kind, boolean value returns nothing\n"
+        "native TriggerEvaluate takes trigger which returns boolean\n"
+        "native TriggerExecute takes trigger which returns nothing\n"
+        "native DestroyTrigger takes trigger which returns nothing\n"
+        "native DestroyBoolExpr takes boolexpr which returns nothing\n"
+        "native DisableTrigger takes trigger which returns nothing\n"
+        "globals\nconstant placement MAP_PLACEMENT_USE_MAP_SETTINGS = ConvertPlacement(0)\n";
+    for (const auto* name : {"CAMERA_MARGIN_LEFT", "CAMERA_MARGIN_RIGHT", "CAMERA_MARGIN_BOTTOM", "CAMERA_MARGIN_TOP"})
+        common += std::string("constant integer ") + name + " = 0\n";
+    for (const auto* name : {"ALLIANCE_PASSIVE", "ALLIANCE_HELP_REQUEST", "ALLIANCE_HELP_RESPONSE", "ALLIANCE_SHARED_XP",
+            "ALLIANCE_SHARED_SPELLS", "ALLIANCE_SHARED_VISION", "ALLIANCE_SHARED_CONTROL", "ALLIANCE_SHARED_ADVANCED_CONTROL"})
+        common += std::string("constant alliancetype ") + name + " = ConvertAllianceType(0)\n";
+    common += "endglobals\n";
+    const std::string blizzard =
+        "function InitGenericPlayerSlots takes nothing returns nothing\nendfunction\n"
+        "function SetAmbientDaySound takes string sound returns nothing\nendfunction\n"
+        "function SetAmbientNightSound takes string sound returns nothing\nendfunction\n"
+        "function InitBlizzard takes nothing returns nothing\nendfunction\n";
+    return {{"common.j", Bytes(common)}, {"blizzard.j", Bytes(blizzard)}};
+}
+
+void ClassicSaveTransactions(Fixture& fixture) {
+    auto selection = fixture.request;
+    selection.dialect = Script::LuaMapSaveDialect::Classic127YDWE;
+    auto& target = selection.profile.target;
+    target.handleTypes.insert(target.handleTypes.end(), {{"player", "handle"}, {"trigger", "handle"}, {"alliancetype", "handle"}});
+    target.apis.push_back({"TriggerEvaluate", "boolean", {"trigger"}});
+    target.apis.push_back({"TriggerExecute", "nothing", {"trigger"}});
+    target.handleTypes.push_back({"boolexpr", "handle"});
+    target.apis.push_back({"DestroyTrigger", "nothing", {"trigger"}});
+    target.apis.push_back({"DestroyBoolExpr", "nothing", {"boolexpr"}});
+    target.apis.push_back({"DisableTrigger", "nothing", {"trigger"}});
+    target.apis.push_back({"SetPlayerAlliance", "nothing", {"player", "player", "alliancetype", "boolean"}});
+    for (const auto* name : {"ALLIANCE_PASSIVE", "ALLIANCE_HELP_REQUEST", "ALLIANCE_HELP_RESPONSE", "ALLIANCE_SHARED_XP",
+            "ALLIANCE_SHARED_SPELLS", "ALLIANCE_SHARED_VISION", "ALLIANCE_SHARED_CONTROL", "ALLIANCE_SHARED_ADVANCED_CONTROL"})
+        target.constants.push_back({name, "alliancetype"});
+    auto libraries = ClassicLibraries();
+    const auto source = fixture.MakeSource("classic-complete", 25, 0, {"war3map.j"}, false, libraries);
+    const auto firstArchive = MapArchiveSession::Open(source.path);
+    Require(firstArchive.Succeeded() && firstArchive.value, Codes(firstArchive));
+    Require(VerifyClassicLuaGeneratedSources(*firstArchive.value, source.hash,
+        ClassicLuaSourcePolicy::AllowAbsentForFirstSave).Succeeded(), "first save source was refused");
+    Require(HasCode(VerifyClassicLuaGeneratedSources(*firstArchive.value, source.hash),
+        "CLASSIC_LUA_MANIFEST_REQUIRED"), "runtime accepted an unsealed first-save source");
+    MapSaveTask task;
+    fixture.Freeze(task, source); task.requireGeneratedNativeByteEquality = true;
+    fixture.RequirePrepared(task, selection); Run(task);
+    Require(task.succeeded && task.scriptRebuilt && task.nextSession, Codes(task));
+    PreservedSource(source);
+    const auto reopened = MapArchiveSession::Open(task.target);
+    Require(reopened.Succeeded() && reopened.value, Codes(reopened));
+    Require(VerifyClassicLuaGeneratedSources(*reopened.value, FileHash(task.target)).Succeeded(),
+        "runtime and save do not accept the same complete generated bundle");
+    Require(!VerifyClassicLuaGeneratedSources(*reopened.value, source.hash).Succeeded(),
+        "runtime verification accepted the wrong source map identity");
+    const auto savedSettings = reopened.value->ReadMember("war3map.w3i");
+    Require(savedSettings.Succeeded() && savedSettings.value && *savedSettings.value == source.settings,
+        "classic save changed source W3I bytes");
+    for (const auto* name : {"war3map.j", "audastra\\map.lua", "audastra\\compat.lua", "audastra\\bootstrap.lua",
+            "audastra\\objects.lua", "audastra\\continue.lua", "audastra\\generated.manifest"})
+        Require(reopened.value->HasMember(name), std::string("missing classic saved member ") + name);
+    Require(!reopened.value->HasMember("war3map.lua"), "classic save accidentally emitted v31 root Lua script");
+    Require(!task.luaTestInstalledBindings, "formal save retained test-only binding state");
+    MapSaveTask reloadTask;
+    fixture.Freeze(reloadTask, source); fixture.RequirePrepared(reloadTask, selection);
+    reloadTask.target = source.path.parent_path() / "reload-candidate.w3x";
+    reloadTask.testCopyOnly = true; reloadTask.script->luaTestOptions.testHotReload = true;
+    reloadTask.requireGeneratedNativeByteEquality = true; Run(reloadTask);
+    Require(reloadTask.succeeded && reloadTask.generatedLuaTestUnit && reloadTask.luaTestInstalledBindings,
+        "classic test save omitted its installed runtime bindings: " + Codes(reloadTask));
+    const auto reloadArchive = MapArchiveSession::Open(reloadTask.target);
+    Require(reloadArchive.Succeeded() && reloadArchive.value, Codes(reloadArchive));
+    const auto bootstrapBytes = reloadArchive.value->ReadMember("audastra\\bootstrap.lua");
+    Require(bootstrapBytes.Succeeded() && bootstrapBytes.value, Codes(bootstrapBytes));
+    const std::string bootstrap(reinterpret_cast<const char*>(bootstrapBytes.value->data()), bootstrapBytes.value->size());
+    std::vector<std::string> actualBindings;
+    std::size_t at = 0;
+    const std::string marker = "    ['", ending = "'] = true,\n";
+    while ((at = bootstrap.find(marker, at)) != std::string::npos) {
+        const auto begin = at + marker.size(), end = bootstrap.find(ending, begin);
+        Require(end != std::string::npos, "saved bootstrap has an incomplete whitelist entry");
+        actualBindings.push_back(bootstrap.substr(begin, end - begin)); at = end + ending.size();
+    }
+    Require(actualBindings == *reloadTask.luaTestInstalledBindings,
+        "controller bindings differ from the actual saved full-map bootstrap whitelist");
+    Require(actualBindings.size() > reloadTask.generatedLuaTestUnit->requiredApis.size()
+        + reloadTask.generatedLuaTestUnit->requiredGlobals.size() + reloadTask.generatedLuaTestUnit->requiredConstants.size(),
+        "fixture did not distinguish map initialization dependencies from trigger dependencies");
+    PreservedSource(source);
+    std::vector<MemberReplacement> owned;
+    for (const auto* name : {"war3map.j", "audastra\\map.lua", "audastra\\compat.lua", "audastra\\bootstrap.lua",
+            "audastra\\objects.lua", "audastra\\continue.lua", "audastra\\generated.manifest"}) {
+        const auto bytes = reopened.value->ReadMember(name); Require(bytes.Succeeded() && bytes.value, Codes(bytes));
+        owned.push_back({name, *bytes.value});
+    }
+    std::vector<MemberReplacement> pending{{"resource/owned.bin", Bytes("untouched")}};
+    const auto originalOwned = owned;
+    std::vector<ArchiveExactMemberIdentity> identities;
+    for (const auto& member : originalOwned) {
+        const auto sha = Sha256(member.data); Require(sha.Succeeded() && sha.value, Codes(sha));
+        identities.push_back({member.name, true, member.data.size(), *sha.value});
+    }
+    Require(VerifyClassicLuaGeneratedIdentities(identities, originalOwned.back().data).Succeeded(),
+        "streamed identities do not share the save manifest contract");
+    const auto originalIdentities = identities;
+    std::swap(identities[1], identities[2]);
+    Require(!VerifyClassicLuaGeneratedIdentities(identities, originalOwned.back().data).Succeeded(),
+        "reordered identity list bypassed exact names");
+    identities = originalIdentities; identities[1].sha256 = std::string(64, 'z');
+    Require(!VerifyClassicLuaGeneratedIdentities(identities, originalOwned.back().data).Succeeded(),
+        "malformed member identity bypassed the shared verifier");
+    identities = originalIdentities; ++*identities.back().byteSize;
+    Require(!VerifyClassicLuaGeneratedIdentities(identities, originalOwned.back().data).Succeeded(),
+        "inconsistent manifest size was accepted");
+    identities = originalIdentities; identities.back().sha256 = std::string(64, '0');
+    Require(!VerifyClassicLuaGeneratedIdentities(identities, originalOwned.back().data).Succeeded(),
+        "inconsistent manifest hash was accepted");
+    Require(!Script::MergeScriptSaveMembers(pending, {}, owned).Succeeded()
+        && pending.size() == 1 && owned.front().data == originalOwned.front().data,
+        "ordinary merge must retain its original resource rejection and atomicity");
+    std::swap(owned[1], owned[2]);
+    Require(!Script::MergeClassicLuaSaveMembers(pending, {}, owned).Succeeded() && pending.size() == 1,
+        "classic merge cannot accept an incomplete or reordered bundle");
+    owned = originalOwned;
+    Require(!Script::MergeClassicLuaSaveMembers(pending, {"audastra/map.lua"}, owned).Succeeded() && pending.size() == 1,
+        "classic generated module cannot also be removed");
+    Require(Script::MergeClassicLuaSaveMembers(pending, {}, owned).Succeeded() && pending.size() == 8 && owned.empty(),
+        "complete verified classic domain merges atomically with unrelated resources");
+    const auto lua = reopened.value->ReadMember("audastra\\map.lua");
+    Require(lua.Succeeded() && std::string(reinterpret_cast<const char*>(lua.value->data()), lua.value->size()).find("udg_Counter = 27") != std::string::npos,
+        "edited typed T globals did not reach classic saved module");
+
+    Source second{task.target, FileHash(task.target), source.settings, {reopened.value->Members().begin(), reopened.value->Members().end()}};
+    for (const auto* mutation : {"missing-module", "changed-manifest", "missing-manifest", "oversized-manifest"}) {
+        auto members = second.members;
+        if (std::string_view(mutation) == "missing-module")
+            std::erase_if(members, [](const auto& member) { return member.name == "audastra\\continue.lua"; });
+        else if (std::string_view(mutation) == "missing-manifest")
+            std::erase_if(members, [](const auto& member) { return member.name == "audastra\\generated.manifest"; });
+        else for (auto& member : members) if (member.name == "audastra\\generated.manifest") {
+            if (std::string_view(mutation) == "changed-manifest") member.data.push_back(std::byte{'\n'});
+            else member.data.assign(8193, std::byte{'x'});
+        }
+        const auto path = fixture.root / (std::string("runtime-") + mutation + ".w3x");
+        Require(WriteVerifiedArchive(path, members).Succeeded(), "write original rejected runtime bundle");
+        const auto hash = FileHash(path), originalHash = FileHash(second.path);
+        const auto archive = MapArchiveSession::Open(path);
+        Require(archive.Succeeded() && archive.value, Codes(archive));
+        const auto checked = VerifyClassicLuaGeneratedSources(*archive.value, hash);
+        Require(!checked.Succeeded(), std::string("runtime accepted ") + mutation);
+        Require(FileHash(path) == hash && FileHash(second.path) == originalHash,
+            "read-only runtime validation modified its fixture or the saved map");
+    }
+    MapSaveTask repeated;
+    fixture.Freeze(repeated, second); repeated.target = task.target.parent_path() / "candidate-second.w3x";
+    repeated.requireGeneratedNativeByteEquality = true;
+    fixture.RequirePrepared(repeated, selection); Run(repeated);
+    Require(repeated.succeeded && repeated.scriptRebuilt, Codes(repeated));
+    PreservedSource(second);
+
+    Source tampered = second;
+    tampered.path = fixture.root / "classic-tampered" / "source.w3x";
+    std::filesystem::create_directory(tampered.path.parent_path());
+    for (auto& member : tampered.members) if (member.name == "audastra\\map.lua") member.data.push_back(std::byte{'\n'});
+    Require(WriteVerifiedArchive(tampered.path, tampered.members).Succeeded(), "write original modified-module fixture");
+    tampered.hash = FileHash(tampered.path);
+    const auto tamperedArchive = MapArchiveSession::Open(tampered.path);
+    Require(tamperedArchive.Succeeded() && tamperedArchive.value, Codes(tamperedArchive));
+    Require(HasCode(VerifyClassicLuaGeneratedSources(*tamperedArchive.value, tampered.hash),
+        "CLASSIC_LUA_GENERATED_SOURCE_CHANGED"), "runtime accepted a changed generated module");
+    MapSaveTask changedSource;
+    fixture.Freeze(changedSource, tampered); fixture.RequirePrepared(changedSource, selection); Run(changedSource);
+    Require(HasCode(changedSource, "CLASSIC_LUA_GENERATED_SOURCE_CHANGED"), Codes(changedSource));
+    RejectedWithoutPublication(changedSource, tampered);
+
+    auto collision = libraries;
+    collision.push_back({"audastra\\map.lua", Bytes("-- authored module retained\n")});
+    const auto protectedSource = fixture.MakeSource("classic-collision", 25, 0, {"war3map.j"}, false, collision);
+    MapSaveTask refused;
+    fixture.Freeze(refused, protectedSource); fixture.RequirePrepared(refused, selection); Run(refused);
+    Require(HasCode(refused, "CLASSIC_LUA_RESERVED_MEMBER_CONFLICT"), Codes(refused));
+    RejectedWithoutPublication(refused, protectedSource);
+
+    const auto noBases = fixture.MakeSource("classic-no-libraries", 25, 0, {"war3map.j"});
+    MapSaveTask incomplete;
+    fixture.Freeze(incomplete, noBases); fixture.RequirePrepared(incomplete, selection); Run(incomplete);
+    Require(!incomplete.scriptRebuilt, "classic save skipped its complete JASS base-library checking");
+    RejectedWithoutPublication(incomplete, noBases);
+
+    auto badTarget = selection;
+    for (auto& api : badTarget.profile.target.apis) if (api.name == "GetCameraMargin") api.returns = "integer";
+    const auto wrong = fixture.MakeSource("classic-wrong-native", 25, 0, {"war3map.j"}, false, libraries);
+    MapSaveTask mismatch;
+    fixture.Freeze(mismatch, wrong); fixture.RequirePrepared(mismatch, badTarget); Run(mismatch);
+    Require(!mismatch.scriptRebuilt, "classic self-reported native signature bypassed trusted common declarations");
+    RejectedWithoutPublication(mismatch, wrong);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     try {
-        const auto root = argc > 1 ? std::filesystem::absolute(argv[1]) : std::filesystem::temp_directory_path()
+        const bool classicOnly = argc > 1 && std::string_view(argv[1]) == "--classic";
+        const auto root = argc > 1 && !classicOnly ? std::filesystem::absolute(argv[1]) : std::filesystem::temp_directory_path()
             / ("forge-lua-map-save-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
         std::cout << "Original synthetic map-save artifacts: " << root.string() << '\n';
-        Fixture fixture(root);
+        Fixture fixture(root, classicOnly);
+        if (classicOnly) {
+            ClassicSaveTransactions(fixture);
+            std::cout << "Classic Lua: embedded compilation, complete JASS semantics, MPQ reopen, repeated save and source preservation passed. No YDWE or game was used.\n";
+            return 0;
+        }
         SavesLuaAndExplicitlySwitchesLanguage(fixture);
         FailedBuildKeepsOriginalTransaction(fixture);
         StaleTargetKeepsOriginalTransaction(fixture);

@@ -1,4 +1,5 @@
 #include "War3MapCore/Services/MapSaveService.h"
+#include "War3MapCore/Services/LuaTestReloadController.h"
 #include "War3MapCore/Services/MapObjectReferenceCapture.h"
 #include "War3MapCore/Services/ObjectTransactionSnapshot.h"
 #include "War3MapCore/Services/ObjectTransactionSaveGuards.h"
@@ -70,6 +71,9 @@ bool MemberNameIs(std::string_view actual, std::string_view expected) {
 
 bool RejectUnsupportedMapFormat(MapSaveTask& task) {
     const bool luaTarget = task.script && task.script->luaTarget.has_value();
+    const bool classicLua = luaTarget && task.script->luaTarget->Profile()
+        && task.script->luaTarget->Profile()->dialect == Script::LuaMapSaveDialect::Classic127YDWE;
+    const auto expectedVersion = luaTarget && !classicLua ? 31u : 25u;
     if (luaTarget) {
         const auto verified = LuaMapSave::VerifyTarget(task);
         Append(task.diagnostics, verified.diagnostics);
@@ -79,14 +83,14 @@ bool RejectUnsupportedMapFormat(MapSaveTask& task) {
     // 未来新增的无脚本保存路径写出尚未实现的 W3I / SkinId 布局。
     if (task.archive->HasMember("war3map.w3i")) {
         const auto settings = task.archive->ReadMember("war3map.w3i");
-        if (!settings.Succeeded() || !settings.value || HeaderVersion(*settings.value) != (luaTarget ? 31u : 25u)) {
+        if (!settings.Succeeded() || !settings.value || HeaderVersion(*settings.value) != expectedVersion) {
             Error(task, "SAVE_MAP_FORMAT_UNSUPPORTED", "源地图 W3I 不是已验证的经典 v25 布局，已拒绝写出。");
             return true;
         }
     }
     for (const auto& replacement : task.replacements) {
         if (!MemberNameIs(replacement.name, "war3map.w3i")) continue;
-        if (HeaderVersion(replacement.data) != (luaTarget ? 31u : 25u)) {
+        if (HeaderVersion(replacement.data) != expectedVersion) {
             Error(task, "SAVE_MAP_FORMAT_UNSUPPORTED", "目标地图 W3I 不是已验证的经典 v25 布局，已拒绝写出。");
             return true;
         }
@@ -152,13 +156,14 @@ void RebuildScript(MapSaveTask& task, const MapSaveService::Progress& progress) 
     request.layers = frozen.layers;
     request.toolchain = frozen.toolchain;
     request.luaTarget = frozen.luaTarget ? frozen.luaTarget->Profile() : nullptr;
+    request.luaTestOptions = frozen.luaTestOptions;
     if (frozen.luaTarget) request.selectedLuaSettings = frozen.luaTarget->SelectedSettings();
     request.toolchain.preprocessCache = nullptr;
     request.toolchain.onStage = [&progress](std::string_view stage) { Report(progress, stage); };
 
     const auto started = std::chrono::steady_clock::now();
     const auto firstScriptDiagnostic = task.diagnostics.size();
-    const auto result = Script::BuildMapScript(request);
+    auto result = Script::BuildMapScript(request);
     // BuildMapScript 已消费最终成员视图。合并生成物会扩容 replacements，先清除旧 span。
     request.finalSaveMembers.reset();
     Append(task.diagnostics, result.diagnostics);
@@ -166,6 +171,7 @@ void RebuildScript(MapSaveTask& task, const MapSaveService::Progress& progress) 
     if (result.pipeline) Append(task.diagnostics, result.pipeline->diagnostics);
     if (result.luaGenerated) Append(task.diagnostics, result.luaGenerated->diagnostics);
     if (result.luaPipeline) Append(task.diagnostics, result.luaPipeline->diagnostics);
+    if (result.classicLuaBundle) Append(task.diagnostics, result.classicLuaBundle->diagnostics);
     task.scriptSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
     const auto workDir = PathUtf8(request.toolchain.workDir);
     if (result.FinalScript() == nullptr || (!result.pipeline && !result.luaPipeline)) {
@@ -179,7 +185,9 @@ void RebuildScript(MapSaveTask& task, const MapSaveService::Progress& progress) 
                 + "；已中止保存，各阶段文件在 " + workDir, "构建");
         return;
     }
-    auto prepared = result.luaPipeline
+    auto prepared = result.classicLuaBundle
+        ? Script::PrepareScriptSaveBundle(*result.pipeline, *result.classicLuaBundle, frozen.scriptMember)
+        : result.luaPipeline
         ? Script::PrepareScriptSaveBundle(*result.luaPipeline, frozen.scriptMember)
         : Script::PrepareScriptSaveBundle(*result.pipeline, frozen.scriptMember);
     Append(task.diagnostics, prepared.diagnostics);
@@ -218,8 +226,13 @@ void RebuildScript(MapSaveTask& task, const MapSaveService::Progress& progress) 
         return;
     }
     if (task.requireGeneratedNativeByteEquality) {
+        // 经典包已由专用准备器核验完整Lua域；物编守卫仍核所有封印来源，
+        // 只接收JASS入口，不能把Lua模块误当成模板生成物编。
+        const auto guardedMembers = result.classicLuaBundle
+            ? std::span<const MemberReplacement>{prepared.value->members}.first(1)
+            : std::span<const MemberReplacement>{prepared.value->members};
         const auto guarded = ValidateGeneratedObjectMembersForSave(*task.archive,
-            task.objectTransactions, prepared.value->members, frozen.scriptMember);
+            task.objectTransactions, guardedMembers, frozen.scriptMember);
         Append(task.diagnostics, guarded.diagnostics);
         if (!guarded.Succeeded()) return;
     }
@@ -295,6 +308,16 @@ void RebuildScript(MapSaveTask& task, const MapSaveService::Progress& progress) 
     task.diagnostics.push_back({DiagnosticSeverity::Info, "构建", "SCRIPT_REBUILT",
         "游戏脚本已重建：" + std::to_string(triggerCount) + " 个触发器，检查方式："
             + checkedBy + "（" + Seconds(task.scriptSeconds) + " 秒）；各阶段文件在 " + workDir});
+    if (frozen.luaTestOptions.testHotReload && result.luaGenerated) {
+        if (frozen.luaTarget->Profile()->dialect == Script::LuaMapSaveDialect::Classic127YDWE) {
+            auto& installed = task.luaTestInstalledBindings.emplace();
+            for (const auto* names : {&result.luaGenerated->requiredApis, &result.luaGenerated->requiredGlobals,
+                &result.luaGenerated->requiredConstants}) installed.insert(installed.end(), names->begin(), names->end());
+            std::sort(installed.begin(), installed.end());
+            installed.erase(std::unique(installed.begin(), installed.end()), installed.end());
+        }
+        task.generatedLuaTestUnit = std::move(result.luaGenerated->triggers);
+    }
     task.script.reset();
 }
 
@@ -345,6 +368,16 @@ void ExecuteSaveTask(MapSaveTask& task, const MapSaveService::Progress& progress
             Error(task, "SAVE_TARGET_INVALID", "地图保存目标路径为空。");
             return;
         }
+        if (task.script && task.script->luaTestOptions.testHotReload) {
+            std::error_code equivalentError;
+            const bool same = !task.target.empty()
+                && std::filesystem::equivalent(task.target, task.sourcePath, equivalentError);
+            if (!task.testCopyOnly || task.inPlace || same || task.target.lexically_normal() == task.sourcePath.lexically_normal()
+                || !task.script->luaTarget) {
+                Error(task, "LUA_TEST_SAVE_REQUIRED", "热重载登记层只能用于明确的独立 Lua 测试副本，不能写回原图或正式保存。");
+                return;
+            }
+        }
         if (task.inPlace && !task.target.empty()) {
             std::error_code pathError;
             if (!std::filesystem::equivalent(task.target, task.sourcePath, pathError) || pathError) {
@@ -368,6 +401,12 @@ void ExecuteSaveTask(MapSaveTask& task, const MapSaveService::Progress& progress
         if (HasError(task.diagnostics)) return;
         // 模板产物可能替换分类成员；必须对最终成员再校验，不能只信编译前的类型。
         if (!verifyObjects()) return;
+        if (task.generatedLuaTestUnit) {
+            const auto binding = CaptureLuaTestMapBinding(*task.archive, task.replacements, task.removals, task.generatedScriptMembers);
+            Append(task.diagnostics, binding.diagnostics);
+            if (!binding.Succeeded() || !binding.value) return;
+            task.luaTestMapBinding = *binding.value;
+        }
 
         if (task.beforePublish) {
             const auto guard = task.beforePublish();

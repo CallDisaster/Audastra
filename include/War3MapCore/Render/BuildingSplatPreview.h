@@ -11,8 +11,8 @@ namespace War3Map::Render {
 struct BuildingSplatPreviewLimits {
     std::size_t maxAssetBytes = 64 * 1024 * 1024, maxFrameBytes = 64 * 1024 * 1024;
     std::size_t maxIssueBytes = 64 * 1024, maxIssues = 128;
-    float maximumCellSize = 128; // 只能收紧；网格不是原版精确地形裁剪。
-    float previewHeightOffset = 0; // 显式预览策略，不能称原版depth bias；不叠加dooZ/usca/ussc。
+    float maximumCellSize = 128; // 只能收紧；细分保留原地形三角面的对角线。
+    float previewHeightOffset = 0; // 保留ABI字段，只接受0；不以整体抬高修正投影。
 };
 struct BuildingSplatPreviewTexture {
     std::string path, sourceLayer, digest;
@@ -78,9 +78,9 @@ struct BuildingSplatPreviewFrame {
     const BuildingSplatPreviewLimits& limits = {});
 
 // 显示terrain须为同一冻结ApplyRampHeights输出。完全覆盖footprint的水/边界/未支持悬崖
-// 明确省略，不夹XY、不回退Z0。height只由SampleTerrainHeight给出；源dooZ不参与。
+// 明确省略，不夹XY、不回退Z0。每片投影属于同一地形三角面；源dooZ不参与。
 // binding是当前地图/目录/地形身份；scene/documentRevision属于辅助资产自己的编号空间。
-// 同布局previous复用静态scene，更新仅产生owned组/alpha。新布局只重交这一聚合层。
+// previous只有投影几何与实例谱系都一致时才复用scene；移动或改变地高重建辅助层。
 // parent epoch/CAS/真正完成帧由既有generic辅助层桥绑定，本函数的成功仅为CPU准备成功。
 [[nodiscard]] Result<BuildingSplatPreviewFrame> BuildBuildingSplatPreviewFrame(
     const BuildingSplatPreviewAssets& assets, std::span<const BuildingSplatPreviewInstance> instances,

@@ -6,6 +6,7 @@
 #include "MapSizeDialog.h"
 #include "ApplicationIdentity.h"
 #include "Widgets/PopoverSurface.h"
+#include "Widgets/ResponsiveToolBar.h"
 #include "Widgets/ObjectCatalogWidgets.h"
 #include "PopupCapture.h"
 #include <QStatusBar>
@@ -1446,8 +1447,14 @@ void NativeWorkbenchTests::WindowTitleTracksMapSaveUndoAndClose() {
         if (!changes || !assistant || changes->text() != QStringLiteral("修改")) return false;
         const auto headerRect = [&](QWidget* widget) { return QRect(widget->mapTo(window.Header(), QPoint{}), widget->size()); };
         const auto changesRect = headerRect(changes), assistantRect = headerRect(assistant);
-        if (changesRect.intersects(assistantRect) || !window.Header()->contentsRect().contains(changesRect)
-            || !window.Header()->contentsRect().contains(assistantRect)) return false;
+        auto* toolbar = window.Header()->findChild<War3Map::UiKit::ResponsiveToolBar*>(QStringLiteral("headerActions"));
+        if (!toolbar) return false;
+        if (!changes->isHidden() && !assistant->isHidden() && changesRect.intersects(assistantRect)) return false;
+        for (auto* button : {changes, assistant}) {
+            if (button->isHidden()) {
+                if (!toolbar->OverflowMenu()->actions().contains(button->defaultAction())) return false;
+            } else if (!window.Header()->contentsRect().contains(headerRect(button))) return false;
+        }
         // Qt 6.8.3 QToolButton::initStyleOption 会把无图标、无箭头的按钮按 TextOnly
         // 绘制；toolButtonStyle() 仍可能返回 TextBesideIcon，不能凭 getter 虚增图标占位。
         const auto iconWidth = [](const QToolButton* button) {
@@ -1457,9 +1464,11 @@ void NativeWorkbenchTests::WindowTitleTracksMapSaveUndoAndClose() {
         };
         const auto requiredTextWidth = [&](const QToolButton* button) {
             // headerAction 的 QSS：左右各 5px padding + 1px border。
+            if (button->toolButtonStyle() == Qt::ToolButtonIconOnly && !button->icon().isNull()) return button->iconSize().width() + 12;
             return button->fontMetrics().horizontalAdvance(button->text()) + iconWidth(button) + 12;
         };
         for (const auto* button : {changes, assistant}) {
+            if (button->isHidden()) continue;
             if (button->width() < requiredTextWidth(button) || button->width() < button->sizeHint().width()) {
                 qWarning() << "Header text clipped" << button->text() << button->width() << button->sizeHint()
                            << button->toolButtonStyle() << "icon_null" << button->icon().isNull()
@@ -8584,7 +8593,7 @@ void NativeWorkbenchTests::ShellFitsCommonWindowSizes() {
         if (button->defaultAction() == window.saveMapInPlaceAction_) saveButton = button;
     }
     QVERIFY(saveButton);
-    QCOMPARE(saveButton->toolButtonStyle(), Qt::ToolButtonTextBesideIcon);
+    QCOMPARE(saveButton->defaultAction(), window.saveMapInPlaceAction_);
     for (const QString& module : {QStringLiteral("triggers"), QStringLiteral("objects"),
                                   QStringLiteral("variables"), QStringLiteral("assets")}) {
         window.ActivateModule(module.toStdString());
@@ -8620,6 +8629,62 @@ void NativeWorkbenchTests::ShellFitsCommonWindowSizes() {
     QVERIFY(window.Header()->width() <= window.width());
     QVERIFY(search->width() >= 130 && search->width() <= 230);
     QVERIFY(saveButton->width() >= saveButton->sizeHint().width());
+
+    auto* toolbar = window.Header()->findChild<War3Map::UiKit::ResponsiveToolBar*>("headerActions");
+    QVERIFY(toolbar);
+    auto* switcher = window.Header()->findChild<QWidget*>("moduleSwitcher");
+    QVERIFY(switcher);
+    const auto output = qEnvironmentVariable("AUD_SHELL_RESPONSIVE_CAPTURE_DIR");
+    if (!output.isEmpty()) { QVERIFY(QDir::isAbsolutePath(output)); QVERIFY(QDir().mkpath(output)); }
+    const auto previousTheme = window.themeManager_->CurrentThemeId();
+    const auto restoreTheme = qScopeGuard([&] { window.themeManager_->ApplyTheme(previousTheme); });
+    for (const QString& theme : {QStringLiteral("graphite"), QStringLiteral("paper")}) {
+        window.themeManager_->ApplyTheme(theme);
+        for (const auto* module : {"triggers", "objects", "variables", "sounds", "assets", "manager",
+                 "map-settings", "entities", "campaign", "world"}) {
+            window.ActivateModule(module);
+            for (const int width : {1920, 1600, 1366, 1280, 1024}) {
+                window.resize(width, 1080); QTest::qWait(10); toolbar->Refresh();
+                // 校验实际生产窗口，不能由独立HeaderBar的宽度测试代替。
+                QCOMPARE(window.width(), width);
+                QVERIFY(window.minimumWidth() <= width);
+                QVERIFY(window.Header()->width() <= width);
+                QVERIFY(window.centralWidget()->width() <= width);
+                for (const QWidget* parent : {static_cast<QWidget*>(window.Header()), static_cast<QWidget*>(toolbar), switcher}) {
+                    QList<QRect> rectangles;
+                    for (const auto* child : parent->findChildren<QWidget*>(QString{}, Qt::FindDirectChildrenOnly)) {
+                        if (child->isHidden() || child->isWindow()) continue;
+                        const QRect rectangle(child->mapTo(parent, QPoint{}), child->size());
+                        const auto description = QStringLiteral("%1/%2/%3 %4=%5x%6 child %7=(%8,%9 %10x%11)")
+                            .arg(theme, QString::fromLatin1(module)).arg(width).arg(parent->objectName())
+                            .arg(parent->width()).arg(parent->height()).arg(child->objectName())
+                            .arg(rectangle.x()).arg(rectangle.y()).arg(rectangle.width()).arg(rectangle.height());
+                        QVERIFY2(parent->rect().contains(rectangle), qPrintable(description));
+                        for (const auto& previous : rectangles) QVERIFY(!previous.intersects(rectangle));
+                        rectangles.push_back(rectangle);
+                    }
+                }
+                for (const auto* button : window.Header()->findChildren<QToolButton*>("headerAction")) {
+                    if (button->isHidden()) QVERIFY(toolbar->OverflowMenu()->actions().contains(button->defaultAction()));
+                    else QVERIFY(button->width() >= button->sizeHint().width());
+                }
+                if (!output.isEmpty() && (std::string_view(module) == "triggers" || std::string_view(module) == "objects"
+                        || std::string_view(module) == "world")) {
+                    const auto stem = QStringLiteral("%1-%2-%3-dpr%4").arg(theme, QString::fromLatin1(module)).arg(width).arg(window.devicePixelRatioF());
+                    const auto file = QDir(output).filePath(stem + QStringLiteral(".png"));
+                    QVERIFY(!QFileInfo::exists(file));
+                    const auto pixels = window.grab(); QVERIFY(!pixels.isNull()); QVERIFY(pixels.save(file));
+                    QCOMPARE(pixels.width(), qRound(width * window.devicePixelRatioF()));
+                    QCOMPARE(pixels.height(), qRound(window.height() * window.devicePixelRatioF()));
+                    const QJsonObject receipt{{"scope", "production-main-window-headless-probe"}, {"map_loaded", false},
+                        {"theme", theme}, {"module", module}, {"capture_method", "QWidget::grab"}, {"resampled", false},
+                        {"logical_width", window.width()}, {"logical_height", window.height()}, {"dpr", window.devicePixelRatioF()},
+                        {"physical_width", pixels.width()}, {"physical_height", pixels.height()}};
+                    QVERIFY(WriteText(QDir(output).filePath(stem + QStringLiteral(".json")), QJsonDocument(receipt).toJson(QJsonDocument::Indented)));
+                }
+            }
+        }
+    }
 }
 
 // Qt GUI 默认日志可能没有 stdout；保留 Qt 原断言，同时逐失败发布有界阶段/原因。
@@ -9121,6 +9186,7 @@ int main(int argc, char** argv) {
         || qEnvironmentVariableIsSet("FORGE_BRAND_CAPTURE_DIR")
         || qEnvironmentVariableIsSet("FORGE_MCP_GUI_CAPTURE_DIR")
         || qEnvironmentVariableIsSet("FORGE_POPUP_CAPTURE_DIR")
+        || qEnvironmentVariableIsSet("AUD_SHELL_RESPONSIVE_CAPTURE_DIR")
         || qEnvironmentVariableIsSet("FORGE_RECENT_MAPS_CAPTURE_DIR")) {
         const auto fonts = War3Map::UiKit::LoadFonts(War3Map::UiKit::DefaultFontDirectory());
         if (!fonts.bundledUi || !fonts.bundledCode || !fonts.failedFiles.isEmpty()) {

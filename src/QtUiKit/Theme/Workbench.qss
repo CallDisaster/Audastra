@@ -71,6 +71,18 @@ QToolButton:pressed, QPushButton:pressed { background: @selection; border-color:
 QToolButton:checked, QPushButton:checked { background: @selection; color: @accent; border-color: @accentLine; }
 QToolButton:focus, QPushButton:focus { border: 2px solid @accent; }
 QToolButton:disabled, QPushButton:disabled { color: @disabled; background: @panel; border-color: @line; }
+/* 分裂按钮的菜单半边也由同一主题绘制，不能回退为系统黑色面板。 */
+QToolButton[popupMode="1"] { padding-right: 22px; }
+QToolButton::menu-button {
+    subcontrol-origin: padding; subcontrol-position: right center; width: 17px;
+    background: transparent; border: 0; border-left: 1px solid @line;
+    border-top-right-radius: @radiusSm; border-bottom-right-radius: @radiusSm;
+}
+QToolButton::menu-button:hover { background: @hover; }
+QToolButton::menu-button:pressed, QToolButton::menu-button:open { background: @selection; }
+QToolButton::menu-button:disabled { background: @panel; border-left-color: @line; }
+QToolButton::menu-arrow { width: 8px; height: 8px; }
+QToolButton::menu-indicator { subcontrol-origin: padding; subcontrol-position: right center; width: 8px; height: 8px; }
 QPushButton#primaryButton, QPushButton#accentButton { background: @selection; color: @accent; border-color: @accentLine; }
 QPushButton#primaryButton:hover, QPushButton#accentButton:hover { border-color: @accent; }
 QPushButton#primaryButton:disabled, QPushButton#accentButton:disabled { color: @disabled; background: @panel; border-color: @line; }

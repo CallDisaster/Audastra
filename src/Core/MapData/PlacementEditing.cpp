@@ -4,6 +4,7 @@
 #include <cmath>
 #include <limits>
 #include <set>
+#include <type_traits>
 #include <vector>
 
 namespace War3Map::MapData {
@@ -54,22 +55,6 @@ PlacementRowLineage Rows(PlacementFile file, std::size_t before, std::size_t aft
     for (std::uint32_t row = 0; row < before; ++row) if (!removed.contains(row)) result.beforeToAfter[row] = next++;
     return result;
 }
-template <class Edit>
-Status EditCopies(MapDataEditSession& session, const MapDocument& document, bool units, bool doodads, Edit&& edit,
-    std::span<const PlacementId> deleted = {}) {
-    std::optional<UnitPlacements> nextUnits;
-    std::optional<DoodadPlacements> nextDoodads;
-    if (units) nextUnits = *document.Units();
-    if (doodads) nextDoodads = *document.Doodads();
-    if (auto status = edit(nextUnits ? &*nextUnits : nullptr, nextDoodads ? &*nextDoodads : nullptr); !status.Succeeded())
-        return status;
-    std::vector<PlacementRowLineage> lineage;
-    if (nextUnits) lineage.push_back(Rows(PlacementFile::Units, document.Units()->units.size(), nextUnits->units.size(), deleted));
-    if (nextDoodads) lineage.push_back(Rows(PlacementFile::Doodads, document.Doodads()->doodads.size(), nextDoodads->doodads.size(), deleted));
-    return detail::PlacementEditingAccess::Commit(session, document, nextUnits ? &*nextUnits : nullptr, nextDoodads ? &*nextDoodads : nullptr,
-        std::move(lineage));
-}
-
 } // namespace
 
 PlacementId MakePlacementId(PlacementFile file, std::uint32_t index, const UnitPlacement& unit) {
@@ -135,27 +120,48 @@ Status MovePlacements(MapDataEditSession& session, std::span<const PlacementMove
         candidate.value->doodads ? &*candidate.value->doodads : nullptr, std::move(candidate.value->lineage));
 }
 
+Result<detail::PlacementEditCandidate> detail::PreparePlacementDeletions(
+    const MapDocument& document, std::span<const PlacementId> ids) {
+    const auto fail = [](Status status) { return Result<PlacementEditCandidate>{std::nullopt, std::move(status.diagnostics)}; };
+    if (ids.empty()) return Result<PlacementEditCandidate>::Success({});
+    bool units = false, doodads = false;
+    std::set<std::pair<PlacementFile, std::uint32_t>> seen;
+    for (const auto& id : ids) {
+        if (id.file != PlacementFile::Units && id.file != PlacementFile::Doodads)
+            return fail(Failure("PLACEMENT_FILE_UNAVAILABLE", "未知摆放文件，不能删除"));
+        if (!Matches(document, id)) return fail(Unavailable(id));
+        if (!seen.emplace(id.file, id.index).second)
+            return fail(Failure("PLACEMENT_DUPLICATE", "同一摆放在一次删除中出现多次"));
+        if (id.file == PlacementFile::Units && id.rawcode == "sloc")
+            return fail(Failure("MAP_START_REMOVE_UNSUPPORTED", "不能直接删除起始位置或将其改为其他类型"));
+        (id.file == PlacementFile::Units ? units : doodads) = true;
+    }
+    if (units) { const auto measured = MeasureClassicPlacementWire(*document.Units()); if (!measured.Succeeded()) return {std::nullopt, measured.diagnostics}; }
+    if (doodads) { const auto measured = MeasureClassicPlacementWire(*document.Doodads()); if (!measured.Succeeded()) return {std::nullopt, measured.diagnostics}; }
+    PlacementEditCandidate candidate;
+    const auto erase = [&](auto& list, PlacementFile file) {
+        std::size_t row = 0;
+        std::erase_if(list, [&](const auto&) { return seen.contains({file, static_cast<std::uint32_t>(row++)}); });
+    };
+    if (units) {
+        candidate.units = *document.Units(); erase(candidate.units->units, PlacementFile::Units);
+        candidate.lineage.push_back(Rows(PlacementFile::Units, document.Units()->units.size(), candidate.units->units.size(), ids));
+    }
+    if (doodads) {
+        candidate.doodads = *document.Doodads(); erase(candidate.doodads->doodads, PlacementFile::Doodads);
+        candidate.lineage.push_back(Rows(PlacementFile::Doodads, document.Doodads()->doodads.size(), candidate.doodads->doodads.size(), ids));
+    }
+    return Result<PlacementEditCandidate>::Success(std::move(candidate));
+}
+
 Status DeletePlacements(MapDataEditSession& session, std::span<const PlacementId> ids) {
     if (ids.empty()) return Status::Ok();
     const auto document = session.Snapshot();
-    bool units = false, doodads = false;
-    for (std::size_t i = 0; i < ids.size(); ++i) {
-        if (!Matches(document, ids[i])) return Unavailable(ids[i]);
-        for (std::size_t j = 0; j < i; ++j)
-            if (ids[j] == ids[i]) return Failure("PLACEMENT_DUPLICATE", "同一摆放在一次删除中出现多次");
-        (ids[i].file == PlacementFile::Units ? units : doodads) = true;
-    }
-    return EditCopies(session, document, units, doodads, [&](UnitPlacements* unitList, DoodadPlacements* doodadList) {
-        const auto erase = [&ids](auto& list, PlacementFile file) {
-            std::vector<std::uint32_t> indices;
-            for (const auto& id : ids) if (id.file == file) indices.push_back(id.index);
-            std::sort(indices.rbegin(), indices.rend());
-            for (const auto index : indices) list.erase(list.begin() + index);
-        };
-        if (unitList) erase(unitList->units, PlacementFile::Units);
-        if (doodadList) erase(doodadList->doodads, PlacementFile::Doodads);
-        return Status::Ok();
-    }, ids);
+    auto candidate = detail::PreparePlacementDeletions(document, ids);
+    if (!candidate.Succeeded()) return {candidate.diagnostics};
+    return detail::PlacementEditingAccess::Commit(session, document,
+        candidate.value->units ? &*candidate.value->units : nullptr,
+        candidate.value->doodads ? &*candidate.value->doodads : nullptr, std::move(candidate.value->lineage));
 }
 
 namespace {
@@ -179,37 +185,64 @@ Status StaleAuxiliary(const Id& id) {
 } // namespace
 
 Result<PlacementId> AddUnitPlacement(MapDataEditSession& session, UnitPlacement placement) {
-    const auto fail = [](Status status) { return Result<PlacementId>{std::nullopt, std::move(status.diagnostics)}; };
-    if (!ValidTransform(placement)) return fail(Failure("PLACEMENT_COORDINATE_INVALID", "新摆放的 rawcode、坐标、朝向或缩放无效"));
-    const auto document = session.Snapshot();
-    if (!document.Units()) return fail(Failure("PLACEMENT_FILE_UNAVAILABLE", "地图单位文件缺失或不可编辑，不能新增单位/物品"));
-    if (document.Units()->recordLayout != PlacementRecordLayout::Classic)
-        return fail(Failure("PLACEMENT_LAYOUT_UNDETERMINED", "单位记录布局尚未确定，不能新增摆放"));
-    auto units = *document.Units();
-    placement.creationId = NextCreationId(units.units);
-    if (placement.creationId < 0) return fail(Failure("PLACEMENT_ID_EXHAUSTED", "创建编号已用尽"));
-    units.units.push_back(placement);
-    if (auto status = detail::PlacementEditingAccess::Commit(session, document, &units, nullptr,
-        {Rows(PlacementFile::Units, document.Units()->units.size(), units.units.size())}); !status.Succeeded()) return fail(std::move(status));
-    return Result<PlacementId>::Success(MakePlacementId(PlacementFile::Units,
-        static_cast<std::uint32_t>(units.units.size() - 1), units.units.back()));
+    std::vector<UnitPlacement> records; records.push_back(std::move(placement));
+    auto added = AddPlacements(session, PlacementCreationRecords{std::move(records)});
+    if (!added.Succeeded()) return {std::nullopt, std::move(added.diagnostics)};
+    return Result<PlacementId>::Success(std::move(added.value->front()));
 }
 
 Result<PlacementId> AddDoodadPlacement(MapDataEditSession& session, DoodadPlacement placement) {
-    const auto fail = [](Status status) { return Result<PlacementId>{std::nullopt, std::move(status.diagnostics)}; };
-    if (!ValidTransform(placement)) return fail(Failure("PLACEMENT_COORDINATE_INVALID", "新摆放的 rawcode、坐标、朝向或缩放无效"));
+    std::vector<DoodadPlacement> records; records.push_back(std::move(placement));
+    auto added = AddPlacements(session, PlacementCreationRecords{std::move(records)});
+    if (!added.Succeeded()) return {std::nullopt, std::move(added.diagnostics)};
+    return Result<PlacementId>::Success(std::move(added.value->front()));
+}
+
+Result<detail::PlacementEditCandidate> detail::PreparePlacementCreations(
+    const MapDocument& document, const PlacementCreationRecords& records) {
+    const auto fail = [](Status status) { return Result<PlacementEditCandidate>{std::nullopt, std::move(status.diagnostics)}; };
+    return std::visit([&](const auto& added) -> Result<PlacementEditCandidate> {
+        using Record = typename std::decay_t<decltype(added)>::value_type;
+        constexpr bool units = std::is_same_v<Record, UnitPlacement>;
+        constexpr auto file = units ? PlacementFile::Units : PlacementFile::Doodads;
+        const auto* source = [&] { if constexpr (units) return document.Units() ? &*document.Units() : nullptr;
+            else return document.Doodads() ? &*document.Doodads() : nullptr; }();
+        if (!source) return fail(Failure("PLACEMENT_FILE_UNAVAILABLE", "摆放来源缺失或不可编辑，不能新增"));
+        if (source->recordLayout != PlacementRecordLayout::Classic)
+            return fail(Failure("PLACEMENT_LAYOUT_UNDETERMINED", "记录布局尚未确定，不能新增摆放"));
+        if (added.empty() || added.size() > 4096)
+            return fail(Failure("PLACEMENT_CREATE_LIMIT", "一次须新增 1..4096 个同类摆放"));
+        for (const auto& record : added) if (!ValidTransform(record))
+            return fail(Failure("PLACEMENT_COORDINATE_INVALID", "新摆放的 rawcode、坐标、朝向或缩放无效"));
+        const auto& existing = [&]() -> const auto& { if constexpr (units) return source->units; else return source->doodads; }();
+        const auto first = NextCreationId(existing);
+        if (first < 0 || std::uint64_t(first) + added.size() - 1 > std::uint64_t((std::numeric_limits<std::int32_t>::max)()))
+            return fail(Failure("PLACEMENT_ID_EXHAUSTED", "新增批次的创建编号已用尽"));
+        const auto measured = MeasureClassicPlacementAppend(*source, std::span<const Record>(added));
+        if (!measured.Succeeded()) return {std::nullopt, measured.diagnostics};
+        PlacementEditCandidate candidate;
+        auto& next = [&]() -> auto& { if constexpr (units) { candidate.units = *source; return candidate.units->units; }
+            else { candidate.doodads = *source; return candidate.doodads->doodads; } }();
+        candidate.newIds.reserve(added.size());
+        for (std::size_t i = 0; i < added.size(); ++i) {
+            auto record = added[i]; record.creationId = static_cast<std::int32_t>(std::uint64_t(first) + i);
+            next.push_back(std::move(record));
+            candidate.newIds.push_back(MakePlacementId(file, static_cast<std::uint32_t>(next.size() - 1), next.back()));
+        }
+        candidate.lineage.push_back(Rows(file, existing.size(), next.size()));
+        return Result<PlacementEditCandidate>::Success(std::move(candidate));
+    }, records);
+}
+
+Result<std::vector<PlacementId>> AddPlacements(MapDataEditSession& session, const PlacementCreationRecords& records) {
     const auto document = session.Snapshot();
-    if (!document.Doodads()) return fail(Failure("PLACEMENT_FILE_UNAVAILABLE", "地图装饰物文件缺失或不可编辑，不能新增装饰物"));
-    if (document.Doodads()->recordLayout != PlacementRecordLayout::Classic)
-        return fail(Failure("PLACEMENT_LAYOUT_UNDETERMINED", "地物记录布局尚未确定，不能新增摆放"));
-    auto doodads = *document.Doodads();
-    placement.creationId = NextCreationId(doodads.doodads);
-    if (placement.creationId < 0) return fail(Failure("PLACEMENT_ID_EXHAUSTED", "创建编号已用尽"));
-    doodads.doodads.push_back(placement);
-    if (auto status = detail::PlacementEditingAccess::Commit(session, document, nullptr, &doodads,
-        {Rows(PlacementFile::Doodads, document.Doodads()->doodads.size(), doodads.doodads.size())}); !status.Succeeded()) return fail(std::move(status));
-    return Result<PlacementId>::Success(MakePlacementId(PlacementFile::Doodads,
-        static_cast<std::uint32_t>(doodads.doodads.size() - 1), doodads.doodads.back()));
+    auto candidate = detail::PreparePlacementCreations(document, records);
+    if (!candidate.Succeeded()) return {std::nullopt, candidate.diagnostics};
+    const auto status = detail::PlacementEditingAccess::Commit(session, document,
+        candidate.value->units ? &*candidate.value->units : nullptr,
+        candidate.value->doodads ? &*candidate.value->doodads : nullptr, std::move(candidate.value->lineage));
+    if (!status.Succeeded()) return {std::nullopt, status.diagnostics};
+    return Result<std::vector<PlacementId>>::Success(std::move(candidate.value->newIds));
 }
 
 Result<detail::PlacementEditCandidate> detail::PreparePlacementCopies(const MapDocument& document,

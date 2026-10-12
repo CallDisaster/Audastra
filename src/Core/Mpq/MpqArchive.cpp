@@ -944,6 +944,11 @@ Result<std::vector<MpqStrictFileInfo>> MpqArchive::ListFilesValidated(bool allow
         const std::uint32_t n1 = crypt.HashString(name, MpqCrypt::HashType::NameA);
         const std::uint32_t n2 = crypt.HashString(name, MpqCrypt::HashType::NameB);
         const auto pair = hashPairs.find({n1, n2});
+        if (pair == hashPairs.end()) {
+            return Result<std::vector<MpqStrictFileInfo>>::Failure(
+                "Mpq", "LISTFILE_MEMBER_MISSING",
+                "(listfile) names a member with no active hash entry: " + name);
+        }
         const HashEntry* match = pair != hashPairs.end() && pair->second.size() == 1
             ? pair->second.front() : nullptr;
         if (match == nullptr ||

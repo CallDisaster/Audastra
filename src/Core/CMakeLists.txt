@@ -9,8 +9,10 @@ add_library(War3MapCore STATIC
     CapabilityRegistry.cpp
     MapArchiveInPlace.cpp
     MapArchiveSession.cpp
+    Services/ClassicLuaMapSources.cpp
     Services/MapTestService.cpp
     Services/MapTestWorkspace.cpp
+    Services/LuaTestMailboxSession.cpp
     ProjectStore.cpp
     EditRevision.cpp
     VerifiedFile.cpp
@@ -32,11 +34,16 @@ add_library(War3MapCore STATIC
     MapData/TerrainEditInspection.cpp
     MapData/MapFields.cpp
     MapData/MapDataEditSessionTerrain.cpp
+    MapData/MapDataEditSessionTerrainQuery.cpp
     MapData/MapDataEditSessionTerrainInternal.h
     MapData/PlacementEditing.cpp
     MapData/MapTerrain.cpp
     MapData/MapPathing.cpp
     MapData/TerrainEditing.cpp
+    MapData/PathingRestrictionEditing.cpp
+    MapData/MapDataEditSessionPathing.cpp
+    MapData/TerrainRampEditing.cpp
+    MapData/TerrainPatchCodec.cpp
     Text/TextUtil.cpp
     Text/SourceEncoding.cpp
     Text/SlkCells.cpp
@@ -52,6 +59,7 @@ add_library(War3MapCore STATIC
     Hash.cpp
     Image/BlpImage.cpp
     Image/BlpEncode.cpp
+    Image/TextureImage.cpp
     Image/JpegDecoder.cpp
     MapInfo.cpp
     Types.cpp

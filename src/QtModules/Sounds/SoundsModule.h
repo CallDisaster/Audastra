@@ -31,6 +31,7 @@ class QWidget;
 
 namespace War3Map::QtProject { class EditorProject; }
 namespace War3Map::Modules {
+class SoundPreviewPlayer;
 
 // war3map.w3s 的真实定义编辑器。资源文件、声音定义和播放实例分别建模；
 // 文档修改只经过工程持有的 MapDataEditSession，候选地图由统一保存服务产生。
@@ -108,9 +109,7 @@ private:
     std::vector<QLineEdit*> fields_;
     std::vector<QToolButton*> defaultButtons_;
     std::vector<QCheckBox*> flags_;
-    QMediaPlayer* player_ = nullptr;
-    QAudioOutput* audio_ = nullptr;
-    QBuffer* previewBuffer_ = nullptr;
+    SoundPreviewPlayer* previewPlayer_ = nullptr;
     std::filesystem::path gameIndexRoot_;
     std::uint64_t gameIndexGeneration_ = 0;
     std::uint64_t previewGeneration_ = 0;

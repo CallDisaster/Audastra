@@ -351,6 +351,13 @@ Result<TransactionId> McpWorkspace::BeginEdit(
         failure.diagnostics.insert(failure.diagnostics.end(), rolled.diagnostics.begin(), rolled.diagnostics.end());
         return failure;
     }
+    const auto seededTerrain = SeedTerrainOverlay(edit);
+    if (!seededTerrain.Succeeded()) {
+        auto failure = FailureFrom<TransactionId>(seededTerrain);
+        const auto rolled = session_.Rollback(edit.id);
+        failure.diagnostics.insert(failure.diagnostics.end(), rolled.diagnostics.begin(), rolled.diagnostics.end());
+        return failure;
+    }
     activeEdit_.emplace(std::move(edit));
     ++toolEpoch_;
     return started;
@@ -625,6 +632,8 @@ Status McpWorkspace::ValidateScalarValue(
 Status McpWorkspace::SealDocument(
     Trigger::TriggerDocument candidate,
     std::string summary) {
+    const auto terrain = CheckTerrainMixingAllowed();
+    if (!terrain.Succeeded()) return terrain;
     const Status validation = codec_.Validate(candidate, catalog_);
     if (!validation.Succeeded()) {
         return validation;
@@ -948,6 +957,8 @@ ValidationReport McpWorkspace::ValidateEdit(
         const auto checked = ValidateMapDataOverlay();
         if (!checked.Succeeded()) { report.diagnostics = checked.diagnostics; return report; }
     }
+    const auto terrain = ValidateTerrainOverlay();
+    if (!terrain.Succeeded()) { report.diagnostics = terrain.diagnostics; return report; }
     report = session_.Validate(
         transactionId,
         session_.Profile(),
@@ -982,6 +993,8 @@ Status McpWorkspace::ExportCandidate(
     if (!codecStatus.Succeeded()) {
         return codecStatus;
     }
+    const auto terrain = ValidateTerrainOverlay();
+    if (!terrain.Succeeded()) return terrain;
     const ValidationReport validation = session_.Validate(
         transactionId, session_.Profile(), CompatibilityLevel::Parsed);
     if (!validation.satisfied) {
@@ -1008,6 +1021,7 @@ Status McpWorkspace::ExportCandidate(
         return status;
     }
     committedDocument_ = std::move(committed);
+    CommitTerrainOverlay();
     if (activeEdit_->mapData) {
         committedMapData_ = activeEdit_->mapData;
         committedPlacementIntent_ = activeEdit_->placementIntent;
@@ -1123,6 +1137,8 @@ Result<Services::MapEditSaveReceipt> McpWorkspace::ExportArchiveCandidate(
             return Result<Services::MapEditSaveReceipt>::Failure("MCP", "MCP_VALIDATION_REQUIRED",
                 "归档候选冻结前的当前目录事务验证未通过。");
         }
+        if (HasTerrainOverlay())
+            return ExportTerrainArchiveCandidate(transactionId, expectedRevision, std::move(request));
         if (activeEdit_->mapData) {
             if (activeEdit_->placementIntent)
                 return ExportPlacementArchiveCandidate(transactionId, expectedRevision, std::move(request));

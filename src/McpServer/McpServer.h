@@ -59,6 +59,8 @@ struct ToolDefinition {
     // 有界写工具先约束外层 request id，避免编辑成功后才因回执预算被拒绝。
     // 0 保留既有工具行为；额度按 JSON 编码后的 id 字节数计算。
     std::size_t maxRequestIdBytes = 0;
+    // 明确由宿主生成的PNG结果转成MCP image content，正文不重复携带Base64。
+    bool pngImageResult = false;
 };
 
 struct ResourceDefinition {

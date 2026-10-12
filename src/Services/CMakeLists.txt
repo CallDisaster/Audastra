@@ -12,12 +12,19 @@ add_library(War3MapServices STATIC
     BuildingSplatService.cpp
     WorldModelBugPlaceholderService.cpp
     PlacementPresentationService.cpp
+    PlacementCreation.cpp
     ProjectReferenceIndex.cpp
     ObjectDeletionAssessment.cpp
     ObjectCommands.cpp
+    ObjectResourceQuery.cpp
+    ObjectResourceCatalog.cpp
+    ObjectResourceFiles.cpp
+    ObjectResourceInfo.cpp
+    ObjectResourceDirectory.cpp
     ObjectTransactionSnapshot.cpp
     ObjectTransactionSaveGuards.cpp
     MapSaveService.cpp
+    LuaTestReloadController.cpp
     MapCreateService.cpp
     ScriptSavePreparation.cpp
     CodeCheck.cpp
@@ -36,7 +43,8 @@ add_library(War3MapServices STATIC
     LuaTriggerCandidate.cpp
     LuaSourceQueries.cpp
     LuaCandidateProfile.cpp
-    TerrainBlightSaveService.cpp)
+    TerrainBlightSaveService.cpp
+    TerrainEditService.cpp)
 add_library(War3MapEditor::Services ALIAS War3MapServices)
 target_link_libraries(War3MapServices PUBLIC War3MapEditor::Core War3MapEditor::ObjectData War3MapTrigger War3MapEditor::UiLibrary War3MapEditor::ScriptBuild)
 target_link_libraries(War3MapServices PUBLIC War3MapEditor::RenderSupport)

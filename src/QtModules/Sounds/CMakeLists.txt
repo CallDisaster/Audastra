@@ -1,5 +1,5 @@
 qt_add_library(War3MapQtModuleSounds STATIC
-    SoundsModule.cpp SoundsModule.h)
+    SoundsModule.cpp SoundsModule.h SoundPreviewPlayer.cpp SoundPreviewPlayer.h)
 add_library(War3MapEditor::QtModuleSounds ALIAS War3MapQtModuleSounds)
 target_include_directories(War3MapQtModuleSounds PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(War3MapQtModuleSounds PUBLIC

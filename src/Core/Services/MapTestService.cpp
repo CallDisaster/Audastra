@@ -81,10 +81,12 @@ std::filesystem::path MapTestYdweInstallRoot(const std::filesystem::path& config
 
 Result<MapTestArtifact> PrepareMapTest(const MapTestRequest& request,
     const MapTestSlkConverter& converter, const MapTestProgress& progress) {
+    if (request.enableLuaHotReload && !request.useOwnedLuaRuntime)
+        return Fail<MapTestArtifact>("MAP_TEST_LUA_RELOAD_RUNTIME", "Lua 热重载只能用于显式选择的自有 Lua 测试运行时。");
     std::error_code ec;
     if (!request.inputMap.is_absolute() || !request.workspace.is_absolute() || !request.gameRoot.is_absolute()
         || (!request.sourceMap.empty() && !request.sourceMap.is_absolute())
-        || (!request.runtimeRoot.empty() && !request.runtimeRoot.is_absolute()))
+        || (!request.useOwnedLuaRuntime && !request.runtimeRoot.empty() && !request.runtimeRoot.is_absolute()))
         return Fail<MapTestArtifact>("MAP_TEST_PATH", "测试输入、独占目录与游戏目录必须是绝对路径。");
     const auto input = std::filesystem::weakly_canonical(request.inputMap, ec);
     if (ec) return Fail<MapTestArtifact>("MAP_TEST_PATH", "无法核对测试输入路径。");
@@ -93,12 +95,12 @@ Result<MapTestArtifact> PrepareMapTest(const MapTestRequest& request,
         return Fail<MapTestArtifact>("MAP_TEST_WORKSPACE", "测试目录不得经重解析点或无效父目录写出。");
     const auto game = std::filesystem::weakly_canonical(request.gameRoot, ec);
     if (ec) return Fail<MapTestArtifact>("MAP_TEST_PATH", "无法核对游戏目录。");
-    auto runtime = request.runtimeRoot;
+    auto runtime = request.useOwnedLuaRuntime ? std::filesystem::path{} : request.runtimeRoot;
     if (!runtime.empty()) {
         runtime = std::filesystem::weakly_canonical(runtime, ec);
         if (ec) return Fail<MapTestArtifact>("MAP_TEST_PATH", "无法核对独立运行时目录。");
     }
-    const auto ydwe = runtime.empty() ? request.runtimeYdweRoot : std::filesystem::path{};
+    const auto ydwe = !request.useOwnedLuaRuntime && runtime.empty() ? request.runtimeYdweRoot : std::filesystem::path{};
     // 未使用的旧 UI 设置不应阻止普通地图。此处仅保护输出目录；实际加载时再严格核对路径。
     for (const auto& configured : {MapTestYdweInstallRoot(ydwe), ydwe}) {
         if (configured.empty() || !configured.is_absolute()) continue;
@@ -164,11 +166,15 @@ Result<MapTestArtifact> PrepareMapTest(const MapTestRequest& request,
     auto prepared = Result<MapTestArtifact>::Success({target, workspace, game,
         request.expectedInputSha256, std::move(outputSha), request.optimizeSlk, request.sourceMap, input,
         runtime, request.runtimeBridge, request.runtimeBootstrap, ydwe});
+    prepared.value->useOwnedLuaRuntime = request.useOwnedLuaRuntime;
+    prepared.value->enableLuaHotReload = request.enableLuaHotReload;
     prepared.diagnostics.insert(prepared.diagnostics.end(), slkNotes.begin(), slkNotes.end());
     return prepared;
 }
 
 Result<MapTestLaunchPlan> BuildMapTestLaunchPlan(const MapTestArtifact& artifact) {
+    if (artifact.enableLuaHotReload && !artifact.useOwnedLuaRuntime)
+        return Fail<MapTestLaunchPlan>("MAP_TEST_LUA_RELOAD_RUNTIME", "Lua 热重载不能附加到普通 JASS 或外部扩展运行时。");
     if (!artifact.testMap.is_absolute() || !artifact.workspace.is_absolute() || !artifact.gameRoot.is_absolute())
         return Fail<MapTestLaunchPlan>("MAP_TEST_PATH", "测试地图、独占目录和游戏目录必须是绝对路径。");
     auto verified = ReadVerifiedFile(artifact.testMap, artifact.testMapSha256, 1024ull * 1024 * 1024);
@@ -210,33 +216,49 @@ Result<MapTestLaunchPlan> BuildMapTestLaunchPlan(const MapTestArtifact& artifact
     plan.testMap = testMap;
     plan.testMapSha256 = artifact.testMapSha256;
     plan.gameMapCopy = copied;
+    plan.useOwnedLuaRuntime = artifact.useOwnedLuaRuntime;
+    plan.enableLuaHotReload = artifact.enableLuaHotReload;
     const auto gameSha = Sha256File(plan.executable), moduleSha = Sha256File(game / L"Game.dll");
     if (!gameSha.Succeeded() || !moduleSha.Succeeded())
         return Fail<MapTestLaunchPlan>("MAP_TEST_GAME_IDENTITY", "无法核对所选游戏启动文件的身份。");
     plan.gameExecutableSha256 = *gameSha.value;
     plan.gameModuleSha256 = *moduleSha.value;
     plan.arguments = {L"-window", L"-loadfile", relative.wstring()};
-    if (!artifact.runtimeRoot.empty()) {
-        if (artifact.runtimeLayout != MapTestRuntimeLayout::Flat && artifact.runtimeLayout != MapTestRuntimeLayout::YdweTree)
+    if (artifact.useOwnedLuaRuntime || !artifact.runtimeRoot.empty()) {
+        if (!artifact.useOwnedLuaRuntime && artifact.runtimeLayout != MapTestRuntimeLayout::Flat && artifact.runtimeLayout != MapTestRuntimeLayout::YdweTree)
             return Fail<MapTestLaunchPlan>("MAP_TEST_RUNTIME_LAYOUT", "扩展运行时目录布局无效，未启动游戏。");
-        if (!artifact.runtimeRoot.is_absolute() || !artifact.runtimeBridge.is_absolute() || !artifact.runtimeBootstrap.is_absolute()
-            || !OrdinaryAncestors(artifact.runtimeRoot) || !std::filesystem::is_directory(artifact.runtimeRoot, ec) || ec)
+        if (!artifact.runtimeBridge.is_absolute() || !artifact.runtimeBootstrap.is_absolute()
+            || (!artifact.useOwnedLuaRuntime && (!artifact.runtimeRoot.is_absolute()
+                || !OrdinaryAncestors(artifact.runtimeRoot) || !std::filesystem::is_directory(artifact.runtimeRoot, ec) || ec)))
             return Fail<MapTestLaunchPlan>("MAP_TEST_RUNTIME_PATH", "扩展运行时必须使用独立的绝对目录。");
         for (const auto& file : {artifact.runtimeBridge, artifact.runtimeBootstrap})
             if (!OrdinaryAncestors(file) || !std::filesystem::is_regular_file(file, ec) || ec)
                 return Fail<MapTestLaunchPlan>("MAP_TEST_RUNTIME_HELPER", "Audastra独立测试启动组件缺失，请使用完整安装包。");
         plan.executable = artifact.runtimeBridge;
-        plan.runtimeRoot = artifact.runtimeRoot;
-        plan.runtimeLayout = artifact.runtimeLayout;
+        plan.runtimeRoot = artifact.useOwnedLuaRuntime ? std::filesystem::path{} : artifact.runtimeRoot;
+        plan.runtimeLayout = artifact.useOwnedLuaRuntime ? MapTestRuntimeLayout::Flat : artifact.runtimeLayout;
+        plan.runtimeBootstrap = artifact.runtimeBootstrap;
+        const auto bootstrapSha = Sha256File(plan.runtimeBootstrap);
+        if (!bootstrapSha.Succeeded()) return {std::nullopt, bootstrapSha.diagnostics};
+        plan.runtimeBootstrapSha256 = *bootstrapSha.value;
         // 小型终态报告保留在安装目录下，不混入需按冻结身份清理的地图工作区。
         plan.runtimeReceipt = artifact.runtimeBridge.parent_path() / L"test-receipts"
             / std::filesystem::path(identity.value->substr(0, 16) + ".json");
         if (!OrdinaryAncestors(plan.runtimeReceipt) || std::filesystem::exists(plan.runtimeReceipt, ec) || ec)
             return Fail<MapTestLaunchPlan>("MAP_TEST_RUNTIME_RECEIPT", "独立测试报告位置已存在或无法确认。");
         plan.arguments = {L"--game", (game / L"war3.exe").wstring(), L"--map", relative.wstring(),
-            L"--runtime", artifact.runtimeRoot.wstring(), L"--bootstrap", artifact.runtimeBootstrap.wstring(),
+            L"--bootstrap", artifact.runtimeBootstrap.wstring(),
             L"--receipt", plan.runtimeReceipt.wstring()};
-        if (artifact.runtimeLayout == MapTestRuntimeLayout::YdweTree) {
+        if (artifact.useOwnedLuaRuntime) {
+            plan.arguments.insert(plan.arguments.end(), {L"--runtime-mode", L"owned-lua",
+                L"--lua-map-sha256", std::wstring(plan.testMapSha256.begin(), plan.testMapSha256.end())});
+            // 启动器只接受显式 enabled；省略选项才是其关闭合同。
+            if (artifact.enableLuaHotReload)
+                plan.arguments.insert(plan.arguments.end(), {L"--lua-hot-reload", L"enabled"});
+        } else {
+            plan.arguments.insert(plan.arguments.end(), {L"--runtime", artifact.runtimeRoot.wstring()});
+        }
+        if (!artifact.useOwnedLuaRuntime && artifact.runtimeLayout == MapTestRuntimeLayout::YdweTree) {
             plan.arguments.push_back(L"--runtime-layout");
             plan.arguments.push_back(L"ydwe-tree");
         }

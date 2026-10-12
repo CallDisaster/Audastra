@@ -15,6 +15,7 @@
 #include <array>
 #include <exception>
 #include <set>
+#include <type_traits>
 #include <utility>
 
 namespace War3Map::Services {
@@ -214,12 +215,13 @@ Status ApplyPlacementEdit(const MapEditPlacementOperation& operation, const MapD
     std::vector<MapEditMemberReceipt>& receipts) {
     std::vector<MapEditPlacementSource> sources;
     if (const auto* copy = std::get_if<MapEditPlacementCopy>(&operation)) sources = copy->sources;
-    else sources.push_back(std::get<MapEditPlacementRotation>(operation).source);
+    else if (const auto* rotation = std::get_if<MapEditPlacementRotation>(&operation)) sources.push_back(rotation->source);
+    else if (const auto* removed = std::get_if<MapEditPlacementDelete>(&operation)) sources = removed->sources;
 
     std::vector<MapData::PlacementId> ids;
     ids.reserve(sources.size());
-    for (const auto& source : sources) {
-        const auto kind = source.file == MapData::PlacementFile::Units
+    const auto bindMember = [&](MapData::PlacementFile file, const std::string& expectedSha) -> Status {
+        const auto kind = file == MapData::PlacementFile::Units
             ? MapDataKind::Units : MapDataKind::Doodads;
         const auto& member = map.Member(kind);
         if (!FieldMemberEditable(member) || member.state != MapDataState::Ready)
@@ -238,8 +240,14 @@ Status ApplyPlacementEdit(const MapEditPlacementOperation& operation, const MapD
         const auto& receipt = *std::find_if(receipts.begin(), receipts.end(), [&](const auto& item) {
             return item.name == member.memberName;
         });
-        if (source.expectedMemberSha256 != receipt.originalSha256)
+        if (expectedSha != receipt.originalSha256)
             return FieldFailure("SAVE_PLACEMENT_MEMBER_STALE", "摆放成员 SHA-256 已变化：" + member.memberName);
+        return Status::Ok();
+    };
+    for (const auto& source : sources) {
+        const auto bound = bindMember(source.file, source.expectedMemberSha256);
+        if (!bound.Succeeded()) return bound;
+        const auto kind = source.file == MapData::PlacementFile::Units ? MapDataKind::Units : MapDataKind::Doodads;
         auto key = MapData::MapFieldRowKey(map, kind, source.row);
         if (!key.Succeeded() || !key.value || *key.value != source.expectedRowKey)
             return FieldFailure("SAVE_PLACEMENT_ROW_STALE", "摆放行身份已变化，请重新查询。");
@@ -252,16 +260,28 @@ Status ApplyPlacementEdit(const MapEditPlacementOperation& operation, const MapD
         }
     }
 
+    if (const auto* created = std::get_if<MapEditPlacementCreate>(&operation)) {
+        const auto file = std::holds_alternative<std::vector<MapData::UnitPlacement>>(created->records)
+            ? MapData::PlacementFile::Units : MapData::PlacementFile::Doodads;
+        const auto bound = bindMember(file, created->expectedMemberSha256);
+        if (!bound.Succeeded()) return bound;
+    }
+
     if (const auto* copy = std::get_if<MapEditPlacementCopy>(&operation)) {
         auto result = MapData::CopyPlacements(edits, ids, copy->offset);
         if (!result.Succeeded() || !result.value) return ForwardStatus(std::move(result.diagnostics));
-    } else {
-        const auto* rotation = std::get_if<MapEditPlacementRotation>(&operation);
+    } else if (const auto* rotation = std::get_if<MapEditPlacementRotation>(&operation)) {
         auto current = MapData::FindPlacement(map, ids.front());
         if (!current.Succeeded() || !current.value) return ForwardStatus(std::move(current.diagnostics));
         const MapData::PlacementMove move{ids.front(), current.value->position, rotation->facingRadians};
         const auto status = MapData::MovePlacements(edits, std::span(&move, 1));
         if (!status.Succeeded()) return ForwardStatus(status.diagnostics);
+    } else if (const auto* created = std::get_if<MapEditPlacementCreate>(&operation)) {
+        const auto added = MapData::AddPlacements(edits, created->records);
+        if (!added.Succeeded()) return ForwardStatus(added.diagnostics);
+    } else {
+        const auto removed = MapData::DeletePlacements(edits, ids);
+        if (!removed.Succeeded()) return ForwardStatus(removed.diagnostics);
     }
     if (!edits.IsDirty()) return FieldFailure("SAVE_NO_PLACEMENT_CHANGE", "摆放操作没有产生成员变化。");
     replacements = edits.Replacements();
@@ -676,8 +696,14 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             task.nextSession->SourceSha256(), std::move(originalTerrainShaValue), std::move(savedTerrainShaValue),
             std::move(savedPathingShaValue), task.memberCount, task.scriptSeconds, std::move(task.scriptLayers),
             request.terrainStrokes.size(), request.fieldEdits.size(),
-            placementRequest ? std::get_if<MapEditPlacementCopy>(&request.placementEdit)
-                ? std::get<MapEditPlacementCopy>(request.placementEdit).sources.size() : 1 : 0,
+            std::visit([](const auto& operation) -> std::size_t {
+                using Operation = std::decay_t<decltype(operation)>;
+                if constexpr (std::is_same_v<Operation, std::monostate>) return 0;
+                else if constexpr (std::is_same_v<Operation, MapEditPlacementRotation>) return 1;
+                else if constexpr (std::is_same_v<Operation, MapEditPlacementCreate>)
+                    return std::visit([](const auto& records) { return records.size(); }, operation.records);
+                else return operation.sources.size();
+            }, request.placementEdit),
             std::move(editedMembers), std::move(triggerReceipt), std::move(transactionReceipt)});
         FinalizeScriptWorkspace(task);
         result.value->appliedObjectTransactionCount = request.objectTransactions.size();

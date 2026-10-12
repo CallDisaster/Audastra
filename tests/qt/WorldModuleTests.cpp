@@ -23,6 +23,7 @@
 #include "Widgets/ObjectCatalogWidgets.h"
 #include "Fonts/FontLoader.h"
 #include "../MapDataFixtures.h"
+#include "../services/ObjectCommandsFixture.h"
 #include "../AnimationParticleContinuityTests.h"
 #include "MdxTestModel.h"
 #include "EditorPresentationFixture.h"
@@ -37,6 +38,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
+#include <QInputDialog>
 #include <QComboBox>
 #include <QLabel>
 #include <QLineEdit>
@@ -56,6 +58,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QThread>
+#include <QTimer>
 #include <QUndoStack>
 #include <QWheelEvent>
 
@@ -94,6 +97,7 @@ struct BackendState {
     int mipSubmits = 0;
     std::uint32_t mipCount = 0, maxSampleMip = 0, atlasColumns = 0, atlasRows = 0;
     std::vector<std::byte> mipOneBytes;
+    std::vector<War3RenderOverlayLineV2> overlayLines;
     bool rejectTerrain = false;
     bool autoComplete = true, pending = false, staleRevision = false, staleSize = false;
     std::int32_t statusResult = 0, viewResult = 0;
@@ -164,6 +168,13 @@ std::int32_t WAR3_RENDER_CALL TerrainScene(War3RendererHandle handle, const War3
 }
 const War3RenderPluginApiV2 backend{sizeof(War3RenderPluginApiV2), WAR3_RENDER_PLUGIN_API_V2,
     Create, Destroy, Attach, Resize, Mesh, Camera, Frame, Status, Capture, ViewInfo, TerrainScene};
+std::int32_t WAR3_RENDER_CALL BoundaryOverlay(War3RendererHandle handle,
+    const War3RenderOverlayLineV2* lines, std::uint32_t count) {
+    auto& state = *static_cast<BackendState*>(handle);
+    state.overlayLines.clear();
+    if (count != 0) state.overlayLines.assign(lines, lines + count);
+    return 0;
+}
 struct EnvironmentRecord { int submits = 0; std::uint32_t fogMode = 0; float fogEnd = 0; };
 EnvironmentRecord environmentRecord;
 std::int32_t WAR3_RENDER_CALL Environment(War3RendererHandle, const War3RenderEnvironmentV2* environment) {
@@ -500,6 +511,8 @@ std::vector<MapArchiveMember> PlacementPreviewMembers(bool pureParticle = false)
         {"ReplaceableTextures\\TeamColor\\TeamColor00.blp", AnimationParticleContinuityTest::Texture()}};
 }
 bool InstallPlacementCatalog(QtProject::EditorProject& project) {
+    Tests::ObjectCommandsFixture fields;
+    project.objectFieldSchema_ = std::make_unique<ObjectData::ObjectFieldSchema>(std::move(fields.schema));
     const std::string slk = "ID;PWXL\nC;X1;Y1;K\"alias\"\nC;X2;K\"Name\"\n"
         "C;X1;Y2;K\"hsan\"\nC;X2;K\"Synthetic sanctuary\"\nE\n";
     ObjectData::CatalogLoadOptions options; options.stringFiles.clear();
@@ -541,6 +554,12 @@ private slots:
     void PlacementClickDragAndKeys();
     void TerrainBrushPreservesCameraAndModels();
     void TerrainBrushUsesSharedTransactionAndUndo();
+    void TerrainTextureSlotUsesSharedTransaction();
+    void TerrainRampKeepsCellAndWholeStroke();
+    void TerrainBoundaryMarksAndRestores_data();
+    void TerrainBoundaryMarksAndRestores();
+    void TerrainPathingUsesCellsAndPreservesSource_data();
+    void TerrainPathingUsesCellsAndPreservesSource();
     void InspectorEditsPreserveOtherFloatBits();
     void RegionEdgesUseSharedTableTransaction_data();
     void RegionEdgesUseSharedTableTransaction();
@@ -2265,7 +2284,15 @@ void WorldModuleTests::TerrainBrushUsesSharedTransactionAndUndo() {
     toggle->click(); QVERIFY(module.Viewport()->BrushMode());
     auto* raise = page->findChild<QToolButton*>("worldTerrainBrushRaise"); QVERIFY(raise);
     raise->click(); QVERIFY(raise->isChecked());
-    auto* radius = page->findChild<QSpinBox*>("worldTerrainRadius"); QVERIFY(radius); radius->setValue(0);
+    auto* radius = page->findChild<QSpinBox*>("worldTerrainRadius"); QVERIFY(radius);
+    QCOMPARE(radius->minimum(), 1); QCOMPARE(radius->maximum(), 8); radius->setValue(1);
+    QVERIFY(page->findChild<QToolButton*>("worldTerrainBrushNoise"));
+    QVERIFY(page->findChild<QToolButton*>("worldTerrainBrushCliffTexture"));
+    QVERIFY(page->findChild<QToolButton*>("worldTerrainBrushWaterHeight"));
+    auto* variation = page->findChild<QComboBox*>("worldTerrainVariation"); QVERIFY(variation);
+    QCOMPARE(variation->count(), 19); // 随机和 0..17 共 18 种显式变体。
+    auto* waterHeight = page->findChild<QDoubleSpinBox*>("worldTerrainWaterHeight"); QVERIFY(waterHeight);
+    QCOMPARE(waterHeight->minimum(), -2048.0); QCOMPARE(waterHeight->maximum(), 2047.75);
     auto* strength = page->findChild<QDoubleSpinBox*>("worldTerrainStrength"); QVERIFY(strength); strength->setValue(6.25);
     auto original = MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()); QVERIFY(original.Succeeded());
     const QPointF center(module.Viewport()->width() / 2.0, module.Viewport()->height() / 2.0);
@@ -2282,7 +2309,7 @@ void WorldModuleTests::TerrainBrushUsesSharedTransactionAndUndo() {
     QTRY_VERIFY(module.Viewport()->DocumentRevision() > revisionBeforeStroke);
     QTRY_VERIFY(toggle->isChecked()); // push() 的 indexChanged 不能吞掉提交后的恢复请求。
     QVERIFY(module.Viewport()->BrushMode());
-    QCOMPARE(radius->value(), 0);
+    QCOMPARE(radius->value(), 1);
     QCOMPARE(strength->value(), 6.25); // 最终地形刷新不能把用户强度重置为 32。
     QVERIFY(project.mapEdits_->IsDirty());
     const auto changed = MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()); QVERIFY(changed.Succeeded());
@@ -2297,7 +2324,7 @@ void WorldModuleTests::TerrainBrushUsesSharedTransactionAndUndo() {
     QTRY_VERIFY(module.Viewport()->DocumentRevision() > revisionBeforeUndoRender);
     QTRY_VERIFY(toggle->isChecked());
     QVERIFY(module.Viewport()->BrushMode());
-    QCOMPARE(radius->value(), 0);
+    QCOMPARE(radius->value(), 1);
     QCOMPARE(strength->value(), 6.25);
     QTRY_VERIFY(!pathingWarning->isVisible());
     QTRY_VERIFY(module.Viewport()->HoverCoordinate().has_value());
@@ -2320,8 +2347,248 @@ void WorldModuleTests::TerrainBrushUsesSharedTransactionAndUndo() {
     QVERIFY(*cancelled.value == *original.value);
     auto* smooth = page->findChild<QToolButton*>("worldTerrainBrushSmooth"); QVERIFY(smooth);
     smooth->click(); QVERIFY(smooth->isChecked());
-    QCOMPARE(radius->value(), 0);
+    QCOMPARE(radius->value(), 1);
     QCOMPARE(strength->value(), 0.5); // 切换到不同强度域时才应用平滑默认值。
+}
+
+void WorldModuleTests::TerrainTextureSlotUsesSharedTransaction() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const auto source = TerrainBytes(); QVERIFY(Write(directory.filePath("war3map.w3e"), source));
+    QtProject::EditorProject project; project.projectRoot_ = directory.path().toStdWString();
+    auto opened = DirectoryWorkspace::Open(project.projectRoot_); QVERIFY(opened.Succeeded());
+    project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*opened.value));
+    project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(std::span<const MapArchiveMember>{}));
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+    QVERIFY(project.mapEdits_->AttachTerrain(std::span<const std::byte>(
+        reinterpret_cast<const std::byte*>(source.constData()), static_cast<std::size_t>(source.size()))).Succeeded());
+    project.ResetEditTracking();
+    BackendState state; activeBackend = &state;
+    WorldModule module(project, &backend);
+    auto* page = module.Widget(); state.viewport = module.Viewport(); page->resize(900, 600); page->show();
+    QTRY_COMPARE(module.Viewport()->VertexCount(), std::size_t{6});
+    auto* replace = page->findChild<QPushButton*>("worldTerrainReplaceTexture"); QVERIFY(replace);
+    const auto original = *MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value;
+    bool accepted = false;
+    QTimer::singleShot(0, page, [&] {
+        if (auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget())) {
+            dialog->setTextValue(QStringLiteral("Lgrs")); accepted = true; dialog->accept();
+        }
+    });
+    replace->click(); QVERIFY(accepted);
+    QCOMPARE(project.mapEdits_->Terrain()->header.groundTilesets.front(), std::string("Lgrs"));
+    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    project.mapDataUndoStack_->undo();
+    QCOMPARE(*MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, original);
+    project.mapDataUndoStack_->redo();
+    QCOMPARE(project.mapEdits_->Terrain()->header.groundTilesets.front(), std::string("Lgrs"));
+    QTRY_VERIFY(page->findChild<QPushButton*>("worldTerrainToggle")->isEnabled());
+    const auto before = project.mapEdits_->Revision();
+    accepted = false;
+    bool externalChanged = false;
+    QTimer::singleShot(0, page, [&] {
+        if (auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget())) {
+            externalChanged = project.mapEdits_->EditTerrainTextureSlot(MapData::TerrainTextureTable::Ground, 0, "Lrok").Succeeded();
+            dialog->setTextValue(QStringLiteral("Ldrt")); accepted = true; dialog->accept();
+        }
+    });
+    replace->click(); QVERIFY(accepted && externalChanged);
+    QCOMPARE(project.mapEdits_->Revision(), before + 1);
+    QCOMPARE(project.mapEdits_->Terrain()->header.groundTilesets.front(), std::string("Lrok"));
+    QCOMPARE(project.mapDataUndoStack_->count(), 1); // 过期对话框不能覆盖外部编辑或增加撤销项。
+}
+
+void WorldModuleTests::TerrainBoundaryMarksAndRestores_data() {
+    QTest::addColumn<bool>("overlaySupported");
+    QTest::newRow("overlay-supported") << true;
+    QTest::newRow("overlay-unavailable") << false;
+}
+
+void WorldModuleTests::TerrainBoundaryMarksAndRestores() {
+    QFETCH(bool, overlaySupported);
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const auto source = TerrainBytes();
+    QVERIFY(Write(directory.filePath("war3map.w3e"), source));
+    QtProject::EditorProject project; project.projectRoot_ = directory.path().toStdWString();
+    auto opened = DirectoryWorkspace::Open(project.projectRoot_); QVERIFY(opened.Succeeded());
+    project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*opened.value));
+    project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(std::span<const MapArchiveMember>{}));
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+    const std::span<const std::byte> bytes(reinterpret_cast<const std::byte*>(source.constData()), static_cast<std::size_t>(source.size()));
+    QVERIFY(project.mapEdits_->AttachTerrain(bytes).Succeeded());
+    project.ResetEditTracking();
+    BackendState state; activeBackend = &state;
+    auto api = backend;
+    if (overlaySupported) api.setOverlayLines = BoundaryOverlay;
+    WorldModule module(project, &api); auto* page = module.Widget(); auto* viewport = module.Viewport();
+    state.viewport = viewport; page->resize(900, 600); page->show();
+    QTRY_COMPARE(viewport->VertexCount(), std::size_t{6});
+    auto* toggle = page->findChild<QPushButton*>("worldTerrainToggle"); QVERIFY(toggle && toggle->isEnabled()); toggle->click();
+    auto* boundary = page->findChild<QToolButton*>("worldTerrainBrushBoundary"); QVERIFY(boundary); boundary->click();
+    auto* radius = page->findChild<QSpinBox*>("worldTerrainRadius"); QVERIFY(radius); radius->setValue(1);
+    auto* status = page->findChild<QLabel*>("worldTerrainBoundaryStatus"); QVERIFY(status);
+    QCOMPARE(viewport->HasOverlaySupport(), overlaySupported);
+    if (!overlaySupported) QVERIFY(status->text().contains(QStringLiteral("不支持边界标记")));
+    QCOMPARE(status->property("boundaryVertexCount").toULongLong(), qulonglong{0});
+    viewport->TerrainStrokeStarted(0, -64); viewport->TerrainStrokeFinished();
+    QVERIFY(project.mapEdits_->Terrain()->vertices[1].IsBoundary());
+    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QVERIFY(!project.mapEdits_->VerifyTerrainPathingForSave().Succeeded());
+    QTRY_COMPARE(status->property("boundaryMarkerCount").toULongLong(), overlaySupported ? qulonglong{1} : qulonglong{0});
+    QTRY_VERIFY(toggle->isEnabled() && toggle->isChecked());
+    QCOMPARE(state.overlayLines.size(), overlaySupported ? std::size_t{2} : std::size_t{0});
+    project.mapDataUndoStack_->undo();
+    QTRY_COMPARE(status->property("boundaryMarkerCount").toULongLong(), qulonglong{0});
+    QCOMPARE(*MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, std::vector<std::byte>(bytes.begin(), bytes.end()));
+    QTRY_VERIFY(toggle->isEnabled() && toggle->isChecked()); project.mapDataUndoStack_->redo();
+    QTRY_COMPARE(status->property("boundaryMarkerCount").toULongLong(), overlaySupported ? qulonglong{1} : qulonglong{0});
+    QTRY_VERIFY(toggle->isEnabled() && toggle->isChecked());
+    auto* clear = page->findChild<QPushButton*>("worldTerrainBoundaryMode1"); QVERIFY(clear); clear->click();
+    viewport->TerrainStrokeStarted(0, -64); viewport->TerrainStrokeFinished();
+    QCOMPARE(*MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, std::vector<std::byte>(bytes.begin(), bytes.end()));
+    QTRY_COMPARE(status->property("boundaryMarkerCount").toULongLong(), qulonglong{0});
+}
+
+void WorldModuleTests::TerrainPathingUsesCellsAndPreservesSource_data() {
+    QTest::addColumn<bool>("overlaySupported");
+    QTest::addColumn<bool>("hasPathing");
+    QTest::newRow("pathing-and-overlay") << true << true;
+    QTest::newRow("overlay-unavailable") << false << true;
+    QTest::newRow("pathing-unavailable") << true << false;
+}
+
+void WorldModuleTests::TerrainPathingUsesCellsAndPreservesSource() {
+    QFETCH(bool, overlaySupported); QFETCH(bool, hasPathing);
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const auto source = TerrainBytes(); QVERIFY(Write(directory.filePath("war3map.w3e"), source));
+    QByteArray wpm("MP3W", 4); Append32(wpm, 0); Append32(wpm, 8); Append32(wpm, 4);
+    wpm.append(QByteArray(32, static_cast<char>(0x82))); // 原图不可走和未知位都须保留。
+    if (hasPathing) QVERIFY(Write(directory.filePath("war3map.wpm"), wpm));
+    QtProject::EditorProject project; project.projectRoot_ = directory.path().toStdWString();
+    auto opened = DirectoryWorkspace::Open(project.projectRoot_); QVERIFY(opened.Succeeded());
+    project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*opened.value));
+    project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(std::span<const MapArchiveMember>{}));
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+    const std::span<const std::byte> bytes(reinterpret_cast<const std::byte*>(source.constData()), static_cast<std::size_t>(source.size()));
+    QVERIFY(project.mapEdits_->AttachTerrain(bytes).Succeeded());
+    if (hasPathing) QVERIFY(project.mapEdits_->AttachPathing(std::span<const std::byte>(
+        reinterpret_cast<const std::byte*>(wpm.constData()), static_cast<std::size_t>(wpm.size()))).Succeeded());
+    project.ResetEditTracking();
+    BackendState state; activeBackend = &state;
+    auto api = backend; if (overlaySupported) api.setOverlayLines = BoundaryOverlay;
+    WorldModule module(project, &api); auto* page = module.Widget(); auto* viewport = module.Viewport();
+    state.viewport = viewport; page->resize(900, 600); page->show();
+    QTRY_COMPARE(viewport->VertexCount(), std::size_t{6});
+    auto* toggle = page->findChild<QPushButton*>("worldTerrainToggle"); QVERIFY(toggle && toggle->isEnabled()); toggle->click();
+    auto* tool = page->findChild<QToolButton*>("worldTerrainBrushPathingRestriction"); QVERIFY(tool); tool->click();
+    auto* radius = page->findChild<QSpinBox*>("worldTerrainRadius"); QVERIFY(radius); radius->setValue(1);
+    auto* fly = page->findChild<QPushButton*>("worldTerrainPathingType1"); QVERIFY(fly); fly->click();
+    auto* status = page->findChild<QLabel*>("worldTerrainPathingStatus"); QVERIFY(status);
+    if (!hasPathing) {
+        QVERIFY(status->text().contains(QStringLiteral("缺少")));
+        viewport->TerrainStrokeStarted(-112, -48); viewport->TerrainStrokeFinished();
+        QCOMPARE(project.mapDataUndoStack_->count(), 0); QCOMPARE(project.mapEdits_->Revision(), std::uint64_t{0});
+        return;
+    }
+    if (!overlaySupported) QVERIFY(status->text().contains(QStringLiteral("不支持通行格标记")));
+    const auto originalTerrain = project.mapEdits_->Terrain();
+    const auto flags = [&](double x) { return project.mapEdits_->InspectTerrainPoint({x, -48}).value->pathingFlags; };
+    // 两格都靠近同一 W3E 顶点；必须按 32 单位 WPM 格连续落笔，不能吸附到 128 单位顶点。
+    viewport->TerrainStrokeStarted(-112, -48); viewport->TerrainStrokeMoved(-80, -48); viewport->TerrainStrokeFinished();
+    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QCOMPARE(flags(-112), std::optional<std::uint8_t>{0x86}); QCOMPARE(flags(-80), std::optional<std::uint8_t>{0x86});
+    QCOMPARE(flags(-48), std::optional<std::uint8_t>{0x82}); QCOMPARE(project.mapEdits_->Terrain().get(), originalTerrain.get());
+    QVERIFY(toggle->isChecked() && viewport->BrushMode());
+    QVERIFY(!project.mapEdits_->VerifyTerrainPathingForSave().Succeeded());
+    QTRY_COMPARE(status->property("pathingMarkerCount").toULongLong(), overlaySupported ? qulonglong{2} : qulonglong{0});
+    if (overlaySupported) { QCOMPARE(status->property("pathingAddedCellCount").toULongLong(), qulonglong{2}); QVERIFY(!state.overlayLines.empty()); }
+    project.mapDataUndoStack_->undo();
+    QCOMPARE(flags(-112), std::optional<std::uint8_t>{0x82}); QCOMPARE(flags(-80), std::optional<std::uint8_t>{0x82});
+    QTRY_COMPARE(status->property("pathingMarkerCount").toULongLong(), qulonglong{0});
+    project.mapDataUndoStack_->redo();
+    QCOMPARE(flags(-112), std::optional<std::uint8_t>{0x86});
+    QTRY_COMPARE(status->property("pathingMarkerCount").toULongLong(), overlaySupported ? qulonglong{2} : qulonglong{0});
+    auto* clear = page->findChild<QPushButton*>("worldTerrainPathingMode1"); QVERIFY(clear); clear->click();
+    auto* walk = page->findChild<QPushButton*>("worldTerrainPathingType0"); QVERIFY(walk); walk->click();
+    const auto beforeOriginalClear = project.mapEdits_->Revision();
+    viewport->TerrainStrokeStarted(-112, -48); viewport->TerrainStrokeFinished();
+    QCOMPARE(project.mapEdits_->Revision(), beforeOriginalClear); QCOMPARE(flags(-112), std::optional<std::uint8_t>{0x86});
+    fly->click();
+    viewport->TerrainStrokeStarted(-112, -48); viewport->TerrainStrokeMoved(-80, -48); viewport->TerrainStrokeFinished();
+    QCOMPARE(project.mapDataUndoStack_->count(), 2); QCOMPARE(flags(-112), std::optional<std::uint8_t>{0x82});
+    QCOMPARE(flags(-80), std::optional<std::uint8_t>{0x82});
+    QTRY_COMPARE(status->property("pathingMarkerCount").toULongLong(), qulonglong{0});
+    project.mapDataUndoStack_->undo(); QCOMPARE(flags(-112), std::optional<std::uint8_t>{0x86});
+    viewport->TerrainStrokeStarted(-112, -48);
+    MapData::TerrainBrush external; external.kind = MapData::TerrainBrushKind::PathingRestriction;
+    external.pathingRestrictions = 0x08; external.size = 1;
+    const MapData::TerrainStrokePoint elsewhere{-16, -48};
+    QVERIFY(project.mapEdits_->EditTerrain(external, std::span(&elsewhere, 1)).Succeeded());
+    const auto externallyChanged = project.mapEdits_->Revision();
+    viewport->TerrainStrokeFinished();
+    QCOMPARE(project.mapEdits_->Revision(), externallyChanged); QCOMPARE(flags(-112), std::optional<std::uint8_t>{0x86});
+    QCOMPARE(flags(-16), std::optional<std::uint8_t>{0x8a}); // 拒绝过期笔划，保留外部编辑。
+    viewport->TerrainStrokeStarted(-112, -48); viewport->TerrainStrokeMoved(-112, 64); viewport->TerrainStrokeFinished();
+    QCOMPARE(project.mapEdits_->Revision(), externallyChanged); // 北边界半开，坏后续点整笔取消。
+    QCOMPARE(*MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, std::vector<std::byte>(bytes.begin(), bytes.end()));
+}
+
+void WorldModuleTests::TerrainRampKeepsCellAndWholeStroke() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    auto terrain = FlatGrid(17, 17);
+    terrain->header.version = 11; terrain->header.mainTileset = 'L'; terrain->header.offset = {-1024, -1024};
+    terrain->header.groundTilesets = {"Ldrt"}; terrain->header.cliffTilesets = {"CLdi"};
+    for (std::uint32_t y = 0; y < 17; ++y) for (std::uint32_t x = 0; x < 17; ++x)
+        terrain->vertices[y * 17 + x].cliffAndLayerRaw = static_cast<std::uint8_t>(x >= 8 ? 3 : 2);
+    MapData::RefreshTerrainDerived(*terrain, 0, 0, 17, 17);
+    const auto original = MapData::SerializeMapTerrain(*terrain); QVERIFY(original.Succeeded());
+    const QByteArray source(reinterpret_cast<const char*>(original.value->data()), static_cast<qsizetype>(original.value->size()));
+    QVERIFY(Write(directory.filePath("war3map.w3e"), source));
+    QtProject::EditorProject project; project.projectRoot_ = directory.path().toStdWString();
+    auto opened = DirectoryWorkspace::Open(project.projectRoot_); QVERIFY(opened.Succeeded());
+    project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*opened.value));
+    project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(std::span<const MapArchiveMember>{}));
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+    QVERIFY(project.mapEdits_->AttachTerrain(*original.value).Succeeded());
+    project.ResetEditTracking();
+    BackendState state; activeBackend = &state;
+    WorldModule module(project, &backend);
+    auto* page = module.Widget(); auto* viewport = module.Viewport(); state.viewport = viewport;
+    page->resize(900, 600); page->show();
+    QTRY_COMPARE(viewport->VertexCount(), std::size_t{289});
+    auto* toggle = page->findChild<QPushButton*>("worldTerrainToggle"); QVERIFY(toggle && toggle->isEnabled());
+    toggle->click(); QVERIFY(viewport->BrushMode());
+    auto* ramp = page->findChild<QToolButton*>("worldTerrainBrushRamp"); QVERIFY(ramp); ramp->click();
+    auto* size = page->findChild<QSpinBox*>("worldTerrainRadius"); QVERIFY(size && !size->isEnabled());
+    // x=-32 位于悬崖格的高侧半格；旧顶点吸附会错误落到 x=0 的平地格。
+    viewport->TerrainStrokeStarted(-32, 32);
+    viewport->TerrainStrokeMoved(-32, 160);
+    viewport->TerrainStrokeFinished();
+    const auto changed = *MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value;
+    QVERIFY(changed != *original.value);
+    QCOMPARE(std::count_if(project.mapEdits_->Terrain()->vertices.begin(), project.mapEdits_->Terrain()->vertices.end(),
+        [](const auto& vertex) { return vertex.IsRamp(); }), 6);
+    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QVERIFY(!project.mapEdits_->VerifyTerrainPathingForSave().Succeeded());
+    QTRY_VERIFY(toggle->isEnabled() && toggle->isChecked());
+    project.mapDataUndoStack_->undo();
+    QCOMPARE(*MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, *original.value);
+    QTRY_VERIFY(toggle->isEnabled() && toggle->isChecked());
+    project.mapDataUndoStack_->redo();
+    QCOMPARE(*MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, changed);
+    QTRY_VERIFY(toggle->isEnabled() && toggle->isChecked());
+    auto* remove = page->findChild<QPushButton*>("worldTerrainRampMode1"); QVERIFY(remove); remove->click();
+    viewport->TerrainStrokeStarted(-32, 32);
+    viewport->TerrainStrokeMoved(-32, 160);
+    viewport->TerrainStrokeFinished();
+    QCOMPARE(*MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, *original.value);
+    QTRY_VERIFY(toggle->isEnabled() && toggle->isChecked());
+    auto* create = page->findChild<QPushButton*>("worldTerrainRampMode0"); QVERIFY(create); create->click();
+    const auto beforeRejected = project.mapEdits_->Revision();
+    viewport->TerrainStrokeStarted(-32, 32);
+    viewport->TerrainStrokeMoved(-640, 32); // 后续坏点使整笔拒绝，不能留下最初的坡道。
+    viewport->TerrainStrokeFinished();
+    QCOMPARE(project.mapEdits_->Revision(), beforeRejected);
+    QCOMPARE(*MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, *original.value);
 }
 
 void WorldModuleTests::InspectorEditsPreserveOtherFloatBits() {

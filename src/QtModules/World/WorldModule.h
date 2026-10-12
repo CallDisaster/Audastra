@@ -95,6 +95,8 @@ public:
     [[nodiscard]] Shell::NavigationRestoreResult RestoreNavigationBookmark(const QJsonObject& state) override;
     [[nodiscard]] bool PrepareNavigationLeave() override;
     [[nodiscard]] WorldViewport* Viewport() const noexcept { return viewport_; }
+    // 切图或重建期间拒绝向工具暴露保留的旧画面。
+    [[nodiscard]] WorldViewport* ViewportForTools() const;
     [[nodiscard]] WorldAnimationPlayer* AnimationPlayer() const noexcept { return animation_; }
     // 读取真实控件/播放器状态；保留的旧画面不能替代服务就绪或完成帧证据。
     [[nodiscard]] QJsonObject PlaybackDiagnosticSnapshot() const;
@@ -118,6 +120,7 @@ protected:
 
 private:
     [[nodiscard]] Result<std::vector<std::byte>> ReadTerrain() const;
+    // 工具不得把切图/地形重建期间保留的旧画面绑定到新工程。
     // 地形显示后在后台读取摆放模型；换代时丢弃过期结果。
     void StartModels(std::uint64_t generation);
     void StartAnimatedModels(std::uint64_t generation);
@@ -183,6 +186,7 @@ private:
     void RefreshTerrainPalette();
     void RefreshTerrainSwatches();
     void UpdateTerrainBrushControls();
+    void EditTerrainTextureSlot(bool cliff, bool append);
     [[nodiscard]] MapData::TerrainBrushKind CurrentBrushKind() const;
     [[nodiscard]] QString TerrainName(const std::string& raw, const std::string& rawcode) const;
     // 右侧属性（WorldInspector.cpp）：选中对象的可编辑属性与地图概况。
@@ -233,6 +237,9 @@ private:
     void RefreshPalette();
     void ValidateSelection();
     void UpdateOverlay();
+    void AppendTerrainBoundaryOverlay(std::vector<War3RenderOverlayLineV2>& lines);
+    QWidget* BuildPathingRestrictionControls(QWidget* parent);
+    void AppendPathingRestrictionOverlay(std::vector<War3RenderOverlayLineV2>& lines);
     void UpdateSelectionText();
     // 选中摆放在 requests_ 中的序号、在当前场景中的实例序号（未显示为空）。
     [[nodiscard]] std::optional<std::uint32_t> SelectedRequest() const;
@@ -291,13 +298,30 @@ private:
     QWidget* swatchGrid_ = nullptr;
     QButtonGroup* terrainSwatches_ = nullptr;
     QLabel* swatchName_ = nullptr;
+    QComboBox* terrainVariation_ = nullptr;
     std::vector<std::string> swatchIds_; // 与按钮 id 同序的地面贴图 rawcode
     const void* swatchSource_ = nullptr; // 生成缩略图所用的材质缓存（换代时重建）
     QWidget* terrainCliffSection_ = nullptr;
     QComboBox* terrainCliffTexture_ = nullptr;
     QButtonGroup* terrainCliffDeltas_ = nullptr;
+    QWidget* terrainWaterSection_ = nullptr;
+    QDoubleSpinBox* terrainWaterHeight_ = nullptr;
+    QWidget* terrainRampSection_ = nullptr;
+    QButtonGroup* terrainRampModes_ = nullptr;
     QWidget* terrainBlightSection_ = nullptr;
     QButtonGroup* terrainBlightModes_ = nullptr;
+    QWidget* terrainBoundarySection_ = nullptr;
+    QButtonGroup* terrainBoundaryModes_ = nullptr;
+    QLabel* terrainBoundaryStatus_ = nullptr;
+    std::weak_ptr<const MapData::TerrainGridSnapshot> boundaryOverlaySource_;
+    std::vector<War3RenderOverlayLineV2> boundaryOverlay_;
+    QWidget* terrainPathingSection_ = nullptr;
+    QButtonGroup* terrainPathingTypes_ = nullptr;
+    QButtonGroup* terrainPathingModes_ = nullptr;
+    QLabel* terrainPathingStatus_ = nullptr;
+    std::weak_ptr<const MapData::TerrainGridSnapshot> pathingOverlaySource_;
+    std::array<std::uint64_t, 3> pathingOverlayIdentity_{};
+    std::vector<War3RenderOverlayLineV2> pathingOverlay_;
     QButtonGroup* terrainShapes_ = nullptr;
     QSpinBox* terrainRadius_ = nullptr;
     QSlider* terrainRadiusSlider_ = nullptr;
@@ -442,6 +466,7 @@ private:
     };
     std::optional<TerrainRenderRequest> pendingTerrainRender_;
     std::shared_ptr<const MapData::TerrainGridSnapshot> strokeBase_;
+    std::uint64_t strokeRevision_ = 0;
     MapData::TerrainBrush strokeBrush_;
     std::vector<MapData::TerrainStrokePoint> strokePoints_;
     std::uint64_t terrainRenderSerial_ = 0;

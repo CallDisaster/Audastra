@@ -55,6 +55,8 @@ add_test(NAME services-map-test-slk COMMAND war3-map-test-slk-tests)
 set_tests_properties(services-map-test-slk PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
 
 add_executable(war3-map-test-launch-fixture services/MapTestLaunchFixture.cpp)
+target_sources(war3-map-test-launch-fixture PRIVATE "${PROJECT_SOURCE_DIR}/src/WarcraftRuntime32/OwnLua/LuaMailboxRuntime.cpp")
+target_include_directories(war3-map-test-launch-fixture PRIVATE "${PROJECT_SOURCE_DIR}/include")
 target_compile_definitions(war3-map-test-launch-fixture PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-test-launch-fixture PRIVATE /W4 /permissive- /utf-8)
 target_link_options(war3-map-test-launch-fixture PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:wmainCRTStartup)
@@ -91,7 +93,7 @@ add_custom_command(
         "$<TARGET_FILE_DIR:war3-map-core-tests>")
 add_test(NAME core-foundation COMMAND war3-map-core-tests)
 
-foreach(service_test IN ITEMS MapArchiveSession MapBackupInspection ProjectStore EditRevision VerifiedFile ImportTable ResourceResolver MapDocument MapDataEditSession MapDataFieldEditing MapDataPlacementEditing PlacementEditing TerrainEditing MapSettings LniMapSettings MapPlacements MapAuxiliary CoreTextIo WorldEditStrings BlpImage)
+foreach(service_test IN ITEMS MapArchiveSession MapBackupInspection ProjectStore EditRevision VerifiedFile ImportTable ResourceResolver MapDocument MapDataEditSession MapDataFieldEditing MapDataPlacementEditing PlacementEditing PlacementCreateDelete TerrainEditing TerrainRampEditing PathingRestrictionEditing MapSettings LniMapSettings MapPlacements MapAuxiliary CoreTextIo WorldEditStrings BlpImage)
     add_executable(war3-map-${service_test}-tests ${service_test}Tests.cpp)
     target_link_libraries(war3-map-${service_test}-tests PRIVATE War3MapEditor::Core)
     target_compile_definitions(war3-map-${service_test}-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
@@ -164,6 +166,23 @@ target_compile_options(war3-map-lua-trigger-unit-tests PRIVATE /W4 /permissive- 
 add_test(NAME script-lua-trigger-unit COMMAND war3-map-lua-trigger-unit-tests)
 set_tests_properties(script-lua-trigger-unit PROPERTIES TIMEOUT 30)
 
+add_executable(audastra-lua-test-reload-tests LuaTestReloadTests.cpp
+    "${PROJECT_SOURCE_DIR}/src/WarcraftRuntime32/OwnLua/LuaMailboxRuntime.cpp"
+    "${AUD_LUA53_SOURCE_DIR}/lauxlib.c" "${AUD_LUA53_SOURCE_DIR}/lbaselib.c" "${AUD_LUA53_SOURCE_DIR}/lmathlib.c")
+target_link_libraries(audastra-lua-test-reload-tests PRIVATE War3MapEditor::Services audastra-lua53-core)
+target_compile_definitions(audastra-lua-test-reload-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+target_compile_options(audastra-lua-test-reload-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME script-lua-test-reload COMMAND audastra-lua-test-reload-tests)
+set_tests_properties(script-lua-test-reload PROPERTIES TIMEOUT 30)
+
+add_executable(audastra-lua-custom-reload-tests LuaCustomReloadTests.cpp
+    "${AUD_LUA53_SOURCE_DIR}/lauxlib.c" "${AUD_LUA53_SOURCE_DIR}/lbaselib.c" "${AUD_LUA53_SOURCE_DIR}/lmathlib.c")
+target_link_libraries(audastra-lua-custom-reload-tests PRIVATE War3MapEditor::Services audastra-lua53-core)
+target_compile_definitions(audastra-lua-custom-reload-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+target_compile_options(audastra-lua-custom-reload-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME script-lua-custom-reload COMMAND audastra-lua-custom-reload-tests)
+set_tests_properties(script-lua-custom-reload PROPERTIES TIMEOUT 30)
+
 add_executable(war3-map-initialization-plan-tests MapInitializationPlanTests.cpp)
 target_link_libraries(war3-map-initialization-plan-tests PRIVATE War3MapEditor::ScriptBuild)
 target_compile_definitions(war3-map-initialization-plan-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
@@ -177,6 +196,20 @@ target_compile_definitions(war3-map-lua-map-script-tests PRIVATE NOMINMAX UNICOD
 target_compile_options(war3-map-lua-map-script-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME script-lua-map-script COMMAND war3-map-lua-map-script-tests)
 set_tests_properties(script-lua-map-script PROPERTIES TIMEOUT 30)
+
+add_executable(audastra-classic-lua-compatibility-tests ClassicLuaCompatibilityTests.cpp)
+target_link_libraries(audastra-classic-lua-compatibility-tests PRIVATE War3MapEditor::ScriptBuild audastra-lua53-core)
+target_compile_definitions(audastra-classic-lua-compatibility-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-classic-lua-compatibility-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME script-classic-lua-compatibility COMMAND audastra-classic-lua-compatibility-tests)
+set_tests_properties(script-classic-lua-compatibility PROPERTIES TIMEOUT 30)
+
+add_executable(audastra-classic-lua-entry-tests ClassicLuaEntryPipelineTests.cpp)
+target_link_libraries(audastra-classic-lua-entry-tests PRIVATE War3MapEditor::ScriptBuild)
+target_compile_definitions(audastra-classic-lua-entry-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-classic-lua-entry-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME script-classic-lua-entry COMMAND audastra-classic-lua-entry-tests)
+set_tests_properties(script-classic-lua-entry PROPERTIES TIMEOUT 30)
 
 add_executable(war3-map-lua-map-pipeline-tests LuaMapPipelineTests.cpp)
 target_link_libraries(war3-map-lua-map-pipeline-tests PRIVATE War3MapEditor::ScriptBuild)
@@ -274,7 +307,7 @@ foreach(render_part IN ITEMS TerrainTable TerrainMaterials TerrainTextureAtlas T
     add_test(NAME render-${render_part} COMMAND war3-map-${render_part}-tests)
 endforeach()
 
-target_link_libraries(war3-map-BuildingSplatPreview-tests PRIVATE War3MapEditor::Services)
+target_link_libraries(war3-map-BuildingSplatPreview-tests PRIVATE War3MapEditor::Services War3RenderCore::SkinInput)
 
 add_executable(war3-jass-budget-tests jass/JassBudgetTests.cpp)
 target_link_libraries(war3-jass-budget-tests PRIVATE War3MapEditor::Jass)

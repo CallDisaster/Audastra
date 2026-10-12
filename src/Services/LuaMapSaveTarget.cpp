@@ -1,6 +1,7 @@
 #include "LuaMapSaveTarget.h"
 
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/Services/ClassicLuaMapSources.h"
 #include "War3MapCore/Script/ScriptSaveBundle.h"
 
 #include <algorithm>
@@ -24,6 +25,13 @@ constexpr std::array<std::string_view, 4> kScriptMembers{
 bool IsScript(std::string_view name) {
     return std::any_of(kScriptMembers.begin(), kScriptMembers.end(),
         [&](auto script) { return SameMember(name, script); });
+}
+
+constexpr auto& kClassicMembers = kClassicLuaGeneratedMembers;
+
+bool ClassicOwned(std::string_view name) {
+    return std::any_of(kClassicMembers.begin() + 1, kClassicMembers.end(),
+        [&](auto member) { return SameMember(name, member); });
 }
 
 Status Fail(std::string code, std::string message) {
@@ -59,9 +67,10 @@ Status VerifyTarget(const MapSaveTask& task) {
         return Fail("LUA_MAP_TARGET_UNCAPTURED", "Lua保存没有可执行的冻结目标。");
     const auto& frozen = *task.script;
     const auto& identity = *frozen.luaTarget->Identity();
+    const bool classic = frozen.luaTarget->Profile()->dialect == Script::LuaMapSaveDialect::Classic127YDWE;
     if (identity.documentRevision != frozen.documentRevision
         || identity.targetRequestSha256 != frozen.luaTarget->Profile()->requestSha256
-        || frozen.scriptMember != "war3map.lua")
+        || frozen.scriptMember != (classic ? "war3map.j" : "war3map.lua"))
         return Fail("LUA_MAP_TARGET_STALE", "Lua目标档案、文档修订或脚本成员与保存任务不一致。");
     const auto input = ReadSettings(task);
     if (!input.Succeeded() || !input.value) return {input.diagnostics};
@@ -73,24 +82,40 @@ Status VerifyTarget(const MapSaveTask& task) {
         || *selected.value != identity.selectedSettingsSha256)
         return Fail("LUA_MAP_SETTINGS_STALE", "源、最终输入或选中W3I已改变；须重新冻结Lua目标。");
     if (std::any_of(task.replacements.begin(), task.replacements.end(),
-        [](const auto& member) { return IsScript(member.name); })
-        || std::any_of(task.removals.begin(), task.removals.end(), IsScript))
+        [&](const auto& member) { return IsScript(member.name) || (classic && ClassicOwned(member.name)); })
+        || std::any_of(task.removals.begin(), task.removals.end(), [&](const auto& name) {
+            return IsScript(name) || (classic && ClassicOwned(name)); }))
         return Fail("LUA_MAP_SCRIPT_CONFLICT", "Lua目标由同一重建任务提交唯一脚本，不能混入另一路脚本替换或删除。");
-    return Status::Ok();
+    return classic ? VerifyClassicLuaGeneratedSources(*task.archive, task.sourceSha256,
+        ClassicLuaSourcePolicy::AllowAbsentForFirstSave) : Status::Ok();
 }
 
 Status MergeCompletedScript(MapSaveTask& task, std::vector<MemberReplacement>& scripts) {
     const auto verified = VerifyTarget(task);
     if (!verified.Succeeded()) return verified;
-    if (scripts.size() != 1 || scripts.front().name != "war3map.lua")
+    const bool classic = task.script->luaTarget->Profile()->dialect == Script::LuaMapSaveDialect::Classic127YDWE;
+    if (classic) {
+        if (scripts.size() != kClassicMembers.size())
+            return Fail("CLASSIC_LUA_SCRIPT_MEMBER", "经典Lua保存缺少完整入口、模块或清单。");
+        for (std::size_t index = 0; index < scripts.size(); ++index)
+            if (scripts[index].name != kClassicMembers[index])
+                return Fail("CLASSIC_LUA_SCRIPT_MEMBER", "经典Lua生成成员名称或顺序不一致。");
+    } else if (scripts.size() != 1 || scripts.front().name != "war3map.lua")
         return Fail("LUA_MAP_SCRIPT_MEMBER", "完整Lua保存只接受唯一根war3map.lua。");
-    const std::array<std::string, 3> oldNames{"war3map.j", "scripts\\war3map.j", "scripts\\war3map.lua"};
+    const std::vector<std::string> oldNames = classic
+        ? std::vector<std::string>{"scripts\\war3map.j", "war3map.lua", "scripts\\war3map.lua"}
+        : std::vector<std::string>{"war3map.j", "scripts\\war3map.j", "scripts\\war3map.lua"};
     // 精确查询也覆盖没有可读listfile的源归档；只取得存在性和身份，不猜不存在。
     const auto old = task.archive->DescribeExactMemberIdentities(task.sourceSha256, oldNames);
     if (!old.Succeeded() || !old.value) return {old.diagnostics};
+    if (classic && std::any_of(old.value->members.begin() + 1, old.value->members.end(), [](const auto& m) { return m.present; }))
+        return Fail("CLASSIC_LUA_SCRIPT_CONFLICT", "经典源含独立Lua入口，拒绝静默删除或替换。");
     auto removals = task.removals;
+    std::vector<std::string> generatedScripts;
+    generatedScripts.reserve(scripts.size()+old.value->members.size());
+    for (const auto& member:scripts) generatedScripts.push_back(member.name);
     for (const auto& member : old.value->members)
-        if (member.present) removals.push_back(member.name);
+        if (member.present) { removals.push_back(member.name); generatedScripts.push_back(member.name); }
     const auto selected = task.script->luaTarget->SelectedSettings();
     MemberReplacement settings{"war3map.w3i", {selected.begin(), selected.end()}};
     const auto existing = std::find_if(task.replacements.begin(), task.replacements.end(),
@@ -98,13 +123,15 @@ Status MergeCompletedScript(MapSaveTask& task, std::vector<MemberReplacement>& s
     const auto slot = static_cast<std::size_t>(existing - task.replacements.begin());
     const bool appendSettings = existing == task.replacements.end();
     task.replacements.reserve(task.replacements.size() + scripts.size() + 1);
-    const auto merged = Script::MergeScriptSaveMembers(task.replacements, removals, scripts);
+    const auto merged = classic ? Script::MergeClassicLuaSaveMembers(task.replacements, removals, scripts)
+        : Script::MergeScriptSaveMembers(task.replacements, removals, scripts);
     if (!merged.Succeeded()) return merged;
     // 分配、来源检查和合并冲突均已完成；以下只移动owned成员，不会留下半份语言选择。
     static_assert(std::is_nothrow_move_assignable_v<MemberReplacement>);
     if (appendSettings) task.replacements.push_back(std::move(settings));
     else task.replacements[slot] = std::move(settings);
     task.removals.swap(removals);
+    task.generatedScriptMembers.swap(generatedScripts);
     return Status::Ok();
 }
 

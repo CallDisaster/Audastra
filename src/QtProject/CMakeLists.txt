@@ -38,6 +38,7 @@ qt_add_library(War3MapQtProject STATIC
     TriggerMapObjectReferences.cpp
     ProjectStrings.cpp
     ObjectNames.cpp
+    ObjectContextProvider.cpp ObjectContextProvider.h
     MapCopySave.cpp
     MapSaveRun.cpp
     MapSavePreferences.cpp

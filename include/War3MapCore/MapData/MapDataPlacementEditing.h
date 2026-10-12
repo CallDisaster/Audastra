@@ -28,7 +28,16 @@ struct MapDataPlacementCopy {
     std::vector<MapDataPlacementSource> sources;
     std::array<float, 3> offset{}; // 游戏世界坐标 XYZ，同一批次同类别、共用偏移。
 };
-using MapDataPlacementIntent = std::variant<MapDataPlacementRotation, MapDataPlacementCopy>;
+struct MapDataPlacementCreate {
+    std::string expectedMemberSha256;
+    PlacementCreationRecords records;
+};
+struct MapDataPlacementDelete {
+    std::vector<MapDataPlacementSource> sources;
+};
+using MapDataPlacementIntent = std::variant<MapDataPlacementRotation, MapDataPlacementCopy,
+    MapDataPlacementCreate, MapDataPlacementDelete>;
+[[nodiscard]] PlacementFile PlacementIntentFile(const MapDataPlacementIntent& intent);
 
 struct PlacementCommandLimits {
     std::size_t maximumSources = 32;

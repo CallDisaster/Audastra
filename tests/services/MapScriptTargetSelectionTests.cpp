@@ -254,6 +254,31 @@ void RejectsUnboundInputs(Fixture& fixture) {
 
 } // namespace
 
+void ClassicTargetPreservesActualSettings(Fixture& fixture) {
+    const auto previous = fixture.request;
+    fixture.request.dialect = Script::LuaMapSaveDialect::Classic127YDWE;
+    fixture.request.checker = {};
+    fixture.request.changeLanguageToLua = false;
+    fixture.request.playerLayout = Script::MapInitializationPlayerLayout::Classic12;
+    const auto classic = Settings(25, 0);
+    const auto prepared = fixture.Prepare(classic, classic);
+    Require(prepared.Succeeded() && prepared.value && prepared.value->Profile()
+        && prepared.value->Profile()->dialect == Script::LuaMapSaveDialect::Classic127YDWE
+        && BytesEqual(prepared.value->SelectedSettings(), classic)
+        && prepared.value->Identity()->sourceSettingsSha256 == prepared.value->Identity()->selectedSettingsSha256,
+        "classic explicit target uses embedded compilation and preserves every v25 byte");
+    fixture.request.changeLanguageToLua = true;
+    Rejected(fixture.Prepare(classic, classic), "CLASSIC_LUA_TARGET_INPUT_UNSUPPORTED");
+    fixture.request.changeLanguageToLua = false;
+    fixture.request.playerLayout = Script::MapInitializationPlayerLayout::Extended24;
+    Rejected(fixture.Prepare(classic, classic), "CLASSIC_LUA_TARGET_INPUT_UNSUPPORTED");
+    fixture.request.playerLayout = Script::MapInitializationPlayerLayout::Classic12;
+    Rejected(fixture.Prepare(Settings(31, 1), Settings(31, 1)), "LUA_MAP_TARGET_VERSION_UNSUPPORTED");
+    fixture.request.dialect = static_cast<Script::LuaMapSaveDialect>(255);
+    Rejected(fixture.Prepare(classic, classic), "LUA_MAP_TARGET_DIALECT_UNKNOWN");
+    fixture.request = previous;
+}
+
 int main() {
     try {
         Fixture fixture;
@@ -261,6 +286,7 @@ int main() {
         RequiresExplicitLanguageAndActualVersion(fixture);
         BindsFullRequest(fixture);
         RejectsUnboundInputs(fixture);
+        ClassicTargetPreservesActualSettings(fixture);
         fixture.RemoveSuccessfulFixture();
         std::cout << "Lua map target selection: actual v31, explicit language, owned request and settings preservation passed; checker only bound, not executed.\n";
         return 0;

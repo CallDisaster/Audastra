@@ -13,6 +13,7 @@
 #include "Icons/SvgIcons.h"
 #include "Widgets/ElidedLabel.h"
 #include "Widgets/Motion.h"
+#include "Widgets/ResponsiveToolBar.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
 #include "War3MapCore/Render/EditorOverlay.h"
 #include "War3MapCore/Render/TerrainPicking.h"
@@ -157,13 +158,14 @@ QString Integer(double value) { return QString::number(static_cast<long long>(st
 // ── 顶栏 ──
 
 void WorldModule::BuildToolbar(QVBoxLayout* layout) {
-    auto* toolbar = new QFrame(page_);
+    auto* toolbar = new UiKit::ResponsiveToolBar(page_);
     toolbar->setObjectName(QStringLiteral("worldToolbar"));
     toolbar->installEventFilter(this);
-    auto* row = new QHBoxLayout(toolbar);
+    auto* row = toolbar->ContentLayout();
     row->setContentsMargins(10, 7, 10, 7); row->setSpacing(8);
     auto* segment = new QFrame(toolbar);
     segment->setObjectName(QStringLiteral("worldToolSegment"));
+    segment->setProperty("toolbarPriority", 100);
     auto* tools = new QHBoxLayout(segment);
     tools->setContentsMargins(3, 3, 3, 3); tools->setSpacing(2);
     toolIndicator_ = new UiKit::SlidingHighlight(segment);
@@ -638,9 +640,12 @@ void WorldModule::UpdateToolHint() {
     const auto tool = CurrentTool();
     if (tool == Tool::Terrain) {
         const auto* kind = terrainKinds_->checkedButton();
-        toolSubtitle_->setText(tr("%1 · 半径 %2 格").arg(kind ? kind->text() : QString{}).arg(terrainRadius_->value()));
+        const bool ramp = CurrentBrushKind() == MapData::TerrainBrushKind::Ramp;
+        toolSubtitle_->setText(ramp ? tr("一级干地直坡 · 三点范围")
+            : tr("%1 · 尺寸 %2").arg(kind ? kind->text() : QString{}).arg(terrainRadius_->value()));
         selectionStatus_->setText(strokeBase_ ? tr("拖动涂刷中 · 松开提交 · Esc 取消本笔")
-            : tr("左键涂刷 · [ ] 调半径 · 中键或右键平移 · Esc 退出"));
+            : ramp ? tr("左键沿直台阶涂刷 · 中键或右键平移 · Esc 退出")
+                   : tr("左键涂刷 · [ ] 调尺寸 · 中键或右键平移 · Esc 退出"));
         return;
     }
     if (tool == Tool::Place) {

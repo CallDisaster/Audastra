@@ -4,6 +4,7 @@
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
 #include "War3MapCore/VerifiedFile.h"
+#include "War3MapCore/Services/ClassicLuaMapSources.h"
 #include "../MapDataFixtures.h"
 #include "../../src/Core/Mpq/MpqCrypt.h"
 
@@ -183,6 +184,60 @@ struct Fixture {
         Require(!std::filesystem::exists(game / "Maps"), "runtime planning never copies maps into game or launches processes");
     }
 };
+
+void OwnedLuaSourcesAndComponents() {
+    Fixture fixture;
+    const auto members = [](std::string_view lua = "return true\n", std::string jass = Script("")) {
+        std::vector<MapArchiveMember> result{{"war3map.j", Bytes(jass)}};
+        for (std::size_t index = 1; index + 1 < Services::kClassicLuaGeneratedMembers.size(); ++index)
+            result.push_back({std::string(Services::kClassicLuaGeneratedMembers[index]), Bytes(lua)});
+        std::string manifest = "audastra-classic-lua-v1\n";
+        for (const auto& item : result) manifest += item.name + "\t" + *Sha256(item.data).value + "\n";
+        result.push_back({std::string(Services::kClassicLuaGeneratedMembers.back()), Bytes(manifest)});
+        result.push_back({"war3map.w3i", MapDataFixtures::FullMapSettingsV25().bytes});
+        return result;
+    };
+    const auto artifact = [&](const std::vector<MapArchiveMember>& contents) {
+        auto map = fixture.Artifact(contents);
+        map.useOwnedLuaRuntime = true;
+        map.runtimeRoot = "unused-external-root"; map.runtimeYdweRoot = "unused-ydwe-root";
+        map.runtimeBridge = fixture.helper / "launcher.exe";
+        map.runtimeBootstrap = fixture.helper / "bootstrap.dll";
+        Write(map.runtimeBridge, Pe(false)); Write(map.runtimeBootstrap, Pe(true));
+        return map;
+    };
+    auto map = artifact(members());
+    auto plan = Script::BuildIndependentMapTestLaunchPlan(map); Success(plan, "complete classic generated source contract");
+    Require(plan.value->useOwnedLuaRuntime && !plan.value->enableLuaHotReload && plan.value->runtimeRoot.empty(),
+        "owned preflight needs no external DLLs even with obsolete configured paths");
+    Require(plan.value->runtimeBootstrap == map.runtimeBootstrap
+        && plan.value->runtimeBootstrapSha256 == *Sha256File(map.runtimeBootstrap).value, "bootstrap identity frozen in launch plan");
+    map.enableLuaHotReload = true;
+    Success(Script::BuildIndependentMapTestLaunchPlan(map), "explicit reload survives owned preflight");
+    auto changed = members(); changed[2].data = Bytes("return false\n");
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(artifact(changed)), "CLASSIC_LUA_GENERATED_SOURCE_CHANGED", "changed module cannot reuse manifest");
+    changed = members(); changed[6].data.push_back(std::byte{'\n'});
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(artifact(changed)), "CLASSIC_LUA_GENERATED_SOURCE_CHANGED", "manifest must match exact bytes");
+    changed = members(); changed.erase(changed.begin() + 3);
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(artifact(changed)), "CLASSIC_LUA_GENERATED_SOURCE_CHANGED", "missing generated module refused");
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(artifact({{"war3map.j", Bytes(Script(""))}})),
+        "CLASSIC_LUA_MANIFEST_REQUIRED", "JASS-only source cannot silently choose owned Lua");
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(artifact(members("local broken = \n"))),
+        "MAP_TEST_OWN_LUA_SYNTAX", "valid source manifest does not bypass Lua compiler");
+    const auto maximumModule = "--" + std::string(4u * 1024u * 1024u - 2, ' ');
+    Success(Script::BuildIndependentMapTestLaunchPlan(artifact(members(maximumModule))),
+        "five valid four-MiB modules obey runtime limit and are not squeezed into JASS sixteen-MiB budget");
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(artifact(members(maximumModule + " "))),
+        "MAP_TEST_SCRIPT_BUDGET", "module over actual four-MiB runtime reader limit refused before launch");
+    changed = members(); changed.back().data[0] = std::byte{31};
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(artifact(changed)), "MAP_TEST_OWN_LUA_CLASSIC_REQUIRED", "newer or malformed settings cannot select classic runtime");
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(artifact(members("return true\n",
+        Script("    call ExternalFixtureNative()", "native ExternalFixtureNative takes nothing returns nothing\n")))),
+        "MAP_TEST_OWN_LUA_EXTENSION_UNSUPPORTED", "owned mode refuses extension natives instead of falling back to six DLLs");
+    Write(map.runtimeBootstrap, Pe(true, false, 0x8664));
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(map), "MAP_TEST_RUNTIME_PE", "owned bootstrap must be x86");
+    fixture.Unchanged(map);
+}
 
 void NativeMapsNeedNoToolsOrRuntime() {
     Fixture fixture;
@@ -738,7 +793,12 @@ void OptionalRealNativeMapPlan() {
 } // namespace
 int main() {
     try {
-        NativeMapsNeedNoToolsOrRuntime(); LexicalTextAndLocalPrefixesAreNotExtensions();
+        Services::MapTestArtifact owned;
+        owned.enableLuaHotReload = true;
+        FailureCode(Script::BuildIndependentMapTestLaunchPlan(owned), "MAP_TEST_LUA_RELOAD_RUNTIME", "reload needs explicit owned runtime before inspecting map");
+        owned.useOwnedLuaRuntime = true;
+        Require(!Script::BuildIndependentMapTestLaunchPlan(owned).Succeeded(), "owned runtime needs a real frozen map and cannot fall back");
+        OwnedLuaSourcesAndComponents(); NativeMapsNeedNoToolsOrRuntime(); LexicalTextAndLocalPrefixesAreNotExtensions();
         CompiledJassOpaqueBytesPreserveRuntimeClassification(); CompiledJassByteRawcodesAndMalformedBoundaries();
         ExplicitAndUnknownInterfacesNeedRuntime(); RuntimeFilesAndProfileAreCheckedWithoutExecution();
         YdweTreeFallbackIsReadonlyAndOnlyNeededForExtensions();

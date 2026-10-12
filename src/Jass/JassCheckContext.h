@@ -24,6 +24,7 @@ struct GlobalSymbol {
     std::uint32_t order = 0; // 全部源文件中的声明序号
     std::uint32_t line = 0;
     std::optional<SymbolKey> definition;
+    std::uint32_t file = 0;
 };
 
 struct FunctionSymbol {
@@ -43,6 +44,18 @@ struct CheckContext {
     std::unordered_map<std::string_view, GlobalSymbol> globals;
     std::unordered_map<std::string_view, FunctionSymbol> functions;
     std::vector<std::string> files;
+    const JassCheckOptions* options = nullptr; // 本次同步检查期间保持有效，工作线程只读。
+
+    [[nodiscard]] std::string DisplayLocation(std::uint32_t file, std::uint32_t line) const {
+        const auto& name = files.at(file);
+        if (options && name == options->diagnosticSourceName) {
+            if (const auto position = options->diagnosticSourceMap.Find(line);
+                position && position->file < options->diagnosticSourceMap.Files().size()) {
+                return DiagnosticText(options->diagnosticSourceMap.Files()[position->file]) + ":" + std::to_string(position->line);
+            }
+        }
+        return DiagnosticText(name) + ":" + std::to_string(line);
+    }
 };
 
 // pjass 的开关：命令行默认值，可被函数前的 //# +flag / -flag 覆盖（只作用于该函数）。

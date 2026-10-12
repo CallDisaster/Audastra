@@ -14,14 +14,16 @@ bool RuntimeGlobal(std::string_view name) {
 bool MapFunction(std::string_view name) {
     constexpr std::string_view names[]{"config", "main", "InitGlobals", "InitCustomTriggers", "RunInitializationTriggers",
         "InitSounds", "CreateRegions", "CreateCameras", "InitUpgrades", "InitTechTree", "CreateAllDestructables",
-        "CreateAllItems", "CreateAllUnits", "InitCustomPlayerSlots", "InitCustomTeams", "InitAllyPriorities"};
+        "CreateAllItems", "CreateAllUnits", "InitCustomPlayerSlots", "InitCustomTeams", "InitAllyPriorities",
+        "AudastraMainObjects", "AudastraMainAfterBlizzard"};
     return std::find(std::begin(names), std::end(names), name) != std::end(names);
 }
 }
 
 Emitter::Emitter(const Trigger::TriggerDocument& document, const Trigger::UiCatalog& catalog,
-    const LuaTargetProfile& target, std::span<const LuaCallbackBinding> callbacks, std::span<const LuaGlobalBinding> globals)
-    : document_(document), catalog_(catalog), types_(catalog), target_(target), callbacks_(callbacks), globals_(globals) {}
+    const LuaTargetProfile& target, std::span<const LuaCallbackBinding> callbacks, std::span<const LuaGlobalBinding> globals,
+    LuaTriggerBuildOptions options)
+    : document_(document), catalog_(catalog), types_(catalog), target_(target), callbacks_(callbacks), globals_(globals), options_(options) {}
 
 void Emitter::Prepare() {
     if (target_.identity.empty() || target_.identity.size() > 256 || target_.apis.size() > 4096 || target_.handleTypes.size() > 512
@@ -37,6 +39,13 @@ void Emitter::Prepare() {
         if (!verified.Succeeded()) {
             const auto& diagnostic = verified.diagnostics.front();
             Fail(diagnostic.code, diagnostic.message);
+        }
+        if (options_.testHotReload) {
+            std::vector<CustomReloadSource> sources;
+            for (const auto& block : target_.nativeAuthorCode->Triggers()) sources.push_back({block.text, block.initializer});
+            auto captured = CaptureCustomReloadContext(target_.nativeAuthorCode->Header(), sources);
+            // 不能证明的作者块仍可正常测试；其后热重载明确要求重新测试。
+            if (captured.Succeeded()) customReloadContext_ = std::move(*captured.value);
         }
     } else if (!document_.wct.customCode.text.empty())
         Fail("LUA_SOURCE_UNTRANSLATED", "地图自定义 JASS 尚未转换，原文仍保留。");
@@ -158,8 +167,16 @@ void Emitter::AuthorTrigger(const Trigger::TriggerRecord& trigger, const LuaTrig
     const auto block = std::find_if(blocks.begin(), blocks.end(), [&](const auto& value) { return value.triggerId == trigger.id; });
     if (block == blocks.end()) Fail("LUA_AUTHOR_TRIGGER_MISSING", "活动 Lua 作者块不在冻结凭据中。");
     const auto start = output_.Size();
-    output_.Raw(block->text);
-    output_.RecordAuthor(start, block->text.size(), trigger.id, LuaSourceSpanKind::AuthorCustom);
+    std::string text = block->text;
+    if (customReloadContext_) {
+        const auto analyzed = AnalyzeCustomReload({block->text, block->initializer}, *customReloadContext_);
+        if (analyzed.Succeeded()) text = analyzed.value->text;
+    }
+    output_.Raw(text);
+    if (options_.testHotReload)
+        result_.testTriggers.push_back({symbol, text, {}, {}, trigger.runOnInit != 0, true, start, 0, block->text});
+    // 转发只插入同一行内的表达式，保持作者的一基行号。
+    output_.RecordAuthor(start, text.size(), trigger.id, LuaSourceSpanKind::AuthorCustom);
     if (trigger.runOnInit) initializers_.emplace_back(trigger.id, symbol.variable);
 }
 
@@ -203,10 +220,19 @@ void Emitter::Globals() {
             initialize.End(); initialize.Line("end");
         } else initialize.Line(name + " = " + value.code);
         initialize.Record(initializeStart, 0, variable.id, LuaSourceSpanKind::Variable);
+        if (options_.testHotReload) {
+            const auto declaration = output_.Text().substr(declarationStart);
+            const auto initialization = initialize.Text().substr(initializeStart);
+            result_.testGlobals.push_back({variable.id, name, declaration, initialization,
+                type + ":" + std::to_string(variable.isArray) + ":" + std::to_string(variable.size) + ":" + value.code,
+                declarationStart, initializeStart});
+        }
         if (output_.Size() + initialize.Size() > 8 * 1024 * 1024)
             Fail("LUA_OUTPUT_BUDGET", "变量初始化文本超过 8 MiB 预算。");
     }
     initialize.End(); initialize.Line("end");
+    if (options_.testHotReload)
+        for (auto& chunk : result_.testGlobals) chunk.initializationOffset += output_.Size();
     output_.Append(initialize);
 }
 
@@ -318,17 +344,33 @@ void Emitter::TriggerBody(const Trigger::TriggerRecord& trigger, const LuaTrigge
         } else Fail("LUA_ROOT_KIND", "根节点不是事件/条件/动作。");
     }
     output_.Line(symbol.variable + " = nil");
+    const auto functionsStart = output_.Size();
     output_.Line("function " + symbol.conditions + "() return " + conditions + " end");
     output_.Line("function " + symbol.actions + "()"); output_.Append(actions); output_.Line("end");
+    const auto initializerStart = output_.Size();
     output_.Line("function " + symbol.initializer + "()"); output_.Begin();
     output_.Line(symbol.variable + " = " + Native("CreateTrigger", {}, "trigger").code + ";");
+    const auto eventIdentity = options_.testHotReload ? events.Text() : std::string{};
     output_.Append(events);
     if (trigger.initiallyClosed)
         output_.Line(Native("DisableTrigger", {{"trigger", symbol.variable, {}}}, "nothing").code + ";");
-    auto condition = Native("Condition", {{"code", symbol.conditions, {}}}, "boolexpr");
+    auto condition = Native("Condition", {{"code", options_.testHotReload
+        ? "function() return " + symbol.conditions + "() end" : symbol.conditions, {}}}, "boolexpr");
+    if (options_.testHotReload) {
+        output_.Line("local __forge_condition = " + condition.code + ";");
+        condition = {"boolexpr", "__forge_condition", {}};
+    }
     output_.Line(Native("TriggerAddCondition", {{"trigger", symbol.variable, {}}, std::move(condition)}, "triggercondition").code + ";");
-    output_.Line(Native("TriggerAddAction", {{"trigger", symbol.variable, {}}, {"code", symbol.actions, {}}}, "triggeraction").code + ";");
+    output_.Line(Native("TriggerAddAction", {{"trigger", symbol.variable, {}}, {"code", options_.testHotReload
+        ? "function() return " + symbol.actions + "() end" : symbol.actions, {}}}, "triggeraction").code + ";");
+    if (options_.testHotReload)
+        output_.Line("__forge_test_triggers[" + Quote(std::to_string(trigger.id)) + "] = { handle = "
+            + symbol.variable + ", condition = __forge_condition }");
     output_.End(); output_.Line("end");
+    if (options_.testHotReload)
+        result_.testTriggers.push_back({symbol, output_.Text().substr(functionsStart, initializerStart - functionsStart),
+            output_.Text().substr(initializerStart), eventIdentity + ":closed=" + std::to_string(trigger.initiallyClosed),
+            initialization, false, functionsStart, initializerStart});
     output_.Record(triggerStart, trigger.id, trigger.id, LuaSourceSpanKind::Trigger);
     // 只按明确初始化事件/标志登记，仍经条件执行。初始关闭的运行语义留给目标 native。
     if (initialization) initializers_.emplace_back(trigger.id, symbol.variable);
@@ -345,8 +387,19 @@ LuaTriggerUnit Emitter::Run() {
             "候选仅含触发器单元；整图初始化和原版 Lua/联机未验证，实数计算不承诺经典 float32 逐位等价。", {}}, 0, 0});
         output_.Raw("-- FORGE Lua trigger compilation unit; requires host map initialization.");
         output_.Raw(kLuaTriggerRuntimeSource);
+        if (options_.testHotReload) {
+            result_.testHotReload = true;
+            // 使用同一目标签名检查，缺少销毁 API 时不生成可执行的部分候选。
+            const auto destroy = Native("DestroyTrigger", {{"trigger", "entry.handle", {}}}, "nothing").code;
+            const auto release = Native("DestroyBoolExpr", {{"boolexpr", "entry.condition", {}}}, "nothing").code;
+            output_.Raw("__forge_test_triggers = {}\nfunction __forge_test_drop(id)\n"
+                "    local entry = __forge_test_triggers[id]\n    if not entry then return end\n    "
+                + destroy + ";\n    " + release + ";\n    __forge_test_triggers[id] = nil\nend\n");
+        }
         Globals();
         AuthorHeader();
+        if (options_.testHotReload && target_.nativeAuthorCode)
+            result_.testSharedSource = std::string(target_.nativeAuthorCode->Header());
         // 分类和原始触发器顺序稳定；初始化 API 和随机调用的先后不能依赖哈希容器。
         std::vector<const Trigger::TriggerRecord*> ordered;
         std::set<StableId> placed;
@@ -366,6 +419,7 @@ LuaTriggerUnit Emitter::Run() {
             const auto start = output_.Size();
             output_.Line("function " + binding.symbol + "() return " + symbols_.at(binding.triggerId).actions + "() end");
             output_.Record(start, binding.triggerId, binding.triggerId, LuaSourceSpanKind::Callback);
+            if (options_.testHotReload) result_.testSharedSource += output_.Text().substr(start);
         }
         output_.Line("function InitCustomTriggers()"); output_.Begin();
         for (const auto& symbol : result_.symbols) {
@@ -408,6 +462,10 @@ LuaTriggerUnit Emitter::Run() {
     result_.requiredApis.assign(requiredApis_.begin(), requiredApis_.end());
     result_.requiredGlobals.assign(requiredGlobals_.begin(), requiredGlobals_.end());
     result_.requiredConstants.assign(requiredConstants_.begin(), requiredConstants_.end());
+    if (result_.text.empty()) {
+        result_.testTriggers.clear(); result_.testGlobals.clear(); result_.testSharedSource.clear();
+        result_.testHotReload = false;
+    }
     return std::move(result_);
 }
 } // namespace War3Map::Script::lua
@@ -419,8 +477,9 @@ bool LuaTriggerUnit::Succeeded() const noexcept {
     });
 }
 LuaTriggerUnit GenerateLuaTriggerUnit(const Trigger::TriggerDocument& document, const Trigger::UiCatalog& catalog,
-    const LuaTargetProfile& target, std::span<const LuaCallbackBinding> callbacks, std::span<const LuaGlobalBinding> globals) {
-    try { return lua::Emitter(document, catalog, target, callbacks, globals).Run(); }
+    const LuaTargetProfile& target, std::span<const LuaCallbackBinding> callbacks, std::span<const LuaGlobalBinding> globals,
+    LuaTriggerBuildOptions options) {
+    try { return lua::Emitter(document, catalog, target, callbacks, globals, options).Run(); }
     catch (const std::bad_alloc&) {
         LuaTriggerUnit result;
         result.diagnostics.push_back({{DiagnosticSeverity::Error, "Script.Lua", "LUA_ALLOCATION_FAILED", "类型目录建立失败：内存不足。", {}}, 0, 0});

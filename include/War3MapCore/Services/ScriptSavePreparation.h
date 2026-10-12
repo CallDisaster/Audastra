@@ -33,7 +33,8 @@ struct ScriptSaveInputSources {
     std::vector<Script::ScriptProfileSourceEncoding> sourceEncodings;
     // 普通include的显式读取资格，不增加搜索目录或注入/native来源。
     std::vector<Script::ScriptProfileIncludeAccess> includeAccess;
-    // 空值沿用经典JASS。Lua必须显式提交完整档案和检查器，不依靠扩展名猜测。
+    // 空值沿用经典JASS。Lua须显式提交完整档案；v31还需外部检查器，
+    // 经典1.27档案使用内置Lua5.3编译检查，不依靠扩展名猜测。
     std::optional<LuaMapTargetRequest> luaTarget;
     std::string scriptMember;
     std::uint64_t documentRevision = 0;

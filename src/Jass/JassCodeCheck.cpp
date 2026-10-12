@@ -89,7 +89,7 @@ const FunctionSymbol* CodeChecker::LookupFunction(std::string_view name, std::ui
         record({});
         if (reportMissing) {
             auto message = "函数 " + Quote(name) + " 在此处尚未声明（定义于 " +
-                context_.files[symbol.file] + ":" + std::to_string(symbol.line) + "，须先定义后使用）";
+                context_.DisplayLocation(symbol.file, symbol.line) + "，须先定义后使用）";
             if (origin) Report(*origin, "JASS_DECLARATION_ORDER", std::move(message));
             else Report(line, "JASS_DECLARATION_ORDER", std::move(message));
         }
@@ -168,8 +168,8 @@ TypeId CodeChecker::CheckName(const Expr& expr) {
     }
     if (symbols_) symbols_->Reference(expr.text, {}, SymbolUse::Read);
     if (const auto later = context_.globals.find(expr.text); later != context_.globals.end()) {
-        Report(expr, "JASS_DECLARATION_ORDER", "全局变量 " + Quote(expr.text) + " 在此处尚未声明（第 " +
-            std::to_string(later->second.line) + " 行声明）");
+        Report(expr, "JASS_DECLARATION_ORDER", "全局变量 " + Quote(expr.text) + " 在此处尚未声明（定义于 " +
+            context_.DisplayLocation(later->second.file, later->second.line) + "，须先定义后使用）");
         return later->second.type;
     }
     Report(expr, "JASS_UNDECLARED", "未声明的变量 " + Quote(expr.text));

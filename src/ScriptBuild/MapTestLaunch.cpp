@@ -2,6 +2,7 @@
 
 #include "ExternalProcess.h"
 #include "MapTestLaunchInternal.h"
+#include "../Core/Services/LuaTestMailboxSessionInternal.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/Services/MapTestWorkspace.h"
@@ -10,6 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include <atomic>
+#include <array>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -38,9 +40,38 @@ struct MapTestLaunchLease::Impl {
     std::shared_ptr<Services::MapTestWorkspaceLease> mapFiles;
     std::vector<HANDLE> protectedDirectories;
     std::vector<HANDLE> protectedFiles;
-    struct Child { HANDLE handle; DWORD id; FILETIME created; };
+    std::filesystem::path gameImage;
+    FILETIME launcherCreated{};
+    struct Child { HANDLE handle; DWORD id; FILETIME created; bool gameIdentity = false; bool exited = false; };
     std::vector<Child> children;
     std::thread monitor;
+    static bool ImageMatches(HANDLE handle, const std::filesystem::path& expected) noexcept {
+        std::array<wchar_t, 32768> text{}; DWORD length = static_cast<DWORD>(text.size());
+        return !expected.empty() && QueryFullProcessImageNameW(handle, 0, text.data(), &length)
+            && CompareStringOrdinal(text.data(), static_cast<int>(length), expected.c_str(), -1, TRUE) == CSTR_EQUAL;
+    }
+    Services::detail::LuaTestProcessOwnership Ownership(std::uint32_t id) const noexcept {
+        using Ownership = Services::detail::LuaTestProcessOwnership;
+        try {
+            std::lock_guard stateLock(lifecycle);
+            std::lock_guard childLock(mutex);
+            const Child* selected = nullptr;
+            for (const auto& child : children) if (child.id == id) {
+                if (selected) return Ownership::Unconfirmed; // 曾复用的PID不能凭邮箱重新择一。
+                selected = &child;
+            }
+            if (!selected || !selected->gameIdentity) return Ownership::Unconfirmed;
+            if (!selected->handle) return selected->exited ? Ownership::OwnedExited : Ownership::Unconfirmed;
+            FILETIME created{}, exited{}, kernel{}, user{}; BOOL belongs = FALSE;
+            if (!GetProcessTimes(selected->handle, &created, &exited, &kernel, &user)
+                || CompareFileTime(&created, &selected->created) != 0
+                || !IsProcessInJob(selected->handle, job, &belongs) || !belongs
+                || !ImageMatches(selected->handle, gameImage)) return Ownership::Unconfirmed;
+            const auto wait = WaitForSingleObject(selected->handle, 0);
+            return wait == WAIT_OBJECT_0 ? Ownership::OwnedExited
+                : wait == WAIT_TIMEOUT ? Ownership::OwnedRunning : Ownership::Unconfirmed;
+        } catch (...) { return Ownership::Unconfirmed; }
+    }
     bool Terminal(bool& coverage) const noexcept {
         if (!job || !launcher) return false;
         JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting{};
@@ -57,8 +88,12 @@ struct MapTestLaunchLease::Impl {
         stop.store(true);
         if (completion) PostQueuedCompletionStatus(completion, 0, 0, nullptr);
         if (monitor.joinable()) monitor.join();
-        for (const auto& child : children) CloseHandle(child.handle);
-        children.clear();
+        // 关闭句柄后仍保留已核验的过去身份，最后一份异步诊断可继续读取。
+        std::lock_guard lock(mutex);
+        for (auto& child : children) if (child.handle) {
+            child.exited = WaitForSingleObject(child.handle, 0) == WAIT_OBJECT_0;
+            CloseHandle(child.handle); child.handle = nullptr;
+        }
         if (launcher) { CloseHandle(launcher); launcher = nullptr; }
         if (completion) { CloseHandle(completion); completion = nullptr; }
         if (job) { CloseHandle(job); job = nullptr; }
@@ -96,7 +131,8 @@ struct MapTestLaunchLease::Impl {
                     && child.created.dwHighDateTime == created.dwHighDateTime) duplicate = true;
                 // 消息延迟/PID复用不能把两个过去身份折成一个新句柄。
                 if (duplicate) { CloseHandle(handle); uncertain.store(true); continue; }
-                try { children.push_back({handle, id, created}); }
+                const bool gameIdentity = CompareFileTime(&created, &launcherCreated) >= 0 && ImageMatches(handle, gameImage);
+                try { children.push_back({handle, id, created, gameIdentity, false}); }
                 catch (...) { CloseHandle(handle); throw; }
             }
         } catch (...) { uncertain.store(true); }
@@ -149,10 +185,17 @@ Status MapTestLaunchLease::Cleanup() {
             if (bytes.Succeeded()) {
                 const auto report = nlohmann::json::parse(reinterpret_cast<const char*>(bytes.value->data()),
                     reinterpret_cast<const char*>(bytes.value->data()) + bytes.value->size(), nullptr, false);
-                if (report.is_object() && report.value("schema", std::string{}) == "audastra-warcraft-launch-v1") {
+                const auto schema = report.is_object() ? report.find("schema") : report.end();
+                if (schema != report.end() && schema->is_string() && *schema == "audastra-warcraft-launch-v1") {
                     const auto stage = report.find("errorStage"), error = report.find("errorWin32");
                     if (stage != report.end() && stage->is_string() && error != report.end() && error->is_number_unsigned())
                         detail += " 独立运行时阶段=" + stage->get<std::string>() + "，Win32=" + std::to_string(error->get<unsigned>()) + "。";
+                    const auto owned = report.find("ownedLua");
+                    if (owned != report.end() && owned->is_object()) {
+                        const auto failure = owned->find("failureText");
+                        if (failure != owned->end() && failure->is_string())
+                            detail += " " + failure->get<std::string>().substr(0, 8192);
+                    }
                 }
             }
             detail += " 报告：" + IO::GenericPathUtf8(impl_->receipt);
@@ -177,6 +220,12 @@ Result<MapTestLaunchReceipt> LaunchMapTest(const Services::MapTestArtifact& arti
 namespace detail {
 struct MapTestLaunchAccess {
 static Result<MapTestLaunchReceipt> Run(const Services::MapTestLaunchPlan& plan) {
+    if (plan.enableLuaHotReload && !plan.useOwnedLuaRuntime)
+        return Result<MapTestLaunchReceipt>::Failure("Map.Test", "MAP_TEST_LUA_RELOAD_RUNTIME", "热重载需要自有 Lua 运行时。");
+    if (plan.useOwnedLuaRuntime && (plan.runtimeBootstrap.empty() || plan.runtimeBootstrapSha256.empty()
+        || plan.gameExecutableSha256.empty() || plan.gameModuleSha256.empty() || plan.runtimeReceipt.empty()
+        || !plan.runtimeRoot.empty()))
+        return Result<MapTestLaunchReceipt>::Failure("Map.Test", "MAP_TEST_OWN_LUA_PLAN", "自有 Lua 测试计划缺少完整组件身份或混入外部运行时。");
 #ifdef _WIN32
     auto destinationIdentity = IO::GenericPathUtf8(plan.workingDirectory.lexically_normal());
     for (auto& c : destinationIdentity) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
@@ -192,6 +241,7 @@ static Result<MapTestLaunchReceipt> Run(const Services::MapTestLaunchPlan& plan)
         return Result<MapTestLaunchReceipt>::Failure("Map.Test", "MAP_TEST_ALREADY_ACTIVE", "另一个编辑器正在准备同一游戏安装的测试。"); }
     struct MutexScope { HANDLE handle; ~MutexScope() { ReleaseMutex(handle); CloseHandle(handle); } } startGuard{startMutex};
     auto state = std::make_unique<MapTestLaunchLease::Impl>();
+    state->gameImage = (plan.workingDirectory / L"war3.exe").lexically_normal().make_preferred();
     state->job = CreateJobObjectW(nullptr, (L"Local\\ForgeMapTestGame_" + suffix).c_str());
     if (!state->job) return Result<MapTestLaunchReceipt>::Failure("Map.Test", "MAP_TEST_LAUNCH_JOB", "无法建立游戏测试生命周期Job。");
     if (GetLastError() == ERROR_ALREADY_EXISTS)
@@ -261,7 +311,8 @@ static Result<MapTestLaunchReceipt> Run(const Services::MapTestLaunchPlan& plan)
     };
     if (!verifyExecutable(plan.executable, plan.executableSha256)
         || (!plan.gameExecutableSha256.empty() && !verifyExecutable(plan.workingDirectory / L"war3.exe", plan.gameExecutableSha256))
-        || (!plan.gameModuleSha256.empty() && !verifyExecutable(plan.workingDirectory / L"Game.dll", plan.gameModuleSha256)))
+        || (!plan.gameModuleSha256.empty() && !verifyExecutable(plan.workingDirectory / L"Game.dll", plan.gameModuleSha256))
+        || (!plan.runtimeBootstrap.empty() && !verifyExecutable(plan.runtimeBootstrap, plan.runtimeBootstrapSha256)))
         return Result<MapTestLaunchReceipt>::Failure("Map.Test", "MAP_TEST_EXECUTABLE_CHANGED", "测试启动文件在预检后发生变化，测试已停止。");
     if (!plan.runtimeReceipt.empty()) {
         const auto parent = plan.runtimeReceipt.parent_path();
@@ -280,30 +331,52 @@ static Result<MapTestLaunchReceipt> Run(const Services::MapTestLaunchPlan& plan)
     // 所有拥有者分配在CreateProcess之前完成，内存不足不能留下已恢复却无lease的游戏。
     auto* rawState = state.get();
     auto lease = std::shared_ptr<MapTestLaunchLease>(new MapTestLaunchLease(std::move(state)));
+    std::shared_ptr<Services::LuaTestMailboxSession> mailbox;
+    std::unique_ptr<Services::detail::LuaTestMailboxLaunchHandle> inheritedMailbox;
+    if (plan.useOwnedLuaRuntime) {
+        auto createdMailbox = Services::CreateLuaTestMailboxSession(plan.testMapSha256);
+        if (!createdMailbox.Succeeded()) return {std::nullopt, createdMailbox.diagnostics};
+        mailbox = *createdMailbox.value;
+        auto preparedMailbox = Services::detail::LuaTestMailboxLaunchAccess::Prepare(mailbox,
+            [lease](std::uint32_t id) { return lease->impl_->Ownership(id); }, plan.enableLuaHotReload);
+        if (!preparedMailbox.Succeeded()) return {std::nullopt, preparedMailbox.diagnostics};
+        inheritedMailbox = std::move(*preparedMailbox.value);
+    }
     std::wstring command = QuoteArgument(plan.executable.wstring());
     for (const auto& argument : plan.arguments) { command += L' '; command += QuoteArgument(argument); }
+    if (inheritedMailbox) {
+        command += L" --lua-mailbox-handle " + std::to_wstring(inheritedMailbox->Value());
+        const auto nonce = inheritedMailbox->Nonce();
+        command += L" --lua-session-nonce " + std::wstring(nonce.begin(), nonce.end());
+    }
     struct Attributes {
         std::vector<std::byte> storage;
         LPPROC_THREAD_ATTRIBUTE_LIST value = nullptr;
         DWORD policy = PROCESS_CREATION_DESKTOP_APP_BREAKAWAY_ENABLE_PROCESS_TREE;
+        HANDLE mailbox = nullptr;
         ~Attributes() { if (value) DeleteProcThreadAttributeList(value); }
-        bool Initialize() {
+        bool Initialize(HANDLE inherited) {
             UINT32 length = 0;
             const auto status = GetCurrentPackageFullName(&length, nullptr);
-            if (status == APPMODEL_ERROR_NO_PACKAGE) return true;
-            if (status != ERROR_INSUFFICIENT_BUFFER) return false;
+            const bool packaged = status == ERROR_INSUFFICIENT_BUFFER;
+            if (status != APPMODEL_ERROR_NO_PACKAGE && !packaged) return false;
+            const DWORD count = static_cast<DWORD>(packaged) + static_cast<DWORD>(inherited != nullptr);
+            if (!count) return true;
             SIZE_T bytes = 0;
-            InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
+            InitializeProcThreadAttributeList(nullptr, count, 0, &bytes);
             if (!bytes) return false;
             storage.resize(bytes);
             auto* list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(storage.data());
-            if (!InitializeProcThreadAttributeList(list, 1, 0, &bytes)) return false;
+            if (!InitializeProcThreadAttributeList(list, count, 0, &bytes)) return false;
             value = list;
-            return UpdateProcThreadAttribute(value, 0, PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY,
-                &policy, sizeof(policy), nullptr, nullptr) != FALSE;
+            if (packaged && !UpdateProcThreadAttribute(value, 0, PROC_THREAD_ATTRIBUTE_DESKTOP_APP_POLICY,
+                &policy, sizeof(policy), nullptr, nullptr)) return false;
+            mailbox = inherited;
+            return !mailbox || UpdateProcThreadAttribute(value, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                &mailbox, sizeof(mailbox), nullptr, nullptr) != FALSE;
         }
     } attributes;
-    if (!attributes.Initialize())
+    if (!attributes.Initialize(inheritedMailbox ? reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(inheritedMailbox->Value())) : nullptr))
         return Result<MapTestLaunchReceipt>::Failure("Map.Test", "MAP_TEST_LAUNCH_ATTRIBUTES", "无法为游戏进程设置独立桌面应用的启动语义。");
     STARTUPINFOEXW startup{};
     startup.StartupInfo.cb = attributes.value ? sizeof(startup) : sizeof(STARTUPINFOW);
@@ -316,8 +389,8 @@ static Result<MapTestLaunchReceipt> Run(const Services::MapTestLaunchPlan& plan)
         static std::mutex creationMutex;
         std::lock_guard lock(creationMutex);
         const auto previous = SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
-        created = CreateProcessW(plan.executable.c_str(), command.data(), nullptr, nullptr, FALSE,
-            CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | CREATE_NO_WINDOW
+        created = CreateProcessW(plan.executable.c_str(), command.data(), nullptr, nullptr, inheritedMailbox ? TRUE : FALSE,
+            CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | (plan.useOwnedLuaRuntime ? DETACHED_PROCESS : CREATE_NO_WINDOW)
                 | (attributes.value ? EXTENDED_STARTUPINFO_PRESENT : 0),
             nullptr, plan.workingDirectory.c_str(), &startup.StartupInfo, &process);
         creationError = GetLastError();
@@ -339,6 +412,13 @@ static Result<MapTestLaunchReceipt> Run(const Services::MapTestLaunchPlan& plan)
         return Result<MapTestLaunchReceipt>::Failure("Map.Test", code, std::string(message) + "（Win32=" + std::to_string(error)
             + (stopped ? "；原launcher已确认终态）。" : "；原launcher终态无法确认，保留本次测试文件）。"));
     };
+    FILETIME launcherCreated{}, launcherExited{}, launcherKernel{}, launcherUser{};
+    if (!GetProcessTimes(process.hProcess, &launcherCreated, &launcherExited, &launcherKernel, &launcherUser))
+        return abort("MAP_TEST_LAUNCH_IDENTITY", "无法捕获原启动器创建身份，已停止尚未恢复的启动器");
+    {
+        std::lock_guard lock(rawState->mutex);
+        rawState->launcherCreated = launcherCreated;
+    }
     if (!AssignProcessToJobObject(rawState->job, process.hProcess))
         return abort("MAP_TEST_LAUNCH_JOB_ASSIGN", "无法证明本次独立启动器的Job归属，已停止尚未恢复的启动器");
     BOOL inJob = FALSE;
@@ -353,6 +433,7 @@ static Result<MapTestLaunchReceipt> Run(const Services::MapTestLaunchPlan& plan)
     CloseHandle(process.hThread);
     rawState->protectedFiles = std::move(files.handles);
     MapTestLaunchReceipt receipt{process.dwProcessId, std::move(lease)};
+    receipt.luaMailbox = std::move(mailbox);
     return Result<MapTestLaunchReceipt>::Success(std::move(receipt));
 #else
     return Result<MapTestLaunchReceipt>::Failure("Map.Test", "MAP_TEST_PLATFORM", "独立测试启动仅支持Windows。");

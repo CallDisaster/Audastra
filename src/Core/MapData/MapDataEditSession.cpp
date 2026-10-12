@@ -141,11 +141,13 @@ Status MapDataEditSession::CommitCommand(Command value, const std::function<Stat
         const auto guardedHistorySize = history_.size();
         const auto guardedSessionIdentity = sessionIdentity_;
         const auto guardedNextIdentity = nextCommandIdentity_;
+        const auto guardedTerrainSource = terrainSourceRevision_;
         const auto accepted = prepublish(prepared);
         if (!accepted.Succeeded()) return accepted;
         // 回调可使用公开 API 重入；保留其成功结果，拒绝覆盖已经过期的外层候选。
         if (revision_ != guardedRevision || cursor_ != guardedCursor || history_.size() != guardedHistorySize
-            || sessionIdentity_ != guardedSessionIdentity || nextCommandIdentity_ != guardedNextIdentity)
+            || sessionIdentity_ != guardedSessionIdentity || nextCommandIdentity_ != guardedNextIdentity
+            || terrainSourceRevision_ != guardedTerrainSource)
             return Status::Failure("MapData.Edit", "MAP_EDIT_PREPUBLISH_STALE", "发布前回调已改变地图会话，请重新准备候选。");
     }
     // 此后仅发布已分配的命令与覆盖；拒绝候选不消耗身份，也不擦除 redo 历史。
@@ -595,6 +597,8 @@ std::vector<std::string> MapDataEditSession::Removals() const {
 }
 
 void MapDataEditSession::CommitSaved(const MapDocument& saved) {
+    // 计数耗尽后不回绕；地形准备与有修订约束的查询将明确拒绝，不能复活旧候选。
+    if (terrainSourceRevision_ != std::numeric_limits<std::uint64_t>::max()) ++terrainSourceRevision_;
     original_ = current_;
     terrainOriginal_ = terrain_;
     pathingOriginal_ = pathing_;

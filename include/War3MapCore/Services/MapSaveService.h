@@ -47,6 +47,7 @@ struct MapSaveScriptSnapshot {
     std::optional<PreparedLuaMapTarget> luaTarget;
     std::string scriptMember;
     std::uint64_t documentRevision = 0;
+    Script::LuaTriggerBuildOptions luaTestOptions;
 };
 
 // 单次地图保存的冻结输入与可核验结果。保留源归档完整快照副本，后台任务不借用
@@ -62,6 +63,8 @@ struct MapSaveTask {
 
     std::filesystem::path target;
     bool inPlace = false;
+    // 宿主显式标记独立测试副本；热重载登记层仅可用于此任务或其只读预检。
+    bool testCopyOnly = false;
     InPlaceSaveOptions inPlaceOptions;
     std::unique_ptr<MapArchiveSession> archive;
     std::filesystem::path sourcePath;
@@ -99,6 +102,13 @@ struct MapSaveTask {
     std::filesystem::path backup;
     std::size_t prunedBackups = 0;
     std::unique_ptr<MapArchiveSession> nextSession;
+    // 实际本次编译的生成单元；整份脚本构建和保存检查通过后宿主才可作为本局基线。
+    std::optional<Script::LuaTriggerUnit> generatedLuaTestUnit;
+    // 经典Lua bootstrap实际安装的全图符号白名单；一局测试内不得随成功ACK扩大。
+    std::optional<std::vector<std::string>> luaTestInstalledBindings;
+    // 同一保存链实际生成或明确移除的脚本成员；其余作者脚本仍参与地图内容绑定。
+    std::vector<std::string> generatedScriptMembers;
+    std::string luaTestMapBinding;
 };
 
 class MapSaveService final {

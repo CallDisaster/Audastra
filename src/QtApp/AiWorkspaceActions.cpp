@@ -12,6 +12,7 @@
 #include "RecoverySettingsPage.h"
 #include "WorldEffectsSettingsPage.h"
 #include "WorldModule.h"
+#include "WorldViewportToolService.h"
 #include "RecoveryPreferences.h"
 #include "../QtCommon/ApplicationPaths.h"
 #include "FeedbackClient.h"
@@ -275,6 +276,14 @@ void MainWindow::SetupAgentWorkspace(bool readUserConfiguration) {
     });
     state->tools->SetSaveHandler([this](const std::filesystem::path& path, bool inPlace) {
         return RunMapSave(path, inPlace, true);
+    });
+    state->tools->SetLuaTestHandler([this](bool submit) { return LuaTestReload(submit); });
+    const QPointer<War3Map::Modules::WorldModule> world(worldModule_);
+    auto viewportTools = std::make_shared<War3Map::Modules::WorldViewportToolService>([world]() {
+        return world ? world->ViewportForTools() : nullptr;
+    });
+    state->tools->SetWorldViewportHandler([viewportTools](const QString& name, const QJsonObject& arguments) {
+        return viewportTools->Invoke(name, arguments);
     });
     connect(state->controller.get(), &War3Map::Agent::AgentController::Event, state, [state](const QJsonObject& event) {
         // Live broker already emits authoritative changes for both AI and HTTP calls.

@@ -7,6 +7,7 @@
 #include <QHBoxLayout>
 #include <QMouseEvent>
 #include <QStyle>
+#include <QStyleOptionToolButton>
 
 #include <algorithm>
 
@@ -57,6 +58,14 @@ ModuleChip::ModuleChip(const ModuleInfo& info, QWidget* parent)
 int ModuleChip::TextModeWidth() const {
     // 图标 + 间距 + 文字 + 左右内边距（样式表 8px）+ 边框；中文标签按实际字形宽度计算。
     return iconSize().width() + 6 + fontMetrics().horizontalAdvance(text()) + 2 * 9 + 6;
+}
+
+int ModuleChip::IconModeWidth() const {
+    QStyleOptionToolButton option;
+    initStyleOption(&option);
+    option.toolButtonStyle = Qt::ToolButtonIconOnly;
+    option.text.clear();
+    return style()->sizeFromContents(QStyle::CT_ToolButton, &option, iconSize(), this).width();
 }
 
 QSize ModuleChip::sizeHint() const {
@@ -164,9 +173,14 @@ QSize ModuleSwitcher::sizeHint() const {
 }
 
 QSize ModuleSwitcher::minimumSizeHint() const {
-    // 图标模式的宽度：每个条目约 32 像素。
-    const int compact = static_cast<int>(chips_.size()) * (32 + layout_->spacing());
+    int compact = std::max(0, static_cast<int>(chips_.size()) - 1) * layout_->spacing();
+    for (const auto* chip : chips_) compact += chip->IconModeWidth();
     return QSize(compact, QWidget::minimumSizeHint().height());
+}
+
+void ModuleSwitcher::SetCompact(bool compact) {
+    forceCompact_ = compact;
+    UpdateCompactMode();
 }
 
 void ModuleSwitcher::resizeEvent(QResizeEvent* event) {
@@ -175,7 +189,7 @@ void ModuleSwitcher::resizeEvent(QResizeEvent* event) {
 }
 
 void ModuleSwitcher::UpdateCompactMode() {
-    const bool compact = width() < FullWidth();
+    const bool compact = forceCompact_ || width() < FullWidth();
     if (compact == compact_ && !chips_.empty() &&
         chips_.front()->toolButtonStyle() == (compact ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextBesideIcon)) {
         return;

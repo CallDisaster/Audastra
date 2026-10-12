@@ -425,9 +425,45 @@ void WorkspaceFreezeRejectsPreexistingHardlinks() {
     Require(*Sha256File(external).value == externalSha, "failed freeze leaves external hardlink source unchanged");
     Require(*Sha256File(f.source).value == f.sha, "failed freeze leaves author source unchanged");
 }
+void OwnedLuaOptionsDoNotFallBack() {
+    Fixture f;
+    auto request = f.Request("lua-test");
+    request.enableLuaHotReload = true;
+    Require(Code(PrepareMapTest(request), "MAP_TEST_LUA_RELOAD_RUNTIME"), "reload cannot silently attach to ordinary runtime");
+    Require(!std::filesystem::exists(request.workspace), "invalid reload mode rejected before any workspace write");
+    request.useOwnedLuaRuntime = true;
+    const auto prepared = PrepareMapTest(request);
+    Require(prepared.Succeeded() && prepared.value->useOwnedLuaRuntime && prepared.value->enableLuaHotReload,
+        "explicit runtime and reload choice survive frozen map preparation");
+    Require(Code(BuildMapTestLaunchPlan(*prepared.value), "MAP_TEST_RUNTIME_PATH"),
+        "owned runtime without its helpers never falls back to direct game or six DLL path");
+    auto configured = *prepared.value;
+    configured.runtimeBridge = f.root / "helpers/launcher.exe";
+    configured.runtimeBootstrap = f.root / "helpers/bootstrap.dll";
+    Write(configured.runtimeBridge); Write(configured.runtimeBootstrap);
+    configured.runtimeRoot = "unused-relative-external-runtime";
+    configured.runtimeYdweRoot = "unused-relative-ydwe";
+    const auto plan = BuildMapTestLaunchPlan(configured);
+    Require(plan.Succeeded() && plan.value->useOwnedLuaRuntime && plan.value->enableLuaHotReload
+        && plan.value->runtimeRoot.empty() && plan.value->runtimeBootstrapSha256 == *Sha256File(configured.runtimeBootstrap).value,
+        "owned plan freezes bootstrap and mode without external DLL selection");
+    Require(ArgumentValue(*plan.value, L"--runtime-mode") == L"owned-lua"
+        && ArgumentValue(*plan.value, L"--lua-hot-reload") == L"enabled"
+        && std::find(plan.value->arguments.begin(), plan.value->arguments.end(), L"--runtime") == plan.value->arguments.end(),
+        "owned launch arguments explicitly use owned runtime without YDWE");
+    configured.enableLuaHotReload = false;
+    const auto diagnosticsOnly = BuildMapTestLaunchPlan(configured);
+    Require(diagnosticsOnly.Succeeded() && !diagnosticsOnly.value->enableLuaHotReload
+        && std::find(diagnosticsOnly.value->arguments.begin(), diagnosticsOnly.value->arguments.end(), L"--lua-hot-reload")
+            == diagnosticsOnly.value->arguments.end(),
+        "disabled reload omits the launcher option; unsupported disabled token must never be emitted");
+    auto changed = *prepared.value; changed.useOwnedLuaRuntime = false;
+    Require(Code(BuildMapTestLaunchPlan(changed), "MAP_TEST_LUA_RELOAD_RUNTIME"), "invalid artifact mode refused");
+    Require(*Sha256File(f.source).value == f.sha, "new runtime choices never modify source map");
+}
 }
 int main() {
-    try { CopyAndPlanKeepSource(); SlkFailureNeverFallsBack(); ProgressStagesAndFinalCopyIdentity(); LaunchProtectionFailsClosed(); NativeW3mAndLegacyConfigurationIgnored(); RuntimePlanRequiresIndependentHelpers(); YdweFallbackFreezesWithoutBecomingAnExplicitRuntime(); StaleSourceAndInstallationWorkspaceRejected(); WorkspaceLeaseCleansOnlyFrozenIdentity(); EmptyWorkspaceRefreshKeepsRootDuringPreparation(); FailedWorkspaceRefreshRetainsRootAndDisablesCleanup(); WorkspaceFreezeRejectsPreexistingHardlinks();
+    try { OwnedLuaOptionsDoNotFallBack(); CopyAndPlanKeepSource(); SlkFailureNeverFallsBack(); ProgressStagesAndFinalCopyIdentity(); LaunchProtectionFailsClosed(); NativeW3mAndLegacyConfigurationIgnored(); RuntimePlanRequiresIndependentHelpers(); YdweFallbackFreezesWithoutBecomingAnExplicitRuntime(); StaleSourceAndInstallationWorkspaceRejected(); WorkspaceLeaseCleansOnlyFrozenIdentity(); EmptyWorkspaceRefreshKeepsRootDuringPreparation(); FailedWorkspaceRefreshRetainsRootAndDisablesCleanup(); WorkspaceFreezeRejectsPreexistingHardlinks();
         std::cout << "Map test service tests passed (no YDWE or game process launched)\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

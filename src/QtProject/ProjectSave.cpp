@@ -157,6 +157,13 @@ Result<std::unique_ptr<ProjectSaveJob>> EditorProject::PrepareProjectSave(
             for (auto& member : mapEdits_->Replacements())
                 if (!append("overlay/map/" + member.name, std::move(member.data))) return fail(tr("工程超过容量限制"));
             for (const auto& name : mapEdits_->Removals()) mapDataRemovals.push_back(Text(name));
+            auto restrictions = mapEdits_->SerializePathingRestrictionDraft();
+            if (!restrictions.Succeeded() || !restrictions.value) return fail(tr("附加通行限制无法绑定原始来源"));
+            if (!restrictions.value->empty()) {
+                if (!append("overlay/editor/pathing-restrictions.bin", std::move(*restrictions.value)))
+                    return fail(tr("工程超过容量限制"));
+                job->manifest_["pathingRestrictions"] = 1;
+            }
         }
         job->manifest_["mapDataRemovals"] = mapDataRemovals;
         if (uiCatalog_) {

@@ -2,6 +2,7 @@
 
 #include "War3MapCore/Types.h"
 #include "War3MapCore/Jass/JassSymbols.h"
+#include "War3MapCore/Jass/SourceMap.h"
 
 #include <chrono>
 #include <cstddef>
@@ -53,6 +54,10 @@ struct JassCheckOptions {
     std::size_t maxSymbolDefinitions = 65536;
     std::size_t maxSymbolReferences = 524288;
     std::size_t maxSymbolBytes = 32 * 1024 * 1024;
+    // 仅换算诊断文字中的位置；AST、符号和origin继续使用实际输入身份。
+    // 用生成链已有的行映射，外部声明文件不会误套主正文的映射。
+    std::string diagnosticSourceName;
+    SourceMap diagnosticSourceMap;
 };
 
 struct JassCheckResult {

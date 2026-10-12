@@ -1,3 +1,18 @@
+add_executable(audastra-lua-test-mailbox-tests LuaTestMailboxSessionTests.cpp
+    "${PROJECT_SOURCE_DIR}/src/WarcraftRuntime32/OwnLua/LuaMailboxRuntime.cpp")
+target_link_libraries(audastra-lua-test-mailbox-tests PRIVATE War3MapEditor::Core)
+target_compile_definitions(audastra-lua-test-mailbox-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-lua-test-mailbox-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-lua-test-mailbox COMMAND audastra-lua-test-mailbox-tests)
+set_tests_properties(services-lua-test-mailbox PROPERTIES TIMEOUT 30)
+
+add_executable(audastra-placement-creation-tests PlacementCreationTests.cpp)
+target_link_libraries(audastra-placement-creation-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(audastra-placement-creation-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-placement-creation-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-placement-creation COMMAND audastra-placement-creation-tests)
+set_tests_properties(services-placement-creation PROPERTIES TIMEOUT 60)
+
 add_executable(audastra-campaign-service-tests CampaignServiceTests.cpp)
 target_link_libraries(audastra-campaign-service-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(audastra-campaign-service-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
@@ -173,6 +188,14 @@ target_compile_definitions(war3-map-object-commands-tests PRIVATE NOMINMAX UNICO
 target_compile_options(war3-map-object-commands-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-object-commands COMMAND war3-map-object-commands-tests)
 
+add_executable(war3-map-object-resource-query-tests ObjectResourceQueryTests.cpp)
+target_include_directories(war3-map-object-resource-query-tests PRIVATE "${WAR3_RENDER_CORE_SOURCE_DIR}/tests")
+target_link_libraries(war3-map-object-resource-query-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(war3-map-object-resource-query-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(war3-map-object-resource-query-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-object-resource-query COMMAND war3-map-object-resource-query-tests)
+set_tests_properties(services-object-resource-query PROPERTIES TIMEOUT 60)
+
 add_executable(war3-map-save-service-tests MapSaveServiceTests.cpp)
 target_link_libraries(war3-map-save-service-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(war3-map-save-service-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
@@ -185,6 +208,8 @@ target_compile_definitions(war3-map-lua-map-save-tests PRIVATE NOMINMAX UNICODE 
 target_compile_options(war3-map-lua-map-save-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-lua-map-save COMMAND war3-map-lua-map-save-tests)
 set_tests_properties(services-lua-map-save PROPERTIES TIMEOUT 60)
+add_test(NAME services-classic-lua-map-save COMMAND war3-map-lua-map-save-tests --classic)
+set_tests_properties(services-classic-lua-map-save PROPERTIES TIMEOUT 60)
 
 add_executable(war3-map-lua-map-target-configuration-tests LuaMapTargetConfigurationTests.cpp)
 target_link_libraries(war3-map-lua-map-target-configuration-tests PRIVATE War3MapEditor::Services)
@@ -197,6 +222,12 @@ target_link_libraries(war3-map-data-query-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(war3-map-data-query-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-data-query-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-map-data-query COMMAND war3-map-data-query-tests)
+
+add_executable(audastra-terrain-edit-service-tests TerrainEditServiceTests.cpp)
+target_link_libraries(audastra-terrain-edit-service-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(audastra-terrain-edit-service-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-terrain-edit-service-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-terrain-edit COMMAND audastra-terrain-edit-service-tests)
 
 add_executable(war3-map-import-inventory-tests ImportInventoryQueryTests.cpp)
 target_link_libraries(war3-map-import-inventory-tests PRIVATE War3MapEditor::Services)

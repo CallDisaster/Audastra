@@ -1,10 +1,92 @@
 #include <windows.h>
+#include "../../src/WarcraftRuntime32/OwnLua/LuaMailboxRuntime.h"
 
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
+
+namespace {
+using namespace Audastra::Runtime32;
+std::wstring Value(int argc, wchar_t** argv, std::wstring_view flag) {
+    for (int index = 2; index + 1 < argc; ++index) if (argv[index] == flag) return argv[index + 1];
+    return {};
+}
+std::string HexText(std::wstring_view text) {
+    std::string result;
+    for (const auto c : text) {
+        if (!((c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'f'))) return {};
+        result += static_cast<char>(c);
+    }
+    return result;
+}
+int OwnedFixture(int argc, wchar_t** argv) {
+    const auto raw = Value(argc, argv, L"--lua-mailbox-handle");
+    if (raw.empty()) return 60;
+    const auto handle = reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(std::stoull(raw)));
+    const auto nonce = Value(argc, argv, L"--lua-session-nonce"), sha = Value(argc, argv, L"--lua-map-sha256");
+    const auto marker = std::filesystem::path(Value(argc, argv, L"--marker"));
+    if (nonce.size() != 32 || sha.size() != 64 || marker.empty()) return 61;
+    if (Value(argc, argv, L"--startup-failure") == L"yes") {
+        std::ofstream output(std::filesystem::path(Value(argc, argv, L"--receipt")), std::ios::binary);
+        output << R"({"schema":"audastra-warcraft-launch-v1","errorStage":"bootstrap","errorWin32":13,"ownedLua":{"failureText":"original pre-handshake failure"}})";
+        output.close(); return 13;
+    }
+    if (std::wstring_view(argv[1]) == L"--owned-child") {
+        auto* mailbox = static_cast<LuaTestMailbox*>(MapViewOfFile(handle, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, sizeof(LuaTestMailbox)));
+        if (!mailbox) return 62;
+        OwnLua::LuaMailboxRuntime runtime(*mailbox);
+        if (!runtime.Attach(HexText(nonce), HexText(sha))) return 63;
+        if (!runtime.Report(LuaReloadResult::RuntimeError, "original launch fixture asynchronous diagnostic")) return 64;
+        if (Value(argc, argv, L"--spoof-pid") == L"yes") mailbox->gameProcessId ^= 0x40000000u;
+        const auto start = GetTickCount64();
+        while (GetTickCount64() - start < 1400) {
+            if (auto change = runtime.Take())
+                if (!runtime.Complete(change->sequence, LuaReloadResult::Success, "original fixture ACK")) return 65;
+            Sleep(10);
+        }
+        runtime.Stop(); UnmapViewOfFile(mailbox);
+        std::ofstream output(marker, std::ios::binary); output << "owned child completed naturally";
+        return output ? 0 : 66;
+    }
+    const auto forbidden = Value(argc, argv, L"--forbidden-handle");
+    if (!forbidden.empty()) {
+        auto* view = MapViewOfFile(reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(std::stoull(forbidden))), FILE_MAP_READ, 0, 0, 16);
+        if (view) {
+            const bool leaked = std::memcmp(view, "not-for-child", 13) == 0;
+            UnmapViewOfFile(view);
+            if (leaked) return 67;
+        }
+    }
+    const auto game = Value(argc, argv, L"--game");
+    std::wstring command = L"\"" + game + L"\" --owned-child";
+    for (int index = 2; index < argc; ++index) {
+        const std::wstring argument = argv[index];
+        if (argument.find(L'"') != std::wstring::npos) return 68;
+        command += L" \"" + argument + L"\"";
+    }
+    SIZE_T bytes = 0; InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
+    std::vector<std::byte> storage(bytes);
+    auto* attributes = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(storage.data());
+    if (!InitializeProcThreadAttributeList(attributes, 1, 0, &bytes)) return 69;
+    if (!UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+        const_cast<HANDLE*>(&handle), sizeof(handle), nullptr, nullptr)) { DeleteProcThreadAttributeList(attributes); return 70; }
+    STARTUPINFOEXW startup{}; startup.StartupInfo.cb = sizeof(startup); startup.lpAttributeList = attributes;
+    PROCESS_INFORMATION process{};
+    const bool created = CreateProcessW(game.c_str(), command.data(), nullptr, nullptr, TRUE,
+        EXTENDED_STARTUPINFO_PRESENT | DETACHED_PROCESS, nullptr, nullptr, &startup.StartupInfo, &process) != FALSE;
+    DeleteProcThreadAttributeList(attributes);
+    if (!created) return 71;
+    CloseHandle(process.hThread); CloseHandle(process.hProcess);
+    Sleep(250);
+    return 0;
+}
+}
 
 int wmain(int argc, wchar_t** argv) {
+    if (argc >= 2 && (std::wstring_view(argv[1]) == L"--owned-parent" || std::wstring_view(argv[1]) == L"--owned-child"))
+        return OwnedFixture(argc, argv);
     if (argc != 4) return 2;
     const std::wstring mode = argv[1];
     const std::filesystem::path marker = argv[2];

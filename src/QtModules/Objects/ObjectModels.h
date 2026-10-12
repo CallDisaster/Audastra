@@ -6,6 +6,7 @@
 #include "War3MapCore/ObjectData/ObjectFieldSchema.h"
 #include "War3MapCore/ObjectData/StandardObjectCatalog.h"
 #include "Widgets/ObjectCatalogWidgets.h"
+#include "Widgets/ObjectResourcePicker.h"
 
 #include <QAbstractTableModel>
 #include <QIcon>
@@ -129,6 +130,7 @@ public:
     explicit ObjectFieldDelegate(QObject* parent = nullptr);
     void SetReferenceContext(War3Map::QtApp::IconProvider* icons,
         const QVector<War3Map::QtApp::ObjectViewEntry>& entries);
+    void SetResourcePickerFactory(War3Map::Modules::ObjectResourcePickerFactory factory) { resourcePickerFactory_ = std::move(factory); }
 
     [[nodiscard]] QWidget* createEditor(
         QWidget* parent,
@@ -146,4 +148,5 @@ private:
     War3Map::QtApp::IconProvider* icons_ = nullptr;
     QVector<War3Map::QtApp::ObjectViewEntry> entries_;
     QPointer<QWidget> referenceEditor_;
+    War3Map::Modules::ObjectResourcePickerFactory resourcePickerFactory_;
 };

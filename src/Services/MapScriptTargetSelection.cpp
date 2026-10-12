@@ -58,22 +58,27 @@ private:
 };
 
 Result<std::string> RequestHash(std::string_view profileHash, const LuaMapTargetRequest& request,
-    const Script::LuaSyntaxCheckerIdentity& checker) {
+    const Script::LuaSyntaxCheckerIdentity* checker) {
     RequestFingerprint identity;
     identity.Add("forge-lua-map-target-request-v1");
     identity.Add(profileHash);
     identity.Number(static_cast<std::uint8_t>(request.playerLayout));
     identity.Number(request.changeLanguageToLua ? 1 : 0);
+    if (request.dialect == Script::LuaMapSaveDialect::Classic127YDWE) identity.Add("classic-127-ydwe-v1");
     identity.Number(request.profile.target.nativeAuthorCode ? 1 : 0);
     if (request.profile.target.nativeAuthorCode) {
         const auto& author = *request.profile.target.nativeAuthorCode->Identity();
         identity.Add(author.sourceSettingsSha256); identity.Add(author.graphSha256);
     }
-    identity.Path(checker.executable);
-    identity.Add(checker.sha256);
-    identity.Number(checker.bytes);
-    identity.Number(checker.runtimeDirectories.size());
-    for (const auto& directory : checker.runtimeDirectories) identity.Path(directory);
+    if (request.dialect == Script::LuaMapSaveDialect::Classic127YDWE) {
+        identity.Add("embedded-lua-5.3.6-text-compilation-v1");
+    } else {
+        identity.Path(checker->executable);
+        identity.Add(checker->sha256);
+        identity.Number(checker->bytes);
+        identity.Number(checker->runtimeDirectories.size());
+        for (const auto& directory : checker->runtimeDirectories) identity.Path(directory);
+    }
     return identity.Hash();
 }
 
@@ -100,11 +105,21 @@ Result<PreparedLuaMapTarget> PrepareMapScriptTargetSelection(
         if (!source.Succeeded() || !source.value) return {{}, source.diagnostics};
         const auto final = MapData::MapSettings::Parse(finalSettings);
         if (!final.Succeeded() || !final.value) return {{}, final.diagnostics};
+        if (request.dialect != Script::LuaMapSaveDialect::NativeV31
+            && request.dialect != Script::LuaMapSaveDialect::Classic127YDWE)
+            return Fail("LUA_MAP_TARGET_DIALECT_UNKNOWN", "未知Lua保存档案。");
+        const bool classic = request.dialect == Script::LuaMapSaveDialect::Classic127YDWE;
+        const auto expectedVersion = classic ? 25 : 31;
         // 直接解析两份真实输入，不能借用调用方改过formatVersion的结构取得升级资格。
-        if (source.value->formatVersion != 31 || final.value->formatVersion != 31
-            || source.value->SourceFormatVersion() != 31 || final.value->SourceFormatVersion() != 31)
+        if (source.value->formatVersion != expectedVersion || final.value->formatVersion != expectedVersion
+            || source.value->SourceFormatVersion() != expectedVersion || final.value->SourceFormatVersion() != expectedVersion)
             return Fail("LUA_MAP_TARGET_VERSION_UNSUPPORTED",
-                "Lua目标选择仅支持源和最终W3I均为真实v31；经典图需要独立迁移，不能在保存时自动升级。");
+                "源和最终W3I必须与明确选择的Lua档案版本一致；不能在保存时自动升级。");
+        if (classic && (request.playerLayout != Script::MapInitializationPlayerLayout::Classic12
+            || request.changeLanguageToLua || request.profile.target.nativeAuthorCode
+            || source.value->scriptLanguage != 0 || final.value->scriptLanguage != 0))
+            return Fail("CLASSIC_LUA_TARGET_INPUT_UNSUPPORTED",
+                "经典Lua档案保留真实v25/JASS设置，仅支持纯T与12槽；不能混入原生Lua作者代码或改W3I语言。");
         if (!KnownLanguage(*source.value) || !KnownLanguage(*final.value))
             return Fail("LUA_MAP_TARGET_LANGUAGE_UNKNOWN", "源或最终W3I的脚本语言不是已知的JASS/Lua档位。");
         if (request.profile.target.nativeAuthorCode) {
@@ -117,7 +132,7 @@ Result<PreparedLuaMapTarget> PrepareMapScriptTargetSelection(
             const auto verified = request.profile.target.nativeAuthorCode->Verify(triggers, catalog);
             if (!verified.Succeeded()) return {{}, verified.diagnostics};
         }
-        if (!request.changeLanguageToLua
+        if (!classic && !request.changeLanguageToLua
             && (source.value->scriptLanguage != 1 || final.value->scriptLanguage != 1))
             return Fail("LUA_MAP_TARGET_LANGUAGE_SELECTION_REQUIRED",
                 "源和最终W3I未同时声明Lua；须显式选择v31内的语言切换，不能静默改脚本语言。");
@@ -125,7 +140,7 @@ Result<PreparedLuaMapTarget> PrepareMapScriptTargetSelection(
             && request.playerLayout != Script::MapInitializationPlayerLayout::Extended24)
             return Fail("LUA_MAP_TARGET_PLAYER_LAYOUT_UNKNOWN", "未知玩家槽位档位；目标选择不猜测或迁移玩家编号。");
         const auto* checker = request.checker.Identity();
-        if (!checker || checker->executable.empty() || checker->bytes == 0 || !Sha(checker->sha256))
+        if (!classic && (!checker || checker->executable.empty() || checker->bytes == 0 || !Sha(checker->sha256)))
             return Fail("LUA_MAP_TARGET_CHECKER_UNCAPTURED", "Lua检查器尚未捕获完整文件身份，不能冻结保存目标。");
         if (request.profile.target.identity.empty())
             return Fail("LUA_MAP_TARGET_PROFILE_MISSING", "Lua目标档案没有明确身份。");
@@ -136,17 +151,17 @@ Result<PreparedLuaMapTarget> PrepareMapScriptTargetSelection(
         const auto* triggerIdentity = triggerInput.value->Identity();
         if (!triggerIdentity || !Sha(triggerIdentity->targetRequestSha256))
             return Fail("LUA_MAP_TARGET_PROFILE_IDENTITY", "无法取得完整Lua档案及回调请求身份。");
-        const auto requestHash = RequestHash(triggerIdentity->targetRequestSha256, request, *checker);
+        const auto requestHash = RequestHash(triggerIdentity->targetRequestSha256, request, checker);
         if (!requestHash.Succeeded() || !requestHash.value) return {{}, requestHash.diagnostics};
 
         auto selected = *final.value;
-        selected.scriptLanguage = 1;
+        if (!classic) selected.scriptLanguage = 1;
         const auto serialized = selected.Serialize();
         if (!serialized.Succeeded() || !serialized.value) return {{}, serialized.diagnostics};
         const auto reparsed = MapData::MapSettings::Parse(*serialized.value);
         if (!reparsed.Succeeded() || !reparsed.value) return {{}, reparsed.diagnostics};
-        if (reparsed.value->formatVersion != 31 || reparsed.value->SourceFormatVersion() != 31
-            || reparsed.value->scriptLanguage != 1 || reparsed.value->UnknownTail() != final.value->UnknownTail())
+        if (reparsed.value->formatVersion != expectedVersion || reparsed.value->SourceFormatVersion() != expectedVersion
+            || reparsed.value->scriptLanguage != (classic ? 0 : 1) || reparsed.value->UnknownTail() != final.value->UnknownTail())
             return Fail("LUA_MAP_TARGET_SETTINGS_ROUNDTRIP", "选中W3I回读的格式、语言或不透明尾部不一致。");
 
         // 回读后只还原语言，再与最终输入逐字节比较。这样覆盖全部其余字段，
@@ -157,7 +172,7 @@ Result<PreparedLuaMapTarget> PrepareMapScriptTargetSelection(
         if (!restoredBytes.Succeeded() || !restoredBytes.value
             || !SameBytes(*restoredBytes.value, finalSettings))
             return Fail("LUA_MAP_TARGET_SETTINGS_CHANGED", "选择Lua时除脚本语言外的W3I字节发生变化；未返回目标快照。");
-        if (final.value->scriptLanguage == 1 && !SameBytes(*serialized.value, finalSettings))
+        if ((classic || final.value->scriptLanguage == 1) && !SameBytes(*serialized.value, finalSettings))
             return Fail("LUA_MAP_TARGET_SETTINGS_CHANGED", "已为Lua的设置未保持输入原字节，拒绝隐式重写。");
 
         const auto sourceHash = Sha256(sourceSettings), finalHash = Sha256(finalSettings), selectedHash = Sha256(*serialized.value);
@@ -172,6 +187,7 @@ Result<PreparedLuaMapTarget> PrepareMapScriptTargetSelection(
         state.profile.initialization.playerLayout = request.playerLayout;
         state.profile.checker = request.checker;
         state.profile.requestSha256 = *requestHash.value;
+        state.profile.dialect = request.dialect;
         state.selectedSettings = final.value->scriptLanguage == 1
             ? std::vector<std::byte>(finalSettings.begin(), finalSettings.end()) : *serialized.value;
         PreparedLuaMapTarget prepared;

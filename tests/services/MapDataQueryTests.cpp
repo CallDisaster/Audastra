@@ -1,4 +1,5 @@
 #include "War3MapCore/Services/MapDataQuery.h"
+#include "../MapDataSpatialFixtures.h"
 
 #include <algorithm>
 #include <bit>
@@ -483,6 +484,106 @@ void TestUnitSourceStatesAndLogicalBudget() {
             return std::none_of(row.fields.begin(), row.fields.end(), [](const auto& field) { return field.writable; });
         }), "Partial来源保留计数及行，不能伪装Ready或授予字段写入");
 }
+MapDataQuerySnapshot SpatialSnapshot(bool special = false) {
+    auto captured = CaptureMapDataSnapshot(MapDocument::FromMembers(MapDataSpatialFixtures::Members(special)), UnitBinding(), false);
+    Require(captured.Succeeded() && captured.value, "original spatial native snapshot");
+    return std::move(*captured.value);
+}
+
+void TestSpatialCombinationFiltersBeforePaging() {
+    const auto snapshot = SpatialSnapshot();
+    const MapDataEntityFilter filter{"hfoo", 0, MapDataWorldRect{-32, -16, 32, 16}};
+    std::optional<MapDataEntityQueryCursor> cursor;
+    std::vector<std::uint64_t> found;
+    const auto original = QueryMapDataPage(snapshot, snapshot.Binding(), MapDataKind::Units);
+    Require(original.Succeeded() && original.value->rows.size() == 7, "unfiltered rows remain available");
+    for (const auto expectedIndex : {std::uint64_t{0}, std::uint64_t{3}, std::uint64_t{6}}) {
+        const auto page = QueryMapDataEntitiesPage(snapshot, snapshot.Binding(), MapDataKind::Units, filter, cursor, 1);
+        Require(page.Succeeded() && page.value->matchedTotal == 3 && page.value->examined == 7
+            && page.value->rows.size() == 1 && page.value->rows.front().sourceIndex == expectedIndex,
+            "world rectangle, exact rawcode and owner combine before native-index pagination");
+        Require(page.value->rows.front().rowKey == original.value->rows[expectedIndex].rowKey,
+            "spatial rows retain the original revision-bound row identity");
+        found.push_back(page.value->rows.front().sourceIndex); cursor = page.value->next;
+    }
+    Require(!cursor && found == std::vector<std::uint64_t>{0, 3, 6}, "sparse pages neither repeat nor skip matches");
+    auto exactPoint = filter; exactPoint.worldRect = MapDataWorldRect{-32, -16, -32, -16};
+    const auto point = QueryMapDataUnitsPage(snapshot, snapshot.Binding(), exactPoint);
+    Require(point.Succeeded() && Indices(*point.value) == std::vector<std::uint64_t>{0}, "closed degenerate rectangle includes its boundary point");
+    auto empty = filter; empty.worldRect = MapDataWorldRect{128, 128, 256, 256};
+    const auto noMatch = QueryMapDataEntitiesPage(snapshot, snapshot.Binding(), MapDataKind::Units, empty);
+    Require(noMatch.Succeeded() && noMatch.value->matchedTotal == 0 && noMatch.value->rows.empty() && !noMatch.value->next,
+        "fully scanned finite region with no hits has a trusted exact zero");
+}
+
+void TestSpatialKindsAndUnknownPositions() {
+    const auto snapshot = SpatialSnapshot(true);
+    const MapDataWorldRect rect{-32, -16, 32, 16};
+    const auto check = [&](MapDataKind kind, MapDataEntityFilter filter, const std::vector<std::uint64_t>& indices) {
+        const auto page = QueryMapDataEntitiesPage(snapshot, snapshot.Binding(), kind, filter);
+        std::string context = "shared filtered service spatial meaning: " + std::string(MapData::MapDataKindId(kind));
+        for (const auto& diagnostic : page.diagnostics) context += " " + diagnostic.code;
+        Require(page.Succeeded() && Indices(*page.value) == indices && page.value->matchedTotal == indices.size(),
+            context.c_str());
+    };
+    check(MapDataKind::Doodads, {"LTlt", {}, rect}, {0, 1});
+    check(MapDataKind::Regions, {{}, {}, rect}, {0, 1, 2, 4}); // touching, inside and containing regions all intersect.
+    check(MapDataKind::Cameras, {{}, {}, rect}, {0, 1});
+    check(MapDataKind::Doodads, {"YTfb", {}, {}}, {4});
+    const auto special = QueryMapDataEntitiesPage(snapshot, snapshot.Binding(), MapDataKind::Doodads, {"YTfb", {}, {}});
+    Require(special.value->rows.front().form == MapDataQueryRowForm::SpecialDoodad
+        && special.value->rows.front().gridPosition && !special.value->rows.front().positionWorld,
+        "non-spatial special doodad query keeps grid coordinates distinct from world coordinates");
+    Require(HasCode(QueryMapDataEntitiesPage(snapshot, snapshot.Binding(), MapDataKind::Doodads, {{}, {}, rect}),
+            "MAP_DATA_QUERY_SPATIAL_UNAVAILABLE"), "matching special doodad must not be silently treated as outside");
+    Require(HasCode(QueryMapDataEntitiesPage(snapshot, snapshot.Binding(), MapDataKind::Doodads, {{}, 0, rect}),
+            "MAP_DATA_ENTITY_FILTER_KIND")
+        && HasCode(QueryMapDataEntitiesPage(snapshot, snapshot.Binding(), MapDataKind::Cameras, {"hfoo", {}, rect}),
+            "MAP_DATA_ENTITY_FILTER_KIND"), "unsupported type or owner filters reject instead of producing a false empty table");
+}
+
+void TestSpatialRefusalsAndScanBudget() {
+    const auto snapshot = SpatialSnapshot();
+    const auto nan = std::numeric_limits<double>::quiet_NaN(), infinity = std::numeric_limits<double>::infinity();
+    for (const auto& rect : {MapDataWorldRect{nan, 0, 1, 1}, MapDataWorldRect{0, -infinity, 1, 1},
+            MapDataWorldRect{2, 0, 1, 1}, MapDataWorldRect{0, 2, 1, 1}}) {
+        Require(HasCode(QueryMapDataEntitiesPage(snapshot, snapshot.Binding(), MapDataKind::Units, {{}, {}, rect}),
+                "MAP_DATA_ENTITY_FILTER_RECT"), "Core rejects non-finite or reversed rectangles");
+    }
+    const MapDataEntityFilter filter{"hfoo", 0, MapDataWorldRect{-32, -16, 32, 16}};
+    const auto first = QueryMapDataEntitiesPage(snapshot, snapshot.Binding(), MapDataKind::Units, filter, {}, 1);
+    Require(first.Succeeded() && first.value->next, "spatial cursor exists");
+    auto changed = filter; changed.worldRect->right = 33;
+    Require(HasCode(QueryMapDataEntitiesPage(snapshot, snapshot.Binding(), MapDataKind::Units, changed, first.value->next),
+            "MAP_DATA_QUERY_CURSOR_INVALID"), "cursor binds rectangle even if this particular page would return the same rows");
+    auto binding = snapshot.Binding(); ++binding.generation;
+    Require(HasCode(QueryMapDataEntitiesPage(snapshot, binding, MapDataKind::Units, filter, first.value->next),
+            "MAP_DATA_QUERY_STALE"), "spatial cursor retains generation checks");
+    auto large = UnitSnapshot(UnitTable(4097));
+    const MapDataEntityFilter tailFilter{"hrif", 0, MapDataWorldRect{4096, 32, 4096, 32}};
+    const auto head = QueryMapDataEntitiesPage(large, large.Binding(), MapDataKind::Units, tailFilter);
+    Require(head.Succeeded() && head.value->examined == 4096 && head.value->scanBudgetExhausted
+        && head.value->rows.empty() && !head.value->matchedTotal && head.value->next
+        && head.value->next->source.nextIndex == 4096, "rectangle miss at the scan cap stays incomplete rather than reporting zero total");
+    const auto tail = QueryMapDataEntitiesPage(large, large.Binding(), MapDataKind::Units, tailFilter, head.value->next);
+    Require(tail.Succeeded() && Indices(*tail.value) == std::vector<std::uint64_t>{4096}
+        && tail.value->examined == 1 && !tail.value->next && !tail.value->matchedTotal,
+        "resumed spatial scan keeps original index and does not invent a global total");
+    auto malformed = MapDataSpatialFixtures::Members();
+    // Native first unit X is corrupted deliberately; the parser must retain Invalid, never filtered zero.
+    const auto bits = std::bit_cast<std::uint32_t>(std::numeric_limits<float>::quiet_NaN());
+    for (unsigned byte = 0; byte < 4; ++byte) malformed[0].data[24 + byte] = static_cast<std::byte>((bits >> (byte * 8)) & 0xff);
+    const auto captured = CaptureMapDataSnapshot(MapDocument::FromMembers(malformed), UnitBinding(), false);
+    Require(captured.Succeeded() && HasCode(QueryMapDataEntitiesPage(*captured.value, captured.value->Binding(), MapDataKind::Units, filter),
+            "MAP_DATA_QUERY_MEMBER_UNAVAILABLE"), "non-finite native position remains an invalid member, not an empty spatial result");
+    auto reversed = MapDataSpatialFixtures::Members();
+    const auto left = std::bit_cast<std::uint32_t>(128.f);
+    for (unsigned byte = 0; byte < 4; ++byte) reversed[2].data[8 + byte] = static_cast<std::byte>((left >> (byte * 8)) & 0xff);
+    const auto regionSnapshot = CaptureMapDataSnapshot(MapDocument::FromMembers(reversed), UnitBinding(), false);
+    Require(regionSnapshot.Succeeded() && HasCode(QueryMapDataEntitiesPage(*regionSnapshot.value, regionSnapshot.value->Binding(),
+            MapDataKind::Regions, {{}, {}, filter.worldRect}), "MAP_DATA_QUERY_SPATIAL_UNAVAILABLE"),
+        "finite but reversed native region cannot be misreported as outside the requested rectangle");
+}
 } // namespace
 
 int main() {
@@ -494,6 +595,9 @@ int main() {
         TestUnitScanBoundaryAndLimits();
         TestUnitCursorRejectsFilterMemberPresenceAndRevisionDrift();
         TestUnitSourceStatesAndLogicalBudget();
+        TestSpatialCombinationFiltersBeforePaging();
+        TestSpatialKindsAndUnknownPositions();
+        TestSpatialRefusalsAndScanBudget();
     }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
     std::cout << "Map data bounded snapshot checks passed\n";

@@ -27,6 +27,9 @@ struct MapTestRequest {
     std::filesystem::path runtimeBootstrap;
     // runtimeRoot 留空且地图需要扩展接口时，才只读使用已配置的本机 YDWE 安装。
     std::filesystem::path runtimeYdweRoot;
+    // 显式选择自有经典 Lua；不能由 YDWE 路径或热重载请求隐式改变运行时。
+    bool useOwnedLuaRuntime = false;
+    bool enableLuaHotReload = false;
 };
 
 struct MapTestArtifact {
@@ -43,6 +46,8 @@ struct MapTestArtifact {
     std::filesystem::path runtimeBootstrap;
     std::filesystem::path runtimeYdweRoot;
     MapTestRuntimeLayout runtimeLayout = MapTestRuntimeLayout::Flat;
+    bool useOwnedLuaRuntime = false;
+    bool enableLuaHotReload = false;
 };
 
 struct MapTestSlkRequest {
@@ -77,6 +82,11 @@ struct MapTestLaunchPlan {
     std::filesystem::path runtimeRoot;
     std::filesystem::path runtimeReceipt;
     MapTestRuntimeLayout runtimeLayout = MapTestRuntimeLayout::Flat;
+    bool useOwnedLuaRuntime = false;
+    bool enableLuaHotReload = false;
+    // 与启动器、Game.dll一同持有到进程终态，防止预检后替换注入库。
+    std::filesystem::path runtimeBootstrap;
+    std::string runtimeBootstrapSha256;
 };
 
 // 核验所选游戏和本轮短路径复制目标；不启动进程、不写安装配置或注册表。

@@ -1,4 +1,5 @@
 #include "SoundsModule.h"
+#include "SoundPreviewPlayer.h"
 #include "../NavigationBookmarkDetail.h"
 
 #include "EditorProject.h"
@@ -510,11 +511,8 @@ void SoundsModule::BuildPage() {
     preview->addWidget(status_, 1);
     outer->addLayout(preview);
 
-    audio_ = new QAudioOutput(this);
-    player_ = new QMediaPlayer(this);
-    player_->setAudioOutput(audio_);
-    previewBuffer_ = new QBuffer(this);
-    connect(player_, &QMediaPlayer::errorOccurred, this, [this](QMediaPlayer::Error, const QString& message) {
+    previewPlayer_ = new SoundPreviewPlayer(this);
+    connect(previewPlayer_, &SoundPreviewPlayer::Error, this, [this](const QString& message) {
         if (!message.isEmpty()) ShowStatus(message, true);
     });
     connect(search_, &QLineEdit::textChanged, this, &SoundsModule::RebuildResources);
@@ -1259,8 +1257,7 @@ void SoundsModule::StartPreview() {
     const auto resource = resourceRows_[static_cast<std::size_t>(resourceTable_->currentRow())];
     StopPreview();
     if (!resource.diskPath.isEmpty()) {
-        player_->setSource(QUrl::fromLocalFile(resource.diskPath));
-        player_->play();
+        previewPlayer_->PlayFile(resource.diskPath);
         ShowStatus(tr("正在试听 %1").arg(resource.path));
         return;
     }
@@ -1303,23 +1300,13 @@ void SoundsModule::StartPreview() {
 }
 
 void SoundsModule::PlayBytes(std::vector<std::byte> bytes, const QString& path) {
-    const auto* data = reinterpret_cast<const char*>(bytes.data());
-    previewBuffer_->setData(QByteArray(data, static_cast<qsizetype>(bytes.size())));
-    if (!previewBuffer_->open(QIODevice::ReadOnly)) {
-        ShowStatus(tr("无法打开试听数据"), true);
-        return;
-    }
-    const QString suffix = path.section(QLatin1Char('.'), -1).toLower();
-    player_->setSourceDevice(previewBuffer_, QUrl(QStringLiteral("file:///preview.%1").arg(suffix)));
-    player_->play();
-    ShowStatus(tr("正在试听 %1").arg(path));
+    if (previewPlayer_->PlayBytes(bytes, path)) ShowStatus(tr("正在试听 %1").arg(path));
 }
 
 void SoundsModule::StopPreview() {
     ++previewGeneration_;
     previewPending_ = false;
-    if (player_) { player_->stop(); player_->setSource(QUrl()); }
-    if (previewBuffer_) previewBuffer_->close();
+    if (previewPlayer_) previewPlayer_->Stop();
 }
 
 } // namespace War3Map::Modules

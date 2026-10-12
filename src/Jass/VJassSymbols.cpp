@@ -167,9 +167,15 @@ bool Translation::OrderLibraries() {
             const auto found = byName.find(requirement.name);
             if (found == byName.end()) {
                 if (!requirement.optional) {
-                    Error(requirement.line, "VJASS_REQUIRES",
-                        "库 " + std::string(library.name) + " 需要的库 " + std::string(requirement.name) + " 不存在");
-                    ok = false;
+                    if (options_.check.syntaxOnly) {
+                        Report(DiagnosticSeverity::Info, requirement.line, "VJASS_REQUIRES_UNCHECKED",
+                            "未检查跨段依赖：库 " + std::string(library.name) + " 需要的库 "
+                            + std::string(requirement.name) + " 不在当前语法检查范围内");
+                    } else {
+                        Error(requirement.line, "VJASS_REQUIRES",
+                            "库 " + std::string(library.name) + " 需要的库 " + std::string(requirement.name) + " 不存在");
+                        ok = false;
+                    }
                 }
                 continue;
             }

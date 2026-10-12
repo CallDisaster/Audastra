@@ -3,6 +3,7 @@
 #include "War3MapCore/MapData/MapAuxiliary.h"
 #include "War3MapCore/MapData/MapFields.h"
 #include "War3MapCore/MapData/MapDataFieldEditing.h"
+#include "War3MapCore/MapData/MapDataPlacementEditing.h"
 #include "War3MapCore/MapData/PlacementEditing.h"
 #include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/MapData/MapPlacements.h"
@@ -1289,6 +1290,58 @@ void TestPlacementSaveBindsSourceAndSharesWriter() {
     const auto rotated = save(MapEditPlacementRotation{source, 1.0f});
     Require(!HasCode(rotated, "SAVE_PLACEMENT_EDIT_SCOPE_INVALID"),
         "bound rotation reaches shared script preparation");
+    auto unit = fixture.map->Units()->units.front(); unit.rawcode = "H001"; unit.heroLevel = 8;
+    const auto created = save(MapEditPlacementCreate{*sha.value, std::vector<MapData::UnitPlacement>{unit}});
+    Require(!HasCode(created, "SAVE_PLACEMENT_REQUEST_INVALID") && !HasCode(created, "SAVE_PLACEMENT_EDIT_SCOPE_INVALID")
+        && !HasCode(created, "SAVE_PLACEMENT_MEMBER_STALE"), "typed creation reaches unchanged shared script gate");
+    Require(HasCode(save(MapEditPlacementCreate{std::string(64, '0'), std::vector<MapData::UnitPlacement>{unit}}),
+        "SAVE_PLACEMENT_MEMBER_STALE"), "new records cannot bypass original member binding");
+    const auto removed = save(MapEditPlacementDelete{{source}});
+    Require(!HasCode(removed, "SAVE_PLACEMENT_REQUEST_INVALID") && !HasCode(removed, "SAVE_PLACEMENT_EDIT_SCOPE_INVALID"),
+        "deleting final classic unit reaches unchanged shared script gate");
+    Require(HasCode(save(MapEditPlacementDelete{{source, source}}), "PLACEMENT_DUPLICATE"), "duplicate save delete refused");
+    Require(HasCode(save(MapEditPlacementDelete{{stale}}), "SAVE_PLACEMENT_MEMBER_STALE"), "delete save checks original sha");
+}
+
+void TestCreateDeleteUseOriginalSaveWorkerAndSavedUndo() {
+    for (const bool creating : {false, true}) {
+        FieldFixture fixture; BuildFieldFixture(fixture);
+        auto opened = MapArchiveSession::Open(fixture.source); Require(opened.Succeeded(), "open create/delete archive fixture");
+        const auto& original = *fixture.map;
+        const auto sha = Sha256(original.Member(MapDataKind::Units).sources.front().data);
+        const auto key = MapData::MapFieldRowKey(original, MapDataKind::Units, 0);
+        Require(sha.Succeeded() && key.Succeeded(), "bind native create/delete fixture");
+        MapData::MapDataPlacementIntent intent = MapData::MapDataPlacementDelete{{{
+            MapData::MakePlacementId(MapData::PlacementFile::Units, 0, original.Units()->units[0]), *key.value, *sha.value}}};
+        if (creating) {
+            auto record = original.Units()->units.front(); record.rawcode = "H001"; record.heroLevel = 5;
+            intent = MapData::MapDataPlacementCreate{*sha.value, std::vector<MapData::UnitPlacement>{record}};
+        }
+        const auto plan = MapData::PrepareMapDataPlacement(original, original, intent);
+        Require(plan.Succeeded(), "prepare native create/delete save");
+        MapData::MapDataEditSession session(original);
+        Require(session.ApplyPreparedPlacement(*plan.value).Succeeded(), "apply native create/delete save");
+        const auto persist = [&](const MapArchiveSession& input, const char* name, const MapDocument& expected) {
+            MapSaveTask task; Require(task.FreezeArchive(input).Succeeded(), "freeze original save worker archive");
+            task.target = fixture.directory.Path() / (std::string(name) + ".w3x"); task.replacements = session.Replacements();
+            MapSaveService::Run(task); Require(task.succeeded && task.nextSession, "create/delete original save worker failed");
+            auto reopened = MapArchiveSession::Open(task.target); Require(reopened.Succeeded(), "independent reopen create/delete candidate");
+            const auto read = MapDocument::FromArchive(*reopened.value);
+            for (const auto& member : expected.Members()) for (const auto& source : member.sources) {
+                const auto observed = reopened.value->ReadMember(member.memberName);
+                Require(observed.Succeeded() && *observed.value == source.data, "create/delete saved member bytes differ");
+            }
+            Require(read.Units() && read.Units()->units.size() == expected.Units()->units.size(), "saved placement count wrong");
+            session.CommitSaved(read); return std::move(*reopened.value);
+        };
+        auto saved = persist(*opened.value, "placement-saved", plan.value->After());
+        Require(!session.IsDirty() && session.Undo(), "saved create/delete lost original undo history");
+        auto undone = persist(saved, "placement-undone", original);
+        Require(!session.IsDirty() && session.Redo(), "saved undo lost create/delete redo history");
+        auto redone = persist(undone, "placement-redone", plan.value->After());
+        Require(redone.VerifySourceUnchanged().Succeeded() && Sha256File(fixture.source).value == fixture.sourceSha,
+            "native create/delete save touched source archive");
+    }
 }
 
 void TestDoodadsUseOriginalSaveWorkerAndSavedUndoRedo() {
@@ -1434,6 +1487,7 @@ int main() {
         TestSoundsUseOriginalSaveWorkerAndUndoReplay();
         TestUnitCoordinatesUseTheExistingFieldSaveGate();
         TestPlacementSaveBindsSourceAndSharesWriter();
+        TestCreateDeleteUseOriginalSaveWorkerAndSavedUndo();
         TestDoodadsUseOriginalSaveWorkerAndSavedUndoRedo();
         TestMapCreationRejectsUnboundedOrExistingInputs();
         std::cout << "Map save service tests passed\n";

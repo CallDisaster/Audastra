@@ -4,6 +4,7 @@
 #include "Dock/ModuleSwitcher.h"
 #include "Theme/DesignTokens.generated.h"
 #include "Widgets/ElidedLabel.h"
+#include "Widgets/ResponsiveToolBar.h"
 
 #include <QAction>
 #include <QDragEnterEvent>
@@ -11,6 +12,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMenu>
+#include <QScopeGuard>
 #include <QStyle>
 #include <QToolButton>
 
@@ -44,12 +46,10 @@ HeaderBar::HeaderBar(QWidget* parent)
 
     switcher_ = new ModuleSwitcher(this);
     layout->addWidget(switcher_, 0);
-    layout->addStretch(1);
-
-    actions_ = new QHBoxLayout;
-    actions_->setContentsMargins(0, 0, 0, 0);
-    actions_->setSpacing(2);
-    layout->addLayout(actions_);
+    actions_ = new UiKit::ResponsiveToolBar(this);
+    actions_->setObjectName(QStringLiteral("headerActions"));
+    actions_->ContentLayout()->setSpacing(2);
+    layout->addWidget(actions_, 1);
 }
 
 void HeaderBar::SetProjectTitle(const QString& title, const QString& tooltip) {
@@ -59,33 +59,23 @@ void HeaderBar::SetProjectTitle(const QString& title, const QString& tooltip) {
 }
 
 QToolButton* HeaderBar::AddAction(QAction* action) {
-    auto* button = new QToolButton(this);
+    auto* button = actions_->AddAction(action);
     button->setObjectName(QStringLiteral("headerAction"));
-    button->setDefaultAction(action);
     button->setAutoRaise(true);
-    // 操作名称不能被布局压缩裁切；剩余宽度由搜索框和可紧凑的模块切换器分配。
-    button->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
     button->setIconSize(QSize(17, 17));
     button->setToolButtonStyle(Qt::ToolButtonIconOnly);
     if (action->menu() != nullptr) {
         button->setPopupMode(QToolButton::InstantPopup);
     }
-    actions_->addWidget(button);
     return button;
 }
 
 void HeaderBar::AddWidget(QWidget* widget) {
-    widget->setParent(this);
-    actions_->addWidget(widget);
+    actions_->AddWidget(widget);
 }
 
 void HeaderBar::AddSeparator() {
-    auto* divider = new QFrame(this);
-    divider->setObjectName(QStringLiteral("headerDivider"));
-    divider->setFixedSize(1, 18);
-    actions_->addSpacing(4);
-    actions_->addWidget(divider);
-    actions_->addSpacing(4);
+    actions_->AddSeparator();
 }
 
 bool HeaderBar::event(QEvent* event) {
@@ -97,19 +87,18 @@ bool HeaderBar::event(QEvent* event) {
 }
 
 void HeaderBar::UpdateActionLayout() {
-    // 窄窗口保留操作文字；先省略工程名，再去掉非固定操作的装饰图标。
-    const auto buttons = findChildren<QToolButton*>("headerAction", Qt::FindDirectChildrenOnly);
-    int fullWidth = QFrame::minimumSizeHint().width();
-    for (auto* button : buttons) if (button->toolButtonStyle() == Qt::ToolButtonTextOnly && !button->icon().isNull())
-        fullWidth += button->iconSize().width() + 6;
-    const bool compact = fullWidth > width();
-    for (auto* button : buttons) {
-        if (!button->property("headerKeepIcon").toBool()
-            && (button->toolButtonStyle() == Qt::ToolButtonTextBesideIcon || button->toolButtonStyle() == Qt::ToolButtonTextOnly))
-            button->setToolButtonStyle(compact ? Qt::ToolButtonTextOnly : Qt::ToolButtonTextBesideIcon);
-        const int minimum = button->sizeHint().width();
-        if (button->minimumWidth() != minimum) button->setMinimumWidth(minimum);
-    }
+    if (updatingLayout_ || !actions_ || !switcher_) return;
+    updatingLayout_ = true;
+    const auto guard = qScopeGuard([this] { updatingLayout_ = false; });
+    actions_->Refresh();
+    project_->setVisible(width() >= 1200);
+    project_->setMaximumWidth(width() >= 1600 ? 160 : 80);
+    const auto* brand = findChild<QLabel*>(QStringLiteral("brand"));
+    const int identity = 22 + 40 + (brand ? brand->sizeHint().width() : 90)
+        + (project_->isHidden() ? 0 : project_->maximumWidth());
+    const bool compact = identity + switcher_->sizeHint().width() + actions_->sizeHint().width() > width();
+    switcher_->SetCompact(compact);
+    switcher_->setFixedWidth(compact ? switcher_->minimumSizeHint().width() : switcher_->sizeHint().width());
 }
 
 void HeaderBar::SetDropHighlight(bool on) {

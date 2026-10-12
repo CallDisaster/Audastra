@@ -1,5 +1,6 @@
 #include "RuntimeProtocol.h"
 #include "RuntimeFiles.h"
+#include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
 #include <detours.h>
 #include <charconv>
 #include <cstdio>
@@ -130,16 +131,17 @@ std::vector<wchar_t> ChildEnvironment(HANDLE channel, const std::filesystem::pat
 struct AttributeList {
     std::vector<std::byte> storage;
     LPPROC_THREAD_ATTRIBUTE_LIST value = nullptr;
-    HANDLE inheritedChannel = nullptr;
+    std::array<HANDLE, 2> inheritedChannels{};
     ~AttributeList() { if (value) DeleteProcThreadAttributeList(value); }
-    bool Initialize(HANDLE channel) {
+    bool Initialize(HANDLE channel, HANDLE luaMailbox = nullptr) {
         SIZE_T bytes = 0;
         InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
         storage.resize(bytes);
         value = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(storage.data());
         if (!InitializeProcThreadAttributeList(value, 1, 0, &bytes)) { value = nullptr; return false; }
-        inheritedChannel = channel;
-        return UpdateProcThreadAttribute(value, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &inheritedChannel, sizeof(inheritedChannel), nullptr, nullptr) != FALSE;
+        inheritedChannels = {channel, luaMailbox};
+        return UpdateProcThreadAttribute(value, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inheritedChannels.data(),
+            sizeof(HANDLE) * (luaMailbox ? 2 : 1), nullptr, nullptr) != FALSE;
     }
 };
 // 仅显式元数据 probe 使用；默认 F9/控制台不注册 class，不创建窗口。
@@ -427,12 +429,14 @@ struct RunReceipt {
     ProbeDesktopWitness* witness = nullptr;
     ProbeWindowDiagnostics* windowDiagnostics = nullptr;
     SharedEvidence* evidence = nullptr;
+    LuaTestMailbox* luaMailbox = nullptr;
     HANDLE file = INVALID_HANDLE_VALUE;
     bool created = false, witnessCleanupFailed = false;
     DWORD gameProcessId = 0, gameExit = STILL_ACTIVE, bridgeExit = kRuntimeFailure, error = 0;
     std::string stage;
     std::string gameSha, bootstrapSha, probeMapSha, probeScriptSha;
     std::string probeGraphicsBackendRequested;
+    bool minimizedNoActivateRequested = false, visibleNoActivateRequested = false;
     std::vector<std::wstring> gameArgv;
     bool Write() {
         if (file == INVALID_HANDLE_VALUE) return false;
@@ -453,6 +457,31 @@ struct RunReceipt {
         json += ",\"gameObserved\":" + std::string(flag(evidence && evidence->gameObserved));
         json += ",\"runtimeInitialized\":" + std::string(flag(evidence && evidence->runtimeInitialized));
         json += ",\"runtimeLayout\":" + Json(evidence && evidence->runtimeLayout == RuntimeLayout::YdweTree ? "ydwe-tree" : "flat");
+        json += ",\"runtimeMode\":" + Json(evidence && evidence->runtimeMode == RuntimeMode::OwnedLua ? "owned-lua" : "external-ydwe");
+        if (evidence && evidence->runtimeMode == RuntimeMode::OwnedLua) {
+            const auto& owned = evidence->ownedLua;
+            json += ",\"ownedLua\":{\"mapSha256\":" + Json(owned.mapSha256) + ",\"nonce\":" + Json(owned.nonce);
+            json += ",\"observerInstalled\":" + std::string(flag(owned.observerInstalled != 0));
+            json += ",\"minimizedNoActivateRequested\":" + std::string(flag(minimizedNoActivateRequested));
+            json += ",\"visibleNoActivateRequested\":" + std::string(flag(visibleNoActivateRequested));
+            json += ",\"ready\":" + std::string(flag(owned.ready != 0));
+            json += ",\"mainThreadId\":" + std::to_string(owned.mainThreadId) + ",\"nativeCount\":" + std::to_string(owned.nativeCount);
+            json += ",\"modules\":" + std::to_string(owned.modules) + ",\"callbacks\":" + std::to_string(owned.callbacks);
+            json += ",\"polls\":" + std::to_string(owned.polls) + ",\"nativeCalls\":" + std::to_string(owned.nativeCalls);
+            json += ",\"errors\":" + std::to_string(owned.errors) + ",\"failureText\":" + Json(owned.failureText);
+            const bool stable = luaMailbox && LuaMailboxHeader(*luaMailbox) && !(luaMailbox->runtimeDiagnosticRevision & 1)
+                && luaMailbox->runtimeDiagnosticSequence == luaMailbox->runtimeDiagnosticRevision / 2
+                && luaMailbox->runtimeDiagnosticBytes < kLuaReloadResultCapacity
+                && LuaMailboxUtf8({luaMailbox->runtimeDiagnosticText, luaMailbox->runtimeDiagnosticBytes});
+            json += ",\"runtimeDiagnosticStable\":" + std::string(flag(stable));
+            if (stable) {
+                json += ",\"runtimeDiagnosticSequence\":" + std::to_string(luaMailbox->runtimeDiagnosticSequence);
+                json += ",\"runtimeDiagnosticCode\":" + std::to_string(static_cast<std::uint32_t>(luaMailbox->runtimeDiagnosticCode));
+                json += ",\"runtimeMessage\":" + Json({luaMailbox->runtimeDiagnosticText, luaMailbox->runtimeDiagnosticBytes});
+                json += ",\"runtimeDiagnosticTruncated\":" + std::string(flag(luaMailbox->runtimeDiagnosticTruncated != 0));
+            }
+            json += '}';
+        }
         json += ",\"fixturePluginBits\":" + std::to_string(evidence ? evidence->fixturePluginBits : 0);
         json += ",\"fixtureConcurrentPass\":" + std::to_string(evidence ? evidence->fixtureConcurrentPass : 0);
         json += ",\"fixtureConcurrentWaitObserved\":" + std::to_string(evidence ? evidence->fixtureConcurrentWaitObserved : 0);
@@ -516,6 +545,10 @@ int Run(int argc, wchar_t** argv) {
     std::wstring map;
     RuntimeLayout layout = RuntimeLayout::Flat;
     bool layoutSpecified = false;
+    RuntimeMode mode = RuntimeMode::ExternalYdwe;
+    bool modeSpecified = false, hotReload = false;
+    std::wstring ownedMapSha, ownedNonce, ownedMailboxHandle, ownedWindowPolicy;
+    DWORD ownedTimeout = 0;
     std::wstring probeNonce, expectedProbeMapSha, desktop, probeRenderer;
     bool desktopWitnessRequested = false, windowDiagnosticsRequested = false;
     std::filesystem::path probeScript;
@@ -535,6 +568,29 @@ int Run(int argc, wchar_t** argv) {
             if (value == L"ydwe-tree") layout = RuntimeLayout::YdweTree;
             else if (value != L"flat") return 64;
             layoutSpecified = true;
+        }
+        else if (key == L"--runtime-mode" && !modeSpecified) {
+            const std::wstring value(argv[index + 1]);
+            if (value == L"owned-lua") mode = RuntimeMode::OwnedLua;
+            else if (value != L"external-ydwe") return 64;
+            modeSpecified = true;
+        }
+        else if (key == L"--lua-map-sha256" && ownedMapSha.empty()) ownedMapSha = argv[index + 1];
+        else if (key == L"--lua-session-nonce" && ownedNonce.empty()) ownedNonce = argv[index + 1];
+        else if (key == L"--lua-mailbox-handle" && ownedMailboxHandle.empty()) ownedMailboxHandle = argv[index + 1];
+        else if (key == L"--lua-hot-reload" && !hotReload) {
+            if (std::wstring_view(argv[index + 1]) != L"enabled") return 64;
+            hotReload = true;
+        }
+        else if (key == L"--owned-timeout-ms" && !ownedTimeout) {
+            const std::wstring value(argv[index + 1]);
+            if (value.empty() || value.size() > 6 || !std::all_of(value.begin(), value.end(), [](wchar_t c) { return c >= L'0' && c <= L'9'; })) return 64;
+            ownedTimeout = static_cast<DWORD>(wcstoul(value.c_str(), nullptr, 10));
+            if (ownedTimeout < 1000 || ownedTimeout > 120000) return 64;
+        }
+        else if (key == L"--owned-window-policy" && ownedWindowPolicy.empty()) {
+            ownedWindowPolicy = argv[index + 1];
+            if (ownedWindowPolicy != L"minimized-no-activate" && ownedWindowPolicy != L"visible-no-activate") return 64;
         }
         else if (key == L"--lua-api-probe" && probeNonce.empty()) probeNonce = argv[index + 1];
         else if (key == L"--probe-map-sha256" && expectedProbeMapSha.empty()) expectedProbeMapSha = argv[index + 1];
@@ -574,12 +630,24 @@ int Run(int argc, wchar_t** argv) {
         }
         else return 64;
     }
-    if (!PlainPath(game) || !PlainPath(runtime) || !PlainPath(bootstrap) || !PlainPath(receiptPath)
+    const bool owned = mode == RuntimeMode::OwnedLua;
+    if (!PlainPath(game) || (!owned && !PlainPath(runtime)) || !PlainPath(bootstrap) || !PlainPath(receiptPath)
         || !SafeMap(map) || !EqualPath(game.filename().wstring(), L"war3.exe")) return 64;
     const bool probe = !probeNonce.empty();
     const auto lowercaseHex = [](const std::wstring& value, std::size_t length) {
         return value.size() == length && std::all_of(value.begin(), value.end(), [](wchar_t c) { return (c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'f'); });
     };
+    if (owned) {
+        if (probe || !runtime.empty() || layoutSpecified || !lowercaseHex(ownedMapSha, 64) || !lowercaseHex(ownedNonce, 32)) return 64;
+        if (!ownedWindowPolicy.empty() && !ownedTimeout) return 64;
+        if (!desktop.empty()) {
+            if (desktop != L"WinSta0\\AudastraOwnedLua-" + ownedNonce) return 64;
+            std::array<wchar_t, 256> actualDesktop{}; DWORD returned = 0;
+            if (!GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()), UOI_NAME, actualDesktop.data(),
+                static_cast<DWORD>(actualDesktop.size() * sizeof(wchar_t)), &returned)
+                || std::wstring(actualDesktop.data()) != L"AudastraOwnedLua-" + ownedNonce) return 64;
+        }
+    } else if (!ownedMapSha.empty() || !ownedNonce.empty() || !ownedMailboxHandle.empty() || hotReload || ownedTimeout || !ownedWindowPolicy.empty()) return 64;
     if (probe) {
         // 探针必须先由调度者放在独立 Desktop 和 Job；严禁默默落到用户桌面。
         if (!lowercaseHex(probeNonce, 32) || !lowercaseHex(expectedProbeMapSha, 64)
@@ -589,13 +657,15 @@ int Run(int argc, wchar_t** argv) {
         if (!GetUserObjectInformationW(GetThreadDesktop(GetCurrentThreadId()), UOI_NAME, actualDesktop.data(),
             static_cast<DWORD>(actualDesktop.size() * sizeof(wchar_t)), &returned)
             || std::wstring(actualDesktop.data()) != L"AudastraRuntimeProbe-" + probeNonce) return 64;
-    } else if (!expectedProbeMapSha.empty() || !desktop.empty() || probeTimeoutSpecified || !probeScript.empty() || !expectedProbeScriptSha.empty() || !nonfatalBlockedPaths.empty() || desktopWitnessRequested || windowDiagnosticsRequested || !probeRenderer.empty()) return 64;
+    } else if (!expectedProbeMapSha.empty() || (!owned && !desktop.empty()) || probeTimeoutSpecified || !probeScript.empty() || !expectedProbeScriptSha.empty() || !nonfatalBlockedPaths.empty() || desktopWitnessRequested || windowDiagnosticsRequested || !probeRenderer.empty()) return 64;
     game = game.lexically_normal(); runtime = runtime.lexically_normal(); bootstrap = bootstrap.lexically_normal();
     Handle output(CreateFileW(receiptPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     if (output.value == INVALID_HANDLE_VALUE) return 65;
     ProbeDesktopWitness witness;
     ProbeWindowDiagnostics windowDiagnostics; windowDiagnostics.requested = windowDiagnosticsRequested;
     RunReceipt result; result.file = output.value; result.witness = &witness; result.windowDiagnostics = &windowDiagnostics;
+    result.visibleNoActivateRequested = owned && ownedTimeout != 0 && ownedWindowPolicy == L"visible-no-activate";
+    result.minimizedNoActivateRequested = owned && ownedTimeout != 0 && !result.visibleNoActivateRequested;
     if (probe) result.probeGraphicsBackendRequested = probeRenderer.empty() ? "game-default" : "opengl";
     const auto fail = [&](const char* stage, DWORD error = GetLastError()) {
         result.stage = stage; result.error = error; result.bridgeExit = kRuntimeFailure;
@@ -616,6 +686,38 @@ int Run(int argc, wchar_t** argv) {
         if (result.probeMapSha != Utf8(expectedProbeMapSha)) return fail("lua-probe-map-sha", ERROR_CRC);
     }
     SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+    Handle luaMapping;
+    LuaTestMailbox* luaMailbox = nullptr;
+    struct LuaView { LuaTestMailbox*& value; ~LuaView() { if (value) UnmapViewOfFile(value); } } luaView{luaMailbox};
+    if (owned) {
+        const auto mapSha = Sha256(mapFile.value, 1024ull * 1024 * 1024);
+        if (mapSha != Utf8(ownedMapSha)) return fail("owned-lua-map-sha", ERROR_CRC);
+        if (!ownedMailboxHandle.empty()) {
+            if (ownedMailboxHandle.size() > 10 || !std::all_of(ownedMailboxHandle.begin(), ownedMailboxHandle.end(), [](wchar_t c) { return c >= L'0' && c <= L'9'; }))
+                return fail("owned-lua-mailbox-handle", ERROR_INVALID_HANDLE);
+            wchar_t* end = nullptr;
+            const auto numeric = _wcstoui64(ownedMailboxHandle.c_str(), &end, 10);
+            if (!numeric || numeric >= 0xffffffffull || !end || *end) return fail("owned-lua-mailbox-handle", ERROR_INVALID_HANDLE);
+            // 只复制本次启动明确继承到的句柄；不按PID重开，不连接具名对象。
+            if (!DuplicateHandle(GetCurrentProcess(), reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(numeric)),
+                GetCurrentProcess(), &luaMapping.value, 0, TRUE, DUPLICATE_SAME_ACCESS)) return fail("owned-lua-mailbox-inheritance");
+        } else {
+            luaMapping.value = CreateFileMappingW(INVALID_HANDLE_VALUE, &inherit, PAGE_READWRITE, 0, sizeof(LuaTestMailbox), nullptr);
+            if (!luaMapping.value) return fail("owned-lua-mailbox-create");
+        }
+        luaMailbox = static_cast<LuaTestMailbox*>(MapViewOfFile(luaMapping.value, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(LuaTestMailbox)));
+        if (!luaMailbox) return fail("owned-lua-mailbox-map");
+        if (ownedMailboxHandle.empty()) {
+            ::new (luaMailbox) LuaTestMailbox{};
+            strcpy_s(luaMailbox->sessionNonce, Utf8(ownedNonce).c_str());
+            strcpy_s(luaMailbox->mapSha256, mapSha.c_str());
+        }
+        if (!LuaMailboxHeader(*luaMailbox) || luaMailbox->sessionNonce != Utf8(ownedNonce)
+            || luaMailbox->mapSha256 != mapSha || luaMailbox->state != static_cast<LONG>(LuaMailboxState::Empty)
+            || luaMailbox->runtimeState != static_cast<LONG>(LuaRuntimeState::Starting))
+            return fail("owned-lua-mailbox-identity", ERROR_INVALID_DATA);
+        result.luaMailbox = luaMailbox;
+    }
     Handle mapping(CreateFileMappingW(INVALID_HANDLE_VALUE, &inherit, PAGE_READWRITE, 0, sizeof(SharedEvidence), nullptr));
     if (!mapping.value) return fail("channel-create");
     auto* shared = static_cast<SharedEvidence*>(MapViewOfFile(mapping.value, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedEvidence)));
@@ -624,6 +726,14 @@ int Run(int argc, wchar_t** argv) {
     new (shared) SharedEvidence();
     wcscpy_s(shared->runtimeRoot, runtime.c_str());
     shared->runtimeLayout = layout;
+    shared->runtimeMode = mode;
+    if (owned) {
+        wcscpy_s(shared->ownedLua.mapPath, (game.parent_path() / map).c_str());
+        strcpy_s(shared->ownedLua.mapSha256, Utf8(ownedMapSha).c_str());
+        strcpy_s(shared->ownedLua.nonce, Utf8(ownedNonce).c_str());
+        shared->ownedLua.mailboxHandle = static_cast<std::uint32_t>(reinterpret_cast<ULONG_PTR>(luaMapping.value));
+        shared->ownedLua.hotReload = hotReload ? 1 : 0;
+    }
     if (probe) {
         shared->probeEnabled = 1; strcpy_s(shared->probeNonce, Utf8(probeNonce).c_str());
         Handle scriptFile(OpenLockedFile(probeScript));
@@ -649,7 +759,7 @@ int Run(int argc, wchar_t** argv) {
     if (gameDllSha.empty()) return fail("game-dll-sha", ERROR_CRC);
     strcpy_s(shared->gameModule.expectedSha256, gameDllSha.c_str());
     std::vector<std::unique_ptr<Handle>> runtimeFiles;
-    for (std::size_t index = 0; index < kModules.size(); ++index) {
+    for (std::size_t index = 0; !owned && index < kModules.size(); ++index) {
         auto file = std::make_unique<Handle>(OpenLockedFile(runtime / ModuleRelativePath(layout, index)));
         if (file->value == INVALID_HANDLE_VALUE || !IsX86Image(file->value)) return fail("runtime-preflight", ERROR_BAD_EXE_FORMAT);
         const auto sha = Sha256(file->value);
@@ -660,8 +770,8 @@ int Run(int argc, wchar_t** argv) {
     const auto importPath = ImportPath(bootstrap);
     if (importPath.empty()) return fail("bootstrap-path-encoding", ERROR_NO_UNICODE_TRANSLATION);
     AttributeList attributes;
-    if (!attributes.Initialize(mapping.value)) return fail("channel-handle-whitelist");
-    auto environment = ChildEnvironment(mapping.value, probe ? (game.parent_path() / map).parent_path() : std::filesystem::path{});
+    if (!attributes.Initialize(mapping.value, owned ? luaMapping.value : nullptr)) return fail("channel-handle-whitelist");
+    auto environment = ChildEnvironment(mapping.value, (probe || owned) ? (game.parent_path() / map).parent_path() : std::filesystem::path{});
     result.gameArgv = {game.wstring(), L"-window"};
     if (!probeRenderer.empty()) result.gameArgv.push_back(L"-opengl");
     result.gameArgv.push_back(L"-loadfile"); result.gameArgv.push_back(map);
@@ -670,7 +780,14 @@ int Run(int argc, wchar_t** argv) {
     for (std::size_t index = 1; index < result.gameArgv.size(); ++index)
         command += L" " + (index + 1 == result.gameArgv.size() ? Quote(result.gameArgv[index]) : result.gameArgv[index]);
     STARTUPINFOEXW startup{}; startup.StartupInfo.cb = sizeof(startup); startup.lpAttributeList = attributes.value;
-    if (probe) startup.StartupInfo.lpDesktop = desktop.data();
+    if (result.minimizedNoActivateRequested || result.visibleNoActivateRequested) {
+        // 显式观察窗口供无人值守开发验证；普通 F9 没有观察期限，不改变其窗口显示。
+        // 默认仍最小化；可见但不激活只用于显式图形初始化对照。两者都是请求，
+        // 调度者仍须监测真实前台归属，不能把此标志当成游戏不抢焦点的证据。
+        startup.StartupInfo.dwFlags |= STARTF_USESHOWWINDOW;
+        startup.StartupInfo.wShowWindow = result.visibleNoActivateRequested ? SW_SHOWNOACTIVATE : SW_SHOWMINNOACTIVE;
+    }
+    if (!desktop.empty()) startup.StartupInfo.lpDesktop = desktop.data();
     PROCESS_INFORMATION process{};
     if (!CreateProcessW(game.c_str(), command.data(), nullptr, nullptr, TRUE, CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW,
         environment.data(), game.parent_path().c_str(), &startup.StartupInfo, &process)) return fail("game-create");
@@ -725,11 +842,26 @@ int Run(int argc, wchar_t** argv) {
         windowDiagnostics.Capture("game-exited-without-result");
         return fail("lua-probe-game-exited-without-result", ERROR_INVALID_DATA);
     }
+    if (owned && ownedTimeout) {
+        const auto start = GetTickCount64();
+        while (WaitForSingleObject(target.value, 50) == WAIT_TIMEOUT) {
+            if (shared->failed) return abort("owned-lua-reported-failure", shared->errorWin32);
+            if (GetTickCount64() - start < ownedTimeout) continue;
+            if (!TerminateProcess(target.value, 0) || WaitForSingleObject(target.value, 5000) != WAIT_OBJECT_0
+                || !GetExitCodeProcess(target.value, &result.gameExit)) return abort("owned-lua-exact-stop");
+            result.stage = "owned-lua-observation-window-ended";
+            result.bridgeExit = shared->ownedLua.ready && shared->ownedLua.modules && !shared->ownedLua.errors ? 0 : kRuntimeFailure;
+            if (!result.Write()) return 65;
+            return static_cast<int>(result.bridgeExit);
+        }
+    }
     if (WaitForSingleObject(target.value, INFINITE) != WAIT_OBJECT_0 || !GetExitCodeProcess(target.value, &result.gameExit)) return fail("game-terminal-query");
     MemoryBarrier();
     if (shared->failed || !shared->hookInstalled || !shared->gameObserved || !shared->runtimeInitialized) {
         if (!shared->failed) { result.stage = "runtime-initialization-unconfirmed"; result.error = ERROR_INVALID_DATA; }
         result.bridgeExit = kRuntimeFailure;
+    } else if (owned && (!shared->ownedLua.modules || shared->ownedLua.errors)) {
+        result.stage = "owned-lua-entry-unconfirmed-or-failed"; result.bridgeExit = kRuntimeFailure;
     } else result.bridgeExit = result.gameExit;
     if (!result.Write()) return 65;
     return static_cast<int>(result.bridgeExit);

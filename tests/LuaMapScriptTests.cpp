@@ -1,4 +1,7 @@
 #include "War3MapCore/Script/LuaMapScript.h"
+#include "War3MapCore/Script/ClassicLuaSaveBundle.h"
+#include "War3MapCore/Script/LuaAuthorCode.h"
+#include "War3MapCore/Lua/LuaSyntax.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapData/GeneratedObjectSymbol.h"
 #include "../src/ScriptBuild/ExternalProcess.h"
@@ -236,6 +239,81 @@ struct Fixture {
     }
 };
 
+// 合入LuaMapScriptTests.cpp的匿名命名空间，调用ClassicBundle(fixture)。
+// 追加头文件ClassicLuaSaveBundle.h、LuaAuthorCode.h、Lua/LuaSyntax.h。
+// 依赖最终7参数GenerateLuaMapScript合同，仅在root集成后编译。
+void ClassicBundle(const Fixture& fixture) {
+    auto plan = fixture.plan;
+    plan.settings.formatVersion = 25;
+    plan.settings.scriptLanguage = 0;
+    plan.settings.graphicsModes = 0;
+    const auto settingsBytes = plan.settings.Serialize();
+    Require(settingsBytes.Succeeded(), Diagnostics(settingsBytes.diagnostics));
+    const auto parsed = MapData::MapSettings::Parse(*settingsBytes.value);
+    Require(parsed.Succeeded() && parsed.value->SourceFormatVersion() == 25, "classic fixture must capture real v25 bytes");
+    plan.settings = *parsed.value;
+    auto target = fixture.target;
+    target.handleTypes.emplace_back("alliancetype", "handle");
+    target.apis.push_back({"TriggerEvaluate", "boolean", {"trigger"}});
+    target.apis.push_back({"TriggerExecute", "nothing", {"trigger"}});
+    target.apis.push_back({"SetPlayerAlliance", "nothing", {"player", "player", "alliancetype", "boolean"}});
+    for (const auto name : {"ALLIANCE_PASSIVE", "ALLIANCE_HELP_REQUEST", "ALLIANCE_HELP_RESPONSE", "ALLIANCE_SHARED_XP",
+            "ALLIANCE_SHARED_SPELLS", "ALLIANCE_SHARED_VISION", "ALLIANCE_SHARED_CONTROL", "ALLIANCE_SHARED_ADVANCED_CONTROL"})
+        target.constants.push_back({name, "alliancetype"});
+    const auto generated = GenerateLuaMapScript(plan, fixture.document, fixture.catalog, target, {}, {}, {true});
+    Require(generated.Succeeded(), Diagnostics(generated.diagnostics));
+    const auto bundle = BuildClassicLuaSaveBundle(plan, generated, target);
+    Require(bundle.Succeeded() && bundle.modules.size() == 5, Diagnostics(bundle.diagnostics));
+    Require(bundle.generatedScriptSha256 == generated.scriptSha256 && bundle.sourceMapSha256 == generated.sourceMapSha256,
+        "bundle must retain the actual complete Lua and source mapping identities");
+    const auto reserialized = plan.settings.Serialize();
+    Require(reserialized.Succeeded() && *reserialized.value == *settingsBytes.value, "classic settings bytes changed during bundle build");
+    const auto entryHash = Sha256Text(bundle.jassEntry);
+    Require(entryHash.Succeeded() && *entryHash.value == bundle.jassSha256, "JASS entry hash does not bind text");
+    bool exactSource = false;
+    for (const auto& module : bundle.modules) {
+        const auto hash = Sha256Text(module.text);
+        Require(hash.Succeeded() && *hash.value == module.sha256 && Lua::CheckSyntax(module.text, "@" + module.member).Succeeded(),
+            "a classic module lacks valid syntax or exact byte identity");
+        if (module.member == "audastra\\map.lua") exactSource = module.text == generated.text;
+    }
+    Require(exactSource, "bundle must not rewrite the typed T generated body");
+    const auto main = bundle.jassEntry.find("function main takes nothing returns nothing");
+    const auto config = bundle.jassEntry.find("function config takes nothing returns nothing");
+    Require(config != std::string::npos && config < main
+        && bundle.jassEntry.substr(config, main - config).find("Cheat(") == std::string::npos,
+        "lobby configuration must stay entirely on the production JASS path");
+    const auto bootstrap = bundle.jassEntry.find("audastra.bootstrap", main);
+    const auto day = bundle.jassEntry.find("call SetAmbientDaySound(", main);
+    const auto night = bundle.jassEntry.find("call SetAmbientNightSound(", main);
+    const auto music = bundle.jassEntry.find("call SetMapMusic(", main);
+    const auto objects = bundle.jassEntry.find("audastra.objects", main);
+    const auto blizzard = bundle.jassEntry.find("call InitBlizzard()", main);
+    const auto continuation = bundle.jassEntry.find("audastra.continue", main);
+    Require(main != std::string::npos && bootstrap != std::string::npos && day != std::string::npos
+        && night != std::string::npos && music != std::string::npos && objects != std::string::npos
+        && blizzard != std::string::npos && continuation != std::string::npos
+        && bootstrap < day && day < night && night < music && music < objects && objects < blizzard && blizzard < continuation,
+        "classic environment, ambient/music, object, Blizzard, and T phases changed order");
+    Require(!BuildClassicLuaSaveBundle(fixture.plan, generated, target).Succeeded(), "v31 source cannot silently become classic");
+    const auto defaultLua = GenerateLuaMapScript(plan, fixture.document, fixture.catalog, target);
+    Require(defaultLua.Succeeded() && !BuildClassicLuaSaveBundle(plan, defaultLua, target).Succeeded(),
+        "native single-main output cannot be treated as split classic output");
+    auto changed = generated;
+    changed.text += "\n-- changed after generation\n";
+    Require(!BuildClassicLuaSaveBundle(plan, changed, target).Succeeded(), "modified generated bytes must be rejected");
+    changed = generated; changed.classicObjectsContinuation.clear();
+    Require(!BuildClassicLuaSaveBundle(plan, changed, target).Succeeded(), "missing object phase must be rejected");
+    changed = generated; changed.classicMainContinuation = "other";
+    Require(!BuildClassicLuaSaveBundle(plan, changed, target).Succeeded(), "unbound continuation name must be rejected");
+    changed = generated; changed.requiredApis.push_back("bad-symbol");
+    Require(!BuildClassicLuaSaveBundle(plan, changed, target).Succeeded(), "invalid global binding cannot reach module source");
+    auto unknown = plan; unknown.settings.players.front().controller = 99;
+    Require(!BuildClassicLuaSaveBundle(unknown, generated, target).Succeeded(), "unknown player controller must not get a default");
+    auto mixed = target; mixed.nativeAuthorCode = std::make_shared<const PreparedLuaAuthorCode>();
+    Require(!BuildClassicLuaSaveBundle(plan, generated, mixed).Succeeded(), "classic pure T contract rejects author-code credentials");
+}
+
 void Reject(const Fixture& fixture, const MapInitializationPlan& plan, const LuaTargetProfile& target, const char* code) {
     const auto result = GenerateLuaMapScript(plan, fixture.document, fixture.catalog, target);
     Require(!result.Succeeded() && result.text.empty() && result.sourceSpans.empty() && result.objectSpans.empty()
@@ -291,6 +369,7 @@ int main(int argc, char** argv) {
         const auto root = argc > 1 ? std::filesystem::absolute(argv[1]) : std::filesystem::temp_directory_path()
             / ("forge-lua-map-" + std::to_string(GetCurrentProcessId()));
         Fixture fixture(root);
+        ClassicBundle(fixture);
         const auto generated = GenerateLuaMapScript(fixture.plan, fixture.document, fixture.catalog, fixture.target);
         Require(generated.Succeeded(), Diagnostics(generated.diagnostics));
         Require(generated.text.find("gg_unit_sloc_") == std::string::npos
@@ -321,6 +400,50 @@ int main(int argc, char** argv) {
         Require(std::find(generated.requiredConstants.begin(), generated.requiredConstants.end(), "UNIT_STATE_LIFE") != generated.requiredConstants.end(),
             "typed constant dependency absent");
         Write(root / "map.lua", generated.text);
+
+        const auto defaults = GenerateLuaMapScript(fixture.plan, fixture.document, fixture.catalog, fixture.target, {}, {});
+        Require(defaults.text == generated.text && defaults.scriptSha256 == generated.scriptSha256
+            && defaults.sourceMapSha256 == generated.sourceMapSha256 && defaults.classicMainContinuation.empty()
+            && defaults.classicObjectsContinuation.empty(),
+            "default native Lua path and source mapping must remain unchanged");
+        auto classicTarget = fixture.target;
+        std::erase_if(classicTarget.apis, [](const auto& value) {
+            return value.name == "InitBlizzard" || value.name == "SetAmbientDaySound" || value.name == "SetAmbientNightSound"
+                || value.name == "SetMapMusic" || value.name == "InitGenericPlayerSlots" || value.name == "SetPlayerSlotAvailable"
+                || value.name.starts_with("SetPlayerAllianceState");
+        });
+        const auto split = GenerateLuaMapScript(fixture.plan, fixture.document, fixture.catalog, classicTarget, {}, {}, {true});
+        Require(split.Succeeded() && split.classicMainContinuation == kClassicLuaMainContinuation
+            && split.classicObjectsContinuation == kClassicLuaObjectsContinuation, Diagnostics(split.diagnostics));
+        for (const auto name : {"InitBlizzard", "SetAmbientDaySound", "SetAmbientNightSound", "SetMapMusic",
+                "InitGenericPlayerSlots", "SetPlayerSlotAvailable"})
+            Require(std::find(split.requiredApis.begin(), split.requiredApis.end(), name) == split.requiredApis.end(),
+                std::string("classic JASS stage must not require a Lua substitute for ") + name);
+        Require(split.text.find("function config()") == std::string::npos
+            && split.text.find("function InitCustomPlayerSlots()") == std::string::npos
+            && split.text.find("function InitCustomTeams()") == std::string::npos,
+            "classic player config is owned by the production JASS generator");
+        const auto mainBegin = split.text.find("function main()"), objects = split.text.find("function AudastraMainObjects()");
+        const auto continuation = split.text.find("function AudastraMainAfterBlizzard()");
+        const auto globalsAfter = split.text.find("InitGlobals()", continuation);
+        const auto triggersAfter = split.text.find("InitCustomTriggers()", continuation);
+        const auto initializersAfter = split.text.find("RunInitializationTriggers()", continuation);
+        Require(mainBegin != std::string::npos && objects != std::string::npos && continuation != std::string::npos
+            && split.text.find("NewSoundEnvironment(", mainBegin) < objects
+            && split.text.find("InitSounds()", objects) > objects && split.text.find("InitSounds()", objects) < continuation
+            && split.text.find("CreateAllUnits()", objects) > objects && split.text.find("CreateAllUnits()", objects) < continuation
+            && globalsAfter != std::string::npos && globalsAfter > continuation
+            && triggersAfter != std::string::npos && triggersAfter > globalsAfter
+            && initializersAfter != std::string::npos && initializersAfter > triggersAfter,
+            "classic Lua phases preserve environment, objects, globals and trigger ordering around JASS stages");
+        auto reforgedLayout = fixture.plan;
+        reforgedLayout.playerSlotCount = 24; reforgedLayout.neutralAggressive = 24; reforgedLayout.neutralPassive = 27;
+        const auto invalidClassic = GenerateLuaMapScript(reforgedLayout, fixture.document, fixture.catalog, classicTarget, {}, {}, {true});
+        Require(!invalidClassic.Succeeded() && invalidClassic.text.empty() && invalidClassic.classicObjectsContinuation.empty()
+            && invalidClassic.classicMainContinuation.empty()
+            && std::any_of(invalidClassic.diagnostics.begin(), invalidClassic.diagnostics.end(), [](const auto& value) {
+                return value.code == "CLASSIC_LUA_PLAYER_LAYOUT";
+            }), "classic phase split rejects modern 24-slot layout without partial stages");
 
         auto plan = fixture.plan; plan.mainOrder[0] = MapInitStage::Units; Reject(fixture, plan, fixture.target, "LUA_MAP_INIT_ORDER");
         plan = fixture.plan; plan.symbols.pop_back(); Reject(fixture, plan, fixture.target, "LUA_MAP_SYMBOL_DIRECTORY");

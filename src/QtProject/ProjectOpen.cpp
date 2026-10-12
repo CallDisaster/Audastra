@@ -284,14 +284,27 @@ Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(const std::files
             && mapDataEdits->AttachPathing(*pathing.value).Succeeded();
         const bool terrainOverlay = archive.HasMember("overlay/map/war3map.w3e");
         const bool pathingOverlay = archive.HasMember("overlay/map/war3map.wpm");
+        const bool restrictionDraft = archive.HasMember("overlay/editor/pathing-restrictions.bin");
+        if (restrictionDraft != manifest.contains("pathingRestrictions")
+            || (restrictionDraft && (!manifest["pathingRestrictions"].isDouble()
+                || manifest["pathingRestrictions"].toDouble() != 1 || !pathingOverlay || !pathingAttached)))
+            return fail(QObject::tr("工程附加通行限制声明缺失、版本未知或没有对应 WPM 覆盖"));
         if (terrainOverlay || pathingOverlay) {
             auto nextTerrain = terrainOverlay ? archive.ReadMember("overlay/map/war3map.w3e") : std::move(terrain);
             auto nextPathing = pathingOverlay ? archive.ReadMember("overlay/map/war3map.wpm") : std::move(pathing);
             if (!attached || !nextTerrain.Succeeded() || !nextTerrain.value)
                 return fail(QObject::tr("工程地形覆盖无法安全恢复：源 W3E 缺失或未能验证"));
             if (pathingAttached) {
-                if (!nextPathing.Succeeded() || !nextPathing.value
-                    || !mapDataEdits->SetTerrainAndPathing(*nextTerrain.value, *nextPathing.value).Succeeded())
+                if (!nextPathing.Succeeded() || !nextPathing.value)
+                    return fail(QObject::tr("工程通行性覆盖无法读取"));
+                auto draft = restrictionDraft ? archive.ReadMember("overlay/editor/pathing-restrictions.bin")
+                    : Result<std::vector<std::byte>>::Success({});
+                if (!draft.Succeeded() || !draft.value)
+                    return fail(QObject::tr("工程附加通行限制声明无法读取"));
+                const auto restored = restrictionDraft
+                    ? mapDataEdits->SetTerrainAndPathingDraft(*nextTerrain.value, *nextPathing.value, *draft.value)
+                    : mapDataEdits->SetTerrainAndPathing(*nextTerrain.value, *nextPathing.value);
+                if (!restored.Succeeded())
                     return fail(QObject::tr("工程地形与通行性覆盖无法作为同一事务安全恢复"));
             } else {
                 if (pathingOverlay) return fail(QObject::tr("工程通行性覆盖无法安全恢复：源 WPM 缺失、模糊或未能解析"));

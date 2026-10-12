@@ -83,14 +83,15 @@ bool ReadMap(const ScriptBaseInputsRequest& request, std::string_view name, Scri
 
 bool Pick(const ScriptBaseInputsRequest& request, std::string_view name, const std::filesystem::path& fallback,
     ScriptBaseInput& output, std::vector<Diagnostic>& diagnostics) {
-    if (request.policy == ScriptBasePolicy::MapGameThenLayout) {
+    if (request.policy == ScriptBasePolicy::MapGameThenLayout || request.policy == ScriptBasePolicy::MapGameOnly) {
         for (const auto& member : {std::string(name), "scripts\\" + std::string(name)}) {
             bool absent = false;
             if (!ReadMap(request, member, output, absent, diagnostics)) return false;
             if (!absent) return true;
         }
         const bool compatibleGame = request.game && request.gameLibraryVersion &&
-            (*request.gameLibraryVersion == 20) == request.layout->allowReturnBug;
+            (request.policy == ScriptBasePolicy::MapGameOnly ||
+                (*request.gameLibraryVersion == 20) == request.layout->allowReturnBug);
         if (compatibleGame) {
             for (const auto& member : {std::string(name), "scripts\\" + std::string(name)}) {
                 if (!request.game->HasFile(member)) continue;
@@ -104,6 +105,10 @@ bool Pick(const ScriptBaseInputsRequest& request, std::string_view name, const s
                 return Freeze(output, file.value->bytes, diagnostics);
             }
         }
+    }
+    if (request.policy == ScriptBasePolicy::MapGameOnly) {
+        Reject(diagnostics, "SCRIPT_BASE_MAP_GAME_MISSING", "地图和已绑定的游戏来源中缺少 " + std::string(name));
+        return false;
     }
     const auto& bindings = request.layout->bindingFiles;
     const auto binding = std::find_if(bindings.begin(), bindings.end(), [&](const auto& file) { return file.path == fallback; });
@@ -124,7 +129,9 @@ bool Pick(const ScriptBaseInputsRequest& request, std::string_view name, const s
 
 Result<ScriptBaseInputs> CaptureScriptBaseInputs(const ScriptBaseInputsRequest& request) {
     Result<ScriptBaseInputs> result;
-    if (!request.layout || (request.policy != ScriptBasePolicy::BoundLayout && request.policy != ScriptBasePolicy::MapGameThenLayout)) {
+    const bool mapGameOnly = request.policy == ScriptBasePolicy::MapGameOnly;
+    if ((!mapGameOnly && !request.layout) || (request.policy != ScriptBasePolicy::BoundLayout &&
+        request.policy != ScriptBasePolicy::MapGameThenLayout && !mapGameOnly)) {
         Reject(result.diagnostics, "SCRIPT_BASE_REQUEST_INVALID", "基础库捕获需要绑定的工具链与有效来源策略");
         return result;
     }
@@ -132,10 +139,16 @@ Result<ScriptBaseInputs> CaptureScriptBaseInputs(const ScriptBaseInputsRequest& 
         Reject(result.diagnostics, "SCRIPT_BASE_GAME_POLICY_INVALID", "游戏基础库校验策略必须是 20 或 24");
         return result;
     }
-    auto verified = VerifyScriptToolchainLayout(*request.layout);
-    const bool layoutValid = verified.Succeeded();
-    result.diagnostics = std::move(verified.diagnostics);
-    if (!layoutValid) return result;
+    if (mapGameOnly && !request.gameLibraryVersion) {
+        Reject(result.diagnostics, "SCRIPT_BASE_GAME_POLICY_UNBOUND", "仅地图和游戏来源策略必须显式绑定基础库校验版本");
+        return result;
+    }
+    if (!mapGameOnly) {
+        auto verified = VerifyScriptToolchainLayout(*request.layout);
+        const bool layoutValid = verified.Succeeded();
+        result.diagnostics = std::move(verified.diagnostics);
+        if (!layoutValid) return result;
+    }
     if (request.policy == ScriptBasePolicy::MapGameThenLayout && request.game) {
         if (!request.gameLibraryVersion || ((*request.gameLibraryVersion == 20) != request.layout->allowReturnBug)) {
             result.diagnostics.push_back({DiagnosticSeverity::Info, "Script.Base",
@@ -143,19 +156,21 @@ Result<ScriptBaseInputs> CaptureScriptBaseInputs(const ScriptBaseInputsRequest& 
                 "游戏基础库策略未绑定或与目标不一致，本次不读取游戏层", {}});
         }
     }
-    if (request.policy == ScriptBasePolicy::MapGameThenLayout && request.archive) {
+    if ((request.policy == ScriptBasePolicy::MapGameThenLayout || mapGameOnly) && request.archive) {
         auto source = request.archive->VerifySourceUnchanged();
         result.diagnostics.insert(result.diagnostics.end(), source.diagnostics.begin(), source.diagnostics.end());
         if (!source.Succeeded()) return result;
     }
     ScriptBaseInputs inputs;
     inputs.policy = request.policy;
-    inputs.allowReturnBug = request.layout->allowReturnBug;
+    inputs.allowReturnBug = mapGameOnly ? *request.gameLibraryVersion == 20 : request.layout->allowReturnBug;
     inputs.documentRevision = request.documentRevision;
     if (request.archive) inputs.sourceMapSha256 = request.archive->SourceSha256();
     inputs.gameLibraryVersion = request.gameLibraryVersion;
-    if (!Pick(request, "common.j", request.layout->commonScript, inputs.common, result.diagnostics) ||
-        !Pick(request, "blizzard.j", request.layout->blizzardScript, inputs.blizzard, result.diagnostics)) return result;
+    const auto commonFallback = mapGameOnly ? std::filesystem::path{} : request.layout->commonScript;
+    const auto blizzardFallback = mapGameOnly ? std::filesystem::path{} : request.layout->blizzardScript;
+    if (!Pick(request, "common.j", commonFallback, inputs.common, result.diagnostics) ||
+        !Pick(request, "blizzard.j", blizzardFallback, inputs.blizzard, result.diagnostics)) return result;
     result.value = std::move(inputs);
     return result;
 }
@@ -180,6 +195,37 @@ Status VerifyScriptBaseInputs(const ScriptBaseInputs& inputs, const ScriptToolch
         } else if (policy == ScriptBasePolicy::BoundLayout) valid = false;
     }
     if (!valid) Reject(result.diagnostics, "SCRIPT_BASE_SNAPSHOT_MISMATCH", "冻结的基础库字节、摘要或来源策略与本次工具链不一致");
+    return result;
+}
+
+Status VerifyScriptBaseInputs(const ScriptBaseInputs& inputs, ScriptBasePolicy policy) {
+    Status result;
+    bool valid = policy == ScriptBasePolicy::MapGameOnly && inputs.policy == policy &&
+        inputs.gameLibraryVersion && (*inputs.gameLibraryVersion == 20 || *inputs.gameLibraryVersion == 24) &&
+        inputs.allowReturnBug == (*inputs.gameLibraryVersion == 20);
+    for (const auto* input : {&inputs.common, &inputs.blizzard}) {
+        if (input->bytes.size() > kBaseBytes) { valid = false; continue; }
+        auto hash = Sha256(input->bytes);
+        result.diagnostics.insert(result.diagnostics.end(), hash.diagnostics.begin(), hash.diagnostics.end());
+        valid = valid && hash.Succeeded() && *hash.value == input->sha256;
+        const std::string name = input == &inputs.common ? "common.j" : "blizzard.j";
+        valid = valid && (SameMember(input->memberName, name) || SameMember(input->memberName, "scripts\\" + name));
+        switch (input->origin) {
+        case ScriptBaseOrigin::MapArchive:
+            valid = valid && !input->sourceRoot.empty() && !inputs.sourceMapSha256.empty() && input->archiveName.empty();
+            break;
+        case ScriptBaseOrigin::MapReplacement:
+            valid = valid && input->archiveName.empty();
+            break;
+        case ScriptBaseOrigin::GameArchive:
+            valid = valid && !input->sourceRoot.empty() && !input->archiveName.empty();
+            break;
+        default:
+            valid = false;
+            break;
+        }
+    }
+    if (!valid) Reject(result.diagnostics, "SCRIPT_BASE_SNAPSHOT_MISMATCH", "冻结的基础库字节、摘要或来源不符合仅地图和游戏来源策略");
     return result;
 }
 

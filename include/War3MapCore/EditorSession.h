@@ -23,7 +23,7 @@ class LniObjectCodec;
 class NativeObjectCodec;
 }
 
-namespace MapData { class MapDataFieldPatchCodec; class MapDataPlacementPatchCodec; }
+namespace MapData { class MapDataFieldPatchCodec; class MapDataPlacementPatchCodec; class TerrainPatchCodec; }
 
 struct OpenRequest {
     std::filesystem::path workspacePath;
@@ -94,6 +94,20 @@ private:
     std::vector<BinaryFilePatch> files_;
 };
 
+// 只由共用地形 codec 重放证明；不扩大 MapDataPatch 的成员范围。
+class TerrainPatch {
+public:
+    TerrainPatch(TerrainPatch&&) noexcept = default;
+    TerrainPatch& operator=(TerrainPatch&&) noexcept = default;
+    TerrainPatch(const TerrainPatch&) = delete;
+    TerrainPatch& operator=(const TerrainPatch&) = delete;
+private:
+    friend class MapData::TerrainPatchCodec;
+    friend class EditorSession;
+    explicit TerrainPatch(std::vector<BinaryFilePatch> files) : files_(std::move(files)) {}
+    std::vector<BinaryFilePatch> files_;
+};
+
 class EditorSession {
 public:
     EditorSession(EditorSession&&) noexcept;
@@ -121,6 +135,7 @@ public:
     [[nodiscard]] Status ApplyMapDataPatch(
         TransactionId transactionId,
         MapDataPatch patch);
+    [[nodiscard]] Status ApplyTerrainPatch(TransactionId transactionId, TerrainPatch patch);
     // 仅 codec 密封的空基线物编可创建成员。既有替换入口不放宽；类别、格式、
     // 来源缺失及空基线身份均须成立。再次编辑同一新增成员仍使用这个显式入口。
     [[nodiscard]] Status CreateObjectMember(

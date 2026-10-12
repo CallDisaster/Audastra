@@ -1,10 +1,12 @@
 #include "War3MapCore/Script/MapTestToolchain.h"
+#include "War3MapCore/Services/LuaTestMailboxSession.h"
 #include "War3MapCore/Hash.h"
 #include "../../src/ScriptBuild/MapTestLaunchInternal.h"
 
 #include <windows.h>
 
 #include <filesystem>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
@@ -53,6 +55,10 @@ struct Temp {
 int wmain(int argc, wchar_t** argv) {
     try {
         Require(argc == 2, "console fixture executable path argument");
+        Services::MapTestLaunchPlan pendingRuntime;
+        pendingRuntime.useOwnedLuaRuntime = true; pendingRuntime.enableLuaHotReload = true;
+        Require(Code(Script::detail::LaunchVerifiedMapTestPlan(pendingRuntime), "MAP_TEST_OWN_LUA_PLAN"),
+            "internal execution entry refuses incomplete owned component identity before copying or starting");
         Temp temp;
         const auto helper = temp.root / "fakeWarcraftConsole.exe";
         Require(CopyFileW(argv[1], helper.c_str(), TRUE) != FALSE, "copy only original tiny console fixture into owned temp directory");
@@ -129,6 +135,91 @@ int wmain(int argc, wchar_t** argv) {
         plan.arguments = {L"--parent", (temp.root / "after-fast-ended").wstring(), L"600"};
         auto afterFast = Script::detail::LaunchVerifiedMapTestPlan(plan); Success(afterFast, "fast exited child never permanently blocks a new test task");
         WaitTerminal(afterFast.value->lease); Success(afterFast.value->lease->Cleanup(), "next slow task has complete terminal proof");
+
+        // 原创控制台接收器经过真实LaunchVerified入口/继承白名单/Job，不使用游戏或GPU。
+        const auto game = plan.workingDirectory / "war3.exe";
+        Require(CopyFileW(helper.c_str(), game.c_str(), TRUE) != FALSE, "owned fixture game image");
+        WriteNew(plan.workingDirectory / "Game.dll", "original placeholder module identity");
+        plan.runtimeBootstrap = temp.root / "bootstrap.dll";
+        WriteNew(plan.runtimeBootstrap, "original placeholder bootstrap identity");
+        plan.runtimeBootstrapSha256 = Hash(plan.runtimeBootstrap);
+        plan.gameExecutableSha256 = Hash(game); plan.gameModuleSha256 = Hash(plan.workingDirectory / "Game.dll");
+        plan.useOwnedLuaRuntime = true;
+        SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
+        HANDLE forbidden = CreateFileMappingW(INVALID_HANDLE_VALUE, &security, PAGE_READWRITE, 0, 4096, nullptr);
+        Require(forbidden != nullptr, "unrelated inheritable mapping");
+        struct Close { HANDLE value; ~Close() { CloseHandle(value); } } forbiddenGuard{forbidden};
+        void* forbiddenView = MapViewOfFile(forbidden, FILE_MAP_WRITE, 0, 0, 16);
+        Require(forbiddenView != nullptr, "unrelated mapping view");
+        std::memcpy(forbiddenView, "not-for-child", 13); UnmapViewOfFile(forbiddenView);
+        for (const bool reload : {false, true}) {
+            const auto token = reload ? "owned-reload" : "owned-diagnostics";
+            const auto marker = temp.root / (std::string(token) + "-ended");
+            plan.enableLuaHotReload = reload; plan.gameMapCopy = task(token);
+            plan.runtimeReceipt = temp.root / "receipts" / (std::string(token) + ".json");
+            plan.arguments = {L"--owned-parent", L"--game", game.wstring(), L"--marker", marker.wstring(),
+                L"--lua-map-sha256", std::wstring(plan.testMapSha256.begin(), plan.testMapSha256.end()),
+                L"--forbidden-handle", std::to_wstring(reinterpret_cast<std::uintptr_t>(forbidden))};
+            auto launched = Script::detail::LaunchVerifiedMapTestPlan(plan); Success(launched, "owned mailbox launch");
+            Require(launched.value->luaMailbox != nullptr, "owned launch always returns a diagnostic mailbox");
+            Result<Services::LuaTestReloadSnapshot> active;
+            const auto readyStart = GetTickCount64();
+            do {
+                active = Services::QueryLuaTestReload(*launched.value->luaMailbox);
+                if (active.Succeeded() && active.value->processActive) break;
+                Sleep(10);
+            } while (launched.value->lease->IsActive() && GetTickCount64() - readyStart < 5000);
+            Success(active, "mailbox confirms only original captured game handle");
+            Require(active.value->processActive && active.value->runtimeMessage == "original launch fixture asynchronous diagnostic",
+                "diagnostic comes from original game child and unrelated inheritable mapping was not passed");
+            const auto submit = Services::SubmitLuaTestReload(*launched.value->luaMailbox, {"@fixture.lua", "return true"});
+            if (reload) {
+                Success(submit, "enabled owned mailbox can submit");
+                const auto ackStart = GetTickCount64();
+                do {
+                    active = Services::QueryLuaTestReload(*launched.value->luaMailbox, *submit.value);
+                    if (active.Succeeded() && active.value->state == Services::LuaTestReloadState::Complete) break;
+                    Sleep(10);
+                } while (GetTickCount64() - ackStart < 1000);
+                Require(active.Succeeded() && active.value->message == "original fixture ACK", "exact fixture ACK through product mailbox");
+            } else Require(!submit.Succeeded() && submit.diagnostics.front().code == "LUA_TEST_RELOAD_DISABLED", "disabled reload rejects sending while diagnostics work");
+            WaitTerminal(launched.value->lease);
+            Require(std::filesystem::exists(marker), "owned child exited naturally");
+            const auto ended = Services::QueryLuaTestReload(*launched.value->luaMailbox);
+            Success(ended, "last diagnostic survives IsActive terminal handle closure");
+            Require(!ended.value->processActive && ended.value->runtimeMessage == "original launch fixture asynchronous diagnostic",
+                "retained exit identity preserves last runtime error");
+            Success(launched.value->lease->Cleanup(), "owned map cleanup after original Job terminal");
+            Require(Services::QueryLuaTestReload(*launched.value->luaMailbox).Succeeded(), "terminal diagnostics survive file cleanup");
+        }
+        plan.gameMapCopy = task("owned-spoof"); plan.runtimeReceipt = temp.root / "receipts/spoof.json";
+        plan.arguments.insert(plan.arguments.end(), {L"--spoof-pid", L"yes"});
+        auto spoof = Script::detail::LaunchVerifiedMapTestPlan(plan); Success(spoof, "spoofed mailbox fixture launch");
+        Result<Services::LuaTestReloadSnapshot> refused;
+        const auto spoofStart = GetTickCount64();
+        do {
+            refused = Services::QueryLuaTestReload(*spoof.value->luaMailbox);
+            if (!refused.Succeeded()) break;
+            Sleep(10);
+        } while (GetTickCount64() - spoofStart < 3000 && spoof.value->lease->IsActive());
+        Require(!refused.Succeeded() && refused.diagnostics.front().code == "LUA_TEST_PROCESS_UNCONFIRMED",
+            "mailbox cannot supply an unobserved PID to gain ownership");
+        WaitTerminal(spoof.value->lease); Success(spoof.value->lease->Cleanup(), "real spoof fixture tree still cleans safely");
+        Require(!Services::QueryLuaTestReload(*spoof.value->luaMailbox).Succeeded(), "unknown mailbox identity does not become owned after exit");
+
+        plan.gameMapCopy = task("owned-startup-failure"); plan.runtimeReceipt = temp.root / "receipts/startup-failure.json";
+        plan.arguments = {L"--owned-parent", L"--marker", (temp.root / "must-not-exist").wstring(), L"--lua-map-sha256",
+            std::wstring(plan.testMapSha256.begin(), plan.testMapSha256.end()), L"--startup-failure", L"yes", L"--receipt", plan.runtimeReceipt.wstring()};
+        auto startupFailure = Script::detail::LaunchVerifiedMapTestPlan(plan); Success(startupFailure, "pre-handshake failure fixture");
+        WaitTerminal(startupFailure.value->lease);
+        const auto failureCleanup = startupFailure.value->lease->Cleanup();
+        Require(Code(failureCleanup, "MAP_TEST_PROCESS_EXIT") && failureCleanup.diagnostics.back().message.find("original pre-handshake failure") != std::string::npos,
+            "bootstrap failure before mailbox handshake retains concrete bounded failure text");
+        plan.gameMapCopy = task("owned-changed-bootstrap");
+        { std::ofstream changed(plan.runtimeBootstrap, std::ios::binary | std::ios::trunc); changed << "changed bootstrap"; }
+        Require(Code(Script::detail::LaunchVerifiedMapTestPlan(plan), "MAP_TEST_EXECUTABLE_CHANGED"),
+            "bootstrap replacement after preflight cannot create a launcher");
+        Require(!std::filesystem::exists(plan.gameMapCopy), "failed component identity cleans only its unstarted short copy");
         std::cout << "Independent map test launch console Job scenarios passed; no YDWE, Warcraft, registry or GPU used\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

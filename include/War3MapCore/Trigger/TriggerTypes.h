@@ -54,6 +54,9 @@ public:
     [[nodiscard]] Status ValidateLiteral(std::string_view type, std::string_view value) const;
     // 与现有 JASS 后端共用同一数值字面量规则，不接受表达式或静默转换。
     [[nodiscard]] static bool IsIntegerLiteral(std::string_view value);
+    // 十进制 int32 或 JASS 的 0x/$ 十六进制32位字面量；返回相同有符号位模式。
+    // Lua 生成也用本解析，不把 0xFF000000 错当成正数或默认0。
+    [[nodiscard]] static std::optional<std::int32_t> ParseIntegerLiteral(std::string_view value);
     [[nodiscard]] static bool IsRealLiteral(std::string_view value);
     // 不带外层引号的四个可安全编码字节；与JASS/Lua生成器共用。
     [[nodiscard]] static bool IsObjectCodeLiteral(std::string_view value);

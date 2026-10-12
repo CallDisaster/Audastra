@@ -1,4 +1,5 @@
 #include "War3MapCore/Script/LuaAuthorCode.h"
+#include "LuaDeclarationScan.h"
 
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapData/MapSettings.h"
@@ -149,7 +150,7 @@ bool Identifier(char c) {
 }
 bool IdentifierPart(char c) { return Identifier(c) || (c >= '0' && c <= '9'); }
 
-struct Token { std::string_view text; std::size_t offset = 0; };
+using Token = lua::DeclarationToken;
 class DeclarationTokens {
 public:
     DeclarationTokens(std::string_view text, const Lua::SyntaxOptions& options) : text_(text), options_(options) {}
@@ -217,10 +218,7 @@ private:
 
 // 此扫描只证明具名顶层函数声明；语法已由同一个 Lua 5.3 编译器检查。
 // 不执行正文，也不把字符串、注释、局部或嵌套声明当成可调用初始化函数。
-struct Declarations {
-    std::set<std::string> functions;
-    std::set<std::string> locals;
-};
+using Declarations = lua::AuthorDeclarations;
 Declarations GlobalFunctions(std::string_view text, const Lua::SyntaxOptions& options) {
     const auto tokens = DeclarationTokens(text, options).Run();
     std::set<std::string> functions;
@@ -295,6 +293,13 @@ void AddDeclarations(const std::set<std::string>& declarations, std::set<std::st
 }
 template<class T> Result<T> Failure(const Diagnostic& diagnostic) { return {std::nullopt, {diagnostic}}; }
 } // namespace
+
+std::vector<lua::DeclarationToken> lua::ScanDeclarationTokens(std::string_view text, const Lua::SyntaxOptions& options) {
+    return DeclarationTokens(text, options).Run();
+}
+lua::AuthorDeclarations lua::CollectAuthorDeclarations(std::string_view text, const Lua::SyntaxOptions& options) {
+    return GlobalFunctions(text, options);
+}
 
 const LuaAuthorCodeIdentity* PreparedLuaAuthorCode::Identity() const noexcept { return state_ ? &state_->identity : nullptr; }
 std::string_view PreparedLuaAuthorCode::Header() const noexcept { return state_ ? state_->header : std::string_view{}; }

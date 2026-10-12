@@ -41,6 +41,18 @@ int ConcurrentGameLoad() {
 
 int wmain(int argc, wchar_t** argv) {
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+    if (argc > 1 && wcsstr(argv[argc - 1], L"minimized.w3x")) {
+        STARTUPINFOW startup{}; startup.cb = sizeof(startup); GetStartupInfoW(&startup);
+        if (!(startup.dwFlags & STARTF_USESHOWWINDOW) || startup.wShowWindow != SW_SHOWMINNOACTIVE) return 58;
+    }
+    if (argc > 1 && wcsstr(argv[argc - 1], L"visible-no-activate.w3x")) {
+        STARTUPINFOW startup{}; startup.cb = sizeof(startup); GetStartupInfoW(&startup);
+        if (!(startup.dwFlags & STARTF_USESHOWWINDOW) || startup.wShowWindow != SW_SHOWNOACTIVATE) return 59;
+    }
+    if (argc > 1 && wcsstr(argv[argc - 1], L"default-display.w3x")) {
+        STARTUPINFOW startup{}; startup.cb = sizeof(startup); GetStartupInfoW(&startup);
+        if (startup.dwFlags & STARTF_USESHOWWINDOW) return 60;
+    }
     if (argc > 1 && wcsstr(argv[argc - 1], L"nogame.w3x")) return 0;
     if (argc > 1 && wcsstr(argv[argc - 1], L"hang.w3x")) { Sleep(INFINITE); return 45; }
     if (argc > 1 && wcsstr(argv[argc - 1], L"concurrent.w3x")) return ConcurrentGameLoad();

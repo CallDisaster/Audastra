@@ -17,7 +17,7 @@ class MapWriter {
 public:
     MapWriter(const MapInitializationPlan& plan, const Trigger::TriggerDocument& document,
         const Trigger::UiCatalog& catalog, const LuaTargetProfile& target,
-        std::span<const LuaCallbackBinding> callbacks);
+        std::span<const LuaCallbackBinding> callbacks, LuaTriggerBuildOptions options, const LuaMapScriptOptions& mapOptions);
     LuaMapScriptResult Run();
 
 private:
@@ -60,6 +60,8 @@ private:
     const Trigger::UiCatalog& catalog_;
     const LuaTargetProfile& target_;
     std::span<const LuaCallbackBinding> callbacks_;
+    LuaTriggerBuildOptions options_;
+    LuaMapScriptOptions mapOptions_;
     LuaMapScriptResult result_;
     ScriptText out_;
     std::map<std::string, const LuaApiSignature*> apis_;

@@ -17,8 +17,8 @@ namespace {
 constexpr std::size_t kKindCount = static_cast<std::size_t>(MapDataKind::Count);
 constexpr std::size_t kMaxRows = 128;
 constexpr std::size_t kMaxLogicalBytes = 256 * 1024;
-constexpr std::size_t kMaxUnitLogicalBytes = 252 * 1024;
-constexpr std::size_t kMaxUnitExamined = 4096;
+constexpr std::size_t kMaxEntityLogicalBytes = 252 * 1024;
+constexpr std::size_t kMaxEntityExamined = 4096;
 static_assert(kKindCount == 7);
 static_assert(sizeof(float) == sizeof(std::uint32_t));
 
@@ -317,42 +317,110 @@ Result<MapDataQueryPage> QueryMapDataPage(
     }
 }
 
-Result<MapDataUnitQueryPage> QueryMapDataUnitsPage(
-    const MapDataQuerySnapshot& snapshot, const MapDataQueryBinding& expected,
-    const MapDataUnitFilter& filter, const std::optional<MapDataUnitQueryCursor>& cursor,
+namespace {
+bool ValidWorldRect(const MapDataWorldRect& rectangle) {
+    return std::isfinite(rectangle.left) && std::isfinite(rectangle.bottom)
+        && std::isfinite(rectangle.right) && std::isfinite(rectangle.top)
+        && rectangle.left <= rectangle.right && rectangle.bottom <= rectangle.top;
+}
+
+Result<bool> EntityMatches(const MapDocument& document, MapDataKind kind,
+    std::size_t index, const MapDataEntityFilter& filter) {
+    const auto spatialUnknown = [&] {
+        return Failure<bool>("MAP_DATA_QUERY_SPATIAL_UNAVAILABLE", "无法可靠取得 "
+            + std::string(MapData::MapDataKindId(kind)) + " 原行 " + std::to_string(index)
+            + " 的有限世界坐标或范围，不能将它视为范围外。");
+    };
+    const auto pointMatches = [&](double x, double y) {
+        if (!filter.worldRect) return Result<bool>::Success(true);
+        if (!std::isfinite(x) || !std::isfinite(y)) return spatialUnknown();
+        const auto& rect = *filter.worldRect;
+        return Result<bool>::Success(x >= rect.left && x <= rect.right && y >= rect.bottom && y <= rect.top);
+    };
+    switch (kind) {
+    case MapDataKind::Units: {
+        const auto& unit = document.Units()->units[index];
+        if ((filter.typeIdBytes && unit.rawcode != *filter.typeIdBytes)
+            || (filter.player && unit.owner != *filter.player)) return Result<bool>::Success(false);
+        return pointMatches(unit.position[0], unit.position[1]);
+    }
+    case MapDataKind::Doodads: {
+        const auto& table = *document.Doodads();
+        if (index < table.doodads.size()) {
+            const auto& doodad = table.doodads[index];
+            if (filter.typeIdBytes && doodad.rawcode != *filter.typeIdBytes) return Result<bool>::Success(false);
+            return pointMatches(doodad.position[0], doodad.position[1]);
+        }
+        const auto& special = table.specialDoodads[index - table.doodads.size()];
+        if (filter.typeIdBytes && special.rawcode != *filter.typeIdBytes) return Result<bool>::Success(false);
+        // 原行只有地形格坐标；快照没有 W3E 原点，不能按默认零点转换或静默漏掉它。
+        return filter.worldRect ? spatialUnknown() : Result<bool>::Success(true);
+    }
+    case MapDataKind::Cameras: {
+        const auto& camera = document.Cameras()->entries[index];
+        return pointMatches(camera.targetX, camera.targetY);
+    }
+    case MapDataKind::Regions: {
+        if (!filter.worldRect) return Result<bool>::Success(true);
+        const auto& region = document.Regions()->entries[index];
+        const MapDataWorldRect bounds{region.left, region.bottom, region.right, region.top};
+        if (!ValidWorldRect(bounds)) return spatialUnknown();
+        const auto& rect = *filter.worldRect;
+        return Result<bool>::Success(bounds.right >= rect.left && bounds.left <= rect.right
+            && bounds.top >= rect.bottom && bounds.bottom <= rect.top);
+    }
+    default: return Failure<bool>("MAP_DATA_QUERY_KIND", "实体筛选不支持此成员类别。");
+    }
+}
+} // namespace
+
+Result<MapDataEntityQueryPage> QueryMapDataEntitiesPage(
+    const MapDataQuerySnapshot& snapshot, const MapDataQueryBinding& expected, MapDataKind kind,
+    const MapDataEntityFilter& filter, const std::optional<MapDataEntityQueryCursor>& cursor,
     std::size_t limit, std::size_t maxExamined, std::size_t maxLogicalBytes) {
+    using Page = MapDataEntityQueryPage;
+    if (kind != MapDataKind::Units && kind != MapDataKind::Doodads
+        && kind != MapDataKind::Regions && kind != MapDataKind::Cameras)
+        return Failure<Page>("MAP_DATA_QUERY_KIND", "实体筛选只支持单位、地物、区域和镜头。");
     if (expected != snapshot.binding_ || (cursor && cursor->source.binding != snapshot.binding_))
-        return Failure<MapDataUnitQueryPage>("MAP_DATA_QUERY_STALE", "文档身份、世代、修订或来源 SHA-256 已变化。");
-    if (cursor && (cursor->source.kind != MapDataKind::Units || cursor->filter != filter))
-        return Failure<MapDataUnitQueryPage>("MAP_DATA_QUERY_CURSOR_INVALID", "单位续页游标的成员类别或过滤条件不匹配。");
+        return Failure<Page>("MAP_DATA_QUERY_STALE", "文档身份、世代、修订或来源 SHA-256 已变化。");
+    if (cursor && (cursor->source.kind != kind || cursor->filter != filter))
+        return Failure<Page>("MAP_DATA_QUERY_CURSOR_INVALID", "实体续页游标的成员类别或过滤条件不匹配。");
+    if ((filter.player && kind != MapDataKind::Units)
+        || (filter.typeIdBytes && kind != MapDataKind::Units && kind != MapDataKind::Doodads))
+        return Failure<Page>("MAP_DATA_ENTITY_FILTER_KIND", "玩家只适用于单位，类型只适用于单位和地物。");
     if (filter.typeIdBytes && filter.typeIdBytes->size() != 4)
-        return Failure<MapDataUnitQueryPage>("MAP_DATA_UNIT_FILTER_INVALID", "单位类型筛选须为恰好四个原始字节。");
-    if (limit == 0 || limit > kMaxRows || maxExamined == 0 || maxExamined > kMaxUnitExamined
-        || maxLogicalBytes == 0 || maxLogicalBytes > kMaxUnitLogicalBytes)
-        return Failure<MapDataUnitQueryPage>("MAP_DATA_QUERY_LIMIT", "单位页须为 1–128 条、1–4096 次扫描且逻辑正文不超过 252 KiB。");
-    const auto& member = snapshot.members_[static_cast<std::size_t>(MapDataKind::Units)];
+        return Failure<Page>("MAP_DATA_UNIT_FILTER_INVALID", "实体类型筛选须为恰好四个原始字节。");
+    if (filter.worldRect && !ValidWorldRect(*filter.worldRect))
+        return Failure<Page>("MAP_DATA_ENTITY_FILTER_RECT", "世界矩形必须为有限数，且 left≤right、bottom≤top。");
+    if (limit == 0 || limit > kMaxRows || maxExamined == 0 || maxExamined > kMaxEntityExamined
+        || maxLogicalBytes == 0 || maxLogicalBytes > kMaxEntityLogicalBytes)
+        return Failure<Page>("MAP_DATA_QUERY_LIMIT", "实体页须为 1–128 条、1–4096 次扫描且逻辑正文不超过 252 KiB。");
+    const auto& member = snapshot.members_[static_cast<std::size_t>(kind)];
     if (member.state != MapDataQueryState::Ready && member.state != MapDataQueryState::Partial
         && member.state != MapDataQueryState::Missing)
-        return Failure<MapDataUnitQueryPage>("MAP_DATA_QUERY_MEMBER_UNAVAILABLE", "成员状态未知或不可可靠解析，不能视为空表。");
+        return Failure<Page>("MAP_DATA_QUERY_MEMBER_UNAVAILABLE", "成员状态未知或不可可靠解析，不能视为空表。");
     if ((member.state == MapDataQueryState::Missing && (member.recordCount || member.memberSha256))
         || (member.state != MapDataQueryState::Missing && (!member.recordCount || !member.memberSha256)))
-        return Failure<MapDataUnitQueryPage>("MAP_DATA_QUERY_INCONSISTENT", "单位成员状态、记录计数与 SHA/presence 不一致。");
+        return Failure<Page>("MAP_DATA_QUERY_INCONSISTENT", "实体成员状态、记录计数与 SHA/presence 不一致。");
     if (cursor && cursor->memberSha256 != member.memberSha256)
-        return Failure<MapDataUnitQueryPage>("MAP_DATA_QUERY_MEMBER_STALE", "单位成员 SHA 或 presence 已变化，请从当前快照重新查询。");
+        return Failure<Page>("MAP_DATA_QUERY_MEMBER_STALE", "实体成员 SHA 或 presence 已变化，请从当前快照重新查询。");
     const std::size_t count = member.recordCount.value_or(0);
-    if (member.state != MapDataQueryState::Missing
-        && (!snapshot.document_->Units() || snapshot.document_->Units()->units.size() != count))
-        return Failure<MapDataUnitQueryPage>("MAP_DATA_QUERY_INCONSISTENT", "单位成员摘要与冻结 typed 表的记录计数不一致。");
+    if (member.state != MapDataQueryState::Missing) {
+        const auto typedCount = MapData::MapFieldRowCount(*snapshot.document_, kind);
+        if (!typedCount.Succeeded() || !typedCount.value || *typedCount.value != count)
+            return Failure<Page>("MAP_DATA_QUERY_INCONSISTENT", "实体成员摘要与冻结 typed 表的记录计数不一致。");
+    }
     const std::uint64_t first = cursor ? cursor->source.nextIndex : 0;
-    if (first > count) return Failure<MapDataUnitQueryPage>(
-        "MAP_DATA_QUERY_CURSOR_INVALID", "续页游标越过单位成员记录数量。");
+    if (first > count) return Failure<Page>(
+        "MAP_DATA_QUERY_CURSOR_INVALID", "续页游标越过实体成员记录数量。");
     try {
-        MapDataUnitQueryPage page{snapshot.binding_, member};
+        Page page{snapshot.binding_, member};
         page.logicalBytes = 320 + page.binding.documentId.size() + page.binding.sourceSha256.size()
             + page.member.memberName.size() + page.member.memberSha256.value_or("").size()
-            + filter.typeIdBytes.value_or("").size();
-        if (page.logicalBytes > maxLogicalBytes) return Failure<MapDataUnitQueryPage>(
-            "MAP_DATA_QUERY_BUDGET", "单位页预算不足以容纳身份、过滤条件及成员描述。");
+            + filter.typeIdBytes.value_or("").size() + (filter.worldRect ? 192 : 0);
+        if (page.logicalBytes > maxLogicalBytes) return Failure<Page>(
+            "MAP_DATA_QUERY_BUDGET", "实体页预算不足以容纳身份、过滤条件及成员描述。");
         page.rows.reserve(std::min(limit, count - static_cast<std::size_t>(first)));
         // 小表从零扫描一遍取得可信总数；不接受客户端传入累计计数。
         const bool exactTotal = count <= maxExamined;
@@ -362,10 +430,10 @@ Result<MapDataUnitQueryPage> QueryMapDataUnitsPage(
         auto nextIndex = static_cast<std::size_t>(first);
         bool accepting = true, pendingMatch = false;
         for (std::size_t i = begin; i < end; ++i) {
-            const auto& unit = snapshot.document_->Units()->units[i];
             ++page.examined;
-            const bool matches = (!filter.typeIdBytes || unit.rawcode == *filter.typeIdBytes)
-                && (!filter.player || unit.owner == *filter.player);
+            auto matched = EntityMatches(*snapshot.document_, kind, i, filter);
+            if (!matched.Succeeded() || !matched.value) return {{}, std::move(matched.diagnostics)};
+            const bool matches = *matched.value;
             if (matches && exactTotal) ++*page.matchedTotal;
             if (i < first) continue;
             if (!accepting) {
@@ -373,19 +441,19 @@ Result<MapDataUnitQueryPage> QueryMapDataUnitsPage(
                 continue;
             }
             if (!matches) { nextIndex = i + 1; continue; }
-            // 未命中原行只读取四字节类型与 owner，不展开字段、字符串或 JSON DTO。
-            auto made = MakeRow(*snapshot.document_, MapDataKind::Units, i);
+            // 未命中原行只读取筛选所需 typed 字段，不展开其它字段、字符串或 JSON DTO。
+            auto made = MakeRow(*snapshot.document_, kind, i);
             if (made.Succeeded() && made.value)
-                made = AttachFields(*snapshot.document_, MapDataKind::Units, i, std::move(*made.value));
+                made = AttachFields(*snapshot.document_, kind, i, std::move(*made.value));
             if (!made.Succeeded()) {
-                Result<MapDataUnitQueryPage> failure;
+                Result<Page> failure;
                 failure.diagnostics = std::move(made.diagnostics);
                 return failure;
             }
             const auto rowBytes = RowLogicalBytes(*made.value);
             if (rowBytes > maxLogicalBytes - page.logicalBytes) {
-                if (page.rows.empty()) return Failure<MapDataUnitQueryPage>(
-                    "MAP_DATA_QUERY_BUDGET", "单条单位记录超出允许页预算。");
+                if (page.rows.empty()) return Failure<Page>(
+                    "MAP_DATA_QUERY_BUDGET", "单条实体记录超出允许页预算。");
                 accepting = false;
                 pendingMatch = true;
                 nextIndex = i; // 当前命中尚未返回，下一页必须重查该原行。
@@ -401,14 +469,22 @@ Result<MapDataUnitQueryPage> QueryMapDataUnitsPage(
             }
         }
         if ((exactTotal && pendingMatch) || (!exactTotal && nextIndex < count))
-            page.next = MapDataUnitQueryCursor{{page.binding, MapDataKind::Units, nextIndex}, filter, member.memberSha256};
+            page.next = MapDataEntityQueryCursor{{page.binding, kind, nextIndex}, filter, member.memberSha256};
         page.scanBudgetExhausted = !exactTotal && page.examined == maxExamined && nextIndex < count;
-        return Result<MapDataUnitQueryPage>::Success(std::move(page));
+        return Result<Page>::Success(std::move(page));
     } catch (const std::bad_alloc&) {
-        return Failure<MapDataUnitQueryPage>("MAP_DATA_QUERY_ALLOCATION", "单位筛选页内存分配失败。");
+        return Failure<Page>("MAP_DATA_QUERY_ALLOCATION", "实体筛选页内存分配失败。");
     } catch (const std::length_error&) {
-        return Failure<MapDataUnitQueryPage>("MAP_DATA_QUERY_LENGTH", "单位筛选页长度超出容器限制。");
+        return Failure<Page>("MAP_DATA_QUERY_LENGTH", "实体筛选页长度超出容器限制。");
     }
+}
+
+Result<MapDataUnitQueryPage> QueryMapDataUnitsPage(
+    const MapDataQuerySnapshot& snapshot, const MapDataQueryBinding& expected,
+    const MapDataUnitFilter& filter, const std::optional<MapDataUnitQueryCursor>& cursor,
+    std::size_t limit, std::size_t maxExamined, std::size_t maxLogicalBytes) {
+    return QueryMapDataEntitiesPage(snapshot, expected, MapDataKind::Units,
+        filter, cursor, limit, maxExamined, maxLogicalBytes);
 }
 
 } // namespace War3Map::Services

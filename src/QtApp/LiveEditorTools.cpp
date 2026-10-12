@@ -1,4 +1,6 @@
 #include "LiveEditorTools.h"
+#include "McpLuaTestTools.h"
+#include "McpWorldViewportTools.h"
 #include "McpCampaignTools.h"
 #include "LiveObjectTools.h"
 #include "EditorProject.h"
@@ -10,7 +12,10 @@
 #include "McpVariableTools.h"
 #include "McpMapDataTools.h"
 #include "McpImportTools.h"
+#include "McpObjectResourceTools.h"
+#include "LiveObjectResourceTools.h"
 #include "McpPlacementTools.h"
+#include "McpTerrainEditTools.h"
 #include "McpProductTools.h"
 #include "McpCodeCheckTools.h"
 #include "McpProjectSearchTools.h"
@@ -227,6 +232,7 @@ const char* RecordKind(Trigger::GraphRecordKind kind) {
 class LiveEditorTools::Impl {
 public:
     Impl(EditorProject& project, LiveEditorTools& owner) : project_(project), owner_(owner), ownerHandle_(&owner) {
+        objectResources_ = std::make_unique<LiveObjectResourceTools>(project_);
         RegisterTools();
         QObject::connect(&project_, &EditorProject::TriggerDocumentChanged, &owner_, [this] { emit owner_.Changed(); });
         QObject::connect(&project_, &EditorProject::ObjectDocumentsReplaced, &owner_, [this] { emit owner_.Changed(); });
@@ -236,6 +242,10 @@ public:
 
     Mcp::McpServer& Server() noexcept { return server_; }
     void SetSaveHandler(std::function<bool(const std::filesystem::path&, bool)> handler) { save_ = std::move(handler); }
+    void SetLuaTestHandler(std::function<QJsonObject(bool)> handler) { luaTest_ = std::move(handler); }
+    void SetWorldViewportHandler(std::function<QJsonObject(const QString&, const QJsonObject&)> handler) {
+        worldViewport_ = std::move(handler);
+    }
     void SetBeforeWrite(std::function<bool()> handler) { beforeWrite_ = std::move(handler); }
     void SetProjectSearchQuery(ProjectSearchRevisionQuery revision, ProjectSearchPageQuery query) {
         // 每次重绑定切换不可复用的 token；执行中的 callback 有自己的拥有副本。
@@ -259,7 +269,14 @@ public:
         const auto content = response->result.toObject().value("content").toArray();
         if (content.isEmpty()) return Mcp::Failure("LIVE_EDITOR_RESPONSE_MISSING", "工具结果缺少结构化正文。");
         const auto parsed = QJsonDocument::fromJson(content[0].toObject().value("text").toString().toUtf8());
-        return parsed.isObject() ? parsed.object() : Mcp::Failure("LIVE_EDITOR_RESPONSE_INVALID", "工具结果不是结构化对象。");
+        if (!parsed.isObject()) return Mcp::Failure("LIVE_EDITOR_RESPONSE_INVALID", "工具结果不是结构化对象。");
+        auto body = parsed.object();
+        for (const auto& block : content) {
+            const auto image = block.toObject();
+            if (image.value("type") == QJsonValue("image") && image.value("mimeType") == QJsonValue("image/png"))
+                body.insert("image", QJsonObject{{"mime_type", "image/png"}, {"encoding", "base64"}, {"data", image.value("data")}});
+        }
+        return body;
     }
 
     QJsonArray Tools() {
@@ -592,10 +609,16 @@ private:
     }
 
     QJsonObject PlacementTool(const QString& name, const QJsonObject& arguments) {
-        return Write(arguments, false, [&] {
+        const auto invoke = [&] {
             Mcp::PlacementToolHost host;
             host.identity = [this] { return State(); };
             host.context = [this] { return VisibleMapDataContext(); };
+            host.objectContext = MakeLiveObjectContextProvider(project_, State());
+            host.terrainPoint = [this](const MapData::TerrainStrokePoint& point) -> Result<MapData::TerrainPointSample> {
+                if (!project_.mapEdits_) return Result<MapData::TerrainPointSample>::Failure("QtApp.Live",
+                    "ENTITY_CREATE_HOST_UNAVAILABLE", "当前地图没有可用的地形会话。");
+                return project_.mapEdits_->InspectTerrainPoint(point);
+            };
             host.apply = [this](const MapData::PreparedMapDataPlacement& plan,
                 const Mcp::PlacementPrepublishValidator& validate) -> Result<MapData::MapDataEditSession::EditReceipt> {
                 using Receipt = MapData::MapDataEditSession::EditReceipt;
@@ -614,7 +637,62 @@ private:
                 return Result<Receipt>::Success(receipt);
             };
             return Mcp::InvokePlacementTool(name, arguments, host);
-        });
+        };
+        if (arguments.contains("dry_run") && !arguments.value("dry_run").isBool())
+            return Mcp::Failure("ENTITY_ARGUMENT_TYPE", "dry_run 须为布尔值。");
+        if (!arguments.value("dry_run").toBool()) return Write(arguments, false, invoke);
+        // 预览只读当前已提交到工程的 UI 状态，不能因提交草稿而改变修订或撤销历史。
+        if (busy_ || project_.savingMap_) return Mcp::Failure("LIVE_EDITOR_BUSY", "地图写任务正在执行。");
+        const auto checked = CheckContext(arguments, false, true);
+        if (!checked.value("ok").toBool()) return checked;
+        return invoke();
+    }
+
+    QJsonObject TerrainTool(const QString& name, const QJsonObject& arguments, bool write) {
+        const auto context = [this]() -> Result<Mcp::TerrainEditToolContext> {
+            if (!project_.mapEdits_ || !project_.mapEdits_->Terrain())
+                return Result<Mcp::TerrainEditToolContext>::Failure("QtApp.Live", "LIVE_EDITOR_TERRAIN_UNAVAILABLE",
+                    "当前地图没有可读取的原地形会话。");
+            const auto identity = State();
+            return Result<Mcp::TerrainEditToolContext>::Success({project_.mapEdits_.get(),
+                {projectIdentity_.toStdString(), generation_, project_.editRevision_.Revision(),
+                    identity.value("source_sha256").toString().toStdString()}, false, project_.mapEdits_->IsDirty()});
+        };
+        const auto invoke = [&] {
+            Mcp::TerrainEditToolHost host;
+            host.identity = [this] { return State(); };
+            host.context = context;
+            host.apply = [this, &context](const Services::PreparedTerrainEdit& plan,
+                const std::function<Status(const MapData::MapDataEditSession::EditReceipt&)>& validate)
+                -> Result<MapData::TerrainStrokeResult> {
+                if (!project_.mapEdits_ || !project_.mapDataUndoStack_)
+                    return Result<MapData::TerrainStrokeResult>::Failure("QtApp.Live", "LIVE_EDITOR_UNDO_UNAVAILABLE",
+                        "当前地图没有共用地图数据撤销栈。");
+                const auto current = context();
+                if (!current.Succeeded()) return {{}, current.diagnostics};
+                const auto applied = Services::ApplyTerrainEdit(*project_.mapEdits_, current.value->document, plan, validate);
+                if (!applied.Succeeded()) return applied;
+                (void)project_.ObserveMapDataEdit("MCP 修改地形");
+                // 原世界页监听此撤销栈的 indexChanged，按同一地形快照增量重建；不发整图重新加载信号。
+                QtProject::PushMapDataEdit(project_, QObject::tr("AI 地形笔刷"), "MCP 修改地形");
+                emit owner_.Changed();
+                return applied;
+            };
+            return Mcp::InvokeTerrainEditTool(name, arguments, host);
+        };
+        // 预览不触发界面草稿提交；dry_run 无效时也不能先写入再由 façade 拒绝。
+        const auto dryRun = arguments.value("dry_run");
+        if (write && dryRun.isBool() && !dryRun.toBool()) return Write(arguments, false, invoke);
+        if (busy_ || project_.savingMap_) return Mcp::Failure("LIVE_EDITOR_BUSY", "地图写任务正在执行。");
+        auto bound = arguments;
+        if (!bound.contains("project_identity") && !bound.contains("expected_revision")) {
+            const auto identity = State();
+            bound.insert("project_identity", identity.value("project_identity"));
+            bound.insert("expected_revision", identity.value("revision"));
+        }
+        const auto checked = CheckContext(bound, false, true);
+        if (!checked.value("ok").toBool()) return checked;
+        return invoke();
     }
 
     QJsonObject Save(const QJsonObject& arguments) {
@@ -696,12 +774,13 @@ private:
 
     void AddTool(QString name, QString title, Mcp::ToolPermission permission, QJsonObject schema,
         std::function<QJsonObject(const QJsonObject&)> handler, std::size_t maxRequestIdBytes = 0,
-        std::size_t maxResponseBytes = 1024 * 1024) {
+        std::size_t maxResponseBytes = 1024 * 1024, bool pngImageResult = false) {
         registeredNames_.append(name);
         Mcp::ToolDefinition tool;
         tool.name = name; tool.description = title; tool.permission = permission; tool.inputSchema = std::move(schema);
         tool.maxResponseBytes = maxResponseBytes;
         tool.maxRequestIdBytes = maxRequestIdBytes;
+        tool.pngImageResult = pngImageResult;
         tool.handler = [this, name = std::move(name), title = std::move(title), handler = std::move(handler)](const QJsonObject& arguments) -> QJsonValue {
             const auto owner = ownerHandle_;
             const auto invoke = handler;
@@ -716,9 +795,15 @@ private:
             try { result = invoke(arguments); }
             catch (const std::exception& failure) { result = Mcp::Failure("LIVE_EDITOR_EXCEPTION", failure.what()); }
             if (!owner) return result;
+            // PNG仅交付请求方；活动日志不再次复制Base64正文。
+            auto details = result;
+            if (details.contains("image")) {
+                details.remove("image");
+                details.insert("image_returned", true);
+            }
             emit owner->Activity(QJsonObject{{"type", "tool_end"}, {"id", id}, {"tool_name", toolName}, {"title", toolTitle},
                 {"success", result.value("ok").toBool()}, {"is_error", !result.value("ok").toBool()},
-                {"elapsed_ms", timer.elapsed()}, {"details", result}});
+                {"elapsed_ms", timer.elapsed()}, {"details", details}});
             if (owner && result.value("ok").toBool() && result.value("changes").isObject()) {
                 auto changes = result.value("changes").toObject();
                 changes.insert("type", "changes"); changes.insert("tool_call_id", id);
@@ -730,6 +815,24 @@ private:
     }
 
     void RegisterTools() {
+        for (auto definition : Mcp::WorldViewportToolDefinitions()) {
+            const auto name = definition.name;
+            AddTool(name, definition.description, definition.permission, definition.inputSchema,
+                [this, name](const QJsonObject& args) {
+                    const auto check = CheckContext(args, false, false);
+                    if (!check.value("ok").toBool()) return check;
+                    return Mcp::InvokeWorldViewportTool(name, args, {worldViewport_});
+                }, definition.maxRequestIdBytes, definition.maxResponseBytes, definition.pngImageResult);
+        }
+        for (auto definition : Mcp::LuaTestToolDefinitions()) {
+            const auto name = definition.name;
+            AddTool(name, definition.description, definition.permission, definition.inputSchema,
+                [this, name](const QJsonObject& args) {
+                    const auto check = CheckContext(args, true, name == "lua_test_hot_reload");
+                    if (!check.value("ok").toBool()) return check;
+                    return Mcp::InvokeLuaTestTool(name, args, {luaTest_});
+                }, definition.maxRequestIdBytes, definition.maxResponseBytes);
+        }
         for (auto definition : Mcp::CampaignToolDefinitions(server_)) {
             AddTool(definition.name, definition.description, definition.permission, definition.inputSchema,
                 [handler = definition.handler](const QJsonObject& arguments) { return handler(arguments).toObject(); },
@@ -804,6 +907,14 @@ private:
                 [this, name](const QJsonObject& arguments) { return ImportTool(name, arguments); },
                 definition.maxRequestIdBytes, definition.maxResponseBytes);
         }
+        for (auto definition : Mcp::ObjectResourceToolDefinitions()) {
+            const auto name = definition.name;
+            AddTool(name, definition.description, definition.permission, definition.inputSchema,
+                [this, name](const QJsonObject& arguments) {
+                    if (busy_ || project_.savingMap_) return Mcp::Failure("LIVE_EDITOR_BUSY", "地图写任务正在执行。");
+                    return objectResources_->Invoke(name, arguments, [this] { return State(); });
+                }, definition.maxRequestIdBytes, definition.maxResponseBytes);
+        }
         for (auto definition : Mcp::VariableToolDefinitions()) {
             const auto name = definition.name;
             const bool write = definition.permission == Mcp::ToolPermission::Edit;
@@ -823,6 +934,13 @@ private:
             AddTool(name, definition.description, definition.permission, definition.inputSchema,
                 [this, name](const QJsonObject& arguments) { return PlacementTool(name, arguments); },
                 definition.maxRequestIdBytes);
+        }
+        for (auto definition : Mcp::TerrainEditToolDefinitions()) {
+            const auto name = definition.name;
+            const bool write = definition.permission == Mcp::ToolPermission::Edit;
+            AddTool(name, definition.description, definition.permission, definition.inputSchema,
+                [this, name, write](const QJsonObject& arguments) { return TerrainTool(name, arguments, write); },
+                definition.maxRequestIdBytes, definition.maxResponseBytes);
         }
         for (auto definition : Mcp::ObjectToolDefinitions()) {
             const auto name = definition.name;
@@ -882,6 +1000,8 @@ private:
     Mcp::McpServer server_;
     std::function<bool(const std::filesystem::path&, bool)> save_;
     std::function<bool()> beforeWrite_;
+    std::function<QJsonObject(bool)> luaTest_;
+    std::function<QJsonObject(const QString&, const QJsonObject&)> worldViewport_;
     ProjectSearchRevisionQuery projectSearchRevision_;
     ProjectSearchPageQuery projectSearchQuery_;
     std::shared_ptr<const int> projectSearchToken_;
@@ -894,6 +1014,7 @@ private:
     Trigger::UiCatalog* catalog_ = nullptr;
     std::string configSha_;
     Mcp::CodeCheckToolSession codeChecks_;
+    std::unique_ptr<LiveObjectResourceTools> objectResources_;
     std::shared_ptr<Services::CodeCheckProjectCache> codeCheckCache_ = std::make_shared<Services::CodeCheckProjectCache>();
 };
 
@@ -902,6 +1023,10 @@ LiveEditorTools::LiveEditorTools(QtProject::EditorProject& project, QObject* par
 LiveEditorTools::~LiveEditorTools() = default;
 Mcp::McpServer& LiveEditorTools::Server() noexcept { return impl_->Server(); }
 void LiveEditorTools::SetSaveHandler(std::function<bool(const std::filesystem::path&, bool)> handler) { impl_->SetSaveHandler(std::move(handler)); }
+void LiveEditorTools::SetLuaTestHandler(std::function<QJsonObject(bool)> handler) { impl_->SetLuaTestHandler(std::move(handler)); }
+void LiveEditorTools::SetWorldViewportHandler(std::function<QJsonObject(const QString&, const QJsonObject&)> handler) {
+    impl_->SetWorldViewportHandler(std::move(handler));
+}
 void LiveEditorTools::SetBeforeWrite(std::function<bool()> handler) { impl_->SetBeforeWrite(std::move(handler)); }
 void LiveEditorTools::SetProjectSearchQuery(ProjectSearchRevisionQuery revision, ProjectSearchPageQuery query) {
     impl_->SetProjectSearchQuery(std::move(revision), std::move(query));
