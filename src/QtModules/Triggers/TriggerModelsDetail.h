@@ -5,6 +5,7 @@
 #include "Icons/IconProvider.h"
 #include "War3MapCore/Trigger/TriggerEditing.h"
 #include "War3MapCore/Trigger/TriggerPresentation.h"
+#include "War3MapCore/Trigger/UiCatalog.h"
 
 #include <QColor>
 #include <QFont>
@@ -135,7 +136,8 @@ inline bool IsIfBlock(std::string_view name) {
     return name.find("IfThenElse") != std::string_view::npos && name.ends_with("Multiple");
 }
 
-inline const std::vector<BranchSpec>* KnownBlock(std::string_view name) {
+// catalog 给出时，函数库声明多一个末尾 code 参数的动作（回调块）也有一个“动作”分支。
+inline const std::vector<BranchSpec>* KnownBlock(std::string_view name, const War3Map::Trigger::UiCatalog* catalog = nullptr) {
     static const std::vector<BranchSpec> ifBlock{{0, 1, "如果 - 条件"}, {1, 2, "则 - 动作"}, {2, 2, "否则 - 动作"}};
     static const std::vector<BranchSpec> conditions{{0, 1, "条件"}};
     static const std::vector<BranchSpec> loop{{0, 2, "循环 - 动作"}};
@@ -143,6 +145,7 @@ inline const std::vector<BranchSpec>* KnownBlock(std::string_view name) {
     static const std::vector<BranchSpec> timer{{0, 2, "参数"}, {1, 2, "动作"}};
     static const std::vector<BranchSpec> registerTrigger{{0, 0, "事件"}, {1, 2, "参数"}, {2, 2, "动作"}};
     static const std::vector<BranchSpec> parameters{{0, 2, "参数"}};
+    static const std::vector<BranchSpec> callback{{0, 2, "动作"}};
     if (IsIfBlock(name)) return &ifBlock;
     if (name == "AndMultiple" || name == "OrMultiple") return &conditions;
     if (name == "YDWETimerStartMultiple") return &timer;
@@ -150,16 +153,18 @@ inline const std::vector<BranchSpec>* KnownBlock(std::string_view name) {
     if (name == "YDWEExecuteTriggerMultiple") return &parameters;
     if (name == "YDWEEnumUnitsInRangeMultiple" || name == "YDWERegionMultiple") return &actions;
     if (name.ends_with("Multiple")) return &loop;
+    if (catalog != nullptr && catalog->CallbackActions().Find(name) != nullptr) return &callback;
     return nullptr;
 }
 
-inline std::vector<BranchSpec> DeclaredBranches(std::string_view name) {
-    const auto* block = KnownBlock(name);
+inline std::vector<BranchSpec> DeclaredBranches(std::string_view name, const War3Map::Trigger::UiCatalog* catalog = nullptr) {
+    const auto* block = KnownBlock(name, catalog);
     return block == nullptr ? std::vector<BranchSpec>{} : *block;
 }
 
-inline QString BranchLabel(std::string_view parentName, std::int32_t branch, std::int32_t type) {
-    if (const auto* block = KnownBlock(parentName)) {
+inline QString BranchLabel(std::string_view parentName, std::int32_t branch, std::int32_t type,
+    const War3Map::Trigger::UiCatalog* catalog = nullptr) {
+    if (const auto* block = KnownBlock(parentName, catalog)) {
         for (const BranchSpec& spec : *block) {
             if (spec.branch == branch && spec.label != nullptr) return QString::fromUtf8(spec.label);
         }

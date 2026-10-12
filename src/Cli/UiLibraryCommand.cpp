@@ -51,6 +51,18 @@ int RunUiLibraryInspect(const std::filesystem::path& toolRoot,
         std::cout << "  conflict " << Trigger::ToString(conflict.kind) << ' ' << conflict.name << " active=" << conflict.activeLayer
                   << " providers=" << conflict.layers.size() << '\n';
     }
+    // 回调块动作：UI 定义少末尾 code 参数，块内动作生成为独立函数传入。
+    const auto& callbacks = catalog.value->CallbackActions();
+    std::vector<std::string> callbackNames;
+    for (const auto& [name, action] : callbacks.actions) callbackNames.push_back(name);
+    std::sort(callbackNames.begin(), callbackNames.end());
+    std::cout << "callbackActions=" << callbackNames.size() << (callbacks.complete ? "" : " incomplete") << '\n';
+    for (const auto& name : callbackNames) {
+        const auto& action = callbacks.actions.at(name);
+        const auto source = action.source.u8string();
+        std::cout << "  callback " << name << " codeArgument=" << action.codeArgument << " source="
+                  << std::string(source.begin(), source.end()) << ':' << action.line << '\n';
+    }
     if (wtgPath == nullptr || wctPath == nullptr) return 0;
     auto parsed = Trigger::WtgWctCodec{}.Parse(ReadAll(*wtgPath), ReadAll(*wctPath), *catalog.value);
     Print(parsed.diagnostics);

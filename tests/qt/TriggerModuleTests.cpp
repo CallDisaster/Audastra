@@ -359,6 +359,7 @@ private slots:
     void DirectoryEditsUndoAndReferences();
     void DirectoryReferenceConfirmationUsesSharedSymbols();
     void StatementsMoveAndFillEmptyBranches();
+    void CallbackActionShowsActionBranch();
     void ValuePanelEditsParameters();
     void BlueprintLaysOutAndSyncs();
     void CommentEntriesAndConditionNode();
@@ -1890,6 +1891,48 @@ void TriggerModuleTests::DirectoryEditsUndoAndReferences() {
     QVERIFY(restoredView->isExpanded(restoredProxy->mapFromSource(restoredModel->IndexForCategoryId(2))));
 }
 
+
+void TriggerModuleTests::CallbackActionShowsActionBranch() {
+    // 函数库声明比 UI 定义多一个末尾 code 参数：树里出现可直接添加动作的“动作”分支。
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const std::filesystem::path ui = root.path().toStdWString();
+    WriteUtf8(ui / "ui" / "config", "base\n");
+    WriteUtf8(ui / "ui" / "base" / "action.txt",
+        "[PlainAction]\ntitle=\"Plain\"\ndescription=\"Plain action\"\n"
+        "[IfThenElseMultiple]\ntitle=\"If\"\ndescription=\"If / Then / Else\"\n");
+    WriteUtf8(ui / "ui" / "base" / "condition.txt", "[RawCond]\ntitle=\"Cond\"\ndescription=\"Cond holds\"\n");
+    WriteUtf8(ui / "ui" / "base" / "jass" / "api.j", "function PlainAction takes code callback returns nothing\nendfunction\n");
+    auto catalog = Trigger::UiCatalog::Load(ui);
+    QVERIFY(catalog.Succeeded());
+    QVERIFY(catalog.value->CallbackActions().Find("PlainAction") != nullptr);
+    auto parsed = Trigger::WtgWctCodec{}.Parse(StructureWtg(), StructureWct(), *catalog.value);
+    QVERIFY(parsed.Succeeded());
+
+    QtProject::EditorProject project;
+    project.triggerUndoStack_ = new QUndoStack(&project);
+    project.uiCatalog_ = std::make_unique<Trigger::UiCatalog>(std::move(*catalog.value));
+    project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>(std::move(*parsed.value));
+    Modules::TriggerModule module(project);
+    QWidget* page = module.Widget();
+    QVERIFY(module.Reveal({"triggers", "trigger", "Logic", {}}));
+    auto* model = dynamic_cast<TriggerEcaModel*>(page->findChild<QTreeView*>(QStringLiteral("triggerLogicTree"))->model());
+    QVERIFY(model != nullptr);
+    auto& document = *project.triggerDocument_;
+    const StableId plain = document.ecaNodes[document.triggers.front().ecas[0]].id;
+    const auto branches = model->BranchesOf(plain);
+    QCOMPARE(branches.size(), std::size_t{1});
+    QCOMPARE(branches[0].label, QStringLiteral("动作"));
+    QCOMPARE(branches[0].type, 2);
+    QCOMPARE(model->rowCount(model->IndexForStableId(plain)), 1);
+    const StableId added = module.InsertEca(branches[0], 0, "PlainAction");
+    QVERIFY(added != 0);
+    QCOMPARE(Trigger::TriggerDocumentEditor::FindEca(document, added)->childId, std::optional<std::int32_t>(0));
+    QCOMPARE(model->index(0, 0, model->IndexForStableId(plain)).data().toString(), QStringLiteral("动作 (1)"));
+    // 内建块语句的分支名不受回调识别影响。
+    const StableId block = document.ecaNodes[document.triggers.front().ecas[1]].id;
+    QCOMPARE(model->BranchesOf(block)[2].label, QStringLiteral("否则 - 动作"));
+}
 
 void TriggerModuleTests::StatementsMoveAndFillEmptyBranches() {
     QTemporaryDir root;

@@ -170,14 +170,53 @@ void TriggerEmitter::PutForLoop(const Eca& eca, const std::string& name, Gui gui
 }
 
 void TriggerEmitter::PutCallAction(const Eca& eca, const std::string& name) {
+    const auto* callback = CallbackOf(eca);
+    if (callback == nullptr && !eca.children.empty()) {
+        // 子动作只有块语句或回调块才能生成；不能静默丢掉作者写的动作。
+        diagnostics_.push_back({DiagnosticSeverity::Error, "Script.Trigger", "TRIGGER_CHILDREN_UNSUPPORTED",
+            (trigger_ != nullptr ? "触发器“" + trigger_->name.text + "”：" : std::string{}) + "动作 " + eca.name.text +
+                " 不是块语句，也未在函数库 J 中找到多一个末尾 code 参数的声明，其下的子动作无法生成。", eca.origin});
+        return;
+    }
     out_.Begin();
     out_.Put("call " + ScriptName(eca) + "(");
     for (std::size_t i = 0; i < eca.arguments.size(); ++i) {
         if (i > 0) out_.Put(", ");
         PutVar(eca, name, i);
     }
+    if (callback != nullptr) {
+        bool any = false;
+        for (const auto index : eca.children) any = any || Enabled(EcaAt(index));
+        // 块内没有启用的动作时传 null（函数库约定为清空回调）。
+        out_.Put(std::string(eca.arguments.empty() ? "" : ", ") + (any ? "function " + name + "A" : std::string("null")));
+    }
     out_.Line(")");
     out_.End();
+}
+
+// 回调块：块内动作写成独立函数。它在之后某个时刻由函数库调用，拥有自己的一帧局部变量，
+// 不读写外层触发器的局部变量（与“运行触发器”动作函数的局部变量规则相同）。
+void TriggerEmitter::PutCallbackFunction(const Eca& eca, const std::string& name) {
+    bool any = false;
+    for (const auto index : eca.children) any = any || Enabled(EcaAt(index));
+    if (!any) return;
+    const LocvarState saved = locvar_;
+    const bool savedEnum = enumUnitsInRange_;
+    locvar_ = {};
+    enumUnitsInRange_ = false;
+    out_.Line("function " + name + "A takes nothing returns nothing");
+    LocalBegin(eca.children, false, true);
+    if (localInMainProc_) {
+        // 无法从声明判断回调是立即执行（遍历类）还是之后执行（注册类），只能统一独立；明确提示差异。
+        Warn("callback-local-scope", "回调块“" + eca.name.text + "”内使用了局部变量：回调有自己的一组局部变量，"
+            "读不到也改不了外层触发器的同名局部变量。需要在内外之间传值时请改用全局变量。");
+    }
+    PutBlockAction(eca, name, -1);
+    LocalEnd(false, true);
+    out_.Line("endfunction");
+    out_.Line("");
+    locvar_ = saved;
+    enumUnitsInRange_ = savedEnum;
 }
 
 void TriggerEmitter::PutActionEx(const Eca& eca, const std::string& name) {

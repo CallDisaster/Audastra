@@ -88,6 +88,8 @@ private:
     [[nodiscard]] std::string ResolvedType(const Eca& eca, std::size_t index) const;
     [[nodiscard]] int TypeNameIndex(const Eca& eca, std::size_t index) const;
     [[nodiscard]] Slot SlotOf(const Eca& eca, std::size_t index) const;
+    // 函数库声明多一个末尾 code 参数的动作：块内动作写成独立函数作为该参数传入。
+    [[nodiscard]] const Trigger::UiCallbackAction* CallbackOf(const Eca& eca) const;
     [[nodiscard]] static long Block(const Eca& eca) { return eca.childId.value_or(-1); }
     [[nodiscard]] static std::string Numbered(const std::string& name, std::size_t index);
     [[nodiscard]] static std::string FuncName(const std::string& name, std::size_t index);
@@ -106,6 +108,7 @@ private:
     void PutActionEx(const Eca& eca, const std::string& name);
     void PutForLoop(const Eca& eca, const std::string& name, Gui gui);
     void PutCallAction(const Eca& eca, const std::string& name);
+    void PutCallbackFunction(const Eca& eca, const std::string& name);
     void PutCondition(const Eca& eca, const std::string& name, std::size_t index);
     void PutConditionEx(const Eca& eca, const std::string& name);
     void PutVarCode(const Eca& eca, const std::string& name, std::size_t index, bool condition);

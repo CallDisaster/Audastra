@@ -1,5 +1,6 @@
 #pragma once
 
+#include "War3MapCore/Trigger/UiCallbackActions.h"
 #include "War3MapCore/Types.h"
 
 #include <cstddef>
@@ -168,6 +169,12 @@ public:
         return bytes;
     }
 
+    // 回调块动作（UI 定义少末尾 code 参数）的识别结果；载入时按已启用层的函数库 J 声明计算，
+    // 树、蓝图、脚本生成与 Agent 工具共用同一份结果。
+    [[nodiscard]] const UiCallbackActionIndex& CallbackActions() const noexcept;
+    // 供测试或宿主用另一组声明重新计算（与载入时使用同一规则）。
+    void SetCallbackDeclarations(std::span<const UiJassDeclaration> declarations, bool complete = true);
+
     // 显示文本用的字符串表（WESTRING_* 键）。只影响显示，不改变定义、保存或脚本生成。
     void SetStrings(std::shared_ptr<const Game::WorldEditStrings> strings) noexcept;
     [[nodiscard]] const Game::WorldEditStrings* Strings() const noexcept { return strings_.get(); }
@@ -191,6 +198,7 @@ private:
     std::unordered_map<std::string, UiDefinition> definitions_;
     std::string sha256_;
     std::shared_ptr<const Game::WorldEditStrings> strings_;
+    std::shared_ptr<const UiCallbackActionIndex> callbackActions_;
 };
 
 [[nodiscard]] UiDefinitionKind UiDefinitionKindFromEcaType(std::int32_t type) noexcept;

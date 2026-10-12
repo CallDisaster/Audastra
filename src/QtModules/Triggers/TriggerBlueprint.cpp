@@ -118,7 +118,7 @@ void TriggerBlueprint::SetSource(const War3Map::Trigger::TriggerDocument* docume
 
 TriggerBlueprint::Node* TriggerBlueprint::AddNode(std::uint32_t nodeIndex, double x, double y) {
     const auto& eca = document_->ecaNodes[nodeIndex];
-    const bool block = KnownBlock(eca.name.text) != nullptr;
+    const bool block = KnownBlock(eca.name.text, catalog_) != nullptr;
     QString title = Utf8(eca.name.text);
     if (catalog_ != nullptr) {
         if (const auto* definition = catalog_->Find(eca.type, eca.name.text)) title = Utf8(War3Map::Trigger::DefinitionTitle(*catalog_, *definition));
@@ -207,7 +207,7 @@ TriggerBlueprint::Placed TriggerBlueprint::LayoutChain(
 
         // 分支：声明的分支（含空的“否则”）+ 实际出现的其他分支号。
         std::map<std::int32_t, std::pair<std::int32_t, std::vector<std::uint32_t>>> branches;
-        for (const BranchSpec& spec : DeclaredBranches(eca.name.text)) branches[spec.branch] = {spec.type, {}};
+        for (const BranchSpec& spec : DeclaredBranches(eca.name.text, catalog_)) branches[spec.branch] = {spec.type, {}};
         for (const std::uint32_t child : eca.children) {
             if (child >= document_->ecaNodes.size()) continue;
             auto& branch = branches.try_emplace(document_->ecaNodes[child].childId.value_or(0),
@@ -216,7 +216,7 @@ TriggerBlueprint::Placed TriggerBlueprint::LayoutChain(
         }
         std::vector<std::pair<Pin*, std::vector<std::uint32_t>>> branchPins;
         for (const auto& [branchId, entry] : branches) {
-            const EcaSlot branchSlot{eca.id, branchId, entry.first, BranchLabel(eca.name.text, branchId, entry.first)};
+            const EcaSlot branchSlot{eca.id, branchId, entry.first, BranchLabel(eca.name.text, branchId, entry.first, catalog_)};
             const War3Map::StableId first = entry.second.empty() ? 0 : document_->ecaNodes[entry.second.front()].id;
             Pin* pin = node->AddPin(PinKind::Branch, branchSlot.label, KindColor(entry.first, entry.first == 2), {branchSlot, first, branchSlot.label});
             node->AddMenuTarget({branchSlot, 0, branchSlot.label});

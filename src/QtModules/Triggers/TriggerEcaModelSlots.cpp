@@ -24,7 +24,7 @@ std::size_t TriggerEcaModel::NodeIndexOf(War3Map::StableId ecaId) const {
 
 EcaSlot TriggerEcaModel::SlotForGroup(std::uint32_t parentNode, const RoleGroup& group) const {
     const auto& parent = document_->ecaNodes[parentNode];
-    return EcaSlot{parent.id, group.branch, group.type, BranchLabel(parent.name.text, group.branch, group.type)};
+    return EcaSlot{parent.id, group.branch, group.type, BranchLabel(parent.name.text, group.branch, group.type, catalog_)};
 }
 
 std::optional<EcaSlot> TriggerEcaModel::SlotAt(const QModelIndex& modelIndex) const {

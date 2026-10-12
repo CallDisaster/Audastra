@@ -157,6 +157,11 @@ Slot TriggerEmitter::SlotOf(const Eca& eca, std::size_t index) const {
     return Slot::Value;
 }
 
+const Trigger::UiCallbackAction* TriggerEmitter::CallbackOf(const Eca& eca) const {
+    if (eca.type != 2 || GuiOf(eca) != Gui::None) return nullptr;
+    return catalog_.CallbackActions().Find(eca.name.text);
+}
+
 std::string TriggerEmitter::Numbered(const std::string& name, std::size_t index) {
     char buffer[16];
     std::snprintf(buffer, sizeof(buffer), "%03zu", index + 1);
@@ -227,6 +232,7 @@ void TriggerEmitter::PutExternTopDown(const Eca& eca, const std::string& name) {
         }
     }
     PutExternItems(eca, name);
+    if (CallbackOf(eca) != nullptr) PutCallbackFunction(eca, name);
     switch (parent) {
     case Gui::ForGroupMultiple:
     case Gui::ForForceMultiple:

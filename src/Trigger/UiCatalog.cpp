@@ -1035,6 +1035,12 @@ Result<UiCatalog> UiCatalog::LoadFromConfig(
             return result;
         }
         catalog.sha256_ = *aggregateHash.value;
+        // 回调块识别只依赖已启用层的函数库 J；扫描诊断随载入结果返回，不使载入失败。
+        auto scan = ScanUiJassRoots(UiCallbackScanRoots(uiRoot, catalog.layers_));
+        result.diagnostics.insert(result.diagnostics.end(), scan.diagnostics.begin(), scan.diagnostics.end());
+        catalog.SetCallbackDeclarations(scan.declarations, scan.complete);
+        result.diagnostics.insert(result.diagnostics.end(), catalog.callbackActions_->diagnostics.begin(),
+            catalog.callbackActions_->diagnostics.end());
         result.value.emplace(std::move(catalog));
     } catch (const std::exception& error) {
         result.diagnostics.push_back(MakeDiagnostic(
@@ -1044,6 +1050,17 @@ Result<UiCatalog> UiCatalog::LoadFromConfig(
             uiRoot));
     }
     return result;
+}
+
+const UiCallbackActionIndex& UiCatalog::CallbackActions() const noexcept {
+    static const UiCallbackActionIndex empty;
+    return callbackActions_ ? *callbackActions_ : empty;
+}
+
+void UiCatalog::SetCallbackDeclarations(std::span<const UiJassDeclaration> declarations, bool complete) {
+    auto index = std::make_shared<UiCallbackActionIndex>(BuildUiCallbackActionIndex(*this, declarations));
+    index->complete = complete;
+    callbackActions_ = std::move(index);
 }
 
 const UiDefinition* UiCatalog::Find(std::int32_t ecaType, std::string_view name) const {

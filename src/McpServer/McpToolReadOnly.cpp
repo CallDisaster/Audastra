@@ -321,12 +321,18 @@ void RegisterReadOnlyTools(McpServer& server) {
                     for (const auto& [field, value] : definition->Active().fields) {
                         if (field == "returns") returns = QString::fromUtf8(value);
                     }
-                    definitions.append(QJsonObject{
+                    QJsonObject item{
                         {"kind", KindName(kind)},
                         {"name", QString::fromUtf8(definition->name)},
                         {"returns", returns},
                         {"arguments", arguments},
-                    });
+                    };
+                    // 回调块：真实声明末尾多一个 code 参数，块内动作放在 child_branch 0，生成为独立函数传入。
+                    if (kind == Trigger::UiDefinitionKind::Action &&
+                        workspace->Catalog().CallbackActions().Find(definition->name) != nullptr) {
+                        item.insert("callback_block", QJsonObject{{"child_branch", 0}, {"child_kind", "action"}});
+                    }
+                    definitions.append(item);
                     if (definitions.size() >= 100) break;
                 }
                 if (definitions.size() >= 100) break;

@@ -158,6 +158,12 @@ target_compile_definitions(war3-map-script-object-property-tests PRIVATE NOMINMA
 target_compile_options(war3-map-script-object-property-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME script-object-property COMMAND war3-map-script-object-property-tests)
 
+add_executable(war3-map-script-callback-action-tests ScriptCallbackActionTests.cpp)
+target_link_libraries(war3-map-script-callback-action-tests PRIVATE War3MapEditor::ScriptBuild)
+target_compile_definitions(war3-map-script-callback-action-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(war3-map-script-callback-action-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME script-callback-action COMMAND war3-map-script-callback-action-tests)
+
 add_executable(war3-map-lua-trigger-unit-tests LuaTriggerUnitTests.cpp LuaTriggerCandidateTests.cpp)
 target_link_libraries(war3-map-lua-trigger-unit-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(war3-map-lua-trigger-unit-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN

@@ -387,7 +387,7 @@ QVariant TriggerEcaModel::data(const QModelIndex& modelIndex, int role) const {
         switch (role) {
         case Qt::DisplayRole:
             if (modelIndex.column() == 0) {
-                const QString label = BranchLabel(document_->ecaNodes[parentNode].name.text, group.branch, childType);
+                const QString label = BranchLabel(document_->ecaNodes[parentNode].name.text, group.branch, childType, catalog_);
                 return group.children.empty() ? label : tr("%1 (%2)").arg(label).arg(group.children.size());
             }
             return {};
@@ -561,7 +561,7 @@ std::vector<TriggerEcaModel::RoleGroup> TriggerEcaModel::RoleGroupsFor(
     // 按 childId（分支号）分组：组内保持原始顺序，组按分支号升序
     //（If：0 条件 → 1 Then → 2 Else；循环/枚举体为 0）。声明的空分支同样列出。
     std::map<std::int32_t, RoleGroup> byBranch;
-    for (const BranchSpec& spec : DeclaredBranches(document_->ecaNodes[nodeIndex].name.text)) {
+    for (const BranchSpec& spec : DeclaredBranches(document_->ecaNodes[nodeIndex].name.text, catalog_)) {
         byBranch[spec.branch] = RoleGroup{spec.branch, spec.type, {}};
     }
     for (const std::uint32_t child : document_->ecaNodes[nodeIndex].children) {
