@@ -105,6 +105,7 @@ private slots:
     void StaleDraftDoesNotCommit();
     void FieldDelegateUsesSameUndoAndSerialization();
     void ComboPopupDoesNotCloseAnchoredPicker();
+    void GameIconsBehindManyFilesFillFirstPage();
     void StandardFieldUsesSameCommand();
     void CommitMayCloseOwner();
     void AdapterOwnsSnapshotAndRejectsOversizedSource();
@@ -205,6 +206,35 @@ void ObjectResourcePickerTests::ComboPopupDoesNotCloseAnchoredPicker() {
     QVERIFY(guard && picker->isVisible());
     QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(5, 5)); // 真正点到面板外仍然关闭。
     QTRY_VERIFY(!guard || !picker->isVisible());
+}
+void ObjectResourcePickerTests::GameIconsBehindManyFilesFillFirstPage() {
+    // 真实游戏包按路径排序时图标目录排在数千个特效/模型文件之后；第一页不能因单次检查预算用完而显示为空。
+    bool current = true;
+    ObjectResourcePickerServices services; services.revision = "picker:1";
+    services.isCurrent = [&current] { return current; };
+    services.load = [](Services::ObjectResourceOrigin origin, const auto&) {
+        auto catalog = std::make_shared<Services::ObjectResourceCatalog>();
+        catalog->revision = "picker:1"; catalog->identity = "game-icons"; catalog->origin = origin;
+        const auto add = [&](std::string value) {
+            Services::ObjectResourceCandidate row;
+            row.id = "game:" + value; row.title = value.substr(value.rfind('\\') + 1); row.value = std::move(value);
+            row.sourceId = "War3.mpq"; row.kind = Services::ObjectResourceKind::Texture; row.origin = origin; row.state = "listed";
+            catalog->rows.push_back(std::move(row));
+        };
+        for (int i = 0; i < 9000; ++i) add("Abilities\\Spells\\Fixture\\Texture" + std::to_string(i) + ".blp");
+        for (int i = 0; i < 3; ++i) add("ReplaceableTextures\\CommandButtons\\BTNFixture" + std::to_string(i) + ".blp");
+        add("ReplaceableTextures\\PassiveButtons\\PASFixture.blp");
+        return Result<std::shared_ptr<const Services::ObjectResourceCatalog>>::Success(std::move(catalog));
+    };
+    auto* picker = new ObjectResourcePicker({Services::ObjectResourceKind::Icon, false, true}, "", services);
+    QPointer<ObjectResourcePicker> guard(picker); picker->show();
+    auto* browse = picker->findChild<QComboBox*>("resourceBrowseMode"); QVERIFY(browse);
+    browse->setCurrentIndex(1);
+    auto* list = picker->findChild<QTreeWidget*>("resourceCandidates");
+    QTRY_COMPARE(list->topLevelItemCount(), 4);
+    QCOMPARE(list->topLevelItem(0)->text(1), QStringLiteral("ReplaceableTextures\\CommandButtons\\BTNFixture0.blp"));
+    QVERIFY(!picker->findChild<QPushButton*>("resourceMore")->isVisible());
+    delete guard.data();
 }
 void ObjectResourcePickerTests::StandardFieldUsesSameCommand() {
     using namespace ObjectData;

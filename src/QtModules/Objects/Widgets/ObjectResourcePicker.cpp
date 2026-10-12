@@ -46,7 +46,9 @@ ObjectResourcePicker::ObjectResourcePicker(Services::ObjectResourceField field, 
     filterBar_ = new QWidget(this); filterBar_->setObjectName(QStringLiteral("resourceFilterBar"));
     auto* filter = new QHBoxLayout(filterBar_); filter->setContentsMargins(0, 0, 0, 0); filter->setSpacing(6);
     browse_ = new QComboBox(filterBar_); browse_->setObjectName(QStringLiteral("resourceBrowseMode"));
-    browse_->addItems({tr("物体使用的资源"), tr("游戏文件")}); filter->addWidget(browse_);
+    browse_->addItems({tr("其他物体用过的"), tr("游戏文件")}); filter->addWidget(browse_);
+    browse_->setItemData(0, tr("列出原版与本图各物体在同类字段里用过的资源，名称列是使用它的物体，可按类别筛选。"), Qt::ToolTipRole);
+    browse_->setItemData(1, tr("按目录浏览游戏 MPQ 中的文件；图标字段只列命令按钮与被动按钮图标。"), Qt::ToolTipRole);
     category_ = new QComboBox(filterBar_); category_->setObjectName(QStringLiteral("resourceObjectCategory"));
     category_->addItem(tr("全部类别"), -1);
     const QStringList categories{tr("单位"), tr("技能"), tr("物品"), tr("魔法效果"), tr("科技"), tr("装饰物"), tr("可破坏物")};
@@ -227,10 +229,20 @@ void ObjectResourcePicker::AppendPage() {
     if (origin_ == Services::ObjectResourceOrigin::Object && category_->currentData().toInt() >= 0)
         query.objectType = static_cast<ObjectData::ObjectType>(category_->currentData().toInt());
     if (BrowsesDirectories() && search_->text().isEmpty()) query.directory = directory_.toStdString();
-    query.limit = 128;
-    auto page = Services::QueryObjectResources(*catalog_, query, cursor_);
-    if (!page.Succeeded()) { status_->setText(Notes(page.diagnostics)); more_->hide(); return; }
-    for (const auto& row : page.value->rows) {
+    // 每次查询只检查有限行；匹配项可能集中在目录后部（如游戏图标目录），
+    // 所以一页没凑满就沿游标继续查，直到凑满一页或查完，不让作者对着空页反复点“加载更多”。
+    constexpr std::size_t kPageRows = 128;
+    std::vector<Services::ObjectResourceCandidate> rows;
+    std::optional<Services::ObjectResourcePage> page;
+    do {
+        query.limit = kPageRows - rows.size();
+        auto next = Services::QueryObjectResources(*catalog_, query, cursor_);
+        if (!next.Succeeded()) { status_->setText(Notes(next.diagnostics)); more_->hide(); return; }
+        rows.insert(rows.end(), next.value->rows.begin(), next.value->rows.end());
+        cursor_ = next.value->next;
+        page = std::move(*next.value);
+    } while (cursor_ && rows.size() < kPageRows);
+    for (const auto& row : rows) {
         auto* item = new QTreeWidgetItem(candidates_);
         item->setText(0, row.directory ? tr("目录 · %1").arg(U8(row.title)) : U8(row.title));
         item->setText(1, U8(row.value));
@@ -243,12 +255,11 @@ void ObjectResourcePicker::AppendPage() {
         const auto tip = U8(row.title) + QStringLiteral("\n") + U8(row.value) + QStringLiteral("\n") + item->text(2);
         for (int column = 0; column < 3; ++column) item->setToolTip(column, tip);
     }
-    cursor_ = page.value->next; more_->setVisible(cursor_.has_value());
+    more_->setVisible(cursor_.has_value());
     status_->setText(tr("已显示 %1 项%2").arg(candidates_->topLevelItemCount())
-        .arg(page.value->complete ? QString{} : tr(" · 目录或结果尚未全部列出")));
+        .arg(cursor_ ? tr(" · 还有更多") : page->complete ? QString{} : tr(" · 列表可能不完整，悬停查看原因")));
     // 来源说明（例如某个游戏包没有文件清单）放在悬停详情，状态行只提示列表可能不完整。
-    status_->setToolTip(Notes(page.value->diagnostics));
-    if (!page.value->diagnostics.empty()) status_->setText(status_->text() + tr(" · 部分来源没有完整文件清单，悬停查看"));
+    status_->setToolTip(Notes(page->diagnostics));
 }
 void ObjectResourcePicker::Choose(QTreeWidgetItem* item, bool activate) {
     if (!item) return;
