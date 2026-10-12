@@ -3,6 +3,7 @@
 #include "WorldModule.h"
 #include "WorldEnvironment.h"
 #include "WorldTerrainAssets.h"
+#include "WorldCliffLayer.h"
 #include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/Render/SceneEnvironment.h"
 
@@ -25,6 +26,8 @@ struct WorldTerrainLoaded {
     std::shared_ptr<const Render::TerrainCliffs> cliffs; // 只与贴图地面一起使用（地面已隐藏被覆盖的格）
     std::shared_ptr<const Render::SceneEnvironment> environment; // 模型光照、雾、静态阴影
     std::optional<Render::TerrainWaterStyle> selectedWater; // worker 产物；UI 成功提交完成帧后才写入缓存
+    std::optional<WorldCliffLayerFrame> cliffLayer; // 请求时为新烘焙的悬崖准备的独立层
+    std::vector<Diagnostic> cliffLayerDiagnostics;
     QString materialNote;
 };
 

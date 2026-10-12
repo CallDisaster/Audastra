@@ -73,6 +73,13 @@ struct TerrainBrush {
 
 struct TerrainStrokePoint { double x = 0, y = 0; };
 
+// 地面单位能否站在该点所在的格：越界、悬崖面（四角层级不同且不全是坡道角）或边界格不可站立。
+// 只看地形本身，不读 WPM 与可破坏物；深水规则未取证，不在此判定。
+[[nodiscard]] bool TerrainGroundStandable(const TerrainGridSnapshot& terrain, double x, double y);
+// 从该点所在格向外逐圈搜索，返回距离最近的可站立格中心；maxTiles 圈内没有时为空。
+[[nodiscard]] std::optional<TerrainStrokePoint> NearestTerrainGroundStandable(const TerrainGridSnapshot& terrain,
+    double x, double y, std::uint32_t maxTiles = 16);
+
 struct TerrainBrushFootprint {
     double centerX = 0, centerY = 0, radius = 0; // 世界坐标；radius 包含外侧半格
     std::uint32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0; // 已裁剪的顶点半开范围

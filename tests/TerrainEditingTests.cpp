@@ -399,6 +399,49 @@ void BoundaryDraftPreservesRawFieldsAndRestores() {
 
 } // namespace
 
+void SessionUnitsFollowAndStandability() {
+    // 单位与物品同在 war3mapUnits.doo；落笔范围内的随地面升降，范围外不动，撤销一并恢复。
+    auto units = ParseUnitPlacements(MapDataFixtures::EmptyUnitsV8Sub11());
+    Require(units.Succeeded(), "unit fixture must parse");
+    UnitPlacement footman;
+    footman.rawcode = "hfoo"; footman.creationId = 1; footman.flags = 2; footman.position = {0, 0, 10}; footman.scale = {1, 1, 1};
+    units.value->units.push_back(footman);
+    footman.creationId = 2; footman.position = {-200, 200, 5}; // 改动范围外
+    units.value->units.push_back(footman);
+    auto unitBytes = units.value->Serialize();
+    Require(unitBytes.Succeeded(), "unit fixture serializes");
+    const std::vector<MapArchiveMember> members{{"war3map.w3i", MapDataFixtures::FullMapSettingsV25().bytes},
+        {"war3mapUnits.doo", std::move(*unitBytes.value)}};
+    MapDataEditSession edits(MapDocument::FromMembers(members));
+    Require(edits.AttachTerrain(Terrain()).Succeeded(), "terrain attaches before edits");
+    TerrainBrush brush;
+    brush.kind = TerrainBrushKind::Raise; brush.radius = 1; brush.strength = 32;
+    const TerrainStrokePoint center{0, 0};
+    Require(edits.EditTerrain(brush, std::span(&center, 1)).Succeeded(), "raise through the session");
+    const auto moved = edits.Snapshot().Units()->units;
+    Require(moved[0].position[2] == 42.0f && moved[1].position[2] == 5.0f, "only units in the changed area follow the ground");
+    Require(edits.Undo() && edits.Snapshot().Units()->units[0].position[2] == 10.0f, "undo restores the unit height");
+    MapDataEditSession still(MapDocument::FromMembers(members));
+    Require(still.AttachTerrain(Terrain()).Succeeded(), "terrain attaches");
+    Require(still.EditTerrain(brush, std::span(&center, 1), false).Succeeded()
+        && still.Snapshot().Units()->units[0].position[2] == 10.0f, "follow disabled keeps unit heights");
+
+    // 悬崖面不可站立；最近可站立点在相邻的平地格。
+    auto grid = Grid(11);
+    const TerrainStrokePoint onTile{448, 448}; // 格 (5,5)
+    Require(TerrainGroundStandable(*grid, onTile.x, onTile.y), "flat tile is standable");
+    Require(!TerrainGroundStandable(*grid, 1e6, 1e6), "outside the map is not standable");
+    TerrainBrush cliff;
+    cliff.kind = TerrainBrushKind::CliffLevel; cliff.levelDelta = 1; cliff.radius = 0; cliff.cliffTexture = 1;
+    const TerrainStrokePoint vertex{384, 384}; // 顶点 (5,5)
+    Require(ApplyTerrainStroke(*grid, cliff, std::span(&vertex, 1)).Succeeded(), "raise one cliff level");
+    Require(!TerrainGroundStandable(*grid, onTile.x, onTile.y), "a tile with mixed cliff levels is a cliff face");
+    const auto nearest = NearestTerrainGroundStandable(*grid, onTile.x, onTile.y);
+    Require(nearest && TerrainGroundStandable(*grid, nearest->x, nearest->y)
+        && std::hypot(nearest->x - onTile.x, nearest->y - onTile.y) <= 128.0 * 1.5, "nearest standable tile is adjacent");
+    Require(NearestTerrainGroundStandable(*grid, 1e6, 1e6, 2) == std::nullopt, "no standable tile far outside the map");
+}
+
 int main() {
     try {
         SerializeRoundTrips();
@@ -413,7 +456,8 @@ int main() {
         WaterAndCliffPreserveOtherFields();
         TextureSlotsAreUndoable();
         BoundaryDraftPreservesRawFieldsAndRestores();
-        std::cout << "TerrainEditing: 12 scenario groups passed\n";
+        SessionUnitsFollowAndStandability();
+        std::cout << "TerrainEditing: 13 scenario groups passed\n";
         return 0;
     } catch (const std::exception& exception) {
         std::cerr << "TerrainEditing: " << exception.what() << '\n';

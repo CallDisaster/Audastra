@@ -27,7 +27,10 @@
 #include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPushButton>
+#include <QTimer>
+#include <QUndoStack>
 #include <QSignalBlocker>
 #include <QSpinBox>
 
@@ -961,6 +964,7 @@ void WorldModule::FinishTerrainStroke() {
     if (pathing && before != strokeRevision_) {
         CancelTerrainStroke(); selectionStatus_->setText(tr("通行性来源已变化，请重新落笔")); return;
     }
+    const auto terrainBefore = project_.mapEdits_->Terrain();
     auto edited = project_.mapEdits_->EditTerrain(strokeBrush_, strokePoints_, true);
     strokeBase_.reset(); strokePoints_.clear();
     if (!pathing) {
@@ -986,6 +990,85 @@ void WorldModule::FinishTerrainStroke() {
     QtProject::PushMapDataEdit(project_, tr("地形笔刷"), "修改地形");
     pushingTerrainStrokeUndo_ = false;
     if (!project_.mapDataUndoStack_) RefreshPlacements();
+    // 落笔事件结束后再询问，避免在鼠标释放处理中开模态窗口。
+    const auto revision = project_.mapEdits_->Revision();
+    QTimer::singleShot(0, this, [this, terrainBefore, revision] { ResolveStrandedUnits(terrainBefore, revision); });
+}
+
+void WorldModule::ResolveStrandedUnits(std::shared_ptr<const MapData::TerrainGridSnapshot> before, std::uint64_t revision) {
+    if (!page_ || !before || !project_.mapEdits_ || project_.mapEdits_->Revision() != revision) return;
+    const auto after = project_.mapEdits_->Terrain();
+    const auto document = CurrentDocument();
+    if (!after || after == before || !document || !document->Units()) return;
+    struct Stranded { MapData::PlacementId id; std::array<float, 3> position; QString name; };
+    std::vector<Stranded> stranded;
+    const auto& units = document->Units()->units;
+    for (std::uint32_t index = 0; index < units.size(); ++index) {
+        const auto& unit = units[index];
+        const double x = unit.position[0], y = unit.position[1];
+        // 只处理这一笔造成的：原来能站、现在不能站。起始位置不是单位，不在此处理。
+        if (unit.rawcode == "sloc" || !MapData::TerrainGroundStandable(*before, x, y)
+            || MapData::TerrainGroundStandable(*after, x, y)) continue;
+        if (PlacementType(project_, unit.rawcode, ObjectData::ObjectType::Unit, ObjectData::ObjectType::Item)
+            != ObjectData::ObjectType::Unit) continue;
+        const auto movement = WorldUnitMovementType(project_, unit.rawcode);
+        if (!movement || *movement == "fly" || *movement == "float") continue; // 飞行与海上单位不受悬崖面影响
+        stranded.push_back({MapData::MakePlacementId(MapData::PlacementFile::Units, index, unit), unit.position,
+            PlacementPresentation(project_, *document, unit.rawcode, ObjectData::ObjectType::Unit, ObjectData::ObjectType::Item).name});
+    }
+    if (stranded.empty()) return;
+    QStringList lines;
+    for (std::size_t i = 0; i < stranded.size() && i < 8; ++i)
+        lines << tr("%1（%2, %3）").arg(stranded[i].name.isEmpty() ? QString::fromStdString(stranded[i].id.rawcode) : stranded[i].name)
+            .arg(stranded[i].position[0], 0, 'f', 0).arg(stranded[i].position[1], 0, 'f', 0);
+    if (stranded.size() > 8) lines << tr("……另有 %1 个").arg(stranded.size() - 8);
+    QMessageBox box(QMessageBox::Question, tr("单位无法落脚"),
+        tr("这一笔让 %1 个地面单位落在悬崖面上，无法站立。").arg(stranded.size()), QMessageBox::NoButton, page_);
+    box.setInformativeText(lines.join(QLatin1Char('\n')));
+    auto* move = box.addButton(tr("移到最近可站立点"), QMessageBox::AcceptRole);
+    auto* remove = box.addButton(tr("移除这些单位"), QMessageBox::DestructiveRole);
+    auto* undo = box.addButton(tr("撤销这一笔"), QMessageBox::RejectRole);
+    box.setDefaultButton(move); box.setEscapeButton(undo);
+    box.exec();
+    if (!page_ || !project_.mapEdits_ || project_.mapEdits_->Revision() != revision) return; // 期间地图已变化，不再按旧结果处理
+    if (box.clickedButton() == undo) {
+        if (project_.mapDataUndoStack_ && project_.mapDataUndoStack_->canUndo()) project_.mapDataUndoStack_->undo();
+        return;
+    }
+    Status status;
+    QString text; std::string description;
+    if (box.clickedButton() == remove) {
+        std::vector<MapData::PlacementId> ids;
+        for (const auto& unit : stranded) ids.push_back(unit.id);
+        ClearSelection();
+        status = MapData::DeletePlacements(*project_.mapEdits_, ids);
+        text = tr("移除 %1 个无法落脚的单位").arg(ids.size()); description = "删除摆放";
+    } else if (box.clickedButton() == move) {
+        std::vector<MapData::PlacementMove> moves;
+        std::size_t unplaced = 0;
+        for (const auto& unit : stranded) {
+            const auto target = MapData::NearestTerrainGroundStandable(*after, unit.position[0], unit.position[1]);
+            const auto oldGround = MapData::SampleGroundHeight(*after, unit.position[0], unit.position[1], MapData::TerrainHeightSource::RawWithRamps);
+            const auto newGround = target ? MapData::SampleGroundHeight(*after, target->x, target->y, MapData::TerrainHeightSource::RawWithRamps) : std::nullopt;
+            if (!target || !oldGround || !newGround) { ++unplaced; continue; }
+            // 保持与地面的相对高度。
+            moves.push_back({unit.id, {static_cast<float>(target->x), static_cast<float>(target->y),
+                unit.position[2] - *oldGround + *newGround}, std::nullopt});
+        }
+        if (moves.empty()) { selectionStatus_->setText(tr("附近没有可站立的位置，单位保持原位")); return; }
+        status = MapData::MovePlacements(*project_.mapEdits_, moves);
+        text = tr("移动 %1 个无法落脚的单位").arg(moves.size()); description = "移动摆放组";
+        if (unplaced) text += tr("（%1 个附近没有可站立位置，保持原位）").arg(unplaced);
+    } else return;
+    if (!status.Succeeded()) {
+        project_.AddDiagnostics(status.diagnostics);
+        selectionStatus_->setText(tr("单位未处理：%1").arg(WorldDiagnosticText(status.diagnostics)));
+        return;
+    }
+    if (project_.mapEdits_->Revision() == revision) return;
+    (void)project_.ObserveMapDataEdit(description);
+    QtProject::PushMapDataEdit(project_, text, description);
+    selectionStatus_->setText(text);
 }
 
 void WorldModule::CancelTerrainStroke() {

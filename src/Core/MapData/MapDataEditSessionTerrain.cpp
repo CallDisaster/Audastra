@@ -350,33 +350,49 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
         || brush.kind == TerrainBrushKind::CliffLevel || brush.kind == TerrainBrushKind::Noise
         || brush.kind == TerrainBrushKind::Ramp;
     const auto& doodadBytes = current_[Index(MapDataKind::Doodads)];
-    if (followDoodads && shaping && !command.terrain.empty() && doodadBytes) {
-        auto doodads = ParseDoodadPlacements(*doodadBytes);
-        if (!doodads.Succeeded() || !doodads.value)
-            return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "MAP_DOODADS_UNSAFE",
-                "装饰物放置无法解析，不能让装饰物随地面高度变化");
+    const auto& unitBytes = current_[Index(MapDataKind::Units)];
+    if (followDoodads && shaping && !command.terrain.empty()) {
         // 层级变化还可能改变相邻坡道中点；再外扩一格覆盖这些中点周围的地面插值。
         const double tile = TerrainGridSnapshot::tileSize;
         const double left = next->header.offset[0] + (static_cast<double>(changed.x0) - 2) * tile;
         const double bottom = next->header.offset[1] + (static_cast<double>(changed.y0) - 2) * tile;
         const double right = next->header.offset[0] + (static_cast<double>(changed.x1) + 1) * tile;
         const double top = next->header.offset[1] + (static_cast<double>(changed.y1) + 1) * tile;
-        bool moved = false;
-        for (auto& doodad : doodads.value->doodads) {
-            const double x = doodad.position[0], y = doodad.position[1];
-            if (x < left || x > right || y < bottom || y > top) continue;
-            const auto before = SampleGroundHeight(*terrain_, x, y, TerrainHeightSource::RawWithRamps);
-            const auto after = SampleGroundHeight(*next, x, y, TerrainHeightSource::RawWithRamps);
-            if (!before || !after || *before == *after) continue;
-            doodad.position[2] += *after - *before;
-            moved = true;
-        }
-        if (moved) {
-            if (const auto status = Prepare(MapDataKind::Doodads, doodads.value->Serialize(), command.changes); !status.Succeeded()) {
-                Result<PreparedTerrainEdit> failed;
-                failed.diagnostics = status.diagnostics;
-                return failed;
+        // 保持与地面的相对高度：Z 加上该点地面高度的变化量，飞行高度等偏移不变。
+        const auto follow = [&](auto& placements) {
+            bool moved = false;
+            for (auto& placement : placements) {
+                const double x = placement.position[0], y = placement.position[1];
+                if (x < left || x > right || y < bottom || y > top) continue;
+                const auto before = SampleGroundHeight(*terrain_, x, y, TerrainHeightSource::RawWithRamps);
+                const auto after = SampleGroundHeight(*next, x, y, TerrainHeightSource::RawWithRamps);
+                if (!before || !after || *before == *after) continue;
+                placement.position[2] += *after - *before;
+                moved = true;
             }
+            return moved;
+        };
+        const auto fail = [](std::vector<Diagnostic> diagnostics) {
+            Result<PreparedTerrainEdit> failed; failed.diagnostics = std::move(diagnostics); return failed;
+        };
+        if (doodadBytes) {
+            auto doodads = ParseDoodadPlacements(*doodadBytes);
+            if (!doodads.Succeeded() || !doodads.value)
+                return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "MAP_DOODADS_UNSAFE",
+                    "装饰物放置无法解析，不能让装饰物随地面高度变化");
+            if (follow(doodads.value->doodads))
+                if (const auto status = Prepare(MapDataKind::Doodads, doodads.value->Serialize(), command.changes); !status.Succeeded())
+                    return fail(status.diagnostics);
+        }
+        // 单位与物品同在 war3mapUnits.doo；原版 WE 改地形时它们也随地面升降，不能被埋进地里或悬空。
+        if (unitBytes) {
+            auto units = ParseUnitPlacements(*unitBytes);
+            if (!units.Succeeded() || !units.value)
+                return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "MAP_UNITS_UNSAFE",
+                    "单位放置无法解析，不能让单位随地面高度变化");
+            if (follow(units.value->units))
+                if (const auto status = Prepare(MapDataKind::Units, units.value->Serialize(), command.changes); !status.Succeeded())
+                    return fail(status.diagnostics);
         }
     }
     const auto doodadChange = std::find_if(command.changes.begin(), command.changes.end(),

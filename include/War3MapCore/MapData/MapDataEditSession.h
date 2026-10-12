@@ -131,7 +131,7 @@ public:
     [[nodiscard]] Result<TerrainStrokeResult> ApplyPreparedTerrainEdit(const PreparedTerrainEdit& plan,
         const std::function<Status(const EditReceipt&)>& prepublish = {});
     // 一笔地形笔刷为一次事务，撤销按 16×16 顶点区块保存前后原始字段。
-    // followDoodads 为真时，改动范围内的装饰物随地面高度变化（同一事务）。
+    // followDoodads 为真时，改动范围内的装饰物、单位与物品随地面高度变化（同一事务）。
     [[nodiscard]] Result<TerrainStrokeResult> EditTerrain(const TerrainBrush& brush,
         std::span<const TerrainStrokePoint> points, bool followDoodads = true);
     // 贴图槽替换/追加也进入同一撤销、工程恢复和原生地图保存门。

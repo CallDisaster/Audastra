@@ -354,6 +354,12 @@ std::uint32_t Variation(std::int32_t variation, double count) {
 
 } // namespace
 
+std::optional<std::string> WorldUnitMovementType(const QtProject::EditorProject& project, const std::string& rawcode) {
+    ObjectFields fields(project);
+    if (!fields.Find(ObjectType::Unit, rawcode)) return std::nullopt;
+    return fields.Text({"umvt", "movetp"}).value_or(std::string{});
+}
+
 std::array<float, 3> WorldPlacementDisplayPosition(const Render::ModelInstanceRequest& request,
     const std::array<float, 3>& rawPosition) {
     auto result = rawPosition;

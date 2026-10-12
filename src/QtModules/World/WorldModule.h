@@ -58,6 +58,7 @@ class WorldSelectionPresenter;
 class WorldBuildingSplatPresenter;
 class WorldModelBugPlaceholderPresenter;
 class WorldPremPresenter;
+class WorldCliffLayerPresenter;
 class WorldOutlinerModel;
 class WorldAssetBrowser;
 struct WorldTerrainCache;
@@ -203,6 +204,8 @@ private:
     void StartTerrainStroke(double x, double y);
     void ExtendTerrainStroke(double x, double y);
     void FinishTerrainStroke();
+    // 落笔前可站立、落笔后落在悬崖面等处的地面单位：询问移除、移到最近可站立点或撤销这一笔。
+    void ResolveStrandedUnits(std::shared_ptr<const MapData::TerrainGridSnapshot> before, std::uint64_t revision);
     void CancelTerrainStroke();
     void QueueTerrainRender(std::shared_ptr<const MapData::TerrainGridSnapshot> source, bool preview);
     void QueueWaterFrame(std::uint32_t frame);
@@ -375,6 +378,8 @@ private:
     WorldBuildingSplatPresenter* buildingSplatPresenter_ = nullptr;
     WorldModelBugPlaceholderPresenter* bugPlaceholderPresenter_ = nullptr;
     WorldPremPresenter* premPresenter_ = nullptr;
+    WorldCliffLayerPresenter* cliffLayer_ = nullptr;
+    bool cliffsInLayer_ = false; // 当前动画主场景不含悬崖，悬崖由独立层显示
     std::shared_ptr<const WorldPathingHelperCache> pathingHelperCache_;
     std::shared_ptr<const WorldPathingHelperPrepared> pathingHelperPresentation_; // accepted来源/占地原因保活，未验项不丢。
     std::vector<std::uint8_t> pathingHelperRequests_; // 与accepted requests平行，服务实际确认的辅助分类。

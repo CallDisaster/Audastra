@@ -8,6 +8,7 @@
 #include "WorldPlacementPreview.h"
 #include "WorldTerrainAssets.h"
 #include "WorldTerrainBuild.h"
+#include "WorldCliffLayer.h"
 #include "WorldPlacementModels.h"
 #include "WorldAssetBrowser.h"
 #include "EditorProject.h"
@@ -149,6 +150,7 @@ WorldModule::~WorldModule() {
     delete selectionPresenter_; selectionPresenter_ = nullptr;
     delete buildingSplatPresenter_; buildingSplatPresenter_ = nullptr;
     delete premPresenter_; premPresenter_ = nullptr;
+    delete cliffLayer_; cliffLayer_ = nullptr;
     delete animation_;
     animation_ = nullptr;
     // CPU 解码线程只持有自有字节及结果；QObject 断开回调，绝不借用地图/视口指针。
@@ -296,6 +298,7 @@ void WorldModule::Refresh() {
     waterFrameVisible_ = false;
     UpdateWaterFrameControl();
     cliffs_.reset();
+    cliffsInLayer_ = false; if (cliffLayer_) cliffLayer_->Clear();
     scene_.reset(); requests_.clear(); placementIds_.clear();
     pathingHelperCache_.reset(); pathingHelperPresentation_.reset(); pathingHelperRequests_.clear(); stagedPresentations_.clear();
     if (modelStatus_) {
@@ -849,7 +852,12 @@ void WorldModule::StartTerrainRender() {
     const bool preview = request.preview;
     const auto source = request.source;
     auto result = std::make_shared<Result<WorldTerrainLoaded>>();
-    auto* worker = QThread::create([request = std::move(request), cache, keepCliffs, result] {
+    // 悬崖在独立层时，新烘焙的悬崖在同一 worker 里准备好层帧，提交地形时一并显示，不重建整张动画场景。
+    std::optional<Render::AnimationSession> cliffSession;
+    if (cliffsInLayer_ && cliffLayer_ && animation_ && !selectedWaterFrame)
+        if (const auto scene = animation_->Scene())
+            cliffSession = Render::AnimationSession{scene->generation, scene->documentRevision, scene->sourceIdentity};
+    auto* worker = QThread::create([request = std::move(request), cache, keepCliffs, result, cliffSession] {
         if (request.selectedWaterFrame)
             *result = RebuildWorldTerrain(*request.source, *cache, keepCliffs, request.selectedWaterFrame);
         else if (request.preview) {
@@ -858,6 +866,16 @@ void WorldModule::StartTerrainRender() {
             if (!stroke.Succeeded()) { result->diagnostics = std::move(stroke.diagnostics); return; }
             *result = RebuildWorldTerrain(*preview, *cache, keepCliffs);
         } else *result = RebuildWorldTerrain(*request.source, *cache, nullptr);
+        if (!cliffSession || !result->Succeeded() || !result->value->cliffs || result->value->cliffs == keepCliffs || !cache->reader) return;
+        try {
+            auto layer = PrepareWorldCliffLayer(result->value->cliffs, [&cache](std::string_view path, std::uint64_t maximum) {
+                return cache->reader->ReadAnimationResource(path, maximum);
+            }, *cliffSession);
+            if (layer.Succeeded()) result->value->cliffLayer = std::move(*layer.value);
+            else result->value->cliffLayerDiagnostics = std::move(layer.diagnostics);
+        } catch (const std::exception& error) {
+            result->value->cliffLayerDiagnostics.push_back({DiagnosticSeverity::Error, "World", "WORLD_CLIFF_LAYER_FAILED", error.what(), std::nullopt});
+        }
     });
     worker_ = worker;
     connect(worker, &QThread::finished, this, [this, generation, serial, preview, source, result,
@@ -898,6 +916,10 @@ bool WorldModule::PresentTerrainRender(WorldTerrainLoaded& loaded, bool preview,
         return false;
     }
     terrain_ = loaded.terrain;
+    // 拖动预览与正式提交都把新悬崖层和地面一起显示；地面隐藏的悬崖格不会出现空洞。
+    const bool layered = cliffsInLayer_ && cliffLayer_ && ground && loaded.cliffLayer;
+    if (layered) cliffLayer_->Show(*loaded.cliffLayer);
+    else if (!loaded.cliffLayerDiagnostics.empty()) project_.AddDiagnostics(loaded.cliffLayerDiagnostics);
     if (!preview && !waterFrameOnly) RefreshBuildingSplats();
     if (!preview && !waterFrameOnly) {
         rawTerrain_ = std::move(source); // 渲染器接收并显示该快照后，才允许下一笔从它拾取。
@@ -906,7 +928,8 @@ bool WorldModule::PresentTerrainRender(WorldTerrainLoaded& loaded, bool preview,
             const auto baked = cliffs_ ? std::span<const Render::BakedModelMesh>(cliffs_->meshes)
                                        : std::span<const Render::BakedModelMesh>{};
             if (viewport_->HasAnimationScene()) {
-                StartModels(generation_); // 悬崖拓扑变了才重建静态包，播放/单步不会走这里。
+                // 悬崖在独立层且新层已显示：单位、装饰物等主场景不变，不重建。
+                if (!layered || !cliffLayer_->Showing(cliffs_)) StartModels(generation_);
             } else if (Render::ReplaceBakedMeshes(*scene_, baked)) {
                 if (!viewport_->SetModelScene(scene_)) modelStatus_->setText(tr("悬崖模型提交失败"));
             } else StartModels(generation_); // 新贴图未在现有场景中时完整读取一次。

@@ -286,6 +286,62 @@ void RefreshTerrainDerived(TerrainGridSnapshot& terrain, std::uint32_t x0, std::
     }
 }
 
+namespace {
+bool TileStandable(const TerrainGridSnapshot& terrain, std::int64_t tx, std::int64_t ty) {
+    const auto width = static_cast<std::int64_t>(terrain.header.width), height = static_cast<std::int64_t>(terrain.header.height);
+    if (tx < 0 || ty < 0 || tx + 1 >= width || ty + 1 >= height) return false;
+    const auto at = [&](std::int64_t x, std::int64_t y) -> const TerrainVertex& {
+        return terrain.vertices[static_cast<std::size_t>(y * width + x)];
+    };
+    const std::array<const TerrainVertex*, 4> corners{&at(tx, ty), &at(tx + 1, ty), &at(tx, ty + 1), &at(tx + 1, ty + 1)};
+    bool sameLevel = true, allRamp = true;
+    for (const auto* corner : corners) {
+        if (corner->IsBoundary()) return false;
+        sameLevel = sameLevel && corner->CliffLevel() == corners[0]->CliffLevel();
+        allRamp = allRamp && corner->IsRamp();
+    }
+    return sameLevel || allRamp;
+}
+std::optional<std::pair<std::int64_t, std::int64_t>> TileAt(const TerrainGridSnapshot& terrain, double x, double y) {
+    if (!Consistent(terrain) || !std::isfinite(x) || !std::isfinite(y)) return std::nullopt;
+    return std::pair{static_cast<std::int64_t>(std::floor((x - terrain.header.offset[0]) / TerrainGridSnapshot::tileSize)),
+        static_cast<std::int64_t>(std::floor((y - terrain.header.offset[1]) / TerrainGridSnapshot::tileSize))};
+}
+} // namespace
+
+bool TerrainGroundStandable(const TerrainGridSnapshot& terrain, double x, double y) {
+    const auto tile = TileAt(terrain, x, y);
+    return tile && TileStandable(terrain, tile->first, tile->second);
+}
+
+std::optional<TerrainStrokePoint> NearestTerrainGroundStandable(const TerrainGridSnapshot& terrain,
+    double x, double y, std::uint32_t maxTiles) {
+    const auto tile = TileAt(terrain, x, y);
+    if (!tile) return std::nullopt;
+    const auto center = [&](std::int64_t tx, std::int64_t ty) {
+        return TerrainStrokePoint{terrain.header.offset[0] + (static_cast<double>(tx) + 0.5) * TerrainGridSnapshot::tileSize,
+            terrain.header.offset[1] + (static_cast<double>(ty) + 0.5) * TerrainGridSnapshot::tileSize};
+    };
+    if (TileStandable(terrain, tile->first, tile->second)) return TerrainStrokePoint{x, y};
+    // 逐圈扫描，按到原点的真实距离取最近。
+    std::optional<TerrainStrokePoint> best;
+    double bestDistance = 0;
+    for (std::int64_t ring = 1; ring <= static_cast<std::int64_t>(maxTiles); ++ring) {
+        for (std::int64_t dy = -ring; dy <= ring; ++dy)
+            for (std::int64_t dx = -ring; dx <= ring; ++dx) {
+                if (std::max(std::llabs(dx), std::llabs(dy)) != ring) continue;
+                const auto tx = tile->first + dx, ty = tile->second + dy;
+                if (!TileStandable(terrain, tx, ty)) continue;
+                const auto point = center(tx, ty);
+                const double distance = std::hypot(point.x - x, point.y - y);
+                if (!best || distance < bestDistance) { best = point; bestDistance = distance; }
+            }
+        // 下一圈格中心到原点至少 (ring+0.5) 格；已有结果不远于此时停止。
+        if (best && bestDistance <= (static_cast<double>(ring) + 0.5) * TerrainGridSnapshot::tileSize) break;
+    }
+    return best;
+}
+
 std::optional<float> SampleGroundHeight(const TerrainGridSnapshot& terrain, double x, double y, TerrainHeightSource source) {
     const auto width = terrain.header.width, height = terrain.header.height;
     if (!Consistent(terrain) || !std::isfinite(x) || !std::isfinite(y)

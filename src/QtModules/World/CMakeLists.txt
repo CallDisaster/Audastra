@@ -8,6 +8,7 @@ qt_add_library(War3MapQtModuleWorld STATIC WorldModule.cpp WorldModule.h WorldMo
     WorldSelectionPresentation.cpp WorldSelectionPresentation.h WorldSelectionPresenter.cpp WorldSelectionPresenter.h
     WorldBuildingSplatPresenter.cpp WorldBuildingSplatPresenter.h
     WorldModelBugPlaceholderPresenter.cpp WorldModelBugPlaceholderPresenter.h
+    WorldCliffLayer.cpp WorldCliffLayer.h
     WorldPremPresenter.cpp WorldPremPresenter.h
     WorldPathingHelperPresenter.cpp WorldPathingHelperPresenter.h
     WorldPlacementPreview.cpp WorldPlacementPreview.h

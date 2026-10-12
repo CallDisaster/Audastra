@@ -85,6 +85,9 @@ struct WorldBuildingSplatCapture {
 [[nodiscard]] std::array<float, 3> WorldPlacementDisplayPosition(
     const Render::ModelInstanceRequest& request, const std::array<float, 3>& rawPosition);
 
+// 单位的移动类型（umvt/movetp，例如 foot、horse、fly、hover、float、amph）；rawcode 不是单位时为空。
+[[nodiscard]] std::optional<std::string> WorldUnitMovementType(const QtProject::EditorProject& project, const std::string& rawcode);
+
 // 新摆放的默认字段，与原版编辑器写出的一致（实测经典地图）：flags 2、朝向 270°、缩放 1、
 // 生命/魔法/掉落表 -1、金矿储量 12500、警戒范围默认、英雄等级 1、非随机（级别 1）；
 // 物品固定属于中立被动（玩家 16），装饰物生命 100%。坐标由调用方给出（已贴地）。

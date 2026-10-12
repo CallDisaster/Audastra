@@ -7,6 +7,7 @@
 #include "WorldBuildingSplatPresenter.h"
 #include "WorldModelBugPlaceholderPresenter.h"
 #include "WorldPremPresenter.h"
+#include "WorldCliffLayer.h"
 #include "WorldPathingHelperPresenter.h"
 #include "EditorProject.h"
 #include "ObjectNames.h"
@@ -481,6 +482,7 @@ void WorldModule::SetupAnimationControls() {
     buildingSplatPresenter_ = new WorldBuildingSplatPresenter(*viewport_, this);
     bugPlaceholderPresenter_ = new WorldModelBugPlaceholderPresenter(viewport_, this);
     premPresenter_ = new WorldPremPresenter(viewport_, this);
+    cliffLayer_ = new WorldCliffLayerPresenter(viewport_, this);
     connect(animation_, &WorldAnimationPlayer::InstanceWorkWaitingChanged,
         selectionPresenter_, [this](bool waiting) {
             if (!waiting && !animation_->Ready()) selectionPresenter_->Clear();
@@ -965,8 +967,11 @@ void WorldModule::StartAnimatedModels(std::uint64_t generation) {
     auto placed=std::make_shared<WorldPlacementCapture>(CaptureWorldPlacements(project_,*document));
     placementsDirty_=false; // 此次捕获已包含先前修改；仅启动后新增的修改要求再加载。
     const auto cliffs=cliffs_;
+    // 有摆放模型时悬崖放独立层：之后的地形笔刷只重建悬崖层。没有模型时主场景只能装悬崖（附加层需要父场景）。
+    const bool cliffLayer = cliffLayer_ && viewport_->HasModelLayerSupport() && !placed->requests.empty();
     if (placed->requests.empty() && (!cliffs || cliffs->meshes.empty())) {
         animation_->Clear(); (void)viewport_->SetModelScene(nullptr); scene_.reset();
+        cliffsInLayer_=false; if (cliffLayer_) cliffLayer_->Clear();
         requests_=placed->requests; placementIds_=placed->ids; unresolvedPlacements_=placed->unresolvedRows;
         emptyModelDiagnosticVersion_ = PlacementPresentationVersion(); emptyModelDiagnosticMapKey_ = MapKey();
         emptyModelDiagnosticGeneration_ = generation_;
@@ -1005,10 +1010,11 @@ void WorldModule::StartAnimatedModels(std::uint64_t generation) {
         std::shared_ptr<const Render::AnimationFrame> frame;
         std::vector<Diagnostic> diagnostics;
         std::optional<WorldPathingHelperPrepared> helpers;
+        std::optional<WorldCliffLayerFrame> cliffLayer;
     };
     auto work=std::make_shared<Work>();
     auto* worker=QThread::create([work,sources=std::move(*sources.value),placed,cliffs,revision,epoch,worldView,particles,registry,
-        presentationVersion, helperIdentity = std::move(*helperIdentity.value), helperCache] {
+        presentationVersion, helperIdentity = std::move(*helperIdentity.value), helperCache, cliffLayer] {
         try {
             auto reader=WorldResourceReader::Open(sources);
             if (!reader.Succeeded()) { work->diagnostics=std::move(reader.diagnostics); return; }
@@ -1038,11 +1044,16 @@ void WorldModule::StartAnimatedModels(std::uint64_t generation) {
             // 整张世界共用一份帧预算：上万实例的姿势会占满默认 64 MiB，粒子几乎全被预算拒绝。
             // 世界页放宽到 256 MiB（仍是有界活跃预算，独立预览/缩略图保持原默认）。
             limits.maxFrameBytes=256ull*1024*1024;
-            auto service=Render::ModelAnimationService::Create({epoch,revision,sources.archiveSha},specs,
-                [&](auto path,auto maximum){return work->source->ReadAnimationResource(path,maximum);},limits,
-                cliffs?std::span<const Render::BakedModelMesh>(cliffs->meshes):std::span<const Render::BakedModelMesh>{});
+            const auto read=[&](auto path,auto maximum){return work->source->ReadAnimationResource(path,maximum);};
+            auto service=Render::ModelAnimationService::Create({epoch,revision,sources.archiveSha},specs,read,limits,
+                cliffs&&!cliffLayer?std::span<const Render::BakedModelMesh>(cliffs->meshes):std::span<const Render::BakedModelMesh>{});
             if (!service.Succeeded()) { work->diagnostics=std::move(service.diagnostics); return; }
             work->service=std::move(*service.value);
+            if (cliffLayer) {
+                auto layer=PrepareWorldCliffLayer(cliffs,read,{epoch,revision,sources.archiveSha});
+                if (!layer.Succeeded()) { work->diagnostics=std::move(layer.diagnostics); return; }
+                work->cliffLayer=std::move(*layer.value);
+            }
             Render::AnimationAdvance first; first.worldView=worldView;
             first.worldCamera=Render::AnimationWorldCamera(worldView.camera);
             const auto& scene=*work->service->Scene();
@@ -1067,7 +1078,7 @@ void WorldModule::StartAnimatedModels(std::uint64_t generation) {
     });
     modelWorker_=worker;
     connect(worker,&QThread::finished,this,[this,work,placed,generation,cliffs,revision,mapKey,registry,revisionGate,selectionSources,
-        catalogRevision = presentationVersion.catalogRevision] {
+        catalogRevision = presentationVersion.catalogRevision, cliffLayer] {
         modelWorker_=nullptr;
         if (!page_) return;
         const auto current=[this,generation,revisionGate,mapKey,catalogRevision] {
@@ -1114,6 +1125,9 @@ void WorldModule::StartAnimatedModels(std::uint64_t generation) {
         }
         scene_=animation_->Picking(); requests_=placed->requests; placementIds_=placed->ids;
         unresolvedPlacements_ = placed->unresolvedRows;
+        cliffsInLayer_ = cliffLayer && work->cliffLayer;
+        if (cliffsInLayer_) { cliffLayer_->Show(*work->cliffLayer); cliffLayer_->RebindParent(); }
+        else if (cliffLayer_) cliffLayer_->Clear(); // 主场景已含悬崖，不能再叠一层
         pathingHelperRequests_.assign(requests_.size(), 0);
         pathingHelperPresentation_.reset();
         if (work->helpers) {
