@@ -21,6 +21,7 @@ qt_add_library(War3MapQtUiKit STATIC
     Widgets/CodeViewHighlight.cpp Widgets/CodeViewHighlight.h
     Widgets/CodeViewGutter.cpp Widgets/CodeViewGutter.h
     Widgets/CodeProblemsView.cpp Widgets/CodeProblemsView.h
+    Widgets/ProblemList.cpp Widgets/ProblemList.h
     Widgets/ColumnLayout.cpp
     Widgets/ColumnLayout.h
     Widgets/CommandPalette.cpp

@@ -414,7 +414,7 @@ void MapTestSettingsTests::LegacyInspectionDisplayAndCancelAreReadonly() {
     auto* note = page.findChild<QLabel*>(QStringLiteral("mapLegacyBackupInspection"));
     auto* browse = page.findChild<QPushButton*>(QStringLiteral("mapLegacyBackupDirectoryBrowse"));
     QVERIFY(note); QVERIFY(browse); QVERIFY(!browse->isEnabled());
-    QCOMPARE(note->text(), QStringLiteral("旧版备份位置尚未检查。"));
+    QVERIFY(note->text().isEmpty());
     QCOMPARE(note->textFormat(), Qt::PlainText);
     page.SetLegacyBackupInspectionText(QStringLiteral("<b>已确认旧位置</b>"));
     QCOMPARE(note->text(), QStringLiteral("<b>已确认旧位置</b>"));

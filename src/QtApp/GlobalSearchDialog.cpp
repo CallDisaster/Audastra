@@ -46,7 +46,7 @@ GlobalSearchDialog::GlobalSearchDialog(std::function<std::string()> revision, Qu
     edit_ = new QLineEdit(this);
     edit_->setObjectName(QStringLiteral("globalSearchQuery"));
     edit_->setMaxLength(256);
-    edit_->setPlaceholderText(tr("搜索名称、ID 或触发器参数 · Ctrl+Shift+F"));
+    edit_->setPlaceholderText(tr("搜索名称、ID 或触发器参数"));
     layout->addWidget(edit_);
     results_ = new QTreeWidget(this);
     results_->setObjectName(QStringLiteral("globalSearchResults"));
@@ -58,7 +58,7 @@ GlobalSearchDialog::GlobalSearchDialog(std::function<std::string()> revision, Qu
     results_->setRootIsDecorated(true);
     results_->setUniformRowHeights(true);
     layout->addWidget(results_, 1);
-    status_ = new QLabel(tr("输入名称、ID 或参数文字开始搜索。"), this);
+    status_ = new QLabel(this);
     status_->setObjectName(QStringLiteral("globalSearchStatus"));
     status_->setTextFormat(Qt::PlainText);
     status_->setWordWrap(true);
@@ -104,7 +104,7 @@ void GlobalSearchDialog::ContextChanged() {
     dirty_ = true;
     timer_->stop(); rows_.clear(); results_->clear(); starts_.clear(); nextCursor_.reset();
     previous_->setEnabled(false); next_->setEnabled(false);
-    status_->setText(tr("工程内容已变化，请重新搜索；旧结果已清除。"));
+    status_->setText(tr("内容已变化，请重新搜索"));
 }
 void GlobalSearchDialog::Refresh(bool reset) {
     if (!revision_ || !query_) return;

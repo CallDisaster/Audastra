@@ -50,6 +50,7 @@ qt_add_executable(war3-map-editor WIN32
     NativeWorkbench.cpp
     ProjectActions.cpp
     RecoveryExitDialog.cpp RecoveryExitDialog.h
+    HelpDialog.cpp HelpDialog.h
     ProjectRevisionActions.cpp
     ProjectWatchActions.cpp
     MapDataActions.cpp
@@ -90,6 +91,11 @@ qt_add_resources(war3-map-editor "audastra_lua_tutorial"
     PREFIX "/audastra/examples/lua-tutorial"
     BASE "${PROJECT_SOURCE_DIR}/examples/lua-tutorial"
     FILES ${audastra_lua_tutorial})
+# 使用帮助：界面不放说明文字，用法与限制集中在这份文档。
+qt_add_resources(war3-map-editor "audastra_help"
+    PREFIX "/audastra/help"
+    BASE "${PROJECT_SOURCE_DIR}/assets/help"
+    FILES "${PROJECT_SOURCE_DIR}/assets/help/help.zh-CN.md")
 target_sources(war3-map-editor PRIVATE "${WAR3MAP_BUILD_INFO_CPP}")
 
 target_link_libraries(war3-map-editor

@@ -1,6 +1,7 @@
 #include "Widgets/CodeView.h"
 #include "Widgets/CodeViewHighlight.h"
 #include "Widgets/CodeProblemsView.h"
+#include "Widgets/ProblemList.h"
 #include "Theme/ThemeManager.h"
 
 #include <QAbstractItemView>
@@ -319,7 +320,9 @@ private slots:
             };
         });
         QTRY_VERIFY_WITH_TIMEOUT(!view.IsChecking(), 4000);
-        QVERIFY(problems.StatusText().contains(QStringLiteral("仅语法"))); QCOMPARE(problems.IssueCount(), 2);
+        // 检查范围的补充说明是“消息”条目，状态只给计数。
+        QCOMPARE(problems.StatusText(), QStringLiteral("2 错误 · 0 警告")); QCOMPARE(problems.IssueCount(), 2);
+        QCOMPARE(problems.List()->Count(ProblemSeverity::Info), 1);
         QCOMPARE(view.extraSelections().size(), 2); // 当前行 + main 源诊断；include 不在当前正文标记。
         view.SetEditable(true); view.insertPlainText("changed"); QVERIFY(!view.CheckResult().completed); QVERIFY(problems.StatusText().contains(QStringLiteral("检查中")));
         QVERIFY(!view.CheckResult().semanticChecked);

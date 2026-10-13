@@ -273,8 +273,6 @@ QWidget* WorldModule::BuildTerrainPage() {
     terrainWaterHeight_->setRange(-2048, 2047.75); terrainWaterHeight_->setDecimals(2);
     terrainWaterHeight_->setSingleStep(0.25);
     water->addWidget(terrainWaterHeight_);
-    auto* waterHint = new QLabel(tr("只调整已有水面，不生成浅水或深水。水面通行性联动待核验，修改后可保存工程，暂不能保存地图。"), terrainWaterSection_);
-    waterHint->setWordWrap(true); water->addWidget(waterHint);
     column->addWidget(terrainWaterSection_);
 
     terrainRampSection_ = Surface(terrainPalette_);
@@ -285,8 +283,6 @@ QWidget* WorldModule::BuildTerrainPage() {
     ramp->addWidget(Segment(terrainRampSection_, terrainRampModes_, {{tr("创建"), 1}, {tr("移除"), 0}},
         "worldTerrainRampMode"));
     terrainRampModes_->button(1)->setChecked(true);
-    auto* rampHint = new QLabel(tr("在一级直线台阶上涂刷，范围自动取整段三点。暂不支持拐角、多级台阶和水中坡道。通行性联动待核验，修改后可保存工程，暂不能保存地图。"), terrainRampSection_);
-    rampHint->setWordWrap(true); ramp->addWidget(rampHint);
     column->addWidget(terrainRampSection_);
 
     // 荒芜：铺设 / 清除
@@ -308,8 +304,6 @@ QWidget* WorldModule::BuildTerrainPage() {
     boundary->addWidget(Segment(terrainBoundarySection_, terrainBoundaryModes_, {{tr("设置"), 1}, {tr("清除"), 0}},
         "worldTerrainBoundaryMode"));
     terrainBoundaryModes_->button(1)->setChecked(true);
-    auto* boundaryHint = new QLabel(tr("橙色十字标记边界顶点。只设置或清除边界标志，保留地图外缘。通行性联动待核验，修改后可保存工程，暂不能保存地图。"), terrainBoundarySection_);
-    boundaryHint->setWordWrap(true); boundary->addWidget(boundaryHint);
     terrainBoundaryStatus_ = new QLabel(terrainBoundarySection_);
     terrainBoundaryStatus_->setObjectName(QStringLiteral("worldTerrainBoundaryStatus"));
     terrainBoundaryStatus_->setWordWrap(true); boundary->addWidget(terrainBoundaryStatus_);
@@ -484,7 +478,7 @@ void WorldModule::AppendTerrainBoundaryOverlay(std::vector<War3RenderOverlayLine
     if (!terrain_ || !terrainBoundaryStatus_) return;
     if (!viewport_ || !viewport_->HasOverlaySupport()) {
         boundaryOverlaySource_.reset(); boundaryOverlay_.clear();
-        terrainBoundaryStatus_->setText(tr("当前渲染器不支持边界标记。"));
+        terrainBoundaryStatus_->setText(tr("渲染器不支持边界标记"));
         terrainBoundaryStatus_->setProperty("boundaryMarkerCount", QVariant::fromValue(qulonglong{0}));
         return;
     }
@@ -506,7 +500,7 @@ void WorldModule::AppendTerrainBoundaryOverlay(std::vector<War3RenderOverlayLine
         }
         const auto shown = boundaryOverlay_.size() / 2;
         terrainBoundaryStatus_->setText(shown == count ? tr("边界顶点：%1").arg(count)
-            : tr("边界顶点：%1，均匀抽样显示 %2 个").arg(count).arg(shown));
+            : tr("边界顶点：%1（标记 %2）").arg(count).arg(shown));
         terrainBoundaryStatus_->setProperty("boundaryVertexCount", QVariant::fromValue(static_cast<qulonglong>(count)));
         terrainBoundaryStatus_->setProperty("boundaryMarkerCount", QVariant::fromValue(static_cast<qulonglong>(shown)));
     }

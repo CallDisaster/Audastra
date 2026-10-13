@@ -37,11 +37,6 @@ UiLibraryDialog::UiLibraryDialog(const QtProject::EditorProject& project, QWidge
     setWindowTitle(tr("函数库"));
     resize(820, 520);
     auto* layout = new QVBoxLayout(this);
-    auto* hint = new QLabel(tr("启用与顺序保存在本机设置中，不修改数据根的 config；后加载的包覆盖同名定义。"
-                               "地图用到但本机关闭的包可以仅对此地图启用。"), this);
-    hint->setWordWrap(true);
-    layout->addWidget(hint);
-
     auto* tabs = new QTabWidget(this);
     auto* packagePage = new QWidget(tabs);
     auto* packageLayout = new QVBoxLayout(packagePage);

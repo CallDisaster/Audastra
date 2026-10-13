@@ -160,7 +160,7 @@ void MapSizeDialogTests::ActualServiceTotalsAndOwnedActivation() {
     QVERIFY(top->item(1, 0)->toolTip().contains(QStringLiteral("a&amp;b.blp")));
     QCOMPARE(top->item(2, 3)->text(), QStringLiteral("外盘上报，未核验"));
     QCOMPARE(Scope(&dialog)->textFormat(), Qt::PlainText); QCOMPARE(MapSizeStatusLabel(&dialog)->textFormat(), Qt::PlainText);
-    QVERIFY(Scope(&dialog)->text().contains(QStringLiteral("不是 w3x/w3m 磁盘大小")));
+    QVERIFY(Scope(&dialog)->text().contains(QStringLiteral("未压缩字节")));
     QVERIFY(MapSizeStatusLabel(&dialog)->text().contains(QStringLiteral("不能称为全图最大成员")));
     if (captureRequested) {
         QVERIFY(displayedReport); QCOMPARE(displayedReport->contextRevision, fixture.context.contextRevision);
@@ -229,7 +229,7 @@ void MapSizeDialogTests::BudgetedTop20RefreshAndStaleActivation() {
     QCOMPARE(Top(&dialog)->item(0, 2)->text(), QString("1049 B"));
     fixture.context.contextRevision = "owned-map-size/revision-2";
     ActivateRow(&dialog, 0); QCOMPARE(activations, 0); QCOMPARE(Top(&dialog)->rowCount(), 0); QCOMPARE(Totals(&dialog)->rowCount(), 0);
-    QVERIFY(MapSizeStatusLabel(&dialog)->text().contains(QStringLiteral("工程内容已变化")));
+    QVERIFY(MapSizeStatusLabel(&dialog)->text().contains(QStringLiteral("内容已变化")));
     Refresh(&dialog); QCOMPARE(queries, 3); QCOMPARE(Top(&dialog)->rowCount(), 20);
     ActivateRow(&dialog, 0); QCOMPARE(activations, 1);
 }
@@ -260,7 +260,7 @@ void MapSizeDialogTests::CallbackContextChanged() {
     guarded = &dialog; dialog.Focus();
     if (phase == QStringLiteral("revision-activation")) { QCOMPARE(Top(&dialog)->rowCount(), 5); armed = true; ActivateRow(&dialog, 0); }
     QCOMPARE(activations, 0); QCOMPARE(Top(&dialog)->rowCount(), 0); QCOMPARE(Totals(&dialog)->rowCount(), 0);
-    QVERIFY(MapSizeStatusLabel(&dialog)->text().contains(QStringLiteral("工程内容已变化")));
+    QVERIFY(MapSizeStatusLabel(&dialog)->text().contains(QStringLiteral("内容已变化")));
     QCOMPARE(queries, phase == QStringLiteral("revision-refresh") ? 0 : 1);
     Refresh(&dialog); QCOMPARE(Top(&dialog)->rowCount(), 5); QCOMPARE(Totals(&dialog)->rowCount(), 6);
     ActivateRow(&dialog, 0); QCOMPARE(activations, 1);

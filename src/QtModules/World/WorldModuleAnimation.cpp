@@ -456,14 +456,14 @@ void WorldModule::RefreshInstanceDiagnostics() {
         if (!text.isEmpty()) details << text;
     }
     if (selectedPlacements_.size() > selected.size())
-        details << tr("另有 %1 个所选摆放未展开，可单选查看。").arg(selectedPlacements_.size() - selected.size());
+        details << tr("另有 %1 个所选摆放未展开").arg(selectedPlacements_.size() - selected.size());
     auto tooltip = details.join(QStringLiteral("\n\n"));
     constexpr qsizetype textLimit = 16 * 1024;
     if (tooltip.size() > textLimit) tooltip = tooltip.left(textLimit) + tr("\n（文本截断）");
     tooltip = DiagnosticToolTip(tooltip);
     if (selectionMeta_ && selectionMeta_->toolTip() != tooltip) selectionMeta_->setToolTip(tooltip);
     if (!instanceDiagnosticNote_) return;
-    const auto summary = tooltip.isEmpty() ? QString{} : tr("动画/粒子诊断 · %1 个所选摆放，悬停查看当前帧原因。")
+    const auto summary = tooltip.isEmpty() ? QString{} : tr("动画/粒子诊断 · %1")
         .arg(selectedPlacements_.size());
     if (instanceDiagnosticNote_->text() != summary) instanceDiagnosticNote_->setText(summary);
     if (instanceDiagnosticNote_->toolTip() != tooltip) instanceDiagnosticNote_->setToolTip(tooltip);

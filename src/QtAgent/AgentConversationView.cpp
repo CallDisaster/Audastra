@@ -654,12 +654,7 @@ AgentConversationView::AgentConversationView(QWidget* parent) : QScrollArea(pare
     auto* title = new QLabel(QStringLiteral("想对地图做些什么？"), d_->empty);
     title->setObjectName(QStringLiteral("agentEmptyTitle"));
     title->setAlignment(Qt::AlignCenter);
-    auto* hint = new QLabel(QStringLiteral("查询地图、修改触发器，或检查地图问题。"), d_->empty);
-    hint->setObjectName(QStringLiteral("agentEmptyHint"));
-    hint->setAlignment(Qt::AlignCenter);
-    hint->setWordWrap(true);
     emptyLayout->addWidget(title);
-    emptyLayout->addWidget(hint);
     // 常用任务：点一下填入输入框，不直接发送。
     emptyLayout->addSpacing(14);
     auto* suggestions = new QHBoxLayout;

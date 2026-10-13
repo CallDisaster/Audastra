@@ -601,7 +601,7 @@ void ObjectModule::MarkCurrentObjectDocumentDirty() {
     project_->ObserveObjectEdit(currentObjectType_);
     emit DocumentEdited(currentObjectType_);
     UpdateObjectReferenceEntries();
-    ShowStatus(tr("存在未导出的物编修改 · 源目录仍保持只读"));
+    ShowStatus(tr("有未导出的物编修改"));
 }
 
 

@@ -11,9 +11,12 @@
 #include "TriggerModule.h"
 #include "VariablesModule.h"
 #include "Widgets/PopoverSurface.h"
+#include "Widgets/ProblemList.h"
+#include "HelpDialog.h"
 
 #include <QAction>
 #include <QActionGroup>
+#include <QColor>
 #include <QCoreApplication>
 #include <QDockWidget>
 #include <QHeaderView>
@@ -23,6 +26,7 @@
 #include <QMenu>
 #include <QPushButton>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QStandardItemModel>
 #include <QStatusBar>
@@ -263,6 +267,12 @@ void MainWindow::BuildHeader() {
     settings->setMenu(settingsMenu);
     header->AddAction(settings);
     auto* helpMenu = new QMenu(this);
+    auto* usage = helpMenu->addAction(tr("使用帮助"), this, &MainWindow::ShowHelp);
+    usage->setObjectName(QStringLiteral("applicationHelpAction"));
+    usage->setShortcut(QKeySequence::HelpContents);
+    usage->setShortcutContext(Qt::ApplicationShortcut);
+    addAction(usage);
+    RegisterCommandAction("application.help", usage, tr("帮助"));
     auto* feedback = helpMenu->addAction(tr("反馈…"), this, &MainWindow::ShowFeedback);
     feedback->setObjectName(QStringLiteral("applicationFeedbackAction"));
     RegisterCommandAction("application.feedback", feedback, tr("帮助"));
@@ -298,26 +308,55 @@ void MainWindow::BuildStatusBar() {
 void MainWindow::BuildDiagnosticsView() {
     auto* dock = new QDockWidget(tr("诊断"), this);
     dock->setObjectName("diagnosticsDock");
-    auto* view = new QTreeView(dock);
-    view->setModel(project_->diagnosticsModel_);
-    view->header()->setStretchLastSection(true);
-    dock->setWidget(view);
+    // 与 VS 错误列表相同：错误 / 警告 / 消息开关带计数，按级别列筛选。
+    auto* list = new War3Map::UiKit::ProblemList(dock);
+    list->setObjectName("diagnosticsList");
+    list->SetSourceModel(project_->diagnosticsModel_, [](const QAbstractItemModel& model, int row) {
+        return War3Map::UiKit::ProblemList::SeverityFromText(model.index(row, 0).data().toString());
+    });
+    dock->setWidget(list);
     addDockWidget(Qt::BottomDockWidgetArea, dock);
     resizeDocks({dock}, {170}, Qt::Vertical);
     dock->hide();
     // 问题入口在状态栏：点击展开 / 收起诊断面板。
     auto* toggle = new QToolButton;
     toggle->setObjectName("diagnosticsToggle");
-    toggle->setDefaultAction(dock->toggleViewAction());
-    toggle->setIcon(War3Map::UiKit::SvgIcon("lucide/triangle-alert"));
+    toggle->setCheckable(true);
+    toggle->setToolTip(tr("错误列表"));
     toggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     toggle->setAutoRaise(true);
+    connect(toggle, &QToolButton::toggled, dock, &QDockWidget::setVisible);
+    connect(dock, &QDockWidget::visibilityChanged, toggle, [toggle, dock] {
+        const QSignalBlocker blocker(toggle);
+        toggle->setChecked(dock->isVisible());
+    });
+    // 和 VS 状态栏一样直接显示错误、警告数量；有错误时用错误图标。
+    const auto updateCounts = [toggle, list] {
+        using War3Map::UiKit::ProblemSeverity;
+        const int errors = list->Count(ProblemSeverity::Error);
+        const int warnings = list->Count(ProblemSeverity::Warning);
+        toggle->setText(tr("%1 错误 · %2 警告").arg(errors).arg(warnings));
+        toggle->setIcon(errors > 0 ? War3Map::UiKit::SvgIcon("lucide/circle-x", QColor(0xf8, 0x51, 0x49))
+            : warnings > 0 ? War3Map::UiKit::SvgIcon("lucide/triangle-alert", QColor(0xe3, 0xb3, 0x41))
+            : War3Map::UiKit::SvgIcon("lucide/triangle-alert"));
+    };
+    connect(list, &War3Map::UiKit::ProblemList::CountsChanged, toggle, updateCounts);
+    updateCounts();
     AddStatusWidget(toggle);
 }
 
 void MainWindow::SetProjectTitle(const QString& title, const QString& tooltip) {
     Header()->SetProjectTitle(title, tooltip);
     UpdateWindowTitle();
+}
+
+void MainWindow::ShowHelp() {
+    // 非模态，同一时间只开一个；再次打开时置前。
+    if (auto* existing = findChild<HelpDialog*>(QStringLiteral("helpDialog"), Qt::FindDirectChildrenOnly)) {
+        existing->raise(); existing->activateWindow(); return;
+    }
+    auto* dialog = new HelpDialog(this);
+    dialog->show();
 }
 
 void MainWindow::ShowAbout() {

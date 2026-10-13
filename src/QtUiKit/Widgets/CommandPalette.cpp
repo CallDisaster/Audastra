@@ -101,7 +101,7 @@ CommandPalette::CommandPalette(QWidget* parent) : QDialog(parent) {
     searchBox_ = new QLineEdit;
     searchBox_->setObjectName(QStringLiteral("commandPaletteSearch"));
     searchBox_->setAccessibleName(tr("搜索命令或工程内容"));
-    searchBox_->setPlaceholderText(tr("搜索命令或工程内容…  输入 > 只搜命令"));
+    searchBox_->setPlaceholderText(tr("搜索命令或工程内容…"));
     searchBox_->setMaxLength(512);
     searchBox_->setClearButtonEnabled(true);
     searchBox_->setAttribute(Qt::WA_InputMethodEnabled);
@@ -123,17 +123,6 @@ CommandPalette::CommandPalette(QWidget* parent) : QDialog(parent) {
     listView_->setMaximumHeight(360);
     listView_->installEventFilter(this);
     layout->addWidget(listView_, 1);
-    auto* divider = new QFrame;
-    divider->setObjectName(QStringLiteral("commandPaletteDivider"));
-    divider->setFrameShape(QFrame::NoFrame);
-    divider->setFixedHeight(1);
-    layout->addWidget(divider);
-    auto* footer = new QLabel(tr("↑ ↓ 选择  ·  Enter 执行  ·  > 只搜命令  ·  Esc 关闭"));
-    footer->setObjectName(QStringLiteral("commandPaletteFooter"));
-    footer->setContentsMargins(12, 8, 12, 8);
-    footer->setWordWrap(true);
-    footer->setForegroundRole(QPalette::PlaceholderText);
-    layout->addWidget(footer);
     connect(searchBox_, &QLineEdit::textChanged, this, &CommandPalette::FilterEntries);
     connect(listView_, &QListView::activated, this, &CommandPalette::ActivateIndex);
     connect(listView_, &QListView::clicked, this, &CommandPalette::ActivateIndex);

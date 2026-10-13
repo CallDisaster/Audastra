@@ -2484,7 +2484,7 @@ void WorldModuleTests::TerrainPathingUsesCellsAndPreservesSource() {
     auto* fly = page->findChild<QPushButton*>("worldTerrainPathingType1"); QVERIFY(fly); fly->click();
     auto* status = page->findChild<QLabel*>("worldTerrainPathingStatus"); QVERIFY(status);
     if (!hasPathing) {
-        QVERIFY(status->text().contains(QStringLiteral("缺少")));
+        QVERIFY(status->text().contains(QStringLiteral("不可读")));
         viewport->TerrainStrokeStarted(-112, -48); viewport->TerrainStrokeFinished();
         QCOMPARE(project.mapDataUndoStack_->count(), 0); QCOMPARE(project.mapEdits_->Revision(), std::uint64_t{0});
         return;

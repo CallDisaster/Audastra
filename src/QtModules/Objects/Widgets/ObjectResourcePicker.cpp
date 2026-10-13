@@ -167,7 +167,7 @@ void ObjectResourcePicker::SelectSource() {
     directory_.clear(); catalog_.reset(); candidates_->clear();
     if (custom) { status_->clear(); path_->setFocus(); return; }
     if (origin_ == Services::ObjectResourceOrigin::Import && !field_.storesPath) {
-        status_->setText(tr("原版字段保存声音标签或组名，不接受文件路径。可在“选择”中选已有标签。")); return;
+        status_->setText(tr("此字段只接受声音标签")); return;
     }
     if (const auto cached = catalogs_[static_cast<int>(origin_)]) { catalog_ = cached; Requery(); return; }
     StartLoad(origin_);

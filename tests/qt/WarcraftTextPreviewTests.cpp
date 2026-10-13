@@ -116,7 +116,7 @@ void WarcraftTextPreviewTests::PlainTextStylesNeverInterpretHtmlOrLoadResources(
     QVERIFY(!reset.charFormat().hasProperty(QTextFormat::ForegroundBrush));
     QVERIFY(!widget.Preview()->document()->resource(QTextDocument::ImageResource, QUrl(QStringLiteral("file:///never-read"))).isValid());
     QVERIFY(!widget.Preview()->isUndoRedoEnabled());
-    QVERIFY(widget.StatusText().contains(QStringLiteral("alpha")));
+    QVERIFY(widget.StatusText().isEmpty()); // 完整预览不显示说明文字
     QCOMPARE(source.toPlainText(), QStringLiteral("|cff00ff00绿|r默认|n||cffffffff <img src='file:///private'>中文"));
     if (qEnvironmentVariableIsSet("AUD_COLOUR_PREVIEW_CAPTURE_DIR")) {
         const auto error = PrepareCaptureDirectory(); QVERIFY2(error.isEmpty(), qPrintable(error));

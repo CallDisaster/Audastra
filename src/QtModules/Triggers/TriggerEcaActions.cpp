@@ -241,7 +241,7 @@ void TriggerModule::PasteEca() {
     const QModelIndex selected = ecaView_->currentIndex();
     const auto* eca = ecaModel_->EcaAt(selected);
     if (eca == nullptr) {
-        ShowStatus(tr("请先选中一个节点作为粘贴位置（粘贴为其后一个兄弟节点）。"), 6000);
+        ShowStatus(tr("请先选中粘贴位置"), 6000);
         return;
     }
     // 兄弟语义：粘贴到当前节点之后，分支号（childId）与当前节点一致。

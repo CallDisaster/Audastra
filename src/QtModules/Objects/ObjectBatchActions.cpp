@@ -152,7 +152,6 @@ void ObjectModule::BatchEditObjects() {
     dialog.setWindowTitle(tr("批量修改 · %1").arg(BreadcrumbText()));
     dialog.setMinimumSize(530, 480);
     auto* layout = new QVBoxLayout(&dialog);
-    layout->addWidget(new QLabel(tr("选择同类地图对象，然后输入要共同设置的字段值。"), &dialog));
     auto* objects = new QListWidget(&dialog);
     objects->setObjectName("batchObjectList");
     const QString currentId = objectListView_ && objectListView_->currentIndex().isValid()

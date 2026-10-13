@@ -295,7 +295,7 @@ private:
     QCheckBox* runOnInitCheck_ = nullptr;
     QWidget* propertiesBox_ = nullptr;
     QLabel* metaNote_ = nullptr;
-    QLabel* scriptRebuildNotice_ = nullptr;
+    QString reportedScriptNotice_; // 已写入错误列表的“不能保存”警告，避免同一地图重复写入
     bool scriptCapabilityCached_ = false;
     std::filesystem::path scriptCapabilityToolRoot_;
     std::filesystem::path scriptCapabilityUiRoot_;

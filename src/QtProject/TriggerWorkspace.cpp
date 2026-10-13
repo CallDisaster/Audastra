@@ -94,7 +94,7 @@ bool EditorProject::LoadTriggers() {
     if (uiRoot.empty()) {
         AddDiagnostic(tr("警告"), tr("触发器"), tr("UI_CATALOG_NOT_FOUND"),
             tr("第三方 UI 层本身是可选的，但 WTG 不保存参数数量；解析引用这些函数的节点时必须提供对应库。"));
-        return fail(tr("未找到 UI Catalog；请选择当前 Warcraft/YDWE 的 UI 数据根。"));
+        return fail(tr("未找到 UI 数据根"));
     }
     activeUiDataRoot_ = uiRoot;
 

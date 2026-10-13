@@ -160,8 +160,8 @@ private slots:
         QVERIFY(summary->text().contains(QStringLiteral("可能不完整"))); QVERIFY(!summary->text().contains(QStringLiteral("全图")));
         Modules::TriggerLuaScripts scripts(project); QVERIFY(scripts.ScriptPaths().contains("Lua\\main.lua")); QVERIFY(scripts.SelectScript("Lua/main.lua"));
         QCOMPARE(scripts.Editor()->toPlainText(), QStringLiteral("return 1\n")); QVERIFY(!scripts.Editor()->isReadOnly());
-        QVERIFY(scripts.StatusText().contains(QStringLiteral("可能不完整"))); QVERIFY(!scripts.CreateScript("Lua/new.lua"));
-        QVERIFY(scripts.StatusText().contains(QStringLiteral("完整性"))); QCOMPARE(project.AssetUndoStack()->count(), 0); QVERIFY(!QFile::exists(root.filePath("Lua/new.lua")));
+        QVERIFY(!scripts.CreateScript("Lua/new.lua")); QVERIFY(scripts.StatusText().contains(QStringLiteral("不完整")));
+        QCOMPARE(project.AssetUndoStack()->count(), 0); QVERIFY(!QFile::exists(root.filePath("Lua/new.lua")));
     }
     void ResourcePropertiesShowDirectorySnapshotAndLiteralOriginalPath() {
         QTemporaryDir root; QVERIFY(root.isValid()); QVERIFY(!Write(root, "resource/Scripts/main.lua", "return 1\n").isEmpty());

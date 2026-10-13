@@ -273,7 +273,7 @@ void ObjectModule::OnStandardFieldChanged(QStandardItem* item) {
             const QSignalBlocker restoring(standardFieldModel_);
             standardFieldModel_->setData(pending, previous, Qt::EditRole);
         }
-        ShowStatus(tr("字段未修改 · 检查取值、字段定义与原生物编基线"), 7000);
+        ShowStatus(tr("字段未修改"), 7000);
     });
 }
 
@@ -445,9 +445,8 @@ void ObjectModule::UpdateObjectFieldControls() {
     const int total = map ? objectFieldModel_->FieldCount() : standardFieldModel_->rowCount();
     const auto issue = map ? objectFieldModel_->InheritanceIssue() : QString{};
     const auto countText = count == total ? tr("%1 个字段").arg(count) : tr("%1 / %2 个字段").arg(count).arg(total);
-    objectFieldCount_->setText(countText + QStringLiteral(" · ")
-        + (!issue.isEmpty() ? tr("继承异常 · 只读") : map ? tr("品红色为已修改的字段")
-            : project ? tr("双击字段直接修改 · 原版资源只读") : tr("标准对象 · 打开地图后可编辑")));
+    objectFieldCount_->setText(!issue.isEmpty() ? countText + tr(" · 继承异常 · 只读")
+        : !map ? countText + tr(" · 标准对象") : countText);
     objectFieldCount_->setToolTip(issue);
     const auto* stack = project_->objectUndoStacks_[currentObjectType_];
     undoObjectEdit_->setEnabled(map && stack && stack->canUndo());

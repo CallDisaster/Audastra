@@ -38,19 +38,19 @@ QString Coverage(const TriggerReplaceCoverage& coverage, std::size_t offset, std
     const bool complete = coverage.state == TriggerReplaceState::Ready && !coverage.scanTruncated && coverage.totalMatches.has_value();
     QString text;
     if (targets) {
-        text = complete ? QObject::tr("可选目标 %1 项；本页 %2–%3。")
+        text = complete ? QObject::tr("%1 项 · 本页 %2–%3")
             .arg(Number(*coverage.totalMatches), Number(rows ? offset + 1 : 0), Number(offset + rows))
-            : QObject::tr("已确认 %1 项；目录尚未完整。").arg(Number(coverage.matchedInScannedScope));
+            : QObject::tr("已确认 %1 项 · 目录不完整").arg(Number(coverage.matchedInScannedScope));
     } else {
-        text = complete ? QObject::tr("找到 %1 项；本页 %2–%3。")
+        text = complete ? QObject::tr("%1 项 · 本页 %2–%3")
             .arg(Number(*coverage.totalMatches), Number(rows ? offset + 1 : 0), Number(offset + rows))
-            : QObject::tr("已扫描范围找到 %1 项；总数尚未确认；本页 %2–%3。")
+            : QObject::tr("已扫描 %1 项 · 总数未确认 · 本页 %2–%3")
                 .arg(Number(coverage.matchedInScannedScope), Number(rows ? offset + 1 : 0), Number(offset + rows));
     }
     if (coverage.customCodeSlotsExcluded)
-        text += QObject::tr(" %1 个代码块未检查正文。函数、代码和数组索引仅可查找定位。").arg(Number(coverage.customCodeSlotsExcluded));
+        text += QObject::tr(" · %1 个代码块未检查").arg(Number(coverage.customCodeSlotsExcluded));
     if (coverage.unresolvedReferenceRows || coverage.displayResolutionPartial)
-        text += QObject::tr(" 部分类型或显示名称尚未确认；原值仍保留。");
+        text += QObject::tr(" · 部分类型未确认");
     return text;
 }
 QPushButton* Button(const QString& text, const char* name, QWidget* parent) {
@@ -89,7 +89,7 @@ TriggerReplaceDialog::TriggerReplaceDialog(std::function<std::string()> revision
     mode_->addItem(tr("变量引用"), static_cast<int>(TriggerReplaceMode::Variable));
     mode_->addItem(tr("物体引用"), static_cast<int>(TriggerReplaceMode::ObjectReference));
     queryEdit_ = new QLineEdit(this); queryEdit_->setObjectName(QStringLiteral("triggerReplaceQuery"));
-    queryEdit_->setMaxLength(2048); queryEdit_->setPlaceholderText(tr("查找传统 T 的原值或引用；不替换 JASS / Lua 正文"));
+    queryEdit_->setMaxLength(2048); queryEdit_->setPlaceholderText(tr("查找"));
     match_ = new QComboBox(this); match_->setObjectName(QStringLiteral("triggerReplaceMatch"));
     match_->addItem(tr("包含"), static_cast<int>(TriggerReplaceMatch::Substring));
     match_->addItem(tr("精确"), static_cast<int>(TriggerReplaceMatch::Exact));
@@ -105,7 +105,7 @@ TriggerReplaceDialog::TriggerReplaceDialog(std::function<std::string()> revision
     replacementKind_->addItem(tr("物体编号"), static_cast<int>(TriggerReplacementKind::ObjectLiteral));
     replacementKind_->addItem(tr("预放物体"), static_cast<int>(TriggerReplacementKind::PreplacedObject));
     targetFilter_ = new QLineEdit(this); targetFilter_->setObjectName(QStringLiteral("triggerReplaceTargetFilter"));
-    targetFilter_->setMaxLength(2048); targetFilter_->setPlaceholderText(tr("按名称、类型或四字码查已有目录"));
+    targetFilter_->setMaxLength(2048); targetFilter_->setPlaceholderText(tr("名称、类型或四字码"));
     auto* targetSearch = Button(tr("查目录"), "triggerReplaceTargetSearch", this);
     targets_ = new QComboBox(this); targets_->setObjectName(QStringLiteral("triggerReplaceTarget"));
     targets_->setMinimumContentsLength(20); targets_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
@@ -114,9 +114,9 @@ TriggerReplaceDialog::TriggerReplaceDialog(std::function<std::string()> revision
     for (auto* widget : std::initializer_list<QWidget*>{replacementKind_, targetFilter_, targetSearch, targets_, targetPrevious_, targetNext_})
         targetBar->addWidget(widget, widget == targets_ ? 2 : widget == targetFilter_ ? 1 : 0);
     layout->addLayout(targetBar);
-    targetStatus_ = new QLabel(tr("从当前已接受的真实声明或物体目录选择目标；不会按四字码前缀猜类型。"), this);
+    targetStatus_ = new QLabel(this);
     targetStatus_->setObjectName(QStringLiteral("triggerReplaceTargetStatus"));
-    targetStatus_->setTextFormat(Qt::PlainText); targetStatus_->setWordWrap(true); layout->addWidget(targetStatus_);
+    targetStatus_->setTextFormat(Qt::PlainText); layout->addWidget(targetStatus_);
     tabs_ = new QTabWidget(this);
     results_ = new QTreeWidget(this); results_->setObjectName(QStringLiteral("triggerReplaceResults"));
     ConfigureTable(*results_, {tr("选择"), tr("位置"), tr("原值 / 显示名"), tr("声明类型"), tr("状态")});
@@ -131,8 +131,8 @@ TriggerReplaceDialog::TriggerReplaceDialog(std::function<std::string()> revision
     selectionStatus_ = new QLabel(this); selectionStatus_->setObjectName(QStringLiteral("triggerReplaceSelectionStatus"));
     selectionStatus_->setTextFormat(Qt::PlainText);
     selectionBar->addWidget(checkPage); selectionBar->addWidget(clear); selectionBar->addWidget(selectionStatus_, 1); layout->addLayout(selectionBar);
-    status_ = new QLabel(tr("查找和预览只读；勾选真实参数并完成类型校验后才可应用，一次撤销还原整批。"), this);
-    status_->setObjectName(QStringLiteral("triggerReplaceStatus")); status_->setTextFormat(Qt::PlainText); status_->setWordWrap(true);
+    status_ = new QLabel(this);
+    status_->setObjectName(QStringLiteral("triggerReplaceStatus")); status_->setTextFormat(Qt::PlainText);
     layout->addWidget(status_);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     if (auto* close = buttons->button(QDialogButtonBox::Close)) close->setText(tr("关闭"));
@@ -181,7 +181,7 @@ TriggerReplaceDialog::TriggerReplaceDialog(std::function<std::string()> revision
             if (row.eligibility != TriggerReplaceEligibility::PreviewRequired ||
                 (!selected_.contains(row.rowKey) && selected_.size() >= limits_.maxSelection)) {
                 const QScopedValueRollback guard(updatingRows_, true); item->setCheckState(0, Qt::Unchecked);
-                status_->setText(tr("最多勾选 %1 项；不可替换项只可定位。").arg(Number(limits_.maxSelection))); return;
+                status_->setText(tr("最多勾选 %1 项").arg(Number(limits_.maxSelection))); return;
             }
             selected_.insert(row.rowKey);
         } else selected_.erase(row.rowKey);
@@ -222,7 +222,7 @@ void TriggerReplaceDialog::SetAsyncPreview(AsyncPreview preview) {
 void TriggerReplaceDialog::CancelPreview() {
     if (!PreviewPending()) return;
     InvalidatePreview(); UpdateSelectionText();
-    status_->setText(tr("已请求取消准备；后台将在安全阶段停止，没有修改地图。"));
+    status_->setText(tr("正在取消"));
 }
 void TriggerReplaceDialog::hideEvent(QHideEvent* event) {
     InvalidatePreview(); UpdateSelectionText(); QDialog::hideEvent(event);
@@ -235,16 +235,16 @@ void TriggerReplaceDialog::InvalidatePreview() {
 void TriggerReplaceDialog::ResetQuery() {
     InvalidatePreview(); proof_.reset(); rows_.clear(); results_->clear(); selected_.clear(); starts_.clear(); nextCursor_.reset();
     previous_->setEnabled(false); next_->setEnabled(false); UpdateSelectionText();
-    status_->setText(tr("请查找当前范围；旧结果和预览已清除。代码正文不作替换。"));
+    status_->clear();
 }
 void TriggerReplaceDialog::ResetTargets() {
     InvalidatePreview(); targetRows_.clear(); targetStarts_.clear(); targetNextCursor_.reset();
-    const QSignalBlocker blocked(targets_); targets_->clear(); targets_->addItem(tr("先查目录，再明确选择目标"));
+    const QSignalBlocker blocked(targets_); targets_->clear(); targets_->addItem(tr("选择目标"));
     targetPrevious_->setEnabled(false); targetNext_->setEnabled(false); UpdateSelectionText();
 }
 void TriggerReplaceDialog::ContextChanged() {
     ResetQuery(); ResetTargets();
-    status_->setText(tr("工程修订、目录或来源已变化；旧命中和预览失效，请重新查找。"));
+    status_->setText(tr("内容已变化，请重新查找"));
 }
 TriggerReplaceQuery TriggerReplaceDialog::ReadQuery() const {
     TriggerReplaceQuery query;
@@ -297,8 +297,8 @@ void TriggerReplaceDialog::Populate(const TriggerReplacePage& page) {
         item->setText(1, Location(row));
         item->setText(2, Text(row.oldValue) + (row.displayValue.empty() || row.displayValue == row.oldValue ? QString{} : QStringLiteral(" · ") + Text(row.displayValue)));
         item->setToolTip(1, Tooltip(item->text(1))); item->setToolTip(2, Tooltip(item->text(2)));
-        item->setText(3, row.declaredType.empty() ? tr("待预览确认") : Text(row.declaredType));
-        item->setText(4, row.eligibility == TriggerReplaceEligibility::ReadOnly ? Text(row.reasonCode) + QStringLiteral(" · ") + Text(row.reason) : tr("预览时校验真实类型与来源"));
+        item->setText(3, row.declaredType.empty() ? tr("待预览") : Text(row.declaredType));
+        item->setText(4, row.eligibility == TriggerReplaceEligibility::ReadOnly ? Text(row.reasonCode) + QStringLiteral(" · ") + Text(row.reason) : QString{});
         if (row.eligibility == TriggerReplaceEligibility::PreviewRequired) {
             item->setFlags(item->flags() | Qt::ItemIsUserCheckable); item->setCheckState(0, selected_.contains(row.rowKey) ? Qt::Checked : Qt::Unchecked);
         } else item->setFlags(item->flags() & ~Qt::ItemIsUserCheckable);
@@ -337,7 +337,7 @@ void TriggerReplaceDialog::SearchTargets(bool reset) {
 }
 void TriggerReplaceDialog::PopulateTargets(const TriggerReplacementOptionsPage& page) {
     InvalidatePreview(); targetRows_ = page.rows; targetNextCursor_ = page.next;
-    const QSignalBlocker blocked(targets_); targets_->clear(); targets_->addItem(tr("请选择已确认的目标"));
+    const QSignalBlocker blocked(targets_); targets_->clear(); targets_->addItem(tr("选择目标"));
     for (const auto& row : targetRows_) targets_->addItem(Text(row.display) + QStringLiteral(" · ") + Text(row.typeName) + QStringLiteral(" · ") + Text(row.source));
     targetPrevious_->setEnabled(targetPageIndex_ != 0); targetNext_->setEnabled(targetNextCursor_.has_value());
     targetStatus_->setText(Coverage(page.coverage, page.matchOffset, page.rows.size(), true)); UpdateSelectionText();
@@ -399,16 +399,16 @@ void TriggerReplaceDialog::PreparePreview() {
                 const auto current = getRevision(); if (!owner || generation != requestGeneration_) return;
                 if (current != revision) { ContextChanged(); return; }
                 if (future.resultCount() != 1) {
-                    previewTiming_.reset(); status_->setText(tr("后台预览未返回完整结果；没有修改地图。")); return;
+                    previewTiming_.reset(); status_->setText(tr("预览未完成")); return;
                 }
                 const auto result = future.result(); PresentPreview(result, proof);
                 if (!owner || generation != requestGeneration_ || !previewTiming_) return;
                 const auto finished = previewTiming_->finishedAtNanoseconds.load();
                 if (finished > 0) previewTiming_->deliveryNanoseconds.store(std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now().time_since_epoch()).count() - finished);
-            } catch (...) { if (owner && generation == requestGeneration_) { previewTiming_.reset(); status_->setText(tr("后台预览未完成；当前编辑保持。")); } }
+            } catch (...) { if (owner && generation == requestGeneration_) { previewTiming_.reset(); status_->setText(tr("预览未完成")); } }
         });
-        status_->setText(tr("正在准备替换预览；可取消，没有修改地图。")); UpdateSelectionText();
+        status_->setText(tr("正在预览…")); UpdateSelectionText();
         watcher->setFuture(task.value->future); return;
     }
     const auto result = prepare(revision, request, proof, keys, *replacement, limits);
@@ -427,9 +427,9 @@ void TriggerReplaceDialog::PresentPreview(const Result<TriggerReplacePreviewResu
         item->setText(3, Text(row.expectedType)); item->setText(4, row.eligible ? tr("校验通过") : Text(row.reasonCode) + QStringLiteral(" · ") + Text(row.reason));
     }
     preview_ = result.value->preview; applyButton_->setEnabled(preview_.has_value()); tabs_->setCurrentIndex(1);
-    status_->setText(preview_ ? tr("%1 项全部校验通过；尚未修改地图。应用后可一次撤销。")
+    status_->setText(preview_ ? tr("%1 项校验通过")
         .arg(Number(result.value->rows.size()))
-        : tr("所选项中存在拒绝；整批不能应用。请取消对应勾选后重新预览，没有静默跳过任何项。"));
+        : tr("有不能替换的项，整批不能应用"));
 }
 void TriggerReplaceDialog::ApplyPreview() {
     if (!preview_ || !revision_ || !apply_) return;
@@ -441,7 +441,7 @@ void TriggerReplaceDialog::ApplyPreview() {
     applyButton_->setEnabled(false);
     const auto status = apply(expected, preview, limits);
     if (!guard || requestGeneration_ != generation) return;
-    ContextChanged(); status_->setText(status.Succeeded() ? tr("已应用整批替换；可一次撤销。请重新查找当前内容。") : Failure(status.diagnostics));
+    ContextChanged(); status_->setText(status.Succeeded() ? tr("已替换") : Failure(status.diagnostics));
 }
 
 } // namespace War3Map::Modules

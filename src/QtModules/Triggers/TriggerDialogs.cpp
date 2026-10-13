@@ -114,7 +114,7 @@ UiDefinitionPickerDialog::UiDefinitionPickerDialog(
     search_ = new QLineEdit;
     search_->setObjectName("dialogSearch");
     search_->setClearButtonEnabled(true);
-    search_->setPlaceholderText(tr("搜索函数名、分类、原始函数名或来源层…"));
+    search_->setPlaceholderText(tr("搜索"));
     filters->addWidget(search_, 1);
     layout->addLayout(filters);
 
@@ -504,7 +504,7 @@ void TriggerParameterDialog::AddArgumentRow(
         row->scalar->setReadOnly(true);
         row->preset->setEnabled(false);
         row->functionButton->setEnabled(false);
-        row->scalar->setText(tr("数组索引参数（只读，请在数组编辑器中修改）"));
+        row->scalar->setText(tr("数组索引"));
     }
 
     const auto updateStack = [row]() {

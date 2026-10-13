@@ -213,7 +213,7 @@ void SearchRevealModuleTests::NestedFunctionShowsContainingStatementWithoutModal
     Host host; Modules::TriggerModule module(project); module.AttachHost(&host); auto* page = module.Widget();
     QVERIFY(module.Reveal(Parameter(owner, nestedId, argument))); QCOMPARE(SelectedEca(page), rootId);
     QVERIFY(host.status.contains(QString::number(nestedId)) && host.status.contains(QString::number(argument))
-        && host.status.contains(QStringLiteral("没有独立逻辑树行")));
+        && host.status.contains(QStringLiteral("语句")));
     QVERIFY(!QApplication::activeModalWidget()); QCOMPARE(project.triggerUndoStack_->count(), 0);
 }
 void SearchRevealModuleTests::WrongOwnerPreservesPendingDraft() {

@@ -417,9 +417,7 @@ void MapSettingsModule::AddTextField(QFormLayout* form, const QString& label, co
         layout->addWidget(editor);
         auto* preview = new UiKit::WarcraftTextPreview(field);
         const bool sourceAvailable = decoded && previewBodySafe && (!value.starts_with("TRIGSTR_") || !reference.isEmpty());
-        const QString sourceText = reference.isEmpty() ? tr("当前字段草稿；编码及写入规则保持原设置。")
-            : (sharedSetting ? tr("来自 %1；应用仍保留原引用并改写当前 WTS。").arg(reference)
-                : tr("来自 %1；此字段应用仍按原规则改为直接文字。").arg(reference));
+        const QString sourceText = reference.isEmpty() ? QString() : tr("来自 %1").arg(reference);
         if (auto* box = qobject_cast<QPlainTextEdit*>(editor)) preview->Bind(box, sourceText, sourceAvailable);
         else if (auto* box = qobject_cast<QLineEdit*>(editor)) preview->Bind(box, sourceText, sourceAvailable);
         layout->addWidget(preview);
@@ -490,10 +488,7 @@ void MapSettingsModule::BuildForms() {
     };
 
     if (!draft_) {
-        auto* form = addForm(tr("地图描述"));
-        auto* empty = new QLabel(tr("当前地图没有可编辑的经典 W3I v25 地图设置"), page_);
-        empty->setWordWrap(true);
-        form->addRow(empty);
+        addForm(tr("地图描述"));
         sections_->setCurrentRow(0);
         apply_->setEnabled(false);
         discard_->setEnabled(false);
@@ -517,9 +512,6 @@ void MapSettingsModule::BuildForms() {
                 .arg(draft_->gameVersion[2]).arg(draft_->gameVersion[3]), form->parentWidget()));
         if (draft_->Layout() && draft_->Layout()->scriptLanguage)
             form->addRow(tr("脚本语言原值"), new QLabel(QString::number(draft_->scriptLanguage), form->parentWidget()));
-        auto* note = new QLabel(tr("已读取并保留源字节；此格式的整图编辑与保存尚未开放，此页只读。"), form->parentWidget());
-        note->setWordWrap(true);
-        form->addRow(note);
         sections_->setCurrentRow(0);
         apply_->setEnabled(false);
         discard_->setEnabled(false);
@@ -560,7 +552,7 @@ void MapSettingsModule::BuildForms() {
     general->addRow(flagsLabel, flagGroup);
     const auto unknownFlags = draft_->flags & ~knownMapFlagMask;
     if (unknownFlags != 0) {
-        auto* unknown = new QLabel(tr("此地图还包含未识别的选项位 %1；编辑时会原样保留。")
+        auto* unknown = new QLabel(tr("未识别的选项位 %1（原样保留）")
             .arg(Hex(unknownFlags)), general->parentWidget());
         unknown->setObjectName("mapSettingsUnknownFlags");
         unknown->setWordWrap(true);
@@ -655,18 +647,16 @@ void MapSettingsModule::BuildForms() {
               .arg(custom->upgrades.size()).arg(custom->techRestrictions.size())
               .arg(custom->randomUnits.size()).arg(custom->randomItems.size())
         : tr("原地图未提供自定义表");
-    for (const auto& text : {status, tr("以上表格暂为只读；编辑需类型选择器与引用检查。")}) {
-        auto* note = new QLabel(text, page_);
-        note->setWordWrap(true);
-        tech->addRow(note);
-    }
+    auto* techStatus = new QLabel(status + tr(" · 只读"), page_);
+    techStatus->setWordWrap(true);
+    tech->addRow(techStatus);
 
     UpdateLabels();
     sections_->setCurrentRow(std::clamp(pendingSection_, 0, pages_->count() - 1));
     apply_->setEnabled(false);
     discard_->setEnabled(false);
     SetMessage(draft_->FullyParsed() ? tr("经典地图设置 · W3I v25")
-        : tr("W3I v25 · 未解释的尾部会按原字节保留"));
+        : tr("W3I v25 · 尾部原样保留"));
     rebuilding_ = false;
     UpdateResponsiveLayout();
 }
@@ -705,7 +695,7 @@ void MapSettingsModule::CheckDraftSource() {
         || !draftBytes.value || *currentBytes.value != *draftBytes.value;
     if (stale == stale_) return;
     stale_ = stale;
-    SetMessage(stale ? tr("地图设置已被其他操作修改：未应用的输入已保留，但不能应用；请放弃修改后重新编辑")
+    SetMessage(stale ? tr("地图设置已被其他操作修改，请放弃后重新编辑")
                      : tr("有未应用的修改"), stale);
 }
 
@@ -850,7 +840,7 @@ bool MapSettingsModule::ApplyDraft() {
         return false;
     }
     if (draft_->formatVersion != 25) {
-        SetMessage(tr("新版地图设置目前只读；整图脚本保存尚未验证"), true);
+        SetMessage(tr("新版地图设置只读"), true);
         return false;
     }
     const auto snapshot = session->Snapshot();
@@ -882,7 +872,7 @@ bool MapSettingsModule::ApplyDraft() {
         const auto expected = field.editor->property("mapSettingsStringSourceSha").toString();
         if (expected.isEmpty() || strings.state != MapDataState::Ready || !hash.Succeeded() || !hash.value
             || expected != QString::fromStdString(*hash.value)) {
-            SetMessage(tr("设置引用的字符串表缺失、重复或已变化，请重新载入后编辑；原引用与正文尚未修改"), true);
+            SetMessage(tr("字符串表已变化，请重新载入"), true);
             return false;
         }
     }

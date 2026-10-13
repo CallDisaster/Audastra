@@ -847,7 +847,7 @@ bool TriggerModule::Reveal(const Shell::NavigationTarget& target) {
             explorerSearch_->clear(); SelectTrigger(*searchOwner); ShowSelectedTrigger(); RefreshEditor(*searchAnchor);
             logicHint_->setText(*searchAnchor == *searchEca
                 ? tr("搜索参数 · ECA %1 · 参数 %2").arg(QString::number(*searchEca), QString::number(*searchArgument))
-                : tr("搜索参数 · 函数 ECA %1 · 参数 %2 · 包含语句 %3（函数参数没有独立逻辑树行）")
+                : tr("搜索参数 · 函数 ECA %1 · 参数 %2 · 语句 %3")
                     .arg(QString::number(*searchEca), QString::number(*searchArgument), QString::number(*searchAnchor)));
             ShowStatus(logicHint_->text(), 8000);
             return true;

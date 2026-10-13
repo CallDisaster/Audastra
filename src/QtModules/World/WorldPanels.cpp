@@ -318,10 +318,6 @@ QWidget* WorldModule::BuildSelectPage() {
     duplicate->setProperty("worldToggle", true);
     duplicate->setToolTip(tr("当前所选对象一次复制；未支持的混合类别保持只读"));
     column->addWidget(duplicate);
-    auto* hint = new QLabel(tr("Shift 加选 · Ctrl 减选 · 双击对准\n眼睛和锁仅改变编辑器状态"), page);
-    hint->setObjectName(QStringLiteral("worldPanelHint"));
-    hint->setWordWrap(true);
-    column->addWidget(hint);
     connect(outlinerFilter_, &QLineEdit::textChanged, this, &WorldModule::FilterOutliner);
     connect(outlinerCategory_, &QComboBox::currentIndexChanged, this, [this] { FilterOutliner(outlinerFilter_->text()); });
     connect(outliner_, &QTreeView::doubleClicked, this, [this](const QModelIndex& index) {
@@ -379,10 +375,6 @@ QWidget* WorldModule::BuildPlacePage() {
     owner_->addItem(tr("中立特殊"), 14); owner_->addItem(tr("中立被动"), 15);
     ownerRow->addWidget(owner_, 1);
     column->addLayout(ownerRow);
-    auto* hint = new QLabel(tr("从资源浏览器选择物体，或拖入视口摆放。\nCtrl 按当前工具吸附；高度随地形，只读。"), palette_);
-    hint->setObjectName(QStringLiteral("worldPanelHint"));
-    hint->setWordWrap(true);
-    column->addWidget(hint);
     column->addStretch(1);
     return palette_;
 }
@@ -634,7 +626,7 @@ void WorldModule::UpdateToolHint() {
     if (!selectionStatus_ || !toolSubtitle_) return;
     if (pasting_) {
         toolSubtitle_->setText(tr("整组粘贴 · %1 个摆放").arg(clipboard_.size()));
-        selectionStatus_->setText(tr("移动鼠标定位 · Ctrl 吸附 32 格 · 左键放下 · 右键或 Esc 结束"));
+        selectionStatus_->clear();
         return;
     }
     const auto tool = CurrentTool();
@@ -643,15 +635,12 @@ void WorldModule::UpdateToolHint() {
         const bool ramp = CurrentBrushKind() == MapData::TerrainBrushKind::Ramp;
         toolSubtitle_->setText(ramp ? tr("一级干地直坡 · 三点范围")
             : tr("%1 · 尺寸 %2").arg(kind ? kind->text() : QString{}).arg(terrainRadius_->value()));
-        selectionStatus_->setText(strokeBase_ ? tr("拖动涂刷中 · 松开提交 · Esc 取消本笔")
-            : ramp ? tr("左键沿直台阶涂刷 · 中键或右键平移 · Esc 退出")
-                   : tr("左键涂刷 · [ ] 调尺寸 · 中键或右键平移 · Esc 退出"));
+        selectionStatus_->setText(strokeBase_ ? tr("涂刷中") : QString{});
         return;
     }
     if (tool == Tool::Place) {
         toolSubtitle_->setText(placing_ ? placingName_ : tr("选择要摆放的物体"));
-        selectionStatus_->setText(placing_ ? tr("左键连续放置 · Ctrl 吸附 32 格 · 右键或 Esc 结束")
-            : tr("在左侧目录中选择物体"));
+        selectionStatus_->clear();
         return;
     }
     toolSubtitle_->setText(tr("区域 %1 · 镜头 %2").arg(regions_.size()).arg(cameras_.size()));
@@ -661,18 +650,14 @@ void WorldModule::UpdateToolHint() {
             std::any_of(snapshot.value->selected.begin(), snapshot.value->selected.end(), [](const auto& id) {
                 return !std::holds_alternative<MapData::PlacementId>(id);
             })) {
-            selectionStatus_->setText(tr("已选 %1 个对象 · 跨类型属性只读 · Shift 加选 · Ctrl 减选")
-                .arg(snapshot.value->selected.size()));
+            selectionStatus_->setText(tr("已选 %1 个对象").arg(snapshot.value->selected.size()));
             return;
         }
     }
     if (dragPosition_ || dragRotation_ || regionDraft_ || cameraDraft_)
-        selectionStatus_->setText(tr("拖动中 · 松开提交 · Esc 取消"));
-    else if (SelectedRegion()) selectionStatus_->setText(tr("拖动内部移动 · 拖动角调整大小（按 32 对齐）"));
-    else if (SelectedCamera()) selectionStatus_->setText(tr("拖动目标点移动"));
-    else if (SelectedRequest()) selectionStatus_->setText(tr("已选 %1 个 · 拖动移动 · Alt+拖动旋转单个 · Ctrl+C 复制 · Delete 删除")
-        .arg(selectedPlacements_.size()));
-    else selectionStatus_->setText(tr("单击选择 · 拖动框选 · Ctrl+右键或 Alt+左键旋转视角 · 中键或右键平移 · 滚轮缩放"));
+        selectionStatus_->setText(tr("拖动中"));
+    else if (SelectedRequest()) selectionStatus_->setText(tr("已选 %1 个").arg(selectedPlacements_.size()));
+    else selectionStatus_->clear();
 }
 
 void WorldModule::UpdateStatusIndicators() {

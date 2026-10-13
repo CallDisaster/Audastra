@@ -35,7 +35,7 @@ QString CodeMessage(const std::vector<Diagnostic>& diagnostics) {
     return diagnostics.empty() ? QObject::tr("代码修改未应用。") : QString::fromUtf8(diagnostics.front().message);
 }
 QString CodeUnicodeReadonlyNotice() {
-    return QObject::tr("正文包含无法无损编辑的特殊空白字符，当前只读，原字节已保留。");
+    return QObject::tr("只读：含特殊空白字符");
 }
 // 只读原来源；编辑态 language、目标配置和脚本成员的存在均不能授予原生 Lua 作者权限。
 Result<std::vector<std::byte>> NativeLuaSettings(const QtProject::EditorProject& project) {
@@ -82,7 +82,7 @@ void TriggerModule::RefreshCodeSourceState() {
     scriptView_->SetEditable(CodeAuthoringAllowed() && codeBaselinePlan_.has_value());
     applyCodeButton_->setEnabled(CodeAuthoringAllowed());
     if (!CodeAuthoringAllowed()) codeDraftNote_->setText(!sourceDisplayLossless_ ? CodeUnicodeReadonlyNotice()
-        : tr("地图来源已变化；草稿保留，请复制正文或放弃草稿后重新载入。"));
+        : tr("地图来源已变化"));
     ConfigureCodeChecking();
 }
 
@@ -94,7 +94,7 @@ void TriggerModule::UpdateCodeDraftState() {
     applyCodeButton_->setEnabled(codeDraftPending_ && CodeAuthoringAllowed());
     discardCodeButton_->setEnabled(codeDraftPending_);
     codeDraftNote_->setText(!sourceDisplayLossless_ ? CodeUnicodeReadonlyNotice()
-        : codeDraftPending_ ? tr("草稿未应用；保存或切换前会提交，失败时保留正文。") : tr("代码已应用；保存地图时编译校验。"));
+        : codeDraftPending_ ? tr("未应用") : tr("已应用"));
     emit DraftEdited();
 }
 
@@ -142,8 +142,8 @@ void TriggerModule::LoadCodeTarget(Trigger::CodeBlockTarget target) {
     applyCodeButton_->setEnabled(false);
     discardCodeButton_->setEnabled(false);
     codeDraftNote_->setText(!sourceDisplayLossless_ ? CodeUnicodeReadonlyNotice()
-        : !CodeAuthoringAllowed() ? tr("代码来源或语言不可编辑；请确认原地图来源后重新载入。")
-        : codeBaselinePlan_ ? tr("代码已应用；保存地图时编译校验。") : CodeMessage(baseline.diagnostics));
+        : !CodeAuthoringAllowed() ? tr("只读")
+        : codeBaselinePlan_ ? QString{} : CodeMessage(baseline.diagnostics));
 }
 
 void TriggerModule::ConfigureCodeChecking() {
@@ -226,7 +226,7 @@ bool TriggerModule::CommitCodeDraft() {
     auto checked = Trigger::TriggerCodeEditor::Apply(*project_.triggerDocument_, *project_.uiCatalog_, *codeBaselinePlan_);
     if (!checked.Succeeded()) {
         project_.AddDiagnostics(checked.diagnostics);
-        codeDraftNote_->setText(CodeMessage(checked.diagnostics) + tr(" 草稿保留；可放弃草稿并重载。"));
+        codeDraftNote_->setText(CodeMessage(checked.diagnostics));
         ShowStatus(codeDraftNote_->text(), 10000);
         return false;
     }
@@ -235,7 +235,7 @@ bool TriggerModule::CommitCodeDraft() {
         const auto hash = native.Succeeded() && native.value ? Sha256(*native.value) : Result<std::string>{};
         if (!hash.Succeeded() || !hash.value || *hash.value != codeSourceSettingsSha256_) {
             project_.AddDiagnostics(native.diagnostics);
-            codeDraftNote_->setText(tr("原来源 Lua 地图信息已改变，草稿保留；请复制正文或放弃草稿后重新载入。"));
+            codeDraftNote_->setText(tr("Lua 地图信息已改变"));
             ShowStatus(codeDraftNote_->text(), 10000); return false;
         }
     }
@@ -246,7 +246,7 @@ bool TriggerModule::CommitCodeDraft() {
             scriptView_->toPlainText().toStdString());
     if (!prepared.Succeeded() || !prepared.value) {
         project_.AddDiagnostics(prepared.diagnostics);
-        codeDraftNote_->setText(CodeMessage(prepared.diagnostics) + tr(" 草稿保留。"));
+        codeDraftNote_->setText(CodeMessage(prepared.diagnostics));
         ShowStatus(codeDraftNote_->text(), 10000);
         return false;
     }

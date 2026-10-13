@@ -31,6 +31,6 @@ bool MainWindow::OpenCampaignPath(const std::filesystem::path& path) {
     (void)campaignModule_->Widget();
     if (!campaignModule_->Open(path)) return false;
     DismissStartupPage(); ActivateModule("campaign");
-    statusBar()->showMessage(tr("已打开战役。章节、菜单和共享数据分别编辑；保存战役写入 .w3n。"), 7000);
+    statusBar()->showMessage(tr("已打开战役"), 7000);
     return true;
 }

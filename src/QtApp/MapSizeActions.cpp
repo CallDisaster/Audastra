@@ -118,7 +118,7 @@ void MainWindow::ShowMapSizeAnalysis() {
 void MainWindow::ActivateMapSizeRow(const War3Map::Services::MapSizeRow& row, std::string_view expectedRevision) {
     if (expectedRevision != CommandContextRevision()) { ShowStatusMessage(tr("工程已变化，请刷新体积分析。")); return; }
     if (!row.navigationAllowed || row.managedMember || row.nonAsciiIdentity || row.trust == War3Map::Services::MapSizeByteTrust::Unknown) {
-        ShowStatusMessage(tr("成员 %1 只显示元数据；此范围不授予资源定位或正文读取。" ).arg(MapSizeText(row.currentPath))); return;
+        ShowStatusMessage(tr("成员 %1 只有元数据" ).arg(MapSizeText(row.currentPath))); return;
     }
     // 复用同一纯元数据服务，核identity/原路径/当前路径，不用名字、行号或低层fallback猜资源。
     const auto current = QueryMapSizeAnalysis(expectedRevision);

@@ -184,7 +184,7 @@ MainWindow::MainWindow(StartupMode startupMode, QWidget* parent, const QString& 
             ScheduleRecovery();
         });
 
-    statusBar()->showMessage(tr("未打开地图 · 打开后可保存地图或另存副本"));
+    statusBar()->showMessage(tr("未打开地图"));
 
     // 启动探针只读取命令行指定工作区，不接触用户持久化设置或 Warcraft 安装目录。
     if (startupMode_ == StartupMode::Normal) {

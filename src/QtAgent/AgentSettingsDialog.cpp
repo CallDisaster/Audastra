@@ -167,7 +167,7 @@ public:
         auto* footer = new QWidget;
         auto* footerLayout = new QHBoxLayout(footer);
         footerLayout->setContentsMargins(20, 12, 20, 12);
-        message = Text(QStringLiteral("设置保存在当前用户目录；取消不会写入密钥。"), nullptr, true);
+        message = Text(QString(), nullptr, true);
         message->setObjectName(QStringLiteral("agentSettingsMessage"));
         footerLayout->addWidget(message, 1);
         auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel);
@@ -199,7 +199,6 @@ public:
         reducedMotion->setChecked(settings.reducedMotion);
         layout->addSpacing(16);
         layout->addWidget(reducedMotion);
-        layout->addWidget(Text(QStringLiteral("开启后缩短计数和展开动效；实际工具结果和流式内容继续更新。"), nullptr, true));
         layout->addSpacing(16);
         layout->addWidget(Text(QStringLiteral("界面字体")));
         uiFont = new QComboBox;
@@ -220,7 +219,6 @@ public:
             if (transferFont) transferFont->setText(uiFontFamily.isEmpty() ? QStringLiteral("默认（微软雅黑）") : uiFontFamily);
         });
         layout->addStretch(1);
-        layout->addWidget(Text(QStringLiteral("地图逻辑默认写成可编辑的触发器（T）；代码与外部命令由任务和权限共同控制。"), nullptr, true));
         pages->addWidget(page);
         QObject::connect(aiEnabled, &QCheckBox::toggled, dialog, [this](bool value) { settings.aiEnabled = value; UpdateStatus(); });
         QObject::connect(reducedMotion, &QCheckBox::toggled, dialog, [this](bool value) { settings.reducedMotion = value; });
@@ -247,8 +245,7 @@ public:
         form->addRow(QStringLiteral("界面字体"), transferFont);
         form->addRow(QStringLiteral("主题"), transferTheme);
         layout->addLayout(form);
-        layout->addWidget(Text(QStringLiteral("目录可按新电脑的位置修改，保存后下次启动生效。字体在“常规”页调整。"), nullptr, true));
-        transferSummary = Text(QStringLiteral("应用设置尚未加载。"));
+        transferSummary = Text(QString());
         transferSummary->setObjectName(QStringLiteral("settingsTransferSummary"));
         layout->addWidget(transferSummary);
         auto* actions = new QHBoxLayout;
@@ -257,7 +254,6 @@ public:
         importSettings->setEnabled(false); exportSettings->setEnabled(false);
         actions->addWidget(importSettings); actions->addWidget(exportSettings); actions->addStretch(1);
         layout->addLayout(actions);
-        layout->addWidget(Text(QStringLiteral("导入先放入当前设置页；点击“保存设置”才应用，取消不改变本机设置。"), nullptr, true));
         layout->addStretch(1);
         pages->addWidget(page);
         QObject::connect(importSettings, &QPushButton::clicked, dialog, [this] {
@@ -394,7 +390,6 @@ public:
         modelForm->addRow(QStringLiteral("输出上限"), output);
         modelForm->addRow(QStringLiteral("模型能力"), capabilities);
         rightLayout->addWidget(modelEditor);
-        rightLayout->addWidget(Text(QStringLiteral("能力开关是调用偏好，需站点实际支持。密钥只在保存设置时加密写入本机用户目录。"), nullptr, true));
         scroll->setWidget(providerEditor);
         split->addWidget(scroll);
         split->setSizes({170, 550});
@@ -508,7 +503,6 @@ public:
             QObject::connect(check, &QCheckBox::toggled, dialog, [target = entry.second](bool value) { *target = value; });
         }
         layout->addSpacing(12);
-        layout->addWidget(Text(QStringLiteral("关闭修改和保存后仍可查询。编辑、撤销、来源检查与保存验证使用编辑器同一套服务。"), nullptr, true));
         layout->addStretch(1);
         pages->addWidget(page);
     }
@@ -535,14 +529,13 @@ public:
         copyConfig->setEnabled(false);
         connectionButtons->addWidget(copyAddress); connectionButtons->addWidget(copyConfig); connectionButtons->addStretch(1);
         layout->addLayout(connectionButtons);
-        mcpStatus = Text(QStringLiteral("配置保存后启动；本机访问令牌由编辑器提供。"), nullptr, true);
+        mcpStatus = Text(QString(), nullptr, true);
         layout->addWidget(mcpStatus);
         layout->addSpacing(12);
         auto* search = Edit(QStringLiteral("agentToolSearch"), QStringLiteral("筛选工具名称"));
         layout->addWidget(search);
         toolList = new QListWidget; toolList->setObjectName(QStringLiteral("agentMcpTools"));
         layout->addWidget(toolList, 1);
-        layout->addWidget(Text(QStringLiteral("关闭的工具从列表移除并拒绝执行。修改开关后，外部客户端需刷新工具列表。"), nullptr, true));
         pages->addWidget(page);
         QObject::connect(mcpEnabled, &QCheckBox::toggled, dialog, [this](bool value) { settings.mcpEnabled = value; });
         QObject::connect(port, &QSpinBox::valueChanged, dialog, [this](int value) { settings.mcpPort = static_cast<quint16>(value); UpdateEndpoint(); });
@@ -815,8 +808,7 @@ void AgentSettingsDialog::SetCredentialStore(CredentialStore* store) { if (store
 void AgentSettingsDialog::SetMcpAccessToken(const QString& token) {
     impl_->mcpToken = token;
     impl_->copyConfig->setEnabled(!token.isEmpty());
-    impl_->mcpStatus->setText(token.isEmpty() ? QStringLiteral("配置保存后启动；本机访问令牌由编辑器提供。")
-        : QStringLiteral("已取得本机访问令牌；复制配置可交给支持 HTTP MCP 的客户端。"));
+    impl_->mcpStatus->setText(token.isEmpty() ? QStringLiteral("未启动") : QStringLiteral("已启动"));
 }
 
 void AgentSettingsDialog::SetAvailableTools(const QStringList& tools) {

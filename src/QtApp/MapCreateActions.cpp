@@ -44,9 +44,6 @@ void MainWindow::CreateNewMap() {
     form->addRow(tr("尺寸"), new QLabel(tr("64 × 64（可玩范围 52 × 52）"), &dialog));
     form->addRow(tr("玩家"), new QLabel(tr("1 名人类玩家 · 中心开始点"), &dialog));
     layout->addLayout(form);
-    auto* note = new QLabel(tr("空白触发器；未添加对战基地、胜负条件或玩家单位。"), &dialog);
-    note->setWordWrap(true);
-    layout->addWidget(note);
     auto* error = new QLabel(&dialog);
     error->setWordWrap(true);
     layout->addWidget(error);
@@ -110,7 +107,7 @@ void MainWindow::CreateLuaTutorialMap() {
     if (output.isEmpty()) return;
     RunMapCreate(std::move(options), output);
     if (project_->sourceArchivePath_ == std::filesystem::path(output.toStdWString()))
-        statusBar()->showMessage(tr("Lua 教程地图已创建：在“触发器 → Lua 脚本”查看 main.lua，按 F9 试玩"), 15000);
+        statusBar()->showMessage(tr("Lua 教程地图已创建"), 15000);
 }
 
 void MainWindow::RunMapCreate(War3Map::Services::MapCreateOptions options, const QString& output) {

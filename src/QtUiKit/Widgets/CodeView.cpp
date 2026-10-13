@@ -573,7 +573,8 @@ bool CodeView::ShowFrozenSource(const CodeExternalSource& frozen, int line, int 
     auto* dialog = new QDialog(this); dialog->setAttribute(Qt::WA_DeleteOnClose); dialog->resize(1000, 640);
     dialog->setWindowTitle(tr("冻结来源 · %1（只读）").arg(source)); dialog->setObjectName("codeExternalSourceDialog"); impl_->externalDialog = dialog;
     auto* layout = new QVBoxLayout(dialog);
-    auto* note = new QLabel(tr("本次检查捕获的来源；工程绑定 %1").arg(binding.left(12)) + (frozen.reason.isEmpty() ? QString{} : QStringLiteral(" · ") + frozen.reason), dialog); note->setWordWrap(true); layout->addWidget(note);
+    dialog->setToolTip(tr("工程绑定 %1").arg(binding.left(12)));
+    if (!frozen.reason.isEmpty()) { auto* note = new QLabel(frozen.reason, dialog); note->setWordWrap(true); layout->addWidget(note); }
     auto* view = new CodeView(dialog); view->setFont(font());
     view->SetLanguage(source.endsWith(".lua", Qt::CaseInsensitive) ? CodeLanguage::Lua
         : source.endsWith(".j", Qt::CaseInsensitive) ? CodeLanguage::VJass : impl_->language);
@@ -613,10 +614,8 @@ void CodeView::ShowReferences() {
         auto* dialog = new QDialog(this); dialog->setAttribute(Qt::WA_DeleteOnClose);
         dialog->setWindowTitle(tr("语义引用 · %1 · %2:%3").arg(definition->name, definition->source).arg(definition->line));
         dialog->setObjectName("codeReferencesDialog"); dialog->resize(850, 380); auto* layout = new QVBoxLayout(dialog);
-        auto* note = new QLabel(impl_->result.semanticIndexComplete
-            ? tr("本次冻结工程的实际变量/函数引用；同名局部变量按定义身份区分。类型名使用点不在此索引范围内。")
-            : tr("本次冻结工程的部分语义引用：%1 空列表不能证明没有引用。").arg(impl_->result.semanticIndexReason), dialog);
-        note->setWordWrap(true); layout->addWidget(note);
+        auto* note = new QLabel(tr("部分引用：%1").arg(impl_->result.semanticIndexReason), dialog);
+        note->setWordWrap(true); note->setVisible(!impl_->result.semanticIndexComplete); layout->addWidget(note);
         auto* rows = new QTreeWidget(dialog); rows->setHeaderLabels({tr("来源"), tr("位置"), tr("用途")}); rows->setRootIsDecorated(false); layout->addWidget(rows);
         const auto openedGeneration = impl_->generation; const auto openedBinding = impl_->result.contextBinding;
         int count = 0;
@@ -640,14 +639,14 @@ void CodeView::ShowReferences() {
     auto* layout = new QVBoxLayout(dialog);
     const bool current = !IsChecking() && impl_->result.generation == impl_->generation;
     const auto positions = current ? impl_->lexical.references.value(name) : QVector<int>{};
-    auto* note = new QLabel(impl_->lexical.lines.isEmpty() ? tr("当前词法索引尚未完成；空列表不表示没有引用。")
-        : !current ? tr("正文已变化，当前索引仍在更新；空列表不表示没有引用。")
-        : impl_->lexical.referenceIndexComplete ? tr("当前正文 %1 处词法命中；不包含注释、字符串，不等于全图语义引用。").arg(positions.size())
-        : tr("当前正文引用索引达到预算，以下为部分词法命中；不等于全图语义引用。"), dialog);
+    auto* note = new QLabel(impl_->lexical.lines.isEmpty() ? tr("索引未完成")
+        : !current ? tr("索引更新中")
+        : impl_->lexical.referenceIndexComplete ? tr("%1 处词法命中").arg(positions.size())
+        : tr("部分词法命中"), dialog);
     note->setWordWrap(true); layout->addWidget(note);
     auto* rows = new QTreeWidget(dialog); rows->setHeaderLabels({tr("位置"), tr("正文")}); rows->setRootIsDecorated(false); layout->addWidget(rows);
     const int visible = qMin(512, static_cast<int>(positions.size()));
-    if (positions.size() > visible) note->setText(note->text() + tr(" 列表显示前 %1 处。").arg(visible));
+    if (positions.size() > visible) note->setText(note->text() + tr(" · 显示前 %1 处").arg(visible));
     for (int i = 0; i < visible; ++i) {
         const int position = positions[i];
         const auto block = document()->findBlock(position);

@@ -20,7 +20,7 @@ void MainWindow::SelectLuaMapTarget() {
         QMessageBox::warning(this, tr("Lua 保存档案不可用"), reasons.join(QLatin1Char('\n')));
         return;
     }
-    statusBar()->showMessage(tr("已选择当前地图的 Lua 保存档案；触发器照常编辑，保存成功后才更新游戏脚本。"), 10000);
+    statusBar()->showMessage(tr("已选择 Lua 保存档案"), 10000);
 }
 
 void MainWindow::ClearLuaMapTarget() {

@@ -42,7 +42,7 @@ bool WaitForRecoveryExit(QThread* worker, const std::function<bool()>& cancelWri
     dialog->setMinimumWidth(420);
     dialog->setWindowModality(Qt::ApplicationModal);
     auto* layout = new QVBoxLayout(dialog);
-    auto* label = new QLabel(QObject::tr("正在写入恢复点，请稍候。\n取消本次写入将保留上一份恢复点。"), dialog);
+    auto* label = new QLabel(QObject::tr("正在写入恢复点…"), dialog);
     label->setObjectName(QStringLiteral("recoveryExitStatus"));
     label->setWordWrap(true);
     layout->addWidget(label);

@@ -296,9 +296,14 @@ void TriggerModule::UpdateMetaBar(const Trigger::TriggerRecord* trigger) {
     // 注释条目：隐藏允许 / 初始打开等开关，注释编辑框占满逻辑区（原版“触发器注释”面板）。
     const bool commentEntry = has && trigger->type != 0;
     const auto saveNotice = has && !commentEntry ? ScriptRebuildNotice() : QString{};
-    scriptRebuildNotice_->setText(saveNotice);
-    scriptRebuildNotice_->setToolTip(scriptCapabilityDetails_);
-    scriptRebuildNotice_->setVisible(!saveNotice.isEmpty());
+    // 不能保存触发器改动是警告：写入错误列表，不在属性区放说明文字。原因消失后再出现时重新写入。
+    if (saveNotice.isEmpty()) reportedScriptNotice_.clear();
+    if (const auto key = saveNotice + QLatin1Char('|') + QString::fromStdWString(project_.sourceArchivePath_.wstring());
+        !saveNotice.isEmpty() && key != reportedScriptNotice_) {
+        reportedScriptNotice_ = key;
+        project_.AddDiagnostic(tr("警告"), tr("触发器"), QStringLiteral("SCRIPT_REBUILD_UNAVAILABLE"),
+            scriptCapabilityDetails_.isEmpty() ? saveNotice : saveNotice + QLatin1Char('\n') + scriptCapabilityDetails_);
+    }
     const auto hint = [&saveNotice](const QString& text) { return saveNotice.isEmpty() ? text : text + QLatin1Char('\n') + saveNotice; };
     enabledCheck_->setToolTip(hint(tr("取消后触发器不生成代码，也不会被创建")));
     initiallyOnCheck_->setToolTip(hint(tr("取消后触发器在地图初始化时被关闭，需要用“开启触发器”动作打开")));
@@ -311,10 +316,10 @@ void TriggerModule::UpdateMetaBar(const Trigger::TriggerRecord* trigger) {
     if (commentEntry) {
         commentEdit_->setMinimumHeight(56);
         commentEdit_->setMaximumHeight(QWIDGETSIZE_MAX);
-        commentEdit_->setPlaceholderText(tr("注释内容（原版的注释条目，不生成代码）"));
+        commentEdit_->setPlaceholderText(tr("注释"));
     } else {
         commentEdit_->setFixedHeight(72);
-        commentEdit_->setPlaceholderText(tr("触发器注释：说明这个触发器做什么；不会生成代码"));
+        commentEdit_->setPlaceholderText(tr("触发器注释"));
     }
     if (auto* box = qobject_cast<QBoxLayout*>(propertiesBox_->parentWidget()->layout())) {
         box->setStretchFactor(propertiesBox_, commentEntry ? 1 : 0);
@@ -323,8 +328,8 @@ void TriggerModule::UpdateMetaBar(const Trigger::TriggerRecord* trigger) {
     const bool off = has && !commentEntry && trigger->enabled == 0;
     initiallyOnCheck_->setEnabled(has && !off);
     metaNote_->setText(!has ? QString{}
-        : off ? tr("已禁用 · 不生成代码")
-        : trigger->initiallyClosed != 0 ? tr("初始关闭 · 生成 DisableTrigger") : QString{});
+        : off ? tr("已禁用")
+        : trigger->initiallyClosed != 0 ? tr("初始关闭") : QString{});
     propertiesBox_->setProperty("off", off);
     const QString comment = has ? QString::fromUtf8(trigger->description.text) : QString{};
     const QString firstLine = comment.section(QRegularExpression(QStringLiteral("\\r?\\n")), 0, 0);

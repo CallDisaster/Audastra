@@ -83,7 +83,7 @@ void TriggerModule::ShowMapScript(std::optional<QByteArray> prepared) {
     showingMapScript_ = true;
     mapScriptButton_->setText(tr("返回触发器"));
     logicTitle_->setText(tr("war3map.j（只读）"));
-    logicHint_->setText(tr("%1 KB · 顶栏搜索在脚本内查找").arg(bytes->size() / 1024));
+    logicHint_->setText(tr("%1 KB").arg(bytes->size() / 1024));
     propertiesBox_->hide();
     ecaView_->hide();
     blueprint_->hide();
@@ -103,7 +103,7 @@ void TriggerModule::LeaveMapScript() {
     showingMapScript_ = false;
     mapScriptButton_->setText(tr("地图脚本"));
     logicTitle_->setText(tr("触发器逻辑"));
-    logicHint_->setText(tr("双击 / Enter 编辑参数"));
+    logicHint_->clear();
     mapScriptView_->hide();
     mapScriptTools_->hide(); mapScriptProblems_->hide(); mapScriptBytes_.clear();
     // 大文档不常驻内存；下次进入时重新读取。

@@ -162,7 +162,7 @@ void CampaignModule::BuildPage() {
     }
     const auto scopedPage = [&](QWidget* contents) {
         auto* container = new QWidget(tabs_); auto* area = new QVBoxLayout(container);
-        auto* label = new QLabel(tr("作用域：战役共享；修改写入当前战役，不写入章节地图。"), container);
+        auto* label = new QLabel(tr("战役共享"), container);
         label->setObjectName("campaignScopeLabel"); area->addWidget(label); area->addWidget(contents); return container;
     };
     tabs_->addTab(scopedPage(objects_->Widget()), tr("共享数据"));

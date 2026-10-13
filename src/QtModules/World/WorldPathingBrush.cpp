@@ -26,8 +26,6 @@ QWidget* WorldModule::BuildPathingRestrictionControls(QWidget* parent) {
     layout->addWidget(Segment(terrainPathingSection_, terrainPathingModes_,
         {{tr("追加"), 1}, {tr("撤回新增"), 0}}, "worldTerrainPathingMode"));
     terrainPathingModes_->button(1)->setChecked(true);
-    auto* hint = new QLabel(tr("每格 32 单位。只追加限制或撤回本工程新增的限制，原图限制保留。橙框只标记新增格，可保存工程，暂不能保存地图。"), terrainPathingSection_);
-    hint->setWordWrap(true); layout->addWidget(hint);
     terrainPathingStatus_ = new QLabel(terrainPathingSection_);
     terrainPathingStatus_->setObjectName(QStringLiteral("worldTerrainPathingStatus"));
     terrainPathingStatus_->setWordWrap(true); layout->addWidget(terrainPathingStatus_);
@@ -38,14 +36,14 @@ void WorldModule::AppendPathingRestrictionOverlay(std::vector<War3RenderOverlayL
     if (!terrainPathingStatus_ || !terrain_ || !project_.mapEdits_) return;
     const auto* edits = project_.mapEdits_.get();
     if (!edits->HasTerrainPathing()) {
-        terrainPathingStatus_->setText(tr("缺少可解析的原始通行图，不能修改。"));
+        terrainPathingStatus_->setText(tr("通行图不可读"));
         terrainPathingStatus_->setProperty("pathingAddedCellCount", 0);
         terrainPathingStatus_->setProperty("pathingMarkerCount", 0);
         pathingOverlaySource_.reset(); pathingOverlay_.clear();
         return;
     }
     if (!viewport_ || !viewport_->HasOverlaySupport()) {
-        terrainPathingStatus_->setText(tr("当前渲染器不支持通行格标记。"));
+        terrainPathingStatus_->setText(tr("渲染器不支持通行格标记"));
         terrainPathingStatus_->setProperty("pathingAddedCellCount", 0);
         terrainPathingStatus_->setProperty("pathingMarkerCount", 0);
         pathingOverlaySource_.reset(); pathingOverlay_.clear();
@@ -56,7 +54,7 @@ void WorldModule::AppendPathingRestrictionOverlay(std::vector<War3RenderOverlayL
         pathingOverlayIdentity_ = identity; pathingOverlaySource_ = terrain_; pathingOverlay_.clear();
         const auto preview = edits->QueryPathingRestrictions(1024);
         if (!preview.Succeeded() || !preview.value) {
-            terrainPathingStatus_->setText(tr("当前通行限制不可读取。"));
+            terrainPathingStatus_->setText(tr("通行限制不可读"));
             terrainPathingStatus_->setProperty("pathingAddedCellCount", 0);
             terrainPathingStatus_->setProperty("pathingMarkerCount", 0);
             return;
@@ -70,7 +68,7 @@ void WorldModule::AppendPathingRestrictionOverlay(std::vector<War3RenderOverlayL
         }
         const auto total = preview.value->totalCells, shown = preview.value->cells.size();
         terrainPathingStatus_->setText(total == shown ? tr("新增限制：%1 格").arg(total)
-            : tr("新增限制：%1 格，均匀抽样标记 %2 格").arg(total).arg(shown));
+            : tr("新增限制：%1 格（标记 %2）").arg(total).arg(shown));
         terrainPathingStatus_->setProperty("pathingAddedCellCount", QVariant::fromValue(static_cast<qulonglong>(total)));
         terrainPathingStatus_->setProperty("pathingMarkerCount", QVariant::fromValue(static_cast<qulonglong>(shown)));
     }

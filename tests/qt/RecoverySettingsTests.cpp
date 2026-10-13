@@ -37,10 +37,8 @@ private slots:
             auto* interval = page.findChild<QSpinBox*>(QStringLiteral("recoveryIntervalMinutes"));
             QVERIFY(enabled); QVERIFY(interval); QVERIFY(enabled->isChecked()); QVERIFY(interval->isEnabled());
             QCOMPARE(interval->minimum(), 1); QCOMPARE(interval->maximum(), 120); QCOMPARE(interval->value(), 5);
-            const auto* note = page.findChild<QLabel*>(QStringLiteral("autoRecoveryNote"));
-            const auto* scope = page.findChild<QLabel*>(QStringLiteral("autoRecoveryScopeNote"));
-            QVERIFY(note); QVERIFY(scope); QVERIFY(note->text().contains(QStringLiteral("不会写回原地图")));
-            QVERIFY(scope->wordWrap()); QCOMPARE(scope->textFormat(), Qt::PlainText);
+            // 恢复说明写在使用帮助里，设置页不放说明文字。
+            QVERIFY(!page.findChild<QLabel*>(QStringLiteral("autoRecoveryNote")));
             auto preferences = page.Preferences(); QVERIFY(preferences.recoveryEnabled.has_value());
             QVERIFY(*preferences.recoveryEnabled); QCOMPARE(*preferences.recoveryIntervalMinutes, 5);
             enabled->setChecked(false); QVERIFY(!interval->isEnabled()); interval->setValue(120);

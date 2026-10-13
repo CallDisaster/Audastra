@@ -204,7 +204,7 @@ void GlobalSearchDialogTests::ContextChangedSameQueryEnterReruns() {
     QCOMPARE(queries, 1); QCOMPARE(activations, 1); QCOMPARE(ResultRows(Tree(&dialog)), 40);
     fixture.context.revision = "owned-dialog/revision-2";
     dialog.ContextChanged(); QCOMPARE(ResultRows(Tree(&dialog)), 0);
-    QVERIFY(SearchStatusLabel(&dialog)->text().contains(QStringLiteral("工程内容已变化")));
+    QVERIFY(SearchStatusLabel(&dialog)->text().contains(QStringLiteral("内容已变化")));
     dialog.FocusQuery("Needle"); // 相同文本不会发 textChanged，必须仍可通过 Enter 重查。
     QVERIFY(ReturnSignal(Edit(&dialog)));
     QCOMPARE(queries, 2); QCOMPARE(activations, 2); QCOMPARE(ResultRows(Tree(&dialog)), 40);
@@ -222,7 +222,7 @@ void GlobalSearchDialogTests::QueryContextChangedDiscardsOldPage() {
         }, [&](const auto&) { ++activations; });
     guarded = &dialog; dialog.FocusQuery("Needle"); QVERIFY(ReturnSignal(Edit(&dialog)));
     QCOMPARE(queries, 1); QCOMPARE(activations, 0); QCOMPARE(ResultRows(Tree(&dialog)), 0);
-    QVERIFY(SearchStatusLabel(&dialog)->text().contains(QStringLiteral("工程内容已变化")));
+    QVERIFY(SearchStatusLabel(&dialog)->text().contains(QStringLiteral("内容已变化")));
     QVERIFY(!dialog.findChild<QPushButton*>("globalSearchNext")->isEnabled());
     QVERIFY(ReturnSignal(Edit(&dialog)));
     QCOMPARE(queries, 2); QCOMPARE(activations, 1); QCOMPARE(ResultRows(Tree(&dialog)), 40);
@@ -244,7 +244,7 @@ void GlobalSearchDialogTests::RevisionContextChangedPreventsQueryAndActivation()
     invalidate = true; // 页已加载且 clean，此次 revision 回调发生在 ActivateCurrent。
     QVERIFY(ReturnSignal(Edit(&dialog)));
     QCOMPARE(queries, 1); QCOMPARE(activations, 1); QCOMPARE(ResultRows(Tree(&dialog)), 0);
-    QVERIFY(SearchStatusLabel(&dialog)->text().contains(QStringLiteral("工程内容已变化")));
+    QVERIFY(SearchStatusLabel(&dialog)->text().contains(QStringLiteral("内容已变化")));
     QVERIFY(ReturnSignal(Edit(&dialog)));
     QCOMPARE(queries, 2); QCOMPARE(activations, 2); QCOMPARE(ResultRows(Tree(&dialog)), 40);
 }

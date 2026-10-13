@@ -166,7 +166,7 @@ bool ObjectFieldDelegate::editorEvent(QEvent* event, QAbstractItemModel* abstrac
         auto* preview = new War3Map::UiKit::WarcraftTextPreview(panel);
         const QPointer<QFrame> panelGuard(panel);
         const QPointer<War3Map::UiKit::WarcraftTextPreview> previewGuard(preview);
-        preview->Bind(text, tr("当前字段草稿；WTS 引用未提供可信正文时不解析编号。"),
+        preview->Bind(text, QString(),
             original.toUtf8().toStdString() == rawOriginal, std::move(previewSource));
         if (!self || !guard || !persistent.isValid() || !anchorGuard || !panelGuard || !previewGuard) {
             if (panelGuard) panelGuard->deleteLater();

@@ -37,16 +37,6 @@ RecoverySettingsPage::RecoverySettingsPage(const QSettings& stored, QWidget* par
     interval_->setEnabled(preferences.enabled);
     connect(enabled_, &QCheckBox::toggled, interval_, &QSpinBox::setEnabled);
     form->addRow(tr("保存间隔"), interval_);
-    auto* note = new QLabel(tr("恢复工程（.forge）保留编辑状态，不会写回原地图，也不会把编辑标记为已保存。异常退出后可使用“恢复编辑…”打开已有恢复工程。"), group);
-    note->setObjectName(QStringLiteral("autoRecoveryNote"));
-    note->setTextFormat(Qt::PlainText);
-    note->setWordWrap(true);
-    form->addRow(note);
-    auto* scope = new QLabel(tr("多个编辑窗口的恢复工程需要分别选择；启动时只提示最近一次恢复。"), group);
-    scope->setObjectName(QStringLiteral("autoRecoveryScopeNote"));
-    scope->setTextFormat(Qt::PlainText);
-    scope->setWordWrap(true);
-    form->addRow(scope);
     layout->addWidget(group);
     layout->addStretch(1);
 }

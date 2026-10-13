@@ -206,6 +206,7 @@ private:
     void ShowBaseWorkspace();
     void DismissStartupPage();
     void ShowAbout();
+    void ShowHelp();
     void BuildStatusBar();
     void BuildDiagnosticsView();
     void ConnectModules();

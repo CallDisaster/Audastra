@@ -204,7 +204,7 @@ void TriggerModule::BuildPage() {
     auto* logicHeading = new QHBoxLayout;
     logicTitle_ = new QLabel(tr("触发器逻辑"), logicPane);
     logicTitle_->setObjectName("paneTitle");
-    logicHint_ = new QLabel(tr("双击 / Enter 编辑参数"), logicPane);
+    logicHint_ = new QLabel(logicPane);
     logicHint_->setObjectName("paneHint");
     logicHeading->addWidget(logicTitle_);
     convertCodeButton_ = new QPushButton(tr("转换为自定义代码…"), logicPane);
@@ -257,11 +257,6 @@ void TriggerModule::BuildPage() {
     toggles->addStretch();
     toggles->addWidget(commentToggle_);
     propertiesLayout->addLayout(toggles);
-    scriptRebuildNotice_ = new QLabel(propertiesBox_);
-    scriptRebuildNotice_->setObjectName("triggerScriptRebuildNotice");
-    scriptRebuildNotice_->setWordWrap(true);
-    scriptRebuildNotice_->hide();
-    propertiesLayout->addWidget(scriptRebuildNotice_);
     connect(&project_, &QtProject::EditorProject::TriggerDocumentAboutToChange, this, [this] {
         scriptCapabilityCached_ = false;
     });
@@ -271,7 +266,7 @@ void TriggerModule::BuildPage() {
     });
     commentEdit_ = new QPlainTextEdit(propertiesBox_);
     commentEdit_->setObjectName("triggerCommentEdit");
-    commentEdit_->setPlaceholderText(tr("说明这个触发器做什么；不会生成代码"));
+    commentEdit_->setPlaceholderText(tr("触发器注释"));
     commentEdit_->setTabChangesFocus(true);
     commentEdit_->setFixedHeight(56);
     commentEdit_->installEventFilter(this);
@@ -333,7 +328,7 @@ void TriggerModule::BuildPage() {
     discardCodeButton_->setObjectName("triggerDiscardCode");
     codeDraftNote_ = new QLabel(codeActions_);
     codeDraftNote_->setObjectName("triggerCodeDraftNote");
-    codeDraftNote_->setWordWrap(true);
+    codeDraftNote_->setTextFormat(Qt::PlainText);
     codeActionsLayout->addWidget(applyCodeButton_);
     codeActionsLayout->addWidget(discardCodeButton_);
     codeActionsLayout->addWidget(codeDraftNote_, 1);

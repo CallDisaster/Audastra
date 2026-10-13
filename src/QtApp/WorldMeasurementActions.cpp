@@ -43,7 +43,7 @@ bool MainWindow::EnableWorldMeasurement(const QString& directory, int background
     row->addWidget(start); row->addWidget(stop); row->addWidget(phase);
     row->addWidget(witness); row->addWidget(visible); row->addStretch();
     layout->addLayout(row);
-    auto* status = new QLabel(tr("等待世界加载。固定活动视区两分钟，再平移缩放一分钟；每 2.3 秒读取一次真实完成画面。"), panel);
+    auto* status = new QLabel(tr("等待世界加载"), panel);
     status->setWordWrap(true);
     status->setTextInteractionFlags(Qt::TextSelectableByMouse);
     status->setObjectName(QStringLiteral("worldMeasurementStatus"));
@@ -65,7 +65,7 @@ bool MainWindow::EnableWorldMeasurement(const QString& directory, int background
     connect(stop, &QPushButton::clicked, recorder, [recorder] { recorder->Stop(QObject::tr("作者停止并导出")); });
     connect(recorder, &War3Map::Modules::WorldFrameRecorder::Finished, this, [start, stop, status](const QString& path) {
         start->setEnabled(false); stop->setEnabled(false);
-        status->setText(QObject::tr("记录已导出：%1。此包供基线分析，尚未签收性能修复。重新记录请启动一次新测量。 ").arg(path));
+        status->setText(QObject::tr("记录已导出：%1").arg(path));
     });
     connect(qApp, &QCoreApplication::aboutToQuit, recorder, [recorder] { recorder->Stop(QObject::tr("进程退出")); });
     if (backgroundSeconds > 0) {

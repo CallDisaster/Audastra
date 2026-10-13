@@ -82,10 +82,10 @@ WarcraftTextSource Resolve(const Prepared& source, const QString& draft) {
     if (resolved.displayName.size() > source.limits.maxBodyBytes)
         return Unknown(QObject::tr("已解码 WTS 正文超过预览预算；原字段值保持不变。"));
     if (!source.current())
-        return {{}, QObject::tr("解析期间来源已变化；拒绝旧 WTS 正文。"), WarcraftTextSourceState::Stale};
+        return {{}, QObject::tr("来源已变化"), WarcraftTextSourceState::Stale};
     return {QString::fromUtf8(resolved.displayName), id
-        ? QObject::tr("当前 WTS 覆盖 · 原字段值 %1；预览不修改引用或字符串表。").arg(draft.left(128))
-        : QObject::tr("当前字段草稿；预览不提交字段。"), WarcraftTextSourceState::Available};
+        ? QObject::tr("来自 %1").arg(draft.left(128))
+        : QString(), WarcraftTextSourceState::Available};
 }
 } // namespace
 

@@ -196,7 +196,7 @@ void TriggerReplaceDialogTests::ReadOnlyHitsCannotBeSelectedAndEnterDoesNotApply
     QVERIFY(!(tree->topLevelItem(0)->flags() & Qt::ItemIsUserCheckable)); Button(dialog, "triggerReplaceCheckPage")->click();
     QVERIFY(!Button(dialog, "triggerReplacePreview")->isEnabled()); QVERIFY(!Button(dialog, "triggerReplaceApply")->isEnabled());
     const auto text = dialog.findChild<QLabel*>("triggerReplaceStatus")->text();
-    QVERIFY(text.contains(QStringLiteral("已扫描范围")) && text.contains(QStringLiteral("总数尚未确认")));
+    QVERIFY(text.contains(QStringLiteral("已扫描")) && text.contains(QStringLiteral("总数未确认")));
 }
 void TriggerReplaceDialogTests::ReentrantQueryAndRevisionCannotPublishStaleRows() {
     TriggerReplaceDialog* current = nullptr; bool reenterQuery = false, reenterRevision = false; int calls = 0;

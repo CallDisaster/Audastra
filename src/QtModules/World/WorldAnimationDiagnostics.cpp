@@ -417,8 +417,6 @@ WorldModelDiagnosticsDialog::WorldModelDiagnosticsDialog(QWidget* parent) : QDia
     setObjectName(QStringLiteral("worldModelDiagnosticsDialog"));
     setWindowTitle(tr("按模型列出诊断")); resize(1080, 640);
     auto* layout = new QVBoxLayout(this);
-    auto* hint = new QLabel(tr("双击条目定位第一个受影响摆放；数量是不同摆放数。各行可重叠；列表使用已保留的冻结诊断，警告省略数量另列。"), this);
-    hint->setWordWrap(true); hint->setTextFormat(Qt::PlainText); layout->addWidget(hint);
     table_ = new QTableWidget(this); table_->setObjectName(QStringLiteral("worldModelDiagnosticsTable"));
     table_->setColumnCount(7); table_->setHorizontalHeaderLabels({tr("模型路径"), tr("所属单位/装饰物"), tr("原因"), tr("数量"), tr("记录"), tr("占位状态"), tr("实际来源")});
     table_->setSelectionBehavior(QAbstractItemView::SelectRows); table_->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -456,7 +454,7 @@ void WorldModelDiagnosticsDialog::SetRows(std::vector<WorldModelDiagnosticRow> r
             item->setToolTip(QStringLiteral("<pre>%1</pre>").arg(cells[column].toHtmlEscaped())); table_->setItem(at, column, item);
         }
     }
-    status_->setText(tr("%1 条分组；来源、模型部件和原因不同的条目分别保留。").arg(rows_.size()));
+    status_->setText(tr("%1 条").arg(rows_.size()));
 }
 bool WorldModelDiagnosticsDialog::LocateRow(std::size_t row) {
     if (row >= rows_.size() || rows_[row].owners.empty() || !locate_) {
@@ -472,7 +470,7 @@ bool WorldModelDiagnosticsDialog::LocateRow(std::size_t row) {
     if (!located) {
         self->status_->setText(tr("此条目无可定位摆放，或地图/来源/修订已变化；未跳转到替代对象。")); return false;
     }
-    self->status_->setText(tr("已定位第一个受影响摆放（本条共 %1 个）；地图内容未改变。").arg(ownerCount)); return true;
+    self->status_->setText(tr("已定位（共 %1 个）").arg(ownerCount)); return true;
 }
 bool WorldModelDiagnosticsDialog::ExportWithChooser(const std::function<QString(QWidget*)>& chooser) {
     if (!chooser) return false;

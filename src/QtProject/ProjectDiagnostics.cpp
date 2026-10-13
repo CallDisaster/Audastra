@@ -17,7 +17,6 @@ QString EditorProject::DiagnosticLevel(DiagnosticSeverity severity) {
 void EditorProject::InitializeDiagnostics() {
     diagnosticsModel_ = new QStandardItemModel(this);
     diagnosticsModel_->setHorizontalHeaderLabels({tr("级别"), tr("子系统"), tr("代码"), tr("说明")});
-    AddDiagnostic(tr("信息"), tr("Core"), tr("NO_PROJECT"), tr("打开展开地图后开始只读扫描。"));
 }
 
 void EditorProject::ClearDiagnostics() {

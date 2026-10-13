@@ -43,9 +43,7 @@ FloatFrame::FloatFrame(const ModuleInfo& info, QWidget* owner)
     auto* stripLayout = new QHBoxLayout(strip);
     stripLayout->setContentsMargins(8, 2, 4, 2);
     stripLayout->setSpacing(2);
-    auto* hint = new QLabel(tr("拖动标题栏到主窗口顶栏或右边缘可停靠"), strip);
-    hint->setObjectName(QStringLiteral("floatStripHint"));
-    stripLayout->addWidget(hint, 1);
+    stripLayout->addStretch(1);
     auto* toSide = StripButton(QStringLiteral("lucide/panel-right"), tr("停靠到右侧"), strip);
     auto* toMain = StripButton(QStringLiteral("lucide/app-window"), tr("放回主编辑区"), strip);
     stripLayout->addWidget(toSide);

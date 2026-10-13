@@ -64,7 +64,7 @@ ChangesPanel::ChangesPanel(QWidget* parent) : QWidget(parent) {
     after_ = new War3Map::UiKit::ElidedLabel(this); after_->setObjectName(QStringLiteral("changesAfter"));
     fields->addRow(tr("原值"), before_); fields->addRow(tr("当前值"), after_);
     layout->addLayout(fields);
-    reason_ = PlainLabel(this, tr("选择一项修改查看前后值和可用操作。"), QStringLiteral("changesReason"));
+    reason_ = PlainLabel(this, QString(), QStringLiteral("changesReason"));
     reason_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     layout->addWidget(reason_);
     auto* rowActions = new QHBoxLayout;
@@ -111,7 +111,7 @@ void ChangesPanel::SetEntries(std::vector<Entry> entries, const QStringList& uns
         + (unsupported.size() > 12 ? tr("（另 %1 项）").arg(unsupported.size() - 12) : QString()));
     unsupported_->setToolTip(unsupported.join(QLatin1Char('\n')));
     unsupported_->setVisible(!unsupported.isEmpty());
-    truncated_->setText(tr("有未展开内容或分页余项；当前最多列出 256 项，成员说明会标明原因。"));
+    truncated_->setText(tr("只列出前 256 项"));
     truncated_->setVisible(limited);
     QHash<QString, QStandardItem*> members;
     QHash<QString, QHash<QString, QStandardItem*>> records;
@@ -147,7 +147,7 @@ QString ChangesPanel::SelectedId() const {
 void ChangesPanel::SelectEntry(const QModelIndex& index) {
     selected_ = -1; reveal_->setEnabled(false); revert_->setEnabled(false);
     before_->clear(); after_->clear(); before_->setToolTip({}); after_->setToolTip({});
-    reason_->setText(tr("选择一项修改查看前后值和可用操作。"));
+    reason_->clear();
     if (!index.isValid() || index.model() != model_ || !index.data(EntryRole).isValid()) return;
     const int row = index.data(EntryRole).toInt();
     if (row < 0 || row >= static_cast<int>(entries_.size())) return;

@@ -198,10 +198,6 @@ void ManagerModule::BuildPage() {
     detail_->setHeaderHidden(true);
     detail_->setUniformRowHeights(true);
     detailLayout->addWidget(detail_, 1);
-    auto* note = new QLabel(tr("只统计工程数据中的直接引用；自定义脚本文本与动态拼接不在其中，不能作为安全删除依据。"), detail);
-    note->setObjectName("paneHint");
-    note->setWordWrap(true);
-    detailLayout->addWidget(note);
     splitter->addWidget(detail);
     splitter->setStretchFactor(0, 3);
     splitter->setStretchFactor(1, 2);

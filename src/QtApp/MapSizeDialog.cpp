@@ -69,7 +69,7 @@ MapSizeDialog::MapSizeDialog(Revision revision, Query query, Activate activate, 
     for (int column = 1; column < 4; ++column) top_->horizontalHeader()->setSectionResizeMode(column, QHeaderView::ResizeToContents);
     top_->setSelectionBehavior(QAbstractItemView::SelectRows); top_->setSelectionMode(QAbstractItemView::SingleSelection);
     layout->addWidget(top_, 1);
-    status_ = new QLabel(tr("按刷新读取当前会话已持有的元数据。"), this);
+    status_ = new QLabel(this);
     status_->setObjectName(QStringLiteral("mapSizeStatus")); status_->setTextFormat(Qt::PlainText);
     status_->setWordWrap(true); layout->addWidget(status_);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
@@ -90,14 +90,14 @@ void MapSizeDialog::Focus() {
 }
 void MapSizeDialog::ContextChanged() {
     ++requestGeneration_; report_.reset(); totals_->setRowCount(0); top_->setRowCount(0);
-    scope_->clear(); status_->setText(tr("工程内容已变化，旧统计已清除；请刷新后再查看。"));
+    scope_->clear(); status_->setText(tr("内容已变化，请刷新"));
 }
 void MapSizeDialog::Refresh() {
     const auto generation = ++requestGeneration_;
     const QPointer<MapSizeDialog> dialog(this);
     const auto revision = revision_; const auto query = query_;
     report_.reset(); totals_->setRowCount(0); top_->setRowCount(0); scope_->clear();
-    if (!revision || !query) { status_->setText(tr("体积分析来源尚未连接。")); return; }
+    if (!revision || !query) { status_->setText(tr("没有可分析的地图")); return; }
     const auto expected = revision();
     if (!dialog || generation != requestGeneration_) return;
     const auto result = query(expected);
@@ -106,16 +106,15 @@ void MapSizeDialog::Refresh() {
     if (!dialog || generation != requestGeneration_) return;
     if (current != expected || (result.value && result.value->contextRevision != expected)) { ContextChanged(); return; }
     if (!result.Succeeded() || !result.value) {
-        status_->setText(result.diagnostics.empty() ? tr("无法读取可信元数据，请刷新重试。") : Text(result.diagnostics.front().message)); return;
+        status_->setText(result.diagnostics.empty() ? tr("读取失败，请刷新重试") : Text(result.diagnostics.front().message)); return;
     }
     // 返回报告自有字符串；窗口不借用 map、正文、索引或资源对象。
     report_ = *result.value; Populate(*report_);
 }
 void MapSizeDialog::Populate(const Services::MapSizeReport& report) {
     const auto source = report.sourceKind == Services::MapSizeSourceKind::ArchiveMembers
-        ? tr("打开时的归档命名成员") : tr("打开时的目录快照（枚举范围可能不完整）");
-    scope_->setText(tr("范围：%1。数字是成员的未压缩逻辑字节，不是 w3x/w3m 磁盘大小。\n"
-        "原始快照：%2；当前已应用编辑态：%3。未提交控件草稿、尚未生成的正文和外盘待导入内容不作为已验证字节。")
+        ? tr("归档成员") : tr("目录快照");
+    scope_->setText(tr("%1 · 未压缩字节 · 原始：%2 · 当前：%3")
         .arg(source, State(report.baseline.state), State(report.effective.state)));
     constexpr int categories = static_cast<int>(Services::MapSizeCategory::Count);
     totals_->setRowCount(categories + 1);

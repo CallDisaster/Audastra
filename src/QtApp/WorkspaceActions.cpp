@@ -306,9 +306,7 @@ bool MainWindow::OpenMapArchivePath(const std::filesystem::path& archivePath) {
     }
     if (openedOk) {
         statusBar()->showMessage(
-            tr("已从地图归档提取并打开：%1（工作目录 %2）")
-                .arg(QString::fromStdWString(archivePath.filename().wstring()))
-                .arg(QString::fromStdWString(workDir.wstring())),
+            tr("已打开 %1").arg(QString::fromStdWString(archivePath.filename().wstring())),
             8000);
     }
     return openedOk;

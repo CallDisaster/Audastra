@@ -229,7 +229,7 @@ QWidget* WorldModule::BuildInspector() {
 
     // ── 选中对象 ──
     column->addWidget(SectionLabel(tr("选中"), inspectorBody_));
-    selectionEmpty_ = new QLabel(tr("单击单位、装饰物、区域或镜头查看属性"), inspectorBody_);
+    selectionEmpty_ = new QLabel(tr("未选择"), inspectorBody_);
     selectionEmpty_->setObjectName(QStringLiteral("worldInspectorEmpty"));
     selectionEmpty_->setWordWrap(true);
     column->addWidget(selectionEmpty_);
@@ -459,8 +459,8 @@ void WorldModule::UpdateInspector(bool animate) {
     const auto document = CurrentDocument();
     const auto editStatus = worldSelection_.Version()
         ? worldSelection_.EditStatus(SelectionContext(), *worldSelection_.Version()) : Status{};
-    const auto readOnlyNote = editStatus.Succeeded() ? tr("当前选择不能一起编辑，请重新选择")
-        : tr("当前选择只读：%1").arg(WorldDiagnosticText(editStatus.diagnostics));
+    const auto readOnlyNote = editStatus.Succeeded() ? tr("不能一起编辑")
+        : tr("只读：%1").arg(WorldDiagnosticText(editStatus.diagnostics));
     const auto snapshot = worldSelection_.Version()
         ? worldSelection_.Snapshot(SelectionContext(), *worldSelection_.Version()) : Result<Services::WorldSelectionSnapshot>{};
     if (worldSelection_.Version() && !snapshot.Succeeded()) {
@@ -516,7 +516,6 @@ void WorldModule::UpdateInspector(bool animate) {
         const auto locked = !sameLocked ? tr("多个值") : firstFlags.locked ? tr("已锁定") : tr("未锁定");
         selectionMeta_->setText(counts.join(QStringLiteral(" · ")) + QStringLiteral("\n")
             + tr("显隐：%1 · 锁定：%2 · 只读").arg(visible, locked));
-        selectionMeta_->setToolTip(tr("显隐和锁定来自当前编辑器选择服务，不是地图或游戏运行状态。"));
         selectionIcon_->setPixmap(UiKit::SvgIcon(QStringLiteral("lucide/layers"))
             .pixmap(QSize(kIconSize, kIconSize), selectionIcon_->devicePixelRatioF()));
         selectionIcon_->setProperty("framed", false);
@@ -549,7 +548,7 @@ void WorldModule::UpdateInspector(bool animate) {
     cameraFields_->setVisible(!placements && camera != nullptr);
     if (key.isEmpty()) {
         selectionEmpty_->setText(!selectedPlacements_.empty() ? tr("摆放属性不可用：%1").arg(WorldDiagnosticText(properties.diagnostics))
-            : tr("单击单位、装饰物、区域或镜头查看属性"));
+            : tr("未选择"));
         if (unitPreview) unitPreview->ClearSelection();
         return;
     }
@@ -701,11 +700,11 @@ void WorldModule::UpdateInspector(bool animate) {
         deleteSelected_->setVisible(true);
         deleteSelected_->setEnabled(editable);
         selectionNote_->setText(!SelectionEditable() ? readOnlyNote
-            : !terrain_ ? tr("地形尚未读取，变换暂不可编辑") : !single ? tr("输入一次应用到全部所选摆放，可一起撤销。")
-            : !request || !InstanceOfRequest(*request) ? tr("模型尚未读取；属性来自当前地图记录。") : QString());
+            : !terrain_ ? tr("地形未读取") : !single ? QString()
+            : !request || !InstanceOfRequest(*request) ? tr("模型未读取") : QString());
         if (unknownType) selectionNote_->setText(selectionNote_->text()
             + (selectionNote_->text().isEmpty() ? QString() : QStringLiteral("\n"))
-            + tr("部分对象的物编类型或英雄类别尚未确认，未显示不确定的专属属性。"));
+            + tr("部分类型未确认"));
         selectionNote_->setVisible(!selectionNote_->text().isEmpty());
     } else if (region) {
         if (unitPreview) unitPreview->ClearSelection();
@@ -718,7 +717,8 @@ void WorldModule::UpdateInspector(bool animate) {
         selectionMeta_->setText(tr("区域 · %1 × %2").arg(b[2] - b[0], 0, 'f', 0).arg(b[3] - b[1], 0, 'f', 0));
         if (changed) selectionIcon_->setPixmap(RegionSwatch(Render::RegionOverlayColor(*region), ratio));
         selectionIcon_->setProperty("framed", false);
-        selectionNote_->setText(SelectionEditable() ? tr("区域常被触发器按名称引用；删除请在“实例”模块核对引用后进行。") : readOnlyNote);
+        selectionNote_->setText(SelectionEditable() ? QString() : readOnlyNote);
+        selectionNote_->setVisible(!selectionNote_->text().isEmpty());
     } else {
         if (unitPreview) unitPreview->ClearSelection();
         const float x = cameraDraft_ ? (*cameraDraft_)[0] : camera->targetX;
@@ -735,12 +735,13 @@ void WorldModule::UpdateInspector(bool animate) {
         if (changed) selectionIcon_->setPixmap(UiKit::SvgIcon(QStringLiteral("lucide/target"), QColor(0xf2, 0xc7, 0x52))
             .pixmap(QSize(22, 22), ratio));
         selectionIcon_->setProperty("framed", false);
-        selectionNote_->setText(SelectionEditable() ? tr("镜头常被触发器按名称引用；删除请在“实例”模块核对引用后进行。") : readOnlyNote);
+        selectionNote_->setText(SelectionEditable() ? QString() : readOnlyNote);
+        selectionNote_->setVisible(!selectionNote_->text().isEmpty());
     }
     if (!placements) {
         openDefinition_->hide();
         deleteSelected_->hide();
-        selectionNote_->show();
+        selectionNote_->setVisible(!selectionNote_->text().isEmpty());
     }
     if (changed) {
         selectionIcon_->style()->unpolish(selectionIcon_);

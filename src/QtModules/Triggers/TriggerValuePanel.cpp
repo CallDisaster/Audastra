@@ -158,16 +158,14 @@ TriggerValuePanel::TriggerValuePanel(const Trigger::TriggerDocument& document, c
     create_->setObjectName("valuePanelCreate");
     create_->hide();
     layout->addWidget(create_);
-    auto* hint = new War3Map::UiKit::ElidedLabel(tr("Enter 使用 · Ctrl+Tab 换页 · Esc 关闭 · 右下角拖动调整大小"), this);
-    hint->setObjectName("paneHint");
     auto* footer = new QHBoxLayout;
     footer->setContentsMargins(0, 0, 0, 0);
-    footer->addWidget(hint, 1);
+    footer->addStretch(1);
     footer->addWidget(new QSizeGrip(this), 0, Qt::AlignBottom | Qt::AlignRight);
     layout->addLayout(footer);
 
     if (argument_ == nullptr || argument_->insertIndex != 0) {
-        note_->setText(argument_ == nullptr ? tr("找不到这个参数。") : tr("数组下标参数请在参数对话框（F2）中修改。"));
+        note_->setText(argument_ == nullptr ? tr("找不到参数") : tr("数组下标 · F2"));
         tabs_->hide();
         search_->hide();
         list_->hide();
@@ -396,7 +394,7 @@ void TriggerValuePanel::RebuildVariables(const QString& query) {
             const auto resolved = Trigger::ResolveVariableReference(document_, object.symbol, mapObjects_.get());
             if (!resolved.Succeeded() || resolved.value->kind != Trigger::VariableReferenceKind::PreplacedObject) continue;
             if (++shown > 400) {
-                note_->setText(tr("预放对象结果较多，只列出前 400 个；输入类型 ID 或创建编号缩小范围。"));
+                note_->setText(tr("只列出前 400 个"));
                 break;
             }
             auto* item = Item(list_, symbol, detail, 1, symbol);
@@ -417,9 +415,9 @@ void TriggerValuePanel::RebuildVariables(const QString& query) {
             item->setData(kCallRole, Utf8(local.loop ? Trigger::kLoopLocalGet : Trigger::kLocalGet));
         }
     }
-    if (list_->count() == 0) note_->setText(query.isEmpty() ? tr("没有该类型的变量。") : tr("没有匹配的变量。"));
+    if (list_->count() == 0) note_->setText(query.isEmpty() ? tr("没有该类型的变量") : tr("没有匹配的变量"));
     if (arrays != 0) {
-        note_->setText(note_->text() + tr(" 另有 %1 个数组变量，需要下标，请在参数对话框（F2）中设置。").arg(arrays));
+        note_->setText(note_->text() + tr(" 另有 %1 个数组变量 · F2").arg(arrays));
     }
     if (!writableTarget_ && !mapObjectFailure_.isEmpty() &&
         (types_->Accepts(type_, "unit") || types_->Accepts(type_, "item"))) {
@@ -459,7 +457,7 @@ void TriggerValuePanel::RebuildFunctions(const QString& query) {
         }
     }
     if (list_->count() == 0) {
-        note_->setText(tr("没有返回该类型的函数。"));
+        note_->setText(tr("没有返回该类型的函数"));
     }
 }
 
@@ -470,7 +468,7 @@ void TriggerValuePanel::RebuildValues(const QString& query) {
         for (const auto& object : objectItems_) {
             if (!matches(object.name) && !matches(object.rawcode)) continue;
             if (++shown > 400) {
-                note_->setText(tr("结果较多，只列出前 400 个；输入名称或 ID 缩小范围。"));
+                note_->setText(tr("只列出前 400 个"));
                 break;
             }
             Item(list_, object.name, object.rawcode, 3, object.rawcode);

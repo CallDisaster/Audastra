@@ -226,14 +226,14 @@ void WarcraftTextPreview::Refresh() {
         preview_->moveCursor(QTextCursor::Start);
         rendered_ = true;
         if (parsed.state == Text::WarcraftTextState::Truncated)
-            status_->setText(tr("预览已截断；原文与应用资格保持不变。"));
-        else if (!parsed.Complete()) status_->setText(tr("本次预览未完成；下方只显示已检查前缀。原文保持不变。"));
+            status_->setText(tr("预览已截断"));
+        else if (!parsed.Complete()) status_->setText(tr("预览未完成"));
         else if (!parsed.diagnostics.empty() || parsed.omittedDiagnostics)
-            status_->setText(tr("未知或不完整的格式标记按字面显示；预览只模拟 RGB 颜色和换行。"));
-        else status_->setText(tr("预览只模拟 RGB 颜色和换行；游戏字体、alpha 和额外热键规则尚未验证。"));
+            status_->setText(tr("含未知格式标记"));
+        else status_->clear();
     } catch (const std::exception&) {
         if (lifetime && lifetime->generation_ == startingGeneration)
-            stale(tr("预览准备失败；原文保持不变。"));
+            stale(tr("预览失败"));
     }
 }
 

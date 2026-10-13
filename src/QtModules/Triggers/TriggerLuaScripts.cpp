@@ -39,9 +39,6 @@ TriggerLuaScripts::TriggerLuaScripts(QtProject::EditorProject& project, QWidget*
     : QWidget(parent), project_(project) {
     setObjectName("triggerLuaScripts");
     auto* layout = new QVBoxLayout(this); layout->setContentsMargins(0, 0, 0, 0); layout->setSpacing(8);
-    auto* boundary = new QLabel(tr("地图里的 .lua 文件随地图保存，保存前会检查语法（支持 YDWE 的 |xxxx| 四字码）。"
-        "文件里用 require \"jass.common\" 调用 native；测试地图时修改并应用，可在工具栏“热重载”把新代码送进正在运行的游戏。"), this);
-    boundary->setObjectName("luaRuntimeBoundary"); boundary->setWordWrap(true); layout->addWidget(boundary);
     auto* splitter = new QSplitter(this);
     auto* directoryPane = new QWidget(splitter); auto* directoryLayout = new QVBoxLayout(directoryPane);
     directoryLayout->setContentsMargins(0, 0, 8, 0);
@@ -54,14 +51,10 @@ TriggerLuaScripts::TriggerLuaScripts(QtProject::EditorProject& project, QWidget*
     directory_ = new QTreeWidget(directoryPane); directory_->setObjectName("luaScriptDirectory");
     directory_->setHeaderLabels({tr("Lua 脚本"), tr("状态")}); directory_->setRootIsDecorated(false);
     directory_->setUniformRowHeights(true); directoryLayout->addWidget(directory_, 1);
-    // 入口沿用 YDWE 约定：触发器“自定义代码”动作调用 Cheat("exec-lua: \"模块\"")，不另设专用入口。
-    auto* entry = new QLabel(tr("游戏开始时加载：在地图初始化触发器中添加“自定义代码”动作\n"
-        "call Cheat(\"exec-lua: \\\"main\\\"\")\n即加载地图根目录的 main.lua；子目录用点号，如 lua.main。\n完整示例：菜单“新建 Lua 教程地图”。"), directoryPane);
-    entry->setObjectName("luaEntryHint"); entry->setWordWrap(true);
-    entry->setTextInteractionFlags(Qt::TextSelectableByMouse); directoryLayout->addWidget(entry);
+    // 入口沿用 YDWE 约定：触发器“自定义代码”动作调用 Cheat("exec-lua: \"模块\"")；用法写在使用帮助里。
     auto* reveal = new QPushButton(tr("在资源中定位"), directoryPane); reveal->setObjectName("luaRevealAsset"); directoryLayout->addWidget(reveal);
     auto* codePane = new QWidget(splitter); auto* codeLayout = new QVBoxLayout(codePane); codeLayout->setContentsMargins(8, 0, 0, 0);
-    sourceNote_ = new QLabel(tr("选择一个导入的 .lua 文件。"), codePane); sourceNote_->setObjectName("luaSourceNote"); sourceNote_->setWordWrap(true); codeLayout->addWidget(sourceNote_);
+    sourceNote_ = new QLabel(codePane); sourceNote_->setObjectName("luaSourceNote"); sourceNote_->setTextFormat(Qt::PlainText); codeLayout->addWidget(sourceNote_);
     editor_ = new UiKit::CodeView(codePane); editor_->setObjectName("luaCodeEditor"); editor_->SetLanguage(UiKit::CodeLanguage::Lua);
     editor_->SetDecoder(DecodeMapCodeForView); editor_->SetEditable(false); codeLayout->addWidget(editor_, 1);
     problems_ = new UiKit::CodeProblemsView(codePane); problems_->setObjectName("luaCodeProblems"); problems_->SetView(editor_); codeLayout->addWidget(problems_);
@@ -71,7 +64,7 @@ TriggerLuaScripts::TriggerLuaScripts(QtProject::EditorProject& project, QWidget*
     auto* check = new QPushButton(tr("检查语法"), codePane); check->setObjectName("luaCheckSyntax"); codeActions->addWidget(check);
     auto* undo = new QPushButton(tr("撤销资源修改"), codePane); auto* redo = new QPushButton(tr("重做资源修改"), codePane);
     codeActions->addWidget(undo); codeActions->addWidget(redo); codeActions->addStretch(); codeLayout->addLayout(codeActions);
-    status_ = new QLabel(this); status_->setObjectName("luaScriptStatus"); status_->setWordWrap(true);
+    status_ = new QLabel(this); status_->setObjectName("luaScriptStatus"); status_->setTextFormat(Qt::PlainText);
     splitter->setChildrenCollapsible(false); splitter->addWidget(directoryPane); splitter->addWidget(codePane); splitter->setStretchFactor(1, 1); splitter->setSizes({280, 760});
     layout->addWidget(splitter, 1); layout->addWidget(status_);
     connect(create, &QPushButton::clicked, this, [this] {
@@ -84,7 +77,7 @@ TriggerLuaScripts::TriggerLuaScripts(QtProject::EditorProject& project, QWidget*
         if (accepted) (void)RenameScript(selectedPath_, path);
     });
     connect(remove, &QPushButton::clicked, this, [this] {
-        if (!selectedPath_.isEmpty() && QMessageBox::question(this, tr("删除 Lua 脚本"), tr("删除 %1？可通过撤销资源修改恢复。").arg(selectedPath_)) == QMessageBox::Yes) (void)DeleteScript(selectedPath_);
+        if (!selectedPath_.isEmpty() && QMessageBox::question(this, tr("删除 Lua 脚本"), tr("删除 %1？").arg(selectedPath_)) == QMessageBox::Yes) (void)DeleteScript(selectedPath_);
     });
     connect(reveal, &QPushButton::clicked, this, [this] { if (!selectedPath_.isEmpty()) emit RevealAssetRequested(selectedPath_); });
     connect(apply_, &QPushButton::clicked, this, [this] { (void)CommitPendingDraft(); });
@@ -107,7 +100,7 @@ TriggerLuaScripts::TriggerLuaScripts(QtProject::EditorProject& project, QWidget*
     connect(&project_, &QtProject::EditorProject::ImportsChanged, this, [this] {
         RefreshDirectory();
         if (publishing_ || selectedPath_.isEmpty()) return;
-        if (HasPendingDraft()) { Status(tr("资源页面有修改；当前 Lua 草稿保留，应用时会重新核对文件身份。")); return; }
+        if (HasPendingDraft()) return;
         const auto entries = project_.AssetEntries();
         const auto existing = std::find_if(entries.begin(), entries.end(), [&](const auto& item) { return QtProject::EditorProject::AssetKey(item.path) == QtProject::EditorProject::AssetKey(selectedPath_); });
         if (existing != entries.end()) { (void)LoadScript(existing->path); return; }
@@ -122,7 +115,7 @@ TriggerLuaScripts::TriggerLuaScripts(QtProject::EditorProject& project, QWidget*
         if (matches == 1) { (void)LoadScript(renamed); RefreshDirectory(); return; }
         source_.reset(); selectedPath_.clear(); editableSource_ = false; suppress_ = true;
         editor_->SetPrepareCheck({}); editor_->SetText({}); suppress_ = false; editor_->SetEditable(false);
-        Status(matches > 1 ? tr("资源改名后有多个同来源候选，请从目录中重新选择。") : tr("当前文件已从共同资源队列删除，可通过资源撤销恢复。")); UpdateDraftState();
+        Status(matches > 1 ? tr("请重新选择文件") : tr("文件已删除")); UpdateDraftState();
     });
     connect(&project_, &QtProject::EditorProject::SourceStateChanged, this, [this] {
         if (publishing_ || !source_ || selectedPath_.isEmpty()) return;
@@ -148,7 +141,7 @@ void TriggerLuaScripts::UpdateDraftState() {
         if (auto* button = findChild<QPushButton*>(name)) button->setEnabled(selected);
     }
     if (auto* button = findChild<QPushButton*>("luaCheckSyntax")) button->setEnabled(selected && editableSource_);
-    if (!selected) sourceNote_->setText(tr("选择一个导入的 .lua 文件。"));
+    if (!selected) { sourceNote_->clear(); sourceNote_->setToolTip({}); }
 }
 void TriggerLuaScripts::RefreshDirectory() {
     QSignalBlocker block(directory_); directory_->clear();
@@ -159,7 +152,6 @@ void TriggerLuaScripts::RefreshDirectory() {
         if (QtProject::EditorProject::AssetKey(entry.path) == QtProject::EditorProject::AssetKey(selectedPath_)) directory_->setCurrentItem(item);
     }
     directory_->sortItems(0, Qt::AscendingOrder);
-    if (project_.directorySnapshot_ && !project_.archiveSession_) Status(tr("目录列表来自打开时可读文件快照；扫描可能跳过无权限项，清单可能不完整。"));
 }
 bool TriggerLuaScripts::LoadScript(const QString& path) {
     const auto read = QtProject::ReadOwnedAsset(project_, path);
@@ -205,13 +197,11 @@ void TriggerLuaScripts::LoadAcceptedScript(QtProject::OwnedAssetSource source) {
     else editor_->SetBytesAsync(raw);
     if (editableSource_) editor_->SetPrepareCheck([source = selectedPath_](const QString& text, std::uint64_t generation) {
             Services::CodeCheckContext context; context.complete = false;
-            context.reason = "检查 Lua 5.3 语法（含 YDWE |xxxx| 四字码）；jass 模块是否可用由运行环境决定。";
             return PrepareTriggerCodeCheck(text, generation, source, UiKit::CodeLanguage::Lua, std::move(context));
         });
     else editor_->SetPrepareCheck({});
-    sourceNote_->setText(editableSource_ ? tr("%1 · UTF-8；应用后在下次保存地图时写入。").arg(selectedPath_)
-        : utf8 ? tr("%1 · 正文包含无法无损编辑的特殊空白字符，当前只读，原字节已保留。").arg(selectedPath_)
-        : tr("%1 · 编码未声明，保留原字节只读查看；推测显示不授予转码保存。").arg(selectedPath_));
+    sourceNote_->setText(editableSource_ ? selectedPath_ : tr("%1 · 只读").arg(selectedPath_));
+    sourceNote_->setToolTip(editableSource_ ? QString{} : utf8 ? tr("正文含无法无损编辑的特殊空白字符") : tr("不是 UTF-8 编码"));
     UpdateDraftState();
 }
 bool TriggerLuaScripts::SelectScript(const QString& path) {
@@ -224,7 +214,7 @@ bool TriggerLuaScripts::SelectScript(const QString& path) {
 }
 bool TriggerLuaScripts::CreateScript(const QString& path, const QString& initialText) {
     if (!CommitPendingDraft()) return false;
-    if (project_.directorySnapshot_ && !project_.archiveSession_) { Status(tr("目录扫描完整性未确认，不能确认新路径没有冲突。")); return false; }
+    if (project_.directorySnapshot_ && !project_.archiveSession_) { Status(tr("目录扫描不完整，不能新建")); return false; }
     const auto bytes = initialText.toUtf8();
     const auto problem = project_.RecordAssetEdit(tr("新建 Lua 脚本草稿"), [&](QtProject::AssetState& candidate) -> QString {
         const auto entries = project_.AssetEntries(candidate);
@@ -234,12 +224,12 @@ bool TriggerLuaScripts::CreateScript(const QString& path, const QString& initial
     if (!problem.isEmpty()) { Status(problem); return false; }
     const bool loaded = LoadScript(path);
     RefreshDirectory();
-    Status(tr("Lua 文件已加入导入队列，保存地图时写入。"));
+    Status(tr("已新建"));
     emit DraftEdited(); return loaded;
 }
 bool TriggerLuaScripts::RenameScript(const QString& path, const QString& newPath) {
     if (!CommitPendingDraft()) return false;
-    if (!newPath.endsWith(".lua", Qt::CaseInsensitive)) { Status(tr("Lua 脚本必须保留 .lua 扩展名。")); return false; }
+    if (!newPath.endsWith(".lua", Qt::CaseInsensitive)) { Status(tr("扩展名必须是 .lua")); return false; }
     publishing_ = true;
     const auto problem = project_.RecordAssetEdit(tr("重命名 Lua 脚本"), [&](QtProject::AssetState& candidate) { return project_.MoveAsset(candidate, path, newPath); });
     publishing_ = false;
@@ -272,7 +262,7 @@ bool TriggerLuaScripts::CommitPendingDraft() {
     publishing_ = false;
     if (!problem.isEmpty()) { Status(problem); return false; }
     const auto path = selectedPath_; RefreshDirectory(); (void)LoadScript(path);
-    Status(tr("Lua 修改已应用，保存地图时写入；测试运行中可用“热重载”送进游戏。")); emit DraftEdited(); return true;
+    Status(tr("已应用")); emit DraftEdited(); return true;
 }
 void TriggerLuaScripts::DiscardPendingDraft() {
     const auto path = selectedPath_; source_.reset(); editableSource_ = false;

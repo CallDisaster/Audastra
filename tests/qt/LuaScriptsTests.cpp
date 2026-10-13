@@ -7,6 +7,7 @@
 #include "Theme/ThemeManager.h"
 #include "Widgets/CodeView.h"
 #include "Widgets/CodeProblemsView.h"
+#include "Widgets/ProblemList.h"
 #include "Modules/ModuleHost.h"
 
 #include "War3MapCore/Hash.h"
@@ -28,6 +29,7 @@
 #include <QDir>
 #include <QFile>
 #include <QLabel>
+#include <QTreeView>
 #include <QPushButton>
 #include <QTabWidget>
 #include <QStandardItemModel>
@@ -130,7 +132,7 @@ private slots:
         QCOMPARE(editor->toPlainText(), fixture); QVERIFY(scripts.HasPendingDraft());
         QCOMPARE(project.AssetUndoStack()->count(), 0);
         auto* problems = scripts.findChild<UiKit::CodeProblemsView*>("luaCodeProblems"); QVERIFY(problems);
-        auto* issues = problems->findChild<QTreeWidget*>("codeIssues"); QVERIFY(issues);
+        auto* issues = problems->findChild<QTreeView*>("problemListView"); QVERIFY(issues);
         auto* gutter = editor->findChild<QWidget*>("codeGutter"); QVERIFY(gutter);
         QVERIFY(editor->GutterWidth() > 30); QVERIFY(gutter->isVisible());
         QVERIFY(problems->IssueCount() > 0); QVERIFY(problems->StatusText().contains(QStringLiteral("错误")));
@@ -139,24 +141,25 @@ private slots:
             return item.severity == UiKit::CodeSeverity::Error && item.source == editor->SourceName() && item.line == 4;
         });
         QVERIFY(error != checked.diagnostics.cend());
-        auto* row = static_cast<QTreeWidgetItem*>(nullptr);
-        for (int index = 0; index < issues->topLevelItemCount(); ++index) {
-            auto* item = issues->topLevelItem(index);
-            if (item->data(0, Qt::UserRole).toString() == error->source
-                && item->data(1, Qt::UserRole).toInt() == error->line
-                && item->data(2, Qt::UserRole).toInt() == error->column) { row = item; break; }
+        // 错误列表行：第 0 列带来源、行、列（UserRole+2/+3/+4）。
+        QModelIndex row;
+        for (int index = 0; index < issues->model()->rowCount(); ++index) {
+            const auto item = issues->model()->index(index, 0);
+            if (item.data(Qt::UserRole + 2).toString() == error->source
+                && item.data(Qt::UserRole + 3).toInt() == error->line
+                && item.data(Qt::UserRole + 4).toInt() == error->column) { row = item; break; }
         }
-        QVERIFY(row);
+        QVERIFY(row.isValid());
         const auto markers = editor->extraSelections();
         QVERIFY(std::any_of(markers.cbegin(), markers.cend(), [](const auto& marker) {
             return marker.cursor.blockNumber() == 3 && marker.cursor.hasSelection()
                 && marker.format.underlineStyle() == QTextCharFormat::WaveUnderline
                 && marker.format.underlineColor().red() > marker.format.underlineColor().green();
         }));
-        editor->GoToLine(1); issues->setCurrentItem(row); issues->scrollToItem(row);
+        editor->GoToLine(1); issues->setCurrentIndex(row); issues->scrollTo(row);
         QCoreApplication::processEvents();
-        QVERIFY(issues->isVisible()); QVERIFY(!issues->visualItemRect(row).isEmpty());
-        const auto rowPoint = issues->visualItemRect(row).center();
+        QVERIFY(issues->isVisible()); QVERIFY(!issues->visualRect(row).isEmpty());
+        const auto rowPoint = issues->visualRect(row).center();
         QTest::mouseClick(issues->viewport(), Qt::LeftButton, Qt::NoModifier, rowPoint);
         QSignalSpy navigated(problems, &UiKit::CodeProblemsView::LocationRequested);
         QTest::mouseDClick(issues->viewport(), Qt::LeftButton, Qt::NoModifier, rowPoint);
@@ -228,7 +231,8 @@ private slots:
         QCOMPARE(OwnedSourceText(*source.value), std::string("local value = 3\nreturn value\n"));
         assets.OpenFolder("Lua"); QVERIFY(assets.ListedRows().join('\n').contains("demo.lua"));
         QCOMPARE(assets.UndoStack(), project.AssetUndoStack()); QCOMPARE(assets.UndoStack()->count(), 1);
-        auto* hint = scripts.findChild<QLabel*>("luaEntryHint"); QVERIFY(hint); QVERIFY(hint->text().contains("exec-lua"));
+        // 入口写法在使用帮助里，面板不放说明文字。
+        QVERIFY(!scripts.findChild<QLabel*>("luaEntryHint"));
         // 语法正确的手写 Lua 按普通导入资源进入保存；语法错误时拒绝并指出文件与行。
         const auto output = std::filesystem::path(dir.filePath("runtime-lua-save.w3x").toStdWString());
         project.ClearDiagnostics(); QVERIFY(project.PrepareMapSave(output, false));
@@ -301,7 +305,7 @@ private slots:
         auto* note = scripts.findChild<QLabel*>("luaSourceNote"); QVERIFY(note);
         const auto empty = [&] {
             if (!scripts.SelectedPath().isEmpty() || !scripts.Editor()->isReadOnly() || !scripts.Editor()->toPlainText().isEmpty()
-                || note->text() != QStringLiteral("选择一个导入的 .lua 文件。")) return false;
+                || !note->text().isEmpty()) return false;
             for (const auto* name : {"luaRenameScript", "luaDeleteScript", "luaRevealAsset", "luaCheckSyntax"}) {
                 auto* button = scripts.findChild<QPushButton*>(name);
                 if (!button || button->isEnabled()) return false;
@@ -358,7 +362,8 @@ private slots:
         Modules::TriggerLuaScripts scripts(project); scripts.show(); QVERIFY(scripts.SelectScript("Scripts\\Unicode.lua"));
         QTRY_VERIFY_WITH_TIMEOUT(!scripts.Editor()->IsLoading() && !scripts.Editor()->IsChecking(), 5000);
         QVERIFY(scripts.Editor()->isReadOnly()); QVERIFY(!scripts.HasPendingDraft());
-        auto* note = scripts.findChild<QLabel*>("luaSourceNote"); QVERIFY(note && note->text().contains(QStringLiteral("特殊空白字符")));
+        auto* note = scripts.findChild<QLabel*>("luaSourceNote");
+        QVERIFY(note && note->text().endsWith(QStringLiteral("只读")) && note->toolTip().contains(QStringLiteral("特殊空白字符")));
         auto* apply = scripts.findChild<QPushButton*>("luaApplyDraft"); QVERIFY(apply && !apply->isEnabled());
         QVERIFY(!scripts.Editor()->CheckResult().syntaxChecked);
         const auto displayed = scripts.Editor()->toPlainText(); QTest::keyClicks(scripts.Editor(), "changed");

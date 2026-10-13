@@ -421,7 +421,7 @@ void MainWindow::CheckGameBuild() {
             AddDiagnostic(diagnostic.severity == DiagnosticSeverity::Error ? tr("错误") : tr("警告"), tr("构建"), ProjectText(diagnostic.code), ProjectText(diagnostic.message));
     }
     if (auto* dock = findChild<QDockWidget*>("diagnosticsDock")) dock->show();
-    statusBar()->showMessage(tr("构建未产出地图 · 查看具体缺项；可先保存工程"), 8000);
+    statusBar()->showMessage(tr("构建未产出地图"), 8000);
 }
 void MainWindow::ShowCapabilities() {
     QDialog dialog(this);

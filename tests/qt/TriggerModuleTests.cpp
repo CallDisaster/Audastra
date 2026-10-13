@@ -19,6 +19,7 @@
 #include "War3MapCore/Script/MapScript.h"
 #include "Widgets/CodeView.h"
 #include "Widgets/CodeProblemsView.h"
+#include "Widgets/ProblemList.h"
 #include "TriggerCodeChecking.h"
 #include "Icons/SvgIcons.h"
 #include "PopupCapture.h"
@@ -44,6 +45,7 @@
 #include <QJsonArray>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QTreeView>
 #include <QLineEdit>
 #include <QLayout>
 #include <QMessageBox>
@@ -914,7 +916,7 @@ void TriggerModuleTests::CodeUnicodeDisplayBaselinePreservesOriginalBytes() {
     auto* editor = qobject_cast<UiKit::CodeView*>(module.CodeEditor()); QVERIFY(editor);
     QTRY_VERIFY_WITH_TIMEOUT(!editor->IsLoading(), 5000);
     QVERIFY(editor->isReadOnly());
-    const auto readonlyNotice = QStringLiteral("正文包含无法无损编辑的特殊空白字符，当前只读，原字节已保留。");
+    const auto readonlyNotice = QStringLiteral("只读：含特殊空白字符");
     QCOMPARE(page->findChild<QLabel*>("triggerCodeDraftNote")->text(), readonlyNotice);
     const auto displayBaseline = editor->toPlainText();
     QVERIFY(displayBaseline.contains(QStringLiteral("NBSP:a b")));
@@ -939,7 +941,13 @@ void TriggerModuleTests::CodeUnicodeDisplayBaselinePreservesOriginalBytes() {
     QVERIFY(!editor->CheckResult().ownedProjectIndex);
     auto* problems = editor->parentWidget()->findChild<UiKit::CodeProblemsView*>(); QVERIFY(problems);
     QVERIFY(problems->StatusText().contains(QStringLiteral("未检查")));
-    QVERIFY(problems->StatusText().contains(QStringLiteral("特殊空白字符"))); QCOMPARE(problems->IssueCount(), 0);
+    {
+        // 编码说明作为“消息”条目列出。
+        const auto* rows = problems->List()->View()->model(); bool listed = false;
+        for (int row = 0; row < rows->rowCount(); ++row)
+            listed = listed || rows->index(row, 2).data().toString().contains(QStringLiteral("特殊空白字符"));
+        QVERIFY(listed); QCOMPARE(problems->IssueCount(), 0);
+    }
     editor->setPlainText(displayBaseline + QStringLiteral("\n// programmatic change"));
     QVERIFY(module.HasPendingCodeDraft()); QVERIFY(!module.HasLoadedContent());
     QVERIFY(!module.CommitPendingEdits());
@@ -1861,17 +1869,24 @@ void TriggerModuleTests::DirectoryEditsUndoAndReferences() {
     for (const auto* path : {"plugin/wave/include/fixture.j", "jass/system/ht/common.j", "jass/system/ht/blizzard.j"})
         WriteUtf8(legacy / path, "// fixture\n");
     project.activeUiDataRoot_ = legacy; project.compilerDataRoot_ = legacy;
-    module.RefreshAfterUndo();
-    auto* notice = page->findChild<QLabel*>("triggerScriptRebuildNotice"); QVERIFY(notice);
+    project.ClearDiagnostics(); module.RefreshAfterUndo();
+    // 不能保存的原因写入错误列表（警告），不在属性区放说明文字。
+    const auto rebuildWarning = [&project] {
+        const auto* model = project.diagnosticsModel_;
+        for (int row = 0; row < model->rowCount(); ++row)
+            if (model->index(row, 2).data().toString() == QStringLiteral("SCRIPT_REBUILD_UNAVAILABLE"))
+                return model->index(row, 3).data().toString();
+        return QString{};
+    };
     // 框架自身现在可进入冻结输入准备；入口就绪不等于此夹具能够完成保存。
-    QVERIFY(notice->text().isEmpty());
+    QVERIFY(rebuildWarning().isEmpty());
     const auto independentCompiler = std::filesystem::path(root.filePath("modern-compiler").toStdWString());
     for (const auto* path : {"compiler/include/fixture.j", "compiler/jass/24/common.j", "compiler/jass/24/blizzard.j"})
         WriteUtf8(independentCompiler / path, "// fixture\n");
     // 旧UI搭配独立现代编译器仍不支持；保留提示和正常编辑不被锁住的断言。
     project.compilerDataRoot_ = independentCompiler;
     module.RefreshAfterUndo();
-    QVERIFY(notice->text().contains(QStringLiteral("旧版图暂时无法保存")));
+    QVERIFY(rebuildWarning().contains(QStringLiteral("旧版图暂时无法保存")));
     QVERIFY(allow->isEnabled() && allow->toolTip().contains(QStringLiteral("旧版图暂时无法保存")));
     allow->setChecked(false);
     QCOMPARE(Named(project, "Spawn")->enabled, 0);

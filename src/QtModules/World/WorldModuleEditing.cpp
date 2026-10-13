@@ -451,7 +451,7 @@ void WorldModule::DeleteSelection() {
     if (!SelectionEditable()) return;
     if (selectedRegion_ || selectedCamera_) {
         // 区域与镜头常被触发器按名称引用；静态未检出引用不构成删除依据，这里不提供删除。
-        selectionStatus_->setText(tr("区域和镜头可能被触发器引用，请在“实例”模块中核对后再删除"));
+        selectionStatus_->setText(tr("区域和镜头请在“实例”中删除"));
         return;
     }
     if (selectedPlacements_.empty() || !project_.mapEdits_) return;

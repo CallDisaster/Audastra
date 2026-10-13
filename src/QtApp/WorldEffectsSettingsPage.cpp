@@ -27,14 +27,6 @@ WorldEffectsSettingsPage::WorldEffectsSettingsPage(QWidget* parent) : QWidget(pa
     const int index = quality_->findData(configured);
     quality_->setCurrentIndex(index >= 0 ? index : 1);
     form->addRow(tr("特效显示"), quality_);
-    auto* note = new QLabel(tr("平衡按完成帧和动画处理耗时自动调整特效数量；省电减少数量和刷新频率。完整取消数量软限，仍遵守资源和内存限制。"), group);
-    note->setTextFormat(Qt::PlainText);
-    note->setWordWrap(true);
-    form->addRow(note);
-    auto* temporary = new QLabel(tr("世界视图状态栏会提示因预算省略的特效；点击可临时显示全部，切换地图后恢复所选设置。"), group);
-    temporary->setTextFormat(Qt::PlainText);
-    temporary->setWordWrap(true);
-    form->addRow(temporary);
     layout->addWidget(group);
     layout->addStretch(1);
 }

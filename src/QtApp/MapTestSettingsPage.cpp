@@ -100,18 +100,15 @@ MapTestSettingsPage::MapTestSettingsPage(
     testForm->setSpacing(12);
     testForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
     testForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-    testForm->addRow(Note(tr("普通地图直接启动所选魔兽，无需额外测试程序。"), testGroup));
     runtimeRoot_ = new QLineEdit(stored.value(QStringLiteral("mapTest/runtimeRoot"), QString()).toString(), testGroup);
     runtimeRoot_->setObjectName(QStringLiteral("mapTestRuntimeRoot"));
     runtimeRoot_->setPlaceholderText(tr("留空使用已配置的本机 YDWE 目录"));
     testForm->addRow(tr("扩展运行时目录（可选）"), DirectoryRow(runtimeRoot_, QStringLiteral("mapTestRuntimeRootBrowse"),
         tr("选择扩展运行时目录"), installationRoot, testGroup));
-    testForm->addRow(Note(tr("JAPI 地图留空时只读使用本机 YDWE 的运行库，无需启动 YDWE；也可填写包含六个 DLL 的独立目录。GPLv3 运行库由用户本机安装提供，不随编辑器分发。"), testGroup));
     slkEnabled_ = new QCheckBox(tr("测试时启用 SLK 优化"), testGroup);
     slkEnabled_->setObjectName(QStringLiteral("mapTestSlkEnabled"));
     slkEnabled_->setChecked(QtCommon::ReadExplicitLocalConsent(stored, QStringLiteral("mapTest/slkEnabled")));
     testForm->addRow(slkEnabled_);
-    testForm->addRow(Note(tr("SLK 优化由编辑器自行完成，不需要额外工具；只作用于测试副本，源地图保持原样。"), testGroup));
     layout->addWidget(testGroup);
 
     auto* backupGroup = new QGroupBox(tr("地图备份"), this);
@@ -138,8 +135,7 @@ MapTestSettingsPage::MapTestSettingsPage(
     const auto limit = stored.value(QStringLiteral("mapSave/backupLimit"), 10).toInt(&limitValid);
     backupLimit_->setValue(limitValid && limit >= 0 && limit <= 1000 ? limit : 10);
     backupForm->addRow(tr("保留数量"), backupLimit_);
-    backupForm->addRow(Note(tr("保存地图前自动备份。不同源图分别保留指定数量；0 表示不限数量。"), backupGroup));
-    legacyBackupInspection_ = Note(tr("旧版备份位置尚未检查。"), backupGroup);
+    legacyBackupInspection_ = Note(QString(), backupGroup);
     legacyBackupInspection_->setObjectName(QStringLiteral("mapLegacyBackupInspection"));
     backupForm->addRow(legacyBackupInspection_);
     legacyBackupBrowse_ = new QPushButton(tr("检查旧版目录…"), backupGroup);
@@ -147,7 +143,6 @@ MapTestSettingsPage::MapTestSettingsPage(
     legacyBackupBrowse_->setAutoDefault(false);
     legacyBackupBrowse_->setEnabled(false);
     backupForm->addRow(legacyBackupBrowse_);
-    backupForm->addRow(Note(tr("选择旧版的 backups 目录进行只读核对；不会搬移或修改文件。"), backupGroup));
     connect(legacyBackupBrowse_, &QPushButton::clicked, this, [this, installationRoot] {
         const QPointer<MapTestSettingsPage> page(this);
         QPointer<QFileDialog> dialog(new QFileDialog(this, tr("检查旧版备份目录"), installationRoot));

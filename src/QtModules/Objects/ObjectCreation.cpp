@@ -280,7 +280,7 @@ bool ObjectModule::CommitStandardFieldValue(const QString& rawcode, const QStrin
     if (current && current != project_->objectDocuments_[index].get()) return false;
     CommitObjectCreation(index, std::move(*candidate), rawcode,
         tr("修改标准对象 %1 的 %2").arg(rawcode, U8(match.definition->displayName)));
-    ShowStatus(tr("已为 %1 创建地图字段覆盖 · 原版数据保持只读").arg(rawcode), 5000);
+    ShowStatus(tr("已为 %1 创建地图字段覆盖").arg(rawcode), 5000);
     return true;
 }
 
