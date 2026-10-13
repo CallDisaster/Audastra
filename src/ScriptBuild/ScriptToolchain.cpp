@@ -757,6 +757,8 @@ PipelineResult CompileMapScript(std::string_view generated, const ToolchainOptio
         const bool templateOk = evaluated.Succeeded();
         for (auto& diagnostic : evaluated.diagnostics) result.diagnostics.push_back(std::move(diagnostic));
         if (!templateOk) { templateStage.exitCode = 1; return result; }
+        if (!evaluated.imports.empty()) templateStage.log += "；import " + std::to_string(evaluated.imports.size()) + " 个文件";
+        result.templateImports = std::move(evaluated.imports);
     }
     const auto placeholderVerified = Detail::VerifyJapiPlaceholderResult(evaluated.text, placeholderRetained);
     result.diagnostics.insert(result.diagnostics.end(), placeholderVerified.diagnostics.begin(), placeholderVerified.diagnostics.end());

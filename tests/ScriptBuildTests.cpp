@@ -98,7 +98,7 @@ void TestYDTriggerStorage() {
     const auto code = StorageFor("abilcode", false);
     Require(code.load == "LoadInteger" && code.save == "SaveInteger" && code.have == "HaveSavedInteger", "rawcode storage natives");
     const auto unknown = StorageFor("eventid", false);
-    Require(!unknown.known && unknown.load == "YDTRIGGER_eventid(GET)" && unknown.save == "YDTRIGGER_SET_eventid", "unsupported type keeps macro names");
+    Require(!unknown.known && unknown.load == "YDTRIGGER_eventid(GET)" && unknown.save == "YDTRIGGER_eventid(SET)", "unsupported type keeps macro names");
     Require(StorageKey("注册单位") == "0x433971BC", "storage key is StringHash in hex");
     Require(StorageKey("a\\nb") == StorageKey("a\nb") && StorageKey("a\\nb") != StorageKey("a\\\\nb"), "storage key applies template escapes");
     Require(LocalPage(1) == "GetHandleId(GetTriggeringTrigger())*ydl_localvar_step" && LocalPage(5) == "ydl_triggerstep", "local pages");
@@ -188,6 +188,46 @@ void TestTemplates() {
     const auto unknownOrder = EvaluateTemplates("<?=abilityOrder(\"'B000'\", \"Order\")?>", context);
     Require(unknownOrder.Succeeded() && unknownOrder.text == "0" && HasCode(unknownOrder.diagnostics, "ABILITY_ORDER_UNKNOWN"),
         "unknown ability order falls back to 0 with a warning");
+}
+
+// 原创样例：YDWE 模板 import 的几种写法（文本、长字符串、拼接、地图目录下的文件）。
+void TestTemplateImports(const std::filesystem::path& root) {
+    const auto mapDir = root / "map";
+    WriteText(mapDir / "lua" / "main.lua", "print('hi')\r\n");
+    TemplateContext context;
+    context.importRoot = mapDir;
+    const std::string input =
+        "a<?import(\"main.lua\")  (\"lua\\\\main.lua\", true)?>b\n"
+        "<?\n    import 'inline.lua' [[\r\n        return 1\r\n    ]]\n?>"
+        "<?import(\"ui.toc\")([=[\nui.fdf\n]=] .. '\\r\\n')?>"
+        "<?import(\"ui.fdf\")[==[Frame \"X\" {}]]]==]?>"
+        "c";
+    const auto result = EvaluateTemplates(input, context);
+    Require(result.Succeeded() && result.skippedBlocks == 0, "import forms evaluate without skipping blocks");
+    Require(result.text == "ab\nc", "import blocks produce no script text:\n" + result.text);
+    const auto content = [&](std::string_view name) {
+        for (const auto& member : result.imports)
+            if (member.name == name) return std::string(reinterpret_cast<const char*>(member.data.data()), member.data.size());
+        return std::string("<missing>");
+    };
+    Require(result.imports.size() == 4 && content("main.lua") == "print('hi')\r\n", "path import copies the file next to the map");
+    Require(content("inline.lua") == "        return 1\n    ", "long string skips the first newline and normalizes line ends");
+    Require(content("ui.toc") == "ui.fdf\n\r\n", "concatenated content");
+    Require(content("ui.fdf") == "Frame \"X\" {}]]", "leveled long bracket");
+    Require(HasCode(result.diagnostics, "TEMPLATE_IMPORTED"), "imports are summarized");
+
+    const auto checkOnly = EvaluateTemplates(input, TemplateContext{});
+    Require(checkOnly.Succeeded() && checkOnly.imports.empty(), "without an import root only the syntax is checked");
+    for (const auto* bad : {"<?import(\"x.lua\")(\"../secret.lua\", true)?>", "<?import(\"x.lua\")(\"lua\\\\missing.lua\", true)?>",
+            "<?import(\"war3map.j\")[[x]]?>", "<?import(\"x.lua\")?>", "<?import(\"C:\\\\x.lua\")[[x]]?>"}) {
+        const auto failed = EvaluateTemplates(bad, context);
+        Require(!failed.Succeeded() && failed.skippedBlocks == 0 && HasCode(failed.diagnostics, "TEMPLATE_IMPORT_FAILED")
+            && failed.imports.empty(), std::string("invalid import is reported clearly: ") + bad);
+    }
+    const auto twice = EvaluateTemplates("<?import 'a.lua' [[1]]?><?import 'A.lua' [[2]]?>", context);
+    Require(twice.Succeeded() && twice.imports.size() == 1 && twice.imports[0].data.size() == 1
+        && twice.imports[0].data[0] == std::byte{'2'} && HasCode(twice.diagnostics, "TEMPLATE_IMPORT_DUPLICATE"),
+        "the last import of the same file wins");
 }
 
 void TestInject(const std::filesystem::path& root) {
@@ -1765,6 +1805,7 @@ int main() {
         TestStringHash();
         TestYDTriggerStorage();
         TestTemplates();
+        TestTemplateImports(root / "imports");
         TestInject(root / "inject");
         TestToolRoot(root / "tools");
         TestToolchainLayouts(root / "layouts");

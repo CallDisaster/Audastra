@@ -34,7 +34,18 @@ bool ClassicLuaMember(std::string_view name) {
         "AUDASTRA\\BOOTSTRAP.LUA", "AUDASTRA\\OBJECTS.LUA", "AUDASTRA\\CONTINUE.LUA", "AUDASTRA\\GENERATED.MANIFEST"};
     return std::find(names.begin(), names.end(), name) != names.end();
 }
+bool ReservedImportKey(std::string_view key) {
+    return ScriptName(key) || key == "WAR3MAP.LUA" || ClassicLuaMember(key)
+        || std::find(kNative.begin(), kNative.end(), key) != kNative.end()
+        || key == "(LISTFILE)" || key == "(ATTRIBUTES)" || key == "(SIGNATURE)";
+}
 } // namespace
+
+bool IsTemplateImportReserved(std::string_view name) {
+    if (name.empty() || name.size() > 1024) return true;
+    const auto canonical = Resources::CanonicalImportPath(name);
+    return !canonical.Succeeded() || !canonical.value || ReservedImportKey(*canonical.value);
+}
 
 Result<ScriptSaveBundle> PrepareScriptSaveBundle(const PipelineResult& pipeline, std::string_view scriptMember) {
     try {
@@ -262,6 +273,43 @@ static Status MergeSaveMembers(std::vector<MemberReplacement>& pending,
 Status MergeScriptSaveMembers(std::vector<MemberReplacement>& pending,
     const std::vector<std::string>& removals, std::vector<MemberReplacement>& generated) {
     return MergeSaveMembers(pending, removals, generated, false);
+}
+
+Status MergeTemplateImportMembers(std::vector<MemberReplacement>& pending,
+    const std::vector<std::string>& removals, std::vector<MemberReplacement>& imports) {
+    try {
+        if (&pending == &imports || pending.size() > 65536 || removals.size() > 65536 || imports.size() > 4096)
+            Reject("SCRIPT_IMPORT_LIMIT", "模板 import 合并输入无效或超过数量预算。");
+        std::map<std::string, std::size_t> existing;
+        for (std::size_t i = 0; i < pending.size(); ++i) existing.emplace(Key(pending[i].name), i);
+        std::set<std::string> deleted;
+        for (const auto& name : removals) deleted.insert(Key(name));
+        std::set<std::string> seen;
+        std::vector<std::size_t> slots;
+        std::size_t bytes = 0;
+        for (const auto& member : imports) {
+            const auto key = Key(member.name);
+            if (ReservedImportKey(key))
+                Reject("SCRIPT_IMPORT_RESERVED", "模板 import 不能覆盖地图脚本、物编或归档内部文件：" + member.name);
+            if (!seen.insert(key).second) Reject("SCRIPT_IMPORT_CONFLICT", "模板 import 结果含重复成员：" + member.name);
+            if (deleted.contains(key))
+                Reject("SCRIPT_IMPORT_CONFLICT", "模板 import 的文件 " + member.name + " 同时被标记删除；请先撤销删除或改模板。");
+            if (member.data.size() > kByteLimit - bytes) Reject("SCRIPT_IMPORT_LIMIT", "模板 import 的文件超过总字节预算。");
+            bytes += member.data.size();
+            const auto found = existing.find(key);
+            slots.push_back(found == existing.end() ? pending.size() : found->second);
+        }
+        const auto oldSize = pending.size();
+        pending.reserve(oldSize + imports.size());
+        for (std::size_t i = 0; i < imports.size(); ++i) {
+            if (slots[i] == oldSize) pending.push_back(std::move(imports[i]));
+            else pending[slots[i]] = std::move(imports[i]);
+        }
+        imports.clear();
+        return {};
+    } catch (const Rejection& failure) { Status result; result.diagnostics = failure.diagnostics; return result; }
+    catch (const std::exception&) { Status result; result.diagnostics.push_back({DiagnosticSeverity::Error,
+        "Script.SaveBundle", "SCRIPT_IMPORT_RESOURCE", "无法准备模板 import 合并，原待保存列表保持不变。", {}}); return result; }
 }
 
 Status MergeClassicLuaSaveMembers(std::vector<MemberReplacement>& pending,

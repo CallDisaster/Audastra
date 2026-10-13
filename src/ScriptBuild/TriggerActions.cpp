@@ -198,6 +198,51 @@ void TriggerEmitter::PutCallAction(const Eca& eca, const std::string& name) {
     out_.End();
 }
 
+// Dz“异步注册（多项）”：只在指定玩家本机注册 ByCode 回调（同步参数为 false），块内动作写成 <名><后缀>T。
+// 参数顺序取自函数库声明：鼠标 / 按键为 (null, 键, 状态, false, 回调)，Frame 为 (界面, 事件, 回调, false)。
+void TriggerEmitter::PutDzRegister(const Eca& eca, const std::string& name, Gui gui) {
+    const std::string callback = "function " + name + DzCallbackSuffix(gui) + "T";
+    LocvarCapture(name, detail::StorageKey(name), {});
+    out_.Begin();
+    out_.Put("if GetLocalPlayer() == ");
+    PutVar(eca, name, 0);
+    out_.Line(" then");
+    out_.Begin();
+    switch (gui) {
+    case Gui::DzTriggerRegisterMouseEventMultiple:
+    case Gui::DzTriggerRegisterKeyEventMultiple:
+        out_.Put(gui == Gui::DzTriggerRegisterMouseEventMultiple ? "call DzTriggerRegisterMouseEventByCode(null, "
+            : "call DzTriggerRegisterKeyEventByCode(null, ");
+        PutVar(eca, name, 2);
+        out_.Put(", ");
+        PutVar(eca, name, 1);
+        out_.Line(", false, " + callback + ")");
+        break;
+    case Gui::DzTriggerRegisterMouseWheelEventMultiple:
+        out_.Line("call DzTriggerRegisterMouseWheelEventByCode(null, false, " + callback + ")");
+        break;
+    case Gui::DzTriggerRegisterMouseMoveEventMultiple:
+        out_.Line("call DzTriggerRegisterMouseMoveEventByCode(null, false, " + callback + ")");
+        break;
+    case Gui::DzTriggerRegisterWindowResizeEventMultiple:
+        out_.Line("call DzTriggerRegisterWindowResizeEventByCode(null, false, " + callback + ")");
+        break;
+    case Gui::DzFrameSetUpdateCallbackMultiple:
+        out_.Line("call DzFrameSetUpdateCallbackByCode(" + callback + ")");
+        break;
+    default:
+        out_.Put("call DzFrameSetScriptByCode(");
+        PutVar(eca, name, 2);
+        out_.Put(", ");
+        PutVar(eca, name, 1);
+        out_.Line(", " + callback + ", false)");
+        break;
+    }
+    out_.End();
+    out_.Line("endif");
+    out_.End();
+}
+
 // 回调块：块内动作写成独立函数。遍历类在调用时立即执行，与“选取单位组做动作”的 A 函数一样共用外层局部变量；
 // 其余之后才由函数库调用，拥有自己的一帧局部变量（与“运行触发器”动作函数的规则相同）。
 void TriggerEmitter::PutCallbackFunction(const Eca& eca, const std::string& name) {
@@ -370,6 +415,15 @@ void TriggerEmitter::PutActionEx(const Eca& eca, const std::string& name) {
     case Gui::YDWETimerStartFlush:
     case Gui::YDWERegisterTriggerFlush:
         LocvarFlush(gui);
+        break;
+    case Gui::DzTriggerRegisterMouseEventMultiple:
+    case Gui::DzTriggerRegisterKeyEventMultiple:
+    case Gui::DzTriggerRegisterMouseWheelEventMultiple:
+    case Gui::DzTriggerRegisterMouseMoveEventMultiple:
+    case Gui::DzTriggerRegisterWindowResizeEventMultiple:
+    case Gui::DzFrameSetUpdateCallbackMultiple:
+    case Gui::DzFrameSetScriptMultiple:
+        PutDzRegister(eca, name, gui);
         break;
     case Gui::TriggerSleepAction:
     case Gui::PolledWait:

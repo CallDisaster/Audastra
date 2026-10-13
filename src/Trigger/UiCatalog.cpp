@@ -1084,7 +1084,12 @@ const UiDefinition* UiCatalog::Find(
     UiDefinitionKind kind,
     std::string_view name,
     std::string_view group) const {
-    const auto iterator = definitions_.find(DefinitionKey(kind, group, name));
+    auto iterator = definitions_.find(DefinitionKey(kind, group, name));
+    if (iterator == definitions_.end()) {
+        // 定义文件里“名 =值”的键带空格时，WE 存进触发器的名字也带着空格；目录键已去掉首尾空白。
+        if (const auto trimmed = War3Map::Text::TrimCWhitespaceCopy(name); trimmed.size() != name.size())
+            iterator = definitions_.find(DefinitionKey(kind, group, trimmed));
+    }
     return iterator == definitions_.end() ? nullptr : &iterator->second;
 }
 

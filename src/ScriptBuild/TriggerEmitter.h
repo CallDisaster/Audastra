@@ -12,6 +12,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -35,7 +36,13 @@ enum class Gui : std::uint16_t {
     YDWERegisterTriggerFlush, YDWEForLoopLocVarMultiple, YDWEForLoopLocVarIndex,
     YDWECustomScriptCode, YDWEEnumUnitsInRangeMultiple, YDWEActivateTrigger, GetEnumUnit,
     GetFilterUnit, TriggerSleepAction, PolledWait, YDWERegionMultiple, YDWEExecuteTriggerMultiple,
+    DzTriggerRegisterMouseEventMultiple, DzTriggerRegisterKeyEventMultiple, DzTriggerRegisterMouseWheelEventMultiple,
+    DzTriggerRegisterMouseMoveEventMultiple, DzTriggerRegisterWindowResizeEventMultiple, DzFrameSetUpdateCallbackMultiple,
+    DzFrameSetScriptMultiple,
 };
+
+// Dz“异步注册（多项）”：回调函数名后缀（<名><后缀>T），不是这类动作时为空。
+[[nodiscard]] const char* DzCallbackSuffix(Gui gui);
 
 // 参数槽的类别：影响参数是写成值，还是写成外部函数引用。
 enum class Slot : std::int8_t { Value = -1, EventCall = 0, BoolExpr = 1, Code = 2 };
@@ -87,6 +94,8 @@ private:
     [[nodiscard]] std::string DeclaredType(const Eca& eca, std::size_t index) const;
     [[nodiscard]] std::string ResolvedType(const Eca& eca, std::size_t index) const;
     [[nodiscard]] int TypeNameIndex(const Eca& eca, std::size_t index) const;
+    // typename 预设对应的类型名：内置序号查表；函数库扩展的序号（如 typename39_frame）取预设名中的类型名。
+    [[nodiscard]] std::string LocalTypeOf(const Eca& eca, std::size_t index) const;
     [[nodiscard]] Slot SlotOf(const Eca& eca, std::size_t index) const;
     // 函数库声明多一个末尾 code 参数的动作：块内动作写成独立函数作为该参数传入。
     [[nodiscard]] const Trigger::UiCallbackAction* CallbackOf(const Eca& eca) const;
@@ -97,6 +106,7 @@ private:
 
     // —— 外部函数与触发器结构（TriggerEmitter.cpp）——
     void PutExternFunc(const Eca& eca, const std::string& name);
+    void PutDzRegister(const Eca& eca, const std::string& name, Gui gui);
     void PutExternTopDown(const Eca& eca, const std::string& name);
     void PutExternItems(const Eca& eca, const std::string& name);
     void PutTriggerExterns(const Trigger::TriggerRecord& trigger, const std::string& name);
@@ -144,6 +154,8 @@ private:
         const LocvarState& state, const std::function<void()>& index, const std::function<void()>& value);
     void LocvarSetAction(const Eca& eca, const std::string& name, std::uint32_t id, bool array);
     void LocvarParams(const Eca& eca, const std::string& name, long block, const std::string& handle, Gui gui);
+    // 把闭包体读取、但未显式传入的局部变量从外层拷进闭包页。
+    void LocvarCapture(const std::string& name, const std::string& handle, const std::set<std::string>& explicitParams);
     [[nodiscard]] bool LocvarTriggerData(const std::string& functionName);
     void LocvarSleepAfter();
     void LocvarReturnBefore();

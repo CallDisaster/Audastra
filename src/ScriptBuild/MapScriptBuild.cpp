@@ -279,6 +279,9 @@ MapScriptBuildResult BuildMapScript(const MapScriptBuildRequest& request) {
         return result;
     }
     auto templates = BuildTemplateContext(options.toolRoot, request.standard, request.abilities);
+    // YDWE import(名)(路径, true) 相对地图文件所在目录读取。
+    if (request.archive && !request.archive->SourcePath().empty())
+        templates.importRoot = request.archive->SourcePath().parent_path();
     result.generated = GenerateMapScript(inputs);
     if (!request.compile || !result.generated.Succeeded()) return result;
 

@@ -84,15 +84,18 @@ Fixture MakeFixture(const std::filesystem::path& root) {
     WriteText(result.ui / "config", "probe\n");
     WriteText(result.ui / "probe/define.txt", "[TriggerTypes]\ninteger=0,1,1,Integer,integer\n"
         "typename=1,0,0,Type,string\nstring=0,1,1,String,string\nscriptcode=1,0,0,Code,string\nNull=0,0,0,Value\nAnyReturnType=0,0,0,Any\n"
-        "[TriggerParams]\ntypename01_integer=0,typename,1,Integer\n");
+        "frame=0,1,1,Frame,integer\nprobegroup=0,1,1,Group,handle\nplayer=0,1,1,Player,player\n"
+        "[TriggerParams]\ntypename01_integer=0,typename,1,Integer\ntypename39_frame=0,typename,39,Frame\ntypename91_probegroup=0,typename,91,Group\nProbeTop =0,integer,1,Top\nPlayer00=0,player,Player(0),Player 1\n");
     WriteText(result.ui / "probe/call.txt",
-        "[YDWEGetAnyTypeLocalVariable]\nreturns=AnyReturnType\n[[.args]]\ntype=scriptcode\n");
+        "[YDWEGetAnyTypeLocalVariable]\nreturns=AnyReturnType\n[[.args]]\ntype=typename\n[[.args]]\ntype=string\n");
     WriteText(result.ui / "probe/action.txt",
         "[ProbeModuleCreate]\ntitle=\"Probe - create module\"\n[[.args]]\ntype=integer\n[[.args]]\ntype=integer\n"
         "[ProbeEnum]\ntitle=\"Probe - 选取探针做动作 (多项)\"\n[[.args]]\ntype=integer\n"
         // 局部变量名在 YDWE 中是代码参数；公共 T 图批次不接受代码参数，合成库改用字符串，生成时同样取原值。
         "[YDWESetAnyTypeLocalVariable]\n[[.args]]\ntype=typename\n[[.args]]\ntype=string\n[[.args]]\ntype=Null\n"
         "[RecordInteger]\n[[.args]]\ntype=integer\n"
+        "[DzFrameSetScriptMultiple]\n[[.args]]\ntype=player\n[[.args]]\ntype=integer\n[[.args]]\ntype=integer\n"
+        "[DzTriggerRegisterKeyEventMultiple]\n[[.args]]\ntype=player\n[[.args]]\ntype=integer\n[[.args]]\ntype=integer\n"
         "[ProbePlain]\n[[.args]]\ntype=integer\n"
         "[ProbeCodeFirst]\n[[.args]]\ntype=integer\n"
         "[ProbeAmbiguous]\n[[.args]]\ntype=integer\n");
@@ -322,6 +325,68 @@ void Run(const std::filesystem::path& root) {
     std::size_t notes = 0;
     for (const auto& diagnostic : scoped.diagnostics) notes += diagnostic.code == "callback-local-scope" ? 1 : 0;
     Require(notes == 1, "only the deferred callback warns about separate locals: " + Details(scoped.diagnostics));
+
+    // 函数库扩展的局部变量类型（序号超出内置 38 种）：类型名取自预设，按 TriggerTypes 声明的基础类型存取。
+    auto framed = MakeDocument(*catalog.value, {Action("YDWESetAnyTypeLocalVariable",
+        {Scalar(0, "typename39_frame"), Scalar(3, "panel"), Scalar(3, "5")})});
+    MapScriptInputs frameInputs; frameInputs.catalog = &*catalog.value; frameInputs.triggers = &framed;
+    const auto frame = GenerateMapScript(frameInputs);
+    Require(frame.Succeeded() && !HasCode(frame.diagnostics, "local-type-missing")
+        && !HasCode(frame.diagnostics, "storage-type-unsupported"), "library local type is accepted: " + Details(frame.diagnostics));
+    Require(frame.text.find("SaveInteger(") != std::string::npos && frame.text.find(", 5)") != std::string::npos,
+        "frame locals are stored as their declared base type integer:\n" + frame.text);
+    // 基础类型为 handle 时没有统一的 Save 函数：按 YDHashSet 展开写 YDTRIGGER_<type>(SET)，由函数库头文件定义。
+    auto grouped = MakeDocument(*catalog.value, {Action("YDWESetAnyTypeLocalVariable",
+        {Scalar(0, "typename91_probegroup"), Scalar(3, "fx"), Scalar(3, "6")})});
+    MapScriptInputs groupInputs; groupInputs.catalog = &*catalog.value; groupInputs.triggers = &grouped;
+    const auto group = GenerateMapScript(groupInputs);
+    Require(group.Succeeded() && !HasCode(group.diagnostics, "local-type-missing")
+        && group.text.find("call YDTRIGGER_probegroup(SET)(") != std::string::npos
+        && group.text.find("YDTRIGGER_handle") == std::string::npos,
+        "library handle types keep their own header macro:\n" + group.text);
+    // 定义里键名带空格（“ProbeTop =…”）时，触发器存的预设名也带空格，仍按预设值输出。
+    auto spaced = MakeDocument(*catalog.value, {Action("RecordInteger", {Scalar(0, "ProbeTop ")})});
+    MapScriptInputs spacedInputs; spacedInputs.catalog = &*catalog.value; spacedInputs.triggers = &spaced;
+    const auto top = GenerateMapScript(spacedInputs);
+    Require(top.Succeeded() && top.text.find("call RecordInteger(1)") != std::string::npos,
+        "preset names with surrounding spaces resolve to their value:\n" + top.text);
+
+    // Dz 异步注册（多项）：只在指定玩家本机注册 ByCode 回调；回调读取的外层局部变量先拷进常量闭包页
+    // （回调基础名的 StringHash），回调内从该页读取。
+    GraphArgumentValue readBox;
+    {
+        auto call = std::make_shared<GraphEcaValue>();
+        call->function = "YDWEGetAnyTypeLocalVariable"; call->kind = UiDefinitionKind::Call;
+        call->arguments = {Scalar(0, "typename01_integer"), Scalar(3, "box")};
+        readBox.call = call;
+    }
+    auto async = MakeDocument(*catalog.value, {
+        Action("YDWESetAnyTypeLocalVariable", {Scalar(0, "typename01_integer"), Scalar(3, "box"), Scalar(3, "5")}),
+        Action("DzFrameSetScriptMultiple", {Scalar(0, "Player00"), Scalar(3, "1"), Scalar(3, "7")},
+            {Child(Action("RecordInteger", {readBox}))}),
+        Action("DzTriggerRegisterKeyEventMultiple", {Scalar(0, "Player00"), Scalar(3, "1"), Scalar(3, "27")},
+            {Child(Action("RecordInteger", {Scalar(3, "2")}))}),
+    });
+    MapScriptInputs asyncInputs; asyncInputs.catalog = &*catalog.value; asyncInputs.triggers = &async;
+    const auto dz = GenerateMapScript(asyncInputs);
+    Require(dz.Succeeded() && !HasCode(dz.diagnostics, "children-not-generated"), "Dz async generation: " + Details(dz.diagnostics));
+    const auto dzBody = [&](std::string_view function) {
+        const auto begin = dz.text.find("function " + std::string(function) + " takes");
+        Require(begin != std::string::npos, "missing " + std::string(function) + ":\n" + dz.text);
+        return dz.text.substr(begin, dz.text.find("endfunction", begin) - begin);
+    };
+    const auto frameCallback = dzBody("Trig_CallbackFunc002FT");
+    const auto keyCallback = dzBody("Trig_CallbackFunc003KT");
+    const auto dzMain = dzBody("Trig_CallbackActions");
+    Require(frameCallback.find("call RecordInteger(LoadInteger(YDLOC, 0x088C955D, 0x") != std::string::npos,
+        "the callback reads captured locals from its constant page: " + frameCallback);
+    Require(keyCallback.find("call RecordInteger(2)") != std::string::npos, "key callback body: " + keyCallback);
+    const auto copy = dzMain.find("call SaveInteger(YDLOC, 0x088C955D, 0x");
+    const auto frameRegister = dzMain.find("call DzFrameSetScriptByCode(7, 1, function Trig_CallbackFunc002FT, false)");
+    const auto keyRegister = dzMain.find("call DzTriggerRegisterKeyEventByCode(null, 27, 1, false, function Trig_CallbackFunc003KT)");
+    Require(copy != std::string::npos && frameRegister != std::string::npos && keyRegister != std::string::npos && copy < frameRegister
+        && Count(dzMain, "if GetLocalPlayer() == Player(0) then") == 2,
+        "registration copies captured locals first and registers only for the chosen local player: " + dzMain);
 }
 } // namespace
 

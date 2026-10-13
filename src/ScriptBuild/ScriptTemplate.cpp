@@ -1,5 +1,8 @@
 #include "War3MapCore/Script/ScriptPipeline.h"
+#include "War3MapCore/IO/FileBytes.h"
+#include "War3MapCore/Script/ScriptSaveBundle.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -12,7 +15,14 @@ namespace War3Map::Script {
 namespace {
 
 struct Nil {};
-using Value = std::variant<Nil, std::int64_t, double, std::string>;
+struct Boolean { bool value = false; };
+// import(名) 的结果：等待第二次调用给出文本或路径。
+struct ImportTarget { std::string member; };
+using Value = std::variant<Nil, std::int64_t, double, std::string, Boolean, ImportTarget>;
+
+constexpr std::size_t kImportFileBytes = 16u * 1024u * 1024u;
+constexpr std::size_t kImportTotalBytes = 64u * 1024u * 1024u;
+constexpr std::size_t kImportCount = 4096;
 
 std::string NumberText(double value) {
     char buffer[64];
@@ -82,14 +92,11 @@ public:
             return {Token::Number, std::string(code_.substr(start, at_ - start))};
         }
         if (c == '"' || c == '\'') return QuotedString(c);
-        if (c == '[' && at_ + 1 < code_.size() && code_[at_ + 1] == '[') {
-            const std::size_t close = code_.find("]]", at_ + 2);
-            if (close == std::string_view::npos) return Fail();
-            std::size_t start = at_ + 2;
-            if (start < code_.size() && code_[start] == '\n') ++start;
-            Lexeme lexeme{Token::String, std::string(code_.substr(start, close - start))};
-            at_ = close + 2;
-            return lexeme;
+        if (c == '[') {
+            std::string content;
+            const auto bracket = LongBracket(content);
+            if (bracket == Bracket::Unterminated) return Fail();
+            if (bracket == Bracket::Ok) return {Token::String, std::move(content)};
         }
         static constexpr std::string_view kSymbols[] = {"...", "..", "==", "~=", "<=", ">=", "//", "::"};
         for (const auto symbol : kSymbols) {
@@ -111,10 +118,11 @@ private:
             if (std::isspace(static_cast<unsigned char>(c))) {
                 ++at_;
             } else if (code_.substr(at_, 2) == "--") {
-                if (code_.substr(at_, 4) == "--[[") {
-                    const std::size_t close = code_.find("]]", at_ + 4);
-                    at_ = close == std::string_view::npos ? code_.size() : close + 2;
-                } else {
+                at_ += 2;
+                std::string ignored;
+                const auto bracket = LongBracket(ignored);
+                if (bracket == Bracket::Unterminated) { Fail(); return; }
+                if (bracket == Bracket::None) {
                     const std::size_t end = code_.find('\n', at_);
                     at_ = end == std::string_view::npos ? code_.size() : end + 1;
                 }
@@ -122,6 +130,34 @@ private:
                 break;
             }
         }
+    }
+
+    // Lua 长括号 [[...]]、[==[...]==]（字符串与注释共用）。与 Lua 相同：紧跟开括号的
+    // 第一个换行不计入内容，内容中的 \r\n / \n\r / \r 统一成 \n。
+    enum class Bracket { None, Ok, Unterminated };
+    Bracket LongBracket(std::string& content) {
+        if (at_ >= code_.size() || code_[at_] != '[') return Bracket::None;
+        std::size_t cursor = at_ + 1, level = 0;
+        while (cursor < code_.size() && code_[cursor] == '=') { ++cursor; ++level; }
+        if (cursor >= code_.size() || code_[cursor] != '[') return Bracket::None;
+        const std::string close = "]" + std::string(level, '=') + "]";
+        const std::size_t end = code_.find(close, cursor + 1);
+        if (end == std::string_view::npos) return Bracket::Unterminated;
+        std::size_t start = cursor + 1;
+        if (start < end && (code_[start] == '\r' || code_[start] == '\n')) {
+            const char first = code_[start++];
+            if (start < end && (code_[start] == '\r' || code_[start] == '\n') && code_[start] != first) ++start;
+        }
+        content.clear();
+        for (std::size_t index = start; index < end; ++index) {
+            const char ch = code_[index];
+            if (ch == '\r' || ch == '\n') {
+                if (index + 1 < end && (code_[index + 1] == '\r' || code_[index + 1] == '\n') && code_[index + 1] != ch) ++index;
+                content.push_back('\n');
+            } else content.push_back(ch);
+        }
+        at_ = end + close.size();
+        return Bracket::Ok;
     }
 
     Lexeme QuotedString(char quote) {
@@ -163,8 +199,9 @@ private:
 // 递归下降求值器：直接在解析时求值（无副作用函数，短路无需特殊处理）。
 class Evaluator {
 public:
-    Evaluator(const TemplateContext& context, std::unordered_map<std::string, Value>& variables, std::vector<Diagnostic>& diagnostics)
-        : context_(context), variables_(variables), diagnostics_(diagnostics) {}
+    Evaluator(const TemplateContext& context, std::unordered_map<std::string, Value>& variables, std::vector<Diagnostic>& diagnostics,
+        std::vector<MemberReplacement>& imports)
+        : context_(context), variables_(variables), diagnostics_(diagnostics), imports_(imports) {}
 
     std::optional<Value> Expression(std::string_view code, std::string& error) {
         Start(code);
@@ -176,12 +213,33 @@ public:
         return value;
     }
 
-    // 只接受 [local] NAME = expr 序列；其余语句返回 false，由调用者报错并拒绝构建。
+    // 只接受 [local] NAME = expr 与 import 调用语句；其余语句返回 false，由调用者报错并拒绝构建。
     bool Statements(std::string_view code, std::string& error) {
+        importFailed_ = false;
+        rejected_ = !StatementList(code, error);
+        return !rejected_;
+    }
+    [[nodiscard]] bool Rejected() const noexcept { return rejected_; }
+    // 上一次拒绝发生在已识别的 import 语句中（名称、路径或读取失败）。
+    [[nodiscard]] bool ImportFailed() const noexcept { return importFailed_; }
+
+private:
+    bool StatementList(std::string_view code, std::string& error) {
         Start(code);
         while (current_.kind != Token::End) {
             if (current_.kind == Token::Symbol && current_.text == ";") {
                 Advance();
+                continue;
+            }
+            if (current_.kind == Token::Name && current_.text == "import") {
+                const auto value = Concat();
+                if (error_.empty() && std::holds_alternative<ImportTarget>(value))
+                    Fail("import(名) 之后缺少要写入的文本或文件路径");
+                if (!error_.empty() || lexer_->Failed()) {
+                    error = error_.empty() ? "无法解析 import 语句" : error_;
+                    importFailed_ = true;
+                    return false;
+                }
                 continue;
             }
             if (current_.kind == Token::Name && current_.text == "local") Advance();
@@ -200,7 +258,6 @@ public:
         return true;
     }
 
-private:
     static bool IsKeyword(std::string_view name) {
         static constexpr std::string_view kKeywords[] = {"and", "break", "do", "else", "elseif", "end", "false", "for", "function",
             "goto", "if", "in", "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while"};
@@ -325,9 +382,15 @@ private:
             Advance();
             return inner;
         }
+        if (current_.kind == Token::Name && (current_.text == "true" || current_.text == "false" || current_.text == "nil")) {
+            const std::string literal = current_.text;
+            Advance();
+            return literal == "nil" ? Value(Nil{}) : Value(Boolean{literal == "true"});
+        }
         if (current_.kind != Token::Name || IsKeyword(current_.text)) return Fail("不支持的表达式：" + current_.text);
         std::string name = current_.text;
         Advance();
+        if (name == "import") return ImportChain();
         while (IsSymbol(".")) {
             Advance();
             if (current_.kind != Token::Name) return Fail("成员名无效");
@@ -349,6 +412,102 @@ private:
         }
         Advance();
         return Call(name, arguments);
+    }
+
+    // 调用参数：( 表达式列表 )，或 Lua 的单个字符串实参写法 f "x" / f [[x]]。
+    std::optional<std::vector<Value>> CallArguments() {
+        std::vector<Value> arguments;
+        if (current_.kind == Token::String) {
+            arguments.emplace_back(current_.text);
+            Advance();
+            return arguments;
+        }
+        if (!IsSymbol("(")) { Fail("缺少调用参数"); return std::nullopt; }
+        Advance();
+        while (!IsSymbol(")")) {
+            arguments.push_back(Concat());
+            if (!error_.empty()) return std::nullopt;
+            if (IsSymbol(",")) Advance();
+            else if (!IsSymbol(")")) { Fail("参数列表无效"); return std::nullopt; }
+        }
+        Advance();
+        return arguments;
+    }
+
+    // YDWE：import(名) 返回一个函数，再以 (文本) 或 (相对路径, true) 调用一次完成写入，返回空值。
+    Value ImportChain() {
+        const auto first = CallArguments();
+        if (!first) return Nil{};
+        const auto member = first->empty() ? std::nullopt : ToText(first->front());
+        if (!member) return Fail("import 需要文件名");
+        const auto name = ImportMemberName(*member);
+        if (!name) return Nil{};
+        if (!IsSymbol("(") && current_.kind != Token::String) return ImportTarget{*name};
+        const auto second = CallArguments();
+        if (!second) return Nil{};
+        return Import(*name, *second);
+    }
+
+    static std::string Lower(std::string text) {
+        std::transform(text.begin(), text.end(), text.begin(), [](char c) {
+            return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
+        });
+        return text;
+    }
+
+    std::optional<std::string> ImportMemberName(std::string name) {
+        std::replace(name.begin(), name.end(), '/', '\\');
+        if (name.empty() || name.size() > 240 || name.front() == '\\' || name.find(':') != std::string::npos
+            || name.find("..") != std::string::npos
+            || std::any_of(name.begin(), name.end(), [](char c) { return static_cast<unsigned char>(c) < 0x20; })) {
+            Fail("import 的文件名必须是地图内相对路径：" + name);
+            return std::nullopt;
+        }
+        if (IsTemplateImportReserved(name)) {
+            Fail("import 不能覆盖地图脚本、物编或归档内部文件：" + name);
+            return std::nullopt;
+        }
+        return name;
+    }
+
+    Value Import(const std::string& member, const std::vector<Value>& arguments) {
+        const auto content = arguments.empty() ? std::nullopt : ToText(arguments[0]);
+        if (!content) return Fail("import(" + member + ") 需要文本内容或文件路径");
+        const auto* flag = arguments.size() > 1 ? std::get_if<Boolean>(&arguments[1]) : nullptr;
+        const bool path = flag && flag->value;
+        // 只读检查场景：核对写法与名称，不读文件、不产生成员。
+        if (!context_.importRoot) return Nil{};
+        std::vector<std::byte> bytes;
+        if (path) {
+            auto relative = *content;
+            std::replace(relative.begin(), relative.end(), '\\', '/');
+            const std::filesystem::path file(std::u8string(relative.begin(), relative.end()));
+            if (relative.empty() || file.is_absolute() || file.has_root_name() || file.has_root_directory()
+                || std::any_of(file.begin(), file.end(), [](const auto& part) { return part == ".."; }))
+                return Fail("import(" + member + ") 的文件路径必须位于地图所在目录内：" + *content);
+            auto read = IO::ReadFileBytes(*context_.importRoot / file, kImportFileBytes);
+            if (!read.Succeeded() || !read.value)
+                return Fail("import(" + member + ") 无法读取地图所在目录下的 " + *content + "（不存在、不是普通文件或超过 16 MiB）");
+            bytes = std::move(*read.value);
+        } else {
+            const auto* first = reinterpret_cast<const std::byte*>(content->data());
+            bytes.assign(first, first + content->size());
+        }
+        // 同名后者覆盖前者，与 YDWE 依次覆盖复制一致。
+        const auto key = Lower(member);
+        const auto existing = std::find_if(imports_.begin(), imports_.end(), [&](const auto& item) { return Lower(item.name) == key; });
+        if (existing != imports_.end()) {
+            importBytes_ -= existing->data.size();
+            diagnostics_.push_back({DiagnosticSeverity::Warning, "Script.Template", "TEMPLATE_IMPORT_DUPLICATE",
+                "模板多次 import 同一文件 " + member + "，以最后一次为准", {}});
+        } else if (imports_.size() >= kImportCount) {
+            return Fail("模板 import 的文件超过 4096 个");
+        }
+        if (bytes.size() > kImportTotalBytes - importBytes_) return Fail("模板 import 的文件合计超过 64 MiB");
+        importBytes_ += bytes.size();
+        if (existing != imports_.end()) existing->data = std::move(bytes);
+        else imports_.push_back({member, std::move(bytes)});
+        return Nil{};
     }
 
     Value Call(const std::string& name, const std::vector<Value>& arguments) {
@@ -379,6 +538,8 @@ private:
             return *order;
         }
         if (name == "tostring") {
+            if (const auto* flag = arguments.empty() ? nullptr : std::get_if<Boolean>(&arguments[0]))
+                return std::string(flag->value ? "true" : "false");
             const auto value = text(0);
             return value ? Value(*value) : Value(std::string("nil"));
         }
@@ -412,6 +573,9 @@ private:
     const TemplateContext& context_;
     std::unordered_map<std::string, Value>& variables_;
     std::vector<Diagnostic>& diagnostics_;
+    std::vector<MemberReplacement>& imports_;
+    std::size_t importBytes_ = 0;
+    bool rejected_ = false, importFailed_ = false;
     std::optional<Lexer> lexer_;
     Lexeme current_;
     std::string error_;
@@ -438,7 +602,7 @@ TemplateResult EvaluateTemplates(std::string_view text, const TemplateContext& c
     TemplateResult result;
     result.text.reserve(text.size());
     std::unordered_map<std::string, Value> variables;
-    Evaluator evaluator(context, variables, result.diagnostics);
+    Evaluator evaluator(context, variables, result.diagnostics, result.imports);
     std::size_t at = 0;
     std::size_t errors = 0;
     // 行号按需增量计算，避免对大文件反复从头扫描。
@@ -480,7 +644,12 @@ TemplateResult EvaluateTemplates(std::string_view text, const TemplateContext& c
             } else {
                 result.text.append(*rendered);
             }
-        } else if (!evaluator.Statements(code, error)) {
+        } else if (!evaluator.Statements(code, error) && evaluator.ImportFailed()) {
+            // import 写法已识别但无法完成（名称、路径或读取失败）：明确报错，不交给整份模板执行。
+            result.diagnostics.push_back({DiagnosticSeverity::Error, "Script.Template", "TEMPLATE_IMPORT_FAILED",
+                "第 " + std::to_string(lineOf(open)) + " 行：" + error, {}});
+            result.text.append(text.substr(open, close + 2 - open));
+        } else if (evaluator.Rejected()) {
             ++result.skippedBlocks;
             const bool slk = code.find("slk") != std::string_view::npos;
             // 不依赖字符串分类决定是否安全：别名或拼接模块名同样可能隐藏物编写入。
@@ -493,6 +662,14 @@ TemplateResult EvaluateTemplates(std::string_view text, const TemplateContext& c
         }
         result.spans.push_back({open, close + 2, outputBegin, result.text.size()});
         at = close + 2;
+    }
+    if (!result.imports.empty()) {
+        std::string names;
+        for (std::size_t index = 0; index < result.imports.size() && index < 5; ++index)
+            names += (index ? "、" : "") + result.imports[index].name;
+        if (result.imports.size() > 5) names += " 等";
+        result.diagnostics.push_back({DiagnosticSeverity::Info, "Script.Template", "TEMPLATE_IMPORTED",
+            "模板 import 将写入 " + std::to_string(result.imports.size()) + " 个文件：" + names, {}});
     }
     return result;
 }

@@ -78,7 +78,8 @@ StorageNatives StorageFor(std::string_view type, bool nullSafeHandleSet) {
     const std::string name(type);
     const auto* entry = FindType(type);
     if (entry == nullptr) {
-        return {"YDTRIGGER_" + name + "(GET)", "YDTRIGGER_SET_" + name, "YDTRIGGER_HC_" + name + "(HAS)",
+        // 与 YDHashSet/YDHashGet 的展开一致：YDTRIGGER_<type>(SET|GET)，由函数库头文件按类型定义。
+        return {"YDTRIGGER_" + name + "(GET)", "YDTRIGGER_" + name + "(SET)", "YDTRIGGER_HC_" + name + "(HAS)",
             "YDTRIGGER_HC_" + name + "(CLEAR)", false};
     }
     const std::string value(entry->value);

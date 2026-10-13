@@ -204,19 +204,19 @@ void TriggerEmitter::PutCallValue(const std::string& slotType, const Eca& call, 
         LocvarGetArray(slotType, ArgValue(call, 0), locvar_, [&] { PutVar(call, child, 1); });
         return;
     case Gui::YDWELoadAnyTypeDataByUserData: {
-        const int key = TypeNameIndex(call, 0);
-        if (key <= 0 || key >= kLocalTypeEnd) return;
+        const auto keyType = LocalTypeOf(call, 0);
+        if (keyType.empty()) return;
         out_.Put(Storage(slotType).load + "(" + std::string(kUserDataTable) + ", ");
-        PutUserDataTable(LocalTypeName(key), call, name, 1);
+        PutUserDataTable(keyType, call, name, 1);
         out_.Put(", " + detail::StorageKey(ArgValue(call, 2)) + ")");
         return;
     }
     case Gui::YDWEHaveSavedAnyTypeDataByUserData: {
-        const int key = TypeNameIndex(call, 0);
-        const int value = TypeNameIndex(call, 2);
-        if (key <= 0 || key >= kLocalTypeEnd || value <= 0 || value >= kLocalTypeEnd) return;
-        out_.Put(Storage(LocalTypeName(value)).have + "(" + std::string(kUserDataTable) + ", ");
-        PutUserDataTable(LocalTypeName(key), call, name, 1);
+        const auto keyType = LocalTypeOf(call, 0);
+        const auto valueType = LocalTypeOf(call, 2);
+        if (keyType.empty() || valueType.empty()) return;
+        out_.Put(Storage(valueType).have + "(" + std::string(kUserDataTable) + ", ");
+        PutUserDataTable(keyType, call, name, 1);
         out_.Put(", " + detail::StorageKey(ArgValue(call, 3)) + ")");
         return;
     }

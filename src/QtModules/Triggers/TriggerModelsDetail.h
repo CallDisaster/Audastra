@@ -152,6 +152,8 @@ inline const std::vector<BranchSpec>* KnownBlock(std::string_view name, const Wa
     if (name == "YDWERegisterTriggerMultiple") return &registerTrigger;
     if (name == "YDWEExecuteTriggerMultiple") return &parameters;
     if (name == "YDWEEnumUnitsInRangeMultiple" || name == "YDWERegionMultiple") return &actions;
+    // Dz 异步注册（多项）：块内是回调动作，不是循环。
+    if ((name.starts_with("DzTriggerRegister") || name.starts_with("DzFrameSet")) && name.ends_with("Multiple")) return &actions;
     if (name.ends_with("Multiple")) return &loop;
     if (catalog != nullptr && catalog->CallbackActions().Find(name) != nullptr) return &callback;
     return nullptr;

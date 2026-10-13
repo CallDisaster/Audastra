@@ -53,7 +53,13 @@ const std::map<std::string, std::string, std::less<>>& TriggerDataTypes() {
 std::uint32_t Id(Gui gui) { return static_cast<std::uint32_t>(gui); }
 
 bool ClosureMother(std::uint32_t id) {
-    return id == Id(Gui::YDWETimerStartMultiple) || id == Id(Gui::YDWERegisterTriggerMultiple);
+    return id == Id(Gui::YDWETimerStartMultiple) || id == Id(Gui::YDWERegisterTriggerMultiple)
+        || (id <= 0xFFFFu && DzCallbackSuffix(static_cast<Gui>(id)) != nullptr);
+}
+
+// 闭包页：计时器 / 触发器闭包按句柄，Dz 异步回调为常量页。
+std::string ClosurePage(const std::string& handle) {
+    return handle.starts_with("0x") ? handle : HandlePage(handle);
 }
 
 std::string_view SaveLoadType(std::string_view type) {
@@ -136,6 +142,15 @@ void TriggerEmitter::LocalSearch(Children children, bool searchHash, long block)
         case Gui::YDWESetAnyTypeLocalArray:
             if (searchHash) localInMainProc_ = true;
             break;
+        case Gui::DzTriggerRegisterMouseEventMultiple:
+        case Gui::DzTriggerRegisterKeyEventMultiple:
+        case Gui::DzTriggerRegisterMouseWheelEventMultiple:
+        case Gui::DzTriggerRegisterMouseMoveEventMultiple:
+        case Gui::DzTriggerRegisterWindowResizeEventMultiple:
+        case Gui::DzFrameSetUpdateCallbackMultiple:
+        case Gui::DzFrameSetScriptMultiple:
+            // 回调之后异步执行，块内局部变量属于闭包页，不影响外层帧。
+            break;
         default:
             // 遍历类回调块共用外层局部变量：外层函数需要据块内用法建立局部变量帧。
             if (const auto* callback = CallbackOf(eca); callback != nullptr && callback->sharesLocals && searchHash)
@@ -187,8 +202,18 @@ void TriggerEmitter::CheckSaveLoad(const std::string& varName, const std::string
 StorageNatives TriggerEmitter::Storage(const std::string& type) {
     usesStorage_ = true;
     auto natives = StorageFor(type, nullSafeHandleSet_);
+    // 函数库自定义类型的 TriggerTypes 第 5 项给出 JASS 基础类型（如 frame=…,integer）；基础类型可直接存取时照此生成，
+    // 与 YDTrigger 头文件对这类类型的展开一致。其余（如 dzeffectgroup=…,handle）保留 YDTRIGGER_<type> 宏，由函数库头文件定义。
     if (!natives.known) {
-        Warn("storage-type-unsupported", "YDTrigger 局部变量 / 自定义值不支持“" + type + "”类型，生成的调用无法通过语法检查。");
+        const auto base = BaseType(type);
+        if (base != type) {
+            auto resolved = StorageFor(base, nullSafeHandleSet_);
+            if (resolved.known) natives = std::move(resolved);
+        }
+    }
+    if (!natives.known) {
+        Warn("storage-type-unsupported", "YDTrigger 局部变量 / 自定义值的“" + type + "”类型没有内置存取方式，生成 YDTRIGGER_" + type
+            + " 宏；函数库头文件未定义它时语法检查会报未声明。");
     }
     return natives;
 }
@@ -222,10 +247,10 @@ void TriggerEmitter::LocvarGet(const std::string& typeName, const std::string& v
     const StorageKey key{varName};
     if ((state.motherId & kParamsFlag) != 0 && state.prevHandle) {
         registerVar_[state.name][varName] = typeName;
-        PutStorageLoad(kLocalTable, typeName, HandlePage(*state.prevHandle), key);
+        PutStorageLoad(kLocalTable, typeName, ClosurePage(*state.prevHandle), key);
     } else if (ClosureMother(state.motherId)) {
         registerVar_[state.name][varName] = typeName;
-        PutStorageLoad(kLocalTable, typeName, HandlePage(state.handle.value_or("")), key);
+        PutStorageLoad(kLocalTable, typeName, ClosurePage(state.handle.value_or("")), key);
     } else {
         CheckSaveLoad(varName, typeName);
         PutStorageLoad(kLocalTable, typeName, LocalPage(localInMainProc_ ? 1 : 2), key);
@@ -240,7 +265,7 @@ void TriggerEmitter::LocvarSet(const std::string& typeName, std::uint32_t id, co
     if ((id & 0xFFFFu) == Id(Gui::YDWEExecuteTriggerMultiple)) {
         PutStorageSave(kLocalTable, typeName, LocalPage(5), key, value);
     } else if ((id & kParamsFlag) != 0 || ClosureMother(id)) {
-        PutStorageSave(kLocalTable, typeName, HandlePage(state.handle.value_or("")), key, value);
+        PutStorageSave(kLocalTable, typeName, ClosurePage(state.handle.value_or("")), key, value);
     } else {
         CheckSaveLoad(varName, typeName);
         PutStorageSave(kLocalTable, typeName, LocalPage(localInMainProc_ ? 1 : 2), key, value);
@@ -256,10 +281,10 @@ void TriggerEmitter::LocvarGetArray(const std::string& typeName, const std::stri
     const StorageKey key{varName, &index};
     if ((state.motherId & kParamsFlag) != 0 && state.prevHandle) {
         registerVar_[state.name][varName] = typeName;
-        PutStorageLoad(kLocalTable, typeName, HandlePage(*state.prevHandle), key);
+        PutStorageLoad(kLocalTable, typeName, ClosurePage(*state.prevHandle), key);
     } else if (ClosureMother(state.motherId)) {
         registerVar_[state.name][varName] = typeName;
-        PutStorageLoad(kLocalTable, typeName, HandlePage(state.handle.value_or("")), key);
+        PutStorageLoad(kLocalTable, typeName, ClosurePage(state.handle.value_or("")), key);
     } else {
         CheckSaveLoad(varName, typeName);
         PutStorageLoad(kLocalTable, typeName, LocalPage(localInMainProc_ ? 1 : 2), key);
@@ -274,7 +299,7 @@ void TriggerEmitter::LocvarSetArray(const std::string& typeName, std::uint32_t i
     if ((id & 0xFFFFu) == Id(Gui::YDWEExecuteTriggerMultiple)) {
         PutStorageSave(kLocalTable, typeName, LocalPage(5), key, value);
     } else if ((id & kParamsFlag) != 0 || ClosureMother(id)) {
-        PutStorageSave(kLocalTable, typeName, HandlePage(state.handle.value_or("")), key, value);
+        PutStorageSave(kLocalTable, typeName, ClosurePage(state.handle.value_or("")), key, value);
     } else {
         CheckSaveLoad(varName, typeName);
         PutStorageSave(kLocalTable, typeName, LocalPage(localInMainProc_ ? 1 : 2), key, value);
@@ -283,16 +308,16 @@ void TriggerEmitter::LocvarSetArray(const std::string& typeName, std::uint32_t i
 }
 
 void TriggerEmitter::LocvarSetAction(const Eca& eca, const std::string& name, std::uint32_t id, bool array) {
-    const int type = TypeNameIndex(eca, 0);
-    if (type <= 0 || type >= kLocalTypeEnd) {
+    const auto type = LocalTypeOf(eca, 0);
+    if (type.empty()) {
         Warn("local-type-missing", "局部变量动作缺少有效的类型参数。");
         return;
     }
     if (array) {
-        LocvarSetArray(LocalTypeName(type), id, ArgValue(eca, 1), locvar_,
+        LocvarSetArray(type, id, ArgValue(eca, 1), locvar_,
             [&] { PutVar(eca, name, 2); }, [&] { PutVar(eca, name, 3); });
     } else {
-        LocvarSet(LocalTypeName(type), id, ArgValue(eca, 1), locvar_, [&] { PutVar(eca, name, 2); });
+        LocvarSet(type, id, ArgValue(eca, 1), locvar_, [&] { PutVar(eca, name, 2); });
     }
 }
 
@@ -327,6 +352,10 @@ void TriggerEmitter::LocvarParams(const Eca& eca, const std::string& name, long 
         }
         locvar_ = saved;
     }
+    LocvarCapture(name, handle, explicitParams);
+}
+
+void TriggerEmitter::LocvarCapture(const std::string& name, const std::string& handle, const std::set<std::string>& explicitParams) {
     const auto captured = registerVar_[name];
     for (const auto& [varName, typeName] : captured) {
         if (explicitParams.contains(varName)) continue;
@@ -389,9 +418,8 @@ void TriggerEmitter::PutUserDataTable(const std::string& type, const Eca& eca, c
 }
 
 void TriggerEmitter::PutUserData(const Eca& eca, const std::string& name, Gui gui) {
-    const int key = TypeNameIndex(eca, 0);
-    if (key <= 0 || key >= kLocalTypeEnd) return;
-    const std::string keyType = LocalTypeName(key);
+    const std::string keyType = LocalTypeOf(eca, 0);
+    if (keyType.empty()) return;
     if (gui == Gui::YDWEFlushAllByUserData) {
         out_.Put("call FlushChildHashtable(" + std::string(kUserDataTable) + ", ");
         PutUserDataTable(keyType, eca, name, 1);
@@ -399,9 +427,8 @@ void TriggerEmitter::PutUserData(const Eca& eca, const std::string& name, Gui gu
         return;
     }
     const bool save = gui == Gui::YDWESaveAnyTypeDataByUserData;
-    const int value = TypeNameIndex(eca, save ? 3 : 2);
-    if (value <= 0 || value >= kLocalTypeEnd) return;
-    const std::string valueType = LocalTypeName(value);
+    const std::string valueType = LocalTypeOf(eca, save ? 3 : 2);
+    if (valueType.empty()) return;
     const auto natives = Storage(valueType);
     out_.Put("call " + (save ? natives.save : natives.remove) + "(" + std::string(kUserDataTable) + ", ");
     PutUserDataTable(keyType, eca, name, 1);

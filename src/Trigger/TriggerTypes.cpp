@@ -2,6 +2,7 @@
 #include "War3MapCore/Trigger/TriggerVariableReference.h"
 
 #include "War3MapCore/Game/WorldEditStrings.h"
+#include "War3MapCore/Text/TextUtil.h"
 #include "War3MapCore/Trigger/TriggerDataText.h"
 
 #include <algorithm>
@@ -297,7 +298,9 @@ TriggerTypeSystem::ValueKinds TriggerTypeSystem::AllowedValueKinds(std::string_v
 }
 
 std::optional<std::string> TriggerTypeSystem::PresetType(std::string_view preset) const {
-    const auto found = presetTypes_.find(std::string(preset));
+    auto found = presetTypes_.find(std::string(preset));
+    // 与 UiCatalog::Find 相同：WE 保存的预设名可能带着定义文件键里的空格。
+    if (found == presetTypes_.end()) found = presetTypes_.find(War3Map::Text::TrimCWhitespaceCopy(preset));
     return found == presetTypes_.end() ? std::nullopt : std::optional<std::string>(found->second);
 }
 

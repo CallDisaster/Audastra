@@ -66,7 +66,8 @@ struct ScriptInjectionSources;
 
 // ---- 模板求值 ----
 // Wave 输出中的 <?= 表达式 ?> 与 <? 语句 ?> 块。只支持受限子集：字面量、变量赋值、算术与连接、
-// StringHash / abilityOrder / math.modf|floor|ceil|abs|max|min / tostring / tonumber。
+// StringHash / abilityOrder / math.modf|floor|ceil|abs|max|min / tostring / tonumber，
+// 以及 YDWE 的 import(名)(文本) / import(名)(相对路径, true)（把文本或地图目录下的文件写入地图）。
 // 含其他语句的块（如 slk 物编生成）不执行并报错；未闭合模板或表达式无法求值也报错。
 // 被拒绝的语句块及未闭合模板保留在失败结果中供诊断，调用方必须先检查 Succeeded() 再使用输出。
 // 整份模板执行（YDWE Lua 模板）的结果：展开后的脚本与 SLK 刷新实际写出的七类物编。
@@ -82,6 +83,9 @@ struct TemplateContext {
     // 可选：内置求值遇到不支持的语句块（如 slk 物编生成）时，改由此回调整份执行模板。
     // 未提供时这类块报错并中止；回调失败同样中止，不回退到跳过语句块。
     std::function<Result<TemplateTransactionOutput>(std::string_view preprocessed)> wholeChunk;
+    // import 的路径形式相对此目录读取（YDWE 约定：地图文件所在目录），只读、不越出该目录。
+    // 为空时只核对 import 写法与名称，不读文件、不产生成员（代码检查等只读场景）。
+    std::optional<std::filesystem::path> importRoot;
 };
 
 // 一个模板块在输入与输出中的字节范围 [begin, end)。块外文本逐字节原样复制，调用方可据此把输出位置映射回输入。
@@ -96,6 +100,7 @@ struct TemplateResult {
     std::vector<TemplateSpan> spans; // 按出现顺序；未闭合的模板不登记（其后文本原样保留）
     std::size_t expressions = 0;
     std::size_t skippedBlocks = 0;
+    std::vector<MemberReplacement> imports; // 模板 import 要写入地图的文件，按名称去重（后者覆盖前者）
 
     [[nodiscard]] bool Succeeded() const noexcept;
 };
@@ -146,6 +151,8 @@ struct PipelineResult {
     // 模板阶段未来生成的七类完整 native 成员。只有完整流水线成功后才能交给
     // PrepareScriptSaveBundle 校验；空集合表示没有物编输出，不代表删除七类。
     std::vector<MemberReplacement> objectMembers;
+    // 模板 import 写入的普通地图成员；由保存合并为待写成员，不能覆盖脚本、物编或归档内部文件。
+    std::vector<MemberReplacement> templateImports;
     std::vector<PipelineStage> stages;
     std::vector<Diagnostic> diagnostics;
     bool syntaxChecked = false; // 语法检查已完成且通过

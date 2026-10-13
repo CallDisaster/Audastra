@@ -296,6 +296,11 @@ void RebuildScript(MapSaveTask& task, const MapSaveService::Progress& progress) 
         : Script::MergeScriptSaveMembers(task.replacements, task.removals, prepared.value->members);
     Append(task.diagnostics, merged.diagnostics);
     if (!merged.Succeeded()) return;
+    if (result.pipeline && !result.pipeline->templateImports.empty()) {
+        const auto imported = Script::MergeTemplateImportMembers(task.replacements, task.removals, result.pipeline->templateImports);
+        Append(task.diagnostics, imported.diagnostics);
+        if (!imported.Succeeded()) return;
+    }
     for (std::size_t index = 0; index < kMapSaveObjectTypeCount; ++index) {
         if (!prepared.value->nativeBaselines[index]) continue;
         task.nextBaselines[index] = std::move(prepared.value->nativeBaselines[index]);

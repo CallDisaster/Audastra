@@ -21,6 +21,14 @@ struct ScriptSaveBundle {
 [[nodiscard]] Result<ScriptSaveBundle> PrepareScriptSaveBundle(
     const PipelineResult& pipeline, std::string_view scriptMember);
 
+// 模板 import 不能写入的成员：地图脚本、物编、编辑器生成的 Lua 与归档内部文件。路径写法不限，无效路径视为不可写。
+[[nodiscard]] bool IsTemplateImportReserved(std::string_view name);
+
+// 把模板 import 的文件合入待保存成员：同名待写成员被覆盖（与 YDWE 每次保存重新导入一致），
+// 与删除冲突、覆盖脚本/物编/归档内部文件或超出数量与字节预算时拒绝且不改动输入。
+[[nodiscard]] Status MergeTemplateImportMembers(std::vector<MemberReplacement>& pending,
+    const std::vector<std::string>& removals, std::vector<MemberReplacement>& imports);
+
 // 完整Lua由独立类型检查结果进入同一个成员合并/归档事务；不生成或替换物编。
 [[nodiscard]] Result<ScriptSaveBundle> PrepareScriptSaveBundle(
     const LuaMapPipelineResult& pipeline, std::string_view scriptMember);

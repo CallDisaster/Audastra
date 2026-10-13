@@ -4,6 +4,7 @@
 
 #include "War3MapCore/Script/MapScript.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <stdexcept>
 #include <string_view>
@@ -48,6 +49,13 @@ const std::unordered_map<std::string_view, Gui>& GuiTable() {
         {"GetFilterUnit", Gui::GetFilterUnit}, {"TriggerSleepAction", Gui::TriggerSleepAction},
         {"PolledWait", Gui::PolledWait}, {"YDWERegionMultiple", Gui::YDWERegionMultiple},
         {"YDWEExecuteTriggerMultiple", Gui::YDWEExecuteTriggerMultiple},
+        {"DzTriggerRegisterMouseEventMultiple", Gui::DzTriggerRegisterMouseEventMultiple},
+        {"DzTriggerRegisterKeyEventMultiple", Gui::DzTriggerRegisterKeyEventMultiple},
+        {"DzTriggerRegisterMouseWheelEventMultiple", Gui::DzTriggerRegisterMouseWheelEventMultiple},
+        {"DzTriggerRegisterMouseMoveEventMultiple", Gui::DzTriggerRegisterMouseMoveEventMultiple},
+        {"DzTriggerRegisterWindowResizeEventMultiple", Gui::DzTriggerRegisterWindowResizeEventMultiple},
+        {"DzFrameSetUpdateCallbackMultiple", Gui::DzFrameSetUpdateCallbackMultiple},
+        {"DzFrameSetScriptMultiple", Gui::DzFrameSetScriptMultiple},
     };
     return table;
 }
@@ -149,6 +157,19 @@ int TriggerEmitter::TypeNameIndex(const Eca& eca, std::size_t index) const {
     return (value[8] - '0') * 10 + (value[9] - '0');
 }
 
+std::string TriggerEmitter::LocalTypeOf(const Eca& eca, std::size_t index) const {
+    const int number = TypeNameIndex(eca, index);
+    if (number <= 0) return {};
+    if (number < kLocalTypeEnd) return LocalTypeName(number);
+    const std::string value = ArgValue(eca, index);
+    const auto underscore = value.find('_');
+    if (underscore != 10 || underscore + 1 >= value.size()) return {};
+    const auto name = value.substr(underscore + 1);
+    return std::all_of(name.begin(), name.end(), [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+    }) ? name : std::string{};
+}
+
 Slot TriggerEmitter::SlotOf(const Eca& eca, std::size_t index) const {
     const std::string type = DeclaredType(eca, index);
     if (type == "boolexpr" || type == "boolcall") return Slot::BoolExpr;
@@ -166,6 +187,19 @@ std::string TriggerEmitter::Numbered(const std::string& name, std::size_t index)
     char buffer[16];
     std::snprintf(buffer, sizeof(buffer), "%03zu", index + 1);
     return name + buffer;
+}
+
+const char* DzCallbackSuffix(Gui gui) {
+    switch (gui) {
+    case Gui::DzTriggerRegisterMouseEventMultiple: return "M";
+    case Gui::DzTriggerRegisterKeyEventMultiple: return "K";
+    case Gui::DzTriggerRegisterMouseWheelEventMultiple: return "W";
+    case Gui::DzTriggerRegisterMouseMoveEventMultiple: return "MM";
+    case Gui::DzTriggerRegisterWindowResizeEventMultiple: return "WR";
+    case Gui::DzFrameSetUpdateCallbackMultiple: return "C";
+    case Gui::DzFrameSetScriptMultiple: return "F";
+    default: return nullptr;
+    }
 }
 
 std::string TriggerEmitter::FuncName(const std::string& name, std::size_t index) {
@@ -232,7 +266,7 @@ void TriggerEmitter::PutExternTopDown(const Eca& eca, const std::string& name) {
         }
     }
     PutExternItems(eca, name);
-    if (CallbackOf(eca) != nullptr) PutCallbackFunction(eca, name);
+    if (DzCallbackSuffix(parent) == nullptr && CallbackOf(eca) != nullptr) PutCallbackFunction(eca, name);
     switch (parent) {
     case Gui::ForGroupMultiple:
     case Gui::ForForceMultiple:
@@ -260,7 +294,8 @@ void TriggerEmitter::PutExternItems(const Eca& eca, const std::string& name) {
 
 void TriggerEmitter::PutExternFunc(const Eca& eca, const std::string& name) {
     const Gui gui = GuiOf(eca);
-    if (gui != Gui::YDWETimerStartMultiple && gui != Gui::YDWERegisterTriggerMultiple) {
+    const char* dz = DzCallbackSuffix(gui);
+    if (gui != Gui::YDWETimerStartMultiple && gui != Gui::YDWERegisterTriggerMultiple && dz == nullptr) {
         PutExternTopDown(eca, name);
         return;
     }
@@ -269,9 +304,15 @@ void TriggerEmitter::PutExternFunc(const Eca& eca, const std::string& name) {
     locvar_.prevHandle = locvar_.handle;
     locvar_.motherId = static_cast<std::uint32_t>(gui);
     locvar_.name = name;
-    locvar_.handle = gui == Gui::YDWETimerStartMultiple ? "GetExpiredTimer()" : "GetTriggeringTrigger()";
+    // Dz 异步回调没有句柄：闭包页是回调基础名的 StringHash 常量（与 YDTrigger 一致）。
+    locvar_.handle = dz != nullptr ? detail::StorageKey(name)
+        : gui == Gui::YDWETimerStartMultiple ? "GetExpiredTimer()" : "GetTriggeringTrigger()";
     PutExternTopDown(eca, name);
-    if (gui == Gui::YDWETimerStartMultiple) {
+    if (dz != nullptr) {
+        out_.Line("function " + name + dz + "T takes nothing returns nothing");
+        LocalBegin(eca.children, true, false);
+        PutBlockAction(eca, name, -1);
+    } else if (gui == Gui::YDWETimerStartMultiple) {
         out_.Line("function " + name + "T takes nothing returns nothing");
         LocalBegin(eca.children, true, false);
         PutBlockAction(eca, name, 1);
