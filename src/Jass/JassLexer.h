@@ -50,6 +50,8 @@ struct Token {
 struct LexOptions {
     bool blockComments = false; // vJass 的 /* */（纯 JASS 不支持）
     bool directiveComments = false; // 改名阶段保留 //! 指令，避免把未展开模板当普通注释漏过。
+    // vJass/Zinc 的 : { } ; % ! & | && || += -= *= /= ++ -- ->：只做改名的阶段须原样跨过，语法交给后续编译器判定。
+    bool vjassOperators = false;
 };
 
 // 对整段文本分词；结尾总有一个 End 记号。字符串可以跨行（WE 与 jasshelper 都会写出）。

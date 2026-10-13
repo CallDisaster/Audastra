@@ -242,11 +242,11 @@ target_link_libraries(war3-map-script-save-bundle-tests PRIVATE War3MapEditor::S
 target_compile_definitions(war3-map-script-save-bundle-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-script-save-bundle-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME script-save-bundle COMMAND war3-map-script-save-bundle-tests)
-add_executable(war3-map-lua-template-tests LuaTemplateTransactionTests.cpp)
+add_executable(war3-map-lua-template-tests LuaTemplateSandboxTests.cpp)
 target_link_libraries(war3-map-lua-template-tests PRIVATE War3MapEditor::ScriptBuild)
 target_compile_definitions(war3-map-lua-template-tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-lua-template-tests PRIVATE /W4 /permissive- /utf-8)
-# 需要本机 YDWE（环境变量 FORGE_YDWE_ROOT）；未设置时跳过。
+# 进程内模板沙盒；slk 部分只读 FORGE_YDWE_ROOT 下的 w3x2lni 数据，未设置时只跳过该部分。
 add_test(NAME script-lua-template COMMAND war3-map-lua-template-tests)
 set_tests_properties(script-lua-template PROPERTIES SKIP_RETURN_CODE 77)
 

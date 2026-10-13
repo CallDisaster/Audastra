@@ -168,6 +168,8 @@ struct MapSettings {
     [[nodiscard]] std::optional<std::int32_t> SourceFormatVersion() const noexcept;
     // 仅格式资格，不证明初始化引用、脚本或完整地图可用。
     [[nodiscard]] bool HasClassicLayout() const noexcept;
+    // 混乱之治 v18：没有 TFT 之后的扩展字段，读到的就是全部内容。
+    [[nodiscard]] bool HasRocLayout() const noexcept;
 
 private:
     std::vector<std::byte> originalBytes_;

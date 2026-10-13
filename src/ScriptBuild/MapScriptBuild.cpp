@@ -4,7 +4,7 @@
 #include "War3MapCore/MapData/MapAuxiliary.h"
 #include "War3MapCore/MapData/MapPlacements.h"
 #include "War3MapCore/MapData/MapSettings.h"
-#include "War3MapCore/Script/LuaTemplateTransaction.h"
+#include "War3MapCore/Script/LuaTemplateSandbox.h"
 #include "War3MapCore/Script/ScriptQueries.h"
 #include "War3MapCore/Script/ScriptFrameworkInputs.h"
 #include "War3MapCore/Script/ClassicLuaEntryPipeline.h"
@@ -191,7 +191,8 @@ MapScriptBuildResult BuildMapScript(const MapScriptBuildRequest& request) {
             "最终W3I的版本和语言必须与明确选择的Lua档案一致；不会自动升级地图格式。", {}});
         return result;
     }
-    if (!luaMode && settings->formatVersion != 25) {
+    // 经典 JASS：TFT v25 与混乱之治 v18（两个 RoC 专有字段由游戏直接读地图设置，不进入脚本）。
+    if (!luaMode && settings->formatVersion != 25 && settings->formatVersion != 18) {
         diagnostics.push_back({DiagnosticSeverity::Error, "Script.Build", "MAP_SCRIPT_FORMAT_UNSUPPORTED",
             "W3I v31 已能独立读取和往返，但整图脚本与新版成员尚未验证；保存继续拒绝。", {}});
         return result;
@@ -293,20 +294,28 @@ MapScriptBuildResult BuildMapScript(const MapScriptBuildRequest& request) {
             if (std::filesystem::is_directory(directory, error)) options.jassDirs.push_back(directory);
         }
     }
-    if (!options.toolRoot.empty() && !options.frameworkInputs) {
-        // 语句块模板（slk 物编生成等）用 YDWE 真实模板执行；SLK 会话读取本次保存的最终成员。
-        templates.wholeChunk = [&](std::string_view preprocessed) -> Result<TemplateTransactionOutput> {
-            auto toolchain = ResolveLuaTemplateToolchain(options.toolRoot);
-            if (!toolchain.Succeeded()) return {std::nullopt, std::move(toolchain.diagnostics)};
-            auto snapshot = SlkMapSourceSnapshot::Capture(archive, edits, removals, request.documentRevision);
-            if (!snapshot.Succeeded()) return {std::nullopt, std::move(snapshot.diagnostics)};
-            // 快照的“尚未物化来源”警告只针对内置 SLK 物化器；真实 frontend 会自行读取这些成员。
-            // 同一输入同时供 frontend 和保存后的 native 三方祖先核验使用。
-            // 成功/失败均保留真实执行的快照，不在模板执行后重新查源文件。
-            result.slkSources = std::move(*snapshot.value);
-            return RunLuaTemplateTransaction(preprocessed, *result.slkSources, *toolchain.value, options.workDir);
+    // 内置求值覆盖不了的模板（slk 物编生成、控制语句等）由进程内 Lua 沙盒整份执行一次，
+    // slk 库首次 require 时才捕获本次保存的最终成员，同一快照供保存时的三方合并使用。
+    templates.wholeChunk = [&](std::string_view preprocessed) -> Result<TemplateTransactionOutput> {
+        LuaTemplateRequest lua;
+        lua.preprocessed = preprocessed;
+        lua.abilityOrder = templates.abilityOrder;
+        lua.importRoot = templates.importRoot;
+        lua.slk = [&]() -> Result<LuaTemplateSlkSources> {
+            const auto root = options.toolRoot.empty() ? std::nullopt : FindTemplateW3x2lniRoot(options.toolRoot);
+            if (!root)
+                return Result<LuaTemplateSlkSources>::Failure("Script.LuaTemplate", "TEMPLATE_SLK_DATA_MISSING",
+                    "工具目录里找不到 w3x2lni 物编数据（plugin/w3x2lni），模板 slk 库不能使用。");
+            if (!result.slkSources) {
+                auto snapshot = SlkMapSourceSnapshot::Capture(archive, edits, removals, request.documentRevision);
+                if (!snapshot.Succeeded() || !snapshot.value) return {std::nullopt, std::move(snapshot.diagnostics)};
+                result.slkSources = std::move(*snapshot.value);
+            }
+            return Result<LuaTemplateSlkSources>::Success({*root, &*result.slkSources});
         };
-    }
+        if (options.onStage) options.onStage("lua-template");
+        return RunLuaTemplate(lua);
+    };
     result.pipeline = CompileMapScript(result.generated.text, options, templates);
     if (std::any_of(result.pipeline->diagnostics.begin(), result.pipeline->diagnostics.end(), [](const Diagnostic& diagnostic) {
             return diagnostic.code == "TEMPLATE_SLK_SKIPPED";

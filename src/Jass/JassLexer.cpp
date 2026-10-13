@@ -281,11 +281,19 @@ private:
             at_ += 2;
             return true;
         }
+        if (options_.vjassOperators && ((c == '&' && n == '&') || (c == '|' && n == '|')
+            || ((c == '+' || c == '-' || c == '*' || c == '/') && n == '=') || (c == '+' && n == '+')
+            || (c == '-' && (n == '-' || n == '>')))) {
+            at_ += 2;
+            return true;
+        }
         at_ += std::max<std::size_t>(source_.Width(at_), 1);
         switch (c) {
         case '(': case ')': case '[': case ']': case ',': case '=': case '<': case '>':
         case '+': case '-': case '*': case '/': case '.':
             return true;
+        case ':': case '{': case '}': case ';': case '%': case '!': case '&': case '|':
+            return options_.vjassOperators;
         default:
             return false;
         }

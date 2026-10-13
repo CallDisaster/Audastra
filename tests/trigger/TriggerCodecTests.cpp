@@ -494,6 +494,43 @@ void TestTriggerCodec(const UiCatalog& catalog) {
     auto emptyOutput = codec.Serialize(*emptyDoc.value, catalog);
     Expect(emptyOutput.Succeeded() && emptyOutput.value->wct == emptyBytes, "empty WCT representation changed");
 
+    // 早期版本 0：没有头注释与自定义代码段。原样往返；加了头代码后只能写成版本 1。
+    BinaryWriter legacyWriter;
+    legacyWriter.I32(0); legacyWriter.I32(2);
+    legacyWriter.SizedText("slot-normal"); legacyWriter.SizedText("slot-legacy");
+    const auto legacyBytes = legacyWriter.Take();
+    auto legacy = codec.Parse(wtg, legacyBytes, catalog);
+    Expect(legacy.Succeeded() && legacy.value->wct.version == War3Map::Trigger::kWctLegacyVersion, "version 0 WCT did not parse");
+    auto legacyOutput = codec.Serialize(*legacy.value, catalog);
+    Expect(legacyOutput.Succeeded() && legacyOutput.value->wct == legacyBytes, "version 0 WCT round-trip changed");
+    legacy.value->wct.customCode.text = "// header";
+    auto upgraded = codec.Serialize(*legacy.value, catalog);
+    Expect(upgraded.Succeeded(), "version 0 WCT with header code did not serialize");
+    auto upgradedDoc = codec.Parse(upgraded.value->wtg, upgraded.value->wct, catalog);
+    Expect(upgradedDoc.Succeeded() && upgradedDoc.value->wct.version == War3Map::Trigger::kWctVersion
+        && upgradedDoc.value->wct.customCode.text == "// header"
+        && upgradedDoc.value->triggers[0].customText.text == "slot-normal",
+        "header code upgrades the WCT to version 1 without losing trigger text");
+
+    // 混乱之治格式（WTG 4）：分类无注释标记、变量无数组大小、触发器无类型、ECA 无子节点计数；
+    // 游戏版本字段为 1。原样往返，不升级成冰封王座格式。
+    BinaryWriter rocWriter;
+    rocWriter.Ascii("WTG!");
+    rocWriter.I32(4);
+    rocWriter.I32(1); rocWriter.I32(0); rocWriter.CString("Category");
+    rocWriter.I32(1); rocWriter.I32(0);
+    rocWriter.I32(1);
+    rocWriter.CString("RoC"); rocWriter.CString("");
+    rocWriter.I32(1); rocWriter.I32(0); rocWriter.I32(0); rocWriter.I32(0); rocWriter.I32(0);
+    rocWriter.I32(1); rocWriter.I32(2); rocWriter.CString("DoNothing"); rocWriter.I32(1);
+    const auto rocWtg = rocWriter.Take();
+    const auto rocWct = MakeSingleSlotWct();
+    auto roc = codec.Parse(rocWtg, rocWct, catalog);
+    Expect(roc.Succeeded() && roc.value->wtgVersion == 4 && roc.value->variablesHeader == 1, "RoC WTG did not parse");
+    auto rocOutput = codec.Serialize(*roc.value, catalog);
+    Expect(rocOutput.Succeeded() && rocOutput.value->wtg == rocWtg && rocOutput.value->wct == rocWct,
+        "RoC WTG round-trip changed");
+
     std::swap(document.triggers[0], document.triggers[1]);
     auto moved = codec.Serialize(document, catalog);
     Expect(moved.Succeeded(), "moving a whole trigger failed");

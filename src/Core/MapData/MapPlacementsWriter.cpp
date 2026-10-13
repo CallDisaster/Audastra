@@ -82,8 +82,8 @@ std::size_t AppendedPlacementCount(std::size_t originalCount, std::size_t append
 template <typename Sink>
 void Header(Sink& writer, std::int32_t version, std::int32_t subversion,
     std::size_t count, const PlacementReadLimits& limits) {
-    if (version != 8 || subversion != 11)
-        throw Detail::WriteFailure{"PLACEMENT_VERSION_UNSUPPORTED", "仅支持经典 TFT v8/subversion 11 写出"};
+    if (!IsClassicPlacementVersion(version, subversion))
+        throw Detail::WriteFailure{"PLACEMENT_VERSION_UNSUPPORTED", "仅支持经典 TFT v8/subversion 11 与混乱之治 v7/subversion 9 写出"};
     writer.Raw("W3do", 4);
     writer.I32(version);
     writer.I32(subversion);
@@ -142,9 +142,12 @@ void Random(Sink& writer, const RandomUnitConfig& random,
     }, random);
 }
 
+// 混乱之治格式（v7）写不下掉落物品表编号与英雄三围：非默认值明确拒绝，不悄悄丢弃。
+bool Roc(std::int32_t version) { return version == 7; }
+
 template <typename Sink>
 void Unit(Sink& writer, const UnitPlacement& value,
-    const PlacementReadLimits& limits) {
+    const PlacementReadLimits& limits, bool roc) {
     if (value.skinId)
         throw Detail::WriteFailure{"PLACEMENT_SKIN_WRITE_UNSUPPORTED", "不能以经典布局写出带 SkinId 的单位"};
     Transform(writer, value);
@@ -155,14 +158,18 @@ void Unit(Sink& writer, const UnitPlacement& value,
     for (const auto byte : value.unknownOwnerBytes) writer.Byte(byte);
     writer.I32(value.hitPoints);
     writer.I32(value.mana);
-    writer.I32(value.droppedItemTable);
+    if (roc && (value.droppedItemTable != -1 || value.heroStrength != 0 || value.heroAgility != 0 || value.heroIntelligence != 0))
+        throw Detail::WriteFailure{"PLACEMENT_ROC_FIELD", "混乱之治格式的单位没有掉落物品表和英雄力量/敏捷/智力字段"};
+    if (!roc) writer.I32(value.droppedItemTable);
     ItemSets(writer, value.itemSets, limits);
     writer.I32(value.gold);
     writer.F32(value.targetAcquisition);
     writer.I32(value.heroLevel);
-    writer.I32(value.heroStrength);
-    writer.I32(value.heroAgility);
-    writer.I32(value.heroIntelligence);
+    if (!roc) {
+        writer.I32(value.heroStrength);
+        writer.I32(value.heroAgility);
+        writer.I32(value.heroIntelligence);
+    }
     CountRecords(writer, value.inventory.size(), limits.maxNestedRecords, true);
     for (const auto& item : value.inventory) {
         writer.I32(item.slot);
@@ -182,7 +189,7 @@ void Unit(Sink& writer, const UnitPlacement& value,
 
 template <typename Sink>
 void Doodad(Sink& writer, const DoodadPlacement& value,
-    const PlacementReadLimits& limits) {
+    const PlacementReadLimits& limits, bool roc) {
     if (value.skinId)
         throw Detail::WriteFailure{"PLACEMENT_SKIN_WRITE_UNSUPPORTED", "不能以经典布局写出带 SkinId 的装饰物"};
     Transform(writer, value);
@@ -190,8 +197,12 @@ void Doodad(Sink& writer, const DoodadPlacement& value,
         throw Detail::WriteFailure{"PLACEMENT_LAYOUT_UNSUPPORTED", "装饰物 flags 不属于当前经典布局"};
     writer.Byte(value.flags);
     writer.Byte(value.lifePercent);
-    writer.I32(value.droppedItemTable);
-    ItemSets(writer, value.itemSets, limits);
+    if (roc && (value.droppedItemTable != -1 || !value.itemSets.empty()))
+        throw Detail::WriteFailure{"PLACEMENT_ROC_FIELD", "混乱之治格式的装饰物没有掉落物品字段"};
+    if (!roc) {
+        writer.I32(value.droppedItemTable);
+        ItemSets(writer, value.itemSets, limits);
+    }
     writer.I32(value.creationId);
 }
 
@@ -226,13 +237,13 @@ Result<PlacementWireProjection> MeasureAppend(const Table& placements, std::span
         if constexpr (units) {
             Header(writer, placements.version, placements.subversion,
                 AppendedPlacementCount(placements.units.size(), appended.size()), limits);
-            for (const auto& record : placements.units) Unit(writer, record, limits);
-            for (const auto& record : appended) Unit(writer, record, limits);
+            for (const auto& record : placements.units) Unit(writer, record, limits, Roc(placements.version));
+            for (const auto& record : appended) Unit(writer, record, limits, Roc(placements.version));
         } else {
             Header(writer, placements.version, placements.subversion,
                 AppendedPlacementCount(placements.doodads.size(), appended.size()), limits);
-            for (const auto& record : placements.doodads) Doodad(writer, record, limits);
-            for (const auto& record : appended) Doodad(writer, record, limits);
+            for (const auto& record : placements.doodads) Doodad(writer, record, limits, Roc(placements.version));
+            for (const auto& record : appended) Doodad(writer, record, limits, Roc(placements.version));
             SpecialDoodads(writer, placements, limits);
         }
         return Result<PlacementWireProjection>::Success(writer.Finish());
@@ -269,8 +280,8 @@ Result<PlacementWireProjection> MeasureClassicPlacementWire(const UnitPlacements
         PlacementWireSink writer(limits);
         Header(writer, placements.version, placements.subversion,
             AppendedPlacementCount(placements.units.size(), appendedSourceRows.size()), limits);
-        for (const auto& unit : placements.units) Unit(writer, unit, limits);
-        for (const auto row : appendedSourceRows) Unit(writer, placements.units[row], limits);
+        for (const auto& unit : placements.units) Unit(writer, unit, limits, Roc(placements.version));
+        for (const auto row : appendedSourceRows) Unit(writer, placements.units[row], limits, Roc(placements.version));
         return Result<PlacementWireProjection>::Success(writer.Finish());
     } catch (const Detail::WriteFailure& error) {
         return Failure<PlacementWireProjection>("war3mapUnits.doo", error);
@@ -297,8 +308,8 @@ Result<PlacementWireProjection> MeasureClassicPlacementWire(const DoodadPlacemen
         PlacementWireSink writer(limits);
         Header(writer, placements.version, placements.subversion,
             AppendedPlacementCount(placements.doodads.size(), appendedSourceRows.size()), limits);
-        for (const auto& doodad : placements.doodads) Doodad(writer, doodad, limits);
-        for (const auto row : appendedSourceRows) Doodad(writer, placements.doodads[row], limits);
+        for (const auto& doodad : placements.doodads) Doodad(writer, doodad, limits, Roc(placements.version));
+        for (const auto row : appendedSourceRows) Doodad(writer, placements.doodads[row], limits, Roc(placements.version));
         SpecialDoodads(writer, placements, limits);
         return Result<PlacementWireProjection>::Success(writer.Finish());
     } catch (const Detail::WriteFailure& error) {
@@ -317,7 +328,7 @@ Result<std::vector<std::byte>> UnitPlacements::Serialize(const PlacementReadLimi
         RequireClassicLayout(recordLayout);
         Detail::Writer writer(limits.maxBytes);
         Header(writer, version, subversion, units.size(), limits);
-        for (const auto& unit : units) Unit(writer, unit, limits);
+        for (const auto& unit : units) Unit(writer, unit, limits, Roc(version));
         auto output = std::move(writer).Finish();
         const auto reparsed = ParseUnitPlacements(output, limits);
         if (!reparsed.Succeeded())
@@ -341,7 +352,7 @@ Result<std::vector<std::byte>> DoodadPlacements::Serialize(const PlacementReadLi
         RequireClassicLayout(recordLayout);
         Detail::Writer writer(limits.maxBytes);
         Header(writer, version, subversion, doodads.size(), limits);
-        for (const auto& doodad : doodads) Doodad(writer, doodad, limits);
+        for (const auto& doodad : doodads) Doodad(writer, doodad, limits, Roc(version));
         SpecialDoodads(writer, *this, limits);
         auto output = std::move(writer).Finish();
         const auto reparsed = ParseDoodadPlacements(output, limits);

@@ -718,8 +718,13 @@ PipelineResult CompileMapScript(std::string_view generated, const ToolchainOptio
     auto& templateStage = BeginStage(result, options, "template", dir / "4_template.j");
     const auto templateStarted = Clock::now();
     auto evaluated = EvaluateTemplates(preprocessed, templates);
+    // 内置求值只覆盖受限子集；其余（含明确的 import 失败以外的错误）交给 Lua 沙盒整份执行。
+    const bool wholeChunk = (evaluated.skippedBlocks > 0 || !evaluated.Succeeded()) && templates.wholeChunk
+        && std::none_of(evaluated.diagnostics.begin(), evaluated.diagnostics.end(), [](const Diagnostic& diagnostic) {
+            return diagnostic.code == "TEMPLATE_IMPORT_FAILED";
+        });
     Jass::SourceLexicalView frameworkEvaluatedView;
-    if (options.frameworkInputs && result.frameworkPreprocessSources) {
+    if (!wholeChunk && options.frameworkInputs && result.frameworkPreprocessSources) {
         const auto& owned = result.frameworkPreprocessSources->preprocessed;
         if (evaluated.text == owned.text) frameworkEvaluatedView = owned.lexicalView;
         else if (!owned.lexicalView.opaque.empty()) {
@@ -733,24 +738,48 @@ PipelineResult CompileMapScript(std::string_view generated, const ToolchainOptio
             frameworkEvaluatedView = std::move(*rebound.value);
         } else frameworkEvaluatedView.text = evaluated.text;
     }
-    if (options.frameworkInputs && std::any_of(evaluated.diagnostics.begin(), evaluated.diagnostics.end(),
+    if (!wholeChunk && options.frameworkInputs && std::any_of(evaluated.diagnostics.begin(), evaluated.diagnostics.end(),
         [](const Diagnostic& diagnostic) { return diagnostic.code == "ABILITY_ORDER_UNKNOWN"; })) {
         result.diagnostics.insert(result.diagnostics.end(), evaluated.diagnostics.begin(), evaluated.diagnostics.end());
         Fail(result, "SCRIPT_FRAMEWORK_ABILITY_ORDER_UNRESOLVED", "模板命令ID未绑定到实际物编；框架子集不把未知命令按0发布。");
         templateStage.exitCode = 1;
         return result;
     }
-    if (evaluated.skippedBlocks > 0 && templates.wholeChunk && !options.frameworkInputs) {
-        // 含内置不支持的语句块：与 YDWE 保存相同，由真实模板整份执行一次；不混用内置求值结果。
-        if (options.onStage) options.onStage("lua-template");
+    if (wholeChunk) {
+        // 内置求值覆盖不了的模板：与 YDWE 保存相同，整份在 Lua 沙盒执行一次；不混用内置求值结果。
         auto whole = templates.wholeChunk(preprocessed);
         templateStage.elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - templateStarted);
         for (auto& diagnostic : whole.diagnostics) result.diagnostics.push_back(std::move(diagnostic));
-        if (!whole.Succeeded()) return result;
+        if (!whole.Succeeded()) { templateStage.exitCode = 1; return result; }
+        result.diagnostics.insert(result.diagnostics.end(), whole.value->diagnostics.begin(), whole.value->diagnostics.end());
+        if (options.frameworkInputs && std::any_of(whole.value->diagnostics.begin(), whole.value->diagnostics.end(),
+            [](const Diagnostic& diagnostic) { return diagnostic.code == "ABILITY_ORDER_UNKNOWN"; })) {
+            Fail(result, "SCRIPT_FRAMEWORK_ABILITY_ORDER_UNRESOLVED", "模板命令ID未绑定到实际物编；框架子集不把未知命令按0发布。");
+            templateStage.exitCode = 1;
+            return result;
+        }
         evaluated.text = std::move(whole.value->script);
         result.objectMembers = std::move(whole.value->objectMembers);
-        templateStage.log = "YDWE 模板整份执行；物编输出 " + std::to_string(result.objectMembers.size()) + " 个成员";
+        result.templateImports = std::move(whole.value->imports);
+        templateStage.log = "Lua 模板整份执行；物编输出 " + std::to_string(result.objectMembers.size()) + " 个成员";
+        if (!result.templateImports.empty()) templateStage.log += "；import " + std::to_string(result.templateImports.size()) + " 个文件";
         for (const auto& message : whole.value->toolMessages) templateStage.log += '\n' + message;
+        if (options.frameworkInputs && result.frameworkPreprocessSources) {
+            // 整份执行的输出不是逐块替换，按原不透明片段在新文本中重新定位。
+            const auto& owned = result.frameworkPreprocessSources->preprocessed;
+            frameworkEvaluatedView = {};
+            if (owned.lexicalView.opaque.empty()) frameworkEvaluatedView.text = evaluated.text;
+            else {
+                auto rebound = RebindFrameworkLexicalView(evaluated.text, owned.text, owned.lexicalView);
+                if (!rebound.Succeeded()) {
+                    result.diagnostics.insert(result.diagnostics.end(), rebound.diagnostics.begin(), rebound.diagnostics.end());
+                    Fail(result, "SCRIPT_FRAMEWORK_TEMPLATE_OPAQUE_PROVENANCE_UNSUPPORTED",
+                        "模板结果的不透明原字节位置无法严格恢复；未发布部分产物。");
+                    templateStage.exitCode = 1; return result;
+                }
+                frameworkEvaluatedView = std::move(*rebound.value);
+            }
+        }
     } else {
         templateStage.elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - templateStarted);
         templateStage.log = std::to_string(evaluated.expressions) + " 个表达式，跳过 " + std::to_string(evaluated.skippedBlocks) + " 个代码块";

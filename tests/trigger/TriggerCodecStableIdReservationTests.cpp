@@ -278,11 +278,13 @@ Status Validate(
             "wtg.source-seal.identity-mismatch",
             "WTG 来源 seal 或 UI Catalog 身份不匹配，禁止验证或序列化。");
     }
-    if (document.variablesHeader != 2) {
-        AddValidationError(status, "wtg.variables-header", "WTG v7 variablesHeader must be 2");
+    const std::int32_t expectedGameVersion = document.wtgVersion == kWtgLegacyVersion ? 1 : 2;
+    if (document.variablesHeader != expectedGameVersion) {
+        AddValidationError(status, "wtg.variables-header", "WTG v" + std::to_string(document.wtgVersion)
+            + " variablesHeader (game version) must be " + std::to_string(expectedGameVersion));
     }
-    if (document.wct.version != kWctVersion) {
-        AddValidationError(status, "wct.version", "WCT version must be 1");
+    if (document.wct.version != kWctVersion && document.wct.version != kWctLegacyVersion) {
+        AddValidationError(status, "wct.version", "WCT version must be 0 or 1");
     }
 
     std::set<std::int32_t> categoryIds;

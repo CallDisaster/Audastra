@@ -148,6 +148,14 @@ private:
         symbol.order = order;
         symbol.file = file_;
         symbol.line = line;
+        if (native) {
+            // 与已有 native 签名完全相同的再次声明（YDWE/KKWE 函数库常见写法）：游戏按名字绑定同一个 native，
+            // 不是重定义；参数、返回值或 constant 有任何不同仍按重复声明报错。
+            const auto existing = context_.functions.find(name);
+            if (existing != context_.functions.end() && existing->second.native && existing->second.params == symbol.params
+                && existing->second.returns == symbol.returns && existing->second.constant == symbol.constant)
+                return &existing->second;
+        }
         if (NameTaken(name, line)) return nullptr;
         if (collector_) symbol.definition = collector_->Define(name, returns.empty() ? "nothing" : returns,
             native ? SymbolKind::Native : SymbolKind::Function, false, constant);

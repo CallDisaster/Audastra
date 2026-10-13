@@ -41,6 +41,11 @@ bool MapSettings::HasClassicLayout() const noexcept {
         });
 }
 
+bool MapSettings::HasRocLayout() const noexcept {
+    const auto source = SourceFormatVersion();
+    return formatVersion == 18 && (!source || *source == 18);
+}
+
 namespace {
 
 constexpr std::size_t MaxFileBytes = 64 * 1024 * 1024;

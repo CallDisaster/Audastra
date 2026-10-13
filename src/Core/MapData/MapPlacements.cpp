@@ -72,13 +72,17 @@ public:
         return count;
     }
 
-    void Header(std::int32_t& version, std::int32_t& subversion) {
+    // 返回是否为混乱之治格式 v7/subversion 9（只有经典布局，没有皮肤扩展）。
+    bool Header(std::int32_t& version, std::int32_t& subversion, PlacementRecordLayout layout) {
         if (Rawcode() != "W3do") Fail("PLACEMENT_MAGIC", "实例成员签名不是 W3do");
         version = Int();
         subversion = Int();
-        if (version != 8 || subversion != 11) {
-            Fail("PLACEMENT_VERSION_UNSUPPORTED", "当前只支持经典 TFT 实例格式 v8/subversion 11；原成员保持不变");
+        const bool roc = version == 7 && subversion == 9;
+        if (!IsClassicPlacementVersion(version, subversion) || (roc && layout != PlacementRecordLayout::Classic)) {
+            Fail("PLACEMENT_VERSION_UNSUPPORTED",
+                "当前只支持经典 TFT 实例格式 v8/subversion 11 与混乱之治 v7/subversion 9；原成员保持不变");
         }
+        return roc;
     }
 
     std::uint8_t Flags() {
@@ -165,7 +169,9 @@ RandomUnitConfig ReadRandom(PlacementReader& reader) {
     }
 }
 
-UnitPlacement ReadUnit(PlacementReader& reader, PlacementRecordLayout layout) {
+// 混乱之治（v7）单位没有掉落物品表编号和英雄三围；装饰物没有掉落物品表与物品组。
+// 依据：游戏自带 45 张 .w3m 的实例文件按此布局逐字节读到结尾，其他组合均不成立。
+UnitPlacement ReadUnit(PlacementReader& reader, PlacementRecordLayout layout, bool roc) {
     UnitPlacement result;
     ReadTransform(reader, result);
     if (layout == PlacementRecordLayout::SkinId) result.skinId = reader.Rawcode();
@@ -174,14 +180,16 @@ UnitPlacement ReadUnit(PlacementReader& reader, PlacementRecordLayout layout) {
     for (auto& byte : result.unknownOwnerBytes) byte = reader.Byte();
     result.hitPoints = reader.Int();
     result.mana = reader.Int();
-    result.droppedItemTable = reader.Int();
+    if (!roc) result.droppedItemTable = reader.Int();
     result.itemSets = ReadItemSets(reader);
     result.gold = reader.Int();
     result.targetAcquisition = reader.Float();
     result.heroLevel = reader.Int();
-    result.heroStrength = reader.Int();
-    result.heroAgility = reader.Int();
-    result.heroIntelligence = reader.Int();
+    if (!roc) {
+        result.heroStrength = reader.Int();
+        result.heroAgility = reader.Int();
+        result.heroIntelligence = reader.Int();
+    }
     const auto inventoryCount = reader.Count(8);
     result.inventory.reserve(inventoryCount);
     for (std::size_t index = 0; index < inventoryCount; ++index) {
@@ -232,10 +240,10 @@ Result<UnitPlacements> ParseUnitsLayout(std::span<const std::byte> bytes,
         PlacementReader reader(bytes, limits, "war3mapUnits.doo");
         UnitPlacements document;
         document.recordLayout = layout;
-        reader.Header(document.version, document.subversion);
-        const auto count = reader.Count(layout == PlacementRecordLayout::SkinId ? 111 : 107, false);
+        const bool roc = reader.Header(document.version, document.subversion, layout);
+        const auto count = reader.Count(layout == PlacementRecordLayout::SkinId ? 111 : roc ? 91 : 107, false);
         document.units.reserve(count);
-        for (std::size_t index = 0; index < count; ++index) document.units.push_back(ReadUnit(reader, layout));
+        for (std::size_t index = 0; index < count; ++index) document.units.push_back(ReadUnit(reader, layout, roc));
         reader.End();
         return Result<UnitPlacements>::Success(std::move(document));
     } catch (PlacementError& error) {
@@ -251,8 +259,8 @@ Result<DoodadPlacements> ParseDoodadsLayout(std::span<const std::byte> bytes,
         PlacementReader reader(bytes, limits, "war3map.doo");
         DoodadPlacements document;
         document.recordLayout = layout;
-        reader.Header(document.version, document.subversion);
-        const auto count = reader.Count(layout == PlacementRecordLayout::SkinId ? 54 : 50, false);
+        const bool roc = reader.Header(document.version, document.subversion, layout);
+        const auto count = reader.Count(layout == PlacementRecordLayout::SkinId ? 54 : roc ? 42 : 50, false);
         document.doodads.reserve(count);
         for (std::size_t index = 0; index < count; ++index) {
             DoodadPlacement doodad;
@@ -260,8 +268,10 @@ Result<DoodadPlacements> ParseDoodadsLayout(std::span<const std::byte> bytes,
             if (layout == PlacementRecordLayout::SkinId) doodad.skinId = reader.Rawcode();
             doodad.flags = reader.Flags();
             doodad.lifePercent = reader.Byte();
-            doodad.droppedItemTable = reader.Int();
-            doodad.itemSets = ReadItemSets(reader);
+            if (!roc) {
+                doodad.droppedItemTable = reader.Int();
+                doodad.itemSets = ReadItemSets(reader);
+            }
             doodad.creationId = reader.Int();
             document.doodads.push_back(std::move(doodad));
         }

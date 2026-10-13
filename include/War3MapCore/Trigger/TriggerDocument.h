@@ -14,7 +14,11 @@
 namespace War3Map::Trigger {
 
 constexpr std::int32_t kWtgVersion = 7;
+// 混乱之治格式：没有分类/触发器注释标志、变量数组大小和块状动作的子节点。
+constexpr std::int32_t kWtgLegacyVersion = 4;
 constexpr std::int32_t kWctVersion = 1;
+// 早期格式：没有地图头注释与自定义代码段，只有各触发器的自定义文本。
+constexpr std::int32_t kWctLegacyVersion = 0;
 constexpr std::uint32_t kInvalidNodeIndex = 0xffffffffU;
 
 struct RawText {
@@ -108,6 +112,7 @@ public:
     [[nodiscard]] std::string_view UiCatalogSha256() const noexcept;
 
     std::vector<CategoryRecord> categories;
+    std::int32_t wtgVersion = kWtgVersion; // 读入的格式版本，原样写回（kWtgVersion 或 kWtgLegacyVersion）
     std::int32_t variablesHeader = 2;
     std::vector<VariableRecord> variables;
     std::vector<TriggerRecord> triggers;

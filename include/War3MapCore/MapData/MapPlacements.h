@@ -128,7 +128,13 @@ struct PlacementWireProjection {
     const DoodadPlacements& placements, std::span<const DoodadPlacement> appended,
     const PlacementReadLimits& limits = {});
 
-// 可编辑入口只识别经典 TFT v8/subversion 11 的无皮肤布局。
+// 经典后端读写的实例格式：TFT v8/subversion 11，以及混乱之治 v7/subversion 9
+// （单位少掉落物品表编号与英雄三围，装饰物少掉落物品字段；写出时这些字段须为默认值）。
+[[nodiscard]] constexpr bool IsClassicPlacementVersion(std::int32_t version, std::int32_t subversion) noexcept {
+    return (version == 8 && subversion == 11) || (version == 7 && subversion == 9);
+}
+
+// 可编辑入口只识别上述经典格式的无皮肤布局。
 // 带 SkinId 的 8/11 布局仅由下方版本化读取入口识别，不能经 Serialize 写出。
 // 失败不返回半成品；调用方继续保留原始归档成员。
 [[nodiscard]] Result<UnitPlacements> ParseUnitPlacements(

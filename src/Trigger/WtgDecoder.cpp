@@ -22,24 +22,26 @@ public:
     TriggerDocument Parse(const WctHeader& header) {
         ReadSignature();
         const std::int32_t version = reader_.ReadI32("version");
-        if (version != kWtgVersion) {
-            throw FormatError("war3map.wtg: only version 7 is supported; got " +
+        if (version != kWtgVersion && version != kWtgLegacyVersion) {
+            throw FormatError("war3map.wtg: only versions 4 and 7 are supported; got " +
                 std::to_string(version));
         }
+        version_ = version;
+        document_.wtgVersion = version;
 
         document_.wct = header;
-        const std::size_t categoryCount = reader_.ReadCount("category count", 9);
+        const std::size_t categoryCount = reader_.ReadCount("category count", version_ >= 7 ? 9 : 5);
         document_.categories.reserve(categoryCount);
         for (std::size_t index = 0; index < categoryCount; ++index) {
             document_.categories.push_back(ReadCategory());
         }
         document_.variablesHeader = reader_.ReadI32("variables header");
-        const std::size_t variableCount = reader_.ReadCount("variable count", 18);
+        const std::size_t variableCount = reader_.ReadCount("variable count", version_ >= 7 ? 18 : 14);
         document_.variables.reserve(variableCount);
         for (std::size_t index = 0; index < variableCount; ++index) {
             document_.variables.push_back(ReadVariable());
         }
-        const std::size_t triggerCount = reader_.ReadCount("trigger count", 33);
+        const std::size_t triggerCount = reader_.ReadCount("trigger count", version_ >= 7 ? 33 : 29);
         if (triggerCount != slots_->size()) {
             throw FormatError("WTG trigger count " + std::to_string(triggerCount) +
                 " does not match WCT slot count " + std::to_string(slots_->size()));

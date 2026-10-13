@@ -926,6 +926,8 @@ Result<std::vector<MpqStrictFileInfo>> MpqArchive::ListFilesValidated(bool allow
     std::set<std::string> canonicalNames;
     std::size_t duplicateNames = 0;
     std::string firstDuplicate;
+    std::size_t staleNames = 0;
+    std::string firstStale;
     std::map<std::uint32_t, std::string> blockNames;
     std::vector<MpqStrictFileInfo> result;
     result.reserve(names.size());
@@ -947,9 +949,10 @@ Result<std::vector<MpqStrictFileInfo>> MpqArchive::ListFilesValidated(bool allow
         const std::uint32_t n2 = crypt.HashString(name, MpqCrypt::HashType::NameB);
         const auto pair = hashPairs.find({n1, n2});
         if (pair == hashPairs.end()) {
-            return Result<std::vector<MpqStrictFileInfo>>::Failure(
-                "Mpq", "LISTFILE_MEMBER_MISSING",
-                "(listfile) names a member with no active hash entry: " + name);
+            // 清单里有、归档里没有的名字（常见为早已删除的 (attributes)）：游戏按哈希找文件，这一行不指向任何内容。
+            // 不补造成员，只跳过；每个块仍须由其余名字唯一命名（见下方 ANONYMOUS_BLOCK_REJECTED）。
+            if (staleNames++ == 0) firstStale = name;
+            continue;
         }
         const HashEntry* match = pair != hashPairs.end() && pair->second.size() == 1
             ? pair->second.front() : nullptr;
@@ -1016,6 +1019,11 @@ Result<std::vector<MpqStrictFileInfo>> MpqArchive::ListFilesValidated(bool allow
         success.diagnostics.push_back({DiagnosticSeverity::Warning, "Mpq", "LISTFILE_NAME_DUPLICATE",
             "地图文件清单 (listfile) 中有 " + std::to_string(duplicateNames) + " 行与前面的名字重复（不分大小写和斜杠方向），"
             "它们指向同一个文件；已按首次出现的写法处理，保存时清单不再重复。首个重复：" + firstDuplicate, {}});
+    }
+    if (staleNames > 0) {
+        success.diagnostics.push_back({DiagnosticSeverity::Warning, "Mpq", "LISTFILE_MEMBER_MISSING",
+            "地图文件清单 (listfile) 中有 " + std::to_string(staleNames) + " 个名字在地图里找不到对应文件，"
+            "已忽略；保存时清单不再列出它们。首个：" + firstStale, {}});
     }
     return success;
 }

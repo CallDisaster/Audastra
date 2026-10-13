@@ -64,9 +64,16 @@ std::string InitialValue(MapContext& context, const Trigger::TriggerTypeSystem& 
         }
         if (role == Trigger::TriggerTypeSystem::Literal::ObjectCode) return Rawcode(value);
         if (jass == "string") return QuoteJassString(value);
-        if (value.rfind("gg_", 0) == 0 || jass == "integer" || jass == "real" || jass == "boolean") return value;
-        const std::string preset = DefineField(catalog, "TriggerParams", value, 2);
-        return preset.empty() ? value : preset;
+        if (value.rfind("gg_", 0) == 0) return value;
+        // 预设值（TriggerParams 中同类型的条目）写其脚本文本；基础类型为 integer 的枚举（如属性类型）同样适用。
+        if (DefineField(catalog, "TriggerParams", value, 1) == type) {
+            std::string preset = DefineField(catalog, "TriggerParams", value, 2);
+            for (auto& ch : preset) {
+                if (ch == '`') ch = '"';
+            }
+            if (!preset.empty()) return preset;
+        }
+        return value;
     }
     return DefineField(catalog, "TriggerTypeDefaults", type, 0);
 }

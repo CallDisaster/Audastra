@@ -491,26 +491,37 @@ Status PrepareScript(MapSaveTask& task, const MapArchiveSession& source,
             task.diagnostics.insert(task.diagnostics.end(), parsed.diagnostics.begin(), parsed.diagnostics.end());
             continue;
         }
+        // 无法建立无损可编辑基线时不立即失败：本次保存不改该类别，原成员逐字节保留。
+        // 若模板随后要整类改写它，MapSaveService 会因缺少可编辑来源而拒绝（SAVE_GENERATED_NATIVE_BASELINE_UNAVAILABLE）。
+        const auto deferBaseline = [&](std::string reason) {
+            task.diagnostics.push_back({DiagnosticSeverity::Warning, "MapEdit.Save", "SAVE_OBJECT_BASELINE_DEFERRED",
+                reason + member + "。本次保存保持该成员原字节不变；脚本模板若要改写该类别将拒绝保存。"});
+        };
         if (!parsed.Succeeded() || !native
             || !native->Supports(ObjectData::NativeObjectOperation::ReplaceFromTemplate) || !parsed.diagnostics.empty()) {
-            return Status::Failure("MapEdit.Save", "SAVE_OBJECT_BASELINE_UNSAFE",
-                "源地图物编类别无法建立无损可编辑基线：" + member);
+            // 解析问题作为原因说明附上；该成员不参与本次改写，所以不作为保存错误。
+            for (auto diagnostic : parsed.diagnostics) {
+                diagnostic.severity = DiagnosticSeverity::Warning;
+                task.diagnostics.push_back(std::move(diagnostic));
+            }
+            deferBaseline("源地图物编类别无法建立无损可编辑基线：");
+            continue;
         }
         auto encoded = codec.Serialize(*native);
         if (!encoded.Succeeded() || !encoded.value || *encoded.value != *bytes.value) {
-            return Status::Failure("MapEdit.Save", "SAVE_OBJECT_BASELINE_UNSAFE",
-                "源地图物编类别未通过原字节往返：" + member);
+            deferBaseline("源地图物编类别未通过原字节往返：");
+            continue;
         }
         auto lniBytes = ObjectData::ConvertNativeObjectDataToLni(type, *bytes.value);
         if (!lniBytes.Succeeded() || !lniBytes.value || !lniBytes.diagnostics.empty()) {
-            return Status::Failure("MapEdit.Save", "SAVE_OBJECT_BASELINE_UNSAFE",
-                "源地图物编类别无法无损投影到编辑基线：" + member);
+            deferBaseline("源地图物编类别无法无损投影到编辑基线：");
+            continue;
         }
         auto lni = ObjectData::LniObjectCodec(type).Parse(*lniBytes.value);
         auto* editable = dynamic_cast<ObjectData::LniObjectDocument*>(lni.document.get());
         if (!lni.Succeeded() || !editable || !editable->IsStructurallySafe() || !lni.diagnostics.empty()) {
-            return Status::Failure("MapEdit.Save", "SAVE_OBJECT_BASELINE_UNSAFE",
-                "源地图物编编辑基线无法解析：" + member);
+            deferBaseline("源地图物编编辑基线无法解析：");
+            continue;
         }
         const auto records = native->Objects();
         const auto projected = editable->Objects();
@@ -524,8 +535,8 @@ Status PrepareScript(MapSaveTask& task, const MapArchiveSession& source,
                                 && oldField.valueWasOpaque == newField.valueWasOpaque;
                         });
             })) {
-            return Status::Failure("MapEdit.Save", "SAVE_OBJECT_BASELINE_UNSAFE",
-                "源地图物编投影后对象或字段数量发生变化：" + member);
+            deferBaseline("源地图物编投影后对象或字段数量发生变化：");
+            continue;
         }
         if (index == 0) sources.units.assign(records.begin(), records.end());
         else if (index == 1) sources.abilities.assign(records.begin(), records.end());

@@ -1,6 +1,6 @@
 #include "War3MapCore/Script/ScriptPipeline.h"
-#include "War3MapCore/IO/FileBytes.h"
-#include "War3MapCore/Script/ScriptSaveBundle.h"
+
+#include "TemplateImports.h"
 
 #include <algorithm>
 #include <cctype>
@@ -19,10 +19,6 @@ struct Boolean { bool value = false; };
 // import(名) 的结果：等待第二次调用给出文本或路径。
 struct ImportTarget { std::string member; };
 using Value = std::variant<Nil, std::int64_t, double, std::string, Boolean, ImportTarget>;
-
-constexpr std::size_t kImportFileBytes = 16u * 1024u * 1024u;
-constexpr std::size_t kImportTotalBytes = 64u * 1024u * 1024u;
-constexpr std::size_t kImportCount = 4096;
 
 std::string NumberText(double value) {
     char buffer[64];
@@ -201,7 +197,7 @@ class Evaluator {
 public:
     Evaluator(const TemplateContext& context, std::unordered_map<std::string, Value>& variables, std::vector<Diagnostic>& diagnostics,
         std::vector<MemberReplacement>& imports)
-        : context_(context), variables_(variables), diagnostics_(diagnostics), imports_(imports) {}
+        : context_(context), variables_(variables), diagnostics_(diagnostics), imports_(context.importRoot, imports, diagnostics) {}
 
     std::optional<Value> Expression(std::string_view code, std::string& error) {
         Start(code);
@@ -448,65 +444,19 @@ private:
         return Import(*name, *second);
     }
 
-    static std::string Lower(std::string text) {
-        std::transform(text.begin(), text.end(), text.begin(), [](char c) {
-            return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
-        });
-        return text;
-    }
-
     std::optional<std::string> ImportMemberName(std::string name) {
-        std::replace(name.begin(), name.end(), '/', '\\');
-        if (name.empty() || name.size() > 240 || name.front() == '\\' || name.find(':') != std::string::npos
-            || name.find("..") != std::string::npos
-            || std::any_of(name.begin(), name.end(), [](char c) { return static_cast<unsigned char>(c) < 0x20; })) {
-            Fail("import 的文件名必须是地图内相对路径：" + name);
-            return std::nullopt;
-        }
-        if (IsTemplateImportReserved(name)) {
-            Fail("import 不能覆盖地图脚本、物编或归档内部文件：" + name);
-            return std::nullopt;
-        }
-        return name;
+        std::string error;
+        auto member = imports_.MemberName(std::move(name), error);
+        if (!member) Fail(error);
+        return member;
     }
 
     Value Import(const std::string& member, const std::vector<Value>& arguments) {
         const auto content = arguments.empty() ? std::nullopt : ToText(arguments[0]);
         if (!content) return Fail("import(" + member + ") 需要文本内容或文件路径");
         const auto* flag = arguments.size() > 1 ? std::get_if<Boolean>(&arguments[1]) : nullptr;
-        const bool path = flag && flag->value;
-        // 只读检查场景：核对写法与名称，不读文件、不产生成员。
-        if (!context_.importRoot) return Nil{};
-        std::vector<std::byte> bytes;
-        if (path) {
-            auto relative = *content;
-            std::replace(relative.begin(), relative.end(), '\\', '/');
-            const std::filesystem::path file(std::u8string(relative.begin(), relative.end()));
-            if (relative.empty() || file.is_absolute() || file.has_root_name() || file.has_root_directory()
-                || std::any_of(file.begin(), file.end(), [](const auto& part) { return part == ".."; }))
-                return Fail("import(" + member + ") 的文件路径必须位于地图所在目录内：" + *content);
-            auto read = IO::ReadFileBytes(*context_.importRoot / file, kImportFileBytes);
-            if (!read.Succeeded() || !read.value)
-                return Fail("import(" + member + ") 无法读取地图所在目录下的 " + *content + "（不存在、不是普通文件或超过 16 MiB）");
-            bytes = std::move(*read.value);
-        } else {
-            const auto* first = reinterpret_cast<const std::byte*>(content->data());
-            bytes.assign(first, first + content->size());
-        }
-        // 同名后者覆盖前者，与 YDWE 依次覆盖复制一致。
-        const auto key = Lower(member);
-        const auto existing = std::find_if(imports_.begin(), imports_.end(), [&](const auto& item) { return Lower(item.name) == key; });
-        if (existing != imports_.end()) {
-            importBytes_ -= existing->data.size();
-            diagnostics_.push_back({DiagnosticSeverity::Warning, "Script.Template", "TEMPLATE_IMPORT_DUPLICATE",
-                "模板多次 import 同一文件 " + member + "，以最后一次为准", {}});
-        } else if (imports_.size() >= kImportCount) {
-            return Fail("模板 import 的文件超过 4096 个");
-        }
-        if (bytes.size() > kImportTotalBytes - importBytes_) return Fail("模板 import 的文件合计超过 64 MiB");
-        importBytes_ += bytes.size();
-        if (existing != imports_.end()) existing->data = std::move(bytes);
-        else imports_.push_back({member, std::move(bytes)});
+        std::string error;
+        if (!imports_.Add(member, *content, flag && flag->value, error)) return Fail(error);
         return Nil{};
     }
 
@@ -573,8 +523,7 @@ private:
     const TemplateContext& context_;
     std::unordered_map<std::string, Value>& variables_;
     std::vector<Diagnostic>& diagnostics_;
-    std::vector<MemberReplacement>& imports_;
-    std::size_t importBytes_ = 0;
+    detail::TemplateImportSink imports_;
     bool rejected_ = false, importFailed_ = false;
     std::optional<Lexer> lexer_;
     Lexeme current_;

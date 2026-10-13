@@ -142,6 +142,10 @@ private:
         const std::uint32_t line = line_;
         const char c = text_[at_];
         PpKind kind = PpKind::Punct;
+        // YDWE 模板块 <? … ?>：照常分词（宏参数如 <?=StringHash(name)?> 仍要替换），但块内是 Lua，
+        // 中文标点、注释里落单的引号不按 JASS 词法报错，作为单个记号原样交给模板阶段。
+        if (!template_ && c == '<' && Next(1) == '?') template_ = true;
+        else if (template_ && c == '?' && Next(1) == '>') template_ = false;
         if (const auto width = source_.IdentifierWidth(at_, true, true); width) {
             kind = PpKind::Identifier;
             at_ += width;
@@ -170,6 +174,8 @@ private:
             kind = PpKind::String;
         } else if (c == '\'' && ScanQuoted('\'', false)) {
             kind = PpKind::Char;
+        } else if (template_ && (c == '\'' || c == '"' || static_cast<unsigned char>(c) >= 0x80)) {
+            at_ += (std::max<std::size_t>)(source_.Width(start), 1);
         } else {
             if (c == '\'' || c == '"') {
                 source_.Error("SOURCE_LEX_UNTERMINATED", "字面量没有配对的结束引号。", start, 1);
@@ -231,6 +237,7 @@ private:
     LexerSource source_;
     std::size_t at_ = 0;
     std::uint32_t line_ = 1;
+    bool template_ = false;
     CheckBudget* budget_ = nullptr;
     std::size_t tokenLimit_, ticks_ = 0;
 };

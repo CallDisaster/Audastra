@@ -13,12 +13,12 @@ Status ValidateClassicMapLayouts(const ClassicMapLayoutInputs& inputs) {
         result.diagnostics.push_back({DiagnosticSeverity::Error, "MapData.Layout", std::move(code),
             std::move(member) + " 包含经典后端未支持或未确定的记录布局；原始数据继续保留，不能省略扩展字段生成脚本或重建成员。", {}});
     };
-    if (inputs.settings && !inputs.settings->HasClassicLayout()) {
+    if (inputs.settings && !inputs.settings->HasClassicLayout() && !inputs.settings->HasRocLayout()) {
         reject("CLASSIC_SETTINGS_LAYOUT_UNSUPPORTED", "war3map.w3i");
     }
     if (inputs.units) {
         const auto& document = *inputs.units;
-        if (document.version != 8 || document.subversion != 11
+        if (!IsClassicPlacementVersion(document.version, document.subversion)
             || document.recordLayout != PlacementRecordLayout::Classic
             || std::any_of(document.units.begin(), document.units.end(),
                 [](const UnitPlacement& unit) { return unit.skinId.has_value(); })) {
@@ -27,7 +27,7 @@ Status ValidateClassicMapLayouts(const ClassicMapLayoutInputs& inputs) {
     }
     if (inputs.doodads) {
         const auto& document = *inputs.doodads;
-        if (document.version != 8 || document.subversion != 11 || document.specialVersion != 0
+        if (!IsClassicPlacementVersion(document.version, document.subversion) || document.specialVersion != 0
             || document.recordLayout != PlacementRecordLayout::Classic
             || std::any_of(document.doodads.begin(), document.doodads.end(),
                 [](const DoodadPlacement& doodad) { return doodad.skinId.has_value(); })) {

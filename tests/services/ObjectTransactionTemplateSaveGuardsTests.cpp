@@ -1,12 +1,13 @@
-// 真实 YDWE 模板产物与物编封印的提交边界。设置 FORGE_YDWE_ROOT 后才运行；
-// 未设置返回 77。只读本机工具链，在私有临时目录使用原创合成地图。
+// 模板沙盒产物与物编封印的提交边界。设置 FORGE_YDWE_ROOT 后才运行（只读其中的 w3x2lni 物编数据）；
+// 未设置返回 77。不运行任何外部程序，在私有临时目录使用原创合成地图。
 // 模板脚本尚未经过 JASS 检查，本测试不伪造 checkedBy，也不发布保存候选。
 #include "War3MapCore/Services/ObjectTransactionSaveGuards.h"
 #include "War3MapCore/Services/ObjectTransactionSnapshot.h"
-#include "War3MapCore/Script/LuaTemplateTransaction.h"
+#include "War3MapCore/Script/LuaTemplateSandbox.h"
 #include "War3MapCore/Script/MapScriptBuild.h"
 #include "War3MapCore/ObjectData/ObjectImport.h"
 #include "War3MapCore/Hash.h"
+#include "../MapDataFixtures.h"
 
 #include <Windows.h>
 #include <algorithm>
@@ -78,13 +79,13 @@ std::string RenameTemplate(std::string_view name) {
     return text;
 }
 
-const MemberReplacement& AbilityOutput(const LuaTemplateOutput& output) {
+const MemberReplacement& AbilityOutput(const TemplateTransactionOutput& output) {
     Require(output.objectMembers.size() == 1 && output.objectMembers.front().name == "war3map.w3a",
         "real template must output exactly the ability table");
     return output.objectMembers.front();
 }
 
-void RequireNativeName(const LuaTemplateOutput& output, std::string_view rawcode, std::string_view name) {
+void RequireNativeName(const TemplateTransactionOutput& output, std::string_view rawcode, std::string_view name) {
     const auto parsed = NativeObjectCodec(ObjectType::Ability).Parse(AbilityOutput(output).data);
     const auto* native = parsed.Succeeded() ? dynamic_cast<const NativeObjectDocument*>(parsed.document.get()) : nullptr;
     const auto* object = native ? native->FindObject({ObjectType::Ability, std::string(rawcode)}) : nullptr;
@@ -96,7 +97,7 @@ void RequireNativeName(const LuaTemplateOutput& output, std::string_view rawcode
 }
 
 struct Fixture {
-    LuaTemplateToolchain toolchain;
+    std::filesystem::path toolchain; // w3x2lni 数据根
     Scratch scratch;
     MapArchiveSession source;
     std::vector<std::byte> originalAbility;
@@ -106,14 +107,16 @@ struct Fixture {
     std::string sourceSha;
     unsigned runs = 0;
 
-    explicit Fixture(LuaTemplateToolchain selected) : toolchain(std::move(selected)) {
+    explicit Fixture(std::filesystem::path selected) : toolchain(std::move(selected)) {
         // 原生祖先由真实 frontend 生成，保证对象名/父级/字段地址与工具链一致。
-        const auto seed = OpenMap("seed.w3x", {{"war3map.j", Bytes(kScript)}});
+        // 原创经典 v25 W3I：模板 slk 库据此选择 prebuilt 数据集。
+        const auto settings = MapDataFixtures::FullMapSettingsV25().bytes;
+        const auto seed = OpenMap("seed.w3x", {{"war3map.j", Bytes(kScript)}, {"war3map.w3i", settings}});
         const auto initialSources = SlkMapSourceSnapshot::Capture(seed, {}, {}, 0);
         Require(initialSources.Succeeded() && initialSources.value, "capture bootstrap sources: " + Codes(initialSources));
         const auto original = Run(*initialSources.value, RenameTemplate(kOriginalName));
         originalAbility = AbilityOutput(original).data;
-        source = OpenMap("source.w3x", {{"war3map.j", Bytes(kScript)},
+        source = OpenMap("source.w3x", {{"war3map.j", Bytes(kScript)}, {"war3map.w3i", settings},
             {"war3map.w3a", originalAbility}, {"preserve.bin", {std::byte{0}, std::byte{0xff}}}});
         sourceSha = source.SourceSha256();
 
@@ -149,13 +152,14 @@ struct Fixture {
         return std::move(*opened.value);
     }
 
-    LuaTemplateOutput Run(const SlkMapSourceSnapshot& sources, std::string_view text) {
-        const auto work = scratch.root / ("work-" + std::to_string(++runs));
-        Require(std::filesystem::create_directory(work), "each real interpreter execution owns its work directory");
-        LuaTemplateLimits limits;
-        limits.timeout = std::chrono::seconds{60};
-        const auto output = RunLuaTemplateTransaction(text, sources, toolchain, work, limits);
-        Require(output.Succeeded() && output.value, "real YDWE template execution failed: " + Codes(output));
+    TemplateTransactionOutput Run(const SlkMapSourceSnapshot& sources, std::string_view text) {
+        ++runs;
+        LuaTemplateRequest request;
+        request.preprocessed = text;
+        request.limits.timeout = std::chrono::seconds{60};
+        request.slk = [&]() { return Result<LuaTemplateSlkSources>::Success({toolchain, &sources}); };
+        const auto output = RunLuaTemplate(request);
+        Require(output.Succeeded() && output.value, "template sandbox execution failed: " + Codes(output));
         Require(output.value->script == kScript, "real interpreter removes template tags and preserves the emitted script");
         return *output.value;
     }
@@ -179,7 +183,7 @@ struct Fixture {
         return std::move(*captured.value);
     }
 
-    Status Guard(const LuaTemplateOutput& actualOutput) const {
+    Status Guard(const TemplateTransactionOutput& actualOutput) const {
         // 直接核验真实模板产物。脚本尚未经过 JASS 检查，不构造 PipelineResult。
         auto generated = actualOutput.objectMembers;
         generated.push_back({"war3map.j", Bytes(actualOutput.script)});
@@ -201,7 +205,7 @@ struct Fixture {
     }
 };
 
-void TestRealTemplateHonorsCandidateAndCannotExceedSeal(const LuaTemplateToolchain& toolchain) {
+void TestRealTemplateHonorsCandidateAndCannotExceedSeal(const std::filesystem::path& toolchain) {
     Fixture fixture(toolchain);
     const auto originalSources = SlkMapSourceSnapshot::Capture(fixture.source, {}, {}, 0);
     Require(originalSources.Succeeded() && originalSources.value, "capture actual native ancestor");
@@ -246,10 +250,10 @@ int main() {
             return 77;
         }
         Require(length < 1024, "FORGE_YDWE_ROOT exceeds the supported path budget");
-        const auto toolchain = ResolveLuaTemplateToolchain(std::filesystem::path(root));
-        Require(toolchain.Succeeded() && toolchain.value, "configured YDWE template toolchain is unavailable: " + Codes(toolchain));
-        TestRealTemplateHonorsCandidateAndCannotExceedSeal(*toolchain.value);
-        std::cout << "ObjectTransactionTemplateSaveGuardsTests: real YDWE candidate/no-op/field/addition boundaries passed\n";
+        const auto toolchain = FindTemplateW3x2lniRoot(std::filesystem::path(root));
+        Require(toolchain.has_value(), "configured YDWE root has no w3x2lni object data");
+        TestRealTemplateHonorsCandidateAndCannotExceedSeal(*toolchain);
+        std::cout << "ObjectTransactionTemplateSaveGuardsTests: sandbox candidate/no-op/field/addition boundaries passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "ObjectTransactionTemplateSaveGuardsTests: " << error.what() << '\n';

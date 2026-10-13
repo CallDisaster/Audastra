@@ -123,8 +123,22 @@ private:
             auto valid = ValidateSourceLexicalView(request_.text, *request_.lexicalView);
             if (!valid.Succeeded()) throw RewriteFailure{std::move(valid.diagnostics)};
             auto result = LexJass(request_.lexicalView->text, Text::SourceEncoding::Utf8,
-                {.blockComments = true, .directiveComments = true});
-            if (!result.Succeeded()) throw RewriteFailure{std::move(result.diagnostics)};
+                {.blockComments = true, .directiveComments = true, .vjassOperators = true});
+            if (!result.Succeeded()) {
+                // 视图与原文逐字节对齐：偏移直接对应本阶段输入，与下方无视图分支一样标出位置，
+                // 并在消息里写出生成脚本的行号与该行内容（视图里的原字节已验证为合法 UTF-8 或被等长屏蔽）。
+                for (auto& diagnostic : result.diagnostics) {
+                    const auto offset = (std::min)(diagnostic.origin ? diagnostic.origin->offset : std::size_t{0}, request_.text.size());
+                    diagnostic.origin = Origin(offset, diagnostic.origin ? diagnostic.origin->length : 0);
+                    const auto& view = request_.lexicalView->text;
+                    const auto lineStart = view.rfind('\n', offset == 0 ? 0 : offset - 1);
+                    const auto begin = lineStart == std::string::npos || offset == 0 ? 0 : lineStart + 1;
+                    const auto end = (std::min)(view.find_first_of("\r\n", offset), begin + 160);
+                    diagnostic.message += "（生成脚本第 " + std::to_string(1 + std::count(view.begin(), view.begin() + begin, '\n'))
+                        + " 行：" + view.substr(begin, end - begin) + "）";
+                }
+                throw RewriteFailure{std::move(result.diagnostics)};
+            }
             if (result.value->size() > request_.limits.maxTokens) Budget("词法记号超过预算。", 0);
             for (auto& token : *result.value) token.text = request_.text.substr(token.offset, token.text.size());
             return std::move(*result.value);
@@ -139,7 +153,7 @@ private:
                 "开头UTF-8 BOM仅作为标记解释，输出保留原字节。", Origin(0, 3)});
         }
         auto result = LexJass(request_.text.substr(bom), *request_.encoding,
-            {.blockComments = true, .directiveComments = true});
+            {.blockComments = true, .directiveComments = true, .vjassOperators = true});
         if (!result.Succeeded()) {
             for (auto& diagnostic : result.diagnostics) {
                 const auto offset = diagnostic.origin ? diagnostic.origin->offset : 0;

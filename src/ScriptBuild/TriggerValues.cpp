@@ -107,6 +107,9 @@ void TriggerEmitter::PutNativeValue(const Arg& arg, const std::string& slotType)
             || kind == Trigger::TriggerTypeSystem::Literal::Integer || kind == Trigger::TriggerTypeSystem::Literal::Other)) {
             for (auto diagnostic : validated.diagnostics) {
                 diagnostic.origin = arg.origin;
+                // 写出是哪个触发器里的哪个值，作者才能找到要改的地方。
+                diagnostic.message += "（" + (trigger_ != nullptr ? "触发器“" + trigger_->name.text + "”，" : std::string{})
+                    + slotType + " 固定值：" + value.substr(0, 80) + "）";
                 diagnostics_.push_back(std::move(diagnostic));
             }
             return;

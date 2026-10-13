@@ -81,9 +81,11 @@ bool RejectUnsupportedMapFormat(MapSaveTask& task) {
     }
     // 在脚本重建之前直接锁住地图版本。脚本门禁仍存在，但不可再依赖它间接阻止
     // 未来新增的无脚本保存路径写出尚未实现的 W3I / SkinId 布局。
+    // 混乱之治 v18 只在 JASS 保存且本次不改 W3I 时放行：W3I 原字节保留，脚本按 v18 设置重建。
     if (task.archive->HasMember("war3map.w3i")) {
         const auto settings = task.archive->ReadMember("war3map.w3i");
-        if (!settings.Succeeded() || !settings.value || HeaderVersion(*settings.value) != expectedVersion) {
+        const bool rocSource = !luaTarget && settings.Succeeded() && settings.value && HeaderVersion(*settings.value) == 18u;
+        if (!rocSource && (!settings.Succeeded() || !settings.value || HeaderVersion(*settings.value) != expectedVersion)) {
             Error(task, "SAVE_MAP_FORMAT_UNSUPPORTED", "源地图 W3I 不是已验证的经典 v25 布局，已拒绝写出。");
             return true;
         }

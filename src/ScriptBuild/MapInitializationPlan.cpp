@@ -96,13 +96,15 @@ private:
         if (inputs_.strings) plan_.strings = *inputs_.strings;
         const auto& settings = plan_.settings;
         const auto sourceVersion = settings.SourceFormatVersion();
-        if ((settings.formatVersion != 25 && settings.formatVersion != 31)
+        const bool roc = settings.HasRocLayout();
+        if (!roc && ((settings.formatVersion != 25 && settings.formatVersion != 31)
             || (sourceVersion && *sourceVersion != 25 && *sourceVersion != 31)
-            || (sourceVersion == 31 && settings.formatVersion != 31))
-            Reject("MAP_INIT_SETTINGS_VERSION_UNSUPPORTED", "初始化只支持 v25 或明确档案的 v31 已知子集；不能改版本标签丢字段。", kSettings);
+            || (sourceVersion == 31 && settings.formatVersion != 31)))
+            Reject("MAP_INIT_SETTINGS_VERSION_UNSUPPORTED", "初始化只支持混乱之治 v18、v25 或明确档案的 v31 已知子集；不能改版本标签丢字段。", kSettings);
         if (!settings.FullyParsed())
             Reject("MAP_INIT_SETTINGS_INCOMPLETE", "自定义表缺失或含未知尾部，不能把未解析部分当作空表。", kSettings);
-        if (settings.rocCampaignBackground || settings.rocLoadingScreenNumber
+        // 混乱之治的战役背景与载入画面编号由游戏读地图设置，脚本里没有对应语句。
+        if ((!roc && (settings.rocCampaignBackground || settings.rocLoadingScreenNumber))
             || settings.forceDefaultCameraZoom || settings.forceMaxCameraZoom || settings.forceMinCameraZoom
             || (settings.formatVersion == 25 && !settings.HasClassicLayout()))
             Reject("MAP_INIT_SETTINGS_EXTENSION_UNSUPPORTED", "地图设置包含当前初始化尚不能表达的扩展字段。", kSettings);

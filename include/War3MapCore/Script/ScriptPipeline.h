@@ -75,6 +75,8 @@ struct TemplateTransactionOutput {
     std::string script;
     std::vector<MemberReplacement> objectMembers; // 空表示物编无变化
     std::vector<std::string> toolMessages;
+    std::vector<MemberReplacement> imports; // 模板 import 写入的文件（规则同 EvaluateTemplates）
+    std::vector<Diagnostic> diagnostics;    // 非致命提示（如 slk 报告中的读取错误）
 };
 
 struct TemplateContext {

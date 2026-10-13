@@ -306,12 +306,14 @@ ParsedWct ParseWct(std::span<const std::byte> data) {
     Reader reader(data, "war3map.wct");
     ParsedWct result;
     result.header.version = reader.ReadI32("version");
-    if (result.header.version != kWctVersion) {
-        throw FormatError("war3map.wct: only version 1 is supported; got " +
+    if (result.header.version != kWctVersion && result.header.version != kWctLegacyVersion) {
+        throw FormatError("war3map.wct: only versions 0 and 1 are supported; got " +
             std::to_string(result.header.version));
     }
-    result.header.customComment = reader.ReadCString("custom comment");
-    result.header.customCode = ReadSizedText(reader, "custom code", result.globalEmptyTerminated);
+    if (result.header.version == kWctVersion) {
+        result.header.customComment = reader.ReadCString("custom comment");
+        result.header.customCode = ReadSizedText(reader, "custom code", result.globalEmptyTerminated);
+    }
     const std::size_t count = reader.ReadCount("trigger slot count", 4);
     result.slots.reserve(count);
     for (std::size_t index = 0; index < count; ++index) {
@@ -541,13 +543,15 @@ void ValidateGraph(
 void WriteArgument(
     Writer& writer,
     const TriggerDocument& document,
-    std::uint32_t index);
+    std::uint32_t index,
+    std::int32_t version);
 
 void WriteEca(
     Writer& writer,
     const TriggerDocument& document,
     std::uint32_t index,
-    bool child) {
+    bool child,
+    std::int32_t version) {
     const EcaNode& eca = document.ecaNodes.at(index);
     writer.WriteI32(eca.type);
     if (child) {
@@ -559,28 +563,30 @@ void WriteEca(
     writer.WriteCString(eca.name);
     writer.WriteI32(eca.enabled);
     for (const std::uint32_t argument : eca.arguments) {
-        WriteArgument(writer, document, argument);
+        WriteArgument(writer, document, argument, version);
     }
+    if (version < kWtgVersion) return; // 版本 4 没有子节点计数（验证已拒绝带子节点的文档）
     writer.WriteI32(CheckedCount(eca.children.size(), "child ECA count"));
     for (const std::uint32_t childIndex : eca.children) {
-        WriteEca(writer, document, childIndex, true);
+        WriteEca(writer, document, childIndex, true, version);
     }
 }
 
 void WriteArgument(
     Writer& writer,
     const TriggerDocument& document,
-    std::uint32_t index) {
+    std::uint32_t index,
+    std::int32_t version) {
     const ArgumentNode& argument = document.argumentNodes.at(index);
     writer.WriteI32(argument.type);
     writer.WriteCString(argument.value);
     writer.WriteI32(argument.insertCall);
     if (argument.callEca.has_value()) {
-        WriteEca(writer, document, *argument.callEca, false);
+        WriteEca(writer, document, *argument.callEca, false, version);
     }
     writer.WriteI32(argument.insertIndex);
     if (argument.indexArgument.has_value()) {
-        WriteArgument(writer, document, *argument.indexArgument);
+        WriteArgument(writer, document, *argument.indexArgument, version);
     }
 }
 
@@ -717,11 +723,30 @@ void ValidateSealAndHeaders(const TriggerDocument& document, const UiCatalog& ca
             "wtg.source-seal.identity-mismatch",
             "WTG 来源 seal 或 UI Catalog 身份不匹配，禁止验证或序列化。");
     }
-    if (document.variablesHeader != 2) {
-        AddValidationError(status, "wtg.variables-header", "WTG v7 variablesHeader must be 2");
+    // 该字段是游戏版本：冰封王座格式（WTG 7）为 2，混乱之治格式（WTG 4）为 1。原值写回，不改版本。
+    const std::int32_t expectedGameVersion = document.wtgVersion == kWtgLegacyVersion ? 1 : 2;
+    if (document.variablesHeader != expectedGameVersion) {
+        AddValidationError(status, "wtg.variables-header", "WTG v" + std::to_string(document.wtgVersion)
+            + " variablesHeader (game version) must be " + std::to_string(expectedGameVersion));
     }
-    if (document.wct.version != kWctVersion) {
-        AddValidationError(status, "wct.version", "WCT version must be 1");
+    if (document.wtgVersion != kWtgVersion && document.wtgVersion != kWtgLegacyVersion) {
+        AddValidationError(status, "wtg.version", "WTG version must be 4 or 7");
+    } else if (document.wtgVersion == kWtgLegacyVersion) {
+        // 混乱之治格式写不下这些内容；明确拒绝，不悄悄丢弃。
+        const auto reject = [&](const std::string& what) {
+            AddValidationError(status, "wtg.legacy-format", "这张图的触发器是混乱之治格式（WTG 版本 4），" + what);
+        };
+        for (const CategoryRecord& category : document.categories)
+            if (category.comment != 0) { reject("不能保存注释类分类：" + category.name.text); break; }
+        for (const TriggerRecord& trigger : document.triggers)
+            if (trigger.type != 0) { reject("不能保存注释触发器：" + trigger.name.text); break; }
+        for (const VariableRecord& variable : document.variables)
+            if (variable.size != 1) { reject("变量没有数组大小字段：" + variable.name.text); break; }
+        for (const EcaNode& eca : document.ecaNodes)
+            if (!eca.children.empty()) { reject("不支持带子动作的块（如“多个动作”“如果-则-否则（多项）”）：" + eca.name.text); break; }
+    }
+    if (document.wct.version != kWctVersion && document.wct.version != kWctLegacyVersion) {
+        AddValidationError(status, "wct.version", "WCT version must be 0 or 1");
     }
 }
 
@@ -876,13 +901,14 @@ namespace {
 template <class Seal>
 EncodedTriggerDocument EncodeDocument(const TriggerDocument& document, const Seal& seal) {
     Writer wtg;
+    const std::int32_t version = document.wtgVersion;
     wtg.WriteAscii("WTG!");
-    wtg.WriteI32(kWtgVersion);
+    wtg.WriteI32(version);
     wtg.WriteI32(CheckedCount(document.categories.size(), "category count"));
     for (const CategoryRecord& category : document.categories) {
         wtg.WriteI32(category.categoryId);
         wtg.WriteCString(category.name);
-        wtg.WriteI32(category.comment);
+        if (version >= kWtgVersion) wtg.WriteI32(category.comment);
     }
     wtg.WriteI32(document.variablesHeader);
     wtg.WriteI32(CheckedCount(document.variables.size(), "variable count"));
@@ -891,7 +917,7 @@ EncodedTriggerDocument EncodeDocument(const TriggerDocument& document, const Sea
         wtg.WriteCString(variable.typeName);
         wtg.WriteI32(variable.unknown);
         wtg.WriteI32(variable.isArray);
-        wtg.WriteI32(variable.size);
+        if (version >= kWtgVersion) wtg.WriteI32(variable.size);
         wtg.WriteI32(variable.hasDefault);
         wtg.WriteCString(variable.value);
     }
@@ -899,7 +925,7 @@ EncodedTriggerDocument EncodeDocument(const TriggerDocument& document, const Sea
     for (const TriggerRecord& trigger : document.triggers) {
         wtg.WriteCString(trigger.name);
         wtg.WriteCString(trigger.description);
-        wtg.WriteI32(trigger.type);
+        if (version >= kWtgVersion) wtg.WriteI32(trigger.type);
         wtg.WriteI32(trigger.enabled);
         wtg.WriteI32(trigger.customTextFlag);
         wtg.WriteI32(trigger.initiallyClosed);
@@ -907,15 +933,21 @@ EncodedTriggerDocument EncodeDocument(const TriggerDocument& document, const Sea
         wtg.WriteI32(trigger.categoryId);
         wtg.WriteI32(CheckedCount(trigger.ecas.size(), "root ECA count"));
         for (const std::uint32_t eca : trigger.ecas) {
-            WriteEca(wtg, document, eca, false);
+            WriteEca(wtg, document, eca, false, version);
         }
     }
     ByteVector encodedWtg = wtg.Take();
 
     Writer wct;
-    wct.WriteI32(document.wct.version);
-    wct.WriteCString(document.wct.customComment);
-    WriteSizedText(wct, document.wct.customCode, seal.globalEmptyTerminated);
+    // 版本 0 没有地图头代码段；作者加了头注释或自定义代码时只能写成版本 1。
+    const bool legacy = document.wct.version == kWctLegacyVersion
+        && document.wct.customComment.text.empty() && document.wct.customComment.originalBytes.empty()
+        && document.wct.customCode.text.empty() && document.wct.customCode.originalBytes.empty();
+    wct.WriteI32(legacy ? kWctLegacyVersion : kWctVersion);
+    if (!legacy) {
+        wct.WriteCString(document.wct.customComment);
+        WriteSizedText(wct, document.wct.customCode, seal.globalEmptyTerminated);
+    }
     wct.WriteI32(CheckedCount(document.triggers.size(), "WCT trigger slot count"));
     for (const TriggerRecord& trigger : document.triggers) {
         WriteSizedText(wct, trigger.customText, seal.emptyTerminatedTriggers.contains(trigger.id));

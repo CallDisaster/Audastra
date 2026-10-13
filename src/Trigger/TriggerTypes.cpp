@@ -206,6 +206,15 @@ bool TriggerTypeSystem::IsRealLiteral(std::string_view value) {
     return result.ec == std::errc{} && result.ptr == value.data() + value.size() && std::isfinite(number);
 }
 
+namespace {
+// 只去掉空格与制表符；换行写进脚本会断开语句，仍按非法处理。
+std::string_view TrimSpaces(std::string_view value) {
+    const auto first = value.find_first_not_of(" \t");
+    if (first == std::string_view::npos) return {};
+    return value.substr(first, value.find_last_not_of(" \t") - first + 1);
+}
+} // namespace
+
 Status TriggerTypeSystem::ValidateLiteral(std::string_view type, std::string_view value) const {
     const auto resolved = ResolveLiteral(*this, type);
     const Literal kind = resolved.kind;
@@ -215,9 +224,10 @@ Status TriggerTypeSystem::ValidateLiteral(std::string_view type, std::string_vie
         message = "对象编号的类型未定义、别名成环，或没有有效的整数父链：" + std::string(type) + "。";
     else if (kind == Literal::ObjectCode && !IsObjectCodeLiteral(value))
         message = "对象编号固定值必须是四个可打印 ASCII 字节；不加引号、不使用反斜杠、转义或 null。";
-    else if (kind == Literal::Integer && !IsIntegerLiteral(value))
+    // 数值前后的空格（WE 原样存下、原样写进脚本，JASS 也接受）不是表达式，核对时忽略。
+    else if (kind == Literal::Integer && !IsIntegerLiteral(TrimSpaces(value)))
         message = "请输入 int32 十进制或32位十六进制整数（0x 或 $ 前缀）；固定值不接受表达式。";
-    else if (kind == Literal::Real && !IsRealLiteral(value))
+    else if (kind == Literal::Real && !IsRealLiteral(TrimSpaces(value)))
         message = "请输入有限的十进制实数；固定值不接受指数、NaN 或表达式。";
     else if (kind == Literal::Boolean && value != "true" && value != "false")
         message = "布尔固定值只能是真（true）或假（false）。";
