@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <exception>
 #include <limits>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace Audastra::Runtime32::OwnLua {
@@ -38,6 +39,9 @@ struct LuaHost::Impl {
     std::uint32_t callbackDepth = 0;
     std::string console;
     std::string_view requestedModule;
+    std::string_view reloadSource;
+    // 热重载过的模块正文：本局之后的 require 使用新正文，地图归档本身不变。
+    std::unordered_map<std::string, std::string> overrides;
     std::unordered_set<std::string> loading;
     std::unordered_set<std::string> readModules;
     std::unique_ptr<LuaNativeBindings> natives;
@@ -146,6 +150,7 @@ struct LuaHost::Impl {
         return 0;
     }
     LuaModuleRead ReadModule(std::string_view member) {
+        if (const auto found = overrides.find(std::string(member)); found != overrides.end()) return {true, found->second, {}};
         try { return reader ? reader(member, limits.sourceBytes) : LuaModuleRead{false, {}, "未配置地图归档读取器。"}; }
         catch (const std::exception& error) { return {false, {}, error.what()}; }
         catch (...) { return {false, {}, "读取地图 Lua 模块时发生异常。"}; }
@@ -212,12 +217,55 @@ struct LuaHost::Impl {
         return 0;
     }
     static int InitializeNatives(lua_State* lua) { Host(lua).natives->Install(lua); return 0; }
+    // 模块热重载：编译通过后先登记新正文；已加载时以新正文重新执行一次，把新结果表里的函数
+    // 写回原模块表（保留表身份，已注册的回调通过表字段调用到新逻辑），原表没有的字段一并补上，
+    // 其余已有数据字段保持原值。模块顶层的副作用（例如注册触发器）会随重新执行再发生一次。
+    static int ReloadRequested(lua_State* lua) {
+        auto& self = Host(lua);
+        const std::string name(self.requestedModule);
+        const auto member = LuaModuleMember(name);
+        const std::string chunk = "@" + member;
+        if (luaL_loadbufferx(lua, self.reloadSource.data(), self.reloadSource.size(), chunk.c_str(), "t") != LUA_OK)
+            return lua_error(lua);
+        self.overrides[member] = std::string(self.reloadSource);
+        const int function = lua_gettop(lua);
+        lua_rawgetp(lua, LUA_REGISTRYINDEX, &loadedModulesKey);
+        const int loaded = lua_gettop(lua);
+        lua_getfield(lua, loaded, name.c_str());
+        const int previous = lua_gettop(lua);
+        if (!lua_toboolean(lua, previous)) { lua_settop(lua, function - 1); return 0; }
+        lua_pushvalue(lua, function);
+        lua_pushlstring(lua, name.data(), name.size());
+        lua_pushlstring(lua, member.data(), member.size());
+        lua_call(lua, 2, 1);
+        if (lua_isnil(lua, -1)) { lua_pop(lua, 1); lua_pushboolean(lua, 1); }
+        const int fresh = lua_gettop(lua);
+        if (lua_istable(lua, previous) && lua_istable(lua, fresh)) {
+            if (!lua_rawequal(lua, previous, fresh)) {
+                lua_pushnil(lua);
+                while (lua_next(lua, fresh)) {
+                    bool replace = lua_type(lua, -1) == LUA_TFUNCTION;
+                    if (!replace) {
+                        lua_pushvalue(lua, -2); lua_gettable(lua, previous);
+                        replace = lua_isnil(lua, -1); lua_pop(lua, 1);
+                    }
+                    if (replace) { lua_pushvalue(lua, -2); lua_pushvalue(lua, -2); lua_settable(lua, previous); }
+                    lua_pop(lua, 1);
+                }
+            }
+        } else {
+            lua_pushvalue(lua, fresh); lua_setfield(lua, loaded, name.c_str());
+        }
+        lua_settop(lua, function - 1);
+        return 0;
+    }
     static int RequireRequested(lua_State* lua) {
         const auto name = Host(lua).requestedModule;
         lua_pushlstring(lua, name.data(), name.size());
         return Require(lua);
     }
-    LuaHostResult Run(std::string_view source, std::string_view name, bool module) {
+    enum class RunKind { Chunk, Module, Reload };
+    LuaHostResult Run(std::string_view source, std::string_view name, RunKind kind) {
         if (!state || !thread || GetCurrentThreadId() != thread || executing)
             return Failure(LuaReloadResult::NotReady, "Lua 宿主尚未就绪、线程不符或正处于执行中。");
         callbacks.Drain();
@@ -227,13 +275,16 @@ struct LuaHost::Impl {
             Impl& host;
             ~Execution() {
                 lua_sethook(host.state, nullptr, 0, 0); lua_settop(host.state, 0);
-                host.executing = false; host.requestedModule = {};
+                host.executing = false; host.requestedModule = {}; host.reloadSource = {};
             }
         } execution{*this};
         lua_pushcfunction(state, Traceback);
-        if (module) {
+        if (kind == RunKind::Module) {
             requestedModule = name;
             lua_pushcfunction(state, RequireRequested);
+        } else if (kind == RunKind::Reload) {
+            requestedModule = name; reloadSource = source;
+            lua_pushcfunction(state, ReloadRequested);
         } else {
             const std::string chunk(name);
             const int loaded = luaL_loadbufferx(state, source.data(), source.size(), chunk.c_str(), "t");
@@ -327,11 +378,18 @@ LuaHostResult LuaHost::Execute(std::string_view source, std::string_view chunkNa
     auto& self = *impl_;
     if (source.empty() || source.size() > self.limits.sourceBytes || !LuaMailboxUtf8(source) || !LuaMailboxChunkName(chunkName))
         return Failure(LuaReloadResult::InvalidRequest, "Lua 代码或名称不是有效的有界 UTF-8 文本。");
-    return self.Run(source, chunkName, false);
+    return self.Run(source, chunkName, Impl::RunKind::Chunk);
 }
 LuaHostResult LuaHost::ExecuteModule(std::string_view module) {
     if (LuaModuleMember(module).empty()) return Failure(LuaReloadResult::InvalidRequest, "Lua 入口模块不是有效的地图内成员。");
-    return impl_->Run({}, module, true);
+    return impl_->Run({}, module, Impl::RunKind::Module);
+}
+LuaHostResult LuaHost::ReloadModule(std::string_view module, std::string_view source) {
+    auto& self = *impl_;
+    if (LuaModuleMember(module).empty()) return Failure(LuaReloadResult::InvalidRequest, "热重载的模块名不是有效的地图内成员。");
+    if (source.empty() || source.size() > self.limits.sourceBytes || !LuaMailboxUtf8(source))
+        return Failure(LuaReloadResult::InvalidRequest, "热重载的模块正文不是有效的有界 UTF-8 文本。");
+    return self.Run(source, module, Impl::RunKind::Reload);
 }
 LuaHostResult LuaHost::BindNatives(std::shared_ptr<NativeProvider> provider) {
     auto& self = *impl_;

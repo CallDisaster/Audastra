@@ -7,7 +7,7 @@
 namespace Audastra::Runtime32 {
 
 inline constexpr std::uint32_t kLuaMailboxMagic = 0x414c5541;
-inline constexpr std::uint32_t kLuaMailboxVersion = 2;
+inline constexpr std::uint32_t kLuaMailboxVersion = 3; // 3：chunk 名 "module:<名>" 表示模块热重载。
 inline constexpr std::size_t kLuaReloadSourceCapacity = 1024 * 1024;
 inline constexpr std::size_t kLuaReloadResultCapacity = 16 * 1024;
 inline constexpr std::size_t kLuaReloadChunkCapacity = 256;

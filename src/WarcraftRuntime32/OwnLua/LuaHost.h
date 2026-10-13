@@ -45,6 +45,8 @@ public:
     // 调用线程绑定到 Initialize；不创建后台执行线程，不执行二进制 chunk。
     [[nodiscard]] LuaHostResult Execute(std::string_view source, std::string_view chunkName);
     [[nodiscard]] LuaHostResult ExecuteModule(std::string_view module);
+    // 用新正文热重载地图内模块：已加载时重新执行并把新函数写回原模块表，未加载时只替换之后 require 的正文。
+    [[nodiscard]] LuaHostResult ReloadModule(std::string_view module, std::string_view source);
     [[nodiscard]] std::size_t MemoryBytes() const noexcept;
     [[nodiscard]] std::size_t CallbackCount() const noexcept;
     [[nodiscard]] std::string_view ConsoleText() const noexcept;

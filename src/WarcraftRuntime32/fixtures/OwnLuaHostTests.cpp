@@ -203,9 +203,36 @@ void MailboxExecutesRealLua() {
 }
 }
 
+void ModuleHotReload() {
+    // 原创两模块：skill 返回函数表并保存一个计数状态；main 通过表字段间接调用，模拟已注册回调。
+    const std::unordered_map<std::string, std::string> modules{
+        {"skill.lua", "local M={hits=0}\nfunction M.damage() return 10 end\nreturn M"},
+        {"main.lua", "local skill=require('skill')\ncallback=function() skill.hits=skill.hits+1; return skill.damage() end"},
+        {"later.lua", "return {value=1}"},
+    };
+    LuaHost host([&](std::string_view member, std::size_t) {
+        const auto found = modules.find(std::string(member));
+        return found == modules.end() ? LuaModuleRead{} : LuaModuleRead{true, found->second, {}};
+    });
+    Success(host.Initialize(), "reload host initialize");
+    Success(host.ExecuteModule("main"), "entry module");
+    Success(host.Execute("assert(callback()==10 and callback()==10)", "@before.lua"), "original logic");
+    Success(host.ReloadModule("skill", "local M={hits=0, added=5}\nfunction M.damage() return 25 end\nreturn M"), "reload loaded module");
+    Success(host.Execute("local s=require('skill'); assert(callback()==25); assert(s.hits==3 and s.added==5)", "@after.lua"),
+        "registered callback reaches new function while module state and identity are kept");
+    Success(host.ReloadModule("later", "return {value=2}"), "reload not-yet-loaded module");
+    Success(host.Execute("assert(require('later').value==2)", "@later-check.lua"), "later require uses reloaded text");
+    const auto broken = host.ReloadModule("skill", "function M.damage( return 1 end");
+    Check(broken.code == LuaReloadResult::SyntaxError || broken.code == LuaReloadResult::RuntimeError, "syntax error refused");
+    Check(broken.message.find("skill.lua:1") != std::string::npos, "syntax error points at the module file and line");
+    Success(host.Execute("assert(callback()==25)", "@unchanged.lua"), "failed reload keeps previous logic");
+    Check(host.ReloadModule("../escape", "return 1").code == LuaReloadResult::InvalidRequest, "invalid module name refused");
+}
+
 int main() {
     try {
         TextOnlyAndSandbox(); ArchiveModules(); ClassicEntrySyntax(); BudgetsAndRandom(); RuntimeBehaviorModules(); MailboxExecutesRealLua();
+        ModuleHotReload();
         std::cout << "Own Lua 5.3 host passed; original in-memory archive/native-free fixture; game_evidence=0\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

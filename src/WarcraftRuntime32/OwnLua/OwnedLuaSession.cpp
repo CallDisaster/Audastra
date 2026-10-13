@@ -130,7 +130,11 @@ public:
             return {true, false, {}};
         }
         ++executionDepth;
-        const auto result = host->Execute(request->source, request->chunkName);
+        // “module:<模块名>” 是作者手写 Lua 文件的模块热重载；其余名称按一段独立代码执行。
+        constexpr std::string_view modulePrefix = "module:";
+        const auto result = std::string_view(request->chunkName).starts_with(modulePrefix)
+            ? host->ReloadModule(std::string_view(request->chunkName).substr(modulePrefix.size()), request->source)
+            : host->Execute(request->source, request->chunkName);
         --executionDepth;
         if (!mailbox->Complete(request->sequence, result.code, result.message)) {
             Fatal("热重载已经执行，但无法提交本次请求的独立回执。");
