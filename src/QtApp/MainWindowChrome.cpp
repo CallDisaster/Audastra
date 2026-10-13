@@ -97,6 +97,10 @@ void MainWindow::BuildHeader() {
     newMap->setShortcut(QKeySequence::New);
     RegisterCommandAction("file.new.map", newMap, tr("工程"));
     addAction(newMap);
+    auto* luaTutorial = fileMenu->addAction(tr("新建 Lua 教程地图…"), this, &MainWindow::CreateLuaTutorialMap);
+    luaTutorial->setObjectName("createLuaTutorialMapAction");
+    luaTutorial->setToolTip(tr("生成一张带分课 Lua 脚本和 exec-lua 入口的示例地图，按 F9 即可试玩与热重载"));
+    RegisterCommandAction("file.new.lua-tutorial", luaTutorial, tr("工程"));
     auto* openMap = fileMenu->addAction(War3Map::UiKit::SvgIcon("lucide/folder-open"), tr("打开地图…"), this, &MainWindow::OpenMapArchive);
     openMap->setObjectName(QStringLiteral("openMapAction"));
     openMap->setShortcut(QKeySequence::Open);
@@ -144,6 +148,14 @@ void MainWindow::BuildHeader() {
     auto* enableReload = fileMenu->addAction(tr("Lua 测试启用热重载"));
     enableReload->setCheckable(true); enableReload->setChecked(QSettings{}.value("mapTest/hotReloadEnabled", true).toBool());
     connect(enableReload, &QAction::toggled, this, [](bool enabled) { QSettings{}.setValue("mapTest/hotReloadEnabled", enabled); });
+    // 手写 Lua（exec-lua 入口）地图的测试运行环境：自带环境可热重载；YDWE 引擎提供 jass.japi 等扩展模块。
+    auto* ydweLua = fileMenu->addAction(tr("Lua 测试使用 YDWE 引擎"));
+    ydweLua->setObjectName("luaTestYdweEngineAction"); ydweLua->setCheckable(true);
+    ydweLua->setToolTip(tr("默认使用 Audastra 自带 Lua 环境（可热重载）；地图需要 jass.japi 等 YDWE 模块时勾选"));
+    ydweLua->setChecked(QSettings{}.value("mapTest/luaEngine").toString() == QLatin1String("ydwe"));
+    connect(ydweLua, &QAction::toggled, this, [](bool enabled) {
+        QSettings{}.setValue("mapTest/luaEngine", enabled ? QStringLiteral("ydwe") : QStringLiteral("owned"));
+    });
     fileMenu->addSeparator();
     saveProjectAction_ = MenuAction(this, "lucide/save", tr("保存工程"), tr("保存工程（编辑状态存档）"));
     saveProjectAction_->setObjectName("saveEditorProjectAction");

@@ -286,6 +286,34 @@ void TestClassicV1CommonMapSaveAndTemplateBoundary() {
     }
 }
 
+// 与“新建 Lua 教程地图”同一服务：初始化触发器里的 exec-lua 入口进入生成脚本，附加 Lua 文件写入地图。
+void TestOptionalRealLuaTutorialCreate() {
+    const auto ydwe = ObjectV1EnvironmentPath(L"FORGE_YDWE_ROOT");
+    const auto game = ObjectV1EnvironmentPath(L"FORGE_WORLD_GAME_ROOT");
+    if (ydwe.empty() || game.empty()) {
+        std::cout << "SKIP real Lua tutorial create: FORGE_YDWE_ROOT / FORGE_WORLD_GAME_ROOT unset\n";
+        return;
+    }
+    TempDirectory scratch;
+    MapCreateRequest request;
+    request.options.name = "Lua tutorial fixture";
+    request.options.initTriggerName = "Lua 入口";
+    request.options.initCustomScript = {"call Cheat(\"exec-lua: \\\"main\\\"\")"};
+    request.options.extraMembers = {{"main.lua", Bytes("require 'lessons.hello'\n")}, {"lessons\\hello.lua", Bytes("return {}\n")}};
+    request.target = scratch.Path() / "tutorial.w3x";
+    request.workspace = scratch.Path() / "work";
+    request.toolRoot = ydwe; request.gameRoot = game;
+    const auto created = CreateMapCandidate(request);
+    Require(created.Succeeded() && created.value, "tutorial map is created through the normal save gate");
+    auto opened = MapArchiveSession::Open(created.value->path);
+    Require(opened.Succeeded(), "reopen tutorial map");
+    const auto script = opened.value->ReadMember("war3map.j");
+    const auto lesson = opened.value->ReadMember("lessons\\hello.lua");
+    Require(script.Succeeded() && lesson.Succeeded() && *lesson.value == Bytes("return {}\n"), "Lua files written byte-for-byte");
+    const std::string text(reinterpret_cast<const char*>(script.value->data()), script.value->size());
+    Require(text.find("call Cheat(\"exec-lua: \\\"main\\\"\")") != std::string::npos, "exec-lua entry is in the generated script");
+}
+
 void TestOptionalRealClassicV1MapSave() {
     const auto source = ObjectV1EnvironmentPath(L"FORGE_OBJECT_V1_MAP");
     if (source.empty()) {
@@ -1448,6 +1476,20 @@ void TestMapCreationRejectsUnboundedOrExistingInputs() {
     Require(ValidateMapCreateOptions(options).Succeeded(), "inclusive text byte limit");
     options.author = std::string(129, 'x');
     Require(!ValidateMapCreateOptions(options).Succeeded(), "author shares text budget");
+    options.author.clear();
+    options.initCustomScript = {"call Cheat(\"exec-lua: \\\"main\\\"\")"};
+    Require(!ValidateMapCreateOptions(options).Succeeded(), "init code needs a trigger name");
+    options.initTriggerName = "Lua 入口";
+    Require(ValidateMapCreateOptions(options).Succeeded(), "named init trigger with one code line");
+    options.initCustomScript.push_back("a\nb");
+    Require(!ValidateMapCreateOptions(options).Succeeded(), "multi-line code is refused");
+    options.initCustomScript.pop_back();
+    for (const auto* bad : {"war3map.j", "(listfile)", "..\\escape.lua", "C:\\abs.lua", "\\root.lua", ""}) {
+        options.extraMembers = {{bad, Bytes("return 1\n")}};
+        Require(!ValidateMapCreateOptions(options).Succeeded(), "extra member cannot replace map data or escape");
+    }
+    options.extraMembers = {{"lessons\\hello.lua", Bytes("return 1\n")}};
+    Require(ValidateMapCreateOptions(options).Succeeded(), "relative extra Lua member");
     TempDirectory scratch;
     MapCreateRequest request;
     request.target = scratch.Path() / "new.w3x";
@@ -1467,6 +1509,7 @@ int main() {
         TestFrozenSourceAndVerifiedCandidate();
         TestClassicV1CommonMapSaveAndTemplateBoundary();
         TestOptionalRealClassicV1MapSave();
+        TestOptionalRealLuaTutorialCreate();
         TestIncompleteScriptInputDoesNotWriteCandidate();
         TestIndependentUiPreparationGate();
         TestSharedPerFileEncodingDeclarations();

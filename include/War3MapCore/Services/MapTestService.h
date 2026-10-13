@@ -9,6 +9,10 @@
 namespace War3Map::Services {
 
 enum class MapTestRuntimeLayout { Flat, YdweTree };
+// 作者手写 Lua（脚本里 Cheat("exec-lua: \"模块\"")）的测试运行环境。
+// Owned：Audastra 自带 Lua，可热重载；地图还需要原版没有的扩展接口时改用 YDWE 引擎并提示。
+// Ydwe：始终使用本机 YDWE 的 Lua 引擎（不能热重载）。
+enum class MapTestLuaEngine { Owned, Ydwe };
 
 // 既有 UI 设置可指向安装根、ui 或 share/mpq；仅归一这两个已知子目录，不搜索其他父目录。
 [[nodiscard]] std::filesystem::path MapTestYdweInstallRoot(const std::filesystem::path& configuredUiRoot);
@@ -30,6 +34,8 @@ struct MapTestRequest {
     // 显式选择自有经典 Lua；不能由 YDWE 路径或热重载请求隐式改变运行时。
     bool useOwnedLuaRuntime = false;
     bool enableLuaHotReload = false;
+    MapTestLuaEngine handwrittenLuaEngine = MapTestLuaEngine::Owned;
+    bool handwrittenLuaHotReload = true;
 };
 
 struct MapTestArtifact {
@@ -48,6 +54,8 @@ struct MapTestArtifact {
     MapTestRuntimeLayout runtimeLayout = MapTestRuntimeLayout::Flat;
     bool useOwnedLuaRuntime = false;
     bool enableLuaHotReload = false;
+    MapTestLuaEngine handwrittenLuaEngine = MapTestLuaEngine::Owned;
+    bool handwrittenLuaHotReload = true;
 };
 
 struct MapTestSlkRequest {
@@ -84,6 +92,8 @@ struct MapTestLaunchPlan {
     MapTestRuntimeLayout runtimeLayout = MapTestRuntimeLayout::Flat;
     bool useOwnedLuaRuntime = false;
     bool enableLuaHotReload = false;
+    // 脚本中实际出现的 exec-lua 入口模块（按出现顺序）；为空表示地图不加载手写 Lua。
+    std::vector<std::string> luaEntryModules;
     // 与启动器、Game.dll一同持有到进程终态，防止预检后替换注入库。
     std::filesystem::path runtimeBootstrap;
     std::string runtimeBootstrapSha256;

@@ -4,6 +4,7 @@
 #include "PendingImportPayload.h"
 
 #include "War3MapCore/Image/BlpImage.h"
+#include "War3MapCore/Lua/LuaSyntax.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
@@ -18,6 +19,7 @@
 #include "War3MapCore/Services/MapObjectReferenceCapture.h"
 #include "War3MapCore/Trigger/TriggerVariableReference.h"
 
+#include <QFile>
 #include <QTemporaryDir>
 #include <QUndoStack>
 
@@ -126,11 +128,27 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
         AddDiagnostic(tr("错误"), tr("地图"), code, message);
         return std::unique_ptr<MapSaveJob>{};
     };
+    // 作者手写的 Lua 文件按普通导入资源写入地图（YDWE 约定：由 Cheat("exec-lua: ...") 加载）；
+    // 写入前用内置 Lua 5.3（含 YDWE |xxxx| 四字码）检查语法，有错误时不保存并指出文件与行。
     for (const auto& pending : pendingImports_) {
         const auto path = CanonicalMember(pending.archivePath.toStdString());
-        if (pending.runtimeLuaDraft || (pending.ownedPayload && path.ends_with(".lua")))
-            return fail(tr("MAP_RUNTIME_LUA_PROFILE_UNCONFIRMED"),
-                tr("运行期 Lua 的工具链档案尚未确认。请先保存工程以保留草稿；入口生成和地图保存暂未开放。"));
+        if (!(pending.runtimeLuaDraft || path.ends_with(".lua"))) continue;
+        std::string text;
+        if (pending.ownedPayload) {
+            text.assign(reinterpret_cast<const char*>(pending.ownedPayload->data()), pending.ownedPayload->size());
+        } else {
+            QFile disk(pending.diskPath);
+            if (!disk.open(QIODevice::ReadOnly) || disk.size() > 16 * 1024 * 1024)
+                return fail(tr("MAP_LUA_READ"), tr("无法读取待导入的 Lua 文件 %1（或超过 16 MiB），地图未保存。").arg(pending.diskPath));
+            const auto bytes = disk.readAll();
+            text.assign(bytes.constData(), static_cast<std::size_t>(bytes.size()));
+        }
+        const auto checked = Lua::CheckSyntax(text, "@" + pending.archivePath.toStdString());
+        if (checked.Succeeded()) continue;
+        const auto& first = checked.diagnostics.empty() ? Lua::SyntaxDiagnostic{"LUA_SYNTAX", "语法检查未完成。", 0}
+            : checked.diagnostics.front();
+        return fail(tr("MAP_LUA_SYNTAX"), tr("Lua 文件 %1 第 %2 行有语法错误，地图未保存：%3")
+            .arg(pending.archivePath).arg(first.line).arg(QString::fromStdString(first.message)));
     }
     if (sourceArchivePath_.empty()) {
         return fail(tr("REPACK_NO_SOURCE"), tr("当前工程没有源地图归档。"));

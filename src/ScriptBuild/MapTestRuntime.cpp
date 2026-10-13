@@ -10,6 +10,7 @@
 #include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/Services/ClassicLuaMapSources.h"
 #include "War3MapCore/Lua/LuaSyntax.h"
+#include "War3MapCore/Runtime/LuaModuleNames.h"
 
 #include <algorithm>
 #include <array>
@@ -133,7 +134,84 @@ Status CollectSymbols(const ProgramFile& file, std::string_view name, Symbols& s
     return Status::Ok();
 }
 
-struct RuntimeRequirement { std::set<std::string, std::less<>> missing; };
+struct RuntimeRequirement {
+    std::set<std::string, std::less<>> missing;
+    std::vector<std::string> luaEntries; // 脚本里 Cheat("exec-lua: ...") 的模块，按出现顺序
+    std::vector<std::string> nonUtf8Lua; // 自带 Lua 环境只接受 UTF-8 正文
+};
+
+std::string JassStringValue(std::string_view literal) {
+    std::string value;
+    for (std::size_t i = 1; i + 1 < literal.size(); ++i) {
+        if (literal[i] != '\\' || i + 2 >= literal.size()) { value += literal[i]; continue; }
+        const char next = literal[++i];
+        value += next == 'n' ? '\n' : next == 't' ? '\t' : next == 'r' ? '\r' : next == 'b' ? '\b' : next == 'f' ? '\f' : next;
+    }
+    return value;
+}
+
+// YDWE 约定的手写 Lua 入口：call Cheat("exec-lua: \"模块\"")。只认字面量参数；
+// 由变量拼出的命令无法静态确定，不猜测。
+Status FindLuaEntries(std::span<const Token> tokens, std::string_view name, std::vector<std::string>& modules) {
+    for (std::size_t i = 0; i + 3 < tokens.size(); ++i) {
+        if (tokens[i].kind != TokenKind::Identifier || tokens[i].text != "Cheat" || !tokens[i + 1].IsOperator("(")
+            || tokens[i + 2].kind != TokenKind::String || !tokens[i + 3].IsOperator(")")) continue;
+        const auto parsed = Audastra::Runtime32::ParseLuaEntryCommand(JassStringValue(tokens[i + 2].text));
+        if (!parsed.recognized) continue;
+        if (!parsed.error.empty())
+            return Status::Failure("Map.Test.Runtime", "MAP_TEST_LUA_ENTRY_INVALID",
+                std::string(name) + " 第 " + std::to_string(tokens[i].line) + " 行：" + parsed.error);
+        if (std::find(modules.begin(), modules.end(), parsed.module) == modules.end()) modules.push_back(parsed.module);
+    }
+    return Status::Ok();
+}
+
+std::string LowerAscii(std::string text) {
+    for (auto& c : text) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    return text;
+}
+
+// 启动前检查手写 Lua：入口文件存在，地图里所有 .lua 文件通过 Lua 5.3 语法检查（含 |xxxx| 四字码）。
+// 出错时指出文件和行，避免进游戏后才发现。
+Status CheckHandwrittenLua(const Mpq::MpqArchive& map, const std::vector<Mpq::MpqStrictFileInfo>& files,
+    RuntimeRequirement& requirement) {
+    std::vector<std::string> names;
+    std::set<std::string> seen;
+    const auto add = [&](std::string member) {
+        if (seen.insert(LowerAscii(member)).second) names.push_back(std::move(member));
+    };
+    for (const auto& module : requirement.luaEntries) {
+        const auto member = Audastra::Runtime32::LuaModuleMember(module);
+        if (!map.HasFile(member))
+            return Status::Failure("Map.Test.Runtime", "MAP_TEST_LUA_ENTRY_MISSING",
+                "脚本用 exec-lua 加载模块 “" + module + "”，但地图里没有 " + member + "。请在 Lua 脚本页导入该文件后再测试。");
+        add(member);
+    }
+    for (const auto& file : files) {
+        if (file.name.size() < 4 || LowerAscii(file.name.substr(file.name.size() - 4)) != ".lua") continue;
+        add(file.name);
+        if (names.size() > 4096)
+            return Status::Failure("Map.Test.Runtime", "MAP_TEST_LUA_BUDGET", "地图里的 Lua 文件超过 4096 个，测试预检已停止。");
+    }
+    std::size_t total = 0;
+    for (const auto& name : names) {
+        auto read = map.ReadFileBounded(name, 4u * 1024u * 1024u);
+        if (!read.Succeeded())
+            return Status::Failure("Map.Test.Runtime", "MAP_TEST_LUA_READ", "地图里的 Lua 文件 " + name + " 损坏或超过 4 MiB。");
+        total += read.value->size();
+        if (total > 32u * 1024u * 1024u)
+            return Status::Failure("Map.Test.Runtime", "MAP_TEST_LUA_BUDGET", "地图里的 Lua 文件合计超过 32 MiB。");
+        const auto text = View(*read.value);
+        if (!Audastra::Runtime32::LuaMailboxUtf8(text)) requirement.nonUtf8Lua.push_back(name);
+        const auto syntax = Lua::CheckSyntax(text, "@" + name);
+        if (syntax.Succeeded()) continue;
+        const auto first = syntax.diagnostics.empty() ? Lua::SyntaxDiagnostic{"LUA_SYNTAX", "语法检查未完成。", 0}
+            : syntax.diagnostics.front();
+        return Status::Failure("Map.Test.Runtime", "MAP_TEST_LUA_SYNTAX",
+            "Lua 文件 " + name + " 第 " + std::to_string(first.line) + " 行有语法错误，测试未启动：" + first.message);
+    }
+    return Status::Ok();
+}
 struct RuntimeMember { bool present = false; std::vector<std::byte> bytes; };
 
 Status InspectOwnedLuaSources(std::span<const RuntimeMember> members) {
@@ -364,6 +442,16 @@ Result<RuntimeRequirement> InspectMapRuntime(const Services::MapTestArtifact& ar
     for (const auto& name : mapSymbols.calls)
         if (!mapSymbols.declared.contains(name) && !base.declared.contains(name) && !original.declared.contains(name))
             requirement.missing.emplace(name);
+    // 生成模式（经典 T→Lua）的模块已由 InspectOwnedLuaSources 核对；这里只处理作者手写的 exec-lua 入口。
+    if (!artifact.useOwnedLuaRuntime) {
+        const auto entries = FindLuaEntries(mapFile.value->tokens, names[index], requirement.luaEntries);
+        if (!entries.Succeeded()) return {std::nullopt, entries.diagnostics};
+        if (!requirement.luaEntries.empty()) {
+            if (progress) progress("check-lua");
+            const auto lua = CheckHandwrittenLua(*map.value, *structure.value, requirement);
+            if (!lua.Succeeded()) return {std::nullopt, lua.diagnostics};
+        }
+    }
     const auto unchanged = lease.Unchanged();
     if (!unchanged.Succeeded()) return {std::nullopt, unchanged.diagnostics};
     return Result<RuntimeRequirement>::Success(std::move(requirement));
@@ -517,6 +605,30 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
         if (progress) progress("check-runtime");
         const bool required = !requirements.value->missing.empty();
         auto selected = artifact;
+        std::vector<Diagnostic> notes;
+        // 作者手写 Lua 必须有 Lua 运行环境才会执行；普通游戏会把 exec-lua 当作无效作弊码忽略。
+        bool handwrittenYdwe = false;
+        const auto& entries = requirements.value->luaEntries;
+        if (!selected.useOwnedLuaRuntime && !entries.empty()) {
+            std::string modules;
+            for (std::size_t i = 0; i < entries.size() && i < 3; ++i) modules += (i ? "、" : "") + entries[i];
+            if (entries.size() > 3) modules += " 等";
+            const auto& nonUtf8 = requirements.value->nonUtf8Lua;
+            if (selected.handwrittenLuaEngine == Services::MapTestLuaEngine::Owned && !required && nonUtf8.empty()) {
+                selected.useOwnedLuaRuntime = true;
+                selected.enableLuaHotReload = selected.handwrittenLuaHotReload;
+                notes.push_back({DiagnosticSeverity::Info, "Map.Test.Runtime", "MAP_TEST_LUA_OWNED",
+                    "地图用 exec-lua 加载 Lua 模块 " + modules + "，使用 Audastra 自带 Lua 环境"
+                    + (selected.enableLuaHotReload ? "；修改 Lua 文件并应用后，可用“热重载”送进游戏。" : "。"), std::nullopt});
+            } else {
+                handwrittenYdwe = true;
+                if (selected.handwrittenLuaEngine == Services::MapTestLuaEngine::Owned)
+                    notes.push_back({DiagnosticSeverity::Warning, "Map.Test.Runtime", "MAP_TEST_LUA_YDWE_FALLBACK",
+                        (required ? "地图还用到原版游戏没有的接口 " + requirements.value->missing.begin()->substr(0, 80)
+                            : "Lua 文件 " + nonUtf8.front() + " 不是 UTF-8 编码")
+                        + "，自带 Lua 环境不支持，本次改用 YDWE 的 Lua 引擎（不能热重载）。", std::nullopt});
+            }
+        }
         if (selected.useOwnedLuaRuntime) {
             if (required)
                 return Failure<LaunchPlan>("MAP_TEST_OWN_LUA_EXTENSION_UNSUPPORTED",
@@ -524,10 +636,15 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
                     + "。自有运行时不会自动改用外部扩展 DLL。");
             selected.runtimeRoot.clear(); selected.runtimeYdweRoot.clear();
         }
-        if (required && selected.runtimeRoot.empty() && !selected.runtimeYdweRoot.empty()) {
+        const bool extension = required || handwrittenYdwe;
+        if (extension && selected.runtimeRoot.empty() && !selected.runtimeYdweRoot.empty()) {
             selected.runtimeRoot = Services::MapTestYdweInstallRoot(selected.runtimeYdweRoot);
             selected.runtimeLayout = Services::MapTestRuntimeLayout::YdweTree;
         }
+        if (handwrittenYdwe && selected.runtimeRoot.empty())
+            return Failure<LaunchPlan>("MAP_TEST_LUA_RUNTIME_REQUIRED",
+                "此地图用 exec-lua 加载 Lua，需要 YDWE 的 Lua 引擎：请在应用设置中配置本机 YDWE 目录，"
+                "或在地图测试设置中改用 Audastra 自带 Lua 环境。原图与当前编辑保持。");
         if (required && selected.runtimeRoot.empty()) {
             const auto reason = std::string("此地图使用所选原生游戏没有提供的接口：")
                 + requirements.value->missing.begin()->substr(0, 80);
@@ -537,6 +654,8 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
         // 先按脚本所需接口选择目录，再只生成一次计划，避免额外整图读取。
         auto plan = Services::BuildMapTestLaunchPlan(selected);
         if (!plan.Succeeded()) return plan;
+        plan.value->luaEntryModules = entries;
+        plan.diagnostics.insert(plan.diagnostics.end(), notes.begin(), notes.end());
         if (!selected.runtimeRoot.empty()) {
             std::size_t index = 0;
             for (const auto& [name, initialize] : {std::pair{"ydbase.dll", false}, std::pair{"lua53.dll", false},

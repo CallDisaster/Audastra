@@ -228,10 +228,14 @@ private slots:
         QCOMPARE(OwnedSourceText(*source.value), std::string("local value = 3\nreturn value\n"));
         assets.OpenFolder("Lua"); QVERIFY(assets.ListedRows().join('\n').contains("demo.lua"));
         QCOMPARE(assets.UndoStack(), project.AssetUndoStack()); QCOMPARE(assets.UndoStack()->count(), 1);
-        auto* entry = scripts.findChild<QPushButton*>("luaSetEntryScript"); QVERIFY(entry); QVERIFY(!entry->isEnabled());
-        const auto output = std::filesystem::path(dir.filePath("runtime-must-not-save.w3x").toStdWString());
+        auto* hint = scripts.findChild<QLabel*>("luaEntryHint"); QVERIFY(hint); QVERIFY(hint->text().contains("exec-lua"));
+        // 语法正确的手写 Lua 按普通导入资源进入保存；语法错误时拒绝并指出文件与行。
+        const auto output = std::filesystem::path(dir.filePath("runtime-lua-save.w3x").toStdWString());
+        project.ClearDiagnostics(); QVERIFY(project.PrepareMapSave(output, false));
+        QVERIFY(!HasDiagnostic(project, "MAP_LUA_SYNTAX"));
+        QVERIFY(scripts.CreateScript("Lua\\broken.lua", "local value = (\n"));
         project.ClearDiagnostics(); QVERIFY(!project.PrepareMapSave(output, false));
-        QVERIFY(HasDiagnostic(project, "MAP_RUNTIME_LUA_PROFILE_UNCONFIRMED")); QVERIFY(!QFile::exists(QString::fromStdWString(output.wstring())));
+        QVERIFY(HasDiagnostic(project, "MAP_LUA_SYNTAX")); QVERIFY(!QFile::exists(QString::fromStdWString(output.wstring())));
         QCOMPARE(QDir(dir.path()).entryList(QDir::Files), files);
         QCOMPARE(Sha256File(project.sourceArchivePath_).value.value_or(""), *sourceSha.value);
         const auto snapshots = qEnvironmentVariable("WAR3_TEST_SCREENSHOT_DIR");
@@ -441,12 +445,13 @@ private slots:
         Modules::AssetsModule assets(project); assets.Widget();
         QVERIFY(assets.RenameAsset("Lua\\sealed.lua", "Lua\\sealed.txt").isEmpty());
         QVERIFY(project.pendingImports_.front().runtimeLuaDraft); QVERIFY(project.pendingImports_.front().ownedPayload);
-        QFile replacement(dir.filePath("sealed.txt")); QVERIFY(replacement.open(QIODevice::WriteOnly)); QCOMPARE(replacement.write("return 9\n"), qint64{9}); replacement.close();
+        QFile replacement(dir.filePath("sealed.txt")); QVERIFY(replacement.open(QIODevice::WriteOnly)); QCOMPARE(replacement.write("return (\n"), qint64{9}); replacement.close();
         assets.AddFiles({replacement.fileName()}, "Lua"); QCOMPARE(project.pendingImports_.size(), std::size_t{1});
         QVERIFY(project.pendingImports_.front().runtimeLuaDraft); QVERIFY(!project.pendingImports_.front().ownedPayload);
         const auto output = std::filesystem::path(dir.filePath("role-must-not-save.w3x").toStdWString());
         project.ClearDiagnostics(); QVERIFY(!project.PrepareMapSave(output, false));
-        QVERIFY(HasDiagnostic(project, "MAP_RUNTIME_LUA_PROFILE_UNCONFIRMED")); QVERIFY(!QFile::exists(QString::fromStdWString(output.wstring())));
+        // 改名或用磁盘文件替换后 Lua 角色仍保留，保存时继续做语法检查。
+        QVERIFY(HasDiagnostic(project, "MAP_LUA_SYNTAX")); QVERIFY(!QFile::exists(QString::fromStdWString(output.wstring())));
         assets.UndoStack()->undo(); QVERIFY(project.pendingImports_.front().ownedPayload); QVERIFY(project.pendingImports_.front().runtimeLuaDraft);
         assets.UndoStack()->undo(); QCOMPARE(project.pendingImports_.front().archivePath, QStringLiteral("Lua\\sealed.lua"));
         QVERIFY(project.pendingImports_.front().runtimeLuaDraft);

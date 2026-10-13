@@ -6213,7 +6213,7 @@ void NativeWorkbenchTests::IncompleteLuaDraftSurvivesApplyHostRecoveryAndMapGate
     QVERIFY(!restored.SaveMapArchiveToPath(forbidden)); QVERIFY(!std::filesystem::exists(forbidden));
     bool profileGate = false;
     for (int row = 0; row < restored.project_->diagnosticsModel_->rowCount(); ++row)
-        profileGate |= restored.project_->diagnosticsModel_->index(row, 2).data().toString() == "MAP_RUNTIME_LUA_PROFILE_UNCONFIRMED";
+        profileGate |= restored.project_->diagnosticsModel_->index(row, 2).data().toString() == "MAP_LUA_SYNTAX";
     QVERIFY(profileGate); QVERIFY(!restored.project_->savingMap_);
     QCOMPARE(War3Map::Sha256File(source).value, originalSource.value);
 }

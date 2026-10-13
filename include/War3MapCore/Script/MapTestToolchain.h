@@ -44,6 +44,9 @@ struct MapTestLaunchReceipt {
     std::shared_ptr<MapTestLaunchLease> lease;
     // 只有自有 Lua 且原 Job/游戏句柄归属得到验证时才提供；UI/MCP 不接触共享内存。
     std::shared_ptr<Services::LuaTestMailboxSession> luaMailbox;
+    // 作者手写 Lua 的入口模块；非空且有 luaMailbox 时，编辑器按文件把修改送进游戏。
+    std::vector<std::string> luaEntryModules;
+    bool luaHotReload = false;
 };
 
 // 只发起已验证的独立计划；返回不代表游戏进图。挂起主线程在Job归属成立后才恢复。

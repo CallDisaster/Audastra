@@ -4,6 +4,8 @@
 
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDirIterator>
+#include <QFile>
 #include <QEventLoop>
 #include <QFileDialog>
 #include <QFormLayout>
@@ -71,12 +73,53 @@ void MainWindow::CreateNewMap() {
     if (dialog.exec() != QDialog::Accepted) return;
     const auto output = QFileDialog::getSaveFileName(this, tr("创建地图文件"), {}, tr("Warcraft III 地图 (*.w3x)"));
     if (output.isEmpty()) return;
+    // 已关闭的栈上窗口由局部作用域销毁，避免打开通知同步删除主窗口时被父对象先销毁。
+    dialog.setParent(nullptr);
+    RunMapCreate(options(), output);
+}
+
+// Lua 教程：内置原创分课脚本 + 名为“Lua 入口”的初始化触发器（自定义代码调用 exec-lua），
+// 与普通新建地图走同一服务与保存检查。
+void MainWindow::CreateLuaTutorialMap() {
+    if (project_->savingMap_) return;
+    if (project_->UiToolRoot().empty() || project_->war3GameRoot_.empty()) {
+        QMessageBox::information(this, tr("新建 Lua 教程地图"), tr("请先在资源设置中选择 YDWE 与 Warcraft III 目录。"));
+        return;
+    }
+    War3Map::Services::MapCreateOptions options;
+    options.name = tr("Lua 教程").toUtf8().toStdString();
+    options.initTriggerName = tr("Lua 入口").toUtf8().toStdString();
+    options.initCustomScript = {"call Cheat(\"exec-lua: \\\"main\\\"\")"};
+    const QString base = QStringLiteral(":/audastra/examples/lua-tutorial");
+    QDirIterator files(base, {QStringLiteral("*.lua")}, QDir::Files, QDirIterator::Subdirectories);
+    while (files.hasNext()) {
+        const auto path = files.next();
+        QFile file(path);
+        if (!file.open(QIODevice::ReadOnly)) continue;
+        const auto bytes = file.readAll();
+        auto name = path.mid(base.size() + 1);
+        name.replace(QLatin1Char('/'), QLatin1Char('\\'));
+        options.extraMembers.push_back({name.toStdString(), {reinterpret_cast<const std::byte*>(bytes.constData()),
+            reinterpret_cast<const std::byte*>(bytes.constData() + bytes.size())}});
+    }
+    if (options.extraMembers.empty()) {
+        QMessageBox::warning(this, tr("新建 Lua 教程地图"), tr("安装包里缺少教程脚本，请重新安装。"));
+        return;
+    }
+    const auto output = QFileDialog::getSaveFileName(this, tr("保存 Lua 教程地图"), tr("Lua 教程.w3x"), tr("Warcraft III 地图 (*.w3x)"));
+    if (output.isEmpty()) return;
+    RunMapCreate(std::move(options), output);
+    if (project_->sourceArchivePath_ == std::filesystem::path(output.toStdWString()))
+        statusBar()->showMessage(tr("Lua 教程地图已创建：在“触发器 → Lua 脚本”查看 main.lua，按 F9 试玩"), 15000);
+}
+
+void MainWindow::RunMapCreate(War3Map::Services::MapCreateOptions options, const QString& output) {
     War3Map::Services::MapCreateRequest request;
-    request.options = options();
+    request.options = std::move(options);
     request.target = std::filesystem::path(output.toStdWString());
     request.workspace = std::filesystem::temp_directory_path() /
         (L"War3MapEditor-create-" + QUuid::createUuid().toString(QUuid::WithoutBraces).toStdWString());
-    request.toolRoot = toolRoot;
+    request.toolRoot = project_->UiToolRoot();
     request.gameRoot = project_->war3GameRoot_;
     War3Map::Result<War3Map::Services::MapCreateReceipt> result;
     QProgressDialog progress(tr("正在生成地图并检查脚本…"), {}, 0, 0, this);
@@ -102,8 +145,6 @@ void MainWindow::CreateNewMap() {
         return;
     }
     // 成功后才走既有打开入口；其未保存编辑确认仍有效，取消打开不删除已生成的文件。
-    // 已关闭的栈上窗口由局部作用域销毁，避免打开通知同步删除主窗口时被父对象先销毁。
-    dialog.setParent(nullptr);
     progress.setParent(nullptr);
     const QPointer<MainWindow> liveWindow(this);
     const QPointer<War3Map::QtProject::EditorProject> liveProject(project_.get());

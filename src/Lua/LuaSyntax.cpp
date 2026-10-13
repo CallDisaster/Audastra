@@ -1,4 +1,5 @@
 #include "War3MapCore/Lua/LuaSyntax.h"
+#include "War3MapCore/Lua/YdweRawcode.h"
 #include "LuaCompileInspection.h"
 
 extern "C" {
@@ -99,6 +100,9 @@ SyntaxDiagnostic SyntaxError(std::string_view raw, std::string_view name) {
 SyntaxResult Detail::CheckSyntaxWithInspection(std::string_view source, std::string_view name,
     const SyntaxOptions& options, const CompiledInspection& inspection) {
     SyntaxResult result;
+    // YDWE 的 |xxxx| 四字码按同一规则先换成整数（行号不变），其余仍由官方 Lua 5.3 解析。
+    const auto rawcodes = TranslateYdweRawcodes(source);
+    if (rawcodes) source = *rawcodes;
     try {
         if (source.size() > options.maxSourceBytes) {
             result.completed = false; result.diagnostics.push_back({"LUA_CHECK_SOURCE_BUDGET", "Lua 代码超过字节预算。"}); return result;

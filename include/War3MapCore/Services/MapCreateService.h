@@ -12,6 +12,11 @@ struct MapCreateOptions {
     std::string profile = std::string(kClassicFlatMapProfile);
     std::string name = "New map";
     std::string author;
+    // 可选：随新地图写入的原创文件（例如 Lua 教程脚本）；名字为地图内相对路径，不能覆盖地图自身成员。
+    std::vector<MapArchiveMember> extraMembers;
+    // 可选：新建一个“地图初始化”触发器，每行一个“自定义代码”动作（例如手写 Lua 的 exec-lua 入口）。
+    std::string initTriggerName;
+    std::vector<std::string> initCustomScript;
 };
 
 struct MapCreateRequest {

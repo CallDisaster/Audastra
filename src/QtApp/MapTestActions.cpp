@@ -39,6 +39,7 @@ QString TestStage(std::string_view stage) {
     if (stage == "read-scripts") return QObject::tr("正在读取地图脚本和地图信息…");
     if (stage == "check-script") return QObject::tr("正在检查已保存脚本的结构和调用…");
     if (stage == "check-runtime") return QObject::tr("正在检查所需游戏运行库…");
+    if (stage == "check-lua") return QObject::tr("正在检查地图里的 Lua 文件…");
     if (stage == "launch") return QObject::tr("正在复制游戏测试地图并启动…");
     return QObject::tr("正在核对冻结的测试副本…");
 }
@@ -61,6 +62,7 @@ void MainWindow::TestMap() {
     luaTestGenerated_.reset(); luaTestMapBinding_.clear(); luaReloadController_.reset();
     luaTestInstalledBindings_.reset();
     luaRuntimeMailbox_.reset();
+    luaFileReload_ = false; luaFileQueue_.clear(); luaFileBaseline_.clear();
     luaRuntimeDiagnosticSequence_ = 0; luaReloadLastStatus_.clear();
     if (luaReloadPoll_) luaReloadPoll_->stop();
     const auto gameRoot = settings.value(QStringLiteral("war3/gameRoot")).toString();
@@ -125,6 +127,10 @@ void MainWindow::TestMap() {
     request.optimizeSlk = QtCommon::ReadExplicitLocalConsent(settings, QStringLiteral("mapTest/slkEnabled"));
     request.useOwnedLuaRuntime = ownedLua;
     request.enableLuaHotReload = testHotReload;
+    // 作者手写 Lua（exec-lua 入口）由预检识别；这里只传设置中的运行环境偏好。
+    request.handwrittenLuaEngine = settings.value("mapTest/luaEngine").toString() == QLatin1String("ydwe")
+        ? Services::MapTestLuaEngine::Ydwe : Services::MapTestLuaEngine::Owned;
+    request.handwrittenLuaHotReload = settings.value("mapTest/hotReloadEnabled", true).toBool();
     if (!snapshot) request.expectedInputSha256 = project_->archiveSession_->SourceSha256();
 
     QProgressDialog dialog(tr("正在准备测试地图…"), QString(), 0, 0, this);
@@ -187,9 +193,14 @@ void MainWindow::TestMap() {
     }
     // 仅用户点击测试时发起游戏；预检、SHA与复制均在低优先级worker完成。
     mapTestLease_ = launched.value->lease;
-    if (ownedLua && launched.value->luaMailbox) {
+    if (launched.value->luaMailbox) {
         luaRuntimeMailbox_ = launched.value->luaMailbox;
         luaTestGeneration_ = project_->editRevision_.Generation();
+    }
+    const bool handwrittenLua = !ownedLua && launched.value->luaMailbox && !launched.value->luaEntryModules.empty();
+    if (handwrittenLua && launched.value->luaHotReload) {
+        luaFileReload_ = true;
+        SnapshotLuaFileBaseline();
     }
     if (testHotReload && launched.value->luaMailbox && luaTestGenerated_ && !luaTestMapBinding_.empty()) {
         luaReloadController_ = std::make_shared<Services::LuaTestReloadController>(launched.value->luaMailbox,
@@ -204,8 +215,10 @@ void MainWindow::TestMap() {
         luaReloadPoll_->start();
     }
     UpdateExportAvailability();
-    ShowStatusMessage(request.optimizeSlk ? tr("已启动地图测试 · SLK 测试副本 · 原图与当前编辑保留")
-        : tr("已启动地图测试 · 独立副本 · 原图与当前编辑保留"));
+    const auto luaNote = handwrittenLua ? (luaFileReload_ ? tr(" · 自带 Lua 环境，可热重载") : tr(" · 自带 Lua 环境"))
+        : !launched.value->luaEntryModules.empty() ? tr(" · YDWE Lua 引擎") : QString{};
+    ShowStatusMessage((request.optimizeSlk ? tr("已启动地图测试 · SLK 测试副本 · 原图与当前编辑保留")
+        : tr("已启动地图测试 · 独立副本 · 原图与当前编辑保留")) + luaNote);
     auto* cleanup = new QTimer(this);
     cleanup->setInterval(2000);
     const auto lease = mapTestLease_;
@@ -246,6 +259,7 @@ void MainWindow::TestMap() {
             if (luaRuntimeMailbox_) PollLuaTestReload();
             if (luaReloadPoll_) luaReloadPoll_->stop();
             luaRuntimeMailbox_.reset(); luaReloadController_.reset();
+            luaFileReload_ = false; luaFileQueue_.clear();
             mapTestLease_.reset();
             if (luaReloadAction_) luaReloadAction_->setEnabled(false);
         }

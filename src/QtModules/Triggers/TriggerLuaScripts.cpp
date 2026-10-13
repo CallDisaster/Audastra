@@ -39,7 +39,8 @@ TriggerLuaScripts::TriggerLuaScripts(QtProject::EditorProject& project, QWidget*
     : QWidget(parent), project_(project) {
     setObjectName("triggerLuaScripts");
     auto* layout = new QVBoxLayout(this); layout->setContentsMargins(0, 0, 0, 0); layout->setSpacing(8);
-    auto* boundary = new QLabel(tr("Lua 运行时配置尚未确认：可以查看文件、准备草稿；设置入口和把新草稿写入地图尚未开放。"), this);
+    auto* boundary = new QLabel(tr("地图里的 .lua 文件随地图保存，保存前会检查语法（支持 YDWE 的 |xxxx| 四字码）。"
+        "文件里用 require \"jass.common\" 调用 native；测试地图时修改并应用，可在工具栏“热重载”把新代码送进正在运行的游戏。"), this);
     boundary->setObjectName("luaRuntimeBoundary"); boundary->setWordWrap(true); layout->addWidget(boundary);
     auto* splitter = new QSplitter(this);
     auto* directoryPane = new QWidget(splitter); auto* directoryLayout = new QVBoxLayout(directoryPane);
@@ -53,8 +54,11 @@ TriggerLuaScripts::TriggerLuaScripts(QtProject::EditorProject& project, QWidget*
     directory_ = new QTreeWidget(directoryPane); directory_->setObjectName("luaScriptDirectory");
     directory_->setHeaderLabels({tr("Lua 脚本"), tr("状态")}); directory_->setRootIsDecorated(false);
     directory_->setUniformRowHeights(true); directoryLayout->addWidget(directory_, 1);
-    auto* entry = new QPushButton(tr("设置入口脚本"), directoryPane); entry->setObjectName("luaSetEntryScript"); entry->setEnabled(false);
-    entry->setToolTip(tr("旧版 YDWE Lua 运行时配置与执行入口规则尚未确认。")); directoryLayout->addWidget(entry);
+    // 入口沿用 YDWE 约定：触发器“自定义代码”动作调用 Cheat("exec-lua: \"模块\"")，不另设专用入口。
+    auto* entry = new QLabel(tr("游戏开始时加载：在地图初始化触发器中添加“自定义代码”动作\n"
+        "call Cheat(\"exec-lua: \\\"main\\\"\")\n即加载地图根目录的 main.lua；子目录用点号，如 lua.main。\n完整示例：菜单“新建 Lua 教程地图”。"), directoryPane);
+    entry->setObjectName("luaEntryHint"); entry->setWordWrap(true);
+    entry->setTextInteractionFlags(Qt::TextSelectableByMouse); directoryLayout->addWidget(entry);
     auto* reveal = new QPushButton(tr("在资源中定位"), directoryPane); reveal->setObjectName("luaRevealAsset"); directoryLayout->addWidget(reveal);
     auto* codePane = new QWidget(splitter); auto* codeLayout = new QVBoxLayout(codePane); codeLayout->setContentsMargins(8, 0, 0, 0);
     sourceNote_ = new QLabel(tr("选择一个导入的 .lua 文件。"), codePane); sourceNote_->setObjectName("luaSourceNote"); sourceNote_->setWordWrap(true); codeLayout->addWidget(sourceNote_);
@@ -201,11 +205,11 @@ void TriggerLuaScripts::LoadAcceptedScript(QtProject::OwnedAssetSource source) {
     else editor_->SetBytesAsync(raw);
     if (editableSource_) editor_->SetPrepareCheck([source = selectedPath_](const QString& text, std::uint64_t generation) {
             Services::CodeCheckContext context; context.complete = false;
-            context.reason = "运行时配置与接口清单未确认，仅检查 Lua 5.3 语法；不推断 jass 模块或入口可用。";
+            context.reason = "检查 Lua 5.3 语法（含 YDWE |xxxx| 四字码）；jass 模块是否可用由运行环境决定。";
             return PrepareTriggerCodeCheck(text, generation, source, UiKit::CodeLanguage::Lua, std::move(context));
         });
     else editor_->SetPrepareCheck({});
-    sourceNote_->setText(editableSource_ ? tr("%1 · UTF-8；应用后的正文留在工程中，地图保存仍等待运行时配置确认。").arg(selectedPath_)
+    sourceNote_->setText(editableSource_ ? tr("%1 · UTF-8；应用后在下次保存地图时写入。").arg(selectedPath_)
         : utf8 ? tr("%1 · 正文包含无法无损编辑的特殊空白字符，当前只读，原字节已保留。").arg(selectedPath_)
         : tr("%1 · 编码未声明，保留原字节只读查看；推测显示不授予转码保存。").arg(selectedPath_));
     UpdateDraftState();
@@ -230,7 +234,7 @@ bool TriggerLuaScripts::CreateScript(const QString& path, const QString& initial
     if (!problem.isEmpty()) { Status(problem); return false; }
     const bool loaded = LoadScript(path);
     RefreshDirectory();
-    Status(tr("Lua 草稿已加入共同导入队列；运行时配置未确认，尚未开放写入地图。"));
+    Status(tr("Lua 文件已加入导入队列，保存地图时写入。"));
     emit DraftEdited(); return loaded;
 }
 bool TriggerLuaScripts::RenameScript(const QString& path, const QString& newPath) {
@@ -268,7 +272,7 @@ bool TriggerLuaScripts::CommitPendingDraft() {
     publishing_ = false;
     if (!problem.isEmpty()) { Status(problem); return false; }
     const auto path = selectedPath_; RefreshDirectory(); (void)LoadScript(path);
-    Status(tr("Lua 草稿已保存在工程中；语法问题继续显示，写入地图仍等待运行时配置确认。")); emit DraftEdited(); return true;
+    Status(tr("Lua 修改已应用，保存地图时写入；测试运行中可用“热重载”送进游戏。")); emit DraftEdited(); return true;
 }
 void TriggerLuaScripts::DiscardPendingDraft() {
     const auto path = selectedPath_; source_.reset(); editableSource_ = false;

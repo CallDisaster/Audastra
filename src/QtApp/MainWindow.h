@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -31,6 +32,7 @@ namespace War3Map::Modules { class WorldFrameRecorder; }
 namespace War3Map::QtFeedback { class FeedbackClient; class ProgramIssueReporter; }
 namespace War3Map::QtUpdate { class UpdateClient; struct PreparedUpdate; }
 namespace War3Map::Script { class MapTestLaunchLease; }
+namespace War3Map::Services { struct MapCreateOptions; }
 namespace War3Map::Agent { struct RecoveryPreferences; }
 namespace War3Map::QtProject { class LegacyMapBackupCheck; }
 
@@ -217,6 +219,11 @@ private:
     void SaveMapInPlace();
     void TestMap();
     QJsonObject LuaTestReload(bool submit);
+    void CreateLuaTutorialMap();
+    void RunMapCreate(War3Map::Services::MapCreateOptions options, const QString& output);
+    // 作者手写 Lua（exec-lua 入口）的热重载：按文件把测试开始后改过的 .lua 送进游戏。
+    QJsonObject LuaFileReload(bool submit);
+    void SnapshotLuaFileBaseline();
     void PollLuaTestReload();
     void SaveEditorProject();
     void SaveEditorProjectAs();
@@ -309,6 +316,12 @@ private:
     QTimer* luaReloadPoll_ = nullptr;
     std::uint32_t luaRuntimeDiagnosticSequence_ = 0;
     QString luaReloadLastStatus_;
+    struct LuaFilePending { QString path; std::string module, source, sha256; };
+    bool luaFileReload_ = false;
+    std::map<QString, std::string> luaFileBaseline_; // AssetKey → 游戏中当前正文的 SHA
+    std::vector<LuaFilePending> luaFileQueue_;       // 首项为已发送、等待游戏确认的文件
+    std::uint32_t luaFileSequence_ = 0;
+    QString luaFileLastMessage_;
     QAction* exportAction_ = nullptr;
     QAction* mapDataAction_ = nullptr;
     QToolBar* projectNoticeBar_ = nullptr;

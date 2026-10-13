@@ -244,7 +244,7 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
     const auto summary = (saved->inPlace ? tr("地图已保存 · %1 秒") : tr("地图已另存为 · %1 秒")).arg(saved->seconds, 0, 'f', 1);
     project_->AddDiagnostic(tr("信息"), tr("地图"), QStringLiteral("MAP_SAVE_COMPLETED"), details.join(QLatin1Char('\n')));
     SaveNotice(*this, background, true, summary, details);
-    if (luaReloadController_ && luaAutoReloadAction_ && luaAutoReloadAction_->isChecked())
+    if ((luaReloadController_ || luaFileReload_) && luaAutoReloadAction_ && luaAutoReloadAction_->isChecked())
         QTimer::singleShot(0, this, [this] { (void)LuaTestReload(true); });
     return true;
 }

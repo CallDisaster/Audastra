@@ -34,7 +34,7 @@ add_library(audastra-own-lua-host STATIC "${CMAKE_CURRENT_LIST_DIR}/LuaHost.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/NativeSignature.cpp" "${CMAKE_CURRENT_LIST_DIR}/LuaMailboxRuntime.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/LuaNativeBindings.cpp" "${CMAKE_CURRENT_LIST_DIR}/NativeCallX86.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/NativeRegistry.cpp" "${CMAKE_CURRENT_LIST_DIR}/LuaCallbacks.cpp"
-    "${CMAKE_CURRENT_LIST_DIR}/LuaModulePath.cpp" "${CMAKE_CURRENT_LIST_DIR}/LuaEntryCommand.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/LuaModulePath.h" "${CMAKE_CURRENT_LIST_DIR}/LuaEntryCommand.h"
     "${CMAKE_CURRENT_LIST_DIR}/NativeCodeRegistry.cpp" "${CMAKE_CURRENT_LIST_DIR}/LuaBehaviorModules.cpp")
 target_include_directories(audastra-own-lua-host PUBLIC "${CMAKE_CURRENT_LIST_DIR}"
     "${CMAKE_CURRENT_LIST_DIR}/../../../include")

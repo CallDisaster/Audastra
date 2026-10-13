@@ -504,7 +504,7 @@ void MainWindow::UpdateExportAvailability() {
         ? tr("保存当前战役；备份目录和保留数量可在应用设置中调整")
         : tr("重建并检查游戏脚本，重新打包后写回打开的地图；备份目录和保留数量可在应用设置中调整"));
     testMapAction_->setEnabled(!campaign && project_->archiveSession_ != nullptr && !project_->savingMap_);
-    if (luaReloadAction_) luaReloadAction_->setEnabled(!campaign && luaReloadController_
+    if (luaReloadAction_) luaReloadAction_->setEnabled(!campaign && (luaReloadController_ || (luaFileReload_ && luaRuntimeMailbox_))
         && luaTestGeneration_ == project_->editRevision_.Generation() && !project_->savingMap_);
     saveMapInPlaceAction_->setEnabled(campaign || project_->archiveSession_ != nullptr || open);
     const bool objectDirty = std::any_of(

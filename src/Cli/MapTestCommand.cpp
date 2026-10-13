@@ -1,0 +1,138 @@
+#include "MapTestCommand.h"
+#include "War3MapCore/Hash.h"
+#include "War3MapCore/IO/FileBytes.h"
+#include "War3MapCore/Script/MapTestToolchain.h"
+#include "War3MapCore/Services/LuaTestMailboxSession.h"
+#include "War3MapCore/Services/MapTestWorkspace.h"
+
+#include <Windows.h>
+
+#include <chrono>
+#include <filesystem>
+#include <iostream>
+#include <string>
+#include <thread>
+#include <vector>
+
+// 命令行地图测试：与编辑器 F9 同一准备、预检、启动与 Lua 邮箱链路，便于脚本与 Agent 验证。
+// 只写入本次新建的独占目录和游戏 Maps/Audastra 短路径副本；游戏退出后按租约清理。
+namespace {
+namespace Services = War3Map::Services;
+namespace Script = War3Map::Script;
+
+struct Reload { double after = 0; std::string module; std::filesystem::path file; bool sent = false; std::uint32_t sequence = 0; };
+
+std::string Utf8(const wchar_t* value) {
+    const auto text = std::filesystem::path(value).u8string();
+    return std::string(text.begin(), text.end());
+}
+void Print(const std::vector<War3Map::Diagnostic>& diagnostics) {
+    for (const auto& d : diagnostics) std::cerr << d.subsystem << '\t' << d.code << '\t' << d.message << '\n';
+}
+}
+
+int RunMapTest(int argc, wchar_t** argv) {
+    if (argc < 5) return 2;
+    const std::filesystem::path map = argv[2], game = argv[3], helpers = argv[4];
+    std::filesystem::path ydwe;
+    double seconds = 60;
+    auto engine = Services::MapTestLuaEngine::Owned;
+    bool hotReload = true;
+    std::vector<Reload> reloads;
+    for (int index = 5; index < argc; ++index) {
+        const std::wstring option = argv[index];
+        if (option == L"--ydwe" && index + 1 < argc) ydwe = argv[++index];
+        else if (option == L"--seconds" && index + 1 < argc) seconds = std::stod(argv[++index]);
+        else if (option == L"--lua-engine" && index + 1 < argc) {
+            const std::wstring value = argv[++index];
+            if (value != L"owned" && value != L"ydwe") return 2;
+            engine = value == L"ydwe" ? Services::MapTestLuaEngine::Ydwe : Services::MapTestLuaEngine::Owned;
+        } else if (option == L"--no-hot-reload") hotReload = false;
+        else if (option == L"--reload-after" && index + 3 < argc) {
+            Reload reload;
+            reload.after = std::stod(argv[index + 1]); reload.module = Utf8(argv[index + 2]); reload.file = argv[index + 3];
+            reloads.push_back(std::move(reload)); index += 3;
+        } else return 2;
+    }
+    const auto sha = War3Map::Sha256File(map);
+    if (!sha.Succeeded()) { Print(sha.diagnostics); return 1; }
+    wchar_t temp[MAX_PATH + 1]{};
+    if (!GetTempPathW(MAX_PATH, temp)) return 1;
+    const auto run = std::filesystem::path(temp) / (L"audastra-cli-test-" + std::to_wstring(GetCurrentProcessId())
+        + L"-" + std::to_wstring(GetTickCount64()));
+    std::error_code error;
+    if (!std::filesystem::create_directory(run, error) || error) { std::cerr << "cannot create test directory\n"; return 1; }
+    auto workspace = Services::FreezeMapTestWorkspace(run);
+    if (!workspace.Succeeded() || !workspace.value) { Print(workspace.diagnostics); return 1; }
+
+    Services::MapTestRequest request;
+    request.inputMap = std::filesystem::absolute(map); request.sourceMap = request.inputMap;
+    request.expectedInputSha256 = *sha.value;
+    request.gameRoot = std::filesystem::absolute(game); request.workspace = run / "prepared";
+    request.runtimeYdweRoot = ydwe;
+    request.runtimeBridge = std::filesystem::absolute(helpers) / "audastra-warcraft-launcher.exe";
+    request.runtimeBootstrap = std::filesystem::absolute(helpers) / "audastra-warcraft-bootstrap.dll";
+    request.handwrittenLuaEngine = engine; request.handwrittenLuaHotReload = hotReload;
+    const auto progress = [](std::string_view stage) { std::cout << "stage=" << stage << '\n'; };
+    auto artifact = Services::PrepareMapTest(request, {}, progress);
+    Print(artifact.diagnostics);
+    if (!artifact.Succeeded() || !artifact.value) return 1;
+    const auto refreshed = (*workspace.value)->Refresh();
+    if (!refreshed.Succeeded()) { Print(refreshed.diagnostics); return 1; }
+    auto launched = Script::LaunchMapTest(*artifact.value, progress);
+    Print(launched.diagnostics);
+    if (!launched.Succeeded() || !launched.value) { (void)(*workspace.value)->Cleanup(true); return 1; }
+    const auto& receipt = *launched.value;
+    std::cout << "launched=true\nlauncher_pid=" << receipt.launcherProcessId << "\nlua_entries=" << receipt.luaEntryModules.size()
+        << "\nlua_mailbox=" << (receipt.luaMailbox ? "true" : "false") << "\nlua_hot_reload=" << (receipt.luaHotReload ? "true" : "false")
+        << std::endl;
+
+    const auto start = std::chrono::steady_clock::now();
+    const auto elapsed = [&] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(); };
+    std::uint32_t lastDiagnostic = 0;
+    std::string lastState;
+    while (elapsed() < seconds && receipt.lease && receipt.lease->IsActive()) {
+        if (receipt.luaMailbox) {
+            const auto query = Services::QueryLuaTestReload(*receipt.luaMailbox);
+            if (query.Succeeded() && query.value) {
+                const auto& snapshot = *query.value;
+                if (snapshot.runtimeDiagnosticSequence && snapshot.runtimeDiagnosticSequence != lastDiagnostic) {
+                    lastDiagnostic = snapshot.runtimeDiagnosticSequence;
+                    std::cout << "[" << elapsed() << "s] lua: " << snapshot.runtimeMessage << std::endl;
+                }
+                const auto state = std::to_string(static_cast<int>(snapshot.state)) + "/" + std::to_string(snapshot.sequence);
+                if (state != lastState) {
+                    lastState = state;
+                    std::cout << "[" << elapsed() << "s] mailbox_state=" << static_cast<int>(snapshot.state)
+                        << " sequence=" << snapshot.sequence << " result=" << static_cast<int>(snapshot.resultCode)
+                        << (snapshot.message.empty() ? "" : " message=" + snapshot.message) << std::endl;
+                }
+                for (auto& reload : reloads) {
+                    if (reload.sent || elapsed() < reload.after || snapshot.state == Services::LuaTestReloadState::Starting
+                        || snapshot.state == Services::LuaTestReloadState::Queued || snapshot.state == Services::LuaTestReloadState::Running)
+                        continue;
+                    const auto bytes = War3Map::IO::ReadFileBytes(reload.file, 1024 * 1024);
+                    if (!bytes.Succeeded()) { Print(bytes.diagnostics); reload.sent = true; continue; }
+                    const std::string source(reinterpret_cast<const char*>(bytes.value->data()), bytes.value->size());
+                    const auto sent = Services::SubmitLuaTestReload(*receipt.luaMailbox, {"module:" + reload.module, source});
+                    reload.sent = true;
+                    if (!sent.Succeeded() || !sent.value) { Print(sent.diagnostics); continue; }
+                    reload.sequence = *sent.value;
+                    std::cout << "[" << elapsed() << "s] reload_sent module=" << reload.module << " sequence=" << reload.sequence << std::endl;
+                    break;
+                }
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    std::cout << "observation_done=true\nwaiting_for_game_exit=true" << std::endl;
+    while (receipt.lease && receipt.lease->IsActive()) std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    const auto cleaned = receipt.lease ? receipt.lease->Cleanup() : War3Map::Status::Ok();
+    Print(cleaned.diagnostics);
+    const auto files = (*workspace.value)->Cleanup(true);
+    Print(files.diagnostics);
+    // 游戏被强制结束时退出码非零，租约照常清理副本；两者分别报告。
+    std::cout << "game_exited=true\ngame_exit_clean=" << (cleaned.Succeeded() ? "true" : "false")
+        << "\nworkspace_cleanup=" << (files.Succeeded() ? "true" : "false") << std::endl;
+    return 0;
+}

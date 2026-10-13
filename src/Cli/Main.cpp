@@ -25,6 +25,7 @@
 #include "WtgSourceCommand.h"
 #include "LuaTriggerCandidateCommand.h"
 #include "MapCreateCommand.h"
+#include "MapTestCommand.h"
 #include "ArchiveInspectCommand.h"
 #include "ImportQueryCommand.h"
 #include "UpdateCommand.h"
@@ -76,7 +77,8 @@ void PrintUsage() {
         << "war3-map-cli update-check --manifest <json> --signature <sig> [--package <zip>] [--channel stable|beta]\n"
         << "war3-map-cli update-apply --package <zip> --manifest <json> --signature <sig> --install-dir <directory> [--baseline-manifest <json> --baseline-signature <sig>] --dry-run\n"
         << "war3-map-cli profiles\n"
-        << "war3-map-cli map-create <profile> <new-map.w3x> <new-work-directory> <ydwe-root> <war3-root> <name> [author]\n"
+        << "war3-map-cli map-create <profile> <new-map.w3x> <new-work-directory> <ydwe-root> <war3-root> <name> [author] [--init-trigger <name> --init-code <jass-line> ...] [--add-file <member> <file> ...]\n"
+        << "war3-map-cli map-test <map.w3x> <war3-root> <helper-dir> [--ydwe <root>] [--lua-engine owned|ydwe] [--no-hot-reload] [--seconds N] [--reload-after <seconds> <module> <file> ...]\n"
         << "war3-map-cli map-data-inspect <map-archive-or-directory>\n"
         << "war3-map-cli name-query <map-archive> <source-sha256> <ui-root-or-dash> <game-root-or-dash> <raw-value> <ui-type>\n"
         << "war3-map-cli map-data-query <map-archive> <source-sha256> <settings|units|doodads|regions|cameras|sounds|strings> <start-index> <limit-1..128>\n"
@@ -347,6 +349,7 @@ int wmain(int argc, wchar_t** argv) {
         return RunMapDataRoundtrip(argv[2]);
     }
     if (command == L"map-create") return RunMapCreate(argc, argv);
+    if (command == L"map-test") return RunMapTest(argc, argv);
     if (command == L"wtg-source-inspect" && (argc == 5 ||
             (argc == 7 && std::wstring_view(argv[5]) == L"--max-nodes" && argv[6][0])))
         return RunWtgSourceInspect(argv[2], Utf8Argument(argv[3]), argv[4], argc == 7 ? Utf8Argument(argv[6]) : "");

@@ -337,8 +337,7 @@ void AssetsModule::RebuildList() {
         }
         state->setText(states.join(QStringLiteral(" · ")));
         auto* full = new QStandardItem(path);
-        full->setToolTip(entry.ownedPayload ? tr("%1\n内容保存在工程中。%2").arg(path,
-            entry.runtimeLuaDraft ? tr("Lua 运行时配置尚未确认，暂不写入地图。") : QString{})
+        full->setToolTip(entry.ownedPayload ? tr("%1\n内容保存在工程中。").arg(path)
             : entry.Pending() ? tr("%1\n磁盘来源：%2").arg(path, entry.diskPath) : path);
         addRow({name, type, size, state, full});
     }

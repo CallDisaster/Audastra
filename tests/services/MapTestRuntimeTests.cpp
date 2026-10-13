@@ -483,6 +483,77 @@ void LuaMapsAreExplicitRuntimeInputs() {
     Require(Code(Script::BuildIndependentMapTestLaunchPlan(nul), "MAP_TEST_SCRIPT_MALFORMED"), "Lua NUL source rejected before plugin startup");
     fixture.Unchanged(map);
 }
+// 原创手写 Lua 地图：初始化里 Cheat("exec-lua: \"main\"")（YDWE 约定），Lua 文件作为普通成员导入。
+void HandwrittenLuaEntriesSelectRuntime() {
+    const auto common = std::string(kCommon) + "native Cheat takes string cheatStr returns nothing\n";
+    Fixture fixture(common);
+    const auto entry = Script("    call Cheat(\"exec-lua: \\\"main\\\"\")");
+    const auto members = [](std::string jass, std::vector<MapArchiveMember> lua) {
+        std::vector<MapArchiveMember> result{{"war3map.j", Bytes(jass)}, {"war3map.w3i", MapDataFixtures::FullMapSettingsV25().bytes}};
+        result.insert(result.end(), lua.begin(), lua.end());
+        return result;
+    };
+    const auto helpers = [&](Services::MapTestArtifact& map) {
+        Write(fixture.helper / "audastra-warcraft-launcher.exe", Pe(false)); Write(fixture.helper / "audastra-warcraft-bootstrap.dll", Pe(true));
+        map.runtimeBridge = fixture.helper / "audastra-warcraft-launcher.exe";
+        map.runtimeBootstrap = fixture.helper / "audastra-warcraft-bootstrap.dll";
+    };
+    const auto hasCode = [](const auto& result, std::string_view code) {
+        return std::any_of(result.diagnostics.begin(), result.diagnostics.end(), [&](const auto& item) { return item.code == code; });
+    };
+    auto map = fixture.Artifact(members(entry, {{"main.lua", Bytes("local u = require 'lib.util'\nlocal id = |hfoo|\n")},
+        {"lib\\util.lua", Bytes("return {}\n")}}));
+    helpers(map);
+    auto plan = Script::BuildIndependentMapTestLaunchPlan(map);
+    Success(plan, "handwritten exec-lua map selects the built-in Lua runtime");
+    Require(plan.value->useOwnedLuaRuntime && plan.value->enableLuaHotReload && plan.value->runtimeRoot.empty()
+        && plan.value->luaEntryModules == std::vector<std::string>{"main"} && hasCode(plan, "MAP_TEST_LUA_OWNED"),
+        "exec-lua entry is detected, hot reload follows the preference, and no YDWE DLL is needed");
+    map.handwrittenLuaHotReload = false;
+    plan = Script::BuildIndependentMapTestLaunchPlan(map);
+    Success(plan, "handwritten Lua without hot reload");
+    Require(plan.value->useOwnedLuaRuntime && !plan.value->enableLuaHotReload, "hot reload preference respected");
+
+    auto missing = fixture.Artifact(members(entry, {}));
+    helpers(missing);
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(missing), "MAP_TEST_LUA_ENTRY_MISSING", "missing entry file stops before launch");
+    auto broken = fixture.Artifact(members(entry, {{"main.lua", Bytes("return 1\n")}, {"lib\\bad.lua", Bytes("local x = 1\nx = \n")}}));
+    helpers(broken);
+    const auto syntax = Script::BuildIndependentMapTestLaunchPlan(broken);
+    FailureCode(syntax, "MAP_TEST_LUA_SYNTAX", "syntax error in any map Lua file stops before launch");
+    Require(syntax.diagnostics.back().message.find("lib\\bad.lua") != std::string::npos, "syntax error names the file");
+    auto invalid = fixture.Artifact(members(Script("    call Cheat(\"exec-lua: main\")"), {{"main.lua", Bytes("return 1\n")}}));
+    helpers(invalid);
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(invalid), "MAP_TEST_LUA_ENTRY_INVALID", "unquoted module is reported with its line");
+
+    auto ordinary = fixture.Artifact(members(Script("    call Cheat(\"greedisgood 500\")"), {{"main.lua", Bytes("return (\n")}}));
+    plan = Script::BuildIndependentMapTestLaunchPlan(ordinary);
+    Success(plan, "ordinary cheat command does not load Lua");
+    Require(!plan.value->useOwnedLuaRuntime && plan.value->luaEntryModules.empty() && plan.value->runtimeRoot.empty(),
+        "maps without exec-lua keep direct native launch and their .lua members are not interpreted");
+
+    map.handwrittenLuaEngine = Services::MapTestLuaEngine::Ydwe;
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(map), "MAP_TEST_LUA_RUNTIME_REQUIRED",
+        "YDWE engine preference needs a configured YDWE instead of silently launching the plain game");
+    fixture.Runtime(map, Services::MapTestRuntimeLayout::YdweTree, true);
+    plan = Script::BuildIndependentMapTestLaunchPlan(map);
+    Success(plan, "YDWE engine preference uses the readonly configured YDWE tree");
+    Require(!plan.value->useOwnedLuaRuntime && plan.value->runtimeRoot == fixture.runtime, "YDWE engine selected");
+
+    auto extension = fixture.Artifact(members(Script("    call EXNative()\n    call Cheat(\"exec-lua: \\\"main\\\"\")",
+        "native EXNative takes nothing returns nothing\n"), {{"main.lua", Bytes("return 1\n")}}));
+    fixture.Runtime(extension, Services::MapTestRuntimeLayout::YdweTree, true);
+    plan = Script::BuildIndependentMapTestLaunchPlan(extension);
+    Success(plan, "extension natives fall back to the YDWE Lua engine");
+    Require(!plan.value->useOwnedLuaRuntime && plan.value->runtimeRoot == fixture.runtime && hasCode(plan, "MAP_TEST_LUA_YDWE_FALLBACK"),
+        "fallback is explained instead of silently dropping hot reload");
+    auto gbk = fixture.Artifact(members(entry, {{"main.lua", Bytes("-- \xB2\xE2\xCA\xD4\nreturn 1\n")}}));
+    fixture.Runtime(gbk, Services::MapTestRuntimeLayout::YdweTree, true);
+    plan = Script::BuildIndependentMapTestLaunchPlan(gbk);
+    Success(plan, "non-UTF-8 Lua falls back to YDWE engine");
+    Require(!plan.value->useOwnedLuaRuntime && hasCode(plan, "MAP_TEST_LUA_YDWE_FALLBACK"), "non-UTF-8 fallback explained");
+    fixture.Unchanged(map); fixture.Unchanged(ordinary);
+}
 void MissingMalformedAndOversizeScriptsStopPlanning() {
     Fixture fixture;
     auto map = fixture.Artifact(std::vector<MapArchiveMember>{{"war3map.w3i", MapDataFixtures::FullMapSettingsV25().bytes}});
@@ -803,7 +874,7 @@ int main() {
         ExplicitAndUnknownInterfacesNeedRuntime(); RuntimeFilesAndProfileAreCheckedWithoutExecution();
         YdweTreeFallbackIsReadonlyAndOnlyNeededForExtensions();
         UnusedUiPreferencesCannotBlockNativeMaps();
-        LuaMapsAreExplicitRuntimeInputs(); MissingMalformedAndOversizeScriptsStopPlanning();
+        LuaMapsAreExplicitRuntimeInputs(); HandwrittenLuaEntriesSelectRuntime(); MissingMalformedAndOversizeScriptsStopPlanning();
         AnonymousScriptFlagsAreCheckedBeforeDecoding();
         std::cout << "Independent map runtime preflight fixtures passed; no YDWE, registry, game, DLL execution or GPU used\n";
         OptionalRealNativeMapPlan();

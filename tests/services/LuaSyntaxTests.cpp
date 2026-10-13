@@ -1,4 +1,5 @@
 #include "War3MapCore/Lua/LuaSyntax.h"
+#include "War3MapCore/Lua/YdweRawcode.h"
 
 #include <Windows.h>
 #include <chrono>
@@ -28,6 +29,16 @@ int main() {
         Require(std::chrono::steady_clock::now() - started < std::chrono::seconds(5), "Checker executed infinite loop or stalled");
         Require(safe.peakMemoryBytes > 0 && safe.peakMemoryBytes <= SyntaxOptions{}.maxMemoryBytes, "Physical allocator peak missing");
         Require(CheckSyntax("local x = 7 // 2\nx = (x & 3) << 1\nreturn x\n", "lua53.lua").Succeeded(), "Lua 5.3 operators unsupported");
+        // YDWE |xxxx| 四字码：代码中改写为整数，字符串/注释/长括号内不动，行号不变；按位或保持原义。
+        const auto rawcodes = TranslateYdweRawcodes(
+            "local id = |AHhb|\n-- |Abcd| comment\nlocal s = '|Abcd|' .. [[|Abcd|]]\nlocal or1 = a|b|c\nreturn id ~= |hfoo|");
+        Require(rawcodes && *rawcodes == "local id = 1095264354\n-- |Abcd| comment\nlocal s = '|Abcd|' .. [[|Abcd|]]\n"
+            "local or1 = a|b|c\nreturn id ~= 1751543663", "YDWE rawcode rewrite outside strings and comments only");
+        Require(!TranslateYdweRawcodes("local x = a | b\nlocal y = '|Abcd|'"), "no rawcode leaves the source untouched");
+        Require(CheckSyntax("local id = |AHhb|\nreturn id == 1095264354", "ydwe-rawcode.lua").Succeeded(), "checker accepts YDWE rawcode");
+        const auto rawcodeError = CheckSyntax("local id = |AHhb|\nlocal broken = )", "ydwe-error.lua");
+        Require(!rawcodeError.Succeeded() && !rawcodeError.diagnostics.empty() && rawcodeError.diagnostics.front().line == 2,
+            "rawcode rewrite keeps line numbers for later errors");
         const std::string longName = "D:/" + std::string(160, 'a') + "/source.lua";
         const auto bad = CheckSyntax("local x = 1\nlocal y = 2\nlocal = 3\n", longName);
         Require(bad.completed && Code(bad, "LUA_SYNTAX_ERROR") && bad.diagnostics.front().line == 3, "Long source name lost exact syntax line");

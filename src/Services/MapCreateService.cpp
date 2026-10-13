@@ -3,6 +3,8 @@
 #include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/MapData/MapPlacements.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
+#include "War3MapCore/Trigger/TriggerDirectory.h"
+#include "War3MapCore/Trigger/TriggerEditing.h"
 
 #include <Windows.h>
 #include <algorithm>
@@ -101,6 +103,30 @@ Result<std::vector<MapArchiveMember>> Seed(const MapCreateOptions& options,
         {"war3map.j", {}}});
 }
 
+// 与界面新建触发器同一编辑接口：初始化事件 + 若干“自定义代码”动作，生成的脚本照常经保存链检查。
+Status AddInitTrigger(Trigger::TriggerDocument& document, const Trigger::UiCatalog& catalog, const MapCreateOptions& options) {
+    using Trigger::TriggerDocumentEditor;
+    const auto category = Trigger::TriggerDirectoryEditor::AddCategory(document, options.initTriggerName);
+    if (!category.Succeeded() || !category.value) return {category.diagnostics};
+    const auto trigger = TriggerDocumentEditor::AddTrigger(document, *category.value, options.initTriggerName);
+    if (!trigger.Succeeded() || !trigger.value) return {trigger.diagnostics};
+    const auto event = TriggerDocumentEditor::AppendRootEca(document, catalog, *trigger.value,
+        Trigger::UiDefinitionKind::Event, "MapInitializationEvent");
+    if (!event.Succeeded()) return {event.diagnostics};
+    for (const auto& line : options.initCustomScript) {
+        const auto action = TriggerDocumentEditor::AppendRootEca(document, catalog, *trigger.value,
+            Trigger::UiDefinitionKind::Action, "CustomScriptCode");
+        if (!action.Succeeded() || !action.value) return {action.diagnostics};
+        const auto* eca = TriggerDocumentEditor::FindEca(document, action.value->rootEcaId);
+        if (!eca || eca->arguments.size() != 1)
+            return Status::Failure("MapCreate", "CREATE_TRIGGER_DEFINITION", "当前函数库的“自定义代码”动作不是单参数定义。");
+        const auto set = TriggerDocumentEditor::SetScalarArgument(document,
+            document.argumentNodes[eca->arguments[0]].id, 3, line);
+        if (!set.Succeeded()) return set;
+    }
+    return Status::Ok();
+}
+
 bool TextValid(std::string_view text, std::size_t maximum) {
     return text.size() <= maximum && std::none_of(text.begin(), text.end(), [](unsigned char c) {
         return c < 32 || c == 127;
@@ -114,6 +140,20 @@ Status ValidateMapCreateOptions(const MapCreateOptions& options) {
         return Status::Failure("MapCreate", "CREATE_PROFILE_UNSUPPORTED", "该新建地图配置尚未实现；不能外推尺寸或地形规则。");
     if (options.name.empty() || !TextValid(options.name, 128) || !TextValid(options.author, 128))
         return Status::Failure("MapCreate", "CREATE_TEXT_INVALID", "地图名称不能为空；名称和作者须为至多 128 字节的 UTF-8 单行文本。");
+    if (!options.initCustomScript.empty() && (options.initTriggerName.empty() || !TextValid(options.initTriggerName, 128)
+            || std::any_of(options.initCustomScript.begin(), options.initCustomScript.end(),
+                [](const auto& line) { return line.empty() || !TextValid(line, 1024); })))
+        return Status::Failure("MapCreate", "CREATE_TRIGGER_INVALID", "初始化触发器需要名称；每行自定义代码须为非空单行 UTF-8 文本。");
+    std::size_t extraBytes = 0;
+    for (const auto& member : options.extraMembers) {
+        extraBytes += member.data.size();
+        const auto name = std::string_view(member.name);
+        if (name.empty() || name.size() > 240 || name.starts_with("war3map") || name.starts_with("(")
+            || name.find("..") != std::string_view::npos || name.find(':') != std::string_view::npos
+            || name.front() == '\\' || name.front() == '/' || !TextValid(name, 240) || extraBytes > 16u * 1024u * 1024u)
+            return Status::Failure("MapCreate", "CREATE_EXTRA_MEMBER_INVALID",
+                "附加文件须为地图内相对路径，不能与地图自身成员同名，合计不超过 16 MiB。");
+    }
     return Status::Ok();
 }
 
@@ -130,8 +170,13 @@ CreateResult CreateMapCandidate(const MapCreateRequest& request, const MapSaveSe
         auto empty = Trigger::WtgWctCodec{}.CreateEmpty(*catalog.value);
         if (!empty.Succeeded() || !empty.value) return Forward<CreateResult>(std::move(empty.diagnostics));
         auto triggers = std::move(*empty.value);
+        if (!request.options.initCustomScript.empty()) {
+            const auto added = AddInitTrigger(triggers, *catalog.value, request.options);
+            if (!added.Succeeded()) return Forward<CreateResult>(added.diagnostics);
+        }
         auto members = Seed(request.options, triggers, *catalog.value);
         if (!members.Succeeded() || !members.value) return Forward<CreateResult>(std::move(members.diagnostics));
+        members.value->insert(members.value->end(), request.options.extraMembers.begin(), request.options.extraMembers.end());
         if (!std::filesystem::create_directory(request.workspace, error) || error)
             return CreateResult::Failure("MapCreate", "CREATE_WORKSPACE_UNAVAILABLE", "工作目录必须不存在且父目录可写；未覆盖原目录。");
         Bytes prefix; prefix.Raw("HM3W"); prefix.UInt(0); prefix.Text(request.options.name);

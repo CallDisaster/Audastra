@@ -227,6 +227,24 @@ void ModuleHotReload() {
     Check(broken.message.find("skill.lua:1") != std::string::npos, "syntax error points at the module file and line");
     Success(host.Execute("assert(callback()==25)", "@unchanged.lua"), "failed reload keeps previous logic");
     Check(host.ReloadModule("../escape", "return 1").code == LuaReloadResult::InvalidRequest, "invalid module name refused");
+    // YDWE |xxxx| 四字码在模块、代码段与热重载中都按整数编译；字符串内保持原文。
+    Success(host.Execute("assert(|AHhb| == 1095264354 and '|AHhb|' == '|' .. 'AHhb|' and (6|1|0) == 7)", "@rawcode.lua"), "YDWE rawcode");
+    Success(host.ReloadModule("skill", "local M={}\nfunction M.damage() return |hfoo| end\nreturn M"), "rawcode in reloaded module");
+    Success(host.Execute("assert(callback()==1751543663)", "@rawcode-reload.lua"), "reloaded rawcode value");
+    // 新函数通过 local M 读写状态时，热重载后仍作用于原模块表（游戏实测发现的计数停止问题）。
+    Success(host.ReloadModule("later", "local M={n=0}\nfunction M.bump() M.n=M.n+1 return M.n end\nreturn M"), "stateful module");
+    Success(host.Execute("local l=require('later'); assert(l.bump()==1 and l.bump()==2)", "@state-before.lua"), "state before reload");
+    Success(host.ReloadModule("later", "local M={n=0}\nfunction M.bump() M.n=M.n+10 return M.n end\nreturn M"), "reload stateful module");
+    Success(host.Execute("local l=require('later'); assert(l.bump()==12 and l.n==12)", "@state-after.lua"),
+        "reloaded function updates the original table state");
+    // 作者用斜杠或点号写同一子目录模块时共用一份结果，编辑器按文件路径（点号）热重载也能命中。
+    LuaHost nested([](std::string_view member, std::size_t) {
+        return member == "lib\\util.lua" ? LuaModuleRead{true, "local M={}\nfunction M.v() return 1 end\nreturn M", {}} : LuaModuleRead{};
+    });
+    Success(nested.Initialize(), "nested host initialize");
+    Success(nested.Execute("u=require('lib/util'); assert(require('lib.util')==u)", "@nested.lua"), "same member shares result");
+    Success(nested.ReloadModule("lib.util", "local M={}\nfunction M.v() return 2 end\nreturn M"), "reload by dotted name");
+    Success(nested.Execute("assert(u.v()==2)", "@nested-check.lua"), "slash-required module receives reload");
 }
 
 int main() {

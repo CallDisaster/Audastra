@@ -214,7 +214,14 @@ Result<MapTestLaunchReceipt> LaunchMapTest(const Services::MapTestArtifact& arti
     const auto plan = BuildIndependentMapTestLaunchPlan(artifact, progress);
     if (!plan.Succeeded()) { Result<MapTestLaunchReceipt> result; result.diagnostics = plan.diagnostics; return result; }
     if (progress) progress("launch");
-    return detail::LaunchVerifiedMapTestPlan(*plan.value);
+    auto launched = detail::LaunchVerifiedMapTestPlan(*plan.value);
+    if (launched.Succeeded()) {
+        launched.value->luaEntryModules = plan.value->luaEntryModules;
+        launched.value->luaHotReload = plan.value->enableLuaHotReload;
+    }
+    // 运行环境选择等提示随结果一起返回给宿主显示。
+    launched.diagnostics.insert(launched.diagnostics.begin(), plan.diagnostics.begin(), plan.diagnostics.end());
+    return launched;
 }
 
 namespace detail {

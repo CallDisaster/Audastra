@@ -42,6 +42,15 @@ QJsonObject Snapshot(const Services::LuaReloadControllerSnapshot& snapshot) {
 QJsonObject MainWindow::LuaTestReload(bool submit) {
     if (luaTestGeneration_ != project_->editRevision_.Generation())
         return Failure("LUA_RELOAD_NO_SESSION", "请先在当前地图启动启用热重载的 Lua 单人测试。");
+    if (luaFileReload_) {
+        if (submit && project_->savingMap_) return Failure("LUA_RELOAD_BUSY", "保存或测试准备正在进行，请稍后重试。");
+        const auto result = LuaFileReload(submit);
+        if (submit) {
+            ShowStatusMessage(result.value("message").toString());
+            if (luaReloadPoll_ && result.value("state").toString() == "pending") luaReloadPoll_->start();
+        }
+        return result;
+    }
     if (!luaReloadController_) {
         if (submit || !luaRuntimeMailbox_)
             return Failure("LUA_RELOAD_NO_SESSION", "请先在当前地图启动启用热重载的 Lua 单人测试。");
@@ -157,8 +166,11 @@ void MainWindow::PollLuaTestReload() {
     if (status == luaReloadLastStatus_) return;
     luaReloadLastStatus_ = status;
     if (result.value("state").toString() == "pending") return;
-    if (!freshDiagnostic)
-        ShowStatusMessage(tr("%1 · %2 秒").arg(result.value("message").toString()).arg(result.value("seconds").toDouble(), 0, 'f', 2));
+    if (!freshDiagnostic) {
+        const auto seconds = result.value("seconds").toDouble();
+        ShowStatusMessage(seconds > 0 ? tr("%1 · %2 秒").arg(result.value("message").toString()).arg(seconds, 0, 'f', 2)
+            : result.value("message").toString());
+    }
     const auto location = result.value("location").toObject();
     bool valid = false; const auto trigger = location.value("trigger_id").toString().toULongLong(&valid);
     if (valid && trigger) {

@@ -168,6 +168,8 @@ Result<MapTestArtifact> PrepareMapTest(const MapTestRequest& request,
         runtime, request.runtimeBridge, request.runtimeBootstrap, ydwe});
     prepared.value->useOwnedLuaRuntime = request.useOwnedLuaRuntime;
     prepared.value->enableLuaHotReload = request.enableLuaHotReload;
+    prepared.value->handwrittenLuaEngine = request.handwrittenLuaEngine;
+    prepared.value->handwrittenLuaHotReload = request.handwrittenLuaHotReload;
     prepared.diagnostics.insert(prepared.diagnostics.end(), slkNotes.begin(), slkNotes.end());
     return prepared;
 }

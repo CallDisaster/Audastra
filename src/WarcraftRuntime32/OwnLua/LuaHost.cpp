@@ -4,6 +4,7 @@
 #include "LuaBehaviorModules.h"
 #include "LuaModulePath.h"
 #include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
+#include "War3MapCore/Lua/YdweRawcode.h"
 
 // 此独立 Lua 库全体以 C++ 编译，使用上游支持的异常展开，不能包 extern "C"。
 #include <lua.h>
@@ -149,6 +150,12 @@ struct LuaHost::Impl {
         if (!self.random) self.random = 0x41d05327;
         return 0;
     }
+    // 所有文本 chunk 统一经过 YDWE |xxxx| 四字码改写后再交给官方 Lua 编译（行号不变）。
+    static int LoadText(lua_State* lua, std::string_view source, const char* chunk) {
+        const auto rawcodes = War3Map::Lua::TranslateYdweRawcodes(source);
+        const std::string_view text = rawcodes ? std::string_view(*rawcodes) : source;
+        return luaL_loadbufferx(lua, text.data(), text.size(), chunk, "t");
+    }
     LuaModuleRead ReadModule(std::string_view member) {
         if (const auto found = overrides.find(std::string(member)); found != overrides.end()) return {true, found->second, {}};
         try { return reader ? reader(member, limits.sourceBytes) : LuaModuleRead{false, {}, "未配置地图归档读取器。"}; }
@@ -163,8 +170,13 @@ struct LuaHost::Impl {
         const std::string name(raw, size);
         const auto member = LuaModuleMember(name);
         if (member.empty()) return luaL_error(lua, "require 模块名不属于地图内有效相对成员。");
+        // 预置的 jass.* 按原名登记；地图模块按实际成员登记，"a.b"、"a/b" 与 "a\b" 共用同一份结果，
+        // 热重载也按成员找到它。
         lua_rawgetp(lua, LUA_REGISTRYINDEX, &loadedModulesKey);
         lua_getfield(lua, -1, name.c_str());
+        if (lua_toboolean(lua, -1)) return 1;
+        lua_pop(lua, 1);
+        lua_getfield(lua, -1, member.c_str());
         if (lua_toboolean(lua, -1)) return 1;
         lua_pop(lua, 1);
         if (name.starts_with("jass.")) return luaL_error(lua, "自有 Lua 运行时尚未实现模块 %s。", name.c_str());
@@ -187,13 +199,13 @@ struct LuaHost::Impl {
         self.readModules.insert(member);
         if (!LuaMailboxUtf8(module.source)) return luaL_error(lua, "Lua 模块 %s 不是有效 UTF-8 文本。", member.c_str());
         const std::string chunk = "@" + member;
-        if (luaL_loadbufferx(lua, module.source.data(), module.source.size(), chunk.c_str(), "t") != LUA_OK) return lua_error(lua);
+        if (LoadText(lua, module.source, chunk.c_str()) != LUA_OK) return lua_error(lua);
         if (self.Expired()) return luaL_error(lua, "Lua 模块编译超出时间预算。");
         lua_pushlstring(lua, name.data(), name.size());
         lua_pushlstring(lua, member.data(), member.size());
         lua_call(lua, 2, 1);
         if (lua_isnil(lua, -1)) { lua_pop(lua, 1); lua_pushboolean(lua, 1); }
-        lua_pushvalue(lua, -1); lua_setfield(lua, -3, name.c_str());
+        lua_pushvalue(lua, -1); lua_setfield(lua, -3, member.c_str());
         return 1;
     }
     static int InitializeLibraries(lua_State* lua) {
@@ -225,13 +237,13 @@ struct LuaHost::Impl {
         const std::string name(self.requestedModule);
         const auto member = LuaModuleMember(name);
         const std::string chunk = "@" + member;
-        if (luaL_loadbufferx(lua, self.reloadSource.data(), self.reloadSource.size(), chunk.c_str(), "t") != LUA_OK)
+        if (LoadText(lua, self.reloadSource, chunk.c_str()) != LUA_OK)
             return lua_error(lua);
         self.overrides[member] = std::string(self.reloadSource);
         const int function = lua_gettop(lua);
         lua_rawgetp(lua, LUA_REGISTRYINDEX, &loadedModulesKey);
         const int loaded = lua_gettop(lua);
-        lua_getfield(lua, loaded, name.c_str());
+        lua_getfield(lua, loaded, member.c_str());
         const int previous = lua_gettop(lua);
         if (!lua_toboolean(lua, previous)) { lua_settop(lua, function - 1); return 0; }
         lua_pushvalue(lua, function);
@@ -242,6 +254,21 @@ struct LuaHost::Impl {
         const int fresh = lua_gettop(lua);
         if (lua_istable(lua, previous) && lua_istable(lua, fresh)) {
             if (!lua_rawequal(lua, previous, fresh)) {
+                // 新函数的上值若指向新结果表（常见的 local M），改指原表：上值盒在同一 chunk 的
+                // 闭包间共享，改一次即对全部新函数生效，模块状态（如 M.count）才真正延续。
+                lua_pushnil(lua);
+                while (lua_next(lua, fresh)) {
+                    if (lua_type(lua, -1) == LUA_TFUNCTION) {
+                        for (int upvalue = 1; lua_getupvalue(lua, -1, upvalue); ++upvalue) {
+                            const bool isFresh = lua_rawequal(lua, -1, fresh);
+                            lua_pop(lua, 1);
+                            if (!isFresh) continue;
+                            lua_pushvalue(lua, previous);
+                            (void)lua_setupvalue(lua, -2, upvalue);
+                        }
+                    }
+                    lua_pop(lua, 1);
+                }
                 lua_pushnil(lua);
                 while (lua_next(lua, fresh)) {
                     bool replace = lua_type(lua, -1) == LUA_TFUNCTION;
@@ -254,7 +281,7 @@ struct LuaHost::Impl {
                 }
             }
         } else {
-            lua_pushvalue(lua, fresh); lua_setfield(lua, loaded, name.c_str());
+            lua_pushvalue(lua, fresh); lua_setfield(lua, loaded, member.c_str());
         }
         lua_settop(lua, function - 1);
         return 0;
@@ -287,7 +314,7 @@ struct LuaHost::Impl {
             lua_pushcfunction(state, ReloadRequested);
         } else {
             const std::string chunk(name);
-            const int loaded = luaL_loadbufferx(state, source.data(), source.size(), chunk.c_str(), "t");
+            const int loaded = LoadText(state, source, chunk.c_str());
             if (loaded != LUA_OK) return Error(loaded, LuaReloadResult::SyntaxError);
         }
         if (Expired()) return Failure(LuaReloadResult::BudgetExceeded, "Lua 编译超出时间预算，代码尚未执行。");

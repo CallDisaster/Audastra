@@ -34,6 +34,7 @@ qt_add_executable(war3-map-editor WIN32
     MapSaveActions.cpp
     MapTestActions.cpp
     MapTestReloadActions.cpp
+    MapTestLuaFileReload.cpp
     MapTestSettingsPage.cpp
     MapTestSettingsPage.h
     RecoverySettingsPage.cpp
@@ -83,6 +84,12 @@ add_custom_target(war3-map-build-info ALL
     BYPRODUCTS "${WAR3MAP_BUILD_INFO_CPP}")
 set_source_files_properties("${WAR3MAP_BUILD_INFO_CPP}" PROPERTIES GENERATED TRUE)
 add_dependencies(war3-map-editor war3-map-build-info)
+# Lua 教程地图的原创脚本：新建教程地图时写入地图；仓库不提交二进制地图。
+file(GLOB_RECURSE audastra_lua_tutorial CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/examples/lua-tutorial/*.lua")
+qt_add_resources(war3-map-editor "audastra_lua_tutorial"
+    PREFIX "/audastra/examples/lua-tutorial"
+    BASE "${PROJECT_SOURCE_DIR}/examples/lua-tutorial"
+    FILES ${audastra_lua_tutorial})
 target_sources(war3-map-editor PRIVATE "${WAR3MAP_BUILD_INFO_CPP}")
 
 target_link_libraries(war3-map-editor

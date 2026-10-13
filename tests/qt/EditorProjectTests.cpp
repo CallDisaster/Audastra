@@ -932,7 +932,7 @@ void EditorProjectTests::OwnedLuaProjectRecoveryPreservesPayloadRoleAndMapGate()
     QCOMPARE(*imports[0].ownedPayload, *payload); QVERIFY(imports[0].diskPath.isEmpty()); QVERIFY(imports[0].runtimeLuaDraft);
     QVERIFY(!std::filesystem::exists((*prepared.value)->root / "imports/0")); // 内存正文不提取成临时磁盘文件。
     QVERIFY(!project.PrepareMapSave(std::filesystem::path(root.filePath("forbidden.mpq").toStdWString()), false));
-    QVERIFY(ModelHasCode(*project.diagnosticsModel_, "MAP_RUNTIME_LUA_PROFILE_UNCONFIRMED"));
+    QVERIFY(ModelHasCode(*project.diagnosticsModel_, "MAP_LUA_SYNTAX"));
     auto package = MapArchiveSession::Open(target); QVERIFY(package.Succeeded());
     auto members = std::vector<MapArchiveMember>(package.value->Members().begin(), package.value->Members().end());
     auto manifest = std::find_if(members.begin(), members.end(), [](const auto& member) { return member.name == "project.json"; });
@@ -948,7 +948,7 @@ void EditorProjectTests::OwnedLuaProjectRecoveryPreservesPayloadRoleAndMapGate()
     auto roleCleared = PrepareProjectOpen(tampered); QVERIFY(roleCleared.Succeeded());
     EditorProject recovered; recovered.RestoreAssets({(*roleCleared.value)->imports, {}});
     QVERIFY(!recovered.PrepareMapSave(std::filesystem::path(root.filePath("bypass.mpq").toStdWString()), false));
-    QVERIFY(ModelHasCode(*recovered.diagnosticsModel_, "MAP_RUNTIME_LUA_PROFILE_UNCONFIRMED"));
+    QVERIFY(ModelHasCode(*recovered.diagnosticsModel_, "MAP_LUA_SYNTAX"));
     const auto diskPath = root.filePath("demo.lua"); QFile disk(diskPath); QVERIFY(disk.open(QIODevice::WriteOnly));
     QCOMPARE(disk.write("local answer = 43\n"), qint64{18}); disk.close();
     QCOMPARE(project.AddImportFiles({diskPath}, "scripts"), 1);
