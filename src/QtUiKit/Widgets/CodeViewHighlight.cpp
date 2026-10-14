@@ -35,6 +35,12 @@ bool IdentifierPart(QChar value) { return value.isLetterOrNumber() || value == '
 struct Fold { QString kind; int line; };
 }
 
+QStringList CodeKeywords(CodeLanguage language) {
+    auto words = Keywords(language).values();
+    words.sort();
+    return words;
+}
+
 CodeLexSnapshot ScanCode(const QString& text, CodeLanguage language, std::stop_token stop) {
     CodeLexSnapshot result;
     if (text.size() > 32 * 1024 * 1024) { result.budgetExceeded = true; result.reason = QStringLiteral("正文超过 32 Mi UTF-16 展示预算。"); return result; }

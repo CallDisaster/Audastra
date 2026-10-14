@@ -1,5 +1,6 @@
 #include "Widgets/CodeView.h"
 #include "Widgets/CodeAssistPopup.h"
+#include "Widgets/CodeJassAssist.h"
 #include "Widgets/CodeViewGutter.h"
 #include "Widgets/CodeViewHighlight.h"
 #include "Fonts/FontLoader.h"
@@ -546,6 +547,8 @@ CodeCompletionList CodeView::DeclarationCompletion(const QTextCursor& cursor) co
         list.items.push_back({item.name, item.signature.isEmpty() ? item.name : item.signature, documentation,
             CompletionKindFor(item.kind, item.signature)});
     }
+    for (const auto& keyword : CodeKeywords(impl_->language))
+        if (!seen.contains(keyword)) list.items.push_back({keyword, {}, {}, CodeCompletionKind::Keyword});
     return list;
 }
 QRect CodeView::GlobalCursorRect() const {
@@ -599,10 +602,43 @@ void CodeView::RepositionAssist() {
     if (impl_->signatureTip->isVisible()) { if (caretVisible) UpdateSignature(); else impl_->signatureTip->hide(); }
 }
 void CodeView::UpdateSignature() {
-    if (!impl_->assist.signature || isReadOnly()) { impl_->signatureTip->hide(); return; }
-    const auto help = impl_->assist.signature(toPlainText(), textCursor().position());
+    if (isReadOnly() || (!impl_->assist.signature && impl_->language == CodeLanguage::Lua)) { impl_->signatureTip->hide(); return; }
+    std::optional<CodeSignatureHelp> help;
+    if (impl_->assist.signature) {
+        help = impl_->assist.signature(toPlainText(), textCursor().position());
+    } else {
+        // JASS：按声明表里的签名（名 takes … returns …）生成，说明取函数库说明或声明前注释。
+        const auto cursor = textCursor();
+        const CodeCompletionItem* found = nullptr;
+        help = JassSignatureHelp(cursor.block().text(), cursor.positionInBlock(), impl_->language, [&](const QString& name) {
+            for (const auto& item : impl_->completions)
+                if (item.name == name && item.signature.contains(QStringLiteral(" takes "))) { found = &item; return item.signature; }
+            return QString();
+        });
+        if (help && found) {
+            const auto note = impl_->notes.value(found->name);
+            help->documentation = note.isEmpty() ? found->documentation : note;
+        }
+    }
     if (!help || help->label.isEmpty()) { impl_->signatureTip->hide(); return; }
     impl_->signatureTip->ShowHelp(*help, GlobalCursorRect());
+}
+bool CodeView::DeclaringName(const QString& before) const {
+    // 正在起新名字（local unit target、function Foo、takes integer count）时不自动弹出，免得 Enter 把新名字换掉。
+    int end = static_cast<int>(before.size());
+    if (end == 0 || !before[end - 1].isSpace()) return false;
+    while (end > 0 && before[end - 1].isSpace()) --end;
+    int start = end;
+    while (start > 0 && IdentifierChar(before[start - 1])) --start;
+    const auto word = before.mid(start, end - start);
+    if (word.isEmpty()) return false;
+    static const QSet<QString> declarers{QStringLiteral("function"), QStringLiteral("native"), QStringLiteral("type"), QStringLiteral("array"),
+        QStringLiteral("struct"), QStringLiteral("library"), QStringLiteral("scope"), QStringLiteral("method"), QStringLiteral("module"),
+        QStringLiteral("interface"), QStringLiteral("integer"), QStringLiteral("real"), QStringLiteral("boolean"), QStringLiteral("string"),
+        QStringLiteral("code"), QStringLiteral("handle")};
+    if (declarers.contains(word)) return true;
+    return std::any_of(impl_->completions.cbegin(), impl_->completions.cend(),
+        [&](const CodeCompletionItem& item) { return item.name == word && item.kind == QStringLiteral("类型"); });
 }
 void CodeView::AfterTyping(const QKeyEvent* event) {
     const auto typed = event->text();
@@ -620,7 +656,8 @@ void CodeView::AfterTyping(const QKeyEvent* event) {
         while (start > 0 && IdentifierChar(before[start - 1])) --start;
         const auto length = before.size() - start;
         // 声明表至少两个字符才弹出；语言服务自行判断注释、字符串和声明位置。
-        if (impl_->assist.complete ? length >= 1 : (length >= 2 && !before[start].isDigit() && !InTextToken(before, impl_->language)))
+        if (impl_->assist.complete ? length >= 1 : (length >= 2 && !before[start].isDigit() && !InTextToken(before, impl_->language)
+                && !DeclaringName(before.left(start))))
             OpenCompletion(false);
     } else if (member) {
         OpenCompletion(false);
@@ -629,7 +666,8 @@ void CodeView::AfterTyping(const QKeyEvent* event) {
         if (const auto list = impl_->assist.complete(toPlainText(), textCursor().position()); list.path && !list.items.isEmpty())
             OpenCompletion(false);
     }
-    if (impl_->assist.signature && ((plain && (ch == '(' || ch == ',' || ch == ')')) || impl_->signatureTip->isVisible()))
+    const bool signatures = impl_->assist.signature || impl_->language != CodeLanguage::Lua;
+    if (signatures && ((plain && (ch == '(' || ch == ',' || ch == ')')) || impl_->signatureTip->isVisible()))
         UpdateSignature();
 }
 const CodeSemanticDefinition* CodeView::SemanticDefinitionAtCursor() const {

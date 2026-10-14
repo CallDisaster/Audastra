@@ -1,5 +1,6 @@
 #include "Widgets/CodeView.h"
 #include "Widgets/CodeAssistPopup.h"
+#include "Widgets/CodeJassAssist.h"
 #include "Widgets/CodeViewHighlight.h"
 #include "Widgets/CodeProblemsView.h"
 #include "Widgets/ProblemList.h"
@@ -168,6 +169,48 @@ private slots:
         // 光标移到替换起点之前时关闭列表。
         view.SetText({}); view.moveCursor(QTextCursor::End); QTest::keyClicks(&view, "jass.");
         QVERIFY(popup->isVisible()); QTest::keyClick(&view, Qt::Key_Home); QVERIFY(!popup->isVisible());
+    }
+    void JassSignatureFromDeclarations() {
+        const auto lookup = [](const QString& name) {
+            if (name == "Foo") return QStringLiteral("Foo takes integer a, string b, real c returns nothing");
+            if (name == "Bar") return QStringLiteral("function Bar takes nothing returns integer");
+            return QString();
+        };
+        const auto at = [&](const QString& line) { return JassSignatureHelp(line, static_cast<int>(line.size()), CodeLanguage::Jass, lookup); };
+        auto help = at("    call Foo(1, ");
+        QVERIFY(help); QCOMPARE(help->label, QStringLiteral("Foo takes integer a, string b, real c returns nothing"));
+        QCOMPARE(help->active, 1); QCOMPARE(help->label.mid(help->parameters[1].first, help->parameters[1].second - help->parameters[1].first), QStringLiteral("string b"));
+        help = at("call Foo(1, \"x(,y\", "); QVERIFY(help); QCOMPARE(help->active, 2); // 字符串里的括号和逗号不算
+        help = at("call Foo(Bar("); QVERIFY(help); QVERIFY(help->label.startsWith("Bar takes nothing")); QCOMPARE(help->active, -1);
+        help = at("call Foo(Bar(), xs[1]"); QVERIFY(help); QVERIFY(help->label.startsWith("Foo")); QCOMPARE(help->active, 1);
+        QVERIFY(!at("call Foo(1) // Foo(1, "));
+        QVERIFY(!at("call Foo(\"text, "));
+        QVERIFY(!at("call Unknown("));
+        QVERIFY(!at("call Foo(1)"));
+    }
+    void JassEditorShowsParametersKeywordsAndSkipsNewNames() {
+        CodeView view; view.SetEditable(true); view.SetLanguage(CodeLanguage::Jass); view.resize(700, 300); view.show(); view.setFocus();
+        view.SetCompletionItems({
+            {"CreateUnit", "原生函数", "CreateUnit takes player id, integer unitid, real x, real y, real face returns unit", "common.j", "创建单位", 10, 1},
+            {"unit", "类型", "unit", "common.j", {}, 2, 1}});
+        auto* popup = view.findChild<CodeCompletionPopup*>(); auto* tip = view.findChild<CodeSignatureTip*>(); QVERIFY(popup && tip);
+        view.SetText({}); QTest::keyClicks(&view, "call Cre");
+        QVERIFY(popup->isVisible()); QCOMPARE(popup->Current()->label, QStringLiteral("CreateUnit"));
+        QTest::keyClicks(&view, "(");
+        QCOMPARE(view.toPlainText(), QStringLiteral("call CreateUnit(")); QVERIFY(!popup->isVisible());
+        QVERIFY(tip->isVisible()); QVERIFY(tip->Text().contains(QStringLiteral(">player id</b>"))); QVERIFY(tip->Text().contains(QStringLiteral("创建单位")));
+        QTest::keyClicks(&view, "p, ");
+        QVERIFY(tip->Text().contains(QStringLiteral(">integer unitid</b>")));
+        QTest::keyClicks(&view, "1, 0, 0, 0)"); QVERIFY(!tip->isVisible());
+        // 关键字也在候选里。
+        view.SetText({}); view.moveCursor(QTextCursor::End); QTest::keyClicks(&view, "endl");
+        QVERIFY(popup->isVisible()); QCOMPARE(popup->Current()->label, QStringLiteral("endloop"));
+        QTest::keyClick(&view, Qt::Key_Escape);
+        // 起新名字的位置不自动弹出。
+        view.SetText({}); view.moveCursor(QTextCursor::End); QTest::keyClicks(&view, "local unit cr");
+        QVERIFY(!popup->isVisible());
+        view.SetText({}); view.moveCursor(QTextCursor::End); QTest::keyClicks(&view, "function cr");
+        QVERIFY(!popup->isVisible());
     }
     void DeclarationCompletionPopsUpAfterTwoCharacters() {
         CodeView view; view.SetEditable(true); view.resize(700, 300); view.show(); view.setFocus();

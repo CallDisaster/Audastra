@@ -100,6 +100,7 @@ private:
     void RepositionAssist();
     void UpdateSignature();
     void AfterTyping(const QKeyEvent* event);
+    [[nodiscard]] bool DeclaringName(const QString& before) const;
     [[nodiscard]] QRect GlobalCursorRect() const;
     bool ShowHover(QEvent* event);
 };

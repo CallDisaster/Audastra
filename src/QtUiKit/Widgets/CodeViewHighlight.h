@@ -28,6 +28,8 @@ struct CodeLexSnapshot {
 };
 
 // 纯展示词法扫描，不冒充语法/语义检查。偏移为 QString UTF-16 偏移。
+// 语言关键字（vJass 含 library/struct 等扩展），按字母排序。
+[[nodiscard]] QStringList CodeKeywords(CodeLanguage language);
 [[nodiscard]] CodeLexSnapshot ScanCode(const QString& text, CodeLanguage language, std::stop_token stop = {});
 // 名称到语义分类；来自检查器的真实声明（函数/原生函数/类型/全局变量/常量）及当前源的局部量与参数。
 using CodeSymbolKinds = QHash<QString, CodeTokenKind>;
