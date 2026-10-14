@@ -62,7 +62,7 @@ namespace TriggerBlueprintDetail { struct PinTarget; }
 namespace War3Map::QtProject { class EditorProject; namespace detail { struct TriggerScalarUiNotice; } }
 namespace War3Map { class MapDocument; }
 namespace War3Map::Trigger { struct TriggerRecord; class TriggerTypeSystem; class UiCatalog; }
-namespace War3Map::Services { class CodeCheckProjectCache; }
+namespace War3Map::Services { class CodeCheckProjectCache; struct CodeCheckLuaSources; }
 namespace War3Map::UiKit { class CodeView; class CodeProblemsView; }
 
 namespace War3Map::Modules {
@@ -185,6 +185,7 @@ private:
     void RefreshCodeFromDocument();
     void UpdateCodeDraftState();
     void ConfigureCodeChecking();
+    void ConfigureLuaAssist();
     [[nodiscard]] bool ClassicCodeAllowed() const;
     [[nodiscard]] bool CodeAuthoringAllowed() const;
     void RefreshCodeSourceState();
@@ -309,6 +310,8 @@ private:
     QWidget* codeTools_ = nullptr;
     QComboBox* codeLanguage_ = nullptr;
     std::shared_ptr<Services::CodeCheckProjectCache> codeCheckCache_;
+    // Lua 代码块：接口目录与地图 Lua 文件，补全与检查共用；不是 Lua 时为空。
+    std::shared_ptr<const Services::CodeCheckLuaSources> codeLuaSources_;
     // 代码悬停的函数库说明，按函数库身份缓存。
     QHash<QString, QString> codeSymbolNotes_;
     std::string codeSymbolNotesCatalog_;

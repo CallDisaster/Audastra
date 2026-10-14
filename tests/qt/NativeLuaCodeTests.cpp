@@ -1,6 +1,7 @@
 #include "EditorProject.h"
 #include "TriggerModule.h"
 #include "Widgets/CodeView.h"
+#include "Widgets/CodeAssistPopup.h"
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/Script/LuaAuthorCode.h"
@@ -104,6 +105,7 @@ private slots:
     void RuntimeLineNavigationWaitsForTextAndCancels();
     void RuntimeLineNavigationRejectsDisplayLineChanges();
     void RuntimeLineNavigationPreservesPropertyDrafts();
+    void CodeBlockCompletionSeesOtherBlocks();
 };
 
 void NativeLuaCodeTests::SourceArchiveAndDirectorySelectLuaAndUndo() {
@@ -283,4 +285,24 @@ int main(int argc, char** argv) {
     NativeLuaCodeTests tests;
     return QTest::qExec(&tests, argc, argv);
 }
+void NativeLuaCodeTests::CodeBlockCompletionSeesOtherBlocks() {
+    QTemporaryDir root; QtProject::EditorProject project; Install(project, root.path().toStdWString(), true);
+    Modules::TriggerModule module(project); module.Widget()->resize(900, 600); module.Widget()->show();
+    QVERIFY(module.CreateCustomTrigger(QStringLiteral("Probe")));
+    auto* code = Code(module); QVERIFY(code && !code->isReadOnly()); QCOMPARE(code->Language(), UiKit::CodeLanguage::Lua);
+    auto* popup = code->findChild<UiKit::CodeCompletionPopup*>(); QVERIFY(popup);
+    code->setFocus(); code->moveCursor(QTextCursor::End);
+    // 头部定义的全局与其它代码块里的函数都在候选里。
+    QTest::keyClicks(code, "NativeC");
+    QTRY_VERIFY(popup->isVisible()); QCOMPARE(popup->Current()->label, QStringLiteral("NativeCounter"));
+    QTest::keyClick(code, Qt::Key_Escape);
+    QTest::keyClick(code, Qt::Key_Return); QTest::keyClicks(code, "InitTrig_Ori");
+    QTRY_VERIFY(popup->isVisible()); QCOMPARE(popup->Current()->label, QStringLiteral("InitTrig_OriginalLua"));
+    QTest::keyClick(code, Qt::Key_Escape);
+    // 换成 JASS 地图的代码块后不再用 Lua 分析。
+    QTemporaryDir jassRoot; QtProject::EditorProject jassProject; Install(jassProject, jassRoot.path().toStdWString(), true, 0);
+    Modules::TriggerModule jassModule(jassProject); QVERIFY(jassModule.ShowGlobalCustomCode());
+    QVERIFY(Code(jassModule)->Language() != UiKit::CodeLanguage::Lua);
+}
+
 #include "NativeLuaCodeTests.moc"

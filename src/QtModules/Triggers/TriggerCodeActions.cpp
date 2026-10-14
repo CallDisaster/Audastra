@@ -8,6 +8,7 @@
 #include "Widgets/CodeView.h"
 #include "Widgets/CodeProblemsView.h"
 #include "TriggerCodeChecking.h"
+#include "LuaCodeAssist.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/Hash.h"
@@ -155,6 +156,7 @@ void TriggerModule::ConfigureCodeChecking() {
         codeSymbolNotes_.clear(); codeSymbolNotesCatalog_.clear();
     }
     scriptView_->SetSymbolNotes(codeSymbolNotes_);
+    ConfigureLuaAssist();
     if (!sourceDisplayLossless_) {
         const auto reason = CodeUnicodeReadonlyNotice() + tr(" 未检查；保存仍使用原字节。");
         // Qt 显示已规范化，不能把显示文本当成作者原正文检查或生成项目索引。
@@ -172,10 +174,33 @@ void TriggerModule::ConfigureCodeChecking() {
         });
         // UI 只冻结共同工程快照；后台函数拥有全部来源，绝不借用 project_ 或控件。
         scriptView_->SetPrepareCheck([this](const QString& text, std::uint64_t generation) {
-            return PrepareProjectCodeCheck(project_.CaptureCodeCheckSnapshot(), codeCheckCache_, *codeTarget_, text, generation, scriptView_->Language());
+            return PrepareProjectCodeCheck(project_.CaptureCodeCheckSnapshot(), codeCheckCache_, *codeTarget_, text, generation,
+                scriptView_->Language(), scriptView_->Language() == UiKit::CodeLanguage::Lua ? codeLuaSources_ : nullptr);
         });
     }
     if (scriptView_->IsLoading()) codeDisplayLoadGeneration_ = scriptView_->Generation();
+}
+
+void TriggerModule::ConfigureLuaAssist() {
+    if (scriptView_->Language() != UiKit::CodeLanguage::Lua || !project_.triggerDocument_) {
+        codeLuaSources_.reset(); scriptView_->SetAssist({}); return;
+    }
+    // 整份地图脚本由 WCT 头部和各代码块拼成：其它块定义的全局在当前块里可见。
+    std::vector<std::string> shared;
+    const auto add = [&](Trigger::CodeBlockTarget block, const Trigger::RawText& text) {
+        if (block.kind == codeTarget_->kind && block.triggerId == codeTarget_->triggerId) return;
+        if (auto normalized = Trigger::TriggerCodeEditor::NormalizedText(text); !normalized.empty()) shared.push_back(std::move(normalized));
+    };
+    add({Trigger::CodeBlockKind::GlobalHeader, 0}, project_.triggerDocument_->wct.customCode);
+    for (const auto& trigger : project_.triggerDocument_->triggers)
+        if (trigger.type == 0 && trigger.enabled != 0 && trigger.customTextFlag != 0)
+            add({Trigger::CodeBlockKind::CustomTrigger, trigger.id}, trigger.customText);
+    auto sources = std::make_shared<Services::CodeCheckLuaSources>();
+    sources->catalog = project_.LuaRuntimeCatalog();
+    const auto modules = CaptureLuaModules(project_);
+    sources->modules.insert(modules->begin(), modules->end());
+    scriptView_->SetAssist(MakeLuaCodeAssist(sources->catalog, modules, {}, codeSymbolNotes_, scriptView_, shared));
+    codeLuaSources_ = std::move(sources);
 }
 
 void TriggerModule::RefreshCodeFromDocument() {

@@ -58,6 +58,9 @@ public:
     CodeIntel(const CodeIntel&) = delete;
     CodeIntel& operator=(const CodeIntel&) = delete;
 
+    // 同一份地图脚本里的其它代码块（如 WCT 头部与其它触发器）：它们定义的全局在这里也可见。
+    void SetSharedSources(const std::vector<std::string>& sources);
+
     [[nodiscard]] CompletionList Complete(std::string_view source, std::size_t cursor);
     [[nodiscard]] std::optional<SignatureHelp> Signature(std::string_view source, std::size_t cursor);
     [[nodiscard]] std::optional<HoverInfo> Hover(std::string_view source, std::size_t cursor);

@@ -155,25 +155,6 @@ void TriggerLuaScripts::RefreshDirectory() {
     }
     directory_->sortItems(0, Qt::AscendingOrder);
 }
-namespace {
-// 冻结地图里其他 Lua 文件的正文，供 require 补全与检查；当前文件用编辑器里的正文。
-std::shared_ptr<const LuaModuleTexts> CaptureLuaModules(const QtProject::EditorProject& project, const QString& current) {
-    constexpr std::size_t kTotalBytes = 16 * 1024 * 1024;
-    auto modules = std::make_shared<LuaModuleTexts>();
-    std::size_t total = 0;
-    for (const auto& entry : project.AssetEntries()) {
-        if (entry.ambiguous || QtProject::EditorProject::AssetKey(entry.path) == QtProject::EditorProject::AssetKey(current)) continue;
-        auto name = LuaModuleName(entry.path);
-        if (name.empty()) continue;
-        const auto read = QtProject::ReadOwnedAsset(project, entry.path);
-        if (!read.Succeeded() || !read.value->bytes || total + read.value->bytes->size() > kTotalBytes) continue;
-        total += read.value->bytes->size();
-        const auto& bytes = *read.value->bytes;
-        modules->emplace(std::move(name), std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
-    }
-    return modules;
-}
-} // namespace
 bool TriggerLuaScripts::LoadScript(const QString& path) {
     const auto read = QtProject::ReadOwnedAsset(project_, path);
     if (!read.Succeeded()) { Status(Problem(read.diagnostics)); return false; }

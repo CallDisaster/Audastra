@@ -13,7 +13,8 @@ namespace War3Map::Modules {
 [[nodiscard]] UiKit::CodeCheckResult PresentCodeCheckResult(const Services::CodeCheckResult& result, const QString& text, const QString& source, std::stop_token stop = {});
 [[nodiscard]] UiKit::CodeCheckTask PrepareProjectCodeCheck(std::shared_ptr<const Services::CodeCheckProjectSnapshot> snapshot,
     std::shared_ptr<Services::CodeCheckProjectCache> cache, Trigger::CodeBlockTarget target,
-    const QString& text, std::uint64_t generation, UiKit::CodeLanguage language);
+    const QString& text, std::uint64_t generation, UiKit::CodeLanguage language,
+    std::shared_ptr<const Services::CodeCheckLuaSources> lua = {});
 // 未声明编码的旧生成脚本只读查看：保留有效 UTF8 标量，非法片段按 Core 旧编码策略推测。
 [[nodiscard]] UiKit::CodeDecodedSource DecodeMapCodeForView(const QByteArray& bytes, std::stop_token stop = {});
 [[nodiscard]] UiKit::CodeDecodedSource ShowMapCodeRawBytes(const QByteArray& bytes, std::stop_token stop = {});

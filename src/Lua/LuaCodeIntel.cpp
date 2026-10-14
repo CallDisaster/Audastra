@@ -96,6 +96,8 @@ struct CodeIntel::Impl {
     std::map<std::string, Entry, std::less<>> moduleCache;
     std::set<std::string, std::less<>> resolving;
     std::optional<std::set<std::string, std::less<>>> known;
+    std::vector<std::shared_ptr<Model>> sharedModels;
+    std::map<std::string, Field, std::less<>> sharedGlobals; // 同名取第一个代码块
 
     ParseOptions Options(bool warnings) {
         ParseOptions options;
@@ -146,6 +148,7 @@ struct CodeIntel::Impl {
     Type RootType(const Model& model, std::string_view name, std::size_t at) const {
         if (const auto* local = Visible(model, name, at)) return local->type;
         if (const auto found = model.globals.find(name); found != model.globals.end()) return found->second.type;
+        if (const auto found = sharedGlobals.find(name); found != sharedGlobals.end()) return found->second.type;
         if (!catalog) return {};
         const auto* member = catalog->Global(name);
         if (!member) return {};
@@ -225,11 +228,12 @@ struct CodeIntel::Impl {
             add({symbol->name, function ? CompletionKind::Function : symbol->parameter ? CompletionKind::Parameter : CompletionKind::Local,
                 TypeDetail(symbol->type), symbol->documentation.empty() && symbol->type.function ? symbol->type.function->documentation : symbol->documentation});
         }
-        for (const auto& [name, field] : model.globals) {
-            const bool function = field.type.kind == TypeKind::Function;
-            add({name, function ? CompletionKind::Function : CompletionKind::Variable, TypeDetail(field.type),
-                field.documentation.empty() && field.type.function ? field.type.function->documentation : field.documentation});
-        }
+        for (const auto* globals : {&model.globals, &sharedGlobals})
+            for (const auto& [name, field] : *globals) {
+                const bool function = field.type.kind == TypeKind::Function;
+                add({name, function ? CompletionKind::Function : CompletionKind::Variable, TypeDetail(field.type),
+                    field.documentation.empty() && field.type.function ? field.type.function->documentation : field.documentation});
+            }
         if (catalog) for (const auto& member : catalog->globals) add({member.name, KindOf(member), ApiSignature(member), member.documentation});
         for (const auto keyword : LuaKeywords()) add({std::string(keyword), CompletionKind::Keyword, {}, {}});
         return items;
@@ -252,6 +256,16 @@ CodeIntel::CodeIntel(std::shared_ptr<const ApiCatalog> catalog, ModuleSources mo
     impl_->current = std::move(currentModule);
 }
 CodeIntel::~CodeIntel() = default;
+
+void CodeIntel::SetSharedSources(const std::vector<std::string>& sources) {
+    impl_->sharedModels.clear();
+    impl_->sharedGlobals.clear();
+    for (const auto& source : sources) {
+        auto model = ParseModel(source, impl_->Options(false));
+        for (const auto& [name, field] : model->globals) impl_->sharedGlobals.emplace(name, field);
+        impl_->sharedModels.push_back(std::move(model)); // 字段类型引用解析结果，一并保留
+    }
+}
 
 CompletionList CodeIntel::Complete(std::string_view source, std::size_t cursor) {
     cursor = (std::min)(cursor, source.size());
@@ -446,11 +460,14 @@ std::optional<HoverInfo> CodeIntel::Hover(std::string_view source, std::size_t c
             }
         }
     }
-    if (const auto found = model.globals.find(name); found != model.globals.end()) {
+    const Field* global = nullptr;
+    if (const auto found = model.globals.find(name); found != model.globals.end()) global = &found->second;
+    else if (const auto shared = impl_->sharedGlobals.find(name); shared != impl_->sharedGlobals.end()) global = &shared->second;
+    if (global) {
         info.kind = "全局变量";
         const auto typeName = TypeName(type);
         info.signature = std::string(name) + (typeName.empty() ? std::string{} : ": " + typeName);
-        info.documentation = found->second.documentation;
+        info.documentation = global->documentation;
         return info;
     }
     if (type.kind == TypeKind::Table || type.kind == TypeKind::Jass) {

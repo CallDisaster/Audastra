@@ -4,6 +4,7 @@
 #include "McpCampaignTools.h"
 #include "LiveObjectTools.h"
 #include "EditorProject.h"
+#include "ProjectLuaModules.h"
 #include "ObjectNames.h"
 #include "McpResources.h"
 #include "McpToolInternal.h"
@@ -892,10 +893,17 @@ private:
                         if (!input.hasText) input.text = Trigger::TriggerCodeEditor::NormalizedText(*text);
                         auto cache = codeCheckCache_;
                         const auto key = Services::CodeCheckTargetSourceName(input.target);
+                        // 与代码编辑器相同：Lua 代码块另做 jass.* 用法与 require 检查。
+                        Services::CodeCheckLuaSources luaSources;
+                        if (lua) {
+                            luaSources.catalog = project_.LuaRuntimeCatalog();
+                            const auto modules = QtProject::CaptureLuaModules(project_);
+                            luaSources.modules.insert(modules->begin(), modules->end());
+                        }
                         return Result<Mcp::CodeCheckToolWork>::Success({snapshot->binding, key,
-                            [snapshot, cache, input = std::move(input)](std::stop_token cancel) {
+                            [snapshot, cache, input = std::move(input), luaSources = std::move(luaSources)](std::stop_token cancel) {
                                 return Services::CheckProjectCode(snapshot, *cache, input.target, input.text,
-                                    input.language, input.generation, cancel);
+                                    input.language, input.generation, cancel, luaSources);
                             }});
                     };
                     return codeChecks_.Invoke(arguments, host);

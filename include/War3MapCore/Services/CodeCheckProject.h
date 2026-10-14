@@ -19,6 +19,11 @@ namespace War3Map::Services {
 
 // 宿主在界面线程冻结结构副本；所有指针保活自己的不可变副本，不能借用实时工程。
 // 保存资格、归档发布、脚本执行均不属于此只读检查快照。
+struct CodeCheckLuaSources {
+    std::shared_ptr<const Lua::ApiCatalog> catalog;
+    std::map<std::string, std::string, std::less<>> modules; // require 名 → 正文
+};
+
 struct CodeCheckProjectSnapshot {
     std::string binding;
     std::uint64_t revision = 0;
@@ -56,17 +61,18 @@ private:
     std::unique_ptr<Impl> impl_;
     friend CodeCheckResult CheckProjectCode(const std::shared_ptr<const CodeCheckProjectSnapshot>&,
         CodeCheckProjectCache&, Trigger::CodeBlockTarget, std::string, CodeLanguage,
-        std::uint64_t, std::stop_token);
+        std::uint64_t, std::stop_token, CodeCheckLuaSources);
 };
 
 [[nodiscard]] std::string CodeCheckTargetSourceName(Trigger::CodeBlockTarget target, CodeLanguage language = CodeLanguage::Jass);
 
 // 只在后台调用：私有作者草稿→生产整图生成→实际owned基础库/框架预处理→共同CheckCode。
 // 缺少或不支持完整来源时退回明确标记的正文语法检查；不授予保存通过结论。
+// lua 只用于 Lua 代码块：编辑器自带 Lua 环境的接口目录与地图 Lua 文件，有目录时另做源码级 jass.* 用法检查。
 [[nodiscard]] CodeCheckResult CheckProjectCode(
     const std::shared_ptr<const CodeCheckProjectSnapshot>& snapshot,
     CodeCheckProjectCache& cache, Trigger::CodeBlockTarget target, std::string draft,
-    CodeLanguage language, std::uint64_t generation, std::stop_token cancel = {});
+    CodeLanguage language, std::uint64_t generation, std::stop_token cancel = {}, CodeCheckLuaSources lua = {});
 
 // 独立Lua文本使用与工程代码块相同的只读本机运行库捕获，不接收外部伪造库存事实。
 // 不把文本加入地图/执行代码，不授予全图上下文或保存发布资格。

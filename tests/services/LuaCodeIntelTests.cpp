@@ -132,6 +132,28 @@ void RequireAndModules() {
     Require(hover && hover->signature.find("unit") != std::string::npos, "Hover did not show inferred type");
 }
 
+void SharedChunkGlobals() {
+    // WCT 头部与其它触发器块拼成同一份脚本：头部的全局在触发器块里可见，局部不可见。
+    CodeIntel intel(Catalog(), Sources());
+    intel.SetSharedSources({"-- 记分\nScore = 0\n-- 给单位加分\nfunction AddScore(u, amount)\n    Score = Score + amount\nend\nlocal hidden = 1\n"});
+    const std::string text = "function Trig()\n    AddS";
+    auto list = intel.Complete(text, text.size());
+    const auto* add = Find(list, "AddScore");
+    Require(add && add->kind == CompletionKind::Function && add->documentation == "给单位加分", "Shared function missing");
+    Require(Find(list, "Score") && !Find(list, "hidden"), "Shared globals wrong");
+    const std::string call = "AddScore(nil, ";
+    const auto help = intel.Signature(call, call.size());
+    Require(help && help->label.starts_with("AddScore(u, amount)") && help->active == 1, "Shared signature missing");
+    const std::string read = "print(Score)";
+    const auto hover = intel.Hover(read, read.find("Score"));
+    Require(hover && hover->kind == "全局变量" && hover->documentation == "记分", "Shared hover missing");
+    // 本块同名定义优先。
+    const std::string local = "-- 本块\nfunction AddScore()\nend\nAddS";
+    list = intel.Complete(local, local.size());
+    add = Find(list, "AddScore");
+    Require(add && add->detail == "AddScore()", "Own definition not preferred");
+}
+
 void SignatureHelpCases() {
     CodeIntel intel(Catalog(), Sources(), "main");
     const std::string source = "local jass = require \"jass.common\"\njass.CreateUnit(jass.Player(0), ";
@@ -214,6 +236,7 @@ int main() {
         CatalogFromDeclarations();
         MemberCompletion();
         RequireAndModules();
+        SharedChunkGlobals();
         SignatureHelpCases();
         Checks();
         CodeCheckIntegration();

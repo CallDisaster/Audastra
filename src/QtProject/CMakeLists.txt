@@ -37,7 +37,7 @@ qt_add_library(War3MapQtProject STATIC
     TriggerWorkspace.cpp
     TriggerMapObjectReferences.cpp
     ProjectStrings.cpp
-    ProjectLuaCatalog.cpp
+    ProjectLuaCatalog.cpp ProjectLuaModules.h
     ObjectNames.cpp
     ObjectContextProvider.cpp ObjectContextProvider.h
     MapCopySave.cpp

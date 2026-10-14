@@ -49,16 +49,9 @@ struct LuaAssistState {
 };
 } // namespace
 
-std::string LuaModuleName(const QString& path) {
-    if (!path.endsWith(QStringLiteral(".lua"), Qt::CaseInsensitive)) return {};
-    auto name = path.left(path.size() - 4);
-    name.replace('\\', '.').replace('/', '.');
-    return name.toStdString();
-}
-
 UiKit::CodeAssist MakeLuaCodeAssist(std::shared_ptr<const Lua::ApiCatalog> catalog,
     std::shared_ptr<const LuaModuleTexts> modules, std::string currentModule,
-    QHash<QString, QString> notes, QPointer<QWidget> style) {
+    QHash<QString, QString> notes, QPointer<QWidget> style, const std::vector<std::string>& shared) {
     if (!modules) modules = std::make_shared<const LuaModuleTexts>();
     Lua::ModuleSources sources{
         [modules] { std::vector<std::string> names; for (const auto& [name, text] : *modules) names.push_back(name); return names; },
@@ -72,6 +65,7 @@ UiKit::CodeAssist MakeLuaCodeAssist(std::shared_ptr<const Lua::ApiCatalog> catal
         }};
     auto state = std::make_shared<LuaAssistState>();
     state->intel = std::make_shared<Lua::CodeIntel>(std::move(catalog), std::move(sources), std::move(currentModule));
+    if (!shared.empty()) state->intel->SetSharedSources(shared);
     state->notes = std::move(notes);
     state->style = std::move(style);
 

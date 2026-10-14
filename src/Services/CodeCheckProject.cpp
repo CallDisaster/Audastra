@@ -387,7 +387,7 @@ std::string CodeCheckTargetSourceName(Trigger::CodeBlockTarget target, CodeLangu
 
 CodeCheckResult CheckProjectCode(const std::shared_ptr<const CodeCheckProjectSnapshot>& snapshot,
     CodeCheckProjectCache& cache, Trigger::CodeBlockTarget target, std::string draft,
-    CodeLanguage language, std::uint64_t generation, std::stop_token cancel) {
+    CodeLanguage language, std::uint64_t generation, std::stop_token cancel, CodeCheckLuaSources lua) {
     CodeCheckRequest request;
     request.language = language; request.source = {CodeCheckTargetSourceName(target, language), std::move(draft)};
     request.generation = generation; request.context.binding = snapshot ? snapshot->binding : "unbound";
@@ -408,6 +408,8 @@ CodeCheckResult CheckProjectCode(const std::shared_ptr<const CodeCheckProjectSna
                 request.context.luaSemantic = {};
                 request.context.luaSemantic.runtime.reason = "本机运行库来源未能完成捕获，未形成语义资格。";
             }
+            request.context.luaCatalog = std::move(lua.catalog);
+            request.context.luaModules = std::move(lua.modules);
             return CheckCode(request, cancel);
         }
         if (snapshot && snapshot->triggers && target.kind == Trigger::CodeBlockKind::CustomTrigger) {

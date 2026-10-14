@@ -243,12 +243,13 @@ UiKit::CodeCheckTask PrepareTriggerCodeCheck(const QString& text, std::uint64_t 
 
 UiKit::CodeCheckTask PrepareProjectCodeCheck(std::shared_ptr<const Services::CodeCheckProjectSnapshot> snapshot,
     std::shared_ptr<Services::CodeCheckProjectCache> cache, Trigger::CodeBlockTarget target, const QString& text,
-    std::uint64_t generation, UiKit::CodeLanguage language) {
+    std::uint64_t generation, UiKit::CodeLanguage language, std::shared_ptr<const Services::CodeCheckLuaSources> lua) {
     const auto codeLanguage = language == UiKit::CodeLanguage::Lua ? Services::CodeLanguage::Lua53
         : language == UiKit::CodeLanguage::VJass ? Services::CodeLanguage::VJass : Services::CodeLanguage::Jass;
     const auto source = QString::fromUtf8(Services::CodeCheckTargetSourceName(target, codeLanguage));
-    return [snapshot = std::move(snapshot), cache = std::move(cache), target, text, generation, codeLanguage, source](std::stop_token stop) {
-        auto checked = std::make_shared<const Services::CodeCheckResult>(Services::CheckProjectCode(snapshot, *cache, target, text.toStdString(), codeLanguage, generation, stop));
+    return [snapshot = std::move(snapshot), cache = std::move(cache), target, text, generation, codeLanguage, source, lua = std::move(lua)](std::stop_token stop) {
+        auto checked = std::make_shared<const Services::CodeCheckResult>(Services::CheckProjectCode(snapshot, *cache, target, text.toStdString(),
+            codeLanguage, generation, stop, lua ? *lua : Services::CodeCheckLuaSources{}));
         auto presented = PresentCodeCheckResult(*checked, text, source, stop);
         if (!presented.cancelled) presented.ownedProjectIndex = std::move(checked);
         return presented;
