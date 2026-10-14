@@ -24,6 +24,7 @@ private:
     ProblemList* list_ = nullptr;
     QStandardItemModel* model_ = nullptr;
     QString status_;
+    QString shownSource_; // 列表当前显示的是哪个源的完成结果
     int issues_ = 0;
 };
 }

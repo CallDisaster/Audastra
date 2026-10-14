@@ -265,6 +265,32 @@ private slots:
         const auto& diagnostics = editor->CheckResult().diagnostics;
         QVERIFY(std::any_of(diagnostics.begin(), diagnostics.end(), [](const auto& item) { return item.code == "LUA_MODULE_NOT_FOUND" && item.line == 1; }));
     }
+    void TypingAtFileEndKeepsCaretProblemsAndCompletionStable() {
+        QTemporaryDir dir; QVERIFY(dir.isValid()); QtProject::EditorProject project; QVERIFY(OpenMap(dir, project));
+        Modules::TriggerLuaScripts scripts(project); scripts.resize(1120, 520); scripts.show();
+        QString text;
+        for (int line = 0; line < 80; ++line) text += QStringLiteral("local value%1 = %1\n").arg(line);
+        QVERIFY(scripts.CreateScript("Lua\\long.lua", text));
+        auto* editor = scripts.Editor(); editor->setFocus(); editor->moveCursor(QTextCursor::End); editor->ensureCursorVisible();
+        QTRY_VERIFY_WITH_TIMEOUT(!editor->IsChecking() && editor->CheckResult().completed, 5000);
+        auto* problems = scripts.findChild<UiKit::CodeProblemsView*>(); QVERIFY(problems);
+        auto* popup = editor->findChild<UiKit::CodeCompletionPopup*>(); QVERIFY(popup);
+        const auto caretVisible = [editor] { return editor->viewport()->rect().contains(editor->cursorRect()); };
+        QVERIFY(caretVisible());
+        for (const char ch : std::string("valu")) {
+            QTest::keyClick(editor, ch);
+            // 检查进行中：上次的列表保留，编辑区高度不变。
+            QVERIFY(caretVisible());
+        }
+        QVERIFY(popup->isVisible());
+        const int rowsWhileChecking = problems->List()->View()->model()->rowCount();
+        QTRY_VERIFY_WITH_TIMEOUT(!editor->IsChecking() && editor->CheckResult().completed, 5000);
+        QApplication::processEvents();
+        QVERIFY(problems->List()->View()->model()->rowCount() > 0); QVERIFY(rowsWhileChecking > 0);
+        QVERIFY(caretVisible());
+        QVERIFY2(popup->isVisible(), "检查结果回来后补全列表被关闭");
+        QTest::keyClick(editor, Qt::Key_Escape); QVERIFY(!popup->isVisible());
+    }
     void SyntaxChecksAndUndoPreserveOriginalBytes() {
         QTemporaryDir dir; QVERIFY(dir.isValid()); QtProject::EditorProject project; QVERIFY(OpenMap(dir, project));
         Modules::TriggerLuaScripts scripts(project); scripts.show(); QVERIFY(scripts.SelectScript("Scripts\\Existing.lua"));

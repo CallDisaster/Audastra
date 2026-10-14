@@ -37,7 +37,17 @@ CodeProblemsView::CodeProblemsView(QWidget* parent) : QWidget(parent) {
     });
 }
 void CodeProblemsView::SetView(CodeView* view) {
-    const auto refresh = [this, view] { SetResult(view->CheckResult(), view->IsChecking(), view->DecodeNotice()); };
+    const auto refresh = [this, view] {
+        const auto& result = view->CheckResult();
+        const bool checking = view->IsChecking();
+        // 同一文件编辑后到新结果出来前保留上次的列表（与 VS 相同），避免每输入一个字符列表收起又展开、编辑区跳动。
+        if (checking && !result.completed && !shownSource_.isEmpty() && shownSource_ == view->SourceName()) {
+            status_ = tr("检查中…"); list_->SetState(status_);
+            return;
+        }
+        SetResult(result, checking, view->DecodeNotice());
+        shownSource_ = result.completed ? view->SourceName() : QString();
+    };
     connect(view, &CodeView::CheckStateChanged, this, refresh);
     connect(view, &CodeView::TextLoaded, this, refresh);
     connect(this, &CodeProblemsView::LocationRequested, view, [view](const QString& source, int line, int column) {

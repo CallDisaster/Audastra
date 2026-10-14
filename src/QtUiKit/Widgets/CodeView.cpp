@@ -18,6 +18,7 @@
 #include <QPainter>
 #include <QPlainTextDocumentLayout>
 #include <QPointer>
+#include <QResizeEvent>
 #include <QScrollBar>
 #include <QPromise>
 #include <QSet>
@@ -168,8 +169,8 @@ CodeView::CodeView(QWidget* parent) : QPlainTextEdit(parent), impl_(std::make_un
     impl_->popup = new CodeCompletionPopup(this);
     impl_->signatureTip = new CodeSignatureTip(this);
     connect(impl_->popup, &CodeCompletionPopup::Accepted, this, &CodeView::AcceptCompletion);
-    connect(verticalScrollBar(), &QScrollBar::valueChanged, this, &CodeView::HideAssist);
-    connect(horizontalScrollBar(), &QScrollBar::valueChanged, this, &CodeView::HideAssist);
+    connect(verticalScrollBar(), &QScrollBar::valueChanged, this, &CodeView::RepositionAssist);
+    connect(horizontalScrollBar(), &QScrollBar::valueChanged, this, &CodeView::RepositionAssist);
     UpdateGutterWidth();
 }
 CodeView::~CodeView() { impl_->stop.request_stop(); impl_->pending.reset(); }
@@ -401,7 +402,14 @@ void CodeView::UpdateGutter(const QRect& rect, int dy) {
     ApplyVisibleFormats();
 }
 void CodeView::resizeEvent(QResizeEvent* event) {
-    QPlainTextEdit::resizeEvent(event); HideAssist(); const auto area = contentsRect();
+    QPlainTextEdit::resizeEvent(event);
+    // 下方面板展开使编辑区变矮时，原本可见的光标行不能被挤到可视区外。
+    if (const int shrink = event->oldSize().height() - event->size().height(); hasFocus() && shrink > 0) {
+        const auto caret = cursorRect();
+        if (caret.top() >= 0 && caret.bottom() > viewport()->height() && caret.top() < viewport()->height() + shrink) ensureCursorVisible();
+    }
+    RepositionAssist();
+    const auto area = contentsRect();
     impl_->gutter->setGeometry(area.left(), area.top(), GutterWidth(), area.height()); ApplyVisibleFormats();
 }
 void CodeView::ApplyVisibleFormats() {
@@ -583,6 +591,12 @@ void CodeView::AcceptCompletion() {
 void CodeView::HideAssist() {
     if (!impl_ || !impl_->popup) return;
     impl_->popup->hide(); impl_->signatureTip->hide();
+}
+void CodeView::RepositionAssist() {
+    if (!impl_ || !impl_->popup) return;
+    const bool caretVisible = viewport()->rect().intersects(cursorRect());
+    if (impl_->popup->isVisible()) { if (caretVisible) impl_->popup->ShowNear(GlobalCursorRect()); else impl_->popup->hide(); }
+    if (impl_->signatureTip->isVisible()) { if (caretVisible) UpdateSignature(); else impl_->signatureTip->hide(); }
 }
 void CodeView::UpdateSignature() {
     if (!impl_->assist.signature || isReadOnly()) { impl_->signatureTip->hide(); return; }

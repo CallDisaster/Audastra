@@ -97,6 +97,7 @@ private:
     void RefilterCompletion();
     void AcceptCompletion();
     void HideAssist();
+    void RepositionAssist();
     void UpdateSignature();
     void AfterTyping(const QKeyEvent* event);
     [[nodiscard]] QRect GlobalCursorRect() const;
