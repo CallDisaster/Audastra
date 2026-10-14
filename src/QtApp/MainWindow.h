@@ -219,6 +219,8 @@ private:
     void SaveAsMap();
     void SaveMapInPlace();
     void TestMap();
+    // 启动单人测试；成功返回空串，否则返回原因。interactive 为 false 时不弹窗（供助手调用）。
+    QString StartMapTest(bool interactive);
     // 本局测试仍对应当前地图：生成的触发器 Lua 要求修订不变；手写 Lua 文件按内容比对，应用草稿后仍可热重载。
     [[nodiscard]] bool LuaTestSessionCurrent() const;
     QJsonObject LuaTestReload(bool submit);

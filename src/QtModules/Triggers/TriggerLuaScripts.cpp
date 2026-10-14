@@ -147,9 +147,8 @@ void TriggerLuaScripts::UpdateDraftState() {
 }
 void TriggerLuaScripts::RefreshDirectory() {
     QSignalBlocker block(directory_); directory_->clear();
-    for (const auto& entry : project_.AssetEntries()) {
-        if (!entry.path.endsWith(".lua", Qt::CaseInsensitive)) continue;
-        auto* item = new QTreeWidgetItem(directory_, {entry.path, entry.ambiguous ? tr("来源歧义") : entry.runtimeLuaDraft ? tr("工程草稿") : entry.Pending() ? tr("待导入") : tr("原内容")});
+    for (const auto& entry : QtProject::ListLuaScripts(project_)) {
+        auto* item = new QTreeWidgetItem(directory_, {entry.path, entry.state});
         item->setData(0, Qt::UserRole, entry.path); item->setToolTip(0, entry.path);
         if (QtProject::EditorProject::AssetKey(entry.path) == QtProject::EditorProject::AssetKey(selectedPath_)) directory_->setCurrentItem(item);
     }
@@ -267,12 +266,8 @@ bool TriggerLuaScripts::CommitPendingDraft() {
     // 工程草稿保留未完成代码；后台语法诊断与地图写出门禁独立核对。
     const auto verified = QtProject::VerifyOwnedAsset(project_, *source_);
     if (!verified.Succeeded()) { Status(Problem(verified.diagnostics)); return false; }
-    QString text = editor_->toPlainText();
-    const auto& old = *source_->bytes; QByteArray oldBytes(reinterpret_cast<const char*>(old.data()), static_cast<qsizetype>(old.size()));
-    const bool crlf = oldBytes.contains("\r\n") && !QByteArray(oldBytes).replace("\r\n", "").contains('\n');
-    if (crlf) text.replace("\n", "\r\n");
-    const auto bytes = Payload(text.toUtf8()); publishing_ = true;
-    const auto problem = project_.RecordAssetEdit(tr("编辑 Lua 脚本草稿"), [&](QtProject::AssetState& candidate) { return QtProject::PutOwnedAsset(project_, candidate, selectedPath_, bytes); });
+    publishing_ = true;
+    const auto problem = QtProject::WriteLuaScript(project_, selectedPath_, editor_->toPlainText(), {}, tr("编辑 Lua 脚本草稿"));
     publishing_ = false;
     if (!problem.isEmpty()) { Status(problem); return false; }
     const auto path = selectedPath_; RefreshDirectory(); (void)LoadScript(path);

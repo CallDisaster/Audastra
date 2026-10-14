@@ -1,5 +1,6 @@
 #include "LiveEditorTools.h"
 #include "McpLuaTestTools.h"
+#include "McpLuaFileTools.h"
 #include "McpWorldViewportTools.h"
 #include "McpCampaignTools.h"
 #include "LiveObjectTools.h"
@@ -244,6 +245,7 @@ public:
     Mcp::McpServer& Server() noexcept { return server_; }
     void SetSaveHandler(std::function<bool(const std::filesystem::path&, bool)> handler) { save_ = std::move(handler); }
     void SetLuaTestHandler(std::function<QJsonObject(bool)> handler) { luaTest_ = std::move(handler); }
+    void SetMapTestHandler(std::function<QString()> handler) { mapTest_ = std::move(handler); }
     void SetWorldViewportHandler(std::function<QJsonObject(const QString&, const QJsonObject&)> handler) {
         worldViewport_ = std::move(handler);
     }
@@ -740,6 +742,53 @@ private:
         });
     }
 
+    // 与代码编辑器相同：Lua 检查另做 jass.* 用法与 require 检查；current 不计入模块。
+    Services::CodeCheckLuaSources LuaCheckSources(const QString& current) {
+        Services::CodeCheckLuaSources sources;
+        sources.catalog = project_.LuaRuntimeCatalog();
+        const auto modules = QtProject::CaptureLuaModules(project_, current);
+        sources.modules.insert(modules->begin(), modules->end());
+        return sources;
+    }
+
+    // 参数已由 InvokeLuaFileTool 校验；写入已在 Write 门内。
+    QJsonObject LuaFile(const QString& name, const QJsonObject& arguments) {
+        const auto path = arguments.value("path").toString();
+        if (name == "lua_files_list") {
+            QJsonArray files;
+            for (const auto& entry : QtProject::ListLuaScripts(project_))
+                files.append(QJsonObject{{"path", entry.path}, {"state", entry.state}, {"size", entry.size}});
+            return QJsonObject{{"ok", true}, {"files", files}, {"revision", QString::number(project_.editRevision_.Revision())}};
+        }
+        if (name == "lua_file_read") {
+            auto read = QtProject::ReadLuaScript(project_, path);
+            if (!read.Succeeded()) return Mcp::Failure(read);
+            return QJsonObject{{"ok", true}, {"path", path}, {"text", read.value->text},
+                {"sha256", QString::fromStdString(read.value->sha256)}, {"revision", QString::number(project_.editRevision_.Revision())}};
+        }
+        if (name == "lua_file_write") {
+            const auto before = QtProject::ReadLuaScript(project_, path);
+            const QJsonValue previous = before.Succeeded() ? QJsonValue(QString::fromStdString(before.value->sha256)) : QJsonValue(QJsonValue::Null);
+            const auto rejected = QtProject::WriteLuaScript(project_, path, arguments.value("text").toString(),
+                arguments.value("expected_sha256").toString().toStdString(), QObject::tr("AI 修改 Lua：%1").arg(path));
+            if (!rejected.isEmpty()) return Mcp::Failure("LUA_FILE_WRITE_REJECTED", rejected.toStdString());
+            const auto after = QtProject::ReadLuaScript(project_, path);
+            if (!after.Succeeded()) return Mcp::Failure(after);
+            SyncIdentity();
+            emit owner_.Changed();
+            const auto sha = QString::fromStdString(after.value->sha256);
+            const QJsonObject item{{"kind", "lua"}, {"object_id", ""}, {"title", path}, {"target", path},
+                {"before", previous}, {"after", sha}};
+            return QJsonObject{{"ok", true}, {"path", path}, {"sha256", sha}, {"created", previous.isNull()}, {"saved", false},
+                {"project_identity", projectIdentity_}, {"revision", QString::number(project_.editRevision_.Revision())},
+                {"changes", QJsonObject{{"files", 1}, {"items", QJsonArray{item}}}}};
+        }
+        if (!mapTest_) return Mcp::Failure("MAP_TEST_UNAVAILABLE", "宿主尚未接通地图测试。");
+        const auto rejected = mapTest_();
+        if (!rejected.isEmpty()) return Mcp::Failure("MAP_TEST_REJECTED", rejected.toStdString());
+        return QJsonObject{{"ok", true}, {"started", true}, {"game_verified", false}};
+    }
+
     QJsonObject Catalog(const QJsonObject& arguments) {
         if (busy_ || project_.savingMap_) return Mcp::Failure("LIVE_EDITOR_BUSY", "当前地图正在写入。");
         const auto check = CheckContext(arguments, true, false);
@@ -834,6 +883,20 @@ private:
                     return Mcp::InvokeLuaTestTool(name, args, {luaTest_});
                 }, definition.maxRequestIdBytes, definition.maxResponseBytes);
         }
+        for (auto definition : Mcp::LuaFileToolDefinitions()) {
+            const auto name = definition.name;
+            AddTool(name, definition.description, definition.permission, definition.inputSchema,
+                [this, name](const QJsonObject& args) -> QJsonObject {
+                    const Mcp::LuaFileToolHost host{[this](const QString& tool, const QJsonObject& arguments) { return LuaFile(tool, arguments); }};
+                    // 写入走共同写门：先提交界面草稿，再核对工程身份与修订。
+                    if (name == "lua_file_write")
+                        return Write(args, false, [&] { return Mcp::InvokeLuaFileTool(name, args, host); });
+                    if (busy_ || project_.savingMap_) return Mcp::Failure("LIVE_EDITOR_BUSY", "地图保存或另一个写命令正在执行。");
+                    const auto check = CheckContext(args, false, false);
+                    if (!check.value("ok").toBool()) return check;
+                    return Mcp::InvokeLuaFileTool(name, args, host);
+                }, definition.maxRequestIdBytes, definition.maxResponseBytes);
+        }
         for (auto definition : Mcp::CampaignToolDefinitions(server_)) {
             AddTool(definition.name, definition.description, definition.permission, definition.inputSchema,
                 [handler = definition.handler](const QJsonObject& arguments) { return handler(arguments).toObject(); },
@@ -873,10 +936,13 @@ private:
                             request.source = {input.sourceName, std::move(input.text)}; request.language = input.language;
                             request.generation = input.generation; request.context.binding = snapshot->binding;
                             request.context.reason = "独立文本未放入地图作者代码块，仅检查正文语法。";
+                            // 地图 Lua 文件用同名路径检查时，以本次正文替代地图里的旧内容。
+                            auto luaSources = request.language == Services::CodeLanguage::Lua53
+                                ? LuaCheckSources(QString::fromStdString(input.sourceName)) : Services::CodeCheckLuaSources{};
                             return Result<Mcp::CodeCheckToolWork>::Success({snapshot->binding, input.sourceName,
-                                [snapshot, request = std::move(request)](std::stop_token cancel) {
+                                [snapshot, request = std::move(request), luaSources = std::move(luaSources)](std::stop_token cancel) {
                                     return request.language == Services::CodeLanguage::Lua53
-                                        ? Services::CheckProjectLuaSource(snapshot, request, cancel)
+                                        ? Services::CheckProjectLuaSource(snapshot, request, cancel, luaSources)
                                         : Services::CheckCode(request, cancel);
                                 }});
                         }
@@ -894,12 +960,7 @@ private:
                         auto cache = codeCheckCache_;
                         const auto key = Services::CodeCheckTargetSourceName(input.target);
                         // 与代码编辑器相同：Lua 代码块另做 jass.* 用法与 require 检查。
-                        Services::CodeCheckLuaSources luaSources;
-                        if (lua) {
-                            luaSources.catalog = project_.LuaRuntimeCatalog();
-                            const auto modules = QtProject::CaptureLuaModules(project_);
-                            luaSources.modules.insert(modules->begin(), modules->end());
-                        }
+                        auto luaSources = lua ? LuaCheckSources({}) : Services::CodeCheckLuaSources{};
                         return Result<Mcp::CodeCheckToolWork>::Success({snapshot->binding, key,
                             [snapshot, cache, input = std::move(input), luaSources = std::move(luaSources)](std::stop_token cancel) {
                                 return Services::CheckProjectCode(snapshot, *cache, input.target, input.text,
@@ -1009,6 +1070,7 @@ private:
     std::function<bool(const std::filesystem::path&, bool)> save_;
     std::function<bool()> beforeWrite_;
     std::function<QJsonObject(bool)> luaTest_;
+    std::function<QString()> mapTest_;
     std::function<QJsonObject(const QString&, const QJsonObject&)> worldViewport_;
     ProjectSearchRevisionQuery projectSearchRevision_;
     ProjectSearchPageQuery projectSearchQuery_;
@@ -1032,6 +1094,7 @@ LiveEditorTools::~LiveEditorTools() = default;
 Mcp::McpServer& LiveEditorTools::Server() noexcept { return impl_->Server(); }
 void LiveEditorTools::SetSaveHandler(std::function<bool(const std::filesystem::path&, bool)> handler) { impl_->SetSaveHandler(std::move(handler)); }
 void LiveEditorTools::SetLuaTestHandler(std::function<QJsonObject(bool)> handler) { impl_->SetLuaTestHandler(std::move(handler)); }
+void LiveEditorTools::SetMapTestHandler(std::function<QString()> handler) { impl_->SetMapTestHandler(std::move(handler)); }
 void LiveEditorTools::SetWorldViewportHandler(std::function<QJsonObject(const QString&, const QJsonObject&)> handler) {
     impl_->SetWorldViewportHandler(std::move(handler));
 }

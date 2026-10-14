@@ -45,16 +45,21 @@ QString TestStage(std::string_view stage) {
 }
 }
 
-void MainWindow::TestMap() {
-    if (project_->savingMap_) return;
-    if (mapTestLease_ && mapTestLease_->IsActive()) {
-        ShowStatusMessage(tr("上一轮测试游戏仍在运行，请先退出游戏再测试。"));
-        return;
-    }
-    if (!project_->archiveSession_ || project_->sourceArchivePath_.empty()) {
-        ShowStatusMessage(tr("请先打开一张地图，再运行测试。"));
-        return;
-    }
+void MainWindow::TestMap() { (void)StartMapTest(true); }
+
+QString MainWindow::StartMapTest(bool interactive) {
+    // 界面启动时弹出说明；助手调用时只返回原因，不出现需要点击的窗口。
+    const auto fail = [this, interactive](const QString& title, const QString& text, bool warning = true) {
+        if (interactive) {
+            if (warning) QMessageBox::warning(this, title, text);
+            else QMessageBox::information(this, title, text);
+        }
+        return text;
+    };
+    const auto busy = [this](const QString& text) { ShowStatusMessage(text); return text; };
+    if (project_->savingMap_) return tr("保存或测试准备正在进行，请稍后再试。");
+    if (mapTestLease_ && mapTestLease_->IsActive()) return busy(tr("上一轮测试游戏仍在运行，请先退出游戏再测试。"));
+    if (!project_->archiveSession_ || project_->sourceArchivePath_.empty()) return busy(tr("请先打开一张地图，再运行测试。"));
     QSettings settings;
     const bool ownedLua = project_->luaMapTarget_
         && project_->luaMapTarget_->dialect == Script::LuaMapSaveDialect::Classic127YDWE;
@@ -68,24 +73,19 @@ void MainWindow::TestMap() {
     const auto gameRoot = settings.value(QStringLiteral("war3/gameRoot")).toString();
     const auto runtimeRoot = settings.value(QStringLiteral("mapTest/runtimeRoot")).toString().trimmed();
     const auto runtimeYdweRoot = settings.value(QStringLiteral("ui/dataRoot")).toString().trimmed();
-    if (gameRoot.isEmpty()) {
-        QMessageBox::information(this, tr("地图测试"), tr("请在应用设置中选择 Warcraft III 安装目录。"));
-        return;
-    }
+    if (gameRoot.isEmpty()) return fail(tr("地图测试"), tr("请在应用设置中选择 Warcraft III 安装目录。"), false);
     const QDir testRoot(QDir(QtCommon::InstallationRoot()).filePath(QStringLiteral("test-maps")));
     const auto runName = QUuid::createUuid().toString(QUuid::WithoutBraces);
     const auto runDirectory = testRoot.filePath(runName);
     std::error_code directoryError;
     if (!QDir().mkpath(testRoot.absolutePath())
         || !std::filesystem::create_directory(std::filesystem::path(runDirectory.toStdWString()), directoryError)) {
-        QMessageBox::warning(this, tr("地图测试"), tr("无法创建独立测试目录：%1").arg(runDirectory));
-        return;
+        return fail(tr("地图测试"), tr("无法创建独立测试目录：%1").arg(runDirectory));
     }
     auto workspace = Services::FreezeMapTestWorkspace(std::filesystem::path(runDirectory.toStdWString()));
     if (!workspace.Succeeded()) {
         project_->AddDiagnostics(workspace.diagnostics);
-        QMessageBox::warning(this, tr("地图测试"), tr("无法保护本次测试目录，请查看诊断。"));
-        return;
+        return fail(tr("地图测试"), tr("无法保护本次测试目录，请查看诊断。"));
     }
     const auto cleanupUnstarted = [this, files = *workspace.value](bool refresh) {
         const auto result = std::make_shared<War3Map::Status>();
@@ -104,15 +104,14 @@ void MainWindow::TestMap() {
     // 草稿进入当前编辑事务，但绝不提交为已保存。无修改时直接使用已保存地图的冻结输入。
     if (!triggersModule_->CommitPendingEdits()) {
         cleanupUnstarted(false);
-        QMessageBox::warning(this, tr("地图测试未启动"), tr("代码草稿未能提交，请查看触发器模块中的诊断。原图和当前编辑均保留。"));
-        return;
+        return fail(tr("地图测试未启动"), tr("代码草稿未能提交，请查看触发器模块中的诊断。原图和当前编辑均保留。"));
     }
     const bool snapshot = project_->HasUnsavedMapChanges() || project_->luaMapTarget_
         || settingsModule_->HasPendingDraft() || soundsModule_->HasPendingDraft();
     auto input = project_->sourceArchivePath_;
     if (snapshot) {
         input = std::filesystem::path(QDir(runDirectory).filePath(QStringLiteral("input.w3x")).toStdWString());
-        if (!RunMapSave(input, false, true, true, testHotReload)) { cleanupUnstarted(true); return; }
+        if (!RunMapSave(input, false, true, true, testHotReload)) { cleanupUnstarted(true); return tr("测试副本保存失败，请查看诊断。"); }
     }
     Services::MapTestRequest request;
     request.inputMap = input;
@@ -187,9 +186,8 @@ void MainWindow::TestMap() {
             : !workspaceReady.Succeeded() ? workspaceReady.diagnostics : launched.diagnostics;
         const auto detail = diagnostics.empty() ? tr("测试准备未通过，请查看诊断。")
             : QString::fromStdString(diagnostics.back().message);
-        QMessageBox::warning(this, tr("地图测试未启动"), detail + tr("\n原图和当前编辑均保留。"));
         if (workspaceReady.Succeeded()) cleanupUnstarted(false);
-        return;
+        return fail(tr("地图测试未启动"), detail + tr("\n原图和当前编辑均保留。"));
     }
     // 仅用户点击测试时发起游戏；预检、SHA与复制均在低优先级worker完成。
     mapTestLease_ = launched.value->lease;
@@ -226,7 +224,7 @@ void MainWindow::TestMap() {
     cleanup->setInterval(2000);
     const auto lease = mapTestLease_;
     const auto files = *workspace.value;
-    connect(cleanup, &QTimer::timeout, this, [this, cleanup, lease, files] {
+    connect(cleanup, &QTimer::timeout, this, [this, cleanup, lease, files, interactive] {
         if (lease && lease->IsActive()) return;
         cleanup->stop();
         // 清理绑定创建时的目录/文件身份，新增或变化的内容保留，不按路径递归删除。
@@ -247,9 +245,9 @@ void MainWindow::TestMap() {
                     "测试副本清理未能完成，未确认的文件已保留。");
             }
         });
-        connect(worker, &QThread::finished, this, [this, result] {
+        connect(worker, &QThread::finished, this, [this, result, interactive] {
             project_->AddDiagnostics(result->diagnostics);
-            for (const auto& diagnostic : result->diagnostics) {
+            if (interactive) for (const auto& diagnostic : result->diagnostics) {
                 if (diagnostic.code == "MAP_TEST_PROCESS_EXIT") {
                     QMessageBox::warning(this, tr("地图测试已退出"), QString::fromStdString(diagnostic.message));
                     break;
@@ -272,5 +270,6 @@ void MainWindow::TestMap() {
         cleanup->deleteLater();
     });
     cleanup->start();
+    return {};
 }
 

@@ -1,0 +1,80 @@
+#include "McpLuaFileTools.h"
+#include "McpToolInternal.h"
+
+#include <QJsonArray>
+#include <QRegularExpression>
+#include <cstring>
+
+namespace War3Map::Mcp {
+namespace {
+constexpr qsizetype kMaxLuaText = 2 * 1024 * 1024;
+QJsonObject Identity() {
+    return {{"project_identity", QJsonObject{{"type", "string"}, {"maxLength", 128}}},
+        {"expected_revision", QJsonObject{{"type", "string"}, {"pattern", "^(0|[1-9][0-9]*)$"}, {"maxLength", 20}}}};
+}
+bool ValidPath(const QJsonValue& value) {
+    if (!value.isString()) return false;
+    const auto path = value.toString();
+    if (path.isEmpty() || path.size() > 260 || path.contains(QChar::Null) || !path.endsWith(QStringLiteral(".lua"), Qt::CaseInsensitive))
+        return false;
+    // 地图内相对路径：不允许盘符、开头分隔符或 .. 段。
+    if (path.contains(QLatin1Char(':')) || path.startsWith(QLatin1Char('\\')) || path.startsWith(QLatin1Char('/'))) return false;
+    for (const auto& part : path.split(QRegularExpression(QStringLiteral("[\\\\/]")))) if (part == QStringLiteral("..")) return false;
+    return true;
+}
+} // namespace
+
+std::vector<ToolDefinition> LuaFileToolDefinitions() {
+    std::vector<ToolDefinition> result;
+    const auto add = [&](const char* name, const char* description, ToolPermission permission, QJsonObject extra, QStringList required) {
+        ToolDefinition tool; tool.name = name; tool.description = description; tool.permission = permission;
+        auto properties = Identity();
+        for (auto it = extra.begin(); it != extra.end(); ++it) properties.insert(it.key(), it.value());
+        required.prepend("expected_revision"); required.prepend("project_identity");
+        tool.inputSchema = BasicSchema(properties, QJsonArray::fromStringList(required));
+        tool.maxRequestIdBytes = 128;
+        tool.maxResponseBytes = std::strcmp(name, "lua_file_read") == 0 ? 3 * 1024 * 1024 : 64 * 1024;
+        result.push_back(std::move(tool));
+    };
+    const QJsonObject path{{"type", "string"}, {"maxLength", 260}};
+    add("lua_files_list", "列出地图里的 Lua 文件、状态和大小", ToolPermission::Query, {}, {});
+    add("lua_file_read", "读取一个地图 Lua 文件的正文和字节身份（sha256）", ToolPermission::Query, {{"path", path}}, {"path"});
+    add("lua_file_write", "新建或整体替换一个地图 Lua 文件，进入撤销栈；替换已有文件时必须给出读取时的 sha256", ToolPermission::Edit,
+        {{"path", path}, {"text", QJsonObject{{"type", "string"}, {"maxLength", kMaxLuaText}}},
+            {"expected_sha256", QJsonObject{{"type", "string"}, {"pattern", "^[0-9a-f]{64}$"}}}}, {"path", "text"});
+    add("map_test_start", "用当前编辑内容启动单人测试（与界面“测试”相同，独立副本，不改原图）", ToolPermission::External, {}, {});
+    return result;
+}
+
+QJsonObject InvokeLuaFileTool(const QString& name, const QJsonObject& args, const LuaFileToolHost& host) {
+    QStringList allowed{"project_identity", "expected_revision"};
+    if (name == "lua_file_read") allowed << "path";
+    else if (name == "lua_file_write") allowed << "path" << "text" << "expected_sha256";
+    else if (name != "lua_files_list" && name != "map_test_start") return Failure("LUA_FILE_TOOL_UNKNOWN", "未知 Lua 文件工具。");
+    for (auto it = args.begin(); it != args.end(); ++it)
+        if (!allowed.contains(it.key())) return Failure("LUA_FILE_ARGUMENT_INVALID", "不接受的参数：" + it.key().toStdString());
+    const auto identity = args.value("project_identity");
+    if (!identity.isString() || identity.toString().isEmpty() || identity.toString().size() > 128
+        || identity.toString().contains(QChar::Null) || !ParseUnsignedId(args, "expected_revision", true).Succeeded())
+        return Failure("LUA_FILE_ARGUMENT_INVALID", "需要当前工程身份和编辑修订。");
+    if (allowed.contains("path") && !ValidPath(args.value("path")))
+        return Failure("LUA_FILE_ARGUMENT_INVALID", "path 必须是地图内的相对 .lua 路径。");
+    if (name == "lua_file_write") {
+        if (!args.value("text").isString() || args.value("text").toString().size() > kMaxLuaText || args.value("text").toString().contains(QChar::Null))
+            return Failure("LUA_FILE_ARGUMENT_INVALID", "text 必须是不超过 2 MiB 的文本。");
+        if (args.contains("expected_sha256")
+            && !QRegularExpression(QStringLiteral("^[0-9a-f]{64}$")).match(args.value("expected_sha256").toString()).hasMatch())
+            return Failure("LUA_FILE_ARGUMENT_INVALID", "expected_sha256 必须是 64 位小写十六进制。");
+    }
+    if (!host.invoke) return Failure("LUA_FILE_NO_EDITOR", "此宿主没有打开的地图，请连接正在编辑该地图的编辑器 MCP 端口。");
+    return host.invoke(name, args);
+}
+
+void RegisterLuaFileTools(McpServer& server) {
+    for (auto tool : LuaFileToolDefinitions()) {
+        const auto name = tool.name;
+        tool.handler = [name](const QJsonObject& args) { return InvokeLuaFileTool(name, args, {}); };
+        server.RegisterTool(std::move(tool));
+    }
+}
+} // namespace War3Map::Mcp

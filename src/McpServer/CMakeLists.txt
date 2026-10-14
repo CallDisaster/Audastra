@@ -27,6 +27,7 @@ if(TARGET Qt6::Core)
         McpToolTerrainEdit.cpp
         McpTools.cpp
         McpLuaTestTools.cpp
+        McpLuaFileTools.cpp McpLuaFileTools.h
         McpWorldViewportTools.cpp
         McpObjectTools.cpp
         McpToolObjects.cpp

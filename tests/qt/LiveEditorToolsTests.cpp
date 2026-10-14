@@ -14,6 +14,7 @@
 #include "McpCampaignTools.h"
 #include "McpProjectSearchTools.h"
 #include "McpLuaTestTools.h"
+#include "McpLuaFileTools.h"
 #include "McpWorldViewportTools.h"
 #include "Commands/MapDataCommands.h"
 #include "War3MapCore/MapData/MapDataFieldEditing.h"
@@ -205,6 +206,7 @@ private slots:
     void BoundaryDraftSavesAndReopensAsProject_data();
     void BoundaryDraftSavesAndReopensAsProject();
     void ImportMetadataUsesSourceAndCurrentAssetOverlay();
+    void LuaFileToolsShareAssetUndoAndRejectStaleText();
     void ResourceToolsUseActualAsyncSourceAndRejectStaleResults();
     void ProjectSearchUsesInjectedOwnedPagesAndStrictRevision();
     void ProjectSearchCallbackReplacementStopsOldRequest();
@@ -220,8 +222,9 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "export_campaign_member",
         "feedback.draft", "feedback.list", "feedback.status",
         "get_terrain_edit_state",
-        "imports_get", "imports_list", "lua_test_hot_reload", "lua_test_reload_result",
-        "map_settings_get", "map_settings_set",
+        "imports_get", "imports_list", "lua_file_read", "lua_file_write", "lua_files_list",
+        "lua_test_hot_reload", "lua_test_reload_result",
+        "map_settings_get", "map_settings_set", "map_test_start",
         "object_resource_inspect", "object_resource_query", "object_resource_state",
         "objects_create", "objects_delete", "objects_field_options", "objects_get", "objects_list", "objects_set_fields",
         "open_campaign", "project_search", "query_campaign", "query_campaign_objects", "query_terrain_points", "redo_campaign", "save_campaign",
@@ -232,7 +235,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{59});
+    QCOMPARE(expected.size(), qsizetype{63});
     const auto luaDefinitions = Mcp::LuaTestToolDefinitions();
     QCOMPARE(luaDefinitions.size(), std::size_t{2});
     QCOMPARE(luaDefinitions[0].permission, Mcp::ToolPermission::External);
@@ -1409,6 +1412,68 @@ void LiveEditorToolsTests::ImportMetadataUsesSourceAndCurrentAssetOverlay() {
     QCOMPARE(f.Fingerprint(), triggerSha); QCOMPARE(f.project.triggerUndoStack_->count(), 0);
     QVERIFY(WriteFile(f.source.filePath("resource/alpha.bin"), "external source change"));
     QVERIFY(!f.tools->Invoke("imports_list", {}).value("ok").toBool());
+}
+
+void LiveEditorToolsTests::LuaFileToolsShareAssetUndoAndRejectStaleText() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    const QByteArray original("print(1)\r\nprint(2)\r\n");
+    QVERIFY(WriteFile(f.source.filePath("scripts/main.lua"), original));
+    auto source = DirectoryWorkspace::Open(f.project.projectRoot_); QVERIFY(source.Succeeded());
+    f.project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*source.value));
+    f.project.ResetEditTracking();
+    for (const auto& definition : Mcp::LuaFileToolDefinitions()) {
+        const auto tools = f.tools->Tools();
+        const auto found = std::find_if(tools.begin(), tools.end(), [&](const auto& item) {
+            return item.toObject().value("name").toString() == definition.name;
+        });
+        QVERIFY(found != tools.end());
+        QCOMPARE(found->toObject().value("inputSchema").toObject(), definition.inputSchema);
+    }
+    const auto list = f.tools->Invoke("lua_files_list", f.Context());
+    QVERIFY2(list.value("ok").toBool(), qPrintable(Explain(list)));
+    QCOMPARE(list.value("files").toArray().size(), 1);
+    const auto path = list.value("files").toArray()[0].toObject().value("path").toString();
+    QVERIFY(path.endsWith(QStringLiteral("main.lua")));
+    auto request = f.Context(); request.insert("path", path);
+    const auto read = f.tools->Invoke("lua_file_read", request);
+    QVERIFY2(read.value("ok").toBool(), qPrintable(Explain(read)));
+    QCOMPARE(read.value("text").toString(), QString::fromUtf8(original));
+    const auto revision = f.Context().value("expected_revision");
+
+    auto stale = request; stale.insert("text", "print(3)\n"); stale.insert("expected_sha256", QString(64, QLatin1Char('0')));
+    QCOMPARE(ErrorCode(f.tools->Invoke("lua_file_write", stale)), QString("LUA_FILE_WRITE_REJECTED"));
+    QCOMPARE(f.Context().value("expected_revision"), revision);
+    auto traversal = f.Context(); traversal.insert("path", "../outside.lua"); traversal.insert("text", "x");
+    QCOMPARE(ErrorCode(f.tools->Invoke("lua_file_write", traversal)), QString("LUA_FILE_ARGUMENT_INVALID"));
+    auto created = f.Context(); created.insert("path", "scripts/new.lua"); created.insert("text", "x");
+    QCOMPARE(ErrorCode(f.tools->Invoke("lua_file_write", created)), QString("LUA_FILE_WRITE_REJECTED"));
+    QCOMPARE(f.project.AssetUndoStack()->count(), 0);
+
+    auto write = f.Context(); write.insert("path", path); write.insert("text", "print(3)\nprint(4)\n");
+    write.insert("expected_sha256", read.value("sha256"));
+    const auto written = f.tools->Invoke("lua_file_write", write);
+    QVERIFY2(written.value("ok").toBool(), qPrintable(Explain(written)));
+    QVERIFY(written.value("changes").isObject());
+    QCOMPARE(f.project.AssetUndoStack()->count(), 1);
+    auto after = f.Context(); after.insert("path", path);
+    // 原文件是 CRLF，写入后保持 CRLF。
+    QCOMPARE(f.tools->Invoke("lua_file_read", after).value("text").toString(), QStringLiteral("print(3)\r\nprint(4)\r\n"));
+    QCOMPARE(f.tools->Invoke("lua_file_read", after).value("sha256"), written.value("sha256"));
+    // 再用旧版本身份写入必须拒绝。
+    auto replay = write; replay.insert("expected_revision", f.Context().value("expected_revision"));
+    QCOMPARE(ErrorCode(f.tools->Invoke("lua_file_write", replay)), QString("LUA_FILE_WRITE_REJECTED"));
+    f.project.AssetUndoStack()->undo();
+    auto undone = f.Context(); undone.insert("path", path);
+    QCOMPARE(f.tools->Invoke("lua_file_read", undone).value("text").toString(), QString::fromUtf8(original));
+
+    QCOMPARE(ErrorCode(f.tools->Invoke("map_test_start", f.Context())), QString("MAP_TEST_UNAVAILABLE"));
+    int launches = 0;
+    f.tools->SetMapTestHandler([&launches] { return ++launches == 1 ? QString() : QStringLiteral("没有找到游戏"); });
+    QVERIFY(f.tools->Invoke("map_test_start", f.Context()).value("started").toBool());
+    QCOMPARE(ErrorCode(f.tools->Invoke("map_test_start", f.Context())), QString("MAP_TEST_REJECTED"));
+    auto staleTest = f.Context(); staleTest.insert("expected_revision", "9999");
+    QCOMPARE(ErrorCode(f.tools->Invoke("map_test_start", staleTest)), QString("LIVE_EDITOR_REVISION_CONFLICT"));
+    QCOMPARE(launches, 2);
 }
 
 void LiveEditorToolsTests::ResourceToolsUseActualAsyncSourceAndRejectStaleResults() {

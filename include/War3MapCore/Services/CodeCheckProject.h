@@ -75,9 +75,9 @@ private:
     CodeLanguage language, std::uint64_t generation, std::stop_token cancel = {}, CodeCheckLuaSources lua = {});
 
 // 独立Lua文本使用与工程代码块相同的只读本机运行库捕获，不接收外部伪造库存事实。
-// 不把文本加入地图/执行代码，不授予全图上下文或保存发布资格。
+// 不把文本加入地图/执行代码，不授予全图上下文或保存发布资格。lua 与 CheckProjectCode 相同。
 [[nodiscard]] CodeCheckResult CheckProjectLuaSource(
     const std::shared_ptr<const CodeCheckProjectSnapshot>& snapshot,
-    CodeCheckRequest request, std::stop_token cancel = {});
+    CodeCheckRequest request, std::stop_token cancel = {}, CodeCheckLuaSources lua = {});
 
 } // namespace War3Map::Services

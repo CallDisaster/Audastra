@@ -64,7 +64,7 @@ void CaptureLuaCheckContext(const std::shared_ptr<const CodeCheckProjectSnapshot
 
 namespace War3Map::Services {
 CodeCheckResult CheckProjectLuaSource(const std::shared_ptr<const CodeCheckProjectSnapshot>& snapshot,
-    CodeCheckRequest request, std::stop_token cancel) {
+    CodeCheckRequest request, std::stop_token cancel, CodeCheckLuaSources lua) {
     request.language = CodeLanguage::Lua53;
     request.context.binding = snapshot ? snapshot->binding : "unbound";
     request.context.luaSemantic = {};
@@ -80,6 +80,8 @@ CodeCheckResult CheckProjectLuaSource(const std::shared_ptr<const CodeCheckProje
         request.context.luaSemantic = {};
         request.context.luaSemantic.runtime.reason = "本机运行库来源未能完成捕获，未形成语义资格。";
     }
+    request.context.luaCatalog = std::move(lua.catalog);
+    request.context.luaModules = std::move(lua.modules);
     return CheckCode(request, combined.get_token());
 }
 } // namespace War3Map::Services

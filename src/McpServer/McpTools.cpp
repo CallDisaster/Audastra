@@ -9,6 +9,7 @@
 #include "McpCodeCheckTools.h"
 #include "McpTerrainEditTools.h"
 #include "McpLuaTestTools.h"
+#include "McpLuaFileTools.h"
 #include "McpWorldViewportTools.h"
 
 namespace War3Map::Mcp {
@@ -19,6 +20,7 @@ void RegisterAllTools(McpServer& server) {
     RegisterProductTools(server);
     RegisterCodeCheckTool(server);
     RegisterLuaTestTools(server);
+    RegisterLuaFileTools(server);
     RegisterWorldViewportTools(server);
     RegisterReadOnlyTools(server);
     RegisterArchiveIdentityTools(server);
