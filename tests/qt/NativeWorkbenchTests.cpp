@@ -39,6 +39,7 @@
 #include "Commands/MapDataCommands.h"
 
 #include "War3MapCore/Mpq/MpqWriter.h"
+#include "War3MapCore/Services/LuaTestMailboxSession.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
@@ -693,6 +694,7 @@ private slots:
     void GuiConversionSnapshotDoesNotBindReusedTriggerIdentity();
     void CodeDraftFailureKeepsSourceAndExplicitDiscardWorks();
     void IncompleteLuaDraftSurvivesApplyHostRecoveryAndMapGate();
+    void HandwrittenLuaReloadStaysAvailableAfterApply();
     void MapDataOnlyChangesProduceAutomaticRecovery();
     void FrozenRecoveryKeepsLaterEditsAndRejectsNewSession();
     void ProjectDirectoryUnicodeBaselineRoundTrip();
@@ -6149,6 +6151,58 @@ void NativeWorkbenchTests::GuiConversionSnapshotDoesNotBindReusedTriggerIdentity
     window.project_->triggerUndoStack_->undo(); // 撤销此前转回，恢复 A 的代码态。
     restored = window.project_->guiConversionSnapshots_.Find(document, *window.project_->uiCatalog_, originalId);
     QVERIFY(restored && restored->ecas.size() == 1 && restored->ecas.front().enabled == 0);
+}
+
+void NativeWorkbenchTests::HandwrittenLuaReloadStaysAvailableAfterApply() {
+    // 手写 Lua 测试中应用草稿会推进地图修订；热重载按文件内容比对，按钮和查询不能因此失效。
+    QTemporaryDir fixture; QVERIFY(fixture.isValid());
+    QVERIFY(QDir{}.mkpath(fixture.filePath("source-workspace")));
+    const auto uiRoot = fixture.filePath("original-ui");
+    QVERIFY(WriteText(uiRoot + "/ui/config", "base\n"));
+    QVERIFY(WriteText(uiRoot + "/ui/base/action.txt", "[DoNothing]\n"));
+    auto catalog = War3Map::Trigger::UiCatalog::Load(NativePath(uiRoot)); QVERIFY(catalog.Succeeded());
+    auto initial = War3Map::Trigger::WtgWctCodec{}.CreateEmpty(*catalog.value); QVERIFY(initial.Succeeded());
+    const auto encoded = War3Map::Trigger::WtgWctCodec{}.Serialize(*initial.value, *catalog.value); QVERIFY(encoded.Succeeded());
+    const auto source = NativePath(fixture.filePath("source-workspace/source.w3x"));
+    const QByteArray originalLua("return 1\r\n");
+    const auto originalSpan = std::as_bytes(std::span(originalLua.constData(), static_cast<std::size_t>(originalLua.size())));
+    const std::vector<War3Map::MapArchiveMember> members{
+        {"war3map.w3i", MapDataFixtures::FullMapSettingsV25().bytes},
+        {"war3mapUnits.doo", MapDataFixtures::EmptyUnitsV8Sub11()},
+        {"war3map.doo", MapDataFixtures::EmptyDoodadsV8Sub11()},
+        {"war3map.wtg", encoded.value->wtg}, {"war3map.wct", encoded.value->wct},
+        {"Scripts\\Reload.lua", {originalSpan.begin(), originalSpan.end()}}
+    };
+    QVERIFY(War3Map::WriteVerifiedArchive(source, members).Succeeded());
+    const auto sourceSha = War3Map::Sha256File(source); QVERIFY(sourceSha.Succeeded());
+    MainWindow window(MainWindow::StartupMode::HeadlessProbe);
+    QVERIFY(window.UseUiDataRoot(NativePath(uiRoot))); QVERIFY(window.OpenMapArchivePath(source));
+    window.ActivateModule("triggers"); window.resize(1100, 800); window.show();
+    // 与 MapTestActions 启动手写 Lua 测试后相同的会话状态；不启动游戏。
+    auto mailbox = War3Map::Services::CreateLuaTestMailboxSession(*sourceSha.value); QVERIFY(mailbox.Succeeded() && mailbox.value);
+    window.luaRuntimeMailbox_ = *mailbox.value;
+    window.luaTestGeneration_ = window.project_->editRevision_.Generation();
+    window.luaTestSource_ = window.project_->sourceArchivePath_;
+    window.luaFileReload_ = true; window.SnapshotLuaFileBaseline(); window.UpdateExportAvailability();
+    QVERIFY(window.luaReloadAction_->isEnabled());
+    auto* scripts = window.triggersModule_->LuaScripts(); QVERIFY(scripts);
+    auto* tabs = window.triggersModule_->Widget()->findChild<QTabWidget*>("triggerWorkspaceTabs"); QVERIFY(tabs);
+    tabs->setCurrentWidget(scripts); QVERIFY(scripts->SelectScript("Scripts\\Reload.lua"));
+    scripts->Editor()->SetText(QStringLiteral("return 2\n")); QVERIFY(scripts->CommitPendingDraft());
+    // 测试开始后地图修订身份变了（其它编辑或重新载入）：手写 Lua 文件仍按内容比对热重载。
+    window.luaTestGeneration_ = window.project_->editRevision_.Generation() + 1; window.UpdateExportAvailability();
+    QCoreApplication::processEvents();
+    QVERIFY2(window.luaReloadAction_->isEnabled(), "应用草稿后热重载按钮被禁用");
+    const auto query = window.LuaTestReload(false);
+    QVERIFY2(query.value("ok").toBool(), qPrintable(query.value("message").toString()));
+    // 游戏未进入地图时明确说明还在初始化，而不是“请先启动测试”。
+    const auto submit = window.LuaTestReload(true);
+    QCOMPARE(submit.value("code").toString(), QStringLiteral("LUA_RELOAD_NOT_READY"));
+    // 换到别的地图后不能再向这一局发送。
+    window.luaTestSource_ = NativePath(fixture.filePath("other.w3x")); window.UpdateExportAvailability();
+    QVERIFY(!window.luaReloadAction_->isEnabled());
+    QCOMPARE(window.LuaTestReload(true).value("code").toString(), QStringLiteral("LUA_RELOAD_NO_SESSION"));
+    window.luaRuntimeMailbox_.reset(); window.luaFileReload_ = false;
 }
 
 void NativeWorkbenchTests::IncompleteLuaDraftSurvivesApplyHostRecoveryAndMapGate() {

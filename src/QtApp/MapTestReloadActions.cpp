@@ -39,8 +39,13 @@ QJsonObject Snapshot(const Services::LuaReloadControllerSnapshot& snapshot) {
 }
 }
 
+bool MainWindow::LuaTestSessionCurrent() const {
+    if (luaFileReload_) return !luaTestSource_.empty() && luaTestSource_ == project_->sourceArchivePath_;
+    return luaTestGeneration_ == project_->editRevision_.Generation();
+}
+
 QJsonObject MainWindow::LuaTestReload(bool submit) {
-    if (luaTestGeneration_ != project_->editRevision_.Generation())
+    if (!LuaTestSessionCurrent())
         return Failure("LUA_RELOAD_NO_SESSION", "请先在当前地图启动启用热重载的 Lua 单人测试。");
     if (luaFileReload_) {
         if (submit && project_->savingMap_) return Failure("LUA_RELOAD_BUSY", "保存或测试准备正在进行，请稍后重试。");
@@ -146,7 +151,7 @@ void MainWindow::PollLuaTestReload() {
     // 游戏可能先发布就绪、Job观察器后捕获原句柄。只等待本局归属确认，
     // 不读取未确认回执、不放行发送；实际终态仍交同一租约的清理流程报告。
     if (!result.value("ok").toBool() && result.value("code").toString() == QLatin1String("LUA_TEST_PROCESS_UNCONFIRMED")
-        && lease && mapTestLease_ == lease && luaTestGeneration_ == project_->editRevision_.Generation()
+        && lease && mapTestLease_ == lease && LuaTestSessionCurrent()
         && lease->IsActive()) return;
     if (!result.value("ok").toBool() || result.value("state").toString() == "stopped") {
         if (luaReloadPoll_) luaReloadPoll_->stop();

@@ -219,6 +219,8 @@ private:
     void SaveAsMap();
     void SaveMapInPlace();
     void TestMap();
+    // 本局测试仍对应当前地图：生成的触发器 Lua 要求修订不变；手写 Lua 文件按内容比对，应用草稿后仍可热重载。
+    [[nodiscard]] bool LuaTestSessionCurrent() const;
     QJsonObject LuaTestReload(bool submit);
     void CreateLuaTutorialMap();
     void RunMapCreate(War3Map::Services::MapCreateOptions options, const QString& output);
@@ -313,6 +315,7 @@ private:
     std::shared_ptr<War3Map::Services::LuaTestReloadController> luaReloadController_;
     std::shared_ptr<War3Map::Services::LuaTestMailboxSession> luaRuntimeMailbox_;
     std::uint64_t luaTestGeneration_ = 0;
+    std::filesystem::path luaTestSource_; // 启动测试时打开的地图
     std::optional<std::array<std::uint64_t, 2>> luaReloadSubmittedRevision_;
     QTimer* luaReloadPoll_ = nullptr;
     std::uint32_t luaRuntimeDiagnosticSequence_ = 0;

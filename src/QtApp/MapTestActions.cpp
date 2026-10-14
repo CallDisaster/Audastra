@@ -196,6 +196,7 @@ void MainWindow::TestMap() {
     if (launched.value->luaMailbox) {
         luaRuntimeMailbox_ = launched.value->luaMailbox;
         luaTestGeneration_ = project_->editRevision_.Generation();
+        luaTestSource_ = project_->sourceArchivePath_;
     }
     const bool handwrittenLua = !ownedLua && launched.value->luaMailbox && !launched.value->luaEntryModules.empty();
     if (handwrittenLua && launched.value->luaHotReload) {
@@ -214,6 +215,8 @@ void MainWindow::TestMap() {
         }
         luaReloadPoll_->start();
     }
+    // 游戏已启动，准备阶段到此结束：先解除准备锁再刷新按钮，否则“测试”“热重载”会一直灰着。
+    project_->savingMap_ = false;
     UpdateExportAvailability();
     const auto luaNote = handwrittenLua ? (luaFileReload_ ? tr(" · 自带 Lua 环境，可热重载") : tr(" · 自带 Lua 环境"))
         : !launched.value->luaEntryModules.empty() ? tr(" · YDWE Lua 引擎") : QString{};
