@@ -322,6 +322,30 @@ void WorldModule::BindInstanceDiagnostics() {
         if (premPresenter_) premPresenter_->Bind(scene, registry, placementIds_, live);
     }
     RefreshInstanceDiagnostics();
+    PublishResourceProblems();
+}
+
+void WorldModule::PublishResourceProblems() {
+    constexpr std::size_t kMaxModelRows = 200;
+    auto problems = terrainProblems_;
+    // 同一模型、同一原因只列一条并写明涉及几处，详情仍在“模型诊断”窗口。
+    std::map<std::pair<QString, QString>, std::pair<std::size_t, QString>> models;
+    for (const auto& row : ModelDiagnosticRows()) {
+        auto& entry = models[{row.modelPath, row.reasonCode}];
+        entry.first += std::max<std::size_t>(1, row.owners.size()); entry.second = row.reason;
+    }
+    std::size_t shown = 0;
+    for (const auto& [key, entry] : models) {
+        if (shown++ == kMaxModelRows) {
+            problems.push_back({DiagnosticSeverity::Warning, {}, "WORLD_MODEL_RESOURCE",
+                tr("另有 %1 类模型问题，详见“模型诊断”。").arg(models.size() - kMaxModelRows).toStdString(), std::nullopt});
+            break;
+        }
+        problems.push_back({DiagnosticSeverity::Warning, {}, key.second.toStdString(),
+            tr("模型 %1（%2 处）：%3").arg(key.first.isEmpty() ? tr("（无路径）") : key.first).arg(entry.first).arg(entry.second).toStdString(),
+            std::nullopt});
+    }
+    project_.ReplaceDiagnostics(QStringLiteral("World.Resources"), std::move(problems));
 }
 
 QString WorldModule::InstanceDiagnosticText(const Services::WorldSelectionVersion& expected,
@@ -965,6 +989,7 @@ void WorldModule::StartAnimatedModels(std::uint64_t generation) {
     CaptureAuxiliary(*document); RefreshOutliner();
     RefreshBuildingSplats(false, &*document); // 先捕获typed uubs，不由模型可用性决定贴画来源。
     auto placed=std::make_shared<WorldPlacementCapture>(CaptureWorldPlacements(project_,*document));
+    (void)ApplyModelVariantFallbacks(*placed, modelVariants_);
     placementsDirty_=false; // 此次捕获已包含先前修改；仅启动后新增的修改要求再加载。
     const auto cliffs=cliffs_;
     // 有摆放模型时悬崖放独立层：之后的地形笔刷只重建悬崖层。没有模型时主场景只能装悬崖（附加层需要父场景）。
@@ -1011,6 +1036,7 @@ void WorldModule::StartAnimatedModels(std::uint64_t generation) {
         std::vector<Diagnostic> diagnostics;
         std::optional<WorldPathingHelperPrepared> helpers;
         std::optional<WorldCliffLayerFrame> cliffLayer;
+        ModelVariantFallbacks variants;
     };
     auto work=std::make_shared<Work>();
     auto* worker=QThread::create([work,sources=std::move(*sources.value),placed,cliffs,revision,epoch,worldView,particles,registry,
@@ -1019,6 +1045,8 @@ void WorldModule::StartAnimatedModels(std::uint64_t generation) {
             auto reader=WorldResourceReader::Open(sources);
             if (!reader.Succeeded()) { work->diagnostics=std::move(reader.diagnostics); return; }
             work->source=std::shared_ptr<WorldResourceReader>(std::move(*reader.value));
+            ResolveModelVariantFallbacks(*placed, work->source->Resolver(), work->variants);
+            (void)ApplyModelVariantFallbacks(*placed, work->variants);
             Services::PlacementPresentationContext helperContext{presentationVersion, helperIdentity,
                 WorldPathingHelperResourceReader(work->source)};
             auto helpers = PrepareWorldPathingHelpers(placed->requests, placed->presentations, helperContext, work->source, helperCache);
@@ -1080,6 +1108,7 @@ void WorldModule::StartAnimatedModels(std::uint64_t generation) {
     connect(worker,&QThread::finished,this,[this,work,placed,generation,cliffs,revision,mapKey,registry,revisionGate,selectionSources,
         catalogRevision = presentationVersion.catalogRevision, cliffLayer] {
         modelWorker_=nullptr;
+        for (const auto& [variant, target] : work->variants) modelVariants_.insert_or_assign(variant, target);
         if (!page_) return;
         const auto current=[this,generation,revisionGate,mapKey,catalogRevision] {
             return page_ && generation==generation_ && MapKey()==mapKey &&

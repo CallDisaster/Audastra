@@ -126,7 +126,19 @@ void TestJpegMipValidation() {
     Require(result.Succeeded(), "原创渐进式 atlas 应通过");
     auto broken = small.bytes;
     broken.erase(broken.begin() + static_cast<std::ptrdiff_t>(small.entropyOffset)); // EOI 仍完整，只有熵数据缺失
-    Rejected(DecodeTerrainTextureAtlas(JpegBlp(16, 16, {base.bytes, broken})), "TERRAIN_ATLAS_DECODE");
+    // 后续层损坏或尺寸不符（常见工具把最后一层写成上一层的副本）：从坏层截断，mip0 照常使用。
+    result = DecodeTerrainTextureAtlas(JpegBlp(16, 16, {base.bytes, broken}));
+    Require(result.Succeeded() && (*result.value)->validatedMipCount == 1 && (*result.value)->additionalMips.empty(), "坏 mip1 应截断");
+    result = DecodeTerrainTextureAtlas(JpegBlp(16, 16, {base.bytes, small.bytes, small.bytes}));
+    Require(result.Succeeded() && (*result.value)->validatedMipCount == 2, "重复上一层的 mip2 应截断");
+    // JPEG 头部 alpha 位数只决定用不用第四组件：9 这类非常规值不拒绝；无第四组件时 4 位按不透明处理。
+    for (const auto alpha : {4u, 9u}) {
+        auto odd = JpegBlp(16, 16, {base.bytes});
+        Put32(odd.bytes, 8, alpha);
+        result = DecodeTerrainTextureAtlas(odd);
+        if (alpha == 4) Require(result.Succeeded() && (*result.value)->image.rgba[3] == std::byte{255}, "JPEG 4 位 alpha 应按不透明解码");
+        else Rejected(result, "TERRAIN_ATLAS_JPEG");
+    }
     Rejected(DecodeTerrainTextureAtlas(JpegBlp(16, 16, {small.bytes})), "TERRAIN_ATLAS_JPEG");
     broken = base.bytes; broken.pop_back();
     Rejected(DecodeTerrainTextureAtlas(JpegBlp(16, 16, {broken})), "TERRAIN_ATLAS_JPEG");
@@ -141,21 +153,35 @@ void TestJpegMipValidation() {
 void TestRejectedFormatsAndBudgets() {
     ColoredFixture fixture(8);
     const auto original = fixture.resource;
+    const auto mip0End = static_cast<std::size_t>(std::to_integer<unsigned>(original.bytes[28]) | std::to_integer<unsigned>(original.bytes[29]) << 8)
+        + (std::to_integer<unsigned>(original.bytes[92]) | std::to_integer<unsigned>(original.bytes[93]) << 8);
     for (std::size_t size = 0; size < original.bytes.size(); ++size) {
         fixture.resource.bytes.assign(original.bytes.begin(), original.bytes.begin() + static_cast<std::ptrdiff_t>(size));
-        Rejected(DecodeTerrainTextureAtlas(fixture.resource));
+        // 截断在 mip0 内拒绝；只截掉后续层时保留完整的前几层。
+        if (size < mip0End) Rejected(DecodeTerrainTextureAtlas(fixture.resource));
+        else {
+            const auto truncated = DecodeTerrainTextureAtlas(fixture.resource);
+            Require(truncated.Succeeded() && (*truncated.value)->validatedMipCount < 4, "截断后续 mip 应保留前几层");
+        }
     }
     fixture.resource = original;
-    for (const auto alpha : {1u, 4u, 16u}) {
+    for (const auto alpha : {1u, 4u}) {
         Put32(fixture.resource.bytes, 8, alpha);
-        Rejected(DecodeTerrainTextureAtlas(fixture.resource), "TERRAIN_ATLAS_ALPHA_UNSUPPORTED");
+        Require(DecodeTerrainTextureAtlas(fixture.resource).Succeeded(), "1/4 位 alpha 调色板应可解码");
     }
+    Put32(fixture.resource.bytes, 8, 16);
+    Rejected(DecodeTerrainTextureAtlas(fixture.resource), "TERRAIN_ATLAS_ALPHA_UNSUPPORTED");
     fixture.resource = original; fixture.resource.bytes[3] = std::byte{'2'};
     Rejected(DecodeTerrainTextureAtlas(fixture.resource), "TERRAIN_ATLAS_FORMAT");
-    fixture.resource = original; Put32(fixture.resource.bytes, 32, 0xfffffff0);
+    fixture.resource = original; Put32(fixture.resource.bytes, 28, 0xfffffff0);
     Rejected(DecodeTerrainTextureAtlas(fixture.resource), "TERRAIN_ATLAS_MIP");
-    fixture.resource = original; Put32(fixture.resource.bytes, 32, 0); Put32(fixture.resource.bytes, 96, 0);
-    Rejected(DecodeTerrainTextureAtlas(fixture.resource), "TERRAIN_ATLAS_MIP");
+    for (const bool missing : {false, true}) {
+        fixture.resource = original;
+        if (missing) { Put32(fixture.resource.bytes, 32, 0); Put32(fixture.resource.bytes, 96, 0); }
+        else Put32(fixture.resource.bytes, 32, 0xfffffff0);
+        const auto truncated = DecodeTerrainTextureAtlas(fixture.resource);
+        Require(truncated.Succeeded() && (*truncated.value)->validatedMipCount == 1, "mip1 缺失或越界应只用 mip0");
+    }
     fixture.resource = original; Put32(fixture.resource.bytes, 12, 12);
     Rejected(DecodeTerrainTextureAtlas(fixture.resource), "TERRAIN_ATLAS_LAYOUT");
     fixture.resource = original;
@@ -163,13 +189,16 @@ void TestRejectedFormatsAndBudgets() {
     limits.maxInputBytes = 1; Rejected(DecodeTerrainTextureAtlas(fixture.resource, limits), "TERRAIN_ATLAS_INPUT_BUDGET");
     limits = {}; limits.maxDimension = 4; Rejected(DecodeTerrainTextureAtlas(fixture.resource, limits), "TERRAIN_ATLAS_DIMENSION");
     limits = {}; limits.maxRgbaBytes = 255; Rejected(DecodeTerrainTextureAtlas(fixture.resource, limits), "TERRAIN_ATLAS_RGBA_BUDGET");
-    limits = {}; limits.maxRetainedRgbaBytes = 256;
+    limits = {}; limits.maxRetainedRgbaBytes = 252;
     Rejected(DecodeTerrainTextureAtlas(fixture.resource, limits), "TERRAIN_ATLAS_RETAINED_BUDGET");
     limits = {}; limits.maxRetainedRgbaBytes = 340;
     Require(DecodeTerrainTextureAtlas(fixture.resource, limits).Succeeded(), "完整 mip 链的精确字节限额被拒绝");
-    limits.maxRetainedRgbaBytes = 339;
-    Rejected(DecodeTerrainTextureAtlas(fixture.resource, limits), "TERRAIN_ATLAS_RETAINED_BUDGET");
-    limits = {}; limits.maxTotalMipPixels = 65; Rejected(DecodeTerrainTextureAtlas(fixture.resource, limits), "TERRAIN_ATLAS_MIP_BUDGET");
+    limits.maxRetainedRgbaBytes = 339; // 超额的最后一层被截掉
+    auto partial = DecodeTerrainTextureAtlas(fixture.resource, limits);
+    Require(partial.Succeeded() && (*partial.value)->validatedMipCount == 3, "保留限额应截断末层");
+    limits = {}; limits.maxTotalMipPixels = 63; Rejected(DecodeTerrainTextureAtlas(fixture.resource, limits), "TERRAIN_ATLAS_MIP_BUDGET");
+    limits = {}; limits.maxTotalMipPixels = 65; partial = DecodeTerrainTextureAtlas(fixture.resource, limits);
+    Require(partial.Succeeded() && (*partial.value)->validatedMipCount == 1, "像素限额应截断后续层");
     limits = {}; limits.maxWorkingBytes = 1; Rejected(DecodeTerrainTextureAtlas(fixture.resource, limits), "TERRAIN_ATLAS_WORKING_BUDGET");
     limits = {}; ++limits.maxDimension; Rejected(DecodeTerrainTextureAtlas(fixture.resource, limits), "TERRAIN_ATLAS_LIMITS");
     const auto jpeg = JpegBlp(16, 16, {TestFixtures::MakeTinyGrayJpeg(16, 16).bytes});

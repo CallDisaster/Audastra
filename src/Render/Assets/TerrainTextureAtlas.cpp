@@ -72,8 +72,10 @@ Header Inspect(Bytes bytes, const TerrainAtlasLimits& limits) {
         Fail("TERRAIN_ATLAS_LAYOUT", "Atlas 不是 4x4 或 8x4 方形单元格布局。");
     if (static_cast<std::size_t>(header.width) * header.height * 4 > limits.maxRgbaBytes)
         Fail("TERRAIN_ATLAS_RGBA_BUDGET", "Atlas RGBA 超出输出预算。");
-    if (header.alpha != 0 && header.alpha != 8)
-        Fail("TERRAIN_ATLAS_ALPHA_UNSUPPORTED", "Core BLP 像素解码当前仅支持 0/8-bit alpha，不能把 1/4-bit 当不透明。");
+    // JPEG 的 alpha 在图像第四组件里，头部位数只决定用不用；与贴图解码相同，8 及以上使用，其余视为不透明。
+    if (header.compression == 0) header.alpha = header.alpha >= 8 ? 8 : 0;
+    if (header.alpha != 0 && header.alpha != 1 && header.alpha != 4 && header.alpha != 8)
+        Fail("TERRAIN_ATLAS_ALPHA_UNSUPPORTED", "BLP alpha 位数只能是 0/1/4/8。");
     if (header.compression == 0) {
         if (U32(bytes, 156) > bytes.size() - 160) Fail("TERRAIN_ATLAS_MIP", "JPEG 共享头越界。");
         header.prefix = 160 + U32(bytes, 156);
@@ -81,25 +83,26 @@ Header Inspect(Bytes bytes, const TerrainAtlasLimits& limits) {
         header.prefix = 156 + 1024;
         if (bytes.size() < header.prefix) Fail("TERRAIN_ATLAS_MIP", "BLP 调色板被截断。");
     } else Fail("TERRAIN_ATLAS_FORMAT", "不支持的 BLP1 压缩类型。");
-    bool missing = false;
     std::size_t totalPixels = 0;
     for (std::size_t level = 0; level < 16; ++level) {
         const Mip mip{U32(bytes, 28 + level * 4), U32(bytes, 92 + level * 4),
             std::max(1u, header.width >> level), std::max(1u, header.height >> level)};
-        if (level != 0 && mip.offset == 0 && mip.size == 0) { missing = true; continue; }
-        if (level != 0 && header.mips.back().width == 1 && header.mips.back().height == 1)
-            Fail("TERRAIN_ATLAS_MIP", "1x1 之后仍有声明的 mip，不能作为连续纹理链。");
-        if (missing || mip.offset < header.prefix || mip.size == 0 || mip.offset > bytes.size()
-            || mip.size > bytes.size() - mip.offset)
-            Fail("TERRAIN_ATLAS_MIP", "mip " + std::to_string(level) + " 缺失、越界或被截断。");
+        // mip0 任何问题都拒绝；后续层与游戏一样只用到第一处缺失、越界或 1x1 之后为止，前面的层照常使用。
+        if (level != 0 && ((mip.offset == 0 && mip.size == 0)
+            || (header.mips.back().width == 1 && header.mips.back().height == 1))) break;
         const auto pixels = static_cast<std::size_t>(mip.width) * mip.height;
+        const bool bounded = mip.offset >= header.prefix && mip.size != 0 && mip.offset <= bytes.size()
+            && mip.size <= bytes.size() - mip.offset
+            && (header.compression != 1 || mip.size >= pixels + (pixels * header.alpha + 7) / 8);
+        if (level != 0 && (!bounded || pixels > limits.maxTotalMipPixels - totalPixels
+            || totalPixels + pixels > limits.maxRetainedRgbaBytes / 4)) break;
+        if (!bounded)
+            Fail("TERRAIN_ATLAS_MIP", "mip 0 缺失、越界或被截断。");
         if (pixels > limits.maxTotalMipPixels - totalPixels)
             Fail("TERRAIN_ATLAS_MIP_BUDGET", "全部 mip 像素数超出解码工作预算。");
         totalPixels += pixels;
         if (totalPixels > limits.maxRetainedRgbaBytes / 4)
             Fail("TERRAIN_ATLAS_RETAINED_BUDGET", "原始 mip 链 RGBA 总量超出保留预算。");
-        if (header.compression == 1 && mip.size < pixels * (header.alpha == 8 ? 2u : 1u))
-            Fail("TERRAIN_ATLAS_MIP", "调色板 mip " + std::to_string(level) + " 索引或 alpha 平面被截断。");
         header.mips.push_back(mip);
     }
     return header;
@@ -274,7 +277,7 @@ Result<Snapshot> DecodeTerrainTextureAtlas(const Resources::ResolvedResource& re
         snapshot->sourceWidth = header.width; snapshot->sourceHeight = header.height;
         snapshot->columns = header.width == header.height ? 4 : 8;
         std::size_t segments = 0, scans = 0;
-        for (std::size_t level = 0; level < header.mips.size(); ++level) {
+        for (std::size_t level = 0; level < header.mips.size(); ++level) try {
             const auto& mip = header.mips[level];
             const auto minimumWorking = input.size() + header.prefix + mip.size + snapshot->RgbaByteCount() + 65536;
             if (minimumWorking > limits.maxWorkingBytes)
@@ -297,6 +300,10 @@ Result<Snapshot> DecodeTerrainTextureAtlas(const Resources::ResolvedResource& re
             if (level == 0) snapshot->image = std::move(*decoded.value);
             else snapshot->additionalMips.push_back(std::move(*decoded.value));
             ++snapshot->validatedMipCount;
+        } catch (Failure&) {
+            // 常见工具把最后一层写成上一层的副本（JPEG 尺寸不符）；游戏照常显示，这里从坏层截断。
+            if (level == 0) throw;
+            break;
         }
         const auto size = header.height / TerrainAtlasSnapshot::rows;
         for (std::uint32_t row = 0; row < TerrainAtlasSnapshot::rows; ++row)

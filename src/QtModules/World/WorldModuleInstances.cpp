@@ -156,6 +156,7 @@ bool WorldModule::StagePlacementInstances(const MapDocument& document, const Wor
         ? CaptureUnitTail(project_, document, receipt, *stagedInstanceRegistry_, stagedRequests_, stagedPlacementIds_, stagedPresentations_)
         : std::nullopt;
     auto capture = tail ? std::move(*tail) : CaptureWorldPlacements(project_, document, changedFile);
+    (void)ApplyModelVariantFallbacks(capture, modelVariants_);
     if (changedFile && !tail) {
         WorldPlacementCapture merged;
         merged.requests.reserve(stagedRequests_.size() + capture.requests.size());

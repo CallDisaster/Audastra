@@ -21,6 +21,7 @@ target_sources(war3-map-cli PRIVATE ArchiveInspectCommand.cpp ArchiveInspectComm
 target_sources(war3-map-cli PRIVATE ImportQueryCommand.cpp ImportQueryCommand.h)
 target_sources(war3-map-cli PRIVATE UpdateCommand.cpp UpdateCommand.h)
 target_sources(war3-map-cli PRIVATE NameQueryCommand.cpp NameQueryCommand.h)
+target_sources(war3-map-cli PRIVATE ResourceCheckCommand.cpp ResourceCheckCommand.h)
 target_link_libraries(war3-map-cli PRIVATE audastra-json)
 target_compile_definitions(war3-map-cli PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-cli PRIVATE /W4 /permissive- /utf-8)

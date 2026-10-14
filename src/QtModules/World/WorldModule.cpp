@@ -237,10 +237,18 @@ void WorldModule::ShowSceneFacts(const WorldTerrainLoaded& loaded, const Render:
     sceneNotes_->setVisible(!loaded.materialNote.isEmpty());
     sceneNotes_->setText(tr("部分资源不可用，已按近似方式显示"));
     sceneNotes_->setToolTip(loaded.materialNote);
+    terrainProblems_.clear();
+    QStringList lines = loaded.materialNote.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    if (!missingGround.isEmpty()) lines.prepend(missingGround);
+    for (const auto& line : lines)
+        terrainProblems_.push_back({DiagnosticSeverity::Warning, {}, "WORLD_TERRAIN_RESOURCE", tr("地形：%1").arg(line).toStdString(), std::nullopt});
+    PublishResourceProblems();
 }
 
 // 属性栏“地图”概况回到未读取状态（换图、重新读取时）。
 void WorldModule::ResetSceneFacts() {
+    terrainProblems_.clear(); modelVariants_.clear();
+    project_.ReplaceDiagnostics(QStringLiteral("World.Resources"), {});
     for (auto* label : {sceneTerrain_, sceneGround_, sceneWater_, sceneCliffs_, sceneLighting_}) {
         if (!label) continue;
         label->setText(QStringLiteral("—")); label->setToolTip({});
@@ -456,6 +464,15 @@ QJsonObject WorldModule::PlaybackDiagnosticSnapshot() const {
         {"accepted_frame", acceptedFrame}, {"buttons", buttons}, {"page", widgetState(page_)},
         {"model_status", model}, {"loading", loading}};
     if (viewport_) result.insert("backend", viewport_->BackendDiagnosticSnapshot());
+    // 属性栏“地图”概况的原文与悬停原因，供探针批量查看地形资源问题。
+    QJsonObject terrain;
+    const auto fact = [&](const char* key, const QLabel* label) {
+        if (label) terrain.insert(key, QJsonObject{{"text", label->text()}, {"details", label->toolTip()}});
+    };
+    fact("terrain", sceneTerrain_); fact("ground", sceneGround_); fact("water", sceneWater_);
+    fact("cliffs", sceneCliffs_); fact("lighting", sceneLighting_);
+    if (sceneNotes_ && !sceneNotes_->isHidden()) terrain.insert("notes", sceneNotes_->toolTip());
+    result.insert("scene_facts", terrain);
     return result;
 }
 
@@ -498,9 +515,11 @@ void WorldModule::StartStaticModels(std::uint64_t generation, QString animationR
     const auto helperCache = pathingHelperCache_;
     auto preparedHelpers = std::make_shared<std::optional<WorldPathingHelperPrepared>>();
     auto result = std::make_shared<Result<Render::WorldModelScene>>();
+    (void)ApplyModelVariantFallbacks(capture, modelVariants_);
     auto placed = std::make_shared<WorldPlacementCapture>(std::move(capture));
+    auto variants = std::make_shared<ModelVariantFallbacks>();
     auto* worker = QThread::create([placed, sources = std::move(*sources.value), result, cliffs,
-        presentationVersion, helperIdentity = *helperIdentity.value, helperCache, preparedHelpers] {
+        presentationVersion, helperIdentity = *helperIdentity.value, helperCache, preparedHelpers, variants] {
         try {
             auto reader = WorldResourceReader::Open(sources);
             if (!reader.Succeeded()) { result->diagnostics = reader.diagnostics; return; }
@@ -512,6 +531,8 @@ void WorldModule::StartStaticModels(std::uint64_t generation, QString animationR
             if (!helpers.Succeeded()) { result->diagnostics = std::move(helpers.diagnostics); return; }
             *preparedHelpers = std::move(*helpers.value);
             auto& resolver = source->Resolver();
+            ResolveModelVariantFallbacks(*placed, resolver, *variants);
+            (void)ApplyModelVariantFallbacks(*placed, *variants);
             *result = Render::BuildWorldModelScene(placed->requests, [&resolver](std::string_view path) {
                 auto read = resolver.Read(path);
                 if (!read.Succeeded()) return Result<std::vector<std::byte>>{std::nullopt, std::move(read.diagnostics)};
@@ -525,8 +546,9 @@ void WorldModule::StartStaticModels(std::uint64_t generation, QString animationR
     });
     modelWorker_ = worker;
     connect(worker, &QThread::finished, this, [this, generation, result, placed, counts, unresolved, unresolvedTip, cliffs, animationReason,
-        modelRevision, preparedHelpers, presentationVersion] {
+        modelRevision, preparedHelpers, presentationVersion, variants] {
         modelWorker_ = nullptr;
+        for (const auto& [variant, target] : *variants) modelVariants_.insert_or_assign(variant, target);
         if (!page_) return;
         if (generation != generation_) {
             // 读取期间地形已换代：新地形已就绪时补一次加载。
@@ -720,6 +742,7 @@ void WorldModule::RefreshPlacements() {
     if (!document) return;
     CaptureAuxiliary(*document);
     auto capture = CaptureWorldPlacements(project_, *document);
+    (void)ApplyModelVariantFallbacks(capture, modelVariants_);
     dragStart_.reset(); dragPosition_.reset(); dragRotation_.reset(); dragGroup_.clear();
     regionDraft_.reset(); cameraDraft_.reset();
     std::vector<std::uint32_t> models;

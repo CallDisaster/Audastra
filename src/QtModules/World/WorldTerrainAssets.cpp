@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <chrono>
 #include <map>
+#include <set>
 
 namespace War3Map::Modules {
 namespace {
@@ -139,6 +140,8 @@ struct WorldResourceReader::State {
     std::optional<ReadLease> lease;
     std::optional<Mpq::MpqArchive> archive;
     std::map<std::string, WorldAssetEntry, std::less<>> entries;
+    // 地图 (listfile) 列出的成员；不在其中的成员只能按名字哈希找到（加密/优化地图常删去清单）。
+    std::set<std::string, std::less<>> listedArchive;
     std::optional<Game::GameDataSource> game;
     Resources::ResourceResolver resolver;
     Render::AnimationSourceGuard animationGuard;
@@ -241,6 +244,8 @@ Result<std::unique_ptr<WorldResourceReader>> WorldResourceReader::Open(const Wor
     if (timings) timings->archiveNs = ResourceStampNs() - archiveStarted;
     if (!archive.Succeeded()) return {std::nullopt, archive.diagnostics};
     state.archive.emplace(std::move(*archive.value));
+    for (const auto& name : state.archive->RawListfileNames())
+        if (const auto key = CanonicalImportPath(name); key.Succeeded()) state.listedArchive.insert(*key.value);
     for (const auto& entry : sources.entries) {
         const auto key = CanonicalImportPath(entry.path);
         if (!key.Succeeded()) continue; // 不相关的不可规范化名字不可能命中严格资源虚拟路径。
@@ -256,13 +261,20 @@ Result<std::unique_ptr<WorldResourceReader>> WorldResourceReader::Open(const Wor
     mapSource.id = "world-map-" + sources.archiveSha;
     mapSource.layer = ResourceLayer::MapImport;
     mapSource.priority = ResourcePriority::MapArchive;
-    mapSource.probe = [shared](std::string_view path) {
-        return Result<ResourceProbe>::Success(shared->entries.contains(path)
+    // 清单之外的成员与游戏一样按名字哈希读取；清单列出但工程里已移除或改名的成员不回退到原归档。
+    const auto unlisted = [shared](std::string_view path) {
+        return !shared->listedArchive.contains(path) && shared->archive->HasFile(path);
+    };
+    mapSource.probe = [shared, unlisted](std::string_view path) {
+        return Result<ResourceProbe>::Success(shared->entries.contains(path) || unlisted(path)
             ? ResourceProbe{ResourceProbeState::Found, std::string(path)} : ResourceProbe{});
     };
-    mapSource.read = [shared](std::string_view path) {
+    mapSource.read = [shared, unlisted](std::string_view path) {
         const auto found = shared->entries.find(path);
-        if (found == shared->entries.end()) return Result<std::vector<std::byte>>::Failure("World", "WORLD_ASSET_MISSING", "资源快照内没有所请求的地图成员。");
+        if (found == shared->entries.end()) {
+            if (unlisted(path)) return shared->archive->ReadFileBounded(path, kResourceLimit);
+            return Result<std::vector<std::byte>>::Failure("World", "WORLD_ASSET_MISSING", "资源快照内没有所请求的地图成员。");
+        }
         if (!found->second.diskPath.empty()) return ReadDisk(found->second.diskPath);
         return shared->archive->ReadFileBounded(found->second.archivePath, kResourceLimit);
     };

@@ -30,6 +30,7 @@
 #include "ImportQueryCommand.h"
 #include "UpdateCommand.h"
 #include "NameQueryCommand.h"
+#include "ResourceCheckCommand.h"
 #include "AudastraVersion.generated.h"
 
 #include <algorithm>
@@ -80,6 +81,7 @@ void PrintUsage() {
         << "war3-map-cli map-create <profile> <new-map.w3x> <new-work-directory> <ydwe-root> <war3-root> <name> [author] [--init-trigger <name> --init-code <jass-line> ...] [--add-file <member> <file> ...]\n"
         << "war3-map-cli map-test <map.w3x> <war3-root> <helper-dir> [--ydwe <root>] [--lua-engine owned|ydwe] [--no-hot-reload] [--seconds N] [--reload-after <seconds> <module> <file> ...]\n"
         << "war3-map-cli map-data-inspect <map-archive-or-directory>\n"
+        << "war3-map-cli resource-check <map-archive> <war3-root>\n"
         << "war3-map-cli name-query <map-archive> <source-sha256> <ui-root-or-dash> <game-root-or-dash> <raw-value> <ui-type>\n"
         << "war3-map-cli map-data-query <map-archive> <source-sha256> <settings|units|doodads|regions|cameras|sounds|strings> <start-index> <limit-1..128>\n"
         << "war3-map-cli imports-query <archive-or-directory> --expected-source-sha256 <sha256> [--query <text>] [--limit <1..128>] [--expected-inventory-sha256 <sha256> --cursor <token>]\n"
@@ -420,6 +422,7 @@ int wmain(int argc, wchar_t** argv) {
     if (command == L"object-field" && argc == 5) {
         return RunObjectField(argv[2], Utf8Argument(argv[3]), Utf8Argument(argv[4]));
     }
+    if (command == L"resource-check" && argc == 4) return RunResourceCheck(argv[2], argv[3]);
     if (command == L"object-model-list" && argc == 4) {
         return RunObjectModelList(argv[2], argv[3]);
     }

@@ -2,6 +2,7 @@
 #include "War3RenderCore/MaterialTextures.h"
 
 #include "War3MapCore/Image/BlpImage.h"
+#include "War3MapCore/Image/TextureImage.h"
 #include "War3MapCore/Render/MdxModel.h"
 #include "War3MapCore/Render/MdxPose.h"
 
@@ -558,7 +559,8 @@ std::string ModelTexturePath(const MdxTexture& texture, const ModelInstanceReque
 Result<ModelTextureRgba> DecodeModelTexture(std::string path, std::span<const std::byte> bytes,
     std::uint32_t maxDimension) {
     if (!maxDimension) return Result<ModelTextureRgba>::Failure("Render.WorldModels", "WORLD_MODEL_TEXTURE_BUDGET", "贴图尺寸预算不能为零。");
-    auto image = Image::DecodeBlp(bytes);
+    // 与游戏一样按扩展名接受 BLP 与 TGA。
+    auto image = Image::DecodeTexture(path, bytes);
     if (!image.Succeeded()) return {std::nullopt, std::move(image.diagnostics)};
     if (!image.value->Valid()) return Result<ModelTextureRgba>::Failure("Render.WorldModels", "WORLD_MODEL_TEXTURE_INVALID", "解码贴图无效。");
     ModelTextureRgba decoded{std::move(path), image.value->width, image.value->height, {}};

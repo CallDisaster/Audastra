@@ -6,10 +6,15 @@
 #include "War3MapCore/Services/PlacementPresentationService.h"
 
 #include "War3MapCore/ObjectData/ObjectTypes.h"
+#include "War3MapCore/Resources/ResourceResolver.h"
 
 #include <QStringList>
 
+#include <functional>
+#include <map>
 #include <optional>
+#include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -45,10 +50,21 @@ struct WorldPlacementCapture {
     std::size_t flightHeightPreviewUnits = 0; // 显示近似；原始doo坐标不变。
     QStringList unresolvedCodes;  // 去重后的前若干个 rawcode
     std::vector<WorldUnresolvedPlacement> unresolvedRows; // 完整逐项，不随摘要截断。
+    // 多变体装饰物/可破坏物：变体文件不存在时改用无编号模型（地图自带模型常照抄原版的变体数）。
+    struct VariantFallback { std::uint32_t request = 0; std::string variant, base; };
+    std::vector<VariantFallback> variantFallbacks;
 };
 // document 为当前地图文档（含未保存的摆放编辑）；物编字段取自 project。
 // file非空时只捕获该成员，计数也只覆盖该成员。复用另一个成员的宿主仍须通过
 // 同来源/物编修订与WorldInstanceRegistry::Prepare的完整成员SHA、谱系检查。
+// 变体模型路径 → 判定结果：无编号模型路径，或空串表示保留变体路径。
+// 只在“变体文件确实不存在、无编号文件存在”时改用；其他读取错误保持原路径与原错误。
+using ModelVariantFallbacks = std::map<std::string, std::string, std::less<>>;
+// 后台线程按实际来源判定本次捕获里的全部变体，结果并入 known。
+void ResolveModelVariantFallbacks(const WorldPlacementCapture& capture, const Resources::ResourceResolver& resolver,
+    ModelVariantFallbacks& known);
+// 按已判定的表替换请求路径（主线程增量捕获复用后台判定）。返回替换数。
+std::size_t ApplyModelVariantFallbacks(WorldPlacementCapture& capture, const ModelVariantFallbacks& fallbacks);
 [[nodiscard]] WorldPlacementCapture CaptureWorldPlacements(const QtProject::EditorProject& project, const MapDocument& document,
     std::optional<MapData::PlacementFile> file = std::nullopt);
 // 独立于模型可用性的有效建筑贴画输入。继承规则仍由ObjectNames解析；目录字段

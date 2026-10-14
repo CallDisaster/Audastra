@@ -7,7 +7,10 @@ Result<DecodedImage> DecodeTexture(std::string_view path, std::span<const std::b
     using Return = Result<DecodedImage>;
     const auto fail = [](std::string code, std::string message) { return Return::Failure("Image.Texture", std::move(code), std::move(message)); };
     if (maxPixels == 0 || maxPixels > 16 * 1024 * 1024) return fail("TEXTURE_PIXEL_LIMIT", "贴图像素预算无效。");
-    if (!Text::LowerAscii(path).ends_with(".tga")) {
+    // 文件头是 BLP 时按 BLP 解码（有的资源把 BLP 存成 .tga 名）；其余 .tga 按 TGA。
+    const bool blpHeader = data.size() >= 4 && std::to_integer<char>(data[0]) == 'B' && std::to_integer<char>(data[1]) == 'L'
+        && std::to_integer<char>(data[2]) == 'P';
+    if (blpHeader || !Text::LowerAscii(path).ends_with(".tga")) {
         auto image = DecodeBlp(data);
         if (image.Succeeded() && static_cast<std::size_t>(image.value->width) * image.value->height > maxPixels)
             return fail("TEXTURE_PIXEL_LIMIT", "贴图像素数超过本次预算。");

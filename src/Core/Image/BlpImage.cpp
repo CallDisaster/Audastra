@@ -162,13 +162,19 @@ Result<DecodedImage> DecodeBlp(std::span<const std::byte> data) try {
                 "Image.Blp", "indices", "索引平面越界。");
         }
         const std::uint8_t* indices = p + mipOff;
-        const bool hasAlpha = alphaBits >= 8;
-        const std::uint8_t* alphaPlane = hasAlpha ? (indices + pixelCount) : nullptr;
-        if (hasAlpha &&
-            static_cast<std::size_t>(mipOff) + pixelCount * 2 > size) {
+        // alpha 平面紧随索引：8 位逐像素；1/4 位按像素顺序从字节低位起打包（与游戏一致）。
+        const std::uint32_t bits = alphaBits >= 8 ? 8 : alphaBits >= 4 ? 4 : alphaBits >= 1 ? 1 : 0;
+        const std::uint8_t* alphaPlane = bits ? (indices + pixelCount) : nullptr;
+        if (bits && static_cast<std::size_t>(mipOff) + pixelCount + (pixelCount * bits + 7) / 8 > size) {
             return Result<DecodedImage>::Failure(
                 "Image.Blp", "alpha-plane", "alpha 平面越界。");
         }
+        const auto alphaAt = [&](std::size_t i) -> std::uint8_t {
+            if (bits == 8) return alphaPlane[i];
+            if (bits == 4) return static_cast<std::uint8_t>(((alphaPlane[i / 2] >> ((i % 2) * 4)) & 0x0f) * 17);
+            if (bits == 1) return (alphaPlane[i / 8] >> (i % 8)) & 1 ? 255 : 0;
+            return 255;
+        };
 
         DecodedImage img;
         img.width = width;
@@ -180,7 +186,7 @@ Result<DecodedImage> DecodeBlp(std::span<const std::byte> data) try {
             const std::uint8_t b = palette[idx * 4 + 0];
             const std::uint8_t g = palette[idx * 4 + 1];
             const std::uint8_t r = palette[idx * 4 + 2];
-            const std::uint8_t a = hasAlpha ? alphaPlane[i] : 255;
+            const std::uint8_t a = alphaAt(i);
             img.rgba[i * 4 + 0] = static_cast<std::byte>(r);
             img.rgba[i * 4 + 1] = static_cast<std::byte>(g);
             img.rgba[i * 4 + 2] = static_cast<std::byte>(b);

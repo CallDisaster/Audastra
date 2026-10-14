@@ -10,6 +10,7 @@
 #include "War3MapCore/ObjectData/StandardObjectCatalog.h"
 #include "War3MapCore/Render/MdxModel.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/Text/TextUtil.h"
 
 #include <algorithm>
 #include <charconv>
@@ -35,7 +36,12 @@ std::optional<double> Number(const std::optional<std::string>& text) {
     return result;
 }
 
-bool Blank(const std::optional<std::string>& text) { return !text || text->empty() || *text == "_" || *text == "-"; }
+// 只有扩展名（".mdl"）的模型字段是常见的“无模型”写法，游戏同样不显示任何模型。
+bool Blank(const std::optional<std::string>& text) {
+    if (!text || text->empty() || *text == "_" || *text == "-") return true;
+    const auto lower = Text::LowerAscii(*text);
+    return lower == ".mdl" || lower == ".mdx";
+}
 
 // 物编父链（地图覆盖 → 自定义父对象 → 原版目录）上的字段查询；与物编显示共用同一继承解析。
 class ObjectFields {
@@ -370,7 +376,8 @@ std::array<float, 3> WorldPlacementDisplayPosition(const Render::ModelInstanceRe
 
 namespace {
 std::optional<Render::ModelInstanceRequest> RequestFromFields(const ObjectFields& fields, ObjectType type,
-    const MapData::PlacementTransform& placement, std::int32_t owner, std::int32_t teamColor, std::int32_t variationIndex) {
+    const MapData::PlacementTransform& placement, std::int32_t owner, std::int32_t teamColor, std::int32_t variationIndex,
+    std::string* variantFallback = nullptr) {
     const bool doodad = type == ObjectType::Doodad;
     const bool destructable = type == ObjectType::Destructable;
     const bool unit = type == ObjectType::Unit;
@@ -385,6 +392,7 @@ std::optional<Render::ModelInstanceRequest> RequestFromFields(const ObjectFields
     const auto variation = doodad || destructable ? Variation(variationIndex, count) : 0;
     auto request = Place(placement, Blank(model) ? std::string{} : Render::MdxModelFile(*model, variation,
         static_cast<std::uint32_t>(std::max(1.0, count))));
+    if (variantFallback && !Blank(model) && count > 1) *variantFallback = Render::MdxModelFile(*model, 0, 1);
     if (unit) {
         request.animationProperties = fields.AnimationProperties();
         UnitPresentation(fields, request);
@@ -423,7 +431,8 @@ void CaptureRow(const QtProject::EditorProject& project, ObjectFields& fields, c
         if (fields.Find(ObjectType::Unit, id.rawcode)) type = ObjectType::Unit;
         else if (fields.Find(ObjectType::Item, id.rawcode)) type = ObjectType::Item;
     }
-    auto request = type ? RequestFromFields(fields, *type, *placement, owner, teamColor, variation) : std::nullopt;
+    std::string fallback;
+    auto request = type ? RequestFromFields(fields, *type, *placement, owner, teamColor, variation, &fallback) : std::nullopt;
     if (!request) {
         WorldUnresolvedPlacement row; row.owner = id; row.position = placement->position; row.objectType = type;
         if (!type) { row.reasonCode = "WORLD_OBJECT_DEFINITION_MISSING"; row.reason = "摆放rawcode在当前地图/原版目录中没有可解析物体定义。"; }
@@ -444,9 +453,44 @@ void CaptureRow(const QtProject::EditorProject& project, ObjectFields& fields, c
     else ++capture.destructibles;
     if (*type == ObjectType::Destructable) capture.presentations.push_back({static_cast<std::uint32_t>(capture.requests.size()),
         {*type, id.rawcode}, id, fields.Presentation()});
+    if (!fallback.empty())
+        capture.variantFallbacks.push_back({static_cast<std::uint32_t>(capture.requests.size()), request->modelPath, std::move(fallback)});
     capture.requests.push_back(std::move(*request)); capture.ids.push_back(id);
 }
 } // namespace
+
+void ResolveModelVariantFallbacks(const WorldPlacementCapture& capture, const Resources::ResourceResolver& resolver,
+    ModelVariantFallbacks& decided) {
+    std::map<std::string, std::optional<bool>, std::less<>> known;
+    const auto exists = [&](const std::string& path) {
+        const auto found = known.find(path);
+        if (found != known.end()) return found->second;
+        const auto located = resolver.Locate(path);
+        std::optional<bool> state;
+        if (located.Succeeded()) state = true;
+        else if (!located.diagnostics.empty() && located.diagnostics.front().code == "RESOURCE_NOT_FOUND") state = false;
+        known.emplace(path, state);
+        return state;
+    };
+    for (const auto& item : capture.variantFallbacks) {
+        const bool fallback = exists(item.variant) == std::optional<bool>(false) && exists(item.base) == std::optional<bool>(true);
+        decided.insert_or_assign(item.variant, fallback ? item.base : std::string{});
+    }
+}
+
+std::size_t ApplyModelVariantFallbacks(WorldPlacementCapture& capture, const ModelVariantFallbacks& fallbacks) {
+    std::size_t switched = 0;
+    if (fallbacks.empty()) return switched;
+    for (const auto& item : capture.variantFallbacks) {
+        if (item.request >= capture.requests.size()) continue;
+        auto& request = capture.requests[item.request];
+        const auto found = fallbacks.find(item.variant);
+        if (found == fallbacks.end()) continue;
+        const auto& target = found->second.empty() ? item.variant : found->second;
+        if (request.modelPath != target) { request.modelPath = target; ++switched; }
+    }
+    return switched;
+}
 
 WorldPlacementCapture CaptureWorldPlacements(const QtProject::EditorProject& project, const MapDocument& document,
     std::optional<MapData::PlacementFile> file) {

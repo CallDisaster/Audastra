@@ -199,6 +199,8 @@ private:
     void CommitCameraFields();
     void OpenSelectedDefinition();
     void ResetSceneFacts();
+    // 地形与模型资源问题写进错误列表（来源“World.Resources”，每次读取整体替换）。
+    void PublishResourceProblems();
     void ShowSceneFacts(const WorldTerrainLoaded& loaded, const Render::TerrainGroundMesh* ground, const QString& missingGround);
     // 编辑交互（WorldModuleEditing.cpp）：选择、拖动、删除、摆放、叠加线与状态文本。
     void StartTerrainStroke(double x, double y);
@@ -361,6 +363,7 @@ private:
     QLabel* sceneLighting_ = nullptr;
     QLabel* modelStatus_ = nullptr;
     QLabel* sceneNotes_ = nullptr;
+    std::vector<Diagnostic> terrainProblems_;
     QLabel* groundPoint_ = nullptr;
     // 状态栏
     QLabel* rendererDot_ = nullptr;
@@ -381,6 +384,7 @@ private:
     WorldCliffLayerPresenter* cliffLayer_ = nullptr;
     bool cliffsInLayer_ = false; // 当前动画主场景不含悬崖，悬崖由独立层显示
     std::shared_ptr<const WorldPathingHelperCache> pathingHelperCache_;
+    ModelVariantFallbacks modelVariants_; // 后台按实际来源判定；主线程增量捕获复用，换图/重读时清空。
     std::shared_ptr<const WorldPathingHelperPrepared> pathingHelperPresentation_; // accepted来源/占地原因保活，未验项不丢。
     std::vector<std::uint8_t> pathingHelperRequests_; // 与accepted requests平行，服务实际确认的辅助分类。
     std::vector<WorldPlacementPresentationCandidate> stagedPresentations_, clipboardPresentations_;

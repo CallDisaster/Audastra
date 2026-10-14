@@ -193,6 +193,8 @@ public:
     [[nodiscard]] static QString DiagnosticLevel(DiagnosticSeverity severity);
     void AddDiagnostic(const QString& level, const QString& subsystem, const QString& code, const QString& message);
     void AddDiagnostics(const std::vector<Diagnostic>& diagnostics);
+    // 用同一来源的新结果整体替换错误列表里该来源的旧条目（例如世界页每次重新读取资源）。
+    void ReplaceDiagnostics(const QString& subsystem, std::vector<Diagnostic> diagnostics);
     void ClearDiagnostics();
 
     // 触发器工作区（TriggerWorkspace.cpp）。

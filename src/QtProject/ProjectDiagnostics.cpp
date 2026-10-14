@@ -53,4 +53,11 @@ void EditorProject::AddDiagnostics(const std::vector<Diagnostic>& diagnostics) {
     }
 }
 
+void EditorProject::ReplaceDiagnostics(const QString& subsystem, std::vector<Diagnostic> diagnostics) {
+    for (int row = diagnosticsModel_->rowCount() - 1; row >= 0; --row)
+        if (const auto* item = diagnosticsModel_->item(row, 1); item && item->text() == subsystem) diagnosticsModel_->removeRow(row);
+    for (auto& diagnostic : diagnostics) diagnostic.subsystem = subsystem.toStdString();
+    AddDiagnostics(diagnostics);
+}
+
 } // namespace War3Map::QtProject

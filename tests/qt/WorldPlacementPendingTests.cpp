@@ -8,6 +8,7 @@
 #include <QApplication>
 
 #include <iostream>
+#include <set>
 #include <stdexcept>
 
 using namespace War3Map;
@@ -16,6 +17,38 @@ using namespace War3Map::Modules;
 using namespace War3Map::Services;
 namespace {
 void Require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
+// 多变体装饰物：变体文件不存在才改用无编号模型；存在或来源出错都保留原路径。
+void VariantFallbackOnlyForActuallyMissingFiles() {
+    Resources::ResourceResolver resolver;
+    Resources::ResourceSource source;
+    source.id = "fixture"; source.layer = Resources::ResourceLayer::MapImport; source.priority = Resources::ResourcePriority::MapArchive;
+    const std::set<std::string> files{"GRASS.MDX", "TREE0.MDX", "TREE.MDX", "ROCK.MDX"};
+    source.probe = [files](std::string_view path) -> Result<Resources::ResourceProbe> {
+        if (path == "ROCK1.MDX") return Result<Resources::ResourceProbe>::Failure("Fixture", "FIXTURE_READ_FAILED", "来源读取失败");
+        return Result<Resources::ResourceProbe>::Success(files.contains(std::string(path))
+            ? Resources::ResourceProbe{Resources::ResourceProbeState::Found, std::string(path)} : Resources::ResourceProbe{});
+    };
+    source.read = [](std::string_view) { return Result<std::vector<std::byte>>::Success({}); };
+    Require(resolver.AddSource(std::move(source)).Succeeded(), "fixture source");
+    WorldPlacementCapture capture;
+    for (const char* path : {"grass2.mdx", "tree0.mdx", "rock1.mdx", "bush1.mdx"}) {
+        Render::ModelInstanceRequest request; request.modelPath = path; capture.requests.push_back(request);
+    }
+    capture.variantFallbacks = {{0, "grass2.mdx", "grass.mdx"}, {1, "tree0.mdx", "tree.mdx"},
+        {2, "rock1.mdx", "rock.mdx"}, {3, "bush1.mdx", "bush.mdx"}};
+    ModelVariantFallbacks decided;
+    ResolveModelVariantFallbacks(capture, resolver, decided);
+    Require(ApplyModelVariantFallbacks(capture, decided) == 1, "only the missing variant with an existing base switches");
+    Require(capture.requests[0].modelPath == "grass.mdx", "missing variant uses the unnumbered model");
+    Require(capture.requests[1].modelPath == "tree0.mdx", "existing variant is kept");
+    Require(capture.requests[2].modelPath == "rock1.mdx", "source errors are not downgraded to the base model");
+    Require(capture.requests[3].modelPath == "bush1.mdx", "missing base keeps the original missing variant");
+    // 主线程按已判定的表恢复同一结果；变体后来出现时判定改回保留。
+    WorldPlacementCapture again = capture; again.requests[0].modelPath = "grass2.mdx";
+    Require(ApplyModelVariantFallbacks(again, decided) == 1 && again.requests[0].modelPath == "grass.mdx", "table reuse");
+    decided.insert_or_assign("grass2.mdx", std::string{});
+    Require(ApplyModelVariantFallbacks(again, decided) == 1 && again.requests[0].modelPath == "grass2.mdx", "table reverts");
+}
 void CreationRemapsAndUndoDoesNotLeaveAGhost() {
     const std::vector<MapArchiveMember> members{{"war3mapUnits.doo", MapDataFixtures::EmptyUnitsV8Sub11()},
         {"war3map.doo", MapDataFixtures::EmptyDoodadsV8Sub11()}};
@@ -127,7 +160,7 @@ void TargetedRowsShareFullCaptureRules() {
 }
 int main(int argc, char** argv) {
     qputenv("QT_QPA_PLATFORM", "offscreen"); QApplication application(argc, argv);
-    try { CreationRemapsAndUndoDoesNotLeaveAGhost(); CachedPreviewOnlyTranslatesOwnedPose(); TargetedRowsShareFullCaptureRules();
+    try { VariantFallbackOnlyForActuallyMissingFiles(); CreationRemapsAndUndoDoesNotLeaveAGhost(); CachedPreviewOnlyTranslatesOwnedPose(); TargetedRowsShareFullCaptureRules();
         std::cout << "placement pending checks passed\n"; return 0; }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

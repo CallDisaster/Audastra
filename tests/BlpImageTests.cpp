@@ -66,6 +66,37 @@ DecodedImage Decode(std::span<const unsigned char> jpeg, std::uint32_t width, st
     return std::move(*decoded.value);
 }
 
+// 调色板 BLP：4×2 像素，索引全为 0；alpha 平面按 bits 打包。
+std::vector<std::byte> PaletteBlp(std::uint32_t alphaBits, std::vector<unsigned char> alpha) {
+    std::vector<std::byte> blp(156 + 1024);
+    const char magic[] = {'B', 'L', 'P', '1'};
+    for (int i = 0; i < 4; ++i) blp[i] = static_cast<std::byte>(magic[i]);
+    PutU32(blp, 4, 1); PutU32(blp, 8, alphaBits); PutU32(blp, 12, 4); PutU32(blp, 16, 2);
+    PutU32(blp, 20, 4); PutU32(blp, 24, 0);
+    PutU32(blp, 28, static_cast<std::uint32_t>(blp.size())); PutU32(blp, 92, static_cast<std::uint32_t>(8 + alpha.size()));
+    blp[156] = std::byte{30}; blp[157] = std::byte{20}; blp[158] = std::byte{10}; // 0 号色 BGR
+    blp.resize(blp.size() + 8, std::byte{0});
+    for (const auto value : alpha) blp.push_back(static_cast<std::byte>(value));
+    return blp;
+}
+std::vector<int> AlphaOf(const DecodedImage& image) {
+    std::vector<int> values;
+    for (std::size_t i = 0; i < image.rgba.size() / 4; ++i) values.push_back(std::to_integer<int>(image.rgba[i * 4 + 3]));
+    return values;
+}
+
+// 1/4 位 alpha 按像素顺序从字节低位起打包；不能当作不透明。
+void TestPaletteLowBitAlpha() {
+    auto one = DecodeBlp(PaletteBlp(1, {0b10100101}));
+    Require(one.Succeeded() && one.value->width == 4 && one.value->height == 2, "1 位 alpha 解码失败");
+    Require(AlphaOf(*one.value) == std::vector<int>{255, 0, 255, 0, 0, 255, 0, 255}, "1 位 alpha 打包顺序错误");
+    Require(std::to_integer<int>(one.value->rgba[0]) == 10 && std::to_integer<int>(one.value->rgba[2]) == 30, "调色板 BGR 顺序错误");
+    auto four = DecodeBlp(PaletteBlp(4, {0x10, 0x32, 0x54, 0xf6}));
+    Require(four.Succeeded(), "4 位 alpha 解码失败");
+    Require(AlphaOf(*four.value) == std::vector<int>{0, 17, 34, 51, 68, 85, 102, 255}, "4 位 alpha 打包顺序错误");
+    RequireError(DecodeBlp(PaletteBlp(4, {0x10})), "alpha-plane");
+}
+
 // 渐进式（多次扫描、逐次逼近精化、EOB 游程）与顺序式编码的系数相同，像素应逐字节一致。
 void TestProgressiveMatchesBaseline() {
     const auto rgb = Decode(kRgbBaseline, 37, 21, 0, "rgb baseline");
@@ -291,6 +322,7 @@ int main() {
         TestStrictEntropyBoundaries();
         TestCoefficientBoundsAndSaturation();
         TestJpegDimensionsAndWorkingBudget();
+        TestPaletteLowBitAlpha();
     } catch (const std::exception& error) {
         std::cerr << "FAIL: " << error.what() << '\n';
         return 1;
