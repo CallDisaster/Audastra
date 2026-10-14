@@ -1,6 +1,8 @@
 #include "TriggerLuaScripts.h"
 
 #include "TriggerCodeChecking.h"
+#include "LuaCodeAssist.h"
+#include "War3MapCore/Services/LuaRuntimeCatalog.h"
 #include "Widgets/CodeView.h"
 #include "Widgets/CodeProblemsView.h"
 #include "War3MapCore/MapArchiveSession.h"
@@ -153,6 +155,25 @@ void TriggerLuaScripts::RefreshDirectory() {
     }
     directory_->sortItems(0, Qt::AscendingOrder);
 }
+namespace {
+// 冻结地图里其他 Lua 文件的正文，供 require 补全与检查；当前文件用编辑器里的正文。
+std::shared_ptr<const LuaModuleTexts> CaptureLuaModules(const QtProject::EditorProject& project, const QString& current) {
+    constexpr std::size_t kTotalBytes = 16 * 1024 * 1024;
+    auto modules = std::make_shared<LuaModuleTexts>();
+    std::size_t total = 0;
+    for (const auto& entry : project.AssetEntries()) {
+        if (entry.ambiguous || QtProject::EditorProject::AssetKey(entry.path) == QtProject::EditorProject::AssetKey(current)) continue;
+        auto name = LuaModuleName(entry.path);
+        if (name.empty()) continue;
+        const auto read = QtProject::ReadOwnedAsset(project, entry.path);
+        if (!read.Succeeded() || !read.value->bytes || total + read.value->bytes->size() > kTotalBytes) continue;
+        total += read.value->bytes->size();
+        const auto& bytes = *read.value->bytes;
+        modules->emplace(std::move(name), std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+    }
+    return modules;
+}
+} // namespace
 bool TriggerLuaScripts::LoadScript(const QString& path) {
     const auto read = QtProject::ReadOwnedAsset(project_, path);
     if (!read.Succeeded()) { Status(Problem(read.diagnostics)); return false; }
@@ -195,11 +216,23 @@ void TriggerLuaScripts::LoadAcceptedScript(QtProject::OwnedAssetSource source) {
     editor_->SetSourceName(selectedPath_); editor_->SetEditable(editableSource_);
     if (editableSource_) { editor_->SetText(text); baselineText_ = editor_->toPlainText(); suppress_ = false; }
     else editor_->SetBytesAsync(raw);
-    if (editableSource_) editor_->SetPrepareCheck([source = selectedPath_](const QString& text, std::uint64_t generation) {
+    if (editableSource_) {
+        // 补全、参数提示与 jass 接口检查共用同一份接口目录和模块快照。
+        const auto catalog = project_.LuaRuntimeCatalog();
+        const auto modules = CaptureLuaModules(project_, selectedPath_);
+        const auto module = LuaModuleName(selectedPath_);
+        editor_->SetAssist(MakeLuaCodeAssist(catalog, modules, module,
+            project_.uiCatalog_ ? UiFunctionNotes(*project_.uiCatalog_) : QHash<QString, QString>{}, editor_));
+        editor_->SetPrepareCheck([source = selectedPath_, catalog, modules, module](const QString& text, std::uint64_t generation) {
             Services::CodeCheckContext context; context.complete = false;
+            context.luaSemantic.runtime = Services::OwnedRuntimeSemantics(*catalog);
+            context.luaCatalog = catalog; context.luaModules = *modules; context.luaModuleName = module;
             return PrepareTriggerCodeCheck(text, generation, source, UiKit::CodeLanguage::Lua, std::move(context));
         });
-    else editor_->SetPrepareCheck({});
+    } else {
+        editor_->SetAssist({});
+        editor_->SetPrepareCheck({});
+    }
     sourceNote_->setText(editableSource_ ? selectedPath_ : tr("%1 · 只读").arg(selectedPath_));
     sourceNote_->setToolTip(editableSource_ ? QString{} : utf8 ? tr("正文含无法无损编辑的特殊空白字符") : tr("不是 UTF-8 编码"));
     UpdateDraftState();

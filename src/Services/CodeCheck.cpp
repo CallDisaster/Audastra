@@ -1,6 +1,7 @@
 #include "War3MapCore/Services/CodeCheck.h"
 #include "War3MapCore/Jass/VJass.h"
 #include "War3MapCore/Jass/Preprocessor.h"
+#include "War3MapCore/Lua/LuaCodeModel.h"
 
 #include <algorithm>
 #include <chrono>
@@ -286,6 +287,10 @@ CodeCheckResult CheckCode(const CodeCheckRequest& request, std::stop_token cance
             result.semanticChecked = semantic.checked;
             result.contextComplete = semantic.complete;
             result.reason = semantic.reason;
+            if (request.context.luaCatalog && checked.completed)
+                result.reason = request.context.luaCatalog->nativesLoaded
+                    ? "jass 接口来自" + request.context.luaCatalog->source + "。"
+                    : std::string("没有读取到游戏 common.j，未检查 jass 接口。");
             for (const auto& diagnostic : checked.diagnostics) {
                 budget.Poll();
                 auto line = diagnostic.line;
@@ -294,8 +299,28 @@ CodeCheckResult CheckCode(const CodeCheckRequest& request, std::stop_token cance
                     inPrimary ? request.source.name : request.source.name + "（生成上下文）", diagnostic.code,
                     diagnostic.message, inPrimary ? line - primaryLine + 1 : line, 1, 0, inPrimary});
             }
+            std::set<std::uint32_t> countLines;
+            if (request.context.luaCatalog && checked.completed) {
+                const auto& modules = request.context.luaModules;
+                Lua::ModuleSources sources{
+                    [&modules] { std::vector<std::string> names; for (const auto& [name, text] : modules) names.push_back(name); return names; },
+                    [&modules](std::string_view name) -> std::optional<std::string> {
+                        const auto found = modules.find(name);
+                        return found == modules.end() ? std::nullopt : std::optional<std::string>(found->second);
+                    }};
+                Lua::CodeIntel intel(request.context.luaCatalog, std::move(sources), request.context.luaModuleName);
+                for (const auto& warning : intel.Check(combined)) {
+                    budget.Poll();
+                    if (warning.code == "LUA_NATIVE_ARGUMENT_COUNT") countLines.insert(warning.line);
+                    const bool inPrimary = IsPrimaryLine(request, warning.line, primaryLine, primaryLines);
+                    if (!inPrimary) continue;
+                    result.diagnostics.push_back({DiagnosticSeverity::Warning, request.source.name, warning.code,
+                        warning.message, warning.line - primaryLine + 1, warning.byteColumn, warning.byteLength, true});
+                }
+            }
             for (const auto& warning : semantic.warnings) {
                 budget.Poll();
+                if (warning.code == "LUA_COMMON_ARGUMENT_COUNT" && countLines.contains(warning.line)) continue;
                 const bool inPrimary = IsPrimaryLine(request, warning.line, primaryLine, primaryLines);
                 result.diagnostics.push_back({DiagnosticSeverity::Warning,
                     inPrimary ? request.source.name : request.source.name + "（生成上下文）", warning.code,

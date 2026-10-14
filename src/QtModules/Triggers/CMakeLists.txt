@@ -6,6 +6,7 @@ qt_add_library(War3MapQtModuleTriggers STATIC
     TriggerCodeActions.cpp
     TriggerCodeChecking.cpp TriggerCodeChecking.h
     TriggerLuaScripts.cpp TriggerLuaScripts.h
+    LuaCodeAssist.cpp LuaCodeAssist.h
     TriggerEcaActions.cpp
     TriggerEcaStructure.cpp
     TriggerValueActions.cpp

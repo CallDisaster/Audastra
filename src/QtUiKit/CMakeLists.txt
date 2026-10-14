@@ -18,6 +18,7 @@ qt_add_library(War3MapQtUiKit STATIC
     Widgets/CodeView.cpp
     Widgets/CodeView.h
     Widgets/CodeViewTypes.h
+    Widgets/CodeAssistPopup.cpp Widgets/CodeAssistPopup.h
     Widgets/CodeViewHighlight.cpp Widgets/CodeViewHighlight.h
     Widgets/CodeViewGutter.cpp Widgets/CodeViewGutter.h
     Widgets/CodeProblemsView.cpp Widgets/CodeProblemsView.h

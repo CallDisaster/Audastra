@@ -8,6 +8,7 @@
 class QPaintEvent;
 class QMouseEvent;
 class QKeyEvent;
+class QFocusEvent;
 
 namespace War3Map::UiKit {
 class CodeViewGutter;
@@ -29,6 +30,8 @@ public:
     void SetPrepareCheck(PrepareCodeCheck prepare);
     void SetCheckBindingValidator(std::function<bool(const QString&)> validate);
     void SetCompletionItems(QVector<CodeCompletionItem> items);
+    // 语言服务（补全、参数提示、悬停）；未设置的部分使用声明表。
+    void SetAssist(CodeAssist assist);
     // 函数库作者说明（标题与提示），按函数名索引；悬停时排在签名之后、源注释之前。
     void SetSymbolNotes(QHash<QString, QString> notes);
     // 悬停内容（VS 风格）：分类与签名、函数库说明、声明前注释、定义位置。没有可显示内容时为空。
@@ -64,6 +67,7 @@ signals:
 protected:
     void resizeEvent(QResizeEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    void focusOutEvent(QFocusEvent* event) override;
     void contextMenuEvent(QContextMenuEvent* event) override;
     bool event(QEvent* event) override;
     bool viewportEvent(QEvent* event) override;
@@ -88,6 +92,14 @@ private:
     [[nodiscard]] const CodeSemanticDefinition* SemanticDefinitionAtCursor() const;
     void ShowReferences();
     void UpdateCompletionItems();
+    [[nodiscard]] CodeCompletionList DeclarationCompletion(const QTextCursor& cursor) const;
+    void OpenCompletion(bool explicitRequest);
+    void RefilterCompletion();
+    void AcceptCompletion();
+    void HideAssist();
+    void UpdateSignature();
+    void AfterTyping(const QKeyEvent* event);
+    [[nodiscard]] QRect GlobalCursorRect() const;
     bool ShowHover(QEvent* event);
 };
 } // namespace War3Map::UiKit

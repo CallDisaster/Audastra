@@ -1,11 +1,11 @@
 #include "Widgets/CodeView.h"
+#include "Widgets/CodeAssistPopup.h"
 #include "Widgets/CodeViewHighlight.h"
 #include "Widgets/CodeProblemsView.h"
 #include "Widgets/ProblemList.h"
 #include "Theme/ThemeManager.h"
 
 #include <QAbstractItemView>
-#include <QCompleter>
 #include <QElapsedTimer>
 #include <QDir>
 #include <QLabel>
@@ -104,9 +104,9 @@ private slots:
         view.SetText(QStringLiteral("De")); view.moveCursor(QTextCursor::End);
         view.SetCompletionItems({{"Demo", "function", "Demo takes nothing returns nothing", "main.j", "original declaration", 4, 1}});
         QTest::keyClick(&view, Qt::Key_Space, Qt::ControlModifier);
-        auto* completer = view.findChild<QCompleter*>(); QVERIFY(completer); QTRY_VERIFY(completer->popup()->isVisible());
-        QVERIFY(completer->popup()->currentIndex().isValid()); QCOMPARE(completer->popup()->currentIndex().data().toString(), QStringLiteral("Demo"));
-        QTest::keyClick(completer->popup(), Qt::Key_Return); QTRY_COMPARE(view.toPlainText(), QStringLiteral("Demo"));
+        auto* popup = view.findChild<CodeCompletionPopup*>(); QVERIFY(popup); QTRY_VERIFY(popup->isVisible());
+        QVERIFY(popup->Current()); QCOMPARE(popup->Current()->label, QStringLiteral("Demo"));
+        QTest::keyClick(&view, Qt::Key_Return); QTRY_COMPARE(view.toPlainText(), QStringLiteral("Demo")); QVERIFY(!popup->isVisible());
         QTRY_VERIFY_WITH_TIMEOUT(!view.IsChecking(), 4000);
         QSignalSpy jump(&view, &CodeView::JumpRequested); QTest::keyClick(&view, Qt::Key_F12); QCOMPARE(jump.count(), 1); QCOMPARE(jump.at(0).at(1).toString(), QStringLiteral("main.j"));
         QSignalSpy references(&view, &CodeView::ReferencesRequested); QTest::keyClick(&view, Qt::Key_F12, Qt::ShiftModifier); QCOMPARE(references.count(), 1);
@@ -115,6 +115,68 @@ private slots:
         QTest::keyClick(&view, Qt::Key_F12); QCOMPARE(jump.count(), 2); QVERIFY(jump.last().at(1).toString().isEmpty());
         QCOMPARE(jump.last().at(2).toInt(), 0);
         view.SetEditable(false); const auto before = view.toPlainText(); QTest::keyClicks(&view, "ignored"); QCOMPARE(view.toPlainText(), before);
+    }
+    void CompletionRankingPrefersPrefixThenWordStarts() {
+        QVector<CodeCompletionCandidate> items{{"createTimer"}, {"GetUnitName"}, {"CreateUnitAtLoc"}, {"KillUnit"}, {"CreateUnit"}};
+        const auto labels = [&](const QString& prefix) {
+            QStringList result; for (const auto index : RankCompletions(items, prefix)) result.push_back(items[index].label); return result;
+        };
+        QCOMPARE(labels("Cre"), QStringList({"CreateUnit", "CreateUnitAtLoc", "createTimer"}));
+        QCOMPARE(labels("cu").mid(0, 2), QStringList({"CreateUnit", "CreateUnitAtLoc"}));
+        QCOMPARE(labels("unit"), QStringList({"CreateUnit", "CreateUnitAtLoc", "GetUnitName", "KillUnit"}));
+        QCOMPARE(labels({}).size(), 5);
+        QCOMPARE(CompletionMatches("CreateUnit", "cu"), QVector<int>({0, 6}));
+    }
+    void AssistPopupAcceptsAndShowsParameters() {
+        // 合成语言服务：点号后列出成员，CreateUnit( 内给出参数提示。
+        CodeAssist assist;
+        assist.complete = [](const QString& text, int position) {
+            CodeCompletionList list; int start = position;
+            while (start > 0 && (text[start - 1].isLetterOrNumber() || text[start - 1] == '_')) --start;
+            list.replaceStart = start; list.member = start > 0 && text[start - 1] == '.';
+            if (list.member) list.items = {{"CreateUnit", "CreateUnit(player id, integer unitid)", "创建单位", CodeCompletionKind::Function},
+                {"KillUnit", "KillUnit(unit whichUnit)", {}, CodeCompletionKind::Function}};
+            return list;
+        };
+        assist.signature = [](const QString& text, int position) -> std::optional<CodeSignatureHelp> {
+            const auto before = text.left(position); const auto open = before.lastIndexOf("CreateUnit(");
+            if (open < 0 || before.indexOf(')', open) >= 0) return std::nullopt;
+            return CodeSignatureHelp{"CreateUnit(player id, integer unitid)", {{11, 20}, {22, 36}},
+                static_cast<int>(before.mid(open).count(',')), "创建单位"};
+        };
+        CodeView view; view.SetEditable(true); view.SetLanguage(CodeLanguage::Lua); view.SetAssist(assist);
+        view.resize(700, 300); view.show(); view.setFocus();
+        auto* popup = view.findChild<CodeCompletionPopup*>(); auto* tip = view.findChild<CodeSignatureTip*>();
+        QVERIFY(popup && tip);
+        view.SetText({}); QTest::keyClicks(&view, "jass.");
+        QTRY_VERIFY(popup->isVisible()); QCOMPARE(popup->VisibleCount(), 2);
+        QTest::keyClicks(&view, "Kil"); QVERIFY(popup->isVisible()); QCOMPARE(popup->Current()->label, QStringLiteral("KillUnit"));
+        QTest::keyClick(&view, Qt::Key_Tab); QCOMPARE(view.toPlainText(), QStringLiteral("jass.KillUnit")); QVERIFY(!popup->isVisible());
+        // 输入左括号先接受选中项再插入括号，并显示参数提示。
+        view.SetText({}); view.moveCursor(QTextCursor::End); QTest::keyClicks(&view, "jass.cu");
+        QVERIFY(popup->isVisible()); QCOMPARE(popup->Current()->label, QStringLiteral("CreateUnit"));
+        QTest::keyClicks(&view, "(");
+        QCOMPARE(view.toPlainText(), QStringLiteral("jass.CreateUnit(")); QVERIFY(!popup->isVisible());
+        QVERIFY(tip->isVisible()); QVERIFY(tip->Text().contains(QStringLiteral(">player id</b>")));
+        QTest::keyClicks(&view, "p, ");
+        QVERIFY(tip->Text().contains(QStringLiteral(">integer unitid</b>")));
+        QTest::keyClick(&view, Qt::Key_Escape); QVERIFY(!tip->isVisible());
+        // 已完整输入的名字按 Enter 换行而不是重复接受。
+        view.SetText({}); view.moveCursor(QTextCursor::End); QTest::keyClicks(&view, "jass.KillUnit");
+        QVERIFY(popup->isVisible()); QTest::keyClick(&view, Qt::Key_Return);
+        QCOMPARE(view.toPlainText(), QStringLiteral("jass.KillUnit\n")); QVERIFY(!popup->isVisible());
+        // 光标移到替换起点之前时关闭列表。
+        view.SetText({}); view.moveCursor(QTextCursor::End); QTest::keyClicks(&view, "jass.");
+        QVERIFY(popup->isVisible()); QTest::keyClick(&view, Qt::Key_Home); QVERIFY(!popup->isVisible());
+    }
+    void DeclarationCompletionPopsUpAfterTwoCharacters() {
+        CodeView view; view.SetEditable(true); view.resize(700, 300); view.show(); view.setFocus();
+        view.SetCompletionItems({{"DemoUnit", "函数", "function DemoUnit takes nothing returns nothing", "main.j", {}, 4, 1}});
+        auto* popup = view.findChild<CodeCompletionPopup*>(); QVERIFY(popup);
+        view.SetText({}); QTest::keyClicks(&view, "D"); QVERIFY(!popup->isVisible());
+        QTest::keyClicks(&view, "e"); QVERIFY(popup->isVisible()); QCOMPARE(popup->Current()->label, QStringLiteral("DemoUnit"));
+        QTest::keyClick(&view, Qt::Key_Escape); QVERIFY(!popup->isVisible());
+        view.SetText({}); view.moveCursor(QTextCursor::End); QTest::keyClicks(&view, "// De"); QVERIFY(!popup->isVisible());
     }
     void SemanticColorsFollowVisualStudioCategories() {
         // 语义索引优先；未知标识符按调用与声明位置推断，控制流关键字单独着色。

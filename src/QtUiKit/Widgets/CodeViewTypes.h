@@ -1,12 +1,14 @@
 #pragma once
 
 #include <QByteArray>
+#include <QPair>
 #include <QString>
 #include <QVector>
 
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <stop_token>
 
 namespace War3Map::UiKit {
@@ -29,6 +31,34 @@ struct CodeCompletionItem {
     int line = 0, column = 1;
 };
 struct CodeExternalSource { QString name, text, reason; QByteArray bytes; };
+
+// 补全与参数提示。位置均为正文 QString 下标。
+enum class CodeCompletionKind : std::uint8_t {
+    Keyword, Module, Function, Method, Field, Variable, Constant, Local, Parameter, Type, Text
+};
+struct CodeCompletionCandidate {
+    QString label, detail, documentation;
+    CodeCompletionKind kind = CodeCompletionKind::Text;
+};
+// 接受候选时替换 [replaceStart, 光标处单词末尾)。
+struct CodeCompletionList {
+    int replaceStart = -1;
+    bool member = false;
+    bool path = false; // 候选是模块名/路径（可含 . / \），只在字符串里出现
+    QVector<CodeCompletionCandidate> items;
+};
+struct CodeSignatureHelp {
+    QString label;
+    QVector<QPair<int, int>> parameters; // label 内的 [开始, 结束)
+    int active = -1;
+    QString documentation;
+};
+// 语言服务。为空的项使用编辑器自带的声明表。
+struct CodeAssist {
+    std::function<CodeCompletionList(const QString& text, int position)> complete;
+    std::function<std::optional<CodeSignatureHelp>(const QString& text, int position)> signature;
+    std::function<QString(const QString& text, int position)> hover; // HTML；空表示没有
+};
 struct CodeSemanticDefinition {
     std::uint64_t identity = 0;
     QString name, kind, signature, source;

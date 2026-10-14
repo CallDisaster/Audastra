@@ -6,6 +6,7 @@
 #include "MapSaveJob.h"
 #include "Theme/ThemeManager.h"
 #include "Widgets/CodeView.h"
+#include "Widgets/CodeAssistPopup.h"
 #include "Widgets/CodeProblemsView.h"
 #include "Widgets/ProblemList.h"
 #include "Modules/ModuleHost.h"
@@ -244,6 +245,25 @@ private slots:
         QCOMPARE(Sha256File(project.sourceArchivePath_).value.value_or(""), *sourceSha.value);
         const auto snapshots = qEnvironmentVariable("WAR3_TEST_SCREENSHOT_DIR");
         if (!snapshots.isEmpty()) { QApplication::processEvents(); QVERIFY(scripts.grab().save(QDir(snapshots).filePath("c3-lua-owned-runtime-gate.png"))); }
+    }
+    void RequireModulesCompleteAndMissingModulesAreReported() {
+        QTemporaryDir dir; QVERIFY(dir.isValid()); QtProject::EditorProject project; QVERIFY(OpenMap(dir, project));
+        Modules::TriggerLuaScripts scripts(project); scripts.resize(1120, 700); scripts.show();
+        QVERIFY(scripts.CreateScript("Lua\\helper.lua", "local M = {}\n-- 打招呼\nfunction M.greet(name)\n    print(name)\nend\nreturn M\n"));
+        QVERIFY(scripts.CommitPendingDraft());
+        QVERIFY(scripts.CreateScript("Lua\\main.lua", "local h = require \"Lua.helper\"\n"));
+        auto* editor = scripts.Editor(); editor->setFocus(); editor->moveCursor(QTextCursor::End);
+        auto* popup = editor->findChild<UiKit::CodeCompletionPopup*>(); QVERIFY(popup);
+        QTest::keyClicks(editor, "h.");
+        QVERIFY(popup->isVisible()); QVERIFY(popup->Current()); QCOMPARE(popup->Current()->label, QStringLiteral("greet"));
+        QCOMPARE(popup->Current()->documentation, QStringLiteral("打招呼"));
+        QTest::keyClick(editor, Qt::Key_Tab); QVERIFY(editor->toPlainText().endsWith("h.greet"));
+        auto* tip = editor->findChild<UiKit::CodeSignatureTip*>(); QVERIFY(tip);
+        QTest::keyClicks(editor, "("); QVERIFY(tip->isVisible()); QVERIFY(tip->Text().contains(QStringLiteral(">name</b>")));
+        editor->SetText("local missing = require \"Lua.nothing\"\nreturn missing\n");
+        QTRY_VERIFY_WITH_TIMEOUT(!editor->IsChecking() && editor->CheckResult().completed, 5000);
+        const auto& diagnostics = editor->CheckResult().diagnostics;
+        QVERIFY(std::any_of(diagnostics.begin(), diagnostics.end(), [](const auto& item) { return item.code == "LUA_MODULE_NOT_FOUND" && item.line == 1; }));
     }
     void SyntaxChecksAndUndoPreserveOriginalBytes() {
         QTemporaryDir dir; QVERIFY(dir.isValid()); QtProject::EditorProject project; QVERIFY(OpenMap(dir, project));

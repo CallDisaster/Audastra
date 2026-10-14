@@ -1,10 +1,10 @@
 #include "Widgets/CodeView.h"
+#include "Widgets/CodeAssistPopup.h"
 #include "Widgets/CodeViewGutter.h"
 #include "Widgets/CodeViewHighlight.h"
 #include "Fonts/FontLoader.h"
 
 #include <QAbstractItemView>
-#include <QCompleter>
 #include <QContextMenuEvent>
 #include <QDialog>
 #include <QLabel>
@@ -18,10 +18,10 @@
 #include <QPainter>
 #include <QPlainTextDocumentLayout>
 #include <QPointer>
+#include <QScrollBar>
 #include <QPromise>
 #include <QSet>
 #include <QStringDecoder>
-#include <QStringListModel>
 #include <QTextBlock>
 #include <QFontMetricsF>
 #include <QThread>
@@ -77,6 +77,25 @@ QTextCursor SymbolCursor(QTextCursor cursor) {
     cursor.setPosition(block.position() + start); cursor.setPosition(block.position() + end, QTextCursor::KeepAnchor);
     return cursor;
 }
+bool IdentifierChar(QChar ch) { return ch.isLetterOrNumber() || ch == '_'; }
+bool PathChar(QChar ch) { return IdentifierChar(ch) || ch == '.' || ch == '/' || ch == '\\'; }
+// 光标前的文本是否停在注释或字符串里（只看当前行）。
+bool InTextToken(const QString& before, CodeLanguage language) {
+    const auto tokens = ScanCode(before, language);
+    if (!tokens.lines.isEmpty()) for (const auto& span : tokens.lines.front().spans)
+        if (span.start + span.length == before.size() && (span.kind == CodeTokenKind::Comment || span.kind == CodeTokenKind::String)) return true;
+    return false;
+}
+CodeCompletionKind CompletionKindFor(const QString& kind, const QString& signature) {
+    switch (CodeSymbolKindFor(kind, signature)) {
+    case CodeTokenKind::Native: case CodeTokenKind::Function: return CodeCompletionKind::Function;
+    case CodeTokenKind::Type: return CodeCompletionKind::Type;
+    case CodeTokenKind::Local: return CodeCompletionKind::Local;
+    case CodeTokenKind::Parameter: return CodeCompletionKind::Parameter;
+    case CodeTokenKind::Constant: return CodeCompletionKind::Constant;
+    default: return CodeCompletionKind::Variable;
+    }
+}
 void ApplyCodeTabWidth(QPlainTextEdit& editor) {
     editor.setTabStopDistance(QFontMetricsF(editor.font()).horizontalAdvance(QLatin1Char(' ')) * 4);
 }
@@ -103,9 +122,12 @@ struct CodeView::Impl {
     QVector<CodeCompletionItem> externalCompletions;
     CodeSymbolKinds symbols, semanticLocals;
     QHash<QString, QString> notes;
-    QCompleter* completer = nullptr;
+    CodeAssist assist;
+    CodeCompletionPopup* popup = nullptr;
+    CodeSignatureTip* signatureTip = nullptr;
+    int replaceStart = -1;
+    bool pathList = false, typing = false;
     QPointer<QDialog> externalDialog;
-    QStringListModel* completionModel = nullptr;
     std::uint64_t generation = 0;
     bool loading = false, suppress = false, formatting = false, desiredEditable = false;
 };
@@ -121,6 +143,12 @@ CodeView::CodeView(QWidget* parent) : QPlainTextEdit(parent), impl_(std::make_un
     connect(this, &QPlainTextEdit::blockCountChanged, this, [this](int) { UpdateGutterWidth(); });
     connect(this, &QPlainTextEdit::updateRequest, this, &CodeView::UpdateGutter);
     connect(this, &QPlainTextEdit::cursorPositionChanged, this, &CodeView::UpdateSelections);
+    connect(this, &QPlainTextEdit::cursorPositionChanged, this, [this] {
+        // 点击或方向键移动光标：列表按新位置重新过滤，参数提示按新位置重算。
+        if (impl_->typing) return;
+        if (impl_->popup->isVisible()) RefilterCompletion();
+        if (impl_->signatureTip->isVisible()) UpdateSignature();
+    });
     connect(this, &QPlainTextEdit::textChanged, this, [this] {
         if (impl_->suppress || impl_->formatting) return;
         if (impl_->loading) { impl_->loading = false; impl_->loadingBytes.clear(); setReadOnly(!impl_->desiredEditable); }
@@ -133,21 +161,15 @@ CodeView::CodeView(QWidget* parent) : QPlainTextEdit(parent), impl_(std::make_un
         }
         impl_->lexical = {}; impl_->formatted.clear();
         impl_->result = {}; impl_->result.generation = impl_->generation;
-        impl_->completer->popup()->hide(); UpdateCompletionItems();
+        if (!impl_->typing) HideAssist();
+        UpdateCompletionItems();
         UpdateSelections(); impl_->debounce->start(); emit CheckStateChanged();
     });
-    impl_->completionModel = new QStringListModel(this);
-    impl_->completer = new QCompleter(impl_->completionModel, this); impl_->completer->setWidget(this);
-    impl_->completer->setCaseSensitivity(Qt::CaseInsensitive); impl_->completer->setCompletionMode(QCompleter::PopupCompletion);
-    connect(impl_->completer, qOverload<const QString&>(&QCompleter::activated), this, [this](const QString& word) {
-        if (isReadOnly()) return;
-        auto cursor = SymbolCursor(textCursor()); cursor.insertText(word); setTextCursor(cursor);
-    });
-    connect(impl_->completer, qOverload<const QString&>(&QCompleter::highlighted), this, [this](const QString& name) {
-        QStringList signatures;
-        for (const auto& item : impl_->completions) if (item.name == name) signatures.push_back((item.kind + " · " + item.signature + "\n" + item.documentation).toHtmlEscaped().replace('\n', "<br>"));
-        if (!signatures.isEmpty()) QToolTip::showText(impl_->completer->popup()->mapToGlobal(QPoint(impl_->completer->popup()->width(), 0)), signatures.join("<hr>"), impl_->completer->popup());
-    });
+    impl_->popup = new CodeCompletionPopup(this);
+    impl_->signatureTip = new CodeSignatureTip(this);
+    connect(impl_->popup, &CodeCompletionPopup::Accepted, this, &CodeView::AcceptCompletion);
+    connect(verticalScrollBar(), &QScrollBar::valueChanged, this, &CodeView::HideAssist);
+    connect(horizontalScrollBar(), &QScrollBar::valueChanged, this, &CodeView::HideAssist);
     UpdateGutterWidth();
 }
 CodeView::~CodeView() { impl_->stop.request_stop(); impl_->pending.reset(); }
@@ -194,7 +216,7 @@ void CodeView::CancelPendingWork() {
         impl_->folded.clear(); document()->markContentsDirty(0, document()->characterCount()); impl_->formatting = false;
     }
     impl_->result = {}; impl_->lexical = {}; impl_->formatted.clear(); impl_->semanticLocals.clear();
-    impl_->completer->popup()->hide(); if (impl_->externalDialog) impl_->externalDialog->close(); UpdateCompletionItems();
+    HideAssist(); if (impl_->externalDialog) impl_->externalDialog->close(); UpdateCompletionItems();
     UpdateSelections(); emit CheckStateChanged();
 }
 void CodeView::SetText(const QString& text) {
@@ -379,7 +401,7 @@ void CodeView::UpdateGutter(const QRect& rect, int dy) {
     ApplyVisibleFormats();
 }
 void CodeView::resizeEvent(QResizeEvent* event) {
-    QPlainTextEdit::resizeEvent(event); const auto area = contentsRect();
+    QPlainTextEdit::resizeEvent(event); HideAssist(); const auto area = contentsRect();
     impl_->gutter->setGeometry(area.left(), area.top(), GutterWidth(), area.height()); ApplyVisibleFormats();
 }
 void CodeView::ApplyVisibleFormats() {
@@ -480,9 +502,6 @@ void CodeView::UpdateCompletionItems() {
         const auto location = local.name + '\n' + local.source + '\n' + QString::number(local.line);
         if (!locations.contains(location)) { locations.insert(location); impl_->completions.push_back(std::move(local)); }
     }
-    QStringList names; QSet<QString> unique;
-    for (const auto& item : impl_->completions) if (!item.name.isEmpty() && !unique.contains(item.name)) { names.push_back(item.name); unique.insert(item.name); }
-    names.sort(Qt::CaseInsensitive); impl_->completionModel->setStringList(names);
     // 语义着色：真实声明给出函数/类型/全局量，当前源的检查结果再补局部量与参数（同名时局部优先）。
     CodeSymbolKinds symbols;
     for (const auto& item : impl_->completions)
@@ -501,13 +520,103 @@ void CodeView::UpdateCompletionItems() {
         impl_->symbols = std::move(symbols); impl_->formatted.clear(); ApplyVisibleFormats();
     }
 }
-void CodeView::ShowCompletion() {
-    if (isReadOnly() || impl_->completions.isEmpty()) return;
-    impl_->completer->setCompletionPrefix(WordAtCursor());
-    auto rect = cursorRect(); rect.setWidth(qMax(280, impl_->completer->popup()->sizeHintForColumn(0) + 30)); impl_->completer->complete(rect);
-    // complete() 不保证弹出列表有当前行；Enter 必须能立即接受首个候选。
-    const auto first = impl_->completer->completionModel()->index(0, 0);
-    if (first.isValid()) impl_->completer->popup()->setCurrentIndex(first);
+void CodeView::ShowCompletion() { OpenCompletion(true); }
+void CodeView::SetAssist(CodeAssist assist) { HideAssist(); impl_->assist = std::move(assist); }
+CodeCompletionList CodeView::DeclarationCompletion(const QTextCursor& cursor) const {
+    CodeCompletionList list;
+    const auto text = cursor.block().text();
+    int start = cursor.positionInBlock();
+    while (start > 0 && IdentifierChar(text[start - 1])) --start;
+    list.replaceStart = cursor.block().position() + start;
+    QSet<QString> seen;
+    for (const auto& item : impl_->completions) {
+        if (item.name.isEmpty() || seen.contains(item.name)) continue;
+        seen.insert(item.name);
+        auto documentation = item.documentation;
+        if (const auto note = impl_->notes.value(item.name); !note.isEmpty())
+            documentation = documentation.isEmpty() ? note : note + QStringLiteral("\n\n") + documentation;
+        list.items.push_back({item.name, item.signature.isEmpty() ? item.name : item.signature, documentation,
+            CompletionKindFor(item.kind, item.signature)});
+    }
+    return list;
+}
+QRect CodeView::GlobalCursorRect() const {
+    const auto rect = cursorRect();
+    return {viewport()->mapToGlobal(rect.topLeft()), rect.size()};
+}
+void CodeView::OpenCompletion(bool explicitRequest) {
+    if (isReadOnly()) return;
+    const auto cursor = textCursor();
+    const int position = cursor.position();
+    auto list = impl_->assist.complete ? impl_->assist.complete(toPlainText(), position) : DeclarationCompletion(cursor);
+    const int blockStart = cursor.block().position();
+    if (list.items.isEmpty() || list.replaceStart < blockStart || list.replaceStart > position) { impl_->popup->hide(); return; }
+    impl_->replaceStart = list.replaceStart;
+    impl_->pathList = list.path;
+    impl_->popup->SetItems(std::move(list.items));
+    const auto prefix = cursor.block().text().mid(list.replaceStart - blockStart, position - list.replaceStart);
+    // 主动请求（Ctrl+空格）且没有匹配时列出全部，方便浏览。
+    if (!impl_->popup->SetFilter(prefix) && !(explicitRequest && impl_->popup->SetFilter({}))) { impl_->popup->hide(); return; }
+    impl_->popup->ShowNear(GlobalCursorRect());
+}
+void CodeView::RefilterCompletion() {
+    if (!impl_->popup->isVisible()) return;
+    const auto cursor = textCursor(); const auto block = cursor.block(); const int position = cursor.position();
+    if (impl_->replaceStart < block.position() || position < impl_->replaceStart) { impl_->popup->hide(); return; }
+    const auto prefix = block.text().mid(impl_->replaceStart - block.position(), position - impl_->replaceStart);
+    const auto valid = impl_->pathList ? PathChar : IdentifierChar;
+    if (!std::all_of(prefix.begin(), prefix.end(), valid) || !impl_->popup->SetFilter(prefix)) impl_->popup->hide();
+}
+void CodeView::AcceptCompletion() {
+    const auto* item = impl_->popup->Current();
+    auto cursor = textCursor(); const auto block = cursor.block();
+    if (!item || isReadOnly() || impl_->replaceStart < block.position() || impl_->replaceStart > cursor.position()) { impl_->popup->hide(); return; }
+    const auto text = block.text(); const auto valid = impl_->pathList ? PathChar : IdentifierChar;
+    int end = cursor.position();
+    while (end - block.position() < text.size() && valid(text[end - block.position()])) ++end;
+    const auto label = item->label;
+    impl_->popup->hide();
+    cursor.setPosition(impl_->replaceStart); cursor.setPosition(end, QTextCursor::KeepAnchor);
+    impl_->typing = true; cursor.insertText(label); impl_->typing = false;
+    setTextCursor(cursor);
+}
+void CodeView::HideAssist() {
+    if (!impl_ || !impl_->popup) return;
+    impl_->popup->hide(); impl_->signatureTip->hide();
+}
+void CodeView::UpdateSignature() {
+    if (!impl_->assist.signature || isReadOnly()) { impl_->signatureTip->hide(); return; }
+    const auto help = impl_->assist.signature(toPlainText(), textCursor().position());
+    if (!help || help->label.isEmpty()) { impl_->signatureTip->hide(); return; }
+    impl_->signatureTip->ShowHelp(*help, GlobalCursorRect());
+}
+void CodeView::AfterTyping(const QKeyEvent* event) {
+    const auto typed = event->text();
+    const bool erase = event->key() == Qt::Key_Backspace || event->key() == Qt::Key_Delete;
+    const bool plain = typed.size() == 1 && !(event->modifiers() & (Qt::ControlModifier | Qt::AltModifier)) && typed[0].isPrint();
+    const QChar ch = plain ? typed[0] : QChar();
+    const bool member = plain && (ch == '.' || ch == ':') && impl_->assist.complete;
+    if (impl_->popup->isVisible()) {
+        if (erase || (plain && (impl_->pathList ? PathChar(ch) : IdentifierChar(ch)))) RefilterCompletion();
+        else if (member) OpenCompletion(false);
+        else impl_->popup->hide();
+    } else if (plain && IdentifierChar(ch) && !ch.isDigit()) {
+        const auto cursor = textCursor(); const auto before = cursor.block().text().left(cursor.positionInBlock());
+        auto start = before.size();
+        while (start > 0 && IdentifierChar(before[start - 1])) --start;
+        const auto length = before.size() - start;
+        // 声明表至少两个字符才弹出；语言服务自行判断注释、字符串和声明位置。
+        if (impl_->assist.complete ? length >= 1 : (length >= 2 && !before[start].isDigit() && !InTextToken(before, impl_->language)))
+            OpenCompletion(false);
+    } else if (member) {
+        OpenCompletion(false);
+    } else if (plain && (ch == '"' || ch == '\'') && impl_->assist.complete) {
+        // require " 之后列出模块名；其它字符串不弹出。
+        if (const auto list = impl_->assist.complete(toPlainText(), textCursor().position()); list.path && !list.items.isEmpty())
+            OpenCompletion(false);
+    }
+    if (impl_->assist.signature && ((plain && (ch == '(' || ch == ',' || ch == ')')) || impl_->signatureTip->isVisible()))
+        UpdateSignature();
 }
 const CodeSemanticDefinition* CodeView::SemanticDefinitionAtCursor() const {
     if (impl_->result.generation != impl_->generation || !impl_->result.completed
@@ -677,7 +786,29 @@ void CodeView::IndentSelection(bool outdent) {
     cursor.endEditBlock();
 }
 void CodeView::keyPressEvent(QKeyEvent* event) {
-    if (impl_->completer->popup()->isVisible() && (event->key() == Qt::Key_Enter || event->key() == Qt::Key_Return || event->key() == Qt::Key_Escape || event->key() == Qt::Key_Tab || event->key() == Qt::Key_Backtab)) { event->ignore(); return; }
+    if (impl_->popup->isVisible()) {
+        switch (event->key()) {
+        case Qt::Key_Up: impl_->popup->MoveSelection(-1); event->accept(); return;
+        case Qt::Key_Down: impl_->popup->MoveSelection(1); event->accept(); return;
+        case Qt::Key_PageUp: impl_->popup->MoveSelection(-10); event->accept(); return;
+        case Qt::Key_PageDown: impl_->popup->MoveSelection(10); event->accept(); return;
+        case Qt::Key_Escape: impl_->popup->hide(); event->accept(); return;
+        case Qt::Key_Tab: case Qt::Key_Enter: case Qt::Key_Return: {
+            // 已完整输入的词（如 end）按 Enter 直接换行，不吞掉回车。
+            const auto* item = impl_->popup->Current();
+            if (event->key() != Qt::Key_Tab && item && item->label == impl_->popup->Filter()) { impl_->popup->hide(); break; }
+            AcceptCompletion(); event->accept(); return;
+        }
+        default:
+            // 输入 ( . : 时先接受前缀或词首缩写匹配的候选，再输入该字符（与 VS 相同）。
+            if (const auto typed = event->text(); typed.size() == 1 && !impl_->popup->Filter().isEmpty() && !impl_->pathList
+                && (typed[0] == '(' || typed[0] == '.' || typed[0] == ':') && impl_->popup->Current()
+                && CompletionTier(impl_->popup->Current()->label, impl_->popup->Filter()) <= 2)
+                AcceptCompletion();
+            break;
+        }
+    }
+    if (impl_->signatureTip->isVisible() && event->key() == Qt::Key_Escape) { impl_->signatureTip->hide(); event->accept(); return; }
     if (event->key() == Qt::Key_F12) {
         if (event->modifiers() & Qt::ShiftModifier) ShowReferences(); else RequestJump();
         event->accept(); return;
@@ -694,9 +825,17 @@ void CodeView::keyPressEvent(QKeyEvent* event) {
         if (!lineTokens.lines.isEmpty()) for (const auto& span : lineTokens.lines.front().spans)
             if (span.start + span.length == before.size() && (span.kind == CodeTokenKind::Comment || span.kind == CodeTokenKind::String)) textToken = true;
         if (!textToken && (before.endsWith("then") || before.endsWith("do") || before == "loop" || before == "globals" || before.startsWith("function ") || before.startsWith("method ") || before.startsWith("library ") || before.startsWith("scope ") || before.startsWith("struct ") || before.startsWith("module ") || before == "repeat")) indent += QStringLiteral("    ");
+        HideAssist();
         auto cursor = textCursor(); cursor.beginEditBlock(); cursor.insertText('\n' + indent); cursor.endEditBlock(); setTextCursor(cursor); event->accept(); return;
     }
+    impl_->typing = true;
     QPlainTextEdit::keyPressEvent(event);
+    impl_->typing = false;
+    if (!isReadOnly()) AfterTyping(event);
+}
+void CodeView::focusOutEvent(QFocusEvent* event) {
+    if (!impl_->popup->underMouse()) HideAssist();
+    QPlainTextEdit::focusOutEvent(event);
 }
 void CodeView::contextMenuEvent(QContextMenuEvent* event) {
     std::unique_ptr<QMenu> menu(createStandardContextMenu()); menu->addSeparator();
@@ -708,7 +847,9 @@ bool CodeView::ShowHover(QEvent* event) {
     if (event->type() == QEvent::ToolTip) {
         const auto* help = static_cast<QHelpEvent*>(event); const auto cursor = cursorForPosition(help->pos()); QStringList tips;
         for (const auto& diagnostic : impl_->result.diagnostics) if (diagnostic.source == impl_->source && diagnostic.line == cursor.blockNumber() + 1) tips.push_back((diagnostic.code + ": " + diagnostic.message).toHtmlEscaped());
-        if (const auto hover = HoverText(SymbolCursor(cursor).selectedText()); !hover.isEmpty()) tips.push_back(hover);
+        QString hover = impl_->assist.hover ? impl_->assist.hover(toPlainText(), cursor.position()) : QString();
+        if (hover.isEmpty()) hover = HoverText(SymbolCursor(cursor).selectedText());
+        if (!hover.isEmpty()) tips.push_back(hover);
         if (!tips.isEmpty()) { QToolTip::showText(help->globalPos(), tips.join("<hr>"), this); return true; }
     }
     return false;

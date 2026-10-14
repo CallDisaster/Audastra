@@ -30,6 +30,7 @@ add_library(War3MapServices STATIC
     CodeCheck.cpp
     CodeCheckProject.cpp
     CodeCheckProjectLua.cpp
+    LuaRuntimeCatalog.cpp
     MapScriptTargetSelection.cpp
     LuaMapTargetConfiguration.cpp
     LuaMapSaveTarget.cpp

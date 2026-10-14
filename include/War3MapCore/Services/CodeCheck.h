@@ -5,9 +5,12 @@
 #include "War3MapCore/Jass/SourceMap.h"
 #include "War3MapCore/Lua/LuaSyntax.h"
 #include "War3MapCore/Lua/LuaSemantic.h"
+#include "War3MapCore/Lua/LuaApiCatalog.h"
 #include "War3MapCore/Types.h"
 
 #include <cstdint>
+#include <map>
+#include <memory>
 #include <stop_token>
 #include <string>
 #include <vector>
@@ -31,6 +34,11 @@ struct CodeCheckContext {
     std::string binding;
     std::string reason;
     Lua::SemanticContext luaSemantic;
+    // 编辑器自带 Lua 环境的接口目录；有值时另做源码级 jass.* 用法检查。
+    std::shared_ptr<const Lua::ApiCatalog> luaCatalog;
+    // 地图里其他 Lua 文件的冻结正文（require 名 → 正文），用于 require 检查与跨文件推断。
+    std::map<std::string, std::string, std::less<>> luaModules;
+    std::string luaModuleName;
 };
 
 struct CodeCheckRequest {

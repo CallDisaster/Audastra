@@ -40,6 +40,13 @@ target_compile_options(war3-lua-semantic-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-lua-semantic COMMAND war3-lua-semantic-tests)
 set_tests_properties(services-lua-semantic PROPERTIES TIMEOUT 90)
 
+add_executable(war3-lua-code-intel-tests LuaCodeIntelTests.cpp)
+target_link_libraries(war3-lua-code-intel-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(war3-lua-code-intel-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(war3-lua-code-intel-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-lua-code-intel COMMAND war3-lua-code-intel-tests)
+set_tests_properties(services-lua-code-intel PROPERTIES TIMEOUT 60)
+
 add_executable(war3-lua-semantic-real-tests LuaSemanticRealTests.cpp)
 target_link_libraries(war3-lua-semantic-real-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(war3-lua-semantic-real-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)

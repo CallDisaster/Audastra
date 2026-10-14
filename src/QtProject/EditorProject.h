@@ -44,7 +44,8 @@ class DirectoryWorkspace;
 class EditorSession;
 class MapArchiveSession;
 class MapDocument;
-namespace Services { struct CodeCheckProjectSnapshot; struct CodeCheckResult; class CampaignSession; }
+namespace Services { struct CodeCheckProjectSnapshot; struct CodeCheckResult; class CampaignSession; struct LuaRuntimeScripts; }
+namespace Lua { struct ApiCatalog; }
 namespace MapData { class MapDataEditSession; }
 
 namespace ObjectData {
@@ -214,6 +215,9 @@ public:
     [[nodiscard]] std::uint64_t ContentCacheEpoch() const;
     // 只冻结当前语义结构并按修订缓存；磁盘、基础库与预处理在后台检查入口读取。
     [[nodiscard]] std::shared_ptr<const Services::CodeCheckProjectSnapshot> CaptureCodeCheckSnapshot() const;
+    // 编辑器自带 Lua 环境的接口目录（ProjectLuaCatalog.cpp）：游戏 common.j / blizzard.j 加地图变量。
+    // 按游戏目录与变量表缓存；没有游戏目录时只含 Lua 标准库。
+    [[nodiscard]] std::shared_ptr<const Lua::ApiCatalog> LuaRuntimeCatalog();
     [[nodiscard]] bool IsCodeCheckBindingCurrent(std::string_view binding) const;
     void AdoptCodeCheckIndex(std::shared_ptr<const Services::CodeCheckResult> index);
     [[nodiscard]] std::shared_ptr<const Services::CodeCheckResult> CurrentCodeCheckIndex() const;
@@ -474,6 +478,10 @@ private:
     [[nodiscard]] std::string CodeCheckSourceStamp() const;
     mutable std::shared_ptr<const Services::CodeCheckProjectSnapshot> codeCheckSnapshot_;
     std::shared_ptr<const Services::CodeCheckResult> codeCheckIndex_;
+    std::shared_ptr<const Services::LuaRuntimeScripts> luaRuntimeScripts_;
+    std::optional<std::filesystem::path> luaRuntimeScriptsRoot_;
+    std::shared_ptr<const Lua::ApiCatalog> luaRuntimeCatalog_;
+    std::string luaRuntimeCatalogKey_;
     mutable std::uint64_t contentCacheEpoch_ = 0;
     mutable std::uint64_t contentCacheEditGeneration_ = (std::numeric_limits<std::uint64_t>::max)();
     mutable std::uint64_t contentCacheEditRevision_ = (std::numeric_limits<std::uint64_t>::max)();
