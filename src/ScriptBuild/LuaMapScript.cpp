@@ -283,11 +283,21 @@ void MapWriter::Regions() {
     for (const auto& value : plan_.regions) {
         const auto start = ObjectBegin(value.symbol);
         const auto& region = value.region;
-        if (!region.ambientSound.empty()) Fail("LUA_MAP_REGION_SOUND_UNSUPPORTED", "区域环境音尚无完整初始化路径。");
         Line(value.symbol + " = " + Api("Rect", "rect", {Real(region.left), Real(region.bottom), Real(region.right), Real(region.top)}).code);
         const auto weather = Raw(region.weatherId);
         if (!EmptyRaw(weather)) Call("EnableWeatherEffect", {Api("AddWeatherEffect", "weathereffect",
             {Global(value.symbol, "rect"), Rawcode(weather)}), Boolean(true)});
+        if (!region.ambientSound.empty()) {
+            const auto sound = std::find_if(plan_.sounds.begin(), plan_.sounds.end(), [&](const auto& item) {
+                return item.symbol == region.ambientSound && !item.sound.IsMusic();
+            });
+            if (sound == plan_.sounds.end()) Fail("LUA_MAP_REGION_SOUND_UNRESOLVED", "区域环境音变量没有对应的声音定义。");
+            const auto ref = Global(region.ambientSound, "sound");
+            Call("SetSoundPosition", {ref, Real((double(region.left) + region.right) / 2.0),
+                Real((double(region.bottom) + region.top) / 2.0), Real(0)});
+            Call("RegisterStackedSound", {ref, Boolean(true), Real(double(region.right) - region.left),
+                Real(double(region.top) - region.bottom)});
+        }
         ObjectEnd(value.symbol, start);
     }
     End();

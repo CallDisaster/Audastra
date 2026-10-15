@@ -15,10 +15,13 @@
 #include <utility>
 #include <vector>
 
+namespace War3Map::Services { class AuxiliaryEditing; }
+
 namespace War3Map::MapData {
 namespace detail { struct PlacementEditingAccess; struct TerrainInspectionAccess; struct MapDataFieldEditingAccess; }
 class PreparedMapDataFields;
 class PreparedMapDataPlacement;
+class TerrainSavePlan;
 
 // 仅已提交的摆放操作提供完整行谱系；空目标表示删除，未被指向的新行表示新增。
 // 不能用rawcode、创建编号或坐标猜测映射。此值在EditReceipt中只读。
@@ -31,6 +34,8 @@ struct PlacementRowLineage {
 // 七类公共地图成员的编辑覆盖。仅提交经过各类型序列化器检查的完整字节；
 // 不触碰源归档，撤销/重做恢复覆盖状态，MapArchiveSession 负责候选发布。
 class MapDataEditSession {
+    friend class TerrainSavePlan;
+    friend class Services::AuxiliaryEditing;
     struct Command;
 public:
     // 不可变事务回执供外层统一撤销栈使用；包含所有联动成员，不重新推导逆操作。
@@ -217,6 +222,8 @@ private:
     std::array<std::string, 7> memberNames_{};
     std::array<std::optional<std::vector<std::byte>>, 7> original_{};
     std::array<std::optional<std::vector<std::byte>>, 7> current_{};
+    // 无法建立可写原生基线的成员仍属于来源；快照不能把损坏、歧义或只读成员改称缺失。
+    std::array<std::optional<MapMemberState>, 7> preservedSources_{};
     std::vector<std::shared_ptr<const Command>> history_;
     std::size_t cursor_ = 0;
     std::uint64_t revision_ = 0;

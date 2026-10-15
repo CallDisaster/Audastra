@@ -165,6 +165,16 @@ Result<WorldViewport::ModelPickPolicy> WorldViewport::ReadModelPickPolicy() cons
 
 Result<WorldViewport::CompletedModelPickFrame> WorldViewport::ReadCompletedModelPickFrame(bool forGeometryPick,
     bool requireSuccessfulPresent) const try {
+    auto completed = ReadCompletedAnimationSource(false, requireSuccessfulPresent, forGeometryPick);
+    if (!completed.Succeeded()) return completed;
+    if (forGeometryPick) completed.value->picking = Render::AnimationPickingScene(*animationScene_, *completed.value->frame);
+    return completed;
+} catch (...) {
+    return Result<CompletedModelPickFrame>::Failure("World", "WORLD_MODEL_PICK_OWNER_FAILED", "无法拥有实际完成帧的点选数据，未改用最新提交姿势。");
+}
+
+Result<WorldViewport::CompletedModelPickFrame> WorldViewport::ReadCompletedAnimationSource(bool preparation,
+    bool requireSuccessfulPresent, bool freezeGeometryPolicy) const try {
     using Output = Result<CompletedModelPickFrame>;
     const auto fail = [](const char* code, const char* message) { return Output::Failure("World", code, message); };
     if (!ModelPresentationCurrent())
@@ -179,7 +189,7 @@ Result<WorldViewport::CompletedModelPickFrame> WorldViewport::ReadCompletedModel
         return fail("WORLD_MODEL_PICK_PRESENTATION_PENDING", "编辑器显隐仍待呈现，点选已取消。");
     const auto currentView = ReadPickingFrame();
     if (!currentView.Succeeded()) return {std::nullopt, currentView.diagnostics};
-    auto policy = forGeometryPick ? ReadModelPickPolicy() : Result<ModelPickPolicy>::Success({});
+    auto policy = freezeGeometryPolicy ? ReadModelPickPolicy() : Result<ModelPickPolicy>::Success({});
     if (!policy.Succeeded()) return {std::nullopt, std::move(policy.diagnostics)};
     // getEditorCompletedFrame只接受“最新提交已经完成”，持续播放时可能永远追不上。
     // 完成指标环保留同次Draw/Present的不可变身份；仅查询最后四帧并绑定拥有的CPU姿势。
@@ -196,7 +206,9 @@ Result<WorldViewport::CompletedModelPickFrame> WorldViewport::ReadCompletedModel
     if (pageResult != 0 ||
         page.structSize < sizeof(page) || page.count > metrics.size())
         return fail("WORLD_MODEL_PICK_FRAME_FAILED", "无法读取同次绘制完成身份，点选已取消。");
-    const RetainedAnimationPickFrame* retained = nullptr;
+    const AnimationCompletionIdentity* retained = nullptr;
+    std::shared_ptr<const Render::AnimationFrame> ownedFrame;
+    std::shared_ptr<const Services::WorldModelBugPlaceholderFrameSnapshot> ownedPreparation;
     const War3RenderEditorCompletedFrameV2* accepted = nullptr;
     const War3RenderFrameMetricsV2* acceptedMetric = nullptr;
     for (std::size_t i = page.count; i > 0 && !retained; --i) {
@@ -215,24 +227,37 @@ Result<WorldViewport::CompletedModelPickFrame> WorldViewport::ReadCompletedModel
         candidateView.physicalWidth = candidate.view.width; candidateView.physicalHeight = candidate.view.height;
         std::copy_n(candidate.view.viewProjection, candidateView.rowMajorViewProjection.size(), candidateView.rowMajorViewProjection.begin());
         if (!SameView(candidateView, *currentView.value) || candidate.view.documentRevision != revision_) continue;
-        for (auto history = animationPickHistory_.rbegin(); history != animationPickHistory_.rend(); ++history) {
-            if (!history->frame || history->rendererEpoch != measurementRendererEpoch_ || history->policyRevision != pickPolicyRevision_ ||
-                history->frame->sceneVersion != animationScene_->sceneVersion || history->frame->documentRevision != animationScene_->documentRevision ||
-                history->frame->contentVersion != candidate.skin.contentVersion ||
-                history->presentation.modelEpoch != editorPresentationTarget_->modelEpoch ||
-                history->presentation.modelEpoch != candidate.presentation.modelEpoch ||
-                history->presentation.mode != candidate.presentation.mode ||
-                history->presentation.sceneVersion != candidate.presentation.sceneVersion ||
-                history->presentation.contentVersion != candidate.presentation.contentVersion ||
-                history->presentationRevision != candidate.presentation.presentationRevision) continue;
-            retained = &*history; accepted = &candidate; acceptedMetric = &metric; break;
+        const auto matches = [&](const AnimationCompletionIdentity& owner) {
+            return owner.rendererEpoch == measurementRendererEpoch_ && owner.policyRevision == pickPolicyRevision_
+                && owner.sceneVersion == animationScene_->sceneVersion && owner.documentRevision == animationScene_->documentRevision
+                && owner.contentVersion == candidate.skin.contentVersion
+                && owner.presentation.modelEpoch == editorPresentationTarget_->modelEpoch
+                && owner.presentation.modelEpoch == candidate.presentation.modelEpoch
+                && owner.presentation.mode == candidate.presentation.mode
+                && owner.presentation.sceneVersion == candidate.presentation.sceneVersion
+                && owner.presentation.contentVersion == candidate.presentation.contentVersion
+                && owner.presentationRevision == candidate.presentation.presentationRevision;
+        };
+        if (preparation) {
+            for (auto history = bugPreparationHistory_.rbegin(); history != bugPreparationHistory_.rend(); ++history) {
+                if (!history->snapshot || history->snapshot->sourceScene.lock() != animationScene_ || !matches(*history)) continue;
+                retained = &*history; ownedPreparation = history->snapshot; break;
+            }
+        } else {
+            for (auto history = animationPickHistory_.rbegin(); history != animationPickHistory_.rend(); ++history) {
+                if (!history->frame || !matches(*history)) continue;
+                retained = &*history; ownedFrame = history->frame; break;
+            }
         }
+        if (retained) { accepted = &candidate; acceptedMetric = &metric; }
     }
+    if ((!retained || !accepted) && preparation && !bugPreparationFailure_.Succeeded())
+        return {std::nullopt, bugPreparationFailure_.diagnostics};
     if (!retained || !accepted)
         return fail("WORLD_MODEL_PICK_FRAME_PENDING", "当前视图尚无拥有姿势与显隐的实际完成帧。");
     const auto& completed = *accepted;
     const auto& view = completed.view; const auto& skin = completed.skin; const auto& presentation = completed.presentation;
-    const auto& target = retained->presentation; const auto& frame = *retained->frame; const auto size = PhysicalSize();
+    const auto& target = retained->presentation; const auto& frame = *retained; const auto size = PhysicalSize();
     const float cameraFields[]{completed.camera.targetX, completed.camera.targetY, completed.camera.targetZ,
         completed.camera.distance, completed.camera.yawRadians, completed.camera.pitchRadians};
     // 逐项核对并报告第一项不一致，便于定位；任何一项失败都不使用该回执。
@@ -255,7 +280,7 @@ Result<WorldViewport::CompletedModelPickFrame> WorldViewport::ReadCompletedModel
     check(presentation.sceneVersion == skin.sceneVersion && presentation.contentVersion == skin.contentVersion, "显隐与姿势版本");
     check(target.sceneVersion == skin.sceneVersion && target.contentVersion == skin.contentVersion, "显隐目标版本");
     check(retained->presentationRevision && presentation.presentationRevision == retained->presentationRevision, "显隐修订");
-    check(presentation.instanceCount == frame.instances.size(), "显隐实例数");
+    check(presentation.instanceCount == frame.instanceCount, "显隐实例数");
     check(presentation.particleDrawCount == retained->particleDrawCount, "显隐粒子批次数");
     check(presentation.visibleInstanceCount <= presentation.instanceCount && presentation.visibleParticleDrawCount <= presentation.particleDrawCount
         && presentation.drawCallCount <= 262144, "显隐计数范围");
@@ -273,8 +298,7 @@ Result<WorldViewport::CompletedModelPickFrame> WorldViewport::ReadCompletedModel
     }
     CompletedModelPickFrame result;
     result.metric = *acceptedMetric;
-    result.frame = retained->frame;
-    if (forGeometryPick) result.picking = Render::AnimationPickingScene(*animationScene_, frame);
+    result.frame = std::move(ownedFrame); result.preparation = std::move(ownedPreparation);
     result.view.identity = {view.surfaceEpoch, view.sceneEpoch, view.viewEpoch, view.frameCount};
     result.view.physicalWidth = view.width; result.view.physicalHeight = view.height;
     std::copy_n(view.viewProjection, result.view.rowMajorViewProjection.size(), result.view.rowMajorViewProjection.begin());
@@ -351,14 +375,14 @@ Result<std::vector<Render::ModelPickHit>> WorldViewport::PickInstancesAt(QPointF
     return output;
 }
 
-Result<std::shared_ptr<const Render::AnimationFrame>> WorldViewport::ReadCompletedAnimationFrameForBugPlaceholder(
+Result<std::shared_ptr<const Services::WorldModelBugPlaceholderFrameSnapshot>> WorldViewport::ReadCompletedBugPlaceholderSnapshot(
     const std::shared_ptr<const Render::AnimatedModelScene>& expected) const {
     if (!expected || expected != animationScene_)
-        return Result<std::shared_ptr<const Render::AnimationFrame>>::Failure("World.BugPlaceholder",
+        return Result<std::shared_ptr<const Services::WorldModelBugPlaceholderFrameSnapshot>>::Failure("World.BugPlaceholder",
             "WORLD_BUG_PLACEHOLDER_SOURCE_STALE", "占位原始动画来源已改变。");
-    auto completed = ReadCompletedModelPickFrame(false, false);
+    auto completed = ReadCompletedAnimationSource(true, false);
     if (!completed.Succeeded()) return {std::nullopt, std::move(completed.diagnostics)};
-    return Result<std::shared_ptr<const Render::AnimationFrame>>::Success(std::move(completed.value->frame));
+    return Result<std::shared_ptr<const Services::WorldModelBugPlaceholderFrameSnapshot>>::Success(std::move(completed.value->preparation));
 }
 
 Result<std::optional<WorldViewport::BugPlaceholderPick>> WorldViewport::PickBugPlaceholderAt(QPointF point,
@@ -374,15 +398,22 @@ Result<std::optional<WorldViewport::BugPlaceholderPick>> WorldViewport::PickBugP
     const auto layer = modelLayerBridges_.find(owned->layer);
     if (layer == modelLayerBridges_.end() || layer->second.scene != owned->scene
         || !layer->second.renderer || layer->second.renderer->Target() != owned->frame) return stale();
+    const auto layerRevision = layer->second.renderer->Revision();
     War3RenderModelLayersTargetV2 before{sizeof(before)};
     if (api_->getModelLayersTarget(renderer_, &before) != 0 || !before.parentModelEpoch || !before.layersRevision) return stale();
-    auto completed = ReadCompletedModelPickFrame(false);
+    const auto policyRevision = pickPolicyRevision_, rendererEpoch = measurementRendererEpoch_;
+    const auto sourceScene = animationScene_;
+    auto completed = ReadCompletedAnimationSource(true, true, true);
     if (!completed.Succeeded()) return {std::nullopt, std::move(completed.diagnostics)};
     if (!SameView(completed.value->view, requestedView)
-        || before.parentModelEpoch != completed.value->visibility.binding.modelEpoch) return stale();
-    // ReadPickingFrame只接收当前sceneEpoch实际完成的画面；ReadCompletedModelPickFrame同时核
+        || before.parentModelEpoch != completed.value->visibility.binding.modelEpoch
+        || (pressModelPolicy_ && (pressModelPolicy_->generation != completed.value->visibility.binding.generation
+            || pressModelPolicy_->sceneVersion != completed.value->visibility.binding.sceneVersion
+            || pressModelPolicy_->visible != completed.value->visibility.visible
+            || pressModelPolicy_->selectable != completed.value->visibility.selectable))) return stale();
+    // ReadPickingFrame只接收当前sceneEpoch实际完成的画面；共用完成来源门同时核
     // 同次Draw/Present成功及全层UPLOAD_VALID聚合。无需RGBA读回，也不将待上传目标当成完成。
-    auto current = Services::PlanWorldModelBugPlaceholders(animationScene_, *completed.value->frame,
+    auto current = Services::PlanWorldModelBugPlaceholders(animationScene_, *completed.value->preparation,
         owned->plan->registry, owned->owners, owned->flags);
     if (!current.Succeeded() || current.value->binding != owned->plan->binding
         || current.value->markers != owned->plan->markers) return stale();
@@ -391,19 +422,32 @@ Result<std::optional<WorldViewport::BugPlaceholderPick>> WorldViewport::PickBugP
     if (!ray.Succeeded()) return {std::nullopt, ray.diagnostics};
     Render::ModelPickVisibilitySnapshot masks;
     masks.binding = {owned->scene->documentRevision, owned->scene->generation, owned->scene->sceneVersion,
-        owned->frame->contentVersion, before.parentModelEpoch, layer->second.renderer->Revision(), completed.value->view.identity};
+        owned->frame->contentVersion, before.parentModelEpoch, layerRevision, completed.value->view.identity};
     masks.visible.assign(owned->plan->markers.size(), 1);
     for (const auto& marker : owned->plan->markers) masks.selectable.push_back(marker.selectable ? 1 : 0);
     auto queried = Render::PickAnimatedModelInstances(*owned->scene, *owned->frame, masks, masks.binding,
         ray.value->ray, ray.value->maxDistance);
     if (!queried.Succeeded()) return {std::nullopt, std::move(queried.diagnostics)};
     War3RenderModelLayersTargetV2 after{sizeof(after)};
-    const auto view = ReadPickingFrame();
-    const auto actual = ReadCompletedModelPickFrame(false);
+    const auto actual = ReadCompletedAnimationSource(true, true, true);
     if (!actual.Succeeded()) return {std::nullopt, actual.diagnostics};
-    auto endPlan = Services::PlanWorldModelBugPlaceholders(animationScene_, *actual.value->frame,
+    auto endPlan = Services::PlanWorldModelBugPlaceholders(animationScene_, *actual.value->preparation,
         owned->plan->registry, owned->owners, owned->flags);
-    if (bugPlaceholderPicking_ != owned || !owned->live() || !view.Succeeded() || !SameView(*view.value, requestedView)
+    const bool live = owned->live();
+    // 分类与live均为宿主回调；最后再读完整policy，不能只使用回调之前的快照。
+    const auto afterPolicy = ReadModelPickPolicy();
+    if (!afterPolicy.Succeeded()) return {std::nullopt, afterPolicy.diagnostics};
+    const auto view = ReadPickingFrame();
+    if (bugPlaceholderPicking_ != owned || !live || !view.Succeeded() || !SameView(*view.value, requestedView)
+        || sourceScene != animationScene_ || rendererEpoch != measurementRendererEpoch_ || policyRevision != pickPolicyRevision_
+        || actual.value->visibility.binding.generation != completed.value->visibility.binding.generation
+        || actual.value->visibility.binding.sceneVersion != completed.value->visibility.binding.sceneVersion
+        || actual.value->visibility.visible != completed.value->visibility.visible
+        || actual.value->visibility.selectable != completed.value->visibility.selectable
+        || afterPolicy.value->generation != completed.value->visibility.binding.generation
+        || afterPolicy.value->sceneVersion != completed.value->visibility.binding.sceneVersion
+        || afterPolicy.value->visible != completed.value->visibility.visible
+        || afterPolicy.value->selectable != completed.value->visibility.selectable
         || api_->getModelLayersTarget(renderer_, &after) != 0 || before.parentModelEpoch != after.parentModelEpoch
         || before.layersRevision != after.layersRevision || before.layerCount != after.layerCount
         || !endPlan.Succeeded() || endPlan.value->binding != owned->plan->binding
@@ -523,18 +567,22 @@ void WorldViewport::FinishClick(QPointF point, Qt::KeyboardModifiers modifiers) 
     // 摆放点选：同一位置再次单击时在重叠的实例间轮换。
     // 地面查询先完成；模型查询最后核对 release 的同帧身份，不将旧按下姿势拼接到新相机。
     const auto hits = PickInstancesAt(point, *frame.value);
-    if (!hits.Succeeded()) {
-        if (PickPending(hits.diagnostics) && DeferSelection(point, modifiers, false)) return;
-        ClearCoordinates(PickDiagnostic(hits.diagnostics), true); return;
-    }
+    // 占位拥有独立的完成来源和三角形；普通几何history超预算不能挡住其严格命中。
+    // 普通查询失败仍是未知，不能折成空命中；两边都有结果时继续比较距离。
     const auto bug = PickBugPlaceholderAt(point, *frame.value);
     if (!bug.Succeeded()) {
         if (PickPending(bug.diagnostics) && DeferSelection(point, modifiers, false)) return;
         ClearCoordinates(PickDiagnostic(bug.diagnostics), true); return;
     }
-    if (*bug.value && (hits.value->empty() || (*bug.value)->distance <= hits.value->front().distance)) {
+    if (!hits.Succeeded() && !*bug.value) {
+        if (PickPending(hits.diagnostics) && DeferSelection(point, modifiers, false)) return;
+        ClearCoordinates(PickDiagnostic(hits.diagnostics), true); return;
+    }
+    if (*bug.value && (!hits.Succeeded() || hits.value->empty() || (*bug.value)->distance <= hits.value->front().distance)) {
         selectedCoordinate_ = picked.value->hit;
-        SetCoordinateTexts(hoverText_, tr("命中：模型无法绘制的紫黑占位；真实原因见模型诊断。"));
+        auto selection = tr("命中：模型无法绘制的紫黑占位；真实原因见模型诊断。");
+        if (!hits.Succeeded()) selection += QStringLiteral(" · ") + PickDiagnostic(hits.diagnostics);
+        SetCoordinateTexts(hoverText_, std::move(selection));
         const auto owner = (*bug.value)->owner; // signal回调可重建视口，不借用绑定内存。
         emit BugPlaceholderClicked(owner, static_cast<int>(modifiers)); return;
     }

@@ -58,10 +58,21 @@ public:
 
     [[nodiscard]] const Mpq::MpqArchive& Archive() const noexcept;
 
-private:
-    explicit MpqWorkspace(std::unique_ptr<Mpq::MpqArchive> archive);
+    // 只读绑定持有拒绝写入的文件租约；身份、SHA 和 MPQ 来自同一文件句柄。
+    // 已知成员仅为正证据，不授予完整枚举、地图保存或恢复快照能力。
+    [[nodiscard]] const std::filesystem::path& SourcePath() const noexcept;
+    [[nodiscard]] const std::string& SourceSha256() const noexcept;
+    [[nodiscard]] const std::vector<Mpq::MpqFileInfo>& KnownMembers() const noexcept;
+    [[nodiscard]] Status VerifyUnchanged() const;
+    // 核对独立后台读取器的新租约；不转移或修改借入的 Windows 文件句柄。
+    [[nodiscard]] Status VerifySourceHandle(void* handle) const;
+    [[nodiscard]] Result<std::vector<std::byte>> ReadMember(
+        std::string_view name, std::size_t maximumBytes) const;
 
-    std::unique_ptr<Mpq::MpqArchive> archive_;
+private:
+    struct State;
+    explicit MpqWorkspace(std::unique_ptr<State> state);
+    std::unique_ptr<State> state_;
 };
 
 } // namespace War3Map

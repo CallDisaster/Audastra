@@ -22,11 +22,18 @@ struct StandardObjectEntry {
     std::string iconPath;
     std::string nameSourceRawcode;
     std::string iconSourceRawcode;
+    std::string definitionSourceFile;
+    std::string nameSourceFile;
+    std::string iconSourceFile;
     // SLK 列名与 profile 键名统一为 ASCII 小写，rawcode 值保持大小写。
     std::unordered_map<std::string, std::string> fields;
+    // 最终字段来自哪个逻辑文件；实际层/容器由有效目录快照记录。
+    std::unordered_map<std::string, std::string> fieldSourceFiles;
     std::vector<std::string> sourceFiles;
     bool nameResolved = false;
     bool editorVisible = true;
+    // 地图/战役表仅授予读取资格；尚未验证其 SLK/profile 写回链，不能自动创建原生覆盖。
+    bool nativeOverridesSupported = true;
 
     [[nodiscard]] std::string_view Field(std::string_view name) const;
 };
@@ -49,6 +56,9 @@ struct CatalogLoadOptions {
     // 统一字符串表（YDWE 覆盖层 → 游戏 → 英文原版）；提供时优先于 stringFiles 解析 WESTRING_ 名称。
     const Game::WorldEditStrings* strings = nullptr;
     std::size_t maximumFileBytes = 32 * 1024 * 1024;
+    // 有效来源入口启用：已有解析器明确拒绝的命中表不能被忽略后继续授予目录资格。
+    // 不改变 SLK/profile 语法。明确缺失使用 OBJECT_CATALOG_SOURCE_MISSING。
+    bool rejectInvalidPresentSources = false;
 };
 
 class StandardObjectCatalog {
@@ -68,6 +78,7 @@ public:
     [[nodiscard]] const std::vector<std::string>& LoadedFiles() const noexcept { return loadedFiles_; }
 
 private:
+    friend class EffectiveObjectCatalog;
     std::vector<StandardObjectEntry> entries_;
     std::unordered_map<std::string, std::size_t> index_;
     std::vector<std::string> loadedFiles_;

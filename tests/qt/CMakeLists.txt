@@ -127,6 +127,8 @@ set_tests_properties(qt-mcp-agent-transport PROPERTIES TIMEOUT 60
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
 qt_add_executable(war3-map-live-editor-tools-tests LiveEditorToolsTests.cpp
+    "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorAuxiliaryTools.cpp"
+    "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorAuxiliaryTools.h"
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveObjectTools.cpp"
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveObjectTools.h"
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorTools.cpp"
@@ -238,6 +240,19 @@ foreach(exit_after_open_case IN ITEMS success custom-text models-missing invalid
         PROPERTIES TIMEOUT 45)
 endforeach()
 
+# 从未显示的世界页启动到真实完成帧；无摆放模型和地形读取失败分别回归。
+foreach(world_probe_case IN ITEMS empty-terrain missing-terrain focused-empty-terrain)
+    add_test(NAME "qt-world-probe-${world_probe_case}"
+        COMMAND "${CMAKE_COMMAND}"
+            "-DEDITOR=$<TARGET_FILE:war3-map-editor>"
+            "-DFIXTURE_WRITER=$<TARGET_FILE:war3-map-exit-after-open-fixture-writer>"
+            "-DQT_BIN_DIR=$<TARGET_FILE_DIR:Qt6::Core>"
+            "-DWORK_ROOT=${CMAKE_CURRENT_BINARY_DIR}/world-probe-$<CONFIG>"
+            "-DPROBE_CASE=${world_probe_case}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/WorldProbeProcessTest.cmake")
+    set_tests_properties("qt-world-probe-${world_probe_case}" PROPERTIES TIMEOUT 60)
+endforeach()
+
 # 嵌入式变量页：GUI 引用重命名与撤销一致性。
 qt_add_executable(war3-map-variable-dialog-tests
     VariablesDialogTests.cpp)
@@ -305,6 +320,7 @@ foreach(native_workbench_source IN LISTS native_workbench_app_sources)
     endif()
 endforeach()
 qt_add_executable(war3-map-native-workbench-tests ${native_workbench_test_sources})
+audastra_use_test_lua(war3-map-native-workbench-tests)
 target_include_directories(war3-map-native-workbench-tests PRIVATE "${PROJECT_SOURCE_DIR}/src/QtApp")
 target_link_libraries(war3-map-native-workbench-tests PRIVATE
     War3MapEditor::Core War3MapEditor::ObjectData War3MapEditor::Trigger War3MapEditor::QtUiKit
@@ -442,6 +458,13 @@ target_link_libraries(war3-map-project-watch-tests PRIVATE War3MapEditor::QtModu
 target_link_libraries(war3-map-project-watch-tests PRIVATE War3MapEditor::QtModuleWorld)
 target_link_libraries(war3-map-project-watch-tests PRIVATE War3MapEditor::QtModuleCampaign)
 
+qt_add_executable(audastra-object-save-catalog-gate-tests ObjectSaveCatalogGateTests.cpp)
+target_link_libraries(audastra-object-save-catalog-gate-tests PRIVATE War3MapEditor::QtProject)
+target_compile_definitions(audastra-object-save-catalog-gate-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-object-save-catalog-gate-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME qt-object-save-catalog-gate COMMAND audastra-object-save-catalog-gate-tests)
+set_tests_properties(qt-object-save-catalog-gate PROPERTIES TIMEOUT 60
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 qt_add_executable(audastra-object-context-provider-tests ObjectContextProviderTests.cpp)
 target_link_libraries(audastra-object-context-provider-tests PRIVATE War3MapEditor::QtProject)
 target_compile_definitions(audastra-object-context-provider-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
@@ -463,7 +486,8 @@ qt_add_executable(war3-map-world-viewport-tests WorldViewportTests.cpp)
 target_link_libraries(war3-map-world-viewport-tests PRIVATE War3MapEditor::QtModuleWorld Qt6::Test)
 target_compile_definitions(war3-map-world-viewport-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-world-viewport-tests PRIVATE /W4 /permissive- /utf-8)
-add_test(NAME qt-world-viewport COMMAND war3-map-world-viewport-tests)
+add_test(NAME qt-world-viewport COMMAND war3-map-world-viewport-tests
+    -o -,txt -o "${CMAKE_CURRENT_BINARY_DIR}/world-viewport-$<CONFIG>.txt,txt")
 set_tests_properties(qt-world-viewport PROPERTIES TIMEOUT 60
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_PLUGIN_PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>/../plugins")
 
@@ -727,6 +751,15 @@ set_tests_properties(qt-world-bug-placeholder PROPERTIES TIMEOUT 60
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_PLUGIN_PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>/../plugins")
 
+qt_add_executable(war3-map-world-prem-presenter-tests WorldPremPresenterTests.cpp)
+target_link_libraries(war3-map-world-prem-presenter-tests PRIVATE War3MapEditor::QtModuleWorld Qt6::Test)
+target_compile_definitions(war3-map-world-prem-presenter-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(war3-map-world-prem-presenter-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME qt-world-prem-presenter COMMAND war3-map-world-prem-presenter-tests)
+set_tests_properties(qt-world-prem-presenter PROPERTIES TIMEOUT 60
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_PLUGIN_PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>/../plugins")
+
 qt_add_executable(war3-map-object-ordered-picker-tests ObjectOrderedPickerTests.cpp)
 target_link_libraries(war3-map-object-ordered-picker-tests PRIVATE War3MapEditor::QtModuleObjects Qt6::Test)
 target_compile_options(war3-map-object-ordered-picker-tests PRIVATE /W4 /permissive- /utf-8)
@@ -804,6 +837,8 @@ set_tests_properties(qt-recovery-backup-cleanup PROPERTIES TIMEOUT 60
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
 qt_add_executable(war3-map-trigger-rename-tests TriggerRenameTests.cpp
+    "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorAuxiliaryTools.cpp"
+    "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorAuxiliaryTools.h"
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveObjectTools.cpp"
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveObjectTools.h"
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorTools.cpp"

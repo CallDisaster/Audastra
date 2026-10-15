@@ -72,6 +72,9 @@ public:
     [[nodiscard]] Status Redo(CampaignRevision expected);
     [[nodiscard]] Result<CampaignPage> Members(CampaignRevision expected, std::size_t offset, std::size_t limit) const;
     [[nodiscard]] Result<std::vector<std::byte>> ReadMember(CampaignRevision expected, std::string_view path) const;
+    // 固定名字的只读捕获，含会话覆盖/删除；缺失与空成员分别记录。
+    [[nodiscard]] Result<std::vector<ArchiveExactMember>> CaptureExactMembers(CampaignRevision expected,
+        std::span<const std::string> names, const ArchiveExactMemberLimits& limits = {}) const;
     [[nodiscard]] Status ExportMember(CampaignRevision expected, std::string_view path, const std::filesystem::path& target) const;
     [[nodiscard]] Result<CampaignSaveReceipt> Save(CampaignRevision expected,
         const std::filesystem::path& target, bool inPlace, const InPlaceSaveOptions& backup = {});

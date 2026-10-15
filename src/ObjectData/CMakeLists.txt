@@ -8,6 +8,7 @@ add_library(War3MapObjectData STATIC
     ObjectFieldSchema.cpp
     ObjectReferenceIndex.cpp
     StandardObjectCatalog.cpp
+    EffectiveObjectCatalog.cpp
     ReferenceAudit.cpp
     SlkTableText.cpp
     SlkOptimizer.cpp)

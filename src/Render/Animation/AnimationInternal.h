@@ -6,6 +6,13 @@
 #include <unordered_map>
 
 namespace War3Map::Render {
+// 逐请求来源需求常驻于scene，统一按实际容量进入帧侧固定存储；不是逐帧复制。
+[[nodiscard]] inline std::uint64_t AnimationRequestGeometryBytes(std::size_t capacity) noexcept {
+    return std::uint64_t(capacity) * sizeof(std::uint8_t);
+}
+[[nodiscard]] inline std::uint64_t AnimationRequestGeometryBytes(const AnimatedModelScene& scene) noexcept {
+    return AnimationRequestGeometryBytes(scene.requestGeometryRequired.capacity());
+}
 inline War3RenderCore::NodeKeySamplingPolicy AnimationNodeKeyPolicy(const AnimationLimits& limits) noexcept {
     return limits.allowSourceOrderNodePreview && limits.playbackPolicy == AnimationPlaybackPolicy::InteractivePreview
         ? War3RenderCore::NodeKeySamplingPolicy::SourceOrderPreview : War3RenderCore::NodeKeySamplingPolicy::Strict;

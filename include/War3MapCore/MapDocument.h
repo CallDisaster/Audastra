@@ -10,6 +10,7 @@
 #include <array>
 
 namespace War3Map {
+namespace MapData { class MapDataEditSession; }
 namespace MapData::detail { struct MapDataFieldEditingAccess; }
 
 enum class MapDataKind { Settings, Units, Doodads, Regions, Cameras, Sounds, Strings, Count };
@@ -32,6 +33,7 @@ public:
     [[nodiscard]] static MapDocument FromArchive(const MapArchiveSession& archive);
     // 仅按已知名字读取基础成员，不要求归档拥有完整 listfile。此入口不授予保存能力。
     [[nodiscard]] static Result<MapDocument> OpenReadOnlyArchive(const std::filesystem::path& path);
+    [[nodiscard]] static Result<MapDocument> FromReadOnlyArchive(const MpqWorkspace& archive);
     [[nodiscard]] static MapDocument FromMembers(std::span<const MapArchiveMember> members,
         const std::filesystem::path& source = {});
     // root/ 与 map/ 同名成员、原生 W3I 与 table/w3i.ini 同时存在均视为冲突。
@@ -57,6 +59,7 @@ public:
     [[nodiscard]] const auto& Strings() const noexcept { return strings_; }
 
 private:
+    friend class MapData::MapDataEditSession;
     friend struct MapData::detail::MapDataFieldEditingAccess;
     MapDocument();
     void ParseMembers();

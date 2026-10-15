@@ -1,5 +1,6 @@
 #include "WorldModule.h"
 #include "WorldAnimationPlayer.h"
+#include "WorldDiagnosticJson.h"
 #include "WorldAnimationDiagnostics.h"
 #include "WorldPlacementModels.h"
 #include "WorldPlacementPreview.h"
@@ -734,15 +735,117 @@ QString FieldStateName(Services::PlacementFieldState state) {
     }
     return QStringLiteral("unavailable");
 }
-QJsonArray PlacementDiagnosticOrigins(const std::vector<Services::PlacementFieldOrigin>& origins) {
+QJsonArray PlacementDiagnosticOrigins(const std::vector<Services::PlacementFieldOrigin>& origins, bool bounded = false) {
     QJsonArray result;
-    for (const auto& origin : origins) result.push_back(QJsonObject{{"field", QString::fromStdString(origin.field)},
-        {"objectRawcode", QString::fromStdString(origin.objectRawcode)}, {"sourceId", QString::fromStdString(origin.sourceId)},
-        {"sourcePath", QString::fromStdString(origin.sourcePath)},
-        {"byteOffset", origin.byteOffset ? QJsonValue(QString::number(*origin.byteOffset)) : QJsonValue::Null}});
+    for (std::size_t i = 0; i < origins.size() && (!bounded || i < 4); ++i) {
+        const auto& origin = origins[i];
+        QJsonObject row{{"byteOffset", origin.byteOffset ? QJsonValue(QString::number(*origin.byteOffset)) : QJsonValue::Null}};
+        if (bounded) {
+            WorldDiagnosticJson::Text(row, "field", std::string_view(origin.field), 128);
+            WorldDiagnosticJson::Text(row, "objectRawcode", std::string_view(origin.objectRawcode), 32);
+            WorldDiagnosticJson::Text(row, "sourceId", std::string_view(origin.sourceId), 256);
+            WorldDiagnosticJson::Text(row, "sourcePath", std::string_view(origin.sourcePath), 1024);
+        } else {
+            row["field"] = QString::fromStdString(origin.field); row["objectRawcode"] = QString::fromStdString(origin.objectRawcode);
+            row["sourceId"] = QString::fromStdString(origin.sourceId); row["sourcePath"] = QString::fromStdString(origin.sourcePath);
+        }
+        result.push_back(std::move(row));
+    }
     return result;
 }
 }
+QJsonObject WorldModule::ModelDiagnosticProgressSnapshot(std::uint32_t offset, std::uint32_t limit) const {
+    limit = std::clamp(limit, 1u, 16u);
+    const bool sceneCurrent = InstanceDiagnosticsCurrent();
+    const bool captureCurrent = sceneCurrent || EmptyModelCaptureCurrent();
+    const auto version = PlacementPresentationVersion();
+    QJsonObject binding{{"generation", QString::number(version.document.generation)},
+        {"revision", QString::number(version.document.revision)}, {"catalogRevision", QString::number(version.catalogRevision)}};
+    WorldDiagnosticJson::Text(binding, "documentId", std::string_view(version.document.documentId));
+    WorldDiagnosticJson::Text(binding, "sourceSha256", std::string_view(version.document.sourceSha256), 128);
+    QJsonObject result{{"schemaVersion", 1}, {"detail", "bounded-progress"}, {"binding", binding},
+        {"sceneCurrent", sceneCurrent}, {"captureCurrent", captureCurrent}, {"documentAvailable", selectionDocument_ != nullptr},
+        {"sourceChangeSuspected", project_.sourceChangeSuspected_}, {"sourceChangeConfirmed", project_.sourceChangeConfirmed_},
+        {"gpuCompletionProven", false}, {"gameplayVerified", false}, {"modelRowKind", "instance-diagnostic-page"},
+        {"terrainOnly", TerrainOnlySceneDiagnosticSnapshot()}};
+    if (buildingSplatPresenter_) result["buildingSplat"] = buildingSplatPresenter_->DiagnosticSnapshot(offset, limit);
+    if (!captureCurrent) {
+        // 旧缓存和加载前的零值都不能充当当前来源的空列表。
+        result["unresolvedPlacementCount"] = QJsonValue::Null;
+        result["modelRequestCount"] = QJsonValue::Null;
+        result["rowsState"] = "pending-or-stale";
+        return result;
+    }
+    QJsonArray unresolved;
+    const auto unresolvedBegin = std::min<std::size_t>(offset, unresolvedPlacements_.size());
+    for (std::size_t i = unresolvedBegin; i < unresolvedPlacements_.size() && i - unresolvedBegin < limit; ++i) {
+        const auto& missing = unresolvedPlacements_[i];
+        auto row = PlacementDiagnosticIdentity(missing.owner);
+        row["position"] = QJsonArray{missing.position[0], missing.position[1], missing.position[2]};
+        row["objectType"] = missing.objectType ? QJsonValue(QString::fromUtf8(ObjectData::ToString(*missing.objectType))) : QJsonValue::Null;
+        WorldDiagnosticJson::Text(row, "modelPath", std::string_view(missing.modelPath));
+        WorldDiagnosticJson::Text(row, "reasonCode", std::string_view(missing.reasonCode), 256);
+        WorldDiagnosticJson::Text(row, "reason", std::string_view(missing.reason));
+        const auto origins = PlacementDiagnosticOrigins(missing.origins, true);
+        row["origins"] = origins;
+        row["originsPage"] = WorldDiagnosticJson::Page(missing.origins.size(), 0, origins.size(), 4);
+        unresolved.append(std::move(row));
+    }
+    result["unresolvedPlacementCount"] = static_cast<double>(unresolvedPlacements_.size());
+    result["unresolvedPlacementRows"] = unresolved;
+    result["unresolvedPlacementPage"] = WorldDiagnosticJson::Page(unresolvedPlacements_.size(), offset, unresolved.size(), limit);
+    result["modelRequestCount"] = static_cast<double>(requests_.size());
+    QJsonArray models;
+    if (sceneCurrent) {
+        const auto frame = animation_->Frame();
+        const auto attached = instanceDiagnosticQuery_->SetFrame(frame);
+        if (!attached.Succeeded()) {
+            result["rowsState"] = "frame-binding-rejected";
+            result["diagnostics"] = WorldDiagnosticJson::Diagnostics(attached.diagnostics);
+            return result;
+        }
+        const auto& specs = instanceDiagnosticScene_->specs;
+        const auto begin = std::min<std::size_t>(offset, specs.size());
+        for (std::size_t i = begin; i < specs.size() && i - begin < limit; ++i) {
+            QJsonObject row{{"requestIndex", static_cast<double>(i)}};
+            const auto capturedBinding = instanceDiagnosticQuery_->Binding(static_cast<std::uint32_t>(i), specs[i].identity);
+            const auto queried = capturedBinding.Succeeded() ? instanceDiagnosticQuery_->Query(*capturedBinding.value, 0, 4)
+                : Result<Render::AnimationDiagnosticPage>{std::nullopt, capturedBinding.diagnostics};
+            if (!queried.Succeeded()) {
+                row["queryRejected"] = true; row["diagnostics"] = WorldDiagnosticJson::Diagnostics(queried.diagnostics, 4);
+                models.append(std::move(row)); continue;
+            }
+            const auto& page = *queried.value;
+            WorldDiagnosticJson::Text(row, "modelPath", std::string_view(page.modelPath));
+            WorldDiagnosticJson::Text(row, "hostKey", std::string_view(page.hostKey));
+            row["sceneVersion"] = QString::number(page.binding.sceneVersion);
+            row["contentVersion"] = QString::number(page.binding.contentVersion);
+            row["identity"] = QString::number(page.binding.identity.value);
+            row["identityGeneration"] = QString::number(page.binding.identity.generation);
+            row["hidden"] = page.hidden; row["unavailable"] = page.unavailable; row["partial"] = page.partial;
+            row["noVisibleGeometry"] = page.noVisibleGeometry;
+            QJsonArray issues;
+            for (const auto& issue : page.issues) {
+                QJsonObject item;
+                WorldDiagnosticJson::Text(item, "stage", std::string_view(issue.stage), 128);
+                WorldDiagnosticJson::Text(item, "kind", std::string_view(issue.kind), 128);
+                WorldDiagnosticJson::Text(item, "code", std::string_view(issue.code), 256);
+                WorldDiagnosticJson::Text(item, "message", std::string_view(issue.message));
+                issues.append(std::move(item));
+            }
+            row["issues"] = issues; row["issuesPage"] = WorldDiagnosticJson::Page(page.total, page.offset, issues.size(), 4);
+            models.append(std::move(row));
+        }
+        result["sceneVersion"] = QString::number(instanceDiagnosticScene_->sceneVersion);
+        result["contentVersion"] = QString::number(frame->contentVersion);
+    }
+    result["rowsState"] = "current";
+    result["modelRows"] = models;
+    result["modelRowsPage"] = WorldDiagnosticJson::Page(
+        sceneCurrent ? instanceDiagnosticScene_->specs.size() : 0, offset, models.size(), limit);
+    return result;
+}
+
 QJsonObject WorldModule::ModelDiagnosticSnapshot() const {
     QJsonObject result{{"schemaVersion", 1}, {"sceneCurrent", InstanceDiagnosticsCurrent()},
         {"sourceChangeSuspected", project_.sourceChangeSuspected_}, {"sourceChangeConfirmed", project_.sourceChangeConfirmed_},
@@ -790,43 +893,69 @@ QJsonObject WorldModule::ModelDiagnosticSnapshot() const {
 
 Result<QJsonObject> WorldModule::ModelBugPlaceholderCaptureSnapshot(const Render::CapturedFrameRgba& capture) const try {
     using Output = Result<QJsonObject>;
-    const auto fail = [](const char* message) { return Output::Failure("World.BugPlaceholder",
-        "WORLD_BUG_PLACEHOLDER_CAPTURE_SOURCE_STALE", message); };
+    const auto fail = [](std::string message) { return Output::Failure("World.BugPlaceholder",
+        "WORLD_BUG_PLACEHOLDER_CAPTURE_SOURCE_STALE", std::move(message)); };
     if (QThread::currentThread() != thread() || !InstanceDiagnosticsCurrent() || !bugPlaceholderPresenter_
-        || !instanceRegistry_ || project_.sourceChangeSuspected_ || project_.sourceChangeConfirmed_)
+        || project_.sourceChangeSuspected_ || project_.sourceChangeConfirmed_)
         return fail("占位GPU读回不属于当前所属线程、地图来源或已接受场景；没有生成证明。");
     const auto scene = animation_->Scene();
     const auto frame = animation_->Frame();
     const auto registry = instanceRegistry_;
     const auto diagnostics = instanceDiagnosticQuery_;
-    const auto prepared = bugPlaceholderPresenter_->Snapshot();
+    auto prepared = bugPlaceholderPresenter_->Snapshot();
+    if (!registry) {
+        if (!scene || !frame || !unresolvedPlacements_.empty())
+            return fail("只读场景仍有未解析摆放或缺少当前帧，不能证明无需占位。");
+        auto absence = Services::PlanWorldModelBugPlaceholderAbsence(scene, *frame);
+        if (!absence.Succeeded()) return {std::nullopt, std::move(absence.diagnostics)};
+        prepared = std::make_shared<const Services::WorldModelBugPlaceholderPlan>(std::move(*absence.value));
+    }
     const auto expected = PlacementPresentationVersion();
     const auto mapKey = MapKey(); const auto generation = generation_;
-    if (!scene || !frame || !prepared || prepared->sourceScene != scene || prepared->registry != registry
-        || prepared->binding != registry->Binding() || capture.animation != frame || viewport_->AnimationTarget() != frame
-        || instanceDiagnosticScene_ != scene || instanceDiagnosticRegistry_ != registry
-        || !worldSelection_.Version() || *worldSelection_.Version() != expected
-        || registry->Binding().sourceIdentity != expected.document.sourceSha256
-        || registry->Binding().sourceGeneration != scene->generation
-        || registry->Binding().mapRevision != expected.document.revision
-        || registry->Binding().editSessionIdentity != (project_.mapEdits_ ? project_.mapEdits_->SessionIdentity() : 0)
-        || registry->Binding().editRevision != (project_.mapEdits_ ? project_.mapEdits_->Revision() : 0))
-        return fail("占位准备计划、实例谱系与实际同次读回的主动画或文档身份不符。");
+    if (!scene || !frame) return fail("占位捕获缺少当前主场景或动画帧。");
+    if (!prepared) {
+        std::string message = "占位捕获尚无当前来源的准备计划。";
+        for (const auto& diagnostic : bugPlaceholderPresenter_->LastStatus().diagnostics)
+            message += diagnostic.code + ": " + diagnostic.message + "；";
+        return fail(std::move(message));
+    }
+    // 每个身份仍独立拒绝；精确说明失配项，避免大图失败只剩一条合并原因。
+    const std::pair<const char*, bool> checks[]{
+        {"plan.scene", prepared->sourceScene == scene},
+        {"plan.registry", prepared->registry == registry},
+        {"plan.binding", !registry || prepared->binding == registry->Binding()},
+        {"capture.frame", capture.animation == frame},
+        {"viewport.frame", viewport_->AnimationTarget() == frame},
+        {"diagnostic.scene", instanceDiagnosticScene_ == scene},
+        {"diagnostic.registry", instanceDiagnosticRegistry_ == registry},
+        {"selection.version", worldSelection_.Version() && *worldSelection_.Version() == expected},
+        {"source.identity", prepared->binding.sourceIdentity == expected.document.sourceSha256},
+        {"source.generation", prepared->binding.sourceGeneration == scene->generation},
+        {"map.revision", prepared->binding.mapRevision == expected.document.revision},
+        {"edit.session", !registry || prepared->binding.editSessionIdentity == (project_.mapEdits_ ? project_.mapEdits_->SessionIdentity() : 0)},
+        {"edit.revision", !registry || prepared->binding.editRevision == (project_.mapEdits_ ? project_.mapEdits_->Revision() : 0)},
+    };
+    for (const auto& [name, current] : checks) if (!current)
+        return fail(std::string("占位捕获身份不符：") + name + "；没有生成完成证明。");
     const auto stillCurrent = [&] {
         if (!InstanceDiagnosticsCurrent() || MapKey() != mapKey || generation_ != generation
             || project_.sourceChangeSuspected_ || project_.sourceChangeConfirmed_
             || animation_->Scene() != scene || animation_->Frame() != frame || viewport_->AnimationTarget() != frame
-            || instanceRegistry_ != registry || instanceDiagnosticQuery_ != diagnostics || bugPlaceholderPresenter_->Snapshot() != prepared
+            || instanceRegistry_ != registry || instanceDiagnosticQuery_ != diagnostics
+            || (registry && bugPlaceholderPresenter_->Snapshot() != prepared)
+            || (!registry && !unresolvedPlacements_.empty())
             || !worldSelection_.Version() || *worldSelection_.Version() != expected) return false;
         const auto actual = PlacementPresentationVersion();
         return actual.document == expected.document && actual.catalogRevision == expected.catalogRevision;
     };
     const Services::WorldModelBugFlagsReader flags = [&](const MapData::PlacementId& owner)
         -> std::optional<Services::WorldEditorFlags> {
-        if (!stillCurrent() || !registry->Find(owner)) return std::nullopt;
+        if (!stillCurrent() || !registry || !registry->Find(owner)) return std::nullopt;
         return worldSelection_.Flags(Services::WorldObjectId{owner});
     };
-    auto actualPlan = Services::PlanWorldModelBugPlaceholders(scene, *capture.animation, registry, placementIds_, flags);
+    auto actualPlan = registry
+        ? Services::PlanWorldModelBugPlaceholders(scene, *capture.animation, registry, placementIds_, flags)
+        : Services::PlanWorldModelBugPlaceholderAbsence(scene, *capture.animation);
     if (!actualPlan.Succeeded()) return {std::nullopt, std::move(actualPlan.diagnostics)};
     if (actualPlan.value->binding != prepared->binding || actualPlan.value->markers != prepared->markers)
         return fail("实际读回帧的故障、位置或可选状态与准备计划不同；没有把旧准备内容冒充当前画面。");
@@ -859,6 +988,7 @@ Result<QJsonObject> WorldModule::ModelBugPlaceholderCaptureSnapshot(const Render
     QJsonObject output{{"schemaVersion", 1}, {"realSourceBound", true}, {"syntheticFixture", false},
         {"captureSource", "renderer_completed_frame"}, {"sceneCurrent", true},
         {"sourceChangeSuspected", false}, {"sourceChangeConfirmed", false},
+        {"instanceLineageAvailable", registry != nullptr}, {"cpuFrameProvesNoPlaceholderDemand", registry == nullptr},
         {"gpuLayerCaptured", facts.layerCaptured}, {"gpuLayerCompletionProven", facts.layerCaptured},
         {"absenceReason", facts.layerCaptured ? QJsonValue(QJsonValue::Null) : QJsonValue("no-marker-for-captured-frame")},
         {"visibleAcceptance", false}, {"selectionAcceptance", false}, {"gameplayVerified", false},
@@ -874,9 +1004,9 @@ Result<QJsonObject> WorldModule::ModelBugPlaceholderCaptureSnapshot(const Render
             {"sourceSha256", QString::fromStdString(expected.document.sourceSha256)},
             {"generation", number(expected.document.generation)}, {"revision", number(expected.document.revision)},
             {"catalogRevision", number(expected.catalogRevision)}, {"editorRevision", number(expected.editorRevision)},
-            {"sourceGeneration", number(registry->Binding().sourceGeneration)},
-            {"editSessionIdentity", number(registry->Binding().editSessionIdentity)},
-            {"editRevision", number(registry->Binding().editRevision)}}}};
+            {"sourceGeneration", number(prepared->binding.sourceGeneration)},
+            {"editSessionIdentity", number(prepared->binding.editSessionIdentity)},
+            {"editRevision", number(prepared->binding.editRevision)}}}};
     for (const auto& layer : capture.modelLayers) if (layer.layerId == Services::WorldModelBugPlaceholderLayerId) {
         output["staticUploadCount"] = number(layer.skin.staticUploadCount);
         output["matrixUploadCount"] = number(layer.skin.matrixUploadCount);
@@ -895,6 +1025,19 @@ Result<QJsonObject> WorldModule::ModelPremCaptureSnapshot(const Render::Captured
         || !viewport_ || viewport_->AnimationTarget() != capture.animation)
         return Result<QJsonObject>::Failure("World.PREM", "WORLD_PREM_CAPTURE_SOURCE_STALE",
             "PREM 捕获未绑定当前所属线程、来源、实例谱系或已接受父帧。");
+    const auto scene = animation_->Scene();
+    const auto frame = animation_->Frame();
+    if (!scene || !frame || !instanceDiagnosticVersion_
+        || scene != instanceDiagnosticScene_ || scene->sourceIdentity != instanceDiagnosticVersion_->document.sourceSha256
+        || scene->documentRevision != instanceDiagnosticVersion_->document.revision)
+        return Result<QJsonObject>::Failure("World.PREM", "WORLD_PREM_CAPTURE_SOURCE_STALE",
+            "PREM 捕获的CPU场景不属于当前已绑定地图来源与修订。");
+    if (!frame->prem) return Result<QJsonObject>::Failure("World.PREM", "WORLD_PREM_CAPTURE_PLAN_MISSING",
+        "当前父帧没有PREM准备计划，不能将未知当作空子层。");
+    // 只读地图可能没有可编辑的实例谱系。空槽由当前CPU计划和同帧层清单共同证明；
+    // 有槽仍走Presenter原有的所属对象、显隐、子矩阵与GPU完成门，不能借空层路径放行。
+    if (frame->prem->childSlots.empty())
+        return WorldPremPresenter::CaptureEmptySnapshot(capture, scene, frame, viewport_->DocumentRevision());
     return premPresenter_->CaptureSnapshot(capture);
 }
 
@@ -903,6 +1046,12 @@ bool WorldModule::ModelDiagnosticsReady() const {
         || project_.sourceChangeSuspected_ || project_.sourceChangeConfirmed_
         || !buildingSplatPresenter_->DiagnosticPreparationReady()) return false;
     if (InstanceDiagnosticsCurrent()) return true;
+    return EmptyModelCaptureCurrent();
+}
+
+bool WorldModule::EmptyModelCaptureCurrent() const {
+    if (!page_ || !viewport_ || !selectionMapData_
+        || project_.sourceChangeSuspected_ || project_.sourceChangeConfirmed_) return false;
     // 仅真实捕获并完成的空模型场景可走此门；启动前/失败时的空容器不表示就绪。
     const auto version = PlacementPresentationVersion();
     return emptyModelDiagnosticVersion_ && emptyModelDiagnosticMapKey_ == MapKey()
@@ -913,6 +1062,86 @@ bool WorldModule::ModelDiagnosticsReady() const {
         && version.catalogRevision == emptyModelDiagnosticVersion_->catalogRevision
         && version.document.generation == std::max<std::uint64_t>(1, project_.editRevision_.Generation())
         && version.document.revision == (project_.mapEdits_ ? project_.mapEdits_->Revision() : 0);
+}
+
+WorldModule::TerrainOnlyFacts WorldModule::QualifyTerrainOnlyScene() const {
+    TerrainOnlyFacts facts;
+    if (!ViewportForTools() || !selectionDocument_ || !EmptyModelCaptureCurrent()
+        || (cliffs_ && !cliffs_->meshes.empty())) return facts;
+    const auto& document = *selectionDocument_;
+    const auto& units = document.Member(MapDataKind::Units);
+    const auto& doodads = document.Member(MapDataKind::Doodads);
+    const auto unitCount = document.Units() ? document.Units()->units.size() : 0;
+    const auto doodadCount = document.Doodads()
+        ? document.Doodads()->doodads.size() + document.Doodads()->specialDoodads.size() : 0;
+    facts.unitsVerified = (units.state == MapDataState::Missing && !document.Units())
+        || (units.state == MapDataState::Ready && document.Units() && units.recordCount == unitCount);
+    facts.doodadsVerified = (doodads.state == MapDataState::Missing && !document.Doodads())
+        || (doodads.state == MapDataState::Ready && document.Doodads() && doodads.recordCount == doodadCount);
+    if (!facts.unitsVerified || !facts.doodadsVerified) {
+        facts.reason = "WORLD_EMPTY_MODEL_SOURCE_INCOMPLETE"; return facts;
+    }
+    if (!unresolvedPlacements_.empty()) {
+        facts.reason = "WORLD_EMPTY_MODEL_UNRESOLVED_PLACEMENTS"; return facts;
+    }
+    if (doodadCount != 0) {
+        facts.reason = "WORLD_EMPTY_MODEL_DOODADS_NOT_REPRESENTED"; return facts;
+    }
+    if (document.Units()) for (const auto& unit : document.Units()->units) {
+        // CaptureWorldPlacements / CaptureWorldBuildingSplats 都明确排除原版起点。
+        // 只承认逐条验证过的 sloc，不用 requests.empty() 推断单位来源为空。
+        if (unit.rawcode != "sloc") {
+            facts.reason = "WORLD_EMPTY_MODEL_UNITS_NOT_REPRESENTED"; return facts;
+        }
+        ++facts.startLocations;
+    }
+    facts.ready = true;
+    facts.reason = facts.startLocations ? "WORLD_START_LOCATIONS_HAVE_NO_MODEL" : "WORLD_PLACEMENT_SOURCES_EMPTY";
+    return facts;
+}
+
+bool WorldModule::TerrainOnlySceneReady() const { return QualifyTerrainOnlyScene().ready; }
+
+QJsonObject WorldModule::TerrainOnlySceneDiagnosticSnapshot() const {
+    const auto facts = QualifyTerrainOnlyScene();
+    QJsonObject result{{"ready", facts.ready}, {"reason_code", facts.reason},
+        {"units_source_verified", facts.unitsVerified}, {"doodads_source_verified", facts.doodadsVerified},
+        {"source_start_location_count", static_cast<double>(facts.startLocations)},
+        {"model_requests", static_cast<double>(requests_.size())},
+        {"unresolved_placements", static_cast<double>(unresolvedPlacements_.size())},
+        {"start_location_model_exclusion", "original-start-location-not-a-placed-model"},
+        {"start_location_splat_exclusion", "original-start-location-not-a-building"},
+        {"start_location_marker_implemented", true}, {"start_location_marker_visual_verified", false},
+        {"start_location_marker_source_current", StartLocationsCurrent()},
+        {"start_location_marker_overlay_submitted", startLocationOverlaySubmitted_},
+        {"start_location_marker_count", static_cast<double>(startLocationMarkers_.markers.size())},
+        {"start_location_marker_omitted", static_cast<double>(startLocationMarkers_.omittedCount)},
+        {"completion_proven", false}};
+    if (selectionDocument_) {
+        const auto stateName = [](MapDataState state) {
+            switch (state) {
+            case MapDataState::Missing: return "missing";
+            case MapDataState::Ready: return "ready";
+            case MapDataState::Partial: return "partial";
+            case MapDataState::Invalid: return "invalid";
+            case MapDataState::Ambiguous: return "ambiguous";
+            case MapDataState::Unreadable: return "unreadable";
+            }
+            return "unknown";
+        };
+        result["units_source_state"] = stateName(selectionDocument_->Member(MapDataKind::Units).state);
+        result["doodads_source_state"] = stateName(selectionDocument_->Member(MapDataKind::Doodads).state);
+    }
+    return result;
+}
+
+void WorldModule::FinishEmptyModelCapture() {
+    emptyModelDiagnosticVersion_ = PlacementPresentationVersion(); emptyModelDiagnosticMapKey_ = MapKey();
+    emptyModelDiagnosticGeneration_ = generation_;
+    const auto facts = QualifyTerrainOnlyScene();
+    if (facts.ready) RecordModelLoad("captured-no-renderable-models");
+    else RecordModelLoad("empty-capture-rejected", Status::Failure("World", facts.reason,
+        "模型捕获已结束，但摆放来源不完整或存在未表示的摆放；不能把空请求当作纯地形成功。").diagnostics, true);
 }
 Result<WorldModelDiagnosticsCapture> WorldModule::CaptureModelDiagnosticsView() {
     if (!ModelDiagnosticsReady()) return Result<WorldModelDiagnosticsCapture>::Failure(
@@ -979,13 +1208,18 @@ Services::WorldSelectionVersion WorldModule::PlacementPresentationVersion() cons
     return {context.binding, context.catalogRevision, worldSelection_.Version() ? worldSelection_.Version()->editorRevision : 0};
 }
 void WorldModule::StartAnimatedModels(std::uint64_t generation) {
+    RecordModelLoad("capturing-animated");
     if (bugPlaceholderPresenter_) bugPlaceholderPresenter_->Clear();
     if (premPresenter_) premPresenter_->Clear();
     emptyModelDiagnosticVersion_.reset();
     instanceDiagnosticVersion_.reset(); RefreshInstanceDiagnostics(); // 加载/等待期间不沿用旧实例原因。
-    if (modelWorker_) { modelGeneration_=generation; placementsDirty_=true; return; }
-    if (!viewport_->VertexCount()) { modelGeneration_=generation; placementsDirty_=true; return; }
-    const auto document=CurrentDocument(); if (!document) return;
+    if (modelWorker_) { RecordModelLoad("waiting-for-model-worker"); modelGeneration_=generation; placementsDirty_=true; return; }
+    if (!viewport_->VertexCount()) { RecordModelLoad("waiting-for-terrain"); modelGeneration_=generation; placementsDirty_=true; return; }
+    const auto document=CurrentDocument();
+    if (!document) {
+        ReportModelPreparationFailure(tr("地图数据不可用，未显示摆放模型"), Status::Failure("World",
+            "WORLD_MODEL_DOCUMENT_UNAVAILABLE", "当前地图文档不可用，不能捕获摆放模型。").diagnostics); return;
+    }
     CaptureAuxiliary(*document); RefreshOutliner();
     RefreshBuildingSplats(false, &*document); // 先捕获typed uubs，不由模型可用性决定贴画来源。
     auto placed=std::make_shared<WorldPlacementCapture>(CaptureWorldPlacements(project_,*document));
@@ -998,12 +1232,11 @@ void WorldModule::StartAnimatedModels(std::uint64_t generation) {
         animation_->Clear(); (void)viewport_->SetModelScene(nullptr); scene_.reset();
         cliffsInLayer_=false; if (cliffLayer_) cliffLayer_->Clear();
         requests_=placed->requests; placementIds_=placed->ids; unresolvedPlacements_=placed->unresolvedRows;
-        emptyModelDiagnosticVersion_ = PlacementPresentationVersion(); emptyModelDiagnosticMapKey_ = MapKey();
-        emptyModelDiagnosticGeneration_ = generation_;
+        FinishEmptyModelCapture();
         modelStatus_->setText(tr("无模型")); UpdateOverlay(); return;
     }
     auto sources=CaptureWorldTerrainSources(project_);
-    if (!sources.Succeeded()) { modelStatus_->setText(WorldDiagnosticText(sources.diagnostics)); return; }
+    if (!sources.Succeeded()) { ReportModelPreparationFailure(tr("模型资源来源准备失败"), sources.diagnostics); return; }
     const bool retainCurrent = animation_->CanRetainCurrentScene();
     if (!retainCurrent) {
         viewport_->InvalidateAnimationPicking();
@@ -1105,6 +1338,7 @@ void WorldModule::StartAnimatedModels(std::uint64_t generation) {
         }
     });
     modelWorker_=worker;
+    RecordModelLoad("preparing-animated");
     connect(worker,&QThread::finished,this,[this,work,placed,generation,cliffs,revision,mapKey,registry,revisionGate,selectionSources,
         catalogRevision = presentationVersion.catalogRevision, cliffLayer] {
         modelWorker_=nullptr;
@@ -1122,6 +1356,7 @@ void WorldModule::StartAnimatedModels(std::uint64_t generation) {
             return;
         }
         if (!work->frame) {
+            RecordModelLoad("animated-preparation-failed", work->diagnostics, true);
             project_.AddDiagnostics(work->diagnostics);
             emit animation_->Message(tr("动画场景准备失败：%1").arg(WorldDiagnosticText(work->diagnostics)));
             const bool retained = animation_->CanRetainCurrentScene();
@@ -1142,6 +1377,7 @@ void WorldModule::StartAnimatedModels(std::uint64_t generation) {
         }
         modelStatus_->setProperty("animationUnresolvedPlacements",QVariant::fromValue(static_cast<qulonglong>(placed->unresolved)));
         if (!animation_->Install(work->service,work->frame,work->source,current)) {
+            RecordModelLoad("animated-submit-failed", viewport_->LastAnimationFailure().diagnostics, true);
             const bool retained = animation_->CanRetainCurrentScene();
             if (!retained) { animation_->Clear(); viewport_->InvalidateAnimationPicking(); }
             UpdateInspector();
@@ -1153,6 +1389,7 @@ void WorldModule::StartAnimatedModels(std::uint64_t generation) {
             return;
         }
         scene_=animation_->Picking(); requests_=placed->requests; placementIds_=placed->ids;
+        RecordModelLoad("prepared-animated");
         unresolvedPlacements_ = placed->unresolvedRows;
         cliffsInLayer_ = cliffLayer && work->cliffLayer;
         if (cliffsInLayer_) { cliffLayer_->Show(*work->cliffLayer); cliffLayer_->RebindParent(); }

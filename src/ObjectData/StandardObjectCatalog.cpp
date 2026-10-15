@@ -98,16 +98,21 @@ Result<Rows> ParseSlk(std::string_view text) {
     return Result<Rows>::Success(std::move(rows));
 }
 
-Rows ParseProfile(std::string_view text) {
+Result<Rows> ParseProfile(std::string_view text, bool rejectInvalid, std::string_view path) {
     Rows rows;
     std::string section;
+    std::size_t lineNumber = 0;
     for (std::size_t start = 0; start < text.size();) {
+        ++lineNumber;
         const auto end = text.find('\n', start);
         auto line = War3Map::Text::TrimCWhitespace(text.substr(start, end == std::string_view::npos ? text.size() - start : end - start));
         start = end == std::string_view::npos ? text.size() : end + 1;
         if (line.empty() || line.starts_with("//") || line.front() == ';') continue;
         if (line.front() == '[') {
             const auto closing = line.find(']');
+            if (rejectInvalid && closing == std::string_view::npos)
+                return Result<Rows>::Failure("Object.Catalog", "OBJECT_CATALOG_PROFILE_SYNTAX",
+                    std::string(path) + " 第 " + std::to_string(lineNumber) + " 行的 section 头缺少右方括号 ]。");
             section = closing == std::string_view::npos ? std::string{} : std::string(War3Map::Text::TrimCWhitespace(line.substr(1, closing - 1)));
             continue;
         }
@@ -118,7 +123,7 @@ Rows ParseProfile(std::string_view text) {
         // 保留 CSV/路径/转义符，显示名称和图标再独立取首项。
         rows[section][War3Map::Text::LowerAscii(key)] = std::string(War3Map::Text::TrimCWhitespace(line.substr(equals + 1)));
     }
-    return rows;
+    return Result<Rows>::Success(std::move(rows));
 }
 
 // 统一字符串表优先（YDWE 覆盖层 → 游戏 → 英文原版），其次本次读取的 stringFiles。
@@ -158,11 +163,13 @@ std::string Category(const StandardObjectEntry& entry) {
     return {};
 }
 
-std::pair<std::string, std::string> PresentationValue(
+struct PresentationField { std::string value, rawcode, sourceFile; };
+PresentationField PresentationValue(
     const StandardObjectEntry& entry, const std::vector<std::string>& candidates,
     const std::string& parentField, const std::map<std::string, StandardObjectEntry>& entries,
-    const Rows& profiles) {
+    const Rows& profiles, const Rows& profileSources) {
     const Fields* current = &entry.fields;
+    const Fields* origins = &entry.fieldSourceFiles;
     std::string currentRawcode = entry.key.rawcode;
     std::set<std::string> visited;
     while (current && visited.insert(currentRawcode).second) {
@@ -172,18 +179,26 @@ std::pair<std::string, std::string> PresentationValue(
             if (found == current->end()) continue;
             explicitlySet = true;
             const auto value = FirstValue(found->second);
-            if (Present(value)) return {value, currentRawcode};
+            if (Present(value)) {
+                const auto source = origins ? origins->find(War3Map::Text::LowerAscii(candidate)) : Fields::const_iterator{};
+                return {value, currentRawcode, origins && source != origins->end() ? source->second : std::string{}};
+            }
         }
         // 显式清空的字段不应被基类图标/名称重新填上。
         if (explicitlySet || parentField.empty()) break;
         currentRawcode = Get(*current, parentField);
         const auto parent = entries.find(currentRawcode);
-        if (parent != entries.end()) current = &parent->second.fields;
+        if (parent != entries.end()) {
+            current = &parent->second.fields;
+            origins = &parent->second.fieldSourceFiles;
+        }
         else {
             // 部分原生 code 只有 profile 原型，不在 SLK 可选择物体集合中。
             // 只借用展示字段，不能把这些原型变成额外目录成员。
             const auto donor = profiles.find(currentRawcode);
             current = donor == profiles.end() ? nullptr : &donor->second;
+            const auto source = profileSources.find(currentRawcode);
+            origins = source == profileSources.end() ? nullptr : &source->second;
         }
     }
     return {};
@@ -238,10 +253,19 @@ Result<StandardObjectCatalog> StandardObjectCatalog::Load(
     auto read = [&](const std::string& path, bool required) -> std::optional<std::vector<std::byte>> {
         auto loaded = reader(path);
         if (!loaded.Succeeded()) {
+            const bool missing = !loaded.diagnostics.empty() && std::all_of(loaded.diagnostics.begin(), loaded.diagnostics.end(),
+                [](const auto& diagnostic) { return diagnostic.code == "OBJECT_CATALOG_SOURCE_MISSING"; });
+            if (options.rejectInvalidPresentSources && !missing) {
+                diagnostics.push_back({DiagnosticSeverity::Error, "Object.Catalog", "OBJECT_CATALOG_READ_FAILED",
+                    "无法确认物编表来源：" + path, std::nullopt});
+                diagnostics.insert(diagnostics.end(), loaded.diagnostics.begin(), loaded.diagnostics.end());
+            }
             if (required) warn("source-unavailable", "无法读取物体目录表: " + path);
             return std::nullopt;
         }
         if (loaded.value->size() > options.maximumFileBytes) {
+            if (options.rejectInvalidPresentSources) diagnostics.push_back({DiagnosticSeverity::Error,
+                "Object.Catalog", "OBJECT_CATALOG_SOURCE_BUDGET", "目录数据超过读取大小限制: " + path, std::nullopt});
             warn("source-too-large", "目录数据超过读取大小限制: " + path);
             return std::nullopt;
         }
@@ -253,7 +277,12 @@ Result<StandardObjectCatalog> StandardObjectCatalog::Load(
     Fields strings;
     for (const auto& path : options.stringFiles) {
         if (const auto bytes = read(path, false)) {
-            for (const auto& [section, values] : ParseProfile(Text(*bytes))) {
+            const auto parsed = ParseProfile(Text(*bytes), options.rejectInvalidPresentSources, path);
+            if (!parsed.Succeeded()) {
+                diagnostics.insert(diagnostics.end(), parsed.diagnostics.begin(), parsed.diagnostics.end());
+                continue;
+            }
+            for (const auto& [section, values] : *parsed.value) {
                 (void)section;
                 for (const auto& [key, value] : values) strings[key] = value;
             }
@@ -264,12 +293,18 @@ Result<StandardObjectCatalog> StandardObjectCatalog::Load(
         if (spec.slkFiles.empty()) continue;
         std::map<std::string, StandardObjectEntry> entries;
         Rows presentationProfiles;
+        Rows presentationProfileSources;
         for (std::size_t table = 0; table < spec.slkFiles.size(); ++table) {
             const auto& path = spec.slkFiles[table];
             const auto bytes = read(path, true);
             if (!bytes) continue;
             auto parsed = ParseSlk(Text(*bytes));
             if (!parsed.Succeeded()) {
+                if (options.rejectInvalidPresentSources) {
+                    diagnostics.push_back({DiagnosticSeverity::Error, "Object.Catalog", "OBJECT_CATALOG_PARSE_FAILED",
+                        "已命中的物编表无法解析：" + path, std::nullopt});
+                    diagnostics.insert(diagnostics.end(), parsed.diagnostics.begin(), parsed.diagnostics.end());
+                }
                 warn("slk-invalid", "未接受无效 SLK: " + path + " — " + parsed.diagnostics.front().message);
                 continue;
             }
@@ -277,36 +312,51 @@ Result<StandardObjectCatalog> StandardObjectCatalog::Load(
                 if (table != 0 && !entries.contains(id)) continue;
                 auto& entry = entries[id];
                 entry.key = {spec.type, id};
-                for (const auto& [key, value] : fields) entry.fields[key] = value;
+                if (table == 0) entry.definitionSourceFile = path;
+                for (const auto& [key, value] : fields) {
+                    entry.fields[key] = value;
+                    entry.fieldSourceFiles[key] = path;
+                }
                 entry.sourceFiles.push_back(path);
             }
         }
         for (const auto& path : spec.profileFiles) {
             if (!profileCache.contains(path)) {
                 const auto bytes = read(path, false);
-                profileCache[path] = bytes ? ParseProfile(Text(*bytes)) : Rows{};
+                auto parsed = bytes ? ParseProfile(Text(*bytes), options.rejectInvalidPresentSources, path)
+                    : Result<Rows>::Success({});
+                if (!parsed.Succeeded()) diagnostics.insert(diagnostics.end(), parsed.diagnostics.begin(), parsed.diagnostics.end());
+                profileCache[path] = parsed.Succeeded() ? std::move(*parsed.value) : Rows{};
             }
             for (const auto& [id, fields] : profileCache.at(path)) {
                 if (id.size() == 4) {
-                    for (const auto& [key, value] : fields) presentationProfiles[id][key] = value;
+                    for (const auto& [key, value] : fields) {
+                        presentationProfiles[id][key] = value;
+                        presentationProfileSources[id][key] = path;
+                    }
                 }
                 const auto found = entries.find(id);
                 if (found == entries.end()) continue;
-                for (const auto& [key, value] : fields) found->second.fields[key] = value;
+                for (const auto& [key, value] : fields) {
+                    found->second.fields[key] = value;
+                    found->second.fieldSourceFiles[key] = path;
+                }
                 found->second.sourceFiles.push_back(path);
             }
         }
         std::size_t unresolved = 0;
         for (auto& [id, entry] : entries) {
-            const auto name = PresentationValue(entry, spec.nameFields, spec.presentationParentField, entries, presentationProfiles);
-            entry.displayName = Resolve(name.first, strings, options.strings);
-            entry.nameSourceRawcode = name.second;
+            const auto name = PresentationValue(entry, spec.nameFields, spec.presentationParentField, entries, presentationProfiles, presentationProfileSources);
+            entry.displayName = Resolve(name.value, strings, options.strings);
+            entry.nameSourceRawcode = name.rawcode;
+            entry.nameSourceFile = name.sourceFile;
             entry.nameResolved = Present(entry.displayName) && !entry.displayName.starts_with("WESTRING_");
             if (!entry.nameResolved) ++unresolved;
             if (entry.displayName.empty()) entry.displayName = id;
-            const auto icon = PresentationValue(entry, spec.iconFields, spec.presentationParentField, entries, presentationProfiles);
-            entry.iconPath = icon.first;
-            entry.iconSourceRawcode = icon.second;
+            const auto icon = PresentationValue(entry, spec.iconFields, spec.presentationParentField, entries, presentationProfiles, presentationProfileSources);
+            entry.iconPath = icon.value;
+            entry.iconSourceRawcode = icon.rawcode;
+            entry.iconSourceFile = icon.sourceFile;
             entry.race = FirstValue(Get(entry.fields, "race"));
             entry.category = Category(entry);
             entry.editorVisible = Get(entry.fields, "ineditor") != "0" &&
@@ -323,6 +373,9 @@ Result<StandardObjectCatalog> StandardObjectCatalog::Load(
         if (unresolved) warn("name-unresolved", std::string(ToString(spec.type)) + ": " +
             std::to_string(unresolved) + " 个物体没有可解析的显示名称，保留原字符串或 rawcode。");
     }
+    if (std::any_of(diagnostics.begin(), diagnostics.end(), [](const auto& diagnostic) {
+            return diagnostic.severity == DiagnosticSeverity::Error;
+        })) return {std::nullopt, std::move(diagnostics)};
     if (catalog.entries_.empty()) return Result<StandardObjectCatalog>::Failure(
         "Object.Catalog", "catalog-empty", "未读取到任何标准物体；请检查游戏资源与目录布局。");
     auto result = Result<StandardObjectCatalog>::Success(std::move(catalog));

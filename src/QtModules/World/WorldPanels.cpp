@@ -20,10 +20,12 @@
 #include "Widgets/SearchField.h"
 
 #include <QButtonGroup>
+#include <QAction>
 #include <QComboBox>
 #include <QEvent>
 #include <QDockWidget>
 #include <QMainWindow>
+#include <QMenu>
 #include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QHBoxLayout>
@@ -313,11 +315,28 @@ QWidget* WorldModule::BuildSelectPage() {
     outlinerStatus_->setObjectName(QStringLiteral("worldOutlinerStatus"));
     outlinerStatus_->setWordWrap(true);
     column->addWidget(outlinerStatus_);
-    auto* duplicate = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/copy")), tr("副本"), page);
+    auto* commands = new UiKit::ResponsiveToolBar(page);
+    commands->setObjectName(QStringLiteral("worldAuxiliaryCommands"));
+    auto* create = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/plus")), tr("新建"), commands);
+    create->setObjectName(QStringLiteral("worldNewAuxiliary"));
+    auto* menu = new QMenu(create); create->setMenu(menu);
+    auto* newRegion = menu->addAction(tr("新建区域")); newRegion->setObjectName(QStringLiteral("worldNewRegion"));
+    auto* newCamera = menu->addAction(tr("新建镜头")); newCamera->setObjectName(QStringLiteral("worldNewCamera"));
+    connect(newRegion, &QAction::triggered, this, [this] { CreateAuxiliary(MapDataKind::Regions); });
+    connect(newCamera, &QAction::triggered, this, [this] { CreateAuxiliary(MapDataKind::Cameras); });
+    commands->AddWidget(create, 100);
+    auto* properties = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/settings-2")), tr("属性"), commands);
+    properties->setObjectName(QStringLiteral("worldAuxiliaryProperties")); commands->AddWidget(properties, 80);
+    connect(properties, &QPushButton::clicked, this, &WorldModule::EditSelectedAuxiliary);
+    auto* duplicate = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/copy")), tr("副本"), commands);
     duplicate->setObjectName(QStringLiteral("worldDuplicateAuxiliary"));
     duplicate->setProperty("worldToggle", true);
     duplicate->setToolTip(tr("当前所选对象一次复制；未支持的混合类别保持只读"));
-    column->addWidget(duplicate);
+    commands->AddWidget(duplicate, 50);
+    auto* remove = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/trash-2")), tr("删除"), commands);
+    remove->setObjectName(QStringLiteral("worldDeleteAuxiliary")); commands->AddWidget(remove, 30);
+    connect(remove, &QPushButton::clicked, this, &WorldModule::DeleteSelectedAuxiliary);
+    column->addWidget(commands);
     connect(outlinerFilter_, &QLineEdit::textChanged, this, &WorldModule::FilterOutliner);
     connect(outlinerCategory_, &QComboBox::currentIndexChanged, this, [this] { FilterOutliner(outlinerFilter_->text()); });
     connect(outliner_, &QTreeView::doubleClicked, this, [this](const QModelIndex& index) {
@@ -348,6 +367,13 @@ QWidget* WorldModule::BuildSelectPage() {
         [this, inputView](const QItemSelection& selected, const QItemSelection& deselected) {
             if (!inputView->CollectChange(selected, deselected)) SyncOutlinerSelection();
     });
+    // QTreeView 也会自动分页；核心选择可以先于对应目录行存在。
+    // 每页结束后再读取当前同文档快照，不在 begin/endInsertRows 调用栈里同步。
+    connect(outlinerModel_, &WorldOutlinerModel::PageLoaded, this, [this] {
+        outliner_->expandAll();
+        outlinerStatus_->setText(outlinerModel_->StatusText());
+        SyncOutlinerSelection();
+    }, Qt::QueuedConnection);
     connect(more, &QPushButton::clicked, this, [this] {
         if (outlinerModel_->canFetchMore({})) outlinerModel_->fetchMore({});
         outliner_->expandAll();

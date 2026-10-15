@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 #include "CampaignModule.h"
 #include "TriggerReplaceRealCase.h"
+#include "TestLua.h"
 #include "TriggerReplaceDialog.h"
 #include <QUndoGroup>
 #include "MapSizeDialog.h"
@@ -16,6 +17,7 @@
 #include "Widgets/ChangesPanel.h"
 #include "Fonts/FontLoader.h"
 #include "ObjectModule.h"
+#include "SyntheticObjectCatalogFixture.h"
 #include "MapSettingsModule.h"
 #include "SoundsModule.h"
 #include "TriggerModule.h"
@@ -420,6 +422,11 @@ War3Map::Result<StandardObjectCatalog> SyntheticCatalog() {
     }, options);
 }
 
+bool InstallSyntheticUnitGameSource(War3Map::QtProject::EditorProject& project) {
+    const auto catalog = SyntheticCatalog();
+    return catalog.Succeeded() && War3Map::Tests::InstallSyntheticGameCatalog(project, *catalog.value);
+}
+
 std::string SyntheticSlk(const std::vector<std::vector<std::string>>& rows) {
     std::string result = "ID;PWXL\n";
     for (std::size_t row = 0; row < rows.size(); ++row) {
@@ -747,7 +754,7 @@ bool NativeWorkbenchTests::InstallSyntheticEditorContext(MainWindow& window) {
     schemaOptions.unitEditorDataFile.clear();
     auto schema = ObjectFieldSchema::Load(reader, schemaOptions);
     if (!catalog.Succeeded() || !schema.Succeeded()) return false;
-    window.project_->standardCatalog_ = std::make_unique<StandardObjectCatalog>(std::move(*catalog.value));
+    if (!War3Map::Tests::InstallSyntheticGameCatalog(*window.project_, *catalog.value)) return false;
     window.project_->objectFieldSchema_ = std::make_unique<ObjectFieldSchema>(std::move(*schema.value));
     window.objectsModule_->objectFieldModel_->SetContext(window.project_->standardCatalog_.get(), window.project_->objectFieldSchema_.get());
     window.objectsModule_->UpdateObjectReferenceEntries();
@@ -772,9 +779,9 @@ bool NativeWorkbenchTests::InstallLuaSaveFixture(MainWindow& window, const QTemp
         qWarning().noquote() << message << '\n' << LastMapSaveDiagnostics(*window.project_->diagnosticsModel_);
         return false;
     };
-    const auto checker = NativePath(qEnvironmentVariable("FORGE_YDWE_ROOT")) / "bin/lua.exe";
+    const auto checker = War3Map::Tests::LuaTestExecutable();
     const auto checkerHash = War3Map::Sha256File(checker);
-    if (!checkerHash.Succeeded()) return fail("Real FORGE_YDWE_ROOT/bin/lua.exe required; no skipped Lua execution");
+    if (!checkerHash.Succeeded()) return fail("Self-built Lua 5.3.6 test interpreter required; no skipped Lua execution");
     const auto definitions = fixture.filePath("definitions");
     if (!WriteText(definitions + "/ui/config", "base\n")
         || !WriteText(definitions + "/ui/base/action.txt",
@@ -1303,6 +1310,13 @@ void NativeWorkbenchTests::ResetClearsArchiveImportsAndVisibleList() {
     QCOMPARE(window.assetsModule_->PendingCount(), 0);
     QCOMPARE(window.objectsModule_->objectListModel_->rowCount(), 0);
     QCOMPARE(window.objectsModule_->objectFieldModel_->rowCount(), 0);
+    // 来源刷新和重复重置都不能重新挂回已经销毁的地图对象。
+    window.objectsModule_->objectFieldModel_->SetContext(window.project_->standardCatalog_.get(),
+        window.project_->objectFieldSchema_.get());
+    QCOMPARE(window.objectsModule_->objectFieldModel_->rowCount(), 0);
+    window.ResetProjectState();
+    QCOMPARE(window.objectsModule_->objectListModel_->rowCount(), 0);
+    QCOMPARE(window.objectsModule_->objectFieldModel_->rowCount(), 0);
     for (const auto& document : window.project_->objectDocuments_) {
         QVERIFY(document == nullptr);
     }
@@ -1357,7 +1371,7 @@ void NativeWorkbenchTests::StandardBrowsingIsReadOnlyAndHiddenSelectionKeepsMapT
             fingerprints[index] = pointers[index]->DocumentFingerprint();
         }
     }
-    window.project_->standardCatalog_ = std::make_unique<StandardObjectCatalog>(std::move(*loaded.value));
+    QVERIFY(War3Map::Tests::InstallSyntheticGameCatalog(*window.project_, *loaded.value));
     window.objectsModule_->UpdateObjectReferenceEntries();
     window.objectsModule_->objectSourceTabs_->setCurrentIndex(0);
     window.objectsModule_->standardObjectBrowser_->SetCurrentId(QStringLiteral("hfoo"));
@@ -3732,6 +3746,7 @@ void NativeWorkbenchTests::ConsecutiveSaveKeepsPriorEditsAndImports() {
     QVERIFY(WriteText(importPath, "new imported payload"));
     MainWindow window(MainWindow::StartupMode::HeadlessProbe);
     QVERIFY(window.OpenMapArchivePath(original));
+    QVERIFY(InstallSyntheticUnitGameSource(*window.project_));
     QVERIFY(ChangeHealth(window, 640));
     window.project_->pendingImports_.push_back({QStringLiteral("Custom/Payload.txt"), importPath, 20});
     window.project_->NotifyImportsChanged();
@@ -3877,6 +3892,7 @@ void NativeWorkbenchTests::SaveMapInPlaceWritesBackAndKeepsBackups() {
 
     MainWindow window(MainWindow::StartupMode::HeadlessProbe);
     QVERIFY(window.OpenMapArchivePath(original));
+    QVERIFY(InstallSyntheticUnitGameSource(*window.project_));
     QVERIFY(!window.project_->HasUnsavedMapChanges());
     QVERIFY(ChangeHealth(window, 555));
     QVERIFY(window.project_->HasUnsavedMapChanges());
@@ -3935,8 +3951,12 @@ void NativeWorkbenchTests::RecoveryProjectSavesBackToOriginalMap() {
         return unit.Succeeded() ? *unit.value : std::vector<std::byte>{};
     };
     const auto recovery = NativePath(fixture.filePath(QStringLiteral("recovery.forge")));
+    // 来源属于整个测试；生产窗口关闭后，恢复窗口仍使用同一份原创游戏目录。
+    War3Map::QtProject::EditorProject gameSource;
+    QVERIFY(InstallSyntheticUnitGameSource(gameSource));
     {
         MainWindow window(MainWindow::StartupMode::HeadlessProbe);
+        window.project_->war3GameRoot_ = gameSource.war3GameRoot_;
         QVERIFY(window.OpenMapArchivePath(original));
         QVERIFY(ChangeHealth(window, 555));
         QVERIFY(window.SaveEditorProjectToPath(recovery, true));
@@ -3944,6 +3964,7 @@ void NativeWorkbenchTests::RecoveryProjectSavesBackToOriginalMap() {
     {
         // 原图未变：恢复后打开的就是原图，保存写回原位置并留备份。
         MainWindow restored(MainWindow::StartupMode::HeadlessProbe);
+        restored.project_->war3GameRoot_ = gameSource.war3GameRoot_;
         QVERIFY(restored.OpenEditorProjectPath(recovery));
         QVERIFY(restored.project_->sourceArchivePath_ == original);
         QVERIFY(!restored.project_->MapSourceIsRecoveryCopy());
@@ -3959,6 +3980,7 @@ void NativeWorkbenchTests::RecoveryProjectSavesBackToOriginalMap() {
         const auto changedBytes = ReadFile(original);
         QVERIFY(changedBytes != sourceBytes);
         MainWindow restored(MainWindow::StartupMode::HeadlessProbe);
+        restored.project_->war3GameRoot_ = gameSource.war3GameRoot_;
         QVERIFY(restored.OpenEditorProjectPath(recovery));
         QVERIFY(restored.project_->MapSourceIsRecoveryCopy());
         QVERIFY(restored.project_->recordedSourceMapPath_ == original);
@@ -3974,6 +3996,7 @@ void NativeWorkbenchTests::RecoveryProjectSavesBackToOriginalMap() {
         QVERIFY(restored.SaveEditorProjectToPath(next, true));
         {
             MainWindow again(MainWindow::StartupMode::HeadlessProbe);
+            again.project_->war3GameRoot_ = gameSource.war3GameRoot_;
             QVERIFY(again.OpenEditorProjectPath(next));
             QVERIFY(again.project_->recordedSourceMapPath_ == original);
         }
@@ -4007,12 +4030,21 @@ void NativeWorkbenchTests::ClassicV1FieldsUseGuiUndoSaveAndBackups() {
     const ScopedMapBackupPreferences backupPreferences(fixture.filePath(QStringLiteral("War3MapEditor Backups")));
     MainWindow window(MainWindow::StartupMode::HeadlessProbe);
     QVERIFY(window.OpenMapArchivePath(working));
+    // 六类 v1 原创对象都以实际游戏 MPQ 中的 hfoo 为基础，来源由生产捕获路径核验。
+    const auto gameTable = SyntheticSlk({{"alias", "Name"}, {"hfoo", "Original classic save base"}});
+    ObjectData::CatalogLoadOptions gameOptions; gameOptions.stringFiles.clear();
+    gameOptions.sources.clear();
+    for (const auto type : kClassicObjectV1Types) gameOptions.sources.push_back({type, {"classic-save.slk"}, {}});
+    const auto gameCatalog = StandardObjectCatalog::Load([&gameTable](const std::string&) {
+        return Result<std::vector<std::byte>>::Success(Bytes(gameTable));
+    }, gameOptions);
+    QVERIFY(gameCatalog.Succeeded());
+    QVERIFY(Tests::InstallSyntheticGameCatalog(*window.project_, *gameCatalog.value));
     // 原创物编保存夹具不伪造触发器或执行本机编译器；沿用既有纯数据保存策略。
     window.project_->compilerDataRoot_ = NativePath(fixture.filePath(QStringLiteral("no-compiler")));
     window.project_->activeUiDataRoot_.clear();
-    window.project_->standardCatalog_.reset();
     window.project_->objectFieldSchema_.reset();
-    window.objectsModule_->objectFieldModel_->SetContext(nullptr, nullptr);
+    window.objectsModule_->objectFieldModel_->SetContext(window.project_->standardCatalog_.get(), nullptr);
     window.ActivateModule("objects");
     window.objectsModule_->showRawFields_->setChecked(true);
     const auto selectType = [&window](ObjectType type) {
@@ -4090,7 +4122,9 @@ void NativeWorkbenchTests::ClassicV1FieldsUseGuiUndoSaveAndBackups() {
     QVERIFY2(window.SaveMapArchiveToPath(redone), qPrintable(LastMapSaveDiagnostics(*window.project_->diagnosticsModel_)));
     QVERIFY(checkMembers(redone, true));
     MainWindow reopened(MainWindow::StartupMode::HeadlessProbe);
+    reopened.project_->war3GameRoot_ = window.project_->war3GameRoot_;
     QVERIFY(reopened.OpenMapArchivePath(redone));
+    QVERIFY(QtProject::VerifyProjectObjectCatalog(*reopened.project_).Succeeded());
     for (const auto type : kClassicObjectV1Types) {
         const auto index = static_cast<std::size_t>(type);
         QVERIFY(reopened.project_->nativeObjectDocuments_[index]);
@@ -4791,6 +4825,7 @@ void NativeWorkbenchTests::ClonedCustomObjectRoundTripsWithUndo() {
     QVERIFY(window.SaveEditorProjectToPath(project));
     QVERIFY(window.project_->objectDirty_[2]);
     MainWindow restored(MainWindow::StartupMode::HeadlessProbe);
+    restored.project_->war3GameRoot_ = window.project_->war3GameRoot_;
     QVERIFY(restored.OpenEditorProjectPath(project));
     QVERIFY(restored.project_->objectDocuments_[2]);
     QCOMPARE(StringOverride(restored.project_->objectDocuments_[2]->FindObject(copied), "unam").value_or(""), name.toStdString());
@@ -4820,6 +4855,7 @@ void NativeWorkbenchTests::ClonedCustomObjectRoundTripsWithUndo() {
     }
     QVERIFY(window.SaveMapArchiveToPath(candidate));
     MainWindow reopened(MainWindow::StartupMode::HeadlessProbe);
+    reopened.project_->war3GameRoot_ = window.project_->war3GameRoot_;
     QVERIFY(reopened.OpenMapArchivePath(candidate));
     QVERIFY(reopened.project_->nativeObjectDocuments_[2]);
     QCOMPARE(reopened.project_->nativeObjectDocuments_[2]->CustomObjectCount(), std::size_t{2});
@@ -4923,6 +4959,7 @@ void NativeWorkbenchTests::EditorProjectRestoresObjectsAndImportSnapshots() {
     const auto originalBytes = ReadFile(source);
     MainWindow window(MainWindow::StartupMode::HeadlessProbe);
     QVERIFY(window.OpenMapArchivePath(source));
+    QVERIFY(InstallSyntheticUnitGameSource(*window.project_));
     QVERIFY(ChangeHealth(window, 991));
     window.assetsModule_->AddFiles({asset});
     QVERIFY(window.SaveEditorProjectToPath(project));
@@ -4941,6 +4978,7 @@ void NativeWorkbenchTests::EditorProjectRestoresObjectsAndImportSnapshots() {
     QVERIFY(QFile::remove(asset));
     QVERIFY(QFile::remove(QString::fromStdWString(source.wstring())));
     MainWindow restored(MainWindow::StartupMode::HeadlessProbe);
+    restored.project_->war3GameRoot_ = window.project_->war3GameRoot_;
     QVERIFY(restored.OpenEditorProjectPath(equivalentProject));
     QCOMPARE(Health(*restored.project_->objectDocuments_[0]).value_or(-1), 991);
     QCOMPARE(restored.project_->pendingImports_.size(), std::size_t{1});
@@ -6565,6 +6603,7 @@ void NativeWorkbenchTests::MapSaveWaitsForRecoveryAndCapturesLaterEdit() {
         else QSettings{}.remove("project/latestRecovery");
     });
     MainWindow window(MainWindow::StartupMode::HeadlessProbe); QVERIFY(window.OpenMapArchivePath(source));
+    QVERIFY(InstallSyntheticUnitGameSource(*window.project_));
     window.project_->recoveryPath_ = recovery;
     QVERIFY(ChangeHealth(window, 200)); window.WriteRecovery(); QVERIFY(window.writingRecovery_);
     QVERIFY(ChangeHealth(window, 300));
@@ -6579,7 +6618,9 @@ void NativeWorkbenchTests::MapSaveWaitsForRecoveryAndCapturesLaterEdit() {
     auto output = War3Map::MapArchiveSession::Open(saved); QVERIFY(output.Succeeded());
     const auto units = output.value->ReadMember("war3map.w3u"); QVERIFY(units.Succeeded());
     QCOMPARE(*units.value, MinimalUnitData(300));
-    MainWindow restored(MainWindow::StartupMode::HeadlessProbe); QVERIFY(restored.OpenEditorProjectPath(recovery));
+    MainWindow restored(MainWindow::StartupMode::HeadlessProbe);
+    restored.project_->war3GameRoot_ = window.project_->war3GameRoot_;
+    QVERIFY(restored.OpenEditorProjectPath(recovery));
     QCOMPARE(Health(*restored.project_->objectDocuments_[0]).value_or(-1), 200);
     QCOMPARE(ReadFile(source), original);
 }
@@ -7454,6 +7495,7 @@ void NativeWorkbenchTests::LockedImportRejectsProjectAndMapWithoutClearingEdits(
     QVERIFY(WriteText(asset, "same length imported bytes"));
     MainWindow window(MainWindow::StartupMode::HeadlessProbe);
     QVERIFY(window.OpenMapArchivePath(source));
+    QVERIFY(InstallSyntheticUnitGameSource(*window.project_));
     QVERIFY(ChangeHealth(window, 640));
     window.assetsModule_->AddFiles({asset});
     const auto projectBaseline = window.project_->editRevision_.Baseline(War3Map::EditSaveTarget::Project)->scopes;

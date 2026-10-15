@@ -92,11 +92,13 @@ void Surface(WorldTerrainLoaded& loaded, WorldTerrainCache& cache, std::shared_p
     auto ground = Render::BuildTerrainGroundMesh(*loaded.terrain, cache.atlases, {}, cache.lighting,
         selectedWater ? selectedWater : cache.water ? &*cache.water : nullptr,
         cliffs ? std::span<const std::uint8_t>(cliffs->coveredTiles) : std::span<const std::uint8_t>{},
-        cache.blightAtlas, selectedGround);
+        cache.blightAtlas, selectedGround, Render::TerrainGroundBudgetPolicy::PreserveBasePreview);
     if (!ground.Succeeded()) notes.prepend(WorldDiagnosticText(ground.diagnostics));
     else {
+        if (ground.value->budget.reduced)
+            notes << QObject::tr("已启用基础贴图预算预览：保留全部原格基础层；可选层按全图水面、普通过渡、精确荒芜顺序整类保留，省略数量见地表详情；不代表完整原版保真。");
         if (ground.value->blightApproximationTiles != 0)
-            notes << QObject::tr("荒芜 %1 格因原版材质不可用或纹理预算不足，仅以保留原地表贴图的近似色调预览。")
+            notes << QObject::tr("荒芜 %1 格因原版材质不可用或网格/纹理预算不足，仅以保留原地表贴图的近似色调预览。")
                 .arg(static_cast<qulonglong>(ground.value->blightApproximationTiles));
         loaded.ground = std::make_shared<const Render::TerrainGroundMesh>(std::move(*ground.value));
         loaded.cliffs = std::move(cliffs);
@@ -138,12 +140,23 @@ Result<WorldTerrainLoaded> LoadWorldTerrain(std::span<const std::byte> bytes, co
         if (!shaped.Succeeded()) return shaped;
         auto& loaded = *shaped.value;
         loaded.rawTerrain = std::move(raw);
-        if (!Textured(loaded)) { loaded.materialNote = QObject::tr("地表网格超过逐格贴图预算，当前显示高度预览"); return shaped; }
-        if (!sources.Succeeded()) { loaded.materialNote = WorldDiagnosticText(sources.diagnostics); return shaped; }
+        if (!sources.Succeeded()) {
+            // 目录资源尚未接入时保留高度预览；身份失效、读取失败和预算拒绝不能伪装成成功。
+            if (sources.diagnostics.size() != 1 || sources.diagnostics.front().code != "WORLD_ASSET_DIRECTORY_UNSUPPORTED")
+                return {std::nullopt, sources.diagnostics};
+            loaded.materialNote = WorldDiagnosticText(sources.diagnostics);
+            return shaped;
+        }
         auto reader = WorldResourceReader::Open(*sources.value);
-        if (!reader.Succeeded()) { loaded.materialNote = WorldDiagnosticText(reader.diagnostics); return shaped; }
+        if (!reader.Succeeded()) return {std::nullopt, std::move(reader.diagnostics)};
         auto created = std::make_shared<WorldTerrainCache>();
         created->reader = std::move(*reader.value);
+        if (!Textured(loaded)) {
+            loaded.materialNote = QObject::tr("地表网格超过逐格贴图预算，当前显示高度预览");
+            // 高度预览也持有来源租约，UI 提交前仍须复核，不因贴图预算跳过身份检查。
+            if (cache) *cache = std::move(created);
+            return shaped;
+        }
         auto& resolver = created->reader->Resolver();
         // 原版昼夜光照（地形光烘焙进地表顶点色，单位光交给模型着色器）、地图雾与静态阴影。
         const auto lighting = LoadWorldLighting(resolver, static_cast<char>(loaded.terrain->header.mainTileset),

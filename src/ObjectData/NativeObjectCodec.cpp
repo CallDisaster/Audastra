@@ -129,6 +129,11 @@ private:
         || type == ObjectType::Destructable;
 }
 
+[[nodiscard]] bool AllowsUnknownEndMarkerPreservation(ObjectType type, std::int32_t version) noexcept {
+    // Unit 的经典 v1/v2 使用相同字段分帧；其他 v1 类别不继承这条只读规则。
+    return version == kSupportedVersion || (version == kClassicVersion1 && type == ObjectType::Unit);
+}
+
 [[nodiscard]] bool IsZeroId(const std::array<std::byte, 4>& id) noexcept {
     return std::all_of(id.begin(), id.end(), [](std::byte value) {
         return value == std::byte{0};
@@ -172,6 +177,11 @@ private:
     const std::array<std::byte, 4>& originalId,
     const std::array<std::byte, 4>& newId) noexcept {
     return IsZeroId(marker) || marker == originalId || (!IsZeroId(newId) && marker == newId);
+}
+
+[[nodiscard]] bool HasUnknownEndMarkerDiagnostic(std::span<const Diagnostic> diagnostics) noexcept {
+    return std::any_of(diagnostics.begin(), diagnostics.end(),
+        [](const Diagnostic& diagnostic) { return diagnostic.code == "native-end-marker-unknown"; });
 }
 
 [[nodiscard]] std::string ModificationIdentity(const ModificationKey& key) {
@@ -486,8 +496,9 @@ bool NativeObjectDocument::Supports(NativeObjectOperation operation) const noexc
     const bool classicV1 = version_ == kClassicVersion1 && SupportsClassicV1ValueEdits(type_);
     switch (operation) {
     case NativeObjectOperation::PreserveSource:
-        // v2 的歧义文档沿用既有原字节透传；v1 重复身份在解析时即拒绝。
-        return version_ == kSupportedVersion || (classicV1 && editable_);
+        // v1 Unit 未知标记只允许完整来源透传；v1 身份歧义仍由结构失败拒绝。
+        return version_ == kSupportedVersion || (classicV1 && (editable_
+            || (AllowsUnknownEndMarkerPreservation(type_, version_) && HasUnknownEndMarkerDiagnostic(parseDiagnostics_))));
     case NativeObjectOperation::EditExistingValue:
         return editable_ && (version_ == kSupportedVersion || classicV1);
     case NativeObjectOperation::EditStructure:
@@ -510,7 +521,7 @@ Status NativeObjectDocument::RequireEditable(std::string_view operation) const {
         return Status::Failure(std::string(kSubsystem), "native-v1-structure-unsupported",
             std::string(operation) + "涉及结构编辑；经典 native v1 仅允许修改已存在字段的值，原对象和字段结构必须保留。");
     }
-    if (!structurallySafe_ || version_ != kSupportedVersion) {
+    if (!Supports(NativeObjectOperation::PreserveSource)) {
         return Status::Failure(
             std::string(kSubsystem),
             "native-document-unsafe",
@@ -520,7 +531,9 @@ Status NativeObjectDocument::RequireEditable(std::string_view operation) const {
         return Status::Failure(
             std::string(kSubsystem),
             "native-document-read-only",
-            std::string(operation) + "因对象或字段身份存在歧义而被拒绝；原始字节仍可只读查看。");
+            std::string(operation) + (HasUnknownEndMarkerDiagnostic(parseDiagnostics_)
+                ? "因源文档含未知结束标记而被拒绝；原始字节仅可原样保留。"
+                : "因对象或字段身份存在歧义而被拒绝；原始字节仍可只读查看。"));
     }
     return Status::Ok();
 }
@@ -1112,7 +1125,7 @@ CodecParseResult NativeObjectCodec::Parse(std::span<const std::byte> input) cons
     if (classicV1) {
         document->parseDiagnostics_.push_back(MakeDiagnostic(DiagnosticSeverity::Warning,
             "native-v1-" + std::string(ToString(type_)) + "-read-only",
-            "经典 native v1 保留来源结构；仅允许修改已存在字段的值并保源写出，新增、删除、重定父及模板整类替换仍被拒绝。",
+            "经典 native v1 保留来源结构；在没有额外只读限制时，仅允许修改已存在字段的值并保源写出，新增、删除、重定父及模板整类替换仍被拒绝。",
             0, sizeof(std::int32_t)));
     }
     if (readOnlyV3) {
@@ -1127,6 +1140,8 @@ CodecParseResult NativeObjectCodec::Parse(std::span<const std::byte> input) cons
     std::unordered_set<std::string> objectIdentities;
     std::size_t totalModificationCount = 0;
     std::size_t totalVersion3IntegerCount = 0;
+    std::size_t unknownEndMarkerCount = 0;
+    std::optional<std::size_t> unknownEndMarkerDiagnostic;
 
     const auto parseTable = [&](NativeObjectTable table) -> bool {
         const std::size_t countOffset = reader.Position();
@@ -1340,12 +1355,23 @@ CodecParseResult NativeObjectCodec::Parse(std::span<const std::byte> input) cons
                         storedModification.endMarker,
                         storedObject.originalId,
                         storedObject.newId)) {
-                    fail(
-                        "native-end-marker-invalid",
-                        "native modification 结束标记既不是零，也不匹配对象 rawcode。",
-                        reader.Position() - 4,
-                        4);
-                    return false;
+                    const auto markerOffset = reader.Position() - 4;
+                    const auto reason = "对象 " + IdForDiagnostic(effectiveId) + " 字段 "
+                        + IdForDiagnostic(storedModification.fieldId) + " 在偏移 " + std::to_string(markerOffset)
+                        + " 的结束标记 " + IdForDiagnostic(storedModification.endMarker)
+                        + " 既不是零，也不匹配原始或自定义对象 rawcode。";
+                    if (!AllowsUnknownEndMarkerPreservation(type_, document->version_)) {
+                        fail("native-end-marker-invalid", reason + "此版本禁止编辑与序列化。", markerOffset, 4);
+                        return false;
+                    }
+                    // 字段类型已确定值的边界，标记始终占四字节；只继续经典 v2 或 Unit v1。
+                    // 两张表必须完整到达成员末尾才可保源，任何后续结构错误仍会撤销授权。
+                    // 不推测未知标记的语义，也不允许改值、复制对象或模板替换。
+                    ++unknownEndMarkerCount;
+                    if (!unknownEndMarkerDiagnostic) {
+                        unknownEndMarkerDiagnostic = document->parseDiagnostics_.size();
+                        makeReadOnly("native-end-marker-unknown", reason, markerOffset, 4);
+                    }
                 }
 
                 storedModification.sourceOffset = modificationOffset;
@@ -1393,6 +1419,13 @@ CodecParseResult NativeObjectCodec::Parse(std::span<const std::byte> input) cons
             reader.Position(),
             reader.Remaining());
     }
+    if (unknownEndMarkerDiagnostic) {
+        auto& diagnostic = document->parseDiagnostics_[*unknownEndMarkerDiagnostic];
+        diagnostic.message += "共发现 " + std::to_string(unknownEndMarkerCount) + " 处未知结束标记；";
+        diagnostic.message += document->structurallySafe_
+            ? "两张表边界完整，已保留全部原始字节；该物编类别只读，禁止编辑或模板替换。"
+            : "后续结构未通过验证，禁止编辑与序列化。";
+    }
 
     result.diagnostics = document->parseDiagnostics_;
     result.document = std::move(document);
@@ -1419,10 +1452,12 @@ Status NativeObjectCodec::Validate(const CodecDocument& document) const {
         return result;
     }
     if (!native->Supports(NativeObjectOperation::EditExistingValue)) {
+        const bool unknownMarker = HasUnknownEndMarkerDiagnostic(native->parseDiagnostics_);
         result.diagnostics.push_back(MakeDiagnostic(
             DiagnosticSeverity::Error,
-            "native-document-ambiguous",
-            "native 文档含有重复对象或字段键，无法建立稳定编辑身份。"));
+            unknownMarker ? "native-document-read-only" : "native-document-ambiguous",
+            unknownMarker ? "native 文档含未知结束标记，只允许原字节保留，禁止编辑或模板替换。"
+                          : "native 文档含有重复对象或字段键，无法建立稳定编辑身份。"));
     }
     return result;
 }
@@ -1449,7 +1484,7 @@ Result<std::vector<std::byte>> NativeObjectCodec::Serialize(
         return Result<std::vector<std::byte>>::Failure(
             std::string(kSubsystem),
             "native-document-read-only",
-            "存在稳定身份歧义的 native 文档禁止生成编辑结果。");
+            "存在稳定身份歧义或未知结束标记的 native 文档禁止生成编辑结果。");
     }
 
     if (native->version_ == kClassicVersion1) {

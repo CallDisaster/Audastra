@@ -10,6 +10,7 @@ namespace War3Map { class ProjectSaveControl; }
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -126,6 +127,9 @@ public:
 
     // 按名字（如 "war3map.w3u"）判断是否存在。名字大小写不敏感，'/' 等价于 '\'。
     [[nodiscard]] bool HasFile(std::string_view name) const;
+
+    // 按同一名字查找规则读取块表元数据，不解码正文；不代表清单完整或成员可保存。
+    [[nodiscard]] std::optional<MpqFileInfo> GetFileInfo(std::string_view name) const;
 
     // 按名字读取并完整解压。找不到或解压失败返回 Failure。
     [[nodiscard]] Result<std::vector<std::byte>> ReadFile(std::string_view name,

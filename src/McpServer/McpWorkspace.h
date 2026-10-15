@@ -8,6 +8,7 @@
 #include "War3MapCore/Services/MapEditSaveService.h"
 #include "War3MapCore/Services/TerrainEditService.h"
 #include "War3MapCore/Services/ObjectCommands.h"
+#include "War3MapCore/Services/AuxiliaryTransaction.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/Trigger/TriggerEditing.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
@@ -23,6 +24,7 @@
 #include <string_view>
 
 namespace War3Map::Services { class ObjectTransactionSnapshot; }
+namespace War3Map::ObjectData { class EffectiveObjectCatalog; }
 namespace War3Map::Trigger { class TriggerTypeSystem; }
 
 namespace War3Map::Mcp {
@@ -102,6 +104,8 @@ public:
 
     // 同一领域命令在 GUI 与独立 MCP 使用；独立宿主仍只写 EditorSession overlay。
     [[nodiscard]] std::string ObjectRevision() const;
+    // 已捕获的只读来源；不会在查询来源信息时读取磁盘或授予写回资格。
+    [[nodiscard]] std::shared_ptr<const ObjectData::EffectiveObjectCatalog> EffectiveObjectSources() const noexcept;
     [[nodiscard]] Result<Services::ObjectCommandContext> ObjectContext(ObjectData::ObjectType type);
     [[nodiscard]] Status ApplyObjectPlan(const Services::ObjectCommandPlan& plan);
     [[nodiscard]] Result<McpWorkspaceMapDataContext> MapDataContext(std::string documentId,
@@ -110,6 +114,9 @@ public:
         const MapData::PreparedMapDataFields& plan, const MapData::MapDataPublishValidator& prepublish = {});
     [[nodiscard]] Result<MapData::MapDataEditSession::EditReceipt> ApplyPlacementPlan(
         const MapData::PreparedMapDataPlacement& plan, const MapData::MapDataPublishValidator& prepublish = {});
+    [[nodiscard]] Services::AuxiliaryReferenceContext AuxiliaryReferences() const;
+    [[nodiscard]] Result<MapData::MapDataEditSession::EditReceipt> ApplyAuxiliaryPlan(
+        const Services::PreparedAuxiliaryEdit& plan, const MapData::MapDataPublishValidator& prepublish = {});
     [[nodiscard]] Result<McpWorkspaceTerrainContext> TerrainContext(std::string documentId,
         std::uint64_t documentGeneration);
     [[nodiscard]] Result<MapData::TerrainStrokeResult> ApplyTerrainPlan(
@@ -187,6 +194,7 @@ private:
         std::array<std::shared_ptr<const ObjectData::LniObjectDocument>, 7> objects;
         std::shared_ptr<const MapDocument> mapData;
         std::shared_ptr<const MapData::MapDataPlacementIntent> placementIntent;
+        std::shared_ptr<const Services::AuxiliaryTransactionSnapshot> auxiliary;
         std::shared_ptr<McpTerrainOverlay> terrain;
     };
 
@@ -207,11 +215,15 @@ private:
         const ProjectRevision& expectedRevision) const;
     [[nodiscard]] Status CheckEnvironmentUnchanged() const;
     [[nodiscard]] Status CheckCatalogUnchanged() const;
-    [[nodiscard]] Status CheckObjectSourcesUnchanged() const;
+    [[nodiscard]] Status CheckObjectSourcesUnchanged(std::string_view expectedSourceSha256 = {}) const;
     [[nodiscard]] Status CaptureObjectSources();
     [[nodiscard]] Status CaptureMapDataSources();
     [[nodiscard]] Status SeedMapDataOverlay(ActiveEdit& edit);
     [[nodiscard]] Status ValidateMapDataOverlay() const;
+    [[nodiscard]] Status ValidateAuxiliaryOverlay() const;
+    [[nodiscard]] Result<Services::MapEditSaveReceipt> ExportAuxiliaryArchiveCandidate(
+        TransactionId transactionId, const ProjectRevision& expectedRevision,
+        Services::MapEditSaveRequest request);
     [[nodiscard]] Status CaptureTerrainSources();
     [[nodiscard]] Status SeedTerrainOverlay(ActiveEdit& edit);
     [[nodiscard]] Status ValidateTerrainOverlay() const;
@@ -272,6 +284,7 @@ private:
     std::shared_ptr<const MapDocument> initialMapData_, committedMapData_;
     std::shared_ptr<const Services::MapDataQuerySnapshot> projectSearchMapCache_;
     std::shared_ptr<const MapData::MapDataPlacementIntent> committedPlacementIntent_;
+    std::shared_ptr<const Services::AuxiliaryTransactionSnapshot> committedAuxiliary_;
     std::uint64_t toolEpoch_ = 0;
     bool publishing_ = false;
 };

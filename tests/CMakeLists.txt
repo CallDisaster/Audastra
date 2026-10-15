@@ -1,4 +1,15 @@
 include_directories("${WAR3_RENDER_CORE_SOURCE_DIR}/tests")
+include("${CMAKE_CURRENT_SOURCE_DIR}/helpers/TestLua.cmake")
+
+add_executable(war3-map-cli-resource-check-tests ResourceCheckCommandTests.cpp
+    "${PROJECT_SOURCE_DIR}/src/Cli/ResourceCheckCommand.cpp")
+target_include_directories(war3-map-cli-resource-check-tests PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/Cli" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(war3-map-cli-resource-check-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(war3-map-cli-resource-check-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(war3-map-cli-resource-check-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME cli-resource-check COMMAND war3-map-cli-resource-check-tests)
+set_tests_properties(cli-resource-check PROPERTIES TIMEOUT 90)
 
 add_executable(war3-map-source-encoding-compatibility-tests SourceEncodingCompatibilityTests.cpp)
 target_link_libraries(war3-map-source-encoding-compatibility-tests PRIVATE War3MapEditor::Core)
@@ -93,7 +104,7 @@ add_custom_command(
         "$<TARGET_FILE_DIR:war3-map-core-tests>")
 add_test(NAME core-foundation COMMAND war3-map-core-tests)
 
-foreach(service_test IN ITEMS MapArchiveSession MapBackupInspection ProjectStore EditRevision VerifiedFile ImportTable ResourceResolver MapDocument MapDataEditSession MapDataFieldEditing MapDataPlacementEditing PlacementEditing PlacementCreateDelete TerrainEditing TerrainRampEditing PathingRestrictionEditing MapSettings LniMapSettings MapPlacements MapAuxiliary CoreTextIo WorldEditStrings BlpImage)
+foreach(service_test IN ITEMS MapArchiveSession MapBackupInspection ProjectStore EditRevision VerifiedFile ImportTable ResourceResolver MapDocument MapDataEditSession MapDataFieldEditing MapDataPlacementEditing PlacementEditing PlacementCreateDelete TerrainEditing TerrainRampEditing TerrainSavePlan PathingRestrictionEditing MapSettings LniMapSettings MapPlacements MapAuxiliary CoreTextIo WorldEditStrings BlpImage)
     add_executable(war3-map-${service_test}-tests ${service_test}Tests.cpp)
     target_link_libraries(war3-map-${service_test}-tests PRIVATE War3MapEditor::Core)
     target_compile_definitions(war3-map-${service_test}-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
@@ -165,6 +176,7 @@ target_compile_options(war3-map-script-callback-action-tests PRIVATE /W4 /permis
 add_test(NAME script-callback-action COMMAND war3-map-script-callback-action-tests)
 
 add_executable(war3-map-lua-trigger-unit-tests LuaTriggerUnitTests.cpp LuaTriggerCandidateTests.cpp)
+audastra_use_test_lua(war3-map-lua-trigger-unit-tests)
 target_link_libraries(war3-map-lua-trigger-unit-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(war3-map-lua-trigger-unit-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN
     LUA_TEST_RUNNER="${CMAKE_CURRENT_SOURCE_DIR}/LuaTriggerRuntimeTests.lua")
@@ -196,6 +208,7 @@ target_compile_options(war3-map-initialization-plan-tests PRIVATE /W4 /permissiv
 add_test(NAME script-map-initialization-plan COMMAND war3-map-initialization-plan-tests)
 
 add_executable(war3-map-lua-map-script-tests LuaMapScriptTests.cpp)
+audastra_use_test_lua(war3-map-lua-map-script-tests)
 target_link_libraries(war3-map-lua-map-script-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(war3-map-lua-map-script-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN
     LUA_MAP_TEST_RUNNER="${CMAKE_CURRENT_SOURCE_DIR}/LuaMapRuntimeTests.lua")
@@ -218,6 +231,7 @@ add_test(NAME script-classic-lua-entry COMMAND audastra-classic-lua-entry-tests)
 set_tests_properties(script-classic-lua-entry PROPERTIES TIMEOUT 30)
 
 add_executable(war3-map-lua-map-pipeline-tests LuaMapPipelineTests.cpp)
+audastra_use_test_lua(war3-map-lua-map-pipeline-tests)
 target_link_libraries(war3-map-lua-map-pipeline-tests PRIVATE War3MapEditor::ScriptBuild)
 target_compile_definitions(war3-map-lua-map-pipeline-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-lua-map-pipeline-tests PRIVATE /W4 /permissive- /utf-8)
@@ -305,7 +319,7 @@ target_compile_definitions(war3-terrain-edit-inspection-tests PRIVATE NOMINMAX W
 target_compile_options(war3-terrain-edit-inspection-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME terrain-edit-inspection COMMAND war3-terrain-edit-inspection-tests)
 
-foreach(render_part IN ITEMS TerrainTable TerrainMaterials TerrainTextureAtlas TerrainPicking TerrainInspection ViewRay TerrainGroundMesh WorldModelScene TerrainCliffs SceneLighting BuildingSplatPreview OwnedStaticModel)
+foreach(render_part IN ITEMS TerrainTable TerrainMaterials TerrainTextureAtlas TerrainPicking TerrainInspection ViewRay TerrainGroundMesh WorldModelScene TerrainCliffs SceneLighting BuildingSplatPreview OwnedStaticModel ClassicObjectTexture)
     add_executable(war3-map-${render_part}-tests ${render_part}Tests.cpp)
     target_link_libraries(war3-map-${render_part}-tests PRIVATE War3MapEditor::RenderSupport)
     target_compile_definitions(war3-map-${render_part}-tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)

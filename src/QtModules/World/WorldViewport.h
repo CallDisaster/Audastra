@@ -42,6 +42,7 @@ public:
     bool SetPickingTerrain(std::shared_ptr<const MapData::TerrainGridSnapshot> terrain,
         std::uint32_t stride, std::uint64_t documentRevision);
     bool SetGroundMesh(std::shared_ptr<const Render::TerrainGroundMesh> ground);
+    [[nodiscard]] const Status& LastGroundFailure() const noexcept { return groundFailure_; }
     // 笔刷预览/提交只替换地形与拾取快照；镜头、模型、环境及叠加线保持原位。
     bool ReplaceTerrainPresentation(std::vector<War3RenderVertexV2> vertices, std::vector<std::uint32_t> indices,
         std::shared_ptr<const MapData::TerrainGridSnapshot> terrain, std::uint32_t stride,
@@ -67,7 +68,7 @@ public:
         std::shared_ptr<const Render::AnimationFrame>)>;
     void SetAcceptedAnimationObserver(AcceptedAnimationObserver observer) { acceptedAnimationObserver_ = std::move(observer); }
     // CPU占位准备可读取同源Draw/Upload完成但Present被遮挡的帧；不授予可见/点选资格。
-    [[nodiscard]] Result<std::shared_ptr<const Render::AnimationFrame>> ReadCompletedAnimationFrameForBugPlaceholder(
+    [[nodiscard]] Result<std::shared_ptr<const Services::WorldModelBugPlaceholderFrameSnapshot>> ReadCompletedBugPlaceholderSnapshot(
         const std::shared_ptr<const Render::AnimatedModelScene>& expected) const;
     void SetBugPlaceholderPicking(std::uint64_t layer,
         std::shared_ptr<const Services::WorldModelBugPlaceholderPlan> plan,
@@ -136,6 +137,8 @@ public:
         // 可选策略不改变已绘制姿势或 GPU 显隐；保留实际完成画面的拥有者，查询时
         // 仍重新冻结当前策略。清空历史会让播放中的单击等待下一帧而发生饥饿。
         for (auto& owned : animationPickHistory_) owned.policyRevision = pickPolicyRevision_;
+        bugPreparationHistory_.clear(); bugPreparationFailure_ = {};
+        RetainBugPreparationFrame(); // 可选性变化不等新动画帧；独立观察立即重建。
         if (animationPickHistory_.empty()) RetainAnimationPickFrame();
     }
     // 独立呈现掩码，参数为来源请求编号；烘焙网格/无placement保持可见。
@@ -297,6 +300,7 @@ private:
     void UpdateSelectionOutline(QPointF point);
     void ClearSelectionOutline();
     void RetainAnimationPickFrame();
+    void RetainBugPreparationFrame();
     friend class WorldViewportPickHistoryTestAccess;
     struct ModelPickPolicy {
         std::uint64_t generation = 0, sceneVersion = 0;
@@ -309,18 +313,29 @@ private:
         Render::ModelPickVisibilitySnapshot visibility;
         std::shared_ptr<const Render::AnimationFrame> frame;
         std::shared_ptr<const Render::WorldModelScene> picking;
+        std::shared_ptr<const Services::WorldModelBugPlaceholderFrameSnapshot> preparation;
     };
-    struct RetainedAnimationPickFrame {
-        // 对外借用仍为 const；仅移出历史且没有借用者的帧可复用存储。
-        std::shared_ptr<Render::AnimationFrame> frame;
+    struct AnimationCompletionIdentity {
         War3RenderEditorPresentationTargetV2 presentation{};
         std::uint64_t presentationRevision = 0, rendererEpoch = 0, policyRevision = 0;
+        std::uint64_t sceneVersion = 0, contentVersion = 0, documentRevision = 0;
+        std::size_t instanceCount = 0;
         std::uint32_t particleVertexCount = 0, particleDrawCount = 0;
+    };
+    struct RetainedAnimationPickFrame : AnimationCompletionIdentity {
+        // 对外借用仍为 const；仅移出历史且没有借用者的帧可复用存储。
+        std::shared_ptr<Render::AnimationFrame> frame;
+        std::size_t ownedBytes = 0;
+    };
+    struct RetainedBugPreparationFrame : AnimationCompletionIdentity {
+        std::shared_ptr<const Services::WorldModelBugPlaceholderFrameSnapshot> snapshot;
         std::size_t ownedBytes = 0;
     };
     [[nodiscard]] Result<ModelPickPolicy> ReadModelPickPolicy() const;
     [[nodiscard]] Result<CompletedModelPickFrame> ReadCompletedModelPickFrame(bool forGeometryPick = true,
         bool requireSuccessfulPresent = true) const;
+    [[nodiscard]] Result<CompletedModelPickFrame> ReadCompletedAnimationSource(bool preparation,
+        bool requireSuccessfulPresent, bool freezeGeometryPolicy = false) const;
     [[nodiscard]] Result<std::vector<Render::ModelPickHit>> PickInstancesAt(QPointF point,
         const Render::ViewProjectionFrame& frame) const;
     struct BugPlaceholderPick {
@@ -376,8 +391,11 @@ private:
     std::shared_ptr<const Render::AnimatedModelScene> animationScene_;
     std::shared_ptr<const Render::AnimationFrame> animationFrame_;
     std::deque<RetainedAnimationPickFrame> animationPickHistory_;
+    std::deque<RetainedBugPreparationFrame> bugPreparationHistory_;
+    Status bugPreparationFailure_;
     std::uint64_t pickPolicyRevision_ = 1;
     Status animationFailure_;
+    Status groundFailure_;
     bool animationPickingCurrent_ = true;
     std::unique_ptr<Render::AnimationRenderer> animationRenderer_;
     struct PendingInstanceRoster {

@@ -9,6 +9,7 @@
 #include <QUrl>
 #include <QVariant>
 
+#include <atomic>
 #include <memory>
 #include <optional>
 
@@ -61,6 +62,8 @@ struct LoopbackUpdateSource {
     QString trustedPublicKeyHex;
     QString stagingDirectory;
     int requestTimeoutMs = 1000;
+    // 显式原创安装树；留空也走失败路径，不能借测试入口跳过当前安装基线校验。
+    QString installationDirectory;
 };
 
 class UpdateClient final : public QObject {
@@ -124,6 +127,8 @@ private:
     void FinishRequest(QNetworkReply* reply);
     bool UrlAllowed(const QUrl& url, bool redirect) const;
     bool ReadRelease(const QByteArray& bytes, bool hasNextPage);
+    void StartInstalledBaselineVerification();
+    void FinishCancelledVerification();
     void FinishSignature();
     void StartPackageVerification();
 
@@ -134,15 +139,19 @@ private:
     QTimer* deadlineTimer_ = nullptr;
     QTimer* retryTimer_ = nullptr;
     QThread* verifier_ = nullptr;
+    QThread* baselineVerifier_ = nullptr;
+    std::shared_ptr<std::atomic_bool> baselineCancelled_;
     QSettings* settings_ = nullptr;
     QUrl apiRoot_;
     QString releaseOwner_;
     QString releaseRepository_;
     QString publicKeyHex_;
     QString stagingRoot_;
+    QString installationRoot_;
     QString configurationError_;
     bool loopback_ = false;
     bool cancellingVerification_ = false;
+    bool resetChannelAfterVerification_ = false;
     int timeoutMs_ = 15000;
     RequestStage stage_ = RequestStage::Releases;
     int redirects_ = 0;

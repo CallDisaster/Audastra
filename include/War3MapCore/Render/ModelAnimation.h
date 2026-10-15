@@ -296,6 +296,9 @@ struct AnimatedModelScene {
     SharedSceneVector<War3RenderCore::Range32> pickMeshGroups; // 与 meshes 平行。
     SharedSceneVector<AnimationPickGroupBounds> pickGroupBounds; // 不随姿势重建顶点。
     SharedSceneVector<AnimationInstanceSpec> specs;
+    // 与 specs 平行，由实际资产 drawable 冻结；0 只表示资产本身无需实体网格，
+    // 不能由 geometry 中缺少实例反推。Create/目录增量都从资产重新构建。
+    SharedSceneVector<std::uint8_t> requestGeometryRequired;
     SharedSceneVector<std::vector<MdxSequence>> sequences; // 与 specs 平行；仅增删实例或编辑定义时分离。
     std::vector<War3RenderCore::AssetSource> sources;
     std::vector<AnimationUnavailableInstance> unavailableInstances;

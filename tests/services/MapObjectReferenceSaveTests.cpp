@@ -288,13 +288,21 @@ void StandardBytesAndReadabilityAreBound() {
         struct ExclusiveHandle {
             HANDLE value = INVALID_HANDLE_VALUE;
             ~ExclusiveHandle() { if (value != INVALID_HANDLE_VALUE) CloseHandle(value); }
-        } lock;
-        lock.value = CreateFileW((fixture.game / "war3.mpq").c_str(), GENERIC_READ, 0, nullptr,
-            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        Require(lock.value != INVALID_HANDLE_VALUE, "exclusively lease the owned synthetic game archive");
-        MapSaveTask task;
-        fixture.Prepare(task, references, "unreadable-standard.w3x", fixture.game);
-        ExpectRejected(task, fixture, "archive-open-failed");
+        };
+        {
+            ExclusiveHandle lock;
+            lock.value = CreateFileW((fixture.game / "war3.mpq").c_str(), GENERIC_READ, 0, nullptr,
+                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            Require(lock.value != INVALID_HANDLE_VALUE, "exclusively lease the owned synthetic game archive");
+            MapSaveTask task;
+            fixture.Prepare(task, references, "unreadable-standard.w3x", fixture.game);
+            // 当前来源捕获先取只读租约；独占锁必须在进入游戏包读取前拒绝，不能降级为缺表。
+            ExpectRejected(task, fixture, "WORLD_ASSET_SOURCE_CHANGED");
+            Require(HasCode(task.diagnostics, "RESOURCE_PROBE_FAILED"),
+                "failed game-source lease propagates through the resource probe without publishing a save");
+        }
+        Require(VerifyMapObjectReferenceStandardSources(*references, fixture.game).Succeeded(),
+            "the unchanged owned source verifies again after the exclusive test lock is released");
     }
     {
         Fixture fixture;

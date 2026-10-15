@@ -45,6 +45,18 @@ using namespace ObjectDetail;
 
 ObjectModule::ObjectModule(QtProject::EditorProject& project)
     : project_(&project) {
+    connect(&project, &QtProject::EditorProject::ObjectCatalogAboutToChange, this, [this] {
+        if (newObjectPicker_) newObjectPicker_->hide();
+        if (objectFieldModel_) objectFieldModel_->SetContext(nullptr, nullptr);
+        if (standardFieldModel_) standardFieldModel_->removeRows(0, standardFieldModel_->rowCount());
+    });
+    connect(&project, &QtProject::EditorProject::ObjectCatalogChanged, this, [this] {
+        if (!page_) return;
+        objectFieldModel_->SetContext(project_->standardCatalog_.get(), project_->objectFieldSchema_.get());
+        UpdateObjectReferenceEntries();
+        ShowObjectType(currentObjectType_);
+        UpdateObjectFieldControls();
+    });
     connect(&project, &QtProject::EditorProject::MapDocumentChanged, this, [this] {
         if (page_) UpdateObjectReferenceEntries();
     });
@@ -284,7 +296,7 @@ void ObjectModule::BuildPage() {
     standardObjectBrowser_->SetDirectoryVisible(false);
     standardObjectBrowser_->SetKindFilter(Kind(ObjectType::Unit), true);
     standardObjectBrowser_->SetCatalogStatus(tr("未连接 Warcraft III 资源"));
-    objectSourceTabs_->addTab(standardObjectBrowser_, tr("标准对象"));
+    objectSourceTabs_->addTab(standardObjectBrowser_, tr("基础对象"));
 
     objectListView_ = new QTableView;
     objectListView_->setObjectName("objectMapOverrides");

@@ -22,7 +22,7 @@ void Require(bool value, const char* message) { if (!value) throw std::runtime_e
 template<class T> void Check(const T& value, const char* message) {
     if (value.Succeeded()) return;
     std::string text(message);
-    for (const auto& diagnostic : value.diagnostics) text += " [" + diagnostic.code + "]";
+    for (const auto& diagnostic : value.diagnostics) text += " [" + diagnostic.code + ": " + diagnostic.message + "]";
     throw std::runtime_error(text);
 }
 void Write(const std::filesystem::path& path, std::span<const std::byte> bytes) {
@@ -144,6 +144,32 @@ void RegisteredCreateSaveReopenDelete(const std::filesystem::path& root, const c
     Check(empty, "original empty table"); Check(restored, "exported empty table");
     Require(*empty.value == *restored.value, "deleting created final rows restores original native bytes");
 }
+void RegisteredCandidateSourceGuards(const std::filesystem::path& root) {
+    PrepareSources(root); GameEnvironment environment(root / "game");
+    McpServer server; RegisterAllTools(server); server.SetWorkspace(root / "source", root / "ui");
+    auto* workspace = server.Workspace(); Require(workspace != nullptr, "candidate guard workspace");
+    const auto revision = workspace->Revision();
+    const auto transaction = workspace->BeginEdit(revision); Check(transaction, "candidate guard transaction");
+    auto args = Base(server, "units"); args.insert("placements", QJsonArray{Record("unit", "u001")});
+    RequireOk(Call(server, "entities_create", args));
+    Check(workspace->PreviewEdit(*transaction.value, revision), "candidate guard preview");
+    Require(workspace->ValidateEdit(*transaction.value, revision).satisfied, "candidate guard validate");
+    const auto output = root / "guarded-candidate";
+    auto stale = revision; ++stale.generation;
+    const auto staleExport = workspace->ExportCandidate(*transaction.value, stale, output);
+    Require(!staleExport.Succeeded() && !std::filesystem::exists(output) && workspace->HasActiveTransaction(),
+        "frozen source identity never authorizes a stale revision or publishes its candidate");
+    const auto gameArchive = root / "game/war3.mpq", heldArchive = root / "war3-held.mpq";
+    std::filesystem::rename(gameArchive, heldArchive);
+    const auto changedExport = workspace->ExportCandidate(*transaction.value, revision, output);
+    std::filesystem::rename(heldArchive, gameArchive);
+    Require(!changedExport.Succeeded() && !std::filesystem::exists(output) && workspace->HasActiveTransaction(),
+        "captured object game source remains required at candidate export");
+    Check(workspace->ExportCandidate(*transaction.value, revision, output), "restored captured object source exports without reentrant lock");
+    server.SetWorkspace(output, root / "ui"); Require(server.Workspace() != nullptr, "guarded candidate reopens");
+    const auto rows = Call(server, "entities_query", {{"kind", "units"}}); RequireOk(rows);
+    Require(rows.value("rows").toArray().size() == 1, "guarded candidate retains native placement");
+}
 }
 
 void TestRegisteredPlacementHost() {
@@ -155,4 +181,5 @@ void TestRegisteredPlacementHost() {
     RegisteredCreateSaveReopenDelete(root, "doodads", {Record("doodad", "D001"), Record("doodad", "D101"), Record("destructable", "b001"), Record("destructable", "b101")});
     const auto unchanged = DirectoryWorkspace::Open(root / "source"); Check(unchanged, "final source snapshot");
     Require(unchanged.value->Snapshot().aggregateSha256 == source.value->Snapshot().aggregateSha256, "registered operations never write source directory");
+    RegisteredCandidateSourceGuards(root / "source-guards");
 }

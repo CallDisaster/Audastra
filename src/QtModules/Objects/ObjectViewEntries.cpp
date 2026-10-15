@@ -1,6 +1,7 @@
 #include "ObjectViewEntries.h"
 
 #include "EditorProject.h"
+#include "ProjectObjectCatalog.h"
 #include "ObjectModuleShared.h"
 #include "ObjectClassification.h"
 #include "ObjectNames.h"
@@ -39,7 +40,8 @@ ObjectViewClassification ClassificationForChain(const ObjectInheritanceChain& ch
     return result;
 }
 
-ObjectViewEntry StandardEntry(const ObjectData::StandardObjectEntry& object, const ObjectData::StandardObjectCatalog* catalog) {
+ObjectViewEntry StandardEntry(const ObjectData::StandardObjectEntry& object, const ObjectData::StandardObjectCatalog* catalog,
+    const ObjectData::EffectiveObjectCatalog* effective = nullptr) {
     ObjectViewEntry entry;
     entry.kind = Kind(object.key.type);
     entry.id = U8(object.key.rawcode);
@@ -50,10 +52,19 @@ ObjectViewEntry StandardEntry(const ObjectData::StandardObjectEntry& object, con
     entry.iconPath = U8(shown.iconPath);
     entry.race = U8(object.race);
     entry.category = U8(object.category);
-    entry.description = QObject::tr("Warcraft III · 标准对象");
+    entry.description = QObject::tr("Warcraft III · 基础对象");
     const auto tip = object.fields.find("ubertip");
     if (tip != object.fields.end()) entry.description = U8(tip->second);
-    entry.details = {QObject::tr("来源：游戏资源"), entry.iconPath};
+    entry.details = {object.nativeOverridesSupported ? QObject::tr("基础数据：游戏资源")
+        : QObject::tr("基础数据含地图/战役 SLK · 当前只读"), entry.iconPath};
+    auto files = object.sourceFiles;
+    for (const auto& file : {object.definitionSourceFile, object.nameSourceFile, object.iconSourceFile})
+        if (!file.empty() && std::find(files.begin(), files.end(), file) == files.end()) files.push_back(file);
+    if (effective) for (const auto& file : files) {
+        const auto* input = effective->Input(file);
+        if (input) entry.details.push_back(QObject::tr("%1 → %2 · %3")
+            .arg(U8(file), U8(input->location.sourceId), U8(input->location.sourcePath)));
+    }
     if (!shown.reason.empty()) entry.details.push_back(U8(shown.reason));
     return entry;
 }
@@ -260,7 +271,7 @@ QVector<ObjectViewEntry> BuildObjectViewEntries(const QtProject::EditorProject& 
     QVector<ObjectViewEntry> entries;
     if (project.standardCatalog_) {
         for (const auto& object : project.standardCatalog_->Entries()) {
-            auto entry = StandardEntry(object, project.standardCatalog_.get());
+            auto entry = StandardEntry(object, project.standardCatalog_.get(), QtProject::ProjectEffectiveObjectCatalog(project).get());
             if (standardOnly) standardOnly->push_back(entry);
             entries.push_back(std::move(entry));
         }
@@ -367,7 +378,7 @@ ObjectViewPage QueryObjectViewEntries(const QtProject::EditorProject& project, c
                 || source.Field("ubertip").size() > 4096) {
                 page.partial = true; page.issue = QObject::tr("部分原版展示文本超过预算"); continue;
             }
-            row.entry = StandardEntry(source, project.standardCatalog_.get());
+            row.entry = StandardEntry(source, project.standardCatalog_.get(), QtProject::ProjectEffectiveObjectCatalog(project).get());
         }
         if (row.entry.available) row.classification = ResolveObjectViewClassification(project, row.object);
         else {

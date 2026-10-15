@@ -44,7 +44,7 @@ namespace {
 struct BackendState {
     bool rejectCreate = false;
     std::int32_t attachResult = 0, meshResult = 0, resizeResult = 0, statusCallResult = 0, statusResult = 0;
-    std::int32_t viewInfoResult = 0;
+    std::int32_t viewInfoResult = 0, terrainResult = 0;
     bool emptyStatus = false, unterminatedStatus = false;
     EditorPresentationState editor;
     std::uint32_t width = 0, height = 0;
@@ -90,6 +90,13 @@ std::int32_t WAR3_RENDER_CALL Mesh(War3RendererHandle handle, const War3RenderMe
     auto& state = *static_cast<BackendState*>(handle);
     if (state.meshResult) return state.meshResult;
     state.revision = mesh->documentRevision; ++state.sceneEpoch;
+    return 0;
+}
+std::int32_t WAR3_RENDER_CALL TerrainScene(War3RendererHandle handle, const War3RenderTerrainSceneV2* scene) {
+    auto& state = *static_cast<BackendState*>(handle);
+    if (state.terrainResult) return state.terrainResult;
+    state.revision = scene->documentRevision;
+    ++state.sceneEpoch;
     return 0;
 }
 std::int32_t WAR3_RENDER_CALL Camera(War3RendererHandle handle, const War3RenderCameraV2* camera) {
@@ -292,6 +299,7 @@ private slots:
     void PluginFailuresPreserveOperationAndBoundedRawStatus_data();
     void PluginFailuresPreserveOperationAndBoundedRawStatus();
     void OptionalCapabilitiesAndPhysicalLimitDoNotEmitPluginFailure();
+    void GroundSubmissionReportsReasonAndPreservesPreviousMesh();
     void CaptureViewPendingKeepsStaleResultWithoutProgramFailure_data();
     void CaptureViewPendingKeepsStaleResultWithoutProgramFailure();
     void CameraAndCompletedFrameStayBound();
@@ -377,6 +385,54 @@ void WorldViewportTests::OptionalCapabilitiesAndPhysicalLimitDoNotEmitPluginFail
     QVERIFY(viewport.RendererReady());
     QVERIFY(!viewport.SetEnvironment(std::make_shared<Render::SceneEnvironment>()));
     QCOMPARE(failures.count(), 0);
+}
+
+void WorldViewportTests::GroundSubmissionReportsReasonAndPreservesPreviousMesh() {
+    BackendState state; active = &state;
+    auto api = backend;
+    api.submitTerrainScene = TerrainScene;
+    WorldViewport viewport(nullptr, &api);
+    viewport.resize(320, 240);
+    auto terrain = std::make_shared<MapData::TerrainGridSnapshot>();
+    terrain->header.width = terrain->header.height = 2;
+    terrain->header.offset = {-64, -64};
+    terrain->header.groundTilesets = {"Ldrt"};
+    terrain->minimum = {-64, -64, 0}; terrain->maximum = {64, 64, 0};
+    terrain->vertices.resize(4); terrain->tiles.push_back({{0, 1, 2, 3}});
+    for (std::size_t i = 0; i < 4; ++i)
+        terrain->vertices[i].position = {i & 1 ? 64.0f : -64.0f, i & 2 ? 64.0f : -64.0f, 0};
+    const std::array<std::shared_ptr<const Render::TerrainAtlasSnapshot>, 1> missingAtlas{};
+    auto built = Render::BuildTerrainGroundMesh(*terrain, missingAtlas);
+    QVERIFY(built.Succeeded());
+    auto ground = std::make_shared<Render::TerrainGroundMesh>(std::move(*built.value));
+    QVERIFY(!viewport.SetGroundMesh(ground));
+    QCOMPARE(viewport.LastGroundFailure().diagnostics.front().code, std::string("WORLD_GROUND_SOURCE"));
+    QVERIFY(Bind(viewport, 17));
+    QVERIFY(viewport.LastGroundFailure().diagnostics.empty());
+    QVERIFY(viewport.SetPickingTerrain(terrain, 1, 17));
+    viewport.show(); QApplication::processEvents();
+    QVERIFY(viewport.RendererReady());
+    QVERIFY(viewport.SetGroundMesh(ground));
+
+    auto changed = std::make_shared<Render::TerrainGroundMesh>(*ground);
+    changed->vertices.front().x += 1;
+    const auto acceptedEpoch = state.sceneEpoch;
+    QVERIFY(!viewport.SetGroundMesh(changed));
+    QVERIFY(viewport.HasGroundMesh());
+    QCOMPARE(state.sceneEpoch, acceptedEpoch);
+    QCOMPARE(viewport.LastGroundFailure().diagnostics.front().code, std::string("WORLD_GROUND_POSITION"));
+    const auto rows = viewport.BackendDiagnosticSnapshot().value("ground_failure").toArray();
+    QCOMPARE(rows.size(), qsizetype{1});
+    QCOMPARE(rows.first().toObject().value("code").toString(), QStringLiteral("WORLD_GROUND_POSITION"));
+
+    state.terrainResult = -20;
+    QVERIFY(!viewport.SetGroundMesh(ground));
+    QVERIFY(viewport.HasGroundMesh());
+    QCOMPARE(state.sceneEpoch, acceptedEpoch);
+    QCOMPARE(viewport.LastGroundFailure().diagnostics.front().code, std::string("WORLD_GROUND_PLUGIN_REJECTED"));
+    state.terrainResult = 0;
+    QVERIFY(viewport.SetGroundMesh(ground));
+    QVERIFY(viewport.LastGroundFailure().diagnostics.empty());
 }
 
 void WorldViewportTests::CaptureViewPendingKeepsStaleResultWithoutProgramFailure_data() {

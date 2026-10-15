@@ -3,7 +3,9 @@
 #include "UpdateClient.h"
 
 #include <QCryptographicHash>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QHostAddress>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -19,7 +21,12 @@
 #include <functional>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <utility>
+
+#ifdef Q_OS_WIN
+#include <Windows.h>
+#endif
 
 namespace UpdateFixtures {
 
@@ -30,7 +37,7 @@ inline QByteArray Http(const QByteArray& body, int code = 200, const QByteArray&
         + "\r\nConnection: close\r\n" + extra + "\r\n" + body;
 }
 
-// 本头仅供两个原创Qt测试编译；seed不是作者密钥，不进入产品BuildInfo或发布包。
+// 本头仅供原创Qt更新测试编译；seed不是作者密钥，不进入产品BuildInfo或发布包。
 struct Signer {
     std::array<unsigned char, crypto_sign_PUBLICKEYBYTES> publicKey{};
     std::array<unsigned char, crypto_sign_SECRETKEYBYTES> secret{};
@@ -67,11 +74,12 @@ inline QByteArray Zip(const QMap<QString, QByteArray>& files) {
 
 struct Bundle {
     Signer signer;
+    QMap<QString, QByteArray> files;
     QByteArray package;
     QByteArray manifest;
     QByteArray signature;
     explicit Bundle(const QString& version = QStringLiteral("0.2.0"), const QString& minimum = QStringLiteral("0.1.0")) {
-        const QMap<QString, QByteArray> files{{QStringLiteral("war3-map-editor.exe"), QByteArray("original fixture executable data")},
+        files = {{QStringLiteral("war3-map-editor.exe"), QByteArray("original fixture executable data")},
             {QStringLiteral("plugins/fixture.txt"), QByteArray("original fixture plugin data")}};
         package = Zip(files); QJsonArray rows;
         for (auto i = files.begin(); i != files.end(); ++i) rows.append(QJsonObject{{"path", i.key()}, {"bytes", qint64(i.value().size())}, {"sha256", QString::fromLatin1(Hash(i.value()))}});
@@ -83,6 +91,37 @@ struct Bundle {
         manifest = QJsonDocument(object).toJson(QJsonDocument::Indented) + "\r\n"; signature = signer.Sign(manifest);
     }
 };
+
+inline bool WriteFixtureFile(const QString& path, const QByteArray& bytes) {
+    if (!QDir().mkpath(QFileInfo(path).absolutePath())) return false;
+    QFile file(path);
+    return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
+}
+
+// 当前安装和远端新包是两份独立的原创签名输入；客户端必须实际核验磁盘文件，
+// 没有“测试时默认为可信”的开关。故障用例在生成后修改此目录或显式传空目录。
+inline QString CreateSignedInstallation(const QString& root, const QString& version = QStringLiteral("0.1.0")) {
+    const Bundle baseline(version, QStringLiteral("0.0.0"));
+    for (auto file = baseline.files.begin(); file != baseline.files.end(); ++file)
+        if (!WriteFixtureFile(QDir(root).filePath(file.key()), file.value()))
+            throw std::runtime_error("fixture installation file failed");
+    if (!WriteFixtureFile(QDir(root).filePath(QStringLiteral("update-manifest.json")), baseline.manifest)
+        || !WriteFixtureFile(QDir(root).filePath(QStringLiteral("update-manifest.json.sig")), baseline.signature))
+        throw std::runtime_error("fixture installation baseline failed");
+#ifdef Q_OS_WIN
+    // TEMP 可能含 8.3 名；仅展开原创目录的短名，原更新路径/reparse 校验仍然照常执行。
+    const auto native = QDir::toNativeSeparators(QDir(root).absolutePath()).toStdWString();
+    const auto size = GetLongPathNameW(native.c_str(), nullptr, 0);
+    if (!size || size > 32768) throw std::runtime_error("fixture installation path failed");
+    std::wstring expanded(size, L'\0');
+    const auto length = GetLongPathNameW(native.c_str(), expanded.data(), size);
+    if (!length || length >= size) throw std::runtime_error("fixture installation path failed");
+    expanded.resize(length);
+    return QDir::fromNativeSeparators(QString::fromStdWString(expanded));
+#else
+    return QDir(root).canonicalPath();
+#endif
+}
 
 class Server final : public QObject {
 public:
@@ -115,8 +154,9 @@ public:
         routes.insert("/repos/fixture/editor/releases/latest", Release(bundle, version, prerelease));
         routes.insert("/assets/update-manifest.json", bundle.manifest); routes.insert("/assets/update-manifest.json.sig", bundle.signature); routes.insert("/assets/fixture.zip", bundle.package);
     }
-    War3Map::QtUpdate::LoopbackUpdateSource Source(const Bundle& bundle, const QString& staging, const QString& current = QStringLiteral("0.1.0")) const {
-        return {Url(QStringLiteral("/repos/fixture/editor")), current, bundle.signer.KeyHex(), staging, 1000};
+    War3Map::QtUpdate::LoopbackUpdateSource Source(const Bundle& bundle, const QString& staging,
+        const QString& installation, const QString& current = QStringLiteral("0.1.0")) const {
+        return {Url(QStringLiteral("/repos/fixture/editor")), current, bundle.signer.KeyHex(), staging, 1000, installation};
     }
     QTcpServer listener;
     QMap<QByteArray, QByteArray> routes;

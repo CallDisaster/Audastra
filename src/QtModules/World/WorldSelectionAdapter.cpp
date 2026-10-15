@@ -60,16 +60,23 @@ Services::WorldSelectionContext WorldModule::SelectionContext() const {
 bool WorldModule::RefreshSelectionContext(std::shared_ptr<const MapDocument> owned) {
     if (!project_.mapDocument_) {
         worldSelection_.Clear(); selectionDocument_.reset(); selectionMapData_.reset();
+        startLocationMarkers_ = {}; startLocationBinding_.reset(); startLocationOverlaySubmitted_ = false;
+        if (viewport_) (void)viewport_->SetOverlayLines({});
         return false;
     }
-    if (selectionDocumentId_.empty()) selectionDocumentId_ = "world-" + QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+    const auto sessionIdentity = project_.mapEdits_ ? project_.mapEdits_->SessionIdentity() : 0;
+    if (selectionDocumentId_.empty() || selectionSessionIdentity_ != sessionIdentity)
+        selectionDocumentId_ = "world-" + QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
     const auto mapKey = MapKey();
     const auto revision = project_.mapEdits_ ? project_.mapEdits_->Revision() : 0;
     const auto generation = std::max<std::uint64_t>(1, project_.editRevision_.Generation());
-    if (!selectionMapData_ || selectionMapKey_ != mapKey || selectionMapData_->Binding().revision != revision
+    if (!selectionMapData_ || selectionSessionIdentity_ != sessionIdentity
+        || selectionMapKey_ != mapKey || selectionMapData_->Binding().revision != revision
         || selectionMapData_->Binding().generation != generation || selectionBoundCatalogRevision_ != selectionCatalogRevision_) {
         auto captured = QtProject::CaptureProjectMapDataQuery(project_, selectionDocumentId_, generation, std::move(owned));
         if (!captured.Succeeded()) {
+            startLocationMarkers_ = {}; startLocationBinding_.reset(); startLocationOverlaySubmitted_ = false;
+            if (viewport_) (void)viewport_->SetOverlayLines({});
             if (selectionStatus_) selectionStatus_->setText(tr("场景查询不可用：%1").arg(WorldDiagnosticText(captured.diagnostics)));
             return false;
         }
@@ -77,7 +84,13 @@ bool WorldModule::RefreshSelectionContext(std::shared_ptr<const MapDocument> own
         selectionDocument_ = selectionMapData_->OwnedDocument();
         selectionObjectSources_ = QtProject::CaptureProjectObjectSources(project_);
         selectionMapKey_ = mapKey;
+        selectionSessionIdentity_ = sessionIdentity;
         selectionBoundCatalogRevision_ = selectionCatalogRevision_;
+        startLocationMarkers_ = {}; startLocationBinding_.reset(); startLocationOverlaySubmitted_ = false;
+        const auto markers = CaptureWorldStartLocations(*selectionDocument_);
+        if (markers.Succeeded()) {
+            startLocationMarkers_ = *markers.value; startLocationBinding_ = selectionMapData_->Binding();
+        } else project_.AddDiagnostics(markers.diagnostics);
     }
     const auto bound = worldSelection_.Bind(SelectionContext());
     if (!bound.Succeeded() || !worldSelection_.Version()) return false;
@@ -113,7 +126,10 @@ bool WorldModule::SelectObjects(std::span<const Services::WorldObjectId> ids, Se
 }
 
 bool WorldModule::SelectionEditable() const {
-    if ((viewport_ && !viewport_->ModelPresentationCurrent()) || !selectionMapData_ || !worldSelection_.Version() || !project_.mapEdits_
+    if ((viewport_ && !viewport_->ModelPresentationCurrent()) || project_.savingMap_
+        || project_.sourceChangeSuspected_ || project_.sourceChangeConfirmed_
+        || !selectionMapData_ || !worldSelection_.Version() || !project_.mapEdits_
+        || selectionSessionIdentity_ != project_.mapEdits_->SessionIdentity()
         || selectionMapKey_ != MapKey() || selectionMapData_->Binding().generation != std::max<std::uint64_t>(1, project_.editRevision_.Generation())
         || selectionMapData_->Binding().revision != project_.mapEdits_->Revision()
         || selectionBoundCatalogRevision_ != selectionCatalogRevision_) return false;
@@ -129,7 +145,10 @@ void WorldModule::RefreshOutliner(std::shared_ptr<const MapDocument> owned) {
     outlinerDirty_ = true;
     // 摆放页与收起的工具栏不需要重建不可见的目录，但 typed 选择、显隐和修订
     // 仍立即绑定到当前文档，不能让隐藏 UI 延迟影响视口和后续编辑的身份检查。
-    if (!RefreshSelectionContext(std::move(owned)) || !outliner_->isVisible()) return;
+    if (!RefreshSelectionContext(std::move(owned))) return;
+    // 只有辅助对象/起点的地图没有主模型 scene；同一文档事务仍须刷新标记和属性。
+    if (!scene_ && terrain_ && viewport_) { UpdateOverlay(); UpdateInspector(); }
+    if (!outliner_->isVisible()) return;
     const QSignalBlocker selectionBlocker(outliner_->selectionModel());
     const auto boundVersion = *worldSelection_.Version();
     const bool configured = outlinerModel_->Version().has_value();

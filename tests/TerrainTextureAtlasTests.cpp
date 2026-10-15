@@ -142,12 +142,73 @@ void TestJpegMipValidation() {
     Rejected(DecodeTerrainTextureAtlas(JpegBlp(16, 16, {small.bytes})), "TERRAIN_ATLAS_JPEG");
     broken = base.bytes; broken.pop_back();
     Rejected(DecodeTerrainTextureAtlas(JpegBlp(16, 16, {broken})), "TERRAIN_ATLAS_JPEG");
-    broken = base.bytes; broken.insert(broken.end(), 0);
-    Rejected(DecodeTerrainTextureAtlas(JpegBlp(16, 16, {broken})), "TERRAIN_ATLAS_JPEG");
     const auto restart = TestFixtures::MakeTinyGrayJpeg(16, 16, true);
     Require(DecodeTerrainTextureAtlas(JpegBlp(16, 16, {restart.bytes})).Succeeded(), "含 RST 的 atlas 应通过");
     broken = restart.bytes; broken[restart.entropyOffset + 2] = 0xd2;
     Rejected(DecodeTerrainTextureAtlas(JpegBlp(16, 16, {broken})), "TERRAIN_ATLAS_DECODE");
+}
+
+void TestJpegTrailingDataPreservesCompleteImage() {
+    const auto base = TestFixtures::MakeTinyGrayJpeg(16, 16);
+    const auto small = TestFixtures::MakeTinyGrayJpeg(8, 8);
+    const auto clean = DecodeTerrainTextureAtlas(JpegBlp(16, 16, {base.bytes, small.bytes}, 71));
+    Require(clean.Succeeded() && clean.diagnostics.empty(), "无尾数据的原创 JPEG 基线应完整通过");
+    // 单字节填充、伪 marker 及第二张 JPEG 均位于完整 EOI 之后，不参与首张图像解码。
+    const std::vector<std::vector<unsigned char>> tails{
+        {0}, {0xff}, {0xda}, {0xcb}, {0xff, 0xc0, 0, 1, 0xff, 0xda}, small.bytes};
+    for (const auto& tail : tails) {
+        auto paddedBase = base.bytes;
+        paddedBase.insert(paddedBase.end(), tail.begin(), tail.end());
+        auto paddedSmall = small.bytes;
+        paddedSmall.insert(paddedSmall.end(), tail.begin(), tail.end());
+        auto resource = JpegBlp(16, 16, {paddedBase, paddedSmall}, 71);
+        const auto sourceBytes = resource.bytes;
+        const auto result = DecodeTerrainTextureAtlas(resource);
+        Require(result.Succeeded() && (*result.value)->validatedMipCount == 2,
+            "完整 JPEG 后的尾数据不应使可用 mip 失效");
+        Require((*result.value)->image.rgba == (*clean.value)->image.rgba
+            && (*result.value)->additionalMips.size() == 1
+            && (*result.value)->additionalMips[0].rgba == (*clean.value)->additionalMips[0].rgba,
+            "EOI 尾数据不得改变首张图像像素或后续 mip");
+        Require(result.diagnostics.size() == 2
+            && std::all_of(result.diagnostics.begin(), result.diagnostics.end(), [](const Diagnostic& diagnostic) {
+                return diagnostic.severity == DiagnosticSeverity::Warning
+                    && diagnostic.code == "TERRAIN_ATLAS_JPEG_TRAILING_DATA";
+            }), "每个成功解码且有尾数据的 mip 应报告明确警告");
+        Require(result.diagnostics[0].message.find("mip 0") != std::string::npos
+            && result.diagnostics[0].message.find(std::to_string(tail.size()) + " 字节") != std::string::npos,
+            "尾数据诊断应给出所在层和实际字节数量");
+        const auto sourceHash = Sha256(sourceBytes);
+        Require(sourceHash.Succeeded() && resource.bytes == sourceBytes
+            && (*result.value)->sourceSha256 == *sourceHash.value
+            && (*result.value)->sourceSha256 != (*clean.value)->sourceSha256,
+            "兼容尾数据不得改写来源或把裁剪后的数据作为来源身份");
+        TerrainAtlasLimits limits;
+        limits.maxInputBytes = resource.bytes.size() - 1;
+        Rejected(DecodeTerrainTextureAtlas(resource, limits), "TERRAIN_ATLAS_INPUT_BUDGET");
+    }
+
+    // 首个 EOI 之前缺失实际熵码时，尾部再有完整 JPEG 也不能补救或生成部分快照。
+    auto earlyEnd = base.bytes;
+    earlyEnd.insert(earlyEnd.begin() + static_cast<std::ptrdiff_t>(base.entropyOffset), {0xff, 0xd9});
+    earlyEnd.insert(earlyEnd.end(), base.bytes.begin(), base.bytes.end());
+    Rejected(DecodeTerrainTextureAtlas(JpegBlp(16, 16, {earlyEnd})), "TERRAIN_ATLAS_DECODE");
+    auto brokenSmall = small.bytes;
+    brokenSmall.insert(brokenSmall.begin() + static_cast<std::ptrdiff_t>(small.entropyOffset), {0xff, 0xd9});
+    const auto truncated = DecodeTerrainTextureAtlas(JpegBlp(16, 16, {base.bytes, brokenSmall}));
+    Require(truncated.Succeeded() && (*truncated.value)->validatedMipCount == 1
+        && (*truncated.value)->additionalMips.empty() && truncated.diagnostics.empty(),
+        "坏 mip 仍只截断后续层，不能报告该层已成功兼容尾数据");
+
+    const std::vector<unsigned char> progressive(std::begin(kTerrainAtlasProgressive), std::end(kTerrainAtlasProgressive));
+    auto paddedProgressive = progressive;
+    paddedProgressive.push_back(0xff);
+    const auto originalProgressive = DecodeTerrainTextureAtlas(JpegBlp(16, 16, {progressive}));
+    const auto decodedProgressive = DecodeTerrainTextureAtlas(JpegBlp(16, 16, {paddedProgressive}));
+    Require(originalProgressive.Succeeded() && decodedProgressive.Succeeded()
+        && (*originalProgressive.value)->image.rgba == (*decodedProgressive.value)->image.rgba
+        && decodedProgressive.diagnostics.size() == 1,
+        "渐进式 JPEG 完成所有扫描后的 EOI 尾数据也应保留像素并给出警告");
 }
 
 void TestRejectedFormatsAndBudgets() {
@@ -267,6 +328,7 @@ int main(int argc, char** argv) {
         Require(argc == 1 || argc == 3, "用法：terrain-atlas-tests [游戏目录 资源虚拟路径]");
         TestPixelsCellsAndOwnership();
         TestJpegMipValidation();
+        TestJpegTrailingDataPreservesCompleteImage();
         TestRejectedFormatsAndBudgets();
         TestResolverFailures();
         if (argc == 3) InspectGameResource(std::filesystem::path(argv[1]), argv[2]);

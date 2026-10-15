@@ -428,6 +428,218 @@ void TestAmbiguousIdentityIsReadOnly() {
         && !document->Supports(NativeObjectOperation::EditExistingValue)
         && !document->Supports(NativeObjectOperation::EditStructure)
         && !document->Supports(NativeObjectOperation::ReplaceFromTemplate), "v2 ambiguity only allows original byte preservation");
+    const auto edit = document->SetModification({ObjectType::Unit, "hfoo"},
+        FixtureKey(ObjectType::Unit, "DUPL"), std::int32_t{9});
+    Check(!edit.Succeeded() && edit.diagnostics.size() == 1
+        && edit.diagnostics.front().code == "native-document-read-only"
+        && edit.diagnostics.front().message == "修改已有 native 字段因对象或字段身份存在歧义而被拒绝；原始字节仍可只读查看。",
+        "duplicate identity retains its exact read-only refusal reason and code");
+}
+
+void TestUnknownEndMarkersAreReadOnly() {
+    struct MarkerCase {
+        ObjectType type;
+        std::int32_t version;
+        bool onlyCustom;
+    };
+    constexpr std::array cases{
+        MarkerCase{ObjectType::Unit, 2, false}, MarkerCase{ObjectType::Ability, 2, false},
+        MarkerCase{ObjectType::Item, 2, false}, MarkerCase{ObjectType::Buff, 2, false},
+        MarkerCase{ObjectType::Upgrade, 2, false}, MarkerCase{ObjectType::Doodad, 2, false},
+        MarkerCase{ObjectType::Destructable, 2, false}, MarkerCase{ObjectType::Unit, 1, false},
+        MarkerCase{ObjectType::Unit, 1, true},
+    };
+    const std::array unknownMarker{std::byte{'X'}, std::byte{'9'}, std::byte{'9'}, std::byte{'9'}};
+    const std::array binaryMarker{std::byte{0xff}, std::byte{0}, std::byte{0x11}, std::byte{0x7f}};
+    for (const auto& markerCase : cases) {
+        const auto type = markerCase.type;
+        auto source = BuildFixture(type, 1.25f, 0.75f, markerCase.version);
+        const std::size_t firstMarkerOffset = 20 + (HasLevelData(type) ? 16 : 8) + 4;
+        if (!markerCase.onlyCustom) {
+            std::copy(unknownMarker.begin(), unknownMarker.end(), source.begin() + static_cast<std::ptrdiff_t>(firstMarkerOffset));
+        }
+        std::copy(binaryMarker.begin(), binaryMarker.end(), source.end() - 4);
+        NativeObjectCodec codec(type);
+        auto parsed = codec.Parse(source);
+        Check(parsed.Succeeded() && parsed.diagnostics.size() == (markerCase.version == 1 ? 2u : 1u)
+            && std::count_if(parsed.diagnostics.begin(), parsed.diagnostics.end(), [](const Diagnostic& diagnostic) {
+                return diagnostic.code == "native-end-marker-unknown";
+            }) == 1,
+            "complete v2 or Unit v1 has one marker warning alongside any existing version warning");
+        const auto markerDiagnostic = std::find_if(parsed.diagnostics.begin(), parsed.diagnostics.end(), [](const Diagnostic& diagnostic) {
+            return diagnostic.code == "native-end-marker-unknown";
+        });
+        if (markerDiagnostic != parsed.diagnostics.end()) {
+            const auto expectedOffset = markerCase.onlyCustom ? source.size() - 4 : firstMarkerOffset;
+            Check(markerDiagnostic->severity == DiagnosticSeverity::Warning
+                && markerDiagnostic->origin && markerDiagnostic->origin->offset == expectedOffset
+                && markerDiagnostic->origin->length == 4,
+                "unknown marker diagnostic retains first exact four-byte source range");
+            Check(markerDiagnostic->message.find(markerCase.onlyCustom ? "H001" : "hfoo") != std::string::npos
+                && markerDiagnostic->message.find(markerCase.onlyCustom ? "ZZZZ" : "I001") != std::string::npos
+                && markerDiagnostic->message.find(markerCase.onlyCustom ? "\\xFF\\x00\\x11\\x7F" : "X999") != std::string::npos
+                && markerDiagnostic->message.find(markerCase.onlyCustom ? "1 处" : "2 处") != std::string::npos,
+                "unknown marker reason identifies object, field, actual bytes and total count");
+        }
+        auto* document = dynamic_cast<NativeObjectDocument*>(parsed.document.get());
+        Check(document && document->IsStructurallySafe() && document->OriginalObjectCount() == 1
+            && document->CustomObjectCount() == 1 && document->Objects().size() == 2,
+            "unknown markers do not stop complete table reading or invent empty objects");
+        if (!document) continue;
+        const ObjectKey original{type, "hfoo"}, custom{type, "H001"};
+        const auto* first = document->FindObject(original);
+        const auto* last = document->FindObject(custom);
+        Check(first && last && first->modifications.size() == 4 && last->modifications.size() == 1
+            && std::get<std::int32_t>(first->modifications.front().value) == 42
+            && std::get<float>(first->modifications[1].value) == 1.25f
+            && std::get<float>(first->modifications[2].value) == 0.75f
+            && std::get<std::string>(first->modifications[3].value) == std::string{"A\xd6\xd0", 3}
+            && std::get<std::int32_t>(last->modifications.front().value) == 7,
+            "all four value types and both complete tables remain readable after an unknown marker");
+        Check(document->Supports(NativeObjectOperation::PreserveSource)
+            && !document->Supports(NativeObjectOperation::EditExistingValue)
+            && !document->Supports(NativeObjectOperation::EditStructure)
+            && !document->Supports(NativeObjectOperation::ReplaceFromTemplate) && !document->IsEditable(),
+            "unknown marker only grants original-byte preservation, never edit or template authority");
+        Check(codec.Serialize(*document).value == source, "all unknown marker bytes and neighbors roundtrip exactly");
+        const auto validation = codec.Validate(*document);
+        Check(!validation.Succeeded()
+            && std::any_of(validation.diagnostics.begin(), validation.diagnostics.end(), [](const Diagnostic& diagnostic) {
+                return diagnostic.code == "native-document-read-only";
+            }) && std::none_of(validation.diagnostics.begin(), validation.diagnostics.end(), [](const Diagnostic& diagnostic) {
+                return diagnostic.code == "native-document-ambiguous";
+            }), "unknown marker is reported as read-only instead of fabricated duplicate identity");
+        const auto edit = document->SetModification(original, FixtureKey(type, "I001"), std::int32_t{99});
+        Check(!edit.Succeeded() && edit.diagnostics.size() == 1
+            && edit.diagnostics.front().code == "native-document-read-only"
+            && edit.diagnostics.front().message == "修改已有 native 字段因源文档含未知结束标记而被拒绝；原始字节仅可原样保留。",
+            "unknown marker denies value editing with its exact source-marker reason and existing code");
+        const auto requireReadOnly = [](const Status& status, std::string_view message) {
+            Check(!status.Succeeded() && status.diagnostics.size() == 1
+                && status.diagnostics.front().code == "native-document-read-only", message);
+        };
+        requireReadOnly(document->SetModification(original, FixtureKey(type, "R001"), 2.0f),
+            "unknown marker revokes existing real value editing");
+        requireReadOnly(document->SetModification(original, FixtureKey(type, "U001"), 0.5f),
+            "unknown marker revokes existing unreal value editing");
+        requireReadOnly(document->SetModification(original, FixtureKey(type, "S001"), std::string{"changed"}),
+            "unknown marker revokes existing string value editing");
+        requireReadOnly(document->SetModification(original, FixtureKey(type, "S001"), LocalizedStringValue{"changed"}),
+            "localized string values cannot bypass unknown-marker read-only authority");
+        requireReadOnly(document->SetModification(custom, FixtureKey(type, "ZZZZ", 4, 7), std::int32_t{99}),
+            "a late custom-table marker revokes every object's existing-value edit authority");
+        requireReadOnly(document->AddModification(custom, FixtureKey(type, "NEW1"), NativeValueType::Int32, std::int32_t{9}),
+            "unknown marker denies adding fields");
+        requireReadOnly(document->RemoveModification(original, FixtureKey(type, "I001")),
+            "unknown marker denies deleting fields");
+        requireReadOnly(document->AddCustomObject("H002", "hfoo"), "unknown marker denies adding custom objects");
+        requireReadOnly(document->AddOriginalObject("hrif"), "unknown marker denies adding original overrides");
+        requireReadOnly(document->CloneCustomObject(custom, "H003"), "unknown marker denies cloning objects");
+        requireReadOnly(document->DeleteCustomObject(custom), "unknown marker denies deleting custom objects");
+        requireReadOnly(document->RemoveOriginalObjectOverrides(original), "unknown marker denies removing original overrides");
+        const auto projection = ConvertNativeObjectDataToLni(type, source);
+        Check(projection.Succeeded() && projection.value, "unknown marker still permits a read-only field projection");
+        if (projection.value) {
+            auto lni = LniObjectCodec(type).Parse(*projection.value);
+            const auto* fields = dynamic_cast<LniObjectDocument*>(lni.document.get());
+            Check(fields && !ApplyLniChangesToNative(*document, *fields).Succeeded(),
+                "projected values cannot bypass native read-only writeback authority");
+            auto modern = ParseOwned(codec, BuildFixture(type));
+            if (fields && modern) {
+                Check(!MergeGeneratedNativeWithLniEdits(*document, *fields, *modern).Succeeded(),
+                    "unknown marker baseline cannot authorize template replacement");
+                Check(!MergeGeneratedNativeWithLniEdits(*modern, *fields, *document).Succeeded(),
+                    "unknown marker generated member cannot authorize template replacement");
+            }
+        }
+        const auto encoded = codec.Serialize(*document);
+        Check(encoded.Succeeded() && encoded.value == source, "rejected edits preserve the complete original member");
+        if (encoded.value) {
+            auto reopened = ParseOwned(codec, *encoded.value);
+            Check(reopened && !reopened->IsEditable() && codec.Serialize(*reopened).value == source,
+                "read-only marker state survives serialization and reopening");
+        }
+    }
+}
+
+void TestUnknownEndMarkersStillRequireCompleteBoundaries() {
+    const auto refused = [](ObjectType type, std::span<const std::byte> bytes, std::string_view expectedCode = {}) {
+        NativeObjectCodec codec(type);
+        const auto parsed = codec.Parse(bytes);
+        const auto* document = dynamic_cast<const NativeObjectDocument*>(parsed.document.get());
+        Check(!parsed.Succeeded() && document && !document->IsStructurallySafe()
+            && !document->Supports(NativeObjectOperation::PreserveSource)
+            && !document->Supports(NativeObjectOperation::EditExistingValue)
+            && !document->Supports(NativeObjectOperation::EditStructure)
+            && !document->Supports(NativeObjectOperation::ReplaceFromTemplate)
+            && !codec.Serialize(*document).Succeeded(),
+            "untrusted boundary after unknown marker denies both editing and source serialization");
+        if (!expectedCode.empty()) {
+            Check(std::any_of(parsed.diagnostics.begin(), parsed.diagnostics.end(), [&](const Diagnostic& diagnostic) {
+                return diagnostic.code == expectedCode;
+            }), "unsupported version, marker or later structure retains its specific failure reason");
+        }
+        const auto projection = ConvertNativeObjectDataToLni(type, bytes);
+        Check(!projection.Succeeded() && !projection.value,
+            "failed native parsing cannot publish partial field projection after moving diagnostics");
+    };
+    for (const std::int32_t version : {2, 1}) {
+        auto source = BuildFixture(ObjectType::Unit, 1.25f, 0.75f, version);
+        // 第一字段的值已完整；v2 和 Unit v1 都必须继续验证到第二张表末尾。
+        const std::array marker{std::byte{'X'}, std::byte{'9'}, std::byte{'9'}, std::byte{'9'}};
+        std::copy(marker.begin(), marker.end(), source.begin() + 32);
+        for (std::size_t size = 0; size < source.size(); ++size) {
+            refused(ObjectType::Unit, std::span<const std::byte>(source).first(size));
+        }
+        auto changed = source;
+        changed.push_back(std::byte{0x55});
+        refused(ObjectType::Unit, changed, "native-trailing-bytes");
+        changed = source;
+        changed[40] = std::byte{4}; // 原始表后续字段的未知类型，禁止猜测长度。
+        refused(ObjectType::Unit, changed, "native-value-type-unsupported");
+        const auto customObjectOffset = source.size() - (12 + 16);
+        changed = source;
+        changed[customObjectOffset + 16] = std::byte{4}; // 第二张表也必须按已知类型完整分帧。
+        refused(ObjectType::Unit, changed, "native-value-type-unsupported");
+        changed = source;
+        std::fill_n(changed.begin() + static_cast<std::ptrdiff_t>(customObjectOffset - 4), 4, std::byte{0xff});
+        refused(ObjectType::Unit, changed, "native-object-count-invalid");
+        if (version == 1) {
+            changed = source;
+            std::copy_n(source.begin() + 20, 4, changed.begin() + 36);
+            refused(ObjectType::Unit, changed, "native-modification-duplicate");
+            changed = source;
+            std::copy_n(source.begin() + 8, 4, changed.begin() + static_cast<std::ptrdiff_t>(customObjectOffset + 4));
+            refused(ObjectType::Unit, changed, "native-object-id-duplicate");
+        }
+    }
+    for (const auto type : {ObjectType::Ability, ObjectType::Item, ObjectType::Buff,
+        ObjectType::Upgrade, ObjectType::Doodad, ObjectType::Destructable}) {
+        auto source = BuildFixture(type, 1.25f, 0.75f, 1);
+        const auto wireType = type == ObjectType::Doodad ? ObjectType::Unit : type;
+        const auto markerOffset = 20 + (HasLevelData(wireType) ? 16 : 8) + 4;
+        source[markerOffset] = std::byte{'X'};
+        refused(type, source, type == ObjectType::Buff ? "native-version-unsupported" : "native-end-marker-invalid");
+    }
+    for (const auto type : {ObjectType::Unit, ObjectType::Ability, ObjectType::Item, ObjectType::Buff,
+        ObjectType::Upgrade, ObjectType::Doodad, ObjectType::Destructable}) {
+        // 使用真正的 v3 整数段分帧，避免只改 v2 版本头造成伪反例。
+        std::vector<std::byte> source;
+        AppendInt32(source, 3);
+        AppendInt32(source, 1);
+        AppendId(source, "hfoo");
+        AppendZeroId(source);
+        AppendInt32(source, 0);
+        AppendInt32(source, 1);
+        AppendModificationHeader(source, type, "V003", NativeValueType::Int32);
+        AppendInt32(source, 42);
+        AppendEndMarker(source, "X999");
+        AppendInt32(source, 0);
+        refused(type, source, "native-end-marker-invalid");
+    }
+    auto unsupported = BuildFixture(ObjectType::Unit);
+    unsupported[0] = std::byte{4};
+    refused(ObjectType::Unit, unsupported, "native-version-unsupported");
 }
 
 void TestClassicV1ExistingValueEdits() {
@@ -1857,6 +2069,8 @@ int main(int argc, char** argv) {
     TestStringEditPreservesNeighbors();
     TestFailClosedInputs();
     TestAmbiguousIdentityIsReadOnly();
+    TestUnknownEndMarkersAreReadOnly();
+    TestUnknownEndMarkersStillRequireCompleteBoundaries();
     TestClassicV1ExistingValueEdits();
     TestClassicV1DuplicateIdentityDenied();
     TestVersion3ReadOnlyAcrossSevenTypes();

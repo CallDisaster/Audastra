@@ -25,7 +25,7 @@ std::uint64_t SceneBytes(const AnimatedModelScene& scene) {
         Bytes(g.models) + Bytes(g.instances) + Bytes(g.instanceRequests) + Bytes(g.modelBounds) + Bytes(g.vertexGroups) +
         Bytes(g.meshGeosets) + Bytes(g.modelPaths) + Bytes(g.modelAssetKeys) + Bytes(g.modelTextureBindings) +
         Bytes(scene.vertices) + Bytes(scene.meshes) + Bytes(scene.meshColors) + Bytes(scene.models) + Bytes(scene.specs) +
-        Bytes(scene.sequences) + Bytes(scene.pickModels) + Bytes(scene.pickMeshGroups) + Bytes(scene.pickGroupBounds) +
+        Bytes(scene.requestGeometryRequired) + Bytes(scene.sequences) + Bytes(scene.pickModels) + Bytes(scene.pickMeshGroups) + Bytes(scene.pickGroupBounds) +
         Bytes(scene.drawLayerBindings) + Bytes(scene.modelLayerRanges) + Bytes(scene.standPickBounds) + Bytes(scene.sources);
     bytes += Bytes(g.textures);
     for (const auto& texture : g.textures) bytes += Bytes(texture.rgba) + texture.path.size();
@@ -321,8 +321,10 @@ Status CreateAnimationPrem(ModelAnimationService::State& state, const AnimationR
                 finish();
             }
         }
-        if (capabilities->empty()) return Status::Ok(); // 无PREM不安装额外帧/资产工作区。
         host->capabilities = capabilities;
+        // 已完成当前场景准备但能力清单为空时仍发布有来源/代次的最小空计划，只证明没有子槽。
+        // 未创建/未启用的宿主保持无包，不能被捕获端当作空计划；此路径不创建子服务或求值器。
+        if (capabilities->empty()) std::vector<std::vector<std::uint32_t>>{}.swap(host->assetCapabilities);
         if (!candidates.empty()) {
             std::vector<AnimationInstanceSpec> poolSpecs;
             for (const auto& candidate : candidates) {
@@ -367,9 +369,12 @@ Status CreateAnimationPrem(ModelAnimationService::State& state, const AnimationR
                 const bool chargedWorkspace = childState.collisionNodesRequired || childState.sharedPoseRanges ||
                     host->childService->Scene()->dynamicMaterialAlphas;
                 const auto includedWorkspace = chargedWorkspace ? budget.childEvaluatorBytes : 0;
-                if (includedWorkspace > childState.frameBytes)
+                // 子scene已在childSceneBytes按容量收费；从子帧账扣同一常驻表，避免外层帧侧重复。
+                // childSceneBytes仍完整保留在资产账，两类预算各自核验，不互相抵扣。
+                const auto includedSceneBytes = AnimationRequestGeometryBytes(*host->childService->Scene());
+                if (includedWorkspace > childState.frameBytes || includedSceneBytes > childState.frameBytes - includedWorkspace)
                     return AnimationFailure("PREM_CHILD_BUDGET_LAYOUT", "子服务实际workspace与正式frame账不一致，未重复或漏算。");
-                budget.childFrameLayoutBytes = childState.frameBytes - includedWorkspace;
+                budget.childFrameLayoutBytes = childState.frameBytes - includedWorkspace - includedSceneBytes;
                 budget.childFrameChargedBytes = std::max(budget.childStandFrameBytes, budget.childFrameLayoutBytes);
                 host->extraAssetBytes = budget.childSourceBytes + budget.childResourceBytes + budget.childSceneBytes;
                 host->storageBytes += budget.childSceneBytes + budget.childFrameChargedBytes + budget.childEvaluatorBytes;
@@ -478,6 +483,8 @@ Status PrepareAnimationPrem(ModelAnimationService::State& state, AnimationFrame&
         output->capabilities = host.capabilities; output->storageBytes = host.storageBytes;
         output->workingBytes = host.workingBytes; output->assetBytes = host.extraAssetBytes;
         output->budget = host.budget;
+        // 空清单已在 Create 完整扫描；每帧只绑定身份，不重新遍历全图请求。
+        if (host.capabilities->empty()) { frame.prem = std::move(output); return Status::Ok(); }
         for (std::uint32_t r = 0; r < state.requestAssets.size(); ++r) {
             const auto a = state.requestAssets[r];
             if (a >= host.assetCapabilities.size()) continue;

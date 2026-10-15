@@ -167,6 +167,10 @@ void WorldModule::PresentSelection() {
                 selectionOwner_ = document->Units()->units[selection_->index].owner;
         }
         selectionType_ = PlacementType(project_, selection_->rawcode, first, second);
+        if (unit && selection_->rawcode == "sloc") {
+            selectionName_ = tr("起始位置");
+            selectionIconPath_.clear(); selectionType_.reset();
+        }
     } else {
         viewport_->SetSelectedInstance(std::nullopt);
         if (selectedRegion_) selectionName_ = QString::fromUtf8(selectedRegion_->name);
@@ -201,7 +205,8 @@ void WorldModule::SelectBox(const QVector<int>& instances, int modifiers) {
 void WorldModule::SelectGround(double x, double y, int modifiers) {
     // 辅助对象只在目标/边框上命中；区域内部留给实例中心框选。
     std::optional<Services::WorldObjectId> candidate;
-    if (showCameras_->isChecked()) {
+    if (const auto start = PickStartLocation(x, y, false)) candidate = *start;
+    if (!candidate && showCameras_->isChecked()) {
         double best = kCameraPickRadius;
         for (std::uint32_t i = 0; i < cameras_.size(); ++i) {
             const Services::WorldObjectId id = MapData::MakeCameraId(i, cameras_[i]);
@@ -234,6 +239,7 @@ void WorldModule::SelectGround(double x, double y, int modifiers) {
 
 bool WorldModule::HandleAt(double x, double y) const {
     if (!SelectionEditable()) return false;
+    if (PickStartLocation(x, y, true)) return true;
     if (const auto* region = SelectedRegion()) {
         const auto handle = PickRegionDragHandle(*region, x, y);
         return handle.corner >= 0 || handle.edge >= 0;
@@ -291,7 +297,7 @@ void WorldModule::DragSelection(double x, double y) {
         regionDraft_ = bounds;
     } else if (const auto* camera = SelectedCamera()) {
         cameraDraft_ = std::array<float, 2>{static_cast<float>(camera->targetX + dx), static_cast<float>(camera->targetY + dy)};
-    } else if (const auto request = SelectedRequest(); request && scene_) {
+    } else if (!selectedPlacements_.empty()) {
         if (!terrain_) return;
         const auto document = CurrentDocument();
         if (!document) return;
@@ -299,9 +305,11 @@ void WorldModule::DragSelection(double x, double y) {
         if (!planned.Succeeded()) return; // 一员无效，整组保持上一份合法草稿。
         auto moves = std::move(*planned.value);
         for (const auto& move : moves) {
+            if (selection_ && move.id == *selection_) dragPosition_ = move.position;
             const auto found = std::find(placementIds_.begin(), placementIds_.end(), move.id);
+            if (!scene_ || found == placementIds_.end()) continue;
             const auto index = static_cast<std::uint32_t>(found - placementIds_.begin());
-            if (move.id == *selection_) dragPosition_ = move.position;
+            if (index >= requests_.size()) continue;
             const auto instance = InstanceOfRequest(index);
             if (!instance) continue;
             auto moved = requests_[index]; moved.position = WorldPlacementDisplayPosition(moved, move.position);
@@ -309,7 +317,7 @@ void WorldModule::DragSelection(double x, double y) {
             std::copy(transform.begin(), transform.end(), scene_->instances[*instance].transform);
         }
         dragGroup_ = std::move(moves);
-        (void)viewport_->UpdateModelInstances();
+        if (scene_) (void)viewport_->UpdateModelInstances();
     }
     UpdateOverlay(); UpdateSelectionText();
 }
@@ -450,8 +458,7 @@ void WorldModule::FinishDrag() {
 void WorldModule::DeleteSelection() {
     if (!SelectionEditable()) return;
     if (selectedRegion_ || selectedCamera_) {
-        // 区域与镜头常被触发器按名称引用；静态未检出引用不构成删除依据，这里不提供删除。
-        selectionStatus_->setText(tr("区域和镜头请在“实例”中删除"));
+        DeleteSelectedAuxiliary();
         return;
     }
     if (selectedPlacements_.empty() || !project_.mapEdits_) return;
@@ -466,66 +473,6 @@ void WorldModule::DeleteSelection() {
     ClearSelection();
     (void)project_.ObserveMapDataEdit("删除摆放");
     QtProject::PushMapDataEdit(project_, tr("删除 %1").arg(name), "删除摆放");
-    if (!project_.mapDataUndoStack_) RefreshPlacements();
-}
-
-void WorldModule::DuplicateSelectedAuxiliary() {
-    if (!SelectionEditable()) return;
-    if (!project_.mapEdits_) return;
-    const auto document = project_.mapEdits_->Snapshot();
-    const auto copyName = [](const std::string& base, const auto& entries) {
-        if (base.size() > 4078) return std::string{};
-        for (int suffix = 1; suffix <= 100000; ++suffix) {
-            const auto name = base + "_copy" + std::to_string(suffix);
-            if (std::none_of(entries.begin(), entries.end(), [&](const auto& entry) { return entry.name == name; }))
-                return name;
-        }
-        return std::string{};
-    };
-    std::string description;
-    QString text;
-    std::optional<Services::WorldObjectId> copiedId;
-    if (selectedRegion_ && document.Regions() && selectedRegion_->index < document.Regions()->entries.size() &&
-        MapData::MakeRegionId(selectedRegion_->index, document.Regions()->entries[selectedRegion_->index]) == *selectedRegion_) {
-        auto record = document.Regions()->entries[selectedRegion_->index];
-        const auto name = copyName(record.name, document.Regions()->entries);
-        std::int32_t highest = -1;
-        for (const auto& entry : document.Regions()->entries) highest = std::max(highest, entry.creationNumber);
-        if (name.empty() || highest == std::numeric_limits<std::int32_t>::max()) {
-            selectionStatus_->setText(tr("区域名称或创建编号已用尽")); return;
-        }
-        record.name = name; record.creationNumber = highest + 1;
-        const auto result = MapData::AddRegion(*project_.mapEdits_, std::move(record));
-        if (!result.Succeeded() || !result.value) {
-            project_.AddDiagnostics(result.diagnostics);
-            selectionStatus_->setText(tr("复制区域失败：%1").arg(WorldDiagnosticText(result.diagnostics)));
-            return;
-        }
-        copiedId = *result.value;
-        description = "复制区域"; text = tr("复制区域 %1").arg(QString::fromUtf8(name));
-    } else if (selectedCamera_ && document.Cameras() && selectedCamera_->index < document.Cameras()->entries.size() &&
-        MapData::MakeCameraId(selectedCamera_->index, document.Cameras()->entries[selectedCamera_->index]) == *selectedCamera_) {
-        auto record = document.Cameras()->entries[selectedCamera_->index];
-        const auto name = copyName(record.name, document.Cameras()->entries);
-        if (name.empty()) { selectionStatus_->setText(tr("镜头名称已用尽")); return; }
-        record.name = name;
-        const auto result = MapData::AddCamera(*project_.mapEdits_, std::move(record));
-        if (!result.Succeeded() || !result.value) {
-            project_.AddDiagnostics(result.diagnostics);
-            selectionStatus_->setText(tr("复制镜头失败：%1").arg(WorldDiagnosticText(result.diagnostics)));
-            return;
-        }
-        copiedId = *result.value;
-        description = "复制镜头"; text = tr("复制镜头 %1").arg(QString::fromUtf8(name));
-    } else {
-        selectionStatus_->setText(tr("先在场景目录选择一个区域或镜头"));
-        return;
-    }
-    CaptureAuxiliary(project_.mapEdits_->Snapshot());
-    (void)project_.ObserveMapDataEdit(description);
-    QtProject::PushMapDataEdit(project_, text, description);
-    if (copiedId) (void)SelectObjects(std::span(&*copiedId, 1), Services::SelectionMode::Replace);
-    RefreshOutliner(); UpdateOverlay(); UpdateSelectionText();
     if (!project_.mapDataUndoStack_) RefreshPlacements();
 }
 
@@ -1128,6 +1075,7 @@ void WorldModule::EditTerrainTextureSlot(bool cliff, bool append) {
 void WorldModule::UpdateOverlay() {
     if (!viewport_) return;
     Render::OverlayLines lines;
+    AppendStartLocationOverlay(lines);
     const auto* terrain = terrain_.get();
     const auto* region = SelectedRegion();
     const auto* camera = SelectedCamera();
@@ -1213,7 +1161,7 @@ void WorldModule::UpdateOverlay() {
     if (const auto binding = CurrentPlacementBinding())
         pendingPlacements_.AppendLines(lines, *binding, placementCompletedScene_.get(), placementCompletedFrame_.get(),
             [this](const auto& row) { return worldSelection_.Flags(row).visible; });
-    (void)viewport_->SetOverlayLines(std::move(lines));
+    startLocationOverlaySubmitted_ = viewport_->SetOverlayLines(std::move(lines)) && StartLocationsCurrent();
     UpdateSelectionCircles();
 }
 
@@ -1222,6 +1170,9 @@ void WorldModule::UpdateSelectionText() {
     UpdateToolHint();
     SyncOutlinerSelection();
     UpdateInspector();
+    if (startLocationMarkers_.omittedCount && selectionStatus_)
+        selectionStatus_->setText(tr("起始位置标记超过显示上限，省略 %1 个；全部记录仍可在场景目录查看。")
+            .arg(startLocationMarkers_.omittedCount));
 }
 
 } // namespace War3Map::Modules

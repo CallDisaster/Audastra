@@ -1,6 +1,7 @@
 #include "War3MapCore/Script/LuaMapPipeline.h"
 #include "War3MapCore/Hash.h"
 #include "../src/ScriptBuild/LuaMapScriptInternal.h"
+#include "TestLua.h"
 
 #include <Windows.h>
 #include <algorithm>
@@ -111,8 +112,7 @@ int main(int argc, char** argv) {
             / ("forge-lua-pipeline-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
         std::filesystem::create_directories(root);
         auto source = Generated(root / "catalog");
-        const auto ydwe = Environment(L"FORGE_YDWE_ROOT"); Require(ydwe && !ydwe->empty(), "FORGE_YDWE_ROOT required; no skipped syntax execution");
-        const auto executable = std::filesystem::path(*ydwe) / "bin/lua.exe";
+        const auto executable = Tests::LuaTestExecutable();
         const auto executableHash = Sha256File(executable); Require(executableHash.Succeeded(), Codes(executableHash));
         const std::vector<std::filesystem::path> directories{executable.parent_path()};
         const auto captured = CaptureLuaSyntaxChecker(executable, *executableHash.value, directories);

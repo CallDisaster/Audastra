@@ -151,7 +151,7 @@ bool MainWindow::ProbeWorldInteraction(int seconds, QStringList& log, bool passi
                 viewport->StatusText(), modelStatus(), viewport->HoverText(), viewport->SelectionText());
         QElapsedTimer diagnosticTimer; diagnosticTimer.start();
         auto diagnostic = worldModule_->PlaybackDiagnosticSnapshot();
-        diagnostic.insert("modelDiagnostics", worldModule_->ModelDiagnosticSnapshot());
+        diagnostic.insert("modelDiagnostics", worldModule_->ModelDiagnosticProgressSnapshot());
         diagnostic.insert("diagnosticCaptureElapsedMs", diagnosticTimer.nsecsElapsed() / 1000000.0);
         diagnostic.insert("tag", tag);
         diagnostic.insert("passive", passive);
@@ -171,10 +171,18 @@ bool MainWindow::ProbeWorldInteraction(int seconds, QStringList& log, bool passi
     };
 
     QElapsedTimer clock; clock.start();
+    const auto completedEmptyModelScene = [&] {
+        const auto* player = worldModule_->AnimationPlayer();
+        // 空指针本身不是成功：只有当前地图/修订已完成模型捕获才允许纯地形截图。
+        return worldModule_->TerrainOnlySceneReady() && player && !player->Ready()
+            && !player->Busy() && !player->InstancesBusy() && !player->Scene() && !player->Frame()
+            && !viewport->AnimationTarget() && !viewport->HasAnimationScene();
+    };
     const auto serviceReady = [&] {
         const auto* player = worldModule_->AnimationPlayer();
-        return viewport->RendererReady() && player && player->Ready()
-            && (!modelListOnly || worldModule_->ModelDiagnosticsReady());
+        if (!viewport->RendererReady() || viewport->VertexCount() == 0 || !player) return false;
+        if (modelListOnly) return worldModule_->ModelDiagnosticsReady();
+        return player->Ready() || (frameOnly && completedEmptyModelScene());
     };
     snapshot(QStringLiteral("loading-start"));
     qint64 nextStatusMs = 5000;
@@ -184,18 +192,23 @@ bool MainWindow::ProbeWorldInteraction(int seconds, QStringList& log, bool passi
             snapshot(QStringLiteral("loading@%1ms").arg(clock.elapsed()));
             nextStatusMs = clock.elapsed() + 5000;
         }
-        if (viewport->RendererFailed()) break;
+        if (viewport->RendererFailed() || worldModule_->TerrainLoadFailed() || worldModule_->ModelLoadFailed()) break;
     }
     snapshot(QStringLiteral("ready@%1ms").arg(clock.elapsed()));
     if (!serviceReady()) {
-        log << QStringLiteral("world-probe-outcome=player-not-ready; retained-picture-is-not-playback");
+        log << (worldModule_->TerrainLoadFailed() ? QStringLiteral("world-probe-outcome=terrain-load-failed")
+            : worldModule_->ModelLoadFailed() ? QStringLiteral("world-probe-outcome=model-load-failed")
+            : QStringLiteral("world-probe-outcome=player-not-ready; retained-picture-is-not-playback"));
         return false;
     }
 
     QJsonObject clockReceipt;
     if (!focusHostKey.isEmpty()) {
         const auto scene = worldModule_->AnimationPlayer()->Scene();
-        if (!scene) return false;
+        if (!scene) {
+            log << QStringLiteral("world-focus=refused-empty-model-scene");
+            return false;
+        }
         const War3Map::Render::AnimationInstanceSpec* target = nullptr;
         std::size_t targetIndex = 0;
         for (std::size_t i = 0; i < scene->specs.size(); ++i) if (QString::fromStdString(scene->specs[i].hostKey) == focusHostKey) {
@@ -289,12 +302,15 @@ bool MainWindow::ProbeWorldInteraction(int seconds, QStringList& log, bool passi
         const auto stableFrame = viewport->AnimationTarget();
         const auto stableScene = player->Scene();
         const auto revision = viewport->DocumentRevision();
+        const bool terrainOnly = completedEmptyModelScene();
         Pump(50);
-        if (!stableFrame || !stableScene || player->Busy() || player->InstancesBusy() || player->Playing()
+        if ((!terrainOnly && (!stableFrame || !stableScene))
+            || (terrainOnly && !completedEmptyModelScene())
+            || player->Busy() || player->InstancesBusy() || player->Playing()
             || player->Frame() != stableFrame || viewport->AnimationTarget() != stableFrame
             || player->Scene() != stableScene || viewport->DocumentRevision() != revision
-            || stableFrame->sceneVersion != stableScene->sceneVersion
-            || stableFrame->documentRevision != stableScene->documentRevision) {
+            || (!terrainOnly && (stableFrame->sceneVersion != stableScene->sceneVersion
+                || stableFrame->documentRevision != stableScene->documentRevision))) {
             log << QStringLiteral("world-frame-only=refused-unstable-animation"); return false;
         }
         if (clockRequested) {
@@ -313,18 +329,34 @@ bool MainWindow::ProbeWorldInteraction(int seconds, QStringList& log, bool passi
         }
         const auto sourceStable = [&] {
             return viewport->AnimationTarget() == stableFrame && player->Frame() == stableFrame && player->Scene() == stableScene
-                && !player->Busy() && !player->InstancesBusy() && !player->Playing() && viewport->DocumentRevision() == revision;
+                && !player->Busy() && !player->InstancesBusy() && !player->Playing() && viewport->DocumentRevision() == revision
+                && (!terrainOnly || completedEmptyModelScene());
+        };
+        const QJsonObject noModelLayer{{"applicable", false}, {"reason", "completed-empty-model-scene"}};
+        const auto capturePrem = [&](const War3Map::Render::CapturedFrameRgba& captured) {
+            return terrainOnly ? War3Map::Result<QJsonObject>::Success(noModelLayer)
+                : worldModule_->ModelPremCaptureSnapshot(captured);
+        };
+        const auto captureBug = [&](const War3Map::Render::CapturedFrameRgba& captured) {
+            return terrainOnly ? War3Map::Result<QJsonObject>::Success(noModelLayer)
+                : worldModule_->ModelBugPlaceholderCaptureSnapshot(captured);
         };
         auto frame = viewport->CaptureCompletedFrame(revision, War3Map::Render::kMaximumFrameCaptureBytes);
-        War3Map::Result<QJsonObject> premCapture;
-        if (frame.Succeeded() && frame.value) premCapture = worldModule_->ModelPremCaptureSnapshot(*frame.value);
+        War3Map::Result<QJsonObject> premCapture, bugCapture;
+        if (frame.Succeeded() && frame.value) {
+            premCapture = capturePrem(*frame.value);
+            bugCapture = captureBug(*frame.value);
+        }
         QElapsedTimer completionWait; completionWait.start();
         while (sourceStable() && completionWait.elapsed() < 5000 && (!frame.Succeeded() || !frame.value
-            || !premCapture.Succeeded() || !premCapture.value)) {
+            || !premCapture.Succeeded() || !premCapture.value || !bugCapture.Succeeded() || !bugCapture.value)) {
             Pump(250); // 有界等待实际层完成，保持同一父包；不把CPU提交即视为已绘制。
             if (!sourceStable()) break;
             frame = viewport->CaptureCompletedFrame(revision, War3Map::Render::kMaximumFrameCaptureBytes);
-            if (frame.Succeeded() && frame.value) premCapture = worldModule_->ModelPremCaptureSnapshot(*frame.value);
+            if (frame.Succeeded() && frame.value) {
+                premCapture = capturePrem(*frame.value);
+                bugCapture = captureBug(*frame.value);
+            }
         }
         if (!sourceStable()) { log << QStringLiteral("world-frame-only=refused-completion-wait-source-changed"); return false; }
         if (!frame.Succeeded() || !frame.value) {
@@ -339,10 +371,7 @@ bool MainWindow::ProbeWorldInteraction(int seconds, QStringList& log, bool passi
                     .arg(QString::fromStdString(diagnostic.code), QString::fromStdString(diagnostic.message));
             return false;
         }
-        if (frame.value->animation != stableFrame || viewport->AnimationTarget() != stableFrame
-            || player->Frame() != stableFrame || player->Scene() != stableScene
-            || player->Busy() || player->InstancesBusy() || player->Playing()
-            || viewport->DocumentRevision() != revision) {
+        if (frame.value->animation != stableFrame || !sourceStable()) {
             log << QStringLiteral("world-frame-only=refused-capture-source-changed"); return false;
         }
         const auto metrics = recentMetrics();
@@ -355,8 +384,8 @@ bool MainWindow::ProbeWorldInteraction(int seconds, QStringList& log, bool passi
                 && (flags & (WAR3_RENDER_FRAME_METRICS_DRAW_COMPLETED | WAR3_RENDER_FRAME_METRICS_UPLOAD_VALID
                     | WAR3_RENDER_FRAME_METRICS_READBACK)) == (WAR3_RENDER_FRAME_METRICS_DRAW_COMPLETED
                     | WAR3_RENDER_FRAME_METRICS_UPLOAD_VALID | WAR3_RENDER_FRAME_METRICS_READBACK)
-                && metric["animation_scene_version"].toString().toULongLong() == stableFrame->sceneVersion
-                && metric["animation_content_version"].toString().toULongLong() == stableFrame->contentVersion
+                && metric["animation_scene_version"].toString().toULongLong() == (stableFrame ? stableFrame->sceneVersion : 0)
+                && metric["animation_content_version"].toString().toULongLong() == (stableFrame ? stableFrame->contentVersion : 0)
                 && metric["surface_epoch"].toString().toULongLong() == frame.value->view.identity.surfaceEpoch
                 && metric["scene_epoch"].toString().toULongLong() == frame.value->view.identity.sceneEpoch
                 && metric["view_epoch"].toString().toULongLong() == frame.value->view.identity.viewEpoch) capturedMetric = metric;
@@ -366,9 +395,9 @@ bool MainWindow::ProbeWorldInteraction(int seconds, QStringList& log, bool passi
         }
         QJsonObject context{{"mode", "frame-only"}, {"selection_acceptance", false},
             {"author_visible_acceptance", false}, {"input_kind", "owned-widget-no-interaction"},
-            {"stable_animation_content_version", QString::number(stableFrame->contentVersion)},
+            {"model_scene", terrainOnly ? "completed-empty" : "animated"},
+            {"stable_animation_content_version", stableFrame ? QJsonValue(QString::number(stableFrame->contentVersion)) : QJsonValue::Null},
             {"frame_metrics", metrics}, {"capture_frame_metrics", capturedMetric}};
-        const auto bugCapture = worldModule_->ModelBugPlaceholderCaptureSnapshot(*frame.value);
         if (!bugCapture.Succeeded() || !bugCapture.value) {
             for (const auto& diagnostic : bugCapture.diagnostics)
                 log << QStringLiteral("world-placeholder-capture-refused=%1; %2")
@@ -377,6 +406,8 @@ bool MainWindow::ProbeWorldInteraction(int seconds, QStringList& log, bool passi
         }
         context["bug_placeholders"] = *bugCapture.value;
         context["prem_preview"] = *premCapture.value;
+        context["terrain_only"] = worldModule_->TerrainOnlySceneDiagnosticSnapshot();
+        context["map_binding"] = worldModule_->ModelDiagnosticProgressSnapshot()["binding"];
         if (!focusHostKey.isEmpty()) context["focused_host_key"] = focusHostKey;
         if (clockRequested) context["requested_accepted_animation_clock"] = clockReceipt;
         if (!writeCapture(std::move(*frame.value), std::move(context))) return false;

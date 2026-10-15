@@ -1,8 +1,8 @@
 #include "War3MapCore/Services/MapObjectReferenceCapture.h"
 
-#include "War3MapCore/Game/GameDataSource.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
+#include "War3MapCore/Services/ObjectCatalogSources.h"
 
 #include <algorithm>
 #include <array>
@@ -13,6 +13,8 @@ namespace {
 using SnapshotResult = Result<std::shared_ptr<const Trigger::MapObjectReferenceSnapshot>>;
 using SourceResult = Result<MapObjectReferenceSource>;
 constexpr std::size_t kMemberBytes = 128U * 1024U * 1024U;
+const std::array<std::string, 2> kClassificationNames{"Units/UnitData.slk", "Units/ItemData.slk"};
+using SourceScope = Trigger::MapObjectReferenceSourceScope;
 
 std::string PathText(const std::filesystem::path& path) {
     const auto text = path.generic_u8string();
@@ -53,35 +55,55 @@ SourceResult ReadDirectoryMember(const DirectoryWorkspace& workspace, std::strin
     return SourceResult::Success(std::move(result));
 }
 
-Result<MapObjectReferenceCapture::Reader> StandardReader(const std::filesystem::path& root) {
-    using Output = Result<MapObjectReferenceCapture::Reader>;
-    if (root.empty()) return Output::Success({});
-    auto mounted = Game::GameDataSource::MountStrict(root);
-    if (!mounted.Succeeded() || !mounted.value) return {{}, std::move(mounted.diagnostics)};
-    auto game = std::make_shared<Game::GameDataSource>(std::move(*mounted.value));
-    return Output::Success([game](std::string_view name) -> SourceResult {
-        const auto logical = std::string(name);
-        if (!game->HasFile(logical)) return SourceResult::Success({PathText(game->Root()) + "/<absent>/" + logical, {}});
-        auto read = game->ReadFileBoundedWithSource(logical, 32U * 1024U * 1024U);
+MapObjectReferenceCapture::Reader ClassificationReader(const ObjectCatalogSourceSnapshot& snapshot,
+    const ObjectCatalogSources& sources) {
+    const auto missingPrefix = sources.gameRoot.empty() ? std::string("unconfigured:")
+        : PathText(sources.gameRoot.lexically_normal()) + "/<absent>/";
+    return [snapshot, missingPrefix](std::string_view name) -> SourceResult {
+        auto read = snapshot.Read(name);
         if (!read.Succeeded() || !read.value) return {{}, std::move(read.diagnostics)};
-        return SourceResult::Success({PathText(game->Root() / read.value->archiveName) + "/" + logical,
-            std::move(read.value->bytes)});
-    });
+        if (!*read.value) return SourceResult::Success({missingPrefix + std::string(name), {}});
+        auto& file = **read.value;
+        MapObjectReferenceSource result;
+        // 身份字段用长度前缀编码，路径含分隔符也不会混淆层、容器与成员。
+        result.source = "object-catalog:";
+        const auto append = [&](std::string_view value) {
+            result.source += std::to_string(value.size()) + ':';
+            result.source += value;
+        };
+        append(std::to_string(static_cast<int>(file.location.layer)));
+        append(std::to_string(file.location.priority));
+        append(file.containerIdentity);
+        append(file.location.sourceId);
+        append(file.location.sourcePath);
+        append(file.location.canonicalPath);
+        if (file.location.layer == Resources::ResourceLayer::MapImport
+            || file.location.layer == Resources::ResourceLayer::SessionOverride) result.scope = SourceScope::Map;
+        else if (file.location.layer == Resources::ResourceLayer::Campaign) result.scope = SourceScope::Campaign;
+        result.bytes = std::move(file.bytes);
+        return SourceResult::Success(std::move(result));
+    };
 }
 
 } // namespace
 
 SnapshotResult CaptureDirectoryMapObjectReferences(const std::filesystem::path& root,
-    const std::filesystem::path& gameRoot) {
+    const std::filesystem::path& gameRoot, const ObjectCatalogSources* classificationSources) {
     auto workspace = DirectoryWorkspace::Open(root);
     if (!workspace.Succeeded() || !workspace.value) return {{}, std::move(workspace.diagnostics)};
     auto map = MapDocument::FromDirectory(*workspace.value);
     if (!map.Succeeded() || !map.value) return {{}, std::move(map.diagnostics)};
-    auto standard = StandardReader(gameRoot);
+    ObjectCatalogSources sources;
+    sources.directory = &*workspace.value;
+    sources.gameRoot = gameRoot;
+    if (classificationSources) sources = *classificationSources;
+    auto standard = CaptureObjectCatalogSources(sources, kClassificationNames);
     if (!standard.Succeeded() || !standard.value) return {{}, std::move(standard.diagnostics)};
     auto captured = MapObjectReferenceCapture::Capture(*map.value,
-        [&](auto member) { return ReadDirectoryMember(*workspace.value, member); }, *standard.value);
+        [&](auto member) { return ReadDirectoryMember(*workspace.value, member); }, ClassificationReader(*standard.value, sources));
     if (!captured.Succeeded()) return captured;
+    const auto classified = standard.value->Verify();
+    if (!classified.Succeeded()) return {{}, classified.diagnostics};
     const auto verified = workspace.value->VerifyUnchanged();
     if (!verified.Succeeded()) return {{}, verified.diagnostics};
     return captured;
@@ -89,7 +111,7 @@ SnapshotResult CaptureDirectoryMapObjectReferences(const std::filesystem::path& 
 
 SnapshotResult CaptureArchiveMapObjectReferences(const MapArchiveSession& archive,
     const std::filesystem::path& gameRoot, std::span<const MemberReplacement> replacements,
-    std::span<const std::string> removals) {
+    std::span<const std::string> removals, const ObjectCatalogSources* classificationSources) {
     // 一次归档身份校验捕获所有未覆盖输入，避免参数面板为每个小成员重哈希整张大地图。
     std::vector<std::string> requested;
     for (const auto name : {"war3map.w3i", "war3mapUnits.doo", "war3map.w3u", "war3map.w3t"}) {
@@ -129,9 +151,19 @@ SnapshotResult CaptureArchiveMapObjectReferences(const MapArchiveSession& archiv
         if (source.value->bytes) members.push_back({name, std::move(*source.value->bytes)});
     }
     const auto map = MapDocument::FromMembers(members, archive.SourcePath());
-    auto standard = StandardReader(gameRoot);
+    ObjectCatalogSources sources;
+    sources.archive = &archive;
+    sources.gameRoot = gameRoot;
+    sources.replacements = replacements;
+    sources.removals = removals;
+    sources.overlayIdentity = archive.SourceSha256();
+    if (classificationSources) sources = *classificationSources;
+    auto standard = CaptureObjectCatalogSources(sources, kClassificationNames);
     if (!standard.Succeeded() || !standard.value) return {{}, std::move(standard.diagnostics)};
-    return MapObjectReferenceCapture::Capture(map, reader, *standard.value);
+    auto result = MapObjectReferenceCapture::Capture(map, reader, ClassificationReader(*standard.value, sources));
+    if (!result.Succeeded()) return result;
+    const auto verified = standard.value->Verify();
+    return verified.Succeeded() ? result : SnapshotResult{{}, verified.diagnostics};
 }
 
 Status VerifyMapObjectReferenceContents(const Trigger::MapObjectReferenceSnapshot& expected,
@@ -142,7 +174,8 @@ Status VerifyMapObjectReferenceContents(const Trigger::MapObjectReferenceSnapsho
     for (std::size_t i = 0; i < expected.Inputs().size(); ++i) {
         const auto& a = expected.Inputs()[i]; const auto& b = actual.Inputs()[i];
         if (a.role != b.role || a.present != b.present || a.bytes != b.bytes || a.sha256 != b.sha256
-            || (a.role.starts_with("standard-") && a.source != b.source)) return reject();
+            || a.scope != b.scope
+            || (a.role.starts_with("standard-") && a.scope != SourceScope::Map && a.source != b.source)) return reject();
     }
     for (std::size_t i = 0; i < expected.References().size(); ++i) {
         const auto& a = expected.References()[i]; const auto& b = actual.References()[i];
@@ -154,23 +187,38 @@ Status VerifyMapObjectReferenceContents(const Trigger::MapObjectReferenceSnapsho
 
 Status VerifyMapObjectReferenceStandardSources(const Trigger::MapObjectReferenceSnapshot& expected,
     const std::filesystem::path& gameRoot) {
-    auto reader = StandardReader(gameRoot);
-    if (!reader.Succeeded() || !reader.value) return {reader.diagnostics};
+    ObjectCatalogSources sources;
+    sources.gameRoot = gameRoot;
+    return VerifyMapObjectReferenceClassificationSources(expected, sources);
+}
+
+Status VerifyMapObjectReferenceClassificationSources(const Trigger::MapObjectReferenceSnapshot& expected,
+    const ObjectCatalogSources& sources) {
+    auto snapshot = CaptureObjectCatalogSources(sources, kClassificationNames);
+    if (!snapshot.Succeeded() || !snapshot.value) return {snapshot.diagnostics};
+    const auto reader = ClassificationReader(*snapshot.value, sources);
     for (const auto& input : expected.Inputs()) {
         if (!input.role.starts_with("standard-")) continue;
         const auto name = input.role == "standard-unit" ? "Units/UnitData.slk" : "Units/ItemData.slk";
-        if (!*reader.value) {
-            if (input.present || input.source != "unconfigured:" + std::string(name))
-                return Status::Failure("MapObjectReference", "MAP_OBJECT_REFERENCE_SOURCE_CHANGED", "预放引用分类的游戏来源已移除。");
-            continue;
-        }
-        auto current = (*reader.value)(name);
+        auto current = reader(name);
         if (!current.Succeeded() || !current.value) return {current.diagnostics};
-        if (input.present != current.value->bytes.has_value() || input.source != current.value->source
+        if (input.present != current.value->bytes.has_value() || input.scope != current.value->scope
+            || input.source != current.value->source
             || (input.present && input.bytes != *current.value->bytes))
-            return Status::Failure("MapObjectReference", "MAP_OBJECT_REFERENCE_SOURCE_CHANGED", "预放引用的游戏分类来源已改变或被遮蔽。");
+            return Status::Failure("MapObjectReference", "MAP_OBJECT_REFERENCE_SOURCE_CHANGED", "预放引用的有效分类表已改变、换层或被遮蔽。");
     }
-    return Status::Ok();
+    return snapshot.value->Verify();
+}
+
+Status VerifyDirectoryMapObjectReferenceClassificationSources(const Trigger::MapObjectReferenceSnapshot& expected,
+    const std::filesystem::path& root, const std::filesystem::path& gameRoot) {
+    auto directory = DirectoryWorkspace::Open(root);
+    if (!directory.Succeeded() || !directory.value) return {directory.diagnostics};
+    ObjectCatalogSources sources;
+    sources.directory = &*directory.value;
+    sources.gameRoot = gameRoot;
+    const auto verified = VerifyMapObjectReferenceClassificationSources(expected, sources);
+    return verified.Succeeded() ? directory.value->VerifyUnchanged() : verified;
 }
 
 } // namespace War3Map::Services

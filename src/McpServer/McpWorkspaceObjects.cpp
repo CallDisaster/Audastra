@@ -5,6 +5,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/ObjectData/ObjectImport.h"
+#include "War3MapCore/Services/ObjectCatalogSources.h"
 #include "War3MapCore/Services/ObjectTransactionSnapshot.h"
 
 #include <algorithm>
@@ -51,6 +52,10 @@ std::string McpWorkspace::ObjectRevision() const {
         revision.sourceSha256 + ':' + revision.uiCatalogSha256;
 }
 
+std::shared_ptr<const ObjectData::EffectiveObjectCatalog> McpWorkspace::EffectiveObjectSources() const noexcept {
+    return objectState_ ? objectState_->effectiveCatalog : nullptr;
+}
+
 Status McpWorkspace::CaptureObjectSources() {
     if (objectState_) return Status::Ok();
     if (gameRoot_.empty()) return Failure("OBJECT_GAME_ROOT_REQUIRED",
@@ -59,7 +64,17 @@ Status McpWorkspace::CaptureObjectSources() {
     if (!environment.Succeeded()) return environment;
     auto game = Game::GameDataSource::MountStrict(gameRoot_);
     if (!game.Succeeded()) return {game.diagnostics};
-    auto state = std::make_unique<McpObjectWorkspaceState>();
+    auto directory = DirectoryWorkspace::Open(projectRoot_);
+    if (!directory.Succeeded()) return {directory.diagnostics};
+    if (directory.value->Snapshot().aggregateSha256 != session_.Revision().sourceSha256)
+        return Failure("OBJECT_WORKSPACE_SOURCE_CHANGED", "物编捕获与当前 EditorSession 来源修订不一致。");
+    Services::ObjectCatalogSources sources;
+    sources.directory = &*directory.value;
+    sources.gameRoot = gameRoot_;
+    auto effective = Services::LoadEffectiveObjectCatalog(sources);
+    if (!effective.Succeeded()) return {effective.diagnostics};
+    auto state = std::make_unique<McpObjectWorkspaceState>(
+        std::make_shared<const EffectiveObjectCatalog>(std::move(*effective.value)));
     std::size_t gameBytes = 0;
     Status gameRead = Status::Ok();
     const StandardObjectCatalog::FileReader reader = [&](const std::string& name) -> Result<std::vector<std::byte>> {
@@ -70,7 +85,7 @@ Status McpWorkspace::CaptureObjectSources() {
                 auto value = game.value->ReadFileBoundedWithSource(name, CatalogLoadOptions{}.maximumFileBytes);
                 if (!value.Succeeded()) { gameRead.diagnostics = value.diagnostics; return Failed<std::vector<std::byte>>(value); }
                 if (value.value->bytes.size() > kGameBudget - gameBytes) {
-                    gameRead = Failure("OBJECT_GAME_SNAPSHOT_BUDGET", "标准目录与字段元数据的实际读取超过 128 MiB 累积预算。");
+                    gameRead = Failure("OBJECT_GAME_SNAPSHOT_BUDGET", "游戏字段元数据的实际读取超过 128 MiB 累积预算。");
                     return Failed<std::vector<std::byte>>(gameRead);
                 }
                 gameBytes += value.value->bytes.size();
@@ -83,19 +98,11 @@ Status McpWorkspace::CaptureObjectSources() {
             "OBJECT_GAME_MEMBER_MISSING", "游戏来源明确缺失：" + name);
         return Result<std::vector<std::byte>>::Success(*existing->second.bytes);
     };
-    auto standard = StandardObjectCatalog::Load(reader);
-    if (!gameRead.Succeeded()) return gameRead;
-    if (!standard.Succeeded()) return {standard.diagnostics};
+    // 字段定义仍只信任宿主游戏来源，地图内的完整 SLK 只提供对象数据。
     auto schema = ObjectFieldSchema::Load(reader);
     if (!gameRead.Succeeded()) return gameRead;
     if (!schema.Succeeded()) return {schema.diagnostics};
-    state->standard = std::move(*standard.value);
     state->schema = std::move(*schema.value);
-
-    auto directory = DirectoryWorkspace::Open(projectRoot_);
-    if (!directory.Succeeded()) return {directory.diagnostics};
-    if (directory.value->Snapshot().aggregateSha256 != session_.Revision().sourceSha256)
-        return Failure("OBJECT_WORKSPACE_SOURCE_CHANGED", "物编捕获与当前 EditorSession 来源修订不一致。");
     std::size_t mapBytes = 0;
     for (std::size_t index = 0; index < state->mapInputs.size(); ++index) {
         const auto type = static_cast<ObjectType>(index);
@@ -182,8 +189,19 @@ Status McpWorkspace::CaptureObjectSources() {
     return Status::Ok();
 }
 
-Status McpWorkspace::CheckObjectSourcesUnchanged() const {
+Status McpWorkspace::CheckObjectSourcesUnchanged(std::string_view expectedSourceSha256) const {
     if (!objectState_) return Status::Ok();
+    const auto sourceSha256 = expectedSourceSha256.empty()
+        ? session_.Revision().sourceSha256 : std::string(expectedSourceSha256);
+    auto directory = DirectoryWorkspace::Open(projectRoot_);
+    if (!directory.Succeeded()) return {directory.diagnostics};
+    if (directory.value->Snapshot().aggregateSha256 != sourceSha256)
+        return Failure("OBJECT_WORKSPACE_SOURCE_CHANGED", "物编来源与当前 EditorSession 修订不同。");
+    Services::ObjectCatalogSources sources;
+    sources.directory = &*directory.value;
+    sources.gameRoot = gameRoot_;
+    const auto effective = Services::VerifyEffectiveObjectCatalog(*objectState_->effectiveCatalog, sources);
+    if (!effective.Succeeded()) return effective;
     auto game = Game::GameDataSource::MountStrict(gameRoot_);
     if (!game.Succeeded()) return {game.diagnostics};
     for (const auto& [name, expected] : objectState_->gameInputs) {
@@ -206,7 +224,7 @@ Result<Services::ObjectCommandContext> McpWorkspace::ObjectContext(ObjectType ty
     const auto index = static_cast<std::size_t>(type);
     if (index >= objectState_->mapInputs.size()) return Failed<Services::ObjectCommandContext>(Failure("OBJECT_KIND_INVALID", "物编类别无效。"));
     if (objectState_->standard.Count(type) == 0)
-        return Failed<Services::ObjectCommandContext>(Failure("OBJECT_STANDARD_CATEGORY_MISSING", "实际标准目录没有此类对象：" + std::string(ToString(type))));
+        return Failed<Services::ObjectCommandContext>(Failure("OBJECT_STANDARD_CATEGORY_MISSING", "实际生效目录没有此类对象：" + std::string(ToString(type))));
     Services::ObjectCommandContext context;
     context.type = type; context.standard = &objectState_->standard; context.schema = &objectState_->schema;
     for (std::size_t i = 0; i < context.documents.size(); ++i)
@@ -244,6 +262,14 @@ Status McpWorkspace::ApplyObjectPlan(const Services::ObjectCommandPlan& plan) {
     if (!context.Succeeded()) return {context.diagnostics};
     if (!context.value->document || context.value->document->DocumentFingerprint() != plan.before.DocumentFingerprint())
         return Failure("OBJECT_PLAN_STALE", "物编命令计划不属于当前可见文档。");
+    // 主体也须实际存在；文档内所有差异的前后父链由保存/MCP共用服务复核。
+    auto subjectContext = *context.value;
+    if (!subjectContext.document->FindObject(plan.subject) && !subjectContext.standard->Find(plan.subject.type, plan.subject.rawcode))
+        subjectContext.document = &plan.after;
+    const auto subjectWritable = Services::VerifyObjectWriteSource(subjectContext, plan.subject.rawcode);
+    if (!subjectWritable.Succeeded()) return subjectWritable;
+    const auto writable = Services::VerifyObjectDocumentWriteSources(*context.value, plan.before, plan.after);
+    if (!writable.Succeeded()) return writable;
     const auto index = static_cast<std::size_t>(plan.subject.type);
     // 可抛出的文档分配在获取 writer lease/发布 overlay 前完成。
     auto candidate = std::make_shared<const LniObjectDocument>(plan.after);

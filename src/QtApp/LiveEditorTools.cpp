@@ -1,4 +1,5 @@
 #include "LiveEditorTools.h"
+#include "LiveEditorAuxiliaryTools.h"
 #include "McpLuaTestTools.h"
 #include "McpLuaFileTools.h"
 #include "McpWorldViewportTools.h"
@@ -17,6 +18,7 @@
 #include "McpObjectResourceTools.h"
 #include "LiveObjectResourceTools.h"
 #include "McpPlacementTools.h"
+#include "McpAuxiliaryTools.h"
 #include "McpTerrainEditTools.h"
 #include "McpProductTools.h"
 #include "McpCodeCheckTools.h"
@@ -651,6 +653,21 @@ private:
         return invoke();
     }
 
+    QJsonObject AuxiliaryTool(const QString& name, const QJsonObject& arguments) {
+        if (arguments.contains("dry_run") && !arguments.value("dry_run").isBool())
+            return Mcp::Failure("AUX_ARGUMENT_TYPE", "dry_run 须为布尔值。");
+        const auto invoke = [&] {
+            return InvokeLiveAuxiliaryTool(project_, name, arguments, [this] { return State(); },
+                [this] { return VisibleMapDataContext(); });
+        };
+        if (!arguments.value("dry_run").toBool()) return Write(arguments, false, invoke);
+        // 与实际命令使用同一来源检查；预览不提交 UI 草稿或取得写租约。
+        if (busy_ || project_.savingMap_) return Mcp::Failure("LIVE_EDITOR_BUSY", "地图写任务正在执行。");
+        const auto checked = CheckContext(arguments, false, true);
+        if (!checked.value("ok").toBool()) return checked;
+        return invoke();
+    }
+
     QJsonObject TerrainTool(const QString& name, const QJsonObject& arguments, bool write) {
         const auto context = [this]() -> Result<Mcp::TerrainEditToolContext> {
             if (!project_.mapEdits_ || !project_.mapEdits_->Terrain())
@@ -1003,6 +1020,12 @@ private:
             AddTool(name, definition.description, definition.permission, definition.inputSchema,
                 [this, name](const QJsonObject& arguments) { return PlacementTool(name, arguments); },
                 definition.maxRequestIdBytes);
+        }
+        for (auto definition : Mcp::AuxiliaryToolDefinitions()) {
+            const auto name = definition.name;
+            AddTool(name, definition.description, definition.permission, definition.inputSchema,
+                [this, name](const QJsonObject& arguments) { return AuxiliaryTool(name, arguments); },
+                definition.maxRequestIdBytes, definition.maxResponseBytes);
         }
         for (auto definition : Mcp::TerrainEditToolDefinitions()) {
             const auto name = definition.name;

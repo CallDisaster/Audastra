@@ -1,4 +1,6 @@
 #include "EditorProject.h"
+#include "MapSaveJob.h"
+#include "ProjectSaveJob.h"
 #include "WorldModule.h"
 #include "MapEntitiesModule.h"
 #include "MapSettingsModule.h"
@@ -9,9 +11,15 @@
 #include "WorldNavigationBookmark.h"
 #include "WorldAssetBrowser.h"
 #include "WorldTerrainAssets.h"
+#include "WorldTerrainBuild.h"
+#include "WorldDiagnosticJson.h"
 #include "WorldSelectionPresenter.h"
 #include "WorldPlacementPreview.h"
 #include "WorldPlacementModels.h"
+#include "WorldAuxiliaryDialog.h"
+#include "WorldStartLocations.h"
+#include "ProjectAuxiliaryEdits.h"
+#include "War3MapCore/Trigger/TriggerDocument.h"
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/MapData/MapAuxiliary.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
@@ -27,8 +35,10 @@
 #include "../AnimationParticleContinuityTests.h"
 #include "MdxTestModel.h"
 #include "EditorPresentationFixture.h"
+#include "SyntheticObjectCatalogFixture.h"
 
 #include <QApplication>
+#include <QAction>
 #include <QCheckBox>
 #include <QDockWidget>
 #include <QMainWindow>
@@ -43,6 +53,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QScrollBar>
 #include <QMouseEvent>
 #include <QPushButton>
@@ -443,6 +454,7 @@ bool InstallAuxiliaryEditFixture(QtProject::EditorProject& project, const QStrin
     project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(members));
     project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
     if (!project.mapEdits_->AttachTerrain(*terrain.value).Succeeded()) return false;
+    project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>(); // 原创完整空 T，允许新符号检查。
     project.ResetEditTracking();
     return true;
 }
@@ -458,6 +470,31 @@ bool SelectAuxiliaryRow(QWidget& page, const Services::WorldObjectId& id, Qt::Ke
     if (!rect.isValid()) return false;
     QTest::mouseClick(outliner->viewport(), Qt::LeftButton, modifiers, rect.center());
     return true;
+}
+bool InstallStartLocationEditFixture(QtProject::EditorProject& project, const QString& root,
+    bool duplicateOwner = false, bool ordinaryUnit = false) {
+    auto grid = FlatGrid(5, 5);
+    grid->header.mainTileset = 'A'; grid->header.groundTilesets = {"Ldrt"}; grid->header.cliffTilesets = {"Cldi"};
+    const auto terrain = MapData::SerializeMapTerrain(*grid);
+    auto units = MapData::ParseUnitPlacements(MapDataFixtures::EmptyUnitsV8Sub11());
+    if (!terrain.Succeeded() || !units.Succeeded()) return false;
+    MapData::UnitPlacement unit;
+    unit.rawcode = "sloc"; unit.creationId = 10; unit.owner = 0; unit.position = {64, 64, 5}; unit.scale = {1, 1, 1};
+    units.value->units.push_back(unit);
+    if (duplicateOwner) { unit.creationId = 20; unit.position = {192, 192, 5}; units.value->units.push_back(unit); }
+    if (ordinaryUnit) { unit.rawcode = "hfoo"; unit.creationId = 30; unit.owner = 1; unit.position = {128, 64, 0}; units.value->units.push_back(unit); }
+    const auto encoded = units.value->Serialize(); if (!encoded.Succeeded()) return false;
+    if (!Write(root + "/war3map.w3e", QByteArray(reinterpret_cast<const char*>(terrain.value->data()),
+        static_cast<qsizetype>(terrain.value->size())))) return false;
+    project.projectRoot_ = root.toStdWString();
+    auto opened = DirectoryWorkspace::Open(project.projectRoot_); if (!opened.Succeeded()) return false;
+    project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*opened.value));
+    const std::vector<MapArchiveMember> members{{"war3map.w3i", MapDataFixtures::FullMapSettingsV25().bytes},
+        {"war3mapUnits.doo", *encoded.value}, {"war3map.doo", MapDataFixtures::EmptyDoodadsV8Sub11()}};
+    project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(members));
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+    if (!project.mapEdits_->AttachTerrain(*terrain.value).Succeeded()) return false;
+    project.ResetEditTracking(); return true;
 }
 QPointF AuxiliaryScreenPoint(const WorldViewport& viewport, const BackendState& state, QPointF world, float span = 192) {
     // 拾取使用完成帧的物理尺寸；1.25 DPR 会将尺寸取整，不能用逻辑宽高直接反投影。
@@ -522,7 +559,7 @@ bool InstallPlacementCatalog(QtProject::EditorProject& project) {
         return Result<std::vector<std::byte>>::Success({bytes.begin(), bytes.end()});
     }, options);
     if (!catalog.Succeeded()) return false;
-    project.standardCatalog_ = std::make_unique<ObjectData::StandardObjectCatalog>(std::move(*catalog.value));
+    if (!Tests::InstallSyntheticGameCatalog(project, *catalog.value)) return false;
     const std::string lni = "[hsan]\nunam=\"神秘圣地合成夹具\"\nfile=\"Synthetic/Arcane.mdx\"\n";
     auto parsed = ObjectData::LniObjectCodec(ObjectData::ObjectType::Unit).Parse(std::as_bytes(std::span(lni.data(), lni.size())));
     if (!parsed.Succeeded()) return false;
@@ -540,6 +577,11 @@ private slots:
     void ViewportLifecycleAndInput();
     void MapSwitchDoesNotEdit();
     void PlaybackSnapshotKeepsServiceAndRetainedPictureDistinct();
+    void TerrainLoadSnapshotPreservesFailureAndClearsOnRefresh_data();
+    void TerrainLoadSnapshotPreservesFailureAndClearsOnRefresh();
+    void TerrainOnlySceneRequiresKnownEmptyPlacements_data();
+    void TerrainOnlySceneRequiresKnownEmptyPlacements();
+    void TerrainOnlySceneRejectsStaleSourceAndRefresh();
     void InstanceCatalogStartsBesidePose_data();
     void InstanceCatalogStartsBesidePose();
     void AmbiguousTerrainAndDeferredLoad();
@@ -549,6 +591,7 @@ private slots:
     void SimplifiedAndMismatchedPickingDisabled();
     void GroundSceneKeepsPickingAndRejectsDifferentGeometry();
     void TerrainResourceOverlayAndSourceIdentity();
+    void ReadOnlyArchiveLoadsTerrainAndRejectsIdenticalReplacement();
     void SelectionLayerWaitsForRosterTerminal();
     void MipSceneUsesOriginalChainAndClampsAtlas();
     void PlacementClickDragAndKeys();
@@ -561,6 +604,15 @@ private slots:
     void TerrainPathingUsesCellsAndPreservesSource_data();
     void TerrainPathingUsesCellsAndPreservesSource();
     void InspectorEditsPreserveOtherFloatBits();
+    void AuxiliaryFormPreservesNativeBytes();
+    void AuxiliaryResultRejectsStaleSessionAndCoverage();
+    void WorldAuxiliaryCrudUsesSharedService();
+    void OutlinerPagingRestoresAuxiliarySelection_data();
+    void OutlinerPagingRestoresAuxiliarySelection();
+    void WorldAuxiliaryDialogRejectsChangedMap();
+    void StartLocationMarkerCaptureIsBounded();
+    void StartLocationDragLinksSettingsAndUndo();
+    void StartLocationAmbiguityRejectsWholeSelection();
     void RegionEdgesUseSharedTableTransaction_data();
     void RegionEdgesUseSharedTableTransaction();
     void AuxiliaryDragCancellationAndIdentity();
@@ -754,6 +806,9 @@ void WorldModuleTests::HiddenOutlinerKeepsTypedEditsAndRefreshesOnce() {
     QVERIFY(project.mapEdits_->AttachTerrain(std::as_bytes(std::span(terrainBytes.constData(),
         static_cast<std::size_t>(terrainBytes.size())))).Succeeded());
     project.ResetEditTracking(); QVERIFY(project.editTrackingReady_);
+    QVERIFY(QtProject::EnsureProjectObjectCatalog(project).Succeeded());
+    const auto* capturedType = project.standardCatalog_->Find(ObjectData::ObjectType::Unit, "hsan");
+    QVERIFY(capturedType && capturedType->nativeOverridesSupported);
     BackendState state; activeBackend = &state;
     WorldModule module(project, &modelBackend); auto* page = module.Widget(); state.viewport = module.Viewport();
     page->resize(1280, 800); page->show();
@@ -1256,7 +1311,7 @@ void WorldModuleTests::MapSwitchDoesNotEdit() {
     BackendState state; activeBackend = &state;
     WorldModule module(project, &backend);
     auto* page = module.Widget(); state.viewport = module.Viewport(); page->resize(800, 600); page->show();
-    // 原后端没有动画尾部：控件可发现但不可用，不用假播放替代能力拒绝。
+    // 该后端既无模型接口，也无动画尾部：控件可发现但不可用，模型准备须留下明确失败。
     auto* play = page->findChild<QPushButton*>("worldAnimationPlay");
     auto* pause = page->findChild<QPushButton*>("worldAnimationPause");
     auto* step = page->findChild<QPushButton*>("worldAnimationStep");
@@ -1264,8 +1319,14 @@ void WorldModuleTests::MapSwitchDoesNotEdit() {
     QVERIFY(!play->isEnabled() && !pause->isEnabled() && !step->isEnabled());
     QVERIFY(!module.Viewport()->HasAnimationSupport());
     QTRY_COMPARE(module.Viewport()->VertexCount(), std::size_t{6});
-    QTRY_VERIFY(module.PlaybackDiagnosticSnapshot()["player"].toObject()["last_diagnostic"].toString().contains("世界动画能力"));
+    QTRY_VERIFY(module.ModelLoadFailed());
     const auto playback = module.PlaybackDiagnosticSnapshot();
+    const auto modelLoad = playback["model_load"].toObject();
+    QCOMPARE(modelLoad["stage"].toString(), QStringLiteral("failed"));
+    const auto modelDiagnostics = modelLoad["diagnostics"].toArray();
+    QCOMPARE(modelDiagnostics.size(), 1);
+    QCOMPARE(modelDiagnostics.first().toObject()["code"].toString(), QStringLiteral("WORLD_MODEL_BACKEND_UNAVAILABLE"));
+    QVERIFY(playback["player"].toObject()["last_diagnostic"].toString().contains(QStringLiteral("渲染插件没有模型显示能力")));
     QVERIFY(!playback["player"].toObject()["ready"].toBool());
     for (const auto* key : {"play", "pause", "step"}) {
         const auto button = playback["buttons"].toObject()[key].toObject();
@@ -1315,6 +1376,284 @@ void WorldModuleTests::MapSwitchDoesNotEdit() {
     project.MapDocumentChanged();
     QTRY_COMPARE(module.Viewport()->VertexCount(), std::size_t{0});
     QTRY_VERIFY(!page->findChild<QLabel*>("worldTerrainStatus")->text().contains(QStringLiteral("正在")));
+}
+
+void WorldModuleTests::TerrainLoadSnapshotPreservesFailureAndClearsOnRefresh_data() {
+    QTest::addColumn<bool>("brokenTerrain");
+    QTest::addColumn<QString>("failureStage");
+    QTest::addColumn<QString>("failureCode");
+    QTest::newRow("missing-member") << false << QStringLiteral("source-read-failed")
+        << QStringLiteral("MAP_MEMBER_UNAVAILABLE");
+    QTest::newRow("malformed-member") << true << QStringLiteral("terrain-load-failed")
+        << QStringLiteral("TERRAIN_MAGIC");
+}
+
+void WorldModuleTests::TerrainLoadSnapshotPreservesFailureAndClearsOnRefresh() {
+    QFETCH(bool, brokenTerrain);
+    QFETCH(QString, failureStage);
+    QFETCH(QString, failureCode);
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    QVERIFY(Write(directory.filePath("owned-note.txt"), QByteArray("owned terrain diagnostic fixture")));
+    if (brokenTerrain) QVERIFY(Write(directory.filePath("war3map.w3e"), QByteArray("broken")));
+    QtProject::EditorProject project; project.projectRoot_ = directory.path().toStdWString();
+    auto snapshot = DirectoryWorkspace::Open(project.projectRoot_); QVERIFY(snapshot.Succeeded());
+    project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*snapshot.value));
+    BackendState state; activeBackend = &state;
+    WorldModule module(project, &backend);
+    auto* page = module.Widget(); state.viewport = module.Viewport(); page->resize(800, 600);
+    const auto loadSnapshot = [&] { return module.PlaybackDiagnosticSnapshot()["terrain_load"].toObject(); };
+    QCOMPARE(loadSnapshot()["stage"].toString(), QStringLiteral("deferred-hidden"));
+    QVERIFY(!module.TerrainLoadFailed());
+    QVERIFY(!loadSnapshot()["failed"].toBool());
+    QVERIFY(!loadSnapshot()["worker_running"].toBool());
+    QVERIFY(loadSnapshot()["diagnostics"].toArray().isEmpty());
+    QCOMPARE(state.creates, 0);
+
+    page->show();
+    QTRY_VERIFY(module.TerrainLoadFailed());
+    const auto failed = loadSnapshot();
+    QVERIFY(failed["failed"].toBool());
+    QCOMPARE(failed["scope"].toString(), QStringLiteral("source-load"));
+    QCOMPARE(failed["stage"].toString(), failureStage);
+    QCOMPARE(failed["status_text"].toString(), page->findChild<QLabel*>("worldTerrainStatus")->text());
+    QVERIFY(!failed["worker_running"].toBool());
+    QVERIFY(!failed["has_terrain"].toBool());
+    QVERIFY(!failed["completion_proven"].toBool());
+    QCOMPARE(failed["vertex_count"].toString(), QStringLiteral("0"));
+    const auto diagnostics = failed["diagnostics"].toArray();
+    QVERIFY(!diagnostics.isEmpty());
+    const auto first = diagnostics.first().toObject();
+    QCOMPARE(first["code"].toString(), failureCode);
+    QCOMPARE(first["severity"].toString(), QStringLiteral("error"));
+    QVERIFY(!first["subsystem"].toString().isEmpty());
+    QCOMPARE(first["message"].toString(), failed["status_text"].toString());
+    QVERIFY(!first["message_truncated"].toBool());
+    QCOMPARE(failed["diagnostics_omitted"].toString(), QStringLiteral("0"));
+    if (brokenTerrain) QCOMPARE(first["origin"].toObject()["offset"].toString(), QStringLiteral("0"));
+    const auto failedGeneration = failed["generation"].toString().toULongLong();
+
+    // 重开自有新来源后旧错误必须清掉；后台准备成功仍不是GPU完成帧证据。
+    QVERIFY(Write(directory.filePath("war3map.w3e"), TerrainBytes()));
+    auto reopened = DirectoryWorkspace::Open(project.projectRoot_); QVERIFY(reopened.Succeeded());
+    project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*reopened.value));
+    project.MapDocumentChanged();
+    QVERIFY(!module.TerrainLoadFailed());
+    QVERIFY(!loadSnapshot()["failed"].toBool());
+    QVERIFY(loadSnapshot()["diagnostics"].toArray().isEmpty());
+    QTRY_COMPARE(loadSnapshot()["stage"].toString(), QStringLiteral("prepared"));
+    const auto prepared = loadSnapshot();
+    QVERIFY(prepared["generation"].toString().toULongLong() > failedGeneration);
+    QVERIFY(prepared["has_terrain"].toBool());
+    QVERIFY(prepared["has_raw_terrain"].toBool());
+    QCOMPARE(prepared["vertex_count"].toString(), QStringLiteral("6"));
+    QVERIFY(!prepared["completion_proven"].toBool());
+    QCOMPARE(project.mapDataUndoStack_->count(), 0);
+}
+
+void WorldModuleTests::TerrainOnlySceneRequiresKnownEmptyPlacements_data() {
+    QTest::addColumn<QByteArray>("unitBytes");
+    QTest::addColumn<QByteArray>("doodadBytes");
+    QTest::addColumn<int>("unitState");
+    QTest::addColumn<int>("doodadState");
+    QTest::addColumn<int>("unitCount");
+    QTest::addColumn<int>("doodadCount");
+    QTest::addColumn<bool>("ready");
+    QTest::addColumn<int>("unresolved");
+    QTest::addColumn<int>("startLocations");
+    const auto bytes = [](const std::vector<std::byte>& value) {
+        return QByteArray(reinterpret_cast<const char*>(value.data()), static_cast<qsizetype>(value.size()));
+    };
+    const auto emptyUnits = bytes(MapDataFixtures::EmptyUnitsV8Sub11());
+    const auto emptyDoodads = bytes(MapDataFixtures::EmptyDoodadsV8Sub11());
+    const auto add = [&](const char* name, QByteArray units, MapDataState unitStatus, int unitsCount,
+        QByteArray doodads, MapDataState doodadStatus, int doodadsCount, bool expected, int unresolvedCount,
+        int startLocations = 0) {
+        QTest::newRow(name) << units << doodads << static_cast<int>(unitStatus) << static_cast<int>(doodadStatus)
+            << unitsCount << doodadsCount << expected << unresolvedCount << startLocations;
+    };
+    add("both-missing", {}, MapDataState::Missing, -1, {}, MapDataState::Missing, -1, true, 0);
+    add("empty-units", emptyUnits, MapDataState::Ready, 0, {}, MapDataState::Missing, -1, true, 0);
+    add("empty-doodads", {}, MapDataState::Missing, -1, emptyDoodads, MapDataState::Ready, 0, true, 0);
+    add("both-empty", emptyUnits, MapDataState::Ready, 0, emptyDoodads, MapDataState::Ready, 0, true, 0);
+    add("broken-units", QByteArray("W3do"), MapDataState::Invalid, -1,
+        emptyDoodads, MapDataState::Ready, 0, false, 0);
+    add("broken-doodads", emptyUnits, MapDataState::Ready, 0,
+        QByteArray("W3do"), MapDataState::Invalid, -1, false, 0);
+
+    auto units = MapData::ParseUnitPlacements(MapDataFixtures::EmptyUnitsV8Sub11());
+    auto doodads = MapData::ParseDoodadPlacements(MapDataFixtures::EmptyDoodadsV8Sub11());
+    QVERIFY(units.Succeeded() && doodads.Succeeded());
+    MapData::UnitPlacement unit; unit.rawcode = "sloc"; unit.creationId = 1; unit.scale = {1, 1, 1};
+    units.value->units = {unit};
+    auto serializedUnits = units.value->Serialize(); QVERIFY(serializedUnits.Succeeded());
+    // 原版起点逐条验证后可以排除模型；回执仍保留数量，不假称已显示起点标记。
+    add("start-location-without-model", bytes(*serializedUnits.value), MapDataState::Ready, 1,
+        emptyDoodads, MapDataState::Ready, 0, true, 0, 1);
+    units.value->units.push_back(unit);
+    serializedUnits = units.value->Serialize(); QVERIFY(serializedUnits.Succeeded());
+    add("partial-duplicate-unit-identity", bytes(*serializedUnits.value), MapDataState::Partial, 2,
+        emptyDoodads, MapDataState::Ready, 0, false, 0);
+    units.value->units.back().creationId = 2;
+    serializedUnits = units.value->Serialize(); QVERIFY(serializedUnits.Succeeded());
+    add("two-start-locations-without-model", bytes(*serializedUnits.value), MapDataState::Ready, 2,
+        emptyDoodads, MapDataState::Ready, 0, true, 0, 2);
+    units.value->units.back().rawcode = "zzzz";
+    serializedUnits = units.value->Serialize(); QVERIFY(serializedUnits.Succeeded());
+    add("start-location-and-unknown-unit", bytes(*serializedUnits.value), MapDataState::Ready, 2,
+        emptyDoodads, MapDataState::Ready, 0, false, 1);
+    unit.rawcode = "zzzz"; units.value->units = {unit};
+    serializedUnits = units.value->Serialize(); QVERIFY(serializedUnits.Succeeded());
+    add("unresolved-unit", bytes(*serializedUnits.value), MapDataState::Ready, 1,
+        emptyDoodads, MapDataState::Ready, 0, false, 1);
+    for (std::uint32_t id = 2; id <= 41; ++id) {
+        unit.creationId = id; units.value->units.push_back(unit);
+    }
+    serializedUnits = units.value->Serialize(); QVERIFY(serializedUnits.Succeeded());
+    add("unresolved-units-paged", bytes(*serializedUnits.value), MapDataState::Ready, 41,
+        emptyDoodads, MapDataState::Ready, 0, false, 41);
+
+    MapData::DoodadPlacement doodad; doodad.rawcode = "zzzz"; doodad.creationId = 2; doodad.scale = {1, 1, 1};
+    doodads.value->doodads = {doodad};
+    auto serializedDoodads = doodads.value->Serialize(); QVERIFY(serializedDoodads.Succeeded());
+    add("unresolved-doodad", emptyUnits, MapDataState::Ready, 0,
+        bytes(*serializedDoodads.value), MapDataState::Ready, 1, false, 1);
+    doodads.value->doodads.push_back(doodad);
+    serializedDoodads = doodads.value->Serialize(); QVERIFY(serializedDoodads.Succeeded());
+    add("partial-duplicate-doodad-identity", emptyUnits, MapDataState::Ready, 0,
+        bytes(*serializedDoodads.value), MapDataState::Partial, 2, false, 2);
+    doodads.value->doodads.clear();
+    doodads.value->specialDoodads.push_back({"zzzz", 0, {0, 0}});
+    serializedDoodads = doodads.value->Serialize(); QVERIFY(serializedDoodads.Succeeded());
+    add("special-doodad-without-model", emptyUnits, MapDataState::Ready, 0,
+        bytes(*serializedDoodads.value), MapDataState::Ready, 1, false, 0);
+}
+
+void WorldModuleTests::TerrainOnlySceneRequiresKnownEmptyPlacements() {
+    QFETCH(QByteArray, unitBytes); QFETCH(QByteArray, doodadBytes);
+    QFETCH(int, unitState); QFETCH(int, doodadState);
+    QFETCH(int, unitCount); QFETCH(int, doodadCount);
+    QFETCH(bool, ready); QFETCH(int, unresolved); QFETCH(int, startLocations);
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    QVERIFY(Write(directory.filePath("war3map.w3e"), TerrainBytes()));
+    if (!unitBytes.isEmpty()) QVERIFY(Write(directory.filePath("war3mapUnits.doo"), unitBytes));
+    if (!doodadBytes.isEmpty()) QVERIFY(Write(directory.filePath("war3map.doo"), doodadBytes));
+    QtProject::EditorProject project; project.projectRoot_ = directory.path().toStdWString();
+    QVERIFY(project.war3GameRoot_.empty());
+    auto source = DirectoryWorkspace::Open(project.projectRoot_); QVERIFY(source.Succeeded());
+    project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*source.value));
+    project.LoadMapDocument(); project.ResetEditTracking();
+    QVERIFY(project.mapDocument_ && project.mapEdits_);
+    const auto& actualUnits = project.mapDocument_->Member(MapDataKind::Units);
+    const auto& actualDoodads = project.mapDocument_->Member(MapDataKind::Doodads);
+    QCOMPARE(static_cast<int>(actualUnits.state), unitState);
+    QCOMPARE(static_cast<int>(actualDoodads.state), doodadState);
+    QCOMPARE(actualUnits.recordCount.has_value(), unitCount >= 0);
+    QCOMPARE(actualDoodads.recordCount.has_value(), doodadCount >= 0);
+    if (actualUnits.recordCount) QCOMPARE(*actualUnits.recordCount, static_cast<std::size_t>(unitCount));
+    if (actualDoodads.recordCount) QCOMPARE(*actualDoodads.recordCount, static_cast<std::size_t>(doodadCount));
+
+    BackendState state; activeBackend = &state;
+    auto api = modelBackend; api.submitSkinnedModelScene = SkinScene; api.updateSkinMatrices = SkinUpdate;
+    api.getSkinStatus = SkinStatus; api.captureSkinnedFrameRgba = SkinCapture;
+    WorldModule module(project, &api);
+    QVERIFY(!module.TerrainOnlySceneReady());
+    auto* page = module.Widget(); state.viewport = module.Viewport(); page->resize(800, 600);
+    QVERIFY(!module.TerrainOnlySceneReady()); // 隐藏页尚未读取，空容器不能充当完成证据。
+    page->show();
+    QTRY_VERIFY(module.ViewportForTools() && module.Viewport()->VertexCount() == 6);
+    QVERIFY(module.Viewport()->HasAnimationSupport());
+    const auto diagnostic = module.ModelDiagnosticSnapshot();
+    QCOMPARE(diagnostic["unresolvedPlacementCount"].toInt(), unresolved);
+    if (ready) QTRY_VERIFY(module.TerrainOnlySceneReady());
+    else QVERIFY(!module.TerrainOnlySceneReady());
+    QTRY_COMPARE(module.ModelLoadFailed(), !ready);
+    const auto terrainOnly = module.TerrainOnlySceneDiagnosticSnapshot();
+    QCOMPARE(terrainOnly["source_start_location_count"].toInt(), startLocations);
+    QVERIFY(terrainOnly["start_location_marker_implemented"].toBool());
+    QVERIFY(!terrainOnly["start_location_marker_visual_verified"].toBool());
+    QVERIFY(!terrainOnly["completion_proven"].toBool());
+    const auto progress = module.ModelDiagnosticProgressSnapshot();
+    QCOMPARE(progress["unresolvedPlacementCount"].toInt(), unresolved);
+    QCOMPARE(progress["unresolvedPlacementRows"].toArray().size(), std::min(16, unresolved));
+    QCOMPARE(progress["unresolvedPlacementPage"].toObject()["omitted"].toInt(), std::max(0, unresolved - 16));
+    QVERIFY(progress["unresolvedPlacementPage"].toObject()["counts_consistent"].toBool());
+    QVERIFY(QJsonDocument(progress).toJson(QJsonDocument::Compact).size() < 128 * 1024);
+    const auto later = module.ModelDiagnosticProgressSnapshot(32, 8);
+    QCOMPARE(later["unresolvedPlacementRows"].toArray().size(), std::clamp(unresolved - 32, 0, 8));
+    const auto past = module.ModelDiagnosticProgressSnapshot(UINT32_MAX, UINT32_MAX);
+    QVERIFY(past["unresolvedPlacementRows"].toArray().isEmpty());
+    QCOMPARE(past["unresolvedPlacementPage"].toObject()["remaining"].toInt(), 0);
+    QVERIFY(past["unresolvedPlacementPage"].toObject()["counts_consistent"].toBool());
+    // 调用者数量错误也应显式标记，而不是无符号下溢成一个巨大剩余数。
+    const auto inconsistent = WorldDiagnosticJson::Page(3, 2, 4, 4);
+    QVERIFY(!inconsistent["counts_consistent"].toBool());
+    QCOMPARE(inconsistent["remaining"].toInt(), 0);
+    // 无Game目录，也未准备UberSplat目录；不放宽原有模型诊断门来让纯地形探针通过。
+    QVERIFY(!module.ModelDiagnosticsReady());
+    QVERIFY(!module.TerrainLoadFailed());
+    QVERIFY(!module.AnimationPlayer()->Ready());
+    QCOMPARE(state.skinUploads, std::uint64_t{0});
+}
+
+void WorldModuleTests::TerrainOnlySceneRejectsStaleSourceAndRefresh() {
+    QTemporaryDir first, second; QVERIFY(first.isValid() && second.isValid());
+    QVERIFY(Write(first.filePath("war3map.w3e"), TerrainBytes()));
+    QVERIFY(Write(second.filePath("war3map.w3e"), TerrainBytes(800)));
+    const auto emptyRegions = MapData::RegionsDocument{5, {}, {}}.Serialize(); QVERIFY(emptyRegions.Succeeded());
+    QVERIFY(Write(first.filePath("war3map.w3r"), QByteArray(reinterpret_cast<const char*>(emptyRegions.value->data()),
+        static_cast<qsizetype>(emptyRegions.value->size()))));
+    QtProject::EditorProject project; project.projectRoot_ = first.path().toStdWString();
+    QVERIFY(project.war3GameRoot_.empty());
+    auto source = DirectoryWorkspace::Open(project.projectRoot_); QVERIFY(source.Succeeded());
+    project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*source.value));
+    project.LoadMapDocument(); project.ResetEditTracking(); QVERIFY(project.editTrackingReady_);
+    BackendState state; activeBackend = &state;
+    auto api = modelBackend; api.submitSkinnedModelScene = SkinScene; api.updateSkinMatrices = SkinUpdate;
+    api.getSkinStatus = SkinStatus; api.captureSkinnedFrameRgba = SkinCapture;
+    WorldModule module(project, &api); auto* page = module.Widget(); state.viewport = module.Viewport();
+    page->resize(800, 600); page->show();
+    QTRY_VERIFY(module.TerrainOnlySceneReady());
+    const auto binding = module.ModelDiagnosticSnapshot()["binding"].toObject();
+    QVERIFY(!binding["documentId"].toString().isEmpty() && !binding["sourceSha256"].toString().isEmpty());
+    QCOMPARE(binding["generation"].toString().toULongLong(), project.editRevision_.Generation());
+    QCOMPARE(binding["revision"].toString().toULongLong(), project.mapEdits_->Revision());
+
+    project.sourceChangeSuspected_ = true;
+    QVERIFY(!module.TerrainOnlySceneReady()); QVERIFY(!module.ModelDiagnosticsReady());
+    QVERIFY(!module.ModelDiagnosticProgressSnapshot()["captureCurrent"].toBool());
+    QVERIFY(module.ModelDiagnosticProgressSnapshot()["unresolvedPlacementCount"].isNull());
+    project.sourceChangeSuspected_ = false; QVERIFY(module.TerrainOnlySceneReady());
+    project.sourceChangeConfirmed_ = true;
+    QVERIFY(!module.TerrainOnlySceneReady()); QVERIFY(!module.ModelDiagnosticsReady());
+    project.sourceChangeConfirmed_ = false; QVERIFY(module.TerrainOnlySceneReady());
+
+    // 真正的代际变化先使旧捕获失效，再由Refresh读取新代际，不能借旧空场景通行。
+    const auto generation = project.editRevision_.Generation();
+    project.ResetEditTracking(); QVERIFY(project.editRevision_.Generation() > generation);
+    QVERIFY(!module.TerrainOnlySceneReady());
+    module.Refresh(); QVERIFY(!module.TerrainOnlySceneReady());
+    module.Refresh(); QVERIFY(!module.TerrainOnlySceneReady());
+    QTRY_VERIFY(module.TerrainOnlySceneReady());
+    MapData::RegionsDocument regions{5, {{-16, -16, 16, 16, "Owned region", 7, {}, "", {0, 0, 0, 255}}}, {}};
+    const auto revision = project.mapEdits_->Revision();
+    QVERIFY(project.mapEdits_->EditRegions(regions).Succeeded());
+    QVERIFY(project.mapEdits_->Revision() > revision);
+    QVERIFY(!module.TerrainOnlySceneReady());
+    module.Refresh(); QVERIFY(!module.TerrainOnlySceneReady());
+    QTRY_VERIFY(module.TerrainOnlySceneReady());
+
+    // MapKey先切换、文档仍旧的过渡期也必须拒绝；最终接受第二份真实来源。
+    project.projectRoot_ = second.path().toStdWString();
+    QVERIFY(!module.TerrainOnlySceneReady()); QVERIFY(!module.ViewportForTools());
+    source = DirectoryWorkspace::Open(project.projectRoot_); QVERIFY(source.Succeeded());
+    project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*source.value));
+    project.LoadMapDocument(); project.ResetEditTracking();
+    QVERIFY(!module.TerrainOnlySceneReady());
+    QTRY_VERIFY(module.TerrainOnlySceneReady());
+    QCOMPARE(module.Viewport()->Camera().targetX, 928.0f);
+    QVERIFY(!module.ModelDiagnosticsReady());
+    QVERIFY(!project.mapEdits_->IsDirty());
+    QCOMPARE(project.mapDataUndoStack_->count(), 0);
 }
 
 void WorldModuleTests::PlaybackSnapshotKeepsServiceAndRetainedPictureDistinct() {
@@ -1649,9 +1988,15 @@ void WorldModuleTests::AmbiguousTerrainAndDeferredLoad() {
     auto* page = module.Widget(); state.viewport = module.Viewport();
     project.MapDocumentChanged(); QTest::qWait(50);
     QCOMPARE(module.Viewport()->VertexCount(), std::size_t{0}); QCOMPARE(state.creates, 0);
+    QCOMPARE(module.PlaybackDiagnosticSnapshot()["terrain_load"].toObject()["stage"].toString(),
+        QStringLiteral("deferred-hidden"));
     page->show();
     QTRY_VERIFY(page->findChild<QLabel*>("worldTerrainStatus")->text().contains(QStringLiteral("来源不明确")));
     QCOMPARE(module.Viewport()->VertexCount(), std::size_t{0});
+    const auto failed = module.PlaybackDiagnosticSnapshot()["terrain_load"].toObject();
+    QVERIFY(failed["failed"].toBool());
+    QCOMPARE(failed["stage"].toString(), QStringLiteral("source-read-failed"));
+    QCOMPARE(failed["diagnostics"].toArray().first().toObject()["code"].toString(), QStringLiteral("MAP_MEMBER_UNAVAILABLE"));
 }
 
 void WorldModuleTests::OversizedViewportDoesNotCreate() {
@@ -1890,6 +2235,152 @@ void WorldModuleTests::SelectionLayerWaitsForRosterTerminal() {
     presenter.SetSubmissionDeferred(false);
     QTRY_COMPARE(state.layerSubmits, 3); QCOMPARE(state.layerParent, oldParent + 1);
     QCOMPARE(state.layerRemoves, 1); QCOMPARE(state.layerX, 70.0f);
+}
+
+void WorldModuleTests::ReadOnlyArchiveLoadsTerrainAndRejectsIdenticalReplacement() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    QVERIFY(QDir(directory.path()).mkdir(QStringLiteral("workspace")));
+    const auto path = std::filesystem::path(directory.filePath(QStringLiteral("readonly-source.w3x")).toStdWString());
+    const auto bytes = [](std::string_view text) {
+        const auto* begin = reinterpret_cast<const std::byte*>(text.data());
+        return std::vector<std::byte>(begin, begin + text.size());
+    };
+    const auto terrain = TerrainBytes();
+    const auto* terrainBegin = reinterpret_cast<const std::byte*>(terrain.constData());
+    Image::DecodedImage image{16, 16, std::vector<std::byte>(16 * 16 * 4)};
+    for (std::size_t i = 0; i < image.rgba.size(); i += 4) {
+        image.rgba[i] = std::byte{64}; image.rgba[i + 1] = std::byte{192}; image.rgba[i + 3] = std::byte{255};
+    }
+    const auto texture = Image::EncodeBlpPaletted(image); QVERIFY(texture.Succeeded());
+    const auto marker = bytes("original imported marker");
+    const std::vector<MapArchiveMember> members{
+        {"war3map.w3i", MapDataFixtures::FullMapSettingsV25().bytes},
+        {"war3map.w3e", {terrainBegin, terrainBegin + terrain.size()}},
+        {"war3mapUnits.doo", MapDataFixtures::EmptyUnitsV8Sub11()},
+        {"war3map.doo", MapDataFixtures::EmptyDoodadsV8Sub11()},
+        {"war3map.wts", bytes("STRING 42\n{\nOriginal fixture\n}\n")},
+        {"TerrainArt/Terrain.slk", bytes("ID;PWXL;N;E\nC;X1;Y1;K\"tileID\"\nC;X2;Y1;K\"dir\"\nC;X3;Y1;K\"file\"\n"
+            "C;X1;Y2;K\"Ldrt\"\nC;X2;Y2;K\"Terrain/Test\"\nC;X3;Y2;K\"stone\"\nE\n")},
+        {"TerrainArt/CliffTypes.slk", bytes("ID;PWXL;N;E\nC;X1;Y1;K\"cliffID\"\nE\n")},
+        {"TerrainArt/Water.slk", bytes("ID;PWXL;N;E\nC;X1;Y1;K\"waterID\"\nE\n")},
+        {"Terrain/Test/stone.blp", *texture.value}, {"Imported/marker.bin", marker}};
+    QVERIFY(WriteVerifiedArchive(path, members).Succeeded());
+    {
+        // NGIS只表示此原创尾部的形态；用例不伪造可信签名，也不放宽严格保存检查。
+        QFile file(QString::fromStdWString(path.wstring())); QVERIFY(file.open(QIODevice::Append));
+        const auto trailer = QByteArray("NGIS", 4) + QByteArray(256, '\0');
+        QCOMPARE(file.write(trailer), trailer.size());
+    }
+    const auto digest = Sha256File(path); QVERIFY(digest.Succeeded());
+    const auto strict = MapArchiveSession::Open(path); QVERIFY(!strict.Succeeded());
+    QVERIFY(std::any_of(strict.diagnostics.begin(), strict.diagnostics.end(), [](const auto& note) {
+        return note.code == "ARCHIVE_TRAILING_BYTES_REJECTED";
+    }));
+    auto opened = MpqWorkspace::OpenReadOnly(path); QVERIFY(opened.Succeeded());
+    QtProject::EditorProject project;
+    project.projectRoot_ = directory.filePath(QStringLiteral("workspace")).toStdWString();
+    project.sourceArchivePath_ = path;
+    project.readOnlyArchive_ = std::make_shared<MpqWorkspace>(std::move(*opened.value));
+    QVERIFY(!project.archiveSession_ && !project.directorySnapshot_);
+    project.LoadMapDocument(); project.ResetEditTracking();
+    QVERIFY(project.mapDocument_ && project.mapEdits_ && project.mapEdits_->Terrain());
+    QVERIFY(project.mapDocument_->InitializationSourceStatus().Succeeded());
+    QVERIFY(project.CheckProjectSources().Succeeded());
+    QVERIFY(!project.sourceChangeConfirmed_ && !project.sourceChangeSuspected_);
+    const auto terrainRead = project.ReadMapMember("war3map.w3e");
+    QVERIFY(terrainRead.Succeeded()); QCOMPARE(*terrainRead.value, members[1].data);
+    const auto entries = project.AssetEntries();
+    const auto imported = std::find_if(entries.begin(), entries.end(), [](const auto& entry) {
+        return QtProject::EditorProject::AssetKey(entry.path) == QStringLiteral("imported\\marker.bin");
+    });
+    QVERIFY(imported != entries.end()); QVERIFY(imported->diskPath.isEmpty());
+    QCOMPARE(imported->size, static_cast<qint64>(marker.size()));
+    const auto captured = CaptureWorldTerrainSources(project); QVERIFY(captured.Succeeded());
+    QCOMPARE(captured.value->archiveSha, *digest.value);
+    QVERIFY(captured.value->readOnlyArchive == project.readOnlyArchive_);
+    QVERIFY(std::filesystem::equivalent(captured.value->archivePath, path));
+    const auto secondCapture = CaptureWorldTerrainSources(project); QVERIFY(secondCapture.Succeeded());
+    QVERIFY(SameWorldTerrainSources(*captured.value, *secondCapture.value));
+    const auto overBudget = CaptureWorldTerrainSources(project, 1); QVERIFY(!overBudget.Succeeded());
+    QCOMPARE(overBudget.diagnostics.front().code, std::string("WORLD_ASSET_METADATA_BUDGET"));
+    auto reader = WorldResourceReader::Open(*captured.value); QVERIFY(reader.Succeeded());
+    const auto importedRead = (*reader.value)->Resolver().Read("Imported/marker.bin");
+    QVERIFY(importedRead.Succeeded()); QCOMPARE(importedRead.value->bytes, marker);
+    const auto textureRead = (*reader.value)->Resolver().Read("Terrain/Test/stone.blp");
+    QVERIFY(textureRead.Succeeded()); QCOMPARE(textureRead.value->bytes, *texture.value);
+    QVERIFY((*reader.value)->VerifyCurrentSource().Succeeded());
+    const auto terrainAtlases = LoadWorldTerrainAtlases(*captured.value, project.mapEdits_->Terrain()->header);
+    QVERIFY(terrainAtlases.Succeeded()); QCOMPARE(terrainAtlases.value->size(), std::size_t{1});
+    QVERIFY(terrainAtlases.value->front()); QCOMPARE(terrainAtlases.value->front()->image.rgba, image.rgba);
+
+    // 只走已有fake backend，真实产品的后台读图/贴图路径仍必须完成；不创建GPU设备。
+    {
+        BackendState state; activeBackend = &state;
+        auto api = modelBackend; api.submitSkinnedModelScene = SkinScene; api.updateSkinMatrices = SkinUpdate;
+        api.getSkinStatus = SkinStatus; api.captureSkinnedFrameRgba = SkinCapture;
+        WorldModule module(project, &api);
+        auto* page = module.Widget(); state.viewport = module.Viewport(); page->resize(800, 600); page->show();
+        QTRY_VERIFY(module.ViewportForTools() && module.Viewport()->VertexCount() == 6);
+        QTRY_VERIFY(state.terrainSubmits > 0 && state.frames > 0);
+        QVERIFY(module.Viewport()->HasGroundMesh()); QVERIFY(!module.TerrainLoadFailed());
+        QVERIFY(!project.mapEdits_->IsDirty()); QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    }
+
+    // 能读地图并不意味着有完整成员清单或可重建签名，地图/工程/恢复准备均须拒绝。
+    const auto mapTarget = std::filesystem::path(directory.filePath(QStringLiteral("copy.w3x")).toStdWString());
+    const auto projectTarget = std::filesystem::path(directory.filePath(QStringLiteral("copy.forge")).toStdWString());
+    QVERIFY(!project.PrepareMapSave(mapTarget, false));
+    QVERIFY(!project.PrepareMapSave({}, true));
+    QVERIFY(!project.PrepareProjectSave(projectTarget).Succeeded());
+    QVERIFY(!project.PrepareProjectSave(projectTarget, true).Succeeded());
+    QVERIFY(!std::filesystem::exists(mapTarget) && !std::filesystem::exists(projectTarget));
+    QVERIFY(!project.archiveSession_ && !project.directorySnapshot_);
+    const auto afterRead = Sha256File(path); QVERIFY(afterRead.Succeeded()); QCOMPARE(*afterRead.value, *digest.value);
+
+    const auto retired = std::filesystem::path(directory.filePath(QStringLiteral("retired.w3x")).toStdWString());
+    std::error_code replacementError;
+    std::filesystem::rename(path, retired, replacementError);
+    QVERIFY2(!replacementError, replacementError.message().c_str());
+    QVERIFY(std::filesystem::copy_file(retired, path, replacementError));
+    QVERIFY2(!replacementError, replacementError.message().c_str());
+    const auto replacementSha = Sha256File(path); QVERIFY(replacementSha.Succeeded()); QCOMPARE(*replacementSha.value, *digest.value);
+    QVERIFY(!project.readOnlyArchive_->VerifyUnchanged().Succeeded());
+    QVERIFY(!project.CheckProjectSources().Succeeded());
+    QVERIFY(project.sourceChangeConfirmed_ && project.sourceChangeSuspected_);
+    QVERIFY(!project.ReadMapMember("war3map.w3e").Succeeded());
+    QVERIFY(!CaptureWorldTerrainSources(project).Succeeded());
+    QVERIFY(!(*reader.value)->VerifyCurrentSource().Succeeded());
+    QVERIFY(!WorldResourceReader::Open(*captured.value).Succeeded()); // 不借旧reader也必须核对捕获时的文件身份。
+    QVERIFY(!WorldResourceReader::Open(*captured.value, reader.value->get()).Succeeded());
+    std::shared_ptr<WorldTerrainCache> staleCache;
+    const auto staleTerrain = LoadWorldTerrain(members[1].data, captured, {}, {}, &staleCache);
+    QVERIFY(!staleTerrain.Succeeded()); QVERIFY(!staleCache);
+    QCOMPARE(staleTerrain.diagnostics.front().code, std::string("MPQ_SOURCE_CHANGED"));
+    const auto recapturedTerrain = LoadWorldTerrain(members[1].data, CaptureWorldTerrainSources(project), {}, {}, &staleCache);
+    QVERIFY(!recapturedTerrain.Succeeded()); QVERIFY(!staleCache);
+    QCOMPARE(recapturedTerrain.diagnostics.front().code, std::string("MPQ_SOURCE_CHANGED"));
+    // 上层世界页不能把仍在内存中的 W3E 降为一次成功的高度预览。
+    {
+        BackendState state; activeBackend = &state;
+        WorldModule module(project, &backend);
+        auto* page = module.Widget(); state.viewport = module.Viewport(); page->resize(800, 600); page->show();
+        QTRY_VERIFY(module.TerrainLoadFailed());
+        QCOMPARE(module.Viewport()->VertexCount(), std::size_t{0});
+        QCOMPARE(state.terrainSubmits, 0);
+    }
+    project.LoadMapDocument(); QVERIFY(!project.mapDocument_ && !project.mapEdits_);
+
+    // 显式重新打开才可接受新文件；旧捕获由自身的绑定维持失效，不随Project重新绑定复活。
+    auto replacement = MpqWorkspace::OpenReadOnly(path); QVERIFY(replacement.Succeeded());
+    project.readOnlyArchive_ = std::make_shared<MpqWorkspace>(std::move(*replacement.value));
+    project.LoadMapDocument(); project.ResetEditTracking();
+    QVERIFY(project.mapDocument_ && project.mapEdits_ && project.CheckProjectSources().Succeeded());
+    const auto rebound = CaptureWorldTerrainSources(project); QVERIFY(rebound.Succeeded());
+    QCOMPARE(rebound.value->archiveSha, captured.value->archiveSha);
+    QVERIFY(!SameWorldTerrainSources(*captured.value, *rebound.value));
+    QVERIFY(WorldResourceReader::Open(*rebound.value).Succeeded());
+    QVERIFY(!WorldResourceReader::Open(*captured.value).Succeeded());
+    QVERIFY(!project.archiveSession_ && !project.PrepareMapSave(mapTarget, false));
 }
 
 void WorldModuleTests::TerrainResourceOverlayAndSourceIdentity() {
@@ -2606,6 +3097,7 @@ void WorldModuleTests::InspectorEditsPreserveOtherFloatBits() {
     project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*opened.value));
     project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(members));
     project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+    project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>();
     QVERIFY(project.mapEdits_->AttachTerrain(std::span<const std::byte>(
         reinterpret_cast<const std::byte*>(terrain.constData()), static_cast<std::size_t>(terrain.size()))).Succeeded());
     project.ResetEditTracking();
@@ -2659,6 +3151,314 @@ void WorldModuleTests::InspectorEditsPreserveOtherFloatBits() {
     QCOMPARE(project.mapEdits_->Snapshot().Regions()->entries[1].name, std::string("RegionOne_copy1"));
     QCOMPARE(project.mapEdits_->Snapshot().Regions()->entries[1].creationNumber, 2);
     QCOMPARE(project.mapEdits_->Snapshot().Regions()->entries[1].top, 50.0f);
+}
+
+void WorldModuleTests::AuxiliaryFormPreservesNativeBytes() {
+    const MapData::RegionRecord region{-64.12345f, -32.125f, 32.375f, 32.875f,
+        std::string("native\xff", 7), 17, {std::byte{'?'}, std::byte{0}, std::byte{0xff}, std::byte{'x'}},
+        std::string("sound\xff", 6), {10, 20, 30, 77}};
+    const auto source = MapDocument::FromMembers({});
+    WorldAuxiliaryDialog regionDialog(region, source, false, nullptr);
+    auto unedited = regionDialog.Record(); QVERIFY(unedited.Succeeded());
+    const auto before = MapData::RegionsDocument{5, {region}, {}}.Serialize(); QVERIFY(before.Succeeded());
+    const auto unchanged = MapData::RegionsDocument{5, {std::get<MapData::RegionRecord>(*unedited.value)}, {}}.Serialize();
+    QVERIFY(unchanged.Succeeded()); QVERIFY(*before.value == *unchanged.value);
+    regionDialog.findChild<QLineEdit*>("worldAuxRegionTop")->setText("96.5");
+    const auto changed = regionDialog.Record(); QVERIFY(changed.Succeeded());
+    const auto& edited = std::get<MapData::RegionRecord>(*changed.value);
+    QCOMPARE(edited.top, 96.5f); QCOMPARE(edited.name, region.name); QCOMPARE(edited.ambientSound, region.ambientSound);
+    QCOMPARE(edited.weatherId, region.weatherId); QCOMPARE(edited.colorBgra, region.colorBgra);
+    QCOMPARE(std::bit_cast<std::uint32_t>(edited.left), std::bit_cast<std::uint32_t>(region.left));
+    regionDialog.findChild<QLineEdit*>("worldAuxRegionTop")->setText("not-a-number");
+    QVERIFY(!regionDialog.Record().Succeeded());
+    const MapData::CameraRecord camera{0.125f, 1.234567f, -0.0f, 45.125f, 304.75f, 1649.875f, 5.25f, 70.125f,
+        5000.5f, std::bit_cast<float>(0x42c80001u), std::string("camera\xff", 7)};
+    WorldAuxiliaryDialog cameraDialog(camera, source, false, nullptr);
+    cameraDialog.findChild<QLineEdit*>("worldAuxCameraRoll")->setText("30.25");
+    const auto cameraEdit = cameraDialog.Record(); QVERIFY(cameraEdit.Succeeded());
+    const auto& result = std::get<MapData::CameraRecord>(*cameraEdit.value);
+    QCOMPARE(result.roll, 30.25f); QCOMPARE(result.name, camera.name);
+    QCOMPARE(std::bit_cast<std::uint32_t>(result.zOffset), std::bit_cast<std::uint32_t>(camera.zOffset));
+    QCOMPARE(std::bit_cast<std::uint32_t>(result.targetY), std::bit_cast<std::uint32_t>(camera.targetY));
+    QCOMPARE(std::bit_cast<std::uint32_t>(result.nearClippingPlane), std::bit_cast<std::uint32_t>(camera.nearClippingPlane));
+}
+
+void WorldModuleTests::AuxiliaryResultRejectsStaleSessionAndCoverage() {
+    QtProject::EditorProject project;
+    const std::vector<MapArchiveMember> members{{"war3map.w3i", MapDataFixtures::FullMapSettingsV25().bytes}};
+    project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(members));
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+    project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>();
+    Services::AuxiliaryEditRequest request;
+    request.action = Services::AuxiliaryEditAction::Create; request.expectedMemberSha256 = "missing";
+    const MapData::RegionRecord region{0, 0, 128, 128, "Created", 1, {}, "", {1, 2, 3, 255}};
+    request.record = region;
+    auto binding = QtProject::CaptureAuxiliaryEditBinding(project); QVERIFY(binding.Succeeded());
+    // 字节相同的新会话不能继承旧授权。
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+    const auto stale = QtProject::ApplyAuxiliaryEditWithResult(project, *binding.value, request, "create");
+    QVERIFY(!stale.Succeeded()); QCOMPARE(stale.diagnostics.front().code, std::string("AUX_PROJECT_STALE"));
+    QVERIFY(project.mapEdits_->Replacements().empty()); QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    binding = QtProject::CaptureAuxiliaryEditBinding(project); QVERIFY(binding.Succeeded());
+    project.triggerDocument_.reset();
+    const auto unknown = QtProject::ApplyAuxiliaryEditWithResult(project, *binding.value, request, "create");
+    QVERIFY(!unknown.Succeeded()); QCOMPARE(unknown.diagnostics.front().code, std::string("AUX_REFERENCE_COVERAGE"));
+    project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>();
+    const auto created = QtProject::ApplyAuxiliaryEditWithResult(project, *binding.value, request, "create");
+    QVERIFY(created.Succeeded()); QVERIFY(created.value->changed); QVERIFY(!created.value->rowKey.empty());
+    QVERIFY(QtProject::AuxiliaryEditBindingCurrent(project, created.value->binding));
+    QCOMPARE(std::get<MapData::RegionId>(created.value->object).name, region.name);
+    auto unchangedRequest = request; unchangedRequest.action = Services::AuxiliaryEditAction::Update;
+    unchangedRequest.expectedMemberSha256 = created.value->memberSha256; unchangedRequest.expectedRowKey = created.value->rowKey;
+    const auto noChange = QtProject::ApplyAuxiliaryEditWithResult(project, created.value->binding, unchangedRequest, "unchanged");
+    QVERIFY(noChange.Succeeded()); QVERIFY(!noChange.value->changed);
+    QCOMPARE(project.mapEdits_->Revision(), created.value->binding.revision); QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    const auto replacements = project.mapEdits_->Replacements(); QCOMPARE(replacements.size(), std::size_t{1});
+    QCOMPARE(replacements.front().name, std::string("war3map.w3r"));
+    auto rereadMembers = members; rereadMembers.insert(rereadMembers.end(), replacements.begin(), replacements.end());
+    const auto reread = MapDocument::FromMembers(rereadMembers);
+    QVERIFY(reread.Regions()); QCOMPARE(reread.Regions()->entries.front().name, region.name);
+    project.mapDataUndoStack_->undo(); QVERIFY(project.mapEdits_->Replacements().empty());
+    QCOMPARE(project.mapEdits_->Snapshot().Member(MapDataKind::Regions).state, MapDataState::Missing);
+    project.mapDataUndoStack_->redo(); QCOMPARE(project.mapEdits_->Replacements().front().data, replacements.front().data);
+    // 缺席镜头成员同样输出真实原生成员，不借用字段密封。
+    request.kind = MapDataKind::Cameras;
+    request.record = MapData::CameraRecord{64, 64, 0, 90, 304, 1650, 0, 70, 5000, 100, "CreatedCamera"};
+    binding = QtProject::CaptureAuxiliaryEditBinding(project); QVERIFY(binding.Succeeded());
+    const auto camera = QtProject::ApplyAuxiliaryEditWithResult(project, *binding.value, request, "camera");
+    QVERIFY(camera.Succeeded()); QCOMPARE(std::get<MapData::CameraId>(camera.value->object).name, std::string("CreatedCamera"));
+    QCOMPARE(project.mapEdits_->Replacements().size(), std::size_t{2});
+    const auto revision = project.mapEdits_->Revision();
+    project.savingMap_ = true;
+    QVERIFY(!QtProject::ApplyAuxiliaryEditWithResult(project, camera.value->binding, request, "save race").Succeeded());
+    QCOMPARE(project.mapEdits_->Revision(), revision); project.savingMap_ = false;
+    project.sourceChangeSuspected_ = true;
+    QVERIFY(!QtProject::CaptureAuxiliaryEditBinding(project).Succeeded());
+    QVERIFY(!QtProject::ApplyAuxiliaryEditWithResult(project, camera.value->binding, request, "source race").Succeeded());
+    project.sourceChangeSuspected_ = false; project.sourceChangeConfirmed_ = true;
+    QVERIFY(!QtProject::AuxiliaryEditBindingCurrent(project, camera.value->binding));
+    QCOMPARE(project.mapEdits_->Revision(), revision); project.sourceChangeConfirmed_ = false;
+}
+
+void WorldModuleTests::WorldAuxiliaryCrudUsesSharedService() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const MapData::RegionRecord region{0, 0, 128, 128, "RegionOne", 17, {}, "", {10, 20, 30, 77}};
+    const MapData::CameraRecord camera{256, 256, 7, 0, 0, 1650, 0, 70, 5000, 100, "CameraOne"};
+    QtProject::EditorProject project; QVERIFY(InstallAuxiliaryEditFixture(project, directory.path(), region, camera));
+    BackendState state; activeBackend = &state; WorldModule module(project, &modelBackend);
+    auto* page = module.Widget(); state.viewport = module.Viewport(); page->resize(1200, 760); page->show();
+    auto* outliner = page->findChild<QTreeView*>("worldOutliner"); QVERIFY(outliner);
+    auto* model = dynamic_cast<WorldOutlinerModel*>(outliner->model()); QVERIFY(model);
+    QTRY_VERIFY(FindWorldObject(*model, MapData::MakeRegionId(0, region)).isValid());
+    auto* create = page->findChild<QAction*>("worldNewRegion"); QVERIFY(create); create->trigger();
+    auto* dialog = dynamic_cast<WorldAuxiliaryDialog*>(page->findChild<QDialog*>("worldAuxiliaryDialog")); QVERIFY(dialog);
+    dialog->findChild<QLineEdit*>("worldAuxName")->setText("WorldCreated"); dialog->accept();
+    QTRY_COMPARE(project.mapEdits_->Snapshot().Regions()->entries.size(), std::size_t{2});
+    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    const auto created = project.mapEdits_->Snapshot().Regions()->entries.back();
+    const Services::WorldObjectId createdId = MapData::MakeRegionId(1, created);
+    QTRY_VERIFY(model->Find(createdId).isValid());
+    QTRY_VERIFY(outliner->selectionModel()->isSelected(model->Find(createdId)));
+    QTRY_VERIFY(page->findChild<QDialog*>("worldAuxiliaryDialog") == nullptr);
+    auto* properties = page->findChild<QPushButton*>("worldAuxiliaryProperties"); QVERIFY(properties && properties->isEnabled());
+    properties->click(); dialog = dynamic_cast<WorldAuxiliaryDialog*>(page->findChild<QDialog*>("worldAuxiliaryDialog")); QVERIFY(dialog);
+    dialog->findChild<QLineEdit*>("worldAuxName")->setText("WorldRenamed");
+    dialog->findChild<QLineEdit*>("worldAuxRegionTop")->setText("320"); dialog->accept();
+    QTRY_COMPARE(project.mapEdits_->Snapshot().Regions()->entries.back().name, std::string("WorldRenamed"));
+    const auto renamed = project.mapEdits_->Snapshot().Regions()->entries.back();
+    QCOMPARE(renamed.top, 320.0f); QCOMPARE(renamed.creationNumber, created.creationNumber);
+    QTRY_VERIFY(model->Find(MapData::MakeRegionId(1, renamed)).isValid());
+    QTRY_VERIFY(outliner->selectionModel()->isSelected(model->Find(MapData::MakeRegionId(1, renamed))));
+    const auto savedBytes = project.mapEdits_->Snapshot().Regions()->Serialize(); QVERIFY(savedBytes.Succeeded());
+    auto* remove = page->findChild<QPushButton*>("worldDeleteAuxiliary"); QVERIFY(remove && remove->isEnabled()); remove->click();
+    QCOMPARE(project.mapEdits_->Snapshot().Regions()->entries.size(), std::size_t{1});
+    QCOMPARE(project.mapDataUndoStack_->count(), 3);
+    project.mapDataUndoStack_->undo();
+    QCOMPARE(*project.mapEdits_->Snapshot().Regions()->Serialize().value, *savedBytes.value);
+    project.mapDataUndoStack_->redo(); QCOMPARE(project.mapEdits_->Snapshot().Regions()->entries.size(), std::size_t{1});
+    QTRY_VERIFY(page->findChild<QDialog*>("worldAuxiliaryDialog") == nullptr);
+    auto* createCamera = page->findChild<QAction*>("worldNewCamera"); QVERIFY(createCamera); createCamera->trigger();
+    dialog = dynamic_cast<WorldAuxiliaryDialog*>(page->findChild<QDialog*>("worldAuxiliaryDialog")); QVERIFY(dialog);
+    dialog->findChild<QLineEdit*>("worldAuxName")->setText("WorldCamera");
+    dialog->findChild<QLineEdit*>("worldAuxCameraFar")->setText("6000"); dialog->accept();
+    QTRY_COMPARE(project.mapEdits_->Snapshot().Cameras()->entries.size(), std::size_t{2});
+    const auto createdCamera = project.mapEdits_->Snapshot().Cameras()->entries.back();
+    QCOMPARE(createdCamera.farClippingPlane, 6000.0f);
+    const Services::WorldObjectId createdCameraId = MapData::MakeCameraId(1, createdCamera);
+    QTRY_VERIFY(model->Find(createdCameraId).isValid());
+    QTRY_VERIFY(outliner->selectionModel()->isSelected(model->Find(createdCameraId)));
+    QTRY_VERIFY(page->findChild<QDialog*>("worldAuxiliaryDialog") == nullptr);
+    properties->click(); dialog = dynamic_cast<WorldAuxiliaryDialog*>(page->findChild<QDialog*>("worldAuxiliaryDialog")); QVERIFY(dialog);
+    dialog->findChild<QLineEdit*>("worldAuxCameraRoll")->setText("12.5"); dialog->accept();
+    const auto editedCamera = project.mapEdits_->Snapshot().Cameras()->entries.back();
+    QCOMPARE(editedCamera.roll, 12.5f);
+    QCOMPARE(std::bit_cast<std::uint32_t>(editedCamera.nearClippingPlane), std::bit_cast<std::uint32_t>(createdCamera.nearClippingPlane));
+    remove->click(); QCOMPARE(project.mapEdits_->Snapshot().Cameras()->entries.size(), std::size_t{1});
+    QCOMPARE(project.mapDataUndoStack_->count(), 6);
+    QTRY_VERIFY(FindWorldObject(*model, MapData::MakeCameraId(0, camera)).isValid());
+    QVERIFY(SelectAuxiliaryRow(*page, MapData::MakeCameraId(0, camera)));
+    project.triggerDocument_.reset(); // 缺少引用覆盖，副本也不能绕过共用服务。
+    const auto before = project.mapEdits_->Revision(); const auto count = project.mapDataUndoStack_->count();
+    auto* duplicate = page->findChild<QPushButton*>("worldDuplicateAuxiliary"); QVERIFY(duplicate); duplicate->click();
+    remove->click(); // 删除也必须命中同一引用覆盖门。
+    QCOMPARE(project.mapEdits_->Revision(), before); QCOMPARE(project.mapDataUndoStack_->count(), count);
+    QCOMPARE(project.mapEdits_->Snapshot().Cameras()->entries.size(), std::size_t{1});
+}
+
+void WorldModuleTests::OutlinerPagingRestoresAuxiliarySelection_data() {
+    QTest::addColumn<bool>("selectCamera");
+    QTest::newRow("region") << false;
+    QTest::newRow("camera") << true;
+}
+
+void WorldModuleTests::OutlinerPagingRestoresAuxiliarySelection() {
+    QFETCH(bool, selectCamera);
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const MapData::RegionRecord region{0, 0, 128, 128, "PagedRegion", 17, {}, "", {0, 0, 0, 255}};
+    const MapData::CameraRecord camera{256, 256, 0, 0, 0, 1650, 0, 70, 5000, 100, "PagedCamera"};
+    QtProject::EditorProject project; QVERIFY(InstallAuxiliaryEditFixture(project, directory.path(), region, camera));
+    BackendState state; activeBackend = &state; WorldModule module(project, &modelBackend);
+    auto* page = module.Widget(); state.viewport = module.Viewport(); page->resize(1200, 760); page->show();
+    auto* outliner = page->findChild<QTreeView*>("worldOutliner"); QVERIFY(outliner);
+    auto* model = dynamic_cast<WorldOutlinerModel*>(outliner->model()); QVERIFY(model);
+    const Services::WorldObjectId selectedId = selectCamera
+        ? Services::WorldObjectId(MapData::MakeCameraId(0, camera))
+        : Services::WorldObjectId(MapData::MakeRegionId(0, region));
+    QTRY_VERIFY(FindWorldObject(*model, selectedId).isValid());
+    QVERIFY(SelectAuxiliaryRow(*page, selectedId));
+    QTRY_VERIFY(outliner->selectionModel()->isSelected(model->Find(selectedId)));
+    const auto revision = project.mapEdits_->Revision();
+    QSignalSpy resets(model, &QAbstractItemModel::modelReset);
+    QSignalSpy pages(model, &WorldOutlinerModel::PageLoaded);
+    // 正常地图刷新先读空的 Units 页。测试随后只等待 QTreeView 自动分页，
+    // 不调用 FindWorldObject / fetchMore / “继续读取”，也不重选该对象。
+    project.MapDocumentChanged();
+    QVERIFY(!resets.empty()); QVERIFY(!pages.empty());
+    QVERIFY(!model->Find(selectedId).isValid());
+    QTRY_VERIFY(model->Find(selectedId).isValid());
+    QTRY_VERIFY(outliner->selectionModel()->isSelected(model->Find(selectedId)));
+    QCOMPARE(outliner->selectionModel()->selectedRows().size(), 1);
+    QCOMPARE(outliner->selectionModel()->currentIndex(), model->Find(selectedId));
+    QVERIFY(pages.size() > 1);
+    QCOMPARE(project.mapEdits_->Revision(), revision);
+    QCOMPARE(project.mapDataUndoStack_->count(), 0);
+}
+
+void WorldModuleTests::WorldAuxiliaryDialogRejectsChangedMap() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const MapData::RegionRecord region{0, 0, 128, 128, "RegionOne", 17, {}, "", {0, 0, 0, 255}};
+    const MapData::CameraRecord camera{256, 256, 0, 0, 0, 1650, 0, 70, 5000, 100, "CameraOne"};
+    QtProject::EditorProject project; QVERIFY(InstallAuxiliaryEditFixture(project, directory.path(), region, camera));
+    BackendState state; activeBackend = &state; WorldModule module(project, &modelBackend);
+    auto* page = module.Widget(); state.viewport = module.Viewport(); page->resize(1200, 760); page->show();
+    auto* outliner = page->findChild<QTreeView*>("worldOutliner"); QVERIFY(outliner);
+    auto* model = dynamic_cast<WorldOutlinerModel*>(outliner->model()); QVERIFY(model);
+    QTRY_VERIFY(FindWorldObject(*model, MapData::MakeRegionId(0, region)).isValid());
+    QVERIFY(SelectAuxiliaryRow(*page, MapData::MakeRegionId(0, region)));
+    auto* properties = page->findChild<QPushButton*>("worldAuxiliaryProperties"); QVERIFY(properties); properties->click();
+    auto* dialog = dynamic_cast<WorldAuxiliaryDialog*>(page->findChild<QDialog*>("worldAuxiliaryDialog")); QVERIFY(dialog);
+    dialog->findChild<QLineEdit*>("worldAuxRegionTop")->setText("999");
+    // 保持同样成员字节与行键，只更换实际编辑会话，旧弹窗仍须拒绝。
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+    dialog->accept();
+    QCOMPARE(project.mapEdits_->Snapshot().Regions()->entries.front().top, region.top);
+    QCOMPARE(project.mapDataUndoStack_->count(), 0);
+}
+
+void WorldModuleTests::StartLocationMarkerCaptureIsBounded() {
+    auto units = MapData::ParseUnitPlacements(MapDataFixtures::EmptyUnitsV8Sub11()); QVERIFY(units.Succeeded());
+    MapData::UnitPlacement start; start.rawcode = "sloc"; start.scale = {1, 1, 1}; start.owner = 0;
+    for (int index = 0; index < 4; ++index) { start.creationId = index + 1; start.position = {float(index * 64), 0, 0}; units.value->units.push_back(start); }
+    const auto bytes = units.value->Serialize(); QVERIFY(bytes.Succeeded());
+    const std::vector<MapArchiveMember> members{{"war3mapUnits.doo", *bytes.value}};
+    const auto source = MapDocument::FromMembers(members);
+    const auto capture = CaptureWorldStartLocations(source, 2); QVERIFY(capture.Succeeded());
+    QCOMPARE(capture.value->sourceCount, std::size_t{4}); QCOMPARE(capture.value->omittedCount, std::size_t{2});
+    QCOMPARE(capture.value->markers.size(), std::size_t{2});
+    QVERIFY(capture.value->markers[1].id == MapData::MakePlacementId(MapData::PlacementFile::Units, 1, units.value->units[1]));
+    QCOMPARE(capture.value->markers[1].position, units.value->units[1].position);
+    QVERIFY(!CaptureWorldStartLocations(source, 0).Succeeded());
+    auto ambiguous = members; ambiguous.push_back(members.front());
+    QVERIFY(!CaptureWorldStartLocations(MapDocument::FromMembers(ambiguous)).Succeeded());
+    const auto empty = CaptureWorldStartLocations(MapDocument::FromMembers({})); QVERIFY(empty.Succeeded());
+    QVERIFY(empty.value->markers.empty());
+}
+
+void WorldModuleTests::StartLocationDragLinksSettingsAndUndo() {
+    QTemporaryDir directory; QVERIFY(directory.isValid()); QtProject::EditorProject project;
+    QVERIFY(InstallStartLocationEditFixture(project, directory.path()));
+    const auto before = project.mapEdits_->Snapshot();
+    const auto id = MapData::MakePlacementId(MapData::PlacementFile::Units, 0, before.Units()->units[0]);
+    const auto unitsBefore = before.Member(MapDataKind::Units).sources.front().data;
+    const auto settingsBefore = before.Member(MapDataKind::Settings).sources.front().data;
+    BackendState state; activeBackend = &state;
+    state.viewProjection[0] = state.viewProjection[5] = 1 / 192.0f;
+    state.viewProjection[12] = state.viewProjection[13] = -64 / 192.0f;
+    auto api = modelBackend; api.setOverlayLines = BoundaryOverlay;
+    WorldModule module(project, &api); auto* page = module.Widget(); auto* viewport = module.Viewport(); state.viewport = viewport;
+    page->resize(1200, 760); page->show();
+    auto* outliner = page->findChild<QTreeView*>("worldOutliner"); QVERIFY(outliner);
+    auto* model = dynamic_cast<WorldOutlinerModel*>(outliner->model()); QVERIFY(model);
+    QTRY_VERIFY(viewport->VertexCount() > 0 && state.frames > 0 && !state.overlayLines.empty());
+    QTRY_VERIFY(FindWorldObject(*model, id).isValid());
+    const auto start = MoveAuxiliaryPointer(*viewport, state, {64, 64});
+    const auto end = AuxiliaryScreenPoint(*viewport, state, {96, 80});
+    Mouse(*viewport, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+    Mouse(*viewport, QEvent::MouseButtonRelease, start, Qt::LeftButton, Qt::NoButton);
+    QTRY_VERIFY(outliner->selectionModel()->isSelected(model->Find(id)));
+    QSignalSpy started(viewport, &WorldViewport::MoveStarted);
+    const auto camera = viewport->SaveCamera(); const auto revision = project.mapEdits_->Revision();
+    Mouse(*viewport, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+    Mouse(*viewport, QEvent::MouseMove, end, Qt::NoButton, Qt::LeftButton);
+    QCOMPARE(started.count(), 1); QCOMPARE(project.mapEdits_->Revision(), revision);
+    QTest::keyClick(viewport, Qt::Key_Escape);
+    Mouse(*viewport, QEvent::MouseButtonRelease, end, Qt::LeftButton, Qt::NoButton);
+    QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    QCOMPARE(project.mapEdits_->Snapshot().Member(MapDataKind::Units).sources.front().data, unitsBefore);
+    const auto stableStart = MoveAuxiliaryPointer(*viewport, state, {64, 64});
+    const auto stableEnd = AuxiliaryScreenPoint(*viewport, state, {96, 80});
+    Mouse(*viewport, QEvent::MouseButtonPress, stableStart, Qt::LeftButton, Qt::LeftButton);
+    Mouse(*viewport, QEvent::MouseMove, stableEnd, Qt::NoButton, Qt::LeftButton);
+    Mouse(*viewport, QEvent::MouseButtonRelease, stableEnd, Qt::LeftButton, Qt::NoButton);
+    QCOMPARE(project.mapDataUndoStack_->count(), 1); QCOMPARE(project.mapEdits_->Revision(), revision + 1);
+    const auto after = project.mapEdits_->Snapshot(); const auto moved = after.Units()->units.front();
+    QCOMPARE(moved.position[0], 96.0f); QCOMPARE(moved.position[1], 80.0f); QCOMPARE(moved.position[2], 5.0f);
+    QCOMPARE(after.Settings()->players.front().startX, moved.position[0]);
+    QCOMPARE(after.Settings()->players.front().startY, moved.position[1]);
+    QCOMPARE(viewport->SaveCamera(), camera);
+    QCOMPARE(module.TerrainOnlySceneDiagnosticSnapshot()["model_requests"].toInt(), 0);
+    QCOMPARE(module.TerrainOnlySceneDiagnosticSnapshot()["start_location_marker_count"].toInt(), 1);
+    project.mapDataUndoStack_->undo();
+    QCOMPARE(project.mapEdits_->Snapshot().Member(MapDataKind::Units).sources.front().data, unitsBefore);
+    QCOMPARE(project.mapEdits_->Snapshot().Member(MapDataKind::Settings).sources.front().data, settingsBefore);
+    project.mapDataUndoStack_->redo();
+    QCOMPARE(project.mapEdits_->Snapshot().Units()->units.front().position, moved.position);
+    QVERIFY(model->setData(model->Find(id).siblingAtColumn(1), Qt::Unchecked, Qt::CheckStateRole));
+    QTRY_VERIFY(state.overlayLines.empty());
+    const auto beforeHidden = project.mapEdits_->Revision();
+    viewport->MoveStarted(96, 80); viewport->MoveDragged(128, 96); viewport->MoveFinished();
+    QCOMPARE(project.mapEdits_->Revision(), beforeHidden);
+}
+
+void WorldModuleTests::StartLocationAmbiguityRejectsWholeSelection() {
+    QTemporaryDir directory; QVERIFY(directory.isValid()); QtProject::EditorProject project;
+    QVERIFY(InstallStartLocationEditFixture(project, directory.path(), true, true));
+    const auto before = project.mapEdits_->Snapshot();
+    const auto start = MapData::MakePlacementId(MapData::PlacementFile::Units, 0, before.Units()->units[0]);
+    const auto ordinary = MapData::MakePlacementId(MapData::PlacementFile::Units, 2, before.Units()->units[2]);
+    BackendState state; activeBackend = &state; auto api = modelBackend; api.setOverlayLines = BoundaryOverlay;
+    WorldModule module(project, &api); auto* page = module.Widget(); state.viewport = module.Viewport(); page->resize(1200, 760); page->show();
+    auto* outliner = page->findChild<QTreeView*>("worldOutliner"); QVERIFY(outliner);
+    auto* model = dynamic_cast<WorldOutlinerModel*>(outliner->model()); QVERIFY(model);
+    QTRY_VERIFY(module.Viewport()->VertexCount() > 0 && FindWorldObject(*model, ordinary).isValid());
+    QVERIFY(SelectAuxiliaryRow(*page, start)); QVERIFY(SelectAuxiliaryRow(*page, ordinary, Qt::ShiftModifier));
+    const auto revision = project.mapEdits_->Revision();
+    module.Viewport()->MoveStarted(64, 64); module.Viewport()->MoveDragged(80, 80); module.Viewport()->MoveFinished();
+    QCOMPARE(project.mapEdits_->Revision(), revision); QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    QCOMPARE(project.mapEdits_->Snapshot().Member(MapDataKind::Units).sources.front().data,
+        before.Member(MapDataKind::Units).sources.front().data);
+    QCOMPARE(project.mapEdits_->Snapshot().Member(MapDataKind::Settings).sources.front().data,
+        before.Member(MapDataKind::Settings).sources.front().data);
 }
 
 void WorldModuleTests::RegionEdgesUseSharedTableTransaction_data() {

@@ -1,3 +1,9 @@
+add_executable(audastra-auxiliary-editing-tests AuxiliaryEditingTests.cpp)
+target_link_libraries(audastra-auxiliary-editing-tests PRIVATE War3MapEditor::Services)
+target_compile_options(audastra-auxiliary-editing-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-auxiliary-editing COMMAND audastra-auxiliary-editing-tests)
+set_tests_properties(services-auxiliary-editing PROPERTIES TIMEOUT 60)
+
 add_executable(audastra-lua-test-mailbox-tests LuaTestMailboxSessionTests.cpp
     "${PROJECT_SOURCE_DIR}/src/WarcraftRuntime32/OwnLua/LuaMailboxRuntime.cpp")
 target_link_libraries(audastra-lua-test-mailbox-tests PRIVATE War3MapEditor::Core)
@@ -12,6 +18,13 @@ target_compile_definitions(audastra-placement-creation-tests PRIVATE NOMINMAX UN
 target_compile_options(audastra-placement-creation-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-placement-creation COMMAND audastra-placement-creation-tests)
 set_tests_properties(services-placement-creation PROPERTIES TIMEOUT 60)
+
+add_executable(audastra-object-catalog-sources-tests ObjectCatalogSourcesTests.cpp)
+target_link_libraries(audastra-object-catalog-sources-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(audastra-object-catalog-sources-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-object-catalog-sources-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-object-catalog-sources COMMAND audastra-object-catalog-sources-tests)
+set_tests_properties(services-object-catalog-sources PROPERTIES TIMEOUT 60)
 
 add_executable(audastra-campaign-service-tests CampaignServiceTests.cpp)
 target_link_libraries(audastra-campaign-service-tests PRIVATE War3MapEditor::Services)
@@ -210,6 +223,7 @@ target_compile_options(war3-map-save-service-tests PRIVATE /W4 /permissive- /utf
 add_test(NAME services-map-save COMMAND war3-map-save-service-tests)
 
 add_executable(war3-map-lua-map-save-tests LuaMapSaveTests.cpp)
+audastra_use_test_lua(war3-map-lua-map-save-tests)
 target_link_libraries(war3-map-lua-map-save-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(war3-map-lua-map-save-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-lua-map-save-tests PRIVATE /W4 /permissive- /utf-8)
@@ -225,6 +239,12 @@ target_compile_options(war3-map-lua-map-target-configuration-tests PRIVATE /W4 /
 add_test(NAME services-lua-map-target-configuration COMMAND war3-map-lua-map-target-configuration-tests)
 
 add_executable(war3-map-data-query-tests MapDataQueryTests.cpp)
+add_executable(audastra-auxiliary-transaction-tests AuxiliaryTransactionTests.cpp)
+target_link_libraries(audastra-auxiliary-transaction-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(audastra-auxiliary-transaction-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-auxiliary-transaction-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-auxiliary-transaction COMMAND audastra-auxiliary-transaction-tests)
+
 target_link_libraries(war3-map-data-query-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(war3-map-data-query-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-data-query-tests PRIVATE /W4 /permissive- /utf-8)
@@ -242,7 +262,7 @@ target_compile_definitions(war3-map-import-inventory-tests PRIVATE NOMINMAX UNIC
 target_compile_options(war3-map-import-inventory-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-import-inventory COMMAND war3-map-import-inventory-tests)
 
-foreach(reference_unit IN ITEMS Capture Graph Save)
+foreach(reference_unit IN ITEMS Capture Graph Save Effective)
     string(TOLOWER "${reference_unit}" reference_target)
     add_executable("war3-map-object-reference-${reference_target}-tests" "MapObjectReference${reference_unit}Tests.cpp")
     target_link_libraries("war3-map-object-reference-${reference_target}-tests" PRIVATE War3MapEditor::Services)

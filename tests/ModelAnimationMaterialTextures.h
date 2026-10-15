@@ -229,8 +229,9 @@ inline void Run() {
     std::vector<AnimationInstanceSpec> many(512,specs[0]);
     for (std::size_t i=0;i<many.size();++i) { many[i].identity.value=i+1; many[i].hostKey="shared-texture:"+std::to_string(i); }
     AnimationLimits sharedLimits; sharedLimits.retainUnsupportedStatic=true; sharedLimits.maxActivePoseBytes=4096;
+    // 与逐请求状态并列列出新增常驻需求字节，不增加既有32768余量或生产预算。
     sharedLimits.maxFrameBytes=many.size()*(sizeof(War3RenderSkinnedModelInstanceV2)+sizeof(AnimationPoseLink)+
-        sizeof(AnimationInstanceState)+sizeof(AnimationPickBounds)+2*sizeof(War3RenderMaterialLayerSliceV2))+32768;
+        sizeof(AnimationInstanceState)+sizeof(std::uint8_t)+sizeof(AnimationPickBounds)+2*sizeof(War3RenderMaterialLayerSliceV2))+32768;
     const auto originalBudget=ModelAnimationService::Create({7,33,"shared-texture"},many,reader,sharedLimits);
     Check(!originalBudget.Succeeded() && !originalBudget.diagnostics.empty() &&
         originalBudget.diagnostics.front().code=="ANIMATION_FRAME_BUDGET",

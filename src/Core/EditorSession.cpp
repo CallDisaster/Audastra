@@ -522,6 +522,52 @@ Status EditorSession::ApplyTerrainPatch(TransactionId transactionId, TerrainPatc
     return impl_->ApplyFiles(transactionId, std::move(patch.files_), "terrain", &IsTerrainMember);
 }
 
+Status EditorSession::ApplyAuxiliaryPatch(TransactionId transactionId, AuxiliaryPatch patch) {
+    std::scoped_lock lock(impl_->mutex);
+    if (!impl_->transaction || impl_->transaction->id != transactionId)
+        return Status::Failure("Transaction", "TRANSACTION_NOT_ACTIVE", "请求的区域/镜头事务未处于活动状态。");
+    if (patch.files_.empty() || patch.files_.size() > 2)
+        return Status::Failure("Transaction", "AUX_PATCH_SCOPE_INVALID", "密封区域/镜头补丁只能包含一到两个成员。");
+    const auto unchanged = impl_->workspace.VerifyUnchanged();
+    if (!unchanged.Succeeded()) return unchanged;
+    std::vector<std::string> seen;
+    std::size_t bytes = 0;
+    for (auto& file : patch.files_) {
+        file.relativePath = file.relativePath.lexically_normal();
+        auto name = LowerGenericPath(file.relativePath);
+        if (name.starts_with("map/")) name.erase(0, 4);
+        if (!IsSafeRelativePath(file.relativePath) || (name != "war3map.w3r" && name != "war3map.w3c")
+            || std::find(seen.begin(), seen.end(), name) != seen.end())
+            return Status::Failure("Transaction", "AUX_PATCH_SCOPE_INVALID", "补丁包含重复或未授权的区域/镜头路径。");
+        seen.push_back(name);
+        if (file.replacement.size() > 64U * 1024U * 1024U - bytes)
+            return Status::Failure("Transaction", "AUX_PATCH_BYTE_BUDGET", "区域/镜头补丁超过 64 MiB。");
+        bytes += file.replacement.size();
+        const WorkspaceFile* bound = nullptr;
+        for (const auto& source : impl_->workspace.Snapshot().files) {
+            const auto path = LowerGenericPath(source.relativePath);
+            if (path != name && path != "map/" + name) continue;
+            if (bound) return Status::Failure("Transaction", "AUX_PATCH_SOURCE_AMBIGUOUS", "区域/镜头有多个目录来源。");
+            bound = &source;
+        }
+        if (file.expectedSourceSha256 == "missing" ? bound != nullptr
+            : !bound || bound->relativePath != file.relativePath || file.expectedSourceSha256 != bound->sha256)
+            return Status::Failure("Transaction", "AUX_PATCH_SOURCE_STALE", "区域/镜头补丁与原目录成员身份不同。");
+        for (const auto& [path, entry] : impl_->transaction->overlay) {
+            auto other = LowerGenericPath(path);
+            if (other.starts_with("map/")) other.erase(0, 4);
+            if (other == name && (path != file.relativePath || entry.kind != "map-auxiliary"))
+                return Status::Failure("Transaction", "AUX_PATCH_OVERLAY_CONFLICT", "区域/镜头已有其它领域或来源路径的覆盖。");
+        }
+    }
+    // 先构造完整下一覆盖；分配或后项验证失败不会留下半批次。
+    auto next = impl_->transaction->overlay;
+    for (auto& file : patch.files_)
+        next.insert_or_assign(file.relativePath, OverlayEntry{std::move(file.replacement), std::move(file.summary), "map-auxiliary"});
+    impl_->transaction->overlay.swap(next);
+    return Status::Ok();
+}
+
 Status EditorSession::CreateObjectMember(TransactionId transactionId, ObjectPatch patch) {
     std::scoped_lock lock(impl_->mutex);
     if (!impl_->transaction || impl_->transaction->id != transactionId)

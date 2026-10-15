@@ -63,6 +63,8 @@ public:
         War3Map::ObjectData::LniObjectDocument* document,
         const War3Map::ObjectData::ObjectKey* object);
     void SetEditCallback(std::function<void()> callback);
+    // 宿主在每次发布前复核有效目录；无宿主的离线模型只执行字段与结构校验。
+    void SetWriteGate(std::function<bool()> gate) { writeGate_ = std::move(gate); }
     void SetFieldFilter(const QString& filter);
     void SetContext(const War3Map::ObjectData::StandardObjectCatalog* catalog,
         const War3Map::ObjectData::ObjectFieldSchema* schema);
@@ -111,6 +113,7 @@ private:
     War3Map::ObjectData::LniObjectDocument* document_ = nullptr;
     std::optional<War3Map::ObjectData::ObjectKey> object_;
     std::function<void()> editCallback_;
+    std::function<bool()> writeGate_;
     QString fieldFilter_;
     QString categoryFilter_;
     QString inheritanceIssue_;

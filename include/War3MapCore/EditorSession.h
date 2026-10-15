@@ -24,6 +24,7 @@ class NativeObjectCodec;
 }
 
 namespace MapData { class MapDataFieldPatchCodec; class MapDataPlacementPatchCodec; class TerrainPatchCodec; }
+namespace Services { class AuxiliaryTransactionSnapshot; }
 
 struct OpenRequest {
     std::filesystem::path workspacePath;
@@ -94,6 +95,20 @@ private:
     std::vector<BinaryFilePatch> files_;
 };
 
+// 共用区域/镜头命令序列的完整重放证明，只授权 W3R/W3C；缺席用明确的 missing 身份。
+class AuxiliaryPatch {
+public:
+    AuxiliaryPatch(AuxiliaryPatch&&) noexcept = default;
+    AuxiliaryPatch& operator=(AuxiliaryPatch&&) noexcept = default;
+    AuxiliaryPatch(const AuxiliaryPatch&) = delete;
+    AuxiliaryPatch& operator=(const AuxiliaryPatch&) = delete;
+private:
+    friend class Services::AuxiliaryTransactionSnapshot;
+    friend class EditorSession;
+    explicit AuxiliaryPatch(std::vector<BinaryFilePatch> files) : files_(std::move(files)) {}
+    std::vector<BinaryFilePatch> files_;
+};
+
 // 只由共用地形 codec 重放证明；不扩大 MapDataPatch 的成员范围。
 class TerrainPatch {
 public:
@@ -136,6 +151,7 @@ public:
         TransactionId transactionId,
         MapDataPatch patch);
     [[nodiscard]] Status ApplyTerrainPatch(TransactionId transactionId, TerrainPatch patch);
+    [[nodiscard]] Status ApplyAuxiliaryPatch(TransactionId transactionId, AuxiliaryPatch patch);
     // 仅 codec 密封的空基线物编可创建成员。既有替换入口不放宽；类别、格式、
     // 来源缺失及空基线身份均须成立。再次编辑同一新增成员仍使用这个显式入口。
     [[nodiscard]] Status CreateObjectMember(

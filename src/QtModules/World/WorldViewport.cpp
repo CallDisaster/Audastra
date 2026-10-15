@@ -1,4 +1,5 @@
 #include "WorldViewport.h"
+#include "WorldDiagnosticJson.h"
 #include "WorldSelectionPresentation.h"
 #include "WorldViewportInternals.h"
 
@@ -113,12 +114,14 @@ QJsonObject WorldViewport::BackendDiagnosticSnapshot() const {
     const bool valid = ValidApi(api_);
     const auto number = [](std::uint64_t value) { return QString::number(value); };
     QJsonObject result{{"schema_version", 1}, {"injected", injected_}, {"library_loaded", library_.isLoaded()},
-        {"library_path", library_.fileName()}, {"api_present", api_ != nullptr}, {"api_valid", valid},
+        {"api_present", api_ != nullptr}, {"api_valid", valid},
         {"renderer_ready", RendererReady()}, {"renderer_failed", failed_}, {"renderer_initializing", initializing_},
-        {"frame_timer_active", frameTimer_.isActive()}, {"status_text", status_},
+        {"frame_timer_active", frameTimer_.isActive()},
         {"renderer_epoch", number(measurementRendererEpoch_)}, {"viewport_document_revision", number(revision_)},
         {"has_animation_scene", HasAnimationScene()}, {"model_presentation_current", ModelPresentationCurrent()},
         {"gpu_timing_observed", false}, {"diagnostic_only", true}};
+    WorldDiagnosticJson::Text(result, "library_path", library_.fileName());
+    WorldDiagnosticJson::Text(result, "status_text", status_);
     result.insert("api_struct_size", api_ ? QJsonValue(number(api_->structSize)) : QJsonValue{});
     result.insert("api_version", api_ && api_->structSize >= offsetof(War3RenderPluginApiV2, apiVersion) + sizeof(api_->apiVersion)
         ? QJsonValue(number(api_->apiVersion)) : QJsonValue{});
@@ -141,11 +144,14 @@ QJsonObject WorldViewport::BackendDiagnosticSnapshot() const {
         status.insert("message", QString::fromUtf8(observed.message, static_cast<qsizetype>(messageLength)));
     }
     result.insert("observed_renderer_status", status);
-    QJsonArray failures;
-    for (const auto& diagnostic : animationFailure_.diagnostics)
-        failures.append(QJsonObject{{"code", QString::fromUtf8(diagnostic.code)},
-            {"message", QString::fromUtf8(diagnostic.message)}});
+    const auto failures = WorldDiagnosticJson::Diagnostics(animationFailure_.diagnostics);
     result.insert("animation_failure", failures);
+    result.insert("animation_failure_page", WorldDiagnosticJson::Page(animationFailure_.diagnostics.size(),
+        0, static_cast<std::size_t>(failures.size()), 64));
+    const auto groundFailures = WorldDiagnosticJson::Diagnostics(groundFailure_.diagnostics);
+    result.insert("ground_failure", groundFailures);
+    result.insert("ground_failure_page", WorldDiagnosticJson::Page(groundFailure_.diagnostics.size(),
+        0, static_cast<std::size_t>(groundFailures.size()), 64));
     return result;
 }
 
@@ -198,6 +204,7 @@ void WorldViewport::EnsureRenderer() {
 void WorldViewport::DestroyRenderer() {
     ++measurementRendererEpoch_;
     animationPickHistory_.clear();
+    bugPreparationHistory_.clear(); bugPreparationFailure_ = {};
     selectionOutline_.clear();
     CancelTerrainStroke();
     CancelMove();
@@ -453,8 +460,39 @@ void WorldViewport::ClearSelectionOutline() {
     (void)SubmitOverlay();
 }
 
+void WorldViewport::RetainBugPreparationFrame() try {
+    if (!animationScene_ || !animationFrame_ || !editorPresentationTarget_ || !animationPickingCurrent_) return;
+    if (!bugPreparationHistory_.empty()) {
+        const auto& last = bugPreparationHistory_.back();
+        if (last.snapshot->sourceScene.lock() == animationScene_ && last.rendererEpoch == measurementRendererEpoch_
+            && last.policyRevision == pickPolicyRevision_ && last.contentVersion == animationFrame_->contentVersion
+            && last.sceneVersion == animationFrame_->sceneVersion && last.presentationRevision == editorPresentationRevision_) return;
+    }
+    auto captured = Services::CaptureWorldModelBugPlaceholderFrame(animationScene_, *animationFrame_);
+    if (!captured.Succeeded()) {
+        bugPreparationHistory_.clear(); bugPreparationFailure_ = {std::move(captured.diagnostics)}; return;
+    }
+    auto snapshot = std::make_shared<const Services::WorldModelBugPlaceholderFrameSnapshot>(std::move(*captured.value));
+    const auto bytes = snapshot->ownedBytes;
+    std::size_t retained = 0; for (const auto& owned : bugPreparationHistory_) retained += owned.ownedBytes;
+    while (!bugPreparationHistory_.empty() && (bugPreparationHistory_.size() >= 4
+        || retained > Services::kMaximumWorldModelBugSnapshotBytes - bytes)) {
+        retained -= bugPreparationHistory_.front().ownedBytes; bugPreparationHistory_.pop_front();
+    }
+    const AnimationCompletionIdentity identity{*editorPresentationTarget_, editorPresentationRevision_, measurementRendererEpoch_,
+        pickPolicyRevision_, animationFrame_->sceneVersion, animationFrame_->contentVersion, animationFrame_->documentRevision,
+        animationFrame_->instances.size(), static_cast<std::uint32_t>(animationFrame_->particleVertices.size()),
+        static_cast<std::uint32_t>(animationFrame_->particleDraws.size())};
+    bugPreparationHistory_.push_back({identity, std::move(snapshot), bytes}); bugPreparationFailure_ = {};
+} catch (...) {
+    bugPreparationHistory_.clear();
+    bugPreparationFailure_ = Status::Failure("World.BugPlaceholder", "WORLD_BUG_PLACEHOLDER_SNAPSHOT_FAILED",
+        "无法拥有有界占位来源快照，未借用几何拾取历史或伪造完成帧。");
+}
+
 void WorldViewport::RetainAnimationPickFrame() try {
     if (!animationScene_ || !animationFrame_ || !editorPresentationTarget_ || !animationPickingCurrent_) return;
+    RetainBugPreparationFrame(); // 独立稀疏来源；完整几何历史超预算不能阻止CPU占位准备。
     constexpr std::size_t budget = 64ull * 1024 * 1024;
     const auto& source = *animationFrame_;
     if (!animationPickHistory_.empty() && animationPickHistory_.back().frame->contentVersion == source.contentVersion &&
@@ -509,9 +547,10 @@ void WorldViewport::RetainAnimationPickFrame() try {
     while (!animationPickHistory_.empty() && retained > budget - *bytes) {
         retained -= animationPickHistory_.front().ownedBytes; animationPickHistory_.pop_front();
     }
-    animationPickHistory_.push_back({std::move(frame), *editorPresentationTarget_, editorPresentationRevision_,
-        measurementRendererEpoch_, pickPolicyRevision_, static_cast<std::uint32_t>(source.particleVertices.size()),
-        static_cast<std::uint32_t>(source.particleDraws.size()), *bytes});
+    const AnimationCompletionIdentity identity{*editorPresentationTarget_, editorPresentationRevision_, measurementRendererEpoch_,
+        pickPolicyRevision_, source.sceneVersion, source.contentVersion, source.documentRevision, source.instances.size(),
+        static_cast<std::uint32_t>(source.particleVertices.size()), static_cast<std::uint32_t>(source.particleDraws.size())};
+    animationPickHistory_.push_back({identity, std::move(frame), *bytes});
 } catch (...) {
     // 点选历史是有界旁路；分配失败时拒绝点选，不能中止仍有效的播放/绘制。
     animationPickHistory_.clear();
@@ -581,6 +620,7 @@ bool WorldViewport::SetModelScene(std::shared_ptr<const Render::WorldModelScene>
 bool WorldViewport::SetMesh(std::vector<War3RenderVertexV2> vertices, std::vector<std::uint32_t> indices,
     std::uint64_t documentRevision) {
     CancelTerrainStroke();
+    groundFailure_ = {};
     ground_.reset();
     animationRenderer_.reset(); animationScene_.reset(); animationFrame_.reset();
     if (models_) { models_.reset(); (void)SubmitModels(); } // 地形换代时旧模型一并清除
@@ -693,29 +733,39 @@ void WorldViewport::CancelTerrainStroke() {
 }
 
 bool WorldViewport::SetGroundMesh(std::shared_ptr<const Render::TerrainGroundMesh> ground) {
-    if (!ground || !terrain_ || terrainStride_ != 1 || !api_ ||
-        api_->structSize < offsetof(War3RenderPluginApiV2, submitTerrainScene) + sizeof(api_->submitTerrainScene) || !api_->submitTerrainScene)
+    const auto reject = [this](const char* code, const char* message) {
+        groundFailure_ = Status::Failure("World", code, message);
         return false;
+    };
+    if (!ground || !terrain_ || terrainStride_ != 1)
+        return reject("WORLD_GROUND_SOURCE", "地表贴图网格未绑定完整分辨率的地形来源。");
+    if (!HasGroundSupport())
+        return reject("WORLD_GROUND_UNSUPPORTED", "当前渲染插件未提供地表贴图接口。");
     const auto tiles = terrain_->tiles.size();
     const auto layered = tiles + ground->overlayTiles.size();
     const auto quads = layered + ground->waterTiles.size();
     // 悬崖覆盖的基础 quad 保留顶点但不写索引；标记必须与 tile 同序且计数一致。
-    if (!ground->hiddenTiles.empty() && ground->hiddenTiles.size() != tiles) return false;
+    if (!ground->hiddenTiles.empty() && ground->hiddenTiles.size() != tiles)
+        return reject("WORLD_GROUND_HIDDEN_LAYOUT", "悬崖覆盖表与地形格数不一致。");
     if (static_cast<std::size_t>(std::count_if(ground->hiddenTiles.begin(), ground->hiddenTiles.end(),
-        [](std::uint8_t hidden) { return hidden != 0; })) != ground->hiddenTileCount) return false;
+        [](std::uint8_t hidden) { return hidden != 0; })) != ground->hiddenTileCount)
+        return reject("WORLD_GROUND_HIDDEN_COUNT", "悬崖覆盖计数与覆盖表不一致。");
     if (ground->vertices.size() != quads * 4 || ground->indices.size() != (quads - ground->hiddenTileCount) * 6 ||
         ground->vertices.size() > Render::TerrainGroundMeshLimits{}.maxVertices || ground->sourceWidth != terrain_->header.width ||
-        ground->sourceHeight != terrain_->header.height) return false;
+        ground->sourceHeight != terrain_->header.height)
+        return reject("WORLD_GROUND_LAYOUT", "地表网格尺寸、顶点数或索引数与当前地形不一致，或已超出预算。");
     // 基础层 quad 对应原 tile，过渡层对应 overlayTiles，坐标必须与原始高度网格一致；
     // 水面对应 waterTiles，XY 一致、Z 为水面高度。
     for (std::size_t quad = 0; quad < quads; ++quad) {
         const auto tile = quad < tiles ? quad : quad < layered ? ground->overlayTiles[quad - tiles]
             : ground->waterTiles[quad - layered];
-        if (tile >= tiles) return false;
+        if (tile >= tiles)
+            return reject("WORLD_GROUND_TILE_RANGE", "地表过渡层或水面引用的地形格越界。");
         for (std::size_t corner = 0; corner < 4; ++corner) {
             const auto& p = terrain_->vertices[terrain_->tiles[tile].vertices[corner]].position;
             const auto& v = ground->vertices[quad * 4 + corner];
-            if (v.x != p[0] || v.y != p[1] || (quad < layered ? v.z != p[2] : !std::isfinite(v.z))) return false;
+            if (v.x != p[0] || v.y != p[1] || (quad < layered ? v.z != p[2] : !std::isfinite(v.z)))
+                return reject("WORLD_GROUND_POSITION", "地表顶点坐标与当前地形不一致，或水面高度无效。");
         }
     }
     // 分组只能重排整 quad，不能换对角线、遗漏或重复显示面；拾取仍共用原始高度网格。
@@ -724,17 +774,23 @@ bool WorldViewport::SetGroundMesh(std::shared_ptr<const Render::TerrainGroundMes
         const auto first = ground->indices[i];
         const auto quad = first / 4;
         if (first % 4 != 0 || quad >= quads || seen[quad]
-            || (quad < tiles && !ground->hiddenTiles.empty() && ground->hiddenTiles[quad])) return false;
+            || (quad < tiles && !ground->hiddenTiles.empty() && ground->hiddenTiles[quad]))
+            return reject("WORLD_GROUND_FACE_LAYOUT", "地表索引重复、越界或包含应由悬崖遮住的面。");
         const std::array<std::uint32_t, 6> expected{first, first + 1, first + 2, first + 1, first + 3, first + 2};
-        if (!std::equal(expected.begin(), expected.end(), ground->indices.begin() + static_cast<std::ptrdiff_t>(i))) return false;
+        if (!std::equal(expected.begin(), expected.end(), ground->indices.begin() + static_cast<std::ptrdiff_t>(i)))
+            return reject("WORLD_GROUND_FACE_ORDER", "地表三角形与拾取网格的对角线不一致。");
         seen[quad] = true;
     }
     if (std::any_of(ground->textures.begin(), ground->textures.end(), [](const auto& p) {
         return !p || (p->columns != 4 && p->columns != 8) || !p->image.Valid() || p->additionalMips.size() > 11;
-    })) return false;
+    })) return reject("WORLD_GROUND_TEXTURE", "地表图集尺寸、像素或 mip 层数不符合提交要求。");
     const auto previous = ground_;
     ground_ = std::move(ground);
-    if (!SubmitMesh()) { ground_ = previous; return false; }
+    if (!SubmitMesh()) {
+        ground_ = previous;
+        return reject("WORLD_GROUND_PLUGIN_REJECTED", "渲染插件拒绝了地表贴图提交；保留此前地形，插件返回值见同次诊断。");
+    }
+    groundFailure_ = {};
     pressView_.reset(); ClearCoordinates(tr("地表视图更新中…"), true);
     return true;
 }

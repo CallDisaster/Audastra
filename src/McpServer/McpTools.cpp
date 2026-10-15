@@ -5,6 +5,7 @@
 #include "McpVariableTools.h"
 #include "McpMapDataTools.h"
 #include "McpPlacementTools.h"
+#include "McpAuxiliaryTools.h"
 #include "McpProductTools.h"
 #include "McpCodeCheckTools.h"
 #include "McpTerrainEditTools.h"
@@ -41,6 +42,7 @@ void RegisterAllTools(McpServer& server) {
     RegisterVariableTools(server);
     RegisterMapDataTools(server);
     RegisterPlacementTools(server);
+    RegisterAuxiliaryTools(server);
 }
 
 } // namespace War3Map::Mcp

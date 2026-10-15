@@ -25,6 +25,11 @@ public:
     [[nodiscard]] const Status& LastStatus() const noexcept { return status_; }
     [[nodiscard]] QString Summary() const;
     [[nodiscard]] Result<QJsonObject> CaptureSnapshot(const Render::CapturedFrameRgba& capture) const;
+    // 调用方先核对当前宿主来源。这里只证明该权威父计划在同次GPU回执中没有子槽/残层，
+    // 不要求可编辑摆放谱系，不授予有子槽的PREM绘制资格。缺失CPU计划不是空计划。
+    [[nodiscard]] static Result<QJsonObject> CaptureEmptySnapshot(const Render::CapturedFrameRgba& capture,
+        const std::shared_ptr<const Render::AnimatedModelScene>& currentScene,
+        const std::shared_ptr<const Render::AnimationFrame>& currentFrame, std::uint64_t viewportRevision);
 private:
     void Accept(std::shared_ptr<const Render::AnimatedModelScene> scene,
         std::shared_ptr<const Render::AnimationFrame> frame);

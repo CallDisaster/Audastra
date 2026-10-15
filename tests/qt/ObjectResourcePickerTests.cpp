@@ -37,6 +37,7 @@
 #include <QtTest>
 #include <Windows.h>
 #include "../AnimationTestModel.h"
+#include "SyntheticObjectCatalogFixture.h"
 #include <cmath>
 #include <map>
 
@@ -244,8 +245,19 @@ void ObjectResourcePickerTests::StandardFieldUsesSameCommand() {
     auto empty = LniObjectCodec(ObjectType::Unit).Parse({}); QVERIFY(empty.Succeeded());
     project.objectDocuments_[0].reset(dynamic_cast<LniObjectDocument*>(empty.document.release()));
     auto native = NativeObjectDocument::CreateEmpty(ObjectType::Unit, 2); QVERIFY(native.Succeeded());
+    const auto encoded = NativeObjectCodec(ObjectType::Unit).Serialize(*native.value); QVERIFY(encoded.Succeeded());
+    QVERIFY(WriteVerifiedArchive(project.sourceArchivePath_,
+        std::vector<MapArchiveMember>{{"war3map.w3u", *encoded.value}}).Succeeded());
+    auto archive = MapArchiveSession::Open(project.sourceArchivePath_); QVERIFY(archive.Succeeded());
+    project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*archive.value));
     project.nativeObjectDocuments_[0] = std::make_unique<NativeObjectDocument>(std::move(*native.value));
+    const auto originalCatalog = project.standardCatalog_;
+    QVERIFY(originalCatalog && Tests::InstallSyntheticGameCatalog(project, *originalCatalog));
+    project.LoadMapDocument();
     for (auto& stack : project.objectUndoStacks_) stack = new QUndoStack(&project);
+    project.ResetEditTracking();
+    QVERIFY(project.ObserveEditState("owned resource-picker command baseline"));
+    QVERIFY(QtProject::VerifyProjectObjectCatalog(project).Succeeded());
     bool current = true; ObjectModule module(project);
     module.SetResourcePickerFactory([&] { return ServicesFor(&current); });
     auto* page = module.Widget(); page->resize(1200, 780); page->show(); module.UpdateObjectReferenceEntries();

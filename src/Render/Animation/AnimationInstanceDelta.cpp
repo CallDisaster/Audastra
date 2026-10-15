@@ -190,8 +190,16 @@ Result<std::shared_ptr<const AnimationInstanceDeltaPlan>> ModelAnimationService:
     const auto& old=*state_->scene;
     if (!read || delta.session.generation!=old.generation || delta.session.sourceIdentity!=old.sourceIdentity)
         return fail("ANIMATION_DELTA_SOURCE_STALE","实例增量的来源身份或代次与驻留场景不同。");
-    const auto bytes=std::uint64_t(old.specs.size()+delta.additions.size())*sizeof(AnimationInstanceSpec);
-    if (bytes>state_->limits.maxFrameBytes || delta.additions.size()>=UINT32_MAX-old.specs.size())
+    if (old.requestGeometryRequired.size()!=old.specs.size())
+        return fail("ANIMATION_GEOMETRY_COVERAGE","驻留场景缺少完整的资产几何需求，不能猜测旧请求是否为纯粒子。");
+    if (delta.additions.size()>=UINT32_MAX-old.specs.size())
+        return fail("ANIMATION_DELTA_BUDGET","实例增量超过索引范围，未截断地图实例。");
+    const auto requestCount=old.specs.size()+delta.additions.size();
+    // clear会放弃共享表，候选按最终请求数重建；只在此准备阶段核旧表与新容量共存。
+    // 旧表不再作为候选每帧永久费用，InitializeStorage只计候选自身实际容量。
+    const auto bytes=std::uint64_t(requestCount)*sizeof(AnimationInstanceSpec)+
+        AnimationRequestGeometryBytes(old)+AnimationRequestGeometryBytes(requestCount);
+    if (bytes>state_->limits.maxFrameBytes)
         return fail("ANIMATION_DELTA_BUDGET","实例增量的实际请求表超过内存/索引范围，未截断地图实例。");
     auto indexed=EnsureAnimationCatalogIdentityIndex(old,state_->catalogIdentity,state_->limits.maxFrameBytes);
     if (!indexed.Succeeded()) return {std::nullopt,std::move(indexed.diagnostics)};
@@ -445,11 +453,17 @@ Result<std::shared_ptr<const AnimationInstanceDeltaPlan>> ModelAnimationService:
     }
     const auto retainedRendered=instances.size();
     scene.geometry.skippedInstances=0; scene.particleInstanceCount=0;
+    scene.requestGeometryRequired.clear(); scene.requestGeometryRequired.reserve(scene.specs.size());
+    const auto geometryBytes=AnimationRequestGeometryBytes(old)+AnimationRequestGeometryBytes(std::as_const(scene));
+    if (geometryBytes>state_->limits.maxFrameBytes ||
+        std::uint64_t(requestCount)*sizeof(AnimationInstanceSpec)>state_->limits.maxFrameBytes-geometryBytes)
+        return fail("ANIMATION_DELTA_BUDGET","旧新几何需求表的实际共存容量超过准备预算，未发布部分目录。");
     for (std::uint32_t r=0;r<scene.specs.size();++r) {
         const auto& spec=std::as_const(scene).specs[r];
         const bool survivor=r<survivorCount;
         const auto a=survivor ? candidate->requestAssets[r] : paths.at(ModelAssetKey(spec.model));
         const auto& asset=candidate->assets[a];
+        scene.requestGeometryRequired.push_back(asset.drawable ? 1 : 0);
         if (asset.particleCapability.available) ++scene.particleInstanceCount;
         if (!asset.unavailableCode.empty()) scene.unavailableInstances.push_back({spec.identity,{std::uint64_t(a)+1,scene.generation},r,asset.unavailableCode});
         if (survivor) continue;

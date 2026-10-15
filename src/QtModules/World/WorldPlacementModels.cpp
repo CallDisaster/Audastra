@@ -1,6 +1,7 @@
 #include "WorldPlacementModels.h"
 
 #include "EditorProject.h"
+#include "ProjectObjectCatalog.h"
 #include "ObjectNames.h"
 #include "War3MapCore/Services/PlacementCreation.h"
 #include "War3MapCore/MapDocument.h"
@@ -97,11 +98,9 @@ public:
         if (chain_.standardBase) for (const auto alias : aliases) {
             const auto found = chain_.standardBase->fields.find(std::string(alias));
             if (found == chain_.standardBase->fields.end()) continue;
-            if (chain_.standardBase->sourceFiles.empty()) { fact.reason = "原版有效字段缺少实际来源集合。"; return fact; }
-            std::string paths;
-            for (const auto& source : chain_.standardBase->sourceFiles) paths += std::to_string(source.size()) + ":" + source;
-            origins.push_back({std::string(canonical), chain_.standardBase->key.rawcode,
-                "standard-effective-source-set", std::move(paths), {}});
+            const auto origin = BaseOrigin<Services::PlacementFieldOrigin>(canonical, {alias});
+            if (!origin) { fact.reason = "基础有效字段缺少实际来源身份。"; return fact; }
+            origins.push_back(*origin);
             fact.state = Services::PlacementFieldState::Known; fact.value = found->second; return fact;
         }
         fact.state = Services::PlacementFieldState::Absent; fact.reason = "完整物编父链没有此字段。"; return fact;
@@ -151,11 +150,9 @@ public:
             if (chain_.standardBase) for (const auto alias : aliases) {
                 const auto found = chain_.standardBase->fields.find(std::string(alias));
                 if (found == chain_.standardBase->fields.end()) continue;
-                if (chain_.standardBase->sourceFiles.empty()) { fact.reason = "原版有效字段缺少来源集合。"; return fact; }
-                std::string paths;
-                for (const auto& source : chain_.standardBase->sourceFiles) paths += std::to_string(source.size()) + ":" + source;
-                result->origins.push_back({std::string(canonical), chain_.standardBase->key.rawcode,
-                    "standard-effective-source-set", std::move(paths), {}});
+                const auto origin = BaseOrigin<Services::PlacementFieldOrigin>(canonical, {alias});
+                if (!origin) { fact.reason = "基础有效字段缺少实际来源身份。"; return fact; }
+                result->origins.push_back(*origin);
                 fact.state = Services::PlacementFieldState::Known; fact.value = found->second; return fact;
             }
             fact.state = Services::PlacementFieldState::Absent; return fact;
@@ -223,15 +220,9 @@ public:
                 result.origins.push_back(std::move(origin));
                 return modification.valueWasOpaque ? std::optional<std::string>{} : value;
             }
-            if (chain_.standardBase && !chain_.standardBase->sourceFiles.empty()) {
-                // StandardObjectCatalog目前只有整行来源集合；保留集合，不猜哪个文件最后覆盖此字段。
-                std::string paths;
-                for (const auto& source : chain_.standardBase->sourceFiles) {
-                    paths += std::to_string(source.size()) + ":" + source;
-                }
-                result.origins.push_back({std::string(canonical), chain_.standardBase->key.rawcode,
-                    "standard-effective-source-set", std::move(paths), std::nullopt});
-            }
+            const auto origin = BaseOrigin<Services::BuildingSplatFieldOrigin>(canonical, aliases);
+            if (origin) result.origins.push_back(*origin);
+            else return std::optional<std::string>{};
             return value;
         };
         const auto uubs = read("uubs", {"uubs", "ubersplat"});
@@ -308,6 +299,29 @@ public:
     }
 
 private:
+    template <typename Origin>
+    std::optional<Origin> BaseOrigin(std::string_view canonical, std::initializer_list<std::string_view> aliases) const {
+        const auto* base = chain_.standardBase;
+        if (!base) return {};
+        const auto effective = QtProject::ProjectEffectiveObjectCatalog(project_);
+        if (effective) {
+            for (const auto alias : aliases) {
+                if (!base->fields.contains(std::string(alias))) continue;
+                const auto source = base->fieldSourceFiles.find(std::string(alias));
+                const auto* input = source == base->fieldSourceFiles.end() ? nullptr : effective->Input(source->second);
+                if (!input || !input->present) return {};
+                return Origin{std::string(canonical), base->key.rawcode,
+                    input->location.sourceId + '|' + input->containerIdentity + '|' + input->sha256,
+                    input->location.sourcePath, {}};
+            }
+            return {};
+        }
+        // 离线字段服务仍可接收外部构造目录，但不把逻辑文件集合伪装成实际容器。
+        if (base->sourceFiles.empty()) return {};
+        std::string paths;
+        for (const auto& source : base->sourceFiles) paths += std::to_string(source.size()) + ':' + source;
+        return Origin{std::string(canonical), base->key.rawcode, "standard-effective-source-set", std::move(paths), {}};
+    }
     const QtProject::EditorProject& project_;
     ObjectInheritanceChain chain_;
     ObjectType type_ = ObjectType::Unit;

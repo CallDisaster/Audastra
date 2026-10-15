@@ -2,6 +2,7 @@
 #include "ObjectModule.h"
 #include "ObjectModels.h"
 #include "ObjectNames.h"
+#include "SyntheticObjectCatalogFixture.h"
 #include "Fonts/FontLoader.h"
 #include "Theme/ThemeManager.h"
 #include "Widgets/ObjectTreeBrowser.h"
@@ -75,7 +76,7 @@ bool InstallSyntheticDefinitions(War3Map::QtProject::EditorProject& project) {
     schemaOptions.unitEditorDataFile.clear();
     auto schema = ObjectFieldSchema::Load(reader, schemaOptions);
     if (!catalog.Succeeded() || !schema.Succeeded()) return false;
-    project.standardCatalog_ = std::make_unique<StandardObjectCatalog>(std::move(*catalog.value));
+    if (!War3Map::Tests::InstallSyntheticGameCatalog(project, *catalog.value)) return false;
     project.objectFieldSchema_ = std::make_unique<ObjectFieldSchema>(std::move(*schema.value));
     return true;
 }

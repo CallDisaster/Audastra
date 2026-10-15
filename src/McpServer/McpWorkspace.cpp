@@ -400,7 +400,7 @@ Status McpWorkspace::CheckEnvironmentUnchanged() const {
         return source;
     }
     if (mapObjectReferences_) {
-        const auto objects = Services::VerifyMapObjectReferenceStandardSources(*mapObjectReferences_, gameRoot_);
+        const auto objects = Services::VerifyDirectoryMapObjectReferenceClassificationSources(*mapObjectReferences_, projectRoot_, gameRoot_);
         if (!objects.Succeeded()) return objects;
     }
     const auto objectSources = CheckObjectSourcesUnchanged();
@@ -993,6 +993,10 @@ Status McpWorkspace::ExportCandidate(
     if (!codecStatus.Succeeded()) {
         return codecStatus;
     }
+    if (activeEdit_->auxiliary) {
+        const auto auxiliary = ValidateAuxiliaryOverlay();
+        if (!auxiliary.Succeeded()) return auxiliary;
+    }
     const auto terrain = ValidateTerrainOverlay();
     if (!terrain.Succeeded()) return terrain;
     const ValidationReport validation = session_.Validate(
@@ -1012,10 +1016,11 @@ Status McpWorkspace::ExportCandidate(
         transactionId,
         expectedRevision,
         outputPath,
-        [this]() {
+        [this, expectedSourceSha256 = expectedRevision.sourceSha256]() {
             const auto catalog = CheckCatalogUnchanged();
             if (!catalog.Succeeded()) return catalog;
-            return CheckObjectSourcesUnchanged();
+            // CommitCandidate 已持锁核对修订；回调使用该冻结身份，避免重入会话锁。
+            return CheckObjectSourcesUnchanged(expectedSourceSha256);
         });
     if (!status.Succeeded()) {
         return status;
@@ -1025,6 +1030,7 @@ Status McpWorkspace::ExportCandidate(
     if (activeEdit_->mapData) {
         committedMapData_ = activeEdit_->mapData;
         committedPlacementIntent_ = activeEdit_->placementIntent;
+        committedAuxiliary_ = activeEdit_->auxiliary;
     }
     if (objectState_) for (std::size_t i = 0; i < activeEdit_->objects.size(); ++i)
         if (activeEdit_->objects[i]) objectState_->mapInputs[i].committed = activeEdit_->objects[i];
@@ -1098,7 +1104,7 @@ Result<Services::MapEditSaveReceipt> McpWorkspace::ExportArchiveCandidate(
     }
     if (!request.terrainStrokes.empty() || !request.fieldEdits.empty() ||
         !std::holds_alternative<std::monostate>(request.placementEdit) || request.triggerEdits ||
-        request.triggerTransaction || !request.objectTransactions.empty() || !request.expectedTerrainSha256.empty() || request.beforePublish) {
+        request.triggerTransaction || request.auxiliaryTransaction || !request.objectTransactions.empty() || !request.expectedTerrainSha256.empty() || request.beforePublish) {
         return Result<Services::MapEditSaveReceipt>::Failure("MCP", "MCP_ARCHIVE_REQUEST_SCOPE_INVALID",
             "完整 GUI 事务出口不接受额外领域操作、调用者快照或发布回调。");
     }
@@ -1140,6 +1146,8 @@ Result<Services::MapEditSaveReceipt> McpWorkspace::ExportArchiveCandidate(
         if (HasTerrainOverlay())
             return ExportTerrainArchiveCandidate(transactionId, expectedRevision, std::move(request));
         if (activeEdit_->mapData) {
+            if (activeEdit_->auxiliary)
+                return ExportAuxiliaryArchiveCandidate(transactionId, expectedRevision, std::move(request));
             if (activeEdit_->placementIntent)
                 return ExportPlacementArchiveCandidate(transactionId, expectedRevision, std::move(request));
             const auto fields = MapData::FreezeOriginalMapDataFields(*initialMapData_, *activeEdit_->mapData);

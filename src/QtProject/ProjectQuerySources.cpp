@@ -69,6 +69,7 @@ Result<Services::MapDataQuerySnapshot> CaptureProjectMapDataQuery(const EditorPr
         project.mapEdits_ ? project.mapEdits_->Snapshot() : *project.mapDocument_);
     std::string sourceSha;
     if (project.archiveSession_) sourceSha = project.archiveSession_->SourceSha256();
+    else if (project.readOnlyArchive_) sourceSha = project.readOnlyArchive_->SourceSha256();
     else {
         std::string digest;
         for (const auto& member : project.mapDocument_->Members()) {

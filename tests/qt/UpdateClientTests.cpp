@@ -10,6 +10,7 @@
 #include <QSettings>
 #include <QSignalSpy>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QtTest>
 
 using namespace War3Map::QtUpdate;
@@ -35,12 +36,20 @@ private slots:
     void ReadyFilesAreRemovedUnlessTheInstallerRetainsTheExactReceipt();
     void InvalidReleaseAssetsNeverDownload_data();
     void InvalidReleaseAssetsNeverDownload();
+    void InstalledBaselineFailuresKeepTheReleaseVisibleAndBlockDownload_data();
+    void InstalledBaselineFailuresKeepTheReleaseVisibleAndBlockDownload();
+    void RecheckingDoesNotReuseAnEarlierTrustedInstallation();
+    void CancellingInstalledBaselineCheckRejectsReentryAndDiscardsItsResult();
+    void SwitchingChannelsDuringInstalledBaselineCheckDiscardsTheOldRelease();
+    void DestroyingClientFromInstalledBaselineStatusDoesNotStartAnOrphanWorker();
+    void DestroyingClientFromChannelCancellationStopsApplyingPreferences();
+    void DestroyingClientFromCommittedChannelIdleStopsPreferencesNotification();
 };
 
 void UpdateClientTests::SignedLoopbackDownloadKeepsExactInputsAndOnlyPreparesInstallation() {
     QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start()); server.Publish(bundle);
     QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat);
-    UpdateClient client(server.Source(bundle, directory.filePath("downloads")), settings);
+    UpdateClient client(server.Source(bundle, directory.filePath("downloads"), CreateSignedInstallation(directory.filePath("install"))), settings);
     QSignalSpy ready(&client, &UpdateClient::PackagePrepared); QSignalSpy progress(&client, &UpdateClient::DownloadProgress);
     QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
     QVERIFY(client.Status().canDownload); QCOMPARE(server.requests.size(), 1);
@@ -66,7 +75,7 @@ void UpdateClientTests::CommittedPreferencesNeverWriteAndStagedChecksKeepTheSave
         QJsonDocument::fromJson(server.Release(bundle)).object()}).toJson();
     QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat);
     settings.setValue("unrelated/value", QStringLiteral("保留")); settings.sync(); const auto before = Read(settings.fileName());
-    UpdateClient client(server.Source(bundle, directory.path()), settings);
+    UpdateClient client(server.Source(bundle, directory.path(), CreateSignedInstallation(directory.filePath("install"))), settings);
     UpdatePreferences draft{false, War3Map::Update::UpdateChannel::Beta, QStringLiteral("0.2.0")};
     QVERIFY(client.CheckWithPreferences(draft)); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
     QCOMPARE(client.Status().channel, War3Map::Update::UpdateChannel::Beta); QCOMPARE(client.Channel(), War3Map::Update::UpdateChannel::Stable);
@@ -90,7 +99,7 @@ void UpdateClientTests::ReadyFilesAreRemovedUnlessTheInstallerRetainsTheExactRec
         QSettings settings(directory.filePath(retain ? "retained.ini" : "unretained.ini"), QSettings::IniFormat);
         PreparedUpdate receipt;
         {
-            UpdateClient client(server.Source(bundle, directory.filePath(retain ? "retained" : "unretained")), settings);
+            UpdateClient client(server.Source(bundle, directory.filePath(retain ? "retained" : "unretained"), CreateSignedInstallation(directory.filePath("install"))), settings);
             QString error; QVERIFY(!client.RetainPreparedForInstaller(receipt, &error)); QVERIFY(!error.isEmpty());
             QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
             QVERIFY(client.Download()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Ready, 5000);
@@ -126,7 +135,7 @@ void UpdateClientTests::InvalidReleaseAssetsNeverDownload() {
         assets[0] = asset;
     }
     release["assets"] = assets; server.routes["/repos/fixture/editor/releases/latest"] = QJsonDocument(release).toJson();
-    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.path()), settings);
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.path(), CreateSignedInstallation(directory.filePath("install"))), settings);
     QSignalSpy prepared(&client, &UpdateClient::PackagePrepared); QVERIFY(client.Check());
     QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Failed, 3000);
     QCOMPARE(client.Status().errorCode, QStringLiteral("UPDATE_RELEASE_ASSET")); QVERIFY(!client.Download());
@@ -147,7 +156,7 @@ void UpdateClientTests::HttpAndParseFailuresNeverReportLatest() {
     QFETCH(int, http); QFETCH(QByteArray, body); QFETCH(QString, code);
     QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start());
     server.responder = [http, body](QTcpSocket* socket, const QByteArray&) { socket->write(Http(body, http)); socket->disconnectFromHost(); };
-    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.path()), settings);
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.path(), CreateSignedInstallation(directory.filePath("install"))), settings);
     QSignalSpy ready(&client, &UpdateClient::PackagePrepared);
     QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Failed, 3000);
     QCOMPARE(client.Status().errorCode, code); QVERIFY(!client.Status().message.isEmpty()); QVERIFY(!client.Status().message.contains(QStringLiteral("已是")));
@@ -156,7 +165,7 @@ void UpdateClientTests::HttpAndParseFailuresNeverReportLatest() {
 
 void UpdateClientTests::StartupCheckIsDelayedDailyAndSkippedVersionOnlySuppressesAutomaticPrompt() {
     QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start()); server.Publish(bundle);
-    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.path()), settings);
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.path(), CreateSignedInstallation(directory.filePath("install"))), settings);
     QVERIFY(client.AutomaticCheckEnabled()); QCOMPARE(client.Channel(), War3Map::Update::UpdateChannel::Stable);
     client.ScheduleAutomaticCheck(40); QCOMPARE(server.requests.size(), 0);
     QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000); QVERIFY(!client.Status().manual);
@@ -168,14 +177,15 @@ void UpdateClientTests::StartupCheckIsDelayedDailyAndSkippedVersionOnlySuppresse
     QVERIFY(client.Check(false)); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Skipped, 3000); QCOMPARE(server.requests.size(), 2);
     QVERIFY(client.Check(true)); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000); QCOMPARE(server.requests.size(), 3);
     QVERIFY(client.SetAutomaticCheckEnabled(false)); client.ScheduleAutomaticCheck(0); QVERIFY(!client.Check(false)); QCOMPARE(server.requests.size(), 3);
-    server.Publish(bundle, QStringLiteral("0.3.0")); QVERIFY(client.Check()); QTRY_COMPARE_WITH_TIMEOUT(client.Status().availableVersion, QStringLiteral("0.3.0"), 3000);
-    QCOMPARE(client.Status().state, UpdateState::Available);
+    server.Publish(bundle, QStringLiteral("0.3.0")); QVERIFY(client.Check());
+    QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
+    QCOMPARE(client.Status().availableVersion, QStringLiteral("0.3.0")); QVERIFY(client.Status().canDownload);
 }
 
 void UpdateClientTests::StableAndBetaUseDifferentEndpointsAndSemver() {
     QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle stable; Bundle beta(QStringLiteral("0.3.0-beta.2")); Server server; QVERIFY(server.Start()); server.Publish(stable);
     QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat);
-    UpdateClient client(server.Source(stable, directory.path(), QStringLiteral("0.2.0")), settings);
+    UpdateClient client(server.Source(stable, directory.path(), CreateSignedInstallation(directory.filePath("install"), QStringLiteral("0.2.0")), QStringLiteral("0.2.0")), settings);
     QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::UpToDate, 3000);
     QVERIFY(server.requests.back().startsWith("GET /repos/fixture/editor/releases/latest "));
     QJsonArray releases{QJsonDocument::fromJson(server.Release(beta, QStringLiteral("0.3.0-beta.2"), true)).object(),
@@ -220,7 +230,7 @@ void UpdateClientTests::SignatureAndPackageFailuresNeverPrepareInstallation() {
     if (mutation == "sha") { auto bad = bundle.package; bad[0] = char(bad.at(0) ^ 1); server.routes["/assets/fixture.zip"] = bad; }
     if (mutation == "short") server.routes["/assets/fixture.zip"].chop(1);
     if (mutation == "long") server.routes["/assets/fixture.zip"] += "x";
-    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.filePath("downloads")), settings);
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.filePath("downloads"), CreateSignedInstallation(directory.filePath("install"))), settings);
     QSignalSpy ready(&client, &UpdateClient::PackagePrepared); QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
     QVERIFY(client.Download()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Failed, 5000);
     QCOMPARE(client.Status().errorCode, code); QCOMPARE(ready.count(), 0); QVERIFY(!client.Prepared());
@@ -236,7 +246,7 @@ void UpdateClientTests::CancellingARealPartialDownloadRemovesItsOwnedTemporaryFi
         }
         socket->write(Http(server.routes.value(path))); socket->disconnectFromHost();
     };
-    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.filePath("downloads")), settings);
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.filePath("downloads"), CreateSignedInstallation(directory.filePath("install"))), settings);
     QSignalSpy ready(&client, &UpdateClient::PackagePrepared); QSignalSpy progress(&client, &UpdateClient::DownloadProgress);
     QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000); QVERIFY(client.Download());
     QTRY_VERIFY_WITH_TIMEOUT(!progress.empty() && progress.last()[0].toLongLong() == 32, 3000);
@@ -277,7 +287,7 @@ void UpdateClientTests::InterruptedPackageDownloadResumesFromReceivedBytes() {
         socket->disconnectFromHost();
     };
     QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat);
-    auto source = server.Source(bundle, directory.filePath("downloads")); source.requestTimeoutMs = 300;
+    auto source = server.Source(bundle, directory.filePath("downloads"), CreateSignedInstallation(directory.filePath("install"))); source.requestTimeoutMs = 300;
     UpdateClient client(source, settings); QSignalSpy ready(&client, &UpdateClient::PackagePrepared);
     QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
     QVERIFY(client.Download());
@@ -296,7 +306,7 @@ void UpdateClientTests::InterruptedPackageDownloadResumesFromReceivedBytes() {
 
 void UpdateClientTests::RedirectsStayOnExplicitLoopbackAndNeverCarryCredentials() {
     QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; Server escaped; QVERIFY(server.Start()); QVERIFY(escaped.Start()); server.Publish(bundle);
-    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.path()), settings);
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.path(), CreateSignedInstallation(directory.filePath("install"))), settings);
     server.responder = [&server, &escaped](QTcpSocket* socket, const QByteArray& path) {
         const auto body = path.endsWith("latest") ? Http({}, 302, "Location: " + escaped.Url("/escape").toEncoded() + "\r\n") : Http(server.routes.value(path));
         socket->write(body); socket->disconnectFromHost();
@@ -317,7 +327,7 @@ void UpdateClientTests::RedirectsStayOnExplicitLoopbackAndNeverCarryCredentials(
 
 void UpdateClientTests::ConfigurationWithoutTrustedKeyCanReadVersionButCannotDownload() {
     QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start()); server.Publish(bundle);
-    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); auto source = server.Source(bundle, directory.path()); source.trustedPublicKeyHex.clear();
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); auto source = server.Source(bundle, directory.path(), CreateSignedInstallation(directory.filePath("install"))); source.trustedPublicKeyHex.clear();
     UpdateClient client(source, settings); QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
     QVERIFY(!client.Status().canDownload); QVERIFY(!client.Download()); QCOMPARE(server.requests.size(), 1); QVERIFY(!client.Prepared());
     source.apiRoot = QUrl(QStringLiteral("http://192.0.2.1/repos/fixture/editor"));
@@ -327,7 +337,7 @@ void UpdateClientTests::ConfigurationWithoutTrustedKeyCanReadVersionButCannotDow
 
 void UpdateClientTests::ResponseBudgetTimeoutAndRedirectLoopAreBounded() {
     QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start());
-    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); auto source = server.Source(bundle, directory.path()); source.requestTimeoutMs = 80;
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); auto source = server.Source(bundle, directory.path(), CreateSignedInstallation(directory.filePath("install"))); source.requestTimeoutMs = 80;
     UpdateClient client(source, settings);
     server.responder = [](QTcpSocket*, const QByteArray&) {};
     QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Failed, 3000);
@@ -341,6 +351,182 @@ void UpdateClientTests::ResponseBudgetTimeoutAndRedirectLoopAreBounded() {
     source.requestTimeoutMs = 1000; UpdateClient bounded(source, settings);
     QVERIFY(bounded.Check()); QTRY_VERIFY_WITH_TIMEOUT(bounded.Status().state == UpdateState::Failed, 3000);
     QCOMPARE(bounded.Status().errorCode, QStringLiteral("UPDATE_RESPONSE_LIMIT")); QVERIFY(!bounded.Prepared());
+}
+
+void UpdateClientTests::InstalledBaselineFailuresKeepTheReleaseVisibleAndBlockDownload_data() {
+    QTest::addColumn<QString>("mutation"); QTest::addColumn<QString>("code");
+    QTest::newRow("missing-baseline") << QStringLiteral("missing") << QStringLiteral("UPDATE_BASELINE_NOT_FOUND");
+    QTest::newRow("mixed-version") << QStringLiteral("version") << QStringLiteral("UPDATE_BASELINE_IDENTITY_MISMATCH");
+    QTest::newRow("mixed-program-file") << QStringLiteral("file") << QStringLiteral("UPDATE_STAGE_PROGRAM_MISMATCH");
+    QTest::newRow("untrusted-signature") << QStringLiteral("signature") << QStringLiteral("UPDATE_SIGNATURE_INVALID");
+    QTest::newRow("explicit-empty-test-root") << QStringLiteral("empty") << QStringLiteral("UPDATE_BASELINE_NOT_FOUND");
+}
+
+void UpdateClientTests::InstalledBaselineFailuresKeepTheReleaseVisibleAndBlockDownload() {
+    QFETCH(QString, mutation); QFETCH(QString, code);
+    QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start()); server.Publish(bundle);
+    const auto install = CreateSignedInstallation(directory.filePath("install"), mutation == QStringLiteral("version")
+        ? QStringLiteral("0.0.9") : QStringLiteral("0.1.0"));
+    if (mutation == QStringLiteral("missing")) {
+        QVERIFY(QFile::remove(QDir(install).filePath("update-manifest.json")));
+        QVERIFY(QFile::remove(QDir(install).filePath("update-manifest.json.sig")));
+    } else if (mutation == QStringLiteral("file")) {
+        auto bytes = Read(QDir(install).filePath("plugins/fixture.txt")); QVERIFY(!bytes.isEmpty());
+        bytes[0] = 'X'; QVERIFY(WriteFixtureFile(QDir(install).filePath("plugins/fixture.txt"), bytes));
+    } else if (mutation == QStringLiteral("signature")) {
+        QVERIFY(WriteFixtureFile(QDir(install).filePath("update-manifest.json.sig"), QByteArray(64, 'x')));
+    }
+    const auto manifestBefore = Read(QDir(install).filePath("update-manifest.json"));
+    const auto programBefore = Read(QDir(install).filePath("plugins/fixture.txt"));
+    auto source = server.Source(bundle, directory.filePath("downloads"), mutation == QStringLiteral("empty") ? QString{} : install);
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat);
+    UpdateClient client(source, settings); QSignalSpy ready(&client, &UpdateClient::PackagePrepared);
+    QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
+    QCOMPARE(client.Status().availableVersion, QStringLiteral("0.2.0"));
+    QCOMPARE(client.Status().errorCode, code); QVERIFY(!client.Status().canDownload); QVERIFY(!client.IsBusy());
+    QVERIFY(client.Status().message.contains(QStringLiteral("完整包")));
+    QVERIFY(client.Status().message.contains(QStringLiteral("新的文件夹")));
+    QVERIFY(!client.Download()); QVERIFY(!client.Prepared()); QCOMPARE(ready.count(), 0); QCOMPARE(server.requests.size(), 1);
+    QVERIFY(!QFileInfo::exists(directory.filePath("downloads")));
+    QCOMPARE(Read(QDir(install).filePath("update-manifest.json")), manifestBefore);
+    QCOMPARE(Read(QDir(install).filePath("plugins/fixture.txt")), programBefore);
+}
+
+void UpdateClientTests::RecheckingDoesNotReuseAnEarlierTrustedInstallation() {
+    QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start()); server.Publish(bundle);
+    const auto install = CreateSignedInstallation(directory.filePath("install"));
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat);
+    UpdateClient client(server.Source(bundle, directory.filePath("downloads"), install), settings);
+    QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
+    QVERIFY(client.Status().canDownload);
+    const auto path = QDir(install).filePath("war3-map-editor.exe"); const auto original = Read(path); QVERIFY(!original.isEmpty());
+    auto changed = original; changed[0] = 'X'; QVERIFY(WriteFixtureFile(path, changed));
+    QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
+    QVERIFY(!client.Status().canDownload); QVERIFY(!client.Download());
+    QCOMPARE(client.Status().errorCode, QStringLiteral("UPDATE_STAGE_PROGRAM_MISMATCH"));
+    QVERIFY(WriteFixtureFile(path, original));
+    QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
+    QVERIFY(client.Status().canDownload); QVERIFY(client.Status().errorCode.isEmpty()); QCOMPARE(server.requests.size(), 3);
+}
+
+void UpdateClientTests::CancellingInstalledBaselineCheckRejectsReentryAndDiscardsItsResult() {
+    QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start()); server.Publish(bundle);
+    const auto install = CreateSignedInstallation(directory.filePath("install"));
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat);
+    UpdateClient client(server.Source(bundle, directory.filePath("downloads"), install), settings);
+    bool cancelled = false, eventLoopContinued = false;
+    int available = 0;
+    connect(&client, &UpdateClient::StatusChanged, this, [&](const UpdateStatus& status) {
+        if (status.state == UpdateState::Available) ++available;
+        if (status.state != UpdateState::Checking || status.availableVersion.isEmpty() || cancelled) return;
+        cancelled = true;
+        QVERIFY(client.IsBusy()); QVERIFY(!client.Status().canDownload); QVERIFY(!client.Check()); QVERIFY(!client.Download());
+        client.Cancel();
+        QVERIFY(client.IsBusy()); QVERIFY(!client.Check());
+        QTimer::singleShot(0, &client, [&] { eventLoopContinued = true; });
+    });
+    QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Cancelled && !client.IsBusy(), 3000);
+    QVERIFY(cancelled); QTRY_VERIFY(eventLoopContinued); QCOMPARE(available, 0); QCOMPARE(server.requests.size(), 1);
+    QVERIFY(!client.Prepared()); QVERIFY(!client.Download());
+    QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
+    QVERIFY(client.Status().canDownload); QCOMPARE(available, 1); QCOMPARE(server.requests.size(), 2);
+}
+
+void UpdateClientTests::SwitchingChannelsDuringInstalledBaselineCheckDiscardsTheOldRelease() {
+    QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle stable, beta(QStringLiteral("0.3.0-beta.1"));
+    Server server; QVERIFY(server.Start()); server.Publish(stable);
+    server.routes["/repos/fixture/editor/releases?per_page=100"] = QJsonDocument(QJsonArray{
+        QJsonDocument::fromJson(server.Release(beta, QStringLiteral("0.3.0-beta.1"), true)).object()}).toJson();
+    const auto install = CreateSignedInstallation(directory.filePath("install"));
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat);
+    UpdateClient client(server.Source(stable, directory.filePath("downloads"), install), settings);
+    bool switched = false; int available = 0;
+    connect(&client, &UpdateClient::StatusChanged, this, [&](const UpdateStatus& status) {
+        if (status.state == UpdateState::Available) ++available;
+        if (status.state != UpdateState::Checking || status.availableVersion.isEmpty() || switched) return;
+        switched = true;
+        QVERIFY(!client.SetChannel(War3Map::Update::UpdateChannel::Beta)); // 独立渠道按钮在忙时禁用。
+        // 设置页已提交的事务仍可在检查期间变更渠道，旧结果必须丢弃。
+        auto preferences = client.Preferences(); preferences.channel = War3Map::Update::UpdateChannel::Beta;
+        QVERIFY(UpdateClient::WritePreferences(settings, preferences)); settings.sync();
+        QCOMPARE(settings.status(), QSettings::NoError);
+        QVERIFY(client.ApplyCommittedPreferences(preferences));
+        QVERIFY(!client.Check()); QVERIFY(!client.Download());
+    });
+    QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(switched && !client.IsBusy(), 3000);
+    QCOMPARE(client.Status().state, UpdateState::Idle); QCOMPARE(available, 0);
+    QCOMPARE(client.Status().channel, War3Map::Update::UpdateChannel::Beta); QVERIFY(client.Status().availableVersion.isEmpty());
+    QVERIFY(!client.Status().canDownload); QVERIFY(!client.Prepared());
+    QVERIFY(client.Check()); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
+    QCOMPARE(client.Status().availableVersion, QStringLiteral("0.3.0-beta.1"));
+    QCOMPARE(client.Status().channel, War3Map::Update::UpdateChannel::Beta); QVERIFY(client.Status().canDownload);
+    QCOMPARE(available, 1); QCOMPARE(server.requests.size(), 2);
+}
+
+void UpdateClientTests::DestroyingClientFromInstalledBaselineStatusDoesNotStartAnOrphanWorker() {
+    QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start()); server.Publish(bundle);
+    const auto install = CreateSignedInstallation(directory.filePath("install"));
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat);
+    auto client = std::make_unique<UpdateClient>(server.Source(bundle, directory.filePath("downloads"), install), settings);
+    bool destroyedAtBaseline = false; int available = 0;
+    connect(client.get(), &UpdateClient::StatusChanged, this, [&](const UpdateStatus& status) {
+        if (status.state == UpdateState::Available) ++available;
+        if (status.state != UpdateState::Checking || status.availableVersion.isEmpty()) return;
+        destroyedAtBaseline = true; client.reset();
+    });
+    QVERIFY(client->Check()); QTRY_VERIFY_WITH_TIMEOUT(destroyedAtBaseline, 3000);
+    QVERIFY(!client); QCOMPARE(available, 0); QCOMPARE(server.requests.size(), 1);
+    // 同一安装目录还能重新验证；上一个客户端没有残留的状态回调或安装操作。
+    UpdateClient next(server.Source(bundle, directory.filePath("downloads"), install), settings);
+    QVERIFY(next.Check()); QTRY_VERIFY_WITH_TIMEOUT(next.Status().state == UpdateState::Available, 3000);
+    QVERIFY(next.Status().canDownload); QCOMPARE(server.requests.size(), 2);
+}
+
+void UpdateClientTests::DestroyingClientFromChannelCancellationStopsApplyingPreferences() {
+    QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start()); server.Publish(bundle);
+    const auto install = CreateSignedInstallation(directory.filePath("install"));
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat);
+    auto client = std::make_unique<UpdateClient>(server.Source(bundle, directory.filePath("downloads"), install), settings);
+    bool switching = false, destroyedFromCancel = false, preferenceCallReturned = false;
+    int available = 0;
+    connect(client.get(), &UpdateClient::StatusChanged, this, [&](const UpdateStatus& status) {
+        if (status.state == UpdateState::Available) ++available;
+        if (status.state != UpdateState::Checking || status.availableVersion.isEmpty()) return;
+        if (switching) {
+            // ApplyCommittedPreferences → Cancel → 同步取消提示；外层调用仍在栈上。
+            destroyedFromCancel = true; client.reset();
+            return;
+        }
+        switching = true;
+        auto preferences = client->Preferences(); preferences.channel = War3Map::Update::UpdateChannel::Beta;
+        QVERIFY(UpdateClient::WritePreferences(settings, preferences)); settings.sync();
+        QCOMPARE(settings.status(), QSettings::NoError);
+        QVERIFY(client->ApplyCommittedPreferences(preferences));
+        preferenceCallReturned = true;
+    });
+    QVERIFY(client->Check()); QTRY_VERIFY_WITH_TIMEOUT(destroyedFromCancel && preferenceCallReturned, 3000);
+    QVERIFY(!client); QCOMPARE(available, 0); QCOMPARE(server.requests.size(), 1);
+    // 用独立设置重新核对同一原创安装树，旧客户端不能留下待启动线程或迟到状态结果。
+    QSettings nextSettings(directory.filePath("next-preferences.ini"), QSettings::IniFormat);
+    UpdateClient next(server.Source(bundle, directory.filePath("downloads"), install), nextSettings);
+    QVERIFY(next.Check()); QTRY_VERIFY_WITH_TIMEOUT(next.Status().state == UpdateState::Available, 3000);
+    QVERIFY(next.Status().canDownload); QCOMPARE(server.requests.size(), 2);
+}
+
+void UpdateClientTests::DestroyingClientFromCommittedChannelIdleStopsPreferencesNotification() {
+    QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start());
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat);
+    auto client = std::make_unique<UpdateClient>(server.Source(bundle, directory.filePath("downloads"), CreateSignedInstallation(directory.filePath("install"))), settings);
+    QSignalSpy changes(client.get(), &UpdateClient::PreferencesChanged);
+    bool destroyedAtIdle = false;
+    connect(client.get(), &UpdateClient::StatusChanged, this, [&](const UpdateStatus& status) {
+        if (status.state != UpdateState::Idle || status.channel != War3Map::Update::UpdateChannel::Beta) return;
+        destroyedAtIdle = true; client.reset();
+    });
+    auto preferences = client->Preferences(); preferences.channel = War3Map::Update::UpdateChannel::Beta;
+    QVERIFY(UpdateClient::WritePreferences(settings, preferences)); settings.sync(); QCOMPARE(settings.status(), QSettings::NoError);
+    QVERIFY(client->ApplyCommittedPreferences(preferences));
+    QVERIFY(destroyedAtIdle); QVERIFY(!client); QCOMPARE(changes.count(), 0); QVERIFY(server.requests.empty());
 }
 
 QTEST_GUILESS_MAIN(UpdateClientTests)

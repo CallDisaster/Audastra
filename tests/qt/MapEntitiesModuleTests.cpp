@@ -6,6 +6,7 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
 #include "War3MapCore/ObjectData/StandardObjectCatalog.h"
+#include "War3MapCore/Trigger/TriggerDocument.h"
 #include "../MapDataFixtures.h"
 
 #include <QApplication>
@@ -13,6 +14,7 @@
 #include <QTableWidget>
 #include <QHeaderView>
 #include <QInputDialog>
+#include <QPushButton>
 #include <QJsonArray>
 #include <QScrollBar>
 #include <QTabWidget>
@@ -38,6 +40,8 @@ private slots:
     void IndexedRevealDistinguishesDuplicateRegionNames();
     void NavigationBookmarkPreservesTypedIdentityAndScroll();
     void NavigationBookmarkBlocksModalDraft();
+    void AuxiliaryCrudUsesSharedUndoAndReferences();
+    void AuxiliaryDialogsKeepCapturedProjectBinding();
 };
 
 void MapEntitiesModuleTests::IndexedRevealDistinguishesDuplicateRegionNames() {
@@ -141,6 +145,7 @@ void MapEntitiesModuleTests::DoodadRegionCameraFieldsRoundTripThroughCommands() 
     QVERIFY(!MapDocument::FromMembers(members).Cameras());
     members.push_back({"war3map.w3i", MapDataFixtures::FullMapSettingsV25().bytes});
     QtProject::EditorProject project;
+    project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>();
     project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(members));
     project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
     Modules::MapEntitiesModule module(project);
@@ -167,6 +172,106 @@ void MapEntitiesModuleTests::DoodadRegionCameraFieldsRoundTripThroughCommands() 
     QVERIFY(!project.mapEdits_->IsDirty());
     module.UndoStack()->redo();
     QCOMPARE(project.mapEdits_->Snapshot().Doodads()->doodads[0].lifePercent, std::uint8_t{60});
+}
+
+void MapEntitiesModuleTests::AuxiliaryCrudUsesSharedUndoAndReferences() {
+    QtProject::EditorProject project;
+    const std::vector<MapArchiveMember> members{{"war3map.w3i", MapDataFixtures::FullMapSettingsV25().bytes}};
+    project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(members));
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+    project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>();
+    Modules::MapEntitiesModule module(project);
+    auto* page = module.Widget();
+    auto* tabs = page->findChild<QTabWidget*>();
+    auto* add = page->findChild<QPushButton*>("mapEntitiesAddAuxiliary");
+    auto* remove = page->findChild<QPushButton*>("mapEntitiesDeleteAuxiliary");
+    QVERIFY(tabs && add && remove);
+    tabs->setCurrentIndex(2); QVERIFY(!add->isHidden() && !remove->isHidden());
+    MapData::RegionRecord region{}; region.name = "Area"; region.creationNumber = 1; region.right = region.top = 128;
+    QVERIFY(module.CreateAuxiliary(region).Succeeded());
+    QCOMPARE(module.UndoStack()->count(), 1);
+    QVERIFY(module.EditCell(MapDataKind::Regions, 0, "weather", "Rain").Succeeded());
+    QVERIFY(module.EditCell(MapDataKind::Regions, 0, "color", "112233").Succeeded());
+    QCOMPARE(project.mapEdits_->Snapshot().Regions()->entries[0].colorBgra[3], std::uint8_t{0});
+    QVERIFY(module.DeleteAuxiliary(MapDataKind::Regions, 0).Succeeded());
+    QVERIFY(project.mapEdits_->Snapshot().Regions()->entries.empty());
+    module.UndoStack()->undo(); QCOMPARE(project.mapEdits_->Snapshot().Regions()->entries.size(), std::size_t{1});
+    const auto count = module.UndoStack()->count();
+    Trigger::ArgumentNode arg; arg.type = 1; arg.value.text = "gg_rct_Area";
+    project.triggerDocument_->argumentNodes.push_back(arg);
+    QVERIFY(!module.DeleteAuxiliary(MapDataKind::Regions, 0).Succeeded());
+    QCOMPARE(module.UndoStack()->count(), count);
+    QVERIFY(!module.EditCell(MapDataKind::Regions, 0, "name", "Renamed").Succeeded());
+    QVERIFY(module.EditCell(MapDataKind::Regions, 0, "left", "-64").Succeeded());
+    tabs->setCurrentIndex(0); QVERIFY(add->isHidden() && remove->isHidden());
+}
+
+void MapEntitiesModuleTests::AuxiliaryDialogsKeepCapturedProjectBinding() {
+    // 真正进入 QInputDialog 的嵌套事件循环；两个工程使用相同成员字节，
+    // 新建两例的 W3R/W3C 都缺席，只有公共工程/会话绑定能区分来源。
+    for (const int category : {2, 3}) for (const bool creating : {false, true}) for (const bool switching : {false, true}) {
+        std::vector<MapArchiveMember> members{{"war3map.w3i", MapDataFixtures::FullMapSettingsV25().bytes}};
+        if (!creating) {
+            MapData::RegionRecord region{}; region.name = "SharedRegion"; region.creationNumber = 7;
+            region.right = region.top = 128;
+            MapData::CameraRecord camera{}; camera.name = "SharedCamera"; camera.fieldOfView = 70;
+            camera.targetDistance = 1650; camera.farClippingPlane = 5000; camera.nearClippingPlane = 100;
+            const auto regions = MapData::RegionsDocument{5, {region}, {}}.Serialize();
+            const auto cameras = MapData::CamerasDocument{0, {camera}, {}}.Serialize();
+            QVERIFY(regions.Succeeded() && cameras.Succeeded());
+            members.push_back({"war3map.w3r", *regions.value}); members.push_back({"war3map.w3c", *cameras.value});
+        }
+        QtProject::EditorProject project;
+        project.projectRoot_ = "original-dialog-project";
+        project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(members));
+        project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+        project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>();
+        const auto originalSession = project.mapEdits_->SessionIdentity();
+        Modules::MapEntitiesModule module(project); auto* page = module.Widget();
+        auto* tabs = page->findChild<QTabWidget*>();
+        auto* table = page->findChild<QTableWidget*>(QStringLiteral("mapEntitiesTable%1").arg(category));
+        auto* add = page->findChild<QPushButton*>("mapEntitiesAddAuxiliary");
+        QVERIFY(tabs && table && add); tabs->setCurrentIndex(category);
+        bool visited = false;
+        QTimer::singleShot(0, page, [&] {
+            auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+            visited = dialog != nullptr;
+            if (!dialog) return;
+            if (switching) {
+                // 与真实 LoadMapDocument 相同：清撤销栈并创建新会话，成员字节故意不变。
+                project.mapDataUndoStack_->clear(); project.projectRoot_ = "other-dialog-project";
+                project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(members));
+                project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+                emit project.MapDocumentChanged();
+            }
+            dialog->setTextValue(creating ? QStringLiteral("NewFromDialog") : QStringLiteral("-64"));
+            dialog->accept();
+        });
+        if (creating) add->click();
+        else QVERIFY(QMetaObject::invokeMethod(table, "cellDoubleClicked", Qt::DirectConnection,
+            Q_ARG(int, 0), Q_ARG(int, 1)));
+        QVERIFY(visited);
+        if (switching) {
+            QVERIFY(project.mapEdits_->SessionIdentity() != originalSession);
+            QVERIFY(!project.mapEdits_->IsDirty()); QCOMPARE(project.mapEdits_->Revision(), std::uint64_t{0});
+            QCOMPARE(module.UndoStack()->count(), 0);
+        } else {
+            QCOMPARE(project.mapEdits_->SessionIdentity(), originalSession);
+            QVERIFY(project.mapEdits_->IsDirty()); QCOMPARE(module.UndoStack()->count(), 1);
+            const auto changed = project.mapEdits_->Snapshot();
+            if (category == 2) {
+                QVERIFY(changed.Regions());
+                if (creating) QCOMPARE(changed.Regions()->entries[0].name, std::string("NewFromDialog"));
+                else QCOMPARE(changed.Regions()->entries[0].left, -64.0f);
+            } else {
+                QVERIFY(changed.Cameras());
+                if (creating) QCOMPARE(changed.Cameras()->entries[0].name, std::string("NewFromDialog"));
+                else QCOMPARE(changed.Cameras()->entries[0].targetX, -64.0f);
+            }
+            module.UndoStack()->undo(); QVERIFY(!project.mapEdits_->IsDirty());
+            module.UndoStack()->redo(); QVERIFY(project.mapEdits_->IsDirty());
+        }
+    }
 }
 
 void MapEntitiesModuleTests::TypePresentationDefaultsAndDegreesKeepRawStorage() {

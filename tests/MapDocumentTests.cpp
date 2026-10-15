@@ -1,5 +1,7 @@
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/MapInfo.h"
+#include "War3MapCore/Hash.h"
+#include "../src/Core/Mpq/MpqCrypt.h"
 #include "MapDataFixtures.h"
 #include "LniMapSettingsFixtures.h"
 
@@ -107,6 +109,126 @@ void TestDirectoryAndArchive() {
     Require(fromArchive.Member(MapDataKind::Settings).sources[0].data == members[0].data, "input bytes retained");
     Require(archive.value->VerifySourceUnchanged().Succeeded(), "inspection left archive untouched");
     Require(archive.value->ReadMember("opaque.bin").value == members.back().data, "unknown input not consumed or replaced");
+}
+void TestReadOnlyArchiveBinding() {
+    const auto root = std::filesystem::temp_directory_path() / ("Audastra-readonly-archive-" +
+        std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
+    Require(std::filesystem::create_directories(root), "owned read-only archive directory");
+    struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code e; std::filesystem::remove_all(path, e); } } cleanup{root};
+    const auto path = root / "signed-shape.w3x";
+    auto members = Members();
+    members.push_back({"Imported/marker.bin", Bytes("original imported asset")});
+    Require(WriteVerifiedArchive(path, members).Succeeded(), "write original read-only fixture");
+    // 只合成外部签名的结构形态，不宣称该签名通过密码学验证。
+    std::array<char, 260> trailer{};
+    std::copy_n("NGIS", 4, trailer.begin());
+    {
+        std::ofstream file(path, std::ios::binary | std::ios::app);
+        file.write(trailer.data(), static_cast<std::streamsize>(trailer.size()));
+        Require(bool(file), "append synthetic NGIS and 256 signature bytes");
+    }
+    const auto digest = Sha256File(path); Require(digest.Succeeded(), "capture whole source including trailer");
+    const auto strict = MapArchiveSession::Open(path);
+    Require(!strict.Succeeded() && std::any_of(strict.diagnostics.begin(), strict.diagnostics.end(), [](const auto& note) {
+        return note.code == "ARCHIVE_TRAILING_BYTES_REJECTED";
+    }), "external trailer never grants strict save eligibility");
+
+    auto opened = MpqWorkspace::OpenReadOnly(path); Require(opened.Succeeded(), "read-only binding accepts external trailer");
+    auto& binding = *opened.value;
+    Require(binding.SourceSha256() == *digest.value && std::filesystem::equivalent(binding.SourcePath(), path),
+        "read-only path and whole-file SHA refer to original source");
+    Require(binding.VerifyUnchanged().Succeeded(), "fresh read-only lease verifies");
+    const auto asset = std::find_if(binding.KnownMembers().begin(), binding.KnownMembers().end(), [](const auto& member) {
+        return member.name == "Imported/marker.bin";
+    });
+    Require(asset != binding.KnownMembers().end() && asset->fileSize == members.back().data.size(),
+        "listed imported asset metadata survives read-only fallback");
+    const auto budget = (std::max)(asset->fileSize, asset->compressedSize);
+    const auto imported = binding.ReadMember("Imported/marker.bin", budget);
+    Require(imported.Succeeded() && *imported.value == members.back().data, "exact storage and decoded budget reads complete imported bytes");
+    const auto overBudget = binding.ReadMember("Imported/marker.bin", budget - 1);
+    Require(!overBudget.Succeeded() && std::any_of(overBudget.diagnostics.begin(), overBudget.diagnostics.end(), [](const auto& note) {
+        return note.code == "FILE_READ_BUDGET_EXCEEDED";
+    }), "too-small member budget rejects instead of truncating");
+    const auto missing = binding.ReadMember("absent.bin", budget);
+    Require(!missing.Succeeded() && std::any_of(missing.diagnostics.begin(), missing.diagnostics.end(), [](const auto& note) {
+        return note.code == "FILE_NOT_FOUND";
+    }), "missing member remains distinct from read budget failure");
+    const auto document = MapDocument::FromReadOnlyArchive(binding);
+    Require(document.Succeeded() && document.value->InitializationSourceStatus().Succeeded(), "complete map data readable through bound archive");
+    Require(document.value->SourcePath() == binding.SourcePath()
+        && document.value->Member(MapDataKind::Settings).sources[0].data == members[0].data,
+        "document provenance and original member bytes preserved");
+    Require(MapDocument::OpenReadOnlyArchive(path).Succeeded(), "path convenience reader shares read-only behavior");
+    const auto afterRead = Sha256File(path);
+    Require(afterRead.Succeeded() && *afterRead.value == *digest.value, "read-only inspection preserves full source SHA");
+    Require(!MapArchiveSession::Open(path).Succeeded(), "successful inspection cannot promote source to editable snapshot");
+
+    // 保留旧句柄，再以完全相同的字节替换路径；仅比较SHA会错误放行旧绑定。
+    const auto retired = root / "retired.w3x";
+    std::filesystem::rename(path, retired);
+    Require(std::filesystem::copy_file(retired, path), "replace path with distinct file containing identical bytes");
+    const auto replacementDigest = Sha256File(path);
+    Require(replacementDigest.Succeeded() && *replacementDigest.value == *digest.value, "replacement deliberately has identical SHA");
+    const auto stale = binding.VerifyUnchanged();
+    Require(!stale.Succeeded() && std::any_of(stale.diagnostics.begin(), stale.diagnostics.end(), [](const auto& note) {
+        return note.code == "MPQ_SOURCE_CHANGED";
+    }), "same-byte path replacement invalidates original file identity");
+    Require(!binding.ReadMember("Imported/marker.bin", budget).Succeeded(), "stale binding cannot continue member reads");
+    Require(!MapDocument::FromReadOnlyArchive(binding).Succeeded(), "stale binding cannot produce a new map document");
+    auto fresh = MpqWorkspace::OpenReadOnly(path); Require(fresh.Succeeded(), "explicit reopen binds replacement identity");
+    Require(fresh.value->SourceSha256() == binding.SourceSha256() && fresh.value->VerifyUnchanged().Succeeded(),
+        "new identity can retain equal content hash");
+    Require(MapDocument::FromReadOnlyArchive(*fresh.value).Succeeded(), "explicitly rebound source is readable");
+}
+void TestReadOnlyArchiveWithoutListfile() {
+    const auto root = std::filesystem::temp_directory_path() / ("Audastra-unlisted-document-" +
+        std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
+    Require(std::filesystem::create_directories(root), "owned unlisted archive directory");
+    struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code e; std::filesystem::remove_all(path, e); } } cleanup{root};
+    // 原创单成员v0归档：完整W3I按名字可读，物理上不存在(listfile)，没有匿名填充块。
+    const auto settings = MapDataFixtures::FullMapSettingsV25().bytes;
+    const auto hashOffset = static_cast<std::uint32_t>(32 + settings.size());
+    const auto blockOffset = hashOffset + 64;
+    std::vector<std::byte> image(blockOffset + 16);
+    const auto put = [&](std::size_t at, std::uint32_t value) {
+        for (unsigned shift = 0; shift < 32; shift += 8) image[at + shift / 8] = static_cast<std::byte>((value >> shift) & 0xffu);
+    };
+    put(0, 0x1a51504d); put(4, 32); put(8, static_cast<std::uint32_t>(image.size())); put(12, 0x00030000);
+    put(16, hashOffset); put(20, blockOffset); put(24, 4); put(28, 1);
+    std::copy(settings.begin(), settings.end(), image.begin() + 32);
+    std::fill(image.begin() + hashOffset, image.begin() + blockOffset, std::byte{0xff});
+    const auto& crypt = Mpq::MpqCrypt::Instance();
+    const auto entry = hashOffset + (crypt.HashString("war3map.w3i", Mpq::MpqCrypt::HashType::TableOffset) & 3u) * 16;
+    put(entry, crypt.HashString("war3map.w3i", Mpq::MpqCrypt::HashType::NameA));
+    put(entry + 4, crypt.HashString("war3map.w3i", Mpq::MpqCrypt::HashType::NameB));
+    put(entry + 8, 0); put(entry + 12, 0);
+    crypt.EncryptBlock(image.data() + hashOffset, 64, crypt.HashString("(hash table)", Mpq::MpqCrypt::HashType::FileKey));
+    put(blockOffset, 32); put(blockOffset + 4, static_cast<std::uint32_t>(settings.size()));
+    put(blockOffset + 8, static_cast<std::uint32_t>(settings.size())); put(blockOffset + 12, Mpq::kFileExists | Mpq::kFileSingleUnit);
+    crypt.EncryptBlock(image.data() + blockOffset, 16, crypt.HashString("(block table)", Mpq::MpqCrypt::HashType::FileKey));
+    const auto path = root / "unlisted.w3x";
+    {
+        std::ofstream file(path, std::ios::binary);
+        file.write(reinterpret_cast<const char*>(image.data()), static_cast<std::streamsize>(image.size()));
+        Require(bool(file), "write original no-listfile fixture");
+    }
+    const auto before = Sha256File(path); Require(before.Succeeded(), "capture unlisted fixture identity");
+    auto opened = MpqWorkspace::OpenReadOnly(path); Require(opened.Succeeded(), "read-only unlisted archive opens");
+    Require(!opened.value->Archive().HasFile("(listfile)"), "fixture has no listfile at all");
+    const auto member = opened.value->ReadMember("war3map.w3i", settings.size());
+    Require(member.Succeeded() && *member.value == settings, "unlisted standard member found by name hash");
+    const auto document = MapDocument::FromReadOnlyArchive(*opened.value);
+    Require(document.Succeeded() && document.value->Settings().has_value()
+        && document.value->Member(MapDataKind::Settings).state == MapDataState::Ready
+        && document.value->Member(MapDataKind::Settings).sources[0].data == settings,
+        "MapDocument does not interpret an incomplete name inventory as absent known map data");
+    Require(document.value->Member(MapDataKind::Units).state == MapDataState::Missing,
+        "genuinely absent member remains missing");
+    Require(!MapArchiveSession::Open(path).Succeeded(), "no-listfile read access cannot authorize full-map save");
+    const auto after = Sha256File(path);
+    Require(after.Succeeded() && *after.value == *before.value && opened.value->SourceSha256() == *before.value,
+        "unlisted inspection retains full source identity and bytes");
 }
 void TestLegacyHeaderTruncation() {
     const auto valid = MapDataFixtures::FullMapSettingsV25().bytes;
@@ -287,7 +409,8 @@ void TestV31WidgetLayoutIsolation() {
 }
 }
 int main() {
-    try { TestSourceStates(); TestReferences(); TestDirectoryAndArchive(); TestLegacyHeaderTruncation();
+    try { TestSourceStates(); TestReferences(); TestDirectoryAndArchive(); TestReadOnlyArchiveBinding();
+        TestReadOnlyArchiveWithoutListfile(); TestLegacyHeaderTruncation();
         TestDirectoryCameraLayoutSourceAliases(); TestLniSettingsProvenanceAndConflicts(); TestV31WidgetLayoutIsolation(); }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
     std::cout << "Map document source, isolation, reference and snapshot checks passed\n";

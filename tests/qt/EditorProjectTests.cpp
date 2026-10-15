@@ -13,7 +13,11 @@
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
+#include "War3MapCore/MapData/MapTerrain.h"
+#include "War3MapCore/Mpq/MpqArchive.h"
+#include "../../src/Core/Mpq/MpqCrypt.h"
 #include "../MapDataFixtures.h"
+#include "SyntheticObjectCatalogFixture.h"
 
 #include <QCoreApplication>
 #include <QFile>
@@ -31,6 +35,7 @@
 #include <QTest>
 #include <QUndoStack>
 #include <algorithm>
+#include <array>
 
 using namespace War3Map;
 using namespace War3Map::QtProject;
@@ -41,6 +46,19 @@ bool ModelHasCode(const QStandardItemModel& model, const QString& code) {
         if (model.item(row, 2)->text() == code) return true;
     }
     return false;
+}
+
+// 仅提供本测试已有父对象的原创表；来源资格由真实临时游戏 MPQ 与共用目录捕获建立。
+bool InstallOwnedGameBase(EditorProject& project, ObjectData::ObjectType type, const std::string& rawcode) {
+    const auto table = Tests::ObjectTable({{{"ID", rawcode}, {"Name", "Original parent fixture"}}});
+    ObjectData::CatalogLoadOptions options;
+    options.sources = {{type, {"owned-base.slk"}, {}}};
+    options.stringFiles.clear();
+    const auto catalog = ObjectData::StandardObjectCatalog::Load([&](const std::string& name) {
+        return name == "owned-base.slk" ? Result<std::vector<std::byte>>::Success(Tests::ObjectBytes(table))
+            : Result<std::vector<std::byte>>::Failure("Test", "MISSING_OWNED_BASE", name);
+    }, options);
+    return catalog.Succeeded() && Tests::InstallSyntheticGameCatalog(project, *catalog.value);
 }
 
 bool LoadFixture(EditorProject& project, const QString& root) {
@@ -58,6 +76,73 @@ bool LoadFixture(EditorProject& project, const QString& root) {
     project.objectDocuments_[0].reset(
         dynamic_cast<ObjectData::LniObjectDocument*>(parsed.document.release()));
     return project.objectDocuments_[0] != nullptr;
+}
+
+std::vector<std::byte> UnlistedTerrainBytes() {
+    MapDataFixtures::Fixture fixture;
+    fixture.Raw("W3E!"); fixture.UInt(11); fixture.Byte('L'); fixture.UInt(0);
+    fixture.UInt(1); fixture.Raw("TxAa"); fixture.UInt(1); fixture.Raw("CLdi");
+    fixture.UInt(2); fixture.UInt(2); fixture.Float(-128); fixture.Float(-128);
+    for (int index = 0; index < 4; ++index) {
+        fixture.Byte(0); fixture.Byte(0x20); // ground raw 8192
+        fixture.Byte(0); fixture.Byte(0x1f); // water raw 7936
+        fixture.Byte(0x80); fixture.Byte(0); fixture.Byte(2);
+    }
+    return std::move(fixture.bytes);
+}
+
+// 原创 MPQ：只有 known.bin 写入 listfile，W3E 块保留准确 hash，但没有可枚举名称。
+bool WriteUnlistedTerrain(const QString& path, const std::vector<std::byte>& terrain,
+    std::uint32_t extraFlags = 0, std::uint32_t declaredBytes = 0) {
+    const auto& crypt = Mpq::MpqCrypt::Instance();
+    const std::string list = "known.bin\r\n";
+    const auto listSpan = std::as_bytes(std::span(list.data(), list.size()));
+    constexpr std::uint32_t hashCount = 8, blockCount = 3, knownAt = 32, terrainAt = 33;
+    const auto listAt = terrainAt + static_cast<std::uint32_t>(terrain.size());
+    const auto hashAt = listAt + static_cast<std::uint32_t>(list.size());
+    const auto blockAt = hashAt + hashCount * 16;
+    std::vector<std::byte> bytes(blockAt + blockCount * 16);
+    const auto put = [&bytes](std::size_t at, std::uint32_t value) {
+        for (unsigned shift = 0; shift < 32; shift += 8)
+            bytes[at + shift / 8] = static_cast<std::byte>((value >> shift) & 0xffU);
+    };
+    put(0, 0x1a51504d); put(4, 32); put(8, static_cast<std::uint32_t>(bytes.size()));
+    put(12, 0x00030000); put(16, hashAt); put(20, blockAt); put(24, hashCount); put(28, blockCount);
+    bytes[knownAt] = std::byte{7};
+    std::copy(terrain.begin(), terrain.end(), bytes.begin() + terrainAt);
+    std::copy(listSpan.begin(), listSpan.end(), bytes.begin() + listAt);
+    std::fill(bytes.begin() + hashAt, bytes.begin() + blockAt, std::byte{0xff});
+    std::array<bool, hashCount> used{};
+    const auto hash = [&](std::string_view name, std::uint32_t block) {
+        auto bucket = crypt.HashString(name, Mpq::MpqCrypt::HashType::TableOffset) & (hashCount - 1);
+        while (used[bucket]) bucket = (bucket + 1) & (hashCount - 1);
+        used[bucket] = true;
+        const auto at = hashAt + bucket * 16;
+        put(at, crypt.HashString(name, Mpq::MpqCrypt::HashType::NameA));
+        put(at + 4, crypt.HashString(name, Mpq::MpqCrypt::HashType::NameB)); put(at + 8, 0); put(at + 12, block);
+    };
+    hash("known.bin", 0); hash("war3map.w3e", 1); hash("(listfile)", 2);
+    crypt.EncryptBlock(bytes.data() + hashAt, hashCount * 16,
+        crypt.HashString("(hash table)", Mpq::MpqCrypt::HashType::FileKey));
+    const auto block = [&](std::uint32_t index, std::uint32_t at, std::size_t length,
+                           std::uint32_t outputBytes, std::uint32_t flags) {
+        const auto offset = blockAt + index * 16;
+        put(offset, at); put(offset + 4, static_cast<std::uint32_t>(length));
+        put(offset + 8, outputBytes); put(offset + 12, Mpq::kFileExists | Mpq::kFileSingleUnit | flags);
+    };
+    block(0, knownAt, 1, 1, 0);
+    block(1, terrainAt, terrain.size(), declaredBytes ? declaredBytes : static_cast<std::uint32_t>(terrain.size()), extraFlags);
+    block(2, listAt, list.size(), static_cast<std::uint32_t>(list.size()), 0);
+    crypt.EncryptBlock(bytes.data() + blockAt, blockCount * 16,
+        crypt.HashString("(block table)", Mpq::MpqCrypt::HashType::FileKey));
+    QFile file(path);
+    return file.open(QIODevice::WriteOnly | QIODevice::NewOnly)
+        && file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<qint64>(bytes.size())) == static_cast<qint64>(bytes.size());
+}
+
+bool HasReadDiagnostic(const auto& result, std::string_view code) {
+    return std::any_of(result.diagnostics.begin(), result.diagnostics.end(),
+        [code](const Diagnostic& diagnostic) { return diagnostic.code == code; });
 }
 }
 
@@ -84,7 +169,70 @@ private slots:
     void ObjectQueriesDistinguishMissingFromUnparsedSources();
     void TriggerChangesCannotSkipUnpreparedFramework();
     void OwnedLuaProjectRecoveryPreservesPayloadRoleAndMapGate();
+    void UnlistedTerrainReadPreservesNamedInventory();
+    void UnlistedTerrainReadRejectsChangedSource();
+    void UnlistedTerrainReadPreservesDecodeAndBudgetErrors();
 };
+
+void EditorProjectTests::UnlistedTerrainReadPreservesNamedInventory() {
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto terrain = UnlistedTerrainBytes();
+    const auto path = root.filePath("unlisted-terrain.w3x"); QVERIFY(WriteUnlistedTerrain(path, terrain));
+    auto opened = MapArchiveSession::Open(std::filesystem::path(path.toStdWString())); QVERIFY(opened.Succeeded());
+    EditorProject project; project.archiveSession_ = std::make_shared<MapArchiveSession>(std::move(*opened.value));
+    const auto namedCount = project.archiveSession_->Members().size();
+    const auto opaqueCount = project.archiveSession_->OpaqueMemberCount();
+    const auto list = project.archiveSession_->ReadMember("(listfile)"); QVERIFY(list.Succeeded());
+    const auto sourceSha = Sha256File(std::filesystem::path(path.toStdWString())); QVERIFY(sourceSha.Succeeded());
+    QVERIFY(!project.archiveSession_->HasMember("war3map.w3e"));
+    QVERIFY(HasReadDiagnostic(project.archiveSession_->ReadMember("war3map.w3e"), "MEMBER_MISSING"));
+    const auto read = project.ReadMapMember("war3map.w3e"); QVERIFY(read.Succeeded() && read.value);
+    QVERIFY(*read.value == terrain);
+    const auto parsed = MapData::ParseMapTerrain(*read.value); QVERIFY(parsed.Succeeded() && parsed.value);
+    QCOMPARE(parsed.value->Snapshot()->header.width, std::uint32_t{2});
+    QCOMPARE(parsed.value->Snapshot()->vertices.size(), std::size_t{4});
+    const auto upper = project.ReadMapMember("WAR3MAP.W3E"); QVERIFY(upper.Succeeded() && *upper.value == terrain);
+    QVERIFY(HasReadDiagnostic(project.ReadMapMember("war3map.shd"), "MAP_MEMBER_UNAVAILABLE"));
+    QVERIFY(!project.archiveSession_->HasMember("war3map.w3e"));
+    QVERIFY(HasReadDiagnostic(project.archiveSession_->ReadMember("war3map.w3e"), "MEMBER_MISSING"));
+    QCOMPARE(project.archiveSession_->Members().size(), namedCount);
+    QCOMPARE(project.archiveSession_->OpaqueMemberCount(), opaqueCount);
+    QVERIFY(project.archiveSession_->ReadMember("(listfile)").value == list.value);
+    QVERIFY(Sha256File(std::filesystem::path(path.toStdWString())).value == sourceSha.value);
+}
+
+void EditorProjectTests::UnlistedTerrainReadRejectsChangedSource() {
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto path = root.filePath("changed-unlisted-terrain.w3x"); QVERIFY(WriteUnlistedTerrain(path, UnlistedTerrainBytes()));
+    auto opened = MapArchiveSession::Open(std::filesystem::path(path.toStdWString())); QVERIFY(opened.Succeeded());
+    EditorProject project; project.archiveSession_ = std::make_shared<MapArchiveSession>(std::move(*opened.value));
+    const auto namedCount = project.archiveSession_->Members().size();
+    QFile changed(path); QVERIFY(changed.open(QIODevice::ReadWrite)); QVERIFY(changed.seek(32));
+    QCOMPARE(changed.write("x", 1), qint64{1}); changed.close();
+    const auto read = project.ReadMapMember("war3map.w3e");
+    QVERIFY(!read.Succeeded() && !read.value); QVERIFY(HasReadDiagnostic(read, "SOURCE_CHANGED"));
+    QVERIFY(!HasReadDiagnostic(read, "MAP_MEMBER_UNAVAILABLE"));
+    const auto missing = project.ReadMapMember("war3map.shd");
+    QVERIFY(!missing.value && HasReadDiagnostic(missing, "SOURCE_CHANGED"));
+    QCOMPARE(project.archiveSession_->Members().size(), namedCount);
+    QVERIFY(!project.archiveSession_->HasMember("war3map.w3e"));
+}
+
+void EditorProjectTests::UnlistedTerrainReadPreservesDecodeAndBudgetErrors() {
+    for (const bool oversized : {false, true}) {
+        QTemporaryDir root; QVERIFY(root.isValid());
+        const auto path = root.filePath("unreadable-unlisted-terrain.w3x");
+        QVERIFY(WriteUnlistedTerrain(path, UnlistedTerrainBytes(), oversized ? Mpq::kFileCompress : Mpq::kFilePatch,
+            oversized ? 64u * 1024u * 1024u + 1u : 0u));
+        auto opened = MapArchiveSession::Open(std::filesystem::path(path.toStdWString())); QVERIFY(opened.Succeeded());
+        EditorProject project; project.archiveSession_ = std::make_shared<MapArchiveSession>(std::move(*opened.value));
+        const auto read = project.ReadMapMember("war3map.w3e");
+        QVERIFY(!read.Succeeded() && !read.value);
+        QVERIFY(HasReadDiagnostic(read, oversized ? "FILE_READ_BUDGET_EXCEEDED" : "EXACT_MEMBER_ENCODING_UNSUPPORTED"));
+        QVERIFY(!HasReadDiagnostic(read, "MAP_MEMBER_UNAVAILABLE"));
+        QVERIFY(!project.archiveSession_->HasMember("war3map.w3e"));
+    }
+}
 
 void EditorProjectTests::PendingNativeCloneOriginsSurviveMissingOrEmptyMember() {
     using namespace ObjectData;
@@ -110,6 +258,7 @@ void EditorProjectTests::PendingNativeCloneOriginsSurviveMissingOrEmptyMember() 
         project.objectDocuments_[2].reset(static_cast<LniObjectDocument*>(parsed.document.release()));
         project.nativeObjectDocuments_[2] = std::make_unique<NativeObjectDocument>(*native.value);
         project.objectUndoStacks_[2] = &undo;
+        QVERIFY(InstallOwnedGameBase(project, ObjectType::Item, "itst"));
         project.ResetEditTracking();
         auto& edited = *project.objectDocuments_[2];
         QVERIFY(edited.AddObject("I001", "itst").Succeeded());
@@ -194,6 +343,7 @@ void EditorProjectTests::NativeCloneOriginsSurviveProjectRestore() {
     project.objectDocuments_[0].reset(static_cast<LniObjectDocument*>(parsed.document.release()));
     project.nativeObjectDocuments_[0] = std::make_unique<NativeObjectDocument>(*native.value);
     project.objectUndoStacks_[0] = &undo;
+    QVERIFY(InstallOwnedGameBase(project, ObjectType::Unit, "Eevi"));
     project.ResetEditTracking();
     auto& edited = *project.objectDocuments_[0];
     QVERIFY(edited.CloneCustomObject({ObjectType::Unit, "E000"}, "E001").Succeeded());
@@ -366,6 +516,7 @@ void EditorProjectTests::GeneratedObjectsSurviveCommitAndSecondSave() {
     auto emptyLni = LniObjectCodec(ObjectType::Unit).Parse({});
     project.objectDocuments_[0].reset(static_cast<LniObjectDocument*>(emptyLni.document.release()));
     project.nativeObjectDocuments_[0] = std::make_unique<NativeObjectDocument>(std::move(*initial.value));
+    QVERIFY(InstallOwnedGameBase(project, ObjectType::Unit, "hfoo"));
     project.ResetEditTracking();
     QUndoStack undo; project.objectUndoStacks_[0] = &undo;
     undo.push(new QUndoCommand("old document command"));

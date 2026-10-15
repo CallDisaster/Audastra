@@ -2,10 +2,12 @@
 #include "Widgets/ObjectTreeBrowser.h"
 
 #include "EditorProject.h"
+#include "ProjectObjectCatalog.h"
 #include "ObjectModels.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
 #include "War3MapCore/ObjectData/ObjectFieldSchema.h"
+#include "War3MapCore/Services/ObjectCommands.h"
 #include "Icons/IconProvider.h"
 
 #include <QDialog>
@@ -34,6 +36,19 @@ using namespace ObjectData;
 
 namespace {
 QString U8(std::string_view text) { return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())); }
+
+bool WritableBase(QtProject::EditorProject& project, ObjectType type, const std::string& id) {
+    const auto source = QtProject::VerifyProjectObjectCatalog(project);
+    if (!source.Succeeded()) { project.AddDiagnostics(source.diagnostics); return false; }
+    Services::ObjectCommandContext context;
+    context.type = type;
+    context.document = project.objectDocuments_[static_cast<std::size_t>(type)].get();
+    context.standard = project.standardCatalog_.get(); context.schema = project.objectFieldSchema_.get();
+    const auto checked = Services::VerifyObjectWriteSource(context, id);
+    for (const auto& diagnostic : checked.diagnostics)
+        project.AddDiagnostic(QObject::tr("错误"), QObject::tr("物体"), U8(diagnostic.code), U8(diagnostic.message));
+    return checked.Succeeded();
+}
 
 // 文档地址稳定；创建与撤销均使用完整的行/对象快照，保留未识别内容。
 class CreateObjectCommand final : public QUndoCommand {
@@ -138,6 +153,7 @@ bool ObjectModule::CreateObjectFromBase(int index, const QString& baseRawcode,
     if (index < 0 || index >= 7 || !project_->standardCatalog_) return false;
     const auto type = static_cast<ObjectType>(index);
     const auto* base = project_->standardCatalog_->Find(type, baseRawcode.toStdString());
+    if (!WritableBase(*project_, type, baseRawcode.toStdString())) return false;
     if (!base || project_->standardCatalog_->Find(type, rawcode.toStdString()) || !EnsureObjectDocument(index)) return false;
     auto next = *project_->objectDocuments_[index];
     const auto added = next.AddObject(rawcode.toStdString(), baseRawcode.toStdString());
@@ -171,6 +187,7 @@ bool ObjectModule::CloneCustomObject(int index, const QString& sourceRawcode,
     if (project_->standardCatalog_->Find(type, newRawcode.toStdString()) || !EnsureObjectDocument(index))
         return false;
     const ObjectKey source{type, sourceRawcode.toStdString()};
+    if (!WritableBase(*project_, type, source.rawcode)) return false;
     const auto* original = project_->objectDocuments_[index]->FindObject(source);
     if (!original || !original->parentRawcode) return false;
     auto next = *project_->objectDocuments_[index];
@@ -207,6 +224,7 @@ void ObjectModule::EditSelectedStandardObject() {
     const auto selected = standardObjectBrowser_->CurrentEntry();
     if (!selected || !project_->standardCatalog_) return;
     const auto type = static_cast<ObjectType>(currentObjectType_);
+    if (!WritableBase(*project_, type, selected->id.toStdString())) return;
     if (!project_->standardCatalog_->Find(type, selected->id.toStdString()) || !EnsureObjectDocument(currentObjectType_)) return;
     if (!project_->objectDocuments_[currentObjectType_]->FindObject({type, selected->id.toStdString()})) {
         auto next = *project_->objectDocuments_[currentObjectType_];
@@ -225,6 +243,7 @@ bool ObjectModule::CommitStandardFieldValue(const QString& rawcode, const QStrin
     const auto type = static_cast<ObjectType>(index);
     const auto* base = project_->standardCatalog_->Find(type, rawcode.toStdString());
     if (!base) return false;
+    if (!WritableBase(*project_, type, rawcode.toStdString())) return false;
     const ObjectKey key{type, rawcode.toStdString()};
     const auto* current = project_->objectDocuments_[index].get();
     if (current && !current->IsStructurallySafe()) return false;

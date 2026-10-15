@@ -1,4 +1,5 @@
 #include "War3MapCore/MapData/PlacementEditing.h"
+#include "War3MapCore/Text/TextUtil.h"
 
 #include <algorithm>
 #include <cmath>
@@ -360,7 +361,8 @@ Result<RegionId> AddRegion(MapDataEditSession& session, RegionRecord record) {
     if (regions.entries.size() >= 100000)
         return fail("REGION_COUNT_LIMIT", "区域数量已达到成员上限");
     if (std::any_of(regions.entries.begin(), regions.entries.end(), [&](const auto& existing) {
-            return existing.name == record.name || existing.creationNumber == record.creationNumber;
+            return Text::ObjectScriptName(existing.name) == Text::ObjectScriptName(record.name)
+                || existing.creationNumber == record.creationNumber;
         }))
         return fail("REGION_ID_DUPLICATE", "区域名称或创建编号已存在");
     regions.entries.push_back(std::move(record));
@@ -387,7 +389,7 @@ Result<CameraId> AddCamera(MapDataEditSession& session, CameraRecord record) {
     if (cameras.entries.size() >= 100000)
         return fail("CAMERA_COUNT_LIMIT", "镜头数量已达到成员上限");
     if (std::any_of(cameras.entries.begin(), cameras.entries.end(), [&](const auto& existing) {
-            return existing.name == record.name;
+            return Text::ObjectScriptName(existing.name) == Text::ObjectScriptName(record.name);
         }))
         return fail("CAMERA_ID_DUPLICATE", "镜头名称已存在");
     cameras.entries.push_back(std::move(record));

@@ -13,7 +13,7 @@ namespace War3Map::Render {
 inline constexpr std::uint32_t TerrainGroundHeightColor = std::numeric_limits<std::uint32_t>::max();
 
 struct TerrainGroundMeshLimits {
-    // 默认值也是硬上限，只能收紧；超预算失败，不发布部分网格或把粗格拉伸贴图。
+    // 默认值也是硬上限，只能收紧；基础层超预算始终失败，不把粗格拉伸贴图。
     // 含过渡层：256×256 原格基础层 262144 顶点，另留过渡层余量。
     std::size_t maxVertices = 1048576;
     std::size_t maxIndices = 6291456;
@@ -78,6 +78,24 @@ struct TerrainGroundFallbackCounts {
     std::size_t invalidAtlasTiles = 0;
 };
 
+enum class TerrainGroundBudgetPolicy {
+    Strict,
+    // 仅供世界预览宿主显式选择；完整保留基础层，按整类限制可选层，不表示完整原版保真。
+    PreserveBasePreview
+};
+
+struct TerrainGroundLayerCounts {
+    std::size_t requested = 0, displayed = 0, omitted = 0;
+};
+
+struct TerrainGroundBudgetStats {
+    TerrainGroundBudgetPolicy policy = TerrainGroundBudgetPolicy::Strict;
+    // base 统计保留的原格 quad（含已由悬崖模型覆盖而不写索引的格，另见 hiddenTileCount）。
+    // transitions / blight 为可贴图格请求的遮罩 quad；water 为全部有水标记的格（含缺样式）。
+    TerrainGroundLayerCounts base, transitions, blight, water;
+    bool reduced = false; // 显式预览因几何/批次/整体载荷预算省略可选层；资源回退另行诊断。
+};
+
 struct TerrainGroundMesh {
     std::uint32_t sourceWidth = 0, sourceHeight = 0;
     static constexpr std::uint32_t blockTileSize = 16;
@@ -88,7 +106,8 @@ struct TerrainGroundMesh {
     // 基础层按纹理稳定归组，地表过渡、荒芜和水面批次依次在后；每个 quad 为 (SW,SE,NW)、(SE,NE,NW)。
     std::vector<std::uint32_t> indices;
     std::vector<TerrainGroundBatch> batches;
-    // textureIndex 索引此列表；仅保活真正使用的 atlas，相同 shared_ptr 只占一个槽。
+    // textureIndex 索引此列表；保活本次请求使用的 atlas，相同 shared_ptr 只占一个槽。
+    // 预览整类省略过渡后仍保留已校验的地表 atlas，不借省略绕过资源预算。
     std::vector<std::shared_ptr<const TerrainAtlasSnapshot>> textures;
     // 按块 row-major，末块可不足 16 格；本批 GPU 仍按纹理归组，没有宣称块剔除。
     std::vector<TerrainGroundBlock> blocks;
@@ -99,7 +118,7 @@ struct TerrainGroundMesh {
     // 被悬崖模型覆盖的原 tile（与 tile 同序，空表示未提供覆盖）：保留四个顶点，但不写索引。
     std::vector<std::uint8_t> hiddenTiles;
     std::size_t hiddenTileCount = 0;
-    bool waterOmitted = false; // 有水但纹理槽已满或未提供样式，未画水面
+    bool waterOmitted = false; // 有水但缺样式、纹理槽不足或显式预览预算省略，未画全部水面
     std::optional<std::uint32_t> waterTextureIndex; // 合成水面透明度 atlas 的纹理槽，供来源审计区分原始图集
     std::uint32_t waterFrameIndex = 0, waterFrameCount = 0; // 本网格实际选取的 Water.slk 帧身份
     std::string waterFrameSourcePath, waterFrameSourceSha256;
@@ -112,6 +131,7 @@ struct TerrainGroundMesh {
     std::size_t mixedGroundTextureTiles = 0; // 四角材质不同的格子（贴图格以过渡层混合）
     bool lit = false; // 顶点颜色已乘光照明暗
     TerrainGroundFallbackCounts fallback;
+    TerrainGroundBudgetStats budget;
 };
 
 // groundAtlases 必须与 header.groundTilesets 同序同长度；null 明确表示资源不可用。
@@ -122,7 +142,11 @@ struct TerrainGroundMesh {
 // 并分别记录 blightTexturedTiles / blightApproximationTiles。异 cliff layer、其八邻域、无效
 // ground 索引、四角任一缺失或无效 atlas 仍逐 tile 保留高度色。
 // 提供水面样式时，四角任一有水的格子追加一个半透明水面 quad（颜色按各角深度，透明度取四角平均，
-// 量化为合成 4×4 atlas 的 16 级；每格是明确选择的水面帧乘该级透明度，不推测播放时钟）。预算/结构错误无部分结果。
+// 量化为合成 4×4 atlas 的 16 级；每格是明确选择的水面帧乘该级透明度，不推测播放时钟）。
+// Strict 保持预算/结构错误无部分结果；PreserveBasePreview 仅在相同硬上限内按整类尝试
+// 水面 → 普通过渡 → 精确荒芜遮罩，装不下的一类全部省略，再尝试下一类；不截 tile 前缀。
+// 基础层的每格 XYZ/UV、原有资源/结构校验与逐格高度色回退不变，省略数由 budget 精确报告。
+// 荒芜遮罩省略时沿用原底色近似。基础层及所需地表资源自身超预算仍失败。
 // UV 左上原点，以实际尺寸半像素内缩；纹理 RGB 不做高度染色，基础层按不透明采样。
 // 顶点颜色：贴图格为灰度明暗（光照关闭时为 1），高度色格为高度色 × 明暗；渲染器以颜色乘贴图。
 // 法线取原格高度的中心差分（边缘单侧），与拼接后的显示高度一致，不修改 XYZ。
@@ -138,7 +162,8 @@ struct TerrainGroundMesh {
     const TerrainGroundMeshLimits& limits = {}, const TerrainLighting& lighting = {},
     const TerrainWaterStyle* water = nullptr, std::span<const std::uint8_t> coveredTiles = {},
     std::shared_ptr<const TerrainAtlasSnapshot> blightAtlas = {},
-    std::span<const std::uint8_t> effectiveGroundIndices = {});
+    std::span<const std::uint8_t> effectiveGroundIndices = {},
+    TerrainGroundBudgetPolicy budgetPolicy = TerrainGroundBudgetPolicy::Strict);
 
 // 水面在给定深度（水面高度 − 地面高度，世界单位）处的 RGBA（0..1）。
 // 深度 ≤ 64 在浅水两色间插值（10 以下取最小值），64–72 在深水两色间插值，再深取深水最大值。

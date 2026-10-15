@@ -5,6 +5,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapData/GeneratedObjectSymbol.h"
 #include "../src/ScriptBuild/ExternalProcess.h"
+#include "TestLua.h"
 
 #include <Windows.h>
 #include <algorithm>
@@ -73,6 +74,8 @@ LuaTargetProfile Profile() {
     for (const auto* name : {"SetSoundDuration", "SetSoundChannel", "SetSoundVolume"}) api(name, "nothing", {"sound", "integer"});
     for (const auto* name : {"SetSoundPitch", "SetSoundDistanceCutoff"}) api(name, "nothing", {"sound", "real"});
     api("SetSoundDistances", "nothing", {"sound", "real", "real"});
+    api("SetSoundPosition", "nothing", {"sound", "real", "real", "real"});
+    api("RegisterStackedSound", "nothing", {"sound", "boolean", "real", "real"});
     api("SetSoundConeAngles", "nothing", {"sound", "real", "real", "integer"});
     api("SetSoundConeOrientation", "nothing", {"sound", "real", "real", "real"});
     api("Rect", "rect", {"real", "real", "real", "real"}); api("AddWeatherEffect", "weathereffect", {"rect", "integer"});
@@ -476,6 +479,14 @@ int main(int argc, char** argv) {
         plan = fixture.plan; plan.units[5].waygateRegionSymbol.reset(); Reject(fixture, plan, fixture.target, "LUA_MAP_WAYGATE_UNBOUND");
         plan = fixture.plan; plan.settings.mapName = "TRIGSTR_999"; Reject(fixture, plan, fixture.target, "LUA_MAP_STRING_UNRESOLVED");
         auto target = fixture.target;
+        auto ambientPlan = fixture.plan;
+        ambientPlan.regions[0].region.ambientSound = "gg_snd_Unit";
+        const auto ambientLua = GenerateLuaMapScript(ambientPlan, fixture.document, fixture.catalog, target);
+        Require(ambientLua.Succeeded() && ambientLua.text.find("RegisterStackedSound") != std::string::npos
+            && ambientLua.text.find("SetSoundPosition") != std::string::npos, "Lua initializes existing region ambient sound");
+        auto missingAmbientApi = target;
+        std::erase_if(missingAmbientApi.apis, [](const auto& value) { return value.name == "RegisterStackedSound"; });
+        Reject(fixture, ambientPlan, missingAmbientApi, "LUA_MAP_API_MISSING");
         std::erase_if(target.apis, [](const auto& value) { return value.name == "CreateUnit"; });
         Reject(fixture, fixture.plan, target, "LUA_MAP_API_MISSING");
         target = fixture.target;
@@ -500,13 +511,10 @@ int main(int argc, char** argv) {
         const auto emptyMap = GenerateLuaMapScript(*emptyPlan.value, {}, fixture.catalog, fixture.target);
         Require(emptyMap.Succeeded(), Diagnostics(emptyMap.diagnostics)); Write(root / "empty-map.lua", emptyMap.text);
 
-        wchar_t ydwe[32768]{};
-        const auto count = GetEnvironmentVariableW(L"FORGE_YDWE_ROOT", ydwe, 32768);
-        Require(count > 0 && count < 32768, "FORGE_YDWE_ROOT required for actual Lua 5.3 execution");
         Script::detail::ProcessRequest request;
-        request.executable = std::filesystem::path(ydwe) / "bin/lua.exe";
+        request.executable = Tests::LuaTestExecutable();
         request.workingDirectory = root;
-        request.arguments = {std::filesystem::path(LUA_MAP_TEST_RUNNER).wstring(), (root / "map.lua").wstring(),
+        request.arguments = {L"-E", std::filesystem::path(LUA_MAP_TEST_RUNNER).wstring(), (root / "map.lua").wstring(),
             (root / "symbols.lua").wstring(), (root / "empty-map.lua").wstring()};
         request.outputFile = root / "runtime.log"; request.timeout = std::chrono::seconds(20);
         const auto execution = Script::detail::RunProcess(request);

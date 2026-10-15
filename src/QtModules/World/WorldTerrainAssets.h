@@ -14,6 +14,7 @@
 #include <optional>
 
 namespace War3Map::QtProject { class EditorProject; }
+namespace War3Map { class MpqWorkspace; }
 namespace War3Map::Modules {
 
 struct WorldAssetEntry {
@@ -26,6 +27,8 @@ struct WorldTerrainSources {
     std::string archiveSha;
     std::vector<WorldAssetEntry> entries;
     std::optional<std::uint8_t> mainTileset;
+    // 持有只读归档的身份租约；后台仍打开独立解析器，不并发使用借入的MPQ。
+    std::shared_ptr<const MpqWorkspace> readOnlyArchive;
 };
 [[nodiscard]] bool SameWorldTerrainSources(const WorldTerrainSources& a, const WorldTerrainSources& b);
 [[nodiscard]] Result<WorldTerrainSources> CaptureWorldTerrainSources(const QtProject::EditorProject& project,

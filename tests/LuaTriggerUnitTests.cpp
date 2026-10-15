@@ -1,5 +1,6 @@
 #include "War3MapCore/Script/LuaTriggerUnit.h"
 #include "../src/ScriptBuild/ExternalProcess.h"
+#include "TestLua.h"
 
 #include <Windows.h>
 #include <algorithm>
@@ -349,23 +350,20 @@ int main(int argc, char** argv) {
         changed.argumentNodes[changed.ecaNodes[largeAssignment].arguments[1]].value.text.assign(65536, 'x');
         changed.triggers[22].ecas.assign(140, largeAssignment);
         reject(changed, "LUA_OUTPUT_BUDGET");
-        wchar_t ydwe[32768]{};
-        const auto count = GetEnvironmentVariableW(L"FORGE_YDWE_ROOT", ydwe, 32768);
-        Require(count > 0 && count < 32768, "FORGE_YDWE_ROOT required for real Lua 5.3 execution");
         Script::detail::ProcessRequest request;
-        request.executable = std::filesystem::path(ydwe) / "bin/lua.exe";
+        request.executable = Tests::LuaTestExecutable();
         request.workingDirectory = root;
-        request.arguments = {std::filesystem::path(LUA_TEST_RUNNER).wstring(), (root / "unit.lua").wstring()};
+        request.arguments = {L"-E", std::filesystem::path(LUA_TEST_RUNNER).wstring(), (root / "unit.lua").wstring()};
         request.outputFile = root / "runtime.log"; request.timeout = std::chrono::seconds(20);
         const auto execution = Script::detail::RunProcess(request);
         Require(execution.Succeeded(), execution.error + execution.output);
         std::cout << execution.output;
-        request.arguments = {(root / "object-code/object-code-runner.lua").wstring(), (root / "object-code/object-code.lua").wstring()};
+        request.arguments = {L"-E", (root / "object-code/object-code-runner.lua").wstring(), (root / "object-code/object-code.lua").wstring()};
         request.outputFile = root / "object-code/runtime.log";
         const auto objectExecution = Script::detail::RunProcess(request);
         Require(objectExecution.Succeeded(), objectExecution.error + objectExecution.output);
         std::cout << objectExecution.output;
-        request.arguments = {(root / "bound-globals/runner.lua").wstring(), (root / "bound-globals/unit.lua").wstring()};
+        request.arguments = {L"-E", (root / "bound-globals/runner.lua").wstring(), (root / "bound-globals/unit.lua").wstring()};
         request.outputFile = root / "bound-globals/runtime.log";
         const auto boundExecution = Script::detail::RunProcess(request);
         Require(boundExecution.Succeeded(), boundExecution.error + boundExecution.output);

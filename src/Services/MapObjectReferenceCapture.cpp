@@ -122,6 +122,7 @@ void CaptureInput(CaptureState& state, const Reader& reader, std::size_t index) 
         if (read.value->source.empty())
             state.Reject("MAP_OBJECT_REFERENCE_SOURCE_IDENTITY_MISSING", "分类读取结果缺少真实来源身份。", input.source);
         input.source = std::move(read.value->source);
+        input.scope = read.value->scope;
         if (input.source.size() > ArchiveExactMemberLimits{}.totalPathBytes)
             state.Reject("MAP_OBJECT_REFERENCE_INPUT_BUDGET", "分类来源身份超过既有路径预算。");
         input.present = read.value->bytes.has_value();
@@ -296,9 +297,10 @@ Result<std::string> Identity(const CaptureState& state) {
         manifest += ':';
         manifest += value;
     };
-    append("forge-map-object-reference-v1");
+    append("forge-map-object-reference-v2");
     for (const auto& input : state.inputs) {
         append(input.role); append(input.source); append(input.present ? "present" : "missing");
+        append(std::to_string(static_cast<int>(input.scope)));
         append(std::to_string(input.bytes.size())); append(input.sha256);
     }
     return Sha256Text(manifest);

@@ -93,21 +93,24 @@ MapDocument MapDocument::FromArchive(const MapArchiveSession& archive) {
 }
 
 Result<MapDocument> MapDocument::OpenReadOnlyArchive(const std::filesystem::path& path) {
-    auto before = Sha256File(path);
-    if (!before.Succeeded()) { Result<MapDocument> failure; failure.diagnostics = std::move(before.diagnostics); return failure; }
-    auto archive = Mpq::MpqArchive::OpenReadOnly(path);
+    auto archive = MpqWorkspace::OpenReadOnly(path);
     if (!archive.Succeeded()) { Result<MapDocument> failure; failure.diagnostics = std::move(archive.diagnostics); return failure; }
+    return FromReadOnlyArchive(*archive.value);
+}
+
+Result<MapDocument> MapDocument::FromReadOnlyArchive(const MpqWorkspace& archive) {
+    const auto before = archive.VerifyUnchanged();
+    if (!before.Succeeded()) return {std::nullopt, before.diagnostics};
     MapDocument document;
-    document.source_ = path;
+    document.source_ = archive.SourcePath();
     for (auto& member : document.members_) {
-        if (!archive.value->HasFile(member.memberName)) continue;
-        auto read = archive.value->ReadFile(member.memberName);
+        if (!archive.Archive().HasFile(member.memberName)) continue;
+        auto read = archive.ReadMember(member.memberName, 128 * 1024 * 1024);
         if (read.Succeeded()) member.sources.push_back({member.memberName, std::move(*read.value)});
         else { member.state = MapDataState::Unreadable; member.diagnostics = std::move(read.diagnostics); }
     }
-    const auto after = Sha256File(path);
-    if (!after.Succeeded() || before.value != after.value) return Result<MapDocument>::Failure(
-        "Map.Document", "MAP_SOURCE_CHANGED", "读取基础数据期间源归档发生变化；未建立文档。");
+    const auto after = archive.VerifyUnchanged();
+    if (!after.Succeeded()) return {std::nullopt, after.diagnostics};
     document.ParseMembers();
     return Result<MapDocument>::Success(std::move(document));
 }

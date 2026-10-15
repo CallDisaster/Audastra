@@ -1,4 +1,5 @@
 #include "WorldModule.h"
+#include "WorldDiagnosticJson.h"
 #include "WorldSelectionPresenter.h"
 #include "WorldBuildingSplatPresenter.h"
 #include "WorldPremPresenter.h"
@@ -40,6 +41,7 @@
 #include <QTreeView>
 #include <QTimer>
 #include <QUndoStack>
+#include <QVariant>
 #include <QVariantAnimation>
 #include <QVBoxLayout>
 
@@ -92,6 +94,33 @@ QString BlightDetails(const Render::TerrainGroundMesh& ground) {
     if (ground.fallback.blightTiles > represented)
         segments << QObject::tr("荒芜 %1 格保留高度色回退（非原版材质）").arg(Count(ground.fallback.blightTiles - represented));
     return segments.join(QLatin1Char('\n'));
+}
+
+QJsonObject GroundBudgetJson(const Render::TerrainGroundMesh& ground) {
+    const auto counts = [](const Render::TerrainGroundLayerCounts& value) {
+        return QJsonObject{{"requested", static_cast<qint64>(value.requested)},
+            {"displayed", static_cast<qint64>(value.displayed)}, {"omitted", static_cast<qint64>(value.omitted)}};
+    };
+    const auto& budget = ground.budget;
+    return {{"policy", budget.policy == Render::TerrainGroundBudgetPolicy::PreserveBasePreview ? "preserve-base-preview" : "strict"},
+        {"reduced", budget.reduced}, {"base", counts(budget.base)}, {"transitions", counts(budget.transitions)},
+        {"blight", counts(budget.blight)}, {"water", counts(budget.water)},
+        {"hidden_base_tiles", static_cast<qint64>(ground.hiddenTileCount)}};
+}
+
+QString GroundBudgetDetails(const Render::TerrainGroundMesh& ground) {
+    const auto counts = [](const QString& name, const Render::TerrainGroundLayerCounts& value) {
+        return QObject::tr("%1：请求 %2、显示 %3、省略 %4")
+            .arg(name, Count(value.requested), Count(value.displayed), Count(value.omitted));
+    };
+    const auto& budget = ground.budget;
+    QStringList lines{QObject::tr("基础层：请求 %1、保留 %2、省略 %3（含悬崖隐藏 %4 格的原顶点）")
+        .arg(Count(budget.base.requested), Count(budget.base.displayed), Count(budget.base.omitted), Count(ground.hiddenTileCount)),
+        counts(QObject::tr("普通过渡遮罩"), budget.transitions), counts(QObject::tr("精确荒芜遮罩"), budget.blight),
+        counts(QObject::tr("水面"), budget.water)};
+    if (budget.reduced)
+        lines << QObject::tr("基础贴图预算预览：完整基础层 → 全图水面 → 全图普通过渡 → 精确荒芜遮罩；每类全留或全省略，不代表完整原版保真。");
+    return lines.join(QLatin1Char('\n'));
 }
 
 QString EnvironmentSummary(const Render::SceneEnvironment* environment) {
@@ -217,17 +246,25 @@ void WorldModule::ShowSceneFacts(const WorldTerrainLoaded& loaded, const Render:
         if (layers != 0) text += tr(" · 过渡 %1 层").arg(Count(layers));
         if (ground->fallback.totalTiles != 0) text += tr(" · 高度色 %1 格").arg(Count(ground->fallback.totalTiles));
         if (const auto blight = BlightTiles(*ground); blight != 0) text += tr(" · 荒芜 %1 格").arg(Count(blight));
+        if (ground->budget.reduced) text += tr(" · 基础贴图预览");
         sceneGround_->setText(text);
+        sceneGround_->setProperty("groundBudget", QVariant::fromValue(GroundBudgetJson(*ground)));
         QStringList tip{viewport_->HasTerrainMips() ? tr("原始 mip 链") : tr("仅 mip0")};
+        tip << GroundBudgetDetails(*ground);
         if (const auto blight = BlightDetails(*ground); !blight.isEmpty()) tip << blight;
         for (const auto& texture : ground->textures) tip << SourceLine(texture->source.canonicalPath, texture->sourceSha256);
         sceneGround_->setToolTip(tip.join(QLatin1Char('\n')));
-        sceneWater_->setText(ground->waterTiles.empty() ? tr("无")
-            : tr("%1 格").arg(Count(ground->waterTiles.size())) + (ground->waterOmitted ? tr(" · 部分未显示") : QString{}));
-        sceneWater_->setToolTip(ground->waterFrameSourcePath.empty() ? QString{}
-            : SourceLine(ground->waterFrameSourcePath, ground->waterFrameSourceSha256));
+        QString water = ground->waterFlaggedTiles == 0 ? tr("无") : tr("%1 格").arg(Count(ground->waterTiles.size()));
+        if (ground->budget.water.omitted != 0) water += tr(" · 省略 %1 格").arg(Count(ground->budget.water.omitted));
+        sceneWater_->setText(water);
+        QString waterDetails = tr("水面：请求 %1、显示 %2、省略 %3")
+            .arg(Count(ground->budget.water.requested), Count(ground->budget.water.displayed), Count(ground->budget.water.omitted));
+        if (!ground->waterFrameSourcePath.empty()) waterDetails += QLatin1Char('\n')
+            + SourceLine(ground->waterFrameSourcePath, ground->waterFrameSourceSha256);
+        sceneWater_->setToolTip(waterDetails);
     } else {
         sceneGround_->setText(tr("高度预览"));
+        sceneGround_->setProperty("groundBudget", QVariant{});
         sceneGround_->setToolTip(missingGround.isEmpty() ? loaded.materialNote : missingGround);
         sceneWater_->setText(tr("未显示")); sceneWater_->setToolTip({});
     }
@@ -235,7 +272,8 @@ void WorldModule::ShowSceneFacts(const WorldTerrainLoaded& loaded, const Render:
     sceneCliffs_->setToolTip(CliffDetails(ground ? cliffs_.get() : nullptr));
     sceneLighting_->setText(EnvironmentSummary(loaded.environment.get()));
     sceneNotes_->setVisible(!loaded.materialNote.isEmpty());
-    sceneNotes_->setText(tr("部分资源不可用，已按近似方式显示"));
+    sceneNotes_->setText(ground && ground->budget.reduced ? tr("已保留基础贴图，部分地形细节未显示")
+        : tr("部分资源不可用，已按近似方式显示"));
     sceneNotes_->setToolTip(loaded.materialNote);
     terrainProblems_.clear();
     QStringList lines = loaded.materialNote.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
@@ -258,12 +296,26 @@ void WorldModule::ResetSceneFacts() {
         modelStatus_->setProperty("fullDiagnostics", QString());
     }
     if (sceneNotes_) { sceneNotes_->clear(); sceneNotes_->setToolTip({}); sceneNotes_->hide(); }
+    if (sceneGround_) sceneGround_->setProperty("groundBudget", QVariant{});
 }
 
 // 有地图数据编辑会话时取其当前地形（含未保存的笔刷修改），否则读来源成员。
 Result<std::vector<std::byte>> WorldModule::ReadTerrain() const {
     if (project_.mapEdits_ && project_.mapEdits_->Terrain()) return MapData::SerializeMapTerrain(*project_.mapEdits_->Terrain());
     return project_.ReadMapMember("war3map.w3e");
+}
+
+void WorldModule::RecordTerrainLoad(const char* stage, std::vector<Diagnostic> diagnostics, bool failed) {
+    terrainLoadStage_ = QString::fromLatin1(stage);
+    terrainLoadDiagnostics_ = std::move(diagnostics);
+    terrainLoadFailed_ = failed;
+}
+
+void WorldModule::RecordModelLoad(const char* stage, std::vector<Diagnostic> diagnostics, bool failed) {
+    modelLoadStage_ = QString::fromLatin1(stage);
+    modelLoadDiagnostics_ = std::move(diagnostics);
+    modelLoadGeneration_ = generation_;
+    modelLoadFailed_ = failed;
 }
 
 QString WorldModule::MapKey() const {
@@ -288,6 +340,8 @@ void WorldModule::Refresh() {
     instanceRegistry_.reset(); stagedInstanceRegistry_.reset(); instanceRevisionGate_.reset();
     pendingPlacements_.Clear(); placementCompletedScene_.reset(); placementCompletedFrame_.reset();
     const auto generation = ++generation_;
+    RecordTerrainLoad("awaiting-page");
+    RecordModelLoad("awaiting-terrain");
     terrainPathingPending_ = project_.mapEdits_ && !project_.mapEdits_->VerifyTerrainPathingForSave().Succeeded();
     if (terrainPathingWarning_) terrainPathingWarning_->setVisible(terrainPathingPending_);
     ++terrainRenderSerial_;
@@ -307,7 +361,8 @@ void WorldModule::Refresh() {
     UpdateWaterFrameControl();
     cliffs_.reset();
     cliffsInLayer_ = false; if (cliffLayer_) cliffLayer_->Clear();
-    scene_.reset(); requests_.clear(); placementIds_.clear();
+    scene_.reset(); requests_.clear(); placementIds_.clear(); unresolvedPlacements_.clear();
+    emptyModelDiagnosticVersion_.reset(); instanceDiagnosticVersion_.reset();
     pathingHelperCache_.reset(); pathingHelperPresentation_.reset(); pathingHelperRequests_.clear(); stagedPresentations_.clear();
     if (modelStatus_) {
         modelStatus_->setProperty("pathingHelperCount", QVariant::fromValue(qulonglong{0}));
@@ -324,13 +379,21 @@ void WorldModule::Refresh() {
     RefreshOutliner();
     ResetSceneFacts();
     UpdateInspector();
-    if (!page_->isVisible()) { needsRefresh_ = true; return; }
+    if (!page_->isVisible()) { needsRefresh_ = true; RecordTerrainLoad("deferred-hidden"); return; }
     needsRefresh_ = false;
-    if (worker_) { reloadQueued_ = true; terrainStatus_->setText(tr("正在切换地形…")); return; }
+    if (worker_) {
+        reloadQueued_ = true; RecordTerrainLoad("waiting-for-worker");
+        terrainStatus_->setText(tr("正在切换地形…")); return;
+    }
     reloadQueued_ = false;
     const auto sourceRaw = project_.mapEdits_ ? project_.mapEdits_->Terrain() : nullptr;
+    RecordTerrainLoad("reading-source");
     auto bytes = ReadTerrain();
-    if (!bytes.Succeeded()) { terrainStatus_->setText(DiagnosticText(bytes.diagnostics)); return; }
+    if (!bytes.Succeeded()) {
+        RecordTerrainLoad("source-read-failed", bytes.diagnostics, true);
+        terrainStatus_->setText(DiagnosticText(bytes.diagnostics)); return;
+    }
+    RecordTerrainLoad("loading-terrain");
     terrainStatus_->setText(tr("正在读取地形…"));
     sceneGround_->setText(tr("正在读取地表资源…"));
     auto sources = CaptureWorldTerrainSources(project_);
@@ -352,17 +415,32 @@ void WorldModule::Refresh() {
         worker_ = nullptr;
         if (reloadQueued_) { Refresh(); return; }
         if (generation != generation_ || !page_) return;
+        if (!result->Succeeded()) {
+            RecordTerrainLoad("terrain-load-failed", result->diagnostics, true);
+            terrainStatus_->setText(DiagnosticText(result->diagnostics)); return;
+        }
+        if (*cache && (*cache)->reader) {
+            // worker 完成后到此 queued 回调之间，源路径仍可能被替换。
+            const auto current = (*cache)->reader->VerifyCurrentSource();
+            if (!current.Succeeded()) {
+                RecordTerrainLoad("terrain-source-changed", current.diagnostics, true);
+                terrainStatus_->setText(DiagnosticText(current.diagnostics)); return;
+            }
+        }
         terrainCache_ = std::move(*cache);
-        if (!result->Succeeded()) { terrainStatus_->setText(DiagnosticText(result->diagnostics)); return; }
         auto& mesh = result->value->mesh;
         const auto vertexCount = mesh.vertices.size(), triangleCount = mesh.indices.size() / 3;
         const auto displayRevision = ++viewportRevision_;
         if (!viewport_->SetMesh(std::move(mesh.vertices), std::move(mesh.indices), displayRevision)) {
+            RecordTerrainLoad("mesh-submit-failed", Status::Failure("World", "WORLD_TERRAIN_MESH_SUBMIT",
+                "地形网格提交失败；插件原因见同次 backend 诊断。").diagnostics, true);
             terrainStatus_->setText(tr("地形网格提交失败")); return;
         }
         terrain_ = result->value->terrain;
         rawTerrain_ = sourceRaw ? sourceRaw : result->value->rawTerrain;
         if (!viewport_->SetPickingTerrain(terrain_, mesh.stride, displayRevision)) {
+            RecordTerrainLoad("picking-bind-failed", Status::Failure("World", "WORLD_TERRAIN_PICKING_BIND",
+                "地形拾取数据未绑定当前显示修订。").diagnostics, true);
             terrainStatus_->setText(tr("地形已显示，但坐标拾取数据不匹配")); return;
         }
         const auto& ground = result->value->ground;
@@ -372,7 +450,7 @@ void WorldModule::Refresh() {
         if (result->value->environment) (void)viewport_->SetEnvironment(result->value->environment); // 失败时状态行说明
         cliffs_ = textured ? result->value->cliffs : nullptr;
         ShowSceneFacts(*result->value, textured ? ground.get() : nullptr,
-            ground ? QString{} : tr("当前插件未提供地表贴图支持"));
+            ground && !textured ? WorldDiagnosticText(viewport_->LastGroundFailure().diagnostics) : QString{});
         sceneTerrain_->setText(tr("%1 × %2 顶点 · %3 三角形%4")
             .arg(mesh.sourceWidth).arg(mesh.sourceHeight)
             .arg(QLocale().toString(static_cast<qulonglong>(textured ? ground->indices.size() / 3 : triangleCount)))
@@ -380,6 +458,7 @@ void WorldModule::Refresh() {
         sceneTerrain_->setToolTip(tr("显示 %1 顶点").arg(QLocale().toString(
             static_cast<qulonglong>(textured ? ground->vertices.size() : vertexCount))));
         terrainStatus_->setText(tr("地形已就绪%1").arg(mesh.stride > 1 ? tr(" · 大地图按每 %1 格取样显示，不可笔刷").arg(mesh.stride) : QString{}));
+        RecordTerrainLoad("prepared", result->diagnostics);
         shownMap_ = MapKey();
         RefreshTerrainPalette();
         if (!pendingCamera_.isEmpty() && pendingCameraMap_ == shownMap_) (void)viewport_->RestoreCamera(pendingCamera_);
@@ -401,6 +480,7 @@ void WorldModule::StartModels(std::uint64_t generation) {
 }
 
 void WorldModule::ReportModelPreparationFailure(const QString& stage, const std::vector<Diagnostic>& diagnostics) {
+    RecordModelLoad("failed", diagnostics, true);
     project_.AddDiagnostics(diagnostics);
     const auto reason = tr("%1：%2").arg(stage, WorldDiagnosticText(diagnostics));
     QStringList details{reason};
@@ -423,7 +503,7 @@ QJsonObject WorldModule::PlaybackDiagnosticSnapshot() const {
             result.insert("locally_disabled", widget->testAttribute(Qt::WA_ForceDisabled));
             result.insert("visible", widget->isVisible());
             result.insert("hidden", widget->isHidden());
-            result.insert("tooltip", widget->toolTip());
+            WorldDiagnosticJson::Text(result, "tooltip", widget->toolTip());
         }
         return result;
     };
@@ -434,7 +514,7 @@ QJsonObject WorldModule::PlaybackDiagnosticSnapshot() const {
         player.insert("playing", animation_->Playing());
         player.insert("busy", animation_->Busy());
         player.insert("instances_busy", animation_->InstancesBusy());
-        player.insert("last_diagnostic", animation_->LastDiagnostic());
+        WorldDiagnosticJson::Text(player, "last_diagnostic", animation_->LastDiagnostic());
         if (const auto scene = animation_->Scene()) {
             serviceScene = {{"present", true}, {"scene_version", number(scene->sceneVersion)},
                 {"generation", number(scene->generation)}, {"document_revision", number(scene->documentRevision)},
@@ -453,7 +533,8 @@ QJsonObject WorldModule::PlaybackDiagnosticSnapshot() const {
         {"step", widgetState(animationStep_)}};
     QJsonObject model{{"exists", modelStatus_ != nullptr}};
     if (modelStatus_) {
-        model.insert("text", modelStatus_->text()); model.insert("details", modelStatus_->toolTip());
+        WorldDiagnosticJson::Text(model, "text", modelStatus_->text());
+        WorldDiagnosticJson::Text(model, "details", modelStatus_->toolTip());
     }
     QJsonObject loading{{"terrain_worker", worker_ != nullptr}, {"model_worker", modelWorker_ != nullptr},
         {"terrain_reload_queued", reloadQueued_}, {"needs_refresh", needsRefresh_},
@@ -463,24 +544,60 @@ QJsonObject WorldModule::PlaybackDiagnosticSnapshot() const {
     QJsonObject result{{"schema_version", 1}, {"player", player}, {"service_scene", serviceScene},
         {"accepted_frame", acceptedFrame}, {"buttons", buttons}, {"page", widgetState(page_)},
         {"model_status", model}, {"loading", loading}};
+    const auto terrainDiagnostics = WorldDiagnosticJson::Diagnostics(terrainLoadDiagnostics_);
+    QJsonObject terrainLoad{{"scope", "source-load"}, {"stage", terrainLoadStage_},
+        {"failed", terrainLoadFailed_}, {"generation", number(generation_)},
+        {"worker_running", worker_ != nullptr}, {"reload_queued", reloadQueued_}, {"needs_refresh", needsRefresh_},
+        {"has_terrain", terrain_ != nullptr}, {"has_raw_terrain", rawTerrain_ != nullptr},
+        {"vertex_count", number(viewport_ ? viewport_->VertexCount() : 0)},
+        {"completion_proven", false}, {"diagnostics", terrainDiagnostics},
+        {"diagnostics_total", number(terrainLoadDiagnostics_.size())},
+        {"diagnostics_omitted", number(terrainLoadDiagnostics_.size() - terrainDiagnostics.size())}};
+    WorldDiagnosticJson::Text(terrainLoad, "status_text", terrainStatus_ ? terrainStatus_->text() : QString{});
+    result.insert("terrain_load", terrainLoad);
+    const auto modelDiagnostics = WorldDiagnosticJson::Diagnostics(modelLoadDiagnostics_);
+    result.insert("model_load", QJsonObject{{"stage", modelLoadStage_}, {"failed", ModelLoadFailed()},
+        {"generation", number(modelLoadGeneration_)}, {"worker_running", modelWorker_ != nullptr},
+        {"diagnostics", modelDiagnostics}, {"diagnostics_total", number(modelLoadDiagnostics_.size())},
+        {"diagnostics_omitted", number(modelLoadDiagnostics_.size() - modelDiagnostics.size())}});
     if (viewport_) result.insert("backend", viewport_->BackendDiagnosticSnapshot());
     // 属性栏“地图”概况的原文与悬停原因，供探针批量查看地形资源问题。
     QJsonObject terrain;
     const auto fact = [&](const char* key, const QLabel* label) {
-        if (label) terrain.insert(key, QJsonObject{{"text", label->text()}, {"details", label->toolTip()}});
+        if (label) {
+            QJsonObject value;
+            WorldDiagnosticJson::Text(value, "text", label->text());
+            WorldDiagnosticJson::Text(value, "details", label->toolTip());
+            terrain.insert(key, value);
+        }
     };
     fact("terrain", sceneTerrain_); fact("ground", sceneGround_); fact("water", sceneWater_);
     fact("cliffs", sceneCliffs_); fact("lighting", sceneLighting_);
-    if (sceneNotes_ && !sceneNotes_->isHidden()) terrain.insert("notes", sceneNotes_->toolTip());
+    if (sceneGround_) {
+        const auto budget = sceneGround_->property("groundBudget").value<QJsonObject>();
+        if (!budget.isEmpty()) terrain.insert("ground_budget", budget);
+    }
+    if (sceneNotes_ && !sceneNotes_->isHidden()) WorldDiagnosticJson::Text(terrain, "notes", sceneNotes_->toolTip());
     result.insert("scene_facts", terrain);
     return result;
 }
 
 void WorldModule::StartStaticModels(std::uint64_t generation, QString animationReason) {
-    if (!viewport_->HasModelSupport()) { modelStatus_->setText(tr("当前渲染插件不支持模型显示")); return; }
-    if (modelWorker_) { modelGeneration_ = generation; modelStatus_->setText(tr("等待上一批模型读取结束…")); return; }
+    RecordModelLoad("capturing-static");
+    emptyModelDiagnosticVersion_.reset();
+    if (!viewport_->HasModelSupport()) {
+        ReportModelPreparationFailure(tr("当前渲染插件不支持模型显示"), Status::Failure("World",
+            "WORLD_MODEL_BACKEND_UNAVAILABLE", "渲染插件没有模型显示能力。").diagnostics); return;
+    }
+    if (modelWorker_) {
+        RecordModelLoad("waiting-for-model-worker");
+        modelGeneration_ = generation; modelStatus_->setText(tr("等待上一批模型读取结束…")); return;
+    }
     const auto document = CurrentDocument();
-    if (!document) { modelStatus_->setText(tr("地图数据不可用，未显示摆放模型")); return; }
+    if (!document) {
+        ReportModelPreparationFailure(tr("地图数据不可用，未显示摆放模型"), Status::Failure("World",
+            "WORLD_MODEL_DOCUMENT_UNAVAILABLE", "当前地图文档不可用，不能捕获摆放模型。").diagnostics); return;
+    }
     CaptureAuxiliary(*document);
     RefreshOutliner();
     RefreshBuildingSplats(false, &*document); // uubs资格独立于后续空模型/解析拒绝。
@@ -496,12 +613,15 @@ void WorldModule::StartStaticModels(std::uint64_t generation, QString animationR
         modelStatus_->setText(tr("无%1").arg(unresolved));
         modelStatus_->setToolTip(unresolvedTip);
         (void)viewport_->SetModelScene(nullptr);
+        scene_.reset(); if (animation_) animation_->Clear();
         requests_ = std::move(capture.requests); placementIds_ = std::move(capture.ids);
+        unresolvedPlacements_ = std::move(capture.unresolvedRows);
+        FinishEmptyModelCapture();
         UpdateOverlay();
         return;
     }
     auto sources = CaptureWorldTerrainSources(project_);
-    if (!sources.Succeeded()) { modelStatus_->setText(DiagnosticText(sources.diagnostics)); return; }
+    if (!sources.Succeeded()) { ReportModelPreparationFailure(tr("模型资源来源准备失败"), sources.diagnostics); return; }
     const auto counts = tr("装饰物 %1 · 可破坏物 %2 · 单位 %3 · 物品 %4").arg(Count(capture.doodads),
         Count(capture.destructibles), Count(capture.units), Count(capture.items));
     modelStatus_->setText(tr("正在读取…"));
@@ -545,6 +665,7 @@ void WorldModule::StartStaticModels(std::uint64_t generation, QString animationR
         }
     });
     modelWorker_ = worker;
+    RecordModelLoad("preparing-static");
     connect(worker, &QThread::finished, this, [this, generation, result, placed, counts, unresolved, unresolvedTip, cliffs, animationReason,
         modelRevision, preparedHelpers, presentationVersion, variants] {
         modelWorker_ = nullptr;
@@ -561,14 +682,19 @@ void WorldModule::StartStaticModels(std::uint64_t generation, QString animationR
             StartModels(generation_); return;
         }
         if (cliffs_ != cliffs) { StartModels(generation_); return; } // 地形重烘焙已替换旧悬崖网格。
-        if (!result->Succeeded()) { modelStatus_->setText(DiagnosticText(result->diagnostics)); return; }
+        if (!result->Succeeded()) { ReportModelPreparationFailure(tr("静态模型准备失败"), result->diagnostics); return; }
         auto scene = std::make_shared<Render::WorldModelScene>(std::move(*result->value));
         if (*preparedHelpers && (*preparedHelpers)->cache->sourceOwner) {
             const auto verified = (*preparedHelpers)->cache->sourceOwner->VerifyCurrentSource();
-            if (!verified.Succeeded()) { project_.AddDiagnostics(verified.diagnostics); return; }
+            if (!verified.Succeeded()) { ReportModelPreparationFailure(tr("静态模型来源已变化"), verified.diagnostics); return; }
         }
-        if (!viewport_->SetModelScene(scene)) { modelStatus_->setText(tr("模型提交失败")); modelStatus_->setToolTip(counts); return; }
+        if (!viewport_->SetModelScene(scene)) {
+            ReportModelPreparationFailure(tr("模型提交失败"), Status::Failure("World", "WORLD_STATIC_MODEL_SUBMIT_FAILED",
+                "静态模型没有被渲染插件接受；没有授予当前场景完成资格。").diagnostics); return;
+        }
         scene_ = scene; requests_ = std::move(placed->requests); placementIds_ = std::move(placed->ids);
+        unresolvedPlacements_ = std::move(placed->unresolvedRows);
+        RecordModelLoad("prepared-static");
         pathingHelperRequests_.assign(requests_.size(), 0);
         pathingHelperPresentation_.reset();
         if (*preparedHelpers) {

@@ -36,6 +36,7 @@ bool IsMemberPath(const std::filesystem::path& path, const std::string& memberNa
 
 Status McpWorkspace::ValidateMapDataOverlay() const {
     if (!activeEdit_ || !activeEdit_->mapData) return Status::Ok();
+    if (activeEdit_->auxiliary) return ValidateAuxiliaryOverlay();
     if (activeEdit_->placementIntent) {
         const auto frozen = MapData::FreezeOriginalMapDataPlacement(*initialMapData_, *activeEdit_->mapData,
             *activeEdit_->placementIntent);
@@ -54,6 +55,8 @@ Result<MapData::MapDataEditSession::EditReceipt> McpWorkspace::ApplyPlacementPla
     if (!terrain.Succeeded()) return Failed<Receipt>(terrain);
     const auto captured = CaptureMapDataSources();
     if (!captured.Succeeded()) return Failed<Receipt>(captured);
+    if (activeEdit_->auxiliary)
+        return Result<Receipt>::Failure("MCP", "MCP_AUXILIARY_MIXED_UNSUPPORTED", "独立预放命令暂不混入区域/镜头结构事务。");
     if (!plan.OriginalReplayIntent())
         return Result<Receipt>::Failure("MCP", "MCP_PLACEMENT_ORIGINAL_SOURCE_REQUIRED",
             "独立预放命令只接受原来源内的精确摆放身份。");

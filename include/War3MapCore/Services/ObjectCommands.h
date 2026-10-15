@@ -65,6 +65,11 @@ struct ObjectCommandPlan {
 
 [[nodiscard]] Result<std::vector<ObjectListRow>> ListObjects(
     const ObjectCommandContext& context, ObjectListScope scope);
+// 读取资格不自动授予写入资格；宿主发布已规划命令前也复核同一入口。
+[[nodiscard]] Status VerifyObjectWriteSource(const ObjectCommandContext& context, const std::string& id);
+// 复核实际文档差异中所有对象的前后父链；subject 或旧查询不能代替此发布门。
+[[nodiscard]] Status VerifyObjectDocumentWriteSources(const ObjectCommandContext& context,
+    const ObjectData::LniObjectDocument& before, const ObjectData::LniObjectDocument& after);
 [[nodiscard]] Result<std::vector<ObjectFieldRow>> ReadObjectFields(
     const ObjectCommandContext& context, const std::string& id);
 [[nodiscard]] Result<ObjectData::ObjectFieldMatch> ResolveObjectField(

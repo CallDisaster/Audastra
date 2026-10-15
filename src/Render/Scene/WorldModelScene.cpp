@@ -5,6 +5,7 @@
 #include "War3MapCore/Image/TextureImage.h"
 #include "War3MapCore/Render/MdxModel.h"
 #include "War3MapCore/Render/MdxPose.h"
+#include "War3MapCore/Resources/ClassicObjectTexture.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -228,19 +229,38 @@ private:
     }
 
     std::uint32_t Texture(const MdxTexture& texture, const ModelInstanceRequest& request) {
-        const auto path = ModelTexturePath(texture, request);
-        if (path.empty()) { ++scene_.untexturedLayers; return WAR3_RENDER_MODEL_NO_TEXTURE; }
-        ModelTextureRgba resourceKey; resourceKey.path = path;
-        const auto key = ModelTextureAssetKey(resourceKey);
-        if (const auto found = textures_.find(key); found != textures_.end()) {
-            if (found->second == WAR3_RENDER_MODEL_NO_TEXTURE) {
+        const auto requestedPath = ModelTexturePath(texture, request);
+        if (requestedPath.empty()) { ++scene_.untexturedLayers; return WAR3_RENDER_MODEL_NO_TEXTURE; }
+        // 同名普通 TEXS 与物编替换入口可能命中不同后缀，不能共用请求缓存。
+        const bool objectReplacement = texture.replaceableId >= 3;
+        const auto requestKey = std::string(objectReplacement ? "object:" : "exact:") + PathKey(requestedPath);
+        if (const auto found = textureRequests_.find(requestKey); found != textureRequests_.end()) {
+            if (found->second.index == WAR3_RENDER_MODEL_NO_TEXTURE) {
                 ++scene_.untexturedLayers;
-                if (budgetTextures_.contains(key)) ++budgetTextures_[key]; else ++failedTextures_[path];
+                if (found->second.budgetExceeded) ++budgetTextures_[requestedPath]; else ++failedTextures_[requestedPath];
             }
-            return found->second;
+            return found->second.index;
         }
         auto index = WAR3_RENDER_MODEL_NO_TEXTURE;
-        auto bytes = read_(path);
+        auto path = requestedPath;
+        Result<std::vector<std::byte>> bytes;
+        if (objectReplacement) {
+            auto resolved = Resources::ReadClassicObjectTexture<std::vector<std::byte>>(path, read_);
+            if (resolved.Succeeded()) {
+                path = std::move(resolved.value->path);
+                bytes.value = std::move(resolved.value->resource);
+            }
+            bytes.diagnostics = std::move(resolved.diagnostics);
+        } else bytes = read_(path);
+        ModelTextureRgba resourceKey; resourceKey.path = path;
+        const auto key = ModelTextureAssetKey(resourceKey);
+        // 解析后按实际资源去重：请求规则不同，但成功读到同一资源时只占一份上传预算。
+        if (bytes.Succeeded() && bytes.value->size() <= limits_.maxTextureBytes) {
+            if (const auto found = textures_.find(key); found != textures_.end()) {
+                textureRequests_.emplace(requestKey, TextureRequest{found->second, false});
+                return found->second;
+            }
+        }
         bool budgetExceeded = false;
         if (bytes.Succeeded() && (bytes.value->size() > limits_.maxTextureBytes || scene_.textures.size() >= limits_.maxTextures)) {
             budgetExceeded = true;
@@ -261,11 +281,12 @@ private:
                 } else budgetExceeded = true;
             }
         }
-        if (budgetExceeded) ++budgetTextures_[key];
-        textures_.emplace(key, index);
+        if (budgetExceeded) ++budgetTextures_[requestedPath];
+        textureRequests_.emplace(requestKey, TextureRequest{index, budgetExceeded});
+        if (index != WAR3_RENDER_MODEL_NO_TEXTURE) textures_.emplace(key, index);
         if (index == WAR3_RENDER_MODEL_NO_TEXTURE) {
             ++scene_.untexturedLayers;
-            if (!budgetExceeded) ++failedTextures_[path];
+            if (!budgetExceeded) ++failedTextures_[requestedPath];
         }
         return index;
     }
@@ -542,6 +563,8 @@ private:
     WorldModelScene scene_;
     std::unordered_map<std::string, ParsedModel> parsed_;
     std::unordered_map<std::string, std::optional<std::uint32_t>> models_;
+    struct TextureRequest { std::uint32_t index; bool budgetExceeded; };
+    std::unordered_map<std::string, TextureRequest> textureRequests_;
     std::unordered_map<std::string, std::uint32_t> textures_;
     std::map<std::string, std::size_t> failedModels_, budgetModels_, failedTextures_, budgetTextures_;
     std::uint64_t textureBytes_ = 0;

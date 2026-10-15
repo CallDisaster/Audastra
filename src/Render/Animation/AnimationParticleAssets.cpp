@@ -1,4 +1,5 @@
 #include "AnimationParticles.h"
+#include "War3MapCore/Resources/ClassicObjectTexture.h"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -41,6 +42,10 @@ bool OnlyMissingResource(std::span<const Diagnostic> diagnostics) {
         if (d.code != "RESOURCE_NOT_FOUND" && d.code != "file-not-found" && d.code != "WORLD_ASSET_MISSING") return false;
     }
     return error;
+}
+bool ValidTextureResource(const AnimationResource& resource, std::uint64_t maximum) {
+    return resource.bytes.size() <= maximum && !resource.sourceLayer.empty() && resource.digest.size() == 64
+        && std::all_of(resource.digest.begin(), resource.digest.end(), [](unsigned char c) { return std::isxdigit(c) != 0; });
 }
 } // namespace
 Status ReadAnimationParticleAsset(AnimationAsset& a, std::span<const std::byte> bytes,
@@ -162,6 +167,7 @@ Result<std::shared_ptr<AnimationParticleHost>> CreateAnimationParticles(Animated
     host->playbackPolicy = limits.playbackPolicy;
     host->simulation = {p.maxParticles, p.maxRibbonSegments, p.maxPerEmitter, p.maxAnchorSamples};
     std::unordered_map<std::string, std::uint32_t> textures;
+    std::unordered_map<std::string, std::string> objectTexturePaths;
     std::unordered_set<std::string> missingTextures; // 同一模型的多个实例不重复走全部来源查找
     std::uint64_t textureBytes = 0, modelTextureBytes = 0;
     const auto& geometry=std::as_const(scene.geometry);
@@ -214,9 +220,30 @@ Result<std::shared_ptr<AnimationParticleHost>> CreateAnimationParticles(Animated
             MdxTexture texture;
             if (e.replaceableId) texture.replaceableId = e.replaceableId;
             else texture = a.parsed->textures[e.textureId];
-            const auto path = ModelTexturePath(texture, std::as_const(scene).specs[r].model), key = AnimationPathKey(path);
+            auto path = ModelTexturePath(texture, std::as_const(scene).specs[r].model);
             if (path.empty()) return fail("PARTICLE_TEXTURE_INVALID", "粒子没有可解析贴图路径，未填白。");
-            if (missingTextures.contains(key)) { textureMissing = true; break; }
+            const bool objectReplacement = texture.replaceableId >= 3;
+            const auto requestKey = std::string(objectReplacement ? "object:" : "exact:") + AnimationPathKey(path);
+            if (missingTextures.contains(requestKey)) { textureMissing = true; break; }
+            std::optional<AnimationResource> selectedResource;
+            if (objectReplacement) {
+                if (const auto found = objectTexturePaths.find(requestKey); found != objectTexturePaths.end()) path = found->second;
+                else {
+                    auto selected = Resources::ReadClassicObjectTexture<AnimationResource>(path,
+                        [&](std::string_view candidate) { return read(candidate, limits.geometry.maxTextureBytes); });
+                    if (!selected.Succeeded()) {
+                        if (!limits.retainUnsupportedStatic || !OnlyMissingResource(selected.diagnostics))
+                            return {std::nullopt, std::move(selected.diagnostics)};
+                        missingTextures.insert(requestKey); textureMissing = true; break;
+                    }
+                    path = std::move(selected.value->path);
+                    selectedResource = std::move(selected.value->resource);
+                    if (!ValidTextureResource(*selectedResource, limits.geometry.maxTextureBytes))
+                        return fail("ANIMATION_TEXTURE_SOURCE", "粒子贴图缺少真实来源、SHA-256 或超过读取预算。");
+                    objectTexturePaths.emplace(requestKey, path);
+                }
+            }
+            const auto key = AnimationPathKey(path);
             auto found = textures.find(key);
             if (found == textures.end()) {
                 if (textures.size() >= 256) return fail("ANIMATION_PARTICLE_TEXTURE_BUDGET", "粒子场景贴图超过 256。");
@@ -225,17 +252,16 @@ Result<std::shared_ptr<AnimationParticleHost>> CreateAnimationParticles(Animated
                     [&](const auto& t) { return AnimationPathKey(t.path) == key; });
                 if (existing != geometry.textures.end()) decoded = *existing;
                 else {
-                    auto resource = read(path, limits.geometry.maxTextureBytes);
+                    auto resource = selectedResource ? Result<AnimationResource>::Success(std::move(*selectedResource))
+                        : read(path, limits.geometry.maxTextureBytes);
                     if (!resource.Succeeded()) {
                         // 预览模式下贴图在所有来源都不存在：游戏同样画不出这组粒子，只停这个实例的粒子并记原因，
                         // 不让一张缺失贴图拖垮整个动画场景（模型、选取圈都会随之消失）。
                         if (!limits.retainUnsupportedStatic || !OnlyMissingResource(resource.diagnostics))
                             return {std::nullopt, std::move(resource.diagnostics)};
-                        missingTextures.insert(key); textureMissing = true; break;
+                        missingTextures.insert(requestKey); textureMissing = true; break;
                     }
-                    if (resource.value->bytes.size() > limits.geometry.maxTextureBytes || resource.value->sourceLayer.empty() ||
-                        resource.value->digest.size() != 64 || !std::all_of(resource.value->digest.begin(), resource.value->digest.end(),
-                            [](unsigned char c) { return std::isxdigit(c) != 0; }))
+                    if (!ValidTextureResource(*resource.value, limits.geometry.maxTextureBytes))
                         return fail("ANIMATION_TEXTURE_SOURCE", "粒子贴图缺少真实来源、SHA-256 或超过读取预算。");
                     auto image = DecodeModelTexture(path, resource.value->bytes, limits.geometry.maxTextureDimension);
                     if (!image.Succeeded()) return {std::nullopt, std::move(image.diagnostics)};

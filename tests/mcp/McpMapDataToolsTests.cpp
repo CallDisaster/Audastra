@@ -969,6 +969,34 @@ void SoundQueriesBindPaginationCoverageAndBudgets() {
     const auto tail = InvokeMapDataTool("sounds_list", QJsonObject{{"query", "absent"}, {"page", QJsonObject{{"cursor", scan.value("next_cursor")}}}}, bounded.host);
     Require(tail.value("ok").toBool() && tail.value("examined") == "1" && !tail.value("truncated").toBool() && tail.value("matched_total").isNull(), "sound scan cursor resumes at actual next row");
 }
+void AuxiliaryFieldsShareBothHostTransactions() {
+    for (const bool standalone : {false, true}) {
+        Fixture fixture(standalone);
+        const auto region = InvokeMapDataTool("entities_set_fields", fixture.Request({
+            fixture.Change(0, "weather_id", "Rain"), fixture.Change(0, "color_bgra", "3351057")}), fixture.host);
+        Require(region.value("ok").toBool(), "both hosts accept shared region weather and color fields");
+        const auto& actual = fixture.current->Regions()->entries[0];
+        Require(actual.weatherId == std::array{std::byte{'R'}, std::byte{'a'}, std::byte{'i'}, std::byte{'n'}}
+            && actual.colorBgra[3] == 0, "full raw weather and reserved BGRA byte retained");
+        Require(Code(InvokeMapDataTool("entities_set_fields", fixture.Request({
+            fixture.Change(0, "color_bgra", "2134062101")}), fixture.host)) == "REGION_COLOR_RESERVED",
+            "both hosts preserve the unknown fourth color byte");
+        const auto camera = InvokeMapDataTool("entities_set_fields", fixture.Request({
+            fixture.Change(0, "rotation", "75", MapDataKind::Cameras),
+            fixture.Change(0, "angle_of_attack", "295", MapDataKind::Cameras),
+            fixture.Change(0, "roll", "12", MapDataKind::Cameras),
+            fixture.Change(0, "field_of_view", "80", MapDataKind::Cameras),
+            fixture.Change(0, "far_z", "6000", MapDataKind::Cameras)}, "cameras"), fixture.host);
+        Require(camera.value("ok").toBool() && fixture.current->Cameras()->entries[0].roll == 12,
+            "both hosts use the same complete known camera fields");
+        Require(Code(InvokeMapDataTool("entities_set_fields", fixture.Request({
+            fixture.Change(0, "near_z", "150", MapDataKind::Cameras)}, "cameras"), fixture.host)) == "MAP_FIELD_READ_ONLY",
+            "classic unknown slot cannot be opened by MCP");
+        const auto frozen = FreezeOriginalMapDataFields(*fixture.original, *fixture.current);
+        Require(frozen.Succeeded() && frozen.value->Operations().size() == 7,
+            "new fields survive original-source freeze and exact native replay");
+    }
+}
 } // namespace
 
 int main() {
@@ -981,6 +1009,7 @@ int main() {
         UnitPositionsUseOriginalAtomicFieldsAndRowCapabilities();
         DWireLiteralSharedStringsAndOriginalUndo(); DSettingsReferencesRequireExplicitSharedModeAndUseOriginalUndo(); DFailuresPagingAndUnresolvedText();
         SoundsUseStableRawNamesTypedValuesAndOriginalUndo(); SoundFailuresNeverPublishOrCoerceTypes(); SoundQueriesBindPaginationCoverageAndBudgets();
-        std::cout << "实体、地图文字与声音工具：18 组场景通过\n"; return 0;
+        AuxiliaryFieldsShareBothHostTransactions();
+        std::cout << "实体、地图文字与声音工具：19 组场景通过\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

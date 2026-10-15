@@ -2,10 +2,12 @@
 #include "MapSaveJob.h"
 #include "MapSavePreferences.h"
 #include "PendingImportPayload.h"
+#include "ProjectObjectCatalog.h"
 
 #include "War3MapCore/Image/BlpImage.h"
 #include "War3MapCore/Lua/LuaSyntax.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
+#include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
@@ -17,6 +19,9 @@
 #include "War3MapCore/Trigger/UiCatalog.h"
 #include "War3MapCore/VerifiedFile.h"
 #include "War3MapCore/Services/MapObjectReferenceCapture.h"
+#include "War3MapCore/Services/AuxiliaryTransaction.h"
+#include "War3MapCore/Services/ObjectCatalogSources.h"
+#include "War3MapCore/Services/ObjectCommands.h"
 #include "War3MapCore/Trigger/TriggerVariableReference.h"
 
 #include <QFile>
@@ -43,6 +48,82 @@ std::string CanonicalMember(std::string name) {
         return character == '\\' ? '/' : static_cast<char>(std::tolower(character));
     });
     return name;
+}
+
+Result<ObjectData::LniObjectDocument> ObjectWriteDocument(ObjectData::ObjectType type,
+    const std::optional<std::vector<std::byte>>& native) {
+    std::vector<std::byte> text;
+    if (native) {
+        auto converted = ObjectData::ConvertNativeObjectDataToLni(type, *native);
+        if (!converted.Succeeded()) return {{}, converted.diagnostics};
+        text = std::move(*converted.value);
+    }
+    auto parsed = ObjectData::LniObjectCodec(type).Parse(text);
+    const auto* document = parsed.Succeeded() ? dynamic_cast<const ObjectData::LniObjectDocument*>(parsed.document.get()) : nullptr;
+    if (!document || !document->IsStructurallySafe()) {
+        if (!parsed.diagnostics.empty()) return {{}, parsed.diagnostics};
+        return Result<ObjectData::LniObjectDocument>::Failure("Object.Save", "OBJECT_WRITE_BASELINE_INVALID",
+            "保存写入资格没有完整的原生/LNI前后文档。");
+    }
+    return Result<ObjectData::LniObjectDocument>::Success(*document);
+}
+
+Result<std::optional<std::vector<std::byte>>> ObjectWriteNative(const MapArchiveSession& archive,
+    ObjectData::ObjectType type) {
+    using Output = Result<std::optional<std::vector<std::byte>>>;
+    const auto name = ObjectData::NativeFileName(type);
+    if (archive.HasMember(name)) {
+        auto read = archive.ReadMember(name);
+        if (!read.Succeeded()) return {{}, read.diagnostics};
+        return Output::Success(std::move(*read.value));
+    }
+    // 命名快照缺项不证明匿名块缺失；最终模板可涉及此前未命名的native成员。
+    const std::vector<std::string> names{std::string(name)};
+    auto exact = archive.CaptureExactMembers(names);
+    if (!exact.Succeeded()) return {{}, exact.diagnostics};
+    if (!exact.value->front().present) return Output::Success(std::nullopt);
+    return Output::Success(std::move(exact.value->front().bytes));
+}
+
+// 后台只读取任务自己拥有的归档、最终成员与冻结来源，不借用Project或CampaignSession。
+// 模板也可能改变native/SLK；发布前按最终实际差异再核全部类别。
+Status VerifyFrozenObjectWriteSources(const Services::MapSaveTask& task,
+    const ObjectData::EffectiveObjectCatalog& captured, const std::filesystem::path& gameRoot) {
+    if (!task.archive) return Status::Failure("Object.Save", "OBJECT_WRITE_BASELINE_INVALID", "保存写入资格缺少冻结归档。");
+    if (const auto status = captured.VerifyCapturedSources(); !status.Succeeded()) return status;
+    Services::ObjectCatalogSources sources;
+    sources.archive = task.archive.get(); sources.gameRoot = gameRoot;
+    sources.replacements = task.replacements; sources.removals = task.removals;
+    sources.overlayIdentity = task.sourceSha256;
+    auto current = Services::LoadEffectiveObjectCatalog(sources);
+    if (!current.Succeeded()) return {current.diagnostics};
+    for (const auto type : kObjectTypes) {
+        const auto member = CanonicalMember(std::string(ObjectData::NativeFileName(type)));
+        const MemberReplacement* replacement = nullptr;
+        for (const auto& input : task.replacements) {
+            if (CanonicalMember(input.name) != member) continue;
+            if (replacement) return Status::Failure("Object.Save", "OBJECT_WRITE_OUTPUT_CONFLICT", "最终物编成员有重复覆盖。");
+            replacement = &input;
+        }
+        const bool removed = std::any_of(task.removals.begin(), task.removals.end(), [&](const auto& name) {
+            return CanonicalMember(name) == member;
+        });
+        if (!replacement && !removed) continue;
+        if (replacement && removed) return Status::Failure("Object.Save", "OBJECT_WRITE_OUTPUT_CONFLICT", "最终物编成员同时删除和覆盖。");
+        auto original = ObjectWriteNative(*task.archive, type);
+        if (!original.Succeeded()) return {original.diagnostics};
+        const auto finalBytes = replacement ? std::make_optional(replacement->data) : std::nullopt;
+        if (*original.value == finalBytes) continue; // 未改变的未知字节仍按原保存链透传。
+        auto before = ObjectWriteDocument(type, *original.value);
+        auto after = ObjectWriteDocument(type, finalBytes);
+        if (!before.Succeeded()) return {before.diagnostics};
+        if (!after.Succeeded()) return {after.diagnostics};
+        Services::ObjectCommandContext context;
+        context.type = type; context.standard = &current.value->Catalog();
+        const auto status = Services::VerifyObjectDocumentWriteSources(context, *before.value, *after.value);
+        if (!status.Succeeded()) return status;
+    }
+    return current.value->VerifyCapturedSources();
 }
 
 // 编辑器自己管理的成员不能被导入资源覆盖。
@@ -211,18 +292,32 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
             nextBaselines[index] = std::make_unique<ObjectData::NativeObjectDocument>(*nativeObjectDocuments_[index]);
         }
     }
+    std::optional<MapData::TerrainSavePlan> terrainPlan;
+    std::vector<MapArchiveMember> auxiliarySaveMembers;
     if (mapEdits_ && mapEdits_->IsDirty()) {
-        const auto pathing = mapEdits_->VerifyTerrainPathingForSave();
+        if (MapData::TerrainSavePlan::HasTerrainChanges(*mapEdits_)) {
+            auto prepared = MapData::TerrainSavePlan::Prepare(*job->archive, *mapEdits_);
+            AddDiagnostics(prepared.diagnostics);
+            if (!prepared.Succeeded() || !prepared.value) return nullptr;
+            terrainPlan = std::move(*prepared.value);
+        }
+        const auto pathing = terrainPlan ? terrainPlan->SaveGate() : mapEdits_->VerifyTerrainPathingForSave();
         if (!pathing.Succeeded()) {
             AddDiagnostics(pathing.diagnostics);
             return fail(tr("REPACK_TERRAIN_PATHING_UNVERIFIED"),
                 tr("地形变化尚无可验证的通行性更新；地图候选未写出。请先撤销这类地形笔划。"));
         }
         for (auto& member : mapEdits_->Replacements()) {
+            const auto key = CanonicalMember(member.name);
+            if (key == "war3map.w3r" || key == "war3map.w3c") auxiliarySaveMembers.push_back(member);
             replaceMember(member.name, std::move(member.data));
         }
         const auto removed = mapEdits_->Removals();
         job->removals.insert(job->removals.end(), removed.begin(), removed.end());
+        if (terrainPlan) {
+            const auto& diagnostics = terrainPlan->Diagnostics();
+            job->diagnostics.insert(job->diagnostics.end(), diagnostics.begin(), diagnostics.end());
+        }
     }
     if (triggerDirty_) {
         if (!triggerDocument_ || !uiCatalog_) {
@@ -236,6 +331,7 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
         replaceMember("war3map.wtg", std::move(encoded.value->wtg));
         replaceMember("war3map.wct", std::move(encoded.value->wct));
     }
+    std::shared_ptr<const ObjectData::EffectiveObjectCatalog> objectWriteCatalog;
     for (std::size_t index = 0; index < kObjectTypes.size(); ++index) {
         if (!objectDirty_[index]) continue;
         const auto type = kObjectTypes[index];
@@ -246,6 +342,27 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
         // 尚未保存的创建全部撤销后，不向源图原本缺少的类别写入空成员。
         if (objectDocuments_[index]->Objects().empty() && !archiveSession_->HasMember(ObjectData::NativeFileName(type))) {
             continue;
+        }
+        auto original = ObjectWriteNative(*job->archive, type);
+        if (!original.Succeeded()) { AddDiagnostics(original.diagnostics); return nullptr; }
+        auto before = ObjectWriteDocument(type, *original.value);
+        if (!before.Succeeded()) { AddDiagnostics(before.diagnostics); return nullptr; }
+        if (!ObjectData::DiffObjects(before.value->Objects(), objectDocuments_[index]->Objects()).Empty()) {
+            if (!objectWriteCatalog) {
+                const auto ready = EnsureProjectObjectCatalog(*this);
+                AddDiagnostics(ready.diagnostics);
+                if (!ready.Succeeded()) return nullptr;
+                const auto verified = VerifyProjectObjectCatalog(*this);
+                AddDiagnostics(verified.diagnostics);
+                if (!verified.Succeeded()) return nullptr;
+                objectWriteCatalog = ProjectEffectiveObjectCatalog(*this);
+                if (!objectWriteCatalog) return fail(tr("OBJECT_CATALOG_UNAVAILABLE"), tr("保存缺少可冻结的有效物编来源。"));
+            }
+            Services::ObjectCommandContext context;
+            context.type = type; context.standard = &objectWriteCatalog->Catalog();
+            const auto writable = Services::VerifyObjectDocumentWriteSources(context, *before.value, *objectDocuments_[index]);
+            AddDiagnostics(writable.diagnostics);
+            if (!writable.Succeeded()) return nullptr;
         }
         const auto applied = ObjectData::ApplyLniChangesToNative(
             *nextBaselines[index], *objectDocuments_[index], objectFieldSchema_.get(), standardCatalog_.get());
@@ -384,7 +501,14 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
     if (!objectNames.Succeeded() || !objectNames.value)
         return fail(tr("REPACK_MAP_OBJECT_REFERENCE_INVALID"), tr("无法确定运行T中的预放对象依赖。"));
     if (!objectNames.value->empty()) {
-        auto references = Services::CaptureArchiveMapObjectReferences(*job->archive, war3GameRoot_, job->replacements, job->removals);
+        Services::ObjectCatalogSources classification;
+        classification.archive = job->archive.get();
+        classification.gameRoot = war3GameRoot_;
+        classification.campaign = campaignScope_.get();
+        classification.replacements = job->replacements;
+        classification.removals = job->removals;
+        classification.overlayIdentity = job->sourceSha256;
+        auto references = Services::CaptureArchiveMapObjectReferences(*job->archive, war3GameRoot_, job->replacements, job->removals, &classification);
         AddDiagnostics(references.diagnostics);
         if (!references.Succeeded() || !references.value)
             return fail(tr("REPACK_MAP_OBJECT_REFERENCES_UNAVAILABLE"), tr("无法冻结当前T使用的预放对象来源。"));
@@ -397,6 +521,11 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
             used |= resolved.value->kind == Trigger::VariableReferenceKind::PreplacedObject;
         }
         if (used) {
+            const auto inputs = (*references.value)->Inputs();
+            if (std::any_of(inputs.begin(), inputs.end(), [](const auto& input) {
+                return input.scope == Trigger::MapObjectReferenceSourceScope::Campaign;
+            })) return fail(tr("CAMPAIGN_CLASSIFICATION_SAVE_UNFROZEN"),
+                tr("预放引用使用了战役分类表，后台保存尚未冻结这份来源；未写出地图。"));
             job->mapObjectReferences = std::move(*references.value);
             job->mapObjectReferenceGameRoot = war3GameRoot_;
         }
@@ -415,6 +544,45 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
     if (editRevision_.Generation() != frozenGeneration || editRevision_.Revision() != frozenRevision
         || editRevision_.Current() != frozenScopes) {
         return fail(tr("SAVE_REVISION_CHANGED"), tr("准备保存时编辑内容发生变化，地图保存已中止。"));
+    }
+    if (objectWriteCatalog) {
+        const auto* task = job.get();
+        job->beforePublish = [catalog = std::move(objectWriteCatalog), gameRoot = war3GameRoot_, task,
+            previous = std::move(job->beforePublish)]() {
+            if (previous) {
+                const auto status = previous();
+                if (!status.Succeeded()) return status;
+            }
+            return VerifyFrozenObjectWriteSources(*task, *catalog, gameRoot);
+        };
+    }
+    if (!auxiliarySaveMembers.empty()) {
+        // 模板 import 在脚本生成之后合并，不能覆盖本次初始化所依据的结构编辑。
+        const auto* task = job.get();
+        job->beforePublish = [members = std::move(auxiliarySaveMembers), task,
+            previous = std::move(job->beforePublish)]() {
+            if (previous) {
+                const auto status = previous();
+                if (!status.Succeeded()) return status;
+            }
+            return Services::VerifyAuxiliarySaveOutput(members, task->replacements, task->removals);
+        };
+    }
+    if (terrainPlan) {
+        const auto checked = terrainPlan->VerifyForSave(*mapEdits_, job->sourceSha256, job->replacements, job->removals);
+        AddDiagnostics(checked.diagnostics);
+        if (!checked.Succeeded()) return nullptr;
+        // 后台仅捕获冻结计划和自有任务；不借用仍在前台编辑的会话。
+        // 脚本模板合并完毕后再核一次，防止派生成员被后续阶段悄悄覆盖。
+        const auto plan = std::make_shared<const MapData::TerrainSavePlan>(std::move(*terrainPlan));
+        const auto* task = job.get();
+        job->beforePublish = [plan, task, previous = std::move(job->beforePublish)]() {
+            if (previous) {
+                const auto status = previous();
+                if (!status.Succeeded()) return status;
+            }
+            return plan->VerifyFrozenOutput(task->sourceSha256, task->replacements, task->removals);
+        };
     }
     job->preparedRevision = MapSaveRevisionBinding{frozenGeneration, frozenRevision, frozenScopes, luaMapTargetGeneration_};
     return job;

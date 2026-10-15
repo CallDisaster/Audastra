@@ -135,6 +135,7 @@ bool WorldViewport::HasBugPlaceholderPicking(const std::shared_ptr<const Service
 void WorldViewport::InvalidateAnimationPicking() {
     ClearBugPlaceholderPicking();
     animationPickHistory_.clear();
+    bugPreparationHistory_.clear(); bugPreparationFailure_ = {};
     if (!animationScene_) return;
     animationPickingCurrent_ = false;
     CancelMove(); pressView_.reset(); pressModelPolicy_.reset();

@@ -157,7 +157,7 @@ void ObjectFieldModel::RebuildRows() {
                             continue;
                         }
                         existing->baseline = std::move(baseline);
-                        existing->baselineSource = tr("原版对象 %1").arg(ToQString(base->key.rawcode));
+                        existing->baselineSource = tr("基础对象 %1").arg(ToQString(base->key.rawcode));
                         continue;
                     }
                     FieldRow row;
@@ -167,7 +167,7 @@ void ObjectFieldModel::RebuildRows() {
                     row.effective.value = *baseline;
                     row.definition = field.definition;
                     row.baseline = std::move(baseline);
-                    row.valueSource = row.baselineSource = tr("原版对象 %1").arg(ToQString(base->key.rawcode));
+                    row.valueSource = row.baselineSource = tr("基础对象 %1").arg(ToQString(base->key.rawcode));
                     row.editable = document_->IsStructurallySafe();
                     rows_.push_back(std::move(row));
                 }
@@ -207,6 +207,12 @@ void ObjectFieldModel::RebuildRows() {
                             .arg(ToQString(parent.key.rawcode), parentRow.reason);
                     }
                 } else *existing = std::move(parentRow);
+            }
+        }
+        if (base && !base->nativeOverridesSupported) {
+            for (auto& row : rows_) {
+                row.editable = false;
+                row.reason = tr("基础对象使用地图或战役 SLK/profile；当前只支持读取，尚未支持此来源的原生覆盖写回。");
             }
         }
         if (!inheritance.IsComplete()) {
@@ -362,6 +368,7 @@ void ObjectFieldModel::CommitSnapshot(LniObjectDocument next, const QString& lab
 }
 
 bool ObjectFieldModel::setData(const QModelIndex& index, const QVariant& input, int role) {
+    if (role == Qt::EditRole && writeGate_ && !writeGate_()) return false;
     const auto* field = RowAt(index.row());
     if (role != Qt::EditRole || index.column() != 3 || !field || !field->editable || !document_ || !object_) return false;
     QVariant value = input;
@@ -401,6 +408,7 @@ bool ObjectFieldModel::CanReset(int row) const {
     return field && field->overridden && field->editable && field->baseline.has_value();
 }
 bool ObjectFieldModel::ResetField(int row) {
+    if (writeGate_ && !writeGate_()) return false;
     if (!CanReset(row) || !document_ || !object_) return false;
     const auto* field = RowAt(row);
     LniObjectDocument next = *document_;

@@ -377,6 +377,10 @@ QWidget* WorldModule::BuildInspector() {
     deleteSelected_->setToolTip(tr("删除选中的摆放（Delete），可撤销"));
     actions->addWidget(openDefinition_, 1); actions->addWidget(deleteSelected_, 1);
     cardColumn->addLayout(actions);
+    auto* properties = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/settings-2")), tr("完整属性"), card);
+    properties->setObjectName(QStringLiteral("worldAuxiliaryInspectorProperties"));
+    cardColumn->addWidget(properties);
+    connect(properties, &QPushButton::clicked, this, &WorldModule::EditSelectedAuxiliary);
     card->hide();
     column->addWidget(card);
     column->addSpacing(6);
@@ -452,6 +456,9 @@ QWidget* WorldModule::BuildInspector() {
 
 void WorldModule::UpdateInspector(bool animate) {
     if (!selectionCard_) return;
+    UpdateAuxiliaryActions();
+    if (auto* properties = page_->findChild<QPushButton*>(QStringLiteral("worldAuxiliaryInspectorProperties")))
+        properties->setVisible(selectedRegion_.has_value() || selectedCamera_.has_value());
     auto* unitPreview = selectionCard_->findChild<WorldModelPreview*>(QStringLiteral("worldUnitModelPreview"));
     const auto* region = SelectedRegion();
     const auto* camera = SelectedCamera();
@@ -562,6 +569,8 @@ void WorldModule::UpdateInspector(bool animate) {
         const auto& id = selectedPlacements_[index];
         const bool unit = id.file == MapData::PlacementFile::Units;
         const bool single = selectedPlacements_.size() == 1;
+        const bool hasStart = std::any_of(selectedPlacements_.begin(), selectedPlacements_.end(),
+            [](const auto& value) { return value.file == MapData::PlacementFile::Units && value.rawcode == "sloc"; });
         const auto& original = properties.value->transforms[index];
         auto* scale = placementFields_->findChild<QLabel*>(QStringLiteral("worldSelectionScale"));
         auto* life = placementFields_->findChild<QLineEdit*>(QStringLiteral("worldSelectionLife"));
@@ -582,6 +591,7 @@ void WorldModule::UpdateInspector(bool animate) {
         for (std::size_t selectedIndex = 0; selectedIndex < selectedPlacements_.size(); ++selectedIndex) {
             const auto& selected = selectedPlacements_[selectedIndex];
             const bool unitFile = selected.file == MapData::PlacementFile::Units;
+            if (unitFile && selected.rawcode == "sloc") { allUnits = false; allHeroes = false; continue; }
             const auto type = PlacementType(project_, selected.rawcode,
                 unitFile ? ObjectData::ObjectType::Unit : ObjectData::ObjectType::Doodad,
                 unitFile ? ObjectData::ObjectType::Item : ObjectData::ObjectType::Destructable);
@@ -640,12 +650,14 @@ void WorldModule::UpdateInspector(bool animate) {
             !properties.value->Same(WorldPlacementProperty::Facing), changed, selectionRevision, mapRevision, MapKey(), generation_);
         const bool editable = SelectionEditable() && project_.mapEdits_ && terrain_;
         for (auto* field : {fieldX_, fieldY_, fieldFacing_}) field->setEnabled(editable);
+        if (hasStart) fieldFacing_->setEnabled(false);
         fieldZ_->setText(tr("随地形 · 只读"));
         fieldZ_->setToolTip(single ? tr("Z：%1\n移动时保持与地表的相对高度").arg(position[2], 0, 'f', 1)
             : tr("每个摆放分别保持与地表的相对高度；手工高度只读"));
         selectionTitle_->setText(single ? selectionName_ : tr("已选 %1 个摆放").arg(selectedPlacements_.size()));
         QStringList meta = single ? QStringList{QString::fromUtf8(id.rawcode), TypeName(selectionType_, unit)} : QStringList{};
         selectionMeta_->setText(meta.join(QStringLiteral(" · ")));
+        if (single && hasStart) selectionMeta_->setText(tr("起始位置 · %1").arg(selectionOwner_ ? PlayerName(*selectionOwner_) : tr("玩家未知")));
         if (changed) {
             QIcon icon;
             if (!selectionIconPath_.isEmpty() && project_.iconProvider_) icon = project_.iconProvider_->IconForTexture(selectionIconPath_);
@@ -698,13 +710,17 @@ void WorldModule::UpdateInspector(bool animate) {
         }
         openDefinition_->setVisible(single && selectionType_.has_value() && host_ != nullptr);
         deleteSelected_->setVisible(true);
-        deleteSelected_->setEnabled(editable);
+        deleteSelected_->setEnabled(editable && !hasStart);
+        deleteSelected_->setToolTip(hasStart ? tr("起始位置绑定玩家设置，不能直接删除") : tr("删除选中的摆放（Delete），可撤销"));
         selectionNote_->setText(!SelectionEditable() ? readOnlyNote
             : !terrain_ ? tr("地形未读取") : !single ? QString()
             : !request || !InstanceOfRequest(*request) ? tr("模型未读取") : QString());
         if (unknownType) selectionNote_->setText(selectionNote_->text()
             + (selectionNote_->text().isEmpty() ? QString() : QStringLiteral("\n"))
             + tr("部分类型未确认"));
+        if (single && hasStart && SelectionEditable())
+            selectionNote_->setText(viewport_ && viewport_->HasOverlaySupport()
+                ? tr("拖动标记或修改 X、Y 会同步玩家起点。") : tr("当前渲染插件不支持起始位置标记；可在此修改 X、Y。"));
         selectionNote_->setVisible(!selectionNote_->text().isEmpty());
     } else if (region) {
         if (unitPreview) unitPreview->ClearSelection();
@@ -740,7 +756,9 @@ void WorldModule::UpdateInspector(bool animate) {
     }
     if (!placements) {
         openDefinition_->hide();
-        deleteSelected_->hide();
+        deleteSelected_->setVisible(region || camera);
+        deleteSelected_->setEnabled(SelectionEditable());
+        deleteSelected_->setToolTip(tr("删除区域或镜头；仍被引用或引用范围不完整时拒绝，可撤销"));
         selectionNote_->setVisible(!selectionNote_->text().isEmpty());
     }
     if (changed) {

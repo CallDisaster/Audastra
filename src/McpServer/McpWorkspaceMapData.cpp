@@ -60,6 +60,14 @@ Status McpWorkspace::SeedMapDataOverlay(ActiveEdit& edit) {
     if (!initialMapData_) return Status::Ok();
     edit.mapData = committedMapData_;
     edit.placementIntent = committedPlacementIntent_;
+    edit.auxiliary = committedAuxiliary_;
+    if (edit.auxiliary) {
+        auto patch = edit.auxiliary->Seal(mapDataSource_->Snapshot());
+        if (!patch.Succeeded()) return {patch.diagnostics};
+        const auto applied = session_.ApplyAuxiliaryPatch(edit.id, std::move(*patch.value));
+        if (applied.Succeeded()) ++edit.generation;
+        return applied;
+    }
     if (edit.placementIntent) {
         auto patch = MapData::MapDataPlacementPatchCodec::Seal(*initialMapData_, *edit.mapData,
             mapDataSource_->Snapshot(), *edit.placementIntent);
@@ -92,6 +100,9 @@ Result<MapData::MapDataEditSession::EditReceipt> McpWorkspace::ApplyMapDataPlan(
     if (activeEdit_->placementIntent)
         return Result<Receipt>::Failure("MCP", "MCP_PLACEMENT_MIXED_FIELDS_UNSUPPORTED",
             "独立预放事务暂不混入字段变化；请使用独立事务。");
+    if (activeEdit_->auxiliary)
+        return Result<Receipt>::Failure("MCP", "MCP_AUXILIARY_MIXED_UNSUPPORTED",
+            "区域/镜头结构事务请继续使用 auxiliary_update，不混入字段命令。");
     const auto beforeDocument = activeEdit_->mapData;
     const auto beforeGeneration = activeEdit_->generation;
     const auto transactionId = activeEdit_->id;

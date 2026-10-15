@@ -370,6 +370,7 @@ void MainWindow::ResetProjectState() {
     project_->restoredTriggerOverlay_ = false;
     if (project_->recoveryTimer_) project_->recoveryTimer_->stop();
     project_->archiveSession_.reset();
+    project_->readOnlyArchive_.reset();
     project_->mapDocument_.reset();
     mapDataAction_->setEnabled(false);
     project_->directorySnapshot_.reset();
@@ -391,7 +392,6 @@ void MainWindow::ResetProjectState() {
     project_->sourceArchivePath_.clear();
     project_->pendingImports_.clear();
     project_->assetEdits_.clear();
-    project_->NotifyImportsChanged();
     project_->iconProvider_->SetMapArchive({});
     project_->iconProvider_->SetMapResourceDirectory({});
     // 只清理项目会话的活动根；用户持久化的外部 UI 根保留。
@@ -408,6 +408,8 @@ void MainWindow::ResetProjectState() {
     }
     project_->restoredFiles_.reset();
     project_->mapWorkspace_.reset();
+    // 来源通知会同步刷新物编页面；等旧文档全部释放后再通知，避免页面重新引用待销毁文档。
+    project_->NotifyImportsChanged();
     objectsModule_->UpdateObjectReferenceEntries();
     project_->objectDirty_.fill(false);
     exportAction_->setEnabled(false);

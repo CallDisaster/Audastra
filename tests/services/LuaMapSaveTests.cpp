@@ -6,6 +6,7 @@
 #include "War3MapCore/Services/ScriptSavePreparation.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "../MapDataFixtures.h"
+#include "TestLua.h"
 
 #include <Windows.h>
 #include <algorithm>
@@ -119,13 +120,7 @@ LuaMapTargetRequest Target(const Script::LuaSyntaxChecker& checker) {
 }
 
 Script::LuaSyntaxChecker ActualChecker() {
-    const auto size = GetEnvironmentVariableW(L"FORGE_YDWE_ROOT", nullptr, 0);
-    Require(size > 1, "FORGE_YDWE_ROOT required; real Lua 5.3 execution may not be skipped");
-    std::wstring root(size, L'\0');
-    const auto count = GetEnvironmentVariableW(L"FORGE_YDWE_ROOT", root.data(), size);
-    Require(count > 0 && count < size, "read actual test process YDWE root");
-    root.resize(count);
-    const auto executable = std::filesystem::path(root) / "bin/lua.exe";
+    const auto executable = Tests::LuaTestExecutable();
     const auto captured = Script::CaptureLuaSyntaxChecker(executable, FileHash(executable),
         std::vector<std::filesystem::path>{executable.parent_path()});
     Require(captured.Succeeded() && captured.value && captured.value->Identity(), Codes(captured));

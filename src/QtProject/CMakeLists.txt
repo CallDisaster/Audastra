@@ -2,6 +2,7 @@
 # 不含界面控件；界面模块通过它读写数据。
 qt_add_library(War3MapQtProject STATIC
     EditorProject.cpp
+    ProjectObjectCatalog.cpp ProjectObjectCatalog.h
     RecentMapsStore.cpp RecentMapsStore.h
     Commands/MapDataCommands.cpp
     Commands/MapDataCommands.h
@@ -47,6 +48,7 @@ qt_add_library(War3MapQtProject STATIC
     ProjectCodeChecking.cpp
     LuaMapTargetProject.cpp
     ProjectMapData.cpp
+    ProjectAuxiliaryEdits.cpp ProjectAuxiliaryEdits.h
     ProjectChanges.cpp
     ProjectQuerySources.cpp
     ProjectSummary.cpp

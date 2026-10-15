@@ -98,6 +98,12 @@ bool DefaultOrNonNegative(const MapFieldValue& value) {
 }
 
 bool CameraDistance(const MapFieldValue& value) { return Coordinate(value) && Float(value) >= 0; }
+bool CameraFar(const MapFieldValue& value) { return Coordinate(value) && Float(value) > 0; }
+bool CameraFov(const MapFieldValue& value) { return Coordinate(value) && Float(value) > 0 && Float(value) < 180; }
+bool ColorBits(const MapFieldValue& value) { return value.integer >= 0 && value.integer <= std::numeric_limits<std::uint32_t>::max(); }
+bool Weather(const MapFieldValue& value) {
+    return IsEditableRegionWeatherId(value.bytes);
+}
 
 bool GameDataSet(const MapFieldValue& value) { return value.integer >= -1 && value.integer <= 2; }
 bool UnitOwner(const MapFieldValue& value) { return value.integer >= 0 && value.integer <= 15; }
@@ -303,10 +309,16 @@ const FieldImpl<RegionRecord> kRegionFields[] = {
         [](const RegionRecord& r) { return F32(r.top); },
         [](RegionRecord& r, const V& v) { r.top = Float(v); }, Coordinate},
     {{K::Regions, "ambient_sound", "环境音效", T::Bytes}, [](const RegionRecord& r) { return Text(r.ambientSound); }},
-    {{K::Regions, "color_bgra", "颜色（BGRA）", T::UInt32}, [](const RegionRecord& r) {
+    {{K::Regions, "weather_id", "天气 ID", T::Bytes, true, "四字节 rawcode，空字符串表示无天气"},
+        [](const RegionRecord& r) { return Text(std::all_of(r.weatherId.begin(), r.weatherId.end(), [](auto b) { return b == std::byte{}; })
+            ? std::string{} : std::string(reinterpret_cast<const char*>(r.weatherId.data()), 4)); },
+        [](RegionRecord& r, const V& v) { r.weatherId.fill(std::byte{}); for (std::size_t i = 0; i < v.bytes.size(); ++i) r.weatherId[i] = static_cast<std::byte>(v.bytes[i]); }, Weather},
+    {{K::Regions, "color_bgra", "颜色（BGRA）", T::UInt32, true, "B、G、R 位于低三字节，高位保留字节必须与原值一致"}, [](const RegionRecord& r) {
         return U32(static_cast<std::uint32_t>(r.colorBgra[0]) | static_cast<std::uint32_t>(r.colorBgra[1]) << 8
             | static_cast<std::uint32_t>(r.colorBgra[2]) << 16 | static_cast<std::uint32_t>(r.colorBgra[3]) << 24);
-    }},
+    }, [](RegionRecord& r, const V& v) {
+        for (unsigned i = 0; i < 4; ++i) r.colorBgra[i] = static_cast<std::uint8_t>(static_cast<std::uint32_t>(v.integer) >> (8 * i));
+    }, ColorBits},
 };
 
 const FieldImpl<CameraRecord> kCameraFields[] = {
@@ -321,15 +333,20 @@ const FieldImpl<CameraRecord> kCameraFields[] = {
     {{K::Cameras, "z_offset", "高度偏移", T::Float32, true, "±1000000 内"},
         [](const CameraRecord& r) { return F32(r.zOffset); },
         [](CameraRecord& r, const V& v) { r.zOffset = Float(v); }, Coordinate},
-    {{K::Cameras, "rotation", "旋转", T::Float32}, [](const CameraRecord& r) { return F32(r.rotation); }},
-    {{K::Cameras, "angle_of_attack", "仰角", T::Float32}, [](const CameraRecord& r) { return F32(r.angleOfAttack); }},
+    {{K::Cameras, "rotation", "旋转", T::Float32, true, "有限角度（度）"}, [](const CameraRecord& r) { return F32(r.rotation); },
+        [](CameraRecord& r, const V& v) { r.rotation = Float(v); }, Coordinate},
+    {{K::Cameras, "angle_of_attack", "仰角", T::Float32, true, "有限角度（度）"}, [](const CameraRecord& r) { return F32(r.angleOfAttack); },
+        [](CameraRecord& r, const V& v) { r.angleOfAttack = Float(v); }, Coordinate},
     {{K::Cameras, "distance", "镜头距离", T::Float32, true, "0..1000000 内"},
         [](const CameraRecord& r) { return F32(r.targetDistance); },
         [](CameraRecord& r, const V& v) { r.targetDistance = Float(v); }, CameraDistance},
-    {{K::Cameras, "roll", "横滚", T::Float32}, [](const CameraRecord& r) { return F32(r.roll); }},
-    {{K::Cameras, "field_of_view", "视野", T::Float32}, [](const CameraRecord& r) { return F32(r.fieldOfView); }},
-    {{K::Cameras, "far_z", "远裁剪", T::Float32}, [](const CameraRecord& r) { return F32(r.farClippingPlane); }},
-    {{K::Cameras, "near_z", "近裁剪", T::Float32}, [](const CameraRecord& r) { return F32(r.nearClippingPlane); }},
+    {{K::Cameras, "roll", "横滚", T::Float32, true, "有限角度（度）"}, [](const CameraRecord& r) { return F32(r.roll); },
+        [](CameraRecord& r, const V& v) { r.roll = Float(v); }, Coordinate},
+    {{K::Cameras, "field_of_view", "视野", T::Float32, true, "0 < 视野 < 180 度"}, [](const CameraRecord& r) { return F32(r.fieldOfView); },
+        [](CameraRecord& r, const V& v) { r.fieldOfView = Float(v); }, CameraFov},
+    {{K::Cameras, "far_z", "远裁剪", T::Float32, true, "0 < 远裁剪 ≤ 1000000"}, [](const CameraRecord& r) { return F32(r.farClippingPlane); },
+        [](CameraRecord& r, const V& v) { r.farClippingPlane = Float(v); }, CameraFar},
+    {{K::Cameras, "near_z", "经典第十槽（只读）", T::Float32}, [](const CameraRecord& r) { return F32(r.nearClippingPlane); }},
     {{K::Cameras, "extended_local_pitch", "局部俯仰（扩展）", T::Float32},
         [](const CameraRecord& r) { return F32((*r.localRotation)[0]); }},
     {{K::Cameras, "extended_local_yaw", "局部偏航（扩展）", T::Float32},
@@ -1064,6 +1081,8 @@ Result<MapFieldTables> ApplyMapFieldEdits(const MapDocument& source, std::span<c
     for (const auto& [kind, row] : touched) {
         if (kind == K::Regions) {
             const auto& region = tables.regions->entries[row];
+            if (region.colorBgra[3] != source.Regions()->entries[row].colorBgra[3])
+                return Fail<MapFieldTables>("REGION_COLOR_RESERVED", "区域颜色第四字节用途未证实，不能在颜色编辑中改变。");
             if (const auto checked = ValidateMapFieldRegionBounds(region.left, region.bottom, region.right, region.top);
                 !checked.Succeeded()) return Fail<MapFieldTables>("MAP_FIELD_ROW_INVALID",
                     "修改后第 " + std::to_string(row) + " 行不满足行级约束（区域须 left < right、bottom < top）。");

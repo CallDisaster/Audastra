@@ -29,13 +29,20 @@ void WorldModelBugPlaceholderPresenter::Refresh() try {
     if (refreshing_ || !viewport_ || !source_ || !registry_ || !live_ || !flags_) return;
     QScopedValueRollback<bool> guard(refreshing_, true);
     if (!live_()) { Clear(); return; }
-    const auto completed = viewport_->ReadCompletedAnimationFrameForBugPlaceholder(source_);
-    if (!completed.Succeeded()) return; // 尚在上传时保留显示，拾取仍独立拒绝旧身份。
+    const auto completed = viewport_->ReadCompletedBugPlaceholderSnapshot(source_);
+    if (!completed.Succeeded()) {
+        // 尚在上传时保留显示，拾取仍独立拒绝旧身份；诊断保留实际等待原因。
+        status_ = {std::move(completed.diagnostics)};
+        return;
+    }
     auto planned = Services::PlanWorldModelBugPlaceholders(source_, **completed.value, registry_, owners_, flags_);
     if (!planned.Succeeded()) { auto failure = Status{std::move(planned.diagnostics)}; Clear(); status_ = std::move(failure); return; }
     const auto epoch = viewport_->MeasurementRendererEpoch();
     if (plan_ && rendererEpoch_ == epoch && plan_->markers == planned.value->markers
-        && (plan_->markers.empty() || viewport_->HasBugPlaceholderPicking(plan_))) return;
+        && (plan_->markers.empty() || viewport_->HasBugPlaceholderPicking(plan_))) {
+        status_ = {};
+        return;
+    }
     if (planned.value->markers.empty()) {
         viewport_->ClearBugPlaceholderPicking(); status_ = viewport_->RemoveModelLayer(LayerId);
         if (status_.Succeeded()) plan_ = std::make_shared<const Services::WorldModelBugPlaceholderPlan>(std::move(*planned.value));

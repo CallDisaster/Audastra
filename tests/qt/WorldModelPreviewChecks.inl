@@ -132,6 +132,12 @@ void WorldViewportTests::ModelPreviewParticleGameOrderStaysStrictAboutInvalidDat
     QTRY_VERIFY2_WITH_TIMEOUT(player->Ready(), qPrintable(message->text()), 5000);
     player->SetPlaying(false); QTRY_VERIFY(!player->Busy());
     QCOMPARE(actions->count(), 2);
+    // 等待 Ready 时自动播放可能已经推进；精确单步检查先明确归零，不依赖定时器恰好未触发。
+    AnimationEdit rewind; rewind.identity = player->Frame()->states.front().identity;
+    rewind.elapsedMs = 0; rewind.globalMs = 0;
+    player->Edit(rewind);
+    QTRY_VERIFY(!player->Busy() && player->Frame()->states.front().elapsedMs == 0 &&
+        player->Frame()->states.front().globalMs == 0);
     const auto initial = player->Frame();
     const auto uploads = state.particles.dynamicUploadCount;
     step->click(); QTRY_VERIFY(player->Frame()->contentVersion > initial->contentVersion && !player->Busy());

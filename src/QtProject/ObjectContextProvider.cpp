@@ -1,5 +1,6 @@
 #include "ObjectContextProvider.h"
 #include "EditorProject.h"
+#include "ProjectObjectCatalog.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
@@ -24,6 +25,8 @@ public:
         auto& project = *project_;
         if (generation_ != project.editRevision_.Generation() || revision_ != project.editRevision_.Revision())
             return ContextResult::Failure("Object.Live", "OBJECT_CONTEXT_STALE", "物编上下文属于旧工程修订，请重新查询。");
+        const auto refreshed = EnsureProjectObjectCatalog(project);
+        if (!refreshed.Succeeded()) return {{}, refreshed.diagnostics};
         if (!project.standardCatalog_ || !project.objectFieldSchema_)
             return ContextResult::Failure("Object.Live", "OBJECT_METADATA_UNAVAILABLE",
                 "当前地图没有完整的标准目录/字段元数据；先在设置中选择真实游戏来源。");

@@ -4,10 +4,12 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/MapDataFieldEditing.h"
+#include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/ObjectData/ObjectImport.h"
 #include "War3MapCore/Services/ScriptSavePreparation.h"
 #include "War3MapCore/Services/ObjectTransactionSnapshot.h"
+#include "War3MapCore/Services/AuxiliaryTransaction.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/UiLibrary/UiLibrary.h"
 
@@ -403,6 +405,31 @@ Status PrepareScript(MapSaveTask& task, const MapArchiveSession& source,
     if (!wct.Succeeded() || !wct.value) return ForwardStatus(std::move(wct.diagnostics));
     auto triggers = Trigger::WtgWctCodec{}.Parse(*wtg.value, *wct.value, *catalog.value);
     if (!triggers.Succeeded() || !triggers.value) return ForwardStatus(std::move(triggers.diagnostics));
+    if (request.auxiliaryTransaction) {
+        const auto& snapshot = *request.auxiliaryTransaction;
+        if (!snapshot.HasChanges()) return FieldFailure("AUX_TRANSACTION_NO_CHANGE", "区域/镜头封印与原来源相同，未生成空改动候选。");
+        // 精确查已知名字，不能把未列入 listfile 的成员误判为缺席。
+        std::vector<std::string> names;
+        for (const auto& member : snapshot.Original().Members()) names.push_back(member.memberName);
+        const auto captured = source.CaptureExactMembers(names);
+        if (!captured.Succeeded()) return ForwardStatus(captured.diagnostics);
+        std::vector<MapArchiveMember> members;
+        for (const auto& member : *captured.value) if (member.present) members.push_back({member.name, member.bytes});
+        const auto original = MapDocument::FromMembers(members, source.SourcePath());
+        AuxiliaryReferenceContext refs{&*triggers.value, true, {}};
+        for (const auto& member : source.Members()) ObserveAuxiliaryScriptSource(refs, member.name);
+        if (source.HasOpaqueMembers()) refs.opaqueScriptSources.push_back("未命名归档成员");
+        const auto verified = snapshot.VerifyAgainst(original, refs);
+        if (!verified.Succeeded()) return verified;
+        for (const auto& member : snapshot.Members()) {
+            const auto kind = member.name == "war3map.w3r" ? MapDataKind::Regions : MapDataKind::Cameras;
+            const auto before = AuxiliaryEditing::MemberIdentity(original, kind), after = Sha256(member.data);
+            if (!before.Succeeded()) return ForwardStatus(before.diagnostics);
+            if (!after.Succeeded()) return ForwardStatus(after.diagnostics);
+            task.replacements.push_back(member);
+            editedMembers.push_back({member.name, *before.value, *after.value});
+        }
+    }
     if (request.triggerEdits) {
         const auto edited = Trigger::ApplyTriggerEditBatch(*triggers.value, *catalog.value,
             *wtg.value, *request.triggerEdits);
@@ -565,24 +592,25 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         const bool terrainRequest = !request.terrainStrokes.empty();
         const bool triggerRequest = request.triggerEdits.has_value() || request.triggerTransaction != nullptr;
         const bool objectRequest = !request.objectTransactions.empty();
+        const bool auxiliaryRequest = request.auxiliaryTransaction != nullptr;
         if (request.triggerEdits && request.triggerTransaction)
             return Fail("SAVE_TRIGGER_INPUT_CONFLICT", "触发器批次与完整冻结事务不能在同一次保存中混用。");
         if (request.triggerTransaction && request.triggerTransaction->IsSourceCompanion() && !objectRequest)
             return Fail("SAVE_SOURCE_COMPANION_WITHOUT_OBJECTS", "未变化的触发器配对封印只能伴随非空物编保存事务。");
         if (request.sourceMap.empty() || request.targetCandidate.empty() || request.toolRoot.empty()
             || request.gameRoot.empty() || !ValidSha(request.expectedSourceSha256)
-            || ((fieldRequest || placementRequest || triggerRequest || objectRequest) ? !request.expectedTerrainSha256.empty()
+            || ((fieldRequest || placementRequest || triggerRequest || objectRequest || auxiliaryRequest) ? !request.expectedTerrainSha256.empty()
                 : !ValidSha(request.expectedTerrainSha256))) {
             return Fail("SAVE_REQUEST_INVALID", "地图路径、数据根、源 SHA 和当前操作所需的成员 SHA 必须有效。");
         }
         if (static_cast<int>(fieldRequest) + static_cast<int>(placementRequest)
-            + static_cast<int>(terrainRequest) + static_cast<int>(triggerRequest) + static_cast<int>(objectRequest)
+            + static_cast<int>(terrainRequest) + static_cast<int>(triggerRequest) + static_cast<int>(objectRequest) + static_cast<int>(auxiliaryRequest)
             - static_cast<int>(objectRequest && request.triggerTransaction != nullptr) != 1)
             return Fail("SAVE_OPERATION_SCOPE_INVALID", "一次保存只能提交一个领域操作或同源的完整触发器与物编封印事务。");
         const auto bounded = fieldRequest ? ValidateFieldOperations(request.fieldEdits)
             : placementRequest ? ValidatePlacementOperation(request.placementEdit)
             : request.triggerEdits ? Trigger::ValidateTriggerEditBatch(*request.triggerEdits)
-            : (request.triggerTransaction || objectRequest) ? Status::Ok()
+            : (request.triggerTransaction || objectRequest || auxiliaryRequest) ? Status::Ok()
                                          : ValidateStrokes(request.terrainStrokes);
         if (!bounded.Succeeded()) return Forward(bounded.diagnostics);
         auto opened = MapArchiveSession::Open(request.sourceMap);
@@ -599,6 +627,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         std::vector<Diagnostic> fieldDiagnostics;
         std::optional<Trigger::TriggerEditBatchReceipt> triggerReceipt;
         std::optional<Trigger::TriggerTransactionReceipt> transactionReceipt;
+        std::optional<MapData::TerrainSavePlan> terrainPlan;
         if (fieldRequest) {
             const auto applied = ApplyFieldEdits(request, map, edits, replacements, editedMembers);
             if (!applied.Succeeded()) return Forward(applied.diagnostics);
@@ -609,7 +638,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         } else if (objectRequest) {
             const auto applied = ApplyObjectTransactions(request, source, replacements, editedMembers);
             if (!applied.Succeeded()) return Forward(applied.diagnostics);
-        } else if (!triggerRequest) {
+        } else if (!triggerRequest && !auxiliaryRequest) {
             if (!source.HasMember("war3map.w3e") || !source.HasMember("war3map.wpm")) {
                 return Fail("SAVE_TERRAIN_PATHING_MISSING", "源地图必须同时包含唯一可读取的 W3E 和 WPM。");
             }
@@ -669,8 +698,13 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             originalTerrainShaValue = *terrainSha.value;
             savedTerrainShaValue = *savedTerrainSha.value;
             savedPathingShaValue = *savedPathingSha.value;
+            auto prepared = MapData::TerrainSavePlan::Prepare(source, edits);
+            if (!prepared.Succeeded() || !prepared.value) return Forward(std::move(prepared.diagnostics));
+            terrainPlan = std::move(*prepared.value);
         }
-        const auto pathingGate = edits.VerifyTerrainPathingForSave();
+        const auto pathingGate = terrainPlan
+            ? terrainPlan->VerifyForSave(edits, source.SourceSha256(), replacements, edits.Removals())
+            : edits.VerifyTerrainPathingForSave();
         if (!pathingGate.Succeeded()) return Forward(pathingGate.diagnostics);
 
         MapSaveTask task;
@@ -684,22 +718,43 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         if (!frozen.Succeeded()) return Forward(frozen.diagnostics);
         task.diagnostics.insert(task.diagnostics.end(), fieldDiagnostics.begin(), fieldDiagnostics.end());
         task.replacements = std::move(replacements);
+        if (terrainPlan) {
+            const auto& diagnostics = terrainPlan->Diagnostics();
+            task.diagnostics.insert(task.diagnostics.end(), diagnostics.begin(), diagnostics.end());
+            task.beforePublish = [&task, &terrainPlan, previous = std::move(task.beforePublish)]() {
+                if (previous) {
+                    const auto status = previous();
+                    if (!status.Succeeded()) return status;
+                }
+                return terrainPlan->VerifyFrozenOutput(task.sourceSha256, task.replacements, task.removals);
+            };
+        }
         const auto script = PrepareScript(task, source, request, editedMembers, triggerReceipt, transactionReceipt);
         if (!script.Succeeded()) return Forward(script.diagnostics);
+        if (auxiliaryRequest) {
+            task.beforePublish = [&task, snapshot = request.auxiliaryTransaction, previous = std::move(task.beforePublish)]() -> Status {
+                if (previous) { const auto status = previous(); if (!status.Succeeded()) return status; }
+                return VerifyAuxiliarySaveOutput(snapshot->Members(), task.replacements, task.removals);
+            };
+        }
         MapSaveService::Run(task, progress);
         if (!task.succeeded || !task.nextSession || !task.scriptRebuilt) {
             return Forward(std::move(task.diagnostics));
         }
         written = true;
+        if (terrainPlan) {
+            const auto readback = terrainPlan->VerifyReadback(*task.nextSession);
+            if (!readback.Succeeded()) return Forward(readback.diagnostics);
+        }
         // 保存服务已回读归档；再核对配对成员确实对应本次语义候选，不能只凭编译器 exit 0。
-        if (triggerRequest || objectRequest) {
+        if (triggerRequest || objectRequest || auxiliaryRequest) {
             for (const auto& member : editedMembers) {
                 const auto bytes = task.nextSession->ReadMember(member.name);
                 if (!bytes.Succeeded() || !bytes.value) return Forward(bytes.diagnostics);
                 const auto sha = Sha256(*bytes.value);
                 if (!sha.Succeeded() || !sha.value) return Forward(sha.diagnostics);
                 if (*sha.value != member.savedSha256)
-                    return Fail(objectRequest ? "SAVE_OBJECT_READBACK_MISMATCH" : "SAVE_TRIGGER_PAIR_READBACK_MISMATCH",
+                    return Fail(auxiliaryRequest ? "SAVE_AUXILIARY_READBACK_MISMATCH" : objectRequest ? "SAVE_OBJECT_READBACK_MISMATCH" : "SAVE_TRIGGER_PAIR_READBACK_MISMATCH",
                         "候选已写出，但领域成员回读与本次冻结候选不一致：" + member.name);
             }
         }
@@ -718,6 +773,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             std::move(editedMembers), std::move(triggerReceipt), std::move(transactionReceipt)});
         FinalizeScriptWorkspace(task);
         result.value->appliedObjectTransactionCount = request.objectTransactions.size();
+        result.value->appliedAuxiliaryCommandCount = auxiliaryRequest ? request.auxiliaryTransaction->Commands().size() : 0;
         result.diagnostics = std::move(task.diagnostics);
         return result;
     } catch (const std::exception&) {

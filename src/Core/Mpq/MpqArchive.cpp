@@ -691,6 +691,12 @@ bool MpqArchive::HasFile(std::string_view name) const {
     return impl_->FindBlock(name) != nullptr;
 }
 
+std::optional<MpqFileInfo> MpqArchive::GetFileInfo(std::string_view name) const {
+    const auto* block = impl_->FindBlock(name);
+    if (!block) return std::nullopt;
+    return MpqFileInfo{std::string(name), block->compressedSize, block->fileSize, block->flags, true};
+}
+
 Result<std::vector<std::byte>> MpqArchive::ReadFile(std::string_view name, const ProjectSaveControl* control) const {
     const BlockEntry* block = impl_->FindBlock(name);
     if (block == nullptr) {

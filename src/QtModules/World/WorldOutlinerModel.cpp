@@ -225,6 +225,7 @@ void WorldOutlinerModel::fetchMore(const QModelIndex& parent) {
     if (!cursor_) source_ = NextSource(source_ + 1, filter_.category);
     if (loaded_ == kMaxRows && source_ < kSources.size()) { partial_ = true; status_ = tr("目录已加载4096项，请按类别或名称筛选继续查询"); }
     fetching_ = false;
+    emit PageLoaded();
 }
 QModelIndex WorldOutlinerModel::Find(const Services::WorldObjectId& id) const {
     const auto find = [&](auto&& self, const Node* node) -> const Node* {

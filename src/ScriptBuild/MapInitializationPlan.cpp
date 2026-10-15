@@ -222,8 +222,8 @@ private:
             if (region.left >= region.right || region.bottom >= region.top)
                 Reject("MAP_INIT_REGION_BOUNDS_INVALID", "区域为空或逆序。", kRegions, i);
             CheckString(region.name, "区域名称", kRegions, i);
-            if (!region.ambientSound.empty())
-                Reject("MAP_INIT_REGION_SOUND_UNSUPPORTED", "区域环境音初始化尚未实现，不能忽略 ambientSound。", kRegions, i);
+            const auto sound = MapData::ValidateRegionAmbientSound(region, inputs_.sounds);
+            if (!sound.Succeeded()) Reject("MAP_INIT_REGION_SOUND_UNRESOLVED", sound.diagnostics.front().message, kRegions, i);
             MapInitRegion record{region, i, "gg_rct_" + ConvertObjectName(region.name)};
             if (region.creationNumber < 0 || !regionByCreation_.emplace(region.creationNumber, record.symbol).second)
                 Reject("MAP_INIT_REGION_ID_INVALID", "区域创建编号为负或重复，传送门引用无法唯一绑定。", kRegions, i);

@@ -12,6 +12,7 @@ bool WorldViewport::HasEditorVisibilitySupport() const noexcept {
 }
 void WorldViewport::SetInstanceVisible(std::function<bool(std::uint32_t)> predicate) {
     ++pickPolicyRevision_; animationPickHistory_.clear();
+    bugPreparationHistory_.clear(); bugPreparationFailure_ = {};
     instanceVisible_ = std::move(predicate);
     animationVisibilityCache_ = {};
     editorVisibilityDirty_ = true;
@@ -124,6 +125,7 @@ bool WorldViewport::UpdateStaticVisibility(bool transforms) {
 bool WorldViewport::RefreshEditorVisibility() try {
     if (QThread::currentThread() != thread()) return false;
     ++pickPolicyRevision_; animationPickHistory_.clear();
+    bugPreparationHistory_.clear(); bugPreparationFailure_ = {};
     animationVisibilityCache_ = {}; // 宿主显隐修订已变化，下一次构建重新读取 predicate。
     editorVisibilityDirty_ = true;
     if (!renderer_) { SetStatus(tr("显隐已记录，渲染器尚未创建")); return false; }

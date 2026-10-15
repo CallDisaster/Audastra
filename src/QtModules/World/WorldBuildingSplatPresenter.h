@@ -40,6 +40,8 @@ public:
             && current_ && current_() && sourceCurrent_ && sourceCurrent_();
     }
     [[nodiscard]] QJsonObject DiagnosticSnapshot() const;
+    // 进度查询沿服务输入游标取一页；总数是已捕获输入数，不伪称全量故障列表。
+    [[nodiscard]] QJsonObject DiagnosticSnapshot(std::uint32_t offset, std::uint32_t limit) const;
     [[nodiscard]] std::vector<Services::BuildingSplatRow> DiagnosticRows() const;
 signals:
     void Message(const QString& text);
@@ -59,6 +61,8 @@ private:
     void CheckParent();
     void UpdateTimer();
     void Report(QString text);
+    [[nodiscard]] bool DiagnosticRowUnavailable(Services::BuildingSplatRow& row) const;
+    [[nodiscard]] QJsonObject DiagnosticSnapshotImpl(std::optional<std::uint32_t> offset, std::uint32_t limit) const;
     QPointer<WorldViewport> viewport_;
     QPointer<QThread> worker_;
     QTimer parentTimer_;
@@ -74,6 +78,7 @@ private:
     std::shared_ptr<const MapData::TerrainGridSnapshot> terrain_;
     std::string terrainIdentity_, desiredIdentity_, geometryIdentity_, preparedGeometryIdentity_;
     std::size_t hiddenPrepared_ = 0;
+    std::size_t notApplicableCount_ = 0;
     std::uint64_t terrainRevision_ = 0;
     std::optional<Render::BuildingSplatPreviewFrame> prepared_, installed_;
     std::optional<Signature> failed_;

@@ -1,0 +1,83 @@
+#pragma once
+
+#include "War3MapCore/MapArchiveSession.h"
+#include "War3MapCore/Workspace.h"
+
+#include <array>
+#include <span>
+
+namespace War3Map::MapData {
+
+class MapDataEditSession;
+
+enum class TerrainSaveSourceState { Present, Missing, Unknown };
+enum class TerrainSaveMemberAction { Preserve, WriteEdited, Reject };
+
+struct TerrainSaveMemberPlan {
+    std::string name;
+    TerrainSaveSourceState sourceState = TerrainSaveSourceState::Unknown;
+    std::optional<std::size_t> sourceBytes, outputBytes;
+    std::optional<std::string> sourceSha256, outputSha256;
+    TerrainSaveMemberAction action = TerrainSaveMemberAction::Preserve;
+    std::string reasonCode, reason;
+};
+
+struct TerrainSavePlanLimits {
+    // 五个来源成员、基线序列化核对与 W3E/WPM 输出的累计工作字节预算；只能收紧。
+    std::size_t maximumBytes = 64u * 1024u * 1024u;
+};
+
+// 当前只计划已有保存门允许的干地高度和荒芜净变化，不扩大保存资格。
+// SHD、MMP、小地图始终明确标记为原样保留（或来源未知），没有重建声明。
+// Prepare 不重新读取磁盘；归档来源变化仍由 MapSaveService 的源租约检查。
+// 调用方须串行排除会话写入。Result 成功表示计划完整，SaveGate 才表示地形门通过。
+class TerrainSavePlan {
+public:
+    TerrainSavePlan(const TerrainSavePlan&) = default;
+    TerrainSavePlan(TerrainSavePlan&&) noexcept = default;
+    TerrainSavePlan& operator=(const TerrainSavePlan&) = default;
+    TerrainSavePlan& operator=(TerrainSavePlan&&) noexcept = default;
+
+    [[nodiscard]] static bool HasTerrainChanges(const MapDataEditSession& edits) noexcept;
+    [[nodiscard]] static Result<TerrainSavePlan> Prepare(const MapArchiveSession& source,
+        const MapDataEditSession& edits, const TerrainSavePlanLimits& limits = {});
+    // 目录来源使用已捕获的完整快照；不读取或信任快照之外的磁盘内容。
+    [[nodiscard]] static Result<TerrainSavePlan> Prepare(const WorkspaceSnapshot& source,
+        const MapDataEditSession& edits, const TerrainSavePlanLimits& limits = {});
+
+    [[nodiscard]] const std::string& SourceSha256() const noexcept { return sourceSha256_; }
+    [[nodiscard]] std::uint64_t SessionIdentity() const noexcept { return sessionIdentity_; }
+    [[nodiscard]] std::uint64_t Revision() const noexcept { return revision_; }
+    [[nodiscard]] std::uint64_t TerrainSourceRevision() const noexcept { return terrainSourceRevision_; }
+    // 固定顺序 W3E / WPM / SHD / MMP / war3mapMap.blp；Missing 与 Unknown 不混用。
+    [[nodiscard]] const std::array<TerrainSaveMemberPlan, 5>& Members() const noexcept { return members_; }
+    [[nodiscard]] std::span<const MemberReplacement> Replacements() const noexcept { return replacements_; }
+    [[nodiscard]] const Status& SaveGate() const noexcept { return saveGate_; }
+    [[nodiscard]] const std::vector<Diagnostic>& Diagnostics() const noexcept { return diagnostics_; }
+    [[nodiscard]] bool RequiresNativeVerification() const noexcept { return terrainChanged_; }
+
+    // 准备阶段检查原会话、修订和来源。最终列表可包含其它领域成员，但五个地形成员
+    // 必须精确符合本计划，不能在脚本模板、导入或删除阶段夹带派生数据覆盖。
+    [[nodiscard]] Status VerifyForSave(const MapDataEditSession& edits, std::string_view sourceSha256,
+        std::span<const MemberReplacement> replacements, std::span<const std::string> removals = {}) const;
+    // 后台执行只消费冻结身份，不借用活跃编辑会话；应在最终成员列表形成后、发布前调用。
+    [[nodiscard]] Status VerifyFrozenOutput(std::string_view sourceSha256,
+        std::span<const MemberReplacement> replacements, std::span<const std::string> removals = {}) const;
+    // 核对计划中身份已知的成员；Unknown 原块仍由归档保存服务验证保留。
+    // 不表示原版编辑器或游戏已经验证。
+    [[nodiscard]] Status VerifyReadback(const MapArchiveSession& saved) const;
+
+private:
+    TerrainSavePlan() = default;
+    [[nodiscard]] static Result<TerrainSavePlan> Complete(TerrainSavePlan plan,
+        const MapDataEditSession& edits, const TerrainSavePlanLimits& limits, std::size_t sourceBytes);
+    std::string sourceSha256_;
+    std::uint64_t sessionIdentity_ = 0, revision_ = 0, terrainSourceRevision_ = 0;
+    bool terrainChanged_ = false;
+    std::array<TerrainSaveMemberPlan, 5> members_;
+    std::vector<MemberReplacement> replacements_;
+    Status saveGate_;
+    std::vector<Diagnostic> diagnostics_;
+};
+
+} // namespace War3Map::MapData

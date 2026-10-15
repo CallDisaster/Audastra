@@ -120,9 +120,10 @@ std::vector<std::byte> WrapMip(Bytes input, const Header& header, const Mip& mip
 }
 
 struct JpegComponent { std::uint8_t id = 0, h = 0, v = 0, quant = 0; };
+struct JpegInspection { std::size_t workingBytes = 0, encodedBytes = 0; };
 
 // 只检查段结构、帧身份和分配预算；Huffman/IDCT 由已有 Core 解码器负责。
-std::size_t InspectJpeg(Bytes jpeg, const Mip& mip, std::uint32_t alpha,
+JpegInspection InspectJpeg(Bytes jpeg, const Mip& mip, std::uint32_t alpha,
     const TerrainAtlasLimits& limits, std::size_t& segments, std::size_t& scans) {
     const auto invalid = [](std::string message) { Fail("TERRAIN_ATLAS_JPEG", std::move(message)); };
     if (jpeg.size() < 4 || U8(jpeg, 0) != 0xff || U8(jpeg, 1) != 0xd8) invalid("JPEG 缺少 SOI。");
@@ -130,7 +131,7 @@ std::size_t InspectJpeg(Bytes jpeg, const Mip& mip, std::uint32_t alpha,
     std::array<bool, 4> quant{}, dc{}, ac{};
     std::array<bool, 256> seenComponent{};
     bool ended = false, progressive = false;
-    std::size_t localScans = 0, memory = 0;
+    std::size_t localScans = 0, memory = 0, encodedBytes = 0;
     for (std::size_t at = 2; at < jpeg.size();) {
         if (U8(jpeg, at) != 0xff) invalid("JPEG 段边界不是 marker。");
         while (at < jpeg.size() && U8(jpeg, at) == 0xff) ++at;
@@ -138,7 +139,9 @@ std::size_t InspectJpeg(Bytes jpeg, const Mip& mip, std::uint32_t alpha,
         const auto marker = U8(jpeg, at++);
         if (++segments > limits.maxJpegSegments) Fail("TERRAIN_ATLAS_JPEG_BUDGET", "JPEG 段数超出预算。");
         if (marker == 0xd9) {
-            if (at != jpeg.size()) invalid("JPEG EOI 后还有未解释的 mip 数据。");
+            // BLP 的 mip 长度可能包含 EOI 后的填充字节。与唯一像素解码器一致，
+            // 在结构内遇到的首个 EOI 结束；完整熵数据仍必须通过后续实际解码。
+            encodedBytes = at;
             ended = true;
             break;
         }
@@ -261,7 +264,7 @@ std::size_t InspectJpeg(Bytes jpeg, const Mip& mip, std::uint32_t alpha,
     if (!ended || localScans == 0 || components.empty()
         || std::any_of(components.begin(), components.end(), [&](const auto& value) { return !seenComponent[value.id]; }))
         invalid("JPEG 缺少完整 EOI、扫描或组件初始 DC 数据。");
-    return memory;
+    return {memory, encodedBytes};
 }
 
 } // namespace
@@ -276,6 +279,7 @@ Result<Snapshot> DecodeTerrainTextureAtlas(const Resources::ResolvedResource& re
         snapshot->sourceBytes = input.size();
         snapshot->sourceWidth = header.width; snapshot->sourceHeight = header.height;
         snapshot->columns = header.width == header.height ? 4 : 8;
+        std::vector<Diagnostic> diagnostics;
         std::size_t segments = 0, scans = 0;
         for (std::size_t level = 0; level < header.mips.size(); ++level) try {
             const auto& mip = header.mips[level];
@@ -284,9 +288,13 @@ Result<Snapshot> DecodeTerrainTextureAtlas(const Resources::ResolvedResource& re
                 Fail("TERRAIN_ATLAS_WORKING_BUDGET", "mip 包装前已超出工作集预算。");
             auto wrapper = WrapMip(input, header, mip);
             std::size_t working = input.size() + wrapper.size() + snapshot->RgbaByteCount() + 65536;
+            std::size_t trailingJpegBytes = 0;
             if (header.compression == 0) {
                 const auto jpeg = Bytes(wrapper).subspan(160);
-                working += jpeg.size() + InspectJpeg(jpeg, mip, header.alpha, limits, segments, scans);
+                const auto inspection = InspectJpeg(jpeg, mip, header.alpha, limits, segments, scans);
+                // 尾数据仍计入输入和工作集预算；不扫描其中的伪 marker 或第二张图像。
+                working += jpeg.size() + inspection.workingBytes;
+                trailingJpegBytes = jpeg.size() - inspection.encodedBytes;
             } else working += static_cast<std::size_t>(mip.width) * mip.height * 4;
             if (working > limits.maxWorkingBytes) Fail("TERRAIN_ATLAS_WORKING_BUDGET", "mip " + std::to_string(level) + " 解码工作集超出预算。");
             auto decoded = Image::DecodeBlp(wrapper);
@@ -297,6 +305,11 @@ Result<Snapshot> DecodeTerrainTextureAtlas(const Resources::ResolvedResource& re
             }
             if (!decoded.value->Valid() || decoded.value->width != mip.width || decoded.value->height != mip.height)
                 Fail("TERRAIN_ATLAS_DECODE", "Core 返回像素尺寸与声明 mip 不一致。");
+            if (trailingJpegBytes != 0) {
+                diagnostics.push_back({DiagnosticSeverity::Warning, std::string(kSubsystem), "TERRAIN_ATLAS_JPEG_TRAILING_DATA",
+                    resource.location.canonicalPath + "：mip " + std::to_string(level) + " 的完整 JPEG EOI 后有 "
+                        + std::to_string(trailingJpegBytes) + " 字节尾数据；已按首个完整图像解码，来源字节未修改。", std::nullopt});
+            }
             if (level == 0) snapshot->image = std::move(*decoded.value);
             else snapshot->additionalMips.push_back(std::move(*decoded.value));
             ++snapshot->validatedMipCount;
@@ -310,7 +323,9 @@ Result<Snapshot> DecodeTerrainTextureAtlas(const Resources::ResolvedResource& re
             for (std::uint32_t column = 0; column < snapshot->columns; ++column)
                 snapshot->cells.push_back({column, row, column * size, row * size, size, size});
         snapshot->sourceSha256 = Take(Sha256(input));
-        return Result<Snapshot>::Success(std::move(snapshot));
+        auto result = Result<Snapshot>::Success(std::move(snapshot));
+        result.diagnostics = std::move(diagnostics);
+        return result;
     } catch (Failure& failure) {
         Result<Snapshot> result;
         result.diagnostics = std::move(failure.diagnostics);

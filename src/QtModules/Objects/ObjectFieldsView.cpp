@@ -4,6 +4,7 @@
 #include "Widgets/TablePopupAnchor.h"
 
 #include "EditorProject.h"
+#include "ProjectObjectCatalog.h"
 #include "Modules/ModuleHost.h"
 #include "ObjectModels.h"
 #include "ObjectNames.h"
@@ -65,30 +66,28 @@ constexpr int kStandardRawValueRole = Qt::UserRole + 46;
 
 
 void ObjectModule::RefreshStandardCatalog() {
-    auto mounted = War3Map::Game::GameDataSource::Mount(project_->war3GameRoot_);
-    if (!mounted.Succeeded() || !mounted.value) return;
     // 名称与字段显示走统一字符串表（YDWE 覆盖层 → 游戏 → 英文原版）；载入期间持有共享指针。
     const auto strings = project_->CurrentWorldEditStrings();
-    CatalogLoadOptions catalogOptions;
-    catalogOptions.strings = strings.get();
-    auto loaded = StandardObjectCatalog::Load(*mounted.value, catalogOptions);
+    const auto loaded = QtProject::EnsureProjectObjectCatalog(*project_, true);
     for (const auto& diagnostic : loaded.diagnostics) {
         project_->AddDiagnostic(tr("信息"), tr("物体目录"), U8(diagnostic.code), U8(diagnostic.message));
     }
-    if (!loaded.Succeeded() || !loaded.value) {
+    if (!loaded.Succeeded() || !project_->standardCatalog_) {
         objectFieldModel_->SetContext(nullptr, nullptr);
         project_->standardCatalog_.reset();
         project_->objectFieldSchema_.reset();
         UpdateObjectReferenceEntries();
-        standardObjectBrowser_->SetCatalogStatus(tr("无法读取原版物体目录"));
+        standardObjectBrowser_->SetCatalogStatus(tr("无法读取有效物体目录"));
         emit DocumentsChanged();
         return;
     }
     objectFieldModel_->SetContext(nullptr, nullptr);
-    project_->standardCatalog_ = std::make_unique<StandardObjectCatalog>(std::move(*loaded.value));
     ObjectFieldSchemaOptions schemaOptions;
     schemaOptions.strings = strings.get();
-    auto schema = ObjectFieldSchema::Load(*mounted.value, schemaOptions);
+    // 字段地址和类型只由可信游戏元数据提供，地图表只贡献对象值。
+    auto mounted = War3Map::Game::GameDataSource::MountStrict(project_->war3GameRoot_);
+    auto schema = mounted.Succeeded() ? ObjectFieldSchema::Load(*mounted.value, schemaOptions)
+        : Result<ObjectFieldSchema>{{}, mounted.diagnostics};
     project_->objectFieldSchema_.reset();
     for (const auto& diagnostic : schema.diagnostics)
         project_->AddDiagnostic(tr("信息"), tr("字段定义"), U8(diagnostic.code), U8(diagnostic.message));
@@ -96,9 +95,9 @@ void ObjectModule::RefreshStandardCatalog() {
         project_->objectFieldSchema_ = std::make_unique<ObjectFieldSchema>(std::move(*schema.value));
     objectFieldModel_->SetContext(project_->standardCatalog_.get(), project_->objectFieldSchema_.get());
     UpdateObjectReferenceEntries();
-    standardObjectBrowser_->SetCatalogStatus(tr("Warcraft III · %1 个标准对象")
+    standardObjectBrowser_->SetCatalogStatus(tr("Warcraft III · %1 个有效对象")
         .arg(project_->standardCatalog_->Entries().size()));
-    ShowStatus(tr("已读取 %1 个原版对象 · 游戏资源只读")
+    ShowStatus(tr("已读取 %1 个有效对象 · 地图/战役 SLK 基础数据只读")
         .arg(project_->standardCatalog_->Entries().size()));
     emit DocumentsChanged();
 }
@@ -109,6 +108,12 @@ void ObjectModule::UpdateObjectReferenceEntries() {
     objectViewEntries_ = QtApp::BuildObjectViewEntries(*project_, &standardEntries);
     if (objectFieldModel_) {
         const QPointer<QtProject::EditorProject> project(project_);
+        objectFieldModel_->SetWriteGate([project] {
+            if (!project) return false;
+            const auto status = QtProject::VerifyProjectObjectCatalog(*project);
+            project->AddDiagnostics(status.diagnostics);
+            return status.Succeeded();
+        });
         const auto previewFactory = [project] {
             return project ? CaptureObjectColourPreviewSource(*project)
                 : UiKit::WarcraftTextSourceResolver{};
@@ -219,12 +224,19 @@ void ObjectModule::ShowStandardObject(const ObjectViewEntry& entry) {
             }
         }
         QString tip = tr("原始字段：%1\n原始值：%2").arg(U8(key), U8(value));
+        if (const auto effective = QtProject::ProjectEffectiveObjectCatalog(*project_)) {
+            const auto file = object->fieldSourceFiles.find(key);
+            const auto* input = file == object->fieldSourceFiles.end() ? nullptr : effective->Input(file->second);
+            if (input) tip += tr("\n对象值来源：%1 · %2\n成员：%3\nSHA-256：%4")
+                .arg(U8(input->location.sourceId), U8(input->containerIdentity), U8(input->location.sourcePath), U8(input->sha256));
+        }
+        if (!object->nativeOverridesSupported) tip += tr("\n地图/战役 SLK 基础数据只读，未授予原生覆盖写回资格");
         if (definition) tip += tr("\n字段 ID：%1\n类型：%2\n来源：%3")
             .arg(U8(definition->fieldId), U8(definition->valueType), U8(definition->sourceTable));
         const bool resource = definition && resourcePickerFactory_ && Services::DescribeObjectResourceField(*definition).has_value();
-        const bool editable = !project_->projectRoot_.empty() && definition && match.safeToEdit &&
+        const bool editable = object->nativeOverridesSupported && !project_->projectRoot_.empty() && definition && match.safeToEdit &&
             definition->nativeValueType && definition->referenceTypes.empty() && !resource;
-        const bool reference = !project_->projectRoot_.empty() && definition && match.safeToEdit &&
+        const bool reference = object->nativeOverridesSupported && !project_->projectRoot_.empty() && definition && match.safeToEdit &&
             definition->nativeValueType && (!definition->referenceTypes.empty() || resource);
         if (editable || reference) tip += tr("\n双击修改：首次提交时自动建立地图覆盖");
         display.push_back({U8(key), label, shownValue, U8(value), category, tip, referenceIcon, editable, reference});

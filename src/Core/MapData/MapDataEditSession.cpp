@@ -47,6 +47,7 @@ MapDataEditSession::MapDataEditSession(const MapDocument& source) {
             && member.sources.size() == 1 && member.memberName == kNativeMembers[i])
             original_[i] = member.sources.front().data;
         current_[i] = original_[i];
+        if (!original_[i] && member.state != MapDataState::Missing) preservedSources_[i] = member;
     }
 }
 
@@ -76,15 +77,20 @@ Status MapDataEditSession::Prepare(MapDataKind kind, Result<std::vector<std::byt
         return Status::Failure("MapData.Edit", "MAP_SOURCE_UNSUPPORTED",
             "无法确认唯一的原生公共地图成员，不能以新成员覆盖来源");
     auto after = std::optional(std::move(*serialized.value));
-    std::vector<MapArchiveMember> verification{{memberNames_[index], *after}};
+    MapDocument checked;
+    checked.members_[index].sources.push_back({memberNames_[index], *after});
     // 布局读取依赖 W3I 来源；校验单个成员时不能丢失当前事务的地图版本。
     if (kind != MapDataKind::Settings) {
         const auto settingsIndex = Index(MapDataKind::Settings);
         const auto* settings = &current_[settingsIndex];
         for (const auto& change : changes) if (change.kind == MapDataKind::Settings) settings = &change.after;
-        if (*settings) verification.push_back({memberNames_[settingsIndex], **settings});
+        if (*settings) checked.members_[settingsIndex].sources.push_back({memberNames_[settingsIndex], **settings});
+        else if (preservedSources_[settingsIndex]) checked.members_[settingsIndex] = *preservedSources_[settingsIndex];
     }
-    const auto checked = MapDocument::FromMembers(verification);
+    checked.ParseMembers();
+    const auto settingsIndex = Index(MapDataKind::Settings);
+    if (kind != MapDataKind::Settings && !current_[settingsIndex] && preservedSources_[settingsIndex])
+        checked.members_[settingsIndex] = *preservedSources_[settingsIndex];
     const auto& state = checked.Member(kind);
     const bool knownSettingsTail = kind == MapDataKind::Settings && state.state == MapDataState::Partial
         && std::all_of(state.diagnostics.begin(), state.diagnostics.end(), [](const Diagnostic& diagnostic) {
@@ -602,15 +608,27 @@ void MapDataEditSession::CommitSaved(const MapDocument& saved) {
     original_ = current_;
     terrainOriginal_ = terrain_;
     pathingOriginal_ = pathing_;
-    for (std::size_t i = 0; i < states_.size(); ++i)
-        states_[i] = saved.Member(static_cast<MapDataKind>(i)).state;
+    for (std::size_t i = 0; i < states_.size(); ++i) {
+        const auto& member = saved.Member(static_cast<MapDataKind>(i));
+        states_[i] = member.state;
+        preservedSources_[i].reset();
+        if (!original_[i] && member.state != MapDataState::Missing) preservedSources_[i] = member;
+    }
 }
 
 MapDocument MapDataEditSession::Snapshot() const {
-    std::vector<MapArchiveMember> members;
-    for (std::size_t i = 0; i < current_.size(); ++i)
-        if (current_[i]) members.push_back({memberNames_[i], *current_[i]});
-    return MapDocument::FromMembers(members);
+    MapDocument document;
+    for (std::size_t i = 0; i < current_.size(); ++i) {
+        if (current_[i]) document.members_[i].sources.push_back({memberNames_[i], *current_[i]});
+        else if (preservedSources_[i]) document.members_[i] = *preservedSources_[i];
+    }
+    // 保留原生版本头和 LNI 等只读输入参与同一解析，避免改变其它成员的布局判定。
+    document.ParseMembers();
+    for (std::size_t i = 0; i < current_.size(); ++i) {
+        // 不可编辑来源的状态、原始字节和原诊断仍是最初捕获的事实；不重复追加诊断。
+        if (!current_[i] && preservedSources_[i]) document.members_[i] = *preservedSources_[i];
+    }
+    return document;
 }
 
 Result<MapDocument> MapDataEditSession::Snapshot(MapDataKind kind, std::size_t maximumBytes) const {
@@ -618,24 +636,37 @@ Result<MapDocument> MapDataEditSession::Snapshot(MapDataKind kind, std::size_t m
     if (index >= current_.size())
         return Result<MapDocument>::Failure("MapData.Read", "MAP_KIND_INVALID", "未知的公共地图成员类别");
     std::array<std::size_t, 2> selected{index, Index(MapDataKind::Settings)};
-    const auto count = kind == MapDataKind::Units || kind == MapDataKind::Doodads ? 2u : 1u;
+    const auto count = kind == MapDataKind::Units || kind == MapDataKind::Doodads || kind == MapDataKind::Cameras ? 2u : 1u;
     std::size_t bytes = 0;
     for (std::size_t i = 0; i < count; ++i) {
         const auto member = selected[i];
-        if (!current_[member] && states_[member] != MapDataState::Missing && !original_[member])
+        if (i == 0 && !current_[member] && states_[member] != MapDataState::Missing && !original_[member])
             return Result<MapDocument>::Failure("MapData.Read", "MAP_SOURCE_UNSAFE",
                 "无法确定唯一的原生成员来源，不能将不可读或歧义来源当作缺失");
         if (current_[member]) {
             if (current_[member]->size() > maximumBytes - bytes)
                 return Result<MapDocument>::Failure("MapData.Read", "MAP_SNAPSHOT_BUDGET", "只读成员快照超过复制字节预算");
             bytes += current_[member]->size();
+        } else if (preservedSources_[member]) {
+            for (const auto& source : preservedSources_[member]->sources) {
+                if (source.data.size() > maximumBytes - bytes)
+                    return Result<MapDocument>::Failure("MapData.Read", "MAP_SNAPSHOT_BUDGET", "只读成员快照超过复制字节预算");
+                bytes += source.data.size();
+            }
         }
     }
-    std::vector<MapArchiveMember> members;
-    members.reserve(count);
-    for (std::size_t i = 0; i < count; ++i)
-        if (current_[selected[i]]) members.push_back({memberNames_[selected[i]], *current_[selected[i]]});
-    return Result<MapDocument>::Success(MapDocument::FromMembers(members));
+    MapDocument result;
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto member = selected[i];
+        if (current_[member]) result.members_[member].sources.push_back({memberNames_[member], *current_[member]});
+        else if (preservedSources_[member]) result.members_[member] = *preservedSources_[member];
+    }
+    result.ParseMembers();
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto member = selected[i];
+        if (!current_[member] && preservedSources_[member]) result.members_[member] = *preservedSources_[member];
+    }
+    return Result<MapDocument>::Success(std::move(result));
 }
 
 } // namespace War3Map::MapData

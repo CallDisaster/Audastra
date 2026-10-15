@@ -1,7 +1,9 @@
 #include "UpdateClient.h"
 
+#include "../QtCommon/ApplicationPaths.h"
 #include "AudastraVersion.generated.h"
 #include "War3MapCore/Update/SemanticVersion.h"
+#include "War3MapCore/Update/UpdateInstaller.h"
 
 #include <QDate>
 #include <QDir>
@@ -12,6 +14,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QPointer>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSettings>
@@ -117,7 +120,8 @@ UpdateClient::UpdateClient(QObject* parent) : QObject(parent) {
 
 UpdateClient::UpdateClient(const LoopbackUpdateSource& source, QSettings& settings, QObject* parent)
     : QObject(parent), settings_(&settings), apiRoot_(source.apiRoot), publicKeyHex_(source.trustedPublicKeyHex),
-      stagingRoot_(source.stagingDirectory), loopback_(true), timeoutMs_(std::clamp(source.requestTimeoutMs, 1, 120000)) {
+      stagingRoot_(source.stagingDirectory), installationRoot_(source.installationDirectory),
+      loopback_(true), timeoutMs_(std::clamp(source.requestTimeoutMs, 1, 120000)) {
     status_.currentVersion = source.currentVersion;
     if (!SafeRoot(apiRoot_) || !Loopback(apiRoot_) || (apiRoot_.scheme() != QStringLiteral("http") && apiRoot_.scheme() != QStringLiteral("https")))
         configurationError_ = tr("测试更新源必须是明确的回环 HTTP/HTTPS 地址，不能含凭据或参数。");
@@ -144,6 +148,12 @@ void UpdateClient::Initialize() {
 
 UpdateClient::~UpdateClient() {
     ClearReply();
+    if (baselineCancelled_) baselineCancelled_->store(true);
+    if (baselineVerifier_) {
+        disconnect(baselineVerifier_, nullptr, this, nullptr);
+        baselineVerifier_->wait();
+        delete baselineVerifier_; baselineVerifier_ = nullptr;
+    }
     if (verifier_) {
         disconnect(verifier_, nullptr, this, nullptr);
         verifier_->wait();
@@ -152,7 +162,8 @@ UpdateClient::~UpdateClient() {
 }
 
 bool UpdateClient::IsBusy() const noexcept {
-    return verifier_ || status_.state == UpdateState::Checking || status_.state == UpdateState::Downloading || status_.state == UpdateState::Verifying;
+    return verifier_ || baselineVerifier_ || status_.state == UpdateState::Checking
+        || status_.state == UpdateState::Downloading || status_.state == UpdateState::Verifying;
 }
 bool UpdateClient::AutomaticCheckEnabled() const { return preferences_.automaticCheckEnabled; }
 Update::UpdateChannel UpdateClient::Channel() const { return preferences_.channel; }
@@ -199,16 +210,23 @@ bool UpdateClient::WritePreferences(QSettings& settings, const UpdatePreferences
 
 bool UpdateClient::ApplyCommittedPreferences(const UpdatePreferences& preferences, QString* error) {
     if (!ValidatePreferences(preferences, error)) return false;
+    const QPointer<UpdateClient> alive(this);
     const auto previous = preferences_;
     preferences_ = preferences;
     if (!preferences_.automaticCheckEnabled) automaticTimer_->stop();
     if (previous.channel != preferences_.channel && status_.channel != preferences_.channel) {
-        if (IsBusy()) Cancel();
+        if (verifier_ || baselineVerifier_) resetChannelAfterVerification_ = true;
+        if (IsBusy()) {
+            Cancel();
+            // StatusChanged 的直接槽可以销毁客户端，不能回到已析构的偏好/状态成员。
+            if (!alive) return true;
+        }
         status_.availableVersion.clear(); status_.releaseNotes.clear(); status_.canDownload = false;
         assets_.clear(); prepared_.reset();
-        if (!verifier_) {
+        if (!verifier_ && !baselineVerifier_) {
             ClearStaging(); verifiedManifest_.reset(); status_.channel = preferences_.channel;
             Publish(UpdateState::Idle, tr("渠道已切换，可重新检查更新。"));
+            if (!alive) return true;
         }
     }
     emit PreferencesChanged();
@@ -326,8 +344,27 @@ void UpdateClient::Cancel() {
     if (!IsBusy()) return;
     deadlineTimer_->stop();
     ClearReply(); status_.canDownload = false;
+    if (baselineVerifier_) {
+        baselineCancelled_->store(true);
+        cancellingVerification_ = true;
+        Publish(UpdateState::Checking, tr("正在结束安装目录核对，随后取消更新。"));
+        return;
+    }
     if (verifier_) { cancellingVerification_ = true; Publish(UpdateState::Verifying, tr("正在结束包校验，随后取消更新。")); return; }
     const bool removed = ClearStaging(); verifiedManifest_.reset();
+    Publish(UpdateState::Cancelled, removed ? tr("已取消更新；下载的临时文件已清理。")
+        : tr("已取消更新；部分临时文件可能仍在应用数据目录，未继续安装。"), removed ? QString{} : QStringLiteral("UPDATE_STAGING_CLEANUP"));
+}
+
+void UpdateClient::FinishCancelledVerification() {
+    cancellingVerification_ = false;
+    const bool removed = ClearStaging(); verifiedManifest_.reset(); prepared_.reset(); status_.canDownload = false;
+    if (resetChannelAfterVerification_) {
+        resetChannelAfterVerification_ = false;
+        status_.channel = preferences_.channel;
+        Publish(UpdateState::Idle, tr("渠道已切换，可重新检查更新。"));
+        return;
+    }
     Publish(UpdateState::Cancelled, removed ? tr("已取消更新；下载的临时文件已清理。")
         : tr("已取消更新；部分临时文件可能仍在应用数据目录，未继续安装。"), removed ? QString{} : QStringLiteral("UPDATE_STAGING_CLEANUP"));
 }
@@ -516,11 +553,66 @@ bool UpdateClient::ReadRelease(const QByteArray& bytes, bool hasNextPage) {
     const auto key = Update::ParseTrustedUpdateKeyHex(publicKeyHex_.toStdString());
     const bool trusted = key.Succeeded() && key.value && key.value->configured;
     const bool signedAssets = assets_.contains(QStringLiteral("update-manifest.json")) && assets_.contains(QStringLiteral("update-manifest.json.sig"));
-    status_.canDownload = trusted && signedAssets;
-    Publish(UpdateState::Available, !trusted ? tr("发现版本 %1；此构建未配置有效的更新验证公钥，暂不能安装。").arg(status_.availableVersion)
-        : !signedAssets ? tr("发现版本 %1；发布缺少签名更新清单，暂不能安装。").arg(status_.availableVersion)
-        : tr("发现新版本 %1，可以下载更新。").arg(status_.availableVersion));
+    status_.canDownload = false;
+    if (!trusted || !signedAssets) {
+        Publish(UpdateState::Available, !trusted ? tr("发现版本 %1；此构建未配置有效的更新验证公钥，暂不能安装。").arg(status_.availableVersion)
+            : tr("发现版本 %1；发布缺少签名更新清单，暂不能安装。").arg(status_.availableVersion));
+        return true;
+    }
+    StartInstalledBaselineVerification();
     return true;
+}
+
+void UpdateClient::StartInstalledBaselineVerification() {
+    // 与安装准备使用同一安装根、当前构建版本和可信公钥。只读散列全部在后台进行；
+    // 此结果仅用于检查阶段的提示，安装准备及独立安装器仍各自重新验证。
+    const auto root = loopback_ ? installationRoot_ : QtCommon::InstallationRoot();
+    const auto version = status_.currentVersion, keyHex = publicKeyHex_;
+    auto result = std::make_shared<Result<Update::UpdateBaselineLocation>>();
+    auto cancelled = std::make_shared<std::atomic_bool>(false);
+    baselineCancelled_ = cancelled;
+    baselineVerifier_ = QThread::create([root, version, keyHex, result, cancelled] {
+        if (cancelled->load()) return;
+        try {
+            const auto key = Update::ParseTrustedUpdateKeyHex(keyHex.toStdString());
+            if (!key.Succeeded() || !key.value || !key.value->configured) {
+                *result = Result<Update::UpdateBaselineLocation>::Failure("QtUpdate", "UPDATE_TRUST_NOT_CONFIGURED",
+                    "未配置可信发布公钥，无法核对当前安装目录。");
+            } else if (root.isEmpty()) {
+                *result = Result<Update::UpdateBaselineLocation>::Failure("QtUpdate", "UPDATE_BASELINE_NOT_FOUND",
+                    "无法定位当前安装目录的签名版本基线。");
+            } else {
+                *result = Update::DiscoverInstalledUpdateBaseline(std::filesystem::path(root.toStdWString()),
+                    version.toStdString(), *key.value);
+            }
+        } catch (...) {
+            *result = Result<Update::UpdateBaselineLocation>::Failure("QtUpdate", "UPDATE_BASELINE_DISCOVERY_FAILED",
+                "无法完成当前安装目录的只读核对。");
+        }
+    });
+    auto* worker = baselineVerifier_;
+    connect(worker, &QThread::finished, this, [this, worker, result, cancelled] {
+        if (baselineVerifier_ != worker) return;
+        baselineVerifier_ = nullptr; baselineCancelled_.reset();
+        if (cancelled->load() || cancellingVerification_) { FinishCancelledVerification(); return; }
+        if (!result->Succeeded() || !result->value) {
+            status_.canDownload = false;
+            Publish(UpdateState::Available,
+                tr("发现版本 %1；当前安装目录缺少可信版本基线，或程序文件与签名清单不一致，不能自动下载安装。"
+                   "请下载最新完整包，解压到新的文件夹使用，设置会自动沿用。\n\n%2")
+                    .arg(status_.availableVersion, DiagnosticMessage(result->diagnostics, tr("安装目录核对失败。"))),
+                DiagnosticCode(result->diagnostics, QStringLiteral("UPDATE_BASELINE_DISCOVERY_FAILED")));
+            return;
+        }
+        status_.canDownload = true;
+        Publish(UpdateState::Available, tr("发现新版本 %1，可以下载更新。").arg(status_.availableVersion));
+    });
+    connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    // StatusChanged 可同步触发取消、切换渠道或销毁客户端；工作指针先登记，
+    // 取消标记由后台读取，销毁后不再启动已被析构回收的线程。
+    const QPointer<UpdateClient> alive(this);
+    Publish(UpdateState::Checking, tr("发现版本 %1，正在核对当前安装目录…").arg(status_.availableVersion));
+    if (alive) worker->start();
 }
 
 bool UpdateClient::Download() {
@@ -603,9 +695,7 @@ void UpdateClient::StartPackageVerification() {
         if (verifier_ != worker) return;
         verifier_ = nullptr;
         if (cancellingVerification_) {
-            cancellingVerification_ = false; const bool removed = ClearStaging(); verifiedManifest_.reset();
-            Publish(UpdateState::Cancelled, removed ? tr("已取消更新；下载的临时文件已清理。")
-                : tr("已取消更新；部分临时文件可能仍在应用数据目录，未继续安装。"), removed ? QString{} : QStringLiteral("UPDATE_STAGING_CLEANUP")); return;
+            FinishCancelledVerification(); return;
         }
         if (!result->Succeeded() || !result->value) { Fail(DiagnosticCode(result->diagnostics, QStringLiteral("UPDATE_PACKAGE_VERIFICATION")), DiagnosticMessage(result->diagnostics, tr("更新包校验失败，不能安装。"))); return; }
         PreparedUpdate ready{staging_->filePath(QStringLiteral("package.zip")), staging_->filePath(QStringLiteral("update-manifest.json")),

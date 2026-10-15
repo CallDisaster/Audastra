@@ -11,6 +11,7 @@ namespace War3Map::Modules {
 
 // QTreeView 的有界薄适配；typed token/version 由核心给出，绝不在模型里修改地图。
 class WorldOutlinerModel final : public QAbstractItemModel {
+    Q_OBJECT
 public:
     using PageReader = std::function<Result<Services::WorldObjectPage>(MapDataKind,
         const Services::WorldObjectFilter&, const std::optional<Services::WorldObjectCursor>&,
@@ -44,6 +45,10 @@ public:
     bool setData(const QModelIndex& index, const QVariant& value, int role) override;
     [[nodiscard]] bool canFetchMore(const QModelIndex& parent) const override;
     void fetchMore(const QModelIndex& parent) override;
+
+signals:
+    // 一页的分组/记录及游标已完整更新；宿主应排队回显选择，避免插行期间重入。
+    void PageLoaded();
 
 private:
     struct Node;

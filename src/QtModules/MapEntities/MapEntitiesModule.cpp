@@ -3,6 +3,7 @@
 
 #include "EditorProject.h"
 #include "Commands/MapDataCommands.h"
+#include "ProjectAuxiliaryEdits.h"
 #include "Icons/IconProvider.h"
 #include "ObjectNames.h"
 #include "War3MapCore/MapDocument.h"
@@ -13,6 +14,8 @@
 #include <QHeaderView>
 #include <QCheckBox>
 #include <QInputDialog>
+#include <QPushButton>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QScrollBar>
@@ -30,6 +33,7 @@
 #include <charconv>
 #include <cmath>
 #include <numbers>
+#include <limits>
 #include <optional>
 #include <string>
 
@@ -44,14 +48,14 @@ constexpr std::array kKinds{MapDataKind::Units, MapDataKind::Doodads,
 const std::array<QStringList, 4> kFields{
     QStringList{"rawcode", "owner", "x", "y", "z", "rotation", "health", "mana", "gold"},
     QStringList{"rawcode", "variation", "x", "y", "z", "rotation", "life"},
-    QStringList{"name", "left", "bottom", "right", "top", "ambientSound"},
+    QStringList{"name", "left", "bottom", "right", "top", "ambientSound", "weather", "color"},
     QStringList{"name", "targetX", "targetY", "zOffset", "rotation", "angle", "distance", "roll", "fov", "far", "near"}};
 
 const std::array<QStringList, 4> kLabels{
     QStringList{"类型", "所属玩家", "X", "Y", "高度", "朝向（度）", "生命", "魔法", "金币"},
     QStringList{"类型", "变体", "X", "Y", "高度", "朝向（度）", "生命 %"},
-    QStringList{"名称", "左边界", "下边界", "右边界", "上边界", "环境音"},
-    QStringList{"名称", "目标 X", "目标 Y", "高度偏移", "旋转", "攻角", "距离", "滚转", "视野", "远裁剪", "近裁剪"}};
+    QStringList{"名称", "左边界", "下边界", "右边界", "上边界", "环境音变量", "天气 ID", "颜色 BGR（十六进制）"},
+    QStringList{"名称", "目标 X", "目标 Y", "高度偏移", "旋转", "攻角", "距离", "滚转", "视野", "远裁剪", "第十槽（只读）"}};
 
 Result<float> ParseFloat(std::string_view text) {
     float result = 0;
@@ -184,6 +188,13 @@ QWidget* MapEntitiesModule::Widget() {
     page_->setObjectName("mapEntitiesWorkspace");
     auto* layout = new QVBoxLayout(page_);
     layout->setContentsMargins(12, 10, 12, 10);
+    auto* actions = new QHBoxLayout;
+    auto* add = new QPushButton(tr("新建"), page_);
+    auto* remove = new QPushButton(tr("删除选中"), page_);
+    add->setObjectName("mapEntitiesAddAuxiliary");
+    remove->setObjectName("mapEntitiesDeleteAuxiliary");
+    actions->addWidget(add); actions->addWidget(remove); actions->addStretch();
+    layout->addLayout(actions);
     rawFields_ = new QCheckBox(tr("显示原始字段"), page_);
     rawFields_->setObjectName("mapEntitiesRawFields");
     layout->addWidget(rawFields_, 0, Qt::AlignRight);
@@ -218,7 +229,14 @@ QWidget* MapEntitiesModule::Widget() {
         Refresh();
     });
     connect(tabs_, &QTabWidget::currentChanged, this,
-        [this](int kind) { RefreshVisibleIcons(kind); });
+        [this, add, remove](int kind) { RefreshVisibleIcons(kind); add->setVisible(kind >= 2); remove->setVisible(kind >= 2); });
+    add->setVisible(false); remove->setVisible(false);
+    connect(add, &QPushButton::clicked, this, &MapEntitiesModule::AddAuxiliary);
+    connect(remove, &QPushButton::clicked, this, [this] {
+        const int category = tabs_->currentIndex();
+        if (category < 2 || category > 3 || tables_[category]->currentRow() < 0) return;
+        ShowError(DeleteAuxiliary(kKinds[category], static_cast<std::size_t>(tables_[category]->currentRow())));
+    });
     layout->addWidget(tabs_, 1);
     Refresh();
     return page_;
@@ -277,7 +295,10 @@ void MapEntitiesModule::Refresh() {
         }
         if (kind == 2 && snapshot.Regions()) for (const auto& region : snapshot.Regions()->entries)
             append({QString::fromUtf8(region.name), Value(region.left), Value(region.bottom),
-                Value(region.right), Value(region.top), QString::fromUtf8(region.ambientSound)});
+                Value(region.right), Value(region.top), QString::fromUtf8(region.ambientSound),
+                std::all_of(region.weatherId.begin(), region.weatherId.end(), [](auto b) { return b == std::byte{}; })
+                    ? QString{} : QString::fromLatin1(reinterpret_cast<const char*>(region.weatherId.data()), 4),
+                QString::fromLatin1(QByteArray(reinterpret_cast<const char*>(region.colorBgra.data()), 3).toHex())});
         if (kind == 3 && snapshot.Cameras()) for (const auto& camera : snapshot.Cameras()->entries)
             append({QString::fromUtf8(camera.name), Value(camera.targetX), Value(camera.targetY), Value(camera.zOffset),
                 Value(camera.rotation), Value(camera.angleOfAttack), Value(camera.targetDistance), Value(camera.roll),
@@ -309,7 +330,9 @@ void MapEntitiesModule::RefreshVisibleIcons(int category) {
 }
 
 Status MapEntitiesModule::EditCell(MapDataKind kind, std::size_t row,
-    std::string_view field, std::string_view value) {
+    std::string_view field, std::string_view value, const QtProject::AuxiliaryEditBinding* auxiliaryBinding) {
+    if (auxiliaryBinding && !QtProject::AuxiliaryEditBindingCurrent(project_, *auxiliaryBinding))
+        return Failure("AUX_PROJECT_STALE", "弹窗期间地图来源、编辑会话或修订已变化，请重新打开属性");
     if (!project_.mapEdits_) return Failure("MAP_SOURCE_MISSING", "尚未打开地图数据");
     const auto snapshot = project_.mapEdits_->Snapshot();
     const auto before = CurrentBytes(snapshot, kind);
@@ -357,6 +380,17 @@ Status MapEntitiesModule::EditCell(MapDataKind kind, std::size_t row,
         else if (field == "right") parsed = SetCatalogFloat(region.right, kind, "right", value);
         else if (field == "top") parsed = SetCatalogFloat(region.top, kind, "top", value);
         else if (field == "ambientSound") region.ambientSound.assign(value);
+        else if (field == "weather") {
+            if (!MapData::IsEditableRegionWeatherId(value)) return Failure("REGION_WEATHER_INVALID", "天气 ID 须为空或四字节可打印 rawcode，不能含引号或反斜杠");
+            region.weatherId.fill(std::byte{});
+            for (std::size_t i = 0; i < value.size(); ++i) region.weatherId[i] = static_cast<std::byte>(value[i]);
+        } else if (field == "color") {
+            if (value.size() != 6 || !std::all_of(value.begin(), value.end(), [](unsigned char c) {
+                return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }))
+                return Failure("REGION_COLOR_INVALID", "颜色须为六位十六进制，按 B、G、R 顺序填写；保留字节不变");
+            const auto bytes = QByteArray::fromHex(QByteArray(value.data(), static_cast<qsizetype>(value.size())));
+            for (std::size_t i = 0; i < 3; ++i) region.colorBgra[i] = static_cast<std::uint8_t>(bytes[static_cast<qsizetype>(i)]);
+        }
         else return Failure("MAP_FIELD_READONLY", "区域字段尚未在此编辑");
         if (parsed.Succeeded() && (field == "left" || field == "bottom" || field == "right" || field == "top"))
             parsed = MapData::ValidateMapFieldRegionBounds(region.left, region.bottom, region.right, region.top);
@@ -375,13 +409,37 @@ Status MapEntitiesModule::EditCell(MapDataKind kind, std::size_t row,
         else if (field == "roll") parsed = SetFloat(camera.roll, value);
         else if (field == "fov") parsed = SetFloat(camera.fieldOfView, value);
         else if (field == "far") parsed = SetFloat(camera.farClippingPlane, value);
-        else if (field == "near") parsed = SetFloat(camera.nearClippingPlane, value);
+        else if (field == "near") return Failure("CAMERA_CLASSIC_SLOT_READ_ONLY", "经典镜头第十个槽位用途未证实，逐位保留原值");
         else return Failure("MAP_FIELD_READONLY", "镜头字段尚未在此编辑");
         if (parsed.Succeeded()) after = doc.Serialize();
     } else return Failure("MAP_SOURCE_MISSING", "此类地图成员缺失或无法解析");
     if (!parsed.Succeeded()) return parsed;
     if (!after.Succeeded()) { Status status; status.diagnostics = after.diagnostics; return status; }
     if (*after.value == *before.value) return Status::Ok();
+    if (kind == MapDataKind::Regions || kind == MapDataKind::Cameras) {
+        Services::AuxiliaryEditRequest request;
+        request.kind = kind; request.sourceIndex = row;
+        const auto identity = Services::AuxiliaryEditing::MemberIdentity(snapshot, kind);
+        const auto key = MapData::MapFieldRowKey(snapshot, kind, row);
+        if (!identity.Succeeded()) return {identity.diagnostics};
+        if (!key.Succeeded()) return {key.diagnostics};
+        request.expectedMemberSha256 = *identity.value; request.expectedRowKey = *key.value;
+        if (kind == MapDataKind::Regions) {
+            const auto parsedRecord = MapData::ParseRegions(*after.value);
+            if (!parsedRecord.Succeeded()) return {parsedRecord.diagnostics};
+            request.record = parsedRecord.value->entries[row];
+        } else {
+            const auto parsedRecord = MapData::ParseCameras(*after.value);
+            if (!parsedRecord.Succeeded()) return {parsedRecord.diagnostics};
+            request.record = parsedRecord.value->entries[row];
+        }
+        if (auxiliaryBinding) {
+            const auto applied = QtProject::ApplyAuxiliaryEditWithResult(project_, *auxiliaryBinding,
+                std::move(request), tr("修改区域或镜头"));
+            return {applied.diagnostics};
+        }
+        return QtProject::ApplyAuxiliaryEdit(project_, std::move(request), tr("修改区域或镜头"));
+    }
     auto status = ApplySerialized(kind, *after.value);
     if (!status.Succeeded()) return status;
     QtProject::PushMapDataEdit(project_, tr("修改地图属性"), "修改地图实例、区域或镜头");
@@ -391,6 +449,8 @@ Status MapEntitiesModule::EditCell(MapDataKind kind, std::size_t row,
 
 Status MapEntitiesModule::ApplySerialized(MapDataKind kind, std::span<const std::byte> bytes) {
     if (!project_.mapEdits_) return Failure("MAP_SOURCE_MISSING", "尚未打开地图数据");
+    if (kind == MapDataKind::Regions || kind == MapDataKind::Cameras)
+        return Failure("AUX_TYPED_COMMAND_REQUIRED", "区域和镜头须使用带行身份与引用检查的共用命令，不能直接替换整表");
     const auto status = project_.mapEdits_->EditSerialized(kind, bytes);
     if (!status.Succeeded()) return status;
     (void)project_.ObserveEditState("修改地图实例、区域或镜头");
@@ -398,17 +458,114 @@ Status MapEntitiesModule::ApplySerialized(MapDataKind kind, std::span<const std:
     return Status::Ok();
 }
 
+Status MapEntitiesModule::CreateAuxiliary(MapData::RegionRecord record) {
+    if (!project_.mapEdits_) return Failure("MAP_SOURCE_MISSING", "尚未打开地图数据");
+    Services::AuxiliaryEditRequest request;
+    request.kind = MapDataKind::Regions; request.action = Services::AuxiliaryEditAction::Create;
+    const auto identity = Services::AuxiliaryEditing::MemberIdentity(project_.mapEdits_->Snapshot(), request.kind);
+    if (!identity.Succeeded()) return {identity.diagnostics};
+    request.expectedMemberSha256 = *identity.value; request.record = std::move(record);
+    return QtProject::ApplyAuxiliaryEdit(project_, std::move(request), tr("新建区域"));
+}
+
+Status MapEntitiesModule::CreateAuxiliary(MapData::CameraRecord record) {
+    if (!project_.mapEdits_) return Failure("MAP_SOURCE_MISSING", "尚未打开地图数据");
+    Services::AuxiliaryEditRequest request;
+    request.kind = MapDataKind::Cameras; request.action = Services::AuxiliaryEditAction::Create;
+    const auto identity = Services::AuxiliaryEditing::MemberIdentity(project_.mapEdits_->Snapshot(), request.kind);
+    if (!identity.Succeeded()) return {identity.diagnostics};
+    request.expectedMemberSha256 = *identity.value; request.record = std::move(record);
+    return QtProject::ApplyAuxiliaryEdit(project_, std::move(request), tr("新建镜头"));
+}
+
+Status MapEntitiesModule::DeleteAuxiliary(MapDataKind kind, std::size_t row) {
+    if (!project_.mapEdits_) return Failure("MAP_SOURCE_MISSING", "尚未打开地图数据");
+    const auto current = project_.mapEdits_->Snapshot();
+    const auto identity = Services::AuxiliaryEditing::MemberIdentity(current, kind);
+    const auto key = MapData::MapFieldRowKey(current, kind, row);
+    if (!identity.Succeeded()) return {identity.diagnostics};
+    if (!key.Succeeded()) return {key.diagnostics};
+    Services::AuxiliaryEditRequest request;
+    request.kind = kind; request.action = Services::AuxiliaryEditAction::Delete;
+    request.sourceIndex = row; request.expectedRowKey = *key.value; request.expectedMemberSha256 = *identity.value;
+    return QtProject::ApplyAuxiliaryEdit(project_, std::move(request), tr("删除区域或镜头"));
+}
+
+void MapEntitiesModule::ShowError(const Status& status) {
+    if (!page_) return;
+    auto* warning = page_->findChild<QLabel*>("mapEntitiesError");
+    if (status.Succeeded()) { if (warning) warning->hide(); return; }
+    if (!warning) {
+        warning = new QLabel(page_); warning->setWordWrap(true);
+        warning->setObjectName("mapEntitiesError"); page_->layout()->addWidget(warning);
+    }
+    warning->setText(status.diagnostics.empty() ? tr("操作未完成") : QString::fromUtf8(status.diagnostics.front().message));
+    warning->show();
+}
+
+void MapEntitiesModule::AddAuxiliary() {
+    if (!project_.mapEdits_ || !tabs_ || tabs_->currentIndex() < 2) return;
+    const auto binding = QtProject::CaptureAuxiliaryEditBinding(project_);
+    if (!binding.Succeeded()) { ShowError({binding.diagnostics}); return; }
+    const auto source = project_.mapEdits_->Snapshot();
+    Services::AuxiliaryEditRequest request;
+    request.kind = kKinds[tabs_->currentIndex()]; request.action = Services::AuxiliaryEditAction::Create;
+    const auto identity = Services::AuxiliaryEditing::MemberIdentity(source, request.kind);
+    if (!identity.Succeeded()) { ShowError({identity.diagnostics}); return; }
+    request.expectedMemberSha256 = *identity.value;
+    const QScopedValueRollback<bool> draft(editingCell_, true);
+    bool accepted = false;
+    const auto name = QInputDialog::getText(page_, tr("新建区域或镜头"), tr("名称"), QLineEdit::Normal, {}, &accepted);
+    if (!accepted) return;
+    if (request.kind == MapDataKind::Regions) {
+        MapData::RegionRecord region{};
+        region.name = name.toUtf8().toStdString(); region.left = region.bottom = -256;
+        region.right = region.top = 256; region.colorBgra = {255, 128, 0, 255};
+        if (source.Regions()) for (const auto& old : source.Regions()->entries) {
+            if (old.creationNumber == std::numeric_limits<std::int32_t>::max()) {
+                ShowError(Failure("REGION_ID_EXHAUSTED", "区域创建编号已用尽")); return;
+            }
+            region.creationNumber = std::max(region.creationNumber, old.creationNumber + 1);
+        }
+        request.record = std::move(region);
+    } else {
+        MapData::CameraRecord camera{};
+        // 明确的可编辑起始值；第十槽只作为原生记录模板保留，不发射未证实的游戏接口。
+        camera.name = name.toUtf8().toStdString(); camera.rotation = 90; camera.angleOfAttack = 304;
+        camera.targetDistance = 1650; camera.fieldOfView = 70; camera.farClippingPlane = 5000;
+        camera.nearClippingPlane = source.Cameras() && !source.Cameras()->entries.empty()
+            ? source.Cameras()->entries.front().nearClippingPlane : 100;
+        request.record = std::move(camera);
+    }
+    const auto applied = QtProject::ApplyAuxiliaryEditWithResult(project_, *binding.value,
+        std::move(request), tr("新建区域或镜头"));
+    ShowError({applied.diagnostics});
+}
+
 void MapEntitiesModule::EditSelected(int category, int row, int column) {
     if (category < 0 || category >= 4 || column < 0 || column >= kFields[category].size()) return;
     if ((category == 0 || category == 1) && column == 0) return;
+    if (category == 3 && kFields[category][column] == "near") return;
     auto* item = tables_[category]->item(row, column);
     if (!item) return;
+    std::optional<QtProject::AuxiliaryEditBinding> auxiliaryBinding;
+    if (category >= 2) {
+        const auto binding = QtProject::CaptureAuxiliaryEditBinding(project_);
+        if (!binding.Succeeded()) { ShowError({binding.diagnostics}); return; }
+        auxiliaryBinding = *binding.value;
+    }
     const QScopedValueRollback<bool> draft(editingCell_, true);
     std::optional<std::string> originalRowKey;
+    std::optional<std::string> originalMember;
     if (project_.mapEdits_) {
-        const auto key = MapData::MapFieldRowKey(project_.mapEdits_->Snapshot(), kKinds[category],
+        const auto snapshot = project_.mapEdits_->Snapshot();
+        const auto key = MapData::MapFieldRowKey(snapshot, kKinds[category],
             static_cast<std::size_t>(row));
         if (key.Succeeded() && key.value) originalRowKey = *key.value;
+        if (category >= 2) {
+            const auto member = Services::AuxiliaryEditing::MemberIdentity(snapshot, kKinds[category]);
+            if (member.Succeeded()) originalMember = *member.value;
+        }
     }
     const QString initial = category == 0 && column == 1 ? item->data(Qt::UserRole).toString() : item->text();
     bool accepted = false;
@@ -418,12 +575,17 @@ void MapEntitiesModule::EditSelected(int category, int row, int column) {
     if (!accepted || text == initial) return;
     Status result;
     if (project_.mapEdits_) {
-        const auto currentKey = MapData::MapFieldRowKey(project_.mapEdits_->Snapshot(), kKinds[category],
+        const auto snapshot = project_.mapEdits_->Snapshot();
+        const auto currentKey = MapData::MapFieldRowKey(snapshot, kKinds[category],
             static_cast<std::size_t>(row));
+        const auto currentMember = category >= 2
+            ? Services::AuxiliaryEditing::MemberIdentity(snapshot, kKinds[category]) : Result<std::string>::Success({});
         if (!originalRowKey || !currentKey.Succeeded() || !currentKey.value || *currentKey.value != *originalRowKey)
             result = Failure("MAP_ROW_STALE", "弹窗期间实例行已变化，请重新选择后编辑");
+        else if (category >= 2 && (!originalMember || !currentMember.Succeeded() || *currentMember.value != *originalMember))
+            result = Failure("AUX_MEMBER_STALE", "弹窗期间区域或镜头成员已变化，请重新选择后编辑");
         else result = EditCell(kKinds[category], static_cast<std::size_t>(row),
-            kFields[category][column].toStdString(), text.toStdString());
+            kFields[category][column].toStdString(), text.toStdString(), auxiliaryBinding ? &*auxiliaryBinding : nullptr);
     } else result = EditCell(kKinds[category], static_cast<std::size_t>(row),
         kFields[category][column].toStdString(), text.toStdString());
     if (!result.Succeeded()) {

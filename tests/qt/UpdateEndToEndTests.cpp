@@ -274,7 +274,7 @@ UpgradeResult Upgrade(OwnedTemp& owner, const QString& current, const QString& t
     const auto install = owner.Path("install"); const auto receipts = owner.Path("receipts");
     Server server; if (!server.Start()) return fail(QStringLiteral("原创回环server无法启动。")); server.Publish(target, targetVersion);
     QSettings settings(owner.Path(tag + ".ini"), QSettings::IniFormat);
-    auto client = std::make_unique<UpdateClient>(server.Source(target, owner.Path("downloads"), current), settings);
+    auto client = std::make_unique<UpdateClient>(server.Source(target, owner.Path("downloads"), install, current), settings);
     QSignalSpy ready(client.get(), &UpdateClient::PackagePrepared); QSignalSpy progress(client.get(), &UpdateClient::DownloadProgress);
     if (!client->Check() || !WaitFor([&] { return !client->IsBusy(); }) || client->Status().state != UpdateState::Available)
         return fail(client->Status().errorCode + QStringLiteral(": ") + client->Status().message);

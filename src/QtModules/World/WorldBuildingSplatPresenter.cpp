@@ -1,5 +1,6 @@
 #include "WorldBuildingSplatPresenter.h"
 #include "WorldViewport.h"
+#include "WorldDiagnosticJson.h"
 #include "War3MapCore/Hash.h"
 
 #include <QEvent>
@@ -107,6 +108,7 @@ void WorldBuildingSplatPresenter::Show(WorldBuildingSplatCapture capture, std::v
     desiredIdentity_ = std::move(*hashed.value);
     geometryIdentity_ = std::move(*geometryHash.value);
     capture_ = std::make_shared<const WorldBuildingSplatCapture>(std::move(capture)); visible_ = std::move(visible);
+    notApplicableCount_ = NotApplicableCount(capture_.get());
     document_ = std::move(document); registry_ = std::move(registry); fallbackBinding_ = std::move(fallbackBinding);
     terrain_ = std::move(terrain); terrainIdentity_ = std::move(terrainIdentity); terrainRevision_ = terrainRevision;
     ++requestSerial_; UpdateTimer(); BeginNext();
@@ -114,7 +116,7 @@ void WorldBuildingSplatPresenter::Show(WorldBuildingSplatCapture capture, std::v
 void WorldBuildingSplatPresenter::Clear() {
     ++sourceSerial_; ++requestSerial_; ++bindingSerial_; parentTimer_.stop(); RemoveLayer();
     sources_.reset(); session_ = {}; sourceCurrent_ = {}; current_ = {}; cache_.reset();
-    capture_.reset(); visible_.clear(); document_.reset(); registry_.reset(); terrain_.reset();
+    capture_.reset(); notApplicableCount_ = 0; visible_.clear(); document_.reset(); registry_.reset(); terrain_.reset();
     terrainIdentity_.clear(); desiredIdentity_.clear(); geometryIdentity_.clear(); preparedGeometryIdentity_.clear();
     prepared_.reset(); failed_.reset(); lastMessage_.clear(); hiddenPrepared_ = 0;
     needsSubmit_ = false; preparedRequestSerial_ = 0; observedParent_ = 0;
@@ -358,7 +360,7 @@ void WorldBuildingSplatPresenter::SubmitPrepared(const Signature& signature) {
         .arg(static_cast<qulonglong>(prepared_->absent)).arg(static_cast<qulonglong>(prepared_->unavailable))
         .arg(static_cast<qulonglong>(prepared_->omittedBudget));
     text += tr("；无贴画中 %1 个不适用于非建筑（保留原uubs Absent）")
-        .arg(static_cast<qulonglong>(NotApplicableCount(capture_.get())));
+        .arg(static_cast<qulonglong>(notApplicableCount_));
     setProperty("buildingSplatLayerId", QVariant::fromValue(static_cast<qulonglong>(layerId_)));
     setProperty("buildingSplatSceneVersion", QVariant::fromValue(static_cast<qulonglong>(prepared_->scene->sceneVersion)));
     setProperty("buildingSplatContentVersion", QVariant::fromValue(static_cast<qulonglong>(prepared_->frame->contentVersion)));
@@ -371,6 +373,19 @@ void WorldBuildingSplatPresenter::SubmitPrepared(const Signature& signature) {
     if (cache_ && !cache_->resourceIssues.empty()) text += QStringLiteral("\n") + FailureText(cache_->resourceIssues);
     Report(std::move(text));
 }
+bool WorldBuildingSplatPresenter::DiagnosticRowUnavailable(Services::BuildingSplatRow& row) const {
+    if (row.availability == Services::BuildingSplatAvailability::Absent) return false;
+    if (row.availability == Services::BuildingSplatAvailability::Available) {
+        const auto& path = cache_->catalog->definitions.at(row.splatKey).texturePath;
+        if (!cache_->failedTextures.contains(path) && !cache_->budgetTextures.contains(path)) return false;
+        row.reason = cache_->failedTextures.contains(path) ? "贴画实际纹理来源读取/解码失败，未替换另一来源。"
+            : "贴画纹理超过当前预览预算，未把预算省略当作资源缺失。";
+        row.reasonCode = cache_->failedTextures.contains(path) ? "BUILDING_SPLAT_TEXTURE_UNAVAILABLE" : "BUILDING_SPLAT_TEXTURE_BUDGET";
+        row.availability = Services::BuildingSplatAvailability::Unavailable;
+    }
+    return true;
+}
+
 std::vector<Services::BuildingSplatRow> WorldBuildingSplatPresenter::DiagnosticRows() const {
     std::vector<Services::BuildingSplatRow> result;
     // worker修改自己的Cache副本。这里仅查询GUI已接收的cache，且不给旧输入授予当前资格。
@@ -384,52 +399,93 @@ std::vector<Services::BuildingSplatRow> WorldBuildingSplatPresenter::DiagnosticR
         if (!page.Succeeded()) return {};
         cursor = page.value->next;
         for (auto& row : page.value->rows) {
-            if (row.availability == Services::BuildingSplatAvailability::Absent) continue;
-            if (row.availability == Services::BuildingSplatAvailability::Available) {
-                const auto& path = cache_->catalog->definitions.at(row.splatKey).texturePath;
-                if (!cache_->failedTextures.contains(path) && !cache_->budgetTextures.contains(path)) continue;
-                row.reason = cache_->failedTextures.contains(path) ? "贴画实际纹理来源读取/解码失败，未替换另一来源。"
-                    : "贴画纹理超过当前预览预算，未把预算省略当作资源缺失。";
-                row.reasonCode = cache_->failedTextures.contains(path) ? "BUILDING_SPLAT_TEXTURE_UNAVAILABLE" : "BUILDING_SPLAT_TEXTURE_BUDGET";
-                row.availability = Services::BuildingSplatAvailability::Unavailable;
-            }
-            result.push_back(std::move(row));
+            if (DiagnosticRowUnavailable(row)) result.push_back(std::move(row));
         }
     } while (cursor);
     return result;
 }
 QJsonObject WorldBuildingSplatPresenter::DiagnosticSnapshot() const {
+    return DiagnosticSnapshotImpl(std::nullopt, 0);
+}
+QJsonObject WorldBuildingSplatPresenter::DiagnosticSnapshot(std::uint32_t offset, std::uint32_t limit) const {
+    return DiagnosticSnapshotImpl(offset, std::clamp(limit, 1u, 16u));
+}
+QJsonObject WorldBuildingSplatPresenter::DiagnosticSnapshotImpl(std::optional<std::uint32_t> offset, std::uint32_t limit) const {
+    const bool bounded = offset.has_value();
     QJsonObject result{{"current", !worker_ && capture_ && current_ && current_() && sourceCurrent_ && sourceCurrent_()},
         {"preparationRunning", static_cast<bool>(worker_)}, {"previewApproximate", true}};
     if (!cache_ || !cache_->catalog || worker_) return result;
     const auto& catalog = *cache_->catalog;
-    result["catalog"] = QJsonObject{{"virtualPath", QString::fromStdString(catalog.source.canonicalPath)},
-        {"sourceId", QString::fromStdString(catalog.source.sourceId)},
-        {"sourcePath", QString::fromStdString(catalog.source.sourcePath)},
-        {"layer", static_cast<int>(catalog.source.layer)}, {"priority", catalog.source.priority},
+    QJsonObject catalogInfo{{"layer", static_cast<int>(catalog.source.layer)}, {"priority", catalog.source.priority},
         {"tableSha256", QString::fromStdString(catalog.tableSha256)},
         {"catalogIdentity", QString::fromStdString(catalog.identitySha256)},
         {"definitionCount", static_cast<double>(catalog.definitions.size())}};
+    const auto text = [&](QJsonObject& object, const char* key, const std::string& value, std::size_t maximum = 2048) {
+        if (bounded) WorldDiagnosticJson::Text(object, key, std::string_view(value), maximum);
+        else object[key] = QString::fromStdString(value);
+    };
+    text(catalogInfo, "virtualPath", catalog.source.canonicalPath);
+    text(catalogInfo, "sourceId", catalog.source.sourceId, 256); text(catalogInfo, "sourcePath", catalog.source.sourcePath);
+    result["catalog"] = catalogInfo;
+    std::vector<Services::BuildingSplatRow> capturedRows;
+    if (bounded) {
+        if (!result["current"].toBool()) { result["rowsState"] = "pending-or-stale"; return result; }
+        Services::BuildingSplatQueryContext query{capture_->version, capture_->inputIdentity, capture_->units};
+        result["inputCount"] = static_cast<double>(query.units.size());
+        result["pageBinding"] = QJsonObject{{"documentId", QString::fromStdString(query.version.document.documentId)},
+            {"sourceSha256", QString::fromStdString(query.version.document.sourceSha256)},
+            {"generation", QString::number(query.version.document.generation)}, {"revision", QString::number(query.version.document.revision)},
+            {"catalogRevision", QString::number(query.version.catalogRevision)}, {"editorRevision", QString::number(query.version.editorRevision)},
+            {"inputIdentity", QString::fromStdString(query.inputIdentity)}, {"catalogIdentity", QString::fromStdString(catalog.identitySha256)}};
+        if (*offset < query.units.size()) {
+            const Services::BuildingSplatCursor cursor{query.version, catalog.identitySha256, query.inputIdentity, *offset};
+            auto page = Services::QueryBuildingSplatFootprints(cache_->catalog, query, query.version, catalog.identitySha256,
+                {limit, 256 * 1024}, cursor);
+            if (!page.Succeeded()) {
+                result["rowsState"] = "query-rejected";
+                result["diagnostics"] = WorldDiagnosticJson::Diagnostics(page.diagnostics, 4); return result;
+            }
+            capturedRows = std::move(page.value->rows);
+        }
+        result["inputPage"] = WorldDiagnosticJson::Page(query.units.size(), *offset, capturedRows.size(), limit);
+        result["unavailableRowsScope"] = "returned-input-page";
+        for (auto& row : capturedRows) (void)DiagnosticRowUnavailable(row);
+    } else capturedRows = DiagnosticRows();
     QJsonArray rows;
-    for (const auto& row : DiagnosticRows()) {
+    for (const auto& row : capturedRows) {
         QJsonArray origins;
-        for (const auto& origin : row.origins) origins.push_back(QJsonObject{{"field", QString::fromStdString(origin.field)},
-            {"objectRawcode", QString::fromStdString(origin.objectRawcode)}, {"sourceId", QString::fromStdString(origin.sourceId)},
-            {"sourcePath", QString::fromStdString(origin.sourcePath)},
-            {"byteOffset", origin.byteOffset ? QJsonValue(QString::number(*origin.byteOffset)) : QJsonValue::Null}});
+        for (std::size_t i = 0; i < row.origins.size() && (!bounded || i < 4); ++i) {
+            const auto& origin = row.origins[i];
+            QJsonObject value{{"byteOffset", origin.byteOffset ? QJsonValue(QString::number(*origin.byteOffset)) : QJsonValue::Null}};
+            text(value, "field", origin.field, 128); text(value, "objectRawcode", origin.objectRawcode, 32);
+            text(value, "sourceId", origin.sourceId, 256); text(value, "sourcePath", origin.sourcePath, 1024);
+            origins.push_back(std::move(value));
+        }
         const auto definition = catalog.definitions.find(row.splatKey);
-        rows.push_back(QJsonObject{{"file", row.owner.file == MapData::PlacementFile::Units ? "war3mapUnits.doo" : "war3map.doo"},
+        QJsonObject value{{"file", row.owner.file == MapData::PlacementFile::Units ? "war3mapUnits.doo" : "war3map.doo"},
             {"index", static_cast<double>(row.owner.index)}, {"creationId", row.owner.creationId},
-            {"rawcode", QString::fromStdString(row.owner.rawcode)}, {"splatKey", QString::fromStdString(row.splatKey)},
-            {"reason", QString::fromStdString(row.reason)}, {"origins", origins},
-            {"reasonCode", QString::fromStdString(row.reasonCode)},
-            {"texturePath", definition == catalog.definitions.end() ? QJsonValue::Null : QJsonValue(QString::fromStdString(definition->second.texturePath))}});
+            {"rawcode", QString::fromStdString(row.owner.rawcode)}, {"origins", origins}};
+        text(value, "splatKey", row.splatKey, 128); text(value, "reason", row.reason); text(value, "reasonCode", row.reasonCode, 256);
+        if (definition == catalog.definitions.end()) value["texturePath"] = QJsonValue::Null;
+        else text(value, "texturePath", definition->second.texturePath);
+        if (bounded) {
+            value["availability"] = row.availability == Services::BuildingSplatAvailability::Available ? "available"
+                : row.availability == Services::BuildingSplatAvailability::Absent ? "absent" : "unavailable";
+            value["inputIndex"] = QString::number(row.inputIndex);
+            value["originsPage"] = WorldDiagnosticJson::Page(row.origins.size(), 0, origins.size(), 4);
+        }
+        rows.push_back(std::move(value));
     }
-    result["unavailableRows"] = rows;
+    if (bounded) {
+        result["inputRows"] = rows; result["rowsState"] = "current";
+        QJsonArray unavailable;
+        for (const auto& row : rows) if (row.toObject()["availability"] == "unavailable") unavailable.append(row);
+        result["unavailableRows"] = unavailable;
+    } else result["unavailableRows"] = rows;
     if (prepared_) result["counts"] = QJsonObject{{"requested", static_cast<double>(prepared_->requested)},
         {"prepared", static_cast<double>(prepared_->displayed)}, {"absent", static_cast<double>(prepared_->absent)},
         {"unavailable", static_cast<double>(prepared_->unavailable)}, {"omittedBudget", static_cast<double>(prepared_->omittedBudget)},
-        {"notApplicable", static_cast<double>(NotApplicableCount(capture_.get()))}};
+        {"notApplicable", static_cast<double>(notApplicableCount_)}};
     return result;
 }
 } // namespace War3Map::Modules

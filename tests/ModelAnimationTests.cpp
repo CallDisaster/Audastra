@@ -195,6 +195,59 @@ void VariantActions() {
     const auto missing=ModelAnimationService::Create({7,33,"missing-variant"},in.specs,[&](auto p,auto n){return in.Read(p,n);});
     Require(!missing.Succeeded() && missing.diagnostics.front().code=="ANIMATION_REQUIRED_SEQUENCE_MISSING","missing variant was silently accepted");
 }
+void RequestGeometryBudget() {
+    // 原创owned静态几何隔离计费边界：无MDX求值器、粒子或材质workspace。
+    const auto asset=Good(CreateCheckerBlockerAsset(std::nullopt));
+    std::array<AnimationInstanceSpec,2> specs;
+    for (std::size_t i=0;i<specs.size();++i) {
+        specs[i].identity={i+1,71}; specs[i].hostKey="geometry-budget:"+std::to_string(i);
+        specs[i].model.modelPath="original-budget-owned.mdx"; specs[i].model.ownedStaticAsset=asset;
+    }
+    unsigned reads=0;
+    const auto read=[&](std::string_view,std::uint64_t) {
+        ++reads; return Result<AnimationResource>::Failure("Test","UNEXPECTED_READ","owned预算夹具不读取MDX。");
+    };
+    const auto probe=Good(ModelAnimationService::Create({71,1,"geometry-budget"},specs,read));
+    const auto frame=Good(probe->Prepare(nullptr));
+    Require(!probe->Scene()->dynamicMaterialAlphas && !probe->Scene()->dynamicMaterialStates &&
+        frame->geosetIssues.empty() && frame->materialIssues.empty() && frame->collisionMatrices.empty(),
+        "owned geometry budget fixture unexpectedly acquired another charged workspace");
+    const auto payloadBytes=std::uint64_t(frame->instances.size())*(sizeof(War3RenderSkinnedModelInstanceV2)+
+        sizeof(AnimationPoseLink)+sizeof(AnimationPickBounds))+std::uint64_t(frame->states.size())*sizeof(AnimationInstanceState)+
+        std::uint64_t(frame->groups.size())*sizeof(War3RenderGroupMatrixV2)+
+        std::uint64_t(frame->alphas.size())*(sizeof(float)+sizeof(War3RenderMeshColorV2));
+    const auto geometryBytes=std::uint64_t(probe->Scene()->requestGeometryRequired.capacity())*sizeof(std::uint8_t);
+    AnimationLimits exact; exact.maxFrameBytes=payloadBytes+geometryBytes;
+    auto narrow=exact; --narrow.maxFrameBytes;
+    const auto refused=ModelAnimationService::Create({71,1,"geometry-budget"},specs,read,narrow);
+    Require(!refused.Succeeded() && refused.diagnostics.front().code=="ANIMATION_FRAME_BUDGET",
+        "Create admitted geometry provenance capacity one byte above the original frame budget");
+    const auto accepted=Good(ModelAnimationService::Create({71,1,"geometry-budget"},specs,read,exact));
+    Require(Good(accepted->Prepare(nullptr))->instances.size()==2,"exact owned geometry budget was rejected");
+    const auto one=std::span(specs).first(1);
+    const auto bounded=Good(ModelAnimationService::Create({71,1,"geometry-budget"},one,read,narrow));
+    const auto before=Good(bounded->Prepare(nullptr)); const auto original=bounded->Scene();
+    AnimationInstanceDelta delta; delta.session={71,2,"geometry-budget"}; delta.additions={specs[1]};
+    const auto over=bounded->PrepareInstanceCatalog(delta,read);
+    Require(!over.Succeeded() && over.diagnostics.front().code=="ANIMATION_FRAME_BUDGET" &&
+        bounded->Scene()==original && Good(bounded->Prepare(before.get()))->states.size()==1,
+        "Delta bypassed the shared one-byte budget gate or changed the resident catalog");
+    const auto source=Good(ModelAnimationService::Create({71,1,"geometry-budget"},one,read,exact));
+    const auto previous=Good(source->Prepare(nullptr)); const auto plan=Good(source->PrepareInstanceCatalog(delta,read));
+    const auto result=Good(source->PrepareInstanceDelta(*previous,*plan));
+    Require(result.frame->states.size()==2 && result.service->Scene()->requestGeometryRequired.size()==2 &&
+        source->Scene()->requestGeometryRequired.size()==1 && !reads,
+        "exact Delta/rebase budget changed assets, lost coverage or double charged the shared source table");
+    // 显式合成容量输入：size仍为1，capacity超预算，检验旧新共存门读取capacity而非size。
+    auto oversized=std::const_pointer_cast<AnimatedModelScene>(source->Scene());
+    oversized->requestGeometryRequired.reserve(static_cast<std::size_t>(exact.maxFrameBytes));
+    Require(oversized->requestGeometryRequired.capacity()>oversized->requestGeometryRequired.size(),
+        "synthetic capacity fixture did not retain spare capacity");
+    const auto capacityRefused=source->PrepareInstanceCatalog(delta,read);
+    Require(!capacityRefused.Succeeded() && capacityRefused.diagnostics.front().code=="ANIMATION_DELTA_BUDGET",
+        "Delta ignored the actual spare capacity of the retained provenance table");
+    std::cout<<"geometry_provenance_budget exact="<<exact.maxFrameBytes<<" create_delta_one_byte_under_refused=1 capacity_not_size=1\n";
+}
 void Geometry() {
     Input in; BakedModelMesh cliff;
     cliff.vertices={{-10,0,0,0,0,1,0,0},{10,0,0,0,0,1,1,0},{0,10,0,0,0,1,0,1}}; cliff.indices={0,1,2};
@@ -741,7 +794,7 @@ void Submission() {
 }
 int main(int argc,char** argv) try {
     const std::string which=argc==2?argv[1]:"";
-    if(which=="instances") { Instances(); WorldIsolation(); ParticleService(); LargeScene(); VariantActions(); ViewAdmission(); MaterialLayers(); AnimationMaterialTextureTest::Run(); } else if(which=="geometry") { Geometry(); AssetIsolation(); }
+    if(which=="instances") { Instances(); WorldIsolation(); ParticleService(); LargeScene(); VariantActions(); ViewAdmission(); MaterialLayers(); AnimationMaterialTextureTest::Run(); } else if(which=="geometry") { Geometry(); AssetIsolation(); RequestGeometryBudget(); }
     else if(which=="submission") Submission();
     else if(which=="particle-continuity") AnimationParticleContinuityTest::Run();
     else if(which=="instance-delta") AnimationInstanceDeltaTest::Run();

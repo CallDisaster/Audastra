@@ -9,6 +9,7 @@
 #include "War3MapCore/Resources/ImportTable.h"
 #include "War3MapCore/Text/TextUtil.h"
 #include "War3MapCore/VerifiedFile.h"
+#include "War3MapCore/Workspace.h"
 
 #include <Windows.h>
 #include <algorithm>
@@ -109,6 +110,7 @@ bool HasBlightMaskAlpha(const Render::TerrainAtlasSnapshot& atlas) {
 
 bool SameWorldTerrainSources(const WorldTerrainSources& a, const WorldTerrainSources& b) {
     return a.archivePath == b.archivePath && a.archiveSha == b.archiveSha && a.gameRoot == b.gameRoot
+        && a.readOnlyArchive == b.readOnlyArchive
         && a.mainTileset == b.mainTileset && a.entries.size() == b.entries.size()
         && std::equal(a.entries.begin(), a.entries.end(), b.entries.begin(), [](const auto& x, const auto& y) {
             return x.path == y.path && x.archivePath == y.archivePath && x.diskPath == y.diskPath;
@@ -116,11 +118,28 @@ bool SameWorldTerrainSources(const WorldTerrainSources& a, const WorldTerrainSou
 }
 
 Result<WorldTerrainSources> CaptureWorldTerrainSources(const QtProject::EditorProject& project, std::size_t maxEntries) {
-    if (!project.archiveSession_) return Result<WorldTerrainSources>::Failure("World", "WORLD_ASSET_SOURCE",
-        "目录工程地形资源来源尚未接入；当前显示高度预览。");
+    if (!project.archiveSession_ && !project.readOnlyArchive_) {
+        if (!project.sourceArchivePath_.empty())
+            return Result<WorldTerrainSources>::Failure("World", "WORLD_ASSET_SOURCE_CHANGED",
+                "地图没有可验证的资源来源绑定，请重新打开地图。");
+        return Result<WorldTerrainSources>::Failure("World", "WORLD_ASSET_DIRECTORY_UNSUPPORTED",
+            "目录工程地形资源来源尚未接入；当前显示高度预览。");
+    }
     WorldTerrainSources result;
-    result.archivePath = project.archiveSession_->SourcePath();
-    result.archiveSha = project.archiveSession_->SourceSha256();
+    if (project.archiveSession_) {
+        result.archivePath = project.archiveSession_->SourcePath();
+        result.archiveSha = project.archiveSession_->SourceSha256();
+    } else {
+        const auto verified = project.readOnlyArchive_->VerifyUnchanged();
+        if (!verified.Succeeded()) return {std::nullopt, verified.diagnostics};
+        std::error_code error;
+        if (project.sourceArchivePath_.empty()
+            || !std::filesystem::equivalent(project.sourceArchivePath_, project.readOnlyArchive_->SourcePath(), error) || error)
+            return Result<WorldTerrainSources>::Failure("World", "WORLD_ASSET_SOURCE_CHANGED", "地图路径与只读资源绑定不一致。");
+        result.archivePath = project.readOnlyArchive_->SourcePath();
+        result.archiveSha = project.readOnlyArchive_->SourceSha256();
+        result.readOnlyArchive = project.readOnlyArchive_;
+    }
     result.gameRoot = project.war3GameRoot_;
     if (project.mapEdits_) {
         if (const auto terrain = project.mapEdits_->Terrain()) result.mainTileset = terrain->header.mainTileset;
@@ -156,6 +175,10 @@ bool WorldResourceReader::MatchesSources(const WorldTerrainSources& sources) con
 }
 
 Status WorldResourceReader::VerifyCurrentSource() const {
+    if (state_->sources.readOnlyArchive) {
+        const auto verified = state_->sources.readOnlyArchive->VerifyUnchanged();
+        if (!verified.Succeeded()) return verified;
+    }
     ReadLease current(state_->sources.archivePath);
     if (current.handle == INVALID_HANDLE_VALUE || !state_->lease)
         return Status::Failure("World", "WORLD_ASSET_SOURCE_CHANGED", "地图资源来源已不可验证，请重新加载地形。");
@@ -220,7 +243,13 @@ Result<std::unique_ptr<WorldResourceReader>> WorldResourceReader::Open(const Wor
     state.sources = sources;
     state.lease.emplace(sources.archivePath);
     if (state.lease->handle == INVALID_HANDLE_VALUE) return fail("WORLD_ASSET_SOURCE", "地图来源无法取得只读资源租约。");
-    if (verifiedSource) {
+    if (sources.readOnlyArchive) {
+        const auto verified = sources.readOnlyArchive->VerifySourceHandle(state.lease->handle);
+        if (!verified.Succeeded()) return {std::nullopt, verified.diagnostics};
+        if (sources.archiveSha != sources.readOnlyArchive->SourceSha256())
+            return fail("WORLD_ASSET_SOURCE_CHANGED", "地图资源摘要与只读绑定不一致。");
+        if (timings) timings->verifiedArchiveReused = true;
+    } else if (verifiedSource) {
         // 两份GENERIC_READ租约都不共享写访问：原文件从完整SHA验证到新租约取得始终
         // 禁止内容写入。比较冻结身份而不是路径存在，rename替换即便字节相同也拒绝。
         const auto& verified = *verifiedSource->state_;
@@ -305,6 +334,8 @@ Result<std::unique_ptr<WorldResourceReader>> WorldResourceReader::Open(const Wor
         gameSource.read = [shared](std::string_view path) { return shared->game->ReadFileBounded(std::string(path), kResourceLimit); };
         if (const auto added = state.resolver.AddSource(std::move(gameSource)); !added.Succeeded()) return {std::nullopt, added.diagnostics};
     }
+    const auto current = reader->VerifyCurrentSource();
+    if (!current.Succeeded()) return {std::nullopt, current.diagnostics};
     return Result<Reader>::Success(std::move(reader));
 }
 

@@ -489,6 +489,11 @@ void WriteRegions(MapContext& context) {
     out.Line("");
     if (context.in.regions != nullptr) {
         for (const auto& region : context.in.regions->entries) {
+            const auto sound = MapData::ValidateRegionAmbientSound(region, context.in.sounds);
+            if (!sound.Succeeded()) {
+                context.diagnostics.insert(context.diagnostics.end(), sound.diagnostics.begin(), sound.diagnostics.end());
+                continue;
+            }
             const std::string name = context.RegionVariable(region.name);
             out.Line("set " + name + " = Rect( " + Real1(region.left) + ", " + Real1(region.bottom) + ", " +
                 Real1(region.right) + ", " + Real1(region.top) + " )");
@@ -497,6 +502,13 @@ void WriteRegions(MapContext& context) {
             if (!EmptyRawcode(weather)) {
                 out.Line("set we = AddWeatherEffect( " + name + ", " + Rawcode(weather) + " )");
                 out.Line("call EnableWeatherEffect( we, true )");
+            }
+            if (!region.ambientSound.empty()) {
+                out.Line("call SetSoundPosition( " + region.ambientSound + ", "
+                    + Real1((double(region.left) + region.right) / 2.0) + ", "
+                    + Real1((double(region.bottom) + region.top) / 2.0) + ", 0.0 )");
+                out.Line("call RegisterStackedSound( " + region.ambientSound + ", true, "
+                    + Real1(double(region.right) - region.left) + ", " + Real1(double(region.top) - region.bottom) + " )");
             }
         }
     }

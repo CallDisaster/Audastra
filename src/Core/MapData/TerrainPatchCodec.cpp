@@ -1,4 +1,5 @@
 #include "War3MapCore/MapData/TerrainPatchCodec.h"
+#include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 
@@ -74,13 +75,20 @@ Result<TerrainPatch> TerrainPatchCodec::Seal(const MapDocument& original,
     // 当前规则只准 W3E/WPM；有地物联动时必须等独立派生一致性证明，不能偷放进 map-data。
     if (current.current_ != current.original_)
         return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_MEMBER_SCOPE", "地形目录事务尚不支持联动其它地图数据成员。");
+    const auto plan = TerrainSavePlan::Prepare(source, current);
+    if (!plan.Succeeded() || !plan.value) return {{}, plan.diagnostics};
+    const auto planned = plan.value->VerifyForSave(current, source.aggregateSha256,
+        current.Replacements(), current.Removals());
+    if (!planned.Succeeded()) return {{}, planned.diagnostics};
     auto terrainFile = BindMember(source, "war3map.w3e", terrain, *currentTerrain.value);
     if (!terrainFile.Succeeded() || !terrainFile.value) return {{}, terrainFile.diagnostics};
     auto pathingFile = BindMember(source, "war3map.wpm", pathing, *current.pathing_);
     if (!pathingFile.Succeeded() || !pathingFile.value) return {{}, pathingFile.diagnostics};
     std::vector<BinaryFilePatch> files;
     files.push_back(std::move(*terrainFile.value)); files.push_back(std::move(*pathingFile.value));
-    return Result<TerrainPatch>::Success(TerrainPatch(std::move(files)));
+    auto result = Result<TerrainPatch>::Success(TerrainPatch(std::move(files)));
+    result.diagnostics = plan.value->Diagnostics();
+    return result;
 }
 
 } // namespace War3Map::MapData

@@ -1,0 +1,16 @@
+{
+  "version": "5.3.6",
+  "archiveSha256": "fc5fd69bb8736323f026672b1b7235da613d7177e72558893a0bdcd320466d60",
+  "sourceUrl": "https://www.lua.org/ftp/lua-5.3.6.tar.gz",
+  "license": "third_party/lua53/LICENSE.txt",
+  "scope": "test-only-official-cli-additions-to-runtime-source-manifest",
+  "files": [
+    { "path": "lua.c", "sha256": "f685516c2c156d39f4b2323659d9524e50125bf36132d283c904b76e4f93501d" },
+    { "path": "linit.c", "sha256": "ed19bbd23e8fa135151db5e61d6e9337f32febd938b9e277b7324824d7f7d9f8" },
+    { "path": "lcorolib.c", "sha256": "10e692df2593d37a088f833d0c1f3e2ecb797ea54e57f0fb231f1ea95188d7ce" },
+    { "path": "ldblib.c", "sha256": "6f22c4d8384af630d1c701041ff874bcca8ae53a5788405000df0be77e526c71" },
+    { "path": "liolib.c", "sha256": "2da9342dc01f0ebf8ebd5852bd0b13aa67ddf0e28135a9caf14d3f0b2be403bc" },
+    { "path": "loadlib.c", "sha256": "0517816a39ed07ae05ba51ba236f789cea2f9e50a8a884448d0aefcbb969edb1" },
+    { "path": "loslib.c", "sha256": "40761936ec3047e9a1f14864ce937bb87861452df02df8e683cda0c371b818bd" }
+  ]
+}

@@ -105,6 +105,7 @@ private slots:
     void CancellingSettingsDiscardsItsOptionsAndSkippedVersion();
     void SettingsOnlyTakeEffectAfterTheHostsSuccessfulCommit();
     void PreparedPackageEmitsAnInstallationRequestWithoutLaunchingAProcess();
+    void MixedInstallationShowsTheFullPackageGuidanceBeforeDownload();
 };
 
 void UpdateDialogTests::initTestCase() {
@@ -128,7 +129,7 @@ void UpdateDialogTests::init() {
 }
 void UpdateDialogTests::ConstructionUsesNativeThemeAndDoesNotStartNetwork() {
     QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start()); server.Publish(bundle);
-    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.path()), settings);
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.path(), CreateSignedInstallation(directory.filePath("install"))), settings);
     UpdateDialog dialog(client); dialog.show(); QTest::qWait(20);
     QCOMPARE(server.requests.size(), 0); QCOMPARE(dialog.windowTitle(), QStringLiteral("检查更新"));
     auto* current = dialog.findChild<QLabel*>("updateCurrentVersion"); auto* primary = dialog.findChild<QPushButton*>("primaryButton");
@@ -144,7 +145,7 @@ void UpdateDialogTests::AvailableVersionIsPlainTextAndSkipPersistsWithoutDownloa
     QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start()); server.Publish(bundle);
     const auto notes = QStringLiteral("<a href=\"https://example.invalid\">不会自动打开的说明</a>\n第二行发布内容");
     server.routes["/repos/fixture/editor/releases/latest"] = server.Release(bundle, QStringLiteral("0.2.0"), false, notes);
-    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.path()), settings);
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.path(), CreateSignedInstallation(directory.filePath("install"))), settings);
     UpdateDialog dialog(client); dialog.show(); dialog.CheckNow();
     QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
     auto* primary = dialog.findChild<QPushButton*>("primaryButton"); auto* skip = dialog.findChild<QPushButton*>("updateSkipButton");
@@ -168,7 +169,7 @@ void UpdateDialogTests::ReleaseNotesRenderMarkdownWithoutLoadingResources() {
     const auto notes = QStringLiteral("## 下载\n\n> **请在副本上试用。**\n\n| 文件 | 用途 |\n|---|---|\n| `a.zip` | **下载这个** |\n\n")
         + QStringLiteral("![图](") + QUrl::fromLocalFile(image).toString() + QStringLiteral(")\n\n[项目](https://example.invalid)\n");
     server.routes["/repos/fixture/editor/releases/latest"] = server.Release(bundle, QStringLiteral("0.2.0"), false, notes);
-    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.path()), settings);
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.path(), CreateSignedInstallation(directory.filePath("install"))), settings);
     UpdateDialog dialog(client); dialog.resize(760, 640); dialog.show(); dialog.CheckNow();
     QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
     auto* shown = dialog.findChild<QTextEdit*>("updateReleaseNotes"); QVERIFY(shown);
@@ -193,7 +194,7 @@ void UpdateDialogTests::ReleaseNotesRenderMarkdownWithoutLoadingResources() {
 void UpdateDialogTests::FailedCheckStaysAnErrorAtNarrowWidthAndCanRetry() {
     QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start()); server.Publish(bundle);
     server.responder = [](QTcpSocket* socket, const QByteArray&) { socket->write(Http("private release", 404)); socket->disconnectFromHost(); };
-    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.path()), settings);
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.path(), CreateSignedInstallation(directory.filePath("install"))), settings);
     UpdateDialog dialog(client); dialog.resize(420, 480); dialog.show(); dialog.CheckNow();
     QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Failed, 3000);
     auto* message = dialog.findChild<QLabel*>("updateStatus"); auto* retry = dialog.findChild<QPushButton*>("updateCheckButton");
@@ -211,7 +212,7 @@ void UpdateDialogTests::DownloadShowsRealProgressAndTheCancelButtonStopsIt() {
         if (path == "/assets/fixture.zip") { socket->write(QByteArray("HTTP/1.1 200 OK\r\nContent-Length: ") + QByteArray::number(bundle.package.size()) + "\r\n\r\n" + bundle.package.left(32)); return; }
         socket->write(Http(server.routes.value(path))); socket->disconnectFromHost();
     };
-    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.filePath("downloads")), settings);
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.filePath("downloads"), CreateSignedInstallation(directory.filePath("install"))), settings);
     UpdateDialog dialog(client); dialog.show(); dialog.CheckNow(); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
     QSignalSpy progress(&client, &UpdateClient::DownloadProgress); QSignalSpy prepared(&client, &UpdateClient::PackagePrepared);
     QTest::mouseClick(dialog.findChild<QPushButton*>("primaryButton"), Qt::LeftButton);
@@ -232,7 +233,7 @@ void UpdateDialogTests::SettingsPageStagesOptionsAndReusesItsManualDialog() {
     QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat);
     settings.setValue("unrelated/value", QStringLiteral("保持不变")); settings.sync();
     const auto before = Read(settings.fileName());
-    UpdateClient client(server.Source(bundle, directory.path()), settings);
+    UpdateClient client(server.Source(bundle, directory.path(), CreateSignedInstallation(directory.filePath("install"))), settings);
     UpdateSettingsWidget page(client); page.resize(600, 390); page.show();
     auto* automatic = page.findChild<QCheckBox*>("updateAutomaticCheck"); auto* channel = page.findChild<QComboBox*>("updateChannel");
     QVERIFY(automatic && channel); automatic->setChecked(false); channel->setCurrentIndex(1);
@@ -260,7 +261,7 @@ void UpdateDialogTests::CancellingSettingsDiscardsItsOptionsAndSkippedVersion() 
         QJsonDocument::fromJson(server.Release(bundle)).object()}).toJson();
     QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat);
     settings.setValue("unrelated/value", QStringLiteral("保留原值")); settings.sync(); const auto before = Read(settings.fileName());
-    UpdateClient client(server.Source(bundle, directory.path()), settings);
+    UpdateClient client(server.Source(bundle, directory.path(), CreateSignedInstallation(directory.filePath("install"))), settings);
     {
         UpdateSettingsWidget cancelled(client); cancelled.show();
         cancelled.findChild<QCheckBox*>("updateAutomaticCheck")->setChecked(false);
@@ -284,7 +285,7 @@ void UpdateDialogTests::SettingsOnlyTakeEffectAfterTheHostsSuccessfulCommit() {
     QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start());
     QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat);
     settings.setValue("unrelated/value", QStringLiteral("原值")); settings.sync();
-    UpdateClient client(server.Source(bundle, directory.path()), settings); UpdateSettingsWidget page(client);
+    UpdateClient client(server.Source(bundle, directory.path(), CreateSignedInstallation(directory.filePath("install"))), settings); UpdateSettingsWidget page(client);
     page.findChild<QCheckBox*>("updateAutomaticCheck")->setChecked(false);
     page.findChild<QComboBox*>("updateChannel")->setCurrentIndex(1);
     QString error; QVERIFY(page.Validate(&error)); QVERIFY(error.isEmpty());
@@ -298,7 +299,7 @@ void UpdateDialogTests::SettingsOnlyTakeEffectAfterTheHostsSuccessfulCommit() {
 
 void UpdateDialogTests::PreparedPackageEmitsAnInstallationRequestWithoutLaunchingAProcess() {
     QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start()); server.Publish(bundle);
-    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.filePath("downloads")), settings);
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat); UpdateClient client(server.Source(bundle, directory.filePath("downloads"), CreateSignedInstallation(directory.filePath("install"))), settings);
     UpdateDialog dialog(client); dialog.show(); dialog.CheckNow(); QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
     QSignalSpy install(&dialog, &UpdateDialog::InstallationRequested);
     QTest::mouseClick(dialog.findChild<QPushButton*>("primaryButton"), Qt::LeftButton);
@@ -309,6 +310,23 @@ void UpdateDialogTests::PreparedPackageEmitsAnInstallationRequestWithoutLaunchin
     const auto prepared = qvariant_cast<PreparedUpdate>(install.front().front());
     QCOMPARE(Read(prepared.packagePath), bundle.package); QCOMPARE(Read(prepared.manifestPath), bundle.manifest);
     QVERIFY(dialog.isVisible()); Capture(dialog, QStringLiteral("update-ready-graphite"));
+}
+
+void UpdateDialogTests::MixedInstallationShowsTheFullPackageGuidanceBeforeDownload() {
+    QTemporaryDir directory; QVERIFY(directory.isValid()); Bundle bundle; Server server; QVERIFY(server.Start()); server.Publish(bundle);
+    const auto install = CreateSignedInstallation(directory.filePath("install"), QStringLiteral("0.0.9"));
+    QSettings settings(directory.filePath("preferences.ini"), QSettings::IniFormat);
+    UpdateClient client(server.Source(bundle, directory.filePath("downloads"), install), settings);
+    UpdateDialog dialog(client); dialog.show(); dialog.CheckNow();
+    QSignalSpy requested(&dialog, &UpdateDialog::InstallationRequested);
+    QTRY_VERIFY_WITH_TIMEOUT(client.Status().state == UpdateState::Available, 3000);
+    const auto* status = dialog.findChild<QLabel*>("updateStatus"); QVERIFY(status);
+    QVERIFY(status->text().contains(QStringLiteral("完整包"))); QVERIFY(status->text().contains(QStringLiteral("新的文件夹")));
+    QVERIFY(status->text().contains(QStringLiteral("0.1.0"))); QVERIFY(status->text().contains(QStringLiteral("0.0.9")));
+    const auto* primary = dialog.findChild<QPushButton*>("primaryButton"); QVERIFY(primary);
+    QVERIFY(!primary->isEnabled()); QVERIFY(!client.Download()); QVERIFY(!client.Prepared());
+    QCOMPARE(requested.count(), 0); QCOMPARE(server.requests.size(), 1);
+    QVERIFY(!QFileInfo::exists(directory.filePath("downloads")));
 }
 
 int main(int argc, char** argv) {

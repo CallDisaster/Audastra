@@ -43,6 +43,7 @@ namespace War3Map {
 class DirectoryWorkspace;
 class EditorSession;
 class MapArchiveSession;
+class MpqWorkspace;
 class MapDocument;
 namespace Services { struct CodeCheckProjectSnapshot; struct CodeCheckResult; class CampaignSession; struct LuaRuntimeScripts; }
 namespace Lua { struct ApiCatalog; }
@@ -70,6 +71,7 @@ class TriggerGraphScalarEditReceipt;
 namespace War3Map::QtProject {
 
 class TriggerGraphSnapshotUndoCommand;
+class ProjectObjectCatalogState;
 namespace detail { struct TriggerScalarUiNotice; struct TriggerUiBaseline; }
 
 inline constexpr std::size_t kObjectTypeCount = 7;
@@ -351,6 +353,8 @@ public:
 signals:
     void ObjectDocumentsAboutToReplace();
     void ObjectDocumentsReplaced();
+    void ObjectCatalogAboutToChange();
+    void ObjectCatalogChanged();
     void SourceStateChanged();
     void TriggerDocumentAboutToChange();
     void TriggerDocumentChanged();
@@ -380,6 +384,8 @@ public:
     [[nodiscard]] std::filesystem::path AuthorMapPath() const;
     std::unique_ptr<EditorSession> session_;
     std::shared_ptr<MapArchiveSession> archiveSession_;
+    // 严格保存快照不可用时仍可绑定只读预览；不可用于授予地图保存资格。
+    std::shared_ptr<const MpqWorkspace> readOnlyArchive_;
     // 战役模块拥有的独立物编/资源上下文；非空时资源读取和发布由同一战役会话负责。
     std::shared_ptr<Services::CampaignSession> campaignScope_;
     std::unique_ptr<MapDocument> mapDocument_;
@@ -416,6 +422,7 @@ public:
     std::array<QUndoStack*, kObjectTypeCount> objectUndoStacks_{};
     // 目录加载后只读；后台资源索引持有同一不可变快照，避免UI复制整份原版字段。
     std::shared_ptr<const ObjectData::StandardObjectCatalog> standardCatalog_;
+    std::shared_ptr<ProjectObjectCatalogState> objectCatalogState_;
     std::shared_ptr<const ObjectData::ObjectFieldSchema> objectFieldSchema_;
 
     // ── 导入资源 ──

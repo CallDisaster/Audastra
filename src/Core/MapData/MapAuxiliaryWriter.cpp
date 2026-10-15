@@ -1,5 +1,6 @@
 #include "War3MapCore/MapData/MapAuxiliary.h"
 #include "War3MapCore/MapData/ClassicMapLayouts.h"
+#include "War3MapCore/Text/TextUtil.h"
 #include "MapDataWriter.h"
 
 #include <algorithm>
@@ -40,6 +41,33 @@ Result<std::vector<std::byte>> SerializeBinary(const Document& document,
 }
 
 } // namespace
+
+Status ValidateRegionAmbientSound(const RegionRecord& region, const SoundsDocument* sounds) {
+    if (region.ambientSound.empty()) return Status::Ok();
+    const auto identifier = [](std::string_view text) {
+        if (text.empty() || (text.front() >= '0' && text.front() <= '9')) return false;
+        return std::all_of(text.begin(), text.end(), [](unsigned char c) {
+            return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+        });
+    };
+    if (!identifier(region.ambientSound)) return Status::Failure("MapData.Regions", "REGION_SOUND_UNRESOLVED",
+        "区域环境音必须是有效的已有声音变量标识符。");
+    std::size_t matches = 0;
+    bool unsupported = false;
+    if (sounds) for (const auto& sound : sounds->entries) {
+        const auto symbol = sound.name.starts_with("gg_snd_") ? sound.name : "gg_snd_" + Text::ObjectScriptName(sound.name);
+        if (symbol == region.ambientSound) { ++matches; unsupported = sound.IsMusic() || (sound.flags & ~15u) != 0; }
+    }
+    if (matches != 1 || unsupported) return Status::Failure("MapData.Regions", "REGION_SOUND_UNRESOLVED",
+        "区域环境音必须引用已有非音乐且标志已知的唯一声音变量：" + region.ambientSound);
+    return Status::Ok();
+}
+
+bool IsEditableRegionWeatherId(std::string_view value) noexcept {
+    return value.empty() || (value.size() == 4 && std::all_of(value.begin(), value.end(), [](unsigned char c) {
+        return c > 32 && c < 127 && c != '\'' && c != '\\';
+    }));
+}
 
 Result<std::vector<std::byte>> RegionsDocument::Serialize() const {
     return SerializeBinary(*this, 5, "war3map.w3r", [](Detail::Writer& writer, const RegionRecord& record) {

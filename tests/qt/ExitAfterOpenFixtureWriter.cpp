@@ -1,3 +1,4 @@
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -15,6 +16,13 @@ using ByteVector = std::vector<std::byte>;
 
 class BinaryWriter final {
 public:
+    void U16(std::uint16_t value) {
+        bytes_.push_back(static_cast<std::byte>(value));
+        bytes_.push_back(static_cast<std::byte>(value >> 8U));
+    }
+
+    void F32(float value) { I32(std::bit_cast<std::int32_t>(value)); }
+
     void I32(std::int32_t value) {
         const std::uint32_t raw = static_cast<std::uint32_t>(value);
         bytes_.push_back(static_cast<std::byte>(raw));
@@ -121,7 +129,23 @@ void WriteText(const std::filesystem::path& path, std::string_view text) {
     return writer.Take();
 }
 
-void WriteWorkspace(const std::filesystem::path& root, bool customText) {
+[[nodiscard]] ByteVector MakeTerrain() {
+    BinaryWriter writer;
+    writer.Ascii("W3E!"); writer.I32(11); writer.Ascii("L"); writer.I32(0);
+    writer.I32(1); writer.Ascii("Ldrt");
+    writer.I32(1); writer.Ascii("CLdi");
+    writer.I32(9); writer.I32(9); writer.F32(-512); writer.F32(-512);
+    for (int y = 0; y < 9; ++y) {
+        for (int x = 0; x < 9; ++x) {
+            writer.U16(static_cast<std::uint16_t>(8192 + x * 16 + y * 8));
+            writer.U16(8192);
+            writer.Ascii(std::string_view("\0\0\2", 3));
+        }
+    }
+    return writer.Take();
+}
+
+void WriteWorkspace(const std::filesystem::path& root, bool customText, bool worldTerrain) {
     // UI Catalog 完全位于临时工作区，测试不会退回仓库 data/ui 或用户安装目录。
     std::filesystem::remove_all(root);
     WriteText(root / "ui" / "config", "base\r\n");
@@ -150,6 +174,8 @@ void WriteWorkspace(const std::filesystem::path& root, bool customText) {
 
     WriteBytes(root / "map" / "war3map.wtg", MakeWtg(customText));
     WriteBytes(root / "map" / "war3map.wct", MakeWct(customText));
+    // 原创纯地形，不依赖游戏、YDWE 或模型文件；缺少贴图时使用显式高度色预览。
+    if (worldTerrain) WriteBytes(root / "map" / "war3map.w3e", MakeTerrain());
     WriteText(
         root / "table" / "unit.ini",
         "[H000]\r\n"
@@ -168,7 +194,8 @@ int main(int argc, char* argv[]) {
     try {
         const std::string_view workspacePath(argv[1]);
         WriteWorkspace(std::filesystem::path(std::u8string(workspacePath.begin(), workspacePath.end())),
-            argc == 3 && std::string_view(argv[2]) == "--custom-text");
+            argc == 3 && std::string_view(argv[2]) == "--custom-text",
+            argc == 3 && std::string_view(argv[2]) == "--world-terrain");
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "生成合成工作区失败: " << error.what() << '\n';

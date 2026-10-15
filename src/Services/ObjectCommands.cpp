@@ -79,9 +79,9 @@ struct Chain {
     const StandardObjectEntry* base = nullptr;
     ObjectFieldContext field;
 };
-Result<Chain> Inheritance(const ObjectCommandContext& context, const std::string& id) {
+Result<Chain> Inheritance(const ObjectCommandContext& context, const std::string& id, bool requireSchema = true) {
     if (!ValidId(id)) return Fail<Chain>("OBJECT_ID_INVALID", "对象 id 必须是四字节可打印 ASCII。");
-    if (!context.standard || !context.schema)
+    if (!context.standard || (requireSchema && !context.schema))
         return Fail<Chain>("OBJECT_METADATA_UNAVAILABLE", "尚未加载同一来源的标准物编和字段元数据，不能猜测字段。");
     Chain result;
     std::set<std::string> seen;
@@ -227,6 +227,45 @@ Result<Value> Normalize(const ObjectCommandContext& context, const ObjectFieldDe
 }
 } // namespace
 
+Status VerifyObjectWriteSource(const ObjectCommandContext& context, const std::string& id) {
+    const auto chain = Inheritance(context, id, false);
+    if (!chain.Succeeded()) return {chain.diagnostics};
+    if (!chain.value->base->nativeOverridesSupported)
+        return Status::Failure("Object.Commands", "OBJECT_CATALOG_READ_ONLY",
+            "基础对象来自地图或战役 SLK/profile，当前只支持读取，尚未支持此来源的原生覆盖写回。");
+    return Status::Ok();
+}
+
+Status VerifyObjectDocumentWriteSources(const ObjectCommandContext& context,
+    const LniObjectDocument& before, const LniObjectDocument& after) {
+    if (!context.standard) return Status::Failure("Object.Command", "OBJECT_METADATA_UNAVAILABLE", "没有当前有效物编目录，未授予文档写入资格。");
+    std::set<std::string> changed;
+    for (const auto& change : DiffObjects(before.Objects(), after.Objects()).changes) {
+        if (change.object.type != context.type)
+            return Status::Failure("Object.Command", "OBJECT_PLAN_SCOPE_MISMATCH", "物编文档差异包含其他类别，未授予写入资格。");
+        changed.insert(change.object.rawcode);
+    }
+    for (const auto& id : changed) {
+        const ObjectKey key{context.type, id};
+        const bool existed = before.FindObject(key) || context.standard->Find(context.type, id);
+        const bool exists = after.FindObject(key) || context.standard->Find(context.type, id);
+        if (!existed && !exists)
+            return Status::Failure("Object.Command", "OBJECT_PLAN_SUBJECT_MISSING", "差异对象不在当前目录或文档中，未授予写入资格。");
+        auto current = context;
+        if (existed) {
+            current.document = &before;
+            const auto checked = VerifyObjectWriteSource(current, id);
+            if (!checked.Succeeded()) return checked;
+        }
+        if (exists) {
+            current.document = &after;
+            const auto checked = VerifyObjectWriteSource(current, id);
+            if (!checked.Succeeded()) return checked;
+        }
+    }
+    return Status::Ok();
+}
+
 Result<std::vector<ObjectListRow>> ListObjects(const ObjectCommandContext& context, ObjectListScope scope) {
     if (!context.standard) return Fail<std::vector<ObjectListRow>>("OBJECT_CATALOG_UNAVAILABLE", "未加载标准物编目录，不能把缺少来源当作空目录。");
     std::map<std::string, ObjectListRow> rows;
@@ -352,11 +391,17 @@ Result<std::vector<ObjectFieldRow>> ReadObjectFields(const ObjectCommandContext&
         return std::tuple{a.key.fieldId, a.key.level, a.key.dataIndex, a.key.variation} <
             std::tuple{b.key.fieldId, b.key.level, b.key.dataIndex, b.key.variation};
     });
+    if (!chain.value->base->nativeOverridesSupported) for (auto& row : rows) {
+        row.editable = false;
+        row.reason = "基础对象使用地图或战役 SLK/profile；当前只支持读取，尚未支持此来源的原生覆盖写回。";
+    }
     return Result<std::vector<ObjectFieldRow>>::Success(std::move(rows));
 }
 
 Result<ObjectCommandPlan> PlanObjectFieldChanges(const ObjectCommandContext& context, const std::string& id,
     std::span<const ObjectFieldChange> changes) {
+    const auto writable = VerifyObjectWriteSource(context, id);
+    if (!writable.Succeeded()) return CopyFailure<ObjectCommandPlan>(writable);
     if (changes.empty() || changes.size() > 128)
         return Fail<ObjectCommandPlan>("OBJECT_CHANGE_BUDGET", "一批需要 1..128 个字段。");
     const auto fields = ReadObjectFields(context, id);
@@ -399,6 +444,8 @@ Result<ObjectCommandPlan> PlanObjectCreation(const ObjectCommandContext& context
     const std::optional<std::string>& requestedId, const std::optional<std::string>& name) {
     const auto base = Inheritance(context, baseId);
     if (!base.Succeeded()) return CopyFailure<ObjectCommandPlan>(base);
+    if (!base.value->base->nativeOverridesSupported)
+        return Fail<ObjectCommandPlan>("OBJECT_CATALOG_READ_ONLY", "基础对象来自地图或战役 SLK/profile，当前只支持读取，未创建或复制对象。");
     std::string id = requestedId.value_or("");
     if (!requestedId) {
         constexpr std::string_view alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";

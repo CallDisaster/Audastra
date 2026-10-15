@@ -86,13 +86,13 @@ std::vector<AssetEntry> EditorProject::AssetEntries(const AssetState& state, std
             if (page.value->nextOffset >= page.value->total) break;
             offset = page.value->nextOffset;
         }
-    } else if (archiveSession_) {
-        for (const auto& member : archiveSession_->Members()) {
-            const QString name = QString::fromUtf8(member.name);
-            if (IsMapDataPath(AssetKey(name))) continue;
+    } else if (archiveSession_ || readOnlyArchive_) {
+        const auto append = [&](std::string_view memberName, std::size_t size) {
+            const QString name = QString::fromUtf8(memberName.data(), static_cast<qsizetype>(memberName.size()));
+            if (IsMapDataPath(AssetKey(name))) return;
             QString path = name;
             if (const auto edit = edits.constFind(AssetKey(name)); edit != edits.cend()) {
-                if ((*edit)->to.isEmpty()) continue;
+                if ((*edit)->to.isEmpty()) return;
                 path = (*edit)->to;
             }
             const auto key = AssetKey(path);
@@ -100,8 +100,13 @@ std::vector<AssetEntry> EditorProject::AssetEntries(const AssetState& state, std
                 entries[*row].ambiguous = true;
             } else {
                 rows.insert(key, entries.size());
-                entries.push_back({path, name, static_cast<qint64>(member.data.size()), {}, duplicateEdits.contains(AssetKey(name))});
+                entries.push_back({path, name, static_cast<qint64>(size), {}, duplicateEdits.contains(AssetKey(name))});
             }
+        };
+        if (archiveSession_) {
+            for (const auto& member : archiveSession_->Members()) append(member.name, member.data.size());
+        } else {
+            for (const auto& member : readOnlyArchive_->KnownMembers()) append(member.name, member.fileSize);
         }
     } else if (directorySnapshot_) {
         // 目录来源保持真实相对路径；map/resource 前缀不是通用资源路径别名。

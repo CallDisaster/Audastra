@@ -20,6 +20,7 @@
 namespace War3Map::Services {
 
 class ObjectTransactionSnapshot;
+class AuxiliaryTransactionSnapshot;
 
 enum class MapEditPointSpace {
     World,
@@ -92,6 +93,8 @@ struct MapEditSaveRequest {
     std::shared_ptr<const Trigger::TriggerTransactionSnapshot> triggerTransaction;
     // 七类物编的类型化冻结候选；拥有来源和最终成员，不能从协议传入任意替换字节。
     std::vector<std::shared_ptr<const ObjectTransactionSnapshot>> objectTransactions;
+    // 共用区域/镜头命令序列封印；保存按实际归档来源和当前触发器重新重放，不能提供 bytes。
+    std::shared_ptr<const AuxiliaryTransactionSnapshot> auxiliaryTransaction;
     // 宿主从真实预放/分类来源捕获；协议端不能自报名单。保存须与最终地图内容复核。
     std::shared_ptr<const Trigger::MapObjectReferenceSnapshot> mapObjectReferences;
     // 仅可信宿主提供，不接受客户端函数或脚本。保存链在实际发布前再次复核。
@@ -121,6 +124,7 @@ struct MapEditSaveReceipt {
     std::optional<Trigger::TriggerEditBatchReceipt> triggerEdits;
     std::optional<Trigger::TriggerTransactionReceipt> triggerTransaction;
     std::size_t appliedObjectTransactionCount = 0;
+    std::size_t appliedAuxiliaryCommandCount = 0;
 };
 
 // 仅接受一种有界领域操作，或同源的完整触发器与物编封印事务；旧触发器批次不能混用。

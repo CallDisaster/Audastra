@@ -129,6 +129,48 @@ bool BindTerrain(WorldViewport& viewport) {
 }
 }
 
+namespace War3Map::Modules {
+// 预算夹具只增加未被任何pose引用的矩阵容量，不伪造Draw或修改实际实例姿势。
+class WorldViewportPickHistoryTestAccess final {
+public:
+    static void ExceedGeometryBudget(WorldViewport& viewport) {
+        auto oversized = std::make_shared<Render::AnimationFrame>(*viewport.animationFrame_);
+        oversized->groups.resize(64ull * 1024 * 1024 / sizeof(War3RenderGroupMatrixV2) + 1);
+        viewport.animationFrame_ = std::move(oversized);
+        viewport.animationPickHistory_.clear();
+        viewport.bugPreparationHistory_.clear(); // 强制重建，不能借先前小帧快照掩盖预算耦合。
+        viewport.RetainAnimationPickFrame();
+    }
+    static std::size_t GeometryCount(const WorldViewport& viewport) { return viewport.animationPickHistory_.size(); }
+    static std::size_t PreparationCount(const WorldViewport& viewport) { return viewport.bugPreparationHistory_.size(); }
+    static Result<std::vector<Render::ModelPickHit>> PickOriginals(WorldViewport& viewport, QPointF point) {
+        const auto view = viewport.ReadPickingFrame();
+        if (!view.Succeeded()) return {std::nullopt, view.diagnostics};
+        return viewport.PickInstancesAt(point, *view.value);
+    }
+    static Result<Render::ViewRaySegment> PickingRay(WorldViewport& viewport, QPointF point) {
+        const auto view = viewport.ReadPickingFrame();
+        if (!view.Succeeded()) return {std::nullopt, view.diagnostics};
+        return Render::MakeViewRayFromLogical(*view.value,
+            {static_cast<std::uint32_t>(viewport.width()), static_cast<std::uint32_t>(viewport.height()), viewport.devicePixelRatioF()},
+            {point.x(), point.y()});
+    }
+    static std::optional<std::array<double, 6>> PlaceholderBounds(const WorldViewport& viewport) {
+        const auto owned = viewport.bugPlaceholderPicking_;
+        if (!owned || !owned->frame || owned->frame->pickBounds.size() != 1 || !owned->frame->pickBounds.front().available)
+            return std::nullopt;
+        return owned->frame->pickBounds.front().box;
+    }
+    static Result<std::optional<double>> PickPlaceholder(WorldViewport& viewport, QPointF point) {
+        const auto view = viewport.ReadPickingFrame();
+        if (!view.Succeeded()) return {std::nullopt, view.diagnostics};
+        const auto picked = viewport.PickBugPlaceholderAt(point, *view.value);
+        if (!picked.Succeeded()) return {std::nullopt, picked.diagnostics};
+        return Result<std::optional<double>>::Success(*picked.value ? std::optional{(*picked.value)->distance} : std::nullopt);
+    }
+};
+}
+
 class WorldBugPlaceholderTests final : public QObject {
     Q_OBJECT
 private slots:
@@ -152,7 +194,7 @@ private slots:
         Fixture source; source.PoseFailure(); const auto originalContent = source.frame->contentVersion;
         auto picking = Render::AnimationPickingScene(*source.scene, *source.frame);
         QVERIFY(viewport.SetAnimationScene(source.scene, source.frame, picking)); PlaceholderBackend::Frame(&state);
-        QVERIFY(viewport.ReadCompletedAnimationFrameForBugPlaceholder(source.scene).Succeeded());
+        QVERIFY(viewport.ReadCompletedBugPlaceholderSnapshot(source.scene).Succeeded());
         bool current = true; WorldModelBugPlaceholderPresenter presenter(&viewport);
         presenter.Bind(source.scene, source.registry, source.owners, [&] { return current; }, source.Flags());
         QCOMPARE(presenter.Count(), std::size_t{1}); QVERIFY(presenter.Snapshot());
@@ -190,7 +232,7 @@ private slots:
         WorldViewport viewport(nullptr, &backend); WorldModelBugPlaceholderPresenter presenter(&viewport);
         Fixture source; source.PoseFailure();
         presenter.Bind(source.scene, source.registry, source.owners, [] { return true; }, source.Flags());
-        QVERIFY(!viewport.ReadCompletedAnimationFrameForBugPlaceholder(source.scene).Succeeded());
+        QVERIFY(!viewport.ReadCompletedBugPlaceholderSnapshot(source.scene).Succeeded());
         QCOMPARE(presenter.Count(), std::size_t(0)); QVERIFY(!presenter.Snapshot());
         QVERIFY(!viewport.HasBugPlaceholderPicking({}));
         presenter.Clear(); QVERIFY(!presenter.Snapshot());
@@ -204,6 +246,11 @@ private slots:
         QTest::newRow("bad-upload-rejects-cpu") << 4;
         QTest::newRow("old-map-revision-rejects-cpu") << 5;
         QTest::newRow("old-view-epoch-rejects-cpu") << 6;
+        QTest::newRow("old-presentation-revision-rejects-cpu") << 7;
+        QTest::newRow("old-model-epoch-rejects-cpu") << 8;
+        QTest::newRow("wrong-skin-content-rejects-cpu") << 9;
+        QTest::newRow("wrong-physical-size-rejects-cpu") << 10;
+        QTest::newRow("missing-draw-rejects-cpu") << 11;
     }
     void OccludedDrawCanPrepareCpuPlanWithoutPickAuthority() {
         QFETCH(int, refusal);
@@ -226,7 +273,12 @@ private slots:
         if (refusal == 4) metric.flags &= ~WAR3_RENDER_FRAME_METRICS_UPLOAD_VALID;
         if (refusal == 5) ++metric.completed.view.documentRevision;
         if (refusal == 6) ++metric.completed.view.viewEpoch;
-        QCOMPARE(viewport.ReadCompletedAnimationFrameForBugPlaceholder(source.scene).Succeeded(), !refusal);
+        if (refusal == 7) ++metric.completed.presentation.presentationRevision;
+        if (refusal == 8) ++metric.completed.presentation.modelEpoch;
+        if (refusal == 9) ++metric.completed.skin.contentVersion;
+        if (refusal == 10) ++metric.completed.view.width;
+        if (refusal == 11) metric.flags &= ~WAR3_RENDER_FRAME_METRICS_DRAW_COMPLETED;
+        QCOMPARE(viewport.ReadCompletedBugPlaceholderSnapshot(source.scene).Succeeded(), !refusal);
         WorldModelBugPlaceholderPresenter presenter(&viewport);
         presenter.Bind(source.scene, source.registry, source.owners, [] { return true; }, source.Flags());
         QCOMPARE(presenter.Count(), refusal ? std::size_t{0} : std::size_t{1});
@@ -234,12 +286,176 @@ private slots:
         if (!refusal) {
             QCOMPARE(state.layers.size(), std::size_t{1}); state.drawEnabled = true;
             PlaceholderBackend::Frame(&state); state.drawEnabled = false; markOccluded(state.editor.metrics.back());
-            QVERIFY(viewport.ReadCompletedAnimationFrameForBugPlaceholder(source.scene).Succeeded());
+            QVERIFY(viewport.ReadCompletedBugPlaceholderSnapshot(source.scene).Succeeded());
         }
         QSignalSpy bugs(&viewport, &WorldViewport::BugPlaceholderClicked); QVERIFY(bugs.isValid());
         QTest::mouseClick(&viewport, Qt::LeftButton, Qt::ShiftModifier, QPoint(160, 120));
         QCOMPARE(bugs.size(), qsizetype{0}); // 含已准备方块的遮挡完成帧仍不得通过严格点选门。
         QCOMPARE(state.rgbaCalls, 0); QVERIFY(source.frame->poses[0].hidden);
+    }
+    void GeometryHistoryBudgetDoesNotBlockCompletedPreparation() {
+        PlaceholderBackend state; auto backend = state.Api();
+        EditorPresentationFixture<PlaceholderBackend>::Enable(backend, state.editor);
+        backend.captureEditorPresentationFrameRgba = PlaceholderBackend::EditorCapture;
+        WorldViewport viewport(nullptr, &backend); viewport.resize(320, 240); QVERIFY(BindTerrain(viewport));
+        viewport.show(); QApplication::processEvents(); QVERIFY(viewport.RendererReady());
+        Fixture source; source.PoseFailure();
+        QVERIFY(viewport.SetAnimationScene(source.scene, source.frame, Render::AnimationPickingScene(*source.scene, *source.frame)));
+        PlaceholderBackend::Frame(&state); state.drawEnabled = false;
+        const auto borrowed = viewport.ReadCompletedBugPlaceholderSnapshot(source.scene); QVERIFY(borrowed.Succeeded());
+        QCOMPARE((*borrowed.value)->observations.size(), std::size_t{1});
+        const auto originalPosition = (*borrowed.value)->observations.front().position;
+        WorldViewportPickHistoryTestAccess::ExceedGeometryBudget(viewport);
+        QCOMPARE(WorldViewportPickHistoryTestAccess::GeometryCount(viewport), std::size_t{0});
+        QVERIFY(WorldViewportPickHistoryTestAccess::PreparationCount(viewport) > 0);
+        QVERIFY(viewport.ReadCompletedBugPlaceholderSnapshot(source.scene).Succeeded());
+        WorldModelBugPlaceholderPresenter presenter(&viewport);
+        presenter.Bind(source.scene, source.registry, source.owners, [] { return true; }, source.Flags());
+        QVERIFY(presenter.Snapshot()); QCOMPARE(presenter.Count(), std::size_t{1});
+        state.drawEnabled = true; PlaceholderBackend::Frame(&state); state.drawEnabled = false;
+        QSignalSpy bugs(&viewport, &WorldViewport::BugPlaceholderClicked); QVERIFY(bugs.isValid());
+        QTest::mouseClick(&viewport, Qt::LeftButton, Qt::ShiftModifier, QPoint(160, 120));
+        QCOMPARE(bugs.size(), qsizetype{1}); // 父几何history归零，方块仍以自身owned三角形和严格完成门命中。
+        QVERIFY(viewport.SelectionText().contains(QStringLiteral("当前视图尚无拥有姿势与显隐的实际完成帧")));
+        viewport.SetInstanceVisible([](std::uint32_t) { return false; });
+        QCOMPARE(WorldViewportPickHistoryTestAccess::PreparationCount(viewport), std::size_t{0});
+        QVERIFY(!viewport.ReadCompletedBugPlaceholderSnapshot(source.scene).Succeeded());
+        QVERIFY(viewport.RefreshEditorVisibility()); // 暂停显隐更新重建独立来源；旧显隐回执仍不能匹配。
+        QVERIFY(!viewport.ReadCompletedBugPlaceholderSnapshot(source.scene).Succeeded());
+        viewport.InvalidateAnimationPicking();
+        QCOMPARE(WorldViewportPickHistoryTestAccess::PreparationCount(viewport), std::size_t{0});
+        QVERIFY(!viewport.ReadCompletedBugPlaceholderSnapshot(source.scene).Succeeded());
+        QCOMPARE((*borrowed.value)->observations.front().position, originalPosition);
+        QCOMPARE((*borrowed.value)->contentVersion, source.frame->contentVersion);
+        QCOMPARE(state.rgbaCalls, 0);
+    }
+    void GeometryHistoryFailureDoesNotAuthorizeOtherSelection_data() {
+        QTest::addColumn<int>("refusal");
+        QTest::newRow("no-placeholder") << 0;
+        QTest::newRow("ray-misses-placeholder") << 1;
+        QTest::newRow("other-request-selectability-changed-after-press") << 2;
+        QTest::newRow("other-request-visibility-changed-after-press") << 3;
+        QTest::newRow("occluded-present") << 4;
+        QTest::newRow("layer-not-completed") << 5;
+        QTest::newRow("other-request-policy-changed-in-end-plan-callback") << 6;
+        QTest::newRow("other-request-policy-changed-in-final-live-callback") << 7;
+    }
+    void GeometryHistoryFailureDoesNotAuthorizeOtherSelection() {
+        QFETCH(int, refusal);
+        PlaceholderBackend state; auto backend = state.Api();
+        EditorPresentationFixture<PlaceholderBackend>::Enable(backend, state.editor);
+        backend.captureEditorPresentationFrameRgba = PlaceholderBackend::EditorCapture;
+        WorldViewport viewport(nullptr, &backend); viewport.resize(320, 240); QVERIFY(BindTerrain(viewport));
+        bool otherVisible = true, otherSelectable = true;
+        viewport.SetInstanceVisible([&](std::uint32_t request) { return request != 1 || otherVisible; });
+        viewport.SetInstanceSelectable([&](std::uint32_t request) { return request != 1 || otherSelectable; });
+        viewport.show(); QApplication::processEvents(); QVERIFY(viewport.RendererReady());
+        Fixture source; if (refusal) source.PoseFailure();
+        QVERIFY(viewport.SetAnimationScene(source.scene, source.frame, Render::AnimationPickingScene(*source.scene, *source.frame)));
+        PlaceholderBackend::Frame(&state); state.drawEnabled = false;
+        WorldViewportPickHistoryTestAccess::ExceedGeometryBudget(viewport);
+        QCOMPARE(WorldViewportPickHistoryTestAccess::GeometryCount(viewport), std::size_t{0});
+        QVERIFY(viewport.ReadCompletedBugPlaceholderSnapshot(source.scene).Succeeded());
+        WorldModelBugPlaceholderPresenter presenter(&viewport);
+        const auto flags = source.Flags();
+        bool probeCallbacks = false;
+        unsigned flagsReads = 0, liveReads = 0;
+        presenter.Bind(source.scene, source.registry, source.owners, [&] {
+            if (probeCallbacks && ++liveReads == 2 && refusal == 7) otherSelectable = false;
+            return true;
+        }, [&](const MapData::PlacementId& owner) {
+            if (probeCallbacks && ++flagsReads == 2 && refusal == 6) otherSelectable = false;
+            return flags(owner);
+        });
+        QCOMPARE(presenter.Count(), refusal ? std::size_t{1} : std::size_t{0});
+        if (refusal != 5) {
+            state.drawEnabled = true; PlaceholderBackend::Frame(&state); state.drawEnabled = false;
+        }
+        if (refusal == 4) {
+            state.editor.metrics.back().flags |= WAR3_RENDER_FRAME_METRICS_PRESENT_OCCLUDED;
+            state.editor.metrics.back().presentResult = 0x087a0001;
+        }
+        QSignalSpy bugs(&viewport, &WorldViewport::BugPlaceholderClicked);
+        QSignalSpy originals(&viewport, &WorldViewport::InstanceClicked);
+        QSignalSpy ground(&viewport, &WorldViewport::GroundClicked);
+        QVERIFY(bugs.isValid()); QVERIFY(originals.isValid()); QVERIFY(ground.isValid());
+        const QPoint point(refusal == 1 ? 220 : 160, 120);
+        if (refusal == 1) {
+            // 理想mesh为x/y±32、z0..64；生产pickBounds另有IncludeBox的浮点运算扩边。
+            const auto bounds = WorldViewportPickHistoryTestAccess::PlaceholderBounds(viewport); QVERIFY(bounds);
+            QVERIFY((*bounds)[0] <= -32.0 && (*bounds)[3] >= 32.0);
+            QVERIFY((*bounds)[2] <= 0.0 && (*bounds)[5] >= 64.0);
+            const auto edgeRay = WorldViewportPickHistoryTestAccess::PickingRay(viewport, QPoint(200, 120));
+            const auto missRay = WorldViewportPickHistoryTestAccess::PickingRay(viewport, point);
+            QVERIFY(edgeRay.Succeeded()); QVERIFY(missRay.Succeeded());
+            QCOMPARE(edgeRay.value->ray.origin[0], 32.0);
+            QVERIFY(edgeRay.value->ray.origin[0] >= (*bounds)[0] && edgeRay.value->ray.origin[0] <= (*bounds)[3]);
+            QCOMPARE(missRay.value->ray.origin[0], 48.0); QCOMPARE(missRay.value->farPoint[0], 48.0);
+            QCOMPARE(missRay.value->ray.direction[0], 0.0); QVERIFY(missRay.value->ray.origin[0] > (*bounds)[3]);
+            const auto center = WorldViewportPickHistoryTestAccess::PickPlaceholder(viewport, QPoint(160, 120));
+            const auto edge = WorldViewportPickHistoryTestAccess::PickPlaceholder(viewport, QPoint(200, 120));
+            const auto miss = WorldViewportPickHistoryTestAccess::PickPlaceholder(viewport, point);
+            QVERIFY(center.Succeeded()); QVERIFY(center.value->has_value()); QCOMPARE(**center.value, 64.0);
+            QVERIFY(edge.Succeeded()); QVERIFY(edge.value->has_value());
+            QVERIFY(miss.Succeeded()); QVERIFY(!miss.value->has_value());
+        }
+        QTest::mousePress(&viewport, Qt::LeftButton, Qt::ShiftModifier, point);
+        // 只改变非marker实例的实时策略；marker计划和完成回执本身均不改变。
+        if (refusal == 2) otherSelectable = false;
+        if (refusal == 3) otherVisible = false;
+        probeCallbacks = refusal == 6 || refusal == 7;
+        QTest::mouseRelease(&viewport, Qt::LeftButton, Qt::ShiftModifier, point);
+        QCOMPARE(bugs.size(), qsizetype{0}); QCOMPARE(originals.size(), qsizetype{0}); QCOMPARE(ground.size(), qsizetype{0});
+        if (refusal == 6 || refusal == 7) {
+            QVERIFY(!otherSelectable); QCOMPARE(flagsReads, 2u); QCOMPARE(liveReads, 2u);
+        }
+        if (refusal == 2 || refusal == 3 || refusal == 6 || refusal == 7) {
+            QVERIFY(viewport.HoverText().contains(QStringLiteral("本次点选已取消")));
+        } else {
+            QVERIFY(viewport.HoverText().contains(QStringLiteral("等待当前姿势完成绘制后选取")));
+        }
+        QCOMPARE(WorldViewportPickHistoryTestAccess::GeometryCount(viewport), std::size_t{0});
+        QCOMPARE(state.rgbaCalls, 0);
+    }
+    void CompletedLayerAndOriginalUseNearestHit_data() {
+        QTest::addColumn<int>("originalZ");
+        QTest::newRow("original-in-front") << 64;
+        QTest::newRow("placeholder-in-front") << -64;
+    }
+    void CompletedLayerAndOriginalUseNearestHit() {
+        QFETCH(int, originalZ);
+        PlaceholderBackend state; auto backend = state.Api();
+        EditorPresentationFixture<PlaceholderBackend>::Enable(backend, state.editor);
+        backend.captureEditorPresentationFrameRgba = PlaceholderBackend::EditorCapture;
+        WorldViewport viewport(nullptr, &backend); viewport.resize(320, 240); QVERIFY(BindTerrain(viewport));
+        viewport.show(); QApplication::processEvents(); QVERIFY(viewport.RendererReady());
+        Fixture source; source.PoseFailure();
+        // 原创完成姿势把第二个健康cube移到中心射线，粗筛包围盒同步平移。
+        auto& original = source.frame->instances[1].instance;
+        const std::array<float, 3> offset{-original.transform[3], -original.transform[7], static_cast<float>(originalZ)};
+        original.transform[3] = original.transform[7] = 0; original.transform[11] += offset[2];
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            source.frame->pickBounds[1].box[axis] += offset[axis];
+            source.frame->pickBounds[1].box[axis + 3] += offset[axis];
+        }
+        QVERIFY(viewport.SetAnimationScene(source.scene, source.frame, Render::AnimationPickingScene(*source.scene, *source.frame)));
+        PlaceholderBackend::Frame(&state);
+        WorldModelBugPlaceholderPresenter presenter(&viewport);
+        presenter.Bind(source.scene, source.registry, source.owners, [] { return true; }, source.Flags());
+        QCOMPARE(presenter.Count(), std::size_t{1});
+        PlaceholderBackend::Frame(&state); state.drawEnabled = false;
+        const auto ordinary = WorldViewportPickHistoryTestAccess::PickOriginals(viewport, QPoint(160, 120));
+        QVERIFY(ordinary.Succeeded()); QCOMPARE(ordinary.value->size(), std::size_t{1});
+        QCOMPARE(ordinary.value->front().distance, static_cast<double>(120 - originalZ));
+        QSignalSpy bugs(&viewport, &WorldViewport::BugPlaceholderClicked);
+        QSignalSpy originals(&viewport, &WorldViewport::InstanceClicked);
+        QSignalSpy ground(&viewport, &WorldViewport::GroundClicked);
+        QVERIFY(bugs.isValid()); QVERIFY(originals.isValid()); QVERIFY(ground.isValid());
+        QTest::mouseClick(&viewport, Qt::LeftButton, Qt::ShiftModifier, QPoint(160, 120));
+        QCOMPARE(bugs.size(), originalZ < 0 ? qsizetype{1} : qsizetype{0});
+        QCOMPARE(originals.size(), originalZ > 0 ? qsizetype{1} : qsizetype{0});
+        if (originalZ > 0) QCOMPARE(originals.front()[0].toInt(), 0);
+        QCOMPARE(ground.size(), qsizetype{0}); QCOMPARE(state.rgbaCalls, 0);
     }
     void FailedPlanRetainsDiagnosticAfterLayerCleanup() {
         PlaceholderBackend state; auto backend = state.Api();

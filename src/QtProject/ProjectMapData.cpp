@@ -5,6 +5,7 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/VerifiedFile.h"
 #include "War3MapCore/Workspace.h"
+#include <array>
 #include <QDir>
 #include <QUndoStack>
 
@@ -20,11 +21,11 @@ void EditorProject::LoadMapDocument(bool afterMapSave) {
     mapDocument_.reset();
     if (archiveSession_) {
         mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromArchive(*archiveSession_));
-    } else if (!sourceArchivePath_.empty()) {
-        auto read = MapDocument::OpenReadOnlyArchive(sourceArchivePath_);
+    } else if (readOnlyArchive_) {
+        auto read = MapDocument::FromReadOnlyArchive(*readOnlyArchive_);
         for (const auto& diagnostic : read.diagnostics) report(diagnostic, true);
         if (read.Succeeded()) mapDocument_ = std::make_unique<MapDocument>(std::move(*read.value));
-    } else if (directorySnapshot_) {
+    } else if (sourceArchivePath_.empty() && directorySnapshot_) {
         auto read = MapDocument::FromDirectory(*directorySnapshot_);
         for (const auto& diagnostic : read.diagnostics) report(diagnostic, true);
         if (read.Succeeded()) mapDocument_ = std::make_unique<MapDocument>(std::move(*read.value));
@@ -59,8 +60,22 @@ Result<std::vector<std::byte>> EditorProject::ReadMapMember(const std::string& n
         return Result<std::vector<std::byte>>::Failure("MapData", "MAP_MEMBER_UNAVAILABLE", std::move(message));
     };
     if (archiveSession_) {
-        if (!archiveSession_->HasMember(name)) return fail("当前地图没有 " + name + "。");
-        return archiveSession_->ReadMember(name);
+        if (archiveSession_->HasMember(name)) return archiveSession_->ReadMember(name);
+        // 命名快照未列出不等于不存在；按准确名字在同一可信源租约内读取，不补进命名清单。
+        const std::array<std::string, 1> names{name};
+        ArchiveExactMemberLimits limits; // 共用硬上限：单成员及总计均为 64 MiB。
+        limits.memberCount = 1;
+        auto captured = archiveSession_->CaptureExactMembers(names, limits);
+        if (!captured.Succeeded() || !captured.value) return {{}, std::move(captured.diagnostics)};
+        auto& member = captured.value->front();
+        if (!member.present) return fail("当前地图没有 " + name + "。");
+        return Result<std::vector<std::byte>>::Success(std::move(member.bytes));
+    }
+    if (readOnlyArchive_) {
+        std::error_code error;
+        if (sourceArchivePath_.empty() || !std::filesystem::equivalent(sourceArchivePath_, readOnlyArchive_->SourcePath(), error) || error)
+            return fail("当前地图路径与只读来源绑定不一致，不能读取 " + name + "。");
+        return readOnlyArchive_->ReadMember(name, name == "war3map.wpm" ? 64ULL * 1024 * 1024 + 16 : 64ULL * 1024 * 1024);
     }
     if (!sourceArchivePath_.empty()) return fail("地图归档会话不可用，不能从另一来源推测 " + name + "。");
     if (!directorySnapshot_) return fail("当前工作区缺少可信来源快照，不能读取 " + name + "。");

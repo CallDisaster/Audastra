@@ -328,8 +328,9 @@ Result<std::unique_ptr<ModelAnimationService::State>> ModelAnimationService::Bui
     std::vector<std::uint32_t> geometryRequests;
     std::vector<Diagnostic> warnings;
     std::uint64_t sourceBytes = state->sourceBytes;
-    if (inputs.size()>limits.maxFrameBytes/sizeof(AnimationInstanceState))
+    if (inputs.size()>limits.maxFrameBytes/(sizeof(AnimationInstanceState)+sizeof(std::uint8_t)))
         return fail("ANIMATION_FRAME_BUDGET","全量实例状态实际内存超过帧预算；保留原静态场景，未截断地图实例。");
+    scene.requestGeometryRequired.reserve(inputs.size());
     for (std::size_t r = 0; r < inputs.size(); ++r) {
         const auto& input = inputs[r];
         if (!input.identity.value || input.identity.generation != session.generation || input.hostKey.empty() ||
@@ -501,6 +502,7 @@ Result<std::unique_ptr<ModelAnimationService::State>> ModelAnimationService::Bui
         }
         state->requestAssets.push_back(found->second);
         auto& asset = state->assets[found->second];
+        scene.requestGeometryRequired.push_back(asset.drawable ? 1 : 0);
         scene.particleCapabilities[r] = asset.particleCapability;
         if (asset.particleCapability.available) ++scene.particleInstanceCount;
         if (!asset.unavailableCode.empty()) scene.unavailableInstances.push_back({input.identity,
@@ -762,6 +764,14 @@ Status ModelAnimationService::InitializeStorage(State& state, const AnimationLim
     };
     auto& scene=*state.scene; const auto& catalog=std::as_const(scene); const auto& g=catalog.geometry;
     const auto fail=[](const char* code,const char* text) { return AnimationFailure(code,text); };
+    if (catalog.requestGeometryRequired.size()!=catalog.specs.size() || state.requestAssets.size()!=catalog.specs.size())
+        return fail("ANIMATION_GEOMETRY_COVERAGE","实际资产的逐请求几何需求未完整冻结。");
+    for (std::size_t r=0;r<catalog.specs.size();++r) {
+        const auto asset=state.requestAssets[r];
+        if (asset>=state.assets.size() || catalog.requestGeometryRequired[r]>1
+            || (catalog.requestGeometryRequired[r]!=0)!=state.assets[asset].drawable)
+            return fail("ANIMATION_GEOMETRY_COVERAGE","逐请求几何需求与实际解析资产不一致。");
+    }
     auto identity=EnsureAnimationCatalogIdentityIndex(scene,state.catalogIdentity,limits.maxFrameBytes);
     if (!identity.Succeeded()) return {std::move(identity.diagnostics)};
     state.catalogIdentity=std::move(*identity.value);
@@ -804,7 +814,7 @@ Status ModelAnimationService::InitializeStorage(State& state, const AnimationLim
         else ++scene.retainedStaticInstances;
         if (a != UINT32_MAX && state.assets[a].parsed) state.maxCollisionMatrices+=state.assets[a].parsed->collisionShapes.size();
     }
-    const auto baseFrameBytes=
+    const auto baseFrameBytes=AnimationRequestGeometryBytes(catalog)+
         g.instances.size()*(sizeof(War3RenderSkinnedModelInstanceV2)+sizeof(AnimationPoseLink))+
         scene.specs.size()*sizeof(AnimationInstanceState)+g.instances.size()*sizeof(AnimationPickBounds)+
         (scene.dynamicMaterialAlphas ? g.instances.size()*sizeof(War3RenderMaterialLayerSliceV2) : 0)+

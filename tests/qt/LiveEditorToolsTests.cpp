@@ -9,6 +9,8 @@
 #include "McpImportTools.h"
 #include "McpObjectResourceTools.h"
 #include "McpPlacementTools.h"
+#include "McpAuxiliaryTools.h"
+#include "ProjectAuxiliaryEdits.h"
 #include "McpTerrainEditTools.h"
 #include "McpCodeCheckTools.h"
 #include "McpCampaignTools.h"
@@ -19,6 +21,7 @@
 #include "Commands/MapDataCommands.h"
 #include "War3MapCore/MapData/MapDataFieldEditing.h"
 #include "../PlacementCreationFixtures.h"
+#include "SyntheticObjectCatalogFixture.h"
 #include "../MapDataFixtures.h"
 #include "../MapDataSpatialFixtures.h"
 
@@ -41,7 +44,10 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <memory>
+#include <optional>
+#include <vector>
 
 using namespace War3Map;
 using namespace War3Map::Trigger;
@@ -85,6 +91,14 @@ int ChangeEvents(const QSignalSpy& events) {
     int count = 0;
     for (const auto& row : events) if (row[0].toJsonObject().value("type") == QStringLiteral("changes")) ++count;
     return count;
+}
+QJsonObject RegionFields(const char* name, int creation) {
+    return {{"name", name}, {"creation_number", creation}, {"left", -128}, {"bottom", -64},
+        {"right", 256}, {"top", 512}, {"weather_id", ""}, {"ambient_sound", ""}, {"color_bgr", QJsonArray{1, 2, 3}}};
+}
+QJsonObject CameraFields(const char* name) {
+    return {{"name", name}, {"target_x", 10}, {"target_y", 20}, {"z_offset", 30}, {"rotation", 90},
+        {"angle_of_attack", 300}, {"target_distance", 1500}, {"roll", 0}, {"field_of_view", 70}, {"far_clipping_plane", 5000}};
 }
 
 // 原创、经 WTG/WCT 序列化与解析建立 seal 的小样例；不读取作者地图。
@@ -142,10 +156,10 @@ struct Fixture {
         return true;
     }
     bool Fail(const char* reason) { error = QString::fromUtf8(reason); return false; }
-    void InstallObjects(bool missing = false, bool custom = false) {
+    bool InstallObjects(bool missing = false, bool custom = false) {
         Tests::ObjectCommandsFixture fixture;
         if (custom) Tests::AddPlacementCustomObjects(fixture);
-        project.standardCatalog_ = std::make_unique<ObjectData::StandardObjectCatalog>(std::move(fixture.standard));
+        if (!Tests::InstallSyntheticGameCatalog(project, fixture.standard)) return Fail("synthetic game catalog");
         project.objectFieldSchema_ = std::make_unique<ObjectData::ObjectFieldSchema>(std::move(fixture.schema));
         for (std::size_t i = 0; i < fixture.documents.size(); ++i) {
             if (!missing) project.objectDocuments_[i] = std::move(fixture.documents[i]);
@@ -154,6 +168,76 @@ struct Fixture {
                 [this, i] { project.ObserveObjectEdit(static_cast<int>(i)); });
         }
         project.ResetEditTracking();
+        return project.editTrackingReady_ && !project.editTrackingFailed_;
+    }
+    bool InstallAuxiliary(bool seeded = false, bool references = false) {
+        // 完整原创 T 配对和经典 W3I；引用负例使用实际变量默认值，经过 codec 建立来源 seal。
+        if (!WriteFile(ui.filePath("ui/base/define.txt"),
+            "[TriggerTypes]\ninteger=0,1,1,Integer,integer\nrect=0,1,1,Region,rect\ncamerasetup=0,1,1,Camera,camerasetup\n[TriggerParams]\n"))
+            return Fail("auxiliary UI types");
+        auto catalog = UiCatalog::Load(project.uiDataRoot_);
+        if (!catalog.Succeeded()) return Fail("auxiliary UI catalog");
+        project.uiCatalog_ = std::make_unique<UiCatalog>(std::move(*catalog.value));
+        auto empty = WtgWctCodec{}.CreateEmpty(*project.uiCatalog_);
+        if (!empty.Succeeded()) return Fail("auxiliary empty T seal");
+        const auto category = TriggerDirectoryEditor::AddCategory(*empty.value, "业务");
+        if (!category.Succeeded()) return Fail("auxiliary category");
+        const auto added = TriggerDocumentEditor::AddTrigger(*empty.value, *category.value, "区域与镜头业务");
+        if (!added.Succeeded()) return Fail("auxiliary trigger");
+        project.triggerDocument_ = std::make_unique<TriggerDocument>(std::move(*empty.value));
+        if (references) {
+            for (const auto& [name, type, symbol] : std::array{
+                std::array<const char*, 3>{"RegionOwner", "rect", "gg_rct_First"},
+                std::array<const char*, 3>{"CameraOwner", "camerasetup", "gg_cam_View"}}) {
+                if (!TriggerDocumentEditor::AddVariable(*project.triggerDocument_, name, type).Succeeded())
+                    return Fail("auxiliary reference variable");
+                auto& variable = project.triggerDocument_->variables.back();
+                variable.hasDefault = 1; variable.value.text = symbol;
+            }
+        }
+        const auto encoded = WtgWctCodec{}.Serialize(*project.triggerDocument_, *project.uiCatalog_);
+        if (!encoded.Succeeded() || !WriteFile(source.filePath("map/war3map.wtg"), Bytes(encoded.value->wtg))
+            || !WriteFile(source.filePath("map/war3map.wct"), Bytes(encoded.value->wct))
+            || !WriteFile(source.filePath("map/war3map.w3i"), Bytes(MapDataFixtures::FullMapSettingsV25().bytes)))
+            return Fail("auxiliary sealed sources");
+        auto parsed = WtgWctCodec{}.Parse(encoded.value->wtg, encoded.value->wct, *project.uiCatalog_);
+        if (!parsed.Succeeded()) return Fail("auxiliary T source seal");
+        project.triggerDocument_ = std::make_unique<TriggerDocument>(std::move(*parsed.value));
+        trigger = project.triggerDocument_->triggers.front().id;
+        if (seeded) {
+            MapData::RegionsDocument regions;
+            regions.entries.push_back({-128, -64, 256, 512, "First", 1, {}, "", {1, 2, 3, 177}});
+            MapData::CamerasDocument cameras;
+            MapData::CameraRecord camera{};
+            camera.name = "View"; camera.targetX = 10; camera.targetY = std::bit_cast<float>(0x3f800001u);
+            camera.zOffset = 30; camera.rotation = 90; camera.angleOfAttack = 300; camera.targetDistance = 1500;
+            camera.fieldOfView = 70; camera.farClippingPlane = 5000; camera.nearClippingPlane = std::bit_cast<float>(0x80000000u);
+            cameras.entries.push_back(camera);
+            const auto w3r = regions.Serialize(), w3c = cameras.Serialize();
+            if (!w3r.Succeeded() || !w3c.Succeeded()
+                || !WriteFile(source.filePath("map/war3map.w3r"), Bytes(*w3r.value))
+                || !WriteFile(source.filePath("map/war3map.w3c"), Bytes(*w3c.value))) return Fail("auxiliary native tables");
+        }
+        auto workspace = DirectoryWorkspace::Open(project.projectRoot_);
+        if (!workspace.Succeeded()) return Fail("auxiliary source snapshot");
+        project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*workspace.value));
+        project.LoadMapDocument(); project.ResetEditTracking();
+        return project.mapEdits_ && project.mapDataUndoStack_ && project.editTrackingReady_ && !project.editTrackingFailed_;
+    }
+    QJsonObject AuxiliaryRequest(MapDataKind kind, std::optional<std::size_t> row = std::nullopt) const {
+        auto result = Context();
+        const auto document = project.mapEdits_->Snapshot();
+        const auto member = Services::AuxiliaryEditing::MemberIdentity(document, kind);
+        if (!member.Succeeded()) return {};
+        result.insert("kind", kind == MapDataKind::Regions ? "regions" : "cameras");
+        result.insert("expected_member_sha256", QString::fromStdString(*member.value));
+        if (row) {
+            const auto key = MapData::MapFieldRowKey(document, kind, *row);
+            if (!key.Succeeded()) return {};
+            result.insert("source", QJsonObject{{"source_index", QString::number(static_cast<qulonglong>(*row))},
+                {"row_key", QString::fromStdString(*key.value)}});
+        }
+        return result;
     }
     QJsonObject Context() const {
         const auto state = tools->Invoke("editor_state", {});
@@ -202,6 +286,10 @@ private slots:
     void SettingsAndStringsKeepOriginalGuiUndoAndPolicy();
     void PlacementToolsKeepAuthorEditsAndOriginalUndo();
     void PlacementCreateDeleteUseRealSourcesAndPurePreview();
+    void AuxiliaryCrudKeepsOriginalUndoAndProjectRoundtrip();
+    void AuxiliaryPartialFieldsAndPrepublishRejection();
+    void AuxiliaryPreviewAndReferenceFailuresAreAtomic();
+    void AuxiliaryReentryProjectReplacementAndSourceDrift();
     void TerrainToolsKeepSessionPreviewAndOriginalUndo();
     void BoundaryDraftSavesAndReopensAsProject_data();
     void BoundaryDraftSavesAndReopensAsProject();
@@ -216,7 +304,8 @@ private slots:
 
 void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
     Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
-    const QStringList expected{"code.check", "create_campaign", "edit_campaign", "edit_terrain_stroke",
+    const QStringList expected{"auxiliary_copy", "auxiliary_create", "auxiliary_delete", "auxiliary_update",
+        "code.check", "create_campaign", "edit_campaign", "edit_terrain_stroke",
         "editor_edit_trigger_graph", "editor_get_ui_catalog", "editor_query_trigger_graph", "editor_save_map", "editor_state",
         "entities_copy", "entities_create", "entities_delete", "entities_query", "entities_rotate", "entities_set_fields",
         "export_campaign_member",
@@ -235,7 +324,17 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{63});
+    QCOMPARE(expected.size(), qsizetype{67});
+    for (const auto& definition : Mcp::AuxiliaryToolDefinitions()) {
+        QCOMPARE(definition.permission, Mcp::ToolPermission::Edit);
+        int matches = 0;
+        for (const auto& value : f.tools->Tools()) {
+            const auto tool = value.toObject();
+            if (tool.value("name") != definition.name) continue;
+            ++matches; QCOMPARE(tool.value("inputSchema").toObject(), definition.inputSchema);
+        }
+        QCOMPARE(matches, 1);
+    }
     const auto luaDefinitions = Mcp::LuaTestToolDefinitions();
     QCOMPARE(luaDefinitions.size(), std::size_t{2});
     QCOMPARE(luaDefinitions[0].permission, Mcp::ToolPermission::External);
@@ -600,7 +699,7 @@ void LiveEditorToolsTests::ChildChangesNavigateActualOwningTrigger() {
 }
 
 void LiveEditorToolsTests::ObjectToolsShareSchemasAndUndo() {
-    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error)); f.InstallObjects();
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error)); QVERIFY2(f.InstallObjects(), qPrintable(f.error));
     QVERIFY(f.project.editTrackingReady_ && !f.project.editTrackingFailed_);
     for (const auto& definition : Mcp::ObjectToolDefinitions()) {
         bool found = false;
@@ -643,7 +742,7 @@ void LiveEditorToolsTests::ObjectToolsShareSchemasAndUndo() {
 }
 
 void LiveEditorToolsTests::MissingObjectsCreateUndoAndPolicy() {
-    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error)); f.InstallObjects(true);
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error)); QVERIFY2(f.InstallObjects(true), qPrintable(f.error));
     QVERIFY(f.project.objectDocuments_[0] == nullptr);
     auto request = f.Context(); request.insert("kind", "unit"); request.insert("base_id", "u001"); request.insert("new_id", "U001"); request.insert("name", "新建测试对象");
     Mcp::ToolPolicy policy; policy.allowEdit = false; f.tools->SetPolicy(policy);
@@ -752,6 +851,265 @@ void LiveEditorToolsTests::VariableFailuresPreserveRevisionAndUndo() {
     auto rename = erase; rename.insert("name", "night_renamed");
     QVERIFY(!f.tools->Invoke("variables_rename", rename).value("ok").toBool());
     QCOMPARE(f.Fingerprint(), after); QCOMPARE(f.Context(), context); QCOMPARE(f.project.triggerUndoStack_->count(), 1);
+}
+
+void LiveEditorToolsTests::AuxiliaryCrudKeepsOriginalUndoAndProjectRoundtrip() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error)); QVERIFY2(f.InstallAuxiliary(), qPrintable(f.error));
+    auto* session = f.project.mapEdits_.get(); auto* undo = f.project.mapDataUndoStack_;
+    auto* document = f.project.mapDocument_.get(); const auto triggers = f.Fingerprint();
+    std::vector<MapDocument> steps{session->Snapshot()};
+    auto settings = *steps.front().Settings(); settings.author = "Earlier GUI author";
+    QVERIFY(session->EditSettings(settings).Succeeded());
+    QtProject::PushMapDataEdit(f.project, "作者已有地图命令", "作者先改作者名");
+    (void)f.project.ObserveMapDataEdit("作者先改作者名");
+    steps.push_back(session->Snapshot());
+    QSignalSpy events(f.tools.get(), &LiveEditorTools::Activity);
+    for (const auto kind : {MapDataKind::Regions, MapDataKind::Cameras}) {
+        const bool region = kind == MapDataKind::Regions;
+        QJsonObject previous;
+        const std::array<QString, 4> tools{"auxiliary_create", "auxiliary_update", "auxiliary_copy", "auxiliary_delete"};
+        for (std::size_t operation = 0; operation < tools.size(); ++operation) {
+            auto request = f.AuxiliaryRequest(kind, operation == 0 ? std::nullopt : std::optional<std::size_t>{0});
+            if (operation == 0) request.insert("fields", region ? RegionFields("First", 1) : CameraFields("View"));
+            if (operation == 1) {
+                // 后续请求直接消费上次真实回执中的定位和成员身份。
+                auto locator = previous.value("result_identity").toObject();
+                request.insert("expected_member_sha256", locator.take("member_sha256")); request.insert("source", locator);
+                request.insert("fields", region ? QJsonObject{{"name", "Renamed"}, {"top", 900}}
+                    : QJsonObject{{"name", "Renamed View"}, {"rotation", 45}});
+            }
+            if (operation == 2) request.insert("fields", region ? QJsonObject{{"name", "Second"}, {"creation_number", 2}}
+                : QJsonObject{{"name", "Second View"}});
+            const auto count = undo->count(); const auto revision = session->Revision();
+            events.clear();
+            // 同时核最终 MCP tool_result，防止宿主已发布却返回错误封装或另一条命令回执。
+            const auto rpc = f.tools->Server().HandleMessage(QJsonDocument(QJsonObject{{"jsonrpc", "2.0"}, {"id", "auxiliary-live"},
+                {"method", "tools/call"}, {"params", QJsonObject{{"name", tools[operation]}, {"arguments", request}}}}).toJson(QJsonDocument::Compact));
+            QVERIFY(rpc && !rpc->error);
+            const auto envelope = rpc->result.toObject();
+            QVERIFY(envelope.contains("isError") && !envelope.value("isError").toBool());
+            const auto content = envelope.value("content").toArray(); QCOMPARE(content.size(), qsizetype{1});
+            QCOMPARE(content[0].toObject().value("type").toString(), QStringLiteral("text"));
+            const auto payload = QJsonDocument::fromJson(content[0].toObject().value("text").toString().toUtf8());
+            QVERIFY(payload.isObject()); const auto result = payload.object();
+            QVERIFY2(result.value("ok").toBool() && result.value("applied").toBool(), qPrintable(Explain(result)));
+            QCOMPARE(result.value("session_identity").toString(), QString::number(session->SessionIdentity()));
+            QCOMPARE(result.value("command_identity").toString(), QString::number(session->LastEdit().CommandIdentity()));
+            QVERIFY(session->LastEdit().CommandIdentity() != 0);
+            QCOMPARE(session->Revision(), revision + 1); QCOMPARE(undo->count(), count + 1);
+            QCOMPARE(events.size(), qsizetype{2});
+            const auto toolResult = events[1][0].toJsonObject();
+            QCOMPARE(toolResult.value("type").toString(), QStringLiteral("tool_end"));
+            QVERIFY(toolResult.value("success").toBool()); QCOMPARE(toolResult.value("details").toObject(), result);
+            QVERIFY(!result.value("saved").toBool() && !result.value("runtime_verified").toBool());
+            steps.push_back(session->Snapshot()); previous = result;
+        }
+        auto noOp = f.AuxiliaryRequest(kind, 0);
+        noOp.insert("fields", QJsonObject{{"name", region ? "Second" : "Second View"}});
+        const auto revision = session->Revision(); const auto count = undo->count(); const auto context = f.Context();
+        const auto result = f.tools->Invoke("auxiliary_update", noOp);
+        QVERIFY2(result.value("ok").toBool(), qPrintable(Explain(result)));
+        QVERIFY(!result.value("changed").toBool() && !result.value("applied").toBool());
+        QCOMPARE(undo->count(), count); QCOMPARE(session->Revision(), revision); QCOMPARE(f.Context(), context);
+    }
+    const auto final = session->Snapshot();
+    const auto target = std::filesystem::path(f.outputs.filePath("auxiliary.forge").toStdWString());
+    const auto saved = f.project.SaveProjectToPath(target);
+    QVERIFY2(saved.Succeeded(), saved.diagnostics.empty() ? "save auxiliary project" : saved.diagnostics.front().message.c_str());
+    auto restored = QtProject::PrepareProjectOpen(target);
+    QVERIFY2(restored.Succeeded(), restored.diagnostics.empty() ? "reopen auxiliary project" : restored.diagnostics.front().message.c_str());
+    auto* restoredEdits = (*restored.value)->mapDataEdits.get(); QVERIFY(restoredEdits);
+    const auto reopened = restoredEdits->Snapshot();
+    for (const auto kind : {MapDataKind::Regions, MapDataKind::Cameras}) {
+        QCOMPARE(reopened.Member(kind).state, MapDataState::Ready);
+        QCOMPARE(reopened.Member(kind).sources.front().data, final.Member(kind).sources.front().data);
+    }
+    // .forge 只证明工程保存恢复；源图成员仍缺席，不代替 w3x、原版编辑器或游戏验收。
+    QVERIFY(!QFileInfo::exists(f.source.filePath("map/war3map.w3r")));
+    QVERIFY(!QFileInfo::exists(f.source.filePath("map/war3map.w3c")));
+    for (std::size_t i = steps.size() - 1; i > 0; --i) {
+        undo->undo(); QVERIFY(Services::AuxiliaryEditing::AreEquivalentMapSources(session->Snapshot(), steps[i - 1]));
+    }
+    QCOMPARE(session->Snapshot().Member(MapDataKind::Regions).state, MapDataState::Missing);
+    QCOMPARE(session->Snapshot().Member(MapDataKind::Cameras).state, MapDataState::Missing);
+    for (std::size_t i = 1; i < steps.size(); ++i) {
+        undo->redo(); QVERIFY(Services::AuxiliaryEditing::AreEquivalentMapSources(session->Snapshot(), steps[i]));
+    }
+    QCOMPARE(undo->command(0)->text(), QStringLiteral("作者已有地图命令"));
+    QCOMPARE(f.project.mapDocument_.get(), document); QCOMPARE(f.project.mapEdits_.get(), session);
+    QCOMPARE(f.project.mapDataUndoStack_, undo); QCOMPARE(f.Fingerprint(), triggers);
+    QCOMPARE(f.project.triggerUndoStack_->count(), 0);
+}
+
+void LiveEditorToolsTests::AuxiliaryPartialFieldsAndPrepublishRejection() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error)); QVERIFY2(f.InstallAuxiliary(true), qPrintable(f.error));
+    auto* session = f.project.mapEdits_.get(); auto* undo = f.project.mapDataUndoStack_;
+    const auto before = session->Snapshot(); const auto triggers = f.Fingerprint();
+    auto region = f.AuxiliaryRequest(MapDataKind::Regions, 0); region.insert("fields", QJsonObject{{"top", 900}});
+    const auto edited = f.tools->Invoke("auxiliary_update", region);
+    QVERIFY2(edited.value("applied").toBool(), qPrintable(Explain(edited)));
+    auto camera = f.AuxiliaryRequest(MapDataKind::Cameras, 0); camera.insert("fields", QJsonObject{{"rotation", 45}});
+    const auto changed = f.tools->Invoke("auxiliary_update", camera);
+    QVERIFY2(changed.value("applied").toBool(), qPrintable(Explain(changed)));
+    const auto after = session->Snapshot();
+    QCOMPARE(after.Regions()->entries.front().colorBgra[3], std::uint8_t{177});
+    QCOMPARE(std::bit_cast<std::uint32_t>(after.Cameras()->entries.front().nearClippingPlane), 0x80000000u);
+    QCOMPARE(std::bit_cast<std::uint32_t>(after.Cameras()->entries.front().targetY), 0x3f800001u);
+    QCOMPARE(undo->count(), 2);
+    const auto binding = QtProject::CaptureAuxiliaryEditBinding(f.project); QVERIFY(binding.Succeeded());
+    Services::AuxiliaryEditRequest request;
+    request.kind = MapDataKind::Regions; request.action = Services::AuxiliaryEditAction::Update;
+    request.expectedMemberSha256 = *Services::AuxiliaryEditing::MemberIdentity(after, request.kind).value;
+    request.expectedRowKey = *MapData::MapFieldRowKey(after, request.kind, 0).value;
+    request.record = after.Regions()->entries.front(); std::get<MapData::RegionRecord>(request.record).top = 1000;
+    const auto revision = session->Revision(); const auto context = f.Context();
+    int validations = 0;
+    const auto refused = QtProject::ApplyAuxiliaryEditWithResult(f.project, *binding.value, request, "拒绝发布",
+        [&](const auto&, const auto&, const auto& receipt) {
+            ++validations;
+            if (receipt.SessionIdentity() != session->SessionIdentity() || !receipt.CommandIdentity())
+                return Status::Failure("Test", "BAD_RECEIPT", "预发布必须提供原事务回执");
+            return Status::Failure("Test", "AUX_TEST_DENIED", "预发布拒绝");
+        });
+    QVERIFY(!refused.Succeeded()); QCOMPARE(validations, 1);
+    QVERIFY(std::any_of(refused.diagnostics.begin(), refused.diagnostics.end(), [](const auto& d) { return d.code == "AUX_TEST_DENIED"; }));
+    QVERIFY(Services::AuxiliaryEditing::AreEquivalentMapSources(session->Snapshot(), after));
+    QCOMPARE(session->Revision(), revision); QCOMPARE(f.Context(), context); QCOMPARE(undo->count(), 2);
+    undo->undo(); undo->undo(); QVERIFY(Services::AuxiliaryEditing::AreEquivalentMapSources(session->Snapshot(), before));
+    undo->redo(); undo->redo(); QVERIFY(Services::AuxiliaryEditing::AreEquivalentMapSources(session->Snapshot(), after));
+    QCOMPARE(f.Fingerprint(), triggers); QCOMPARE(f.project.triggerUndoStack_->count(), 0);
+}
+
+void LiveEditorToolsTests::AuxiliaryPreviewAndReferenceFailuresAreAtomic() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error)); QVERIFY2(f.InstallAuxiliary(), qPrintable(f.error));
+    const auto before = f.project.mapEdits_->Snapshot(); const auto context = f.Context(); int drafts = 0;
+    const auto initialRevision = f.project.mapEdits_->Revision();
+    QSignalSpy events(f.tools.get(), &LiveEditorTools::Activity);
+    f.tools->SetBeforeWrite([&] { ++drafts; return true; });
+    for (const auto kind : {MapDataKind::Regions, MapDataKind::Cameras}) {
+        auto create = f.AuxiliaryRequest(kind);
+        create.insert("fields", kind == MapDataKind::Regions ? RegionFields("First", 1) : CameraFields("View"));
+        create.insert("dry_run", true);
+        const auto preview = f.tools->Invoke("auxiliary_create", create);
+        QVERIFY2(preview.value("ok").toBool(), qPrintable(Explain(preview)));
+        QVERIFY(preview.contains("candidate_identity") && !preview.contains("result_identity"));
+        QVERIFY(!preview.value("applied").toBool()); QCOMPARE(drafts, 0);
+        QCOMPARE(f.Context(), context); QCOMPARE(f.project.mapDataUndoStack_->count(), 0);
+        QVERIFY(Services::AuxiliaryEditing::AreEquivalentMapSources(f.project.mapEdits_->Snapshot(), before));
+        create.insert("dry_run", "true");
+        // 共用 JSON-RPC schema 在 handler/BeforeWrite 之前拒绝类型；业务层的
+        // AUX_ARGUMENT_TYPE 仅适用于直接 facade 调用，不能冒充外层 -32602 合同。
+        events.clear();
+        const auto invalidRpc = f.tools->Server().HandleMessage(QJsonDocument(QJsonObject{{"jsonrpc", "2.0"},
+            {"id", "auxiliary-invalid-type"}, {"method", "tools/call"},
+            {"params", QJsonObject{{"name", "auxiliary_create"}, {"arguments", create}}}}).toJson(QJsonDocument::Compact));
+        QVERIFY(invalidRpc && invalidRpc->error);
+        QCOMPARE(invalidRpc->id.toString(), QStringLiteral("auxiliary-invalid-type"));
+        QCOMPARE(invalidRpc->error->value("code").toInt(), Mcp::JsonRpcResponse::kInvalidParams);
+        QCOMPARE(invalidRpc->error->value("message").toString(), QStringLiteral("arguments.dry_run must be a boolean"));
+        QVERIFY(invalidRpc->result.isNull());
+        const auto mapped = f.tools->Invoke("auxiliary_create", create);
+        QCOMPARE(ErrorCode(mapped), QStringLiteral("LIVE_EDITOR_RPC_ERROR"));
+        QCOMPARE(mapped.value("diagnostics").toArray()[0].toObject().value("message").toString(),
+            QStringLiteral("arguments.dry_run must be a boolean"));
+        QCOMPARE(events.count(), 0); QCOMPARE(drafts, 0);
+        QCOMPARE(f.Context(), context); QCOMPARE(f.project.mapEdits_->Revision(), initialRevision);
+        QCOMPARE(f.project.mapDataUndoStack_->count(), 0); QCOMPARE(f.project.triggerUndoStack_->count(), 0);
+        QVERIFY(Services::AuxiliaryEditing::AreEquivalentMapSources(f.project.mapEdits_->Snapshot(), before));
+    }
+    auto create = f.AuxiliaryRequest(MapDataKind::Regions); create.insert("fields", RegionFields("First", 1));
+    f.tools->SetBeforeWrite([] { return false; });
+    QCOMPARE(ErrorCode(f.tools->Invoke("auxiliary_create", create)), QStringLiteral("LIVE_EDITOR_DRAFT_REJECTED"));
+    f.tools->SetBeforeWrite({});
+    QVERIFY(f.tools->Invoke("auxiliary_create", create).value("applied").toBool());
+    const auto after = f.project.mapEdits_->Snapshot(); const auto revision = f.project.mapEdits_->Revision();
+    const auto active = f.Context();
+    for (const bool dry : {true, false}) {
+        auto invalid = f.AuxiliaryRequest(MapDataKind::Regions, 0); invalid.insert("dry_run", dry);
+        invalid.insert("fields", QJsonObject{{"left", 1000}});
+        QCOMPARE(ErrorCode(f.tools->Invoke("auxiliary_update", invalid)), QStringLiteral("REGION_BOUNDS_INVALID"));
+        invalid.insert("fields", QJsonObject{{"top", 900}});
+        invalid.insert("expected_member_sha256", QString(64, QChar('a')));
+        QCOMPARE(ErrorCode(f.tools->Invoke("auxiliary_update", invalid)), QStringLiteral("AUX_ROW_STALE"));
+        invalid = f.AuxiliaryRequest(MapDataKind::Regions, 0); invalid.insert("dry_run", dry);
+        invalid.insert("fields", QJsonObject{{"top", 900}});
+        auto locator = invalid.value("source").toObject(); locator.insert("row_key", "old-row"); invalid.insert("source", locator);
+        QCOMPARE(ErrorCode(f.tools->Invoke("auxiliary_update", invalid)), QStringLiteral("AUX_ROW_STALE"));
+        auto stale = create; stale.insert("dry_run", dry);
+        QCOMPARE(ErrorCode(f.tools->Invoke("auxiliary_create", stale)), QStringLiteral("LIVE_EDITOR_REVISION_CONFLICT"));
+        auto conflict = f.AuxiliaryRequest(MapDataKind::Regions); conflict.insert("dry_run", dry);
+        conflict.insert("fields", RegionFields("First", 2));
+        QCOMPARE(ErrorCode(f.tools->Invoke("auxiliary_create", conflict)), QStringLiteral("AUX_SYMBOL_DUPLICATE"));
+    }
+    QCOMPARE(f.Context(), active); QCOMPARE(f.project.mapEdits_->Revision(), revision);
+    QCOMPARE(f.project.mapDataUndoStack_->count(), 1);
+    QVERIFY(Services::AuxiliaryEditing::AreEquivalentMapSources(f.project.mapEdits_->Snapshot(), after));
+    Mcp::ToolPolicy policy; policy.allowEdit = false; f.tools->SetPolicy(policy);
+    for (const auto& definition : Mcp::AuxiliaryToolDefinitions()) {
+        QVERIFY(!Names(f.tools->Tools()).contains(definition.name));
+        QVERIFY(!f.tools->Invoke(definition.name, create).value("ok").toBool());
+    }
+    Fixture linked; QVERIFY2(linked.Initialize(), qPrintable(linked.error));
+    QVERIFY2(linked.InstallAuxiliary(true, true), qPrintable(linked.error));
+    const auto linkedBefore = linked.project.mapEdits_->Snapshot(); const auto t = linked.Fingerprint();
+    for (const auto kind : {MapDataKind::Regions, MapDataKind::Cameras}) for (const bool dry : {true, false}) {
+        auto remove = linked.AuxiliaryRequest(kind, 0); remove.insert("dry_run", dry);
+        QCOMPARE(ErrorCode(linked.tools->Invoke("auxiliary_delete", remove)), QStringLiteral("AUX_REFERENCED"));
+        remove.insert("fields", QJsonObject{{"name", "New Name"}});
+        QCOMPARE(ErrorCode(linked.tools->Invoke("auxiliary_update", remove)), QStringLiteral("AUX_REFERENCED"));
+    }
+    QVERIFY(Services::AuxiliaryEditing::AreEquivalentMapSources(linked.project.mapEdits_->Snapshot(), linkedBefore));
+    QCOMPARE(linked.project.mapDataUndoStack_->count(), 0); QCOMPARE(linked.Fingerprint(), t);
+    linked.project.triggerDocument_.reset();
+    for (const bool dry : {true, false}) {
+        auto remove = linked.AuxiliaryRequest(MapDataKind::Cameras, 0); remove.insert("dry_run", dry);
+        QCOMPARE(ErrorCode(linked.tools->Invoke("auxiliary_delete", remove)), QStringLiteral("AUX_REFERENCE_COVERAGE"));
+    }
+    QCOMPARE(linked.project.mapDataUndoStack_->count(), 0);
+}
+
+void LiveEditorToolsTests::AuxiliaryReentryProjectReplacementAndSourceDrift() {
+    Fixture f, other;
+    QVERIFY2(f.Initialize(), qPrintable(f.error)); QVERIFY2(f.InstallAuxiliary(), qPrintable(f.error));
+    QVERIFY2(other.Initialize(), qPrintable(other.error)); QVERIFY2(other.InstallAuxiliary(), qPrintable(other.error));
+    const auto before = f.project.mapEdits_->Snapshot(); const auto oldSession = f.project.mapEdits_->SessionIdentity();
+    QVERIFY(Services::AuxiliaryEditing::AreEquivalentMapSources(before, other.project.mapEdits_->Snapshot()));
+    QCOMPARE(f.Fingerprint(), other.Fingerprint());
+    auto request = f.AuxiliaryRequest(MapDataKind::Regions); request.insert("fields", RegionFields("First", 1));
+    QJsonObject nested;
+    f.tools->SetBeforeWrite([&] {
+        nested = f.tools->Invoke("auxiliary_create", request);
+        f.project.projectRoot_ = other.project.projectRoot_;
+        f.project.directorySnapshot_ = std::move(other.project.directorySnapshot_);
+        f.project.mapDocument_ = std::make_unique<MapDocument>(*other.project.mapDocument_);
+        f.project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*f.project.mapDocument_);
+        f.project.triggerDocument_ = std::make_unique<TriggerDocument>(*other.project.triggerDocument_);
+        f.project.ResetEditTracking();
+        return true;
+    });
+    const auto result = f.tools->Invoke("auxiliary_create", request);
+    QCOMPARE(ErrorCode(nested), QStringLiteral("LIVE_EDITOR_BUSY"));
+    QCOMPARE(ErrorCode(result), QStringLiteral("LIVE_EDITOR_REVISION_CONFLICT"));
+    QVERIFY(f.project.mapEdits_->SessionIdentity() != oldSession); QCOMPARE(f.project.mapDataUndoStack_->count(), 0);
+    QVERIFY(Services::AuxiliaryEditing::AreEquivalentMapSources(f.project.mapEdits_->Snapshot(), before));
+    f.tools->SetBeforeWrite({});
+    auto current = f.AuxiliaryRequest(MapDataKind::Cameras); current.insert("fields", CameraFields("View"));
+    f.project.savingMap_ = true;
+    for (const bool dry : {true, false}) {
+        current.insert("dry_run", dry);
+        QCOMPARE(ErrorCode(f.tools->Invoke("auxiliary_create", current)), QStringLiteral("LIVE_EDITOR_BUSY"));
+    }
+    f.project.savingMap_ = false;
+    const auto stableContext = f.Context();
+    const auto path = QString::fromStdWString((f.project.projectRoot_ / "map/war3map.w3i").wstring());
+    QVERIFY(WriteFile(path, Bytes(MapDataFixtures::FullMapSettingsV25().bytes) + QByteArray("changed")));
+    for (const bool dry : {true, false}) {
+        current.insert("dry_run", dry);
+        QVERIFY(!f.tools->Invoke("auxiliary_create", current).value("ok").toBool());
+        QVERIFY(f.project.sourceChangeConfirmed_);
+    }
+    QCOMPARE(f.Context(), stableContext); QCOMPARE(f.project.mapDataUndoStack_->count(), 0);
+    QVERIFY(Services::AuxiliaryEditing::AreEquivalentMapSources(f.project.mapEdits_->Snapshot(), before));
 }
 
 void LiveEditorToolsTests::BoundaryDraftSavesAndReopensAsProject_data() {
@@ -1254,7 +1612,7 @@ void LiveEditorToolsTests::SpatialEntityQueriesShareSchemasAndObserveOriginalUnd
 
 void LiveEditorToolsTests::PlacementCreateDeleteUseRealSourcesAndPurePreview() {
     using namespace MapData;
-    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error)); f.InstallObjects(false, true);
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error)); QVERIFY2(f.InstallObjects(false, true), qPrintable(f.error));
     const auto unitBytes = UnitPlacements{}.Serialize(), doodadBytes = DoodadPlacements{}.Serialize();
     QVERIFY(unitBytes.Succeeded() && doodadBytes.Succeeded());
     const auto terrainBytes = Tests::PlacementTerrainBytes();

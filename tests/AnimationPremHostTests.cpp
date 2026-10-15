@@ -587,12 +587,25 @@ void Budgets() {
         Check(packet.assetBytes == bill.childSourceBytes + bill.childResourceBytes + bill.childSceneBytes &&
             bill.childFrameChargedBytes == std::max(bill.childStandFrameBytes, bill.childFrameLayoutBytes),
             "PREM bill double charged source/layout/workspace or missed actual child capacity");
-        if (accepted) Check(bill.childSourceBytes && bill.childResourceBytes && bill.childSceneBytes && bill.childStandFrameBytes &&
-            bill.childFrameLayoutBytes && bill.childEvaluatorBytes && bill.birthEvaluatorBytes && bill.preparationResourceBytes &&
-            bill.childSceneBytes <= packet.storageBytes && bill.childFrameChargedBytes <= packet.storageBytes - bill.childSceneBytes &&
-            bill.childEvaluatorBytes <= packet.storageBytes - bill.childSceneBytes - bill.childFrameChargedBytes &&
-            bill.birthEvaluatorBytes <= packet.storageBytes - bill.childSceneBytes - bill.childFrameChargedBytes - bill.childEvaluatorBytes,
-            "PREM positive bill lost actual retained scene/frame or unique evaluator fees");
+        if (accepted) {
+            Check(packet.childFrame && packet.childScene && !packet.childFrame->sharedPoseRanges &&
+                !packet.childScene->dynamicMaterialAlphas && !packet.childScene->dynamicMaterialStates &&
+                packet.childFrame->geosetIssues.empty() && packet.childFrame->materialIssues.empty() &&
+                packet.childFrame->collisionMatrices.empty(), "PREM billing fixture acquired unrelated child layout charges");
+            const auto& child=*packet.childFrame;
+            const auto actualFrameLayout=std::uint64_t(child.instances.size())*(sizeof(War3RenderSkinnedModelInstanceV2)+
+                sizeof(AnimationPoseLink)+sizeof(AnimationPickBounds))+std::uint64_t(child.states.size())*sizeof(AnimationInstanceState)+
+                std::uint64_t(child.groups.size())*sizeof(War3RenderGroupMatrixV2)+
+                std::uint64_t(child.alphas.size())*(sizeof(float)+sizeof(War3RenderMeshColorV2));
+            Check(bill.childFrameLayoutBytes==actualFrameLayout && packet.childScene->requestGeometryRequired.capacity(),
+                "PREM charged the scene provenance table again in the child frame layout");
+            Check(bill.childSourceBytes && bill.childResourceBytes && bill.childSceneBytes && bill.childStandFrameBytes &&
+                bill.childFrameLayoutBytes && bill.childEvaluatorBytes && bill.birthEvaluatorBytes && bill.preparationResourceBytes &&
+                bill.childSceneBytes <= packet.storageBytes && bill.childFrameChargedBytes <= packet.storageBytes - bill.childSceneBytes &&
+                bill.childEvaluatorBytes <= packet.storageBytes - bill.childSceneBytes - bill.childFrameChargedBytes &&
+                bill.birthEvaluatorBytes <= packet.storageBytes - bill.childSceneBytes - bill.childFrameChargedBytes - bill.childEvaluatorBytes,
+                "PREM positive bill lost actual retained scene/frame or unique evaluator fees");
+        }
         else Check(!packet.assetBytes && !bill.childSourceBytes && !bill.childResourceBytes && !bill.childSceneBytes &&
             !bill.childStandFrameBytes && !bill.childFrameLayoutBytes && !bill.childFrameChargedBytes &&
             !bill.childEvaluatorBytes && !bill.birthEvaluatorBytes, "refused PREM retained phantom child/evaluator charges");

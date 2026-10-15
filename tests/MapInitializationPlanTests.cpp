@@ -1,5 +1,6 @@
 #include "War3MapCore/Script/MapInitializationPlan.h"
 #include "War3MapCore/MapData/GeneratedObjectSymbol.h"
+#include "War3MapCore/Trigger/TriggerDocument.h"
 
 #include <algorithm>
 #include <array>
@@ -365,7 +366,30 @@ void RefusesUnimplementedDataWithoutLosingRecords() {
     fixture.sounds.version = 1;
     fixture.regions.entries.push_back(Region("Ambient", 1));
     fixture.regions.entries[0].ambientSound = "gg_snd_Ambient";
-    Rejected(BuildMapInitializationPlan(fixture.inputs), "MAP_INIT_REGION_SOUND_UNSUPPORTED");
+    Rejected(BuildMapInitializationPlan(fixture.inputs), "MAP_INIT_REGION_SOUND_UNRESOLVED");
+}
+
+void RegionAmbientSoundInitialization() {
+    Fixture fixture;
+    fixture.regions.entries.push_back(Region("SoundArea", 1));
+    fixture.regions.entries[0].ambientSound = "gg_snd_Ambient";
+    fixture.sounds.entries.push_back(Sound("Ambient", "Sound.wav"));
+    const auto plan = BuildMapInitializationPlan(fixture.inputs);
+    Require(plan.Succeeded() && plan.value->regions[0].region.ambientSound == "gg_snd_Ambient",
+        "existing sound symbol belongs to the region initialization plan");
+    Trigger::TriggerDocument triggers; Trigger::UiCatalog catalog;
+    fixture.inputs.triggers = &triggers; fixture.inputs.catalog = &catalog;
+    const auto script = GenerateMapScript(fixture.inputs);
+    Require(script.Succeeded() && script.text.find("call SetSoundPosition( gg_snd_Ambient, 64.0, -64.0, 0.0 )") != std::string::npos
+        && script.text.find("call RegisterStackedSound( gg_snd_Ambient, true, 384.0, 384.0 )") != std::string::npos,
+        "JASS emits the actual region center and dimensions for the sound");
+    fixture.sounds.entries[0].flags = 8;
+    Rejected(BuildMapInitializationPlan(fixture.inputs), "MAP_INIT_REGION_SOUND_UNRESOLVED");
+    fixture.sounds.entries[0].flags = 3;
+    fixture.sounds.entries.push_back(Sound("gg_snd_Ambient", "Other.wav"));
+    Rejected(BuildMapInitializationPlan(fixture.inputs), "MAP_INIT_REGION_SOUND_UNRESOLVED");
+    fixture.sounds.entries.resize(1); fixture.regions.entries[0].ambientSound = "gg_snd_Ambient)";
+    Require(!GenerateMapScript(fixture.inputs).Succeeded(), "sound strings cannot inject script tokens");
 }
 
 void SoundSentinelsAndNonFiniteValues() {
@@ -398,6 +422,7 @@ int main() {
         SourceBindingAndQueryFailures();
         RefusesUnimplementedDataWithoutLosingRecords();
         SoundSentinelsAndNonFiniteValues();
+        RegionAmbientSoundInitialization();
         std::cout << "Map initialization plan: owned facts, ordering, identity and refusal tests passed.\n";
         return 0;
     } catch (const std::exception& error) {

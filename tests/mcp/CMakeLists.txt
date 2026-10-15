@@ -77,6 +77,14 @@ if(TARGET War3MapMcpProtocol)
     set_tests_properties(mcp-placement-tools PROPERTIES ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
     add_executable(war3-map-mcp-map-data-tools-tests McpMapDataToolsTests.cpp)
+    add_executable(audastra-mcp-auxiliary-tools-tests McpAuxiliaryToolsTests.cpp)
+    target_link_libraries(audastra-mcp-auxiliary-tools-tests PRIVATE War3MapEditor::McpProtocol)
+    target_compile_definitions(audastra-mcp-auxiliary-tools-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+    target_compile_options(audastra-mcp-auxiliary-tools-tests PRIVATE /W4 /permissive- /utf-8)
+    add_test(NAME mcp-auxiliary-tools COMMAND audastra-mcp-auxiliary-tools-tests)
+    set_tests_properties(mcp-auxiliary-tools PROPERTIES ENVIRONMENT_MODIFICATION
+        "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+
     target_link_libraries(war3-map-mcp-map-data-tools-tests PRIVATE War3MapEditor::McpProtocol)
     target_compile_definitions(war3-map-mcp-map-data-tools-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
     target_compile_options(war3-map-mcp-map-data-tools-tests PRIVATE /W4 /permissive- /utf-8)
@@ -89,6 +97,13 @@ if(TARGET War3MapMcpProtocol)
     target_compile_options(war3-map-mcp-variable-tools-tests PRIVATE /W4 /permissive- /utf-8)
     add_test(NAME mcp-variable-tools COMMAND war3-map-mcp-variable-tools-tests)
     set_tests_properties(mcp-variable-tools PROPERTIES ENVIRONMENT_MODIFICATION
+        "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    add_executable(war3-map-mcp-effective-object-tests McpEffectiveObjectTests.cpp)
+    target_link_libraries(war3-map-mcp-effective-object-tests PRIVATE War3MapEditor::McpProtocol)
+    target_compile_definitions(war3-map-mcp-effective-object-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+    target_compile_options(war3-map-mcp-effective-object-tests PRIVATE /W4 /permissive- /utf-8)
+    add_test(NAME mcp-effective-object-catalog COMMAND war3-map-mcp-effective-object-tests)
+    set_tests_properties(mcp-effective-object-catalog PROPERTIES ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
     add_executable(war3-map-mcp-object-tools-tests McpObjectToolsTests.cpp)
     target_link_libraries(war3-map-mcp-object-tools-tests PRIVATE War3MapEditor::McpProtocol)

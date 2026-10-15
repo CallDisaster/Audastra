@@ -19,6 +19,115 @@ bool SkinMatches(const War3RenderSkinStatusV2& skin, const Render::AnimationFram
         && skin.frameCount == drawnFrame && skin.sceneVersion == frame.sceneVersion
         && skin.contentVersion == frame.contentVersion && skin.staticUploadCount && skin.matrixUploadCount;
 }
+Status CheckParentPacket(const Render::AnimatedModelScene& scene, const Render::AnimationFrame& frame) {
+    if (!frame.prem) return {};
+    const auto& packet = *frame.prem;
+    if (packet.parentSceneVersion != scene.sceneVersion || packet.parentContentVersion != frame.contentVersion
+        || packet.parentDocumentRevision != frame.documentRevision || packet.parentGeneration != scene.generation
+        || packet.parentSourceIdentity != scene.sourceIdentity || !packet.capabilities)
+        return Failure("WORLD_PREM_PARENT_BINDING_INVALID", "PREM 包未绑定同次已接受父帧的完整身份；旧子层已清理。");
+    for (const auto& pose : frame.poses) if (pose.evaluationEpoch && pose.evaluationEpoch != packet.parentEvaluationEpoch)
+        return Failure("WORLD_PREM_PARENT_EPOCH_INVALID", "PREM 包与实际父姿势求值 epoch 不符；旧子层已清理。");
+    return {};
+}
+Status CheckCapturedParent(const Render::CapturedFrameRgba& capture,
+    const std::shared_ptr<const Render::AnimationFrame>& parent, std::uint64_t viewportRevision) {
+    if (!parent || capture.animation != parent || capture.documentRevision != viewportRevision)
+        return Failure("WORLD_PREM_CAPTURE_PARENT_STALE", "PREM 捕获未绑定当前父帧或视口修订。");
+    if (!capture.modelLayersRevision || capture.modelLayerFrames.size() != capture.modelLayers.size())
+        return Failure("WORLD_PREM_CAPTURE_LAYER_LIST_INVALID", "PREM 捕获缺少完整的同帧附加层清单及修订。");
+    if (!capture.view.identity.frameCount || !capture.view.identity.surfaceEpoch
+        || !capture.view.identity.sceneEpoch || !capture.view.identity.viewEpoch
+        || !capture.skin || !capture.presentation)
+        return Failure("WORLD_PREM_CAPTURE_RECEIPT_MISSING", "PREM 捕获缺少实际完成帧、主层或视图身份。");
+    if (!SkinMatches(*capture.skin, *parent, capture.view.identity.frameCount))
+        return Failure("WORLD_PREM_CAPTURE_SKIN_INVALID", "PREM 主层蒙皮的完成帧、scene/content 或静态/矩阵上传身份不符。");
+    if (capture.presentation->structSize < sizeof(*capture.presentation) || capture.presentation->reserved
+        || !capture.presentation->modelEpoch || !capture.presentation->presentationRevision
+        || capture.presentation->sceneVersion != parent->sceneVersion
+        || capture.presentation->contentVersion != parent->contentVersion
+        || capture.presentation->instanceCount != parent->instances.size())
+        return Failure("WORLD_PREM_CAPTURE_PRESENTATION_INVALID", "PREM 主层呈现身份未对应同次父动画帧。");
+    return {};
+}
+QJsonObject CaptureSummary(const Render::CapturedFrameRgba& capture, const Render::AnimatedModelScene& scene,
+    const Render::AnimationFrame& parent) {
+    const auto& packet = parent.prem;
+    return {{"schemaVersion", 1}, {"captureSource", "renderer_completed_frame"}, {"layerId", Number(WorldPremPresenter::LayerId)},
+        {"parentSceneVersion", Number(parent.sceneVersion)}, {"parentContentVersion", Number(parent.contentVersion)},
+        {"parentDocumentRevision", Number(parent.documentRevision)}, {"parentGeneration", Number(scene.generation)},
+        {"parentEvaluationEpoch", Number(packet ? packet->parentEvaluationEpoch : 0)},
+        {"parentSourceIdentity", QString::fromStdString(scene.sourceIdentity)},
+        {"parentModelEpoch", Number(capture.presentation->modelEpoch)}, {"layersRevision", Number(capture.modelLayersRevision)},
+        {"captureFrameNumber", Number(capture.view.identity.frameCount)},
+        {"cpuEmissionCount", Number(packet ? packet->emission.children.size() : 0)},
+        {"submittedSlotCount", Number(packet ? packet->childSlots.size() : 0)},
+        {"suppressedChildren", Number(packet ? packet->emission.suppressedChildren + packet->slotSuppressedChildren : 0)},
+        {"sampleErrorCount", Number(packet ? packet->sampleErrors.size() : 0)},
+        {"supportedEmitterInstances", Number(packet ? packet->supportedEmitterInstances : 0)},
+        {"unsupportedEmitterInstances", Number(packet ? packet->unsupportedEmitterInstances : 0)},
+        {"requestBudgetOmissions", Number(packet ? packet->requestBudgetOmissions : 0)},
+        {"slotSuppressedChildren", Number(packet ? packet->slotSuppressedChildren : 0)},
+        {"clockRejectedChildren", Number(packet ? packet->emission.clockRejectedChildren : 0)},
+        {"gpuLayerCompletionProven", false}, {"visibleAcceptance", false}, {"selectionAcceptance", false},
+        {"gameplayVerified", false}, {"childStandFrozenApproximation", true}};
+}
+void AppendPlanDetails(QJsonObject& output, const Render::AnimationPremFrame& packet, const Render::AnimatedModelScene& scene) {
+    QJsonArray clocks, capabilities, errors, children;
+    for (const auto& clock : packet.requestClocks) clocks.push_back(QJsonObject{
+        {"identity", Number(clock.identity.value)}, {"identityGeneration", Number(clock.identity.generation)},
+        {"requestIndex", static_cast<double>(clock.requestIndex)}, {"sequenceIndex", static_cast<double>(clock.sequenceIndex)},
+        {"parentElapsedMs", Number(clock.parentElapsedMs)}, {"parentGlobalMs", Number(clock.parentGlobalMs)},
+        {"elapsedMs", Number(clock.elapsedMs)}, {"globalMs", Number(clock.globalMs)}, {"tailAging", clock.tailAging}});
+    const auto assetSource = [](const War3RenderCore::AssetSource& source) { return QJsonObject{
+        {"path", QString::fromStdString(source.virtualPath)}, {"layer", QString::fromStdString(source.sourceLayer)},
+        {"sha256", QString::fromStdString(source.contentDigest)}}; };
+    const auto& budget = packet.budget;
+    output["budget"] = QJsonObject{
+        {"parentAssetBytesBefore", Number(budget.parentAssetBytesBefore)},
+        {"parentAssetBytesAfter", Number(budget.parentAssetBytesAfter)},
+        {"parentFixedFrameBytes", Number(budget.parentFixedFrameBytes)},
+        {"childSourceBytes", Number(budget.childSourceBytes)},
+        {"childResourceBytes", Number(budget.childResourceBytes)},
+        {"childSceneBytes", Number(budget.childSceneBytes)},
+        {"childStandFrameBytes", Number(budget.childStandFrameBytes)},
+        {"childFrameLayoutBytes", Number(budget.childFrameLayoutBytes)},
+        {"childFrameChargedBytes", Number(budget.childFrameChargedBytes)},
+        {"childEvaluatorBytes", Number(budget.childEvaluatorBytes)},
+        {"birthEvaluatorBytes", Number(budget.birthEvaluatorBytes)},
+        {"preparationResourceBytes", Number(budget.preparationResourceBytes)}};
+    for (const auto& capability : *packet.capabilities) capabilities.push_back(QJsonObject{
+        {"prepared", capability.prepared}, {"parentAsset", Number(capability.parentAsset.value)},
+        {"parentAssetGeneration", Number(capability.parentAsset.generation)},
+        {"sourceIndex", static_cast<double>(capability.sourceIndex)}, {"nodeId", static_cast<double>(capability.nodeId)},
+        {"sourceByteOffset", Number(capability.sourceByteOffset)}, {"originalPath", QString::fromStdString(capability.originalPath)},
+        {"resolvedPath", QString::fromStdString(capability.resolvedPath)},
+        {"parentSource", assetSource(capability.parentSource)}, {"childSource", assetSource(capability.childSource)},
+        {"rejectionCode", QString::fromStdString(capability.rejectionCode)},
+        {"rejectionMessage", QString::fromStdString(capability.rejectionMessage)}});
+    for (const auto& error : packet.sampleErrors) errors.push_back(QJsonObject{
+        {"identity", Number(error.identity.value)}, {"identityGeneration", Number(error.identity.generation)},
+        {"requestIndex", static_cast<double>(error.requestIndex)}, {"sourceIndex", static_cast<double>(error.sourceIndex)},
+        {"birthElapsedMs", Number(error.birthElapsedMs)}, {"birthGlobalMs", Number(error.birthGlobalMs)},
+        {"code", QString::fromStdString(error.code)}});
+    for (const auto& slot : packet.childSlots) {
+        const auto& child = packet.emission.children[slot.childIndex];
+        QJsonArray transform; for (const auto value : child.transform) transform.push_back(value);
+        children.push_back(QJsonObject{{"parentIdentity", Number(child.parentIdentity.value)},
+            {"parentIdentityGeneration", Number(child.parentIdentity.generation)},
+            {"parentRequestIndex", static_cast<double>(child.parentRequestIndex)},
+            {"parentHostKey", QString::fromStdString(scene.specs[child.parentRequestIndex].hostKey)},
+            {"sourceIndex", static_cast<double>(child.emitter->Source().sourceIndex)},
+            {"nodeId", static_cast<double>(child.emitter->Source().nodeId)},
+            {"childRequestIndex", static_cast<double>(slot.childRequestIndex)},
+            {"birthOrdinal", Number(child.birthOrdinal)}, {"birthElapsedMs", Number(child.birthElapsedMs)},
+            {"birthGlobalMs", Number(child.birthGlobalMs)}, {"ageMs", Number(child.ageMs)},
+            {"worldTransformRowMajor3x4", transform}, {"childSource", assetSource(child.emitter->Binding().childSource)}});
+    }
+    output["requestClocks"] = clocks; output["capabilities"] = capabilities;
+    output["sampleErrors"] = errors; output["children"] = children;
+    output["capabilityRecordCount"] = Number(packet.capabilities->size());
+}
 }
 
 WorldPremPresenter::WorldPremPresenter(WorldViewport* viewport, QObject* parent) : QObject(parent), viewport_(viewport) {
@@ -57,14 +166,10 @@ Status WorldPremPresenter::CheckFrame(const std::shared_ptr<const Render::Animat
         || frame->documentRevision != scene->documentRevision || registry_->Binding().sourceGeneration != scene->generation
         || registry_->Binding().mapRevision != scene->documentRevision || registry_->Binding().sourceIdentity != scene->sourceIdentity)
         return Failure("WORLD_PREM_SOURCE_STALE", "PREM 父帧、地图来源或当前实例谱系已失效；旧子层已清理。");
+    const auto parent = CheckParentPacket(*scene, *frame);
+    if (!parent.Succeeded()) return parent;
     if (!frame->prem) return {};
     const auto& packet = *frame->prem;
-    if (packet.parentSceneVersion != scene->sceneVersion || packet.parentContentVersion != frame->contentVersion
-        || packet.parentDocumentRevision != frame->documentRevision || packet.parentGeneration != scene->generation
-        || packet.parentSourceIdentity != scene->sourceIdentity || !packet.capabilities)
-        return Failure("WORLD_PREM_PARENT_BINDING_INVALID", "PREM 包未绑定同次已接受父帧的完整身份；旧子层已清理。");
-    for (const auto& pose : frame->poses) if (pose.evaluationEpoch && pose.evaluationEpoch != packet.parentEvaluationEpoch)
-        return Failure("WORLD_PREM_PARENT_EPOCH_INVALID", "PREM 包与实际父姿势求值 epoch 不符；旧子层已清理。");
     if (packet.childSlots.empty()) return {};
     if (!packet.parentEvaluationEpoch || !packet.childScene || !packet.childFrame || packet.childScene != scene->premGeometry
         || packet.childScene->generation != scene->generation || packet.childScene->documentRevision != frame->documentRevision
@@ -168,102 +273,66 @@ QString WorldPremPresenter::Summary() const {
         .arg(packet_->emission.children.size()).arg(packet_->childSlots.size())
         .arg(packet_->emission.suppressedChildren + packet_->slotSuppressedChildren).arg(packet_->sampleErrors.size());
 }
+Result<QJsonObject> WorldPremPresenter::CaptureEmptySnapshot(const Render::CapturedFrameRgba& capture,
+    const std::shared_ptr<const Render::AnimatedModelScene>& currentScene,
+    const std::shared_ptr<const Render::AnimationFrame>& currentFrame, std::uint64_t viewportRevision) try {
+    using Output = Result<QJsonObject>;
+    if (!currentScene || !currentFrame || !currentScene->sceneVersion || !currentScene->generation || !currentFrame->contentVersion
+        || currentScene->sourceIdentity.empty() || currentFrame->sceneVersion != currentScene->sceneVersion
+        || currentFrame->documentRevision != currentScene->documentRevision
+        || currentFrame->states.size() != currentScene->specs.size())
+        return Output::Failure("World.PREM", "WORLD_PREM_CAPTURE_CPU_BINDING_INVALID",
+            "PREM 空层证明没有绑定当前CPU场景、父帧和地图来源。");
+    if (!currentScene->premEnabled || !currentFrame->prem || !currentFrame->prem->capabilities
+        || !currentFrame->prem->parentEvaluationEpoch)
+        return Output::Failure("World.PREM", "WORLD_PREM_CAPTURE_PLAN_MISSING",
+            "PREM 空层证明需要当前已完成的CPU准备计划；未启用或缺失计划不代表空子层。");
+    const auto& packet = *currentFrame->prem;
+    const auto parent = CheckParentPacket(*currentScene, *currentFrame);
+    if (!parent.Succeeded()) return {std::nullopt, parent.diagnostics};
+    if (!packet.childSlots.empty()) return Output::Failure("World.PREM", "WORLD_PREM_CAPTURE_SLOTS_PRESENT",
+        "当前CPU计划有PREM子槽，必须按所属对象、子姿势和完成帧逐项核验，不能走空层证明。");
+    if (packet.childScene != currentScene->premGeometry)
+        return Output::Failure("World.PREM", "WORLD_PREM_CAPTURE_CHILD_PLAN_STALE",
+            "PREM 空槽计划的子场景与当前CPU场景不一致，不能将过期计划当作空层。");
+    const auto captured = CheckCapturedParent(capture, currentFrame, viewportRevision);
+    if (!captured.Succeeded()) return {std::nullopt, captured.diagnostics};
+    if (std::any_of(capture.modelLayers.begin(), capture.modelLayers.end(), [](const auto& layer) { return layer.layerId == LayerId; }))
+        return Output::Failure("World.PREM", "WORLD_PREM_CAPTURE_RESIDUAL_LAYER",
+            "当前CPU没有PREM子槽，但同次完成帧仍有固定PREM层，未签收空帧。");
+    auto output = CaptureSummary(capture, *currentScene, *currentFrame);
+    AppendPlanDetails(output, packet, *currentScene);
+    output["absenceReason"] = "no-filled-slot-for-captured-parent";
+    output["cpuPlanProvesEmptySlots"] = true;
+    output["gpuLayerAbsenceProven"] = true;
+    return Output::Success(std::move(output));
+} catch (...) {
+    return Result<QJsonObject>::Failure("World.PREM", "WORLD_PREM_CAPTURE_FAILED",
+        "无法拥有PREM空层回执，未用缺失数据代替完成证明。");
+}
 Result<QJsonObject> WorldPremPresenter::CaptureSnapshot(const Render::CapturedFrameRgba& capture) const try {
     using Output = Result<QJsonObject>;
     const auto fail = [](const char* text) { return Output::Failure("World.PREM", "WORLD_PREM_CAPTURE_INVALID", text); };
-    if (!status_.Succeeded() || !acceptedParent_ || capture.animation != acceptedParent_
-        // 捕获修订属于视口呈现；地图编辑修订已由同一父包与 CheckFrame 绑定，不能混比两套编号。
-        || !CheckFrame(source_, acceptedParent_).Succeeded() || capture.documentRevision != viewport_->DocumentRevision()
-        || capture.modelLayerFrames.size() != capture.modelLayers.size() || !capture.skin || !capture.presentation
-        || !SkinMatches(*capture.skin, *acceptedParent_, capture.view.identity.frameCount))
-        return fail("PREM GPU 捕获未绑定当前父帧、来源或同次完成帧，未签收子层绘制。");
-    if (capture.presentation->structSize < sizeof(*capture.presentation) || capture.presentation->reserved
-        || !capture.presentation->modelEpoch || !capture.presentation->presentationRevision
-        || capture.presentation->sceneVersion != acceptedParent_->sceneVersion
-        || capture.presentation->contentVersion != acceptedParent_->contentVersion
-        || capture.presentation->instanceCount != acceptedParent_->instances.size())
-        return fail("PREM 主层呈现身份未对应同次父动画帧。");
-    QJsonArray clocks;
-    if (packet_) for (const auto& clock : packet_->requestClocks) clocks.push_back(QJsonObject{
-        {"identity", Number(clock.identity.value)}, {"identityGeneration", Number(clock.identity.generation)},
-        {"requestIndex", static_cast<double>(clock.requestIndex)}, {"sequenceIndex", static_cast<double>(clock.sequenceIndex)},
-        {"parentElapsedMs", Number(clock.parentElapsedMs)}, {"parentGlobalMs", Number(clock.parentGlobalMs)},
-        {"elapsedMs", Number(clock.elapsedMs)}, {"globalMs", Number(clock.globalMs)}, {"tailAging", clock.tailAging}});
-    QJsonObject output{{"schemaVersion", 1}, {"captureSource", "renderer_completed_frame"}, {"layerId", Number(LayerId)},
-        {"parentSceneVersion", Number(acceptedParent_->sceneVersion)}, {"parentContentVersion", Number(acceptedParent_->contentVersion)},
-        {"parentDocumentRevision", Number(acceptedParent_->documentRevision)}, {"parentGeneration", Number(source_->generation)},
-        {"parentEvaluationEpoch", Number(packet_ ? packet_->parentEvaluationEpoch : 0)},
-        {"parentSourceIdentity", QString::fromStdString(source_->sourceIdentity)},
-        {"parentModelEpoch", Number(capture.presentation->modelEpoch)}, {"layersRevision", Number(capture.modelLayersRevision)},
-        {"captureFrameNumber", Number(capture.view.identity.frameCount)}, {"requestClocks", clocks},
-        {"cpuEmissionCount", Number(packet_ ? packet_->emission.children.size() : 0)},
-        {"submittedSlotCount", Number(packet_ ? packet_->childSlots.size() : 0)},
-        {"suppressedChildren", Number(packet_ ? packet_->emission.suppressedChildren + packet_->slotSuppressedChildren : 0)},
-        {"sampleErrorCount", Number(packet_ ? packet_->sampleErrors.size() : 0)},
-        {"gpuLayerCompletionProven", false}, {"visibleAcceptance", false}, {"selectionAcceptance", false},
-        {"gameplayVerified", false}, {"childStandFrozenApproximation", true}};
-    QJsonArray capabilities, errors, children;
-    const auto assetSource = [](const War3RenderCore::AssetSource& source) { return QJsonObject{
-        {"path", QString::fromStdString(source.virtualPath)}, {"layer", QString::fromStdString(source.sourceLayer)},
-        {"sha256", QString::fromStdString(source.contentDigest)}}; };
-    if (packet_) {
-        const auto& budget = packet_->budget;
-        output["budget"] = QJsonObject{
-            {"parentAssetBytesBefore", Number(budget.parentAssetBytesBefore)},
-            {"parentAssetBytesAfter", Number(budget.parentAssetBytesAfter)},
-            {"parentFixedFrameBytes", Number(budget.parentFixedFrameBytes)},
-            {"childSourceBytes", Number(budget.childSourceBytes)},
-            {"childResourceBytes", Number(budget.childResourceBytes)},
-            {"childSceneBytes", Number(budget.childSceneBytes)},
-            {"childStandFrameBytes", Number(budget.childStandFrameBytes)},
-            {"childFrameLayoutBytes", Number(budget.childFrameLayoutBytes)},
-            {"childFrameChargedBytes", Number(budget.childFrameChargedBytes)},
-            {"childEvaluatorBytes", Number(budget.childEvaluatorBytes)},
-            {"birthEvaluatorBytes", Number(budget.birthEvaluatorBytes)},
-            {"preparationResourceBytes", Number(budget.preparationResourceBytes)}};
-        output["supportedEmitterInstances"] = Number(packet_->supportedEmitterInstances);
-        output["unsupportedEmitterInstances"] = Number(packet_->unsupportedEmitterInstances);
-        output["requestBudgetOmissions"] = Number(packet_->requestBudgetOmissions);
-        output["slotSuppressedChildren"] = Number(packet_->slotSuppressedChildren);
-        output["clockRejectedChildren"] = Number(packet_->emission.clockRejectedChildren);
-        for (const auto& capability : *packet_->capabilities) capabilities.push_back(QJsonObject{
-            {"prepared", capability.prepared}, {"parentAsset", Number(capability.parentAsset.value)},
-            {"parentAssetGeneration", Number(capability.parentAsset.generation)},
-            {"sourceIndex", static_cast<double>(capability.sourceIndex)}, {"nodeId", static_cast<double>(capability.nodeId)},
-            {"sourceByteOffset", Number(capability.sourceByteOffset)}, {"originalPath", QString::fromStdString(capability.originalPath)},
-            {"resolvedPath", QString::fromStdString(capability.resolvedPath)},
-            {"parentSource", assetSource(capability.parentSource)}, {"childSource", assetSource(capability.childSource)},
-            {"rejectionCode", QString::fromStdString(capability.rejectionCode)},
-            {"rejectionMessage", QString::fromStdString(capability.rejectionMessage)}});
-        for (const auto& error : packet_->sampleErrors) errors.push_back(QJsonObject{
-            {"identity", Number(error.identity.value)}, {"identityGeneration", Number(error.identity.generation)},
-            {"requestIndex", static_cast<double>(error.requestIndex)}, {"sourceIndex", static_cast<double>(error.sourceIndex)},
-            {"birthElapsedMs", Number(error.birthElapsedMs)}, {"birthGlobalMs", Number(error.birthGlobalMs)},
-            {"code", QString::fromStdString(error.code)}});
-        for (const auto& slot : packet_->childSlots) {
-            const auto& child = packet_->emission.children[slot.childIndex];
-            QJsonArray transform; for (const auto value : child.transform) transform.push_back(value);
-            children.push_back(QJsonObject{{"parentIdentity", Number(child.parentIdentity.value)},
-                {"parentIdentityGeneration", Number(child.parentIdentity.generation)},
-                {"parentRequestIndex", static_cast<double>(child.parentRequestIndex)},
-                {"parentHostKey", QString::fromStdString(source_->specs[child.parentRequestIndex].hostKey)},
-                {"sourceIndex", static_cast<double>(child.emitter->Source().sourceIndex)},
-                {"nodeId", static_cast<double>(child.emitter->Source().nodeId)},
-                {"childRequestIndex", static_cast<double>(slot.childRequestIndex)},
-                {"birthOrdinal", Number(child.birthOrdinal)}, {"birthElapsedMs", Number(child.birthElapsedMs)},
-                {"birthGlobalMs", Number(child.birthGlobalMs)}, {"ageMs", Number(child.ageMs)},
-                {"worldTransformRowMajor3x4", transform}, {"childSource", assetSource(child.emitter->Binding().childSource)}});
-        }
+    if (!status_.Succeeded()) return {std::nullopt, status_.diagnostics};
+    if (!acceptedParent_) return Output::Failure("World.PREM", "WORLD_PREM_CAPTURE_PARENT_UNBOUND",
+        "PREM Presenter 尚未绑定当前父帧；未将未准备状态当作没有子层。");
+    const auto current = CheckFrame(source_, acceptedParent_);
+    if (!current.Succeeded()) return {std::nullopt, current.diagnostics};
+    // 捕获修订属于视口呈现；地图编辑修订已由同一父包与 CheckFrame 绑定，不能混比两套编号。
+    const auto captured = CheckCapturedParent(capture, acceptedParent_, viewport_->DocumentRevision());
+    if (!captured.Succeeded()) return {std::nullopt, captured.diagnostics};
+    if (!packet_) return Output::Failure("World.PREM", "WORLD_PREM_CAPTURE_PLAN_MISSING",
+        "PREM 捕获没有当前CPU准备计划；未知不能当作空子层。");
+    if (packet_->childSlots.empty()) {
+        if (submitted_) return fail("没有 PREM 槽位但宿主仍保留已提交子层，未签收空帧。");
+        return CaptureEmptySnapshot(capture, source_, acceptedParent_, viewport_->DocumentRevision());
     }
-    output["capabilities"] = capabilities; output["sampleErrors"] = errors; output["children"] = children;
+    auto output = CaptureSummary(capture, *source_, *acceptedParent_);
+    AppendPlanDetails(output, *packet_, *source_);
     std::optional<std::size_t> capturedLayer;
     for (std::size_t i = 0; i < capture.modelLayers.size(); ++i) if (capture.modelLayers[i].layerId == LayerId) {
         if (capturedLayer) return fail("PREM 捕获中固定子层身份重复。");
         capturedLayer = i;
-    }
-    if (!packet_ || packet_->childSlots.empty()) {
-        if (capturedLayer || submitted_) return fail("没有 PREM 槽位但捕获到旧子层，未签收空帧。");
-        output["absenceReason"] = "no-filled-slot-for-captured-parent"; return Output::Success(std::move(output));
     }
     if (!submitted_ || !capturedLayer || rendererEpoch_ != viewport_->MeasurementRendererEpoch()
         || parentModelEpoch_ != capture.presentation->modelEpoch) return fail("PREM 子层未完成或父 renderer epoch 已变化。");

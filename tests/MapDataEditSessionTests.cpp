@@ -1,5 +1,6 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "MapDataFixtures.h"
+#include "LniMapSettingsFixtures.h"
 
 #include <algorithm>
 #include <bit>
@@ -97,6 +98,171 @@ void AmbiguousSourceIsNotEditable() {
     Require(!edits.IsDirty(), "failed edit must not create an overlay");
 }
 
+void RequirePreservedMember(const MapMemberState& actual, const MapMemberState& expected) {
+    Require(actual.kind == expected.kind && actual.memberName == expected.memberName
+        && actual.state == expected.state && actual.recordCount == expected.recordCount
+        && actual.sources.size() == expected.sources.size() && actual.diagnostics.size() == expected.diagnostics.size(),
+        "snapshot must preserve source state, member identity, counts and diagnostics without duplication");
+    for (std::size_t i = 0; i < expected.sources.size(); ++i) {
+        Require(actual.sources[i].name == expected.sources[i].name && actual.sources[i].data == expected.sources[i].data,
+            "snapshot must preserve every original source name and byte in source order");
+    }
+    for (std::size_t i = 0; i < expected.diagnostics.size(); ++i) {
+        const auto& a = actual.diagnostics[i]; const auto& b = expected.diagnostics[i];
+        Require(a.severity == b.severity && a.subsystem == b.subsystem && a.code == b.code && a.message == b.message
+            && a.origin.has_value() == b.origin.has_value(), "original source diagnostic identity must remain exact");
+        if (a.origin) Require(a.origin->source == b.origin->source && a.origin->offset == b.origin->offset
+            && a.origin->length == b.origin->length && a.origin->fingerprint == b.origin->fingerprint,
+            "snapshot must retain original diagnostic byte ranges and source identity");
+    }
+}
+
+template<class CheckTyped>
+void ExercisePreservedSnapshotSources(std::vector<MapArchiveMember> members,
+    const std::vector<MapDataKind>& protectedKinds, CheckTyped checkTyped) {
+    members.push_back({"war3map.w3r", RegionBytes()});
+    const auto source = MapDocument::FromMembers(members);
+    Require(source.Regions() && source.Member(MapDataKind::Regions).state == MapDataState::Ready,
+        "independent original region fixture must remain editable");
+    const auto validSettings = MapDataFixtures::FullMapSettingsV25().bytes;
+    MapDataFixtures::Fixture validSounds; validSounds.Int(1); validSounds.Int(0);
+    const auto denied = [&](MapDataEditSession& session) {
+        const auto revision = session.Revision();
+        for (const auto kind : protectedKinds) {
+            const auto& replacement = kind == MapDataKind::Settings ? validSettings : validSounds.bytes;
+            Require(!session.EditSerialized(kind, replacement).Succeeded()
+                && !session.SetSerialized(kind, replacement).Succeeded() && !session.Remove(kind).Succeeded(),
+                "preserved read-only sources cannot be replaced, restored over or removed");
+        }
+        Require(session.Revision() == revision, "rejected source edits must not add an undo command or change revision");
+    };
+    MapDataEditSession edits(source);
+    const auto verify = [&](std::string_view regionName, bool dirty) {
+        const auto snapshot = edits.Snapshot();
+        Require(snapshot.Regions() && snapshot.Regions()->entries.size() == 1
+            && snapshot.Regions()->entries[0].name == regionName, "region snapshot must contain the actual pending value");
+        for (const auto& member : source.Members()) if (member.kind != MapDataKind::Regions)
+            RequirePreservedMember(snapshot.Member(member.kind), member);
+        Require(snapshot.Settings().has_value() == source.Settings().has_value()
+            && snapshot.LniSettings().has_value() == source.LniSettings().has_value(),
+            "snapshot must retain typed read-only data without fabricating native settings");
+        if (source.LniSettings()) Require(snapshot.LniSettings()->originalBytes == source.LniSettings()->originalBytes
+            && snapshot.LniSettings()->fullyParsed == source.LniSettings()->fullyParsed
+            && snapshot.LniSettings()->unknownFields == source.LniSettings()->unknownFields
+            && snapshot.Settings()->OriginalBytes().empty()
+            && snapshot.Settings()->mapName == source.Settings()->mapName,
+            "LNI snapshot retains text, unknown fields and provenance instead of claiming native W3I bytes");
+        checkTyped(snapshot);
+        denied(edits);
+        Require(edits.IsDirty() == dirty && edits.Removals().empty(), "only the independent region edit may change dirty state");
+        const auto replacements = edits.Replacements();
+        Require(replacements.size() == (dirty ? 1u : 0u)
+            && (replacements.empty() || replacements.front().name == "war3map.w3r"),
+            "preserved sources must never enter the replacement or removal set");
+        // 再由快照创建会话也不能把 Invalid/Ambiguous/LNI 变成 Missing 后重新授予编辑。
+        MapDataEditSession reopened(snapshot);
+        denied(reopened);
+        Require(!reopened.IsDirty() && reopened.Replacements().empty() && reopened.Removals().empty(),
+            "a new session from a snapshot must retain read-only authority");
+        const auto repeated = reopened.Snapshot();
+        for (const auto& member : source.Members()) if (member.kind != MapDataKind::Regions)
+            RequirePreservedMember(repeated.Member(member.kind), member);
+        checkTyped(repeated);
+        return snapshot;
+    };
+    verify("Original Region", false);
+    auto region = *source.Regions();
+    region.entries[0].name = "Saved Region";
+    Require(edits.EditRegions(region).Succeeded(), "read-only neighbors must not block an independent region edit");
+    verify("Saved Region", true);
+    Require(edits.Undo(), "region edit must undo"); verify("Original Region", false);
+    Require(edits.Redo(), "region edit must redo");
+    const auto saved = verify("Saved Region", true);
+    edits.CommitSaved(saved);
+    verify("Saved Region", false);
+    Require(edits.Undo(), "undo after save must remain available"); verify("Original Region", true);
+    Require(edits.Redo(), "redo after save must remain available"); verify("Saved Region", false);
+    region.entries[0].name = "Second Region";
+    Require(edits.EditRegions(region).Succeeded(), "another region edit after saving must remain available");
+    const auto savedAgain = verify("Second Region", true);
+    edits.CommitSaved(savedAgain);
+    verify("Second Region", false);
+}
+
+void SnapshotsPreserveInvalidAndAmbiguousSources() {
+    MapDataFixtures::Fixture invalidSettings; invalidSettings.Int(25);
+    MapDataFixtures::Fixture invalidSounds; invalidSounds.Int(1);
+    const auto invalid = [](const MapDocument& document) {
+        Require(document.Member(MapDataKind::Settings).state == MapDataState::Invalid
+            && document.Member(MapDataKind::Sounds).state == MapDataState::Invalid
+            && !document.Settings() && !document.Sounds(), "truncated sources must remain Invalid and retain no fabricated typed values");
+    };
+    ExercisePreservedSnapshotSources({{"war3map.w3i", invalidSettings.bytes}, {"war3map.w3s", invalidSounds.bytes}},
+        {MapDataKind::Settings, MapDataKind::Sounds}, invalid);
+
+    auto settings = MapDataFixtures::FullMapSettingsV25().bytes;
+    auto otherSettings = settings; otherSettings.back() ^= std::byte{1};
+    MapDataFixtures::Fixture sounds; sounds.Int(1); sounds.Int(0);
+    ExercisePreservedSnapshotSources({{"war3map.w3i", settings}, {"WAR3MAP.W3I", otherSettings},
+        {"war3map.w3s", sounds.bytes}, {"WAR3MAP.W3S", invalidSounds.bytes}},
+        {MapDataKind::Settings, MapDataKind::Sounds}, [](const MapDocument& document) {
+            Require(document.Member(MapDataKind::Settings).state == MapDataState::Ambiguous
+                && document.Member(MapDataKind::Sounds).state == MapDataState::Ambiguous
+                && !document.Settings() && !document.Sounds(), "conflicting sources must not select an arbitrary winner");
+        });
+}
+
+void SnapshotsPreserveLniReadOnlySources() {
+    for (const bool partial : {false, true}) {
+        auto text = LniMapSettingsFixtures::Complete();
+        if (partial) text += "[extension]\nvalue = 9\n";
+        ExercisePreservedSnapshotSources({{"table/w3i.ini", LniMapSettingsFixtures::Bytes(text)}},
+            {MapDataKind::Settings}, [partial](const MapDocument& document) {
+                Require(document.LniSettings() && document.Settings()
+                    && document.Member(MapDataKind::Settings).memberName == "table/w3i.ini"
+                    && document.Member(MapDataKind::Settings).state == (partial ? MapDataState::Partial : MapDataState::Ready)
+                    && document.LniSettings()->fullyParsed == !partial,
+                    "complete or partial LNI must retain its actual source state and read-only provenance");
+            });
+    }
+    ExercisePreservedSnapshotSources({{"table/w3i.ini", LniMapSettingsFixtures::Bytes(LniMapSettingsFixtures::Complete())},
+        {"war3map.w3i", MapDataFixtures::FullMapSettingsV25().bytes}}, {MapDataKind::Settings}, [](const MapDocument& document) {
+            Require(document.Member(MapDataKind::Settings).state == MapDataState::Ambiguous
+                && !document.Settings() && !document.LniSettings(), "native and LNI conflict must survive every snapshot and save baseline");
+        });
+}
+
+void SnapshotsRetainReadOnlyW3iLayoutEvidence() {
+    MapDataFixtures::Fixture camera;
+    camera.Int(0); camera.Int(1);
+    for (const float value : {0.f, 0.f, 0.f, 0.f, 0.f, 1600.f, 0.f, 70.f, 5000.f, 100.f}) camera.Float(value);
+    camera.String("Original camera");
+    Require(ParseCameras(camera.bytes).Succeeded() && !ReadCamerasVersioned(camera.bytes).Succeeded(),
+        "synthetic classic camera intentionally requires trustworthy W3I layout evidence");
+    for (const auto version : {18, 25}) {
+        MapDataFixtures::Fixture header; header.Int(version);
+        ExercisePreservedSnapshotSources({{"war3map.w3i", header.bytes}, {"war3map.w3c", camera.bytes}},
+            {MapDataKind::Settings}, [&camera](const MapDocument& document) {
+                Require(document.Member(MapDataKind::Settings).state == MapDataState::Invalid
+                    && document.Cameras() && document.Member(MapDataKind::Cameras).state == MapDataState::Ready
+                    && document.Cameras()->layout == CameraLayout::Classic
+                    && document.Cameras()->originalBytes == camera.bytes,
+                    "an invalid W3I body must still preserve its classic header evidence for camera parsing");
+            });
+    }
+    MapDataFixtures::Fixture future; future.Int(32);
+    ExercisePreservedSnapshotSources({{"war3map.w3i", future.bytes},
+        {"war3mapUnits.doo", MapDataFixtures::EmptyUnitsV8Sub11()},
+        {"war3map.doo", MapDataFixtures::EmptyDoodadsV8Sub11()}}, {MapDataKind::Settings}, [](const MapDocument& document) {
+            Require(document.Member(MapDataKind::Settings).state == MapDataState::Invalid
+                && document.Units() && document.Doodads()
+                && document.Units()->recordLayout == PlacementRecordLayout::Undetermined
+                && document.Doodads()->recordLayout == PlacementRecordLayout::Undetermined
+                && !document.Units()->Serialize().Succeeded() && !document.Doodads()->Serialize().Succeeded(),
+                "unsupported W3I header must keep empty versioned widgets read-only, not reclassify them as classic");
+        });
+}
+
 void DuplicateEditedIdentityIsRejected() {
     const auto settingsBytes = MapDataFixtures::FullMapSettingsV25().bytes;
     const std::vector<MapArchiveMember> members{{"war3map.w3i", settingsBytes}};
@@ -106,6 +272,27 @@ void DuplicateEditedIdentityIsRejected() {
     settings.players[1].number = settings.players[0].number;
     Require(!edits.EditSettings(settings).Succeeded() && !edits.IsDirty(),
         "duplicate edited player identity must not create a pending replacement");
+}
+
+void CameraEditKeepsReadOnlyVersionEvidence() {
+    MapDataFixtures::Fixture camera;
+    camera.Int(0); camera.Int(1);
+    for (const float value : {0.f, 0.f, 0.f, 0.f, 0.f, 1600.f, 0.f, 70.f, 5000.f, 100.f}) camera.Float(value);
+    camera.String("Original camera");
+    MapDataFixtures::Fixture header; header.Int(25); // 有可信经典版本头，但正文损坏，不能授予 W3I 写入。
+    const std::vector<MapArchiveMember> members{{"war3map.w3i", header.bytes}, {"war3map.w3c", camera.bytes}};
+    const auto original = MapDocument::FromMembers(members);
+    MapDataEditSession edits(original);
+    const auto small = edits.Snapshot(MapDataKind::Cameras, camera.bytes.size() + header.bytes.size());
+    Require(small.Succeeded() && small.value->Cameras() && small.value->Cameras()->layout == CameraLayout::Classic,
+        "bounded camera snapshot carries read-only W3I version evidence");
+    RequirePreservedMember(small.value->Member(MapDataKind::Settings), original.Member(MapDataKind::Settings));
+    Require(!edits.Snapshot(MapDataKind::Cameras, camera.bytes.size()).Succeeded(), "snapshot budget includes W3I evidence bytes");
+    auto changed = *original.Cameras(); changed.entries[0].targetX = 123;
+    Require(edits.EditCameras(changed).Succeeded() && edits.Snapshot().Cameras()->entries[0].targetX == 123,
+        "camera write reparse retains preserved version evidence instead of ambiguous generic parsing");
+    RequirePreservedMember(edits.Snapshot().Member(MapDataKind::Settings), original.Member(MapDataKind::Settings));
+    Require(edits.Undo() && edits.Snapshot().Cameras()->originalBytes == camera.bytes && edits.Redo(), "camera evidence survives undo redo");
 }
 
 // 来源里的未知控制者/种族原样保留；改动过的值和新增玩家只能写入已知取值，失败不产生覆盖。
@@ -534,7 +721,11 @@ int main() {
     try {
         EditsUndoRedoAndFailureDoNotChangeSource();
         AmbiguousSourceIsNotEditable();
+        SnapshotsPreserveInvalidAndAmbiguousSources();
+        SnapshotsPreserveLniReadOnlySources();
+        SnapshotsRetainReadOnlyW3iLayoutEvidence();
         DuplicateEditedIdentityIsRejected();
+        CameraEditKeepsReadOnlyVersionEvidence();
         PlayerEnumsKeepUnknownSourceButRejectNewUnknown();
         NewOptionalMemberCanBeUndoneWithoutRemoval();
         StartLocationsCommitAndReplayAsOneTransaction();

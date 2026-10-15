@@ -85,6 +85,7 @@ std::optional<MapCopySaveResult> EditorProject::CommitMapSave(MapSaveJob& job) {
         sourceChangeConfirmed_ = false;
     }
     archiveSession_ = std::move(job.nextSession);
+    readOnlyArchive_.reset();
     sourceArchivePath_ = job.written;
     if (luaMapTarget_) luaMapTargetSource_ = sourceArchivePath_;
     const bool generatedObjects = std::any_of(job.generatedObjectBaselines.begin(), job.generatedObjectBaselines.end(),

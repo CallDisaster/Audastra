@@ -33,6 +33,13 @@ if(MSVC)
 endif()
 add_test(NAME standard-object-catalog-synthetic COMMAND War3MapStandardObjectCatalogTests)
 
+add_executable(War3MapEffectiveObjectCatalogTests EffectiveObjectCatalogTests.cpp)
+target_link_libraries(War3MapEffectiveObjectCatalogTests PRIVATE War3MapEditor::ObjectData)
+if(MSVC)
+    target_compile_options(War3MapEffectiveObjectCatalogTests PRIVATE /W4 /permissive- /utf-8)
+endif()
+add_test(NAME effective-object-catalog-synthetic COMMAND War3MapEffectiveObjectCatalogTests)
+
 add_executable(War3MapObjectFieldSchemaTests ObjectFieldSchemaTests.cpp)
 target_link_libraries(War3MapObjectFieldSchemaTests PRIVATE War3MapEditor::ObjectData)
 if(MSVC)

@@ -151,4 +151,9 @@ struct StringTableDocument {
 [[nodiscard]] Result<SoundsDocument> ParseSounds(std::span<const std::byte> bytes);
 [[nodiscard]] Result<StringTableDocument> ParseStringTable(std::span<const std::byte> bytes);
 
+// W3R 环境音保存的是 W3S 已有声音变量。生成初始化之前核对唯一符号，禁止把任意文字当代码。
+[[nodiscard]] Status ValidateRegionAmbientSound(const RegionRecord& region, const SoundsDocument* sounds);
+// 新写入的天气 ID 须能安全生成经典脚本 rawcode；空值表示无天气，原有未知值只允许保留。
+[[nodiscard]] bool IsEditableRegionWeatherId(std::string_view value) noexcept;
+
 } // namespace War3Map::MapData

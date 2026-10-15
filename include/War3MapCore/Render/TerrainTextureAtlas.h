@@ -42,7 +42,7 @@ struct TerrainAtlasSnapshot {
     // mip0 RGBA8888，行优先、栅格左上角为 (0,0)，不翻转 Y、不预乘 alpha。
     // 各 cell 为整张像素缓冲中的矩形，不复制 16/32 份子图；不赋予游戏混合 mask 语义。
     Image::DecodedImage image;
-    // 原文件 mip1..N；不生成缺级，也不复制 mip0。完整验证后一起发布。
+    // 原文件 mip1..N；只保留连续通过验证的层，不生成缺级，也不复制 mip0。
     std::vector<Image::DecodedImage> additionalMips;
     std::vector<TerrainAtlasCell> cells; // row * columns + column
 
@@ -59,9 +59,10 @@ struct TerrainAtlasSnapshot {
     }
 };
 
-// Core DecodeBlp 是唯一像素解码实现。这里在调用前验证经典 BLP1 所有声明 mip 的范围、
-// JPEG 帧尺寸/扫描结构与工作集预算，再逐 mip 解码检查；任一失败不发布部分快照。
-// 支持 JPEG 及调色板 0/8-bit alpha。Core 未支持的 1/4-bit alpha、BLP2/DXT 明确拒绝。
+// Core DecodeBlp 是唯一像素解码实现。这里验证经典 BLP1 的 mip 范围、JPEG 帧尺寸、
+// 扫描结构与工作集预算，再实际解码；mip0 失败拒绝，后续失败只保留前面的连续有效层。
+// JPEG 完整 EOI 后的声明 mip 尾数据不参与像素解码，但仍计入预算并报告警告。
+// 支持 JPEG 及调色板 0/1/4/8-bit alpha；BLP2/DXT 明确拒绝。
 // 仅接受 4x4 或 8x4 方形单元格 atlas；没有 GPU 上传、UV 变换或原版混合层生成。
 [[nodiscard]] Result<std::shared_ptr<const TerrainAtlasSnapshot>> DecodeTerrainTextureAtlas(
     const Resources::ResolvedResource& resource, const TerrainAtlasLimits& limits = {});

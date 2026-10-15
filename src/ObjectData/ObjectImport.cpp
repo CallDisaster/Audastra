@@ -20,11 +20,12 @@ Result<std::vector<std::byte>> ConvertNativeObjectDataToLni(
     ObjectType type, std::span<const std::byte> nativeBytes) {
     NativeObjectCodec codec(type);
     CodecParseResult parsed = codec.Parse(nativeBytes);
+    const bool parsedSuccessfully = parsed.Succeeded();
 
     Result<std::vector<std::byte>> result;
     result.diagnostics = std::move(parsed.diagnostics);
 
-    if (!parsed.Succeeded() || parsed.document == nullptr) {
+    if (!parsedSuccessfully || parsed.document == nullptr) {
         if (result.diagnostics.empty()) {
             result.diagnostics.push_back(Diagnostic{
                 DiagnosticSeverity::Error,

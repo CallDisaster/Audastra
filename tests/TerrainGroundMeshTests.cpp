@@ -475,6 +475,33 @@ void TestBlendLayers() {
     Require(Success(Grid(), atlases).overlayTiles.empty(), "单一材质不应产生过渡层");
 }
 
+void TestWaterColorBounds() {
+    // 两端相同的满强度通道应保持 1；旧的双乘加在部分浅水深度会得到 1+1ULP，
+    // 从而使渲染插件拒绝包含水面的整份地表。使用原创颜色，不依赖游戏资源。
+    TerrainWaterStyle style{0, {255, 255, 255, 0}, {255, 255, 255, 255},
+        {255, 255, 255, 255}, {255, 255, 255, 0}};
+    for (int quarter = 0; quarter <= 320; ++quarter) {
+        const auto color = TerrainWaterColor(style, static_cast<float>(quarter) / 4.0f);
+        for (std::size_t channel = 0; channel < 3; ++channel)
+            Require(color[channel] == 1.0f, "相同的水面颜色端点必须保持原值，不能越过渲染颜色范围");
+        Require(std::isfinite(color[3]) && color[3] >= 0.0f && color[3] <= 1.0f,
+            "浅水及深水插值的透明度必须保持在归一化范围内");
+    }
+    auto terrain = Grid(3, 3);
+    for (auto& vertex : terrain.vertices) {
+        vertex.textureAndFlagsRaw |= 0x40;
+        vertex.waterBaseHeight = 11.0f;
+    }
+    const auto mesh = Success(terrain, Atlases(), {}, kUnlit, &style);
+    Require(mesh.waterTiles.size() == terrain.tiles.size() && !mesh.waterOmitted,
+        "颜色边界回归必须实际产生全部水面格，不能通过省略水面绕过");
+    for (const auto& vertex : mesh.vertices)
+        Require(std::isfinite(vertex.red) && vertex.red >= 0.0f && vertex.red <= 1.0f
+            && std::isfinite(vertex.green) && vertex.green >= 0.0f && vertex.green <= 1.0f
+            && std::isfinite(vertex.blue) && vertex.blue >= 0.0f && vertex.blue <= 1.0f,
+            "有水面时地表输出仍须满足渲染插件的顶点颜色要求");
+}
+
 void TestWater() {
     // Water.slk 洛丹伦夏季一行的颜色与高度偏移（原版数值，写成原创测试常量）。
     TerrainWaterStyle style{-89.6f, {255, 255, 255, 10}, {117, 117, 200, 219}, {117, 117, 200, 219}, {96, 96, 192, 250}};
@@ -595,6 +622,173 @@ void TestLighting() {
     Require(!BuildTerrainGroundMesh(Grid(), Atlases(), {}, negative).Succeeded(), "负的环境光必须拒绝");
 }
 
+void TestPreserveBasePreviewBudget() {
+    // 原创单格：三种地表、一个荒芜角和水面，明确请求 base=1、transition=2、blight=1、water=1。
+    auto terrain = Grid(2, 2, [](std::uint32_t x, std::uint32_t y) { return 7.0f * x + 11.0f * y; });
+    const std::array<std::uint8_t, 4> grounds{0, 1, 2, 1};
+    for (std::size_t i = 0; i < grounds.size(); ++i) terrain.vertices[i].textureAndFlagsRaw = grounds[i];
+    terrain.vertices[0].variationRaw = 3;
+    terrain.vertices[3].textureAndFlagsRaw |= 0x60;
+    const auto atlases = Atlases();
+    const auto blight = MakeAtlas(8);
+    TerrainWaterStyle water{0, {90, 130, 170, 210}, {90, 130, 170, 210},
+        {90, 130, 170, 210}, {90, 130, 170, 210}};
+    water.frameIndex = 1; water.frameCount = 2;
+    water.frameSourcePath = "fixture/water-1"; water.frameSourceSha256 = "original-fixture-frame";
+    constexpr auto previewPolicy = TerrainGroundBudgetPolicy::PreserveBasePreview;
+    const auto attempt = [&](const TerrainGridSnapshot& grid, const TerrainGroundMeshLimits& limits,
+        TerrainGroundBudgetPolicy policy) {
+        return BuildTerrainGroundMesh(grid, atlases, limits, kUnlit, &water, {}, blight, {}, policy);
+    };
+    const auto preview = [&](const TerrainGridSnapshot& grid, const TerrainGroundMeshLimits& limits) {
+        auto result = attempt(grid, limits, previewPolicy);
+        Require(result.Succeeded() && result.value.has_value(), "显式预览应在基础层预算内成功");
+        return std::move(*result.value);
+    };
+    const auto failure = [](const auto& result, std::string_view code) {
+        Require(!result.Succeeded() && !result.value && result.diagnostics.size() == 1
+            && result.diagnostics.front().code == code, "预览必须保留真实失败类别且不发布部分结果");
+    };
+    const auto counts = [](const TerrainGroundMesh& mesh) {
+        for (const auto* layer : {&mesh.budget.base, &mesh.budget.transitions, &mesh.budget.blight, &mesh.budget.water})
+            Require(layer->requested == layer->displayed + layer->omitted, "每类请求数必须等于显示数加省略数");
+        Require(mesh.budget.base.omitted == 0 && mesh.budget.base.displayed * 4 <= mesh.vertices.size(),
+            "预览不能省略基础层顶点");
+        Require(mesh.budget.transitions.displayed + mesh.budget.blight.displayed == mesh.overlayTiles.size()
+            && mesh.budget.blight.displayed == mesh.blightTexturedTiles
+            && mesh.budget.water.displayed == mesh.waterTiles.size(), "统计必须与实际输出映射一致");
+    };
+    const auto strict = Success(terrain, atlases, {}, kUnlit, &water, blight);
+    const auto full = preview(terrain, {});
+    CheckGeometry(terrain, full); counts(full);
+    Require(!full.budget.reduced && full.budget.base.requested == 1 && full.budget.transitions.requested == 2
+        && full.budget.blight.requested == 1 && full.budget.water.requested == 1
+        && full.vertices.size() == strict.vertices.size() && full.indices == strict.indices
+        && full.overlayTiles == strict.overlayTiles && full.waterTiles == strict.waterTiles,
+        "预算足够时预览应保持严格模式的完整几何及各类请求数");
+    const auto sameBase = [&](const TerrainGroundMesh& mesh, const TerrainGroundMesh& reference, std::size_t tiles) {
+        for (std::size_t i = 0; i < tiles * 4; ++i) {
+            const auto& a = mesh.vertices[i]; const auto& b = reference.vertices[i];
+            Require(std::array<float, 5>{a.x, a.y, a.z, a.u, a.v} == std::array<float, 5>{b.x, b.y, b.z, b.u, b.v},
+                "预算取舍必须逐位保留每个基础层顶点 XYZ 和实际图集 UV");
+        }
+    };
+    sameBase(full, strict, 1);
+
+    TerrainGroundMeshLimits limits;
+    limits.maxVertices = 8; // 仅容纳基础层与全图水面，不能只留两个过渡层中的第一个。
+    const auto waterFirst = preview(terrain, limits);
+    CheckGeometry(terrain, waterFirst); counts(waterFirst); sameBase(waterFirst, strict, 1);
+    Require(waterFirst.budget.reduced && waterFirst.waterTiles == std::vector<std::uint32_t>{0}
+        && waterFirst.overlayTiles.empty() && waterFirst.budget.transitions.omitted == 2
+        && waterFirst.budget.blight.omitted == 1 && waterFirst.blightApproximationTiles == 1
+        && !waterFirst.waterOmitted && waterFirst.waterFrameIndex == 1, "全图水面优先于整类普通过渡和精确荒芜");
+    limits.maxVertices = 12;
+    const auto retryLowerClass = preview(terrain, limits);
+    counts(retryLowerClass); CheckGeometry(terrain, retryLowerClass);
+    Require(retryLowerClass.budget.transitions.displayed == 0 && retryLowerClass.budget.blight.displayed == 1
+        && retryLowerClass.budget.water.displayed == 1, "普通过渡整类装不下后仍可保留完整荒芜类");
+    limits.maxVertices = 16;
+    const auto transitions = preview(terrain, limits);
+    counts(transitions); CheckGeometry(terrain, transitions);
+    Require(transitions.budget.transitions.displayed == 2 && transitions.budget.water.displayed == 1
+        && transitions.budget.blight.displayed == 0, "普通过渡优先于精确荒芜，不能颠倒保留顺序");
+
+    limits.maxVertices = 4;
+    const auto baseOnly = preview(terrain, limits);
+    counts(baseOnly); CheckGeometry(terrain, baseOnly); sameBase(baseOnly, strict, 1);
+    Require(baseOnly.vertices.size() == 4 && baseOnly.texturedTiles == 1 && baseOnly.waterOmitted
+        && !baseOnly.waterTextureIndex && baseOnly.waterFrameCount == 0 && baseOnly.waterFrameSourcePath.empty()
+        && baseOnly.waterFrameSourceSha256.empty() && baseOnly.budget.water.omitted == 1,
+        "低预算应保留完整基础贴图；省略水面必须清空已显示帧身份");
+    // 默认实参仍严格拒绝同一输入；显式 Strict 也不能静默采用预览。
+    failure(BuildTerrainGroundMesh(terrain, atlases, limits, kUnlit, &water, {}, blight), "TERRAIN_GROUND_BUDGET");
+    failure(attempt(terrain, limits, TerrainGroundBudgetPolicy::Strict), "TERRAIN_GROUND_BUDGET");
+    limits.maxVertices = 3;
+    failure(attempt(terrain, limits, previewPolicy), "TERRAIN_GROUND_BUDGET");
+    limits = {}; limits.maxIndices = 5;
+    failure(attempt(terrain, limits, previewPolicy), "TERRAIN_GROUND_BUDGET");
+    limits = {}; limits.maxWorkingBytes = 1;
+    failure(attempt(terrain, limits, previewPolicy), "TERRAIN_GROUND_BUDGET");
+    limits = {}; limits.maxIndices = 12;
+    const auto indexLimited = preview(terrain, limits);
+    counts(indexLimited);
+    Require(indexLimited.waterTiles.size() == 1 && indexLimited.overlayTiles.empty(), "索引预算也必须整类保留水面");
+    limits = {}; limits.maxBatches = 2;
+    const auto batchLimited = preview(terrain, limits);
+    counts(batchLimited);
+    Require(batchLimited.batches.size() == 2 && batchLimited.waterTiles.size() == 1
+        && batchLimited.overlayTiles.empty(), "基础批次只计实际可见分组，批次预算仍按水面优先");
+    limits = {}; limits.maxWorkingBytes = 120 * 1024;
+    const auto workingLimited = preview(terrain, limits);
+    counts(workingLimited); CheckGeometry(terrain, workingLimited); sameBase(workingLimited, strict, 1);
+    Require(workingLimited.waterTiles.empty() && workingLimited.budget.transitions.displayed == 2
+        && workingLimited.budget.blight.displayed == 0, "整体载荷不足以保留水面时仍须保留完整基础层和装得下的过渡类");
+    failure(attempt(terrain, limits, TerrainGroundBudgetPolicy::Strict), "TERRAIN_GROUND_BUDGET");
+
+    // x64：完整五类载荷按 5 个保活槽计为 218817B；push_back 自增到 6/8 槽会越过此边界。
+    limits = {}; limits.maxTextures = 5; limits.maxWorkingBytes = 218825;
+    const auto capacityLimited = preview(terrain, limits);
+    counts(capacityLimited); CheckGeometry(terrain, capacityLimited); sameBase(capacityLimited, strict, 1);
+    Require(!capacityLimited.budget.reduced && capacityLimited.budget.transitions.displayed == 2
+        && capacityLimited.budget.blight.displayed == 1 && capacityLimited.budget.water.displayed == 1,
+        "已计费的纹理槽不能因容器扩容额外开销导致完整可容纳预览整包失败");
+
+    // 全图九个水格装不下时整类省略，再尝试唯一的过渡层；不能残留地图前部的若干水格。
+    auto wide = Grid(4, 4);
+    for (auto& vertex : wide.vertices) vertex.textureAndFlagsRaw |= 0x40;
+    wide.vertices[0].textureAndFlagsRaw |= 1;
+    limits = {}; limits.maxVertices = (wide.tiles.size() + 1) * 4;
+    const auto wideMesh = preview(wide, limits);
+    counts(wideMesh); CheckGeometry(wide, wideMesh);
+    Require(wideMesh.waterTiles.empty() && wideMesh.budget.water.requested == 9 && wideMesh.budget.water.omitted == 9
+        && wideMesh.overlayTiles == std::vector<std::uint32_t>{0} && wideMesh.budget.transitions.displayed == 1,
+        "整类水面放不下时应允许完整低优先级过渡，不能按 tile 前缀截断");
+    sameBase(wideMesh, Success(wide, atlases, {}, kUnlit, &water, blight), wide.tiles.size());
+
+    // 资源上限与结构错误不能因低几何预算被省略成成功；已有逐格资源回退保持原样。
+    limits = {}; limits.maxVertices = 4; limits.maxTextures = 1;
+    failure(attempt(terrain, limits, previewPolicy), "TERRAIN_GROUND_BUDGET");
+    limits = {}; limits.maxVertices = 4; limits.maxTextureDimension = 63;
+    failure(attempt(terrain, limits, previewPolicy), "TERRAIN_GROUND_BUDGET");
+    limits = {}; limits.maxVertices = 4; limits.maxRgbaBytes = 100 * 1024;
+    failure(attempt(terrain, limits, previewPolicy), "TERRAIN_GROUND_BUDGET");
+    limits = {}; limits.maxVertices = 4;
+    auto invalid = terrain; invalid.tiles[0].vertices[2] = 3;
+    failure(attempt(invalid, limits, previewPolicy), "TERRAIN_GROUND_GRID");
+    invalid = terrain; invalid.vertices[0].position[2] = std::numeric_limits<float>::quiet_NaN();
+    failure(attempt(invalid, limits, previewPolicy), "TERRAIN_GROUND_GRID");
+    invalid = terrain; invalid.minimum[2] -= 1;
+    failure(attempt(invalid, limits, previewPolicy), "TERRAIN_GROUND_GRID");
+    const std::array<std::uint8_t, 1> shortSelection{0};
+    failure(BuildTerrainGroundMesh(terrain, atlases, limits, kUnlit, &water, {}, blight, shortSelection, previewPolicy),
+        "TERRAIN_GROUND_SELECTION");
+    TerrainLighting invalidLight; invalidLight.towardLight[2] = -1;
+    failure(BuildTerrainGroundMesh(terrain, atlases, limits, invalidLight, &water, {}, blight, {}, previewPolicy),
+        "TERRAIN_GROUND_LIGHTING");
+    auto invalidWater = water; invalidWater.frameIndex = invalidWater.frameCount;
+    failure(BuildTerrainGroundMesh(terrain, atlases, limits, kUnlit, &invalidWater, {}, blight, {}, previewPolicy),
+        "TERRAIN_GROUND_WATER_FRAME");
+    invalidWater = water; invalidWater.heightOffset = std::numeric_limits<float>::quiet_NaN();
+    failure(BuildTerrainGroundMesh(terrain, atlases, limits, kUnlit, &invalidWater, {}, blight, {}, previewPolicy),
+        "TERRAIN_GROUND_WATER_HEIGHT");
+    invalid = terrain; invalid.vertices[0].waterBaseHeight = std::numeric_limits<float>::infinity();
+    failure(attempt(invalid, limits, previewPolicy), "TERRAIN_GROUND_WATER_HEIGHT");
+    failure(attempt(invalid, {}, TerrainGroundBudgetPolicy::Strict), "TERRAIN_GROUND_WATER_HEIGHT");
+    failure(attempt(terrain, {}, static_cast<TerrainGroundBudgetPolicy>(99)), "TERRAIN_GROUND_POLICY");
+    auto missing = atlases; missing[2].reset();
+    const auto fallback = BuildTerrainGroundMesh(terrain, missing, limits, kUnlit, &water, {}, blight, {}, previewPolicy);
+    Require(fallback.Succeeded() && fallback.value->texturedTiles == 0 && fallback.value->fallback.missingAtlasTiles == 1
+        && fallback.value->budget.transitions.requested == 0, "缺过渡材质仍须整格高度色回退，不能以基础贴图伪装完整资源");
+    counts(*fallback.value);
+    const std::array<std::uint8_t, 1> covered{1};
+    const auto hidden = BuildTerrainGroundMesh(terrain, atlases, {}, kUnlit, &water, covered, blight, {}, previewPolicy);
+    Require(hidden.Succeeded() && hidden.value->hiddenTileCount == 1 && hidden.value->budget.base.displayed == 1
+        && hidden.value->vertices.size() == 8 && hidden.value->indices.size() == 6,
+        "悬崖覆盖仍保留基础原格顶点，显示统计含保留 quad 并单列隐藏数");
+    counts(*hidden.value);
+}
+
 } // namespace
 
 int main() {
@@ -607,8 +801,10 @@ int main() {
         TestRetainedMipBudgets();
         TestBudgetsAndInvalidInputs();
         TestBlendLayers();
+        TestWaterColorBounds();
         TestWater();
         TestLighting();
+        TestPreserveBasePreviewBudget();
         std::cout << "TerrainGroundMeshTests: all tests passed\n";
         return 0;
     } catch (const std::exception& exception) {

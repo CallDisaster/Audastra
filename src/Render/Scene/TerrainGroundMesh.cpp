@@ -184,7 +184,8 @@ std::array<float, 4> TerrainWaterColor(const TerrainWaterStyle& style, float dep
     const auto mix = [](const std::array<std::uint8_t, 4>& low, const std::array<std::uint8_t, 4>& high, float t) {
         std::array<float, 4> color{};
         for (std::size_t channel = 0; channel < 4; ++channel)
-            color[channel] = (static_cast<float>(low[channel]) * (1.0f - t) + static_cast<float>(high[channel]) * t) / 255.0f;
+            // 保持端点及区间边界，避免双乘加把满强度通道舍入成 1+1ULP。
+            color[channel] = std::lerp(static_cast<float>(low[channel]), static_cast<float>(high[channel]), t) / 255.0f;
         return color;
     };
     if (!std::isfinite(depth)) depth = 0;
@@ -220,14 +221,18 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
     std::span<const std::shared_ptr<const TerrainAtlasSnapshot>> groundAtlases,
     const TerrainGroundMeshLimits& limits, const TerrainLighting& lighting, const TerrainWaterStyle* waterStyle,
     std::span<const std::uint8_t> coveredTiles, std::shared_ptr<const TerrainAtlasSnapshot> blightAtlas,
-    std::span<const std::uint8_t> effectiveGroundIndices) {
+    std::span<const std::uint8_t> effectiveGroundIndices, TerrainGroundBudgetPolicy budgetPolicy) {
     try {
         if (!ValidLimits(limits)) return Failure("TERRAIN_GROUND_LIMITS", "调用方不能放宽地表网格硬预算。");
+        if (budgetPolicy != TerrainGroundBudgetPolicy::Strict && budgetPolicy != TerrainGroundBudgetPolicy::PreserveBasePreview)
+            return Failure("TERRAIN_GROUND_POLICY", "地表网格预算策略无效。");
         if (!ValidLighting(lighting)) return Failure("TERRAIN_GROUND_LIGHTING", "光照方向或亮度参数无效。");
         if (waterStyle && (waterStyle->frameCount == 0 || waterStyle->frameCount > 256
             || waterStyle->frameIndex >= waterStyle->frameCount
             || (waterStyle->texture && !waterStyle->texture->Valid())))
             return Failure("TERRAIN_GROUND_WATER_FRAME", "水面帧索引或解码纹理无效。");
+        if (waterStyle && !std::isfinite(waterStyle->heightOffset))
+            return Failure("TERRAIN_GROUND_WATER_HEIGHT", "水面高度偏移不是有限数值。");
         const auto width = terrain.header.width, height = terrain.header.height;
         if (width < 2 || height < 2 || width > 2049 || height > 2049
             || terrain.header.groundTilesets.size() > kMaximumGroundEntries
@@ -296,6 +301,8 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
         std::vector<std::uint32_t> waterTiles;
         TerrainGroundMesh output;
         output.sourceWidth = width; output.sourceHeight = height;
+        output.budget.policy = budgetPolicy;
+        output.budget.base = {tileCount, tileCount, 0};
         const auto covered = [&](std::size_t tile) { return !coveredTiles.empty() && coveredTiles[tile] != 0; };
         if (!coveredTiles.empty()) output.hiddenTiles.assign(coveredTiles.size(), 0);
         output.lit = lighting.enabled;
@@ -311,6 +318,12 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
                 lowest = std::min(lowest, ground);
                 highest = std::max(highest, ground);
                 invalidIndex |= static_cast<std::size_t>(ground) >= groundAtlases.size();
+            }
+            // 即使预览稍后整类省略水面，也不能掩盖本应由渲染宿主拒绝的非法水面坐标。
+            if (water && waterStyle) for (const auto index : corners) {
+                const auto surface = WaterHeight(terrain, index, *waterStyle);
+                if (!std::isfinite(surface) || std::abs(surface) > 10000000.0f)
+                    return Failure("TERRAIN_GROUND_WATER_HEIGHT", "请求的水面坐标不是有限有效高度。");
             }
             const auto firstX = x > 0 ? x - 1 : 0, firstY = y > 0 ? y - 1 : 0;
             for (auto nearY = firstY; nearY <= std::min(y + 1, height - 2); ++nearY)
@@ -369,6 +382,9 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
             }
         }
 
+        output.budget.transitions.requested = overlays.size();
+        output.budget.blight.requested = blightOverlays.size();
+        output.budget.water.requested = output.waterFlaggedTiles;
         TextureSlots textureSlots{};
         textureSlots.fill(TerrainGroundHeightColor);
         std::size_t rgbaBytes = 0;
@@ -413,36 +429,90 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
                 output.waterOmitted = true;
             }
         }
-        const auto overlayGroups = static_cast<std::size_t>(std::count_if(overlayCounts.begin(), overlayCounts.end(),
+        auto overlayGroups = static_cast<std::size_t>(std::count_if(overlayCounts.begin(), overlayCounts.end(),
             [](std::uint32_t count) { return count != 0; }));
         constexpr auto kOverlayBytes = 4 * sizeof(TerrainGroundVertex) + 6 * sizeof(std::uint32_t)
             + sizeof(Overlay) + sizeof(std::uint32_t);
+        auto baseBatchCount = groundTextureCount + static_cast<std::size_t>(output.fallback.totalTiles != 0);
+        // 只允许显式世界预览减少可选几何。所有请求的地表资源已在上方完整校验，不能借省略绕过。
+        // 保留顺序：完整基础层 > 全图水面 > 全图普通过渡 > 精确荒芜遮罩（下方）。
+        // 每类全留或全省略；水域轮廓优先于地表混合细节，不按 tile/块前缀截断。
+        if (budgetPolicy == TerrainGroundBudgetPolicy::PreserveBasePreview) {
+            // 过渡专用 atlas 不必产生基础层批次；预览取实际可见基础层分组数，不能虚耗批次预算。
+            BatchCounters baseGroups{};
+            for (std::size_t tile = 0; tile < tileCount; ++tile) if (!covered(tile))
+                ++baseGroups[tileTextures[tile] == TerrainGroundHeightColor ? groundTextureCount : textureSlots[tileTextures[tile]]];
+            baseBatchCount = static_cast<std::size_t>(std::count_if(baseGroups.begin(), baseGroups.end(),
+                [](std::uint32_t count) { return count != 0; }));
+            const auto fits = [&](std::size_t transitionQuads, std::size_t waterQuads, std::size_t bytes) {
+                const auto extra = transitionQuads + waterQuads;
+                const auto quads = tileCount + extra;
+                const auto batches = baseBatchCount + (transitionQuads != 0 ? overlayGroups : 0)
+                    + static_cast<std::size_t>(waterQuads != 0);
+                return quads * 4 <= limits.maxVertices && quads * 6 <= limits.maxIndices
+                    && batches <= limits.maxBatches
+                    && fixedBytes + extra * kOverlayBytes + bytes + batches * sizeof(TerrainGroundBatch)
+                        + output.textures.capacity() * sizeof(std::shared_ptr<const TerrainAtlasSnapshot>) <= limits.maxWorkingBytes;
+            };
+            if (!fits(overlays.size(), waterTiles.size(), rgbaBytes)) {
+                const auto waterBytes = waterSlot != TerrainGroundHeightColor
+                    ? output.textures[waterSlot]->RgbaByteCount() : 0;
+                const auto groundBytes = rgbaBytes - waterBytes;
+                if (!fits(0, 0, groundBytes))
+                    return Failure("TERRAIN_GROUND_BUDGET", "完整基础层与所需地表材质超过预算，不能发布基础贴图预览。");
+                const bool keepWater = fits(0, waterTiles.size(), rgbaBytes);
+                if (!keepWater) {
+                    // 水面 atlas 在地表 atlas 之后且尚未追加荒芜；省略时清掉帧身份，不能声称已显示该帧。
+                    output.textures.pop_back();
+                    rgbaBytes = groundBytes;
+                    waterSlot = TerrainGroundHeightColor;
+                    output.waterTextureIndex.reset();
+                    output.waterFrameIndex = output.waterFrameCount = 0;
+                    output.waterFrameSourcePath.clear(); output.waterFrameSourceSha256.clear();
+                    std::vector<std::uint32_t>().swap(waterTiles);
+                    output.waterOmitted = true;
+                    output.budget.reduced = true;
+                }
+                if (!fits(overlays.size(), waterTiles.size(), rgbaBytes)) {
+                    std::vector<Overlay>().swap(overlays);
+                    overlayCounts.fill(0);
+                    overlayGroups = 0;
+                    output.budget.reduced = true;
+                }
+            }
+        }
         auto blightSlot = TerrainGroundHeightColor;
         if (!blightOverlays.empty() && blightAtlas && blightAtlas->columns == 8 && ValidAtlas(*blightAtlas)) {
             const auto existing = std::find(output.textures.begin(), output.textures.end(), blightAtlas);
             const bool newTexture = existing == output.textures.end();
             const auto addedRgba = newTexture ? blightAtlas->RgbaByteCount() : 0;
             const auto quads = tileCount + overlays.size() + blightOverlays.size() + waterTiles.size();
-            const auto batches = groundTextureCount + static_cast<std::size_t>(output.fallback.totalTiles != 0)
-                + overlayGroups + 1 + static_cast<std::size_t>(!waterTiles.empty());
-            if ((!newTexture || (output.textures.size() < limits.maxTextures
+            const auto batches = baseBatchCount + overlayGroups + 1 + static_cast<std::size_t>(!waterTiles.empty());
+            const bool resourceFits = (!newTexture || (output.textures.size() < limits.maxTextures
                     && blightAtlas->image.width <= limits.maxTextureDimension
                     && blightAtlas->image.height <= limits.maxTextureDimension
                     && blightAtlas->image.rgba.size() <= limits.maxTextureBytes
                     && addedRgba <= limits.maxTextureChainBytes))
-                && addedRgba <= limits.maxRgbaBytes - rgbaBytes
-                && quads * 4 <= limits.maxVertices && quads * 6 <= limits.maxIndices
+                && addedRgba <= limits.maxRgbaBytes - rgbaBytes;
+            const auto textureCapacity = budgetPolicy == TerrainGroundBudgetPolicy::PreserveBasePreview
+                ? std::max(limits.maxTextures, output.textures.capacity()) : limits.maxTextures;
+            const bool meshFits = quads * 4 <= limits.maxVertices && quads * 6 <= limits.maxIndices
                 && fixedBytes + (overlays.size() + blightOverlays.size() + waterTiles.size()) * kOverlayBytes
                     + rgbaBytes + addedRgba + batches * sizeof(TerrainGroundBatch)
-                    + limits.maxTextures * sizeof(std::shared_ptr<const TerrainAtlasSnapshot>) <= limits.maxWorkingBytes
-                && batches <= limits.maxBatches) {
+                    + textureCapacity * sizeof(std::shared_ptr<const TerrainAtlasSnapshot>) <= limits.maxWorkingBytes
+                && batches <= limits.maxBatches;
+            if (resourceFits && meshFits) {
                 blightSlot = newTexture ? static_cast<std::uint32_t>(output.textures.size())
                     : static_cast<std::uint32_t>(existing - output.textures.begin());
                 if (newTexture) {
+                    // 预览已按槽预算计费，先预留这些槽，避免 push_back 的几何扩容越过预检字节数。
+                    if (budgetPolicy == TerrainGroundBudgetPolicy::PreserveBasePreview)
+                        output.textures.reserve(limits.maxTextures);
                     rgbaBytes += addedRgba;
                     output.textures.push_back(blightAtlas);
                 }
-            }
+            } else if (resourceFits && budgetPolicy == TerrainGroundBudgetPolicy::PreserveBasePreview)
+                output.budget.reduced = true;
         }
         if (blightSlot == TerrainGroundHeightColor) {
             output.blightApproximationTiles = blightOverlays.size();
@@ -454,12 +524,18 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
             || fixedBytes + overlayBytes > limits.maxWorkingBytes)
             return Failure("TERRAIN_GROUND_BUDGET", "地表过渡层或水面超出网格预算，请由宿主回退完整地图的高度预览。");
         // 基础层每个地表纹理最多一批，随后是地表过渡、荒芜和水面批次。
-        const auto batchCount = groundTextureCount + static_cast<std::size_t>(output.fallback.totalTiles != 0)
-            + overlayGroups + static_cast<std::size_t>(blightSlot != TerrainGroundHeightColor)
+        const auto batchCount = baseBatchCount + overlayGroups + static_cast<std::size_t>(blightSlot != TerrainGroundHeightColor)
             + static_cast<std::size_t>(!waterTiles.empty());
         if (batchCount > limits.maxBatches || fixedBytes + overlayBytes + rgbaBytes + batchCount * sizeof(TerrainGroundBatch)
             + output.textures.capacity() * sizeof(std::shared_ptr<const TerrainAtlasSnapshot>) > limits.maxWorkingBytes)
             return Failure("TERRAIN_GROUND_BUDGET", "地表批次或整体载荷超过预算。");
+        const auto counts = [](TerrainGroundLayerCounts& layer, std::size_t displayed) {
+            layer.displayed = displayed;
+            layer.omitted = layer.requested - displayed;
+        };
+        counts(output.budget.transitions, overlays.size());
+        counts(output.budget.blight, blightOverlays.size());
+        counts(output.budget.water, waterTiles.size());
         output.vertices.reserve(quadCount * 4);
         output.indices.resize((quadCount - output.hiddenTileCount) * 6);
         output.overlayTiles.reserve(overlays.size() + blightOverlays.size());

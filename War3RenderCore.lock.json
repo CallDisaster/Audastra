@@ -2,7 +2,7 @@
   "schema": 1,
   "version": "0.1.19",
   "repository": "https://github.com/CallDisaster/Audastra-RenderCore.git",
-  "commit": "bc4c90c92a613969db86dbecf48280a0a1fd4fdd",
+  "commit": "e3840ffbdb70388002015aa505e4e12cf8fe4eb3",
   "files": [
     {
       "path": ".gitattributes",
@@ -53,6 +53,10 @@
       "sha256": "1294412fcceb20a92e867cab997c2da9dff23aaa9ebe7072dc44ac15ee49a883"
     },
     {
+      "path": "docs/NO_CONTROLLER_STATIC_MODELS.md",
+      "sha256": "6e2a53d0721c0af5f42d90f31e07365181ad3edccd2384d52bef1d479876db31"
+    },
+    {
       "path": "docs/PROVENANCE.md",
       "sha256": "b46e967d1f56feed2b160f91c8b2aac849a24ce0cacdead4a697932c405422c8"
     },
@@ -74,11 +78,11 @@
     },
     {
       "path": "include/War3MapCore/Render/MdxModel.h",
-      "sha256": "e50fd37d72a405e46b0d53a9bada72183e6f4634e343d8eabbfb3362cef70b40"
+      "sha256": "1a68d58f559c47102d1ead0076667c132a4dc4d3d4269684831d8100a2cead35"
     },
     {
       "path": "include/War3MapCore/Render/MdxPose.h",
-      "sha256": "953a7fbc0d8cab4f2d3db5792e058d9debd0408e4748f368a43eac0c20ea87cd"
+      "sha256": "f806c3844b483949bbf3e71a9655bdff5a377e78cc3cfd9e1f60a56f757e2625"
     },
     {
       "path": "include/War3MapCore/RenderPlugin.h",
@@ -118,7 +122,7 @@
     },
     {
       "path": "include/War3RenderCore/CompiledModel.h",
-      "sha256": "d0ebefcf1dd14674779efcfe2fd876b7cbab7b8be2385e01aee4c7c9abe97703"
+      "sha256": "0c06ebbad2823d7a55c982c3245409e1949329337d26de6b642864b5db468722"
     },
     {
       "path": "include/War3RenderCore/ExternalFrame.h",
@@ -218,7 +222,7 @@
     },
     {
       "path": "include/War3RenderCore/PoseTypes.h",
-      "sha256": "c93300552fa060c613b9693272bf6b9c0b3eac97d27dc46cc2a4be827564e60e"
+      "sha256": "1b14a1aa115ae541edeef1a9df2a73575de13ab2832ce889ab2e1bc88fbcca30"
     },
     {
       "path": "include/War3RenderCore/Result.h",
@@ -238,11 +242,15 @@
     },
     {
       "path": "src/Render/Assets/MdxModel.cpp",
-      "sha256": "1f5005697f29fda06e6c10b42fe3ca382aed95e018dcb9025e785c665d5a401c"
+      "sha256": "1d9c31f92240ddae451ea46d0d14323d9a0361a04c3a8d6ec2a0f0f6c2b1b40f"
+    },
+    {
+      "path": "src/Render/Assets/MdxNoControllerStatic.h",
+      "sha256": "3b4f7437cb9ff7e9552644da753965c46944b2f1017d862d76a487f5c2b74f2b"
     },
     {
       "path": "src/Render/Assets/MdxNodeRead.h",
-      "sha256": "83d864617755ee7f60b0b981618295e78092e6492855bd7dd24ee19688e33c0b"
+      "sha256": "ce3ae5c0d9bce1e933442dc4d4553305efdbe94ef8fd1e5feb1f0e7ecad0eb18"
     },
     {
       "path": "src/Render/Assets/MdxNormalPreview.h",
@@ -250,7 +258,7 @@
     },
     {
       "path": "src/Render/Assets/MdxPose.cpp",
-      "sha256": "58c4475a7ae758e4d3ed3c48dff1e413f497375d5ba4e3f85ddd0d9429753fb6"
+      "sha256": "376ebb1ba10fd5fa6a4c5bb77e4420fbf438351b88b25bd735a9d543db13d197"
     },
     {
       "path": "src/Render/Assets/MdxPremRead.h",
@@ -298,7 +306,7 @@
     },
     {
       "path": "src/RenderCore/CompiledModel.cpp",
-      "sha256": "2e151fc43aaa5105ae93f4a5005e74448ff5374cec704969d65123967cea0437"
+      "sha256": "bf16ad5a97b3f7647deaf04e644c6f9b1a362605e8e445fc82c941301dce8a1a"
     },
     {
       "path": "src/RenderCore/Diagnostics.cpp",
@@ -334,7 +342,7 @@
     },
     {
       "path": "src/RenderCore/ModelData.h",
-      "sha256": "56c3469e4513c55088043bef66aba8b32b2d031c9b5a52fd4c07efc27f0b8980"
+      "sha256": "a42716cd4f10d919f556a4a1ddbf26d2982ce443dc1864abebda6f883621ee12"
     },
     {
       "path": "src/RenderCore/NodeTrackCompile.h",
@@ -358,7 +366,7 @@
     },
     {
       "path": "src/RenderCore/PoseTracks.cpp",
-      "sha256": "3adad6ec147347e6999e8ef1e81854d729e7616ecb7c13a70561a75c9ff41838"
+      "sha256": "b63d264d4655e1af8266df0efbc1fc1069c2653212241addf5c5e2343022aead"
     },
     {
       "path": "src/RenderCore/PoseTracks.h",
@@ -382,7 +390,7 @@
     },
     {
       "path": "src/RenderCore/TestTargets.cmake",
-      "sha256": "5648207b3e1cf4ae519211803ab4ae4bf9d2cb9cceacceb89615c916810ff75f"
+      "sha256": "ece9aa31c4d3711d6c2effd3f8ac7d4022ba5486901d6dffe635e8bb0c587645"
     },
     {
       "path": "tests/ExternalFrameTests.cpp",
@@ -421,8 +429,16 @@
       "sha256": "6c3e07805a01572de7ff08c6e36aa2ed6851141bee6ef44ea5398ee4eae4921e"
     },
     {
+      "path": "tests/MdxClassicNodeTests.h",
+      "sha256": "003b8491c43917cc36001d270299afd92df5dae3d5091fc5d053df968f4b1956"
+    },
+    {
       "path": "tests/MdxModelTests.cpp",
-      "sha256": "eda3e9fd6940452d8ba7659da5e37f0a0bd702adc28a4dcb296cea10d0dcc4bb"
+      "sha256": "7ab08f9601a127f04d215b2ebf54dff07b1cedb0867f8079de4a0683675fd048"
+    },
+    {
+      "path": "tests/MdxNoControllerStaticTests.cpp",
+      "sha256": "6f0eb6e7b79d4bbf13334ea5c3730cde3918557c23393c284fda6341d336fe3e"
     },
     {
       "path": "tests/MdxTestModel.h",

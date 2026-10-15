@@ -1,4 +1,5 @@
 #include "EditorProject.h"
+#include "ProjectObjectCatalog.h"
 
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
@@ -14,6 +15,7 @@ Result<std::shared_ptr<const Trigger::MapObjectReferenceSnapshot>>
 EditorProject::CaptureTriggerMapObjectReferences() const {
     using Output = Result<std::shared_ptr<const Trigger::MapObjectReferenceSnapshot>>;
     constexpr std::array kinds{ObjectData::ObjectType::Unit, ObjectData::ObjectType::Item};
+    const std::array<std::string, 2> classificationNames{"Units/UnitData.slk", "Units/ItemData.slk"};
     if (!archiveSession_) {
         const bool objectChanges = std::any_of(kinds.begin(), kinds.end(), [this](auto type) {
             return objectDirty_[static_cast<std::size_t>(type)];
@@ -27,7 +29,10 @@ EditorProject::CaptureTriggerMapObjectReferences() const {
                 "当前触发器没有可捕获的地图来源，无法提供预放单位或物品引用。");
         }
         // 共用目录捕获会明确拒绝尚未投影的 LNI 分类，不能退回原版表猜测。
-        return Services::CaptureDirectoryMapObjectReferences(projectRoot_, war3GameRoot_);
+        auto frozen = CaptureProjectObjectCatalogSources(*this, classificationNames);
+        if (!frozen.Succeeded() || !frozen.value) return {{}, frozen.diagnostics};
+        const auto classification = frozen.value->Sources();
+        return Services::CaptureDirectoryMapObjectReferences(projectRoot_, war3GameRoot_, &classification);
     }
 
     std::vector<MemberReplacement> replacements;
@@ -66,7 +71,10 @@ EditorProject::CaptureTriggerMapObjectReferences() const {
         if (!encoded.Succeeded() || !encoded.value) return {{}, std::move(diagnostics)};
         replacements.push_back({std::string(ObjectData::NativeFileName(type)), std::move(*encoded.value)});
     }
-    auto captured = Services::CaptureArchiveMapObjectReferences(*archiveSession_, war3GameRoot_, replacements, removals);
+    auto frozen = CaptureProjectObjectCatalogSources(*this, classificationNames);
+    if (!frozen.Succeeded() || !frozen.value) return {{}, frozen.diagnostics};
+    const auto classification = frozen.value->Sources();
+    auto captured = Services::CaptureArchiveMapObjectReferences(*archiveSession_, war3GameRoot_, replacements, removals, &classification);
     captured.diagnostics.insert(captured.diagnostics.begin(), diagnostics.begin(), diagnostics.end());
     return captured;
 }

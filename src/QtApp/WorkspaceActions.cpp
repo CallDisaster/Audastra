@@ -112,6 +112,7 @@ bool WithinOwnedTemporaryRoot(const std::filesystem::path& input, const QTempora
 struct MainWindow::ArchiveOpenBinding {
     std::filesystem::path sourcePath;
     std::unique_ptr<War3Map::MapArchiveSession> session;
+    std::shared_ptr<const War3Map::MpqWorkspace> readOnly;
     std::array<std::unique_ptr<War3Map::ObjectData::NativeObjectDocument>, 7> nativeBaselines;
     std::unique_ptr<QTemporaryDir> workspace;
 };
@@ -255,9 +256,17 @@ bool MainWindow::OpenMapArchivePath(const std::filesystem::path& archivePath) {
         }
     }
 
-    ArchiveOpenBinding binding{archivePath, {}, std::move(nativeBaselines), std::move(workspace)};
+    const auto sourceStatus = opened.value->VerifyUnchanged();
+    if (!sourceStatus.Succeeded() || (snapshot.Succeeded() && snapshot.value
+        && snapshot.value->SourceSha256() != opened.value->SourceSha256())) {
+        AddDiagnostic(tr("错误"), tr("地图"), tr("MAP_SOURCE_CHANGED"),
+            tr("打开地图期间来源发生变化，当前编辑保持不变。"));
+        return false;
+    }
+    ArchiveOpenBinding binding{archivePath, {}, {}, std::move(nativeBaselines), std::move(workspace)};
     if (snapshot.Succeeded() && snapshot.value)
         binding.session = std::make_unique<War3Map::MapArchiveSession>(std::move(*snapshot.value));
+    else binding.readOnly = std::make_shared<const War3Map::MpqWorkspace>(std::move(*opened.value));
     const QPointer<MainWindow> liveWindow(this);
     const QPointer<War3Map::QtProject::EditorProject> liveProject(project_.get());
     const bool openedOk = OpenWorkspacePathImpl(workDir, &binding);
@@ -352,6 +361,7 @@ bool MainWindow::OpenWorkspacePathImpl(const std::filesystem::path& path, Archiv
         project_->mapWorkspace_ = std::move(archive->workspace);
         project_->sourceArchivePath_ = archive->sourcePath;
         project_->archiveSession_ = std::move(archive->session);
+        project_->readOnlyArchive_ = std::move(archive->readOnly);
         project_->nativeObjectDocuments_ = std::move(archive->nativeBaselines);
         project_->iconProvider_->SetMapArchive(project_->sourceArchivePath_);
     }

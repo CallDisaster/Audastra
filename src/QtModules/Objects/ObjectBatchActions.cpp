@@ -2,6 +2,7 @@
 #include "ObjectModuleShared.h"
 
 #include "EditorProject.h"
+#include "ProjectObjectCatalog.h"
 #include "ObjectModels.h"
 #include "ObjectModelsDetail.h"
 #include "War3MapCore/ObjectData/ObjectBatchEdit.h"
@@ -83,6 +84,8 @@ const ObjectModification* FindModification(const ObjectRecord* record, const Mod
 
 bool ObjectModule::CommitBatchFieldValue(const std::vector<ObjectKey>& targets,
     const ModificationKey& field, const QString& value) {
+    const auto source = QtProject::VerifyProjectObjectCatalog(*project_);
+    if (!source.Succeeded()) { project_->AddDiagnostics(source.diagnostics); return false; }
     const int index = currentObjectType_;
     if (targets.size() < 2 || index < 0 || index >= 7 || !project_->objectDocuments_[index] ||
         !project_->objectFieldSchema_ || !project_->standardCatalog_ ||

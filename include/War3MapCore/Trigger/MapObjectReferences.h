@@ -23,12 +23,16 @@ struct MapObjectReference {
     std::string classificationSource;
 };
 
+// 地图内数据可随显式保存迁移；外部游戏与战役仍绑定实际来源。
+enum class MapObjectReferenceSourceScope { External, Map, Campaign };
+
 struct MapObjectReferenceInput {
     std::string role;
     std::string source;
     bool present = false;
     std::vector<std::byte> bytes;
     std::string sha256;
+    MapObjectReferenceSourceScope scope = MapObjectReferenceSourceScope::External;
 };
 
 // 只能由Services用真实成员/分类表捕获。协议端不能传入symbol/type名单取得资格。

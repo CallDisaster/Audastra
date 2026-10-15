@@ -12,6 +12,7 @@
 #include "War3MapCore/Services/WorldInstanceRegistry.h"
 #include "WorldEnvironment.h"
 #include "WorldSelectionProperties.h"
+#include "WorldStartLocations.h"
 #include "WorldAnimationDiagnostics.h"
 #include "WorldPlacementModels.h"
 #include "WorldPlacementPending.h"
@@ -45,7 +46,8 @@ class QTreeView;
 class QModelIndex;
 class QVariantAnimation;
 class QVBoxLayout;
-namespace War3Map::QtProject { class EditorProject; }
+namespace War3Map::QtProject { class EditorProject; struct AuxiliaryEditBinding; }
+namespace War3Map::Services { struct AuxiliaryEditRequest; }
 namespace War3Map::QtApp { class ObjectCatalogWidget; struct ObjectViewEntry; }
 namespace War3Map::UiKit { class ElidedLabel; class SlidingHighlight; }
 namespace War3Map::Render { struct TerrainGroundMesh; struct AnimatedModelScene; struct CapturedFrameRgba; class AnimationDiagnosticQuery; }
@@ -99,12 +101,21 @@ public:
     // 切图或重建期间拒绝向工具暴露保留的旧画面。
     [[nodiscard]] WorldViewport* ViewportForTools() const;
     [[nodiscard]] WorldAnimationPlayer* AnimationPlayer() const noexcept { return animation_; }
+    // 探针等待只读轻量终态；每次整图 Refresh 都先清除上一代失败。
+    [[nodiscard]] bool TerrainLoadFailed() const noexcept { return terrainLoadFailed_; }
+    [[nodiscard]] bool ModelLoadFailed() const noexcept { return modelLoadFailed_ && modelLoadGeneration_ == generation_; }
     // 读取真实控件/播放器状态；保留的旧画面不能替代服务就绪或完成帧证据。
     [[nodiscard]] QJsonObject PlaybackDiagnosticSnapshot() const;
     // GUI线程只读captured字段/当前接受场景；不触发资源读取或GPU操作。
     [[nodiscard]] QJsonObject ModelDiagnosticSnapshot() const;
+    // 常规进度查询只遍历有界页，复用已接受场景的公共诊断，不重捕整张地图。
+    [[nodiscard]] QJsonObject ModelDiagnosticProgressSnapshot(std::uint32_t offset = 0, std::uint32_t limit = 16) const;
     // 廉价等待门；不构造全量列表、不访问资源。真实捕获另核完成的同一来源/修订。
     [[nodiscard]] bool ModelDiagnosticsReady() const;
+    // 当前地图已完整捕获，仅允许空来源或明确的原版开始位置 sloc。
+    // 不要求无关的建筑贴画目录可用，也不把模型加载失败当作纯地形。
+    [[nodiscard]] bool TerrainOnlySceneReady() const;
+    [[nodiscard]] QJsonObject TerrainOnlySceneDiagnosticSnapshot() const;
     [[nodiscard]] Result<WorldModelDiagnosticsCapture> CaptureModelDiagnosticsView();
     // capture须来自成功的Viewport完成帧读回；只核同次层与当前typed计划，不制造GPU回执。
     // 不授予可见、点选或游戏签收。
@@ -121,6 +132,8 @@ protected:
 
 private:
     [[nodiscard]] Result<std::vector<std::byte>> ReadTerrain() const;
+    void RecordTerrainLoad(const char* stage, std::vector<Diagnostic> diagnostics = {}, bool failed = false);
+    void RecordModelLoad(const char* stage, std::vector<Diagnostic> diagnostics = {}, bool failed = false);
     // 工具不得把切图/地形重建期间保留的旧画面绑定到新工程。
     // 地形显示后在后台读取摆放模型；换代时丢弃过期结果。
     void StartModels(std::uint64_t generation);
@@ -135,6 +148,15 @@ private:
     [[nodiscard]] std::vector<WorldModelDiagnosticRow> ModelDiagnosticRows() const;
     void RefreshEffectBudgetStatus();
     [[nodiscard]] bool InstanceDiagnosticsCurrent() const;
+    [[nodiscard]] bool EmptyModelCaptureCurrent() const;
+    struct TerrainOnlyFacts {
+        bool ready = false;
+        bool unitsVerified = false, doodadsVerified = false;
+        std::size_t startLocations = 0;
+        const char* reason = "WORLD_MODEL_CAPTURE_NOT_CURRENT";
+    };
+    [[nodiscard]] TerrainOnlyFacts QualifyTerrainOnlyScene() const;
+    void FinishEmptyModelCapture();
     [[nodiscard]] QString InstanceDiagnosticText(const Services::WorldSelectionVersion& expected,
         const MapData::PlacementId& id) const;
     // 当前地图文档：有编辑会话时取其快照（含未保存的摆放/区域/镜头修改）。
@@ -229,6 +251,14 @@ private:
     void CancelDrag();
     void DeleteSelection();
     void DuplicateSelectedAuxiliary();
+    void CreateAuxiliary(MapDataKind kind);
+    void EditSelectedAuxiliary();
+    void DeleteSelectedAuxiliary();
+    void ShowAuxiliaryDialog(Services::AuxiliaryEditRequest request,
+        const QtProject::AuxiliaryEditBinding& binding, const MapDocument& source);
+    void SubmitAuxiliary(Services::AuxiliaryEditRequest request,
+        const QtProject::AuxiliaryEditBinding& binding, const QString& label);
+    void UpdateAuxiliaryActions();
     void ChoosePlacement(const QtApp::ObjectViewEntry& entry);
     void ActivatePlacementTool();
     void PlaceAt(double x, double y, bool snap);
@@ -242,6 +272,9 @@ private:
     void RefreshPalette();
     void ValidateSelection();
     void UpdateOverlay();
+    [[nodiscard]] bool StartLocationsCurrent() const;
+    [[nodiscard]] std::optional<MapData::PlacementId> PickStartLocation(double x, double y, bool selectedOnly) const;
+    void AppendStartLocationOverlay(std::vector<War3RenderOverlayLineV2>& lines) const;
     void AppendTerrainBoundaryOverlay(std::vector<War3RenderOverlayLineV2>& lines);
     QWidget* BuildPathingRestrictionControls(QWidget* parent);
     void AppendPathingRestrictionOverlay(std::vector<War3RenderOverlayLineV2>& lines);
@@ -291,8 +324,12 @@ private:
     Services::WorldSelection worldSelection_;
     std::shared_ptr<const MapDocument> selectionDocument_;
     std::optional<Services::MapDataQuerySnapshot> selectionMapData_;
+    WorldStartLocationCapture startLocationMarkers_;
+    std::optional<Services::MapDataQueryBinding> startLocationBinding_;
+    bool startLocationOverlaySubmitted_ = false;
     std::array<Services::ProjectSearchObjectSource, 7> selectionObjectSources_{};
     std::string selectionDocumentId_;
+    std::uint64_t selectionSessionIdentity_ = 0;
     std::uint64_t selectionCatalogRevision_ = 1;
     std::uint64_t selectionBoundCatalogRevision_ = 0;
     QString selectionMapKey_;
@@ -465,6 +502,14 @@ private:
     std::uint64_t generation_ = 0;
     bool reloadQueued_ = false;
     bool needsRefresh_ = true;
+    // 仅记录当前整图读取这一代的阶段与原始原因，不把后台提交当成完成帧。
+    QString terrainLoadStage_ = QStringLiteral("not-requested");
+    std::vector<Diagnostic> terrainLoadDiagnostics_;
+    bool terrainLoadFailed_ = false;
+    QString modelLoadStage_ = QStringLiteral("not-requested");
+    std::vector<Diagnostic> modelLoadDiagnostics_;
+    std::uint64_t modelLoadGeneration_ = 0;
+    bool modelLoadFailed_ = false;
     struct TerrainRenderRequest {
         std::shared_ptr<const MapData::TerrainGridSnapshot> source;
         MapData::TerrainBrush brush;

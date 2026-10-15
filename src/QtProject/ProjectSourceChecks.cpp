@@ -23,6 +23,14 @@ Status EditorProject::CheckProjectSources() {
                     result.diagnostics.push_back(diagnostic);
             }
         }
+    } else if (readOnlyArchive_) {
+        std::error_code error;
+        if (sourceArchivePath_.empty() || !std::filesystem::equivalent(sourceArchivePath_, readOnlyArchive_->SourcePath(), error) || error)
+            reject("SOURCE_IDENTITY_CHANGED", "源地图路径与当前只读绑定不一致或已不可访问");
+        else {
+            const auto check = readOnlyArchive_->VerifyUnchanged();
+            result.diagnostics.insert(result.diagnostics.end(), check.diagnostics.begin(), check.diagnostics.end());
+        }
     } else if (!sourceArchivePath_.empty()) {
         reject("SOURCE_SNAPSHOT_UNAVAILABLE", "当前地图缺少完整来源快照，不能确认来源未变");
     } else if (directorySnapshot_) {
