@@ -251,7 +251,16 @@ void MainWindow::BeginProductUpdate(const War3Map::QtUpdate::PreparedUpdate& pre
             const auto key = ParseTrustedUpdateKeyHex(BuildInfo::UpdatePublicKeyHex);
             if (!key.Succeeded() || !key.value->configured) { launchData->error = QStringLiteral("尚未配置可信发布公钥，无法安装更新。"); return; }
             const auto baseline = DiscoverInstalledUpdateBaseline(std::filesystem::path(root.toStdWString()), BuildInfo::Version, *key.value);
-            if (!baseline.Succeeded()) { launchData->error = DiagnosticText(baseline.diagnostics); return; }
+            if (!baseline.Succeeded()) {
+                // 安装目录与签名清单对不上时自动更新无法证明旧文件，给出可执行的处理办法。
+                const auto code = baseline.diagnostics.empty() ? std::string{} : baseline.diagnostics.front().code;
+                launchData->error = code.starts_with("UPDATE_BASELINE_") || code == "UPDATE_STAGE_PROGRAM_MISMATCH"
+                    ? QStringLiteral("这个文件夹里的程序文件和版本清单对不上，不能自动更新。常见原因是把别的版本解压或复制进了这个文件夹，"
+                        "或解压时有文件正被占用没有替换。\n\n请下载最新完整包，解压到新的文件夹使用，设置会自动沿用。\n\n")
+                        + DiagnosticText(baseline.diagnostics)
+                    : DiagnosticText(baseline.diagnostics);
+                return;
+            }
             const auto raw = ReadVerifiedFile(baseline.value->manifestPath, baseline.value->manifestSha256, kMaxUpdateManifestBytes);
             const auto signature = IO::ReadFileBytes(baseline.value->signaturePath, 64);
             if (!raw.Succeeded() || !signature.Succeeded()) { launchData->error = QStringLiteral("当前版本签名基线读取失败。"); return; }

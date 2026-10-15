@@ -313,7 +313,9 @@ Result<UpdateBaselineLocation> DiscoverInstalledUpdateBaseline(const std::filesy
             auto sidecar = Detail::ReadSignedInput(manifestPath, signaturePath, key);
             if (!sidecar.Succeeded()) return {std::nullopt, std::move(sidecar.diagnostics)};
             if (sidecar.value->verified.Manifest().version != currentVersion)
-                return Result<UpdateBaselineLocation>::Failure("Update", "UPDATE_BASELINE_IDENTITY_MISMATCH", "portable旁置签名清单不是当前精确版本。");
+                return Result<UpdateBaselineLocation>::Failure("Update", "UPDATE_BASELINE_IDENTITY_MISMATCH",
+                    "程序版本是 " + std::string(currentVersion) + "，同目录的签名版本清单却是 "
+                    + sidecar.value->verified.Manifest().version + "。");
             const auto program = Detail::VerifyProgramTree(install.value->path, sidecar.value->verified);
             if (!program.Succeeded()) return {std::nullopt, program.diagnostics};
             selected = UpdateBaselineLocation{manifestPath, signaturePath, {}, sidecar.value->verified.ManifestSha256()};
