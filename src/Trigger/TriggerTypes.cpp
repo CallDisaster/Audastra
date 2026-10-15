@@ -139,6 +139,9 @@ TriggerTypeSystem::TriggerTypeSystem(const UiCatalog& catalog, const MapObjectRe
             info.comparable = columns.size() > 2 && columns[2] == "1";
             info.display = columns.size() > 3 ? columns[3] : std::string{};
             info.baseType = columns.size() > 4 ? columns[4] : std::string{};
+            // YDWE 基础框架的 StringExt（长文本）只写到第 5 列，但在 YDWE 中与文本参数一样可选文本变量和函数。
+            info.editorUsesBaseType = !info.baseType.empty()
+                && ((columns.size() > 6 && columns[6] == "1") || (info.name == "StringExt" && info.baseType == "string"));
             types_[info.name] = std::move(info);
         } else if (definition->group == "TriggerParams") {
             const auto columns = SplitTriggerDataCsv(*value);
@@ -284,6 +287,12 @@ TriggerTypeSystem::ValueKinds TriggerTypeSystem::AllowedValueKinds(std::string_v
     const bool nativeHandle = ClassicHandleType(CanonicalUiType(expected));
     if (expected.empty() || expected == "Null" || expected == "AnyGlobal" || IsAnyType(expected)
         || (info == nullptr && !nativeHandle)) return kinds;
+    if (info != nullptr && info->editorUsesBaseType && info->baseType != expected) {
+        // 按基础类型提供变量/函数；预设仍只取本类型自己的。
+        kinds = AllowedValueKinds(info->baseType);
+        kinds.preset = !PresetsOfType(catalog_, expected).empty();
+        return kinds;
+    }
     kinds.variable = info != nullptr && info->canBeGlobal;
     if (nativeHandle && !kinds.variable) {
         for (const auto& [name, candidate] : types_) {

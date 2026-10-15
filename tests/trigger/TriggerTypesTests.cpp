@@ -70,6 +70,7 @@ std::filesystem::path CreateUi() {
         "abilityalias2=0,1,1,二级别名,abilityalias\r\ncustomcode=0,1,1,普通整数,integer\r\n"
         "scriptcode=1,0,0,代码,string\r\n"
         "typename=1,0,0,参数类型,string\r\nobjecttype=1,0,0,物体类型,string\r\n"
+        "StringExt=0,0,0,长文本,string\r\nmodelfile=0,0,0,模型文件,string,Model,1\r\nplainalias=0,0,0,无标记别名,string\r\n"
         "[TriggerParams]\r\n"
         "typename01_real=0,typename,1,实数\r\ntypename07_unit=0,typename,7,单位\r\n"
         "objecttype02_unitcode=0,objecttype,2,单位\r\nPresetHalf=0,real,0.5,一半\r\n");
@@ -172,6 +173,14 @@ void TestTriggerTypes() {
     // 取值种类按 TriggerTypes 定义开放：代码名不能用变量/函数/预设，基础类型别名不放宽。
     const auto code = types.AllowedValueKinds("scriptcode");
     Check(!code.variable && !code.function && !code.preset, "scriptcode must only take typed text");
+    // 第 7 列为 1 或 YDWE StringExt：按 string 取变量/函数；无标记的不可声明别名保持关闭。
+    for (const auto type : {"StringExt", "modelfile"}) {
+        const auto text = types.AllowedValueKinds(type);
+        Check(text.variable && text.function && !text.preset, "editor base-type text accepts string variables and functions");
+        Check(types.Accepts(type, "string"), "string value fits editor base-type text");
+    }
+    const auto plain = types.AllowedValueKinds("plainalias");
+    Check(!plain.variable && !plain.function, "unmarked non-global alias stays closed");
     const auto real = types.AllowedValueKinds("real");
     Check(real.variable && real.function && real.preset, "real accepts variables, functions and presets");
     const auto selector = types.AllowedValueKinds("typename");

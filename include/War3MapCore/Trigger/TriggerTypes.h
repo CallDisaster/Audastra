@@ -32,6 +32,8 @@ struct TriggerTypeInfo {
     std::string display;  // 第 4 列；WESTRING_ 键原样保留
     std::string baseType; // 第 5 列（自定义类型的基础类型）
     bool canBeGlobal = false;
+    // 第 7 列为 1：编辑器按基础类型取值（modelfile/imagefile 等）；YDWE 框架的 StringExt 同样按 string。
+    bool editorUsesBaseType = false;
     bool comparable = false;
 };
 
