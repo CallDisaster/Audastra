@@ -91,7 +91,7 @@ float4 PSTerrain(TerrainOutput input) : SV_TARGET {
 cbuffer ModelLayer : register(b2) {
     float layerAlpha;
     uint layerFilter; // MDX 过滤模式
-    uint layerFlags;  // 1 = 无光照
+    uint layerFlags;  // 1 = 无光照、2 = 不受雾影响
     uint layerTextured;
 };
 struct ModelInput {
@@ -136,7 +136,7 @@ float4 PSModel(ModelOutput input) : SV_TARGET {
     if (layerFilter <= 1) alpha = 1.0;
     float3 color = texel.rgb * input.color;
     // 雾：普通层混向雾色；叠加层淡到 0、调制层淡到中性值，避免雾色被叠加或相乘。
-    float keep = FogKeep(input.depth);
+    float keep = (layerFlags & 2) != 0 ? 1.0 : FogKeep(input.depth);
     if (layerFilter == 3 || layerFilter == 4) color *= keep;
     else if (layerFilter == 5) color = lerp(float3(1, 1, 1), color, keep);
     else if (layerFilter == 6) color = lerp(float3(0.5, 0.5, 0.5), color, keep);

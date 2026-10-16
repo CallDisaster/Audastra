@@ -1,5 +1,109 @@
 #pragma once
 #include "War3MapCore/RenderPluginMaterialState.h"
+
+// 原创并排平面：左层接受雾，右层 Unfogged。静态与动态材质蒙皮共用真实 PSModel。
+void TestUnfoggedMaterials(const War3RenderPluginApiV2* api, const War3RenderCreateInfoV2& info) {
+    RendererOwner renderer{api, api->createRenderer(&info)};
+    Require(renderer.handle != nullptr, "unfogged renderer unavailable");
+    const War3RenderCameraV2 camera{sizeof(camera), 0, 0, 0, 3500, -1.5707963f, 1.5f};
+    const War3RenderMeshV2 empty{sizeof(empty), 0, 0, 947, nullptr, nullptr};
+    Require(api->setCamera(renderer.handle, &camera) == 0 && api->submitMesh(renderer.handle, &empty) == 0,
+        "unfogged camera/revision rejected");
+    constexpr std::array<int, 3> source{192, 96, 48}, background{11, 15, 19}, fogColor{32, 64, 128};
+    std::array<std::uint8_t, 16> rgba{};
+    for (std::size_t pixel = 0; pixel < 4; ++pixel) {
+        for (std::size_t channel = 0; channel < 3; ++channel) rgba[pixel * 4 + channel] = static_cast<std::uint8_t>(source[channel]);
+        rgba[pixel * 4 + 3] = 255;
+    }
+    const War3RenderMipRgbaV2 mip{sizeof(mip), 2, 2, rgba.size(), rgba.data()};
+    const War3RenderTextureMipChainV2 texture{sizeof(texture), 1, 0, 1, 1, &mip};
+    RenderSkinFixture fixture;
+    for (auto& instance : fixture.instances) for (auto& color : instance.instance.color) color = 1;
+    fixture.instances[1].instance.model = 1;
+    std::array<War3RenderModelVertexV2, 4> vertices;
+    for (std::size_t i = 0; i < vertices.size(); ++i) vertices[i] = fixture.vertices[i].vertex;
+    const std::array<War3RenderModelMeshV2, 2> meshes{{{0, 6, 0, 0, 1}, {0, 6, 0, 1, 1}}};
+    const std::array<War3RenderModelV2, 2> models{{{0, 1}, {1, 1}}};
+    const std::array<War3RenderModelInstanceV2, 2> instances{{
+        {0, {1,0,0,-500, 0,1,0,0, 0,0,1,0}, {1,1,1}},
+        {1, {1,0,0,500, 0,1,0,0, 0,0,1,0}, {1,1,1}}}};
+    const std::array<War3RenderSkinnedModelMeshV2, 2> skinMeshes{{{meshes[0], 0, 1}, {meshes[1], 0, 1}}};
+    const std::array<War3RenderSkinnedModelV2, 2> skinModels{{{models[0], 1}, {models[1], 1}}};
+    std::array<War3RenderModelLayerV2, 2> layers{};
+    std::array<float, 2> alphas{};
+    const std::array<War3RenderMaterialLayerSliceV2, 2> slices{{{0, 1}, {1, 1}}};
+    const std::array<War3RenderMaterialStateV2, 2> states{{{0, 0, {1,0,0,0,1,0}}, {0, 0, {1,0,0,0,1,0}}}};
+    War3RenderMaterialStateSkinUpdateV2 pose{};
+    pose.base.base.base = fixture.Update(); pose.base.base.base.structSize = sizeof(pose);
+    pose.base.layerAlphaFormat = WAR3_RENDER_DYNAMIC_LAYER_ALPHA_V1;
+    pose.base.layerAlphaCount = pose.base.instanceSliceCount = 2;
+    pose.base.layerAlphas = alphas.data(); pose.base.instanceSlices = slices.data();
+    pose.materialStateFormat = WAR3_RENDER_DYNAMIC_MATERIAL_STATE_V1;
+    pose.materialStateCount = pose.materialInstanceSliceCount = 2;
+    pose.materialStates = states.data(); pose.materialInstanceSlices = slices.data();
+    auto skin = fixture.Scene(pose.base.base.base);
+    skin.layerCount = skin.meshCount = skin.modelCount = 2;
+    skin.layers = layers.data(); skin.meshes = skinMeshes.data(); skin.models = skinModels.data();
+    skin.textureCount = 1; skin.textures = &texture;
+    War3RenderModelSceneV2 scene{sizeof(scene), 4, 6, 2, 2, 2, 2, 1, vertices.data(), fixture.indices.data(),
+        layers.data(), meshes.data(), models.data(), instances.data(), &texture};
+    War3RenderEnvironmentV2 environment{sizeof(environment), {0,0,1}, {0,0,0}, {.25f,.25f,.25f},
+        WAR3_RENDER_FOG_NONE, 100, 200, .01f, {32.0f/255,64.0f/255,128.0f/255}, 0,0,0,0,0,0,nullptr};
+    for (const bool skinned : {false, true}) for (const auto unshaded : {0u, 1u}) {
+        for (std::uint32_t filter = 0; filter <= 6; ++filter) {
+            const auto alpha = filter >= 2 && filter <= 4 ? .5f : 1.0f;
+            // 蒙皮用绝对动态 alpha，静态 layerAlpha 故意保持1，确保不是旧路径碰巧通过。
+            layers = {{{0, filter, unshaded, skinned ? 1.0f : alpha},
+                {0, filter, unshaded | WAR3_RENDER_MODEL_UNFOGGED, skinned ? 1.0f : alpha}}};
+            alphas = {alpha, alpha};
+            Require((skinned ? api->submitSkinnedModelScene(renderer.handle, &skin)
+                             : api->submitModelScene(renderer.handle, &scene)) == 0, "unfogged model scene rejected");
+            const auto capture = [&] {
+                if (!skinned) return Capture(renderer, info.width, info.height, 947);
+                War3RenderSkinnedCapturedFrameV2 receipt{sizeof(receipt)};
+                std::vector<std::uint8_t> pixels(static_cast<std::size_t>(info.width) * info.height * 4);
+                Require(api->captureSkinnedFrameRgba(renderer.handle, pixels.data(), pixels.size(), &receipt) == 0
+                    && receipt.skin.sceneVersion == 1 && receipt.skin.contentVersion == 1
+                    && receipt.skin.frameCount == receipt.frame.view.frameCount
+                    && receipt.frame.capture.documentRevision == 947, "unfogged skin completed identity wrong");
+                return pixels;
+            };
+            const auto expected = [&](bool fogged) {
+                std::array<int, 3> color{};
+                for (std::size_t c = 0; c < color.size(); ++c) {
+                    const auto lit = source[c] * (unshaded ? 1.0f : .25f);
+                    const auto value = fogged ? (filter >= 3 ? (filter == 5 ? 255.0f : filter == 6 ? 127.5f : 0.0f)
+                        : static_cast<float>(fogColor[c])) : lit;
+                    const auto blended = filter <= 1 ? value : filter == 2 ? value * alpha + background[c] * (1 - alpha)
+                        : filter <= 4 ? value * alpha + background[c]
+                        : value * background[c] / 255.0f * (filter == 6 ? 2.0f : 1.0f);
+                    color[c] = static_cast<int>(std::lround(std::clamp(blended, 0.0f, 255.0f)));
+                }
+                return color;
+            };
+            environment.fogMode = WAR3_RENDER_FOG_NONE;
+            Require(api->setEnvironment(renderer.handle, &environment) == 0, "unfogged no-fog reference rejected");
+            const auto reference = capture();
+            auto view = ReadView(renderer);
+            RequireWorldColor(reference, view, -500, 0, expected(false), 2);
+            RequireWorldColor(reference, view, 500, 0, expected(false), 2);
+            for (const auto mode : {WAR3_RENDER_FOG_LINEAR, WAR3_RENDER_FOG_EXP, WAR3_RENDER_FOG_EXP2}) {
+                environment.fogMode = mode;
+                Require(api->setEnvironment(renderer.handle, &environment) == 0, "unfogged fog environment rejected");
+                const auto fogged = capture(); view = ReadView(renderer);
+                RequireWorldColor(fogged, view, -500, 0, expected(true), 2);
+                RequireWorldColor(fogged, view, 500, 0, expected(false), 2);
+            }
+            const auto accepted = capture();
+            layers[1].flags = 8;
+            Require((skinned ? api->submitSkinnedModelScene(renderer.handle, &skin)
+                             : api->submitModelScene(renderer.handle, &scene)) != 0
+                && capture() == accepted, "unknown material flags replaced completed unfogged frame");
+        }
+    }
+    std::cout << "unfogged WARP: static/dynamic skin, seven filters, independent lighting/alpha, three fog modes and rejected unknown flag\n";
+}
+
 // 原创双实例/双层平面；沿现有headless主入口和完成帧，不增加工具或CPU烘焙路径。
 void TestMaterialStates(const War3RenderPluginApiV2* api, const War3RenderCreateInfoV2& info,
     InstanceRosterSetFault fault = nullptr, InstanceRosterGateRead gate = nullptr, InstanceRosterAssetRead assets = nullptr) {

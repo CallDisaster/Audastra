@@ -59,7 +59,7 @@ Result<std::shared_ptr<const OwnedStaticModelAsset>> FreezeOwnedStaticModelAsset
     };
     for (const auto& mesh : meshes) {
         if (mesh.vertices.empty() || mesh.vertices.size() > 65536 || mesh.indices.empty() || mesh.indices.size() % 3 ||
-            mesh.filterMode > 6 || (mesh.flags & ~5u) || !(mesh.alpha >= 0 && mesh.alpha <= 1) ||
+            mesh.filterMode > 6 || (mesh.flags & ~WAR3_RENDER_MODEL_LAYER_FLAGS) || !(mesh.alpha >= 0 && mesh.alpha <= 1) ||
             (mesh.textureIndex != WAR3_RENDER_MODEL_NO_TEXTURE && mesh.textureIndex >= textures.size()))
             return fail("WORLD_OWNED_MESH_INVALID", "辅助网格的顶点、三角形、层或本地贴图引用无效。");
         for (const auto& v : mesh.vertices) {

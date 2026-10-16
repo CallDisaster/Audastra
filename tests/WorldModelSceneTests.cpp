@@ -12,6 +12,7 @@
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -342,6 +343,43 @@ void TestGhostUsesSharedAssetAndBlendedVariant() {
         "鼠标移动只更新预览实例，不重建静态几何");
 }
 
+void TestMaterialUnfoggedFlags() {
+    Files files;
+    files.files[Key("Textures\\Crate.blp")] = Blp(4, 4, 200);
+    files.files[Key(TeamColorTexture(0))] = Blp(2, 2, 255);
+    const std::array<std::pair<std::uint32_t, std::uint32_t>, 7> cases{{
+        {0, 0}, {0x1, 1}, {0x2, 0}, {0x20, WAR3_RENDER_MODEL_UNFOGGED}, {0x80, 4}, {0xa1, 7}, {0x10, 0}}};
+    for (const auto [sourceFlags, expectedFlags] : cases) {
+        auto bytes = RigidTestModel();
+        constexpr std::array<char, 4> layersTag{'L', 'A', 'Y', 'S'};
+        const auto layers = std::search(bytes.begin(), bytes.end(), layersTag.begin(), layersTag.end(),
+            [](std::byte left, char right) { return left == static_cast<std::byte>(right); });
+        Require(layers != bytes.end(), "原创材质需要 LAYS");
+        // LAYS + count + inclusiveSize + filterMode 后为第一层的原始 shadingFlags。
+        const auto flagsAt = static_cast<std::size_t>(layers - bytes.begin()) + 16;
+        std::memcpy(bytes.data() + flagsAt, &sourceFlags, sizeof(sourceFlags));
+        const auto parsed = ParseMdx(bytes);
+        Require(parsed.Succeeded() && parsed.value->materials[0].layers[0].shadingFlags == sourceFlags,
+            "原创 MDX 标志夹具错误");
+        files.files[Key("Original\\FogLayer.mdx")] = bytes;
+        auto ghost = At("Original\\FogLayer.mdx", 0, 200); ghost.previewGhost = true;
+        const std::array requests{At("Original\\FogLayer.mdx", 0, 0), ghost};
+        const auto built = BuildWorldModelScene(requests, files.Reader());
+        const auto posed = BuildWorldModelScene(std::span(requests).first(1), files.Reader(), {}, {},
+            ModelSceneRigidPoseRequest{0, 500, 0});
+        Require(built.Succeeded() && built.value->models.size() == 2 && posed.Succeeded(), "材质标志场景构建失败");
+        for (const auto& scene : {&*built.value, &*posed.value}) {
+            for (const auto& model : scene->models) {
+                const auto& mesh = scene->meshes[model.firstMesh];
+                Require(scene->layers[mesh.firstLayer].flags == expectedFlags
+                    && scene->layers[mesh.firstLayer + 1].flags == 0,
+                    "静态、显式姿态及预览层须保留各自 Unfogged，且不改变旧光照/深度标志");
+            }
+        }
+        Require(files.files.at(Key("Original\\FogLayer.mdx")) == bytes, "渲染不得回写来源模型");
+    }
+}
+
 void TestLimitsAndInvalid() {
     Files files;
     files.files[Key("Units\\Crate.mdx")] = MdxTest::BuildTestMdx();
@@ -602,6 +640,7 @@ int main() {
     try {
         TestBuild();
         TestGhostUsesSharedAssetAndBlendedVariant();
+        TestMaterialUnfoggedFlags();
         TestLimitsAndInvalid();
         TestPicking();
         TestPreciseAnimatedPicking();

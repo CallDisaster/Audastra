@@ -507,7 +507,9 @@ private:
             scene_.indices.insert(scene_.indices.end(), geoset.indices.begin(), geoset.indices.end());
             std::uint32_t materialLayer=0;
             for (const auto& layer : material.layers) {
-                const std::uint32_t flags = ((layer.shadingFlags & 0x1u) ? 1u : 0u) | ((layer.shadingFlags & 0x80u) ? 4u : 0u);
+                const std::uint32_t flags = ((layer.shadingFlags & 0x1u) ? WAR3_RENDER_MODEL_UNSHADED : 0u)
+                    | ((layer.shadingFlags & 0x20u) ? WAR3_RENDER_MODEL_UNFOGGED : 0u)
+                    | ((layer.shadingFlags & 0x80u) ? WAR3_RENDER_MODEL_NO_DEPTH_WRITE : 0u);
                 scene_.layers.push_back({Texture(model.textures[layer.textureId], request),
                     request.previewGhost ? 2u : std::min(static_cast<std::uint32_t>(layer.filterMode), 6u), flags,
                     std::clamp((rigidPose_ ? materialAlphas[firstMaterialLayers[geoset.materialId]+materialLayer] : layer.alpha) * geosetAlpha[geosetIndex]

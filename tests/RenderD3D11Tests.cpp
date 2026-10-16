@@ -1638,6 +1638,7 @@ int wmain(int argc, wchar_t** argv) {
         TestSkinnedModels(api, info);
         TestMaterialLayerAlphas(api, info);
         TestMaterialStates(api, info);
+        TestUnfoggedMaterials(api, info);
         TestMaterialLayerFaults(dll.parent_path(), info);
         TestAdditionalModelLayer(api, info);
         TestBuildingSplatLayer(api, info);

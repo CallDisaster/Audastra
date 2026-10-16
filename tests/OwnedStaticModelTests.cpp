@@ -38,6 +38,16 @@ void Factory() {
         "owned asset borrowed caller mutable storage");
     Check(Good(FreezeOwnedStaticModelAsset(meshes, textures))->IdentitySha256() != frozen->IdentitySha256(),
         "geometry/texture changes or caller identity reused old cache");
+    const auto originalFlags = meshes[0].flags;
+    const auto beforeFlag = Good(FreezeOwnedStaticModelAsset(meshes, textures));
+    meshes[0].flags = originalFlags | WAR3_RENDER_MODEL_UNFOGGED;
+    const auto unfogged = Good(FreezeOwnedStaticModelAsset(meshes, textures));
+    Check((unfogged->Meshes()[0].flags & WAR3_RENDER_MODEL_UNFOGGED) != 0
+        && unfogged->IdentitySha256() != beforeFlag->IdentitySha256(),
+        "owned Unfogged must survive freezing and have a distinct content identity");
+    meshes[0].flags = 8;
+    Check(!FreezeOwnedStaticModelAsset(meshes, textures).Succeeded(), "unknown owned layer flag accepted");
+    meshes[0].flags = originalFlags;
     meshes[0].indices[0] = UINT16_MAX;
     Check(!FreezeOwnedStaticModelAsset(meshes, textures).Succeeded(), "bad owned index accepted");
     meshes.assign(asset->Meshes().begin(), asset->Meshes().end()); meshes[0].alpha = std::numeric_limits<float>::quiet_NaN();
