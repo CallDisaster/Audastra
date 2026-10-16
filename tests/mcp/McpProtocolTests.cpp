@@ -4,6 +4,7 @@
 #include "McpTriggerGraphJson.h"
 #include "McpToolInternal.h"
 #include "McpMapDataTools.h"
+#include "McpLuaFileTools.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Mpq/MpqWriter.h"
 #include "War3MapCore/Trigger/TriggerTypes.h"
@@ -245,6 +246,81 @@ void TestToolSurface() {
     const auto accepted = callWrite(QString(4094, QLatin1Char('x')));
     Expect(accepted && !accepted->error && writes == 1,
         "valid boundary request id did not execute exactly one write");
+}
+
+void TestLuaListPagingProtocol() {
+    using namespace War3Map::Mcp;
+    int hostCalls = 0;
+    const LuaFileToolHost host{[&](const QString&, const QJsonObject& args) {
+        ++hostCalls;
+        const int limit = args.value("limit").toInt(64);
+        QJsonArray files;
+        const auto path = QString(110, QLatin1Char('\\')) + QStringLiteral("file.lua");
+        for (int i = 0; i < limit; ++i)
+            files.append(QJsonObject{{"path", path}, {"state", "original"}, {"size", 1}});
+        return QJsonObject{{"ok", true}, {"files", files}, {"offset", args.value("offset").toInt()},
+            {"limit", limit}, {"total", 200}, {"next_offset", limit}, {"complete", false}};
+    }};
+    const QJsonObject base{{"project_identity", "owned-test"}, {"expected_revision", "1"}};
+    for (const QJsonValue& value : {QJsonValue(-1), QJsonValue(1.5), QJsonValue(true), QJsonValue(QStringLiteral("2")),
+            QJsonValue(QJsonValue::Null), QJsonValue(2147483648.0)}) {
+        auto args = base; args.insert("offset", value);
+        Expect(!InvokeLuaFileTool("lua_files_list", args, host).value("ok").toBool() && hostCalls == 0,
+            "direct Lua list accepted an invalid offset before reaching host");
+    }
+    for (const QJsonValue& value : {QJsonValue(0), QJsonValue(257), QJsonValue(1.25), QJsonValue(false)}) {
+        auto args = base; args.insert("limit", value);
+        Expect(!InvokeLuaFileTool("lua_files_list", args, host).value("ok").toBool() && hostCalls == 0,
+            "direct Lua list accepted an invalid limit before reaching host");
+    }
+    auto wrongTool = base; wrongTool.insert("offset", 0); wrongTool.insert("path", "a.lua");
+    Expect(!InvokeLuaFileTool("lua_file_read", wrongTool, host).value("ok").toBool() && hostCalls == 0,
+        "Lua read accidentally accepted list paging parameters");
+
+    McpServer server;
+    auto definitions = LuaFileToolDefinitions();
+    auto list = std::find_if(definitions.begin(), definitions.end(), [](const auto& tool) { return tool.name == "lua_files_list"; });
+    Expect(list != definitions.end(), "Lua list tool definition missing");
+    list->handler = [&](const QJsonObject& args) -> QJsonValue { return InvokeLuaFileTool("lua_files_list", args, host); };
+    server.RegisterTool(std::move(*list));
+    const auto call = [&](const QJsonValue& id, QJsonObject args) {
+        return server.HandleMessage(QJsonDocument(QJsonObject{{"jsonrpc", "2.0"}, {"id", id},
+            {"method", "tools/call"}, {"params", QJsonObject{{"name", "lua_files_list"}, {"arguments", args}}}})
+            .toJson(QJsonDocument::Compact));
+    };
+    auto invalid = base; invalid.insert("limit", 1.25);
+    const auto invalidRpc = call(1, invalid);
+    Expect(invalidRpc && invalidRpc->error && hostCalls == 0, "Lua list RPC schema accepted a fractional limit");
+    auto large = base; large.insert("offset", 0); large.insert("limit", 200);
+    const auto raw = QJsonDocument(host.invoke("lua_files_list", large)).toJson(QJsonDocument::Compact);
+    const auto encoded = QJsonDocument(QJsonArray{QString::fromUtf8(raw)}).toJson(QJsonDocument::Compact);
+    Expect(raw.size() < 65536 && encoded.size() - 2 > 65536,
+        "synthetic Lua metadata did not isolate second-pass JSON escaping from raw body size");
+    const auto tooLarge = call(QString(126, QLatin1Char('x')), large);
+    Expect(tooLarge && !tooLarge->error && SerializeResponse(*tooLarge).size() <= 65536,
+        "large Lua list response escaped the final 64 KiB envelope");
+    const auto failureText = tooLarge->result.toObject().value("content").toArray()[0].toObject().value("text").toString();
+    Expect(failureText.contains("LUA_FILES_RESPONSE_BUDGET") && !failureText.contains("MCP_TOOL_RESPONSE_BUDGET"),
+        "large Lua page did not report a same-offset retryable budget failure");
+    large.insert("limit", 40);
+    const auto smaller = call(QString(126, QLatin1Char('x')), large);
+    Expect(smaller && !smaller->error && SerializeResponse(*smaller).size() <= 65536,
+        "smaller same-offset Lua page exceeded the actual JSON-RPC wire budget");
+    const auto smallerText = smaller->result.toObject().value("content").toArray()[0].toObject().value("text").toString();
+    Expect(QJsonDocument::fromJson(smallerText.toUtf8()).object().value("files").toArray().size() == 40,
+        "Lua list budget failure could not be recovered by shrinking limit at the same offset");
+    const int called = hostCalls;
+    const auto oversizedId = call(QString(127, QLatin1Char('x')), large);
+    Expect(oversizedId && oversizedId->error && hostCalls == called,
+        "129-byte encoded Lua list request id reached the host");
+    const LuaFileToolHost single{[](const QString&, const QJsonObject&) {
+        return QJsonObject{{"ok", true}, {"files", QJsonArray{QJsonObject{{"path", QString(70000, QLatin1Char('\\'))}}}}};
+    }};
+    auto one = base; one.insert("limit", 1);
+    const auto singleResult = InvokeLuaFileTool("lua_files_list", one, single);
+    Expect(!singleResult.value("ok").toBool()
+        && QJsonDocument(singleResult).toJson(QJsonDocument::Compact).contains("LUA_FILES_RESPONSE_BUDGET"),
+        "one oversized synthetic metadata row was silently truncated or accepted");
 }
 
 void TestArchiveMemberIdentities() {
@@ -858,6 +934,7 @@ void TestProjectSearchImportInputBudgets() {
 int main() {
     try {
         TestToolSurface();
+        TestLuaListPagingProtocol();
         TestArchiveMemberIdentities();
         TestMapDataPageBinding();
         TestProjectSearchTypePreparation();

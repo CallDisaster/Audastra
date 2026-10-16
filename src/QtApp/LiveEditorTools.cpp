@@ -43,6 +43,7 @@
 #include <QUuid>
 
 #include <algorithm>
+#include <array>
 #include <map>
 #include <span>
 #include <stdexcept>
@@ -772,10 +773,26 @@ private:
     QJsonObject LuaFile(const QString& name, const QJsonObject& arguments) {
         const auto path = arguments.value("path").toString();
         if (name == "lua_files_list") {
+            const auto rows = QtProject::ListLuaScripts(project_);
+            if (rows.size() > 2147483647u)
+                return Mcp::Failure("LUA_FILES_CATALOG_BUDGET", "Lua目录条目超出分页索引容量，未返回不完整前缀。");
+            const int total = static_cast<int>(rows.size());
+            const int offset = arguments.contains("offset") ? arguments.value("offset").toInt() : 0;
+            const int limit = arguments.contains("limit") ? arguments.value("limit").toInt() : 64;
+            if (offset > total)
+                return Mcp::Failure("LUA_FILES_OFFSET_RANGE", "offset 超出当前Lua目录条目总数，请从0重新列出。");
+            const int count = std::min(limit, total - offset);
             QJsonArray files;
-            for (const auto& entry : QtProject::ListLuaScripts(project_))
+            for (int i = offset; i < offset + count; ++i) {
+                const auto& entry = rows[static_cast<std::size_t>(i)];
                 files.append(QJsonObject{{"path", entry.path}, {"state", entry.state}, {"size", entry.size}});
-            return QJsonObject{{"ok", true}, {"files", files}, {"revision", QString::number(project_.editRevision_.Revision())}};
+            }
+            const bool complete = offset + count == total;
+            return QJsonObject{{"ok", true}, {"files", files},
+                {"project_identity", projectIdentity_}, {"revision", QString::number(project_.editRevision_.Revision())},
+                {"offset", offset}, {"limit", limit}, {"total", total},
+                {"next_offset", complete ? QJsonValue(QJsonValue::Null) : QJsonValue(offset + count)},
+                {"complete", complete}, {"scope", "captured-assets-and-overlay"}, {"source_checked_in_this_call", false}};
         }
         if (name == "lua_file_read") {
             auto read = QtProject::ReadLuaScript(project_, path);
@@ -784,8 +801,29 @@ private:
                 {"sha256", QString::fromStdString(read.value->sha256)}, {"revision", QString::number(project_.editRevision_.Revision())}};
         }
         if (name == "lua_file_write") {
+            const auto entries = project_.AssetEntries();
+            const auto key = QtProject::EditorProject::AssetKey(path);
+            const auto existing = std::find_if(entries.begin(), entries.end(), [&](const auto& entry) {
+                return QtProject::EditorProject::AssetKey(entry.path) == key;
+            });
+            if (existing != entries.end() && existing->ambiguous)
+                return Mcp::Failure("LUA_FILE_WRITE_REJECTED", "该 Lua 路径有多份来源，未写入。");
             const auto before = QtProject::ReadLuaScript(project_, path);
-            const QJsonValue previous = before.Succeeded() ? QJsonValue(QString::fromStdString(before.value->sha256)) : QJsonValue(QJsonValue::Null);
+            if (existing != entries.end()) {
+                if (!before.Succeeded()) return Mcp::Failure(before);
+                if (!arguments.contains("expected_sha256"))
+                    return Mcp::Failure("LUA_FILE_WRITE_REJECTED", "替换已有 Lua 文件必须给出读取时的 sha256。");
+            } else {
+                if (!project_.archiveSession_)
+                    return Mcp::Failure("LUA_FILE_WRITE_REJECTED", "当前来源不能证明 Lua 路径不存在，未按新文件写入。");
+                const std::array<std::string, 1> names{path.toStdString()};
+                const auto exact = project_.archiveSession_->CaptureExactMembers(names);
+                if (!exact.Succeeded()) return Mcp::Failure(exact);
+                if (exact.value->size() != 1 || exact.value->front().present)
+                    return Mcp::Failure("LUA_FILE_WRITE_REJECTED", "归档中的 Lua 路径不能证明不存在，未按新文件写入。");
+            }
+            const QJsonValue previous = existing != entries.end()
+                ? QJsonValue(QString::fromStdString(before.value->sha256)) : QJsonValue(QJsonValue::Null);
             const auto rejected = QtProject::WriteLuaScript(project_, path, arguments.value("text").toString(),
                 arguments.value("expected_sha256").toString().toStdString(), QObject::tr("AI 修改 Lua：%1").arg(path));
             if (!rejected.isEmpty()) return Mcp::Failure("LUA_FILE_WRITE_REJECTED", rejected.toStdString());
@@ -796,7 +834,7 @@ private:
             const auto sha = QString::fromStdString(after.value->sha256);
             const QJsonObject item{{"kind", "lua"}, {"object_id", ""}, {"title", path}, {"target", path},
                 {"before", previous}, {"after", sha}};
-            return QJsonObject{{"ok", true}, {"path", path}, {"sha256", sha}, {"created", previous.isNull()}, {"saved", false},
+            return QJsonObject{{"ok", true}, {"path", path}, {"sha256", sha}, {"created", existing == entries.end()}, {"saved", false},
                 {"project_identity", projectIdentity_}, {"revision", QString::number(project_.editRevision_.Revision())},
                 {"changes", QJsonObject{{"files", 1}, {"items", QJsonArray{item}}}}};
         }

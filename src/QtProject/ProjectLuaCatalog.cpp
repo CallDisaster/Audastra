@@ -71,7 +71,10 @@ std::vector<LuaScriptEntry> ListLuaScripts(const EditorProject& project) {
         scripts.push_back({entry.path, entry.ambiguous ? QObject::tr("来源歧义") : entry.runtimeLuaDraft ? QObject::tr("工程草稿")
             : entry.Pending() ? QObject::tr("待导入") : QObject::tr("原内容"), entry.size});
     }
-    std::sort(scripts.begin(), scripts.end(), [](const auto& a, const auto& b) { return a.path.compare(b.path, Qt::CaseInsensitive) < 0; });
+    std::sort(scripts.begin(), scripts.end(), [](const auto& a, const auto& b) {
+        const auto folded = a.path.compare(b.path, Qt::CaseInsensitive);
+        return folded < 0 || (folded == 0 && a.path.compare(b.path, Qt::CaseSensitive) < 0);
+    });
     return scripts;
 }
 

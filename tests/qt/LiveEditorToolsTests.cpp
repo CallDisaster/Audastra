@@ -1,6 +1,7 @@
 #include "LiveEditorTools.h"
 #include "EditorProject.h"
 #include "ProjectOpen.h"
+#include "ProjectLuaModules.h"
 #include "Commands/TriggerCommands.h"
 #include "Commands/ObjectSnapshotCommand.h"
 #include "McpObjectTools.h"
@@ -26,6 +27,7 @@
 #include "../MapDataSpatialFixtures.h"
 
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/ProjectStore.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
@@ -295,6 +297,8 @@ private slots:
     void BoundaryDraftSavesAndReopensAsProject();
     void ImportMetadataUsesSourceAndCurrentAssetOverlay();
     void LuaFileToolsShareAssetUndoAndRejectStaleText();
+    void LuaFileToolsCreateOnlyAtProvenArchiveAbsence();
+    void LuaFilesListPagesCapturedDirectoryAndRejectsStaleContinuation();
     void ResourceToolsUseActualAsyncSourceAndRejectStaleResults();
     void ProjectSearchUsesInjectedOwnedPagesAndStrictRevision();
     void ProjectSearchCallbackReplacementStopsOldRequest();
@@ -1798,6 +1802,17 @@ void LiveEditorToolsTests::LuaFileToolsShareAssetUndoAndRejectStaleText() {
     QCOMPARE(read.value("text").toString(), QString::fromUtf8(original));
     const auto revision = f.Context().value("expected_revision");
 
+    auto missingSha = request; missingSha.insert("text", "print('unread overwrite')\n");
+    QCOMPARE(ErrorCode(f.tools->Invoke("lua_file_write", missingSha)), QString("LUA_FILE_WRITE_REJECTED"));
+    auto equivalentPath = missingSha; equivalentPath.insert("path", QStringLiteral("SCRIPTS\\MAIN.LUA"));
+    QCOMPARE(ErrorCode(f.tools->Invoke("lua_file_write", equivalentPath)), QString("LUA_FILE_WRITE_REJECTED"));
+    auto emptySha = missingSha; emptySha.insert("expected_sha256", "");
+    // 外层 JSON-RPC schema 先于 Lua 工具适配器拒绝不匹配 sha256 pattern 的空字符串。
+    QCOMPARE(ErrorCode(f.tools->Invoke("lua_file_write", emptySha)), QString("LIVE_EDITOR_RPC_ERROR"));
+    QCOMPARE(f.Context().value("expected_revision"), revision);
+    QCOMPARE(f.project.AssetUndoStack()->count(), 0);
+    QCOMPARE(f.tools->Invoke("lua_file_read", request).value("text").toString(), QString::fromUtf8(original));
+
     auto stale = request; stale.insert("text", "print(3)\n"); stale.insert("expected_sha256", QString(64, QLatin1Char('0')));
     QCOMPARE(ErrorCode(f.tools->Invoke("lua_file_write", stale)), QString("LUA_FILE_WRITE_REJECTED"));
     QCOMPARE(f.Context().value("expected_revision"), revision);
@@ -1812,6 +1827,8 @@ void LiveEditorToolsTests::LuaFileToolsShareAssetUndoAndRejectStaleText() {
     const auto written = f.tools->Invoke("lua_file_write", write);
     QVERIFY2(written.value("ok").toBool(), qPrintable(Explain(written)));
     QVERIFY(written.value("changes").isObject());
+    QCOMPARE(written.value("created").toBool(), false);
+    QCOMPARE(written.value("changes").toObject().value("items").toArray()[0].toObject().value("before"), read.value("sha256"));
     QCOMPARE(f.project.AssetUndoStack()->count(), 1);
     auto after = f.Context(); after.insert("path", path);
     // 原文件是 CRLF，写入后保持 CRLF。
@@ -1823,6 +1840,14 @@ void LiveEditorToolsTests::LuaFileToolsShareAssetUndoAndRejectStaleText() {
     f.project.AssetUndoStack()->undo();
     auto undone = f.Context(); undone.insert("path", path);
     QCOMPARE(f.tools->Invoke("lua_file_read", undone).value("text").toString(), QString::fromUtf8(original));
+    f.project.AssetUndoStack()->redo();
+    auto redone = f.Context(); redone.insert("path", path);
+    QCOMPARE(f.tools->Invoke("lua_file_read", redone).value("text").toString(),
+        QStringLiteral("print(3)\r\nprint(4)\r\n"));
+    f.project.AssetUndoStack()->undo();
+    undone = f.Context(); undone.insert("path", path);
+    QCOMPARE(f.tools->Invoke("lua_file_read", undone).value("text").toString(),
+        QString::fromUtf8(original));
 
     QCOMPARE(ErrorCode(f.tools->Invoke("map_test_start", f.Context())), QString("MAP_TEST_UNAVAILABLE"));
     int launches = 0;
@@ -1832,6 +1857,134 @@ void LiveEditorToolsTests::LuaFileToolsShareAssetUndoAndRejectStaleText() {
     auto staleTest = f.Context(); staleTest.insert("expected_revision", "9999");
     QCOMPARE(ErrorCode(f.tools->Invoke("map_test_start", staleTest)), QString("LIVE_EDITOR_REVISION_CONFLICT"));
     QCOMPARE(launches, 2);
+
+    QtProject::AssetState ambiguous;
+    ambiguous.edits.push_back({path, path}); ambiguous.edits.push_back({path, path});
+    f.project.RestoreAssets(ambiguous);
+    const auto entries = f.project.AssetEntries();
+    QVERIFY(std::any_of(entries.begin(), entries.end(), [&](const auto& entry) {
+        return EditorProject::AssetKey(entry.path) == EditorProject::AssetKey(path) && entry.ambiguous;
+    }));
+    auto ambiguousWrite = f.Context(); ambiguousWrite.insert("path", path); ambiguousWrite.insert("text", "print(5)\n");
+    const auto ambiguousResult = f.tools->Invoke("lua_file_write", ambiguousWrite);
+    QCOMPARE(ErrorCode(ambiguousResult), QString("LUA_FILE_WRITE_REJECTED"));
+    QVERIFY(!ambiguousResult.contains("created"));
+    QCOMPARE(f.project.AssetUndoStack()->count(), 1);
+    QCOMPARE(f.project.AssetUndoStack()->index(), 0);
+    f.project.RestoreAssets({});
+
+    QVERIFY(WriteFile(f.source.filePath("scripts/main.lua"), "print(9)\r\nprint(2)\r\n"));
+    auto changedSource = f.Context(); changedSource.insert("path", path); changedSource.insert("text", "print(5)\n");
+    changedSource.insert("expected_sha256", read.value("sha256"));
+    const auto denied = f.tools->Invoke("lua_file_write", changedSource);
+    QVERIFY(!denied.value("ok").toBool());
+    QVERIFY(!denied.contains("created"));
+    QCOMPARE(f.project.AssetUndoStack()->count(), 1);
+    QCOMPARE(f.project.AssetUndoStack()->index(), 0);
+    changedSource.remove("expected_sha256");
+    const auto deniedWithoutSha = f.tools->Invoke("lua_file_write", changedSource);
+    QVERIFY(!deniedWithoutSha.value("ok").toBool());
+    QVERIFY(!deniedWithoutSha.contains("created"));
+    QCOMPARE(f.project.AssetUndoStack()->count(), 1);
+    QCOMPARE(f.project.AssetUndoStack()->index(), 0);
+}
+
+void LiveEditorToolsTests::LuaFileToolsCreateOnlyAtProvenArchiveAbsence() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    const auto source = std::filesystem::path(f.outputs.filePath("owned-lua-source.w3x").toStdWString());
+    const std::array<MapArchiveMember, 1> members{{{"readme.txt", {std::byte{0x58}}}}};
+    const auto written = WriteVerifiedArchive(source, members); QVERIFY(written.Succeeded());
+    auto archive = MapArchiveSession::Open(source); QVERIFY(archive.Succeeded());
+    f.project.archiveSession_ = std::make_shared<MapArchiveSession>(std::move(*archive.value));
+    f.project.sourceArchivePath_ = source;
+    f.project.ResetEditTracking();
+    f.tools = std::make_unique<LiveEditorTools>(f.project);
+    auto create = f.Context(); create.insert("path", "scripts/new.lua"); create.insert("text", "return 42\n");
+    auto inventedVersion = create; inventedVersion.insert("expected_sha256", QString(64, QLatin1Char('a')));
+    QCOMPARE(ErrorCode(f.tools->Invoke("lua_file_write", inventedVersion)), QString("LUA_FILE_WRITE_REJECTED"));
+    QCOMPARE(f.project.AssetUndoStack()->count(), 0);
+    const auto created = f.tools->Invoke("lua_file_write", create);
+    QVERIFY2(created.value("ok").toBool(), qPrintable(Explain(created)));
+    QVERIFY(created.value("created").toBool());
+    QVERIFY(created.value("changes").toObject().value("items").toArray()[0].toObject().value("before").isNull());
+    QCOMPARE(f.project.AssetUndoStack()->count(), 1);
+    auto read = f.Context(); read.insert("path", "scripts/new.lua");
+    QCOMPARE(f.tools->Invoke("lua_file_read", read).value("text").toString(), QStringLiteral("return 42\n"));
+    f.project.AssetUndoStack()->undo();
+    QCOMPARE(f.project.AssetUndoStack()->index(), 0);
+    read = f.Context(); read.insert("path", "scripts/new.lua");
+    QVERIFY(!f.tools->Invoke("lua_file_read", read).value("ok").toBool());
+}
+
+void LiveEditorToolsTests::LuaFilesListPagesCapturedDirectoryAndRejectsStaleContinuation() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    for (int i = 129; i >= 0; --i) {
+        const auto name = QStringLiteral("scripts/deep/part_%1.lua").arg(i, 3, 10, QLatin1Char('0'));
+        QVERIFY(WriteFile(f.source.filePath(name), "return true\n"));
+    }
+    QVERIFY(WriteFile(f.source.filePath("scripts/ignored.txt"), "not Lua"));
+    auto source = DirectoryWorkspace::Open(f.project.projectRoot_); QVERIFY(source.Succeeded());
+    f.project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*source.value));
+    f.project.ResetEditTracking();
+    const auto expected = QtProject::ListLuaScripts(f.project);
+    QCOMPARE(expected.size(), std::size_t{130});
+    const auto revision = f.Context().value("expected_revision");
+    const auto rpc = f.tools->Server().HandleMessage(QJsonDocument(QJsonObject{{"jsonrpc", "2.0"},
+        {"id", QString(126, QLatin1Char('x'))}, {"method", "tools/call"},
+        {"params", QJsonObject{{"name", "lua_files_list"}, {"arguments", f.Context()}}}}).toJson(QJsonDocument::Compact));
+    QVERIFY(rpc && !rpc->error);
+    QVERIFY(Mcp::SerializeResponse(*rpc).size() <= 65536);
+    const auto rpcText = rpc->result.toObject().value("content").toArray()[0].toObject().value("text").toString();
+    QCOMPARE(QJsonDocument::fromJson(rpcText.toUtf8()).object().value("files").toArray().size(), qsizetype{64});
+    auto page = f.Context();
+    QStringList actual;
+    for (const int offset : {0, 64, 128}) {
+        page.insert("offset", offset);
+        const auto result = f.tools->Invoke("lua_files_list", page);
+        QVERIFY2(result.value("ok").toBool(), qPrintable(Explain(result)));
+        QCOMPARE(result.value("total").toInt(), 130);
+        QCOMPARE(result.value("offset").toInt(), offset);
+        QCOMPARE(result.value("limit").toInt(), 64);
+        QCOMPARE(result.value("project_identity"), page.value("project_identity"));
+        QCOMPARE(result.value("revision"), revision);
+        QCOMPARE(result.value("scope"), QJsonValue(QStringLiteral("captured-assets-and-overlay")));
+        QCOMPARE(result.value("source_checked_in_this_call"), QJsonValue(false));
+        QCOMPARE(result.value("complete").toBool(), offset == 128);
+        const auto files = result.value("files").toArray();
+        QCOMPARE(files.size(), offset == 128 ? qsizetype{2} : qsizetype{64});
+        for (const auto& file : files) actual.push_back(file.toObject().value("path").toString());
+        if (offset == 128) QVERIFY(result.value("next_offset").isNull());
+        else QCOMPARE(result.value("next_offset").toInt(), offset + files.size());
+        QCOMPARE(f.tools->Invoke("lua_files_list", page), result);
+    }
+    for (std::size_t i = 0; i < expected.size(); ++i) QCOMPARE(actual[static_cast<qsizetype>(i)], expected[i].path);
+    QCOMPARE(f.Context().value("expected_revision"), revision);
+    QCOMPARE(f.project.AssetUndoStack()->count(), 0);
+    page.insert("offset", 130);
+    const auto end = f.tools->Invoke("lua_files_list", page);
+    QVERIFY(end.value("ok").toBool()); QVERIFY(end.value("files").toArray().isEmpty());
+    QVERIFY(end.value("complete").toBool()); QVERIFY(end.value("next_offset").isNull());
+    page.insert("offset", 131);
+    QCOMPARE(ErrorCode(f.tools->Invoke("lua_files_list", page)), QStringLiteral("LUA_FILES_OFFSET_RANGE"));
+    page.insert("offset", 1); page.insert("limit", 1);
+    const auto single = f.tools->Invoke("lua_files_list", page);
+    QVERIFY(single.value("ok").toBool()); QCOMPARE(single.value("files").toArray().size(), qsizetype{1});
+    QCOMPARE(single.value("next_offset").toInt(), 2);
+    page.insert("offset", 64);
+    QtProject::AssetState changed;
+    changed.edits.push_back({"scripts/deep/part_000.lua", "scripts/deep/renamed.lua"});
+    f.project.RestoreAssets(changed);
+    QCOMPARE(ErrorCode(f.tools->Invoke("lua_files_list", page)), QStringLiteral("LIVE_EDITOR_REVISION_CONFLICT"));
+    auto fresh = f.Context(); fresh.insert("offset", 0); fresh.insert("limit", 256);
+    const auto renamed = f.tools->Invoke("lua_files_list", fresh);
+    QVERIFY2(renamed.value("ok").toBool(), qPrintable(Explain(renamed)));
+    QCOMPARE(renamed.value("files").toArray().size(), qsizetype{130});
+    QCOMPARE(renamed.value("total").toInt(), 130);
+    Fixture empty; QVERIFY2(empty.Initialize(), qPrintable(empty.error));
+    const auto none = empty.tools->Invoke("lua_files_list", empty.Context());
+    QVERIFY(none.value("ok").toBool()); QCOMPARE(none.value("total").toInt(), 0);
+    QVERIFY(none.value("files").toArray().isEmpty()); QVERIFY(none.value("complete").toBool());
+    QVERIFY(none.value("next_offset").isNull());
 }
 
 void LiveEditorToolsTests::ResourceToolsUseActualAsyncSourceAndRejectStaleResults() {

@@ -2,12 +2,21 @@
 #include "McpToolInternal.h"
 
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QRegularExpression>
+#include <cmath>
 #include <cstring>
 
 namespace War3Map::Mcp {
 namespace {
 constexpr qsizetype kMaxLuaText = 2 * 1024 * 1024;
+constexpr int kMaxLuaPageIndex = 2147483647;
+constexpr int kMaxLuaPageLimit = 256;
+bool ValidPageNumber(const QJsonValue& value, int minimum, int maximum) {
+    if (!value.isDouble()) return false;
+    const auto number = value.toDouble();
+    return std::isfinite(number) && number >= minimum && number <= maximum && std::floor(number) == number;
+}
 QJsonObject Identity() {
     return {{"project_identity", QJsonObject{{"type", "string"}, {"maxLength", 128}}},
         {"expected_revision", QJsonObject{{"type", "string"}, {"pattern", "^(0|[1-9][0-9]*)$"}, {"maxLength", 20}}}};
@@ -37,7 +46,9 @@ std::vector<ToolDefinition> LuaFileToolDefinitions() {
         result.push_back(std::move(tool));
     };
     const QJsonObject path{{"type", "string"}, {"maxLength", 260}};
-    add("lua_files_list", "列出地图里的 Lua 文件、状态和大小", ToolPermission::Query, {}, {});
+    add("lua_files_list", "分页列出地图里的 Lua 文件、状态和大小；默认每页64项，按next_offset继续，超预算时保持offset并缩小limit", ToolPermission::Query,
+        {{"offset", QJsonObject{{"type", "integer"}, {"minimum", 0}, {"maximum", kMaxLuaPageIndex}, {"default", 0}}},
+            {"limit", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", kMaxLuaPageLimit}, {"default", 64}}}}, {});
     add("lua_file_read", "读取一个地图 Lua 文件的正文和字节身份（sha256）", ToolPermission::Query, {{"path", path}}, {"path"});
     add("lua_file_write", "新建或整体替换一个地图 Lua 文件，进入撤销栈；替换已有文件时必须给出读取时的 sha256", ToolPermission::Edit,
         {{"path", path}, {"text", QJsonObject{{"type", "string"}, {"maxLength", kMaxLuaText}}},
@@ -48,7 +59,8 @@ std::vector<ToolDefinition> LuaFileToolDefinitions() {
 
 QJsonObject InvokeLuaFileTool(const QString& name, const QJsonObject& args, const LuaFileToolHost& host) {
     QStringList allowed{"project_identity", "expected_revision"};
-    if (name == "lua_file_read") allowed << "path";
+    if (name == "lua_files_list") allowed << "offset" << "limit";
+    else if (name == "lua_file_read") allowed << "path";
     else if (name == "lua_file_write") allowed << "path" << "text" << "expected_sha256";
     else if (name != "lua_files_list" && name != "map_test_start") return Failure("LUA_FILE_TOOL_UNKNOWN", "未知 Lua 文件工具。");
     for (auto it = args.begin(); it != args.end(); ++it)
@@ -59,6 +71,10 @@ QJsonObject InvokeLuaFileTool(const QString& name, const QJsonObject& args, cons
         return Failure("LUA_FILE_ARGUMENT_INVALID", "需要当前工程身份和编辑修订。");
     if (allowed.contains("path") && !ValidPath(args.value("path")))
         return Failure("LUA_FILE_ARGUMENT_INVALID", "path 必须是地图内的相对 .lua 路径。");
+    if (name == "lua_files_list"
+        && ((args.contains("offset") && !ValidPageNumber(args.value("offset"), 0, kMaxLuaPageIndex))
+            || (args.contains("limit") && !ValidPageNumber(args.value("limit"), 1, kMaxLuaPageLimit))))
+        return Failure("LUA_FILE_ARGUMENT_INVALID", "offset 必须是0..2147483647的整数，limit 必须是1..256的整数。");
     if (name == "lua_file_write") {
         if (!args.value("text").isString() || args.value("text").toString().size() > kMaxLuaText || args.value("text").toString().contains(QChar::Null))
             return Failure("LUA_FILE_ARGUMENT_INVALID", "text 必须是不超过 2 MiB 的文本。");
@@ -67,7 +83,15 @@ QJsonObject InvokeLuaFileTool(const QString& name, const QJsonObject& args, cons
             return Failure("LUA_FILE_ARGUMENT_INVALID", "expected_sha256 必须是 64 位小写十六进制。");
     }
     if (!host.invoke) return Failure("LUA_FILE_NO_EDITOR", "此宿主没有打开的地图，请连接正在编辑该地图的编辑器 MCP 端口。");
-    return host.invoke(name, args);
+    auto result = host.invoke(name, args);
+    if (name == "lua_files_list" && result.value("ok").toBool()) {
+        // MCP会把compact正文作为content[0].text再次JSON转义；给128B request id与外壳留512B。
+        const auto inner = QJsonDocument(result).toJson(QJsonDocument::Compact);
+        const auto encoded = QJsonDocument(QJsonArray{QString::fromUtf8(inner)}).toJson(QJsonDocument::Compact);
+        if (encoded.size() - 2 > 64 * 1024 - 512)
+            return Failure("LUA_FILES_RESPONSE_BUDGET", "该页未返回；保持offset并减小limit。limit=1仍失败表示单条元数据超预算。");
+    }
+    return result;
 }
 
 void RegisterLuaFileTools(McpServer& server) {
