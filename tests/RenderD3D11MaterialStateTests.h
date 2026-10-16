@@ -6,10 +6,20 @@ void TestUnfoggedMaterials(const War3RenderPluginApiV2* api, const War3RenderCre
     RendererOwner renderer{api, api->createRenderer(&info)};
     Require(renderer.handle != nullptr, "unfogged renderer unavailable");
     const War3RenderCameraV2 camera{sizeof(camera), 0, 0, 0, 3500, -1.5707963f, 1.5f};
-    const War3RenderMeshV2 empty{sizeof(empty), 0, 0, 947, nullptr, nullptr};
-    Require(api->setCamera(renderer.handle, &camera) == 0 && api->submitMesh(renderer.handle, &empty) == 0,
-        "unfogged camera/revision rejected");
     constexpr std::array<int, 3> source{192, 96, 48}, background{11, 15, 19}, fogColor{32, 64, 128};
+    // 空mesh会画调试网格，(-500,0)恰好落在灰线，不能将混合目标假定为clear色。
+    // 显式原创不透明背景平面固定混合输入；模型原z=20，背景z=0，不改变任何深度规则。
+    constexpr std::array<War3RenderVertexV2, 4> backdrop{{
+        {-1500,-1500,0,11.0f/255,15.0f/255,19.0f/255}, {1500,-1500,0,11.0f/255,15.0f/255,19.0f/255},
+        {-1500,1500,0,11.0f/255,15.0f/255,19.0f/255}, {1500,1500,0,11.0f/255,15.0f/255,19.0f/255}}};
+    constexpr std::array<std::uint32_t, 6> backdropIndices{0,1,2,1,3,2};
+    const War3RenderMeshV2 backdropMesh{sizeof(backdropMesh), 4, 6, 947, backdrop.data(), backdropIndices.data()};
+    Require(api->setCamera(renderer.handle, &camera) == 0 && api->submitMesh(renderer.handle, &backdropMesh) == 0,
+        "unfogged camera/background/revision rejected");
+    const auto backdropPixels = Capture(renderer, info.width, info.height, 947);
+    const auto backdropView = ReadView(renderer);
+    RequireWorldColor(backdropPixels, backdropView, -500, 0, background, 1);
+    RequireWorldColor(backdropPixels, backdropView, 500, 0, background, 1);
     std::array<std::uint8_t, 16> rgba{};
     for (std::size_t pixel = 0; pixel < 4; ++pixel) {
         for (std::size_t channel = 0; channel < 3; ++channel) rgba[pixel * 4 + channel] = static_cast<std::uint8_t>(source[channel]);
@@ -81,18 +91,26 @@ void TestUnfoggedMaterials(const War3RenderPluginApiV2* api, const War3RenderCre
                 }
                 return color;
             };
+            const auto checkColors = [&](const auto& pixels, const auto& view, bool fogged, std::uint32_t mode) {
+                try {
+                    RequireWorldColor(pixels, view, -500, 0, expected(fogged), 2);
+                    RequireWorldColor(pixels, view, 500, 0, expected(false), 2);
+                } catch (...) {
+                    std::cerr << "unfogged case skinned=" << skinned << " unshaded=" << unshaded
+                        << " filter=" << filter << " fogMode=" << mode << " reference=" << !fogged << '\n';
+                    throw;
+                }
+            };
             environment.fogMode = WAR3_RENDER_FOG_NONE;
             Require(api->setEnvironment(renderer.handle, &environment) == 0, "unfogged no-fog reference rejected");
             const auto reference = capture();
             auto view = ReadView(renderer);
-            RequireWorldColor(reference, view, -500, 0, expected(false), 2);
-            RequireWorldColor(reference, view, 500, 0, expected(false), 2);
+            checkColors(reference, view, false, WAR3_RENDER_FOG_NONE);
             for (const auto mode : {WAR3_RENDER_FOG_LINEAR, WAR3_RENDER_FOG_EXP, WAR3_RENDER_FOG_EXP2}) {
                 environment.fogMode = mode;
                 Require(api->setEnvironment(renderer.handle, &environment) == 0, "unfogged fog environment rejected");
                 const auto fogged = capture(); view = ReadView(renderer);
-                RequireWorldColor(fogged, view, -500, 0, expected(true), 2);
-                RequireWorldColor(fogged, view, 500, 0, expected(false), 2);
+                checkColors(fogged, view, true, mode);
             }
             const auto accepted = capture();
             layers[1].flags = 8;
