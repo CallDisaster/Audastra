@@ -32,7 +32,9 @@ void TestUnfoggedMaterials(const War3RenderPluginApiV2* api, const War3RenderCre
     fixture.instances[1].instance.model = 1;
     std::array<War3RenderModelVertexV2, 4> vertices;
     for (std::size_t i = 0; i < vertices.size(); ++i) vertices[i] = fixture.vertices[i].vertex;
-    const std::array<War3RenderModelMeshV2, 2> meshes{{{0, 6, 0, 0, 1}, {0, 6, 0, 1, 1}}};
+    // 每个mesh拥有连续、不重叠的索引片段；两种模型共用顶点，不借用同一索引片段。
+    const std::array<std::uint16_t, 12> indices{0,1,2,1,3,2, 0,1,2,1,3,2};
+    const std::array<War3RenderModelMeshV2, 2> meshes{{{0, 6, 0, 0, 1}, {6, 6, 0, 1, 1}}};
     const std::array<War3RenderModelV2, 2> models{{{0, 1}, {1, 1}}};
     const std::array<War3RenderModelInstanceV2, 2> instances{{
         {0, {1,0,0,-500, 0,1,0,0, 0,0,1,0}, {1,1,1}},
@@ -52,13 +54,15 @@ void TestUnfoggedMaterials(const War3RenderPluginApiV2* api, const War3RenderCre
     pose.materialStateCount = pose.materialInstanceSliceCount = 2;
     pose.materialStates = states.data(); pose.materialInstanceSlices = slices.data();
     auto skin = fixture.Scene(pose.base.base.base);
+    skin.indexCount = static_cast<std::uint32_t>(indices.size()); skin.indices = indices.data();
     skin.layerCount = skin.meshCount = skin.modelCount = 2;
     skin.layers = layers.data(); skin.meshes = skinMeshes.data(); skin.models = skinModels.data();
     skin.textureCount = 1; skin.textures = &texture;
-    War3RenderModelSceneV2 scene{sizeof(scene), 4, 6, 2, 2, 2, 2, 1, vertices.data(), fixture.indices.data(),
+    War3RenderModelSceneV2 scene{sizeof(scene), 4, 12, 2, 2, 2, 2, 1, vertices.data(), indices.data(),
         layers.data(), meshes.data(), models.data(), instances.data(), &texture};
     War3RenderEnvironmentV2 environment{sizeof(environment), {0,0,1}, {0,0,0}, {.25f,.25f,.25f},
         WAR3_RENDER_FOG_NONE, 100, 200, .01f, {32.0f/255,64.0f/255,128.0f/255}, 0,0,0,0,0,0,nullptr};
+    std::uint64_t skinSceneVersion = 0;
     for (const bool skinned : {false, true}) for (const auto unshaded : {0u, 1u}) {
         for (std::uint32_t filter = 0; filter <= 6; ++filter) {
             const auto alpha = filter >= 2 && filter <= 4 ? .5f : 1.0f;
@@ -66,14 +70,19 @@ void TestUnfoggedMaterials(const War3RenderPluginApiV2* api, const War3RenderCre
             layers = {{{0, filter, unshaded, skinned ? 1.0f : alpha},
                 {0, filter, unshaded | WAR3_RENDER_MODEL_UNFOGGED, skinned ? 1.0f : alpha}}};
             alphas = {alpha, alpha};
-            Require((skinned ? api->submitSkinnedModelScene(renderer.handle, &skin)
-                             : api->submitModelScene(renderer.handle, &scene)) == 0, "unfogged model scene rejected");
+            // 每组filter是新的完整蒙皮场景；入口要求sceneVersion严格递增，不能重用第1组身份。
+            if (skinned) pose.base.base.base.sceneVersion = ++skinSceneVersion;
+            const auto submitted = skinned ? api->submitSkinnedModelScene(renderer.handle, &skin)
+                                           : api->submitModelScene(renderer.handle, &scene);
+            if (submitted != 0) std::cerr << "unfogged submit skinned=" << skinned << " unshaded=" << unshaded
+                << " filter=" << filter << " sceneVersion=" << skinSceneVersion << " result=" << submitted << '\n';
+            Require(submitted == 0, "unfogged model scene rejected");
             const auto capture = [&] {
                 if (!skinned) return Capture(renderer, info.width, info.height, 947);
                 War3RenderSkinnedCapturedFrameV2 receipt{sizeof(receipt)};
                 std::vector<std::uint8_t> pixels(static_cast<std::size_t>(info.width) * info.height * 4);
                 Require(api->captureSkinnedFrameRgba(renderer.handle, pixels.data(), pixels.size(), &receipt) == 0
-                    && receipt.skin.sceneVersion == 1 && receipt.skin.contentVersion == 1
+                    && receipt.skin.sceneVersion == skinSceneVersion && receipt.skin.contentVersion == 1
                     && receipt.skin.frameCount == receipt.frame.view.frameCount
                     && receipt.frame.capture.documentRevision == 947, "unfogged skin completed identity wrong");
                 return pixels;
