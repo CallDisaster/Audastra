@@ -3,20 +3,28 @@
 #include "CredentialStore.h"
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QDirIterator>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QHostAddress>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QProcess>
+#include <QProcessEnvironment>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
+#include <QUuid>
 #include <QtTest>
 
+#include <Windows.h>
+
+#include <cstdio>
 #include <functional>
 #include <memory>
 
@@ -25,6 +33,93 @@ using namespace War3Map::Agent;
 namespace {
 
 const QString kFakeKey = QStringLiteral("controller-fixture-secret-123");
+bool portableRuntimeChild = false;
+
+class QuietProcessErrors final {
+public:
+    QuietProcessErrors() : previous_(GetErrorMode()) {
+        SetErrorMode(previous_ | SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+    }
+    ~QuietProcessErrors() { SetErrorMode(previous_); }
+private:
+    DWORD previous_;
+};
+
+class PortableChildJob final {
+public:
+    PortableChildJob() {
+        name = QStringLiteral("Local\\Audastra-PortableAgent-%1-%2")
+            .arg(GetCurrentProcessId()).arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+        handle_ = CreateJobObjectW(nullptr, reinterpret_cast<LPCWSTR>(name.utf16()));
+        const auto createdError = GetLastError();
+        if (!handle_ || createdError == ERROR_ALREADY_EXISTS) {
+            error = QStringLiteral("Cannot create a unique portable child Job: %1").arg(createdError);
+            if (handle_) CloseHandle(handle_);
+            handle_ = nullptr;
+            return;
+        }
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(handle_, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+            error = QStringLiteral("Cannot configure portable child Job: %1").arg(GetLastError());
+            CloseHandle(handle_); handle_ = nullptr;
+        }
+    }
+    ~PortableChildJob() {
+        if (handle_) { TerminateJobObject(handle_, 125); CloseHandle(handle_); }
+    }
+    bool Stop() { return handle_ && TerminateJobObject(handle_, 125); }
+    bool WaitEmpty(int timeout) {
+        QElapsedTimer elapsed; elapsed.start();
+        do {
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting{};
+            if (!QueryInformationJobObject(handle_, JobObjectBasicAccountingInformation, &accounting, sizeof(accounting), nullptr))
+                return false;
+            if (accounting.ActiveProcesses == 0) return true;
+            QTest::qWait(10);
+        } while (elapsed.elapsed() < timeout);
+        return false;
+    }
+    QString name, error;
+private:
+    HANDLE handle_ = nullptr;
+};
+
+bool JoinPortableChildJob(QString& error) {
+    const auto name = qEnvironmentVariable("AUDASTRA_TEST_PORTABLE_JOB");
+    if (name.isEmpty()) { error = QStringLiteral("Portable child Job is missing"); return false; }
+    const auto job = OpenJobObjectW(JOB_OBJECT_ASSIGN_PROCESS, FALSE, reinterpret_cast<LPCWSTR>(name.utf16()));
+    if (!job) { error = QStringLiteral("Open portable child Job failed: %1").arg(GetLastError()); return false; }
+    const bool joined = AssignProcessToJobObject(job, GetCurrentProcess()) != FALSE;
+    const auto joinedError = GetLastError();
+    // 父进程是唯一长期持有者；子进程不能使 kill-on-close 在父进程退出后失效。
+    CloseHandle(job);
+    qunsetenv("AUDASTRA_TEST_PORTABLE_JOB");
+    if (!joined) error = QStringLiteral("Join portable child Job failed: %1").arg(joinedError);
+    return joined;
+}
+
+bool CopyPortableFile(const QString& source, const QString& target, QString& error) {
+    QFile file(source);
+    if (!file.open(QIODevice::ReadOnly)) { error = source + QStringLiteral(": ") + file.errorString(); return false; }
+    QCryptographicHash original(QCryptographicHash::Sha256);
+    if (!original.addData(&file)) { error = QStringLiteral("Cannot hash portable source: ") + source; return false; }
+    if (!QFile::copy(source, target)) { error = QStringLiteral("Cannot copy portable file: ") + source; return false; }
+    QFile copied(target);
+    QCryptographicHash actual(QCryptographicHash::Sha256);
+    if (!copied.open(QIODevice::ReadOnly) || !actual.addData(&copied) || actual.result() != original.result()) {
+        error = QStringLiteral("Portable copied bytes differ: ") + target;
+        return false;
+    }
+    return true;
+}
+
+QByteArray ProcessDiagnostic(const QProcess& process) {
+    return QByteArray("exit=") + QByteArray::number(process.exitCode()) + " (0x"
+        + QByteArray::number(static_cast<quint32>(process.exitCode()), 16) + ") status="
+        + QByteArray::number(process.exitStatus()) + " state=" + QByteArray::number(process.state())
+        + " error=" + process.errorString().toUtf8();
+}
 
 QByteArray Chunk(const QJsonArray& choices) {
     return QByteArray("data: ") + QJsonDocument(QJsonObject{{QStringLiteral("id"), QStringLiteral("fixture-stream")},
@@ -178,6 +273,7 @@ class AgentControllerTests final : public QObject {
 private slots:
     void initTestCase();
     void realWorkerStreamsToolsAndRestoresCompleteSession();
+    void portableRuntimeUsesApplicationDirectoryWithoutOverrides();
     void stopClosesOnlyModelTaskAndKeepsFinishedToolChanges();
     void stopDuringToolWaitsForResultWithoutKillingTransaction();
     void mapSwitchStopsAndDoesNotReuseOtherMapHistory();
@@ -196,7 +292,9 @@ private:
 void AgentControllerTests::initTestCase() {
     node = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("agent-runtime/node.exe"));
     if (!QFileInfo::exists(node)) node = QStandardPaths::findExecutable(QStringLiteral("node"));
-    worker = QFINDTESTDATA("../../tools/agent-runtime/worker.mjs");
+    worker = portableRuntimeChild
+        ? QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("agent-runtime/worker.bundle.mjs"))
+        : QFINDTESTDATA("../../tools/agent-runtime/worker.mjs");
     QVERIFY2(!node.isEmpty() && QFileInfo(node).isFile(), "实际 Node 运行时缺失，不能以模拟进程替代。");
     QVERIFY2(!worker.isEmpty() && QFileInfo(worker).isFile(), "实际 PI worker 缺失，不能跳过真实工具循环。");
 }
@@ -208,7 +306,7 @@ void AgentControllerTests::Configure(AgentController& controller, const QString&
     QVERIFY2(credentials.Write(QStringLiteral("fixture-credential"), kFakeKey, &error), qPrintable(error));
     controller.SetCredentialDirectory(credentialDirectory);
     controller.SetHistoryDirectory(QDir(directory).filePath(QStringLiteral("history")));
-    controller.SetRuntimePaths(node, worker);
+    if (!portableRuntimeChild) controller.SetRuntimePaths(node, worker);
     controller.SetSettings(Settings(url));
     controller.SetActiveMap(QStringLiteral("独立测试地图"), QStringLiteral("map-A"));
     controller.SetSystemPrompt(QStringLiteral("调用工具取得真实测试事实，不伪造编辑结果。"));
@@ -239,6 +337,13 @@ void AgentControllerTests::realWorkerStreamsToolsAndRestoresCompleteSession() {
         QVERIFY2(LastEvent(events, QStringLiteral("run_end")).value(QStringLiteral("success")).toBool(),
             qPrintable(RunDiagnostic(events, controller, server.bodies.size())));
         QVERIFY(!controller.IsBusy()); QCOMPARE(dispatched, 1);
+        if (portableRuntimeChild) {
+            const auto* runtime = controller.findChild<QProcess*>();
+            QVERIFY(runtime != nullptr);
+            QCOMPARE(QFileInfo(runtime->program()).canonicalFilePath(), QFileInfo(node).canonicalFilePath());
+            QCOMPARE(runtime->arguments().size(), 1);
+            QCOMPARE(QFileInfo(runtime->arguments().front()).canonicalFilePath(), QFileInfo(worker).canonicalFilePath());
+        }
         QVERIFY(HasEvent(events, QStringLiteral("assistant_delta")));
         QVERIFY(HasEvent(events, QStringLiteral("changes")));
         const auto transcript = LastEvent(events, QStringLiteral("session_state")).value(QStringLiteral("messages")).toArray();
@@ -595,5 +700,102 @@ void AgentControllerTests::invalidTranscriptDoesNotSendModelRequests() {
     }
 }
 
-QTEST_GUILESS_MAIN(AgentControllerTests)
+void AgentControllerTests::portableRuntimeUsesApplicationDirectoryWithoutOverrides() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    QuietProcessErrors quietErrors; // 子进程继承，冷加载失败也不能弹出系统模态框。
+    PortableChildJob ownedJob;
+    QVERIFY2(ownedJob.error.isEmpty(), qPrintable(ownedJob.error));
+    const auto bin = directory.filePath(QStringLiteral("bin"));
+    const auto deployed = QDir(bin).filePath(QStringLiteral("agent-runtime"));
+    QVERIFY(QDir().mkpath(deployed));
+    const auto childExecutable = QDir(bin).filePath(QFileInfo(QCoreApplication::applicationFilePath()).fileName());
+    QString copyError;
+    QVERIFY2(CopyPortableFile(QCoreApplication::applicationFilePath(), childExecutable, copyError), qPrintable(copyError));
+    QVERIFY2(CopyPortableFile(node, QDir(deployed).filePath(QStringLiteral("node.exe")), copyError), qPrintable(copyError));
+    // 该测试宿主的 Qt/VC 导入依赖也须真正 app-local 部署。Svg 与 atomic_wait
+    // 是宿主的直接导入；仅复制 Core/Test 或依赖父进程 PATH 都不能证明冷启动。
+    const QStringList dependencies{QStringLiteral("Qt6Core.dll"), QStringLiteral("Qt6Gui.dll"),
+        QStringLiteral("Qt6Widgets.dll"), QStringLiteral("Qt6Network.dll"), QStringLiteral("Qt6Test.dll"),
+        QStringLiteral("Qt6Svg.dll"), QStringLiteral("msvcp140.dll"), QStringLiteral("msvcp140_1.dll"),
+        QStringLiteral("msvcp140_2.dll"), QStringLiteral("msvcp140_atomic_wait.dll"),
+        QStringLiteral("vcruntime140.dll"), QStringLiteral("vcruntime140_1.dll")};
+    for (const auto& dependency : dependencies)
+        QVERIFY2(CopyPortableFile(QDir(QCoreApplication::applicationDirPath()).filePath(dependency),
+            QDir(bin).filePath(dependency), copyError), qPrintable(copyError));
+
+    // 使用当前锁定依赖生成真实便携 worker，不复制 node_modules、不访问模型服务。
+    const auto buildScript = QFINDTESTDATA("../../tools/agent-runtime/build.mjs");
+    QVERIFY(!buildScript.isEmpty());
+    QProcess bundle;
+    bundle.setProgram(node);
+    bundle.setArguments({buildScript, deployed});
+    bundle.setWorkingDirectory(QFileInfo(buildScript).absolutePath());
+    bundle.start();
+    const bool bundleStarted = bundle.waitForStarted();
+    const bool bundleFinished = bundleStarted && bundle.waitForFinished(15000);
+    if (!bundleFinished && bundle.state() != QProcess::NotRunning) { bundle.kill(); bundle.waitForFinished(5000); }
+    const auto bundleDiagnostic = ProcessDiagnostic(bundle) + "\n" + bundle.readAllStandardOutput() + bundle.readAllStandardError();
+    QVERIFY2(bundleStarted && bundleFinished && bundle.exitStatus() == QProcess::NormalExit && bundle.exitCode() == 0,
+        bundleDiagnostic.constData());
+    QVERIFY(QFileInfo::exists(QDir(deployed).filePath(QStringLiteral("worker.bundle.mjs"))));
+    QVERIFY(QFileInfo::exists(QDir(deployed).filePath(QStringLiteral("runtime-manifest.json"))));
+
+    // 子进程的 applicationDir 是独立便携目录。生产控制器不注入运行时路径，
+    // 仍执行原有完整回环工具/会话恢复测试，并核实际 QProcess 的程序与参数。
+    QProcess child;
+    auto environment = QProcessEnvironment::systemEnvironment();
+    environment.remove(QStringLiteral("NODE_OPTIONS"));
+    environment.remove(QStringLiteral("NODE_PATH"));
+    environment.remove(QStringLiteral("QT_PLUGIN_PATH"));
+    environment.remove(QStringLiteral("QT_QPA_PLATFORM_PLUGIN_PATH"));
+    const auto windows = environment.value(QStringLiteral("SystemRoot"));
+    QVERIFY2(!windows.isEmpty(), "SystemRoot is required for the isolated portable process");
+    environment.insert(QStringLiteral("PATH"), bin + QDir::listSeparator() + QDir(windows).filePath(QStringLiteral("System32"))
+        + QDir::listSeparator() + windows);
+    environment.insert(QStringLiteral("AUDASTRA_TEST_PORTABLE_JOB"), ownedJob.name);
+    child.setProcessEnvironment(environment);
+    child.setProgram(childExecutable);
+    child.setWorkingDirectory(bin);
+    const auto childLog = directory.filePath(QStringLiteral("portable-child.qtest.txt"));
+    child.setArguments({QStringLiteral("--portable-agent-child"),
+        QStringLiteral("realWorkerStreamsToolsAndRestoresCompleteSession"),
+        QStringLiteral("-o"), childLog + QStringLiteral(",txt")});
+    child.start();
+    const bool started = child.waitForStarted();
+    const bool finished = started && child.waitForFinished(25000);
+    if (!finished) {
+        ownedJob.Stop();
+        if (child.state() != QProcess::NotRunning) { child.kill(); child.waitForFinished(5000); }
+    }
+    const bool emptyAfterExit = ownedJob.WaitEmpty(1000);
+    if (!emptyAfterExit) ownedJob.Stop();
+    const bool cleaned = emptyAfterExit || ownedJob.WaitEmpty(5000);
+    auto output = child.readAllStandardOutput() + child.readAllStandardError();
+    QFile childReport(childLog);
+    if (childReport.open(QIODevice::ReadOnly)) output += childReport.readAll();
+    else output += "\nchild QTest log unavailable: " + childReport.errorString().toUtf8();
+    const auto diagnostic = ProcessDiagnostic(child) + " started=" + QByteArray::number(started)
+        + " finished=" + QByteArray::number(finished) + " empty_after_exit=" + QByteArray::number(emptyAfterExit)
+        + " cleanup=" + QByteArray::number(cleaned) + "\n" + output;
+    QVERIFY2(started && finished, diagnostic.constData());
+    QVERIFY2(child.exitStatus() == QProcess::NormalExit && child.exitCode() == 0, diagnostic.constData());
+    QVERIFY2(emptyAfterExit && cleaned, diagnostic.constData());
+    QVERIFY2(output.contains("0 failed"), diagnostic.constData());
+    qInfo().noquote() << "Portable child cold start: 12 app-local DLLs; restricted PATH; default runtime; Job empty\n" << output;
+}
+
+int main(int argc, char* argv[]) {
+    bool child = false;
+    for (int index = 1; index < argc; ++index)
+        if (QByteArray(argv[index]) == "--portable-agent-child") child = true;
+    if (child) {
+        QString error;
+        if (!JoinPortableChildJob(error)) { std::fprintf(stderr, "%s\n", error.toUtf8().constData()); return 125; }
+    }
+    QCoreApplication application(argc, argv);
+    auto arguments = application.arguments();
+    portableRuntimeChild = arguments.removeOne(QStringLiteral("--portable-agent-child"));
+    AgentControllerTests tests;
+    return QTest::qExec(&tests, arguments);
+}
 #include "AgentControllerTests.moc"
