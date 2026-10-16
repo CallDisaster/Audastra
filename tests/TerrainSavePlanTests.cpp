@@ -322,9 +322,15 @@ void UnlistedMembersAreFrozenAndReadBack() {
     const auto saved = Take(MapArchiveSession::Open(candidate.path));
     Require(!saved.HasMember("war3map.shd") && plan.VerifyReadback(saved).Succeeded(),
         "actual readback verifies hidden derived members without changing listfile semantics");
-    const std::vector<MemberReplacement> changed{{"war3map.shd", {std::byte{8}}}};
-    const auto altered = Take(saved.SaveCandidate(directory.Path() / "altered.w3x", changed));
-    Require(!plan.VerifyReadback(Take(MapArchiveSession::Open(altered.path))).Succeeded(),
+    auto alteredFiles = files;
+    for (auto& file : alteredFiles) {
+        if (file.name == "war3map.shd") file.data = {std::byte{8}};
+        for (const auto& replacement : plan.Replacements())
+            if (file.name == replacement.name) file.data = replacement.data;
+    }
+    const auto altered = directory.Path() / "altered.w3x";
+    Require(IO::WriteFileBytes(altered, OpaqueArchiveBytes(alteredFiles)).Succeeded(), "write independent altered readback fixture");
+    Require(!plan.VerifyReadback(Take(MapArchiveSession::Open(altered))).Succeeded(),
         "independent readback detects changed unlisted shadow");
     Require(Take(IO::ReadFileBytes(path)) == original, "planning and successful candidate preserve all source archive bytes");
 }
@@ -332,11 +338,11 @@ void UnlistedMembersAreFrozenAndReadBack() {
 void ExactMissingAndRequiredMembersDoNotDependOnListfile() {
     TempDirectory directory;
     Fixture fixture;
-    const auto files = OpaqueFiles(fixture, "opaque/keep.bin\n");
-    const auto path = directory.Path() / "hidden-source.w3x";
+    const auto files = OpaqueFiles(fixture, "war3map.w3e\nwar3map.wpm\n");
+    const auto path = directory.Path() / "missing-derived-source.w3x";
     Require(IO::WriteFileBytes(path, OpaqueArchiveBytes(files)).Succeeded(), "write hidden terrain fixture");
     const auto source = Take(MapArchiveSession::Open(path));
-    Require(source.HasOpaqueMembers() && !source.HasMember("war3map.w3e"), "required terrain is unlisted");
+    Require(source.HasOpaqueMembers(), "unrelated source blocks remain opaque");
     fixture.Stroke(TerrainBrushKind::Blight);
     const auto plan = Take(TerrainSavePlan::Prepare(source, fixture.edits));
     Require(plan.SaveGate().Succeeded(), "exact required-member bytes match the attached baseline");
@@ -346,10 +352,29 @@ void ExactMissingAndRequiredMembersDoNotDependOnListfile() {
     const auto candidate = Take(source.SaveCandidate(directory.Path() / "hidden-candidate.w3x", plan.Replacements()));
     const auto saved = Take(MapArchiveSession::Open(candidate.path));
     Require(plan.VerifyReadback(saved).Succeeded(), "hidden required members and missing derivatives round trip");
-    const std::vector<MemberReplacement> unexpected{{"war3map.mmp", {}}};
-    const auto changed = Take(saved.SaveCandidate(directory.Path() / "unexpected.w3x", unexpected));
-    Require(!plan.VerifyReadback(Take(MapArchiveSession::Open(changed.path))).Succeeded(),
+    auto unexpected = files;
+    unexpected.push_back({"war3map.mmp", {}});
+    for (auto& file : unexpected)
+        for (const auto& replacement : plan.Replacements())
+            if (file.name == replacement.name) file.data = replacement.data;
+    const auto changed = directory.Path() / "unexpected.w3x";
+    Require(IO::WriteFileBytes(changed, OpaqueArchiveBytes(unexpected)).Succeeded(), "write independent unexpected-member readback fixture");
+    Require(!plan.VerifyReadback(Take(MapArchiveSession::Open(changed))).Succeeded(),
         "readback rejects a newly inserted derived member even when it is empty");
+
+    const auto hiddenPath = directory.Path() / "hidden-required-source.w3x";
+    const auto hiddenOriginal = OpaqueArchiveBytes(OpaqueFiles(fixture, "opaque/keep.bin\n"));
+    Require(IO::WriteFileBytes(hiddenPath, hiddenOriginal).Succeeded(), "write unlisted required-member fixture");
+    const auto hidden = Take(MapArchiveSession::Open(hiddenPath));
+    Require(!hidden.HasMember("war3map.w3e"), "fixture required terrain is unlisted");
+    const auto hiddenPlan = Take(TerrainSavePlan::Prepare(hidden, fixture.edits));
+    Require(hiddenPlan.Members()[0].sourceState == TerrainSaveSourceState::Present,
+        "the plan binds hidden required-member bytes rather than guessing absence");
+    const auto blocked = hidden.SaveCandidate(directory.Path() / "hidden-rejected.w3x", hiddenPlan.Replacements());
+    Require(!blocked.Succeeded() && !blocked.value && HasCode(blocked.diagnostics, "OPAQUE_NEW_MEMBER_REJECTED"),
+        "exact source capture does not bypass the archive's unlisted replacement restriction");
+    Require(!std::filesystem::exists(directory.Path() / "hidden-rejected.w3x")
+        && Take(IO::ReadFileBytes(hiddenPath)) == hiddenOriginal, "unsupported hidden-required save leaves no candidate or source change");
 }
 
 void ArchiveCaptureFailuresAreAtomicAndKeepHistory() {
