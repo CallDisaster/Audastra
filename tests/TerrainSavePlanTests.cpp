@@ -242,15 +242,11 @@ void PutU32(Bytes& bytes, std::size_t offset, std::uint32_t value) {
     std::memcpy(bytes.data() + offset, &value, sizeof(value));
 }
 
-// 原创未压缩 MPQ，SHD 存在但不列在 listfile；保留匿名原块不等于已证明缺失。
-void OpaqueDerivedSourceStaysUnknown() {
-    TempDirectory directory;
-    Fixture fixture;
-    const std::string list = "war3map.w3e\nwar3map.wpm\n";
-    const auto* first = reinterpret_cast<const std::byte*>(list.data());
-    const std::vector<MapArchiveMember> files{{"war3map.w3e", fixture.w3e}, {"war3map.wpm", fixture.wpm},
-        {"war3map.shd", {std::byte{71}}}, {"(listfile)", Bytes(first, first + list.size())}};
-    constexpr std::uint32_t hashCount = 8, blockCount = 4;
+// 原创未压缩 MPQ；清单与真实具名 hash 独立，以覆盖未列名正、负和坏编码。
+Bytes OpaqueArchiveBytes(const std::vector<MapArchiveMember>& files, bool unsupportedShadow = false) {
+    const auto blockCount = static_cast<std::uint32_t>(files.size());
+    std::uint32_t hashCount = 8;
+    while (hashCount < blockCount * 2) hashCount *= 2;
     std::uint32_t dataBytes = 0;
     for (const auto& file : files) dataBytes += static_cast<std::uint32_t>(file.data.size());
     const auto hashOffset = 32u + dataBytes, blockOffset = hashOffset + hashCount * 16;
@@ -277,21 +273,131 @@ void OpaqueDerivedSourceStaysUnknown() {
         const auto size = static_cast<std::uint32_t>(file.data.size());
         PutU32(bytes, blockOffset + index * 16, position); PutU32(bytes, blockOffset + index * 16 + 4, size);
         PutU32(bytes, blockOffset + index * 16 + 8, size);
-        PutU32(bytes, blockOffset + index * 16 + 12, Mpq::kFileExists | Mpq::kFileSingleUnit);
+        PutU32(bytes, blockOffset + index * 16 + 12, Mpq::kFileExists | Mpq::kFileSingleUnit
+            | (unsupportedShadow && file.name == "war3map.shd" ? Mpq::kFilePatch : 0u));
         position += size;
     }
     crypt.EncryptBlock(bytes.data() + hashOffset, hashCount * 16, crypt.HashString("(hash table)", Mpq::MpqCrypt::HashType::FileKey));
     crypt.EncryptBlock(bytes.data() + blockOffset, blockCount * 16, crypt.HashString("(block table)", Mpq::MpqCrypt::HashType::FileKey));
+    return bytes;
+}
+
+std::vector<MapArchiveMember> OpaqueFiles(const Fixture& fixture, std::string_view list) {
+    const auto* first = reinterpret_cast<const std::byte*>(list.data());
+    return {{"war3map.w3e", fixture.w3e}, {"war3map.wpm", fixture.wpm},
+        {"opaque/keep.bin", {std::byte{0xc3}, std::byte{0}, std::byte{0xff}}},
+        {"(listfile)", Bytes(first, first + list.size())}};
+}
+
+void UnlistedMembersAreFrozenAndReadBack() {
+    TempDirectory directory;
+    Fixture fixture;
+    auto files = OpaqueFiles(fixture, "war3map.w3e\nwar3map.wpm\n");
+    const Bytes shadow{std::byte{71}, std::byte{0}, std::byte{255}};
+    const Bytes markers{std::byte{0x92}, std::byte{0}, std::byte{0x1b}};
+    files.push_back({"war3map.shd", shadow});
+    files.push_back({"war3map.mmp", markers}); // 不解释 opaque 内容，更不规范化。
+    files.push_back({"war3mapMap.blp", {}}); // 未列名的真实空文件也是 Present。
     const auto path = directory.Path() / "opaque-source.w3x";
-    Require(IO::WriteFileBytes(path, bytes).Succeeded(), "write private opaque fixture");
+    const auto original = OpaqueArchiveBytes(files);
+    Require(IO::WriteFileBytes(path, original).Succeeded(), "write private opaque fixture");
     const auto source = Take(MapArchiveSession::Open(path));
-    Require(source.HasOpaqueMembers() && !source.HasMember("war3map.shd"), "fixture has unlisted shadow");
+    Require(source.HasOpaqueMembers() && !source.HasMember("war3map.shd") && !source.HasMember("war3map.mmp"),
+        "fixture has unlisted derived members");
     fixture.Stroke(TerrainBrushKind::Raise);
     const auto plan = Take(TerrainSavePlan::Prepare(source, fixture.edits));
-    Require(plan.Members()[2].sourceState == TerrainSaveSourceState::Unknown && !plan.Members()[2].sourceSha256,
-        "unlisted shadow cannot be claimed absent or independently verified");
-    auto output = fixture.Output(); output.push_back({"war3map.shd", {std::byte{71}}});
-    Require(!plan.VerifyFrozenOutput(source.SourceSha256(), output).Succeeded(), "unknown source cannot be overwritten even by guessed bytes");
+    Require(plan.SaveGate().Succeeded(), "source exact capture does not change the existing dry-height gate");
+    Require(plan.Members()[2].sourceState == TerrainSaveSourceState::Present
+        && plan.Members()[2].sourceSha256 == Take(Sha256(shadow)), "unlisted shadow has exact identity");
+    Require(plan.Members()[3].sourceState == TerrainSaveSourceState::Present
+        && plan.Members()[3].sourceSha256 == Take(Sha256(markers)), "opaque marker bytes have exact identity");
+    Require(plan.Members()[4].sourceState == TerrainSaveSourceState::Present
+        && plan.Members()[4].sourceBytes == 0 && plan.Members()[4].sourceSha256 == Take(Sha256(Bytes{})),
+        "unlisted empty image is present and distinct from missing");
+    auto output = fixture.Output(); output.push_back({"WAR3MAP.SHD", shadow});
+    Require(plan.VerifyFrozenOutput(source.SourceSha256(), output).Succeeded(), "exact shadow preservation is verifiable");
+    output.back().data[1] = std::byte{1};
+    Require(!plan.VerifyFrozenOutput(source.SourceSha256(), output).Succeeded(), "unlisted shadow cannot be rewritten later");
+    const auto candidate = Take(source.SaveCandidate(directory.Path() / "candidate.w3x", plan.Replacements()));
+    const auto saved = Take(MapArchiveSession::Open(candidate.path));
+    Require(!saved.HasMember("war3map.shd") && plan.VerifyReadback(saved).Succeeded(),
+        "actual readback verifies hidden derived members without changing listfile semantics");
+    const std::vector<MemberReplacement> changed{{"war3map.shd", {std::byte{8}}}};
+    const auto altered = Take(saved.SaveCandidate(directory.Path() / "altered.w3x", changed));
+    Require(!plan.VerifyReadback(Take(MapArchiveSession::Open(altered.path))).Succeeded(),
+        "independent readback detects changed unlisted shadow");
+    Require(Take(IO::ReadFileBytes(path)) == original, "planning and successful candidate preserve all source archive bytes");
+}
+
+void ExactMissingAndRequiredMembersDoNotDependOnListfile() {
+    TempDirectory directory;
+    Fixture fixture;
+    const auto files = OpaqueFiles(fixture, "opaque/keep.bin\n");
+    const auto path = directory.Path() / "hidden-source.w3x";
+    Require(IO::WriteFileBytes(path, OpaqueArchiveBytes(files)).Succeeded(), "write hidden terrain fixture");
+    const auto source = Take(MapArchiveSession::Open(path));
+    Require(source.HasOpaqueMembers() && !source.HasMember("war3map.w3e"), "required terrain is unlisted");
+    fixture.Stroke(TerrainBrushKind::Blight);
+    const auto plan = Take(TerrainSavePlan::Prepare(source, fixture.edits));
+    Require(plan.SaveGate().Succeeded(), "exact required-member bytes match the attached baseline");
+    for (std::size_t index = 2; index < plan.Members().size(); ++index)
+        Require(plan.Members()[index].sourceState == TerrainSaveSourceState::Missing
+            && !plan.Members()[index].sourceSha256, "exact negative lookup proves missing despite unrelated opaque blocks");
+    const auto candidate = Take(source.SaveCandidate(directory.Path() / "hidden-candidate.w3x", plan.Replacements()));
+    const auto saved = Take(MapArchiveSession::Open(candidate.path));
+    Require(plan.VerifyReadback(saved).Succeeded(), "hidden required members and missing derivatives round trip");
+    const std::vector<MemberReplacement> unexpected{{"war3map.mmp", {}}};
+    const auto changed = Take(saved.SaveCandidate(directory.Path() / "unexpected.w3x", unexpected));
+    Require(!plan.VerifyReadback(Take(MapArchiveSession::Open(changed.path))).Succeeded(),
+        "readback rejects a newly inserted derived member even when it is empty");
+}
+
+void ArchiveCaptureFailuresAreAtomicAndKeepHistory() {
+    TempDirectory directory;
+    Fixture fixture;
+    fixture.Stroke(TerrainBrushKind::Raise);
+    const auto revision = fixture.edits.Revision();
+    const auto output = fixture.Output();
+    auto files = OpaqueFiles(fixture, "war3map.w3e\nwar3map.wpm\n");
+    files.push_back({"war3map.shd", Bytes(128, std::byte{0x55})});
+    const auto original = OpaqueArchiveBytes(files);
+    const auto path = directory.Path() / "source.w3x";
+    Require(IO::WriteFileBytes(path, original).Succeeded(), "write exact-source failure fixture");
+    const auto source = Take(MapArchiveSession::Open(path));
+    TerrainSavePlanLimits limits;
+    limits.maximumBytes = fixture.w3e.size() + fixture.wpm.size() + 127;
+    auto plan = TerrainSavePlan::Prepare(source, fixture.edits, limits);
+    Require(!plan.Succeeded() && !plan.value, "unlisted derived bytes also consume the capture budget");
+    const auto file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    Require(file != INVALID_HANDLE_VALUE, "hold private source writer handle without writing");
+    plan = TerrainSavePlan::Prepare(source, fixture.edits);
+    CloseHandle(file);
+    Require(!plan.Succeeded() && !plan.value && HasCode(plan.diagnostics, "SOURCE_LEASE_FAILED"),
+        "active source writer refuses an exact plan, never an unknown-member fallback");
+    const auto unsupportedPath = directory.Path() / "unsupported-shadow.w3x";
+    const auto unsupported = OpaqueArchiveBytes(files, true);
+    Require(IO::WriteFileBytes(unsupportedPath, unsupported).Succeeded(), "write private unsupported encoding fixture");
+    const auto unreadable = Take(MapArchiveSession::Open(unsupportedPath));
+    plan = TerrainSavePlan::Prepare(unreadable, fixture.edits);
+    Require(!plan.Succeeded() && !plan.value && HasCode(plan.diagnostics, "EXACT_MEMBER_ENCODING_UNSUPPORTED"),
+        "unreadable unlisted derivative refuses a plan instead of being called absent");
+    Require(Take(IO::ReadFileBytes(unsupportedPath)) == unsupported && Take(IO::ReadFileBytes(path)) == original,
+        "capture failures do not alter either source archive");
+    const auto afterFailure = fixture.edits.Replacements();
+    Require(fixture.edits.Revision() == revision && afterFailure.size() == output.size()
+        && std::equal(afterFailure.begin(), afterFailure.end(), output.begin(), [](const auto& left, const auto& right) {
+            return left.name == right.name && left.data == right.data;
+        }) && fixture.edits.CanUndo(),
+        "capture failures preserve edit revision, exact output and undo history");
+    auto changed = original;
+    changed[32] ^= std::byte{1};
+    Require(IO::WriteFileBytes(path, changed).Succeeded(), "simulate a private source change after opening");
+    plan = TerrainSavePlan::Prepare(source, fixture.edits);
+    Require(!plan.Succeeded() && !plan.value && HasCode(plan.diagnostics, "SOURCE_CHANGED"),
+        "source SHA is rechecked before using snapshot identities");
+    Require(Take(IO::ReadFileBytes(path)) == changed && fixture.edits.Revision() == revision,
+        "stale-source refusal does not restore or write the source or consume history");
 }
 
 } // namespace
@@ -305,7 +411,9 @@ int main() {
         PreservedMembersCannotBeSilentlyRebuilt();
         SourceErrorsNeverReturnPartialPlans();
         ArchiveRoundTripChecksPlannedAndPreservedBytes();
-        OpaqueDerivedSourceStaysUnknown();
+        UnlistedMembersAreFrozenAndReadBack();
+        ExactMissingAndRequiredMembersDoNotDependOnListfile();
+        ArchiveCaptureFailuresAreAtomicAndKeepHistory();
         std::cout << "Terrain save plan tests passed\n";
         return 0;
     } catch (const std::exception& error) {

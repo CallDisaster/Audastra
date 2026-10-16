@@ -28,8 +28,9 @@ struct TerrainSavePlanLimits {
 };
 
 // 当前只计划已有保存门允许的干地高度和荒芜净变化，不扩大保存资格。
-// SHD、MMP、小地图始终明确标记为原样保留（或来源未知），没有重建声明。
-// Prepare 不重新读取磁盘；归档来源变化仍由 MapSaveService 的源租约检查。
+// SHD、MMP、小地图始终明确标记为原样保留或已证明缺失，没有重建声明。
+// 归档 Prepare 在同一已核来源的只读租约内按五个明确名字捕获，不依赖 listfile。
+// 目录 Prepare 只使用已冻结快照；实际保存仍须执行 MapSaveService 的源租约检查。
 // 调用方须串行排除会话写入。Result 成功表示计划完整，SaveGate 才表示地形门通过。
 class TerrainSavePlan {
 public:
@@ -63,7 +64,7 @@ public:
     // 后台执行只消费冻结身份，不借用活跃编辑会话；应在最终成员列表形成后、发布前调用。
     [[nodiscard]] Status VerifyFrozenOutput(std::string_view sourceSha256,
         std::span<const MemberReplacement> replacements, std::span<const std::string> removals = {}) const;
-    // 核对计划中身份已知的成员；Unknown 原块仍由归档保存服务验证保留。
+    // 按明确名字独立回读五个成员的存在性和原字身份，包括未列在 listfile 中的成员。
     // 不表示原版编辑器或游戏已经验证。
     [[nodiscard]] Status VerifyReadback(const MapArchiveSession& saved) const;
 

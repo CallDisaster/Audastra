@@ -16,6 +16,12 @@ constexpr std::array<std::string_view, 5> kNames{
     "war3map.w3e", "war3map.wpm", "war3map.shd", "war3map.mmp", "war3mapMap.blp"};
 constexpr std::string_view kSubsystem = "Terrain.SavePlan";
 
+std::array<std::string, kNames.size()> ExactNames() {
+    std::array<std::string, kNames.size()> names;
+    std::copy(kNames.begin(), kNames.end(), names.begin());
+    return names;
+}
+
 Status Reject(std::string code, std::string message) {
     return Status::Failure(std::string(kSubsystem), std::move(code), std::move(message));
 }
@@ -108,28 +114,26 @@ Result<TerrainSavePlan> TerrainSavePlan::Prepare(const MapArchiveSession& source
         CheckLimits(limits);
         TerrainSavePlan plan;
         plan.sourceSha256_ = source.SourceSha256();
+        ArchiveExactMemberLimits captureLimits;
+        captureLimits.memberCount = kNames.size();
+        captureLimits.memberBytes = limits.maximumBytes;
+        captureLimits.totalBytes = limits.maximumBytes;
+        // listfile 不是完整性证据。明确查询五个名字，连同未列名成员一起在同一
+        // 已核源 SHA 的只读租约内捕获；解码失败不得降为 Missing/Unknown。
+        const auto names = ExactNames();
+        const auto captured = Take(source.DescribeExactMemberIdentities(plan.sourceSha256_, names, captureLimits));
         std::size_t total = 0;
         for (std::size_t index = 0; index < kNames.size(); ++index) {
             auto& member = plan.members_[index];
             member.name = kNames[index];
-            const auto key = Canonical(member.name);
-            const MapArchiveMember* found = nullptr;
-            for (const auto& entry : source.Members()) {
-                if (Canonical(entry.name) != key) continue;
-                if (found)
-                    return Result<TerrainSavePlan>::Failure(std::string(kSubsystem), "TERRAIN_SAVE_PLAN_SOURCE_AMBIGUOUS",
-                        "地形保存成员存在多个来源：" + member.name);
-                found = &entry;
-            }
-            if (found) {
-                AddBytes(found->data.size(), total, limits);
+            const auto& identity = captured.members[index];
+            if (identity.present) {
+                AddBytes(static_cast<std::size_t>(*identity.byteSize), total, limits);
                 member.sourceState = TerrainSaveSourceState::Present;
-                member.sourceBytes = found->data.size();
-                member.sourceSha256 = Take(Sha256(found->data));
+                member.sourceBytes = static_cast<std::size_t>(*identity.byteSize);
+                member.sourceSha256 = identity.sha256;
             } else {
-                // 匿名 MPQ 块可能包含这个名字；不能从 listfile 未列出推断缺失。
-                member.sourceState = source.HasOpaqueMembers()
-                    ? TerrainSaveSourceState::Unknown : TerrainSaveSourceState::Missing;
+                member.sourceState = TerrainSaveSourceState::Missing;
             }
         }
         return Complete(std::move(plan), edits, limits, total);
@@ -273,14 +277,20 @@ Status TerrainSavePlan::VerifyFrozenOutput(std::string_view sourceSha256,
 
 Status TerrainSavePlan::VerifyReadback(const MapArchiveSession& saved) const {
     if (!saveGate_.Succeeded()) return saveGate_;
-    for (const auto& member : members_) {
-        if (member.sourceState == TerrainSaveSourceState::Unknown) continue;
-        if (member.outputSha256) {
-            const auto bytes = saved.ReadMember(member.name);
-            if (!bytes.Succeeded() || !bytes.value) return {bytes.diagnostics};
-            const auto checked = MatchBytes(member, *bytes.value, true);
-            if (!checked.Succeeded()) return checked;
-        } else if (saved.HasMember(member.name)) {
+    const auto names = ExactNames();
+    ArchiveExactMemberLimits limits;
+    limits.memberCount = kNames.size();
+    const auto captured = saved.DescribeExactMemberIdentities(saved.SourceSha256(), names, limits);
+    if (!captured.Succeeded() || !captured.value) return {captured.diagnostics};
+    for (std::size_t index = 0; index < members_.size(); ++index) {
+        const auto& member = members_[index];
+        const auto& identity = captured.value->members[index];
+        if (member.sourceState == TerrainSaveSourceState::Unknown)
+            return Reject("TERRAIN_SAVE_PLAN_READBACK_UNKNOWN", "地形保存计划缺少可核对的成员来源：" + member.name);
+        if (member.outputSha256 && (!identity.present || identity.byteSize != member.outputBytes
+            || identity.sha256 != member.outputSha256))
+            return Reject("TERRAIN_SAVE_PLAN_MEMBER_MISMATCH", "回读成员状态、长度或字节与地形保存计划不符：" + member.name);
+        if (!member.outputSha256 && identity.present) {
             return Reject("TERRAIN_SAVE_PLAN_READBACK_UNEXPECTED", "回读发现计划之外的新地形成员：" + member.name);
         }
     }
