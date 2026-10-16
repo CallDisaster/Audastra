@@ -1,4 +1,5 @@
 #include "War3MapCore/Render/ModelSceneLayerRenderer.h"
+#include "AnimationParticleMaterial.h"
 #include <limits>
 #include <exception>
 
@@ -26,6 +27,7 @@ Status ModelSceneLayerRenderer::Submit(std::shared_ptr<const AnimatedModelScene>
     }
     if (!scene || !frame || scene->sceneVersion != frame->sceneVersion || scene->documentRevision != frame->documentRevision)
         return Failure("MODEL_LAYER_FRAME_STALE", "附加层场景和姿势身份不符。");
+    if (auto status=CheckAnimationParticleMaterialFrame(*frame); !status.Succeeded()) return status;
     if (scene->dynamicMaterialAlphas) {
         War3RenderSkinMaterialCapabilitiesV2 capabilities{}; capabilities.base.base.base.base.structSize=sizeof(capabilities);
         if (!api_->getSkinStatus || api_->getSkinStatus(handle_,&capabilities.base.base.base.base)!=0 ||
@@ -49,10 +51,12 @@ Status ModelSceneLayerRenderer::Submit(std::shared_ptr<const AnimatedModelScene>
         colored.colors = scene->meshColors.data(); model = &colored.base;
     }
     const bool particles = scene->particlesEnabled && scene->particleInstanceCount;
+    const bool particleMaterial=particles && AnimationParticleMaterialSupported(api_,handle_);
+    auto particleWarning=particles ? AnimationParticleMaterialWarning(*scene,particleMaterial) : Status::Ok();
     const auto textures = DescribeModelTextures(scene->particleTextures);
-    const auto particleFrame = frame->DescribeParticles(model->initialPose);
+    const AnimationParticleDescriptor particleFrame(*frame,model->initialPose,particleMaterial);
     const War3RenderParticleSceneV2 particleScene{sizeof(particleScene), static_cast<std::uint32_t>(textures.chains.size()),
-        textures.chains.data(), model, &particleFrame};
+        textures.chains.data(), model, particleFrame.Get()};
     // 普通层发送旧prefix，保证具有旧附加层接口的插件仍可使用；新角色先协商。
     const War3RenderModelSceneLayerV2 input{role == WAR3_RENDER_MODEL_LAYER_MODEL
         ? WAR3_RENDER_MODEL_SCENE_LAYER_PREFIX_SIZE : static_cast<std::uint32_t>(sizeof(input)), 0, id_, target.parentModelEpoch, expected + 1, expected,
@@ -60,22 +64,26 @@ Status ModelSceneLayerRenderer::Submit(std::shared_ptr<const AnimatedModelScene>
     if (api_->submitModelSceneLayer(handle_, &input) != 0)
         return Failure("MODEL_LAYER_SUBMIT_REJECTED", "附加模型层未接收；主世界保持原状。");
     scene_ = std::move(scene); frame_ = std::move(frame); parentEpoch_ = target.parentModelEpoch; revision_ = expected + 1; role_ = role;
-    return {};
+    return particleWarning;
 } catch (const std::exception&) { return Failure("MODEL_LAYER_SUBMIT_FAILED", "附加模型层准备失败；未宣称上传成功。"); }
 Status ModelSceneLayerRenderer::Update(std::shared_ptr<const AnimationFrame> frame) {
     if (!frame_ || !scene_ || !frame || frame->sceneVersion != frame_->sceneVersion
         || frame->documentRevision != frame_->documentRevision || frame->contentVersion <= frame_->contentVersion
         || revision_ == std::numeric_limits<std::uint64_t>::max())
         return Failure("MODEL_LAYER_FRAME_STALE", "附加模型层更新的身份或修订已过期。");
+    if (auto status=CheckAnimationParticleMaterialFrame(*frame); !status.Succeeded()) return status;
     const auto pose = frame->Describe(); const auto colored = frame->DescribeColored(); const auto material=frame->DescribeMaterial();
     const auto* skin = scene_->dynamicMaterialAlphas ? &material.base.base : scene_->dynamicColors ? &colored.base : &pose;
-    const auto particles = frame->DescribeParticles(skin);
     const bool hasParticles = scene_->particlesEnabled && scene_->particleInstanceCount;
+    const bool particleMaterial=hasParticles && AnimationParticleMaterialSupported(api_,handle_);
+    auto particleWarning=hasParticles ? AnimationParticleMaterialWarning(*scene_,particleMaterial) : Status::Ok();
+    const AnimationParticleDescriptor particles(*frame,skin,particleMaterial);
     const War3RenderModelLayerUpdateV2 input{sizeof(input), 0, id_, parentEpoch_, revision_ + 1, revision_,
-        hasParticles ? nullptr : skin, hasParticles ? &particles : nullptr};
+        hasParticles ? nullptr : skin, hasParticles ? particles.Get() : nullptr};
     if (api_->updateModelSceneLayer(handle_, &input) != 0)
         return Failure("MODEL_LAYER_UPDATE_REJECTED", "附加模型层动态更新被拒绝；主世界保持原状。");
-    frame_ = std::move(frame); ++revision_; return {};
+    frame_ = std::move(frame); ++revision_;
+    return particleWarning;
 }
 Status ModelSceneLayerRenderer::Remove() {
     if (!frame_) return {};

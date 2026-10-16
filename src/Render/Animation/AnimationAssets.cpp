@@ -468,8 +468,8 @@ Result<std::unique_ptr<ModelAnimationService::State>> ModelAnimationService::Bui
                             warnings.push_back({DiagnosticSeverity::Warning,"Render.Animation","PARTICLE_PREM_UNSUPPORTED",
                                 input.model.modelPath + "：旧式 PREM 未实现，未将其他已显示部分称为完整效果。",std::nullopt});
                         if (limits.enableParticles && asset.particleUnfoggedPreview)
-                            warnings.push_back({DiagnosticSeverity::Warning,"Render.Animation","PARTICLE_UNFOGGED_PREVIEW",
-                                input.model.modelPath + "：当前粒子接口统一应用环境雾，条带 Unfogged 仅为预览近似；无雾时无差别。",std::nullopt});
+                            warnings.push_back({DiagnosticSeverity::Warning,"Render.Animation","PARTICLE_UNFOGGED_REQUIRES_CAPABILITY",
+                                input.model.modelPath + "：RIBB Unfogged需要插件声明逐draw粒子材质能力；实际呈现以同帧完成回执为准。",std::nullopt});
                         if (!asset.unavailableCode.empty() && !limits.retainUnsupportedStatic)
                             return fail(asset.unavailableCode.c_str(), "模型颜色或完整网格无法表达，未使用白色或部分几何替代。");
                         if (asset.unavailableCode.empty()) {
@@ -814,7 +814,7 @@ Status ModelAnimationService::InitializeStorage(State& state, const AnimationLim
         else ++scene.retainedStaticInstances;
         if (a != UINT32_MAX && state.assets[a].parsed) state.maxCollisionMatrices+=state.assets[a].parsed->collisionShapes.size();
     }
-    const auto baseFrameBytes=AnimationRequestGeometryBytes(catalog)+
+    const auto baseFrameBytes=AnimationRequestGeometryBytes(catalog)+AnimationParticleMaterialOwnerBytes(state.assets.capacity())+
         g.instances.size()*(sizeof(War3RenderSkinnedModelInstanceV2)+sizeof(AnimationPoseLink))+
         scene.specs.size()*sizeof(AnimationInstanceState)+g.instances.size()*sizeof(AnimationPickBounds)+
         (scene.dynamicMaterialAlphas ? g.instances.size()*sizeof(War3RenderMaterialLayerSliceV2) : 0)+

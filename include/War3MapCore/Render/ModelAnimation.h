@@ -5,6 +5,7 @@
 #include "War3MapCore/RenderPluginModelColor.h"
 #include "War3MapCore/RenderPluginMaterialAlpha.h"
 #include "War3MapCore/RenderPluginMaterialState.h"
+#include "War3MapCore/RenderPluginParticleMaterial.h"
 #include "War3RenderCore/PoseTypes.h"
 #include "War3RenderCore/MaterialChannels.h"
 
@@ -254,6 +255,7 @@ struct AnimationFrame {
     std::vector<AnimationPickBounds> pickBounds; // 与 poses 平行，同一 contentVersion。
     std::vector<War3RenderParticleVertexV2> particleVertices;
     std::vector<War3RenderParticleDrawV2> particleDraws;
+    std::vector<std::uint32_t> particleMaterialFlags; // 与实际draw同序；属于本帧，不借用资产/模拟暂存。
     std::vector<AnimationParticleLink> particleLinks; // 原始请求身份；包括启用后被局部拒绝的请求。
     std::shared_ptr<const AnimationParticleCheckpoint> particleCheckpoint;
     std::vector<War3RenderCore::PoseDiagnostic> diagnostics;
@@ -275,6 +277,7 @@ struct AnimationFrame {
     [[nodiscard]] War3RenderMaterialSkinUpdateV2 DescribeMaterial() const noexcept;
     [[nodiscard]] War3RenderMaterialStateSkinUpdateV2 DescribeMaterialState() const noexcept;
     [[nodiscard]] War3RenderParticleUpdateV2 DescribeParticles(const War3RenderSkinUpdateV2* modelPose) const noexcept;
+    [[nodiscard]] War3RenderParticleMaterialUpdateV2 DescribeParticleMaterial(const War3RenderSkinUpdateV2* modelPose) const noexcept;
 };
 struct AnimationUnavailableInstance {
     War3RenderCore::InstanceIdentity identity;
@@ -311,6 +314,7 @@ struct AnimatedModelScene {
     bool dynamicMaterialAlphas = false; // 真实 KMTA 要求显式能力，即使当前 alpha 正好等于静态值。
     bool dynamicMaterialStates = false; // KMTF 数值必须经过同帧显式材质渠道，不能伪造静态成功。
     bool particlesEnabled = false;
+    bool particleUnfogged = false; // 已接受RIBB需要逐draw材质能力；不代表provider或完成帧已支持。
     std::size_t particleInstanceCount = 0; // 创建时可运行粒子的请求数；与某帧是否有顶点无关。
     std::size_t budgetStaticInstances = 0; // Create 的容量估计，实际调度以 Frame 为准。
     SharedSceneVector<AnimationPickBounds> standPickBounds; // 与Stand姿势缓存平行；预算外实例按standPoseIndex取局部盒。

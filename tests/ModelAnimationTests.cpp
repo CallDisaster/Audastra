@@ -5,6 +5,8 @@
 #include "AnimationTestModel.h"
 #include "AnimationParticleContinuityTests.h"
 #include "AnimationParticleVisibilityPreviewTests.h"
+#include "AnimationRibbonMaterialTests.h"
+#include "AnimationRibbonRendererTests.h"
 #include "AnimationInstanceDeltaTests.h"
 #include "ModelAnimationMaterialTextures.h"
 #include "War3MapCore/Render/ModelAnimationCapture.h"
@@ -217,7 +219,8 @@ void RequestGeometryBudget() {
         std::uint64_t(frame->groups.size())*sizeof(War3RenderGroupMatrixV2)+
         std::uint64_t(frame->alphas.size())*(sizeof(float)+sizeof(War3RenderMeshColorV2));
     const auto geometryBytes=std::uint64_t(probe->Scene()->requestGeometryRequired.capacity())*sizeof(std::uint8_t);
-    AnimationLimits exact; exact.maxFrameBytes=payloadBytes+geometryBytes;
+    // 本原创夹具只建立一个asset槽；空粒子owner本体也进入共用固定账。
+    AnimationLimits exact; exact.maxFrameBytes=payloadBytes+geometryBytes+AnimationParticleMaterialOwnerBytes(1);
     auto narrow=exact; --narrow.maxFrameBytes;
     const auto refused=ModelAnimationService::Create({71,1,"geometry-budget"},specs,read,narrow);
     Require(!refused.Succeeded() && refused.diagnostics.front().code=="ANIMATION_FRAME_BUDGET",
@@ -544,6 +547,8 @@ std::vector<std::byte> ParticleBytes(bool pure,bool invalidSibling=false,bool in
     return std::move(w.bytes);
 }
 void ParticleService() {
+    AnimationRibbonMaterialTest::Run();
+    AnimationRibbonRendererTest::Run();
     AnimationParticleVisibilityPreviewTest::Run();
     Input input; const auto mixed=ParticleBytes(false),pure=ParticleBytes(true),partial=ParticleBytes(false,true),bindings=ParticleBytes(false,false,true);
     auto badFilter=mixed,history=mixed,geoset=mixed; Patch(badFilter,"PRE2",140,9); SingularScaleSegment(history);

@@ -6,8 +6,19 @@ struct AnimationParticleBinding {
     std::uint32_t requestIndex = 0, assetIndex = 0;
     std::vector<std::uint32_t> quotas, textures;
     std::vector<float> layerAlpha;
+    std::shared_ptr<const std::vector<std::uint32_t>> materialFlags;
     bool quotaLimited = false;
 };
+// 计算真实拥有的输出容量；旧帧的size变小也不会免除仍保留的flags容量。
+[[nodiscard]] inline std::uint64_t AnimationParticleOutputBytes(std::size_t vertices, std::size_t draws,
+    std::size_t flags) noexcept {
+    return std::uint64_t(vertices)*sizeof(War3RenderParticleVertexV2)
+        + std::uint64_t(draws)*sizeof(War3RenderParticleDrawV2) + std::uint64_t(flags)*sizeof(std::uint32_t);
+}
+[[nodiscard]] inline std::uint64_t AnimationParticleOutputBytes(const AnimationFrame& frame) noexcept {
+    return AnimationParticleOutputBytes(frame.particleVertices.capacity(), frame.particleDraws.capacity(),
+        frame.particleMaterialFlags.capacity());
+}
 struct AnimationParticleState {
     Particles::State state;
     Particles::Timeline timeline;

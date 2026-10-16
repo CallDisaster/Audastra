@@ -60,6 +60,14 @@ War3RenderParticleUpdateV2 AnimationFrame::DescribeParticles(const War3RenderSki
         static_cast<std::uint32_t>(particleDraws.size()), 0, sceneVersion, contentVersion,
         particleVertices.data(), particleDraws.data(), modelPose};
 }
+War3RenderParticleMaterialUpdateV2 AnimationFrame::DescribeParticleMaterial(const War3RenderSkinUpdateV2* modelPose) const noexcept {
+    War3RenderParticleMaterialUpdateV2 result{};
+    result.base = DescribeParticles(modelPose); result.base.structSize = sizeof(result);
+    result.materialFlagsFormat = WAR3_RENDER_PARTICLE_MATERIAL_FLAGS_V1;
+    result.materialFlagsCount = static_cast<std::uint32_t>(particleMaterialFlags.size());
+    result.materialFlags = particleMaterialFlags.empty() ? nullptr : particleMaterialFlags.data();
+    return result;
+}
 void AnimatedSceneDescriptor::Refresh(const AnimatedModelScene& data, const AnimationFrame& frame) {
     textures=DescribeModelScene(data.geometry); update=frame.Describe();
     scene={sizeof(scene),static_cast<std::uint32_t>(data.vertices.size()),static_cast<std::uint32_t>(data.geometry.indices.size()),

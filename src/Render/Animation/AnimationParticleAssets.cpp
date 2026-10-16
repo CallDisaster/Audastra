@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <functional>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -78,7 +79,9 @@ Status ReadAnimationParticleAsset(AnimationAsset& a, std::span<const std::byte> 
     // 这里只验证已界定发射器的材质内容与索引；锚点、资源读取和预算仍走原拒绝路径。
     std::vector<std::uint32_t> emitterNodes;
     std::vector<float> layerAlpha;
+    std::vector<std::uint32_t> materialFlags;
     emitterNodes.reserve(particles->emitters.size()); layerAlpha.reserve(particles->emitters.size());
+    materialFlags.reserve(particles->emitters.size());
     std::size_t retained = 0;
     bool unfoggedPreview = false;
     for (auto& e : particles->emitters) {
@@ -113,6 +116,7 @@ Status ReadAnimationParticleAsset(AnimationAsset& a, std::span<const std::byte> 
             continue;
         }
         emitterNodes.push_back(node->second); layerAlpha.push_back(alpha);
+        materialFlags.push_back(unfogged ? WAR3_PARTICLE_UNFOGGED : 0u);
         unfoggedPreview |= unfogged;
         if (&e != &particles->emitters[retained]) particles->emitters[retained] = std::move(e);
         ++retained;
@@ -120,6 +124,7 @@ Status ReadAnimationParticleAsset(AnimationAsset& a, std::span<const std::byte> 
     particles->emitters.resize(retained);
     // 验证失败不会把节点、透明度或部分发射器安装到资产；有效记录保持源次序。
     a.emitterNodes = std::move(emitterNodes); a.particleLayerAlpha = std::move(layerAlpha);
+    a.particleMaterialFlags = std::make_shared<const std::vector<std::uint32_t>>(std::move(materialFlags));
     a.particleUnfoggedPreview |= unfoggedPreview;
     if (!particles->skippedEmitters.empty()) {
         auto issues = std::make_shared<std::vector<AnimationParticleIssue>>();
@@ -132,7 +137,6 @@ Status ReadAnimationParticleAsset(AnimationAsset& a, std::span<const std::byte> 
             capability.rejectionCode = capability.skippedEmitters->front().code;
     }
     capability.available = !particles->emitters.empty();
-    if (a.particleUnfoggedPreview && capability.rejectionCode.empty()) capability.rejectionCode = "PARTICLE_UNFOGGED_PREVIEW";
     // PRE2/RIBB 读取器不实现 PREM，但启用的独立 PREM 主机会随后给出逐发射器能力结果。
     // 只撤掉读取器这条笼统提示；主机拒绝、子资产失败及其它粒子诊断保持原样。
     if (limits.enablePremPreview) std::erase_if(read.diagnostics, [](const auto& diagnostic) {
@@ -182,6 +186,29 @@ Result<std::shared_ptr<AnimationParticleHost>> CreateAnimationParticles(Animated
         return fail("ANIMATION_PARTICLE_TEXTURE_BUDGET", "驻留模型和粒子解码贴图超过总预算。");
     std::uint32_t particleEmitters = 0, ribbonEmitters = 0, maxNodes = 1, maxGroups = 1, maxGeosets = 1;
     std::uint64_t bindingBytes=sizeof(AnimationParticleCheckpoint)+scene.specs.size()*sizeof(std::uint32_t);
+    // 表随冻结资产常驻，所有实例只持有同一const owner；按唯一实际拥有表收费一次。
+    scene.particleUnfogged = false;
+    std::uint64_t materialTableBytes=0;
+    if (host->fixedFrameBytes>limits.maxFrameBytes)
+        return fail("ANIMATION_FRAME_BUDGET", "粒子固定身份存储超过帧预算。");
+    {
+        // 临时指针索引排序去重；不对大量资产做平方扫描，也不复制不可变payload。
+        const auto tableCount=std::count_if(assets.begin(),assets.end(),[](const auto& asset) { return bool(asset.particleMaterialFlags); });
+        std::vector<const std::vector<std::uint32_t>*> tables;
+        if (std::uint64_t(tableCount)*sizeof(tables.front())>limits.maxFrameBytes-host->fixedFrameBytes)
+            return fail("ANIMATION_FRAME_BUDGET", "粒子材质表去重索引超过工作预算。");
+        tables.reserve(static_cast<std::size_t>(tableCount));
+        const auto indexBytes=std::uint64_t(tables.capacity())*sizeof(tables.front());
+        for (const auto& asset:assets) if (asset.particleMaterialFlags) tables.push_back(asset.particleMaterialFlags.get());
+        std::sort(tables.begin(),tables.end(),std::less<>{});
+        const auto uniqueEnd=std::unique(tables.begin(),tables.end());
+        for (auto i=tables.begin();i!=uniqueEnd;++i)
+            materialTableBytes+=sizeof(**i)+std::uint64_t((*i)->capacity())*sizeof(std::uint32_t);
+        if (indexBytes>limits.maxFrameBytes-host->fixedFrameBytes ||
+            materialTableBytes>limits.maxFrameBytes-host->fixedFrameBytes-indexBytes)
+            return fail("ANIMATION_FRAME_BUDGET", "粒子不可变材质表与临时去重索引超过帧预算。");
+    }
+    host->fixedFrameBytes+=materialTableBytes;
     if (bindingBytes>limits.maxFrameBytes-host->fixedFrameBytes && limits.retainUnsupportedStatic) {
         for (auto& capability:scene.particleCapabilities) if (capability.available) {
             capability.available=false; capability.rejectionCode="ANIMATION_PARTICLE_INSTANCE_BUDGET";
@@ -199,6 +226,8 @@ Result<std::shared_ptr<AnimationParticleHost>> CreateAnimationParticles(Animated
         const auto& a = assets[requestAssets[r]];
         if (!a.particleCapability.available || !a.unavailableCode.empty()) continue;
         const auto emitterCount=a.particles->emitters.size();
+        if (!a.particleMaterialFlags || a.particleMaterialFlags->size()!=emitterCount)
+            return fail("ANIMATION_PARTICLE_MAPPING", "不可变粒子材质表与已接受发射器数量不符。");
         // 这里只收费实际绑定/两帧回执与共享检查点索引；尚未获准模拟的地图实例不预分配粒子池。
         const auto cost=2*sizeof(AnimationParticleBinding)+2*sizeof(AnimationParticleLink)+
             2*sizeof(std::shared_ptr<const AnimationParticleState>)+2*sizeof(std::uint8_t)+
@@ -283,6 +312,8 @@ Result<std::shared_ptr<AnimationParticleHost>> CreateAnimationParticles(Animated
         }
         particleEmitters += bindingParticles; ribbonEmitters += bindingRibbons;
         binding.layerAlpha = a.particleLayerAlpha;
+        binding.materialFlags = a.particleMaterialFlags;
+        scene.particleUnfogged |= a.particleUnfoggedPreview;
         binding.quotas.resize(a.particles->emitters.size());
         maxNodes = std::max(maxNodes, a.compiled.NodeCount()); maxGroups = std::max(maxGroups, a.compiled.GroupCount());
         maxGeosets = std::max(maxGeosets, a.compiled.GeosetCount()); host->bindings.push_back(std::move(binding));
@@ -323,7 +354,7 @@ Result<std::shared_ptr<AnimationParticleHost>> CreateAnimationParticles(Animated
         }
         // 旧检查点、候选状态，以及合并帧/临时几何的容量增长都计入；这是活跃计算预算，不是RSS。
         return host->fixedFrameBytes + 2 * stateBytes + 3 * std::min<std::uint64_t>(vertices, p.maxVertices) * sizeof(Particles::Vertex)
-            + 2ull * (particleEmitters + ribbonEmitters) * sizeof(War3RenderParticleDrawV2);
+            + 2ull * (particleEmitters + ribbonEmitters) * (sizeof(War3RenderParticleDrawV2)+sizeof(std::uint32_t));
     };
     if (measure(0, false) > limits.maxFrameBytes) {
         if (!limits.retainUnsupportedStatic) return fail("ANIMATION_FRAME_BUDGET", "粒子检查点和节点暂存已超过帧预算。");

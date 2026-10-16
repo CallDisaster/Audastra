@@ -41,6 +41,7 @@ struct AnimationAsset {
     std::shared_ptr<const Particles::Asset> particles;
     std::vector<std::uint32_t> emitterNodes;
     std::vector<float> particleLayerAlpha;
+    std::shared_ptr<const std::vector<std::uint32_t>> particleMaterialFlags; // 只含保留的emitter，资产与绑定共享不可变表。
     AnimationParticleCapability particleCapability;
     std::string originalParticleRejectionCode; // 静态读取结果；驻留重建不能复用上一轮 PREM 准入原因。
     bool drawable = false, cameraDependent = false, particleUnfoggedPreview = false;
@@ -48,6 +49,12 @@ struct AnimationAsset {
     AnimationVisibilityBounds visibilityBounds; // 原字节中的 MODL/SEQS 声明，读取后不可变。
     std::shared_ptr<const OwnedStaticModelAsset> ownedStaticAsset; // 原创静态辅助资产，与MDX/compiled互斥。
 };
+// 新材质通道的固定owner增量：前/当前帧vector本体与资产数组中的shared_ptr成员。
+// 即便粒子关闭，空容器仍存在；payload表/输出capacity由粒子host另行收费。
+[[nodiscard]] inline std::uint64_t AnimationParticleMaterialOwnerBytes(std::size_t assetCapacity) noexcept {
+    return 2ull*sizeof(std::vector<std::uint32_t>)
+        + std::uint64_t(assetCapacity)*sizeof(std::shared_ptr<const std::vector<std::uint32_t>>);
+}
 struct AnimationParticleHost;
 struct AnimationPremHost;
 struct AnimationVisibilityIndex;

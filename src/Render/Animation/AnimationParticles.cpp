@@ -107,6 +107,7 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
     checkpoint->frozen.resize(host.bindings.size(),1);
     if (!world) {
         frame.particleVertices.reserve(host.maxDynamicVertices); frame.particleDraws.reserve(host.maxDynamicDraws);
+        frame.particleMaterialFlags.reserve(host.maxDynamicDraws);
     }
     frame.particleLinks.reserve(host.bindings.size());
     std::vector<std::uint32_t> rendered;
@@ -175,8 +176,7 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
         std::uint64_t reservedAnchors=0,reservedNodes=0,reservedVertices=0,reservedDraws=0,reservedStates=0;
         std::uint64_t reservedParticles=0,reservedSegments=0;
         std::uint64_t admittedInstances=0;
-        const auto oldGeometry=previous ? previous->particleVertices.capacity()*sizeof(War3RenderParticleVertexV2)+
-            previous->particleDraws.capacity()*sizeof(War3RenderParticleDrawV2) : 0;
+        const auto oldGeometry=previous ? AnimationParticleOutputBytes(*previous) : 0;
         for (const auto b:order) {
             const auto& binding=host.bindings[b];const auto r=binding.requestIndex;
             if (outside(r)) continue;
@@ -212,11 +212,12 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
             }
             // 共享旧检查点只收费一次；本帧获准副本、输出及临时几何都收费，不把模拟配额称为RSS。
             // 同时保留同规模前帧输出的容量，避免旧/新容量交替挤出预算边缘实例。
-            const auto outputCapacity=(reservedVertices+plan.vertices)*sizeof(War3RenderParticleVertexV2)+
-                (reservedDraws+plan.draws)*sizeof(War3RenderParticleDrawV2);
+            const auto outputCapacity=AnimationParticleOutputBytes(reservedVertices+plan.vertices,
+                reservedDraws+plan.draws,reservedDraws+plan.draws);
             const auto bytes=host.fixedFrameBytes+checkpoint->stateBytes+std::max(oldGeometry,outputCapacity)+reservedStates+plan.stateBytes+
                 3*(reservedVertices+plan.vertices)*sizeof(Particles::Vertex)+
-                2*(reservedDraws+plan.draws)*sizeof(War3RenderParticleDrawV2);
+                2*(reservedDraws+plan.draws)*sizeof(War3RenderParticleDrawV2)+
+                (reservedDraws+plan.draws)*sizeof(std::uint32_t); // 当前输出拥有flags，临时geometry没有该数组。
             if (bytes>host.maxFrameBytes) { plan.code="ANIMATION_FRAME_BUDGET";continue; }
             plan.admitted=true;reservedAnchors+=plan.anchors;reservedNodes+=plan.nodes;
             ++admittedInstances;
@@ -225,6 +226,7 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
         }
         frame.particleVertices.reserve(static_cast<std::size_t>(reservedVertices));
         frame.particleDraws.reserve(static_cast<std::size_t>(reservedDraws));
+        frame.particleMaterialFlags.reserve(static_cast<std::size_t>(reservedDraws));
     }
     order.insert(order.end(),outsideOrder.begin(),outsideOrder.end());
     for (const auto b : order) {
@@ -414,8 +416,12 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
         link.drawCount = static_cast<std::uint32_t>(geometry.value->draws.size());
         Hash geometryHash;
         for (const auto& draw : geometry.value->draws) {
-            if (draw.emitter >= binding.textures.size()) return AnimationFailure("ANIMATION_PARTICLE_MAPPING", "粒子绘制发射器索引越界。");
+            if (draw.emitter >= binding.textures.size() || draw.emitter >= binding.layerAlpha.size()
+                || !binding.materialFlags || draw.emitter >= binding.materialFlags->size())
+                return AnimationFailure("ANIMATION_PARTICLE_MAPPING", "粒子绘制发射器索引越界。");
+            const auto materialFlags=(*binding.materialFlags)[draw.emitter];
             geometryHash.Add(draw.first); geometryHash.Add(draw.count); geometryHash.Add(draw.emitter); geometryHash.Add(draw.filter);
+            geometryHash.Add(materialFlags);
             for (std::uint32_t i = 0; i < draw.count; ++i) {
                 auto vertex = geometry.value->vertices[draw.first + i];
                 for (std::size_t c = 0; c < 3; ++c) vertex.color[c] *= current.tint[c];
@@ -427,6 +433,7 @@ Status PrepareAnimationParticles(AnimationParticleHost& host, const AnimatedMode
                 std::copy(vertex.color.begin(), vertex.color.end(), output.color); frame.particleVertices.push_back(output);
             }
             frame.particleDraws.push_back({link.firstVertex + draw.first, draw.count, binding.textures[draw.emitter], static_cast<std::uint32_t>(draw.filter)});
+            frame.particleMaterialFlags.push_back(materialFlags);
         }
         link.geometryHash = geometryHash.value;
         candidate.counts=counts;candidate.stateHash=link.stateHash;candidate.storageBytes=StateBytes(candidate);
