@@ -1,10 +1,18 @@
 #include "McpAuxiliaryTools.h"
+#include "McpTools.h"
 #include "McpWorkspace.h"
+#include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
+#include "War3MapCore/Script/ScriptToolchainLayout.h"
 #include "../MapDataFixtures.h"
+#include "../AuxiliarySaveFixtures.h"
 
 #include <Windows.h>
+#include <QCoreApplication>
+#include <QDir>
 #include <QJsonArray>
+#include <QJsonDocument>
+#include <QTemporaryDir>
 #include <algorithm>
 #include <bit>
 #include <chrono>
@@ -202,9 +210,168 @@ void StandaloneSequenceExportReseedAndRollback() {
     Write(f.root / "source/map/war3map.w3c", "broken external member");
     Need(!f.workspace->ApplyAuxiliaryPlan(plan).Succeeded(), "external new member changes are refused before publication");
 }
+
+QJsonObject Call(McpServer& server, const char* name, const QJsonObject& arguments = {}) {
+    const auto request = QJsonDocument(QJsonObject{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/call"},
+        {"params", QJsonObject{{"name", name}, {"arguments", arguments}}}}).toJson(QJsonDocument::Compact);
+    const auto reply = server.HandleMessage(request);
+    Need(reply && !reply->error, "registered auxiliary tool dispatch/schema");
+    const auto content = reply->result.toObject().value("content").toArray();
+    Need(content.size() == 1, "registered auxiliary tool returns one bounded receipt");
+    return QJsonDocument::fromJson(content[0].toObject().value("text").toString().toUtf8()).object();
 }
-int main() {
-    try { FacadeCrudDryRunAndOriginalUndo(); PartialUpdatesPreserveNativeBytes(); StandaloneSequenceExportReseedAndRollback(); }
+void RequireOk(const QJsonObject& result) {
+    if (result.value("ok").toBool()) return;
+    const auto rows = result.value("diagnostics").toArray();
+    Need(!rows.isEmpty(), "registered tool returned neither success nor diagnostics");
+    const auto diagnostic = rows.first().toObject();
+    throw std::runtime_error((diagnostic.value("code").toString() + ": " + diagnostic.value("message").toString()).left(2048).toStdString());
+}
+struct ScopedSaveEnvironment {
+    const bool hadTool = qEnvironmentVariableIsSet("FORGE_MCP_YDWE_ROOT"), hadGame = qEnvironmentVariableIsSet("FORGE_MCP_WAR3_ROOT");
+    const QByteArray previousTool = qgetenv("FORGE_MCP_YDWE_ROOT"), previousGame = qgetenv("FORGE_MCP_WAR3_ROOT");
+    explicit ScopedSaveEnvironment(const AuxiliarySaveFixtures::OriginalInputs& input) {
+        qputenv("FORGE_MCP_YDWE_ROOT", QString::fromStdWString(input.tool.wstring()).toUtf8());
+        qputenv("FORGE_MCP_WAR3_ROOT", QString::fromStdWString(input.game.wstring()).toUtf8());
+    }
+    ~ScopedSaveEnvironment() {
+        if (hadTool) qputenv("FORGE_MCP_YDWE_ROOT", previousTool); else qunsetenv("FORGE_MCP_YDWE_ROOT");
+        if (hadGame) qputenv("FORGE_MCP_WAR3_ROOT", previousGame); else qunsetenv("FORGE_MCP_WAR3_ROOT");
+    }
+};
+
+void StandaloneRegisteredArchiveSaveAndReopen() {
+    QTemporaryDir temporary(QDir::tempPath() + "/audastra-s6-mcp-save-XXXXXX");
+    Need(temporary.isValid(), "owned MCP archive evidence directory");
+    auto root = std::filesystem::path(temporary.path().toStdWString());
+    const auto retained = qEnvironmentVariable("FORGE_S6_MCP_SAVE_ROOT");
+    if (!retained.isEmpty()) {
+        root = std::filesystem::path(retained.toStdWString()).lexically_normal();
+        Need(root.is_absolute() && std::filesystem::create_directory(root), "retained MCP S6 root must be new and absolute");
+    }
+    const auto input = AuxiliarySaveFixtures::CreateOriginalInputs(root);
+    const auto layout = AuxiliarySaveFixtures::Take(Script::ResolveScriptToolchainLayout({input.tool, 24, {}}));
+    Need(layout.semanticsSupported && layout.waveExecutable.empty() && layout.jassHelperExecutable.empty()
+        && layout.pjassExecutable.empty(), "original complete tool layout cannot execute external tools");
+    const auto sourceSha = AuxiliarySaveFixtures::Take(Sha256File(input.source));
+    const auto gameSha = AuxiliarySaveFixtures::Take(Sha256File(input.game / "war3.mpq"));
+    const auto commonSha = AuxiliarySaveFixtures::Take(Sha256File(input.tool / "compiler/jass/24/common.j"));
+    const auto configSha = AuxiliarySaveFixtures::Take(Sha256File(input.ui / "config"));
+    ScopedSaveEnvironment environment(input);
+    McpServer server; RegisterAllTools(server); server.SetWorkspace(input.workspace, input.ui);
+    Need(server.Workspace() != nullptr, "actual registered standalone auxiliary workspace");
+    auto* workspace = server.Workspace();
+    const auto initial = Call(server, "get_revision"); RequireOk(initial);
+    const auto revision = initial.value("revision").toObject();
+    const auto begun = Call(server, "begin_edit", {{"expected_revision", revision}}); RequireOk(begun);
+    const QJsonObject envelope{{"transaction_id", begun.value("transaction_id")}, {"expected_revision", revision}};
+    const auto arguments = [&](MapDataKind kind, bool existing = false, std::size_t row = 0) {
+        const auto current = AuxiliarySaveFixtures::Take(workspace->MapDataContext(server.DocumentId(), server.DocumentGeneration()));
+        QJsonObject value{{"project_identity", QString::fromStdString(server.DocumentId())},
+            {"expected_revision", QString::fromStdString(workspace->ObjectRevision())},
+            {"kind", kind == MapDataKind::Regions ? "regions" : "cameras"},
+            {"expected_member_sha256", QString::fromStdString(AuxiliarySaveFixtures::Take(AuxiliaryEditing::MemberIdentity(*current.document, kind)))}};
+        if (existing) value.insert("source", QJsonObject{{"source_index", QString::number(static_cast<qulonglong>(row))},
+            {"row_key", QString::fromStdString(AuxiliarySaveFixtures::Take(MapFieldRowKey(*current.document, kind, row)))}});
+        return value;
+    };
+    auto command = arguments(MapDataKind::Regions); command.insert("fields", RegionFields("DraftRegion", 10));
+    const auto staleArguments = command; RequireOk(Call(server, "auxiliary_create", command));
+    const auto firstRevision = workspace->ObjectRevision();
+    Need(Code(Call(server, "auxiliary_create", staleArguments)) == "AUX_REVISION_CONFLICT"
+        && workspace->ObjectRevision() == firstRevision, "registered stale revision publishes no command");
+    command = arguments(MapDataKind::Regions, true); command.insert("fields", QJsonObject{{"name", "KeptRegion"}, {"top", 768}});
+    auto staleMember = command; staleMember["expected_member_sha256"] = QString(64, 'a');
+    Need(Code(Call(server, "auxiliary_update", staleMember)) == "AUX_ROW_STALE" && workspace->ObjectRevision() == firstRevision,
+        "registered stale member source changes no overlay");
+    RequireOk(Call(server, "auxiliary_update", command));
+    command = arguments(MapDataKind::Regions, true); command.insert("fields", QJsonObject{{"name", "RemovedRegion"}, {"creation_number", 11}});
+    RequireOk(Call(server, "auxiliary_copy", command));
+    RequireOk(Call(server, "auxiliary_delete", arguments(MapDataKind::Regions, true, 1)));
+    command = arguments(MapDataKind::Cameras); auto cameraFields = CameraFields("DraftCamera");
+    cameraFields["target_x"] = 16; cameraFields["target_y"] = 32; command.insert("fields", cameraFields);
+    RequireOk(Call(server, "auxiliary_create", command));
+    command = arguments(MapDataKind::Cameras, true); command.insert("fields", QJsonObject{{"name", "KeptCamera"}, {"rotation", 45}, {"target_y", 96}});
+    RequireOk(Call(server, "auxiliary_update", command));
+    command = arguments(MapDataKind::Cameras, true); command.insert("fields", QJsonObject{{"name", "RemovedCamera"}});
+    RequireOk(Call(server, "auxiliary_copy", command));
+    RequireOk(Call(server, "auxiliary_delete", arguments(MapDataKind::Cameras, true, 1)));
+    const auto edited = AuxiliarySaveFixtures::Take(workspace->MapDataContext(server.DocumentId(), server.DocumentGeneration())).document;
+    const auto editedRevision = workspace->ObjectRevision();
+    const auto stable = [&] {
+        const auto current = AuxiliarySaveFixtures::Take(workspace->MapDataContext(server.DocumentId(), server.DocumentGeneration()));
+        return workspace->HasActiveTransaction() && workspace->ObjectRevision() == editedRevision
+            && AuxiliaryEditing::AreEquivalentMapSources(*current.document, *edited)
+            && AuxiliarySaveFixtures::Take(Sha256File(input.source)) == sourceSha
+            && AuxiliarySaveFixtures::Take(Sha256File(input.game / "war3.mpq")) == gameSha;
+    };
+    command = arguments(MapDataKind::Regions, true); command.insert("fields", QJsonObject{{"top", -128}});
+    Need(!Call(server, "auxiliary_update", command).value("ok").toBool() && stable(), "registered invalid bounds preserve current dirty overlay");
+    const auto candidate = root / "candidate.w3x";
+    auto save = envelope; save.insert("source_map_path", QString::fromStdWString(input.source.wstring()));
+    save.insert("output_path", QString::fromStdWString(candidate.wstring()));
+    save.insert("expected_source_sha256", QString::fromStdString(sourceSha));
+    Need(Code(Call(server, "save_map_edit_candidate", save)) == "MCP_CURRENT_GENERATION_NOT_PROVEN"
+        && !std::filesystem::exists(candidate) && stable(), "registered save requires current preview and validation");
+    const auto preview = Call(server, "preview_edit", envelope); RequireOk(preview);
+    Need(preview.value("changes").toArray().size() == 2, "registered preview contains exactly two original native overlays");
+    RequireOk(Call(server, "validate_edit", envelope));
+    auto staleSave = save; auto wrongRevision = revision; wrongRevision["generation"] = QStringLiteral("999999999");
+    staleSave["expected_revision"] = wrongRevision;
+    Need(Code(Call(server, "save_map_edit_candidate", staleSave)) == "MCP_REVISION_CONFLICT" && stable(), "registered stale save revision is rejected without mutation");
+    staleSave = save; staleSave["expected_source_sha256"] = QString(64, 'a');
+    Need(Code(Call(server, "save_map_edit_candidate", staleSave)) == "SAVE_SOURCE_STALE"
+        && !std::filesystem::exists(candidate) && stable(), "stale archive source does not consume the active transaction");
+    const auto occupied = root / "occupied.w3x"; Write(occupied, "owned existing output");
+    auto occupiedSave = save; occupiedSave["output_path"] = QString::fromStdWString(occupied.wstring());
+    Need(Code(Call(server, "save_map_edit_candidate", occupiedSave)) == "MCP_OUTPUT_EXISTS"
+        && std::filesystem::file_size(occupied) == 21 && stable(), "registered save preserves an occupied output and its overlay");
+    const auto saved = Call(server, "save_map_edit_candidate", save); RequireOk(saved);
+    Need(saved.value("candidate_kind").toString() == QStringLiteral("mpq-map-archive") && saved.value("script_rebuilt").toBool()
+        && !saved.value("native_editor_verified").toBool() && !saved.value("game_runtime_verified").toBool()
+        && saved.value("edited_members").toArray().size() == 2 && stable(), "registered save returns a real new MPQ without rebinding the directory transaction");
+    auto reopened = AuxiliarySaveFixtures::Take(MapArchiveSession::Open(candidate));
+    AuxiliarySaveFixtures::VerifyNativeMembers(reopened, *edited, 0, 0);
+    const auto jass = AuxiliarySaveFixtures::VerifyJassInitialization(reopened);
+    const auto candidateSha = AuxiliarySaveFixtures::Take(Sha256File(candidate));
+    Need(saved.value("candidate_sha256").toString().toStdString() == candidateSha
+        && saved.value("source_sha256").toString().toStdString() == sourceSha, "registered receipt matches independently reopened archive identities");
+    const auto diagnostics = saved.value("diagnostics").toArray();
+    Need(std::any_of(diagnostics.begin(), diagnostics.end(), [](const auto& value) {
+        const auto row = value.toObject();
+        return row.value("code").toString() == QStringLiteral("SCRIPT_REBUILT")
+            && row.value("message").toString().contains(QStringLiteral("内置 vJass 翻译与语法检查"));
+    }), "registered save receipt identifies actual builtin translation/checking");
+    for (const auto& member : input.members) {
+        if (member.name != "war3map.j") Need(AuxiliarySaveFixtures::Take(reopened.ReadMember(member.name)) == member.data, "saved original T/native/unrelated member unchanged");
+        Need(AuxiliarySaveFixtures::Take(IO::ReadFileBytes(input.workspace / "map" / member.name, 1024 * 1024)) == member.data, "source directory member changed by archive save");
+    }
+    Need(Script::VerifyScriptToolchainLayout(layout).Succeeded()
+        && AuxiliarySaveFixtures::Take(Sha256File(input.tool / "compiler/jass/24/common.j")) == commonSha
+        && AuxiliarySaveFixtures::Take(Sha256File(input.ui / "config")) == configSha, "original tool/UI inputs remain unchanged");
+    RequireOk(Call(server, "rollback_edit", envelope));
+    const auto rolledBack = AuxiliarySaveFixtures::Take(workspace->MapDataContext(server.DocumentId(), server.DocumentGeneration()));
+    Need(!workspace->HasActiveTransaction() && !rolledBack.document->Regions() && !rolledBack.document->Cameras()
+        && AuxiliarySaveFixtures::Take(Sha256File(candidate)) == candidateSha
+        && AuxiliarySaveFixtures::Take(Sha256File(input.source)) == sourceSha
+        && AuxiliarySaveFixtures::Take(Sha256File(input.game / "war3.mpq")) == gameSha, "normal rollback restores missing members while retaining the successfully saved candidate");
+    const auto rootUtf8 = root.u8string();
+    std::cout << "s6_mcp_root=" << std::string(rootUtf8.begin(), rootUtf8.end()) << " source_sha256=" << sourceSha
+        << " candidate_sha256=" << candidateSha << " game_fixture_sha256=" << gameSha
+        << " script_sha256=" << AuxiliarySaveFixtures::Take(Sha256Text(jass))
+        << " registered_auxiliary_save_reopen=true original_tool_fixture=true real_ydwe_environment_verified=false game_executed=false\n";
+}
+}
+int main(int argc, char** argv) {
+    QCoreApplication application(argc, argv);
+    try {
+        if (application.arguments().size() == 2 && application.arguments()[1] == "--s6-archive-save") {
+            StandaloneRegisteredArchiveSaveAndReopen();
+            std::cout << "Auxiliary registered MPQ save authored fixture passed.\n"; return 0;
+        }
+        Need(application.arguments().size() == 1, "unknown auxiliary test mode");
+        FacadeCrudDryRunAndOriginalUndo(); PartialUpdatesPreserveNativeBytes(); StandaloneSequenceExportReseedAndRollback();
+    }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     std::cout << "Auxiliary MCP authored fixtures passed.\n"; return 0;
 }

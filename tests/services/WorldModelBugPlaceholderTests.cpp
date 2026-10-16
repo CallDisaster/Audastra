@@ -341,6 +341,107 @@ void ReadOnlyGeometryCoverage() {
         "ordinary catalog delta invalidated healthy pure-particle coverage");
     std::cout << "read-only-coverage: real baked/mixed/pure CPU producers; synthetic malformed mappings rejected, no GPU proof\n";
 }
+void ReadOnlyPlacementSource() {
+    Fixture f({256, 384, 32});
+    auto units = Good(ParseUnitPlacements(MapDataFixtures::EmptyUnitsV8Sub11()));
+    for (std::uint32_t i = 0; i < f.owners.size(); ++i) {
+        UnitPlacement row; row.rawcode = "hfoo"; row.creationId = 44; row.scale = {1, 1, 1};
+        row.position = f.scene->specs[i].model.position;
+        units.units.push_back(row); f.owners[i] = MakePlacementId(PlacementFile::Units, i, row);
+        f.scene->specs[i].hostKey = "read-only-record:" + std::to_string(i);
+    }
+    const std::vector<MapArchiveMember> members{{"war3mapUnits.doo", Good(units.Serialize())}};
+    const auto document = MapDocument::FromMembers(members);
+    Check(document.Member(MapDataKind::Units).state == MapDataState::Partial
+        && document.Member(MapDataKind::Doodads).state == MapDataState::Missing,
+        "original repeated-ID fixture did not retain partial/missing source states");
+    const auto binding = f.registry->Binding();
+    Check(!WorldInstanceRegistry::Create(document, binding, {}, {}).Succeeded(),
+        "repeated-ID fixture unexpectedly gained editable registry/save lineage");
+    const auto source = Good(WorldModelBugReadOnlySource::Capture(document, f.scene, binding, f.owners));
+    Check(source->Members()[0].state == MapDataState::Partial && source->Members()[0].parsedRecords == 3
+        && source->Members()[0].boundRequests == 3 && source->Members()[0].sourceSha256 == Good(Sha256(members[0].data))
+        && source->Members()[1].state == MapDataState::Missing && source->Members()[1].sourceSha256.empty()
+        && source->OwnedBytes() < kMaximumWorldModelBugSnapshotBytes,
+        "read-only source lost exact original SHA, indexed records, partial/missing scope or bounded ownership");
+    f.PoseFailure();
+    f.scene->unavailableInstances.push_back({f.scene->specs[1].identity, {}, 1, "MDX_READ_FAILED"});
+    const auto observe = [&] { return Good(CaptureWorldModelBugPlaceholderFrame(f.scene, *f.frame)); };
+    auto plan = Good(PlanWorldModelBugReadOnlyPlaceholders(f.scene, observe(), source, f.Flags()));
+    Check(plan.markers.size() == 2 && !plan.registry && plan.readOnlySource == source
+        && plan.markers[0].owner.index == 1 && plan.markers[1].owner.index == 0
+        && plan.markers[0].owner.creationId == plan.markers[1].owner.creationId
+        && plan.markers[0].identity != plan.markers[1].identity
+        && std::none_of(plan.markers.begin(), plan.markers.end(), [](const auto& marker) { return marker.selectable; }),
+        "read-only known faults lost indexed request lineage or gained business selection");
+    Check(!PlanWorldModelBugPlaceholderAbsence(f.scene, *f.frame).Succeeded(),
+        "read-only marker support weakened the existing complete absence gate");
+    const auto capture = SyntheticCapture(f, plan);
+    Check(Good(QualifyWorldModelBugPlaceholderCapture(plan, capture)).markerCount == 2,
+        "synthetic same-frame read-only layer binding rejected known source records");
+    auto noLayer = capture; noLayer.modelLayers.clear(); noLayer.modelLayerFrames.clear();
+    Check(!QualifyWorldModelBugPlaceholderCapture(plan, noLayer).Succeeded(), "read-only CPU plan substituted for completed layer");
+    auto selectable = plan; selectable.markers[0].selectable = true;
+    Check(!QualifyWorldModelBugPlaceholderCapture(selectable, capture).Succeeded(), "read-only marker gained selection authorization");
+    auto wrongRow = plan; ++wrongRow.markers[0].owner.index;
+    Check(!QualifyWorldModelBugPlaceholderCapture(wrongRow, capture).Succeeded(), "read-only capture accepted a different source record");
+    auto copiedScene = std::make_shared<Render::AnimatedModelScene>(*f.scene);
+    Check(!source->Matches(copiedScene)
+        && !PlanWorldModelBugReadOnlyPlaceholders(copiedScene, observe(), source, f.Flags()).Succeeded(),
+        "equal-looking scene replaced actual read-only source ownership");
+    f.policy[0].visible = false;
+    Check(Good(PlanWorldModelBugReadOnlyPlaceholders(f.scene, observe(), source, f.Flags())).markers.size() == 1,
+        "read-only marker ignored current owner visibility");
+    f.policy[0] = {};
+    const auto key = f.scene->specs[0].hostKey; f.scene->specs[0].hostKey += "-changed";
+    Check(!PlanWorldModelBugReadOnlyPlaceholders(f.scene, observe(), source, f.Flags()).Succeeded(),
+        "read-only plan accepted a replaced host key");
+    f.scene->specs[0].hostKey = key;
+    const auto path = f.scene->specs[0].model.modelPath; f.scene->specs[0].model.modelPath += "-changed";
+    Check(!QualifyWorldModelBugPlaceholderCapture(plan, capture).Succeeded(), "read-only capture accepted changed source asset key");
+    f.scene->specs[0].model.modelPath = path;
+    auto wrongBinding = binding; wrongBinding.sourceIdentity += "-old";
+    Check(!WorldModelBugReadOnlySource::Capture(document, f.scene, wrongBinding, f.owners).Succeeded(),
+        "read-only source accepted another map SHA");
+    wrongBinding = binding; ++wrongBinding.sourceGeneration;
+    Check(!WorldModelBugReadOnlySource::Capture(document, f.scene, wrongBinding, f.owners).Succeeded(),
+        "read-only source accepted another request generation");
+    auto duplicateOwners = f.owners; duplicateOwners[1] = duplicateOwners[0];
+    Check(!WorldModelBugReadOnlySource::Capture(document, f.scene, binding, duplicateOwners).Succeeded(),
+        "read-only source routed duplicate original IDs without record indices");
+    f.scene->specs[1].hostKey = key;
+    Check(!WorldModelBugReadOnlySource::Capture(document, f.scene, binding, f.owners).Succeeded(),
+        "read-only source accepted a host-key collision");
+    f.scene->specs[1].hostKey = "read-only-record:1";
+    const auto secondIdentity = f.scene->specs[1].identity; f.scene->specs[1].identity = f.scene->specs[0].identity;
+    Check(!WorldModelBugReadOnlySource::Capture(document, f.scene, binding, f.owners).Succeeded(),
+        "read-only source accepted reused request identity");
+    f.scene->specs[1].identity = secondIdentity;
+    auto ambiguousMembers = members; ambiguousMembers.push_back(members[0]);
+    Check(!WorldModelBugReadOnlySource::Capture(MapDocument::FromMembers(ambiguousMembers), f.scene, binding, f.owners).Succeeded(),
+        "read-only source selected one of multiple original members");
+    auto invalidMembers = members; invalidMembers[0].data.pop_back();
+    Check(!WorldModelBugReadOnlySource::Capture(MapDocument::FromMembers(invalidMembers), f.scene, binding, f.owners).Succeeded(),
+        "invalid/unknown source was treated as a complete empty placement table");
+    Check(!WorldModelBugReadOnlySource::Capture(MapDocument::FromMembers({}), f.scene, binding, f.owners).Succeeded(),
+        "missing source member authorized existing placement requests");
+    Check(!WorldModelBugReadOnlySource::Capture(document, f.scene, binding, std::span(f.owners.data(), 2)).Succeeded(),
+        "unbound scene request was silently excluded from read-only source coverage");
+    f.scene->specs[0].hostKey.assign(kMaximumWorldModelBugSnapshotBytes + 1, 'x');
+    const auto overBudget = WorldModelBugReadOnlySource::Capture(document, f.scene, binding, f.owners);
+    Check(!overBudget.Succeeded() && overBudget.diagnostics[0].code == "WORLD_BUG_PLACEHOLDER_READONLY_SOURCE_BUDGET",
+        "read-only source exceeded its independent ownership budget");
+    f.scene->specs[0].hostKey = key;
+    const auto originalUnavailable = f.scene->unavailableInstances.back().code;
+    f.scene->unavailableInstances.back().code = "MODEL_SOURCE_UNKNOWN";
+    Check(!PlanWorldModelBugReadOnlyPlaceholders(f.scene, observe(), source, f.Flags()).Succeeded(),
+        "unknown model failure was silently treated as empty read-only demand");
+    f.scene->unavailableInstances.back().code = originalUnavailable;
+    f.frame->states[2].identity.value += 100;
+    Check(!CaptureWorldModelBugPlaceholderFrame(f.scene, *f.frame).Succeeded(),
+        "healthy unobserved request state bypassed complete read-only frame identity validation");
+    std::cout << "read-only-placement: original repeated-ID member/real CPU assets; synthetic faults/completion, known-record scope only, no GPU proof\n";
+}
 void OwnedPicking() {
     Fixture f; f.PoseFailure(); auto plan = f.Plan();
     Render::AnimationInstanceSpec marker; marker.identity = plan.markers[0].identity; marker.hostKey = "marker";
@@ -390,6 +491,7 @@ void CompletedLayerContract() {
     Check(!WorldModelBugLayerFrameQualified(target, target, view, metric), "old global scene epoch accepted");
     CaptureBindingContract();
     ReadOnlyGeometryCoverage();
+    ReadOnlyPlacementSource();
     std::cout << "completed-layer-contract: synthetic metadata predicates; does not claim backend draw\n";
 }
 }

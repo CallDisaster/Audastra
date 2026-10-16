@@ -1,7 +1,9 @@
 #include "War3MapCore/Services/WorldModelBugPlaceholderService.h"
+#include "War3MapCore/Hash.h"
 #include <algorithm>
 #include <cmath>
 #include <set>
+#include <unordered_set>
 
 namespace War3Map::Services {
 bool WorldModelBugLayerFrameQualified(const War3RenderModelLayersTargetV2& before,
@@ -52,6 +54,83 @@ bool BakedMapping(const Render::AnimatedModelScene& scene, std::size_t rendered,
     return true;
 }
 }
+bool WorldModelBugReadOnlySource::Matches(const std::shared_ptr<const Render::AnimatedModelScene>& scene) const noexcept {
+    return scene && scene_.lock() == scene && sceneVersion_ == scene->sceneVersion
+        && requestCount_ == scene->specs.size() && binding_.sourceGeneration == scene->generation
+        && binding_.sourceIdentity == scene->sourceIdentity && binding_.mapRevision == scene->documentRevision;
+}
+Result<std::shared_ptr<const WorldModelBugReadOnlySource>> WorldModelBugReadOnlySource::Capture(
+    const MapDocument& document, std::shared_ptr<const Render::AnimatedModelScene> scene,
+    WorldInstanceBinding binding, std::span<const MapData::PlacementId> owners) try {
+    using Output = Result<std::shared_ptr<const WorldModelBugReadOnlySource>>;
+    const auto fail = [](const char* message) { return Output::Failure("World.BugPlaceholder",
+        "WORLD_BUG_PLACEHOLDER_READONLY_SOURCE_UNPROVEN", message); };
+    const auto budget = [] { return Output::Failure("World.BugPlaceholder",
+        "WORLD_BUG_PLACEHOLDER_READONLY_SOURCE_BUDGET", "只读占位来源超出独立16 MiB快照预算。"); };
+    if (!scene || !scene->generation || !scene->sceneVersion || binding.sourceIdentity.empty()
+        || binding.sourceGeneration != scene->generation || binding.sourceIdentity != scene->sourceIdentity
+        || binding.mapRevision != scene->documentRevision || owners.size() != scene->specs.size())
+        return fail("只读占位来源与当前地图、请求代次或场景修订不一致。");
+    if (owners.size() > kMaximumWorldModelBugSnapshotBytes / sizeof(WorldModelBugReadOnlyPlacement)
+        || binding.sourceIdentity.size() > kMaximumWorldModelBugSnapshotBytes) return budget();
+    auto output = std::shared_ptr<WorldModelBugReadOnlySource>(new WorldModelBugReadOnlySource);
+    output->scene_ = scene; output->binding_ = std::move(binding); output->sceneVersion_ = scene->sceneVersion;
+    output->requestCount_ = scene->specs.size(); output->placements_.reserve(owners.size());
+    output->ownedBytes_ = sizeof(*output) + output->binding_.sourceIdentity.capacity() + 1
+        + output->placements_.capacity() * sizeof(WorldModelBugReadOnlyPlacement);
+    if (output->ownedBytes_ > kMaximumWorldModelBugSnapshotBytes) return budget();
+    for (std::size_t file = 0; file < output->members_.size(); ++file) {
+        auto& fact = output->members_[file]; fact.kind = file ? MapDataKind::Doodads : MapDataKind::Units;
+        const auto& member = document.Member(fact.kind); fact.state = member.state;
+        const auto typed = file ? bool(document.Doodads()) : bool(document.Units());
+        if (member.state == MapDataState::Missing && member.sources.empty() && !typed) continue;
+        if ((member.state != MapDataState::Ready && member.state != MapDataState::Partial)
+            || member.sources.size() != 1 || !typed
+            || (member.state == MapDataState::Partial && member.diagnostics.empty())
+            || std::any_of(member.diagnostics.begin(), member.diagnostics.end(), [](const Diagnostic& item) {
+                return item.severity == DiagnosticSeverity::Error || item.code != "MAP_IDENTITY_AMBIGUOUS";
+            })) return fail("摆放来源未完整解析、来源歧义或含未支持的部分读取诊断；未将未知部分作为空表。");
+        const auto& original = file ? document.Doodads()->OriginalBytes() : document.Units()->OriginalBytes();
+        fact.parsedRecords = file ? document.Doodads()->doodads.size() + document.Doodads()->specialDoodads.size()
+            : document.Units()->units.size();
+        fact.initializationIdentityAmbiguous = member.state == MapDataState::Partial;
+        if (original != member.sources.front().data || member.recordCount != fact.parsedRecords)
+            return fail("摆放原始字节、完整解析记录数或唯一成员来源不一致。");
+        auto sha = Sha256(original); if (!sha.Succeeded()) return {std::nullopt, std::move(sha.diagnostics)};
+        fact.sourceSha256 = std::move(*sha.value); output->ownedBytes_ += fact.sourceSha256.capacity() + 1;
+    }
+    std::set<std::pair<MapData::PlacementFile, std::uint32_t>> rows;
+    std::unordered_set<std::uint64_t> identities;
+    std::unordered_set<std::string_view> hostKeys;
+    for (std::size_t request = 0; request < owners.size(); ++request) {
+        const auto& owner = owners[request]; const auto& spec = scene->specs[request];
+        std::size_t file = 0; bool rowMatches = false;
+        if (owner.file == MapData::PlacementFile::Units && document.Units()) {
+            rowMatches = owner.index < document.Units()->units.size()
+                && owner == MapData::MakePlacementId(owner.file, owner.index, document.Units()->units[owner.index]);
+        } else if (owner.file == MapData::PlacementFile::Doodads && document.Doodads()) {
+            file = 1; rowMatches = owner.index < document.Doodads()->doodads.size()
+                && owner == MapData::MakePlacementId(owner.file, owner.index, document.Doodads()->doodads[owner.index]);
+        }
+        if (!rowMatches || !rows.emplace(owner.file, owner.index).second || !spec.identity.value
+            || spec.identity.generation != scene->generation || !identities.insert(spec.identity.value).second
+            || spec.hostKey.empty() || !hostKeys.insert(spec.hostKey).second)
+            return fail("只读请求的原始记录索引、实例代次、hostKey或同序绑定重复/失配。");
+        if (spec.hostKey.size() > kMaximumWorldModelBugSnapshotBytes
+            || spec.model.modelPath.size() > kMaximumWorldModelBugSnapshotBytes) return budget();
+        auto key = Render::ModelAssetKey(spec.model);
+        if (key.size() > kMaximumWorldModelBugSnapshotBytes) return budget();
+        output->placements_.push_back({owner, spec.identity, spec.hostKey, std::move(key)});
+        const auto& added = output->placements_.back();
+        output->ownedBytes_ += added.owner.rawcode.capacity() + added.hostKey.capacity() + added.assetKey.capacity() + 3;
+        if (output->ownedBytes_ > kMaximumWorldModelBugSnapshotBytes) return budget();
+        ++output->members_[file].boundRequests;
+    }
+    return Output::Success(std::move(output));
+} catch (...) {
+    return Result<std::shared_ptr<const WorldModelBugReadOnlySource>>::Failure("World.BugPlaceholder",
+        "WORLD_BUG_PLACEHOLDER_READONLY_SOURCE_FAILED", "无法拥有完整只读占位来源，未生成不完整快照。");
+}
 Result<WorldModelBugPlaceholderFrameSnapshot> CaptureWorldModelBugPlaceholderFrame(
     const std::shared_ptr<const Render::AnimatedModelScene>& scene, const Render::AnimationFrame& frame) try {
     using Output = Result<WorldModelBugPlaceholderFrameSnapshot>;
@@ -64,6 +143,10 @@ Result<WorldModelBugPlaceholderFrameSnapshot> CaptureWorldModelBugPlaceholderFra
         || (!frame.requestVisibility.empty() && frame.requestVisibility.size() != scene->specs.size()))
         return fail("占位来源、完整状态或完成帧布局不匹配。");
     WorldModelBugPlaceholderFrameSnapshot snapshot;
+    for (std::size_t i = 0; i < frame.states.size(); ++i)
+        if (frame.states[i].identity != scene->specs[i].identity || !frame.states[i].identity.value
+            || frame.states[i].identity.generation != scene->generation)
+            return fail("占位完整状态的实例身份与当前请求代次不匹配。");
     snapshot.sourceScene = scene; snapshot.generation = scene->generation; snapshot.sourceIdentity = scene->sourceIdentity;
     snapshot.sceneVersion = frame.sceneVersion; snapshot.contentVersion = frame.contentVersion;
     snapshot.documentRevision = frame.documentRevision; snapshot.stateCount = frame.states.size(); snapshot.instanceCount = frame.instances.size();
@@ -73,7 +156,8 @@ Result<WorldModelBugPlaceholderFrameSnapshot> CaptureWorldModelBugPlaceholderFra
     std::size_t observationStringBytes = 0;
     const auto append = [&](std::uint32_t request, const War3RenderCore::InstanceIdentity& identity,
                             std::string_view code, std::string_view message) -> bool {
-        if (request >= scene->specs.size() || NonFailure(code) || !HasPath(scene->specs[request].model.modelPath)) return true;
+        const bool unknown = code.empty() || code.find("UNKNOWN") != code.npos;
+        if (request >= scene->specs.size() || (!unknown && NonFailure(code)) || !HasPath(scene->specs[request].model.modelPath)) return true;
         if (code.size() > kMaximumWorldModelBugSnapshotBytes || message.size() > kMaximumWorldModelBugSnapshotBytes
             || snapshot.observations.size() >= kMaximumWorldModelBugSnapshotBytes / sizeof(WorldModelBugObservation)) return false;
         const auto& state = frame.states[request];
@@ -115,44 +199,59 @@ Result<WorldModelBugPlaceholderPlan> PlanWorldModelBugPlaceholders(
     if (!snapshot.Succeeded()) return {std::nullopt, std::move(snapshot.diagnostics)};
     return PlanWorldModelBugPlaceholders(std::move(scene), *snapshot.value, std::move(registry), owners, flags);
 }
-Result<WorldModelBugPlaceholderPlan> PlanWorldModelBugPlaceholders(
+namespace {
+Result<WorldModelBugPlaceholderPlan> PlanObservations(
     std::shared_ptr<const Render::AnimatedModelScene> scene, const WorldModelBugPlaceholderFrameSnapshot& frame,
     std::shared_ptr<const WorldInstanceRegistry> registry, std::span<const MapData::PlacementId> owners,
-    const WorldModelBugFlagsReader& flags) try {
+    const WorldModelBugFlagsReader& flags, std::shared_ptr<const WorldModelBugReadOnlySource> readOnly = {}) try {
     using Output = Result<WorldModelBugPlaceholderPlan>;
     const auto fail = [](const char* message) { return Output::Failure("World.BugPlaceholder",
         "WORLD_BUG_PLACEHOLDER_SOURCE_STALE", message); };
-    if (!scene || !registry || !flags || frame.sourceScene.lock() != scene || !scene->sceneVersion || !frame.contentVersion
+    const auto ownerCount = readOnly ? readOnly->Placements().size() : owners.size();
+    if (!scene || (!registry && !readOnly) || (registry && readOnly) || !flags
+        || frame.sourceScene.lock() != scene || !scene->sceneVersion || !frame.contentVersion
         || frame.sceneVersion != scene->sceneVersion || frame.documentRevision != scene->documentRevision
         || frame.generation != scene->generation || frame.sourceIdentity != scene->sourceIdentity
         || frame.stateCount != scene->specs.size() || frame.instanceCount != scene->geometry.instances.size()
-        || owners.size() > scene->specs.size())
+        || ownerCount > scene->specs.size())
         return fail("占位来源、完整扫描快照或完成帧布局不匹配。");
-    const auto& binding = registry->Binding();
-    if (!binding.editSessionIdentity || binding.sourceIdentity.empty() || binding.sourceIdentity != scene->sourceIdentity
+    const auto& binding = registry ? registry->Binding() : readOnly->Binding();
+    if ((registry && !binding.editSessionIdentity) || binding.sourceIdentity.empty() || binding.sourceIdentity != scene->sourceIdentity
         || binding.sourceGeneration != scene->generation || binding.mapRevision != scene->documentRevision
-        || registry->CapturedSpecs().size() < owners.size())
+        || (registry && registry->CapturedSpecs().size() < ownerCount)
+        || (readOnly && !readOnly->Matches(scene)))
         return fail("占位实例谱系与当前地图、会话或来源代次不一致。");
     WorldModelBugPlaceholderPlan plan{binding, registry, scene, frame.contentVersion, {}};
+    plan.readOnlySource = readOnly;
     std::set<std::uint32_t> added;
     const auto append = [&](const WorldModelBugObservation& observation) -> bool {
         const auto request = observation.request; const auto& identity = observation.identity;
         const auto& code = observation.reasonCode; const auto& message = observation.reason;
-        if (request >= owners.size() || request >= scene->specs.size() || NonFailure(code)) return true;
+        if (request >= ownerCount || request >= scene->specs.size()) return !readOnly;
+        if (readOnly && (code.empty() || code.find("UNKNOWN") != code.npos)) return false;
+        if (NonFailure(code)) return true;
         const auto& spec = scene->specs[request];
+        const auto& owner = readOnly ? readOnly->Placements()[request].owner : owners[request];
         if (!HasPath(spec.model.modelPath)) return true;
-        const auto registered = registry->Find(owners[request]); const auto& captured = registry->CapturedSpecs()[request];
-        if (!registered || *registered != identity || spec.identity != identity || observation.stateIdentity != identity
-            || captured.identity != identity || captured.hostKey != spec.hostKey) return false;
+        if (spec.identity != identity || observation.stateIdentity != identity) return false;
+        if (registry) {
+            const auto registered = registry->Find(owner); const auto& captured = registry->CapturedSpecs()[request];
+            if (!registered || *registered != identity || captured.identity != identity || captured.hostKey != spec.hostKey) return false;
+        } else {
+            const auto& captured = readOnly->Placements()[request];
+            if (captured.owner != owner || captured.identity != identity || captured.hostKey != spec.hostKey
+                || captured.assetKey != Render::ModelAssetKey(spec.model)) return false;
+        }
         if (!observation.inView) return true;
-        const auto policy = flags(owners[request]);
+        const auto policy = flags(owner);
         if (!policy) return false;
         if (!policy->visible || added.contains(request)) return true;
         // ModelInstanceTransform及AnimationFrame实例都是row-major 3x4，位移列为3/7/11。
         const auto& position = observation.position;
         if (!std::all_of(position.begin(), position.end(), [](float value) { return std::isfinite(value); })) return false;
         added.insert(request);
-        plan.markers.push_back({owners[request], identity, request, position, spec.model.modelPath, code, message, !policy->locked});
+        plan.markers.push_back({owner, identity, request, position, spec.model.modelPath, code, message,
+            registry && !policy->locked});
         return true;
     };
     for (const auto& observation : frame.observations) {
@@ -163,6 +262,20 @@ Result<WorldModelBugPlaceholderPlan> PlanWorldModelBugPlaceholders(
 } catch (...) {
     return Result<WorldModelBugPlaceholderPlan>::Failure("World.BugPlaceholder", "WORLD_BUG_PLACEHOLDER_POLICY_FAILED",
         "无法冻结真实占位来源与显隐/锁定，未使用猜测身份。");
+}
+} // namespace
+Result<WorldModelBugPlaceholderPlan> PlanWorldModelBugPlaceholders(
+    std::shared_ptr<const Render::AnimatedModelScene> scene, const WorldModelBugPlaceholderFrameSnapshot& frame,
+    std::shared_ptr<const WorldInstanceRegistry> registry, std::span<const MapData::PlacementId> owners,
+    const WorldModelBugFlagsReader& flags) {
+    return PlanObservations(std::move(scene), frame, std::move(registry), owners, flags);
+}
+Result<WorldModelBugPlaceholderPlan> PlanWorldModelBugReadOnlyPlaceholders(
+    std::shared_ptr<const Render::AnimatedModelScene> scene, const WorldModelBugPlaceholderFrameSnapshot& frame,
+    std::shared_ptr<const WorldModelBugReadOnlySource> source, const WorldModelBugFlagsReader& flags) {
+    if (!source) return Result<WorldModelBugPlaceholderPlan>::Failure("World.BugPlaceholder",
+        "WORLD_BUG_PLACEHOLDER_READONLY_SOURCE_UNPROVEN", "只读占位缺少已验证原始摆放来源。");
+    return PlanObservations(std::move(scene), frame, {}, {}, flags, std::move(source));
 }
 
 Result<WorldModelBugPlaceholderPlan> PlanWorldModelBugPlaceholderAbsence(
@@ -236,6 +349,8 @@ Result<WorldModelBugPlaceholderCapturedFacts> QualifyWorldModelBugPlaceholderCap
     const auto& main = capture.animation;
     const auto& view = capture.view;
     if (!scene || (plan.registry && (plan.binding != plan.registry->Binding() || !plan.binding.editSessionIdentity))
+        || (plan.readOnlySource && (plan.registry || !plan.readOnlySource->Matches(scene)
+            || plan.binding != plan.readOnlySource->Binding()))
         || plan.binding.sourceIdentity.empty()
         || plan.binding.sourceGeneration != scene->generation || plan.binding.sourceIdentity != scene->sourceIdentity
         || plan.binding.mapRevision != scene->documentRevision || !scene->sceneVersion || !plan.completedContentVersion
@@ -249,7 +364,7 @@ Result<WorldModelBugPlaceholderCapturedFacts> QualifyWorldModelBugPlaceholderCap
         || !capture.modelLayersRevision || capture.modelLayers.size() > WAR3_RENDER_MAX_MODEL_SCENE_LAYERS
         || capture.modelLayerFrames.size() != capture.modelLayers.size() || plan.markers.size() > 262144)
         return fail("完成截图、原地图会话、完整层表或准备计划版本不符。");
-    if (!plan.registry) {
+    if (!plan.registry && !plan.readOnlySource) {
         const auto absence = PlanWorldModelBugPlaceholderAbsence(scene, *main);
         if (!plan.markers.empty() || !absence.Succeeded() || absence.value->binding != plan.binding)
             return fail("缺少实例谱系时，须由同次完整 CPU 帧证明没有整模型占位需求；不能授权非空占位。");
@@ -295,13 +410,25 @@ Result<WorldModelBugPlaceholderCapturedFacts> QualifyWorldModelBugPlaceholderCap
     std::set<std::uint64_t> identities;
     for (std::size_t i = 0; i < plan.markers.size(); ++i) {
         const auto& marker = plan.markers[i]; const auto& pose = frame.poses[i]; const auto& state = frame.states[i];
-        if (marker.request >= scene->specs.size() || marker.request >= plan.registry->CapturedSpecs().size())
+        if (marker.request >= scene->specs.size()
+            || (plan.registry && marker.request >= plan.registry->CapturedSpecs().size())
+            || (plan.readOnlySource && marker.request >= plan.readOnlySource->Placements().size())
+            || (!plan.registry && !plan.readOnlySource))
             return fail("占位原请求超出实际来源或实例谱系。");
-        const auto& spec = scene->specs[marker.request]; const auto& registered = plan.registry->CapturedSpecs()[marker.request];
-        const auto owner = plan.registry->Find(marker.owner);
+        const auto& spec = scene->specs[marker.request];
+        if (plan.registry) {
+            const auto& registered = plan.registry->CapturedSpecs()[marker.request];
+            const auto owner = plan.registry->Find(marker.owner);
+            if (!owner || *owner != marker.identity || registered.identity != marker.identity || registered.hostKey != spec.hostKey)
+                return fail("占位原始可编辑谱系与当前请求不一致。");
+        } else {
+            const auto& registered = plan.readOnlySource->Placements()[marker.request];
+            if (marker.selectable || registered.owner != marker.owner || registered.identity != marker.identity
+                || registered.hostKey != spec.hostKey || registered.assetKey != Render::ModelAssetKey(spec.model))
+                return fail("只读占位原始记录、资产或请求身份失配，或被错误授予选择资格。");
+        }
         const auto& sourceState = main->states[marker.request]; const auto& transform = frame.instances[i].instance.transform;
-        if (!identities.insert(marker.identity.value).second || !owner || *owner != marker.identity
-            || spec.identity != marker.identity || registered.identity != marker.identity || registered.hostKey != spec.hostKey
+        if (!identities.insert(marker.identity.value).second || spec.identity != marker.identity
             || marker.modelPath != spec.model.modelPath || sourceState.identity != marker.identity
             || state.identity != marker.identity || pose.identity != marker.identity
             || pose.requestIndex != i || pose.renderedInstance != i || pose.hidden || pose.outsideView

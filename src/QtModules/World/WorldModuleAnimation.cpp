@@ -306,21 +306,35 @@ void WorldModule::BindInstanceDiagnostics() {
     instanceDiagnosticQuery_ = std::move(*query.value);
     instanceDiagnosticVersion_ = worldSelection_.Version();
     instanceDiagnosticMapKey_ = MapKey(); instanceDiagnosticGeneration_ = generation_;
-    if ((bugPlaceholderPresenter_ || premPresenter_) && instanceRegistry_) {
+    if (bugPlaceholderPresenter_ || premPresenter_) {
         const auto registry = instanceRegistry_;
         const auto expected = *instanceDiagnosticVersion_;
-        const auto live = [this, scene, registry, expected] {
+        const auto editSessionIdentity = project_.mapEdits_ ? project_.mapEdits_->SessionIdentity() : 0;
+        const auto live = [this, scene, registry, expected, editSessionIdentity] {
             return InstanceDiagnosticsCurrent() && !project_.sourceChangeSuspected_ && !project_.sourceChangeConfirmed_
                 && animation_->Scene() == scene && instanceRegistry_ == registry && worldSelection_.Version()
+                && (project_.mapEdits_ ? project_.mapEdits_->SessionIdentity() : 0) == editSessionIdentity
                 && worldSelection_.Version()->document == expected.document
                 && worldSelection_.Version()->catalogRevision == expected.catalogRevision;
         };
-        if (bugPlaceholderPresenter_) bugPlaceholderPresenter_->Bind(scene, registry, placementIds_, live,
-            [this, registry, live](const MapData::PlacementId& owner) -> std::optional<Services::WorldEditorFlags> {
-                if (!live() || !registry->Find(owner)) return std::nullopt;
+        const Services::WorldModelBugFlagsReader flags = [this, registry, live](const MapData::PlacementId& owner)
+            -> std::optional<Services::WorldEditorFlags> {
+                if (!live() || (registry && !registry->Find(owner))) return std::nullopt;
                 return worldSelection_.Flags(Services::WorldObjectId{owner});
-            });
-        if (premPresenter_) premPresenter_->Bind(scene, registry, placementIds_, live);
+            };
+        if (bugPlaceholderPresenter_ && registry) bugPlaceholderPresenter_->Bind(scene, registry, placementIds_, live, flags);
+        else if (bugPlaceholderPresenter_ && unresolvedPlacements_.empty()) {
+            const auto document = CurrentDocument();
+            if (document) {
+                auto source = Services::WorldModelBugReadOnlySource::Capture(*document, scene,
+                    {scene->generation, expected.document.revision,
+                        project_.mapEdits_ ? project_.mapEdits_->SessionIdentity() : 0,
+                        project_.mapEdits_ ? project_.mapEdits_->Revision() : 0, expected.document.sourceSha256}, placementIds_);
+                if (source.Succeeded()) bugPlaceholderPresenter_->BindReadOnly(scene, std::move(*source.value), live, flags);
+                else project_.AddDiagnostics(source.diagnostics);
+            }
+        }
+        if (premPresenter_ && registry) premPresenter_->Bind(scene, registry, placementIds_, live);
     }
     RefreshInstanceDiagnostics();
     PublishResourceProblems();
@@ -903,7 +917,7 @@ Result<QJsonObject> WorldModule::ModelBugPlaceholderCaptureSnapshot(const Render
     const auto registry = instanceRegistry_;
     const auto diagnostics = instanceDiagnosticQuery_;
     auto prepared = bugPlaceholderPresenter_->Snapshot();
-    if (!registry) {
+    if (!registry && (!prepared || !prepared->readOnlySource)) {
         if (!scene || !frame || !unresolvedPlacements_.empty())
             return fail("只读场景仍有未解析摆放或缺少当前帧，不能证明无需占位。");
         auto absence = Services::PlanWorldModelBugPlaceholderAbsence(scene, *frame);
@@ -919,6 +933,15 @@ Result<QJsonObject> WorldModule::ModelBugPlaceholderCaptureSnapshot(const Render
             message += diagnostic.code + ": " + diagnostic.message + "；";
         return fail(std::move(message));
     }
+    const auto readOnly = prepared->readOnlySource;
+    if (readOnly) {
+        const auto document = CurrentDocument();
+        if (!document) return fail("只读占位缺少当前原始摆放文档。");
+        auto current = Services::WorldModelBugReadOnlySource::Capture(*document, scene, readOnly->Binding(), placementIds_);
+        if (!current.Succeeded()) return {std::nullopt, std::move(current.diagnostics)};
+        if ((*current.value)->Members() != readOnly->Members() || (*current.value)->Placements() != readOnly->Placements())
+            return fail("只读占位原始成员SHA、记录索引或资产绑定已变化。");
+    }
     // 每个身份仍独立拒绝；精确说明失配项，避免大图失败只剩一条合并原因。
     const std::pair<const char*, bool> checks[]{
         {"plan.scene", prepared->sourceScene == scene},
@@ -932,8 +955,8 @@ Result<QJsonObject> WorldModule::ModelBugPlaceholderCaptureSnapshot(const Render
         {"source.identity", prepared->binding.sourceIdentity == expected.document.sourceSha256},
         {"source.generation", prepared->binding.sourceGeneration == scene->generation},
         {"map.revision", prepared->binding.mapRevision == expected.document.revision},
-        {"edit.session", !registry || prepared->binding.editSessionIdentity == (project_.mapEdits_ ? project_.mapEdits_->SessionIdentity() : 0)},
-        {"edit.revision", !registry || prepared->binding.editRevision == (project_.mapEdits_ ? project_.mapEdits_->Revision() : 0)},
+        {"edit.session", (!registry && !readOnly) || prepared->binding.editSessionIdentity == (project_.mapEdits_ ? project_.mapEdits_->SessionIdentity() : 0)},
+        {"edit.revision", (!registry && !readOnly) || prepared->binding.editRevision == (project_.mapEdits_ ? project_.mapEdits_->Revision() : 0)},
     };
     for (const auto& [name, current] : checks) if (!current)
         return fail(std::string("占位捕获身份不符：") + name + "；没有生成完成证明。");
@@ -942,7 +965,7 @@ Result<QJsonObject> WorldModule::ModelBugPlaceholderCaptureSnapshot(const Render
             || project_.sourceChangeSuspected_ || project_.sourceChangeConfirmed_
             || animation_->Scene() != scene || animation_->Frame() != frame || viewport_->AnimationTarget() != frame
             || instanceRegistry_ != registry || instanceDiagnosticQuery_ != diagnostics
-            || (registry && bugPlaceholderPresenter_->Snapshot() != prepared)
+            || ((registry || readOnly) && bugPlaceholderPresenter_->Snapshot() != prepared)
             || (!registry && !unresolvedPlacements_.empty())
             || !worldSelection_.Version() || *worldSelection_.Version() != expected) return false;
         const auto actual = PlacementPresentationVersion();
@@ -950,12 +973,16 @@ Result<QJsonObject> WorldModule::ModelBugPlaceholderCaptureSnapshot(const Render
     };
     const Services::WorldModelBugFlagsReader flags = [&](const MapData::PlacementId& owner)
         -> std::optional<Services::WorldEditorFlags> {
-        if (!stillCurrent() || !registry || !registry->Find(owner)) return std::nullopt;
+        if (!stillCurrent() || (registry && !registry->Find(owner))) return std::nullopt;
         return worldSelection_.Flags(Services::WorldObjectId{owner});
     };
-    auto actualPlan = registry
-        ? Services::PlanWorldModelBugPlaceholders(scene, *capture.animation, registry, placementIds_, flags)
-        : Services::PlanWorldModelBugPlaceholderAbsence(scene, *capture.animation);
+    auto actualPlan = Services::PlanWorldModelBugPlaceholderAbsence(scene, *capture.animation);
+    if (registry) actualPlan = Services::PlanWorldModelBugPlaceholders(scene, *capture.animation, registry, placementIds_, flags);
+    else if (readOnly) {
+        const auto observed = Services::CaptureWorldModelBugPlaceholderFrame(scene, *capture.animation);
+        if (!observed.Succeeded()) return {std::nullopt, observed.diagnostics};
+        actualPlan = Services::PlanWorldModelBugReadOnlyPlaceholders(scene, *observed.value, readOnly, flags);
+    }
     if (!actualPlan.Succeeded()) return {std::nullopt, std::move(actualPlan.diagnostics)};
     if (actualPlan.value->binding != prepared->binding || actualPlan.value->markers != prepared->markers)
         return fail("实际读回帧的故障、位置或可选状态与准备计划不同；没有把旧准备内容冒充当前画面。");
@@ -988,7 +1015,8 @@ Result<QJsonObject> WorldModule::ModelBugPlaceholderCaptureSnapshot(const Render
     QJsonObject output{{"schemaVersion", 1}, {"realSourceBound", true}, {"syntheticFixture", false},
         {"captureSource", "renderer_completed_frame"}, {"sceneCurrent", true},
         {"sourceChangeSuspected", false}, {"sourceChangeConfirmed", false},
-        {"instanceLineageAvailable", registry != nullptr}, {"cpuFrameProvesNoPlaceholderDemand", registry == nullptr},
+        {"instanceLineageAvailable", registry != nullptr}, {"cpuFrameProvesNoPlaceholderDemand", !registry && !readOnly},
+        {"planKind", readOnly ? "read-only-known-placements-v1" : registry ? "editable-lineage-v1" : "absence-v1"},
         {"gpuLayerCaptured", facts.layerCaptured}, {"gpuLayerCompletionProven", facts.layerCaptured},
         {"absenceReason", facts.layerCaptured ? QJsonValue(QJsonValue::Null) : QJsonValue("no-marker-for-captured-frame")},
         {"visibleAcceptance", false}, {"selectionAcceptance", false}, {"gameplayVerified", false},
@@ -1007,6 +1035,20 @@ Result<QJsonObject> WorldModule::ModelBugPlaceholderCaptureSnapshot(const Render
             {"sourceGeneration", number(prepared->binding.sourceGeneration)},
             {"editSessionIdentity", number(prepared->binding.editSessionIdentity)},
             {"editRevision", number(prepared->binding.editRevision)}}}};
+    if (readOnly) {
+        QJsonArray members;
+        for (const auto& member : readOnly->Members()) members.push_back(QJsonObject{
+            {"member", member.kind == MapDataKind::Units ? "war3mapUnits.doo" : "war3map.doo"},
+            {"sourceState", member.state == MapDataState::Missing ? "missing" : member.state == MapDataState::Partial ? "partial" : "ready"},
+            {"sourceSha256", member.sourceSha256.empty() ? QJsonValue(QJsonValue::Null) : QJsonValue(QString::fromStdString(member.sourceSha256))},
+            {"parsedRecordCount", static_cast<double>(member.parsedRecords)},
+            {"initializationIdentityAmbiguous", member.initializationIdentityAmbiguous},
+            {"boundRequestCount", static_cast<double>(member.boundRequests)}});
+        output["sourceCoverage"] = QJsonObject{{"scope", "known-placement-records-only"}, {"version", 1},
+            {"members", members}, {"fullMapModelCompleteness", false}, {"editable", false},
+            {"unknownPlacements", static_cast<double>(unresolvedPlacements_.size())},
+            {"snapshotBytes", static_cast<double>(readOnly->OwnedBytes())}};
+    }
     for (const auto& layer : capture.modelLayers) if (layer.layerId == Services::WorldModelBugPlaceholderLayerId) {
         output["staticUploadCount"] = number(layer.skin.staticUploadCount);
         output["matrixUploadCount"] = number(layer.skin.matrixUploadCount);

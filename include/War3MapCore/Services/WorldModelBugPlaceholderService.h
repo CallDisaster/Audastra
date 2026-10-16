@@ -8,6 +8,40 @@
 
 namespace War3Map::Services {
 
+struct WorldModelBugReadOnlyMember {
+    MapDataKind kind = MapDataKind::Units;
+    MapDataState state = MapDataState::Missing;
+    std::string sourceSha256;
+    std::size_t parsedRecords = 0, boundRequests = 0;
+    bool initializationIdentityAmbiguous = false;
+    bool operator==(const WorldModelBugReadOnlyMember&) const = default;
+};
+struct WorldModelBugReadOnlyPlacement {
+    MapData::PlacementId owner;
+    War3RenderCore::InstanceIdentity identity;
+    std::string hostKey, assetKey;
+    bool operator==(const WorldModelBugReadOnlyPlacement&) const = default;
+};
+// 只绑定完整解析的原始记录及本次只读请求，不授予增量、业务选择或保存资格。
+// Partial 仅接受已完整解析但初始化 ID 重复的情形；其它未知来源继续拒绝。
+class WorldModelBugReadOnlySource final {
+public:
+    [[nodiscard]] static Result<std::shared_ptr<const WorldModelBugReadOnlySource>> Capture(
+        const MapDocument& document, std::shared_ptr<const Render::AnimatedModelScene> scene,
+        WorldInstanceBinding binding, std::span<const MapData::PlacementId> owners);
+    [[nodiscard]] bool Matches(const std::shared_ptr<const Render::AnimatedModelScene>& scene) const noexcept;
+    [[nodiscard]] const WorldInstanceBinding& Binding() const noexcept { return binding_; }
+    [[nodiscard]] const auto& Placements() const noexcept { return placements_; }
+    [[nodiscard]] const auto& Members() const noexcept { return members_; }
+    [[nodiscard]] std::size_t OwnedBytes() const noexcept { return ownedBytes_; }
+private:
+    std::weak_ptr<const Render::AnimatedModelScene> scene_;
+    WorldInstanceBinding binding_;
+    std::uint64_t sceneVersion_ = 0;
+    std::size_t requestCount_ = 0, ownedBytes_ = 0;
+    std::array<WorldModelBugReadOnlyMember, 2> members_;
+    std::vector<WorldModelBugReadOnlyPlacement> placements_;
+};
 struct WorldModelBugPlaceholder {
     MapData::PlacementId owner;
     War3RenderCore::InstanceIdentity identity;
@@ -23,6 +57,7 @@ struct WorldModelBugPlaceholderPlan {
     std::shared_ptr<const Render::AnimatedModelScene> sourceScene;
     std::uint64_t completedContentVersion = 0;
     std::vector<WorldModelBugPlaceholder> markers;
+    std::shared_ptr<const WorldModelBugReadOnlySource> readOnlySource;
 };
 using WorldModelBugFlagsReader = std::function<std::optional<WorldEditorFlags>(const MapData::PlacementId&)>;
 inline constexpr std::uint64_t WorldModelBugPlaceholderLayerId = 0x4255474d4f44454cull;
@@ -64,6 +99,10 @@ struct WorldModelBugPlaceholderCapturedFacts {
     std::shared_ptr<const Render::AnimatedModelScene> scene, const Render::AnimationFrame& frame,
     std::shared_ptr<const WorldInstanceRegistry> registry, std::span<const MapData::PlacementId> owners,
     const WorldModelBugFlagsReader& flags);
+// 与可编辑 registry 分离，标记永不可选。宿主仍须核对当前地图/会话/目录和完成帧。
+[[nodiscard]] Result<WorldModelBugPlaceholderPlan> PlanWorldModelBugReadOnlyPlaceholders(
+    std::shared_ptr<const Render::AnimatedModelScene> scene, const WorldModelBugPlaceholderFrameSnapshot& frame,
+    std::shared_ptr<const WorldModelBugReadOnlySource> source, const WorldModelBugFlagsReader& flags);
 [[nodiscard]] Result<WorldModelBugPlaceholderPlan> PlanWorldModelBugPlaceholders(
     std::shared_ptr<const Render::AnimatedModelScene> scene, const WorldModelBugPlaceholderFrameSnapshot& frame,
     std::shared_ptr<const WorldInstanceRegistry> registry, std::span<const MapData::PlacementId> owners,

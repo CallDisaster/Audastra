@@ -457,6 +457,49 @@ private slots:
         if (originalZ > 0) QCOMPARE(originals.front()[0].toInt(), 0);
         QCOMPARE(ground.size(), qsizetype{0}); QCOMPARE(state.rgbaCalls, 0);
     }
+    void ReadOnlyKnownRecordsUseCompletedLayerWithoutBusinessPicking() {
+        PlaceholderBackend state; auto backend = state.Api();
+        EditorPresentationFixture<PlaceholderBackend>::Enable(backend, state.editor);
+        backend.captureEditorPresentationFrameRgba = PlaceholderBackend::EditorCapture;
+        WorldViewport viewport(nullptr, &backend); viewport.resize(320, 240); QVERIFY(BindTerrain(viewport));
+        viewport.show(); QApplication::processEvents(); QVERIFY(viewport.RendererReady());
+        Fixture source; source.PoseFailure();
+        const auto beforeContent = source.frame->contentVersion;
+        auto units = Good(MapData::ParseUnitPlacements(MapDataFixtures::EmptyUnitsV8Sub11()));
+        for (std::uint32_t i = 0; i < source.owners.size(); ++i) {
+            MapData::UnitPlacement unit; unit.rawcode = "hfoo"; unit.creationId = 44; unit.scale = {1, 1, 1};
+            unit.position = source.scene->specs[i].model.position; units.units.push_back(unit);
+            source.owners[i] = MapData::MakePlacementId(MapData::PlacementFile::Units, i, unit);
+            source.scene->specs[i].hostKey = "read-only-record:" + std::to_string(i);
+        }
+        const std::vector<MapArchiveMember> members{{"war3mapUnits.doo", Good(units.Serialize())}};
+        const auto document = MapDocument::FromMembers(members);
+        QCOMPARE(document.Member(MapDataKind::Units).state, MapDataState::Partial);
+        auto capturedSource = Services::WorldModelBugReadOnlySource::Capture(document, source.scene,
+            source.registry->Binding(), source.owners);
+        QVERIFY(capturedSource.Succeeded());
+        state.drawEnabled = false;
+        QVERIFY(viewport.SetAnimationScene(source.scene, source.frame, Render::AnimationPickingScene(*source.scene, *source.frame)));
+        bool current = true; WorldModelBugPlaceholderPresenter presenter(&viewport);
+        // 尚无实际完成的父帧时，不得用CPU来源快照制造占位层。
+        presenter.BindReadOnly(source.scene, *capturedSource.value, [&] { return current; }, source.Flags());
+        QVERIFY(!presenter.Snapshot()); QVERIFY(state.layers.empty());
+        state.drawEnabled = true;
+        PlaceholderBackend::Frame(&state); presenter.Refresh();
+        QVERIFY(presenter.LastStatus().Succeeded()); QVERIFY(presenter.Snapshot());
+        QCOMPARE(presenter.Count(), std::size_t{1}); QCOMPARE(state.layers.size(), std::size_t{1});
+        QVERIFY(!presenter.Snapshot()->registry); QVERIFY(presenter.Snapshot()->readOnlySource == *capturedSource.value);
+        QVERIFY(!presenter.Snapshot()->markers.front().selectable);
+        QVERIFY(!viewport.HasBugPlaceholderPicking(presenter.Snapshot()));
+        PlaceholderBackend::Frame(&state);
+        QSignalSpy bugs(&viewport, &WorldViewport::BugPlaceholderClicked);
+        QTest::mouseClick(&viewport, Qt::LeftButton, Qt::NoModifier, QPoint(160, 120));
+        QCOMPARE(bugs.size(), qsizetype{0}); QCOMPARE(state.rgbaCalls, 0);
+        QCOMPARE(source.frame->contentVersion, beforeContent); QVERIFY(source.frame->poses[0].hidden);
+        current = false; presenter.Refresh();
+        QVERIFY(!presenter.Snapshot()); QCOMPARE(presenter.Count(), std::size_t{0}); QVERIFY(state.layers.empty());
+        QCOMPARE(state.rgbaCalls, 0);
+    }
     void FailedPlanRetainsDiagnosticAfterLayerCleanup() {
         PlaceholderBackend state; auto backend = state.Api();
         EditorPresentationFixture<PlaceholderBackend>::Enable(backend, state.editor);

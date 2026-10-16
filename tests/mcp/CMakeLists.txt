@@ -82,7 +82,9 @@ if(TARGET War3MapMcpProtocol)
     target_compile_definitions(audastra-mcp-auxiliary-tools-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
     target_compile_options(audastra-mcp-auxiliary-tools-tests PRIVATE /W4 /permissive- /utf-8)
     add_test(NAME mcp-auxiliary-tools COMMAND audastra-mcp-auxiliary-tools-tests)
-    set_tests_properties(mcp-auxiliary-tools PROPERTIES ENVIRONMENT_MODIFICATION
+    add_test(NAME mcp-auxiliary-archive-save COMMAND audastra-mcp-auxiliary-tools-tests --s6-archive-save)
+    set_tests_properties(mcp-auxiliary-archive-save PROPERTIES TIMEOUT 120)
+    set_tests_properties(mcp-auxiliary-tools mcp-auxiliary-archive-save PROPERTIES ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
     target_link_libraries(war3-map-mcp-map-data-tools-tests PRIVATE War3MapEditor::McpProtocol)

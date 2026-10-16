@@ -19,6 +19,7 @@
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
 #include "War3MapCore/Workspace.h"
 #include "../MapDataFixtures.h"
+#include "../AuxiliarySaveFixtures.h"
 
 #include <QDir>
 #include <QFile>
@@ -183,6 +184,7 @@ private slots:
     void UnboundIdentityAndRejectedFirstPublicationExposeFailure();
     void ActualSmallMapSaveAndReopen();
     void AuxiliaryCrudClassicLuaSaveAndReopen();
+    void AuxiliaryCrudClassicJassSaveAndReopen();
 };
 
 void TriggerRenameTests::GuiRenameSynchronizesReferencesAndWholeUndo() {
@@ -411,65 +413,12 @@ void TriggerRenameTests::AuxiliaryCrudClassicLuaSaveAndReopen() {
         Require(triggers.HasTrustedSourceSeal(), "original empty T has a real codec source seal");
 
         // 沿用 services-classic-lua-map-save 的原创声明方式；不复制游戏基础库，也不执行空函数。
-        std::string profile = "forge-lua-target-v1\nidentity\toriginal-s6-classic-lua-save\n", common, blizzard;
-        for (const auto* type : {"placement", "player", "trigger", "boolexpr", "alliancetype", "rect", "camerasetup", "camerafield"}) {
-            profile += std::string("type\t") + type + "\thandle\n";
-            common += std::string("type ") + type + " extends handle\n";
-        }
-        const auto api = [&](const char* name, const char* returns, std::initializer_list<const char*> parameters, bool bj = false) {
-            profile += std::string("api\t") + name + '\t' + returns;
-            std::string declaration = std::string(bj ? "function " : "native ") + name + " takes ";
-            std::size_t index = 0;
-            if (parameters.size() == 0) declaration += "nothing";
-            for (const auto* parameter : parameters) {
-                profile += std::string("\t") + parameter;
-                if (index) declaration += ", ";
-                declaration += std::string(parameter) + " p" + std::to_string(index++);
-            }
-            profile += '\n'; declaration += std::string(" returns ") + returns + '\n';
-            if (bj) blizzard += declaration + "endfunction\n";
-            else common += declaration;
-        };
-        common += "native ConvertPlacement takes integer i returns placement\n"
-            "native ConvertAllianceType takes integer i returns alliancetype\n"
-            "native ConvertCameraField takes integer i returns camerafield\n"
-            "native Cheat takes string text returns nothing\n";
-        api("GetCameraMargin", "real", {"integer"});
-        api("SetCameraBounds", "nothing", {"real", "real", "real", "real", "real", "real", "real", "real"});
-        api("SetDayNightModels", "nothing", {"string", "string"});
-        api("NewSoundEnvironment", "nothing", {"string"});
-        api("SetMapName", "nothing", {"string"}); api("SetMapDescription", "nothing", {"string"});
-        api("SetPlayers", "nothing", {"integer"}); api("SetTeams", "nothing", {"integer"});
-        api("SetGamePlacement", "nothing", {"placement"}); api("SetMapMusic", "nothing", {"string", "boolean", "integer"});
-        api("InitGenericPlayerSlots", "nothing", {}, true); api("InitBlizzard", "nothing", {}, true);
-        api("SetAmbientDaySound", "nothing", {"string"}, true); api("SetAmbientNightSound", "nothing", {"string"}, true);
-        api("TriggerEvaluate", "boolean", {"trigger"}); api("TriggerExecute", "nothing", {"trigger"});
-        api("DestroyTrigger", "nothing", {"trigger"}); api("DestroyBoolExpr", "nothing", {"boolexpr"});
-        api("DisableTrigger", "nothing", {"trigger"}); api("SetPlayerAlliance", "nothing", {"player", "player", "alliancetype", "boolean"});
-        api("Rect", "rect", {"real", "real", "real", "real"}); api("CreateCameraSetup", "camerasetup", {});
-        api("CameraSetupSetField", "nothing", {"camerasetup", "camerafield", "real", "real"});
-        api("CameraSetupSetDestPosition", "nothing", {"camerasetup", "real", "real", "real"});
-        common += "globals\n";
-        const auto constant = [&](const char* name, const char* type, std::string value) {
-            profile += std::string("constant\t") + name + '\t' + type + '\n';
-            common += std::string("constant ") + type + ' ' + name + " = " + value + '\n';
-        };
-        constant("MAP_PLACEMENT_USE_MAP_SETTINGS", "placement", "ConvertPlacement(0)");
-        for (const auto* name : {"CAMERA_MARGIN_LEFT", "CAMERA_MARGIN_RIGHT", "CAMERA_MARGIN_BOTTOM", "CAMERA_MARGIN_TOP"})
-            constant(name, "integer", "0");
-        for (const auto* name : {"ALLIANCE_PASSIVE", "ALLIANCE_HELP_REQUEST", "ALLIANCE_HELP_RESPONSE", "ALLIANCE_SHARED_XP",
-                "ALLIANCE_SHARED_SPELLS", "ALLIANCE_SHARED_VISION", "ALLIANCE_SHARED_CONTROL", "ALLIANCE_SHARED_ADVANCED_CONTROL"})
-            constant(name, "alliancetype", "ConvertAllianceType(0)");
-        int cameraField = 0;
-        for (const auto* name : {"CAMERA_FIELD_ZOFFSET", "CAMERA_FIELD_ROTATION", "CAMERA_FIELD_ANGLE_OF_ATTACK",
-                "CAMERA_FIELD_TARGET_DISTANCE", "CAMERA_FIELD_ROLL", "CAMERA_FIELD_FIELD_OF_VIEW", "CAMERA_FIELD_FARZ", "CAMERA_FIELD_NEARZ"})
-            constant(name, "camerafield", "ConvertCameraField(" + std::to_string(cameraField++) + ")");
-        common += "endglobals\n";
-        // 基础库属于独立原创游戏来源；放进地图会正确触发不透明脚本引用拒绝。
+        const auto declarations = AuxiliarySaveFixtures::OriginalDeclarations();
+        const auto& profile = declarations.profile;
+        // Original game-data source remains separate from the map.
         const auto gameRoot = root / "game", gameArchive = gameRoot / "war3.mpq";
         Require(std::filesystem::create_directory(gameRoot), "owned original game-data directory");
-        const std::vector<Mpq::MpqBuildFile> gameFiles{{"common.j", Bytes(common), false}, {"blizzard.j", Bytes(blizzard), false},
-            {"Units/UnitData.slk", Bytes("ID;PWXL\nC;X1;Y1;K\"ID\"\nC;X2;Y1;K\"Name\"\nC;X1;Y2;K\"u001\"\nC;X2;Y2;K\"Original S6 unit\"\nE\n"), false}};
+        const auto gameFiles = AuxiliarySaveFixtures::GameFiles(declarations);
         const auto gameWritten = Mpq::WriteMpqArchive(gameArchive, gameFiles);
         Require(gameWritten.Succeeded(), Explain(gameWritten));
         const auto gameSha = Take(Sha256File(gameArchive));
@@ -479,15 +428,8 @@ void TriggerRenameTests::AuxiliaryCrudClassicLuaSaveAndReopen() {
             + std::string(profileUtf8.begin(), profileUtf8.end()) + '\t' + Take(Sha256Text(profile))
             + "\nplayer_layout\tclassic12\nlanguage\tpreserve\ndialect\tclassic-127-ydwe\n"), "owned explicit classic Lua configuration");
 
-        MapData::MapSettings settings; settings.formatVersion = 25; settings.tileset = 'L';
-        settings.mapName = "Original S6 structural save"; settings.custom.emplace();
-        settings.cameraBounds = {-1024, -1024, 1024, 1024, -1024, 1024, 1024, -1024};
-        const auto settingsBytes = Take(settings.Serialize());
         const auto source = root / "auxiliary-source.w3x", candidate = root / "auxiliary-candidate.w3x";
-        const std::vector<MapArchiveMember> members{{"war3map.w3i", settingsBytes}, {"war3map.wtg", pair.wtg}, {"war3map.wct", pair.wct},
-            {"war3mapUnits.doo", MapDataFixtures::EmptyUnitsV8Sub11()}, {"war3map.doo", MapDataFixtures::EmptyDoodadsV8Sub11()},
-            {"war3map.j", Bytes("function config takes nothing returns nothing\nendfunction\nfunction main takes nothing returns nothing\nendfunction\n")},
-            {"unchanged.bin", Bytes("Original S6 unrelated member")}};
+        const auto members = AuxiliarySaveFixtures::SourceMembers(pair);
         (void)Take(WriteVerifiedArchive(source, members)); auto archive = Take(MapArchiveSession::Open(source));
         const auto sourceSha = Take(Sha256File(source)), profileSha = Take(Sha256File(profilePath)), configSha = Take(Sha256File(configuration));
         Require(!archive.HasMember("war3map.w3r") && !archive.HasMember("war3map.w3c"), "S6 members originally absent");
@@ -634,6 +576,145 @@ void TriggerRenameTests::AuxiliaryCrudClassicLuaSaveAndReopen() {
             << "check_receipt=" << QString::fromStdString(checkReceipt) << "stages=" << stages.join(" | ")
             << "classic_lua_save_reopen=true embedded_lua_jass_checks=true source_unchanged=true ydwe_executed=false classic_jass_pipeline_verified=false game_executed=false";
     } catch (const std::exception& e) { QFAIL(e.what()); }
+}
+
+void TriggerRenameTests::AuxiliaryCrudClassicJassSaveAndReopen() {
+    try {
+        QTemporaryDir temporary(QDir::tempPath() + "/audastra-s6-classic-jass-XXXXXX");
+        Require(temporary.isValid(), "owned S6 JASS directory");
+        auto root = std::filesystem::path(temporary.path().toStdWString());
+        const auto retained = qEnvironmentVariable("FORGE_S6_QT_SAVE_ROOT");
+        if (!retained.isEmpty()) {
+            root = std::filesystem::path(retained.toStdWString()).lexically_normal();
+            Require(root.is_absolute() && std::filesystem::create_directory(root), "retained S6 root must be new and absolute");
+        }
+        const auto input = AuxiliarySaveFixtures::CreateOriginalInputs(root);
+        auto archive = Take(MapArchiveSession::Open(input.source));
+        const auto sourceSha = Take(Sha256File(input.source)), gameSha = Take(Sha256File(input.game / "war3.mpq"));
+        const auto commonPath = input.tool / "compiler/jass/24/common.j";
+        const auto commonBytes = AuxiliarySaveFixtures::JassDeclarations().common;
+        const auto commonSha = Take(Sha256File(commonPath));
+        const auto configSha = Take(Sha256File(input.ui / "config"));
+        auto catalog = Take(UiCatalog::Load(input.ui));
+        auto triggers = Take(WtgWctCodec{}.Parse(input.pair.wtg, input.pair.wct, catalog));
+        Require(triggers.HasTrustedSourceSeal() && triggers.triggers.size() == 1
+            && triggers.triggers.front().customTextFlag == 0 && triggers.wct.customCode.text.empty(), "real editable T source with no custom code");
+        EditorProject project;
+        project.projectRoot_ = input.workspace; project.sourceArchivePath_ = input.source;
+        project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(Take(DirectoryWorkspace::Open(input.workspace)));
+        project.archiveSession_ = std::make_unique<MapArchiveSession>(archive);
+        project.uiDataRoot_ = project.activeUiDataRoot_ = input.ui;
+        project.compilerDataRoot_ = input.tool; project.war3GameRoot_ = input.game;
+        project.uiCatalog_ = std::make_unique<UiCatalog>(std::move(catalog));
+        project.triggerDocument_ = std::make_unique<TriggerDocument>(std::move(triggers));
+        project.triggerUndoStack_ = new QUndoStack(&project);
+        project.LoadMapDocument(); project.ResetEditTracking();
+        Require(project.mapEdits_ && project.mapDataUndoStack_ && project.editTrackingReady_ && !project.editTrackingFailed_, "original S6 JASS map session");
+        const auto original = project.mapEdits_->Snapshot();
+        const auto request = [&](MapDataKind kind, Services::AuxiliaryEditAction action, std::size_t row = 0) {
+            const auto current = project.mapEdits_->Snapshot();
+            Services::AuxiliaryEditRequest value; value.kind = kind; value.action = action;
+            value.expectedMemberSha256 = Take(Services::AuxiliaryEditing::MemberIdentity(current, kind));
+            if (action != Services::AuxiliaryEditAction::Create) {
+                value.sourceIndex = row; value.expectedRowKey = Take(MapData::MapFieldRowKey(current, kind, row));
+            }
+            return value;
+        };
+        const auto apply = [&](Services::AuxiliaryEditRequest value) {
+            const auto binding = Take(QtProject::CaptureAuxiliaryEditBinding(project));
+            const auto changed = Take(QtProject::ApplyAuxiliaryEditWithResult(project, binding, std::move(value), QStringLiteral("S6原创JASS结构命令")));
+            Require(changed.changed && changed.receipt.CommandIdentity() != 0, "real JASS project command receipt");
+        };
+        const auto staleBinding = Take(QtProject::CaptureAuxiliaryEditBinding(project));
+        MapData::RegionRecord region{-128, -64, 256, 512, "DraftRegion", 10, {}, "", {1, 2, 3, 177}};
+        auto command = request(MapDataKind::Regions, Services::AuxiliaryEditAction::Create); command.record = region; apply(command);
+        auto staleRequest = request(MapDataKind::Regions, Services::AuxiliaryEditAction::Update); staleRequest.record = region;
+        const auto stale = QtProject::ApplyAuxiliaryEditWithResult(project, staleBinding, staleRequest, QStringLiteral("Stale revision"));
+        Require(!stale.Succeeded() && std::any_of(stale.diagnostics.begin(), stale.diagnostics.end(), [](const auto& row) { return row.code == "AUX_PROJECT_STALE"; })
+            && project.mapDataUndoStack_->count() == 1 && project.mapDataUndoStack_->index() == 1 && project.mapEdits_->IsDirty(), "stale revision adds no Undo command");
+        auto wrongSource = Take(QtProject::CaptureAuxiliaryEditBinding(project)); wrongSource.sourceArchive = root / "another-source.w3x";
+        const auto staleSource = QtProject::ApplyAuxiliaryEditWithResult(project, wrongSource, staleRequest, QStringLiteral("Stale source"));
+        Require(!staleSource.Succeeded() && project.mapDataUndoStack_->count() == 1
+            && project.mapEdits_->Snapshot().Regions()->entries.front().name == "DraftRegion", "another source binding cannot mutate the original command");
+        region.name = "KeptRegion"; region.top = 768;
+        command = request(MapDataKind::Regions, Services::AuxiliaryEditAction::Update); command.record = region; apply(command);
+        auto removedRegion = region; removedRegion.name = "RemovedRegion"; removedRegion.creationNumber = 11;
+        command = request(MapDataKind::Regions, Services::AuxiliaryEditAction::Create); command.record = removedRegion; apply(command);
+        apply(request(MapDataKind::Regions, Services::AuxiliaryEditAction::Delete, 1));
+        MapData::CameraRecord camera{}; camera.name = "DraftCamera"; camera.targetX = 16; camera.targetY = 32;
+        camera.zOffset = 30; camera.rotation = 90; camera.angleOfAttack = 300; camera.targetDistance = 1500;
+        camera.fieldOfView = 70; camera.farClippingPlane = 5000; camera.nearClippingPlane = -0.0f;
+        command = request(MapDataKind::Cameras, Services::AuxiliaryEditAction::Create); command.record = camera; apply(command);
+        camera.name = "KeptCamera"; camera.rotation = 45; camera.targetY = 96;
+        command = request(MapDataKind::Cameras, Services::AuxiliaryEditAction::Update); command.record = camera; apply(command);
+        auto removedCamera = camera; removedCamera.name = "RemovedCamera";
+        command = request(MapDataKind::Cameras, Services::AuxiliaryEditAction::Create); command.record = removedCamera; apply(command);
+        apply(request(MapDataKind::Cameras, Services::AuxiliaryEditAction::Delete, 1));
+        const auto edited = project.mapEdits_->Snapshot();
+        const auto stable = [&] {
+            return project.sourceArchivePath_ == input.source && project.mapEdits_->IsDirty()
+                && project.mapDataUndoStack_->count() == 8 && project.mapDataUndoStack_->index() == 8
+                && project.triggerUndoStack_->count() == 0
+                && Services::AuxiliaryEditing::AreEquivalentMapSources(project.mapEdits_->Snapshot(), edited)
+                && Take(Sha256File(input.source)) == sourceSha && Take(Sha256File(input.game / "war3.mpq")) == gameSha;
+        };
+        Require(stable(), "eight shared JASS structural commands preserve T/source/game");
+        const auto deniedBinding = Take(QtProject::CaptureAuxiliaryEditBinding(project));
+        command = request(MapDataKind::Cameras, Services::AuxiliaryEditAction::Update); auto deniedCamera = camera; deniedCamera.roll = 99; command.record = deniedCamera;
+        const auto denied = QtProject::ApplyAuxiliaryEditWithResult(project, deniedBinding, command, QStringLiteral("Denied publication"),
+            [](const auto&, const auto&, const auto&) { return Status::Failure("Test", "S6_PUBLICATION_DENIED", "原创发布拒绝"); });
+        Require(!denied.Succeeded() && stable(), "failed public edit preserves dirty/native bytes and the eight Undo commands");
+        for (int index = 0; index < 8; ++index) project.mapDataUndoStack_->undo();
+        Require(Services::AuxiliaryEditing::AreEquivalentMapSources(project.mapEdits_->Snapshot(), original), "JASS whole Undo restores missing members");
+        for (int index = 0; index < 8; ++index) project.mapDataUndoStack_->redo();
+        Require(stable(), "JASS whole Redo preserves the real save snapshot");
+
+        const auto rejectedPath = root / "dependency-stale.w3x";
+        auto rejected = project.PrepareMapSave(rejectedPath, false);
+        Require(rejected && rejected->script && rejected->script->toolchain.layout && !rejected->scriptSkipped, "normal JASS preparation freezes complete tool layout");
+        Require(Write(commonPath, commonBytes + "// changed original dependency\n"), "change only the owned tool fixture after preparation");
+        EditorProject::RunMapSave(*rejected);
+        Require(rejected->executed && !rejected->succeeded && !rejected->nextSession && !std::filesystem::exists(rejectedPath)
+            && std::any_of(rejected->diagnostics.begin(), rejected->diagnostics.end(), [](const auto& row) { return row.code == "SCRIPT_LAYOUT_STALE"; })
+            && !project.CommitMapSave(*rejected) && stable(), "dependency-stale save leaves source, dirty bytes and Undo unchanged");
+        Require(Write(commonPath, commonBytes) && Take(Sha256File(commonPath)) == commonSha, "restore only the original test dependency for a fresh save");
+        const auto candidate = root / "candidate.w3x";
+        auto job = project.PrepareMapSave(candidate, false);
+        Require(job && job->script && !job->scriptSkipped && !job->script->luaTarget && job->script->toolchain.layout
+            && job->script->toolchain.preprocessor == Script::ScriptEngine::Builtin
+            && job->script->toolchain.vjass == Script::ScriptEngine::Builtin && job->script->toolchain.checker == Script::ScriptEngine::Builtin
+            && !job->script->toolchain.crossCheck && job->script->toolchain.layout->waveExecutable.empty()
+            && job->script->toolchain.layout->jassHelperExecutable.empty() && job->script->toolchain.layout->pjassExecutable.empty(), "normal builtin-only original toolchain has no external executable");
+        QStringList stages; job->progress = [&](const QString& stage) { stages.append(stage); };
+        EditorProject::RunMapSave(*job);
+        Require(job->executed && job->succeeded && job->scriptRebuilt && !job->scriptSkipped && job->nextSession, Explain(*job));
+        const auto checked = std::find_if(job->diagnostics.begin(), job->diagnostics.end(), [](const auto& row) {
+            return row.code == "SCRIPT_REBUILT" && row.message.find("内置 vJass 翻译与语法检查") != std::string::npos;
+        });
+        Require(checked != job->diagnostics.end(), "actual JASS save receipt records builtin translation and checking");
+        const auto checkReceipt = checked->message;
+        auto reopened = Take(MapArchiveSession::Open(candidate));
+        AuxiliarySaveFixtures::VerifyNativeMembers(reopened, edited);
+        const auto jass = AuxiliarySaveFixtures::VerifyJassInitialization(reopened);
+        for (const auto& member : input.members) if (member.name != "war3map.j")
+            Require(Take(reopened.ReadMember(member.name)) == member.data, "JASS save changed original unrelated member/T: " + member.name);
+        const auto candidateSha = Take(Sha256File(candidate));
+        Require(stable() && archive.VerifySourceUnchanged().Succeeded() && Take(Sha256File(input.ui / "config")) == configSha, "JASS save preserves original inputs before commit");
+        Require(project.CommitMapSave(*job).has_value() && !project.mapEdits_->IsDirty()
+            && project.sourceArchivePath_ == candidate && project.mapDataUndoStack_->count() == 8, "normal JASS commit sets the real saved native baseline");
+        for (int index = 0; index < 8; ++index) project.mapDataUndoStack_->undo();
+        Require(project.mapEdits_->IsDirty() && Services::AuxiliaryEditing::AreEquivalentMapSources(project.mapEdits_->Snapshot(), original), "post-save JASS Undo preserves whole history");
+        for (int index = 0; index < 8; ++index) project.mapDataUndoStack_->redo();
+        Require(!project.mapEdits_->IsDirty() && Services::AuxiliaryEditing::AreEquivalentMapSources(project.mapEdits_->Snapshot(), edited)
+            && Take(Sha256File(candidate)) == candidateSha && Take(Sha256File(input.source)) == sourceSha
+            && Take(Sha256File(input.game / "war3.mpq")) == gameSha, "post-save JASS Redo changes no archive or game fixture");
+        Services::FinalizeScriptWorkspace(*job);
+        qInfo().noquote() << "s6_jass_root=" << QString::fromStdWString(root.wstring())
+            << "source_sha256=" << QString::fromStdString(sourceSha) << "candidate_sha256=" << QString::fromStdString(candidateSha)
+            << "game_fixture_sha256=" << QString::fromStdString(gameSha) << "script_sha256=" << QString::fromStdString(Take(Sha256Text(jass)))
+            << "check_receipt=" << QString::fromStdString(checkReceipt) << "stages=" << stages.join(" | ")
+            << "original_jass_template_save_reopen=true real_ydwe_environment_verified=false external_tools_executed=false game_executed=false";
+    } catch (const std::exception& error) { QFAIL(error.what()); }
 }
 
 QTEST_MAIN(TriggerRenameTests)

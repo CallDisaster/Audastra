@@ -15,6 +15,9 @@ public:
         std::shared_ptr<const Services::WorldInstanceRegistry> registry,
         std::vector<MapData::PlacementId> owners, std::function<bool()> live,
         Services::WorldModelBugFlagsReader flags);
+    void BindReadOnly(std::shared_ptr<const Render::AnimatedModelScene> scene,
+        std::shared_ptr<const Services::WorldModelBugReadOnlySource> source, std::function<bool()> live,
+        Services::WorldModelBugFlagsReader flags);
     void Clear();
     void Refresh();
     [[nodiscard]] const Status& LastStatus() const noexcept { return status_; }
@@ -29,6 +32,7 @@ private:
     QTimer timer_;
     std::shared_ptr<const Render::AnimatedModelScene> source_;
     std::shared_ptr<const Services::WorldInstanceRegistry> registry_;
+    std::shared_ptr<const Services::WorldModelBugReadOnlySource> readOnlySource_;
     std::vector<MapData::PlacementId> owners_;
     std::function<bool()> live_;
     Services::WorldModelBugFlagsReader flags_;

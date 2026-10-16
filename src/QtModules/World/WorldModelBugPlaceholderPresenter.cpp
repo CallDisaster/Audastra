@@ -17,16 +17,24 @@ void WorldModelBugPlaceholderPresenter::Bind(std::shared_ptr<const Render::Anima
     live_ = std::move(live); flags_ = std::move(flags);
     if (source_ && registry_ && live_ && flags_) { timer_.start(); Refresh(); }
 }
+void WorldModelBugPlaceholderPresenter::BindReadOnly(std::shared_ptr<const Render::AnimatedModelScene> scene,
+    std::shared_ptr<const Services::WorldModelBugReadOnlySource> source, std::function<bool()> live,
+    Services::WorldModelBugFlagsReader flags) {
+    if (source_ != scene || readOnlySource_ != source || registry_) Clear();
+    source_ = std::move(scene); readOnlySource_ = std::move(source);
+    live_ = std::move(live); flags_ = std::move(flags);
+    if (source_ && readOnlySource_ && live_ && flags_) { timer_.start(); Refresh(); }
+}
 void WorldModelBugPlaceholderPresenter::Clear() {
     timer_.stop();
     if (viewport_) {
         viewport_->ClearBugPlaceholderPicking();
         status_ = viewport_->RemoveModelLayer(LayerId);
     }
-    plan_.reset(); source_.reset(); registry_.reset(); owners_.clear(); live_ = {}; flags_ = {}; rendererEpoch_ = 0;
+    plan_.reset(); source_.reset(); registry_.reset(); readOnlySource_.reset(); owners_.clear(); live_ = {}; flags_ = {}; rendererEpoch_ = 0;
 }
 void WorldModelBugPlaceholderPresenter::Refresh() try {
-    if (refreshing_ || !viewport_ || !source_ || !registry_ || !live_ || !flags_) return;
+    if (refreshing_ || !viewport_ || !source_ || (!registry_ && !readOnlySource_) || !live_ || !flags_) return;
     QScopedValueRollback<bool> guard(refreshing_, true);
     if (!live_()) { Clear(); return; }
     const auto completed = viewport_->ReadCompletedBugPlaceholderSnapshot(source_);
@@ -35,11 +43,13 @@ void WorldModelBugPlaceholderPresenter::Refresh() try {
         status_ = {std::move(completed.diagnostics)};
         return;
     }
-    auto planned = Services::PlanWorldModelBugPlaceholders(source_, **completed.value, registry_, owners_, flags_);
+    auto planned = readOnlySource_
+        ? Services::PlanWorldModelBugReadOnlyPlaceholders(source_, **completed.value, readOnlySource_, flags_)
+        : Services::PlanWorldModelBugPlaceholders(source_, **completed.value, registry_, owners_, flags_);
     if (!planned.Succeeded()) { auto failure = Status{std::move(planned.diagnostics)}; Clear(); status_ = std::move(failure); return; }
     const auto epoch = viewport_->MeasurementRendererEpoch();
     if (plan_ && rendererEpoch_ == epoch && plan_->markers == planned.value->markers
-        && (plan_->markers.empty() || viewport_->HasBugPlaceholderPicking(plan_))) {
+        && (plan_->markers.empty() || readOnlySource_ || viewport_->HasBugPlaceholderPicking(plan_))) {
         status_ = {};
         return;
     }
@@ -73,7 +83,8 @@ void WorldModelBugPlaceholderPresenter::Refresh() try {
     auto next = std::make_shared<const Services::WorldModelBugPlaceholderPlan>(std::move(*planned.value));
     status_ = viewport_->SetModelLayer(LayerId, (*service.value)->Scene(), *frame.value);
     if (!status_.Succeeded()) { viewport_->ClearBugPlaceholderPicking(); return; }
-    viewport_->SetBugPlaceholderPicking(LayerId, next, (*service.value)->Scene(), *frame.value, owners_, live_, flags_);
+    if (readOnlySource_) viewport_->ClearBugPlaceholderPicking();
+    else viewport_->SetBugPlaceholderPicking(LayerId, next, (*service.value)->Scene(), *frame.value, owners_, live_, flags_);
     plan_ = std::move(next); rendererEpoch_ = epoch;
 } catch (...) {
     status_ = Status::Failure("World.BugPlaceholder", "WORLD_BUG_PLACEHOLDER_PREPARE_FAILED",
