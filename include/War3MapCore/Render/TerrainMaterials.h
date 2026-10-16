@@ -130,7 +130,8 @@ struct TerrainMaterialSet {
     const Resources::ResourceResolver& resolver, const TerrainMaterialLimits& limits = {});
 
 // 只读取显式指定的一帧及用于核对尺寸的首帧，不由 texRate 猜测播放时钟。
-// 索引越界、来源缺失/损坏、尺寸不一致或预算超限均失败；调用方不得把失败当成下一帧成功。
+// 只检查和解码 mip0；未消费的其它 mip 不影响显示，不表示整条链完整。SHA 覆盖未修改的全部来源字节。
+// 索引越界、来源缺失、mip0 损坏、尺寸不一致或预算超限均失败；不得把失败当成下一帧成功。
 [[nodiscard]] Result<TerrainWaterFrame> LoadTerrainWaterFrame(
     const WaterMaterialDefinition& definition, std::uint32_t index,
     const Resources::ResourceResolver& resolver, const TerrainMaterialLimits& limits = {});

@@ -270,6 +270,69 @@ void TestExplicitWaterFrame() {
     Rejected(LoadTerrainWaterFrame(definition, 1, fixture.resolver), "RESOURCE_NOT_FOUND");
 }
 
+void TestWaterFrameIgnoresUnusedMips() {
+    Fixture fixture;
+    const auto catalog = fixture.Catalog();
+    const auto& definition = catalog.water.at("TSha");
+    const auto firstPath = "WATER\\FLOW00.BLP";
+    const auto selectedPath = "WATER\\FLOW01.BLP";
+    auto& firstBytes = fixture.backing->files.at(firstPath);
+    auto& selectedBytes = fixture.backing->files.at(selectedPath);
+    // 可辨认的颜色和逐像素 alpha；不能以不透明占位替代真正的 mip0。
+    Put32(firstBytes, 8, 8); Put32(selectedBytes, 8, 8);
+    firstBytes[158] = std::byte{73}; selectedBytes[158] = std::byte{217};
+    for (std::size_t pixel = 0; pixel < 64; ++pixel) {
+        firstBytes.push_back(static_cast<std::byte>(pixel * 3));
+        selectedBytes.push_back(static_cast<std::byte>(255 - pixel * 3));
+    }
+    Put32(firstBytes, 92, 128); Put32(selectedBytes, 92, 128);
+    const auto originalFirst = firstBytes, originalSelected = selectedBytes;
+    const auto expectedFirst = LoadTerrainWaterFrame(definition, 0, fixture.resolver);
+    const auto expectedSelected = LoadTerrainWaterFrame(definition, 1, fixture.resolver);
+    Require(expectedFirst.Succeeded() && expectedSelected.Succeeded(), "原创水面 alpha 基线应可解码");
+
+    for (const auto level : {1u, 7u, 15u}) {
+        for (const auto corrupt : {0u, 1u, 2u}) {
+            firstBytes = originalFirst; selectedBytes = originalSelected;
+            for (auto* bytes : {&firstBytes, &selectedBytes}) {
+                // 三种非消费层异常：缺 offset、越界范围、索引/alpha 平面声明不足。
+                Put32(*bytes, 28 + level * 4, corrupt == 0 ? 0u : corrupt == 1 ? 0xfffffff0u : 1180u);
+                Put32(*bytes, 92 + level * 4, corrupt == 2 ? 1u : 16u);
+            }
+            const auto savedFirst = firstBytes, savedSelected = selectedBytes;
+            const auto first = LoadTerrainWaterFrame(definition, 0, fixture.resolver);
+            const auto selected = LoadTerrainWaterFrame(definition, 1, fixture.resolver);
+            Require(first.Succeeded() && selected.Succeeded(), "未使用的坏 mip 不应让完整水面首层退回白色");
+            Require(first.value->image.rgba == expectedFirst.value->image.rgba
+                && selected.value->image.rgba == expectedSelected.value->image.rgba
+                && selected.value->image.width == 8 && selected.value->image.height == 8,
+                "忽略非消费层必须逐字保留正确帧的 RGB、alpha 和尺寸");
+            Require(first.value->sourceSha256 != expectedFirst.value->sourceSha256
+                && selected.value->sourceSha256 != expectedSelected.value->sourceSha256
+                && selected.value->resource.canonicalPath == selectedPath,
+                "水面来源 SHA 必须覆盖含坏 mip 声明的完整原字节");
+            Require(firstBytes == savedFirst && selectedBytes == savedSelected, "水面预览不得修写来源 BLP");
+            // 全材质元数据检查仍校验全部声明，不能将可显示 mip0 冒充完整链通过。
+            Rejected(ResolveTerrainMaterialSet(catalog, fixture.terrain, fixture.resolver), "TERRAIN_MATERIAL_BLP");
+        }
+    }
+    firstBytes = originalFirst; selectedBytes = originalSelected;
+    Put32(selectedBytes, 92, 64); // 文件尾仍有 alpha，但它在 mip0 声明范围以外。
+    Rejected(LoadTerrainWaterFrame(definition, 1, fixture.resolver), "TERRAIN_MATERIAL_BLP");
+    selectedBytes = originalSelected; Put32(selectedBytes, 28, 0xfffffff0u);
+    Rejected(LoadTerrainWaterFrame(definition, 1, fixture.resolver), "TERRAIN_MATERIAL_BLP");
+    selectedBytes = originalSelected; Put32(firstBytes, 92, 64);
+    Rejected(LoadTerrainWaterFrame(definition, 1, fixture.resolver), "TERRAIN_MATERIAL_BLP");
+    firstBytes = originalFirst;
+    TerrainMaterialLimits limits;
+    limits.maxTextureBytes = selectedBytes.size() - 1;
+    Rejected(LoadTerrainWaterFrame(definition, 1, fixture.resolver, limits), "TERRAIN_MATERIAL_TEXTURE_BUDGET");
+    limits = {}; limits.maxTotalTextureBytes = firstBytes.size() + selectedBytes.size() - 1;
+    Rejected(LoadTerrainWaterFrame(definition, 1, fixture.resolver, limits), "TERRAIN_MATERIAL_TEXTURE_BUDGET");
+    limits = {}; limits.maxTotalTexturePixels = 127;
+    Rejected(LoadTerrainWaterFrame(definition, 1, fixture.resolver, limits), "TERRAIN_MATERIAL_TEXTURE_BUDGET");
+}
+
 void TestResolverLayers() {
     Fixture fixture;
     auto overlay = std::make_shared<Backing>();
@@ -366,6 +429,7 @@ int main(int argc, char** argv) {
         TestTablesAndLimits();
         TestMetadataAndFailures();
         TestExplicitWaterFrame();
+        TestWaterFrameIgnoresUnusedMips();
         TestResolverLayers();
         if (argc == 3) InspectGameMap(std::filesystem::path(argv[1]), std::filesystem::path(argv[2]));
         std::cout << "TerrainMaterials tests passed\n";

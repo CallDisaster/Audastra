@@ -151,7 +151,10 @@ std::uint32_t U32(std::span<const std::byte> bytes, std::size_t offset) {
     return result;
 }
 
-TerrainTextureMetadata InspectBlp(const Resources::ResolvedResource& resource, const TerrainMaterialLimits& limits) {
+enum class BlpMipScope { AllDeclared, First };
+
+TerrainTextureMetadata InspectBlp(const Resources::ResolvedResource& resource, const TerrainMaterialLimits& limits,
+    BlpMipScope scope = BlpMipScope::AllDeclared) {
     const std::span<const std::byte> bytes(resource.bytes);
     const auto error = [&](std::string message) {
         Fail("TERRAIN_MATERIAL_BLP", resource.location.canonicalPath + "：" + std::move(message));
@@ -173,7 +176,9 @@ TerrainTextureMetadata InspectBlp(const Resources::ResolvedResource& resource, c
         if (result.alphaBits != 0 && result.alphaBits != 1 && result.alphaBits != 4 && result.alphaBits != 8)
             error("不支持的调色板 alpha 位数。");
     } else error("不支持的 BLP1 压缩类型。");
-    for (std::size_t level = 0; level < 16; ++level) {
+    // 元数据查询保留全声明范围校验；单帧水面只解码 mip0，不能因未消费的后级损坏丢掉可用像素。
+    const std::size_t levels = scope == BlpMipScope::First ? 1 : 16;
+    for (std::size_t level = 0; level < levels; ++level) {
         const auto offset = U32(bytes, 28 + level * 4);
         const auto count = U32(bytes, 92 + level * 4);
         if (level != 0 && offset == 0 && count == 0) continue;
@@ -375,7 +380,7 @@ Result<TerrainWaterFrame> LoadTerrainWaterFrame(const WaterMaterialDefinition& d
         auto selected = Take(resolver.Read(selectedPath));
         if (selected.bytes.size() > limits.maxTextureBytes || selected.bytes.size() > limits.maxTotalTextureBytes)
             Fail("TERRAIN_MATERIAL_TEXTURE_BUDGET", selectedPath + " 超出纹理读取字节预算。");
-        const auto selectedMetadata = InspectBlp(selected, limits);
+        const auto selectedMetadata = InspectBlp(selected, limits, BlpMipScope::First);
         const auto selectedPixels = static_cast<std::size_t>(selectedMetadata.width) * selectedMetadata.height;
         if (selectedPixels > limits.maxTotalTexturePixels)
             Fail("TERRAIN_MATERIAL_TEXTURE_BUDGET", selectedPath + " 超出纹理像素预算。");
@@ -385,7 +390,7 @@ Result<TerrainWaterFrame> LoadTerrainWaterFrame(const WaterMaterialDefinition& d
             if (first.bytes.size() > limits.maxTextureBytes
                 || first.bytes.size() > limits.maxTotalTextureBytes - selected.bytes.size())
                 Fail("TERRAIN_MATERIAL_TEXTURE_BUDGET", firstPath + " 与所选帧超出合计纹理读取预算。");
-            const auto firstMetadata = InspectBlp(first, limits);
+            const auto firstMetadata = InspectBlp(first, limits, BlpMipScope::First);
             const auto firstPixels = static_cast<std::size_t>(firstMetadata.width) * firstMetadata.height;
             if (firstPixels > limits.maxTotalTexturePixels - selectedPixels)
                 Fail("TERRAIN_MATERIAL_TEXTURE_BUDGET", firstPath + " 与所选帧超出合计纹理像素预算。");
