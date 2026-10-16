@@ -401,6 +401,7 @@ void MainWindow::ShowAbout() {
             ? QString::fromUtf8(War3Map::BuildInfo::Version.data(), static_cast<qsizetype>(War3Map::BuildInfo::Version.size()))
             : QCoreApplication::applicationVersion();
         label(tr("版本 %1").arg(version), "aboutVersion");
+        label(tr("Bug 反馈 QQ 群：1127618143"), "aboutFeedbackGroup");
         label(tr("提交 %1").arg(QString::fromUtf8(War3Map::BuildInfo::Commit)), "aboutCommit");
         extern const char* kWar3MapBuildStamp;
         label(tr("构建 %1").arg(QString::fromUtf8(kWar3MapBuildStamp)), "aboutBuildStamp");

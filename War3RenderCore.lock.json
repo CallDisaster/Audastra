@@ -2,7 +2,7 @@
   "schema": 1,
   "version": "0.1.19",
   "repository": "https://github.com/CallDisaster/Audastra-RenderCore.git",
-  "commit": "e3840ffbdb70388002015aa505e4e12cf8fe4eb3",
+  "commit": "91ea3f54946f4488522b72af1b1cdb509a5e9be6",
   "files": [
     {
       "path": ".gitattributes",
@@ -78,7 +78,7 @@
     },
     {
       "path": "include/War3MapCore/Render/MdxModel.h",
-      "sha256": "1a68d58f559c47102d1ead0076667c132a4dc4d3d4269684831d8100a2cead35"
+      "sha256": "c77f384c02bab3f83a3bde726ec9c9284e84b90fbc5e4e375eec5709a9672e42"
     },
     {
       "path": "include/War3MapCore/Render/MdxPose.h",
@@ -118,7 +118,7 @@
     },
     {
       "path": "include/War3MapCore/RenderPluginV2.h",
-      "sha256": "11df6469256f341b6c63e80045cd7637ba04046e118021014ea98391ec4143a2"
+      "sha256": "4fa00576b85c34c60192345f02c006bbd5aca63cde5f0788b059e382f170aaaa"
     },
     {
       "path": "include/War3RenderCore/CompiledModel.h",
@@ -242,15 +242,19 @@
     },
     {
       "path": "src/Render/Assets/MdxModel.cpp",
-      "sha256": "1d9c31f92240ddae451ea46d0d14323d9a0361a04c3a8d6ec2a0f0f6c2b1b40f"
+      "sha256": "7fbaa1333fe0bdd64ce2f64b4d1335edde88a0933869d471728bb23fa7b8f7c5"
     },
     {
       "path": "src/Render/Assets/MdxNoControllerStatic.h",
       "sha256": "3b4f7437cb9ff7e9552644da753965c46944b2f1017d862d76a487f5c2b74f2b"
     },
     {
+      "path": "src/Render/Assets/MdxNodeIdentity.h",
+      "sha256": "acd93fe202ccca8971a9931c0fa43bf41479e42099d908056889cb5d484c000a"
+    },
+    {
       "path": "src/Render/Assets/MdxNodeRead.h",
-      "sha256": "ce3ae5c0d9bce1e933442dc4d4553305efdbe94ef8fd1e5feb1f0e7ecad0eb18"
+      "sha256": "137c7207d418dc725edb6df54e76a02945a1d30497e8f1babb005eaa87afc9ad"
     },
     {
       "path": "src/Render/Assets/MdxNormalPreview.h",
@@ -278,7 +282,7 @@
     },
     {
       "path": "src/Render/Scene/ModelSkinInput.cpp",
-      "sha256": "d2a2def831e39bff49cb8d0f86471f0741109a75935d3511d3d895f598561bae"
+      "sha256": "66aed5b32e0f681e09864f4ebefdb891dad0f5445ed37b1f554cf443c653ba02"
     },
     {
       "path": "src/Render/Scene/ModelSkinInput.h",
@@ -433,8 +437,12 @@
       "sha256": "003b8491c43917cc36001d270299afd92df5dae3d5091fc5d053df968f4b1956"
     },
     {
+      "path": "tests/MdxCompatibilityTests.h",
+      "sha256": "a78fc0281931b98df14b7a6a345c2c3ebb2cd98e7b3f70ffb4481f6a95d27b63"
+    },
+    {
       "path": "tests/MdxModelTests.cpp",
-      "sha256": "7ab08f9601a127f04d215b2ebf54dff07b1cedb0867f8079de4a0683675fd048"
+      "sha256": "545174925d0a5fcdc1028f2e98379f9f09ff8fa475842158aabba80a37eb5825"
     },
     {
       "path": "tests/MdxNoControllerStaticTests.cpp",
@@ -490,7 +498,7 @@
     },
     {
       "path": "tests/RenderSkinAssetAppendTests.cpp",
-      "sha256": "36a87b5f8c2e2275d7856cd6d963efaa302c31e7b38cb95b7d1f5e4f626171a4"
+      "sha256": "7472dac778321ab9c97a8ffbd4348a1eadfd1b14c1318e47ba5a49f354624718"
     },
     {
       "path": "tests/RenderSkinFixture.h",
@@ -498,7 +506,7 @@
     },
     {
       "path": "tests/RenderSkinInputTests.cpp",
-      "sha256": "86719a6e75572ab7c3f619443d70495ab670fe91be95aeaee02b6951476e4afa"
+      "sha256": "579ebad658c82364044f75ec401977380dd87cf1e681f63bb299d4a281b925ee"
     },
     {
       "path": "tests/RenderSkinRosterTests.cpp",
