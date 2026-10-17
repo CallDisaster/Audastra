@@ -213,11 +213,16 @@ void TestModelObliqueSampler(const War3RenderPluginApiV2* api, const War3RenderC
         && capability.samplerFormat == WAR3_RENDER_STATIC_LAYER_SAMPLERS_V1 && capability.supportedSamplerFlags == 3,
         "oblique fixture static sampler format unavailable");
     const auto directory = OutputDirectory();
-    const War3RenderMeshV2 emptyGround{sizeof(emptyGround), 0, 0, kRevision, nullptr, nullptr};
+    // 空mesh会启用z=0默认调试grid；相机外非空triangle关闭grid，不改变测试平面和深度。
+    const std::array<War3RenderVertexV2,3> background{{
+        {10000,10000,0,.045f,.060f,.075f}, {10100,10000,0,.045f,.060f,.075f},
+        {10000,10100,0,.045f,.060f,.075f}}};
+    const std::array<std::uint32_t,3> backgroundIndices{0,1,2};
+    const War3RenderMeshV2 backgroundMesh{sizeof(backgroundMesh),3,3,kRevision,background.data(),backgroundIndices.data()};
     const War3RenderEnvironmentV2 environment{sizeof(environment), {0,0,1}, {1,1,1}, {0,0,0},
         WAR3_RENDER_FOG_NONE, 0,1,0, {0,0,0}, 0,0,0,0,1,0,nullptr};
-    Require(api->submitMesh(renderer.handle, &emptyGround) == 0 && api->setEnvironment(renderer.handle, &environment) == 0,
-        "oblique fixture empty ground/environment rejected");
+    Require(api->submitMesh(renderer.handle, &backgroundMesh) == 0 && api->setEnvironment(renderer.handle, &environment) == 0,
+        "oblique fixture controlled background/environment rejected");
     auto grating = MakeTexture(false), solidTexture = MakeTexture(true);
     const std::array<War3RenderModelVertexV2, 4> vertices{{
         {-256,-256,0, 0,0,1, 0,0}, {256,-256,0, 0,0,1, 1,0},
