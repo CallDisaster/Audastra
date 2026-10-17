@@ -742,22 +742,34 @@ bool WorldViewport::SetGroundMesh(std::shared_ptr<const Render::TerrainGroundMes
     if (!HasGroundSupport())
         return reject("WORLD_GROUND_UNSUPPORTED", "当前渲染插件未提供地表贴图接口。");
     const auto tiles = terrain_->tiles.size();
-    const auto layered = tiles + ground->overlayTiles.size();
-    const auto quads = layered + ground->waterTiles.size();
-    // 悬崖覆盖的基础 quad 保留顶点但不写索引；标记必须与 tile 同序且计数一致。
+    // 悬崖覆盖表仍对应原格；紧缩基础层映射必须恰好为它的有序补集。
     if (!ground->hiddenTiles.empty() && ground->hiddenTiles.size() != tiles)
         return reject("WORLD_GROUND_HIDDEN_LAYOUT", "悬崖覆盖表与地形格数不一致。");
-    if (static_cast<std::size_t>(std::count_if(ground->hiddenTiles.begin(), ground->hiddenTiles.end(),
+    if (std::any_of(ground->hiddenTiles.begin(), ground->hiddenTiles.end(), [](std::uint8_t hidden) { return hidden > 1; })
+        || static_cast<std::size_t>(std::count_if(ground->hiddenTiles.begin(), ground->hiddenTiles.end(),
         [](std::uint8_t hidden) { return hidden != 0; })) != ground->hiddenTileCount)
         return reject("WORLD_GROUND_HIDDEN_COUNT", "悬崖覆盖计数与覆盖表不一致。");
-    if (ground->vertices.size() != quads * 4 || ground->indices.size() != (quads - ground->hiddenTileCount) * 6 ||
+    const auto baseQuads = tiles - ground->hiddenTileCount;
+    if (ground->hiddenTileCount ? ground->baseTiles.size() != baseQuads : !ground->baseTiles.empty())
+        return reject("WORLD_GROUND_BASE_LAYOUT", "基础层原格映射与悬崖覆盖数量不一致。");
+    if (ground->hiddenTileCount) {
+        std::size_t base = 0;
+        for (std::size_t tile = 0; tile < tiles; ++tile) if (!ground->hiddenTiles[tile]) {
+            if (ground->baseTiles[base++] != tile)
+                return reject("WORLD_GROUND_BASE_LAYOUT", "基础层原格映射必须按原格顺序完整覆盖所有未隐藏格。");
+        }
+    }
+    const auto layered = baseQuads + ground->overlayTiles.size();
+    const auto quads = layered + ground->waterTiles.size();
+    if (ground->vertices.size() != quads * 4 || ground->indices.size() != quads * 6 ||
         ground->vertices.size() > Render::TerrainGroundMeshLimits{}.maxVertices || ground->sourceWidth != terrain_->header.width ||
         ground->sourceHeight != terrain_->header.height)
         return reject("WORLD_GROUND_LAYOUT", "地表网格尺寸、顶点数或索引数与当前地形不一致，或已超出预算。");
-    // 基础层 quad 对应原 tile，过渡层对应 overlayTiles，坐标必须与原始高度网格一致；
+    // 基础层通过完整原格或显式 baseTiles 映射，过渡层对应 overlayTiles，坐标必须与原始高度网格一致；
     // 水面对应 waterTiles，XY 一致、Z 为水面高度。
     for (std::size_t quad = 0; quad < quads; ++quad) {
-        const auto tile = quad < tiles ? quad : quad < layered ? ground->overlayTiles[quad - tiles]
+        const auto tile = quad < baseQuads ? (ground->hiddenTileCount ? ground->baseTiles[quad] : quad)
+            : quad < layered ? ground->overlayTiles[quad - baseQuads]
             : ground->waterTiles[quad - layered];
         if (tile >= tiles)
             return reject("WORLD_GROUND_TILE_RANGE", "地表过渡层或水面引用的地形格越界。");
@@ -773,14 +785,15 @@ bool WorldViewport::SetGroundMesh(std::shared_ptr<const Render::TerrainGroundMes
     for (std::size_t i = 0; i < ground->indices.size(); i += 6) {
         const auto first = ground->indices[i];
         const auto quad = first / 4;
-        if (first % 4 != 0 || quad >= quads || seen[quad]
-            || (quad < tiles && !ground->hiddenTiles.empty() && ground->hiddenTiles[quad]))
+        if (first % 4 != 0 || quad >= quads || seen[quad])
             return reject("WORLD_GROUND_FACE_LAYOUT", "地表索引重复、越界或包含应由悬崖遮住的面。");
         const std::array<std::uint32_t, 6> expected{first, first + 1, first + 2, first + 1, first + 3, first + 2};
         if (!std::equal(expected.begin(), expected.end(), ground->indices.begin() + static_cast<std::ptrdiff_t>(i)))
             return reject("WORLD_GROUND_FACE_ORDER", "地表三角形与拾取网格的对角线不一致。");
         seen[quad] = true;
     }
+    if (!std::all_of(seen.begin(), seen.end(), [](bool visible) { return visible; }))
+        return reject("WORLD_GROUND_FACE_LAYOUT", "地表索引没有完整覆盖全部基础层、过渡层和水面。");
     if (std::any_of(ground->textures.begin(), ground->textures.end(), [](const auto& p) {
         return !p || (p->columns != 4 && p->columns != 8) || !p->image.Valid() || p->additionalMips.size() > 11;
     })) return reject("WORLD_GROUND_TEXTURE", "地表图集尺寸、像素或 mip 层数不符合提交要求。");

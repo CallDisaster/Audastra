@@ -163,8 +163,12 @@ void TestGroundHiding() {
     auto mesh = BuildTerrainGroundMesh(grid, atlases, {}, {}, nullptr, covered);
     if (!mesh.Succeeded()) throw std::runtime_error("覆盖标记下地面构建失败：" + mesh.diagnostics.front().message);
     Require(mesh.value->hiddenTileCount == 1 && mesh.value->hiddenTiles == covered, "隐藏标记");
-    Require(mesh.value->vertices.size() == 8 && mesh.value->indices.size() == 6, "隐藏格保留顶点、不写索引");
-    for (const auto index : mesh.value->indices) Require(index >= 4, "隐藏格的 quad 不出现在索引里");
+    Require(mesh.value->vertices.size() == 4 && mesh.value->indices.size() == 6
+        && mesh.value->baseTiles == std::vector<std::uint32_t>{1}, "隐藏格不再分配顶点，可见基础层保留原格映射");
+    for (const auto index : mesh.value->indices) Require(index < 4, "索引必须指向紧缩后的可见基础层");
+    const auto& expected = grid.vertices[grid.tiles[1].vertices[0]].position;
+    Require(mesh.value->vertices[0].x == expected[0] && mesh.value->vertices[0].y == expected[1]
+        && mesh.value->vertices[0].z == expected[2], "紧缩不能把后一格挪到隐藏格位置");
     covered.pop_back();
     Require(!BuildTerrainGroundMesh(grid, atlases, {}, {}, nullptr, covered).Succeeded(), "覆盖标记数量不符拒绝");
 }

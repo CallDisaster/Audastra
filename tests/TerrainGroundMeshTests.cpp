@@ -81,12 +81,14 @@ void Rejected(const TerrainGridSnapshot& terrain, const std::vector<Atlas>& atla
 }
 
 void CheckGeometry(const TerrainGridSnapshot& terrain, const TerrainGroundMesh& mesh) {
-    const auto tiles = terrain.tiles.size(), layered = tiles + mesh.overlayTiles.size();
+    const auto tiles = terrain.tiles.size(), base = tiles - mesh.hiddenTileCount;
+    const auto layered = base + mesh.overlayTiles.size();
     const auto quads = layered + mesh.waterTiles.size();
     Require(mesh.vertices.size() == quads * 4 && mesh.indices.size() == quads * 6,
-        "原始每格四顶点及六索引不可省略或降采样");
+        "每个可见原格及过渡层必须使用四顶点及六索引，不得降采样");
     for (std::size_t quad = 0; quad < quads; ++quad) {
-        const auto tile = quad < tiles ? quad : quad < layered ? mesh.overlayTiles[quad - tiles] : mesh.waterTiles[quad - layered];
+        const auto tile = quad < base ? (mesh.hiddenTileCount ? mesh.baseTiles[quad] : quad)
+            : quad < layered ? mesh.overlayTiles[quad - base] : mesh.waterTiles[quad - layered];
         Require(tile < tiles, "过渡层/水面必须指向原 tile");
         for (std::size_t corner = 0; corner < 4; ++corner) {
             const auto& original = terrain.vertices[terrain.tiles[tile].vertices[corner]].position;
@@ -475,6 +477,89 @@ void TestBlendLayers() {
     Require(Success(Grid(), atlases).overlayTiles.empty(), "单一材质不应产生过渡层");
 }
 
+void TestEveryTransitionMask() {
+    // 独立列举物理角的材料与 atlas 格坐标，不在 oracle 内重新计算 CornerMask。
+    // 每个原创 atlas 只在该格写入带方向的四角 alpha，其余格为黑色不透明毒值。
+    struct Case { std::array<std::uint8_t, 4> swSeNwNe; std::uint32_t column, row; };
+    constexpr std::array<Case, 14> cases{{
+        {{{0, 1, 0, 0}}, 1, 0}, {{{1, 0, 0, 0}}, 2, 0}, {{{1, 1, 0, 0}}, 3, 0},
+        {{{0, 0, 0, 1}}, 0, 1}, {{{0, 1, 0, 1}}, 1, 1}, {{{1, 0, 0, 1}}, 2, 1},
+        {{{1, 1, 0, 1}}, 3, 1}, {{{0, 0, 1, 0}}, 0, 2}, {{{0, 1, 1, 0}}, 1, 2},
+        {{{1, 0, 1, 0}}, 2, 2}, {{{1, 1, 1, 0}}, 3, 2}, {{{0, 0, 1, 1}}, 0, 3},
+        {{{0, 1, 1, 1}}, 1, 3}, {{{1, 0, 1, 1}}, 2, 3}}};
+    for (const auto columns : {4u, 8u}) for (const auto& item : cases) {
+        auto terrain = Grid();
+        for (std::size_t corner = 0; corner < 4; ++corner)
+            terrain.vertices[corner].textureAndFlagsRaw = item.swSeNwNe[corner];
+        auto atlas = MakeAtlas(columns, 8);
+        for (std::size_t pixel = 0; pixel < atlas->image.rgba.size(); pixel += 4) {
+            atlas->image.rgba[pixel] = atlas->image.rgba[pixel + 1] = atlas->image.rgba[pixel + 2] = std::byte{0};
+        }
+        const auto& cell = *atlas->Cell(item.column, item.row);
+        for (std::uint32_t y = 0; y < cell.height; ++y) for (std::uint32_t x = 0; x < cell.width; ++x) {
+            const float east = static_cast<float>(x) / static_cast<float>(cell.width - 1);
+            const float south = static_cast<float>(y) / static_cast<float>(cell.height - 1);
+            const auto northAlpha = std::lerp(static_cast<float>(item.swSeNwNe[2]), static_cast<float>(item.swSeNwNe[3]), east);
+            const auto southAlpha = std::lerp(static_cast<float>(item.swSeNwNe[0]), static_cast<float>(item.swSeNwNe[1]), east);
+            const auto pixel = (static_cast<std::size_t>(cell.y + y) * atlas->image.width + cell.x + x) * 4;
+            atlas->image.rgba[pixel] = std::byte{47}; atlas->image.rgba[pixel + 1] = std::byte{139};
+            atlas->image.rgba[pixel + 2] = std::byte{211};
+            atlas->image.rgba[pixel + 3] = static_cast<std::byte>(std::lround(std::lerp(northAlpha, southAlpha, south) * 255));
+        }
+        const auto mesh = Success(terrain, {MakeAtlas(), atlas, MakeAtlas()});
+        CheckGeometry(terrain, mesh);
+        Require(mesh.overlayTiles == std::vector<std::uint32_t>{0} && mesh.batches.size() == 2
+            && mesh.batches.back().alphaBlend && mesh.batches.back().textureIndex == 1,
+            "每类局部蒙版都应提交一个有 alpha 混合标志的过渡层");
+        for (std::size_t corner = 0; corner < 4; ++corner) {
+            const auto& vertex = mesh.vertices[4 + corner];
+            const auto x = static_cast<std::uint32_t>(std::lround(vertex.u * static_cast<float>(atlas->image.width) - 0.5f));
+            const auto y = static_cast<std::uint32_t>(std::lround(vertex.v * static_cast<float>(atlas->image.height) - 0.5f));
+            Require(x < atlas->image.width && y < atlas->image.height, "蒙版角 UV 不得越界");
+            const auto pixel = (static_cast<std::size_t>(y) * atlas->image.width + x) * 4;
+            Require(atlas->image.rgba[pixel] == std::byte{47} && atlas->image.rgba[pixel + 1] == std::byte{139}
+                && atlas->image.rgba[pixel + 2] == std::byte{211}, "蒙版选格错误或采到了邻格");
+            Require(std::to_integer<unsigned>(atlas->image.rgba[pixel + 3]) == item.swSeNwNe[corner] * 255u,
+                "蒙版物理角 alpha 方向错误（SW/SE/NW/NE），不可翻转或旋转");
+        }
+    }
+}
+
+void TestCoveredBaseCompactionPreservesTransitions() {
+    auto terrain = Grid(4, 2);
+    terrain.vertices[1].textureAndFlagsRaw = 1;
+    terrain.vertices[7].textureAndFlagsRaw = 1;
+    const auto atlases = Atlases();
+    const std::array<std::uint8_t, 3> covered{0, 1, 0};
+    TerrainGroundMeshLimits limits;
+    limits.maxVertices = 16; limits.maxIndices = 24; // 两个可见基础格 + 两个过渡层，恰好容纳。
+    auto actual = BuildTerrainGroundMesh(terrain, atlases, limits, kUnlit, nullptr, covered, {}, {},
+        TerrainGroundBudgetPolicy::PreserveBasePreview);
+    Require(actual.Succeeded(), "悬崖覆盖格不应继续占用不可见基础顶点预算");
+    const auto& mesh = *actual.value;
+    CheckGeometry(terrain, mesh);
+    Require(mesh.baseTiles == std::vector<std::uint32_t>{0, 2} && mesh.hiddenTiles == std::vector<std::uint8_t>{0, 1, 0}
+        && mesh.hiddenTileCount == 1, "紧缩基础层必须保留原格身份并完整跳过悬崖覆盖格");
+    Require(mesh.vertices.size() == 16 && mesh.indices.size() == 24 && mesh.overlayTiles == std::vector<std::uint32_t>{0, 2}
+        && mesh.budget.base.requested == 2 && mesh.budget.base.displayed == 2 && mesh.budget.base.omitted == 0
+        && mesh.budget.transitions.requested == 2 && mesh.budget.transitions.displayed == 2
+        && mesh.budget.transitions.omitted == 0 && !mesh.budget.reduced,
+        "同一预算必须保留完整两层过渡，不能只恢复部分地图");
+    const auto strict = BuildTerrainGroundMesh(terrain, atlases, limits, kUnlit, nullptr, covered);
+    Require(strict.Succeeded() && strict.value->indices == mesh.indices && strict.value->vertices.size() == mesh.vertices.size(),
+        "紧缩是相同几何表示，不应只在允许降级的预览策略中生效");
+    const auto noCoverage = BuildTerrainGroundMesh(terrain, atlases, limits, kUnlit, nullptr, {}, {}, {},
+        TerrainGroundBudgetPolicy::PreserveBasePreview);
+    Require(noCoverage.Succeeded() && noCoverage.value->baseTiles.empty() && noCoverage.value->hiddenTiles.empty()
+        && noCoverage.value->budget.transitions.displayed == 0 && noCoverage.value->budget.transitions.omitted == 3
+        && noCoverage.value->budget.reduced, "没有已准备覆盖时不能擅自隐藏基础格以通过预算");
+    limits.maxVertices = 8;
+    const auto stillLimited = BuildTerrainGroundMesh(terrain, atlases, limits, kUnlit, nullptr, covered, {}, {},
+        TerrainGroundBudgetPolicy::PreserveBasePreview);
+    Require(stillLimited.Succeeded() && stillLimited.value->budget.transitions.omitted == 2
+        && stillLimited.value->budget.reduced, "紧缩后仍超预算时必须保留明确的整类降级统计");
+}
+
 void TestWaterColorBounds() {
     // 两端相同的满强度通道应保持 1；旧的双乘加在部分浅水深度会得到 1+1ULP，
     // 从而使渲染插件拒绝包含水面的整份地表。使用原创颜色，不依赖游戏资源。
@@ -783,9 +868,9 @@ void TestPreserveBasePreviewBudget() {
     counts(*fallback.value);
     const std::array<std::uint8_t, 1> covered{1};
     const auto hidden = BuildTerrainGroundMesh(terrain, atlases, {}, kUnlit, &water, covered, blight, {}, previewPolicy);
-    Require(hidden.Succeeded() && hidden.value->hiddenTileCount == 1 && hidden.value->budget.base.displayed == 1
-        && hidden.value->vertices.size() == 8 && hidden.value->indices.size() == 6,
-        "悬崖覆盖仍保留基础原格顶点，显示统计含保留 quad 并单列隐藏数");
+    Require(hidden.Succeeded() && hidden.value->hiddenTileCount == 1 && hidden.value->budget.base.displayed == 0
+        && hidden.value->baseTiles.empty() && hidden.value->vertices.size() == 4 && hidden.value->indices.size() == 6,
+        "悬崖覆盖不分配基础原格顶点，覆盖格上的水面仍独立保留");
     counts(*hidden.value);
 }
 
@@ -801,6 +886,8 @@ int main() {
         TestRetainedMipBudgets();
         TestBudgetsAndInvalidInputs();
         TestBlendLayers();
+        TestEveryTransitionMask();
+        TestCoveredBaseCompactionPreservesTransitions();
         TestWaterColorBounds();
         TestWater();
         TestLighting();

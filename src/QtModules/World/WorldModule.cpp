@@ -114,7 +114,7 @@ QString GroundBudgetDetails(const Render::TerrainGroundMesh& ground) {
             .arg(name, Count(value.requested), Count(value.displayed), Count(value.omitted));
     };
     const auto& budget = ground.budget;
-    QStringList lines{QObject::tr("基础层：请求 %1、保留 %2、省略 %3（含悬崖隐藏 %4 格的原顶点）")
+    QStringList lines{QObject::tr("基础层：请求 %1、保留 %2、省略 %3（悬崖模型另覆盖 %4 格）")
         .arg(Count(budget.base.requested), Count(budget.base.displayed), Count(budget.base.omitted), Count(ground.hiddenTileCount)),
         counts(QObject::tr("普通过渡遮罩"), budget.transitions), counts(QObject::tr("精确荒芜遮罩"), budget.blight),
         counts(QObject::tr("水面"), budget.water)};

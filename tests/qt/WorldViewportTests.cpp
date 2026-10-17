@@ -433,6 +433,60 @@ void WorldViewportTests::GroundSubmissionReportsReasonAndPreservesPreviousMesh()
     state.terrainResult = 0;
     QVERIFY(viewport.SetGroundMesh(ground));
     QVERIFY(viewport.LastGroundFailure().diagnostics.empty());
+
+    // 三个原格只隐藏中间格：后一个可见格必须仍绑定原 tile 2；这里只验来源/提交，不代替动态点击验收。
+    auto wide = std::make_shared<MapData::TerrainGridSnapshot>();
+    wide->header.width = 4; wide->header.height = 2; wide->header.offset = {-64, -64};
+    wide->header.groundTilesets = {"Ldrt"};
+    wide->minimum = {-64, -64, 0}; wide->maximum = {320, 64, 0};
+    std::vector<War3RenderVertexV2> sourceVertices;
+    std::vector<std::uint32_t> sourceIndices;
+    for (std::uint32_t y = 0; y < 2; ++y) for (std::uint32_t x = 0; x < 4; ++x) {
+        MapData::TerrainVertex vertex;
+        vertex.cliffAndLayerRaw = 2;
+        vertex.position = {-64.0f + static_cast<float>(x) * 128.0f, -64.0f + static_cast<float>(y) * 128.0f, 0};
+        wide->vertices.push_back(vertex);
+        sourceVertices.push_back({vertex.position[0], vertex.position[1], 0, 1, 1, 1});
+    }
+    for (std::uint32_t tile = 0; tile < 3; ++tile) {
+        wide->tiles.push_back({{tile, tile + 1, tile + 4, tile + 5}});
+        for (const auto index : {tile, tile + 1, tile + 4, tile + 1, tile + 5, tile + 4}) sourceIndices.push_back(index);
+    }
+    QVERIFY(viewport.SetMesh(sourceVertices, sourceIndices, 18));
+    QVERIFY(viewport.SetPickingTerrain(wide, 1, 18));
+    const std::array<std::uint8_t, 3> covered{0, 1, 0};
+    auto compactResult = Render::BuildTerrainGroundMesh(*wide, missingAtlas, {}, {}, nullptr, covered);
+    QVERIFY(compactResult.Succeeded());
+    auto compact = std::make_shared<Render::TerrainGroundMesh>(std::move(*compactResult.value));
+    QVERIFY(compact->baseTiles == std::vector<std::uint32_t>({0, 2}));
+    QVERIFY(viewport.SetGroundMesh(compact));
+    const auto compactEpoch = state.sceneEpoch;
+    const auto rejectCompact = [&](std::shared_ptr<Render::TerrainGroundMesh> candidate, const char* code) {
+        QVERIFY(!viewport.SetGroundMesh(std::move(candidate)));
+        QVERIFY(viewport.HasGroundMesh());
+        QCOMPARE(state.sceneEpoch, compactEpoch);
+        QCOMPARE(viewport.LastGroundFailure().diagnostics.front().code, std::string(code));
+    };
+    const std::vector<std::vector<std::uint32_t>> badMaps{{0}, {0, 0}, {2, 0}, {0, 1}, {0, 99}};
+    for (const auto& badMap : badMaps) {
+        auto candidate = std::make_shared<Render::TerrainGroundMesh>(*compact);
+        candidate->baseTiles = badMap;
+        rejectCompact(candidate, "WORLD_GROUND_BASE_LAYOUT");
+    }
+    auto candidate = std::make_shared<Render::TerrainGroundMesh>(*compact);
+    candidate->hiddenTiles[1] = 2;
+    rejectCompact(candidate, "WORLD_GROUND_HIDDEN_COUNT");
+    candidate = std::make_shared<Render::TerrainGroundMesh>(*compact);
+    ++candidate->hiddenTileCount;
+    rejectCompact(candidate, "WORLD_GROUND_HIDDEN_COUNT");
+    candidate = std::make_shared<Render::TerrainGroundMesh>(*compact);
+    candidate->vertices[4].x = candidate->vertices[0].x;
+    rejectCompact(candidate, "WORLD_GROUND_POSITION");
+    candidate = std::make_shared<Render::TerrainGroundMesh>(*compact);
+    std::copy_n(candidate->indices.begin(), 6, candidate->indices.begin() + 6);
+    rejectCompact(candidate, "WORLD_GROUND_FACE_LAYOUT");
+    QVERIFY(viewport.SetGroundMesh(compact));
+    QVERIFY(viewport.LastGroundFailure().diagnostics.empty());
 }
 
 void WorldViewportTests::CaptureViewPendingKeepsStaleResultWithoutProgramFailure_data() {

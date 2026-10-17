@@ -90,7 +90,7 @@ struct TerrainGroundLayerCounts {
 
 struct TerrainGroundBudgetStats {
     TerrainGroundBudgetPolicy policy = TerrainGroundBudgetPolicy::Strict;
-    // base 统计保留的原格 quad（含已由悬崖模型覆盖而不写索引的格，另见 hiddenTileCount）。
+    // base 只统计未被悬崖模型覆盖的原格 quad；已覆盖格另见 hiddenTileCount，不占地表顶点预算。
     // transitions / blight 为可贴图格请求的遮罩 quad；water 为全部有水标记的格（含缺样式）。
     TerrainGroundLayerCounts base, transitions, blight, water;
     bool reduced = false; // 显式预览因几何/批次/整体载荷预算省略可选层；资源回退另行诊断。
@@ -99,7 +99,8 @@ struct TerrainGroundBudgetStats {
 struct TerrainGroundMesh {
     std::uint32_t sourceWidth = 0, sourceHeight = 0;
     static constexpr std::uint32_t blockTileSize = 16;
-    // 前 tileCount×4 个顶点：每个原 tile 连续四个，固定 SW/SE/NW/NE；原 tile = vertexIndex / 4。
+    // 前 (原 tile 数 - hiddenTileCount)×4 个顶点为可见基础层，固定 SW/SE/NW/NE。
+    // 无隐藏格时原 tile = vertexIndex / 4；有隐藏格时由 baseTiles 显式映射。
     // 其后每个过渡层 quad 也是四个顶点，所属原 tile 见 overlayTiles。
     // 只复制原始 XYZ，不调整坡道、悬崖或水面高度，不降采样。
     std::vector<TerrainGroundVertex> vertices;
@@ -111,11 +112,13 @@ struct TerrainGroundMesh {
     std::vector<std::shared_ptr<const TerrainAtlasSnapshot>> textures;
     // 按块 row-major，末块可不足 16 格；本批 GPU 仍按纹理归组，没有宣称块剔除。
     std::vector<TerrainGroundBlock> blocks;
-    // 第 i 个地表过渡或荒芜 quad（顶点从 tileCount×4 + i×4 起）所属的原 tile。
+    // 仅有隐藏格时存储：按原 tile 升序，恰好为 hiddenTiles 的补集；不能省略、重复或重排。
+    std::vector<std::uint32_t> baseTiles;
+    // 第 i 个地表过渡或荒芜 quad（位于全部可见基础层顶点之后）所属的原 tile。
     std::vector<std::uint32_t> overlayTiles;
     // 水面 quad 排在过渡层之后，第 i 个所属的原 tile；XY 与原格相同，Z 为水面高度。
     std::vector<std::uint32_t> waterTiles;
-    // 被悬崖模型覆盖的原 tile（与 tile 同序，空表示未提供覆盖）：保留四个顶点，但不写索引。
+    // 被已准备悬崖模型覆盖的原 tile（与 tile 同序，空表示无隐藏）：不分配地表顶点或索引。
     std::vector<std::uint8_t> hiddenTiles;
     std::size_t hiddenTileCount = 0;
     bool waterOmitted = false; // 有水但缺样式、纹理槽不足或显式预览预算省略，未画全部水面

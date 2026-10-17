@@ -252,12 +252,16 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
             // 未覆盖顶点可原样携带未知 raw：继续下方逐 tile 的 invalidIndex 高度色回退。
         }
         const auto tileCount = terrain.tiles.size();
-        const auto vertexCount = tileCount * 4, indexCount = tileCount * 6;
+        const auto hiddenTileCount = static_cast<std::size_t>(std::count_if(coveredTiles.begin(), coveredTiles.end(),
+            [](std::uint8_t covered) { return covered != 0; }));
+        const auto baseQuadCount = tileCount - hiddenTileCount;
+        const auto vertexCount = baseQuadCount * 4, indexCount = baseQuadCount * 6;
         const auto blockColumns = (width - 2) / TerrainGroundMesh::blockTileSize + 1;
         const auto blockRows = (height - 2) / TerrainGroundMesh::blockTileSize + 1;
         const auto blockCount = static_cast<std::size_t>(blockColumns) * blockRows;
         const auto fixedBytes = vertexCount * sizeof(TerrainGroundVertex) + indexCount * sizeof(std::uint32_t)
             + blockCount * sizeof(TerrainGroundBlock) + tileCount * (sizeof(std::uint32_t) + sizeof(std::uint8_t))
+            + (hiddenTileCount ? tileCount * sizeof(std::uint8_t) + baseQuadCount * sizeof(std::uint32_t) : 0)
             + kFixedScratchBytes;
         if (vertexCount > limits.maxVertices || indexCount > limits.maxIndices || fixedBytes > limits.maxWorkingBytes)
             return Failure("TERRAIN_GROUND_BUDGET", "原格地表网格超出预算，请由宿主回退完整地图的高度预览。");
@@ -302,9 +306,12 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
         TerrainGroundMesh output;
         output.sourceWidth = width; output.sourceHeight = height;
         output.budget.policy = budgetPolicy;
-        output.budget.base = {tileCount, tileCount, 0};
+        output.budget.base = {baseQuadCount, baseQuadCount, 0};
         const auto covered = [&](std::size_t tile) { return !coveredTiles.empty() && coveredTiles[tile] != 0; };
-        if (!coveredTiles.empty()) output.hiddenTiles.assign(coveredTiles.size(), 0);
+        if (hiddenTileCount) {
+            output.hiddenTiles.assign(tileCount, 0);
+            output.baseTiles.reserve(baseQuadCount);
+        }
         output.lit = lighting.enabled;
         for (std::uint32_t y = 0; y + 1 < height; ++y) for (std::uint32_t x = 0; x + 1 < width; ++x) {
             const auto tileIndex = static_cast<std::size_t>(y) * (width - 1) + x;
@@ -446,7 +453,7 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
                 [](std::uint32_t count) { return count != 0; }));
             const auto fits = [&](std::size_t transitionQuads, std::size_t waterQuads, std::size_t bytes) {
                 const auto extra = transitionQuads + waterQuads;
-                const auto quads = tileCount + extra;
+                const auto quads = baseQuadCount + extra;
                 const auto batches = baseBatchCount + (transitionQuads != 0 ? overlayGroups : 0)
                     + static_cast<std::size_t>(waterQuads != 0);
                 return quads * 4 <= limits.maxVertices && quads * 6 <= limits.maxIndices
@@ -486,7 +493,7 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
             const auto existing = std::find(output.textures.begin(), output.textures.end(), blightAtlas);
             const bool newTexture = existing == output.textures.end();
             const auto addedRgba = newTexture ? blightAtlas->RgbaByteCount() : 0;
-            const auto quads = tileCount + overlays.size() + blightOverlays.size() + waterTiles.size();
+            const auto quads = baseQuadCount + overlays.size() + blightOverlays.size() + waterTiles.size();
             const auto batches = baseBatchCount + overlayGroups + 1 + static_cast<std::size_t>(!waterTiles.empty());
             const bool resourceFits = (!newTexture || (output.textures.size() < limits.maxTextures
                     && blightAtlas->image.width <= limits.maxTextureDimension
@@ -518,7 +525,7 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
             output.blightApproximationTiles = blightOverlays.size();
             std::vector<Overlay>().swap(blightOverlays);
         } else output.blightTexturedTiles = blightOverlays.size();
-        const auto quadCount = tileCount + overlays.size() + blightOverlays.size() + waterTiles.size();
+        const auto quadCount = baseQuadCount + overlays.size() + blightOverlays.size() + waterTiles.size();
         const auto overlayBytes = (overlays.size() + blightOverlays.size() + waterTiles.size()) * kOverlayBytes;
         if (quadCount * 4 > limits.maxVertices || quadCount * 6 > limits.maxIndices
             || fixedBytes + overlayBytes > limits.maxWorkingBytes)
@@ -537,7 +544,7 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
         counts(output.budget.blight, blightOverlays.size());
         counts(output.budget.water, waterTiles.size());
         output.vertices.reserve(quadCount * 4);
-        output.indices.resize((quadCount - output.hiddenTileCount) * 6);
+        output.indices.resize(quadCount * 6);
         output.overlayTiles.reserve(overlays.size() + blightOverlays.size());
         output.waterTiles.reserve(waterTiles.size());
         output.batches.reserve(batchCount);
@@ -571,6 +578,7 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
         if (!waterTiles.empty())
             output.batches.push_back({firstIndex, static_cast<std::uint32_t>(waterTiles.size() * 6), waterSlot, true, true});
         for (std::size_t tileIndex = 0; tileIndex < tileCount; ++tileIndex) {
+            if (covered(tileIndex)) continue; // 已准备的悬崖模型负责此格，地表不再分配不可见顶点。
             const auto texture = tileTextures[tileIndex];
             const bool colored = texture == TerrainGroundHeightColor;
             const auto& corners = terrain.tiles[tileIndex].vertices;
@@ -580,12 +588,13 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
                 const auto coordinate = VariationCell(atlas.columns, terrain.vertices[corners[0]].GroundVariation());
                 rect = CellUv(atlas, coordinate[0], coordinate[1]);
             }
+            const auto first = static_cast<std::uint32_t>(output.vertices.size());
             EmitQuad(output, terrain, corners, colored, blightSlot == TerrainGroundHeightColor,
                 rect, minimum[2], maximum[2], lighting);
-            if (covered(tileIndex)) continue; // 保留顶点布局，只不写索引
+            if (hiddenTileCount) output.baseTiles.push_back(static_cast<std::uint32_t>(tileIndex));
             const auto group = colored ? heightGroup : textureSlots[texture];
             const auto at = groupOffsets[group] + groupWritten[group] * 6;
-            WriteFace(output, static_cast<std::uint32_t>(tileIndex * 4), at);
+            WriteFace(output, first, at);
             ++groupWritten[group];
         }
         for (const auto& overlay : overlays) {
