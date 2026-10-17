@@ -130,9 +130,9 @@ HRESULT D3D11Scene::Initialize(bool warp) {
     hr = device_->CreateInputLayout(modelElements, 7, kModelVS, sizeof(kModelVS), &modelLayout_);
     if (FAILED(hr)) return hr;
     D3D11_SAMPLER_DESC modelSampler{};
-    modelSampler.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    modelSampler.Filter = D3D11_FILTER_ANISOTROPIC;
     modelSampler.AddressU = modelSampler.AddressV = modelSampler.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
-    modelSampler.MaxAnisotropy = 1;
+    modelSampler.MaxAnisotropy = 8;
     modelSampler.ComparisonFunc = D3D11_COMPARISON_NEVER;
     modelSampler.MaxLOD = D3D11_FLOAT32_MAX;
     hr = device_->CreateSamplerState(&modelSampler, &modelSampler_);
