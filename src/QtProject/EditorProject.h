@@ -119,6 +119,7 @@ struct MapCopySaveResult {
     std::size_t memberCount = 0;
     bool savedTriggerChanges = false; // 触发器已保存但游戏脚本未重建（工具链不可用）
     bool scriptRebuilt = false;       // 游戏脚本已重建并通过语法检查
+    bool scriptPreserved = false;     // 改动不影响脚本，沿用了原地图脚本
     bool inPlace = false;             // 写回了打开的地图
     std::filesystem::path backup;     // 写回时原图的备份
     double seconds = 0;               // 整个保存耗时

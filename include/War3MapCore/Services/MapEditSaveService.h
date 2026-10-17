@@ -125,6 +125,8 @@ struct MapEditSaveReceipt {
     std::optional<Trigger::TriggerTransactionReceipt> triggerTransaction;
     std::size_t appliedObjectTransactionCount = 0;
     std::size_t appliedAuxiliaryCommandCount = 0;
+    // 改动不影响游戏脚本，候选沿用了源地图脚本原字节。
+    bool scriptPreserved = false;
 };
 
 // 仅接受一种有界领域操作，或同源的完整触发器与物编封印事务；旧触发器批次不能混用。

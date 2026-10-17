@@ -16,6 +16,7 @@
 #include "War3MapCore/Script/ScriptSaveBundle.h"
 #include "War3MapCore/ObjectData/ObjectImport.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
+#include "War3MapCore/Trigger/UiCatalog.h"
 #include "../MapDataFixtures.h"
 
 #include <Windows.h>
@@ -312,6 +313,105 @@ void TestOptionalRealLuaTutorialCreate() {
     Require(script.Succeeded() && lesson.Succeeded() && *lesson.value == Bytes("return {}\n"), "Lua files written byte-for-byte");
     const std::string text(reinterpret_cast<const char*>(script.value->data()), script.value->size());
     Require(text.find("call Cheat(\"exec-lua: \\\"main\\\"\")") != std::string::npos, "exec-lua entry is in the generated script");
+}
+
+// 改动不影响脚本时沿用作者原脚本，避免本机函数库版本不同改写 war3map.j；触发器有改动才写入重建结果。
+void TestOptionalRealScriptPreservation() {
+    const auto ydwe = ObjectV1EnvironmentPath(L"FORGE_YDWE_ROOT");
+    const auto game = ObjectV1EnvironmentPath(L"FORGE_WORLD_GAME_ROOT");
+    if (ydwe.empty() || game.empty()) {
+        std::cout << "SKIP real script preservation: FORGE_YDWE_ROOT / FORGE_WORLD_GAME_ROOT unset\n";
+        return;
+    }
+    TempDirectory scratch;
+    MapCreateRequest create;
+    create.options.name = "Script preservation fixture";
+    create.options.initTriggerName = "Init";
+    create.options.initCustomScript = {"call DoNothing()"};
+    create.target = scratch.Path() / "created.w3x";
+    create.workspace = scratch.Path() / "create-work";
+    create.toolRoot = ydwe; create.gameRoot = game;
+    const auto created = CreateMapCandidate(create);
+    Require(created.Succeeded() && created.value, "fixture map is created with a real script");
+    auto opened = MapArchiveSession::Open(created.value->path);
+    Require(opened.Succeeded() && opened.value, "reopen created fixture");
+
+    // 模拟作者用另一版函数库保存：原脚本里的函数签名与本机重建结果不同。
+    const std::string generatedSignature = "function InitCustomTriggers takes nothing returns nothing";
+    const std::string authorSignature = "function InitCustomTriggers takes integer legacy returns nothing";
+    std::vector<MapArchiveMember> members(opened.value->Members().begin(), opened.value->Members().end());
+    std::vector<std::byte> authorScript;
+    for (auto& member : members) {
+        if (member.name != "war3map.j") continue;
+        std::string text(reinterpret_cast<const char*>(member.data.data()), member.data.size());
+        const auto at = text.find(generatedSignature);
+        Require(at != std::string::npos, "generated script declares InitCustomTriggers");
+        text.replace(at, generatedSignature.size(), authorSignature);
+        text += "// author note\r\n";
+        member.data = Bytes(text);
+        authorScript = member.data;
+    }
+    Require(!authorScript.empty(), "fixture has war3map.j");
+    const auto source = scratch.Path() / "author.w3x";
+    Require(WriteVerifiedArchive(source, members).Succeeded(), "write author-saved fixture");
+    auto author = MapArchiveSession::Open(source);
+    Require(author.Succeeded() && author.value, "open author fixture");
+
+    const auto save = [&](std::string_view label, bool preserve, bool editTriggers) {
+        auto task = std::make_unique<MapSaveTask>();
+        Require(task->FreezeArchive(*author.value).Succeeded(), "freeze author fixture");
+        task->target = scratch.Path() / (std::string(label) + ".w3x");
+        task->preserveUnaffectedScript = preserve;
+        task->replacements.push_back({"notes\\readme.txt", Bytes("unrelated asset\n")});
+        auto catalog = Trigger::UiCatalog::Load(ydwe);
+        Require(catalog.Succeeded() && catalog.value, "load real UI catalog");
+        const auto wtg = author.value->ReadMember("war3map.wtg");
+        const auto wct = author.value->ReadMember("war3map.wct");
+        Require(wtg.Succeeded() && wct.Succeeded(), "read fixture trigger pair");
+        auto triggers = Trigger::WtgWctCodec{}.Parse(*wtg.value, *wct.value, *catalog.value);
+        Require(triggers.Succeeded() && triggers.value, "parse fixture triggers");
+        if (editTriggers) {
+            auto empty = Trigger::WtgWctCodec{}.CreateEmpty(*catalog.value);
+            Require(empty.Succeeded() && empty.value, "create replacement trigger document");
+            triggers.value = std::move(*empty.value);
+            const auto encoded = Trigger::WtgWctCodec{}.Serialize(*triggers.value, *catalog.value);
+            Require(encoded.Succeeded() && encoded.value, "encode edited triggers");
+            task->replacements.push_back({"war3map.wtg", encoded.value->wtg});
+            task->replacements.push_back({"war3map.wct", encoded.value->wct});
+        }
+        ScriptSaveInputSources inputs;
+        inputs.layers = catalog.value->Layers(); inputs.toolRoot = ydwe; inputs.gameRoot = game;
+        inputs.catalog = std::make_unique<Trigger::UiCatalog>(std::move(*catalog.value));
+        inputs.triggers = std::make_unique<Trigger::TriggerDocument>(std::move(*triggers.value));
+        inputs.scriptMember = "war3map.j";
+        const auto prepared = PrepareScriptSaveInputs(*task, std::move(inputs));
+        Require(prepared.Succeeded() && prepared.value && *prepared.value == ScriptSavePreparationState::Ready,
+            "real toolchain is ready");
+        MapSaveService::Run(*task);
+        if (!task->succeeded) for (const auto& diagnostic : task->diagnostics)
+            std::cerr << diagnostic.code << ": " << diagnostic.message << '\n';
+        Require(task->succeeded && task->nextSession && task->scriptRebuilt, "save succeeds with a checked script");
+        return task;
+    };
+    const auto readScript = [](const MapSaveTask& task) {
+        const auto bytes = task.nextSession->ReadMember("war3map.j");
+        Require(bytes.Succeeded() && bytes.value, "read saved script");
+        return *bytes.value;
+    };
+
+    const auto kept = save("asset-only", true, false);
+    Require(kept->scriptPreserved && readScript(*kept) == authorScript, "unrelated edit keeps the author script byte-for-byte");
+    Require(HasCode(kept->diagnostics, "SCRIPT_SOURCE_PRESERVED")
+        && HasCode(kept->diagnostics, "SCRIPT_FUNCTION_SIGNATURE_DIFFERS"), "preserved save reports local library drift");
+    const auto asset = kept->nextSession->ReadMember("notes\\readme.txt");
+    Require(asset.Succeeded() && asset.value == std::optional{Bytes("unrelated asset\n")}, "unrelated edit is written");
+
+    const auto rebuilt = save("no-preserve", false, false);
+    Require(!rebuilt->scriptPreserved && readScript(*rebuilt) != authorScript
+        && HasCode(rebuilt->diagnostics, "SCRIPT_FUNCTION_SIGNATURE_CHANGED"), "hosts without opt-in rebuild and warn on drift");
+
+    const auto edited = save("trigger-edit", true, true);
+    Require(!edited->scriptPreserved && readScript(*edited) != authorScript, "trigger edits always write the rebuilt script");
 }
 
 void TestOptionalRealClassicV1MapSave() {
@@ -1510,6 +1610,7 @@ int main() {
         TestClassicV1CommonMapSaveAndTemplateBoundary();
         TestOptionalRealClassicV1MapSave();
         TestOptionalRealLuaTutorialCreate();
+        TestOptionalRealScriptPreservation();
         TestIncompleteScriptInputDoesNotWriteCandidate();
         TestIndependentUiPreparationGate();
         TestSharedPerFileEncodingDeclarations();

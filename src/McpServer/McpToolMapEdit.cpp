@@ -832,6 +832,7 @@ void RegisterMapEditSaveTool(McpServer& server) {
             {"edited_members", editedMembers},
             {"member_count", static_cast<qint64>(receipt.memberCount)},
             {"script_seconds", receipt.scriptSeconds}, {"script_rebuilt", true},
+            {"script_preserved", receipt.scriptPreserved},
             {"applied_field_edit_count", static_cast<qint64>(receipt.appliedFieldEditCount)},
             {"applied_placement_count", static_cast<qint64>(receipt.appliedPlacementCount)},
             {"applied_terrain_stroke_count", static_cast<qint64>(receipt.appliedStrokeCount)},

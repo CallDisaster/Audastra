@@ -162,6 +162,7 @@ EditorProject::ScriptRebuild EditorProject::PrepareScriptRebuild(MapSaveJob& job
     // 触发器和地图初始化有修改时必须真正重建；不能把 WTG 已保存冒充游戏脚本已更新。
     sources.allowMissingToolchain = !triggerDirty_ && !(mapEdits_ && mapEdits_->IsDirty());
 
+    job.preserveUnaffectedScript = true;
     auto prepared = Services::PrepareScriptSaveInputs(job, std::move(sources));
     AddDiagnostics(prepared.diagnostics);
     if (!prepared.Succeeded() || !prepared.value) return ScriptRebuild::Failed;

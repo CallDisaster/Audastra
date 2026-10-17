@@ -571,6 +571,7 @@ Status PrepareScript(MapSaveTask& task, const MapArchiveSession& source,
         sources.editableInputs[index].reset(static_cast<ObjectData::LniObjectDocument*>(lni.document.release()));
         task.nextBaselines[index].reset(static_cast<ObjectData::NativeObjectDocument*>(parsed.document.release()));
     }
+    task.preserveUnaffectedScript = true;
     auto prepared = PrepareScriptSaveInputs(task, std::move(sources));
     if (!prepared.Succeeded() || !prepared.value || *prepared.value != ScriptSavePreparationState::Ready) {
         return ForwardStatus(std::move(prepared.diagnostics));
@@ -774,6 +775,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         FinalizeScriptWorkspace(task);
         result.value->appliedObjectTransactionCount = request.objectTransactions.size();
         result.value->appliedAuxiliaryCommandCount = auxiliaryRequest ? request.auxiliaryTransaction->Commands().size() : 0;
+        result.value->scriptPreserved = task.scriptPreserved;
         result.diagnostics = std::move(task.diagnostics);
         return result;
     } catch (const std::exception&) {

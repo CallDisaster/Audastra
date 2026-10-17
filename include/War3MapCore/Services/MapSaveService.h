@@ -78,6 +78,8 @@ struct MapSaveTask {
     // 仅供地图数据类的窄事务：脚本模板可以运行，但不得顺带修改或新增七类物编。
     // 比较生成 native 与冻结源成员的完整字节，合并/写候选前失败。
     bool requireGeneratedNativeByteEquality = false;
+    // 宿主保存的是作者已有地图时开启：改动不影响脚本就沿用源脚本。新建地图的种子脚本只是占位，不能开启。
+    bool preserveUnaffectedScript = false;
     // 窄物编事务只允许模板重现这些封印候选；其余类别继续和源成员逐字节一致。
     std::vector<std::shared_ptr<const ObjectTransactionSnapshot>> objectTransactions;
     std::optional<MapSaveScriptSnapshot> script;
@@ -96,6 +98,8 @@ struct MapSaveTask {
     bool executed = false;
     bool succeeded = false;
     bool scriptRebuilt = false;
+    // 已重建并核对：本次改动不影响脚本，写出的是源地图原脚本（scriptRebuilt 同时为真）。
+    bool scriptPreserved = false;
     double scriptSeconds = 0;
     std::size_t memberCount = 0;
     std::filesystem::path written;
