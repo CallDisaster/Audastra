@@ -3,6 +3,7 @@
 #include "War3MapCore/Render/AnimationRenderer.h"
 #include "War3MapCore/RenderPluginEditorVisibility.h"
 #include "War3MapCore/RenderPluginMaterialAlpha.h"
+#include "War3MapCore/RenderPluginTerrainBlight.h"
 #include "War3MapCore/Render/ModelSceneLayerRenderer.h"
 #include "War3MapCore/Render/BuildingSplatPreview.h"
 #include "War3MapCore/Render/WorldModelScene.h"
@@ -675,6 +676,295 @@ void TestTerrainMips(const RendererOwner& renderer) {
     frame = Capture(renderer,320,240,820);
     RequireWorldColor(frame,ReadView(renderer),0,0,{255,0,0},1);
     std::cout << "original mip chain: LOD0/1/2 colors, clamp, deep copy, rejected preservation and four atlas edges passed\n";
+}
+
+// 原创32格：同XYZ/RGB的旧展开顶点为独立像素oracle，不能只凭新入口返回成功。
+void TestTerrainBlight(const RendererOwner& renderer) {
+    const auto* api = renderer.api;
+    Require(api->structSize >= offsetof(War3RenderPluginApiV2, submitTerrainBlightFrame)
+        + sizeof(api->submitTerrainBlightFrame) && api->getTerrainBlightCapabilities && api->submitTerrainBlightFrame,
+        "shared-base blight ABI missing");
+    struct LargerCaps { War3RenderTerrainBlightCapabilitiesV2 known; std::uint64_t tail; };
+    LargerCaps caps{{sizeof(LargerCaps)}, 0xababababababababull};
+    Require(api->getTerrainBlightCapabilities(nullptr, &caps.known) == 0
+        && caps.known.structSize == sizeof(caps.known) && caps.known.blightFormat == WAR3_RENDER_TERRAIN_BLIGHT_SHARED_BASE_V1
+        && caps.known.maxBlightBatches == 32 && caps.known.reserved == 0 && caps.tail == 0xababababababababull,
+        "blight capability prefix/tail contract failed");
+    auto smallCaps = caps.known; smallCaps.structSize = sizeof(smallCaps) - 1;
+    const auto beforeSmall = smallCaps;
+    Require(api->getTerrainBlightCapabilities(renderer.handle, &smallCaps) != 0
+        && std::memcmp(&smallCaps, &beforeSmall, sizeof(smallCaps)) == 0, "short blight query overwrote output");
+    Require(api->resize(renderer.handle, 320, 240) == 0, "blight viewport rejected");
+
+    const std::array<std::uint8_t, 4> red{200, 0, 0, 255};
+    const War3RenderMipRgbaV2 redMip{sizeof(redMip), 1, 1, red.size(), red.data()};
+    const War3RenderTextureMipChainV2 redTexture{sizeof(redTexture), 1, 0, 1, 1, &redMip};
+    std::vector<std::vector<std::uint8_t>> pixels;
+    std::vector<War3RenderMipRgbaV2> mips;
+    for (std::uint32_t level = 0; level < 7; ++level) {
+        const auto width = std::max(1u, 64u >> level), height = std::max(1u, 32u >> level);
+        auto& rgba = pixels.emplace_back(static_cast<std::size_t>(width) * height * 4, 255);
+        for (std::uint32_t y = 0; y < height; ++y) for (std::uint32_t x = 0; x < width; ++x) {
+            const auto cell = level <= 3 ? (y / (height / 4)) * 8 + x / (width / 8) : 31u;
+            const auto at = (static_cast<std::size_t>(y) * width + x) * 4;
+            rgba[at] = static_cast<std::uint8_t>(cell * 37 % 256);
+            rgba[at + 1] = static_cast<std::uint8_t>(cell * 73 % 256);
+            rgba[at + 2] = 200;
+            rgba[at + 3] = cell == 0 || cell % 3 == 1 ? 128 : cell % 3 == 0 ? 0 : 255;
+            if (cell != 0 && level <= 3) {
+                const auto cellSize = width / 8;
+                rgba[at] = static_cast<std::uint8_t>((cell * 37 + (x % cellSize) * 19 + level * 43) % 256);
+                rgba[at + 1] = static_cast<std::uint8_t>((cell * 73 + (y % cellSize) * 31 + level * 59) % 256);
+                rgba[at + 2] = static_cast<std::uint8_t>((cell * 17 + (x % cellSize) * 7 + (y % cellSize) * 13 + level * 71) % 256);
+            }
+        }
+    }
+    for (std::uint32_t level = 0; level < pixels.size(); ++level)
+        mips.push_back({sizeof(War3RenderMipRgbaV2), std::max(1u, 64u >> level), std::max(1u, 32u >> level),
+            pixels[level].size(), pixels[level].data()});
+    const War3RenderTextureMipChainV2 blightTexture{sizeof(blightTexture), 7, 3, 8, 4, mips.data()};
+    std::vector<War3RenderTerrainVertexV2> vertices;
+    std::vector<std::uint32_t> indices;
+    std::vector<War3RenderTerrainBlightBatchV2> blightBatches;
+    for (std::uint32_t q = 0; q < 32; ++q) {
+        for (std::uint32_t corner = 0; corner < 4; ++corner) {
+            const auto x = q % 8 + corner % 2, y = q / 8 + corner / 2;
+            vertices.push_back({static_cast<float>(x) * 128 - 512, static_cast<float>(y) * 128 - 256,
+                static_cast<float>(x * 3 + y * 12), 1, 1, 1, static_cast<float>(corner % 2), corner < 2 ? 1.f : 0.f});
+            if (q != 0) {
+                vertices.back().red = 0.55f + static_cast<float>(corner) * 0.1f;
+                vertices.back().green = 0.9f - static_cast<float>(corner) * 0.1f;
+                vertices.back().blue = 0.65f + static_cast<float>(corner % 2) * 0.2f;
+            }
+        }
+        const auto first = q * 4;
+        indices.insert(indices.end(), {first, first + 1, first + 2, first + 1, first + 3, first + 2});
+        const auto x = (q % 8) * 8, y = (q / 8) * 8;
+        blightBatches.push_back({q * 6, 6, (static_cast<float>(x) + 0.5f) / 64,
+            (static_cast<float>(x + 8) - 0.5f) / 64, (static_cast<float>(y) + 0.5f) / 32,
+            (static_cast<float>(y + 8) - 0.5f) / 32});
+    }
+    const War3RenderTerrainBatchV2 groundBatch{0, 192, 0};
+    War3RenderTerrainBlightFrameV2 frame{sizeof(frame), 32,
+        {sizeof(War3RenderTerrainMipSceneV2), 128, 192, 1, 1, 880, vertices.data(), indices.data(), &redTexture, &groundBatch},
+        192, 32, indices.data(), blightBatches.data(), &blightTexture};
+    auto expanded = vertices;
+    auto expandedIndices = indices;
+    std::vector<War3RenderTerrainBatchV2> referenceBatches{groundBatch};
+    for (std::uint32_t q = 0; q < 32; ++q) {
+        const auto& uv = blightBatches[q];
+        for (std::uint32_t corner = 0; corner < 4; ++corner) {
+            auto vertex = vertices[q * 4 + corner];
+            vertex.u = corner % 2 == 0 ? uv.uvLeft : uv.uvRight;
+            vertex.v = corner < 2 ? uv.uvBottom : uv.uvTop;
+            expanded.push_back(vertex);
+        }
+        const auto first = 128 + q * 4;
+        expandedIndices.insert(expandedIndices.end(), {first, first + 1, first + 2, first + 1, first + 3, first + 2});
+        referenceBatches.push_back({192 + q * 6, 6, 1u | WAR3_RENDER_TERRAIN_ALPHA_BLEND});
+    }
+    const std::array<War3RenderTextureMipChainV2, 2> referenceTextures{redTexture, blightTexture};
+    const War3RenderTerrainMipSceneV2 reference{sizeof(reference), 256, 384, 2, 33, 880,
+        expanded.data(), expandedIndices.data(), referenceTextures.data(), referenceBatches.data()};
+    const auto compareReference = [&] {
+        Require(api->submitTerrainMipScene(renderer.handle, &reference) == 0, "expanded blight oracle rejected");
+        const auto expected = Capture(renderer, 320, 240, 880);
+        Require(api->submitTerrainBlightFrame(renderer.handle, &frame) == 0, "shared-base blight rejected");
+        const auto actual = Capture(renderer, 320, 240, 880);
+        Require(actual == expected && Colors(actual) > 50, "shared-base blight differs from expanded original-mip oracle");
+        return actual;
+    };
+    const std::array<War3RenderCameraV2, 3> cameras{{
+        {sizeof(War3RenderCameraV2), 0, 0, 20, 1500, -1.5707963f, 1.5f},
+        {sizeof(War3RenderCameraV2), 0, 0, 20, 8000, -1.5707963f, 1.5f},
+        {sizeof(War3RenderCameraV2), 0, 0, 20, 1500, -0.45f, 0.6f}}};
+    std::vector<std::uint8_t> accepted;
+    std::vector<std::uint8_t> previousCameraFrame;
+    for (const auto& camera : cameras) {
+        Require(api->setCamera(renderer.handle, &camera) == 0, "blight camera rejected");
+        accepted = compareReference();
+        RequireExactMatrix(ReadView(renderer), camera);
+        if (!previousCameraFrame.empty()) Require(accepted != previousCameraFrame, "blight camera change was inactive");
+        previousCameraFrame = accepted;
+    }
+    Require(api->setCamera(renderer.handle, &cameras.front()) == 0, "blight alpha camera rejected");
+    accepted = compareReference();
+    RequireWorldColor(accepted, ReadView(renderer), -448, -192, {100, 0, 100}, 2);
+
+    const auto originalBase = frame.baseScene;
+    const auto originalPixels = accepted;
+    War3RenderEnvironmentV2 environment{sizeof(environment), {-0.45f, 0.35f, 0.82f},
+        {0.6698592f, 0.6698592f, 0.6698592f}, {0.35f, 0.35f, 0.35f}, WAR3_RENDER_FOG_LINEAR,
+        100, 3000, 0, {0, 1, 0}, 0, 0, 0, 0, 0, 0, nullptr};
+    Require(api->setEnvironment(renderer.handle, &environment) == 0, "blight fog rejected");
+    Require(compareReference() != originalPixels, "blight fog comparison was inactive");
+    const std::array<std::uint8_t, 4> shadow{255, 0, 255, 0};
+    environment.fogMode = WAR3_RENDER_FOG_NONE;
+    environment.shadowWidth = environment.shadowHeight = 2;
+    environment.shadowOriginX = -512; environment.shadowOriginY = -256;
+    environment.shadowCellSize = 512; environment.shadowDarkness = 0.5f; environment.shadow = shadow.data();
+    Require(api->setEnvironment(renderer.handle, &environment) == 0, "blight shadow rejected");
+    Require(compareReference() != originalPixels, "blight shadow comparison was inactive");
+    environment.shadowWidth = environment.shadowHeight = 0; environment.shadowDarkness = 0; environment.shadow = nullptr;
+    Require(api->setEnvironment(renderer.handle, &environment) == 0, "blight environment reset rejected");
+    accepted = compareReference();
+
+    // 十六份ground都实际参与draw，新pass独立第十七来源；旧接口仍拒绝17项。
+    std::array<std::array<std::uint8_t, 4>, 16> groundColors;
+    std::array<War3RenderMipRgbaV2, 16> groundMips;
+    std::array<War3RenderTextureMipChainV2, 16> sixteenTextures;
+    for (std::uint32_t i = 0; i < 16; ++i) {
+        groundColors[i] = {static_cast<std::uint8_t>(40 + i * 11), static_cast<std::uint8_t>(220 - i * 9),
+            static_cast<std::uint8_t>(20 + i * 7), 255};
+        groundMips[i] = {sizeof(War3RenderMipRgbaV2), 1, 1, 4, groundColors[i].data()};
+        sixteenTextures[i] = {sizeof(War3RenderTextureMipChainV2), 1, 0, 1, 1, &groundMips[i]};
+    }
+    std::array<War3RenderTerrainBatchV2, 16> sixteenBatches;
+    for (std::uint32_t i = 0; i < 16; ++i) sixteenBatches[i] = {i * 12, 12, i};
+    frame.baseScene.textureCount = frame.baseScene.batchCount = 16;
+    frame.baseScene.textures = sixteenTextures.data(); frame.baseScene.batches = sixteenBatches.data();
+    auto sixteenVertices = vertices;
+    for (auto& vertex : sixteenVertices) vertex.red = vertex.green = vertex.blue = 1;
+    frame.baseScene.vertices = sixteenVertices.data();
+    std::array<War3RenderTextureMipChainV2, 17> oldSeventeen;
+    std::copy(sixteenTextures.begin(), sixteenTextures.end(), oldSeventeen.begin()); oldSeventeen.back() = blightTexture;
+    auto sixteenReference = reference;
+    // 旧入口不能接17份：独立oracle分两套scene，先把16份base色烘入逐quad顶点RGB，
+    // 仍只用原两纹理，其blight RGB保持白色，shader路径和旧展开几何不变。
+    auto sixteenExpanded = expanded;
+    for (auto& vertex : sixteenExpanded) vertex.red = vertex.green = vertex.blue = 1;
+    for (std::uint32_t q = 0; q < 32; ++q) for (std::uint32_t corner = 0; corner < 4; ++corner) {
+        auto& vertex = sixteenExpanded[q * 4 + corner];
+        vertex.red *= groundColors[q / 2][0] / 255.f;
+        vertex.green *= groundColors[q / 2][1] / 255.f;
+        vertex.blue *= groundColors[q / 2][2] / 255.f;
+    }
+    const std::array<std::uint8_t, 4> white{255, 255, 255, 255};
+    const War3RenderMipRgbaV2 whiteMip{sizeof(whiteMip), 1, 1, white.size(), white.data()};
+    const std::array<War3RenderTextureMipChainV2, 2> colorOracleTextures{{
+        {sizeof(War3RenderTextureMipChainV2), 1, 0, 1, 1, &whiteMip}, blightTexture}};
+    sixteenReference = reference; sixteenReference.vertices = sixteenExpanded.data();
+    sixteenReference.textures = colorOracleTextures.data();
+    Require(api->submitTerrainMipScene(renderer.handle, &sixteenReference) == 0, "sixteen source color oracle rejected");
+    const auto sixteenExpected = Capture(renderer, 320, 240, 880);
+    Require(sixteenExpected != accepted, "sixteen distinguishable source oracle was inactive");
+    Require(api->submitTerrainBlightFrame(renderer.handle, &frame) == 0
+        && Capture(renderer, 320, 240, 880) == sixteenExpected, "sixteen ground sources plus independent blight failed");
+    accepted = sixteenExpected;
+    auto oldOverflow = frame.baseScene; oldOverflow.textureCount = 17; oldOverflow.textures = oldSeventeen.data();
+    Require(api->submitTerrainMipScene(renderer.handle, &oldOverflow) != 0
+        && Capture(renderer, 320, 240, 880) == accepted, "legacy sixteen texture cap changed");
+    std::vector<std::uint8_t> largeRgba(1024u * 1024u * 4u, 255);
+    const War3RenderMipRgbaV2 largeMip{sizeof(largeMip), 1024, 1024, largeRgba.size(), largeRgba.data()};
+    auto largeTextures = sixteenTextures;
+    for (auto& texture : largeTextures) texture.mips = &largeMip;
+    auto rgbaOverflow = frame; rgbaOverflow.baseScene.textures = largeTextures.data();
+    Require(api->submitTerrainBlightFrame(renderer.handle, &rgbaOverflow) != 0
+        && Capture(renderer, 320, 240, 880) == accepted, "combined ground/blight RGBA budget was split per pass");
+    frame.baseScene = originalBase;
+    accepted = compareReference();
+
+    std::vector<std::uint8_t> onePixelCells(8u * 4u * 4u, 255);
+    onePixelCells[0] = onePixelCells[1] = 0; onePixelCells[2] = 200; onePixelCells[3] = 128;
+    const War3RenderMipRgbaV2 onePixelMip{sizeof(onePixelMip), 8, 4, onePixelCells.size(), onePixelCells.data()};
+    const War3RenderTextureMipChainV2 onePixelTexture{sizeof(onePixelTexture), 1, 0, 8, 4, &onePixelMip};
+    const War3RenderTerrainBlightBatchV2 onePixelBatch{0, 6, 0.5f / 8, 0.5f / 8, 0.5f / 4, 0.5f / 4};
+    auto onePixelFrame = frame;
+    onePixelFrame.blightIndexCount = 6; onePixelFrame.blightBatchCount = 1;
+    onePixelFrame.blightBatches = &onePixelBatch; onePixelFrame.blightTexture = &onePixelTexture;
+    Require(api->submitTerrainBlightFrame(renderer.handle, &onePixelFrame) == 0, "one-pixel blight cell rejected");
+    RequireWorldColor(Capture(renderer, 320, 240, 880), ReadView(renderer), -448, -192, {100, 0, 100}, 2);
+    accepted = compareReference();
+
+    // submit返回后、第一次完成帧capture前即破坏所有借入层级，独立oracle仍保留。
+    auto mutablePixels = pixels;
+    auto mutableMips = mips;
+    for (std::size_t i = 0; i < mutableMips.size(); ++i) mutableMips[i].rgba = mutablePixels[i].data();
+    auto mutableTexture = blightTexture; mutableTexture.mips = mutableMips.data();
+    auto mutableVertices = vertices; auto mutableIndices = indices; auto mutableBatches = blightBatches;
+    auto mutableFrame = frame;
+    mutableFrame.baseScene.vertices = mutableVertices.data(); mutableFrame.baseScene.indices = mutableIndices.data();
+    mutableFrame.blightIndices = mutableIndices.data(); mutableFrame.blightBatches = mutableBatches.data();
+    mutableFrame.blightTexture = &mutableTexture;
+    Require(api->submitTerrainBlightFrame(renderer.handle, &mutableFrame) == 0, "mutable blight submission rejected");
+    for (auto& rgba : mutablePixels) std::fill(rgba.begin(), rgba.end(), 0);
+    std::fill(mutableMips.begin(), mutableMips.end(), War3RenderMipRgbaV2{});
+    std::fill(mutableVertices.begin(), mutableVertices.end(), War3RenderTerrainVertexV2{});
+    std::fill(mutableIndices.begin(), mutableIndices.end(), 0u);
+    std::fill(mutableBatches.begin(), mutableBatches.end(), War3RenderTerrainBlightBatchV2{});
+    mutableTexture = {};
+    Require(Capture(renderer, 320, 240, 880) == accepted, "blight input was borrowed beyond CPU reception");
+    const auto reject = [&](const War3RenderTerrainBlightFrameV2& invalid) {
+        const auto before = ReadView(renderer);
+        Require(api->submitTerrainBlightFrame(renderer.handle, &invalid) != 0, "invalid blight frame accepted");
+        Require(Capture(renderer, 320, 240, 880) == accepted, "invalid blight replaced completed scene");
+        const auto after = ReadView(renderer);
+        Require(after.sceneEpoch == before.sceneEpoch && after.viewEpoch == before.viewEpoch
+            && after.surfaceEpoch == before.surfaceEpoch, "rejected blight changed completed frame identity");
+    };
+    auto bad = frame; --bad.structSize; reject(bad);
+    bad = frame; bad.baseQuadCount = 31; reject(bad);
+    bad = frame; bad.blightBatchCount = 33; reject(bad);
+    bad = frame; bad.blightIndexCount = 6291456; reject(bad);
+    bad = frame; bad.baseScene.batchCount = 4096; reject(bad);
+    auto badBatches = blightBatches;
+    badBatches[0].uvLeft = std::numeric_limits<float>::quiet_NaN();
+    bad = frame; bad.blightBatches = badBatches.data(); reject(bad);
+    badBatches = blightBatches; badBatches[0].uvLeft += 0.001f; reject(bad);
+    badBatches = blightBatches; badBatches[1] = badBatches[0]; badBatches[1].firstIndex = 6;
+    reject(bad);
+    auto badIndices = indices; std::copy_n(indices.begin(), 6, badIndices.begin() + 6);
+    bad = frame; bad.blightIndices = badIndices.data(); reject(bad);
+    badIndices = indices; std::swap(badIndices[0], badIndices[1]); reject(bad);
+    auto colored = groundBatch; colored.textureIndex = WAR3_RENDER_HEIGHT_COLOR_TEXTURE;
+    bad = frame; bad.baseScene.batches = &colored; reject(bad);
+    colored.textureIndex = WAR3_RENDER_TERRAIN_ALPHA_BLEND; reject(bad);
+    colored.textureIndex = WAR3_RENDER_TERRAIN_TRANSLUCENT; reject(bad);
+    auto invalidTexture = blightTexture; invalidTexture.atlasColumns = 4;
+    bad = frame; bad.blightTexture = &invalidTexture; reject(bad);
+    bad = frame; bad.blightIndexCount = bad.blightBatchCount = 0; reject(bad);
+    bad = frame; bad.blightIndices = nullptr; reject(bad);
+
+    // 空pass与旧入口都必须清除新pass，也显式核普通draw的UV状态已复位。
+    bad = frame; bad.blightIndexCount = bad.blightBatchCount = 0;
+    bad.blightIndices = nullptr; bad.blightBatches = nullptr; bad.blightTexture = nullptr;
+    Require(api->submitTerrainBlightFrame(renderer.handle, &bad) == 0, "empty blight pass rejected");
+    const auto cleared = Capture(renderer, 320, 240, 880);
+    Require(cleared != accepted, "empty blight pass retained old overlay");
+    Require(api->submitTerrainMipScene(renderer.handle, &frame.baseScene) == 0
+        && Capture(renderer, 320, 240, 880) == cleared, "ordinary terrain inherited blight UV/pass state");
+
+    // 每个旧入口都从非空pass开始，避免先empty后legacy导致错误实现也能通过。
+    const std::array<std::uint8_t, 16> patterned{255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255};
+    const War3RenderMipRgbaV2 patternedMip{sizeof(patternedMip), 2, 2, patterned.size(), patterned.data()};
+    const War3RenderTextureMipChainV2 patternedTexture{sizeof(patternedTexture), 1, 0, 1, 1, &patternedMip};
+    auto ordinary = frame.baseScene; ordinary.textures = &patternedTexture;
+    Require(api->submitTerrainMipScene(renderer.handle, &ordinary) == 0, "patterned ordinary scene rejected");
+    const auto ordinaryExpected = Capture(renderer, 320, 240, 880);
+    const auto installBlight = [&] {
+        Require(api->submitTerrainBlightFrame(renderer.handle, &frame) == 0
+            && Capture(renderer, 320, 240, 880) == accepted, "blight reinstall before legacy clear failed");
+    };
+    installBlight();
+    Require(api->submitTerrainMipScene(renderer.handle, &ordinary) == 0
+        && Capture(renderer, 320, 240, 880) == ordinaryExpected, "old mip scene failed to clear visible blight/UV override");
+    const War3RenderTextureRgbaV2 legacyTexture{sizeof(legacyTexture), 2, 2, patterned.size(), patterned.data()};
+    const War3RenderTerrainSceneV2 legacy{sizeof(legacy), ordinary.vertexCount, ordinary.indexCount, 1, 1, 880,
+        vertices.data(), indices.data(), &legacyTexture, &groundBatch};
+    Require(api->submitTerrainScene(renderer.handle, &legacy) == 0, "legacy patterned oracle rejected");
+    const auto legacyExpected = Capture(renderer, 320, 240, 880);
+    installBlight();
+    Require(api->submitTerrainScene(renderer.handle, &legacy) == 0
+        && Capture(renderer, 320, 240, 880) == legacyExpected, "legacy mip0 scene failed to clear visible blight");
+    std::vector<War3RenderVertexV2> coloredVertices;
+    for (const auto& v : vertices) coloredVertices.push_back({v.x, v.y, v.z, 0, 0.8f, 0.2f});
+    const War3RenderMeshV2 coloredMesh{sizeof(coloredMesh), 128, 192, 880, coloredVertices.data(), indices.data()};
+    Require(api->submitMesh(renderer.handle, &coloredMesh) == 0, "colored mesh clear oracle rejected");
+    const auto meshExpected = Capture(renderer, 320, 240, 880);
+    installBlight();
+    Require(api->submitMesh(renderer.handle, &coloredMesh) == 0
+        && Capture(renderer, 320, 240, 880) == meshExpected, "plain mesh failed to clear visible blight");
+    std::cout << "shared-base blight: 32 cell/mip expanded oracle, cameras/fog/shadow, alpha, 16+1 sources, budgets, immutable input and clearing passed\n";
 }
 
 void TestTerrainZeroAlphaContribution(const RendererOwner& renderer) {
@@ -1953,6 +2243,7 @@ int wmain(int argc, wchar_t** argv) {
             std::cout << status.message << " frames=" << status.frameCount << " revision=" << status.documentRevision << '\n';
             screenshot = TestTerrain(renderer); // 外层两轮销毁/重建，在硬件与WARP入口均执行。
             TestTerrainMips(renderer);
+            TestTerrainBlight(renderer);
             TestTerrainZeroAlphaContribution(renderer);
             TestModels(renderer);
             TestEnvironment(renderer);

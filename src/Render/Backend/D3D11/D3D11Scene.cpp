@@ -344,20 +344,30 @@ void D3D11Scene::DrawTerrainBatches(bool translucent) {
     context_->PSSetSamplers(0, 1, &sampler);
     auto* parameters = terrainConstants_.Get();
     context_->PSSetConstantBuffers(1, 1, &parameters);
+    context_->VSSetConstantBuffers(1, 1, &parameters);
     context_->OMSetDepthStencilState(translucent ? modelDepthRead_.Get() : terrainDepth_.Get(), 0);
-    for (const auto& batch : batches_) {
+    for (std::size_t batchIndex = 0; batchIndex < batches_.size(); ++batchIndex) {
+        const auto& batch = batches_[batchIndex];
         const bool textured = batch.textureIndex != WAR3_RENDER_HEIGHT_COLOR_TEXTURE;
         const bool isTranslucent = textured && (batch.textureIndex & WAR3_RENDER_TERRAIN_TRANSLUCENT) != 0;
         if (isTranslucent != translucent) continue;
         const bool blended = isTranslucent || (textured && (batch.textureIndex & WAR3_RENDER_TERRAIN_ALPHA_BLEND) != 0);
         const auto slot = batch.textureIndex & ~(WAR3_RENDER_TERRAIN_ALPHA_BLEND | WAR3_RENDER_TERRAIN_TRANSLUCENT);
+        // 每批明确复位，防止荒芜 UV 泄漏到下一帧或高度色/普通地表批次。
+        TextureParameters textureParameters{};
         if (textured) {
-            auto textureParameters = textureParameters_[slot];
+            textureParameters = textureParameters_[slot];
             textureParameters.alphaBlend = blended ? 1.0f : 0.0f;
             textureParameters.isTranslucent = isTranslucent ? 1.0f : 0.0f;
             if (isTranslucent) textureParameters.tapLimit = 1.0f; // 水面等透明批次保留原精确路径。
-            context_->UpdateSubresource(terrainConstants_.Get(), 0, nullptr, &textureParameters, 0, 0);
+            if (batchIndex >= blightFirstBatch_ && batchIndex - blightFirstBatch_ < blightBatches_.size()) {
+                const auto& uv = blightBatches_[batchIndex - blightFirstBatch_];
+                textureParameters.uvLeft = uv.uvLeft; textureParameters.uvRight = uv.uvRight;
+                textureParameters.uvTop = uv.uvTop; textureParameters.uvBottom = uv.uvBottom;
+                textureParameters.uvOverride = 1;
+            }
         }
+        context_->UpdateSubresource(terrainConstants_.Get(), 0, nullptr, &textureParameters, 0, 0);
         auto* resource = textured ? textures_[slot].Get() : nullptr;
         context_->PSSetShaderResources(0, 1, &resource);
         context_->PSSetShader(textured ? terrainPixelShader_.Get() : pixelShader_.Get(), nullptr, 0);
@@ -374,8 +384,18 @@ HRESULT D3D11Scene::SetMesh(const Mesh& mesh) try {
     std::vector<Ptr<ID3D11ShaderResourceView>> textures;
     std::vector<TextureParameters> parameters;
     auto batches = mesh.batches;
+    auto blightBatches = mesh.blightBatches;
+    // 上传阶段仅新增这份至多32项元数据；不复制第二份顶点/像素，且核实际容量。
+    if (blightBatches.capacity() > WAR3_RENDER_TERRAIN_BLIGHT_MAX_BATCHES) return E_INVALIDARG;
     textures.reserve(mesh.textures.size());
     parameters.reserve(mesh.textures.size());
+    if (!blightBatches.empty()) {
+        const auto uploadMetadataBytes = std::uint64_t(batches.capacity()) * sizeof(War3RenderTerrainBatchV2)
+            + std::uint64_t(blightBatches.capacity()) * sizeof(War3RenderTerrainBlightBatchV2)
+            + std::uint64_t(textures.capacity()) * sizeof(Ptr<ID3D11ShaderResourceView>)
+            + std::uint64_t(parameters.capacity()) * sizeof(TextureParameters);
+        if (uploadMetadataBytes > 128ull * 1024 * 1024) return E_INVALIDARG;
+    }
     // 所有资源先创建到局部所有者；任一步失败都不替换现有 GPU 场景。
     for (const auto& source : mesh.textures) {
         Ptr<ID3D11ShaderResourceView> view;
@@ -397,6 +417,7 @@ HRESULT D3D11Scene::SetMesh(const Mesh& mesh) try {
     }
     vertices_ = std::move(vertices); indices_ = std::move(indices);
     textures_.swap(textures); textureParameters_.swap(parameters); batches_.swap(batches); terrain_ = mesh.terrain;
+    blightBatches_.swap(blightBatches); blightFirstBatch_ = mesh.blightFirstBatch;
     indexCount_ = static_cast<UINT>(mesh.indices.size());
     return S_OK;
 } catch (const std::bad_alloc&) {

@@ -44,16 +44,24 @@ cbuffer TerrainTexture : register(b1) {
     float terrainAlphaBlend; // 1 = 过渡层，输出贴图 alpha 供混合
     float terrainIsTranslucent;
     float terrainTapLimit; // 宿主逐批次明确下发1/4；shader自身仍硬限4tap。
+    float4 terrainUvRect; // left/right/top/bottom，与宿主 CellUv 的 mip0 半 texel 内缩一致。
+    float terrainUvOverride;
+    float3 terrainUvPadding;
 };
 struct TerrainInput { float3 position : POSITION; float3 color : COLOR; float2 uv : TEXCOORD; };
 struct TerrainOutput {
     float4 position : SV_POSITION; float3 color : COLOR; float2 uv : TEXCOORD0; float3 world : TEXCOORD1;
 };
-TerrainOutput VSTerrain(TerrainInput input) {
+TerrainOutput VSTerrain(TerrainInput input, uint vertexId : SV_VertexID) {
     TerrainOutput output;
     output.position = mul(float4(input.position, 1.0), viewProjection);
     output.color = input.color;
     output.uv = input.uv;
+    if (terrainUvOverride > 0.5) {
+        uint corner = vertexId % 4;
+        output.uv = float2((corner & 1) == 0 ? terrainUvRect.x : terrainUvRect.y,
+            corner < 2 ? terrainUvRect.w : terrainUvRect.z);
+    }
     output.world = float3(input.position.xy, output.position.w);
     return output;
 }

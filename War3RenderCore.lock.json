@@ -2,7 +2,7 @@
   "schema": 1,
   "version": "0.1.19",
   "repository": "https://github.com/CallDisaster/Audastra-RenderCore.git",
-  "commit": "1440658f04aa9c154f94da9a42e345cef57e9d54",
+  "commit": "46730eebb4aa3dc0471c44d13a4db0aaf5105459",
   "files": [
     {
       "path": ".gitattributes",
@@ -129,8 +129,12 @@
       "sha256": "51eca720328b826f611e0e1140a3faa90e4c989fac60e54c14db54aa4cb62ca2"
     },
     {
+      "path": "include/War3MapCore/RenderPluginTerrainBlight.h",
+      "sha256": "91209b58ea63ddc12d674083818d56faabfda623e9ed38b376e055da404833c0"
+    },
+    {
       "path": "include/War3MapCore/RenderPluginV2.h",
-      "sha256": "36ec5788d85993a7efc01f11a88548078576683ccd7eec0597ba48fea76d4f38"
+      "sha256": "1d10257e134d5b7baa02f20e76908c92c905e4df265c7ce297684864f1e02512"
     },
     {
       "path": "include/War3RenderCore/CompiledModel.h",
@@ -203,6 +207,10 @@
     {
       "path": "include/War3RenderCore/Legacy/RenderPluginStaticSamplers.h",
       "sha256": "59763c99a04c0e9bfb5ac940d0405321fe7d4f8586d90d642c4e281c4a9d570b"
+    },
+    {
+      "path": "include/War3RenderCore/Legacy/RenderPluginTerrainBlight.h",
+      "sha256": "8efd1e6e8ee77114af3b86170daeb1de4018c5410fa12130d88911a9516a502d"
     },
     {
       "path": "include/War3RenderCore/Legacy/RenderPluginV2.h",
@@ -414,7 +422,7 @@
     },
     {
       "path": "src/RenderCore/TestTargets.cmake",
-      "sha256": "f3b8feb66498b534da1ffbb40a71d9d35b79ebbbcbb02605f93c638822326cd7"
+      "sha256": "8a7a66d8b512098cf1c174e609f1bbcba2eb8aa25834d990c2deac52aaaa269e"
     },
     {
       "path": "tests/ExternalFrameTests.cpp",
@@ -474,7 +482,7 @@
     },
     {
       "path": "tests/ParticleMaterialContractTests.cpp",
-      "sha256": "a01e5f9d83db9d107a3f1718132acfd63c1605ae19367d3492745f4a649930bc"
+      "sha256": "1b5a231062da458f2dffd77599bb01fe68bd45f530240051952290861df329af"
     },
     {
       "path": "tests/PremReadTests.cpp",
@@ -530,11 +538,11 @@
     },
     {
       "path": "tests/RenderSkinInputTests.cpp",
-      "sha256": "3db3f866fedb6e0e6eeab2347ff697f5de02c3d92de25c219faad0af99ab6e98"
+      "sha256": "2733e28e4535619dd5a03ed63c5e3c0cc91e7a74f665bbbec696995b26b2ca17"
     },
     {
       "path": "tests/RenderSkinRosterTests.cpp",
-      "sha256": "7c7e05cb8bfe6791037bddd95999fe0f4dd843eea56c9c2bb382ac4c2e432400"
+      "sha256": "030eb01df1ebef458e1693e9c8dd2852c87d1db9b32bc86732a42e4e59bebbfb"
     },
     {
       "path": "tests/RigidStaticPreviewFixture.h",
@@ -554,11 +562,15 @@
     },
     {
       "path": "tests/StaticSamplerContractTests.cpp",
-      "sha256": "2a41ca8fa32a5f94f6acf5fce8ec5ac9bb1b8d6c3e5ce6ecf89b2191e8079b45"
+      "sha256": "317d876d3ca0a56a0c36082d34943f6836d34f9a89e1da5b2660a8729d703916"
     },
     {
       "path": "tests/StaticSamplerInputTests.cpp",
       "sha256": "f0b3c007b381ccfd2608b1a53dd16f0ebe2b0cf62698317423b9c2ffc56fce67"
+    },
+    {
+      "path": "tests/TerrainBlightContractTests.cpp",
+      "sha256": "6184dcb4da07e39575c85dd9c3d3778e9c776f4748a4068a45473360b124d7d3"
     },
     {
       "path": "tools/FootmanGolden.cpp",

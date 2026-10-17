@@ -4,6 +4,7 @@
 #include "War3MapCore/RenderPluginMaterialAlpha.h"
 #include "War3MapCore/RenderPluginMaterialState.h"
 #include "War3MapCore/RenderPluginStaticSamplers.h"
+#include "War3MapCore/RenderPluginTerrainBlight.h"
 #include "Backend/D3D11/D3D11Scene.h"
 #include "Scene/ModelSkinInput.h"
 #include "Particles/ParticleInput.h"
@@ -569,9 +570,9 @@ bool ValidateTextureChains(const War3RenderTextureMipChainV2* input, std::uint32
     }
     return true;
 }
-std::vector<War3Map::Render::TextureRgba> CopyTextureChains(const TextureChains& chains) {
+std::vector<War3Map::Render::TextureRgba> CopyTextureChains(const TextureChains& chains, std::size_t extraCapacity = 0) {
     std::vector<War3Map::Render::TextureRgba> textures;
-    textures.reserve(chains.descriptions.size());
+    textures.reserve(chains.descriptions.size() + extraCapacity);
     for (std::size_t i = 0; i < chains.descriptions.size(); ++i) {
         const auto& description = chains.descriptions[i];
         War3Map::Render::TextureRgba texture;
@@ -588,6 +589,24 @@ std::vector<War3Map::Render::TextureRgba> CopyTextureChains(const TextureChains&
         textures.push_back(std::move(texture));
     }
     return textures;
+}
+std::uint64_t TerrainOwnedCapacityBytes(const Mesh& mesh) noexcept {
+    std::uint64_t bytes = std::uint64_t(mesh.terrainVertices.capacity()) * sizeof(War3RenderTerrainVertexV2)
+        + std::uint64_t(mesh.indices.capacity()) * sizeof(std::uint32_t)
+        + std::uint64_t(mesh.batches.capacity()) * sizeof(War3RenderTerrainBatchV2)
+        + std::uint64_t(mesh.blightBatches.capacity()) * sizeof(War3RenderTerrainBlightBatchV2)
+        + std::uint64_t(mesh.textures.capacity()) * sizeof(War3Map::Render::TextureRgba);
+    for (const auto& texture : mesh.textures) {
+        bytes += std::uint64_t(texture.mips.capacity()) * sizeof(War3Map::Render::TextureMipRgba);
+        for (const auto& mip : texture.mips) bytes += mip.rgba.capacity();
+    }
+    return bytes;
+}
+std::uint64_t TextureChainsCapacityBytes(const TextureChains& chains) noexcept {
+    std::uint64_t bytes = std::uint64_t(chains.descriptions.capacity()) * sizeof(War3RenderTextureMipChainV2)
+        + std::uint64_t(chains.levels.capacity()) * sizeof(std::vector<War3RenderMipRgbaV2>);
+    for (const auto& levels : chains.levels) bytes += std::uint64_t(levels.capacity()) * sizeof(War3RenderMipRgbaV2);
+    return bytes;
 }
 template<class Scene> std::uint64_t ResidentTextureBytes(const Scene& scene) noexcept {
     std::uint64_t total = 0;
@@ -627,7 +646,9 @@ bool CopyParticleScene(const War3RenderParticleSceneV2& input, ModelSceneLayerDa
     output.particles = std::move(particles); output.particleFrame = std::move(frame);
     return true;
 }
-std::int32_t WAR3_RENDER_CALL SubmitTerrainMips(War3RendererHandle renderer, const War3RenderTerrainMipSceneV2* input) noexcept {
+// 复用原提交器验证、复制和原子更新；荒芜入口只追加引用，不能先发布去近似染色的地表。
+std::int32_t SubmitTerrainMipsImpl(War3RendererHandle renderer, const War3RenderTerrainMipSceneV2* input,
+    const War3RenderTerrainBlightFrameV2* blight) noexcept {
     if (!renderer || !input || input->structSize != sizeof(*input) || input->vertexCount > kMaxTerrainVertices
         || input->indexCount > kMaxTerrainIndices || input->textureCount > kMaxTerrainTextures
         || input->batchCount > kMaxTerrainBatches || input->indexCount % 3 != 0
@@ -642,15 +663,43 @@ std::int32_t WAR3_RENDER_CALL SubmitTerrainMips(War3RendererHandle renderer, con
         if (!ValidateTextureChains(input->textures, input->textureCount, kTerrainTextureBudget, chains)) return kInvalid;
         const auto& descriptions = chains.descriptions;
         const auto mipDescriptorBytes = chains.descriptorBytes, textureBytes = chains.pixelBytes;
-        const std::uint64_t payloadBytes = static_cast<std::uint64_t>(input->vertexCount) * sizeof(War3RenderTerrainVertexV2)
+        std::uint64_t payloadBytes = static_cast<std::uint64_t>(input->vertexCount) * sizeof(War3RenderTerrainVertexV2)
             + static_cast<std::uint64_t>(input->indexCount) * sizeof(std::uint32_t)
             + static_cast<std::uint64_t>(input->batchCount) * sizeof(War3RenderTerrainBatchV2)
             + static_cast<std::uint64_t>(input->textureCount) * sizeof(War3RenderTextureMipChainV2)
             + mipDescriptorBytes + textureBytes;
+        TextureChains blightChains;
+        if (blight) {
+            if (blight->baseQuadCount > input->vertexCount / 4
+                || blight->blightIndexCount > kMaxTerrainIndices - input->indexCount
+                || blight->blightBatchCount > kMaxTerrainBatches - input->batchCount
+                || blight->blightBatchCount > WAR3_RENDER_TERRAIN_BLIGHT_MAX_BATCHES
+                || blight->blightIndexCount % 6 != 0
+                || (blight->blightIndexCount == 0) != (blight->blightBatchCount == 0)) return kInvalid;
+            if (blight->blightIndexCount == 0) {
+                if (blight->blightIndices || blight->blightBatches || blight->blightTexture) return kInvalid;
+            } else {
+                if (!blight->baseQuadCount || !blight->blightIndices || !blight->blightBatches || !blight->blightTexture
+                    || !ValidateTextureChains(blight->blightTexture, 1, kTerrainTextureBudget, blightChains)) return kInvalid;
+                const auto& texture = blightChains.descriptions.front();
+                if (texture.atlasColumns != 8 || texture.atlasRows != 4
+                    || blightChains.levels.front().front().width / 8 != blightChains.levels.front().front().height / 4
+                    || blightChains.pixelBytes > kMaxTextureTotal - textureBytes) return kInvalid;
+                // 新索引/两种批次描述符、单链和资格位图全计原预算；不是每个pass各领一份。
+                payloadBytes += std::uint64_t(blight->blightIndexCount) * sizeof(std::uint32_t)
+                    + std::uint64_t(blight->blightBatchCount)
+                        * (sizeof(War3RenderTerrainBlightBatchV2) + sizeof(War3RenderTerrainBatchV2))
+                    + sizeof(War3RenderTextureMipChainV2) + blightChains.descriptorBytes + blightChains.pixelBytes
+                    + blight->baseQuadCount;
+            }
+        }
         if (payloadBytes > kMaxTerrainBytes) return kInvalid;
         auto mesh = std::make_shared<Mesh>();
         mesh->terrain = true; mesh->revision = input->documentRevision;
         if (input->vertexCount) {
+            // 一次预留最终数组，追加pass不能制造整份旧索引/批次的reallocation暂存。
+            mesh->indices.reserve(std::size_t(input->indexCount) + (blight ? blight->blightIndexCount : 0));
+            mesh->batches.reserve(std::size_t(input->batchCount) + (blight ? blight->blightBatchCount : 0));
             mesh->terrainVertices.assign(input->vertices, input->vertices + input->vertexCount);
             mesh->indices.assign(input->indices, input->indices + input->indexCount);
             mesh->batches.assign(input->batches, input->batches + input->batchCount);
@@ -673,9 +722,92 @@ std::int32_t WAR3_RENDER_CALL SubmitTerrainMips(War3RendererHandle renderer, con
             nextIndex += batch.indexCount;
         }
         if (nextIndex != input->indexCount) return kInvalid;
-        mesh->textures = CopyTextureChains(chains);
+        std::uint64_t validationCapacityBytes = 0;
+        if (blight && blight->blightIndexCount) {
+            // 先从原不透明贴图quad验证资格，height-color、transition与water不能冒充base。
+            std::vector<std::uint8_t> quadFlags(blight->baseQuadCount, 0);
+            if (quadFlags.capacity() - quadFlags.size() > kMaxTerrainBytes - payloadBytes) return kInvalid;
+            validationCapacityBytes = quadFlags.capacity();
+            for (const auto& batch : mesh->batches) {
+                if (batch.textureIndex == WAR3_RENDER_HEIGHT_COLOR_TEXTURE
+                    || (batch.textureIndex & (WAR3_RENDER_TERRAIN_ALPHA_BLEND | WAR3_RENDER_TERRAIN_TRANSLUCENT))
+                    || batch.indexCount % 6 != 0) continue;
+                for (std::uint32_t offset = 0; offset < batch.indexCount; offset += 6) {
+                    const auto at = batch.firstIndex + offset, first = mesh->indices[at];
+                    if (first % 4 != 0 || first / 4 >= blight->baseQuadCount) continue;
+                    const std::array<std::uint32_t, 6> face{first, first + 1, first + 2, first + 1, first + 3, first + 2};
+                    if (std::equal(face.begin(), face.end(), mesh->indices.begin() + at)) quadFlags[first / 4] |= 1;
+                }
+            }
+            mesh->blightBatches.assign(blight->blightBatches, blight->blightBatches + blight->blightBatchCount);
+            const auto& top = blightChains.levels.front().front();
+            std::uint32_t expectedIndex = 0, usedCells = 0, previousCell = 0;
+            for (const auto& batch : mesh->blightBatches) {
+                if (batch.firstIndex != expectedIndex || !batch.indexCount || batch.indexCount % 6 != 0
+                    || batch.indexCount > blight->blightIndexCount - expectedIndex) return kInvalid;
+                // 只接受原8×4图集的真实cell。1像素cell允许left==right或top==bottom。
+                std::uint32_t cellIndex = 32;
+                for (std::uint32_t cell = 0; cell < 32; ++cell) {
+                    const auto x = (cell % 8) * (top.width / 8), y = (cell / 8) * (top.height / 4);
+                    const float width = static_cast<float>(top.width), height = static_cast<float>(top.height);
+                    if (batch.uvLeft == (static_cast<float>(x) + 0.5f) / width
+                        && batch.uvRight == (static_cast<float>(x + top.width / 8) - 0.5f) / width
+                        && batch.uvTop == (static_cast<float>(y) + 0.5f) / height
+                        && batch.uvBottom == (static_cast<float>(y + top.height / 4) - 0.5f) / height) { cellIndex = cell; break; }
+                }
+                if (cellIndex == 32 || (usedCells & (1u << cellIndex)) || (usedCells && cellIndex <= previousCell)) return kInvalid;
+                usedCells |= 1u << cellIndex;
+                previousCell = cellIndex;
+                std::uint32_t previousQuad = 0;
+                for (std::uint32_t offset = 0; offset < batch.indexCount; offset += 6) {
+                    const auto at = batch.firstIndex + offset, first = blight->blightIndices[at];
+                    if (first % 4 != 0 || first / 4 >= quadFlags.size() || quadFlags[first / 4] != 1) return kInvalid;
+                    if (offset && first / 4 <= previousQuad) return kInvalid;
+                    previousQuad = first / 4;
+                    const std::array<std::uint32_t, 6> face{first, first + 1, first + 2, first + 1, first + 3, first + 2};
+                    if (!std::equal(face.begin(), face.end(), blight->blightIndices + at)) return kInvalid;
+                    quadFlags[first / 4] |= 2;
+                }
+                expectedIndex += batch.indexCount;
+            }
+            if (expectedIndex != blight->blightIndexCount) return kInvalid;
+            mesh->indices.insert(mesh->indices.end(), blight->blightIndices, blight->blightIndices + blight->blightIndexCount);
+            mesh->blightFirstBatch = static_cast<std::uint32_t>(mesh->batches.size());
+            for (const auto& batch : mesh->blightBatches)
+                mesh->batches.push_back({input->indexCount + batch.firstIndex, batch.indexCount,
+                    input->textureCount | WAR3_RENDER_TERRAIN_ALPHA_BLEND});
+        }
+        mesh->textures = CopyTextureChains(chains, blight && blight->blightIndexCount ? 1 : 0);
+        if (blight && blight->blightIndexCount) {
+            auto textures = CopyTextureChains(blightChains);
+            mesh->textures.push_back(std::move(textures.front()));
+            validationCapacityBytes += std::uint64_t(textures.capacity()) * sizeof(War3Map::Render::TextureRgba);
+        }
+        if (blight) {
+            // 原wire载荷先预检；再累计核实际owned capacity与新增验证/描述符暂存。
+            // flags和临时outer虽已可释放仍保守合计，不把这些分项各领同一份remaining。
+            const auto ownedAndScratch = TerrainOwnedCapacityBytes(*mesh) + validationCapacityBytes
+                + TextureChainsCapacityBytes(chains) + TextureChainsCapacityBytes(blightChains);
+            if (ownedAndScratch > kMaxTerrainBytes) return kInvalid;
+        }
         return UpdateScene(renderer, std::move(mesh));
     } catch (...) { return static_cast<std::int32_t>(E_OUTOFMEMORY); }
+}
+std::int32_t WAR3_RENDER_CALL SubmitTerrainMips(War3RendererHandle renderer, const War3RenderTerrainMipSceneV2* input) noexcept {
+    return SubmitTerrainMipsImpl(renderer, input, nullptr);
+}
+std::int32_t WAR3_RENDER_CALL SubmitTerrainBlightFrame(War3RendererHandle renderer,
+    const War3RenderTerrainBlightFrameV2* input) noexcept {
+    if (!input || input->structSize != sizeof(*input)) return kInvalid;
+    return SubmitTerrainMipsImpl(renderer, &input->baseScene, input);
+}
+std::int32_t WAR3_RENDER_CALL GetTerrainBlightCapabilities(War3RendererHandle,
+    War3RenderTerrainBlightCapabilitiesV2* output) noexcept {
+    if (!output || output->structSize < sizeof(*output)) return kInvalid;
+    const War3RenderTerrainBlightCapabilitiesV2 value{sizeof(value), WAR3_RENDER_TERRAIN_BLIGHT_SHARED_BASE_V1,
+        WAR3_RENDER_TERRAIN_BLIGHT_MAX_BATCHES, 0};
+    std::memcpy(output, &value, sizeof(value));
+    return 0;
 }
 bool Unit(float value) { return std::isfinite(value) && value >= 0 && value <= 1; }
 std::uint64_t PosePayloadBytes(const SkinPose& pose) noexcept {
@@ -1603,7 +1735,8 @@ const War3RenderPluginApiV2 api{sizeof(War3RenderPluginApiV2), WAR3_RENDER_PLUGI
     &GetEditorPresentationTarget, &SubmitEditorVisibility, &CaptureEditorPresentationFrame, &SubmitEditorModelScene, &GetEditorCompletedFrame,
     &SubmitModelSceneLayer, &UpdateModelSceneLayer, &RemoveModelSceneLayer, &GetModelLayersTarget, &CaptureLayeredFrame, &GetFrameMetrics,
     &SubmitEditorInstanceRoster, &GetEditorInstanceRosterResult, &GetEditorRosterCapabilities, &CancelEditorInstanceRoster,
-    &GetModelLayerCapabilities, &GetStaticModelSamplerCapabilities};
+    &GetModelLayerCapabilities, &GetStaticModelSamplerCapabilities,
+    &GetTerrainBlightCapabilities, &SubmitTerrainBlightFrame};
 }
 extern "C" WAR3_RENDER_EXPORT const War3RenderPluginApiV2* WAR3_RENDER_CALL
 War3MapEditor_GetRenderPluginApiV2(std::uint32_t version) { return version == WAR3_RENDER_PLUGIN_API_V2 ? &api : nullptr; }

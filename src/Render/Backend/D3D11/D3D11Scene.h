@@ -3,6 +3,7 @@
 #include "../../Scene/ModelSceneLayerData.h"
 #include "../../Particles/ParticleInput.h"
 #include "War3MapCore/RenderPluginEditorVisibility.h"
+#include "War3MapCore/RenderPluginTerrainBlight.h"
 #include <d3d11.h>
 #include <dxgi.h>
 #include <wrl/client.h>
@@ -18,6 +19,9 @@ struct Mesh {
     std::vector<std::uint32_t> indices;
     std::vector<TextureRgba> textures;
     std::vector<War3RenderTerrainBatchV2> batches;
+    // 独立荒芜仅保存 UV 批次；顶点与索引缓冲仍由同一份 Mesh 原子拥有。
+    std::vector<War3RenderTerrainBlightBatchV2> blightBatches;
+    std::uint32_t blightFirstBatch = 0;
     std::uint64_t revision = 0;
     bool terrain = false;
 };
@@ -198,13 +202,18 @@ private:
     struct TextureParameters {
         float width, height, columns, rows;
         float maxSampleMip, alphaBlend, isTranslucent, tapLimit; // 明确批次角色与1/4策略，不由atlas形状猜测。
+        float uvLeft = 0, uvRight = 0, uvTop = 0, uvBottom = 0;
+        float uvOverride = 0, uvPadding[3]{};
     };
-    static_assert(sizeof(TextureParameters) == 32);
+    static_assert(sizeof(TextureParameters) == 64);
     static_assert(offsetof(TextureParameters,maxSampleMip) == 16 && offsetof(TextureParameters,isTranslucent) == 24
         && offsetof(TextureParameters,tapLimit) == 28);
+    static_assert(offsetof(TextureParameters, uvLeft) == 32 && offsetof(TextureParameters, uvOverride) == 48);
     std::vector<TextureParameters> textureParameters_;
     std::vector<Ptr<ID3D11ShaderResourceView>> textures_;
     std::vector<War3RenderTerrainBatchV2> batches_;
+    std::vector<War3RenderTerrainBlightBatchV2> blightBatches_;
+    std::uint32_t blightFirstBatch_ = 0;
     Ptr<ID3D11RasterizerState> rasterizer_;
     Ptr<ID3D11RasterizerState> groundDecalRasterizer_; // 显式GroundDecalPreview层独用，不改地形/模型。
     // 模型：顶点/索引/实例缓冲、贴图、每模型实例区间；按过滤模式分两遍绘制。
