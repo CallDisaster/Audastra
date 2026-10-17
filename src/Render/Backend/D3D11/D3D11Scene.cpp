@@ -1,26 +1,39 @@
 #include "D3D11Scene.h"
+#include "War3MapCore/Render/TerrainTextureAtlas.h"
 #include <DirectXMath.h>
 #include <algorithm>
 #include <cmath>
 #include <chrono>
 #include <cstring>
 #include <new>
+#include <limits>
 #include <stdexcept>
 #include "SceneVS.h"
 #include "ScenePS.h"
 #include "TerrainVS.h"
 #include "TerrainPS.h"
+#include "TerrainGridVS.h"
+#include "TerrainGridWaterVS.h"
 #include "ModelVS.h"
 #include "ModelPS.h"
 
 namespace War3Map::Render {
 using namespace DirectX;
 std::uint64_t TerrainOwnedCapacityBytes(const Mesh& mesh) noexcept {
-    std::uint64_t bytes = std::uint64_t(mesh.terrainVertices.capacity()) * sizeof(War3RenderTerrainVertexV2)
+    std::uint64_t bytes = std::uint64_t(mesh.vertices.capacity()) * sizeof(War3RenderVertexV2)
+        + std::uint64_t(mesh.terrainVertices.capacity()) * sizeof(War3RenderTerrainVertexV2)
         + std::uint64_t(mesh.indices.capacity()) * sizeof(std::uint32_t)
         + std::uint64_t(mesh.batches.capacity()) * sizeof(War3RenderTerrainBatchV2)
         + std::uint64_t(mesh.blightBatches.capacity()) * sizeof(War3RenderTerrainBlightBatchV2)
-        + std::uint64_t(mesh.textures.capacity()) * sizeof(TextureRgba);
+        + std::uint64_t(mesh.textures.capacity()) * sizeof(TextureRgba)
+        + std::uint64_t(mesh.groundGrid.capacity()) * sizeof(War3RenderTerrainGridGroundVertexV2)
+        + std::uint64_t(mesh.waterGrid.capacity()) * sizeof(War3RenderTerrainGridWaterVertexV2)
+        + std::uint64_t(mesh.baseQuads.capacity()) * sizeof(War3RenderTerrainGridBaseQuadV2)
+        + std::uint64_t(mesh.baseIndices.capacity()) * sizeof(std::uint32_t)
+        + std::uint64_t(mesh.baseBatches.capacity()) * sizeof(War3RenderTerrainBatchV2)
+        + std::uint64_t(mesh.blightIndices.capacity()) * sizeof(std::uint32_t)
+        + std::uint64_t(mesh.gridWaterQuads.capacity()) * sizeof(War3RenderTerrainGridWaterQuadV2)
+        + std::uint64_t(mesh.gridWaterIndices.capacity()) * sizeof(std::uint32_t);
     for (const auto& texture : mesh.textures) {
         bytes += std::uint64_t(texture.mips.capacity()) * sizeof(TextureMipRgba);
         for (const auto& mip : texture.mips) bytes += mip.rgba.capacity();
@@ -79,6 +92,10 @@ HRESULT D3D11Scene::Initialize(bool warp) {
     hr = device_->CreateInputLayout(elements, 2, kSceneVS, sizeof(kSceneVS), &layout_);
     if (FAILED(hr)) return hr;
     hr = device_->CreateVertexShader(kTerrainVS, sizeof(kTerrainVS), nullptr, &terrainVertexShader_);
+    if (FAILED(hr)) return hr;
+    hr = device_->CreateVertexShader(kTerrainGridVS, sizeof(kTerrainGridVS), nullptr, &terrainGridVertexShader_);
+    if (FAILED(hr)) return hr;
+    hr = device_->CreateVertexShader(kTerrainGridWaterVS, sizeof(kTerrainGridWaterVS), nullptr, &terrainGridWaterVertexShader_);
     if (FAILED(hr)) return hr;
     hr = device_->CreatePixelShader(kTerrainPS, sizeof(kTerrainPS), nullptr, &terrainPixelShader_);
     if (FAILED(hr)) return hr;
@@ -263,7 +280,7 @@ HRESULT D3D11Scene::SetTarget(HWND window, UINT width, UINT height) {
     return S_OK;
 }
 // 已给多级时原样上传；只给 mip0 时由 GPU 生成完整链（模型远处采样用；地表只采样声明的级别）。
-HRESULT D3D11Scene::CreateTexture(const TextureRgba& source, Ptr<ID3D11ShaderResourceView>& view) {
+HRESULT D3D11Scene::CreateTexture(const TextureRgba& source, Ptr<ID3D11ShaderResourceView>& view, bool exactMips) {
     if (source.mips.empty()) return E_INVALIDARG;
     const auto& top = source.mips.front();
     D3D11_TEXTURE2D_DESC desc{};
@@ -272,6 +289,21 @@ HRESULT D3D11Scene::CreateTexture(const TextureRgba& source, Ptr<ID3D11ShaderRes
     desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     desc.SampleDesc.Count = 1;
     Ptr<ID3D11Texture2D> texture;
+    if (exactMips) {
+        // grid的ground/blight原链和water单级均原样上传，不能生成额外水面mip。
+        std::array<D3D11_SUBRESOURCE_DATA, 12> data{};
+        if (source.mips.size() > data.size()) return E_INVALIDARG;
+        for (std::size_t index = 0; index < source.mips.size(); ++index) {
+            const auto& mip = source.mips[index];
+            data[index] = {mip.rgba.data(), mip.width * 4, 0};
+        }
+        desc.MipLevels = static_cast<UINT>(source.mips.size());
+        desc.Usage = D3D11_USAGE_IMMUTABLE;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        const auto hr = device_->CreateTexture2D(&desc, data.data(), &texture);
+        if (FAILED(hr)) return hr;
+        return device_->CreateShaderResourceView(texture.Get(), nullptr, &view);
+    }
     if (source.mips.size() > 1 || (top.width == 1 && top.height == 1)) {
         desc.MipLevels = static_cast<UINT>(source.mips.size());
         desc.Usage = D3D11_USAGE_IMMUTABLE;
@@ -294,6 +326,25 @@ HRESULT D3D11Scene::CreateTexture(const TextureRgba& source, Ptr<ID3D11ShaderRes
     if (FAILED(hr)) return hr;
     context_->GenerateMips(view.Get());
     return S_OK;
+}
+HRESULT D3D11Scene::StructuredBuffer(const void* data, std::size_t count, UINT stride,
+    Ptr<ID3D11Buffer>& buffer, Ptr<ID3D11ShaderResourceView>& view) {
+    if (count == 0) return S_OK;
+    if (!data || stride == 0 || count > std::numeric_limits<UINT>::max() / stride) return E_INVALIDARG;
+    D3D11_BUFFER_DESC desc{};
+    desc.ByteWidth = static_cast<UINT>(count * stride);
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+    desc.StructureByteStride = stride;
+    const D3D11_SUBRESOURCE_DATA initial{data, 0, 0};
+    auto hr = device_->CreateBuffer(&desc, &initial, &buffer);
+    if (FAILED(hr)) return hr;
+    D3D11_SHADER_RESOURCE_VIEW_DESC resource{};
+    resource.Format = DXGI_FORMAT_UNKNOWN;
+    resource.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+    resource.Buffer.NumElements = static_cast<UINT>(count);
+    return device_->CreateShaderResourceView(buffer.Get(), &resource, &view);
 }
 HRESULT D3D11Scene::SetOverlay(const std::vector<War3RenderVertexV2>& vertices) {
     overlay_.Reset(); overlayCount_ = 0;
@@ -344,7 +395,29 @@ HRESULT D3D11Scene::SetEnvironment(const Environment& environment) try {
 } catch (const std::bad_alloc&) {
     return E_OUTOFMEMORY;
 }
+void D3D11Scene::ClearTerrainFetchState() {
+    ID3D11ShaderResourceView* emptyViews[]{nullptr, nullptr, nullptr, nullptr};
+    context_->VSSetShaderResources(8, 4, emptyViews);
+    ID3D11Buffer* empty = nullptr;
+    context_->VSSetConstantBuffers(1, 1, &empty);
+    context_->PSSetConstantBuffers(1, 1, &empty);
+    context_->VSSetConstantBuffers(5, 1, &empty);
+    context_->PSSetShaderResources(0, 1, emptyViews);
+    ID3D11SamplerState* emptySampler = nullptr;
+    context_->PSSetSamplers(0, 1, &emptySampler);
+    context_->PSSetShader(pixelShader_.Get(), nullptr, 0);
+    context_->OMSetBlendState(nullptr, nullptr, 0xffffffff);
+    context_->OMSetDepthStencilState(nullptr, 0);
+    context_->RSSetState(rasterizer_.Get());
+    context_->IASetInputLayout(terrainLayout_.Get());
+    const UINT stride = sizeof(War3RenderTerrainVertexV2), offset = 0;
+    auto* vertexBuffer = vertices_.Get();
+    context_->IASetVertexBuffers(0, 1, &vertexBuffer, &stride, &offset);
+    context_->IASetIndexBuffer(indices_.Get(), DXGI_FORMAT_R32_UINT, 0);
+    context_->VSSetShader(terrainVertexShader_.Get(), nullptr, 0);
+}
 void D3D11Scene::DrawTerrainBatches(bool translucent) {
+    ClearTerrainFetchState();
     context_->IASetInputLayout(terrainLayout_.Get());
     context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     const UINT stride = sizeof(War3RenderTerrainVertexV2), offset = 0;
@@ -372,7 +445,8 @@ void D3D11Scene::DrawTerrainBatches(bool translucent) {
             textureParameters.alphaBlend = blended ? 1.0f : 0.0f;
             textureParameters.isTranslucent = isTranslucent ? 1.0f : 0.0f;
             if (isTranslucent) textureParameters.tapLimit = 1.0f; // 水面等透明批次保留原精确路径。
-            if (batchIndex >= blightFirstBatch_ && batchIndex - blightFirstBatch_ < blightBatches_.size()) {
+            if (!terrainGridGpu_.enabled && batchIndex >= blightFirstBatch_
+                && batchIndex - blightFirstBatch_ < blightBatches_.size()) {
                 const auto& uv = blightBatches_[batchIndex - blightFirstBatch_];
                 textureParameters.uvLeft = uv.uvLeft; textureParameters.uvRight = uv.uvRight;
                 textureParameters.uvTop = uv.uvTop; textureParameters.uvBottom = uv.uvBottom;
@@ -386,37 +460,240 @@ void D3D11Scene::DrawTerrainBatches(bool translucent) {
         context_->OMSetBlendState(blended ? overlayBlend_.Get() : nullptr, nullptr, 0xffffffff);
         context_->DrawIndexed(batch.indexCount, batch.firstIndex, 0);
     }
-    context_->OMSetBlendState(nullptr, nullptr, 0xffffffff);
-    context_->OMSetDepthStencilState(nullptr, 0);
-    ID3D11ShaderResourceView* empty = nullptr;
-    context_->PSSetShaderResources(0, 1, &empty);
+    ClearTerrainFetchState();
+}
+void D3D11Scene::DrawTerrainGrid(bool translucent) {
+    const auto bind = [&](bool water) {
+        context_->IASetInputLayout(nullptr);
+        context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        ID3D11Buffer* empty = nullptr;
+        const UINT zero = 0;
+        context_->IASetVertexBuffers(0, 1, &empty, &zero, &zero);
+        context_->VSSetShader(water ? terrainGridWaterVertexShader_.Get() : terrainGridVertexShader_.Get(), nullptr, 0);
+        ID3D11ShaderResourceView* resources[]{terrainGridGpu_.groundView.Get(), terrainGridGpu_.baseQuadView.Get(),
+            water ? terrainGridGpu_.waterView.Get() : nullptr, water ? terrainGridGpu_.waterQuadView.Get() : nullptr};
+        context_->VSSetShaderResources(8, 4, resources);
+        auto* gridConstants = terrainGridGpu_.constants.Get();
+        context_->VSSetConstantBuffers(5, 1, &gridConstants);
+        auto* parameters = terrainConstants_.Get();
+        context_->VSSetConstantBuffers(1, 1, &parameters);
+        context_->PSSetConstantBuffers(1, 1, &parameters);
+        auto* sampler = terrainSampler_.Get();
+        context_->PSSetSamplers(0, 1, &sampler);
+        context_->RSSetState(rasterizer_.Get());
+        context_->OMSetDepthStencilState(water ? modelDepthRead_.Get() : terrainDepth_.Get(), 0);
+    };
+    const auto material = [&](UINT texture, bool blend, bool water, const War3RenderTerrainBlightBatchV2* uv) {
+        const bool textured = texture != WAR3_RENDER_HEIGHT_COLOR_TEXTURE;
+        TextureParameters parameters{};
+        if (textured) {
+            parameters = textureParameters_[texture];
+            parameters.alphaBlend = blend ? 1.0f : 0.0f;
+            parameters.isTranslucent = water ? 1.0f : 0.0f;
+            if (water) parameters.tapLimit = 1;
+            if (uv) {
+                parameters.uvLeft = uv->uvLeft; parameters.uvRight = uv->uvRight;
+                parameters.uvTop = uv->uvTop; parameters.uvBottom = uv->uvBottom;
+                parameters.uvOverride = 1;
+            }
+        } else parameters.uvOverride = -1; // 新base VS使用CPU最终fallbackRGB，旧入口不见此值。
+        context_->UpdateSubresource(terrainConstants_.Get(), 0, nullptr, &parameters, 0, 0);
+        auto* resource = textured ? textures_[texture].Get() : nullptr;
+        context_->PSSetShaderResources(0, 1, &resource);
+        context_->PSSetShader(textured ? terrainPixelShader_.Get() : pixelShader_.Get(), nullptr, 0);
+        context_->OMSetBlendState(blend ? overlayBlend_.Get() : nullptr, nullptr, 0xffffffff);
+    };
+    if (translucent) {
+        if (terrainGridGpu_.waterIndexCount != 0) {
+            bind(true);
+            const auto texture = terrainGridGpu_.groundTextureCount + (blightBatches_.empty() ? 0u : 1u);
+            material(texture, true, true, nullptr);
+            context_->IASetIndexBuffer(terrainGridGpu_.waterIndices.Get(), DXGI_FORMAT_R32_UINT, 0);
+            // 保留原sourceTile顺序，一次draw；禁止按alphaLevel重排水面。
+            context_->DrawIndexed(terrainGridGpu_.waterIndexCount, 0, 0);
+        }
+    } else {
+        bind(false);
+        context_->IASetIndexBuffer(terrainGridGpu_.baseIndices.Get(), DXGI_FORMAT_R32_UINT, 0);
+        for (const auto& batch : terrainGridGpu_.baseBatches) {
+            material(batch.textureIndex, false, false, nullptr);
+            context_->DrawIndexed(batch.indexCount, batch.firstIndex, 0);
+        }
+        // transition仍是原32B VB；独立blight随后回到base虚拟角，不借transition。
+        DrawTerrainBatches(false);
+        if (!blightBatches_.empty()) {
+            bind(false);
+            context_->IASetIndexBuffer(terrainGridGpu_.blightIndices.Get(), DXGI_FORMAT_R32_UINT, 0);
+            for (const auto& batch : blightBatches_) {
+                material(terrainGridGpu_.groundTextureCount, true, false, &batch);
+                context_->DrawIndexed(batch.indexCount, batch.firstIndex, 0);
+            }
+        }
+    }
+    ClearTerrainFetchState();
 }
 HRESULT D3D11Scene::SetMesh(const Mesh& mesh) try {
+    constexpr std::uint64_t workingLimit = 128ull * 1024 * 1024;
+    const bool bounded = mesh.terrainGrid || !mesh.blightBatches.empty();
+    if (mesh.terrainGrid) {
+        const bool empty = mesh.groundGrid.empty();
+        const auto gridVertices = std::uint64_t(mesh.gridWidth) * mesh.gridHeight;
+        const auto tileCount = mesh.gridWidth > 0 && mesh.gridHeight > 0
+            ? std::uint64_t(mesh.gridWidth - 1) * (mesh.gridHeight - 1) : 0;
+        if (!mesh.terrain || !mesh.vertices.empty() || mesh.blightFirstBatch != 0 || mesh.gridGroundTextureCount > 16
+            || (empty ? (mesh.gridWidth != 0 || mesh.gridHeight != 0)
+                : (mesh.gridWidth < 2 || mesh.gridHeight < 2 || mesh.gridWidth > 2049 || mesh.gridHeight > 2049
+                    || tileCount > 262144 || gridVertices != mesh.groundGrid.size()))) return E_INVALIDARG;
+        const bool water = !mesh.gridWaterQuads.empty(), blight = !mesh.blightBatches.empty();
+        if (mesh.groundGrid.size() + mesh.waterGrid.size() + mesh.terrainVertices.size() > 1048576
+            || mesh.baseQuads.size() > 262144 || mesh.gridWaterQuads.size() > 262144
+            || mesh.baseIndices.size() != mesh.baseQuads.size() * 6
+            || mesh.gridWaterIndices.size() != mesh.gridWaterQuads.size() * 6
+            || (water ? mesh.waterGrid.size() != mesh.groundGrid.size() : !mesh.waterGrid.empty())
+            || blight != !mesh.blightIndices.empty()
+            || mesh.blightBatches.size() > WAR3_RENDER_TERRAIN_BLIGHT_MAX_BATCHES
+            || mesh.textures.size() != mesh.gridGroundTextureCount + (blight ? 1u : 0u) + (water ? 1u : 0u)
+            || mesh.indices.size() + mesh.baseIndices.size() + mesh.blightIndices.size() + mesh.gridWaterIndices.size() > 6291456
+            || mesh.batches.size() + mesh.baseBatches.size() + mesh.blightBatches.size() + (water ? 1u : 0u) > 4096)
+            return E_INVALIDARG;
+        if (empty && (!mesh.terrainVertices.empty() || !mesh.indices.empty() || !mesh.batches.empty()
+            || !mesh.baseQuads.empty() || !mesh.baseBatches.empty() || blight || water || !mesh.textures.empty())) return E_INVALIDARG;
+        const auto validIndices = [](const auto& indices, std::size_t count) {
+            return std::all_of(indices.begin(), indices.end(), [count](auto index) { return index < count; });
+        };
+        if (!validIndices(mesh.indices, mesh.terrainVertices.size())
+            || !validIndices(mesh.baseIndices, mesh.baseQuads.size() * 4)
+            || !validIndices(mesh.blightIndices, mesh.baseQuads.size() * 4)
+            || !validIndices(mesh.gridWaterIndices, mesh.gridWaterQuads.size() * 4)) return E_INVALIDARG;
+        for (const auto& quad : mesh.baseQuads) if (quad.sourceTile >= tileCount) return E_INVALIDARG;
+        for (const auto& quad : mesh.gridWaterQuads)
+            if (quad.sourceTile >= tileCount || quad.alphaLevel > 15) return E_INVALIDARG;
+        const auto validBatches = [&](const auto& batches, std::size_t count, bool transition) {
+            std::size_t next = 0;
+            for (const auto& batch : batches) {
+                const auto texture = batch.textureIndex;
+                const auto slot = texture & ~WAR3_RENDER_TERRAIN_ALPHA_BLEND;
+                if (batch.firstIndex != next || batch.indexCount == 0 || batch.indexCount > count - next
+                    || (texture != WAR3_RENDER_HEIGHT_COLOR_TEXTURE
+                        && (slot >= mesh.gridGroundTextureCount || (!transition && texture != slot)))
+                    || (transition && (texture == WAR3_RENDER_HEIGHT_COLOR_TEXTURE
+                        || (texture & WAR3_RENDER_TERRAIN_ALPHA_BLEND) == 0))) return false;
+                next += batch.indexCount;
+            }
+            return next == count;
+        };
+        if (!validBatches(mesh.baseBatches, mesh.baseIndices.size(), false)
+            || !validBatches(mesh.batches, mesh.indices.size(), true)) return E_INVALIDARG;
+        std::size_t nextBlight = 0;
+        for (const auto& batch : mesh.blightBatches) {
+            if (batch.firstIndex != nextBlight || batch.indexCount == 0
+                || batch.indexCount > mesh.blightIndices.size() - nextBlight) return E_INVALIDARG;
+            nextBlight += batch.indexCount;
+        }
+        if (nextBlight != mesh.blightIndices.size()) return E_INVALIDARG;
+        std::uint64_t rgbaBytes = 0;
+        for (std::size_t index = 0; index < mesh.textures.size(); ++index) {
+            const auto& texture = mesh.textures[index];
+            if (texture.mips.empty() || texture.mips.size() > 12 || texture.maxSampleMip >= texture.mips.size()
+                || (texture.atlasColumns != 4 && texture.atlasColumns != 8) || texture.atlasRows != 4) return E_INVALIDARG;
+            const auto& top = texture.mips.front();
+            if (top.width == 0 || top.height == 0 || top.width > 2048 || top.height > 2048) return E_INVALIDARG;
+            std::uint64_t chainBytes = 0;
+            for (std::size_t level = 0; level < texture.mips.size(); ++level) {
+                const auto& mip = texture.mips[level];
+                if (mip.width != std::max(1u, top.width >> level) || mip.height != std::max(1u, top.height >> level)
+                    || mip.rgba.size() != std::uint64_t(mip.width) * mip.height * 4 || mip.rgba.size() > 16ull * 1024 * 1024)
+                    return E_INVALIDARG;
+                chainBytes += mip.rgba.size();
+            }
+            rgbaBytes += chainBytes;
+            if (chainBytes > 24ull * 1024 * 1024 || rgbaBytes > 64ull * 1024 * 1024) return E_INVALIDARG;
+            if (index == mesh.gridGroundTextureCount && blight && texture.atlasColumns != 8) return E_INVALIDARG;
+            if (water && index + 1 == mesh.textures.size()
+                && (top.width != 128 || top.height != 128 || texture.mips.size() != 1
+                    || texture.maxSampleMip != 0 || texture.atlasColumns != 4)) return E_INVALIDARG;
+        }
+    }
+    // 分配前以logical元数据预收，分配后以actual capacity复核同一128MiB。
+    // exact mip上传只用固定12项栈上描述符，不藏一份像素或旧expanded base VB。
+    const auto metadataBytes = [&](std::size_t batches, std::size_t blight, std::size_t base,
+        std::size_t textures, std::size_t parameters) {
+        return std::uint64_t(batches + base) * sizeof(War3RenderTerrainBatchV2)
+            + std::uint64_t(blight) * sizeof(War3RenderTerrainBlightBatchV2)
+            + std::uint64_t(textures) * sizeof(Ptr<ID3D11ShaderResourceView>)
+            + std::uint64_t(parameters) * sizeof(TextureParameters)
+            + (mesh.terrainGrid ? sizeof(TerrainGridGpu) + sizeof(TerrainGridParameters)
+                + 12 * sizeof(D3D11_SUBRESOURCE_DATA) : 0);
+    };
+    const auto ownedBytes = TerrainOwnedCapacityBytes(mesh);
+    const auto fits = [&](std::uint64_t extra) { return ownedBytes <= workingLimit && extra <= workingLimit - ownedBytes; };
+    if (bounded && !fits(metadataBytes(mesh.batches.size(), mesh.blightBatches.size(), mesh.baseBatches.size(),
+        mesh.textures.size(), mesh.textures.size()))) return E_INVALIDARG;
     Ptr<ID3D11Buffer> vertices, indices;
+    TerrainGridGpu grid;
+    TerrainGridParameters gridParameters;
+    War3RenderTerrainGridCaptureFactsV2 gridFacts{};
     std::vector<Ptr<ID3D11ShaderResourceView>> textures;
     std::vector<TextureParameters> parameters;
     auto batches = mesh.batches;
     auto blightBatches = mesh.blightBatches;
+    if (mesh.terrainGrid) grid.baseBatches = mesh.baseBatches;
     // 上传阶段仅新增这份至多32项元数据；不复制第二份顶点/像素，且核实际容量。
     if (blightBatches.capacity() > WAR3_RENDER_TERRAIN_BLIGHT_MAX_BATCHES) return E_INVALIDARG;
     textures.reserve(mesh.textures.size());
     parameters.reserve(mesh.textures.size());
-    if (!blightBatches.empty()) {
-        const auto uploadMetadataBytes = std::uint64_t(batches.capacity()) * sizeof(War3RenderTerrainBatchV2)
-            + std::uint64_t(blightBatches.capacity()) * sizeof(War3RenderTerrainBlightBatchV2)
-            + std::uint64_t(textures.capacity()) * sizeof(Ptr<ID3D11ShaderResourceView>)
-            + std::uint64_t(parameters.capacity()) * sizeof(TextureParameters);
-        if (TerrainOwnedCapacityBytes(mesh) + uploadMetadataBytes > 128ull * 1024 * 1024) return E_INVALIDARG;
-    }
+    if (bounded && !fits(metadataBytes(batches.capacity(), blightBatches.capacity(), grid.baseBatches.capacity(),
+        textures.capacity(), parameters.capacity()))) return E_INVALIDARG;
     // 所有资源先创建到局部所有者；任一步失败都不替换现有 GPU 场景。
     for (const auto& source : mesh.textures) {
         Ptr<ID3D11ShaderResourceView> view;
-        const auto hr = CreateTexture(source, view);
+        const auto hr = CreateTexture(source, view, mesh.terrainGrid);
         if (FAILED(hr)) return hr;
         textures.push_back(std::move(view));
         parameters.push_back({static_cast<float>(source.mips.front().width), static_cast<float>(source.mips.front().height),
             static_cast<float>(source.atlasColumns), static_cast<float>(source.atlasRows),
             static_cast<float>(source.maxSampleMip), 0, 0, source.maxSampleMip > 0 ? 4.0f : 1.0f});
+    }
+    if (mesh.terrainGrid) {
+        grid.enabled = true;
+        grid.groundTextureCount = mesh.gridGroundTextureCount;
+        grid.waterIndexCount = static_cast<UINT>(mesh.gridWaterIndices.size());
+        gridParameters.width = mesh.gridWidth; gridParameters.height = mesh.gridHeight;
+        if (!mesh.gridWaterQuads.empty()) {
+            const auto& texture = mesh.textures.back();
+            for (std::uint32_t level = 0; level < 16; ++level) {
+                const auto uv = ResolveTerrainAtlasCellUv(texture.mips.front().width, texture.mips.front().height,
+                    texture.atlasColumns, texture.atlasRows, level % 4, level / 4);
+                if (!uv) return E_INVALIDARG;
+                gridParameters.waterCellUv[level] = {uv->left, uv->right, uv->top, uv->bottom};
+            }
+        }
+        auto hr = StructuredBuffer(mesh.groundGrid.data(), mesh.groundGrid.size(), sizeof(mesh.groundGrid[0]), grid.ground, grid.groundView);
+        if (FAILED(hr)) return hr;
+        hr = StructuredBuffer(mesh.waterGrid.data(), mesh.waterGrid.size(), sizeof(mesh.waterGrid[0]), grid.water, grid.waterView);
+        if (FAILED(hr)) return hr;
+        hr = StructuredBuffer(mesh.baseQuads.data(), mesh.baseQuads.size(), sizeof(mesh.baseQuads[0]), grid.baseQuads, grid.baseQuadView);
+        if (FAILED(hr)) return hr;
+        hr = StructuredBuffer(mesh.gridWaterQuads.data(), mesh.gridWaterQuads.size(), sizeof(mesh.gridWaterQuads[0]), grid.waterQuads, grid.waterQuadView);
+        if (FAILED(hr)) return hr;
+        const auto indexBuffer = [&](const auto& input, Ptr<ID3D11Buffer>& output) {
+            return input.empty() ? S_OK : Buffer(input.data(), static_cast<UINT>(input.size() * sizeof(input[0])),
+                D3D11_BIND_INDEX_BUFFER, &output);
+        };
+        hr = indexBuffer(mesh.baseIndices, grid.baseIndices); if (FAILED(hr)) return hr;
+        hr = indexBuffer(mesh.blightIndices, grid.blightIndices); if (FAILED(hr)) return hr;
+        hr = indexBuffer(mesh.gridWaterIndices, grid.waterIndices); if (FAILED(hr)) return hr;
+        hr = Buffer(&gridParameters, sizeof(gridParameters), D3D11_BIND_CONSTANT_BUFFER, &grid.constants);
+        if (FAILED(hr)) return hr;
+        gridFacts.gridVertexCount = static_cast<UINT>(mesh.groundGrid.size());
+        gridFacts.baseQuadCount = static_cast<UINT>(mesh.baseQuads.size());
+        gridFacts.transitionVertexCount = static_cast<UINT>(mesh.terrainVertices.size());
+        gridFacts.blightIndexCount = static_cast<UINT>(mesh.blightIndices.size());
+        gridFacts.blightBatchCount = static_cast<UINT>(mesh.blightBatches.size());
+        gridFacts.waterQuadCount = static_cast<UINT>(mesh.gridWaterQuads.size());
+        gridFacts.groundTextureCount = mesh.gridGroundTextureCount;
+        gridFacts.passBits = (mesh.blightBatches.empty() ? 0u : WAR3_RENDER_TERRAIN_GRID_HAS_BLIGHT)
+            | (mesh.gridWaterQuads.empty() ? 0u : WAR3_RENDER_TERRAIN_GRID_HAS_WATER);
     }
     if (!mesh.indices.empty()) {
         const auto* data = mesh.terrain ? static_cast<const void*>(mesh.terrainVertices.data()) : mesh.vertices.data();
@@ -427,9 +704,18 @@ HRESULT D3D11Scene::SetMesh(const Mesh& mesh) try {
         hr = Buffer(mesh.indices.data(), static_cast<UINT>(mesh.indices.size() * sizeof(std::uint32_t)), D3D11_BIND_INDEX_BUFFER, &indices);
         if (FAILED(hr)) return hr;
     }
+#ifdef WAR3_RENDER_TEST_FAULTS
+    // stage9仅测试DLL：全资源已备齐，但尚未改变任何旧GPU owner或实际统计。
+    if (mesh.terrainGrid && ConsumeTestFault(9)) return E_FAIL;
+#endif
     vertices_ = std::move(vertices); indices_ = std::move(indices);
     textures_.swap(textures); textureParameters_.swap(parameters); batches_.swap(batches); terrain_ = mesh.terrain;
     blightBatches_.swap(blightBatches); blightFirstBatch_ = mesh.blightFirstBatch;
+    // 以上所有分配和D3D创建成功后才无抛交换；旧入口的空grid也一起清上帧残留。
+    static_assert(std::is_nothrow_swappable_v<TerrainGridGpu>);
+    using std::swap;
+    swap(terrainGridGpu_, grid);
+    terrainGridFacts_ = gridFacts;
     indexCount_ = static_cast<UINT>(mesh.indices.size());
     return S_OK;
 } catch (const std::bad_alloc&) {
@@ -461,7 +747,8 @@ HRESULT D3D11Scene::Draw(const War3RenderCameraV2& camera, std::vector<std::uint
     const D3D11_VIEWPORT viewport{0, 0, static_cast<float>(width_), static_cast<float>(height_), 0, 1};
     context_->RSSetViewports(1, &viewport);
     context_->RSSetState(rasterizer_.Get());
-    const bool terrain = terrain_ && indexCount_ != 0;
+    ClearTerrainFetchState();
+    const bool terrain = terrain_ && (indexCount_ != 0 || terrainGridGpu_.enabled);
     context_->IASetInputLayout(terrain ? terrainLayout_.Get() : layout_.Get());
     context_->VSSetShader(terrain ? terrainVertexShader_.Get() : vertexShader_.Get(), nullptr, 0);
     context_->PSSetShader(pixelShader_.Get(), nullptr, 0);
@@ -478,7 +765,9 @@ HRESULT D3D11Scene::Draw(const War3RenderCameraV2& camera, std::vector<std::uint
     const UINT stride = static_cast<UINT>(terrain ? sizeof(War3RenderTerrainVertexV2) : sizeof(War3RenderVertexV2)), offset = 0;
     auto* vertexBuffer = indexCount_ ? vertices_.Get() : grid_.Get();
     context_->IASetVertexBuffers(0, 1, &vertexBuffer, &stride, &offset);
-    if (indexCount_) {
+    if (terrainGridGpu_.enabled) {
+        DrawTerrainGrid(false);
+    } else if (indexCount_) {
         context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         context_->IASetIndexBuffer(indices_.Get(), DXGI_FORMAT_R32_UINT, 0);
         if (terrain) DrawTerrainBatches(false);
@@ -487,11 +776,12 @@ HRESULT D3D11Scene::Draw(const War3RenderCameraV2& camera, std::vector<std::uint
         context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
         context_->Draw(gridCount_, 0);
     }
-    // 顺序：不透明地形与过渡层 → 不透明模型 → 半透明地形（水面）→ 模型混合层。
+    // 顺序：base→transition→blight→不透明模型/粒子/层→水只读depth→透明层。
     DrawModels(0);
     DrawParticles(0);
     DrawModelLayers(0);
-    if (terrain) DrawTerrainBatches(true);
+    if (terrainGridGpu_.enabled) DrawTerrainGrid(true);
+    else if (terrain) DrawTerrainBatches(true);
     DrawModels(1);
     DrawParticles(1);
     DrawModelLayers(1);

@@ -65,6 +65,48 @@ TerrainOutput VSTerrain(TerrainInput input, uint vertexId : SV_VertexID) {
     output.world = float3(input.position.xy, output.position.w);
     return output;
 }
+// 新入口按真实grid拉取；记录stride逐一对应正式Core的36/16/20/8B合同。
+struct TerrainGridGround { float x, y, groundZ; float3 textureColor, fallbackColor; };
+struct TerrainGridWater { float waterZ; float3 color; };
+struct TerrainGridBaseQuad { uint sourceTile; float left, right, top, bottom; };
+struct TerrainGridWaterQuad { uint sourceTile, alphaLevel; };
+StructuredBuffer<TerrainGridGround> terrainGroundGrid : register(t8);
+StructuredBuffer<TerrainGridBaseQuad> terrainBaseQuads : register(t9);
+StructuredBuffer<TerrainGridWater> terrainWaterGrid : register(t10);
+StructuredBuffer<TerrainGridWaterQuad> terrainWaterQuads : register(t11);
+cbuffer TerrainGridParameters : register(b5) {
+    uint terrainGridWidth, terrainGridHeight; uint2 terrainGridReserved;
+    float4 terrainWaterCellUv[16]; // CPU唯一CellUv函数，禁止另算半texel。
+};
+uint TerrainGridCornerIndex(uint sourceTile, uint corner) {
+    uint first = (sourceTile / (terrainGridWidth - 1)) * terrainGridWidth + sourceTile % (terrainGridWidth - 1);
+    return first + (corner & 1) + (corner / 2) * terrainGridWidth;
+}
+float2 TerrainGridCornerUv(float4 rect, uint corner) {
+    return float2((corner & 1) == 0 ? rect.x : rect.y, corner < 2 ? rect.w : rect.z);
+}
+TerrainOutput VSTerrainGrid(uint vertexId : SV_VertexID) {
+    uint corner = vertexId % 4;
+    TerrainGridBaseQuad quad = terrainBaseQuads[vertexId / 4];
+    TerrainGridGround ground = terrainGroundGrid[TerrainGridCornerIndex(quad.sourceTile, corner)];
+    TerrainInput input;
+    input.position = float3(ground.x, ground.y, ground.groundZ);
+    input.color = terrainUvOverride < -0.5 ? ground.fallbackColor : ground.textureColor;
+    input.uv = TerrainGridCornerUv(float4(quad.left, quad.right, quad.top, quad.bottom), corner);
+    return VSTerrain(input, vertexId);
+}
+TerrainOutput VSTerrainGridWater(uint vertexId : SV_VertexID) {
+    uint corner = vertexId % 4;
+    TerrainGridWaterQuad quad = terrainWaterQuads[vertexId / 4];
+    uint index = TerrainGridCornerIndex(quad.sourceTile, corner);
+    TerrainGridGround ground = terrainGroundGrid[index];
+    TerrainGridWater water = terrainWaterGrid[index];
+    TerrainInput input;
+    input.position = float3(ground.x, ground.y, water.waterZ);
+    input.color = water.color;
+    input.uv = TerrainGridCornerUv(terrainWaterCellUv[quad.alphaLevel], corner);
+    return VSTerrain(input, vertexId);
+}
 float4 SampleTerrainCell(float2 uv, float2 cell, float level) {
     uint width, height, mipCount;
     terrainTexture.GetDimensions((uint)level, width, height, mipCount);

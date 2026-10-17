@@ -18,6 +18,13 @@ foreach(stage IN ITEMS VS PS)
             "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/Scene.hlsl"
         DEPENDS Shaders/Scene.hlsl VERBATIM)
 endforeach()
+foreach(_grid_variant IN ITEMS Grid GridWater)
+    add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/Terrain${_grid_variant}VS.h"
+        COMMAND "${WAR3MAPEDITOR_FXC}" /nologo /WX /O3 /T vs_5_0 /E "VSTerrain${_grid_variant}"
+            /Fh "${CMAKE_CURRENT_BINARY_DIR}/Terrain${_grid_variant}VS.h" /Vn "kTerrain${_grid_variant}VS"
+            "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/Scene.hlsl"
+        DEPENDS Shaders/Scene.hlsl VERBATIM)
+endforeach()
 foreach(stage IN ITEMS VS PS)
     string(TOLOWER "${stage}" _profile)
     add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/Terrain${stage}.h"
@@ -55,6 +62,8 @@ add_library(war3-render-d3d11 SHARED RenderPlugin.cpp Backend/D3D11/D3D11Scene.c
     "${CMAKE_CURRENT_BINARY_DIR}/ModelVS.h" "${CMAKE_CURRENT_BINARY_DIR}/ModelPS.h"
     "${CMAKE_CURRENT_BINARY_DIR}/SceneVS.h" "${CMAKE_CURRENT_BINARY_DIR}/ScenePS.h"
     "${CMAKE_CURRENT_BINARY_DIR}/TerrainVS.h" "${CMAKE_CURRENT_BINARY_DIR}/TerrainPS.h")
+target_sources(war3-render-d3d11 PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/TerrainGridVS.h" "${CMAKE_CURRENT_BINARY_DIR}/TerrainGridWaterVS.h")
 target_include_directories(war3-render-d3d11 PRIVATE "${PROJECT_SOURCE_DIR}/include" "${CMAKE_CURRENT_BINARY_DIR}")
 target_compile_definitions(war3-render-d3d11 PRIVATE WAR3_RENDER_PLUGIN_BUILD NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-render-d3d11 PRIVATE /W4 /permissive- /utf-8)

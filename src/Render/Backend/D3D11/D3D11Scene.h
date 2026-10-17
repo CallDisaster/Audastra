@@ -4,6 +4,7 @@
 #include "../../Particles/ParticleInput.h"
 #include "War3MapCore/RenderPluginEditorVisibility.h"
 #include "War3MapCore/RenderPluginTerrainBlight.h"
+#include "War3MapCore/RenderPluginTerrainGrid.h"
 #include <d3d11.h>
 #include <dxgi.h>
 #include <wrl/client.h>
@@ -24,6 +25,17 @@ struct Mesh {
     std::uint32_t blightFirstBatch = 0;
     std::uint64_t revision = 0;
     bool terrain = false;
+    // 新入口只共享完整grid；旧32B terrainVertices/indices/batches仅保留transition。
+    bool terrainGrid = false;
+    std::uint32_t gridWidth = 0, gridHeight = 0, gridGroundTextureCount = 0;
+    std::vector<War3RenderTerrainGridGroundVertexV2> groundGrid;
+    std::vector<War3RenderTerrainGridWaterVertexV2> waterGrid;
+    std::vector<War3RenderTerrainGridBaseQuadV2> baseQuads;
+    std::vector<std::uint32_t> baseIndices;
+    std::vector<War3RenderTerrainBatchV2> baseBatches;
+    std::vector<std::uint32_t> blightIndices;
+    std::vector<War3RenderTerrainGridWaterQuadV2> gridWaterQuads;
+    std::vector<std::uint32_t> gridWaterIndices;
 };
 // 本次地表CPU所有者的实际容器容量；不含历史场景、驱动和GPU分配。
 [[nodiscard]] std::uint64_t TerrainOwnedCapacityBytes(const Mesh& mesh) noexcept;
@@ -54,6 +66,8 @@ public:
     HRESULT Initialize(bool warp);
     HRESULT SetTarget(HWND window, UINT width, UINT height);
     HRESULT SetMesh(const Mesh& mesh);
+    // 只取成功SetMesh发布后的GPU所有者事实；捕获view/format由插件同锁封入。
+    [[nodiscard]] War3RenderTerrainGridCaptureFactsV2 TerrainGridFacts() const noexcept { return terrainGridFacts_; }
     HRESULT SetModels(const ModelScene& models, const SkinPose* latestPose = nullptr);
     HRESULT SetSkinPose(const SkinPose& pose);
     // 基础重绑定：调用方已通过共享校验及资产身份CAS确认verifiedStaticLayout。
@@ -109,7 +123,10 @@ public:
 private:
     template<class T> using Ptr = Microsoft::WRL::ComPtr<T>;
     HRESULT Buffer(const void* data, UINT bytes, UINT bind, ID3D11Buffer** output);
-    HRESULT CreateTexture(const TextureRgba& source, Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& view);
+    HRESULT CreateTexture(const TextureRgba& source, Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& view,
+        bool exactMips = false);
+    HRESULT StructuredBuffer(const void* data, std::size_t count, UINT stride,
+        Ptr<ID3D11Buffer>& buffer, Ptr<ID3D11ShaderResourceView>& view);
     HRESULT InitializeSkinning();
     HRESULT InitializeMaterialStateSamplers();
     static bool CountModelDrawLayers(const ModelScene& models, std::vector<std::uint32_t>& counts);
@@ -185,6 +202,8 @@ private:
     std::size_t additionalModelCount_ = 0;
     bool borrowedContext_ = false;
     void DrawTerrainBatches(bool translucent); // false = 不透明与过渡层，true = 水面等半透明批次
+    void DrawTerrainGrid(bool translucent);
+    void ClearTerrainFetchState();
     Ptr<ID3D11Device> device_;
     std::array<char, 256> adapterName_{};
     UINT featureLevel_ = 0;
@@ -198,6 +217,7 @@ private:
     Ptr<ID3D11PixelShader> pixelShader_;
     Ptr<ID3D11InputLayout> layout_;
     Ptr<ID3D11VertexShader> terrainVertexShader_;
+    Ptr<ID3D11VertexShader> terrainGridVertexShader_, terrainGridWaterVertexShader_;
     Ptr<ID3D11PixelShader> terrainPixelShader_;
     Ptr<ID3D11InputLayout> terrainLayout_;
     Ptr<ID3D11SamplerState> terrainSampler_;
@@ -216,6 +236,20 @@ private:
     std::vector<War3RenderTerrainBatchV2> batches_;
     std::vector<War3RenderTerrainBlightBatchV2> blightBatches_;
     std::uint32_t blightFirstBatch_ = 0;
+    struct TerrainGridGpu {
+        Ptr<ID3D11Buffer> ground, water, baseQuads, waterQuads, baseIndices, blightIndices, waterIndices, constants;
+        Ptr<ID3D11ShaderResourceView> groundView, waterView, baseQuadView, waterQuadView;
+        std::vector<War3RenderTerrainBatchV2> baseBatches;
+        UINT waterIndexCount = 0, groundTextureCount = 0;
+        bool enabled = false;
+    };
+    struct TerrainGridParameters {
+        std::uint32_t width = 0, height = 0, reserved[2]{};
+        std::array<std::array<float, 4>, 16> waterCellUv{};
+    };
+    static_assert(sizeof(TerrainGridParameters) == 272);
+    TerrainGridGpu terrainGridGpu_;
+    War3RenderTerrainGridCaptureFactsV2 terrainGridFacts_{};
     Ptr<ID3D11RasterizerState> rasterizer_;
     Ptr<ID3D11RasterizerState> groundDecalRasterizer_; // 显式GroundDecalPreview层独用，不改地形/模型。
     // 模型：顶点/索引/实例缓冲、贴图、每模型实例区间；按过滤模式分两遍绘制。
