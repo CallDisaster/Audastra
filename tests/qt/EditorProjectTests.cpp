@@ -718,6 +718,8 @@ void EditorProjectTests::TerrainSaveReadbackGatesCommit() {
     job->preparedRevision = MapSaveRevisionBinding{project.editRevision_.Generation(), project.editRevision_.Revision(),
         project.editRevision_.Current()};
     job->terrainSavePlan = originalPlan;
+    const auto& diagnostics = originalPlan->Diagnostics();
+    job->diagnostics.insert(job->diagnostics.end(), diagnostics.begin(), diagnostics.end());
     QVERIFY(originalPlan->VerifyForSave(*project.mapEdits_, job->sourceSha256, job->replacements, job->removals).Succeeded());
     const auto* task = job.get();
     job->beforePublish = [originalPlan, task] {
