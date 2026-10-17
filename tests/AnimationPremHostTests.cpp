@@ -593,12 +593,21 @@ void Budgets() {
                 packet.childFrame->geosetIssues.empty() && packet.childFrame->materialIssues.empty() &&
                 packet.childFrame->collisionMatrices.empty(), "PREM billing fixture acquired unrelated child layout charges");
             const auto& child=*packet.childFrame;
-            const auto actualFrameLayout=std::uint64_t(child.instances.size())*(sizeof(War3RenderSkinnedModelInstanceV2)+
+            Check(packet.childScene->models.size()==1 && child.particleMaterialFlags.empty(),
+                "PREM billing fixture lost its single child asset or acquired particle material payload");
+            const auto actualFramePayload=std::uint64_t(child.instances.size())*(sizeof(War3RenderSkinnedModelInstanceV2)+
                 sizeof(AnimationPoseLink)+sizeof(AnimationPickBounds))+std::uint64_t(child.states.size())*sizeof(AnimationInstanceState)+
                 std::uint64_t(child.groups.size())*sizeof(War3RenderGroupMatrixV2)+
                 std::uint64_t(child.alphas.size())*(sizeof(float)+sizeof(War3RenderMeshColorV2));
-            Check(bill.childFrameLayoutBytes==actualFrameLayout && packet.childScene->requestGeometryRequired.capacity(),
-                "PREM charged the scene provenance table again in the child frame layout");
+            // 本夹具全新子服务仅push一次唯一资产且不reserve，MSVC资产容量为1。
+            // 唯一子资产仍持有一个材质表shared_ptr槽，前/当前帧各保留空vector本体。
+            // 独立按类型计算新增owner，不复用生产计费helper；场景来源表仍不得重复收费。
+            const auto materialOwnerBytes=2ull*sizeof(decltype(child.particleMaterialFlags))+
+                sizeof(std::shared_ptr<const std::vector<std::uint32_t>>);
+            Check(bill.childFrameLayoutBytes>=actualFramePayload &&
+                bill.childFrameLayoutBytes-actualFramePayload==materialOwnerBytes &&
+                packet.childScene->requestGeometryRequired.capacity(),
+                "PREM frame layout lost material owners or charged the scene provenance table again");
             Check(bill.childSourceBytes && bill.childResourceBytes && bill.childSceneBytes && bill.childStandFrameBytes &&
                 bill.childFrameLayoutBytes && bill.childEvaluatorBytes && bill.birthEvaluatorBytes && bill.preparationResourceBytes &&
                 bill.childSceneBytes <= packet.storageBytes && bill.childFrameChargedBytes <= packet.storageBytes - bill.childSceneBytes &&
