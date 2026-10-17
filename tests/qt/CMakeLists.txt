@@ -483,7 +483,7 @@ set_tests_properties(qt-object-context-provider PROPERTIES TIMEOUT 60
 
 qt_add_executable(war3-map-world-module-tests WorldModuleTests.cpp)
 target_link_libraries(war3-map-world-module-tests PRIVATE War3MapEditor::QtModuleWorld
-    War3MapEditor::QtModuleMapEntities War3MapEditor::QtModuleMapSettings Qt6::Test)
+    War3MapEditor::QtModuleMapEntities War3MapEditor::QtModuleMapSettings Qt6::Test War3RenderCore::SkinInput)
 target_compile_definitions(war3-map-world-module-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-world-module-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME qt-world-module COMMAND war3-map-world-module-tests)
