@@ -559,9 +559,11 @@ Result<std::unique_ptr<ModelAnimationService::State>> ModelAnimationService::Bui
     std::vector<Diagnostic> resourceFailures;
     auto geometryLimits = limits.geometry;
     geometryLimits.allowRigidStaticPreview = limits.allowRigidStaticPreview;
-    scene.dynamicMaterialStates=std::any_of(state->assets.begin(),state->assets.end(),[](const auto& asset) {
-        return asset.unavailableCode.empty() && AnimatedMaterialState(asset.materialTextures.get());
-    }) || std::any_of(baked.begin(), baked.end(), [](const auto& mesh) { return mesh.samplerFlags != 3; });
+    // 追加准备继承常驻场景的材质模式；缺图变体也须为最终合并场景冻结缺失sidecar。
+    scene.dynamicMaterialStates=(resident && resident->scene->dynamicMaterialStates) ||
+        std::any_of(state->assets.begin(),state->assets.end(),[](const auto& asset) {
+            return asset.unavailableCode.empty() && AnimatedMaterialState(asset.materialTextures.get());
+        }) || std::any_of(baked.begin(), baked.end(), [](const auto& mesh) { return mesh.samplerFlags != 3; });
     // 只在显式材质模式下冻结缺失sidecar；迟激活与原KMTF/TXAN共用身份和预算。
     const auto freezeMaterialTextures = [&]() -> Status {
         for (auto& asset:state->assets) if (asset.compiled.Valid() &&
