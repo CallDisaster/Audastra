@@ -2324,11 +2324,11 @@ void WorldModuleTests::ReadOnlyArchiveLoadsTerrainAndRejectsIdenticalReplacement
         QTRY_VERIFY(state.terrainSubmits > 0 && state.frames > 0);
         QVERIFY(module.Viewport()->HasGroundMesh()); QVERIFY(!module.TerrainLoadFailed());
         const auto facts = module.PlaybackDiagnosticSnapshot().value("scene_facts").toObject();
-        const auto slots = facts.value("ground_budget").toObject().value("resource_state").toObject();
-        QVERIFY(slots.contains("requested_ground_texture_slots"));
-        QCOMPARE(slots.value("requested_ground_texture_slots").toInteger(), qint64{1});
-        QCOMPARE(slots.value("ground_texture_slots").toInteger(), qint64{1});
-        QCOMPARE(slots.value("final_texture_slots").toInteger(), qint64{1});
+        const auto textureSlotFacts = facts.value("ground_budget").toObject().value("resource_state").toObject();
+        QVERIFY(textureSlotFacts.contains("requested_ground_texture_slots"));
+        QCOMPARE(textureSlotFacts.value("requested_ground_texture_slots").toInteger(), qint64{1});
+        QCOMPARE(textureSlotFacts.value("ground_texture_slots").toInteger(), qint64{1});
+        QCOMPARE(textureSlotFacts.value("final_texture_slots").toInteger(), qint64{1});
         const auto groundDetails = facts.value("ground").toObject().value("details").toString();
         QVERIFY(groundDetails.contains(QStringLiteral("请求地表预检 1")));
         QVERIFY(groundDetails.contains(QStringLiteral("保留地表 1")));
