@@ -1051,6 +1051,70 @@ std::vector<std::byte> CliffMdxFixture() {
     }
     w.Tag("PIVT");w.U32(12);w.F32(0);w.F32(0);w.F32(0); return std::move(w.bytes);
 }
+const char* CliffMipStopName(Image::BlpMipChainStopReason reason) {
+    using Stop = Image::BlpMipChainStopReason;
+    switch (reason) {
+    case Stop::Complete: return "Complete";
+    case Stop::UndeclaredMip: return "UndeclaredMip";
+    case Stop::InvalidMipRange: return "InvalidMipRange";
+    case Stop::TotalPixelBudget: return "TotalPixelBudget";
+    case Stop::RetainedRgbaBudget: return "RetainedRgbaBudget";
+    case Stop::WorkingBudget: return "WorkingBudget";
+    case Stop::JpegBudget: return "JpegBudget";
+    case Stop::DecodeFailure: return "DecodeFailure";
+    }
+    Check(false,"cliff-ground unknown model mip stop reason");return "Unknown";
+}
+Json CliffTextureMipFacts(const WorldModelScene& scene,const ModelSceneDescriptor& descriptor) {
+    const auto* submitted=descriptor.StaticScene();
+    Check(scene.textures.size()==1 && submitted && submitted->textureCount==scene.textures.size()
+        && descriptor.chains.size()==scene.textures.size() && submitted->textures==descriptor.chains.data(),
+        "cliff-ground submitted texture array does not match its descriptor owner/scene");
+    const auto& texture=scene.textures[0];
+    Check(ModelTextureValid(texture,WorldModelLimits{}.maxTextureDimension),"cliff-ground owned model mip chain invalid");
+    const auto retained=texture.additionalMips.size()+1;
+    const auto& chain=submitted->textures[0];
+    const bool stableInterval=chain.mips==descriptor.mips.data() && descriptor.mips.size()==retained;
+    Check(chain.structSize==sizeof(chain) && chain.mipCount==retained && chain.maxSampleMip==retained-1
+        && chain.atlasColumns==1 && chain.atlasRows==1 && stableInterval,
+        "cliff-ground submitted mip interval/count/LOD does not match the owned source chain");
+    Json levels=Json::array(),diagnostics=Json::array();std::uint64_t descriptorRgbaBytes=0;
+    bool pointersMatch=true,metadataMatch=true;
+    for (std::size_t level=0;level<retained;++level) {
+        const auto bytes=level==0 ? std::as_bytes(std::span(texture.rgba))
+            : std::span<const std::byte>(texture.additionalMips[level-1].rgba);
+        const auto width=level==0 ? texture.width : texture.additionalMips[level-1].width;
+        const auto height=level==0 ? texture.height : texture.additionalMips[level-1].height;
+        const auto& mip=chain.mips[level];
+        const bool pointer=static_cast<const void*>(mip.rgba)==static_cast<const void*>(bytes.data());
+        const bool metadata=mip.structSize==sizeof(mip) && mip.width==width && mip.height==height
+            && mip.rgbaByteCount==bytes.size();
+        Check(pointer && metadata,"cliff-ground submitted mip does not refer to the actual owned RGBA level");
+        Check(mip.rgbaByteCount<=UINT64_MAX-descriptorRgbaBytes,"cliff-ground descriptor RGBA sum overflow");
+        descriptorRgbaBytes+=mip.rgbaByteCount;pointersMatch&=pointer;metadataMatch&=metadata;
+        levels.push_back({{"level",level},{"width",width},{"height",height},{"rgba_bytes",bytes.size()},
+            {"rgba_sha256",Digest(bytes)}});
+    }
+    const auto rgbaBytes=ModelTextureRgbaBytes(texture),storageBytes=ModelTextureStorageBytes(texture);
+    Check(rgbaBytes!=UINT64_MAX && storageBytes!=UINT64_MAX && descriptorRgbaBytes==rgbaBytes,
+        "cliff-ground submitted/owned full-chain RGBA totals differ");
+    for (const auto& diagnostic:texture.mipDiagnostics)
+        diagnostics.push_back({{"severity",static_cast<int>(diagnostic.severity)},
+            {"subsystem",diagnostic.subsystem},{"code",diagnostic.code}});
+    // 这些是CPU拥有字节与即将提交的同一个描述符事实；没有逐级GPU读回或像素采样声明。
+    return {{"schema","cliff-model-texture-mips-v1"},
+        {"scope","cpu-owned-mips-and-submitted-host-descriptors; no per-mip GPU readback"},
+        {"origin",texture.mipOrigin==ModelTextureMipOrigin::BlpSource ? "blp-source" : "generated-from-top"},
+        {"policy_version",texture.mipPolicyVersion},{"source_width",texture.sourceWidth},{"source_height",texture.sourceHeight},
+        {"source_base_mip",texture.sourceBaseMip},{"stop",{{"reason",CliffMipStopName(texture.mipStopReason)},
+            {"level",texture.mipStopLevel},{"has_later_declarations",texture.mipHasLaterDeclarations}}},
+        {"diagnostics",diagnostics},{"retained_mip_count",retained},{"rgba_bytes",rgbaBytes},
+        {"owned_dynamic_storage_bytes",storageBytes},{"levels",levels},
+        {"submitted_descriptor",{{"mip_count",chain.mipCount},{"max_sample_mip",chain.maxSampleMip},
+            {"atlas_columns",chain.atlasColumns},{"atlas_rows",chain.atlasRows},{"rgba_bytes",descriptorRgbaBytes},
+            {"stable_interval_matches_owner",stableInterval},{"rgba_pointers_match_scene",pointersMatch},
+            {"level_metadata_match_scene",metadataMatch},{"rgba_total_matches_scene",descriptorRgbaBytes==rgbaBytes}}}};
+}
 } // namespace
 
 void RunRealCliffGroundValidationTests() {
@@ -1060,6 +1124,17 @@ void RunRealCliffGroundValidationTests() {
         context.sourceVertices==std::array<std::uint32_t,6>{20,21,29,30,38,39},"cliff-ground original source mapping failed");
     const auto reject=[](const auto& action) {bool caught=false;try {action();}catch(const std::exception&){caught=true;}
         Check(caught,"cliff-ground malformed contract accepted");};
+    WorldModelScene mipScene;ModelTextureRgba mipTexture;
+    mipTexture.width=mipTexture.height=mipTexture.sourceWidth=mipTexture.sourceHeight=2;
+    mipTexture.rgba.assign(16,255);mipTexture.additionalMips.push_back({1,1,std::vector<std::byte>(4,std::byte{127})});
+    mipTexture.mipOrigin=ModelTextureMipOrigin::BlpSource;mipTexture.mipPolicyVersion=ModelTextureMipPolicyVersion;
+    mipTexture.mipStopLevel=2;mipScene.textures.push_back(std::move(mipTexture));
+    auto mipDescriptor=DescribeModelScene(mipScene);const auto mipFacts=CliffTextureMipFacts(mipScene,mipDescriptor);
+    Check(mipFacts.at("retained_mip_count")==2 && mipFacts.at("rgba_bytes")==20
+        && mipFacts.at("submitted_descriptor").at("rgba_total_matches_scene")==true,
+        "cliff-ground facts omitted owned source levels or descriptor bytes");
+    mipDescriptor.mips[1].rgba=mipScene.textures[0].rgba.data();
+    reject([&]{CliffTextureMipFacts(mipScene,mipDescriptor);}); // 同尺寸/字节的错误像素指针也必须拒绝。
     Check(RelativePathText("inputs/original.bin")==std::filesystem::path("inputs/original.bin"),"cliff-ground relative input fixture failed");
     for (const auto* path:{"../original.bin","inputs/../original.bin","C:/original.bin","//host/original.bin",
         "inputs\\original.bin","inputs//original.bin","inputs./original.bin","inputs /original.bin","original.w3x","original.bin/"})
@@ -1231,6 +1306,7 @@ void RunRealCliffGroundAudit(const std::filesystem::path& manifestPath,std::stri
     Check(models.value->models.size()==1 && models.value->instances.size()==1 && !models.value->untexturedLayers &&
         models.value->textures.size()==1 && !models.value->indices.empty(),"cliff-ground incomplete model material/geometry");
     const auto descriptor=DescribeModelScene(*models.value);Check(descriptor.StaticScene(),"cliff-ground source sampler descriptor invalid");
+    const auto cliffMipFacts=CliffTextureMipFacts(*models.value,descriptor);
     for(std::size_t i=0;i<models.value->layers.size();++i) {
         const auto flags=models.value->layerSamplerFlags.empty()?3u:models.value->layerSamplerFlags[i];
         Check(flags==prepared.cliffs.meshes.at(i).samplerFlags,"cliff-ground baked source sampler transport changed");
@@ -1297,7 +1373,8 @@ void RunRealCliffGroundAudit(const std::filesystem::path& manifestPath,std::stri
             {"indices_sha256",Digest(std::as_bytes(std::span(ground.indices)))}}},{"resources",resources},
         {"cliff_decoded_mip0",{{"width",models.value->textures[0].width},{"height",models.value->textures[0].height},
             {"rgba_sha256",Digest(std::as_bytes(std::span(models.value->textures[0].rgba)))},
-            {"mip_scope","Core mip0 then provider-generated chain; not original BLP mip-chain acceptance"}}},
+            {"mip_scope","CPU-decoded mip0; owned chain and submitted descriptor facts are in cliff_texture_mips; no per-mip GPU readback"}}},
+        {"cliff_texture_mips",cliffMipFacts},
         {"camera",cameraInput},{"capture",{{"width",width},{"height",height},{"ticket",receipt.capture.ticket},{"frame_count",receipt.capture.frameCount},
             {"document_revision",revision},{"surface_epoch",receipt.view.surfaceEpoch},{"scene_epoch",receipt.view.sceneEpoch},{"view_epoch",receipt.view.viewEpoch},
             {"view_projection",std::vector<float>(std::begin(receipt.view.viewProjection),std::end(receipt.view.viewProjection))}}},
