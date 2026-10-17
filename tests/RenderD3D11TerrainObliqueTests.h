@@ -65,7 +65,7 @@ struct Footprint {
     std::array<double,2> axis;
     std::uint32_t taps;
 };
-Footprint ExpectedFootprint(const War3RenderViewInfoV2& view, std::uint32_t x, std::uint32_t y) {
+Footprint QualificationFootprint(const War3RenderViewInfoV2& view, std::uint32_t x, std::uint32_t y) {
     const auto p = PlanePoint(view,x + .5,y + .5), r = PlanePoint(view,x + 1.5,y + .5), d = PlanePoint(view,x + .5,y + 1.5);
     const double dxU = (r.x - p.x) * 127 / 128, dxV = -(r.y - p.y) * 127 / 128;
     const double dyU = (d.x - p.x) * 127 / 128, dyV = -(d.y - p.y) * 127 / 128;
@@ -79,6 +79,13 @@ Footprint ExpectedFootprint(const War3RenderViewInfoV2& view, std::uint32_t x, s
     return {(p.x + 64) / 128,(64 - p.y) / 128,major,minor,std::clamp(std::log2(width),0.0,7.0),axis,
         static_cast<std::uint32_t>(std::clamp(std::ceil(major / width),1.0,4.0))};
 }
+Footprint ExpectedFootprint(const War3RenderViewInfoV2& view, std::uint32_t x, std::uint32_t y) {
+    // DXBC使用coarse导数：quad左上中心求dx/dy，当前fragment仍保留自己的采样中心。
+    auto output = QualificationFootprint(view,x & ~1u,y & ~1u);
+    const auto p = PlanePoint(view,x + .5,y + .5);
+    output.u = (p.x + 64) / 128; output.v = (64 - p.y) / 128;
+    return output;
+}
 
 struct Analysis {
     std::vector<std::size_t> roi, white, black;
@@ -89,17 +96,20 @@ struct Analysis {
 Analysis Analyze(const War3RenderViewInfoV2& view, std::uint32_t period, bool oblique) {
     Analysis output;
     for (std::uint32_t y = 0; y < view.height; ++y) for (std::uint32_t x = 0; x < view.width; ++x) {
-        const auto f = ExpectedFootprint(view,x,y);
+        // 原forward仅用于输入资格，保持原UV ROI/phase选择，不冒充GPU导数遥测。
+        const auto f = QualificationFootprint(view,x,y);
         if (!std::isfinite(f.u) || !std::isfinite(f.v) || f.u < 0 || f.u > 1 || f.v < 0 || f.v > 1) continue;
         Require(std::isfinite(f.major) && std::isfinite(f.minor) && f.minor > 0,"terrain oblique input footprint invalid");
+        const auto expected = ExpectedFootprint(view,x,y);
         std::array<bool,4> edges{}, corners{};
-        const auto low = static_cast<std::uint32_t>(std::floor(f.lod)), high = std::min(kMaximumMip,low + 1);
+        const auto low = static_cast<std::uint32_t>(std::floor(expected.lod)), high = std::min(kMaximumMip,low + 1);
         for (const auto level : {low,high}) {
-            if (level == high && (high == low || f.lod == std::floor(f.lod))) continue; // 零权重层不冒充边界覆盖。
+            if (level == high && (high == low || expected.lod == std::floor(expected.lod))) continue; // 零权重层不冒充边界覆盖。
             const double scale = double(1u << level), minimum = 128 + .5 * scale, maximum = 256 - .5 * scale;
-            for (std::uint32_t tap = 0; tap < f.taps; ++tap) {
-                const double offset = ((tap + .5) / f.taps - .5) * f.major;
-                const double px = 128.5 + f.u * 127 + f.axis[0] * offset, py = 128.5 + f.v * 127 + f.axis[1] * offset;
+            for (std::uint32_t tap = 0; tap < expected.taps; ++tap) {
+                const double offset = ((tap + .5) / expected.taps - .5) * expected.major;
+                const double px = 128.5 + expected.u * 127 + expected.axis[0] * offset;
+                const double py = 128.5 + expected.v * 127 + expected.axis[1] * offset;
                 const bool w = px < minimum, e = px > maximum, n = py < minimum, s = py > maximum;
                 edges[0] |= w; edges[1] |= e; edges[2] |= s; edges[3] |= n;
                 corners[0] |= w && s; corners[1] |= e && s; corners[2] |= w && n; corners[3] |= e && n;
@@ -111,13 +121,13 @@ Analysis Analyze(const War3RenderViewInfoV2& view, std::uint32_t period, bool ob
         if (oblique && (f.major < (period == 2 ? 2.25 : 4.5) || f.major > (period == 2 ? 3 : 6)
             || f.minor < (period == 2 ? .25 : .5) || f.minor > (period == 2 ? .375 : .75) || ratio < 6 || ratio > 10)) continue;
         if (output.roi.empty()) {
-            output.majorMin = output.majorMax = f.major; output.minorMin = output.minorMax = f.minor;
-            output.lodMin = output.lodMax = f.lod; output.tapMin = output.tapMax = f.taps;
+            output.majorMin = output.majorMax = expected.major; output.minorMin = output.minorMax = expected.minor;
+            output.lodMin = output.lodMax = expected.lod; output.tapMin = output.tapMax = expected.taps;
         } else {
-            output.majorMin = std::min(output.majorMin,f.major); output.majorMax = std::max(output.majorMax,f.major);
-            output.minorMin = std::min(output.minorMin,f.minor); output.minorMax = std::max(output.minorMax,f.minor);
-            output.lodMin = std::min(output.lodMin,f.lod); output.lodMax = std::max(output.lodMax,f.lod);
-            output.tapMin = std::min(output.tapMin,f.taps); output.tapMax = std::max(output.tapMax,f.taps);
+            output.majorMin = std::min(output.majorMin,expected.major); output.majorMax = std::max(output.majorMax,expected.major);
+            output.minorMin = std::min(output.minorMin,expected.minor); output.minorMax = std::max(output.minorMax,expected.minor);
+            output.lodMin = std::min(output.lodMin,expected.lod); output.lodMax = std::max(output.lodMax,expected.lod);
+            output.tapMin = std::min(output.tapMin,expected.taps); output.tapMax = std::max(output.tapMax,expected.taps);
         }
         const auto at = (static_cast<std::size_t>(y) * view.width + x) * 4;
         output.roi.push_back(at);
@@ -190,6 +200,8 @@ void Export(const std::filesystem::path& directory, const Observation& observati
         {"source",{{"generated_atlas_columns",4},{"generated_atlas_rows",4},{"cell",{1,1}},{"period",period},
             {"generated_mips",source.identity},{"texture_provided",textureProvided}}},
         {"roi",{{"count",a.roi.size()},{"white_count",a.white.size()},{"black_count",a.black.size()},
+            {"qualification_derivative_definition","per-pixel-forward-plane-difference-geometry-only"},
+            {"expectation_derivative_definition","quad-top-left-coarse"},{"quad_anchor","(x & ~1u, y & ~1u)"},
             {"expected_major_range",{a.majorMin,a.majorMax}},{"expected_minor_range",{a.minorMin,a.minorMax}},
             {"expected_candidate_lod_range",{a.lodMin,a.lodMax}},{"expected_candidate_taps",{a.tapMin,a.tapMax}},
             {"expectation_is_gpu_telemetry",false},{"clamp_sensitive_edges_w_e_s_n",a.edge},{"clamp_sensitive_corners_sw_se_nw_ne",a.corner}}},
@@ -320,17 +332,30 @@ void TestTerrainObliqueFilter(const War3RenderPluginApiV2* api, const War3Render
     Require(fineFrame.opaque && fractionalFrame.opaque && frontFrame.opaque && solidFrame.opaque
         && SameCoverage(fineFrame,solidFrame) && SameCoverage(fineSentinel,solidFrame),
         "terrain filter changed opaque silhouette coverage");
-    const auto quality = [](const Observation& observed, std::size_t count, int blueMin, int blueMax) {
+    const auto quality = [](const Observation& observed, std::size_t count, bool fractionalMarker) {
         Require(observed.covered && observed.analysis.white.size() >= count && observed.analysis.black.size() >= count,
             "terrain oblique quality ROI missing, occluded or below frozen sample count");
         Require(observed.white - observed.black >= kContrast,"terrain lost resolvable short-axis source detail");
-        for (const auto at : observed.analysis.roi)
-            Require(observed.frame.pixels[at + 2] >= blueMin && observed.frame.pixels[at + 2] <= blueMax,
-                "terrain explicit mip marker disagrees with natural/fractional LOD");
+        for (const auto at : observed.analysis.roi) {
+            if (!fractionalMarker) {
+                Require(observed.frame.pixels[at + 2] >= 159 && observed.frame.pixels[at + 2] <= 161,
+                    "terrain explicit mip marker disagrees with natural/fractional LOD");
+            } else {
+                const auto& view = observed.frame.receipt.view;
+                const auto pixel = at / 4;
+                const auto expected = ExpectedFootprint(view,static_cast<std::uint32_t>(pixel % view.width),
+                    static_cast<std::uint32_t>(pixel / view.width));
+                Require(expected.lod > 0 && expected.lod < 1,"terrain coarse marker left original mip bracket");
+                // 仅用原级常量B160/96验证LOD；不重建多tap RGB/alpha，也不从输出倒推预期。
+                const double expectedBlue = 160.0 + (96.0 - 160.0) * expected.lod;
+                Require(std::abs(double(observed.frame.pixels[at + 2]) - expectedBlue) <= 1.0,
+                    "terrain explicit mip marker disagrees with natural/fractional LOD");
+            }
+        }
     };
     Require(frontFrame.covered && frontFrame.analysis.white.size() >= 128 && frontFrame.analysis.black.size() >= 128
         && frontFrame.white - frontFrame.black >= kContrast,"terrain N1 front control lost resolvable bars");
-    quality(fineFrame,128,159,161);
-    quality(fractionalFrame,64,126,150);
+    quality(fineFrame,128,false);
+    quality(fractionalFrame,64,true);
     std::cout << "terrain K4: original cell mips, short-axis/fractional detail, four-edge sentinel, alpha and exact policy controls passed\n";
 }
