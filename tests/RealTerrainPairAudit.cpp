@@ -61,7 +61,9 @@ std::string Rawcode(const Json& value) {
     return result;
 }
 std::filesystem::path Path(const Json& value) {
-    const auto path = std::filesystem::u8path(value.get<std::string>());
+    std::u8string utf8;
+    for (const unsigned char byte : value.get<std::string>()) utf8.push_back(static_cast<char8_t>(byte));
+    const std::filesystem::path path(utf8);
     Check(path.is_absolute(), "pair input paths must be absolute"); return path;
 }
 Json ReadJson(const std::filesystem::path& path, std::string_view sha) {
@@ -73,6 +75,76 @@ Json ReadJson(const std::filesystem::path& path, std::string_view sha) {
 }
 Json ReadRef(const Json& reference) {
     return ReadJson(Path(reference.at("path")), reference.at("sha256").get<std::string>());
+}
+const Image::DecodedImage& Mip(const TerrainAtlasSnapshot& atlas, std::size_t level) {
+    return level ? atlas.additionalMips.at(level - 1) : atlas.image;
+}
+bool CellSampleable(const Image::DecodedImage& mip, std::uint32_t columns) {
+    return mip.width >= columns && mip.height >= TerrainAtlasSnapshot::rows &&
+        mip.width % columns == 0 && mip.height % TerrainAtlasSnapshot::rows == 0;
+}
+std::uint32_t HostMaxSampleMip(const TerrainAtlasSnapshot& atlas) {
+    // 与既有 TerrainPreviewFrame descriptor 相同；完整保留链与可采样上限分开。
+    std::uint32_t maximum = 0;
+    for (std::size_t level = 1; level <= atlas.additionalMips.size(); ++level) {
+        if (!CellSampleable(Mip(atlas,level),atlas.columns)) break;
+        maximum = static_cast<std::uint32_t>(level);
+    }
+    return maximum;
+}
+struct MipContract {
+    Json audited = Json::array(), retained = Json::array();
+    std::uint32_t auditedCount = 0, retainedCount = 0, validatedCount = 0, maxSampleMip = 0;
+};
+void CheckRequestedSampleMip(const MipContract& contract, std::uint32_t maximum) {
+    Check(maximum == contract.maxSampleMip && maximum < contract.auditedCount,
+        "pair sample range must exactly cover the audited cell-sampleable prefix, never a retained tail");
+}
+MipContract ValidateMipContract(const TerrainAtlasSnapshot& atlas, const Json& auditedLevels) {
+    const TerrainAtlasLimits limits;
+    Check((atlas.columns == 4 || atlas.columns == 8) && atlas.image.width == atlas.sourceWidth &&
+        atlas.image.height == atlas.sourceHeight && atlas.image.height % atlas.rows == 0 &&
+        atlas.image.width == atlas.image.height / atlas.rows * atlas.columns,
+        "pair original atlas layout invalid");
+    const auto count = atlas.additionalMips.size()+1;
+    Check(count >= 1 && count <= 12 && atlas.validatedMipCount == count,
+        "pair retained and validated original mip counts disagree");
+    Check(auditedLevels.is_array() && !auditedLevels.empty() && auditedLevels.size() <= 12 && auditedLevels.size() <= count,
+        "pair audited prefix count invalid");
+    MipContract contract;
+    contract.auditedCount = static_cast<std::uint32_t>(auditedLevels.size());
+    contract.retainedCount = static_cast<std::uint32_t>(count); contract.validatedCount = atlas.validatedMipCount;
+    std::size_t retainedBytes = 0, totalPixels = 0;
+    for (std::size_t level = 0; level < count; ++level) {
+        const auto& mip = Mip(atlas,level);
+        Check(mip.width <= limits.maxDimension && mip.height <= limits.maxDimension && mip.Valid(),
+            "pair retained mip dimensions or RGBA byte count invalid");
+        if (level) {
+            const auto& previous = Mip(atlas,level-1);
+            Check((previous.width != 1 || previous.height != 1) && mip.width == std::max(1u,previous.width/2) &&
+                mip.height == std::max(1u,previous.height/2), "pair retained mip chain is not continuous original half sizes");
+        }
+        const auto pixels = static_cast<std::size_t>(mip.width)*mip.height;
+        Check(mip.rgba.size() <= limits.maxRgbaBytes && mip.rgba.size() <= limits.maxRetainedRgbaBytes-retainedBytes &&
+            pixels <= limits.maxTotalMipPixels-totalPixels, "pair retained original mip chain exceeds existing limits");
+        retainedBytes += mip.rgba.size(); totalPixels += pixels;
+        const bool sampleable = CellSampleable(mip,atlas.columns), audited = level < auditedLevels.size();
+        const auto sha = Digest(mip.rgba);
+        if (audited) {
+            const auto& expected = auditedLevels[level];
+            Check(sampleable && UInt(expected.at("level")) == level && UInt(expected.at("width")) == mip.width &&
+                UInt(expected.at("height")) == mip.height && expected.at("rgba_sha256").get<std::string>() == sha,
+                "pair audited original mip identity mismatch");
+            contract.audited.push_back({{"level",level},{"width",mip.width},{"height",mip.height},{"rgba_sha256",sha}});
+        } else Check(!sampleable, "pair unaudited retained mip is still cell-sampleable");
+        contract.retained.push_back({{"level",level},{"width",mip.width},{"height",mip.height},
+            {"rgba_sha256",sha},{"cell_sampleable",sampleable},{"audited",audited}});
+    }
+    contract.maxSampleMip = HostMaxSampleMip(atlas);
+    Check(contract.auditedCount == contract.maxSampleMip+1,
+        "pair audited prefix must exactly equal the original host cell-sampleable range");
+    CheckRequestedSampleMip(contract,contract.maxSampleMip);
+    return contract;
 }
 TerrainVertex Vertex(const Json& j, const TerrainHeader& original) {
     TerrainVertex v;
@@ -189,6 +261,41 @@ Context ValidateContext(const Json& selected) {
     return c;
 }
 
+void RunMipContractValidationTests() {
+    // 原创小图仅验证身份、链结构和取样资格，不模拟真实纹理像素或过滤。
+    TerrainAtlasSnapshot atlas; atlas.columns = 4; atlas.sourceWidth = atlas.sourceHeight = 16;
+    for (std::uint32_t size = 16; size; size /= 2) {
+        Image::DecodedImage image{size,size,std::vector<std::byte>(static_cast<std::size_t>(size)*size*4,
+            static_cast<std::byte>(size))};
+        if (size == 16) atlas.image = std::move(image); else atlas.additionalMips.push_back(std::move(image));
+    }
+    atlas.validatedMipCount = 5;
+    Json levels = Json::array();
+    for (std::size_t i = 0; i < 3; ++i) {
+        const auto& mip = Mip(atlas,i);
+        levels.push_back({{"level",i},{"width",mip.width},{"height",mip.height},{"rgba_sha256",Digest(mip.rgba)}});
+    }
+    const auto valid = ValidateMipContract(atlas,levels);
+    Check(valid.auditedCount == 3 && valid.retainedCount == 5 && valid.validatedCount == 5 && valid.maxSampleMip == 2 &&
+        !valid.retained[3].at("cell_sampleable").get<bool>() && !valid.retained[4].at("audited").get<bool>(),
+        "pair original mip fixture failed");
+    const auto reject = [](const TerrainAtlasSnapshot& candidate, const Json& prefix) {
+        bool rejected = false; try { (void)ValidateMipContract(candidate,prefix); } catch (const std::exception&) { rejected = true; }
+        Check(rejected, "pair malformed mip contract accepted");
+    };
+    auto prefix = levels; prefix[1]["rgba_sha256"] = std::string(64,'0'); reject(atlas,prefix);
+    prefix = levels; prefix[1]["width"] = 4; reject(atlas,prefix);
+    prefix = levels; prefix[1]["level"] = 2; reject(atlas,prefix);
+    prefix = levels; prefix.erase(2); reject(atlas,prefix); // 仍可采样的第2级不得留作未审尾层。
+    auto changed = atlas; changed.validatedMipCount = 4; reject(changed,levels);
+    changed = atlas; changed.additionalMips[0].rgba.pop_back(); reject(changed,levels);
+    changed = atlas; changed.additionalMips[2] = changed.additionalMips[1]; reject(changed,levels);
+    changed = atlas; changed.additionalMips.push_back(changed.additionalMips.back()); changed.validatedMipCount = 6; reject(changed,levels);
+    bool tailRejected = false;
+    try { CheckRequestedSampleMip(valid,3); } catch (const std::exception&) { tailRejected = true; }
+    Check(tailRejected, "pair retained tail was allowed into the requested sample range");
+}
+
 Json Fixture() {
     Json j; j["axis"] = "vertical-shared-edge"; j["preview_diagonal"] = "northwest-southeast";
     j["header"] = {{"version",11},{"vertex_record_bytes",7},{"main_tileset_byte",65},{"uses_custom_tileset",true},
@@ -222,6 +329,7 @@ Json FileReceipt(const std::filesystem::path& path) {
 } // namespace
 
 void RunRealTerrainPairValidationTests() {
+    RunMipContractValidationTests();
     const auto original = Fixture(); const auto good = ValidateContext(original);
     Check(good.terrain.vertices.size() == 20 && good.terrain.tiles.size() == 12, "pair original fixture failed");
     const auto reject = [](Json j) { bool rejected = false; try { (void)ValidateContext(j); } catch (const std::exception&) { rejected = true; }
@@ -265,6 +373,7 @@ void RunRealTerrainPairAudit(const std::filesystem::path& manifestPath, std::str
     Check(sampling.at("schema") == "terrain-alpha-sampling-input-v1" && sampling.at("textures").size() <= 16,
         "pair sampling manifest unsupported");
     std::vector<std::shared_ptr<const TerrainAtlasSnapshot>> atlases(context.original.groundTilesets.size());
+    std::vector<std::pair<std::shared_ptr<const TerrainAtlasSnapshot>,MipContract>> mipContracts;
     Json resourceReceipts = Json::array();
     for (const auto index : context.materials) {
         const Json* audited = nullptr;
@@ -301,18 +410,13 @@ void RunRealTerrainPairAudit(const std::filesystem::path& manifestPath, std::str
                     << " cell_sampleable=" << cellSampleable << " rgba_sha256=" << Digest(mip.rgba) << '\n';
             }
         }
-        Check(levels.size() == atlas.additionalMips.size() + 1 && levels.size() <= 12,
-            "pair original mip count mismatch");
-        Json verifiedLevels = Json::array();
-        for (std::size_t i = 0; i < levels.size(); ++i) {
-            const auto& mip = i ? atlas.additionalMips[i - 1] : atlas.image;
-            const auto sha = Digest(mip.rgba);
-            Check(UInt(levels[i].at("level")) == i && UInt(levels[i].at("width")) == mip.width &&
-                UInt(levels[i].at("height")) == mip.height && levels[i].at("rgba_sha256") == sha, "pair decoded original mip SHA mismatch");
-            verifiedLevels.push_back({{"level",i},{"width",mip.width},{"height",mip.height},{"rgba_sha256",sha}});
-        }
+        auto mipContract = ValidateMipContract(atlas,levels);
         resourceReceipts.push_back({{"palette_index",index},{"source_sha256",atlas.sourceSha256},
-            {"source_path",sourcePath.generic_string()},{"columns",atlas.columns},{"mips",verifiedLevels}});
+            {"source_path",sourcePath.generic_string()},{"columns",atlas.columns},{"audited_mips",mipContract.audited},
+            {"retained_mips",mipContract.retained},{"audited_sampleable_mip_count",mipContract.auditedCount},
+            {"retained_mip_count",mipContract.retainedCount},{"validated_mip_count",mipContract.validatedCount},
+            {"max_sample_mip",mipContract.maxSampleMip}});
+        mipContracts.emplace_back(atlases[index],std::move(mipContract));
     }
     TerrainLighting lighting; const auto& light = manifest.at("lighting");
     lighting.enabled = light.at("enabled").get<bool>(); lighting.towardLight = Triple(light.at("toward_light"));
@@ -387,12 +491,13 @@ void RunRealTerrainPairAudit(const std::filesystem::path& manifestPath, std::str
         const auto append = [&](const Image::DecodedImage& mip) { mips.push_back({sizeof(War3RenderMipRgbaV2),
             mip.width,mip.height,mip.rgba.size(),mip.rgba.data()}); };
         append(texture.image); for (const auto& mip : texture.additionalMips) append(mip);
-        std::uint32_t maximum = 0;
-        for (std::size_t level = 1; level < mips.size(); ++level) {
-            if (mips[level].width < texture.columns || mips[level].height < texture.rows ||
-                mips[level].width % texture.columns || mips[level].height % texture.rows) break;
-            maximum = static_cast<std::uint32_t>(level);
-        }
+        const auto maximum = HostMaxSampleMip(texture);
+        const auto contract = std::find_if(mipContracts.begin(),mipContracts.end(),[&](const auto& item) {
+            return item.first == mesh.textures[i];
+        });
+        Check(contract != mipContracts.end(), "pair submitted texture has no audited mip contract");
+        CheckRequestedSampleMip(contract->second,maximum);
+        Check(mips.size() == contract->second.retainedCount, "pair descriptor dropped retained mip data");
         chains.push_back({sizeof(War3RenderTextureMipChainV2),static_cast<std::uint32_t>(mips.size()),maximum,
             texture.columns,texture.rows,mips.data()});
     }
@@ -464,7 +569,7 @@ void RunRealTerrainPairAudit(const std::filesystem::path& manifestPath, std::str
     if (!std::filesystem::exists(output)) Check(std::filesystem::create_directories(output), "pair output directory creation failed");
     WriteBytes(output/"rgba.bin",frame.pixels); saveBmp(output/"frame.bmp",frame.pixels,width,height);
     WriteBytes(output/"edge-strip.rgba",strip); saveBmp(output/"edge-strip.bmp",strip,2,kStripRows);
-    Json result = {{"schema","terrain-real-pair-audit-result-v1"},{"completed",true},{"manifest_sha256",std::string(manifestSha)},
+    Json result = {{"schema","terrain-real-pair-audit-result-v2"},{"completed",true},{"manifest_sha256",std::string(manifestSha)},
         {"terrain_binding",binding},{"camera",cameraJson},{"lighting",light},{"environment",manifest.at("environment")},
         {"selected_neighbors",manifest.at("selected_neighbors")},{"sampling_manifest",manifest.at("sampling_manifest")},
         {"resources",resourceReceipts},{"renderer",{{"software",frame.status.software},{"result",frame.status.result},
@@ -487,7 +592,8 @@ void RunRealTerrainPairAudit(const std::filesystem::path& manifestPath, std::str
             {"interpretation","observation only; no RGB seam equality threshold"}}},
         {"scope","one real flat pair, production original-mip WARP sampling at the explicit audit camera; not full-map/editor/game proof"},
         {"caveats",Json::array({"Source texture art and opposite cell borders may differ legitimately.",
-            "Verified/uploaded mip chains do not prove every mip or fractional LOD was sampled by this one camera.",
+            "The audited cell-sampleable prefix is exact; retained smaller tails are hashed/uploaded but cannot be sampled as atlas cells.",
+            "Verified/uploaded mip chains do not prove every audited mip or fractional LOD was sampled by this one camera.",
             "Target alpha=255 preserves destination opacity and does not report overlay source alpha.",
             "Each side is a distinct covered pixel center near the edge, not two fragments at the exact shared coordinate.",
             "Source file lifetime is owned by the caller read leases; verified reads produce independent byte snapshots."})}};
