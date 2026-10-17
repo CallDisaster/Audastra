@@ -63,6 +63,7 @@ add_library(War3MapCore STATIC
     Game/WorldEditStrings.cpp
     Hash.cpp
     Image/BlpImage.cpp
+    Image/BlpMipChain.cpp
     Image/BlpEncode.cpp
     Image/TextureImage.cpp
     Image/JpegDecoder.cpp
