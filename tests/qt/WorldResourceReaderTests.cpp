@@ -193,7 +193,9 @@ void EmptyOwnedOverridesAndPerResourceBudgetsRemainLocal() {
     const auto ground = (*opened.value)->Resolver().Read("Fixture.bin");
     Require(ground.Succeeded() && ground.value->bytes.size() == 3, "unrelated original world member remains readable");
     const auto oversized = (*opened.value)->Resolver().Read("UnusedSound.wav");
-    Require(!oversized.Succeeded() && oversized.diagnostics.front().code == "WORLD_ASSET_READ", "actual owned read retains existing 16 MiB cap");
+    Require(!oversized.Succeeded() && oversized.diagnostics.front().code == "RESOURCE_READ_FAILED"
+        && std::any_of(oversized.diagnostics.begin(), oversized.diagnostics.end(),
+            [](const auto& diagnostic) { return diagnostic.code == "WORLD_ASSET_READ"; }), "actual owned read retains existing 16 MiB cap and resolver diagnostic wrapper");
     const auto animationOversized = (*opened.value)->ReadAnimationResource("UnusedSound.wav", large->size());
     Require(!animationOversized.Succeeded() && animationOversized.diagnostics.front().code == "WORLD_ANIMATION_RESOURCE_BUDGET", "animation cannot expand existing member cap");
     const auto boundary = std::make_shared<const std::vector<std::byte>>(16 * 1024 * 1024, std::byte{5});
