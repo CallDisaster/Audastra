@@ -1192,13 +1192,28 @@ void OriginCommitRollbackTests() {
         };
         const auto result = Detail::InstallUpdateWithHooks(fixture.request, fixture.signer.key, hooks);
         ReceiptDiagnostics(result, "MOTW rollback");
-        Check(changed && result.Succeeded() && result.value->outcome == UpdateInstallOutcome::RolledBack,
-            "failed native health restores original program through existing rollback transaction");
+        Check(changed && result.Succeeded() && result.value->outcome == UpdateInstallOutcome::RolledBack
+            && result.value->reasonCode == "UPDATE_ACTIVATION_CHANGED" && !result.value->childProcess,
+            "changed activated inventory restores original program before health launch through existing rollback transaction");
         if (!changed || !result.Succeeded() || result.value->outcome != UpdateInstallOutcome::RolledBack) return;
         Check(!HasZone(fixture.request.installDirectory / L"settings.json")
             && Read(ZonePath(fixture.request.installDirectory / L"logs/local.log")) == Data(kChangedZone)
             && Read(ZonePath(fixture.request.installDirectory / L"user-empty/inner")) == Data(kChangedZone),
             "rollback preserves latest user marker removal, insertion and directory change without resurrecting backup metadata");
+    }
+    {
+        Fixture fixture(true);
+        for (const auto& path : {fixture.request.installDirectory, fixture.request.installDirectory / L"settings.json",
+                 fixture.request.installDirectory / L"user-empty/inner"}) Write(ZonePath(path), kOriginalZone);
+        const auto result = InstallUpdate(fixture.request, fixture.signer.key);
+        Check(result.Succeeded() && result.value->outcome == UpdateInstallOutcome::RolledBack
+            && result.value->reasonCode == "UPDATE_EXECUTABLE_TYPE_INVALID" && !result.value->healthVerified && !result.value->childProcess,
+            "actual invalid native image health-start gate restores marked tree without granting health or launching child");
+        Check(fixture.FileIs(L"program.txt", "old program")
+            && Read(ZonePath(fixture.request.installDirectory)) == Data(kOriginalZone)
+            && Read(ZonePath(fixture.request.installDirectory / L"settings.json")) == Data(kOriginalZone)
+            && Read(ZonePath(fixture.request.installDirectory / L"user-empty/inner")) == Data(kOriginalZone),
+            "native health-start refusal preserves root user-file and empty-directory origin bytes through rollback");
     }
 }
 
