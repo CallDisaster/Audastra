@@ -37,6 +37,7 @@
 #include <QUndoStack>
 #include <algorithm>
 #include <array>
+#include <stdexcept>
 
 using namespace War3Map;
 using namespace War3Map::QtProject;
@@ -678,6 +679,7 @@ void EditorProjectTests::TerrainSaveReadbackGatesCommit_data() {
     QTest::addColumn<QString>("mode");
     QTest::newRow("matching-copy") << false << QStringLiteral("match");
     QTest::newRow("matching-in-place") << true << QStringLiteral("match");
+    QTest::newRow("throwing-readback-progress-in-place") << true << QStringLiteral("progress");
     QTest::newRow("mismatched-plan-copy") << false << QStringLiteral("mismatch");
     QTest::newRow("mismatched-plan-in-place") << true << QStringLiteral("mismatch");
     QTest::newRow("missing-copy-receipt") << false << QStringLiteral("missing");
@@ -714,7 +716,15 @@ void EditorProjectTests::TerrainSaveReadbackGatesCommit() {
         // 仅通过已有可见job字段注入另一冻结计划；writer闭包仍持原计划，不改真实保存文件。
         job->terrainSavePlan = std::make_shared<const MapData::TerrainSavePlan>(std::move(*different.value));
     }
+    bool progressFaultReached = false;
+    if (mode == QStringLiteral("progress")) job->progress = [&](const QString& text) {
+        if (text == EditorProject::tr("正在核对保存后的地形…")) {
+            progressFaultReached = true;
+            throw std::runtime_error("readback progress display fixture");
+        }
+    };
     EditorProject::RunMapSave(*job);
+    if (mode == QStringLiteral("progress")) QVERIFY(progressFaultReached);
     QVERIFY(job->executed && job->nextSession && std::filesystem::exists(job->written));
     QVERIFY(job->terrainReadbackStatus);
     QCOMPARE(job->terrainReadbackArchiveSha256, job->nextSession->SourceSha256());
@@ -738,7 +748,7 @@ void EditorProjectTests::TerrainSaveReadbackGatesCommit() {
         QVERIFY(RaiseTerrainSaveProject(project, 1)); expectedCode = QStringLiteral("SAVE_REVISION_CHANGED");
     }
     const auto currentScopes = project.editRevision_.Current();
-    if (mode == QStringLiteral("match")) {
+    if (mode == QStringLiteral("match") || mode == QStringLiteral("progress")) {
         const auto savedSha = job->terrainReadbackArchiveSha256;
         QVERIFY(project.CommitMapSave(*job).has_value());
         QCOMPARE(project.archiveSession_->SourceSha256(), savedSha);

@@ -38,9 +38,10 @@ void EditorProject::RunMapSave(MapSaveJob& job) {
     job.terrainReadbackArchiveSha256.clear();
     Services::MapSaveService::Run(job, [&job](std::string_view stage) { job.Report(StageText(stage)); });
     if (!job.succeeded || !job.nextSession || !job.terrainSavePlan) return;
+    // 展示回调沿用通用保存服务的合同，异常不能改变实际写出或回读资格。
+    try { job.Report(tr("正在核对保存后的地形…")); } catch (...) {}
     try {
         // UI由既有worker调用；公开同步保存helper仍同步执行，不在Commit重复散列。
-        job.Report(tr("正在核对保存后的地形…"));
         job.terrainReadbackArchiveSha256 = job.nextSession->SourceSha256();
         job.terrainReadbackStatus = job.terrainSavePlan->VerifyReadback(*job.nextSession);
     } catch (...) {
