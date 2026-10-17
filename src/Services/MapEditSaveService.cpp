@@ -765,7 +765,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         }
         written = true;
         if (terrainPlan) {
-            const auto readback = minimapSave ? minimapSave->VerifyReadback(*task.nextSession)
+            const auto readback = minimapSave ? minimapSave->VerifyReadback(task, *task.nextSession)
                 : terrainPlan->VerifyReadback(*task.nextSession);
             if (!readback.Succeeded()) return Forward(readback.diagnostics);
         }
