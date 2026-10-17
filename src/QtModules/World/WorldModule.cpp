@@ -120,6 +120,7 @@ QJsonObject GroundBudgetJson(const Render::TerrainGroundMesh& ground) {
             if (value.omissionReasons & static_cast<std::uint32_t>(omission.reason)) reasons.append(QString::fromLatin1(omission.code));
         return QJsonObject{{"requested", static_cast<qint64>(value.requested)},
             {"displayed", static_cast<qint64>(value.displayed)}, {"omitted", static_cast<qint64>(value.omitted)},
+            {"no_contribution", static_cast<qint64>(value.noContribution)},
             {"omission_reasons", reasons}, {"resource_admission_checked", value.resourceAdmissionChecked},
             {"texture_slots_before_admission", static_cast<qint64>(value.textureSlotsBeforeAdmission)}};
     };
@@ -165,8 +166,8 @@ QString GroundOmissionDetails(const Render::TerrainGroundLayerCounts& value) {
 
 QString GroundBudgetDetails(const Render::TerrainGroundMesh& ground) {
     const auto counts = [](const QString& name, const Render::TerrainGroundLayerCounts& value) {
-        QString text = QObject::tr("%1：请求 %2、显示 %3、省略 %4")
-            .arg(name, Count(value.requested), Count(value.displayed), Count(value.omitted));
+        QString text = QObject::tr("%1：请求 %2、显示 %3、质量省略 %4、零贡献 %5")
+            .arg(name, Count(value.requested), Count(value.displayed), Count(value.omitted), Count(value.noContribution));
         if (const auto reason = GroundOmissionDetails(value); !reason.isEmpty()) text += QObject::tr("；原因：%1").arg(reason);
         return text;
     };
@@ -317,9 +318,11 @@ void WorldModule::ShowSceneFacts(const WorldTerrainLoaded& loaded, const Render:
         sceneGround_->setToolTip(tip.join(QLatin1Char('\n')));
         QString water = ground->waterFlaggedTiles == 0 ? tr("无") : tr("%1 格").arg(Count(ground->waterTiles.size()));
         if (ground->budget.water.omitted != 0) water += tr(" · 省略 %1 格").arg(Count(ground->budget.water.omitted));
+        if (ground->budget.water.noContribution != 0) water += tr(" · 零贡献 %1 格").arg(Count(ground->budget.water.noContribution));
         sceneWater_->setText(water);
-        QString waterDetails = tr("水面：请求 %1、显示 %2、省略 %3")
-            .arg(Count(ground->budget.water.requested), Count(ground->budget.water.displayed), Count(ground->budget.water.omitted));
+        QString waterDetails = tr("水面：请求 %1、显示 %2、质量省略 %3、零贡献 %4")
+            .arg(Count(ground->budget.water.requested), Count(ground->budget.water.displayed),
+                Count(ground->budget.water.omitted), Count(ground->budget.water.noContribution));
         if (const auto reason = GroundOmissionDetails(ground->budget.water); !reason.isEmpty())
             waterDetails += tr("\n原因：%1").arg(reason);
         if (!ground->waterFrameSourcePath.empty()) waterDetails += QLatin1Char('\n')

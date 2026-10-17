@@ -1,4 +1,5 @@
 #include "War3MapCore/Render/TerrainMaterials.h"
+#include "War3MapCore/Render/TerrainMaterialPreview.h"
 
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/Game/GameDataSource.h"
@@ -333,6 +334,65 @@ void TestWaterFrameIgnoresUnusedMips() {
     Rejected(LoadTerrainWaterFrame(definition, 1, fixture.resolver, limits), "TERRAIN_MATERIAL_TEXTURE_BUDGET");
 }
 
+void TestZeroContributionMaterialPreview() {
+    Fixture fixture;
+    fixture.backing->files["WATER\\FLOW01.BLP"][158] = std::byte{217};
+    for (const auto field : {17u,21u,25u,29u}) fixture.waterRow[field] = "0";
+    fixture.Water();
+    MapData::TerrainGridSnapshot terrain;
+    terrain.header = fixture.terrain;
+    terrain.header.version = 11; terrain.header.width = 3; terrain.header.height = 2;
+    terrain.header.offset = {0,0}; terrain.minimum = {0,0,0}; terrain.maximum = {256,128,0};
+    for (std::uint32_t y = 0; y < 2; ++y) for (std::uint32_t x = 0; x < 3; ++x) {
+        MapData::TerrainVertex vertex;
+        vertex.groundHeightRaw = 8192; vertex.cliffAndLayerRaw = 2; vertex.textureAndFlagsRaw = 0x40;
+        vertex.position = {static_cast<float>(x) * 128,static_cast<float>(y) * 128,0};
+        vertex.waterBaseHeight = 48; // Water.slk -48 偏移后深度0。
+        terrain.vertices.push_back(vertex);
+        if (x < 2 && y == 0) terrain.tiles.push_back({{x,x+1,x+3,x+4}});
+    }
+    const auto build = [&] {
+        auto result = BuildTerrainMaterialPreview(terrain, fixture.resolver, {}, TerrainLighting{false}, 1);
+        if (!result.Succeeded()) for (const auto& diagnostic : result.diagnostics)
+            std::cerr << diagnostic.code << ": " << diagnostic.message << '\n';
+        Require(result.Succeeded(), "材质预览必须接受有基础层的已证明零贡献水面");
+        return std::move(*result.value);
+    };
+    const auto ledger = [](const TerrainMaterialPreview& preview, std::size_t zero, std::size_t shown) {
+        const auto& counts = preview.ground.budget.water;
+        Require(counts.requested == 2 && preview.coverage.waterFlaggedTiles == 2
+            && counts.noContribution == zero && counts.displayed == shown && counts.omitted == 0
+            && counts.requested == counts.noContribution + counts.displayed + counts.omitted
+            && preview.coverage.waterRenderedTiles == shown && !preview.coverage.waterOmitted
+            && preview.ground.waterTextureIndex.has_value() == (shown != 0),
+            "材质入口与网格必须共用源请求、零贡献、实际显示和质量省略计数");
+        Require(preview.water && preview.water->style && preview.water->style->frameIndex == 1
+            && preview.water->style->frameCount == 2
+            && preview.water->style->frameSourcePath == "WATER\\FLOW01.BLP"
+            && preview.water->style->texture->rgba[0] == std::byte{217},
+            "全零也须保留实际读取的所选源帧身份，不能用无atlas冒充未读取");
+    };
+    auto zero = build(); ledger(zero, 2, 0);
+    Require(zero.ground.indices.size() == 12 && !zero.ground.waterTextureIndex
+        && zero.ground.waterFrameCount == 0 && zero.ground.waterFrameSourcePath.empty()
+        && zero.ground.waterFrameSourceSha256.empty(),
+        "全零水面保留基础地表，但不得伪造实际绘制帧身份");
+    fixture.waterRow[21] = fixture.waterRow[25] = fixture.waterRow[29] = "255"; fixture.Water();
+    terrain.vertices[2].waterBaseHeight = terrain.vertices[5].waterBaseHeight = 112;
+    auto mixed = build(); ledger(mixed, 1, 1);
+    const auto& source = *mixed.water->style;
+    Require(mixed.ground.waterTiles == std::vector<std::uint32_t>{1}
+        && mixed.ground.waterFrameIndex == source.frameIndex && mixed.ground.waterFrameCount == source.frameCount
+        && mixed.ground.waterFrameSourcePath == source.frameSourcePath
+        && mixed.ground.waterFrameSourceSha256 == source.frameSourceSha256,
+        "混合零贡献时实际water atlas仍须绑定同一已选源帧身份及剩余原格");
+    for (const auto field : {17u,21u,25u,29u}) fixture.waterRow[field] = "0";
+    fixture.Water();
+    fixture.backing->files["WATER\\FLOW01.BLP"].resize(100);
+    Rejected(BuildTerrainMaterialPreview(terrain, fixture.resolver, {}, TerrainLighting{false}, 1),
+        "TERRAIN_MATERIAL_BLP");
+}
+
 void TestResolverLayers() {
     Fixture fixture;
     auto overlay = std::make_shared<Backing>();
@@ -430,6 +490,7 @@ int main(int argc, char** argv) {
         TestMetadataAndFailures();
         TestExplicitWaterFrame();
         TestWaterFrameIgnoresUnusedMips();
+        TestZeroContributionMaterialPreview();
         TestResolverLayers();
         if (argc == 3) InspectGameMap(std::filesystem::path(argv[1]), std::filesystem::path(argv[2]));
         std::cout << "TerrainMaterials tests passed\n";

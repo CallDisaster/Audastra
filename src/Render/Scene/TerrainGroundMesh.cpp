@@ -147,26 +147,43 @@ Result<TerrainGroundMesh> Failure(const char* code, const char* message) {
 // 合成的水面 atlas：4×4 格、每格 32×32 像素，第 k 格 = 水面贴图（最近邻缩放；无贴图为白）× alpha k/15。
 // 渲染 ABI 顶点没有 alpha，水面每个 quad 通过选格得到透明度。
 constexpr std::uint32_t kWaterAlphaLevels = 16;
+constexpr std::uint32_t kWaterCellSize = 32;
+
+std::array<std::uint32_t, 4> WaterSourceTexel(const Image::DecodedImage* texture, std::uint32_t x, std::uint32_t y) {
+    if (!texture) return {255, 255, 255, 255};
+    const auto sx = x * texture->width / kWaterCellSize, sy = y * texture->height / kWaterCellSize;
+    const auto* texel = texture->rgba.data() + (static_cast<std::size_t>(sy) * texture->width + sx) * 4;
+    std::array<std::uint32_t, 4> source{};
+    for (std::size_t channel = 0; channel < 4; ++channel) source[channel] = std::to_integer<std::uint32_t>(texel[channel]);
+    return source;
+}
+
+std::uint32_t WaterTexelAlpha(std::uint32_t level, std::uint32_t sourceAlpha) {
+    return (level * sourceAlpha + 7) / 15;
+}
+
+std::uint32_t WaterMaximumSourceAlpha(const Image::DecodedImage* texture) {
+    std::uint32_t maximum = 0;
+    // 必须与 WaterAtlas 共用 32×32 最近邻取样，不能用源图任意像素或角点替代。
+    for (std::uint32_t y = 0; y < kWaterCellSize; ++y) for (std::uint32_t x = 0; x < kWaterCellSize; ++x)
+        maximum = std::max(maximum, WaterSourceTexel(texture, x, y)[3]);
+    return maximum;
+}
+
 std::shared_ptr<const TerrainAtlasSnapshot> WaterAtlas(const Image::DecodedImage* texture) {
     auto result = std::make_shared<TerrainAtlasSnapshot>();
-    constexpr std::uint32_t cell = 32, size = cell * 4;
+    constexpr std::uint32_t cell = kWaterCellSize, size = cell * 4;
     result->source.canonicalPath = "（合成）水面贴图 × 透明度";
     result->columns = 4;
     result->sourceWidth = result->sourceHeight = size;
     result->validatedMipCount = 1;
     result->image = {size, size, std::vector<std::byte>(static_cast<std::size_t>(size) * size * 4)};
-    const bool textured = texture != nullptr && texture->Valid();
     for (std::uint32_t y = 0; y < size; ++y) for (std::uint32_t x = 0; x < size; ++x) {
         const auto level = (y / cell) * 4 + x / cell;
         auto* pixel = result->image.rgba.data() + (static_cast<std::size_t>(y) * size + x) * 4;
-        std::array<std::uint32_t, 4> source{255, 255, 255, 255};
-        if (textured) {
-            const auto sx = (x % cell) * texture->width / cell, sy = (y % cell) * texture->height / cell;
-            const auto* texel = texture->rgba.data() + (static_cast<std::size_t>(sy) * texture->width + sx) * 4;
-            for (std::size_t channel = 0; channel < 4; ++channel) source[channel] = std::to_integer<std::uint32_t>(texel[channel]);
-        }
+        const auto source = WaterSourceTexel(texture, x % cell, y % cell);
         for (std::size_t channel = 0; channel < 3; ++channel) pixel[channel] = static_cast<std::byte>(source[channel]);
-        pixel[3] = static_cast<std::byte>((level * source[3] + 7) / 15);
+        pixel[3] = static_cast<std::byte>(WaterTexelAlpha(level, source[3]));
     }
     for (std::uint32_t row = 0; row < 4; ++row) for (std::uint32_t column = 0; column < 4; ++column)
         result->cells.push_back({column, row, column * cell, row * cell, cell, cell});
@@ -175,6 +192,19 @@ std::shared_ptr<const TerrainAtlasSnapshot> WaterAtlas(const Image::DecodedImage
 
 float WaterHeight(const TerrainGridSnapshot& terrain, std::uint32_t vertex, const TerrainWaterStyle& style) {
     return terrain.vertices[vertex].waterBaseHeight + style.heightOffset;
+}
+
+std::uint32_t WaterAlphaLevel(const TerrainGridSnapshot& terrain, const std::array<std::uint32_t, 4>& corners,
+    const TerrainWaterStyle& style, std::array<std::array<float, 4>, 4>* colors = nullptr) {
+    float alpha = 0;
+    for (std::size_t corner = 0; corner < corners.size(); ++corner) {
+        const auto index = corners[corner];
+        const auto color = TerrainWaterColor(style, WaterHeight(terrain, index, style) - terrain.vertices[index].position[2]);
+        if (colors) (*colors)[corner] = color;
+        alpha += color[3] / 4.0f;
+    }
+    return std::min(kWaterAlphaLevels - 1,
+        static_cast<std::uint32_t>(std::lround(std::clamp(alpha, 0.0f, 1.0f) * static_cast<float>(kWaterAlphaLevels - 1))));
 }
 
 } // namespace
@@ -318,6 +348,7 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
             output.baseTiles.reserve(baseQuadCount);
         }
         output.lit = lighting.enabled;
+        const auto maximumWaterAlpha = waterStyle ? WaterMaximumSourceAlpha(waterStyle->texture.get()) : 0;
         for (std::uint32_t y = 0; y + 1 < height; ++y) for (std::uint32_t x = 0; x + 1 < width; ++x) {
             const auto tileIndex = static_cast<std::size_t>(y) * (width - 1) + x;
             const auto& corners = terrain.tiles[tileIndex].vertices;
@@ -337,6 +368,15 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
                 if (!std::isfinite(surface) || std::abs(surface) > 10000000.0f)
                     return Failure("TERRAIN_GROUND_WATER_HEIGHT", "请求的水面坐标不是有限有效高度。");
             }
+            output.waterFlaggedTiles += water;
+            if (water && waterStyle) {
+                // 仅合成单 mip 的全部 32×32 texel 为零才剔除；先保留上面的逐角高度校验。
+                // 单调整数 alpha 与 atlas 同源。深度只读、目标 alpha 保持的水面混合因此无贡献。
+                // 没有基础层时保持原水 draw：空地形协议会显示默认网格，不能把局部零贡献扩大为整场景变化。
+                if (baseQuadCount != 0 && WaterTexelAlpha(WaterAlphaLevel(terrain, corners, *waterStyle), maximumWaterAlpha) == 0)
+                    ++output.budget.water.noContribution;
+                else waterTiles.push_back(static_cast<std::uint32_t>(tileIndex));
+            }
             const auto firstX = x > 0 ? x - 1 : 0, firstY = y > 0 ? y - 1 : 0;
             for (auto nearY = firstY; nearY <= std::min(y + 1, height - 2); ++nearY)
                 for (auto nearX = firstX; nearX <= std::min(x + 1, width - 2); ++nearX)
@@ -346,8 +386,6 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
             if (covered(tileIndex)) {
                 // 悬崖模型覆盖整格（含上下平台），地面不画；水面照常。
                 output.hiddenTiles[tileIndex] = 1; ++output.hiddenTileCount;
-                output.waterFlaggedTiles += water;
-                if (water && waterStyle) waterTiles.push_back(static_cast<std::uint32_t>(tileIndex));
                 continue;
             }
             const bool mixedCliff = cliffTiles[tileIndex] != 0;
@@ -365,8 +403,6 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
             output.fallback.invalidGroundIndexTiles += invalidIndex;
             output.fallback.missingAtlasTiles += missing;
             output.fallback.invalidAtlasTiles += invalidAtlas;
-            output.waterFlaggedTiles += water;
-            if (water && waterStyle) waterTiles.push_back(static_cast<std::uint32_t>(tileIndex));
             output.mixedGroundTextureTiles += lowest != highest;
             if (mixedCliff || neighboringCliff || invalidIndex || missing || invalidAtlas) {
                 ++output.fallback.totalTiles;
@@ -578,7 +614,7 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
             return Failure("TERRAIN_GROUND_BUDGET", "地表批次或整体载荷超过预算。");
         const auto counts = [](TerrainGroundLayerCounts& layer, std::size_t displayed) {
             layer.displayed = displayed;
-            layer.omitted = layer.requested - displayed;
+            layer.omitted = layer.requested - layer.noContribution - displayed;
         };
         counts(output.budget.transitions, overlays.size());
         counts(output.budget.blight, blightOverlays.size());
@@ -664,18 +700,16 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
         const auto* waterAtlas = waterTiles.empty() ? nullptr : output.textures[waterSlot].get();
         for (std::size_t index = 0; index < waterTiles.size(); ++index) {
             const auto& corners = terrain.tiles[waterTiles[index]].vertices;
-            float alpha = 0;
+            std::array<std::array<float, 4>, 4> colors{};
+            const auto level = WaterAlphaLevel(terrain, corners, *waterStyle, &colors);
             const auto first = static_cast<std::uint32_t>(output.vertices.size());
             for (std::size_t corner = 0; corner < 4; ++corner) {
                 const auto& position = terrain.vertices[corners[corner]].position;
                 const auto surface = WaterHeight(terrain, corners[corner], *waterStyle);
-                const auto color = TerrainWaterColor(*waterStyle, surface - position[2]);
-                alpha += color[3] / 4.0f;
+                const auto& color = colors[corner];
                 output.vertices.push_back({position[0], position[1], surface, color[0], color[1], color[2], 0, 0});
             }
             // 四角平均透明度量化到合成 atlas 的 16 级，UV 指向该格。
-            const auto level = std::min(kWaterAlphaLevels - 1,
-                static_cast<std::uint32_t>(std::lround(std::clamp(alpha, 0.0f, 1.0f) * static_cast<float>(kWaterAlphaLevels - 1))));
             const auto rect = CellUv(*waterAtlas, level % 4, level / 4);
             for (std::size_t corner = 0; corner < 4; ++corner) {
                 auto& vertex = output.vertices[first + corner];

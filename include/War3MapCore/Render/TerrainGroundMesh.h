@@ -103,6 +103,9 @@ enum class TerrainGroundOmissionReason : std::uint32_t {
 
 struct TerrainGroundLayerCounts {
     std::size_t requested = 0, displayed = 0, omitted = 0;
+    // 已证明全部可采样 texel 的 alpha 为零，不占绘制/资源预算；不属于质量省略。
+    // requested = noContribution + displayed + omitted；目前仅合成单 mip 水面使用。
+    std::size_t noContribution = 0;
     std::uint32_t omissionReasons = 0;
     // 水面/荒芜有请求时检查其资源前置条件；缺样式也属于已检查，不表示已分配纹理。
     bool resourceAdmissionChecked = false;
@@ -146,7 +149,7 @@ struct TerrainGroundMesh {
     // 被已准备悬崖模型覆盖的原 tile（与 tile 同序，空表示无隐藏）：不分配地表顶点或索引。
     std::vector<std::uint8_t> hiddenTiles;
     std::size_t hiddenTileCount = 0;
-    bool waterOmitted = false; // 有水但缺样式、纹理槽不足或显式预览预算省略，未画全部水面
+    bool waterOmitted = false; // 缺样式、纹理槽不足或预览预算造成质量省略；不含已证明零贡献的格
     std::optional<std::uint32_t> waterTextureIndex; // 合成水面透明度 atlas 的纹理槽，供来源审计区分原始图集
     std::uint32_t waterFrameIndex = 0, waterFrameCount = 0; // 本网格实际选取的 Water.slk 帧身份
     std::string waterFrameSourcePath, waterFrameSourceSha256;
@@ -155,7 +158,7 @@ struct TerrainGroundMesh {
     std::size_t blightTexturedTiles = 0;
     // 原版荒芜 atlas 不可用或纹理预算不足时，以原地表贴图轻度逐角色调表示的格数。
     std::size_t blightApproximationTiles = 0;
-    std::size_t waterFlaggedTiles = 0; // 仍只绘制地面，没有水面。
+    std::size_t waterFlaggedTiles = 0; // 全部有水标记的原格，含零贡献与质量省略，保留源请求身份。
     std::size_t mixedGroundTextureTiles = 0; // 四角材质不同的格子（贴图格以过渡层混合）
     bool lit = false; // 顶点颜色已乘光照明暗
     TerrainGroundFallbackCounts fallback;
@@ -171,6 +174,8 @@ struct TerrainGroundMesh {
 // ground 索引、四角任一缺失或无效 atlas 仍逐 tile 保留高度色。
 // 提供水面样式时，四角任一有水的格子追加一个半透明水面 quad（颜色按各角深度，透明度取四角平均，
 // 量化为合成 4×4 atlas 的 16 级；每格是明确选择的水面帧乘该级透明度，不推测播放时钟）。
+// 合成 atlas 仅 mip0；有基础层且选中 cell 的全部 texel alpha 为零时不发 quad，计入 noContribution。
+// 全部基础格被覆盖时保留原水 draw，避免把只有水面的场景变成另有语义的空地形提交。
 // Strict 保持预算/结构错误无部分结果；PreserveBasePreview 仅在相同硬上限内按整类尝试
 // 水面 → 普通过渡 → 精确荒芜遮罩，装不下的一类全部省略，再尝试下一类；不截 tile 前缀。
 // 基础层的每格 XYZ/UV、原有资源/结构校验与逐格高度色回退不变，省略数由 budget 精确报告。

@@ -197,13 +197,24 @@ Result<TerrainMaterialPreview> BuildTerrainMaterialPreview(
             return Fail("TERRAIN_MATERIAL_PREVIEW_CLIFF_COVERAGE", "悬崖模型覆盖与实际隐藏的地面原格不一致。");
         if (water && water->coverage.waterFlaggedTiles != preview.coverage.waterFlaggedTiles)
             return Fail("TERRAIN_MATERIAL_PREVIEW_WATER_COVERAGE", "水面标记覆盖与地表网格不一致。");
-        if (water && water->style && !preview.coverage.waterOmitted
-            && (preview.coverage.waterRenderedTiles != preview.coverage.waterFlaggedTiles
+        const auto& waterBudget = ground.value->budget.water;
+        if (waterBudget.requested != preview.coverage.waterFlaggedTiles
+            || waterBudget.displayed != preview.coverage.waterRenderedTiles
+            || waterBudget.requested != waterBudget.noContribution + waterBudget.displayed + waterBudget.omitted
+            || preview.coverage.waterOmitted != (waterBudget.omitted != 0)
+            || ground.value->waterTextureIndex.has_value() != (preview.coverage.waterRenderedTiles != 0))
+            return Fail("TERRAIN_MATERIAL_PREVIEW_WATER_COVERAGE", "水面源请求、零贡献、显示与质量省略统计不守恒。");
+        // water 保存所选源帧身份；只有实际生成水面 atlas 时才要求 rendered 帧身份逐项一致。
+        if (ground.value->waterTextureIndex
+            && (!water || !water->style || preview.coverage.waterOmitted
                 || ground.value->waterFrameIndex != water->style->frameIndex
                 || ground.value->waterFrameCount != water->style->frameCount
                 || ground.value->waterFrameSourcePath != water->style->frameSourcePath
                 || ground.value->waterFrameSourceSha256 != water->style->frameSourceSha256))
             return Fail("TERRAIN_MATERIAL_PREVIEW_WATER_COVERAGE", "所选水面帧身份或实际绘制原格数与网格不一致。");
+        if (!ground.value->waterTextureIndex && (ground.value->waterFrameIndex != 0 || ground.value->waterFrameCount != 0
+            || !ground.value->waterFrameSourcePath.empty() || !ground.value->waterFrameSourceSha256.empty()))
+            return Fail("TERRAIN_MATERIAL_PREVIEW_WATER_COVERAGE", "没有水面atlas时不能保留实际绘制帧身份。");
         if (preview.coverage.heightColorTiles != 0)
             warnings.push_back({DiagnosticSeverity::Warning, "TerrainMaterialPreview", "TERRAIN_MATERIAL_PREVIEW_FALLBACK",
                 std::to_string(preview.coverage.heightColorTiles) + " 个原格仅显示高度色；详见 coverage.fallback。", std::nullopt});
@@ -218,7 +229,7 @@ Result<TerrainMaterialPreview> BuildTerrainMaterialPreview(
                 std::to_string(preview.coverage.waterFlaggedTiles) + " 个原格带水标记，本入口未构造水面。", std::nullopt});
         else if (preview.coverage.waterFlaggedTiles != 0 && preview.coverage.waterOmitted)
             warnings.push_back({DiagnosticSeverity::Warning, "TerrainMaterialPreview", "TERRAIN_MATERIAL_PREVIEW_WATER_OMITTED",
-                std::to_string(preview.coverage.waterFlaggedTiles) + " 个原格带水标记，所选帧已读取但网格纹理预算不足，未绘制水面。", std::nullopt});
+                std::to_string(waterBudget.omitted) + " 个有贡献的水面原格因网格纹理预算不足而省略；零贡献另计。", std::nullopt});
         else if (preview.coverage.waterRenderedTiles != 0)
             warnings.push_back({DiagnosticSeverity::Warning, "TerrainMaterialPreview", "TERRAIN_MATERIAL_PREVIEW_WATER_APPROXIMATION",
                 "水面按原格 quad 与所选 Water.slk 帧预览；岸线、UV 与动画不等同于原版验证。", std::nullopt});

@@ -667,6 +667,102 @@ void TestTerrainMips(const RendererOwner& renderer) {
     std::cout << "original mip chain: LOD0/1/2 colors, clamp, deep copy, rejected preservation and four atlas edges passed\n";
 }
 
+void TestTerrainZeroAlphaContribution(const RendererOwner& renderer) {
+    Require(renderer.api->resize(renderer.handle, 320, 240) == 0, "zero-alpha viewport rejected");
+    War3RenderCameraV2 camera{sizeof(camera), 0, 0, 0, 3500, -1.5707963f, 1.5f};
+    const std::array<std::uint8_t, 4> red{255,0,0,255}, blue{0,0,255,128}, green{0,255,0,64};
+    // 原创128²/4×4 atlas，目标cell(1,1)为白色alpha0，所有邻格是不透明黄。
+    // 第二级不透明白是反例毒值：maxSampleMip0必须完全忽略，放开到1则不能证明零贡献。
+    std::vector<std::uint8_t> atlas(128 * 128 * 4), lower(64 * 64 * 4, 255);
+    for (std::size_t at = 0; at < atlas.size(); at += 4) {
+        atlas[at] = atlas[at + 1] = atlas[at + 3] = 255;
+    }
+    const auto cellAlpha = [&](std::uint8_t alpha) {
+        for (std::uint32_t y = 32; y < 64; ++y) for (std::uint32_t x = 32; x < 64; ++x) {
+            const auto at = (static_cast<std::size_t>(y) * 128 + x) * 4;
+            atlas[at + 2] = 255; atlas[at + 3] = alpha;
+        }
+    };
+    cellAlpha(0);
+    const War3RenderMipRgbaV2 redMip{sizeof(redMip),1,1,red.size(),red.data()};
+    const War3RenderMipRgbaV2 blueMip{sizeof(blueMip),1,1,blue.size(),blue.data()};
+    const War3RenderMipRgbaV2 greenMip{sizeof(greenMip),1,1,green.size(),green.data()};
+    const std::array<War3RenderMipRgbaV2, 2> atlasMips{{
+        {sizeof(War3RenderMipRgbaV2),128,128,atlas.size(),atlas.data()},
+        {sizeof(War3RenderMipRgbaV2),64,64,lower.size(),lower.data()}}};
+    std::array<War3RenderTextureMipChainV2, 4> textures{{
+        {sizeof(War3RenderTextureMipChainV2),1,0,1,1,&redMip},
+        {sizeof(War3RenderTextureMipChainV2),2,0,4,4,atlasMips.data()},
+        {sizeof(War3RenderTextureMipChainV2),1,0,1,1,&blueMip},
+        {sizeof(War3RenderTextureMipChainV2),1,0,1,1,&greenMip}}};
+    const std::array<War3RenderTextureRgbaV2, 4> legacy{{
+        {sizeof(War3RenderTextureRgbaV2),1,1,red.size(),red.data()},
+        {sizeof(War3RenderTextureRgbaV2),128,128,atlas.size(),atlas.data()},
+        {sizeof(War3RenderTextureRgbaV2),1,1,blue.size(),blue.data()},
+        {sizeof(War3RenderTextureRgbaV2),1,1,green.size(),green.data()}}};
+    std::array<War3RenderTerrainVertexV2, 16> vertices{};
+    const std::array<float, 4> heights{0,100,50,25};
+    for (std::uint32_t quad = 0; quad < 4; ++quad) for (std::uint32_t corner = 0; corner < 4; ++corner)
+        vertices[quad * 4 + corner] = {corner % 2 == 0 ? -1000.f : 1000.f, corner < 2 ? -1000.f : 1000.f,
+            heights[quad],1,1,1,corner % 2 == 0 ? 0.f : 1.f,corner < 2 ? 1.f : 0.f};
+    std::uint64_t revision = 840;
+    const auto draw = [&](bool includeZero, bool includeVisible, bool oldApi) {
+        std::vector<std::uint32_t> indices;
+        std::vector<War3RenderTerrainBatchV2> batches;
+        for (std::uint32_t quad = 0; quad < 4; ++quad) {
+            if ((quad == 1 && !includeZero) || (quad >= 2 && !includeVisible)) continue;
+            const auto sw = quad * 4;
+            batches.push_back({static_cast<std::uint32_t>(indices.size()),6,
+                quad == 0 ? 0 : quad | WAR3_RENDER_TERRAIN_TRANSLUCENT | WAR3_RENDER_TERRAIN_ALPHA_BLEND});
+            for (const auto index : {sw,sw+1,sw+2,sw+1,sw+3,sw+2}) indices.push_back(index);
+        }
+        ++revision;
+        if (oldApi) {
+            const War3RenderTerrainSceneV2 scene{sizeof(scene),16,static_cast<std::uint32_t>(indices.size()),4,
+                static_cast<std::uint32_t>(batches.size()),revision,vertices.data(),indices.data(),legacy.data(),batches.data()};
+            Require(renderer.api->submitTerrainScene(renderer.handle,&scene) == 0, "legacy zero-alpha scene rejected");
+        } else {
+            const War3RenderTerrainMipSceneV2 scene{sizeof(scene),16,static_cast<std::uint32_t>(indices.size()),4,
+                static_cast<std::uint32_t>(batches.size()),revision,vertices.data(),indices.data(),textures.data(),batches.data()};
+            Require(renderer.api->submitTerrainMipScene(renderer.handle,&scene) == 0, "mip zero-alpha scene rejected");
+        }
+        return Capture(renderer,320,240,revision);
+    };
+    for (const bool oldApi : {false,true}) for (const float distance : {3500.f,56000.f}) {
+        camera.distance = distance;
+        Require(renderer.api->setCamera(renderer.handle,&camera) == 0, "zero-alpha camera rejected");
+        for (std::uint32_t edge = 0; edge < 5; ++edge) {
+            for (std::uint32_t corner = 0; corner < 4; ++corner) {
+                auto& vertex = vertices[4 + corner];
+                vertex.u = corner % 2 == 0 ? 32.5f/128 : 63.5f/128;
+                vertex.v = corner < 2 ? 63.5f/128 : 32.5f/128;
+                if (edge < 2) vertex.u = edge == 0 ? 32.5f/128 : 63.5f/128;
+                else if (edge < 4) vertex.v = edge == 2 ? 32.5f/128 : 63.5f/128;
+            }
+            const auto withoutZero = draw(false,true,oldApi);
+            Require(Colors(withoutZero) != 0, "zero-alpha baseline must preserve opaque target alpha");
+            RequireWorldColor(withoutZero,ReadView(renderer),0,0,{95,64,96},2);
+            // 最近的零alpha水面不得写深度；其后的两层保留原序，目标RGBA须逐字节完全相同。
+            Require(draw(true,true,oldApi) == withoutZero, "zero-alpha removal changed RGBA/depth/order or leaked adjacent cell");
+        }
+    }
+    camera.distance = 3500;
+    Require(renderer.api->setCamera(renderer.handle,&camera) == 0, "one-alpha camera rejected");
+    const auto withoutWater = draw(false,false,false);
+    cellAlpha(1);
+    const auto oneAlpha = draw(true,false,false);
+    Require(oneAlpha != withoutWater, "one-byte nonzero alpha was incorrectly equivalent to omitted water");
+    RequireWorldColor(oneAlpha,ReadView(renderer),0,0,{255,1,1},1);
+    cellAlpha(0); textures[1].maxSampleMip = 1;
+    camera.distance = 56000;
+    Require(renderer.api->setCamera(renderer.handle,&camera) == 0, "accessible lower mip camera rejected");
+    const auto withoutLower = draw(false,false,false);
+    const auto withLower = draw(true,false,false);
+    Require(withLower != withoutLower, "accessible nonzero lower mip must invalidate a mip0-only zero proof");
+    RequireWorldColor(withLower,ReadView(renderer),0,0,{255,255,255},1);
+    std::cout << "zero-alpha water: full RGBA equality, read-only depth, retained layer order, mip0/legacy edges and nonzero controls passed\n";
+}
+
 // 上一版V2表的完整布局。新增能力只能出现在这个前缀之后。
 struct OldRenderApiV2 {
     std::uint32_t structSize, apiVersion;
@@ -1699,6 +1795,7 @@ int wmain(int argc, wchar_t** argv) {
             std::cout << status.message << " frames=" << status.frameCount << " revision=" << status.documentRevision << '\n';
             screenshot = TestTerrain(renderer); // 外层两轮销毁/重建，在硬件与WARP入口均执行。
             TestTerrainMips(renderer);
+            TestTerrainZeroAlphaContribution(renderer);
             TestModels(renderer);
             TestEnvironment(renderer);
         }

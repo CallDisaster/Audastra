@@ -576,7 +576,7 @@ void TestWaterColorBounds() {
     auto terrain = Grid(3, 3);
     for (auto& vertex : terrain.vertices) {
         vertex.textureAndFlagsRaw |= 0x40;
-        vertex.waterBaseHeight = 11.0f;
+        vertex.waterBaseHeight = 12.0f; // alpha 量化为第 1 格，保持此颜色回归实际覆盖水面输出。
     }
     const auto mesh = Success(terrain, Atlases(), {}, kUnlit, &style);
     Require(mesh.waterTiles.size() == terrain.tiles.size() && !mesh.waterOmitted,
@@ -652,6 +652,138 @@ void TestWater() {
     TerrainGroundMeshLimits oneTexture; oneTexture.maxTextures = 1;
     const auto full = Success(terrain, atlases, oneTexture, kUnlit, &style);
     Require(full.waterOmitted && full.waterTiles.empty() && full.textures.size() == 1, "纹理槽满时不画水面");
+}
+
+void TestWaterZeroContribution() {
+    auto terrain = Grid();
+    for (auto& vertex : terrain.vertices) { vertex.textureAndFlagsRaw |= 0x40; vertex.waterBaseHeight = 40; }
+    const auto original = terrain.vertices;
+    const auto atlases = Atlases();
+    const auto styleFor = [](std::uint8_t alpha) {
+        const std::array<std::uint8_t, 4> color{73, 151, 219, alpha};
+        return TerrainWaterStyle{0, color, color, color, color};
+    };
+    const auto sourceFor = [](std::uint32_t width, std::uint32_t height, std::uint8_t alpha) {
+        auto source = std::make_shared<Image::DecodedImage>(Image::DecodedImage{width, height,
+            std::vector<std::byte>(static_cast<std::size_t>(width) * height * 4, std::byte{231})});
+        for (std::size_t at = 3; at < source->rgba.size(); at += 4) source->rgba[at] = static_cast<std::byte>(alpha);
+        return source;
+    };
+    const auto counts = [](const TerrainGroundMesh& mesh, std::size_t zero, std::size_t shown, std::size_t omitted) {
+        const auto& water = mesh.budget.water;
+        Require(water.noContribution == zero && water.displayed == shown && water.omitted == omitted
+            && water.requested == zero + shown + omitted && water.requested == mesh.waterFlaggedTiles
+            && water.displayed == mesh.waterTiles.size() && mesh.waterOmitted == (omitted != 0),
+            "水面源请求必须守恒，零贡献不能冒充显示或质量省略");
+        CheckGeometry(terrain, mesh);
+    };
+    auto style = styleFor(0);
+    auto mesh = Success(terrain, atlases, {}, kUnlit, &style);
+    counts(mesh, 1, 0, 0);
+    Require(mesh.vertices.size() == 4 && mesh.indices.size() == 6 && mesh.textures.size() == 1
+        && !mesh.waterTextureIndex && mesh.waterFrameCount == 0 && !mesh.budget.reduced,
+        "全零水面不分配atlas或几何，也不产生质量降级");
+    TerrainGroundMeshLimits occupiedSlot; occupiedSlot.maxTextures = 1;
+    counts(Success(terrain, atlases, occupiedSlot, kUnlit, &style), 1, 0, 0);
+    // 8/255×15 仍不到半级；9/255 则选第1格。白色 fallback alpha 必须为255。
+    for (const std::uint8_t alpha : {std::uint8_t{8}, std::uint8_t{9}, std::uint8_t{255}}) {
+        style = styleFor(alpha);
+        mesh = Success(terrain, atlases, {}, kUnlit, &style);
+        counts(mesh, alpha == 8 ? 1 : 0, alpha == 8 ? 0 : 1, 0);
+    }
+    // 原整数舍入边界：level1×7=>0、×8=>1；level7×1=>0、level8×1=>1。
+    for (const auto [styleAlpha, sourceAlpha, zero] : std::array<std::array<std::uint8_t, 3>, 4>{{
+            {17, 7, 1}, {17, 8, 0}, {119, 1, 1}, {136, 1, 0}}}) {
+        style = styleFor(styleAlpha); style.texture = sourceFor(3, 5, sourceAlpha);
+        mesh = Success(terrain, atlases, {}, kUnlit, &style);
+        counts(mesh, zero, 1 - zero, 0);
+        if (!zero) {
+            const auto& atlas = *mesh.textures[*mesh.waterTextureIndex];
+            Require(atlas.additionalMips.empty() && atlas.validatedMipCount == 1,
+                "零贡献证明只允许真实单mip合成atlas");
+            for (std::uint32_t y = 0; y < 128; ++y) for (std::uint32_t x = 0; x < 128; ++x) {
+                const auto level = (y / 32) * 4 + x / 32;
+                const auto at = (static_cast<std::size_t>(y) * 128 + x) * 4;
+                Require(atlas.image.rgba[at] == std::byte{231}
+                    && std::to_integer<std::uint32_t>(atlas.image.rgba[at + 3]) == (level * sourceAlpha + 7) / 15,
+                    "共享helper不得改动合成atlas字节或整数alpha舍入");
+            }
+        }
+    }
+    style = styleFor(255);
+    auto sparse = sourceFor(64, 64, 0);
+    sparse->rgba[(1 * 64 + 1) * 4 + 3] = std::byte{255}; // 32²最近邻从64²只取偶数坐标。
+    const auto sparseOriginal = sparse->rgba;
+    style.texture = sparse;
+    counts(Success(terrain, atlases, {}, kUnlit, &style), 1, 0, 0);
+    Require(sparse->rgba == sparseOriginal, "分类不得修改原始水面帧");
+    sparse->rgba[(2 * 64 + 2) * 4 + 3] = std::byte{1};
+    counts(Success(terrain, atlases, {}, kUnlit, &style), 0, 1, 0);
+    // 缺style保持质量省略；非法source即使style alpha0仍按旧输入合同拒绝。
+    counts(Success(terrain, atlases), 0, 0, 1);
+    style = styleFor(0); style.texture = std::make_shared<Image::DecodedImage>(Image::DecodedImage{2, 2, {}});
+    auto rejected = BuildTerrainGroundMesh(terrain, atlases, {}, kUnlit, &style);
+    Require(!rejected.Succeeded() && !rejected.value && rejected.diagnostics.front().code == "TERRAIN_GROUND_WATER_FRAME",
+        "零alpha不能绕过无效水源布局/字节拒绝");
+    style = styleFor(0);
+    for (const auto invalidHeight : {std::numeric_limits<float>::quiet_NaN(), 10000001.0f, -10000001.0f}) {
+        auto invalid = terrain; invalid.vertices[0].waterBaseHeight = invalidHeight;
+        for (const auto covered : {std::uint8_t{0}, std::uint8_t{1}}) {
+            const std::array<std::uint8_t, 1> coverage{covered};
+            rejected = BuildTerrainGroundMesh(invalid, atlases, {}, kUnlit, &style, coverage);
+            Require(!rejected.Succeeded() && !rejected.value
+                && rejected.diagnostics.front().code == "TERRAIN_GROUND_WATER_HEIGHT",
+                "零贡献/悬崖覆盖仍必须校验每个有水原格的全部水面高度");
+        }
+    }
+    const std::array<std::uint8_t, 1> covered{1};
+    const auto waterOnly = BuildTerrainGroundMesh(terrain, atlases, {}, kUnlit, &style, covered);
+    Require(waterOnly.Succeeded() && waterOnly.value->budget.water.noContribution == 0
+        && waterOnly.value->waterTiles.size() == 1 && waterOnly.value->indices.size() == 6
+        && waterOnly.value->waterTextureIndex && !waterOnly.value->waterOmitted,
+        "全部基础格被覆盖时保持原零alpha水draw，不能变成默认网格空场景");
+    // 槽满时只有具备完整source证明的zero免占槽，仍有贡献的相邻原格保留真实省略。
+    auto pair = Grid(3, 2);
+    for (std::size_t i = 0; i < pair.vertices.size(); ++i) {
+        pair.vertices[i].textureAndFlagsRaw |= 0x40; pair.vertices[i].waterBaseHeight = i % 3 == 2 ? 64.0f : 0.0f;
+    }
+    style = TerrainWaterStyle{0, {255,255,255,0}, {255,255,255,255}, {255,255,255,255}, {255,255,255,255}};
+    const auto partial = Success(pair, atlases, {}, kUnlit, &style);
+    Require(partial.budget.water.requested == 2 && partial.budget.water.noContribution == 1
+        && partial.budget.water.displayed == 1 && partial.budget.water.omitted == 0
+        && partial.waterTiles == std::vector<std::uint32_t>{1} && !partial.waterOmitted,
+        "混合零/非零只删除已证明无贡献的原格，保留剩余原格身份和顺序");
+    CheckGeometry(pair, partial);
+    TerrainGroundMeshLimits oneSlot; oneSlot.maxTextures = 1;
+    const auto full = Success(pair, atlases, oneSlot, kUnlit, &style);
+    Require(full.budget.water.requested == 2 && full.budget.water.noContribution == 1
+        && full.budget.water.displayed == 0 && full.budget.water.omitted == 1 && full.waterOmitted
+        && full.budget.water.omissionReasons == static_cast<std::uint32_t>(TerrainGroundOmissionReason::TextureSlots),
+        "槽满不能把非零水格的真实省略混入零贡献");
+    TerrainGroundMeshLimits baseOnly; baseOnly.maxVertices = 8;
+    const auto limited = BuildTerrainGroundMesh(pair, atlases, baseOnly, kUnlit, &style, {}, {}, {},
+        TerrainGroundBudgetPolicy::PreserveBasePreview);
+    Require(limited.Succeeded() && limited.value->budget.water.requested == 2
+        && limited.value->budget.water.noContribution == 1 && limited.value->budget.water.omitted == 1
+        && limited.value->budget.water.displayed == 0 && limited.value->waterOmitted && limited.value->budget.reduced
+        && (limited.value->budget.water.omissionReasons & static_cast<std::uint32_t>(TerrainGroundOmissionReason::Vertices)),
+        "几何预算省略也须与零贡献分开，不能改变整类准入");
+    auto blighted = terrain;
+    for (auto& vertex : blighted.vertices) vertex.textureAndFlagsRaw |= 0x20;
+    TerrainGroundMeshLimits twoSlots; twoSlots.maxTextures = 2;
+    style = styleFor(0);
+    const auto reclaimed = Success(blighted, atlases, twoSlots, kUnlit, &style, MakeAtlas(8));
+    Require(reclaimed.budget.water.noContribution == 1 && reclaimed.blightTexturedTiles == 1
+        && reclaimed.textures.size() == 2, "零贡献不占槽，按原优先级让精确荒芜准入");
+    style = styleFor(255);
+    const auto priority = Success(blighted, atlases, twoSlots, kUnlit, &style, MakeAtlas(8));
+    Require(priority.waterTiles.size() == 1 && priority.blightApproximationTiles == 1,
+        "有贡献的水面仍优先于荒芜，不能改变原准入顺序");
+    for (std::size_t i = 0; i < original.size(); ++i)
+        Require(terrain.vertices[i].position == original[i].position
+            && terrain.vertices[i].waterBaseHeight == original[i].waterBaseHeight
+            && terrain.vertices[i].textureAndFlagsRaw == original[i].textureAndFlagsRaw,
+            "水面剔除只能省绘制，不能回写地形源数据");
 }
 
 void TestLighting() {
@@ -844,7 +976,8 @@ void TestPreserveBasePreviewBudget() {
     };
     const auto counts = [](const TerrainGroundMesh& mesh) {
         for (const auto* layer : {&mesh.budget.base, &mesh.budget.transitions, &mesh.budget.blight, &mesh.budget.water})
-            Require(layer->requested == layer->displayed + layer->omitted, "每类请求数必须等于显示数加省略数");
+            Require(layer->requested == layer->noContribution + layer->displayed + layer->omitted,
+                "每类原请求数必须等于零贡献、显示和质量省略之和");
         Require(mesh.budget.base.omitted == 0 && mesh.budget.base.displayed * 4 <= mesh.vertices.size(),
             "预览不能省略基础层顶点");
         Require(mesh.budget.transitions.displayed + mesh.budget.blight.displayed == mesh.overlayTiles.size()
@@ -1002,6 +1135,7 @@ int main() {
         TestCoveredBaseCompactionPreservesTransitions();
         TestWaterColorBounds();
         TestWater();
+        TestWaterZeroContribution();
         TestLighting();
         TestOmissionReasonsAndResourceStates();
         TestPreserveBasePreviewBudget();

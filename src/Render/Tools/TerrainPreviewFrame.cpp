@@ -743,6 +743,7 @@ int Run(const Options& options) {
     if (material) {
         const auto& coverage = material->preview.coverage;
         const auto& fallback = coverage.fallback;
+        const auto& waterBudget = material->preview.ground.budget.water;
         std::cout << ",\"same_frame_terrain_upload_verified\":true,\"terrain_upload\":";
         JsonString(std::cout, mipMode);
         std::cout << ",\"lighting\":\"default-neutral\",\"game_root\":";
@@ -761,7 +762,10 @@ int Run(const Options& options) {
             << ",\"unavailable_atlas_slots\":" << coverage.unavailableAtlasSlots
             << ",\"water_flagged_without_water_surface\":"
             << coverage.waterFlaggedTiles - coverage.waterRenderedTiles
+            << ",\"water_requested_tiles\":" << waterBudget.requested
+            << ",\"water_no_contribution_tiles\":" << waterBudget.noContribution
             << ",\"water_rendered_tiles\":" << coverage.waterRenderedTiles
+            << ",\"water_omitted_tiles\":" << waterBudget.omitted
             << ",\"water_omitted\":" << (coverage.waterOmitted ? "true" : "false")
             << ",\"blight_approximation_tiles\":" << coverage.blightApproximationTiles
             << ",\"fallback_reasons\":{\"blight_flagged_tiles\":" << fallback.blightTiles
@@ -789,6 +793,10 @@ int Run(const Options& options) {
         if (options.waterFrameIndex) {
             std::cout << ",\"water_frame\":{\"requested_index\":" << *options.waterFrameIndex
                 << ",\"selected\":" << (material->preview.water && material->preview.water->style ? "true" : "false")
+                << ",\"identity_scope\":\"selected-source\""
+                << ",\"rendered\":" << (renderedWater ? "true" : "false")
+                << ",\"no_contribution_tiles\":" << waterBudget.noContribution
+                << ",\"quality_omitted_tiles\":" << waterBudget.omitted
                 << ",\"drawn_tiles\":" << coverage.waterRenderedTiles;
             if (material->preview.water && material->preview.water->style) {
                 const auto& water = *material->preview.water;
