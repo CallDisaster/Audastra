@@ -150,6 +150,43 @@ AnimationInstanceSpec Spec(std::uint64_t identity, std::string path) {
     value.model = Request(std::move(path)); value.sequenceIndex = 0; value.elapsedMs = 200; value.playing = true; return value;
 }
 
+void PureRgbaBudgetDiagnostic() {
+    const auto model = Model(0);
+    auto image = AnimationParticleContinuityTest::Texture();
+    Check(image.size() == 1181 && !std::memcmp(image.data(), "BLP1", 4), "pure RGBA budget fixture lost its original paletted BLP1");
+    // 复用原创单色调色板，只把 mip0 扩成 16x16；仍由正式 Core 解码，不引入编码器。
+    image.resize(1180 + 16 * 16, std::byte{});
+    const auto write = [&](std::size_t at, std::uint32_t value) { std::memcpy(image.data() + at, &value, 4); };
+    write(12, 16); write(16, 16); write(92, 16 * 16);
+    const AnimationResourceReader read = [&](std::string_view path, std::uint64_t) {
+        const auto& bytes = path == "rgba-budget.mdx" ? model : image;
+        return Result<AnimationResource>::Success({bytes, "source-rgba-budget-fixture", Good(Sha256(bytes))});
+    };
+    const auto spec = Spec(1, "rgba-budget.mdx");
+    const auto baseline = Good(ModelAnimationService::Create({7,1,"source-rgba-budget"}, std::span(&spec,1), read));
+    const auto scene = baseline->Scene(); const auto& geometry = std::as_const(*scene).geometry;
+    Check(scene->dynamicMaterialStates && geometry.textures.size() == 1 && !geometry.layerSamplerFlags.empty(),
+        "pure RGBA budget fixture did not publish its actual source sampler and texture");
+    const auto& decoded = geometry.textures.front();
+    Check(decoded.width == 16 && decoded.height == 16 && decoded.rgba.size() == 1024,
+        "pure RGBA budget fixture did not decode 1024 real Core RGBA bytes");
+    std::uint64_t metadataBytes = geometry.layerSamplerFlags.capacity() * sizeof(std::uint32_t)
+        + sizeof(War3RenderStaticSamplerModelSceneV2) - sizeof(War3RenderModelSceneV2);
+    for (const auto& bindings : geometry.modelTextureBindings)
+        if (bindings) metadataBytes += bindings->capacity() * sizeof(ModelTextureBinding);
+    constexpr std::uint64_t budget = 512;
+    // 单模型首次追加没有旧 sampler allocation；连首帧 promotion 后的真实 metadata 都能放下。
+    Check(metadataBytes > 0 && metadataBytes <= budget && decoded.rgba.size() > budget,
+        "pure RGBA budget fixture did not separate metadata capacity from decoded texture bytes");
+    AnimationLimits limits; limits.geometry.maxTotalTextureBytes = budget;
+    const auto rejected = ModelAnimationService::Create({7,1,"source-rgba-budget"}, std::span(&spec,1), read, limits);
+    std::cout << "pure_rgba_budget decoded_bytes=" << decoded.rgba.size() << " metadata_bytes=" << metadataBytes
+        << " limit=" << budget << " code=" << (rejected.diagnostics.empty() ? "none" : rejected.diagnostics.front().code) << '\n';
+    Check(!rejected.Succeeded() && !rejected.value && !rejected.diagnostics.empty()
+        && rejected.diagnostics.front().code == "WORLD_MODEL_TEXTURE_BUDGET",
+        "pure decoded RGBA overflow was mislabeled as source sampler overhead");
+}
+
 void SkinSourceAndCapabilities() {
     for (const bool resident : {true, false}) for (const auto flags : {0u, 1u, 2u, 3u}) {
         Resources resources; resources.resident = resident; resources.models.emplace("source.mdx", Model(flags));
@@ -204,6 +241,6 @@ void SkinAppendTransaction() {
 }
 
 int main() try {
-    StaticSourceAndRefresh(); MaterialBudgetAndInvalidFlags(); SkinSourceAndCapabilities(); SkinAppendTransaction();
+    StaticSourceAndRefresh(); MaterialBudgetAndInvalidFlags(); PureRgbaBudgetDiagnostic(); SkinSourceAndCapabilities(); SkinAppendTransaction();
     std::cout << "static/skin source TEXS sampler tests passed\n"; return 0;
 } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
