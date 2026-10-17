@@ -13,6 +13,7 @@
 #include <limits>
 #include <set>
 #include <stdexcept>
+#include <tuple>
 
 namespace War3Map::Tests {
 namespace {
@@ -181,7 +182,7 @@ struct Context {
     TerrainGridSnapshot terrain;
     TerrainHeader original;
     std::array<std::uint32_t, 2> tiles{5, 6};
-    std::array<std::uint32_t, 2> materials{};
+    std::vector<std::uint32_t> materials;
     std::uint32_t x = 0, y = 0;
     Json source;
 };
@@ -210,9 +211,11 @@ Context ValidateContext(const Json& selected) {
     Check(c.x > 0 && c.y > 0 && c.x + 3 < c.original.width && c.y + 2 < c.original.height &&
         UInt(cells[1].at("x")) == c.x + 1 && UInt(cells[1].at("y")) == c.y, "pair cells are not interior neighbors");
     Check(selected.at("vertices").size() == 6 && selected.at("halo_vertices").size() == 20 &&
-        selected.at("materials").size() == 2, "pair exact six vertices and twenty halo required");
-    c.materials = {UInt(selected.at("materials")[0], 15), UInt(selected.at("materials")[1], 15)};
-    Check(c.materials[0] < c.materials[1], "pair material order invalid");
+        selected.at("materials").is_array() && selected.at("materials").size() >= 2 &&
+        selected.at("materials").size() <= 3, "pair exact six vertices, twenty halo and two or three materials required");
+    for (const auto& material : selected.at("materials")) c.materials.push_back(UInt(material,15));
+    Check(std::is_sorted(c.materials.begin(),c.materials.end()) &&
+        std::adjacent_find(c.materials.begin(),c.materials.end()) == c.materials.end(), "pair material order invalid");
     c.terrain.header = c.original; c.terrain.header.width = 5; c.terrain.header.height = 4;
     c.terrain.header.offset = {c.original.offset[0] + static_cast<float>(c.x - 1) * 128,
         c.original.offset[1] + static_cast<float>(c.y - 1) * 128};
@@ -228,21 +231,25 @@ Context ValidateContext(const Json& selected) {
     const auto z = c.terrain.vertices[0].position[2]; const auto level = c.terrain.vertices[0].CliffLevel();
     for (const auto& v : c.terrain.vertices) {
         Check(v.position[2] == z && v.CliffLevel() == level, "pair halo is not flat at one cliff level");
-        Check(v.GroundTextureIndex() == c.materials[0] || v.GroundTextureIndex() == c.materials[1],
+        Check(std::binary_search(c.materials.begin(),c.materials.end(),v.GroundTextureIndex()),
             "pair halo introduces another material");
     }
     std::set<std::uint32_t> selectedVertices;
+    std::set<std::uint32_t> coreMaterials;
     for (const auto& j : selected.at("vertices")) {
         const auto x = UInt(j.at("x")), y = UInt(j.at("y"));
         Check(x >= c.x && x <= c.x + 2 && y >= c.y && y <= c.y + 1, "pair core vertex outside pair");
         Check(selectedVertices.insert(UInt(j.at("source_index"))).second, "pair duplicate core vertex");
         const auto v = Vertex(j, c.original);
+        coreMaterials.insert(v.GroundTextureIndex());
         const auto& h = c.terrain.vertices[(y - c.y + 1) * 5 + x - c.x + 1];
         Check(v.groundHeightRaw == h.groundHeightRaw && v.waterHeightAndFlagsRaw == h.waterHeightAndFlagsRaw &&
             v.textureAndFlagsRaw == h.textureAndFlagsRaw && v.variationRaw == h.variationRaw &&
             v.cliffAndLayerRaw == h.cliffAndLayerRaw && v.textureFlagsExtensionRaw == h.textureFlagsExtensionRaw &&
             v.position == h.position && v.waterBaseHeight == h.waterBaseHeight, "pair core/halo raw mismatch");
     }
+    Check(std::vector<std::uint32_t>(coreMaterials.begin(),coreMaterials.end()) == c.materials,
+        "pair declared materials must exactly equal the real core union");
     for (std::uint32_t y = 0; y < 3; ++y) for (std::uint32_t x = 0; x < 4; ++x) {
         const auto sw = y * 5 + x; c.terrain.tiles.push_back({{sw, sw + 1, sw + 5, sw + 6}});
     }
@@ -259,6 +266,55 @@ Context ValidateContext(const Json& selected) {
     const auto& a = c.terrain.vertices[7]; const auto& b = c.terrain.vertices[12];
     Check(a.GroundTextureIndex() != b.GroundTextureIndex(), "pair shared edge must transition");
     return c;
+}
+
+using LayerKey = std::tuple<std::uint32_t,std::uint32_t,bool>; // local tile、原palette、是否overlay
+std::set<LayerKey> RequiredLayers(const Context& context) {
+    std::set<LayerKey> expected;
+    for (const auto tile : context.tiles) {
+        std::set<std::uint32_t> materials;
+        for (const auto corner : context.terrain.tiles[tile].vertices)
+            materials.insert(context.terrain.vertices[corner].GroundTextureIndex());
+        for (const auto material : materials) expected.emplace(tile,material,material != *materials.begin());
+    }
+    return expected;
+}
+std::uint32_t PaletteForTexture(const Context& context,
+    const std::vector<std::shared_ptr<const TerrainAtlasSnapshot>>& atlases,
+    const std::shared_ptr<const TerrainAtlasSnapshot>& texture) {
+    std::optional<std::uint32_t> found;
+    for (const auto material : context.materials) if (texture && atlases.at(material) == texture) {
+        Check(!found, "pair submitted atlas has ambiguous original palette identity"); found = material;
+    }
+    Check(found.has_value(), "pair submitted layer lacks an audited original palette source"); return *found;
+}
+struct LayerLayout { unsigned mask; std::array<unsigned,2> cell; };
+LayerLayout ValidateLayerLayout(const Context& context, std::uint32_t tile, std::uint32_t material,
+    bool alphaBlend, const TerrainAtlasSnapshot& atlas, std::span<const TerrainGroundVertex> quad) {
+    Check(quad.size() == 4, "pair layer must contain four original corners");
+    const auto& corners = context.terrain.tiles.at(tile).vertices;
+    std::set<unsigned> materials; unsigned mask = 0;
+    for (unsigned i = 0; i < 4; ++i) {
+        const auto ground = context.terrain.vertices[corners[i]].GroundTextureIndex(); materials.insert(ground);
+        if (ground == material) mask |= std::array<unsigned,4>{2,1,8,4}[i];
+    }
+    Check(materials.contains(material) && alphaBlend == (material != *materials.begin()),
+        "pair layer is not the actual lowest base or a present higher overlay");
+    std::array<unsigned,2> cell{mask%4,mask/4};
+    if (!alphaBlend) {
+        const auto variation = context.terrain.vertices[corners[0]].GroundVariation();
+        if (atlas.columns == 4) cell = variation == 0 ? std::array<unsigned,2>{0,0} : std::array<unsigned,2>{3,3};
+        else if (variation < 16) cell = {4u+variation%4u,variation/4u};
+        else cell = variation == 16 ? std::array<unsigned,2>{3,3} : std::array<unsigned,2>{0,0};
+    }
+    const auto* rect = atlas.Cell(cell[0],cell[1]); Check(rect, "pair production layer cell invalid");
+    const auto width = static_cast<float>(atlas.image.width), height = static_cast<float>(atlas.image.height);
+    const float left = (static_cast<float>(rect->x)+0.5f)/width, right = (static_cast<float>(rect->x+rect->width)-0.5f)/width;
+    const float top = (static_cast<float>(rect->y)+0.5f)/height, bottom = (static_cast<float>(rect->y+rect->height)-0.5f)/height;
+    for (unsigned i = 0; i < 4; ++i)
+        Check(quad[i].u == (i%2 == 0 ? left : right) && quad[i].v == (i < 2 ? bottom : top),
+            "pair production layer four-corner UV/mask or SW variation mismatch");
+    return {mask,cell};
 }
 
 void RunMipContractValidationTests() {
@@ -317,6 +373,57 @@ Json Fixture() {
         {{"x",3},{"y",2},{"source_index",19},{"source_vertices_sw_se_nw_ne",Json::array({21,22,30,31})}}});
     j["shared_source_vertices"] = Json::array({21,30}); return j;
 }
+void RunLayerValidationTests() {
+    auto original = Fixture(); original["materials"] = Json::array({1,2,3});
+    for (const auto* field : {"vertices","halo_vertices"}) for (auto& v : original[field]) {
+        const auto x = UInt(v.at("x")), y = UInt(v.at("y"));
+        if (x >= 2 && x <= 4 && y >= 2 && y <= 3) {
+            const unsigned ground = y == 2 ? (x == 3 ? 1u : 3u) : (x == 3 ? 3u : 2u);
+            v["ground_texture_index"] = ground; v["texture_and_flags_raw"] = ground;
+        }
+    }
+    const auto context = ValidateContext(original);
+    std::vector<std::shared_ptr<const TerrainAtlasSnapshot>> atlases(16);
+    for (const auto material : context.materials) {
+        auto atlas = std::make_shared<TerrainAtlasSnapshot>();
+        atlas->columns = 4; atlas->sourceWidth = atlas->sourceHeight = 16; atlas->validatedMipCount = 1;
+        atlas->image = {16,16,std::vector<std::byte>(16*16*4,std::byte{255})};
+        for (unsigned y = 0; y < 4; ++y) for (unsigned x = 0; x < 4; ++x) atlas->cells.push_back({x,y,x*4,y*4,4,4});
+        atlases[material] = std::move(atlas);
+    }
+    TerrainLighting lighting; lighting.enabled = false;
+    const auto built = BuildTerrainGroundMesh(context.terrain,atlases,{},lighting);
+    Check(built.Succeeded(), "pair original three-material mesh fixture failed");
+    const auto& mesh = *built.value; std::set<LayerKey> seen; std::vector<TerrainGroundVertex> middle;
+    for (const auto& batch : mesh.batches) for (std::uint32_t at = batch.firstIndex; at < batch.firstIndex+batch.indexCount; at += 6) {
+        const auto first = mesh.indices[at], quad = first/4;
+        const auto tile = quad < 12 ? quad : mesh.overlayTiles.at(quad-12);
+        if (tile != 5 && tile != 6) continue;
+        const auto material = PaletteForTexture(context,atlases,mesh.textures[batch.textureIndex]);
+        const auto vertices = std::span<const TerrainGroundVertex>(mesh.vertices).subspan(first,4);
+        const auto layout = ValidateLayerLayout(context,tile,material,batch.alphaBlend,*atlases[material],vertices);
+        Check(seen.emplace(tile,material,batch.alphaBlend).second, "pair three-material fixture duplicates a layer");
+        if (tile == 5 && material == 2) {
+            Check(layout.mask == 8, "pair three-material fixture middle equality mask changed");
+            middle.assign(vertices.begin(),vertices.end());
+        }
+    }
+    Check(seen == RequiredLayers(context) && seen.size() == 6 && middle.size() == 4,
+        "pair three-material fixture omits an original layer");
+    const auto reject = [](const auto& action) {
+        bool rejected = false; try { action(); } catch (const std::exception&) { rejected = true; }
+        Check(rejected, "pair malformed three-material layer fixture accepted");
+    };
+    reject([&] { (void)ValidateLayerLayout(context,5,3,true,*atlases[3],middle); }); // 中层误当最高材质。
+    auto wrongUv = middle; wrongUv[3].v += 1.0f/16;
+    reject([&] { (void)ValidateLayerLayout(context,5,2,true,*atlases[2],wrongUv); }); // 非SW角也必须核。
+    auto missing = atlases; missing[2].reset();
+    reject([&] { (void)PaletteForTexture(context,missing,atlases[2]); });
+    auto pure = context;
+    for (const auto corner : pure.terrain.tiles[5].vertices) pure.terrain.vertices[corner].textureAndFlagsRaw = 3;
+    for (const auto corner : {8u,13u}) pure.terrain.vertices[corner].textureAndFlagsRaw = 1;
+    Check(RequiredLayers(pure).size() == 3, "pair pure-cell fixture must not invent an overlay");
+}
 void WriteBytes(const std::filesystem::path& path, std::span<const std::uint8_t> bytes) {
     std::ofstream stream(path, std::ios::binary); Check(stream.good(), "pair output open failed");
     stream.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
@@ -330,6 +437,7 @@ Json FileReceipt(const std::filesystem::path& path) {
 
 void RunRealTerrainPairValidationTests() {
     RunMipContractValidationTests();
+    RunLayerValidationTests();
     const auto original = Fixture(); const auto good = ValidateContext(original);
     Check(good.terrain.vertices.size() == 20 && good.terrain.tiles.size() == 12, "pair original fixture failed");
     const auto reject = [](Json j) { bool rejected = false; try { (void)ValidateContext(j); } catch (const std::exception&) { rejected = true; }
@@ -348,6 +456,7 @@ void RunRealTerrainPairValidationTests() {
     j = original; j["halo_vertices"][0]["is_ramp"] = true; reject(j);
     j = original; j["header"]["ground_rawcodes_hex"].erase(0); reject(j);
     j = original; j["shared_source_vertices"][0] = 999; reject(j);
+    j = original; j["materials"] = Json::array({1,2,3}); reject(j);
     Check(!IsSha("../invalid") && IsSha(std::string(64,'a')), "pair SHA fixture gate failed");
 }
 
@@ -430,6 +539,10 @@ void RunRealTerrainPairAudit(const std::filesystem::path& manifestPath, std::str
     for (const auto& v : mesh.vertices) vertices.push_back({v.x,v.y,v.z,v.red,v.green,v.blue,v.u,v.v});
     std::vector<std::uint32_t> indices; std::vector<War3RenderTerrainBatchV2> batches;
     Json quadReceipts = Json::array(); unsigned baseCount = 0, overlayCount = 0;
+    const auto expectedLayers = RequiredLayers(context); std::set<LayerKey> observedLayers;
+    std::set<std::pair<bool,std::uint32_t>> expectedBatches;
+    for (const auto& [tile,material,alphaBlend] : expectedLayers) expectedBatches.emplace(alphaBlend,material);
+    bool overlaysStarted = false; std::uint32_t previousOverlay = 0;
     for (const auto& batch : mesh.batches) {
         Check(!batch.translucent && batch.indexCount % 6 == 0 && batch.textureIndex < mesh.textures.size(), "pair unexpected production batch");
         const auto firstIndex = static_cast<std::uint32_t>(indices.size());
@@ -439,24 +552,17 @@ void RunRealTerrainPairAudit(const std::filesystem::path& manifestPath, std::str
             const auto tile = quad < 12 ? quad : mesh.overlayTiles.at(quad - 12);
             if (tile != context.tiles[0] && tile != context.tiles[1]) continue;
             const auto& corners = context.terrain.tiles[tile].vertices;
-            unsigned mask = 0; const auto material = batch.alphaBlend ? context.materials[1] : context.materials[0];
-            for (unsigned i = 0; i < 4; ++i) if (context.terrain.vertices[corners[i]].GroundTextureIndex() == material)
-                mask |= std::array<unsigned,4>{2,1,8,4}[i];
-            Check(mesh.textures[batch.textureIndex] == atlases[material], "pair production layer material mismatch");
+            const auto material = PaletteForTexture(context,atlases,mesh.textures[batch.textureIndex]);
             const auto& atlas = *mesh.textures[batch.textureIndex];
-            const auto& v = mesh.vertices.at(first);
-            const auto column = static_cast<unsigned>(std::floor(v.u * static_cast<float>(atlas.columns)));
-            const auto row = static_cast<unsigned>(std::floor(v.v * 4.0f));
-            Check(column < atlas.columns && row < 4, "pair production UV cell invalid");
-            if (batch.alphaBlend) Check(column == mask % 4 && row == mask / 4, "pair production mask/cell mismatch");
-            else {
-                // 这里只核结构合同，不参与任何像素采样；UV 本身仍完全取生产 mesh。
-                const auto variation = context.terrain.vertices[corners[0]].GroundVariation();
-                std::array<unsigned,2> expectedCell;
-                if (atlas.columns == 4) expectedCell = variation == 0 ? std::array<unsigned,2>{0,0} : std::array<unsigned,2>{3,3};
-                else if (variation < 16) expectedCell = {4u+variation%4u,variation/4u};
-                else expectedCell = variation == 16 ? std::array<unsigned,2>{3,3} : std::array<unsigned,2>{0,0};
-                Check(column == expectedCell[0] && row == expectedCell[1], "pair production base variation cell mismatch");
+            const auto layout = ValidateLayerLayout(context,tile,material,batch.alphaBlend,atlas,
+                std::span<const TerrainGroundVertex>(mesh.vertices).subspan(first,4));
+            const auto mask = layout.mask;
+            Check(observedLayers.emplace(tile,material,batch.alphaBlend).second, "pair production repeated a layer");
+            if (batch.alphaBlend) {
+                Check(!overlaysStarted || material >= previousOverlay, "pair production overlay palette order changed");
+                overlaysStarted = true; previousOverlay = material;
+            } else {
+                Check(!overlaysStarted, "pair production base appeared after an overlay");
             }
             Json shades = Json::array(), uvs = Json::array();
             for (unsigned i = 0; i < 4; ++i) {
@@ -472,7 +578,7 @@ void RunRealTerrainPairAudit(const std::filesystem::path& manifestPath, std::str
                 {"source_vertices",selected.at("cells")[side].at("source_vertices_sw_se_nw_ne")},
                 {"alpha_blend",batch.alphaBlend},{"palette_index",material},{"corner_membership_mask",mask},
                 {"transition_mask",batch.alphaBlend ? Json(mask) : Json(nullptr)},
-                {"cell",Json::array({column,row})},{"sw_variation_raw",context.terrain.vertices[corners[0]].variationRaw},
+                {"cell",layout.cell},{"sw_variation_raw",context.terrain.vertices[corners[0]].variationRaw},
                 {"sw_ground_variation",context.terrain.vertices[corners[0]].GroundVariation()},{"shade",shades},{"uv_sw_se_nw_ne",uvs}});
             const std::array<std::uint32_t,6> expected{first,first+1,first+2,first+1,first+3,first+2};
             Check(std::equal(expected.begin(), expected.end(), mesh.indices.begin()+at), "pair production diagonal changed");
@@ -482,8 +588,9 @@ void RunRealTerrainPairAudit(const std::filesystem::path& manifestPath, std::str
         if (indices.size() != firstIndex) batches.push_back({firstIndex,static_cast<std::uint32_t>(indices.size()-firstIndex),
             batch.textureIndex | (batch.alphaBlend ? WAR3_RENDER_TERRAIN_ALPHA_BLEND : 0u)});
     }
-    Check(baseCount == 2 && overlayCount == 2 && indices.size() == 24 && batches.size() == 2,
-        "pair requires both real base and transition quads");
+    Check(observedLayers == expectedLayers && baseCount == context.tiles.size() &&
+        overlayCount == expectedLayers.size()-context.tiles.size() && indices.size() == expectedLayers.size()*6 &&
+        batches.size() == expectedBatches.size(), "pair production omitted or added an actual base/transition layer");
     std::vector<std::vector<War3RenderMipRgbaV2>> mipLists(mesh.textures.size());
     std::vector<War3RenderTextureMipChainV2> chains;
     for (std::size_t i = 0; i < mesh.textures.size(); ++i) {
@@ -583,6 +690,8 @@ void RunRealTerrainPairAudit(const std::filesystem::path& manifestPath, std::str
         {"geometry",{{"original_vertex_dimensions",Json::array({context.original.width,context.original.height})},
             {"local_vertex_dimensions",Json::array({5,4})},{"local_offset",context.terrain.header.offset},
             {"halo_vertices",20},{"source_pair_cells",selected.at("cells")},{"quads",quadReceipts},
+            {"materials",context.materials},{"expected_layer_count",expectedLayers.size()},
+            {"observed_layer_count",observedLayers.size()},{"base_quad_count",baseCount},{"overlay_quad_count",overlayCount},
             {"full_vertex_count",vertices.size()},{"full_index_count",mesh.indices.size()},
             {"submitted_index_count",indices.size()},{"submitted_batch_count",batches.size()},{"fallback_tiles",0}}},
         {"files",{{"rgba",FileReceipt(output/"rgba.bin")},{"bmp",FileReceipt(output/"frame.bmp")},
