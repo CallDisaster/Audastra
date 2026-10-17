@@ -500,8 +500,21 @@ void AssetIsolation() {
     std::vector<std::byte> blp(1181); std::memcpy(blp.data(),"BLP1",4); blp[158]=std::byte{255};
     for (const auto offset:{4u,12u,16u,92u}) Patch(blp,"BLP1",offset,1);
     Patch(blp,"BLP1",28,1180);
-    const auto textures=[&](std::string_view p,std::uint64_t n) { return p=="same.mdx" ? in.Read(p,n) :
-        Result<AnimationResource>::Success({blp,"synthetic-blp","80A9D0025CFBB0DA12A0A026FBC73938B57DBF41D00190F8768201AB4C231D32"}); };
+    // 此局部门只验证解码像素/纹理数量预算；来源sampler的独立内存门由专用target覆盖。
+    auto textureBudgetModel=in.bytes;
+    Patch(textureBudgetModel,"TEXS",8+264,3); Patch(textureBudgetModel,"TEXS",8+268+264,3);
+    const auto textureBudgetParsed=Good(ParseMdx(textureBudgetModel));
+    Require(textureBudgetParsed.textures.size()==2 &&
+        std::all_of(textureBudgetParsed.textures.begin(),textureBudgetParsed.textures.end(),[](const auto& texture) { return texture.flags==3; }),
+        "pure decoded budget fixture must explicitly keep source legacy3 samplers");
+    const auto textures=[&](std::string_view p,std::uint64_t n) {
+        if (p=="same.mdx") {
+            auto resource=in.Read(p,n);
+            if (resource.Succeeded()) { resource.value->bytes=textureBudgetModel; resource.value->digest=Good(Sha256(textureBudgetModel)); }
+            return resource;
+        }
+        return Result<AnimationResource>::Success({blp,"synthetic-blp","80A9D0025CFBB0DA12A0A026FBC73938B57DBF41D00190F8768201AB4C231D32"});
+    };
     Require(Good(ModelAnimationService::Create({7,33,"texture-budget"},std::span(specs).first(1),textures,limits))->Scene()->geometry.textures.size()==2,
         "budget fixture did not decode real BLP textures");
     bool textureBudgetCasesAccepted=true;
@@ -744,7 +757,13 @@ void ParticleService() {
     MockBackend geoMock; War3RenderPluginApiV2 geoApi{}; geoApi.structSize=sizeof(geoApi); geoApi.apiVersion=WAR3_RENDER_PLUGIN_API_V2;
     geoApi.submitSkinnedModelScene=Submit; geoApi.updateSkinMatrices=Update; geoApi.captureSkinnedFrameRgba=CaptureMock;
     geoApi.getSkinStatus=[](War3RendererHandle,War3RenderSkinStatusV2* status)->std::int32_t {
-        if(status->structSize==sizeof(War3RenderSkinColorCapabilitiesV2)) reinterpret_cast<War3RenderSkinColorCapabilitiesV2*>(status)->colorFormat=WAR3_RENDER_STATIC_MESH_RGB_V1;
+        const auto capacity=status->structSize; *status={}; status->structSize=sizeof(*status);
+        if(capacity>=sizeof(War3RenderSkinColorCapabilitiesV2))
+            reinterpret_cast<War3RenderSkinColorCapabilitiesV2*>(status)->colorFormat=WAR3_RENDER_STATIC_MESH_RGB_V1;
+        if(capacity>=sizeof(War3RenderSkinMaterialCapabilitiesV2))
+            reinterpret_cast<War3RenderSkinMaterialCapabilitiesV2*>(status)->layerAlphaFormat=WAR3_RENDER_DYNAMIC_LAYER_ALPHA_V1;
+        if(capacity>=sizeof(War3RenderSkinMaterialStateCapabilitiesV2))
+            reinterpret_cast<War3RenderSkinMaterialStateCapabilitiesV2*>(status)->materialStateFormat=WAR3_RENDER_DYNAMIC_MATERIAL_STATE_V1;
         return 0; };
     geoApi.submitParticleModelScene=[](War3RendererHandle h,const War3RenderParticleSceneV2* packet)->std::int32_t { return Submit(h,packet->models); };
     geoApi.updateParticleModelFrame=[](War3RendererHandle h,const War3RenderParticleUpdateV2* packet)->std::int32_t { return Update(h,packet->modelPose); };
@@ -758,12 +777,43 @@ void ParticleService() {
         for (const auto& diagnostic:status.diagnostics)
             std::cout<<"geoa_backend_diagnostic step="<<label<<" code="<<diagnostic.code<<" message="<<diagnostic.message<<'\n';
     };
+    const auto checkGeoCopiedMaterials=[&](const AnimationFrame& expectedFrame) {
+        Require(geoMock.pose.dynamicMaterialStates && !geoMock.pose.materialStates.empty() &&
+            geoMock.pose.materialStates.size()==expectedFrame.materialStates.size(),
+            "GEOA backend declared material states without copying a real payload");
+        bool copiedSourceClamp=false;
+        for (std::size_t instance=0;instance<expectedFrame.instances.size();++instance) {
+            const auto modelIndex=expectedFrame.instances[instance].instance.model;
+            const auto& source=*geoScene->pickModels[modelIndex].source;
+            const auto& geometry=geoScene->geometry;
+            const auto model=geometry.models[modelIndex];
+            for (std::uint32_t meshOffset=0;meshOffset<model.meshCount;++meshOffset) {
+                const auto meshIndex=model.firstMesh+meshOffset;
+                const auto& mesh=geometry.meshes[meshIndex];
+                const auto& material=source.materials[source.geosets[geometry.meshGeosets[meshIndex]].materialId];
+                for (std::uint32_t layer=0;layer<mesh.layerCount;++layer) {
+                    const auto at=expectedFrame.poses[instance].materialStates.offset+mesh.firstLayer-geoScene->modelLayerRanges[modelIndex].offset+layer;
+                    const auto& actual=geoMock.pose.materialStates.at(at);
+                    const auto& expectedState=expectedFrame.materialStates.at(at);
+                    const auto sourceFlags=source.textures[material.layers[layer].textureId].flags;
+                    Require(actual.samplerFlags==sourceFlags && actual.textureIndex==expectedState.textureIndex &&
+                        actual.textureIndex!=WAR3_RENDER_MODEL_NO_TEXTURE,
+                        "GEOA shared Copy validators lost the actual resident layer source sampler");
+                    copiedSourceClamp |= sourceFlags==0;
+                }
+            }
+        }
+        Require(copiedSourceClamp,"GEOA source clamp layer was removed instead of transported");
+    };
     const auto geoSubmitted=geoRenderer.Submit(geoScene,geoFirst); reportGeoStatus("submit",geoSubmitted);
     bool geoNextAccepted=false,geoRepeatAccepted=false;
     if (geoSubmitted.Succeeded()) {
+        checkGeoCopiedMaterials(*geoFirst);
         const auto updated=geoRenderer.Update(geoNext); reportGeoStatus("next",updated); geoNextAccepted=updated.Succeeded();
         if (geoNextAccepted) {
+            checkGeoCopiedMaterials(*geoNext);
             const auto geoRepeatedStatus=geoRenderer.Update(geoRepeat); reportGeoStatus("repeat",geoRepeatedStatus); geoRepeatAccepted=geoRepeatedStatus.Succeeded();
+            if (geoRepeatAccepted) checkGeoCopiedMaterials(*geoRepeat);
         } else std::cout<<"geoa_backend_step step=repeat attempted=0\n";
     } else std::cout<<"geoa_backend_step step=next attempted=0\ngeoa_backend_step step=repeat attempted=0\n";
     Require(geoSubmitted.Succeeded() && geoNextAccepted && geoRepeatAccepted && geoMock.staticUploads==1 && geoMock.updates==3,
