@@ -31,7 +31,7 @@ struct StrongOwnedVersion { OwnedBytes owner; std::uint64_t version; };
 struct OwnedInput { OwnedBytes owner; std::size_t entry; std::uint64_t version = 0; };
 struct OwnedIdentityFailure { const char* code; const char* message; };
 [[noreturn]] void IdentityBudgetFailure() {
-    throw OwnedIdentityFailure{"WORLD_ASSET_IDENTITY_BUDGET", "资源身份metadata工作容量超过预算；未逐出活owner或返回部分快照。"};
+    throw OwnedIdentityFailure{"WORLD_ASSET_IDENTITY_BUDGET", "资源版本记录所需的内存超过本次预算，请减少待导入资源或关闭不用的地图后重试。"};
 }
 bool OwnedLess(const OwnedBytes& a, const OwnedBytes& b) {
     const std::owner_less<OwnedBytes> owners;
@@ -90,13 +90,13 @@ Result<std::size_t> AssignOwnedVersions(std::vector<WorldAssetEntry>& entries, s
         auto held = row.owner.lock();
         if (held) live.push_back({std::move(held), row.version});
         else if (!row.owner.expired())
-            throw OwnedIdentityFailure{"WORLD_ASSET_IDENTITY", "资源weak身份仍有owner但没有有效view。"};
+            throw OwnedIdentityFailure{"WORLD_ASSET_IDENTITY", "导入资源的内存来源无效，请重新导入该资源。"};
     }
     reserve(inputs, inputCount);
     for (std::size_t index = 0; index < entries.size(); ++index) if (const auto& payload = entries[index].ownedPayload) {
         const auto held = std::weak_ptr<const std::vector<std::byte>>(payload).lock();
         if (!held || !SameOwned(held, payload))
-            throw OwnedIdentityFailure{"WORLD_ASSET_IDENTITY", "资源正文缺少可保活的ownership，未重复签发临时版本。"};
+            throw OwnedIdentityFailure{"WORLD_ASSET_IDENTITY", "导入资源的内存来源无效，请重新导入该资源。"};
         inputs.push_back({payload, index});
     }
     std::sort(inputs.begin(), inputs.end(), [](const auto& a, const auto& b) { return OwnedLess(a.owner, b.owner); });
@@ -124,7 +124,7 @@ Result<std::size_t> AssignOwnedVersions(std::vector<WorldAssetEntry>& entries, s
     merge([&](const OwnedBytes& owner, std::uint64_t version, std::size_t first, std::size_t end) {
         if (!version) {
             if (registry.nextVersion == std::numeric_limits<std::uint64_t>::max())
-                throw OwnedIdentityFailure{"WORLD_ASSET_IDENTITY_EXHAUSTED", "资源缓存版本已耗尽，不能复用旧身份。"};
+                throw OwnedIdentityFailure{"WORLD_ASSET_IDENTITY_EXHAUSTED", "资源版本记录已耗尽，请重新启动编辑器。"};
             version = registry.nextVersion++;
         }
         next.push_back({owner, version});
@@ -137,9 +137,9 @@ Result<std::size_t> AssignOwnedVersions(std::vector<WorldAssetEntry>& entries, s
 } catch (const OwnedIdentityFailure& failure) {
     return Result<std::size_t>::Failure("World", failure.code, failure.message);
 } catch (const std::bad_alloc&) {
-    return Result<std::size_t>::Failure("World", "WORLD_ASSET_IDENTITY_ALLOCATION", "资源身份metadata分配失败，未返回部分快照。");
+    return Result<std::size_t>::Failure("World", "WORLD_ASSET_IDENTITY_ALLOCATION", "无法为资源版本记录分配内存，请关闭不用的地图后重试。");
 } catch (const std::length_error&) {
-    return Result<std::size_t>::Failure("World", "WORLD_ASSET_IDENTITY_BUDGET", "资源身份metadata长度越界，未返回部分快照。");
+    return Result<std::size_t>::Failure("World", "WORLD_ASSET_IDENTITY_BUDGET", "资源版本记录超出容量限制，未完成资源读取。");
 }
 struct ReadLease {
     HANDLE handle = INVALID_HANDLE_VALUE;
