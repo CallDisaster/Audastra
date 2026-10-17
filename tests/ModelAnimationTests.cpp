@@ -9,6 +9,7 @@
 #include "AnimationRibbonRendererTests.h"
 #include "AnimationInstanceDeltaTests.h"
 #include "ModelAnimationMaterialTextures.h"
+#include "ModelPreviewReplacementTests.h"
 #include "War3MapCore/Render/ModelAnimationCapture.h"
 #include <fstream>
 #include <algorithm>
@@ -872,7 +873,7 @@ void Submission() {
 }
 int main(int argc,char** argv) try {
     const std::string which=argc==2?argv[1]:"";
-    if(which=="instances") { Instances(); WorldIsolation(); ParticleService(); LargeScene(); VariantActions(); ViewAdmission(); MaterialLayers(); AnimationMaterialTextureTest::Run(); } else if(which=="geometry") { Geometry(); AssetIsolation(); RequestGeometryBudget(); }
+    if(which=="instances") { Instances(); WorldIsolation(); ParticleService(); LargeScene(); VariantActions(); ViewAdmission(); MaterialLayers(); AnimationMaterialTextureTest::Run(); } else if(which=="geometry") { Geometry(); AssetIsolation(); RequestGeometryBudget(); ModelPreviewReplacementTest::Run(); }
     else if(which=="submission") Submission();
     else if(which=="particle-continuity") AnimationParticleContinuityTest::Run();
     else if(which=="instance-delta") AnimationInstanceDeltaTest::Run();
