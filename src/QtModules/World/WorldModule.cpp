@@ -128,6 +128,10 @@ QJsonObject GroundBudgetJson(const Render::TerrainGroundMesh& ground) {
     return {{"policy", budget.policy == Render::TerrainGroundBudgetPolicy::PreserveBasePreview ? "preserve-base-preview" : "strict"},
         {"reduced", budget.reduced}, {"reduced_scope", "geometry-batches-working-bytes"},
         {"shared_base_blight", ground.blightPolicy == Render::TerrainGroundBlightPolicy::SharedBase},
+        {"shared_grid", ground.representation == Render::TerrainGroundRepresentation::SharedGrid},
+        {"grid_vertex_count", static_cast<qint64>(ground.groundGrid.size())},
+        {"base_quad_count", static_cast<qint64>(ground.baseQuads.size())},
+        {"water_quad_count", static_cast<qint64>(ground.waterQuads.size())},
         {"blight_index_count", static_cast<qint64>(ground.blightIndices.size())},
         {"blight_batch_count", static_cast<qint64>(ground.blightBatches.size())},
         {"base", counts(budget.base)}, {"transitions", counts(budget.transitions)},
@@ -323,7 +327,7 @@ void WorldModule::ShowSceneFacts(const WorldTerrainLoaded& loaded, const Render:
         for (const auto& texture : ground->textures) tip << SourceLine(texture->source.canonicalPath, texture->sourceSha256);
         if (ground->blightTexture) tip << SourceLine(ground->blightTexture->source.canonicalPath, ground->blightTexture->sourceSha256);
         sceneGround_->setToolTip(tip.join(QLatin1Char('\n')));
-        QString water = ground->waterFlaggedTiles == 0 ? tr("无") : tr("%1 格").arg(Count(ground->waterTiles.size()));
+        QString water = ground->waterFlaggedTiles == 0 ? tr("无") : tr("%1 格").arg(Count(ground->budget.water.displayed));
         if (ground->budget.water.omitted != 0) water += tr(" · 省略 %1 格").arg(Count(ground->budget.water.omitted));
         if (ground->budget.water.noContribution != 0) water += tr(" · 零贡献 %1 格").arg(Count(ground->budget.water.noContribution));
         sceneWater_->setText(water);
@@ -481,10 +485,12 @@ void WorldModule::Refresh() {
     auto result = std::make_shared<Result<WorldTerrainLoaded>>();
     auto cache = std::make_shared<std::shared_ptr<WorldTerrainCache>>();
     // 先加载函数表并实际查询（renderer可为null）；不能等首次height mesh提交后才发现新能力。
-    const auto blightPolicy = viewport_->HasTerrainBlightSupport()
+    const auto representation = viewport_->HasTerrainGridSupport()
+        ? Render::TerrainGroundRepresentation::SharedGrid : Render::TerrainGroundRepresentation::Expanded;
+    const auto blightPolicy = representation == Render::TerrainGroundRepresentation::SharedGrid || viewport_->HasTerrainBlightSupport()
         ? Render::TerrainGroundBlightPolicy::SharedBase : Render::TerrainGroundBlightPolicy::Legacy;
-    auto* worker = QThread::create([bytes = std::move(*bytes.value), sources = std::move(sources), settings, shadow = std::move(shadow), result, cache, blightPolicy] {
-        *result = LoadWorldTerrain(bytes, sources, settings, shadow, cache.get(), blightPolicy);
+    auto* worker = QThread::create([bytes = std::move(*bytes.value), sources = std::move(sources), settings, shadow = std::move(shadow), result, cache, blightPolicy, representation] {
+        *result = LoadWorldTerrain(bytes, sources, settings, shadow, cache.get(), blightPolicy, representation);
     });
     worker_ = worker;
     connect(worker, &QThread::finished, this, [this, generation, result, cache, sourceRaw] {
@@ -1076,7 +1082,9 @@ void WorldModule::StartTerrainRender() {
     const auto serial = request.serial;
     const bool preview = request.preview;
     const auto source = request.source;
-    const auto blightPolicy = viewport_->HasTerrainBlightSupport()
+    const auto representation = viewport_->HasTerrainGridSupport()
+        ? Render::TerrainGroundRepresentation::SharedGrid : Render::TerrainGroundRepresentation::Expanded;
+    const auto blightPolicy = representation == Render::TerrainGroundRepresentation::SharedGrid || viewport_->HasTerrainBlightSupport()
         ? Render::TerrainGroundBlightPolicy::SharedBase : Render::TerrainGroundBlightPolicy::Legacy;
     auto result = std::make_shared<Result<WorldTerrainLoaded>>();
     // 悬崖在独立层时，新烘焙的悬崖在同一 worker 里准备好层帧，提交地形时一并显示，不重建整张动画场景。
@@ -1084,15 +1092,15 @@ void WorldModule::StartTerrainRender() {
     if (cliffsInLayer_ && cliffLayer_ && animation_ && !selectedWaterFrame)
         if (const auto scene = animation_->Scene())
             cliffSession = Render::AnimationSession{scene->generation, scene->documentRevision, scene->sourceIdentity};
-    auto* worker = QThread::create([request = std::move(request), cache, keepCliffs, result, cliffSession, blightPolicy] {
+    auto* worker = QThread::create([request = std::move(request), cache, keepCliffs, result, cliffSession, blightPolicy, representation] {
         if (request.selectedWaterFrame)
-            *result = RebuildWorldTerrain(*request.source, *cache, keepCliffs, request.selectedWaterFrame, blightPolicy);
+            *result = RebuildWorldTerrain(*request.source, *cache, keepCliffs, request.selectedWaterFrame, blightPolicy, representation);
         else if (request.preview) {
             auto preview = std::make_shared<MapData::TerrainGridSnapshot>(*request.source);
             auto stroke = MapData::ApplyTerrainStroke(*preview, request.brush, request.points);
             if (!stroke.Succeeded()) { result->diagnostics = std::move(stroke.diagnostics); return; }
-            *result = RebuildWorldTerrain(*preview, *cache, keepCliffs, std::nullopt, blightPolicy);
-        } else *result = RebuildWorldTerrain(*request.source, *cache, nullptr, std::nullopt, blightPolicy);
+            *result = RebuildWorldTerrain(*preview, *cache, keepCliffs, std::nullopt, blightPolicy, representation);
+        } else *result = RebuildWorldTerrain(*request.source, *cache, nullptr, std::nullopt, blightPolicy, representation);
         if (!cliffSession || !result->Succeeded() || !result->value->cliffs || result->value->cliffs == keepCliffs || !cache->reader) return;
         try {
             auto layer = PrepareWorldCliffLayer(result->value->cliffs, [&cache](std::string_view path, std::uint64_t maximum) {

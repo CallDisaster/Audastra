@@ -122,6 +122,12 @@ struct BackendState {
     std::vector<std::uint32_t> blightIndices;
     std::vector<War3RenderTerrainBlightBatchV2> blightBatches;
     std::vector<std::byte> blightMipOneBytes;
+    int gridQueries = 0, gridNullQueries = 0, gridSubmits = 0;
+    std::int32_t gridQueryResult = 0;
+    War3RenderTerrainGridCapabilitiesV2 gridCaps{sizeof(War3RenderTerrainGridCapabilitiesV2), 1, 16, 32, 1, 0};
+    std::uint32_t gridVertexCount = 0, gridBaseCount = 0, gridWaterCount = 0, gridTransitionCount = 0;
+    const War3RenderTerrainGridGroundVertexV2* gridGroundAddress = nullptr;
+    const War3RenderTerrainGridWaterVertexV2* gridWaterAddress = nullptr;
     std::vector<War3RenderOverlayLineV2> overlayLines;
     bool rejectTerrain = false;
     bool autoComplete = true, pending = false, staleRevision = false, staleSize = false;
@@ -525,6 +531,23 @@ std::int32_t WAR3_RENDER_CALL BlightFrame(War3RendererHandle handle, const War3R
 const War3RenderPluginApiV2 legacyBackend{static_cast<std::uint32_t>(offsetof(War3RenderPluginApiV2, getViewInfo)), WAR3_RENDER_PLUGIN_API_V2,
     Create, Destroy, Attach, Resize, Mesh, Camera, Frame, Status, Capture, ViewInfo}; // 尾部虽在内存中，旧 size 禁止读取/调用。
 
+std::int32_t WAR3_RENDER_CALL GridCapabilities(War3RendererHandle handle, War3RenderTerrainGridCapabilitiesV2* output) {
+    auto& state = handle ? *static_cast<BackendState*>(handle) : *activeBackend;
+    ++state.gridQueries; state.gridNullQueries += handle == nullptr;
+    if (state.gridQueryResult) return state.gridQueryResult;
+    *output = state.gridCaps; return 0;
+}
+std::int32_t WAR3_RENDER_CALL GridFrame(War3RendererHandle handle, const War3RenderTerrainGridFrameV2* frame) {
+    auto& state = *static_cast<BackendState*>(handle); ++state.gridSubmits;
+    if (state.rejectTerrain) return 1;
+    state.gridVertexCount = frame->gridVertexCount; state.gridBaseCount = frame->baseQuadCount;
+    state.gridWaterCount = frame->waterQuadCount; state.gridTransitionCount = frame->groundScene.vertexCount;
+    state.gridGroundAddress = frame->groundGrid; state.gridWaterAddress = frame->waterGrid;
+    state.revision = frame->groundScene.documentRevision; state.vertices = frame->gridVertexCount; ++state.sceneEpoch;
+    return 0;
+}
+std::int32_t WAR3_RENDER_CALL GridFacts(War3RendererHandle, const War3RenderViewInfoV2*, War3RenderTerrainGridCaptureFactsV2*) { return 2; }
+
 void Append32(QByteArray& bytes, std::uint32_t value) {
     for (int shift = 0; shift < 32; shift += 8) bytes.append(static_cast<char>((value >> shift) & 0xffu));
 }
@@ -758,6 +781,7 @@ private slots:
     void SelectionLayerWaitsForRosterTerminal();
     void MipSceneUsesOriginalChainAndClampsAtlas();
     void SharedBaseBlightRequiresCapabilitiesAndKeepsAtomicFrame();
+    void SharedGridRequiresCompleteCapabilitiesAndKeepsAtomicFrame();
     void PlacementClickDragAndKeys();
     void TerrainBrushPreservesCameraAndModels();
     void TerrainBrushUsesSharedTransactionAndUndo();
@@ -2872,6 +2896,63 @@ void WorldModuleTests::SharedBaseBlightRequiresCapabilitiesAndKeepsAtomicFrame()
     const auto oldGround = Render::BuildTerrainGroundMesh(*clean, atlases); QVERIFY(oldGround.Succeeded());
     QVERIFY(viewport.SetGroundMesh(std::make_shared<const Render::TerrainGroundMesh>(*oldGround.value)));
     QCOMPARE(state.mipSubmits, 1); QVERIFY(state.blightIndices.empty());
+}
+
+void WorldModuleTests::SharedGridRequiresCompleteCapabilitiesAndKeepsAtomicFrame() {
+    auto api = mipBackend;
+    api.getTerrainGridCapabilities = GridCapabilities; api.submitTerrainGridFrame = GridFrame; api.getTerrainGridCaptureFacts = GridFacts;
+    BackendState state; activeBackend = &state;
+    WorldViewport viewport(nullptr, &api); state.viewport = &viewport;
+    QVERIFY(viewport.HasTerrainGridSupport()); QCOMPARE(state.creates, 0); QCOMPARE(state.gridNullQueries, 1);
+    state.gridQueryResult = 1; QVERIFY(!viewport.HasTerrainGridSupport()); state.gridQueryResult = 0;
+    const auto good = state.gridCaps;
+    state.gridCaps.gridFormat = 2; QVERIFY(!viewport.HasTerrainGridSupport()); state.gridCaps = good;
+    state.gridCaps.maxGroundTextures = 17; QVERIFY(!viewport.HasTerrainGridSupport()); state.gridCaps = good;
+    state.gridCaps.maxBlightBatches = 31; QVERIFY(!viewport.HasTerrainGridSupport()); state.gridCaps = good;
+    state.gridCaps.maxWaterTextures = 2; QVERIFY(!viewport.HasTerrainGridSupport()); state.gridCaps = good;
+    state.gridCaps.reserved = 1; QVERIFY(!viewport.HasTerrainGridSupport()); state.gridCaps = good;
+    state.gridCaps.structSize = 20; QVERIFY(!viewport.HasTerrainGridSupport()); state.gridCaps = good;
+    {
+        auto prefix = api;
+        prefix.structSize = static_cast<std::uint32_t>(offsetof(War3RenderPluginApiV2, getTerrainGridCaptureFacts));
+        WorldViewport old(nullptr, &prefix); const auto queries = state.gridQueries;
+        QVERIFY(!old.HasTerrainGridSupport()); QCOMPARE(state.gridQueries, queries);
+        prefix.structSize = sizeof(prefix); prefix.getTerrainGridCapabilities = nullptr;
+        QVERIFY(!old.HasTerrainGridSupport()); prefix.getTerrainGridCapabilities = GridCapabilities;
+        prefix.submitTerrainGridFrame = nullptr; QVERIFY(!old.HasTerrainGridSupport()); prefix.submitTerrainGridFrame = GridFrame;
+        prefix.getTerrainGridCaptureFacts = nullptr; QVERIFY(!old.HasTerrainGridSupport()); QCOMPARE(state.gridQueries, queries);
+    }
+    auto terrain = FlatGrid(3, 2); terrain->header.groundTilesets = {"Ldrt"};
+    for (auto& vertex : terrain->vertices) { vertex.textureAndFlagsRaw = 0x60; vertex.waterBaseHeight = 40; }
+    const auto atlas = [](std::uint32_t columns) {
+        auto value = std::make_shared<Render::TerrainAtlasSnapshot>();
+        value->columns = columns; value->sourceWidth = value->image.width = columns;
+        value->sourceHeight = value->image.height = 4; value->image.rgba.assign(columns * 4 * 4, std::byte{255});
+        for (std::uint32_t row = 0; row < 4; ++row) for (std::uint32_t column = 0; column < columns; ++column)
+            value->cells.push_back({column, row, column, row, 1, 1});
+        return value;
+    };
+    const std::vector<std::shared_ptr<const Render::TerrainAtlasSnapshot>> atlases{atlas(4)};
+    Render::TerrainWaterStyle water{0, {30, 60, 100, 100}, {80, 110, 150, 220}, {20, 50, 90, 180}, {10, 30, 70, 240}};
+    const auto built = Render::BuildTerrainGroundMesh(*terrain, atlases, {}, Render::TerrainLighting{false}, &water, {}, atlas(8), {},
+        Render::TerrainGroundBudgetPolicy::PreserveBasePreview, Render::TerrainGroundBlightPolicy::SharedBase,
+        Render::TerrainGroundRepresentation::SharedGrid);
+    QVERIFY(built.Succeeded()); const auto ground = std::make_shared<const Render::TerrainGroundMesh>(*built.value);
+    viewport.resize(320, 240); QVERIFY(BindTerrain(viewport, terrain)); viewport.show(); QTRY_VERIFY(state.frames > 0);
+    QVERIFY(viewport.SetGroundMesh(ground)); QCOMPARE(state.gridSubmits, 1); QCOMPARE(state.mipSubmits, 0); QCOMPARE(state.blightSubmits, 0);
+    QCOMPARE(state.gridVertexCount, 6u); QCOMPARE(state.gridBaseCount, 2u); QCOMPARE(state.gridWaterCount, 2u); QCOMPARE(state.gridTransitionCount, 0u);
+    QCOMPARE(state.gridGroundAddress, ground->groundGrid.data()); QCOMPARE(state.gridWaterAddress, ground->waterGrid.data());
+    const auto epoch = state.sceneEpoch, revision = state.revision;
+    state.gridQueryResult = 1; QVERIFY(!viewport.SetGroundMesh(ground)); state.gridQueryResult = 0;
+    QCOMPARE(state.gridSubmits, 1); QCOMPARE(state.mipSubmits, 0); QCOMPARE(state.sceneEpoch, epoch);
+    auto invalid = std::make_shared<Render::TerrainGroundMesh>(*ground); invalid->representation = Render::TerrainGroundRepresentation::Expanded;
+    QVERIFY(!viewport.SetGroundMesh(invalid)); QCOMPARE(state.mipSubmits, 0); QCOMPARE(state.gridSubmits, 1);
+    invalid = std::make_shared<Render::TerrainGroundMesh>(*ground); invalid->baseQuads[1].sourceTile = 0;
+    QVERIFY(!viewport.SetGroundMesh(invalid)); QCOMPARE(state.gridSubmits, 1);
+    state.rejectTerrain = true; auto mesh = BuildWorldTerrainMesh(*terrain); QVERIFY(mesh.Succeeded());
+    QVERIFY(!viewport.ReplaceTerrainPresentation(std::move(mesh.value->vertices), std::move(mesh.value->indices), terrain, 1, ground, revision + 1));
+    QCOMPARE(state.sceneEpoch, epoch); QCOMPARE(state.revision, revision); QCOMPARE(state.gridSubmits, 2);
+    QCOMPARE(state.mipSubmits, 0); QCOMPARE(state.blightSubmits, 0); QVERIFY(viewport.HasGroundMesh());
 }
 
 // 摆放点选与拖动：单击命中实例、按在选中实例上拖动发出目标 XY 且不转镜头、Esc 取消、Delete 请求删除。

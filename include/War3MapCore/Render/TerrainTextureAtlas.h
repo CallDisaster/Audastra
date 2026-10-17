@@ -4,8 +4,27 @@
 #include "War3MapCore/Resources/ResourceResolver.h"
 
 #include <memory>
+#include <optional>
 
 namespace War3Map::Render {
+
+struct TerrainAtlasUv { float left = 0, right = 0, top = 0, bottom = 0; };
+
+// Canonical cell 半 texel 内缩；纯算数、无 RenderSupport 链接依赖。
+// 1 像素 cell 合法且两端相等；保留旧 CPU float 运算顺序。
+[[nodiscard]] inline std::optional<TerrainAtlasUv> ResolveTerrainAtlasCellUv(
+    std::uint32_t width, std::uint32_t height, std::uint32_t columns, std::uint32_t rows,
+    std::uint32_t column, std::uint32_t row) noexcept {
+    if (!width || !height || width > 2048 || height > 2048 || !columns || !rows
+        || width % columns || height % rows || column >= columns || row >= rows) return std::nullopt;
+    const auto cellWidth = width / columns, cellHeight = height / rows;
+    if (!cellWidth || !cellHeight) return std::nullopt;
+    const auto imageWidth = static_cast<float>(width), imageHeight = static_cast<float>(height);
+    return TerrainAtlasUv{(static_cast<float>(column * cellWidth) + 0.5f) / imageWidth,
+        (static_cast<float>((column + 1) * cellWidth) - 0.5f) / imageWidth,
+        (static_cast<float>(row * cellHeight) + 0.5f) / imageHeight,
+        (static_cast<float>((row + 1) * cellHeight) - 0.5f) / imageHeight};
+}
 
 struct TerrainAtlasLimits {
     // 默认值也是硬上限；只能收紧。Resolver 回调须自行限制读取时的源文件分配。

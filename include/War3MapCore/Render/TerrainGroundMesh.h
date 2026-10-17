@@ -2,6 +2,7 @@
 
 #include "War3MapCore/MapData/MapTerrain.h"
 #include "War3MapCore/Render/TerrainTextureAtlas.h"
+#include "War3MapCore/RenderPluginTerrainGrid.h"
 
 #include <array>
 #include <limits>
@@ -54,6 +55,12 @@ struct TerrainGroundVertex {
     float x, y, z, red, green, blue, u, v;
 };
 
+// SharedGrid 的完整 row-major 原格；保留两种 CPU 最终颜色，shader 不重算高度色。
+using TerrainGroundGridVertex = War3RenderTerrainGridGroundVertexV2;
+using TerrainGroundWaterVertex = War3RenderTerrainGridWaterVertexV2;
+using TerrainGroundBaseQuad = War3RenderTerrainGridBaseQuadV2;
+using TerrainGroundWaterQuad = War3RenderTerrainGridWaterQuadV2;
+
 struct TerrainGroundBatch {
     std::uint32_t firstIndex = 0;
     std::uint32_t indexCount = 0;
@@ -86,6 +93,9 @@ enum class TerrainGroundBudgetPolicy {
 
 // 只有宿主实际查询到 shared-base 能力后才能显式选择；旧调用与 minimap 保持原路径。
 enum class TerrainGroundBlightPolicy { Legacy, SharedBase };
+
+// 只有实际查询完整 grid 能力的世界宿主才选择 SharedGrid；旧默认和 minimap 保留 Expanded。
+enum class TerrainGroundRepresentation { Expanded, SharedGrid };
 
 struct TerrainGroundBlightBatch {
     std::uint32_t firstIndex = 0, indexCount = 0;
@@ -129,7 +139,7 @@ struct TerrainGroundBudgetStats {
     bool reduced = false; // 显式预览因几何/批次/整体载荷预算省略可选层；资源回退另行诊断。
     // A：全部请求base/transition依赖的原资源预检数，省略过渡也不能绕过其硬预算。
     std::size_t requestedGroundTextureSlots = 0;
-    // B：最终保留ground槽及同表水/荒芜槽；SharedBase的独立荒芜不占此表，RGBA仍聚合计费。
+    // B：最终保留ground槽及Expanded同表水/荒芜槽；SharedBase荒芜与SharedGrid水不占此表，RGBA仍聚合计费。
     // Strict的requested/ground相同。
     std::size_t groundTextureSlots = 0, finalTextureSlots = 0, textureSlotLimit = 0;
     bool waterStyleAvailable = false, waterSourceTextureAvailable = false;
@@ -140,7 +150,18 @@ struct TerrainGroundBudgetStats {
 struct TerrainGroundMesh {
     std::uint32_t sourceWidth = 0, sourceHeight = 0;
     static constexpr std::uint32_t blockTileSize = 16;
-    // 前 (原 tile 数 - hiddenTileCount)×4 个顶点为可见基础层，固定 SW/SE/NW/NE。
+    TerrainGroundRepresentation representation = TerrainGroundRepresentation::Expanded;
+    // SharedGrid 下三个旧几何池只含 ordinary transition；以下 base/water 是各自虚拟四角域。
+    // sourceTile 严格递增；完整 grid 保留 hidden 格的水来源，不重复 baseTiles/waterTiles 映射。
+    std::vector<TerrainGroundGridVertex> groundGrid;
+    std::vector<TerrainGroundWaterVertex> waterGrid;
+    std::vector<TerrainGroundBaseQuad> baseQuads;
+    std::vector<std::uint32_t> baseIndices;
+    std::vector<TerrainGroundBatch> baseBatches;
+    std::vector<TerrainGroundWaterQuad> waterQuads;
+    std::vector<std::uint32_t> waterIndices;
+    std::shared_ptr<const TerrainAtlasSnapshot> waterTexture;
+    // Expanded：前 (原 tile 数 - hiddenTileCount)×4 个顶点为可见基础层，固定 SW/SE/NW/NE。
     // 无隐藏格时原 tile = vertexIndex / 4；有隐藏格时由 baseTiles 显式映射。
     // 其后每个过渡层 quad 也是四个顶点，所属原 tile 见 overlayTiles。
     // 只复制原始 XYZ，不调整坡道、悬崖或水面高度，不降采样。
@@ -148,7 +169,7 @@ struct TerrainGroundMesh {
     // 基础层按纹理稳定归组，地表过渡、荒芜和水面批次依次在后；每个 quad 为 (SW,SE,NW)、(SE,NE,NW)。
     std::vector<std::uint32_t> indices;
     std::vector<TerrainGroundBatch> batches;
-    // 独立荒芜通道只复用可见基础层前缀的四顶点；不占 ground 纹理槽，不复制顶点。
+    // 独立荒芜通道复用Expanded基础前缀或SharedGrid的baseQuad虚拟四角；不占ground槽、不复制顶点。
     // base 前缀包含高度色回退格，但本通道索引只引用不透明贴图基础面；每格恰好一次。
     // 批次按真实 8x4 atlas cell 稳定归组，同 cell 内维持源 tile 顺序。
     TerrainGroundBlightPolicy blightPolicy = TerrainGroundBlightPolicy::Legacy;
@@ -164,13 +185,13 @@ struct TerrainGroundMesh {
     std::vector<std::uint32_t> baseTiles;
     // 第 i 个地表过渡或荒芜 quad（位于全部可见基础层顶点之后）所属的原 tile。
     std::vector<std::uint32_t> overlayTiles;
-    // 水面 quad 排在过渡层之后，第 i 个所属的原 tile；XY 与原格相同，Z 为水面高度。
+    // Expanded水面 quad 排在过渡层之后，第 i 个所属的原 tile；SharedGrid改由waterQuads直接持源。
     std::vector<std::uint32_t> waterTiles;
     // 被已准备悬崖模型覆盖的原 tile（与 tile 同序，空表示无隐藏）：不分配地表顶点或索引。
     std::vector<std::uint8_t> hiddenTiles;
     std::size_t hiddenTileCount = 0;
     bool waterOmitted = false; // 缺样式、纹理槽不足或预览预算造成质量省略；不含已证明零贡献的格
-    std::optional<std::uint32_t> waterTextureIndex; // 合成水面透明度 atlas 的纹理槽，供来源审计区分原始图集
+    std::optional<std::uint32_t> waterTextureIndex; // 仅Expanded同表槽；SharedGrid用独立waterTexture且此处为空。
     std::uint32_t waterFrameIndex = 0, waterFrameCount = 0; // 本网格实际选取的 Water.slk 帧身份
     std::string waterFrameSourcePath, waterFrameSourceSha256;
     std::size_t texturedTiles = 0;
@@ -204,6 +225,8 @@ struct TerrainGroundMesh {
 // SharedBase 仅由能力已查询成功的世界宿主显式请求：复用可见base顶点，独立荒芜索引/真实cell批次，
 // 保持原vertex帽和ground槽帽；两通道RGBA、indices、batches、working合计受原上限约束。
 // 只有精确pass整类准入后才取消基础/过渡顶点近似色；空pass保留SharedBase策略供完整帧清旧通道。
+// SharedGrid必须配SharedBase，直接发完整ground/water pool与源quad；vertices/indices/batches只含transition。
+// 独立水资源不占ground表，全部记录/索引/资源/实际capacity及描述符暂存仍共同受原硬帽约束。
 // UV 左上原点，以实际尺寸半像素内缩；纹理 RGB 不做高度染色，基础层按不透明采样。
 // 顶点颜色：贴图格为灰度明暗（光照关闭时为 1），高度色格为高度色 × 明暗；渲染器以颜色乘贴图。
 // 法线取原格高度的中心差分（边缘单侧），与拼接后的显示高度一致，不修改 XYZ。
@@ -221,7 +244,18 @@ struct TerrainGroundMesh {
     std::shared_ptr<const TerrainAtlasSnapshot> blightAtlas = {},
     std::span<const std::uint8_t> effectiveGroundIndices = {},
     TerrainGroundBudgetPolicy budgetPolicy = TerrainGroundBudgetPolicy::Strict,
-    TerrainGroundBlightPolicy blightPolicy = TerrainGroundBlightPolicy::Legacy);
+    TerrainGroundBlightPolicy blightPolicy = TerrainGroundBlightPolicy::Legacy,
+    TerrainGroundRepresentation representation = TerrainGroundRepresentation::Expanded);
+
+// SharedGrid 同一份 CPU/Host 提交工作量口径：实际容器 capacity、完整 RGBA/mip/cell、
+// 来源字符串、校验 flags 与 ABI 描述符/旧 transition 拷贝暂存；借入 terrain 与 GPU 峰值不在此口径。
+// scratchBytes 为 builder 此刻仍保活的分析候选；溢出饱和到硬帽+1，不能绕过预算。
+[[nodiscard]] std::size_t TerrainGroundGridWorkingBytes(const TerrainGroundMesh& mesh,
+    std::size_t scratchBytes = 0) noexcept;
+
+// Host 在提交前复核同一 owned terrain 来源；不改变picker或代替provider/GPU完成回执。
+[[nodiscard]] Status ValidateTerrainGroundGrid(const TerrainGroundMesh& mesh,
+    const MapData::TerrainGridSnapshot& terrain, const TerrainGroundMeshLimits& limits = {});
 
 // 固定原版8×4荒芜：读取四个SW/SE/NW/NE角与SW variation，返回(column,row)。
 // 无荒芜角或任一corner索引越界返回空；不读取贴图、不改地形。构建与宿主来源核验共用此单一映射。

@@ -4,9 +4,20 @@
 
 #include <array>
 #include <memory>
+#include <optional>
 #include <span>
 
 namespace War3Map::MapData {
+
+// 完整原格的 SW/SE/NW/NE 索引；只解几何身份，不读取材质或改变地形。
+// builder、Host 来源复核与 provider grid 验证共用，拾取仍可保留原遍历算法。
+[[nodiscard]] constexpr std::optional<std::uint32_t> ResolveTerrainTileCornerIndex(
+    std::uint32_t width, std::uint32_t height, std::uint32_t sourceTile, std::uint32_t corner) noexcept {
+    if (width < 2 || height < 2 || width > 2049 || height > 2049 || corner >= 4
+        || sourceTile >= static_cast<std::uint64_t>(width - 1) * (height - 1)) return std::nullopt;
+    const auto sw = (sourceTile / (width - 1)) * width + sourceTile % (width - 1);
+    return sw + (corner >= 2 ? width : 0) + corner % 2;
+}
 
 struct TerrainReadLimits {
     // 默认值也是硬上限，调用方只能收紧；渲染器可以另设更小的网格上传预算。

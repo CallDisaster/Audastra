@@ -1457,6 +1457,188 @@ void TestSharedBaseBlightBudgetsAndMapping() {
     }
 }
 
+void TestSharedGridGoldenAndSources() {
+    constexpr auto preview = TerrainGroundBudgetPolicy::PreserveBasePreview;
+    constexpr auto shared = TerrainGroundBlightPolicy::SharedBase;
+    constexpr auto gridMode = TerrainGroundRepresentation::SharedGrid;
+    auto terrain = Grid(5, 3, [](auto x, auto y) { return static_cast<float>(x * 11 + y * y * 7); });
+    for (std::size_t index = 0; index < terrain.vertices.size(); ++index) {
+        auto& vertex = terrain.vertices[index];
+        vertex.textureAndFlagsRaw = static_cast<std::uint8_t>((index % 3 == 0 ? 1 : 0) | 0x60);
+        vertex.waterBaseHeight = 2.0f + static_cast<float>(index * 9); vertex.variationRaw = static_cast<std::uint8_t>(index % 18);
+    }
+    terrain.vertices.back().textureAndFlagsRaw = 0x6f; // 可辨识的height fallback。
+    const std::vector<std::uint8_t> hidden{0, 1, 0, 0, 1, 0, 0, 0};
+    const auto atlases = Atlases(); const auto blight = MakeAtlas(8);
+    TerrainWaterStyle water{3.25f, {20, 60, 100, 40}, {80, 130, 180, 190}, {30, 70, 110, 120}, {10, 40, 80, 240}};
+    const TerrainLighting lighting{};
+    const auto old = BuildTerrainGroundMesh(terrain, atlases, {}, lighting, &water, hidden, blight, {}, preview, shared);
+    const auto built = BuildTerrainGroundMesh(terrain, atlases, {}, lighting, &water, hidden, blight, {}, preview, shared, gridMode);
+    Require(old.Succeeded() && built.Succeeded(), "原创expanded与grid夹具都必须构建成功");
+    const auto& expanded = *old.value; const auto& mesh = *built.value;
+    Require(ValidateTerrainGroundGrid(mesh, terrain).Succeeded(), "真实来源与全部grid域应通过同一Host来源门");
+    Require(mesh.groundGrid.size() == terrain.vertices.size() && mesh.waterGrid.size() == terrain.vertices.size()
+        && mesh.vertices.size() == mesh.overlayTiles.size() * 4 && mesh.baseTiles.empty() && mesh.waterTiles.empty(),
+        "新路径只能直接持有完整grid和transition，不得残留展开base或重复source映射");
+    const auto values = [](const TerrainGroundVertex& v) { return std::array<float, 8>{v.x, v.y, v.z, v.red, v.green, v.blue, v.u, v.v}; };
+    for (std::size_t quad = 0; quad < mesh.baseQuads.size(); ++quad) {
+        const auto& q = mesh.baseQuads[quad];
+        Require(q.sourceTile == expanded.baseTiles[quad], "非连续hidden补集必须绑定同一原sourceTile");
+        const auto& sw = expanded.vertices[quad * 4]; const auto& ne = expanded.vertices[quad * 4 + 3];
+        bool fallback = false;
+        for (const auto& batch : expanded.batches) if (!batch.alphaBlend && !batch.translucent)
+            for (std::size_t at = batch.firstIndex; at < batch.firstIndex + batch.indexCount; at += 6)
+                if (expanded.indices[at] / 4 == quad) fallback = batch.textureIndex == TerrainGroundHeightColor;
+        Require(fallback ? q.uvLeft == 0 && q.uvRight == 0 && q.uvTop == 0 && q.uvBottom == 0
+            : q.uvLeft == sw.u && q.uvRight == ne.u && q.uvTop == ne.v && q.uvBottom == sw.v,
+            "base真实UV逐位沿用旧expanded，fallback冻结为零UV");
+        for (std::uint32_t corner = 0; corner < 4; ++corner) {
+            const auto index = ResolveTerrainTileCornerIndex(mesh.sourceWidth, mesh.sourceHeight, q.sourceTile, corner);
+            Require(index.has_value(), "source取角必须有界");
+            const auto& v = mesh.groundGrid[*index]; const auto& oracle = expanded.vertices[quad * 4 + corner];
+            Require(std::array<float, 3>{v.x, v.y, v.groundZ} == std::array<float, 3>{oracle.x, oracle.y, oracle.z}
+                && (fallback ? std::array<float, 3>{v.fallbackR, v.fallbackG, v.fallbackB}
+                    : std::array<float, 3>{v.textureR, v.textureG, v.textureB}) == std::array<float, 3>{oracle.red, oracle.green, oracle.blue},
+                "共享角XYZ与CPU最终纹理/高度色必须逐位等于旧expanded");
+        }
+    }
+    const auto baseVertices = mesh.baseQuads.size() * 4, baseIndices = mesh.baseQuads.size() * 6;
+    Require(std::equal(mesh.baseIndices.begin(), mesh.baseIndices.end(), expanded.indices.begin()), "基础材质稳定归组不能改变quad序列");
+    Require(mesh.overlayTiles == expanded.overlayTiles && mesh.blightIndices == expanded.blightIndices,
+        "transition源次序与blight虚拟基础域必须沿用旧语义");
+    for (std::size_t index = 0; index < mesh.vertices.size(); ++index)
+        Require(values(mesh.vertices[index]) == values(expanded.vertices[baseVertices + index]), "transition原32B顶点必须逐位保留");
+    for (std::size_t index = 0; index < mesh.indices.size(); ++index)
+        Require(mesh.indices[index] + baseVertices == expanded.indices[baseIndices + index], "transition只平移自身索引域，不换triangle或批序");
+    const auto waterOffset = baseVertices + mesh.vertices.size();
+    Require(mesh.waterQuads.size() == expanded.waterTiles.size() && mesh.waterQuads.size() == terrain.tiles.size(), "hidden或低于地表的水不能删");
+    bool differentLevels = false;
+    for (std::size_t quad = 0; quad < mesh.waterQuads.size(); ++quad) {
+        const auto& q = mesh.waterQuads[quad];
+        Require(q.sourceTile == expanded.waterTiles[quad], "透明水严格保原sourceTile顺序，不能按level重排");
+        differentLevels |= q.alphaLevel != mesh.waterQuads[0].alphaLevel;
+        const auto uv = ResolveTerrainAtlasCellUv(128, 128, 4, 4, q.alphaLevel % 4, q.alphaLevel / 4);
+        for (std::uint32_t corner = 0; corner < 4; ++corner) {
+            const auto index = *ResolveTerrainTileCornerIndex(mesh.sourceWidth, mesh.sourceHeight, q.sourceTile, corner);
+            const auto& v = mesh.waterGrid[index]; const auto& oracle = expanded.vertices[waterOffset + quad * 4 + corner];
+            Require(std::array<float, 4>{v.waterZ, v.red, v.green, v.blue} == std::array<float, 4>{oracle.z, oracle.red, oracle.green, oracle.blue}
+                && oracle.u == (corner % 2 ? uv->right : uv->left) && oracle.v == (corner < 2 ? uv->bottom : uv->top),
+                "逐角水Z/RGB及四次alpha累加所得cell必须与旧expanded逐位相同");
+        }
+    }
+    Require(differentLevels, "水golden必须实际覆盖不同alpha level，不能退化为均匀颜色样例");
+    auto poison = mesh; poison.baseQuads[1].sourceTile = poison.baseQuads[0].sourceTile;
+    Require(!ValidateTerrainGroundGrid(poison, terrain).Succeeded(), "重复sourceTile不能通过来源门");
+    poison = mesh; poison.waterIndices[0] = 4;
+    Require(!ValidateTerrainGroundGrid(poison, terrain).Succeeded(), "水透明顺序不能借base重排资格放行");
+    poison = mesh; poison.groundGrid[0].textureR = std::numeric_limits<float>::quiet_NaN();
+    Require(!ValidateTerrainGroundGrid(poison, terrain).Succeeded(), "非有限真实颜色必须拒绝");
+    const auto onePixel = ResolveTerrainAtlasCellUv(4, 4, 4, 4, 3, 2);
+    Require(onePixel && onePixel->left == 0.875f && onePixel->right == 0.875f && onePixel->top == 0.625f && onePixel->bottom == 0.625f
+        && !ResolveTerrainAtlasCellUv(2049, 4, 4, 4, 0, 0) && !ResolveTerrainAtlasCellUv(4, 4, 4, 4, 4, 0)
+        && !ResolveTerrainTileCornerIndex(5, 3, 8, 0) && !ResolveTerrainTileCornerIndex(5, 3, 0, 4),
+        "公开纯函数保1px退化与原尺寸/索引边界");
+}
+
+void TestSharedGridIndependentResourcesAndBudgets() {
+    constexpr auto preview = TerrainGroundBudgetPolicy::PreserveBasePreview;
+    constexpr auto shared = TerrainGroundBlightPolicy::SharedBase;
+    constexpr auto gridMode = TerrainGroundRepresentation::SharedGrid;
+    auto terrain = Grid(33, 2); terrain.header.groundTilesets.clear(); std::vector<Atlas> atlases;
+    for (std::uint32_t index = 0; index < 16; ++index) {
+        terrain.header.groundTilesets.push_back("g" + std::to_string(index)); atlases.push_back(MakeAtlas(4, 2));
+    }
+    auto mipAtlas = std::const_pointer_cast<TerrainAtlasSnapshot>(atlases[0]);
+    for (std::uint32_t size = 4; size; size /= 2) mipAtlas->additionalMips.push_back({size, size, std::vector<std::byte>(size * size * 4, std::byte{37})});
+    for (std::uint32_t y = 0; y < 2; ++y) for (std::uint32_t x = 0; x < 33; ++x) {
+        auto& vertex = terrain.vertices[y * 33 + x];
+        vertex.textureAndFlagsRaw = static_cast<std::uint8_t>(std::min(x / 2, 15u) | 0x60); vertex.waterBaseHeight = 40;
+    }
+    const auto blight = MakeAtlas(8, 1);
+    TerrainWaterStyle water{0, {90, 130, 170, 210}, {90, 130, 170, 210}, {60, 100, 150, 230}, {60, 100, 150, 230}};
+    const auto build = [&](const TerrainGroundMeshLimits& limits = {}, const TerrainWaterStyle* selected = nullptr) {
+        return BuildTerrainGroundMesh(terrain, atlases, limits, kUnlit, selected ? selected : &water, {}, blight, {}, preview, shared, gridMode);
+    };
+    const auto result = build(); Require(result.Succeeded(), "16ground加独立blight/water必须准入");
+    const auto& mesh = *result.value;
+    Require(mesh.textures.size() == 16 && mesh.blightTexture == blight && mesh.waterTexture && !mesh.waterTextureIndex
+        && mesh.waterQuads.size() == terrain.tiles.size() && mesh.budget.water.omitted == 0
+        && mesh.textures[0]->additionalMips.size() == 3 && mesh.textures[0]->additionalMips.back().rgba[0] == std::byte{37}
+        && mesh.waterTexture->image.width == 128 && mesh.waterTexture->additionalMips.empty(),
+        "新表解除水槽帽，但ground仍16且保原连续mip尾级与现合成水单mip");
+    Require(ValidateTerrainGroundGrid(mesh, terrain).Succeeded(), "独立资源整体仍受同一来源/预算门");
+    auto small = Grid(5, 3); small.header.groundTilesets = {"Ldrt"};
+    for (auto& vertex : small.vertices) { vertex.textureAndFlagsRaw |= 0x40; vertex.waterBaseHeight = 40; }
+    const std::vector<Atlas> one{MakeAtlas(4, 1)};
+    TerrainGroundMeshLimits tight; tight.maxVertices = small.vertices.size() * 2;
+    const auto compact = BuildTerrainGroundMesh(small, one, tight, kUnlit, &water, {}, {}, {}, preview, shared, gridMode);
+    const auto expanded = BuildTerrainGroundMesh(small, one, tight, kUnlit, &water);
+    Require(compact.Succeeded() && compact.value->waterQuads.size() == small.tiles.size() && !expanded.Succeeded(),
+        "原同一record帽必须按两份共享grid计数，不能继续按每quad展开计数");
+    --tight.maxVertices;
+    const auto less = BuildTerrainGroundMesh(small, one, tight, kUnlit, &water, {}, {}, {}, preview, shared, gridMode);
+    Require(less.Succeeded() && less.value->waterQuads.empty() && less.value->budget.water.omitted == small.tiles.size(),
+        "少1个record时水面整类省略，不能抬帽或截取水tile前缀");
+    const auto bounded = [&](const TerrainGroundMeshLimits& limits, bool includeWater = true) {
+        return BuildTerrainGroundMesh(small, one, limits, kUnlit, includeWater ? &water : nullptr, {}, {}, {}, preview, shared, gridMode);
+    };
+    tight = {}; tight.maxIndices = small.tiles.size() * 12;
+    Require(bounded(tight).Succeeded() && bounded(tight).value->waterQuads.size() == small.tiles.size(), "两域索引恰到原收紧边界应全部保留");
+    --tight.maxIndices; const auto fewerIndices = bounded(tight);
+    Require(fewerIndices.Succeeded() && fewerIndices.value->waterQuads.empty(), "索引少1必须整类省水，不能借独立域各领一份帽");
+    tight = {}; tight.maxBatches = 1; const auto fewerBatches = bounded(tight);
+    Require(fewerBatches.Succeeded() && fewerBatches.value->waterQuads.empty(), "非空水仍计一批，不能漏掉独立pass批次预算");
+    tight = {}; tight.maxRgbaBytes = one[0]->RgbaByteCount() + 65536;
+    const auto rgbaEdge = bounded(tight); Require(rgbaEdge.Succeeded() && rgbaEdge.value->waterTexture, "独立资源的全RGBA恰到边界应通过");
+    --tight.maxRgbaBytes; const auto fewerPixels = bounded(tight);
+    Require(fewerPixels.Succeeded() && !fewerPixels.value->waterTexture, "独立水资源不能绕过聚合RGBA少1B门");
+    const auto minimumBytes = [&](const std::function<bool(std::size_t)>& accepts) {
+        std::size_t low = 0, high = TerrainGroundMeshLimits{}.maxWorkingBytes;
+        Require(accepts(high), "原创fixture应在原完整working帽内准入");
+        while (low < high) { const auto middle = low + (high - low) / 2; if (accepts(middle)) high = middle; else low = middle + 1; }
+        return low;
+    };
+    const auto waterMinimum = minimumBytes([&](std::size_t bytes) {
+        TerrainGroundMeshLimits limit; limit.maxWorkingBytes = bytes; const auto value = bounded(limit);
+        return value.Succeeded() && value.value->waterQuads.size() == small.tiles.size();
+    });
+    tight = {}; tight.maxWorkingBytes = waterMinimum - 1; const auto belowWater = bounded(tight);
+    Require(!belowWater.Succeeded() || belowWater.value->waterQuads.empty(), "公开完整水准入门槛前1B不能漏账准入或只显示一部分水");
+    const auto minimumDry = minimumBytes([&](std::size_t bytes) {
+        TerrainGroundMeshLimits limit; limit.maxWorkingBytes = bytes; return bounded(limit, false).Succeeded();
+    });
+    const auto minimumRefused = minimumBytes([&](std::size_t bytes) {
+        TerrainGroundMeshLimits limit; limit.maxWorkingBytes = bytes; limit.maxTextureDimension = 127;
+        const auto value = bounded(limit); return value.Succeeded() && value.value->waterQuads.empty();
+    });
+    Require(minimumRefused > minimumDry, "已收集后资源拒绝的完整水候选capacity仍须收费，clear不能伪装释放");
+    auto poison = mesh; const auto originalBytes = TerrainGroundGridWorkingBytes(poison);
+    poison.groundGrid.reserve(poison.groundGrid.size() + 64); tight = {}; tight.maxWorkingBytes = originalBytes;
+    Require(TerrainGroundGridWorkingBytes(poison) > originalBytes && !ValidateTerrainGroundGrid(poison, terrain, tight).Succeeded(),
+        "真实已申请capacity必须收费，不能只对逻辑record数验收");
+    auto zero = water;
+    zero.shallowMinimum[3] = zero.shallowMaximum[3] = zero.deepMinimum[3] = zero.deepMaximum[3] = 0;
+    const auto selectedZero = build({}, &zero);
+    Require(selectedZero.Succeeded() && selectedZero.value->waterQuads.size() == terrain.tiles.size()
+        && selectedZero.value->budget.water.noContribution == 0 && selectedZero.value->waterQuads.front().alphaLevel == 0,
+        "仅selected level0不能扩展为whole-source零贡献证明");
+    auto transparent = water;
+    transparent.texture = std::make_shared<const Image::DecodedImage>(Image::DecodedImage{32, 32, std::vector<std::byte>(32 * 32 * 4)});
+    const auto noContribution = BuildTerrainGroundMesh(small, one, {}, kUnlit, &transparent, {}, {}, {}, preview, shared, gridMode);
+    Require(noContribution.Succeeded() && noContribution.value->waterQuads.empty() && noContribution.value->waterGrid.empty()
+        && !noContribution.value->waterTexture && noContribution.value->budget.water.noContribution == small.tiles.size(),
+        "只有原整源32²alpha零证明才可同时清空水pool/表并记录零贡献");
+    const std::vector<std::uint8_t> allHidden(small.tiles.size(), 1);
+    const auto waterOnly = BuildTerrainGroundMesh(small, one, {}, kUnlit, &transparent, allHidden, {}, {}, preview, shared, gridMode);
+    Require(waterOnly.Succeeded() && waterOnly.value->baseQuads.empty() && waterOnly.value->waterQuads.size() == small.tiles.size()
+        && waterOnly.value->budget.water.noContribution == 0 && ValidateTerrainGroundGrid(*waterOnly.value, small).Succeeded(),
+        "全hidden的水only候选保旧语义，不因零alpha或无base变成默认空场景");
+    TerrainGroundMeshLimits widened; ++widened.maxVertices;
+    Require(!build(widened).Succeeded(), "新入口仍禁止放宽任何原硬帽");
+    Require(!BuildTerrainGroundMesh(small, one, {}, kUnlit, &water, {}, {}, {}, preview,
+        TerrainGroundBlightPolicy::Legacy, gridMode).Succeeded(), "共享pool必须绑定完整新模式，不接旧荒芜/提交分支");
+}
+
 } // namespace
 
 int main() {
@@ -1467,6 +1649,8 @@ int main() {
         TestFallbackReasonsAndWater();
         TestOriginalBlightAtlasAndFallback();
         TestSharedBaseBlightBudgetsAndMapping();
+        TestSharedGridGoldenAndSources();
+        TestSharedGridIndependentResourcesAndBudgets();
         TestRetainedMipBudgets();
         TestBudgetsAndInvalidInputs();
         TestBlendLayers();

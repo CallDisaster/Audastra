@@ -54,7 +54,8 @@ struct WorldTerrainCache {
 [[nodiscard]] Result<WorldTerrainLoaded> LoadWorldTerrain(std::span<const std::byte> bytes,
     const Result<WorldTerrainSources>& sources, const std::optional<WorldEnvironmentInputs>& environment,
     const std::optional<std::vector<std::byte>>& shadow, std::shared_ptr<WorldTerrainCache>* cache,
-    Render::TerrainGroundBlightPolicy blightPolicy = Render::TerrainGroundBlightPolicy::Legacy);
+    Render::TerrainGroundBlightPolicy blightPolicy = Render::TerrainGroundBlightPolicy::Legacy,
+    Render::TerrainGroundRepresentation representation = Render::TerrainGroundRepresentation::Expanded);
 
 // 编辑后重建：复用缓存（贴图表变化时只重读贴图）。keepCliffs 非空时不重算悬崖、沿用其覆盖格
 // （拖动中的快速预览）；为空时重新烘焙悬崖。selectedWaterFrame 仅选择 Water.slk 帧，
@@ -63,6 +64,7 @@ struct WorldTerrainCache {
 [[nodiscard]] Result<WorldTerrainLoaded> RebuildWorldTerrain(const MapData::TerrainGridSnapshot& raw,
     WorldTerrainCache& cache, std::shared_ptr<const Render::TerrainCliffs> keepCliffs,
     std::optional<std::uint32_t> selectedWaterFrame = std::nullopt,
-    Render::TerrainGroundBlightPolicy blightPolicy = Render::TerrainGroundBlightPolicy::Legacy);
+    Render::TerrainGroundBlightPolicy blightPolicy = Render::TerrainGroundBlightPolicy::Legacy,
+    Render::TerrainGroundRepresentation representation = Render::TerrainGroundRepresentation::Expanded);
 
 } // namespace War3Map::Modules

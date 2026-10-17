@@ -54,6 +54,7 @@ public:
     [[nodiscard]] bool HasTerrainMips() const noexcept;
     // 可在renderer建立前只读查询编译能力；不访问GPU，不因缺少可选尾部改变旧路径。
     [[nodiscard]] bool HasTerrainBlightSupport();
+    [[nodiscard]] bool HasTerrainGridSupport();
     // 模型场景与地形并存、独立提交；插件不支持或拒绝时保留旧 CPU 场景和选择。空指针清除模型。
     bool SetModelScene(std::shared_ptr<const Render::WorldModelScene> models);
     [[nodiscard]] bool HasModelSupport() const noexcept;

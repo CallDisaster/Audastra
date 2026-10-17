@@ -287,11 +287,14 @@ void WorldViewport::ReportPluginFailure(const char* operation, std::int32_t resu
 
 bool WorldViewport::SubmitMesh() {
     if (!renderer_) return true;
+    const bool sharedGrid = ground_ && ground_->representation == Render::TerrainGroundRepresentation::SharedGrid;
+    if (sharedGrid && !HasTerrainGridSupport()) return false;
     if (ground_ && api_->structSize >= offsetof(War3RenderPluginApiV2, submitTerrainScene) + sizeof(api_->submitTerrainScene) && api_->submitTerrainScene) {
         std::vector<War3RenderTerrainVertexV2> vertices;
         vertices.reserve(ground_->vertices.size());
         for (const auto& v : ground_->vertices) vertices.push_back({v.x, v.y, v.z, v.red, v.green, v.blue, v.u, v.v});
         std::vector<War3RenderTerrainBatchV2> batches;
+        batches.reserve(ground_->batches.size());
         for (const auto& b : ground_->batches) batches.push_back({b.firstIndex, b.indexCount,
             b.textureIndex | (b.alphaBlend ? WAR3_RENDER_TERRAIN_ALPHA_BLEND : 0u) | (b.translucent ? WAR3_RENDER_TERRAIN_TRANSLUCENT : 0u)});
         if (HasTerrainMips()) {
@@ -319,6 +322,52 @@ bool WorldViewport::SubmitMesh() {
             const War3RenderTerrainMipSceneV2 scene{sizeof(War3RenderTerrainMipSceneV2), static_cast<std::uint32_t>(vertices.size()),
                 static_cast<std::uint32_t>(ground_->indices.size()), static_cast<std::uint32_t>(chains.size()),
                 static_cast<std::uint32_t>(batches.size()), revision_, vertices.data(), ground_->indices.data(), chains.data(), batches.data()};
+            if (sharedGrid) {
+                // 同一owned候选直接借出正式ABI池，不展开/复制base或water，也不向旧入口降交。
+                if (!HasTerrainGridSupport() || Render::TerrainGroundGridWorkingBytes(*ground_) > Render::TerrainGroundMeshLimits{}.maxWorkingBytes) return false;
+                std::vector<War3RenderTerrainBatchV2> baseBatches;
+                baseBatches.reserve(ground_->baseBatches.size());
+                for (const auto& b : ground_->baseBatches) baseBatches.push_back({b.firstIndex, b.indexCount, b.textureIndex});
+                std::vector<War3RenderTerrainBlightBatchV2> blightBatches;
+                blightBatches.reserve(ground_->blightBatches.size());
+                for (const auto& b : ground_->blightBatches)
+                    blightBatches.push_back({b.firstIndex, b.indexCount, b.uvLeft, b.uvRight, b.uvTop, b.uvBottom});
+                std::vector<War3RenderMipRgbaV2> blightMips, waterMips;
+                War3RenderTextureMipChainV2 blightChain{}, waterChain{};
+                if (ground_->blightTexture) blightChain = describeChain(*ground_->blightTexture, blightMips);
+                if (ground_->waterTexture) waterChain = describeChain(*ground_->waterTexture, waterMips);
+                std::size_t extraCapacity = (vertices.capacity() - vertices.size()) * sizeof(War3RenderTerrainVertexV2)
+                    + (batches.capacity() - batches.size() + baseBatches.capacity() - baseBatches.size()) * sizeof(War3RenderTerrainBatchV2)
+                    + (blightBatches.capacity() - blightBatches.size()) * sizeof(War3RenderTerrainBlightBatchV2)
+                    + (chains.capacity() - chains.size()) * sizeof(War3RenderTextureMipChainV2)
+                    + (mipLists.capacity() - mipLists.size()) * sizeof(std::vector<War3RenderMipRgbaV2>)
+                    + (blightMips.capacity() - blightMips.size() + waterMips.capacity() - waterMips.size()) * sizeof(War3RenderMipRgbaV2);
+                for (const auto& mips : mipLists) extraCapacity += (mips.capacity() - mips.size()) * sizeof(War3RenderMipRgbaV2);
+                if (Render::TerrainGroundGridWorkingBytes(*ground_, extraCapacity) > Render::TerrainGroundMeshLimits{}.maxWorkingBytes) return false;
+                auto transition = scene;
+                if (vertices.empty()) transition.vertices = nullptr;
+                if (ground_->indices.empty()) transition.indices = nullptr;
+                if (chains.empty()) transition.textures = nullptr;
+                if (batches.empty()) transition.batches = nullptr;
+                const War3RenderTerrainGridFrameV2 frame{sizeof(War3RenderTerrainGridFrameV2), WAR3_RENDER_TERRAIN_GRID_FETCH_V1,
+                    ground_->sourceWidth, ground_->sourceHeight, static_cast<std::uint32_t>(ground_->groundGrid.size()),
+                    static_cast<std::uint32_t>(ground_->baseQuads.size()), static_cast<std::uint32_t>(ground_->baseIndices.size()),
+                    static_cast<std::uint32_t>(baseBatches.size()), static_cast<std::uint32_t>(ground_->blightIndices.size()),
+                    static_cast<std::uint32_t>(blightBatches.size()), static_cast<std::uint32_t>(ground_->waterQuads.size()),
+                    static_cast<std::uint32_t>(ground_->waterIndices.size()), transition,
+                    ground_->groundGrid.data(), ground_->waterGrid.empty() ? nullptr : ground_->waterGrid.data(),
+                    ground_->baseQuads.empty() ? nullptr : ground_->baseQuads.data(), ground_->baseIndices.empty() ? nullptr : ground_->baseIndices.data(),
+                    baseBatches.empty() ? nullptr : baseBatches.data(), ground_->blightIndices.empty() ? nullptr : ground_->blightIndices.data(),
+                    blightBatches.empty() ? nullptr : blightBatches.data(), ground_->blightTexture ? &blightChain : nullptr,
+                    ground_->waterQuads.empty() ? nullptr : ground_->waterQuads.data(), ground_->waterIndices.empty() ? nullptr : ground_->waterIndices.data(),
+                    ground_->waterTexture ? &waterChain : nullptr};
+                if (!HasTerrainGridSupport()) return false;
+                const auto result = api_->submitTerrainGridFrame(renderer_, &frame);
+                if (result == 0) return true;
+                ReportPluginFailure("submitTerrainGridFrame", result);
+                SetStatus(tr("渲染器拒绝了完整共享地表帧，保留此前视图"));
+                return false;
+            }
             if (ground_->blightPolicy == Render::TerrainGroundBlightPolicy::SharedBase) {
                 // 能力可能在worker之后失效；绝不把已经去近似色的base退交旧入口。
                 if (!HasTerrainBlightSupport()) return false;
@@ -743,6 +792,17 @@ bool WorldViewport::HasTerrainBlightSupport() {
         && caps.maxBlightBatches == WAR3_RENDER_TERRAIN_BLIGHT_MAX_BATCHES && caps.reserved == 0;
 }
 
+bool WorldViewport::HasTerrainGridSupport() {
+    if (!LoadPluginApi() || !HasGroundSupport() || !HasTerrainMips()
+        || api_->structSize < offsetof(War3RenderPluginApiV2, getTerrainGridCaptureFacts) + sizeof(api_->getTerrainGridCaptureFacts)
+        || !api_->getTerrainGridCapabilities || !api_->submitTerrainGridFrame || !api_->getTerrainGridCaptureFacts) return false;
+    War3RenderTerrainGridCapabilitiesV2 caps{};
+    caps.structSize = sizeof(caps);
+    return api_->getTerrainGridCapabilities(renderer_, &caps) == 0 && caps.structSize == sizeof(caps)
+        && caps.gridFormat == WAR3_RENDER_TERRAIN_GRID_FETCH_V1 && caps.maxGroundTextures == 16
+        && caps.maxBlightBatches == 32 && caps.maxWaterTextures == 1 && caps.reserved == 0;
+}
+
 bool WorldViewport::HasGroundSupport() const noexcept {
     return api_ && api_->structSize >= offsetof(War3RenderPluginApiV2, submitTerrainScene)
         + sizeof(api_->submitTerrainScene) && api_->submitTerrainScene;
@@ -814,6 +874,24 @@ bool WorldViewport::SetGroundMesh(std::shared_ptr<const Render::TerrainGroundMes
         return reject("WORLD_GROUND_SOURCE", "地表贴图网格未绑定完整分辨率的地形来源。");
     if (!HasGroundSupport())
         return reject("WORLD_GROUND_UNSUPPORTED", "当前渲染插件未提供地表贴图接口。");
+    if (ground->representation == Render::TerrainGroundRepresentation::SharedGrid) {
+        if (!HasTerrainGridSupport()) return reject("WORLD_GROUND_GRID_UNSUPPORTED", "当前插件共享 grid 能力已失效，整帧保留此前视图。");
+        const auto valid = Render::ValidateTerrainGroundGrid(*ground, *terrain_);
+        if (!valid.Succeeded()) { groundFailure_ = valid; return false; }
+        const auto previous = ground_;
+        ground_ = std::move(ground);
+        if (!SubmitMesh()) {
+            ground_ = previous;
+            return reject("WORLD_GROUND_PLUGIN_REJECTED", "渲染插件拒绝共享 grid 完整帧，保留此前地形。");
+        }
+        groundFailure_ = {};
+        pressView_.reset(); ClearCoordinates(tr("地表视图更新中…"), true);
+        return true;
+    }
+    if (ground->representation != Render::TerrainGroundRepresentation::Expanded || !ground->groundGrid.empty()
+        || !ground->waterGrid.empty() || !ground->baseQuads.empty() || !ground->baseIndices.empty() || !ground->baseBatches.empty()
+        || !ground->waterQuads.empty() || !ground->waterIndices.empty() || ground->waterTexture)
+        return reject("WORLD_GROUND_GRID_MODE", "旧地表入口不能接收共享 pool。");
     const bool sharedBlight = ground->blightPolicy == Render::TerrainGroundBlightPolicy::SharedBase;
     if (ground->blightPolicy != Render::TerrainGroundBlightPolicy::Legacy && !sharedBlight)
         return reject("WORLD_GROUND_BLIGHT_POLICY", "荒芜通道策略无效。");
@@ -915,11 +993,10 @@ bool WorldViewport::SetGroundMesh(std::shared_ptr<const Render::TerrainGroundMes
             bool canonical = false;
             std::size_t selectedCell = 0;
             for (std::size_t cell = 0; cell < 32; ++cell) {
-                const auto size = atlas.image.height / 4;
-                const auto x = static_cast<float>((cell % 8) * size), y = static_cast<float>((cell / 8) * size);
-                const auto width = static_cast<float>(atlas.image.width), height = static_cast<float>(atlas.image.height);
-                if (batch.uvLeft == (x + 0.5f) / width && batch.uvRight == (x + size - 0.5f) / width
-                    && batch.uvTop == (y + 0.5f) / height && batch.uvBottom == (y + size - 0.5f) / height) {
+                const auto uv = Render::ResolveTerrainAtlasCellUv(atlas.image.width, atlas.image.height, 8, 4,
+                    static_cast<std::uint32_t>(cell % 8), static_cast<std::uint32_t>(cell / 8));
+                if (uv && batch.uvLeft == uv->left && batch.uvRight == uv->right
+                    && batch.uvTop == uv->top && batch.uvBottom == uv->bottom) {
                     if (cells[cell]) return reject("WORLD_GROUND_BLIGHT_CELL", "同一荒芜 cell 不能重复分批。");
                     cells[cell] = canonical = true; selectedCell = cell; break;
                 }
