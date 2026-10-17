@@ -297,15 +297,13 @@ FinalMembers SelectFinalMembers(const TerrainMinimapAssetSnapshot& snapshot,
     return selected;
 }
 
-std::size_t PrechargeFinal(const TerrainMinimapAssetSnapshot& snapshot, const FinalMembers& selected,
+std::size_t PrechargeInputs(const TerrainMinimapAssetSnapshot& snapshot, std::size_t terrainReadBytes,
     const TerrainMinimapAssetCaptureLimits& limits) {
-    const auto& binding = snapshot.Binding();
-    if (snapshot.Input().currentW3e.size() > limits.maxCurrentW3eBytes || !binding.originalTerrainBytes)
+    if (snapshot.Input().currentW3e.size() > limits.maxCurrentW3eBytes || !terrainReadBytes)
         Fail("TERRAIN_ASSETS_BUDGET", "冻结W3E缺少有界的源/现字节大小。");
     std::size_t total = 0;
-    Add(total, binding.originalTerrainBytes, limits.maxSourceBytes);
+    Add(total, terrainReadBytes, limits.maxSourceBytes);
     Add(total, snapshot.Input().currentW3e.size(), limits.maxSourceBytes);
-    std::size_t hashed = snapshot.Input().currentW3e.size();
     for (const auto& dependency : snapshot.Dependencies()) {
         const auto cap = dependency.kind == TerrainMinimapDependencyKind::Atlas
             ? limits.atlas.maxInputBytes : limits.tables.maxTableBytes;
@@ -313,6 +311,13 @@ std::size_t PrechargeFinal(const TerrainMinimapAssetSnapshot& snapshot, const Fi
             Fail("TERRAIN_ASSETS_BUDGET", "冻结依赖超过本次收紧的成员硬限额：" + dependency.winner.canonicalPath);
         Add(total, dependency.encodedBytes, limits.maxSourceBytes);
     }
+    return total;
+}
+
+std::size_t PrechargeFinal(const TerrainMinimapAssetSnapshot& snapshot, const FinalMembers& selected,
+    const TerrainMinimapAssetCaptureLimits& limits) {
+    auto total = PrechargeInputs(snapshot, snapshot.Binding().originalTerrainBytes, limits);
+    std::size_t hashed = snapshot.Input().currentW3e.size();
     for (const auto& entry : selected) if (entry.second.replacement) {
         Add(total, entry.second.replacement->data.size(), limits.maxSourceBytes);
         Add(hashed, entry.second.replacement->data.size(), limits.maxSourceBytes);
@@ -320,10 +325,14 @@ std::size_t PrechargeFinal(const TerrainMinimapAssetSnapshot& snapshot, const Fi
     return hashed; // source/依赖的预收留给随后CaptureContext实际读取时累计。
 }
 
+void VerifyCurrentTerrainBytes(const TerrainMinimapAssetSnapshot& snapshot) {
+    if (Take(Sha256(snapshot.Input().currentW3e)) != snapshot.Binding().currentTerrainSha256)
+        Fail("TERRAIN_ASSETS_FINAL_SNAPSHOT", "冻结当前W3E正文与真实捕获身份不同。");
+}
+
 void VerifyFinalBytes(const TerrainMinimapAssetSnapshot& snapshot, const FinalMembers& selected) {
     const auto& binding = snapshot.Binding();
-    if (Take(Sha256(snapshot.Input().currentW3e)) != binding.currentTerrainSha256)
-        Fail("TERRAIN_ASSETS_FINAL_SNAPSHOT", "冻结当前W3E正文与真实捕获身份不同。");
+    VerifyCurrentTerrainBytes(snapshot);
     for (const auto& [path, member] : selected) {
         if (!member.dependency && !member.replacement && binding.originalTerrainSha256 != binding.currentTerrainSha256)
             Fail("TERRAIN_ASSETS_FINAL_W3E_MISSING", "最终列表缺少冻结的已编辑W3E输出。");
@@ -337,14 +346,18 @@ void VerifyFinalBytes(const TerrainMinimapAssetSnapshot& snapshot, const FinalMe
     }
 }
 
-bool SameWinner(const TerrainMinimapAssetDependency& a, const TerrainMinimapAssetDependency& b) {
+bool SameWinner(const TerrainMinimapAssetDependency& a, const TerrainMinimapAssetDependency& b, std::string_view savedMapSha) {
+    // 新归档map资源的容器/sourceId必然随整档SHA改变；其实际路径/层级/正文仍必须相同。
+    const bool rebindMap = !savedMapSha.empty() && a.mapMemberPresent && b.mapMemberPresent;
+    const bool sameContainer = rebindMap
+        ? a.containerIdentity == savedMapSha && a.winner.sourceId == "terrain-minimap-map:" + std::string(savedMapSha)
+        : a.winner.sourceId == b.winner.sourceId && a.containerIdentity == b.containerIdentity;
     return a.winner.canonicalPath == b.winner.canonicalPath && a.winner.layer == b.winner.layer
-        && a.winner.priority == b.winner.priority && a.winner.sourceId == b.winner.sourceId
-        && a.winner.sourcePath == b.winner.sourcePath && a.containerIdentity == b.containerIdentity
+        && a.winner.priority == b.winner.priority && a.winner.sourcePath == b.winner.sourcePath && sameContainer
         && a.mapMemberPresent == b.mapMemberPresent && a.encodedBytes == b.encodedBytes && a.encodedSha256 == b.encodedSha256;
 }
 
-void VerifyDependencyPhase(CaptureContext& context, const TerrainMinimapAssetSnapshot& snapshot, bool atlas) {
+void VerifyDependencyPhase(CaptureContext& context, const TerrainMinimapAssetSnapshot& snapshot, bool atlas, bool savedMap = false) {
     std::vector<std::string> names;
     for (const auto& dependency : snapshot.Dependencies())
         if ((dependency.kind == TerrainMinimapDependencyKind::Atlas) == atlas) names.push_back(dependency.winner.canonicalPath);
@@ -357,7 +370,8 @@ void VerifyDependencyPhase(CaptureContext& context, const TerrainMinimapAssetSna
             Fail("TERRAIN_ASSETS_FINAL_WINNER", "源地图存在性改变了小地图依赖winner：" + path);
         const auto resource = Take(context.resolver.Read(path));
         if (resource.bytes.size() != expected.encodedBytes
-            || !SameWinner(context.dependencies.at(context.dependencyIndices.at(path)), expected))
+            || !SameWinner(context.dependencies.at(context.dependencyIndices.at(path)), expected,
+                savedMap ? std::string_view(context.source.SourceSha256()) : std::string_view{}))
             Fail("TERRAIN_ASSETS_FINAL_DEPENDENCY", "实际来源容器、winner或编码正文已改变：" + path);
     }
     Check(context.guard.Verify());
@@ -551,6 +565,38 @@ Status VerifyTerrainMinimapAssetsFrozenOutput(const TerrainMinimapAssetSnapshot&
         return Status::Failure(kSubsystem, "TERRAIN_ASSETS_ALLOCATION", "最终依赖核验分配失败，不返回部分通过。");
     } catch (const std::length_error&) {
         return Status::Failure(kSubsystem, "TERRAIN_ASSETS_ALLOCATION", "最终依赖核验超出容器容量，不返回部分通过。");
+    }
+}
+
+Status VerifyTerrainMinimapAssetsReadback(const TerrainMinimapAssetSnapshot& snapshot, const MapArchiveSession& saved,
+    const TerrainMinimapAssetCaptureLimits& limits) {
+    try {
+        ValidateLimits(limits);
+        if (SnapshotIdentity(snapshot) != snapshot.IdentitySha256())
+            Fail("TERRAIN_ASSETS_FINAL_SNAPSHOT", "回读需要原工厂冻结的真实快照身份。");
+        const auto terrainBytes = snapshot.Input().currentW3e.size();
+        static_cast<void>(PrechargeInputs(snapshot, terrainBytes, limits));
+        VerifyCurrentTerrainBytes(snapshot);
+        TerrainMinimapAssetCaptureFacts facts;
+        facts.cumulativeSourceBytes = terrainBytes; // 上述owned current实际散列也计原工作字节账。
+        std::vector<TerrainMinimapAssetDependency> dependencies;
+        const auto& binding = snapshot.Binding();
+        CaptureContext context{saved, limits, facts, dependencies, binding.gameRoot, binding.mainTileset};
+        Check(context.guard.Watch(saved.SourcePath()));
+        context.Phase({"war3map.w3e"}, terrainBytes, TerrainMinimapDependencyKind::Table);
+        const auto& terrain = context.mapMembers.front();
+        if (!terrain.present || terrain.bytes.size() != terrainBytes || Take(Sha256(terrain.bytes)) != binding.currentTerrainSha256)
+            Fail("TERRAIN_ASSETS_READBACK_TERRAIN", "实际输出W3E与冻结当前修订不同。");
+        Check(context.guard.Verify());
+        VerifyDependencyPhase(context, snapshot, false, true);
+        VerifyDependencyPhase(context, snapshot, true, true);
+        Check(context.guard.Verify());
+        return Status::Ok();
+    } catch (Failure& failure) { return {std::move(failure.diagnostics)}; }
+    catch (const std::bad_alloc&) {
+        return Status::Failure(kSubsystem, "TERRAIN_ASSETS_ALLOCATION", "输出依赖回读分配失败，不返回部分通过。");
+    } catch (const std::length_error&) {
+        return Status::Failure(kSubsystem, "TERRAIN_ASSETS_ALLOCATION", "输出依赖回读超出容器容量，不返回部分通过。");
     }
 }
 

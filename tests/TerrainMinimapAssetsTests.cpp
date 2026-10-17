@@ -588,6 +588,110 @@ void TestFinalBudgetAndUnrelatedBodies() {
     RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(snapshot, other, {}), "TERRAIN_ASSETS_FINAL_SOURCE");
 }
 
+MapArchiveSession Saved(Fixture& fixture, const MapArchiveSession& source, std::string_view name,
+    std::span<const MemberReplacement> replacements = {}, std::span<const std::string> removals = {}) {
+    const auto result = Take(source.SaveCandidate(fixture.directory.Path() / name, replacements, removals));
+    return Take(MapArchiveSession::Open(result.path));
+}
+
+void TestReadbackCurrentTerrainAndSourcePreservation() {
+    Fixture fixture(false, W3i()); auto source = fixture.Source();
+    const auto originalSha = Take(Sha256File(source.SourcePath()));
+    TerrainBrush brush; brush.kind = TerrainBrushKind::Raise; brush.radius = 0; brush.strength = 39;
+    const TerrainStrokePoint point{512, 512};
+    Require(fixture.edits.EditTerrain(brush, std::span(&point, 1), false).Succeeded(), "产生真实raw156编辑");
+    const auto snapshot = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, TerrainMinimapRangePolicy::DeclaredW3iMargins));
+    const auto revision = fixture.edits.Revision(); const auto dirty = fixture.edits.IsDirty();
+    const std::vector<MemberReplacement> output{{"war3map.w3e", snapshot.Input().currentW3e}, {"saved-only.txt", Text("new-archive")}};
+    auto saved = Saved(fixture, source, "readback-current.w3x", output);
+    Require(saved.SourceSha256() != source.SourceSha256() && VerifyTerrainMinimapAssetsReadback(snapshot, saved).Succeeded(),
+        "真实输出整档SHA不同，map容器应重绑定而非误判原sourceSHA；当前W3E与全部crop依赖仍核原字");
+    auto stale = Saved(fixture, source, "readback-old-w3e.w3x");
+    RequireRejected(VerifyTerrainMinimapAssetsReadback(snapshot, stale), "TERRAIN_ASSETS_READBACK_TERRAIN");
+    auto members = Materials(); members.push_back({"war3map.w3i", *fixture.w3i});
+    unsigned number = 0;
+    for (const auto& member : members) {
+        auto changed = member; changed.data.back() ^= std::byte{1};
+        auto replacements = output; replacements.push_back(std::move(changed));
+        auto mismatch = Saved(fixture, source, "readback-changed-" + std::to_string(number++) + ".w3x", replacements);
+        RequireRejected(VerifyTerrainMinimapAssetsReadback(snapshot, mismatch), "TERRAIN_ASSETS_FINAL_DEPENDENCY");
+    }
+    auto renamed = *fixture.w3i; renamed.insert(renamed.begin() + 12, std::byte{'X'});
+    auto nameOutput = output; nameOutput.push_back({"war3map.w3i", renamed});
+    auto settings = Saved(fixture, source, "readback-settings-name.w3x", nameOutput);
+    RequireRejected(VerifyTerrainMinimapAssetsReadback(snapshot, settings), "TERRAIN_ASSETS_FINAL_DEPENDENCY");
+    const std::vector<MemberReplacement> emptyAtlas{{"Fixture\\Ground.blp", {}}};
+    auto emptyOutput = output; emptyOutput.push_back(emptyAtlas.front());
+    auto empty = Saved(fixture, source, "readback-empty-atlas.w3x", emptyOutput);
+    RequireRejected(VerifyTerrainMinimapAssetsReadback(snapshot, empty), "TERRAIN_ASSETS_FINAL_DEPENDENCY");
+    const std::vector<std::string> removedAtlas{"Fixture\\Ground.blp"};
+    auto missing = Saved(fixture, source, "readback-missing-atlas.w3x", output, removedAtlas);
+    RequireRejected(VerifyTerrainMinimapAssetsReadback(snapshot, missing), "TERRAIN_ASSETS_FINAL_WINNER");
+    Require(Take(Sha256File(source.SourcePath())) == originalSha && source.VerifySourceUnchanged().Succeeded()
+        && fixture.edits.Revision() == revision && fixture.edits.IsDirty() == dirty,
+        "输出回读不得写原source或活跃编辑会话；此断言只涉及测试拥有的真实归档");
+    Require(!snapshot.formalSaveAuthorized && !snapshot.nativeEditorOrGameVerified && !snapshot.pendingImportReplaceRemoveCovered,
+        "输出回读成功不提升正式保存/native或源阶段snapshot资格");
+}
+
+void TestReadbackGameWinnersAndMapOverrides() {
+    Fixture fixture(false, W3i()); auto source = fixture.Source("readback-game-source.w3x", {}); const auto game = fixture.Game();
+    const auto snapshot = Take(CaptureTerrainMinimapAssets(source, fixture.edits, game, {}, TerrainMinimapRangePolicy::DeclaredW3iMargins));
+    const std::vector<MemberReplacement> unrelated{{"saved-only.txt", Text("different-output")}};
+    auto saved = Saved(fixture, source, "readback-game.w3x", unrelated);
+    Require(VerifyTerrainMinimapAssetsReadback(snapshot, saved).Succeeded(), "实际game fallback重读winner，输出map仍须准确missing");
+    unsigned number = 0;
+    for (const auto& material : Materials()) {
+        const std::vector<MemberReplacement> sameMap{material};
+        auto overridden = Saved(fixture, source, "readback-game-map-" + std::to_string(number++) + ".w3x", sameMap);
+        RequireRejected(VerifyTerrainMinimapAssetsReadback(snapshot, overridden), "TERRAIN_ASSETS_FINAL_WINNER");
+    }
+    Take(WriteVerifiedArchive(game / "war3patch.mpq", std::vector<MapArchiveMember>{{"Fixture\\Ground.blp", Blp()}}));
+    RequireRejected(VerifyTerrainMinimapAssetsReadback(snapshot, saved), "TERRAIN_ASSETS_FINAL_DEPENDENCY");
+}
+
+void TestReadbackExactPoliciesBudgetsAndOutputIdentity() {
+    Fixture fixture(false, W3i()); auto source = fixture.Source();
+    const auto full = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}));
+    const auto crop = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, TerrainMinimapRangePolicy::DeclaredW3iMargins));
+    auto files = Materials(); files.push_back({"war3map.w3e", fixture.w3e}); files.push_back({"war3map.w3i", *fixture.w3i});
+    const auto path = fixture.directory.Path() / "readback-unlisted.w3x";
+    Require(IO::WriteFileBytes(path, UnlistedArchive(files)).Succeeded(), "写原创清单外output");
+    auto unlisted = Take(MapArchiveSession::Open(path));
+    Require(VerifyTerrainMinimapAssetsReadback(crop, unlisted).Succeeded(), "输出exact依赖不依赖listfile命名快照");
+    const auto badPath = fixture.directory.Path() / "readback-unreadable-settings.w3x";
+    Require(IO::WriteFileBytes(badPath, UnlistedArchive(files, true, "war3map.w3i")).Succeeded(), "写不可读W3I输出");
+    auto bad = Take(MapArchiveSession::Open(badPath));
+    Require(VerifyTerrainMinimapAssetsReadback(full, bad).Succeeded(), "FullW3e不读取未请求的不可读W3I");
+    RequireRejected(VerifyTerrainMinimapAssetsReadback(crop, bad), "EXACT_MEMBER_ENCODING_UNSUPPORTED");
+    for (const auto& alias : {std::string("WAR3MAP.W3I"), std::string("fixture/ground.blp")}) {
+        auto duplicate = files; duplicate.push_back({alias, alias == "WAR3MAP.W3I" ? *fixture.w3i : Blp()});
+        const auto duplicatePath = fixture.directory.Path() / (alias == "WAR3MAP.W3I" ? "readback-alias-w3i.w3x" : "readback-alias-atlas.w3x");
+        Require(IO::WriteFileBytes(duplicatePath, UnlistedArchive(duplicate)).Succeeded(), "写同canonical双hash输出");
+        auto opened = MapArchiveSession::Open(duplicatePath);
+        if (opened.Succeeded()) RequireRejected(VerifyTerrainMinimapAssetsReadback(crop, *opened.value));
+        else Require(!opened.diagnostics.empty(), "歧义output可在Open先拒，但不得静默通过");
+    }
+    std::size_t required = 2 * fixture.w3e.size() + fixture.w3i->size();
+    for (const auto& material : Materials()) required += material.data.size();
+    TerrainMinimapAssetCaptureLimits limits; limits.maxSourceBytes = required;
+    Require(VerifyTerrainMinimapAssetsReadback(crop, unlisted, limits).Succeeded(), "独立原字账精确预算边界可通过");
+    --limits.maxSourceBytes;
+    RequireRejected(VerifyTerrainMinimapAssetsReadback(crop, unlisted, limits), "TERRAIN_ASSETS_BUDGET");
+    const auto oldPath = fixture.directory.Path() / "readback-previous-file.w3x";
+    const auto sameBytes = Take(IO::ReadFileBytes(path)); std::filesystem::rename(path, oldPath);
+    Require(IO::WriteFileBytes(path, sameBytes).Succeeded(), "samebytes换新file-ID输出，保留旧句柄身份反例");
+    RequireRejected(VerifyTerrainMinimapAssetsReadback(crop, unlisted, limits), "TERRAIN_ASSETS_BUDGET");
+    ++limits.maxSourceBytes;
+    RequireRejected(VerifyTerrainMinimapAssetsReadback(crop, unlisted, limits));
+    auto reopened = Take(MapArchiveSession::Open(path));
+    Require(VerifyTerrainMinimapAssetsReadback(crop, reopened, limits).Succeeded(), "只有重新取得真实新output身份才能签收");
+    limits.maxCurrentW3eBytes = fixture.w3e.size() - 1;
+    RequireRejected(VerifyTerrainMinimapAssetsReadback(crop, reopened, limits), "TERRAIN_ASSETS_BUDGET");
+    limits.maxCurrentW3eBytes = TerrainMinimapAssetCaptureLimits{}.maxCurrentW3eBytes; limits.atlas.maxInputBytes = 1;
+    RequireRejected(VerifyTerrainMinimapAssetsReadback(crop, reopened, limits), "TERRAIN_ASSETS_BUDGET");
+}
+
 } // namespace
 
 int main() {
@@ -598,6 +702,8 @@ int main() {
         TestRealHeightEditsGenerateWithoutChangingSaveAuthority();
         TestSourceMarginsCaptureAndCurrentGuards(); TestW3iMissingInvalidAndDefaultNotRequested();
         TestFinalMapDependenciesAndPolicies(); TestFinalCanonicalConflictsAndEditedW3e(); TestFinalBudgetAndUnrelatedBodies();
+        TestReadbackCurrentTerrainAndSourcePreservation(); TestReadbackGameWinnersAndMapOverrides();
+        TestReadbackExactPoliciesBudgetsAndOutputIdentity();
         std::cout << "TerrainMinimapAssetsTests: all tests passed\n"; return 0;
     } catch (const std::exception& e) {
         std::cerr << "TerrainMinimapAssetsTests: " << e.what() << '\n'; return 1;

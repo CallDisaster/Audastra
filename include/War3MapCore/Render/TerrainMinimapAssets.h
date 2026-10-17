@@ -123,4 +123,11 @@ private:
     const MapArchiveSession& source, std::span<const MemberReplacement> replacements,
     std::span<const std::string> removals = {}, const TerrainMinimapAssetCaptureLimits& limits = {});
 
+// 回读真实输出归档的当前W3E与显式依赖；允许输出整档SHA不同于原图。
+// map winner按saved身份核原字，game winner必须仍为map Missing并重读同一真实来源。
+// FullW3e不请求W3I；同次guard/三批准确捕获只覆盖本次调用，不替代生成到发布的长期租约。
+// 沿原64MiB预收current散列、输出W3E与依赖重读，不重解码/解析，不授予MapBLP/native资格。
+[[nodiscard]] Status VerifyTerrainMinimapAssetsReadback(const TerrainMinimapAssetSnapshot& snapshot,
+    const MapArchiveSession& saved, const TerrainMinimapAssetCaptureLimits& limits = {});
+
 } // namespace War3Map::Render
