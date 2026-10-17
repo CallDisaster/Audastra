@@ -56,7 +56,9 @@ receipts/                     每次调用建立独立子目录
 
 旧 baseline 必须是相应正式版本的原始签名清单和签名，不能编辑版本或来源 commit。完整 portable ZIP 不能替代此处的 **update ZIP**。helper 必须与签名 0.1.7 目标同源，编译期发布公钥必须接受三份旧签名及新目标签名。脚本核对 CLI 的版本/commit，并将 helper 子树中的文件逐项对应到新目标签名文件清单；发布方仍须验收其实际加载模块、完整依赖和整包可信来源。
 
-所有输入和 helper 都位于原安装树之外；正式事务仍会在安装目录的父目录建立同卷 next、backup 和 transaction 并切换原安装路径。脚本固定传入 `--exe bin/war3-map-editor.exe`，使用正常桌面健康启动，不传测试、自退出或伪健康参数；若当前终端包含离屏 Qt 或已知测试注入环境，会停止并要求从正常环境运行。
+所有输入和 helper 都位于原安装树之外；正式事务仍会在安装目录的父目录建立同卷 next、backup 和 transaction 并切换原安装路径。脚本固定传入 `--exe bin/war3-map-editor.exe`，使用 Normal 生产 host 的正式健康启动，不传测试、自退出、headless/measure 或伪健康参数；若当前终端包含已知测试注入环境，会停止并要求从正常环境运行。
+
+`QT_QPA_PLATFORM=offscreen` 本身不会改变 Normal StartupMode，因此脚本允许独立隔离环境使用 offscreen 运行同一正式事务；仍须由真实 Qt 事件循环和正确版本/commit 的进程完成原生 pipe 健康协议。**offscreen Normal 健康通过不证明原生可见窗口验收**，后者需要另外检查。
 
 ## 查看结果
 

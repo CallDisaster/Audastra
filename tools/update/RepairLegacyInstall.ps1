@@ -112,9 +112,8 @@ function Assert-Plan($Plan, $Baseline, [string]$Version, [string]$BaselineHash) 
 try {
     [Console]::OutputEncoding = $utf8
     $PSNativeCommandUseErrorActionPreference = $false
-    if (($env:QT_QPA_PLATFORM -and $env:QT_QPA_PLATFORM -cne 'windows') -or
-        @(Get-ChildItem Env: | Where-Object { $_.Name -like 'AUDASTRA_TEST_*' -or $_.Name -like 'FORGE_WORLD_PROBE_*' }).Count -gt 0) {
-        throw '当前终端包含离屏/测试注入环境；请从普通桌面的正常 PowerShell 环境运行，不授予测试健康。'
+    if (@(Get-ChildItem Env: | Where-Object { $_.Name -like 'AUDASTRA_TEST_*' -or $_.Name -like 'FORGE_WORLD_PROBE_*' }).Count -gt 0) {
+        throw '当前终端包含测试注入环境；请从正常 PowerShell 环境运行，不授予测试健康。'
     }
     if ($InstallDirectory -notmatch '^[A-Za-z]:[\\/]') { throw '请明确传入现有安装目录的本机绝对路径。' }
     $installRoot = [IO.Path]::GetFullPath($InstallDirectory).TrimEnd('\', '/')
