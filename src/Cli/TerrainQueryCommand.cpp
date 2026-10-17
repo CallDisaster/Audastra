@@ -1,9 +1,9 @@
 #include "TerrainQueryCommand.h"
 
 #include "War3MapCore/Hash.h"
-#include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/MapData/MapTerrain.h"
 #include "War3MapCore/Render/TerrainInspection.h"
+#include "War3MapCore/Workspace.h"
 
 #include <charconv>
 #include <cstdint>
@@ -20,7 +20,7 @@ namespace {
 using Binding = War3Map::Render::TerrainInspectionBinding;
 
 struct OpenTerrain {
-    War3Map::MapArchiveSession archive;
+    War3Map::MpqWorkspace archive;
     War3Map::MapData::MapTerrain terrain;
     Binding binding;
 };
@@ -33,16 +33,17 @@ void PrintDiagnostics(const std::vector<War3Map::Diagnostic>& diagnostics) {
 }
 
 std::optional<OpenTerrain> Open(const std::filesystem::path& path) {
-    auto archive = War3Map::MapArchiveSession::Open(path);
+    // 这里只按已知名字只读查询 W3E，不要求可编辑/可保存的完整成员清单。
+    auto archive = War3Map::MpqWorkspace::OpenReadOnly(path);
     if (!archive.Succeeded() || !archive.value) {
         PrintDiagnostics(archive.diagnostics);
         return std::nullopt;
     }
-    if (!archive.value->HasMember("war3map.w3e")) {
+    if (!archive.value->Archive().HasFile("war3map.w3e")) {
         std::cerr << "Terrain: TERRAIN_MEMBER_MISSING: war3map.w3e\n";
         return std::nullopt;
     }
-    auto bytes = archive.value->ReadMember("war3map.w3e");
+    auto bytes = archive.value->ReadMember("war3map.w3e", War3Map::MapData::TerrainReadLimits{}.maxBytes);
     if (!bytes.Succeeded() || !bytes.value) {
         PrintDiagnostics(bytes.diagnostics);
         return std::nullopt;
@@ -63,7 +64,7 @@ std::optional<OpenTerrain> Open(const std::filesystem::path& path) {
 }
 
 bool SourceStillCurrent(const OpenTerrain& opened) {
-    const auto status = opened.archive.VerifySourceUnchanged();
+    const auto status = opened.archive.VerifyUnchanged();
     if (status.Succeeded()) return true;
     PrintDiagnostics(status.diagnostics);
     return false;
