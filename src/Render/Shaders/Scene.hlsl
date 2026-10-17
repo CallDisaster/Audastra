@@ -77,7 +77,7 @@ bool TryTerrainFootprint(float2 dx, float2 dy, out float lod, out float2 axis, o
     major = 0.0;
     taps = 1u;
     bool valid = false;
-    do {
+    [unroll] do {
         [branch] if (terrainTapLimit < 1.5 || terrainIsTranslucent > 0.5 || terrainMaxMip <= 0.0) break;
         // 先归一化J再求协方差，避免合法大导数先平方再平方溢出；极端/放大仍走旧表达式。
         float scale = max(max(abs(dx.x), abs(dx.y)), max(abs(dy.x), abs(dy.y)));
