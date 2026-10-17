@@ -691,7 +691,7 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
             if (newTexture && addedRgba > limits.maxTextureChainBytes) resourceReasons |= Reason(TerrainGroundOmissionReason::TextureChainBytes);
             if (addedRgba > limits.maxRgbaBytes - rgbaBytes) resourceReasons |= Reason(TerrainGroundOmissionReason::RgbaBytes);
             const bool resourceFits = resourceReasons == 0;
-            const auto textureCapacity = budgetPolicy == TerrainGroundBudgetPolicy::PreserveBasePreview
+            const auto textureCapacity = sharedBlight || budgetPolicy == TerrainGroundBudgetPolicy::PreserveBasePreview
                 ? std::max(limits.maxTextures, output.textures.capacity()) : limits.maxTextures;
             std::uint32_t meshReasons = 0;
             if (quads * 4 > limits.maxVertices) meshReasons |= Reason(TerrainGroundOmissionReason::Vertices);
