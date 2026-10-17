@@ -33,6 +33,13 @@ template<class T> void Rejected(const Result<T>& result) {
     Require(!result.Succeeded() && !result.value && !result.diagnostics.empty(), "失败不能返回部分qualified资源快照");
 }
 
+void RequireRejected(const Status& status, std::string_view code = {}) {
+    Require(!status.Succeeded() && !status.diagnostics.empty(), "最终依赖失败须有诊断");
+    if (!code.empty()) Require(std::any_of(status.diagnostics.begin(), status.diagnostics.end(), [&](const auto& d) {
+        return d.code == code;
+    }), "最终依赖失败必须属于预期的具体拒绝门");
+}
+
 class TempDirectory {
 public:
     TempDirectory() {
@@ -219,9 +226,15 @@ void TestGameFallbackAndWinnerChange() {
     for (const auto& dependency : captured.Dependencies())
         Require(!dependency.mapMemberPresent && dependency.winner.layer == Resources::ResourceLayer::Game
             && dependency.containerIdentity == "war3.mpq", "必须记录实际命中的game MPQ，不能用笼统Game sourceId");
+    Require(VerifyTerrainMinimapAssetsFrozenOutput(captured, source, {}).Succeeded(), "无覆盖的实际game来源可核最终依赖");
+    for (const auto& material : Materials()) {
+        const std::vector<MemberReplacement> added{material};
+        RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(captured, source, added), "TERRAIN_ASSETS_FINAL_WINNER");
+    } // 连相同编码字节也改变map/game winner，不能按SHA相同洗白。
     // 新增高层patch中相同字节的纹理；像素/SHA可相同，真实winner已改变，旧快照仍失效。
     Take(WriteVerifiedArchive(game / "war3patch.mpq", std::vector<MapArchiveMember>{{"Fixture\\Ground.blp", Blp()}}));
     Require(!VerifyTerrainMinimapAssetsCurrent(captured, source, fixture.edits, game).Succeeded(), "相同字节换高优先级winner必须使旧快照失效");
+    RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(captured, source, {}), "TERRAIN_ASSETS_FINAL_DEPENDENCY");
     const auto changed = Take(CaptureTerrainMinimapAssets(source, fixture.edits, game));
     const auto& atlas = changed.Dependencies()[changed.GroundAssets()[0].dependencyIndex];
     Require(atlas.containerIdentity == "war3patch.mpq" && atlas.encodedSha256 == Take(Sha256(Blp()))
@@ -236,6 +249,7 @@ void TestSameGamePathChangedMember() {
     Take(WriteVerifiedArchive(game / "war3.mpq", Materials(Blp({220, 40, 20}))));
     Require(!VerifyTerrainMinimapAssetsCurrent(captured, source, fixture.edits, game).Succeeded(),
         "同路径游戏包的已读取member字节变化必须使旧资源快照失效");
+    RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(captured, source, {}), "TERRAIN_ASSETS_FINAL_DEPENDENCY");
 }
 
 void TestMissingDoesNotHideUnreadable() {
@@ -263,6 +277,7 @@ void TestUnlistedExactAndReadError() {
     const auto captured = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}));
     Require(captured.Dependencies()[captured.GroundAssets()[0].dependencyIndex].mapMemberPresent,
         "命名清单缺项不能当missing；精确成员捕获应找到实际地图材质");
+    Require(VerifyTerrainMinimapAssetsFrozenOutput(captured, source, {}).Succeeded(), "最终依赖同样必须支持listfile外实际成员");
     const auto badPath = fixture.directory.Path() / "unreadable.w3x";
     Require(IO::WriteFileBytes(badPath, UnlistedArchive(files, true)).Succeeded(), "写独立不可读高层块fixture");
     auto unreadable = Take(MapArchiveSession::Open(badPath)); const auto game = fixture.Game();
@@ -475,6 +490,104 @@ void TestW3iMissingInvalidAndDefaultNotRequested() {
     else Require(!aliasSource.diagnostics.empty(), "歧义源若在open拒绝也须保留诊断");
 }
 
+void TestFinalMapDependenciesAndPolicies() {
+    Fixture fixture(false, W3i()); auto source = fixture.Source();
+    const auto crop = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, TerrainMinimapRangePolicy::DeclaredW3iMargins));
+    Require(crop.Binding().originalTerrainBytes == fixture.w3e.size() && crop.Binding().mainTileset == 'L',
+        "源W3E大小和真实当前tileset须由工厂冻结，不能由最终调用者指定");
+    Require(VerifyTerrainMinimapAssetsFrozenOutput(crop, source, {}).Succeeded(), "不覆盖的crop依赖可通过实际来源复核");
+    auto members = Materials(); members.push_back({"war3map.w3i", *fixture.w3i}); members.push_back({"war3map.w3e", fixture.w3e});
+    Require(VerifyTerrainMinimapAssetsFrozenOutput(crop, source, members).Succeeded(), "每个地图依赖的唯一同字替换可通过");
+    for (const auto& member : members) {
+        auto changed = member; changed.data.back() ^= std::byte{1};
+        const std::vector<MemberReplacement> replacements{changed};
+        RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(crop, source, replacements), "TERRAIN_ASSETS_FINAL_BYTES");
+    }
+    auto renamedSettings = *fixture.w3i;
+    renamedSettings.insert(renamedSettings.begin() + 12, std::byte{'X'}); // 只给原空mapName加字符，其余字段整体后移。
+    const std::vector<MemberReplacement> settings{{"war3map.w3i", renamedSettings}};
+    RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(crop, source, settings), "TERRAIN_ASSETS_FINAL_BYTES");
+    const auto full = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}));
+    Require(!full.Input().sourceW3i && VerifyTerrainMinimapAssetsFrozenOutput(full, source, settings).Succeeded(),
+        "FullW3e未请求W3I，不能在最终门暗加W3I依赖或声称native crop");
+    const std::vector<std::string> removedSettings{"war3map.w3i"};
+    Require(VerifyTerrainMinimapAssetsFrozenOutput(full, source, {}, removedSettings).Succeeded(),
+        "FullW3e的无关W3I删除仍交给其余正式保存门处理");
+    Require(!crop.formalSaveAuthorized && !crop.nativeEditorOrGameVerified && !crop.pendingImportReplaceRemoveCovered
+        && !crop.Facts().gameInternalInventoryIndependentlyVerified, "单次最终门通过不能改写快照来源阶段或未知game库存事实");
+}
+
+void TestFinalCanonicalConflictsAndEditedW3e() {
+    Fixture fixture(false, W3i()); auto source = fixture.Source();
+    const auto original = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, TerrainMinimapRangePolicy::DeclaredW3iMargins));
+    auto members = Materials(); members.push_back({"war3map.w3i", *fixture.w3i}); members.push_back({"war3map.w3e", fixture.w3e});
+    for (const auto& member : members) {
+        auto alias = member;
+        for (auto& c : alias.name) {
+            if (c == '\\') c = '/';
+            else if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        }
+        const std::vector<MemberReplacement> duplicate{member, alias}, single{member};
+        const std::vector<std::string> removed{alias.name}, duplicateRemoved{member.name, alias.name};
+        RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(original, source, duplicate), "TERRAIN_ASSETS_FINAL_DUPLICATE");
+        RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(original, source, {}, removed), "TERRAIN_ASSETS_FINAL_REMOVAL");
+        RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(original, source, single, removed), "TERRAIN_ASSETS_FINAL_CONFLICT");
+        RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(original, source, {}, duplicateRemoved), "TERRAIN_ASSETS_FINAL_DUPLICATE");
+    }
+    TerrainBrush brush; brush.kind = TerrainBrushKind::Raise; brush.radius = 0; brush.strength = 39;
+    const TerrainStrokePoint point{512, 512};
+    Require(fixture.edits.EditTerrain(brush, std::span(&point, 1), false).Succeeded(), "产生原正式门内raw156的真实修改");
+    const auto edited = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, TerrainMinimapRangePolicy::DeclaredW3iMargins));
+    Require(!VerifyTerrainMinimapAssetsCurrent(original, source, fixture.edits, {}).Succeeded(), "准备时仍须拒旧修订");
+    RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(edited, source, {}), "TERRAIN_ASSETS_FINAL_W3E_MISSING");
+    const std::vector<MemberReplacement> oldOutput{{"war3map.w3e", fixture.w3e}}, currentOutput{{"war3map.w3e", edited.Input().currentW3e}};
+    RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(edited, source, oldOutput), "TERRAIN_ASSETS_FINAL_BYTES");
+    RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(original, source, currentOutput), "TERRAIN_ASSETS_FINAL_BYTES");
+    Require(VerifyTerrainMinimapAssetsFrozenOutput(edited, source, currentOutput).Succeeded(),
+        "最终必须逐字对应已编辑W3E，同时复核不同的原始W3E而非把两者混为一谈");
+    const auto plan = Take(TerrainSavePlan::Prepare(source, fixture.edits));
+    Require(plan.SaveGate().Succeeded(), "最终依赖功能保留原raw156地形门");
+    auto unapproved = currentOutput; unapproved.push_back({"war3mapMap.blp", Blp()});
+    Require(!plan.VerifyForSave(fixture.edits, source.SourceSha256(), unapproved).Succeeded(), "最终依赖通过仍不允许夹入新的MapBLP");
+}
+
+void TestFinalBudgetAndUnrelatedBodies() {
+    Fixture fixture; auto source = fixture.Source();
+    const auto snapshot = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}));
+    // 独立原始fixture字节账：现W3E散列 + 原W3E重读 + 三表/唯一atlas重读。
+    std::size_t required = 2 * fixture.w3e.size();
+    for (const auto& member : Materials()) required += member.data.size();
+    TerrainMinimapAssetCaptureLimits limits; limits.maxSourceBytes = required;
+    const std::vector<MemberReplacement> unrelated{{"Other\\Large.blp", Bytes(2 * 1024 * 1024, std::byte{255})},
+        {"模型\\纹理.blp", Text("unrelated-non-ASCII-name")}};
+    Require(VerifyTerrainMinimapAssetsFrozenOutput(snapshot, source, unrelated, {}, limits).Succeeded(),
+        "无关正文即使超过本次总预算也不能被散列/解码；无关非ASCII名字不被资源依赖门误拒");
+    --limits.maxSourceBytes;
+    RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(snapshot, source, {}, {}, limits), "TERRAIN_ASSETS_BUDGET");
+    const std::vector<MemberReplacement> sameW3e{{"war3map.w3e", fixture.w3e}};
+    limits.maxSourceBytes = required + fixture.w3e.size() - 1;
+    RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(snapshot, source, sameW3e, {}, limits), "TERRAIN_ASSETS_BUDGET");
+    ++limits.maxSourceBytes;
+    Require(VerifyTerrainMinimapAssetsFrozenOutput(snapshot, source, sameW3e, {}, limits).Succeeded(),
+        "相关replacement散列须额外计一次，精确边界才允许");
+    limits.maxCurrentW3eBytes = fixture.w3e.size() - 1;
+    RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(snapshot, source, {}, {}, limits), "TERRAIN_ASSETS_BUDGET");
+    limits.maxCurrentW3eBytes = TerrainMinimapAssetCaptureLimits{}.maxCurrentW3eBytes;
+    limits.tables.maxTableBytes = 1;
+    RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(snapshot, source, {}, {}, limits), "TERRAIN_ASSETS_BUDGET");
+    limits.tables = {}; limits.maxSourceBytes = required - 1;
+    const auto savedPath = fixture.directory.Path() / "budget-source-away.w3x";
+    std::filesystem::rename(source.SourcePath(), savedPath);
+    RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(snapshot, source, {}, {}, limits), "TERRAIN_ASSETS_BUDGET");
+    // 预算先于来源读/租约；预算足够后才得到真实源缺失，而非以快照状态伪造来源。
+    ++limits.maxSourceBytes;
+    RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(snapshot, source, {}, {}, limits));
+    std::filesystem::rename(savedPath, source.SourcePath());
+    Require(VerifyTerrainMinimapAssetsFrozenOutput(snapshot, source, {}, {}, limits).Succeeded(), "恢复本测试独占源路径后可重新核验");
+    Fixture foreign; auto other = foreign.Source("foreign.w3x", Materials(Blp({7, 8, 9})));
+    RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(snapshot, other, {}), "TERRAIN_ASSETS_FINAL_SOURCE");
+}
+
 } // namespace
 
 int main() {
@@ -484,6 +597,7 @@ int main() {
         TestBaselineAndCurrentRevision(); TestDuplicatePathsAndBudgets();
         TestRealHeightEditsGenerateWithoutChangingSaveAuthority();
         TestSourceMarginsCaptureAndCurrentGuards(); TestW3iMissingInvalidAndDefaultNotRequested();
+        TestFinalMapDependenciesAndPolicies(); TestFinalCanonicalConflictsAndEditedW3e(); TestFinalBudgetAndUnrelatedBodies();
         std::cout << "TerrainMinimapAssetsTests: all tests passed\n"; return 0;
     } catch (const std::exception& e) {
         std::cerr << "TerrainMinimapAssetsTests: " << e.what() << '\n'; return 1;

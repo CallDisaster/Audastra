@@ -21,6 +21,8 @@ struct TerrainMinimapAssetCaptureLimits {
 struct TerrainMinimapAssetBinding {
     std::string archiveSha256, originalTerrainSha256, currentTerrainSha256;
     std::filesystem::path gameRoot;
+    std::size_t originalTerrainBytes = 0;
+    std::uint8_t mainTileset = 0; // 实际当前W3E，供无活跃edits的来源复核使用。
     std::uint64_t sessionIdentity = 0, revision = 0, terrainSourceRevision = 0;
     [[nodiscard]] bool operator==(const TerrainMinimapAssetBinding&) const = default;
 };
@@ -86,7 +88,7 @@ public:
     [[nodiscard]] const std::vector<TerrainMinimapGroundAsset>& GroundAssets() const noexcept { return ground_; }
     [[nodiscard]] const TerrainMinimapAssetCaptureFacts& Facts() const noexcept { return facts_; }
     [[nodiscard]] const std::string& IdentitySha256() const noexcept { return identitySha256_; }
-    static constexpr const char* sourcePolicy = "archive-and-game-capture-v2";
+    static constexpr const char* sourcePolicy = "archive-and-game-capture-v3";
     static constexpr bool formalSaveAuthorized = false, nativeEditorOrGameVerified = false;
     static constexpr bool pendingImportReplaceRemoveCovered = false, w3iDooShdSemanticsCovered = false;
 private:
@@ -109,5 +111,16 @@ private:
 [[nodiscard]] Status VerifyTerrainMinimapAssetsCurrent(const TerrainMinimapAssetSnapshot& snapshot,
     const MapArchiveSession& source, const MapData::MapDataEditSession& edits,
     const std::filesystem::path& gameRoot, const TerrainMinimapAssetCaptureLimits& limits = {});
+
+// 对保存任务实际最终列表核验所消费的W3E/Settings/Table/Atlas；不接caller填的SHA或来源。
+// 准备线程先用VerifyCurrent核编辑代际；worker只消费owned snapshot和真实source/最终列表，
+// 后续仍由原保存job的revision/Commit门检查代际。FullW3e不隐式增加W3I依赖。
+// 预算累计当前W3E散列、源W3E/依赖编码重读和相关replacement散列，均在工作前预收；
+// 无关成员只检查名字，不读正文。整源SHA、挂载/MPQ容量仍不在这个字节账内。
+// 来源按W3E、三表(可选W3I)、atlas三批复核，不重解码，不证明完整game包内部唯一性。
+// 成功只覆盖本次调用与给定实际列表；guard返回即释放，不授予长期租约、MapBLP或native资格。
+[[nodiscard]] Status VerifyTerrainMinimapAssetsFrozenOutput(const TerrainMinimapAssetSnapshot& snapshot,
+    const MapArchiveSession& source, std::span<const MemberReplacement> replacements,
+    std::span<const std::string> removals = {}, const TerrainMinimapAssetCaptureLimits& limits = {});
 
 } // namespace War3Map::Render
