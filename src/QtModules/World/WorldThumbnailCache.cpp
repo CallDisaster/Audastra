@@ -32,9 +32,13 @@ QString SourceKey(const WorldTerrainSources& sources) {
     QByteArray bytes;
     Field(bytes, Path(sources.archivePath)); Field(bytes, Path(sources.gameRoot));
     Field(bytes, QByteArray::fromStdString(sources.archiveSha));
+    Field(bytes, sources.mainTileset ? QByteArray::number(*sources.mainTileset) : QByteArray("unknown-tileset"));
     for (const auto& entry : sources.entries) {
         Field(bytes, QByteArray::fromStdString(entry.path)); Field(bytes, QByteArray::fromStdString(entry.archivePath));
         Field(bytes, Path(entry.diskPath));
+        Field(bytes, QByteArray::number(entry.size)); Field(bytes, entry.ambiguous ? "ambiguous" : "unique");
+        Field(bytes, entry.ownedPayload ? "owned" : "external");
+        Field(bytes, QByteArray::number(entry.ownedPayloadVersion));
     }
     return Digest(bytes);
 }
@@ -228,7 +232,12 @@ void WorldThumbnailCache::SetContext(WorldAssetBinding binding, Result<WorldTerr
     state_->binding = std::move(binding); state_->current = std::move(current);
     if (!sources.Succeeded()) { state_->issue = Issue(sources.diagnostics); return; }
     std::size_t bytes = 0;
-    for (const auto& entry : sources.value->entries) bytes += entry.path.size() + entry.archivePath.size() + Path(entry.diskPath).size();
+    for (const auto& entry : sources.value->entries) {
+        bytes += entry.path.size() + entry.archivePath.size() + Path(entry.diskPath).size();
+        if (entry.ownedPayload && !entry.ownedPayloadVersion) {
+            state_->issue = tr("地图资源缺少已冻结的正文缓存版本，缩略图不可用"); return;
+        }
+    }
     if (sources.value->entries.size() > 4096 || bytes > 1024 * 1024) {
         state_->issue = tr("地图资源来源超过完整索引预算，缩略图不可用（未截断后回退游戏资源）"); return;
     }

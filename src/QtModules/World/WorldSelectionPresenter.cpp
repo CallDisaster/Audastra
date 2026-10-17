@@ -9,13 +9,6 @@
 
 namespace War3Map::Modules {
 namespace {
-bool SameSources(const WorldTerrainSources& a, const WorldTerrainSources& b) {
-    if (a.archivePath != b.archivePath || a.archiveSha != b.archiveSha || a.gameRoot != b.gameRoot
-        || a.mainTileset != b.mainTileset || a.entries.size() != b.entries.size()) return false;
-    return std::equal(a.entries.begin(), a.entries.end(), b.entries.begin(), [](const auto& x, const auto& y) {
-        return x.path == y.path && x.archivePath == y.archivePath && x.diskPath == y.diskPath;
-    });
-}
 bool SameSession(const Render::AnimationSession& a, const Render::AnimationSession& b) {
     return a.generation == b.generation && a.documentRevision == b.documentRevision
         && a.sourceIdentity == b.sourceIdentity;
@@ -76,7 +69,7 @@ WorldSelectionPresenter::~WorldSelectionPresenter() {
 }
 void WorldSelectionPresenter::SetSource(WorldTerrainSources sources, Render::AnimationSession session,
     std::function<bool()> sourceCurrent) {
-    if (sources_ && SameSources(*sources_, sources) && SameSession(session_, session)) {
+    if (sources_ && SameWorldTerrainSources(*sources_, sources) && SameSession(session_, session)) {
         sourceCurrent_ = std::move(sourceCurrent);
         BeginNext();
         return;

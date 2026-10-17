@@ -8,13 +8,6 @@
 
 namespace War3Map::Modules {
 namespace {
-bool SameSources(const WorldTerrainSources& a, const WorldTerrainSources& b) {
-    if (a.archivePath != b.archivePath || a.archiveSha != b.archiveSha || a.gameRoot != b.gameRoot
-        || a.mainTileset != b.mainTileset || a.entries.size() != b.entries.size()) return false;
-    return std::equal(a.entries.begin(), a.entries.end(), b.entries.begin(), [](const auto& x, const auto& y) {
-        return x.path == y.path && x.archivePath == y.archivePath && x.diskPath == y.diskPath;
-    });
-}
 bool SameRequests(const std::vector<Render::ModelInstanceRequest>& a,
     const std::vector<Render::ModelInstanceRequest>& b) {
     return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](const auto& x, const auto& y) {
@@ -79,7 +72,7 @@ void WorldPlacementPreview::CancelRequest() {
 }
 std::shared_ptr<const Render::AnimationAssetSnapshot> WorldPlacementPreview::PreloadedAssets(
     const WorldTerrainSources& sources) const {
-    return residentSources_ && SameSources(*residentSources_, sources) ? preloadedAssets_ : nullptr;
+    return residentSources_ && SameWorldTerrainSources(*residentSources_, sources) ? preloadedAssets_ : nullptr;
 }
 void WorldPlacementPreview::Show(std::vector<Render::ModelInstanceRequest> requests, WorldTerrainSources sources,
     std::uint64_t revision, std::function<bool()> current, std::vector<std::array<float, 12>> initialTransforms,
@@ -95,7 +88,7 @@ void WorldPlacementPreview::Show(std::vector<Render::ModelInstanceRequest> reque
         presentationIdentity = std::move(*identity.value);
     }
     for (auto& request : requests) request.previewGhost = true;
-    const bool sameSource = residentSources_ && SameSources(*residentSources_, sources);
+    const bool sameSource = residentSources_ && SameWorldTerrainSources(*residentSources_, sources);
     const bool reuse = sameSource && service_ && frame_ && SameRequests(residentRequests_, requests)
         && residentPresentationIdentity_ == presentationIdentity;
     if (!reuse) {

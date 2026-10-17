@@ -37,12 +37,17 @@ void AddUnique(std::vector<Diagnostic>& output, const std::vector<Diagnostic>& d
 
 Result<std::string> WorldPathingHelperResourceIdentity(const WorldTerrainSources& sources,
     std::uint64_t catalogRevision) {
-    std::string identity = "world-pathing-helper-resource-v1;";
+    std::string identity = "world-pathing-helper-resource-v2;";
     PathPart(identity, sources.archivePath); Part(identity, sources.archiveSha); PathPart(identity, sources.gameRoot);
     Part(identity, std::to_string(catalogRevision));
     Part(identity, sources.mainTileset ? std::to_string(*sources.mainTileset) : "unknown-tileset");
     for (const auto& entry : sources.entries) {
+        if (entry.ownedPayload && !entry.ownedPayloadVersion)
+            return Result<std::string>::Failure("World.Helper", "WORLD_ASSET_IDENTITY", "资源快照缺少已冻结的正文缓存版本。");
         Part(identity, entry.path); Part(identity, entry.archivePath); PathPart(identity, entry.diskPath);
+        Part(identity, std::to_string(entry.size)); Part(identity, entry.ambiguous ? "ambiguous" : "unique");
+        Part(identity, entry.ownedPayload ? "owned" : "external");
+        Part(identity, std::to_string(entry.ownedPayloadVersion));
     }
     return Sha256Text(identity);
 }

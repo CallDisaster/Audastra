@@ -22,6 +22,7 @@
 #include "War3MapCore/Trigger/TriggerDocument.h"
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/MapData/MapAuxiliary.h"
+#include "War3MapCore/MapData/PlacementEditing.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Workspace.h"
@@ -677,6 +678,20 @@ bool InstallPlacementCatalog(QtProject::EditorProject& project) {
     project.objectDocuments_[0].reset(dynamic_cast<ObjectData::LniObjectDocument*>(parsed.document.release()));
     return project.objectDocuments_[0] != nullptr;
 }
+std::optional<MapData::PlacementId> AttachTrackedResourcePlacement(QtProject::EditorProject& project) {
+    if (!project.archiveSession_) return {};
+    project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromArchive(*project.archiveSession_));
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+    const auto terrain = TerrainBytes();
+    if (!project.mapEdits_->AttachTerrain(std::as_bytes(std::span(terrain.constData(),
+        static_cast<std::size_t>(terrain.size())))).Succeeded()) return {};
+    MapData::UnitPlacement unit; unit.rawcode = "hsan"; unit.flags = 2;
+    unit.scale = {1, 1, 1}; unit.position = {-32, 0, 0};
+    const auto added = MapData::AddUnitPlacement(*project.mapEdits_, unit);
+    if (!added.Succeeded()) return {};
+    project.ResetEditTracking();
+    return project.editTrackingReady_ ? added.value : std::nullopt;
+}
 } // namespace
 
 class WorldModuleTests final : public QObject {
@@ -1015,6 +1030,7 @@ void WorldModuleTests::PlacementParticleClock() {
     auto archive = MapArchiveSession::Open(mapPath.toStdWString()); QVERIFY(archive.Succeeded());
     QtProject::EditorProject project; project.sourceArchivePath_ = mapPath.toStdWString();
     project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*archive.value));
+    const auto trackedPlacement = AttachTrackedResourcePlacement(project); QVERIFY(trackedPlacement);
     auto sources = CaptureWorldTerrainSources(project); QVERIFY(sources.Succeeded());
     BackendState state; activeBackend = &state;
     WorldViewport viewport(nullptr, &particleLayerBackend); state.viewport = &viewport;
@@ -1030,6 +1046,16 @@ void WorldModuleTests::PlacementParticleClock() {
     auto transform = Render::ModelInstanceTransform(request);
     preview.Show({request}, *sources.value, 12, [] { return true; }, {transform});
     QTRY_VERIFY2(preview.ModelSubmitted() && preview.CurrentFrame(), qPrintable(previewMessage));
+    QTRY_VERIFY(preview.PreloadedAssets(*sources.value));
+    const auto resourceSnapshot = preview.PreloadedAssets(*sources.value);
+    const auto revisionBeforeMove = project.editRevision_.Revision();
+    const MapData::PlacementMove resourceMove{*trackedPlacement, {32, 0, 0}, {}};
+    QVERIFY(MapData::MovePlacements(*project.mapEdits_, std::span(&resourceMove, 1)).Succeeded());
+    QVERIFY(project.ObserveMapDataEdit("移动真实夹具单位"));
+    QVERIFY(project.editRevision_.Revision() > revisionBeforeMove);
+    const auto afterMove = CaptureWorldTerrainSources(project); QVERIFY(afterMove.Succeeded());
+    QVERIFY(SameWorldTerrainSources(*sources.value, *afterMove.value));
+    QCOMPARE(preview.PreloadedAssets(*afterMove.value), resourceSnapshot);
     const auto scene = preview.CurrentScene(); const auto first = preview.CurrentFrame();
     QVERIFY(scene && first->particleCheckpoint && scene->particleInstanceCount == 1);
     QVERIFY(state.layerPose && state.layerPose->dynamicMaterialStates == !pureParticle);
@@ -1836,6 +1862,9 @@ void WorldModuleTests::InstanceCatalogStartsBesidePose() {
     auto archive = MapArchiveSession::Open(mapPath.toStdWString()); QVERIFY(archive.Succeeded());
     QtProject::EditorProject project; project.sourceArchivePath_ = mapPath.toStdWString();
     project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*archive.value));
+    const bool trackedMovement = !cancelAndReplace && !planBeforePose && prefetchDisposition.isEmpty();
+    std::optional<MapData::PlacementId> trackedPlacement;
+    if (trackedMovement) { trackedPlacement = AttachTrackedResourcePlacement(project); QVERIFY(trackedPlacement); }
     const auto captured = CaptureWorldTerrainSources(project); QVERIFY(captured.Succeeded());
     auto opened = WorldResourceReader::Open(*captured.value); QVERIFY(opened.Succeeded());
     auto source = std::shared_ptr<WorldResourceReader>(std::move(*opened.value));
@@ -2060,6 +2089,19 @@ void WorldModuleTests::InstanceCatalogStartsBesidePose() {
     // 成功roster和Clear后替换都须发布各自的新档案；旧revision/旧代次不能用于下一笔。
     auto nextCompletion = std::make_shared<Completion>();
     auto next = makeChange(cancelAndReplace ? 101 : 14, nextCompletion);
+    if (trackedMovement) {
+        const auto revisionBeforeMove = project.editRevision_.Revision();
+        const MapData::PlacementMove move{*trackedPlacement, {32, 0, 0}, {}};
+        QVERIFY(MapData::MovePlacements(*project.mapEdits_, std::span(&move, 1)).Succeeded());
+        QVERIFY(project.ObserveMapDataEdit("移动真实夹具单位"));
+        QVERIFY(project.editRevision_.Revision() > revisionBeforeMove);
+        const auto afterMove = CaptureWorldTerrainSources(project); QVERIFY(afterMove.Succeeded());
+        QVERIFY(SameWorldTerrainSources(*captured.value, *afterMove.value));
+        next.sources = *afterMove.value;
+        auto movedRequest = spec.model; movedRequest.position = {32, 0, 0};
+        Render::AnimationEdit edit; edit.identity = spec.identity; edit.transform = Render::ModelInstanceTransform(movedRequest);
+        next.delta.edits.push_back(std::move(edit));
+    }
     auto nextInstanceReader = std::make_shared<std::shared_ptr<WorldResourceReader>>();
     next.prepareOwnedAssets = [nextInstanceReader](auto&, auto reader, auto&) {
         *nextInstanceReader = std::move(reader); return War3Map::Status::Ok();
@@ -2080,7 +2122,8 @@ void WorldModuleTests::InstanceCatalogStartsBesidePose() {
     // 同一归档SHA仍不足以复用解析器：主地形/覆盖配置变化必须取得独立的新reader。
     auto changedSourceCompletion = std::make_shared<Completion>();
     auto changedSource = makeChange(cancelAndReplace ? 102 : 15, changedSourceCompletion);
-    changedSource.sources.mainTileset = static_cast<std::uint8_t>('L');
+    changedSource.sources.mainTileset = static_cast<std::uint8_t>(
+        changedSource.sources.mainTileset == static_cast<std::uint8_t>('L') ? 'A' : 'L');
     QVERIFY(!(*nextInstanceReader)->MatchesSources(changedSource.sources));
     auto changedInstanceReader = std::make_shared<std::shared_ptr<WorldResourceReader>>();
     changedSource.prepareOwnedAssets = [changedInstanceReader](auto&, auto reader, auto&) {
@@ -2091,6 +2134,42 @@ void WorldModuleTests::InstanceCatalogStartsBesidePose() {
     QVERIFY(changedSourceCompletion->accepted);
     QVERIFY(!player.InstanceTimingHistory().back().resourceReaderReused);
     QVERIFY(*changedInstanceReader && *changedInstanceReader != *nextInstanceReader);
+    if (trackedMovement) for (const bool changeGeneration : {false, true}) {
+        // 资源可复用不授予旧地图任务发布资格：阻住真实worker后改变原任务绑定。
+        const auto beforeSources = CaptureWorldTerrainSources(project); QVERIFY(beforeSources.Succeeded());
+        const auto generation = project.editRevision_.Generation(), revision = project.mapEdits_->Revision();
+        const auto sceneBefore = player.Scene()->sceneVersion;
+        auto staleCompletion = std::make_shared<Completion>();
+        auto stale = makeChange(player.Scene()->documentRevision + 1, staleCompletion);
+        stale.sources = *beforeSources.value;
+        stale.valid = [&project, generation, revision] {
+            return project.editRevision_.Generation() == generation && project.mapEdits_->Revision() == revision;
+        };
+        auto staleGate = std::make_shared<CatalogWorkerGate>(); ReleaseCatalogWorker releaseStale{staleGate};
+        stale.prepareOwnedAssets = [staleGate](auto&, auto, auto&) {
+            staleGate->entered.release(); staleGate->release.acquire(); return War3Map::Status::Ok();
+        };
+        QVERIFY(player.QueueInstances(std::move(stale)));
+        QVERIFY(staleGate->entered.tryAcquire(1, 2000));
+        if (changeGeneration) {
+            project.ResetEditTracking(); QVERIFY(project.editTrackingReady_);
+            QVERIFY(project.editRevision_.Generation() != generation);
+        } else {
+            const MapData::PlacementMove move{*trackedPlacement, {64, 0, 0}, {}};
+            QVERIFY(MapData::MovePlacements(*project.mapEdits_, std::span(&move, 1)).Succeeded());
+            QVERIFY(project.ObserveMapDataEdit("使旧worker地图修订过期"));
+            QVERIFY(project.mapEdits_->Revision() != revision);
+        }
+        const auto afterChange = CaptureWorldTerrainSources(project); QVERIFY(afterChange.Succeeded());
+        QVERIFY(SameWorldTerrainSources(*beforeSources.value, *afterChange.value));
+        staleGate->release.release();
+        QTRY_COMPARE(staleCompletion->calls, 1);
+        QVERIFY(!staleCompletion->accepted);
+        QVERIFY(!staleCompletion->status.diagnostics.empty());
+        QCOMPARE(staleCompletion->status.diagnostics.front().code, std::string("WORLD_INSTANCE_SOURCE_STALE"));
+        QCOMPARE(player.Scene()->sceneVersion, sceneBefore);
+        QTRY_VERIFY(!player.InstancesBusy());
+    }
     player.Clear(); QVERIFY(!player.Ready()); QVERIFY(!player.Busy()); QVERIFY(!player.InstancesBusy());
 }
 
