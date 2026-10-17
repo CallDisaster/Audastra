@@ -26,8 +26,10 @@ HRESULT D3D11Scene::InitializeParticles() {
     return S_OK;
 }
 HRESULT D3D11Scene::PrepareParticleFrame(const ParticleFrameData& frame, ParticleGpuFrame& candidate) {
+    if (!frame.ValidMaterialFlags() || frame.PayloadBytes() > 64ull * 1024 * 1024) return E_INVALIDARG;
     // 只写非活动槽。即使后续模型提交失败，上一对模型/粒子 GPU 资源仍完整可画。
     candidate.draws = frame.draws;
+    candidate.drawMaterialFlags = frame.drawMaterialFlags;
     const auto bytes = static_cast<UINT>(frame.vertices.size() * sizeof(War3RenderParticleVertexV2));
     if (!bytes) return S_OK;
     auto hr = InitializeParticles();
@@ -55,6 +57,7 @@ void D3D11Scene::PublishParticleFrame(const ParticleFrameData& frame, ParticleGp
     particleFrames_[next].vertices.Swap(candidate.vertices);
     std::swap(particleFrames_[next].capacity, candidate.capacity);
     particleFrames_[next].draws.swap(candidate.draws);
+    particleFrames_[next].drawMaterialFlags.swap(candidate.drawMaterialFlags);
     activeParticleFrame_ = next;
     particleStatus_.sceneVersion = frame.sceneVersion; particleStatus_.contentVersion = frame.contentVersion;
     particleStatus_.vertexCount = static_cast<std::uint32_t>(frame.vertices.size());
@@ -106,7 +109,10 @@ HRESULT D3D11Scene::SetParticleFrame(const SkinPose& pose, const ParticleFrameDa
 catch (const std::length_error&) { return E_INVALIDARG; }
 
 void D3D11Scene::ClearParticles() noexcept {
-    for (auto& frame : particleFrames_) { frame.vertices.Reset(); frame.capacity = 0; frame.draws.clear(); }
+    for (auto& frame : particleFrames_) {
+        frame.vertices.Reset(); frame.capacity = 0; frame.draws.clear();
+        std::vector<std::uint32_t>().swap(frame.drawMaterialFlags);
+    }
     particleTextures_.clear();
     particleStatus_.sceneVersion = particleStatus_.contentVersion = 0;
     particleStatus_.vertexCount = particleStatus_.drawCount = 0;
@@ -133,7 +139,10 @@ void D3D11Scene::DrawParticles(int pass) {
         const auto& draw = frame.draws[drawIndex];
         const auto filter = filters[draw.filter];
         if ((filter >= 2) != (pass == 1)) continue;
-        const ModelLayerConstants values{1, filter, 1, 1};
+        const auto materialFlags = frame.drawMaterialFlags.empty() ? 0u : frame.drawMaterialFlags[drawIndex];
+        const auto layerFlags = WAR3_RENDER_MODEL_UNSHADED
+            | ((materialFlags & WAR3_PARTICLE_UNFOGGED) ? WAR3_RENDER_MODEL_UNFOGGED : 0u);
+        const ModelLayerConstants values{1, filter, layerFlags, 1};
         context_->UpdateSubresource(modelConstants_.Get(), 0, nullptr, &values, 0, 0);
         auto* texture = particleTextures_[draw.texture].Get(); context_->PSSetShaderResources(0, 1, &texture);
         // PRE2 AlphaKey / RIBB Transparent 均提交原版 mode 1：裁剪后仍使用源 alpha 混合。

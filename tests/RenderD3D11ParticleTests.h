@@ -1,4 +1,5 @@
 #pragma once
+#include "War3MapCore/RenderPluginParticleMaterial.h"
 // 复用既有 WARP 测试的相机、颜色断言和蒙皮夹具；只验证组合提交的新增边界。
 struct ParticleGpuFixture {
     RenderSkinFixture skin;
@@ -217,7 +218,8 @@ void TestParticleModels(const War3RenderPluginApiV2* api, const War3RenderCreate
     for (const bool material : {false,true}) TestParticleModelsMode(api,info,material);
     TestParticleModelsMode(api,info,true,true);
 }
-void TestParticleFaults(const std::filesystem::path& directory, HMODULE production, const War3RenderCreateInfoV2& info) {
+void TestParticleFaultsMode(const std::filesystem::path& directory, HMODULE production,
+    const War3RenderCreateInfoV2& info, bool materialMode) {
     Require(GetProcAddress(production,"War3RenderTest_SetFault") == nullptr,"test hook leaked into production DLL");
     const auto module = LoadLibraryExW((directory / L"war3-render-d3d11-test.dll").c_str(),nullptr,
         LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
@@ -229,17 +231,30 @@ void TestParticleFaults(const std::filesystem::path& directory, HMODULE producti
     Require(getApi && fault,"private fault controls unavailable");
     const auto* api = getApi(WAR3_RENDER_PLUGIN_API_V2);
     RendererOwner renderer{api,api->createRenderer(&info)}; Require(renderer.handle != nullptr,"fault renderer missing");
-    ParticleGpuFixture fixture; fixture.Bind(1,1);
+    ParticleGpuFixture fixture;
+    std::uint32_t materialFlag = WAR3_PARTICLE_UNFOGGED;
+    War3RenderParticleMaterialUpdateV2 materialFrame{};
+    const auto bind = [&](std::uint64_t scene, std::uint64_t content) {
+        fixture.Bind(scene,content);
+        materialFrame = {fixture.frame,WAR3_RENDER_PARTICLE_MATERIAL_FLAGS_V1,1,&materialFlag};
+        materialFrame.base.structSize = sizeof(materialFrame);
+        if (materialMode) fixture.scene.initialFrame = &materialFrame.base;
+    };
+    bind(1,1);
+    const War3RenderEnvironmentV2 environment{sizeof(environment),{0,0,1},{1,1,1},{1,1,1},
+        WAR3_RENDER_FOG_LINEAR,100,200,.01f,{.1f,.2f,.4f},0,0,0,0,0,0,nullptr};
+    if (materialMode) Require(api->setEnvironment(renderer.handle,&environment) == 0,"fault fog fixture rejected");
     Require(api->submitParticleModelScene(renderer.handle,&fixture.scene) == 0,"fault fixture rejected");
     auto accepted = CaptureParticles(renderer,1,1);
     std::uint64_t scene = 1, content = 1;
     for (const auto stage : {1u,2u}) for (const bool newScene : {false,true}) {
         if (newScene) { ++scene; content = 0; }
-        fixture.Bind(scene,++content);
+        materialFlag = materialFlag ? 0u : static_cast<std::uint32_t>(WAR3_PARTICLE_UNFOGGED);
+        bind(scene,++content);
         fixture.colors[0] = {{0,1,0}}; fixture.vertices[0].position[0] -= 50;
         Require(fault(renderer.handle,stage) == 0,"fault arm failed");
         Require((newScene ? api->submitParticleModelScene(renderer.handle,&fixture.scene)
-            : api->updateParticleModelFrame(renderer.handle,&fixture.frame)) == 0,"fault candidate not queued");
+            : api->updateParticleModelFrame(renderer.handle,fixture.scene.initialFrame)) == 0,"fault candidate not queued");
         RejectedParticleCapture(renderer);
         War3RenderSkinStatusV2 actual{sizeof(actual)};
         Require(api->getSkinStatus(renderer.handle,&actual) == 0 && actual.result < 0
@@ -248,8 +263,8 @@ void TestParticleFaults(const std::filesystem::path& directory, HMODULE producti
             && actual.staticUploadCount == accepted.receipt.models.skin.staticUploadCount
             && actual.matrixUploadCount == accepted.receipt.models.skin.matrixUploadCount,"failed combo published model half");
         Require(Capture(renderer,320,240,0) == accepted.pixels,"failed combo replaced old GPU pair");
-        fixture.Bind(scene,++content);
-        Require(api->updateParticleModelFrame(renderer.handle,&fixture.frame) == 0,"higher recovery version rejected");
+        bind(scene,++content);
+        Require(api->updateParticleModelFrame(renderer.handle,fixture.scene.initialFrame) == 0,"higher recovery version rejected");
         const auto recovered = CaptureParticles(renderer,scene,content);
         Require(recovered.receipt.particles.dynamicUploadCount == accepted.receipt.particles.dynamicUploadCount + 1
             && recovered.receipt.particles.textureUploadCount == accepted.receipt.particles.textureUploadCount + (newScene ? 1 : 0),
@@ -259,4 +274,8 @@ void TestParticleFaults(const std::filesystem::path& directory, HMODULE producti
     Require(fault(renderer.handle,3) == 0,"readback fault arm failed");
     RejectedParticleCapture(renderer); // Draw/readback 故障沿既有设备失效合同锁存；不伪报同设备恢复。
     std::cout << "particles fault WARP: old pair retained, no partial output, higher-version recovery, readback failure passed\n";
+}
+void TestParticleFaults(const std::filesystem::path& directory, HMODULE production, const War3RenderCreateInfoV2& info) {
+    TestParticleFaultsMode(directory,production,info,false);
+    TestParticleFaultsMode(directory,production,info,true);
 }

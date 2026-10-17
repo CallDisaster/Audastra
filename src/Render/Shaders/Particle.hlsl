@@ -14,7 +14,7 @@ float4 PSParticle(ParticleOutput input) : SV_TARGET {
     // 原版材质 mode 1：GE 192 的 alpha test，并保留源 alpha 参与混合。
     if (layerFilter == 1 && texel.a < (192.0 / 255.0)) discard;
     if (layerFilter == 0) texel.a = 1.0;
-    float keep = FogKeep(input.depth);
+    float keep = (layerFlags & 2) != 0 ? 1.0 : FogKeep(input.depth);
     if (layerFilter == 3 || layerFilter == 4) texel.rgb *= keep;
     else if (layerFilter == 5) texel.rgb = lerp(float3(1, 1, 1), texel.rgb, keep);
     else if (layerFilter == 6) texel.rgb = lerp(float3(0.5, 0.5, 0.5), texel.rgb, keep);

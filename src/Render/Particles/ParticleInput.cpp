@@ -105,14 +105,32 @@ bool ParticleApiSupported(const War3RenderPluginApiV2* a) noexcept {
         && a->apiVersion==WAR3_RENDER_PLUGIN_API_V2 && a->submitParticleModelScene
         && a->updateParticleModelFrame && a->captureParticleFrameRgba;
 }
+std::optional<std::uint64_t> ParticleInputPayloadBytes(const War3RenderParticleUpdateV2& in) noexcept {
+    const War3RenderParticleMaterialUpdateV2* material = nullptr;
+    if (in.structSize == sizeof(War3RenderParticleMaterialUpdateV2)) {
+        material = reinterpret_cast<const War3RenderParticleMaterialUpdateV2*>(&in);
+        if (material->materialFlagsFormat != WAR3_RENDER_PARTICLE_MATERIAL_FLAGS_V1
+            || material->materialFlagsCount != in.drawCount
+            || (material->materialFlagsCount == 0) != (material->materialFlags == nullptr)) return std::nullopt;
+    } else if (in.structSize != sizeof(in)) return std::nullopt;
+    if(in.reserved||!in.sceneVersion||!in.contentVersion||in.vertexCount>1048576
+        ||in.drawCount>65536||(in.vertexCount&&!in.vertices)||(in.drawCount&&!in.draws)) return std::nullopt;
+    const auto bytes = std::uint64_t(in.vertexCount) * sizeof(War3RenderParticleVertexV2)
+        + std::uint64_t(in.drawCount) * sizeof(War3RenderParticleDrawV2)
+        + (material ? std::uint64_t(material->materialFlagsCount) * sizeof(std::uint32_t) : 0);
+    return bytes > 64ull * 1024 * 1024 ? std::nullopt : std::optional<std::uint64_t>(bytes);
+}
 bool CopyParticleInput(const War3RenderParticleUpdateV2& in,std::uint32_t textures,ParticleFrameData& out) {
-    if(in.structSize!=sizeof(in)||in.reserved||!in.sceneVersion||!in.contentVersion||in.vertexCount>1048576
-        ||in.drawCount>65536||textures>256|| (in.vertexCount&&!in.vertices)||(in.drawCount&&!in.draws)
-        ||!in.modelPose||!SupportedPoseHeader(*in.modelPose)
-        ||in.modelPose->sceneVersion!=in.sceneVersion||in.modelPose->contentVersion!=in.contentVersion)return false;
+    if (!ParticleInputPayloadBytes(in) || textures > 256 || !in.modelPose || !SupportedPoseHeader(*in.modelPose)
+        || in.modelPose->sceneVersion != in.sceneVersion || in.modelPose->contentVersion != in.contentVersion) return false;
+    const auto* material = in.structSize == sizeof(War3RenderParticleMaterialUpdateV2)
+        ? reinterpret_cast<const War3RenderParticleMaterialUpdateV2*>(&in) : nullptr;
     ParticleFrameData copy;copy.sceneVersion=in.sceneVersion;copy.contentVersion=in.contentVersion;
     if(in.vertexCount)copy.vertices.assign(in.vertices,in.vertices+in.vertexCount);
     if(in.drawCount)copy.draws.assign(in.draws,in.draws+in.drawCount);
+    if (material && material->materialFlagsCount)
+        copy.drawMaterialFlags.assign(material->materialFlags, material->materialFlags + material->materialFlagsCount);
+    if (!copy.ValidMaterialFlags()) return false;
     for(const auto& v:copy.vertices){
         for(const auto x:v.position)if(!std::isfinite(x)||std::abs(x)>1e7f)return false;
         for(const auto x:v.uv)if(!std::isfinite(x)||std::abs(x)>1e7f)return false;

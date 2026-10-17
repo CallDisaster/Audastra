@@ -1,5 +1,6 @@
 #pragma once
 #include "War3MapCore/RenderPluginInstanceRoster.h"
+#include "War3MapCore/RenderPluginParticleMaterial.h"
 // 复用已有原创粒子/蒙皮夹具与WARP入口，不复制另一套资产或运行器。
 War3RenderInstanceRosterResultV2 WaitInstanceRoster(const RendererOwner& renderer, std::uint64_t ticket) {
     const auto deadline = GetTickCount64() + 10000;
@@ -17,7 +18,8 @@ using InstanceRosterSetFault = std::int32_t (WAR3_RENDER_CALL*)(War3RendererHand
 using InstanceRosterGateRead = std::int32_t (WAR3_RENDER_CALL*)(War3RendererHandle);
 using InstanceRosterAssetRead = std::int32_t (WAR3_RENDER_CALL*)(War3RendererHandle, std::uint64_t*, std::uint32_t);
 void TestInstanceRoster(const War3RenderPluginApiV2* api, const War3RenderCreateInfoV2& info,
-    InstanceRosterSetFault fault = nullptr, InstanceRosterGateRead gate = nullptr, InstanceRosterAssetRead assets = nullptr) {
+    InstanceRosterSetFault fault = nullptr, InstanceRosterGateRead gate = nullptr, InstanceRosterAssetRead assets = nullptr,
+    bool particleMaterialMode = false) {
     Require(api->structSize >= offsetof(War3RenderPluginApiV2, getEditorInstanceRosterResult)
         + sizeof(api->getEditorInstanceRosterResult) && api->submitEditorInstanceRoster && api->getEditorInstanceRosterResult,
         "resident roster tail missing");
@@ -27,6 +29,17 @@ void TestInstanceRoster(const War3RenderPluginApiV2* api, const War3RenderCreate
     const War3RenderCameraV2 camera{sizeof(camera),0,0,0,3500,-1.5707963f,1.5f};
     Require(api->setCamera(renderer.handle, &camera) == 0, "roster camera rejected");
     ParticleGpuFixture fixture; fixture.Bind(1,1);
+    std::uint32_t baselineMaterialFlag = WAR3_PARTICLE_UNFOGGED;
+    War3RenderParticleMaterialUpdateV2 baselineMaterial{
+        fixture.frame,WAR3_RENDER_PARTICLE_MATERIAL_FLAGS_V1,1,&baselineMaterialFlag};
+    baselineMaterial.base.structSize = sizeof(baselineMaterial);
+    War3RenderEnvironmentV2 environment{sizeof(environment),{0,0,1},{1,1,1},{1,1,1},
+        WAR3_RENDER_FOG_LINEAR,100,200,.01f,{.1f,.2f,.4f},0,0,0,0,0,0,nullptr};
+    if (particleMaterialMode) {
+        fixture.skin.layer.flags |= WAR3_RENDER_MODEL_UNFOGGED;
+        fixture.scene.initialFrame = &baselineMaterial.base;
+        Require(api->setEnvironment(renderer.handle,&environment) == 0,"roster material fog rejected");
+    }
     fixture.pose.base.instanceCount = fixture.pose.base.groupCount = fixture.pose.base.alphaCount = fixture.pose.colorCount = 1;
     War3RenderEditorPresentationTargetV2 target{sizeof(target)};
     Require(api->getEditorPresentationTarget(renderer.handle, &target) == 0, "roster initial target missing");
@@ -35,6 +48,8 @@ void TestInstanceRoster(const War3RenderPluginApiV2* api, const War3RenderCreate
     const War3RenderEditorModelSceneV2 scene{sizeof(scene),0,nullptr,nullptr,&fixture.scene,&mask};
     Require(api->submitEditorModelScene(renderer.handle, &scene) == 0, "roster baseline rejected");
     const auto before = CaptureParticles(renderer,1,1);
+    if (particleMaterialMode)
+        RequireWorldColor(before.pixels,before.receipt.models.frame.view,-500,0,{64,128,191},2);
     War3RenderInstanceRosterResultV2 base{}; base.structSize = sizeof(base);
     Require(api->getEditorInstanceRosterResult(renderer.handle,0,&base) == 0 && base.state == WAR3_RENDER_ROSTER_TARGET,
         "roster base identity missing");
@@ -51,12 +66,18 @@ void TestInstanceRoster(const War3RenderPluginApiV2* api, const War3RenderCreate
     pose.base.instanceCount = pose.base.groupCount = pose.base.alphaCount = pose.colorCount = 20;
     pose.base.instances = instances.data(); pose.base.groups = groups.data(); pose.base.alphas = alphas.data(); pose.colors = colors.data();
     auto particles = fixture.frame; particles.sceneVersion = 2; particles.modelPose = &pose.base;
+    std::uint32_t candidateMaterialFlag = 0;
+    War3RenderParticleMaterialUpdateV2 candidateMaterial{
+        particles,WAR3_RENDER_PARTICLE_MATERIAL_FLAGS_V1,1,&candidateMaterialFlag};
+    candidateMaterial.base.structSize = sizeof(candidateMaterial);
     std::uint8_t hiddenParticle = 0;
+    if (particleMaterialMode) hiddenParticle = 1;
     mask = {sizeof(mask),20,1,0,base.target,2,instancesVisible.data(),&hiddenParticle,nullptr,nullptr,nullptr};
     War3RenderEditorInstanceRosterV2 request{}; request.structSize = sizeof(request); request.expected = base.target;
     request.expectedPresentationRevision = base.presentationRevision; request.expectedAssetIdentity = base.assetIdentity;
     request.expectedLayersRevision = base.layersRevision; request.candidatePose = &pose.base;
     request.candidateParticles = &particles; request.visibility = &mask;
+    if (particleMaterialMode) request.candidateParticles = &candidateMaterial.base;
     std::uint64_t ticket = 0;
     auto bad = request; bad.flags = 0x80000000u;
     Require(api->submitEditorInstanceRoster(renderer.handle,&bad,&ticket) != 0 && !ticket, "unknown asset flag accepted");
@@ -106,6 +127,12 @@ void TestInstanceRoster(const War3RenderPluginApiV2* api, const War3RenderCreate
             && old.receipt.particles.textureUploadCount == before.receipt.particles.textureUploadCount
             && old.receipt.particles.dynamicUploadCount == before.receipt.particles.dynamicUploadCount,
             "cancelled roster changed resident VB/IB/textures, old completed frame or upload counts");
+    }
+    if (particleMaterialMode) {
+        // fault/cancel已用可判别flags核旧像素；下面正常名册沿用原隐藏粒子/无雾oracle。
+        request.candidateParticles = &particles;
+        hiddenParticle = 0; environment.fogMode = WAR3_RENDER_FOG_NONE;
+        Require(api->setEnvironment(renderer.handle,&environment) == 0,"roster material restore fog rejected");
     }
     Require(api->submitEditorInstanceRoster(renderer.handle,&request,&ticket) == 0 && ticket, "twenty roster not queued");
     colors[0] = {{1,0,0}}; groups[0].values[9] = 900; // 返回后宿主内存不再被借用。
@@ -205,4 +232,5 @@ void TestInstanceRosterFaults(const std::filesystem::path& directory, const War3
     const auto assets = reinterpret_cast<InstanceRosterAssetRead>(GetProcAddress(module,"War3RenderTest_GetAssetResources"));
     Require(getApi && fault && gate && assets,"roster fault controls unavailable");
     TestInstanceRoster(getApi(WAR3_RENDER_PLUGIN_API_V2),info,fault,gate,assets);
+    TestInstanceRoster(getApi(WAR3_RENDER_PLUGIN_API_V2),info,fault,gate,assets,true);
 }

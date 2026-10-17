@@ -935,6 +935,7 @@ void TestEnvironment(const RendererOwner& renderer) {
 #include "RenderD3D11SkinTests.h"
 #include "RenderD3D11AnimationTests.h"
 #include "RenderD3D11ParticleTests.h"
+#include "RenderD3D11ParticleMaterialTests.h"
 #include "RenderInstanceRosterTests.h"
 #include "RenderD3D11AssetAppendTests.h"
 #include "RenderD3D11MaterialStateTests.h"
@@ -1644,6 +1645,7 @@ int wmain(int argc, wchar_t** argv) {
         TestBuildingSplatLayer(api, info);
         TestAnimationServiceWARP(api, info);
         TestParticleModels(api, info);
+        TestParticleUnfoggedMaterials(api, info);
         TestOwnedStaticHelper(api, info);
         TestEditorVisibility(api, info);
         TestParticleFaults(dll.parent_path(), module, info);

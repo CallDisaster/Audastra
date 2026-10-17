@@ -2,7 +2,7 @@
   "schema": 1,
   "version": "0.1.19",
   "repository": "https://github.com/CallDisaster/Audastra-RenderCore.git",
-  "commit": "91ea3f54946f4488522b72af1b1cdb509a5e9be6",
+  "commit": "5d8bd0049c25fd3598e661473ec4bd9e06ef1d08",
   "files": [
     {
       "path": ".gitattributes",
@@ -26,7 +26,7 @@
     },
     {
       "path": "README.md",
-      "sha256": "ec7795d12c7483632ca1915ea7b9de1fa007f5a4b649a59a46fb153fd022bcf1"
+      "sha256": "d3cd2f7aace778ab1c29a745198a9e530ab45c41d30b671c739869cfe0f044ed"
     },
     {
       "path": "docs/DRAW_ASSET_VIEW.md",
@@ -55,6 +55,10 @@
     {
       "path": "docs/NO_CONTROLLER_STATIC_MODELS.md",
       "sha256": "6e2a53d0721c0af5f42d90f31e07365181ad3edccd2384d52bef1d479876db31"
+    },
+    {
+      "path": "docs/PARTICLE_MATERIAL_CONTRACT.md",
+      "sha256": "78289c23eec3912eab39e04de9f5ac9a3f97a5f76cc4fd07265d7d0009ca9ef8"
     },
     {
       "path": "docs/PROVENANCE.md",
@@ -115,6 +119,10 @@
     {
       "path": "include/War3MapCore/RenderPluginModelLayers.h",
       "sha256": "8b7716a1f01f29e4447391bf7e86f463e5dfdc5ec911147a0cc548b9baccdd32"
+    },
+    {
+      "path": "include/War3MapCore/RenderPluginParticleMaterial.h",
+      "sha256": "48305d35d2b81b68ccbf32b28facfd2301671e886dad5f588e01ec6aef704f6c"
     },
     {
       "path": "include/War3MapCore/RenderPluginV2.h",
@@ -183,6 +191,10 @@
     {
       "path": "include/War3RenderCore/Legacy/RenderPluginModelLayers.h",
       "sha256": "37520428cfbe707dba7f63dff1fe112281ca831ec5ff77ca379fa2a8ba70543e"
+    },
+    {
+      "path": "include/War3RenderCore/Legacy/RenderPluginParticleMaterial.h",
+      "sha256": "087226d486126f527e9a77c7437140298b411191aa37b74e30f4242ebbcb0ebc"
     },
     {
       "path": "include/War3RenderCore/Legacy/RenderPluginV2.h",
@@ -394,7 +406,7 @@
     },
     {
       "path": "src/RenderCore/TestTargets.cmake",
-      "sha256": "ece9aa31c4d3711d6c2effd3f8ac7d4022ba5486901d6dffe635e8bb0c587645"
+      "sha256": "13a94eeaf0b60b98ee79f5bb144bf2d982245fe22416f2bbc32b5123524ebcc8"
     },
     {
       "path": "tests/ExternalFrameTests.cpp",
@@ -451,6 +463,10 @@
     {
       "path": "tests/MdxTestModel.h",
       "sha256": "34b8ba8ff358e89e2ae860dcd3905a40b386f71aa6c35fdf724173d7b5279cc8"
+    },
+    {
+      "path": "tests/ParticleMaterialContractTests.cpp",
+      "sha256": "492521a2091a62bb81ff331484d7d6b6d7672d1ddac756840ed3325d305e42ea"
     },
     {
       "path": "tests/PremReadTests.cpp",

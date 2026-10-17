@@ -156,6 +156,7 @@ private:
         Ptr<ID3D11Buffer> vertices;
         UINT capacity = 0;
         std::vector<War3RenderParticleDrawV2> draws;
+        std::vector<std::uint32_t> drawMaterialFlags;
     };
     HRESULT PrepareParticleFrame(const ParticleFrameData& frame, ParticleGpuFrame& candidate);
     void PublishParticleFrame(const ParticleFrameData& frame, ParticleGpuFrame& candidate) noexcept;

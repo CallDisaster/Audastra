@@ -219,7 +219,62 @@ void MaterialStateInputContract(){
     Check(CopyParticleInput(in,1,out)&&out.vertices[0].position[0]==42,"material-state recovery failed");
     std::cout<<"particle_material_state_header=1 distinct_model_texture_pool=1 known_tails_validated=1 bad_tail_atomic=1 pose_work_budget=1\n";
 }
+void ParticleMaterialInputContract() {
+    using namespace War3Map::Render;
+    War3RenderSkinUpdateV2 pose{};
+    pose.structSize = sizeof(pose); pose.sceneVersion = 9; pose.contentVersion = 11;
+    std::array<War3RenderParticleVertexV2, 6> vertices{};
+    std::array<War3RenderParticleDrawV2, 2> draws{{{0,3,0,WAR3_PARTICLE_BLEND}, {3,3,0,WAR3_PARTICLE_BLEND}}};
+    std::array<std::uint32_t, 2> flags{0, WAR3_PARTICLE_UNFOGGED};
+    War3RenderParticleMaterialUpdateV2 input{
+        {sizeof(input),6,2,0,9,11,vertices.data(),draws.data(),&pose},
+        WAR3_RENDER_PARTICLE_MATERIAL_FLAGS_V1,2,flags.data()};
+    ParticleFrameData output;
+    Check(CopyParticleInput(input.base,1,output) && output.drawMaterialFlags == std::vector<std::uint32_t>{0,1},
+        "particle material flags lost per-draw identity");
+    Check(output.PayloadBytes() == sizeof(vertices) + sizeof(draws) + sizeof(flags),
+        "particle material payload excluded owned flags");
+    flags[1] = 0; vertices[0].position[0] = 42;
+    Check(output.drawMaterialFlags[1] == WAR3_PARTICLE_UNFOGGED && output.vertices[0].position[0] == 0,
+        "particle material flags/geometry still borrowed");
+    flags[1] = WAR3_PARTICLE_UNFOGGED; vertices[0].position[0] = 0;
+    const auto accepted = output;
+    const auto reject = [&] {
+        Check(!CopyParticleInput(input.base,1,output), "invalid particle material descriptor accepted");
+        Check(output.sceneVersion == accepted.sceneVersion && output.contentVersion == accepted.contentVersion
+            && output.drawMaterialFlags == accepted.drawMaterialFlags && output.PayloadBytes() == accepted.PayloadBytes()
+            && std::memcmp(output.vertices.data(),accepted.vertices.data(),sizeof(vertices)) == 0
+            && std::memcmp(output.draws.data(),accepted.draws.data(),sizeof(draws)) == 0,
+            "rejected particle material input changed accepted frame");
+    };
+    input.materialFlagsFormat = 2; reject(); input.materialFlagsFormat = 1;
+    for (const auto count : {0u,1u,3u,UINT32_MAX}) { input.materialFlagsCount = count; reject(); }
+    input.materialFlagsCount = 2;
+    input.materialFlags = nullptr; reject(); input.materialFlags = flags.data();
+    flags[0] = 2; reject(); flags[0] = 0;
+    input.base.reserved = 1; reject(); input.base.reserved = 0;
+    for (const auto size : {sizeof(input)-1,sizeof(input)+1}) {
+        input.base.structSize = static_cast<std::uint32_t>(size); reject();
+    }
+    input.base.structSize = sizeof(input);
+    input.base.contentVersion = 12; reject(); input.base.contentVersion = 11;
+    input.base.sceneVersion = 10; reject(); input.base.sceneVersion = 9;
+    input.base.drawCount = 65537; input.materialFlagsCount = 65537; reject();
+    input.base.drawCount = input.materialFlagsCount = 2;
+    input.base.vertexCount = 1048577; reject(); input.base.vertexCount = 6;
+    auto legacy = input.base; legacy.structSize = sizeof(legacy);
+    Check(CopyParticleInput(legacy,1,output) && output.drawMaterialFlags.empty(),
+        "legacy particle input retained old extended flags");
+    input.base.vertexCount = input.base.drawCount = input.materialFlagsCount = 0;
+    input.base.vertices = nullptr; input.base.draws = nullptr; input.materialFlags = nullptr;
+    Check(CopyParticleInput(input.base,1,output) && output.vertices.empty() && output.draws.empty()
+        && output.drawMaterialFlags.empty(), "extended empty particle frame rejected");
+    input.materialFlags = flags.data();
+    Check(!CopyParticleInput(input.base,1,output) && output.PayloadBytes() == 0,
+        "empty particle frame accepted stray material pointer");
+}
 void InputContract(){
+    ParticleMaterialInputContract();
     using namespace War3Map::Render;
     War3RenderPluginApiV2 old{};old.apiVersion=WAR3_RENDER_PLUGIN_API_V2;
     old.structSize=static_cast<std::uint32_t>(offsetof(War3RenderPluginApiV2,submitParticleModelScene));

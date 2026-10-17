@@ -677,18 +677,20 @@ std::int32_t WAR3_RENDER_CALL SubmitTerrainMips(War3RendererHandle renderer, con
     } catch (...) { return static_cast<std::int32_t>(E_OUTOFMEMORY); }
 }
 bool Unit(float value) { return std::isfinite(value) && value >= 0 && value <= 1; }
+std::uint64_t PosePayloadBytes(const SkinPose& pose) noexcept {
+    return std::uint64_t(pose.instances.size()) * sizeof(War3RenderSkinnedModelInstanceV2)
+        + std::uint64_t(pose.groups.size()) * sizeof(War3RenderGroupMatrixV2)
+        + std::uint64_t(pose.alphas.size()) * sizeof(float) + std::uint64_t(pose.colors.size()) * sizeof(War3RenderMeshColorV2)
+        + std::uint64_t(pose.layerAlphas.size()) * sizeof(float) + std::uint64_t(pose.layerSlices.size()) * sizeof(War3RenderMaterialLayerSliceV2)
+        + std::uint64_t(pose.materialStates.size()) * sizeof(War3RenderMaterialStateV2)
+        + std::uint64_t(pose.materialStateSlices.size()) * sizeof(War3RenderMaterialLayerSliceV2);
+}
 bool ValidateUnmaskedMaterialWork(const ModelScene& models, const SkinPose* pose, const ParticleFrameData* particles) {
     if (!models.dynamicMaterialStates) return true;
     if (!pose) return false;
     const auto maskBytes = std::uint64_t(models.instances.size()) + (particles ? particles->draws.size() : 0);
-    const auto bytes = std::uint64_t(pose->instances.size()) * sizeof(War3RenderSkinnedModelInstanceV2)
-        + std::uint64_t(pose->groups.size()) * sizeof(War3RenderGroupMatrixV2)
-        + std::uint64_t(pose->alphas.size()) * sizeof(float) + std::uint64_t(pose->colors.size()) * sizeof(War3RenderMeshColorV2)
-        + std::uint64_t(pose->layerAlphas.size()) * sizeof(float) + std::uint64_t(pose->layerSlices.size()) * sizeof(War3RenderMaterialLayerSliceV2)
-        + std::uint64_t(pose->materialStates.size()) * sizeof(War3RenderMaterialStateV2)
-        + std::uint64_t(pose->materialStateSlices.size()) * sizeof(War3RenderMaterialLayerSliceV2)
-        + (particles ? std::uint64_t(particles->vertices.size()) * sizeof(War3RenderParticleVertexV2)
-            + std::uint64_t(particles->draws.size()) * sizeof(War3RenderParticleDrawV2) : 0) + maskBytes;
+    const auto bytes = PosePayloadBytes(*pose)
+        + (particles ? particles->PayloadBytes() : 0) + maskBytes;
     const auto limit = (particles ? 128ull : 64ull) * 1024 * 1024;
     if (bytes > limit) {
         char message[192]{};
@@ -863,6 +865,11 @@ std::int32_t WAR3_RENDER_CALL GetSkinStatus(War3RendererHandle handle, War3Rende
         if (capacity >= sizeof(War3RenderSkinMaterialStateCapabilitiesV2)) {
             auto& extended = *reinterpret_cast<War3RenderSkinMaterialStateCapabilitiesV2*>(output);
             extended.materialStateFormat = WAR3_RENDER_DYNAMIC_MATERIAL_STATE_V1; extended.reserved = 0;
+        }
+        if (capacity >= sizeof(War3RenderParticleMaterialCapabilitiesV2)) {
+            auto& extended = *reinterpret_cast<War3RenderParticleMaterialCapabilitiesV2*>(output);
+            extended.particleMaterialFlagsFormat = WAR3_RENDER_PARTICLE_MATERIAL_FLAGS_V1;
+            extended.particleMaterialFlagsMask = WAR3_PARTICLE_UNFOGGED;
         }
         return 0;
     } catch (...) { return static_cast<std::int32_t>(E_FAIL); }
@@ -1086,6 +1093,8 @@ std::int32_t WAR3_RENDER_CALL SubmitEditorVisibility(War3RendererHandle handle,
         if (input->staticInstances) ++target.modelEpoch;
         if (pose) { target.sceneVersion = pose->sceneVersion; target.contentVersion = pose->contentVersion; }
         target.particleDrawCount = particles ? static_cast<std::uint32_t>(particles->draws.size()) : 0;
+        if (particles && (!pose || PosePayloadBytes(*pose) + particles->PayloadBytes()
+            + input->instanceCount + input->particleDrawCount > 128ull * 1024 * 1024)) return kInvalid;
         auto visibility = std::make_shared<EditorVisibility>();
         if (!War3Map::Render::CopyEditorVisibility(SkinLayout(frozen), particles.get(), target, *input, *visibility, pose.get())) return kInvalid;
         {
@@ -1150,9 +1159,9 @@ std::int32_t WAR3_RENDER_CALL SubmitEditorInstanceRoster(War3RendererHandle hand
         if (material) poseBytes += std::uint64_t(material->layerAlphaCount) * sizeof(float)
             + std::uint64_t(material->instanceSliceCount) * sizeof(War3RenderMaterialLayerSliceV2);
         const auto particleBytes = input->candidateParticles
-            ? std::uint64_t(input->candidateParticles->vertexCount) * sizeof(War3RenderParticleVertexV2)
-                + std::uint64_t(input->candidateParticles->drawCount) * sizeof(War3RenderParticleDrawV2) : 0;
-        if (poseBytes + particleBytes + mask.instanceCount + mask.particleDrawCount > 128ull * 1024 * 1024) return kInvalid;
+            ? War3Map::Render::ParticleInputPayloadBytes(*input->candidateParticles) : std::optional<std::uint64_t>(0);
+        if (!particleBytes) return kInvalid;
+        if (poseBytes + *particleBytes + mask.instanceCount + mask.particleDrawCount > 128ull * 1024 * 1024) return kInvalid;
         auto roster = std::make_shared<RosterCandidate>();
         roster->assetIdentity = frozen.assetIdentity; roster->expected = input->expected;
         roster->candidateAssetIdentity = assets ? frozen.assetIdentity + 1 : frozen.assetIdentity;
