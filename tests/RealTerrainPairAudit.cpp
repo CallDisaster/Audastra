@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <iostream>
 #include <limits>
 #include <set>
 #include <stdexcept>
@@ -288,7 +289,19 @@ void RunRealTerrainPairAudit(const std::filesystem::path& manifestPath, std::str
         atlases[index] = *decoded.value; const auto& atlas = *atlases[index];
         Check(atlas.sourceSha256 == texture->at("source_sha256").get<std::string>() && atlas.columns == UInt(texture->at("columns")),
             "pair decoded atlas identity mismatch");
-        const auto& levels = texture->at("levels"); Check(levels.size() == atlas.additionalMips.size() + 1 && levels.size() <= 12,
+        const auto& levels = texture->at("levels");
+        if (levels.size() != atlas.additionalMips.size() + 1) {
+            std::cerr << "pair_mip_counts palette=" << index << " audited=" << levels.size()
+                << " retained=" << atlas.additionalMips.size() + 1 << " validated=" << atlas.validatedMipCount << '\n';
+            for (std::size_t level = 0; level <= atlas.additionalMips.size(); ++level) {
+                const auto& mip = level ? atlas.additionalMips[level - 1] : atlas.image;
+                const bool cellSampleable = mip.width >= atlas.columns && mip.height >= atlas.rows
+                    && mip.width % atlas.columns == 0 && mip.height % atlas.rows == 0;
+                std::cerr << "pair_mip_level level=" << level << " width=" << mip.width << " height=" << mip.height
+                    << " cell_sampleable=" << cellSampleable << " rgba_sha256=" << Digest(mip.rgba) << '\n';
+            }
+        }
+        Check(levels.size() == atlas.additionalMips.size() + 1 && levels.size() <= 12,
             "pair original mip count mismatch");
         Json verifiedLevels = Json::array();
         for (std::size_t i = 0; i < levels.size(); ++i) {
