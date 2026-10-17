@@ -129,7 +129,8 @@ QJsonObject GroundBudgetJson(const Render::TerrainGroundMesh& ground) {
         {"reduced", budget.reduced}, {"reduced_scope", "geometry-batches-working-bytes"},
         {"base", counts(budget.base)}, {"transitions", counts(budget.transitions)},
         {"blight", counts(budget.blight)}, {"water", counts(budget.water)},
-        {"resource_state", QJsonObject{{"ground_texture_slots", static_cast<qint64>(budget.groundTextureSlots)},
+        {"resource_state", QJsonObject{{"requested_ground_texture_slots", static_cast<qint64>(budget.requestedGroundTextureSlots)},
+            {"ground_texture_slots", static_cast<qint64>(budget.groundTextureSlots)},
             {"final_texture_slots", static_cast<qint64>(budget.finalTextureSlots)},
             {"texture_slot_limit", static_cast<qint64>(budget.textureSlotLimit)},
             {"water_style_available", budget.waterStyleAvailable},
@@ -180,8 +181,9 @@ QString GroundBudgetDetails(const Render::TerrainGroundMesh& ground) {
         lines << QObject::tr("基础贴图预算预览：完整基础层 → 全图水面 → 全图普通过渡 → 精确荒芜遮罩；每类全留或全省略，不代表完整原版保真。");
     else if (budget.water.omitted || budget.blight.omitted || budget.transitions.omitted)
         lines << QObject::tr("未触发几何预览降级；资源省略仍见各层原因，不代表完整原版保真。");
-    lines << QObject::tr("纹理槽：地表 %1，最终 %2，上限 %3")
-        .arg(Count(budget.groundTextureSlots), Count(budget.finalTextureSlots), Count(budget.textureSlotLimit));
+    lines << QObject::tr("纹理槽：请求地表预检 %1，保留地表 %2，最终全部 %3，上限 %4")
+        .arg(Count(budget.requestedGroundTextureSlots), Count(budget.groundTextureSlots),
+            Count(budget.finalTextureSlots), Count(budget.textureSlotLimit));
     return lines.join(QLatin1Char('\n'));
 }
 

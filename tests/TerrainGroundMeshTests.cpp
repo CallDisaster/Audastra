@@ -1119,6 +1119,144 @@ void TestPreserveBasePreviewBudget() {
     counts(*hidden.value);
 }
 
+void TestOmittedTransitionAtlasReAdmission() {
+    constexpr auto preview = TerrainGroundBudgetPolicy::PreserveBasePreview;
+    const auto bit = [](TerrainGroundOmissionReason reason) { return static_cast<std::uint32_t>(reason); };
+    TerrainWaterStyle water{0, {90, 130, 170, 210}, {90, 130, 170, 210},
+        {90, 130, 170, 210}, {90, 130, 170, 210}};
+    water.frameIndex = 1; water.frameCount = 2;
+    water.frameSourcePath = "original/retained-water-1"; water.frameSourceSha256 = "retained-water-fixture";
+    auto single = Grid();
+    const std::array<std::uint8_t, 4> grounds{0, 1, 2, 1};
+    for (std::size_t i = 0; i < grounds.size(); ++i)
+        single.vertices[i].textureAndFlagsRaw = static_cast<std::uint8_t>(grounds[i] | 0x40);
+    std::vector<Atlas> atlases{MakeAtlas(), MakeAtlas(8), MakeAtlas()};
+    const auto build = [&](const TerrainGridSnapshot& terrain, const std::vector<Atlas>& sources,
+        const TerrainGroundMeshLimits& limits, const TerrainWaterStyle* style, Atlas blight = {}) {
+        auto result = BuildTerrainGroundMesh(terrain, sources, limits, kUnlit, style, {}, blight, {}, preview);
+        Require(result.Succeeded(), "原创重准入夹具必须保留完整基础层");
+        CheckGeometry(terrain, *result.value);
+        for (std::size_t slot = 0; slot < result.value->textures.size(); ++slot)
+            Require(std::any_of(result.value->batches.begin(), result.value->batches.end(), [&](const auto& batch) {
+                return batch.indexCount != 0 && batch.textureIndex == slot;
+            }), "回收后的每个纹理槽必须有真实非空draw依赖");
+        for (const auto* layer : {&result.value->budget.base, &result.value->budget.transitions,
+                &result.value->budget.blight, &result.value->budget.water})
+            Require(layer->requested == layer->noContribution + layer->displayed + layer->omitted, "重准入不破坏层计数守恒");
+        return std::move(*result.value);
+    };
+    TerrainGroundMeshLimits limits; limits.maxTextures = 3; limits.maxVertices = 8;
+    const auto small = build(single, atlases, limits, &water);
+    Require(small.budget.requestedGroundTextureSlots == 3 && small.budget.groundTextureSlots == 1
+        && small.budget.finalTextureSlots == 2 && small.textures[0] == atlases[0]
+        && small.vertices.size() == 8 && small.waterTiles.size() == 1 && small.overlayTiles.empty()
+        && small.budget.water.omissionReasons == 0 && small.budget.reduced
+        && small.budget.transitions.omissionReasons == bit(TerrainGroundOmissionReason::Vertices)
+        && small.budget.water.textureSlotsBeforeAdmission == 1,
+        "原槽拒水且原顶点省过渡后，回收unused再完整重试水，保留原过渡省略原因");
+    Require(small.waterTextureIndex == 1 && small.waterFrameIndex == 1 && small.waterFrameCount == 2
+        && small.waterFrameSourceSha256 == water.frameSourceSha256, "重准入成功须写实际水面索引和来源身份");
+    Require(!BuildTerrainGroundMesh(single, atlases, limits, kUnlit, &water).Succeeded(), "Strict不采用资源回收预览");
+    limits.maxTextures = 4;
+    const auto retainedWater = build(single, atlases, limits, &water);
+    Require(retainedWater.budget.water.displayed == 1 && retainedWater.waterTextureIndex == 1
+        && retainedWater.textures.size() == 2 && retainedWater.batches.back().textureIndex == 1
+        && retainedWater.waterFrameSourceSha256 == water.frameSourceSha256,
+        "原已准入水面须稳定保留，过渡槽压紧后同步remap水batch/索引而不改变来源");
+    limits.maxTextures = 3;
+    limits.maxVertices = 4;
+    const auto noRoom = build(single, atlases, limits, &water);
+    Require(noRoom.waterTiles.empty() && noRoom.budget.water.omissionReasons == bit(TerrainGroundOmissionReason::Vertices)
+        && noRoom.budget.finalTextureSlots == 1 && !noRoom.waterTextureIndex && noRoom.waterFrameCount == 0,
+        "资源重试通过但几何仍失败时只记录实际最终原因，不残留旧槽拒或水帧身份");
+    limits = {}; limits.maxRgbaBytes = 96 * 1024; limits.maxVertices = 8;
+    const auto rgba = build(single, atlases, limits, &water);
+    Require(rgba.budget.water.displayed == 1 && rgba.budget.water.omissionReasons == 0 && rgba.budget.finalTextureSlots == 2,
+        "A全部ground64KiB通过但加水128KiB被拒，过渡省略后base水80KiB可重新准入");
+    limits.maxRgbaBytes = 80 * 1024 - 1;
+    const auto rgbaBelow = build(single, atlases, limits, &water);
+    Require(rgbaBelow.budget.water.omissionReasons == bit(TerrainGroundOmissionReason::RgbaBytes)
+        && rgbaBelow.budget.finalTextureSlots == 1, "重试真实RGBA并集少一字节仍省水，不伪造几何原因");
+    limits.maxRgbaBytes = 80 * 1024;
+    Require(build(single, atlases, limits, &water).budget.water.displayed == 1, "重试RGBA恰好达到上限时应显示");
+
+    // 16来源、唯一base：前14格各2过渡，最后1格1过渡，共29；不使用地图资源。
+    auto sixteen = Grid(16, 2); sixteen.header.groundTilesets.clear(); std::vector<Atlas> distinct;
+    for (std::uint32_t i = 0; i < 16; ++i) { sixteen.header.groundTilesets.push_back("r" + std::to_string(i)); distinct.push_back(MakeAtlas()); }
+    for (std::uint32_t x = 0; x < 16; ++x) {
+        sixteen.vertices[x].textureAndFlagsRaw = 0x40;
+        sixteen.vertices[16 + x].textureAndFlagsRaw = static_cast<std::uint8_t>(std::min(x + 1, 15u) | 0x40);
+    }
+    limits = {}; limits.maxVertices = 120;
+    const auto narrow = build(sixteen, distinct, limits, &water);
+    Require(narrow.budget.requestedGroundTextureSlots == 16 && narrow.budget.groundTextureSlots == 1
+        && narrow.budget.finalTextureSlots == 2 && narrow.budget.transitions.requested == 29
+        && narrow.budget.transitions.omissionReasons == bit(TerrainGroundOmissionReason::Vertices)
+        && narrow.budget.water.displayed == 15 && narrow.vertices.size() == 120 && narrow.indices.size() == 180
+        && narrow.batches.size() == 2 && narrow.textures.capacity() >= 16,
+        "16槽反例须回收15个unused并保全15水，同时保留并计费原capacity");
+    limits = {};
+    const auto roomy = build(sixteen, distinct, limits, &water);
+    Require(roomy.budget.groundTextureSlots == 16 && roomy.budget.finalTextureSlots == 16
+        && roomy.budget.transitions.displayed == 29 && roomy.budget.water.displayed == 0
+        && roomy.budget.water.omissionReasons == bit(TerrainGroundOmissionReason::TextureSlots) && !roomy.budget.reduced,
+        "宽松几何全部trans可显示时没有unused，不能为了17槽水并集主动丢掉原成功过渡");
+    auto blighted = sixteen;
+    for (auto& vertex : blighted.vertices)
+        vertex.textureAndFlagsRaw = static_cast<std::uint8_t>((vertex.textureAndFlagsRaw & 0x0f) | 0x20);
+    limits.maxVertices = 120; const auto exactBlight = MakeAtlas(8);
+    const auto recovered = build(blighted, distinct, limits, nullptr, exactBlight);
+    Require(recovered.budget.groundTextureSlots == 1 && recovered.budget.finalTextureSlots == 2
+        && recovered.blightTexturedTiles == 15 && recovered.vertices.size() == 120 && recovered.textures[1] == exactBlight,
+        "原过渡几何省略后荒芜按回收后的实际表准入");
+    auto smallBlight = single;
+    for (auto& vertex : smallBlight.vertices)
+        vertex.textureAndFlagsRaw = static_cast<std::uint8_t>((vertex.textureAndFlagsRaw & 0x0f) | 0x20);
+    limits = {}; limits.maxVertices = 8;
+    const auto aliasBlight = build(smallBlight, atlases, limits, nullptr, atlases[1]);
+    Require(aliasBlight.textures.size() == 2 && aliasBlight.textures[1] == atlases[1] && aliasBlight.blightTexturedTiles == 1
+        && aliasBlight.batches.back().textureIndex == 1, "blight复用已省略transition来源须重新保活并remap");
+    auto shared = atlases; shared[1] = shared[0]; shared[2] = shared[0];
+    const auto aliasBase = build(single, shared, limits, &water);
+    Require(aliasBase.budget.requestedGroundTextureSlots == 1 && aliasBase.budget.groundTextureSlots == 1
+        && aliasBase.textures[0] == shared[0] && aliasBase.waterTextureIndex == 1,
+        "base仍引用的同pointer atlas不能因其transition省略被回收");
+    limits = {};
+    const auto aliasFull = build(single, shared, limits, &water);
+    Require(aliasFull.budget.transitions.displayed == 2 && aliasFull.batches.size() == 4
+        && aliasFull.batches[1].textureIndex == 0 && aliasFull.batches[2].textureIndex == 0,
+        "共享atlas的原palette透明分组不合批、不重排");
+
+    for (int domain = 0; domain < 5; ++domain) {
+        limits = {}; limits.maxVertices = 8;
+        switch (domain) {
+        case 0: limits.maxTextures = 2; break;
+        case 1: limits.maxTextureDimension = 127; break;
+        case 2: limits.maxTextureBytes = 32767; break;
+        case 3: limits.maxTextureChainBytes = 32767; break;
+        default: limits.maxRgbaBytes = 65535; break;
+        }
+        const auto rejected = BuildTerrainGroundMesh(single, atlases, limits, kUnlit, &water, {}, {}, {}, preview);
+        Require(!rejected.Succeeded() && rejected.diagnostics.front().code == "TERRAIN_GROUND_BUDGET", "最终不用的过渡资源也不能绕过A原硬帽");
+    }
+    limits = {}; limits.maxVertices = 8; limits.maxWorkingBytes = 60 * 1024;
+    const auto requiredBudget = BuildTerrainGroundMesh(single, atlases, limits, kUnlit, &water, {}, {}, {}, preview);
+    Require(!requiredBudget.Succeeded() && requiredBudget.diagnostics.front().code == "TERRAIN_GROUND_BUDGET",
+        "原base加全部所需ground工作集检查失败时不得靠后置回收改成成功");
+    auto missing = atlases; missing[1].reset(); limits = {}; limits.maxVertices = 8;
+    const auto fallback = build(single, missing, limits, &water);
+    Require(fallback.fallback.missingAtlasTiles == 1 && fallback.texturedTiles == 0
+        && fallback.budget.transitions.requested == 0, "缺transition源仍整格高度色fallback");
+    auto zero = water;
+    zero.texture = std::make_shared<const Image::DecodedImage>(Image::DecodedImage{1, 1,
+        {std::byte{90}, std::byte{130}, std::byte{170}, std::byte{0}}}); // 整个source为零，非仅选中cell0。
+    limits = {}; limits.maxVertices = 4;
+    const auto noWater = build(single, atlases, limits, &zero);
+    Require(noWater.budget.water.noContribution == 1 && noWater.budget.water.omissionReasons == 0
+        && !noWater.waterTextureIndex && noWater.textures.size() == 1,
+        "969零贡献候选不因重试生成水atlas或质量省略原因");
+}
+
 } // namespace
 
 int main() {
@@ -1139,6 +1277,7 @@ int main() {
         TestLighting();
         TestOmissionReasonsAndResourceStates();
         TestPreserveBasePreviewBudget();
+        TestOmittedTransitionAtlasReAdmission();
         std::cout << "TerrainGroundMeshTests: all tests passed\n";
         return 0;
     } catch (const std::exception& exception) {

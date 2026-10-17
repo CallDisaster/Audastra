@@ -452,7 +452,8 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
             textureSlots[i] = static_cast<std::uint32_t>(output.textures.size());
             output.textures.push_back(atlas);
         }
-        const auto groundTextureCount = output.textures.size();
+        auto groundTextureCount = output.textures.size();
+        output.budget.requestedGroundTextureSlots = groundTextureCount;
         output.budget.groundTextureSlots = groundTextureCount;
         // 水面用合成透明度 atlas 占一个纹理槽；槽满时不画水面并如实标记。
         output.waterOmitted = output.waterFlaggedTiles != 0 && !waterStyle;
@@ -462,6 +463,13 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
             if (!waterStyle) output.budget.water.omissionReasons = Reason(TerrainGroundOmissionReason::MissingWaterStyle);
         }
         auto waterSlot = TerrainGroundHeightColor;
+        const auto setWaterIdentity = [&] {
+            output.waterTextureIndex = waterSlot;
+            output.waterFrameIndex = waterStyle->frameIndex;
+            output.waterFrameCount = waterStyle->frameCount;
+            output.waterFrameSourcePath = waterStyle->frameSourcePath;
+            output.waterFrameSourceSha256 = waterStyle->frameSourceSha256;
+        };
         if (!waterTiles.empty()) {
             if (output.textures.size() < limits.maxTextures) {
                 auto atlas = WaterAtlas(waterStyle->texture.get());
@@ -469,18 +477,14 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
                     waterSlot = static_cast<std::uint32_t>(output.textures.size());
                     rgbaBytes += atlas->RgbaByteCount();
                     output.textures.push_back(std::move(atlas));
-                    output.waterTextureIndex = waterSlot;
-                    output.waterFrameIndex = waterStyle->frameIndex;
-                    output.waterFrameCount = waterStyle->frameCount;
-                    output.waterFrameSourcePath = waterStyle->frameSourcePath;
-                    output.waterFrameSourceSha256 = waterStyle->frameSourceSha256;
+                    setWaterIdentity();
                 } else {
-                    waterTiles.clear();
+                    if (budgetPolicy == TerrainGroundBudgetPolicy::Strict) waterTiles.clear();
                     output.waterOmitted = true;
                     output.budget.water.omissionReasons = Reason(TerrainGroundOmissionReason::RgbaBytes);
                 }
             } else {
-                waterTiles.clear();
+                if (budgetPolicy == TerrainGroundBudgetPolicy::Strict) waterTiles.clear();
                 output.waterOmitted = true;
                 output.budget.water.omissionReasons = Reason(TerrainGroundOmissionReason::TextureSlots);
             }
@@ -517,15 +521,17 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
             const auto fits = [&](std::size_t transitionQuads, std::size_t waterQuads, std::size_t bytes) {
                 return fitReasons(transitionQuads, waterQuads, bytes) == 0;
             };
-            if (!fits(overlays.size(), waterTiles.size(), rgbaBytes)) {
+            // 资源拒绝时仅暂存原候选索引，不把它们冒充已准入水面参加原几何决策。
+            auto displayedWaterQuads = waterSlot != TerrainGroundHeightColor ? waterTiles.size() : 0;
+            if (!fits(overlays.size(), displayedWaterQuads, rgbaBytes)) {
                 const auto waterBytes = waterSlot != TerrainGroundHeightColor
                     ? output.textures[waterSlot]->RgbaByteCount() : 0;
                 const auto groundBytes = rgbaBytes - waterBytes;
                 if (!fits(0, 0, groundBytes))
                     return Failure("TERRAIN_GROUND_BUDGET", "完整基础层与所需地表材质超过预算，不能发布基础贴图预览。");
-                const bool keepWater = fits(0, waterTiles.size(), rgbaBytes);
+                const bool keepWater = fits(0, displayedWaterQuads, rgbaBytes);
                 if (!keepWater) {
-                    output.budget.water.omissionReasons |= fitReasons(0, waterTiles.size(), rgbaBytes);
+                    output.budget.water.omissionReasons |= fitReasons(0, displayedWaterQuads, rgbaBytes);
                     // 水面 atlas 在地表 atlas 之后且尚未追加荒芜；省略时清掉帧身份，不能声称已显示该帧。
                     output.textures.pop_back();
                     rgbaBytes = groundBytes;
@@ -534,17 +540,81 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
                     output.waterFrameIndex = output.waterFrameCount = 0;
                     output.waterFrameSourcePath.clear(); output.waterFrameSourceSha256.clear();
                     std::vector<std::uint32_t>().swap(waterTiles);
+                    displayedWaterQuads = 0;
                     output.waterOmitted = true;
                     output.budget.reduced = true;
                 }
-                if (!fits(overlays.size(), waterTiles.size(), rgbaBytes)) {
-                    output.budget.transitions.omissionReasons = fitReasons(overlays.size(), waterTiles.size(), rgbaBytes);
+                if (!fits(overlays.size(), displayedWaterQuads, rgbaBytes)) {
+                    output.budget.transitions.omissionReasons = fitReasons(overlays.size(), displayedWaterQuads, rgbaBytes);
                     std::vector<Overlay>().swap(overlays);
                     overlayCounts.fill(0);
                     overlayGroups = 0;
                     output.budget.reduced = true;
                 }
             }
+            // 原成功的过渡/水面决策保持；只有已整类省略过渡且真有无draw槽时才收紧依赖B。
+            // A 的全部请求地表资源预检及上方基础必需预算失败仍先发生，不能借回收绕过。
+            if (output.budget.transitions.requested != 0 && overlays.empty()) {
+                // atlasValid 的逐格核验已结束，复用现有固定scratch记录必需基础依赖，不建第二张槽表。
+                auto& retainedGround = atlasValid;
+                retainedGround.fill(false);
+                for (std::size_t tile = 0; tile < tileCount; ++tile)
+                    if (!covered(tile) && tileTextures[tile] != TerrainGroundHeightColor) retainedGround[tileTextures[tile]] = true;
+                std::size_t retainedGroundCount = 0;
+                for (std::size_t slot = 0; slot < groundTextureCount; ++slot) {
+                    bool required = false;
+                    for (std::size_t ground = 0; ground < groundAtlases.size(); ++ground)
+                        required |= retainedGround[ground] && textureSlots[ground] == slot;
+                    retainedGroundCount += required;
+                }
+                if (retainedGroundCount < groundTextureCount) {
+                    std::size_t write = 0;
+                    for (std::size_t read = 0; read < output.textures.size(); ++read) {
+                        bool required = read == waterSlot;
+                        for (std::size_t ground = 0; ground < groundAtlases.size(); ++ground)
+                            required |= retainedGround[ground] && textureSlots[ground] == read;
+                        if (required) {
+                            if (read == waterSlot) waterSlot = static_cast<std::uint32_t>(write);
+                            if (write != read) output.textures[write] = std::move(output.textures[read]);
+                            ++write;
+                        }
+                    }
+                    output.textures.resize(write); // 保持并计费实际capacity；不制造新旧槽表并存峰值。
+                    groundTextureCount = retainedGroundCount;
+                    output.budget.groundTextureSlots = retainedGroundCount;
+                    textureSlots.fill(TerrainGroundHeightColor);
+                    rgbaBytes = 0;
+                    for (const auto& atlas : output.textures) rgbaBytes += atlas->RgbaByteCount();
+                    for (std::size_t ground = 0; ground < groundAtlases.size(); ++ground) if (retainedGround[ground])
+                        textureSlots[ground] = static_cast<std::uint32_t>(std::find(output.textures.begin(), output.textures.end(),
+                            groundAtlases[ground]) - output.textures.begin());
+                    if (waterSlot != TerrainGroundHeightColor) output.waterTextureIndex = waterSlot;
+                    const auto resourceReasons = Reason(TerrainGroundOmissionReason::TextureSlots) | Reason(TerrainGroundOmissionReason::RgbaBytes);
+                    if (waterSlot == TerrainGroundHeightColor && !waterTiles.empty()
+                        && (output.budget.water.omissionReasons & resourceReasons) != 0) {
+                        // 原资源拒绝只重试一次；成功不再携带旧失败。未执行的几何域不伪造原因。
+                        auto& reasons = output.budget.water.omissionReasons;
+                        output.budget.water.textureSlotsBeforeAdmission = output.textures.size();
+                        reasons = output.textures.size() >= limits.maxTextures ? Reason(TerrainGroundOmissionReason::TextureSlots) : 0;
+                        if (reasons == 0) {
+                            auto atlas = WaterAtlas(waterStyle->texture.get());
+                            if (atlas->RgbaByteCount() > limits.maxRgbaBytes - rgbaBytes) reasons = Reason(TerrainGroundOmissionReason::RgbaBytes);
+                            else {
+                                reasons = fitReasons(0, waterTiles.size(), rgbaBytes + atlas->RgbaByteCount());
+                                if (reasons == 0) {
+                                    // 至少回收了一个原槽；既有capacity足以追加，不触发几何扩容。
+                                    waterSlot = static_cast<std::uint32_t>(output.textures.size());
+                                    rgbaBytes += atlas->RgbaByteCount();
+                                    output.textures.push_back(std::move(atlas));
+                                    output.waterOmitted = false;
+                                    setWaterIdentity();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (waterSlot == TerrainGroundHeightColor) waterTiles.clear();
         }
         auto blightSlot = TerrainGroundHeightColor;
         if (!blightOverlays.empty()) {

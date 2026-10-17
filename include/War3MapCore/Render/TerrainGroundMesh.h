@@ -109,6 +109,7 @@ struct TerrainGroundLayerCounts {
     std::uint32_t omissionReasons = 0;
     // 水面/荒芜有请求时检查其资源前置条件；缺样式也属于已检查，不表示已分配纹理。
     bool resourceAdmissionChecked = false;
+    // 最终实际准入尝试前的槽数；已省过渡后有界重试水面时不再沿用旧表槽数。
     std::size_t textureSlotsBeforeAdmission = 0;
 };
 
@@ -118,6 +119,9 @@ struct TerrainGroundBudgetStats {
     // transitions / blight 为可贴图格请求的遮罩 quad；water 为全部有水标记的格（含缺样式）。
     TerrainGroundLayerCounts base, transitions, blight, water;
     bool reduced = false; // 显式预览因几何/批次/整体载荷预算省略可选层；资源回退另行诊断。
+    // A：全部请求base/transition依赖的原资源预检数，省略过渡也不能绕过其硬预算。
+    std::size_t requestedGroundTextureSlots = 0;
+    // B：最终保留ground槽及含水/荒芜的全部槽；Strict的requested/ground相同。
     std::size_t groundTextureSlots = 0, finalTextureSlots = 0, textureSlotLimit = 0;
     bool waterStyleAvailable = false, waterSourceTextureAvailable = false;
     // 这里只记录构建器的atlas布局/字节检查；原BLP来源及mask alpha由既有loader检查。
@@ -135,8 +139,8 @@ struct TerrainGroundMesh {
     // 基础层按纹理稳定归组，地表过渡、荒芜和水面批次依次在后；每个 quad 为 (SW,SE,NW)、(SE,NE,NW)。
     std::vector<std::uint32_t> indices;
     std::vector<TerrainGroundBatch> batches;
-    // textureIndex 索引此列表；保活本次请求使用的 atlas，相同 shared_ptr 只占一个槽。
-    // 预览整类省略过渡后仍保留已校验的地表 atlas，不借省略绕过资源预算。
+    // textureIndex 索引此列表；相同 shared_ptr 只占一个槽。
+    // 预览在原完整资源预检后，仅当原流程已整类省略过渡时回收无draw依赖的地表槽并统一remap。
     std::vector<std::shared_ptr<const TerrainAtlasSnapshot>> textures;
     // 按块 row-major，末块可不足 16 格；本批 GPU 仍按纹理归组，没有宣称块剔除。
     std::vector<TerrainGroundBlock> blocks;
@@ -179,6 +183,7 @@ struct TerrainGroundMesh {
 // Strict 保持预算/结构错误无部分结果；PreserveBasePreview 仅在相同硬上限内按整类尝试
 // 水面 → 普通过渡 → 精确荒芜遮罩，装不下的一类全部省略，再尝试下一类；不截 tile 前缀。
 // 基础层的每格 XYZ/UV、原有资源/结构校验与逐格高度色回退不变，省略数由 budget 精确报告。
+// 保持原成功的过渡/水面决策；已省略过渡留下未用atlas时，回收其槽并只重试原资源拒绝的水面。
 // 荒芜遮罩省略时沿用原底色近似。基础层及所需地表资源自身超预算仍失败。
 // UV 左上原点，以实际尺寸半像素内缩；纹理 RGB 不做高度染色，基础层按不透明采样。
 // 顶点颜色：贴图格为灰度明暗（光照关闭时为 1），高度色格为高度色 × 明暗；渲染器以颜色乘贴图。
