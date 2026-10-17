@@ -354,6 +354,8 @@ void D3D11Scene::DrawTerrainBatches(bool translucent) {
         if (textured) {
             auto textureParameters = textureParameters_[slot];
             textureParameters.alphaBlend = blended ? 1.0f : 0.0f;
+            textureParameters.isTranslucent = isTranslucent ? 1.0f : 0.0f;
+            if (isTranslucent) textureParameters.tapLimit = 1.0f; // 水面等透明批次保留原精确路径。
             context_->UpdateSubresource(terrainConstants_.Get(), 0, nullptr, &textureParameters, 0, 0);
         }
         auto* resource = textured ? textures_[slot].Get() : nullptr;
@@ -382,7 +384,7 @@ HRESULT D3D11Scene::SetMesh(const Mesh& mesh) try {
         textures.push_back(std::move(view));
         parameters.push_back({static_cast<float>(source.mips.front().width), static_cast<float>(source.mips.front().height),
             static_cast<float>(source.atlasColumns), static_cast<float>(source.atlasRows),
-            static_cast<float>(source.maxSampleMip), 0, {}});
+            static_cast<float>(source.maxSampleMip), 0, 0, source.maxSampleMip > 0 ? 4.0f : 1.0f});
     }
     if (!mesh.indices.empty()) {
         const auto* data = mesh.terrain ? static_cast<const void*>(mesh.terrainVertices.data()) : mesh.vertices.data();

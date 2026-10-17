@@ -42,7 +42,8 @@ cbuffer TerrainTexture : register(b1) {
     float2 terrainCells;
     float terrainMaxMip;
     float terrainAlphaBlend; // 1 = 过渡层，输出贴图 alpha 供混合
-    float2 terrainPadding;
+    float terrainIsTranslucent;
+    float terrainTapLimit; // 宿主逐批次明确下发1/4；shader自身仍硬限4tap。
 };
 struct TerrainInput { float3 position : POSITION; float3 color : COLOR; float2 uv : TEXCOORD; };
 struct TerrainOutput {
@@ -64,15 +65,67 @@ float4 SampleTerrainCell(float2 uv, float2 cell, float level) {
     float2 maximum = (cell + 1.0) / terrainCells - 0.5 / dimensions;
     return terrainTexture.SampleLevel(terrainSampler, clamp(uv, minimum, maximum), level);
 }
-float4 PSTerrain(TerrainOutput input) : SV_TARGET {
-    // 用夹取之前的原 UV 导数选级，避免 cell 边缘 clamp 后导数突变。
-    float2 dx = ddx(input.uv) * terrainDimensions;
-    float2 dy = ddy(input.uv) * terrainDimensions;
+float4 SampleTerrainOriginal(float2 uv, float2 cell, float2 dx, float2 dy) {
     float lod = clamp(0.5 * log2(max(max(dot(dx, dx), dot(dy, dy)), 1e-16)), 0.0, terrainMaxMip);
     float lower = floor(lod), upper = min(lower + 1.0, terrainMaxMip);
+    return lerp(SampleTerrainCell(uv, cell, lower), SampleTerrainCell(uv, cell, upper), lod - lower);
+}
+float4 SampleTerrainBounded(float2 uv, float2 cell, float2 dx, float2 dy) {
+    [branch] if (terrainTapLimit < 1.5 || terrainIsTranslucent > 0.5 || terrainMaxMip <= 0.0)
+        return SampleTerrainOriginal(uv, cell, dx, dy);
+    // 先归一化J再求协方差，避免合法大导数先平方再平方溢出；极端/放大仍走旧表达式。
+    float scale = max(max(abs(dx.x), abs(dx.y)), max(abs(dy.x), abs(dy.y)));
+    [branch] if (!all(isfinite(dx)) || !all(isfinite(dy)) || scale <= 0.5 || scale > 8.507059173023462e37)
+        return SampleTerrainOriginal(uv, cell, dx, dy);
+    float2 p = dx / scale, q = dy / scale;
+    float a = p.x * p.x + q.x * q.x, b = p.x * p.y + q.x * q.y, c = p.y * p.y + q.y * q.y;
+    float difference = a - c;
+    float eigenvalue = 0.5 * (a + c + sqrt(max(difference * difference + 4.0 * b * b, 0.0)));
+    float majorNorm = sqrt(eigenvalue);
+    [branch] if (!isfinite(majorNorm) || majorNorm <= 0.0) return SampleTerrainOriginal(uv, cell, dx, dy);
+    float minorNorm = abs(p.x * q.y - p.y * q.x) / majorNorm;
+    [branch] if (!isfinite(minorNorm) || minorNorm <= majorNorm * 0.000244140625 || majorNorm / minorNorm <= 1.25)
+        return SampleTerrainOriginal(uv, cell, dx, dy);
+    float major = scale * majorNorm, minor = scale * minorNorm;
+    float width = max(max(minor, major * 0.25), 1.0);
+    [branch] if (!isfinite(major) || !isfinite(minor) || !isfinite(width))
+        return SampleTerrainOriginal(uv, cell, dx, dy);
+    uint taps = min(4u, max(1u, (uint)ceil(major / width)));
+    [branch] if (taps == 1u) return SampleTerrainOriginal(uv, cell, dx, dy);
+    float2 firstAxis = float2(b, eigenvalue - a), secondAxis = float2(eigenvalue - c, b);
+    float2 axis = dot(firstAxis, firstAxis) >= dot(secondAxis, secondAxis) ? firstAxis : secondAxis;
+    float axisLengthSquared = dot(axis, axis);
+    [branch] if (!isfinite(axisLengthSquared) || axisLengthSquared <= 0.0)
+        return SampleTerrainOriginal(uv, cell, dx, dy);
+    axis *= rsqrt(axisLengthSquared);
+    float lod = clamp(log2(width), 0.0, terrainMaxMip);
+    float lower = floor(lod), upper = min(lower + 1.0, terrainMaxMip);
+    uint lowerWidth, lowerHeight, lowerCount, upperWidth, upperHeight, upperCount;
+    terrainTexture.GetDimensions((uint)lower, lowerWidth, lowerHeight, lowerCount);
+    terrainTexture.GetDimensions((uint)upper, upperWidth, upperHeight, upperCount);
+    float2 lowerDimensions = float2(lowerWidth, lowerHeight), upperDimensions = float2(upperWidth, upperHeight);
+    float2 lowerMinimum = cell / terrainCells + 0.5 / lowerDimensions;
+    float2 lowerMaximum = (cell + 1.0) / terrainCells - 0.5 / lowerDimensions;
+    float2 upperMinimum = cell / terrainCells + 0.5 / upperDimensions;
+    float2 upperMaximum = (cell + 1.0) / terrainCells - 0.5 / upperDimensions;
+    float4 accumulated = 0.0;
+    [unroll] for (uint index = 0u; index < 4u; ++index) {
+        if (index < taps) {
+            float2 point = uv + axis * (((float(index) + 0.5) / float(taps) - 0.5) * major) / terrainDimensions;
+            // 所有tap固定中心cell；每级分别夹取，不允许偏移后改选相邻mask/variation。
+            float4 low = terrainTexture.SampleLevel(terrainSampler, clamp(point, lowerMinimum, lowerMaximum), lower);
+            float4 high = terrainTexture.SampleLevel(terrainSampler, clamp(point, upperMinimum, upperMaximum), upper);
+            accumulated += lerp(low, high, lod - lower);
+        }
+    }
+    return accumulated / float(taps);
+}
+float4 PSTerrain(TerrainOutput input) : SV_TARGET {
+    // 所有动态分支前取原UV导数，避免clamp或发散tap循环改变足迹。
+    float2 dx = ddx(input.uv) * terrainDimensions;
+    float2 dy = ddy(input.uv) * terrainDimensions;
     float2 cell = min(floor(saturate(input.uv) * terrainCells), terrainCells - 1.0);
-    float4 color = lerp(SampleTerrainCell(input.uv, cell, lower),
-        SampleTerrainCell(input.uv, cell, upper), lod - lower);
+    float4 color = SampleTerrainBounded(input.uv, cell, dx, dy);
     // 基础层不透明；过渡层输出遮罩 alpha，由混合状态叠在基础层上。
     // 顶点颜色是宿主给的光照（未提供光照的宿主为白色，结果不变）。
     float alpha = terrainAlphaBlend > 0.5 ? color.a : 1.0;

@@ -197,9 +197,11 @@ private:
     Ptr<ID3D11SamplerState> terrainSampler_;
     struct TextureParameters {
         float width, height, columns, rows;
-        float maxSampleMip, alphaBlend, unused[2]; // alphaBlend：1 = 输出贴图 alpha（过渡层）
+        float maxSampleMip, alphaBlend, isTranslucent, tapLimit; // 明确批次角色与1/4策略，不由atlas形状猜测。
     };
     static_assert(sizeof(TextureParameters) == 32);
+    static_assert(offsetof(TextureParameters,maxSampleMip) == 16 && offsetof(TextureParameters,isTranslucent) == 24
+        && offsetof(TextureParameters,tapLimit) == 28);
     std::vector<TextureParameters> textureParameters_;
     std::vector<Ptr<ID3D11ShaderResourceView>> textures_;
     std::vector<War3RenderTerrainBatchV2> batches_;
