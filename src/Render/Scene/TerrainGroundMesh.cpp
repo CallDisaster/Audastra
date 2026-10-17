@@ -210,6 +210,16 @@ std::uint32_t WaterAlphaLevel(const TerrainGridSnapshot& terrain, const std::arr
 
 } // namespace
 
+std::optional<std::array<std::uint32_t, 2>> TerrainBlightCell(const TerrainGridSnapshot& terrain,
+    const std::array<std::uint32_t, 4>& corners) noexcept {
+    if (std::any_of(corners.begin(), corners.end(), [&](std::uint32_t corner) { return corner >= terrain.vertices.size(); }))
+        return std::nullopt;
+    const auto mask = BlightMask(terrain, corners);
+    if (mask == 0) return std::nullopt;
+    return mask == 15 ? VariationCell(8, terrain.vertices[corners[0]].GroundVariation())
+        : std::array<std::uint32_t, 2>{mask % 4u, mask / 4u};
+}
+
 std::array<float, 4> TerrainWaterColor(const TerrainWaterStyle& style, float depth) {
     // 深度区间常量来自社区对原版水面着色的逆向结果（浅水起始 10、深水起点 64、最深 72）。
     constexpr float shallowStart = 10.0f, deepStart = 64.0f, deepEnd = 72.0f;
@@ -649,14 +659,11 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
         }
         auto blightSlot = TerrainGroundHeightColor;
         std::array<std::uint32_t, 32> blightCounts{}, blightOffsets{}, blightWritten{};
-        const auto blightCell = [&](const Overlay& overlay) {
-            const auto& corners = terrain.tiles[overlay.tile].vertices;
-            const auto coordinate = overlay.mask == 15
-                ? VariationCell(8, terrain.vertices[corners[0]].GroundVariation())
-                : std::array<std::uint32_t, 2>{overlay.mask % 4u, overlay.mask / 4u};
-            return coordinate[1] * 8 + coordinate[0];
-        };
-        if (sharedBlight) for (const auto& overlay : blightOverlays) ++blightCounts[blightCell(overlay)];
+        if (sharedBlight) for (const auto& overlay : blightOverlays) {
+            const auto coordinate = TerrainBlightCell(terrain, terrain.tiles[overlay.tile].vertices);
+            if (!coordinate) return Failure("TERRAIN_GROUND_BLIGHT_SOURCE", "荒芜候选没有合法源格映射。");
+            ++blightCounts[(*coordinate)[1] * 8 + (*coordinate)[0]];
+        }
         const auto blightGroups = sharedBlight ? static_cast<std::size_t>(std::count_if(blightCounts.begin(), blightCounts.end(),
             [](std::uint32_t count) { return count != 0; })) : std::size_t{1};
         constexpr auto kSharedBlightBytes = 6 * sizeof(std::uint32_t); // Overlay scratch 已计入 fixedBytes
@@ -824,6 +831,9 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
         }
         for (std::size_t index = 0; index < blightOverlays.size(); ++index) {
             const auto& overlay = blightOverlays[index];
+            const auto& corners = terrain.tiles[overlay.tile].vertices;
+            const auto coordinate = TerrainBlightCell(terrain, corners);
+            if (!coordinate) return Failure("TERRAIN_GROUND_BLIGHT_SOURCE", "荒芜绘制没有合法源格映射。");
             if (sharedBlight) {
                 // 有hidden时baseTiles为源tile有序补集；无hidden时是隐式identity，不能当零张表。
                 const auto baseQuad = hiddenTileCount
@@ -831,16 +841,12 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
                     : static_cast<std::size_t>(overlay.tile);
                 const auto first = static_cast<std::uint32_t>(baseQuad * 4);
                 const std::array<std::uint32_t, 6> face{first, first + 1, first + 2, first + 1, first + 3, first + 2};
-                const auto cell = blightCell(overlay);
+                const auto cell = (*coordinate)[1] * 8 + (*coordinate)[0];
                 const auto at = blightOffsets[cell] + blightWritten[cell]++ * 6;
                 std::copy(face.begin(), face.end(), output.blightIndices.begin() + at);
                 continue;
             }
-            const auto& corners = terrain.tiles[overlay.tile].vertices;
-            const auto coordinate = overlay.mask == 15
-                ? VariationCell(blightAtlas->columns, terrain.vertices[corners[0]].GroundVariation())
-                : std::array<std::uint32_t, 2>{overlay.mask % 4u, overlay.mask / 4u};
-            const auto rect = CellUv(*blightAtlas, coordinate[0], coordinate[1]);
+            const auto rect = CellUv(*blightAtlas, (*coordinate)[0], (*coordinate)[1]);
             const auto first = static_cast<std::uint32_t>(output.vertices.size());
             EmitQuad(output, terrain, corners, false, false, rect, minimum[2], maximum[2], lighting);
             WriteFace(output, first, blightFirst + index * 6);

@@ -223,6 +223,11 @@ struct TerrainGroundMesh {
     TerrainGroundBudgetPolicy budgetPolicy = TerrainGroundBudgetPolicy::Strict,
     TerrainGroundBlightPolicy blightPolicy = TerrainGroundBlightPolicy::Legacy);
 
+// 固定原版8×4荒芜：读取四个SW/SE/NW/NE角与SW variation，返回(column,row)。
+// 无荒芜角或任一corner索引越界返回空；不读取贴图、不改地形。构建与宿主来源核验共用此单一映射。
+[[nodiscard]] std::optional<std::array<std::uint32_t, 2>> TerrainBlightCell(
+    const MapData::TerrainGridSnapshot& terrain, const std::array<std::uint32_t, 4>& corners) noexcept;
+
 // 水面在给定深度（水面高度 − 地面高度，世界单位）处的 RGBA（0..1）。
 // 深度 ≤ 64 在浅水两色间插值（10 以下取最小值），64–72 在深水两色间插值，再深取深水最大值。
 [[nodiscard]] std::array<float, 4> TerrainWaterColor(const TerrainWaterStyle& style, float depth);

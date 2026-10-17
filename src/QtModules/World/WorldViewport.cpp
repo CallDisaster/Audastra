@@ -898,7 +898,7 @@ bool WorldViewport::SetGroundMesh(std::shared_ptr<const Render::TerrainGroundMes
         for (std::size_t quad = 0; quad < baseQuads; ++quad) if (seen[quad]) {
             const auto tile = ground->hiddenTileCount ? ground->baseTiles[quad] : quad;
             const auto& corners = terrain_->tiles[tile].vertices;
-            requested += std::any_of(corners.begin(), corners.end(), [&](std::uint32_t corner) { return terrain_->vertices[corner].IsBlight(); });
+            requested += Render::TerrainBlightCell(*terrain_, corners).has_value();
         }
         if (ground->budget.blight.requested != requested
             || (ground->blightTexture ? indices.size() / 6 != requested : ground->blightApproximationTiles != requested))
@@ -934,16 +934,8 @@ bool WorldViewport::SetGroundMesh(std::shared_ptr<const Render::TerrainGroundMes
                     return reject("WORLD_GROUND_BLIGHT_FACE", "荒芜只能按原格稳定顺序引用一次不透明贴图基础面。");
                 const auto tile = ground->hiddenTileCount ? ground->baseTiles[quad] : quad;
                 const auto& corners = terrain_->tiles[tile].vertices;
-                const std::array<std::uint32_t, 4> bits{2, 1, 8, 4};
-                std::uint32_t mask = 0;
-                for (std::size_t corner = 0; corner < 4; ++corner)
-                    if (terrain_->vertices[corners[corner]].IsBlight()) mask |= bits[corner];
-                auto cell = (mask / 4) * 8 + mask % 4;
-                if (mask == 15) {
-                    const auto variation = terrain_->vertices[corners[0]].GroundVariation();
-                    cell = variation < 16 ? (variation / 4) * 8 + 4 + variation % 4 : variation == 16 ? 27 : 0;
-                }
-                if (mask == 0 || cell != selectedCell)
+                const auto coordinate = Render::TerrainBlightCell(*terrain_, corners);
+                if (!coordinate || (*coordinate)[1] * 8 + (*coordinate)[0] != selectedCell)
                     return reject("WORLD_GROUND_BLIGHT_SOURCE", "荒芜cell必须匹配同一原格的当前mask与SW variation。");
                 seen[quad] = false; previous = first;
             }

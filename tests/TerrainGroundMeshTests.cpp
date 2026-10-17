@@ -1318,17 +1318,22 @@ void TestSharedBaseBlightBudgetsAndMapping() {
     cap = limits; cap.maxBatches = 31; omitted(cap, TerrainGroundOmissionReason::Batches);
     cap = limits; cap.maxRgbaBytes = 16 * 64 + 128 - 1; omitted(cap, TerrainGroundOmissionReason::RgbaBytes);
     cap.maxRgbaBytes += 1; Require(build(cap).value->blightTexturedTiles == 16, "RGBA边界必须聚合两份资源表后准入");
-    // 搜索实际working门槛，核对边界前后全pass准入；不把分配器开销或进程RSS混入该口径。
+    // 必须同时保留完整普通层，排除低预算省过渡后反而能装荒芜的另一准入区间。
+    const auto completeBlight = [](const Result<TerrainGroundMesh>& built) {
+        return built.Succeeded() && built.value->blightTexturedTiles == 16
+            && built.value->overlayTiles.size() == 15 && built.value->vertices.size() == 124;
+    };
+    // 搜索实际working门槛，核对边界前后完整场景准入；不把分配器开销或进程RSS混入该口径。
     std::size_t low = 0, high = 128 * 1024;
     while (low < high) {
         const auto middle = low + (high - low) / 2;
         cap = limits; cap.maxWorkingBytes = middle;
         const auto bounded = build(cap);
-        if (bounded.Succeeded() && bounded.value->blightTexturedTiles == 16) high = middle;
+        if (completeBlight(bounded)) high = middle;
         else low = middle + 1;
     }
     cap = limits; cap.maxWorkingBytes = low;
-    Require(low > 0 && build(cap).value->blightTexturedTiles == 16, "working门槛处应完整准入");
+    Require(low > 0 && completeBlight(build(cap)), "working门槛处应完整准入");
     cap.maxWorkingBytes -= 1;
     const auto below = build(cap);
     Require(!below.Succeeded() || (below.value->blightIndices.empty() && below.value->blightApproximationTiles == 16),
@@ -1357,10 +1362,10 @@ void TestSharedBaseBlightBudgetsAndMapping() {
                 hasWater ? &refusedWater : nullptr, {}, blight, {}, policy, shared);
         };
         const auto dryMinimum = minimumAcceptedBytes([&](std::size_t bytes) {
-            const auto built = attempt(false, bytes); return built.Succeeded() && built.value->blightTexturedTiles == 16;
+            return completeBlight(attempt(false, bytes));
         });
         const auto wetMinimum = minimumAcceptedBytes([&](std::size_t bytes) {
-            const auto built = attempt(true, bytes); return built.Succeeded() && built.value->blightTexturedTiles == 16;
+            return completeBlight(attempt(true, bytes));
         });
         const auto accepted = attempt(true, wetMinimum);
         Require(accepted.Succeeded() && accepted.value->waterFlaggedTiles == 16
@@ -1427,6 +1432,17 @@ void TestSharedBaseBlightBudgetsAndMapping() {
         Require(rect.uvLeft == expanded.vertices[4].u && rect.uvRight == expanded.vertices[5].u
             && rect.uvTop == expanded.vertices[6].v && rect.uvBottom == expanded.vertices[4].v,
             "新pass必须逐位复用旧CellUv和mask/variation，不能重新猜测半texel约定");
+    }
+    auto source = Grid();
+    Require(!TerrainBlightCell(source, source.tiles[0].vertices), "零mask不能产生荒芜cell");
+    auto invalidCorners = source.tiles[0].vertices; invalidCorners[3] = static_cast<std::uint32_t>(source.vertices.size());
+    Require(!TerrainBlightCell(source, invalidCorners), "公开纯函数应有界拒绝非法corner");
+    for (auto& vertex : source.vertices) vertex.textureAndFlagsRaw = 0x20;
+    const std::array<std::array<std::uint32_t, 3>, 5> boundaries{{{0, 4, 0}, {15, 7, 3}, {16, 3, 3}, {17, 0, 0}, {31, 0, 0}}};
+    for (const auto& entry : boundaries) {
+        source.vertices[0].variationRaw = static_cast<std::uint8_t>(entry[0]);
+        const auto cell = TerrainBlightCell(source, source.tiles[0].vertices);
+        Require(cell && (*cell)[0] == entry[1] && (*cell)[1] == entry[2], "共享纯函数必须保留原版variation全部边界");
     }
 }
 
