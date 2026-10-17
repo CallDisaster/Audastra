@@ -322,12 +322,42 @@ void TestBudgetsBeforeFullMesh() {
     Require(aliased.manifest.atlases.size() == 1 && aliased.manifest.meshQuads == 2, "共享 atlas 槽身份与完整层数应分别保留");
 }
 
+void TestEncodedCandidateUsesCurrentImage() {
+    auto input = Fixture();
+    const auto first = Build(input);
+    Require(first.encoded.mipCount == 9 && first.encoded.totalMipPixels == 87381
+        && first.encoded.bytes.size() == 88561 && first.encoded.paletteColorCount == 1
+        && !first.encoded.quantized && first.encoded.method == Image::BlpOpaquePaletteMethod::Exact,
+        "固定256小地图必须生成九级共享调色板BLP，而非仅返回RGBA");
+    const auto decoded = Image::DecodeBlp(first.encoded.bytes);
+    Require(decoded.Succeeded() && decoded.value->rgba == first.image.rgba,
+        "单色小地图BLP的实际像素必须来自本次RGBA");
+    const auto hash = Sha256(first.encoded.bytes);
+    Require(hash.Succeeded() && first.manifest.outputBlpSha256 == *hash.value
+        && first.manifest.encodedBlpBytes == first.encoded.bytes.size()
+        && first.manifest.encodedMipCount == first.encoded.mipCount
+        && first.manifest.encodedTotalMipPixels == first.encoded.totalMipPixels
+        && first.manifest.paletteColorCount == first.encoded.paletteColorCount
+        && !first.manifest.formalSaveAuthorized && !first.manifest.nativeEditorOrGameVerified,
+        "编码候选事实和SHA必须绑定实际字节，不能授予正式保存或原版验收");
+    auto other = Atlas(4, {210, 40, 10, 255});
+    input.groundAtlases[0] = other;
+    const auto second = Build(input);
+    const auto secondDecoded = Image::DecodeBlp(second.encoded.bytes);
+    Require(secondDecoded.Succeeded() && secondDecoded.value->rgba == second.image.rgba
+        && first.encoded.bytes != second.encoded.bytes
+        && first.manifest.outputBlpSha256 != second.manifest.outputBlpSha256
+        && first.manifest.manifestSha256 != second.manifest.manifestSha256,
+        "更换当前材质后不能复用旧小地图图像或旧编码身份");
+}
+
 } // namespace
 
 int main() {
     try {
         TestDirectionAndFit(); TestGroupedDrawAndAllLayers(); TestBilinearByteSpace(); TestOriginalTrilinearAndCellClamp();
         TestSafeMipCapsAndOddCells(); TestIdentityAndHonestProvenance(); TestUnsupportedDomainAndResources(); TestBudgetsBeforeFullMesh();
+        TestEncodedCandidateUsesCurrentImage();
         std::cout << "TerrainMinimapCandidateTests: all tests passed\n"; return 0;
     } catch (const std::exception& exception) {
         std::cerr << "TerrainMinimapCandidateTests: " << exception.what() << '\n'; return 1;

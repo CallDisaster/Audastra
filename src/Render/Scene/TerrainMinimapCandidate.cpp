@@ -19,6 +19,8 @@ constexpr TerrainMinimapLimits kHard{};
 constexpr TerrainGroundMeshLimits kMeshHard{};
 constexpr std::uint32_t kSize = 256;
 constexpr std::size_t kOutputBytes = kSize * kSize * 4;
+constexpr std::size_t kEncodingWorkReserve = Image::BlpOpaqueQuantizeLimits{}.maxWorkingBytes;
+constexpr std::size_t kEncodedOutputReserve = Image::BlpOpaqueQuantizeLimits{}.maxOutputBytes;
 constexpr std::size_t kHashReserve = 1024 * 1024;
 constexpr std::size_t kManifestReserve = 1024 * 1024;
 constexpr std::size_t kMaximumHashBytes = 256 * 1024 * 1024;
@@ -175,7 +177,8 @@ void Estimate(const TerrainMinimapInput& input, const Counts& counts, TerrainMin
     const TerrainMinimapLimits& limits) {
     // 在 Parse/完整 mesh 前按原 tile 最坏 1 base + 3 transition 计费。Overlay 内部增长
     // scratch 按每层 32 字节，另计公开映射；不借 256 输出把大网格工作集隐去。
-    std::size_t extra = sizeof(MapData::MapTerrain) + sizeof(MapData::TerrainGridSnapshot) + kHashReserve + 8192;
+    std::size_t extra = sizeof(MapData::MapTerrain) + sizeof(MapData::TerrainGridSnapshot)
+        + kHashReserve + kEncodingWorkReserve + 8192;
     Charge(extra, input.currentW3e.size(), 2); // Parse 原字节 + 内部重新 Serialize
     Charge(extra, counts.vertices, sizeof(MapData::TerrainVertex));
     Charge(extra, counts.tiles, sizeof(MapData::TerrainTile));
@@ -187,7 +190,7 @@ void Estimate(const TerrainMinimapInput& input, const Counts& counts, TerrainMin
     Charge(extra, 32, sizeof(TerrainGroundBatch));
     Charge(extra, 16, sizeof(std::shared_ptr<const TerrainAtlasSnapshot>));
     memory.estimatedExtraPeakBytes = extra;
-    memory.estimatedOutputBytes = sizeof(TerrainMinimapCandidate) + kOutputBytes + kManifestReserve;
+    memory.estimatedOutputBytes = sizeof(TerrainMinimapCandidate) + kOutputBytes + kEncodedOutputReserve + kManifestReserve;
     memory.estimatedPeakBytes = memory.retainedInputCapacityBytes;
     Charge(memory.estimatedPeakBytes, extra); Charge(memory.estimatedPeakBytes, memory.estimatedOutputBytes);
     if (memory.estimatedPeakBytes > limits.maxWorkingBytes)
@@ -455,8 +458,10 @@ void Raster(const MapData::TerrainGridSnapshot& grid, const TerrainGroundMesh& m
 
 std::size_t OutputCapacity(const TerrainMinimapCandidate& result) {
     const auto& m = result.manifest;
-    std::size_t bytes = sizeof(result); Charge(bytes, result.image.rgba.capacity()); ChargeBinding(bytes, m.binding);
-    for (const auto* text : {&m.currentW3eSha256, &m.reserializedW3eSha256, &m.meshSha256, &m.outputRgbaSha256, &m.manifestSha256})
+    std::size_t bytes = sizeof(result); Charge(bytes, result.image.rgba.capacity());
+    Charge(bytes, result.encoded.bytes.capacity()); ChargeBinding(bytes, m.binding);
+    for (const auto* text : {&m.currentW3eSha256, &m.reserializedW3eSha256, &m.meshSha256,
+        &m.outputRgbaSha256, &m.outputBlpSha256, &m.manifestSha256})
         ChargeText(bytes, *text);
     Charge(bytes, m.atlases.capacity(), sizeof(TerrainMinimapAtlasFacts));
     for (const auto& a : m.atlases) {
@@ -469,12 +474,15 @@ std::size_t OutputCapacity(const TerrainMinimapCandidate& result) {
 
 std::string ManifestHash(TerrainMinimapManifest& m) {
     Digest hash(m.memory.maximumObservedHashScratchBytes);
-    hash.String("TerrainMinimapManifest-v1"); hash.String(m.samplingPolicy); HashBinding(hash, m.binding);
+    hash.String("TerrainMinimapManifest-v1"); hash.String(m.samplingPolicy); hash.String(m.encodingPolicy); HashBinding(hash, m.binding);
     hash.String(m.currentW3eSha256); hash.String(m.reserializedW3eSha256);
     for (const auto value : m.worldExtent) hash.F64(value);
     for (const auto value : m.contentRectangle) hash.F64(value);
     hash.U32(kSize); hash.U32(kSize); hash.U64(kOutputBytes);
     hash.U64(m.sourceTiles); hash.U64(m.meshQuads); hash.U64(m.meshBatches); hash.String(m.meshSha256); hash.String(m.outputRgbaSha256);
+    hash.String(m.outputBlpSha256); hash.U32(static_cast<std::uint32_t>(m.paletteMethod)); hash.U32(m.paletteQuantized ? 1u : 0u);
+    hash.U32(m.paletteColorCount); hash.U32(m.occupiedHistogramBins); hash.U32(m.encodedMipCount);
+    hash.U64(m.encodedTotalMipPixels); hash.U64(m.encodedBlpBytes);
     hash.U64(m.atlases.size());
     for (const auto& a : m.atlases) {
         HashLocation(hash, a.declaredSource); hash.String(a.declaredEncodedSha256); hash.U64(a.declaredEncodedBytes);
@@ -509,9 +517,10 @@ Result<TerrainMinimapCandidate> BuildTerrainMinimapCandidate(const TerrainMinima
         memory.retainedInputCapacityBytes = ValidateInputs(input, limits);
         if (input.currentW3e.size() > limits.maxW3eBytes)
             Fail("TERRAIN_MINIMAP_BUDGET", "当前 W3E 超过候选读取预算。");
-        memory.estimatedOutputBytes = sizeof(TerrainMinimapCandidate) + kOutputBytes + kManifestReserve;
+        memory.estimatedOutputBytes = sizeof(TerrainMinimapCandidate) + kOutputBytes + kEncodedOutputReserve + kManifestReserve;
         std::size_t beforeParse = memory.retainedInputCapacityBytes;
         Charge(beforeParse, memory.estimatedOutputBytes); Charge(beforeParse, kHashReserve);
+        Charge(beforeParse, kEncodingWorkReserve);
         Charge(beforeParse, input.currentW3e.size()); // 后续 Serialize 同时保活
         if (beforeParse >= limits.maxWorkingBytes)
             Fail("TERRAIN_MINIMAP_BUDGET", "冻结输入、输出与解析预留已经超过工作预算。");
@@ -562,6 +571,14 @@ Result<TerrainMinimapCandidate> BuildTerrainMinimapCandidate(const TerrainMinima
         manifest.meshSha256 = MeshHash(mesh, memory.maximumObservedHashScratchBytes);
         Raster(*grid, mesh, layers, result);
         manifest.outputRgbaSha256 = HashBytes(result.image.rgba, memory.maximumObservedHashScratchBytes);
+        // mesh/解析输入仍在保活，因此在 Parse 和 mesh 前已经预留完整编码工作集。
+        // 编码器的工作上限和输出容量独立于旧无损入口，不能把有损结果称作无损。
+        result.encoded = Take(Image::EncodeBlpOpaqueQuantized(result.image));
+        manifest.outputBlpSha256 = HashBytes(result.encoded.bytes, memory.maximumObservedHashScratchBytes);
+        manifest.paletteMethod = result.encoded.method; manifest.paletteQuantized = result.encoded.quantized;
+        manifest.paletteColorCount = result.encoded.paletteColorCount; manifest.occupiedHistogramBins = result.encoded.occupiedHistogramBins;
+        manifest.encodedMipCount = result.encoded.mipCount; manifest.encodedTotalMipPixels = result.encoded.totalMipPixels;
+        manifest.encodedBlpBytes = result.encoded.bytes.size();
         // 为最后摘要预留其最终 64 字符容量，内存账和 manifest hash 无自引用。
         manifest.manifestSha256.reserve(64);
         memory.outputCapacityBytes = OutputCapacity(result);

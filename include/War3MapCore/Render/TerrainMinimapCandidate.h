@@ -58,6 +58,7 @@ struct TerrainMinimapMemoryFacts {
 struct TerrainMinimapManifest {
     static constexpr std::uint32_t algorithmVersion = 1;
     static constexpr const char* samplingPolicy = "original-mips-cell-clamped-trilinear-unorm-v1";
+    static constexpr const char* encodingPolicy = "opaque-full-chain-shared-adaptive-palette-v1";
     TerrainInspectionBinding binding;
     std::string currentW3eSha256, reserializedW3eSha256;
     // 完整 W3E 范围 [west,south,east,north]，不采用 W3I 可玩区或相机裁剪。
@@ -65,7 +66,11 @@ struct TerrainMinimapManifest {
     // 256 画布上的连续边界 [left,top,width,height]；像素中心落在半开范围才采样。
     std::array<double, 4> contentRectangle{};
     std::size_t sourceTiles = 0, meshQuads = 0, meshBatches = 0;
-    std::string meshSha256, outputRgbaSha256, manifestSha256;
+    std::string meshSha256, outputRgbaSha256, outputBlpSha256, manifestSha256;
+    Image::BlpOpaquePaletteMethod paletteMethod = Image::BlpOpaquePaletteMethod::Exact;
+    bool paletteQuantized = false;
+    std::uint32_t paletteColorCount = 0, occupiedHistogramBins = 0, encodedMipCount = 0;
+    std::size_t encodedTotalMipPixels = 0, encodedBlpBytes = 0;
     std::vector<TerrainMinimapAtlasFacts> atlases; // 实际 mesh texture 槽顺序
     TerrainMinimapMemoryFacts memory;
     // sourceSha256 仅是宿主冻结身份；没有归档重读、编码源解码复验或 resolver winner 复验。
@@ -78,10 +83,11 @@ struct TerrainMinimapManifest {
 
 struct TerrainMinimapCandidate {
     Image::DecodedImage image; // 固定 256×256，RGBA8888，左上原点，北向上，alpha 恒为 255
+    Image::BlpOpaqueQuantized encoded; // 同次图像生成的完整 BLP1 候选；没有地图写入授权
     TerrainMinimapManifest manifest;
 };
 
-// 独立、只读 CPU 候选，不执行 I/O/GPU/编码/保存。仅接受 classic v11 平坦干地，统一
+// 独立、只读 CPU 候选，不执行 I/O/GPU/保存。仅接受 classic v11 平坦干地，统一
 // cliff layer，无坡道/水/荒芜/边界/MapEdge/未知位。合法 cliff palette 索引不等于悬崖。
 // 内部从当前 W3E 构建 Strict unlit 完整 GroundMesh，逐批次索引追溯原 tile 与全部层。
 // 每层按唯一三角重心插值 UV；原始连续 mip 按 quad 导数及输出像素足迹选择 LOD，
@@ -89,6 +95,7 @@ struct TerrainMinimapCandidate {
 // 这是明确的 CPU 策略，不声称等价于 GPU 隐式 LOD、4 tap 或各向异性采样。
 // base 忽略源 alpha，overlay 为 straight alpha；在 UNORM 字节数值空间用 double 混合，
 // 最终才 lround 到 byte，不隐式进行 sRGB/linear 转换。不拓宽任何现有保存门禁。
+// 最后经独立 opaque BLP 编码器生成全部 mip；量化策略、实际输出 SHA 与容量同样绑定。
 [[nodiscard]] Result<TerrainMinimapCandidate> BuildTerrainMinimapCandidate(
     const TerrainMinimapInput& input, const TerrainMinimapLimits& limits = {});
 
