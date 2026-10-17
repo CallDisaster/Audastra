@@ -272,9 +272,11 @@ void TestBaselineAndCurrentRevision() {
     MapDataEditSession another{MapDocument::FromMembers({})};
     Require(another.AttachTerrain(fixture.w3e).Succeeded() && another.AttachPathing(fixture.wpm).Succeeded(), "创建另一真实会话");
     Require(!VerifyTerrainMinimapAssetsCurrent(original, source, another, {}).Succeeded(), "同字节跨会话应拒绝");
+    const auto freshBeforeRebase = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}));
     const auto beforeRebase = fixture.edits.Revision(); fixture.edits.CommitSaved(MapDocument::FromMembers({}));
     Require(fixture.edits.Revision() == beforeRebase
-        && !VerifyTerrainMinimapAssetsCurrent(original, source, fixture.edits, {}).Succeeded(),
+        && fixture.edits.TerrainSourceRevision() != freshBeforeRebase.Binding().terrainSourceRevision
+        && !VerifyTerrainMinimapAssetsCurrent(freshBeforeRebase, source, fixture.edits, {}).Succeeded(),
         "重新附基线的terrainSourceRevision应独立于普通revision并使旧快照失效");
     Fixture mismatch;
     mismatch.w3e[45] = std::byte{1}; // classic头45字节后的首顶点raw低字节，从8192变8193。
