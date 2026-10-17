@@ -17,6 +17,11 @@ War3RenderInstanceRosterResultV2 WaitInstanceRoster(const RendererOwner& rendere
 using InstanceRosterSetFault = std::int32_t (WAR3_RENDER_CALL*)(War3RendererHandle, std::uint32_t);
 using InstanceRosterGateRead = std::int32_t (WAR3_RENDER_CALL*)(War3RendererHandle);
 using InstanceRosterAssetRead = std::int32_t (WAR3_RENDER_CALL*)(War3RendererHandle, std::uint64_t*, std::uint32_t);
+void WaitInstanceRosterGate(const RendererOwner& renderer, InstanceRosterGateRead gate, const char* message) {
+    const auto deadline = GetTickCount64() + 10000;
+    while (gate(renderer.handle) != 1 && GetTickCount64() < deadline) Sleep(1);
+    Require(gate(renderer.handle) == 1, message);
+}
 void TestInstanceRoster(const War3RenderPluginApiV2* api, const War3RenderCreateInfoV2& info,
     InstanceRosterSetFault fault = nullptr, InstanceRosterGateRead gate = nullptr, InstanceRosterAssetRead assets = nullptr,
     bool particleMaterialMode = false) {
@@ -109,9 +114,7 @@ void TestInstanceRoster(const War3RenderPluginApiV2* api, const War3RenderCreate
         Require(fault(renderer.handle, 6) == 0, "prePublish gate arm failed");
         Require(api->submitEditorInstanceRoster(renderer.handle, &request, &ticket) == 0 && ticket,
             "cancellation roster not queued");
-        const auto deadline = GetTickCount64() + 10000;
-        while (gate(renderer.handle) != 1 && GetTickCount64() < deadline) Sleep(1);
-        Require(gate(renderer.handle) == 1, "prePublish cancellation gate not reached");
+        WaitInstanceRosterGate(renderer, gate, "prePublish cancellation gate not reached");
         War3RenderInstanceRosterResultV2 cancelled{}; cancelled.structSize = sizeof(cancelled);
         Require(api->cancelEditorInstanceRoster(renderer.handle, ticket, &cancelled) == 0
             && cancelled.ticket == ticket && cancelled.state == WAR3_RENDER_ROSTER_SUPERSEDED
@@ -221,6 +224,134 @@ void TestInstanceRoster(const War3RenderPluginApiV2* api, const War3RenderCreate
     std::cout << "roster WARP: atomic one->twenty->zero, owned inputs, strict ordinary baseline, immutable geometry/textures"
         << (fault ? ", fault1/2 rollback, gated prePublish cancel preserves resources\n" : "\n");
 }
+void TestInstanceRosterParticleMaterialCas(const War3RenderPluginApiV2* api, const War3RenderCreateInfoV2& info,
+    InstanceRosterSetFault fault, InstanceRosterGateRead gate, InstanceRosterAssetRead assets) {
+    Require(fault && gate && assets, "particle material CAS evidence controls unavailable");
+    RendererOwner renderer{api,api->createRenderer(&info)};
+    Require(renderer.handle != nullptr, "particle material CAS renderer unavailable");
+    const War3RenderCameraV2 camera{sizeof(camera),0,0,0,3500,-1.5707963f,1.5f};
+    const War3RenderEnvironmentV2 environment{sizeof(environment),{0,0,1},{1,1,1},{1,1,1},
+        WAR3_RENDER_FOG_LINEAR,100,200,.01f,{.1f,.2f,.4f},0,0,0,0,0,0,nullptr};
+    Require(api->setCamera(renderer.handle,&camera) == 0 && api->setEnvironment(renderer.handle,&environment) == 0,
+        "particle material CAS camera/fog rejected");
+    ParticleGpuFixture fixture; fixture.skin.layer.flags |= WAR3_RENDER_MODEL_UNFOGGED; fixture.Bind(1,1);
+    std::array<War3RenderParticleVertexV2,12> vertices{};
+    for (std::size_t i=0;i<6;++i) {
+        vertices[i] = vertices[i+6] = fixture.vertices[i];
+        vertices[i+6].position[0] += 1000;
+    }
+    const std::array<War3RenderParticleDrawV2,2> draws{{
+        {0,6,0,WAR3_PARTICLE_OPAQUE},{6,6,0,WAR3_PARTICLE_OPAQUE}}};
+    fixture.frame.vertexCount = 12; fixture.frame.drawCount = 2;
+    fixture.frame.vertices = vertices.data(); fixture.frame.draws = draws.data();
+    const std::array<std::uint32_t,2> baselineFlags{0,WAR3_PARTICLE_UNFOGGED};
+    War3RenderParticleMaterialUpdateV2 baseline{
+        fixture.frame,WAR3_RENDER_PARTICLE_MATERIAL_FLAGS_V1,2,baselineFlags.data()};
+    baseline.base.structSize = sizeof(baseline); fixture.scene.initialFrame = &baseline.base;
+    War3RenderEditorPresentationTargetV2 initial{sizeof(initial)};
+    Require(api->getEditorPresentationTarget(renderer.handle,&initial) == 0, "particle material CAS initial target missing");
+    const std::array<std::uint8_t,2> visible{1,1};
+    War3RenderEditorVisibilityUpdateV2 mask{
+        sizeof(mask),2,2,0,initial,1,visible.data(),visible.data(),nullptr,nullptr,nullptr};
+    const War3RenderEditorModelSceneV2 scene{sizeof(scene),0,nullptr,nullptr,&fixture.scene,&mask};
+    Require(api->submitEditorModelScene(renderer.handle,&scene) == 0, "particle material CAS baseline rejected");
+    const auto before = CaptureParticles(renderer,1,1);
+    constexpr std::array<int,3> source{64,128,191}, fog{26,51,102};
+    RequireWorldColor(before.pixels,before.receipt.models.frame.view,-500,0,fog,2);
+    RequireWorldColor(before.pixels,before.receipt.models.frame.view,500,0,source,2);
+    War3RenderInstanceRosterResultV2 base{sizeof(base)};
+    Require(api->getEditorInstanceRosterResult(renderer.handle,0,&base) == 0 && base.state == WAR3_RENDER_ROSTER_TARGET,
+        "particle material CAS baseline identity missing");
+    std::array<std::uint64_t,7> resourcesBefore{}, resourcesAfter{};
+    Require(assets(renderer.handle,resourcesBefore.data(),static_cast<std::uint32_t>(resourcesBefore.size())) == 0,
+        "particle material CAS baseline resources missing");
+
+    // 三帧有可区分的逐draw位：旧完成01、迟到候选10、普通获胜11；只竞争owned帧，不改静态资产。
+    auto rosterPose = fixture.pose; rosterPose.base.sceneVersion = 2;
+    const std::array<std::uint32_t,2> rosterFlags{WAR3_PARTICLE_UNFOGGED,0};
+    auto rosterFrame = baseline; rosterFrame.base.sceneVersion = 2;
+    rosterFrame.base.modelPose = &rosterPose.base; rosterFrame.materialFlags = rosterFlags.data();
+    mask.expected = base.target; mask.presentationRevision = 2;
+    War3RenderEditorInstanceRosterV2 request{}; request.structSize = sizeof(request);
+    request.expected = base.target; request.expectedAssetIdentity = base.assetIdentity;
+    request.expectedLayersRevision = base.layersRevision; request.expectedPresentationRevision = base.presentationRevision;
+    request.candidatePose = &rosterPose.base; request.candidateParticles = &rosterFrame.base; request.visibility = &mask;
+    struct ReleaseGate {
+        InstanceRosterSetFault fault; War3RendererHandle handle;
+        ~ReleaseGate() { (void)fault(handle,0); }
+    } release{fault,renderer.handle};
+    Require(fault(renderer.handle,6) == 0, "particle material CAS gate arm failed");
+    std::uint64_t ticket = 0;
+    Require(api->submitEditorInstanceRoster(renderer.handle,&request,&ticket) == 0 && ticket,
+        "particle material CAS roster not queued");
+    WaitInstanceRosterGate(renderer,gate,"particle material CAS gate not reached");
+    auto ordinaryPose = fixture.pose; ordinaryPose.base.contentVersion = 2;
+    std::array<std::uint32_t,2> ordinaryFlags{WAR3_PARTICLE_UNFOGGED,WAR3_PARTICLE_UNFOGGED};
+    auto ordinary = baseline; ordinary.base.contentVersion = 2;
+    ordinary.base.modelPose = &ordinaryPose.base; ordinary.materialFlags = ordinaryFlags.data();
+    Require(api->updateParticleModelFrame(renderer.handle,&ordinary.base) == 0,
+        "ordinary higher-content particle material frame did not win while roster was gated");
+    ordinaryFlags = {0,0}; // 返回后改写调用方数组；稍后完成像素仍必须来自owned的11。
+    War3RenderInstanceRosterResultV2 current{sizeof(current)}, queued{sizeof(queued)};
+    Require(api->getEditorInstanceRosterResult(renderer.handle,0,&current) == 0
+        && current.target.mode == WAR3_EDITOR_PRESENTATION_PARTICLES
+        && current.target.sceneVersion == 1 && current.target.contentVersion == 2
+        && current.target.instanceCount == 2 && current.target.particleDrawCount == 2
+        && current.target.modelEpoch == base.target.modelEpoch && current.assetIdentity == base.assetIdentity
+        && current.layersRevision == base.layersRevision && current.presentationRevision == 0,
+        "ordinary particle material frame did not replace only the CPU frame target");
+    Require(api->getEditorInstanceRosterResult(renderer.handle,ticket,&queued) == 0
+        && queued.ticket == ticket && queued.state == WAR3_RENDER_ROSTER_QUEUED && !queued.completed.view.frameCount
+        && gate(renderer.handle) == 1, "roster left its gate before the ordinary target was observed");
+    // 不调用cancel，不在gate中等待GPU；由原发布前CAS识别已改变的pose/particle/visibility身份。
+    Require(fault(renderer.handle,0) == 0, "particle material CAS gate release failed");
+    const auto superseded = WaitInstanceRoster(renderer,ticket);
+    Require(superseded.state == WAR3_RENDER_ROSTER_SUPERSEDED && superseded.result == 2
+        && !superseded.completed.view.frameCount,
+        "late particle material roster was completed or rejected instead of CAS-superseded");
+    const auto accepted = CaptureParticles(renderer,1,2);
+    RequireWorldColor(accepted.pixels,accepted.receipt.models.frame.view,-500,0,source,2);
+    RequireWorldColor(accepted.pixels,accepted.receipt.models.frame.view,500,0,source,2);
+    Require(accepted.pixels != before.pixels && accepted.receipt.particles.vertexCount == 12
+        && accepted.receipt.particles.drawCount == 2
+        && accepted.receipt.models.skin.staticUploadCount == before.receipt.models.skin.staticUploadCount
+        && accepted.receipt.models.skin.matrixUploadCount == before.receipt.models.skin.matrixUploadCount + 1
+        && accepted.receipt.particles.textureUploadCount == before.receipt.particles.textureUploadCount
+        && accepted.receipt.particles.dynamicUploadCount == before.receipt.particles.dynamicUploadCount + 1
+        && assets(renderer.handle,resourcesAfter.data(),static_cast<std::uint32_t>(resourcesAfter.size())) == 0
+        && resourcesBefore == resourcesAfter,
+        "late roster changed winning flags, resource identity or upload counts");
+    Require(api->getEditorInstanceRosterResult(renderer.handle,0,&current) == 0
+        && current.target.sceneVersion == 1 && current.target.contentVersion == 2
+        && current.target.modelEpoch == base.target.modelEpoch && current.assetIdentity == base.assetIdentity
+        && current.layersRevision == base.layersRevision && current.presentationRevision == 0,
+        "late roster replaced ordinary CPU identity after its CAS result");
+
+    // 正向对照：同一候选只重绑expected即可完成，避免用本来无效的候选冒充CAS保护。
+    request.expected = mask.expected = current.target;
+    request.expectedPresentationRevision = current.presentationRevision;
+    std::uint64_t rebasedTicket = 0;
+    Require(api->submitEditorInstanceRoster(renderer.handle,&request,&rebasedTicket) == 0 && rebasedTicket && rebasedTicket != ticket,
+        "rebased particle material CAS control was not queued");
+    const auto completed = WaitInstanceRoster(renderer,rebasedTicket);
+    Require(completed.state == WAR3_RENDER_ROSTER_COMPLETED && completed.result == 0
+        && completed.target.sceneVersion == 2 && completed.target.contentVersion == 1
+        && completed.target.modelEpoch == base.target.modelEpoch + 1
+        && completed.assetIdentity == base.assetIdentity && completed.layersRevision == base.layersRevision + 1
+        && completed.completed.view.frameCount && completed.completed.presentation.visibleParticleDrawCount == 2,
+        "unchanged candidate failed the positive CAS control after rebasing");
+    const auto rebased = CaptureParticles(renderer,2,1);
+    RequireWorldColor(rebased.pixels,rebased.receipt.models.frame.view,-500,0,source,2);
+    RequireWorldColor(rebased.pixels,rebased.receipt.models.frame.view,500,0,fog,2);
+    Require(rebased.receipt.models.skin.staticUploadCount == accepted.receipt.models.skin.staticUploadCount
+        && rebased.receipt.models.skin.matrixUploadCount == accepted.receipt.models.skin.matrixUploadCount + 1
+        && rebased.receipt.particles.textureUploadCount == accepted.receipt.particles.textureUploadCount
+        && rebased.receipt.particles.dynamicUploadCount == accepted.receipt.particles.dynamicUploadCount + 1
+        && api->getEditorInstanceRosterResult(renderer.handle,ticket,&queued) == 0
+        && queued.state == WAR3_RENDER_ROSTER_SUPERSEDED && !queued.completed.view.frameCount,
+        "rebased control changed immutable uploads or rewrote the old superseded ticket");
+    std::cout << "roster material CAS WARP: gated stale 10 superseded by owned ordinary 11, exact pixels/identity/uploads, valid rebased control\n";
+}
 void TestInstanceRosterFaults(const std::filesystem::path& directory, const War3RenderCreateInfoV2& info) {
     const auto module = LoadLibraryExW((directory / L"war3-render-d3d11-test.dll").c_str(),nullptr,
         LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
@@ -233,4 +364,5 @@ void TestInstanceRosterFaults(const std::filesystem::path& directory, const War3
     Require(getApi && fault && gate && assets,"roster fault controls unavailable");
     TestInstanceRoster(getApi(WAR3_RENDER_PLUGIN_API_V2),info,fault,gate,assets);
     TestInstanceRoster(getApi(WAR3_RENDER_PLUGIN_API_V2),info,fault,gate,assets,true);
+    TestInstanceRosterParticleMaterialCas(getApi(WAR3_RENDER_PLUGIN_API_V2),info,fault,gate,assets);
 }
