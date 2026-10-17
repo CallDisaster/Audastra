@@ -141,7 +141,7 @@ inline void Run() {
         const auto& pose=first.frame->poses[i]; const auto& checkpoint=latest->particleCheckpoint->instances[i];
         Check(pose.asset==War3RenderCore::AssetIdentity{1,7} && pose.materialStates.count>0 &&
             first.frame->materialStates[pose.materialStates.offset].textureIndex==0 &&
-            first.frame->materialStates[pose.materialStates.offset].samplerFlags==0 &&
+            first.frame->materialStates[pose.materialStates.offset].samplerFlags==3 &&
             first.frame->states[i].elapsedMs==latest->states[i].elapsedMs && first.frame->states[i].globalMs==latest->states[i].globalMs &&
             first.frame->particleCheckpoint->instances[i]->stateHash==checkpoint->stateHash &&
             first.frame->particleCheckpoint->instances[i]->state.emitters[0].random==checkpoint->state.emitters[0].random &&
