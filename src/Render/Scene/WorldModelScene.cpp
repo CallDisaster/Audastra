@@ -132,6 +132,9 @@ public:
                 "悬崖等烘焙网格超出模型显示预算，未显示。", std::nullopt});
             return {};
         }
+        const auto emittedLayers = static_cast<std::size_t>(std::count_if(baked.begin(), baked.end(),
+            [](const auto& mesh) { return !mesh.indices.empty(); }));
+        if (auto status = PrepareSamplerAppend(emittedLayers, true); !status.Succeeded()) return status;
         War3RenderModelV2 entry{static_cast<std::uint32_t>(scene_.meshes.size()), 0};
         const ModelInstanceRequest none;
         for (const auto& mesh : baked) {
@@ -161,20 +164,12 @@ public:
     }
 
     Result<WorldModelScene> Finish() {
-        if (!scene_.layerSamplerFlags.empty()) {
-            const auto previousCapacity = scene_.layerSamplerFlags.capacity();
-            scene_.layerSamplerFlags.resize(scene_.layers.size(), 3);
-            // 描述符共享不可变flags所有权；resize发生增长时同时计旧/新实际分配的峰值。
-            const auto bytes = std::uint64_t(scene_.layerSamplerFlags.capacity()
-                + (scene_.layerSamplerFlags.capacity()!=previousCapacity ? previousCapacity : 0)) * sizeof(std::uint32_t)
-                + sizeof(War3RenderStaticSamplerModelSceneV2) - sizeof(War3RenderModelSceneV2);
-            auto used = textureBytes_;
-            for (const auto& bindings : std::as_const(scene_).modelTextureBindings)
-                if (bindings) used += std::uint64_t(bindings->capacity()) * sizeof(ModelTextureBinding);
-            if (used > limits_.maxTotalTextureBytes || bytes > limits_.maxTotalTextureBytes - used)
-                return Result<WorldModelScene>::Failure(std::string(kSubsystem), "WORLD_STATIC_SAMPLER_BUDGET",
-                    "静态 sampler 常驻及描述符暂存连同贴图超过原预算。");
-        }
+        if (samplerActive_ && scene_.layerSamplerFlags.size() != scene_.layers.size())
+            return Result<WorldModelScene>::Failure(std::string(kSubsystem), "WORLD_STATIC_SAMPLER_INVALID",
+                "来源 sampler 与实际发布的模型层数量不同。");
+        if (samplerBudgetExceeded_ || !MaterialStorageFits(textureBytes_, textureBindingBytes_, scene_.layerSamplerFlags.capacity()))
+            return Result<WorldModelScene>::Failure(std::string(kSubsystem), "WORLD_STATIC_SAMPLER_BUDGET",
+                "静态 sampler、绑定与真实贴图的常驻或增长峰值超过原预算。");
         // 实例按模型稳定排序，请求序号随之重排。
         std::vector<std::uint32_t> order(scene_.instances.size());
         for (std::uint32_t i = 0; i < order.size(); ++i) order[i] = i;
@@ -194,6 +189,41 @@ public:
     }
 
 private:
+    // 所有材质所有者共用一份预算；retiredCapacity仅在reserve时与新分配同时驻留。
+    bool MaterialStorageFits(std::uint64_t textureBytes, std::uint64_t bindingBytes,
+        std::uint64_t samplerCapacity, std::uint64_t retiredCapacity = 0) const {
+        auto remaining = limits_.maxTotalTextureBytes;
+        const auto take = [&](std::uint64_t bytes) {
+            if (bytes > remaining) return false;
+            remaining -= bytes; return true;
+        };
+        return take(textureBytes) && take(bindingBytes)
+            && take(samplerCapacity * sizeof(std::uint32_t)) && take(retiredCapacity * sizeof(std::uint32_t))
+            && (!(samplerCapacity || retiredCapacity)
+                || take(sizeof(War3RenderStaticSamplerModelSceneV2) - sizeof(War3RenderModelSceneV2)));
+    }
+
+    Status PrepareSamplerAppend(std::size_t layers, bool explicitSource) {
+        if (!layers || (!samplerActive_ && !explicitSource)) return {};
+        const auto target = scene_.layers.size() + layers;
+        if (target > limits_.maxLayers)
+            return Status::Failure(std::string(kSubsystem), "WORLD_STATIC_SAMPLER_INVALID", "来源 sampler 层数超过几何门禁。");
+        const auto previousCapacity = scene_.layerSamplerFlags.capacity();
+        if (target > previousCapacity) {
+            const auto requested = std::max(target, std::min<std::size_t>(limits_.maxLayers,
+                previousCapacity + std::max<std::size_t>(previousCapacity, 1)));
+            if (!MaterialStorageFits(textureBytes_, textureBindingBytes_, requested, previousCapacity))
+                return Status::Failure(std::string(kSubsystem), "WORLD_STATIC_SAMPLER_BUDGET", "来源 sampler 增长峰值超过原材质预算。");
+            // Builder尚未发布scene，也没有共享副本；此处不存在额外COW分配。
+            scene_.layerSamplerFlags.reserve(requested);
+            if (!MaterialStorageFits(textureBytes_, textureBindingBytes_, scene_.layerSamplerFlags.capacity(), previousCapacity))
+                return Status::Failure(std::string(kSubsystem), "WORLD_STATIC_SAMPLER_BUDGET", "来源 sampler 实际分配峰值超过原材质预算。");
+        }
+        if (!samplerActive_) scene_.layerSamplerFlags.resize(scene_.layers.size(), 3);
+        samplerActive_ = true;
+        return {};
+    }
+
     ParsedModel Parse(const std::string& path) {
         ParsedModel result;
         if (assets_) {
@@ -290,11 +320,16 @@ private:
                 : DecodeModelTexture(path, *bytes.value, limits_.maxTextureDimension);
             if (image.Succeeded()) {
                 auto decoded = std::move(*image.value);
-                if (textureBytes_ <= limits_.maxTotalTextureBytes && decoded.rgba.size() <= limits_.maxTotalTextureBytes - textureBytes_) {
+                if (decoded.rgba.size() <= limits_.maxTotalTextureBytes
+                    && MaterialStorageFits(textureBytes_ + decoded.rgba.size(), textureBindingBytes_, scene_.layerSamplerFlags.capacity())) {
                     textureBytes_ += decoded.rgba.size();
                     index = static_cast<std::uint32_t>(scene_.textures.size());
                     scene_.textures.push_back(std::move(decoded));
-                } else budgetExceeded = true;
+                } else {
+                    budgetExceeded = true;
+                    // 来源元数据新增开销不能把本应拒绝的完整场景改成成功的白色fallback。
+                    samplerBudgetExceeded_ |= samplerActive_ || textureBindingBytes_ != 0;
+                }
             }
         }
         if (budgetExceeded) ++budgetTextures_[requestedPath];
@@ -347,9 +382,14 @@ private:
             scene_.indices.size() > limits_.maxIndices || indices > limits_.maxIndices - scene_.indices.size() ||
             scene_.meshes.size() > limits_.maxMeshes || asset.Meshes().size() > limits_.maxMeshes - scene_.meshes.size() ||
             scene_.layers.size() > limits_.maxLayers || asset.Meshes().size() > limits_.maxLayers - scene_.layers.size() ||
-            scene_.textures.size() > limits_.maxTextures || textures > limits_.maxTextures - scene_.textures.size() ||
-            textureBytes_ > limits_.maxTotalTextureBytes || textureBytes > limits_.maxTotalTextureBytes - textureBytes_)
+            scene_.textures.size() > limits_.maxTextures || textures > limits_.maxTextures - scene_.textures.size())
             return Output::Success(std::nullopt);
+        if (auto status = PrepareSamplerAppend(asset.Meshes().size(), false); !status.Succeeded())
+            return {std::nullopt, std::move(status.diagnostics)};
+        if (!MaterialStorageFits(textureBytes_ + textureBytes, textureBindingBytes_, scene_.layerSamplerFlags.capacity())) {
+            if (!samplerActive_ && !textureBindingBytes_) return Output::Success(std::nullopt);
+            return Output::Failure(std::string(kSubsystem), "WORLD_STATIC_SAMPLER_BUDGET", "原创模型贴图与来源 sampler 超过原材质预算。");
+        }
         std::vector<std::uint32_t> textureMap;
         for (const auto& texture : asset.Textures()) {
             const auto key = ModelTextureAssetKey(texture);
@@ -368,6 +408,7 @@ private:
             scene_.indices.insert(scene_.indices.end(), mesh.indices.begin(), mesh.indices.end());
             scene_.layers.push_back({mesh.textureIndex == WAR3_RENDER_MODEL_NO_TEXTURE ? WAR3_RENDER_MODEL_NO_TEXTURE : textureMap.at(mesh.textureIndex),
                 request.previewGhost ? 2u : mesh.filterMode, mesh.flags, mesh.alpha * (request.previewGhost ? 0.45f : 1.0f)});
+            if (samplerActive_) scene_.layerSamplerFlags.push_back(3);
             if (mesh.textureIndex == WAR3_RENDER_MODEL_NO_TEXTURE) ++scene_.untexturedLayers;
             if (assets_) { scene_.vertexGroups.insert(scene_.vertexGroups.end(), mesh.vertices.size(), 0); scene_.meshGeosets.push_back(UINT32_MAX); }
         }
@@ -381,6 +422,7 @@ private:
     Result<std::optional<std::uint32_t>> Append(const MdxModel& model, const ModelInstanceRequest& request, bool animated,
         const War3RenderCore::CompiledMaterialTextures* materialTextures) {
         std::uint64_t vertices = 0, indices = 0, meshes = 0, layers = 0, posedMeshes = 0;
+        bool explicitSampler = false;
         std::vector<float> geosetAlpha;
         geosetAlpha.reserve(model.geosets.size());
         std::vector<std::optional<MdxRigidSkinnedGeoset>> posedGeosets;
@@ -456,6 +498,12 @@ private:
             }
             geosetAlpha.push_back(alpha);
             if (!(alpha > 0) || geoset.indices.empty()) continue;
+            for (const auto& layer : model.materials[geoset.materialId].layers) {
+                const auto flags = model.textures[layer.textureId].flags;
+                if (flags > 3) return Result<std::optional<std::uint32_t>>::Failure(std::string(kSubsystem),
+                    "WORLD_MODEL_SAMPLER_UNSUPPORTED", "实际模型层的来源 TEXS sampler 含未知标志：" + request.modelPath);
+                explicitSampler |= flags != 3;
+            }
             vertices += geoset.positions.size(); indices += geoset.indices.size();
             ++meshes; layers += model.materials[geoset.materialId].layers.size();
             if (!model.materials[geoset.materialId].layers.empty()) ++posedMeshes;
@@ -475,11 +523,13 @@ private:
         std::shared_ptr<const std::vector<ModelTextureBinding>> textureBindings;
         if (materialTextures) {
             const auto bytes=static_cast<std::uint64_t>(model.textures.size())*sizeof(ModelTextureBinding);
-            if (bytes>limits_.maxModelBytes || textureBindingBytes_>limits_.maxTotalTextureBytes ||
-                bytes>limits_.maxTotalTextureBytes-textureBindingBytes_)
+            if (bytes>limits_.maxModelBytes || !MaterialStorageFits(textureBytes_, textureBindingBytes_ + bytes, scene_.layerSamplerFlags.capacity()))
                 return Result<std::optional<std::uint32_t>>::Success(std::nullopt);
-            textureBindingBytes_+=bytes;
             auto bindings=std::make_shared<std::vector<ModelTextureBinding>>(model.textures.size());
+            const auto actualBytes = std::uint64_t(bindings->capacity()) * sizeof(ModelTextureBinding);
+            if (!MaterialStorageFits(textureBytes_, textureBindingBytes_ + actualBytes, scene_.layerSamplerFlags.capacity()))
+                return Result<std::optional<std::uint32_t>>::Success(std::nullopt);
+            textureBindingBytes_+=actualBytes;
             for (std::uint32_t layer=0;layer<materialTextures->MaterialLayerCount();++layer) {
                 const auto layout=materialTextures->MaterialLayerLayouts()[layer];
                 for (const auto textureId:materialTextures->ReachableTextureIds(layer)) {
@@ -503,6 +553,8 @@ private:
             }
             textureBindings=std::move(bindings);
         }
+        if (auto status = PrepareSamplerAppend(static_cast<std::size_t>(layers), explicitSampler); !status.Succeeded())
+            return {std::nullopt, std::move(status.diagnostics)};
         War3RenderModelV2 entry{static_cast<std::uint32_t>(scene_.meshes.size()), 0};
         for (std::size_t geosetIndex = 0; geosetIndex < model.geosets.size(); ++geosetIndex) {
             const auto& geoset = model.geosets[geosetIndex];
@@ -530,6 +582,7 @@ private:
                     request.previewGhost ? 2u : std::min(static_cast<std::uint32_t>(layer.filterMode), 6u), flags,
                     std::clamp((rigidPose_ ? materialAlphas[firstMaterialLayers[geoset.materialId]+materialLayer] : layer.alpha) * geosetAlpha[geosetIndex]
                         * (request.previewGhost ? 0.45f : 1.0f), 0.0f, 1.0f)});
+                if (samplerActive_) scene_.layerSamplerFlags.push_back(model.textures[layer.textureId].flags);
                 ++materialLayer;
             }
             scene_.meshes.push_back(mesh);
@@ -587,6 +640,7 @@ private:
     std::map<std::string, std::size_t> failedModels_, budgetModels_, failedTextures_, budgetTextures_;
     std::uint64_t textureBytes_ = 0;
     std::uint64_t textureBindingBytes_ = 0;
+    bool samplerActive_ = false, samplerBudgetExceeded_ = false;
 };
 
 } // namespace

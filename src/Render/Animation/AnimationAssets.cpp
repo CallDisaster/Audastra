@@ -66,12 +66,23 @@ template<class T> void Append(SharedSceneVector<T>& target, const SharedSceneVec
     if (!source.empty()) target.insert(target.cend(), source.cbegin(), source.cend());
 }
 Status PromoteMaterialTextureBindings(AnimatedModelScene& scene, std::span<const AnimationAsset> assets,
-    std::span<const std::uint32_t> modelAssets) {
+    std::span<const std::uint32_t> modelAssets, const WorldModelLimits& limits) {
     if (!scene.dynamicMaterialStates) return Status::Ok();
     const auto& catalog=std::as_const(scene); const auto& g=catalog.geometry;
     const auto fail=[](const char* code,const char* text) { return AnimationFailure(code,text); };
     if (modelAssets.size()!=catalog.models.size() || g.modelTextureBindings.size()!=catalog.models.size())
         return fail("ANIMATION_TEXTURE_MAPPING","静态材质元数据与冻结模型目录数量不同。");
+    auto remaining=limits.maxTotalTextureBytes;
+    const auto take=[&](std::uint64_t bytes) {
+        if (bytes>remaining) return false;
+        remaining-=bytes; return true;
+    };
+    bool fits=take(std::uint64_t(g.layerSamplerFlags.capacity())*sizeof(std::uint32_t));
+    if (!g.layerSamplerFlags.empty()) fits &= take(sizeof(War3RenderStaticSamplerModelSceneV2)-sizeof(War3RenderModelSceneV2));
+    for (const auto& texture:g.textures) fits &= take(texture.rgba.size());
+    for (const auto& binding:g.modelTextureBindings) if (binding)
+        fits &= take(std::uint64_t(binding->capacity())*sizeof(ModelTextureBinding));
+    if (!fits) return fail("ANIMATION_DELTA_TEXTURE_BUDGET","静态材质提升的常驻来源元数据超过原预算。");
     // false→true：从常驻draw层绑定真实TEXS；正式预取也走此函数，COW工作留在准备阶段。
     for (std::uint32_t m=0;m<catalog.models.size();++m) {
         const auto index=modelAssets[m];
@@ -81,7 +92,12 @@ Status PromoteMaterialTextureBindings(AnimatedModelScene& scene, std::span<const
         const auto& asset=assets[index];
         if (asset.materialTextures && asset.materialTextures->HasAnimatedTexture())
             return fail("ANIMATION_TEXTURE_MAPPING","动态KMTF资产缺少已冻结的全部可达贴图绑定。");
+        const auto requestedBytes=std::uint64_t(asset.parsed->textures.size())*sizeof(ModelTextureBinding);
+        if (requestedBytes>remaining)
+            return fail("ANIMATION_DELTA_TEXTURE_BUDGET","静态材质提升的新绑定超过原预算。");
         auto bindings=std::make_shared<std::vector<ModelTextureBinding>>(asset.parsed->textures.size());
+        if (!take(std::uint64_t(bindings->capacity())*sizeof(ModelTextureBinding)))
+            return fail("ANIMATION_DELTA_TEXTURE_BUDGET","静态材质提升的实际绑定分配超过原预算。");
         const auto model=catalog.models[m].model;
         for (std::uint32_t k=0;k<model.meshCount;++k) {
             const auto mesh=model.firstMesh+k,geoset=g.meshGeosets[mesh];
@@ -546,16 +562,21 @@ Result<std::unique_ptr<ModelAnimationService::State>> ModelAnimationService::Bui
     scene.dynamicMaterialStates=std::any_of(state->assets.begin(),state->assets.end(),[](const auto& asset) {
         return asset.unavailableCode.empty() && AnimatedMaterialState(asset.materialTextures.get());
     }) || std::any_of(baked.begin(), baked.end(), [](const auto& mesh) { return mesh.samplerFlags != 3; });
-    // 旧无KMTF场景不创建新工作区；混合场景的静态材质sidecar仅在首次显式开启时冻结。
-    if (scene.dynamicMaterialStates) for (auto& asset:state->assets) if (asset.compiled.Valid() &&
-        asset.unavailableCode.empty() && !asset.materialTextures) {
-        auto textures=CompileMdxMaterialTextures(*asset.parsed,asset.compiled,std::min<std::uint64_t>(limits.maxAssetBytes,128ull*1024*1024));
-        if (!textures.Succeeded()) return {std::nullopt,std::move(textures.diagnostics)};
-        if (sourceBytes>limits.maxAssetBytes || textures.value->StorageBytes()>limits.maxAssetBytes-sourceBytes)
-            return fail("ANIMATION_ASSET_BUDGET","混合场景冻结材质贴图布局超过资产预算。");
-        sourceBytes+=textures.value->StorageBytes();
-        asset.materialTextures=std::make_shared<const CompiledMaterialTextures>(std::move(*textures.value));
-    }
+    // 只在显式材质模式下冻结缺失sidecar；迟激活与原KMTF/TXAN共用身份和预算。
+    const auto freezeMaterialTextures = [&]() -> Status {
+        for (auto& asset:state->assets) if (asset.compiled.Valid() &&
+            asset.unavailableCode.empty() && !asset.materialTextures) {
+            auto textures=CompileMdxMaterialTextures(*asset.parsed,asset.compiled,std::min<std::uint64_t>(limits.maxAssetBytes,128ull*1024*1024));
+            if (!textures.Succeeded()) return {std::move(textures.diagnostics)};
+            if (sourceBytes>limits.maxAssetBytes || textures.value->StorageBytes()>limits.maxAssetBytes-sourceBytes)
+                return AnimationFailure("ANIMATION_ASSET_BUDGET","混合场景冻结材质贴图布局超过资产预算。");
+            sourceBytes+=textures.value->StorageBytes();
+            asset.materialTextures=std::make_shared<const CompiledMaterialTextures>(std::move(*textures.value));
+        }
+        return Status::Ok();
+    };
+    if (scene.dynamicMaterialStates)
+        if (auto status=freezeMaterialTextures(); !status.Succeeded()) return {std::nullopt,std::move(status.diagnostics)};
     auto geometry = BuildAnimatedModelGeometry(requests, [&](std::string_view path) -> Result<std::vector<std::byte>> {
         auto data = read(path,limits.geometry.maxTextureBytes);
         if (!data.Succeeded()) {
@@ -600,6 +621,16 @@ Result<std::unique_ptr<ModelAnimationService::State>> ModelAnimationService::Bui
     if (!geometry.Succeeded()) return {std::nullopt,std::move(geometry.diagnostics)};
     for (const auto& d : geometry.value->warnings) if (d.code == "WORLD_MODEL_BUDGET" || d.code == "WORLD_BAKED_BUDGET" ||
         d.code == "WORLD_MODEL_TEXTURE_BUDGET") return fail(d.code.c_str(), d.message.c_str());
+    if (!scene.dynamicMaterialStates && !geometry.value->layerSamplerFlags.empty()) {
+        const auto& source = std::as_const(*geometry.value);
+        for (std::size_t layer=0;layer<source.layers.size();++layer)
+            if (source.layers[layer].textureIndex!=WAR3_RENDER_MODEL_NO_TEXTURE && source.layerSamplerFlags[layer]!=3) {
+                // 白色fallback没有纹理采样；实际常驻的非3源值才要求新的skin材质能力。
+                scene.dynamicMaterialStates=true;
+                if (auto status=freezeMaterialTextures(); !status.Succeeded()) return {std::nullopt,std::move(status.diagnostics)};
+                break;
+            }
+    }
     scene.geometry = std::move(*geometry.value);
     for (auto& request : scene.geometry.instanceRequests) if (request != kBakedInstance) request = geometryRequests.at(request);
     scene.geometry.requestedInstances = inputs.size();
@@ -706,8 +737,10 @@ Result<std::unique_ptr<ModelAnimationService::State>> ModelAnimationService::Bui
     for (const auto& a:state->assets) if (a.collisionNodes) pickBytes+=a.collisionNodes->size()*sizeof(std::uint32_t);
     // 显式通用材质尾部包含 alpha；KMTF-only模型也消费真实静态层alpha，不能重复预乘。
     scene.dynamicMaterialAlphas|=scene.dynamicMaterialStates;
+    if (auto status=PromoteMaterialTextureBindings(scene,state->assets,state->modelAssets,limits.geometry); !status.Succeeded())
+        return {std::nullopt,std::move(status.diagnostics)};
     for (const auto& bindings:std::as_const(scene.geometry).modelTextureBindings)
-        if (bindings) pickBytes+=bindings->size()*sizeof(ModelTextureBinding);
+        if (bindings) pickBytes+=bindings->capacity()*sizeof(ModelTextureBinding);
     if (pickBytes>limits.maxAssetBytes-sourceBytes)
         return fail("ANIMATION_PICK_METADATA_BUDGET","点选固定来源和节点索引超过原资产预算。");
     state->sourceBytes=sourceBytes;
@@ -770,7 +803,7 @@ Result<std::shared_ptr<const AnimationPreparedAssets>> ModelAnimationService::Pr
     if (merged.dynamicMaterialStates) {
         auto modelAssets=state_->modelAssets;
         modelAssets.insert(modelAssets.end(),prepared.modelAssets.begin(),prepared.modelAssets.end());
-        if (auto promoted=PromoteMaterialTextureBindings(merged,prepared.assets,modelAssets); !promoted.Succeeded())
+        if (auto promoted=PromoteMaterialTextureBindings(merged,prepared.assets,modelAssets,state_->limits.geometry); !promoted.Succeeded())
             return {std::nullopt,std::move(promoted.diagnostics)};
     }
     result->mergedGeometry_ = AnimationStaticGeometry::Capture(merged);
@@ -804,7 +837,7 @@ Status ModelAnimationService::InitializeStorage(State& state, const AnimationLim
     auto identity=EnsureAnimationCatalogIdentityIndex(scene,state.catalogIdentity,limits.maxFrameBytes);
     if (!identity.Succeeded()) return {std::move(identity.diagnostics)};
     state.catalogIdentity=std::move(*identity.value);
-    if (auto promoted=PromoteMaterialTextureBindings(scene,state.assets,state.modelAssets); !promoted.Succeeded()) return promoted;
+    if (auto promoted=PromoteMaterialTextureBindings(scene,state.assets,state.modelAssets,limits.geometry); !promoted.Succeeded()) return promoted;
     std::vector<CompiledModel> compiled;
     std::vector<CompiledMaterialTextures> textureAssets;
     std::uint32_t maxNodes=1,maxGroups=1,maxGeosets=1,maxMaterialLayers=1;
