@@ -131,8 +131,12 @@ void BaselineAndUndoCaptureAreReadOnly() {
     const auto originalSha = Take(Sha256File(source.SourcePath()));
     const auto first = Take(CaptureTerrainEditInspection(source, edits));
     Require(first.SourceSha256() == originalSha && first.SessionIdentity() == edits.SessionIdentity()
-        && first.Revision() == 0 && !first.TerrainChanged() && first.TerrainPathingGate().Succeeded(),
+        && first.Revision() == 0 && first.TerrainSourceRevision() == edits.TerrainSourceRevision()
+        && !first.TerrainChanged() && first.TerrainPathingGate().Succeeded(),
         "baseline binds archive, session and exact revision");
+    const auto preserved = Take(first.PathingPreservation());
+    Require(preserved.Kind() == PathingPreservationKind::PreserveExact && preserved.ChangedCells() == 0,
+        "the actual archive baseline supplies an independent exact-preservation proof");
     std::size_t byteCount = 0;
     for (std::size_t index = 0; index < members.size(); ++index) {
         const auto& captured = first.Members()[index];
@@ -197,9 +201,83 @@ void AcceptedAndRejectedTerrainRemainInspectable() {
                 "rejected gate stays inside a successful read-only snapshot");
         }
         SameStatus(snapshot.TerrainPathingGate(), gate);
+        Rejected(snapshot.PathingPreservation(), "PATHING_POLICY_TERRAIN_CHANGED");
         Require(edits.Revision() == revision && edits.CanUndo() && !edits.CanRedo(), "capture cannot add a command");
         Require(source.VerifySourceUnchanged().Succeeded(), "source unchanged for every terrain outcome");
     }
+}
+
+void RestrictionInspectionProvesBytesWithoutGrantingSaveEligibility() {
+    TempDirectory directory;
+    const auto members = Members();
+    auto source = WriteSource(directory.Path() / "restriction-inspection.w3x", members);
+    const auto originalSha = Take(Sha256File(source.SourcePath()));
+    MapDataEditSession edits(MapDocument::FromArchive(source));
+    Attach(edits, members);
+    TerrainBrush brush; brush.kind = TerrainBrushKind::PathingRestriction;
+    brush.size = 1; brush.pathingRestrictions = 4;
+    const TerrainStrokePoint point{16, 16}; // 原创WPM第0格原值为0，新增不可飞。
+    (void)Take(edits.EditTerrain(brush, std::span(&point, 1), false));
+    const auto revision = edits.Revision();
+    const auto sourceRevision = edits.TerrainSourceRevision();
+    const auto receipt = edits.LastAppliedEdit();
+    const auto replacements = edits.Replacements();
+    const auto snapshot = Take(CaptureTerrainEditInspection(source, edits));
+    const auto proof = Take(snapshot.PathingPreservation());
+    Require(proof.Kind() == PathingPreservationKind::ExplicitRestrictionCandidate && proof.ChangedCells() == 1
+        && proof.RequiresNativeVerification(), "inspection proves the one declared cell without native acceptance");
+    Require(!snapshot.TerrainPathingGate().Succeeded() && !snapshot.TerrainPathingGate().diagnostics.empty()
+        && snapshot.TerrainPathingGate().diagnostics.front().code == "MAP_TERRAIN_PATHING_UNVERIFIED",
+        "proof success cannot replace the unchanged formal-save rejection");
+    SameStatus(snapshot.TerrainPathingGate(), edits.VerifyTerrainPathingForSave());
+    Require(snapshot.Members()[0].original == snapshot.Members()[0].current
+        && snapshot.Members()[1].original != snapshot.Members()[1].current,
+        "restriction-only inspection freezes exact W3E and the actual changed WPM");
+    const auto bindingOf = [](const TerrainEditInspection& capture) {
+        return PathingPreservationBinding{capture.SourceSha256(), *capture.Members()[0].originalSha256,
+            *capture.Members()[1].originalSha256, capture.SessionIdentity(), capture.Revision(), capture.TerrainSourceRevision()};
+    };
+    const auto draft = Take(edits.SerializePathingRestrictionDraft());
+    Require(proof.VerifyCurrent(bindingOf(snapshot), *snapshot.Members()[0].current, *snapshot.Members()[1].current, draft).Succeeded(),
+        "proof uses the real archive SHA and same frozen session declaration");
+    const auto after = edits.Replacements();
+    Require(edits.Revision() == revision && edits.TerrainSourceRevision() == sourceRevision
+        && edits.CanUndo() && !edits.CanRedo() && edits.LastAppliedEdit().CommandIdentity() == receipt.CommandIdentity()
+        && std::equal(replacements.begin(), replacements.end(), after.begin(), after.end(), [](const auto& first, const auto& second) {
+            return first.name == second.name && first.data == second.data;
+        }), "inspection cannot change commands, generations, replacements or redo");
+    Require(Take(CaptureTerrainEditInspection(source, edits)).IdentitySha256() == snapshot.IdentitySha256(),
+        "same frozen restriction state has stable inspection identity");
+
+    Require(edits.Undo(), "undo restriction before read-only capture");
+    const auto undone = Take(CaptureTerrainEditInspection(source, edits));
+    Require(Take(undone.PathingPreservation()).Kind() == PathingPreservationKind::PreserveExact
+        && edits.CanRedo() && !edits.CanUndo(), "inspection preserves redo of a fully withdrawn declaration");
+    Require(edits.Redo(), "redo after inspection still applies the same restriction");
+    const auto redone = Take(CaptureTerrainEditInspection(source, edits));
+    const auto stale = proof.VerifyCurrent(bindingOf(redone), *redone.Members()[0].current, *redone.Members()[1].current, draft);
+    Require(!stale.Succeeded() && !stale.diagnostics.empty() && stale.diagnostics.front().code == "PATHING_POLICY_STALE_BINDING"
+        && redone.IdentitySha256() != snapshot.IdentitySha256(), "matching bytes cannot revive a pre-undo proof");
+    MapDataEditSession other(MapDocument::FromArchive(source));
+    Attach(other, members);
+    (void)Take(other.EditTerrain(brush, std::span(&point, 1), false));
+    const auto another = Take(CaptureTerrainEditInspection(source, other));
+    const auto otherStale = proof.VerifyCurrent(bindingOf(another), *another.Members()[0].current, *another.Members()[1].current, draft);
+    Require(!otherStale.Succeeded() && !otherStale.diagnostics.empty()
+        && otherStale.diagnostics.front().code == "PATHING_POLICY_STALE_BINDING", "another session cannot borrow a byte-identical proof");
+
+    Require(edits.Undo(), "restore exact source before synthetic saved-generation rebase");
+    const auto beforeRebase = Take(CaptureTerrainEditInspection(source, edits));
+    const auto exact = Take(beforeRebase.PathingPreservation());
+    edits.CommitSaved(MapDocument::FromArchive(source));
+    const auto rebased = Take(CaptureTerrainEditInspection(source, edits));
+    const auto rebaseStale = exact.VerifyCurrent(bindingOf(rebased), *rebased.Members()[0].current, *rebased.Members()[1].current, {});
+    Require(rebased.Revision() == beforeRebase.Revision() && rebased.TerrainSourceRevision() != beforeRebase.TerrainSourceRevision()
+        && rebased.IdentitySha256() != beforeRebase.IdentitySha256() && !rebaseStale.Succeeded()
+        && !rebaseStale.diagnostics.empty() && rebaseStale.diagnostics.front().code == "PATHING_POLICY_STALE_BINDING",
+        "source generation alone changes inspection identity and invalidates the old exact proof");
+    Require(Take(Sha256File(source.SourcePath())) == originalSha && source.VerifySourceUnchanged().Succeeded(),
+        "all read-only inspection and synthetic session rebases leave the source archive untouched");
 }
 
 void FullRawTerrainAndPathingBaselinesMustMatch() {
@@ -277,6 +355,7 @@ void MissingEmptyReadonlyAndDeletionStayDistinct() {
     auto source = WriteSource(directory.Path() / "empty.w3x", emptyMembers);
     MapDataEditSession edits(MapDocument::FromArchive(source));
     const auto empty = Take(CaptureTerrainEditInspection(source, edits, {0}));
+    Rejected(empty.PathingPreservation(), "PATHING_POLICY_CONTEXT_MISSING");
     Require(empty.OwnedBytes() == 0 && !empty.TerrainChanged(), "true empty unbound members fit a zero-byte budget");
     const auto emptyHash = Take(Sha256(std::span<const std::byte>{}));
     for (std::size_t index = 0; index < 2; ++index)
@@ -293,6 +372,7 @@ void MissingEmptyReadonlyAndDeletionStayDistinct() {
     MapDataEditSession readonly(MapDocument::FromArchive(newSource));
     Require(!readonly.AttachTerrain(newMembers[0].data).Succeeded(), "v12 remains unavailable to classic editing");
     const auto v12 = Take(CaptureTerrainEditInspection(newSource, readonly));
+    Rejected(v12.PathingPreservation(), "PATHING_POLICY_CONTEXT_MISSING");
     Require(v12.Members()[0].original == v12.Members()[0].current && *v12.Members()[0].current == newMembers[0].data
         && !v12.TerrainChanged(), "unattached readonly W3E must retain all original bytes");
 
@@ -422,6 +502,7 @@ void ExactCaptureDoesNotDependOnListfile() {
     MapDataEditSession edits(MapDocument::FromArchive(source));
     Require(edits.AttachTerrain(TerrainBytes()).Succeeded(), "attach independently captured known W3E");
     const auto capture = Take(CaptureTerrainEditInspection(source, edits));
+    Rejected(capture.PathingPreservation(), "PATHING_POLICY_CONTEXT_MISSING");
     Require(capture.Members()[0].original && *capture.Members()[0].original == TerrainBytes()
         && capture.Members()[0].current == capture.Members()[0].original,
         "capture reads the actual requested name despite incomplete listfile");
@@ -434,13 +515,14 @@ int main() {
     try {
         BaselineAndUndoCaptureAreReadOnly();
         AcceptedAndRejectedTerrainRemainInspectable();
+        RestrictionInspectionProvesBytesWithoutGrantingSaveEligibility();
         FullRawTerrainAndPathingBaselinesMustMatch();
         NativeSourcesCannotBeInventedOrDiscarded();
         MissingEmptyReadonlyAndDeletionStayDistinct();
         AggregateBudgetsAndIdentityUseFinalOwnedBytes();
         ChangedOrReplacedSourceIsRejectedAndSnapshotOwnsData();
         ExactCaptureDoesNotDependOnListfile();
-        std::cout << "terrain-edit-inspection: 8 scenario groups passed\n";
+        std::cout << "terrain-edit-inspection: 9 scenario groups passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "terrain-edit-inspection: " << error.what() << '\n';

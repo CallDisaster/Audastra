@@ -43,6 +43,7 @@ add_library(War3MapCore STATIC
     MapData/MapShadow.cpp
     MapData/TerrainEditing.cpp
     MapData/PathingRestrictionEditing.cpp
+    MapData/PathingSavePolicy.cpp
     MapData/MapDataEditSessionPathing.cpp
     MapData/TerrainRampEditing.cpp
     MapData/TerrainPatchCodec.cpp

@@ -36,6 +36,7 @@ struct PathingRestrictionPreview {
     const TerrainGridSnapshot& originalTerrain, std::span<const std::byte> original,
     std::span<const std::byte> current);
 // 验证声明与完整候选逐格相符，再剥离声明过的附加位；调用方还须检查剩余荒芜差分。
+// 声明不匹配保留 PATHING_DRAFT_IDENTITY，并定位 APR 首个差异字节、格/位与完整不匹配总数。
 [[nodiscard]] Result<std::vector<std::byte>> StripPathingRestrictionDraft(
     const TerrainGridSnapshot& originalTerrain, std::span<const std::byte> original,
     std::span<const std::byte> current, std::span<const std::byte> draft);

@@ -39,6 +39,50 @@ Result<std::vector<std::byte>> Header(const TerrainGridSnapshot& terrain, std::s
         for (const auto value : *sha) bytes.push_back(static_cast<std::byte>(value));
     return Result<std::vector<std::byte>>::Success(std::move(bytes));
 }
+
+std::string HexByte(unsigned value) {
+    constexpr char digits[] = "0123456789abcdef";
+    return {digits[(value >> 4) & 15], digits[value & 15]};
+}
+
+Result<std::vector<std::byte>> DraftMismatch(const TerrainHeader& terrain,
+    std::span<const std::byte> expected, std::span<const std::byte> draft) {
+    // 唯一编码器给出完整预期，不另写一套 APR 解析或掩码规则；摘要不截断检查。
+    const auto common = std::min(expected.size(), draft.size());
+    std::size_t first = common, mismatchedBytes = std::max(expected.size(), draft.size()) - common;
+    std::size_t mismatchedCells = expected.size() > std::max(common, kDraftHeader)
+        ? expected.size() - std::max(common, kDraftHeader) : 0;
+    for (std::size_t offset = 0; offset < common; ++offset) {
+        if (expected[offset] == draft[offset]) continue;
+        if (first == common) first = offset;
+        ++mismatchedBytes;
+        if (offset >= kDraftHeader) ++mismatchedCells;
+    }
+    std::string message = "通行草稿声明与源 W3E/WPM 或候选附加位不一致。";
+    if (mismatchedBytes != 0) {
+        message += " 首个差异：APR 偏移=" + std::to_string(first);
+        if (first >= kDraftHeader && first < expected.size()) {
+            const auto cell = first - kDraftHeader;
+            const auto width = (terrain.width - 1) * 4;
+            message += "；格(x=" + std::to_string(cell % width) + ", y=" + std::to_string(cell / width) + ")";
+        }
+        if (first < common) {
+            const auto difference = std::to_integer<unsigned>(expected[first] ^ draft[first]);
+            unsigned firstBit = 1;
+            while ((difference & firstBit) == 0) firstBit <<= 1;
+            message += "；首个差异位=0x" + HexByte(firstBit) + "；差异位掩码=0x" + HexByte(difference);
+        } else {
+            message += first < expected.size() ? "；缺少声明字节" : "；多余声明字节";
+        }
+    }
+    message += "；不匹配格数=" + std::to_string(mismatchedCells)
+        + "；不匹配字节数=" + std::to_string(mismatchedBytes) + "。";
+    auto result = Result<std::vector<std::byte>>::Failure("Pathing.Edit", "PATHING_DRAFT_IDENTITY", std::move(message));
+    if (mismatchedBytes != 0)
+        result.diagnostics.front().origin = OriginSpan{"overlay/editor/pathing-restrictions.bin", first,
+            first < draft.size() ? 1u : 0u, {}};
+    return result;
+}
 } // namespace
 
 std::optional<TerrainBrushFootprint> GetPathingRestrictionFootprint(
@@ -128,7 +172,7 @@ Result<std::vector<std::byte>> StripPathingRestrictionDraft(
     if (!encoded.Succeeded()) return encoded;
     // 重新编码同时核对来源 SHA、长度、版本和每一格的声明，拒绝多余/缺失或未知位。
     if (!encoded.value || encoded.value->empty() || !std::equal(draft.begin(), draft.end(), encoded.value->begin(), encoded.value->end()))
-        return Output::Failure("Pathing.Edit", "PATHING_DRAFT_IDENTITY", "通行草稿声明与源 W3E/WPM 或候选附加位不一致。");
+        return DraftMismatch(terrain.header, encoded.value ? std::span<const std::byte>(*encoded.value) : std::span<const std::byte>{}, draft);
     std::vector<std::byte> stripped(current.begin(), current.end());
     for (std::size_t i = kWpmHeader; i < stripped.size(); ++i)
         stripped[i] &= ~draft[kDraftHeader + i - kWpmHeader];

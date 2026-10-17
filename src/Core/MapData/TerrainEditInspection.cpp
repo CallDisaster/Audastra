@@ -46,7 +46,7 @@ namespace {
 
 using Bytes = std::vector<std::byte>;
 constexpr std::string_view kSubsystem = "MapData.TerrainInspection";
-constexpr std::string_view kVersion = "forge-terrain-edit-inspection-v1";
+constexpr std::string_view kVersion = "forge-terrain-edit-inspection-v2";
 const std::array<std::string, 5> kMembers{
     "war3map.w3e", "war3map.wpm", "war3map.doo", "war3mapUnits.doo", "war3map.w3i"};
 
@@ -133,6 +133,23 @@ void SetCurrent(TerrainInspectionMember& member, const std::optional<Bytes>& byt
     }
 }
 
+Result<PathingPreservationProof> CapturePathingPreservation(const TerrainEditInspection& snapshot,
+    const MapDataEditSession& edits, bool contextAttached) {
+    const auto& terrain = snapshot.Members()[0];
+    const auto& pathing = snapshot.Members()[1];
+    if (!contextAttached || !terrain.original || !terrain.current || !pathing.original || !pathing.current)
+        return Result<PathingPreservationProof>::Failure("Pathing.SavePolicy", "PATHING_POLICY_CONTEXT_MISSING",
+            "只读通行保留检查需要真实归档及已绑定的源 W3E/WPM；缺失、只读或未附入不伪造证明。");
+    PathingPreservationBinding binding{snapshot.SourceSha256(), *terrain.originalSha256, *pathing.originalSha256,
+        snapshot.SessionIdentity(), snapshot.Revision(), snapshot.TerrainSourceRevision()};
+    // APR 由同一冻结点的已有会话编码器产生，不接受外部替换。它仅暂存至分类完成，
+    // WPM解析器先限制其来源大小；proof对五个span再执行独立64 MiB累计输入预算。
+    const auto draft = edits.SerializePathingRestrictionDraft();
+    if (!draft.Succeeded() || !draft.value) return {{}, draft.diagnostics};
+    return PathingPreservationProof::Prepare(binding, *terrain.original, *pathing.original,
+        *terrain.current, *pathing.current, *draft.value);
+}
+
 std::string Identity(const TerrainEditInspection& snapshot) {
     std::string manifest;
     const auto append = [&](std::string_view value) {
@@ -144,6 +161,7 @@ std::string Identity(const TerrainEditInspection& snapshot) {
     append(snapshot.SourceSha256());
     append(std::to_string(snapshot.SessionIdentity()));
     append(std::to_string(snapshot.Revision()));
+    append(std::to_string(snapshot.TerrainSourceRevision()));
     append(std::to_string(snapshot.Limits().maximumOwnedBytes));
     append(std::to_string(snapshot.OwnedBytes()));
     append(snapshot.TerrainChanged() ? "changed" : "unchanged");
@@ -159,23 +177,37 @@ std::string Identity(const TerrainEditInspection& snapshot) {
             }
         }
     }
+    const auto appendDiagnostics = [&](const std::vector<Diagnostic>& diagnostics) {
+        append(std::to_string(diagnostics.size()));
+        for (const auto& diagnostic : diagnostics) {
+            append(std::to_string(static_cast<int>(diagnostic.severity)));
+            append(diagnostic.subsystem);
+            append(diagnostic.code);
+            append(diagnostic.message);
+            append(diagnostic.origin ? "origin" : "no-origin");
+            if (diagnostic.origin) {
+                const auto path = diagnostic.origin->source.generic_u8string();
+                append({reinterpret_cast<const char*>(path.data()), path.size()});
+                append(std::to_string(diagnostic.origin->offset));
+                append(std::to_string(diagnostic.origin->length));
+                append(diagnostic.origin->fingerprint);
+            }
+        }
+    };
     const auto& gate = snapshot.TerrainPathingGate();
     append(gate.Succeeded() ? "allowed" : "rejected");
-    append(std::to_string(gate.diagnostics.size()));
-    for (const auto& diagnostic : gate.diagnostics) {
-        append(std::to_string(static_cast<int>(diagnostic.severity)));
-        append(diagnostic.subsystem);
-        append(diagnostic.code);
-        append(diagnostic.message);
-        append(diagnostic.origin ? "origin" : "no-origin");
-        if (diagnostic.origin) {
-            const auto path = diagnostic.origin->source.generic_u8string();
-            append({reinterpret_cast<const char*>(path.data()), path.size()});
-            append(std::to_string(diagnostic.origin->offset));
-            append(std::to_string(diagnostic.origin->length));
-            append(diagnostic.origin->fingerprint);
-        }
+    appendDiagnostics(gate.diagnostics);
+    const auto& preservation = snapshot.PathingPreservation();
+    append(std::to_string(PathingPreservationProof::RuleVersion()));
+    append(preservation.Succeeded() ? "proven" : "rejected");
+    if (preservation.value) {
+        const auto& proof = *preservation.value;
+        append(std::to_string(static_cast<int>(proof.Kind())));
+        append(std::to_string(proof.ChangedCells()));
+        append(proof.OutputPathingSha256());
+        append(proof.DeclarationSha256());
     }
+    appendDiagnostics(preservation.diagnostics);
     return Take(Sha256Text(manifest));
 }
 
@@ -190,6 +222,7 @@ Result<TerrainEditInspection> CaptureTerrainEditInspection(const MapArchiveSessi
         result.sourceSha256_ = source.SourceSha256();
         result.sessionIdentity_ = edits.SessionIdentity();
         result.revision_ = edits.Revision();
+        result.terrainSourceRevision_ = edits.TerrainSourceRevision();
         result.limits_ = limits;
         RequireStatus(source.VerifySourceUnchanged());
 
@@ -246,10 +279,12 @@ Result<TerrainEditInspection> CaptureTerrainEditInspection(const MapArchiveSessi
         }
         // 门禁拒绝属于快照内容，不能让Result把完整只读快照也判作失败。
         result.terrainPathingGate_ = edits.VerifyTerrainPathingForSave();
+        result.pathingPreservation_ = CapturePathingPreservation(result, edits,
+            view.terrainOriginal && view.pathingOriginal->has_value());
         result.identitySha256_ = Identity(result);
         RequireStatus(source.VerifySourceUnchanged());
         if (source.SourceSha256() != result.sourceSha256_ || edits.SessionIdentity() != result.sessionIdentity_
-            || edits.Revision() != result.revision_)
+            || edits.Revision() != result.revision_ || edits.TerrainSourceRevision() != result.terrainSourceRevision_)
             Fail("TERRAIN_EDIT_INSPECTION_STALE", "地形影响捕获期间来源或编辑修订发生变化，须重新捕获。");
         return Result<TerrainEditInspection>::Success(std::move(result));
     } catch (Failure& failure) {

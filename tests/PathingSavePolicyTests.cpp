@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <initializer_list>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -33,6 +34,25 @@ template<class T> void Refused(const Result<T>& result, std::string_view code) {
     Require(!result.Succeeded() && !result.value, "rejection must not return partial proof");
     Require(std::any_of(result.diagnostics.begin(), result.diagnostics.end(), [&](const auto& item) { return item.code == code; }),
         "rejection keeps its precise reason");
+}
+
+void Refused(const Status& status, std::string_view code) {
+    Require(!status.Succeeded(), "rejection must not report success");
+    Require(std::any_of(status.diagnostics.begin(), status.diagnostics.end(), [&](const auto& item) { return item.code == code; }),
+        "status rejection keeps its precise reason");
+}
+
+template<class T> void DraftRefused(const Result<T>& result, std::size_t offset,
+    std::initializer_list<std::string_view> details = {}, bool missingByte = false) {
+    Refused(result, "PATHING_DRAFT_IDENTITY");
+    const auto found = std::find_if(result.diagnostics.begin(), result.diagnostics.end(),
+        [](const auto& item) { return item.code == "PATHING_DRAFT_IDENTITY"; });
+    Require(found->origin && found->origin->source.generic_string() == "overlay/editor/pathing-restrictions.bin"
+        && found->origin->offset == offset, "APR rejection locates its first differing or missing declaration byte");
+    for (const auto detail : details)
+        Require(found->message.find(detail) != std::string::npos, "APR rejection retains independently expected mismatch details");
+    if (missingByte)
+        Require(found->message.find("首个差异位=") == std::string::npos, "a missing declaration byte must not invent a differing bit");
 }
 
 void U32(Bytes& bytes, std::uint32_t value) {
@@ -131,16 +151,52 @@ void RectangularGridAndDeclarationMustBeComplete() {
         && proof.Bounds()->y0 == 0 && proof.Bounds()->y1 == 12, "non-square grid dirty bounds retain the narrow full-height column");
     Refused(fixture.Prepare(current, {}), "PATHING_POLICY_DECLARATION_MISSING");
     auto bad = draft; bad[4] ^= std::byte{1};
-    Refused(fixture.Prepare(current, bad), "PATHING_DRAFT_IDENTITY");
-    bad = draft; bad.pop_back(); Refused(fixture.Prepare(current, bad), "PATHING_DRAFT_IDENTITY");
-    bad = draft; bad.push_back(std::byte{0}); Refused(fixture.Prepare(current, bad), "PATHING_DRAFT_IDENTITY");
-    bad = draft; bad[132] = std::byte{0x20}; Refused(fixture.Prepare(current, bad), "PATHING_DRAFT_IDENTITY");
-    bad = draft; bad[132 + 88] = std::byte{0}; Refused(fixture.Prepare(current, bad), "PATHING_DRAFT_IDENTITY");
-    bad = draft; bad[132 + 1] = std::byte{4}; Refused(fixture.Prepare(current, bad), "PATHING_DRAFT_IDENTITY");
+    DraftRefused(fixture.Prepare(current, bad), 4);
+    bad = draft; bad[0] = std::byte{'X'}; DraftRefused(fixture.Prepare(current, bad), 0);
+    bad = draft; bad.resize(3); DraftRefused(fixture.Prepare(current, bad), 3, {}, true);
+    bad = draft; bad.pop_back(); DraftRefused(fixture.Prepare(current, bad), draft.size() - 1, {}, true);
+    bad = draft; bad.push_back(std::byte{0}); DraftRefused(fixture.Prepare(current, bad), draft.size());
+    bad = draft; bad[132] = std::byte{0x20};
+    DraftRefused(fixture.Prepare(current, bad), 132, {"x=0", "y=0", "首个差异位=0x02", "不匹配格数=1"});
+    bad = draft; bad[132 + 88] = std::byte{0};
+    DraftRefused(fixture.Prepare(current, bad), 132 + 88, {"x=0", "y=11", "首个差异位=0x04", "不匹配格数=1"});
+    bad = draft; bad[132 + 1] = std::byte{4};
+    DraftRefused(fixture.Prepare(current, bad), 132 + 1, {"x=1", "y=0", "首个差异位=0x04", "不匹配格数=1"});
     Refused(fixture.Prepare(fixture.pathing, draft), "PATHING_POLICY_REDUNDANT_DECLARATION");
     PathingPreservationLimits limits; limits.maximumReportedCells = 0;
     const auto countOnly = Take(fixture.Prepare(current, draft, limits));
     Require(countOnly.ChangedCells() == 2 && countOnly.ReportedCells().empty(), "zero report budget retains complete validation and count");
+}
+
+void ReportedCellLimitNeverLimitsValidation() {
+    const Fixture fixture;
+    auto current = fixture.pathing;
+    std::vector<std::uint8_t> masks(256);
+    for (unsigned source = 0; source < 256; ++source) {
+        masks[source] = AddedBySetOracle(source, 7, 0);
+        current[16 + source] |= static_cast<std::byte>(masks[source]);
+    }
+    const auto draft = fixture.Draft(masks);
+    const auto proof = Take(fixture.Prepare(current, draft));
+    Require(proof.ChangedCells() > 64 && proof.ReportedCells().size() == 64,
+        "fixture exceeds the bounded cell report before injecting a late failure");
+    Require(std::none_of(proof.ReportedCells().begin(), proof.ReportedCells().end(), [](const auto& cell) {
+        return cell.x == 8 && cell.y == 12;
+    }), "the independently chosen late cell is beyond the retained report");
+
+    auto badPathing = current; badPathing[16 + 200] ^= std::byte{0x10};
+    const auto invalid = fixture.Prepare(badPathing, draft);
+    Refused(invalid, "PATHING_POLICY_UNSUPPORTED_BITS");
+    Require(invalid.diagnostics.front().origin && invalid.diagnostics.front().origin->source.generic_string() == "war3map.wpm"
+        && invalid.diagnostics.front().origin->offset == 16 + 200, "unsupported WPM bit beyond the report still rejects the whole proof");
+
+    // 源 200/201 的 0x0e 缺位均为 0x06；首次坏格固定为 x=8/y=12。
+    auto bad = draft; bad[132 + 200] = std::byte{0}; bad[132 + 201] = std::byte{0};
+    DraftRefused(fixture.Prepare(current, bad), 132 + 200,
+        {"x=8", "y=12", "首个差异位=0x02", "不匹配格数=2"});
+    bad = draft; bad[132 + 200] = std::byte{0x02};
+    DraftRefused(fixture.Prepare(current, bad), 132 + 200,
+        {"x=8", "y=12", "首个差异位=0x04", "不匹配格数=1"});
 }
 
 void SourceBitsTerrainAndShapeRemainStrict() {
@@ -193,7 +249,7 @@ void BindingBudgetsAndCurrentBytesNeverReviveAProof() {
         if (field == 3) ++binding.sessionIdentity;
         if (field == 4) ++binding.revision;
         if (field == 5) ++binding.terrainSourceRevision;
-        Require(!exact.VerifyCurrent(binding, fixture.terrain, fixture.pathing, {}).Succeeded(), "all source and generation binding fields are enforced");
+        Refused(exact.VerifyCurrent(binding, fixture.terrain, fixture.pathing, {}), "PATHING_POLICY_STALE_BINDING");
     }
     auto wrong = fixture.binding; wrong.pathingSha256 = Take(Sha256Text("different source"));
     Refused(PathingPreservationProof::Prepare(wrong, fixture.terrain, fixture.pathing, fixture.terrain, fixture.pathing, {}),
@@ -201,7 +257,7 @@ void BindingBudgetsAndCurrentBytesNeverReviveAProof() {
     wrong = fixture.binding; wrong.archiveSha256.clear();
     Refused(PathingPreservationProof::Prepare(wrong, fixture.terrain, fixture.pathing, fixture.terrain, fixture.pathing, {}), "PATHING_POLICY_BINDING");
     auto changed = fixture.pathing; changed.back() ^= std::byte{1};
-    Require(!exact.VerifyCurrent(fixture.binding, fixture.terrain, changed, {}).Succeeded(), "same binding cannot hide changed output bytes");
+    Refused(exact.VerifyCurrent(fixture.binding, fixture.terrain, changed, {}), "PATHING_POLICY_STALE_OUTPUT");
     PathingPreservationLimits limits; limits.maximumInputBytes = 16;
     Refused(fixture.Prepare(fixture.pathing, {}, limits), "PATHING_POLICY_BUDGET");
     limits = {}; limits.maximumDecodedTerrainBytes = 1;
@@ -213,6 +269,56 @@ void BindingBudgetsAndCurrentBytesNeverReviveAProof() {
         if (field == 2) ++limits.maximumReportedCells;
         Refused(fixture.Prepare(fixture.pathing, {}, limits), "PATHING_POLICY_LIMITS");
     }
+}
+
+void RestrictionProofBindsEveryCurrentByteAndLength() {
+    const Fixture fixture(3, 4);
+    auto current = fixture.pathing;
+    std::vector<std::uint8_t> masks(96);
+    masks[0] = 2; masks[88] = 4;
+    current[16] |= std::byte{2}; current[16 + 88] |= std::byte{4};
+    const auto draft = fixture.Draft(masks);
+    const auto proof = Take(fixture.Prepare(current, draft));
+    Require(proof.Kind() == PathingPreservationKind::ExplicitRestrictionCandidate,
+        "stale-output cases start from a complete successful restriction proof");
+
+    for (const auto member : {0, 1, 2}) {
+        auto terrain = fixture.terrain, pathing = current, declaration = draft;
+        auto& bytes = member == 0 ? terrain : member == 1 ? pathing : declaration;
+        bytes.back() ^= std::byte{1};
+        Refused(proof.VerifyCurrent(fixture.binding, terrain, pathing, declaration), "PATHING_POLICY_STALE_OUTPUT");
+        for (const bool append : {false, true}) {
+            terrain = fixture.terrain; pathing = current; declaration = draft;
+            auto& resized = member == 0 ? terrain : member == 1 ? pathing : declaration;
+            if (append) resized.push_back(std::byte{0});
+            else resized.pop_back();
+            Refused(proof.VerifyCurrent(fixture.binding, terrain, pathing, declaration), "PATHING_POLICY_STALE_OUTPUT");
+        }
+    }
+    auto binding = fixture.binding; ++binding.revision;
+    Refused(proof.VerifyCurrent(binding, fixture.terrain, current, draft), "PATHING_POLICY_STALE_BINDING");
+    Require(proof.VerifyCurrent(fixture.binding, fixture.terrain, current, draft).Succeeded(),
+        "failed verification cannot alter an immutable proof or its accepted original output");
+}
+
+void CumulativeInputAndDecodedTerrainBudgetBoundariesAreExact() {
+    const Fixture fixture;
+    auto current = fixture.pathing;
+    std::vector<std::uint8_t> masks(256);
+    masks[0] = 2; current[16] |= std::byte{2};
+    const auto draft = fixture.Draft(masks);
+    PathingPreservationLimits limits;
+    limits.maximumInputBytes = fixture.terrain.size() * 2 + fixture.pathing.size() + current.size() + draft.size();
+    // 手写 5×5 来源有两项四字节贴图 ID、25 顶点、16 tile；核载荷合同，不以运行时 RSS 为 oracle。
+    limits.maximumDecodedTerrainBytes = fixture.terrain.size() + sizeof(TerrainGridSnapshot)
+        + 2 * (sizeof(std::string) + 4) + 25 * sizeof(TerrainVertex) + 16 * sizeof(TerrainTile);
+    const auto exact = Take(fixture.Prepare(current, draft, limits));
+    Require(exact.ChangedCells() == 1 && exact.Kind() == PathingPreservationKind::ExplicitRestrictionCandidate,
+        "the complete declared candidate fits both exact cumulative and decoded payload boundaries");
+    auto tooSmall = limits; --tooSmall.maximumInputBytes;
+    Refused(fixture.Prepare(current, draft, tooSmall), "PATHING_POLICY_BUDGET");
+    tooSmall = limits; --tooSmall.maximumDecodedTerrainBytes;
+    Refused(fixture.Prepare(current, draft, tooSmall), "TERRAIN_MEMORY_LIMIT");
 }
 
 Bytes CurrentPathing(const MapDataEditSession& edits, const Bytes& original) {
@@ -234,24 +340,24 @@ void RealSessionUndoAndSaveGateStaySeparate() {
     const auto proof = Take(PathingPreservationProof::Prepare(binding, fixture.terrain, fixture.pathing, fixture.terrain, current, draft));
     Require(proof.Kind() == PathingPreservationKind::ExplicitRestrictionCandidate && proof.ChangedCells() == 1,
         "existing APR command is fully explained by the independent policy");
-    Require(!edits.VerifyTerrainPathingForSave().Succeeded(), "new proof never grants current map-write eligibility");
+    Refused(edits.VerifyTerrainPathingForSave(), "MAP_TERRAIN_PATHING_UNVERIFIED");
     WorkspaceSnapshot source;
     source.aggregateSha256 = binding.archiveSha256;
     source.files = {{"map/war3map.w3e", fixture.terrain.size(), 0, binding.terrainSha256},
         {"map/war3map.wpm", fixture.pathing.size(), 0, binding.pathingSha256}};
     const auto plan = Take(TerrainSavePlan::Prepare(source, edits));
-    Require(!plan.SaveGate().Succeeded() && !plan.VerifyForSave(edits, source.aggregateSha256, edits.Replacements()).Succeeded(),
-        "shared frozen save plan still rejects restriction-only WPM replacement");
+    Refused(plan.SaveGate(), "MAP_TERRAIN_PATHING_UNVERIFIED");
+    Refused(plan.VerifyForSave(edits, source.aggregateSha256, edits.Replacements()), "MAP_TERRAIN_PATHING_UNVERIFIED");
     Require(edits.Undo() && CurrentPathing(edits, fixture.pathing) == fixture.pathing && edits.Redo()
         && CurrentPathing(edits, fixture.pathing) == current, "undo-redo preserves exact source and output bytes");
     binding.revision = edits.Revision();
-    Require(!proof.VerifyCurrent(binding, fixture.terrain, current, draft).Succeeded(), "undo-redo never revives an old proof by matching bytes");
+    Refused(proof.VerifyCurrent(binding, fixture.terrain, current, draft), "PATHING_POLICY_STALE_BINDING");
     Require(edits.Undo(), "restore exact original source for rebase");
     binding.revision = edits.Revision();
     const auto exact = Take(PathingPreservationProof::Prepare(binding, fixture.terrain, fixture.pathing, fixture.terrain, fixture.pathing, {}));
     edits.CommitSaved(MapDocument::FromMembers({}));
     binding.terrainSourceRevision = edits.TerrainSourceRevision();
-    Require(!exact.VerifyCurrent(binding, fixture.terrain, fixture.pathing, {}).Succeeded(), "source rebasing invalidates proof without changing bytes");
+    Refused(exact.VerifyCurrent(binding, fixture.terrain, fixture.pathing, {}), "PATHING_POLICY_STALE_BINDING");
 }
 
 } // namespace
@@ -260,10 +366,13 @@ int main() {
     try {
         AllSourceBytesAndRestrictionSubsetsArePreserved();
         RectangularGridAndDeclarationMustBeComplete();
+        ReportedCellLimitNeverLimitsValidation();
         SourceBitsTerrainAndShapeRemainStrict();
         BindingBudgetsAndCurrentBytesNeverReviveAProof();
+        RestrictionProofBindsEveryCurrentByteAndLength();
+        CumulativeInputAndDecodedTerrainBudgetBoundariesAreExact();
         RealSessionUndoAndSaveGateStaySeparate();
-        std::cout << "Pathing preservation policy: 5 scenario groups passed\n";
+        std::cout << "Pathing preservation policy: 8 scenario groups passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n'; return 1;
