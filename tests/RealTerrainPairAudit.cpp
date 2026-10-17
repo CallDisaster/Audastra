@@ -286,7 +286,7 @@ void RunRealTerrainPairAudit(const std::filesystem::path& manifestPath, std::str
         resource.bytes = std::move(*source.value);
         auto decoded = DecodeTerrainTextureAtlas(resource); Check(decoded.Succeeded(), "pair production BLP decode failed");
         atlases[index] = *decoded.value; const auto& atlas = *atlases[index];
-        Check(atlas.sourceSha256 == texture->at("source_sha256") && atlas.columns == UInt(texture->at("columns")),
+        Check(atlas.sourceSha256 == texture->at("source_sha256").get<std::string>() && atlas.columns == UInt(texture->at("columns")),
             "pair decoded atlas identity mismatch");
         const auto& levels = texture->at("levels"); Check(levels.size() == atlas.additionalMips.size() + 1 && levels.size() <= 12,
             "pair original mip count mismatch");
