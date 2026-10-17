@@ -28,6 +28,7 @@
 #include <string_view>
 #include <stdexcept>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -1096,6 +1097,7 @@ void TestEnvironment(const RendererOwner& renderer) {
 #include "RenderD3D11StaticSamplerTests.h"
 #include "RenderD3D11ObliqueSamplerTests.h"
 #include "RenderD3D11TerrainObliqueTests.h"
+#include "RenderD3D11ModelSourceMipTests.h"
 
 // 原创双层平面复用已有skin夹具；验证绝对层值、GEOA独立性和同一roster事务。
 void TestMaterialLayerAlphas(const War3RenderPluginApiV2* api, const War3RenderCreateInfoV2& info,
@@ -1778,6 +1780,7 @@ int wmain(int argc, wchar_t** argv) {
     try {
         const bool realPair = argc > 1 && std::wstring_view(argv[1]) == L"--real-terrain-pair";
         const bool realCliffGround = argc > 1 && std::wstring_view(argv[1]) == L"--real-cliff-ground";
+        const bool modelSourceMips = argc > 1 && std::wstring_view(argv[1]) == L"--model-source-mips";
         for (int argument = 1; argument < argc; ++argument) {
             if (std::wstring_view(argv[argument]).starts_with(L"--real-terrain-pair"))
                 Require(argument == 1 && realPair && argc == 5,
@@ -1787,9 +1790,14 @@ int wmain(int argc, wchar_t** argv) {
                 Require(argument == 1 && realCliffGround && argc == 5,
                     "real cliff ground requires the sole first option, manifest, SHA and empty output directory");
             if (realCliffGround) Require(std::wstring_view(argv[argument]) != L"--hardware", "real cliff ground cannot use hardware mode");
+            if (std::wstring_view(argv[argument]).starts_with(L"--model-source-mips"))
+                Require(argument == 1 && modelSourceMips && (argc == 2 || argc == 3),
+                    "model source mips requires the sole first option and optional new absolute output directory");
         }
-        War3Map::Tests::RunRealTerrainPairValidationTests();
-        War3Map::Tests::RunRealCliffGroundValidationTests();
+        if (!modelSourceMips) {
+            War3Map::Tests::RunRealTerrainPairValidationTests();
+            War3Map::Tests::RunRealCliffGroundValidationTests();
+        }
         wchar_t executable[32768]{};
         const auto length = GetModuleFileNameW(nullptr, executable, 32768);
         Require(length != 0 && length < 32768, "executable path unavailable");
@@ -1800,6 +1808,12 @@ int wmain(int argc, wchar_t** argv) {
         Require(getApi != nullptr && getApi(99) == nullptr, "ABI version gate failed");
         const auto* api = getApi(WAR3_RENDER_PLUGIN_API_V2);
         Require(api && api->structSize == sizeof(*api), "V2 ABI unavailable");
+        // 原创因果回归只执行CPU来源门与两张完成帧，不进入普通多帧/窗口/硬件测试。
+        if (modelSourceMips) {
+            ModelSourceMipTest::Run(api,dll,argc == 3 ? std::filesystem::path(argv[2]) : std::filesystem::path{});
+            FreeLibrary(module); module = nullptr;
+            return 0;
+        }
         // 专用真实输入入口必须在普通测试、硬件和 HWND 生命周期之前返回。
         if (realPair) {
             const std::wstring wideSha(argv[3]);
