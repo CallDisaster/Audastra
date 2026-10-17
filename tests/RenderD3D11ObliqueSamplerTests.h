@@ -194,7 +194,7 @@ void Export(const std::filesystem::path& directory, const char* name, const Capt
         << ",\n\"contrast_gate_passed\":" << boolean(HasContrast(samples, metrics))
         << ",\n\"opaque\":" << boolean(metrics.opaque) << ",\n\"roi_covered\":" << boolean(metrics.roiCovered)
         << ",\n\"foreground_count\":" << metrics.foreground << ",\n\"coverage_matches_solid\":";
-    if (front || solid) stream << "null"; else stream << boolean(metrics.sameCoverage);
+    if (front || solid || particle) stream << "null"; else stream << boolean(metrics.sameCoverage);
     stream << ",\n\"solid_color_within_one\":";
     if (solid) stream << boolean(metrics.solidColor); else stream << "null";
     stream << ",\n\"particle_trilinear_control\":" << boolean(particle != nullptr)
