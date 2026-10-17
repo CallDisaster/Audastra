@@ -312,6 +312,18 @@ void WeakVersionsRejectAliasesAndKeepCompleteBatchesStable() {
         "1025 live owners retain every identity across complete fixed-order captures");
     Require(complete.ownedIdentityMetadataCapacityBytes > 0
         && complete.ownedIdentityMetadataCapacityBytes <= WorldOwnedIdentityLimits{}.maxMetadataBytes, "actual identity vector capacity is accounted");
+    const auto stablePeak = third.ownedIdentityMetadataCapacityBytes;
+    Require(stablePeak > 1 && repeated.ownedIdentityMetadataCapacityBytes == stablePeak, "warm complete batches have a stable observed metadata peak");
+    const auto warmed = Capture(project);
+    Require(SameWorldTerrainSources(third, warmed) && warmed.ownedIdentityMetadataCapacityBytes == stablePeak,
+        "one more complete warm capture confirms unchanged sources and metadata peak");
+    // 固定warm批次的旧registry/live/inputs容量不变，peak-1在准备新next容量时拒绝。
+    const auto lateRefused = CaptureWorldTerrainSources(project, std::numeric_limits<std::size_t>::max(), {stablePeak - 1});
+    Require(!lateRefused.Succeeded() && !lateRefused.value
+        && lateRefused.diagnostics.front().code == "WORLD_ASSET_IDENTITY_BUDGET", "tightened warm peak refuses the next registry after scratch preparation");
+    const auto afterLateBudget = Capture(project);
+    Require(SameWorldTerrainSources(complete, afterLateBudget) && afterLateBudget.ownedIdentityMetadataCapacityBytes == stablePeak,
+        "late metadata refusal leaves every accepted owner-view identity and warm capacity unchanged");
     const auto refused = CaptureWorldTerrainSources(project, std::numeric_limits<std::size_t>::max(), {1});
     Require(!refused.Succeeded() && !refused.value && refused.diagnostics.front().code == "WORLD_ASSET_IDENTITY_BUDGET", "tight metadata budget returns no partial source");
     const auto afterBudget = Capture(project);
