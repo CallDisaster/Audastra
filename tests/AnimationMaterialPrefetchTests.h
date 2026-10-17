@@ -8,7 +8,7 @@ using namespace War3Map::Render;
 using AnimationParticleContinuityTest::Check;
 using AnimationParticleContinuityTest::Good;
 
-inline void SingleClampedResidentTexture(std::vector<std::byte>& bytes) {
+inline void SingleLegacyResidentTexture(std::vector<std::byte>& bytes) {
     bool textureFound=false,materialFound=false;
     const auto word=[&](std::size_t at) {
         std::uint32_t value=0; std::memcpy(&value,bytes.data()+at,4); return value;
@@ -22,7 +22,7 @@ inline void SingleClampedResidentTexture(std::vector<std::byte>& bytes) {
         if (!std::memcmp(bytes.data()+at,"TEXS",4)) {
             Check(size==536 && word(at+8)==0 && word(at+8+268)==1,
                 "prefetch fixture static/team TEXS layout changed");
-            write(at+8+264,0);
+            write(at+8+264,3); // 本用例专验legacy→material-state提升；源clamp首次提交另有独立测试。
             bytes.erase(bytes.begin()+static_cast<std::ptrdiff_t>(at+8+268),
                 bytes.begin()+static_cast<std::ptrdiff_t>(at+8+size));
             size=268; write(at+4,size); textureFound=true;
@@ -39,7 +39,7 @@ inline void SingleClampedResidentTexture(std::vector<std::byte>& bytes) {
 }
 
 inline void Run() {
-    auto residentModel=AnimationParticleContinuityTest::Model(); SingleClampedResidentTexture(residentModel);
+    auto residentModel=AnimationParticleContinuityTest::Model(); SingleLegacyResidentTexture(residentModel);
     const auto materialModel=AnimationMaterialTextureTest::Model();
     const auto residentImage=AnimationParticleContinuityTest::Texture();
     auto firstImage=residentImage,secondImage=residentImage;
@@ -72,7 +72,7 @@ inline void Run() {
     const auto original=resident->Scene();
     Check(!original->dynamicMaterialStates && original->geometry.models.size()==1 &&
         original->geometry.textures.size()==1 && original->pickModels.front().source->textures.size()==1 &&
-        original->pickModels.front().source->textures.front().flags==0 && original->drawLayerBindings.front().staticSamplerFlags==3,
+        original->pickModels.front().source->textures.front().flags==3 && original->drawLayerBindings.front().staticSamplerFlags==3,
         "prefetch fixture did not start in the old fixed sampler mode");
     const auto originalVertices=original->geometry.vertices.data();
     const auto originalTextures=original->geometry.textures.data();
@@ -132,10 +132,10 @@ inline void Run() {
     const auto& oldBinding=scene->geometry.modelTextureBindings[0]->at(0);
     const auto& newFirst=scene->geometry.modelTextureBindings[1]->at(0);
     const auto& newSecond=scene->geometry.modelTextureBindings[1]->at(1);
-    Check(oldBinding.reachable && oldBinding.textureIndex==0 && oldBinding.samplerFlags==0 &&
+    Check(oldBinding.reachable && oldBinding.textureIndex==0 && oldBinding.samplerFlags==3 &&
         newFirst.reachable && newFirst.textureIndex==1 && newFirst.samplerFlags==1 &&
         newSecond.reachable && newSecond.textureIndex==2 && newSecond.samplerFlags==2 &&
-        scene->drawLayerBindings.front().staticSamplerFlags==0 && original->drawLayerBindings.front().staticSamplerFlags==3,
+        scene->drawLayerBindings.front().staticSamplerFlags==3 && original->drawLayerBindings.front().staticSamplerFlags==3,
         "material append guessed wrap flags, kept fragment-local texture IDs or changed the resident snapshot");
     for (std::size_t i=0;i<originals.size();++i) {
         const auto& pose=first.frame->poses[i]; const auto& checkpoint=latest->particleCheckpoint->instances[i];

@@ -661,8 +661,8 @@ void TestBakedSamplerFlagsAndSnapshotRefresh() {
         && built.value->layers.size() == 6 && !built.value->layerSamplerFlags.empty(), "sampler 烘焙场景构建");
     auto& scene = *built.value;
     const WorldModelScene& view = scene;
-    Require(EffectiveSamplerFlags(view) == std::vector<std::uint32_t>{0, 1, 2, 3, 3, 3},
-        "烘焙前缀保留四种 sampler，普通模型后缀明确保持旧 repeat/repeat");
+    Require(EffectiveSamplerFlags(view) == std::vector<std::uint32_t>{0, 1, 2, 3, 0, 3},
+        "烘焙前缀与普通模型后缀必须分别保留实际来源 sampler");
     Require(view.textures.size() == 2 && files.reads[Key("Textures\\Crate.blp")] == 1,
         "不同 sampler 仍共用一次读取和一份真实 BLP，不能复制贴图或伪造替代纹理");
     TestStaticSamplerDescriptorAndCapabilities(view);
@@ -678,7 +678,7 @@ void TestBakedSamplerFlagsAndSnapshotRefresh() {
     Require(view.layerSamplerFlags.SharesStorageWith(snapshot.layerSamplerFlags), "快照应共享只读 sampler 存储");
     const std::vector<BakedModelMesh> replacement{Triangle(500, "textures/crate.BLP", 2), Triangle(600, "Textures\\Crate.blp")};
     Require(ReplaceBakedMeshes(scene, replacement)
-        && EffectiveSamplerFlags(view) == std::vector<std::uint32_t>{2, 3, 3, 1},
+        && EffectiveSamplerFlags(view) == std::vector<std::uint32_t>{2, 3, 0, 1},
         "前缀缩短后 sampler 与图层同步平移，默认烘焙仍为3，显式后缀保持原值");
     Require(BakedSceneReceipt(snapshot) == snapshotReceipt
         && !view.layerSamplerFlags.SharesStorageWith(snapshot.layerSamplerFlags)
@@ -687,7 +687,7 @@ void TestBakedSamplerFlagsAndSnapshotRefresh() {
     const auto beforeMove = scene;
     Require(ReplaceModelInstances(scene, requests, moved) && view.instances.back().transform[3] == 200
         && view.layerSamplerFlags.SharesStorageWith(beforeMove.layerSamplerFlags)
-        && EffectiveSamplerFlags(view) == std::vector<std::uint32_t>{2, 3, 3, 1},
+        && EffectiveSamplerFlags(view) == std::vector<std::uint32_t>{2, 3, 0, 1},
         "仅刷新实例不能丢失、重建或改写 sampler 元数据");
 
     RequireBakedReplaceRejected(scene, std::vector<BakedModelMesh>{Triangle(700, "Textures\\Crate.blp", 0),

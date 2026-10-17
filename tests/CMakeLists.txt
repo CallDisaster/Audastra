@@ -329,7 +329,7 @@ target_compile_definitions(war3-terrain-edit-inspection-tests PRIVATE NOMINMAX W
 target_compile_options(war3-terrain-edit-inspection-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME terrain-edit-inspection COMMAND war3-terrain-edit-inspection-tests)
 
-foreach(render_part IN ITEMS TerrainTable TerrainMaterials TerrainTextureAtlas TerrainPicking TerrainInspection ViewRay TerrainGroundMesh WorldModelScene TerrainCliffs SceneLighting BuildingSplatPreview OwnedStaticModel ClassicObjectTexture)
+foreach(render_part IN ITEMS TerrainTable TerrainMaterials TerrainTextureAtlas TerrainPicking TerrainInspection ViewRay TerrainGroundMesh WorldModelScene StaticModelTexsSampler TerrainCliffs SceneLighting BuildingSplatPreview OwnedStaticModel ClassicObjectTexture)
     add_executable(war3-map-${render_part}-tests ${render_part}Tests.cpp)
     target_link_libraries(war3-map-${render_part}-tests PRIVATE War3MapEditor::RenderSupport)
     target_compile_definitions(war3-map-${render_part}-tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
@@ -337,6 +337,7 @@ foreach(render_part IN ITEMS TerrainTable TerrainMaterials TerrainTextureAtlas T
     add_test(NAME render-${render_part} COMMAND war3-map-${render_part}-tests)
 endforeach()
 
+target_link_libraries(war3-map-StaticModelTexsSampler-tests PRIVATE War3RenderCore::SkinInput)
 target_link_libraries(war3-map-BuildingSplatPreview-tests PRIVATE War3MapEditor::Services War3RenderCore::SkinInput)
 
 add_executable(war3-jass-budget-tests jass/JassBudgetTests.cpp)
