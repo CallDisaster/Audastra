@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <map>
 #include <new>
 #include <unordered_map>
@@ -80,6 +81,31 @@ std::optional<std::string> ShapeLetters(const Footprint& footprint, bool rampLet
     return name;
 }
 
+// z'=z+h(x,y)：法线使用高度形变 Jacobian 的逆转置，保留作者硬边，不重建/焊接几何法线。
+// 边界取 footprint 内侧单边导数，严格外侧仅将对应轴导数清零，与位置的 clamp 一致。
+std::array<float, 3> ReliefNormal(const std::array<float, 3>& normal, const std::array<float, 3>& position,
+    const std::array<float, 4>& relief, float width, float depth, float u, float v) {
+    // 原烘焙提交会拒绝非有限或 abs>1e7 的分量；不能借归一化扩大来源接受范围。
+    if (std::any_of(normal.begin(), normal.end(), [](float n) { return !std::isfinite(n) || std::abs(n) > 1e7f; }))
+        return normal;
+    const float squared = normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2];
+    // 保留 shader 既有的小向量 up 近似，也保留精确零/带符号零的源字节。
+    if (!(squared > 1e-12f) || normal[2] == 0) return normal;
+    if (std::all_of(relief.begin(), relief.end(), [&](float value) { return value == relief.front(); })) return normal;
+    const double hx = position[0] < -width || position[0] > 0 ? 0.0
+        : ((1.0 - v) * (static_cast<double>(relief[3]) - relief[0])
+            + v * (static_cast<double>(relief[2]) - relief[1])) / width;
+    const double hy = position[1] < 0 || position[1] > depth ? 0.0
+        : ((1.0 - u) * (static_cast<double>(relief[1]) - relief[0])
+            + u * (static_cast<double>(relief[2]) - relief[3])) / depth;
+    if ((hx == 0 && hy == 0) || !std::isfinite(hx) || !std::isfinite(hy)) return normal;
+    const std::array<double, 3> transformed{normal[0] - hx * normal[2], normal[1] - hy * normal[2], normal[2]};
+    const double scale = std::max({std::abs(transformed[0]), std::abs(transformed[1]), std::abs(transformed[2])});
+    const std::array<double, 3> scaled{transformed[0] / scale, transformed[1] / scale, transformed[2] / scale};
+    const double length = std::sqrt(scaled[0] * scaled[0] + scaled[1] * scaled[1] + scaled[2] * scaled[2]);
+    return {static_cast<float>(scaled[0] / length), static_cast<float>(scaled[1] / length), static_cast<float>(scaled[2] / length)};
+}
+
 // 模型局部原点在外沿东侧（x 向负方向延伸 columns 格、y 向正方向 rows 格）；顶点按外沿四角
 // 去掉层级后的地面起伏双线性抬升。
 void Bake(MeshSink& sink, const MdxModel& model, const Footprint& footprint, const std::string& replaceable) {
@@ -103,7 +129,9 @@ void Bake(MeshSink& sink, const MdxModel& model, const Footprint& footprint, con
             const auto& p = geoset.positions[i];
             const float u = std::clamp((p[0] + width) / width, 0.0f, 1.0f), v = std::clamp(p[1] / depth, 0.0f, 1.0f);
             const float lift = (relief[0] * (1 - u) + relief[3] * u) * (1 - v) + (relief[1] * (1 - u) + relief[2] * u) * v;
-            const auto n = i < geoset.normals.size() ? geoset.normals[i] : std::array<float, 3>{0, 0, 1};
+            // 缺失法线保留既有 up 近似；仅对实际存在且通过原门的非小向量修正方向。
+            const auto n = i < geoset.normals.size()
+                ? ReliefNormal(geoset.normals[i], p, relief, width, depth, u, v) : std::array<float, 3>{0, 0, 1};
             const auto uv = i < geoset.uvs.size() ? geoset.uvs[i] : std::array<float, 2>{0, 0};
             mesh.vertices.push_back({originX + p[0], originY + p[1], baseZ + p[2] + lift, n[0], n[1], n[2], uv[0], uv[1]});
         }

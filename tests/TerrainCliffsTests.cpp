@@ -1,8 +1,10 @@
 #include "War3MapCore/Render/TerrainCliffs.h"
 #include "War3MapCore/Render/TerrainGroundMesh.h"
+#include "War3MapCore/Render/MdxModel.h"
 #include "MdxTestModel.h"
 
 #include <cmath>
+#include <limits>
 #include <iostream>
 #include <map>
 #include <stdexcept>
@@ -67,6 +69,90 @@ struct Files {
 
 const std::vector<std::optional<CliffTypeSource>> kTypes{
     CliffTypeSource{"Cliffs", "ReplaceableTextures\\Cliff\\Cliff0.blp", "CliffTrans"}};
+
+using Vec3 = std::array<float, 3>;
+struct NormalGeoset {
+    std::vector<Vec3> positions, normals;
+};
+
+// 原创平面/切向采样 MDX，不沿用旧四点非平面且全 up 法线的几何 oracle。
+std::vector<std::byte> NormalModel(const std::vector<NormalGeoset>& geosets) {
+    MdxTest::Writer w;
+    w.Tag("MDLX"); w.Tag("VERS"); w.U32(4); w.U32(800);
+    w.Tag("TEXS"); w.U32(268); w.U32(0); w.Fixed("Original\\CliffNormals.blp", 260); w.U32(0);
+    w.Tag("MTLS"); {
+        const auto chunk = w.Begin(), material = w.Begin();
+        w.U32(0); w.U32(0); w.Tag("LAYS"); w.U32(1);
+        const auto layer = w.Begin();
+        w.U32(0); w.U32(0); w.U32(0); w.U32(UINT32_MAX); w.U32(0); w.F32(1);
+        w.EndInclusive(layer); w.EndInclusive(material); w.EndChunk(chunk);
+    }
+    w.Tag("GEOS"); {
+        const auto chunk = w.Begin();
+        for (const auto& input : geosets) {
+            const auto item = w.Begin();
+            const auto count = static_cast<std::uint32_t>(input.positions.size());
+            w.Tag("VRTX"); w.U32(count);
+            for (const auto& p : input.positions) for (const auto axis : p) w.F32(axis);
+            w.Tag("NRMS"); w.U32(static_cast<std::uint32_t>(input.normals.size()));
+            for (const auto& n : input.normals) for (const auto axis : n) w.F32(axis);
+            w.Tag("PTYP"); w.U32(1); w.U32(4); w.Tag("PCNT"); w.U32(1); w.U32(3);
+            w.Tag("PVTX"); w.U32(3); w.U16(0); w.U16(1); w.U16(2);
+            w.Tag("GNDX"); w.U32(count); for (std::uint32_t i = 0; i < count; ++i) w.Raw("\0", 1);
+            w.Tag("MTGC"); w.U32(1); w.U32(1); w.Tag("MATS"); w.U32(1); w.U32(0);
+            w.U32(0); w.U32(0); w.U32(0);
+            for (int i = 0; i < 7; ++i) w.F32(0);
+            w.U32(0);
+            w.Tag("UVAS"); w.U32(1); w.Tag("UVBS"); w.U32(count);
+            for (std::uint32_t i = 0; i < count; ++i) { w.F32(static_cast<float>(i) / 8); w.F32(0.25f); }
+            w.EndInclusive(item);
+        }
+        w.EndChunk(chunk);
+    }
+    w.Tag("BONE"); {
+        const auto chunk = w.Begin(), node = w.Begin();
+        w.Fixed("Original", 80); w.U32(0); w.U32(UINT32_MAX); w.U32(0);
+        w.EndInclusive(node); w.U32(UINT32_MAX); w.U32(UINT32_MAX); w.EndChunk(chunk);
+    }
+    w.Tag("PIVT"); w.U32(12); w.F32(0); w.F32(0); w.F32(0);
+    return std::move(w.bytes);
+}
+
+TerrainCliffs NormalCliffs(const TerrainGridSnapshot& grid, const std::vector<NormalGeoset>& geosets) {
+    Files files;
+    const auto bytes = NormalModel(geosets);
+    const auto parsed = ParseMdx(bytes);
+    Require(parsed.Succeeded() && parsed.value->geosets.size() == geosets.size(), "原创法线 MDX 必须通过真实解析");
+    for (const auto& geoset : parsed.value->geosets) Require(geoset.visibleInStand, "两个原创 geoset 都必须实际可见");
+    files.files["Doodads\\Terrain\\Cliffs\\CliffsAAAB0.mdx"] = bytes;
+    files.files["Doodads\\Terrain\\CliffTrans\\CliffTransABHL0.mdx"] = bytes;
+    auto result = BuildTerrainCliffs(grid, kTypes, files.Reader());
+    Require(result.Succeeded() && result.value->meshes.size() == 1, "原创法线悬崖烘焙失败");
+    return std::move(*result.value);
+}
+
+TerrainGridSnapshot NormalGrid(const std::vector<float>& relief) {
+    return GridOf(2, 2, {2, 3, 2, 2}, {}, relief);
+}
+
+std::array<double, 3> Difference(const War3RenderModelVertexV2& a, const War3RenderModelVertexV2& b) {
+    return {static_cast<double>(a.x) - b.x, static_cast<double>(a.y) - b.y, static_cast<double>(a.z) - b.z};
+}
+
+void CheckPerpendicular(const War3RenderModelVertexV2& vertex,
+    const std::array<double, 3>& tangentX, const std::array<double, 3>& tangentY, bool requireWinding = true) {
+    const std::array<double, 3> n{vertex.nx, vertex.ny, vertex.nz};
+    const auto dot = [](const auto& a, const auto& b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
+    const auto length = [&](const auto& a) { return std::sqrt(dot(a, a)); };
+    Require(std::abs(length(n) - 1.0) < 1e-6, "修正后有效法线必须是有限单位方向");
+    Require(std::abs(dot(n, tangentX)) < 1e-5 * length(tangentX)
+        && std::abs(dot(n, tangentY)) < 1e-5 * length(tangentY), "法线必须与独立输出几何切向正交");
+    if (requireWinding) {
+        const std::array<double, 3> cross{tangentX[1] * tangentY[2] - tangentX[2] * tangentY[1],
+            tangentX[2] * tangentY[0] - tangentX[0] * tangentY[2], tangentX[0] * tangentY[1] - tangentX[1] * tangentY[0]};
+        Require(dot(n, cross) > 0, "法线朝向必须遵守原始绕序，不能只比较绝对正交");
+    }
+}
 
 void TestShapeNames() {
     Require(CliffShapeName(2, 2, 2, 3) == "AAAB", "东南高");
@@ -214,6 +300,102 @@ void TestOrdinaryGroundSelection() {
         "全邻域15按slot0配对，平层无邻格保持raw");
 }
 
+void TestReliefNormalsFromGeometry() {
+    const NormalGeoset plane{{{-96, 24, 0}, {-32, 24, 0}, {-96, 88, 0}}, std::vector<Vec3>(3, {0, 0, 1})};
+    for (const auto& relief : std::vector<std::vector<float>>{{0, 32, 0, 32}, {0, 0, 16, 16}, {0, 32, 16, 48}}) {
+        const auto output = NormalCliffs(NormalGrid(relief), {plane});
+        const auto unlitNormal = NormalCliffs(NormalGrid(relief), {{plane.positions, std::vector<Vec3>(3, {0, 0, 0})}});
+        const auto& v = output.meshes[0].vertices;
+        for (const auto& vertex : v) CheckPerpendicular(vertex, Difference(v[1], v[0]), Difference(v[2], v[0]));
+        Require(output.coveredTiles == std::vector<std::uint8_t>{1}
+            && output.meshes[0].indices == std::vector<std::uint16_t>{0, 1, 2}, "法线修正不应改变覆盖或三角形绕序");
+        Require(output.meshes[0].texturePath == "Original\\CliffNormals.blp"
+            && output.meshes[0].indices == unlitNormal.meshes[0].indices
+            && output.coveredTiles == unlitNormal.coveredTiles, "法线变化不能改变材质来源、拓扑和覆盖集合");
+        for (std::size_t i = 0; i < v.size(); ++i) {
+            Require(v[i].x == plane.positions[i][0] && v[i].y == plane.positions[i][1]
+                && v[i].u == static_cast<float>(i) / 8 && v[i].v == 0.25f, "位置 XY 和 UV 不得随法线修正改变");
+            const auto& unchanged = unlitNormal.meshes[0].vertices[i];
+            Require(std::array<float, 5>{v[i].x, v[i].y, v[i].z, v[i].u, v[i].v}
+                == std::array<float, 5>{unchanged.x, unchanged.y, unchanged.z, unchanged.u, unchanged.v},
+                "有效法线和近似法线必须产生完全相同的位置及 UV");
+        }
+    }
+    const NormalGeoset tilted{{{-96, 24, 0}, {-32, 24, -32}, {-96, 88, -16}}, std::vector<Vec3>(3, {2, 1, 4})};
+    const auto changedTilt = NormalCliffs(NormalGrid({0, 32, 16, 48}), {tilted});
+    const auto& t = changedTilt.meshes[0].vertices;
+    for (const auto& vertex : t) CheckPerpendicular(vertex, Difference(t[1], t[0]), Difference(t[2], t[0]));
+    // 鞍面：用 Bake 输出位置的中心差分作为切向 oracle，不复制生产梯度公式。
+    const NormalGeoset probes{{{-64, 64, 0}, {-63, 64, 0}, {-65, 64, 0}, {-64, 65, 0}, {-64, 63, 0}},
+        std::vector<Vec3>(5, {0, 0, 1})};
+    const auto saddle = NormalCliffs(NormalGrid({0, 0, 0, 64}), {probes});
+    const auto& s = saddle.meshes[0].vertices;
+    CheckPerpendicular(s[0], Difference(s[1], s[2]), Difference(s[3], s[4]));
+    // 坡道 footprint 深256：实际输出边的高度差必须决定法线，不能仍除128。
+    const NormalGeoset rampPlane{{{10, 24, 0}, {20, 24, 0}, {10, 88, 0}}, std::vector<Vec3>(3, {0, 0, 1})};
+    const auto ramp = NormalCliffs(RampColumn(), {rampPlane});
+    const auto& r = ramp.meshes[0].vertices;
+    Require(ramp.rampPieces == 1, "两格坡道夹具必须真正使用 CliffTrans");
+    for (const auto& vertex : r) CheckPerpendicular(vertex, Difference(r[1], r[0]), Difference(r[2], r[0]));
+}
+
+void TestReliefNormalBoundaryConvention() {
+    const auto grid = NormalGrid({0, 32, 16, 48});
+    // 每个中心点配一个沿内侧/外侧 x 与 y 的位置样本；严格外侧仍允许另一轴有斜率。
+    const std::array<Vec3, 8> centers{{{-128, 64, 0}, {0, 64, 0}, {-64, 0, 0}, {-64, 128, 0},
+        {-129, 64, 0}, {1, 64, 0}, {-64, -1, 0}, {-64, 129, 0}}};
+    for (std::size_t i = 0; i < centers.size(); ++i) {
+        auto alongX = centers[i], alongY = centers[i];
+        const float dx = i == 1 || i == 4 ? -1.0f : 1.0f;
+        const float dy = i == 3 || i == 6 ? -1.0f : 1.0f;
+        alongX[0] += dx; alongY[1] += dy;
+        const auto output = NormalCliffs(grid, {{{centers[i], alongX, alongY}, std::vector<Vec3>(3, {0, 0, 1})}});
+        const auto& v = output.meshes[0].vertices;
+        auto tx = Difference(v[1], v[0]), ty = Difference(v[2], v[0]);
+        for (auto& axis : tx) axis /= dx;
+        for (auto& axis : ty) axis /= dy;
+        CheckPerpendicular(v[0], tx, ty);
+    }
+}
+
+void TestReliefNormalsPreserveHardEdgesAndApproximationGates() {
+    const std::vector<Vec3> positions{{-96, 24, 0}, {-32, 24, 0}, {-96, 88, 0}};
+    const auto grid = NormalGrid({0, 32, 16, 48});
+    const std::vector<Vec3> vertical{{-96, 24, 0}, {-32, 24, 0}, {-96, 24, 64}};
+    const auto hard = NormalCliffs(grid, {{positions, std::vector<Vec3>(3, {0, 0, 2})},
+        {vertical, std::vector<Vec3>(3, {0, -1, 0})}});
+    const auto& v = hard.meshes[0].vertices;
+    Require(v.size() == 6 && hard.meshes[0].indices == std::vector<std::uint16_t>{0, 1, 2, 3, 4, 5},
+        "两个同纹理可见 geoset 必须保持独立顶点和法线，不能焊接硬边");
+    CheckPerpendicular(v[0], Difference(v[1], v[0]), Difference(v[2], v[0]));
+    CheckPerpendicular(v[3], Difference(v[4], v[3]), Difference(v[5], v[3]));
+    Require(v[3].nx == 0 && v[3].ny == -1 && v[3].nz == 0 && v[0].nz > 0,
+        "共位硬边的不同作者法线不能被跨 geoset 平均");
+    const auto flat = NormalCliffs(NormalGrid({7, 7, 7, 7}), {{positions, std::vector<Vec3>(3, {0, 0, 2})}});
+    Require(flat.meshes[0].vertices[0].nz == 2, "平坦 relief 必须保留原法线字节，不做双重归一化");
+    for (const auto normal : {Vec3{-0.0f, 0, 0}, Vec3{0, 0, 1e-8f}, Vec3{0, 0, 1e7f + 1}}) {
+        const auto output = NormalCliffs(grid, {{positions, std::vector<Vec3>(3, normal)}});
+        const auto& actual = output.meshes[0].vertices[0];
+        Require(actual.nx == normal[0] && actual.ny == normal[1] && actual.nz == normal[2]
+            && std::signbit(actual.nx) == std::signbit(normal[0]), "零/小向量及原提交超幅拒绝门必须保留");
+        if (normal[2] > 1e7f) {
+            Files files;
+            const auto rejected = BuildWorldModelScene({}, files.Reader(), {}, output.meshes);
+            Require(!rejected.Succeeded() && !rejected.diagnostics.empty()
+                && rejected.diagnostics.front().code == "WORLD_BAKED_MESH_INVALID" && files.reads.empty(),
+                "超幅法线必须仍被实际烘焙提交校验拒绝，不能借归一化变成新接受来源");
+        }
+    }
+    const auto missing = NormalCliffs(grid, {{positions, {}}});
+    Require(missing.meshes[0].vertices[0].nx == 0 && missing.meshes[0].vertices[0].ny == 0
+        && missing.meshes[0].vertices[0].nz == 1, "空 NRMS 保留已有 up 近似，不伪造恢复法线");
+    const auto invalid = ParseMdx(NormalModel({{positions, std::vector<Vec3>(3, {0, 0, std::numeric_limits<float>::infinity()})}}));
+    Require(!invalid.Succeeded(), "非有限源法线仍须由共享解析器拒绝");
+    const auto bounded = NormalCliffs(grid, {{positions, std::vector<Vec3>(3, {0, 0, 1e7f})}});
+    CheckPerpendicular(bounded.meshes[0].vertices[0], Difference(bounded.meshes[0].vertices[1], bounded.meshes[0].vertices[0]),
+        Difference(bounded.meshes[0].vertices[2], bounded.meshes[0].vertices[0]));
+}
+
 } // namespace
 
 int main() {
@@ -225,6 +407,9 @@ int main() {
         TestRampPiece();
         TestGroundHiding();
         TestOrdinaryGroundSelection();
+        TestReliefNormalsFromGeometry();
+        TestReliefNormalBoundaryConvention();
+        TestReliefNormalsPreserveHardEdgesAndApproximationGates();
         std::cout << "terrain cliffs: shape names, variation fallback, relief lift, skips, ramp heights, ramp pieces and ground hiding passed\n";
         return 0;
     } catch (const std::exception& error) {
