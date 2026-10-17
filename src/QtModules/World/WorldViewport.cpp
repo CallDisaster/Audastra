@@ -164,14 +164,7 @@ void WorldViewport::EnsureRenderer() {
     }
     initializing_ = true;
     attachResult_.reset(); statusCallResult_.reset(); observedStatus_.reset();
-    if (!api_ && !injected_) {
-        library_.setFileName(QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("war3-render-d3d11.dll")));
-        if (library_.load()) {
-            const auto getApi = reinterpret_cast<War3GetRenderPluginApiV2>(library_.resolve("War3MapEditor_GetRenderPluginApiV2"));
-            if (getApi) api_ = getApi(WAR3_RENDER_PLUGIN_API_V2);
-        }
-    }
-    if (!ValidApi(api_)) {
+    if (!LoadPluginApi()) {
         failed_ = true;
         SetStatus(tr("无法加载兼容的 D3D11 渲染插件：%1").arg(library_.errorString()));
     } else {
@@ -199,6 +192,17 @@ void WorldViewport::EnsureRenderer() {
         }
     }
     initializing_ = false;
+}
+
+bool WorldViewport::LoadPluginApi() {
+    if (!api_ && !injected_) {
+        library_.setFileName(QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("war3-render-d3d11.dll")));
+        if (library_.load()) {
+            const auto getApi = reinterpret_cast<War3GetRenderPluginApiV2>(library_.resolve("War3MapEditor_GetRenderPluginApiV2"));
+            if (getApi) api_ = getApi(WAR3_RENDER_PLUGIN_API_V2);
+        }
+    }
+    return ValidApi(api_);
 }
 
 void WorldViewport::DestroyRenderer() {
@@ -294,9 +298,8 @@ bool WorldViewport::SubmitMesh() {
             std::vector<std::vector<War3RenderMipRgbaV2>> mipLists(ground_->textures.size());
             std::vector<War3RenderTextureMipChainV2> chains;
             chains.reserve(ground_->textures.size());
-            for (std::size_t index = 0; index < ground_->textures.size(); ++index) {
-                const auto& texture = *ground_->textures[index];
-                auto& mips = mipLists[index];
+            const auto describeChain = [](const Render::TerrainAtlasSnapshot& texture, std::vector<War3RenderMipRgbaV2>& mips) {
+                mips.reserve(1 + texture.additionalMips.size());
                 const auto append = [&](const Image::DecodedImage& mip) {
                     mips.push_back({sizeof(War3RenderMipRgbaV2), mip.width, mip.height, mip.rgba.size(), mip.rgba.data()});
                 };
@@ -308,12 +311,35 @@ bool WorldViewport::SubmitMesh() {
                         || mips[level].width % texture.columns != 0 || mips[level].height % texture.rows != 0) break;
                     maximum = static_cast<std::uint32_t>(level);
                 }
-                chains.push_back({sizeof(War3RenderTextureMipChainV2), static_cast<std::uint32_t>(mips.size()),
-                    maximum, texture.columns, texture.rows, mips.data()});
-            }
+                return War3RenderTextureMipChainV2{sizeof(War3RenderTextureMipChainV2), static_cast<std::uint32_t>(mips.size()),
+                    maximum, texture.columns, texture.rows, mips.data()};
+            };
+            for (std::size_t index = 0; index < ground_->textures.size(); ++index)
+                chains.push_back(describeChain(*ground_->textures[index], mipLists[index]));
             const War3RenderTerrainMipSceneV2 scene{sizeof(War3RenderTerrainMipSceneV2), static_cast<std::uint32_t>(vertices.size()),
                 static_cast<std::uint32_t>(ground_->indices.size()), static_cast<std::uint32_t>(chains.size()),
                 static_cast<std::uint32_t>(batches.size()), revision_, vertices.data(), ground_->indices.data(), chains.data(), batches.data()};
+            if (ground_->blightPolicy == Render::TerrainGroundBlightPolicy::SharedBase) {
+                // 能力可能在worker之后失效；绝不把已经去近似色的base退交旧入口。
+                if (!HasTerrainBlightSupport()) return false;
+                std::vector<War3RenderMipRgbaV2> blightMips;
+                War3RenderTextureMipChainV2 blightChain{};
+                if (ground_->blightTexture) blightChain = describeChain(*ground_->blightTexture, blightMips);
+                std::vector<War3RenderTerrainBlightBatchV2> blightBatches;
+                blightBatches.reserve(ground_->blightBatches.size());
+                for (const auto& b : ground_->blightBatches)
+                    blightBatches.push_back({b.firstIndex, b.indexCount, b.uvLeft, b.uvRight, b.uvTop, b.uvBottom});
+                const War3RenderTerrainBlightFrameV2 frame{sizeof(War3RenderTerrainBlightFrameV2),
+                    static_cast<std::uint32_t>(ground_->budget.base.displayed), scene,
+                    static_cast<std::uint32_t>(ground_->blightIndices.size()), static_cast<std::uint32_t>(blightBatches.size()),
+                    ground_->blightIndices.empty() ? nullptr : ground_->blightIndices.data(),
+                    blightBatches.empty() ? nullptr : blightBatches.data(), ground_->blightTexture ? &blightChain : nullptr};
+                const auto result = api_->submitTerrainBlightFrame(renderer_, &frame);
+                if (result == 0) return true;
+                ReportPluginFailure("submitTerrainBlightFrame", result);
+                SetStatus(tr("渲染器拒绝了完整地表与荒芜帧，保留此前视图"));
+                return false;
+            }
             const auto result = api_->submitTerrainMipScene(renderer_, &scene);
             if (result == 0) return true;
             ReportPluginFailure("submitTerrainMipScene", result);
@@ -706,6 +732,17 @@ bool WorldViewport::HasTerrainMips() const noexcept {
         + sizeof(api_->submitTerrainMipScene) && api_->submitTerrainMipScene;
 }
 
+bool WorldViewport::HasTerrainBlightSupport() {
+    if (!LoadPluginApi() || !HasGroundSupport() || !HasTerrainMips()
+        || api_->structSize < offsetof(War3RenderPluginApiV2, submitTerrainBlightFrame) + sizeof(api_->submitTerrainBlightFrame)
+        || !api_->getTerrainBlightCapabilities || !api_->submitTerrainBlightFrame) return false;
+    War3RenderTerrainBlightCapabilitiesV2 caps{};
+    caps.structSize = sizeof(caps);
+    return api_->getTerrainBlightCapabilities(renderer_, &caps) == 0 && caps.structSize == sizeof(caps)
+        && caps.blightFormat == WAR3_RENDER_TERRAIN_BLIGHT_SHARED_BASE_V1
+        && caps.maxBlightBatches == WAR3_RENDER_TERRAIN_BLIGHT_MAX_BATCHES && caps.reserved == 0;
+}
+
 bool WorldViewport::HasGroundSupport() const noexcept {
     return api_ && api_->structSize >= offsetof(War3RenderPluginApiV2, submitTerrainScene)
         + sizeof(api_->submitTerrainScene) && api_->submitTerrainScene;
@@ -731,6 +768,7 @@ bool WorldViewport::ReplaceTerrainPresentation(std::vector<War3RenderVertexV2> v
     auto oldGround = std::move(ground_);
     const auto oldStride = terrainStride_;
     const auto oldRevision = revision_;
+    const bool compositeBlight = ground && ground->blightPolicy == Render::TerrainGroundBlightPolicy::SharedBase;
     vertices_ = std::move(vertices); indices_ = std::move(indices);
     terrain_ = std::move(terrain); terrainStride_ = stride; revision_ = documentRevision;
     ground_.reset();
@@ -739,7 +777,8 @@ bool WorldViewport::ReplaceTerrainPresentation(std::vector<War3RenderVertexV2> v
         vertices_ = std::move(oldVertices); indices_ = std::move(oldIndices);
         terrain_ = std::move(oldTerrain); ground_ = std::move(oldGround);
         terrainStride_ = oldStride; revision_ = oldRevision;
-        (void)SubmitMesh(); // 插件若曾接受临时场景，恢复先前已确认的地形。
+        // 新入口拒绝保证旧完整帧不变；再次提交旧帧会无故推进sceneEpoch并丢弃完成帧身份。
+        if (!compositeBlight) (void)SubmitMesh();
         return false;
     }
     pressView_.reset();
@@ -775,6 +814,13 @@ bool WorldViewport::SetGroundMesh(std::shared_ptr<const Render::TerrainGroundMes
         return reject("WORLD_GROUND_SOURCE", "地表贴图网格未绑定完整分辨率的地形来源。");
     if (!HasGroundSupport())
         return reject("WORLD_GROUND_UNSUPPORTED", "当前渲染插件未提供地表贴图接口。");
+    const bool sharedBlight = ground->blightPolicy == Render::TerrainGroundBlightPolicy::SharedBase;
+    if (ground->blightPolicy != Render::TerrainGroundBlightPolicy::Legacy && !sharedBlight)
+        return reject("WORLD_GROUND_BLIGHT_POLICY", "荒芜通道策略无效。");
+    if (sharedBlight && !HasTerrainBlightSupport())
+        return reject("WORLD_GROUND_BLIGHT_UNSUPPORTED", "当前插件未实际报告共享基础层荒芜能力，保留此前视图。");
+    if (!sharedBlight && (!ground->blightIndices.empty() || !ground->blightBatches.empty() || ground->blightTexture))
+        return reject("WORLD_GROUND_BLIGHT_POLICY", "旧地表模式不能携带独立荒芜数据。");
     const auto tiles = terrain_->tiles.size();
     // 悬崖覆盖表仍对应原格；紧缩基础层映射必须恰好为它的有序补集。
     if (!ground->hiddenTiles.empty() && ground->hiddenTiles.size() != tiles)
@@ -828,6 +874,83 @@ bool WorldViewport::SetGroundMesh(std::shared_ptr<const Render::TerrainGroundMes
     }
     if (!std::all_of(seen.begin(), seen.end(), [](bool visible) { return visible; }))
         return reject("WORLD_GROUND_FACE_LAYOUT", "地表索引没有完整覆盖全部基础层、过渡层和水面。");
+    if (sharedBlight) {
+        const auto& limits = Render::TerrainGroundMeshLimits{};
+        const auto& indices = ground->blightIndices;
+        const auto& batches = ground->blightBatches;
+        if (ground->budget.base.displayed != baseQuads || ground->indices.size() + indices.size() > limits.maxIndices
+            || ground->batches.size() + batches.size() > limits.maxBatches || batches.size() > WAR3_RENDER_TERRAIN_BLIGHT_MAX_BATCHES)
+            return reject("WORLD_GROUND_BLIGHT_LAYOUT", "荒芜与基础层的完整索引、批次或基础前缀身份无效。");
+        if (indices.empty() != batches.empty() || indices.empty() != !ground->blightTexture || indices.size() % 6 != 0)
+            return reject("WORLD_GROUND_BLIGHT_LAYOUT", "荒芜空帧必须清空全部数据，非空帧必须完整。");
+        std::fill(seen.begin(), seen.end(), false);
+        for (const auto& batch : ground->batches) {
+            if (batch.firstIndex > ground->indices.size() || batch.indexCount > ground->indices.size() - batch.firstIndex
+                || batch.firstIndex % 6 || batch.indexCount % 6)
+                return reject("WORLD_GROUND_BLIGHT_BASE", "基础批次索引范围无效。");
+            if (batch.alphaBlend || batch.translucent || batch.textureIndex >= ground->textures.size()) continue;
+            for (std::size_t i = batch.firstIndex; i < batch.firstIndex + batch.indexCount; i += 6) {
+                const auto quad = ground->indices[i] / 4;
+                if (quad < baseQuads) seen[quad] = true;
+            }
+        }
+        std::size_t requested = 0;
+        for (std::size_t quad = 0; quad < baseQuads; ++quad) if (seen[quad]) {
+            const auto tile = ground->hiddenTileCount ? ground->baseTiles[quad] : quad;
+            const auto& corners = terrain_->tiles[tile].vertices;
+            requested += std::any_of(corners.begin(), corners.end(), [&](std::uint32_t corner) { return terrain_->vertices[corner].IsBlight(); });
+        }
+        if (ground->budget.blight.requested != requested
+            || (ground->blightTexture ? indices.size() / 6 != requested : ground->blightApproximationTiles != requested))
+            return reject("WORLD_GROUND_BLIGHT_SOURCE", "荒芜请求数量必须绑定当前完整原格来源，不允许部分pass或陈旧标记。");
+        std::array<bool, 32> cells{};
+        std::size_t nextIndex = 0;
+        for (const auto& batch : batches) {
+            const auto& atlas = *ground->blightTexture;
+            if (atlas.columns != 8 || atlas.rows != 4 || !atlas.image.Valid() || atlas.image.height % 4
+                || atlas.image.width != atlas.image.height / 4 * 8 || atlas.cells.size() != 32
+                || batch.firstIndex != nextIndex || batch.indexCount == 0 || batch.indexCount % 6
+                || batch.indexCount > indices.size() - nextIndex)
+                return reject("WORLD_GROUND_BLIGHT_LAYOUT", "荒芜图集或连续 cell 批次无效。");
+            bool canonical = false;
+            std::size_t selectedCell = 0;
+            for (std::size_t cell = 0; cell < 32; ++cell) {
+                const auto size = atlas.image.height / 4;
+                const auto x = static_cast<float>((cell % 8) * size), y = static_cast<float>((cell / 8) * size);
+                const auto width = static_cast<float>(atlas.image.width), height = static_cast<float>(atlas.image.height);
+                if (batch.uvLeft == (x + 0.5f) / width && batch.uvRight == (x + size - 0.5f) / width
+                    && batch.uvTop == (y + 0.5f) / height && batch.uvBottom == (y + size - 0.5f) / height) {
+                    if (cells[cell]) return reject("WORLD_GROUND_BLIGHT_CELL", "同一荒芜 cell 不能重复分批。");
+                    cells[cell] = canonical = true; selectedCell = cell; break;
+                }
+            }
+            if (!canonical) return reject("WORLD_GROUND_BLIGHT_CELL", "荒芜 UV 必须精确对应半 texel 内缩的原版 cell。");
+            std::uint32_t previous = 0;
+            for (std::size_t i = nextIndex; i < nextIndex + batch.indexCount; i += 6) {
+                const auto first = indices[i], quad = first / 4;
+                const std::array<std::uint32_t, 6> expected{first, first + 1, first + 2, first + 1, first + 3, first + 2};
+                if (first % 4 || quad >= baseQuads || !seen[quad] || (i != nextIndex && first <= previous)
+                    || !std::equal(expected.begin(), expected.end(), indices.begin() + static_cast<std::ptrdiff_t>(i)))
+                    return reject("WORLD_GROUND_BLIGHT_FACE", "荒芜只能按原格稳定顺序引用一次不透明贴图基础面。");
+                const auto tile = ground->hiddenTileCount ? ground->baseTiles[quad] : quad;
+                const auto& corners = terrain_->tiles[tile].vertices;
+                const std::array<std::uint32_t, 4> bits{2, 1, 8, 4};
+                std::uint32_t mask = 0;
+                for (std::size_t corner = 0; corner < 4; ++corner)
+                    if (terrain_->vertices[corners[corner]].IsBlight()) mask |= bits[corner];
+                auto cell = (mask / 4) * 8 + mask % 4;
+                if (mask == 15) {
+                    const auto variation = terrain_->vertices[corners[0]].GroundVariation();
+                    cell = variation < 16 ? (variation / 4) * 8 + 4 + variation % 4 : variation == 16 ? 27 : 0;
+                }
+                if (mask == 0 || cell != selectedCell)
+                    return reject("WORLD_GROUND_BLIGHT_SOURCE", "荒芜cell必须匹配同一原格的当前mask与SW variation。");
+                seen[quad] = false; previous = first;
+            }
+            nextIndex += batch.indexCount;
+        }
+        if (nextIndex != indices.size()) return reject("WORLD_GROUND_BLIGHT_LAYOUT", "荒芜批次没有完整覆盖索引。");
+    }
     if (std::any_of(ground->textures.begin(), ground->textures.end(), [](const auto& p) {
         return !p || (p->columns != 4 && p->columns != 8) || !p->image.Valid() || p->additionalMips.size() > 11;
     })) return reject("WORLD_GROUND_TEXTURE", "地表图集尺寸、像素或 mip 层数不符合提交要求。");

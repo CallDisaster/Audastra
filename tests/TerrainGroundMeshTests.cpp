@@ -1268,6 +1268,109 @@ void TestOmittedTransitionAtlasReAdmission() {
         "969零贡献候选不因重试生成水atlas或质量省略原因");
 }
 
+void TestSharedBaseBlightBudgetsAndMapping() {
+    constexpr auto preview = TerrainGroundBudgetPolicy::PreserveBasePreview;
+    constexpr auto shared = TerrainGroundBlightPolicy::SharedBase;
+    auto terrain = Grid(17, 2);
+    terrain.header.groundTilesets.resize(16, "Ldrt");
+    std::vector<Atlas> atlases;
+    for (std::uint32_t ground = 0; ground < 16; ++ground) atlases.push_back(MakeAtlas(4, 1));
+    for (std::uint32_t y = 0; y < 2; ++y) for (std::uint32_t x = 0; x < 17; ++x)
+        terrain.vertices[y * 17 + x].textureAndFlagsRaw = static_cast<std::uint8_t>(std::min(x, 15u) | 0x20);
+    const auto blight = MakeAtlas(8, 1);
+    TerrainGroundMeshLimits limits; limits.maxVertices = 124;
+    const auto build = [&](const TerrainGroundMeshLimits& cap) {
+        return BuildTerrainGroundMesh(terrain, atlases, cap, kUnlit, nullptr, {}, blight, {}, preview, shared);
+    };
+    const auto result = build(limits);
+    Require(result.Succeeded(), "16个实际基础材质与独立第17荒芜资源应在原顶点帽内成功");
+    const auto& mesh = *result.value;
+    CheckGeometry(terrain, mesh);
+    Require(mesh.textures.size() == 16 && mesh.vertices.size() == 124 && mesh.indices.size() == 186
+        && mesh.overlayTiles.size() == 15 && mesh.blightTexture == blight && mesh.blightIndices.size() == 96
+        && mesh.blightBatches.size() == 1 && mesh.baseTiles.empty() && mesh.budget.base.displayed == 16
+        && mesh.blightTexturedTiles == 16 && mesh.blightApproximationTiles == 0,
+        "共享pass必须只加96索引，保16个基础格和15个普通过渡，不复制顶点或占第17个scene槽");
+    for (const auto& vertex : mesh.vertices) Near(vertex.red, 1, "精确荒芜准入后base/过渡不能残留近似色调");
+    for (std::uint32_t quad = 0; quad < 16; ++quad) {
+        const std::array<std::uint32_t, 6> face{quad * 4, quad * 4 + 1, quad * 4 + 2, quad * 4 + 1, quad * 4 + 3, quad * 4 + 2};
+        Require(std::equal(face.begin(), face.end(), mesh.blightIndices.begin() + quad * 6),
+            "无hidden时空baseTiles是identity；每个基础格只能按标准拓扑引用一次");
+    }
+    Require(mesh.blightBatches[0].uvLeft == mesh.blightBatches[0].uvRight
+        && mesh.blightBatches[0].uvTop == mesh.blightBatches[0].uvBottom,
+        "1像素canonical cell两端相等仍然合法");
+    const auto legacy = BuildTerrainGroundMesh(terrain, atlases, limits, kUnlit, nullptr, {}, blight, {}, preview);
+    Require(legacy.Succeeded() && legacy.value->blightPolicy == TerrainGroundBlightPolicy::Legacy
+        && legacy.value->blightTexture == nullptr && legacy.value->blightIndices.empty()
+        && legacy.value->blightTexturedTiles == 0 && legacy.value->blightApproximationTiles == 16,
+        "缺少显式能力选择的旧入口必须保留原纹理槽/顶点拒绝和近似色调");
+    const auto omitted = [&](TerrainGroundMeshLimits cap, TerrainGroundOmissionReason reason) {
+        const auto rejected = build(cap);
+        Require(rejected.Succeeded() && rejected.value->blightTexture == nullptr
+            && rejected.value->blightIndices.empty() && rejected.value->blightBatches.empty()
+            && rejected.value->blightApproximationTiles == 16
+            && (rejected.value->budget.blight.omissionReasons & static_cast<std::uint32_t>(reason)),
+            "新pass预算拒绝必须整类回退，不能发布去近似色的部分pass");
+        Near(rejected.value->vertices[0].red, 0.87f, "拒绝精确pass后必须保留base近似色调");
+    };
+    auto cap = limits; cap.maxIndices = 186 + 96 - 1; omitted(cap, TerrainGroundOmissionReason::Indices);
+    cap = limits; cap.maxBatches = 31; omitted(cap, TerrainGroundOmissionReason::Batches);
+    cap = limits; cap.maxRgbaBytes = 16 * 64 + 128 - 1; omitted(cap, TerrainGroundOmissionReason::RgbaBytes);
+    cap.maxRgbaBytes += 1; Require(build(cap).value->blightTexturedTiles == 16, "RGBA边界必须聚合两份资源表后准入");
+    // 搜索实际working门槛，核对边界前后全pass准入；不把分配器开销或进程RSS混入该口径。
+    std::size_t low = 0, high = 128 * 1024;
+    while (low < high) {
+        const auto middle = low + (high - low) / 2;
+        cap = limits; cap.maxWorkingBytes = middle;
+        const auto bounded = build(cap);
+        if (bounded.Succeeded() && bounded.value->blightTexturedTiles == 16) high = middle;
+        else low = middle + 1;
+    }
+    cap = limits; cap.maxWorkingBytes = low;
+    Require(low > 0 && build(cap).value->blightTexturedTiles == 16, "working门槛处应完整准入");
+    cap.maxWorkingBytes -= 1;
+    const auto below = build(cap);
+    Require(!below.Succeeded() || (below.value->blightIndices.empty() && below.value->blightApproximationTiles == 16),
+        "working边界以下不能保留部分索引或无pass的去近似色base");
+
+    auto compact = Grid(5, 2);
+    for (auto& vertex : compact.vertices) vertex.textureAndFlagsRaw = 0x20;
+    compact.vertices[4].textureAndFlagsRaw = compact.vertices[9].textureAndFlagsRaw = 0x2f;
+    const std::vector<std::uint8_t> covered{0, 1, 0, 0};
+    const auto mapped = BuildTerrainGroundMesh(compact, Atlases(), {}, kUnlit, nullptr, covered, blight, {}, preview, shared);
+    Require(mapped.Succeeded() && mapped.value->baseTiles == std::vector<std::uint32_t>{0, 2, 3}
+        && mapped.value->budget.base.displayed == 3 && mapped.value->fallback.totalTiles == 1
+        && mapped.value->blightIndices == std::vector<std::uint32_t>{0, 1, 2, 1, 3, 2, 4, 5, 6, 5, 7, 6},
+        "base前缀含fallback；荒芜只引用紧缩后的0/2原格，排除hidden和fallback格");
+    CheckGeometry(compact, *mapped.value);
+
+    auto grouped = Grid(5, 2);
+    for (auto& vertex : grouped.vertices) vertex.textureAndFlagsRaw = 0x20;
+    grouped.vertices[1].variationRaw = 1; grouped.vertices[3].variationRaw = 16;
+    const auto groups = BuildTerrainGroundMesh(grouped, Atlases(), {}, kUnlit, nullptr, {}, blight, {}, preview, shared);
+    Require(groups.Succeeded() && groups.value->blightBatches.size() == 3
+        && groups.value->blightBatches[0].indexCount == 12 && groups.value->blightBatches[1].firstIndex == 12
+        && groups.value->blightIndices[0] == 0 && groups.value->blightIndices[6] == 8
+        && groups.value->blightIndices[12] == 4 && groups.value->blightIndices[18] == 12,
+        "不同cell按规范顺序唯一分组；组内原tile顺序稳定，不能重复quad");
+
+    for (std::uint32_t mask = 1; mask < 16; ++mask) for (std::uint32_t variation = 0; variation < (mask == 15 ? 18u : 1u); ++variation) {
+        auto one = Grid();
+        const std::array<std::uint32_t, 4> bits{2, 1, 8, 4};
+        for (std::size_t corner = 0; corner < 4; ++corner)
+            one.vertices[corner].textureAndFlagsRaw = mask & bits[corner] ? 0x20 : 0;
+        one.vertices[0].variationRaw = static_cast<std::uint8_t>(variation);
+        const auto expanded = Success(one, Atlases(), {}, kUnlit, nullptr, blight);
+        const auto precise = BuildTerrainGroundMesh(one, Atlases(), {}, kUnlit, nullptr, {}, blight, {}, preview, shared);
+        Require(precise.Succeeded() && precise.value->blightBatches.size() == 1, "每种原版mask/variation都应保留");
+        const auto& rect = precise.value->blightBatches.front();
+        Require(rect.uvLeft == expanded.vertices[4].u && rect.uvRight == expanded.vertices[5].u
+            && rect.uvTop == expanded.vertices[6].v && rect.uvBottom == expanded.vertices[4].v,
+            "新pass必须逐位复用旧CellUv和mask/variation，不能重新猜测半texel约定");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -1277,6 +1380,7 @@ int main() {
         TestBaseTextureBatchesAndLifetime();
         TestFallbackReasonsAndWater();
         TestOriginalBlightAtlasAndFallback();
+        TestSharedBaseBlightBudgetsAndMapping();
         TestRetainedMipBudgets();
         TestBudgetsAndInvalidInputs();
         TestBlendLayers();

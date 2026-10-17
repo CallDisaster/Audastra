@@ -48,7 +48,7 @@ bool Textured(const WorldTerrainLoaded& loaded) {
 
 // 地表网格与悬崖（缓存已就绪时）。
 void Surface(WorldTerrainLoaded& loaded, WorldTerrainCache& cache, std::shared_ptr<const Render::TerrainCliffs> keepCliffs,
-    const Render::TerrainWaterStyle* selectedWater = nullptr) {
+    const Render::TerrainWaterStyle* selectedWater, Render::TerrainGroundBlightPolicy blightPolicy) {
     const auto& header = loaded.terrain->header;
     const bool groundChanged = header.groundTilesets != cache.header.groundTilesets || header.mainTileset != cache.header.mainTileset;
     const bool cliffsChanged = header.cliffTilesets != cache.header.cliffTilesets;
@@ -92,7 +92,7 @@ void Surface(WorldTerrainLoaded& loaded, WorldTerrainCache& cache, std::shared_p
     auto ground = Render::BuildTerrainGroundMesh(*loaded.terrain, cache.atlases, {}, cache.lighting,
         selectedWater ? selectedWater : cache.water ? &*cache.water : nullptr,
         cliffs ? std::span<const std::uint8_t>(cliffs->coveredTiles) : std::span<const std::uint8_t>{},
-        cache.blightAtlas, selectedGround, Render::TerrainGroundBudgetPolicy::PreserveBasePreview);
+        cache.blightAtlas, selectedGround, Render::TerrainGroundBudgetPolicy::PreserveBasePreview, blightPolicy);
     if (!ground.Succeeded()) notes.prepend(WorldDiagnosticText(ground.diagnostics));
     else {
         if (ground.value->budget.reduced)
@@ -129,7 +129,7 @@ bool SameWorldFog(const WorldEnvironmentInputs& left, const WorldEnvironmentInpu
 
 Result<WorldTerrainLoaded> LoadWorldTerrain(std::span<const std::byte> bytes, const Result<WorldTerrainSources>& sources,
     const std::optional<WorldEnvironmentInputs>& environmentInputs, const std::optional<std::vector<std::byte>>& shadow,
-    std::shared_ptr<WorldTerrainCache>* cache) {
+    std::shared_ptr<WorldTerrainCache>* cache, Render::TerrainGroundBlightPolicy blightPolicy) {
     const auto* settings = environmentInputs ? &environmentInputs->settings : nullptr;
     if (cache) cache->reset();
     try {
@@ -172,7 +172,7 @@ Result<WorldTerrainLoaded> LoadWorldTerrain(std::span<const std::byte> bytes, co
         // 名称只用于笔刷面板显示；读取失败时面板回退到 rawcode。
         if (auto names = LoadWorldTerrainNames(resolver, loaded.terrain->header); names.Succeeded())
             created->names = std::move(*names.value);
-        Surface(loaded, *created, nullptr);
+        Surface(loaded, *created, nullptr, nullptr, blightPolicy);
         if (const auto current = created->reader->VerifyCurrentSource(); !current.Succeeded())
             return {std::nullopt, current.diagnostics};
         if (cache) *cache = std::move(created);
@@ -183,7 +183,8 @@ Result<WorldTerrainLoaded> LoadWorldTerrain(std::span<const std::byte> bytes, co
 }
 
 Result<WorldTerrainLoaded> RebuildWorldTerrain(const MapData::TerrainGridSnapshot& raw, WorldTerrainCache& cache,
-    std::shared_ptr<const Render::TerrainCliffs> keepCliffs, std::optional<std::uint32_t> selectedWaterFrame) {
+    std::shared_ptr<const Render::TerrainCliffs> keepCliffs, std::optional<std::uint32_t> selectedWaterFrame,
+    Render::TerrainGroundBlightPolicy blightPolicy) {
     try {
         if (cache.reader) {
             const auto current = cache.reader->VerifyCurrentSource();
@@ -214,7 +215,7 @@ Result<WorldTerrainLoaded> RebuildWorldTerrain(const MapData::TerrainGridSnapsho
             selected->frameSourcePath = frame.value->resource.canonicalPath;
             selected->frameSourceSha256 = std::move(frame.value->sourceSha256);
         }
-        Surface(*shaped.value, cache, std::move(keepCliffs), selected ? &*selected : nullptr);
+        Surface(*shaped.value, cache, std::move(keepCliffs), selected ? &*selected : nullptr, blightPolicy);
         if (selected) {
             if (!shaped.value->ground || shaped.value->ground->waterOmitted || shaped.value->ground->waterTiles.empty())
                 return Result<WorldTerrainLoaded>::Failure("World", "WORLD_WATER_FRAME_RENDER",

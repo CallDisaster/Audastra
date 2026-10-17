@@ -1,6 +1,7 @@
 #pragma once
 
 #include "War3MapCore/RenderPluginV2.h"
+#include "War3MapCore/RenderPluginTerrainBlight.h"
 #include "War3MapCore/Render/ViewRay.h"
 #include "War3MapCore/Render/FrameCapture.h"
 #include "War3MapCore/Render/SceneEnvironment.h"
@@ -51,6 +52,8 @@ public:
     [[nodiscard]] bool HasGroundMesh() const noexcept { return ground_ != nullptr; }
     [[nodiscard]] bool HasGroundSupport() const noexcept;
     [[nodiscard]] bool HasTerrainMips() const noexcept;
+    // 可在renderer建立前只读查询编译能力；不访问GPU，不因缺少可选尾部改变旧路径。
+    [[nodiscard]] bool HasTerrainBlightSupport();
     // 模型场景与地形并存、独立提交；插件不支持或拒绝时保留旧 CPU 场景和选择。空指针清除模型。
     bool SetModelScene(std::shared_ptr<const Render::WorldModelScene> models);
     [[nodiscard]] bool HasModelSupport() const noexcept;
@@ -251,6 +254,7 @@ private:
     std::uint64_t measurementRendererEpoch_ = 1;
     std::deque<AnimationReceiveTiming> animationReceiveTimings_;
     void EnsureRenderer();
+    bool LoadPluginApi();
     void ReportPluginFailure(const char* operation, std::int32_t result,
         const War3RenderStatusV2* observed = nullptr, std::optional<std::int32_t> statusCall = std::nullopt) const;
     void DestroyRenderer();

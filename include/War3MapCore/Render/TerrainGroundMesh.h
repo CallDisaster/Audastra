@@ -84,6 +84,14 @@ enum class TerrainGroundBudgetPolicy {
     PreserveBasePreview
 };
 
+// 只有宿主实际查询到 shared-base 能力后才能显式选择；旧调用与 minimap 保持原路径。
+enum class TerrainGroundBlightPolicy { Legacy, SharedBase };
+
+struct TerrainGroundBlightBatch {
+    std::uint32_t firstIndex = 0, indexCount = 0;
+    float uvLeft = 0, uvRight = 0, uvTop = 0, uvBottom = 0;
+};
+
 // 仅记录本次实际准入检查的失败域；未请求或成功显示的层没有省略原因。
 // 资源回退与几何预览降级不同，不能仅凭reduced判断场景完整。
 enum class TerrainGroundOmissionReason : std::uint32_t {
@@ -121,7 +129,8 @@ struct TerrainGroundBudgetStats {
     bool reduced = false; // 显式预览因几何/批次/整体载荷预算省略可选层；资源回退另行诊断。
     // A：全部请求base/transition依赖的原资源预检数，省略过渡也不能绕过其硬预算。
     std::size_t requestedGroundTextureSlots = 0;
-    // B：最终保留ground槽及含水/荒芜的全部槽；Strict的requested/ground相同。
+    // B：最终保留ground槽及同表水/荒芜槽；SharedBase的独立荒芜不占此表，RGBA仍聚合计费。
+    // Strict的requested/ground相同。
     std::size_t groundTextureSlots = 0, finalTextureSlots = 0, textureSlotLimit = 0;
     bool waterStyleAvailable = false, waterSourceTextureAvailable = false;
     // 这里只记录构建器的atlas布局/字节检查；原BLP来源及mask alpha由既有loader检查。
@@ -139,6 +148,13 @@ struct TerrainGroundMesh {
     // 基础层按纹理稳定归组，地表过渡、荒芜和水面批次依次在后；每个 quad 为 (SW,SE,NW)、(SE,NE,NW)。
     std::vector<std::uint32_t> indices;
     std::vector<TerrainGroundBatch> batches;
+    // 独立荒芜通道只复用可见基础层前缀的四顶点；不占 ground 纹理槽，不复制顶点。
+    // base 前缀包含高度色回退格，但本通道索引只引用不透明贴图基础面；每格恰好一次。
+    // 批次按真实 8x4 atlas cell 稳定归组，同 cell 内维持源 tile 顺序。
+    TerrainGroundBlightPolicy blightPolicy = TerrainGroundBlightPolicy::Legacy;
+    std::vector<std::uint32_t> blightIndices;
+    std::vector<TerrainGroundBlightBatch> blightBatches;
+    std::shared_ptr<const TerrainAtlasSnapshot> blightTexture;
     // textureIndex 索引此列表；相同 shared_ptr 只占一个槽。
     // 预览在原完整资源预检后，仅当原流程已整类省略过渡时回收无draw依赖的地表槽并统一remap。
     std::vector<std::shared_ptr<const TerrainAtlasSnapshot>> textures;
@@ -185,6 +201,9 @@ struct TerrainGroundMesh {
 // 基础层的每格 XYZ/UV、原有资源/结构校验与逐格高度色回退不变，省略数由 budget 精确报告。
 // 保持原成功的过渡/水面决策；已省略过渡留下未用atlas时，回收其槽并只重试原资源拒绝的水面。
 // 荒芜遮罩省略时沿用原底色近似。基础层及所需地表资源自身超预算仍失败。
+// SharedBase 仅由能力已查询成功的世界宿主显式请求：复用可见base顶点，独立荒芜索引/真实cell批次，
+// 保持原vertex帽和ground槽帽；两通道RGBA、indices、batches、working合计受原上限约束。
+// 只有精确pass整类准入后才取消基础/过渡顶点近似色；空pass保留SharedBase策略供完整帧清旧通道。
 // UV 左上原点，以实际尺寸半像素内缩；纹理 RGB 不做高度染色，基础层按不透明采样。
 // 顶点颜色：贴图格为灰度明暗（光照关闭时为 1），高度色格为高度色 × 明暗；渲染器以颜色乘贴图。
 // 法线取原格高度的中心差分（边缘单侧），与拼接后的显示高度一致，不修改 XYZ。
@@ -201,7 +220,8 @@ struct TerrainGroundMesh {
     const TerrainWaterStyle* water = nullptr, std::span<const std::uint8_t> coveredTiles = {},
     std::shared_ptr<const TerrainAtlasSnapshot> blightAtlas = {},
     std::span<const std::uint8_t> effectiveGroundIndices = {},
-    TerrainGroundBudgetPolicy budgetPolicy = TerrainGroundBudgetPolicy::Strict);
+    TerrainGroundBudgetPolicy budgetPolicy = TerrainGroundBudgetPolicy::Strict,
+    TerrainGroundBlightPolicy blightPolicy = TerrainGroundBlightPolicy::Legacy);
 
 // 水面在给定深度（水面高度 − 地面高度，世界单位）处的 RGBA（0..1）。
 // 深度 ≤ 64 在浅水两色间插值（10 以下取最小值），64–72 在深水两色间插值，再深取深水最大值。

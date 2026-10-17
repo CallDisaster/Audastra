@@ -115,6 +115,13 @@ struct BackendState {
     int mipSubmits = 0;
     std::uint32_t mipCount = 0, maxSampleMip = 0, atlasColumns = 0, atlasRows = 0;
     std::vector<std::byte> mipOneBytes;
+    int blightQueries = 0, blightNullQueries = 0, blightSubmits = 0;
+    std::int32_t blightQueryResult = 0;
+    std::uint32_t blightFormat = 1, blightMaximum = 32, blightReserved = 0, blightCapsSize = 16;
+    std::uint32_t blightBaseQuads = 0, blightBaseTextures = 0, blightMipCount = 0, blightMaxMip = 0;
+    std::vector<std::uint32_t> blightIndices;
+    std::vector<War3RenderTerrainBlightBatchV2> blightBatches;
+    std::vector<std::byte> blightMipOneBytes;
     std::vector<War3RenderOverlayLineV2> overlayLines;
     bool rejectTerrain = false;
     bool autoComplete = true, pending = false, staleRevision = false, staleSize = false;
@@ -472,6 +479,7 @@ std::int32_t WAR3_RENDER_CALL MipScene(War3RendererHandle handle, const War3Rend
     auto& state = *static_cast<BackendState*>(handle);
     ++state.mipSubmits;
     if (state.rejectTerrain) return 1;
+    state.blightIndices.clear(); state.blightBatches.clear(); state.blightMipOneBytes.clear();
     if (scene->textureCount) {
         const auto& chain = scene->textures[0];
         state.mipCount = chain.mipCount; state.maxSampleMip = chain.maxSampleMip;
@@ -486,6 +494,34 @@ std::int32_t WAR3_RENDER_CALL MipScene(War3RendererHandle handle, const War3Rend
 }
 const War3RenderPluginApiV2 mipBackend{sizeof(War3RenderPluginApiV2), WAR3_RENDER_PLUGIN_API_V2,
     Create, Destroy, Attach, Resize, Mesh, Camera, Frame, Status, Capture, ViewInfo, TerrainScene, MipScene};
+std::int32_t WAR3_RENDER_CALL BlightCapabilities(War3RendererHandle handle, War3RenderTerrainBlightCapabilitiesV2* output) {
+    auto& state = handle ? *static_cast<BackendState*>(handle) : *activeBackend;
+    ++state.blightQueries;
+    state.blightNullQueries += handle == nullptr;
+    if (state.blightQueryResult) return state.blightQueryResult;
+    *output = {state.blightCapsSize, state.blightFormat, state.blightMaximum, state.blightReserved};
+    return 0;
+}
+std::int32_t WAR3_RENDER_CALL BlightFrame(War3RendererHandle handle, const War3RenderTerrainBlightFrameV2* frame) {
+    auto& state = *static_cast<BackendState*>(handle);
+    ++state.blightSubmits;
+    if (state.rejectTerrain) return 1;
+    state.blightBaseQuads = frame->baseQuadCount; state.blightBaseTextures = frame->baseScene.textureCount;
+    state.blightIndices.clear(); state.blightBatches.clear(); state.blightMipOneBytes.clear();
+    state.blightMipCount = state.blightMaxMip = 0;
+    if (frame->blightIndexCount) state.blightIndices.assign(frame->blightIndices, frame->blightIndices + frame->blightIndexCount);
+    if (frame->blightBatchCount) state.blightBatches.assign(frame->blightBatches, frame->blightBatches + frame->blightBatchCount);
+    if (frame->blightTexture) {
+        state.blightMipCount = frame->blightTexture->mipCount; state.blightMaxMip = frame->blightTexture->maxSampleMip;
+        if (frame->blightTexture->mipCount > 1) {
+            const auto& mip = frame->blightTexture->mips[1];
+            const auto* bytes = static_cast<const std::byte*>(mip.rgba);
+            state.blightMipOneBytes.assign(bytes, bytes + mip.rgbaByteCount);
+        }
+    }
+    state.revision = frame->baseScene.documentRevision; state.vertices = frame->baseScene.vertexCount; ++state.sceneEpoch;
+    return 0;
+}
 const War3RenderPluginApiV2 legacyBackend{static_cast<std::uint32_t>(offsetof(War3RenderPluginApiV2, getViewInfo)), WAR3_RENDER_PLUGIN_API_V2,
     Create, Destroy, Attach, Resize, Mesh, Camera, Frame, Status, Capture, ViewInfo}; // 尾部虽在内存中，旧 size 禁止读取/调用。
 
@@ -721,6 +757,7 @@ private slots:
     void ReadOnlyArchiveLoadsTerrainAndRejectsIdenticalReplacement();
     void SelectionLayerWaitsForRosterTerminal();
     void MipSceneUsesOriginalChainAndClampsAtlas();
+    void SharedBaseBlightRequiresCapabilitiesAndKeepsAtomicFrame();
     void PlacementClickDragAndKeys();
     void TerrainBrushPreservesCameraAndModels();
     void TerrainBrushUsesSharedTransactionAndUndo();
@@ -2744,6 +2781,92 @@ void WorldModuleTests::MipSceneUsesOriginalChainAndClampsAtlas() {
         QTRY_VERIFY(state.creates == 2);
         QVERIFY(!legacy.HasTerrainMips()); QVERIFY(legacy.SetGroundMesh(ground)); QCOMPARE(state.terrainSubmits, 1);
     }
+}
+
+void WorldModuleTests::SharedBaseBlightRequiresCapabilitiesAndKeepsAtomicFrame() {
+    auto api = mipBackend;
+    api.getTerrainBlightCapabilities = BlightCapabilities; api.submitTerrainBlightFrame = BlightFrame;
+    BackendState state; activeBackend = &state;
+    WorldViewport viewport(nullptr, &api); state.viewport = &viewport;
+    QVERIFY(viewport.HasTerrainBlightSupport()); QCOMPARE(state.creates, 0); QCOMPARE(state.blightNullQueries, 1);
+    state.blightQueryResult = 1; QVERIFY(!viewport.HasTerrainBlightSupport()); state.blightQueryResult = 0;
+    state.blightFormat = 2; QVERIFY(!viewport.HasTerrainBlightSupport()); state.blightFormat = 1;
+    state.blightMaximum = 31; QVERIFY(!viewport.HasTerrainBlightSupport()); state.blightMaximum = 32;
+    state.blightReserved = 1; QVERIFY(!viewport.HasTerrainBlightSupport()); state.blightReserved = 0;
+    state.blightCapsSize = 12; QVERIFY(!viewport.HasTerrainBlightSupport()); state.blightCapsSize = 16;
+    {
+        auto prefix = api;
+        prefix.structSize = static_cast<std::uint32_t>(offsetof(War3RenderPluginApiV2, getTerrainBlightCapabilities));
+        const auto queries = state.blightQueries;
+        WorldViewport old(nullptr, &prefix); QVERIFY(!old.HasTerrainBlightSupport());
+        QCOMPARE(state.blightQueries, queries);
+        prefix.structSize = sizeof(prefix); prefix.getTerrainBlightCapabilities = nullptr;
+        QVERIFY(!old.HasTerrainBlightSupport());
+        prefix.getTerrainBlightCapabilities = BlightCapabilities; prefix.submitTerrainBlightFrame = nullptr;
+        QVERIFY(!old.HasTerrainBlightSupport()); QCOMPARE(state.blightQueries, queries);
+    }
+    auto terrain = FlatGrid(3, 2); terrain->header.groundTilesets = {"Ldrt"};
+    for (auto& vertex : terrain->vertices) vertex.textureAndFlagsRaw = 0x20;
+    terrain->vertices[1].variationRaw = 1;
+    Image::DecodedImage image{16, 16, std::vector<std::byte>(16 * 16 * 4, std::byte{127})};
+    const auto encoded = Image::EncodeBlpPaletted(image); QVERIFY(encoded.Succeeded());
+    Resources::ResolvedResource resource; resource.bytes = *encoded.value;
+    const auto decoded = Render::DecodeTerrainTextureAtlas(resource); QVERIFY(decoded.Succeeded());
+    Image::DecodedImage blightImage{32, 16, std::vector<std::byte>(32 * 16 * 4, std::byte{211})};
+    const auto encodedBlight = Image::EncodeBlpPaletted(blightImage); QVERIFY(encodedBlight.Succeeded());
+    Resources::ResolvedResource blightResource; blightResource.bytes = *encodedBlight.value;
+    const auto decodedBlight = Render::DecodeTerrainTextureAtlas(blightResource); QVERIFY(decodedBlight.Succeeded());
+    const std::vector<std::shared_ptr<const Render::TerrainAtlasSnapshot>> atlases{*decoded.value};
+    constexpr auto preview = Render::TerrainGroundBudgetPolicy::PreserveBasePreview;
+    constexpr auto shared = Render::TerrainGroundBlightPolicy::SharedBase;
+    const auto built = Render::BuildTerrainGroundMesh(*terrain, atlases, {}, Render::TerrainLighting{false},
+        nullptr, {}, *decodedBlight.value, {}, preview, shared);
+    QVERIFY(built.Succeeded());
+    const auto ground = std::make_shared<const Render::TerrainGroundMesh>(*built.value);
+    viewport.resize(320, 240); QVERIFY(BindTerrain(viewport, terrain)); viewport.show();
+    QTRY_VERIFY(state.frames > 0);
+    QVERIFY(viewport.SetGroundMesh(ground)); QCOMPARE(state.blightSubmits, 1); QCOMPARE(state.mipSubmits, 0);
+    QCOMPARE(state.blightBaseQuads, 2u); QCOMPARE(state.blightBaseTextures, 1u); QCOMPARE(state.vertices, std::size_t{8});
+    QCOMPARE(state.blightIndices, ground->blightIndices); QCOMPARE(state.blightBatches.size(), ground->blightBatches.size());
+    QCOMPARE(state.blightBatches[0].uvLeft, ground->blightBatches[0].uvLeft);
+    QCOMPARE(state.blightBatches[1].uvBottom, ground->blightBatches[1].uvBottom);
+    QCOMPARE(state.blightMipCount, 6u); QCOMPARE(state.blightMaxMip, 2u);
+    QCOMPARE(state.blightMipOneBytes, (*decodedBlight.value)->additionalMips[0].rgba);
+    const auto epoch = state.sceneEpoch, revision = state.revision;
+    const auto submits = state.blightSubmits;
+    const auto invalid = [&](const std::function<void(Render::TerrainGroundMesh&)>& change) {
+        auto candidate = std::make_shared<Render::TerrainGroundMesh>(*ground); change(*candidate);
+        return viewport.SetGroundMesh(std::move(candidate));
+    };
+    QVERIFY(!invalid([](auto& m) { m.blightIndices[0] = 8; })); // base前缀外
+    QVERIFY(!invalid([](auto& m) { m.blightIndices[1] = 0; })); // 错对角线/重复顶点
+    QVERIFY(!invalid([](auto& m) { m.blightIndices[6] = 0; m.blightIndices[7] = 1; m.blightIndices[8] = 2;
+        m.blightIndices[9] = 1; m.blightIndices[10] = 3; m.blightIndices[11] = 2; })); // 跨cell重复quad
+    QVERIFY(!invalid([](auto& m) { m.blightBatches[1].uvLeft = m.blightBatches[0].uvLeft;
+        m.blightBatches[1].uvRight = m.blightBatches[0].uvRight; m.blightBatches[1].uvTop = m.blightBatches[0].uvTop;
+        m.blightBatches[1].uvBottom = m.blightBatches[0].uvBottom; }));
+    QVERIFY(!invalid([](auto& m) { m.batches[0].alphaBlend = true; }));
+    QCOMPARE(state.blightSubmits, submits); QCOMPARE(state.sceneEpoch, epoch); QCOMPARE(state.revision, revision);
+    state.rejectTerrain = true;
+    auto mesh = BuildWorldTerrainMesh(*terrain); QVERIFY(mesh.Succeeded());
+    QVERIFY(!viewport.ReplaceTerrainPresentation(std::move(mesh.value->vertices), std::move(mesh.value->indices),
+        terrain, 1, ground, revision + 1));
+    QCOMPARE(state.sceneEpoch, epoch); QCOMPARE(state.revision, revision); QVERIFY(viewport.HasGroundMesh());
+    state.rejectTerrain = false;
+    state.blightQueryResult = 1; QVERIFY(!viewport.SetGroundMesh(ground)); state.blightQueryResult = 0;
+    QCOMPARE(state.sceneEpoch, epoch); QCOMPARE(state.revision, revision); QCOMPARE(state.mipSubmits, 0);
+    auto clean = std::make_shared<MapData::TerrainGridSnapshot>(*terrain);
+    for (auto& vertex : clean->vertices) vertex.textureAndFlagsRaw = 0;
+    const auto empty = Render::BuildTerrainGroundMesh(*clean, atlases, {}, Render::TerrainLighting{false},
+        nullptr, {}, *decodedBlight.value, {}, preview, shared);
+    QVERIFY(empty.Succeeded());
+    auto cleanMesh = BuildWorldTerrainMesh(*clean); QVERIFY(cleanMesh.Succeeded());
+    QVERIFY(viewport.ReplaceTerrainPresentation(std::move(cleanMesh.value->vertices), std::move(cleanMesh.value->indices),
+        clean, 1, std::make_shared<const Render::TerrainGroundMesh>(*empty.value), revision + 2));
+    QVERIFY(state.blightIndices.empty()); QVERIFY(state.blightBatches.empty()); QCOMPARE(state.blightMipCount, 0u);
+    const auto oldGround = Render::BuildTerrainGroundMesh(*clean, atlases); QVERIFY(oldGround.Succeeded());
+    QVERIFY(viewport.SetGroundMesh(std::make_shared<const Render::TerrainGroundMesh>(*oldGround.value)));
+    QCOMPARE(state.mipSubmits, 1); QVERIFY(state.blightIndices.empty());
 }
 
 // 摆放点选与拖动：单击命中实例、按在选中实例上拖动发出目标 XY 且不转镜头、Esc 取消、Delete 请求删除。
