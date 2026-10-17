@@ -486,7 +486,8 @@ target_link_libraries(war3-map-world-module-tests PRIVATE War3MapEditor::QtModul
     War3MapEditor::QtModuleMapEntities War3MapEditor::QtModuleMapSettings Qt6::Test War3RenderCore::SkinInput)
 target_compile_definitions(war3-map-world-module-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-world-module-tests PRIVATE /W4 /permissive- /utf-8)
-add_test(NAME qt-world-module COMMAND war3-map-world-module-tests)
+add_test(NAME qt-world-module COMMAND war3-map-world-module-tests
+    -o -,txt -o "${CMAKE_CURRENT_BINARY_DIR}/world-module-$<CONFIG>.txt,txt")
 set_tests_properties(qt-world-module PROPERTIES TIMEOUT 60
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_PLUGIN_PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>/../plugins")
 
