@@ -588,6 +588,45 @@ void Budgets() {
             bill.childFrameChargedBytes == std::max(bill.childStandFrameBytes, bill.childFrameLayoutBytes),
             "PREM bill double charged source/layout/workspace or missed actual child capacity");
         if (accepted) {
+            // 只记录旧布局门的实际输入；不改变准入、源字节、独立公式或预算上限。
+            std::cout << "prem_bill_diag childFrame=" << bool(packet.childFrame)
+                << " childScene=" << bool(packet.childScene) << '\n';
+            if (packet.childFrame && packet.childScene) {
+                const auto& diagnosticFrame = *packet.childFrame;
+                const auto& diagnosticScene = *packet.childScene;
+                const auto diagnosticBasePayload = std::uint64_t(diagnosticFrame.instances.size()) *
+                    (sizeof(War3RenderSkinnedModelInstanceV2) + sizeof(AnimationPoseLink) + sizeof(AnimationPickBounds)) +
+                    std::uint64_t(diagnosticFrame.states.size()) * sizeof(AnimationInstanceState) +
+                    std::uint64_t(diagnosticFrame.groups.size()) * sizeof(War3RenderGroupMatrixV2) +
+                    std::uint64_t(diagnosticFrame.alphas.size()) * (sizeof(float) + sizeof(War3RenderMeshColorV2));
+                const auto diagnosticMaterialPayload = std::uint64_t(diagnosticFrame.layerAlphas.size()) * sizeof(float) +
+                    std::uint64_t(diagnosticFrame.layerSlices.size()) * sizeof(War3RenderMaterialLayerSliceV2) +
+                    std::uint64_t(diagnosticFrame.materialStates.size()) * sizeof(War3RenderMaterialStateV2) +
+                    std::uint64_t(diagnosticFrame.materialStateSlices.size()) * sizeof(War3RenderMaterialLayerSliceV2);
+                const auto diagnosticOwnerBytes = 2ull * sizeof(decltype(diagnosticFrame.particleMaterialFlags)) +
+                    sizeof(std::shared_ptr<const std::vector<std::uint32_t>>);
+                const auto diagnosticExpectedLayout = diagnosticBasePayload + diagnosticMaterialPayload + diagnosticOwnerBytes;
+                std::cout << "prem_bill_diag shared=" << diagnosticFrame.sharedPoseRanges
+                    << " sceneAlpha=" << diagnosticScene.dynamicMaterialAlphas << " sceneState=" << diagnosticScene.dynamicMaterialStates
+                    << " frameAlpha=" << diagnosticFrame.dynamicMaterialAlphas << " frameState=" << diagnosticFrame.dynamicMaterialStates
+                    << " geosetIssues=" << diagnosticFrame.geosetIssues.size() << " materialIssues=" << diagnosticFrame.materialIssues.size()
+                    << " collisions=" << diagnosticFrame.collisionMatrices.size() << " models=" << diagnosticScene.models.size()
+                    << " particleFlags=" << diagnosticFrame.particleMaterialFlags.size() << '\n';
+                std::cout << "prem_bill_diag layerAlphas=" << diagnosticFrame.layerAlphas.size() << '/' << diagnosticFrame.layerAlphas.capacity()
+                    << " layerSlices=" << diagnosticFrame.layerSlices.size() << '/' << diagnosticFrame.layerSlices.capacity()
+                    << " materialStates=" << diagnosticFrame.materialStates.size() << '/' << diagnosticFrame.materialStates.capacity()
+                    << " materialStateSlices=" << diagnosticFrame.materialStateSlices.size() << '/' << diagnosticFrame.materialStateSlices.capacity() << '\n';
+                std::cout << "prem_bill_diag layout=" << bill.childFrameLayoutBytes << " stand=" << bill.childStandFrameBytes
+                    << " charged=" << bill.childFrameChargedBytes << " childEvaluator=" << bill.childEvaluatorBytes
+                    << " birthEvaluator=" << bill.birthEvaluatorBytes << " basePayload=" << diagnosticBasePayload
+                    << " materialPayload=" << diagnosticMaterialPayload << " owners=" << diagnosticOwnerBytes
+                    << " expectedLayout=" << diagnosticExpectedLayout << " layoutEqualsExpected=" << (bill.childFrameLayoutBytes == diagnosticExpectedLayout) << '\n';
+                std::cout << "prem_bill_diag childSource=" << bill.childSourceBytes << " childResource=" << bill.childResourceBytes
+                    << " childScene=" << bill.childSceneBytes << " requestGeometry=" << diagnosticScene.requestGeometryRequired.size()
+                    << '/' << diagnosticScene.requestGeometryRequired.capacity()
+                    << " sourceTableBytes=" << std::uint64_t(diagnosticScene.requestGeometryRequired.capacity()) * sizeof(std::uint8_t)
+                    << " storage=" << packet.storageBytes << " working=" << packet.workingBytes << " asset=" << packet.assetBytes << '\n';
+            }
             Check(packet.childFrame && packet.childScene && !packet.childFrame->sharedPoseRanges &&
                 !packet.childScene->dynamicMaterialAlphas && !packet.childScene->dynamicMaterialStates &&
                 packet.childFrame->geosetIssues.empty() && packet.childFrame->materialIssues.empty() &&
