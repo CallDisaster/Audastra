@@ -58,7 +58,7 @@ TerrainOutput VSTerrain(TerrainInput input) {
     return output;
 }
 float4 SampleTerrainCell(float2 uv, float2 cell, float level) {
-    uint width, height, mipCount;
+    uint width = 0u, height = 0u, mipCount = 0u;
     terrainTexture.GetDimensions((uint)level, width, height, mipCount);
     float2 dimensions = float2(width, height);
     float2 minimum = cell / terrainCells + 0.5 / dimensions;
@@ -100,7 +100,7 @@ float4 SampleTerrainBounded(float2 uv, float2 cell, float2 dx, float2 dy) {
     axis *= rsqrt(axisLengthSquared);
     float lod = clamp(log2(width), 0.0, terrainMaxMip);
     float lower = floor(lod), upper = min(lower + 1.0, terrainMaxMip);
-    uint lowerWidth, lowerHeight, lowerCount, upperWidth, upperHeight, upperCount;
+    uint lowerWidth = 0u, lowerHeight = 0u, lowerCount = 0u, upperWidth = 0u, upperHeight = 0u, upperCount = 0u;
     terrainTexture.GetDimensions((uint)lower, lowerWidth, lowerHeight, lowerCount);
     terrainTexture.GetDimensions((uint)upper, upperWidth, upperHeight, upperCount);
     float2 lowerDimensions = float2(lowerWidth, lowerHeight), upperDimensions = float2(upperWidth, upperHeight);
