@@ -247,6 +247,20 @@ void PersistentArchiveSaveCopyAndIndependentOpen() {
         for (const auto& diagnostic : task.diagnostics) message += " | " + diagnostic.code + ":" + diagnostic.message;
         throw std::runtime_error(message);
     }
+    if (!task.nextSession || task.written != task.target || task.scriptRebuilt) {
+        std::error_code pathError;
+        const auto equivalent = std::filesystem::equivalent(task.written, task.target, pathError);
+        const auto written = task.written.u8string(), target = task.target.u8string();
+        std::cerr << "SaveCopy断言现场：succeeded=" << task.succeeded
+            << " nextSession=" << static_cast<bool>(task.nextSession)
+            << " scriptRebuilt=" << task.scriptRebuilt
+            << " lexicalPathEqual=" << (task.written == task.target)
+            << " equivalent=" << equivalent << " pathError=" << pathError.value()
+            << " written=" << std::string(written.begin(), written.end())
+            << " target=" << std::string(target.begin(), target.end()) << '\n';
+        for (const auto& diagnostic : task.diagnostics)
+            std::cerr << diagnostic.subsystem << ':' << diagnostic.code << ':' << diagnostic.message << '\n';
+    }
     Require(task.nextSession && task.written == task.target && !task.scriptRebuilt,
         "本层验证真实archive SaveCopy/AfterSave，不伪称运行JASS工具链");
     auto independentlyOpened = Take(MapArchiveSession::Open(task.target));
