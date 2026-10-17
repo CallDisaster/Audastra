@@ -336,7 +336,15 @@ void TestWaterFrameIgnoresUnusedMips() {
 
 void TestZeroContributionMaterialPreview() {
     Fixture fixture;
-    fixture.backing->files["WATER\\FLOW01.BLP"][158] = std::byte{217};
+    const auto sourceFrame = [](std::uint8_t alpha) {
+        auto bytes = Blp(8, 8);
+        bytes[158] = std::byte{217}; // 调色板0的红色，跟踪实际选中帧而不借用另一帧。
+        Put32(bytes, 8, 8); Put32(bytes, 92, 8 * 8 * 2);
+        bytes.resize(156 + 1024 + 8 * 8 * 2);
+        std::fill(bytes.begin() + 156 + 1024 + 8 * 8, bytes.end(), static_cast<std::byte>(alpha));
+        return bytes;
+    };
+    fixture.backing->files["WATER\\FLOW01.BLP"] = sourceFrame(0);
     for (const auto field : {17u,21u,25u,29u}) fixture.waterRow[field] = "0";
     fixture.Water();
     MapData::TerrainGridSnapshot terrain;
@@ -375,17 +383,25 @@ void TestZeroContributionMaterialPreview() {
     auto zero = build(); ledger(zero, 2, 0);
     Require(zero.ground.indices.size() == 12 && !zero.ground.waterTextureIndex
         && zero.ground.waterFrameCount == 0 && zero.ground.waterFrameSourcePath.empty()
-        && zero.ground.waterFrameSourceSha256.empty(),
+        && zero.ground.waterFrameSourceSha256.empty() && zero.water->style->texture->rgba[3] == std::byte{0},
         "全零水面保留基础地表，但不得伪造实际绘制帧身份");
+    fixture.backing->files["WATER\\FLOW01.BLP"] = sourceFrame(1);
+    auto selectedZero = build(); ledger(selectedZero, 0, 2);
+    Require(selectedZero.water->style->texture->rgba[3] == std::byte{1}
+        && selectedZero.ground.waterTiles == std::vector<std::uint32_t>{0,1}
+        && selectedZero.ground.waterFrameSourceSha256 == selectedZero.water->style->frameSourceSha256
+        && selectedZero.water->style->frameSourceSha256 != zero.water->style->frameSourceSha256,
+        "实际源 alpha1 即使当前深度 cell 量化为零，也保留两个 draw 及其实际源帧身份");
+    fixture.backing->files["WATER\\FLOW01.BLP"] = sourceFrame(255);
     fixture.waterRow[21] = fixture.waterRow[25] = fixture.waterRow[29] = "255"; fixture.Water();
     terrain.vertices[2].waterBaseHeight = terrain.vertices[5].waterBaseHeight = 112;
-    auto mixed = build(); ledger(mixed, 1, 1);
+    auto mixed = build(); ledger(mixed, 0, 2);
     const auto& source = *mixed.water->style;
-    Require(mixed.ground.waterTiles == std::vector<std::uint32_t>{1}
+    Require(mixed.ground.waterTiles == std::vector<std::uint32_t>{0,1}
         && mixed.ground.waterFrameIndex == source.frameIndex && mixed.ground.waterFrameCount == source.frameCount
         && mixed.ground.waterFrameSourcePath == source.frameSourcePath
         && mixed.ground.waterFrameSourceSha256 == source.frameSourceSha256,
-        "混合零贡献时实际water atlas仍须绑定同一已选源帧身份及剩余原格");
+        "深度零/非零混合时保留两个原格，实际 water atlas 仍绑定同一已选非零源帧");
     for (const auto field : {17u,21u,25u,29u}) fixture.waterRow[field] = "0";
     fixture.Water();
     fixture.backing->files["WATER\\FLOW01.BLP"].resize(100);

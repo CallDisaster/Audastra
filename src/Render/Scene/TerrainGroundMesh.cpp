@@ -370,10 +370,10 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
             }
             output.waterFlaggedTiles += water;
             if (water && waterStyle) {
-                // 仅合成单 mip 的全部 32×32 texel 为零才剔除；先保留上面的逐角高度校验。
-                // 单调整数 alpha 与 atlas 同源。深度只读、目标 alpha 保持的水面混合因此无贡献。
-                // 没有基础层时保持原水 draw：空地形协议会显示默认网格，不能把局部零贡献扩大为整场景变化。
-                if (baseQuadCount != 0 && WaterTexelAlpha(WaterAlphaLevel(terrain, corners, *waterStyle), maximumWaterAlpha) == 0)
+                // 实际 32×32 源取样的 alpha 全零，才证明整个合成 atlas 的全部 16 cell 为零。
+                // legacy 没有逐 cell clamp；仅当前量化 cell 为零仍可能从邻 cell 泄漏，必须保留原 draw。
+                // 没有基础层时也保留原水 draw，避免空地形协议显示默认网格；逐角高度已在上面校验。
+                if (baseQuadCount != 0 && maximumWaterAlpha == 0)
                     ++output.budget.water.noContribution;
                 else waterTiles.push_back(static_cast<std::uint32_t>(tileIndex));
             }

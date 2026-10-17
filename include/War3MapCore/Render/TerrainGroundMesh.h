@@ -178,7 +178,7 @@ struct TerrainGroundMesh {
 // ground 索引、四角任一缺失或无效 atlas 仍逐 tile 保留高度色。
 // 提供水面样式时，四角任一有水的格子追加一个半透明水面 quad（颜色按各角深度，透明度取四角平均，
 // 量化为合成 4×4 atlas 的 16 级；每格是明确选择的水面帧乘该级透明度，不推测播放时钟）。
-// 合成 atlas 仅 mip0；有基础层且选中 cell 的全部 texel alpha 为零时不发 quad，计入 noContribution。
+// 实际 32×32 源取样使整个合成 atlas 的 alpha 全零时，有基础层才不发 quad，计入 noContribution。
 // 全部基础格被覆盖时保留原水 draw，避免把只有水面的场景变成另有语义的空地形提交。
 // Strict 保持预算/结构错误无部分结果；PreserveBasePreview 仅在相同硬上限内按整类尝试
 // 水面 → 普通过渡 → 精确荒芜遮罩，装不下的一类全部省略，再尝试下一类；不截 tile 前缀。

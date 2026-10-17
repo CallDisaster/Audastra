@@ -684,6 +684,7 @@ void TestTerrainZeroAlphaContribution(const RendererOwner& renderer) {
         }
     };
     cellAlpha(0);
+    const auto selectedCellZeroAtlas = atlas;
     const War3RenderMipRgbaV2 redMip{sizeof(redMip),1,1,red.size(),red.data()};
     const War3RenderMipRgbaV2 blueMip{sizeof(blueMip),1,1,blue.size(),blue.data()};
     const War3RenderMipRgbaV2 greenMip{sizeof(greenMip),1,1,green.size(),green.data()};
@@ -729,6 +730,9 @@ void TestTerrainZeroAlphaContribution(const RendererOwner& renderer) {
         return Capture(renderer,320,240,revision);
     };
     for (const bool oldApi : {false,true}) for (const float distance : {3500.f,56000.f}) {
+        // mip ABI 有逐 cell clamp；legacy 只有整 atlas clamp，允许删除必须证明所有邻 cell 也为零。
+        if (oldApi) for (std::size_t at = 3; at < atlas.size(); at += 4) atlas[at] = 0;
+        else std::copy(selectedCellZeroAtlas.begin(), selectedCellZeroAtlas.end(), atlas.begin());
         camera.distance = distance;
         Require(renderer.api->setCamera(renderer.handle,&camera) == 0, "zero-alpha camera rejected");
         for (std::uint32_t edge = 0; edge < 5; ++edge) {
@@ -773,6 +777,24 @@ void TestTerrainZeroAlphaContribution(const RendererOwner& renderer) {
             Require(withZero == withoutZero, "zero-alpha removal changed RGBA/depth/order or leaked adjacent cell");
         }
     }
+    // 保留已暴露 legacy 半 texel 边缘泄漏的旧反例。等值与否只作观测，不能授予 selected-cell-only 剔除许可。
+    std::copy(selectedCellZeroAtlas.begin(), selectedCellZeroAtlas.end(), atlas.begin());
+    camera.distance = 3500;
+    Require(renderer.api->setCamera(renderer.handle,&camera) == 0, "legacy adjacent-cell observation camera rejected");
+    for (std::uint32_t corner = 0; corner < 4; ++corner) {
+        vertices[4 + corner].u = 32.5f/128;
+        vertices[4 + corner].v = corner < 2 ? 63.5f/128 : 32.5f/128;
+    }
+    const auto legacyWithoutZero = draw(false,true,true);
+    const auto legacyWithZero = draw(true,true,true);
+    Require(Colors(legacyWithoutZero) != 0 && Colors(legacyWithZero) != 0,
+        "legacy adjacent-cell observation must retain opaque target alpha");
+    std::cout << "legacy selected-cell-zero observation distance=3500 edge=0 equal="
+        << (legacyWithZero == legacyWithoutZero) << "; no cull permission\n";
+    for (std::uint32_t corner = 0; corner < 4; ++corner) {
+        vertices[4 + corner].u = corner % 2 == 0 ? 32.5f/128 : 63.5f/128;
+        vertices[4 + corner].v = corner < 2 ? 63.5f/128 : 32.5f/128;
+    }
     camera.distance = 3500;
     Require(renderer.api->setCamera(renderer.handle,&camera) == 0, "one-alpha camera rejected");
     const auto withoutWater = draw(false,false,false);
@@ -787,7 +809,7 @@ void TestTerrainZeroAlphaContribution(const RendererOwner& renderer) {
     const auto withLower = draw(true,false,false);
     Require(withLower != withoutLower, "accessible nonzero lower mip must invalidate a mip0-only zero proof");
     RequireWorldColor(withLower,ReadView(renderer),0,0,{255,255,255},1);
-    std::cout << "zero-alpha water: full RGBA equality, read-only depth, retained layer order, mip0/legacy edges and nonzero controls passed\n";
+    std::cout << "zero-alpha water: full RGBA equality, read-only depth, retained layer order, mip cell/legacy whole-atlas zero and nonzero controls passed\n";
 }
 
 // 上一版V2表的完整布局。新增能力只能出现在这个前缀之后。

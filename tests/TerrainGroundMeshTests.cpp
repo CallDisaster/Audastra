@@ -677,7 +677,7 @@ void TestWaterZeroContribution() {
             "水面源请求必须守恒，零贡献不能冒充显示或质量省略");
         CheckGeometry(terrain, mesh);
     };
-    auto style = styleFor(0);
+    auto style = styleFor(255); style.texture = sourceFor(3, 5, 0);
     auto mesh = Success(terrain, atlases, {}, kUnlit, &style);
     counts(mesh, 1, 0, 0);
     Require(mesh.vertices.size() == 4 && mesh.indices.size() == 6 && mesh.textures.size() == 1
@@ -685,30 +685,34 @@ void TestWaterZeroContribution() {
         "全零水面不分配atlas或几何，也不产生质量降级");
     TerrainGroundMeshLimits occupiedSlot; occupiedSlot.maxTextures = 1;
     counts(Success(terrain, atlases, occupiedSlot, kUnlit, &style), 1, 0, 0);
-    // 8/255×15 仍不到半级；9/255 则选第1格。白色 fallback alpha 必须为255。
+    // 8/255×15 仍不到半级；9/255 则选第1格。白色 fallback 的非零邻 cell 不允许剔除。
     for (const std::uint8_t alpha : {std::uint8_t{8}, std::uint8_t{9}, std::uint8_t{255}}) {
         style = styleFor(alpha);
         mesh = Success(terrain, atlases, {}, kUnlit, &style);
-        counts(mesh, alpha == 8 ? 1 : 0, alpha == 8 ? 0 : 1, 0);
+        counts(mesh, 0, 1, 0);
+        const auto at = (alpha == 8 ? 0u : alpha == 9 ? 32u : 96u * 128u + 96u) * 4 + 3;
+        Require(mesh.textures[*mesh.waterTextureIndex]->image.rgba[at] == static_cast<std::byte>(alpha == 8 ? 0 : alpha == 9 ? 17 : 255),
+            "selected cell 的量化零值不能许可 legacy 删除仍有非零邻 cell 的水 draw");
     }
-    // 原整数舍入边界：level1×7=>0、×8=>1；level7×1=>0、level8×1=>1。
-    for (const auto [styleAlpha, sourceAlpha, zero] : std::array<std::array<std::uint8_t, 3>, 4>{{
-            {17, 7, 1}, {17, 8, 0}, {119, 1, 1}, {136, 1, 0}}}) {
+    // 原整数舍入边界不变；即使 selected cell 为零，源有非零样本仍必须保留 draw。
+    for (const auto [styleAlpha, sourceAlpha, selectedLevel, cellZero] : std::array<std::array<std::uint8_t, 4>, 4>{{
+            {17, 7, 1, 1}, {17, 8, 1, 0}, {119, 1, 7, 1}, {136, 1, 8, 0}}}) {
         style = styleFor(styleAlpha); style.texture = sourceFor(3, 5, sourceAlpha);
         mesh = Success(terrain, atlases, {}, kUnlit, &style);
-        counts(mesh, zero, 1 - zero, 0);
-        if (!zero) {
-            const auto& atlas = *mesh.textures[*mesh.waterTextureIndex];
-            Require(atlas.additionalMips.empty() && atlas.validatedMipCount == 1,
-                "零贡献证明只允许真实单mip合成atlas");
-            for (std::uint32_t y = 0; y < 128; ++y) for (std::uint32_t x = 0; x < 128; ++x) {
-                const auto level = (y / 32) * 4 + x / 32;
-                const auto at = (static_cast<std::size_t>(y) * 128 + x) * 4;
-                Require(atlas.image.rgba[at] == std::byte{231}
-                    && std::to_integer<std::uint32_t>(atlas.image.rgba[at + 3]) == (level * sourceAlpha + 7) / 15,
-                    "共享helper不得改动合成atlas字节或整数alpha舍入");
-            }
+        counts(mesh, 0, 1, 0);
+        const auto& atlas = *mesh.textures[*mesh.waterTextureIndex];
+        Require(atlas.additionalMips.empty() && atlas.validatedMipCount == 1,
+            "共享合成 atlas 仍保持原单 mip 字节");
+        for (std::uint32_t y = 0; y < 128; ++y) for (std::uint32_t x = 0; x < 128; ++x) {
+            const auto level = (y / 32) * 4 + x / 32;
+            const auto at = (static_cast<std::size_t>(y) * 128 + x) * 4;
+            Require(atlas.image.rgba[at] == std::byte{231}
+                && std::to_integer<std::uint32_t>(atlas.image.rgba[at + 3]) == (level * sourceAlpha + 7) / 15,
+                "共享helper不得改动合成atlas字节或整数alpha舍入");
         }
+        const auto selectedAt = ((selectedLevel / 4 * 32) * 128 + selectedLevel % 4 * 32) * 4 + 3;
+        Require((atlas.image.rgba[selectedAt] == std::byte{0}) == (cellZero != 0),
+            "量化边界负控须确实覆盖 selected cell 零与 alpha1，不能放宽到近零阈值");
     }
     style = styleFor(255);
     auto sparse = sourceFor(64, 64, 0);
@@ -725,7 +729,7 @@ void TestWaterZeroContribution() {
     auto rejected = BuildTerrainGroundMesh(terrain, atlases, {}, kUnlit, &style);
     Require(!rejected.Succeeded() && !rejected.value && rejected.diagnostics.front().code == "TERRAIN_GROUND_WATER_FRAME",
         "零alpha不能绕过无效水源布局/字节拒绝");
-    style = styleFor(0);
+    style = styleFor(0); style.texture = sourceFor(3, 5, 0);
     for (const auto invalidHeight : {std::numeric_limits<float>::quiet_NaN(), 10000001.0f, -10000001.0f}) {
         auto invalid = terrain; invalid.vertices[0].waterBaseHeight = invalidHeight;
         for (const auto covered : {std::uint8_t{0}, std::uint8_t{1}}) {
@@ -742,36 +746,43 @@ void TestWaterZeroContribution() {
         && waterOnly.value->waterTiles.size() == 1 && waterOnly.value->indices.size() == 6
         && waterOnly.value->waterTextureIndex && !waterOnly.value->waterOmitted,
         "全部基础格被覆盖时保持原零alpha水draw，不能变成默认网格空场景");
-    // 槽满时只有具备完整source证明的zero免占槽，仍有贡献的相邻原格保留真实省略。
+    // 同一非零源帧的深度零/非零格都保留，不能按 selected cell 分别删除。
     auto pair = Grid(3, 2);
     for (std::size_t i = 0; i < pair.vertices.size(); ++i) {
         pair.vertices[i].textureAndFlagsRaw |= 0x40; pair.vertices[i].waterBaseHeight = i % 3 == 2 ? 64.0f : 0.0f;
     }
     style = TerrainWaterStyle{0, {255,255,255,0}, {255,255,255,255}, {255,255,255,255}, {255,255,255,255}};
     const auto partial = Success(pair, atlases, {}, kUnlit, &style);
-    Require(partial.budget.water.requested == 2 && partial.budget.water.noContribution == 1
-        && partial.budget.water.displayed == 1 && partial.budget.water.omitted == 0
-        && partial.waterTiles == std::vector<std::uint32_t>{1} && !partial.waterOmitted,
-        "混合零/非零只删除已证明无贡献的原格，保留剩余原格身份和顺序");
+    Require(partial.budget.water.requested == 2 && partial.budget.water.noContribution == 0
+        && partial.budget.water.displayed == 2 && partial.budget.water.omitted == 0
+        && partial.waterTiles == std::vector<std::uint32_t>{0,1} && !partial.waterOmitted,
+        "非零源帧的深度零/非零格都保留原 draw、原格身份及相对顺序");
     CheckGeometry(pair, partial);
     TerrainGroundMeshLimits oneSlot; oneSlot.maxTextures = 1;
     const auto full = Success(pair, atlases, oneSlot, kUnlit, &style);
-    Require(full.budget.water.requested == 2 && full.budget.water.noContribution == 1
-        && full.budget.water.displayed == 0 && full.budget.water.omitted == 1 && full.waterOmitted
+    Require(full.budget.water.requested == 2 && full.budget.water.noContribution == 0
+        && full.budget.water.displayed == 0 && full.budget.water.omitted == 2 && full.waterOmitted
         && full.budget.water.omissionReasons == static_cast<std::uint32_t>(TerrainGroundOmissionReason::TextureSlots),
-        "槽满不能把非零水格的真实省略混入零贡献");
+        "槽满也不能把仅 selected cell 为零的真实省略混入零贡献");
     TerrainGroundMeshLimits baseOnly; baseOnly.maxVertices = 8;
     const auto limited = BuildTerrainGroundMesh(pair, atlases, baseOnly, kUnlit, &style, {}, {}, {},
         TerrainGroundBudgetPolicy::PreserveBasePreview);
     Require(limited.Succeeded() && limited.value->budget.water.requested == 2
-        && limited.value->budget.water.noContribution == 1 && limited.value->budget.water.omitted == 1
+        && limited.value->budget.water.noContribution == 0 && limited.value->budget.water.omitted == 2
         && limited.value->budget.water.displayed == 0 && limited.value->waterOmitted && limited.value->budget.reduced
         && (limited.value->budget.water.omissionReasons & static_cast<std::uint32_t>(TerrainGroundOmissionReason::Vertices)),
-        "几何预算省略也须与零贡献分开，不能改变整类准入");
+        "几何预算仍整类省略两个未证明全 atlas 为零的原格");
+    style.texture = sourceFor(3, 5, 0);
+    const auto wholeZero = Success(pair, atlases, oneSlot, kUnlit, &style);
+    Require(wholeZero.budget.water.requested == 2 && wholeZero.budget.water.noContribution == 2
+        && wholeZero.budget.water.displayed == 0 && wholeZero.budget.water.omitted == 0
+        && wholeZero.waterTiles.empty() && !wholeZero.waterTextureIndex && !wholeZero.waterOmitted,
+        "实际源样本全零时两个深度格都无需纹理槽，不能伪造质量省略或 rendered 身份");
+    CheckGeometry(pair, wholeZero);
     auto blighted = terrain;
     for (auto& vertex : blighted.vertices) vertex.textureAndFlagsRaw |= 0x20;
     TerrainGroundMeshLimits twoSlots; twoSlots.maxTextures = 2;
-    style = styleFor(0);
+    style = styleFor(0); style.texture = sourceFor(3, 5, 0);
     const auto reclaimed = Success(blighted, atlases, twoSlots, kUnlit, &style, MakeAtlas(8));
     Require(reclaimed.budget.water.noContribution == 1 && reclaimed.blightTexturedTiles == 1
         && reclaimed.textures.size() == 2, "零贡献不占槽，按原优先级让精确荒芜准入");
