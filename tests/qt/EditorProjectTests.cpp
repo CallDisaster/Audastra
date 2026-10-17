@@ -212,6 +212,7 @@ private slots:
     void SaveCommitRejectsRevisionDrift();
     void TerrainSaveReadbackGatesCommit_data();
     void TerrainSaveReadbackGatesCommit();
+    void TerrainSavePrepareStillRequiresToolchain();
     void BoundedAssetsPreserveCurrentPrefix();
     void ObjectQueriesDistinguishMissingFromUnparsedSources();
     void TriggerChangesCannotSkipUnpreparedFramework();
@@ -702,9 +703,27 @@ void EditorProjectTests::TerrainSaveReadbackGatesCommit() {
     const auto undoCount = project.mapDataUndoStack_->count();
     const auto* originalSession = project.archiveSession_.get();
     const auto target = std::filesystem::path(root.filePath("candidate.w3x").toStdWString());
-    auto job = project.PrepareMapSave(inPlace ? std::filesystem::path{} : target, inPlace);
-    QVERIFY(job && job->terrainSavePlan && !job->terrainReadbackStatus);
-    QVERIFY2(!job->script, "terrain readback fixture must preserve its source script without invoking a compiler");
+    auto prepared = MapData::TerrainSavePlan::Prepare(*project.archiveSession_, *project.mapEdits_); QVERIFY(prepared.Succeeded());
+    const auto originalPlan = std::make_shared<const MapData::TerrainSavePlan>(std::move(*prepared.value));
+    // 沿已有内部job夹具验证真实Run/回读/Commit；不伪装成通过生产Prepare脚本门。
+    auto job = std::make_unique<MapSaveJob>();
+    QVERIFY(job->FreezeArchive(*project.archiveSession_).Succeeded());
+    job->target = inPlace ? source : target; job->inPlace = inPlace;
+    if (inPlace) {
+        job->inPlaceOptions.backupDirectory = std::filesystem::path(root.filePath("backups").toStdWString());
+        QVERIFY(std::filesystem::create_directory(job->inPlaceOptions.backupDirectory));
+        job->inPlaceOptions.keepBackups = 0;
+    }
+    job->replacements = project.mapEdits_->Replacements(); job->removals = project.mapEdits_->Removals();
+    job->preparedRevision = MapSaveRevisionBinding{project.editRevision_.Generation(), project.editRevision_.Revision(),
+        project.editRevision_.Current()};
+    job->terrainSavePlan = originalPlan;
+    QVERIFY(originalPlan->VerifyForSave(*project.mapEdits_, job->sourceSha256, job->replacements, job->removals).Succeeded());
+    const auto* task = job.get();
+    job->beforePublish = [originalPlan, task] {
+        return originalPlan->VerifyFrozenOutput(task->sourceSha256, task->replacements, task->removals);
+    };
+    QVERIFY(!job->script && !job->terrainReadbackStatus);
     QVERIFY(job->terrainSavePlan->SaveGate().Succeeded() && job->terrainSavePlan->RequiresNativeVerification());
     if (mode == QStringLiteral("mismatch")) {
         auto alternateMembers = members;
@@ -771,6 +790,26 @@ void EditorProjectTests::TerrainSaveReadbackGatesCommit() {
         QVERIFY(!job->backup.empty() && std::filesystem::exists(job->backup));
         QCOMPARE(Sha256File(job->backup).value, originalSha.value);
     } else QCOMPARE(Sha256File(source).value, originalSha.value);
+}
+
+void EditorProjectTests::TerrainSavePrepareStillRequiresToolchain() {
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto members = TerrainSaveMembers(); QVERIFY(!members.empty());
+    const auto source = std::filesystem::path(root.filePath("source.w3x").toStdWString());
+    const auto target = std::filesystem::path(root.filePath("blocked.w3x").toStdWString());
+    QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
+    const auto originalSha = Sha256File(source); QVERIFY(originalSha.Succeeded());
+    EditorProject project; QVERIFY(BindTerrainSaveProject(project, source)); QVERIFY(RaiseTerrainSaveProject(project));
+    project.compilerDataRoot_.clear(); project.activeUiDataRoot_.clear(); project.uiDataRoot_.clear();
+    const auto scopes = project.editRevision_.Current();
+    const auto baseline = project.editRevision_.Baseline(EditSaveTarget::Map);
+    QVERIFY(baseline);
+    QVERIFY(!project.PrepareMapSave(target, false));
+    QVERIFY(ModelHasCode(*project.diagnosticsModel_, QStringLiteral("REPACK_SCRIPT_REJECTED")));
+    QVERIFY(!std::filesystem::exists(target) && project.HasUnsavedMapChanges());
+    QCOMPARE(project.editRevision_.Current(), scopes);
+    QCOMPARE(project.editRevision_.Baseline(EditSaveTarget::Map)->scopes, baseline->scopes);
+    QCOMPARE(Sha256File(source).value, originalSha.value);
 }
 
 void EditorProjectTests::IndependentProjectsDoNotShareEdits() {
