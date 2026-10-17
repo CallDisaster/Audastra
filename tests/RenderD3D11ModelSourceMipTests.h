@@ -138,6 +138,8 @@ void WriteBytes(const std::filesystem::path& path, std::span<const std::byte> by
 
 void Export(const std::filesystem::path& directory, const std::vector<std::byte>& source, const std::string& providerSha,
     const std::string& geometrySha, const std::array<CapturedFrame, 2>& frames,
+    const std::array<War3RenderEditorPresentationTargetV2, 2>& targetsBefore,
+    const std::array<War3RenderEditorPresentationTargetV2, 2>& targetsAfter,
     const std::array<std::size_t, 2>& matches, double minimumFootprint, const ModelTextureRgba& original) {
     if (directory.empty()) return;
     WriteBytes(directory / "original.blp", source);
@@ -148,7 +150,9 @@ void Export(const std::filesystem::path& directory, const std::vector<std::byte>
         << "\"provider_sha256\":\"" << providerSha << "\",\n\"source_blp_sha256\":\"" << Digest(source)
         << "\",\n\"source_top_sha256\":\"" << Digest(std::as_bytes(std::span(original.rgba)))
         << "\",\n\"geometry_sha256\":\"" << geometrySha << "\",\n"
-        << "\"same_top_geometry_camera_provider\":true,\n\"source_mip_count\":" << kMipCount
+        << "\"same_top_geometry_camera_provider\":true,\n"
+        << "\"model_target_scope\":\"accepted CPU slot before/after capture; not per-frame GPU modelEpoch readback\",\n"
+        << "\"source_mip_count\":" << kMipCount
         << ",\n\"source_low_mips\":[";
     for (std::size_t level = 0; level < original.additionalMips.size(); ++level) {
         const auto& mip = original.additionalMips[level];
@@ -168,6 +172,8 @@ void Export(const std::filesystem::path& directory, const std::vector<std::byte>
             << ",\"software\":1,\"revision\":" << view.documentRevision << ",\"frame\":" << view.frameCount
             << ",\"ticket\":" << frame.receipt.capture.ticket << ",\"surface_epoch\":" << view.surfaceEpoch
             << ",\"scene_epoch\":" << view.sceneEpoch << ",\"view_epoch\":" << view.viewEpoch
+            << ",\"cpu_model_epoch_before\":" << targetsBefore[index].modelEpoch
+            << ",\"cpu_model_epoch_after\":" << targetsAfter[index].modelEpoch
             << ",\"matching_roi_samples\":" << matches[index] << ",\"expected_channel\":\"" << (index ? "red" : "green")
             << "\",\"passed\":" << (matches[index] >= kMinimumSamples ? "true" : "false") << ",\"camera\":["
             << camera.targetX << ',' << camera.targetY << ',' << camera.targetZ << ',' << camera.distance << ','
@@ -228,11 +234,30 @@ void Run(const War3RenderPluginApiV2* api, const std::filesystem::path& provider
     const War3RenderMeshV2 ground{sizeof(ground),0,0,kRevision,nullptr,nullptr};
     Require(api->setEnvironment(renderer.handle,&environment) == 0 && api->setCamera(renderer.handle,&camera) == 0
         && api->submitMesh(renderer.handle,&ground) == 0, "source-mip camera/environment/empty terrain rejected");
+    Require(api->structSize >= offsetof(War3RenderPluginApiV2, getEditorPresentationTarget)
+        + sizeof(api->getEditorPresentationTarget) && api->getEditorPresentationTarget,
+        "source-mip accepted model-slot identity capability missing");
+    const auto modelTarget = [&] {
+        War3RenderEditorPresentationTargetV2 target{sizeof(target)};
+        Require(api->getEditorPresentationTarget(renderer.handle, &target) == 0 && target.structSize == sizeof(target)
+            && target.mode == WAR3_EDITOR_PRESENTATION_STATIC && target.instanceCount == 1
+            && target.particleDrawCount == 0 && target.modelEpoch != 0 && !target.sceneVersion && !target.contentVersion,
+            "source-mip accepted model-slot identity differs from the static fixture");
+        return target;
+    };
     std::array<CapturedFrame, 2> frames;
+    std::array<War3RenderEditorPresentationTargetV2, 2> targetsBefore{}, targetsAfter{};
     const std::array<const ModelSceneDescriptor*, 2> descriptors{&sourceDescriptor, &controlDescriptor};
     for (std::size_t index = 0; index < frames.size(); ++index) {
         Require(api->submitModelScene(renderer.handle,descriptors[index]->StaticScene()) == 0, "source-mip production descriptor rejected");
+        targetsBefore[index] = modelTarget();
         frames[index] = CaptureFrame(renderer,kWidth,kHeight,kRevision,camera);
+        targetsAfter[index] = modelTarget();
+        const auto& before = targetsBefore[index]; const auto& after = targetsAfter[index];
+        Require(before.structSize == after.structSize && before.mode == after.mode
+            && before.instanceCount == after.instanceCount && before.particleDrawCount == after.particleDrawCount
+            && before.modelEpoch == after.modelEpoch && before.sceneVersion == after.sceneVersion
+            && before.contentVersion == after.contentVersion, "accepted CPU model slot changed during source-mip capture");
         War3RenderStatusV2 status{sizeof(status)};
         Require(api->getStatus(renderer.handle,&status) == 0 && status.result == 0 && status.software == 1
             && status.documentRevision == kRevision && status.width == kWidth && status.height == kHeight,
@@ -244,15 +269,20 @@ void Run(const War3RenderPluginApiV2* api, const std::filesystem::path& provider
         << " A_surface=" << frames[0].receipt.view.surfaceEpoch << " B_surface=" << frames[1].receipt.view.surfaceEpoch
         << " A_scene=" << frames[0].receipt.view.sceneEpoch << " B_scene=" << frames[1].receipt.view.sceneEpoch
         << " A_frame=" << frames[0].receipt.view.frameCount << " B_frame=" << frames[1].receipt.view.frameCount
+        << " A_model_epoch=" << targetsBefore[0].modelEpoch << " B_model_epoch=" << targetsBefore[1].modelEpoch
         << " A_ticket=" << frames[0].receipt.capture.ticket << " B_ticket=" << frames[1].receipt.capture.ticket << '\n';
     Require(std::memcmp(frames[0].receipt.view.viewProjection,frames[1].receipt.view.viewProjection,
         sizeof(frames[0].receipt.view.viewProjection)) == 0
         && frames[0].receipt.view.surfaceEpoch == frames[1].receipt.view.surfaceEpoch
-        && frames[1].receipt.view.sceneEpoch > frames[0].receipt.view.sceneEpoch
+        // sceneEpoch属于未改变的ground；模型完整替换的身份是独立modelEpoch。
+        && frames[1].receipt.view.sceneEpoch == frames[0].receipt.view.sceneEpoch
+        && frames[1].receipt.view.viewEpoch == frames[0].receipt.view.viewEpoch
+        && targetsBefore[1].modelEpoch > targetsBefore[0].modelEpoch
+        && frames[1].receipt.capture.ticket > frames[0].receipt.capture.ticket
         && frames[1].receipt.view.frameCount > frames[0].receipt.view.frameCount, "A/B did not complete the same camera/geometry revision");
     const auto minimumFootprint = RequireMinifiedInterior(frames[0].receipt.view);
     const std::array<std::size_t, 2> matches{MatchingSamples(frames[0],1), MatchingSamples(frames[1],0)};
-    Export(output,source,*providerSha.value,Digest(geometry),frames,matches,minimumFootprint,sourceTexture);
+    Export(output,source,*providerSha.value,Digest(geometry),frames,targetsBefore,targetsAfter,matches,minimumFootprint,sourceTexture);
     Require(matches[0] >= kMinimumSamples && matches[1] >= kMinimumSamples,
         "original source low mips must render green while the identical red-top GenerateMips control stays red");
     std::cout << "model source mips: production decode/baked scene/descriptors, identical top/geometry/camera/provider, "
