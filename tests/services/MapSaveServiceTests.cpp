@@ -949,14 +949,21 @@ void TestMissingMinimapChoiceCannotBroadenTerrainSaveScope() {
     stroke.points = {{4, 4}};
     request.terrainStrokes = {stroke};
     request.terrainStrokes[0].brush.strength = 0;
+    const auto zeroStrength = SaveMapEditCandidate(request);
+    Require(!zeroStrength.Succeeded() && HasCode(zeroStrength.diagnostics, "TERRAIN_BRUSH_STRENGTH"),
+        "zero-strength raise retains the exact core brush rejection");
+    // 合法平滑笔划作用于平坦网格，平均高度不变，才能到达服务层的无净变化门。
+    request.terrainStrokes[0].brush.kind = MapData::TerrainBrushKind::Smooth;
+    request.terrainStrokes[0].brush.strength = 1;
     const auto noChange = SaveMapEditCandidate(request);
     if (!HasCode(noChange.diagnostics, "SAVE_NO_TERRAIN_CHANGE")) {
         for (const auto& diagnostic : noChange.diagnostics)
             std::cerr << "missing-minimap no-op: " << diagnostic.subsystem << ": "
                       << diagnostic.code << ": " << diagnostic.message << '\n';
     }
-    Require(HasCode(noChange.diagnostics, "SAVE_NO_TERRAIN_CHANGE"),
+    Require(!noChange.Succeeded() && HasCode(noChange.diagnostics, "SAVE_NO_TERRAIN_CHANGE"),
         "explicit generation cannot produce a no-op terrain candidate");
+    request.terrainStrokes[0].brush.kind = MapData::TerrainBrushKind::Raise;
     request.terrainStrokes[0].brush.strength = 40; // raw160，仍超出现有raw156正式门。
     for (const auto choice : {TerrainMinimapSaveChoice::Preserve, TerrainMinimapSaveChoice::GenerateMissingGroundOnly}) {
         request.minimapChoice = choice;
