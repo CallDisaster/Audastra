@@ -2,9 +2,11 @@
 
 #include <QDir>
 #include <QFileInfo>
+#include <QSet>
 #include <QUndoStack>
 
 #include <algorithm>
+#include <array>
 
 // 会话级导入队列：只记录磁盘来源与归档内路径，文件字节在保存时按快照校验后读取。
 namespace War3Map::QtProject {
@@ -82,6 +84,51 @@ int EditorProject::AddImportFiles(AssetState& state, const QStringList& diskPath
             [&](const PendingImport& pending) { return AssetKey(pending.archivePath) == AssetKey(edit.from); });
     });
     return added;
+}
+
+QString EditorProject::AddImportPayloads(std::vector<ImportPayload>& payloads, bool replaceExisting,
+    const QString& label) {
+    if (payloads.empty()) return tr("没有要导入的文件。");
+    const auto entries = AssetEntries();
+    QSet<QString> requested;
+    for (auto& payload : payloads) {
+        if (const auto problem = CheckAssetPath(payload.archivePath); !problem.isEmpty())
+            return payload.archivePath + QStringLiteral("：") + problem;
+        if (!payload.bytes) return payload.archivePath + tr("：缺少文件内容。");
+        const auto key = AssetKey(payload.archivePath);
+        if (requested.contains(key)) return payload.archivePath + tr("：同一路径出现多次。");
+        requested.insert(key);
+        const auto existing = std::find_if(entries.begin(), entries.end(),
+            [&](const AssetEntry& entry) { return AssetKey(entry.path) == key; });
+        if (existing != entries.end() && existing->ambiguous)
+            return payload.archivePath + tr("：该路径有多份来源，未导入。");
+        payload.replaced = existing != entries.end();
+        if (!payload.replaced && archiveSession_) {
+            // 未列入文件清单的成员也要按名字核对，不能当作不存在。
+            const std::array<std::string, 1> names{payload.archivePath.toStdString()};
+            const auto exact = archiveSession_->CaptureExactMembers(names);
+            if (!exact.Succeeded() || !exact.value || exact.value->size() != 1)
+                return payload.archivePath + tr("：无法确认地图里是否已有该文件，未导入。");
+            payload.replaced = exact.value->front().present;
+        }
+        if (payload.replaced && !replaceExisting)
+            return payload.archivePath + tr("：地图里已有该文件；确认覆盖时请明确要求替换。");
+    }
+    return RecordAssetEdit(label, [&](AssetState& state) -> QString {
+        for (const auto& payload : payloads) {
+            PendingImport entry;
+            entry.archivePath = payload.archivePath;
+            entry.size = static_cast<qint64>(payload.bytes->size());
+            entry.ownedPayload = payload.bytes;
+            const auto key = AssetKey(entry.archivePath);
+            const auto previous = std::find_if(state.imports.begin(), state.imports.end(),
+                [&](const PendingImport& value) { return AssetKey(value.archivePath) == key; });
+            if (previous == state.imports.end()) state.imports.push_back(std::move(entry));
+            else *previous = std::move(entry);
+            std::erase_if(state.edits, [&](const AssetEdit& edit) { return edit.to.isEmpty() && AssetKey(edit.from) == key; });
+        }
+        return {};
+    });
 }
 
 void EditorProject::RemoveImports(std::vector<int> rows) {

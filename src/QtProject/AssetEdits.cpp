@@ -18,12 +18,7 @@ namespace {
 
 // 地图自身的数据文件（根目录的 war3map* / war3campaign*、脚本、自动清单）由编辑器管理，不能当作资源改动。
 bool IsMapDataPath(const QString& key) {
-    if (key.startsWith(QLatin1Char('(')) || key == QLatin1String("scripts\\war3map.j") ||
-        key == QLatin1String("scripts\\war3map.lua")) {
-        return true;
-    }
-    return !key.contains(QLatin1Char('\\')) &&
-        (key.startsWith(QLatin1String("war3map")) || key.startsWith(QLatin1String("war3campaign")));
+    return Resources::IsEditorManagedMemberPath(key.toStdString());
 }
 
 } // namespace

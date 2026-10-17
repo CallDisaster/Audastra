@@ -18,6 +18,7 @@ target_sources(war3-map-cli PRIVATE WtgSourceCommand.cpp WtgSourceCommand.h)
 target_sources(war3-map-cli PRIVATE LuaTriggerCandidateCommand.cpp LuaTriggerCandidateCommand.h)
 
 target_sources(war3-map-cli PRIVATE ArchiveInspectCommand.cpp ArchiveInspectCommand.h)
+target_sources(war3-map-cli PRIVATE ArchiveMemberCommand.cpp ArchiveMemberCommand.h)
 target_sources(war3-map-cli PRIVATE ImportQueryCommand.cpp ImportQueryCommand.h)
 target_sources(war3-map-cli PRIVATE UpdateCommand.cpp UpdateCommand.h)
 target_sources(war3-map-cli PRIVATE NameQueryCommand.cpp NameQueryCommand.h)

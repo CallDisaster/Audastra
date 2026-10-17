@@ -34,6 +34,8 @@
 #include "War3MapCore/Workspace.h"
 
 #include <QElapsedTimer>
+#include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QPointer>
 #include <QScopedValueRollback>
@@ -44,6 +46,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <map>
 #include <span>
 #include <stdexcept>
@@ -838,6 +841,44 @@ private:
                 {"project_identity", projectIdentity_}, {"revision", QString::number(project_.editRevision_.Revision())},
                 {"changes", QJsonObject{{"files", 1}, {"items", QJsonArray{item}}}}};
         }
+        if (name == "imports_add") {
+            // 调用时读入内存：之后磁盘文件再变也不影响本次导入和撤销。
+            constexpr qint64 kMaxFileBytes = 64LL * 1024 * 1024, kMaxTotalBytes = 256LL * 1024 * 1024;
+            std::vector<QtProject::EditorProject::ImportPayload> payloads;
+            qint64 total = 0;
+            for (const auto& item : arguments.value("files").toArray()) {
+                const auto file = item.toObject();
+                const auto disk = file.value("disk_path").toString();
+                QFile input(disk);
+                if (!QFileInfo(disk).isFile() || !input.open(QIODevice::ReadOnly))
+                    return Mcp::Failure("IMPORTS_ADD_FILE_UNREADABLE", "无法读取本机文件：" + disk.toStdString());
+                if (input.size() > kMaxFileBytes || (total += input.size()) > kMaxTotalBytes)
+                    return Mcp::Failure("IMPORTS_ADD_FILE_TOO_LARGE", "单个文件不能超过 64 MiB，一次合计不超过 256 MiB。");
+                const auto data = input.readAll();
+                if (data.size() != input.size())
+                    return Mcp::Failure("IMPORTS_ADD_FILE_UNREADABLE", "读取本机文件不完整：" + disk.toStdString());
+                auto bytes = std::make_shared<std::vector<std::byte>>(data.size());
+                std::memcpy(bytes->data(), data.constData(), static_cast<std::size_t>(data.size()));
+                payloads.push_back({file.value("archive_path").toString(), std::move(bytes)});
+            }
+            const auto rejected = project_.AddImportPayloads(payloads, arguments.value("replace_existing").toBool(false),
+                QObject::tr("AI 导入 %1 个文件").arg(payloads.size()));
+            if (!rejected.isEmpty()) return Mcp::Failure("IMPORTS_ADD_REJECTED", rejected.toStdString());
+            SyncIdentity();
+            emit owner_.Changed();
+            QJsonArray added, items;
+            for (const auto& payload : payloads) {
+                const auto sha = Sha256(*payload.bytes);
+                const auto shaText = sha.Succeeded() && sha.value ? QString::fromStdString(*sha.value) : QString();
+                added.append(QJsonObject{{"archive_path", payload.archivePath},
+                    {"size", static_cast<qint64>(payload.bytes->size())}, {"sha256", shaText}, {"replaced", payload.replaced}});
+                items.append(QJsonObject{{"kind", "import"}, {"object_id", ""}, {"title", payload.archivePath},
+                    {"target", payload.archivePath}, {"before", QJsonValue::Null}, {"after", shaText}});
+            }
+            return QJsonObject{{"ok", true}, {"added", added}, {"saved", false},
+                {"project_identity", projectIdentity_}, {"revision", QString::number(project_.editRevision_.Revision())},
+                {"changes", QJsonObject{{"files", added.size()}, {"items", items}}}};
+        }
         if (!mapTest_) return Mcp::Failure("MAP_TEST_UNAVAILABLE", "宿主尚未接通地图测试。");
         const auto rejected = mapTest_();
         if (!rejected.isEmpty()) return Mcp::Failure("MAP_TEST_REJECTED", rejected.toStdString());
@@ -944,7 +985,7 @@ private:
                 [this, name](const QJsonObject& args) -> QJsonObject {
                     const Mcp::LuaFileToolHost host{[this](const QString& tool, const QJsonObject& arguments) { return LuaFile(tool, arguments); }};
                     // 写入走共同写门：先提交界面草稿，再核对工程身份与修订。
-                    if (name == "lua_file_write")
+                    if (name == "lua_file_write" || name == "imports_add")
                         return Write(args, false, [&] { return Mcp::InvokeLuaFileTool(name, args, host); });
                     if (busy_ || project_.savingMap_) return Mcp::Failure("LIVE_EDITOR_BUSY", "地图保存或另一个写命令正在执行。");
                     const auto check = CheckContext(args, false, false);

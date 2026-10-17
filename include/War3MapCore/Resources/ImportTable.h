@@ -25,6 +25,10 @@ enum class ImportScope { Map, Campaign };
 // 与当前严格 MPQ 写入器一致：相对 ASCII 虚拟路径，统一反斜杠及大小写用于比较。
 [[nodiscard]] Result<std::string> CanonicalImportPath(std::string_view path);
 
+// 地图自身的数据文件由编辑器管理，不能当作导入资源：根目录的 war3map* / war3campaign*、
+// 括号开头的归档内部文件、Scripts\war3map.j / .lua。大小写与正反斜杠等价。
+[[nodiscard]] bool IsEditorManagedMemberPath(std::string_view path);
+
 // 5/8 为标准路径，10/13 为完整路径。旧工具写出的歧义记录可由真实归档消歧。
 // 未知 flags 不猜测语义；有唯一的实际成员证据时允许解析，但不改写原 flags。
 [[nodiscard]] Result<std::string> ResolveArchivePath(

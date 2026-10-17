@@ -311,6 +311,15 @@ public:
     int AddImportFiles(AssetState& state, const QStringList& diskPaths, const QString& folder = {}) const;
     void RemoveImports(std::vector<int> rows);
     void ClearImports();
+    // 按明确归档路径加入已读入内存的文件，整批一次进入资源撤销栈。路径须通过 CheckAssetPath；
+    // 路径已有文件（含未列入清单的归档成员）时须 replaceExisting。返回空字符串表示成功。
+    struct ImportPayload {
+        QString archivePath;
+        std::shared_ptr<const std::vector<std::byte>> bytes;
+        bool replaced = false; // 输出：覆盖了已有文件
+    };
+    [[nodiscard]] QString AddImportPayloads(std::vector<ImportPayload>& payloads, bool replaceExisting,
+        const QString& label);
     // 资源路径编辑（AssetEdits.cpp）：改名 / 移动 / 删除地图已有成员或待导入文件。
     // 返回空字符串表示成功，否则为不能修改的原因（非法路径、重名、编辑器管理的文件）。
     [[nodiscard]] QString MoveAsset(const QString& from, const QString& to);
