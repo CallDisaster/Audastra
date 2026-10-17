@@ -1,5 +1,7 @@
 #include "War3MapCore/Render/TerrainMinimapCandidate.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/MapData/MapTerrain.h"
+#include "War3MapCore/Render/TerrainGroundMesh.h"
 
 #include <algorithm>
 #include <bit>
@@ -72,6 +74,21 @@ TerrainMinimapInput Fixture(std::uint32_t width = 2, std::uint32_t height = 2, s
 
 std::size_t Record(const TerrainMinimapInput& input, std::size_t index) {
     return 41 + 4 * input.groundAtlases.size() + index * 7;
+}
+
+void HeightRaw(TerrainMinimapInput& input, std::size_t vertex, std::uint16_t value) {
+    const auto offset = Record(input, vertex);
+    input.currentW3e[offset] = static_cast<std::byte>(value & 255);
+    input.currentW3e[offset + 1] = static_cast<std::byte>(value >> 8);
+    Rebind(input);
+}
+
+TerrainGroundMesh Mesh(const TerrainMinimapInput& input) {
+    auto parsed = MapData::ParseMapTerrain(input.currentW3e);
+    Require(parsed.Succeeded(), "独立mesh对照需要可解析W3E");
+    auto mesh = BuildTerrainGroundMesh(*parsed.value->Snapshot(), input.groundAtlases, {}, TerrainLighting{false},
+        nullptr, {}, {}, {}, TerrainGroundBudgetPolicy::Strict);
+    Require(mesh.Succeeded(), "独立mesh对照需要完整Strict unlit网格"); return std::move(*mesh.value);
 }
 
 void Ground(TerrainMinimapInput& input, std::size_t vertex, unsigned texture) {
@@ -190,6 +207,16 @@ void TestOriginalTrilinearAndCellClamp() {
     Near(facts.maximumSampledLod, std::log2(381.0 / 256.0), "可用原始 mip 必须参与采样");
     Require(facts.originalMaxMip == 1 && facts.cellSafeMaxMip == 7 && facts.usableMaxMip == 1
         && !facts.missingOriginalMipsLimitedSampling && !facts.cellBoundaryLimitedSampling, "安全原链 cap facts 错误");
+    auto slopeInput = input; HeightRaw(slopeInput, 1, 8192 + 4096);
+    const auto slope = Build(slopeInput);
+    Require(Pixel(slope, 170, 128) == Rgba{0, 115, 85, 255}
+        && Pixel(slope, 170, 84) == Rgba{0, 0, 0, 255} && Pixel(slope, 170, 171) == Rgba{0, 0, 0, 255}
+        && Pixel(slope, 170, 85) == Rgba{0, 115, 85, 255} && Pixel(slope, 170, 170) == Rgba{0, 115, 85, 255},
+        "陡普通坡面必须保持手算三线性与非整数clip像素，不能改用3D边长LOD");
+    Near(slope.manifest.atlases[0].maximumRequestedLod, std::log2(381.0 / 256.0), "坡度不改变顶视UV足迹");
+    Near(slope.manifest.atlases[0].maximumSampledLod, std::log2(381.0 / 256.0), "坡度不改变原链取样LOD");
+    Require(slope.image.rgba == result.image.rgba && slope.encoded.bytes == result.encoded.bytes
+        && slope.manifest.meshSha256 != result.manifest.meshSha256, "相同顶视像素/BLP不能掩盖真实mesh高程身份");
     atlas->additionalMips.clear(); atlas->validatedMipCount = 1;
     const auto topOnly = Build(input);
     Require(Pixel(topOnly, 170, 128) == Rgba{0, 0, 200, 255}, "原图缺 lower 时只能 clamp 到 mip0，不能伪造 chain");
@@ -269,8 +296,8 @@ void TestUnsupportedDomainAndResources() {
     auto input = original;
     input.currentW3e[Record(input, 0) + 3] = std::byte{0x60}; Rebind(input); Rejected(input, "TERRAIN_MINIMAP_MAP_EDGE");
     input = original; input.currentW3e[Record(input, 0) + 3] = std::byte{0xa0}; Rebind(input); Rejected(input, "TERRAIN_MINIMAP_UNKNOWN_FLAGS");
-    input = original; input.currentW3e[Record(input, 0)] = std::byte{1}; Rebind(input); Rejected(input, "TERRAIN_MINIMAP_NOT_FLAT");
     input = original; input.currentW3e[Record(input, 0) + 6] = std::byte{3}; Rebind(input); Rejected(input, "TERRAIN_MINIMAP_NOT_FLAT");
+    input = original; HeightRaw(input, 0, 0x8000); Rejected(input, "TERRAIN_GROUND_HEIGHT_AMBIGUOUS");
     input = original; input.currentW3e[Record(input, 0) + 5] = std::byte{18}; Rebind(input); Rejected(input, "TERRAIN_MINIMAP_VARIATION");
     input = original; input.currentW3e[Record(input, 0) + 6] = std::byte{0x12}; Rebind(input); Rejected(input, "TERRAIN_MINIMAP_PALETTE");
     // 合法 cliff index0 已由全部正常 fixture 覆盖；sentinel15 同样允许，不能把任一合法索引当实悬崖。
@@ -356,6 +383,53 @@ void TestEncodedCandidateUsesCurrentImage() {
         "更换当前材质后不能复用旧小地图图像或旧编码身份");
 }
 
+void TestDryHeightfieldKeepsPixelsButChangesGeometryIdentity() {
+    auto input = Fixture(3, 3); input.groundAtlases[0] = Atlas(4, {12, 34, 56, 0});
+    const auto flat = Build(input); const auto flatMesh = Mesh(input);
+    const auto expected = Solid(256, 256, {12, 34, 56, 255});
+    Require(flat.image.rgba == expected.rgba, "固定单色顶视oracle必须覆盖全部256平方像素，忽略base alpha");
+    static_assert(TerrainMinimapManifest::algorithmVersion == 2);
+    Require(std::string_view(TerrainMinimapManifest::samplingPolicy) == "original-mips-cell-clamped-trilinear-unorm-v1"
+        && std::string_view(TerrainMinimapManifest::encodingPolicy) == "opaque-full-chain-shared-adaptive-palette-v1",
+        "高程域v2不能暗改采样/编码v1策略");
+    // 156是正式保存限制；157和陡坡也属于本生成器的普通干地heightfield域。
+    for (const int delta : {156, 157, 4096, -156, -157}) {
+        auto changed = input; HeightRaw(changed, 4, static_cast<std::uint16_t>(8192 + delta));
+        const auto result = Build(changed); const auto mesh = Mesh(changed);
+        Require(result.image.rgba == expected.rgba && result.image.rgba == flat.image.rgba
+            && result.encoded.bytes == flat.encoded.bytes && result.manifest.outputRgbaSha256 == flat.manifest.outputRgbaSha256
+            && result.manifest.outputBlpSha256 == flat.manifest.outputBlpSha256, "普通高程变化不能改变固定顶视RGBA或确定性BLP");
+        Require(result.manifest.currentW3eSha256 != flat.manifest.currentW3eSha256
+            && result.manifest.reserializedW3eSha256 == result.manifest.currentW3eSha256
+            && result.manifest.meshSha256 != flat.manifest.meshSha256 && result.manifest.manifestSha256 != flat.manifest.manifestSha256,
+            "相同像素不能复用W3E、真实mesh或manifest身份");
+        Require(mesh.vertices.size() == flatMesh.vertices.size() && mesh.indices == flatMesh.indices
+            && mesh.batches.size() == flatMesh.batches.size() && mesh.blocks.size() == flatMesh.blocks.size(),
+            "高度不能丢格、重排三角或改变材质批次");
+        std::size_t changedCorners = 0;
+        for (std::size_t index = 0; index < mesh.vertices.size(); ++index) {
+            const auto& before = flatMesh.vertices[index]; const auto& after = mesh.vertices[index];
+            Require(before.x == after.x && before.y == after.y && before.u == after.u && before.v == after.v
+                && before.red == after.red && before.green == after.green && before.blue == after.blue,
+                "只改高程时XY、UV、unlit RGB必须逐顶点不变");
+            const auto center = after.x == 138 && after.y == 148; // 手写header offset(10,20)+中心(128,128)。
+            Require(after.z == (center ? delta / 4.0f : 0.0f), "真实mesh必须保留手算Z，禁止为了像素相同而flatten");
+            changedCorners += center;
+        }
+        Require(changedCorners == 4, "2乘2 tiles中心顶点应在四份quad中各出现一次");
+        for (std::size_t index = 0; index < mesh.batches.size(); ++index) {
+            const auto& before = flatMesh.batches[index]; const auto& after = mesh.batches[index];
+            Require(before.firstIndex == after.firstIndex && before.indexCount == after.indexCount
+                && before.textureIndex == after.textureIndex && before.alphaBlend == after.alphaBlend && before.translucent == after.translucent,
+                "高度不改变实际draw批次布局");
+        }
+        Require(mesh.blocks[0].minimum[2] == std::min(0.0f, delta / 4.0f)
+            && mesh.blocks[0].maximum[2] == std::max(0.0f, delta / 4.0f), "block真实Z bounds也必须变化");
+        Near(result.manifest.atlases[0].maximumRequestedLod, flat.manifest.atlases[0].maximumRequestedLod, "普通坡度不改变UV LOD");
+        Require(!result.manifest.formalSaveAuthorized && !result.manifest.nativeEditorOrGameVerified, "更宽生成域不能取得保存或原版资格");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -363,6 +437,7 @@ int main() {
         TestDirectionAndFit(); TestGroupedDrawAndAllLayers(); TestBilinearByteSpace(); TestOriginalTrilinearAndCellClamp();
         TestSafeMipCapsAndOddCells(); TestIdentityAndHonestProvenance(); TestUnsupportedDomainAndResources(); TestBudgetsBeforeFullMesh();
         TestEncodedCandidateUsesCurrentImage();
+        TestDryHeightfieldKeepsPixelsButChangesGeometryIdentity();
         std::cout << "TerrainMinimapCandidateTests: all tests passed\n"; return 0;
     } catch (const std::exception& exception) {
         std::cerr << "TerrainMinimapCandidateTests: " << exception.what() << '\n'; return 1;

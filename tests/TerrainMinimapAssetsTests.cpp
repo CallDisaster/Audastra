@@ -284,6 +284,61 @@ void TestBaselineAndCurrentRevision() {
     Rejected(CaptureTerrainMinimapAssets(foreign, fixture.edits, {}));
 }
 
+void TestRealHeightEditsGenerateWithoutChangingSaveAuthority() {
+    Fixture fixture; auto source = fixture.Source();
+    const auto original = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}));
+    const auto flat = Take(BuildTerrainMinimapCandidate(original.Input()));
+    for (std::size_t at = 0; at < flat.image.rgba.size(); at += 4) {
+        Require(flat.image.rgba[at] == std::byte{80} && flat.image.rgba[at + 1] == std::byte{120}
+            && flat.image.rgba[at + 2] == std::byte{160} && flat.image.rgba[at + 3] == std::byte{255},
+            "真实手写BLP顶级固定颜色应覆盖整个方形顶视图");
+    }
+    for (const unsigned delta : {156u, 157u}) {
+        TerrainBrush brush; brush.kind = TerrainBrushKind::Raise; brush.radius = 0; brush.strength = delta / 4.0f;
+        const TerrainStrokePoint point{512, 512};
+        Require(fixture.edits.EditTerrain(brush, std::span(&point, 1), false).Succeeded(), "真实会话产生中心普通高程编辑");
+        Require(fixture.edits.Terrain()->vertices[40].groundHeightRaw == 8192 + delta, "真实笔刷应给出手算raw净差");
+        const auto plan = Take(TerrainSavePlan::Prepare(source, fixture.edits));
+        Require(plan.SaveGate().Succeeded() == (delta == 156), "生成域扩大不能放宽正式raw156保存门");
+        const auto captured = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}));
+        const auto candidate = Take(BuildTerrainMinimapCandidate(captured.Input()));
+        Require(captured.Binding().archiveSha256 == source.SourceSha256()
+            && captured.Binding().sessionIdentity == fixture.edits.SessionIdentity()
+            && captured.Binding().revision == fixture.edits.Revision()
+            && captured.Binding().currentTerrainSha256 != original.Binding().currentTerrainSha256
+            && captured.Binding().currentTerrainSha256 == candidate.manifest.currentW3eSha256,
+            "实际source/edit/assets与当前W3E身份应连续绑定");
+        Require(candidate.image.rgba == flat.image.rgba && candidate.encoded.bytes == flat.encoded.bytes
+            && candidate.manifest.outputRgbaSha256 == flat.manifest.outputRgbaSha256
+            && candidate.manifest.outputBlpSha256 == flat.manifest.outputBlpSha256
+            && candidate.manifest.meshSha256 != flat.manifest.meshSha256
+            && candidate.manifest.manifestSha256 != flat.manifest.manifestSha256,
+            "真实非平坦编辑应保持固定RGBA/BLP但更新mesh与manifest身份");
+        Require(!candidate.manifest.formalSaveAuthorized && !candidate.manifest.nativeEditorOrGameVerified
+            && !TerrainMinimapAssetSnapshot::formalSaveAuthorized && !TerrainMinimapAssetSnapshot::nativeEditorOrGameVerified,
+            "真实来源与生成成功仍不授予新派生成员保存或原版资格");
+        Require(!VerifyTerrainMinimapAssetsCurrent(original, source, fixture.edits, {}).Succeeded(), "相同像素不能复活旧来源修订");
+        if (delta == 156) {
+            Require(plan.Members()[1].sourceSha256 == plan.Members()[1].outputSha256, "纯高度编辑应原字保留WPM");
+            const auto saved = Take(source.SaveCandidate(fixture.directory.Path() / "height156.w3x", plan.Replacements()));
+            const auto readback = Take(MapArchiveSession::Open(saved.path));
+            Require(plan.VerifyReadback(readback).Succeeded(), "现有正式门内W3E输出仍按五成员精确回读");
+            const auto savedTerrain = Take(readback.ReadMember("war3map.w3e"));
+            const auto savedPathing = Take(readback.ReadMember("war3map.wpm"));
+            Require(savedTerrain == captured.Input().currentW3e && savedPathing == fixture.wpm,
+                "回读实际W3E对应本次候选输入，原始WPM保持逐字一致");
+            std::vector<MemberReplacement> unapproved(plan.Replacements().begin(), plan.Replacements().end());
+            unapproved.push_back({"war3mapMap.blp", candidate.encoded.bytes});
+            Require(!plan.VerifyFrozenOutput(source.SourceSha256(), unapproved).Succeeded(),
+                "小地图生成成功不能把未批准MapBLP夹入正式冻结成员计划");
+        }
+        Require(fixture.edits.Undo(), "撤销真实高度编辑");
+        Require(fixture.edits.Terrain()->vertices[40].groundHeightRaw == 8192
+            && !VerifyTerrainMinimapAssetsCurrent(captured, source, fixture.edits, {}).Succeeded(),
+            "undo回到原图字节也不能复活旧高程快照修订");
+    }
+}
+
 void TestDuplicatePathsAndBudgets() {
     Fixture fixture(true); auto source = fixture.Source();
     auto captured = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}));
@@ -313,6 +368,7 @@ int main() {
         TestActualMapWinnerAndOriginalMips(); TestGameFallbackAndWinnerChange(); TestSameGamePathChangedMember();
         TestMissingDoesNotHideUnreadable(); TestUnlistedExactAndReadError();
         TestBaselineAndCurrentRevision(); TestDuplicatePathsAndBudgets();
+        TestRealHeightEditsGenerateWithoutChangingSaveAuthority();
         std::cout << "TerrainMinimapAssetsTests: all tests passed\n"; return 0;
     } catch (const std::exception& e) {
         std::cerr << "TerrainMinimapAssetsTests: " << e.what() << '\n'; return 1;

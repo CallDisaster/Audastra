@@ -233,7 +233,6 @@ void CheckDomain(const MapData::TerrainGridSnapshot& grid) {
     if (grid.header.groundTilesets.empty() || grid.header.groundTilesets.size() > 16)
         Fail("TERRAIN_MINIMAP_PALETTE", "第一版候选需要 1..16 个地面材质槽。");
     const auto level = grid.vertices.front().CliffLevel();
-    const auto z = grid.vertices.front().position[2];
     for (const auto& vertex : grid.vertices) {
         if (vertex.IsBoundary()) Fail("TERRAIN_MINIMAP_BOUNDARY", "第一版候选不解释 Boundary 边界标志。");
         if (vertex.IsMapEdge()) Fail("TERRAIN_MINIMAP_MAP_EDGE", "第一版候选不解释 MapEdge 外缘标志。");
@@ -242,8 +241,8 @@ void CheckDomain(const MapData::TerrainGridSnapshot& grid) {
         if (vertex.IsRamp()) Fail("TERRAIN_MINIMAP_RAMP", "第一版候选不近似坡道。");
         if (vertex.HasWater()) Fail("TERRAIN_MINIMAP_WATER", "第一版候选不近似水面。");
         if (vertex.IsBlight()) Fail("TERRAIN_MINIMAP_BLIGHT", "第一版候选不近似荒芜。");
-        if (vertex.CliffLevel() != level || vertex.position[2] != z)
-            Fail("TERRAIN_MINIMAP_NOT_FLAT", "第一版候选需要同一世界高度与统一 cliff layer。");
+        if (vertex.CliffLevel() != level)
+            Fail("TERRAIN_MINIMAP_NOT_FLAT", "候选需要统一 cliff layer，不近似悬崖层级变化。");
         if (vertex.GroundTextureIndex() >= grid.header.groundTilesets.size()
             || (vertex.CliffTextureIndex() != 15 && vertex.CliffTextureIndex() >= grid.header.cliffTilesets.size()))
             Fail("TERRAIN_MINIMAP_PALETTE", "候选不解释未解析的地面或悬崖材质索引。");
@@ -482,7 +481,7 @@ std::size_t OutputCapacity(const TerrainMinimapCandidate& result) {
 
 std::string ManifestHash(TerrainMinimapManifest& m) {
     Digest hash(m.memory.maximumObservedHashScratchBytes);
-    hash.String("TerrainMinimapManifest-v1"); hash.String(m.samplingPolicy); hash.String(m.encodingPolicy); HashBinding(hash, m.binding);
+    hash.String("TerrainMinimapManifest-v2"); hash.String(m.samplingPolicy); hash.String(m.encodingPolicy); HashBinding(hash, m.binding);
     hash.String(m.currentW3eSha256); hash.String(m.reserializedW3eSha256);
     for (const auto value : m.worldExtent) hash.F64(value);
     for (const auto value : m.contentRectangle) hash.F64(value);

@@ -56,7 +56,7 @@ struct TerrainMinimapMemoryFacts {
 };
 
 struct TerrainMinimapManifest {
-    static constexpr std::uint32_t algorithmVersion = 1;
+    static constexpr std::uint32_t algorithmVersion = 2; // v2扩展普通干地高程域；采样与编码策略不变。
     static constexpr const char* samplingPolicy = "original-mips-cell-clamped-trilinear-unorm-v1";
     static constexpr const char* encodingPolicy = "opaque-full-chain-shared-adaptive-palette-v1";
     TerrainInspectionBinding binding;
@@ -87,8 +87,10 @@ struct TerrainMinimapCandidate {
     TerrainMinimapManifest manifest;
 };
 
-// 独立、只读 CPU 候选，不执行 I/O/GPU/保存。仅接受 classic v11 平坦干地，统一
+// 独立、只读 CPU 候选，不执行 I/O/GPU/保存。仅接受 classic v11 干地heightfield，统一
 // cliff layer，无坡道/水/荒芜/边界/MapEdge/未知位。合法 cliff palette 索引不等于悬崖。
+// 保留真实Z及其mesh身份；顶视unlit覆盖/UV/LOD不使用Z，不计算坡度明暗、阴影或遮挡。
+// 普通高程坡面不等于Ramp flag或cliff层变化；生成域不授予正式保存的幅度资格。
 // 内部从当前 W3E 构建 Strict unlit 完整 GroundMesh，逐批次索引追溯原 tile 与全部层。
 // 每层按唯一三角重心插值 UV；原始连续 mip 按 quad 导数及输出像素足迹选择 LOD，
 // 在每个仍有整数 cell 边界的 mip 内夹到该 cell 首末 texel 再双线性/三线性采样。
