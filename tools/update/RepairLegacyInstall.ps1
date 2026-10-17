@@ -15,7 +15,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 if ([string]::IsNullOrWhiteSpace($InstallDirectory)) {
-    Write-Host '用法：.\RepairLegacyInstall.ps1 -InstallDirectory "C:\Apps\Audastra" [-PlanOnly]'
+    Write-Host '用法：.\RepairLegacyInstall.ps1 -InstallDirectory "<现有安装目录的绝对路径>" [-PlanOnly]'
     Write-Host '请先保存并正常关闭旧编辑器，再从完整官方修复包运行。详见 LEGACY_UPDATE_REPAIR.md。'
     return
 }

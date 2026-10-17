@@ -13,13 +13,13 @@
 3. 在修复包根目录打开 PowerShell，明确传入安装目录。路径含空格时保留引号。可以先执行只读计划：
 
 ```powershell
-.\RepairLegacyInstall.ps1 -InstallDirectory 'C:\Apps\Audastra' -PlanOnly
+.\RepairLegacyInstall.ps1 -InstallDirectory '<现有安装目录的绝对路径>' -PlanOnly
 ```
 
 只读计划通过后，以同一路径执行升级：
 
 ```powershell
-.\RepairLegacyInstall.ps1 -InstallDirectory 'C:\Apps\Audastra'
+.\RepairLegacyInstall.ps1 -InstallDirectory '<现有安装目录的绝对路径>'
 ```
 
 没有参数时会显示用法。若系统脚本策略阻止运行，请遵循组织或发布方提供的受信脚本运行方式；不要修改机器级策略或删除文件的来源标记。
