@@ -36,6 +36,8 @@
 #include "MdxTestModel.h"
 #include "EditorPresentationFixture.h"
 #include "SyntheticObjectCatalogFixture.h"
+#include "../../src/Render/Scene/ModelSkinInput.h"
+#include "../../src/Render/Particles/ParticleInput.h"
 
 #include <QApplication>
 #include <QAction>
@@ -86,6 +88,10 @@ namespace {
 struct BackendState {
     EditorPresentationState editor;
     std::uint64_t skinScene = 0, skinContent = 0, skinUploads = 0, matrixUploads = 0;
+    std::shared_ptr<const Render::ModelScene> skinModels, skinLayout, layerModels;
+    std::shared_ptr<const Render::SkinPose> skinPose, layerPose;
+    std::shared_ptr<const Render::ParticleFrameData> layerParticles;
+    std::vector<Render::TextureRgba> layerParticleTextures;
     std::uint64_t layerParent = 7, layerRevision = 0, layersRevision = 1, layerId = 0;
     int layerSubmits = 0, layerUpdates = 0, layerRemoves = 0;
     std::uint32_t layerParticleVertices = 0;
@@ -208,8 +214,48 @@ const War3RenderPluginApiV2 modelBackend = [] {
     api.submitModelScene = ModelScene;
     return api;
 }();
+// UI 调度夹具仍不绘制像素；保存完整 owned 输入，让能力声明有真实的 CPU 负载校验。
+bool CopyFixtureTextures(const War3RenderTextureMipChainV2* input, std::uint32_t count,
+    std::vector<Render::TextureRgba>& output) {
+    if (count > 4096 || (count && !input)) return false;
+    std::vector<Render::TextureRgba> candidate;
+    std::uint64_t total = 0;
+    for (std::uint32_t i = 0; i < count; ++i) {
+        const auto& chain = input[i];
+        if (chain.structSize != sizeof(chain) || !chain.mipCount || chain.mipCount > 12
+            || !chain.mips || chain.maxSampleMip >= chain.mipCount || chain.atlasColumns != 1 || chain.atlasRows != 1) return false;
+        Render::TextureRgba texture;
+        texture.maxSampleMip = chain.maxSampleMip;
+        std::uint64_t chainBytes = 0;
+        for (std::uint32_t level = 0; level < chain.mipCount; ++level) {
+            const auto& mip = chain.mips[level];
+            if (mip.structSize != sizeof(mip) || !mip.width || !mip.height || mip.width > 2048 || mip.height > 2048
+                || !mip.rgba || mip.rgbaByteCount != std::uint64_t(mip.width) * mip.height * 4
+                || mip.rgbaByteCount > 16ull * 1024 * 1024 || mip.rgbaByteCount > 24ull * 1024 * 1024 - chainBytes
+                || mip.rgbaByteCount > 192ull * 1024 * 1024 - total) return false;
+            if (level) {
+                const auto& previous = chain.mips[level - 1];
+                if ((previous.width == 1 && previous.height == 1) || mip.width != std::max(1u, previous.width / 2)
+                    || mip.height != std::max(1u, previous.height / 2)) return false;
+            }
+            const auto* pixels = static_cast<const std::uint8_t*>(mip.rgba);
+            texture.mips.push_back({mip.width, mip.height, {pixels, pixels + static_cast<std::size_t>(mip.rgbaByteCount)}});
+            chainBytes += mip.rgbaByteCount; total += mip.rgbaByteCount;
+        }
+        candidate.push_back(std::move(texture));
+    }
+    output = std::move(candidate); return true;
+}
+bool CopyFixtureModels(const War3RenderSkinnedModelSceneV2& input, Render::ModelScene& output) {
+    std::uint64_t payload = 0;
+    return Render::CopySkinnedModelInput(input, output, payload)
+        && CopyFixtureTextures(input.textures, input.textureCount, output.textures);
+}
 std::int32_t WAR3_RENDER_CALL SkinScene(War3RendererHandle h, const War3RenderSkinnedModelSceneV2* input) {
     auto& s = *static_cast<BackendState*>(h);
+    auto models = std::make_shared<Render::ModelScene>();
+    if (!input || !CopyFixtureModels(*input, *models)) return 1;
+    s.skinPose = models->initialSkin; s.skinModels = s.skinLayout = std::move(models);
     s.skinScene = input->initialPose->sceneVersion; s.skinContent = input->initialPose->contentVersion;
     s.rosterAssets = {input->vertexCount, input->indexCount, input->layerCount, input->meshCount,
         input->modelCount, input->textureCount, 0};
@@ -218,14 +264,40 @@ std::int32_t WAR3_RENDER_CALL SkinScene(War3RendererHandle h, const War3RenderSk
 }
 std::int32_t WAR3_RENDER_CALL SkinUpdate(War3RendererHandle h, const War3RenderSkinUpdateV2* input) {
     auto& s = *static_cast<BackendState*>(h);
-    if (input->sceneVersion != s.skinScene || input->contentVersion <= s.skinContent) return 1;
+    auto pose = std::make_shared<Render::SkinPose>();
+    if (!input || !s.skinLayout || input->sceneVersion != s.skinScene || input->contentVersion <= s.skinContent
+        || !Render::CopySkinUpdate(*input, *s.skinLayout, *pose)) return 1;
+    s.skinPose = std::move(pose);
     // 与生产插件一致：姿势更新推进content，不替换静态场景/视图sceneEpoch。
     s.skinContent = input->contentVersion; ++s.matrixUploads; return 0;
 }
 std::int32_t WAR3_RENDER_CALL SkinStatus(War3RendererHandle h, War3RenderSkinStatusV2* out) {
     const auto& s = *static_cast<BackendState*>(h);
+    if (!out || out->structSize < sizeof(*out)) return 1;
+    const auto capacity = out->structSize;
     *out = {sizeof(*out), 0, s.skinScene ? 1u : 0u, 0, static_cast<std::uint64_t>(s.frames),
-        s.skinScene, s.skinContent, s.skinUploads, s.matrixUploads}; return 0;
+        s.skinScene, s.skinContent, s.skinUploads, s.matrixUploads};
+    if (capacity >= sizeof(War3RenderSkinColorCapabilitiesV2)) {
+        auto& capabilities = *reinterpret_cast<War3RenderSkinColorCapabilitiesV2*>(out);
+        capabilities.colorFormat = WAR3_RENDER_STATIC_MESH_RGB_V1; capabilities.reserved = 0;
+    }
+    if (capacity >= sizeof(War3RenderSkinDynamicColorCapabilitiesV2)) {
+        auto& capabilities = *reinterpret_cast<War3RenderSkinDynamicColorCapabilitiesV2*>(out);
+        capabilities.dynamicColorFormat = WAR3_RENDER_DYNAMIC_MESH_RGB_V1; capabilities.reserved = 0;
+    }
+    if (capacity >= sizeof(War3RenderSkinSharedRangeCapabilitiesV2)) {
+        auto& capabilities = *reinterpret_cast<War3RenderSkinSharedRangeCapabilitiesV2*>(out);
+        capabilities.sharedRangeMatrixFormat = 0; capabilities.reserved = 0;
+    }
+    if (capacity >= sizeof(War3RenderSkinMaterialCapabilitiesV2)) {
+        auto& capabilities = *reinterpret_cast<War3RenderSkinMaterialCapabilitiesV2*>(out);
+        capabilities.layerAlphaFormat = WAR3_RENDER_DYNAMIC_LAYER_ALPHA_V1; capabilities.reserved = 0;
+    }
+    if (capacity >= sizeof(War3RenderSkinMaterialStateCapabilitiesV2)) {
+        auto& capabilities = *reinterpret_cast<War3RenderSkinMaterialStateCapabilitiesV2*>(out);
+        capabilities.materialStateFormat = WAR3_RENDER_DYNAMIC_MATERIAL_STATE_V1; capabilities.reserved = 0;
+    }
+    return 0;
 }
 std::int32_t WAR3_RENDER_CALL SkinCapture(War3RendererHandle, void*, std::uint64_t, War3RenderSkinnedCapturedFrameV2*) { return 1; }
 std::int32_t WAR3_RENDER_CALL LayerTarget(War3RendererHandle h, War3RenderModelLayersTargetV2* out) {
@@ -234,11 +306,30 @@ std::int32_t WAR3_RENDER_CALL LayerTarget(War3RendererHandle h, War3RenderModelL
 }
 std::int32_t WAR3_RENDER_CALL LayerSubmit(War3RendererHandle h, const War3RenderModelSceneLayerV2* in) {
     auto& s = *static_cast<BackendState*>(h);
+    if (!in) return 1;
     const auto* models = in->particles ? in->particles->models : in->models;
     if (!models || !models->initialPose || in->parentModelEpoch != s.layerParent
         || in->expectedRevision != s.layerRevision || in->revision != s.layerRevision + 1) return 1;
     const auto& pose = *models->initialPose;
     if (!pose.instanceCount && !in->particles) return 1;
+    auto ownedModels = std::make_shared<Render::ModelScene>();
+    if (!CopyFixtureModels(*models, *ownedModels)) return 1;
+    std::shared_ptr<const Render::ParticleFrameData> particles;
+    std::vector<Render::TextureRgba> particleTextures;
+    if (in->particles) {
+        const auto& scene = *in->particles;
+        auto frame = std::make_shared<Render::ParticleFrameData>();
+        auto particlePose = std::make_shared<Render::SkinPose>();
+        if (scene.structSize != sizeof(scene) || !scene.initialFrame || !scene.initialFrame->modelPose
+            || !CopyFixtureTextures(scene.textures, scene.textureCount, particleTextures)
+            || !Render::CopyParticleInput(*scene.initialFrame, scene.textureCount, *frame)
+            || !Render::CopySkinUpdate(*scene.initialFrame->modelPose, *ownedModels, *particlePose)
+            || particlePose->sceneVersion != ownedModels->initialSkin->sceneVersion
+            || particlePose->contentVersion != ownedModels->initialSkin->contentVersion) return 1;
+        ownedModels->initialSkin = std::move(particlePose); particles = std::move(frame);
+    }
+    s.layerPose = ownedModels->initialSkin; s.layerModels = std::move(ownedModels);
+    s.layerParticles = std::move(particles); s.layerParticleTextures = std::move(particleTextures);
     s.layerId = in->layerId; s.layerRevision = in->revision; ++s.layersRevision; ++s.layerSubmits;
     s.layerScene = pose.sceneVersion; s.layerContent = pose.contentVersion;
     s.layerParticleVertices = in->particles ? in->particles->initialFrame->vertexCount : 0;
@@ -246,10 +337,19 @@ std::int32_t WAR3_RENDER_CALL LayerSubmit(War3RendererHandle h, const War3Render
 }
 std::int32_t WAR3_RENDER_CALL LayerUpdate(War3RendererHandle h, const War3RenderModelLayerUpdateV2* in) {
     auto& s = *static_cast<BackendState*>(h);
+    if (!in) return 1;
     const auto* pose = in->particles ? in->particles->modelPose : in->pose;
     if (!pose || (!pose->instanceCount && !in->particles) || in->layerId != s.layerId || in->parentModelEpoch != s.layerParent
         || in->expectedRevision != s.layerRevision || in->revision != s.layerRevision + 1) return 1;
     if (pose->sceneVersion != s.layerScene || pose->contentVersion <= s.layerContent) return 1;
+    auto ownedPose = std::make_shared<Render::SkinPose>();
+    if (!s.layerModels || bool(s.layerParticles) != bool(in->particles)
+        || !Render::CopySkinUpdate(*pose, *s.layerModels, *ownedPose)) return 1;
+    auto particles = std::make_shared<Render::ParticleFrameData>();
+    if (in->particles && !Render::CopyParticleInput(*in->particles,
+        static_cast<std::uint32_t>(s.layerParticleTextures.size()), *particles)) return 1;
+    s.layerPose = std::move(ownedPose);
+    if (in->particles) s.layerParticles = std::move(particles);
     s.layerRevision = in->revision; ++s.layersRevision; ++s.layerUpdates;
     s.layerContent = pose->contentVersion;
     s.layerParticleVertices = in->particles ? in->particles->vertexCount : 0;
@@ -259,6 +359,7 @@ std::int32_t WAR3_RENDER_CALL LayerRemove(War3RendererHandle h, std::uint64_t id
     std::uint64_t parent, std::uint64_t expected) {
     auto& s = *static_cast<BackendState*>(h);
     if (id != s.layerId || parent != s.layerParent || expected != s.layerRevision) return 1;
+    s.layerModels.reset(); s.layerPose.reset(); s.layerParticles.reset(); s.layerParticleTextures.clear();
     s.layerId = s.layerRevision = 0; ++s.layersRevision; ++s.layerRemoves; return 0;
 }
 std::int32_t WAR3_RENDER_CALL LayerCapture(War3RendererHandle, std::uint64_t, void*, std::uint64_t,
@@ -296,6 +397,10 @@ std::int32_t WAR3_RENDER_CALL SubmitRoster(War3RendererHandle handle,
         || !EditorPresentationFixture<BackendState>::Matches(input->expected, editor.target)
         || input->expectedAssetIdentity != state.rosterAssetIdentity || input->expectedLayersRevision != state.layersRevision
         || input->expectedPresentationRevision != editor.presentation.presentationRevision) return 1;
+    if (!state.skinModels || !state.skinLayout) return 1;
+    auto layout = std::make_shared<Render::ModelScene>();
+    auto models = state.skinModels;
+    auto assets = state.rosterAssets;
     if (input->flags == WAR3_RENDER_ROSTER_APPEND_ASSETS) {
         const auto* append = reinterpret_cast<const War3RenderEditorAssetRosterV2*>(input)->assets;
         if (!append || append->structSize != sizeof(*append) || append->reserved || append->particleTextureCount
@@ -309,13 +414,19 @@ std::int32_t WAR3_RENDER_CALL SubmitRoster(War3RendererHandle handle,
             || prefix.layerCount != before.layerCount || prefix.meshCount != before.meshCount
             || prefix.modelCount != before.modelCount || prefix.modelTextureCount != before.modelTextureCount
             || prefix.particleTextureCount != before.particleTextureCount) return 1;
+        std::uint64_t payload = 0;
+        if (!Render::CopySkinAssetAppend(*append, *input->candidatePose, state.skinModels, *layout, payload)
+            || !CopyFixtureTextures(append->modelTextures, append->modelTextureCount, layout->textures)) return 1;
+        layout->SealStaticSuffix(); models = layout;
         // 只核验本调度夹具的资产前缀/后缀和身份；不实现GPU上传，也不伪造模型像素。
-        state.rosterAssets = {prefix.vertexCount + append->vertexCount, prefix.indexCount + append->indexCount,
+        assets = {prefix.vertexCount + append->vertexCount, prefix.indexCount + append->indexCount,
             prefix.layerCount + append->layerCount, prefix.meshCount + append->meshCount,
             prefix.modelCount + append->modelCount, prefix.modelTextureCount + append->modelTextureCount,
             prefix.particleTextureCount};
-        ++state.rosterAssetIdentity; ++state.rosterAssetAppends;
-    }
+    } else if (!Render::CopySkinRoster(*input->candidatePose, *state.skinLayout, *layout)) return 1;
+    state.skinModels = std::move(models); state.skinLayout = std::move(layout);
+    state.skinPose = state.skinLayout->initialSkin; state.rosterAssets = assets;
+    if (input->flags == WAR3_RENDER_ROSTER_APPEND_ASSETS) { ++state.rosterAssetIdentity; ++state.rosterAssetAppends; }
     const auto& pose = *input->candidatePose;
     state.skinScene = pose.sceneVersion; state.skinContent = pose.contentVersion;
     ++state.matrixUploads; ++state.sceneEpoch; ++state.layersRevision;
@@ -766,6 +877,7 @@ void WorldModuleTests::BrowserSelectionSynchronizesPlacementTool() {
     auto* preview = module.findChild<WorldPlacementPreview*>(); QVERIFY(preview);
     viewport->PlacementHovered(0, 0, 0, false);
     QTRY_VERIFY(preview->ModelSubmitted() && state.layerId != 0);
+    QVERIFY(state.layerPose && state.layerPose->dynamicMaterialStates && !state.layerPose->materialStates.empty());
     QTRY_VERIFY(preview->CurrentFrame() && !preview->CurrentFrame()->particleVertices.empty());
     QTest::mouseClick(select, Qt::LeftButton);
     QVERIFY(select->isChecked() && !place->isChecked() && !viewport->Placing());
@@ -920,6 +1032,11 @@ void WorldModuleTests::PlacementParticleClock() {
     QTRY_VERIFY2(preview.ModelSubmitted() && preview.CurrentFrame(), qPrintable(previewMessage));
     const auto scene = preview.CurrentScene(); const auto first = preview.CurrentFrame();
     QVERIFY(scene && first->particleCheckpoint && scene->particleInstanceCount == 1);
+    QVERIFY(state.layerPose && state.layerPose->dynamicMaterialStates == !pureParticle);
+    if (!pureParticle) {
+        QVERIFY(state.layerPose->dynamicMaterialAlphas && !state.layerPose->materialStates.empty());
+        QCOMPARE(state.layerPose->layerAlphas, first->layerAlphas);
+    }
     QCOMPARE(first->states.size(), std::size_t{1});
     QCOMPARE(first->states[0].sequenceIndex, std::uint32_t{0}); // 共享夹具按时间顺序，Stand 为第 0 个动作
     QCOMPARE(first->states[0].elapsedMs - first->states[0].globalMs, std::uint64_t{500});
@@ -1711,7 +1828,7 @@ void WorldModuleTests::InstanceCatalogStartsBesidePose() {
     QTemporaryDir directory; QVERIFY(directory.isValid());
     const auto mapPath = directory.filePath(QStringLiteral("catalog-scheduling.w3x"));
     auto members = PlacementPreviewMembers();
-    // 此夹具验证目录/预取调度，后端只有骨架能力；KMTF有独立的完整材质能力回归。
+    // 此夹具验证目录/预取调度；保留 TEXS0 的真实材质模式，并由后端共用 Copy 校验完整负载。
     const auto skeletonOnly = AnimationTest::WithoutSyntheticConstantKmtf(MdxTest::BuildTestMdx());
     for (auto& member : members) if (member.name == "Synthetic\\Arcane.mdx") member.data = skeletonOnly;
     if (!prefetchDisposition.isEmpty()) members.push_back({"Synthetic\\Prefetched.mdx", skeletonOnly});
@@ -1746,6 +1863,8 @@ void WorldModuleTests::InstanceCatalogStartsBesidePose() {
         return first.Succeeded() && player.Install(*service.value, *first.value, source, [] { return true; });
     };
     QVERIFY(install(12)); QVERIFY(!player.Busy());
+    QVERIFY(state.skinPose && state.skinPose->dynamicMaterialStates && state.skinPose->dynamicMaterialAlphas);
+    QVERIFY(!state.skinPose->materialStates.empty() && !state.skinPose->layerAlphas.empty());
     const auto originalScene = player.Scene()->sceneVersion;
     auto gate = std::make_shared<CatalogWorkerGate>(); ReleaseCatalogWorker release{gate};
     struct Completion { int calls = 0; bool accepted = false; War3Map::Status status; };
