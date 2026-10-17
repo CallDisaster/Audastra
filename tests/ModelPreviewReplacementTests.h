@@ -96,6 +96,17 @@ inline void SourceRouting() {
         ModelPreview::SetReplacementTexture(replacement, explicitPath);
         const auto request = ModelPreview::MakeRequest("original.mdx", replacement);
         const auto scene = Good(BuildWorldModelScene(std::span(&request, 1), reader, {}, {}, pose));
+        std::cout<<"replacement_scene replaceable="<<replaceable<<" request_model="<<request.modelPath
+            <<" request_texture="<<request.replaceableTexture<<" expected_texture="<<expected
+            <<" instances="<<scene.instances.size()<<" models="<<scene.models.size()<<" meshes="<<scene.meshes.size()
+            <<" layers="<<scene.layers.size()<<" vertices="<<scene.vertices.size()<<" indices="<<scene.indices.size()
+            <<" untextured="<<scene.untexturedLayers<<" textures="<<scene.textures.size()<<" sampler_flags=";
+        for (const auto flags:scene.layerSamplerFlags) std::cout<<flags<<',';
+        std::cout<<" texture_paths=";
+        for (const auto& texture:scene.textures) std::cout<<texture.path<<',';
+        std::cout<<" read_paths=";
+        for (const auto& path:textureReads) std::cout<<path<<',';
+        std::cout<<'\n';
         Check(request.modelPath == "original.mdx" && request.replaceableTexture == explicitPath &&
             scene.instances.size() == 1 && scene.models.size() == 1 && scene.meshes.size() == 1 && scene.layers.size() == 1 &&
             !scene.vertices.empty() && !scene.indices.empty() && scene.untexturedLayers == 0 && scene.textures.size() == 1 &&
