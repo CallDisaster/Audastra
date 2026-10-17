@@ -588,56 +588,75 @@ void Budgets() {
             bill.childFrameChargedBytes == std::max(bill.childStandFrameBytes, bill.childFrameLayoutBytes),
             "PREM bill double charged source/layout/workspace or missed actual child capacity");
         if (accepted) {
-            // 只记录旧布局门的实际输入；不改变准入、源字节、独立公式或预算上限。
-            std::cout << "prem_bill_diag childFrame=" << bool(packet.childFrame)
-                << " childScene=" << bool(packet.childScene) << '\n';
-            if (packet.childFrame && packet.childScene) {
-                const auto& diagnosticFrame = *packet.childFrame;
-                const auto& diagnosticScene = *packet.childScene;
-                const auto diagnosticBasePayload = std::uint64_t(diagnosticFrame.instances.size()) *
-                    (sizeof(War3RenderSkinnedModelInstanceV2) + sizeof(AnimationPoseLink) + sizeof(AnimationPickBounds)) +
-                    std::uint64_t(diagnosticFrame.states.size()) * sizeof(AnimationInstanceState) +
-                    std::uint64_t(diagnosticFrame.groups.size()) * sizeof(War3RenderGroupMatrixV2) +
-                    std::uint64_t(diagnosticFrame.alphas.size()) * (sizeof(float) + sizeof(War3RenderMeshColorV2));
-                const auto diagnosticMaterialPayload = std::uint64_t(diagnosticFrame.layerAlphas.size()) * sizeof(float) +
-                    std::uint64_t(diagnosticFrame.layerSlices.size()) * sizeof(War3RenderMaterialLayerSliceV2) +
-                    std::uint64_t(diagnosticFrame.materialStates.size()) * sizeof(War3RenderMaterialStateV2) +
-                    std::uint64_t(diagnosticFrame.materialStateSlices.size()) * sizeof(War3RenderMaterialLayerSliceV2);
-                const auto diagnosticOwnerBytes = 2ull * sizeof(decltype(diagnosticFrame.particleMaterialFlags)) +
-                    sizeof(std::shared_ptr<const std::vector<std::uint32_t>>);
-                const auto diagnosticExpectedLayout = diagnosticBasePayload + diagnosticMaterialPayload + diagnosticOwnerBytes;
-                std::cout << "prem_bill_diag shared=" << diagnosticFrame.sharedPoseRanges
-                    << " sceneAlpha=" << diagnosticScene.dynamicMaterialAlphas << " sceneState=" << diagnosticScene.dynamicMaterialStates
-                    << " frameAlpha=" << diagnosticFrame.dynamicMaterialAlphas << " frameState=" << diagnosticFrame.dynamicMaterialStates
-                    << " geosetIssues=" << diagnosticFrame.geosetIssues.size() << " materialIssues=" << diagnosticFrame.materialIssues.size()
-                    << " collisions=" << diagnosticFrame.collisionMatrices.size() << " models=" << diagnosticScene.models.size()
-                    << " particleFlags=" << diagnosticFrame.particleMaterialFlags.size() << '\n';
-                std::cout << "prem_bill_diag layerAlphas=" << diagnosticFrame.layerAlphas.size() << '/' << diagnosticFrame.layerAlphas.capacity()
-                    << " layerSlices=" << diagnosticFrame.layerSlices.size() << '/' << diagnosticFrame.layerSlices.capacity()
-                    << " materialStates=" << diagnosticFrame.materialStates.size() << '/' << diagnosticFrame.materialStates.capacity()
-                    << " materialStateSlices=" << diagnosticFrame.materialStateSlices.size() << '/' << diagnosticFrame.materialStateSlices.capacity() << '\n';
-                std::cout << "prem_bill_diag layout=" << bill.childFrameLayoutBytes << " stand=" << bill.childStandFrameBytes
-                    << " charged=" << bill.childFrameChargedBytes << " childEvaluator=" << bill.childEvaluatorBytes
-                    << " birthEvaluator=" << bill.birthEvaluatorBytes << " basePayload=" << diagnosticBasePayload
-                    << " materialPayload=" << diagnosticMaterialPayload << " owners=" << diagnosticOwnerBytes
-                    << " expectedLayout=" << diagnosticExpectedLayout << " layoutEqualsExpected=" << (bill.childFrameLayoutBytes == diagnosticExpectedLayout) << '\n';
-                std::cout << "prem_bill_diag childSource=" << bill.childSourceBytes << " childResource=" << bill.childResourceBytes
-                    << " childScene=" << bill.childSceneBytes << " requestGeometry=" << diagnosticScene.requestGeometryRequired.size()
-                    << '/' << diagnosticScene.requestGeometryRequired.capacity()
-                    << " sourceTableBytes=" << std::uint64_t(diagnosticScene.requestGeometryRequired.capacity()) * sizeof(std::uint8_t)
-                    << " storage=" << packet.storageBytes << " working=" << packet.workingBytes << " asset=" << packet.assetBytes << '\n';
-            }
             Check(packet.childFrame && packet.childScene && !packet.childFrame->sharedPoseRanges &&
-                !packet.childScene->dynamicMaterialAlphas && !packet.childScene->dynamicMaterialStates &&
+                packet.childScene->dynamicMaterialAlphas && packet.childScene->dynamicMaterialStates &&
+                packet.childFrame->dynamicMaterialAlphas && packet.childFrame->dynamicMaterialStates &&
                 packet.childFrame->geosetIssues.empty() && packet.childFrame->materialIssues.empty() &&
-                packet.childFrame->collisionMatrices.empty(), "PREM billing fixture acquired unrelated child layout charges");
+                packet.childFrame->collisionMatrices.empty(), "PREM billing fixture lost required material modes or acquired unrelated child layout charges");
             const auto& child=*packet.childFrame;
             Check(packet.childScene->models.size()==1 && child.particleMaterialFlags.empty(),
                 "PREM billing fixture lost its single child asset or acquired particle material payload");
+            const auto& childScene=*packet.childScene;
+            const auto& geometry=childScene.geometry;
+            // 常驻TEXS0要求真实材质模式：32槽各有4个层输出，两套切片均归当前帧所有。
+            Check(child.instances.size()==32 && child.states.size()==32 && child.poses.size()==32 && child.pickBounds.size()==32 &&
+                child.layerAlphas.size()==128 && child.layerAlphas.capacity()==128 &&
+                child.layerSlices.size()==32 && child.layerSlices.capacity()==32 &&
+                child.materialStates.size()==128 && child.materialStates.capacity()==128 &&
+                child.materialStateSlices.size()==32 && child.materialStateSlices.capacity()==32,
+                "PREM child material payload lost its exact 32-slot four-layer owned layout");
+            Check(childScene.pickModels.size()==1 && childScene.pickModels[0].source && childScene.modelLayerRanges.size()==1 &&
+                childScene.modelLayerRanges[0].count==4 && geometry.layers.size()==4 && geometry.layerSamplerFlags.size()==4 &&
+                childScene.drawLayerBindings.size()==4 && geometry.modelTextureBindings.size()==1 && geometry.modelTextureBindings[0],
+                "PREM child material layout lost the actual source or resident sampler bindings");
+            const auto& source=*childScene.pickModels[0].source;
+            const auto& textureBindings=*geometry.modelTextureBindings[0];
+            Check(source.textures.size()==2 && source.textures[0].flags==3 && source.textures[1].flags==0 &&
+                textureBindings.size()==source.textures.size(), "PREM billing fixture changed its real TEXS3/0 source");
+            const auto model=geometry.models.at(0);
+            const auto modelLayers=childScene.modelLayerRanges[0];
+            Check(modelLayers.offset==0 && model.meshCount==source.geosets.size(), "PREM child draw layers no longer cover the source model");
+            std::uint32_t sourceClampLayers=0;
+            for (std::uint32_t meshIndex=0;meshIndex<model.meshCount;++meshIndex) {
+                const auto meshId=model.firstMesh+meshIndex;
+                const auto& mesh=geometry.meshes.at(meshId);
+                const auto& layers=source.materials.at(source.geosets.at(geometry.meshGeosets.at(meshId)).materialId).layers;
+                Check(mesh.layerCount==layers.size(), "PREM child draw layer count differs from its source material");
+                for (std::uint32_t layer=0;layer<mesh.layerCount;++layer) {
+                    const auto draw=mesh.firstLayer+layer;
+                    const auto& texture=source.textures.at(layers[layer].textureId);
+                    const auto& binding=textureBindings.at(layers[layer].textureId);
+                    if (texture.flags==0) ++sourceClampLayers;
+                    Check(binding.reachable && binding.textureIndex!=WAR3_RENDER_MODEL_NO_TEXTURE && binding.textureIndex<geometry.textures.size() &&
+                        binding.textureIndex==geometry.layers.at(draw).textureIndex && binding.samplerFlags==texture.flags &&
+                        geometry.layerSamplerFlags.at(draw)==texture.flags && childScene.drawLayerBindings.at(draw).staticSamplerFlags==texture.flags,
+                        "PREM child resident draw or frozen texture binding lost source TEXS sampler flags");
+                }
+            }
+            Check(sourceClampLayers==2, "PREM billing fixture no longer emits its two real source clamp layers");
+            for (std::size_t slot=0;slot<child.instances.size();++slot) {
+                const auto alphaSlice=child.layerSlices[slot],stateSlice=child.materialStateSlices[slot];
+                const auto& pose=child.poses[slot];
+                Check(child.instances[slot].instance.model==0 && alphaSlice.first==slot*4 && alphaSlice.count==4 &&
+                    stateSlice.first==alphaSlice.first && stateSlice.count==alphaSlice.count &&
+                    pose.materialAlphas.offset==alphaSlice.first && pose.materialAlphas.count==alphaSlice.count &&
+                    pose.materialStates.offset==stateSlice.first && pose.materialStates.count==stateSlice.count,
+                    "PREM child material slices overlap, omit a slot or differ from their owned pose ranges");
+                for (std::uint32_t layer=0;layer<stateSlice.count;++layer) {
+                    const auto draw=modelLayers.offset+layer;
+                    const auto& state=child.materialStates[stateSlice.first+layer];
+                    Check(state.textureIndex==geometry.layers.at(draw).textureIndex && state.samplerFlags==geometry.layerSamplerFlags.at(draw),
+                        "PREM child material-state payload differs from the source-bound resident draw");
+                }
+            }
             const auto actualFramePayload=std::uint64_t(child.instances.size())*(sizeof(War3RenderSkinnedModelInstanceV2)+
                 sizeof(AnimationPoseLink)+sizeof(AnimationPickBounds))+std::uint64_t(child.states.size())*sizeof(AnimationInstanceState)+
                 std::uint64_t(child.groups.size())*sizeof(War3RenderGroupMatrixV2)+
-                std::uint64_t(child.alphas.size())*(sizeof(float)+sizeof(War3RenderMeshColorV2));
+                std::uint64_t(child.alphas.size())*(sizeof(float)+sizeof(War3RenderMeshColorV2))+
+                std::uint64_t(child.layerAlphas.size())*sizeof(float)+
+                std::uint64_t(child.layerSlices.size())*sizeof(War3RenderMaterialLayerSliceV2)+
+                std::uint64_t(child.materialStates.size())*sizeof(War3RenderMaterialStateV2)+
+                std::uint64_t(child.materialStateSlices.size())*sizeof(War3RenderMaterialLayerSliceV2);
             // 本夹具全新子服务仅push一次唯一资产且不reserve，MSVC资产容量为1。
             // 唯一子资产仍持有一个材质表shared_ptr槽，前/当前帧各保留空vector本体。
             // 独立按类型计算新增owner，不复用生产计费helper；场景来源表仍不得重复收费。
