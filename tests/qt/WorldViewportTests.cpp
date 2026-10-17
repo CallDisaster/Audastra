@@ -1141,6 +1141,7 @@ void WorldViewportTests::AnimationPauseStepAndCaptureStayBound() {
     QCOMPARE(firstParticle.value->particles->vertexCount,std::uint32_t{0});
     auto emitted=std::make_shared<AnimationFrame>(*zero); emitted->contentVersion=2;
     emitted->particleVertices.resize(3); emitted->particleDraws.push_back({0,3,WAR3_RENDER_MODEL_NO_TEXTURE,WAR3_PARTICLE_BLEND});
+    emitted->particleMaterialFlags.push_back(0);
     state.rejectModels=true;
     QVERIFY(!viewport.UpdateAnimationFrame(emitted,emptyPicking)); QVERIFY(viewport.AnimationTarget()==zero);
     QCOMPARE(state.particles.contentVersion,std::uint64_t{1}); state.rejectModels=false;
