@@ -8,6 +8,7 @@
 #include "War3MapCore/Hash.h"
 #include "MdxTestModel.h"
 #include "AnimationTestModel.h"
+#include "RealTerrainPairAudit.h"
 #include <Windows.h>
 #include <DirectXMath.h>
 #include <d3d11.h>
@@ -1765,6 +1766,14 @@ void TestEditorVisibility(const War3RenderPluginApiV2* api, const War3RenderCrea
 int wmain(int argc, wchar_t** argv) {
     HMODULE module = nullptr;
     try {
+        const bool realPair = argc > 1 && std::wstring_view(argv[1]) == L"--real-terrain-pair";
+        for (int argument = 1; argument < argc; ++argument) {
+            if (std::wstring_view(argv[argument]).starts_with(L"--real-terrain-pair"))
+                Require(argument == 1 && realPair && argc == 5,
+                    "real terrain pair requires the sole first option, manifest, SHA and empty output directory");
+            if (realPair) Require(std::wstring_view(argv[argument]) != L"--hardware", "real terrain pair cannot use hardware mode");
+        }
+        War3Map::Tests::RunRealTerrainPairValidationTests();
         wchar_t executable[32768]{};
         const auto length = GetModuleFileNameW(nullptr, executable, 32768);
         Require(length != 0 && length < 32768, "executable path unavailable");
@@ -1775,6 +1784,38 @@ int wmain(int argc, wchar_t** argv) {
         Require(getApi != nullptr && getApi(99) == nullptr, "ABI version gate failed");
         const auto* api = getApi(WAR3_RENDER_PLUGIN_API_V2);
         Require(api && api->structSize == sizeof(*api), "V2 ABI unavailable");
+        // 专用真实输入入口必须在普通测试、硬件和 HWND 生命周期之前返回。
+        if (realPair) {
+            const std::wstring wideSha(argv[3]);
+            Require(wideSha.size() == 64 && std::all_of(wideSha.begin(), wideSha.end(), [](wchar_t c) {
+                return (c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'f'); }), "real terrain pair SHA invalid");
+            const std::string sha(wideSha.begin(), wideSha.end());
+            War3Map::Tests::RunRealTerrainPairAudit(argv[2], sha, argv[4],
+                [api](const War3RenderTerrainMipSceneV2& scene, const War3RenderCameraV2& camera,
+                    std::uint32_t width, std::uint32_t height) {
+                    Require(api->submitTerrainMipScene && api->setEnvironment, "real terrain pair requires original-mip/environment ABI");
+                    const War3RenderCreateInfoV2 pairInfo{sizeof(pairInfo),width,height,1};
+                    RendererOwner renderer{api,api->createRenderer(&pairInfo)};
+                    Require(renderer.handle != nullptr, "real terrain pair WARP creation failed");
+                    const War3RenderEnvironmentV2 environment{sizeof(environment),{0,0,1},{1,1,1},{0,0,0},
+                        WAR3_RENDER_FOG_NONE,0,1,0,{0,0,0},0,0,0,0,1,0,nullptr};
+                    Require(api->setEnvironment(renderer.handle,&environment) == 0 &&
+                        api->setCamera(renderer.handle,&camera) == 0 && api->submitTerrainMipScene(renderer.handle,&scene) == 0,
+                        "real terrain pair production scene rejected; no legacy fallback");
+                    auto frame = CaptureFrame(renderer,width,height,scene.documentRevision,camera);
+                    War3Map::Tests::RealTerrainPairFrame result;
+                    result.pixels = std::move(frame.pixels); result.receipt = frame.receipt;
+                    result.status.structSize = sizeof(result.status);
+                    Require(api->getStatus(renderer.handle,&result.status) == 0, "real terrain pair status missing");
+                    return result; // RendererOwner 在 DLL 卸载前析构。
+                }, [](const std::filesystem::path& path, const std::vector<std::uint8_t>& pixels,
+                    std::uint32_t width, std::uint32_t height) {
+                    SaveBmp(path,pixels,static_cast<LONG>(width),static_cast<LONG>(height));
+                });
+            FreeLibrary(module); module = nullptr;
+            std::cout << "real terrain pair source, geometry, atomic WARP capture and finite edge observations completed\n";
+            return 0;
+        }
         const bool hardware = argc > 1 && std::wstring_view(argv[1]) == L"--hardware";
         const War3RenderCreateInfoV2 info{sizeof(info), 320, 240, hardware ? 0u : 1u};
         auto invalid = info; invalid.width = 0;

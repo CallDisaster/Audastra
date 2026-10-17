@@ -303,7 +303,7 @@ foreach(slk_service IN ITEMS MapSourceSnapshot OrderedCreation)
     add_test(NAME slk-${slk_service} COMMAND war3-map-slk-${slk_service}-tests)
 endforeach()
 
-add_executable(war3-map-render-d3d11-tests RenderD3D11Tests.cpp)
+add_executable(war3-map-render-d3d11-tests RenderD3D11Tests.cpp RealTerrainPairAudit.cpp)
 target_include_directories(war3-map-render-d3d11-tests PRIVATE "${PROJECT_SOURCE_DIR}/include")
 target_compile_definitions(war3-map-render-d3d11-tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-render-d3d11-tests PRIVATE /W4 /permissive- /utf-8)
@@ -499,7 +499,7 @@ target_link_libraries(war3-render-skin-input-tests PRIVATE War3RenderCore::Contr
 # 第3步服务及WARP接线登记，业务实现不放在共享CMake。
 include("${PROJECT_SOURCE_DIR}/src/Render/Animation/TestTargets.cmake")
 include("${PROJECT_SOURCE_DIR}/src/Render/Particles/TestTargets.cmake")
-target_link_libraries(war3-map-render-d3d11-tests PRIVATE War3MapEditor::RenderSupport War3MapEditor::Services)
+target_link_libraries(war3-map-render-d3d11-tests PRIVATE War3MapEditor::RenderSupport War3MapEditor::Services audastra-json)
 
 target_link_libraries(war3-map-render-d3d11-tests PRIVATE War3RenderCore::Contract)
 add_executable(war3-map-frame-measurement-tests FrameMeasurementTests.cpp)
