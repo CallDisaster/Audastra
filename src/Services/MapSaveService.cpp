@@ -10,6 +10,7 @@
 #include "War3MapCore/ObjectData/ObjectImport.h"
 #include "War3MapCore/Script/ScriptSaveBundle.h"
 #include "LuaMapSaveTarget.h"
+#include "MapSaveScriptPreservation.h"
 
 #include <algorithm>
 #include <exception>
@@ -292,6 +293,24 @@ void RebuildScript(MapSaveTask& task, const MapSaveService::Progress& progress) 
             return;
         }
         mergedEditable[index] = std::make_unique<ObjectData::LniObjectDocument>(std::move(*mergedLni.value));
+    }
+    if (!frozen.luaTarget && !prepared.value->members.empty()) {
+        // 改动不影响脚本时沿用作者原脚本：本机函数库版本不同会让重建结果与原图不同。
+        if (auto original = ScriptPreservation::UnaffectedSourceScript(
+                task, request, result, prepared.value->members, frozen.scriptMember)) {
+            ScriptPreservation::ReportSignatureChanges(*original, prepared.value->members.front().data, true,
+                task.diagnostics);
+            task.scriptRebuilt = true;
+            task.scriptPreserved = true;
+            task.diagnostics.push_back({DiagnosticSeverity::Info, "构建", "SCRIPT_SOURCE_PRESERVED",
+                "本次改动不影响游戏脚本，沿用地图原脚本；重建结果已通过检查（" + Seconds(task.scriptSeconds)
+                    + " 秒），未写入。各阶段文件在 " + workDir});
+            task.script.reset();
+            return;
+        }
+        if (const auto source = task.archive->ReadMember(frozen.scriptMember); source.Succeeded() && source.value)
+            ScriptPreservation::ReportSignatureChanges(*source.value, prepared.value->members.front().data, false,
+                task.diagnostics);
     }
     const auto merged = frozen.luaTarget
         ? LuaMapSave::MergeCompletedScript(task, prepared.value->members)

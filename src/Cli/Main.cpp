@@ -27,6 +27,7 @@
 #include "MapCreateCommand.h"
 #include "MapTestCommand.h"
 #include "ArchiveInspectCommand.h"
+#include "ArchiveMemberCommand.h"
 #include "ImportQueryCommand.h"
 #include "UpdateCommand.h"
 #include "NameQueryCommand.h"
@@ -107,6 +108,7 @@ void PrintUsage() {
         << "  1..16 ordered strokes; vertex coordinates; doodads stay fixed. Other brush kinds require a future explicit CLI schema.\n"
         << "war3-map-cli archive-session-inspect <map-archive> [--expected-source-sha256 <64hex>] [--member <internal-path> ...]\n"
         << "war3-map-cli archive-candidate-copy <map-archive> <new-candidate-path>\n"
+        << "war3-map-cli archive-member-add <source-map> <expected-source-sha256> <new-candidate.w3x> <member> <file> [<member> <file> ...]\n"
         << "war3-map-cli inspect <expanded-workspace> [profile-id]\n"
         << "war3-map-cli validate <expanded-workspace> [profile-id]\n"
         << "war3-map-cli trigger-inspect <ydwe-root> <war3map.wtg> <war3map.wct>\n"
@@ -295,6 +297,7 @@ int wmain(int argc, wchar_t** argv) {
         return 0;
     }
     if (command == L"archive-session-inspect") return RunArchiveInspectCommand(argc, argv);
+    if (command == L"archive-member-add") return War3Map::Cli::RunArchiveMemberAdd(argc, argv);
     if (command == L"update-check" || command == L"update-apply") return RunUpdateCommand(argc, argv);
     if (command == L"imports-query" || command == L"imports-get") return RunImportQueryCommand(argc, argv);
     if (command == L"archive-candidate-copy" && argc == 4) {

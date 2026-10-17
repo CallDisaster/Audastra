@@ -17,7 +17,9 @@ struct TriggerTransactionBinding {
 
 struct TriggerTransactionLimits {
     std::size_t maxMemberBytes = 64U * 1024U * 1024U;
-    std::size_t maxRecords = 250000;
+    // 变量、触发器、ECA 与参数合计。大型旧版 YDWE 图约 29 万条（1109 个触发器、10.5 万 ECA），
+    // 内存仍由成员与文字字节上限约束；所有入口共用同一默认值，不在单个入口另行放宽。
+    std::size_t maxRecords = 1000000;
     std::size_t maxTextBytes = 128U * 1024U * 1024U;
 };
 

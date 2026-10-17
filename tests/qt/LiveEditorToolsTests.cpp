@@ -298,6 +298,7 @@ private slots:
     void ImportMetadataUsesSourceAndCurrentAssetOverlay();
     void LuaFileToolsShareAssetUndoAndRejectStaleText();
     void LuaFileToolsCreateOnlyAtProvenArchiveAbsence();
+    void ImportsAddQueuesOwnedBytesWithUndo();
     void LuaFilesListPagesCapturedDirectoryAndRejectsStaleContinuation();
     void ResourceToolsUseActualAsyncSourceAndRejectStaleResults();
     void ProjectSearchUsesInjectedOwnedPagesAndStrictRevision();
@@ -315,7 +316,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "export_campaign_member",
         "feedback.draft", "feedback.list", "feedback.status",
         "get_terrain_edit_state",
-        "imports_get", "imports_list", "lua_file_read", "lua_file_write", "lua_files_list",
+        "imports_add", "imports_get", "imports_list", "lua_file_read", "lua_file_write", "lua_files_list",
         "lua_test_hot_reload", "lua_test_reload_result",
         "map_settings_get", "map_settings_set", "map_test_start",
         "object_resource_inspect", "object_resource_query", "object_resource_state",
@@ -328,7 +329,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{67});
+    QCOMPARE(expected.size(), qsizetype{68});
     for (const auto& definition : Mcp::AuxiliaryToolDefinitions()) {
         QCOMPARE(definition.permission, Mcp::ToolPermission::Edit);
         int matches = 0;
@@ -1914,6 +1915,62 @@ void LiveEditorToolsTests::LuaFileToolsCreateOnlyAtProvenArchiveAbsence() {
     QCOMPARE(f.project.AssetUndoStack()->index(), 0);
     read = f.Context(); read.insert("path", "scripts/new.lua");
     QVERIFY(!f.tools->Invoke("lua_file_read", read).value("ok").toBool());
+}
+
+void LiveEditorToolsTests::ImportsAddQueuesOwnedBytesWithUndo() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    const auto source = std::filesystem::path(f.outputs.filePath("imports-source.w3x").toStdWString());
+    const std::array<MapArchiveMember, 1> members{{{"war3mapImported\\old.mdx", {std::byte{0x4d}}}}};
+    QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
+    auto archive = MapArchiveSession::Open(source); QVERIFY(archive.Succeeded());
+    f.project.archiveSession_ = std::make_shared<MapArchiveSession>(std::move(*archive.value));
+    f.project.sourceArchivePath_ = source;
+    f.project.ResetEditTracking();
+    f.tools = std::make_unique<LiveEditorTools>(f.project);
+    const auto disk = f.outputs.filePath("hero.mdx");
+    QVERIFY(WriteFile(disk, "MDLX-original"));
+    const auto request = [&](const QString& diskPath, const QString& archivePath) {
+        auto value = f.Context();
+        value.insert("files", QJsonArray{QJsonObject{{"disk_path", QDir::toNativeSeparators(diskPath)}, {"archive_path", archivePath}}});
+        return value;
+    };
+    QCOMPARE(ErrorCode(f.tools->Invoke("imports_add", request(disk, "scripts\\main.lua"))), QString("IMPORTS_ADD_ARGUMENT_INVALID"));
+    QCOMPARE(ErrorCode(f.tools->Invoke("imports_add", request("hero.mdx", "war3mapImported\\hero.mdx"))), QString("IMPORTS_ADD_ARGUMENT_INVALID"));
+    QCOMPARE(ErrorCode(f.tools->Invoke("imports_add", request(disk, "..\\hero.mdx"))), QString("IMPORTS_ADD_ARGUMENT_INVALID"));
+    QCOMPARE(ErrorCode(f.tools->Invoke("imports_add", request(disk, "war3map.w3u"))), QString("IMPORTS_ADD_REJECTED"));
+    QCOMPARE(ErrorCode(f.tools->Invoke("imports_add", request(f.outputs.filePath("missing.mdx"), "war3mapImported\\x.mdx"))),
+        QString("IMPORTS_ADD_FILE_UNREADABLE"));
+    // 归档里已有的成员（包括清单外的）须明确替换。
+    QCOMPARE(ErrorCode(f.tools->Invoke("imports_add", request(disk, "WAR3MAPIMPORTED\\OLD.MDX"))), QString("IMPORTS_ADD_REJECTED"));
+    QCOMPARE(f.project.AssetUndoStack()->count(), 0);
+
+    const auto added = f.tools->Invoke("imports_add", request(disk, "war3mapImported\\hero.mdx"));
+    QVERIFY2(added.value("ok").toBool(), qPrintable(Explain(added)));
+    const auto row = added.value("added").toArray()[0].toObject();
+    QCOMPARE(row.value("archive_path").toString(), QStringLiteral("war3mapImported\\hero.mdx"));
+    QCOMPARE(row.value("size").toInt(), 13);
+    QVERIFY(!row.value("replaced").toBool());
+    QCOMPARE(row.value("sha256").toString().size(), 64);
+    QCOMPARE(f.project.AssetUndoStack()->count(), 1);
+    // 调用时已读入内存，磁盘文件之后再变不影响待导入内容。
+    QVERIFY(WriteFile(disk, "MDLX-changed-later"));
+    const auto pending = [&]() -> std::optional<QtProject::AssetEntry> {
+        for (const auto& entry : f.project.AssetEntries())
+            if (EditorProject::AssetKey(entry.path) == EditorProject::AssetKey("war3mapImported\\hero.mdx")) return entry;
+        return std::nullopt;
+    };
+    QVERIFY(pending() && pending()->ownedPayload && pending()->size == 13);
+    QCOMPARE(QByteArray(reinterpret_cast<const char*>(pending()->ownedPayload->data()), 13), QByteArray("MDLX-original"));
+
+    QCOMPARE(ErrorCode(f.tools->Invoke("imports_add", request(disk, "war3mapImported\\hero.mdx"))), QString("IMPORTS_ADD_REJECTED"));
+    auto replace = request(disk, "war3mapImported\\old.mdx"); replace.insert("replace_existing", true);
+    const auto replaced = f.tools->Invoke("imports_add", replace);
+    QVERIFY2(replaced.value("ok").toBool(), qPrintable(Explain(replaced)));
+    QVERIFY(replaced.value("added").toArray()[0].toObject().value("replaced").toBool());
+    QCOMPARE(f.project.AssetUndoStack()->count(), 2);
+    f.project.AssetUndoStack()->undo();
+    f.project.AssetUndoStack()->undo();
+    QVERIFY(!pending());
 }
 
 void LiveEditorToolsTests::LuaFilesListPagesCapturedDirectoryAndRejectsStaleContinuation() {

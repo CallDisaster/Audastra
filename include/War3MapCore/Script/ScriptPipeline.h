@@ -155,6 +155,9 @@ struct PipelineResult {
     std::vector<MemberReplacement> objectMembers;
     // 模板 import 写入的普通地图成员；由保存合并为待写成员，不能覆盖脚本、物编或归档内部文件。
     std::vector<MemberReplacement> templateImports;
+    // 模板阶段实际求值：内置求值的模板、表达式与跳过块数，以及是否整份交给 Lua 沙盒执行。
+    std::size_t templateExpressions = 0;
+    bool templateWholeChunk = false;
     std::vector<PipelineStage> stages;
     std::vector<Diagnostic> diagnostics;
     bool syntaxChecked = false; // 语法检查已完成且通过

@@ -12,6 +12,7 @@ namespace {
 constexpr qsizetype kMaxLuaText = 2 * 1024 * 1024;
 constexpr int kMaxLuaPageIndex = 2147483647;
 constexpr int kMaxLuaPageLimit = 256;
+constexpr int kMaxImportFiles = 32;
 bool ValidPageNumber(const QJsonValue& value, int minimum, int maximum) {
     if (!value.isDouble()) return false;
     const auto number = value.toDouble();
@@ -30,6 +31,23 @@ bool ValidPath(const QJsonValue& value) {
     if (path.contains(QLatin1Char(':')) || path.startsWith(QLatin1Char('\\')) || path.startsWith(QLatin1Char('/'))) return false;
     for (const auto& part : path.split(QRegularExpression(QStringLiteral("[\\\\/]")))) if (part == QStringLiteral("..")) return false;
     return true;
+}
+// 导入目标：地图内相对路径；Lua 文件走 lua_file_write，以便检查语法和进入 Lua 草稿规则。
+bool ValidImportTarget(const QJsonValue& value) {
+    if (!value.isString()) return false;
+    const auto path = value.toString();
+    if (path.isEmpty() || path.size() > 260 || path.contains(QChar::Null) || path.endsWith(QStringLiteral(".lua"), Qt::CaseInsensitive))
+        return false;
+    if (path.contains(QLatin1Char(':')) || path.startsWith(QLatin1Char('\\')) || path.startsWith(QLatin1Char('/'))) return false;
+    for (const auto& part : path.split(QRegularExpression(QStringLiteral("[\\\\/]")))) if (part == QStringLiteral("..")) return false;
+    return true;
+}
+bool ValidDiskPath(const QJsonValue& value) {
+    if (!value.isString()) return false;
+    const auto path = value.toString();
+    // 本机绝对路径：盘符或 UNC 开头。
+    return !path.isEmpty() && path.size() <= 1024 && !path.contains(QChar::Null)
+        && (QRegularExpression(QStringLiteral("^[A-Za-z]:[\\\\/]")).match(path).hasMatch() || path.startsWith(QStringLiteral("\\\\")));
 }
 } // namespace
 
@@ -53,6 +71,14 @@ std::vector<ToolDefinition> LuaFileToolDefinitions() {
     add("lua_file_write", "新建或整体替换一个地图 Lua 文件，进入撤销栈；替换已有文件时必须给出读取时的 sha256", ToolPermission::Edit,
         {{"path", path}, {"text", QJsonObject{{"type", "string"}, {"maxLength", kMaxLuaText}}},
             {"expected_sha256", QJsonObject{{"type", "string"}, {"pattern", "^[0-9a-f]{64}$"}}}}, {"path", "text"});
+    add("imports_add", "把本机文件导入地图（模型、贴图、声音等），进入资源撤销栈，保存地图时写入；"
+        "一次1..32个，单个不超过64 MiB。地图里已有同路径文件时须 replace_existing=true。Lua 文件请用 lua_file_write", ToolPermission::Edit,
+        {{"files", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", kMaxImportFiles},
+            {"items", BasicSchema({{"disk_path", QJsonObject{{"type", "string"}, {"maxLength", 1024},
+                    {"description", "本机文件的绝对路径"}}},
+                {"archive_path", QJsonObject{{"type", "string"}, {"maxLength", 260},
+                    {"description", "地图内路径，例如 war3mapImported\\hero.mdx"}}}}, {"disk_path", "archive_path"})}}},
+            {"replace_existing", QJsonObject{{"type", "boolean"}, {"default", false}}}}, {"files"});
     add("map_test_start", "用当前编辑内容启动单人测试（与界面“测试”相同，独立副本，不改原图）", ToolPermission::External, {}, {});
     return result;
 }
@@ -62,6 +88,7 @@ QJsonObject InvokeLuaFileTool(const QString& name, const QJsonObject& args, cons
     if (name == "lua_files_list") allowed << "offset" << "limit";
     else if (name == "lua_file_read") allowed << "path";
     else if (name == "lua_file_write") allowed << "path" << "text" << "expected_sha256";
+    else if (name == "imports_add") allowed << "files" << "replace_existing";
     else if (name != "lua_files_list" && name != "map_test_start") return Failure("LUA_FILE_TOOL_UNKNOWN", "未知 Lua 文件工具。");
     for (auto it = args.begin(); it != args.end(); ++it)
         if (!allowed.contains(it.key())) return Failure("LUA_FILE_ARGUMENT_INVALID", "不接受的参数：" + it.key().toStdString());
@@ -81,6 +108,19 @@ QJsonObject InvokeLuaFileTool(const QString& name, const QJsonObject& args, cons
         if (args.contains("expected_sha256")
             && !QRegularExpression(QStringLiteral("^[0-9a-f]{64}$")).match(args.value("expected_sha256").toString()).hasMatch())
             return Failure("LUA_FILE_ARGUMENT_INVALID", "expected_sha256 必须是 64 位小写十六进制。");
+    }
+    if (name == "imports_add") {
+        const auto files = args.value("files");
+        if (!files.isArray() || files.toArray().isEmpty() || files.toArray().size() > kMaxImportFiles)
+            return Failure("IMPORTS_ADD_ARGUMENT_INVALID", "files 必须是1..32项的数组。");
+        for (const auto& item : files.toArray()) {
+            const auto file = item.toObject();
+            if (!item.isObject() || file.size() != 2 || !ValidDiskPath(file.value("disk_path")) || !ValidImportTarget(file.value("archive_path")))
+                return Failure("IMPORTS_ADD_ARGUMENT_INVALID",
+                    "每项只能有 disk_path（本机绝对路径）和 archive_path（地图内相对路径，不能是 .lua）。");
+        }
+        if (args.contains("replace_existing") && !args.value("replace_existing").isBool())
+            return Failure("IMPORTS_ADD_ARGUMENT_INVALID", "replace_existing 必须是 true 或 false。");
     }
     if (!host.invoke) return Failure("LUA_FILE_NO_EDITOR", "此宿主没有打开的地图，请连接正在编辑该地图的编辑器 MCP 端口。");
     auto result = host.invoke(name, args);

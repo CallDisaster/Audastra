@@ -66,6 +66,16 @@ Status FailureStatus(const Result<T>& result) {
 
 } // namespace
 
+bool IsEditorManagedMemberPath(std::string_view path) {
+    std::string key(path);
+    for (auto& character : key) {
+        if (character == '/') character = '\\';
+        else if (character >= 'A' && character <= 'Z') character = static_cast<char>(character - 'A' + 'a');
+    }
+    if (key.starts_with('(') || key == "scripts\\war3map.j" || key == "scripts\\war3map.lua") return true;
+    return key.find('\\') == std::string::npos && (key.starts_with("war3map") || key.starts_with("war3campaign"));
+}
+
 Result<std::string> CanonicalImportPath(std::string_view path) {
     if (path.empty() || path.front() == '/' || path.front() == '\\') {
         return UnsafePath();

@@ -234,7 +234,8 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
     UpdateStatusBar();
     UpdateExportAvailability();
     const QString name = QString::fromStdWString(saved->target.wstring());
-    const QString script = saved->scriptRebuilt ? tr("脚本已重建并通过语法检查")
+    const QString script = saved->scriptPreserved ? tr("改动不影响脚本，沿用原地图脚本")
+        : saved->scriptRebuilt ? tr("脚本已重建并通过语法检查")
         : saved->savedTriggerChanges ? tr("脚本未重建（工具链未就绪，详见诊断）") : tr("脚本未变");
     QStringList details{tr("文件：%1").arg(name), tr("已写入：%1").arg(ChangedMembers(*job)), script};
     if (!saved->backup.empty()) details << (job->inPlaceOptions.keepBackups == 0

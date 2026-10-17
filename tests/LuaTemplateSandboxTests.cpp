@@ -55,6 +55,15 @@ void TestExpressionsAndControl() {
     Require(plain.value->script == std::string("a x1 b ") + hash + " c\n", "expanded script: " + plain.value->script);
     Require(plain.value->objectMembers.empty(), "no slk use means no object output");
 
+    // YDWE 模板运行在 Lua 5.1 的赋值上下文：多返回值只保留第一个，
+    // 整数值的浮点按 "%.14g" 写成整数文本（例如 math.modf 的 32.0 写成 32）。
+    auto multi = Run("a<?= ('x'):gsub('x', 'y') ?>b");
+    Require(multi.Succeeded() && multi.value->script == "ayb",
+        "multi-value expression keeps first: " + (multi.value ? multi.value->script : Codes(multi)));
+    auto integral = Run("a<?= math.modf(8192 / 256) ?>b");
+    Require(integral.Succeeded() && integral.value->script == "a32b",
+        "integral float formats as integer: " + (integral.value ? integral.value->script : Codes(integral)));
+
     // 控制语句、跨块局部变量、浮点与字符串里的模板；块外文本含引号/反斜杠/CRLF/中文逐字节保留。
     const std::string control = "x\r\n<? local n = 0 for i = 1, 3 do n = n + i ?>v<?= i ?> <? end ?>\r\n"
         "set s = \"<?= 1+2 ?>\\\\\"中文\" r=<?= 1.5 ?> <? if n > 5 then ?>big<? else ?>small<? end ?>";
@@ -157,7 +166,7 @@ void TestSlk(SlkFixture& fixture) {
         "<?= slk.ability.AHtb.code ?>|<?= slk.ability.AHtb.Buttonpos ?>|<?= slk.item.afac.goldcost ?>|"
         "<?= tonumber(slk.misc.Misc.DefenseArmor) ?>|<?= slk.ability.XXXX.Name ?>|");
     Require(read.Succeeded(), "slk reads:\n" + Codes(read));
-    Require(read.value->script.starts_with("100.0|5.0|AHtb|0,2|") && read.value->script.ends_with("|0.06||"),
+    Require(read.value->script.starts_with("100|5|AHtb|0,2|") && read.value->script.ends_with("|0.06||"),
         "slk read values: " + read.value->script);
     Require(read.value->objectMembers.empty(), "reading produces no writes");
 

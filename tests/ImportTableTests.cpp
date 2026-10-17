@@ -225,9 +225,18 @@ void TestUnrelatedAmbiguousRecordsPreserveBytesAndRelatedRefusals() {
 
 } // namespace
 
+void TestEditorManagedMemberPaths() {
+    for (const auto* managed : {"war3map.j", "WAR3MAP.W3U", "war3mapUnits.doo", "war3mapSkin.txt", "war3map.shd",
+            "war3campaign.w3f", "(listfile)", "Scripts\\war3map.j", "scripts/WAR3MAP.LUA"})
+        Require(War3Map::Resources::IsEditorManagedMemberPath(managed), "map data members are editor managed");
+    for (const auto* asset : {"war3mapImported\\hero.mdx", "Textures\\war3map.blp", "Scripts\\main.j", "main.lua", "readme.txt"})
+        Require(!War3Map::Resources::IsEditorManagedMemberPath(asset), "ordinary imports are not editor managed");
+}
+
 int main() {
     try {
         TestClassicFlags();
+        TestEditorManagedMemberPaths();
         TestLosslessAndAppend();
         TestCreationAndFailureAtomicity();
         TestMalformedAndUnknownVersion();

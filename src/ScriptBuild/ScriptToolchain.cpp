@@ -723,6 +723,8 @@ PipelineResult CompileMapScript(std::string_view generated, const ToolchainOptio
         && std::none_of(evaluated.diagnostics.begin(), evaluated.diagnostics.end(), [](const Diagnostic& diagnostic) {
             return diagnostic.code == "TEMPLATE_IMPORT_FAILED";
         });
+    result.templateExpressions = evaluated.spans.size() + evaluated.expressions + evaluated.skippedBlocks;
+    result.templateWholeChunk = wholeChunk;
     Jass::SourceLexicalView frameworkEvaluatedView;
     if (!wholeChunk && options.frameworkInputs && result.frameworkPreprocessSources) {
         const auto& owned = result.frameworkPreprocessSources->preprocessed;

@@ -75,6 +75,7 @@ std::optional<MapCopySaveResult> EditorProject::CommitMapSave(MapSaveJob& job) {
     result.memberCount = job.memberCount;
     result.savedTriggerChanges = job.triggerChanges && !job.scriptRebuilt;
     result.scriptRebuilt = job.scriptRebuilt;
+    result.scriptPreserved = job.scriptPreserved;
     result.inPlace = job.inPlace;
     result.backup = job.backup;
     result.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - job.started).count();
