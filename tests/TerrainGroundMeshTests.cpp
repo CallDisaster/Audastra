@@ -1375,6 +1375,17 @@ void TestSharedBaseBlightBudgetsAndMapping() {
         Require(wetMinimum >= dryMinimum + accepted.value->waterFlaggedTiles * sizeof(std::uint32_t),
             "clear保留的水候选capacity至少容纳全部请求，必须体现在公开working准入门槛");
         const auto rejected = attempt(true, wetMinimum - 1);
+        if (!(rejected.Succeeded() && rejected.value->blightIndices.empty() && rejected.value->blightApproximationTiles == 16
+            && (rejected.value->budget.blight.omissionReasons & static_cast<std::uint32_t>(TerrainGroundOmissionReason::WorkingBytes)))) {
+            std::cerr << "shared-water-boundary policy=" << (policy == TerrainGroundBudgetPolicy::Strict ? "strict" : "preview")
+                << " dry_min=" << dryMinimum << " wet_min=" << wetMinimum << " succeeded=" << rejected.Succeeded()
+                << " error=" << (rejected.diagnostics.empty() ? "none" : rejected.diagnostics.front().code);
+            if (rejected.value) std::cerr << " vertices=" << rejected.value->vertices.size()
+                << " overlays=" << rejected.value->overlayTiles.size() << " blight_indices=" << rejected.value->blightIndices.size()
+                << " blight_batches=" << rejected.value->blightBatches.size() << " blight_displayed=" << rejected.value->blightTexturedTiles
+                << " blight_approx=" << rejected.value->blightApproximationTiles << " blight_reasons=" << rejected.value->budget.blight.omissionReasons;
+            std::cerr << '\n';
+        }
         Require(rejected.Succeeded() && rejected.value->blightIndices.empty() && rejected.value->blightApproximationTiles == 16
             && (rejected.value->budget.blight.omissionReasons & static_cast<std::uint32_t>(TerrainGroundOmissionReason::WorkingBytes)),
             "真实拒水候选门槛以下1B必须整类拒绝精确荒芜，不能漏账准入");
