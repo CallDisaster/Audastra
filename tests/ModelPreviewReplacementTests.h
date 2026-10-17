@@ -2,6 +2,7 @@
 #include "../src/Render/Tools/ModelPreviewReplacement.h"
 #include "AnimationParticleContinuityTests.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/Resources/ClassicObjectTexture.h"
 #include <cctype>
 
 namespace ModelPreviewReplacementTest {
@@ -84,7 +85,7 @@ inline void SourceRouting() {
             if (path == "original.mdx") return Result<std::vector<std::byte>>::Success(bytes);
             textureReads.push_back(Key(path));
             if (Key(path) == Key(expected)) return Result<std::vector<std::byte>>::Success(image);
-            return Result<std::vector<std::byte>>::Failure("Test", "MISSING", "unexpected replacement source");
+            return Result<std::vector<std::byte>>::Failure("Test", "RESOURCE_NOT_FOUND", "declared replacement source is absent");
         };
         std::optional<std::string> replacement;
         if (replaceable == 11) {
@@ -112,7 +113,9 @@ inline void SourceRouting() {
             !scene.vertices.empty() && !scene.indices.empty() && scene.untexturedLayers == 0 && scene.textures.size() == 1 &&
             scene.layerSamplerFlags.size() == 1 && scene.layerSamplerFlags[0] == 0,
             "shared option mapper did not reach the actual replacement11 pose/texture/sampler scene");
-        Check(textureReads == std::vector<std::string>{Key(expected)} && Key(scene.textures[0].path) == Key(expected) &&
+        const auto expectedReads = replaceable >= 3 ? std::vector<std::string>{Key("Original/Replacement.tga"), Key(explicitPath)}
+            : std::vector<std::string>{Key(expected)};
+        Check(textureReads == expectedReads && Key(scene.textures[0].path) == Key(expected) &&
             scene.textures[0].width == 1 && scene.textures[0].height == 1 && scene.textures[0].rgba.size() == 4 &&
             scene.textures[0].rgba[0] == 255 && scene.textures[0].rgba[3] == 255,
             "replacement option overrode a TEXS0/team source or did not decode the real original BLP");
@@ -124,5 +127,19 @@ inline void SourceRouting() {
     }
 }
 
-inline void Run() { Options(); SourceRouting(); }
+inline void ExistingSourceErrorsStop() {
+    for (const auto code : {"MODEL_PREVIEW_ASSET_PROBE", "MODEL_PREVIEW_READ", "MODEL_PREVIEW_FILE"}) {
+        std::vector<std::string> reads;
+        const auto rejected = Resources::ReadClassicObjectTexture<std::vector<std::byte>>("Original/Replacement.blp",
+            [&](std::string_view path) -> Result<std::vector<std::byte>> {
+                reads.push_back(Key(path));
+                return Result<std::vector<std::byte>>::Failure("ModelPreview", code, "existing source probe/read/budget error");
+            });
+        Check(!rejected.Succeeded() && !rejected.value && !rejected.diagnostics.empty() && rejected.diagnostics.front().code == code &&
+            reads == std::vector<std::string>{Key("Original/Replacement.tga")},
+            "nonmissing source error fell through to a sibling suffix");
+    }
+}
+
+inline void Run() { Options(); SourceRouting(); ExistingSourceErrorsStop(); }
 } // namespace ModelPreviewReplacementTest
