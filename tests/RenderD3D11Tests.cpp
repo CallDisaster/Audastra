@@ -814,7 +814,9 @@ void TestTerrainBlight(const RendererOwner& renderer) {
     environment.shadowCellSize = 512; environment.shadowDarkness = 0.5f; environment.shadow = shadow.data();
     Require(api->setEnvironment(renderer.handle, &environment) == 0, "blight shadow rejected");
     Require(compareReference() != originalPixels, "blight shadow comparison was inactive");
-    environment.shadowWidth = environment.shadowHeight = 0; environment.shadowDarkness = 0; environment.shadow = nullptr;
+    environment = {sizeof(environment), {-0.45f, 0.35f, 0.82f},
+        {0.6698592f, 0.6698592f, 0.6698592f}, {0.35f, 0.35f, 0.35f}, WAR3_RENDER_FOG_NONE,
+        0, 0, 0, {0, 0, 0}, 0, 0, 0, 0, 0, 0, nullptr};
     Require(api->setEnvironment(renderer.handle, &environment) == 0, "blight environment reset rejected");
     accepted = compareReference();
 

@@ -25,6 +25,8 @@ struct Mesh {
     std::uint64_t revision = 0;
     bool terrain = false;
 };
+// 本次地表CPU所有者的实际容器容量；不含历史场景、驱动和GPU分配。
+[[nodiscard]] std::uint64_t TerrainOwnedCapacityBytes(const Mesh& mesh) noexcept;
 // 场景环境的 CPU 副本（已由插件入口校验）：values.shadow 不使用，像素在 shadow。
 struct Environment {
     War3RenderEnvironmentV2 values{};

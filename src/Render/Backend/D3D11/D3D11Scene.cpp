@@ -15,6 +15,18 @@
 
 namespace War3Map::Render {
 using namespace DirectX;
+std::uint64_t TerrainOwnedCapacityBytes(const Mesh& mesh) noexcept {
+    std::uint64_t bytes = std::uint64_t(mesh.terrainVertices.capacity()) * sizeof(War3RenderTerrainVertexV2)
+        + std::uint64_t(mesh.indices.capacity()) * sizeof(std::uint32_t)
+        + std::uint64_t(mesh.batches.capacity()) * sizeof(War3RenderTerrainBatchV2)
+        + std::uint64_t(mesh.blightBatches.capacity()) * sizeof(War3RenderTerrainBlightBatchV2)
+        + std::uint64_t(mesh.textures.capacity()) * sizeof(TextureRgba);
+    for (const auto& texture : mesh.textures) {
+        bytes += std::uint64_t(texture.mips.capacity()) * sizeof(TextureMipRgba);
+        for (const auto& mip : texture.mips) bytes += mip.rgba.capacity();
+    }
+    return bytes;
+}
 Environment DefaultEnvironment() {
     Environment environment;
     auto& v = environment.values;
@@ -394,7 +406,7 @@ HRESULT D3D11Scene::SetMesh(const Mesh& mesh) try {
             + std::uint64_t(blightBatches.capacity()) * sizeof(War3RenderTerrainBlightBatchV2)
             + std::uint64_t(textures.capacity()) * sizeof(Ptr<ID3D11ShaderResourceView>)
             + std::uint64_t(parameters.capacity()) * sizeof(TextureParameters);
-        if (uploadMetadataBytes > 128ull * 1024 * 1024) return E_INVALIDARG;
+        if (TerrainOwnedCapacityBytes(mesh) + uploadMetadataBytes > 128ull * 1024 * 1024) return E_INVALIDARG;
     }
     // 所有资源先创建到局部所有者；任一步失败都不替换现有 GPU 场景。
     for (const auto& source : mesh.textures) {

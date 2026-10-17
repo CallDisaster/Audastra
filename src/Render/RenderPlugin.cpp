@@ -25,6 +25,7 @@
 namespace {
 using War3Map::Render::D3D11Scene;
 using War3Map::Render::Mesh;
+using War3Map::Render::TerrainOwnedCapacityBytes;
 using War3Map::Render::ModelScene;
 using War3Map::Render::SkinPose;
 using War3Map::Render::ParticleSceneData;
@@ -589,18 +590,6 @@ std::vector<War3Map::Render::TextureRgba> CopyTextureChains(const TextureChains&
         textures.push_back(std::move(texture));
     }
     return textures;
-}
-std::uint64_t TerrainOwnedCapacityBytes(const Mesh& mesh) noexcept {
-    std::uint64_t bytes = std::uint64_t(mesh.terrainVertices.capacity()) * sizeof(War3RenderTerrainVertexV2)
-        + std::uint64_t(mesh.indices.capacity()) * sizeof(std::uint32_t)
-        + std::uint64_t(mesh.batches.capacity()) * sizeof(War3RenderTerrainBatchV2)
-        + std::uint64_t(mesh.blightBatches.capacity()) * sizeof(War3RenderTerrainBlightBatchV2)
-        + std::uint64_t(mesh.textures.capacity()) * sizeof(War3Map::Render::TextureRgba);
-    for (const auto& texture : mesh.textures) {
-        bytes += std::uint64_t(texture.mips.capacity()) * sizeof(War3Map::Render::TextureMipRgba);
-        for (const auto& mip : texture.mips) bytes += mip.rgba.capacity();
-    }
-    return bytes;
 }
 std::uint64_t TextureChainsCapacityBytes(const TextureChains& chains) noexcept {
     std::uint64_t bytes = std::uint64_t(chains.descriptions.capacity()) * sizeof(War3RenderTextureMipChainV2)
