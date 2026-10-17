@@ -471,6 +471,219 @@ void PathDirectoryLeaseTests() {
         "actual lease refusal and later rename preserve original user bytes");
 }
 
+std::filesystem::path ZonePath(const std::filesystem::path& path) {
+    return std::filesystem::path(path.native() + Detail::kZoneIdentifierSuffix);
+}
+bool OriginalZone(const Detail::OriginStreamReadLease& lease, std::string_view bytes) {
+    return lease.stream.Valid() && lease.zoneIdentifier
+        && lease.zoneIdentifier->bytes == std::vector<std::byte>(Bytes(bytes).begin(), Bytes(bytes).end())
+        && lease.zoneIdentifier->sha256 == Hash(bytes)
+        && Detail::OriginMatches(lease, &*lease.zoneIdentifier) && !Detail::OriginMatches(lease, nullptr);
+}
+
+void OriginMetadataFormatTests() {
+    TempDirectory temp;
+    const auto file = temp.Path() / L"original.txt", zone = ZonePath(file);
+    Write(file, "original default stream");
+    {
+        const auto absent = Detail::OpenSafeReadFile(file, 1024);
+        Check(absent.Succeeded() && !absent.value->origin.zoneIdentifier && !absent.value->origin.stream.Valid()
+            && Detail::OriginMatches(absent.value->origin, nullptr), "absent origin metadata stays absent with no invented lease");
+    }
+    const auto accepted = [&](std::string_view text) {
+        Write(zone, text);
+        const auto lease = Detail::OpenSafeReadFile(file, 1024);
+        Check(lease.Succeeded() && OriginalZone(lease.value->origin, text),
+            "supported original Zone metadata accepted with exact raw bytes and SHA");
+    };
+    for (const char id : {'0', '1', '2', '3', '4'})
+        accepted(std::string("[ZoneTransfer]\r\nZoneId=") + id + "\r\nHostUrl=https://origin.invalid/original?a=1&b=2\r\n");
+    accepted(" \t[zonetransfer]\n ZoNeId \t= 3\t\nReferrerUrl=https://referrer.invalid/original\n");
+    accepted(std::string("\xef\xbb\xbf") + "[ZoneTransfer]\r\nZoneId=3\r\n");
+    const auto mixedCase = temp.Path() / L"case-original.txt";
+    const std::string mixedCaseBytes = "[ZoneTransfer]\r\nZoneId=3\r\n";
+    Write(mixedCase, "original case-insensitive stream fixture");
+    Write(std::filesystem::path(mixedCase.native() + L":zOnE.iDeNtIfIeR:$DATA"), mixedCaseBytes);
+    {
+        const auto lease = Detail::OpenSafeReadFile(mixedCase, 1024);
+        Check(lease.Succeeded() && OriginalZone(lease.value->origin, mixedCaseBytes),
+            "only the fixed origin stream name is accepted case-insensitively");
+    }
+    std::string utf16("\xff\xfe", 2);
+    for (const char c : std::string("[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=https://origin.invalid/wide\r\n")) {
+        utf16.push_back(c); utf16.push_back('\0');
+    }
+    accepted(utf16);
+    const std::string prefix = "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=";
+    const auto limit = static_cast<std::size_t>(Detail::kMaxZoneIdentifierBytes);
+    Check(limit > prefix.size(), "origin metadata boundary fixture has room for a URL value");
+    if (limit <= prefix.size()) return;
+    const auto bounded = prefix + std::string(limit - prefix.size(), 'a');
+    accepted(std::string_view(bounded).substr(0, limit - 1));
+    accepted(bounded); // 16KiB为包含式上限；+1必须拒绝。
+    const std::vector<std::string> rejected{
+        "", "[ZoneTransfer]\r\n", "[ZoneTransfer]\r\nHostUrl=https://origin.invalid/no-zone\r\n",
+        "ZoneId=3\r\n", "[Other]\r\nZoneId=3\r\n", "[ZoneTransfer]\r\nZoneId=3\r\nZoneId=4\r\n",
+        "[ZoneTransfer]\r\nZoneId=3\r\nzoneid=3\r\n", "[ZoneTransfer]\r\nZoneId=3\r\n[ZoneTransfer]\r\nZoneId=3\r\n",
+        "[ZoneTransfer]\r\nZoneId=3\r\n[Other]\r\nEntry=value\r\n", "[ZoneTransfer]\r\nZoneId=5\r\n",
+        "[ZoneTransfer]\r\nZoneId=-1\r\n", "[ZoneTransfer]\r\nZoneId=00\r\n", "[ZoneTransfer]\r\nZoneId=\r\n",
+        "[ZoneTransfer]\r\nZoneId=x\r\n", std::string("[ZoneTransfer]\nZoneId=3\n") + '\0',
+        std::string("[ZoneTransfer]\nZoneId=3\nHostUrl=") + char(1), bounded + 'a', utf16 + 'x'};
+    for (const auto& text : rejected) {
+        Write(zone, text);
+        Check(Code(Detail::OpenSafeReadFile(file, 1024), "UPDATE_ORIGIN_METADATA_INVALID"),
+            "empty ambiguous malformed or oversized Zone metadata rejected before a safe read");
+    }
+    Check(Sha256File(file).value == std::optional<std::string>(Hash("original default stream")),
+        "origin metadata format checks never modify the original default stream");
+}
+
+void OriginNamedStreamLeaseTests() {
+    TempDirectory temp;
+    const auto directory = temp.Path() / L"origin-directory", file = directory / L"origin-file.txt";
+    Write(file, "original named-stream lease data");
+    const std::string original = "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=https://origin.invalid/lease\r\n";
+    const std::string changed = "[ZoneTransfer]\r\nZoneId=4\r\nHostUrl=https://origin.invalid/changed\r\n";
+    Write(ZonePath(directory), original); Write(ZonePath(file), original);
+    const auto cannotMutate = [&](const std::filesystem::path& path) {
+        const auto stream = ZonePath(path);
+        const HANDLE writer = CreateFileW(stream.c_str(), GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+        const auto openError = writer == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
+        bool written = false;
+        if (writer != INVALID_HANDLE_VALUE) {
+            DWORD bytes = 0;
+            written = WriteFile(writer, changed.data(), static_cast<DWORD>(changed.size()), &bytes, nullptr) != FALSE;
+            CloseHandle(writer);
+        }
+        Check(writer == INVALID_HANDLE_VALUE && openError == ERROR_SHARING_VIOLATION && !written,
+            "named origin read lease actually refuses a native writer instead of relying on the default-stream handle");
+        const bool removed = DeleteFileW(stream.c_str()) != FALSE;
+        const auto deleteError = removed ? ERROR_SUCCESS : GetLastError();
+        Check(!removed && deleteError == ERROR_SHARING_VIOLATION,
+            "named origin read lease actually refuses native stream deletion");
+    };
+    {
+        const auto held = Detail::LockSafeDirectory(directory);
+        Check(held.Succeeded() && OriginalZone(held.value->origin, original), "directory owns its actual named-stream read lease");
+        if (held.Succeeded()) cannotMutate(directory);
+    }
+    Write(ZonePath(directory), changed);
+    {
+        const auto held = Detail::LockSafeDirectory(directory);
+        Check(held.Succeeded() && OriginalZone(held.value->origin, changed), "released directory lease allows a new original metadata snapshot");
+    }
+    {
+        const auto held = Detail::OpenSafeReadFile(file, 1024);
+        Check(held.Succeeded() && OriginalZone(held.value->origin, original)
+            && OriginalZone(held.value->parent.origin, changed), "file and its parent hold separate original metadata leases");
+        if (held.Succeeded()) cannotMutate(file);
+    }
+    Write(ZonePath(file), changed);
+    {
+        const auto held = Detail::OpenSafeReadFile(file, 1024);
+        Check(held.Succeeded() && OriginalZone(held.value->origin, changed), "released file lease allows changed origin bytes to be read and rehashed");
+    }
+    const auto stream = ZonePath(file);
+    Detail::NativeHandle preexistingWriter(CreateFileW(stream.c_str(), GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr));
+    Check(preexistingWriter.Valid(), "original preexisting named-stream writer acquired");
+    if (preexistingWriter.Valid()) {
+        DWORD count = 0;
+        Check(WriteFile(preexistingWriter.Get(), changed.data(), static_cast<DWORD>(changed.size()), &count, nullptr) != FALSE
+            && count == changed.size(), "preexisting native writer fixture can actually write its original named stream");
+        Check(Code(Detail::OpenSafeReadFile(file, 1024), "UPDATE_STREAM_INSPECTION_FAILED"),
+            "an already-open native named-stream writer prevents granting a false exclusive read lease");
+    }
+    preexistingWriter = Detail::NativeHandle{};
+    Check(DeleteFileW(stream.c_str()) != FALSE, "native stream deletion succeeds after every owned lease is released");
+    const auto absent = Detail::OpenSafeReadFile(file, 1024);
+    Check(absent.Succeeded() && !absent.value->origin.zoneIdentifier && Detail::OriginMatches(absent.value->origin, nullptr),
+        "deleted metadata is recorded as absent instead of retaining a stale prior hash");
+    Check(Sha256File(file).value == std::optional<std::string>(Hash("original named-stream lease data")),
+        "named-stream refusal release and deletion leave default-stream content unchanged");
+}
+
+void OriginPackageAndPlanTests(const Signer& signer) {
+    TempDirectory temp;
+    const std::string zone = "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=https://origin.invalid/package\r\n";
+    const auto cache = temp.Path() / L"cache", package = cache / L"original.zip",
+        manifestPath = cache / L"original.json", signaturePath = cache / L"original.sig",
+        install = temp.Path() / L"install", userDirectory = install / L"user", userFile = userDirectory / L"original.txt";
+    const auto archive = Zip({{"bin/app.exe", "original new program"}});
+    const auto digest = Sha256(archive);
+    const auto raw = Manifest("0.2.0", {File("bin/app.exe", "original new program")}, archive.size(), *digest.value).dump();
+    const auto signature = signer.Sign(raw);
+    const auto target = signer.Verify(raw);
+    const auto baseline = signer.Verify(Manifest("0.1.0", {File("bin/app.exe", "original old program")}).dump());
+    Check(target.Succeeded() && baseline.Succeeded(), "original MOTW package and baseline signatures constructed");
+    if (!target.Succeeded() || !baseline.Succeeded()) return;
+    Write(package, archive); Write(manifestPath, raw); Write(signaturePath, signature);
+    Write(install / L"bin/app.exe", "original old program"); Write(userFile, "original user bytes");
+    const auto plainPlan = BuildUpdateInstallPlan(*target.value, &*baseline.value, install, "0.1.0");
+    Check(plainPlan.Succeeded(), "original no-origin inventory plan available for metadata identity comparison");
+    for (const auto& path : {cache, package, manifestPath, signaturePath, install, userDirectory, userFile, install / L"bin/app.exe"})
+        Write(ZonePath(path), zone);
+    {
+        auto manifestLease = Detail::OpenSafeReadFile(manifestPath, 1024 * 1024);
+        auto signatureLease = Detail::OpenSafeReadFile(signaturePath, 64);
+        Check(manifestLease.Succeeded() && signatureLease.Succeeded(), "signed manifest and signature accept bounded original Zone metadata");
+        if (manifestLease.Succeeded() && signatureLease.Succeeded()) {
+            const auto readHeld = [](Detail::FileReadLease& lease) {
+                std::vector<std::byte> bytes(static_cast<std::size_t>(lease.bytes)); DWORD count = 0;
+                if (!ReadFile(lease.file.Get(), bytes.data(), static_cast<DWORD>(bytes.size()), &count, nullptr) || count != bytes.size())
+                    throw std::runtime_error("original leased signed-input read failed");
+                return bytes;
+            };
+            const auto manifestBytes = readHeld(*manifestLease.value), signatureBytes = readHeld(*signatureLease.value);
+            Check(OriginalZone(manifestLease.value->origin, zone) && OriginalZone(signatureLease.value->origin, zone)
+                && OriginalZone(manifestLease.value->parent.origin, zone)
+                && VerifyAndParseUpdateManifest(manifestBytes, signatureBytes, signer.key).Succeeded(),
+                "MOTW signed inputs retain exact metadata and still pass the real signature parser");
+        }
+    }
+    const auto verified = VerifyUpdatePackage(*target.value, package);
+    Check(verified.Succeeded() && verified.value->sha256 == *digest.value,
+        "legal package and parent Zone metadata do not alter signed ZIP SHA or verification");
+    const auto plan = BuildUpdateInstallPlan(*target.value, &*baseline.value, install, "0.1.0");
+    Check(plan.Succeeded() && plainPlan.Succeeded() && plan.value->inventorySha256 != plainPlan.value->inventorySha256,
+        "legal root directory program and user Zone metadata enter the real inventory identity");
+    if (plan.Succeeded()) {
+        const auto user = std::find_if(plan.value->files.begin(), plan.value->files.end(), [](const auto& entry) { return entry.path == "user/original.txt"; });
+        Check(user != plan.value->files.end() && user->action == UpdateFileAction::PreserveUserFile
+            && user->currentSha256 == Hash("original user bytes"), "origin-marked user bytes remain a preserved user file");
+        Write(ZonePath(userFile), "[ZoneTransfer]\r\nZoneId=4\r\n");
+        const auto changed = BuildUpdateInstallPlan(*target.value, &*baseline.value, install, "0.1.0");
+        Check(changed.Succeeded() && changed.value->inventorySha256 != plan.value->inventorySha256,
+            "changing only original user metadata changes the actual inventory hash");
+        Check(DeleteFileW(ZonePath(userFile).c_str()) != FALSE, "only original user Zone fixture deleted for absence comparison");
+        const auto absent = BuildUpdateInstallPlan(*target.value, &*baseline.value, install, "0.1.0");
+        Check(absent.Succeeded() && changed.Succeeded() && absent.value->inventorySha256 != changed.value->inventorySha256,
+            "Zone metadata absence differs from presence in the actual inventory");
+        Write(ZonePath(userFile), zone);
+    }
+    for (const auto& path : {package, manifestPath, install, userDirectory, userFile}) {
+        const auto unknown = std::filesystem::path(path.native() + L":original-unknown");
+        Write(unknown, "original unknown stream alongside valid Zone");
+        if (path == package) Check(Code(VerifyUpdatePackage(*target.value, package), "UPDATE_ADS_REJECTED"),
+            "legal Zone plus unknown package ADS remains refused");
+        else if (path == manifestPath) Check(Code(Detail::OpenSafeReadFile(manifestPath, 1024 * 1024), "UPDATE_ADS_REJECTED"),
+            "legal Zone plus unknown signed-input ADS remains refused");
+        else Check(Code(BuildUpdateInstallPlan(*target.value, &*baseline.value, install, "0.1.0"), "UPDATE_ADS_REJECTED"),
+            "legal Zone plus unknown root child-directory or user-file ADS remains refused");
+        Check(DeleteFileW(unknown.c_str()) != FALSE, "only original unknown stream fixture removed");
+    }
+    Check(VerifyUpdatePackage(*target.value, package).Succeeded()
+        && BuildUpdateInstallPlan(*target.value, &*baseline.value, install, "0.1.0").Succeeded(),
+        "unknown stream refusal does not destroy legal Zone metadata or valid update inputs");
+    const auto wrong = signer.Verify(Manifest("0.2.0", {File("bin/app.exe", "original new program")}, archive.size(), Hash("wrong signed ZIP")).dump());
+    Check(wrong.Succeeded() && Code(VerifyUpdatePackage(*wrong.value, package), "UPDATE_PACKAGE_SHA_MISMATCH"),
+        "legal origin metadata never relaxes the signed package SHA gate");
+    Check(Sha256File(userFile).value == std::optional<std::string>(Hash("original user bytes"))
+        && Sha256File(install / L"bin/app.exe").value == std::optional<std::string>(Hash("original old program")),
+        "all original origin planning and refusal cases leave user and program default bytes intact");
+}
+
 void PlanTests(const Signer& signer) {
     TempDirectory temp;
     const auto install = temp.Path() / L"install";
@@ -562,6 +775,9 @@ int main() {
         PackageTests(signer);
         PathAncestorStreamTests(signer);
         PathDirectoryLeaseTests();
+        OriginMetadataFormatTests();
+        OriginNamedStreamLeaseTests();
+        OriginPackageAndPlanTests(signer);
         PlanTests(signer);
     } catch (const std::exception& error) {
         ++failures;
