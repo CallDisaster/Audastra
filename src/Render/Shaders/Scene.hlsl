@@ -111,10 +111,10 @@ float4 SampleTerrainBounded(float2 uv, float2 cell, float2 dx, float2 dy) {
     float4 accumulated = 0.0;
     [unroll] for (uint index = 0u; index < 4u; ++index) {
         if (index < taps) {
-            float2 point = uv + axis * (((float(index) + 0.5) / float(taps) - 0.5) * major) / terrainDimensions;
+            float2 sampleUv = uv + axis * (((float(index) + 0.5) / float(taps) - 0.5) * major) / terrainDimensions;
             // 所有tap固定中心cell；每级分别夹取，不允许偏移后改选相邻mask/variation。
-            float4 low = terrainTexture.SampleLevel(terrainSampler, clamp(point, lowerMinimum, lowerMaximum), lower);
-            float4 high = terrainTexture.SampleLevel(terrainSampler, clamp(point, upperMinimum, upperMaximum), upper);
+            float4 low = terrainTexture.SampleLevel(terrainSampler, clamp(sampleUv, lowerMinimum, lowerMaximum), lower);
+            float4 high = terrainTexture.SampleLevel(terrainSampler, clamp(sampleUv, upperMinimum, upperMaximum), upper);
             accumulated += lerp(low, high, lod - lower);
         }
     }
