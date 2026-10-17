@@ -149,7 +149,8 @@ std::filesystem::path OutputDirectory() {
 
 void Export(const std::filesystem::path& directory, const char* name, const CapturedFrame& frame,
     const Texture& texture, const Samples& samples, const Metrics& metrics, bool front, bool solid,
-    bool explicitSampler, std::uint32_t samplerFlags, std::uint32_t software) {
+    bool explicitSampler, std::uint32_t samplerFlags, std::uint32_t software,
+    const War3RenderParticleStatusV2* particle = nullptr, bool additionalLayer = false) {
     if (directory.empty()) return;
     const std::string stem(name);
     std::ofstream raw(directory / (stem + ".rgba"), std::ios::binary);
@@ -189,15 +190,101 @@ void Export(const std::filesystem::path& directory, const char* name, const Capt
         << "\"white_mean\":" << metrics.whiteMean << ",\n\"black_mean\":" << metrics.blackMean
         << ",\n\"contrast\":" << metrics.contrast << ",\n\"required_contrast\":" << kRequiredContrast
         << ",\n\"minimum_phase_samples\":" << kMinimumPhaseSamples
-        << ",\n\"contrast_gate_required\":" << boolean(!solid)
+        << ",\n\"contrast_gate_required\":" << boolean(!solid && !particle)
         << ",\n\"contrast_gate_passed\":" << boolean(HasContrast(samples, metrics))
         << ",\n\"opaque\":" << boolean(metrics.opaque) << ",\n\"roi_covered\":" << boolean(metrics.roiCovered)
         << ",\n\"foreground_count\":" << metrics.foreground << ",\n\"coverage_matches_solid\":";
     if (front || solid) stream << "null"; else stream << boolean(metrics.sameCoverage);
     stream << ",\n\"solid_color_within_one\":";
     if (solid) stream << boolean(metrics.solidColor); else stream << "null";
+    stream << ",\n\"particle_trilinear_control\":" << boolean(particle != nullptr)
+        << ",\n\"additional_layer\":" << boolean(additionalLayer);
+    if (particle) stream << ",\n\"particle_status\":{\"scene_version\":" << particle->sceneVersion
+        << ",\"content_version\":" << particle->contentVersion << ",\"texture_uploads\":" << particle->textureUploadCount
+        << ",\"dynamic_uploads\":" << particle->dynamicUploadCount << ",\"vertex_count\":" << particle->vertexCount
+        << ",\"draw_count\":" << particle->drawCount << '}';
     stream << "\n}\n";
     stream.close(); Require(stream.good(), "oblique metrics export failed");
+}
+
+void TestParticlePreservation(const RendererOwner& renderer, const War3RenderCameraV2& camera,
+    const Texture& texture, const Samples& samples, const std::filesystem::path& directory, std::uint32_t software) {
+    const auto* api = renderer.api;
+    Require(api->submitParticleModelScene && api->captureParticleFrameRgba && api->submitModelSceneLayer
+        && api->captureLayeredFrameRgba && api->getModelLayersTarget, "oblique particle/layer production API unavailable");
+    War3RenderSkinUpdateV2 pose{sizeof(pose),0,0,0,101,1,WAR3_RENDER_GROUP_LOCAL_COLUMN_3X4,48,0,0,nullptr,nullptr,nullptr};
+    War3RenderSkinnedModelSceneV2 models{sizeof(models),0,0,0,0,0,0,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,&pose};
+    const std::array<War3RenderParticleVertexV2,6> vertices{{
+        {{-256,-256,0},{0,0},{1,1,1,1}}, {{256,-256,0},{1,0},{1,1,1,1}}, {{-256,256,0},{0,1},{1,1,1,1}},
+        {{256,-256,0},{1,0},{1,1,1,1}}, {{256,256,0},{1,1},{1,1,1,1}}, {{-256,256,0},{0,1},{1,1,1,1}}}};
+    const War3RenderParticleDrawV2 draw{0,6,0,WAR3_PARTICLE_OPAQUE};
+    const War3RenderParticleUpdateV2 update{sizeof(update),6,1,0,101,1,vertices.data(),&draw,&pose};
+    const War3RenderParticleSceneV2 scene{sizeof(scene),1,&texture.chain,&models,&update};
+    Require(api->setCamera(renderer.handle,&camera) == 0 && api->submitParticleModelScene(renderer.handle,&scene) == 0,
+        "oblique original particle scene rejected");
+    CapturedFrame main;
+    main.pixels.resize(static_cast<std::size_t>(kSize) * kSize * 4);
+    War3RenderParticleCapturedFrameV2 mainReceipt{sizeof(mainReceipt)};
+    Require(api->captureParticleFrameRgba(renderer.handle,main.pixels.data(),main.pixels.size(),&mainReceipt) == 0,
+        "oblique particle capture failed");
+    main.receipt = mainReceipt.models.frame;
+    Require(mainReceipt.models.skin.active && !mainReceipt.models.skin.result
+        && mainReceipt.models.skin.sceneVersion == 101 && mainReceipt.models.skin.contentVersion == 1
+        && mainReceipt.models.skin.frameCount == main.receipt.capture.frameCount
+        && mainReceipt.particles.sceneVersion == 101 && mainReceipt.particles.contentVersion == 1
+        && mainReceipt.particles.vertexCount == 6 && mainReceipt.particles.drawCount == 1
+        && mainReceipt.particles.textureUploadCount == 1 && mainReceipt.particles.dynamicUploadCount == 1,
+        "oblique particle completed status mismatch");
+    const auto checkFrame = [&](const CapturedFrame& frame) {
+        const auto& receipt = frame.receipt;
+        Require(receipt.capture.ticket && receipt.capture.frameCount && receipt.capture.width == kSize
+            && receipt.capture.height == kSize && receipt.capture.documentRevision == kRevision
+            && receipt.view.frameCount == receipt.capture.frameCount && receipt.view.documentRevision == kRevision
+            && receipt.view.surfaceEpoch && receipt.view.sceneEpoch && receipt.view.viewEpoch
+            && std::memcmp(&receipt.camera,&camera,sizeof(camera)) == 0,
+            "oblique particle pixels/camera/view do not share identity");
+        RequireExactMatrix(receipt.view,camera);
+    };
+    checkFrame(main);
+    const auto mainMetrics = Measure(main,samples);
+    Export(directory,"oblique-particle-main",main,texture,samples,mainMetrics,false,false,false,3,software,&mainReceipt.particles);
+
+    // 清空主槽后再放同源粒子到child，避免主粒子遮住child而让缺sampler假通过。
+    auto parentPose = pose; parentPose.sceneVersion = 102;
+    auto parent = models; parent.initialPose = &parentPose;
+    Require(api->submitSkinnedModelScene(renderer.handle,&parent) == 0, "oblique layer parent clear rejected");
+    const auto background = CaptureFrame(renderer,kSize,kSize,kRevision,camera);
+    const auto backgroundMetrics = Measure(background,samples);
+    Require(backgroundMetrics.foreground == 0, "oblique particle child is hidden by a foreground parent");
+    War3RenderModelLayersTargetV2 target{sizeof(target)};
+    Require(api->getModelLayersTarget(renderer.handle,&target) == 0 && target.parentModelEpoch,
+        "oblique particle parent target missing");
+    const War3RenderModelSceneLayerV2 layer{sizeof(layer),0,9832,target.parentModelEpoch,1,0,nullptr,&scene,
+        WAR3_RENDER_MODEL_LAYER_MODEL,0};
+    Require(api->submitModelSceneLayer(renderer.handle,&layer) == 0
+        && api->getModelLayersTarget(renderer.handle,&target) == 0 && target.layerCount == 1,
+        "oblique particle child submit rejected");
+    CapturedFrame child; child.pixels.resize(main.pixels.size());
+    War3RenderLayeredCapturedFrameV2 childReceipt{sizeof(childReceipt)};
+    Require(api->captureLayeredFrameRgba(renderer.handle,target.layersRevision,child.pixels.data(),child.pixels.size(),&childReceipt) == 0,
+        "oblique particle child capture failed");
+    child.receipt = childReceipt.world.frame; checkFrame(child);
+    const auto& status = childReceipt.layers[0];
+    Require(childReceipt.layerCount == 1 && childReceipt.layersRevision == target.layersRevision
+        && status.layerId == 9832 && status.parentModelEpoch == target.parentModelEpoch && status.revision == 1 && !status.result
+        && status.skin.active && !status.skin.result && status.skin.sceneVersion == 101 && status.skin.contentVersion == 1
+        && status.particles.sceneVersion == 101 && status.particles.contentVersion == 1
+        && status.particles.vertexCount == 6 && status.particles.drawCount == 1
+        && status.particles.textureUploadCount == 1 && status.particles.dynamicUploadCount == 1,
+        "oblique particle child completed status mismatch");
+    const auto childMetrics = Measure(child,samples);
+    Export(directory,"oblique-particle-child",child,texture,samples,childMetrics,false,false,false,3,software,&status.particles,true);
+    Require(mainMetrics.opaque && mainMetrics.roiCovered && mainMetrics.foreground > 1000
+        && std::abs(mainMetrics.whiteMean - 128) <= 1 && std::abs(mainMetrics.blackMean - 128) <= 1,
+        "particle filter changed from original trilinear gray");
+    Require(childMetrics.opaque && childMetrics.roiCovered && child.pixels == main.pixels,
+        "additional particle layer changed original sampler pixels");
+    std::cout << "oblique particle controls: original trilinear gray and byte-identical main/child frames passed\n";
 }
 
 } // namespace ModelObliqueSamplerTest
@@ -273,6 +360,7 @@ void TestModelObliqueSampler(const War3RenderPluginApiV2* api, const War3RenderC
         std::cout << names[index] << " contrast=" << observed[index].contrast << " white=" << samples.white.size()
             << " black=" << samples.black.size() << " coverage=" << observed[index].sameCoverage << '\n';
     }
+    TestParticlePreservation(renderer,oblique,grating,samples,directory,info.forceWarp);
     Require(frontMetrics.opaque && HasContrast(frontSamples,frontMetrics), "front control lost resolvable source bars");
     Require(solidMetrics.opaque && solidMetrics.roiCovered && solidMetrics.foreground > 1000 && solidMetrics.solidColor,
         "oblique solid control changed color, alpha or geometric coverage");

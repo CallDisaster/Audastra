@@ -1790,7 +1790,8 @@ int wmain(int argc, wchar_t** argv) {
             const std::wstring wideSha(argv[3]);
             Require(wideSha.size() == 64 && std::all_of(wideSha.begin(), wideSha.end(), [](wchar_t c) {
                 return (c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'f'); }), "real terrain pair SHA invalid");
-            const std::string sha(wideSha.begin(), wideSha.end());
+            std::string sha; sha.reserve(wideSha.size());
+            for (const auto character : wideSha) sha.push_back(static_cast<char>(character));
             War3Map::Tests::RunRealTerrainPairAudit(argv[2], sha, argv[4],
                 [api](const War3RenderTerrainMipSceneV2& scene, const War3RenderCameraV2& camera,
                     std::uint32_t width, std::uint32_t height) {
