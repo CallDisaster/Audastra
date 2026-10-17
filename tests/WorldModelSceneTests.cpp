@@ -4,6 +4,7 @@
 #include "War3MapCore/Image/BlpImage.h"
 #include "War3MapCore/RenderPluginStaticSamplers.h"
 #include "MdxTestModel.h"
+#include "fixtures/TinyJpegFixture.h"
 
 #include <algorithm>
 #include <array>
@@ -736,7 +737,7 @@ void TestStaticSamplerMetadataBudget() {
         "紧预算夹具只允许一张真实2x2 RGBA贴图，不制造大纹理或虚拟内存");
     const auto& baseline = *probe.value;
     const auto tailBytes = sizeof(War3RenderStaticSamplerModelSceneV2) - sizeof(War3RenderModelSceneV2);
-    const auto exact = std::uint64_t(baseline.textures[0].rgba.size())
+    const auto exact = ModelTextureRgbaBytes(baseline.textures[0])
         + baseline.layerSamplerFlags.capacity() * sizeof(std::uint32_t) + tailBytes;
     WorldModelLimits limits; limits.maxTotalTextureBytes = exact - 1;
     const auto rejected = BuildWorldModelScene({}, files.Reader(), limits, baked);
@@ -751,7 +752,7 @@ void TestStaticSamplerMetadataBudget() {
     const std::vector<BakedModelMesh> replacement{Triangle(200, "Original\\Tiny.blp", 2)};
     auto measured = baseline;
     Require(ReplaceBakedMeshes(measured, replacement), "测量真实替换候选的 sampler 分配容量");
-    const auto replaceExact = std::uint64_t(baseline.textures[0].rgba.size())
+    const auto replaceExact = ModelTextureRgbaBytes(baseline.textures[0])
         + (baseline.layerSamplerFlags.capacity() + std::as_const(measured).layerSamplerFlags.capacity()) * sizeof(std::uint32_t)
         + tailBytes;
     auto candidate = baseline;
@@ -900,11 +901,125 @@ void TestPreparedAnimatedPicking() {
         "Create→Prepare 生成实际 mesh 映射、当前盒与 owned 碰撞节点矩阵后精确命中");
 }
 
+
+std::vector<std::byte> SourceMipFixture(std::uint32_t width, std::uint32_t height, unsigned count=16) {
+    std::vector<std::byte> bytes(1180);
+    const auto put=[&](std::size_t at,std::uint32_t value) {
+        for (unsigned i=0;i<4;++i) bytes[at+i]=static_cast<std::byte>((value>>(i*8))&255);
+    };
+    bytes[0]=std::byte{'B'};bytes[1]=std::byte{'L'};bytes[2]=std::byte{'P'};bytes[3]=std::byte{'1'};
+    put(4,1);put(12,width);put(16,height);put(156,0x00ff0000);put(160,0x0000ff00);
+    for (unsigned level=0;level<count;++level) {
+        const auto w=std::max(1u,width>>level),h=std::max(1u,height>>level);
+        put(28+4*level,static_cast<std::uint32_t>(bytes.size()));put(92+4*level,w*h);
+        bytes.insert(bytes.end(),w*h,static_cast<std::byte>(level ? 1 : 0));
+        if (w==1 && h==1) break;
+    }
+    return bytes;
+}
+
+void TestModelSourceMipsAndLegacyRoutes() {
+    const auto source=SourceMipFixture(3,5);
+    auto decoded=DecodeModelTexture("Original\\Source.blp",source,512,72);
+    Require(decoded.Succeeded() && ModelTextureValid(*decoded.value,512) && ModelTextureRgbaBytes(*decoded.value)==72
+        && decoded.value->additionalMips.size()==2 && decoded.value->rgba[0]==255
+        && decoded.value->additionalMips[0].rgba[1]==std::byte{255}
+        && decoded.value->mipOrigin==ModelTextureMipOrigin::BlpSource,"生产解码未保留故意不同的红top/绿原低级");
+    Require(ModelTextureStorageBytes(*decoded.value)>ModelTextureRgbaBytes(*decoded.value),"实际owned计费遗漏lower容器/容量");
+    Require(!DecodeModelTexture("Original\\Source.blp",source,512,71).Succeeded(),"预算不足发布了trimmed原链");
+    auto topOnly=DecodeModelTexture("Original\\OnlyTop.blp",SourceMipFixture(3,5,1),512);
+    Require(topOnly.Succeeded() && topOnly.value->additionalMips.empty()
+        && topOnly.value->mipOrigin==ModelTextureMipOrigin::GeneratedFromTop
+        && topOnly.value->mipStopReason==Image::BlpMipChainStopReason::UndeclaredMip,"明确无低级的源没有保留旧生成路径");
+    const auto normalTail=DecodeModelTexture("Original\\NormalTail.blp",SourceMipFixture(3,5,2),512);
+    Require(normalTail.Succeeded() && normalTail.value->additionalMips.size()==1
+        && normalTail.value->mipStopReason==Image::BlpMipChainStopReason::UndeclaredMip
+        && normalTail.value->mipDiagnostics.empty(),"正常缺失尾级被补齐或误判为坏素材");
+    std::vector<std::byte> tga(18+2*2*3); tga[2]=std::byte{2}; tga[12]=tga[14]=std::byte{2};
+    tga[16]=std::byte{24}; tga[17]=std::byte{0x20};
+    for (std::size_t pixel=18;pixel<tga.size();pixel+=3) tga[pixel+2]=std::byte{255};
+    const auto legacyTga=DecodeModelTexture("Original\\Legacy.tga",tga,512);
+    Require(legacyTga.Succeeded() && legacyTga.value->additionalMips.empty() && legacyTga.value->rgba[0]==255,
+        "普通TGA没有保持原DecodeTexture路径");
+    for (const auto dimensions : {std::array<std::uint32_t,3>{4096,1,512},{128,1,32},{1024,1,2048}}) {
+        const auto image=DecodeModelTexture("Original\\Derived.blp",SourceMipFixture(dimensions[0],dimensions[1]),dimensions[2]);
+        Require(image.Succeeded() && image.value->additionalMips.empty()
+            && image.value->width==std::min(dimensions[0],dimensions[2]) && image.value->rgba[0]==255
+            && image.value->rgba[1]==0 && image.value->sourceWidth==dimensions[0],
+            "新generic/512门退回旧大源、caller小上限或2048消费者能力");
+    }
+    const auto put=[](std::vector<std::byte>& bytes,std::size_t at,std::uint32_t value) {
+        for (unsigned i=0;i<4;++i) bytes[at+i]=static_cast<std::byte>((value>>(i*8))&255);
+    };
+    auto damaged=source;put(damaged,32,static_cast<std::uint32_t>(damaged.size()+1));
+    Require(!DecodeModelTexture("Original\\BadMip1.blp",damaged,512).Succeeded(),"只剩mip0的坏源偷走GenerateMips");
+    damaged=source;put(damaged,32,0);put(damaged,96,0);
+    Require(!DecodeModelTexture("Original\\Hole.blp",damaged,512).Succeeded(),"中间空洞误认为正常只有top");
+    damaged=source;put(damaged,36,static_cast<std::uint32_t>(damaged.size()+1));
+    auto prefix=DecodeModelTexture("Original\\BadMip2.blp",damaged,512);
+    Require(prefix.Succeeded() && prefix.value->additionalMips.size()==1 && !prefix.value->mipDiagnostics.empty(),
+        "明确坏范围的多级前缀未保留来源诊断");
+    const auto top=TestFixtures::MakeTinyGrayJpeg(16,16),small=TestFixtures::MakeTinyGrayJpeg(8,8),last=TestFixtures::MakeTinyGrayJpeg(4,4);
+    const auto jpeg=[&](std::vector<unsigned char> final) {
+        std::vector<std::byte> bytes(160);bytes[0]=std::byte{'B'};bytes[1]=std::byte{'L'};bytes[2]=std::byte{'P'};bytes[3]=std::byte{'1'};
+        put(bytes,12,16);put(bytes,16,16);
+        const std::array<std::vector<unsigned char>,3> levels{top.bytes,small.bytes,std::move(final)};
+        for (std::size_t i=0;i<levels.size();++i) {
+            put(bytes,28+4*i,static_cast<std::uint32_t>(bytes.size()));put(bytes,92+4*i,static_cast<std::uint32_t>(levels[i].size()));
+            for (const auto value:levels[i]) bytes.push_back(static_cast<std::byte>(value));
+        }
+        return bytes;
+    };
+    const auto formatPrefix=DecodeModelTexture("Original\\KnownFormat.blp",jpeg(small.bytes),512);
+    Require(formatPrefix.Succeeded() && formatPrefix.value->additionalMips.size()==1,
+        "可定位SOF尺寸损坏没有保留多级前缀");
+    auto entropy=last.bytes;entropy.erase(entropy.begin()+static_cast<std::ptrdiff_t>(last.entropyOffset));
+    Require(!DecodeModelTexture("Original\\CoreFailure.blp",jpeg(entropy),512).Succeeded(),
+        "底层Core失败被按message猜成坏素材前缀发布");
+    std::vector<ModelTextureRgba> textures{*decoded.value,*prefix.value,*topOnly.value};
+    auto descriptors=DescribeModelTextures(textures);
+    Require(descriptors.chains.size()==3 && descriptors.mips.size()==6 && descriptors.chains[0].mipCount==3
+        && descriptors.chains[0].maxSampleMip==2 && descriptors.chains[0].mips==descriptors.mips.data()
+        && descriptors.chains[1].mips==descriptors.mips.data()+3 && descriptors.chains[2].mips==descriptors.mips.data()+5,
+        "多纹理描述符没有稳定指向各自完整链区间");
+    auto moved=std::move(descriptors);
+    Require(moved.chains[0].mips==moved.mips.data(),"描述符owner移动令mip指针悬空");
+    Files files;files.files[Key("Original\\Source.blp")]=source;
+    const std::vector<BakedModelMesh> baked{Triangle(0,"Original\\Source.blp")};
+    auto scene=BuildWorldModelScene({},files.Reader(),{},baked);
+    Require(scene.Succeeded() && scene.value->textures.size()==1 && scene.value->textures[0].additionalMips.size()==2,
+        "实际baked模型Builder没有消费生产原始链");
+    auto cached=std::make_shared<ModelTextureRgba>(*decoded.value); cached->rgba[0]=19;
+    const ModelDecodedTextureProvider cache=[&](std::string_view path,std::span<const std::byte> bytes,std::uint32_t maximum) {
+        Require(Key(path)==Key(cached->path) && maximum==512 && std::equal(bytes.begin(),bytes.end(),source.begin(),source.end()),
+            "decoded cache bypassed the current actual source bytes or caller policy");
+        return cached;
+    };
+    auto cachedScene=BuildAnimatedModelGeometry({},files.Reader(),{},{},baked,cache);
+    Require(cachedScene.Succeeded() && cachedScene.value->textures[0].rgba[0]==19,
+        "valid current-policy complete source chain was not reused");
+    ++cached->mipPolicyVersion;
+    cachedScene=BuildAnimatedModelGeometry({},files.Reader(),{},{},baked,cache);
+    Require(cachedScene.Succeeded() && cachedScene.value->textures[0].rgba[0]==255,
+        "changed mip policy reused an obsolete decoded cache entry");
+    cached->mipPolicyVersion=ModelTextureMipPolicyVersion;
+    cached->mipStopReason=Image::BlpMipChainStopReason::WorkingBudget;
+    cachedScene=BuildAnimatedModelGeometry({},files.Reader(),{},{},baked,cache);
+    Require(cachedScene.Succeeded() && cachedScene.value->textures[0].rgba[0]==255,
+        "cached budget-trimmed chain bypassed full source-chain revalidation");
+    cached->mipStopReason=Image::BlpMipChainStopReason::Complete;
+    WorldModelLimits shortCacheQuota; shortCacheQuota.maxTotalTextureBytes=71;
+    cachedScene=BuildAnimatedModelGeometry({},files.Reader(),{},shortCacheQuota,baked,cache);
+    Require(cachedScene.Succeeded() && cachedScene.value->textures.empty() && HasWarning(*cachedScene.value,"WORLD_MODEL_TEXTURE_BUDGET"),
+        "cache reused all mip levels without charging the current complete-chain quota");
+}
+
 } // namespace
 
 int main() {
     try {
         TestBuild();
+        TestModelSourceMipsAndLegacyRoutes();
         TestGhostUsesSharedAssetAndBlendedVariant();
         TestMaterialUnfoggedFlags();
         TestLimitsAndInvalid();

@@ -176,13 +176,16 @@ Result<std::shared_ptr<AnimationParticleHost>> CreateAnimationParticles(Animated
     std::uint64_t textureBytes = 0, modelTextureBytes = 0;
     const auto& geometry=std::as_const(scene.geometry);
     const auto& residentTextures=std::as_const(scene.particleTextures);
-    for (const auto& t : geometry.textures) modelTextureBytes += t.rgba.size();
+    for (const auto& t : geometry.textures)
+        if (!ChargeModelTextureRgba(t,modelTextureBytes,limits.geometry.maxTotalTextureBytes))
+            return fail("ANIMATION_PARTICLE_TEXTURE_BUDGET","模型完整mip链超过总预算。");
     for (std::uint32_t i=0;i<residentTextures.size();++i) {
         textures.emplace(AnimationPathKey(residentTextures[i].path),i);
-        textureBytes+=residentTextures[i].rgba.size();
+        if (!ChargeModelTextureRgba(residentTextures[i],textureBytes,64ull*1024*1024))
+            return fail("ANIMATION_PARTICLE_TEXTURE_BUDGET","常驻粒子完整mip链超过预算。");
     }
     if (textures.size()>256 || textureBytes>64ull*1024*1024 ||
-        textureBytes+modelTextureBytes>limits.geometry.maxTotalTextureBytes)
+        modelTextureBytes>limits.geometry.maxTotalTextureBytes || textureBytes>limits.geometry.maxTotalTextureBytes-modelTextureBytes)
         return fail("ANIMATION_PARTICLE_TEXTURE_BUDGET", "驻留模型和粒子解码贴图超过总预算。");
     std::uint32_t particleEmitters = 0, ribbonEmitters = 0, maxNodes = 1, maxGroups = 1, maxGeosets = 1;
     std::uint64_t bindingBytes=sizeof(AnimationParticleCheckpoint)+scene.specs.size()*sizeof(std::uint32_t);
@@ -279,7 +282,13 @@ Result<std::shared_ptr<AnimationParticleHost>> CreateAnimationParticles(Animated
                 ModelTextureRgba decoded;
                 const auto existing = std::find_if(geometry.textures.begin(), geometry.textures.end(),
                     [&](const auto& t) { return AnimationPathKey(t.path) == key; });
-                if (existing != geometry.textures.end()) decoded = *existing;
+                const auto remaining=std::min(64ull*1024*1024-textureBytes,
+                    limits.geometry.maxTotalTextureBytes-modelTextureBytes-textureBytes);
+                if (existing != geometry.textures.end()) {
+                    if (!ModelTextureValid(*existing,limits.geometry.maxTextureDimension) || ModelTextureRgbaBytes(*existing)>remaining)
+                        return fail("ANIMATION_PARTICLE_TEXTURE_BUDGET","复制模型完整mip链前粒子配额不足。");
+                    decoded = *existing;
+                }
                 else {
                     auto resource = selectedResource ? Result<AnimationResource>::Success(std::move(*selectedResource))
                         : read(path, limits.geometry.maxTextureBytes);
@@ -292,14 +301,16 @@ Result<std::shared_ptr<AnimationParticleHost>> CreateAnimationParticles(Animated
                     }
                     if (!ValidTextureResource(*resource.value, limits.geometry.maxTextureBytes))
                         return fail("ANIMATION_TEXTURE_SOURCE", "粒子贴图缺少真实来源、SHA-256 或超过读取预算。");
-                    auto image = DecodeModelTexture(path, resource.value->bytes, limits.geometry.maxTextureDimension);
+                    auto image = DecodeModelTexture(path, resource.value->bytes, limits.geometry.maxTextureDimension,remaining);
                     if (!image.Succeeded()) return {std::nullopt, std::move(image.diagnostics)};
                     decoded = std::move(*image.value);
                     scene.sources.push_back({key, resource.value->sourceLayer, resource.value->digest});
                 }
-                textureBytes += decoded.rgba.size();
-                if (textureBytes > 64ull * 1024 * 1024 || textureBytes + modelTextureBytes > limits.geometry.maxTotalTextureBytes)
+                if (!ChargeModelTextureRgba(decoded,textureBytes,64ull*1024*1024)
+                    || textureBytes>limits.geometry.maxTotalTextureBytes-modelTextureBytes)
                     return fail("ANIMATION_PARTICLE_TEXTURE_BUDGET", "模型和粒子解码贴图超过总预算。");
+                for (const auto& diagnostic:decoded.mipDiagnostics)
+                    if (scene.geometry.warnings.size()<64) scene.geometry.warnings.push_back(diagnostic);
                 found = textures.emplace(key, static_cast<std::uint32_t>(scene.particleTextures.size())).first;
                 scene.particleTextures.push_back(std::move(decoded));
             }

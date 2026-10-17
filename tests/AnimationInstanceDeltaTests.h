@@ -162,7 +162,9 @@ inline void PreviewAssetSnapshot() {
 }
 inline void PreparedFormalAssets() {
     const auto model = AnimationParticleContinuityTest::Model(), plainModel = AnimationTest::Bytes();
-    auto seedModel = model, texture = AnimationParticleContinuityTest::Texture();
+    Image::DecodedImage mipImage; mipImage.width=mipImage.height=8;
+    mipImage.rgba.assign(8*8*4,std::byte{255});
+    auto seedModel = model, texture = Good(Image::EncodeBlpPaletted(mipImage));
     constexpr std::string_view texturePath = "Textures\\Crate.blp";
     const auto at = std::search(seedModel.begin(), seedModel.end(),
         reinterpret_cast<const std::byte*>(texturePath.data()), reinterpret_cast<const std::byte*>(texturePath.data() + texturePath.size()));
@@ -213,6 +215,11 @@ inline void PreparedFormalAssets() {
     auto first = Good(resident->PrepareInstanceDelta(*previous, *plan, view));
     auto second = Good(resident->PrepareInstanceDelta(*previous, *plan, view));
     const auto scene = first.service->Scene();
+    Check(!scene->geometry.textures.empty() &&
+        std::all_of(scene->geometry.textures.begin(),scene->geometry.textures.end(),[](const auto& image) {
+            return image.additionalMips.size()==3 && image.additionalMips.back().width==1 &&
+                image.additionalMips.back().height==1 && ModelTextureRgbaBytes(image)==340;
+        }), "prepared formal append lost the original complete source mip chain");
     const auto layerIndex = scene->geometry.meshes.at(scene->geometry.models.back().firstMesh).firstLayer;
     Check(scene->pickModels.back().source == parsed && scene->geometry.layers.at(layerIndex).alpha == 1.0f &&
         !scene->specs.back().model.previewGhost && first.frame->states.back().identity == added.identity &&

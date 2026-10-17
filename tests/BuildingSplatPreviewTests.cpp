@@ -98,6 +98,36 @@ int main() try {
     }
     const AnimationSession session{13,5,"owned-resource-source"};
     auto loaded=BuildBuildingSplatPreviewAssets(catalog,textures,session); Require(loaded.Succeeded(),"assets failed");
+    auto mipTextures=textures; std::uint64_t mipStorageDelta=0;
+    for (auto& texture:mipTextures) {
+        auto image=std::make_shared<ModelTextureRgba>(*texture.image);
+        Image::DecodedImage lower; lower.width=lower.height=1; lower.rgba.assign(4,std::byte{127});
+        image->additionalMips.push_back(std::move(lower)); image->mipOrigin=ModelTextureMipOrigin::BlpSource;
+        image->mipPolicyVersion=ModelTextureMipPolicyVersion; image->sourceWidth=image->sourceHeight=2;
+        image->mipStopLevel=2;
+        mipStorageDelta+=2*(ModelTextureStorageBytes(*image)-ModelTextureStorageBytes(*texture.image));
+        texture.image=std::move(image);
+    }
+    const auto mipAssets=BuildBuildingSplatPreviewAssets(catalog,mipTextures,session);
+    Require(mipAssets.Succeeded() && mipAssets.value->grids.size()==2 &&
+        mipAssets.value->logicalBytes==loaded.value->logicalBytes+mipStorageDelta,
+        "splat source and scene copies did not charge the complete owned mip chain");
+    for (const auto& image:mipAssets.value->scene->geometry.textures)
+        Require(image.additionalMips.size()==1 && image.additionalMips[0].rgba[0]==std::byte{127},
+            "splat asset copy lost its original lower source mip");
+    BuildingSplatPreviewLimits exactMipBudget; exactMipBudget.maxAssetBytes=mipAssets.value->logicalBytes;
+    const auto exactMipAssets=BuildBuildingSplatPreviewAssets(catalog,mipTextures,session,exactMipBudget);
+    Require(exactMipAssets.Succeeded() && exactMipAssets.value->grids.size()==2,"exact full-chain splat budget refused");
+    --exactMipBudget.maxAssetBytes;
+    const auto shortMipAssets=BuildBuildingSplatPreviewAssets(catalog,mipTextures,session,exactMipBudget);
+    Require(shortMipAssets.Succeeded() && shortMipAssets.value->grids.size()==1 && !shortMipAssets.value->issues.empty(),
+        "one-byte-short splat budget omitted no full-chain asset");
+    auto brokenMipTextures=mipTextures;
+    auto brokenMip=std::make_shared<ModelTextureRgba>(*mipTextures[0].image); brokenMip->additionalMips[0].width=2;
+    brokenMipTextures[0].image=brokenMip;
+    const auto brokenMipAssets=BuildBuildingSplatPreviewAssets(catalog,brokenMipTextures,session);
+    Require(brokenMipAssets.Succeeded() && brokenMipAssets.value->grids.size()==1 && !brokenMipAssets.value->issues.empty(),
+        "splat asset preparation accepted malformed lower-level dimensions");
     const auto& assets=*loaded.value; Require(assets.grids.size()==2 && assets.grids[0].fullWidth==380
         && assets.grids[1].fullWidth==340 && assets.grids[0].vertexCount==16,"table width/grid spacing wrong");
     const auto terrain=Terrain(); auto inputs=Inputs(catalog,version);

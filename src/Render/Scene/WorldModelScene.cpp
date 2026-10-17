@@ -311,25 +311,41 @@ private:
         if (bytes.Succeeded() && (bytes.value->size() > limits_.maxTextureBytes || scene_.textures.size() >= limits_.maxTextures)) {
             budgetExceeded = true;
         } else if (bytes.Succeeded()) {
+            // 解码的分配门只扣实际RGBA；联合来源/采样元数据由MaterialStorageFits归因。
+            const auto remaining = limits_.maxTotalTextureBytes - std::min(limits_.maxTotalTextureBytes, textureBytes_);
             const auto cached = decoded_ ? decoded_(path, *bytes.value, limits_.maxTextureDimension) : nullptr;
             const bool usable = cached && cached->ownedIdentity.empty() && PathKey(cached->path) == PathKey(path)
-                && cached->width && cached->height && cached->width <= limits_.maxTextureDimension
-                && cached->height <= limits_.maxTextureDimension
-                && std::uint64_t(cached->width) * cached->height * 4 == cached->rgba.size();
+                && cached->mipPolicyVersion == ModelTextureMipPolicyVersion
+                && ModelTextureValid(*cached, limits_.maxTextureDimension) && ModelTextureRgbaBytes(*cached) <= remaining;
             auto image = usable ? Result<ModelTextureRgba>::Success(*cached)
-                : DecodeModelTexture(path, *bytes.value, limits_.maxTextureDimension);
+                : DecodeModelTexture(path, *bytes.value, limits_.maxTextureDimension, remaining);
             if (image.Succeeded()) {
                 auto decoded = std::move(*image.value);
-                const bool rgbaFits = decoded.rgba.size() <= limits_.maxTotalTextureBytes
-                    && textureBytes_ <= limits_.maxTotalTextureBytes - decoded.rgba.size();
-                if (rgbaFits && MaterialStorageFits(textureBytes_ + decoded.rgba.size(), textureBindingBytes_, scene_.layerSamplerFlags.capacity())) {
-                    textureBytes_ += decoded.rgba.size();
+                const auto rgbaBytes = ModelTextureRgbaBytes(decoded);
+                const bool rgbaFits = ModelTextureValid(decoded, limits_.maxTextureDimension)
+                    && rgbaBytes <= limits_.maxTotalTextureBytes && textureBytes_ <= limits_.maxTotalTextureBytes - rgbaBytes;
+                if (rgbaFits && MaterialStorageFits(textureBytes_ + rgbaBytes, textureBindingBytes_, scene_.layerSamplerFlags.capacity())) {
+                    textureBytes_ += rgbaBytes;
+                    // 场景保有界摘要，完整来源/截止诊断仍由纹理owned字段保存。
+                    for (const auto& diagnostic : decoded.mipDiagnostics)
+                        if (scene_.warnings.size() < 64) scene_.warnings.push_back(diagnostic);
                     index = static_cast<std::uint32_t>(scene_.textures.size());
                     scene_.textures.push_back(std::move(decoded));
                 } else {
                     budgetExceeded = true;
                     // 仅纯RGBA本可容纳时将超额归因于来源元数据；纯纹理超限保留原预算诊断。
                     samplerBudgetExceeded_ |= rgbaFits && (samplerActive_ || textureBindingBytes_ != 0);
+                }
+            } else {
+                for (const auto& diagnostic : image.diagnostics) {
+                    budgetExceeded |= diagnostic.code == "WORLD_MODEL_TEXTURE_BUDGET"
+                        || diagnostic.code == "BLP_MIP_INPUT_BUDGET" || diagnostic.code == "BLP_MIP_RGBA_BUDGET"
+                        || diagnostic.code == "BLP_MIP_RETAINED_BUDGET" || diagnostic.code == "BLP_MIP_MIP_BUDGET"
+                        || diagnostic.code == "BLP_MIP_WORKING_BUDGET" || diagnostic.code == "BLP_MIP_JPEG_BUDGET";
+                    if (scene_.warnings.size() < 64) {
+                        auto warning = diagnostic; warning.severity = DiagnosticSeverity::Warning;
+                        scene_.warnings.push_back(std::move(warning));
+                    }
                 }
             }
         }
@@ -373,10 +389,10 @@ private:
         std::set<std::string> newTextures;
         for (const auto& mesh : asset.Meshes()) { vertices += mesh.vertices.size(); indices += mesh.indices.size(); }
         for (const auto& texture : asset.Textures()) {
-            if (texture.width > limits_.maxTextureDimension || texture.height > limits_.maxTextureDimension ||
-                texture.rgba.size() > limits_.maxTextureBytes) return Output::Success(std::nullopt);
+            if (!ModelTextureHasLegacyOwnedState(texture) || !ModelTextureValid(texture, limits_.maxTextureDimension) ||
+                ModelTextureRgbaBytes(texture) > limits_.maxTextureBytes) return Output::Success(std::nullopt);
             const auto key = ModelTextureAssetKey(texture);
-            if (!textures_.contains(key) && newTextures.insert(key).second) { ++textures; textureBytes += texture.rgba.size(); }
+            if (!textures_.contains(key) && newTextures.insert(key).second) { ++textures; if (!ChargeModelTextureRgba(texture, textureBytes, limits_.maxTotalTextureBytes)) return Output::Success(std::nullopt); }
         }
         if (asset.OwnedBytes() > limits_.maxModelBytes || scene_.models.size() >= limits_.maxModels ||
             scene_.vertices.size() > limits_.maxVertices || vertices > limits_.maxVertices - scene_.vertices.size() ||
@@ -397,7 +413,7 @@ private:
             auto found = textures_.find(key);
             if (found == textures_.end()) {
                 found = textures_.emplace(key, static_cast<std::uint32_t>(scene_.textures.size())).first;
-                scene_.textures.push_back(texture); textureBytes_ += texture.rgba.size();
+                scene_.textures.push_back(texture); textureBytes_ += ModelTextureRgbaBytes(texture);
             }
             textureMap.push_back(found->second);
         }
@@ -652,21 +668,221 @@ std::string ModelTexturePath(const MdxTexture& texture, const ModelInstanceReque
     if (texture.replaceableId == 2) return TeamGlowTexture(request.teamColor);
     return request.replaceableTexture;
 }
-Result<ModelTextureRgba> DecodeModelTexture(std::string path, std::span<const std::byte> bytes,
-    std::uint32_t maxDimension) {
-    if (!maxDimension) return Result<ModelTextureRgba>::Failure("Render.WorldModels", "WORLD_MODEL_TEXTURE_BUDGET", "贴图尺寸预算不能为零。");
-    // 与游戏一样按扩展名接受 BLP 与 TGA。
-    auto image = Image::DecodeTexture(path, bytes);
-    if (!image.Succeeded()) return {std::nullopt, std::move(image.diagnostics)};
-    if (!image.value->Valid()) return Result<ModelTextureRgba>::Failure("Render.WorldModels", "WORLD_MODEL_TEXTURE_INVALID", "解码贴图无效。");
-    ModelTextureRgba decoded{std::move(path), image.value->width, image.value->height, {}};
-    decoded.rgba.resize(image.value->rgba.size());
-    std::transform(image.value->rgba.begin(), image.value->rgba.end(), decoded.rgba.begin(),
-        [](std::byte value) { return static_cast<std::uint8_t>(value); });
-    Shrink(decoded, maxDimension);
-    return Result<ModelTextureRgba>::Success(std::move(decoded));
+std::uint64_t ModelTextureRgbaBytes(const ModelTextureRgba& texture) noexcept {
+    std::uint64_t bytes = texture.rgba.size();
+    for (const auto& mip : texture.additionalMips) {
+        if (mip.rgba.size() > UINT64_MAX - bytes) return UINT64_MAX;
+        bytes += mip.rgba.size();
+    }
+    return bytes;
 }
 
+std::uint64_t ModelDiagnosticStorageBytes(const std::vector<Diagnostic>& diagnostics) noexcept {
+    if (diagnostics.capacity()>UINT64_MAX/sizeof(Diagnostic)) return UINT64_MAX;
+    std::uint64_t bytes=std::uint64_t(diagnostics.capacity())*sizeof(Diagnostic);
+    const auto add=[&](std::uint64_t value) { if (value>UINT64_MAX-bytes) return false; bytes+=value;return true; };
+    for (const auto& diagnostic:diagnostics) {
+        if (!add(diagnostic.subsystem.capacity()) || !add(diagnostic.code.capacity()) || !add(diagnostic.message.capacity()))
+            return UINT64_MAX;
+        if (diagnostic.origin) {
+            const auto capacity=diagnostic.origin->source.native().capacity();
+            if (capacity>UINT64_MAX/sizeof(std::filesystem::path::value_type)
+                || !add(std::uint64_t(capacity)*sizeof(std::filesystem::path::value_type))
+                || !add(diagnostic.origin->fingerprint.capacity())) return UINT64_MAX;
+        }
+    }
+    return bytes;
+}
+
+std::uint64_t ModelTextureStorageBytes(const ModelTextureRgba& texture) noexcept {
+    std::uint64_t bytes = texture.rgba.capacity();
+    const auto add = [&](std::uint64_t value) {
+        if (value > UINT64_MAX - bytes) return false;
+        bytes += value; return true;
+    };
+    if (texture.additionalMips.capacity() > UINT64_MAX / sizeof(Image::DecodedImage)
+        || !add(std::uint64_t(texture.additionalMips.capacity()) * sizeof(Image::DecodedImage))
+        || !add(ModelDiagnosticStorageBytes(texture.mipDiagnostics))) return UINT64_MAX;
+    for (const auto& mip : texture.additionalMips) if (!add(mip.rgba.capacity())) return UINT64_MAX;
+    return bytes;
+}
+
+bool ModelTextureHasLegacyOwnedState(const ModelTextureRgba& texture) noexcept {
+    return texture.additionalMips.empty() && texture.mipOrigin == ModelTextureMipOrigin::GeneratedFromTop
+        && texture.mipPolicyVersion == 0 && texture.sourceWidth == 0 && texture.sourceHeight == 0
+        && texture.sourceBaseMip == 0 && texture.mipStopReason == Image::BlpMipChainStopReason::Complete
+        && texture.mipStopLevel == 0 && !texture.mipHasLaterDeclarations && texture.mipDiagnostics.empty();
+}
+
+bool ModelTextureValid(const ModelTextureRgba& texture, std::uint32_t maximum) noexcept {
+    if (!maximum || !texture.width || !texture.height || texture.width > maximum || texture.height > maximum
+        || std::uint64_t(texture.width) * texture.height > UINT64_MAX / 4
+        || std::uint64_t(texture.width) * texture.height * 4 != texture.rgba.size()
+        || texture.additionalMips.size() > 15 || texture.mipDiagnostics.size() > 64
+        || (texture.mipPolicyVersion && texture.mipPolicyVersion != ModelTextureMipPolicyVersion)) return false;
+    if ((texture.mipOrigin!=ModelTextureMipOrigin::GeneratedFromTop && texture.mipOrigin!=ModelTextureMipOrigin::BlpSource)
+        || (!texture.mipPolicyVersion && !ModelTextureHasLegacyOwnedState(texture))) return false;
+    if (std::any_of(texture.mipDiagnostics.begin(), texture.mipDiagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.severity == DiagnosticSeverity::Error;
+    })) return false;
+    auto width = texture.width, height = texture.height;
+    for (const auto& mip : texture.additionalMips) {
+        if (width == 1 && height == 1) return false;
+        width = std::max(1u, width / 2); height = std::max(1u, height / 2);
+        if (mip.width != width || mip.height != height || !mip.Valid()) return false;
+    }
+    if (!texture.additionalMips.empty() && (texture.mipOrigin != ModelTextureMipOrigin::BlpSource
+        || texture.mipPolicyVersion != ModelTextureMipPolicyVersion)) return false;
+    if (texture.mipPolicyVersion == ModelTextureMipPolicyVersion
+        && texture.mipOrigin == ModelTextureMipOrigin::GeneratedFromTop) {
+        using Stop = Image::BlpMipChainStopReason;
+        const bool legacy = texture.mipStopLevel == 0 && texture.mipStopReason == Stop::Complete
+            && !texture.mipHasLaterDeclarations;
+        const bool sourceTopOnly = texture.mipStopLevel == 1 && texture.mipStopReason == Stop::UndeclaredMip
+            && !texture.mipHasLaterDeclarations && (texture.width!=1 || texture.height!=1)
+            && texture.sourceWidth == texture.width && texture.sourceHeight == texture.height;
+        if (!texture.additionalMips.empty() || texture.sourceBaseMip!=0 || !texture.sourceWidth || !texture.sourceHeight
+            || (!legacy && !sourceTopOnly)) return false;
+    }
+    if (texture.mipOrigin == ModelTextureMipOrigin::BlpSource) {
+        using Stop = Image::BlpMipChainStopReason;
+        if (texture.mipPolicyVersion != ModelTextureMipPolicyVersion || texture.sourceBaseMip != 0
+            || texture.sourceWidth != texture.width || texture.sourceHeight != texture.height
+            || texture.sourceWidth>512 || texture.sourceHeight>512
+            || texture.mipStopLevel != texture.additionalMips.size() + 1
+            || (texture.additionalMips.empty() && (texture.width != 1 || texture.height != 1))) return false;
+        const bool terminal=width==1 && height==1;
+        const bool truncated=std::any_of(texture.mipDiagnostics.begin(),texture.mipDiagnostics.end(),[](const auto& diagnostic) {
+            return diagnostic.subsystem=="Render.WorldModels" && diagnostic.code=="WORLD_MODEL_SOURCE_MIP_TRUNCATED";
+        });
+        switch (texture.mipStopReason) {
+        case Stop::Complete: if (!terminal) return false; break;
+        case Stop::UndeclaredMip:
+            if (terminal || (texture.mipHasLaterDeclarations && !truncated)) return false;
+            break;
+        case Stop::InvalidMipRange:
+            if (terminal || texture.additionalMips.empty() || !truncated) return false;
+            break;
+        case Stop::DecodeFailure: {
+            bool knownFormat=false;
+            for (const auto& diagnostic:texture.mipDiagnostics) {
+                if (diagnostic.subsystem=="Image.BlpMipChain" && diagnostic.code=="BLP_MIP_JPEG") knownFormat=true;
+                else if (!(diagnostic.subsystem=="Image.BlpMipChain" && diagnostic.code=="BLP_MIP_JPEG_TRAILING_DATA")
+                    && !(diagnostic.subsystem=="Render.WorldModels" && diagnostic.code=="WORLD_MODEL_SOURCE_MIP_TRUNCATED")) return false;
+            }
+            if (terminal || texture.additionalMips.empty() || !knownFormat || !truncated) return false;
+            break;
+        }
+        default: return false; // 预算、未知枚举及Core故障不得从缓存重新准入。
+        }
+    }
+    return ModelTextureRgbaBytes(texture) != UINT64_MAX && ModelTextureStorageBytes(texture) != UINT64_MAX;
+}
+
+bool ChargeModelTextureRgba(const ModelTextureRgba& texture, std::uint64_t& bytes, std::uint64_t limit) noexcept {
+    const auto count = ModelTextureRgbaBytes(texture);
+    if (!ModelTextureValid(texture, UINT32_MAX) || bytes > limit || count > limit - bytes) return false;
+    bytes += count; return true;
+}
+
+Result<ModelTextureRgba> DecodeModelTexture(std::string path, std::span<const std::byte> bytes,
+    std::uint32_t maxDimension, std::uint64_t remainingRgbaBytes) {
+    using Output = Result<ModelTextureRgba>;
+    const auto fail = [](const char* code, const char* message) {
+        return Output::Failure("Render.WorldModels", code, message);
+    };
+    if (!maxDimension || !remainingRgbaBytes || bytes.size() > 16u * 1024u * 1024u)
+        return fail("WORLD_MODEL_TEXTURE_BUDGET", "贴图尺寸、读取或剩余RGBA预算无效。");
+    // 仅按固定头的尺寸选择政策；分类不代表格式/像素有效，不捕获解码错误来回退。
+    const auto u32 = [&](std::size_t at) {
+        std::uint32_t value = 0;
+        for (unsigned part = 0; part < 4; ++part)
+            value |= std::uint32_t(std::to_integer<std::uint8_t>(bytes[at + part])) << (part * 8);
+        return value;
+    };
+    const bool blp1 = bytes.size() >= 20 && bytes[0] == std::byte{'B'} && bytes[1] == std::byte{'L'}
+        && bytes[2] == std::byte{'P'} && bytes[3] == std::byte{'1'};
+    const bool sourceChain = blp1 && u32(12) && u32(16)
+        && u32(12) <= std::min(maxDimension, 512u) && u32(16) <= std::min(maxDimension, 512u);
+    ModelTextureRgba decoded;
+    decoded.path = std::move(path);
+    decoded.mipPolicyVersion = ModelTextureMipPolicyVersion;
+    if (!sourceChain) {
+        // 保留旧4096源、TGA与caller较小上限的DecodeTexture+Shrink能力，不套generic2048门。
+        auto image = Image::DecodeTexture(decoded.path, bytes);
+        if (!image.Succeeded()) return {std::nullopt, std::move(image.diagnostics)};
+        if (!image.value->Valid()) return fail("WORLD_MODEL_TEXTURE_INVALID", "解码贴图无效。");
+        auto width = image.value->width, height = image.value->height;
+        while (width > maxDimension || height > maxDimension) {
+            width = std::max(1u, width / 2); height = std::max(1u, height / 2);
+        }
+        if (std::uint64_t(width) * height * 4 > remainingRgbaBytes)
+            return fail("WORLD_MODEL_TEXTURE_BUDGET", "派生贴图超过本次剩余RGBA预算。");
+        decoded.width = decoded.sourceWidth = image.value->width;
+        decoded.height = decoded.sourceHeight = image.value->height;
+        decoded.rgba.resize(image.value->rgba.size());
+        std::transform(image.value->rgba.begin(), image.value->rgba.end(), decoded.rgba.begin(),
+            [](std::byte value) { return static_cast<std::uint8_t>(value); });
+        Shrink(decoded, maxDimension);
+    } else {
+        Image::BlpMipChainLimits limits;
+        limits.maxDimension = std::min(maxDimension, 512u);
+        limits.maxRgbaBytes = static_cast<std::size_t>(std::min<std::uint64_t>(limits.maxRgbaBytes, remainingRgbaBytes));
+        limits.maxRetainedRgbaBytes = static_cast<std::size_t>(std::min<std::uint64_t>(limits.maxRetainedRgbaBytes, remainingRgbaBytes));
+        auto chain = Image::DecodeBlpMipChain(bytes, limits);
+        if (!chain.Succeeded()) return {std::nullopt, std::move(chain.diagnostics)};
+        const auto& stop = chain.value->stop;
+        using Stop = Image::BlpMipChainStopReason;
+        const bool budget = stop.reason == Stop::TotalPixelBudget || stop.reason == Stop::RetainedRgbaBudget
+            || stop.reason == Stop::WorkingBudget || stop.reason == Stop::JpegBudget;
+        if (budget) {
+            auto failure = fail("WORLD_MODEL_TEXTURE_BUDGET", "原始mip链超过本次预算，不发布预算截断链。");
+            failure.diagnostics.insert(failure.diagnostics.end(), stop.diagnostics.begin(), stop.diagnostics.end());
+            return failure;
+        }
+        const bool ordinaryEnd = stop.reason == Stop::Complete
+            || (stop.reason == Stop::UndeclaredMip && !stop.hasLaterDeclarations);
+        // 只允许明确可定位的格式损坏；Core像素/分配/未知host故障不能靠message猜成坏素材。
+        const bool knownFormat = stop.reason == Stop::DecodeFailure && !stop.diagnostics.empty()
+            && std::all_of(stop.diagnostics.begin(), stop.diagnostics.end(), [](const auto& diagnostic) {
+                return diagnostic.subsystem == "Image.BlpMipChain" && diagnostic.code == "BLP_MIP_JPEG";
+            });
+        const bool damaged = stop.reason == Stop::InvalidMipRange
+            || (stop.reason == Stop::UndeclaredMip && stop.hasLaterDeclarations) || knownFormat;
+        if (!ordinaryEnd && (!damaged || chain.value->validatedMipCount < 2)) {
+            auto failure = fail("WORLD_MODEL_SOURCE_MIP_REJECTED", "原始mip链损坏只剩单级，或故障身份不明确；不回退生成链。");
+            failure.diagnostics.insert(failure.diagnostics.end(), stop.diagnostics.begin(), stop.diagnostics.end());
+            return failure;
+        }
+        decoded.width = decoded.sourceWidth = chain.value->image.width;
+        decoded.height = decoded.sourceHeight = chain.value->image.height;
+        decoded.rgba.resize(chain.value->image.rgba.size());
+        std::transform(chain.value->image.rgba.begin(), chain.value->image.rgba.end(), decoded.rgba.begin(),
+            [](std::byte value) { return static_cast<std::uint8_t>(value); });
+        decoded.additionalMips = std::move(chain.value->additionalMips);
+        decoded.mipOrigin = decoded.additionalMips.empty() && (decoded.width != 1 || decoded.height != 1)
+            ? ModelTextureMipOrigin::GeneratedFromTop : ModelTextureMipOrigin::BlpSource;
+        decoded.mipStopReason = stop.reason; decoded.mipStopLevel = stop.level;
+        decoded.mipHasLaterDeclarations = stop.hasLaterDeclarations;
+        decoded.mipDiagnostics = std::move(chain.diagnostics);
+        if (damaged) {
+            for (auto& diagnostic : chain.value->stop.diagnostics) {
+                diagnostic.severity = DiagnosticSeverity::Warning;
+                decoded.mipDiagnostics.push_back(std::move(diagnostic));
+            }
+            decoded.mipDiagnostics.push_back({DiagnosticSeverity::Warning, "Render.WorldModels", "WORLD_MODEL_SOURCE_MIP_TRUNCATED",
+                "原始mip在第" + std::to_string(stop.level) + "级遇到已定位格式损坏，仅保留实际多级前缀。", std::nullopt});
+        } else if (decoded.mipOrigin == ModelTextureMipOrigin::GeneratedFromTop) {
+            decoded.mipDiagnostics.push_back({DiagnosticSeverity::Info, "Render.WorldModels", "WORLD_MODEL_SOURCE_MIP0_GENERATED",
+                "源文件明确只有mip0；低级由既有provider生成，不声称保留原始低mip。", std::nullopt});
+        }
+    }
+    if (!ModelTextureValid(decoded, maxDimension) || ModelTextureRgbaBytes(decoded) > remainingRgbaBytes)
+        return fail("WORLD_MODEL_TEXTURE_INVALID", "解码后的完整贴图链或预算无效。");
+    auto result = Output::Success(std::move(decoded));
+    result.diagnostics = result.value->mipDiagnostics;
+    return result;
+}
 std::array<float, 12> ModelInstanceTransform(const ModelInstanceRequest& request) {
     const float c = std::cos(request.angle), s = std::sin(request.angle);
     return {c * request.scale[0], -s * request.scale[1], 0, request.position[0],
@@ -854,8 +1070,8 @@ bool ReplaceBakedMeshes(WorldModelScene& outputScene, std::span<const BakedModel
     for (const auto& bindings : scene.modelTextureBindings)
         if (bindings) samplerStorage += std::uint64_t(bindings->capacity()) * sizeof(ModelTextureBinding);
     for (const auto& texture : scene.textures) {
-        if (samplerStorage > limits.maxTotalTextureBytes || texture.rgba.size() > limits.maxTotalTextureBytes - samplerStorage) return false;
-        samplerStorage += texture.rgba.size();
+        if (!ModelTextureValid(texture, limits.maxTextureDimension)
+            || !ChargeModelTextureRgba(texture, samplerStorage, limits.maxTotalTextureBytes)) return false;
     }
     if (samplerStorage > limits.maxTotalTextureBytes) return false;
 
@@ -968,12 +1184,29 @@ bool ReplaceBakedMeshes(WorldModelScene& outputScene, std::span<const BakedModel
 
 ModelSceneDescriptor DescribeModelTextures(std::span<const ModelTextureRgba> textures) {
     ModelSceneDescriptor descriptor;
-    descriptor.mips.reserve(textures.size());
-    for (const auto& texture : textures)
+    std::size_t totalMips = 0;
+    for (const auto& texture : textures) {
+        const auto count = texture.additionalMips.size() + 1;
+        if (!ModelTextureValid(texture, UINT32_MAX) || count > descriptor.mips.max_size() - totalMips) {
+            descriptor.validStaticSamplers = false; return descriptor;
+        }
+        totalMips += count;
+    }
+    // 先完成全部描述符分配，再建立指针；后续push不能使已有chain悬空。
+    descriptor.mips.reserve(totalMips);
+    for (const auto& texture : textures) {
         descriptor.mips.push_back({sizeof(War3RenderMipRgbaV2), texture.width, texture.height, texture.rgba.size(), texture.rgba.data()});
+        for (const auto& mip : texture.additionalMips)
+            descriptor.mips.push_back({sizeof(War3RenderMipRgbaV2), mip.width, mip.height, mip.rgba.size(),
+                reinterpret_cast<const std::uint8_t*>(mip.rgba.data())});
+    }
     descriptor.chains.reserve(textures.size());
-    for (const auto& mip : descriptor.mips)
-        descriptor.chains.push_back({sizeof(War3RenderTextureMipChainV2), 1, 0, 1, 1, &mip});
+    std::size_t offset = 0;
+    for (const auto& texture : textures) {
+        const auto count = static_cast<std::uint32_t>(texture.additionalMips.size() + 1);
+        descriptor.chains.push_back({sizeof(War3RenderTextureMipChainV2), count, count - 1, 1, 1, descriptor.mips.data() + offset});
+        offset += count;
+    }
     return descriptor;
 }
 ModelSceneDescriptor DescribeModelScene(const WorldModelScene& scene) {
@@ -983,9 +1216,9 @@ ModelSceneDescriptor DescribeModelScene(const WorldModelScene& scene) {
         count(scene.meshes), count(scene.models), count(scene.instances), count(scene.textures),
         scene.vertices.data(), scene.indices.data(), scene.layers.data(), scene.meshes.data(), scene.models.data(),
         scene.instances.data(), descriptor.chains.data()};
-    descriptor.validStaticSamplers = scene.layerSamplerFlags.empty()
+    descriptor.validStaticSamplers = descriptor.validStaticSamplers && (scene.layerSamplerFlags.empty()
         || (scene.layerSamplerFlags.size() == scene.layers.size()
-            && std::none_of(scene.layerSamplerFlags.begin(), scene.layerSamplerFlags.end(), [](auto flags) { return flags > 3; }));
+            && std::none_of(scene.layerSamplerFlags.begin(), scene.layerSamplerFlags.end(), [](auto flags) { return flags > 3; })));
     if (descriptor.validStaticSamplers && std::any_of(scene.layerSamplerFlags.begin(), scene.layerSamplerFlags.end(), [](auto flags) { return flags != 3; })) {
         descriptor.samplerFlags = scene.layerSamplerFlags;
         descriptor.samplerScene = {descriptor.scene, WAR3_RENDER_STATIC_LAYER_SAMPLERS_V1,

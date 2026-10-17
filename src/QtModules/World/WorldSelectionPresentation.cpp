@@ -113,6 +113,8 @@ Result<WorldSelectionCircleAssets> LoadWorldSelectionCircleAssets(Render::Animat
     }
     float previousMaximum = 0;
     std::map<std::string, std::uint32_t> textures;
+    std::uint64_t textureBytes=0;
+    const auto textureLimit=Render::WorldModelLimits{}.maxTotalTextureBytes;
     for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(*count); ++i) {
         const auto suffix = (i < 10 ? std::string("0") : std::string{}) + std::to_string(i);
         const auto maximum = i + 1 == static_cast<std::uint32_t>(*count) ? std::optional<float>(std::numeric_limits<float>::max())
@@ -130,8 +132,12 @@ Result<WorldSelectionCircleAssets> LoadWorldSelectionCircleAssets(Render::Animat
             if (!resource.Succeeded() || !resource.value) return {std::nullopt, std::move(resource.diagnostics)};
             if (resource.value->bytes.size() > 16ull * 1024 * 1024 || resource.value->digest.empty() || resource.value->sourceLayer.empty())
                 return Output::Failure("World.Selection", "WORLD_SELECTION_SOURCE_INVALID", "选取圈纹理缺少可信来源或超预算。");
-            auto decoded = Render::DecodeModelTexture(path, resource.value->bytes, 512);
+            auto decoded = Render::DecodeModelTexture(path, resource.value->bytes, 512,textureLimit-textureBytes);
             if (!decoded.Succeeded()) return {std::nullopt, std::move(decoded.diagnostics)};
+            if (!Render::ModelTextureValid(*decoded.value,512)
+                || !Render::ChargeModelTextureRgba(*decoded.value,textureBytes,textureLimit))
+                return Output::Failure("World.Selection","WORLD_SELECTION_TEXTURE_BUDGET","选取圈完整mip链超过纹理预算。");
+            scene->geometry.warnings.insert(scene->geometry.warnings.end(),decoded.value->mipDiagnostics.begin(),decoded.value->mipDiagnostics.end());
             output.sources.push_back({path, resource.value->sourceLayer, resource.value->digest});
             found = textures.emplace(path, static_cast<std::uint32_t>(scene->geometry.textures.size())).first;
             scene->geometry.textures.push_back(std::move(*decoded.value));

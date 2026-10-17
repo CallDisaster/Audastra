@@ -54,7 +54,7 @@ bool ImageValid(const BuildingSplatPreviewTexture& texture, std::string_view can
         || texture.image->width > 2048 || texture.image->height > 2048) return false;
     const auto path = Resources::CanonicalImportPath(texture.image->path);
     return path.Succeeded() && *path.value == canonical
-        && texture.image->rgba.size() == static_cast<std::size_t>(texture.image->width) * texture.image->height * 4;
+        && ModelTextureValid(*texture.image,2048);
 }
 std::optional<std::size_t> OriginBytes(const Services::BuildingSplatRow& row) {
     if (row.origins.size() > 64 || row.splatKey.size() > 4096 || row.reason.size() > 4096) return {};
@@ -185,8 +185,14 @@ Result<BuildingSplatPreviewAssets> BuildBuildingSplatPreviewAssets(
         const auto count = static_cast<std::uint32_t>(segments);
         const auto vertexCount = (count + 1) * (count + 1), indexCount = count * count * 6;
         const auto existingTexture = installed.find(definition.texturePath);
+        const auto textureStorage=ModelTextureStorageBytes(*texture.image);
+        const auto textureMetadata=SourceBytes(texture)+sizeof(ModelTextureRgba)+definition.texturePath.size();
+        if (existingTexture==installed.end() && (textureMetadata>limits.maxAssetBytes
+            || textureStorage>(limits.maxAssetBytes-textureMetadata)/2)) {
+            Issue(output, {{},0,key,"BUILDING_SPLAT_ASSET_BUDGET","完整纹理链的两份owned存储超过预算。",true},limits,issueBytes); continue;
+        }
         const std::size_t textureBytes = existingTexture == installed.end()
-            ? 2 * texture.image->rgba.size() + SourceBytes(texture) + sizeof(ModelTextureRgba) + definition.texturePath.size() : 0;
+            ? static_cast<std::size_t>(2*textureStorage+textureMetadata) : 0;
         const std::size_t needed = static_cast<std::size_t>(vertexCount)
                 * (sizeof(War3RenderSkinnedModelVertexV2) + sizeof(War3RenderModelVertexV2))
             + static_cast<std::size_t>(indexCount) * sizeof(std::uint16_t) + sizeof(BuildingSplatPreviewAssets::Grid) + key.size()

@@ -77,7 +77,7 @@ Result<std::shared_ptr<const OwnedStaticModelAsset>> FreezeOwnedStaticModelAsset
     }
     for (const auto& texture : textures) {
         const auto pixels = static_cast<std::uint64_t>(texture.width) * texture.height;
-        if (!texture.width || !texture.height || texture.width > limits.maxTextureDimension ||
+        if (!ModelTextureHasLegacyOwnedState(texture) || !texture.width || !texture.height || texture.width > limits.maxTextureDimension ||
             texture.height > limits.maxTextureDimension || pixels > std::numeric_limits<std::size_t>::max() / 4 ||
             texture.rgba.size() != pixels * 4 || texture.path.size() > 1024 || texture.path.find('\0') != std::string::npos)
             return fail("WORLD_OWNED_TEXTURE_INVALID", "辅助资产的owned RGBA尺寸、正文或来源描述无效。");

@@ -47,10 +47,10 @@ private slots:
             "Texture01=ReplaceableTextures\\Selection\\SelectionCircleMed\r\n"
             "Texture02=ReplaceableTextures\\Selection\\SelectionCircleLarge\r\nColorFriend=255,0,255,0\r\n";
         const std::string units = "[Misc]\r\nSelectionCircleBaseZ=8\r\n";
-        std::vector<std::byte> blp(1181); std::memcpy(blp.data(), "BLP1", 4); blp[158] = std::byte{255};
+        std::vector<std::byte> blp(1185); std::memcpy(blp.data(), "BLP1", 4); blp[158] = std::byte{255};
+        blp[161]=std::byte{255}; blp[1184]=std::byte{1};
         const auto put = [&](std::size_t offset, std::uint32_t value) { std::memcpy(blp.data() + offset, &value, 4); };
-        for (const auto offset : {4u, 12u, 16u, 92u}) put(offset, 1);
-        put(28, 1180);
+        put(4,1); put(12,2); put(16,2); put(28,1180); put(92,4); put(32,1184); put(96,1);
         const auto bytes = [](const std::string& text) {
             std::vector<std::byte> out(text.size()); std::memcpy(out.data(), text.data(), text.size()); return out;
         };
@@ -61,6 +61,12 @@ private slots:
         auto assets = LoadWorldSelectionCircleAssets({3, 4, "selection-test"}, read);
         QVERIFY2(assets.Succeeded(), assets.diagnostics.empty() ? "" : assets.diagnostics.front().message.c_str());
         QCOMPARE(assets.value->bands.size(), std::size_t(3));
+        QCOMPARE(assets.value->scene->geometry.textures.size(),std::size_t(3));
+        for (const auto& texture:assets.value->scene->geometry.textures) {
+            QCOMPARE(texture.additionalMips.size(),std::size_t(1));
+            QCOMPARE(texture.rgba[0],std::uint8_t(255));
+            QCOMPARE(std::to_integer<unsigned>(texture.additionalMips[0].rgba[1]),255u);
+        }
         std::array<Render::ModelInstanceRequest, 3> requests;
         const std::array<float, 3> scales{1, 2, 4}; // 72 / 144 / 288：三档各一个
         for (std::size_t i = 0; i < requests.size(); ++i) {
@@ -73,6 +79,12 @@ private slots:
         Render::ModelScene model; std::uint64_t payload = 0;
         QVERIFY(Render::CopySkinnedModelInput(descriptor.scene, model, payload));
         QCOMPARE(model.models.size(), std::size_t(3));
+        const auto described=Render::DescribeModelTextures(assets.value->scene->geometry.textures);
+        QCOMPARE(described.chains.size(),std::size_t(3)); QCOMPARE(described.mips.size(),std::size_t(6));
+        for (const auto& chain:described.chains) QCOMPARE(chain.mipCount,2u);
+        put(32,1185); // mip1越界仅余top，必须拒绝而非生成替代链。
+        const auto damaged=LoadWorldSelectionCircleAssets({3,4,"selection-test"},read);
+        QVERIFY(!damaged.Succeeded());
     }
     void CircleUsesDisplayedGroundWithoutChangingPlacement() {
         WorldSelectionCircleAssets assets;

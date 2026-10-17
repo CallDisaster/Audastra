@@ -33,6 +33,14 @@ void Factory() {
     std::vector<OwnedModelMesh> meshes(asset->Meshes().begin(), asset->Meshes().end());
     std::vector<ModelTextureRgba> textures(asset->Textures().begin(), asset->Textures().end());
     const auto frozen = Good(FreezeOwnedStaticModelAsset(meshes, textures));
+    auto sourceChain=textures;
+    sourceChain[0].additionalMips.push_back({4,4,std::vector<std::byte>(4*4*4)});
+    Check(!FreezeOwnedStaticModelAsset(meshes,sourceChain).Succeeded(),"owned v1 silently ignored new lower mip bytes");
+    sourceChain[0].additionalMips.clear();
+    sourceChain[0].mipPolicyVersion=ModelTextureMipPolicyVersion;
+    Check(!FreezeOwnedStaticModelAsset(meshes,sourceChain).Succeeded(),"owned v1 silently ignored new source/policy state");
+    Check(Good(FreezeOwnedStaticModelAsset(meshes,textures))->IdentitySha256()==frozen->IdentitySha256(),
+        "rejecting new chains changed existing owned v1 canonical identity");
     meshes[0].vertices[0].x = -123; textures[0].rgba[0] ^= 255; textures[0].ownedIdentity = "caller-sha";
     Check(frozen->Meshes()[0].vertices[0].x == -32 && frozen->Textures()[0].rgba[0] == 12,
         "owned asset borrowed caller mutable storage");

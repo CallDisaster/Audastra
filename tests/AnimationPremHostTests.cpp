@@ -124,6 +124,7 @@ struct Fixture {
     std::map<std::string, AnimationResource> resources;
     mutable std::map<std::string, std::uint32_t> reads;
     AnimationInstanceSpec spec;
+    std::vector<std::byte> textureOverride;
     explicit Fixture(std::uint32_t emitters = 1, float rate = 20, bool transparent = false) {
         Add(std::string(kParentPath), ParentModel(emitters, rate, transparent), "original-parent-bytes");
         for (std::uint32_t i = 0; i < emitters; ++i) Add(ChildPath(i), ChildModel(), "original-child-bytes");
@@ -144,7 +145,8 @@ struct Fixture {
         }
         auto key = std::string(path); std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         if (key.ends_with(".blp")) {
-            auto bytes = AnimationParticleContinuityTest::Texture(); const auto sha = Good(Sha256(bytes));
+            auto bytes = textureOverride.empty() ? AnimationParticleContinuityTest::Texture() : textureOverride;
+            const auto sha = Good(Sha256(bytes));
             return Result<AnimationResource>::Success({std::move(bytes), "original-test-blp-not-game-texture", sha});
         }
         return Result<AnimationResource>::Failure("Test", "RESOURCE_NOT_FOUND", "本原创测试资源不存在。");
@@ -678,6 +680,29 @@ void Budgets() {
             !bill.childEvaluatorBytes && !bill.birthEvaluatorBytes, "refused PREM retained phantom child/evaluator charges");
     };
     checkBill(prem, Limits(), true); checkBill(refused, narrow, false);
+    // 两个真实子服务仅改变原创纹理源链；独立核对每级容量进入childScene账单。
+    std::array<std::uint64_t,2> fixedSceneBytes{};
+    for (std::size_t variant=0;variant<fixedSceneBytes.size();++variant) {
+        Fixture mipFixture(1,200); mipFixture.spec.elapsedMs=500; mipFixture.spec.globalMs=1500;
+        Image::DecodedImage image; image.width=image.height=variant ? 4 : 8;
+        image.rgba.assign(std::size_t(image.width)*image.height*4,std::byte{255});
+        mipFixture.textureOverride=Good(Image::EncodeBlpPaletted(image));
+        const auto mipService=Good(mipFixture.Create(Limits()));
+        const auto mipFrame=Good(mipService->Prepare(nullptr));
+        const auto& packet=Prem(*mipService->Scene(),*mipFrame); checkBill(packet,Limits(),true);
+        std::uint64_t ownedPixelsAndLevels=0;
+        Check(!packet.childScene->geometry.textures.empty(),"PREM child source mip fixture has no resident texture");
+        for (const auto& texture:packet.childScene->geometry.textures) {
+            Check(texture.additionalMips.size()==(variant ? 2u : 3u) && texture.mipDiagnostics.empty(),
+                "PREM child preparation dropped a source mip or added unexplained diagnostics");
+            ownedPixelsAndLevels+=texture.rgba.capacity()+texture.additionalMips.capacity()*sizeof(Image::DecodedImage);
+            for (const auto& mip:texture.additionalMips) ownedPixelsAndLevels+=mip.rgba.capacity();
+        }
+        Check(packet.budget.childSceneBytes>=ownedPixelsAndLevels,"PREM scene bill omitted source mip storage");
+        fixedSceneBytes[variant]=packet.budget.childSceneBytes-ownedPixelsAndLevels;
+        mipFixture.Unchanged();
+    }
+    Check(fixedSceneBytes[0]==fixedSceneBytes[1],"PREM scene bill omitted or duplicated a lower mip owner/capacity");
     // 合法的大外层帧预算不能把出生采样器的预算参数抬过核心硬帽；实际工作量仍与64MiB一致。
     auto largeLimits = Limits(); largeLimits.maxFrameBytes = 256ull * 1024 * 1024;
     const auto largeService = Good(fixture.Create(largeLimits)); const auto largeScene = largeService->Scene();

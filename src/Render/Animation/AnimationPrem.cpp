@@ -28,7 +28,14 @@ std::uint64_t SceneBytes(const AnimatedModelScene& scene) {
         Bytes(scene.requestGeometryRequired) + Bytes(scene.sequences) + Bytes(scene.pickModels) + Bytes(scene.pickMeshGroups) + Bytes(scene.pickGroupBounds) +
         Bytes(scene.drawLayerBindings) + Bytes(scene.modelLayerRanges) + Bytes(scene.standPickBounds) + Bytes(scene.sources);
     bytes += Bytes(g.textures);
-    for (const auto& texture : g.textures) bytes += Bytes(texture.rgba) + texture.path.size();
+    const auto diagnostics=ModelDiagnosticStorageBytes(g.warnings);
+    if (diagnostics>UINT64_MAX-bytes) return UINT64_MAX;
+    bytes+=diagnostics;
+    for (const auto& texture : g.textures) {
+        const auto storage=ModelTextureStorageBytes(texture);
+        if (storage>UINT64_MAX-bytes || texture.path.size()>UINT64_MAX-bytes-storage) return UINT64_MAX;
+        bytes+=storage+texture.path.size();
+    }
     for (const auto& bindings : g.modelTextureBindings) if (bindings) bytes += Bytes(*bindings);
     for (const auto& sequences : scene.sequences) {
         bytes += Bytes(sequences);
@@ -364,6 +371,8 @@ Status CreateAnimationPrem(ModelAnimationService::State& state, const AnimationR
                 budget.childSourceBytes = childState.sourceBytes;
                 budget.childResourceBytes = childState.resourceBytes;
                 budget.childSceneBytes = SceneBytes(*host->childService->Scene());
+                if (budget.childSceneBytes==UINT64_MAX)
+                    return AnimationFailure("PREM_CHILD_BUDGET_LAYOUT","子scene完整纹理存储计数溢出。");
                 budget.childStandFrameBytes = FrameBytes(*host->childStand);
                 budget.childEvaluatorBytes = childState.evaluator ? childState.evaluator->StorageBytes() : 0;
                 const bool chargedWorkspace = childState.collisionNodesRequired || childState.sharedPoseRanges ||

@@ -7,6 +7,7 @@ namespace War3Map::Render {
 Result<std::shared_ptr<const AnimationAssetSnapshot>> ModelAnimationService::CaptureAssetSnapshot() const try {
     auto result = std::shared_ptr<AnimationAssetSnapshot>(new AnimationAssetSnapshot);
     result->maxTextureDimension_ = state_->limits.geometry.maxTextureDimension;
+    result->mipPolicyVersion_ = ModelTextureMipPolicyVersion;
     result->allowRigidStaticPreview_ = state_->limits.allowRigidStaticPreview;
     const auto& scene = *state_->scene;
     // 内容来自已经有界的服务；共享不免除使用方的本次原字节、解析和累计几何预算。
@@ -22,7 +23,8 @@ Result<std::shared_ptr<const AnimationAssetSnapshot>> ModelAnimationService::Cap
     result->decoded_ = scene.geometry.textures;
     for (std::uint32_t i = 0; i < result->decoded_.size(); ++i) {
         const auto& texture = std::as_const(result->decoded_)[i];
-        if (!texture.ownedIdentity.empty()) continue;
+        if (!texture.ownedIdentity.empty() || texture.mipPolicyVersion != ModelTextureMipPolicyVersion
+            || !ModelTextureValid(texture,state_->limits.geometry.maxTextureDimension)) continue;
         const auto key = AnimationPathKey(texture.path);
         const auto resource = state_->resources.find(key);
         if (resource == state_->resources.end()) continue;

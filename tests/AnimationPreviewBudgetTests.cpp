@@ -73,7 +73,9 @@ void Admission() {
     using AnimationParticleContinuityTest::Model;
     using AnimationParticleContinuityTest::Texture;
     using AnimationParticleContinuityTest::Good;
-    auto model = Model(); const auto texture = Texture();
+    auto model = Model();
+    Image::DecodedImage image; image.width=image.height=8; image.rgba.assign(8*8*4,std::byte{255});
+    const auto texture = Good(Image::EncodeBlpPaletted(image));
     // 降低原创夹具的发射率，单独命中全图锚样瓶颈，而非总活粒子内存门。
     const auto word = [&](std::size_t offset) {
         std::uint32_t value = 0;
@@ -108,6 +110,23 @@ void Admission() {
     AnimationLimits limits; limits.enableParticles = limits.retainUnsupportedStatic = true;
     limits.playbackPolicy = AnimationPlaybackPolicy::InteractivePreview;
     auto service = Good(ModelAnimationService::Create({7, 1, "budget-fixture"}, specs, read, limits));
+    const auto residentScene=service->Scene();
+    Check(!residentScene->geometry.textures.empty() && !residentScene->particleTextures.empty(),
+        "source mip budget fixture did not create actual model and particle texture owners");
+    std::uint64_t fullTextureBytes=0,topTextureBytes=0;
+    for (const auto* textures:{&residentScene->geometry.textures,&residentScene->particleTextures})
+        for (const auto& decoded:*textures) {
+            Check(decoded.additionalMips.size()==3 && ModelTextureRgbaBytes(decoded)==340,
+                "model/particle admission discarded lower source mip levels");
+            fullTextureBytes+=ModelTextureRgbaBytes(decoded); topTextureBytes+=decoded.rgba.size();
+        }
+    auto tightTextures=limits; tightTextures.geometry.maxTotalTextureBytes=fullTextureBytes-1;
+    Check(topTextureBytes<=tightTextures.geometry.maxTotalTextureBytes,
+        "source mip budget fixture would already exceed its old top-only bill");
+    const auto rejectedTextures=ModelAnimationService::Create({7,1,"budget-fixture"},std::span(specs.data(),1),read,tightTextures);
+    Check(!rejectedTextures.Succeeded() && !rejectedTextures.diagnostics.empty() &&
+        rejectedTextures.diagnostics.front().code=="ANIMATION_PARTICLE_TEXTURE_BUDGET",
+        "particle copy admitted a complete source chain using the old top-only budget");
     AnimationAdvance advance; advance.deltaMs = 33; advance.playAll = true;
     advance.worldCamera = War3RenderCore::LocalCamera{{0, 0, 100}, {0, 0, 1}};
     auto baseline = Good(service->Prepare(nullptr, advance));

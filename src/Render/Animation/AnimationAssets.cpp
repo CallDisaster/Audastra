@@ -79,7 +79,8 @@ Status PromoteMaterialTextureBindings(AnimatedModelScene& scene, std::span<const
     };
     bool fits=take(std::uint64_t(g.layerSamplerFlags.capacity())*sizeof(std::uint32_t));
     if (!g.layerSamplerFlags.empty()) fits &= take(sizeof(War3RenderStaticSamplerModelSceneV2)-sizeof(War3RenderModelSceneV2));
-    for (const auto& texture:g.textures) fits &= take(texture.rgba.size());
+    for (const auto& texture:g.textures)
+        fits &= ModelTextureValid(texture,limits.maxTextureDimension) && take(ModelTextureRgbaBytes(texture));
     for (const auto& binding:g.modelTextureBindings) if (binding)
         fits &= take(std::uint64_t(binding->capacity())*sizeof(ModelTextureBinding));
     if (!fits) return fail("ANIMATION_DELTA_TEXTURE_BUDGET","静态材质提升的常驻来源元数据超过原预算。");
@@ -259,10 +260,12 @@ Status CheckAnimationStaticAppend(const AnimatedModelScene& current,
     if (bytes > limits.maxTotalTextureBytes)
         return AnimationFailure("ANIMATION_DELTA_TEXTURE_BUDGET", "sampler 常驻及合并暂存超过原材质预算。");
     const auto addTextures = [&](const auto& values) {
-        for (const auto& texture : values) if (textures.insert(ModelTextureAssetKey(texture)).second) {
-            if (!fits(bytes, texture.rgba.size(), limits.maxTotalTextureBytes) ||
+        for (const auto& texture : values) {
+            if (!ModelTextureValid(texture,limits.maxTextureDimension)) return false;
+            if (!textures.insert(ModelTextureAssetKey(texture)).second) continue;
+            if (!fits(bytes, ModelTextureRgbaBytes(texture), limits.maxTotalTextureBytes) ||
                 textures.size() > limits.maxTextures) return false;
-            bytes += texture.rgba.size();
+            bytes += ModelTextureRgbaBytes(texture);
         }
         return true;
     };
@@ -610,7 +613,8 @@ Result<std::unique_ptr<ModelAnimationService::State>> ModelAnimationService::Bui
             scene.dynamicMaterialStates ? a.materialTextures : nullptr} : ModelGeometryAsset{};
     }, geometryLimits,baked, [&](std::string_view path, std::span<const std::byte>, std::uint32_t maximum)
         -> std::shared_ptr<const ModelTextureRgba> {
-        if (!preloaded || preloaded->maxTextureDimension_ != maximum) return {};
+        if (!preloaded || preloaded->maxTextureDimension_ != maximum
+            || preloaded->mipPolicyVersion_ != ModelTextureMipPolicyVersion) return {};
         const auto key = AnimationPathKey(path);
         const auto frozen = preloaded->textures_.find(key);
         const auto current = state->resources.find(key); // 正式读取器刚提供的本次来源，不能按路径单独复用。

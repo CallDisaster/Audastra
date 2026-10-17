@@ -440,7 +440,9 @@ Result<std::shared_ptr<const AnimationInstanceDeltaPlan>> ModelAnimationService:
         plan->assetsChanged_=true;
     }
     std::uint64_t decodedBytes=0;
-    for (const auto& texture:std::as_const(scene.geometry.textures)) decodedBytes+=texture.rgba.size();
+    for (const auto& texture:std::as_const(scene.geometry.textures))
+        if (!ChargeModelTextureRgba(texture,decodedBytes,state_->limits.geometry.maxTotalTextureBytes))
+            return fail("ANIMATION_DELTA_TEXTURE_BUDGET","增量后的完整mip链超过资产预算。");
     if (scene.geometry.textures.size()>state_->limits.geometry.maxTextures || decodedBytes>state_->limits.geometry.maxTotalTextureBytes)
         return fail("ANIMATION_DELTA_TEXTURE_BUDGET","增量后的实际解码纹理超过资产预算。");
     phase.Switch(timings ? &timings->orderingNs : nullptr);

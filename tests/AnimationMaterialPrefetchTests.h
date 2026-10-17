@@ -41,7 +41,9 @@ inline void SingleLegacyResidentTexture(std::vector<std::byte>& bytes) {
 inline void Run() {
     auto residentModel=AnimationParticleContinuityTest::Model(); SingleLegacyResidentTexture(residentModel);
     const auto materialModel=AnimationMaterialTextureTest::Model();
-    const auto residentImage=AnimationParticleContinuityTest::Texture();
+    Image::DecodedImage mipImage; mipImage.width=mipImage.height=8;
+    mipImage.rgba.assign(8*8*4,std::byte{255});
+    const auto residentImage=Good(Image::EncodeBlpPaletted(mipImage));
     auto firstImage=residentImage,secondImage=residentImage;
     firstImage[158]=std::byte{80}; secondImage[158]=std::byte{160};
     std::string secondLayer="material-textures";
@@ -107,6 +109,11 @@ inline void Run() {
     const auto first=Good(resident->PrepareInstanceDelta(*latest,*plan,view));
     const auto sibling=Good(resident->PrepareInstanceDelta(*latest,*alternatePlan,view));
     const auto scene=first.service->Scene(),siblingScene=sibling.service->Scene();
+    Check(std::all_of(scene->geometry.textures.begin(),scene->geometry.textures.end(),[](const auto& texture) {
+            return texture.additionalMips.size()==3 && texture.additionalMips.back().width==1 &&
+                texture.additionalMips.back().height==1 && ModelTextureRgbaBytes(texture)==340;
+        }) && scene->geometry.textures.size()==3,
+        "material promotion or prepared source verification discarded resident source mip levels");
     std::cerr << "material-prefetch reads=" << (reads==expectedReads)
         << " mode=" << scene->dynamicMaterialStates << " alphas=" << scene->dynamicMaterialAlphas
         << " models=" << scene->geometry.models.size() << " textures=" << scene->geometry.textures.size()

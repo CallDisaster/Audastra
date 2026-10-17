@@ -274,9 +274,15 @@ void WorldBuildingSplatPresenter::BeginNext() {
                 if (!wantedPaths.contains(at->first)) at = cache.textures.erase(at); else ++at;
             }
             if (cache.assetPaths != wantedPaths) cache.budgetTextures.clear();
-            std::size_t textureBytes = 0;
-            for (const auto& [path, texture] : cache.textures) {
-                (void)path; if (texture.image) textureBytes += texture.image->rgba.size();
+            constexpr std::uint64_t textureBudget=64ull*1024*1024;
+            std::uint64_t textureBytes=0;
+            for (auto at=cache.textures.begin();at!=cache.textures.end();) {
+                const auto& image=at->second.image;
+                const auto storage=image ? Render::ModelTextureStorageBytes(*image) : UINT64_MAX;
+                if (!image || image->mipPolicyVersion!=Render::ModelTextureMipPolicyVersion
+                    || !Render::ModelTextureValid(*image,2048) || storage>textureBudget-textureBytes) {
+                    at=cache.textures.erase(at); cache.assets.reset();
+                } else { textureBytes+=storage; ++at; }
             }
             const auto noteResource = [&](const std::vector<Diagnostic>& diagnostics) {
                 for (const auto& diagnostic : diagnostics) {
@@ -287,22 +293,37 @@ void WorldBuildingSplatPresenter::BeginNext() {
                 }
             };
             for (const auto& path : wantedPaths) {
-                if (cache.textures.contains(path) || cache.failedTextures.contains(path) || cache.budgetTextures.contains(path)) continue;
+                if (cache.failedTextures.contains(path) || cache.budgetTextures.contains(path)) continue;
                 auto resource = cache.reader->ReadAnimationResource(path, 16ull * 1024 * 1024);
+                auto previous=cache.textures.find(path);
+                const bool same=resource.Succeeded() && previous!=cache.textures.end()
+                    && previous->second.sourceLayer==resource.value->sourceLayer && previous->second.digest==resource.value->digest;
+                if (same) continue; // 本次正式reader的完整来源身份已重新核对。
+                if (previous!=cache.textures.end()) {
+                    textureBytes-=Render::ModelTextureStorageBytes(*previous->second.image);
+                    cache.textures.erase(previous); cache.assets.reset();
+                }
                 if (!resource.Succeeded()) {
                     cache.failedTextures.insert(path); noteResource(resource.diagnostics); continue;
                 }
-                auto decoded = Render::DecodeModelTexture(path, resource.value->bytes, 2048);
+                auto decoded = Render::DecodeModelTexture(path, resource.value->bytes, 2048,textureBudget-textureBytes);
                 if (!decoded.Succeeded()) {
-                    cache.failedTextures.insert(path); noteResource(decoded.diagnostics); continue;
+                    const bool budget=std::any_of(decoded.diagnostics.begin(),decoded.diagnostics.end(),[](const auto& issue) {
+                        return issue.code=="WORLD_MODEL_TEXTURE_BUDGET" || issue.code=="BLP_MIP_INPUT_BUDGET"
+                            || issue.code=="BLP_MIP_RGBA_BUDGET" || issue.code=="BLP_MIP_RETAINED_BUDGET"
+                            || issue.code=="BLP_MIP_MIP_BUDGET" || issue.code=="BLP_MIP_WORKING_BUDGET"
+                            || issue.code=="BLP_MIP_JPEG_BUDGET";
+                    });
+                    (budget ? cache.budgetTextures : cache.failedTextures).insert(path);
+                    noteResource(decoded.diagnostics); continue;
                 }
-                constexpr std::size_t textureBudget = 64ull * 1024 * 1024;
-                if (decoded.value->rgba.size() > textureBudget - std::min(textureBudget, textureBytes)) {
+                const auto storage=Render::ModelTextureStorageBytes(*decoded.value);
+                if (!Render::ModelTextureValid(*decoded.value,2048) || storage>textureBudget-textureBytes) {
                     cache.budgetTextures.insert(path);
                     noteResource(Status::Failure("World.BuildingSplat", "BUILDING_SPLAT_TEXTURE_BUDGET", "当前贴画纹理实际RGBA总字节超过预算，未限制全图实例数。").diagnostics);
                     continue;
                 }
-                textureBytes += decoded.value->rgba.size();
+                textureBytes+=storage; noteResource(decoded.value->mipDiagnostics);
                 cache.textures.emplace(path, Render::BuildingSplatPreviewTexture{path, resource.value->sourceLayer,
                     resource.value->digest, std::make_shared<const Render::ModelTextureRgba>(std::move(*decoded.value))});
             }

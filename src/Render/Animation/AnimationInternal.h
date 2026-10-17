@@ -76,6 +76,7 @@ class AnimationAssetSnapshot {
     std::unordered_map<std::string, Texture> textures_;
     SharedSceneVector<ModelTextureRgba> decoded_;
     std::uint32_t maxTextureDimension_ = 0;
+    std::uint32_t mipPolicyVersion_ = 0;
     bool allowRigidStaticPreview_ = false;
 };
 // 记录共用静态加载阶段真正访问的正/负来源；不是整个来源树的快照。

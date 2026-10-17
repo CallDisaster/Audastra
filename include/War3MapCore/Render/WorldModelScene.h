@@ -5,6 +5,7 @@
 #include "War3MapCore/Render/MdxPose.h"
 #include "War3MapCore/Render/SharedSceneVector.h"
 #include "War3MapCore/Types.h"
+#include "War3MapCore/Image/BlpMipChain.h"
 
 #include <array>
 #include <cstdint>
@@ -65,12 +66,31 @@ struct WorldModelLimits {
     bool allowRigidStaticPreview = false; // 明确申请MDX800无控制器静态identity子集；默认严格。
 };
 
+inline constexpr std::uint32_t ModelTextureMipPolicyVersion = 1;
+enum class ModelTextureMipOrigin { GeneratedFromTop, BlpSource };
+
 struct ModelTextureRgba {
     std::string path;
     std::uint32_t width = 0, height = 0;
     std::vector<std::uint8_t> rgba;
     std::string ownedIdentity; // 非资源路径；仅FreezeOwnedStaticModelAsset设置，旧资源贴图保持空。
+    std::vector<Image::DecodedImage> additionalMips; // 原mip1..N，不复制top。
+    ModelTextureMipOrigin mipOrigin = ModelTextureMipOrigin::GeneratedFromTop;
+    std::uint32_t mipPolicyVersion = 0; // 0保留已有原创单级纹理；资源缓存须匹配当前版本。
+    std::uint32_t sourceWidth = 0, sourceHeight = 0, sourceBaseMip = 0;
+    Image::BlpMipChainStopReason mipStopReason = Image::BlpMipChainStopReason::Complete;
+    std::uint32_t mipStopLevel = 0;
+    bool mipHasLaterDeclarations = false;
+    std::vector<Diagnostic> mipDiagnostics; // 已准入的来源/截止诊断；不含Error。
 };
+
+// 逻辑RGBA与动态owned存储分开精确计数；溢出返回UINT64_MAX，调用方须按剩余配额拒绝。
+[[nodiscard]] std::uint64_t ModelTextureRgbaBytes(const ModelTextureRgba& texture) noexcept;
+[[nodiscard]] std::uint64_t ModelTextureStorageBytes(const ModelTextureRgba& texture) noexcept;
+[[nodiscard]] std::uint64_t ModelDiagnosticStorageBytes(const std::vector<Diagnostic>& diagnostics) noexcept;
+[[nodiscard]] bool ModelTextureValid(const ModelTextureRgba& texture, std::uint32_t maxDimension = 4096) noexcept;
+[[nodiscard]] bool ModelTextureHasLegacyOwnedState(const ModelTextureRgba& texture) noexcept;
+[[nodiscard]] bool ChargeModelTextureRgba(const ModelTextureRgba& texture, std::uint64_t& bytes, std::uint64_t limit) noexcept;
 
 struct OwnedModelMesh {
     std::vector<War3RenderModelVertexV2> vertices;
@@ -172,7 +192,7 @@ struct ModelSceneDescriptor {
     War3RendererHandle renderer);
 [[nodiscard]] std::string ModelTexturePath(const MdxTexture& texture, const ModelInstanceRequest& request);
 [[nodiscard]] Result<ModelTextureRgba> DecodeModelTexture(std::string path, std::span<const std::byte> bytes,
-    std::uint32_t maxDimension);
+    std::uint32_t maxDimension, std::uint64_t remainingRgbaBytes = 160ull * 1024 * 1024);
 
 using ModelFileReader = std::function<Result<std::vector<std::byte>>(std::string_view virtualPath)>;
 // 每个不同的模型路径（及其替换贴图、队伍色组合）只读取、解析一次。读取/解析/预算失败只跳过
