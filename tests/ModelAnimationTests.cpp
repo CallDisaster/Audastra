@@ -763,7 +763,7 @@ void ParticleService() {
     if (geoSubmitted.Succeeded()) {
         const auto updated=geoRenderer.Update(geoNext); reportGeoStatus("next",updated); geoNextAccepted=updated.Succeeded();
         if (geoNextAccepted) {
-            const auto repeated=geoRenderer.Update(geoRepeat); reportGeoStatus("repeat",repeated); geoRepeatAccepted=repeated.Succeeded();
+            const auto geoRepeatedStatus=geoRenderer.Update(geoRepeat); reportGeoStatus("repeat",geoRepeatedStatus); geoRepeatAccepted=geoRepeatedStatus.Succeeded();
         } else std::cout<<"geoa_backend_step step=repeat attempted=0\n";
     } else std::cout<<"geoa_backend_step step=next attempted=0\ngeoa_backend_step step=repeat attempted=0\n";
     Require(geoSubmitted.Succeeded() && geoNextAccepted && geoRepeatAccepted && geoMock.staticUploads==1 && geoMock.updates==3,
