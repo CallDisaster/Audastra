@@ -26,10 +26,25 @@ private:
     HANDLE value_;
 };
 
+inline constexpr std::uint64_t kMaxZoneIdentifierBytes = 16 * 1024;
+inline constexpr std::uint64_t kMaxOriginMetadataBytes = 16 * 1024 * 1024;
+inline constexpr wchar_t kZoneIdentifierSuffix[] = L":Zone.Identifier:$DATA";
+
+struct OriginMetadata {
+    std::vector<std::byte> bytes;
+    std::string sha256;
+    [[nodiscard]] bool operator==(const OriginMetadata&) const = default;
+};
+struct OriginStreamReadLease {
+    std::optional<OriginMetadata> zoneIdentifier;
+    // NTFS sharing按stream独立；默认流的只读句柄不能代替此租约。
+    NativeHandle stream;
+};
 struct DirectoryReadLease {
     std::filesystem::path path;
     // 所有祖先目录都拒绝删除/rename共享，避免检查后被junction替换。
     std::vector<NativeHandle> anchors;
+    OriginStreamReadLease origin;
 };
 
 struct FileReadLease {
@@ -37,7 +52,14 @@ struct FileReadLease {
     std::uint64_t bytes = 0;
     DirectoryReadLease parent;
     NativeHandle file;
+    OriginStreamReadLease origin;
 };
+
+// base是已验证的普通磁盘文件/目录句柄。只接受固定Zone.Identifier元数据；
+// cleanup仅为自身DELETE句柄增加share-delete，仍不给任何命名流写共享。
+[[nodiscard]] Result<OriginStreamReadLease> LockUpdateOriginStreams(
+    const std::filesystem::path& path, HANDLE base, bool shareDelete = false);
+[[nodiscard]] bool OriginMatches(const OriginStreamReadLease& actual, const OriginMetadata* expected);
 
 [[nodiscard]] Result<std::filesystem::path> NormalizeLocalPath(
     const std::filesystem::path& input, bool requireAbsolute);

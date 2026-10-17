@@ -514,6 +514,12 @@ void OriginMetadataFormatTests() {
         utf16.push_back(c); utf16.push_back('\0');
     }
     accepted(utf16);
+    const auto wideBytes = [](std::wstring_view text) {
+        std::string result("\xff\xfe", 2);
+        for (const auto c : text) { result.push_back(static_cast<char>(c & 0xff)); result.push_back(static_cast<char>(c >> 8)); }
+        return result;
+    };
+    accepted(wideBytes(L"[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=https://origin.invalid/\u4e2d\u6587\r\n"));
     const std::string prefix = "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=";
     const auto limit = static_cast<std::size_t>(Detail::kMaxZoneIdentifierBytes);
     Check(limit > prefix.size(), "origin metadata boundary fixture has room for a URL value");
@@ -528,7 +534,11 @@ void OriginMetadataFormatTests() {
         "[ZoneTransfer]\r\nZoneId=3\r\n[Other]\r\nEntry=value\r\n", "[ZoneTransfer]\r\nZoneId=5\r\n",
         "[ZoneTransfer]\r\nZoneId=-1\r\n", "[ZoneTransfer]\r\nZoneId=00\r\n", "[ZoneTransfer]\r\nZoneId=\r\n",
         "[ZoneTransfer]\r\nZoneId=x\r\n", std::string("[ZoneTransfer]\nZoneId=3\n") + '\0',
-        std::string("[ZoneTransfer]\nZoneId=3\nHostUrl=") + char(1), bounded + 'a', utf16 + 'x'};
+        std::string("[ZoneTransfer]\nZoneId=3\nHostUrl=") + char(1),
+        std::string("[ZoneTransfer]\nZoneId=3\nHostUrl=") + char(127),
+        wideBytes(L"[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=\x0001"),
+        wideBytes(L"[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=\x007f"),
+        wideBytes(L"[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=\xd800"), bounded + 'a', utf16 + 'x'};
     for (const auto& text : rejected) {
         Write(zone, text);
         Check(Code(Detail::OpenSafeReadFile(file, 1024), "UPDATE_ORIGIN_METADATA_INVALID"),

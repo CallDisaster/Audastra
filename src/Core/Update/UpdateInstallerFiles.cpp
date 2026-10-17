@@ -47,10 +47,95 @@ Status EnsureDirectory(const std::filesystem::path& root, const std::filesystem:
     }
     return Status::Ok();
 }
+
+bool SameObject(const BY_HANDLE_FILE_INFORMATION& a, const BY_HANDLE_FILE_INFORMATION& b) {
+    return a.dwVolumeSerialNumber == b.dwVolumeSerialNumber && a.nFileIndexHigh == b.nFileIndexHigh && a.nFileIndexLow == b.nFileIndexLow;
+}
+
+Status RemoveOwnedOrigin(NativeHandle& base, const std::filesystem::path& path, bool directory, OriginStreamReadLease& current) {
+    BY_HANDLE_FILE_INFORMATION before{}, pinned{}, named{};
+    if (!GetFileInformationByHandle(base.Get(), &before)) return Failure("UPDATE_COPY_METADATA_FAILED", "无法冻结自身镜像的原文件身份。");
+    std::optional<std::string> mainHash;
+    if (!directory) {
+        const auto hash = Sha256Handle(base.Get());
+        if (!hash.Succeeded()) return {hash.diagnostics};
+        mainHash = *hash.value;
+    }
+    const DWORD flags = FILE_FLAG_OPEN_REPARSE_POINT | (directory ? FILE_FLAG_BACKUP_SEMANTICS : 0);
+    // 属性pin仅保留原对象身份，不宣称阻止rename；父目录anchors和源租约始终保留。
+    NativeHandle pin(CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, flags, nullptr));
+    if (!pin.Valid() || !GetFileInformationByHandle(pin.Get(), &pinned) || !SameObject(before, pinned))
+        return Failure("UPDATE_COPY_METADATA_FAILED", "自身镜像的来源标记删除身份pin不符。");
+    current.stream = NativeHandle{};
+    base = NativeHandle{}; // DELETE会跨stream检查共享；只释放自身镜像的目标tail。
+    const auto streamPath = std::filesystem::path(path.native() + kZoneIdentifierSuffix);
+    NativeHandle stream(CreateFileW(streamPath.c_str(), GENERIC_READ | DELETE, FILE_SHARE_READ,
+        nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (!stream.Valid() || !GetFileInformationByHandle(stream.Get(), &named) || !SameObject(before, named)
+        || !CheckOpenedPath(pin.Get(), path, directory).Succeeded())
+        return Failure("UPDATE_COPY_METADATA_FAILED", "自身镜像的待删除来源流身份或最终路径不符。");
+    auto checked = LockUpdateOriginStreams(path, pin.Get(), true);
+    if (!checked.Succeeded()) return {std::move(checked.diagnostics)};
+    if (!OriginMatches(*checked.value, &*current.zoneIdentifier))
+        return Failure("UPDATE_COPY_METADATA_FAILED", "自身镜像来源流在换挡后变化，未删除。");
+    checked.value->stream = NativeHandle{};
+    FILE_DISPOSITION_INFO disposition{TRUE};
+    if (!SetFileInformationByHandle(stream.Get(), FileDispositionInfo, &disposition, sizeof(disposition)))
+        return Failure("UPDATE_COPY_METADATA_FAILED", "自身镜像的已验证来源流未能接受删除。");
+    stream = NativeHandle{};
+    base = NativeHandle(CreateFileW(path.c_str(), directory ? FILE_READ_ATTRIBUTES | FILE_LIST_DIRECTORY : GENERIC_READ | GENERIC_WRITE,
+        directory ? FILE_SHARE_READ | FILE_SHARE_WRITE : 0, nullptr, OPEN_EXISTING, flags, nullptr));
+    BY_HANDLE_FILE_INFORMATION after{};
+    if (!base.Valid() || !GetFileInformationByHandle(base.Get(), &after) || !SameObject(before, after)
+        || !CheckOpenedPath(base.Get(), path, directory).Succeeded())
+        return Failure("UPDATE_COPY_METADATA_FAILED", "删除自身标记后无法恢复相同身份的严格租约。");
+    if (mainHash) {
+        const auto hash = Sha256Handle(base.Get());
+        if (!hash.Succeeded() || *hash.value != *mainHash || before.nFileSizeHigh != after.nFileSizeHigh || before.nFileSizeLow != after.nFileSizeLow)
+            return Failure("UPDATE_COPY_METADATA_FAILED", "自身镜像默认流在标记删除换挡期间变化。");
+    }
+    return Status::Ok();
+}
+
+// 仅供CopyInventory写入自身next/rollback镜像；绝不清除源安装或备份上的标记。
+Status CopyOwnedOrigin(NativeHandle& base, const std::filesystem::path& path, const OriginMetadata* expected, bool directory) {
+    auto current = LockUpdateOriginStreams(path, base.Get());
+    if (!current.Succeeded()) return {std::move(current.diagnostics)};
+    if (OriginMatches(*current.value, expected)) return Status::Ok();
+    const bool existed = current.value->zoneIdentifier.has_value();
+    const auto streamPath = std::filesystem::path(path.native() + kZoneIdentifierSuffix);
+    if (!expected) {
+        const auto removed = RemoveOwnedOrigin(base, path, directory, *current.value);
+        if (!removed.Succeeded()) return removed;
+    } else {
+        current.value->stream = NativeHandle{};
+        NativeHandle output(CreateFileW(streamPath.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+            existed ? OPEN_EXISTING : CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+        BY_HANDLE_FILE_INFORMATION original{}, actual{};
+        if (!output.Valid() || !GetFileInformationByHandle(base.Get(), &original) || !GetFileInformationByHandle(output.Get(), &actual)
+            || original.dwVolumeSerialNumber != actual.dwVolumeSerialNumber || original.nFileIndexHigh != actual.nFileIndexHigh
+            || original.nFileIndexLow != actual.nFileIndexLow || !SetEndOfFile(output.Get()))
+            return Failure("UPDATE_COPY_METADATA_FAILED", "无法独占写入自身镜像同一文件身份的下载标记。");
+        DWORD written = 0;
+        if (!WriteFile(output.Get(), expected->bytes.data(), static_cast<DWORD>(expected->bytes.size()), &written, nullptr)
+            || written != expected->bytes.size() || !FlushFileBuffers(output.Get()))
+            return Failure("UPDATE_COPY_METADATA_FAILED", "自身镜像的下载标记未完整写入或持久化。");
+        const auto hash = Sha256Handle(output.Get());
+        if (!hash.Succeeded() || *hash.value != expected->sha256)
+            return Failure("UPDATE_COPY_METADATA_FAILED", "自身镜像的下载标记原字节校验失败。");
+    }
+    const auto checked = LockUpdateOriginStreams(path, base.Get());
+    if (!checked.Succeeded()) return {checked.diagnostics};
+    if (!OriginMatches(*checked.value, expected)) return Failure("UPDATE_COPY_METADATA_FAILED", "自身镜像下载标记的存在状态或原字节不符。");
+    return Status::Ok();
+}
+
 Status CopyOne(const std::filesystem::path& source, const std::filesystem::path& destination,
-    const UpdateFileEntry& expected, bool replace) {
+    const UpdateFileEntry& expected, const OriginMetadata* origin, bool replace) {
     auto input = OpenSafeReadFile(source, 64ULL * 1024 * 1024 * 1024);
     if (!input.Succeeded()) return {std::move(input.diagnostics)};
+    if (!OriginMatches(input.value->origin, origin)) return Failure("UPDATE_INVENTORY_CHANGED", "源用户文件下载标记与盘点不符，未复制元数据。");
     BY_HANDLE_FILE_INFORMATION original{};
     if (!GetFileInformationByHandle(input.value->file.Get(), &original)
         || (original.dwFileAttributes & (FILE_ATTRIBUTE_ENCRYPTED | FILE_ATTRIBUTE_OFFLINE)))
@@ -88,6 +173,8 @@ Status CopyOne(const std::filesystem::path& source, const std::filesystem::path&
     const auto digest = Sha256Handle(output.Get());
     if (total != expected.bytes || !digest.Succeeded() || *digest.value != expected.sha256)
         return Failure("UPDATE_INVENTORY_CHANGED", "镜像复制内容与原盘点不符，拒绝丢失并发用户改动。");
+    const auto copiedOrigin = CopyOwnedOrigin(output, destination, origin, false);
+    if (!copiedOrigin.Succeeded()) return copiedOrigin;
     if (!SetFileTime(output.Get(), &original.ftCreationTime, &original.ftLastAccessTime, &original.ftLastWriteTime)
         || !FlushFileBuffers(output.Get())) return Failure("UPDATE_COPY_FLUSH_FAILED", "镜像内容或时间戳未能持久写入。");
     output = NativeHandle{};
@@ -104,12 +191,22 @@ Status CopyOne(const std::filesystem::path& source, const std::filesystem::path&
 Result<TreeInventory> InspectUpdateTree(const std::filesystem::path& root) {
     using R = Result<TreeInventory>;
     TreeInventory inventory;
+    std::uint64_t originBytes = 0;
+    const auto remember = [&](const std::wstring& key, const OriginStreamReadLease& origin) {
+        if (!origin.zoneIdentifier) return true;
+        if (origin.zoneIdentifier->bytes.size() > kMaxOriginMetadataBytes - originBytes) return false;
+        originBytes += origin.zoneIdentifier->bytes.size(); inventory.origins.emplace(key, *origin.zoneIdentifier);
+        return true;
+    };
     std::vector<std::pair<std::filesystem::path, unsigned>> pending{{root, 0}};
     while (!pending.empty()) {
         auto [directory, depth] = std::move(pending.back()); pending.pop_back();
         if (depth > 64) return R::Failure("Update", "UPDATE_INVENTORY_DEPTH_BUDGET", "安装目录超过64层，未返回部分盘点。");
         const auto directoryLease = LockSafeDirectory(directory);
         if (!directoryLease.Succeeded()) return {std::nullopt, directoryLease.diagnostics};
+        const auto directoryKey = directory == root ? std::wstring{} : directory.lexically_relative(root).generic_wstring();
+        if (!remember(directoryKey, directoryLease.value->origin))
+            return R::Failure("Update", "UPDATE_ORIGIN_METADATA_BUDGET", "安装树下载来源元数据超过累计有界容量。");
         WIN32_FIND_DATAW data{};
         FindHandle find(FindFirstFileW((directory / L"*").c_str(), &data));
         if (find.Get() == INVALID_HANDLE_VALUE) {
@@ -133,6 +230,8 @@ Result<TreeInventory> InspectUpdateTree(const std::filesystem::path& root) {
             } else {
                 auto lease = OpenSafeReadFile(path, 64ULL * 1024 * 1024 * 1024);
                 if (!lease.Succeeded()) return {std::nullopt, std::move(lease.diagnostics)};
+                if (!remember(key, lease.value->origin))
+                    return R::Failure("Update", "UPDATE_ORIGIN_METADATA_BUDGET", "安装树下载来源元数据超过累计有界容量。");
                 if (lease.value->bytes > 64ULL * 1024 * 1024 * 1024 - inventory.bytes)
                     return R::Failure("Update", "UPDATE_INVENTORY_SIZE_BUDGET", "安装树累计超过64GiB。");
                 auto hash = Sha256Handle(lease.value->file.Get());
@@ -149,6 +248,12 @@ Result<TreeInventory> InspectUpdateTree(const std::filesystem::path& root) {
     for (const auto& [key, file] : inventory.files) {
         (void)key;
         snapshot["files"].push_back({{"path", file.path}, {"bytes", file.bytes}, {"sha256", file.sha256}});
+    }
+    // 无流时保持原canonical JSON及hash，兼容既有无ADS事务/备份。
+    if (!inventory.origins.empty()) {
+        snapshot["origin_streams"] = nlohmann::json::array();
+        for (const auto& [key, origin] : inventory.origins) snapshot["origin_streams"].push_back({
+            {"path", IO::GenericPathUtf8(key)}, {"bytes", origin.bytes.size()}, {"sha256", origin.sha256}});
     }
     auto hash = Sha256Text(snapshot.dump());
     if (!hash.Succeeded()) return {std::nullopt, std::move(hash.diagnostics)};
@@ -193,9 +298,27 @@ Status CopyInventory(const std::filesystem::path& source, const std::filesystem:
         const auto relative = Utf8Path(file.path);
         const auto created = EnsureDirectory(destination, relative.parent_path());
         if (!created.Succeeded()) return created;
-        const auto copied = CopyOne(source / relative, destination / relative, file, replace);
+        const auto copied = CopyOne(source / relative, destination / relative, file, InventoryOrigin(inventory, key), replace);
         if (!copied.Succeeded()) return copied;
     }
+    // 文件/子目录创建完成后再同步目录标记；root与空目录的absence也必须覆盖旧镜像状态。
+    std::vector<std::wstring> directoryKeys{L""};
+    directoryKeys.insert(directoryKeys.end(), inventory.directories.begin(), inventory.directories.end());
+    for (const auto& key : directoryKeys) {
+        auto input = LockSafeDirectory(key.empty() ? source : source / key);
+        auto output = LockSafeDirectory(key.empty() ? destination : destination / key);
+        if (!input.Succeeded()) return {std::move(input.diagnostics)};
+        if (!output.Succeeded()) return {std::move(output.diagnostics)};
+        const auto expected = InventoryOrigin(inventory, key);
+        if (!OriginMatches(input.value->origin, expected)) return Failure("UPDATE_INVENTORY_CHANGED", "源目录下载标记在复制期间变化。");
+        output.value->origin.stream = NativeHandle{};
+        const auto copied = CopyOwnedOrigin(output.value->anchors.back(), output.value->path, expected, true);
+        if (!copied.Succeeded()) return copied;
+    }
+    const auto copied = InspectUpdateTree(destination);
+    if (!copied.Succeeded()) return {copied.diagnostics};
+    if (!PreservedOriginsMatch(inventory, *copied.value, excluded))
+        return Failure("UPDATE_COPY_METADATA_FAILED", "镜像未完整保留用户文件或目录的下载标记。");
     return Status::Ok();
 }
 
@@ -294,6 +417,7 @@ struct CleanupFileLease {
     std::filesystem::path path;
     NativeHandle handle;
     FILE_BASIC_INFO basic{};
+    OriginStreamReadLease origin;
 };
 struct CleanupDirectoryLease {
     std::wstring relative;
@@ -301,21 +425,14 @@ struct CleanupDirectoryLease {
     NativeHandle handle;
     RootIdentity identity;
     DWORD attributes = 0;
+    OriginStreamReadLease origin;
 };
 
-Status CheckCleanupStreams(const std::filesystem::path& path) {
-    WIN32_FIND_STREAM_DATA data{};
-    FindHandle streams(FindFirstStreamW(path.c_str(), FindStreamInfoStandard, &data, 0));
-    if (streams.Get() == INVALID_HANDLE_VALUE) {
-        if (GetLastError() == ERROR_HANDLE_EOF) return Status::Ok();
-        return Failure("UPDATE_STREAM_INSPECTION_FAILED", "清理无法完整确认备份数据流，拒绝当前删除操作。");
-    }
-    do {
-        if (std::wstring_view(data.cStreamName) != L"::$DATA")
-            return Failure("UPDATE_ADS_REJECTED", "备份包含额外数据流，拒绝当前删除操作。");
-    } while (FindNextStreamW(streams.Get(), &data));
-    if (GetLastError() != ERROR_HANDLE_EOF)
-        return Failure("UPDATE_STREAM_INSPECTION_FAILED", "备份数据流枚举中断，拒绝当前删除操作。");
+Status CheckCleanupStreams(const std::filesystem::path& path, HANDLE base, const OriginMetadata* expected) {
+    const auto streams = LockUpdateOriginStreams(path, base, true);
+    if (!streams.Succeeded()) return {streams.diagnostics};
+    if (!OriginMatches(*streams.value, expected))
+        return Failure("UPDATE_CLEANUP_CHANGED", "备份下载来源数据流与已冻结元数据不符，拒绝删除。");
     return Status::Ok();
 }
 
@@ -402,7 +519,14 @@ TreeDeletionReceipt DeleteOwnedTree(const std::filesystem::path& root, const Tre
             FILE_BASIC_INFO basic{};
             if (!directoryId.Succeeded() || !GetFileInformationByHandleEx(lease.value->anchors.back().Get(), FileBasicInfo, &basic, sizeof(basic)))
                 return reject(Failure("UPDATE_CLEANUP_BUSY", "无法预检备份子目录身份或属性，未开始删除。"));
-            directories.push_back({relative, path, std::move(lease.value->anchors.back()), *directoryId.value, basic.FileAttributes});
+            // 清理阶段的命名流必须允许本工具后续DELETE，但仍禁止其它写者。
+            lease.value->origin.stream = NativeHandle{};
+            auto origin = LockUpdateOriginStreams(path, lease.value->anchors.back().Get(), true);
+            if (!origin.Succeeded()) return reject({std::move(origin.diagnostics)});
+            if (!OriginMatches(*origin.value, InventoryOrigin(expected, relative)))
+                return reject(Failure("UPDATE_CLEANUP_CHANGED", "备份目录下载标记已变化，未开始删除。"));
+            directories.push_back({relative, path, std::move(lease.value->anchors.back()), *directoryId.value,
+                basic.FileAttributes, std::move(*origin.value)});
         }
         std::vector<CleanupFileLease> files;
         files.reserve(expected.files.size());
@@ -422,7 +546,11 @@ TreeDeletionReceipt DeleteOwnedTree(const std::filesystem::path& root, const Tre
             FILE_BASIC_INFO basic{};
             if (!GetFileInformationByHandleEx(handle.Get(), FileBasicInfo, &basic, sizeof(basic)))
                 return reject(Failure("UPDATE_CLEANUP_BUSY", "无法预检备份文件属性，整个备份未开始删除。"));
-            files.push_back({path, std::move(handle), basic});
+            auto origin = LockUpdateOriginStreams(path, handle.Get(), true);
+            if (!origin.Succeeded()) return reject({std::move(origin.diagnostics)});
+            if (!OriginMatches(*origin.value, InventoryOrigin(expected, key)))
+                return reject(Failure("UPDATE_CLEANUP_CHANGED", "备份文件下载标记已变化，未开始删除。"));
+            files.push_back({path, std::move(handle), basic, std::move(*origin.value)});
         }
         if (hooks.checkpoint) {
             const auto checkpoint = hooks.checkpoint("preflight-complete", actualRoot, actualRoot);
@@ -432,14 +560,14 @@ TreeDeletionReceipt DeleteOwnedTree(const std::filesystem::path& root, const Tre
         // 名称另行枚举；身份、属性和SHA均复用已经锁定的原句柄，且不修改任何内容。
         const auto names = CheckCleanupNames(actualRoot, expected, directories);
         if (!names.Succeeded()) return reject(names);
-        auto streams = CheckCleanupStreams(actualRoot);
+        auto streams = CheckCleanupStreams(actualRoot, rootLease.value->anchors.back().Get(), InventoryOrigin(expected, L""));
         if (!streams.Succeeded()) return reject(streams);
         FILE_BASIC_INFO currentBasic{};
         if (!GetFileInformationByHandleEx(rootLease.value->anchors.back().Get(), FileBasicInfo, &currentBasic, sizeof(currentBasic))
             || currentBasic.FileAttributes != rootBasic.FileAttributes)
             return reject(Failure("UPDATE_CLEANUP_CHANGED", "备份根属性在预检后变化，未开始删除。"));
         for (const auto& directory : directories) {
-            streams = CheckCleanupStreams(directory.path);
+            streams = CheckCleanupStreams(directory.path, directory.handle.Get(), InventoryOrigin(expected, directory.relative));
             const auto safe = CheckOpenedPath(directory.handle.Get(), directory.path, true);
             if (!streams.Succeeded()) return reject(streams);
             if (!safe.Succeeded() || !GetFileInformationByHandleEx(directory.handle.Get(), FileBasicInfo, &currentBasic, sizeof(currentBasic))
@@ -448,7 +576,7 @@ TreeDeletionReceipt DeleteOwnedTree(const std::filesystem::path& root, const Tre
         }
         auto expectedFile = expected.files.begin();
         for (const auto& file : files) {
-            streams = CheckCleanupStreams(file.path);
+            streams = CheckCleanupStreams(file.path, file.handle.Get(), InventoryOrigin(expected, expectedFile->first));
             if (!streams.Succeeded()) return reject(streams);
             const auto safe = CheckOpenedPath(file.handle.Get(), file.path, false);
             const auto hash = Sha256Handle(file.handle.Get());
@@ -461,7 +589,8 @@ TreeDeletionReceipt DeleteOwnedTree(const std::filesystem::path& root, const Tre
 
         // 第二阶段才允许修改。删除本身无法跨整个目录树原子化，任何已接受操作都进入回执。
         for (auto& file : files) {
-            streams = CheckCleanupStreams(file.path);
+            const auto relative = file.path.lexically_relative(actualRoot).generic_wstring();
+            streams = CheckCleanupStreams(file.path, file.handle.Get(), InventoryOrigin(expected, relative));
             if (!streams.Succeeded()) return reject(streams);
             const auto safe = CheckOpenedPath(file.handle.Get(), file.path, false);
             if (!safe.Succeeded() || !GetFileInformationByHandleEx(file.handle.Get(), FileBasicInfo, &currentBasic, sizeof(currentBasic))
@@ -487,6 +616,7 @@ TreeDeletionReceipt DeleteOwnedTree(const std::filesystem::path& root, const Tre
                 return reject(Failure("UPDATE_CLEANUP_BUSY", "已验证备份文件未能接受删除，停止清理并保留剩余内容。"));
             }
             ++receipt.filesMarkedForDeletion;
+            file.origin.stream = NativeHandle{};
             file.handle = NativeHandle{};
             if (hooks.checkpoint) {
                 const auto checkpoint = hooks.checkpoint("file-delete-accepted", actualRoot, file.path);
@@ -500,7 +630,8 @@ TreeDeletionReceipt DeleteOwnedTree(const std::filesystem::path& root, const Tre
             return a.relative.size() != b.relative.size() ? a.relative.size() > b.relative.size() : WindowsPathLess{}(a.relative, b.relative);
         });
         const auto deleteDirectory = [&](const std::filesystem::path& path, const RootIdentity& expectedDirectory,
-            DWORD expectedAttributes, NativeHandle& readLease) -> Status {
+            DWORD expectedAttributes, NativeHandle& readLease, OriginStreamReadLease& origin) -> Status {
+            origin.stream = NativeHandle{};
             readLease = NativeHandle{}; // 仅释放该目录，父目录身份仍由祖先租约保护。
             if (hooks.checkpoint) {
                 const auto checkpoint = hooks.checkpoint("directory-lease-released", actualRoot, path);
@@ -517,21 +648,26 @@ TreeDeletionReceipt DeleteOwnedTree(const std::filesystem::path& root, const Tre
                 || !GetFileInformationByHandleEx(handle.Get(), FileBasicInfo, &basic, sizeof(basic))
                 || basic.FileAttributes != expectedAttributes)
                 return Failure("UPDATE_CLEANUP_IDENTITY_CHANGED", "备份目录最终身份或属性不符，不删除任何替换目录。");
-            const auto streams = CheckCleanupStreams(path);
-            if (!streams.Succeeded()) return streams;
+            auto finalOrigin = LockUpdateOriginStreams(path, handle.Get(), true);
+            if (!finalOrigin.Succeeded()) return {std::move(finalOrigin.diagnostics)};
+            const auto relative = path == actualRoot ? std::wstring{} : path.lexically_relative(actualRoot).generic_wstring();
+            if (!OriginMatches(*finalOrigin.value, InventoryOrigin(expected, relative)))
+                return Failure("UPDATE_CLEANUP_CHANGED", "备份目录最终下载标记身份变化，拒绝删除。");
             FILE_DISPOSITION_INFO disposition{TRUE};
             if (!SetFileInformationByHandle(handle.Get(), FileDispositionInfo, &disposition, sizeof(disposition)))
                 return Failure("UPDATE_CLEANUP_BUSY", "备份目录有新内容或未能接受删除，停止清理。");
             ++receipt.directoriesMarkedForDeletion;
+            finalOrigin.value->stream = NativeHandle{};
             handle = NativeHandle{};
             if (!CleanupPathMissing(path)) return Failure("UPDATE_CLEANUP_BUSY", "已接受删除的目录路径尚未消失，停止清理。");
             return Status::Ok();
         };
         for (auto& directory : directories) {
-            const auto deleted = deleteDirectory(directory.path, directory.identity, directory.attributes, directory.handle);
+            const auto deleted = deleteDirectory(directory.path, directory.identity, directory.attributes, directory.handle, directory.origin);
             if (!deleted.Succeeded()) return reject(deleted);
         }
-        const auto deleted = deleteDirectory(actualRoot, expectedId, rootBasic.FileAttributes, rootLease.value->anchors.back());
+        const auto deleted = deleteDirectory(actualRoot, expectedId, rootBasic.FileAttributes,
+            rootLease.value->anchors.back(), rootLease.value->origin);
         if (!deleted.Succeeded()) return reject(deleted);
         receipt.rootRemoved = true;
         return receipt;

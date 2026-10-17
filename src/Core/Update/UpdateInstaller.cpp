@@ -48,6 +48,8 @@ Status PreserveCheck(const TreeInventory& original, const TreeInventory& stage,
     for (const auto& file : targets) for (auto end = file.find(L'/'); end != std::wstring::npos; end = file.find(L'/', end + 1))
         expectedDirectories.insert(file.substr(0, end));
     if (stage.directories != expectedDirectories) return Failure("UPDATE_STAGE_DIRECTORY_MISMATCH", "镜像缺少空用户目录或出现未知目录。");
+    if (!PreservedOriginsMatch(original, stage, targets))
+        return Failure("UPDATE_STAGE_USER_CONTENT_MISMATCH", "新镜像未完整保留用户文件或目录的下载来源元数据。");
     return Status::Ok();
 }
 

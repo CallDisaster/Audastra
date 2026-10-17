@@ -160,6 +160,8 @@ Result<UpdateInstallReceipt> RollbackJournal(InstallJournal& journal,
                 if (copied == mergedInventory.value->files.end() || copied->second.bytes != file.bytes || copied->second.sha256 != file.sha256)
                     return Pending(journal, "UPDATE_ROLLBACK_USER_MERGE_FAILED", "晚期用户内容未完整进入恢复镜像。");
             }
+            if (!PreservedOriginsMatch(*current.value, *mergedInventory.value, programs))
+                return Pending(journal, "UPDATE_ROLLBACK_USER_MERGE_FAILED", "晚期用户文件或目录的下载标记未完整进入恢复镜像。");
             journal.rollbackInventory = mergedInventory.value->sha256; journal.failedInventory = current.value->sha256;
         }
         const auto beforeCurrentRename = InspectUpdateTree(journal.install), beforeBackup = InspectUpdateTree(journal.backup);

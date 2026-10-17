@@ -1,4 +1,5 @@
 #include "UpdatePath.h"
+#include "War3MapCore/Hash.h"
 
 #include <algorithm>
 #include <array>
@@ -17,22 +18,98 @@ bool Equal(std::wstring_view a, std::wstring_view b) {
     if (a.size() > INT_MAX || b.size() > INT_MAX) return false;
     return CompareStringOrdinal(a.data(), static_cast<int>(a.size()), b.data(), static_cast<int>(b.size()), TRUE) == CSTR_EQUAL;
 }
-Status NoAlternateStreams(const std::filesystem::path& path) {
+Result<bool> EnumerateOriginStream(const std::filesystem::path& path) {
+    using R = Result<bool>;
     WIN32_FIND_STREAM_DATA data{};
     const HANDLE stream = FindFirstStreamW(path.c_str(), FindStreamInfoStandard, &data, 0);
     if (stream == INVALID_HANDLE_VALUE) {
-        if (GetLastError() == ERROR_HANDLE_EOF) return Status::Ok();
-        return Status::Failure("Update", "UPDATE_STREAM_INSPECTION_FAILED", "无法完整确认更新路径的NTFS数据流，拒绝继续。");
+        if (GetLastError() == ERROR_HANDLE_EOF) return R::Success(false);
+        return Failure<bool>(path, "UPDATE_STREAM_INSPECTION_FAILED", "无法完整确认更新路径的NTFS数据流，拒绝继续。");
     }
-    bool extra = false;
+    bool extra = false, zone = false, invalid = false;
     do {
-        if (!Equal(data.cStreamName, L"::$DATA")) { extra = true; break; }
+        if (Equal(data.cStreamName, L"::$DATA")) continue;
+        if (!Equal(data.cStreamName, kZoneIdentifierSuffix)) { extra = true; break; }
+        if (zone || data.StreamSize.QuadPart <= 0 || std::uint64_t(data.StreamSize.QuadPart) > kMaxZoneIdentifierBytes) {
+            invalid = true; break;
+        }
+        zone = true;
     } while (FindNextStreamW(stream, &data));
     const DWORD error = GetLastError();
     FindClose(stream);
-    if (extra) return Status::Failure("Update", "UPDATE_ADS_REJECTED", "更新路径包含额外数据流(ADS)，拒绝继续。");
-    if (error != ERROR_HANDLE_EOF) return Status::Failure("Update", "UPDATE_STREAM_INSPECTION_FAILED", "更新路径的数据流未能完整枚举。");
-    return Status::Ok();
+    if (extra) return Failure<bool>(path, "UPDATE_ADS_REJECTED", "更新路径包含未知数据流(ADS)，拒绝继续。");
+    if (invalid) return Failure<bool>(path, "UPDATE_ORIGIN_METADATA_INVALID", "下载来源元数据重复、为空或超过有界容量。");
+    if (error != ERROR_HANDLE_EOF) return Failure<bool>(path, "UPDATE_STREAM_INSPECTION_FAILED", "更新路径的数据流未能完整枚举。");
+    return R::Success(zone);
+}
+
+bool ValidZoneIdentifier(std::span<const std::byte> bytes) {
+    // 来源URL只是不可执行的元数据；只辨识ZoneTransfer和唯一ZoneId，原字节不重编码。
+    std::string text;
+    std::size_t at = 0;
+    const auto byte = [&](std::size_t i) { return std::to_integer<unsigned char>(bytes[i]); };
+    const auto allowed = [](unsigned value) {
+        return value && value != 127 && (value >= 32 || value == '\r' || value == '\n' || value == '\t');
+    };
+    if (bytes.size() >= 2 && byte(0) == 0xff && byte(1) == 0xfe) {
+        if (bytes.size() % 2) return false;
+        std::wstring wide;
+        for (at = 2; at < bytes.size(); at += 2) {
+            const auto value = byte(at) | (unsigned(byte(at + 1)) << 8);
+            if (!allowed(value)) return false;
+            wide.push_back(static_cast<wchar_t>(value));
+        }
+        if (wide.empty()) return false;
+        const auto length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide.data(), static_cast<int>(wide.size()),
+            nullptr, 0, nullptr, nullptr);
+        if (!length) return false;
+        text.resize(static_cast<std::size_t>(length));
+        if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide.data(), static_cast<int>(wide.size()),
+            text.data(), length, nullptr, nullptr) != length) return false;
+    } else {
+        if (bytes.size() >= 3 && byte(0) == 0xef && byte(1) == 0xbb && byte(2) == 0xbf) at = 3;
+        for (; at < bytes.size(); ++at) {
+            const auto value = byte(at);
+            if (!allowed(value)) return false;
+            text.push_back(static_cast<char>(value));
+        }
+    }
+    const auto trim = [](std::string_view value) {
+        const auto first = value.find_first_not_of(" \t\r");
+        if (first == std::string_view::npos) return std::string_view{};
+        return value.substr(first, value.find_last_not_of(" \t\r") - first + 1);
+    };
+    const auto equal = [](std::string_view a, std::string_view b) {
+        if (a.size() != b.size()) return false;
+        const auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? char(c - 'A' + 'a') : c; };
+        for (std::size_t i = 0; i < a.size(); ++i) if (lower(a[i]) != lower(b[i])) return false;
+        return true;
+    };
+    bool section = false, zone = false;
+    for (std::size_t begin = 0; begin <= text.size();) {
+        const auto end = text.find('\n', begin);
+        auto line = trim(std::string_view(text).substr(begin, end == std::string::npos ? end : end - begin));
+        if (!line.empty()) {
+            if (!section) {
+                if (!equal(line, "[ZoneTransfer]")) return false;
+                section = true;
+            } else {
+                const auto separator = line.find('=');
+                if (separator == std::string_view::npos || separator == 0 || line.front() == '[') return false;
+                const auto key = trim(line.substr(0, separator)), value = trim(line.substr(separator + 1));
+                if (key.empty()) return false;
+                if (equal(key, "ZoneId")) {
+                    if (zone || value.size() != 1 || value.front() < '0' || value.front() > '4') return false;
+                    zone = true;
+                } else {
+                    for (const auto c : key) if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) return false;
+                }
+            }
+        }
+        if (end == std::string::npos) break;
+        begin = end + 1;
+    }
+    return section && zone;
 }
 bool FinalMatches(HANDLE handle, const std::filesystem::path& expected) {
     const DWORD size = GetFinalPathNameByHandleW(handle, nullptr, 0, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
@@ -56,6 +133,47 @@ bool RegularInfo(HANDLE handle, bool directory, const std::filesystem::path& pat
 }
 
 } // namespace
+
+Result<OriginStreamReadLease> LockUpdateOriginStreams(const std::filesystem::path& path, HANDLE base, bool shareDelete) {
+    using R = Result<OriginStreamReadLease>;
+    const auto listed = EnumerateOriginStream(path);
+    if (!listed.Succeeded()) return {std::nullopt, listed.diagnostics};
+    OriginStreamReadLease lease;
+    if (*listed.value) {
+        const auto named = std::filesystem::path(path.native() + kZoneIdentifierSuffix);
+        lease.stream = NativeHandle(CreateFileW(named.c_str(), GENERIC_READ,
+            FILE_SHARE_READ | (shareDelete ? FILE_SHARE_DELETE : 0), nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+        BY_HANDLE_FILE_INFORMATION baseInfo{}, streamInfo{};
+        LARGE_INTEGER size{};
+        if (!lease.stream.Valid() || GetFileType(lease.stream.Get()) != FILE_TYPE_DISK
+            || !GetFileInformationByHandle(base, &baseInfo) || !GetFileInformationByHandle(lease.stream.Get(), &streamInfo)
+            || baseInfo.dwVolumeSerialNumber != streamInfo.dwVolumeSerialNumber
+            || baseInfo.nFileIndexHigh != streamInfo.nFileIndexHigh || baseInfo.nFileIndexLow != streamInfo.nFileIndexLow
+            || !GetFileSizeEx(lease.stream.Get(), &size) || size.QuadPart <= 0
+            || std::uint64_t(size.QuadPart) > kMaxZoneIdentifierBytes)
+            return Failure<OriginStreamReadLease>(path, "UPDATE_STREAM_INSPECTION_FAILED", "无法锁定同一文件身份的有界下载来源数据流。");
+        OriginMetadata metadata;
+        metadata.bytes.resize(static_cast<std::size_t>(size.QuadPart));
+        DWORD read = 0;
+        if (!ReadFile(lease.stream.Get(), metadata.bytes.data(), static_cast<DWORD>(metadata.bytes.size()), &read, nullptr)
+            || read != metadata.bytes.size() || !ValidZoneIdentifier(metadata.bytes))
+            return Failure<OriginStreamReadLease>(path, "UPDATE_ORIGIN_METADATA_INVALID", "下载来源数据流无法完整读取或不是受支持的ZoneTransfer元数据。");
+        const auto digest = Sha256(metadata.bytes);
+        if (!digest.Succeeded()) return {std::nullopt, digest.diagnostics};
+        metadata.sha256 = *digest.value; lease.zoneIdentifier = std::move(metadata);
+    }
+    // 命名流共享不锁定其它stream名称；完整枚举必须再次成立。
+    const auto after = EnumerateOriginStream(path);
+    if (!after.Succeeded()) return {std::nullopt, after.diagnostics};
+    if (*after.value != lease.zoneIdentifier.has_value())
+        return Failure<OriginStreamReadLease>(path, "UPDATE_INVENTORY_CHANGED", "下载来源数据流在读取期间变化。");
+    return R::Success(std::move(lease));
+}
+
+bool OriginMatches(const OriginStreamReadLease& actual, const OriginMetadata* expected) {
+    return actual.zoneIdentifier.has_value() == (expected != nullptr)
+        && (!expected || *actual.zoneIdentifier == *expected);
+}
 
 Status CheckOpenedPath(HANDLE handle, const std::filesystem::path& path, bool directory) {
     BY_HANDLE_FILE_INFORMATION info{};
@@ -141,8 +259,9 @@ Result<DirectoryReadLease> LockSafeDirectory(const std::filesystem::path& input)
     }
     // 祖先仍逐级锁定并验证普通磁盘/reparse/实际路径身份，但不会被复制的
     // 祖先数据流不属于更新内容。只检查本次目标；inventory会逐目录调用本函数。
-    const auto streams = NoAlternateStreams(lease.path);
+    auto streams = LockUpdateOriginStreams(lease.path, lease.anchors.back().Get());
     if (!streams.Succeeded()) return {std::nullopt, streams.diagnostics};
+    lease.origin = std::move(*streams.value);
     return Result<DirectoryReadLease>::Success(std::move(lease));
 }
 
@@ -160,10 +279,10 @@ Result<FileReadLease> OpenSafeReadFile(const std::filesystem::path& input, std::
         "UPDATE_REPARSE_OR_PATH_REJECTED", "更新文件不是单链接普通文件、含reparse或实际路径不符。");
     const auto length = (static_cast<std::uint64_t>(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
     if (length > maxBytes) return Failure<FileReadLease>(input, "UPDATE_FILE_BUDGET", "更新文件超过读取容量限制。");
-    const auto streams = NoAlternateStreams(*normalized.value);
+    auto streams = LockUpdateOriginStreams(*normalized.value, handle.Get());
     if (!streams.Succeeded()) return {std::nullopt, streams.diagnostics};
     return Result<FileReadLease>::Success(FileReadLease{std::move(*normalized.value), length,
-        std::move(*parent.value), std::move(handle)});
+        std::move(*parent.value), std::move(handle), std::move(*streams.value)});
 }
 
 } // namespace War3Map::Update::Detail

@@ -13,9 +13,29 @@ namespace War3Map::Update::Detail {
 struct TreeInventory {
     std::map<std::wstring, UpdateFileEntry, WindowsPathLess> files;
     std::set<std::wstring, WindowsPathLess> directories;
+    // 空key表示根目录；仅记录存在的固定Zone.Identifier，absence由缺少key明确绑定。
+    std::map<std::wstring, OriginMetadata, WindowsPathLess> origins;
     std::uint64_t bytes = 0;
     std::string sha256;
 };
+[[nodiscard]] inline const OriginMetadata* InventoryOrigin(const TreeInventory& tree, const std::wstring& key) {
+    const auto found = tree.origins.find(key);
+    return found == tree.origins.end() ? nullptr : &found->second;
+}
+[[nodiscard]] inline bool PreservedOriginsMatch(const TreeInventory& source, const TreeInventory& destination,
+    const std::set<std::wstring, WindowsPathLess>& excluded = {}) {
+    const auto same = [&](const std::wstring& key) {
+        const auto before = InventoryOrigin(source, key), after = InventoryOrigin(destination, key);
+        return (before != nullptr) == (after != nullptr) && (!before || *before == *after);
+    };
+    if (!same(L"")) return false;
+    for (const auto& directory : source.directories) if (!same(directory)) return false;
+    for (const auto& [key, file] : source.files) {
+        (void)file;
+        if (!excluded.contains(key) && !same(key)) return false;
+    }
+    return true;
+}
 struct RootIdentity {
     std::uint64_t volume = 0, index = 0;
     [[nodiscard]] bool operator==(const RootIdentity&) const noexcept = default;

@@ -1076,6 +1076,200 @@ void InventoryChangeTests() {
         "parallel user change preserved with original program");
 }
 
+std::filesystem::path ZonePath(const std::filesystem::path& path) {
+    return std::filesystem::path(path.native() + Detail::kZoneIdentifierSuffix);
+}
+bool HasZone(const std::filesystem::path& path) {
+    WIN32_FIND_STREAM_DATA data{};
+    const auto handle = FindFirstStreamW(path.c_str(), FindStreamInfoStandard, &data, 0);
+    if (handle == INVALID_HANDLE_VALUE) {
+        if (GetLastError() == ERROR_HANDLE_EOF) return false;
+        throw std::runtime_error("original fixture stream enumeration failed");
+    }
+    bool found = false;
+    do { found |= std::wstring_view(data.cStreamName) == Detail::kZoneIdentifierSuffix; } while (FindNextStreamW(handle, &data));
+    const auto error = GetLastError(); FindClose(handle);
+    if (error != ERROR_HANDLE_EOF) throw std::runtime_error("original fixture incomplete stream enumeration");
+    return found;
+}
+constexpr std::string_view kOriginalZone = "[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=https://original.invalid/fixture\r\n";
+constexpr std::string_view kChangedZone = "[ZoneTransfer]\r\nZoneId=4\r\nReferrerUrl=https://original.invalid/changed\r\n";
+
+void OriginInventoryCopyTests() {
+    Temp temp;
+    const auto source = temp.path / L"source", copy = temp.path / L"copy";
+    Write(source / L"user.txt", "original user bytes");
+    std::filesystem::create_directories(source / L"empty"); std::filesystem::create_directory(copy);
+    const auto plain = Detail::InspectUpdateTree(source);
+    Check(plain.Succeeded(), "original no-stream tree can be inventoried");
+    if (!plain.Succeeded()) return;
+    Json legacy{{"directories", Json::array({"empty"})}, {"files", Json::array({
+        {{"path", "user.txt"}, {"bytes", 19}, {"sha256", Hash("original user bytes")}}})}};
+    Check(plain.value->origins.empty() && plain.value->sha256 == Hash(legacy.dump()), "no-Zone inventory keeps exact legacy canonical hash");
+    for (const auto& path : {source, source / L"empty", source / L"user.txt"}) Write(ZonePath(path), kOriginalZone);
+    const auto original = Detail::InspectUpdateTree(source);
+    Check(original.Succeeded() && original.value->origins.size() == 3 && original.value->sha256 != plain.value->sha256,
+        "root, empty directory and file Zone presence/raw SHA all belong to inventory identity");
+    if (!original.Succeeded()) return;
+    Check(Detail::CopyInventory(source, copy, *original.value).Succeeded(), "owned mirror copies original root/directory/file download metadata");
+    for (const auto& path : {copy, copy / L"empty", copy / L"user.txt"})
+        Check(Read(ZonePath(path)) == Data(kOriginalZone), "copied origin metadata preserves exact original bytes");
+    Write(ZonePath(source), kChangedZone);
+    Check(DeleteFileW(ZonePath(source / L"user.txt").c_str()) != FALSE, "only original source fixture file marker removed");
+    const auto latest = Detail::InspectUpdateTree(source);
+    Check(latest.Succeeded() && latest.value->sha256 != original.value->sha256, "metadata-only change/absence changes inventory identity");
+    if (!latest.Succeeded()) return;
+    Check(Detail::CopyInventory(source, copy, *latest.value, true).Succeeded(), "rollback-style copy overlays latest metadata including absence");
+    Check(Read(ZonePath(copy)) == Data(kChangedZone) && !HasZone(copy / L"user.txt"),
+        "latest user removal does not resurrect backup Zone and root metadata stays latest");
+    Check(Read(ZonePath(copy / L"empty")) == Data(kOriginalZone), "empty user directory retains its own metadata");
+    Write(ZonePath(copy / L"user.txt"), kOriginalZone);
+    const auto tampered = Detail::InspectUpdateTree(copy);
+    Check(tampered.Succeeded() && !Detail::PreservedOriginsMatch(*latest.value, *tampered.value),
+        "post-copy metadata injection cannot satisfy the final preservation proof");
+    const auto stale = Detail::CopyInventory(source, copy, *original.value, true);
+    Check(!stale.Succeeded(), "copy refuses source metadata which no longer matches captured expected bytes");
+    Check(DeleteFileW(ZonePath(source).c_str()) != FALSE && DeleteFileW(ZonePath(source / L"empty").c_str()) != FALSE,
+        "only original source root and empty-directory markers removed for absence overlay");
+    const auto unmarked = Detail::InspectUpdateTree(source);
+    Check(unmarked.Succeeded() && Detail::CopyInventory(source, copy, *unmarked.value, true).Succeeded(),
+        "owned mirror handles root directory and file marker removal without conflicting with its own strict base leases");
+    Check(!HasZone(copy) && !HasZone(copy / L"empty") && !HasZone(copy / L"user.txt")
+        && Read(copy / L"user.txt") == Data("original user bytes"),
+        "absence overlay preserves default bytes and removes only the three captured mirror markers");
+}
+
+void OriginCommitRollbackTests() {
+    {
+        Fixture fixture;
+        for (const auto& path : {fixture.request.installDirectory, fixture.request.installDirectory / L"user-empty/inner",
+                 fixture.request.installDirectory / L"settings.json", fixture.request.installDirectory / L"program.txt",
+                 fixture.request.installDirectory / L"update-manifest.json", fixture.request.installDirectory / L"update-manifest.json.sig"})
+            Write(ZonePath(path), kOriginalZone);
+        const auto original = Detail::InspectUpdateTree(fixture.request.installDirectory);
+        Check(original.Succeeded(), "marked original install inventory is complete");
+        if (!original.Succeeded()) return;
+        fixture.original = *original.value;
+        Check(DiscoverInstalledUpdateBaseline(fixture.request.installDirectory, "0.1.0", fixture.signer.key).Succeeded(),
+            "normal portable download marks do not reject an otherwise exact signed installed baseline");
+        auto first = InstallUpdate(fixture.request, fixture.signer.key);
+        Diagnostics(first, "MOTW commit");
+        Check(first.Succeeded() && first.value->outcome == UpdateInstallOutcome::Committed, "signed update commits with normal origin metadata");
+        if (!first.Succeeded() || first.value->outcome != UpdateInstallOutcome::Committed) return;
+        WaitNatural(first.value->childProcess);
+        const auto backup = Detail::InspectUpdateTree(first.value->backupDirectory);
+        Check(backup.Succeeded() && backup.value->sha256 == fixture.original.sha256, "original program and user MOTW remain exact in renamed backup");
+        Check(Read(ZonePath(fixture.request.installDirectory / L"settings.json")) == Data(kOriginalZone)
+            && Read(ZonePath(fixture.request.installDirectory / L"user-empty/inner")) == Data(kOriginalZone),
+            "committed user file and empty directory retain their exact download marks");
+        Check(!HasZone(fixture.request.installDirectory / L"program.txt"),
+            "new signed program is new payload; old program URL is not fabricated as its origin");
+        fixture.Next("0.2.0", "0.3.0");
+        auto second = InstallUpdate(fixture.request, fixture.signer.key);
+        Check(second.Succeeded() && second.value->outcome == UpdateInstallOutcome::Committed, "subsequent signed update retains marked user tree");
+        if (!second.Succeeded() || second.value->outcome != UpdateInstallOutcome::Committed) return;
+        WaitNatural(second.value->childProcess);
+        const auto cleanup = CleanupUpdateBackups(fixture.request.installDirectory, fixture.signer.key);
+        Diagnostics(cleanup, "MOTW cleanup");
+        Check(cleanup.Succeeded() && cleanup.value->removedBackups == 1 && !std::filesystem::exists(first.value->backupDirectory)
+            && std::filesystem::exists(second.value->backupDirectory), "only verified older marked backup is removed; latest backup remains");
+    }
+    {
+        Fixture fixture(true);
+        Write(ZonePath(fixture.request.installDirectory / L"settings.json"), kOriginalZone);
+        Write(ZonePath(fixture.request.installDirectory / L"user-empty/inner"), kOriginalZone);
+        Detail::InstallerTestHooks hooks;
+        bool changed = false;
+        hooks.checkpoint = [&](std::string_view phase) {
+            if (phase == "after-activation") {
+                changed = true;
+                Check(DeleteFileW(ZonePath(fixture.request.installDirectory / L"settings.json").c_str()) != FALSE,
+                    "late original user fixture removes its mark");
+                Write(ZonePath(fixture.request.installDirectory / L"logs/local.log"), kChangedZone);
+                Write(ZonePath(fixture.request.installDirectory / L"user-empty/inner"), kChangedZone);
+            }
+            return Status::Ok();
+        };
+        const auto result = Detail::InstallUpdateWithHooks(fixture.request, fixture.signer.key, hooks);
+        ReceiptDiagnostics(result, "MOTW rollback");
+        Check(changed && result.Succeeded() && result.value->outcome == UpdateInstallOutcome::RolledBack,
+            "failed native health restores original program through existing rollback transaction");
+        if (!changed || !result.Succeeded() || result.value->outcome != UpdateInstallOutcome::RolledBack) return;
+        Check(!HasZone(fixture.request.installDirectory / L"settings.json")
+            && Read(ZonePath(fixture.request.installDirectory / L"logs/local.log")) == Data(kChangedZone)
+            && Read(ZonePath(fixture.request.installDirectory / L"user-empty/inner")) == Data(kChangedZone),
+            "rollback preserves latest user marker removal, insertion and directory change without resurrecting backup metadata");
+    }
+}
+
+void OriginMetadataBudgetTests() {
+    Temp temp;
+    const auto root = temp.path / L"origin-budget";
+    std::filesystem::create_directory(root);
+    const std::string prefix = "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=";
+    const auto limit = static_cast<std::size_t>(Detail::kMaxZoneIdentifierBytes);
+    const auto full = prefix + std::string(limit - prefix.size(), 'a');
+    const auto count = Detail::kMaxOriginMetadataBytes / Detail::kMaxZoneIdentifierBytes;
+    Check(count == 1024 && count * limit == Detail::kMaxOriginMetadataBytes, "original aggregate boundary fixture matches declared budgets");
+    Write(ZonePath(root), full);
+    std::filesystem::path last;
+    for (std::uint64_t i = 1; i < count; ++i) {
+        last = root / (L"original-" + std::to_wstring(i) + L".txt");
+        Write(last, "original bounded user bytes"); Write(ZonePath(last), full);
+    }
+    const auto exact = Detail::InspectUpdateTree(root);
+    Check(exact.Succeeded() && exact.value->origins.size() == count,
+        "root and file origin streams at exactly 16MiB aggregate are accepted without a partial inventory");
+    const auto directory = root / L"original-empty";
+    std::filesystem::create_directory(directory);
+    const std::string minimal = "[ZoneTransfer]\nZoneId=3\n";
+    Write(ZonePath(last), std::string_view(full).substr(0, full.size() - minimal.size() + 1));
+    Write(ZonePath(directory), minimal);
+    const auto oversized = Detail::InspectUpdateTree(root);
+    Check(Code(oversized, "UPDATE_ORIGIN_METADATA_BUDGET") && !oversized.value,
+        "root file and empty-directory origin streams at aggregate limit plus one fail closed without a partial inventory");
+    Check(Read(ZonePath(root)) == Data(full) && Read(ZonePath(directory)) == Data(minimal),
+        "aggregate refusal preserves original fixture metadata bytes");
+}
+
+void OriginMutationAndCleanupTests() {
+    {
+        Fixture fixture;
+        Detail::InstallerTestHooks hooks;
+        hooks.checkpoint = [&](std::string_view phase) {
+            if (phase == "after-stage") Write(ZonePath(fixture.request.installDirectory / L"settings.json"), kOriginalZone);
+            return Status::Ok();
+        };
+        const auto result = Detail::InstallUpdateWithHooks(fixture.request, fixture.signer.key, hooks);
+        Check(result.Succeeded() && result.value->outcome == UpdateInstallOutcome::Abandoned
+            && result.value->reasonCode == "UPDATE_INVENTORY_CHANGED" && fixture.FileIs(L"program.txt", "old program"),
+            "metadata-only author change after staging rejects switch and retains original program");
+        Check(Read(ZonePath(fixture.request.installDirectory / L"settings.json")) == Data(kOriginalZone), "author's changed marker is not cleared on refusal");
+    }
+    for (const bool unknown : {false, true}) {
+        Temp temp;
+        const auto root = temp.path / L"owned-old-tree";
+        std::filesystem::create_directory(root);
+        Write(ZonePath(root), kOriginalZone);
+        const auto inventory = Detail::InspectUpdateTree(root); const auto identity = Detail::ReadRootIdentity(root);
+        if (!inventory.Succeeded() || !identity.Succeeded()) throw std::runtime_error("original cleanup marker fixture failed");
+        Detail::BackupCleanupTestHooks hooks;
+        bool injected = false;
+        hooks.checkpoint = [&](std::string_view phase, const auto&, const auto& path) {
+            if (phase == "directory-lease-released" && path == root) {
+                injected = true;
+                if (unknown) Write(std::filesystem::path(root.native() + L":original-unknown"), "original unknown metadata");
+                else Write(ZonePath(root), kChangedZone);
+            }
+            return Status::Ok();
+        };
+        const auto removed = Detail::DeleteOwnedTree(root, *inventory.value, *identity.value, hooks);
+        Check(injected && !removed.status.Succeeded() && !removed.MutationStarted() && std::filesystem::exists(root),
+            "final directory lease-release race rejects changed Zone or newly unknown ADS before any deletion");
+        Check(Read(ZonePath(root)) == Data(unknown ? kOriginalZone : kChangedZone), "cleanup refusal preserves changed origin bytes");
+    }
+}
+
 void HealthFailureTests() {
     {
         Fixture fixture(true);
@@ -1212,6 +1406,8 @@ int wmain(int argc, wchar_t** argv) {
         suite("rename-recovery", RenameAndRecoveryTests);
         suite("rollback-terminal", RollbackTerminalBoundaryTests); suite("between-rollback-renames", BetweenRollbackRenamesTests);
         suite("old-restart-guards", OldRestartGuardsTests); suite("inventory-change", InventoryChangeTests);
+        suite("origin-inventory-copy", OriginInventoryCopyTests); suite("origin-commit-rollback", OriginCommitRollbackTests);
+        suite("origin-metadata-budget", OriginMetadataBudgetTests); suite("origin-mutation-cleanup", OriginMutationAndCleanupTests);
         suite("health-failure", HealthFailureTests); suite("parent-wait", ParentWaitTests);
     } catch (const std::exception& error) {
         ++failures; std::cerr << "FAIL: unexpected original fixture error: " << error.what() << '\n';
