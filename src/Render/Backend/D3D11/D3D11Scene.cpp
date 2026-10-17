@@ -40,6 +40,28 @@ std::uint64_t TerrainOwnedCapacityBytes(const Mesh& mesh) noexcept {
     }
     return bytes;
 }
+std::uint64_t TerrainGridUploadMetadataBytes(std::uint64_t transitionBatches, std::uint64_t baseBatches,
+    std::uint64_t blightBatches, std::uint64_t textureViews, std::uint64_t textureParameters) noexcept {
+    // 包含实际GPU owner描述符、grid/材质/事实局部值和exact mip最大12级描述符。
+    std::uint64_t bytes = sizeof(D3D11Scene::TerrainGridGpu) + sizeof(D3D11Scene::TerrainGridParameters)
+        + sizeof(War3RenderTerrainGridCaptureFactsV2) + sizeof(D3D11Scene::TextureParameters)
+        + 12 * sizeof(D3D11_SUBRESOURCE_DATA);
+    const auto add = [&bytes](std::uint64_t count, std::uint64_t stride) {
+        constexpr auto maximum = std::numeric_limits<std::uint64_t>::max();
+        if (count > (maximum - bytes) / stride) { bytes = maximum; return; }
+        bytes += count * stride;
+    };
+    add(transitionBatches, sizeof(War3RenderTerrainBatchV2));
+    add(baseBatches, sizeof(War3RenderTerrainBatchV2));
+    add(blightBatches, sizeof(War3RenderTerrainBlightBatchV2));
+    add(textureViews, sizeof(Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>));
+    add(textureParameters, sizeof(D3D11Scene::TextureParameters));
+    return bytes;
+}
+std::uint64_t TerrainGridUploadMetadataBytes(const Mesh& mesh) noexcept {
+    return TerrainGridUploadMetadataBytes(mesh.batches.capacity(), mesh.baseBatches.capacity(),
+        mesh.blightBatches.capacity(), mesh.textures.capacity(), mesh.textures.capacity());
+}
 Environment DefaultEnvironment() {
     Environment environment;
     auto& v = environment.values;
@@ -617,18 +639,18 @@ HRESULT D3D11Scene::SetMesh(const Mesh& mesh) try {
     // 分配前以logical元数据预收，分配后以actual capacity复核同一128MiB。
     // exact mip上传只用固定12项栈上描述符，不藏一份像素或旧expanded base VB。
     const auto metadataBytes = [&](std::size_t batches, std::size_t blight, std::size_t base,
-        std::size_t textures, std::size_t parameters) {
+        std::size_t textures, std::size_t parameters) -> std::uint64_t {
+        if (mesh.terrainGrid) return TerrainGridUploadMetadataBytes(batches, base, blight, textures, parameters);
         return std::uint64_t(batches + base) * sizeof(War3RenderTerrainBatchV2)
             + std::uint64_t(blight) * sizeof(War3RenderTerrainBlightBatchV2)
             + std::uint64_t(textures) * sizeof(Ptr<ID3D11ShaderResourceView>)
-            + std::uint64_t(parameters) * sizeof(TextureParameters)
-            + (mesh.terrainGrid ? sizeof(TerrainGridGpu) + sizeof(TerrainGridParameters)
-                + 12 * sizeof(D3D11_SUBRESOURCE_DATA) : 0);
+            + std::uint64_t(parameters) * sizeof(TextureParameters);
     };
     const auto ownedBytes = TerrainOwnedCapacityBytes(mesh);
     const auto fits = [&](std::uint64_t extra) { return ownedBytes <= workingLimit && extra <= workingLimit - ownedBytes; };
-    if (bounded && !fits(metadataBytes(mesh.batches.size(), mesh.blightBatches.size(), mesh.baseBatches.size(),
-        mesh.textures.size(), mesh.textures.size()))) return E_INVALIDARG;
+    if (mesh.terrainGrid ? !fits(TerrainGridUploadMetadataBytes(mesh))
+        : bounded && !fits(metadataBytes(mesh.batches.size(), mesh.blightBatches.size(), mesh.baseBatches.size(),
+            mesh.textures.size(), mesh.textures.size()))) return E_INVALIDARG;
     Ptr<ID3D11Buffer> vertices, indices;
     TerrainGridGpu grid;
     TerrainGridParameters gridParameters;
@@ -656,6 +678,8 @@ HRESULT D3D11Scene::SetMesh(const Mesh& mesh) try {
     }
     if (mesh.terrainGrid) {
         grid.enabled = true;
+        gridFacts.structSize = sizeof(gridFacts);
+        gridFacts.gridFormat = WAR3_RENDER_TERRAIN_GRID_FETCH_V1;
         grid.groundTextureCount = mesh.gridGroundTextureCount;
         grid.waterIndexCount = static_cast<UINT>(mesh.gridWaterIndices.size());
         gridParameters.width = mesh.gridWidth; gridParameters.height = mesh.gridHeight;

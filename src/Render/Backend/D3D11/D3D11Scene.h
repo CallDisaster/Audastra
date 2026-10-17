@@ -39,6 +39,11 @@ struct Mesh {
 };
 // 本次地表CPU所有者的实际容器容量；不含历史场景、驱动和GPU分配。
 [[nodiscard]] std::uint64_t TerrainOwnedCapacityBytes(const Mesh& mesh) noexcept;
+// 新grid上传metadata/固定暂存的唯一公式；计数版供分配前预收，Mesh版用actual capacity。
+[[nodiscard]] std::uint64_t TerrainGridUploadMetadataBytes(std::uint64_t transitionBatches,
+    std::uint64_t baseBatches, std::uint64_t blightBatches, std::uint64_t textureViews,
+    std::uint64_t textureParameters) noexcept;
+[[nodiscard]] std::uint64_t TerrainGridUploadMetadataBytes(const Mesh& mesh) noexcept;
 // 场景环境的 CPU 副本（已由插件入口校验）：values.shadow 不使用，像素在 shadow。
 struct Environment {
     War3RenderEnvironmentV2 values{};
@@ -111,6 +116,18 @@ public:
             modelTextures_.empty() ? 0 : id(modelTextures_[0].Get()),
             particleTextures_.empty() ? 0 : id(particleTextures_[0].Get())};
     }
+    // 仅Run线程取值并由插件同mutex封存；失败后也可证旧GPU owner未交换，不触发上传。
+    [[nodiscard]] std::array<std::uint64_t, 16> TestTerrainGridResources() const noexcept {
+        const auto id = [](const auto* value) { return static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(value)); };
+        return {id(terrainGridGpu_.ground.Get()), id(terrainGridGpu_.groundView.Get()),
+            id(terrainGridGpu_.baseQuads.Get()), id(terrainGridGpu_.baseQuadView.Get()),
+            id(terrainGridGpu_.water.Get()), id(terrainGridGpu_.waterView.Get()),
+            id(terrainGridGpu_.waterQuads.Get()), id(terrainGridGpu_.waterQuadView.Get()),
+            id(terrainGridGpu_.baseIndices.Get()), id(terrainGridGpu_.blightIndices.Get()),
+            id(terrainGridGpu_.waterIndices.Get()), id(terrainGridGpu_.constants.Get()),
+            id(vertices_.Get()), id(indices_.Get()), textures_.empty() ? 0 : id(textures_.front().Get()),
+            textures_.empty() ? 0 : id(textures_.back().Get())};
+    }
 #endif
     HRESULT SetEnvironment(const Environment& environment);
     // 只覆盖当前模型场景的实例变换与颜色（数量须一致）。
@@ -121,6 +138,8 @@ public:
         float (&viewProjection)[16], DrawTimings* timings = nullptr);
     ~D3D11Scene();
 private:
+    friend std::uint64_t TerrainGridUploadMetadataBytes(std::uint64_t, std::uint64_t, std::uint64_t,
+        std::uint64_t, std::uint64_t) noexcept;
     template<class T> using Ptr = Microsoft::WRL::ComPtr<T>;
     HRESULT Buffer(const void* data, UINT bytes, UINT bind, ID3D11Buffer** output);
     HRESULT CreateTexture(const TextureRgba& source, Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>& view,
