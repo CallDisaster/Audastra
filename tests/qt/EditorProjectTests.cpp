@@ -14,6 +14,7 @@
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/MapTerrain.h"
+#include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
 #include "../../src/Core/Mpq/MpqCrypt.h"
 #include "../MapDataFixtures.h"
@@ -144,6 +145,49 @@ bool HasReadDiagnostic(const auto& result, std::string_view code) {
     return std::any_of(result.diagnostics.begin(), result.diagnostics.end(),
         [code](const Diagnostic& diagnostic) { return diagnostic.code == code; });
 }
+
+std::vector<MapArchiveMember> TerrainSaveMembers() {
+    MapData::TerrainGridSnapshot terrain;
+    terrain.header.width = terrain.header.height = 9;
+    terrain.header.mainTileset = 'L';
+    terrain.header.groundTilesets = {"Tg01"}; terrain.header.cliffTilesets = {"Cl01"};
+    terrain.vertices.resize(81);
+    for (auto& vertex : terrain.vertices) {
+        vertex.groundHeightRaw = 8192; vertex.waterHeightAndFlagsRaw = 7936; vertex.cliffAndLayerRaw = 2;
+    }
+    MapData::RefreshTerrainDerived(terrain, 0, 0, 9, 9);
+    const auto terrainBytes = MapData::SerializeMapTerrain(terrain);
+    if (!terrainBytes.Succeeded() || !terrainBytes.value) return {};
+    MapDataFixtures::Fixture pathing;
+    pathing.Raw("MP3W"); pathing.UInt(0); pathing.UInt(32); pathing.UInt(32);
+    pathing.bytes.resize(16 + 32 * 32, std::byte{0x82});
+    const std::string script = "function config takes nothing returns nothing\nendfunction\n"
+        "function main takes nothing returns nothing\nendfunction\n";
+    const auto scriptBytes = std::as_bytes(std::span(script.data(), script.size()));
+    // SHD仅作为不解释的原字追踪值；MMP真实空，MapBLP缺失，不构成原版地图验收。
+    return {{"war3map.w3i", MapDataFixtures::FullMapSettingsV25().bytes},
+        {"war3map.w3e", *terrainBytes.value}, {"war3map.wpm", std::move(pathing.bytes)},
+        {"war3map.shd", {std::byte{7}, std::byte{11}}}, {"war3map.mmp", {}},
+        {"war3map.j", {scriptBytes.begin(), scriptBytes.end()}}};
+}
+
+bool BindTerrainSaveProject(EditorProject& project, const std::filesystem::path& source) {
+    auto opened = MapArchiveSession::Open(source);
+    if (!opened.Succeeded() || !opened.value) return false;
+    project.projectRoot_ = source.parent_path(); project.sourceArchivePath_ = source;
+    project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*opened.value));
+    project.LoadMapDocument();
+    if (!project.mapEdits_ || !project.mapEdits_->Terrain()) return false;
+    project.ResetEditTracking();
+    return project.editTrackingReady_ && project.mapEdits_->VerifyTerrainPathingForSave().Succeeded();
+}
+
+bool RaiseTerrainSaveProject(EditorProject& project, float strength = 10) {
+    MapData::TerrainBrush brush; brush.kind = MapData::TerrainBrushKind::Raise; brush.radius = 0; brush.strength = strength;
+    const MapData::TerrainStrokePoint point{512, 512};
+    return project.mapEdits_ && project.mapEdits_->EditTerrain(brush, std::span(&point, 1), false).Succeeded()
+        && project.ObserveMapDataEdit("原创地形保存回读夹具");
+}
 }
 
 class EditorProjectTests final : public QObject {
@@ -165,6 +209,8 @@ private slots:
     void NativeCloneOriginsSurviveProjectRestore();
     void PendingNativeCloneOriginsSurviveMissingOrEmptyMember();
     void SaveCommitRejectsRevisionDrift();
+    void TerrainSaveReadbackGatesCommit_data();
+    void TerrainSaveReadbackGatesCommit();
     void BoundedAssetsPreserveCurrentPrefix();
     void ObjectQueriesDistinguishMissingFromUnparsedSources();
     void TriggerChangesCannotSkipUnpreparedFramework();
@@ -625,6 +671,96 @@ void EditorProjectTests::SaveCommitRejectsRevisionDrift() {
             QVERIFY(!project.sourceChangeConfirmed_);
         }
     }
+}
+
+void EditorProjectTests::TerrainSaveReadbackGatesCommit_data() {
+    QTest::addColumn<bool>("inPlace");
+    QTest::addColumn<QString>("mode");
+    QTest::newRow("matching-copy") << false << QStringLiteral("match");
+    QTest::newRow("matching-in-place") << true << QStringLiteral("match");
+    QTest::newRow("mismatched-plan-copy") << false << QStringLiteral("mismatch");
+    QTest::newRow("mismatched-plan-in-place") << true << QStringLiteral("mismatch");
+    QTest::newRow("missing-copy-receipt") << false << QStringLiteral("missing");
+    QTest::newRow("wrong-copy-output-sha") << false << QStringLiteral("stale");
+    QTest::newRow("repeat-in-place-run") << true << QStringLiteral("repeat");
+    QTest::newRow("new-edit-after-readback") << false << QStringLiteral("revision");
+}
+
+void EditorProjectTests::TerrainSaveReadbackGatesCommit() {
+    QFETCH(bool, inPlace); QFETCH(QString, mode);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto members = TerrainSaveMembers(); QVERIFY(!members.empty());
+    const auto source = std::filesystem::path(root.filePath("source.w3x").toStdWString());
+    QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
+    const auto originalSha = Sha256File(source); QVERIFY(originalSha.Succeeded());
+    EditorProject project; QVERIFY(BindTerrainSaveProject(project, source));
+    const auto baseline = project.editRevision_.Baseline(EditSaveTarget::Map); QVERIFY(baseline);
+    QVERIFY(RaiseTerrainSaveProject(project));
+    project.mapDataUndoStack_->push(new QUndoCommand("terrain save undo marker"));
+    const auto undoCount = project.mapDataUndoStack_->count();
+    const auto* originalSession = project.archiveSession_.get();
+    const auto target = std::filesystem::path(root.filePath("candidate.w3x").toStdWString());
+    auto job = project.PrepareMapSave(inPlace ? std::filesystem::path{} : target, inPlace);
+    QVERIFY(job && job->terrainSavePlan && !job->terrainReadbackStatus);
+    QVERIFY2(!job->script, "terrain readback fixture must preserve its source script without invoking a compiler");
+    QVERIFY(job->terrainSavePlan->SaveGate().Succeeded() && job->terrainSavePlan->RequiresNativeVerification());
+    if (mode == QStringLiteral("mismatch")) {
+        auto alternateMembers = members;
+        for (auto& member : alternateMembers) if (member.name == "war3map.shd") member.data = {std::byte{255}, std::byte{255}};
+        const auto alternate = std::filesystem::path(root.filePath("different-shadow.w3x").toStdWString());
+        QVERIFY(WriteVerifiedArchive(alternate, alternateMembers).Succeeded());
+        EditorProject other; QVERIFY(BindTerrainSaveProject(other, alternate)); QVERIFY(RaiseTerrainSaveProject(other));
+        auto different = MapData::TerrainSavePlan::Prepare(*other.archiveSession_, *other.mapEdits_); QVERIFY(different.Succeeded());
+        // 仅通过已有可见job字段注入另一冻结计划；writer闭包仍持原计划，不改真实保存文件。
+        job->terrainSavePlan = std::make_shared<const MapData::TerrainSavePlan>(std::move(*different.value));
+    }
+    EditorProject::RunMapSave(*job);
+    QVERIFY(job->executed && job->nextSession && std::filesystem::exists(job->written));
+    QVERIFY(job->terrainReadbackStatus);
+    QCOMPARE(job->terrainReadbackArchiveSha256, job->nextSession->SourceSha256());
+    if (mode == QStringLiteral("mismatch")) {
+        QVERIFY(!job->succeeded && !job->terrainReadbackStatus->Succeeded());
+        QVERIFY(HasReadDiagnostic(*job->terrainReadbackStatus, "TERRAIN_SAVE_PLAN_MEMBER_MISMATCH"));
+    } else {
+        QVERIFY(job->succeeded && job->terrainReadbackStatus->Succeeded());
+    }
+    QString expectedCode = QStringLiteral("TERRAIN_SAVE_PLAN_READBACK_REJECTED");
+    if (mode == QStringLiteral("missing")) {
+        job->terrainReadbackStatus.reset(); expectedCode = QStringLiteral("TERRAIN_SAVE_PLAN_READBACK_MISSING");
+    } else if (mode == QStringLiteral("stale")) {
+        job->terrainReadbackArchiveSha256.assign(64, '0'); expectedCode = QStringLiteral("TERRAIN_SAVE_PLAN_READBACK_STALE");
+    } else if (mode == QStringLiteral("repeat")) {
+        EditorProject::RunMapSave(*job);
+        QVERIFY(!job->succeeded && !job->terrainReadbackStatus && job->terrainReadbackArchiveSha256.empty());
+        QVERIFY(HasReadDiagnostic(*job, "SAVE_TASK_ALREADY_EXECUTED"));
+        expectedCode = QStringLiteral("TERRAIN_SAVE_PLAN_READBACK_MISSING");
+    } else if (mode == QStringLiteral("revision")) {
+        QVERIFY(RaiseTerrainSaveProject(project, 1)); expectedCode = QStringLiteral("SAVE_REVISION_CHANGED");
+    }
+    const auto currentScopes = project.editRevision_.Current();
+    if (mode == QStringLiteral("match")) {
+        const auto savedSha = job->terrainReadbackArchiveSha256;
+        QVERIFY(project.CommitMapSave(*job).has_value());
+        QCOMPARE(project.archiveSession_->SourceSha256(), savedSha);
+        QVERIFY(!project.mapEdits_->IsDirty() && !project.HasUnsavedMapChanges());
+        QVERIFY(ModelHasCode(*project.diagnosticsModel_, QStringLiteral("TERRAIN_SAVE_SHADOW_NOT_REBUILT")));
+        auto saved = MapArchiveSession::Open(project.sourceArchivePath_); QVERIFY(saved.Succeeded());
+        QVERIFY(job->terrainSavePlan->VerifyReadback(*saved.value).Succeeded());
+    } else {
+        QVERIFY(!project.CommitMapSave(*job).has_value());
+        QVERIFY(ModelHasCode(*project.diagnosticsModel_, expectedCode));
+        QVERIFY(project.archiveSession_.get() == originalSession && project.sourceArchivePath_ == source);
+        QVERIFY(project.mapEdits_->IsDirty() && project.HasUnsavedMapChanges());
+        QCOMPARE(project.editRevision_.Current(), currentScopes);
+        QCOMPARE(project.editRevision_.Baseline(EditSaveTarget::Map)->scopes, baseline->scopes);
+        QCOMPARE(project.mapDataUndoStack_->count(), undoCount);
+        if (inPlace) QVERIFY(project.sourceChangeSuspected_ && project.sourceChangeConfirmed_);
+        else QVERIFY(!project.sourceChangeConfirmed_);
+    }
+    if (inPlace) {
+        QVERIFY(!job->backup.empty() && std::filesystem::exists(job->backup));
+        QCOMPARE(Sha256File(job->backup).value, originalSha.value);
+    } else QCOMPARE(Sha256File(source).value, originalSha.value);
 }
 
 void EditorProjectTests::IndependentProjectsDoNotShareEdits() {

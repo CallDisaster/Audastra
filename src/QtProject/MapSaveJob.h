@@ -8,10 +8,14 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
+#include <string>
 
-// UI 仅持有阶段文案回调和开始时间。归档、编辑输入、脚本目录及输出均由无 Qt 的
-// MapSaveTask 自持有；工作线程不得再借用 EditorProject 的可变文档。
+namespace War3Map::MapData { class TerrainSavePlan; }
+
+// Qt job追加阶段文案、冻结地形计划与本次回读结果。归档、编辑输入、脚本目录及输出
+// 均由无Qt的MapSaveTask自持有；执行阶段不得借用EditorProject的可变文档。
 namespace War3Map::QtProject {
 
 struct MapSaveRevisionBinding {
@@ -31,6 +35,10 @@ struct MapSaveJob final : Services::MapSaveTask {
     std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
     // 准备阶段冻结的编辑身份；提交必须重新观察并逐项匹配，不能把晚到编辑标为已保存。
     std::optional<MapSaveRevisionBinding> preparedRevision;
+    // 与发布前闭包共享同一冻结计划；无状态表示尚未执行本次领域回读。
+    std::shared_ptr<const MapData::TerrainSavePlan> terrainSavePlan;
+    std::optional<Status> terrainReadbackStatus;
+    std::string terrainReadbackArchiveSha256;
     // 阶段提示可从工作线程调用，由 UI 调用方排队到界面线程。
     std::function<void(const QString&)> progress;
 

@@ -1,5 +1,6 @@
 #include "EditorProject.h"
 #include "MapSaveJob.h"
+#include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/Services/ScriptSavePreparation.h"
 
 #include <QDateTime>
@@ -32,12 +33,30 @@ QString StageText(std::string_view stage) {
 } // namespace
 
 void EditorProject::RunMapSave(MapSaveJob& job) {
+    // Run拒绝重复执行时，也不能留下上次的Passed结果供本次提交复用。
+    job.terrainReadbackStatus.reset();
+    job.terrainReadbackArchiveSha256.clear();
     Services::MapSaveService::Run(job, [&job](std::string_view stage) { job.Report(StageText(stage)); });
+    if (!job.succeeded || !job.nextSession || !job.terrainSavePlan) return;
+    try {
+        // UI由既有worker调用；公开同步保存helper仍同步执行，不在Commit重复散列。
+        job.Report(tr("正在核对保存后的地形…"));
+        job.terrainReadbackArchiveSha256 = job.nextSession->SourceSha256();
+        job.terrainReadbackStatus = job.terrainSavePlan->VerifyReadback(*job.nextSession);
+    } catch (...) {
+        // 领域回读位于通用Run的异常边界之外，失败须保留已写出路径及备份。
+        job.terrainReadbackStatus = Status::Failure("Terrain.SavePlan", "TERRAIN_SAVE_PLAN_READBACK_EXCEPTION",
+            "保存后的地形核对发生异常，未接受此次保存结果。");
+    }
+    if (!job.terrainReadbackStatus->Succeeded()) {
+        job.succeeded = false;
+        const auto& diagnostics = job.terrainReadbackStatus->diagnostics;
+        job.diagnostics.insert(job.diagnostics.end(), diagnostics.begin(), diagnostics.end());
+    }
 }
 
 std::optional<MapCopySaveResult> EditorProject::CommitMapSave(MapSaveJob& job) {
     AddDiagnostics(job.diagnostics);
-    if (!job.succeeded || !job.nextSession) return std::nullopt;
 
     const auto rejectStaleCommit = [this, &job](const QString& code, const QString& reason)
         -> std::optional<MapCopySaveResult> {
@@ -57,6 +76,18 @@ std::optional<MapCopySaveResult> EditorProject::CommitMapSave(MapSaveJob& job) {
         }
         return std::nullopt;
     };
+    if (job.terrainSavePlan && job.nextSession) {
+        if (!job.terrainReadbackStatus) {
+            return rejectStaleCommit(tr("TERRAIN_SAVE_PLAN_READBACK_MISSING"), tr("尚未核对保存后的地形结果"));
+        }
+        if (!job.terrainReadbackStatus->Succeeded()) {
+            return rejectStaleCommit(tr("TERRAIN_SAVE_PLAN_READBACK_REJECTED"), tr("保存后的地形核对未通过"));
+        }
+        if (job.terrainReadbackArchiveSha256 != job.nextSession->SourceSha256()) {
+            return rejectStaleCommit(tr("TERRAIN_SAVE_PLAN_READBACK_STALE"), tr("地形核对结果不属于本次保存输出"));
+        }
+    }
+    if (!job.succeeded || !job.nextSession) return std::nullopt;
     if (!job.preparedRevision) {
         return rejectStaleCommit(tr("SAVE_REVISION_BINDING_MISSING"), tr("保存任务缺少冻结的编辑修订身份"));
     }

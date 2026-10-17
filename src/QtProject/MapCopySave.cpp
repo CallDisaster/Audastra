@@ -575,6 +575,7 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
         // 后台仅捕获冻结计划和自有任务；不借用仍在前台编辑的会话。
         // 脚本模板合并完毕后再核一次，防止派生成员被后续阶段悄悄覆盖。
         const auto plan = std::make_shared<const MapData::TerrainSavePlan>(std::move(*terrainPlan));
+        job->terrainSavePlan = plan;
         const auto* task = job.get();
         job->beforePublish = [plan, task, previous = std::move(job->beforePublish)]() {
             if (previous) {
