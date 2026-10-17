@@ -7,6 +7,7 @@
 #include <bit>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string_view>
 
@@ -28,6 +29,25 @@ void U32(std::vector<std::byte>& bytes, std::uint32_t value) {
 
 void Raw(std::vector<std::byte>& bytes, std::string_view text) {
     for (const auto c : text) bytes.push_back(static_cast<std::byte>(c));
+}
+
+std::vector<std::byte> W3i(std::array<std::int32_t, 4> margins = {1, 3, 2, 1},
+    std::int32_t width = 4, std::int32_t height = 3, std::uint32_t version = 25) {
+    // 独立v25字节，不调用MapSettings writer产生期望；四字符串为空，八bounds故意不等于crop。
+    std::vector<std::byte> bytes;
+    U32(bytes, version); U32(bytes, 0); U32(bytes, 6061);
+    if (version >= 28) bytes.insert(bytes.end(), 16, std::byte{0});
+    bytes.insert(bytes.end(), 4, std::byte{0});
+    for (unsigned i = 0; i < 8; ++i) U32(bytes, std::bit_cast<std::uint32_t>(static_cast<float>(i + 1)));
+    for (const auto margin : margins) U32(bytes, static_cast<std::uint32_t>(margin));
+    U32(bytes, static_cast<std::uint32_t>(width)); U32(bytes, static_cast<std::uint32_t>(height));
+    U32(bytes, 0); bytes.push_back(std::byte{'L'}); U32(bytes, 0);
+    bytes.insert(bytes.end(), 4, std::byte{0}); U32(bytes, 0); bytes.insert(bytes.end(), 4, std::byte{0});
+    bytes.insert(bytes.end(), 16 + 4 + 4 + 1 + 1 + 4, std::byte{0}); // fog、weather、sound NUL、light、water。
+    if (version >= 28) U32(bytes, 0);
+    if (version >= 31) { U32(bytes, 0); U32(bytes, 0); }
+    for (unsigned i = 0; i < 6; ++i) U32(bytes, 0); // players/forces及四组custom表。
+    return bytes;
 }
 
 void Rebind(TerrainMinimapInput& input) {
@@ -388,10 +408,10 @@ void TestDryHeightfieldKeepsPixelsButChangesGeometryIdentity() {
     const auto flat = Build(input); const auto flatMesh = Mesh(input);
     const auto expected = Solid(256, 256, {12, 34, 56, 255});
     Require(flat.image.rgba == expected.rgba, "固定单色顶视oracle必须覆盖全部256平方像素，忽略base alpha");
-    static_assert(TerrainMinimapManifest::algorithmVersion == 2);
+    static_assert(TerrainMinimapManifest::algorithmVersion == 3);
     Require(std::string_view(TerrainMinimapManifest::samplingPolicy) == "original-mips-cell-clamped-trilinear-unorm-v1"
         && std::string_view(TerrainMinimapManifest::encodingPolicy) == "opaque-full-chain-shared-adaptive-palette-v1",
-        "高程域v2不能暗改采样/编码v1策略");
+        "声明边距v3不能暗改默认采样/编码v1策略");
     // 156是正式保存限制；157和陡坡也属于本生成器的普通干地heightfield域。
     for (const int delta : {156, 157, 4096, -156, -157}) {
         auto changed = input; HeightRaw(changed, 4, static_cast<std::uint16_t>(8192 + delta));
@@ -430,6 +450,102 @@ void TestDryHeightfieldKeepsPixelsButChangesGeometryIdentity() {
     }
 }
 
+void TestDeclaredMarginsFixedPixelsAndLod() {
+    auto input = Fixture(9, 7);
+    auto gradient = Atlas();
+    for (std::uint32_t y = 0; y < 16; ++y) for (std::uint32_t x = 0; x < 16; ++x) {
+        const Rgba color{40 + 40 * (x % 4), 20 + 40 * (y % 4), 60, 255};
+        for (std::size_t c = 0; c < 4; ++c) gradient->image.rgba[(y * 16 + x) * 4 + c] = static_cast<std::byte>(color[c]);
+    }
+    input.groundAtlases[0] = gradient;
+    const auto full = Build(input);
+    input.sourceW3i = W3i(); // full不消费，默认像素与BLP保持逐字相同。
+    const auto ignored = Build(input);
+    Require(ignored.image.rgba == full.image.rgba && ignored.encoded.bytes == full.encoded.bytes
+        && ignored.manifest.w3i.state == "NotRequested" && ignored.manifest.w3i.sha256.empty(), "默认full不能隐式消费W3I");
+    input.sourceW3i = std::vector<std::byte>{std::byte{99}};
+    Require(Build(input).image.rgba == full.image.rgba, "未消费的损坏W3I也不能改变默认生成域");
+    input.sourceW3i = W3i();
+    input.rangePolicy = TerrainMinimapRangePolicy::DeclaredW3iMargins;
+    const auto cropped = Build(input);
+    Require(cropped.manifest.worldExtent == std::array<double, 4>{10, 20, 1034, 788}
+        && cropped.manifest.renderExtent == std::array<double, 4>{138, 276, 650, 660}
+        && cropped.manifest.contentRectangle == std::array<double, 4>{0, 32, 256, 192}, "非对称边距必须保留全域与声明选区独立事实");
+    Require(cropped.manifest.w3i.sha256 == *Sha256(*input.sourceW3i).value && cropped.manifest.w3i.stage == "source-archive"
+        && cropped.manifest.w3i.cameraBounds[0] == 1 && cropped.manifest.w3i.cameraBounds[7] == 8,
+        "实际W3I bytes必须自产SHA且原cameraBounds不应强制等于crop");
+    Require(Pixel(cropped, 23, 63) == Rgba{84, 79, 60, 255}
+        && Pixel(cropped, 0, 32) == Rgba{41, 21, 60, 255}
+        && Pixel(cropped, 255, 223) == Rgba{159, 139, 60, 255}, "手算原tile局部UV固定像素不能被重编号或二次翻Y");
+    for (const auto y : {31u, 224u}) for (std::uint32_t x = 0; x < 256; ++x)
+        Require(Pixel(cropped, x, y) == Rgba{0, 0, 0, 255}, "半开padding必须全行opaque黑");
+    Require(cropped.manifest.meshSha256 == full.manifest.meshSha256 && cropped.manifest.sourceTiles == 48
+        && !cropped.manifest.archiveSourceIndependentlyVerified && !cropped.manifest.nativeEditorOrGameVerified
+        && !cropped.manifest.formalSaveAuthorized, "pure范围数学不能授予来源、native或保存资格，也不缩原mesh");
+    auto atlas = Atlas(128, {255, 0, 255, 255});
+    SetCell(atlas->image, 128, 0, 0, {0, 0, 200, 255});
+    atlas->additionalMips.push_back(Solid(256, 256, {255, 0, 255, 255}));
+    atlas->additionalMips.push_back(Solid(128, 128, {255, 0, 255, 255}));
+    SetCell(atlas->additionalMips[0], 64, 0, 0, {0, 200, 0, 255});
+    SetCell(atlas->additionalMips[1], 32, 0, 0, {200, 0, 0, 255}); atlas->validatedMipCount = 3;
+    input.groundAtlases[0] = atlas;
+    const auto cropMip = Build(input);
+    input.rangePolicy = TerrainMinimapRangePolicy::FullW3e;
+    const auto fullMip = Build(input);
+    Require(Pixel(cropMip, 23, 63) == Rgba{0, 198, 2, 255} && Pixel(fullMip, 23, 63) == Rgba{198, 2, 0, 255},
+        "原三mip固定颜色应区分crop/full足迹，不能只改反查或最后裁图");
+    Near(cropMip.manifest.atlases[0].maximumRequestedLod, std::log2(127.0 / 64), "crop足迹=127乘4/256");
+    Near(fullMip.manifest.atlases[0].maximumSampledLod, std::log2(127.0 / 32), "full足迹=127乘8/256");
+    Require(cropMip.manifest.memory.estimatedSettingsScratchBytes >= cropMip.manifest.memory.parsedSettingsCapacityBytes
+        && cropMip.manifest.memory.parsedSettingsCapacityBytes > input.sourceW3i->size(), "解析临时容量必须进入旧working账");
+}
+
+void TestDeclaredMarginsPolicyAndRefusals() {
+    auto input = Fixture(9, 7); input.rangePolicy = TerrainMinimapRangePolicy::DeclaredW3iMargins;
+    Rejected(input, "TERRAIN_MINIMAP_W3I_MISSING");
+    input.sourceW3i.emplace(); Rejected(input, "TERRAIN_MINIMAP_W3I_EMPTY");
+    input.sourceW3i = W3i(); const auto original = Build(input);
+    for (unsigned side = 0; side < 4; ++side) {
+        std::array<std::int32_t, 4> margins{1, 3, 2, 1}; ++margins[side];
+        input.sourceW3i = W3i(margins, side < 2 ? 3 : 4, side >= 2 ? 2 : 3);
+        const auto changed = Build(input); auto expected = original.manifest.renderExtent;
+        expected[side == 0 ? 0 : side == 1 ? 2 : side == 2 ? 1 : 3] += side == 0 || side == 2 ? 128 : -128;
+        Require(changed.manifest.renderExtent == expected && changed.manifest.w3i.sha256 != original.manifest.w3i.sha256,
+            "只改一边必须只移动对应世界边，不从playable猜居中原点");
+    }
+    input.sourceW3i = W3i({-1, 3, 2, 1}); Rejected(input, "TERRAIN_MINIMAP_W3I_MARGINS");
+    input.sourceW3i = W3i({std::numeric_limits<std::int32_t>::max(), 3, 2, 1}); Rejected(input, "TERRAIN_MINIMAP_W3I_MARGINS");
+    input.sourceW3i = W3i({5, 3, 2, 1}, 0, 3); Rejected(input, "TERRAIN_MINIMAP_W3I_MARGINS");
+    input.sourceW3i = W3i({1, 3, 5, 1}, 4, 0); Rejected(input, "TERRAIN_MINIMAP_W3I_MARGINS");
+    input.sourceW3i = W3i({1, 3, 2, 1}, 5, 3); Rejected(input, "TERRAIN_MINIMAP_W3I_MARGINS");
+    input.sourceW3i = W3i(); (*input.sourceW3i)[0] = std::byte{99}; Rejected(input, "W3I_UNSUPPORTED_VERSION");
+    input.sourceW3i = W3i({1, 3, 2, 1}, 4, 3, 28); Rejected(input, "TERRAIN_MINIMAP_W3I_POLICY_LAYOUT");
+    input.sourceW3i = W3i(); (*input.sourceW3i)[18] = std::byte{192}; (*input.sourceW3i)[19] = std::byte{127}; Rejected(input, "W3I_NONFINITE");
+    input.sourceW3i = W3i(); input.sourceW3i->push_back(std::byte{0}); Rejected(input, "TERRAIN_MINIMAP_W3I_PARTIAL");
+    input.sourceW3i = W3i(); const auto baseline = Build(input);
+    // 只改原name字符串：语义选区/像素相同，整字SHA与manifest仍必须改变。
+    input.sourceW3i->insert(input.sourceW3i->begin() + 12, std::byte{'N'});
+    const auto renamed = Build(input);
+    Require(renamed.image.rgba == baseline.image.rgba && renamed.encoded.bytes == baseline.encoded.bytes
+        && renamed.manifest.w3i.sha256 != baseline.manifest.w3i.sha256 && renamed.manifest.manifestSha256 != baseline.manifest.manifestSha256,
+        "同像素不能掩盖W3I实际整字依赖变化");
+    input.sourceW3i = W3i(); const auto dry = input;
+    // SW位于crop外，仍逐一校验全源拒绝域，不能因选区变小而开放复杂内容。
+    for (const auto [flag, code] : {std::pair{0x80u, "TERRAIN_MINIMAP_BOUNDARY"}, {0x10u, "TERRAIN_MINIMAP_RAMP"},
+        {0x40u, "TERRAIN_MINIMAP_WATER"}, {0x20u, "TERRAIN_MINIMAP_BLIGHT"}}) {
+        input = dry; input.currentW3e[Record(input, 0) + 4] = static_cast<std::byte>(flag); Rebind(input); Rejected(input, code);
+    }
+    input = dry; input.currentW3e[Record(input, 0) + 3] = std::byte{0x60}; Rebind(input); Rejected(input, "TERRAIN_MINIMAP_MAP_EDGE");
+    input = dry; input.currentW3e[Record(input, 0) + 3] = std::byte{0xa0}; Rebind(input); Rejected(input, "TERRAIN_MINIMAP_UNKNOWN_FLAGS");
+    input = dry; input.currentW3e[Record(input, 0) + 6] = std::byte{3}; Rebind(input); Rejected(input, "TERRAIN_MINIMAP_NOT_FLAT");
+    input = Fixture(9, 7); input.rangePolicy = TerrainMinimapRangePolicy::DeclaredW3iMargins; input.sourceW3i = W3i();
+    auto limits = TerrainMinimapLimits{}; limits.maxRetainedInputBytes = Build(input).manifest.memory.retainedInputCapacityBytes - 1;
+    Rejected(input, "TERRAIN_MINIMAP_BUDGET", limits);
+    limits = {}; limits.maxWorkingBytes = Build(input).manifest.memory.estimatedPeakBytes - 1;
+    Rejected(input, "TERRAIN_MINIMAP_BUDGET", limits);
+    input.rangePolicy = static_cast<TerrainMinimapRangePolicy>(42); Rejected(input, "TERRAIN_MINIMAP_RANGE_POLICY");
+}
+
 } // namespace
 
 int main() {
@@ -438,6 +554,7 @@ int main() {
         TestSafeMipCapsAndOddCells(); TestIdentityAndHonestProvenance(); TestUnsupportedDomainAndResources(); TestBudgetsBeforeFullMesh();
         TestEncodedCandidateUsesCurrentImage();
         TestDryHeightfieldKeepsPixelsButChangesGeometryIdentity();
+        TestDeclaredMarginsFixedPixelsAndLod(); TestDeclaredMarginsPolicyAndRefusals();
         std::cout << "TerrainMinimapCandidateTests: all tests passed\n"; return 0;
     } catch (const std::exception& exception) {
         std::cerr << "TerrainMinimapCandidateTests: " << exception.what() << '\n'; return 1;

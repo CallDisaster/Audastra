@@ -3,6 +3,7 @@
 #include "War3MapCore/Game/GameDataSource.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
+#include "War3MapCore/MapData/TerrainEditInspection.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/Render/AnimationSourceGuard.h"
 #include "War3MapCore/Render/TerrainMaterials.h"
@@ -220,6 +221,7 @@ private:
 
 std::string SnapshotIdentity(const TerrainMinimapAssetSnapshot& snapshot) {
     Identity hash; hash.Text(snapshot.sourcePolicy); hash.Text(snapshot.Facts().gameLookupPolicy);
+    hash.U64(static_cast<std::uint64_t>(snapshot.Input().rangePolicy));
     const auto& b = snapshot.Binding();
     hash.Text(b.archiveSha256); hash.Text(b.originalTerrainSha256); hash.Text(b.currentTerrainSha256);
     const auto root = b.gameRoot.generic_u8string(); hash.Text(std::string_view(reinterpret_cast<const char*>(root.data()), root.size()));
@@ -248,10 +250,13 @@ std::string SnapshotIdentity(const TerrainMinimapAssetSnapshot& snapshot) {
 
 Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(const MapArchiveSession& source,
     const MapData::MapDataEditSession& edits, const std::filesystem::path& gameRoot,
-    const TerrainMinimapAssetCaptureLimits& limits) {
+    const TerrainMinimapAssetCaptureLimits& limits, TerrainMinimapRangePolicy rangePolicy) {
     try {
         ValidateLimits(limits);
+        if (rangePolicy != TerrainMinimapRangePolicy::FullW3e && rangePolicy != TerrainMinimapRangePolicy::DeclaredW3iMargins)
+            Fail("TERRAIN_ASSETS_RANGE_POLICY", "未知的小地图范围政策。");
         TerrainMinimapAssetSnapshot result;
+        result.input_.rangePolicy = rangePolicy;
         auto& binding = result.binding_; auto& facts = result.facts_;
         binding.archiveSha256 = source.SourceSha256(); binding.sessionIdentity = edits.SessionIdentity();
         binding.revision = edits.Revision(); binding.terrainSourceRevision = edits.TerrainSourceRevision(); binding.gameRoot = GameRoot(gameRoot);
@@ -283,7 +288,42 @@ Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(const MapArchive
         std::vector<std::string> texturePaths;
         {
             const std::vector<std::string> tablePaths{"TerrainArt\\Terrain.slk", "TerrainArt\\CliffTypes.slk", "TerrainArt\\Water.slk"};
-            context.Phase(tablePaths, limits.tables.maxTableBytes, TerrainMinimapDependencyKind::Table);
+            auto exactPaths = tablePaths;
+            if (rangePolicy == TerrainMinimapRangePolicy::DeclaredW3iMargins) exactPaths.emplace_back("war3map.w3i");
+            // 四名共用原三表member cap；绝不为W3I抬高调用方给表设定的读取上限。
+            context.Phase(exactPaths, limits.tables.maxTableBytes, TerrainMinimapDependencyKind::Table);
+            if (rangePolicy == TerrainMinimapRangePolicy::DeclaredW3iMargins) {
+                const auto path = Canonical("war3map.w3i");
+                auto& member = context.mapMembers.at(context.mapIndices.at(path));
+                if (!member.present) Fail("TERRAIN_ASSETS_W3I_MISSING", "地图准确捕获证明缺少W3I；禁止回退game。");
+                if (member.bytes.empty()) Fail("TERRAIN_ASSETS_W3I_EMPTY", "源W3I是真实空成员，不能用于声明边距。");
+                Check(MapData::ValidateTerrainSettingsSourceBaseline(edits, member.present, member.bytes));
+                // Snapshot内部也解析W3I；先计读入原字、当前副本和有界解析峰值，
+                // 在atlas解码前销毁MapDocument，Candidate不会同时保活第二次解析。
+                facts.estimatedSettingsWorkingBytes = facts.cumulativeSourceBytes;
+                Add(facts.estimatedSettingsWorkingBytes, result.input_.currentW3e.capacity(), limits.maxSourceBytes);
+                Add(facts.estimatedSettingsWorkingBytes, member.bytes.capacity(), limits.maxSourceBytes);
+                Add(facts.estimatedSettingsWorkingBytes, TerrainMinimapMemoryFacts::settingsScratchFixedBytes, limits.maxSourceBytes);
+                const auto remaining = limits.maxSourceBytes - facts.estimatedSettingsWorkingBytes;
+                if (member.bytes.size() > remaining / TerrainMinimapMemoryFacts::settingsScratchBytesPerSourceByte)
+                    Fail("TERRAIN_ASSETS_BUDGET", "W3I当前快照与解析预留超过现有累计硬预算。");
+                Add(facts.estimatedSettingsWorkingBytes, member.bytes.size() * TerrainMinimapMemoryFacts::settingsScratchBytesPerSourceByte,
+                    limits.maxSourceBytes);
+                {
+                    const auto current = Take(edits.Snapshot(MapDataKind::Settings, member.bytes.size()));
+                    const auto& settingsMember = current.Member(MapDataKind::Settings);
+                    if (settingsMember.state != MapDataState::Ready || settingsMember.memberName != "war3map.w3i"
+                        || settingsMember.sources.size() != 1 || settingsMember.sources.front().data != member.bytes)
+                        Fail("TERRAIN_ASSETS_W3I_CURRENT", "当前W3I必须Ready、唯一且逐字等于本次源捕获；修改或删除不能套用源crop。");
+                    if (!current.Settings() || current.Settings()->formatVersion != 25 || !current.Settings()->FullyParsed())
+                        Fail("TERRAIN_ASSETS_W3I_LAYOUT", "声明边距仅消费完整classic v25源W3I。");
+                }
+                // 直接消费map-only exact member；绝不向支持game fallback的resolver请求W3I。
+                context.Record(path, member.bytes, true, source.SourceSha256());
+                result.dependencies_[context.dependencyIndices.at(path)].kind = TerrainMinimapDependencyKind::Settings;
+                facts.retainedW3iCapacityBytes = member.bytes.capacity();
+                result.input_.sourceW3i = std::move(member.bytes);
+            }
             std::vector<Resources::TerrainTableSnapshot> tables;
             const std::array<std::string_view, 3> ids{"tileid", "cliffid", "waterid"};
             tables.reserve(3);
@@ -353,7 +393,7 @@ Status VerifyTerrainMinimapAssetsCurrent(const TerrainMinimapAssetSnapshot& snap
     try {
         if (!Current(source, edits, snapshot.Binding()) || GameRoot(gameRoot) != snapshot.Binding().gameRoot)
             return Status::Failure(kSubsystem, "TERRAIN_ASSETS_STALE", "资源快照不属于当前来源或编辑修订。");
-        auto current = CaptureTerrainMinimapAssets(source, edits, gameRoot, limits);
+        auto current = CaptureTerrainMinimapAssets(source, edits, gameRoot, limits, snapshot.Input().rangePolicy);
         if (!current.Succeeded()) return {std::move(current.diagnostics)};
         if (current.value->IdentitySha256() != snapshot.IdentitySha256())
             return Status::Failure(kSubsystem, "TERRAIN_ASSETS_STALE", "实际winner、编码字节或解码mip身份已变化。");

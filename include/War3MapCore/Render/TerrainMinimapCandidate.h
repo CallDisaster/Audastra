@@ -3,7 +3,12 @@
 #include "War3MapCore/Render/TerrainInspection.h"
 #include "War3MapCore/Render/TerrainTextureAtlas.h"
 
+#include <optional>
+
 namespace War3Map::Render {
+
+// full-w3e / declared-w3i-margins；后者仅是声明边距政策，未验证1.27a native crop。
+enum class TerrainMinimapRangePolicy { FullW3e, DeclaredW3iMargins };
 
 struct TerrainMinimapInput {
     TerrainInspectionBinding binding;
@@ -11,6 +16,10 @@ struct TerrainMinimapInput {
     std::vector<std::byte> currentW3e;
     // 与当前 W3E groundTilesets 同序；宿主必须冻结快照，不能经别名并发改写。
     std::vector<std::shared_ptr<const TerrainAtlasSnapshot>> groundAtlases;
+    TerrainMinimapRangePolicy rangePolicy = TerrainMinimapRangePolicy::FullW3e;
+    // 显式声明边距策略才消费的源 W3I 原字；nullopt 与真实空成员分别拒绝。
+    // 纯生成器自己计算 SHA/解析范围，不认证这些字节来自地图或当前会话。
+    std::optional<std::vector<std::byte>> sourceW3i;
 };
 
 struct TerrainMinimapLimits {
@@ -44,6 +53,8 @@ struct TerrainMinimapAtlasFacts {
 };
 
 struct TerrainMinimapMemoryFacts {
+    // 对既有 MapSettings 有界布局的保守解析/snapshot预留；分配器元数据仍不在口径内。
+    static constexpr std::size_t settingsScratchFixedBytes = 64 * 1024, settingsScratchBytesPerSourceByte = 64;
     // capacity 计费含容器对象、字符串 capacity+1（SSO 仍保守计费），去重 atlas 指针。
     // 不含分配器元数据、共享指针控制块、CNG provider 系统内存，也不是进程 RSS。
     std::size_t retainedInputCapacityBytes = 0;
@@ -53,16 +64,30 @@ struct TerrainMinimapMemoryFacts {
     std::size_t meshCapacityBytes = 0, rasterCapacityBytes = 0;
     std::size_t outputCapacityBytes = 0, observedContainerCapacityBytes = 0;
     std::size_t maximumObservedHashScratchBytes = 0;
+    std::size_t estimatedSettingsScratchBytes = 0, parsedSettingsCapacityBytes = 0;
+};
+
+struct TerrainMinimapW3iFacts {
+    // FullW3e 为 NotRequested/空 SHA；成功 crop 为 Parsed/source-archive。
+    std::string state = "NotRequested", stage, sha256;
+    std::size_t sourceBytes = 0;
+    std::int32_t formatVersion = 0, playableWidth = 0, playableHeight = 0;
+    std::array<float, 8> cameraBounds{};
+    std::array<std::int32_t, 4> cameraMargins{}; // L/R/B/T，tile 单位；不是 native crop 证明。
 };
 
 struct TerrainMinimapManifest {
-    static constexpr std::uint32_t algorithmVersion = 2; // v2扩展普通干地高程域；采样与编码策略不变。
+    static constexpr std::uint32_t algorithmVersion = 3; // v3增加显式声明边距，默认像素策略保持。
     static constexpr const char* samplingPolicy = "original-mips-cell-clamped-trilinear-unorm-v1";
     static constexpr const char* encodingPolicy = "opaque-full-chain-shared-adaptive-palette-v1";
     TerrainInspectionBinding binding;
     std::string currentW3eSha256, reserializedW3eSha256;
     // 完整 W3E 范围 [west,south,east,north]，不采用 W3I 可玩区或相机裁剪。
     std::array<double, 4> worldExtent{};
+    std::array<double, 4> renderExtent{}; // 实际选区；worldExtent 始终保留完整 W3E。
+    TerrainMinimapRangePolicy rangePolicy = TerrainMinimapRangePolicy::FullW3e;
+    static constexpr std::uint32_t rangePolicyVersion = 1;
+    TerrainMinimapW3iFacts w3i;
     // 256 画布上的连续边界 [left,top,width,height]；像素中心落在半开范围才采样。
     std::array<double, 4> contentRectangle{};
     std::size_t sourceTiles = 0, meshQuads = 0, meshBatches = 0;

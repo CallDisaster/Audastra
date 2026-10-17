@@ -53,6 +53,19 @@ Bytes Text(std::string_view text) {
 void Put32(Bytes& bytes, std::size_t at, std::uint32_t value) {
     for (unsigned i = 0; i < 4; ++i) bytes[at + i] = static_cast<std::byte>((value >> (i * 8)) & 255);
 }
+Bytes W3i() {
+    // 独立v25原字；8×8源tile扣L/R/B/T=[1,3,2,1]后为4×5。
+    Bytes bytes(147);
+    Put32(bytes, 0, 25); Put32(bytes, 8, 6061);
+    Put32(bytes, 48, 1); Put32(bytes, 52, 3); Put32(bytes, 56, 2); Put32(bytes, 60, 1);
+    Put32(bytes, 64, 4); Put32(bytes, 68, 5); bytes[76] = std::byte{'L'};
+    return bytes;
+}
+MapDocument SettingsDocument(const std::optional<Bytes>& bytes) {
+    if (!bytes) return MapDocument::FromMembers({});
+    const std::vector<MapArchiveMember> members{{"war3map.w3i", *bytes}};
+    return MapDocument::FromMembers(members);
+}
 Bytes Slk(const std::vector<std::string>& headers, const std::vector<std::vector<std::string>>& rows = {}) {
     std::string slk = "ID;PWXL;N;E\n";
     const auto add = [&](const auto& row, std::size_t y) {
@@ -98,7 +111,8 @@ std::vector<MapArchiveMember> Materials(Bytes blp = Blp()) {
 
 // 沿用既有TerrainSavePlan测试的独立未压缩MPQ布局思路；listfile只列W3E/WPM，
 // 真正材质hash/块在清单之外。badTexture故意使用精确读取器明确拒绝的patch块标志。
-Bytes UnlistedArchive(std::vector<MapArchiveMember> members, bool badTexture = false) {
+Bytes UnlistedArchive(std::vector<MapArchiveMember> members, bool badTexture = false,
+    std::string_view unreadableMember = "Fixture\\Ground.blp") {
     members.push_back({"(listfile)", Text("war3map.w3e\nwar3map.wpm\n")});
     const auto count = static_cast<std::uint32_t>(members.size());
     std::uint32_t hashCount = 8, payloadBytes = 0;
@@ -122,7 +136,7 @@ Bytes UnlistedArchive(std::vector<MapArchiveMember> members, bool badTexture = f
         Put32(bytes, at + 8, 0); Put32(bytes, at + 12, i);
         Put32(bytes, blockAt + i * 16, dataAt); Put32(bytes, blockAt + i * 16 + 4, size); Put32(bytes, blockAt + i * 16 + 8, size);
         Put32(bytes, blockAt + i * 16 + 12, Mpq::kFileExists | Mpq::kFileSingleUnit
-            | (badTexture && member.name == "Fixture\\Ground.blp" ? Mpq::kFilePatch : 0u));
+            | (badTexture && member.name == unreadableMember ? Mpq::kFilePatch : 0u));
         dataAt += size;
     }
     crypt.EncryptBlock(bytes.data() + hashAt, hashCount * 16, crypt.HashString("(hash table)", Mpq::MpqCrypt::HashType::FileKey));
@@ -133,8 +147,10 @@ Bytes UnlistedArchive(std::vector<MapArchiveMember> members, bool badTexture = f
 struct Fixture {
     TempDirectory directory;
     Bytes w3e, wpm;
-    MapDataEditSession edits{MapDocument::FromMembers({})};
-    Fixture(bool duplicatePath = false) {
+    std::optional<Bytes> w3i;
+    MapDataEditSession edits;
+    Fixture(bool duplicatePath = false, std::optional<Bytes> settings = {})
+        : w3i(std::move(settings)), edits(SettingsDocument(w3i)) {
         TerrainGridSnapshot terrain;
         terrain.header.width = terrain.header.height = 9; terrain.header.mainTileset = 'L';
         terrain.header.groundTilesets = duplicatePath ? std::vector<std::string>{"Tg01", "Tg02"} : std::vector<std::string>{"Tg01"};
@@ -146,6 +162,7 @@ struct Fixture {
     }
     MapArchiveSession Source(std::string_view name = "source.w3x", std::vector<MapArchiveMember> resources = Materials()) {
         resources.push_back({"war3map.w3e", w3e}); resources.push_back({"war3map.wpm", wpm});
+        if (w3i) resources.push_back({"war3map.w3i", *w3i});
         const auto path = directory.Path() / name;
         Take(WriteVerifiedArchive(path, resources)); return Take(MapArchiveSession::Open(path));
     }
@@ -361,6 +378,103 @@ void TestDuplicatePathsAndBudgets() {
     limits = {}; ++limits.atlas.maxWorkingBytes; Rejected(CaptureTerrainMinimapAssets(source, fixture.edits, {}, limits));
 }
 
+void TestSourceMarginsCaptureAndCurrentGuards() {
+    Fixture fixture(false, W3i()); auto source = fixture.Source();
+    const auto full = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}));
+    const auto captured = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, TerrainMinimapRangePolicy::DeclaredW3iMargins));
+    Require(captured.Facts().exactMemberCaptureBatches == 3 && captured.Tables().size() == 3
+        && captured.Dependencies().size() == 5 && !captured.Facts().gameMounted
+        && captured.Input().sourceW3i == fixture.w3i && !full.Input().sourceW3i,
+        "W3I必须复用三表批次、保持三张表且只在crop拥有源原字");
+    const auto settings = std::find_if(captured.Dependencies().begin(), captured.Dependencies().end(),
+        [](const auto& dependency) { return dependency.kind == TerrainMinimapDependencyKind::Settings; });
+    Require(settings != captured.Dependencies().end() && settings->mapMemberPresent
+        && settings->winner.layer == Resources::ResourceLayer::MapImport && settings->encodedSha256 == Take(Sha256(W3i()))
+        && settings->containerIdentity == source.SourceSha256() && settings->decodedMips.empty(), "Settings不能错记Table或来自game");
+    Require(captured.Facts().retainedW3iCapacityBytes >= W3i().size()
+        && captured.Facts().estimatedSettingsWorkingBytes > captured.Facts().cumulativeSourceBytes
+        && captured.IdentitySha256() != full.IdentitySha256(), "政策、真实W3I与临时容量都必须有独立身份/账");
+    const auto candidate = Take(BuildTerrainMinimapCandidate(captured.Input()));
+    Require(candidate.manifest.renderExtent == std::array<double, 4>{128, 256, 640, 896}
+        && candidate.manifest.w3i.sha256 == settings->encodedSha256, "factory与pure生成器须绑定同一实际W3I");
+    Require(VerifyTerrainMinimapAssetsCurrent(captured, source, fixture.edits, {}).Succeeded(), "复核必须重用显式crop政策而非默认full");
+    auto changed = W3i(); Put32(changed, 4, 1); // 同长度、只改saves，仍须拒current不等于源。
+    Require(fixture.edits.EditSerialized(MapDataKind::Settings, changed).Succeeded(), "建立真实settings修改");
+    Rejected(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, TerrainMinimapRangePolicy::DeclaredW3iMargins));
+    Require(!VerifyTerrainMinimapAssetsCurrent(captured, source, fixture.edits, {}).Succeeded(), "W3I编辑须使旧crop快照stale");
+    Require(fixture.edits.Undo(), "撤销settings修改");
+    Require(!VerifyTerrainMinimapAssetsCurrent(captured, source, fixture.edits, {}).Succeeded(), "undo相同原字不复活旧revision");
+    Require(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, TerrainMinimapRangePolicy::DeclaredW3iMargins).Succeeded(),
+        "undo后同源current可取得新修订快照");
+    Require(!fixture.edits.Remove(MapDataKind::Settings).Succeeded(), "必需Settings成员删除应先被既有会话API拒绝");
+    Require(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, TerrainMinimapRangePolicy::DeclaredW3iMargins).Succeeded(),
+        "删除命令被拒后不能污染当前crop资格");
+    fixture.edits.CommitSaved(MapDocument::FromMembers({})); // rebase报告Missing却仍有original原字，须拒绝不一致来源。
+    Rejected(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, TerrainMinimapRangePolicy::DeclaredW3iMargins));
+    Require(CaptureTerrainMinimapAssets(source, fixture.edits, {}).Succeeded(), "未消费W3I的默认full不应受Settings基线缺失影响");
+    Fixture foreign(false, changed); foreign.w3i = W3i(); auto foreignSource = foreign.Source();
+    Require(foreign.edits.EditSerialized(MapDataKind::Settings, W3i()).Succeeded(), "foreign原B后来改为source A");
+    const auto rejected = CaptureTerrainMinimapAssets(foreignSource, foreign.edits, {}, {}, TerrainMinimapRangePolicy::DeclaredW3iMargins);
+    Rejected(rejected);
+    Require(std::any_of(rejected.diagnostics.begin(), rejected.diagnostics.end(), [](const auto& d) {
+        return d.code == "TERRAIN_EDIT_INSPECTION_SOURCE_MISMATCH";
+    }), "source A/original B/current A仍须由共用原baseline检查拒绝");
+    Fixture budget(false, W3i()); auto budgetSource = budget.Source();
+    const auto measured = Take(CaptureTerrainMinimapAssets(budgetSource, budget.edits, {}, {}, TerrainMinimapRangePolicy::DeclaredW3iMargins));
+    TerrainMinimapAssetCaptureLimits limits;
+    limits.maxSourceBytes = measured.Facts().estimatedSettingsWorkingBytes - 1;
+    const auto earlyBudget = CaptureTerrainMinimapAssets(budgetSource, budget.edits, {}, limits, TerrainMinimapRangePolicy::DeclaredW3iMargins);
+    Rejected(earlyBudget);
+    Require(std::any_of(earlyBudget.diagnostics.begin(), earlyBudget.diagnostics.end(), [](const auto& d) { return d.code == "TERRAIN_ASSETS_BUDGET"; }),
+        "同源Ready W3I必须在Snapshot分配前因解析预收失败，而非靠current/stale分支冒充预算门");
+    auto larger = W3i(); larger.insert(larger.begin() + 12, 1024, std::byte{'N'});
+    Fixture perMember(false, larger); auto largerSource = perMember.Source();
+    limits = {}; limits.tables.maxTableBytes = 512;
+    Require(CaptureTerrainMinimapAssets(largerSource, perMember.edits, {}, limits).Succeeded(), "三表本身在原512B cap内");
+    Rejected(CaptureTerrainMinimapAssets(largerSource, perMember.edits, {}, limits, TerrainMinimapRangePolicy::DeclaredW3iMargins));
+}
+
+void TestW3iMissingInvalidAndDefaultNotRequested() {
+    Fixture missing; auto source = missing.Source();
+    auto gameResources = Materials(); gameResources.push_back({"war3map.w3i", W3i()}); const auto game = missing.Game(gameResources);
+    const auto noW3i = CaptureTerrainMinimapAssets(source, missing.edits, game, {}, TerrainMinimapRangePolicy::DeclaredW3iMargins);
+    Rejected(noW3i);
+    Require(std::any_of(noW3i.diagnostics.begin(), noW3i.diagnostics.end(), [](const auto& d) { return d.code == "TERRAIN_ASSETS_W3I_MISSING"; }),
+        "map-only missing不能读game内同名W3I");
+    for (const auto& bytes : {Bytes{}, Text("broken-W3I"), W3i()}) {
+        auto malformed = bytes;
+        if (malformed == W3i()) malformed[0] = std::byte{99};
+        Fixture fixture(false, malformed); auto badSource = fixture.Source();
+        const auto full = Take(CaptureTerrainMinimapAssets(badSource, fixture.edits, {}));
+        Require(!full.Input().sourceW3i && full.Facts().exactMemberCaptureBatches == 3
+            && Take(BuildTerrainMinimapCandidate(full.Input())).manifest.w3i.state == "NotRequested",
+            "缺失/空/损坏/未知W3I不应给默认full增加解析门");
+        Rejected(CaptureTerrainMinimapAssets(badSource, fixture.edits, {}, {}, TerrainMinimapRangePolicy::DeclaredW3iMargins));
+    }
+    auto partial = W3i(); partial.push_back(std::byte{0});
+    Fixture incomplete(false, partial); auto partialSource = incomplete.Source();
+    Rejected(CaptureTerrainMinimapAssets(partialSource, incomplete.edits, {}, {}, TerrainMinimapRangePolicy::DeclaredW3iMargins));
+    Fixture unlisted(false, W3i()); auto files = Materials();
+    files.push_back({"war3map.w3e", unlisted.w3e}); files.push_back({"war3map.wpm", unlisted.wpm}); files.push_back({"war3map.w3i", W3i()});
+    const auto path = unlisted.directory.Path() / "unlisted-w3i.w3x";
+    Require(IO::WriteFileBytes(path, UnlistedArchive(files)).Succeeded(), "写清单外W3I fixture");
+    auto exact = Take(MapArchiveSession::Open(path));
+    Require(CaptureTerrainMinimapAssets(exact, unlisted.edits, {}, {}, TerrainMinimapRangePolicy::DeclaredW3iMargins).Succeeded(),
+        "exact W3I不依赖listfile命名快照");
+    const auto unreadablePath = unlisted.directory.Path() / "unreadable-w3i.w3x";
+    Require(IO::WriteFileBytes(unreadablePath, UnlistedArchive(files, true, "war3map.w3i")).Succeeded(), "写不可读W3I fixture");
+    auto unreadable = Take(MapArchiveSession::Open(unreadablePath));
+    Require(CaptureTerrainMinimapAssets(unreadable, unlisted.edits, {}).Succeeded(), "full不请求清单外不可读W3I");
+    Rejected(CaptureTerrainMinimapAssets(unreadable, unlisted.edits, {}, {}, TerrainMinimapRangePolicy::DeclaredW3iMargins));
+    auto aliases = files; aliases.push_back({"WAR3MAP.W3I", W3i()});
+    const auto aliasPath = unlisted.directory.Path() / "alias-w3i.w3x";
+    Require(IO::WriteFileBytes(aliasPath, UnlistedArchive(aliases)).Succeeded(), "写同canonical名双hash fixture");
+    auto aliasSource = MapArchiveSession::Open(aliasPath);
+    if (aliasSource.Succeeded())
+        Rejected(CaptureTerrainMinimapAssets(*aliasSource.value, unlisted.edits, {}, {}, TerrainMinimapRangePolicy::DeclaredW3iMargins));
+    else Require(!aliasSource.diagnostics.empty(), "歧义源若在open拒绝也须保留诊断");
+}
+
 } // namespace
 
 int main() {
@@ -369,6 +483,7 @@ int main() {
         TestMissingDoesNotHideUnreadable(); TestUnlistedExactAndReadError();
         TestBaselineAndCurrentRevision(); TestDuplicatePathsAndBudgets();
         TestRealHeightEditsGenerateWithoutChangingSaveAuthority();
+        TestSourceMarginsCaptureAndCurrentGuards(); TestW3iMissingInvalidAndDefaultNotRequested();
         std::cout << "TerrainMinimapAssetsTests: all tests passed\n"; return 0;
     } catch (const std::exception& e) {
         std::cerr << "TerrainMinimapAssetsTests: " << e.what() << '\n'; return 1;

@@ -25,7 +25,7 @@ struct TerrainMinimapAssetBinding {
     [[nodiscard]] bool operator==(const TerrainMinimapAssetBinding&) const = default;
 };
 
-enum class TerrainMinimapDependencyKind { Table, Atlas };
+enum class TerrainMinimapDependencyKind { Table, Atlas, Settings };
 
 struct TerrainMinimapAssetDependency {
     TerrainMinimapDependencyKind kind = TerrainMinimapDependencyKind::Table;
@@ -50,11 +50,13 @@ struct TerrainMinimapGroundAsset {
 };
 
 struct TerrainMinimapAssetCaptureFacts {
-    // 成功固定3次：TerrainSavePlan基线五成员、三表批量、唯一atlas批量；不按材质逐次散列源图。
+    // 成功固定3次：基线五成员、三表(显式crop同批带W3I)、唯一atlas；不按材质散列源图。
     std::size_t exactMemberCaptureBatches = 0, baselineSourceBytes = 0, mapDependencyBytes = 0, gameDependencyBytes = 0;
     std::size_t cumulativeSourceBytes = 0;
     std::size_t maximumMapBatchRetainedBytes = 0; // 本次phase编码字节size，不是容器capacity或完整内存峰值
     std::size_t uniqueAtlasCount = 0, retainedAtlasRgbaCapacityBytes = 0;
+    // 新增 W3I 原字 capacity 与有界 Settings snapshot/解析的保守峰值；不是全进程峰值。
+    std::size_t retainedW3iCapacityBytes = 0, estimatedSettingsWorkingBytes = 0;
     bool gameMounted = false;
     static constexpr const char* gameLookupPolicy = "GameDataSource-existing-priority-and-Mpq-FindBlock-v1";
     bool gameInternalInventoryIndependentlyVerified = false; // 未全量证明重复hash/locale等包内唯一性
@@ -68,7 +70,8 @@ class TerrainMinimapAssetSnapshot;
 // Prepare只复用来源基线匹配；其Result成功与SaveGate成功不同，本接口不执行或放宽保存。
 [[nodiscard]] Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(
     const MapArchiveSession& source, const MapData::MapDataEditSession& edits,
-    const std::filesystem::path& gameRoot, const TerrainMinimapAssetCaptureLimits& limits = {});
+    const std::filesystem::path& gameRoot, const TerrainMinimapAssetCaptureLimits& limits = {},
+    TerrainMinimapRangePolicy rangePolicy = TerrainMinimapRangePolicy::FullW3e);
 
 class TerrainMinimapAssetSnapshot {
 public:
@@ -83,7 +86,7 @@ public:
     [[nodiscard]] const std::vector<TerrainMinimapGroundAsset>& GroundAssets() const noexcept { return ground_; }
     [[nodiscard]] const TerrainMinimapAssetCaptureFacts& Facts() const noexcept { return facts_; }
     [[nodiscard]] const std::string& IdentitySha256() const noexcept { return identitySha256_; }
-    static constexpr const char* sourcePolicy = "archive-and-game-capture-v1";
+    static constexpr const char* sourcePolicy = "archive-and-game-capture-v2";
     static constexpr bool formalSaveAuthorized = false, nativeEditorOrGameVerified = false;
     static constexpr bool pendingImportReplaceRemoveCovered = false, w3iDooShdSemanticsCovered = false;
 private:
@@ -97,7 +100,7 @@ private:
     std::string identitySha256_;
     friend Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(
         const MapArchiveSession&, const MapData::MapDataEditSession&, const std::filesystem::path&,
-        const TerrainMinimapAssetCaptureLimits&);
+        const TerrainMinimapAssetCaptureLimits&, TerrainMinimapRangePolicy);
 };
 
 // 有界重新捕获并核对来源配置/修订和显式依赖；不以同像素或同W3E SHA复活旧会话。

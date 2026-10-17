@@ -1,12 +1,14 @@
 #include "War3MapCore/Render/TerrainMinimapCandidate.h"
 
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
 #include "War3MapCore/Render/TerrainGroundMesh.h"
 
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <filesystem>
 #include <limits>
 #include <new>
 #include <stdexcept>
@@ -25,6 +27,11 @@ constexpr std::size_t kHashReserve = 1024 * 1024;
 constexpr std::size_t kManifestReserve = 1024 * 1024;
 constexpr std::size_t kMaximumHashBytes = 256 * 1024 * 1024;
 constexpr const char* kSubsystem = "TerrainMinimapCandidate";
+// 64N+64KiB预收依赖既有parser的Count/Remaining与这些ABI上界，失败路径峰值未实测。
+static_assert(sizeof(std::string) <= 64 && sizeof(std::vector<std::byte>) <= 64
+    && sizeof(MapData::MapSettings) <= 2048 && sizeof(MapData::MapRandomUnitRow) <= 64
+    && sizeof(MapData::MapRandomUnitTable) <= 192 && sizeof(MapData::MapRandomItemTable) <= 192
+    && sizeof(MapData::MapPlayerSettings) <= 160 && sizeof(MapData::MapForceSettings) <= 96);
 
 struct Failure { std::vector<Diagnostic> diagnostics; };
 
@@ -125,8 +132,11 @@ std::size_t ValidateInputs(const TerrainMinimapInput& input, const TerrainMinima
         Fail("TERRAIN_MINIMAP_BINDING", "候选需要完整的冻结文档及当前 W3E SHA 身份。");
     if (input.groundAtlases.empty() || input.groundAtlases.size() > 16)
         Fail("TERRAIN_MINIMAP_ATLAS", "候选需要有界、与地面表同序的冻结 atlas 快照。");
+    if (input.rangePolicy != TerrainMinimapRangePolicy::FullW3e && input.rangePolicy != TerrainMinimapRangePolicy::DeclaredW3iMargins)
+        Fail("TERRAIN_MINIMAP_RANGE_POLICY", "未知的小地图范围政策。");
     std::size_t retained = sizeof(input), rgba = 0;
     ChargeBinding(retained, input.binding); Charge(retained, input.currentW3e.capacity());
+    if (input.sourceW3i) Charge(retained, input.sourceW3i->capacity());
     Charge(retained, input.groundAtlases.capacity(), sizeof(input.groundAtlases.front()));
     for (std::size_t slot = 0; slot < input.groundAtlases.size(); ++slot) {
         const auto& pointer = input.groundAtlases[slot];
@@ -187,6 +197,7 @@ void Estimate(const TerrainMinimapInput& input, const Counts& counts, TerrainMin
     // scratch 按每层 32 字节，另计公开映射；不借 256 输出把大网格工作集隐去。
     std::size_t extra = sizeof(MapData::MapTerrain) + sizeof(MapData::TerrainGridSnapshot)
         + kHashReserve + kEncodingWorkReserve + 8192;
+    Charge(extra, memory.estimatedSettingsScratchBytes);
     Charge(extra, input.currentW3e.size(), 2); // Parse 原字节 + 内部重新 Serialize
     Charge(extra, counts.vertices, sizeof(MapData::TerrainVertex));
     Charge(extra, counts.tiles, sizeof(MapData::TerrainTile));
@@ -251,6 +262,90 @@ void CheckDomain(const MapData::TerrainGridSnapshot& grid) {
     }
 }
 
+std::size_t SettingsCapacity(const MapData::MapSettings& settings) {
+    std::size_t bytes = sizeof(settings);
+    Charge(bytes, settings.OriginalBytes().capacity()); Charge(bytes, settings.UnknownTail().capacity());
+    for (const auto* text : {&settings.mapName, &settings.author, &settings.description, &settings.recommendedPlayers,
+        &settings.environment.soundEnvironment, &settings.loadingScreen.path, &settings.loadingScreen.text,
+        &settings.loadingScreen.title, &settings.loadingScreen.subtitle, &settings.prologueScreen.path,
+        &settings.prologueScreen.text, &settings.prologueScreen.title, &settings.prologueScreen.subtitle}) ChargeText(bytes, *text);
+    Charge(bytes, settings.players.capacity(), sizeof(MapData::MapPlayerSettings));
+    for (const auto& player : settings.players) ChargeText(bytes, player.name);
+    Charge(bytes, settings.forces.capacity(), sizeof(MapData::MapForceSettings));
+    for (const auto& force : settings.forces) ChargeText(bytes, force.name);
+    if (settings.custom) {
+        const auto& custom = *settings.custom;
+        Charge(bytes, custom.upgrades.capacity(), sizeof(MapData::MapUpgradeAvailability));
+        Charge(bytes, custom.techRestrictions.capacity(), sizeof(MapData::MapTechRestriction));
+        Charge(bytes, custom.randomUnits.capacity(), sizeof(MapData::MapRandomUnitTable));
+        for (const auto& table : custom.randomUnits) {
+            ChargeText(bytes, table.name); Charge(bytes, table.columnTypes.capacity(), sizeof(std::int32_t));
+            Charge(bytes, table.rows.capacity(), sizeof(MapData::MapRandomUnitRow));
+            for (const auto& row : table.rows) Charge(bytes, row.ids.capacity(), sizeof(MapData::SettingsRawcode));
+        }
+        Charge(bytes, custom.randomItems.capacity(), sizeof(MapData::MapRandomItemTable));
+        for (const auto& table : custom.randomItems) {
+            ChargeText(bytes, table.name); Charge(bytes, table.sets.capacity(), sizeof(std::vector<MapData::MapRandomItem>));
+            for (const auto& set : table.sets) Charge(bytes, set.capacity(), sizeof(MapData::MapRandomItem));
+        }
+    }
+    return bytes;
+}
+
+void ChargeDiagnostics(std::size_t& bytes, const std::vector<Diagnostic>& diagnostics) {
+    Charge(bytes, diagnostics.capacity(), sizeof(Diagnostic));
+    for (const auto& diagnostic : diagnostics) {
+        ChargeText(bytes, diagnostic.subsystem); ChargeText(bytes, diagnostic.code); ChargeText(bytes, diagnostic.message);
+        if (diagnostic.origin) {
+            Charge(bytes, diagnostic.origin->source.native().capacity() + 1, sizeof(std::filesystem::path::value_type));
+            ChargeText(bytes, diagnostic.origin->fingerprint);
+        }
+    }
+}
+
+struct SamplingRectangle { double x = 0, y = 0, width = 0, height = 0; };
+
+SamplingRectangle SelectRange(const TerrainMinimapInput& input, const MapData::TerrainGridSnapshot& grid,
+    TerrainMinimapManifest& manifest) {
+    const auto tx = static_cast<std::int64_t>(grid.header.width) - 1, ty = static_cast<std::int64_t>(grid.header.height) - 1;
+    manifest.rangePolicy = input.rangePolicy;
+    manifest.worldExtent = {grid.header.offset[0], grid.header.offset[1],
+        static_cast<double>(grid.header.offset[0]) + tx * 128.0, static_cast<double>(grid.header.offset[1]) + ty * 128.0};
+    manifest.renderExtent = manifest.worldExtent;
+    if (input.rangePolicy == TerrainMinimapRangePolicy::FullW3e)
+        return {0, 0, static_cast<double>(tx), static_cast<double>(ty)};
+    if (!input.sourceW3i) Fail("TERRAIN_MINIMAP_W3I_MISSING", "声明边距需要实际源W3I，缺失不能回退全图。");
+    if (input.sourceW3i->empty()) Fail("TERRAIN_MINIMAP_W3I_EMPTY", "实际空W3I不等于缺失，也不能用于声明边距。");
+    auto& facts = manifest.w3i;
+    facts.sha256 = HashBytes(*input.sourceW3i, manifest.memory.maximumObservedHashScratchBytes);
+    const auto parsed = MapData::MapSettings::Parse(*input.sourceW3i);
+    if (!parsed.Succeeded()) throw Failure{parsed.diagnostics};
+    const auto& settings = *parsed.value;
+    manifest.memory.parsedSettingsCapacityBytes = SettingsCapacity(settings);
+    ChargeDiagnostics(manifest.memory.parsedSettingsCapacityBytes, parsed.diagnostics);
+    if (manifest.memory.parsedSettingsCapacityBytes > manifest.memory.estimatedSettingsScratchBytes)
+        Fail("TERRAIN_MINIMAP_BUDGET", "W3I解析实际capacity超过分配前预留。");
+    if (settings.formatVersion != 25)
+        Fail("TERRAIN_MINIMAP_W3I_POLICY_LAYOUT", "声明边距政策仅支持classic v25，不改变既有W3I解析白名单。");
+    if (!settings.FullyParsed()) Fail("TERRAIN_MINIMAP_W3I_PARTIAL", "声明边距不消费Partial或未知尾部W3I。");
+    facts.state = "Parsed"; facts.stage = "source-archive"; facts.sourceBytes = input.sourceW3i->size();
+    facts.formatVersion = settings.formatVersion; facts.cameraBounds = settings.cameraBounds; facts.cameraMargins = settings.cameraMargins;
+    facts.playableWidth = settings.playableWidth; facts.playableHeight = settings.playableHeight;
+    const std::int64_t left = settings.cameraMargins[0], right = settings.cameraMargins[1],
+        bottom = settings.cameraMargins[2], top = settings.cameraMargins[3];
+    if (left < 0 || right < 0 || bottom < 0 || top < 0 || left + right >= tx || bottom + top >= ty
+        || settings.playableWidth != tx - left - right || settings.playableHeight != ty - bottom - top)
+        Fail("TERRAIN_MINIMAP_W3I_MARGINS", "W3I声明边距/可玩尺寸与完整W3E不一致，不clamp或猜测原点。");
+    manifest.renderExtent = {grid.header.offset[0] + left * 128.0, grid.header.offset[1] + bottom * 128.0,
+        grid.header.offset[0] + (tx - right) * 128.0, grid.header.offset[1] + (ty - top) * 128.0};
+    for (std::size_t i = 0; i < 4; ++i) if (!std::isfinite(manifest.renderExtent[i])
+        || (i < 2 ? manifest.renderExtent[i] < manifest.worldExtent[i] : manifest.renderExtent[i] > manifest.worldExtent[i]))
+        Fail("TERRAIN_MINIMAP_W3I_MARGINS", "声明范围必须有限并完整位于W3E全域内。");
+    if (manifest.renderExtent[0] >= manifest.renderExtent[2] || manifest.renderExtent[1] >= manifest.renderExtent[3])
+        Fail("TERRAIN_MINIMAP_W3I_MARGINS", "声明世界范围为空或因坐标精度而退化。");
+    return {static_cast<double>(left), static_cast<double>(bottom), static_cast<double>(tx - left - right), static_cast<double>(ty - bottom - top)};
+}
+
 const Image::DecodedImage& Mip(const TerrainAtlasSnapshot& atlas, std::uint32_t level) {
     return level == 0 ? atlas.image : atlas.additionalMips[level - 1];
 }
@@ -303,7 +398,7 @@ double RequestedLod(const TerrainGroundVertex& origin, const TerrainGroundVertex
 }
 
 std::vector<TileLayers> IndexLayers(const MapData::TerrainGridSnapshot& grid, const TerrainGroundMesh& mesh,
-    TerrainMinimapManifest& manifest) {
+    TerrainMinimapManifest& manifest, const SamplingRectangle& rectangle) {
     const auto tiles = grid.tiles.size(), quads = mesh.vertices.size() / 4;
     if (mesh.sourceWidth != grid.header.width || mesh.sourceHeight != grid.header.height || mesh.vertices.size() % 4
         || quads != tiles + mesh.overlayTiles.size() || mesh.indices.size() != quads * 6 || mesh.hiddenTileCount
@@ -317,7 +412,7 @@ std::vector<TileLayers> IndexLayers(const MapData::TerrainGridSnapshot& grid, co
         Fail("TERRAIN_MINIMAP_MESH", "候选要求完整、无回退、无隐藏与无可选层省略的 Strict unlit 地表网格。");
     std::vector<TileLayers> indexed(tiles);
     std::vector<std::uint8_t> seen(quads);
-    const auto tileStep = static_cast<double>(std::max(grid.header.width - 1, grid.header.height - 1)) / kSize;
+    const auto tileStep = std::max(rectangle.width, rectangle.height) / kSize;
     std::size_t next = 0;
     bool blended = false;
     for (const auto& batch : mesh.batches) {
@@ -424,10 +519,10 @@ std::array<double, 4> Sample(const TerrainAtlasSnapshot& atlas, const Layer& lay
 }
 
 void Raster(const MapData::TerrainGridSnapshot& grid, const TerrainGroundMesh& mesh,
-    const std::vector<TileLayers>& tiles, TerrainMinimapCandidate& result) {
+    const std::vector<TileLayers>& tiles, TerrainMinimapCandidate& result, const SamplingRectangle& rectangle) {
     const auto width = grid.header.width - 1, height = grid.header.height - 1;
-    const auto scale = static_cast<double>(kSize) / std::max(width, height);
-    const double fitWidth = width * scale, fitHeight = height * scale;
+    const auto scale = static_cast<double>(kSize) / std::max(rectangle.width, rectangle.height);
+    const double fitWidth = rectangle.width * scale, fitHeight = rectangle.height * scale;
     const double left = (kSize - fitWidth) / 2, top = (kSize - fitHeight) / 2;
     result.manifest.contentRectangle = {left, top, fitWidth, fitHeight};
     result.image = {kSize, kSize, std::vector<std::byte>(kOutputBytes, std::byte{0})};
@@ -436,7 +531,7 @@ void Raster(const MapData::TerrainGridSnapshot& grid, const TerrainGroundMesh& m
         auto* output = result.image.rgba.data() + (static_cast<std::size_t>(py) * kSize + px) * 4;
         output[3] = std::byte{255};
         if (centerX < left || centerX >= left + fitWidth || centerY < top || centerY >= top + fitHeight) continue;
-        const auto x = (centerX - left) / scale, y = (top + fitHeight - centerY) / scale;
+        const auto x = rectangle.x + (centerX - left) / scale, y = rectangle.y + (top + fitHeight - centerY) / scale;
         const auto tx = std::min(static_cast<std::uint32_t>(x), width - 1), ty = std::min(static_cast<std::uint32_t>(y), height - 1);
         const auto fx = std::clamp(x - tx, 0.0, 1.0), fy = std::clamp(y - ty, 0.0, 1.0);
         const auto& tile = tiles[static_cast<std::size_t>(ty) * width + tx];
@@ -468,7 +563,7 @@ std::size_t OutputCapacity(const TerrainMinimapCandidate& result) {
     std::size_t bytes = sizeof(result); Charge(bytes, result.image.rgba.capacity());
     Charge(bytes, result.encoded.bytes.capacity()); ChargeBinding(bytes, m.binding);
     for (const auto* text : {&m.currentW3eSha256, &m.reserializedW3eSha256, &m.meshSha256,
-        &m.outputRgbaSha256, &m.outputBlpSha256, &m.manifestSha256})
+        &m.outputRgbaSha256, &m.outputBlpSha256, &m.manifestSha256, &m.w3i.state, &m.w3i.stage, &m.w3i.sha256})
         ChargeText(bytes, *text);
     Charge(bytes, m.atlases.capacity(), sizeof(TerrainMinimapAtlasFacts));
     for (const auto& a : m.atlases) {
@@ -481,9 +576,16 @@ std::size_t OutputCapacity(const TerrainMinimapCandidate& result) {
 
 std::string ManifestHash(TerrainMinimapManifest& m) {
     Digest hash(m.memory.maximumObservedHashScratchBytes);
-    hash.String("TerrainMinimapManifest-v2"); hash.String(m.samplingPolicy); hash.String(m.encodingPolicy); HashBinding(hash, m.binding);
+    hash.String("TerrainMinimapManifest-v3"); hash.String(m.samplingPolicy); hash.String(m.encodingPolicy); HashBinding(hash, m.binding);
     hash.String(m.currentW3eSha256); hash.String(m.reserializedW3eSha256);
     for (const auto value : m.worldExtent) hash.F64(value);
+    for (const auto value : m.renderExtent) hash.F64(value);
+    hash.U32(static_cast<std::uint32_t>(m.rangePolicy)); hash.U32(m.rangePolicyVersion);
+    hash.String(m.w3i.state); hash.String(m.w3i.stage); hash.String(m.w3i.sha256); hash.U64(m.w3i.sourceBytes);
+    hash.U32(static_cast<std::uint32_t>(m.w3i.formatVersion));
+    hash.U32(static_cast<std::uint32_t>(m.w3i.playableWidth)); hash.U32(static_cast<std::uint32_t>(m.w3i.playableHeight));
+    for (const auto value : m.w3i.cameraBounds) hash.F32(value);
+    for (const auto value : m.w3i.cameraMargins) hash.U32(static_cast<std::uint32_t>(value));
     for (const auto value : m.contentRectangle) hash.F64(value);
     hash.U32(kSize); hash.U32(kSize); hash.U64(kOutputBytes);
     hash.U64(m.sourceTiles); hash.U64(m.meshQuads); hash.U64(m.meshBatches); hash.String(m.meshSha256); hash.String(m.outputRgbaSha256);
@@ -509,7 +611,8 @@ std::string ManifestHash(TerrainMinimapManifest& m) {
     const auto& memory = m.memory;
     for (const auto bytes : {memory.retainedInputCapacityBytes, memory.estimatedExtraPeakBytes, memory.estimatedOutputBytes,
         memory.estimatedPeakBytes, memory.parsedTerrainCapacityBytes, memory.reserializedW3eCapacityBytes, memory.meshCapacityBytes,
-        memory.rasterCapacityBytes, memory.outputCapacityBytes, memory.observedContainerCapacityBytes, memory.maximumObservedHashScratchBytes}) hash.U64(bytes);
+        memory.rasterCapacityBytes, memory.outputCapacityBytes, memory.observedContainerCapacityBytes, memory.maximumObservedHashScratchBytes,
+        memory.estimatedSettingsScratchBytes, memory.parsedSettingsCapacityBytes}) hash.U64(bytes);
     for (const auto fact : {m.archiveSourceIndependentlyVerified, m.encodedAtlasSourcesIndependentlyVerified,
         m.resourceWinnersIndependentlyVerified, m.nativeEditorOrGameVerified, m.formalSaveAuthorized}) hash.U32(fact ? 1u : 0u);
     return hash.Finish();
@@ -522,12 +625,17 @@ Result<TerrainMinimapCandidate> BuildTerrainMinimapCandidate(const TerrainMinima
         TerrainMinimapCandidate result;
         auto& manifest = result.manifest; auto& memory = manifest.memory;
         memory.retainedInputCapacityBytes = ValidateInputs(input, limits);
+        if (input.rangePolicy == TerrainMinimapRangePolicy::DeclaredW3iMargins && input.sourceW3i) {
+            memory.estimatedSettingsScratchBytes = TerrainMinimapMemoryFacts::settingsScratchFixedBytes;
+            Charge(memory.estimatedSettingsScratchBytes, input.sourceW3i->size(), TerrainMinimapMemoryFacts::settingsScratchBytesPerSourceByte);
+        }
         if (input.currentW3e.size() > limits.maxW3eBytes)
             Fail("TERRAIN_MINIMAP_BUDGET", "当前 W3E 超过候选读取预算。");
         memory.estimatedOutputBytes = sizeof(TerrainMinimapCandidate) + kOutputBytes + kEncodedOutputReserve + kManifestReserve;
         std::size_t beforeParse = memory.retainedInputCapacityBytes;
         Charge(beforeParse, memory.estimatedOutputBytes); Charge(beforeParse, kHashReserve);
         Charge(beforeParse, kEncodingWorkReserve);
+        Charge(beforeParse, memory.estimatedSettingsScratchBytes);
         Charge(beforeParse, input.currentW3e.size()); // 后续 Serialize 同时保活
         if (beforeParse >= limits.maxWorkingBytes)
             Fail("TERRAIN_MINIMAP_BUDGET", "冻结输入、输出与解析预留已经超过工作预算。");
@@ -547,6 +655,7 @@ Result<TerrainMinimapCandidate> BuildTerrainMinimapCandidate(const TerrainMinima
         CheckDomain(*grid);
         const Counts counts{grid->vertices.size(), grid->tiles.size(), grid->header.groundTilesets.size() + grid->header.cliffTilesets.size()};
         Estimate(input, counts, memory, limits);
+        const auto rectangle = SelectRange(input, *grid, manifest);
         const auto serialized = Take(MapData::SerializeMapTerrain(*grid));
         manifest.reserializedW3eSha256 = HashBytes(serialized, memory.maximumObservedHashScratchBytes);
         if (serialized != input.currentW3e || manifest.reserializedW3eSha256 != manifest.currentW3eSha256)
@@ -570,13 +679,10 @@ Result<TerrainMinimapCandidate> BuildTerrainMinimapCandidate(const TerrainMinima
         memory.meshCapacityBytes = MeshCapacity(mesh);
         manifest.atlases.reserve(mesh.textures.size());
         for (const auto& atlas : mesh.textures) manifest.atlases.push_back(AtlasFacts(*atlas, memory.maximumObservedHashScratchBytes));
-        const auto layers = IndexLayers(*grid, mesh, manifest);
+        const auto layers = IndexLayers(*grid, mesh, manifest, rectangle);
         manifest.sourceTiles = grid->tiles.size(); manifest.meshQuads = mesh.vertices.size() / 4; manifest.meshBatches = mesh.batches.size();
-        manifest.worldExtent = {grid->header.offset[0], grid->header.offset[1],
-            static_cast<double>(grid->header.offset[0]) + (grid->header.width - 1) * 128.0,
-            static_cast<double>(grid->header.offset[1]) + (grid->header.height - 1) * 128.0};
         manifest.meshSha256 = MeshHash(mesh, memory.maximumObservedHashScratchBytes);
-        Raster(*grid, mesh, layers, result);
+        Raster(*grid, mesh, layers, result, rectangle);
         manifest.outputRgbaSha256 = HashBytes(result.image.rgba, memory.maximumObservedHashScratchBytes);
         // mesh/解析输入仍在保活，因此在 Parse 和 mesh 前已经预留完整编码工作集。
         // 编码器的工作上限和输出容量独立于旧无损入口，不能把有损结果称作无损。
@@ -591,7 +697,7 @@ Result<TerrainMinimapCandidate> BuildTerrainMinimapCandidate(const TerrainMinima
         memory.outputCapacityBytes = OutputCapacity(result);
         memory.observedContainerCapacityBytes = memory.retainedInputCapacityBytes;
         for (const auto bytes : {memory.parsedTerrainCapacityBytes, memory.reserializedW3eCapacityBytes, memory.meshCapacityBytes,
-            memory.rasterCapacityBytes, memory.outputCapacityBytes}) Charge(memory.observedContainerCapacityBytes, bytes);
+            memory.rasterCapacityBytes, memory.outputCapacityBytes, memory.parsedSettingsCapacityBytes}) Charge(memory.observedContainerCapacityBytes, bytes);
         if (memory.outputCapacityBytes > memory.estimatedOutputBytes || memory.observedContainerCapacityBytes > limits.maxWorkingBytes
             || memory.observedContainerCapacityBytes > memory.estimatedPeakBytes)
             Fail("TERRAIN_MINIMAP_BUDGET", "实际可观察 capacity 超过构建前估算或候选硬预算。");
