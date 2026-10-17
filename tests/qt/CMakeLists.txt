@@ -494,6 +494,7 @@ qt_add_executable(war3-map-world-viewport-tests WorldViewportTests.cpp)
 target_link_libraries(war3-map-world-viewport-tests PRIVATE War3MapEditor::QtModuleWorld Qt6::Test)
 target_compile_definitions(war3-map-world-viewport-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-world-viewport-tests PRIVATE /W4 /permissive- /utf-8)
+war3map_deploy_qt_runtime(war3-map-world-viewport-tests)
 add_test(NAME qt-world-viewport COMMAND war3-map-world-viewport-tests
     -o -,txt -o "${CMAKE_CURRENT_BINARY_DIR}/world-viewport-$<CONFIG>.txt,txt")
 set_tests_properties(qt-world-viewport PROPERTIES TIMEOUT 60
