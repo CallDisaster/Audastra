@@ -33,6 +33,35 @@ struct DecodedImage {
 // alpha 全不透明时不写 alpha 平面。
 [[nodiscard]] Result<std::vector<std::byte>> EncodeBlpPaletted(const DecodedImage& image);
 
+struct BlpOpaqueQuantizeLimits {
+    // 默认值也是硬上限，只能收紧；工作预算是载荷估算，不是进程 RSS。
+    std::size_t maxDimension = 512;
+    std::size_t maxPixels = 512u * 512u;
+    std::size_t maxTotalMipPixels = 349525;
+    std::size_t maxWorkingBytes = 8u * 1024u * 1024u;
+    std::size_t maxOutputBytes = 512u * 1024u;
+};
+
+enum class BlpOpaquePaletteMethod { Exact, WeightedMedianCut5Bit };
+
+struct BlpOpaqueQuantized {
+    std::vector<std::byte> bytes;
+    std::uint32_t paletteColorCount = 0;
+    std::uint32_t occupiedHistogramBins = 0;
+    std::uint32_t mipCount = 0;
+    std::size_t totalMipPixels = 0;
+    BlpOpaquePaletteMethod method = BlpOpaquePaletteMethod::Exact;
+    bool quantized = false;
+};
+
+// 显式有损、仅全不透明图像。先按既有 floor-halving/2×2 平均规则生成原始完整 mip 链，
+// 再用全链加权的 5bit RGB histogram / median-cut 生成共享 palette，逐原像素最近色映射。
+// box 选 range*weight 最大者（同值保留较小稳定槽位）；轴同值 R/G/B 顺序；分割累计半权重；
+// nearest RGB 平方距离同值取 RGB 字典序较小颜色。无 dither，不做 sRGB 转换。
+// 全链联合颜色 <=256 时与 EncodeBlpPaletted 逐字相同，旧无损 API 的语义不变。
+[[nodiscard]] Result<BlpOpaqueQuantized> EncodeBlpOpaqueQuantized(const DecodedImage& image,
+    const BlpOpaqueQuantizeLimits& limits = {});
+
 // 暂停 / 禁用按钮图标（DISBTN / DISPAS）的外观：去色并压暗，保留 alpha。
 [[nodiscard]] DecodedImage MakeDisabledIcon(const DecodedImage& image);
 
