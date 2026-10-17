@@ -995,21 +995,25 @@ void TestModelSourceMipsAndLegacyRoutes() {
             "decoded cache bypassed the current actual source bytes or caller policy");
         return cached;
     };
-    auto cachedScene=BuildAnimatedModelGeometry({},files.Reader(),{},{},baked,cache);
+    const ModelGeometryProvider bakedOnly=[](std::string_view) {
+        Require(false,"baked-only cache fixture unexpectedly requested a model asset");
+        return ModelGeometryAsset{};
+    };
+    auto cachedScene=BuildAnimatedModelGeometry({},files.Reader(),bakedOnly,{},baked,cache);
     Require(cachedScene.Succeeded() && cachedScene.value->textures[0].rgba[0]==19,
         "valid current-policy complete source chain was not reused");
     ++cached->mipPolicyVersion;
-    cachedScene=BuildAnimatedModelGeometry({},files.Reader(),{},{},baked,cache);
+    cachedScene=BuildAnimatedModelGeometry({},files.Reader(),bakedOnly,{},baked,cache);
     Require(cachedScene.Succeeded() && cachedScene.value->textures[0].rgba[0]==255,
         "changed mip policy reused an obsolete decoded cache entry");
     cached->mipPolicyVersion=ModelTextureMipPolicyVersion;
     cached->mipStopReason=Image::BlpMipChainStopReason::WorkingBudget;
-    cachedScene=BuildAnimatedModelGeometry({},files.Reader(),{},{},baked,cache);
+    cachedScene=BuildAnimatedModelGeometry({},files.Reader(),bakedOnly,{},baked,cache);
     Require(cachedScene.Succeeded() && cachedScene.value->textures[0].rgba[0]==255,
         "cached budget-trimmed chain bypassed full source-chain revalidation");
     cached->mipStopReason=Image::BlpMipChainStopReason::Complete;
     WorldModelLimits shortCacheQuota; shortCacheQuota.maxTotalTextureBytes=71;
-    cachedScene=BuildAnimatedModelGeometry({},files.Reader(),{},shortCacheQuota,baked,cache);
+    cachedScene=BuildAnimatedModelGeometry({},files.Reader(),bakedOnly,shortCacheQuota,baked,cache);
     Require(cachedScene.Succeeded() && cachedScene.value->textures.empty() && HasWarning(*cachedScene.value,"WORLD_MODEL_TEXTURE_BUDGET"),
         "cache reused all mip levels without charging the current complete-chain quota");
 }
