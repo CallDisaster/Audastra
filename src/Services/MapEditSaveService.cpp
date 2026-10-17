@@ -594,6 +594,11 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         const bool triggerRequest = request.triggerEdits.has_value() || request.triggerTransaction != nullptr;
         const bool objectRequest = !request.objectTransactions.empty();
         const bool auxiliaryRequest = request.auxiliaryTransaction != nullptr;
+        if (request.minimapChoice != TerrainMinimapSaveChoice::Preserve
+            && request.minimapChoice != TerrainMinimapSaveChoice::GenerateMissingGroundOnly)
+            return Fail("SAVE_MINIMAP_CHOICE_INVALID", "小地图保存选项未获识别。");
+        if (request.minimapChoice == TerrainMinimapSaveChoice::GenerateMissingGroundOnly && !terrainRequest)
+            return Fail("SAVE_MINIMAP_SCOPE_INVALID", "补建缺失小地图只能伴随非空干地高度另存事务。");
         if (request.triggerEdits && request.triggerTransaction)
             return Fail("SAVE_TRIGGER_INPUT_CONFLICT", "触发器批次与完整冻结事务不能在同一次保存中混用。");
         if (request.triggerTransaction && request.triggerTransaction->IsSourceCompanion() && !objectRequest)
@@ -628,7 +633,8 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         std::vector<Diagnostic> fieldDiagnostics;
         std::optional<Trigger::TriggerEditBatchReceipt> triggerReceipt;
         std::optional<Trigger::TriggerTransactionReceipt> transactionReceipt;
-        std::optional<MapData::TerrainSavePlan> terrainPlan;
+        std::shared_ptr<const MapData::TerrainSavePlan> terrainPlan;
+        std::shared_ptr<const TerrainMinimapSave> minimapSave;
         if (fieldRequest) {
             const auto applied = ApplyFieldEdits(request, map, edits, replacements, editedMembers);
             if (!applied.Succeeded()) return Forward(applied.diagnostics);
@@ -699,9 +705,11 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             originalTerrainShaValue = *terrainSha.value;
             savedTerrainShaValue = *savedTerrainSha.value;
             savedPathingShaValue = *savedPathingSha.value;
-            auto prepared = MapData::TerrainSavePlan::Prepare(source, edits);
-            if (!prepared.Succeeded() || !prepared.value) return Forward(std::move(prepared.diagnostics));
-            terrainPlan = std::move(*prepared.value);
+            if (request.minimapChoice == TerrainMinimapSaveChoice::Preserve) {
+                auto prepared = MapData::TerrainSavePlan::Prepare(source, edits);
+                if (!prepared.Succeeded() || !prepared.value) return Forward(std::move(prepared.diagnostics));
+                terrainPlan = std::make_shared<const MapData::TerrainSavePlan>(std::move(*prepared.value));
+            }
         }
         const auto pathingGate = terrainPlan
             ? terrainPlan->VerifyForSave(edits, source.SourceSha256(), replacements, edits.Removals())
@@ -719,15 +727,28 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         if (!frozen.Succeeded()) return Forward(frozen.diagnostics);
         task.diagnostics.insert(task.diagnostics.end(), fieldDiagnostics.begin(), fieldDiagnostics.end());
         task.replacements = std::move(replacements);
+        if (request.minimapChoice == TerrainMinimapSaveChoice::GenerateMissingGroundOnly) {
+            auto prepared = TerrainMinimapSave::Prepare(task, edits, request.gameRoot, request.minimapChoice);
+            if (!prepared.Succeeded() || !prepared.value) return Forward(std::move(prepared.diagnostics));
+            minimapSave = std::move(*prepared.value);
+            if (!minimapSave || !minimapSave->Plan())
+                return Fail("SAVE_MINIMAP_PREPARATION_MISSING", "补建小地图未返回本次实际保存任务的完整计划。");
+            task.replacements.push_back(minimapSave->MinimapReplacement());
+            // 同一个扩展计划负责五成员；不能继续用旧 Preserve 计划拒绝本次生成的 MapBLP。
+            terrainPlan = minimapSave->Plan();
+            const auto current = minimapSave->VerifyCurrent(task, edits, request.gameRoot);
+            if (!current.Succeeded()) return Forward(current.diagnostics);
+        }
         if (terrainPlan) {
             const auto& diagnostics = terrainPlan->Diagnostics();
             task.diagnostics.insert(task.diagnostics.end(), diagnostics.begin(), diagnostics.end());
-            task.beforePublish = [&task, &terrainPlan, previous = std::move(task.beforePublish)]() {
+            task.beforePublish = [&task, terrainPlan, minimapSave, previous = std::move(task.beforePublish)]() {
                 if (previous) {
                     const auto status = previous();
                     if (!status.Succeeded()) return status;
                 }
-                return terrainPlan->VerifyFrozenOutput(task.sourceSha256, task.replacements, task.removals);
+                return minimapSave ? minimapSave->VerifyFrozenOutput(task)
+                    : terrainPlan->VerifyFrozenOutput(task.sourceSha256, task.replacements, task.removals);
             };
         }
         const auto script = PrepareScript(task, source, request, editedMembers, triggerReceipt, transactionReceipt);
@@ -744,7 +765,8 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         }
         written = true;
         if (terrainPlan) {
-            const auto readback = terrainPlan->VerifyReadback(*task.nextSession);
+            const auto readback = minimapSave ? minimapSave->VerifyReadback(*task.nextSession)
+                : terrainPlan->VerifyReadback(*task.nextSession);
             if (!readback.Succeeded()) return Forward(readback.diagnostics);
         }
         // 保存服务已回读归档；再核对配对成员确实对应本次语义候选，不能只凭编译器 exit 0。
@@ -776,6 +798,13 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         result.value->appliedObjectTransactionCount = request.objectTransactions.size();
         result.value->appliedAuxiliaryCommandCount = auxiliaryRequest ? request.auxiliaryTransaction->Commands().size() : 0;
         result.value->scriptPreserved = task.scriptPreserved;
+        if (minimapSave) {
+            const auto& manifest = minimapSave->Manifest();
+            const auto& mip0 = minimapSave->DecodedMip0();
+            result.value->generatedMissingMinimap = MapEditMinimapReceipt{
+                manifest.outputBlpSha256, mip0.decodedRgbaSha256, manifest.manifestSha256,
+                manifest.encodedBlpBytes, mip0.width, mip0.height, manifest.encodedMipCount};
+        }
         result.diagnostics = std::move(task.diagnostics);
         return result;
     } catch (const std::exception&) {

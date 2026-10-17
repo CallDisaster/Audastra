@@ -4,6 +4,7 @@
 #include "War3MapCore/MapData/PlacementEditing.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
 #include "War3MapCore/Services/MapSaveService.h"
+#include "War3MapCore/Services/TerrainMinimapSave.h"
 #include "War3MapCore/Script/ScriptToolchainProfile.h"
 #include "War3MapCore/Trigger/TriggerEditBatch.h"
 #include "War3MapCore/Trigger/TriggerTransactionSnapshot.h"
@@ -85,6 +86,8 @@ struct MapEditSaveRequest {
     // 显式层序供 Agent/工程宿主传入；省略只允许证明 config 默认层序完全一致。
     std::optional<std::vector<std::string>> effectiveLayers;
     std::vector<MapEditTerrainStroke> terrainStrokes;
+    // 单次明确选择：只为真实非空干地高度另存补建已证明缺失的 MapBLP，不接收客户端图像或 SHA。
+    TerrainMinimapSaveChoice minimapChoice = TerrainMinimapSaveChoice::Preserve;
     std::vector<MapEditFieldOperation> fieldEdits;
     MapEditPlacementOperation placementEdit;
     // 一个领域批次与地图 SHA 同时绑定，不能提供任意 WTG/WCT/脚本成员字节。
@@ -107,6 +110,12 @@ struct MapEditMemberReceipt {
     std::string savedSha256;
 };
 
+struct MapEditMinimapReceipt {
+    std::string encodedBlpSha256, decodedMip0RgbaSha256, manifestSha256;
+    std::size_t encodedBlpBytes = 0;
+    std::uint32_t width = 0, height = 0, encodedMipCount = 0;
+};
+
 struct MapEditSaveReceipt {
     std::filesystem::path candidate;
     std::string sourceSha256;
@@ -127,6 +136,8 @@ struct MapEditSaveReceipt {
     std::size_t appliedAuxiliaryCommandCount = 0;
     // 改动不影响游戏脚本，候选沿用了源地图脚本原字节。
     bool scriptPreserved = false;
+    // 仅完成同一保存任务的生成和独立回读后出现；不表示原版编辑器或游戏已验证。
+    std::optional<MapEditMinimapReceipt> generatedMissingMinimap;
 };
 
 // 仅接受一种有界领域操作，或同源的完整触发器与物编封印事务；旧触发器批次不能混用。

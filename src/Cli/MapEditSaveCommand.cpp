@@ -207,7 +207,12 @@ int RunMapEditSave(int argc, wchar_t** argv) {
     for (int index = 8; index < argc;) {
         const std::wstring_view flag(argv[index]);
         std::string error;
-        if (flag == L"--ui-root") {
+        if (flag == L"--generate-missing-minimap") {
+            if (request.minimapChoice != Services::TerrainMinimapSaveChoice::Preserve)
+                return Invalid("--generate-missing-minimap may appear only once");
+            request.minimapChoice = Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly;
+            ++index;
+        } else if (flag == L"--ui-root") {
             if (index + 1 >= argc || argv[index + 1][0] == L'\0' || !request.uiRoot.empty())
                 return Invalid("--ui-root requires one nonempty UI data root");
             request.uiRoot = argv[index + 1];
@@ -361,6 +366,10 @@ int RunMapEditSave(int argc, wchar_t** argv) {
     if (request.terrainStrokes.empty() && request.fieldEdits.empty()
         && std::holds_alternative<std::monostate>(request.placementEdit) && !request.triggerEdits)
         return Invalid("at least one bounded edit operation is required");
+    if (request.minimapChoice == Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly
+        && (request.terrainStrokes.empty() || !request.fieldEdits.empty()
+            || !std::holds_alternative<std::monostate>(request.placementEdit) || request.triggerEdits))
+        return Invalid("--generate-missing-minimap requires only nonempty height strokes in a save copy");
     auto saved = Services::SaveMapEditCandidate(request);
     PrintDiagnostics(saved.diagnostics);
     if (!saved.Succeeded() || !saved.value) return 1;
@@ -381,6 +390,17 @@ int RunMapEditSave(int argc, wchar_t** argv) {
         std::cout << "\nedited_member_" << index << '=' << member.name
                   << "\nedited_member_" << index << "_original_sha256=" << member.originalSha256
                   << "\nedited_member_" << index << "_saved_sha256=" << member.savedSha256;
+    }
+    if (receipt.generatedMissingMinimap) {
+        const auto& minimap = *receipt.generatedMissingMinimap;
+        std::cout << "\nminimap_action=generate_missing_ground_only"
+                  << "\nminimap_blp_sha256=" << minimap.encodedBlpSha256
+                  << "\nminimap_blp_bytes=" << minimap.encodedBlpBytes
+                  << "\nminimap_decoded_mip0_rgba_sha256=" << minimap.decodedMip0RgbaSha256
+                  << "\nminimap_width=" << minimap.width
+                  << "\nminimap_height=" << minimap.height
+                  << "\nminimap_mip_count=" << minimap.encodedMipCount
+                  << "\nminimap_manifest_sha256=" << minimap.manifestSha256;
     }
     if (receipt.triggerEdits) std::cout << "\napplied_trigger_edits=" << receipt.triggerEdits->operationCount
         << "\nremoved_eca_count=" << receipt.triggerEdits->removedEcaCount
