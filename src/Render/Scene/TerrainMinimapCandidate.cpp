@@ -69,11 +69,11 @@ void ChargeLocation(std::size_t& bytes, const Resources::ResourceLocation& sourc
 
 class Digest {
 public:
-    explicit Digest(std::size_t& observed) : stream_(kMaximumHashBytes) {
-        observed = std::max(observed, stream_.ScratchBytes());
-        if (stream_.ScratchBytes() > kHashReserve) Fail("TERRAIN_MINIMAP_BUDGET", "SHA 工作缓冲超过预留预算。");
+    explicit Digest(std::size_t& observed) : stream_(kMaximumHashBytes), observed_(observed) {
+        // Sha256Stream 惰性分配 CNG object；空 Update 初始化 provider/hash，不改变摘要字节。
+        Check(stream_.Update({})); Observe();
     }
-    void Bytes(std::span<const std::byte> bytes) { Check(stream_.Update(bytes)); }
+    void Bytes(std::span<const std::byte> bytes) { Check(stream_.Update(bytes)); Observe(); }
     void U32(std::uint32_t value) {
         std::array<std::byte, 4> bytes{};
         for (unsigned i = 0; i < 4; ++i) bytes[i] = static_cast<std::byte>((value >> (i * 8)) & 255);
@@ -87,9 +87,17 @@ public:
     void String(std::string_view value) {
         U64(value.size()); Bytes(std::as_bytes(std::span(value.data(), value.size())));
     }
-    std::string Finish() { return Take(stream_.Finish()); }
+    std::string Finish() {
+        auto result = stream_.Finish(); Observe(); return Take(std::move(result));
+    }
 private:
+    void Observe() {
+        const auto bytes = stream_.ScratchBytes();
+        observed_ = std::max(observed_, bytes);
+        if (bytes > kHashReserve) Fail("TERRAIN_MINIMAP_BUDGET", "SHA 工作缓冲超过预留预算。");
+    }
     Sha256Stream stream_;
+    std::size_t& observed_;
 };
 
 std::string HashBytes(std::span<const std::byte> bytes, std::size_t& scratch) {

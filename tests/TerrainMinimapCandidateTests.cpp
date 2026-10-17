@@ -298,6 +298,11 @@ void TestBudgetsBeforeFullMesh() {
         && memory.observedContainerCapacityBytes <= memory.estimatedPeakBytes
         && memory.outputCapacityBytes >= 256 * 256 * 4 && memory.parsedTerrainCapacityBytes && memory.meshCapacityBytes,
         "内存账必须区分输入保活、额外工作、输出及估算/实际capacity");
+    Sha256Stream independentHash(1);
+    Require(independentHash.Update({}).Succeeded(), "独立 Hash 观察必须触发惰性 CNG 初始化");
+    Require(memory.maximumObservedHashScratchBytes >= independentHash.ScratchBytes()
+        && memory.maximumObservedHashScratchBytes <= 1024 * 1024,
+        "实际 Hash scratch 必须包括第一次 Update 后才分配的 CNG object capacity");
     TerrainMinimapLimits limits; limits.maxTiles = 1; Rejected(input, {}, limits);
     limits = {}; limits.maxW3eBytes = input.currentW3e.size() - 1; Rejected(input, "TERRAIN_MINIMAP_BUDGET", limits);
     limits = {}; limits.maxRetainedInputBytes = memory.retainedInputCapacityBytes - 1; Rejected(input, "TERRAIN_MINIMAP_BUDGET", limits);
