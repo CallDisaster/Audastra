@@ -76,37 +76,36 @@ bool TryTerrainFootprint(float2 dx, float2 dy, out float lod, out float2 axis, o
     axis = float2(1.0, 0.0);
     major = 0.0;
     taps = 1u;
-    [branch] if (terrainTapLimit < 1.5 || terrainIsTranslucent > 0.5 || terrainMaxMip <= 0.0)
-        return false;
-    // 先归一化J再求协方差，避免合法大导数先平方再平方溢出；极端/放大仍走旧表达式。
-    float scale = max(max(abs(dx.x), abs(dx.y)), max(abs(dy.x), abs(dy.y)));
-    [branch] if (!all(isfinite(dx)) || !all(isfinite(dy)) || scale <= 0.5 || scale > 8.507059173023462e37)
-        return false;
-    float2 p = dx / scale, q = dy / scale;
-    float a = p.x * p.x + q.x * q.x, b = p.x * p.y + q.x * q.y, c = p.y * p.y + q.y * q.y;
-    float difference = a - c;
-    float eigenvalue = 0.5 * (a + c + sqrt(max(difference * difference + 4.0 * b * b, 0.0)));
-    float majorNorm = sqrt(eigenvalue);
-    [branch] if (!isfinite(majorNorm) || majorNorm <= 0.0) return false;
-    float minorNorm = abs(p.x * q.y - p.y * q.x) / majorNorm;
-    [branch] if (!isfinite(minorNorm) || minorNorm <= majorNorm * 0.000244140625 || majorNorm / minorNorm <= 1.25)
-        return false;
-    float candidateMajor = scale * majorNorm, minor = scale * minorNorm;
-    float width = max(max(minor, candidateMajor * 0.25), 1.0);
-    [branch] if (!isfinite(candidateMajor) || !isfinite(minor) || !isfinite(width))
-        return false;
-    uint candidateTaps = min(4u, max(1u, (uint)ceil(candidateMajor / width)));
-    [branch] if (candidateTaps == 1u) return false;
-    float2 firstAxis = float2(b, eigenvalue - a), secondAxis = float2(eigenvalue - c, b);
-    float2 candidateAxis = dot(firstAxis, firstAxis) >= dot(secondAxis, secondAxis) ? firstAxis : secondAxis;
-    float axisLengthSquared = dot(candidateAxis, candidateAxis);
-    [branch] if (!isfinite(axisLengthSquared) || axisLengthSquared <= 0.0)
-        return false;
-    axis = candidateAxis * rsqrt(axisLengthSquared);
-    lod = clamp(log2(width), 0.0, terrainMaxMip);
-    major = candidateMajor;
-    taps = candidateTaps;
-    return true;
+    bool valid = false;
+    do {
+        [branch] if (terrainTapLimit < 1.5 || terrainIsTranslucent > 0.5 || terrainMaxMip <= 0.0) break;
+        // 先归一化J再求协方差，避免合法大导数先平方再平方溢出；极端/放大仍走旧表达式。
+        float scale = max(max(abs(dx.x), abs(dx.y)), max(abs(dy.x), abs(dy.y)));
+        [branch] if (!all(isfinite(dx)) || !all(isfinite(dy)) || scale <= 0.5 || scale > 8.507059173023462e37) break;
+        float2 p = dx / scale, q = dy / scale;
+        float a = p.x * p.x + q.x * q.x, b = p.x * p.y + q.x * q.y, c = p.y * p.y + q.y * q.y;
+        float difference = a - c;
+        float eigenvalue = 0.5 * (a + c + sqrt(max(difference * difference + 4.0 * b * b, 0.0)));
+        float majorNorm = sqrt(eigenvalue);
+        [branch] if (!isfinite(majorNorm) || majorNorm <= 0.0) break;
+        float minorNorm = abs(p.x * q.y - p.y * q.x) / majorNorm;
+        [branch] if (!isfinite(minorNorm) || minorNorm <= majorNorm * 0.000244140625 || majorNorm / minorNorm <= 1.25) break;
+        float candidateMajor = scale * majorNorm, minor = scale * minorNorm;
+        float width = max(max(minor, candidateMajor * 0.25), 1.0);
+        [branch] if (!isfinite(candidateMajor) || !isfinite(minor) || !isfinite(width)) break;
+        uint candidateTaps = min(4u, max(1u, (uint)ceil(candidateMajor / width)));
+        [branch] if (candidateTaps == 1u) break;
+        float2 firstAxis = float2(b, eigenvalue - a), secondAxis = float2(eigenvalue - c, b);
+        float2 candidateAxis = dot(firstAxis, firstAxis) >= dot(secondAxis, secondAxis) ? firstAxis : secondAxis;
+        float axisLengthSquared = dot(candidateAxis, candidateAxis);
+        [branch] if (!isfinite(axisLengthSquared) || axisLengthSquared <= 0.0) break;
+        axis = candidateAxis * rsqrt(axisLengthSquared);
+        lod = clamp(log2(width), 0.0, terrainMaxMip);
+        major = candidateMajor;
+        taps = candidateTaps;
+        valid = true;
+    } while (false);
+    return valid;
 }
 float4 SampleTerrainBounded(float2 uv, float2 cell, float2 dx, float2 dy) {
     float lod = 0.0, major = 0.0;
