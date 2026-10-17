@@ -273,10 +273,16 @@ int Run(const Options& options) {
                 "Resource path is not relative to the asset root");
         if (options.hasAssets) {
             const auto candidate = options.assets / *relative;
-            if (auto local = ReadLocalBounded(candidate, kMaxAssetBytes); local.Succeeded()) return local;
+            std::error_code probeError;
+            const bool exists = fs::exists(candidate, probeError);
+            if (probeError)
+                return War3Map::Result<std::vector<std::byte>>::Failure("ModelPreview", "MODEL_PREVIEW_ASSET_PROBE",
+                    "Could not determine whether the selected asset exists: " + Utf8(candidate));
+            // 已存在来源的读错/超限必须原样返回，只有确定缺失才允许更低来源或下一后缀。
+            if (exists) return ReadLocalBounded(candidate, kMaxAssetBytes);
         }
-        if (game) return game->ReadFileBounded(std::string(name), kMaxAssetBytes);
-        return War3Map::Result<std::vector<std::byte>>::Failure("ModelPreview", "MODEL_PREVIEW_ASSET_MISSING",
+        if (game && game->HasFile(std::string(name))) return game->ReadFileBounded(std::string(name), kMaxAssetBytes);
+        return War3Map::Result<std::vector<std::byte>>::Failure("ModelPreview", "RESOURCE_NOT_FOUND",
             "Resource is not available in the selected read-only sources");
     };
 
