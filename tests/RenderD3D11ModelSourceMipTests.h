@@ -231,9 +231,14 @@ void Run(const War3RenderPluginApiV2* api, const std::filesystem::path& provider
     const War3RenderCameraV2 camera{sizeof(camera),0,0,0,5000,-1.5707963f,1.5f};
     const War3RenderEnvironmentV2 environment{sizeof(environment),{0,0,1},{1,1,1},{0,0,0},
         WAR3_RENDER_FOG_NONE,0,1,0,{0,0,0},0,0,0,0,1,0,nullptr};
-    const War3RenderMeshV2 ground{sizeof(ground),0,0,kRevision,nullptr,nullptr};
+    // 空mesh会在z=0画默认grid，与测试平面共面；明确的相机外背景保留原平面/深度及完整ROI。
+    const std::array<War3RenderVertexV2, 3> background{{
+        {10000,10000,0,.045f,.060f,.075f}, {10100,10000,0,.045f,.060f,.075f},
+        {10000,10100,0,.045f,.060f,.075f}}};
+    const std::array<std::uint32_t, 3> backgroundIndices{0,1,2};
+    const War3RenderMeshV2 ground{sizeof(ground),3,3,kRevision,background.data(),backgroundIndices.data()};
     Require(api->setEnvironment(renderer.handle,&environment) == 0 && api->setCamera(renderer.handle,&camera) == 0
-        && api->submitMesh(renderer.handle,&ground) == 0, "source-mip camera/environment/empty terrain rejected");
+        && api->submitMesh(renderer.handle,&ground) == 0, "source-mip camera/environment/controlled background rejected");
     Require(api->structSize >= offsetof(War3RenderPluginApiV2, getEditorPresentationTarget)
         + sizeof(api->getEditorPresentationTarget) && api->getEditorPresentationTarget,
         "source-mip accepted model-slot identity capability missing");
