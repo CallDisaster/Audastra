@@ -1334,6 +1334,65 @@ void TestSharedBaseBlightBudgetsAndMapping() {
     Require(!below.Succeeded() || (below.value->blightIndices.empty() && below.value->blightApproximationTiles == 16),
         "working边界以下不能保留部分索引或无pass的去近似色base");
 
+    TerrainWaterStyle refusedWater{0, {90, 130, 170, 210}, {90, 130, 170, 210},
+        {90, 130, 170, 210}, {90, 130, 170, 210}};
+    auto wet = terrain;
+    for (auto& vertex : wet.vertices) { vertex.textureAndFlagsRaw |= 0x40; vertex.waterBaseHeight = 40; }
+    const auto minimumAcceptedBytes = [](const std::function<bool(std::size_t)>& accepts) {
+        std::size_t first = 0, last = 256 * 1024;
+        Require(accepts(last), "容量边界夹具必须在宽松硬预算内完整准入");
+        while (first < last) {
+            const auto middle = first + (last - first) / 2;
+            if (accepts(middle)) last = middle;
+            else first = middle + 1;
+        }
+        return first;
+    };
+    // 16个真实ground槽使全部水候选因资源拒绝。公开结果搜索阈值，不复制builder私有预算公式。
+    // Strict资源拒绝clear与Preview最终clear均须保留实际candidate capacity的账。
+    for (const auto policy : {TerrainGroundBudgetPolicy::Strict, preview}) {
+        const auto attempt = [&](bool hasWater, std::size_t bytes) {
+            auto bounded = limits; bounded.maxWorkingBytes = bytes;
+            return BuildTerrainGroundMesh(hasWater ? wet : terrain, atlases, bounded, kUnlit,
+                hasWater ? &refusedWater : nullptr, {}, blight, {}, policy, shared);
+        };
+        const auto dryMinimum = minimumAcceptedBytes([&](std::size_t bytes) {
+            const auto built = attempt(false, bytes); return built.Succeeded() && built.value->blightTexturedTiles == 16;
+        });
+        const auto wetMinimum = minimumAcceptedBytes([&](std::size_t bytes) {
+            const auto built = attempt(true, bytes); return built.Succeeded() && built.value->blightTexturedTiles == 16;
+        });
+        const auto accepted = attempt(true, wetMinimum);
+        Require(accepted.Succeeded() && accepted.value->waterFlaggedTiles == 16
+            && accepted.value->budget.water.omitted == 16 && accepted.value->waterTiles.empty()
+            && accepted.value->budget.water.omissionReasons == static_cast<std::uint32_t>(TerrainGroundOmissionReason::TextureSlots),
+            "水候选资源拒绝必须保留完整源请求与拒绝原因");
+        Require(wetMinimum >= dryMinimum + accepted.value->waterFlaggedTiles * sizeof(std::uint32_t),
+            "clear保留的水候选capacity至少容纳全部请求，必须体现在公开working准入门槛");
+        const auto rejected = attempt(true, wetMinimum - 1);
+        Require(rejected.Succeeded() && rejected.value->blightIndices.empty() && rejected.value->blightApproximationTiles == 16
+            && (rejected.value->budget.blight.omissionReasons & static_cast<std::uint32_t>(TerrainGroundOmissionReason::WorkingBytes)),
+            "真实拒水候选门槛以下1B必须整类拒绝精确荒芜，不能漏账准入");
+    }
+    // 水面保留时，独立候选账不能再叠加到原逐quad账；比较公开增量而非硬编码私有字节数。
+    auto waterOnly = Grid(); waterOnly.header.groundTilesets = {"Ldrt"};
+    auto wetOnly = waterOnly;
+    for (auto& vertex : wetOnly.vertices) { vertex.textureAndFlagsRaw |= 0x40; vertex.waterBaseHeight = 40; }
+    const std::vector<Atlas> oneAtlas{MakeAtlas(4, 1)};
+    const auto selectedWaterCost = [&](TerrainGroundBlightPolicy mode) {
+        const auto minimum = [&](bool hasWater) {
+            return minimumAcceptedBytes([&](std::size_t bytes) {
+                TerrainGroundMeshLimits bounded; bounded.maxWorkingBytes = bytes;
+                const auto built = BuildTerrainGroundMesh(hasWater ? wetOnly : waterOnly, oneAtlas, bounded, kUnlit,
+                    hasWater ? &refusedWater : nullptr, {}, {}, {}, preview, mode);
+                return built.Succeeded() && (!hasWater || built.value->waterTiles.size() == 1);
+            });
+        };
+        return minimum(true) - minimum(false);
+    };
+    Require(selectedWaterCost(shared) == selectedWaterCost(TerrainGroundBlightPolicy::Legacy),
+        "已选水面的公开working增量必须维持原口径，不能重复计候选4B");
+
     auto compact = Grid(5, 2);
     for (auto& vertex : compact.vertices) vertex.textureAndFlagsRaw = 0x20;
     compact.vertices[4].textureAndFlagsRaw = compact.vertices[9].textureAndFlagsRaw = 0x2f;

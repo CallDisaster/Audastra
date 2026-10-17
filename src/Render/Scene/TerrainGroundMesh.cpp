@@ -458,7 +458,8 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
         output.budget.water.requested = output.waterFlaggedTiles;
         if (sharedBlight) fixedBytes += (overlays.capacity() - overlays.size()) * sizeof(Overlay)
             + (blightOverlays.capacity() - blightOverlays.size()) * sizeof(Overlay)
-            + (waterTiles.capacity() - waterTiles.size()) * sizeof(std::uint32_t)
+            // clear()不会释放容量：完整候选capacity始终独立计费，包含资源拒绝与有界重试阶段。
+            + waterTiles.capacity() * sizeof(std::uint32_t)
             + blightOverlays.size() * sizeof(Overlay); // 早于可选层决策的真实荒芜候选峰值
         TextureSlots textureSlots{};
         textureSlots.fill(TerrainGroundHeightColor);
@@ -520,6 +521,8 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
             [](std::uint32_t count) { return count != 0; }));
         constexpr auto kOverlayBytes = 4 * sizeof(TerrainGroundVertex) + 6 * sizeof(std::uint32_t)
             + sizeof(Overlay) + sizeof(std::uint32_t);
+        // SharedBase的水候选已全额计入fixedBytes；已选水逐quad扣回原有的候选4B，不能双计。
+        const auto waterQuadBytes = kOverlayBytes - (sharedBlight ? sizeof(std::uint32_t) : 0);
         auto baseBatchCount = groundTextureCount + static_cast<std::size_t>(output.fallback.totalTiles != 0);
         // 只允许显式世界预览减少可选几何。所有请求的地表资源已在上方完整校验，不能借省略绕过。
         // 保留顺序：完整基础层 > 全图水面 > 全图普通过渡 > 精确荒芜遮罩（下方）。
@@ -540,7 +543,8 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
                 if (quads * 4 > limits.maxVertices) reasons |= Reason(TerrainGroundOmissionReason::Vertices);
                 if (quads * 6 > limits.maxIndices) reasons |= Reason(TerrainGroundOmissionReason::Indices);
                 if (batches > limits.maxBatches) reasons |= Reason(TerrainGroundOmissionReason::Batches);
-                if (fixedBytes + extra * kOverlayBytes + bytes + batches * sizeof(TerrainGroundBatch)
+                if (fixedBytes + transitionQuads * kOverlayBytes + waterQuads * waterQuadBytes
+                    + bytes + batches * sizeof(TerrainGroundBatch)
                     + output.textures.capacity() * sizeof(std::shared_ptr<const TerrainAtlasSnapshot>) > limits.maxWorkingBytes)
                     reasons |= Reason(TerrainGroundOmissionReason::WorkingBytes);
                 return reasons;
@@ -688,7 +692,7 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
             if (batches > limits.maxBatches) meshReasons |= Reason(TerrainGroundOmissionReason::Batches);
             const auto blightBytes = blightOverlays.size() * (sharedBlight ? kSharedBlightBytes : kOverlayBytes);
             const auto blightBatchBytes = sharedBlight ? blightGroups * sizeof(TerrainGroundBlightBatch) : sizeof(TerrainGroundBatch);
-            if (fixedBytes + (overlays.size() + waterTiles.size()) * kOverlayBytes + blightBytes
+            if (fixedBytes + overlays.size() * kOverlayBytes + waterTiles.size() * waterQuadBytes + blightBytes
                 + rgbaBytes + addedRgba + (batches - blightGroups) * sizeof(TerrainGroundBatch) + blightBatchBytes
                 + textureCapacity * sizeof(std::shared_ptr<const TerrainAtlasSnapshot>) > limits.maxWorkingBytes)
                 meshReasons |= Reason(TerrainGroundOmissionReason::WorkingBytes);
@@ -722,8 +726,8 @@ Result<TerrainGroundMesh> BuildTerrainGroundMesh(const TerrainGridSnapshot& terr
         const auto sharedBlightQuads = sharedBlight ? blightOverlays.size() : 0;
         const auto expandedBlightQuads = sharedBlight ? 0 : blightOverlays.size();
         const auto quadCount = baseQuadCount + overlays.size() + expandedBlightQuads + waterTiles.size();
-        const auto overlayBytes = (overlays.size() + expandedBlightQuads + waterTiles.size()) * kOverlayBytes
-            + sharedBlightQuads * kSharedBlightBytes;
+        const auto overlayBytes = (overlays.size() + expandedBlightQuads) * kOverlayBytes
+            + waterTiles.size() * waterQuadBytes + sharedBlightQuads * kSharedBlightBytes;
         if (quadCount * 4 > limits.maxVertices || (quadCount + sharedBlightQuads) * 6 > limits.maxIndices
             || fixedBytes + overlayBytes > limits.maxWorkingBytes)
             return Failure("TERRAIN_GROUND_BUDGET", "地表过渡层或水面超出网格预算，请由宿主回退完整地图的高度预览。");
