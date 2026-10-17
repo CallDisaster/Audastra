@@ -30,6 +30,16 @@ target_compile_options(war3-map-cli-terrain-query-tests PRIVATE /W4 /permissive-
 add_test(NAME cli-terrain-query COMMAND war3-map-cli-terrain-query-tests)
 set_tests_properties(cli-terrain-query PROPERTIES TIMEOUT 60)
 
+add_executable(war3-map-cli-map-edit-save-tests CliMapEditSaveTests.cpp
+    "${PROJECT_SOURCE_DIR}/src/Cli/MapEditSaveCommand.cpp")
+target_include_directories(war3-map-cli-map-edit-save-tests PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/Cli" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(war3-map-cli-map-edit-save-tests PRIVATE War3MapEditor::Services audastra-json)
+target_compile_definitions(war3-map-cli-map-edit-save-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(war3-map-cli-map-edit-save-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME cli-map-edit-save COMMAND war3-map-cli-map-edit-save-tests)
+set_tests_properties(cli-map-edit-save PROPERTIES TIMEOUT 60)
+
 add_executable(war3-map-source-encoding-compatibility-tests SourceEncodingCompatibilityTests.cpp)
 target_link_libraries(war3-map-source-encoding-compatibility-tests PRIVATE War3MapEditor::Core)
 target_compile_definitions(war3-map-source-encoding-compatibility-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
