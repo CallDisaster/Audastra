@@ -949,7 +949,13 @@ void TestMissingMinimapChoiceCannotBroadenTerrainSaveScope() {
     stroke.points = {{4, 4}};
     request.terrainStrokes = {stroke};
     request.terrainStrokes[0].brush.strength = 0;
-    Require(HasCode(SaveMapEditCandidate(request).diagnostics, "SAVE_NO_TERRAIN_CHANGE"),
+    const auto noChange = SaveMapEditCandidate(request);
+    if (!HasCode(noChange.diagnostics, "SAVE_NO_TERRAIN_CHANGE")) {
+        for (const auto& diagnostic : noChange.diagnostics)
+            std::cerr << "missing-minimap no-op: " << diagnostic.subsystem << ": "
+                      << diagnostic.code << ": " << diagnostic.message << '\n';
+    }
+    Require(HasCode(noChange.diagnostics, "SAVE_NO_TERRAIN_CHANGE"),
         "explicit generation cannot produce a no-op terrain candidate");
     request.terrainStrokes[0].brush.strength = 40; // raw160，仍超出现有raw156正式门。
     for (const auto choice : {TerrainMinimapSaveChoice::Preserve, TerrainMinimapSaveChoice::GenerateMissingGroundOnly}) {
