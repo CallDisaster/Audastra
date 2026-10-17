@@ -130,11 +130,16 @@ HRESULT D3D11Scene::Initialize(bool warp) {
     hr = device_->CreateInputLayout(modelElements, 7, kModelVS, sizeof(kModelVS), &modelLayout_);
     if (FAILED(hr)) return hr;
     D3D11_SAMPLER_DESC modelSampler{};
-    modelSampler.Filter = D3D11_FILTER_ANISOTROPIC;
+    modelSampler.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     modelSampler.AddressU = modelSampler.AddressV = modelSampler.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
-    modelSampler.MaxAnisotropy = 8;
+    modelSampler.MaxAnisotropy = 1;
     modelSampler.ComparisonFunc = D3D11_COMPARISON_NEVER;
     modelSampler.MaxLOD = D3D11_FLOAT32_MAX;
+    // 粒子保持原三线性；模型预览使用8×各向异性，四种TEXS寻址从模型desc继承。
+    hr = device_->CreateSamplerState(&modelSampler, &particleSampler_);
+    if (FAILED(hr)) return hr;
+    modelSampler.Filter = D3D11_FILTER_ANISOTROPIC;
+    modelSampler.MaxAnisotropy = 8;
     hr = device_->CreateSamplerState(&modelSampler, &modelSampler_);
     if (FAILED(hr)) return hr;
     hr = Buffer(nullptr, sizeof(ModelLayerConstants), D3D11_BIND_CONSTANT_BUFFER, &modelConstants_);

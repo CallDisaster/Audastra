@@ -130,7 +130,7 @@ void D3D11Scene::DrawParticles(int pass) {
     context_->VSSetShader(particleVertexShader_.Get(), nullptr, 0);
     context_->PSSetShader(particlePixelShader_.Get(), nullptr, 0);
     auto* constants = modelConstants_.Get(); context_->PSSetConstantBuffers(2, 1, &constants);
-    auto* sampler = modelSampler_.Get(); context_->PSSetSamplers(1, 1, &sampler);
+    auto* sampler = particleSampler_.Get(); context_->PSSetSamplers(1, 1, &sampler);
     context_->OMSetDepthStencilState(pass == 0 ? terrainDepth_.Get() : modelDepthRead_.Get(), 0);
     // ABI 粒子枚举与 MDX 材质枚举次序不同，不能直接作索引。
     constexpr UINT filters[]{2, 3, 5, 6, 1, 4, 0};

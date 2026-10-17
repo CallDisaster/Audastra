@@ -209,7 +209,7 @@ private:
     Ptr<ID3D11VertexShader> modelVertexShader_;
     Ptr<ID3D11PixelShader> modelPixelShader_;
     Ptr<ID3D11InputLayout> modelLayout_;
-    Ptr<ID3D11SamplerState> modelSampler_;
+    Ptr<ID3D11SamplerState> modelSampler_, particleSampler_;
     std::array<Ptr<ID3D11SamplerState>, 4> materialStateSamplers_;
     Ptr<ID3D11Buffer> modelVertices_, modelIndices_, modelInstances_, modelConstants_;
     std::vector<GeometryPage> modelPages_;

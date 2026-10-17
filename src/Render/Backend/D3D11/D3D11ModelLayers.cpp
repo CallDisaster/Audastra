@@ -43,6 +43,7 @@ void D3D11Scene::SetModelLayers(const ModelSceneLayers& layers) {
                     gpu->device_ = device_; gpu->context_ = context_;
                     gpu->modelVertexShader_ = modelVertexShader_; gpu->modelPixelShader_ = modelPixelShader_;
                     gpu->modelLayout_ = modelLayout_; gpu->modelSampler_ = modelSampler_;
+                    gpu->particleSampler_ = particleSampler_;
                     gpu->modelConstants_ = modelConstants_; gpu->modelBlend_ = modelBlend_;
                     gpu->terrainDepth_ = terrainDepth_; gpu->modelDepthRead_ = modelDepthRead_;
 #ifdef WAR3_RENDER_TEST_FAULTS
