@@ -236,7 +236,94 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
         || edits.TerrainSourceRevision() != plan.terrainSourceRevision_)
         return Result<TerrainSavePlan>::Failure(std::string(kSubsystem), "TERRAIN_SAVE_PLAN_STALE",
             "生成地形保存计划期间会话、编辑修订或地形来源发生变化。");
+    plan.cumulativeBytes_ = total;
+    plan.maximumBytes_ = limits.maximumBytes;
     return Result<TerrainSavePlan>::Success(std::move(plan));
+}
+
+Status TerrainSavePlan::VerifyMissingMinimapEligibility(const MapDataEditSession& edits) const {
+    if (edits.SessionIdentity() != sessionIdentity_ || edits.Revision() != revision_
+        || edits.TerrainSourceRevision() != terrainSourceRevision_)
+        return Reject("TERRAIN_SAVE_PLAN_STALE", "missing-only小地图准备必须绑定原会话、修订和地形来源。");
+    if (!saveGate_.Succeeded()) return saveGate_;
+    const auto& member = members_[4];
+    if (member.sourceState != TerrainSaveSourceState::Missing || member.sourceBytes || member.sourceSha256
+        || member.action != TerrainSaveMemberAction::Preserve || member.outputBytes || member.outputSha256)
+        return Reject("MINIMAP_SAVE_NOT_MISSING", "只允许新建准确Missing的war3mapMap.blp；空成员、已有自定义图或Unknown均拒绝。");
+    if (!terrainChanged_ || !edits.terrain_ || !edits.terrainOriginal_ || !edits.pathing_ || !edits.pathingOriginal_
+        || edits.pathing_ != edits.pathingOriginal_ || edits.current_ != edits.original_)
+        return Reject("MINIMAP_SAVE_DOMAIN", "首次missing-only小地图保存要求纯高度净变化，WPM与其它地图数据成员必须保持原字。");
+    // 原SaveGate已核header、raw156上限、安全一格与DOO；这里只求更窄的交集，
+    // 不另造高度保存规则，也不把荒芜、贴图或pathing资格扩到小地图生成域。
+    bool changed = false;
+    for (std::size_t index = 0; index < edits.terrain_->vertices.size(); ++index) {
+        const auto& before = edits.terrainOriginal_->vertices[index];
+        const auto& after = edits.terrain_->vertices[index];
+        if (before.textureAndFlagsRaw != after.textureAndFlagsRaw
+            || before.waterHeightAndFlagsRaw != after.waterHeightAndFlagsRaw
+            || before.variationRaw != after.variationRaw || before.cliffAndLayerRaw != after.cliffAndLayerRaw)
+            return Reject("MINIMAP_SAVE_DOMAIN", "missing-only小地图只支持非空干地height净差，不包含荒芜或其它原始字段变化。");
+        changed = changed || before.groundHeightRaw != after.groundHeightRaw;
+    }
+    return changed ? Status::Ok()
+        : Reject("MINIMAP_SAVE_DOMAIN", "missing-only小地图要求至少一个实际groundHeightRaw净差。");
+}
+
+Status TerrainSavePlan::AdmitMissingMinimap(const MapDataEditSession& edits, std::vector<std::byte> generatedBytes) {
+    try {
+        RequireStatus(VerifyMissingMinimapEligibility(edits));
+        if (generatedBytes.empty()) return Reject("MINIMAP_SAVE_DOMAIN", "实际生成的MapBLP不能是空字节。");
+        auto total = cumulativeBytes_;
+        AddBytes(generatedBytes.size(), total, {maximumBytes_});
+        // 仅Services的真实Capture/Build/Decode证明持有者能调用此私有入口；
+        // 摘要在Core对实际字节自行计算，没有公开任意bytes/SHA setter。
+        auto sha = Take(Sha256(generatedBytes));
+        auto& member = members_[4];
+        replacements_.push_back({member.name, std::move(generatedBytes)});
+        member.outputBytes = replacements_.back().data.size();
+        member.outputSha256 = std::move(sha);
+        member.action = TerrainSaveMemberAction::WriteEdited;
+        member.reasonCode = "TERRAIN_SAVE_WRITE_MISSING_MINIMAP";
+        member.reason = "显式单次新建Missing MapBLP；原干地height门与完整FullW3e ground-only生成域交集，不含阴影/标记重建或native验收。";
+        std::erase_if(diagnostics_, [](const auto& diagnostic) {
+            return diagnostic.code == "TERRAIN_SAVE_MINIMAP_NOT_REBUILT";
+        });
+        cumulativeBytes_ = total;
+        return Status::Ok();
+    } catch (Failure& failure) {
+        return {std::move(failure.diagnostics)};
+    } catch (const std::bad_alloc&) {
+        return Reject("TERRAIN_SAVE_PLAN_ALLOCATION", "加入missing-only小地图时分配失败；调用者必须丢弃此部分计划。");
+    } catch (const std::length_error&) {
+        return Reject("TERRAIN_SAVE_PLAN_ALLOCATION", "加入missing-only小地图时容量异常；调用者必须丢弃此部分计划。");
+    }
+}
+
+std::size_t TerrainSavePlan::OwnedCapacityBytes() const noexcept {
+    std::size_t bytes = sizeof(*this);
+    const auto add = [&](std::size_t value) {
+        bytes = value > std::numeric_limits<std::size_t>::max() - bytes
+            ? std::numeric_limits<std::size_t>::max() : bytes + value;
+    };
+    const auto text = [&](const std::string& value) { add(value.capacity()); add(1); };
+    text(sourceSha256_);
+    for (const auto& member : members_) {
+        text(member.name); text(member.reasonCode); text(member.reason);
+        if (member.sourceSha256) text(*member.sourceSha256);
+        if (member.outputSha256) text(*member.outputSha256);
+    }
+    add(replacements_.capacity() * sizeof(MemberReplacement));
+    for (const auto& member : replacements_) { text(member.name); add(member.data.capacity()); }
+    add((diagnostics_.capacity() + saveGate_.diagnostics.capacity()) * sizeof(Diagnostic));
+    for (const auto* diagnostics : {&diagnostics_, &saveGate_.diagnostics})
+        for (const auto& diagnostic : *diagnostics) {
+            text(diagnostic.subsystem); text(diagnostic.code); text(diagnostic.message);
+            if (diagnostic.origin) {
+                add((diagnostic.origin->source.native().capacity() + 1) * sizeof(std::filesystem::path::value_type));
+                text(diagnostic.origin->fingerprint);
+            }
+        }
+    return bytes;
 }
 
 Status TerrainSavePlan::VerifyForSave(const MapDataEditSession& edits, std::string_view sourceSha256,
@@ -275,22 +362,41 @@ Status TerrainSavePlan::VerifyFrozenOutput(std::string_view sourceSha256,
     return Status::Ok();
 }
 
-Status TerrainSavePlan::VerifyReadback(const MapArchiveSession& saved) const {
+Status TerrainSavePlan::VerifyReadback(const MapArchiveSession& saved, const TerrainSavePlanLimits& readLimits) const {
     if (!saveGate_.Succeeded()) return saveGate_;
+    if (readLimits.maximumBytes > TerrainSavePlanLimits{}.maximumBytes)
+        return Reject("TERRAIN_SAVE_PLAN_BUDGET", "地形五成员回读只能收紧64MiB读取预算。");
     const auto names = ExactNames();
     ArchiveExactMemberLimits limits;
     limits.memberCount = kNames.size();
-    const auto captured = saved.DescribeExactMemberIdentities(saved.SourceSha256(), names, limits);
+    limits.memberBytes = limits.totalBytes = readLimits.maximumBytes;
+    const auto captured = saved.CaptureExactMembers(names, limits);
     if (!captured.Succeeded() || !captured.value) return {captured.diagnostics};
+    // 共享保存单元预收3×读取上限，另外保留固定hash/metadata工作；这里再核实际拥有
+    // 的body/name/descriptor capacity。普通调用默认64MiB读取语义不变。
+    std::size_t capacity = sizeof(*captured.value) + captured.value->capacity() * sizeof(ArchiveExactMember);
+    for (const auto& member : *captured.value) {
+        if (member.bytes.capacity() > std::numeric_limits<std::size_t>::max() - capacity)
+            return Reject("TERRAIN_SAVE_PLAN_BUDGET", "五成员回读capacity溢出。");
+        capacity += member.bytes.capacity();
+        if (member.name.capacity() + 1 > std::numeric_limits<std::size_t>::max() - capacity)
+            return Reject("TERRAIN_SAVE_PLAN_BUDGET", "五成员回读名称capacity溢出。");
+        capacity += member.name.capacity() + 1;
+    }
+    if (capacity > readLimits.maximumBytes * 3 + 64 * 1024)
+        return Reject("TERRAIN_SAVE_PLAN_BUDGET", "五成员回读实际capacity超过预收工作上界。");
     for (std::size_t index = 0; index < members_.size(); ++index) {
         const auto& member = members_[index];
-        const auto& identity = captured.value->members[index];
+        const auto& actual = (*captured.value)[index];
         if (member.sourceState == TerrainSaveSourceState::Unknown)
             return Reject("TERRAIN_SAVE_PLAN_READBACK_UNKNOWN", "地形保存计划缺少可核对的成员来源：" + member.name);
-        if (member.outputSha256 && (!identity.present || identity.byteSize != member.outputBytes
-            || identity.sha256 != member.outputSha256))
-            return Reject("TERRAIN_SAVE_PLAN_MEMBER_MISMATCH", "回读成员状态、长度或字节与地形保存计划不符：" + member.name);
-        if (!member.outputSha256 && identity.present) {
+        if (member.outputSha256) {
+            if (!actual.present)
+                return Reject("TERRAIN_SAVE_PLAN_MEMBER_MISMATCH", "回读缺少地形保存计划要求的成员：" + member.name);
+            const auto matched = MatchBytes(member, actual.bytes, true);
+            if (!matched.Succeeded()) return matched;
+        }
+        if (!member.outputSha256 && actual.present) {
             return Reject("TERRAIN_SAVE_PLAN_READBACK_UNEXPECTED", "回读发现计划之外的新地形成员：" + member.name);
         }
     }

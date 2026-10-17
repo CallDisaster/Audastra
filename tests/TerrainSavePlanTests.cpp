@@ -201,6 +201,20 @@ void PreservedMembersCannotBeSilentlyRebuilt() {
     Require(plan.VerifyFrozenOutput(fixture.source.aggregateSha256, output).Succeeded(), "unrelated domains retain their own gates");
 }
 
+void DefaultMissingMinimapRemainsPreserved() {
+    Fixture fixture;
+    fixture.Stroke(TerrainBrushKind::Raise);
+    const auto plan = Take(TerrainSavePlan::Prepare(fixture.source, fixture.edits));
+    const auto& minimap = plan.Members()[4];
+    Require(minimap.sourceState == TerrainSaveSourceState::Missing
+        && minimap.action == TerrainSaveMemberAction::Preserve
+        && !minimap.sourceBytes && !minimap.sourceSha256 && !minimap.outputBytes && !minimap.outputSha256,
+        "普通Core Prepare对准确Missing MapBLP仍无新增资格");
+    Require(plan.Replacements().size() == 1 && plan.Replacements()[0].name == "war3map.w3e"
+        && HasCode(plan.Diagnostics(), "TERRAIN_SAVE_MINIMAP_NOT_REBUILT"),
+        "新增Services私有准入不能改变Core默认Preserve计划或未重建告警");
+}
+
 void SourceErrorsNeverReturnPartialPlans() {
     Fixture fixture;
     fixture.Stroke(TerrainBrushKind::Raise);
@@ -434,6 +448,7 @@ int main() {
         OriginalSaveGateRemainsAuthoritative();
         SessionAndBaselineChangesInvalidatePlans();
         PreservedMembersCannotBeSilentlyRebuilt();
+        DefaultMissingMinimapRemainsPreserved();
         SourceErrorsNeverReturnPartialPlans();
         ArchiveRoundTripChecksPlannedAndPreservedBytes();
         UnlistedMembersAreFrozenAndReadBack();

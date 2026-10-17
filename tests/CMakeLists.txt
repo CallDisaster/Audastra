@@ -534,6 +534,13 @@ target_compile_options(war3-map-project-search-tests PRIVATE /W4 /permissive- /u
 add_test(NAME services-project-search COMMAND war3-map-project-search-tests)
 set_tests_properties(services-project-search PROPERTIES TIMEOUT 60)
 
+add_executable(war3-map-terrain-minimap-save-tests services/TerrainMinimapSaveTests.cpp)
+target_link_libraries(war3-map-terrain-minimap-save-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(war3-map-terrain-minimap-save-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(war3-map-terrain-minimap-save-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-terrain-minimap-save COMMAND war3-map-terrain-minimap-save-tests)
+set_tests_properties(services-terrain-minimap-save PROPERTIES TIMEOUT 120)
+
 # U9：纯文字格式与既有来源编码兼容入口，参数对应同一测试程序的独立组。
 add_executable(war3-map-warcraft-text-tests WarcraftTextTests.cpp)
 target_link_libraries(war3-map-warcraft-text-tests PRIVATE War3MapEditor::WarcraftText War3MapEditor::Core)

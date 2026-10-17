@@ -50,6 +50,7 @@ add_library(War3MapServices STATIC
     LuaSourceQueries.cpp
     LuaCandidateProfile.cpp
     TerrainBlightSaveService.cpp
+    TerrainMinimapSave.cpp
     TerrainEditService.cpp)
 add_library(War3MapEditor::Services ALIAS War3MapServices)
 target_link_libraries(War3MapServices PUBLIC War3MapEditor::Core War3MapEditor::ObjectData War3MapTrigger War3MapEditor::UiLibrary War3MapEditor::ScriptBuild)
