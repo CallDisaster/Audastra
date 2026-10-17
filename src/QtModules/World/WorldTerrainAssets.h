@@ -28,7 +28,12 @@ struct WorldAssetEntry {
     std::shared_ptr<const std::vector<std::byte>> ownedPayload;
     std::uint64_t ownedPayloadVersion = 0; // 进程内受控immutable owner版本，不是正文SHA。
 };
-// GUI 线程复制路径/身份并保活不可变正文；owner版本按weak ownership有界复用。
+struct WorldOwnedIdentityLimits {
+    // 只计本单元同时存活的identity工作vector容量，不计正文、allocator/control block或RSS。
+    // 默认也是硬上限，测试/调用方只能收紧；活owner不会因容量压力被逐出。
+    std::size_t maxMetadataBytes = 16 * 1024 * 1024;
+};
+// GUI 线程复制路径/身份并保活不可变正文；完整owned批量解析稳定weak ownership版本。
 // 后台读取用独立文件租约，不借用 Project/MPQ/QObject。
 struct WorldTerrainSources {
     std::filesystem::path archivePath, gameRoot;
@@ -37,11 +42,11 @@ struct WorldTerrainSources {
     std::optional<std::uint8_t> mainTileset;
     // 持有只读归档的身份租约；后台仍打开独立解析器，不并发使用借入的MPQ。
     std::shared_ptr<const MpqWorkspace> readOnlyArchive;
-    std::uint64_t editGeneration = 0, editRevision = 0;
+    std::size_t ownedIdentityMetadataCapacityBytes = 0; // 本次实际identity工作vector容量峰值；不是完整内存峰值。
 };
 [[nodiscard]] bool SameWorldTerrainSources(const WorldTerrainSources& a, const WorldTerrainSources& b);
 [[nodiscard]] Result<WorldTerrainSources> CaptureWorldTerrainSources(const QtProject::EditorProject& project,
-    std::size_t maxEntries = std::numeric_limits<std::size_t>::max());
+    std::size_t maxEntries = std::numeric_limits<std::size_t>::max(), const WorldOwnedIdentityLimits& identityLimits = {});
 // worker 内打开只读解析器（校验地图 SHA；游戏包按需挂载）。不可复制或并发读取。
 // 初始场景reader后续仅作来源检查；专用实例reader可在前一资源任务结束后独占移交，
 // 继续实际读取，逐项来源及任务前后租约复核不因挂载复用而省略。

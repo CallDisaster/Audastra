@@ -229,7 +229,7 @@ void ReplacementUndoRedoAndBranchesInvalidateLongLivedKeys() {
     const auto helperFirst = HelperIdentity(first); const auto thumbFirst = ThumbnailIdentity(thumbnails, first);
     Import(project, QStringLiteral("Fixture.bin"), Payload("BBB"));
     const auto replacement = Capture(project);
-    Require(first.editGeneration == replacement.editGeneration && first.editRevision == replacement.editRevision,
+    Require(!project.editTrackingReady_,
         "fixture deliberately covers imports before edit tracking is ready");
     Require(!SameWorldTerrainSources(first, replacement) && !(*oldReader.value)->MatchesSources(replacement), "equal-length owned replacement changes complete source identity");
     Require(HelperIdentity(replacement) != helperFirst && ThumbnailIdentity(thumbnails, replacement) != thumbFirst, "both long-lived keys observe owned replacement");
@@ -246,14 +246,16 @@ void ReplacementUndoRedoAndBranchesInvalidateLongLivedKeys() {
     const auto branch = Capture(project);
     Require(!project.AssetUndoStack()->canRedo() && !SameWorldTerrainSources(branch, replacement)
         && HelperIdentity(branch) != HelperIdentity(replacement) && ThumbnailIdentity(thumbnails, branch) != ThumbnailIdentity(thumbnails, replacement), "new undo branch with same path and size cannot inherit old keys");
+    const auto beforeRevision = project.editRevision_.Revision();
     Require(project.editRevision_.Observe({{"fixture", "changed"}}, "fixture edit revision").Succeeded(), "advance real edit revision");
     const auto revised = Capture(project);
-    Require(revised.editRevision != branch.editRevision && !SameWorldTerrainSources(branch, revised)
-        && HelperIdentity(revised) != HelperIdentity(branch) && ThumbnailIdentity(thumbnails, revised) != ThumbnailIdentity(thumbnails, branch), "captured edit revision participates in both keys");
+    Require(project.editRevision_.Revision() != beforeRevision && SameWorldTerrainSources(branch, revised)
+        && HelperIdentity(revised) == HelperIdentity(branch) && ThumbnailIdentity(thumbnails, revised) == ThumbnailIdentity(thumbnails, branch), "unrelated map revision cannot invalidate immutable resources");
+    const auto beforeGeneration = project.editRevision_.Generation();
     Require(project.editRevision_.Reset().Succeeded(), "reset real edit generation");
     const auto regenerated = Capture(project);
-    Require(regenerated.editGeneration != revised.editGeneration && !SameWorldTerrainSources(revised, regenerated)
-        && HelperIdentity(regenerated) != HelperIdentity(revised) && ThumbnailIdentity(thumbnails, regenerated) != ThumbnailIdentity(thumbnails, revised), "captured generation participates in both keys");
+    Require(project.editRevision_.Generation() != beforeGeneration && SameWorldTerrainSources(revised, regenerated)
+        && HelperIdentity(regenerated) == HelperIdentity(revised) && ThumbnailIdentity(thumbnails, regenerated) == ThumbnailIdentity(thumbnails, revised), "task generation is independent of immutable resource keys");
     auto ambiguous = regenerated; Entry(ambiguous, "Fixture.bin").ambiguous = true;
     Require(HelperIdentity(ambiguous) != HelperIdentity(regenerated)
         && ThumbnailIdentity(thumbnails, ambiguous) != ThumbnailIdentity(thumbnails, regenerated), "ambiguity participates in both long-lived keys");
@@ -265,7 +267,7 @@ void ReplacementUndoRedoAndBranchesInvalidateLongLivedKeys() {
     Require(invalidResult && !invalidResult->issue.isEmpty() && invalidResult->image.isNull(), "thumbnail reports missing owned version instead of reusing a successful image");
 }
 
-void WeakVersionsRejectAddressAliasesAndEvictConservatively() {
+void WeakVersionsRejectAliasesAndKeepCompleteBatchesStable() {
     QTemporaryDir directory; Require(directory.isValid(), "weak version temporary directory");
     const auto fixture = Fixture(std::filesystem::path(directory.path().toStdWString()) / L"source.w3x");
     std::weak_ptr<const std::vector<std::byte>> released;
@@ -295,22 +297,45 @@ void WeakVersionsRejectAddressAliasesAndEvictConservatively() {
     Require(Entry(afterExpiry, "Alias.bin").ownedPayloadVersion != firstVersion
         && Entry(afterExpiry, "Alias.bin").ownedPayloadVersion != Entry(second, "Alias.bin").ownedPayloadVersion,
         "expired ownership cannot create address-ABA cache reuse");
-    std::vector<std::shared_ptr<const std::vector<std::byte>>> held;
+    project.pendingImports_.clear();
+    std::vector<QtProject::EditorProject::ImportPayload> batch;
+    batch.reserve(1025);
     for (std::size_t index = 0; index < 1025; ++index) {
-        held.push_back(Payload("x"));
-        project.pendingImports_ = {{QStringLiteral("Evict.bin"), {}, 1, held.back()}};
-        const auto captured = Capture(project);
-        Require(Entry(captured, "Evict.bin").ownedPayloadVersion != 0, "all minted versions are nonzero");
-        if (!index) first = captured;
+        batch.push_back({QStringLiteral("Batch/%1.bin").arg(static_cast<qulonglong>(index)), Payload("x")});
     }
-    project.pendingImports_ = {{QStringLiteral("Evict.bin"), {}, 1, held.front()}};
-    const auto afterEviction = Capture(project);
+    Require(project.AddImportPayloads(batch, true, QStringLiteral("complete owned batch")).isEmpty(), "publish one real 1025-owner transaction");
+    const auto complete = Capture(project), repeated = Capture(project), third = Capture(project);
     WorldThumbnailCache thumbnails(nullptr);
-    Require(Entry(first, "Evict.bin").ownedPayload == Entry(afterEviction, "Evict.bin").ownedPayload
-        && Entry(first, "Evict.bin").ownedPayloadVersion != Entry(afterEviction, "Evict.bin").ownedPayloadVersion
-        && !SameWorldTerrainSources(first, afterEviction) && HelperIdentity(first) != HelperIdentity(afterEviction)
-        && ThumbnailIdentity(thumbnails, first) != ThumbnailIdentity(thumbnails, afterEviction),
-        "bounded memo eviction conservatively invalidates even the same still-live payload");
+    Require(SameWorldTerrainSources(complete, repeated) && SameWorldTerrainSources(complete, third)
+        && HelperIdentity(complete) == HelperIdentity(third)
+        && ThumbnailIdentity(thumbnails, complete) == ThumbnailIdentity(thumbnails, third),
+        "1025 live owners retain every identity across complete fixed-order captures");
+    Require(complete.ownedIdentityMetadataCapacityBytes > 0
+        && complete.ownedIdentityMetadataCapacityBytes <= WorldOwnedIdentityLimits{}.maxMetadataBytes, "actual identity vector capacity is accounted");
+    const auto refused = CaptureWorldTerrainSources(project, std::numeric_limits<std::size_t>::max(), {1});
+    Require(!refused.Succeeded() && !refused.value && refused.diagnostics.front().code == "WORLD_ASSET_IDENTITY_BUDGET", "tight metadata budget returns no partial source");
+    const auto afterBudget = Capture(project);
+    Require(SameWorldTerrainSources(complete, afterBudget), "budget refusal does not evict live identities or publish partial versions");
+    const auto enlarged = CaptureWorldTerrainSources(project, std::numeric_limits<std::size_t>::max(),
+        {WorldOwnedIdentityLimits{}.maxMetadataBytes + 1});
+    Require(!enlarged.Succeeded(), "identity metadata hard budget cannot be enlarged");
+
+    struct Views { std::vector<std::byte> a{std::byte{1}}, b{std::byte{2}}; };
+    auto storage = std::make_shared<Views>();
+    const std::shared_ptr<const std::vector<std::byte>> viewA(storage, &storage->a), viewB(storage, &storage->b);
+    project.pendingImports_ = {{QStringLiteral("ViewA.bin"), {}, 1, viewA}, {QStringLiteral("ViewB.bin"), {}, 1, viewB}};
+    const auto views = Capture(project), viewsAgain = Capture(project);
+    Require(Entry(views, "ViewA.bin").ownedPayloadVersion != Entry(views, "ViewB.bin").ownedPayloadVersion
+        && SameWorldTerrainSources(views, viewsAgain), "one live owner with different views has distinct stable identities");
+    const auto validImports = project.pendingImports_;
+    const std::shared_ptr<const std::vector<std::byte>> ownerless(std::shared_ptr<const std::vector<std::byte>>{}, &backing);
+    project.pendingImports_ = {{QStringLiteral("Ownerless.bin"), {}, 1, ownerless}};
+    for (unsigned attempt = 0; attempt < 2; ++attempt) {
+        const auto invalid = CaptureWorldTerrainSources(project);
+        Require(!invalid.Succeeded() && !invalid.value && invalid.diagnostics.front().code == "WORLD_ASSET_IDENTITY", "ownerless nonempty alias is refused rather than reissued each capture");
+    }
+    project.pendingImports_ = validImports;
+    Require(SameWorldTerrainSources(views, Capture(project)), "invalid ownership does not invalidate accepted owner-view identities");
 }
 }
 int main(int argc, char** argv) {
@@ -321,7 +346,7 @@ int main(int argc, char** argv) {
         OwnedImportsWinAndKeepAnimationProvenance();
         EmptyOwnedOverridesAndPerResourceBudgetsRemainLocal();
         ReplacementUndoRedoAndBranchesInvalidateLongLivedKeys();
-        WeakVersionsRejectAddressAliasesAndEvictConservatively();
+        WeakVersionsRejectAliasesAndKeepCompleteBatchesStable();
         std::cout << "world-resource-reader: source lease, owned payload and cache identity regressions passed\n";
         return 0;
     } catch (const std::exception& error) {

@@ -32,7 +32,6 @@ QString SourceKey(const WorldTerrainSources& sources) {
     QByteArray bytes;
     Field(bytes, Path(sources.archivePath)); Field(bytes, Path(sources.gameRoot));
     Field(bytes, QByteArray::fromStdString(sources.archiveSha));
-    Field(bytes, QByteArray::number(sources.editGeneration)); Field(bytes, QByteArray::number(sources.editRevision));
     Field(bytes, sources.mainTileset ? QByteArray::number(*sources.mainTileset) : QByteArray("unknown-tileset"));
     for (const auto& entry : sources.entries) {
         Field(bytes, QByteArray::fromStdString(entry.path)); Field(bytes, QByteArray::fromStdString(entry.archivePath));

@@ -40,7 +40,6 @@ Result<std::string> WorldPathingHelperResourceIdentity(const WorldTerrainSources
     std::string identity = "world-pathing-helper-resource-v2;";
     PathPart(identity, sources.archivePath); Part(identity, sources.archiveSha); PathPart(identity, sources.gameRoot);
     Part(identity, std::to_string(catalogRevision));
-    Part(identity, std::to_string(sources.editGeneration)); Part(identity, std::to_string(sources.editRevision));
     Part(identity, sources.mainTileset ? std::to_string(*sources.mainTileset) : "unknown-tileset");
     for (const auto& entry : sources.entries) {
         if (entry.ownedPayload && !entry.ownedPayloadVersion)

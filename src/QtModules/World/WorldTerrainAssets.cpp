@@ -13,41 +13,133 @@
 
 #include <Windows.h>
 #include <algorithm>
-#include <atomic>
 #include <chrono>
-#include <list>
+#include <functional>
 #include <map>
+#include <mutex>
+#include <new>
 #include <set>
+#include <stdexcept>
+#include <type_traits>
 
 namespace War3Map::Modules {
 namespace {
 constexpr std::size_t kResourceLimit = 16 * 1024 * 1024;
-constexpr std::size_t kOwnedVersionCacheEntries = 1024;
-Result<std::uint64_t> OwnedPayloadVersion(const std::shared_ptr<const std::vector<std::byte>>& payload) {
-    struct CachedVersion {
-        std::weak_ptr<const std::vector<std::byte>> owner;
-        std::uint64_t version;
+using OwnedBytes = std::shared_ptr<const std::vector<std::byte>>;
+struct WeakOwnedVersion { std::weak_ptr<const std::vector<std::byte>> owner; std::uint64_t version; };
+struct StrongOwnedVersion { OwnedBytes owner; std::uint64_t version; };
+struct OwnedInput { OwnedBytes owner; std::size_t entry; std::uint64_t version = 0; };
+struct OwnedIdentityFailure { const char* code; const char* message; };
+[[noreturn]] void IdentityBudgetFailure() {
+    throw OwnedIdentityFailure{"WORLD_ASSET_IDENTITY_BUDGET", "资源身份metadata工作容量超过预算；未逐出活owner或返回部分快照。"};
+}
+bool OwnedLess(const OwnedBytes& a, const OwnedBytes& b) {
+    const std::owner_less<OwnedBytes> owners;
+    if (owners(a, b)) return true;
+    if (owners(b, a)) return false;
+    // 只比较本次强保活的view；地址不进入持久键或weak registry的比较器。
+    return std::less<const std::vector<std::byte>*>{}(a.get(), b.get());
+}
+bool SameOwned(const OwnedBytes& a, const OwnedBytes& b) {
+    return a == b && !a.owner_before(b) && !b.owner_before(a);
+}
+Result<std::size_t> AssignOwnedVersions(std::vector<WorldAssetEntry>& entries, std::size_t limit) try {
+    if (limit > WorldOwnedIdentityLimits{}.maxMetadataBytes) IdentityBudgetFailure();
+    const auto inputCount = static_cast<std::size_t>(std::count_if(entries.begin(), entries.end(),
+        [](const auto& entry) { return static_cast<bool>(entry.ownedPayload); }));
+    if (!inputCount) return Result<std::size_t>::Success(0);
+    struct Registry {
+        std::mutex mutex;
+        std::vector<WeakOwnedVersion> rows; // 持久状态只有weak+版本；活owner永不淘汰。
+        std::uint64_t nextVersion = 1;
     };
-    // Capture在UI线程；每线程至多1024条弱身份，不延长正文生命周期，不缓存裸地址。
-    // 版本来自进程级计数器；淘汰或线程切换只会保守失效，不重用旧版本。
-    static thread_local std::list<CachedVersion> cache;
-    static std::atomic<std::uint64_t> nextVersion{1};
-    std::erase_if(cache, [](const auto& entry) { return entry.owner.expired(); });
-    for (auto found = cache.begin(); found != cache.end(); ++found) {
-        const auto held = found->owner.lock();
-        if (held == payload && !held.owner_before(payload) && !payload.owner_before(held)) {
-            cache.splice(cache.begin(), cache, found);
-            return Result<std::uint64_t>::Success(cache.front().version);
-        }
+    static Registry registry;
+    const std::scoped_lock lock(registry.mutex);
+    std::vector<StrongOwnedVersion> live;
+    std::vector<OwnedInput> inputs; // 同时存排序索引与逐输入版本结果，不另开未计费数组。
+    std::vector<WeakOwnedVersion> next;
+    std::size_t observed = 0;
+    const auto capacityBytes = [&] {
+        std::size_t total = 0;
+        const auto add = [&](std::size_t count, std::size_t element) {
+            if (count > std::numeric_limits<std::size_t>::max() / element) IdentityBudgetFailure();
+            const auto bytes = count * element;
+            if (bytes > limit || total > limit - bytes) IdentityBudgetFailure();
+            total += bytes;
+        };
+        add(registry.rows.capacity(), sizeof(WeakOwnedVersion));
+        add(live.capacity(), sizeof(StrongOwnedVersion));
+        add(inputs.capacity(), sizeof(OwnedInput));
+        add(next.capacity(), sizeof(WeakOwnedVersion));
+        return total;
+    };
+    const auto observe = [&] { observed = std::max(observed, capacityBytes()); };
+    const auto reserve = [&](auto& vector, std::size_t count) {
+        if (count > vector.max_size()) IdentityBudgetFailure();
+        const auto current = capacityBytes();
+        using Value = typename std::remove_reference_t<decltype(vector)>::value_type;
+        const auto extra = count > vector.capacity() ? count - vector.capacity() : 0;
+        if (extra > (limit - current) / sizeof(Value)) IdentityBudgetFailure();
+        // 三个工作vector都只从空表reserve一次；前置需求估算不称为实测完整峰值。
+        vector.reserve(count);
+        observe(); // 实际capacity含旧/新registry和全部工作表，分配后再核才可发布。
+    };
+    observe();
+    reserve(live, registry.rows.size());
+    for (const auto& row : registry.rows) {
+        auto held = row.owner.lock();
+        if (held) live.push_back({std::move(held), row.version});
+        else if (!row.owner.expired())
+            throw OwnedIdentityFailure{"WORLD_ASSET_IDENTITY", "资源weak身份仍有owner但没有有效view。"};
     }
-    auto version = nextVersion.load(std::memory_order_relaxed);
-    do {
-        if (version == std::numeric_limits<std::uint64_t>::max())
-            return Result<std::uint64_t>::Failure("World", "WORLD_ASSET_IDENTITY_EXHAUSTED", "资源缓存版本已耗尽，不能复用旧身份。");
-    } while (!nextVersion.compare_exchange_weak(version, version + 1, std::memory_order_relaxed));
-    if (cache.size() == kOwnedVersionCacheEntries) cache.pop_back();
-    cache.push_front({payload, version});
-    return Result<std::uint64_t>::Success(version);
+    reserve(inputs, inputCount);
+    for (std::size_t index = 0; index < entries.size(); ++index) if (const auto& payload = entries[index].ownedPayload) {
+        const auto held = std::weak_ptr<const std::vector<std::byte>>(payload).lock();
+        if (!held || !SameOwned(held, payload))
+            throw OwnedIdentityFailure{"WORLD_ASSET_IDENTITY", "资源正文缺少可保活的ownership，未重复签发临时版本。"};
+        inputs.push_back({payload, index});
+    }
+    std::sort(inputs.begin(), inputs.end(), [](const auto& a, const auto& b) { return OwnedLess(a.owner, b.owner); });
+    // 上轮merge有序，清除expired保持live顺序；不能每次重排整个registry。
+    const auto merge = [&](auto emit) {
+        std::size_t old = 0, input = 0;
+        while (old < live.size() || input < inputs.size()) {
+            if (input == inputs.size() || (old < live.size() && OwnedLess(live[old].owner, inputs[input].owner))) {
+                emit(live[old].owner, live[old].version, input, input); ++old;
+            } else {
+                const auto first = input++;
+                while (input < inputs.size() && SameOwned(inputs[first].owner, inputs[input].owner)) ++input;
+                const auto version = old < live.size() && SameOwned(live[old].owner, inputs[first].owner)
+                    ? live[old++].version : 0;
+                emit(inputs[first].owner, version, first, input);
+            }
+        }
+    };
+    std::size_t mergedCount = 0;
+    merge([&](const OwnedBytes&, std::uint64_t, std::size_t, std::size_t) {
+        if (mergedCount == next.max_size()) IdentityBudgetFailure();
+        ++mergedCount;
+    });
+    reserve(next, mergedCount);
+    merge([&](const OwnedBytes& owner, std::uint64_t version, std::size_t first, std::size_t end) {
+        if (!version) {
+            if (registry.nextVersion == std::numeric_limits<std::uint64_t>::max())
+                throw OwnedIdentityFailure{"WORLD_ASSET_IDENTITY_EXHAUSTED", "资源缓存版本已耗尽，不能复用旧身份。"};
+            version = registry.nextVersion++;
+        }
+        next.push_back({owner, version});
+        for (auto index = first; index < end; ++index) inputs[index].version = version;
+    });
+    observe();
+    for (const auto& input : inputs) entries[input.entry].ownedPayloadVersion = input.version;
+    registry.rows.swap(next); // 最后一次性发布；旧表此刻仍在next内，峰值费用已计。
+    return Result<std::size_t>::Success(observed);
+} catch (const OwnedIdentityFailure& failure) {
+    return Result<std::size_t>::Failure("World", failure.code, failure.message);
+} catch (const std::bad_alloc&) {
+    return Result<std::size_t>::Failure("World", "WORLD_ASSET_IDENTITY_ALLOCATION", "资源身份metadata分配失败，未返回部分快照。");
+} catch (const std::length_error&) {
+    return Result<std::size_t>::Failure("World", "WORLD_ASSET_IDENTITY_BUDGET", "资源身份metadata长度越界，未返回部分快照。");
 }
 struct ReadLease {
     HANDLE handle = INVALID_HANDLE_VALUE;
@@ -140,7 +232,6 @@ bool HasBlightMaskAlpha(const Render::TerrainAtlasSnapshot& atlas) {
 bool SameWorldTerrainSources(const WorldTerrainSources& a, const WorldTerrainSources& b) {
     return a.archivePath == b.archivePath && a.archiveSha == b.archiveSha && a.gameRoot == b.gameRoot
         && a.readOnlyArchive == b.readOnlyArchive
-        && a.editGeneration == b.editGeneration && a.editRevision == b.editRevision
         && a.mainTileset == b.mainTileset && a.entries.size() == b.entries.size()
         && std::equal(a.entries.begin(), a.entries.end(), b.entries.begin(), [](const auto& x, const auto& y) {
             // 两侧快照均保活immutable owner，比较期间不会发生释放后的地址复用。
@@ -150,7 +241,8 @@ bool SameWorldTerrainSources(const WorldTerrainSources& a, const WorldTerrainSou
         });
 }
 
-Result<WorldTerrainSources> CaptureWorldTerrainSources(const QtProject::EditorProject& project, std::size_t maxEntries) {
+Result<WorldTerrainSources> CaptureWorldTerrainSources(const QtProject::EditorProject& project, std::size_t maxEntries,
+    const WorldOwnedIdentityLimits& identityLimits) {
     if (!project.archiveSession_ && !project.readOnlyArchive_) {
         if (!project.sourceArchivePath_.empty())
             return Result<WorldTerrainSources>::Failure("World", "WORLD_ASSET_SOURCE_CHANGED",
@@ -174,8 +266,6 @@ Result<WorldTerrainSources> CaptureWorldTerrainSources(const QtProject::EditorPr
         result.readOnlyArchive = project.readOnlyArchive_;
     }
     result.gameRoot = project.war3GameRoot_;
-    result.editGeneration = project.editRevision_.Generation();
-    result.editRevision = project.editRevision_.Revision();
     if (project.mapEdits_) {
         if (const auto terrain = project.mapEdits_->Terrain()) result.mainTileset = terrain->header.mainTileset;
     }
@@ -186,13 +276,11 @@ Result<WorldTerrainSources> CaptureWorldTerrainSources(const QtProject::EditorPr
     for (const auto& entry : entries) {
         WorldAssetEntry captured{entry.path.toStdString(), entry.originalPath.toStdString(), entry.diskPath.toStdWString(),
             static_cast<std::int64_t>(entry.size), entry.ambiguous, entry.ownedPayload};
-        if (entry.ownedPayload) {
-            auto version = OwnedPayloadVersion(entry.ownedPayload);
-            if (!version.Succeeded()) return {std::nullopt, std::move(version.diagnostics)};
-            captured.ownedPayloadVersion = *version.value;
-        }
         result.entries.push_back(std::move(captured));
     }
+    auto identity = AssignOwnedVersions(result.entries, identityLimits.maxMetadataBytes);
+    if (!identity.Succeeded()) return {std::nullopt, std::move(identity.diagnostics)};
+    result.ownedIdentityMetadataCapacityBytes = *identity.value;
     return Result<WorldTerrainSources>::Success(std::move(result));
 }
 
