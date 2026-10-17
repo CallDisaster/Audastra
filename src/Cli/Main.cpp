@@ -31,6 +31,7 @@
 #include "UpdateCommand.h"
 #include "NameQueryCommand.h"
 #include "ResourceCheckCommand.h"
+#include "GameExtractCommand.h"
 #include "AudastraVersion.generated.h"
 
 #include <algorithm>
@@ -121,7 +122,8 @@ void PrintUsage() {
         << "war3-map-cli object-layer-query <map-archive> <source-sha256> <unit|ability|item|buff|upgrade|doodad|destructable> <start-index> <limit-1..128>\n"
         << "war3-map-cli object-inspect <type> <table.ini>\n"
         << "war3-map-cli object-roundtrip <type> <table.ini>\n"
-        << "war3-map-cli game-extract <war3-root> <internal\\path> <out-file>\n"
+        << "war3-map-cli game-extract <war3-root> <internal\\path> <out-file> [--tileset <A-Z>]\n"
+        << "  --tileset: strict game-only JSON source and member SHA256, max 64 MiB; excludes map/session overrides\n"
         << "war3-map-cli mpq-list <archive> [name-filter]\n"
         << "war3-map-cli mpq-extract <archive> <internal\\path> <out-file>\n"
         << "war3-map-cli blp-decode <in.blp> <out.ppm>\n"
@@ -473,33 +475,7 @@ int wmain(int argc, wchar_t** argv) {
             argv[3]);
     }
 
-    if (command == L"game-extract" && argc == 5) {
-        const std::filesystem::path root = argv[2];
-        const std::string name = Utf8Argument(argv[3]);
-        auto mounted = War3Map::Game::GameDataSource::Mount(root);
-        if (!mounted.Succeeded() || !mounted.value.has_value()) {
-            PrintDiagnostics(mounted.diagnostics);
-            return 1;
-        }
-        auto data = mounted.value->ReadFile(name);
-        if (!data.Succeeded() || !data.value.has_value()) {
-            PrintDiagnostics(data.diagnostics);
-            return 1;
-        }
-        std::ofstream out(argv[4], std::ios::binary);
-        if (!out) {
-            std::cerr << "Game: OUTPUT_OPEN_FAILED\n";
-            return 1;
-        }
-        out.write(reinterpret_cast<const char*>(data.value->data()),
-                  static_cast<std::streamsize>(data.value->size()));
-        std::cout << "extracted=" << name << " bytes=" << data.value->size() << '\n';
-        if (data.value->size() >= 4) {
-            const auto* magic = reinterpret_cast<const char*>(data.value->data());
-            std::cout << "magic=" << std::string(magic, 4) << '\n';
-        }
-        return 0;
-    }
+    if (command == L"game-extract") return RunGameExtract(argc, argv);
 
     if (command == L"mpq-list" && (argc == 3 || argc == 4)) {
         auto archive = War3Map::Mpq::MpqArchive::OpenReadOnly(argv[2]);

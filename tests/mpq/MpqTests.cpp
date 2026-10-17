@@ -12,9 +12,12 @@
 #include "War3MapCore/Image/BlpImage.h"
 #include "War3MapCore/Resources/ImportTable.h"
 #include "War3MapCore/Text/SlkCells.h"
+#include "GameExtractCommand.h"
 
 #include "Mpq/MpqCrypt.h"
 #include "Mpq/MpqDecompress.h"
+
+#include <nlohmann/json.hpp>
 
 #include <Windows.h>
 
@@ -29,6 +32,7 @@
 #include <iostream>
 #include <limits>
 #include <span>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -1744,6 +1748,150 @@ void TestOwnedTilesetArchive() {
     Require(!GameDataSource::MountStrict(temp.Path(), '/').Succeeded(), "tileset is not a path fragment");
 }
 
+struct GameExtractCall {
+    int code = 0;
+    std::string output;
+    std::string errors;
+};
+
+GameExtractCall CallGameExtract(const std::filesystem::path& root, const std::filesystem::path& output,
+    const std::wstring& member, const std::vector<std::wstring>& options = {}) {
+    std::vector<std::wstring> words{L"war3-map-cli", L"game-extract", root.wstring(), member, output.wstring()};
+    words.insert(words.end(), options.begin(), options.end());
+    std::vector<wchar_t*> arguments;
+    for (auto& word : words) arguments.push_back(word.data());
+    std::ostringstream capturedOutput, capturedErrors;
+    struct RestoreStreams {
+        std::streambuf* output;
+        std::streambuf* errors;
+        ~RestoreStreams() { std::cout.rdbuf(output); std::cerr.rdbuf(errors); }
+    } restore{std::cout.rdbuf(capturedOutput.rdbuf()), std::cerr.rdbuf(capturedErrors.rdbuf())};
+    const auto code = RunGameExtract(static_cast<int>(arguments.size()), arguments.data());
+    return {code, capturedOutput.str(), capturedErrors.str()};
+}
+
+void TestGameExtractTilesetCommand() {
+    using namespace War3Map::Mpq;
+    TempDirectory temp;
+    const auto nestedPath = temp.Path() / "fixture.mpq";
+    const std::vector<MpqBuildFile> nestedFiles{{"same.bin", TextBytes("abc"), false}};
+    Require(WriteMpqArchive(nestedPath, nestedFiles).Succeeded(), "extract nested fixture write");
+    const auto nested = ReadAll(nestedPath);
+    const auto nestedSha = War3Map::Sha256(nested);
+    Require(nestedSha.Succeeded(), "extract nested fixture SHA");
+    const auto writeBase = [&](bool withTileset) {
+        std::vector<MpqBuildFile> files{{"same.bin", TextBytes("base"), false}};
+        if (withTileset) files.push_back({"Z.mpq", nested, true});
+        std::filesystem::remove(temp.Path() / "war3.mpq");
+        Require(WriteMpqArchive(temp.Path() / "war3.mpq", files).Succeeded(), "extract base fixture write");
+    };
+    writeBase(true);
+    // 磁盘独立 Z.mpq 不是核心主包中的嵌套来源，必须始终忽略。
+    const std::vector<MpqBuildFile> diskFiles{{"same.bin", TextBytes("wrong disk tileset"), false}};
+    Require(WriteMpqArchive(temp.Path() / "Z.mpq", diskFiles).Succeeded(), "extract standalone tileset fixture");
+    const auto legacyPath = temp.Path() / "legacy.bin";
+    const auto legacy = CallGameExtract(temp.Path(), legacyPath, L"same.bin");
+    Require(legacy.code == 0 && ReadAll(legacyPath) == TextBytes("base") && legacy.errors.empty()
+        && legacy.output == "extracted=same.bin bytes=4\nmagic=base\n", "no-flag extraction must retain original source and exact stdout");
+    const auto cityPath = temp.Path() / "city.bin";
+    const auto city = CallGameExtract(temp.Path(), cityPath, L"same.bin", {L"--tileset", L"Z"});
+    Require(city.code == 0 && ReadAll(cityPath) == TextBytes("abc") && city.errors.empty(), "explicit Z must extract the owned nested member");
+    const auto cityJson = nlohmann::json::parse(city.output);
+    Require(cityJson.at("ok") == true && cityJson.at("scope") == "game-only" && cityJson.at("tileset") == "Z"
+        && cityJson.at("path") == "same.bin" && cityJson.at("bytes") == 3 && cityJson.at("diagnostics").empty()
+        && cityJson.at("source_archive") == "war3.mpq|Z.mpq|sha256:" + *nestedSha.value
+        && cityJson.at("member_sha256") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        "nested archive identity and original member SHA must be separate, exact output fields");
+    const std::vector<MpqBuildFile> patch{{"same.bin", TextBytes("hello"), false}};
+    Require(WriteMpqArchive(temp.Path() / "war3patch.mpq", patch).Succeeded(), "extract direct patch write");
+    const auto patchPath = temp.Path() / "patch.bin";
+    const auto patched = CallGameExtract(temp.Path(), patchPath, L"same.bin", {L"--tileset", L"Z"});
+    Require(patched.code == 0, "direct patch command failed: " + patched.errors);
+    const auto patchJson = nlohmann::json::parse(patched.output);
+    Require(patched.code == 0 && ReadAll(patchPath) == TextBytes("hello")
+        && patchJson.at("source_archive") == "war3patch.mpq" && patchJson.at("bytes") == 5
+        && patchJson.at("member_sha256") == "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+        "direct patch must win over nested Z and report its actual bytes/source/SHA");
+    std::filesystem::remove(temp.Path() / "war3patch.mpq");
+    writeBase(false);
+    const auto absentPath = temp.Path() / "absent.bin";
+    const auto absent = CallGameExtract(temp.Path(), absentPath, L"same.bin", {L"--tileset", L"Z"});
+    Require(absent.code == 0, "absent nested command failed: " + absent.errors);
+    const auto absentJson = nlohmann::json::parse(absent.output);
+    Require(absent.code == 0 && ReadAll(absentPath) == TextBytes("base")
+        && absent.errors.find("tileset-archive-absent") != std::string::npos
+        && absentJson.at("source_archive") == "war3.mpq" && absentJson.at("diagnostics").size() == 1
+        && absentJson.at("diagnostics").at(0).at("code") == "tileset-archive-absent"
+        && absentJson.at("diagnostics").at(0).at("severity") == "info",
+        "confirmed missing nested Z must report Info and the true base source, ignoring disk Z");
+    const auto controlRoot = temp.Path() / "control-root";
+    std::filesystem::create_directory(controlRoot);
+    const std::string controlName = "Models\\line\n\"quoted.bin";
+    const auto controlArchive = BuildSyntheticMpq(controlRoot, controlName, "0123456789ABCDEF");
+    std::filesystem::rename(controlArchive, controlRoot / "war3.mpq");
+    const auto escaped = CallGameExtract(controlRoot, temp.Path() / "escaped.bin", L"Models\\line\n\"quoted.bin", {L"--tileset", L"Z"});
+    Require(escaped.code == 0, "control-character path command failed: " + escaped.errors);
+    const auto escapedJson = nlohmann::json::parse(escaped.output);
+    Require(escaped.code == 0 && escapedJson.at("path") == controlName && escapedJson.at("bytes") == 16
+        && escapedJson.at("source_archive") == "war3.mpq", "success JSON must roundtrip control characters, quotes and backslashes in member paths");
+    for (const auto& value : {L"", L"ZZ", L"\u015A"}) {
+        const auto output = temp.Path() / "invalid-byte.bin";
+        const auto invalid = CallGameExtract(temp.Path(), output, L"same.bin", {L"--tileset", value});
+        Require(invalid.code == 2 && invalid.output.empty() && !std::filesystem::exists(output), "tileset argument must be exactly one byte without Unicode truncation");
+    }
+    for (const auto& value : {L"z", L"/"}) {
+        const auto output = temp.Path() / "invalid-tileset.bin";
+        const auto invalid = CallGameExtract(temp.Path(), output, L"same.bin", {L"--tileset", value});
+        Require(invalid.code == 1 && invalid.errors.find("tileset-invalid") != std::string::npos
+            && !std::filesystem::exists(output), "single-byte validity must reuse MountStrict's existing A-Z rule");
+    }
+    for (const auto& flags : std::vector<std::vector<std::wstring>>{{L"--tileset"}, {L"--unknown", L"Z"}, {L"--tileset", L"Z", L"--tileset", L"Y"}}) {
+        const auto output = temp.Path() / "invalid-options.bin";
+        Require(CallGameExtract(temp.Path(), output, L"same.bin", flags).code == 2 && !std::filesystem::exists(output), "missing/repeated/unknown option must be rejected before extraction");
+    }
+}
+
+void TestGameExtractFailureBoundaries() {
+    using namespace War3Map::Mpq;
+    TempDirectory temp;
+    const auto nestedPath = temp.Path() / "fixture.mpq";
+    const std::vector<MpqBuildFile> nestedFiles{{"same.bin", TextBytes("nested lower"), false}};
+    Require(WriteMpqArchive(nestedPath, nestedFiles).Succeeded(), "extract failure nested fixture");
+    const std::vector<MpqBuildFile> base{{"same.bin", TextBytes("base lower"), false}, {"Z.mpq", ReadAll(nestedPath), true}};
+    Require(WriteMpqArchive(temp.Path() / "war3.mpq", base).Succeeded(), "extract failure base fixture");
+    const auto missingPath = temp.Path() / "missing.bin";
+    const auto missing = CallGameExtract(temp.Path(), missingPath, L"missing.bin", {L"--tileset", L"Z"});
+    Require(missing.code == 1 && missing.errors.find("file-not-found") != std::string::npos
+        && missing.output.empty() && !std::filesystem::exists(missingPath), "true missing must keep its diagnostic and create no output");
+    const auto output = temp.Path() / "keep.bin";
+    const auto sentinel = TextBytes("original output sentinel");
+    WriteAll(output, sentinel);
+    const auto rejects = [&](const std::vector<MpqBuildFile>& patch, const std::string& code) {
+        std::filesystem::remove(temp.Path() / "war3patch.mpq");
+        Require(WriteMpqArchive(temp.Path() / "war3patch.mpq", patch).Succeeded(), "extract failure patch fixture");
+        const auto result = CallGameExtract(temp.Path(), output, L"same.bin", {L"--tileset", L"Z"});
+        Require(result.code == 1 && result.output.empty() && !result.errors.empty()
+            && result.errors.find("file-not-found") == std::string::npos && result.errors.find(code) != std::string::npos
+            && ReadAll(output) == sentinel, "bad/limited high layer must refuse lower bytes without truncating output");
+    };
+    rejects({{"same.bin", {}, false, MpqRawBlock{{std::byte{0x10}, std::byte{0x01}}, 32,
+        kFileExists | kFileSingleUnit | kFileCompress, 0}}}, "SECTOR_UNSUPPORTED_COMPRESSION");
+    constexpr std::uint32_t aboveLimit = 64u * 1024u * 1024u + 1;
+    // 小原始块只宣称超预算大小；不为回归分配 64 MiB 数据。
+    for (const auto& member : {"same.bin", "Z.mpq"}) {
+        rejects({{member, {}, false, MpqRawBlock{{std::byte{0x10}, std::byte{0x01}}, aboveLimit,
+            kFileExists | kFileSingleUnit | kFileCompress, 0}}}, "FILE_READ_BUDGET_EXCEEDED");
+    }
+    rejects({{"Z.mpq", TextBytes("invalid selected nested archive"), false}}, "Mpq");
+    WriteAll(temp.Path() / "war3patch.mpq", TextBytes("invalid core archive"));
+    const auto corruptCore = CallGameExtract(temp.Path(), output, L"same.bin", {L"--tileset", L"Z"});
+    Require(corruptCore.code == 1 && corruptCore.errors.find("archive-open-failed") != std::string::npos
+        && corruptCore.output.empty() && ReadAll(output) == sentinel, "strict flag must refuse a present corrupt patch before fallback");
+    const auto legacyPath = temp.Path() / "legacy-best-effort.bin";
+    Require(CallGameExtract(temp.Path(), legacyPath, L"same.bin").code == 0 && ReadAll(legacyPath) == TextBytes("base lower"),
+        "no-flag extraction must preserve legacy best-effort corrupt-archive handling");
+}
+
 void TestSoundInfoVerifiedDiscovery() {
     TempDirectory temp;
     const std::string path = "Abilities\\Spells\\Human\\Blizzard\\BlizzardTarget1.wav";
@@ -2009,6 +2157,8 @@ int main() {
         TestGameBoundedReadPriority();
         TestGameStrictMount();
         TestOwnedTilesetArchive();
+        TestGameExtractTilesetCommand();
+        TestGameExtractFailureBoundaries();
         TestGameDataSourceKnownInventory();
         TestSoundInfoVerifiedDiscovery();
         TestSharedSlkParserModes();

@@ -1,8 +1,9 @@
-add_executable(war3-map-mpq-tests MpqTests.cpp)
+add_executable(war3-map-mpq-tests MpqTests.cpp "${PROJECT_SOURCE_DIR}/src/Cli/GameExtractCommand.cpp")
 target_include_directories(war3-map-mpq-tests
     PRIVATE
-        "${PROJECT_SOURCE_DIR}/src/Core")
-target_link_libraries(war3-map-mpq-tests PRIVATE War3MapEditor::Core)
+        "${PROJECT_SOURCE_DIR}/src/Core"
+        "${PROJECT_SOURCE_DIR}/src/Cli")
+target_link_libraries(war3-map-mpq-tests PRIVATE War3MapEditor::Core audastra-json)
 target_compile_definitions(war3-map-mpq-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS
     MPQ_TEST_FIXTURES="${PROJECT_SOURCE_DIR}/tests/fixtures")
 target_compile_options(war3-map-mpq-tests PRIVATE /W4 /permissive- /utf-8)
