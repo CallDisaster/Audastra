@@ -83,6 +83,13 @@ void CompletedFrameMetadataSurvivesPngRoundTrip() {
     frame.view.rowMajorViewProjection[0] = 1.25f;
     frame.camera = {sizeof(War3RenderCameraV2), 10, 20, 30, 1400, 0.25f, 0.75f};
     frame.rgba = pixels;
+    Render::TerrainGridCaptureReceipt terrain;
+    terrain.sourceWidth = 3; terrain.sourceHeight = 2; terrain.hiddenTileCount = 1;
+    terrain.accepted = {sizeof(terrain.accepted),1,
+        {sizeof(War3RenderViewInfoV2),2,2,frame.view.identity.frameCount,frame.documentRevision,31,41,51},6,1,4,6,1,2,2,3};
+    terrain.budget.base = {2,1,0,1}; terrain.budget.transitions = {3,1,2,0};
+    terrain.budget.blight = {1,1,0,0}; terrain.budget.water = {4,2,1,1};
+    frame.terrainGrid = terrain;
     auto animation = std::make_shared<Render::AnimationFrame>();
     animation->documentRevision = 32; animation->sceneVersion = 61; animation->contentVersion = 71;
     frame.animation = animation;
@@ -104,6 +111,19 @@ void CompletedFrameMetadataSurvivesPngRoundTrip() {
         && input.sample.identity.viewEpoch == 51 && input.rgba == pixels,
         "common screenshot input must retain completed frame identity and pixels");
     const auto completion = input.metadata.value("completion").toObject();
+    const auto grid = completion.value("terrain").toObject();
+    Require(grid.value("representation").toString() == QStringLiteral("shared-grid-v1")
+        && grid.value("completion_bound").toBool()
+        && grid.value("counts_meaning").toString() == QStringLiteral("accepted-geometry-not-visible-pixel-contribution")
+        && grid.value("grid_vertex_count").toString() == QStringLiteral("6")
+        && grid.value("base_quad_count").toString() == QStringLiteral("1")
+        && grid.value("water_quad_count").toString() == QStringLiteral("2")
+        && grid.value("hidden_base_tiles").toString() == QStringLiteral("1")
+        && grid.value("water").toObject().value("requested").toString() == QStringLiteral("4")
+        && grid.value("water").toObject().value("displayed").toString() == QStringLiteral("2")
+        && grid.value("water").toObject().value("omitted").toString() == QStringLiteral("1")
+        && grid.value("water").toObject().value("no_contribution").toString() == QStringLiteral("1"),
+        "terrain metadata must retain the frozen accepted counts and separate candidate omissions");
     Require(completion.value("document_revision").toString() == QStringLiteral("9007199254740993")
         && completion.value("document_revision_space").toString() == QStringLiteral("viewport_presentation")
         && completion.value("viewport_revision").toString() == QStringLiteral("9007199254740993")
@@ -123,6 +143,7 @@ void CompletedFrameMetadataSurvivesPngRoundTrip() {
     staticFrame.documentRevision = 23;
     const auto noSource = MakeWorldScreenshotEncodeInput(std::move(staticFrame));
     Require(noSource.sample.identity.viewportRevision == 23 && noSource.sample.identity.mapEditRevision == 0
+        && !noSource.metadata.value("completion").toObject().contains("terrain")
         && noSource.metadata.value("completion").toObject().value("map_edit_revision").isNull()
         && noSource.metadata.value("completion").toObject().value("map_edit_revision_source").toString() == QStringLiteral("unknown"),
         "a static frame without document-source evidence must not invent a map edit revision");

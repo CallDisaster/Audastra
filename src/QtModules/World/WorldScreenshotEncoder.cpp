@@ -89,6 +89,25 @@ WorldScreenshotEncodeInput MakeWorldScreenshotEncodeInput(Render::CapturedFrameR
         {"camera", QJsonObject{{"target_x", camera.targetX}, {"target_y", camera.targetY}, {"target_z", camera.targetZ},
             {"distance", camera.distance}, {"yaw_radians", camera.yawRadians}, {"pitch_radians", camera.pitchRadians}}},
         {"row_major_view_projection", matrix}, {"model_layers_revision", number(frame.modelLayersRevision)}};
+    if (frame.terrainGrid) {
+        const auto& terrain = *frame.terrainGrid; const auto& accepted = terrain.accepted;
+        const auto layer = [&](const Render::TerrainGroundLayerCounts& value) {
+            return QJsonObject{{"requested", number(value.requested)}, {"displayed", number(value.displayed)},
+                {"omitted", number(value.omitted)}, {"no_contribution", number(value.noContribution)},
+                {"omission_reason_bits", static_cast<int>(value.omissionReasons)},
+                {"resource_admission_checked", value.resourceAdmissionChecked},
+                {"texture_slots_before_admission", number(value.textureSlotsBeforeAdmission)}};
+        };
+        completion.insert("terrain", QJsonObject{{"representation", "shared-grid-v1"}, {"completion_bound", true},
+            {"counts_meaning", "accepted-geometry-not-visible-pixel-contribution"},
+            {"grid_width", static_cast<int>(terrain.sourceWidth)}, {"grid_height", static_cast<int>(terrain.sourceHeight)},
+            {"grid_vertex_count", number(accepted.gridVertexCount)}, {"base_quad_count", number(accepted.baseQuadCount)},
+            {"transition_vertex_count", number(accepted.transitionVertexCount)}, {"blight_index_count", number(accepted.blightIndexCount)},
+            {"blight_batch_count", number(accepted.blightBatchCount)}, {"water_quad_count", number(accepted.waterQuadCount)},
+            {"ground_texture_count", static_cast<int>(accepted.groundTextureCount)}, {"pass_bits", static_cast<int>(accepted.passBits)},
+            {"hidden_base_tiles", number(terrain.hiddenTileCount)}, {"base", layer(terrain.budget.base)},
+            {"transitions", layer(terrain.budget.transitions)}, {"blight", layer(terrain.budget.blight)}, {"water", layer(terrain.budget.water)}});
+    }
     if (frame.skin) completion.insert("animation", QJsonObject{{"scene_version", number(frame.skin->sceneVersion)},
         {"content_version", number(frame.skin->contentVersion)}, {"frame_number", number(frame.skin->frameCount)},
         {"source_document_revision", frame.animation ? QJsonValue(number(frame.animation->documentRevision)) : QJsonValue(QJsonValue::Null)},

@@ -5,6 +5,8 @@
 #include "War3MapCore/RenderPluginMaterialState.h"
 #include "War3MapCore/RenderPluginStaticSamplers.h"
 #include "War3MapCore/RenderPluginTerrainBlight.h"
+#include "War3MapCore/RenderPluginTerrainGrid.h"
+#include "War3MapCore/Render/TerrainTextureAtlas.h"
 #include "Backend/D3D11/D3D11Scene.h"
 #include "Scene/ModelSkinInput.h"
 #include "Particles/ParticleInput.h"
@@ -20,12 +22,14 @@
 #include <memory>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <thread>
 
 namespace {
 using War3Map::Render::D3D11Scene;
 using War3Map::Render::Mesh;
 using War3Map::Render::TerrainOwnedCapacityBytes;
+using War3Map::Render::TerrainGridUploadMetadataBytes;
 using War3Map::Render::ModelScene;
 using War3Map::Render::SkinPose;
 using War3Map::Render::ParticleSceneData;
@@ -125,6 +129,7 @@ struct Renderer {
     War3RenderCaptureInfoV2 captureInfo{sizeof(War3RenderCaptureInfoV2)};
     War3RenderViewInfoV2 viewInfo{sizeof(War3RenderViewInfoV2)};
     War3RenderCapturedFrameV2 capturedFrame{sizeof(War3RenderCapturedFrameV2)};
+    War3RenderTerrainGridCaptureFactsV2 capturedGridFacts{sizeof(War3RenderTerrainGridCaptureFactsV2)};
     War3RenderSkinStatusV2 skinStatus{sizeof(War3RenderSkinStatusV2)};
     War3RenderSkinnedCapturedFrameV2 capturedSkinFrame{sizeof(War3RenderSkinnedCapturedFrameV2)};
     War3RenderParticleCapturedFrameV2 capturedParticleFrame{sizeof(War3RenderParticleCapturedFrameV2)};
@@ -150,6 +155,8 @@ struct Renderer {
     std::atomic<std::uint32_t> testFault{0};
     std::atomic<bool> testRosterGateReached{false};
     std::array<std::uint64_t, 7> completedAssetResources{};
+    std::array<std::uint64_t, 16> completedTerrainGridResources{};
+    War3RenderTerrainGridCaptureFactsV2 completedTerrainGridTestFacts{};
 #endif
     std::int32_t skinUploadResult = 0;
     std::int32_t visibilityUploadResult = 0;
@@ -377,6 +384,8 @@ struct Renderer {
                     completedModelEpoch = next.modelEpoch; visibilityUploadResult = static_cast<std::int32_t>(visibilityError);
 #ifdef WAR3_RENDER_TEST_FAULTS
                     completedAssetResources = scene.TestAssetResources();
+                    completedTerrainGridResources = scene.TestTerrainGridResources();
+                    completedTerrainGridTestFacts = scene.TerrainGridFacts();
 #endif
                     skinUploadResult = static_cast<std::int32_t>(modelError);
                     skinStatus.result = skinUploadResult;
@@ -448,6 +457,11 @@ struct Renderer {
                         // 和 pixels 在同一临界区保存。普通后续帧只能更新 viewInfo，
                         // 不能把新相机/矩阵贴到上一次读回像素的身份上。
                         capturedFrame = {sizeof(War3RenderCapturedFrameV2), captureInfo, viewInfo, next.camera};
+                        // 事实来自已原子安装的GPU owner，不从可能上传失败的next.mesh拼统计。
+                        capturedGridFacts = SUCCEEDED(meshError) ? scene.TerrainGridFacts()
+                            : War3RenderTerrainGridCaptureFactsV2{};
+                        capturedGridFacts.structSize = sizeof(capturedGridFacts);
+                        capturedGridFacts.view = viewInfo;
                         capturedSkinFrame = {sizeof(War3RenderSkinnedCapturedFrameV2), capturedFrame, skinStatus};
                         capturedParticleFrame = {sizeof(War3RenderParticleCapturedFrameV2), capturedSkinFrame, scene.ParticleStatus()};
                         capturedPresentationFrame = {sizeof(War3RenderEditorCapturedFrameV2), capturedFrame, skinStatus,
@@ -799,6 +813,227 @@ std::int32_t WAR3_RENDER_CALL GetTerrainBlightCapabilities(War3RendererHandle,
     return 0;
 }
 bool Unit(float value) { return std::isfinite(value) && value >= 0 && value <= 1; }
+bool GridFace(const std::uint32_t* indices, std::uint32_t quad) noexcept {
+    const auto first = quad * 4;
+    const std::array<std::uint32_t, 6> expected{first, first + 1, first + 2, first + 1, first + 3, first + 2};
+    return std::equal(expected.begin(), expected.end(), indices);
+}
+std::optional<std::uint32_t> GridUvCell(const TextureChains& chains, std::size_t texture,
+    float left, float right, float top, float bottom) noexcept {
+    if (texture >= chains.descriptions.size() || !Unit(left) || !Unit(right) || !Unit(top) || !Unit(bottom)
+        || left > right || top > bottom) return {};
+    const auto& description = chains.descriptions[texture];
+    const auto& mip = chains.levels[texture].front();
+    const auto column = static_cast<std::uint32_t>(left * description.atlasColumns);
+    const auto row = static_cast<std::uint32_t>(top * description.atlasRows);
+    const auto uv = War3Map::Render::ResolveTerrainAtlasCellUv(mip.width, mip.height,
+        description.atlasColumns, description.atlasRows, column, row);
+    if (!uv || uv->left != left || uv->right != right || uv->top != top || uv->bottom != bottom) return {};
+    return row * description.atlasColumns + column;
+}
+std::int32_t WAR3_RENDER_CALL GetTerrainGridCapabilities(War3RendererHandle,
+    War3RenderTerrainGridCapabilitiesV2* output) noexcept {
+    if (!output || output->structSize < sizeof(*output)) return kInvalid;
+    const War3RenderTerrainGridCapabilitiesV2 value{sizeof(value), WAR3_RENDER_TERRAIN_GRID_FETCH_V1,
+        kMaxTerrainTextures, WAR3_RENDER_TERRAIN_GRID_MAX_BLIGHT_BATCHES, 1, 0};
+    std::memcpy(output, &value, sizeof(value));
+    return 0;
+}
+std::int32_t WAR3_RENDER_CALL SubmitTerrainGridFrame(War3RendererHandle renderer,
+    const War3RenderTerrainGridFrameV2* borrowed) noexcept {
+    if (!borrowed || borrowed->structSize != sizeof(*borrowed)) return kInvalid;
+    const auto input = *borrowed; // 先冻结计数及指针；借入正文仍只在本次调用内消费。
+    const auto& ground = input.groundScene;
+    if (input.gridFormat != WAR3_RENDER_TERRAIN_GRID_FETCH_V1 || ground.structSize != sizeof(ground)
+        || ground.textureCount > kMaxTerrainTextures || ground.vertexCount > kMaxTerrainVertices
+        || ground.indexCount > kMaxTerrainIndices || ground.batchCount > kMaxTerrainBatches
+        || input.baseQuadCount > WAR3_RENDER_TERRAIN_GRID_MAX_SOURCE_TILES
+        || input.waterQuadCount > WAR3_RENDER_TERRAIN_GRID_MAX_SOURCE_TILES
+        || input.baseIndexCount != std::uint64_t(input.baseQuadCount) * 6
+        || input.waterIndexCount != std::uint64_t(input.waterQuadCount) * 6
+        || input.blightIndexCount > std::uint64_t(input.baseQuadCount) * 6
+        || input.blightIndexCount % 6 || input.blightBatchCount > WAR3_RENDER_TERRAIN_GRID_MAX_BLIGHT_BATCHES
+        || input.baseBatchCount > kMaxTerrainBatches) return kInvalid;
+    const auto pair = [](std::uint32_t count, const auto* pointer) { return (count == 0) == (pointer == nullptr); };
+    if (!pair(ground.vertexCount, ground.vertices) || !pair(ground.indexCount, ground.indices)
+        || !pair(ground.batchCount, ground.batches) || !pair(ground.textureCount, ground.textures)
+        || !pair(input.gridVertexCount, input.groundGrid) || !pair(input.baseQuadCount, input.baseQuads)
+        || !pair(input.baseIndexCount, input.baseIndices) || !pair(input.baseBatchCount, input.baseBatches)
+        || !pair(input.blightIndexCount, input.blightIndices) || !pair(input.blightBatchCount, input.blightBatches)
+        || !pair(input.blightIndexCount, input.blightTexture) || !pair(input.waterQuadCount, input.waterGrid)
+        || !pair(input.waterQuadCount, input.waterQuads) || !pair(input.waterIndexCount, input.waterIndices)
+        || !pair(input.waterQuadCount, input.waterTexture)) return kInvalid;
+    const auto vertices = std::uint64_t(input.width) * input.height;
+    const bool empty = input.gridVertexCount == 0;
+    if (empty) {
+        if (input.width || input.height || input.baseQuadCount || input.blightIndexCount || input.waterQuadCount
+            || ground.vertexCount || ground.indexCount || ground.batchCount || ground.textureCount || input.baseBatchCount
+            || input.blightBatchCount) return kInvalid;
+        try {
+            auto mesh = std::make_shared<Mesh>(); mesh->terrain = true; mesh->terrainGrid = true;
+            mesh->revision = ground.documentRevision;
+            return UpdateScene(renderer, std::move(mesh));
+        } catch (...) { return static_cast<std::int32_t>(E_OUTOFMEMORY); }
+    }
+    if (input.width < 2 || input.height < 2 || input.width > WAR3_RENDER_TERRAIN_GRID_MAX_DIMENSION
+        || input.height > WAR3_RENDER_TERRAIN_GRID_MAX_DIMENSION || vertices != input.gridVertexCount) return kInvalid;
+    const auto tiles = std::uint64_t(input.width - 1) * (input.height - 1);
+    const auto records = vertices * (input.waterQuadCount ? 2 : 1) + ground.vertexCount;
+    const auto indices = std::uint64_t(ground.indexCount) + input.baseIndexCount + input.blightIndexCount + input.waterIndexCount;
+    const auto batches = std::uint64_t(ground.batchCount) + input.baseBatchCount + input.blightBatchCount + (input.waterQuadCount ? 1 : 0);
+    if (tiles > WAR3_RENDER_TERRAIN_GRID_MAX_SOURCE_TILES || input.baseQuadCount > tiles || input.waterQuadCount > tiles
+        || records > kMaxTerrainVertices || indices > kMaxTerrainIndices || batches > kMaxTerrainBatches
+        || std::uint64_t(ground.vertexCount) * 6 != std::uint64_t(ground.indexCount) * 4
+        || ground.vertexCount % 4 || (ground.indexCount == 0) != (ground.batchCount == 0)
+        || (input.baseQuadCount == 0) != (input.baseBatchCount == 0)
+        || (input.blightIndexCount == 0) != (input.blightBatchCount == 0)) return kInvalid;
+    try {
+        const auto extraTextures = (input.blightIndexCount ? 1u : 0u) + (input.waterQuadCount ? 1u : 0u);
+        const auto textureCount = std::uint64_t(ground.textureCount) + extraTextures;
+        const auto geometryBytes = vertices * sizeof(War3RenderTerrainGridGroundVertexV2)
+            + (input.waterQuadCount ? vertices * sizeof(War3RenderTerrainGridWaterVertexV2) : 0)
+            + std::uint64_t(ground.vertexCount) * sizeof(War3RenderTerrainVertexV2)
+            + std::uint64_t(input.baseQuadCount) * sizeof(War3RenderTerrainGridBaseQuadV2)
+            + std::uint64_t(input.waterQuadCount) * sizeof(War3RenderTerrainGridWaterQuadV2)
+            + indices * sizeof(std::uint32_t) + (std::uint64_t(ground.batchCount) + input.baseBatchCount) * sizeof(War3RenderTerrainBatchV2)
+            + std::uint64_t(input.blightBatchCount) * sizeof(War3RenderTerrainBlightBatchV2);
+        const auto fixedAndScratch = sizeof(Mesh) + std::uint64_t(input.baseQuadCount) + ground.vertexCount / 4;
+        const auto uploadMetadata = TerrainGridUploadMetadataBytes(ground.batchCount, input.baseBatchCount,
+            input.blightBatchCount, textureCount, textureCount);
+        // mip数量尚未可信，先按硬上限收验证描述符，再读取描述符；此处不分配像素或几何。
+        const auto descriptorUpper = textureCount * (sizeof(War3RenderTextureMipChainV2)
+            + sizeof(std::vector<War3RenderMipRgbaV2>) + kMaxMipLevels * sizeof(War3RenderMipRgbaV2));
+        if (geometryBytes + fixedAndScratch + uploadMetadata + descriptorUpper > kMaxTerrainBytes) return kInvalid;
+        TextureChains groundTextures, blightTexture, waterTexture;
+        const TextureBudget textureBudget{kMaxTextureBytes, kMaxMipChainBytes, kMaxTextureTotal};
+        if (!ValidateTextureChains(ground.textures, ground.textureCount, textureBudget, groundTextures)
+            || !ValidateTextureChains(input.blightTexture, input.blightIndexCount ? 1 : 0, textureBudget, blightTexture)
+            || !ValidateTextureChains(input.waterTexture, input.waterQuadCount ? 1 : 0, textureBudget, waterTexture)) return kInvalid;
+        for (const auto& texture : groundTextures.descriptions)
+            if (texture.atlasRows != 4 || (texture.atlasColumns != 4 && texture.atlasColumns != 8)) return kInvalid;
+        if (input.blightIndexCount && (blightTexture.descriptions.front().atlasColumns != 8
+            || blightTexture.descriptions.front().atlasRows != 4)) return kInvalid;
+        if (input.waterQuadCount) {
+            const auto& texture = waterTexture.descriptions.front(); const auto& mip = waterTexture.levels.front().front();
+            if (texture.atlasColumns != 4 || texture.atlasRows != 4 || texture.mipCount != 1
+                || texture.maxSampleMip || mip.width != 128 || mip.height != 128) return kInvalid;
+        }
+        const auto rgba = groundTextures.pixelBytes + blightTexture.pixelBytes + waterTexture.pixelBytes;
+        if (rgba > kMaxTextureTotal) return kInvalid;
+        const auto descriptors = TextureChainsCapacityBytes(groundTextures) + TextureChainsCapacityBytes(blightTexture)
+            + TextureChainsCapacityBytes(waterTexture);
+        std::uint64_t ownedTextureMetadata = (textureCount + extraTextures) * sizeof(War3Map::Render::TextureRgba);
+        for (const auto* chains : {&groundTextures, &blightTexture, &waterTexture})
+            for (const auto& levels : chains->levels)
+                ownedTextureMetadata += std::uint64_t(levels.size()) * sizeof(War3Map::Render::TextureMipRgba);
+        // 几何、全部像素和owned mip描述符的分配前门；最终actual门沿同一账目。
+        if (geometryBytes + fixedAndScratch + uploadMetadata + rgba + descriptors + ownedTextureMetadata > kMaxTerrainBytes)
+            return kInvalid;
+        auto mesh = std::make_shared<Mesh>(); mesh->terrain = true; mesh->terrainGrid = true;
+        mesh->revision = ground.documentRevision; mesh->gridWidth = input.width; mesh->gridHeight = input.height;
+        mesh->gridGroundTextureCount = ground.textureCount;
+        const auto copy = [](auto& output, const auto* source, std::uint32_t count) {
+            if (count) output.assign(source, source + count);
+        };
+        copy(mesh->groundGrid, input.groundGrid, input.gridVertexCount);
+        copy(mesh->waterGrid, input.waterGrid, input.waterQuadCount ? input.gridVertexCount : 0);
+        copy(mesh->baseQuads, input.baseQuads, input.baseQuadCount);
+        copy(mesh->baseIndices, input.baseIndices, input.baseIndexCount);
+        copy(mesh->baseBatches, input.baseBatches, input.baseBatchCount);
+        copy(mesh->blightIndices, input.blightIndices, input.blightIndexCount);
+        copy(mesh->blightBatches, input.blightBatches, input.blightBatchCount);
+        copy(mesh->gridWaterQuads, input.waterQuads, input.waterQuadCount);
+        copy(mesh->gridWaterIndices, input.waterIndices, input.waterIndexCount);
+        copy(mesh->terrainVertices, ground.vertices, ground.vertexCount);
+        copy(mesh->indices, ground.indices, ground.indexCount); copy(mesh->batches, ground.batches, ground.batchCount);
+        const auto x0 = mesh->groundGrid.front().x, y0 = mesh->groundGrid.front().y;
+        for (std::uint32_t index = 0; index < input.gridVertexCount; ++index) {
+            const auto& vertex = mesh->groundGrid[index];
+            if (!Coordinate(vertex.x) || !Coordinate(vertex.y) || !Coordinate(vertex.groundZ)
+                || vertex.x != x0 + static_cast<float>(index % input.width) * 128.0f
+                || vertex.y != y0 + static_cast<float>(index / input.width) * 128.0f
+                || !Unit(vertex.textureR) || !Unit(vertex.textureG) || !Unit(vertex.textureB)
+                || !Unit(vertex.fallbackR) || !Unit(vertex.fallbackG) || !Unit(vertex.fallbackB)) return kInvalid;
+        }
+        for (const auto& vertex : mesh->waterGrid)
+            if (!Coordinate(vertex.waterZ) || !Unit(vertex.red) || !Unit(vertex.green) || !Unit(vertex.blue)) return kInvalid;
+        for (const auto& vertex : mesh->terrainVertices)
+            if (!Coordinate(vertex.x) || !Coordinate(vertex.y) || !Coordinate(vertex.z)
+                || !Unit(vertex.red) || !Unit(vertex.green) || !Unit(vertex.blue) || !Unit(vertex.u) || !Unit(vertex.v)) return kInvalid;
+        std::vector<std::uint8_t> transitionFlags(ground.vertexCount / 4, 0);
+        for (std::uint32_t at = 0; at < ground.indexCount; at += 6) {
+            const auto first = mesh->indices[at], q = first / 4;
+            if (first % 4 || q >= transitionFlags.size() || transitionFlags[q]
+                || !GridFace(mesh->indices.data() + at, q)) return kInvalid;
+            transitionFlags[q] = 1;
+        }
+        std::uint32_t next = 0;
+        for (const auto& batch : mesh->batches) {
+            const auto texture = batch.textureIndex & ~WAR3_RENDER_TERRAIN_ALPHA_BLEND;
+            if (batch.firstIndex != next || !batch.indexCount || batch.indexCount % 6
+                || batch.indexCount > ground.indexCount - next || !(batch.textureIndex & WAR3_RENDER_TERRAIN_ALPHA_BLEND)
+                || texture >= ground.textureCount) return kInvalid;
+            next += batch.indexCount;
+        }
+        if (next != ground.indexCount) return kInvalid;
+        for (std::uint32_t q = 0; q < input.baseQuadCount; ++q)
+            if (mesh->baseQuads[q].sourceTile >= tiles || (q && mesh->baseQuads[q].sourceTile <= mesh->baseQuads[q - 1].sourceTile)) return kInvalid;
+        std::vector<std::uint8_t> baseFlags(input.baseQuadCount, 0);
+        next = 0;
+        for (const auto& batch : mesh->baseBatches) {
+            if (batch.firstIndex != next || !batch.indexCount || batch.indexCount % 6
+                || batch.indexCount > input.baseIndexCount - next
+                || (batch.textureIndex != WAR3_RENDER_HEIGHT_COLOR_TEXTURE && batch.textureIndex >= ground.textureCount)) return kInvalid;
+            std::uint32_t previousQuad = 0;
+            for (std::uint32_t at = batch.firstIndex; at < batch.firstIndex + batch.indexCount; at += 6) {
+                const auto first = mesh->baseIndices[at], q = first / 4;
+                if (first % 4 || q >= input.baseQuadCount || baseFlags[q] || !GridFace(mesh->baseIndices.data() + at, q)
+                    || (at != batch.firstIndex && q <= previousQuad)) return kInvalid;
+                previousQuad = q; const auto& quad = mesh->baseQuads[q];
+                if (batch.textureIndex == WAR3_RENDER_HEIGHT_COLOR_TEXTURE) {
+                    if (quad.uvLeft || quad.uvRight || quad.uvTop || quad.uvBottom) return kInvalid;
+                    baseFlags[q] = 1;
+                } else {
+                    if (!GridUvCell(groundTextures, batch.textureIndex, quad.uvLeft, quad.uvRight, quad.uvTop, quad.uvBottom)) return kInvalid;
+                    baseFlags[q] = 3;
+                }
+            }
+            next += batch.indexCount;
+        }
+        if (next != input.baseIndexCount || std::any_of(baseFlags.begin(), baseFlags.end(), [](auto value) { return value == 0; })) return kInvalid;
+        next = 0; std::uint32_t usedCells = 0, previousCell = 0;
+        for (const auto& batch : mesh->blightBatches) {
+            if (batch.firstIndex != next || !batch.indexCount || batch.indexCount % 6 || batch.indexCount > input.blightIndexCount - next) return kInvalid;
+            const auto cell = GridUvCell(blightTexture, 0, batch.uvLeft, batch.uvRight, batch.uvTop, batch.uvBottom);
+            if (!cell || *cell >= 32 || (usedCells & (1u << *cell)) || (usedCells && *cell <= previousCell)) return kInvalid;
+            usedCells |= 1u << *cell; previousCell = *cell; std::uint32_t previousQuad = 0;
+            for (std::uint32_t at = batch.firstIndex; at < batch.firstIndex + batch.indexCount; at += 6) {
+                const auto first = mesh->blightIndices[at], q = first / 4;
+                if (first % 4 || q >= input.baseQuadCount || baseFlags[q] != 3 || !GridFace(mesh->blightIndices.data() + at, q)
+                    || (at != batch.firstIndex && q <= previousQuad)) return kInvalid;
+                baseFlags[q] |= 4; previousQuad = q;
+            }
+            next += batch.indexCount;
+        }
+        if (next != input.blightIndexCount) return kInvalid;
+        for (std::uint32_t q = 0; q < input.waterQuadCount; ++q) {
+            const auto& quad = mesh->gridWaterQuads[q];
+            if (quad.sourceTile >= tiles || quad.alphaLevel > 15 || (q && quad.sourceTile <= mesh->gridWaterQuads[q - 1].sourceTile)
+                || !GridFace(mesh->gridWaterIndices.data() + q * 6, q)) return kInvalid;
+        }
+        if (TerrainOwnedCapacityBytes(*mesh) + sizeof(Mesh) + descriptors + baseFlags.capacity() + transitionFlags.capacity()
+            + rgba + ownedTextureMetadata + uploadMetadata > kMaxTerrainBytes) return kInvalid;
+        mesh->textures = CopyTextureChains(groundTextures, extraTextures);
+        std::uint64_t temporaryTextureBytes = 0;
+        for (const auto* chains : {&blightTexture, &waterTexture}) if (!chains->descriptions.empty()) {
+            auto copied = CopyTextureChains(*chains); temporaryTextureBytes += std::uint64_t(copied.capacity()) * sizeof(War3Map::Render::TextureRgba);
+            mesh->textures.push_back(std::move(copied.front()));
+        }
+        if (TerrainOwnedCapacityBytes(*mesh) + sizeof(Mesh) + descriptors + baseFlags.capacity() + transitionFlags.capacity()
+            + temporaryTextureBytes + TerrainGridUploadMetadataBytes(*mesh) > kMaxTerrainBytes) return kInvalid;
+        return UpdateScene(renderer, std::move(mesh));
+    } catch (...) { return static_cast<std::int32_t>(E_OUTOFMEMORY); }
+}
 std::uint64_t PosePayloadBytes(const SkinPose& pose) noexcept {
     return std::uint64_t(pose.instances.size()) * sizeof(War3RenderSkinnedModelInstanceV2)
         + std::uint64_t(pose.groups.size()) * sizeof(War3RenderGroupMatrixV2)
@@ -1665,6 +1900,32 @@ std::int32_t WAR3_RENDER_CALL ViewInfo(War3RendererHandle handle, War3RenderView
         return 0;
     } catch (...) { return static_cast<std::int32_t>(E_FAIL); }
 }
+std::int32_t WAR3_RENDER_CALL GetTerrainGridCaptureFacts(War3RendererHandle handle,
+    const War3RenderViewInfoV2* expected, War3RenderTerrainGridCaptureFactsV2* output) noexcept {
+    if (!handle || !expected || expected->structSize != sizeof(*expected) || !output
+        || output->structSize < sizeof(*output) || !expected->frameCount || !expected->width || !expected->height
+        || !expected->surfaceEpoch || !expected->sceneEpoch || !expected->viewEpoch
+        || !std::all_of(std::begin(expected->viewProjection), std::end(expected->viewProjection),
+            [](float value) { return std::isfinite(value); })) return kInvalid;
+    try {
+        auto& renderer = *static_cast<Renderer*>(handle); std::lock_guard lock(renderer.mutex);
+        if (renderer.status.result) return renderer.status.result;
+        const auto& facts = renderer.capturedGridFacts; const auto& captured = facts.view;
+        const auto& state = renderer.state;
+        if (renderer.closing || renderer.captureActive || renderer.captureDone != state.capture
+            || !state.mesh->terrainGrid || facts.gridFormat != WAR3_RENDER_TERRAIN_GRID_FETCH_V1
+            || captured.structSize != sizeof(captured) || captured.width != expected->width || captured.height != expected->height
+            || captured.frameCount != expected->frameCount || captured.documentRevision != expected->documentRevision
+            || captured.surfaceEpoch != expected->surfaceEpoch || captured.sceneEpoch != expected->sceneEpoch
+            || captured.viewEpoch != expected->viewEpoch
+            || !std::equal(std::begin(captured.viewProjection), std::end(captured.viewProjection), expected->viewProjection)
+            || state.width != captured.width || state.height != captured.height || state.mesh->revision != captured.documentRevision
+            || state.surfaceEpoch != captured.surfaceEpoch || state.sceneEpoch != captured.sceneEpoch || state.viewEpoch != captured.viewEpoch)
+            return kTimeout;
+        std::memcpy(output, &facts, sizeof(facts)); // 更大caller输出的未知尾部保持原字。
+        return 0;
+    } catch (...) { return static_cast<std::int32_t>(E_FAIL); }
+}
 std::int32_t WAR3_RENDER_CALL GetEditorCompletedFrame(War3RendererHandle handle,
     War3RenderEditorCompletedFrameV2* output) noexcept {
     if (!handle || !output || output->structSize < sizeof(*output)) return kInvalid;
@@ -1725,14 +1986,15 @@ const War3RenderPluginApiV2 api{sizeof(War3RenderPluginApiV2), WAR3_RENDER_PLUGI
     &SubmitModelSceneLayer, &UpdateModelSceneLayer, &RemoveModelSceneLayer, &GetModelLayersTarget, &CaptureLayeredFrame, &GetFrameMetrics,
     &SubmitEditorInstanceRoster, &GetEditorInstanceRosterResult, &GetEditorRosterCapabilities, &CancelEditorInstanceRoster,
     &GetModelLayerCapabilities, &GetStaticModelSamplerCapabilities,
-    &GetTerrainBlightCapabilities, &SubmitTerrainBlightFrame};
+    &GetTerrainBlightCapabilities, &SubmitTerrainBlightFrame,
+    &GetTerrainGridCapabilities, &SubmitTerrainGridFrame, &GetTerrainGridCaptureFacts};
 }
 extern "C" WAR3_RENDER_EXPORT const War3RenderPluginApiV2* WAR3_RENDER_CALL
 War3MapEditor_GetRenderPluginApiV2(std::uint32_t version) { return version == WAR3_RENDER_PLUGIN_API_V2 ? &api : nullptr; }
 #ifdef WAR3_RENDER_TEST_FAULTS
 extern "C" WAR3_RENDER_EXPORT std::int32_t WAR3_RENDER_CALL
 War3RenderTest_SetFault(War3RendererHandle handle, std::uint32_t stage) {
-    if (!handle || stage > 8) return kInvalid;
+    if (!handle || stage > 9) return kInvalid;
     if (stage == 6) static_cast<Renderer*>(handle)->testRosterGateReached.store(false);
     static_cast<Renderer*>(handle)->testFault.store(stage);
     return 0;
@@ -1748,5 +2010,15 @@ War3RenderTest_GetAssetResources(War3RendererHandle handle, std::uint64_t* outpu
     auto& renderer = *static_cast<Renderer*>(handle); std::lock_guard lock(renderer.mutex);
     if (!renderer.completedEditorFrame.view.frameCount) return kTimeout;
     std::copy(renderer.completedAssetResources.begin(), renderer.completedAssetResources.end(), output); return 0;
+}
+extern "C" WAR3_RENDER_EXPORT std::int32_t WAR3_RENDER_CALL
+War3RenderTest_GetTerrainGridResources(War3RendererHandle handle, std::uint64_t* output, std::uint32_t capacity,
+    War3RenderTerrainGridCaptureFactsV2* facts) {
+    if (!handle || !output || capacity != 16 || !facts || facts->structSize != sizeof(*facts)) return kInvalid;
+    auto& renderer = *static_cast<Renderer*>(handle); std::lock_guard lock(renderer.mutex);
+    if (!renderer.viewInfo.frameCount) return kTimeout;
+    std::copy(renderer.completedTerrainGridResources.begin(), renderer.completedTerrainGridResources.end(), output);
+    *facts = renderer.completedTerrainGridTestFacts;
+    return 0;
 }
 #endif

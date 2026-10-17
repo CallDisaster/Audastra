@@ -4,6 +4,7 @@
 #include "War3MapCore/RenderPluginEditorVisibility.h"
 #include "War3MapCore/RenderPluginMaterialAlpha.h"
 #include "War3MapCore/RenderPluginTerrainBlight.h"
+#include "War3MapCore/RenderPluginTerrainGrid.h"
 #include "War3MapCore/Render/ModelSceneLayerRenderer.h"
 #include "War3MapCore/Render/BuildingSplatPreview.h"
 #include "War3MapCore/Render/WorldModelScene.h"
@@ -2073,6 +2074,8 @@ void TestEditorVisibility(const War3RenderPluginApiV2* api, const War3RenderCrea
     std::cout << "editor WARP: static/skin/particle hide/show pixels, immutable uploads, atomic pose and epoch-bound receipt passed\n";
 }
 
+#include "RenderTerrainGridChecks.h"
+
 int wmain(int argc, wchar_t** argv) {
     HMODULE module = nullptr;
     try {
@@ -2195,6 +2198,7 @@ int wmain(int argc, wchar_t** argv) {
         TestModelObliqueSampler(api, info);
         TestTerrainObliqueFilter(api, info);
         TestMaterialLayerFaults(dll.parent_path(), info);
+        TestTerrainGridFault(dll.parent_path(), info);
         TestAdditionalModelLayer(api, info);
         TestBuildingSplatLayer(api, info);
         TestAnimationServiceWARP(api, info);
@@ -2251,6 +2255,7 @@ int wmain(int argc, wchar_t** argv) {
             std::cout << status.message << " frames=" << status.frameCount << " revision=" << status.documentRevision << '\n';
             screenshot = TestTerrain(renderer); // 外层两轮销毁/重建，在硬件与WARP入口均执行。
             TestTerrainMips(renderer);
+            TestTerrainGrid(renderer);
             TestTerrainBlight(renderer);
             TestTerrainZeroAlphaContribution(renderer);
             TestModels(renderer);

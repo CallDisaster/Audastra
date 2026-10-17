@@ -2,7 +2,7 @@
   "schema": 1,
   "version": "0.1.19",
   "repository": "https://github.com/CallDisaster/Audastra-RenderCore.git",
-  "commit": "46730eebb4aa3dc0471c44d13a4db0aaf5105459",
+  "commit": "2e55ef4b4494bebbed162aa2753a145ec2917ae1",
   "files": [
     {
       "path": ".gitattributes",
@@ -133,8 +133,12 @@
       "sha256": "91209b58ea63ddc12d674083818d56faabfda623e9ed38b376e055da404833c0"
     },
     {
+      "path": "include/War3MapCore/RenderPluginTerrainGrid.h",
+      "sha256": "b7a00c821898f4a9442b13eb02750e169f66da7cc5f847553584993a608f8208"
+    },
+    {
       "path": "include/War3MapCore/RenderPluginV2.h",
-      "sha256": "1d10257e134d5b7baa02f20e76908c92c905e4df265c7ce297684864f1e02512"
+      "sha256": "068907611e5232cfe4cc1b0f9a3403f7469098cbdf8d877f1d6d9d474e8ef72c"
     },
     {
       "path": "include/War3RenderCore/CompiledModel.h",
@@ -211,6 +215,10 @@
     {
       "path": "include/War3RenderCore/Legacy/RenderPluginTerrainBlight.h",
       "sha256": "8efd1e6e8ee77114af3b86170daeb1de4018c5410fa12130d88911a9516a502d"
+    },
+    {
+      "path": "include/War3RenderCore/Legacy/RenderPluginTerrainGrid.h",
+      "sha256": "9c9fb331c9954feae179d81c7860dcb175d06b3741cc8aa9d23ffed9f7db93c9"
     },
     {
       "path": "include/War3RenderCore/Legacy/RenderPluginV2.h",
@@ -422,7 +430,7 @@
     },
     {
       "path": "src/RenderCore/TestTargets.cmake",
-      "sha256": "8a7a66d8b512098cf1c174e609f1bbcba2eb8aa25834d990c2deac52aaaa269e"
+      "sha256": "bf47cc76ac9f80465c180992bca1361af90290211edb25c110717855d30e7a45"
     },
     {
       "path": "tests/ExternalFrameTests.cpp",
@@ -570,7 +578,11 @@
     },
     {
       "path": "tests/TerrainBlightContractTests.cpp",
-      "sha256": "6184dcb4da07e39575c85dd9c3d3778e9c776f4748a4068a45473360b124d7d3"
+      "sha256": "39da7b2859ba08559a5ccf9bdcde3b9bc7e2404f40ae3e74c88724544dfc2dc3"
+    },
+    {
+      "path": "tests/TerrainGridContractTests.cpp",
+      "sha256": "a43d56306232a1b7f3cb32501305efd871414721c98f9448d5aa64481b2aade8"
     },
     {
       "path": "tools/FootmanGolden.cpp",

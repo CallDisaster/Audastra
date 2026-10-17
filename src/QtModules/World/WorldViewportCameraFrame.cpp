@@ -107,8 +107,11 @@ Result<Render::CapturedFrameRgba> WorldViewport::CaptureCompletedFrame(std::uint
     const bool hasAnimatedGeometry = animationScene_ && animationFrame_ && HasAnimationSupport() &&
         ((!animationScene_->vertices.empty() && !animationFrame_->instances.empty()) ||
             (HasParticleSupport() && animationScene_->particlesEnabled && animationScene_->particleInstanceCount));
+    const auto terrainGround = ground_;
+    const bool hasGrid = terrainGround && terrainGround->representation == Render::TerrainGroundRepresentation::SharedGrid
+        && !terrainGround->groundGrid.empty();
     if (!renderer_ || failed_ || destroying_ || !CanRender() ||
-        (vertices_.empty() && !hasModelGeometry && !hasAnimatedGeometry) || pickingSuspended_)
+        (vertices_.empty() && !hasGrid && !hasModelGeometry && !hasAnimatedGeometry) || pickingSuspended_)
         return fail("WORLD_CAPTURE_UNAVAILABLE", "世界视口尚未就绪，无法读取真实完成帧。");
     if (!api_ || api_->structSize < offsetof(War3RenderPluginApiV2, captureFrameRgba) + sizeof(api_->captureFrameRgba) ||
         !api_->captureFrameRgba || !HasViewInfo())
@@ -249,7 +252,40 @@ Result<Render::CapturedFrameRgba> WorldViewport::CaptureCompletedFrame(std::uint
         current.frameCount < view.frameCount || current.surfaceEpoch != view.surfaceEpoch ||
         current.sceneEpoch != view.sceneEpoch || current.viewEpoch != view.viewEpoch)
         return fail("WORLD_CAPTURE_FRAME_STALE", "读回后视图 epoch 已变化，截图已丢弃。");
-    if (vertices_.empty() && !output.animation) {
+    if (hasGrid) {
+        if (ground_ != terrainGround || !HasTerrainGridSupport())
+            return fail("WORLD_CAPTURE_TERRAIN_STALE", "地表来源或完成帧能力在读回期间改变。");
+        War3RenderTerrainGridCaptureFactsV2 facts{}; facts.structSize = sizeof(facts);
+        const auto result = api_->getTerrainGridCaptureFacts(renderer_, &receipt.view, &facts);
+        if (result == 2) return fail("WORLD_CAPTURE_TERRAIN_STALE", "地表统计与图像不属于同一次有效完成帧。");
+        if (result != 0) {
+            ReportPluginFailure("getTerrainGridCaptureFacts", result);
+            return fail("WORLD_CAPTURE_TERRAIN_FAILED", "渲染器没有返回本次实际安装地表的统计。");
+        }
+        const auto& budget = terrainGround->budget;
+        const auto conserved = [](const auto& layer) {
+            return layer.displayed <= layer.requested && layer.omitted <= layer.requested - layer.displayed
+                && layer.noContribution == layer.requested - layer.displayed - layer.omitted;
+        };
+        const auto expectedBits = (terrainGround->blightIndices.empty() ? 0u : WAR3_RENDER_TERRAIN_GRID_HAS_BLIGHT)
+            | (terrainGround->waterQuads.empty() ? 0u : WAR3_RENDER_TERRAIN_GRID_HAS_WATER);
+        if (facts.structSize != sizeof(facts) || facts.gridFormat != WAR3_RENDER_TERRAIN_GRID_FETCH_V1
+            || facts.view.structSize != sizeof(facts.view) || facts.view.frameCount != view.frameCount
+            || facts.view.documentRevision != view.documentRevision || facts.view.width != view.width || facts.view.height != view.height
+            || facts.view.surfaceEpoch != view.surfaceEpoch || facts.view.sceneEpoch != view.sceneEpoch || facts.view.viewEpoch != view.viewEpoch
+            || !std::equal(std::begin(facts.view.viewProjection), std::end(facts.view.viewProjection), std::begin(view.viewProjection))
+            || facts.gridVertexCount != terrainGround->groundGrid.size() || facts.baseQuadCount != terrainGround->baseQuads.size()
+            || facts.transitionVertexCount != terrainGround->vertices.size() || facts.blightIndexCount != terrainGround->blightIndices.size()
+            || facts.blightBatchCount != terrainGround->blightBatches.size() || facts.waterQuadCount != terrainGround->waterQuads.size()
+            || facts.groundTextureCount != terrainGround->textures.size() || facts.passBits != expectedBits
+            || !conserved(budget.base) || !conserved(budget.transitions) || !conserved(budget.blight) || !conserved(budget.water)
+            || budget.base.displayed != facts.baseQuadCount || budget.transitions.displayed * 4 != facts.transitionVertexCount
+            || budget.blight.displayed * 6 != facts.blightIndexCount || budget.water.displayed != facts.waterQuadCount)
+            return fail("WORLD_CAPTURE_TERRAIN_STALE", "实际完成地表的数量、来源候选或图像身份不一致，截图已丢弃。");
+        output.terrainGrid = Render::TerrainGridCaptureReceipt{facts, budget,
+            terrainGround->sourceWidth, terrainGround->sourceHeight, terrainGround->hiddenTileCount};
+    }
+    if (vertices_.empty() && !hasGrid && !output.animation) {
         War3RenderStatusV2 status{sizeof(status)};
         if (!api_->getStatus || api_->getStatus(renderer_, &status) != 0 || status.structSize != sizeof(status) ||
             status.result != 0 || status.deviceReady != 1 || status.width != width || status.height != height ||
