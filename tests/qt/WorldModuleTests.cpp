@@ -689,6 +689,7 @@ std::optional<MapData::PlacementId> AttachTrackedResourcePlacement(QtProject::Ed
     unit.scale = {1, 1, 1}; unit.position = {-32, 0, 0};
     const auto added = MapData::AddUnitPlacement(*project.mapEdits_, unit);
     if (!added.Succeeded()) return {};
+    project.projectRoot_ = project.sourceArchivePath_.parent_path();
     project.ResetEditTracking();
     return project.editTrackingReady_ ? added.value : std::nullopt;
 }
@@ -1031,6 +1032,10 @@ void WorldModuleTests::PlacementParticleClock() {
     QtProject::EditorProject project; project.sourceArchivePath_ = mapPath.toStdWString();
     project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*archive.value));
     const auto trackedPlacement = AttachTrackedResourcePlacement(project); QVERIFY(trackedPlacement);
+    const auto resourceBaseline = project.editRevision_.Baseline(EditSaveTarget::Map); QVERIFY(resourceBaseline);
+    QVERIFY(resourceBaseline->scopes.contains("source"));
+    QCOMPARE(resourceBaseline->scopes.at("source"), "archive:" + project.archiveSession_->SourceSha256());
+    QVERIFY(resourceBaseline->scopes.contains("map/war3mapUnits.doo"));
     auto sources = CaptureWorldTerrainSources(project); QVERIFY(sources.Succeeded());
     BackendState state; activeBackend = &state;
     WorldViewport viewport(nullptr, &particleLayerBackend); state.viewport = &viewport;
@@ -1864,7 +1869,13 @@ void WorldModuleTests::InstanceCatalogStartsBesidePose() {
     project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*archive.value));
     const bool trackedMovement = !cancelAndReplace && !planBeforePose && prefetchDisposition.isEmpty();
     std::optional<MapData::PlacementId> trackedPlacement;
-    if (trackedMovement) { trackedPlacement = AttachTrackedResourcePlacement(project); QVERIFY(trackedPlacement); }
+    if (trackedMovement) {
+        trackedPlacement = AttachTrackedResourcePlacement(project); QVERIFY(trackedPlacement);
+        const auto resourceBaseline = project.editRevision_.Baseline(EditSaveTarget::Map); QVERIFY(resourceBaseline);
+        QVERIFY(resourceBaseline->scopes.contains("source"));
+        QCOMPARE(resourceBaseline->scopes.at("source"), "archive:" + project.archiveSession_->SourceSha256());
+        QVERIFY(resourceBaseline->scopes.contains("map/war3mapUnits.doo"));
+    }
     const auto captured = CaptureWorldTerrainSources(project); QVERIFY(captured.Succeeded());
     auto opened = WorldResourceReader::Open(*captured.value); QVERIFY(opened.Succeeded());
     auto source = std::shared_ptr<WorldResourceReader>(std::move(*opened.value));

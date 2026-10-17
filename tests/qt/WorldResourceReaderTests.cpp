@@ -19,6 +19,7 @@ using namespace War3Map;
 using namespace War3Map::Modules;
 namespace {
 void Require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
+void Require(bool value, const std::string& message) { Require(value, message.c_str()); }
 std::shared_ptr<const std::vector<std::byte>> Payload(std::string_view text) {
     std::vector<std::byte> bytes;
     for (const unsigned char value : text) bytes.push_back(static_cast<std::byte>(value));
@@ -135,9 +136,18 @@ void OwnedImportsWinAndKeepAnimationProvenance() {
     Import(project, QStringLiteral("New.bin"), added);
     const auto sources = Capture(project), repeated = Capture(project);
     const auto& replaced = Entry(sources, "Fixture.bin"); const auto& created = Entry(sources, "New.bin");
-    Require(replaced.ownedPayload == replacement && replaced.archivePath == "Fixture.bin" && replaced.diskPath.empty()
-        && replaced.size == static_cast<std::int64_t>(replacement->size()) && !replaced.ambiguous && replaced.ownedPayloadVersion,
-        "capture preserves owned replacement, size, ambiguity and controlled version");
+    Require(replaced.ownedPayload == replacement, "capture preserves owned replacement owner; actual owner_equal="
+        + std::to_string(replaced.ownedPayload == replacement));
+    Require(replaced.archivePath == "Fixture.bin", "capture preserves owned replacement archive path; actual='"
+        + replaced.archivePath + "', expected='Fixture.bin'");
+    Require(replaced.diskPath.empty(), "capture preserves owned replacement without disk path; actual='"
+        + replaced.diskPath.generic_string() + "'");
+    Require(replaced.size == static_cast<std::int64_t>(replacement->size()), "capture preserves owned replacement size; actual="
+        + std::to_string(replaced.size) + ", expected=" + std::to_string(replacement->size()));
+    Require(!replaced.ambiguous, "capture preserves unambiguous owned replacement; actual ambiguous="
+        + std::to_string(replaced.ambiguous));
+    Require(replaced.ownedPayloadVersion != 0, "capture assigns a controlled owned version; actual version="
+        + std::to_string(replaced.ownedPayloadVersion));
     Require(created.ownedPayload == added && created.archivePath.empty() && created.diskPath.empty(), "new import has no old archive or disk path");
     Require(SameWorldTerrainSources(sources, repeated), "same live immutable owners reuse captured versions");
     auto opened = WorldResourceReader::Open(sources); Require(opened.Succeeded(), "open owned resources");
