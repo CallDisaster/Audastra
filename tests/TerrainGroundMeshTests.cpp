@@ -669,7 +669,7 @@ void TestWaterZeroContribution() {
         for (std::size_t at = 3; at < source->rgba.size(); at += 4) source->rgba[at] = static_cast<std::byte>(alpha);
         return source;
     };
-    const auto counts = [](const TerrainGroundMesh& mesh, std::size_t zero, std::size_t shown, std::size_t omitted) {
+    const auto counts = [&terrain](const TerrainGroundMesh& mesh, std::size_t zero, std::size_t shown, std::size_t omitted) {
         const auto& water = mesh.budget.water;
         Require(water.noContribution == zero && water.displayed == shown && water.omitted == omitted
             && water.requested == zero + shown + omitted && water.requested == mesh.waterFlaggedTiles
