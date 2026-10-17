@@ -21,6 +21,14 @@ namespace {
 using ObjectData::ObjectType;
 constexpr std::array<const char*, 7> kClasses{"unit", "ability", "item", "buff", "upgrade", "doodad", "destructable"};
 constexpr std::size_t kStrings = 7;
+// 这些是 WE 的界面/闪电/命令卡来源，不在 w3x2lni core/info.lua 的 slk/txt/misc
+// 读取清单里，目标模板 slk 库不会读取它们。旧图常带这些成员；把它们当成
+// “未知物编来源”拒绝会让整张图无法保存，而跳过不会改变 slk 的结果。
+constexpr std::array<std::string_view, 3> kSlkUnreadSources{
+    "SPLATS\\LIGHTNINGDATA.SLK", "UNITS\\COMMANDFUNC.TXT", "WAR3MAPSKIN.TXT"};
+bool SlkUnreadSource(std::string_view name) {
+    return std::find(kSlkUnreadSources.begin(), kSlkUnreadSources.end(), name) != kSlkUnreadSources.end();
+}
 
 struct NativeMod {
     std::string id;
@@ -315,7 +323,8 @@ std::string ReadWrites(lua_State* lua, int index, std::array<ClassWrite, 7>& wri
 
 } // namespace
 
-std::string PushSlkData(lua_State* lua, const LuaTemplateSlkSources& sources) {
+std::string PushSlkData(lua_State* lua, const LuaTemplateSlkSources& sources,
+    std::vector<Diagnostic>* diagnostics) {
     if (!sources.map) return "缺少本次保存的地图来源，模板 slk 库不能读取物编。";
     const auto members = sources.map->Members();
     if (members.size() != 9) return "地图来源快照不完整，模板 slk 库不能读取物编。";
@@ -365,6 +374,11 @@ std::string PushSlkData(lua_State* lua, const LuaTemplateSlkSources& sources) {
         }
         std::vector<std::string> others;
         for (const auto& name : sources.map->UnsupportedSources()) {
+            if (SlkUnreadSource(name)) {
+                if (diagnostics) diagnostics->push_back({DiagnosticSeverity::Warning, "Script.LuaTemplate",
+                    "TEMPLATE_SLK_SOURCE_IGNORED", "模板 slk 库不读取该来源，已跳过：" + std::string(name), {}});
+                continue;
+            }
             const auto slkClass = SlkClass(name);
             const bool txt = name.starts_with("UNITS\\") && name.ends_with(".TXT");
             if (name != "WAR3MAPMISC.TXT" && !slkClass && !txt) { others.push_back(name); continue; }

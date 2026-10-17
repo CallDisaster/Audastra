@@ -151,9 +151,14 @@ Chunk Precompile(std::string_view text) {
         const bool expression = open + 2 < text.size() && text[open + 2] == '=';
         const auto code = text.substr(open + (expression ? 3 : 2), close - open - (expression ? 3 : 2));
         if (expression) {
-            emit("__put(");
+            // 括号强制表达式只保留第一个返回值，与 YDWE 模板里
+            // __JASS__[#__JASS__+1]=表达式 的 Lua 赋值语义一致；
+            // 例如 memory_hack 的 <?=math.modf(8192 / MHTDSMaxCount)?> 返回两个值。
+            // 空表达式 <?= ?> 用于显式输出空串，仍生成 __put()。
+            const bool empty = code.find_first_not_of(" \t\r\n") == std::string_view::npos;
+            emit(empty ? "__put(" : "__put((");
             emit(code);
-            emit(")");
+            emit(empty ? ")" : "))");
         } else {
             emit(code);
         }
@@ -186,16 +191,31 @@ std::string Located(const Host& host, std::string message) {
 int Put(lua_State* lua) {
     const int count = lua_gettop(lua);
     if (count == 0 || lua_isnil(lua, 1)) return 0;
-    if (count > 1) return luaL_error(lua, "<?= ?> 只能写一个值");
-    if (!lua_isstring(lua, 1)) return luaL_error(lua, "<?= ?> 的结果是 %s，不能写进脚本", luaL_typename(lua, 1));
+    // YDWE 的模板执行在 Lua 5.1 的赋值上下文里，多返回值只保留第一个。
+    if (count > 1) lua_settop(lua, 1);
     if (lua_type(lua, 1) == LUA_TNUMBER && !lua_isinteger(lua, 1)) {
         const auto number = lua_tonumber(lua, 1);
         if (number != number || number == HUGE_VAL || number == -HUGE_VAL)
             return luaL_error(lua, "<?= ?> 的结果不是有限数值，不能写进脚本");
     }
+    if (lua_type(lua, 1) == LUA_TNUMBER) {
+        // 与 Lua 5.1 的 tostring 一致：整数值的浮点不补 ".0"，
+        // 否则 32.0 会写进 JASS 的 integer 表达式并被 pjass 拒绝。
+        char formatted[64]{};
+        if (lua_isinteger(lua, 1))
+            std::snprintf(formatted, sizeof(formatted), "%lld", static_cast<long long>(lua_tointeger(lua, 1)));
+        else
+            std::snprintf(formatted, sizeof(formatted), "%.14g", static_cast<double>(lua_tonumber(lua, 1)));
+        lua_pushstring(lua, formatted);
+    } else if (!lua_isstring(lua, 1)) {
+        return luaL_error(lua, "<?= ?> 的结果是 %s，不能写进脚本", lua_typename(lua, lua_type(lua, 1)));
+    } else {
+        lua_pushvalue(lua, 1);
+        lua_tostring(lua, -1);
+    }
     lua_getfield(lua, LUA_REGISTRYINDEX, "audastra.template.output");
     const auto length = static_cast<lua_Integer>(luaL_len(lua, -1));
-    lua_pushvalue(lua, 1);
+    lua_pushvalue(lua, -2);
     lua_tostring(lua, -1);
     lua_rawseti(lua, -2, length + 1);
     return 0;
@@ -276,7 +296,7 @@ int Require(lua_State* lua) {
     if (luaL_loadbufferx(lua, library.data(), library.size(), "=slk", "t") != LUA_OK) return lua_error(lua);
     lua_rawgeti(lua, LUA_REGISTRYINDEX, LUA_RIDX_GLOBALS);
     lua_setupvalue(lua, -2, 1);
-    const auto error = detail::PushSlkData(lua, *host.slk);
+    const auto error = detail::PushSlkData(lua, *host.slk, &host.diagnostics);
     if (!error.empty()) return luaL_error(lua, "%s", error.c_str());
     lua_call(lua, 1, 2);
     lua_setfield(lua, LUA_REGISTRYINDEX, kFinishKey);
