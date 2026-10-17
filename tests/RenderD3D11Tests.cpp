@@ -740,10 +740,37 @@ void TestTerrainZeroAlphaContribution(const RendererOwner& renderer) {
                 else if (edge < 4) vertex.v = edge == 2 ? 32.5f/128 : 63.5f/128;
             }
             const auto withoutZero = draw(false,true,oldApi);
+            const auto beforeView = ReadView(renderer);
             Require(Colors(withoutZero) != 0, "zero-alpha baseline must preserve opaque target alpha");
             RequireWorldColor(withoutZero,ReadView(renderer),0,0,{95,64,96},2);
             // 最近的零alpha水面不得写深度；其后的两层保留原序，目标RGBA须逐字节完全相同。
-            Require(draw(true,true,oldApi) == withoutZero, "zero-alpha removal changed RGBA/depth/order or leaked adjacent cell");
+            const auto withZero = draw(true,true,oldApi);
+            if (withZero != withoutZero) {
+                const auto afterView = ReadView(renderer);
+                const auto first = static_cast<std::size_t>(std::mismatch(withoutZero.begin(),withoutZero.end(),withZero.begin()).first-withoutZero.begin());
+                std::size_t pixels = 0, alphaPixels = 0; unsigned channels = 0, maximumDelta = 0;
+                for (std::size_t at = 0; at < withZero.size(); at += 4) {
+                    bool changed = false;
+                    for (unsigned c = 0; c < 4; ++c) if (withZero[at+c] != withoutZero[at+c]) {
+                        changed = true; channels |= 1u << c;
+                        maximumDelta = std::max(maximumDelta,static_cast<unsigned>(std::abs(int(withZero[at+c])-int(withoutZero[at+c]))));
+                    }
+                    pixels += changed; alphaPixels += withZero[at+3] != withoutZero[at+3];
+                }
+                std::cerr << "zero-alpha mismatch legacy=" << oldApi << " distance=" << distance << " edge=" << edge
+                    << " first=" << first/4%320 << ',' << first/4/320 << " channel=" << first%4
+                    << " pixels=" << pixels << " channelMask=" << channels << " alphaPixels=" << alphaPixels << " maxDelta=" << maximumDelta
+                    << " revisions=" << beforeView.documentRevision << ',' << afterView.documentRevision
+                    << " epochs=" << beforeView.surfaceEpoch << ',' << beforeView.sceneEpoch << ',' << beforeView.viewEpoch
+                    << '/' << afterView.surfaceEpoch << ',' << afterView.sceneEpoch << ',' << afterView.viewEpoch
+                    << " sameMvp=" << std::equal(std::begin(beforeView.viewProjection),std::end(beforeView.viewProjection),std::begin(afterView.viewProjection))
+                    << " expected=";
+                for (std::size_t c=0;c<4;++c) std::cerr << unsigned(withoutZero[first/4*4+c]) << ',';
+                std::cerr << " actual=";
+                for (std::size_t c=0;c<4;++c) std::cerr << unsigned(withZero[first/4*4+c]) << ',';
+                std::cerr << '\n';
+            }
+            Require(withZero == withoutZero, "zero-alpha removal changed RGBA/depth/order or leaked adjacent cell");
         }
     }
     camera.distance = 3500;
