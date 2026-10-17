@@ -13,13 +13,42 @@
 
 #include <Windows.h>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <list>
 #include <map>
 #include <set>
 
 namespace War3Map::Modules {
 namespace {
 constexpr std::size_t kResourceLimit = 16 * 1024 * 1024;
+constexpr std::size_t kOwnedVersionCacheEntries = 1024;
+Result<std::uint64_t> OwnedPayloadVersion(const std::shared_ptr<const std::vector<std::byte>>& payload) {
+    struct CachedVersion {
+        std::weak_ptr<const std::vector<std::byte>> owner;
+        std::uint64_t version;
+    };
+    // Capture在UI线程；每线程至多1024条弱身份，不延长正文生命周期，不缓存裸地址。
+    // 版本来自进程级计数器；淘汰或线程切换只会保守失效，不重用旧版本。
+    static thread_local std::list<CachedVersion> cache;
+    static std::atomic<std::uint64_t> nextVersion{1};
+    std::erase_if(cache, [](const auto& entry) { return entry.owner.expired(); });
+    for (auto found = cache.begin(); found != cache.end(); ++found) {
+        const auto held = found->owner.lock();
+        if (held == payload && !held.owner_before(payload) && !payload.owner_before(held)) {
+            cache.splice(cache.begin(), cache, found);
+            return Result<std::uint64_t>::Success(cache.front().version);
+        }
+    }
+    auto version = nextVersion.load(std::memory_order_relaxed);
+    do {
+        if (version == std::numeric_limits<std::uint64_t>::max())
+            return Result<std::uint64_t>::Failure("World", "WORLD_ASSET_IDENTITY_EXHAUSTED", "资源缓存版本已耗尽，不能复用旧身份。");
+    } while (!nextVersion.compare_exchange_weak(version, version + 1, std::memory_order_relaxed));
+    if (cache.size() == kOwnedVersionCacheEntries) cache.pop_back();
+    cache.push_front({payload, version});
+    return Result<std::uint64_t>::Success(version);
+}
 struct ReadLease {
     HANDLE handle = INVALID_HANDLE_VALUE;
     BY_HANDLE_FILE_INFORMATION identity{};
@@ -111,9 +140,13 @@ bool HasBlightMaskAlpha(const Render::TerrainAtlasSnapshot& atlas) {
 bool SameWorldTerrainSources(const WorldTerrainSources& a, const WorldTerrainSources& b) {
     return a.archivePath == b.archivePath && a.archiveSha == b.archiveSha && a.gameRoot == b.gameRoot
         && a.readOnlyArchive == b.readOnlyArchive
+        && a.editGeneration == b.editGeneration && a.editRevision == b.editRevision
         && a.mainTileset == b.mainTileset && a.entries.size() == b.entries.size()
         && std::equal(a.entries.begin(), a.entries.end(), b.entries.begin(), [](const auto& x, const auto& y) {
-            return x.path == y.path && x.archivePath == y.archivePath && x.diskPath == y.diskPath;
+            // 两侧快照均保活immutable owner，比较期间不会发生释放后的地址复用。
+            return x.path == y.path && x.archivePath == y.archivePath && x.diskPath == y.diskPath
+                && x.size == y.size && x.ambiguous == y.ambiguous && x.ownedPayload == y.ownedPayload
+                && x.ownedPayloadVersion == y.ownedPayloadVersion;
         });
 }
 
@@ -141,6 +174,8 @@ Result<WorldTerrainSources> CaptureWorldTerrainSources(const QtProject::EditorPr
         result.readOnlyArchive = project.readOnlyArchive_;
     }
     result.gameRoot = project.war3GameRoot_;
+    result.editGeneration = project.editRevision_.Generation();
+    result.editRevision = project.editRevision_.Revision();
     if (project.mapEdits_) {
         if (const auto terrain = project.mapEdits_->Terrain()) result.mainTileset = terrain->header.mainTileset;
     }
@@ -148,8 +183,16 @@ Result<WorldTerrainSources> CaptureWorldTerrainSources(const QtProject::EditorPr
     if (entries.size() > maxEntries)
         return Result<WorldTerrainSources>::Failure("World", "WORLD_ASSET_METADATA_BUDGET",
             "资源覆盖清单超过查询预算；未截断后回退到游戏资源。");
-    for (const auto& entry : entries)
-        result.entries.push_back({entry.path.toStdString(), entry.originalPath.toStdString(), entry.diskPath.toStdWString()});
+    for (const auto& entry : entries) {
+        WorldAssetEntry captured{entry.path.toStdString(), entry.originalPath.toStdString(), entry.diskPath.toStdWString(),
+            static_cast<std::int64_t>(entry.size), entry.ambiguous, entry.ownedPayload};
+        if (entry.ownedPayload) {
+            auto version = OwnedPayloadVersion(entry.ownedPayload);
+            if (!version.Succeeded()) return {std::nullopt, std::move(version.diagnostics)};
+            captured.ownedPayloadVersion = *version.value;
+        }
+        result.entries.push_back(std::move(captured));
+    }
     return Result<WorldTerrainSources>::Success(std::move(result));
 }
 
@@ -202,9 +245,12 @@ Result<Render::AnimationResource> WorldResourceReader::ReadAnimationResource(std
         const auto root = state_->sources.gameRoot.generic_u8string();
         layer = "game:" + std::string(reinterpret_cast<const char*>(root.data()), root.size()) + "|" + read.value->archiveName;
     } else {
-        const auto diskEntry = state_->entries.find(location.value->canonicalPath);
-        if (diskEntry != state_->entries.end() && !diskEntry->second.diskPath.empty()) {
-            auto guard = state_->animationGuard.Watch(diskEntry->second.diskPath);
+        const auto entry = state_->entries.find(location.value->canonicalPath);
+        if (entry != state_->entries.end() && entry->second.ownedPayload
+            && entry->second.ownedPayload->size() > maxBytes)
+            return Output::Failure("World", "WORLD_ANIMATION_RESOURCE_BUDGET", "动画资源超过读取预算。");
+        if (entry != state_->entries.end() && !entry->second.ownedPayload && !entry->second.diskPath.empty()) {
+            auto guard = state_->animationGuard.Watch(entry->second.diskPath);
             if (!guard.Succeeded()) return {std::nullopt, std::move(guard.diagnostics)};
         }
         auto read = state_->resolver.Read(path);
@@ -213,8 +259,8 @@ Result<Render::AnimationResource> WorldResourceReader::ReadAnimationResource(std
             return Output::Failure("World", "WORLD_ANIMATION_RESOURCE_BUDGET", "动画资源超过读取预算。");
         bytes = std::move(read.value->bytes);
         layer = read.value->location.sourceId;
-        const auto entry = state_->entries.find(location.value->canonicalPath);
-        if (entry != state_->entries.end() && !entry->second.diskPath.empty()) {
+        if (entry != state_->entries.end() && entry->second.ownedPayload) layer += "|session:owned";
+        else if (entry != state_->entries.end() && !entry->second.diskPath.empty()) {
             const auto disk = entry->second.diskPath.generic_u8string();
             layer += "|session:" + std::string(reinterpret_cast<const char*>(disk.data()), disk.size());
         } else layer += "|map-archive";
@@ -276,13 +322,19 @@ Result<std::unique_ptr<WorldResourceReader>> WorldResourceReader::Open(const Wor
     for (const auto& name : state.archive->RawListfileNames())
         if (const auto key = CanonicalImportPath(name); key.Succeeded()) state.listedArchive.insert(*key.value);
     for (const auto& entry : sources.entries) {
+        if (entry.ambiguous) return fail("WORLD_ASSET_CONFLICT", "地图资源快照包含歧义路径，地图资源未启用。");
+        if (entry.size < 0 || (entry.ownedPayload && static_cast<std::uint64_t>(entry.size) != entry.ownedPayload->size()))
+            return fail("WORLD_ASSET_SIZE", "地图资源快照的大小与不可变正文不一致。");
+        if (entry.ownedPayload && !entry.ownedPayloadVersion)
+            return fail("WORLD_ASSET_IDENTITY", "地图资源快照缺少已冻结的正文缓存版本。");
         const auto key = CanonicalImportPath(entry.path);
         if (!key.Succeeded()) continue; // 不相关的不可规范化名字不可能命中严格资源虚拟路径。
         const auto previous = state.entries.find(*key.value);
         if (previous == state.entries.end()) state.entries.emplace(*key.value, entry);
-        else if (previous->second.diskPath.empty() != entry.diskPath.empty()) {
+        else if (static_cast<bool>(previous->second.ownedPayload || !previous->second.diskPath.empty())
+            != static_cast<bool>(entry.ownedPayload || !entry.diskPath.empty())) {
             // 与生产保存一致：会话待导入覆盖原归档（包括改名后的目标）。同层冲突仍拒绝。
-            if (!entry.diskPath.empty()) previous->second = entry;
+            if (entry.ownedPayload || !entry.diskPath.empty()) previous->second = entry;
         } else return fail("WORLD_ASSET_CONFLICT", "地图资源同层存在大小写或路径冲突，地图资源未启用。");
     }
     State* shared = &state;
@@ -303,6 +355,12 @@ Result<std::unique_ptr<WorldResourceReader>> WorldResourceReader::Open(const Wor
         if (found == shared->entries.end()) {
             if (unlisted(path)) return shared->archive->ReadFileBounded(path, kResourceLimit);
             return Result<std::vector<std::byte>>::Failure("World", "WORLD_ASSET_MISSING", "资源快照内没有所请求的地图成员。");
+        }
+        if (found->second.ownedPayload) {
+            if (found->second.ownedPayload->size() > kResourceLimit)
+                return Result<std::vector<std::byte>>::Failure("World", "WORLD_ASSET_READ", "导入地形资源超过 16 MiB。");
+            // 空正文仍是明确的会话覆盖，不回退磁盘、旧地图或游戏包。
+            return Result<std::vector<std::byte>>::Success(*found->second.ownedPayload);
         }
         if (!found->second.diskPath.empty()) return ReadDisk(found->second.diskPath);
         return shared->archive->ReadFileBounded(found->second.archivePath, kResourceLimit);

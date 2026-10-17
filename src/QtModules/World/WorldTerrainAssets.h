@@ -8,10 +8,13 @@
 #include "War3MapCore/Render/TerrainTextureAtlas.h"
 #include "War3MapCore/MapData/MapTerrain.h"
 #include "War3MapCore/Resources/ResourceResolver.h"
+#include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <limits>
 #include <optional>
+#include <vector>
 
 namespace War3Map::QtProject { class EditorProject; }
 namespace War3Map { class MpqWorkspace; }
@@ -20,8 +23,13 @@ namespace War3Map::Modules {
 struct WorldAssetEntry {
     std::string path, archivePath;
     std::filesystem::path diskPath;
+    std::int64_t size = 0;
+    bool ambiguous = false;
+    std::shared_ptr<const std::vector<std::byte>> ownedPayload;
+    std::uint64_t ownedPayloadVersion = 0; // 进程内受控immutable owner版本，不是正文SHA。
 };
-// GUI 线程只复制路径/身份。后台读取用独立文件租约，不借用 Project/MPQ/QObject。
+// GUI 线程复制路径/身份并保活不可变正文；owner版本按weak ownership有界复用。
+// 后台读取用独立文件租约，不借用 Project/MPQ/QObject。
 struct WorldTerrainSources {
     std::filesystem::path archivePath, gameRoot;
     std::string archiveSha;
@@ -29,6 +37,7 @@ struct WorldTerrainSources {
     std::optional<std::uint8_t> mainTileset;
     // 持有只读归档的身份租约；后台仍打开独立解析器，不并发使用借入的MPQ。
     std::shared_ptr<const MpqWorkspace> readOnlyArchive;
+    std::uint64_t editGeneration = 0, editRevision = 0;
 };
 [[nodiscard]] bool SameWorldTerrainSources(const WorldTerrainSources& a, const WorldTerrainSources& b);
 [[nodiscard]] Result<WorldTerrainSources> CaptureWorldTerrainSources(const QtProject::EditorProject& project,

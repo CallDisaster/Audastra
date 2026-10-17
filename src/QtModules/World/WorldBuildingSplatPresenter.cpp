@@ -13,13 +13,6 @@
 
 namespace War3Map::Modules {
 namespace {
-bool SameSources(const WorldTerrainSources& a, const WorldTerrainSources& b) {
-    return a.archivePath == b.archivePath && a.archiveSha == b.archiveSha && a.gameRoot == b.gameRoot
-        && a.mainTileset == b.mainTileset && a.entries.size() == b.entries.size()
-        && std::equal(a.entries.begin(), a.entries.end(), b.entries.begin(), [](const auto& x, const auto& y) {
-            return x.path == y.path && x.archivePath == y.archivePath && x.diskPath == y.diskPath;
-        });
-}
 QString FailureText(const std::vector<Diagnostic>& diagnostics) {
     return diagnostics.empty() ? QObject::tr("建筑贴画准备失败，原层保留；未提交新层")
         : QString::fromUtf8(diagnostics.front().code + "：" + diagnostics.front().message);
@@ -71,7 +64,7 @@ void WorldBuildingSplatPresenter::Report(QString text) {
 }
 void WorldBuildingSplatPresenter::SetSource(WorldTerrainSources sources, Render::AnimationSession session,
     std::function<bool()> sourceCurrent) {
-    if (sources_ && SameSources(*sources_, sources) && session_.sourceIdentity == session.sourceIdentity) {
+    if (sources_ && SameWorldTerrainSources(*sources_, sources) && session_.sourceIdentity == session.sourceIdentity) {
         sourceCurrent_ = std::move(sourceCurrent); return;
     }
     Clear(); sources_ = std::move(sources); session_ = std::move(session);
