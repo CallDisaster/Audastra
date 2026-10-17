@@ -2846,6 +2846,11 @@ void WorldModuleTests::SharedBaseBlightRequiresCapabilitiesAndKeepsAtomicFrame()
         m.blightBatches[1].uvRight = m.blightBatches[0].uvRight; m.blightBatches[1].uvTop = m.blightBatches[0].uvTop;
         m.blightBatches[1].uvBottom = m.blightBatches[0].uvBottom; }));
     QVERIFY(!invalid([](auto& m) { m.batches[0].alphaBlend = true; }));
+    QVERIFY(!invalid([](auto& m) {
+        auto atlas = std::make_shared<Render::TerrainAtlasSnapshot>(*m.blightTexture);
+        while (atlas->additionalMips.size() < 12) atlas->additionalMips.push_back(atlas->additionalMips.back());
+        m.blightTexture = std::move(atlas);
+    })); // 超12总mip须在reserve/复制ABI描述符前拒绝，不交provider兜底。
     QCOMPARE(state.blightSubmits, submits); QCOMPARE(state.sceneEpoch, epoch); QCOMPARE(state.revision, revision);
     state.rejectTerrain = true;
     auto mesh = BuildWorldTerrainMesh(*terrain); QVERIFY(mesh.Succeeded());

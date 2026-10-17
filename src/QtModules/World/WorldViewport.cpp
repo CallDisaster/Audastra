@@ -907,7 +907,7 @@ bool WorldViewport::SetGroundMesh(std::shared_ptr<const Render::TerrainGroundMes
         std::size_t nextIndex = 0;
         for (const auto& batch : batches) {
             const auto& atlas = *ground->blightTexture;
-            if (atlas.columns != 8 || atlas.rows != 4 || !atlas.image.Valid() || atlas.image.height % 4
+            if (atlas.columns != 8 || atlas.rows != 4 || !atlas.image.Valid() || atlas.additionalMips.size() > 11 || atlas.image.height % 4
                 || atlas.image.width != atlas.image.height / 4 * 8 || atlas.cells.size() != 32
                 || batch.firstIndex != nextIndex || batch.indexCount == 0 || batch.indexCount % 6
                 || batch.indexCount > indices.size() - nextIndex)
