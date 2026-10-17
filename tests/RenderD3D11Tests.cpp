@@ -5,6 +5,7 @@
 #include "War3MapCore/RenderPluginMaterialAlpha.h"
 #include "War3MapCore/Render/ModelSceneLayerRenderer.h"
 #include "War3MapCore/Render/BuildingSplatPreview.h"
+#include "War3MapCore/Render/WorldModelScene.h"
 #include "War3MapCore/Hash.h"
 #include "MdxTestModel.h"
 #include "AnimationTestModel.h"
@@ -1776,13 +1777,19 @@ int wmain(int argc, wchar_t** argv) {
     HMODULE module = nullptr;
     try {
         const bool realPair = argc > 1 && std::wstring_view(argv[1]) == L"--real-terrain-pair";
+        const bool realCliffGround = argc > 1 && std::wstring_view(argv[1]) == L"--real-cliff-ground";
         for (int argument = 1; argument < argc; ++argument) {
             if (std::wstring_view(argv[argument]).starts_with(L"--real-terrain-pair"))
                 Require(argument == 1 && realPair && argc == 5,
                     "real terrain pair requires the sole first option, manifest, SHA and empty output directory");
             if (realPair) Require(std::wstring_view(argv[argument]) != L"--hardware", "real terrain pair cannot use hardware mode");
+            if (std::wstring_view(argv[argument]).starts_with(L"--real-cliff-ground"))
+                Require(argument == 1 && realCliffGround && argc == 5,
+                    "real cliff ground requires the sole first option, manifest, SHA and empty output directory");
+            if (realCliffGround) Require(std::wstring_view(argv[argument]) != L"--hardware", "real cliff ground cannot use hardware mode");
         }
         War3Map::Tests::RunRealTerrainPairValidationTests();
+        War3Map::Tests::RunRealCliffGroundValidationTests();
         wchar_t executable[32768]{};
         const auto length = GetModuleFileNameW(nullptr, executable, 32768);
         Require(length != 0 && length < 32768, "executable path unavailable");
@@ -1824,6 +1831,41 @@ int wmain(int argc, wchar_t** argv) {
                 });
             FreeLibrary(module); module = nullptr;
             std::cout << "real terrain pair source, geometry, atomic WARP capture and finite edge observations completed\n";
+            return 0;
+        }
+        if (realCliffGround) {
+            const std::wstring wideSha(argv[3]);
+            Require(wideSha.size() == 64 && std::all_of(wideSha.begin(),wideSha.end(),[](wchar_t c) {
+                return (c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'f'); }), "real cliff ground SHA invalid");
+            std::string sha;for (const auto c:wideSha) sha.push_back(static_cast<char>(c));
+            const auto providerSha=War3Map::Sha256File(dll);
+            Require(providerSha.Succeeded(),"real cliff ground actual provider SHA unavailable");
+            War3Map::Tests::RunRealCliffGroundAudit(argv[2],sha,argv[4],
+                [api,actualProvider=*providerSha.value](const War3RenderTerrainMipSceneV2& terrain,const War3RenderModelSceneV2& models,
+                    const War3RenderCameraV2& camera,std::uint32_t width,std::uint32_t height) {
+                    Require(api->submitTerrainMipScene && api->submitModelScene && api->setEnvironment,
+                        "real cliff ground requires current terrain/model/environment ABI");
+                    const War3RenderCreateInfoV2 create{sizeof(create),width,height,1};
+                    RendererOwner renderer{api,api->createRenderer(&create)};
+                    Require(renderer.handle != nullptr,"real cliff ground WARP creation failed");
+                    Require(War3Map::Render::CheckStaticModelSamplerCapability(api,renderer.handle).Succeeded(),
+                        "real cliff ground source sampler backend capability missing");
+                    const War3RenderEnvironmentV2 environment{sizeof(environment),{0,0,1},{1,1,1},{0,0,0},
+                        WAR3_RENDER_FOG_NONE,0,1,0,{0,0,0},0,0,0,0,1,0,nullptr};
+                    Require(api->setEnvironment(renderer.handle,&environment) == 0 &&
+                        api->submitTerrainMipScene(renderer.handle,&terrain) == 0 &&
+                        api->submitModelScene(renderer.handle,&models) == 0 && api->setCamera(renderer.handle,&camera) == 0,
+                        "real cliff ground production packet pair rejected; no partial capture");
+                    auto captured=CaptureFrame(renderer,width,height,terrain.documentRevision,camera);
+                    War3Map::Tests::RealTerrainPairFrame frame;
+                    frame.pixels=std::move(captured.pixels);frame.receipt=captured.receipt;frame.providerSha256=actualProvider;
+                    frame.status.structSize=sizeof(frame.status);
+                    Require(api->getStatus(renderer.handle,&frame.status) == 0,"real cliff ground status missing");return frame;
+                },[](const std::filesystem::path& path,const std::vector<std::uint8_t>& pixels,std::uint32_t width,std::uint32_t height) {
+                    SaveBmp(path,pixels,static_cast<LONG>(width),static_cast<LONG>(height));
+                });
+            FreeLibrary(module);module=nullptr;
+            std::cout << "real cliff ground source, production ramp/selection/coverage and same-provider frame completed\n";
             return 0;
         }
         const bool hardware = argc > 1 && std::wstring_view(argv[1]) == L"--hardware";

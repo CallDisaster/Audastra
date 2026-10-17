@@ -2,6 +2,9 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/VerifiedFile.h"
 #include "War3MapCore/Render/TerrainGroundMesh.h"
+#include "War3MapCore/Render/TerrainCliffs.h"
+#include "War3MapCore/Resources/TerrainTable.h"
+#include "MdxTestModel.h"
 #include <DirectXMath.h>
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -11,6 +14,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <tuple>
@@ -710,4 +714,600 @@ void RunRealTerrainPairAudit(const std::filesystem::path& manifestPath, std::str
     WriteBytes(output/"result.json.tmp",std::span(reinterpret_cast<const std::uint8_t*>(encoded.data()),encoded.size()));
     std::filesystem::rename(output/"result.json.tmp",output/"result.json");
 }
+namespace {
+// 此入口只消费已存block与明确资源；路径不能逃出manifest目录，也不接受地图/游戏入口。
+std::filesystem::path RelativePathText(const std::string& text) {
+    Check(!text.empty() && text.size() <= 1024 && text.find(':') == std::string::npos &&
+        text.find('\\') == std::string::npos && text.find("//") == std::string::npos &&
+        text.back() != '/' && std::none_of(text.begin(),text.end(),[](unsigned char c) {
+            return c < 32 || c == '<' || c == '>' || c == '"' || c == '|' || c == '?' || c == '*';
+        }), "cliff-ground input requires a plain relative path");
+    std::u8string utf8; for (const unsigned char c : text) utf8.push_back(static_cast<char8_t>(c));
+    const std::filesystem::path relative(utf8);
+    Check(!relative.is_absolute() && !relative.has_root_path(), "cliff-ground absolute input denied");
+    const auto extension=relative.extension().string();
+    Check(extension==".json" || extension==".bin" || extension==".slk" || extension==".mdx" || extension==".blp",
+        "cliff-ground map/archive/unlisted input type denied");
+    for (const auto& component : relative) {
+        const auto part=component.u8string();
+        Check(component != "." && component != ".." && !part.empty() && part.back()!=u8'.' && part.back()!=u8' ',
+            "cliff-ground input path has traversal or a Windows alias");
+    }
+    return relative;
+}
+std::filesystem::path RelativeInput(const std::filesystem::path& root, const Json& reference) {
+    const auto relative=RelativePathText(reference.at("path").get<std::string>());
+    auto resolved = root;
+    for (const auto& component : relative) {
+        resolved /= component;
+        Check(!std::filesystem::is_symlink(std::filesystem::symlink_status(resolved)), "cliff-ground input symlink denied");
+    }
+    const auto canonical = std::filesystem::canonical(resolved);
+    const auto inside = canonical.lexically_relative(std::filesystem::canonical(root));
+    Check(!inside.empty() && !inside.is_absolute() && *inside.begin() != ".." &&
+        std::filesystem::is_regular_file(canonical), "cliff-ground input is outside its manifest tree");
+    return canonical;
+}
+std::vector<std::byte> RelativeBytes(const std::filesystem::path& root, const Json& reference,
+    std::uint64_t limit, std::string_view extension = {}) {
+    const auto path = RelativeInput(root,reference);
+    Check(extension.empty() || path.extension() == extension, "cliff-ground input extension mismatch");
+    const auto sha = reference.at("sha256").get<std::string>(); Check(IsSha(sha), "cliff-ground input SHA invalid");
+    auto bytes = ReadVerifiedFile(path,sha,limit); Check(bytes.Succeeded(), "cliff-ground verified input failed");
+    return std::move(*bytes.value);
+}
+Json RelativeJson(const std::filesystem::path& root, const Json& reference) {
+    const auto bytes = RelativeBytes(root,reference,kJsonLimit);
+    return Json::parse(reinterpret_cast<const char*>(bytes.data()),reinterpret_cast<const char*>(bytes.data()+bytes.size()));
+}
+std::string VirtualPath(std::string path) {
+    Check(!path.empty() && path.size() <= 260 && path.front() != '/' && path.front() != '\\' &&
+        path.find(':') == std::string::npos && std::none_of(path.begin(),path.end(),[](unsigned char c) {
+            return c < 32 || c == '<' || c == '>' || c == '"' || c == '|' || c == '?' || c == '*';
+        }), "cliff-ground virtual path invalid");
+    std::replace(path.begin(),path.end(),'\\','/');
+    Check(path.back()!='/' && path.find("//")==std::string::npos,"cliff-ground virtual empty component denied");
+    const std::filesystem::path parts(path);
+    for (const auto& part : parts) {
+        const auto text=part.u8string();
+        Check(part != "." && part != ".." && !text.empty() && text.back()!=u8'.' && text.back()!=u8' ',
+            "cliff-ground virtual traversal/Windows alias denied");
+    }
+    std::replace(path.begin(),path.end(),'/','\\'); return path;
+}
+void RebuildGrid(TerrainGridSnapshot& grid) {
+    grid.tiles.clear();
+    for (std::uint32_t y=0;y+1<grid.header.height;++y) for (std::uint32_t x=0;x+1<grid.header.width;++x) {
+        const auto at=y*grid.header.width+x; grid.tiles.push_back({{at,at+1,at+grid.header.width,at+grid.header.width+1}});
+    }
+    Check(!grid.vertices.empty(), "cliff-ground empty grid"); grid.minimum=grid.maximum=grid.vertices.front().position;
+    for (const auto& v:grid.vertices) for (unsigned axis=0;axis<3;++axis) {
+        grid.minimum[axis]=std::min(grid.minimum[axis],v.position[axis]);
+        grid.maximum[axis]=std::max(grid.maximum[axis],v.position[axis]);
+    }
+}
+TerrainHeader CliffHeader(const Json& j) {
+    TerrainHeader header;
+    Check(UInt(j.at("version"))==11 && UInt(j.at("vertex_record_bytes"))==7 && Number(j.at("tile_size_world"))==128,
+        "cliff-ground requires original classic header");
+    header.width=UInt(j.at("vertex_width"),2049); header.height=UInt(j.at("vertex_height"),2049);
+    Check(header.width>=4 && header.height>=5 && UInt(j.at("tile_width"))==header.width-1 &&
+        UInt(j.at("tile_height"))==header.height-1, "cliff-ground header dimensions invalid");
+    header.mainTileset=static_cast<std::uint8_t>(UInt(j.at("main_tileset_byte"),255));
+    header.usesCustomTileset=j.at("uses_custom_tileset").get<bool>();
+    Check(j.at("offset_world_xy").size()==2,"cliff-ground source offset invalid");
+    header.offset={Number(j.at("offset_world_xy")[0]),Number(j.at("offset_world_xy")[1])};
+    for (const auto* field:{"ground_rawcodes_hex","cliff_rawcodes_hex"})
+        Check(j.at(field).is_array() && !j.at(field).empty() && j.at(field).size()<=16,"cliff-ground palette bound invalid");
+    for (const auto& id:j.at("ground_rawcodes_hex")) header.groundTilesets.push_back(Rawcode(id));
+    for (const auto& id:j.at("cliff_rawcodes_hex")) header.cliffTilesets.push_back(Rawcode(id));
+    return header;
+}
+struct CliffContext {
+    TerrainHeader original;
+    TerrainGridSnapshot halo, core;
+    std::array<std::uint32_t,6> haloCore{5,6,9,10,13,14};
+    std::array<std::uint32_t,6> sourceVertices{};
+    std::uint32_t x=0,y=0,type=0;
+    Json sourceCells, haloSource;
+};
+CliffContext CliffContextFromBlock(const Json& block, const Json& selection) {
+    Check(block.at("ok")==true && UInt(block.at("schema_version"))==1 && block.at("is_render_capture")==false &&
+        block.at("workspace_kind")=="map-archive-readonly" && block.at("content_scope")=="committed-source" &&
+        block.at("coordinate_system")=="southwest-origin-x-east-y-north-z-up" &&
+        block.at("surface_semantics")=="w3e-raw-layer-height-grid" &&
+        block.at("preview_diagonal")=="northwest-southeast" && block.at("includes_cliff_ramp_geometry")==false &&
+        block.at("includes_water_material_offset")==false && block.at("includes_entities")==false && block.at("includes_pathing")==false,
+        "cliff-ground source block contract invalid");
+    CliffContext c; c.original=CliffHeader(block.at("header"));
+    const auto& ground=selection.at("ground_cell"); const auto& cliff=selection.at("cliff_cell");
+    Check(ground.is_array() && ground.size()==2 && cliff.is_array() && cliff.size()==2,"cliff-ground selection needs two coordinates");
+    c.x=UInt(ground[0],c.original.width-1); c.y=UInt(ground[1],c.original.height-1);
+    Check(c.x>0 && c.y>0 && c.x+2<c.original.width && c.y+3<c.original.height &&
+        UInt(cliff[0])==c.x && UInt(cliff[1])==c.y+1,"cliff-ground requires an interior ground cell immediately south of one cliff");
+    const auto& rectangle=block.at("tiles"); const auto bx=UInt(rectangle.at("x"),c.original.width-1),by=UInt(rectangle.at("y"),c.original.height-1);
+    const auto bw=UInt(rectangle.at("width"),256),bh=UInt(rectangle.at("height"),256);
+    Check(bw && bh && std::uint64_t(bw)*bh<=256 && bx+bw<c.original.width && by+bh<c.original.height &&
+        c.x-1>=bx && c.y-1>=by && c.x+2<=bx+bw && c.y+3<=by+bh &&
+        block.at("vertices").size()==std::size_t(bw+1)*(bh+1) && block.at("cells").size()==std::size_t(bw)*bh,
+        "cliff-ground source block does not contain its complete halo");
+    c.halo.header=c.original; c.halo.header.width=4; c.halo.header.height=5;
+    c.halo.header.offset={c.original.offset[0]+float(c.x-1)*128,c.original.offset[1]+float(c.y-1)*128};
+    c.halo.vertices.resize(20); c.haloSource=Json::array(); std::array<bool,20> seen{};
+    for (const auto& row:block.at("vertices")) {
+        const auto x=UInt(row.at("x")),y=UInt(row.at("y"));
+        if (x<c.x-1 || x>c.x+2 || y<c.y-1 || y>c.y+3) continue;
+        const auto at=(y-(c.y-1))*4+x-(c.x-1); Check(!seen[at],"cliff-ground duplicate halo source"); seen[at]=true;
+        c.halo.vertices[at]=Vertex(row,c.original); c.haloSource.push_back(row);
+        Check(c.halo.vertices[at].GroundTextureIndex()<c.original.groundTilesets.size(),"cliff-ground unknown raw ground palette");
+    }
+    Check(std::all_of(seen.begin(),seen.end(),[](bool v){return v;}),"cliff-ground incomplete source halo");
+    RebuildGrid(c.halo); c.core.header=c.original; c.core.header.width=2; c.core.header.height=3;
+    c.core.header.offset={c.original.offset[0]+float(c.x)*128,c.original.offset[1]+float(c.y)*128};
+    for (std::size_t i=0;i<c.haloCore.size();++i) {
+        c.core.vertices.push_back(c.halo.vertices[c.haloCore[i]]);
+        c.sourceVertices[i]=(c.y+static_cast<std::uint32_t>(i/2))*c.original.width+c.x+static_cast<std::uint32_t>(i%2);
+    }
+    RebuildGrid(c.core); c.sourceCells=Json::array();
+    for (std::uint32_t side=0;side<2;++side) {
+        const auto y=c.y+side; const Json* found=nullptr;
+        for (const auto& row:block.at("cells")) if (UInt(row.at("x"))==c.x && UInt(row.at("y"))==y) {
+            Check(!found,"cliff-ground duplicate source cell"); found=&row;
+        }
+        const auto sw=y*c.original.width+c.x;
+        Check(found && UInt(found->at("source_index"))==y*(c.original.width-1)+c.x &&
+            found->at("source_vertices_sw_se_nw_ne")==Json::array({sw,sw+1,sw+c.original.width,sw+c.original.width+1}),
+            "cliff-ground source cell/corner identity invalid"); c.sourceCells.push_back(*found);
+    }
+    const auto low=c.core.vertices[0].CliffLevel(),high=c.core.vertices[4].CliffLevel();
+    Check(high>low && high-low<=2 && c.core.vertices[1].CliffLevel()==low && c.core.vertices[2].CliffLevel()==low &&
+        c.core.vertices[3].CliffLevel()==low && c.core.vertices[5].CliffLevel()==high,
+        "cliff-ground source is not one ordinary straight north wall and flat south ground");
+    c.type=c.core.vertices[2].CliffTextureIndex();
+    Check(c.type<c.original.cliffTilesets.size() && c.type!=15,"cliff-ground source cliff palette unknown");
+    for (const auto at:{2u,3u,4u,5u}) Check(c.core.vertices[at].CliffTextureIndex()==c.type,
+        "cliff-ground narrow input requires unambiguous actual cliff type");
+    return c;
+}
+void NoWarnings(std::span<const Diagnostic> diagnostics) {
+    Check(std::none_of(diagnostics.begin(),diagnostics.end(),[](const auto& d){return d.severity!=DiagnosticSeverity::Info;}),
+        "cliff-ground production warning/error must not become accepted partial geometry");
+}
+std::vector<std::optional<CliffTypeSource>> CliffTypesFromTable(const TerrainHeader& header,
+    const Resources::TerrainTableSnapshot& table, Json& rows) {
+    std::vector<std::optional<CliffTypeSource>> types(header.cliffTilesets.size()); rows=Json::array();
+    const auto required=[](const auto& row,const char* key)->std::string {
+        const auto at=row.fields.find(key); Check(at!=row.fields.end() && !at->second.empty(),"cliff-ground cliff row field missing"); return at->second;
+    };
+    for (std::size_t index=0;index<header.cliffTilesets.size();++index) for (const auto& row:table.Rows())
+        if (row.id==header.cliffTilesets[index]) {
+            Check(!types[index],"cliff-ground duplicate cliff rawcode row");
+            const auto directory=required(row,"cliffmodeldir"),ramp=required(row,"rampmodeldir");
+            for (const auto& part:{directory,ramp}) Check(part.size()<=64 && std::all_of(part.begin(),part.end(),[](unsigned char c){
+                return (c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_';}),"cliff-ground cliff directory invalid");
+            auto texture=VirtualPath(required(row,"texdir")+"\\"+required(row,"texfile"));
+            if (!texture.ends_with(".blp")) texture+=".blp";
+            const auto ground=required(row,"groundtile"),upper=required(row,"uppertile");
+            Check(ground.size()==4 && (upper=="_" || upper.size()==4),"cliff-ground paired rawcodes invalid");
+            types[index]=CliffTypeSource{directory,texture,ramp,ground,upper=="_"?"":upper};
+            rows.push_back({{"palette_index",index},{"rawcode",row.id},{"sylk_row",row.row},{"fields",row.fields}});
+        }
+    return types;
+}
+Resources::TerrainTableSnapshot CaptureCliffTable(std::span<const std::byte> bytes) {
+    Resources::ResourceResolver resolver;
+    Resources::ResourceSource source;source.id="verified-audit-cliff-table";source.layer=Resources::ResourceLayer::Other;
+    source.probe=[](std::string_view path) {
+        return Result<Resources::ResourceProbe>::Success({path=="TERRAINART\\CLIFFTYPES.SLK"?
+            Resources::ResourceProbeState::Found:Resources::ResourceProbeState::Missing,std::string(path)});
+    };
+    source.read=[&](std::string_view path) {
+        if(path!="TERRAINART\\CLIFFTYPES.SLK")return Result<std::vector<std::byte>>::Failure("Audit","MISSING","unlisted table");
+        return Result<std::vector<std::byte>>::Success(std::vector<std::byte>(bytes.begin(),bytes.end()));
+    };
+    Check(resolver.AddSource(std::move(source)).Succeeded(),"cliff-ground table source rejected");
+    auto table=Resources::CaptureTerrainTable(resolver,"TerrainArt\\CliffTypes.slk","cliffid");
+    Check(table.Succeeded(),"cliff-ground official table parse failed");NoWarnings(table.diagnostics);return std::move(*table.value);
+}
+struct CliffPrepared {
+    TerrainGridSnapshot core;
+    std::vector<std::uint8_t> selected;
+    TerrainCliffs cliffs;
+    TerrainGroundSelection selection;
+    std::size_t rampAdjusted=0;
+};
+CliffPrepared PrepareCliffGround(const CliffContext& context,
+    std::span<const std::optional<CliffTypeSource>> types,const ModelFileReader& read) {
+    Check(types.size()==context.original.cliffTilesets.size() && types[context.type],"cliff-ground selected source row unavailable");
+    auto halo=context.halo; CliffPrepared p; p.rampAdjusted=ApplyRampHeights(halo);
+    Check(p.rampAdjusted==0,"cliff-ground clean ordinary halo unexpectedly needs ramp shaping");
+    const auto selected=ResolveTerrainGroundSelection(halo,types); Check(selected.Succeeded(),"cliff-ground production ground selection failed");
+    NoWarnings(selected.diagnostics); p.selection=*selected.value; p.core=context.core;
+    for (std::size_t i=0;i<context.haloCore.size();++i) {
+        p.core.vertices[i]=halo.vertices[context.haloCore[i]]; p.selected.push_back(p.selection.indices.at(context.haloCore[i]));
+    }
+    RebuildGrid(p.core);
+    const auto built=BuildTerrainCliffs(p.core,types,read); Check(built.Succeeded(),"cliff-ground production cliff build failed");
+    NoWarnings(built.diagnostics); p.cliffs=*built.value; NoWarnings(p.cliffs.warnings);
+    Check(p.cliffs.cliffTiles==1 && p.cliffs.placedTiles==1 && !p.cliffs.rampPieces && !p.cliffs.rampSurfaceTiles &&
+        !p.cliffs.tooHighTiles && !p.cliffs.unknownTypeTiles && !p.cliffs.missingModelTiles &&
+        p.cliffs.coveredTiles==std::vector<std::uint8_t>({0,1}) && !p.cliffs.meshes.empty(),
+        "cliff-ground cliff coverage is not one actual model and one visible ground cell");
+    std::size_t visibleIndices=0;
+    for (const auto& mesh:p.cliffs.meshes) {
+        Check(!mesh.vertices.empty() && !mesh.indices.empty(),"cliff-ground empty visible cliff mesh"); visibleIndices+=mesh.indices.size();
+    }
+    Check(visibleIndices>0,"cliff-ground covered flag lacks actual visible geometry"); return p;
+}
+void ValidateCliffModel(const MdxModel& model,std::string_view texturePath) {
+    Check(model.version==800 && !model.geosets.empty() && !model.skippedChunks && model.globalSequences.empty() &&
+        model.textureAnimations.empty() && model.textureAnimationIssue.empty() && model.otherNodes.empty() && model.lights.empty(),
+        "cliff-ground actual MDX format unsupported");
+    ForEachMdxNode(model,[](const MdxNode& node) {
+        Check(!node.translation && !node.rotation && !node.scaling &&
+            (node.flags & ~MdxNodeNonTransformFlags(node.kind))==0,
+            "cliff-ground static Bake cannot silently ignore a source node transform");
+    });
+    std::size_t visible=0;
+    for (const auto& geoset:model.geosets) if (geoset.visibleInStand && !geoset.indices.empty()) {
+        ++visible; Check(geoset.materialId<model.materials.size(),"cliff-ground visible material missing");
+        const auto& material=model.materials[geoset.materialId];
+        Check(material.layers.size()==1 && material.priorityPlane==0 && !material.flags && !material.hasUninterpretedData &&
+            !geoset.animation && !geoset.skippedPrimitiveGroups && !geoset.uninterpretedTailBytes,
+            "cliff-ground Bake cannot faithfully accept additional visible material/geoset semantics");
+        const auto& layer=material.layers.front(); Check(layer.textureId<model.textures.size(),"cliff-ground source TEXS missing");
+        const auto& texture=model.textures[layer.textureId];
+        Check(layer.filterMode==MdxFilterMode::None && layer.shadingFlags==0 && layer.alpha==1 && texture.flags<=3 &&
+            !layer.animatedTexture && !layer.animatedAlpha && !layer.hasUninterpretedData &&
+            layer.textureAnimationId==UINT32_MAX && layer.coordId==0 &&
+            (texture.replaceableId==11 || (texture.replaceableId==0 && VirtualPath(texture.path)==texturePath)),
+            "cliff-ground unsupported original material must not be flattened by Bake");
+        Check(geoset.normals.size()==geoset.positions.size() && geoset.uvs.size()==geoset.positions.size(),
+            "cliff-ground requires actual source UV and normals");
+    }
+    Check(visible>0,"cliff-ground source has no Stand-visible triangles");
+}
+std::string ExpectedCliffPath(const CliffContext& c,const CliffTypeSource& type) {
+    const auto& v=c.core.vertices;
+    const auto shape=CliffShapeName(v[2].CliffLevel(),v[4].CliffLevel(),v[5].CliffLevel(),v[3].CliffLevel());
+    Check(shape && v[2].CliffVariation()==0,"cliff-ground requires exact source variation0 without fallback search");
+    return "Doodads\\Terrain\\"+type.modelDirectory+"\\"+type.modelDirectory+*shape+"0.mdx";
+}
+void CheckGroundGeometry(const TerrainGroundMesh& ground,const CliffPrepared& p) {
+    Check(ground.hiddenTileCount==1 && ground.texturedTiles==1 && !ground.fallback.totalTiles &&
+        ground.baseTiles==std::vector<std::uint32_t>({0}) && ground.vertices.size()>=4 && !ground.indices.empty() &&
+        ground.waterTiles.empty() && ground.budget.policy==TerrainGroundBudgetPolicy::Strict && !ground.budget.reduced,
+        "cliff-ground actual ground must preserve one textured cell and hide only the placed cliff");
+    Check(ground.indices.size()%6==0 && ground.overlayTiles.size()+1==ground.vertices.size()/4,
+        "cliff-ground output layer mapping invalid");
+    for (const auto tile:ground.overlayTiles) Check(tile==0,"cliff-ground unexpected overlay on hidden cliff");
+    for (const auto& batch:ground.batches) {
+        Check(!batch.translucent && batch.textureIndex<ground.textures.size() && batch.indexCount%6==0,
+            "cliff-ground untextured/water/fallback batch denied");
+        for (std::uint32_t at=batch.firstIndex;at<batch.firstIndex+batch.indexCount;at+=6) {
+            const auto first=ground.indices.at(at); Check(first%4==0 && first+3<ground.vertices.size(),"cliff-ground quad shape invalid");
+            const std::array<std::uint32_t,6> expected{first,first+1,first+2,first+1,first+3,first+2};
+            Check(std::equal(expected.begin(),expected.end(),ground.indices.begin()+at),"cliff-ground original diagonal changed");
+            for (unsigned i=0;i<4;++i) {
+                const auto& output=ground.vertices[first+i];
+                Check(std::array<float,3>{output.x,output.y,output.z}==p.core.vertices[p.core.tiles[0].vertices[i]].position,
+                    "cliff-ground actual ground XYZ is not the shaped source corner");
+            }
+        }
+    }
+}
+Json CliffBlockFixture() {
+    const auto original=Fixture(); Json block;
+    block["ok"]=true; block["schema_version"]=1; block["is_render_capture"]=false;
+    block["workspace_kind"]="map-archive-readonly";block["content_scope"]="committed-source";
+    block["coordinate_system"]="southwest-origin-x-east-y-north-z-up";
+    block["surface_semantics"]="w3e-raw-layer-height-grid"; block["preview_diagonal"]="northwest-southeast";
+    block["includes_cliff_ramp_geometry"]=false; block["header"]=original.at("header");
+    block["includes_water_material_offset"]=false;block["includes_entities"]=false;block["includes_pathing"]=false;
+    for (unsigned i=0;i<16;++i) {
+        // 唯一rawcode使正式GroundSelection必须真正找到第3项，不能把私有地图palette写死。
+        std::string code="41414141"; code[7]="0123456789abcdef"[i]; block["header"]["ground_rawcodes_hex"][i]=code;
+    }
+    block["tiles"]={{"x",1},{"y",1},{"width",3},{"height",4}};
+    block["vertices"]=Json::array(); block["cells"]=Json::array();
+    for (unsigned y=1;y<=5;++y) for (unsigned x=1;x<=4;++x) {
+        auto row=original.at("halo_vertices")[0]; const unsigned level=y>=4?3:2,material=y>=3?1:3;
+        row["x"]=x; row["y"]=y; row["source_index"]=y*9+x;
+        row["position_world"]=Json::array({-128+int(x)*128,-256+int(y)*128,int(level-2)*128});
+        row["cliff_and_layer_raw"]=16+level; row["cliff_level"]=level;
+        row["ground_texture_index"]=material; row["texture_and_flags_raw"]=material;
+        block["vertices"].push_back(row);
+    }
+    for (unsigned y=1;y<5;++y) for (unsigned x=1;x<4;++x) {
+        const auto sw=y*9+x; block["cells"].push_back({{"x",x},{"y",y},{"source_index",y*8+x},
+            {"source_vertices_sw_se_nw_ne",Json::array({sw,sw+1,sw+9,sw+10})}});
+    }
+    return block;
+}
+std::vector<std::byte> CliffMdxFixture() {
+    // 原创单层可见墙面，正式ParseMdx/BuildTerrainCliffs读取；没有私有Bake测试后门。
+    MdxTest::Writer w; w.Tag("MDLX"); w.Tag("VERS"); w.U32(4); w.U32(800);
+    w.Tag("TEXS"); w.U32(268); w.U32(11); w.Fixed("",260); w.U32(0);
+    w.Tag("MTLS"); {
+        const auto chunk=w.Begin(),material=w.Begin(); w.U32(0); w.U32(0); w.Tag("LAYS"); w.U32(1);
+        const auto layer=w.Begin(); w.U32(0); w.U32(0); w.U32(0); w.U32(UINT32_MAX); w.U32(0); w.F32(1);
+        w.EndInclusive(layer); w.EndInclusive(material); w.EndChunk(chunk);
+    }
+    w.Tag("GEOS"); {
+        const auto chunk=w.Begin(),item=w.Begin(); w.Tag("VRTX"); w.U32(3);
+        for (const auto& p:std::array<std::array<float,3>,3>{{{-128,0,0},{0,0,0},{-128,128,128}}}) for (float v:p) w.F32(v);
+        w.Tag("NRMS"); w.U32(3); for (int i=0;i<3;++i) {w.F32(0);w.F32(-1);w.F32(0);}
+        w.Tag("PTYP"); w.U32(1); w.U32(4); w.Tag("PCNT"); w.U32(1); w.U32(3);
+        w.Tag("PVTX"); w.U32(3); w.U16(0); w.U16(1); w.U16(2);
+        w.Tag("GNDX"); w.U32(3); w.Raw("\0\0\0",3);
+        w.Tag("MTGC"); w.U32(1); w.U32(1); w.Tag("MATS"); w.U32(1); w.U32(0);
+        w.U32(0);w.U32(0);w.U32(0); for (int i=0;i<7;++i) w.F32(0); w.U32(0);
+        w.Tag("UVAS"); w.U32(1);w.Tag("UVBS");w.U32(3); for (int i=0;i<3;++i) {w.F32(float(i)/2);w.F32(float(i)/2);}
+        w.EndInclusive(item); w.EndChunk(chunk);
+    }
+    w.Tag("BONE"); {
+        const auto chunk=w.Begin(),node=w.Begin();w.Fixed("Original audit",80);w.U32(0);w.U32(UINT32_MAX);w.U32(0);
+        w.EndInclusive(node);w.U32(UINT32_MAX);w.U32(UINT32_MAX);w.EndChunk(chunk);
+    }
+    w.Tag("PIVT");w.U32(12);w.F32(0);w.F32(0);w.F32(0); return std::move(w.bytes);
+}
+} // namespace
+
+void RunRealCliffGroundValidationTests() {
+    const auto selection=Json{{"ground_cell",{2,2}},{"cliff_cell",{2,3}}};
+    const auto original=CliffBlockFixture(); const auto context=CliffContextFromBlock(original,selection);
+    Check(context.halo.vertices.size()==20 && context.core.vertices.size()==6 && context.core.tiles.size()==2 &&
+        context.sourceVertices==std::array<std::uint32_t,6>{20,21,29,30,38,39},"cliff-ground original source mapping failed");
+    const auto reject=[](const auto& action) {bool caught=false;try {action();}catch(const std::exception&){caught=true;}
+        Check(caught,"cliff-ground malformed contract accepted");};
+    Check(RelativePathText("inputs/original.bin")==std::filesystem::path("inputs/original.bin"),"cliff-ground relative input fixture failed");
+    for (const auto* path:{"../original.bin","inputs/../original.bin","C:/original.bin","//host/original.bin",
+        "inputs\\original.bin","inputs//original.bin","inputs./original.bin","inputs /original.bin","original.w3x","original.bin/"})
+        reject([&]{(void)RelativePathText(path);});
+    reject([&]{(void)RelativePathText(std::string("original\0.bin",13));});
+    for (const auto* path:{"../Original.blp","Original//Audit.blp","Original/Audit.blp/","Original./Audit.blp"})
+        reject([&]{(void)VirtualPath(path);});
+    for (const auto field:{"is_ramp","has_water","is_boundary","is_blight","is_map_edge"}) {
+        auto changed=original;changed["vertices"][5][field]=true;reject([&]{(void)CliffContextFromBlock(changed,selection);});
+    }
+    auto rawRamp=original;rawRamp["vertices"][5]["texture_and_flags_raw"]=UInt(rawRamp["vertices"][5]["ground_texture_index"])|0x10u;
+    rawRamp["vertices"][5]["is_ramp"]=true;reject([&]{(void)CliffContextFromBlock(rawRamp,selection);});
+    auto changed=original;changed["vertices"][5]["source_index"]=999;reject([&]{(void)CliffContextFromBlock(changed,selection);});
+    changed=original;changed["vertices"][5]=changed["vertices"][6];reject([&]{(void)CliffContextFromBlock(changed,selection);});
+    changed=original;changed["cells"][4]["source_vertices_sw_se_nw_ne"][2]=0;reject([&]{(void)CliffContextFromBlock(changed,selection);});
+    changed=original;changed["vertices"].erase(3);reject([&]{(void)CliffContextFromBlock(changed,selection);});
+    auto moved=selection;moved["cliff_cell"]={3,2};reject([&]{(void)CliffContextFromBlock(original,moved);});
+    const std::vector<std::optional<CliffTypeSource>> types{std::nullopt,
+        CliffTypeSource{"AuditCliffs","Original\\Audit.blp","AuditRamp",context.original.groundTilesets[3],""}};
+    const std::string slk="ID;PWXL;N;E\nB;X7;Y2;D0\nC;X1;Y1;K\"cliffID\"\nC;X2;K\"cliffModelDir\"\n"
+        "C;X3;K\"rampModelDir\"\nC;X4;K\"texDir\"\nC;X5;K\"texFile\"\nC;X6;K\"groundTile\"\nC;X7;K\"upperTile\"\n"
+        "C;X1;Y2;K\"EFGH\"\nC;X2;K\"AuditCliffs\"\nC;X3;K\"AuditRamp\"\nC;X4;K\"Original\"\n"
+        "C;X5;K\"Audit\"\nC;X6;K\"AAAC\"\nC;X7;K\"_\"\nE\n";
+    const auto table=CaptureCliffTable(std::as_bytes(std::span(slk)));Json rows;
+    const auto parsedTypes=CliffTypesFromTable(context.original,table,rows);
+    Check(parsedTypes.size()==2 && !parsedTypes[0] && parsedTypes[1] && parsedTypes[1]->modelDirectory==types[1]->modelDirectory &&
+        parsedTypes[1]->texturePath==types[1]->texturePath && parsedTypes[1]->groundTile==types[1]->groundTile && rows.size()==1,
+        "cliff-ground official source table/raw palette binding failed");
+    auto unsafeSlk=slk;unsafeSlk.replace(unsafeSlk.find("AuditCliffs"),11,"../Escape");
+    reject([&]{const auto unsafeTable=CaptureCliffTable(std::as_bytes(std::span(unsafeSlk)));Json unsafeRows;
+        (void)CliffTypesFromTable(context.original,unsafeTable,unsafeRows);});
+    const auto bytes=CliffMdxFixture();const auto parsed=ParseMdx(bytes);Check(parsed.Succeeded(),"cliff-ground original MDX fixture invalid");
+    ValidateCliffModel(*parsed.value,types[1]->texturePath);
+    unsigned reads=0;const auto path=ExpectedCliffPath(context,*types[1]);
+    const ModelFileReader reader=[&](std::string_view requested) {
+        ++reads;Check(requested==path,"cliff-ground reader guessed another shape or source order");
+        return Result<std::vector<std::byte>>::Success(bytes);
+    };
+    const auto prepared=PrepareCliffGround(context,types,reader);
+    Check(reads==1 && prepared.rampAdjusted==0 && prepared.selected==std::vector<std::uint8_t>({3,3,3,3,3,3}) &&
+        context.core.vertices[2].GroundTextureIndex()==1,"cliff-ground production derived indices were not separated from raw");
+    const auto& contact=prepared.cliffs.meshes.front().vertices;
+    Check(std::array<float,3>{contact[0].x,contact[0].y,contact[0].z}==prepared.core.vertices[2].position &&
+        std::array<float,3>{contact[1].x,contact[1].y,contact[1].z}==prepared.core.vertices[3].position &&
+        contact[0].u==parsed.value->geosets[0].uvs[0][0] && contact[1].v==parsed.value->geosets[0].uvs[1][1],
+        "cliff-ground original wall contact/UV did not follow the actual source geometry");
+    auto atlas=std::make_shared<TerrainAtlasSnapshot>();atlas->columns=4;atlas->sourceWidth=atlas->sourceHeight=16;
+    atlas->image={16,16,std::vector<std::byte>(16*16*4,std::byte{255})};atlas->validatedMipCount=1;
+    for (unsigned y=0;y<4;++y)for(unsigned x=0;x<4;++x)atlas->cells.push_back({x,y,x*4,y*4,4,4});
+    std::vector<std::shared_ptr<const TerrainAtlasSnapshot>> atlases(16);atlases[3]=atlas;
+    TerrainLighting lighting;lighting.enabled=false;
+    const auto ground=BuildTerrainGroundMesh(prepared.core,atlases,{},lighting,nullptr,prepared.cliffs.coveredTiles,{},prepared.selected);
+    Check(ground.Succeeded(),"cliff-ground production original ground fixture rejected");CheckGroundGeometry(*ground.value,prepared);
+    auto emptyTypes=types;emptyTypes[1].reset();reject([&]{(void)PrepareCliffGround(context,emptyTypes,reader);});
+    reject([&]{(void)PrepareCliffGround(context,types,[](std::string_view){return Result<std::vector<std::byte>>::Failure("Audit","MISSING","missing");});});
+    auto unsupported=*parsed.value;unsupported.materials[0].layers.push_back(unsupported.materials[0].layers[0]);
+    reject([&]{ValidateCliffModel(unsupported,types[1]->texturePath);});
+    auto typedBone=*parsed.value;typedBone.bones[0].flags=0x100;
+    ValidateCliffModel(typedBone,types[1]->texturePath); // 正式元数据中Bone类型位不表示变换。
+    typedBone.bones[0].flags|=1;reject([&]{ValidateCliffModel(typedBone,types[1]->texturePath);});
+    TerrainGroundMeshLimits budget;budget.maxVertices=3;
+    Check(!BuildTerrainGroundMesh(prepared.core,atlases,budget,lighting,nullptr,prepared.cliffs.coveredTiles,{},prepared.selected).Succeeded(),
+        "cliff-ground original production vertex budget was bypassed");
+}
+
+void RunRealCliffGroundAudit(const std::filesystem::path& manifestPath,std::string_view manifestSha,
+    const std::filesystem::path& output,const RealCliffGroundCapture& capture,const RealTerrainPairSaveBmp& saveBmp) {
+    RunRealCliffGroundValidationTests();
+    Check(manifestPath.is_absolute() && std::filesystem::is_regular_file(manifestPath),"cliff-ground manifest must be an absolute regular file");
+    const auto manifest=ReadJson(manifestPath,manifestSha);const auto root=std::filesystem::canonical(manifestPath.parent_path());
+    Check(manifest.at("schema")=="terrain-cliff-ground-audit-v1" && manifest.at("environment")=="neutral-no-shadow-no-fog",
+        "cliff-ground manifest schema/environment unsupported");
+    const auto provenance=manifest.at("source_scope").get<std::string>();
+    Check(!provenance.empty() && provenance.size()<=4096,"cliff-ground source scope must be explicit");
+    Check(output.is_absolute() && std::filesystem::weakly_canonical(output)!=root && (!std::filesystem::exists(output) ||
+        (!std::filesystem::is_symlink(std::filesystem::symlink_status(output)) && std::filesystem::is_directory(output) &&
+        std::filesystem::is_empty(output))),"cliff-ground output must be a new/empty directory distinct from inputs");
+    const auto block=RelativeJson(root,manifest.at("source_block"));
+    const auto& binding=manifest.at("terrain_binding");
+    Check(binding==block.at("terrain_binding") && IsSha(binding.at("source_sha256").get<std::string>()) &&
+        IsSha(binding.at("terrain_sha256").get<std::string>()) && !binding.at("document_id").get<std::string>().empty(),
+        "cliff-ground map/member source binding mismatch");
+    const auto expectedProvider=manifest.at("expected_provider_sha256").get<std::string>();
+    Check(IsSha(expectedProvider),"cliff-ground expected provider SHA invalid");
+    const auto revisionText=binding.at("revision").get<std::string>();
+    Check(!revisionText.empty() && revisionText.size()<=19 && std::all_of(revisionText.begin(),revisionText.end(),[](char c){return c>='0'&&c<='9';}),
+        "cliff-ground revision invalid");const auto revision=std::stoull(revisionText);
+    const auto context=CliffContextFromBlock(block,manifest.at("selection"));
+
+    // 只给正式TerrainTable提供manifest已核字节，没有目录/game/地图Resolver来源。
+    const auto tableBytes=RelativeBytes(root,manifest.at("cliff_table"),2*1024*1024,".slk");
+    const auto table=CaptureCliffTable(tableBytes);
+    Check(table.SourceSha256()==manifest.at("cliff_table").at("sha256").get<std::string>(),"cliff-ground official table SHA failed");
+    Json sourceRows;const auto types=CliffTypesFromTable(context.original,table,sourceRows);
+    Check(types[context.type].has_value(),"cliff-ground actual palette row missing from parsed source table");
+    const auto& type=*types[context.type];const auto expectedModel=ExpectedCliffPath(context,type);
+    Check(VirtualPath(manifest.at("cliff_model").at("virtual_path").get<std::string>())==expectedModel &&
+        VirtualPath(manifest.at("cliff_texture").at("virtual_path").get<std::string>())==type.texturePath,
+        "cliff-ground model/texture does not match actual source row, shape and variation");
+    const auto modelBytes=RelativeBytes(root,manifest.at("cliff_model"),16*1024*1024,".mdx");
+    const auto cliffBytes=RelativeBytes(root,manifest.at("cliff_texture"),16*1024*1024,".blp");
+    const auto model=ParseMdx(modelBytes);Check(model.Succeeded(),"cliff-ground actual MDX parse failed");NoWarnings(model.diagnostics);
+    ValidateCliffModel(*model.value,type.texturePath);
+    unsigned modelReads=0;
+    const ModelFileReader modelReader=[&](std::string_view requested) {
+        Check(requested==expectedModel,"cliff-ground undeclared model/fallback read denied");++modelReads;
+        return Result<std::vector<std::byte>>::Success(modelBytes);
+    };
+    const auto prepared=PrepareCliffGround(context,types,modelReader);Check(modelReads==1,"cliff-ground expected exactly one source model read");
+    std::set<std::uint32_t> requiredGround;
+    for (const auto at:prepared.core.tiles[0].vertices) requiredGround.insert(prepared.selected[at]);
+    Check(manifest.at("ground_atlases").is_array() && manifest.at("ground_atlases").size()==requiredGround.size() &&
+        requiredGround.size()<=4,"cliff-ground manifest must supply precisely actual visible ground dependencies");
+    std::vector<std::shared_ptr<const TerrainAtlasSnapshot>> atlases(context.original.groundTilesets.size());
+    Json resources=Json::array();std::set<std::uint32_t> loaded;
+    std::size_t retainedAtlasBytes=0;
+    for (const auto& entry:manifest.at("ground_atlases")) {
+        const auto palette=UInt(entry.at("palette_index"));
+        Check(requiredGround.contains(palette) && loaded.insert(palette).second && palette<atlases.size() &&
+            Rawcode(entry.at("rawcode_hex"))==context.original.groundTilesets[palette],"cliff-ground atlas raw palette mismatch");
+        Resources::ResolvedResource resource;
+        resource.location={VirtualPath(entry.at("virtual_path").get<std::string>()),Resources::ResourceLayer::Other,0,
+            "verified-audit-ground",entry.at("path").get<std::string>()};
+        resource.bytes=RelativeBytes(root,entry,16*1024*1024,".blp");
+        const auto decoded=DecodeTerrainTextureAtlas(resource);Check(decoded.Succeeded(),"cliff-ground production atlas decode failed");
+        NoWarnings(decoded.diagnostics);atlases[palette]=*decoded.value;
+        Check(atlases[palette]->sourceSha256==entry.at("sha256").get<std::string>() &&
+            atlases[palette]->columns==UInt(entry.at("columns")),"cliff-ground actual atlas source/layout mismatch");
+        const auto contract=ValidateMipContract(*atlases[palette],entry.at("audited_mips"));
+        Check(atlases[palette]->RgbaByteCount()<=64*1024*1024-retainedAtlasBytes,"cliff-ground retained atlas aggregate budget exceeded");
+        retainedAtlasBytes+=atlases[palette]->RgbaByteCount();
+        resources.push_back({{"palette_index",palette},{"input",entry},{"audited_mips",contract.audited},
+            {"retained_mips",contract.retained},{"max_sample_mip",contract.maxSampleMip}});
+    }
+    TerrainLighting lighting;lighting.enabled=false;
+    const auto built=BuildTerrainGroundMesh(prepared.core,atlases,{},lighting,nullptr,prepared.cliffs.coveredTiles,{},prepared.selected);
+    Check(built.Succeeded(),"cliff-ground production ground build failed");NoWarnings(built.diagnostics);
+    const auto& ground=*built.value;CheckGroundGeometry(ground,prepared);
+    // 此副本只供独立UV/mask检查，生产输入及回执始终保留原raw字段。
+    Context layout;layout.terrain=prepared.core;
+    for (std::size_t i=0;i<layout.terrain.vertices.size();++i)
+        layout.terrain.vertices[i].textureAndFlagsRaw=prepared.selected[i];
+    Json groundLayers=Json::array();std::set<std::uint32_t> emitted;bool overlayStarted=false;std::uint32_t previousOverlay=0;
+    for (const auto& batch:ground.batches) {
+        std::optional<std::uint32_t> palette;
+        for (const auto index:requiredGround) if(atlases[index]==ground.textures.at(batch.textureIndex)) {
+            Check(!palette,"cliff-ground ambiguous palette/atlas identity");palette=index;
+        }
+        Check(palette.has_value(),"cliff-ground emitted an undeclared atlas");
+        for (std::uint32_t at=batch.firstIndex;at<batch.firstIndex+batch.indexCount;at+=6) {
+            const auto first=ground.indices.at(at);
+            const auto checked=ValidateLayerLayout(layout,0,*palette,batch.alphaBlend,*atlases[*palette],
+                std::span<const TerrainGroundVertex>(ground.vertices).subspan(first,4));
+            Check(emitted.insert(*palette).second,"cliff-ground duplicate actual ground layer");
+            if(batch.alphaBlend) {Check(!overlayStarted||*palette>=previousOverlay,"cliff-ground overlay ordering changed");overlayStarted=true;previousOverlay=*palette;}
+            else Check(!overlayStarted && *palette==*requiredGround.begin(),"cliff-ground original base layer ordering changed");
+            Json uvs=Json::array();for(unsigned i=0;i<4;++i)uvs.push_back({ground.vertices[first+i].u,ground.vertices[first+i].v});
+            groundLayers.push_back({{"source_tile",context.sourceCells[0].at("source_index")},{"palette_index",*palette},
+                {"alpha_blend",batch.alphaBlend},{"exact_membership_mask",checked.mask},{"cell",checked.cell},{"uv_sw_se_nw_ne",uvs}});
+        }
+    }
+    Check(emitted==requiredGround,"cliff-ground production omitted an actual derived layer");
+    const ModelFileReader textureReader=[&](std::string_view requested) {
+        Check(VirtualPath(std::string(requested))==type.texturePath,"cliff-ground undeclared material resource read denied");
+        return Result<std::vector<std::byte>>::Success(cliffBytes);
+    };
+    const auto models=BuildWorldModelScene({},textureReader,{},prepared.cliffs.meshes);
+    Check(models.Succeeded(),"cliff-ground production baked model scene failed");NoWarnings(models.diagnostics);NoWarnings(models.value->warnings);
+    Check(models.value->models.size()==1 && models.value->instances.size()==1 && !models.value->untexturedLayers &&
+        models.value->textures.size()==1 && !models.value->indices.empty(),"cliff-ground incomplete model material/geometry");
+    const auto descriptor=DescribeModelScene(*models.value);Check(descriptor.StaticScene(),"cliff-ground source sampler descriptor invalid");
+    for(std::size_t i=0;i<models.value->layers.size();++i) {
+        const auto flags=models.value->layerSamplerFlags.empty()?3u:models.value->layerSamplerFlags[i];
+        Check(flags==prepared.cliffs.meshes.at(i).samplerFlags,"cliff-ground baked source sampler transport changed");
+    }
+    std::vector<War3RenderTerrainVertexV2> vertices;vertices.reserve(ground.vertices.size());
+    for(const auto& v:ground.vertices)vertices.push_back({v.x,v.y,v.z,v.red,v.green,v.blue,v.u,v.v});
+    std::vector<std::vector<War3RenderMipRgbaV2>> mipLists(ground.textures.size());std::vector<War3RenderTextureMipChainV2> chains;
+    for(std::size_t i=0;i<ground.textures.size();++i) {
+        const auto& atlas=*ground.textures[i];auto& list=mipLists[i];
+        const auto append=[&](const Image::DecodedImage& mip){list.push_back({sizeof(War3RenderMipRgbaV2),mip.width,mip.height,mip.rgba.size(),mip.rgba.data()});};
+        append(atlas.image);for(const auto& mip:atlas.additionalMips)append(mip);
+        chains.push_back({sizeof(War3RenderTextureMipChainV2),static_cast<std::uint32_t>(list.size()),HostMaxSampleMip(atlas),
+            atlas.columns,atlas.rows,list.data()});
+    }
+    std::vector<War3RenderTerrainBatchV2> batches;
+    for(const auto& batch:ground.batches)batches.push_back({batch.firstIndex,batch.indexCount,
+        batch.textureIndex|(batch.alphaBlend?WAR3_RENDER_TERRAIN_ALPHA_BLEND:0u)});
+    const War3RenderTerrainMipSceneV2 scene{sizeof(scene),static_cast<std::uint32_t>(vertices.size()),static_cast<std::uint32_t>(ground.indices.size()),
+        static_cast<std::uint32_t>(chains.size()),static_cast<std::uint32_t>(batches.size()),revision,
+        vertices.data(),ground.indices.data(),chains.data(),batches.data()};
+    const auto& cameraInput=manifest.at("camera");const auto target=Triple(cameraInput.at("target_world"));
+    const auto width=UInt(cameraInput.at("width"),1024),height=UInt(cameraInput.at("height"),1024);
+    Check(width>=64 && height>=64,"cliff-ground viewport qualification invalid");
+    const War3RenderCameraV2 camera{sizeof(camera),target[0],target[1],target[2],Number(cameraInput.at("distance")),
+        Number(cameraInput.at("yaw_radians")),Number(cameraInput.at("pitch_radians"))};
+    Check(camera.distance>0 && camera.pitchRadians>0 && camera.pitchRadians<1.5707964f,"cliff-ground camera invalid");
+    if(!std::filesystem::exists(output))Check(std::filesystem::create_directory(output),"cliff-ground output create failed");
+    const auto frame=capture(scene,*descriptor.StaticScene(),camera,width,height);const auto& receipt=frame.receipt;
+    Check(frame.providerSha256==expectedProvider && frame.pixels.size()==std::size_t(width)*height*4 &&
+        frame.status.result==0 && frame.status.deviceReady==1 && frame.status.software==1 &&
+        frame.status.documentRevision==revision && frame.status.frameCount>=receipt.capture.frameCount &&
+        receipt.capture.width==width && receipt.capture.height==height && receipt.capture.documentRevision==revision &&
+        receipt.view.documentRevision==revision && receipt.capture.ticket && receipt.capture.frameCount &&
+        receipt.view.frameCount==receipt.capture.frameCount && receipt.view.surfaceEpoch && receipt.view.sceneEpoch && receipt.view.viewEpoch &&
+        receipt.view.width==width && receipt.view.height==height && receipt.camera.targetX==camera.targetX && receipt.camera.targetY==camera.targetY &&
+        receipt.camera.targetZ==camera.targetZ && receipt.camera.distance==camera.distance && receipt.camera.yawRadians==camera.yawRadians &&
+        receipt.camera.pitchRadians==camera.pitchRadians,"cliff-ground atomic two-packet completed frame identity failed");
+    for(float value:receipt.view.viewProjection)Check(std::isfinite(value),"cliff-ground completed MVP nonfinite");
+    DirectX::XMFLOAT4X4 completedMatrix;std::memcpy(&completedMatrix,receipt.view.viewProjection,sizeof(completedMatrix));
+    const auto matrix=DirectX::XMLoadFloat4x4(&completedMatrix);
+    const auto determinant=DirectX::XMMatrixDeterminant(matrix);
+    Check(std::isfinite(DirectX::XMVectorGetX(determinant)) && DirectX::XMVectorGetX(determinant)!=0,
+        "cliff-ground completed MVP singular");
+    Json core=Json::array();for(std::size_t i=0;i<6;++i)core.push_back({{"source_index",context.sourceVertices[i]},
+        {"raw_ground_index",context.core.vertices[i].GroundTextureIndex()},{"derived_ground_index",prepared.selected[i]},
+        {"raw_xyz",context.core.vertices[i].position},{"shaped_xyz",prepared.core.vertices[i].position}});
+    Json cliffMeshes=Json::array();
+    for(const auto& mesh:prepared.cliffs.meshes)cliffMeshes.push_back({{"texture_path",mesh.texturePath},{"source_sampler_flags",mesh.samplerFlags},
+        {"vertex_count",mesh.vertices.size()},{"index_count",mesh.indices.size()},
+        {"vertices_sha256",Digest(std::as_bytes(std::span(mesh.vertices)))},{"indices_sha256",Digest(std::as_bytes(std::span(mesh.indices)))}});
+    WriteBytes(output/"rgba.bin",frame.pixels);saveBmp(output/"frame.bmp",frame.pixels,width,height);
+    const Json result{{"schema","terrain-cliff-ground-audit-result-v1"},{"completed",true},
+        {"scope","one-source-footprint-and-adjacent-ground-warp-not-game-or-automatic-seam-acceptance"},
+        {"manifest_sha256",manifestSha},{"source_scope",provenance},{"terrain_binding",binding},{"source_block",manifest.at("source_block")},
+        {"provider_sha256",frame.providerSha256},{"winning_archive_verified_by_this_entry",false},
+        {"selection",manifest.at("selection")},{"original_header",block.at("header")},{"source_cells",context.sourceCells},
+        {"halo_source_vertices",context.haloSource},{"core_vertices",core},{"cliff_table",manifest.at("cliff_table")},
+        {"official_table_identity_sha256",table.IdentitySha256()},{"cliff_rows",sourceRows},
+        {"cliff_model",manifest.at("cliff_model")},{"cliff_texture",manifest.at("cliff_texture")},{"actual_model_path",expectedModel},
+        {"ramp_adjusted_vertices",prepared.rampAdjusted},{"cliff_geometry",{{"covered_tiles",prepared.cliffs.coveredTiles},
+            {"placed_tiles",prepared.cliffs.placedTiles},{"visible_meshes",cliffMeshes}}},
+        {"ground_geometry",{{"textured_tiles",ground.texturedTiles},{"hidden_tiles",ground.hiddenTileCount},{"fallback_tiles",ground.fallback.totalTiles},
+            {"base_tiles",ground.baseTiles},{"layers",groundLayers},{"vertices_sha256",Digest(std::as_bytes(std::span(ground.vertices)))},
+            {"indices_sha256",Digest(std::as_bytes(std::span(ground.indices)))}}},{"resources",resources},
+        {"cliff_decoded_mip0",{{"width",models.value->textures[0].width},{"height",models.value->textures[0].height},
+            {"rgba_sha256",Digest(std::as_bytes(std::span(models.value->textures[0].rgba)))},
+            {"mip_scope","Core mip0 then provider-generated chain; not original BLP mip-chain acceptance"}}},
+        {"camera",cameraInput},{"capture",{{"width",width},{"height",height},{"ticket",receipt.capture.ticket},{"frame_count",receipt.capture.frameCount},
+            {"document_revision",revision},{"surface_epoch",receipt.view.surfaceEpoch},{"scene_epoch",receipt.view.sceneEpoch},{"view_epoch",receipt.view.viewEpoch},
+            {"view_projection",std::vector<float>(std::begin(receipt.view.viewProjection),std::end(receipt.view.viewProjection))}}},
+        {"files",{{"rgba",FileReceipt(output/"rgba.bin")},{"bmp",FileReceipt(output/"frame.bmp")}}},
+        {"caveats",Json::array({"No map/W3E/game/YDWE resource reads; only SHA-bound relative manifest inputs.",
+            "Table identity is the supplied captured source, not a claim of the map Resolver winning archive.",
+            "Both production packets share one renderer/frame; actual geometry gaps and image quality require separate review.",
+            "Neutral diffuse-zero lighting does not qualify relief-normal improvement or original game equivalence."})}};
+    const auto text=result.dump(2)+"\n";WriteBytes(output/"result.json.tmp",std::span(reinterpret_cast<const std::uint8_t*>(text.data()),text.size()));
+    std::filesystem::rename(output/"result.json.tmp",output/"result.json");
+}
+
 } // namespace War3Map::Tests
