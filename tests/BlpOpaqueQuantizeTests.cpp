@@ -137,6 +137,36 @@ void HandComputedFullChainPalette() {
     CheckAllMipLayout(encoded, 257, 1);
 }
 
+void HandComputedSplitAndNearestTie() {
+    auto source = MakeImage(512, 1);
+    for (unsigned index = 0; index < 512; ++index) {
+        const auto local = index % 256;
+        Pixel(source, index, (index < 256 ? 0u : 8u) + local % 8,
+            (local / 8) % 8, local / 64);
+    }
+    // 两个相邻 5bit 桶各含256个不同颜色；完整链共1023像素，必须拆成两个盒。
+    // 左半链511像素的独立通道和为(1916,1804,768)。右半的R加8，且最终
+    // 1x1像素(8,4,2)归入右桶，故右桶512像素的和为(6012,1808,770)。
+    // 两盒各自四舍五入得到(4,4,2)、(12,4,2)，其等距面严格为R=8。
+    const auto encoded = Take(EncodeBlpOpaqueQuantized(source));
+    Require(encoded.quantized && encoded.method == BlpOpaquePaletteMethod::WeightedMedianCut5Bit
+        && encoded.paletteColorCount == 2 && encoded.occupiedHistogramBins == 2
+        && encoded.mipCount == 10 && encoded.totalMipPixels == 1023
+        && encoded.bytes.size() == 2203, "two-box hand example statistics wrong");
+    const std::array<std::byte, 8> expectedPalette{std::byte{2}, std::byte{4}, std::byte{4}, std::byte{0},
+        std::byte{2}, std::byte{4}, std::byte{12}, std::byte{0}};
+    Require(std::equal(expectedPalette.begin(), expectedPalette.end(), encoded.bytes.begin() + 156),
+        "two-box full-chain weighted representatives differ from hand oracle");
+    for (unsigned index = 0; index < 512; ++index) {
+        const auto red = (index < 256 ? 0u : 8u) + index % 8;
+        Require(encoded.bytes[1180 + index] == static_cast<std::byte>(red <= 8 ? 0 : 1),
+            "nearest-color selection or lexicographic tie differs from independent red-plane oracle");
+    }
+    Require(U32(encoded.bytes, 28 + 9 * 4) == 2202 && encoded.bytes.back() == std::byte{0},
+        "last unquantized mip must choose the smaller RGB representative at equal distance");
+    CheckAllMipLayout(encoded, 512, 1);
+}
+
 void GradientExercisesSplitAndDeterminism() {
     auto source = MakeImage(64, 64);
     for (unsigned y = 0; y < 64; ++y) for (unsigned x = 0; x < 64; ++x)
@@ -216,6 +246,7 @@ int main() {
     try {
         LegacyIndependentByteGoldens();
         HandComputedFullChainPalette();
+        HandComputedSplitAndNearestTie();
         GradientExercisesSplitAndDeterminism();
         DownsampleColorsAlsoSelectTheQuantizer();
         OddSizeAndBudgetRefusals();
