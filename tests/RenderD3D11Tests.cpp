@@ -655,6 +655,13 @@ void TestTerrainMips(const RendererOwner& renderer) {
         {sizeof(War3RenderMipRgbaV2),32,16,npot1.size(),npot1.data()}};
     vertices = originalVertices;
     texture = {sizeof(texture),2,1,1,1,npotMips}; input.documentRevision = 819;
+    // 原squareworld保留为质量观察；格式门另配平texel密度，避免把新LOD选择误当mip尺寸损坏。
+    Require(renderer.api->submitTerrainMipScene(renderer.handle,&input) == 0, "NPOT square observation rejected");
+    const auto npotSquare = Capture(renderer,320,240,819);
+    const auto npotCenter = (std::size_t{120} * 320 + 160) * 4;
+    std::cout << "NPOT squareworld observation RGB=" << int(npotSquare[npotCenter]) << ','
+        << int(npotSquare[npotCenter + 1]) << ',' << int(npotSquare[npotCenter + 2]) << '\n';
+    for (auto& vertex : vertices) vertex.y *= 33.0f / 65.0f;
     Require(renderer.api->submitTerrainMipScene(renderer.handle,&input) == 0, "NPOT original mip chain rejected");
     frame = Capture(renderer,320,240,819);
     RequireWorldColor(frame,ReadView(renderer),0,0,{0,0,255},1);
@@ -1087,6 +1094,7 @@ void TestEnvironment(const RendererOwner& renderer) {
 #include "RenderD3D11MaterialStateTests.h"
 #include "RenderD3D11StaticSamplerTests.h"
 #include "RenderD3D11ObliqueSamplerTests.h"
+#include "RenderD3D11TerrainObliqueTests.h"
 
 // 原创双层平面复用已有skin夹具；验证绝对层值、GEOA独立性和同一roster事务。
 void TestMaterialLayerAlphas(const War3RenderPluginApiV2* api, const War3RenderCreateInfoV2& info,
@@ -1831,6 +1839,7 @@ int wmain(int argc, wchar_t** argv) {
         TestUnfoggedMaterials(api, info);
         TestStaticLayerSamplers(api, info);
         TestModelObliqueSampler(api, info);
+        TestTerrainObliqueFilter(api, info);
         TestMaterialLayerFaults(dll.parent_path(), info);
         TestAdditionalModelLayer(api, info);
         TestBuildingSplatLayer(api, info);
