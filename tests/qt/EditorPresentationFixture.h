@@ -30,6 +30,8 @@ template<class State> struct EditorPresentationFixture {
     }
     static void Draw(War3RendererHandle h) {
         auto& s = Get(h);
+        s.completed.view.structSize = sizeof(s.completed.view);
+        s.completed.skin.structSize = sizeof(s.completed.skin);
         if (!s.api || s.api->getViewInfo(h, &s.completed.view) || s.api->getSkinStatus(h, &s.completed.skin)) return;
         s.completed.camera = static_cast<State*>(h)->camera;
         s.completed.presentation = s.presentation; s.pending = false;
