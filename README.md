@@ -38,6 +38,8 @@ Audastra 从第一行代码起就是和 AI 一起写出来的：设计、编码�
 
 新版本发布后，编辑器会提示更新；更新包经过签名校验后才会安装。
 
+旧版本若在安装更新时出现 `UPDATE_ADS_REJECTED`，可下载 0.1.7 或更新的完整包，解压到新目录，保存并退出旧版后再启动新版；旧目录及其中的地图、工程会保留。需要继续使用原安装目录时，见[旧版升级修复说明](docs/LEGACY_UPDATE_REPAIR.md)。旧客户端的这个错误需要一次性处理，之后可以继续使用程序内更新。
+
 ## 从源码构建
 
 需要 Visual Studio 2026（x64）、CMake 3.24+、PowerShell 7、Node.js 22.19+，以及 Qt 6.8.3 MSVC 64 位（qtbase、qtsvg、qtimageformats、qtmultimedia）。
