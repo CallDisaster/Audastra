@@ -320,15 +320,16 @@ private:
                 : DecodeModelTexture(path, *bytes.value, limits_.maxTextureDimension);
             if (image.Succeeded()) {
                 auto decoded = std::move(*image.value);
-                if (decoded.rgba.size() <= limits_.maxTotalTextureBytes
-                    && MaterialStorageFits(textureBytes_ + decoded.rgba.size(), textureBindingBytes_, scene_.layerSamplerFlags.capacity())) {
+                const bool rgbaFits = decoded.rgba.size() <= limits_.maxTotalTextureBytes
+                    && textureBytes_ <= limits_.maxTotalTextureBytes - decoded.rgba.size();
+                if (rgbaFits && MaterialStorageFits(textureBytes_ + decoded.rgba.size(), textureBindingBytes_, scene_.layerSamplerFlags.capacity())) {
                     textureBytes_ += decoded.rgba.size();
                     index = static_cast<std::uint32_t>(scene_.textures.size());
                     scene_.textures.push_back(std::move(decoded));
                 } else {
                     budgetExceeded = true;
-                    // 来源元数据新增开销不能把本应拒绝的完整场景改成成功的白色fallback。
-                    samplerBudgetExceeded_ |= samplerActive_ || textureBindingBytes_ != 0;
+                    // 仅纯RGBA本可容纳时将超额归因于来源元数据；纯纹理超限保留原预算诊断。
+                    samplerBudgetExceeded_ |= rgbaFits && (samplerActive_ || textureBindingBytes_ != 0);
                 }
             }
         }
