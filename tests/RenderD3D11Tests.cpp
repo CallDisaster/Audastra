@@ -766,6 +766,15 @@ void TestTerrainBlight(const RendererOwner& renderer) {
     const std::array<War3RenderTextureMipChainV2, 2> referenceTextures{redTexture, blightTexture};
     const War3RenderTerrainMipSceneV2 reference{sizeof(reference), 256, 384, 2, 33, 880,
         expanded.data(), expandedIndices.data(), referenceTextures.data(), referenceBatches.data()};
+    // 在本renderer第一次安装新pass之前建立非均匀旧路径oracle，不能从已污染状态取期望。
+    const std::array<std::uint8_t, 16> patterned{255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255};
+    const War3RenderMipRgbaV2 patternedMip{sizeof(patternedMip), 2, 2, patterned.size(), patterned.data()};
+    const War3RenderTextureMipChainV2 patternedTexture{sizeof(patternedTexture), 1, 0, 1, 1, &patternedMip};
+    auto ordinary = frame.baseScene; ordinary.textures = &patternedTexture;
+    const War3RenderCameraV2 oracleCamera{sizeof(oracleCamera), 0, 0, 20, 1500, -1.5707963f, 1.5f};
+    Require(api->setCamera(renderer.handle, &oracleCamera) == 0, "ordinary oracle camera rejected");
+    Require(api->submitTerrainMipScene(renderer.handle, &ordinary) == 0, "clean patterned ordinary scene rejected");
+    const auto ordinaryExpected = Capture(renderer, 320, 240, 880);
     const auto compareReference = [&] {
         Require(api->submitTerrainMipScene(renderer.handle, &reference) == 0, "expanded blight oracle rejected");
         const auto expected = Capture(renderer, 320, 240, 880);
@@ -937,12 +946,6 @@ void TestTerrainBlight(const RendererOwner& renderer) {
         && Capture(renderer, 320, 240, 880) == cleared, "ordinary terrain inherited blight UV/pass state");
 
     // 每个旧入口都从非空pass开始，避免先empty后legacy导致错误实现也能通过。
-    const std::array<std::uint8_t, 16> patterned{255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255};
-    const War3RenderMipRgbaV2 patternedMip{sizeof(patternedMip), 2, 2, patterned.size(), patterned.data()};
-    const War3RenderTextureMipChainV2 patternedTexture{sizeof(patternedTexture), 1, 0, 1, 1, &patternedMip};
-    auto ordinary = frame.baseScene; ordinary.textures = &patternedTexture;
-    Require(api->submitTerrainMipScene(renderer.handle, &ordinary) == 0, "patterned ordinary scene rejected");
-    const auto ordinaryExpected = Capture(renderer, 320, 240, 880);
     const auto installBlight = [&] {
         Require(api->submitTerrainBlightFrame(renderer.handle, &frame) == 0
             && Capture(renderer, 320, 240, 880) == accepted, "blight reinstall before legacy clear failed");
@@ -955,6 +958,7 @@ void TestTerrainBlight(const RendererOwner& renderer) {
         vertices.data(), indices.data(), &legacyTexture, &groundBatch};
     Require(api->submitTerrainScene(renderer.handle, &legacy) == 0, "legacy patterned oracle rejected");
     const auto legacyExpected = Capture(renderer, 320, 240, 880);
+    Require(legacyExpected == ordinaryExpected, "legacy patterned scene differs from clean original oracle");
     installBlight();
     Require(api->submitTerrainScene(renderer.handle, &legacy) == 0
         && Capture(renderer, 320, 240, 880) == legacyExpected, "legacy mip0 scene failed to clear visible blight");
