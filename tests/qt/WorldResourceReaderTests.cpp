@@ -319,6 +319,18 @@ void WeakVersionsRejectAliasesAndKeepCompleteBatchesStable() {
     const auto enlarged = CaptureWorldTerrainSources(project, std::numeric_limits<std::size_t>::max(),
         {WorldOwnedIdentityLimits{}.maxMetadataBytes + 1});
     Require(!enlarged.Succeeded(), "identity metadata hard budget cannot be enlarged");
+    const auto batchImports = project.pendingImports_;
+    project.pendingImports_.clear();
+    const auto idle = Capture(project);
+    Require(std::none_of(idle.entries.begin(), idle.entries.end(), [](const auto& entry) { return static_cast<bool>(entry.ownedPayload); })
+        && idle.ownedIdentityMetadataCapacityBytes > 0
+        && idle.ownedIdentityMetadataCapacityBytes <= WorldOwnedIdentityLimits{}.maxMetadataBytes,
+        "zero-owned capture still accounts the resident weak registry capacity");
+    const auto idleRefused = CaptureWorldTerrainSources(project, std::numeric_limits<std::size_t>::max(), {1});
+    Require(!idleRefused.Succeeded() && !idleRefused.value
+        && idleRefused.diagnostics.front().code == "WORLD_ASSET_IDENTITY_BUDGET", "zero-owned capture cannot bypass the resident metadata budget");
+    project.pendingImports_ = batchImports;
+    Require(SameWorldTerrainSources(complete, Capture(project)), "idle capture and its budget refusal do not evict live identities");
 
     struct Views { std::vector<std::byte> a{std::byte{1}}, b{std::byte{2}}; };
     auto storage = std::make_shared<Views>();

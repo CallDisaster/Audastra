@@ -47,7 +47,6 @@ Result<std::size_t> AssignOwnedVersions(std::vector<WorldAssetEntry>& entries, s
     if (limit > WorldOwnedIdentityLimits{}.maxMetadataBytes) IdentityBudgetFailure();
     const auto inputCount = static_cast<std::size_t>(std::count_if(entries.begin(), entries.end(),
         [](const auto& entry) { return static_cast<bool>(entry.ownedPayload); }));
-    if (!inputCount) return Result<std::size_t>::Success(0);
     struct Registry {
         std::mutex mutex;
         std::vector<WeakOwnedVersion> rows; // 持久状态只有weak+版本；活owner永不淘汰。
@@ -85,6 +84,7 @@ Result<std::size_t> AssignOwnedVersions(std::vector<WorldAssetEntry>& entries, s
         observe(); // 实际capacity含旧/新registry和全部工作表，分配后再核才可发布。
     };
     observe();
+    if (!inputCount) return Result<std::size_t>::Success(observed); // 空输入仍核算已驻留的weak registry容量。
     reserve(live, registry.rows.size());
     for (const auto& row : registry.rows) {
         auto held = row.owner.lock();
