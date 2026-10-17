@@ -793,7 +793,12 @@ bool WorldViewport::HasTerrainBlightSupport() {
 }
 
 bool WorldViewport::HasTerrainGridSupport() {
-    if (!LoadPluginApi() || !HasGroundSupport() || !HasTerrainMips()
+    if (!LoadPluginApi()) return false;
+    return static_cast<const WorldViewport&>(*this).HasTerrainGridSupport();
+}
+
+bool WorldViewport::HasTerrainGridSupport() const {
+    if (!HasGroundSupport() || !HasTerrainMips()
         || api_->structSize < offsetof(War3RenderPluginApiV2, getTerrainGridCaptureFacts) + sizeof(api_->getTerrainGridCaptureFacts)
         || !api_->getTerrainGridCapabilities || !api_->submitTerrainGridFrame || !api_->getTerrainGridCaptureFacts) return false;
     War3RenderTerrainGridCapabilitiesV2 caps{};
