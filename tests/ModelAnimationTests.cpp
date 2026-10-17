@@ -504,11 +504,18 @@ void AssetIsolation() {
         Result<AnimationResource>::Success({blp,"synthetic-blp","80A9D0025CFBB0DA12A0A026FBC73938B57DBF41D00190F8768201AB4C231D32"}); };
     Require(Good(ModelAnimationService::Create({7,33,"texture-budget"},std::span(specs).first(1),textures,limits))->Scene()->geometry.textures.size()==2,
         "budget fixture did not decode real BLP textures");
+    bool textureBudgetCasesAccepted=true;
     for (const bool count:{false,true}) {
         auto bounded=limits; if (count) bounded.geometry.maxTextures=0; else bounded.geometry.maxTotalTextureBytes=1;
         const auto rejected=ModelAnimationService::Create({7,33,"texture-budget"},std::span(specs).first(1),textures,bounded);
-        Require(!rejected.Succeeded() && rejected.diagnostics.front().code=="WORLD_MODEL_TEXTURE_BUDGET","decoded texture budget became white fallback");
+        std::cout<<"texture_budget_case count="<<count<<" max_textures="<<bounded.geometry.maxTextures
+            <<" max_total_texture_bytes="<<bounded.geometry.maxTotalTextureBytes
+            <<" succeeded="<<rejected.Succeeded()<<" value_present="<<rejected.value.has_value()<<'\n';
+        for (const auto& diagnostic:rejected.diagnostics)
+            std::cout<<"texture_budget_diagnostic count="<<count<<" code="<<diagnostic.code<<" message="<<diagnostic.message<<'\n';
+        textureBudgetCasesAccepted &= !rejected.Succeeded() && rejected.diagnostics.front().code=="WORLD_MODEL_TEXTURE_BUDGET";
     }
+    Require(textureBudgetCasesAccepted,"decoded texture budget became white fallback");
     std::cout<<"world_assets=4 animated=2 retained_static=1 unavailable=1 partial_geoset=1 original_rgb=1 source_budget_fail_closed=1\n";
 }
 std::vector<std::byte> ParticleBytes(bool pure,bool invalidSibling=false,bool invalidBindings=false) {
@@ -743,8 +750,24 @@ void ParticleService() {
     geoApi.updateParticleModelFrame=[](War3RendererHandle h,const War3RenderParticleUpdateV2* packet)->std::int32_t { return Update(h,packet->modelPose); };
     geoApi.captureParticleFrameRgba=[](War3RendererHandle,void*,std::uint64_t,War3RenderParticleCapturedFrameV2*)->std::int32_t { return 1; };
     AnimationRenderer geoRenderer(&geoApi,&geoMock);
-    Require(geoRenderer.Submit(geoScene,geoFirst).Succeeded() && geoRenderer.Update(geoNext).Succeeded() &&
-        geoRenderer.Update(geoRepeat).Succeeded() && geoMock.staticUploads==1 && geoMock.updates==3,"GEOA partial rebuilt static assets");
+    std::cout<<"geoa_material_mode scene_states="<<geoScene->dynamicMaterialStates<<" scene_alphas="<<geoScene->dynamicMaterialAlphas
+        <<" frame_states="<<geoFirst->dynamicMaterialStates<<" frame_alphas="<<geoFirst->dynamicMaterialAlphas<<'\n';
+    const auto reportGeoStatus=[&](const char* label,const Status& status) {
+        std::cout<<"geoa_backend_step step="<<label<<" attempted=1 succeeded="<<status.Succeeded()
+            <<" static_uploads="<<geoMock.staticUploads<<" updates="<<geoMock.updates<<'\n';
+        for (const auto& diagnostic:status.diagnostics)
+            std::cout<<"geoa_backend_diagnostic step="<<label<<" code="<<diagnostic.code<<" message="<<diagnostic.message<<'\n';
+    };
+    const auto geoSubmitted=geoRenderer.Submit(geoScene,geoFirst); reportGeoStatus("submit",geoSubmitted);
+    bool geoNextAccepted=false,geoRepeatAccepted=false;
+    if (geoSubmitted.Succeeded()) {
+        const auto updated=geoRenderer.Update(geoNext); reportGeoStatus("next",updated); geoNextAccepted=updated.Succeeded();
+        if (geoNextAccepted) {
+            const auto repeated=geoRenderer.Update(geoRepeat); reportGeoStatus("repeat",repeated); geoRepeatAccepted=repeated.Succeeded();
+        } else std::cout<<"geoa_backend_step step=repeat attempted=0\n";
+    } else std::cout<<"geoa_backend_step step=next attempted=0\ngeoa_backend_step step=repeat attempted=0\n";
+    Require(geoSubmitted.Succeeded() && geoNextAccepted && geoRepeatAccepted && geoMock.staticUploads==1 && geoMock.updates==3,
+        "GEOA partial rebuilt static assets");
     auto allGeosets=geoset; Patch(allGeosets,"GEOA",16,1);
     auto allService=Good(ModelAnimationService::Create({7,33,"all-geosets"},shared,[&](auto path,auto count) {
         return path=="geoset.mdx"?Result<AnimationResource>::Success({allGeosets,"original-fixture",std::string(64,'a')}):read(path,count); },tolerant));
