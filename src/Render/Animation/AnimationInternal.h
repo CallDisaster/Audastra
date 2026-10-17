@@ -177,8 +177,9 @@ struct ModelAnimationService::State {
     const AnimatedModelScene& scene, std::shared_ptr<const AnimationCatalogIdentityIndex> previous,
     std::uint64_t maxBytes);
 [[nodiscard]] Status CheckAnimationStaticAppend(const AnimatedModelScene& current,
-    const AnimatedModelScene& added, const WorldModelLimits& limits);
-void AppendAnimationStaticGeometry(AnimatedModelScene& target, const AnimatedModelScene& added);
+    const AnimatedModelScene& added, const WorldModelLimits& limits, std::uint64_t mergedSamplerCapacity = 0);
+[[nodiscard]] Status AppendAnimationStaticGeometry(AnimatedModelScene& target, const AnimatedModelScene& added,
+    const WorldModelLimits& limits);
 [[nodiscard]] bool AnimationLocalDataFailure(War3RenderCore::Code code) noexcept;
 [[nodiscard]] bool AnimationLocalDataFailure(std::string_view code) noexcept;
 [[nodiscard]] Status CheckAnimationState(const AnimationInstanceState& state);

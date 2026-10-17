@@ -2,6 +2,7 @@
 #include "War3MapCore/Render/ModelPicking.h"
 #include "War3MapCore/Render/ModelAnimation.h"
 #include "War3MapCore/Image/BlpImage.h"
+#include "War3MapCore/RenderPluginStaticSamplers.h"
 #include "MdxTestModel.h"
 
 #include <algorithm>
@@ -10,9 +11,11 @@
 #include <cstring>
 #include <iostream>
 #include <map>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -427,7 +430,7 @@ void TestPicking() {
     Require(!ModelInstanceBox(scene, 99, 0), "越界实例无包围盒");
 }
 
-BakedModelMesh Triangle(float x, std::string texture) {
+BakedModelMesh Triangle(float x, std::string texture, std::uint32_t samplerFlags = 3) {
     BakedModelMesh mesh;
     for (int i = 0; i < 3; ++i) {
         War3RenderModelVertexV2 vertex{};
@@ -436,7 +439,159 @@ BakedModelMesh Triangle(float x, std::string texture) {
     }
     mesh.indices = {0, 1, 2};
     mesh.texturePath = std::move(texture);
+    mesh.samplerFlags = samplerFlags;
     return mesh;
+}
+
+std::vector<std::uint32_t> EffectiveSamplerFlags(const WorldModelScene& scene) {
+    Require(scene.layerSamplerFlags.empty() || scene.layerSamplerFlags.size() == scene.layers.size(),
+        "显式 sampler 数组必须与图层全长对齐");
+    return scene.layerSamplerFlags.empty() ? std::vector<std::uint32_t>(scene.layers.size(), 3)
+        : std::vector<std::uint32_t>(scene.layerSamplerFlags.cbegin(), scene.layerSamplerFlags.cend());
+}
+
+// 保存实际 CPU 场景的独立字节收据，拒绝路径不能靠同时改坏两个共享快照蒙混过关。
+std::string BakedSceneReceipt(const WorldModelScene& scene) {
+    std::string bytes;
+    const auto array = [&](const auto& values) {
+        const auto count = values.size();
+        bytes.append(reinterpret_cast<const char*>(&count), sizeof(count));
+        const auto raw = std::as_bytes(std::span(values.data(), values.size()));
+        if (!raw.empty()) bytes.append(reinterpret_cast<const char*>(raw.data()), raw.size());
+    };
+    const auto text = [&](const std::string& value) { array(value); };
+    array(scene.vertices); array(scene.indices); array(scene.layers); array(scene.layerSamplerFlags);
+    array(scene.meshes); array(scene.models); array(scene.instances); array(scene.instanceRequests);
+    array(scene.modelBounds); array(scene.vertexGroups); array(scene.meshGeosets);
+    for (const auto& path : scene.modelPaths) text(path);
+    for (const auto& key : scene.modelAssetKeys) text(key);
+    for (const auto& texture : scene.textures) {
+        text(texture.path); text(texture.ownedIdentity); array(texture.rgba);
+        array(std::array{texture.width, texture.height});
+    }
+    for (const auto& bindings : scene.modelTextureBindings) {
+        array(std::array{bindings ? bindings->size() : std::size_t{0}});
+        if (bindings) for (const auto& binding : *bindings)
+            array(std::array{binding.textureIndex, binding.samplerFlags, static_cast<std::uint32_t>(binding.reachable)});
+    }
+    array(std::array{scene.requestedInstances, scene.skippedInstances, scene.untexturedLayers,
+        scene.rigidStaticPreviewAssets, scene.rigidStaticPreviewInstances});
+    for (const auto& warning : scene.warnings) { text(warning.subsystem); text(warning.code); text(warning.message); }
+    return bytes;
+}
+
+void RequireBakedReplaceRejected(WorldModelScene& scene, std::span<const BakedModelMesh> baked,
+    const WorldModelLimits& limits = {}) {
+    const auto receipt = BakedSceneReceipt(scene);
+    const auto snapshot = scene;
+    Require(!ReplaceBakedMeshes(scene, baked, limits) && BakedSceneReceipt(scene) == receipt,
+        "失败替换必须保留几何、材质、sampler、实例、贴图和计数的原始数据");
+    const WorldModelScene& after = scene;
+    Require(after.vertices.SharesStorageWith(snapshot.vertices) && after.indices.SharesStorageWith(snapshot.indices)
+        && after.layers.SharesStorageWith(snapshot.layers) && after.layerSamplerFlags.SharesStorageWith(snapshot.layerSamplerFlags)
+        && after.meshes.SharesStorageWith(snapshot.meshes) && after.models.SharesStorageWith(snapshot.models)
+        && after.modelBounds.SharesStorageWith(snapshot.modelBounds) && after.textures.SharesStorageWith(snapshot.textures)
+        && after.vertexGroups.SharesStorageWith(snapshot.vertexGroups) && after.meshGeosets.SharesStorageWith(snapshot.meshGeosets)
+        && after.modelPaths.SharesStorageWith(snapshot.modelPaths) && after.modelAssetKeys.SharesStorageWith(snapshot.modelAssetKeys)
+        && after.modelTextureBindings.SharesStorageWith(snapshot.modelTextureBindings),
+        "失败校验不得触发共享场景的隐式 COW 复制");
+}
+
+struct StaticSamplerBackend {
+    War3RenderStaticSamplerCapabilitiesV2 response{sizeof(response), WAR3_RENDER_STATIC_LAYER_SAMPLERS_V1,
+        WAR3_RENDER_STATIC_SAMPLER_FLAGS_MASK, 0};
+    std::int32_t result = 0;
+    unsigned calls = 0;
+};
+
+std::int32_t WAR3_RENDER_CALL StaticSamplerCapabilities(War3RendererHandle handle,
+    War3RenderStaticSamplerCapabilitiesV2* capabilities) {
+    auto& backend = *static_cast<StaticSamplerBackend*>(handle);
+    ++backend.calls;
+    Require(capabilities && capabilities->structSize == sizeof(*capabilities), "能力查询必须提供准确输出容量");
+    *capabilities = backend.response;
+    return backend.result;
+}
+
+void TestStaticSamplerDescriptorAndCapabilities(const WorldModelScene& scene) {
+    auto source = scene;
+    auto descriptor = DescribeModelScene(source);
+    const auto& description = std::as_const(descriptor);
+    Require(description.validStaticSamplers && description.StaticScene() == &description.samplerScene.base
+        && description.samplerScene.base.structSize == sizeof(War3RenderStaticSamplerModelSceneV2)
+        && description.samplerScene.samplerFormat == WAR3_RENDER_STATIC_LAYER_SAMPLERS_V1
+        && description.samplerScene.samplerFlagCount == scene.layers.size()
+        && description.samplerFlags == EffectiveSamplerFlags(scene)
+        && description.samplerScene.samplerFlags == description.samplerFlags.data()
+        && description.samplerFlags.SharesStorageWith(source.layerSamplerFlags), "静态 descriptor 必须共享全长 sampler 的不可写所有权");
+    const auto* publishedFlags = description.samplerScene.samplerFlags;
+    source.layerSamplerFlags.front() = 3;
+    Require(description.samplerScene.samplerFlags == publishedFlags && description.samplerFlags == EffectiveSamplerFlags(scene)
+        && !description.samplerFlags.SharesStorageWith(source.layerSamplerFlags),
+        "来源场景可写访问必须 COW，已发布 descriptor 的拥有者、指针和 sampler 值保持不变");
+    auto legacyBase = description.samplerScene.base; legacyBase.structSize = sizeof(legacyBase);
+    Require(std::memcmp(&legacyBase, &description.scene, sizeof(legacyBase)) == 0,
+        "扩展仅改变外部结构大小，旧 base 几何、图层、实例和贴图字段逐字节保持");
+    auto moved = std::move(descriptor);
+    const auto& movedView = std::as_const(moved);
+    Require(movedView.StaticScene() == &movedView.samplerScene.base && movedView.samplerScene.samplerFlags == movedView.samplerFlags.data()
+        && movedView.samplerFlags == EffectiveSamplerFlags(scene)
+        && movedView.scene.textures == movedView.chains.data() && movedView.chains.front().mips == movedView.mips.data(),
+        "移动 descriptor 后其 sampler、mip 与 chain 指针必须继续指向拥有的缓冲区");
+
+    StaticSamplerBackend backend;
+    War3RenderPluginApiV2 api{}; api.structSize = sizeof(api); api.apiVersion = WAR3_RENDER_PLUGIN_API_V2;
+    api.getStaticModelSamplerCapabilities = StaticSamplerCapabilities;
+    const auto unsupported = [&](const War3RenderPluginApiV2* candidate) {
+        const auto status = CheckStaticModelSamplerSupport(candidate, &backend, scene);
+        Require(!status.Succeeded() && !status.diagnostics.empty()
+            && status.diagnostics.front().code == "WORLD_STATIC_SAMPLER_UNSUPPORTED",
+            "非默认 sampler 必须拒绝缺失或不完整的后端能力，不能静默降级");
+    };
+    unsupported(nullptr);
+    auto missing = api; missing.getStaticModelSamplerCapabilities = nullptr; unsupported(&missing);
+    auto shortTable = api;
+    shortTable.structSize = offsetof(War3RenderPluginApiV2, getStaticModelSamplerCapabilities)
+        + sizeof(shortTable.getStaticModelSamplerCapabilities) - 1;
+    unsupported(&shortTable);
+    Require(backend.calls == 0, "旧表缺失尾部时不能访问新能力 getter");
+    const auto good = backend.response;
+    for (const auto response : {
+        War3RenderStaticSamplerCapabilitiesV2{0, good.samplerFormat, good.supportedSamplerFlags, 0},
+        War3RenderStaticSamplerCapabilitiesV2{sizeof(good) - 1, good.samplerFormat, good.supportedSamplerFlags, 0},
+        War3RenderStaticSamplerCapabilitiesV2{sizeof(good), good.samplerFormat + 1, good.supportedSamplerFlags, 0},
+        War3RenderStaticSamplerCapabilitiesV2{sizeof(good), good.samplerFormat, 1, 0},
+        War3RenderStaticSamplerCapabilitiesV2{sizeof(good), good.samplerFormat, good.supportedSamplerFlags | 4, 0},
+        War3RenderStaticSamplerCapabilitiesV2{sizeof(good), good.samplerFormat, good.supportedSamplerFlags, 1}}) {
+        backend.response = response; unsupported(&api);
+    }
+    backend.response = good; backend.result = -1; unsupported(&api);
+    backend.result = 0;
+    Require(CheckStaticModelSamplerSupport(&api, &backend, scene).Succeeded() && backend.calls == 8,
+        "准确能力声明才可放行非默认 sampler，查询本身不构成产品提交证明");
+
+    auto legacy = scene;
+    for (const bool explicitFlags : {false, true}) {
+        if (explicitFlags) legacy.layerSamplerFlags.assign(legacy.layers.size(), 3);
+        else legacy.layerSamplerFlags.clear();
+        const auto description = DescribeModelScene(legacy);
+        const auto calls = backend.calls;
+        Require(description.validStaticSamplers && description.samplerFlags.empty()
+            && description.StaticScene() == &description.scene && description.scene.structSize == sizeof(War3RenderModelSceneV2)
+            && CheckStaticModelSamplerSupport(nullptr, nullptr, legacy).Succeeded()
+            && CheckStaticModelSamplerSupport(&api, &backend, legacy).Succeeded() && backend.calls == calls,
+            "空或全3的 legacy 场景必须保留旧 descriptor，无需新 API 能力");
+    }
+    for (const bool wrongLength : {false, true}) {
+        auto invalid = scene;
+        if (wrongLength) invalid.layerSamplerFlags.pop_back();
+        else invalid.layerSamplerFlags.front() = 4;
+        const auto description = DescribeModelScene(invalid);
+        const auto status = CheckStaticModelSamplerSupport(&api, &backend, invalid);
+        Require(!description.validStaticSamplers && description.StaticScene() == nullptr && !status.Succeeded()
+            && !status.diagnostics.empty() && status.diagnostics.front().code == "WORLD_STATIC_SAMPLER_INVALID",
+            "损坏的宿主 sampler 数组必须在 descriptor 和 capability 两条入口都明确拒绝");
+    }
 }
 
 // 地形编辑后替换悬崖烘焙网格：其余模型整体平移，实例与请求对应关系不变；贴图须已载入。
@@ -461,28 +616,23 @@ void TestReplaceBaked() {
     Require(scene.instanceRequests == std::vector<std::uint32_t>{kBakedInstance, 0} && scene.instances[1].model == 1, "实例对应不变");
     Require(scene.modelBounds[0][0] == 500 && scene.modelBounds[0][3] == 620, "烘焙包围盒更新");
     // 只读失败不能留下半次替换，也不能突破渲染器的网格、图层或实例预算。
-    const auto unchanged = scene.vertices[0].x;
     WorldModelLimits limited;
     limited.maxMeshes = 2;
-    Require(!ReplaceBakedMeshes(scene, twice, limited) && scene.vertices[0].x == unchanged, "网格预算拒绝且不修改");
+    RequireBakedReplaceRejected(scene, twice, limited);
     limited = {};
     limited.maxLayers = 2;
-    Require(!ReplaceBakedMeshes(scene, twice, limited) && scene.vertices[0].x == unchanged, "图层预算拒绝且不修改");
+    RequireBakedReplaceRejected(scene, twice, limited);
     limited = {};
     limited.maxInstances = 1;
-    Require(!ReplaceBakedMeshes(scene, twice, limited) && scene.vertices[0].x == unchanged, "实例预算拒绝且不修改");
+    RequireBakedReplaceRejected(scene, twice, limited);
     auto malformed = scene;
     malformed.models[0].meshCount = static_cast<std::uint32_t>(malformed.meshes.size() + 1);
-    Require(!ReplaceBakedMeshes(malformed, original) && malformed.models[0].meshCount == malformed.meshes.size() + 1,
-        "损坏的模型范围拒绝且不修改");
+    RequireBakedReplaceRejected(malformed, original);
     malformed = scene;
     malformed.meshes[0].firstIndex = 1;
-    Require(!ReplaceBakedMeshes(malformed, original) && malformed.meshes[0].firstIndex == 1,
-        "非连续网格布局拒绝且不修改");
+    RequireBakedReplaceRejected(malformed, original);
     // 缺贴图不修改；清空后烘焙模型移除，其余模型序号前移。
-    const auto before = scene.vertices.size();
-    Require(!ReplaceBakedMeshes(scene, std::vector<BakedModelMesh>{Triangle(0, "Cliff\\Missing.blp")}) && scene.vertices.size() == before,
-        "未载入的贴图拒绝且不修改");
+    RequireBakedReplaceRejected(scene, std::vector<BakedModelMesh>{Triangle(0, "Cliff\\Missing.blp")});
     Require(ReplaceBakedMeshes(scene, {}), "清空烘焙网格");
     Require(scene.models.size() == 1 && scene.instances.size() == 1 && scene.instances[0].model == 0
         && scene.instanceRequests[0] == 0 && scene.meshes[0].baseVertex == 0 && scene.vertices.size() == crateVertices.size(), "移除烘焙模型");
@@ -495,6 +645,122 @@ void TestReplaceBaked() {
     Require(ReplaceBakedMeshes(scene, original) && scene.untexturedLayers == originalUntextured,
         "恢复贴图后图层计数恢复");
     Require(!DescribeModelScene(scene).mips.empty(), "替换后仍可描述");
+}
+
+void TestBakedSamplerFlagsAndSnapshotRefresh() {
+    Files files;
+    files.files[Key("Original\\Sampler.mdx")] = RigidTestModel();
+    files.files[Key("Textures\\Crate.blp")] = Blp(4, 4, 90);
+    files.files[Key(TeamColorTexture(0))] = Blp(2, 2, 10);
+    const std::array requests{At("Original\\Sampler.mdx", 0, 100)};
+    const std::vector<BakedModelMesh> original{Triangle(0, "Textures\\Crate.blp", 0),
+        Triangle(20, "textures/crate.BLP", 1), Triangle(40, "Textures\\Crate.blp", 2),
+        Triangle(60, "Textures\\Crate.blp", 3)};
+    auto built = BuildWorldModelScene(requests, files.Reader(), {}, original);
+    Require(built.Succeeded() && built.value->models.size() == 2 && built.value->models[0].meshCount == 4
+        && built.value->layers.size() == 6 && !built.value->layerSamplerFlags.empty(), "sampler 烘焙场景构建");
+    auto& scene = *built.value;
+    const WorldModelScene& view = scene;
+    Require(EffectiveSamplerFlags(view) == std::vector<std::uint32_t>{0, 1, 2, 3, 3, 3},
+        "烘焙前缀保留四种 sampler，普通模型后缀明确保持旧 repeat/repeat");
+    Require(view.textures.size() == 2 && files.reads[Key("Textures\\Crate.blp")] == 1,
+        "不同 sampler 仍共用一次读取和一份真实 BLP，不能复制贴图或伪造替代纹理");
+    TestStaticSamplerDescriptorAndCapabilities(view);
+    for (std::size_t i = 0; i < original.size(); ++i)
+        Require(view.layers[i].textureIndex == view.layers[5].textureIndex && view.layers[i].filterMode == 0
+            && view.layers[i].flags == 0 && view.layers[i].alpha == 1,
+            "sampler 元数据独立于旧图层 ABI 字段，同一贴图身份保持不变");
+
+    // 合法非默认后缀模拟已发布静态快照，替换烘焙前缀时不得改写它。
+    scene.layerSamplerFlags.back() = 1;
+    const auto snapshot = scene;
+    const auto snapshotReceipt = BakedSceneReceipt(snapshot);
+    Require(view.layerSamplerFlags.SharesStorageWith(snapshot.layerSamplerFlags), "快照应共享只读 sampler 存储");
+    const std::vector<BakedModelMesh> replacement{Triangle(500, "textures/crate.BLP", 2), Triangle(600, "Textures\\Crate.blp")};
+    Require(ReplaceBakedMeshes(scene, replacement)
+        && EffectiveSamplerFlags(view) == std::vector<std::uint32_t>{2, 3, 3, 1},
+        "前缀缩短后 sampler 与图层同步平移，默认烘焙仍为3，显式后缀保持原值");
+    Require(BakedSceneReceipt(snapshot) == snapshotReceipt
+        && !view.layerSamplerFlags.SharesStorageWith(snapshot.layerSamplerFlags)
+        && view.textures.SharesStorageWith(snapshot.textures), "成功刷新分离 sampler，旧快照和共享真实贴图保持不变");
+    auto moved = requests; moved[0].position[0] = 200;
+    const auto beforeMove = scene;
+    Require(ReplaceModelInstances(scene, requests, moved) && view.instances.back().transform[3] == 200
+        && view.layerSamplerFlags.SharesStorageWith(beforeMove.layerSamplerFlags)
+        && EffectiveSamplerFlags(view) == std::vector<std::uint32_t>{2, 3, 3, 1},
+        "仅刷新实例不能丢失、重建或改写 sampler 元数据");
+
+    RequireBakedReplaceRejected(scene, std::vector<BakedModelMesh>{Triangle(700, "Textures\\Crate.blp", 0),
+        Triangle(800, "Textures\\Crate.blp", 4)});
+    auto malformed = scene; malformed.layerSamplerFlags.pop_back();
+    RequireBakedReplaceRejected(malformed, replacement);
+    malformed = scene; malformed.layerSamplerFlags.back() = 4;
+    RequireBakedReplaceRejected(malformed, replacement);
+    WorldModelLimits limited; limited.maxLayers = 3;
+    RequireBakedReplaceRejected(scene, replacement, limited);
+    limited = {}; limited.maxVertices = 9;
+    RequireBakedReplaceRejected(scene, replacement, limited);
+
+    // 空数组是明确的旧 repeat/repeat，而不是省略现有图层或猜测来源 TEXS。
+    auto legacy = scene; legacy.layerSamplerFlags.clear();
+    Require(ReplaceBakedMeshes(legacy, std::vector<BakedModelMesh>{Triangle(0, "Textures\\Crate.blp", 0)})
+        && EffectiveSamplerFlags(legacy) == std::vector<std::uint32_t>{0, 3, 3}, "旧场景补齐后缀 sampler=3");
+    Require(ReplaceBakedMeshes(legacy, {}) && EffectiveSamplerFlags(legacy) == std::vector<std::uint32_t>{3, 3},
+        "清空烘焙前缀后 sampler 后缀仍与保留的普通图层对齐");
+    Require(ReplaceBakedMeshes(legacy, std::vector<BakedModelMesh>{Triangle(0, "Textures\\Crate.blp")})
+        && EffectiveSamplerFlags(legacy) == std::vector<std::uint32_t>{3, 3, 3}, "再次插入采用默认 sampler=3");
+
+    files.reads.clear();
+    const std::vector<BakedModelMesh> invalid{original[0], Triangle(0, "Textures\\Crate.blp", 4)};
+    const auto rejected = BuildWorldModelScene(requests, files.Reader(), {}, invalid);
+    Require(!rejected.Succeeded() && !rejected.value && !rejected.diagnostics.empty()
+        && rejected.diagnostics.front().code == "WORLD_BAKED_MESH_INVALID" && files.reads.empty(),
+        "未知烘焙 sampler 必须在所有模型/贴图读取前拒绝，不能发布部分场景");
+
+    BakedModelMesh defaultMesh; Require(defaultMesh.samplerFlags == 3, "旧调用者默认保留 repeat/repeat 合同");
+    const std::vector<BakedModelMesh> implicitDefault{Triangle(0, "Textures\\Crate.blp")};
+    const std::vector<BakedModelMesh> explicitDefault{Triangle(0, "Textures\\Crate.blp", 3)};
+    const auto implicit = BuildWorldModelScene(requests, files.Reader(), {}, implicitDefault);
+    const auto explicitFlags = BuildWorldModelScene(requests, files.Reader(), {}, explicitDefault);
+    Require(implicit.Succeeded() && explicitFlags.Succeeded()
+        && BakedSceneReceipt(*implicit.value) == BakedSceneReceipt(*explicitFlags.value),
+        "默认与显式3产生相同旧几何、图层字段、实例、贴图与 sampler 语义");
+}
+
+void TestStaticSamplerMetadataBudget() {
+    Files files; files.files[Key("Original\\Tiny.blp")] = Blp(2, 2, 17);
+    const std::vector<BakedModelMesh> baked{Triangle(0, "Original\\Tiny.blp", 0), Triangle(20, "Original\\Tiny.blp", 1),
+        Triangle(40, "Original\\Tiny.blp", 2), Triangle(60, "Original\\Tiny.blp", 3), Triangle(80, "Original\\Tiny.blp", 0)};
+    const auto probe = BuildWorldModelScene({}, files.Reader(), {}, baked);
+    Require(probe.Succeeded() && probe.value->textures.size() == 1 && probe.value->textures[0].rgba.size() == 16,
+        "紧预算夹具只允许一张真实2x2 RGBA贴图，不制造大纹理或虚拟内存");
+    const auto& baseline = *probe.value;
+    const auto tailBytes = sizeof(War3RenderStaticSamplerModelSceneV2) - sizeof(War3RenderModelSceneV2);
+    const auto exact = std::uint64_t(baseline.textures[0].rgba.size())
+        + baseline.layerSamplerFlags.capacity() * sizeof(std::uint32_t) + tailBytes;
+    WorldModelLimits limits; limits.maxTotalTextureBytes = exact - 1;
+    const auto rejected = BuildWorldModelScene({}, files.Reader(), limits, baked);
+    Require(!rejected.Succeeded() && !rejected.value && !rejected.diagnostics.empty()
+        && rejected.diagnostics.front().code == "WORLD_STATIC_SAMPLER_BUDGET",
+        "真实像素可装入但 sampler 实际分配容量超出一字节时必须拒绝");
+    limits.maxTotalTextureBytes = exact;
+    const auto accepted = BuildWorldModelScene({}, files.Reader(), limits, baked);
+    Require(accepted.Succeeded() && EffectiveSamplerFlags(*accepted.value) == std::vector<std::uint32_t>{0, 1, 2, 3, 0},
+        "像素、sampler容量和描述符增量恰好达到原预算时应接纳");
+
+    const std::vector<BakedModelMesh> replacement{Triangle(200, "Original\\Tiny.blp", 2)};
+    auto measured = baseline;
+    Require(ReplaceBakedMeshes(measured, replacement), "测量真实替换候选的 sampler 分配容量");
+    const auto replaceExact = std::uint64_t(baseline.textures[0].rgba.size())
+        + (baseline.layerSamplerFlags.capacity() + std::as_const(measured).layerSamplerFlags.capacity()) * sizeof(std::uint32_t)
+        + tailBytes;
+    auto candidate = baseline;
+    limits.maxTotalTextureBytes = replaceExact - 1;
+    RequireBakedReplaceRejected(candidate, replacement, limits);
+    limits.maxTotalTextureBytes = replaceExact;
+    Require(ReplaceBakedMeshes(candidate, replacement, limits)
+        && EffectiveSamplerFlags(candidate) == std::vector<std::uint32_t>{2},
+        "替换时旧快照和新候选 sampler 的实际容量必须一起计入原预算");
 }
 
 void TestPreciseAnimatedPicking() {
@@ -646,6 +912,8 @@ int main() {
         TestPreciseAnimatedPicking();
         TestPreparedAnimatedPicking();
         TestReplaceBaked();
+        TestBakedSamplerFlagsAndSnapshotRefresh();
+        TestStaticSamplerMetadataBudget();
         TestRigidPoseScene();
         TestNoControllerStaticPreview();
         std::cout << "world model scene: variants, dedupe, transforms, textures, budgets passed\n";

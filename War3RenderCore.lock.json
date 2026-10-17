@@ -2,7 +2,7 @@
   "schema": 1,
   "version": "0.1.19",
   "repository": "https://github.com/CallDisaster/Audastra-RenderCore.git",
-  "commit": "5d8bd0049c25fd3598e661473ec4bd9e06ef1d08",
+  "commit": "1440658f04aa9c154f94da9a42e345cef57e9d54",
   "files": [
     {
       "path": ".gitattributes",
@@ -125,8 +125,12 @@
       "sha256": "48305d35d2b81b68ccbf32b28facfd2301671e886dad5f588e01ec6aef704f6c"
     },
     {
+      "path": "include/War3MapCore/RenderPluginStaticSamplers.h",
+      "sha256": "51eca720328b826f611e0e1140a3faa90e4c989fac60e54c14db54aa4cb62ca2"
+    },
+    {
       "path": "include/War3MapCore/RenderPluginV2.h",
-      "sha256": "4fa00576b85c34c60192345f02c006bbd5aca63cde5f0788b059e382f170aaaa"
+      "sha256": "36ec5788d85993a7efc01f11a88548078576683ccd7eec0597ba48fea76d4f38"
     },
     {
       "path": "include/War3RenderCore/CompiledModel.h",
@@ -195,6 +199,10 @@
     {
       "path": "include/War3RenderCore/Legacy/RenderPluginParticleMaterial.h",
       "sha256": "087226d486126f527e9a77c7437140298b411191aa37b74e30f4242ebbcb0ebc"
+    },
+    {
+      "path": "include/War3RenderCore/Legacy/RenderPluginStaticSamplers.h",
+      "sha256": "59763c99a04c0e9bfb5ac940d0405321fe7d4f8586d90d642c4e281c4a9d570b"
     },
     {
       "path": "include/War3RenderCore/Legacy/RenderPluginV2.h",
@@ -290,15 +298,15 @@
     },
     {
       "path": "src/Render/Scene/ModelSceneData.h",
-      "sha256": "3985b452cdc25a392f067826050ea4fb708c996600396dea2efb8f1465f2898a"
+      "sha256": "3f5ec84b4507d3e754b566eed6f459bfbcab713e4e7e1c71b023f56d8061562b"
     },
     {
       "path": "src/Render/Scene/ModelSkinInput.cpp",
-      "sha256": "66aed5b32e0f681e09864f4ebefdb891dad0f5445ed37b1f554cf443c653ba02"
+      "sha256": "070b6554c880d63c36916356d17da16d06325ff66bb222cd1ef2a645cf7592d8"
     },
     {
       "path": "src/Render/Scene/ModelSkinInput.h",
-      "sha256": "1f82f5bf8c2f913f1dad64ce33229dff324290ed64b87d895f8c36dca105896f"
+      "sha256": "ad884904b12366cebbfef54ac21a52524f9781b7da54c3bd13ee6d57dbcf83df"
     },
     {
       "path": "src/Render/Tools/MdxScan/ScanDetail.cpp",
@@ -406,7 +414,7 @@
     },
     {
       "path": "src/RenderCore/TestTargets.cmake",
-      "sha256": "13a94eeaf0b60b98ee79f5bb144bf2d982245fe22416f2bbc32b5123524ebcc8"
+      "sha256": "f3b8feb66498b534da1ffbb40a71d9d35b79ebbbcbb02605f93c638822326cd7"
     },
     {
       "path": "tests/ExternalFrameTests.cpp",
@@ -466,7 +474,7 @@
     },
     {
       "path": "tests/ParticleMaterialContractTests.cpp",
-      "sha256": "492521a2091a62bb81ff331484d7d6b6d7672d1ddac756840ed3325d305e42ea"
+      "sha256": "a01e5f9d83db9d107a3f1718132acfd63c1605ae19367d3492745f4a649930bc"
     },
     {
       "path": "tests/PremReadTests.cpp",
@@ -514,7 +522,7 @@
     },
     {
       "path": "tests/RenderSkinAssetAppendTests.cpp",
-      "sha256": "7472dac778321ab9c97a8ffbd4348a1eadfd1b14c1318e47ba5a49f354624718"
+      "sha256": "58cbc60bd6ff1a54835140a6c2c8d18983e9257962100ae32c303cef47dc2bae"
     },
     {
       "path": "tests/RenderSkinFixture.h",
@@ -522,11 +530,11 @@
     },
     {
       "path": "tests/RenderSkinInputTests.cpp",
-      "sha256": "579ebad658c82364044f75ec401977380dd87cf1e681f63bb299d4a281b925ee"
+      "sha256": "3db3f866fedb6e0e6eeab2347ff697f5de02c3d92de25c219faad0af99ab6e98"
     },
     {
       "path": "tests/RenderSkinRosterTests.cpp",
-      "sha256": "79557a0a41920f7713f289a4525a16f3e6ada51384746bdd56f85a31ed7d352f"
+      "sha256": "7c7e05cb8bfe6791037bddd95999fe0f4dd843eea56c9c2bb382ac4c2e432400"
     },
     {
       "path": "tests/RigidStaticPreviewFixture.h",
@@ -543,6 +551,14 @@
     {
       "path": "tests/SourceOrderPreviewTests.cpp",
       "sha256": "29b567b2486a4b873e59036372e867ab76765aef359f2a346c5772cb498ed4a4"
+    },
+    {
+      "path": "tests/StaticSamplerContractTests.cpp",
+      "sha256": "2a41ca8fa32a5f94f6acf5fce8ec5ac9bb1b8d6c3e5ce6ecf89b2191e8079b45"
+    },
+    {
+      "path": "tests/StaticSamplerInputTests.cpp",
+      "sha256": "f0b3c007b381ccfd2608b1a53dd16f0ebe2b0cf62698317423b9c2ffc56fce67"
     },
     {
       "path": "tools/FootmanGolden.cpp",

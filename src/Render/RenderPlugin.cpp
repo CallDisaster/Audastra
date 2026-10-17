@@ -3,6 +3,7 @@
 #include "War3MapCore/RenderPluginInstanceRoster.h"
 #include "War3MapCore/RenderPluginMaterialAlpha.h"
 #include "War3MapCore/RenderPluginMaterialState.h"
+#include "War3MapCore/RenderPluginStaticSamplers.h"
 #include "Backend/D3D11/D3D11Scene.h"
 #include "Scene/ModelSkinInput.h"
 #include "Particles/ParticleInput.h"
@@ -759,34 +760,18 @@ std::int32_t PublishModels(Renderer& renderer, std::shared_ptr<const ModelScene>
 }
 std::int32_t SubmitModelsImpl(War3RendererHandle renderer, const War3RenderModelSceneV2* input,
     const War3RenderEditorVisibilityUpdateV2* visibility) noexcept {
-    if (!renderer || !input || input->structSize != sizeof(*input) || input->vertexCount > kMaxModelVertices
-        || input->indexCount > kMaxModelIndices || input->layerCount > kMaxModelLayers || input->meshCount > kMaxModelMeshes
-        || input->modelCount > kMaxModels || input->textureCount > kMaxModelTextures
-        || (input->vertexCount && !input->vertices) || (input->indexCount && !input->indices)
-        || (input->layerCount && !input->layers) || (input->meshCount && !input->meshes)
-        || (input->modelCount && !input->models) || (input->instanceCount && !input->instances)) return kInvalid;
+    if (!renderer || !input) return kInvalid;
     try {
+        War3Map::Render::StaticSamplerSceneView samplerView;
+        if (!War3Map::Render::ValidateStaticSamplerScene(*input, 0, 0, samplerView)) return kInvalid;
         TextureChains chains;
         if (!ValidateTextureChains(input->textures, input->textureCount,
             TextureBudget{kMaxTextureBytes, kMaxMipChainBytes, kMaxModelTextureTotal}, chains)) return kInvalid;
         for (const auto& description : chains.descriptions)
             if (description.atlasColumns != 1 || description.atlasRows != 1) return kInvalid;
-        const std::uint64_t payloadBytes = static_cast<std::uint64_t>(input->vertexCount) * sizeof(War3RenderModelVertexV2)
-            + static_cast<std::uint64_t>(input->indexCount) * sizeof(std::uint16_t)
-            + static_cast<std::uint64_t>(input->layerCount) * sizeof(War3RenderModelLayerV2)
-            + static_cast<std::uint64_t>(input->meshCount) * sizeof(War3RenderModelMeshV2)
-            + static_cast<std::uint64_t>(input->modelCount) * sizeof(War3RenderModelV2)
-            + static_cast<std::uint64_t>(input->instanceCount) * sizeof(War3RenderModelInstanceV2)
-            + chains.descriptorBytes + chains.pixelBytes;
-        if (payloadBytes > kMaxModelBytes) return kInvalid;
         auto scene = std::make_shared<ModelScene>();
-        if (input->vertexCount) scene->vertices.assign(input->vertices, input->vertices + input->vertexCount);
-        if (input->indexCount) scene->indices.assign(input->indices, input->indices + input->indexCount);
-        if (input->layerCount) scene->layers.assign(input->layers, input->layers + input->layerCount);
-        if (input->meshCount) scene->meshes.assign(input->meshes, input->meshes + input->meshCount);
-        if (input->modelCount) scene->models.assign(input->models, input->models + input->modelCount);
-        if (input->instanceCount) scene->instances.assign(input->instances, input->instances + input->instanceCount);
-        if (!War3Map::Render::ValidateModelGeometry(*scene, input->textureCount)) return kInvalid;
+        std::uint64_t payloadBytes = 0;
+        if (!War3Map::Render::CopyStaticModelInput(*input, chains.descriptorBytes, chains.pixelBytes, *scene, payloadBytes)) return kInvalid;
         scene->textures = CopyTextureChains(chains);
         return PublishModels(*static_cast<Renderer*>(renderer), std::move(scene), {}, {}, {}, visibility);
     } catch (...) { return static_cast<std::int32_t>(E_OUTOFMEMORY); }
@@ -998,6 +983,12 @@ std::int32_t WAR3_RENDER_CALL GetModelLayersTarget(War3RendererHandle handle, Wa
 std::int32_t WAR3_RENDER_CALL GetModelLayerCapabilities(War3RendererHandle handle, std::uint32_t* output) noexcept {
     if (!handle || !output) return kInvalid;
     *output = WAR3_RENDER_MODEL_LAYER_CAP_GROUND_DECAL_PREVIEW;
+    return 0;
+}
+std::int32_t WAR3_RENDER_CALL GetStaticModelSamplerCapabilities(War3RendererHandle handle,
+    War3RenderStaticSamplerCapabilitiesV2* output) noexcept {
+    if (!handle || !output || output->structSize < sizeof(*output)) return kInvalid;
+    *output = {sizeof(*output), WAR3_RENDER_STATIC_LAYER_SAMPLERS_V1, WAR3_RENDER_STATIC_SAMPLER_FLAGS_MASK, 0};
     return 0;
 }
 std::int32_t WAR3_RENDER_CALL SubmitEditorModelScene(War3RendererHandle handle,
@@ -1612,7 +1603,7 @@ const War3RenderPluginApiV2 api{sizeof(War3RenderPluginApiV2), WAR3_RENDER_PLUGI
     &GetEditorPresentationTarget, &SubmitEditorVisibility, &CaptureEditorPresentationFrame, &SubmitEditorModelScene, &GetEditorCompletedFrame,
     &SubmitModelSceneLayer, &UpdateModelSceneLayer, &RemoveModelSceneLayer, &GetModelLayersTarget, &CaptureLayeredFrame, &GetFrameMetrics,
     &SubmitEditorInstanceRoster, &GetEditorInstanceRosterResult, &GetEditorRosterCapabilities, &CancelEditorInstanceRoster,
-    &GetModelLayerCapabilities};
+    &GetModelLayerCapabilities, &GetStaticModelSamplerCapabilities};
 }
 extern "C" WAR3_RENDER_EXPORT const War3RenderPluginApiV2* WAR3_RENDER_CALL
 War3MapEditor_GetRenderPluginApiV2(std::uint32_t version) { return version == WAR3_RENDER_PLUGIN_API_V2 ? &api : nullptr; }

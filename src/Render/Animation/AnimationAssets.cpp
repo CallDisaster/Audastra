@@ -47,6 +47,7 @@ bool PreviewColorFailure(GeosetColorError error) {
 template<class Target, class Source> void CopyStaticGeometry(Target& target, const Source& source) {
     auto& g = target.geometry; const auto& a = source.geometry;
     g.vertices = a.vertices; g.indices = a.indices; g.layers = a.layers; g.meshes = a.meshes;
+    g.layerSamplerFlags = a.layerSamplerFlags;
     g.models = a.models; g.modelBounds = a.modelBounds; g.textures = a.textures;
     g.vertexGroups = a.vertexGroups; g.meshGeosets = a.meshGeosets;
     g.modelPaths = a.modelPaths; g.modelAssetKeys = a.modelAssetKeys;
@@ -148,8 +149,20 @@ AnimatedModelScene AnimationStaticGeometry::Materialize() const {
 void AnimationStaticGeometry::ApplyTo(AnimatedModelScene& target) const {
     CopyStaticGeometry(target, *this);
 }
-void AppendAnimationStaticGeometry(AnimatedModelScene& target, const AnimatedModelScene& added) {
+Status AppendAnimationStaticGeometry(AnimatedModelScene& target, const AnimatedModelScene& added,
+    const WorldModelLimits& limits) {
+    if (auto budget=CheckAnimationStaticAppend(target,added,limits); !budget.Succeeded()) return budget;
     auto& g=target.geometry; const auto& a=added.geometry;
+    std::vector<std::uint32_t> samplerFlags;
+    const bool explicitSamplers=!g.layerSamplerFlags.empty() || !a.layerSamplerFlags.empty();
+    if (explicitSamplers) {
+        samplerFlags.reserve(g.layers.size()+a.layers.size());
+        if (g.layerSamplerFlags.empty()) samplerFlags.resize(g.layers.size(),3);
+        else samplerFlags.insert(samplerFlags.end(),g.layerSamplerFlags.cbegin(),g.layerSamplerFlags.cend());
+        if (a.layerSamplerFlags.empty()) samplerFlags.resize(g.layers.size()+a.layers.size(),3);
+        else samplerFlags.insert(samplerFlags.end(),a.layerSamplerFlags.cbegin(),a.layerSamplerFlags.cend());
+    }
+    if (auto budget=CheckAnimationStaticAppend(target,added,limits,samplerFlags.capacity()); !budget.Succeeded()) return budget;
     const auto vertexBase=static_cast<std::uint32_t>(g.vertices.size());
     const auto indexBase=static_cast<std::uint32_t>(g.indices.size());
     const auto layerBase=static_cast<std::uint32_t>(g.layers.size());
@@ -175,6 +188,7 @@ void AppendAnimationStaticGeometry(AnimatedModelScene& target, const AnimatedMod
             binding.textureIndex=textureMap.at(binding.textureIndex);
         g.modelTextureBindings.push_back(std::move(bindings));
     }
+    if (explicitSamplers) g.layerSamplerFlags=std::move(samplerFlags);
     for (auto layer:a.layers) {
         if (layer.textureIndex!=WAR3_RENDER_MODEL_NO_TEXTURE) layer.textureIndex=textureMap.at(layer.textureIndex);
         g.layers.push_back(layer);
@@ -201,14 +215,17 @@ void AppendAnimationStaticGeometry(AnimatedModelScene& target, const AnimatedMod
     std::set<std::tuple<std::string,std::string,std::string>> sources;
     for (const auto& s:target.sources) sources.emplace(s.virtualPath,s.sourceLayer,s.contentDigest);
     for (const auto& s:added.sources) if (sources.emplace(s.virtualPath,s.sourceLayer,s.contentDigest).second) target.sources.push_back(s);
+    return {};
 }
 Status CheckAnimationStaticAppend(const AnimatedModelScene& current,
-    const AnimatedModelScene& added, const WorldModelLimits& limits) {
+    const AnimatedModelScene& added, const WorldModelLimits& limits, std::uint64_t mergedSamplerCapacity) {
     const auto& g = current.geometry; const auto& a = added.geometry;
     const auto fits = [](std::uint64_t present, std::uint64_t extra, std::uint64_t maximum) {
         return present <= maximum && extra <= maximum - present;
     };
-    if (!fits(g.vertices.size(), a.vertices.size(), limits.maxVertices) ||
+    if ((!g.layerSamplerFlags.empty() && g.layerSamplerFlags.size()!=g.layers.size()) ||
+        (!a.layerSamplerFlags.empty() && a.layerSamplerFlags.size()!=a.layers.size()) ||
+        !fits(g.vertices.size(), a.vertices.size(), limits.maxVertices) ||
         !fits(g.indices.size(), a.indices.size(), limits.maxIndices) ||
         !fits(g.layers.size(), a.layers.size(), limits.maxLayers) ||
         !fits(g.meshes.size(), a.meshes.size(), limits.maxMeshes) ||
@@ -216,6 +233,15 @@ Status CheckAnimationStaticAppend(const AnimatedModelScene& current,
         return AnimationFailure("ANIMATION_DELTA_ASSET_BUDGET", "新增资产的累计几何超过已配置内存/索引预算，驻留资产未改动。");
     std::set<std::string> textures;
     std::uint64_t bytes = 0;
+    if (!g.layerSamplerFlags.empty() || !a.layerSamplerFlags.empty())
+        bytes = (std::uint64_t(g.layerSamplerFlags.capacity()) + a.layerSamplerFlags.capacity()
+            + (mergedSamplerCapacity ? mergedSamplerCapacity : g.layers.size() + a.layers.size())) * sizeof(std::uint32_t);
+    for (const auto& bindings:g.modelTextureBindings)
+        if (bindings) bytes+=std::uint64_t(bindings->capacity())*sizeof(ModelTextureBinding);
+    for (const auto& bindings:a.modelTextureBindings)
+        if (bindings) bytes+=std::uint64_t(bindings->capacity())*sizeof(ModelTextureBinding);
+    if (bytes > limits.maxTotalTextureBytes)
+        return AnimationFailure("ANIMATION_DELTA_TEXTURE_BUDGET", "sampler 常驻及合并暂存超过原材质预算。");
     const auto addTextures = [&](const auto& values) {
         for (const auto& texture : values) if (textures.insert(ModelTextureAssetKey(texture)).second) {
             if (!fits(bytes, texture.rgba.size(), limits.maxTotalTextureBytes) ||
@@ -519,7 +545,7 @@ Result<std::unique_ptr<ModelAnimationService::State>> ModelAnimationService::Bui
     geometryLimits.allowRigidStaticPreview = limits.allowRigidStaticPreview;
     scene.dynamicMaterialStates=std::any_of(state->assets.begin(),state->assets.end(),[](const auto& asset) {
         return asset.unavailableCode.empty() && AnimatedMaterialState(asset.materialTextures.get());
-    });
+    }) || std::any_of(baked.begin(), baked.end(), [](const auto& mesh) { return mesh.samplerFlags != 3; });
     // 旧无KMTF场景不创建新工作区；混合场景的静态材质sidecar仅在首次显式开启时冻结。
     if (scene.dynamicMaterialStates) for (auto& asset:state->assets) if (asset.compiled.Valid() &&
         asset.unavailableCode.empty() && !asset.materialTextures) {
@@ -587,11 +613,13 @@ Result<std::unique_ptr<ModelAnimationService::State>> ModelAnimationService::Bui
     scene.meshes.resize(g.meshes.size());
     scene.pickMeshGroups.resize(g.meshes.size());
     scene.drawLayerBindings.resize(g.layers.size()); scene.modelLayerRanges.resize(g.models.size());
+    if (!g.layerSamplerFlags.empty()) for (std::size_t i=0;i<g.layers.size();++i)
+        scene.drawLayerBindings[i].staticSamplerFlags=g.layerSamplerFlags[i];
     std::vector<std::uint8_t> ghostModels(g.models.size());
     for (std::size_t i=0;i<g.instances.size();++i) if (g.instanceRequests[i]!=kBakedInstance)
         ghostModels[g.instances[i].model]=scene.specs[g.instanceRequests[i]].model.previewGhost ? 1 : 0;
     std::uint64_t pickBytes=g.meshes.size()*sizeof(Range32)+g.models.size()*(sizeof(AnimationPickModel)+sizeof(Range32))+
-        g.layers.size()*sizeof(AnimationDrawLayerBinding);
+        g.layers.size()*sizeof(AnimationDrawLayerBinding)+g.layerSamplerFlags.capacity()*sizeof(std::uint32_t);
     scene.meshColors.assign(g.meshes.size(), War3RenderMeshColorV2{{1,1,1}});
     for (std::size_t m=0;m<g.models.size();++m) {
         const auto found = cached.find(g.modelAssetKeys[m]);
@@ -737,7 +765,8 @@ Result<std::shared_ptr<const AnimationPreparedAssets>> ModelAnimationService::Pr
     // 唯一静态追加逻辑在预取阶段完成旧世界缓冲的COW分离；包不持有原State或实例。
     // 正式点击只共享这份不可变合并结果，仍要复核exact catalog、实际来源和累计预算。
     AnimatedModelScene merged; CopyStaticGeometry(merged, base);
-    AppendAnimationStaticGeometry(merged, result->addedGeometry_.Materialize());
+    if (auto budget=AppendAnimationStaticGeometry(merged, result->addedGeometry_.Materialize(),state_->limits.geometry); !budget.Succeeded())
+        return {std::nullopt,std::move(budget.diagnostics)};
     if (merged.dynamicMaterialStates) {
         auto modelAssets=state_->modelAssets;
         modelAssets.insert(modelAssets.end(),prepared.modelAssets.begin(),prepared.modelAssets.end());

@@ -219,6 +219,7 @@ private:
     Ptr<ID3D11DepthStencilState> modelDepthRead_;
     std::vector<Ptr<ID3D11ShaderResourceView>> modelTextures_;
     std::vector<War3RenderModelLayerV2> modelLayers_;
+    std::vector<std::uint32_t> modelStaticSamplerFlags_; // 空=legacy3；与已接受的静态 draw 层同序。
     std::vector<War3RenderModelMeshV2> modelMeshes_;
     std::vector<War3RenderModelV2> modelRanges_;
     std::vector<std::pair<UINT, UINT>> modelInstanceRanges_; // 每模型 (首实例, 数量)

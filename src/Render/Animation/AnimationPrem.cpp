@@ -21,7 +21,7 @@ template<class Vector> std::uint64_t Bytes(const Vector& values) {
 }
 std::uint64_t SceneBytes(const AnimatedModelScene& scene) {
     const auto& g = scene.geometry;
-    std::uint64_t bytes = sizeof(scene) + Bytes(g.vertices) + Bytes(g.indices) + Bytes(g.layers) + Bytes(g.meshes) +
+    std::uint64_t bytes = sizeof(scene) + Bytes(g.vertices) + Bytes(g.indices) + Bytes(g.layers) + Bytes(g.layerSamplerFlags) + Bytes(g.meshes) +
         Bytes(g.models) + Bytes(g.instances) + Bytes(g.instanceRequests) + Bytes(g.modelBounds) + Bytes(g.vertexGroups) +
         Bytes(g.meshGeosets) + Bytes(g.modelPaths) + Bytes(g.modelAssetKeys) + Bytes(g.modelTextureBindings) +
         Bytes(scene.vertices) + Bytes(scene.meshes) + Bytes(scene.meshColors) + Bytes(scene.models) + Bytes(scene.specs) +

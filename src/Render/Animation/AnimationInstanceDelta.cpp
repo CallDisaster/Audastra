@@ -423,7 +423,8 @@ Result<std::shared_ptr<const AnimationInstanceDeltaPlan>> ModelAnimationService:
         const auto modelBase=static_cast<std::uint32_t>(scene.models.size());
         if (auto budget = CheckAnimationStaticAppend(scene, *add.scene, state_->limits.geometry); !budget.Succeeded())
             return {std::nullopt, std::move(budget.diagnostics)};
-        AppendAnimationStaticGeometry(scene,*add.scene);
+        if (auto budget=AppendAnimationStaticGeometry(scene,*add.scene,state_->limits.geometry); !budget.Succeeded())
+            return {std::nullopt,std::move(budget.diagnostics)};
         candidate->assets=add.assets; candidate->assetPaths=add.assetPaths; candidate->resources=add.resources;
         candidate->sourceBytes=add.sourceBytes; candidate->resourceBytes=add.resourceBytes;
         candidate->collisionNodesRequired=add.collisionNodesRequired;

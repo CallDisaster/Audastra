@@ -15,6 +15,7 @@
 #include <optional>
 #include <set>
 #include <unordered_map>
+#include <utility>
 
 namespace War3Map::Render {
 namespace {
@@ -115,7 +116,7 @@ public:
         if (baked.empty()) return {};
         std::uint64_t vertices = 0, indices = 0;
         for (const auto& mesh : baked) {
-            if (mesh.vertices.size() > 65536 || mesh.indices.size() % 3 != 0
+            if (mesh.samplerFlags > 3 || mesh.vertices.size() > 65536 || mesh.indices.size() % 3 != 0
                 || std::any_of(mesh.indices.begin(), mesh.indices.end(), [&](std::uint16_t i) { return i >= mesh.vertices.size(); })
                 || std::any_of(mesh.vertices.begin(), mesh.vertices.end(), [](const War3RenderModelVertexV2& v) {
                     const float values[]{v.x, v.y, v.z, v.nx, v.ny, v.nz, v.u, v.v};
@@ -146,6 +147,7 @@ public:
             MdxTexture texture;
             texture.path = mesh.texturePath;
             scene_.layers.push_back({Texture(texture, none), 0, 0, 1.0f});
+            scene_.layerSamplerFlags.push_back(mesh.samplerFlags);
             ++entry.meshCount;
         }
         scene_.models.push_back(entry);
@@ -158,7 +160,21 @@ public:
         return {};
     }
 
-    WorldModelScene Finish() {
+    Result<WorldModelScene> Finish() {
+        if (!scene_.layerSamplerFlags.empty()) {
+            const auto previousCapacity = scene_.layerSamplerFlags.capacity();
+            scene_.layerSamplerFlags.resize(scene_.layers.size(), 3);
+            // 描述符共享不可变flags所有权；resize发生增长时同时计旧/新实际分配的峰值。
+            const auto bytes = std::uint64_t(scene_.layerSamplerFlags.capacity()
+                + (scene_.layerSamplerFlags.capacity()!=previousCapacity ? previousCapacity : 0)) * sizeof(std::uint32_t)
+                + sizeof(War3RenderStaticSamplerModelSceneV2) - sizeof(War3RenderModelSceneV2);
+            auto used = textureBytes_;
+            for (const auto& bindings : std::as_const(scene_).modelTextureBindings)
+                if (bindings) used += std::uint64_t(bindings->capacity()) * sizeof(ModelTextureBinding);
+            if (used > limits_.maxTotalTextureBytes || bytes > limits_.maxTotalTextureBytes - used)
+                return Result<WorldModelScene>::Failure(std::string(kSubsystem), "WORLD_STATIC_SAMPLER_BUDGET",
+                    "静态 sampler 常驻及描述符暂存连同贴图超过原预算。");
+        }
         // 实例按模型稳定排序，请求序号随之重排。
         std::vector<std::uint32_t> order(scene_.instances.size());
         for (std::uint32_t i = 0; i < order.size(); ++i) order[i] = i;
@@ -174,7 +190,7 @@ public:
         Summarize(budgetModels_, "WORLD_MODEL_BUDGET", "超出模型显示预算，相关实例未显示");
         Summarize(failedTextures_, "WORLD_MODEL_TEXTURE_UNAVAILABLE", "贴图不可用，相关层按白色显示");
         Summarize(budgetTextures_, "WORLD_MODEL_TEXTURE_BUDGET", "贴图数量、文件大小或解码后总字节数超过预算，未上传");
-        return std::move(scene_);
+        return Result<WorldModelScene>::Success(std::move(scene_));
     }
 
 private:
@@ -632,7 +648,7 @@ Result<WorldModelScene> BuildWorldModelScene(std::span<const ModelInstanceReques
         auto status = builder.Add(requests[i], static_cast<std::uint32_t>(i));
         if (!status.Succeeded()) return {std::nullopt, std::move(status.diagnostics)};
     }
-    return Result<WorldModelScene>::Success(builder.Finish());
+    return builder.Finish();
 }
 
 Result<WorldModelScene> BuildAnimatedModelGeometry(std::span<const ModelInstanceRequest> requests,
@@ -646,7 +662,7 @@ Result<WorldModelScene> BuildAnimatedModelGeometry(std::span<const ModelInstance
         auto status = builder.Add(requests[i], static_cast<std::uint32_t>(i));
         if (!status.Succeeded()) return {std::nullopt, std::move(status.diagnostics)};
     }
-    return Result<WorldModelScene>::Success(builder.Finish());
+    return builder.Finish();
 }
 
 bool ReplaceModelInstances(WorldModelScene& scene, std::span<const ModelInstanceRequest> previous,
@@ -694,11 +710,14 @@ bool ReplaceModelInstances(WorldModelScene& scene, std::span<const ModelInstance
     return true;
 }
 
-bool ReplaceBakedMeshes(WorldModelScene& scene, std::span<const BakedModelMesh> baked, const WorldModelLimits& limits) {
+bool ReplaceBakedMeshes(WorldModelScene& outputScene, std::span<const BakedModelMesh> baked, const WorldModelLimits& limits) {
+    const auto& scene = std::as_const(outputScene); // 失败前的读取不能触发 COW 分离。
     if (scene.instanceRequests.size() != scene.instances.size() || scene.modelBounds.size() != scene.models.size()
         || (!scene.modelAssetKeys.empty() && scene.modelAssetKeys.size() != scene.models.size())
         || (!scene.modelTextureBindings.empty() && scene.modelTextureBindings.size() != scene.models.size())
         || (!scene.modelPaths.empty() && scene.modelPaths.size() != scene.models.size())
+        || (!scene.layerSamplerFlags.empty() && (scene.layerSamplerFlags.size() != scene.layers.size()
+            || std::any_of(scene.layerSamplerFlags.cbegin(), scene.layerSamplerFlags.cend(), [](auto flags) { return flags > 3; })))
         || scene.textures.size() > limits.maxTextures || baked.size() > limits.maxMeshes) return false;
 
     // BuildWorldModelScene 把烘焙模型放在 0 号，实例也排在首位；只接受这种布局。
@@ -747,7 +766,7 @@ bool ReplaceBakedMeshes(WorldModelScene& scene, std::span<const BakedModelMesh> 
 
     std::size_t newVertices = 0, newIndices = 0, newMeshes = 0;
     for (const auto& mesh : baked) {
-        if (mesh.vertices.size() > 65536 || mesh.indices.size() % 3 != 0
+        if (mesh.samplerFlags > 3 || mesh.vertices.size() > 65536 || mesh.indices.size() % 3 != 0
             || (mesh.indices.empty() && !mesh.vertices.empty())
             || std::any_of(mesh.indices.begin(), mesh.indices.end(), [&](std::uint16_t i) { return i >= mesh.vertices.size(); })
             || std::any_of(mesh.vertices.begin(), mesh.vertices.end(), [](const War3RenderModelVertexV2& v) {
@@ -774,6 +793,17 @@ bool ReplaceBakedMeshes(WorldModelScene& scene, std::span<const BakedModelMesh> 
         || !fits(newModels, keptModels, limits.maxModels)
         || !InstanceBudget(newModels+keptInstances,limits)) return false;
 
+    std::uint64_t samplerStorage = std::uint64_t(scene.layerSamplerFlags.capacity()) * sizeof(std::uint32_t)
+        + std::uint64_t(newMeshes + keptLayers) * sizeof(std::uint32_t)
+        + sizeof(War3RenderStaticSamplerModelSceneV2) - sizeof(War3RenderModelSceneV2);
+    for (const auto& bindings : scene.modelTextureBindings)
+        if (bindings) samplerStorage += std::uint64_t(bindings->capacity()) * sizeof(ModelTextureBinding);
+    for (const auto& texture : scene.textures) {
+        if (samplerStorage > limits.maxTotalTextureBytes || texture.rgba.size() > limits.maxTotalTextureBytes - samplerStorage) return false;
+        samplerStorage += texture.rgba.size();
+    }
+    if (samplerStorage > limits.maxTotalTextureBytes) return false;
+
     std::unordered_map<std::string, std::uint32_t> textureByPath;
     textureByPath.reserve(scene.textures.size());
     for (std::size_t i = 0; i < scene.textures.size(); ++i)
@@ -781,6 +811,7 @@ bool ReplaceBakedMeshes(WorldModelScene& scene, std::span<const BakedModelMesh> 
     std::vector<War3RenderModelVertexV2> vertices; vertices.reserve(newVertices + keptVertices);
     std::vector<std::uint16_t> indices; indices.reserve(newIndices + keptIndices);
     std::vector<War3RenderModelLayerV2> layers; layers.reserve(newMeshes + keptLayers);
+    std::vector<std::uint32_t> samplerFlags; samplerFlags.reserve(newMeshes + keptLayers);
     std::vector<War3RenderModelMeshV2> meshes; meshes.reserve(newMeshes + keptMeshes);
     std::size_t newUntextured = 0;
     for (const auto& mesh : baked) {
@@ -798,6 +829,7 @@ bool ReplaceBakedMeshes(WorldModelScene& scene, std::span<const BakedModelMesh> 
         vertices.insert(vertices.end(), mesh.vertices.begin(), mesh.vertices.end());
         indices.insert(indices.end(), mesh.indices.begin(), mesh.indices.end());
         layers.push_back({texture, 0, 0, 1.0f});
+        samplerFlags.push_back(mesh.samplerFlags);
     }
     const auto oldUntextured = static_cast<std::size_t>(std::count_if(scene.layers.begin(),
         scene.layers.begin() + static_cast<std::ptrdiff_t>(oldLayers), [](const auto& layer) {
@@ -816,6 +848,12 @@ bool ReplaceBakedMeshes(WorldModelScene& scene, std::span<const BakedModelMesh> 
     vertices.insert(vertices.end(), scene.vertices.begin() + static_cast<std::ptrdiff_t>(oldVertices), scene.vertices.end());
     indices.insert(indices.end(), scene.indices.begin() + static_cast<std::ptrdiff_t>(oldIndices), scene.indices.end());
     layers.insert(layers.end(), scene.layers.begin() + static_cast<std::ptrdiff_t>(oldLayers), scene.layers.end());
+    if (scene.layerSamplerFlags.empty()) samplerFlags.resize(newMeshes + keptLayers, 3);
+    else samplerFlags.insert(samplerFlags.end(), scene.layerSamplerFlags.cbegin() + static_cast<std::ptrdiff_t>(oldLayers), scene.layerSamplerFlags.cend());
+    if (samplerFlags.capacity() > newMeshes + keptLayers) {
+        const auto extra = std::uint64_t(samplerFlags.capacity() - newMeshes - keptLayers) * sizeof(std::uint32_t);
+        if (extra > limits.maxTotalTextureBytes - samplerStorage) return false;
+    }
 
     std::vector<War3RenderModelV2> models; models.reserve(newModels + keptModels);
     std::vector<std::array<float, 6>> bounds; bounds.reserve(newModels + keptModels);
@@ -863,12 +901,13 @@ bool ReplaceBakedMeshes(WorldModelScene& scene, std::span<const BakedModelMesh> 
         instances.push_back(instance);
         requests.push_back(scene.instanceRequests[i]);
     }
-    scene.vertices = std::move(vertices); scene.indices = std::move(indices); scene.layers = std::move(layers);
-    scene.meshes = std::move(meshes); scene.models = std::move(models); scene.modelBounds = std::move(bounds);
-    scene.modelAssetKeys = std::move(assetKeys); scene.modelPaths = std::move(modelPaths);
-    scene.modelTextureBindings = std::move(textureBindings);
-    scene.instances = std::move(instances); scene.instanceRequests = std::move(requests);
-    scene.untexturedLayers = scene.untexturedLayers - oldUntextured + newUntextured;
+    outputScene.vertices = std::move(vertices); outputScene.indices = std::move(indices); outputScene.layers = std::move(layers);
+    outputScene.layerSamplerFlags = std::move(samplerFlags);
+    outputScene.meshes = std::move(meshes); outputScene.models = std::move(models); outputScene.modelBounds = std::move(bounds);
+    outputScene.modelAssetKeys = std::move(assetKeys); outputScene.modelPaths = std::move(modelPaths);
+    outputScene.modelTextureBindings = std::move(textureBindings);
+    outputScene.instances = std::move(instances); outputScene.instanceRequests = std::move(requests);
+    outputScene.untexturedLayers = scene.untexturedLayers - oldUntextured + newUntextured;
     return true;
 }
 
@@ -889,7 +928,35 @@ ModelSceneDescriptor DescribeModelScene(const WorldModelScene& scene) {
         count(scene.meshes), count(scene.models), count(scene.instances), count(scene.textures),
         scene.vertices.data(), scene.indices.data(), scene.layers.data(), scene.meshes.data(), scene.models.data(),
         scene.instances.data(), descriptor.chains.data()};
+    descriptor.validStaticSamplers = scene.layerSamplerFlags.empty()
+        || (scene.layerSamplerFlags.size() == scene.layers.size()
+            && std::none_of(scene.layerSamplerFlags.begin(), scene.layerSamplerFlags.end(), [](auto flags) { return flags > 3; }));
+    if (descriptor.validStaticSamplers && std::any_of(scene.layerSamplerFlags.begin(), scene.layerSamplerFlags.end(), [](auto flags) { return flags != 3; })) {
+        descriptor.samplerFlags = scene.layerSamplerFlags;
+        descriptor.samplerScene = {descriptor.scene, WAR3_RENDER_STATIC_LAYER_SAMPLERS_V1,
+            count(descriptor.samplerFlags), std::as_const(descriptor.samplerFlags).data()};
+        descriptor.samplerScene.base.structSize = sizeof(descriptor.samplerScene);
+    }
     return descriptor;
+}
+
+Status CheckStaticModelSamplerSupport(const War3RenderPluginApiV2* api, War3RendererHandle renderer,
+    const WorldModelScene& scene) {
+    if (!scene.layerSamplerFlags.empty() && (scene.layerSamplerFlags.size() != scene.layers.size()
+        || std::any_of(scene.layerSamplerFlags.begin(), scene.layerSamplerFlags.end(), [](auto flags) { return flags > 3; })))
+        return Status::Failure(std::string(kSubsystem), "WORLD_STATIC_SAMPLER_INVALID", "静态 sampler 与实际 draw 层不一致。");
+    if (std::none_of(scene.layerSamplerFlags.begin(), scene.layerSamplerFlags.end(), [](auto flags) { return flags != 3; })) return {};
+    return CheckStaticModelSamplerCapability(api, renderer);
+}
+Status CheckStaticModelSamplerCapability(const War3RenderPluginApiV2* api, War3RendererHandle renderer) {
+    War3RenderStaticSamplerCapabilitiesV2 capabilities{sizeof(capabilities)};
+    if (!api || api->structSize < offsetof(War3RenderPluginApiV2, getStaticModelSamplerCapabilities) + sizeof(api->getStaticModelSamplerCapabilities)
+        || !api->getStaticModelSamplerCapabilities || api->getStaticModelSamplerCapabilities(renderer, &capabilities) != 0
+        || capabilities.structSize != sizeof(capabilities) || capabilities.samplerFormat != WAR3_RENDER_STATIC_LAYER_SAMPLERS_V1
+        || capabilities.supportedSamplerFlags != WAR3_RENDER_STATIC_SAMPLER_FLAGS_MASK || capabilities.reserved)
+        return Status::Failure(std::string(kSubsystem), "WORLD_STATIC_SAMPLER_UNSUPPORTED",
+            "渲染插件未声明来源静态 sampler 能力，保留此前配对地形与悬崖。");
+    return {};
 }
 
 } // namespace War3Map::Render

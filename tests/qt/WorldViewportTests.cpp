@@ -66,6 +66,7 @@ struct BackendState {
     std::vector<War3RenderModelLayerStatusV2> layers;
     int layeredCaptures = 0;
     bool shortLayerWorld = false, shortLayerSkin = false, inactiveLayerSkin = false;
+    std::uint32_t staticSamplerFormat = 1, staticSamplerMask = 3, staticSamplerReserved = 0;
 };
 BackendState* active = nullptr;
 
@@ -114,6 +115,11 @@ std::int32_t WAR3_RENDER_CALL ModelScene(War3RendererHandle handle, const War3Re
 std::int32_t WAR3_RENDER_CALL ModelInstances(War3RendererHandle handle,
     const War3RenderModelInstanceV2*, std::uint32_t count) {
     static_cast<BackendState*>(handle)->updatedModelInstances = count;
+    return 0;
+}
+std::int32_t WAR3_RENDER_CALL StaticSamplerCapabilities(War3RendererHandle handle, War3RenderStaticSamplerCapabilitiesV2* output) {
+    const auto& state=*static_cast<BackendState*>(handle);
+    *output={sizeof(*output),state.staticSamplerFormat,state.staticSamplerMask,state.staticSamplerReserved};
     return 0;
 }
 void WAR3_RENDER_CALL Frame(War3RendererHandle handle) {
@@ -300,6 +306,7 @@ private slots:
     void PluginFailuresPreserveOperationAndBoundedRawStatus();
     void OptionalCapabilitiesAndPhysicalLimitDoNotEmitPluginFailure();
     void GroundSubmissionReportsReasonAndPreservesPreviousMesh();
+    void UnsupportedCliffSamplerKeepsPairedGroundAndModels();
     void CaptureViewPendingKeepsStaleResultWithoutProgramFailure_data();
     void CaptureViewPendingKeepsStaleResultWithoutProgramFailure();
     void CameraAndCompletedFrameStayBound();
@@ -487,6 +494,41 @@ void WorldViewportTests::GroundSubmissionReportsReasonAndPreservesPreviousMesh()
     rejectCompact(candidate, "WORLD_GROUND_FACE_LAYOUT");
     QVERIFY(viewport.SetGroundMesh(compact));
     QVERIFY(viewport.LastGroundFailure().diagnostics.empty());
+}
+
+void WorldViewportTests::UnsupportedCliffSamplerKeepsPairedGroundAndModels() {
+    BackendState state; active=&state;
+    auto api=backend; api.submitTerrainScene=TerrainScene; api.submitModelScene=ModelScene;
+    WorldViewport viewport(nullptr,&api);
+    viewport.resize(320,240); QVERIFY(Bind(viewport,17)); viewport.show(); QApplication::processEvents();
+    auto original=std::make_shared<Render::WorldModelScene>(); original->instances.resize(1);
+    QVERIFY(viewport.SetModelScene(original));
+    const auto oldEpoch=state.sceneEpoch; const auto oldRevision=state.revision;
+    auto ground=std::make_shared<Render::TerrainGroundMesh>();
+    Render::BakedModelMesh cliff; cliff.samplerFlags=0;
+    const auto rejectPair=[&] {
+        QVERIFY(!viewport.ReplaceTerrainPresentation({}, {}, {}, 1, ground,18,std::span(&cliff,1)));
+        QCOMPARE(viewport.LastGroundFailure().diagnostics.front().code,std::string("WORLD_STATIC_SAMPLER_UNSUPPORTED"));
+        QCOMPARE(state.sceneEpoch,oldEpoch); QCOMPARE(state.revision,oldRevision);
+        QCOMPARE(state.modelInstances,std::uint32_t(1)); QVERIFY(viewport.HasModelScene());
+    };
+    rejectPair(); // 缺getter。
+    api.getStaticModelSamplerCapabilities=StaticSamplerCapabilities;
+    api.structSize=offsetof(War3RenderPluginApiV2,getStaticModelSamplerCapabilities); rejectPair();
+    api.structSize=sizeof(api);
+    state.staticSamplerFormat=0; rejectPair(); state.staticSamplerFormat=1;
+    state.staticSamplerMask=1; rejectPair(); state.staticSamplerMask=3;
+    state.staticSamplerReserved=1; rejectPair(); state.staticSamplerReserved=0;
+    QVERIFY(viewport.CheckCliffSamplerSupport(std::span(&cliff,1),false).Succeeded());
+    QVERIFY(!viewport.CheckCliffSamplerSupport(std::span(&cliff,1),true).Succeeded()); // 静态能力不能冒充skin/material-state能力。
+    auto candidate=std::make_shared<Render::WorldModelScene>(); candidate->instances.resize(2);
+    candidate->layers.resize(1); candidate->layerSamplerFlags={0};
+    api.getStaticModelSamplerCapabilities=nullptr;
+    QVERIFY(!viewport.SetModelScene(candidate)); QCOMPARE(state.modelInstances,std::uint32_t(1));
+    api.getStaticModelSamplerCapabilities=StaticSamplerCapabilities;
+    QVERIFY(viewport.SetModelScene(candidate)); QCOMPARE(state.modelInstances,std::uint32_t(2));
+    cliff.samplerFlags=3; api.getStaticModelSamplerCapabilities=nullptr;
+    QVERIFY(viewport.CheckCliffSamplerSupport(std::span(&cliff,1),false).Succeeded());
 }
 
 void WorldViewportTests::CaptureViewPendingKeepsStaleResultWithoutProgramFailure_data() {

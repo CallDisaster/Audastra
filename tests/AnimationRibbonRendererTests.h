@@ -1,7 +1,9 @@
 #pragma once
 #include "War3MapCore/Render/AnimationRenderer.h"
 #include "War3MapCore/Render/ModelSceneLayerRenderer.h"
+#include "War3MapCore/RenderPluginMaterialState.h"
 #include "AnimationParticleContinuityTests.h"
+#include "../src/Render/Scene/ModelSkinInput.h"
 
 namespace AnimationRibbonRendererTest {
 using namespace War3Map;
@@ -114,7 +116,92 @@ inline void Warning(const Status& status, bool supported) {
     });
     Check(count==(supported ? 0 : 1),"old-provider ribbon approximation warning lost or reported for supported input");
 }
+
+inline void BakedSamplerLayer() {
+    // 原创baked-only non3层，走真实CPU输入/更新验证，不让mock凭返回0掩盖描述符尾部丢失。
+    BakedModelMesh baked; baked.texturePath="layer-sampler.tga"; baked.samplerFlags=0;
+    baked.vertices={{0,0,0,0,0,1,-.25f,-.25f},{10,0,0,0,0,1,1.25f,-.25f},{0,10,0,0,0,1,-.25f,1.25f}};
+    baked.indices={0,1,2};
+    const auto image=AnimationParticleContinuityTest::Texture();
+    const auto service=AnimationParticleContinuityTest::Good(ModelAnimationService::Create({7,50,"layer-sampler"},{},
+        [&](std::string_view path,std::uint64_t) {
+            Check(path=="layer-sampler.tga","baked layer unexpectedly requested a synthetic MDX");
+            return Result<AnimationResource>::Success({image,"original-layer-sampler",std::string(64,'a')});
+        },{},std::span(&baked,1)));
+    const auto scene=service->Scene(); const auto first=AnimationParticleContinuityTest::Good(service->Prepare(nullptr));
+    const auto second=AnimationParticleContinuityTest::Good(service->Prepare(first.get()));
+    const auto third=AnimationParticleContinuityTest::Good(service->Prepare(second.get()));
+    Check(scene->dynamicMaterialStates && first->materialStates.size()==1 && first->materialStates[0].samplerFlags==0,
+        "layer regression fixture must contain an actual nonlegacy material state");
+    struct MaterialBackend {
+        bool alpha=true, state=false, reject=false;
+        unsigned submitCalls=0, updateCalls=0, uploads=0, updates=0;
+        ModelScene model;
+        SkinPose pose;
+    } backend;
+    auto api=Api();
+    api.getSkinStatus=[](War3RendererHandle handle,War3RenderSkinStatusV2* output)->std::int32_t {
+        const auto& state=*static_cast<MaterialBackend*>(handle); const auto capacity=output->structSize;
+        *output={}; output->structSize=sizeof(*output);
+        if (capacity>=sizeof(War3RenderSkinMaterialCapabilitiesV2) && state.alpha)
+            reinterpret_cast<War3RenderSkinMaterialCapabilitiesV2*>(output)->layerAlphaFormat=WAR3_RENDER_DYNAMIC_LAYER_ALPHA_V1;
+        if (capacity>=sizeof(War3RenderSkinMaterialStateCapabilitiesV2) && state.state)
+            reinterpret_cast<War3RenderSkinMaterialStateCapabilitiesV2*>(output)->materialStateFormat=WAR3_RENDER_DYNAMIC_MATERIAL_STATE_V1;
+        return 0;
+    };
+    api.getModelLayersTarget=[](War3RendererHandle,War3RenderModelLayersTargetV2* output)->std::int32_t {
+        *output={sizeof(*output),0,7,1}; return 0;
+    };
+    api.submitModelSceneLayer=[](War3RendererHandle handle,const War3RenderModelSceneLayerV2* input)->std::int32_t {
+        auto& state=*static_cast<MaterialBackend*>(handle); ++state.submitCalls;
+        ModelScene candidate; std::uint64_t bytes=0;
+        if (!input->models || input->particles || !CopySkinnedModelInput(*input->models,candidate,bytes) || state.reject) return 1;
+        state.pose=*candidate.initialSkin; state.model=std::move(candidate); ++state.uploads; return 0;
+    };
+    api.updateModelSceneLayer=[](War3RendererHandle handle,const War3RenderModelLayerUpdateV2* input)->std::int32_t {
+        auto& state=*static_cast<MaterialBackend*>(handle); ++state.updateCalls;
+        SkinPose candidate;
+        if (!input->pose || input->particles || !CopySkinUpdate(*input->pose,state.model,candidate) || state.reject) return 1;
+        state.pose=std::move(candidate); ++state.updates; return 0;
+    };
+    ModelSceneLayerRenderer layer(&api,&backend,9);
+    const auto noState=layer.Submit(scene,first);
+    Check(!noState.Succeeded() && !noState.diagnostics.empty() &&
+        noState.diagnostics.front().code=="ANIMATION_MATERIAL_STATE_BACKEND_UNSUPPORTED" && backend.submitCalls==0 &&
+        !layer.Target() && layer.Revision()==0,"non3 layer bypassed its material-state capability gate");
+    backend.state=true; backend.alpha=false;
+    const auto noAlpha=layer.Submit(scene,first);
+    Check(!noAlpha.Succeeded() && !noAlpha.diagnostics.empty() &&
+        noAlpha.diagnostics.front().code=="ANIMATION_MATERIAL_ALPHA_BACKEND_UNSUPPORTED" && backend.submitCalls==0,
+        "material-state capability must not imply the required absolute alpha capability");
+    backend.alpha=true;
+    Check(layer.Submit(scene,first).Succeeded() && backend.uploads==1 && layer.Target()==first && layer.Revision()==1 &&
+        backend.pose.dynamicMaterialStates && backend.pose.materialStates[0].samplerFlags==0,
+        "capable layer submission lost the real sampler through the shared CPU validator");
+    backend.state=false;
+    const auto rejected=layer.Update(second);
+    Check(!rejected.Succeeded() && !rejected.diagnostics.empty() &&
+        rejected.diagnostics.front().code=="ANIMATION_MATERIAL_STATE_BACKEND_UNSUPPORTED" && backend.updateCalls==0 &&
+        layer.Target()==first && layer.Revision()==1,"layer update omitted capability negotiation or replaced the accepted target");
+    backend.state=true;
+    auto malformed=std::make_shared<AnimationFrame>(*second); malformed->dynamicMaterialStates=false;
+    Check(!layer.Update(malformed).Succeeded() && backend.updateCalls==0 && layer.Target()==first && layer.Revision()==1,
+        "bad owned material mode reached the backend or advanced the layer revision");
+    malformed=std::make_shared<AnimationFrame>(*second); malformed->materialStates[0].samplerFlags=4;
+    Check(!layer.Update(malformed).Succeeded() && backend.updates==0 && layer.Target()==first && layer.Revision()==1,
+        "shared CPU update validation accepted unknown sampler flags or lost the old frame");
+    Check(layer.Update(second).Succeeded() && backend.updates==1 && layer.Target()==second && layer.Revision()==2 &&
+        backend.pose.materialStates.size()==1 && backend.pose.materialStates[0].samplerFlags==0 &&
+        backend.pose.contentVersion==second->contentVersion && first->materialStates[0].samplerFlags==0,
+        "non3 layer update lost DescribeMaterialState, copied old contents, or mutated its previous frame");
+    backend.reject=true;
+    Check(!layer.Update(third).Succeeded() && backend.updates==1 && layer.Target()==second && layer.Revision()==2 &&
+        backend.pose.contentVersion==second->contentVersion,"backend refusal changed the accepted layer revision or material owner");
+    std::cout<<"non3_baked_layer_cpu_submit_update=1 alpha_state_capability_gates=1 rejected_target_preserved=1\n";
+}
+
 inline void Run() {
+    BakedSamplerLayer();
     auto scene=std::make_shared<AnimatedModelScene>(); scene->sceneVersion=7; scene->generation=2; scene->documentRevision=3;
     scene->particlesEnabled=true; scene->particleInstanceCount=1; scene->particleUnfogged=true;
     AnimationParticleCapability capability; capability.available=true; capability.ribbonCount=2;

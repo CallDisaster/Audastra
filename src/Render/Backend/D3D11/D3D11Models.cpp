@@ -16,7 +16,13 @@ HRESULT D3D11Scene::SetModels(const ModelScene& models, const SkinPose* latestPo
         || (pose && !ValidMaterialStatePose(*pose, modelLayerCounts, models.dynamicMaterialStates, models.TextureCount()))
         || (models.dynamicMaterialStates && models.materialStateTextureCount != models.TextureCount())
         || (!pose && (models.dynamicMaterialAlphas || models.dynamicMaterialStates))) return E_INVALIDARG;
-    if (pose && pose->dynamicMaterialStates) { const auto hr = InitializeMaterialStateSamplers(); if (FAILED(hr)) return hr; }
+    if (models.explicitStaticSamplers && (pose || models.staticSamplerFlags.size() != models.layers.size())) return E_INVALIDARG;
+    auto staticSamplerFlags = models.staticSamplerFlags;
+    if (models.explicitStaticSamplers
+        && std::uint64_t(staticSamplerFlags.capacity()) * sizeof(std::uint32_t) > models.staticSamplerBackendBudget) return E_INVALIDARG;
+    if ((pose && pose->dynamicMaterialStates) || models.explicitStaticSamplers) {
+        const auto hr = InitializeMaterialStateSamplers(); if (FAILED(hr)) return hr;
+    }
     if (pose && !models.instances.empty() && !skinVertexShader_) {
         // 可选路径按需初始化；蒙皮资源失败不能让仍可用的旧静态路径一起失效。
         const auto hr = InitializeSkinning();
@@ -82,6 +88,7 @@ HRESULT D3D11Scene::SetModels(const ModelScene& models, const SkinPose* latestPo
     // 从这里开始只move/swap标量及拥有者，无分配，整组发布。
     modelVertices_ = std::move(vertices); modelIndices_ = std::move(indices); modelInstances_ = std::move(instances);
     modelTextures_.swap(textures); modelLayers_.swap(layers); modelMeshes_.swap(meshes); modelRanges_.swap(modelRanges);
+    modelStaticSamplerFlags_.swap(staticSamplerFlags);
     modelInstanceRanges_.swap(ranges); skinMeshGroups_.swap(meshGroups); skinBuffers_.swap(skin);
     skinModelLayerCounts_.swap(modelLayerCounts);
     modelPages_.swap(pages); modelMeshPages_.swap(meshPages);
@@ -210,6 +217,10 @@ void D3D11Scene::DrawModels(int pass) {
             }
             for (auto layerIndex = mesh.firstLayer; layerIndex < mesh.firstLayer + mesh.layerCount; ++layerIndex) {
                 const auto& layer = modelLayers_[layerIndex];
+                // 每层都绑定，包含legacy3；前一层/前一帧的动态 sampler 不能泄漏到当前层。
+                auto* staticSampler = modelStaticSamplerFlags_.empty() ? modelSampler_.Get()
+                    : materialStateSamplers_[modelStaticSamplerFlags_[layerIndex]].Get();
+                context_->PSSetSamplers(1, 1, &staticSampler);
                 const bool blended = layer.filterMode >= 2;
                 if (blended != (pass == 1)) continue;
                 if (skinned_ && skinDynamicMaterialAlphas_) {

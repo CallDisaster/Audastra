@@ -48,10 +48,10 @@ struct CachedModel {
 class MeshSink {
 public:
     explicit MeshSink(std::vector<BakedModelMesh>& output) : output_(output) {}
-    BakedModelMesh& Reserve(const std::string& texture, std::size_t vertices) {
-        auto& index = current_[texture];
+    BakedModelMesh& Reserve(const std::string& texture, std::uint32_t samplerFlags, std::size_t vertices) {
+        auto& index = current_[{texture, samplerFlags}];
         if (!index || output_[*index - 1].vertices.size() + vertices > kChunkVertices) {
-            output_.push_back({{}, {}, texture});
+            output_.push_back({{}, {}, texture, samplerFlags});
             index = output_.size();
         }
         return output_[*index - 1];
@@ -59,7 +59,7 @@ public:
 
 private:
     std::vector<BakedModelMesh>& output_;
-    std::map<std::string, std::optional<std::size_t>> current_;
+    std::map<std::pair<std::string, std::uint32_t>, std::optional<std::size_t>> current_;
 };
 
 // 一次模型放置：外沿四角（西南、西北、东北、东南）与覆盖的格数（x 向 columns、y 向 rows）。
@@ -108,7 +108,7 @@ std::array<float, 3> ReliefNormal(const std::array<float, 3>& normal, const std:
 
 // 模型局部原点在外沿东侧（x 向负方向延伸 columns 格、y 向正方向 rows 格）；顶点按外沿四角
 // 去掉层级后的地面起伏双线性抬升。
-void Bake(MeshSink& sink, const MdxModel& model, const Footprint& footprint, const std::string& replaceable) {
+bool Bake(MeshSink& sink, const MdxModel& model, const Footprint& footprint, const std::string& replaceable) {
     const float width = 128.0f * static_cast<float>(footprint.columns), depth = 128.0f * static_cast<float>(footprint.rows);
     std::uint8_t base = 15;
     for (const auto* corner : footprint.corners) base = std::min(base, corner->CliffLevel());
@@ -122,8 +122,9 @@ void Bake(MeshSink& sink, const MdxModel& model, const Footprint& footprint, con
         const auto& material = model.materials[geoset.materialId];
         if (material.layers.empty()) continue;
         const auto& texture = model.textures[material.layers.front().textureId];
+        if (texture.flags > 3) return false;
         const auto& texturePath = texture.replaceableId == 0 ? texture.path : replaceable;
-        auto& mesh = sink.Reserve(texturePath, geoset.positions.size());
+        auto& mesh = sink.Reserve(texturePath, texture.flags, geoset.positions.size());
         const auto first = static_cast<std::uint16_t>(mesh.vertices.size());
         for (std::size_t i = 0; i < geoset.positions.size(); ++i) {
             const auto& p = geoset.positions[i];
@@ -137,6 +138,7 @@ void Bake(MeshSink& sink, const MdxModel& model, const Footprint& footprint, con
         }
         for (const auto index : geoset.indices) mesh.indices.push_back(static_cast<std::uint16_t>(first + index));
     }
+    return true;
 }
 
 } // namespace
@@ -316,7 +318,9 @@ Result<TerrainCliffs> BuildTerrainCliffs(const MapData::TerrainGridSnapshot& ter
                 if (!type || type->rampDirectory.empty() || !shape) continue;
                 const auto* model = loadShape(type->rampDirectory, *shape, piece.corners[0]->CliffVariation());
                 if (!model) continue;
-                Bake(sink, *model, piece, type->texturePath);
+                if (!Bake(sink, *model, piece, type->texturePath))
+                    return Result<TerrainCliffs>::Failure(std::string(kSubsystem), "TERRAIN_CLIFF_SAMPLER_UNSUPPORTED",
+                        "悬崖来源 TEXS sampler 含未知标志，未发布部分覆盖地形。");
                 output.coveredTiles[tileIndex] = output.coveredTiles[second] = 1;
                 output.placedTiles += levelsDiffer;
                 ++output.rampPieces;
@@ -334,7 +338,9 @@ Result<TerrainCliffs> BuildTerrainCliffs(const MapData::TerrainGridSnapshot& ter
         if (!type || type->modelDirectory.empty()) { ++output.unknownTypeTiles; continue; }
         const auto* model = loadShape(type->modelDirectory, *shape, c[0]->CliffVariation());
         if (!model) { ++output.missingModelTiles; ++missing[type->modelDirectory + *shape]; continue; }
-        Bake(sink, *model, single, type->texturePath);
+        if (!Bake(sink, *model, single, type->texturePath))
+            return Result<TerrainCliffs>::Failure(std::string(kSubsystem), "TERRAIN_CLIFF_SAMPLER_UNSUPPORTED",
+                "悬崖来源 TEXS sampler 含未知标志，未发布部分覆盖地形。");
         output.coveredTiles[tileIndex] = 1;
         ++output.placedTiles;
     }

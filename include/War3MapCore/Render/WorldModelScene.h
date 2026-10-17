@@ -1,6 +1,7 @@
 #pragma once
 
 #include "War3MapCore/RenderPluginV2.h"
+#include "War3MapCore/RenderPluginStaticSamplers.h"
 #include "War3MapCore/Render/MdxPose.h"
 #include "War3MapCore/Render/SharedSceneVector.h"
 #include "War3MapCore/Types.h"
@@ -50,6 +51,7 @@ struct BakedModelMesh {
     std::vector<War3RenderModelVertexV2> vertices;
     std::vector<std::uint16_t> indices;
     std::string texturePath;
+    std::uint32_t samplerFlags = 3; // TEXS: bit0 U wrap、bit1 V wrap；旧原创 producer 默认保持双 wrap。
 };
 
 struct WorldModelLimits {
@@ -123,6 +125,8 @@ struct WorldModelScene {
     SharedSceneVector<War3RenderModelVertexV2> vertices;
     SharedSceneVector<std::uint16_t> indices;
     SharedSceneVector<War3RenderModelLayerV2> layers;
+    // 空是明确的 legacy 双 wrap；非空必须与 layers 完整等长，值仅允许 0..3。
+    SharedSceneVector<std::uint32_t> layerSamplerFlags;
     SharedSceneVector<War3RenderModelMeshV2> meshes;
     SharedSceneVector<War3RenderModelV2> models;
     std::vector<War3RenderModelInstanceV2> instances;
@@ -151,9 +155,21 @@ struct ModelSceneDescriptor {
     std::vector<War3RenderMipRgbaV2> mips;
     std::vector<War3RenderTextureMipChainV2> chains;
     War3RenderModelSceneV2 scene{};
+    SharedSceneVector<std::uint32_t> samplerFlags; // 拥有不可写共享租约；源场景任何可写访问先 COW。
+    War3RenderStaticSamplerModelSceneV2 samplerScene{};
+    bool validStaticSamplers = true;
+    // 静态消费者必须显式取此入口；scene 仍保留给只消费纹理的旧动画描述符。
+    [[nodiscard]] const War3RenderModelSceneV2* StaticScene() const noexcept {
+        if (!validStaticSamplers) return nullptr;
+        return samplerFlags.empty() ? &scene : &samplerScene.base;
+    }
 };
 [[nodiscard]] ModelSceneDescriptor DescribeModelScene(const WorldModelScene& scene);
 [[nodiscard]] ModelSceneDescriptor DescribeModelTextures(std::span<const ModelTextureRgba> textures);
+[[nodiscard]] Status CheckStaticModelSamplerSupport(const War3RenderPluginApiV2* api,
+    War3RendererHandle renderer, const WorldModelScene& scene);
+[[nodiscard]] Status CheckStaticModelSamplerCapability(const War3RenderPluginApiV2* api,
+    War3RendererHandle renderer);
 [[nodiscard]] std::string ModelTexturePath(const MdxTexture& texture, const ModelInstanceRequest& request);
 [[nodiscard]] Result<ModelTextureRgba> DecodeModelTexture(std::string path, std::span<const std::byte> bytes,
     std::uint32_t maxDimension);

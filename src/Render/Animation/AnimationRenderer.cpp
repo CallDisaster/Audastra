@@ -1,6 +1,7 @@
 #include "War3MapCore/Render/AnimationRenderer.h"
 #include "War3MapCore/RenderPluginMaterialState.h"
 #include "AnimationParticleMaterial.h"
+#include "AnimationMaterialFrame.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -12,7 +13,8 @@
 namespace War3Map::Render {
 namespace {
 Status Failure(const char* code, const char* text) { return Status::Failure("Render.Animation",code,text); }
-Status CheckMaterialFrame(const War3RenderPluginApiV2* api,War3RendererHandle handle,
+}
+Status CheckAnimationMaterialFrame(const War3RenderPluginApiV2* api,War3RendererHandle handle,
     const AnimatedModelScene& scene,const AnimationFrame& frame) {
     if (auto status=CheckAnimationParticleMaterialFrame(frame); !status.Succeeded()) return status;
     if (scene.dynamicMaterialAlphas!=frame.dynamicMaterialAlphas)
@@ -36,6 +38,7 @@ Status CheckMaterialFrame(const War3RenderPluginApiV2* api,War3RendererHandle ha
     }
     return Status::Ok();
 }
+namespace {
 bool ReadPresentationTarget(const War3RenderPluginApiV2* api, War3RendererHandle handle,
     War3RenderEditorPresentationTargetV2& target) {
     target = {sizeof(target)};
@@ -66,6 +69,7 @@ bool SameResidentAssets(const AnimatedModelScene& a, const AnimatedModelScene& b
         && a.geometry.vertices.SharesStorageWith(b.geometry.vertices)
         && a.geometry.indices.SharesStorageWith(b.geometry.indices)
         && a.geometry.layers.SharesStorageWith(b.geometry.layers)
+        && a.geometry.layerSamplerFlags.SharesStorageWith(b.geometry.layerSamplerFlags)
         && a.geometry.meshes.SharesStorageWith(b.geometry.meshes)
         && a.geometry.models.SharesStorageWith(b.geometry.models)
         && a.geometry.textures.SharesStorageWith(b.geometry.textures)
@@ -117,6 +121,7 @@ bool SameAssetPrefix(const AnimatedModelScene& before, const AnimatedModelScene&
         && SamePrefix(before.geometry.vertices, after.geometry.vertices)
         && SamePrefix(before.geometry.indices, after.geometry.indices)
         && SamePrefix(before.geometry.layers, after.geometry.layers)
+        && SamePrefix(before.geometry.layerSamplerFlags, after.geometry.layerSamplerFlags)
         && SamePrefix(before.geometry.meshes, after.geometry.meshes)
         && SamePrefix(before.geometry.models, after.geometry.models)
         && SamePrefix(before.geometry.vertexGroups, after.geometry.vertexGroups)
@@ -181,7 +186,7 @@ Result<std::uint64_t> AnimationRenderer::QueueRoster(std::shared_ptr<const Anima
         || (presentationTarget_ && !SameTarget(base.target, *presentationTarget_))
         || !TargetMatchesFrame(base.target, *frame_) || base.presentationRevision != presentationRevision_)
         return Output::Failure("Render.Animation", "ANIMATION_ROSTER_STALE", "当前CPU驻留基准已被替换，未提交实例事务。");
-    if (auto status=CheckMaterialFrame(api_,handle_,*scene,*frame); !status.Succeeded()) return {std::nullopt,std::move(status.diagnostics)};
+    if (auto status=CheckAnimationMaterialFrame(api_,handle_,*scene,*frame); !status.Succeeded()) return {std::nullopt,std::move(status.diagnostics)};
     auto update = frame->Describe(); auto colored = frame->DescribeColored(); auto material=frame->DescribeMaterial(); auto state=frame->DescribeMaterialState();
     const auto* pose = scene->dynamicMaterialStates ? &state.base.base.base : scene->dynamicMaterialAlphas ? &material.base.base : scene->dynamicColors ? &colored.base : &update;
     const bool wantParticles = particleMode_ || (assetsChanged && scene->particlesEnabled && scene->particleInstanceCount);
@@ -308,7 +313,7 @@ Status AnimationRenderer::Submit(std::shared_ptr<const AnimatedModelScene> scene
     if (!handle_ || !Supported(api_)) return Failure("ANIMATION_BACKEND_UNSUPPORTED","渲染插件没有矩阵组蒙皮尾部接口。");
     if (!scene || !frame || scene->sceneVersion!=frame->sceneVersion || scene->documentRevision!=frame->documentRevision)
         return Failure("ANIMATION_FRAME_STALE","静态场景与初始帧的身份不一致。");
-    if (auto status=CheckMaterialFrame(api_,handle_,*scene,*frame); !status.Succeeded()) return status;
+    if (auto status=CheckAnimationMaterialFrame(api_,handle_,*scene,*frame); !status.Succeeded()) return status;
     if (frame->sharedPoseRanges) {
         War3RenderSkinSharedRangeCapabilitiesV2 capabilities{}; capabilities.base.base.base.structSize=sizeof(capabilities);
         if (api_->getSkinStatus(handle_,&capabilities.base.base.base)!=0 ||
@@ -399,7 +404,7 @@ Status AnimationRenderer::Update(std::shared_ptr<const AnimationFrame> frame, co
     if (pendingRosterTicket_) return Failure("ANIMATION_ROSTER_PENDING", "实例事务尚未完成，旧Target保持。");
     if (!frame_ || !frame || frame->sceneVersion!=frame_->sceneVersion || frame->contentVersion<=frame_->contentVersion ||
         frame->documentRevision!=frame_->documentRevision) return Failure("ANIMATION_FRAME_STALE","动态更新的场景、修订或版本无效。");
-    if (auto status=CheckMaterialFrame(api_,handle_,*scene_,*frame); !status.Succeeded()) return status;
+    if (auto status=CheckAnimationMaterialFrame(api_,handle_,*scene_,*frame); !status.Succeeded()) return status;
     auto update=frame->Describe();
     auto colored=frame->DescribeColored(); auto material=frame->DescribeMaterial(); auto state=frame->DescribeMaterialState();
     if (scene_->dynamicColors && frame->colors.size()!=frame->alphas.size())

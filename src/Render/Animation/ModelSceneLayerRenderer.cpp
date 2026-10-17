@@ -1,5 +1,6 @@
 #include "War3MapCore/Render/ModelSceneLayerRenderer.h"
 #include "AnimationParticleMaterial.h"
+#include "AnimationMaterialFrame.h"
 #include <limits>
 #include <exception>
 
@@ -27,13 +28,7 @@ Status ModelSceneLayerRenderer::Submit(std::shared_ptr<const AnimatedModelScene>
     }
     if (!scene || !frame || scene->sceneVersion != frame->sceneVersion || scene->documentRevision != frame->documentRevision)
         return Failure("MODEL_LAYER_FRAME_STALE", "附加层场景和姿势身份不符。");
-    if (auto status=CheckAnimationParticleMaterialFrame(*frame); !status.Succeeded()) return status;
-    if (scene->dynamicMaterialAlphas) {
-        War3RenderSkinMaterialCapabilitiesV2 capabilities{}; capabilities.base.base.base.base.structSize=sizeof(capabilities);
-        if (!api_->getSkinStatus || api_->getSkinStatus(handle_,&capabilities.base.base.base.base)!=0 ||
-            capabilities.layerAlphaFormat!=WAR3_RENDER_DYNAMIC_LAYER_ALPHA_V1 || capabilities.reserved)
-            return Failure("ANIMATION_MATERIAL_ALPHA_BACKEND_UNSUPPORTED","插件没有 KMTA 动态层能力，附加层未以静态层替代。");
-    }
+    if (auto status=CheckAnimationMaterialFrame(api_,handle_,*scene,*frame); !status.Succeeded()) return status;
     War3RenderModelLayersTargetV2 target{sizeof(target)};
     if (api_->getModelLayersTarget(handle_, &target) != 0 || !target.parentModelEpoch)
         return Failure("MODEL_LAYER_TARGET_UNAVAILABLE", "附加层主场景身份尚未就绪。");
@@ -71,9 +66,11 @@ Status ModelSceneLayerRenderer::Update(std::shared_ptr<const AnimationFrame> fra
         || frame->documentRevision != frame_->documentRevision || frame->contentVersion <= frame_->contentVersion
         || revision_ == std::numeric_limits<std::uint64_t>::max())
         return Failure("MODEL_LAYER_FRAME_STALE", "附加模型层更新的身份或修订已过期。");
-    if (auto status=CheckAnimationParticleMaterialFrame(*frame); !status.Succeeded()) return status;
+    if (auto status=CheckAnimationMaterialFrame(api_,handle_,*scene_,*frame); !status.Succeeded()) return status;
     const auto pose = frame->Describe(); const auto colored = frame->DescribeColored(); const auto material=frame->DescribeMaterial();
-    const auto* skin = scene_->dynamicMaterialAlphas ? &material.base.base : scene_->dynamicColors ? &colored.base : &pose;
+    const auto materialState = frame->DescribeMaterialState();
+    const auto* skin = scene_->dynamicMaterialStates ? &materialState.base.base.base
+        : scene_->dynamicMaterialAlphas ? &material.base.base : scene_->dynamicColors ? &colored.base : &pose;
     const bool hasParticles = scene_->particlesEnabled && scene_->particleInstanceCount;
     const bool particleMaterial=hasParticles && AnimationParticleMaterialSupported(api_,handle_);
     auto particleWarning=hasParticles ? AnimationParticleMaterialWarning(*scene_,particleMaterial) : Status::Ok();

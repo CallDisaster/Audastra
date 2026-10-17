@@ -630,6 +630,9 @@ int Run(const Options& options) {
         "D3D11 render plugin lacks the atomic frame capture API");
     const War3RenderCreateInfoV2 create{sizeof(create), options.width, options.height, 1}; // 无 HWND 的 WARP。
     const Renderer renderer(api, create);
+    if (material && material->cliffScene)
+        Require(War3Map::Render::CheckStaticModelSamplerSupport(api, renderer.handle, *material->cliffScene).Succeeded(),
+            "WORLD_STATIC_SAMPLER_UNSUPPORTED: paired ground and cliff scene retained");
     std::string mipMode;
     if (material) mipMode = SubmitGroundScene(api, renderer.handle, material->preview.ground, revision);
     else {
@@ -642,7 +645,7 @@ int Run(const Options& options) {
         Require(HasApi(api, offsetof(War3RenderPluginApiV2, submitModelScene),
             &War3RenderPluginApiV2::submitModelScene), "D3D11 plugin lacks the cliff model ABI");
         const auto descriptor = War3Map::Render::DescribeModelScene(*material->cliffScene);
-        Require(api->submitModelScene(renderer.handle, &descriptor.scene) == 0,
+        Require(api->submitModelScene(renderer.handle, descriptor.StaticScene()) == 0,
             "D3D11 plugin rejected the cliff model scene");
     }
     Require(api->setCamera(renderer.handle, &options.camera) == 0,

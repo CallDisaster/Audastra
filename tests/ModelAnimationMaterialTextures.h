@@ -6,6 +6,8 @@
 #include "War3MapCore/Render/ModelAnimationCapture.h"
 #include "War3MapCore/RenderPluginMaterialState.h"
 #include "../src/Render/Scene/ModelSkinInput.h"
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <map>
@@ -183,9 +185,132 @@ inline void UvAnimation() {
         "TXAN clock shared between instances, old frame mutated, or hash unchanged");
     std::cout<<"txan_uv_material_state=1 per_instance_clock=1 static_texture_binding=1\n";
 }
+
+inline BakedModelMesh SamplerMesh(std::uint32_t flags) {
+    BakedModelMesh mesh;
+    mesh.texturePath="prefix.tga"; mesh.samplerFlags=flags;
+    mesh.vertices={{0,0,0,0,0,1,-0.25f,-0.25f},{10,0,0,0,0,1,1.25f,-0.25f},{0,10,0,0,0,1,-0.25f,1.25f}};
+    mesh.indices={0,1,2}; return mesh;
+}
+
+inline void CheckMaterialPacket(const AnimatedModelScene& scene,const AnimationFrame& frame) {
+    AnimatedSceneDescriptor descriptor; descriptor.Refresh(scene,frame);
+    ModelScene copied; std::uint64_t bytes=0;
+    Check(CopySkinnedModelInput(descriptor.scene,copied,bytes) && copied.dynamicMaterialStates && copied.initialSkin &&
+        copied.initialSkin->materialStates.size()==frame.materialStates.size() &&
+        copied.initialSkin->materialStateSlices.size()==frame.materialStateSlices.size() &&
+        copied.initialSkin->materialStates.data()!=frame.materialStates.data() &&
+        std::memcmp(copied.initialSkin->materialStates.data(),frame.materialStates.data(),
+            frame.materialStates.size()*sizeof(War3RenderMaterialStateV2))==0 &&
+        std::memcmp(copied.initialSkin->materialStateSlices.data(),frame.materialStateSlices.data(),
+            frame.materialStateSlices.size()*sizeof(War3RenderMaterialLayerSliceV2))==0,
+        "CPU descriptor copy lost the actual baked/rigid/skin sampler states or borrowed frame storage");
+}
+
+inline void BakedSamplerPropagation() {
+    const auto image=AnimationParticleContinuityTest::Texture();
+    // 无任何MDX、KMTF或TXAN，也必须能表达来源烘焙sampler；全3仍保留既有旧渠道。
+    for (const auto flags:{0u,1u,2u,3u}) {
+        const auto baked=SamplerMesh(flags); unsigned reads=0;
+        const auto service=Good(ModelAnimationService::Create({7,40,"baked-only-sampler"},{},
+            [&](std::string_view path,std::uint64_t) {
+                Check(path=="prefix.tga","baked-only scene attempted a synthetic MDX read"); ++reads;
+                return Result<AnimationResource>::Success({image,"original-baked-only",std::string(64,'a')});
+            },{},std::span(&baked,1)));
+        const auto scene=service->Scene(); const auto first=Good(service->Prepare(nullptr));
+        Check(scene->retainedStaticInstances==1 && scene->animatedInstances==0 && first->instances.size()==1 &&
+            scene->geometry.layers.size()==1 && scene->geometry.layerSamplerFlags.size()==1 &&
+            scene->geometry.layerSamplerFlags[0]==flags && scene->drawLayerBindings[0].staticSamplerFlags==flags &&
+            scene->dynamicMaterialStates==(flags!=3) && scene->dynamicMaterialAlphas==(flags!=3),
+            "baked-only sampler did not select its explicit material channel or changed legacy3 mode");
+        if (flags==3) {
+            Check(first->materialStates.empty() && first->materialStateSlices.empty(),
+                "legacy3 baked-only scene acquired an unnecessary dynamic material pool");
+            continue;
+        }
+        Check(first->materialStates.size()==1 && first->materialStateSlices.size()==1 &&
+            first->materialStates[0].samplerFlags==flags && first->materialStates[0].textureIndex==0 &&
+            first->materialStateSlices[0].first==0 && first->materialStateSlices[0].count==1,
+            "baked-only flags were replaced with guessed wrap flags or lost their actual resident texture");
+        CheckMaterialPacket(*scene,*first);
+        const auto next=Good(service->Prepare(first.get()));
+        Check(next->materialStates[0].samplerFlags==flags && first->materialStates[0].samplerFlags==flags && reads==1,
+            "paused baked-only refresh changed sampler flags, mutated old frame, or reread texture");
+        if (flags!=0) continue;
+        CapabilityBackend backend; backend.materialAlpha=true;
+        War3RenderPluginApiV2 api{}; api.structSize=sizeof(api); api.apiVersion=WAR3_RENDER_PLUGIN_API_V2;
+        api.submitSkinnedModelScene=CapabilitySubmit; api.updateSkinMatrices=CapabilityUpdate; api.getSkinStatus=CapabilityStatus;
+        api.captureSkinnedFrameRgba=[](War3RendererHandle,void*,std::uint64_t,War3RenderSkinnedCapturedFrameV2*)->std::int32_t { return -1; };
+        AnimationRenderer renderer(&api,&backend);
+        const auto rejected=renderer.Submit(scene,first);
+        Check(!rejected.Succeeded() && !rejected.diagnostics.empty() &&
+            rejected.diagnostics.front().code=="ANIMATION_MATERIAL_STATE_BACKEND_UNSUPPORTED" && backend.uploads==0,
+            "baked-only nonlegacy flags silently used an incapable animation backend");
+        backend.materialState=true;
+        Check(renderer.Submit(scene,first).Succeeded() && renderer.Update(next).Succeeded() && backend.uploads==1 &&
+            backend.updates==1 && backend.pose.materialStates.size()==1 && backend.pose.materialStates[0].samplerFlags==0,
+            "baked-only nonlegacy state did not survive the real shared CPU submit/update validators");
+    }
+
+    // 一个明确owned静态producer和一个无KMTF骨骼MDX；新增烘焙渠道不能把两者的sampler都猜成3。
+    const auto model=AnimationTest::Bytes(); const auto parsed=Good(ParseMdx(model));
+    Check(parsed.textures.size()==2 && parsed.textures[0].flags==3 && parsed.textures[1].flags==0 &&
+        parsed.materials[0].layers.size()==2 && parsed.materials[0].layers[0].textureId==1 &&
+        parsed.materials[0].layers[1].textureId==0 && !parsed.materials[0].layers[0].animatedTexture &&
+        !parsed.materials[0].layers[1].animatedTexture,"mixed sampler MDX must carry real static TEXS flags0/3 without KMTF");
+    std::array<AnimationInstanceSpec,2> specs;
+    specs[0].identity={1,7}; specs[0].hostKey="sampler:rigid"; specs[0].model.modelPath="owned-rigid.mdx";
+    specs[0].model.ownedStaticAsset=Good(CreateCheckerBlockerAsset(std::nullopt));
+    specs[1].identity={2,7}; specs[1].hostKey="sampler:skin"; specs[1].model.modelPath="no-kmtf.mdx";
+    specs[1].sequenceIndex=0; specs[1].elapsedMs=250; specs[1].playing=false;
+    const auto baked=SamplerMesh(2); std::map<std::string,unsigned> reads;
+    const auto reader=[&](std::string_view path,std::uint64_t) {
+        Check(path!="owned-rigid.mdx","owned rigid producer must not be sent to a fake MDX reader"); ++reads[std::string(path)];
+        return Result<AnimationResource>::Success({path=="no-kmtf.mdx" ? model : image,
+            "original-mixed-sampler",std::string(64,path=="no-kmtf.mdx" ? 'b' : 'a')});
+    };
+    const auto service=Good(ModelAnimationService::Create({7,41,"mixed-baked-sampler"},specs,reader,{},std::span(&baked,1)));
+    const auto scene=service->Scene(); const auto first=Good(service->Prepare(nullptr));
+    Check(scene->dynamicMaterialStates && scene->dynamicMaterialAlphas && scene->retainedStaticInstances==2 &&
+        scene->animatedInstances==1 && first->poses.size()==3,"mixed sampler fixture omitted baked, owned rigid, or real skinned geometry");
+    const auto check=[&](const AnimationFrame& frame) {
+        for (const auto& pose:frame.poses) {
+            const auto range=pose.materialStates;
+            Check(range.offset<=frame.materialStates.size() && range.count<=frame.materialStates.size()-range.offset,
+                "mixed sampler state slice is not owned by this completed CPU frame");
+            if (pose.requestIndex==kBakedInstance) {
+                Check(range.count==1 && frame.materialStates[range.offset].samplerFlags==2,
+                    "mixed baked prefix lost authored V-wrap sampler");
+            } else if (pose.requestIndex==0) {
+                Check(range.count>0,"owned rigid fixture must have actual material layers");
+                for (std::uint32_t i=0;i<range.count;++i) Check(frame.materialStates[range.offset+i].samplerFlags==3,
+                    "owned rigid producer no longer preserved its explicit legacy3 behavior");
+            } else {
+                const std::array<std::uint32_t,4> expected{0,3,0,3};
+                Check(range.count==expected.size(),"skinned fixture must retain both real geosets and their material layers");
+                for (std::size_t i=0;i<expected.size();++i) Check(frame.materialStates[range.offset+i].samplerFlags==expected[i],
+                    "baked-activated material mode lost the no-KMTF skinned model's real TEXS sampler");
+            }
+        }
+    };
+    check(*first); CheckMaterialPacket(*scene,*first);
+    AnimationAdvance advance; AnimationEdit edit; edit.identity=specs[1].identity; edit.elapsedMs=750; advance.edits.push_back(edit);
+    const auto next=Good(service->Prepare(first.get(),advance)); check(*next); check(*first);
+    CheckMaterialPacket(*scene,*next);
+    AnimationInstanceDelta delta; delta.session={7,42,"mixed-baked-sampler"};
+    auto added=specs[1]; added.identity={3,7}; added.hostKey="sampler:skin-added"; delta.additions.push_back(added);
+    const auto plan=Good(service->PrepareInstanceCatalog(delta,reader)); const auto rebound=Good(service->PrepareInstanceDelta(*next,*plan));
+    const auto reboundScene=rebound.service->Scene(); check(*rebound.frame); CheckMaterialPacket(*reboundScene,*rebound.frame);
+    Check(!rebound.assetsChanged && reboundScene->geometry.layerSamplerFlags.SharesStorageWith(scene->geometry.layerSamplerFlags) &&
+        reboundScene->drawLayerBindings.SharesStorageWith(scene->drawLayerBindings) && reads["prefix.tga"]==1 &&
+        reads["no-kmtf.mdx"]==1,"same-asset roster refresh copied/lost sampler metadata or reread original assets");
+    std::cout<<"baked_sampler_flags_0_1_2_owned_cpu_packets=1 legacy3_mode_preserved=1 mixed_rigid_skin_no_kmtf=1\n";
+}
+
 inline void Run() {
     CapabilityMatrix();
     UvAnimation();
+    BakedSamplerPropagation();
     const auto model=Model(),image=AnimationParticleContinuityTest::Texture();
     std::map<std::string,unsigned> reads;
     const auto reader=[&](std::string_view path,std::uint64_t) {

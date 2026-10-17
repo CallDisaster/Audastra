@@ -46,13 +46,15 @@ public:
     // 笔刷预览/提交只替换地形与拾取快照；镜头、模型、环境及叠加线保持原位。
     bool ReplaceTerrainPresentation(std::vector<War3RenderVertexV2> vertices, std::vector<std::uint32_t> indices,
         std::shared_ptr<const MapData::TerrainGridSnapshot> terrain, std::uint32_t stride,
-        std::shared_ptr<const Render::TerrainGroundMesh> ground, std::uint64_t documentRevision);
+        std::shared_ptr<const Render::TerrainGroundMesh> ground, std::uint64_t documentRevision,
+        std::span<const Render::BakedModelMesh> cliffs = {}, bool layeredCliffs = false);
     [[nodiscard]] bool HasGroundMesh() const noexcept { return ground_ != nullptr; }
     [[nodiscard]] bool HasGroundSupport() const noexcept;
     [[nodiscard]] bool HasTerrainMips() const noexcept;
     // 模型场景与地形并存、独立提交；插件不支持或拒绝时保留旧 CPU 场景和选择。空指针清除模型。
     bool SetModelScene(std::shared_ptr<const Render::WorldModelScene> models);
     [[nodiscard]] bool HasModelSupport() const noexcept;
+    [[nodiscard]] Status CheckCliffSamplerSupport(std::span<const Render::BakedModelMesh> baked, bool layered) const;
     [[nodiscard]] bool HasModelScene() const noexcept { return models_ != nullptr; }
     [[nodiscard]] bool HasModelInstances() const noexcept { return models_ && !models_->instances.empty(); }
     [[nodiscard]] bool HasAnimationSupport() const noexcept;

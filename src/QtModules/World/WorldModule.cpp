@@ -1054,19 +1054,21 @@ bool WorldModule::PresentTerrainRender(WorldTerrainLoaded& loaded, bool preview,
     std::shared_ptr<const MapData::TerrainGridSnapshot> source) {
     auto& mesh = loaded.mesh;
     const auto ground = viewport_->HasGroundSupport() ? loaded.ground : nullptr;
+    const bool layered = cliffsInLayer_ && cliffLayer_ && ground && loaded.cliffLayer;
     if (waterFrameOnly && (!ground || ground->waterTiles.empty())) {
         terrainStatus_->setText(tr("水面帧未切换：当前渲染器没有显示可替换的水面"));
         return false;
     }
     if (!viewport_->ReplaceTerrainPresentation(std::move(mesh.vertices), std::move(mesh.indices), loaded.terrain,
-            mesh.stride, ground, ++viewportRevision_)) {
+            mesh.stride, ground, ++viewportRevision_,
+            loaded.cliffs ? std::span<const Render::BakedModelMesh>(loaded.cliffs->meshes) : std::span<const Render::BakedModelMesh>{}, layered)) {
+        if (!viewport_->LastGroundFailure().Succeeded()) project_.AddDiagnostics(viewport_->LastGroundFailure().diagnostics);
         terrainStatus_->setText(tr("地形网格更新失败，保留此前视图"));
         if (!preview) resumeBrushAfterRender_ = false;
         return false;
     }
     terrain_ = loaded.terrain;
     // 拖动预览与正式提交都把新悬崖层和地面一起显示；地面隐藏的悬崖格不会出现空洞。
-    const bool layered = cliffsInLayer_ && cliffLayer_ && ground && loaded.cliffLayer;
     if (layered) cliffLayer_->Show(*loaded.cliffLayer);
     else if (!loaded.cliffLayerDiagnostics.empty()) project_.AddDiagnostics(loaded.cliffLayerDiagnostics);
     if (!preview && !waterFrameOnly) RefreshBuildingSplats();

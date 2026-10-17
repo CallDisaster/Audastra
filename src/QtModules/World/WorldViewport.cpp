@@ -355,9 +355,15 @@ bool WorldViewport::SubmitModels(const Render::WorldModelScene* models) {
     if (!renderer_) return true;
     if (!HasModelSupport()) return models == nullptr;
     static const Render::WorldModelScene empty;
+    if (const auto status = Render::CheckStaticModelSamplerSupport(api_, renderer_, models ? *models : empty); !status.Succeeded()) {
+        SetStatus(QString::fromStdString(status.diagnostics.front().code + ": " + status.diagnostics.front().message));
+        return false;
+    }
     const auto descriptor = Render::DescribeModelScene(models ? *models : empty);
+    const auto* input = descriptor.StaticScene();
+    if (!input) return false;
     if (HasEditorVisibilitySupport()) {
-        if (SubmitStaticVisibility(models, descriptor.scene)) return true;
+        if (SubmitStaticVisibility(models, *input)) return true;
         SetStatus(tr("渲染器拒绝了模型与显隐组合场景，未替换当前视图"));
         return false;
     }
@@ -369,7 +375,7 @@ bool WorldViewport::SubmitModels(const Render::WorldModelScene* models) {
             return false;
         }
     }
-    const auto result = api_->submitModelScene(renderer_, &descriptor.scene);
+    const auto result = api_->submitModelScene(renderer_, input);
     if (result == 0) {
         editorPresentationTarget_.reset(); editorVisibilityDirty_ = false;
         return true;
@@ -382,6 +388,25 @@ bool WorldViewport::SubmitModels(const Render::WorldModelScene* models) {
 bool WorldViewport::HasEnvironmentSupport() const noexcept {
     return api_ && api_->structSize >= offsetof(War3RenderPluginApiV2, setEnvironment)
         + sizeof(api_->setEnvironment) && api_->setEnvironment;
+}
+
+Status WorldViewport::CheckCliffSamplerSupport(std::span<const Render::BakedModelMesh> baked, bool layered) const {
+    if (std::any_of(baked.begin(), baked.end(), [](const auto& mesh) { return mesh.samplerFlags > 3; }))
+        return Status::Failure("Render.World", "WORLD_STATIC_SAMPLER_INVALID", "悬崖来源 sampler 含未知标志。");
+    if (std::none_of(baked.begin(), baked.end(), [](const auto& mesh) { return mesh.samplerFlags != 3; })) return {};
+    if (layered || animationScene_) {
+        War3RenderSkinMaterialStateCapabilitiesV2 capabilities{};
+        capabilities.base.base.base.base.base.structSize = sizeof(capabilities);
+        if (!api_ || api_->structSize < offsetof(War3RenderPluginApiV2, getSkinStatus) + sizeof(api_->getSkinStatus)
+            || !api_->getSkinStatus || api_->getSkinStatus(renderer_, &capabilities.base.base.base.base.base) != 0
+            || capabilities.materialStateFormat != WAR3_RENDER_DYNAMIC_MATERIAL_STATE_V1 || capabilities.reserved
+            || capabilities.base.layerAlphaFormat != WAR3_RENDER_DYNAMIC_LAYER_ALPHA_V1 || capabilities.base.reserved
+            || (layered && !HasModelLayerSupport()))
+            return Status::Failure("Render.World", "WORLD_STATIC_SAMPLER_UNSUPPORTED",
+                "渲染插件不支持悬崖材质 sampler，未替换配对地面与悬崖。");
+        return {};
+    }
+    return Render::CheckStaticModelSamplerCapability(api_, renderer_);
 }
 
 bool WorldViewport::SubmitEnvironment() {
@@ -688,7 +713,16 @@ bool WorldViewport::HasGroundSupport() const noexcept {
 
 bool WorldViewport::ReplaceTerrainPresentation(std::vector<War3RenderVertexV2> vertices,
     std::vector<std::uint32_t> indices, std::shared_ptr<const MapData::TerrainGridSnapshot> terrain,
-    std::uint32_t stride, std::shared_ptr<const Render::TerrainGroundMesh> ground, std::uint64_t documentRevision) {
+    std::uint32_t stride, std::shared_ptr<const Render::TerrainGroundMesh> ground, std::uint64_t documentRevision,
+    std::span<const Render::BakedModelMesh> cliffs, bool layeredCliffs) {
+    if (ground) {
+        const auto support = CheckCliffSamplerSupport(cliffs, layeredCliffs);
+        if (!support.Succeeded()) {
+            groundFailure_ = support;
+            SetStatus(QString::fromStdString(support.diagnostics.front().code + ": " + support.diagnostics.front().message));
+            return false; // 不提交/回滚任何新ground，不触碰旧CPU来源和完成帧。
+        }
+    }
     if (!terrain || !ValidMesh(vertices, indices) || vertices.empty() ||
         !MatchesTerrain(*terrain, stride, vertices, indices) || (ground && !HasGroundSupport())) return false;
     auto oldVertices = std::move(vertices_);

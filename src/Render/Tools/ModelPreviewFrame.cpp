@@ -31,6 +31,7 @@
 namespace {
 
 using War3Map::Render::BuildWorldModelScene;
+using War3Map::Render::CheckStaticModelSamplerSupport;
 using War3Map::Render::DescribeModelScene;
 using War3Map::Render::ModelInstanceRequest;
 using War3Map::Render::ModelSceneRigidPoseRequest;
@@ -322,6 +323,7 @@ int Run(const Options& options) {
         "D3D11 plugin lacks required atomic model capture API");
     const War3RenderCreateInfoV2 create{sizeof(create), options.width, options.height, 1}; // WARP, no HWND
     const Renderer renderer(api, create);
+    Require(CheckStaticModelSamplerSupport(api, renderer.handle, *scene.value).Succeeded(), "WORLD_STATIC_SAMPLER_UNSUPPORTED");
     std::uint64_t revision = 0;
     const auto parsed = std::from_chars(sourceSha.value->data(), sourceSha.value->data() + 16, revision, 16);
     Require(parsed.ec == std::errc{} && parsed.ptr == sourceSha.value->data() + 16, "invalid source SHA-256");
@@ -330,7 +332,7 @@ int Run(const Options& options) {
     const War3RenderCameraV2 camera{sizeof(camera), options.targetX, options.targetY, options.targetZ,
         options.distance, options.yaw, options.pitch};
     Require(api->submitMesh(renderer.handle, &emptyMesh) == 0 &&
-        api->submitModelScene(renderer.handle, &descriptor.scene) == 0 &&
+        api->submitModelScene(renderer.handle, descriptor.StaticScene()) == 0 &&
         api->setCamera(renderer.handle, &camera) == 0,
         "D3D11 plugin rejected model scene or camera");
     std::vector<std::uint8_t> rgba(static_cast<std::size_t>(options.width) * options.height * 4);

@@ -69,7 +69,7 @@ War3RenderParticleMaterialUpdateV2 AnimationFrame::DescribeParticleMaterial(cons
     return result;
 }
 void AnimatedSceneDescriptor::Refresh(const AnimatedModelScene& data, const AnimationFrame& frame) {
-    textures=DescribeModelScene(data.geometry); update=frame.Describe();
+    textures=DescribeModelTextures(data.geometry.textures); update=frame.Describe();
     scene={sizeof(scene),static_cast<std::uint32_t>(data.vertices.size()),static_cast<std::uint32_t>(data.geometry.indices.size()),
         static_cast<std::uint32_t>(data.geometry.layers.size()),static_cast<std::uint32_t>(data.meshes.size()),
         static_cast<std::uint32_t>(data.models.size()),static_cast<std::uint32_t>(textures.chains.size()),

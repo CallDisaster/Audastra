@@ -34,7 +34,7 @@ struct TerrainGroundSelection {
     const MapData::TerrainGridSnapshot& terrain, std::span<const std::optional<CliffTypeSource>> cliffTypes);
 
 struct TerrainCliffs {
-    std::vector<BakedModelMesh> meshes;     // 按贴图分组、每块 ≤ 65536 顶点
+    std::vector<BakedModelMesh> meshes;     // 按贴图路径及 TEXS sampler 分组、每块 ≤ 65536 顶点
     std::vector<std::uint8_t> coveredTiles; // 与 tile 同序；1 = 已放置悬崖模型，地面应隐藏
     std::size_t cliffTiles = 0;             // 四角层级不同、且不全是坡道角的格（需要模型）
     std::size_t placedTiles = 0;            // 上述格中已被悬崖或坡道边模型覆盖的

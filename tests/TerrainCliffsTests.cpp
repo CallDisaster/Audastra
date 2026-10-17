@@ -3,11 +3,14 @@
 #include "War3MapCore/Render/MdxModel.h"
 #include "MdxTestModel.h"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <iostream>
 #include <map>
 #include <stdexcept>
+#include <vector>
 
 namespace {
 
@@ -73,22 +76,32 @@ const std::vector<std::optional<CliffTypeSource>> kTypes{
 using Vec3 = std::array<float, 3>;
 struct NormalGeoset {
     std::vector<Vec3> positions, normals;
+    std::uint32_t samplerFlags = 0;
 };
 
 // 原创平面/切向采样 MDX，不沿用旧四点非平面且全 up 法线的几何 oracle。
 std::vector<std::byte> NormalModel(const std::vector<NormalGeoset>& geosets) {
     MdxTest::Writer w;
     w.Tag("MDLX"); w.Tag("VERS"); w.U32(4); w.U32(800);
-    w.Tag("TEXS"); w.U32(268); w.U32(0); w.Fixed("Original\\CliffNormals.blp", 260); w.U32(0);
+    // 每个 geoset 独立引用 TEXS/MTLS；即使路径相同，也不能先抹掉作者 sampler 身份。
+    w.Tag("TEXS"); w.U32(static_cast<std::uint32_t>(268 * geosets.size()));
+    for (const auto& input : geosets) {
+        w.U32(0); w.Fixed("Original\\CliffNormals.blp", 260); w.U32(input.samplerFlags);
+    }
     w.Tag("MTLS"); {
-        const auto chunk = w.Begin(), material = w.Begin();
-        w.U32(0); w.U32(0); w.Tag("LAYS"); w.U32(1);
-        const auto layer = w.Begin();
-        w.U32(0); w.U32(0); w.U32(0); w.U32(UINT32_MAX); w.U32(0); w.F32(1);
-        w.EndInclusive(layer); w.EndInclusive(material); w.EndChunk(chunk);
+        const auto chunk = w.Begin();
+        for (std::uint32_t i = 0; i < geosets.size(); ++i) {
+            const auto material = w.Begin();
+            w.U32(0); w.U32(0); w.Tag("LAYS"); w.U32(1);
+            const auto layer = w.Begin();
+            w.U32(0); w.U32(0); w.U32(i); w.U32(UINT32_MAX); w.U32(0); w.F32(1);
+            w.EndInclusive(layer); w.EndInclusive(material);
+        }
+        w.EndChunk(chunk);
     }
     w.Tag("GEOS"); {
         const auto chunk = w.Begin();
+        std::uint32_t material = 0;
         for (const auto& input : geosets) {
             const auto item = w.Begin();
             const auto count = static_cast<std::uint32_t>(input.positions.size());
@@ -100,7 +113,7 @@ std::vector<std::byte> NormalModel(const std::vector<NormalGeoset>& geosets) {
             w.Tag("PVTX"); w.U32(3); w.U16(0); w.U16(1); w.U16(2);
             w.Tag("GNDX"); w.U32(count); for (std::uint32_t i = 0; i < count; ++i) w.Raw("\0", 1);
             w.Tag("MTGC"); w.U32(1); w.U32(1); w.Tag("MATS"); w.U32(1); w.U32(0);
-            w.U32(0); w.U32(0); w.U32(0);
+            w.U32(material++); w.U32(0); w.U32(0);
             for (int i = 0; i < 7; ++i) w.F32(0);
             w.U32(0);
             w.Tag("UVAS"); w.U32(1); w.Tag("UVBS"); w.U32(count);
@@ -396,6 +409,56 @@ void TestReliefNormalsPreserveHardEdgesAndApproximationGates() {
         Difference(bounded.meshes[0].vertices[2], bounded.meshes[0].vertices[0]));
 }
 
+void TestSamplerIdentitySurvivesCliffBaking() {
+    const std::vector<Vec3> positions{{-96, 24, 0}, {-32, 24, 0}, {-96, 88, 0}};
+    const std::vector<Vec3> normals(3, {0, 0, 1});
+    const std::array<std::uint32_t, 6> authoredFlags{0, 1, 2, 3, 0, 3};
+    std::vector<NormalGeoset> geosets;
+    for (const auto flags : authoredFlags) geosets.push_back({positions, normals, flags});
+    const auto bytes = NormalModel(geosets);
+    const auto parsed = ParseMdx(bytes);
+    Require(parsed.Succeeded() && parsed.value->geosets.size() == authoredFlags.size()
+        && parsed.value->textures.size() == authoredFlags.size(), "原创 sampler MDX 必须经过真实解析");
+    for (std::size_t i = 0; i < authoredFlags.size(); ++i) {
+        const auto& geoset = parsed.value->geosets[i];
+        Require(geoset.visibleInStand && geoset.indices.size() == 3 && geoset.materialId == i,
+            "各 sampler geoset 都必须实际可见，不能靠隐藏组绕过合并检查");
+        const auto texture = parsed.value->materials[geoset.materialId].layers.front().textureId;
+        Require(parsed.value->textures[texture].path == "Original\\CliffNormals.blp"
+            && parsed.value->textures[texture].flags == authoredFlags[i], "每组独立保留同路径 TEXS 标志");
+    }
+    Files files;
+    const std::string path = "Doodads\\Terrain\\Cliffs\\CliffsAAAB0.mdx";
+    files.files[path] = bytes;
+    const auto built = BuildTerrainCliffs(NormalGrid({0, 0, 0, 0}), kTypes, files.Reader());
+    Require(built.Succeeded() && built.value->placedTiles == 1 && built.value->coveredTiles == std::vector<std::uint8_t>{1}
+        && built.value->meshes.size() == 4 && files.reads[path] == 1, "单格六个可见组应按四种 sampler 分桶");
+    std::array<std::size_t, 4> vertexCounts{}, indexCounts{}, meshCounts{};
+    for (const auto& mesh : built.value->meshes) {
+        Require(mesh.texturePath == "Original\\CliffNormals.blp" && mesh.samplerFlags < meshCounts.size(),
+            "烘焙不应改写贴图路径或接受未知 sampler");
+        const auto flags = mesh.samplerFlags;
+        ++meshCounts[flags]; vertexCounts[flags] += mesh.vertices.size(); indexCounts[flags] += mesh.indices.size();
+        Require(std::all_of(mesh.indices.begin(), mesh.indices.end(), [&](std::uint16_t index) {
+            return index < mesh.vertices.size();
+        }), "合并后的索引仍只引用本 sampler 网格顶点");
+    }
+    Require(meshCounts == std::array<std::size_t, 4>{1, 1, 1, 1}
+        && vertexCounts == std::array<std::size_t, 4>{6, 3, 3, 6}
+        && indexCounts == vertexCounts, "同路径同 flags 可合并，同路径不同 flags 不得误合并");
+
+    // 有效组排在未知组之前，拒绝也不得泄漏半个候选或假的 coveredTiles。
+    files.files[path] = NormalModel({{positions, normals, 0}, {positions, normals, 4}});
+    const auto unknown = ParseMdx(files.files[path]);
+    Require(unknown.Succeeded() && unknown.value->geosets.size() == 2
+        && unknown.value->geosets[0].visibleInStand && unknown.value->geosets[1].visibleInStand,
+        "flags=4 夹具必须实际到达悬崖 sampler 门禁");
+    const auto rejected = BuildTerrainCliffs(NormalGrid({0, 0, 0, 0}), kTypes, files.Reader());
+    Require(!rejected.Succeeded() && !rejected.value && !rejected.diagnostics.empty()
+        && rejected.diagnostics.front().code == "TERRAIN_CLIFF_SAMPLER_UNSUPPORTED",
+        "未知 sampler 必须明确拒绝整次烘焙，不可用部分几何伪造完整覆盖");
+}
+
 } // namespace
 
 int main() {
@@ -410,6 +473,7 @@ int main() {
         TestReliefNormalsFromGeometry();
         TestReliefNormalBoundaryConvention();
         TestReliefNormalsPreserveHardEdgesAndApproximationGates();
+        TestSamplerIdentitySurvivesCliffBaking();
         std::cout << "terrain cliffs: shape names, variation fallback, relief lift, skips, ramp heights, ramp pieces and ground hiding passed\n";
         return 0;
     } catch (const std::exception& error) {
