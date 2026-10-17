@@ -103,7 +103,7 @@ void StaticSourceAndRefresh() {
     Check(ReplaceBakedMeshes(scene, {}), "source sampler prefix removal failed");
     Check(Effective(scene) == Effective(snapshot), "removing baked prefix lost ordinary source flags");
 
-    auto owned = Request("owned-helper"); owned.ownedStaticAsset = Good(CreateCheckerBlockerAsset({16,16}));
+    auto owned = Request("owned-helper"); owned.ownedStaticAsset = Good(CreateCheckerBlockerAsset(std::array<float,2>{16,16}));
     const std::array mixed{requests[1], owned, requests[0]};
     const auto mixedScene = Good(BuildWorldModelScene(mixed, resources.StaticReader(), {}, std::span(&baked, 1)));
     CheckModel(mixedScene, 0, 2); CheckModel(mixedScene, 1, 0); CheckModel(mixedScene, 2, 3); CheckModel(mixedScene, 3, 3);
@@ -128,6 +128,21 @@ void MaterialBudgetAndInvalidFlags() {
         [&](std::string_view) { return ModelGeometryAsset{parsed, false, {}}; });
     Check(!invalid.Succeeded() && !invalid.value, "unknown emitted TEXS flags became wrap3");
     Check(Effective(baseline).front() == 0 && baseline.textures.size() == 1, "failed build mutated an already published scene");
+
+    // 没有图片常驻时隔离第二次reserve：预算必须覆盖仍存活的旧capacity和新capacity。
+    resources.resident = false; resources.models.emplace("second.mdx", Model(1));
+    const std::array growing{request, Request("second.mdx")};
+    const auto one = Good(BuildWorldModelScene(std::span(&request,1), resources.StaticReader()));
+    const auto two = Good(BuildWorldModelScene(growing, resources.StaticReader()));
+    Check(two.layerSamplerFlags.capacity() > one.layerSamplerFlags.capacity(), "growth fixture did not reallocate sampler storage");
+    const auto peak = std::uint64_t(one.layerSamplerFlags.capacity() + two.layerSamplerFlags.capacity()) * sizeof(std::uint32_t)
+        + sizeof(War3RenderStaticSamplerModelSceneV2) - sizeof(War3RenderModelSceneV2);
+    limits.maxTotalTextureBytes = peak;
+    Check(BuildWorldModelScene(growing, resources.StaticReader(), limits).Succeeded(), "exact old/new sampler growth peak rejected");
+    limits.maxTotalTextureBytes = peak - 1;
+    const auto overflow = BuildWorldModelScene(growing, resources.StaticReader(), limits);
+    Check(!overflow.Succeeded() && !overflow.value && overflow.diagnostics.front().code == "WORLD_STATIC_SAMPLER_BUDGET",
+        "sampler realloc checked only the final resident allocation");
 }
 
 AnimationInstanceSpec Spec(std::uint64_t identity, std::string path) {
