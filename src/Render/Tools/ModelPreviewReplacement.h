@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace War3Map::Render::ModelPreview {
 // 与预览资源reader共用词法范围；实际文件读取及来源租约仍由调用者管理。

@@ -2,6 +2,7 @@
 #include "../src/Render/Tools/ModelPreviewReplacement.h"
 #include "AnimationParticleContinuityTests.h"
 #include "War3MapCore/Hash.h"
+#include <cctype>
 
 namespace ModelPreviewReplacementTest {
 using namespace War3Map;
