@@ -1086,6 +1086,7 @@ void TestEnvironment(const RendererOwner& renderer) {
 #include "RenderD3D11AssetAppendTests.h"
 #include "RenderD3D11MaterialStateTests.h"
 #include "RenderD3D11StaticSamplerTests.h"
+#include "RenderD3D11ObliqueSamplerTests.h"
 
 // 原创双层平面复用已有skin夹具；验证绝对层值、GEOA独立性和同一roster事务。
 void TestMaterialLayerAlphas(const War3RenderPluginApiV2* api, const War3RenderCreateInfoV2& info,
@@ -1828,6 +1829,7 @@ int wmain(int argc, wchar_t** argv) {
         TestMaterialStates(api, info);
         TestUnfoggedMaterials(api, info);
         TestStaticLayerSamplers(api, info);
+        TestModelObliqueSampler(api, info);
         TestMaterialLayerFaults(dll.parent_path(), info);
         TestAdditionalModelLayer(api, info);
         TestBuildingSplatLayer(api, info);
