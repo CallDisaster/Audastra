@@ -89,6 +89,7 @@ add_library(War3MapRenderSupport STATIC
     Scene/TerrainCliffPreview.cpp
     Scene/TerrainWaterPreview.cpp
     Scene/TerrainGroundMesh.cpp
+    Scene/TerrainMinimapCandidate.cpp
     Scene/ViewRay.cpp
     Scene/WorldModelScene.cpp
     Scene/OwnedStaticModels.cpp
