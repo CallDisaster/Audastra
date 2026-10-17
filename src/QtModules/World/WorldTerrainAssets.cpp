@@ -101,17 +101,17 @@ Result<std::size_t> AssignOwnedVersions(std::vector<WorldAssetEntry>& entries, s
     }
     std::sort(inputs.begin(), inputs.end(), [](const auto& a, const auto& b) { return OwnedLess(a.owner, b.owner); });
     // 上轮merge有序，清除expired保持live顺序；不能每次重排整个registry。
-    const auto merge = [&](auto emit) {
+    const auto merge = [&](auto visitor) {
         std::size_t old = 0, input = 0;
         while (old < live.size() || input < inputs.size()) {
             if (input == inputs.size() || (old < live.size() && OwnedLess(live[old].owner, inputs[input].owner))) {
-                emit(live[old].owner, live[old].version, input, input); ++old;
+                visitor(live[old].owner, live[old].version, input, input); ++old;
             } else {
                 const auto first = input++;
                 while (input < inputs.size() && SameOwned(inputs[first].owner, inputs[input].owner)) ++input;
                 const auto version = old < live.size() && SameOwned(live[old].owner, inputs[first].owner)
                     ? live[old++].version : 0;
-                emit(inputs[first].owner, version, first, input);
+                visitor(inputs[first].owner, version, first, input);
             }
         }
     };
