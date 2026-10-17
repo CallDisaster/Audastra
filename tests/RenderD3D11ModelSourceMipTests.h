@@ -238,6 +238,13 @@ void Run(const War3RenderPluginApiV2* api, const std::filesystem::path& provider
             && status.documentRevision == kRevision && status.width == kWidth && status.height == kHeight,
             "source-mip captured frame device identity mismatch");
     }
+    const bool sameMvp = std::memcmp(frames[0].receipt.view.viewProjection,frames[1].receipt.view.viewProjection,
+        sizeof(frames[0].receipt.view.viewProjection)) == 0;
+    std::cerr << "source_mip_identity mvp_equal=" << sameMvp
+        << " A_surface=" << frames[0].receipt.view.surfaceEpoch << " B_surface=" << frames[1].receipt.view.surfaceEpoch
+        << " A_scene=" << frames[0].receipt.view.sceneEpoch << " B_scene=" << frames[1].receipt.view.sceneEpoch
+        << " A_frame=" << frames[0].receipt.view.frameCount << " B_frame=" << frames[1].receipt.view.frameCount
+        << " A_ticket=" << frames[0].receipt.capture.ticket << " B_ticket=" << frames[1].receipt.capture.ticket << '\n';
     Require(std::memcmp(frames[0].receipt.view.viewProjection,frames[1].receipt.view.viewProjection,
         sizeof(frames[0].receipt.view.viewProjection)) == 0
         && frames[0].receipt.view.surfaceEpoch == frames[1].receipt.view.surfaceEpoch
