@@ -873,7 +873,9 @@ void TestTerrainBlight(const RendererOwner& renderer) {
     onePixelFrame.blightIndexCount = 6; onePixelFrame.blightBatchCount = 1;
     onePixelFrame.blightBatches = &onePixelBatch; onePixelFrame.blightTexture = &onePixelTexture;
     Require(api->submitTerrainBlightFrame(renderer.handle, &onePixelFrame) == 0, "one-pixel blight cell rejected");
-    RequireWorldColor(Capture(renderer, 320, 240, 880), ReadView(renderer), -448, -192, {100, 0, 100}, 2);
+    const auto onePixelPixels = Capture(renderer, 320, 240, 880);
+    const auto onePixelView = ReadView(renderer);
+    RequireWorldColor(onePixelPixels, onePixelView, -448, -192, {100, 0, 100}, 2);
     accepted = compareReference();
 
     // submit返回后、第一次完成帧capture前即破坏所有借入层级，独立oracle仍保留。
