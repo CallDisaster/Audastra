@@ -84,8 +84,29 @@ enum class TerrainGroundBudgetPolicy {
     PreserveBasePreview
 };
 
+// 仅记录本次实际准入检查的失败域；未请求或成功显示的层没有省略原因。
+// 资源回退与几何预览降级不同，不能仅凭reduced判断场景完整。
+enum class TerrainGroundOmissionReason : std::uint32_t {
+    MissingWaterStyle = 1u << 0,
+    MissingBlightAtlas = 1u << 1,
+    InvalidBlightAtlas = 1u << 2,
+    TextureSlots = 1u << 3,
+    TextureDimension = 1u << 4,
+    TextureBytes = 1u << 5,
+    TextureChainBytes = 1u << 6,
+    RgbaBytes = 1u << 7,
+    Vertices = 1u << 8,
+    Indices = 1u << 9,
+    Batches = 1u << 10,
+    WorkingBytes = 1u << 11
+};
+
 struct TerrainGroundLayerCounts {
     std::size_t requested = 0, displayed = 0, omitted = 0;
+    std::uint32_t omissionReasons = 0;
+    // 水面/荒芜有请求时检查其资源前置条件；缺样式也属于已检查，不表示已分配纹理。
+    bool resourceAdmissionChecked = false;
+    std::size_t textureSlotsBeforeAdmission = 0;
 };
 
 struct TerrainGroundBudgetStats {
@@ -94,6 +115,10 @@ struct TerrainGroundBudgetStats {
     // transitions / blight 为可贴图格请求的遮罩 quad；water 为全部有水标记的格（含缺样式）。
     TerrainGroundLayerCounts base, transitions, blight, water;
     bool reduced = false; // 显式预览因几何/批次/整体载荷预算省略可选层；资源回退另行诊断。
+    std::size_t groundTextureSlots = 0, finalTextureSlots = 0, textureSlotLimit = 0;
+    bool waterStyleAvailable = false, waterSourceTextureAvailable = false;
+    // 这里只记录构建器的atlas布局/字节检查；原BLP来源及mask alpha由既有loader检查。
+    bool blightAtlasAvailable = false, blightAtlasValidationPerformed = false, blightAtlasValid = false;
 };
 
 struct TerrainGroundMesh {

@@ -5,6 +5,7 @@
 #include <functional>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 
 namespace {
@@ -707,6 +708,113 @@ void TestLighting() {
     Require(!BuildTerrainGroundMesh(Grid(), Atlases(), {}, negative).Succeeded(), "负的环境光必须拒绝");
 }
 
+void TestOmissionReasonsAndResourceStates() {
+    const auto bit = [](TerrainGroundOmissionReason reason) { return static_cast<std::uint32_t>(reason); };
+    constexpr auto preview = TerrainGroundBudgetPolicy::PreserveBasePreview;
+    auto terrain = Grid();
+    terrain.vertices[0].textureAndFlagsRaw |= 0x60;
+    const std::vector<Atlas> atlases{MakeAtlas(), MakeAtlas(), MakeAtlas()};
+    const auto blight = MakeAtlas(8);
+    TerrainWaterStyle water{0, {90, 130, 170, 210}, {90, 130, 170, 210},
+        {90, 130, 170, 210}, {90, 130, 170, 210}};
+    const auto build = [&](const TerrainWaterStyle* style, Atlas exactBlight, const TerrainGroundMeshLimits& limits = {}) {
+        auto result = BuildTerrainGroundMesh(terrain, atlases, limits, kUnlit, style, {}, exactBlight, {}, preview);
+        Require(result.Succeeded(), "原因夹具必须保留合法基础层");
+        CheckGeometry(terrain, *result.value);
+        return std::move(*result.value);
+    };
+    const auto full = build(&water, blight);
+    Require(full.budget.water.omissionReasons == 0 && full.budget.blight.omissionReasons == 0
+        && full.budget.water.displayed == 1 && full.budget.blight.displayed == 1 && !full.budget.reduced,
+        "成功显示的层不能带有省略原因");
+    Require(full.budget.waterStyleAvailable && !full.budget.waterSourceTextureAvailable
+        && full.budget.blightAtlasAvailable && full.budget.blightAtlasValidationPerformed && full.budget.blightAtlasValid
+        && full.budget.groundTextureSlots == 1 && full.budget.finalTextureSlots == 3 && full.budget.textureSlotLimit == 16
+        && full.budget.water.textureSlotsBeforeAdmission == 1 && full.budget.blight.textureSlotsBeforeAdmission == 2,
+        "白色回退水样式仍可用，来源纹理缺失与样式缺失必须区分");
+    auto texturedWater = water;
+    texturedWater.texture = std::make_shared<const Image::DecodedImage>(Image::DecodedImage{1, 1,
+        {std::byte{35}, std::byte{70}, std::byte{105}, std::byte{210}}});
+    Require(build(&texturedWater, blight).budget.waterSourceTextureAvailable,
+        "实际水源纹理可用状态不能沿用白色回退值");
+    const auto missingStyle = build(nullptr, blight);
+    Require(!missingStyle.budget.waterStyleAvailable && missingStyle.budget.water.requested == 1
+        && missingStyle.budget.water.omitted == 1 && missingStyle.budget.water.displayed == 0
+        && missingStyle.budget.water.omissionReasons == bit(TerrainGroundOmissionReason::MissingWaterStyle)
+        && !missingStyle.budget.reduced, "缺样式是资源省略，不能伪报为几何预览降级");
+    const auto missingBlight = build(&water, {});
+    Require(!missingBlight.budget.blightAtlasAvailable && !missingBlight.budget.blightAtlasValidationPerformed
+        && missingBlight.budget.blight.omissionReasons == bit(TerrainGroundOmissionReason::MissingBlightAtlas)
+        && missingBlight.blightApproximationTiles == 1, "缺荒芜图集原因丢失");
+    const auto invalidBlight = build(&water, MakeAtlas(4));
+    Require(invalidBlight.budget.blightAtlasAvailable && invalidBlight.budget.blightAtlasValidationPerformed
+        && !invalidBlight.budget.blightAtlasValid
+        && invalidBlight.budget.blight.omissionReasons == bit(TerrainGroundOmissionReason::InvalidBlightAtlas),
+        "存在但无效的荒芜图集不能伪报为未提供");
+    TerrainGroundMeshLimits limits; limits.maxVertices = 4;
+    const auto vertexLimited = build(&water, blight, limits);
+    Require(vertexLimited.budget.water.omissionReasons == bit(TerrainGroundOmissionReason::Vertices)
+        && vertexLimited.budget.blight.omissionReasons == bit(TerrainGroundOmissionReason::Vertices)
+        && vertexLimited.budget.reduced, "资源足够时实际顶点失败域必须与资源省略分开");
+    limits = {}; limits.maxIndices = 6;
+    const auto indexLimited = build(&water, blight, limits);
+    Require(indexLimited.budget.water.omissionReasons == bit(TerrainGroundOmissionReason::Indices)
+        && indexLimited.budget.blight.omissionReasons == bit(TerrainGroundOmissionReason::Indices), "独立索引失败域未记录");
+    limits = {}; limits.maxBatches = 1;
+    const auto batchLimited = build(&water, blight, limits);
+    Require(batchLimited.budget.water.omissionReasons == bit(TerrainGroundOmissionReason::Batches)
+        && batchLimited.budget.blight.omissionReasons == bit(TerrainGroundOmissionReason::Batches), "独立批次失败域未记录");
+    limits = {}; limits.maxRgbaBytes = 16 * 1024;
+    const auto rgbaLimited = build(&water, blight, limits);
+    Require(rgbaLimited.budget.water.omissionReasons == bit(TerrainGroundOmissionReason::RgbaBytes)
+        && rgbaLimited.budget.blight.omissionReasons == bit(TerrainGroundOmissionReason::RgbaBytes)
+        && !rgbaLimited.budget.reduced, "RGBA资源域省略不能伪报为整体几何预算");
+
+    // 原创16种实际使用地表；每列两角相同，邻列之间恰有15个普通过渡。
+    auto sixteen = Grid(17, 2);
+    sixteen.header.groundTilesets.clear();
+    std::vector<Atlas> distinct;
+    for (std::size_t i = 0; i < 16; ++i) {
+        sixteen.header.groundTilesets.push_back("g" + std::to_string(i));
+        distinct.push_back(MakeAtlas());
+    }
+    for (std::uint32_t y = 0; y < 2; ++y) for (std::uint32_t x = 0; x < 17; ++x)
+        sixteen.vertices[y * 17 + x].textureAndFlagsRaw = static_cast<std::uint8_t>(std::min(x, 15u) | 0x60);
+    const auto fullSlotsResult = BuildTerrainGroundMesh(sixteen, distinct, {}, kUnlit, &water, {}, blight, {}, preview);
+    Require(fullSlotsResult.Succeeded(), "16槽基础/过渡仍应完整显示");
+    const auto& fullSlots = *fullSlotsResult.value;
+    CheckGeometry(sixteen, fullSlots);
+    Require(fullSlots.budget.transitions.displayed == 15 && fullSlots.budget.groundTextureSlots == 16
+        && fullSlots.budget.finalTextureSlots == 16 && fullSlots.budget.water.omitted == 16
+        && fullSlots.budget.blight.omitted == 16 && !fullSlots.budget.reduced
+        && fullSlots.budget.water.textureSlotsBeforeAdmission == 16 && fullSlots.budget.blight.textureSlotsBeforeAdmission == 16
+        && fullSlots.budget.water.omissionReasons == bit(TerrainGroundOmissionReason::TextureSlots)
+        && fullSlots.budget.blight.omissionReasons == bit(TerrainGroundOmissionReason::TextureSlots),
+        "槽满导致省略且reduced=false必须直接记录实际原因，不猜未来几何失败");
+    limits = {}; limits.maxVertices = (16 + 15) * 4;
+    const auto simultaneous = BuildTerrainGroundMesh(sixteen, distinct, limits, kUnlit, &water, {}, blight, {}, preview);
+    Require(simultaneous.Succeeded()
+        && simultaneous.value->budget.water.omissionReasons == bit(TerrainGroundOmissionReason::TextureSlots)
+        && simultaneous.value->budget.blight.omissionReasons
+            == (bit(TerrainGroundOmissionReason::TextureSlots) | bit(TerrainGroundOmissionReason::Vertices))
+        && !simultaneous.value->budget.reduced, "只记录实际评估的域；水面资源拒绝后不虚构几何检查，荒芜双重失败仍要报告");
+    const auto missingStyleFullSlots = BuildTerrainGroundMesh(sixteen, distinct, {}, kUnlit, nullptr, {}, blight, {}, preview);
+    Require(missingStyleFullSlots.Succeeded() && missingStyleFullSlots.value->budget.water.omissionReasons
+        == bit(TerrainGroundOmissionReason::MissingWaterStyle), "缺样式没有进入纹理分配，不得猜测实际槽满分支");
+    auto shared = distinct;
+    for (auto& atlas : shared) atlas = distinct.front();
+    const auto sharedSlots = BuildTerrainGroundMesh(sixteen, shared, {}, kUnlit, &water, {}, blight, {}, preview);
+    Require(sharedSlots.Succeeded() && sharedSlots.value->budget.groundTextureSlots == 1
+        && sharedSlots.value->budget.water.displayed == 16 && sharedSlots.value->budget.blight.displayed == 16
+        && sharedSlots.value->budget.water.omissionReasons == 0 && sharedSlots.value->budget.blight.omissionReasons == 0,
+        "逻辑palette数量不能冒充实际去重后的纹理槽数");
+    const auto noRequests = BuildTerrainGroundMesh(Grid(), atlases, {}, kUnlit, nullptr, {}, {}, {}, preview);
+    Require(noRequests.Succeeded() && noRequests.value->budget.water.requested == 0
+        && noRequests.value->budget.water.omissionReasons == 0 && noRequests.value->budget.blight.omissionReasons == 0
+        && !noRequests.value->budget.water.resourceAdmissionChecked && !noRequests.value->budget.blight.resourceAdmissionChecked,
+        "无请求时不能因为缺省资源产生虚假省略原因");
+}
+
 void TestPreserveBasePreviewBudget() {
     // 原创单格：三种地表、一个荒芜角和水面，明确请求 base=1、transition=2、blight=1、water=1。
     auto terrain = Grid(2, 2, [](std::uint32_t x, std::uint32_t y) { return 7.0f * x + 11.0f * y; });
@@ -768,6 +876,8 @@ void TestPreserveBasePreviewBudget() {
         && waterFirst.overlayTiles.empty() && waterFirst.budget.transitions.omitted == 2
         && waterFirst.budget.blight.omitted == 1 && waterFirst.blightApproximationTiles == 1
         && !waterFirst.waterOmitted && waterFirst.waterFrameIndex == 1, "全图水面优先于整类普通过渡和精确荒芜");
+    Require(waterFirst.budget.transitions.omissionReasons == static_cast<std::uint32_t>(TerrainGroundOmissionReason::Vertices),
+        "普通过渡的实际顶点省略原因不能只写在水面或荒芜上");
     limits.maxVertices = 12;
     const auto retryLowerClass = preview(terrain, limits);
     counts(retryLowerClass); CheckGeometry(terrain, retryLowerClass);
@@ -809,6 +919,8 @@ void TestPreserveBasePreviewBudget() {
     counts(workingLimited); CheckGeometry(terrain, workingLimited); sameBase(workingLimited, strict, 1);
     Require(workingLimited.waterTiles.empty() && workingLimited.budget.transitions.displayed == 2
         && workingLimited.budget.blight.displayed == 0, "整体载荷不足以保留水面时仍须保留完整基础层和装得下的过渡类");
+    Require((workingLimited.budget.water.omissionReasons & static_cast<std::uint32_t>(TerrainGroundOmissionReason::WorkingBytes)) != 0,
+        "工作载荷造成的实际水面省略必须保留独立原因");
     failure(attempt(terrain, limits, TerrainGroundBudgetPolicy::Strict), "TERRAIN_GROUND_BUDGET");
 
     // x64：完整五类载荷按 5 个保活槽计为 218817B；push_back 自增到 6/8 槽会越过此边界。
@@ -891,6 +1003,7 @@ int main() {
         TestWaterColorBounds();
         TestWater();
         TestLighting();
+        TestOmissionReasonsAndResourceStates();
         TestPreserveBasePreviewBudget();
         std::cout << "TerrainGroundMeshTests: all tests passed\n";
         return 0;

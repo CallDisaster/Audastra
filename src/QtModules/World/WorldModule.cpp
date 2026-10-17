@@ -97,21 +97,78 @@ QString BlightDetails(const Render::TerrainGroundMesh& ground) {
 }
 
 QJsonObject GroundBudgetJson(const Render::TerrainGroundMesh& ground) {
+    struct Omission {
+        Render::TerrainGroundOmissionReason reason;
+        const char* code;
+    };
+    static constexpr Omission omissions[]{
+        {Render::TerrainGroundOmissionReason::MissingWaterStyle, "missing-water-style"},
+        {Render::TerrainGroundOmissionReason::MissingBlightAtlas, "missing-blight-atlas"},
+        {Render::TerrainGroundOmissionReason::InvalidBlightAtlas, "invalid-blight-atlas"},
+        {Render::TerrainGroundOmissionReason::TextureSlots, "texture-slots"},
+        {Render::TerrainGroundOmissionReason::TextureDimension, "texture-dimension"},
+        {Render::TerrainGroundOmissionReason::TextureBytes, "texture-bytes"},
+        {Render::TerrainGroundOmissionReason::TextureChainBytes, "texture-chain-bytes"},
+        {Render::TerrainGroundOmissionReason::RgbaBytes, "rgba-bytes"},
+        {Render::TerrainGroundOmissionReason::Vertices, "vertex-budget"},
+        {Render::TerrainGroundOmissionReason::Indices, "index-budget"},
+        {Render::TerrainGroundOmissionReason::Batches, "batch-budget"},
+        {Render::TerrainGroundOmissionReason::WorkingBytes, "working-bytes"}};
     const auto counts = [](const Render::TerrainGroundLayerCounts& value) {
+        QJsonArray reasons;
+        for (const auto& omission : omissions)
+            if (value.omissionReasons & static_cast<std::uint32_t>(omission.reason)) reasons.append(QString::fromLatin1(omission.code));
         return QJsonObject{{"requested", static_cast<qint64>(value.requested)},
-            {"displayed", static_cast<qint64>(value.displayed)}, {"omitted", static_cast<qint64>(value.omitted)}};
+            {"displayed", static_cast<qint64>(value.displayed)}, {"omitted", static_cast<qint64>(value.omitted)},
+            {"omission_reasons", reasons}, {"resource_admission_checked", value.resourceAdmissionChecked},
+            {"texture_slots_before_admission", static_cast<qint64>(value.textureSlotsBeforeAdmission)}};
     };
     const auto& budget = ground.budget;
     return {{"policy", budget.policy == Render::TerrainGroundBudgetPolicy::PreserveBasePreview ? "preserve-base-preview" : "strict"},
-        {"reduced", budget.reduced}, {"base", counts(budget.base)}, {"transitions", counts(budget.transitions)},
+        {"reduced", budget.reduced}, {"reduced_scope", "geometry-batches-working-bytes"},
+        {"base", counts(budget.base)}, {"transitions", counts(budget.transitions)},
         {"blight", counts(budget.blight)}, {"water", counts(budget.water)},
+        {"resource_state", QJsonObject{{"ground_texture_slots", static_cast<qint64>(budget.groundTextureSlots)},
+            {"final_texture_slots", static_cast<qint64>(budget.finalTextureSlots)},
+            {"texture_slot_limit", static_cast<qint64>(budget.textureSlotLimit)},
+            {"water_style_available", budget.waterStyleAvailable},
+            {"water_source_texture_available", budget.waterSourceTextureAvailable},
+            {"blight_atlas_available", budget.blightAtlasAvailable},
+            {"blight_atlas_validation_performed", budget.blightAtlasValidationPerformed},
+            {"blight_atlas_valid", budget.blightAtlasValid}}},
         {"hidden_base_tiles", static_cast<qint64>(ground.hiddenTileCount)}};
+}
+
+QString GroundOmissionDetails(const Render::TerrainGroundLayerCounts& value) {
+    QStringList reasons;
+    const auto add = [&](Render::TerrainGroundOmissionReason reason, const QString& text) {
+        if (value.omissionReasons & static_cast<std::uint32_t>(reason)) reasons << text;
+    };
+    add(Render::TerrainGroundOmissionReason::MissingWaterStyle, QObject::tr("缺少水面样式"));
+    add(Render::TerrainGroundOmissionReason::MissingBlightAtlas, QObject::tr("缺少荒芜图集"));
+    add(Render::TerrainGroundOmissionReason::InvalidBlightAtlas, QObject::tr("荒芜图集无效"));
+    add(Render::TerrainGroundOmissionReason::TextureSlots, QObject::tr("纹理槽已满"));
+    add(Render::TerrainGroundOmissionReason::TextureDimension, QObject::tr("纹理尺寸超过预算"));
+    add(Render::TerrainGroundOmissionReason::TextureBytes, QObject::tr("纹理 mip0 字节超过预算"));
+    add(Render::TerrainGroundOmissionReason::TextureChainBytes, QObject::tr("纹理 mip 链字节超过预算"));
+    add(Render::TerrainGroundOmissionReason::RgbaBytes, QObject::tr("RGBA 总量超过预算"));
+    add(Render::TerrainGroundOmissionReason::Vertices, QObject::tr("顶点超过预算"));
+    add(Render::TerrainGroundOmissionReason::Indices, QObject::tr("索引超过预算"));
+    add(Render::TerrainGroundOmissionReason::Batches, QObject::tr("批次超过预算"));
+    add(Render::TerrainGroundOmissionReason::WorkingBytes, QObject::tr("整体工作载荷超过预算"));
+    if (reasons.isEmpty()) return {};
+    QString result = reasons.join(QObject::tr("、"));
+    if (value.resourceAdmissionChecked)
+        result += QObject::tr("（资源准入前已用 %1 个纹理槽）").arg(Count(value.textureSlotsBeforeAdmission));
+    return result;
 }
 
 QString GroundBudgetDetails(const Render::TerrainGroundMesh& ground) {
     const auto counts = [](const QString& name, const Render::TerrainGroundLayerCounts& value) {
-        return QObject::tr("%1：请求 %2、显示 %3、省略 %4")
+        QString text = QObject::tr("%1：请求 %2、显示 %3、省略 %4")
             .arg(name, Count(value.requested), Count(value.displayed), Count(value.omitted));
+        if (const auto reason = GroundOmissionDetails(value); !reason.isEmpty()) text += QObject::tr("；原因：%1").arg(reason);
+        return text;
     };
     const auto& budget = ground.budget;
     QStringList lines{QObject::tr("基础层：请求 %1、保留 %2、省略 %3（悬崖模型另覆盖 %4 格）")
@@ -120,6 +177,10 @@ QString GroundBudgetDetails(const Render::TerrainGroundMesh& ground) {
         counts(QObject::tr("水面"), budget.water)};
     if (budget.reduced)
         lines << QObject::tr("基础贴图预算预览：完整基础层 → 全图水面 → 全图普通过渡 → 精确荒芜遮罩；每类全留或全省略，不代表完整原版保真。");
+    else if (budget.water.omitted || budget.blight.omitted || budget.transitions.omitted)
+        lines << QObject::tr("未触发几何预览降级；资源省略仍见各层原因，不代表完整原版保真。");
+    lines << QObject::tr("纹理槽：地表 %1，最终 %2，上限 %3")
+        .arg(Count(budget.groundTextureSlots), Count(budget.finalTextureSlots), Count(budget.textureSlotLimit));
     return lines.join(QLatin1Char('\n'));
 }
 
@@ -259,6 +320,8 @@ void WorldModule::ShowSceneFacts(const WorldTerrainLoaded& loaded, const Render:
         sceneWater_->setText(water);
         QString waterDetails = tr("水面：请求 %1、显示 %2、省略 %3")
             .arg(Count(ground->budget.water.requested), Count(ground->budget.water.displayed), Count(ground->budget.water.omitted));
+        if (const auto reason = GroundOmissionDetails(ground->budget.water); !reason.isEmpty())
+            waterDetails += tr("\n原因：%1").arg(reason);
         if (!ground->waterFrameSourcePath.empty()) waterDetails += QLatin1Char('\n')
             + SourceLine(ground->waterFrameSourcePath, ground->waterFrameSourceSha256);
         sceneWater_->setToolTip(waterDetails);
