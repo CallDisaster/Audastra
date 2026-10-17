@@ -349,6 +349,51 @@ void NativeSourcesCannotBeInventedOrDiscarded() {
     Require(*snapshot.Members()[4].original == members[4].data, "native original is still exact source");
 }
 
+void SettingsBaselineComparisonIsReadOnly() {
+    const auto members = Members();
+    MapDataEditSession edits(MapDocument::FromMembers(members));
+    Require(ValidateTerrainSettingsSourceBaseline(edits, true, members[4].data).Succeeded(),
+        "exact settings baseline compares without an archive capture");
+    auto changed = members;
+    auto settings = Take(MapSettings::Parse(changed[4].data));
+    settings.mapName = "different settings baseline";
+    changed[4].data = Take(settings.Serialize());
+    Require(edits.SetSerialized(MapDataKind::Settings, changed[4].data).Succeeded(), "change current settings only");
+    const auto revision = edits.Revision();
+    Require(ValidateTerrainSettingsSourceBaseline(edits, true, members[4].data).Succeeded()
+        && edits.Revision() == revision && edits.CanUndo() && !edits.CanRedo(),
+        "baseline validation ignores current changes and preserves the undo stack");
+
+    const auto rejected = [&](const Status& status, std::string_view code) {
+        Require(!status.Succeeded() && !status.diagnostics.empty() && status.diagnostics.front().code == code,
+            "settings baseline retains the shared inspection failure code");
+    };
+    rejected(ValidateTerrainSettingsSourceBaseline(edits, true, changed[4].data),
+        "TERRAIN_EDIT_INSPECTION_SOURCE_MISMATCH");
+    MapDataEditSession foreign(MapDocument::FromMembers(changed));
+    Require(foreign.SetSerialized(MapDataKind::Settings, members[4].data).Succeeded(),
+        "foreign session current now equals the supplied source A");
+    const auto foreignCurrent = foreign.Snapshot(MapDataKind::Settings, members[4].data.size());
+    Require(foreignCurrent.Succeeded() && foreignCurrent.value->Member(MapDataKind::Settings).sources.size() == 1
+        && foreignCurrent.value->Member(MapDataKind::Settings).sources[0].data == members[4].data,
+        "foreign regression really has source A / original B / current A");
+    rejected(ValidateTerrainSettingsSourceBaseline(foreign, true, members[4].data),
+        "TERRAIN_EDIT_INSPECTION_SOURCE_MISMATCH");
+    Require(ValidateTerrainSettingsSourceBaseline(foreign, true, changed[4].data).Succeeded(),
+        "only the actual foreign original matches, even after editing current");
+
+    MapDataEditSession missing(MapDocument::FromMembers({}));
+    Require(ValidateTerrainSettingsSourceBaseline(missing, false, {}).Succeeded(), "proven missing baseline matches missing source");
+    rejected(ValidateTerrainSettingsSourceBaseline(missing, true, {}), "TERRAIN_EDIT_INSPECTION_SOURCE_MISMATCH");
+    rejected(ValidateTerrainSettingsSourceBaseline(missing, false, members[4].data), "TERRAIN_EDIT_INSPECTION_SOURCE_UNSAFE");
+    auto empty = members; empty[4].data.clear();
+    MapDataEditSession invalid(MapDocument::FromMembers(empty));
+    rejected(ValidateTerrainSettingsSourceBaseline(invalid, true, {}), "TERRAIN_EDIT_INSPECTION_SOURCE_UNSAFE");
+    auto duplicate = members; duplicate.push_back({"WAR3MAP.W3I", members[4].data});
+    MapDataEditSession ambiguous(MapDocument::FromMembers(duplicate));
+    rejected(ValidateTerrainSettingsSourceBaseline(ambiguous, true, members[4].data), "TERRAIN_EDIT_INSPECTION_SOURCE_UNSAFE");
+}
+
 void MissingEmptyReadonlyAndDeletionStayDistinct() {
     TempDirectory directory;
     const std::vector<MapArchiveMember> emptyMembers{{"war3map.w3e", {}}, {"war3map.wpm", {}}};
@@ -518,11 +563,12 @@ int main() {
         RestrictionInspectionProvesBytesWithoutGrantingSaveEligibility();
         FullRawTerrainAndPathingBaselinesMustMatch();
         NativeSourcesCannotBeInventedOrDiscarded();
+        SettingsBaselineComparisonIsReadOnly();
         MissingEmptyReadonlyAndDeletionStayDistinct();
         AggregateBudgetsAndIdentityUseFinalOwnedBytes();
         ChangedOrReplacedSourceIsRejectedAndSnapshotOwnsData();
         ExactCaptureDoesNotDependOnListfile();
-        std::cout << "terrain-edit-inspection: 9 scenario groups passed\n";
+        std::cout << "terrain-edit-inspection: 10 scenario groups passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "terrain-edit-inspection: " << error.what() << '\n';

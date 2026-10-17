@@ -5,10 +5,17 @@
 
 #include <array>
 #include <memory>
+#include <span>
 
 namespace War3Map::MapData {
 
 class MapDataEditSession;
+
+// 只借用给定原字节，与当前会话绑定的 W3I 原始基线比较；不读归档、不解析、不授予来源资格。
+// exists=false 时 bytes 必须为空；实际空成员与缺失不同。当前编辑字节须由调用方另行核对。
+// 与捕获接口相同，宿主须串行排除会话写入。
+[[nodiscard]] Status ValidateTerrainSettingsSourceBaseline(
+    const MapDataEditSession& edits, bool exists, std::span<const std::byte> bytes);
 
 struct TerrainInspectionLimits {
     // 捕获五成员原/现唯一拥有字节的累计预算，调用方只能收紧。

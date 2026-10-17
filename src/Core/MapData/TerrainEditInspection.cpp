@@ -95,17 +95,17 @@ bool SameRawTerrain(const TerrainGridSnapshot& a, const TerrainGridSnapshot& b) 
 }
 
 void RequireNativeBaseline(const detail::TerrainInspectionAccess::NativeMember& view,
-    const TerrainInspectionMember& member) {
+    std::string_view memberName, bool exists, std::span<const std::byte> bytes) {
     if (view.state != MapDataState::Ready && view.state != MapDataState::Partial
         && view.state != MapDataState::Missing)
-        Fail("TERRAIN_EDIT_INSPECTION_SOURCE_UNSAFE", member.name + " 的编辑会话源无效、歧义或不可读，不能当成缺失。");
+        Fail("TERRAIN_EDIT_INSPECTION_SOURCE_UNSAFE", std::string(memberName) + " 的编辑会话源无效、歧义或不可读，不能当成缺失。");
     const auto& original = *view.original;
     const bool expectedPresent = view.state != MapDataState::Missing;
-    if (view.name != member.name || expectedPresent != original.has_value())
-        Fail("TERRAIN_EDIT_INSPECTION_SOURCE_UNSAFE", member.name + " 的编辑会话原字节与来源状态不一致。");
-    if (original.has_value() != static_cast<bool>(member.original)
-        || (original && *original != *member.original))
-        Fail("TERRAIN_EDIT_INSPECTION_SOURCE_MISMATCH", member.name + " 与编辑会话绑定的原生成员不同。");
+    if (view.name != memberName || expectedPresent != original.has_value() || (!exists && !bytes.empty()))
+        Fail("TERRAIN_EDIT_INSPECTION_SOURCE_UNSAFE", std::string(memberName) + " 的编辑会话原字节与来源状态不一致。");
+    if (original.has_value() != exists
+        || (original && !std::equal(original->begin(), original->end(), bytes.begin(), bytes.end())))
+        Fail("TERRAIN_EDIT_INSPECTION_SOURCE_MISMATCH", std::string(memberName) + " 与编辑会话绑定的原生成员不同。");
 }
 
 // 在为 dirty W3E 分配输出前检查它会增加的原字节容量；格式合法性仍由原序列化器判断。
@@ -213,6 +213,23 @@ std::string Identity(const TerrainEditInspection& snapshot) {
 
 } // namespace
 
+Status ValidateTerrainSettingsSourceBaseline(const MapDataEditSession& edits,
+    bool exists, std::span<const std::byte> bytes) {
+    try {
+        const auto view = detail::TerrainInspectionAccess::Read(edits);
+        RequireNativeBaseline(view.native[2], kMembers[4], exists, bytes);
+        return Status::Ok();
+    } catch (Failure& failure) {
+        return Status{std::move(failure.diagnostics)};
+    } catch (const std::bad_alloc&) {
+        return Status::Failure(std::string(kSubsystem), "TERRAIN_EDIT_INSPECTION_ALLOCATION",
+            "地形原始基线比较内存分配失败。");
+    } catch (const std::length_error&) {
+        return Status::Failure(std::string(kSubsystem), "TERRAIN_EDIT_INSPECTION_ALLOCATION",
+            "地形原始基线比较超出容器容量。");
+    }
+}
+
 Result<TerrainEditInspection> CaptureTerrainEditInspection(const MapArchiveSession& source,
     const MapDataEditSession& edits, const TerrainInspectionLimits& limits) {
     try {
@@ -244,8 +261,11 @@ Result<TerrainEditInspection> CaptureTerrainEditInspection(const MapArchiveSessi
             member.currentSha256 = member.originalSha256;
         }
 
-        for (std::size_t index = 0; index < view.native.size(); ++index)
-            RequireNativeBaseline(view.native[index], result.members_[index + 2]);
+        for (std::size_t index = 0; index < view.native.size(); ++index) {
+            const auto& member = result.members_[index + 2];
+            RequireNativeBaseline(view.native[index], member.name, static_cast<bool>(member.original),
+                member.original ? std::span<const std::byte>(*member.original) : std::span<const std::byte>{});
+        }
         if (static_cast<bool>(view.terrainOriginal) != static_cast<bool>(view.terrain))
             Fail("TERRAIN_EDIT_INSPECTION_SOURCE_UNSAFE", "地形会话缺少成对的原／现快照。");
         if (view.terrainOriginal) {
