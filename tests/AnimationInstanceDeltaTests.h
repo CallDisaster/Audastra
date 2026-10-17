@@ -12,6 +12,38 @@ using namespace War3Map;
 using namespace War3Map::Render;
 using AnimationParticleContinuityTest::Check;
 using AnimationParticleContinuityTest::Good;
+inline void StaticSamplerSnapshotRoundtrip() {
+    for (const bool explicitFlags:{false,true}) {
+        AnimatedModelScene source;
+        source.geometry.layers.resize(4);
+        if (explicitFlags) source.geometry.layerSamplerFlags={0,1,2,3};
+        const auto snapshot=AnimationStaticGeometry::Capture(source);
+        const auto materialized=snapshot.Materialize();
+        AnimatedModelScene applied;
+        applied.sceneVersion=91; applied.documentRevision=92; applied.generation=93;
+        applied.geometry.instances.resize(1); applied.geometry.instanceRequests={17};
+        applied.geometry.instances[0].transform[3]=123;
+        snapshot.ApplyTo(applied);
+        const auto& frozen=std::as_const(snapshot).geometry.layerSamplerFlags;
+        const auto& replay=std::as_const(materialized).geometry.layerSamplerFlags;
+        const auto& target=std::as_const(applied).geometry.layerSamplerFlags;
+        const auto expected=explicitFlags ? std::vector<std::uint32_t>{0,1,2,3} : std::vector<std::uint32_t>{};
+        Check(frozen==expected && replay==expected && target==expected &&
+            frozen.SharesStorageWith(std::as_const(source).geometry.layerSamplerFlags) &&
+            replay.SharesStorageWith(frozen) && target.SharesStorageWith(frozen),
+            "static sampler Capture/Materialize/ApplyTo lost its flags or copied immutable storage");
+        Check(applied.sceneVersion==91 && applied.documentRevision==92 && applied.generation==93 &&
+            applied.geometry.instances.size()==1 && applied.geometry.instanceRequests==std::vector<std::uint32_t>{17} &&
+            applied.geometry.instances[0].transform[3]==123,
+            "static sampler ApplyTo overwrote the target instance or session identity");
+        if (!explicitFlags) continue;
+        source.geometry.layerSamplerFlags[0]=3;
+        Check(std::as_const(source).geometry.layerSamplerFlags[0]==3 &&
+            !std::as_const(source).geometry.layerSamplerFlags.SharesStorageWith(frozen) &&
+            frozen==expected && replay==expected && target==expected,
+            "source write changed a frozen/materialized/applied sampler snapshot");
+    }
+}
 inline void CheckDeltaTimings(const AnimationInstanceDeltaTimings& timing) {
     const auto phases=timing.cloneNs+timing.identityNs+timing.assetNs+timing.orderingNs+timing.storageNs+
         timing.stateRemapNs+timing.particleRemapNs+timing.firstFrameNs+timing.renderedRemapNs;
@@ -611,6 +643,7 @@ inline void ReusablePlansKeepFrozenParticleWorkspacesIndependent() {
         "one candidate's particle resume mutated another candidate or the continuing resident service");
 }
 inline void Run() {
+    StaticSamplerSnapshotRoundtrip();
     AnimationMaterialPrefetchTest::Run();
     PreviewAssetSnapshot();
     PreparedFormalAssets();

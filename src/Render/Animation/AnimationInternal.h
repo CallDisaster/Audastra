@@ -92,6 +92,7 @@ struct AnimationStaticGeometry {
         SharedSceneVector<War3RenderModelVertexV2> vertices;
         SharedSceneVector<std::uint16_t> indices;
         SharedSceneVector<War3RenderModelLayerV2> layers;
+        SharedSceneVector<std::uint32_t> layerSamplerFlags;
         SharedSceneVector<War3RenderModelMeshV2> meshes;
         SharedSceneVector<War3RenderModelV2> models;
         SharedSceneVector<std::array<float, 6>> modelBounds;
