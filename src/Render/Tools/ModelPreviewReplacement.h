@@ -31,9 +31,10 @@ inline void SetReplacementTexture(std::optional<std::string>& target, std::optio
     target.emplace(reinterpret_cast<const char*>(normalized.data()), normalized.size());
 }
 
-inline ModelInstanceRequest MakeRequest(std::string modelKey, const std::optional<std::string>&) {
+inline ModelInstanceRequest MakeRequest(std::string modelKey, const std::optional<std::string>& replacement) {
     ModelInstanceRequest request;
     request.modelPath = std::move(modelKey);
+    if (replacement) request.replaceableTexture = *replacement;
     return request;
 }
 } // namespace War3Map::Render::ModelPreview

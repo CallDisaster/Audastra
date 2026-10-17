@@ -1,6 +1,7 @@
 #include "War3MapCore/Game/GameDataSource.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Render/WorldModelScene.h"
+#include "ModelPreviewReplacement.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -33,8 +34,8 @@ namespace {
 using War3Map::Render::BuildWorldModelScene;
 using War3Map::Render::CheckStaticModelSamplerSupport;
 using War3Map::Render::DescribeModelScene;
-using War3Map::Render::ModelInstanceRequest;
 using War3Map::Render::ModelSceneRigidPoseRequest;
+using War3Map::Render::ModelPreview::RelativeAssetPath;
 namespace fs = std::filesystem;
 
 constexpr std::size_t kMaxAssetBytes = 16 * 1024 * 1024;
@@ -43,6 +44,7 @@ constexpr std::uint32_t kDefaultWidth = 640, kDefaultHeight = 480;
 struct Options {
     fs::path model, output, assets, gameRoot, plugin;
     bool hasAssets = false, hasGameRoot = false, hasPlugin = false;
+    std::optional<std::string> replaceableTexture;
     std::size_t sequence = 0;
     std::uint64_t elapsedMs = 0;
     float targetX = 0, targetY = 0, targetZ = 80;
@@ -102,6 +104,8 @@ Options ParseOptions(int argc, wchar_t** argv) {
         } else if (flag == L"--elapsed-ms") {
             Require(!hasElapsed, "duplicate --elapsed-ms"); options.elapsedMs = ParseUnsigned<std::uint64_t>(value, "--elapsed-ms"); hasElapsed = true;
         } else if (flag == L"--assets") { options.assets = value; options.hasAssets = true; }
+        else if (flag == L"--replaceable-texture")
+            War3Map::Render::ModelPreview::SetReplacementTexture(options.replaceableTexture, Utf8(fs::path(value)));
         else if (flag == L"--game-root") { options.gameRoot = value; options.hasGameRoot = true; }
         else if (flag == L"--plugin") { options.plugin = value; options.hasPlugin = true; }
         else if (flag == L"--target-x") options.targetX = ParseFloat(value, "--target-x");
@@ -117,6 +121,7 @@ Options ParseOptions(int argc, wchar_t** argv) {
     Require(hasModel && hasOutput && hasSequence && hasElapsed,
         "usage: war3-model-preview --model <file.mdx> --output <new.bmp> --sequence <index> --elapsed-ms <ms> "
         "[--game-root <Warcraft III>] [--assets <directory>] [--plugin <war3-render-d3d11.dll>] "
+        "[--replaceable-texture <relative resource path>] "
         "[--target-x/y/z <number>] [--yaw <radians>] [--pitch <radians>] [--distance <units>] "
         "[--width <pixels>] [--height <pixels>]");
     Require(options.width >= 64 && options.width <= 2048 && options.height >= 64 && options.height <= 2048,
@@ -138,16 +143,6 @@ War3Map::Result<std::vector<std::byte>> ReadLocalBounded(const fs::path& path, s
         return War3Map::Result<std::vector<std::byte>>::Failure("ModelPreview", "MODEL_PREVIEW_READ",
             "Could not read file completely: " + Utf8(path));
     return War3Map::Result<std::vector<std::byte>>::Success(std::move(bytes));
-}
-
-std::optional<fs::path> RelativeAssetPath(std::string_view name) {
-    if (name.empty() || name.find(':') != name.npos) return std::nullopt;
-    std::string normalized(name);
-    std::replace(normalized.begin(), normalized.end(), '\\', '/');
-    const auto relative = fs::path(std::u8string(reinterpret_cast<const char8_t*>(normalized.data()), normalized.size()));
-    if (relative.is_absolute() || relative.has_root_path()) return std::nullopt;
-    for (const auto& component : relative) if (component == L"..") return std::nullopt;
-    return relative;
 }
 
 struct Module {
@@ -293,7 +288,7 @@ int Run(const Options& options) {
         options.targetX + horizontal * std::cos(options.yaw),
         options.targetY + horizontal * std::sin(options.yaw),
         options.targetZ + options.distance * std::sin(options.pitch)}, {0, 0, 1}};
-    const ModelInstanceRequest request{modelKey};
+    const auto request = War3Map::Render::ModelPreview::MakeRequest(modelKey, options.replaceableTexture);
     auto scene = BuildWorldModelScene(std::span(&request, 1), reader, {}, {}, pose);
     if (!scene.Succeeded()) {
         for (const auto& diagnostic : scene.diagnostics)
@@ -373,6 +368,7 @@ int Run(const Options& options) {
     std::cout << "preview_label=通用算法预览\n"
         << "model=" << Utf8(options.model) << "\nsource_sha256=" << *sourceSha.value
         << "\noutput=" << Utf8(options.output) << "\nimage_sha256=" << *imageSha.value
+        << "\nreplaceable_texture=" << options.replaceableTexture.value_or("")
         << "\nsequence=" << options.sequence << " elapsed_ms=" << options.elapsedMs
         << "\ncamera_target=" << camera.targetX << ',' << camera.targetY << ',' << camera.targetZ
         << " yaw=" << camera.yawRadians << " pitch=" << camera.pitchRadians << " distance=" << camera.distance
