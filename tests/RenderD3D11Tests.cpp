@@ -703,7 +703,7 @@ void TestTerrainBlight(const RendererOwner& renderer) {
     std::vector<War3RenderMipRgbaV2> mips;
     for (std::uint32_t level = 0; level < 7; ++level) {
         const auto width = std::max(1u, 64u >> level), height = std::max(1u, 32u >> level);
-        auto& rgba = pixels.emplace_back(static_cast<std::size_t>(width) * height * 4, 255);
+        auto& rgba = pixels.emplace_back(static_cast<std::size_t>(width) * height * 4, std::uint8_t{255});
         for (std::uint32_t y = 0; y < height; ++y) for (std::uint32_t x = 0; x < width; ++x) {
             const auto cell = level <= 3 ? (y / (height / 4)) * 8 + x / (width / 8) : 31u;
             const auto at = (static_cast<std::size_t>(y) * width + x) * 4;
@@ -898,7 +898,7 @@ void TestTerrainBlight(const RendererOwner& renderer) {
     mutableFrame.blightIndices = mutableIndices.data(); mutableFrame.blightBatches = mutableBatches.data();
     mutableFrame.blightTexture = &mutableTexture;
     Require(api->submitTerrainBlightFrame(renderer.handle, &mutableFrame) == 0, "mutable blight submission rejected");
-    for (auto& rgba : mutablePixels) std::fill(rgba.begin(), rgba.end(), 0);
+    for (auto& rgba : mutablePixels) std::fill(rgba.begin(), rgba.end(), std::uint8_t{0});
     std::fill(mutableMips.begin(), mutableMips.end(), War3RenderMipRgbaV2{});
     std::fill(mutableVertices.begin(), mutableVertices.end(), War3RenderTerrainVertexV2{});
     std::fill(mutableIndices.begin(), mutableIndices.end(), 0u);
