@@ -1194,10 +1194,11 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
     MapEditSaveRequest unitRequest;
     unitRequest.sourceMap = sourcePath; unitRequest.targetCandidate = directory.Path() / "unit-auto.w3x";
     unitRequest.expectedSourceSha256 = source.value->SourceSha256();
-    unitRequest.expectedTerrainSha256 = *terrainSha.value;
     unitRequest.toolRoot = ydwe; unitRequest.gameRoot = game;
     unitRequest.fieldEdits = {{*unitMemberSha.value, {MapDataKind::Units, 0, *unitRow.value,
         "hit_points", *unitBefore.value, *unitAfter.value}}};
+    Require(unitRequest.expectedTerrainSha256.empty(),
+        "Automatic字段请求不应提供地形笔刷专用的SHA身份");
     const auto unitSaved = SaveMapEditCandidate(unitRequest);
     if (!unitSaved.Succeeded()) for (const auto& note : unitSaved.diagnostics)
         std::cerr << "unit automatic attach regression: " << note.code << ": " << note.message << '\n';
@@ -1288,6 +1289,8 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
         specialRequest.toolRoot = ydwe; specialRequest.gameRoot = game;
         specialRequest.fieldEdits = {{*specialSha.value, {MapDataKind::Units, 0, *specialRow.value,
             "hit_points", *specialBefore.value, *unitAfter.value}}};
+        Require(specialRequest.expectedTerrainSha256.empty(),
+            "特殊装饰物的单位字段请求不应提供地形笔刷专用的SHA身份");
         Require(specialRequest.minimapChoice == TerrainMinimapSaveChoice::Automatic,
             "special doodad unit field save must use the product default Automatic policy");
         const auto specialSaved = SaveMapEditCandidate(specialRequest);
