@@ -435,7 +435,7 @@ void AutomaticDecisionUsesExactSourceMembers() {
             "TGA保留不要求加载地形贴图或返回生成资格");
         task.removals.push_back("war3mapMap.tga");
         const auto removed = TerrainMinimapSave::RequiresAutomaticGeneration(task);
-        Require(!removed.Succeeded() && HasCode(removed.diagnostics, "MINIMAP_SAVE_TGA_REMOVED"),
+        Require(!removed.Succeeded() && Code(removed.diagnostics, "MINIMAP_SAVE_TGA_REMOVED"),
             "作者TGA不能通过删除后自动改写为BLP");
     }
     {

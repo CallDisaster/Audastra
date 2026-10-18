@@ -863,6 +863,38 @@ void TestFinalDerivedExceptionClosesStage() {
         "final-derived exception must use the common save exception boundary");
 }
 
+void TestAutomaticPartialArchivePreservesExistingMinimapOnSave() {
+    TempDirectory directory;
+    const auto source = directory.Path() / "partial-source.w3x";
+    const std::vector<MapArchiveMember> members{
+        {"war3map.wtg", Bytes("partial-wtg")},
+        {"war3map.wct", Bytes("partial-wct")},
+        {"war3map.j", Bytes("partial-script")},
+        {"war3mapMap.blp", Bytes("existing-blp")},
+    };
+    Require(WriteVerifiedArchive(source, members).Succeeded(), "write partial automatic-save fixture");
+    auto opened = MapArchiveSession::Open(source);
+    Require(opened.Succeeded() && opened.value, "open partial automatic-save fixture");
+    MapSaveTask task;
+    Require(task.FreezeArchive(*opened.value).Succeeded(), "freeze partial automatic-save fixture");
+    task.target = directory.Path() / "partial-saved.w3x";
+    bool required = true;
+    task.prepareFinalDerived = [&required](MapSaveTask& current) {
+        const auto decision = TerrainMinimapSave::RequiresAutomaticGeneration(current);
+        if (!decision.Succeeded() || !decision.value) return Status{decision.diagnostics};
+        required = *decision.value;
+        // A partial archive has no accurately readable W3E; the automatic path must
+        // preserve its existing BLP and still let the normal archive save complete.
+        return Status::Ok();
+    };
+    MapSaveService::Run(task);
+    Require(task.succeeded && task.nextSession && !required,
+        "automatic partial archive save must preserve existing minimap without terrain generation");
+    const auto blp = task.nextSession->ReadMember("war3mapMap.blp");
+    Require(blp.Succeeded() && blp.value && *blp.value == Bytes("existing-blp"),
+        "partial automatic save must retain the existing BLP byte-for-byte");
+}
+
 void TestProgramExceptionsFailClosedWithoutCollectingPrivateWhat() {
     TempDirectory directory;
     const auto source = Source(directory);
@@ -1105,6 +1137,7 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
     stroke.brush.radius = 0; stroke.brush.strength = 1;
     stroke.pointSpace = MapEditPointSpace::TerrainVertex; stroke.points = {{32, 32}};
     request.terrainStrokes = {stroke};
+    request.minimapChoice = TerrainMinimapSaveChoice::Preserve;
     request.targetCandidate = directory.Path() / "preserved.w3x";
     const auto preserved = SaveMapEditCandidate(request);
     Require(preserved.Succeeded() && preserved.value && preserved.value->scriptPreserved
@@ -1128,6 +1161,12 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
         }
     };
     verifyPreservedMembers(*preservedArchive.value);
+
+    request.minimapChoice = TerrainMinimapSaveChoice::Automatic;
+    request.targetCandidate = directory.Path() / "automatic.w3x";
+    const auto automatic = SaveMapEditCandidate(request);
+    Require(automatic.Succeeded() && automatic.value && automatic.value->generatedMissingMinimap,
+        "automatic service path generates a missing minimap after final script preparation");
 
     request.minimapChoice = TerrainMinimapSaveChoice::GenerateMissingGroundOnly;
     request.targetCandidate = directory.Path() / "generated.w3x";
@@ -1958,6 +1997,7 @@ int main() {
         TestThrowingProgressCallbackDoesNotChangeSaveResult();
         TestFinalDerivedPreparationRunsOnceAfterScriptStage();
         TestFinalDerivedExceptionClosesStage();
+        TestAutomaticPartialArchivePreservesExistingMinimapOnSave();
         TestProgramExceptionsFailClosedWithoutCollectingPrivateWhat();
         TestBlightSaveRejectsStaleOrMissingTerrainPair();
         TestGenericTerrainSaveRejectsUnverifiedAmplitude();

@@ -748,7 +748,13 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         // 门禁看到过期的 replacements。回调只在共用保存服务的一次最终阶段执行。
         if (request.minimapChoice != TerrainMinimapSaveChoice::Preserve) {
             task.prepareFinalDerived = [&task, &edits, &source, &request, &terrainPlan, &minimapSave](MapSaveTask&) mutable -> Status {
-                if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic && !edits.Terrain()) {
+                bool automaticRequired = true;
+                if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic) {
+                    const auto required = TerrainMinimapSave::RequiresAutomaticGeneration(task);
+                    if (!required.Succeeded() || !required.value) return Status{required.diagnostics};
+                    automaticRequired = *required.value;
+                }
+                if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic && automaticRequired && !edits.Terrain()) {
                     const std::array<std::string, 2> names{"war3map.w3e", "war3map.wpm"};
                     const auto members = source.CaptureExactMembers(names);
                     if (!members.Succeeded() || !members.value) return Status{members.diagnostics};
@@ -759,6 +765,20 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                     if (!attached.Succeeded()) return attached;
                     attached = edits.AttachPathing((*members.value)[1].bytes);
                     if (!attached.Succeeded()) return attached;
+                }
+                if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic && !automaticRequired) {
+                    auto previous = std::move(task.beforePublish);
+                    if (terrainPlan) {
+                        const auto& notes = terrainPlan->Diagnostics();
+                        task.diagnostics.insert(task.diagnostics.end(), notes.begin(), notes.end());
+                        task.beforePublish = [&task, terrainPlan, previous = std::move(previous)]() {
+                            if (previous) { const auto checked = previous(); if (!checked.Succeeded()) return checked; }
+                            return terrainPlan->VerifyFrozenOutput(task.sourceSha256, task.replacements, task.removals);
+                        };
+                    } else if (previous) {
+                        task.beforePublish = std::move(previous);
+                    }
+                    return Status::Ok();
                 }
                 const auto prepared = TerrainMinimapSave::Prepare(task, edits, request.gameRoot, request.minimapChoice);
                 if (!prepared.Succeeded() || !prepared.value) return Status{prepared.diagnostics};
