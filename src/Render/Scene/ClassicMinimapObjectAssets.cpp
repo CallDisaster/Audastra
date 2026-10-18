@@ -413,8 +413,9 @@ Result<ClassicMinimapObjectAssets> CaptureClassicMinimapObjectAssets(TerrainMini
             fact.sourceSha256 = fact.sourcePresent ? Take(Sha256(members[i].bytes)) : std::string{};
             fact.currentSha256 = fact.currentPresent ? Take(Sha256(currentMember.bytes)) : std::string{};
             fact.sourceAndCurrentBytesEqual = fact.sourcePresent == fact.currentPresent && members[i].bytes == currentMember.bytes;
-            if (fact.sourcePresent != fact.currentPresent || (fact.sourcePresent && !fact.sourceAndCurrentBytesEqual))
-                Fail("CLASSIC_OBJECT_CAPTURE_CURRENT_MISMATCH", "源与当前对象成员正文不同，不能建立对象层快照。");
+            // 源与当前可以合法不同：编辑会话可能已新增、删除或修改对象。两份正文
+            // 分别保留并由 Current/FrozenOutput 的 revision + replacement 门核对；
+            // 这里只拒绝任一侧无法由唯一classic parser完整读取的记录。
         }
         auto objectLayer = Take(CaptureClassicMinimapObjectLayer(doodads.doodads, source, terrain.Binding().gameRoot,
             currentTerrain->header.mainTileset, currentTerrain->header.offset,
