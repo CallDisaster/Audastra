@@ -1189,7 +1189,7 @@ void RunRealCliffGroundValidationTests() {
     const auto ground=BuildTerrainGroundMesh(prepared.core,atlases,{},lighting,nullptr,prepared.cliffs.coveredTiles,{},prepared.selected);
     Check(ground.Succeeded(),"cliff-ground production original ground fixture rejected");CheckGroundGeometry(*ground.value,prepared);
     auto emptyTypes=types;emptyTypes[1].reset();reject([&]{(void)PrepareCliffGround(context,emptyTypes,reader);});
-    reject([&]{(void)PrepareCliffGround(context,types,[](std::string_view){return Result<std::vector<std::byte>>::Failure("Audit","MISSING","missing");});});
+    reject([&]{(void)PrepareCliffGround(context,types,[](std::string_view){return Result<std::vector<std::byte>>::Failure("Audit","RESOURCE_NOT_FOUND","missing");});});
     auto unsupported=*parsed.value;unsupported.materials[0].layers.push_back(unsupported.materials[0].layers[0]);
     reject([&]{ValidateCliffModel(unsupported,types[1]->texturePath);});
     auto typedBone=*parsed.value;typedBone.bones[0].flags=0x100;

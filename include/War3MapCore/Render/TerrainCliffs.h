@@ -42,7 +42,7 @@ struct TerrainCliffs {
     std::size_t rampSurfaceTiles = 0;       // 四角都是坡道的层级过渡格：坡道面，由地面按贴图绘制
     std::size_t tooHighTiles = 0;           // 层级差超过 2，原版没有对应模型
     std::size_t unknownTypeTiles = 0;       // 悬崖类型索引无效或该类型没有定义
-    std::size_t missingModelTiles = 0;      // 模型文件读取/解析失败
+    std::size_t missingModelTiles = 0;      // 所有候选变体均明确回执 RESOURCE_NOT_FOUND
     std::vector<Diagnostic> warnings;
 };
 
@@ -51,7 +51,8 @@ struct TerrainCliffs {
 // 模型在局部 x∈[−128,0]、y∈[0,128]，放在格子东侧边；z 从最低层级起算，顶点再按四角地面起伏
 // （去掉层级后的高度）双线性抬升，因此悬崖贴合地面。普通悬崖材质按 SW/SE/NW/NE 取首个非15，
 // 全15时有界搜索5×5再退slot0；坡道仍保留当前预览选择规则，与形状字母顺序无关。
-// 只读取模型，不修改地形；单格失败只计数跳过，不中止。
+// 只读取模型，不修改地形。只有单条明确 RESOURCE_NOT_FOUND 回执允许变体回退/缺失计数；
+// 此处不独立认证归档存在性。其它读取或解析失败保留原诊断并拒绝整批，不发布部分覆盖。
 [[nodiscard]] Result<TerrainCliffs> BuildTerrainCliffs(const MapData::TerrainGridSnapshot& terrain,
     std::span<const std::optional<CliffTypeSource>> cliffTypes, const ModelFileReader& read);
 

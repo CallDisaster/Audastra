@@ -22,6 +22,21 @@ void Require(bool value, const char* message) {
     if (!value) throw std::runtime_error(message);
 }
 
+void RequireOriginalFailure(const Result<TerrainCliffs>& result, const std::vector<Diagnostic>& expected) {
+    Require(!result.Succeeded() && !result.value && result.diagnostics.size() == expected.size(),
+        "失败必须拒绝整批value/coveredTiles并完整保留原诊断数量");
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+        const auto& actual = result.diagnostics[i]; const auto& original = expected[i];
+        Require(actual.severity == original.severity && actual.subsystem == original.subsystem
+            && actual.code == original.code && actual.message == original.message
+            && actual.origin.has_value() == original.origin.has_value(), "读取/解析失败不得重写code、severity或消息");
+        if (original.origin)
+            Require(actual.origin->source == original.origin->source && actual.origin->offset == original.origin->offset
+                && actual.origin->length == original.origin->length && actual.origin->fingerprint == original.origin->fingerprint,
+                "读取/解析失败必须保留原来源位置和fingerprint");
+    }
+}
+
 // 原创 width×height 顶点网格；各数组按 index = y * width + x 给出，ramps 为坡道标记。
 TerrainGridSnapshot GridOf(std::uint32_t width, std::uint32_t height, std::vector<std::uint8_t> levels,
     std::vector<std::uint8_t> ramps = {}, std::vector<float> relief = {}, std::vector<std::uint8_t> types = {},
@@ -64,7 +79,7 @@ struct Files {
         return [this](std::string_view path) {
             ++reads[std::string(path)];
             const auto found = files.find(std::string(path));
-            if (found == files.end()) return Result<std::vector<std::byte>>::Failure("Test", "MISSING", "缺少文件");
+            if (found == files.end()) return Result<std::vector<std::byte>>::Failure("Test", "RESOURCE_NOT_FOUND", "缺少文件");
             return Result<std::vector<std::byte>>::Success(found->second);
         };
     }
@@ -459,6 +474,100 @@ void TestSamplerIdentitySurvivesCliffBaking() {
         "未知 sampler 必须明确拒绝整次烘焙，不可用部分几何伪造完整覆盖");
 }
 
+void TestOnlyExplicitMissingAllowsVariantFallback() {
+    Files files;
+    const auto grid = GridOf(2, 2, {2, 3, 2, 2}, {}, {}, {}, 1);
+    const std::string requested = "Doodads\\Terrain\\Cliffs\\CliffsAAAB1.mdx";
+    const std::string lower = "Doodads\\Terrain\\Cliffs\\CliffsAAAB0.mdx";
+    files.files[lower] = MdxTest::BuildTestMdx();
+    const auto fallback = BuildTerrainCliffs(grid, kTypes, files.Reader());
+    Require(fallback.Succeeded() && fallback.value->placedTiles == 1
+        && fallback.value->coveredTiles == std::vector<std::uint8_t>{1}
+        && files.reads[requested] == 1 && files.reads[lower] == 1, "明确Missing回执仍允许既有1到0变体回退");
+    files.files.clear(); files.reads.clear();
+    const auto missing = BuildTerrainCliffs(grid, kTypes, files.Reader());
+    Require(missing.Succeeded() && missing.value->meshes.empty() && missing.value->placedTiles == 0
+        && missing.value->missingModelTiles == 1 && missing.value->coveredTiles == std::vector<std::uint8_t>{0}
+        && missing.value->warnings.size() == 1 && missing.value->warnings[0].code == "TERRAIN_CLIFF_MODEL",
+        "所有变体明确Missing仍返回未覆盖格及原缺模型warning");
+
+    for (const auto* code : {"RESOURCE_READ_FAILED", "RESOURCE_CONFLICT", "WORLD_ASSET_READ", "MISSING"}) {
+        files.reads.clear(); files.files[lower] = MdxTest::BuildTestMdx();
+        const std::vector<Diagnostic> diagnostics{{DiagnosticSeverity::Warning, "OwnedWinner", code, "原选中模型读取失败",
+            OriginSpan{requested, 17, 23, "session-winner-1"}}};
+        auto originalReader = files.Reader();
+        const auto rejected = BuildTerrainCliffs(grid, kTypes, [&](std::string_view path) {
+            if (path != requested) return originalReader(path);
+            ++files.reads[std::string(path)]; return Result<std::vector<std::byte>>{std::nullopt, diagnostics};
+        });
+        RequireOriginalFailure(rejected, diagnostics);
+        Require(files.reads[requested] == 1 && files.reads[lower] == 0, "非明确Missing不得尝试有效低变体");
+    }
+    files.reads.clear();
+    const std::vector<Diagnostic> compound{
+        {DiagnosticSeverity::Error, "OwnedWinner", "RESOURCE_NOT_FOUND", "不能用其中一条Missing掩盖其它失败", std::nullopt},
+        {DiagnosticSeverity::Error, "OwnedWinner", "RESOURCE_READ_FAILED", "实际来源失败", OriginSpan{requested, 4, 8, "winner-2"}}};
+    auto originalReader = files.Reader();
+    const auto compoundFailure = BuildTerrainCliffs(grid, kTypes, [&](std::string_view path) {
+        if (path != requested) return originalReader(path);
+        ++files.reads[std::string(path)]; return Result<std::vector<std::byte>>{std::nullopt, compound};
+    });
+    RequireOriginalFailure(compoundFailure, compound);
+    Require(files.reads[lower] == 0, "复合失败包含Missing也不能回退");
+}
+
+void TestParseFailureAndValidRequestedVariantKeepTheirMeaning() {
+    Files files;
+    const std::string requested = "Doodads\\Terrain\\Cliffs\\CliffsAAAB1.mdx";
+    const std::string lower = "Doodads\\Terrain\\Cliffs\\CliffsAAAB0.mdx";
+    const auto grid = GridOf(2, 2, {2, 3, 2, 2}, {}, {}, {}, 1);
+    MdxTest::Options broken; broken.truncate = true;
+    files.files[requested] = MdxTest::BuildTestMdx(broken); files.files[lower] = MdxTest::BuildTestMdx();
+    const auto parsed = ParseMdx(files.files[requested]); Require(!parsed.Succeeded(), "命中模型确实被唯一MDX解析器拒绝");
+    RequireOriginalFailure(BuildTerrainCliffs(grid, kTypes, files.Reader()), parsed.diagnostics);
+    Require(files.reads[requested] == 1 && files.reads[lower] == 0, "命中损坏MDX不得当缺失改画有效0变体");
+
+    const std::vector<Vec3> lowPositions{{-96, 24, 0}, {-32, 24, 0}, {-96, 88, 0}};
+    const std::vector<Vec3> highPositions{{-96, 24, 37}, {-32, 24, 37}, {-96, 88, 37}}, normals(3, {0, 0, 1});
+    files.files[requested] = NormalModel({{highPositions, normals}}); files.files[lower] = NormalModel({{lowPositions, normals}});
+    files.reads.clear();
+    const auto selected = BuildTerrainCliffs(grid, kTypes, files.Reader());
+    Require(selected.Succeeded() && selected.value->placedTiles == 1 && selected.value->meshes.size() == 1
+        && selected.value->meshes.front().vertices.front().z == 37 && files.reads[lower] == 0,
+        "有效原请求变体须保留实际不同几何，不被低变体替代");
+}
+
+void TestRampFailureAndLateFailureRejectTheEntireBatch() {
+    const std::string rampPath = "Doodads\\Terrain\\CliffTrans\\CliffTransABHL1.mdx";
+    auto ramp = RampColumn(); ramp.vertices[0].variationRaw = 1 << 5;
+    for (const bool readFailure : {false, true}) {
+        Files files;
+        files.files["Doodads\\Terrain\\CliffTrans\\CliffTransABHL0.mdx"] = MdxTest::BuildTestMdx();
+        files.files["Doodads\\Terrain\\Cliffs\\CliffsABBA0.mdx"] = MdxTest::BuildTestMdx();
+        MdxTest::Options broken; broken.truncate = true; files.files[rampPath] = MdxTest::BuildTestMdx(broken);
+        const auto parsed = ParseMdx(files.files[rampPath]); Require(!parsed.Succeeded(), "原创坡道坏模型须解析失败");
+        const std::vector<Diagnostic> diagnostics{{DiagnosticSeverity::Error, "SessionCliff", "RESOURCE_READ_FAILED",
+            "原坡道winner不可读", OriginSpan{rampPath, 9, 3, "ramp-winner"}}};
+        auto originalReader = files.Reader();
+        const auto rejected = BuildTerrainCliffs(ramp, kTypes, [&](std::string_view path) {
+            if (!readFailure || path != rampPath) return originalReader(path);
+            ++files.reads[std::string(path)]; return Result<std::vector<std::byte>>{std::nullopt, diagnostics};
+        });
+        RequireOriginalFailure(rejected, readFailure ? diagnostics : parsed.diagnostics);
+        Require(files.reads.size() == 1 && files.reads[rampPath] == 1,
+            "坡道读取/解析失败不得转低变体、其它方向或普通悬崖");
+    }
+    Files files;
+    files.files["Doodads\\Terrain\\Cliffs\\CliffsAAAB0.mdx"] = MdxTest::BuildTestMdx();
+    const std::string second = "Doodads\\Terrain\\Cliffs\\CliffsBAAA0.mdx";
+    MdxTest::Options broken; broken.truncate = true; files.files[second] = MdxTest::BuildTestMdx(broken);
+    const auto parsed = ParseMdx(files.files[second]); Require(!parsed.Succeeded(), "第二格模型须确实损坏");
+    const auto rejected = BuildTerrainCliffs(Grid({2, 3, 2, 2, 2, 2}), kTypes, files.Reader());
+    RequireOriginalFailure(rejected, parsed.diagnostics);
+    Require(files.reads["Doodads\\Terrain\\Cliffs\\CliffsAAAB0.mdx"] == 1 && files.reads[second] == 1,
+        "先烘焙有效格再遇失败仍不得发布部分meshes或coveredTiles");
+}
+
 } // namespace
 
 int main() {
@@ -474,6 +583,9 @@ int main() {
         TestReliefNormalBoundaryConvention();
         TestReliefNormalsPreserveHardEdgesAndApproximationGates();
         TestSamplerIdentitySurvivesCliffBaking();
+        TestOnlyExplicitMissingAllowsVariantFallback();
+        TestParseFailureAndValidRequestedVariantKeepTheirMeaning();
+        TestRampFailureAndLateFailureRejectTheEntireBatch();
         std::cout << "terrain cliffs: shape names, variation fallback, relief lift, skips, ramp heights, ramp pieces and ground hiding passed\n";
         return 0;
     } catch (const std::exception& error) {

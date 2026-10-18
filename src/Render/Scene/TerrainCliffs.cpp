@@ -262,15 +262,24 @@ Result<TerrainCliffs> BuildTerrainCliffs(const MapData::TerrainGridSnapshot& ter
     MeshSink sink(output.meshes);
     std::unordered_map<std::string, CachedModel> cache;
     std::map<std::string, std::size_t> missing;
-    const auto load = [&](const std::string& path) -> const MdxModel* {
+    // nullptr成功只代表reader明确回执Missing；读取/解析失败必须沿Result返回，
+    // 不能被变体、坡道方向或普通悬崖的后续尝试掩盖。这不新增归档存在性认证。
+    const auto load = [&](const std::string& path) -> Result<const MdxModel*> {
         auto found = cache.find(path);
         if (found == cache.end()) {
             CachedModel entry;
-            if (auto bytes = read(path); bytes.Succeeded())
-                if (auto model = ParseMdx(*bytes.value); model.Succeeded()) entry.model = std::move(*model.value);
+            auto bytes = read(path);
+            if (!bytes.Succeeded()) {
+                if (bytes.diagnostics.size() != 1 || bytes.diagnostics.front().code != "RESOURCE_NOT_FOUND")
+                    return {std::nullopt, std::move(bytes.diagnostics)};
+            } else {
+                auto model = ParseMdx(*bytes.value);
+                if (!model.Succeeded()) return {std::nullopt, std::move(model.diagnostics)};
+                entry.model = std::move(*model.value);
+            }
             found = cache.emplace(path, std::move(entry)).first;
         }
-        return found->second.model ? &*found->second.model : nullptr;
+        return Result<const MdxModel*>::Success(found->second.model ? &*found->second.model : nullptr);
     };
     const auto vertexAt = [&](std::uint32_t x, std::uint32_t y) { return &terrain.vertices[static_cast<std::size_t>(y) * width + x]; };
     const auto tileAt = [&](std::uint32_t x, std::uint32_t y) { return static_cast<std::size_t>(y) * (width - 1) + x; };
@@ -282,12 +291,13 @@ Result<TerrainCliffs> BuildTerrainCliffs(const MapData::TerrainGridSnapshot& ter
         }
         return nullptr;
     };
-    // 变体：原版每种形状的变体数不同，缺文件时逐级退到 0。
-    const auto loadShape = [&](const std::string& directory, const std::string& shape, int variation) -> const MdxModel* {
-        for (; variation >= 0; --variation)
-            if (const auto* model = load("Doodads\\Terrain\\" + directory + "\\" + directory + shape + std::to_string(variation) + ".mdx"))
-                return model;
-        return nullptr;
+    // 变体：只有明确RESOURCE_NOT_FOUND才逐级退到0，失败立即拒绝整批几何。
+    const auto loadShape = [&](const std::string& directory, const std::string& shape, int variation) -> Result<const MdxModel*> {
+        for (; variation >= 0; --variation) {
+            auto model = load("Doodads\\Terrain\\" + directory + "\\" + directory + shape + std::to_string(variation) + ".mdx");
+            if (!model.Succeeded() || *model.value) return model;
+        }
+        return Result<const MdxModel*>::Success(nullptr);
     };
     for (std::uint32_t y = 0; y + 1 < height; ++y) for (std::uint32_t x = 0; x + 1 < width; ++x) {
         const auto tileIndex = tileAt(x, y);
@@ -316,7 +326,9 @@ Result<TerrainCliffs> BuildTerrainCliffs(const MapData::TerrainGridSnapshot& ter
                 const auto* type = typeOf(piece);
                 const auto shape = ShapeLetters(piece, true);
                 if (!type || type->rampDirectory.empty() || !shape) continue;
-                const auto* model = loadShape(type->rampDirectory, *shape, piece.corners[0]->CliffVariation());
+                auto loaded = loadShape(type->rampDirectory, *shape, piece.corners[0]->CliffVariation());
+                if (!loaded.Succeeded()) return {std::nullopt, std::move(loaded.diagnostics)};
+                const auto* model = *loaded.value;
                 if (!model) continue;
                 if (!Bake(sink, *model, piece, type->texturePath))
                     return Result<TerrainCliffs>::Failure(std::string(kSubsystem), "TERRAIN_CLIFF_SAMPLER_UNSUPPORTED",
@@ -336,7 +348,9 @@ Result<TerrainCliffs> BuildTerrainCliffs(const MapData::TerrainGridSnapshot& ter
         const auto* type = anyRamp ? typeOf(single)
             : typeIndex < cliffTypes.size() && cliffTypes[typeIndex] ? &*cliffTypes[typeIndex] : nullptr;
         if (!type || type->modelDirectory.empty()) { ++output.unknownTypeTiles; continue; }
-        const auto* model = loadShape(type->modelDirectory, *shape, c[0]->CliffVariation());
+        auto loaded = loadShape(type->modelDirectory, *shape, c[0]->CliffVariation());
+        if (!loaded.Succeeded()) return {std::nullopt, std::move(loaded.diagnostics)};
+        const auto* model = *loaded.value;
         if (!model) { ++output.missingModelTiles; ++missing[type->modelDirectory + *shape]; continue; }
         if (!Bake(sink, *model, single, type->texturePath))
             return Result<TerrainCliffs>::Failure(std::string(kSubsystem), "TERRAIN_CLIFF_SAMPLER_UNSUPPORTED",
