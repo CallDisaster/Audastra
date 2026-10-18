@@ -29,13 +29,19 @@ template<class T> T Take(Result<T> result) {
 bool Code(const std::vector<Diagnostic>& diagnostics, std::string_view code) {
     return std::any_of(diagnostics.begin(), diagnostics.end(), [&](const auto& diagnostic) { return diagnostic.code == code; });
 }
+void RequireCode(const std::vector<Diagnostic>& diagnostics, std::string_view code) {
+    if (code.empty() || Code(diagnostics, code)) return;
+    std::string message = "必须命中预期的具体拒绝门：" + std::string(code);
+    for (const auto& diagnostic : diagnostics) message += " | " + diagnostic.code + ":" + diagnostic.message;
+    throw std::runtime_error(message);
+}
 template<class T> void Rejected(const Result<T>& result, std::string_view code = {}) {
     Require(!result.Succeeded() && !result.value && !result.diagnostics.empty(), "拒绝不能返回部分小地图保存资格");
-    if (!code.empty()) Require(Code(result.diagnostics, code), "必须命中预期的具体拒绝门");
+    RequireCode(result.diagnostics, code);
 }
 void Rejected(const Status& status, std::string_view code = {}) {
     Require(!status.Succeeded() && !status.diagnostics.empty(), "复核必须明确失败");
-    if (!code.empty()) Require(Code(status.diagnostics, code), "复核必须命中预期的具体拒绝门");
+    RequireCode(status.diagnostics, code);
 }
 class Directory {
 public:
