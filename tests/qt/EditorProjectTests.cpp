@@ -1365,6 +1365,11 @@ void EditorProjectTests::DeclaredMissingMinimapWorkerFailureConsumesTask() {
     if (mode == "mask-hole") members[1].data[45 + 3] = std::byte{32}; // 只破坏远离height邻域的原外域SW0,0。
     else if (mode == "missing-w3i") members.erase(members.begin());
     else if (mode == "present-empty") members.push_back({"war3mapMap.blp", {}});
+    else if (mode == "height-gate") {
+        // R2 已按原版 dry-height 不变性替代旧156 raw幅度阈值。
+        // 负例改为真实不允许的水面邻域，仍要求完整拒绝且不产生归档。
+        members[1].data[45 + (4 * 9 + 4) * 7 + 4] |= std::byte{0x40};
+    }
     const auto source = std::filesystem::path(root.filePath("declared-worker-rejected-source.w3x").toStdWString());
     const auto target = std::filesystem::path(root.filePath("declared-worker-rejected.w3x").toStdWString());
     QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
