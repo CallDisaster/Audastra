@@ -91,6 +91,7 @@ void ValidateGenerationConfig(const TerrainMinimapInput& input) {
     // 当前核心只实现旧的干地、无对象、opaque palette 候选；即使未来提供证据，
     // 也不能静默把新字段当成已经接通的实现。
     if (config.medianRadius || config.blurRadius || config.noisePercent || config.noiseSeed
+        || config.boundaryColorRgba
         || config.waterColorRgba || config.waterDeepThreshold || config.objectLayerIsDoodad
         || config.objectDefaultColorRgba || config.defaultGroundColorRgba || config.cliffExceptionResolved
         || config.playableTileRectangle)
