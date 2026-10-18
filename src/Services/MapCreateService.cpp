@@ -231,13 +231,13 @@ CreateResult CreateMapCandidate(const MapCreateRequest& request, const MapSaveSe
                 Status synced = Status::Ok();
                 if (name == "war3map.w3e") synced = minimapEdits.SetTerrain(member.data);
                 else if (name == "war3map.wpm") synced = minimapEdits.SetPathing(member.data);
-                else if (name == "war3map.w3i") synced = minimapEdits.SetSerialized(MapData::MapDataKind::Settings, member.data);
-                else if (name == "war3mapunits.doo") synced = minimapEdits.SetSerialized(MapData::MapDataKind::Units, member.data);
-                else if (name == "war3map.doo") synced = minimapEdits.SetSerialized(MapData::MapDataKind::Doodads, member.data);
-                else if (name == "war3map.w3r") synced = minimapEdits.SetSerialized(MapData::MapDataKind::Regions, member.data);
-                else if (name == "war3map.w3c") synced = minimapEdits.SetSerialized(MapData::MapDataKind::Cameras, member.data);
-                else if (name == "war3map.w3s") synced = minimapEdits.SetSerialized(MapData::MapDataKind::Sounds, member.data);
-                else if (name == "war3map.wts") synced = minimapEdits.SetSerialized(MapData::MapDataKind::Strings, member.data);
+                else if (name == "war3map.w3i") synced = minimapEdits.SetSerialized(MapDataKind::Settings, member.data);
+                else if (name == "war3mapunits.doo") synced = minimapEdits.SetSerialized(MapDataKind::Units, member.data);
+                else if (name == "war3map.doo") synced = minimapEdits.SetSerialized(MapDataKind::Doodads, member.data);
+                else if (name == "war3map.w3r") synced = minimapEdits.SetSerialized(MapDataKind::Regions, member.data);
+                else if (name == "war3map.w3c") synced = minimapEdits.SetSerialized(MapDataKind::Cameras, member.data);
+                else if (name == "war3map.w3s") synced = minimapEdits.SetSerialized(MapDataKind::Sounds, member.data);
+                else if (name == "war3map.wts") synced = minimapEdits.SetSerialized(MapDataKind::Strings, member.data);
                 if (!synced.Succeeded()) return synced;
             }
             const auto required = TerrainMinimapSave::RequiresAutomaticGeneration(task);
