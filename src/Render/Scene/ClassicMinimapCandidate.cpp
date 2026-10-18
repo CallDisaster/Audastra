@@ -194,15 +194,18 @@ Result<ClassicMinimapCandidate> BuildClassicMinimapCandidate(const ClassicMinima
         if (retained > limits.maxWorkingBytes) Fail("CLASSIC_MINIMAP_BUDGET", "冻结来源保活已超过128MiB候选预算。");
         if (input.terrain.currentW3e.size() > limits.maxW3eBytes)
             Fail("CLASSIC_MINIMAP_W3E_BUDGET", "当前W3E超过Classic候选读取上限。");
-        const auto terrainSha = Take(Sha256(input.terrain.currentW3e));
-        if (terrainSha != input.terrain.binding.terrainSha256)
-            Fail("CLASSIC_MINIMAP_TERRAIN_STALE", "当前W3E字节与绑定terrain SHA不同。");
         std::size_t reserveExtra = kFixedReserve;
         AddMul(reserveExtra, limits.maxTiles, 8); // 两份原图：输出与postprocess调用输入
         Add(reserveExtra, 4u * 256u * 256u * 4u); // 两内容pingpong及两个256画布
         Add(reserveExtra, 16u * 1024u * 1024u); Add(reserveExtra, limits.maxBlpBytes);
+        // Hash::Sha256无control时会复制整个当前W3E作chunk；必须在首次SHA之前预收。
+        // 后续图像/BLP散列的有界临时正文另包含在较大的JPEG阶段预留中。
+        Add(reserveExtra, input.terrain.currentW3e.size());
         if (retained > limits.maxWorkingBytes || reserveExtra > limits.maxWorkingBytes - retained)
             Fail("CLASSIC_MINIMAP_BUDGET", "解析前预收原图、postprocess与JPEG工作集后预算不足。");
+        const auto terrainSha = Take(Sha256(input.terrain.currentW3e));
+        if (terrainSha != input.terrain.binding.terrainSha256)
+            Fail("CLASSIC_MINIMAP_TERRAIN_STALE", "当前W3E字节与绑定terrain SHA不同。");
         MapData::TerrainReadLimits read;
         read.maxBytes = input.terrain.currentW3e.size();
         read.maxTiles = limits.maxTiles;

@@ -51,6 +51,30 @@ Bytes W3e(bool boundary = false, bool blight = false, bool variation = false,
     return bytes;
 }
 
+Bytes TwoGroundW3e() {
+    // 顺序写header，不沿用单槽fixture的固定偏移。2 ground + 1 cliff -> 49字节。
+    Bytes bytes;
+    const auto raw = [&](std::string_view text) {
+        for (const auto c : text) bytes.push_back(static_cast<std::byte>(c));
+    };
+    const auto u32 = [&](std::uint32_t value) {
+        const auto at = bytes.size(); bytes.resize(at + 4); Put32(bytes, at, value);
+    };
+    raw("W3E!"); u32(11); bytes.push_back(std::byte{'L'}); u32(0);
+    u32(2); raw("LdrtLgrs"); u32(1); raw("CLdi"); u32(3); u32(3); u32(0); u32(0);
+    Require(bytes.size() == 49, "双ground fixture必须为实际header长度");
+    for (std::uint32_t y = 0; y < 3; ++y) for (std::uint32_t x = 0; x < 3; ++x) {
+        const auto at = bytes.size(); bytes.resize(at + 7);
+        Put16(bytes, at, 8192); Put16(bytes, at + 2, 8192);
+        // 四SW锚点按南行0/1、北行1/0。terminal东/北顶点槽15是负控：
+        // 它不在两个ground槽中；若误作逐格锚点就应失败或得到错误颜色。
+        const auto slot = x == 2 || y == 2 ? 15u : (x + y) % 2;
+        bytes[at + 4] = static_cast<std::byte>(slot | (x == 0 && y == 0 ? 0x80u : 0u));
+        bytes[at + 5] = std::byte{0}; bytes[at + 6] = std::byte{0xf2};
+    }
+    return bytes;
+}
+
 std::shared_ptr<const TerrainAtlasSnapshot> Atlas(std::array<std::uint8_t, 4> color,
     bool malformed = false) {
     auto result = std::make_shared<TerrainAtlasSnapshot>();
@@ -97,6 +121,61 @@ void RequireRejected(const Result<ClassicMinimapCandidate>& result, const char* 
     Require(std::any_of(result.diagnostics.begin(), result.diagnostics.end(), [&](const auto& diagnostic) {
         return diagnostic.code == code;
     }), "缺少预期Classic拒绝诊断");
+}
+
+std::array<unsigned, 4> RgbaAt(const Image::DecodedImage& image, std::uint32_t x, std::uint32_t y) {
+    std::array<unsigned, 4> result{};
+    const auto at = (static_cast<std::size_t>(y) * image.width + x) * 4;
+    for (unsigned c = 0; c < 4; ++c) result[c] = std::to_integer<unsigned>(image.rgba[at + c]);
+    return result;
+}
+
+void DistinctSwAnchorsTerminalVerticesAndFlip() {
+    auto input = Input(TwoGroundW3e());
+    input.terrain.groundAtlases.push_back(Atlas({20, 40, 60, 17}));
+    const auto result = Take(BuildClassicMinimapCandidate(input));
+    Require(result.manifest.sourceTiles == 4 && result.manifest.boundaryTiles == 1,
+        "四tile仅一个SW边界，不能用整图solid取样自证");
+    Require(RgbaAt(result.raw, 0, 0) == std::array<unsigned, 4>{9, 11, 13, 255}, "南西SW槽0需做边界混黑");
+    Require(RgbaAt(result.raw, 1, 0) == std::array<unsigned, 4>{20, 40, 60, 255}, "南东SW槽1代表色");
+    Require(RgbaAt(result.raw, 0, 1) == std::array<unsigned, 4>{20, 40, 60, 255}, "北西SW槽1代表色");
+    Require(RgbaAt(result.raw, 1, 1) == std::array<unsigned, 4>{100, 120, 140, 255}, "北东SW槽0不得取terminal无效槽15");
+    Require(RgbaAt(result.preNoise, 0, 0) == RgbaAt(result.raw, 0, 1), "最终preNoise首行必须来自北行");
+    Require(RgbaAt(result.preNoise, 255, 0) == RgbaAt(result.raw, 1, 1), "最终preNoise北东正确");
+    Require(RgbaAt(result.preNoise, 0, 255) == RgbaAt(result.raw, 0, 0), "最终preNoise末行必须来自南行");
+    Require(RgbaAt(result.preNoise, 255, 255) == RgbaAt(result.raw, 1, 0), "最终preNoise南东正确");
+    Require(result.preNoise.rgba == result.finalImage.rgba, "禁噪时两张256图必须精确相同");
+}
+
+void ObjectEnumEmptyIdentityAndCumulativeBudgetReject() {
+    auto invalid = Input(W3e());
+    invalid.objectDomain.unitsState = static_cast<ClassicMinimapMemberState>(999);
+    RequireRejected(BuildClassicMinimapCandidate(invalid), "CLASSIC_MINIMAP_OBJECT_DOMAIN_INVALID");
+    auto empty = Input(W3e());
+    empty.objectDomain.unitsState = ClassicMinimapMemberState::Empty;
+    empty.objectDomain.unitsMemberSha256 = std::string(64, 'e');
+    RequireRejected(BuildClassicMinimapCandidate(empty), "CLASSIC_MINIMAP_OBJECT_DOMAIN_IDENTITY");
+    empty.objectDomain.unitsMemberSha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    empty.objectDomain.unitsMemberBytes = 1;
+    RequireRejected(BuildClassicMinimapCandidate(empty), "CLASSIC_MINIMAP_OBJECT_DOMAIN_IDENTITY");
+
+    // 2MiB本可保留此微型输入，但解析前的完整后处理/JPEG预收使总帽不足。
+    ClassicMinimapCandidateLimits tight;
+    tight.maxWorkingBytes = 2u * 1024u * 1024u;
+    RequireRejected(BuildClassicMinimapCandidate(Input(W3e()), tight), "CLASSIC_MINIMAP_BUDGET");
+    // 样本size保持合法65536且noise=0；必须仍对额外capacity计费，不能以未消费为由忽略。
+    auto retainedSamples = Input(W3e());
+    retainedSamples.postprocess.noiseSamples = std::vector<std::uint16_t>(65536, 0);
+    retainedSamples.postprocess.noiseSamples->reserve(4u * 1024u * 1024u);
+    tight.maxWorkingBytes = 8u * 1024u * 1024u;
+    RequireRejected(BuildClassicMinimapCandidate(retainedSamples, tight), "CLASSIC_MINIMAP_BUDGET");
+    // SHA故意不匹配：若在统一预算预收前调用SHA，会先返回STALE并复制整份4MiB。
+    // 此case要求在任何SHA/Parse之前命中累计预算门。
+    auto hashPrecharge = Input(W3e());
+    hashPrecharge.terrain.currentW3e.resize(4u * 1024u * 1024u);
+    hashPrecharge.terrain.binding.terrainSha256 = std::string(64, 'd');
+    tight.maxWorkingBytes = 4u * 1024u * 1024u + 128u * 1024u;
+    RequireRejected(BuildClassicMinimapCandidate(hashPrecharge, tight), "CLASSIC_MINIMAP_BUDGET");
 }
 
 void BasicGroundBoundaryAndOutput() {
@@ -159,6 +238,8 @@ void PostprocessRandomSourceMustBeExplicit() {
 int main() {
     try {
         BasicGroundBoundaryAndOutput();
+        DistinctSwAnchorsTerminalVerticesAndFlip();
+        ObjectEnumEmptyIdentityAndCumulativeBudgetReject();
         ActualUnresolvedLayersReject();
         ObjectDeclarationAndAtlasIdentityReject();
         PostprocessRandomSourceMustBeExplicit();
