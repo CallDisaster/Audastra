@@ -18,8 +18,8 @@ struct ClassicMinimapObjectAssetLimits {
     // 只收紧：此账包含已有Terrain快照载荷和本次新增捕获/快照/解析/SHA预留。
     // 不含已存在的edits历史、MapArchiveSession/MPQ/Game挂载内部、allocator或进程RSS。
     std::size_t maxWorkingBytes = 128u * 1024u * 1024u;
-    std::size_t maxObjectMemberBytes = 2u * 1024u * 1024u;
-    std::size_t maxCurrentSnapshotBytes = 2u * 1024u * 1024u;
+    std::size_t maxObjectMemberBytes = 8u * 1024u * 1024u;
+    std::size_t maxCurrentSnapshotBytes = 8u * 1024u * 1024u;
     std::size_t maxCurrentTerrainBytes = 4u * 1024u * 1024u;
     // 解析后的实例仍受界限约束；这是对象图层的输入容量，不是地图编辑器的通用上限。
     std::size_t maxPlacements = 65536;
@@ -44,7 +44,7 @@ struct ClassicMinimapObjectMemberFacts {
 
 struct ClassicMinimapObjectAssetFacts {
     static constexpr const char* capturePolicy = "source-capture-parsed-objects-v2/native=false";
-    static constexpr std::size_t snapshotScratchBytesPerWireByte = 16;
+    static constexpr std::size_t snapshotScratchBytesPerWireByte = 4;
     std::array<ClassicMinimapObjectMemberFacts, 2> members; // units、doodads
     std::size_t retainedTerrainCapacityBytes = 0;
     std::size_t estimatedExtraPeakBytes = 0, estimatedPeakBytes = 0;

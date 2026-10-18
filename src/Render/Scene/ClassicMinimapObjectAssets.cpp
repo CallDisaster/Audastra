@@ -394,6 +394,8 @@ Result<ClassicMinimapObjectAssets> CaptureClassicMinimapObjectAssets(TerrainMini
             Fail("CLASSIC_OBJECT_CAPTURE_SOURCE", "准确捕获没有返回要求的两个对象成员身份。");
         MapData::UnitPlacements units;
         MapData::DoodadPlacements doodads;
+        std::size_t measuredSnapshotBytes = 0;
+        for (const auto kind : kKinds) Charge(measuredSnapshotBytes, Take(edits.SnapshotByteSize(kind)));
         for (std::size_t i = 0; i < 2; ++i) {
             const auto current = Take(edits.Snapshot(kKinds[i], limits.maxCurrentSnapshotBytes));
             const auto& member = current.Member(kKinds[i]);
@@ -417,6 +419,17 @@ Result<ClassicMinimapObjectAssets> CaptureClassicMinimapObjectAssets(TerrainMini
             // 分别保留并由 Current/FrozenOutput 的 revision + replacement 门核对；
             // 这里只拒绝任一侧无法由唯一classic parser完整读取的记录。
         }
+        if (!doodads.specialDoodads.empty())
+            Fail("CLASSIC_OBJECT_CAPTURE_SPECIAL_UNRESOLVED", "当前war3map.doo包含特殊装饰物记录；其是否进入原版0x08小地图层尚未由IDA确认，拒绝生成以免静默漏画。");
+        auto objectWorking = facts.estimatedPeakBytes;
+        Charge(objectWorking, measuredSnapshotBytes);
+        Charge(objectWorking, members[0].bytes.capacity()); Charge(objectWorking, members[1].bytes.capacity());
+        Charge(objectWorking, currentTerrain->vertices.capacity(), sizeof(MapData::TerrainVertex));
+        Charge(objectWorking, units.units.capacity(), sizeof(MapData::UnitPlacement));
+        Charge(objectWorking, doodads.doodads.capacity(), sizeof(MapData::DoodadPlacement));
+        Charge(objectWorking, doodads.specialDoodads.capacity(), sizeof(MapData::SpecialDoodadPlacement));
+        if (objectWorking > limits.maxWorkingBytes)
+            Fail("CLASSIC_OBJECT_CAPTURE_BUDGET", "当前对象摆放解析峰值超过累计捕获预算。");
         auto objectLayer = Take(CaptureClassicMinimapObjectLayer(doodads.doodads, source, terrain.Binding().gameRoot,
             currentTerrain->header.mainTileset, currentTerrain->header.offset,
             {0, 0, currentTerrain->header.width - 1, currentTerrain->header.height - 1}, replacements, removals));

@@ -637,24 +637,10 @@ Result<MapDocument> MapDataEditSession::Snapshot(MapDataKind kind, std::size_t m
         return Result<MapDocument>::Failure("MapData.Read", "MAP_KIND_INVALID", "未知的公共地图成员类别");
     std::array<std::size_t, 2> selected{index, Index(MapDataKind::Settings)};
     const auto count = kind == MapDataKind::Units || kind == MapDataKind::Doodads || kind == MapDataKind::Cameras ? 2u : 1u;
-    std::size_t bytes = 0;
-    for (std::size_t i = 0; i < count; ++i) {
-        const auto member = selected[i];
-        if (i == 0 && !current_[member] && states_[member] != MapDataState::Missing && !original_[member])
-            return Result<MapDocument>::Failure("MapData.Read", "MAP_SOURCE_UNSAFE",
-                "无法确定唯一的原生成员来源，不能将不可读或歧义来源当作缺失");
-        if (current_[member]) {
-            if (current_[member]->size() > maximumBytes - bytes)
-                return Result<MapDocument>::Failure("MapData.Read", "MAP_SNAPSHOT_BUDGET", "只读成员快照超过复制字节预算");
-            bytes += current_[member]->size();
-        } else if (preservedSources_[member]) {
-            for (const auto& source : preservedSources_[member]->sources) {
-                if (source.data.size() > maximumBytes - bytes)
-                    return Result<MapDocument>::Failure("MapData.Read", "MAP_SNAPSHOT_BUDGET", "只读成员快照超过复制字节预算");
-                bytes += source.data.size();
-            }
-        }
-    }
+    const auto measured = SnapshotByteSize(kind);
+    if (!measured.Succeeded() || !measured.value) return {std::nullopt, std::move(measured.diagnostics)};
+    if (*measured.value > maximumBytes)
+        return Result<MapDocument>::Failure("MapData.Read", "MAP_SNAPSHOT_BUDGET", "只读成员快照超过复制字节预算");
     MapDocument result;
     for (std::size_t i = 0; i < count; ++i) {
         const auto member = selected[i];
@@ -667,6 +653,33 @@ Result<MapDocument> MapDataEditSession::Snapshot(MapDataKind kind, std::size_t m
         if (!current_[member] && preservedSources_[member]) result.members_[member] = *preservedSources_[member];
     }
     return Result<MapDocument>::Success(std::move(result));
+}
+
+Result<std::size_t> MapDataEditSession::SnapshotByteSize(MapDataKind kind) const {
+    const auto index = Index(kind);
+    if (index >= current_.size())
+        return Result<std::size_t>::Failure("MapData.Read", "MAP_KIND_INVALID", "未知的公共地图成员类别");
+    const std::array<std::size_t, 2> selected{index, Index(MapDataKind::Settings)};
+    const auto count = kind == MapDataKind::Units || kind == MapDataKind::Doodads || kind == MapDataKind::Cameras ? 2u : 1u;
+    std::size_t bytes = 0;
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto member = selected[i];
+        if (i == 0 && !current_[member] && states_[member] != MapDataState::Missing && !original_[member])
+            return Result<std::size_t>::Failure("MapData.Read", "MAP_SOURCE_UNSAFE",
+                "无法确定唯一的原生成员来源，不能将不可读或歧义来源当作缺失");
+        const auto add = [&](std::size_t amount) -> bool {
+            if (amount > (std::numeric_limits<std::size_t>::max)() - bytes) return false;
+            bytes += amount; return true;
+        };
+        if (current_[member]) {
+            if (!add(current_[member]->size()))
+                return Result<std::size_t>::Failure("MapData.Read", "MAP_SNAPSHOT_SIZE_OVERFLOW", "只读成员快照字节数溢出");
+        } else if (preservedSources_[member]) for (const auto& source : preservedSources_[member]->sources) {
+            if (!add(source.data.size()))
+                return Result<std::size_t>::Failure("MapData.Read", "MAP_SNAPSHOT_SIZE_OVERFLOW", "只读成员快照字节数溢出");
+        }
+    }
+    return Result<std::size_t>::Success(bytes);
 }
 
 } // namespace War3Map::MapData

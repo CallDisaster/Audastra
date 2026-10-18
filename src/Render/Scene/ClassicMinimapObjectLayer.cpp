@@ -170,25 +170,35 @@ std::array<std::uint8_t, 4> ModelColor(const ClassicMinimapObjectStyle& style,
 
 struct Mask { std::uint32_t width = 0, height = 0; std::vector<std::uint8_t> cells; };
 
-std::optional<Mask> ReadMask(const ClassicMinimapObjectStyle& style,
+Result<std::optional<Mask>> ReadMask(const ClassicMinimapObjectStyle& style,
     const Resources::ResourceResolver& resources, std::size_t maxPixels,
     ClassicMinimapObjectLayer& output) {
-    if (style.pathingTexture.empty()) return std::nullopt;
+    if (style.pathingTexture.empty()) return Result<std::optional<Mask>>::Success(std::nullopt);
     auto resource = Resources::ReadClassicObjectTexture<Resources::ResolvedResource>(style.pathingTexture,
         [&](std::string_view name) { return resources.Read(name); });
-    if (!resource.Succeeded() || !resource.value) return std::nullopt;
+    if (!resource.Succeeded() || !resource.value) {
+        const bool missing = !resource.diagnostics.empty() && std::all_of(resource.diagnostics.begin(), resource.diagnostics.end(),
+            [](const auto& diagnostic) { return diagnostic.code == "RESOURCE_MISSING" || diagnostic.code == "OBJECT_RESOURCE_MISSING"; });
+        if (missing) {
+            AddDiagnostic(output, "CLASSIC_MINIMAP_OBJECT_PATHING_MISSING", "对象通行纹理明确缺失，按原版单格回退。");
+            Result<std::optional<Mask>> fallback;
+            fallback.value.emplace(std::nullopt); fallback.diagnostics = std::move(resource.diagnostics); return fallback;
+        }
+        return {std::nullopt, std::move(resource.diagnostics)};
+    }
     CaptureDependency(resource.value->resource, output);
     auto image = Image::DecodeTexture(resource.value->path, resource.value->resource.bytes, maxPixels);
-    if (!image.Succeeded() || !image.value || !image.value->Valid()) return std::nullopt;
+    if (!image.Succeeded() || !image.value || !image.value->Valid())
+        return {std::nullopt, std::move(image.diagnostics)};
     if (static_cast<std::size_t>(image.value->width) * image.value->height > maxPixels) {
-        AddDiagnostic(output, "CLASSIC_MINIMAP_OBJECT_PATHING_BUDGET", "对象通行纹理超过像素预算。"); return std::nullopt;
+        return Result<std::optional<Mask>>::Failure(kSubsystem, "CLASSIC_MINIMAP_OBJECT_PATHING_BUDGET", "对象通行纹理超过像素预算。");
     }
     Mask mask{image.value->width, image.value->height, std::vector<std::uint8_t>(image.value->width * image.value->height)};
     for (std::size_t i = 0; i < mask.cells.size(); ++i)
         mask.cells[i] = std::to_integer<std::uint8_t>(image.value->rgba[i * 4])
             || std::to_integer<std::uint8_t>(image.value->rgba[i * 4 + 1])
             || std::to_integer<std::uint8_t>(image.value->rgba[i * 4 + 2]);
-    return mask;
+    return Result<std::optional<Mask>>::Success(std::move(mask));
 }
 
 } // namespace
@@ -230,14 +240,17 @@ Result<ClassicMinimapObjectLayer> BuildClassicMinimapObjectLayer(
             bool modelColor = false; style.color = ModelColor(style, *input.resources, limits.maxModelBytes, output, modelColor);
             style.colorSource = modelColor ? ClassicMinimapObjectColorSource::ModelTextures : ClassicMinimapObjectColorSource::FallbackDarkGreen;
         } else {
-            AddDiagnostic(output, "CLASSIC_MINIMAP_OBJECT_COLOR", "对象声明useMMColor但MM颜色字段无效，已拒绝该对象。");
-            ++output.omittedPlacements; continue;
+            return Fail("CLASSIC_MINIMAP_OBJECT_COLOR", "对象声明useMMColor但MM颜色字段无效，不能猜测颜色。");
         }
         styleCache.emplace(styleKey, style);
         }
         output.styles.push_back(style); ++output.shownPlacements;
-        if (!maskCache.contains(style.pathingTexture))
-            maskCache.emplace(style.pathingTexture, ReadMask(style, *input.resources, limits.maxTexturePixels, output));
+        if (!maskCache.contains(style.pathingTexture)) {
+            auto loaded = ReadMask(style, *input.resources, limits.maxTexturePixels, output);
+            if (!loaded.Succeeded() || !loaded.value) return {std::nullopt, std::move(loaded.diagnostics)};
+            maskCache.emplace(style.pathingTexture, std::move(*loaded.value));
+            output.diagnostics.insert(output.diagnostics.end(), loaded.diagnostics.begin(), loaded.diagnostics.end());
+        }
         const auto& mask = maskCache.at(style.pathingTexture);
         const auto width = mask ? mask->width : 1u, height = mask ? mask->height : 1u;
         if (!std::isfinite(placement.rotation) || !std::isfinite(placement.position[0]) || !std::isfinite(placement.position[1]))
@@ -249,7 +262,8 @@ Result<ClassicMinimapObjectLayer> BuildClassicMinimapObjectLayer(
         // WorldEdit 的 pathing loader 保存 top-down 源纹理。q0/q2 交换宽高，
         // q1/q3 不交换；这与模型空间角度的通常约定不同，不能换成任意角度投影。
         const auto rotatedWidth = (quadrant & 1u) ? width : height, rotatedHeight = (quadrant & 1u) ? height : width;
-        if (static_cast<std::size_t>(width) * height > limits.maxPixelsPerFootprint) { output.omittedPixels += width * height; continue; }
+        if (static_cast<std::size_t>(width) * height > limits.maxPixelsPerFootprint)
+            return Fail("CLASSIC_MINIMAP_OBJECT_FOOTPRINT_BUDGET", "对象通行覆盖超过单实例预算，不能静默漏画。");
         const auto sourceScale = input.highResolution ? 1u : 4u;
         const auto left = static_cast<std::int64_t>(std::trunc((placement.position[0] - input.worldOrigin[0]
             - static_cast<float>(rotatedWidth * 32) * 0.5f + (rotatedWidth % 2 == 0 ? 16.0f : 0.0f)) / 32.0f));

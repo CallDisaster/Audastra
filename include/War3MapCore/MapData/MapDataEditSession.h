@@ -161,6 +161,9 @@ public:
     // 仅在候选已通过回读并成为新的归档基线后调用；保留撤销历史。
     void CommitSaved(const MapDocument& saved);
     [[nodiscard]] MapDocument Snapshot() const;
+    // 与有界Snapshot相同的成员/W3I选择，只计wire字节，不复制正文或解析。
+    // 来源不可读/歧义仍失败；供调用者在对象解析前预收实际容量。
+    [[nodiscard]] Result<std::size_t> SnapshotByteSize(MapDataKind kind) const;
     // 有界只读快照：只复制所需成员；摆放成员额外保留 W3I 布局上下文。
     // 已知缺失与来源不可读/歧义分别报告，不把无法确定的来源当作空表。
     [[nodiscard]] Result<MapDocument> Snapshot(MapDataKind kind,
