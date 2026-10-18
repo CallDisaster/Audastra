@@ -3,12 +3,37 @@
 #include "War3MapCore/Render/TerrainInspection.h"
 #include "War3MapCore/Render/TerrainTextureAtlas.h"
 
+#include <array>
+#include <cstdint>
 #include <optional>
 
 namespace War3Map::Render {
 
 // 声明边距仅是源W3I政策，未验证1.27a native crop；新外缘域必须显式选择。
 enum class TerrainMinimapRangePolicy { FullW3e, DeclaredW3iMargins, DeclaredW3iMarginsExteriorMapEdge };
+
+// 原版保存小地图的五项未决来源只能由独立原版实例/静态证据填入；这些字段不是
+// “给一个默认值就通过”的开关。未验证或当前候选未接通时，Build 会返回稳定诊断。
+// 当前实现只保留合同，不把水/对象/悬崖/滤波参数冒充成已实现的原版行为。
+struct TerrainMinimapGenerationConfig {
+    bool nativeReferenceVerified = false;
+    // [MinimapGeneration] 已知字段：当前候选尚未接入中值/高斯/噪点执行链。
+    std::optional<std::int32_t> medianRadius;
+    std::optional<double> blurRadius;
+    std::optional<double> noisePercent;
+    std::optional<std::uint32_t> noiseSeed;
+    // BoundaryTerrain 的实际 RGBA 及水色/深水阈值；来源未证实时必须保持空值。
+    std::optional<std::array<std::uint8_t, 4>> boundaryColorRgba;
+    std::optional<std::array<std::uint8_t, 4>> waterColorRgba;
+    std::optional<double> waterDeepThreshold;
+    // 对象层语义与 useMMColor=0 默认色；当前 TerrainMinimapInput 没有对象快照，故不执行。
+    std::optional<bool> objectLayerIsDoodad;
+    std::optional<std::array<std::uint8_t, 4>> objectDefaultColorRgba;
+    std::optional<std::array<std::uint8_t, 4>> defaultGroundColorRgba;
+    // 悬崖例外条件与可玩区域矩形；矩形仍须与同源 W3I 绑定，不能由地图边缘猜测。
+    std::optional<bool> cliffExceptionResolved;
+    std::optional<std::array<std::int32_t, 4>> playableTileRectangle;
+};
 
 struct TerrainMinimapInput {
     TerrainInspectionBinding binding;
@@ -20,6 +45,8 @@ struct TerrainMinimapInput {
     // 显式声明边距策略才消费的源 W3I 原字；nullopt 与真实空成员分别拒绝。
     // 纯生成器自己计算 SHA/解析范围，不认证这些字节来自地图或当前会话。
     std::optional<std::vector<std::byte>> sourceW3i;
+    // 旧调用保持空值并沿用当前严格域；非空只启用下列 fail-closed 合同验证。
+    std::optional<TerrainMinimapGenerationConfig> generation;
 };
 
 struct TerrainMinimapLimits {

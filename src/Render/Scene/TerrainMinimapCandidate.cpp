@@ -66,6 +66,37 @@ bool Text(std::string_view value, std::size_t maximum, bool required = true) {
 
 void ChargeText(std::size_t& bytes, const std::string& value) { Charge(bytes, value.capacity()); Charge(bytes, 1); }
 
+void ValidateGenerationConfig(const TerrainMinimapInput& input) {
+    if (!input.generation) return;
+    const auto& config = *input.generation;
+    const auto unknown = [&](const char* code, const char* message) { Fail(code, message); };
+    // 配置可以被宿主保存，但没有独立原版证据时不能把它当成事实。
+    if (!config.nativeReferenceVerified) {
+        if (config.boundaryColorRgba) unknown("TERRAIN_MINIMAP_BOUNDARY_UNVERIFIED", "BoundaryTerrain 颜色没有独立原版来源证据。");
+        if (config.waterColorRgba || config.waterDeepThreshold)
+            unknown("TERRAIN_MINIMAP_WATER_UNVERIFIED", "水色或深水阈值没有独立原版来源证据。");
+        if (config.objectLayerIsDoodad || config.objectDefaultColorRgba)
+            unknown("TERRAIN_MINIMAP_OBJECT_LAYER_UNVERIFIED", "对象层语义或默认颜色没有独立原版来源证据。");
+        if (config.defaultGroundColorRgba)
+            unknown("TERRAIN_MINIMAP_DEFAULT_GROUND_UNVERIFIED", "默认地面颜色没有独立原版来源证据。");
+        if (config.cliffExceptionResolved)
+            unknown("TERRAIN_MINIMAP_CLIFF_EXCEPTION_UNVERIFIED", "悬崖例外条件没有独立原版来源证据。");
+        if (config.playableTileRectangle)
+            unknown("TERRAIN_MINIMAP_PLAYABLE_RECT_UNVERIFIED", "可玩区域矩形没有同源 W3I/原版来源证据。");
+        if (config.medianRadius || config.blurRadius || config.noisePercent || config.noiseSeed)
+            unknown("TERRAIN_MINIMAP_FILTER_UNVERIFIED", "中值、高斯或噪点参数没有独立原版来源证据。");
+    }
+    if (config.noisePercent && *config.noisePercent > 0 && !config.noiseSeed)
+        unknown("TERRAIN_MINIMAP_NOISE_SEED_UNSPECIFIED", "噪点百分比已声明但没有可复现的显式种子。");
+    // 当前核心只实现旧的干地、无对象、opaque palette 候选；即使未来提供证据，
+    // 也不能静默把新字段当成已经接通的实现。
+    if (config.medianRadius || config.blurRadius || config.noisePercent || config.noiseSeed
+        || config.waterColorRgba || config.waterDeepThreshold || config.objectLayerIsDoodad
+        || config.objectDefaultColorRgba || config.defaultGroundColorRgba || config.cliffExceptionResolved
+        || config.playableTileRectangle)
+        unknown("TERRAIN_MINIMAP_S0_UNIMPLEMENTED", "S0 原版层或滤波合同已声明，但当前候选尚未接通该执行链。");
+}
+
 void ChargeBinding(std::size_t& bytes, const TerrainInspectionBinding& binding) {
     ChargeText(bytes, binding.documentId); ChargeText(bytes, binding.sourceSha256); ChargeText(bytes, binding.terrainSha256);
 }
@@ -240,27 +271,30 @@ std::size_t MeshCapacity(const TerrainGroundMesh& mesh) {
     return bytes;
 }
 
-void CheckDomain(const MapData::TerrainGridSnapshot& grid, TerrainMinimapRangePolicy rangePolicy) {
+void CheckDomain(const MapData::TerrainGridSnapshot& grid, TerrainMinimapRangePolicy rangePolicy,
+    const std::optional<TerrainMinimapGenerationConfig>& generation) {
     if (grid.header.version != 11) Fail("TERRAIN_MINIMAP_VERSION", "第一版候选仅支持 classic W3E v11。");
     if (grid.header.groundTilesets.empty() || grid.header.groundTilesets.size() > 16)
         Fail("TERRAIN_MINIMAP_PALETTE", "第一版候选需要 1..16 个地面材质槽。");
     const auto level = grid.vertices.front().CliffLevel();
     for (const auto& vertex : grid.vertices) {
-        if (vertex.IsBoundary()) Fail("TERRAIN_MINIMAP_BOUNDARY", "第一版候选不解释 Boundary 边界标志。");
+        if (vertex.IsBoundary() && (!generation || !generation->boundaryColorRgba))
+            Fail("TERRAIN_MINIMAP_BOUNDARY", "BoundaryTerrain 颜色未取得独立原版证据，不能猜测混合。");
         if (vertex.IsMapEdge() && rangePolicy != TerrainMinimapRangePolicy::DeclaredW3iMarginsExteriorMapEdge)
             Fail("TERRAIN_MINIMAP_MAP_EDGE", "第一版候选不解释 MapEdge 外缘标志。");
         if (vertex.UnknownWaterFlags() || vertex.UnknownTextureFlags())
             Fail("TERRAIN_MINIMAP_UNKNOWN_FLAGS", "候选不忽略未知地形标志。");
-        if (vertex.IsRamp()) Fail("TERRAIN_MINIMAP_RAMP", "第一版候选不近似坡道。");
-        if (vertex.HasWater()) Fail("TERRAIN_MINIMAP_WATER", "第一版候选不近似水面。");
-        if (vertex.IsBlight()) Fail("TERRAIN_MINIMAP_BLIGHT", "第一版候选不近似荒芜。");
+        if (vertex.IsRamp()) Fail("TERRAIN_MINIMAP_RAMP", "坡道颜色/几何语义未取得独立原版证据。");
+        if (vertex.HasWater() && (!generation || !generation->waterColorRgba || !generation->waterDeepThreshold))
+            Fail("TERRAIN_MINIMAP_WATER", "水色或深水阈值未取得独立原版证据。");
+        if (vertex.IsBlight()) Fail("TERRAIN_MINIMAP_BLIGHT", "保存层荒芜语义未取得独立原版证据。");
         if (vertex.CliffLevel() != level)
-            Fail("TERRAIN_MINIMAP_NOT_FLAT", "候选需要统一 cliff layer，不近似悬崖层级变化。");
+            Fail("TERRAIN_MINIMAP_NOT_FLAT", "悬崖层级/例外代表色未取得独立原版证据。");
         if (vertex.GroundTextureIndex() >= grid.header.groundTilesets.size()
             || (vertex.CliffTextureIndex() != 15 && vertex.CliffTextureIndex() >= grid.header.cliffTilesets.size()))
             Fail("TERRAIN_MINIMAP_PALETTE", "候选不解释未解析的地面或悬崖材质索引。");
         if (vertex.GroundVariation() > 17)
-            Fail("TERRAIN_MINIMAP_VARIATION", "第一版候选不推测 18..31 地面变体的语义。");
+            Fail("TERRAIN_MINIMAP_VARIATION", "18..31 地面变体语义未取得独立原版证据。");
     }
 }
 
@@ -658,6 +692,7 @@ Result<TerrainMinimapCandidate> BuildTerrainMinimapCandidate(const TerrainMinima
     try {
         TerrainMinimapCandidate result;
         auto& manifest = result.manifest; auto& memory = manifest.memory;
+        ValidateGenerationConfig(input);
         memory.retainedInputCapacityBytes = ValidateInputs(input, limits);
         if (input.rangePolicy != TerrainMinimapRangePolicy::FullW3e && input.sourceW3i) {
             memory.estimatedSettingsScratchBytes = TerrainMinimapMemoryFacts::settingsScratchFixedBytes;
@@ -686,7 +721,7 @@ Result<TerrainMinimapCandidate> BuildTerrainMinimapCandidate(const TerrainMinima
         const auto grid = terrain.Snapshot();
         if (grid->header.groundTilesets.size() != input.groundAtlases.size())
             Fail("TERRAIN_MINIMAP_ATLAS", "冻结 atlas 数量与当前 W3E 地面表不同。");
-        CheckDomain(*grid, input.rangePolicy);
+        CheckDomain(*grid, input.rangePolicy, input.generation);
         const Counts counts{grid->vertices.size(), grid->tiles.size(), grid->header.groundTilesets.size() + grid->header.cliffTilesets.size()};
         Estimate(input, counts, memory, limits);
         const auto rectangle = SelectRange(input, *grid, manifest);
