@@ -41,6 +41,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstring>
 #include <stdexcept>
 
 using namespace War3Map;
@@ -97,14 +98,18 @@ std::vector<std::byte> UnlistedTerrainBytes() {
     return std::move(fixture.bytes);
 }
 
-// 原创 MPQ：只有 known.bin 写入 listfile，W3E 块保留准确 hash，但没有可枚举名称。
+// 原创 MPQ：默认只有known.bin列名；恢复测试可独立列名W3E/WPM，块始终保留准确hash。
 bool WriteUnlistedTerrain(const QString& path, const std::vector<std::byte>& terrain,
-    std::uint32_t extraFlags = 0, std::uint32_t declaredBytes = 0) {
+    std::uint32_t extraFlags = 0, std::uint32_t declaredBytes = 0,
+    const std::vector<std::byte>* pathing = nullptr, bool listTerrain = false, bool listPathing = false) {
     const auto& crypt = Mpq::MpqCrypt::Instance();
-    const std::string list = "known.bin\r\n";
+    const std::string list = std::string("known.bin\r\n") + (listTerrain ? "war3map.w3e\r\n" : "")
+        + (pathing && listPathing ? "war3map.wpm\r\n" : "");
     const auto listSpan = std::as_bytes(std::span(list.data(), list.size()));
-    constexpr std::uint32_t hashCount = 8, blockCount = 3, knownAt = 32, terrainAt = 33;
-    const auto listAt = terrainAt + static_cast<std::uint32_t>(terrain.size());
+    constexpr std::uint32_t hashCount = 8, knownAt = 32, terrainAt = 33;
+    const std::uint32_t blockCount = pathing ? 4 : 3;
+    const auto pathingAt = terrainAt + static_cast<std::uint32_t>(terrain.size());
+    const auto listAt = pathingAt + static_cast<std::uint32_t>(pathing ? pathing->size() : 0);
     const auto hashAt = listAt + static_cast<std::uint32_t>(list.size());
     const auto blockAt = hashAt + hashCount * 16;
     std::vector<std::byte> bytes(blockAt + blockCount * 16);
@@ -116,6 +121,7 @@ bool WriteUnlistedTerrain(const QString& path, const std::vector<std::byte>& ter
     put(12, 0x00030000); put(16, hashAt); put(20, blockAt); put(24, hashCount); put(28, blockCount);
     bytes[knownAt] = std::byte{7};
     std::copy(terrain.begin(), terrain.end(), bytes.begin() + terrainAt);
+    if (pathing) std::copy(pathing->begin(), pathing->end(), bytes.begin() + pathingAt);
     std::copy(listSpan.begin(), listSpan.end(), bytes.begin() + listAt);
     std::fill(bytes.begin() + hashAt, bytes.begin() + blockAt, std::byte{0xff});
     std::array<bool, hashCount> used{};
@@ -127,7 +133,9 @@ bool WriteUnlistedTerrain(const QString& path, const std::vector<std::byte>& ter
         put(at, crypt.HashString(name, Mpq::MpqCrypt::HashType::NameA));
         put(at + 4, crypt.HashString(name, Mpq::MpqCrypt::HashType::NameB)); put(at + 8, 0); put(at + 12, block);
     };
-    hash("known.bin", 0); hash("war3map.w3e", 1); hash("(listfile)", 2);
+    hash("known.bin", 0); hash("war3map.w3e", 1);
+    if (pathing) hash("war3map.wpm", 2);
+    hash("(listfile)", blockCount - 1);
     crypt.EncryptBlock(bytes.data() + hashAt, hashCount * 16,
         crypt.HashString("(hash table)", Mpq::MpqCrypt::HashType::FileKey));
     const auto block = [&](std::uint32_t index, std::uint32_t at, std::size_t length,
@@ -138,7 +146,8 @@ bool WriteUnlistedTerrain(const QString& path, const std::vector<std::byte>& ter
     };
     block(0, knownAt, 1, 1, 0);
     block(1, terrainAt, terrain.size(), declaredBytes ? declaredBytes : static_cast<std::uint32_t>(terrain.size()), extraFlags);
-    block(2, listAt, list.size(), static_cast<std::uint32_t>(list.size()), 0);
+    if (pathing) block(2, pathingAt, pathing->size(), static_cast<std::uint32_t>(pathing->size()), 0);
+    block(blockCount - 1, listAt, list.size(), static_cast<std::uint32_t>(list.size()), 0);
     crypt.EncryptBlock(bytes.data() + blockAt, blockCount * 16,
         crypt.HashString("(block table)", Mpq::MpqCrypt::HashType::FileKey));
     QFile file(path);
@@ -289,6 +298,9 @@ private slots:
     void UnlistedTerrainReadPreservesNamedInventory();
     void UnlistedTerrainReadRejectsChangedSource();
     void UnlistedTerrainReadPreservesDecodeAndBudgetErrors();
+    void ProjectRestoreReadsUnlistedTerrainAndPathing_data();
+    void ProjectRestoreReadsUnlistedTerrainAndPathing();
+    void ProjectRestoreKeepsMissingAndUnreadableTerrainDistinct();
 };
 
 void EditorProjectTests::UnlistedTerrainReadPreservesNamedInventory() {
@@ -348,6 +360,118 @@ void EditorProjectTests::UnlistedTerrainReadPreservesDecodeAndBudgetErrors() {
         QVERIFY(HasReadDiagnostic(read, oversized ? "FILE_READ_BUDGET_EXCEEDED" : "EXACT_MEMBER_ENCODING_UNSUPPORTED"));
         QVERIFY(!HasReadDiagnostic(read, "MAP_MEMBER_UNAVAILABLE"));
         QVERIFY(!project.archiveSession_->HasMember("war3map.w3e"));
+    }
+}
+
+void EditorProjectTests::ProjectRestoreReadsUnlistedTerrainAndPathing_data() {
+    QTest::addColumn<bool>("listTerrain"); QTest::addColumn<bool>("listPathing"); QTest::addColumn<bool>("draft");
+    QTest::addColumn<bool>("terrainOverlay");
+    QTest::newRow("unlisted-w3e-clean") << false << true << false << false;
+    QTest::newRow("unlisted-w3e-apr") << false << true << true << false;
+    QTest::newRow("unlisted-w3e-terrain") << false << true << true << true;
+    QTest::newRow("unlisted-wpm-clean") << true << false << false << false;
+    QTest::newRow("unlisted-wpm-apr") << true << false << true << false;
+    QTest::newRow("unlisted-wpm-terrain") << true << false << true << true;
+    QTest::newRow("both-unlisted-clean") << false << false << false << false;
+    QTest::newRow("both-unlisted-apr") << false << false << true << false;
+    QTest::newRow("both-unlisted-terrain") << false << false << true << true;
+}
+
+void EditorProjectTests::ProjectRestoreReadsUnlistedTerrainAndPathing() {
+    QFETCH(bool, listTerrain); QFETCH(bool, listPathing); QFETCH(bool, draft); QFETCH(bool, terrainOverlay);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto terrain = UnlistedTerrainBytes();
+    MapDataFixtures::Fixture encodedPathing; encodedPathing.Raw("MP3W"); encodedPathing.UInt(0); encodedPathing.UInt(4); encodedPathing.UInt(4);
+    encodedPathing.bytes.resize(32, std::byte{0x82}); const auto& pathing = encodedPathing.bytes;
+    const auto source = std::filesystem::path(root.filePath("source.w3x").toStdWString());
+    QVERIFY(WriteUnlistedTerrain(QString::fromStdWString(source.wstring()),terrain,0,0,&pathing,listTerrain,listPathing));
+    auto opened = MapArchiveSession::Open(source); QVERIFY(opened.Succeeded());
+    EditorProject project; project.sourceArchivePath_ = source;
+    const auto workspace = root.filePath("workspace"); QVERIFY(QDir().mkpath(workspace));
+    project.projectRoot_ = std::filesystem::path(workspace.toStdWString());
+    project.archiveSession_ = std::make_shared<MapArchiveSession>(std::move(*opened.value));
+    const auto sourceSha = project.archiveSession_->SourceSha256(); const auto namedCount = project.archiveSession_->Members().size();
+    const auto opaqueCount = project.archiveSession_->OpaqueMemberCount();
+    const auto list = project.archiveSession_->ReadMember("(listfile)"); QVERIFY(list.Succeeded());
+    QCOMPARE(project.archiveSession_->HasMember("war3map.w3e"),listTerrain);
+    QCOMPARE(project.archiveSession_->HasMember("war3map.wpm"),listPathing);
+    project.LoadMapDocument(); QVERIFY(project.mapEdits_ && project.mapEdits_->Terrain() && project.mapEdits_->HasTerrainPathing());
+    project.ResetEditTracking(); const MapData::TerrainStrokePoint point{-80,-80};
+    if (draft) {
+        if (terrainOverlay) {
+            auto next = *project.mapEdits_->Terrain(); next.vertices[0].groundHeightRaw += 16;
+            MapData::RefreshTerrainDerived(next,0,0,2,2);
+            const auto bytes = MapData::SerializeMapTerrain(next); QVERIFY(bytes.Succeeded());
+            QVERIFY(project.mapEdits_->SetTerrain(*bytes.value).Succeeded());
+        } else {
+            MapData::TerrainBrush brush; brush.kind = MapData::TerrainBrushKind::PathingRestriction;
+            brush.size = 1; brush.pathingRestrictions = 0x04; brush.value = true;
+            QVERIFY(project.mapEdits_->EditTerrain(brush,std::span(&point,1)).Succeeded());
+        }
+        QVERIFY(project.ObserveMapDataEdit("unlisted terrain/pathing project recovery"));
+        QVERIFY(!project.mapEdits_->VerifyTerrainPathingForSave().Succeeded());
+    }
+    const auto expectedTerrain = MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()); QVERIFY(expectedTerrain.Succeeded());
+    const auto expectedDraft = project.mapEdits_->SerializePathingRestrictionDraft(); QVERIFY(expectedDraft.Succeeded());
+    const auto target = std::filesystem::path(root.filePath("reopen.forge").toStdWString());
+    const auto saved = project.SaveProjectToPath(target);
+    QVERIFY2(saved.Succeeded(),saved.diagnostics.empty() ? "project save" : saved.diagnostics.front().message.c_str());
+    auto prepared = PrepareProjectOpen(target);
+    QVERIFY2(prepared.Succeeded(),prepared.diagnostics.empty() ? "project reopen" : prepared.diagnostics.front().message.c_str());
+    QVERIFY((*prepared.value)->mapDataEdits);
+    auto& edits = *(*prepared.value)->mapDataEdits;
+    QVERIFY(edits.Terrain() && edits.HasTerrainPathing()); QCOMPARE(edits.IsDirty(),draft);
+    QCOMPARE(MapData::SerializeMapTerrain(*edits.Terrain()).value,expectedTerrain.value);
+    QCOMPARE(edits.SerializePathingRestrictionDraft().value,expectedDraft.value);
+    const auto sample = edits.InspectTerrainPoint(point); QVERIFY(sample.Succeeded());
+    const auto expectedFlags = draft && !terrainOverlay ? 0x86 : 0x82;
+    QCOMPARE(sample.value->pathingFlags,expectedFlags); QCOMPARE(sample.value->originalPathingFlags,0x82);
+    if (draft) {
+        QVERIFY(!edits.VerifyTerrainPathingForSave().Succeeded());
+        QVERIFY(edits.Undo() && !edits.IsDirty()); QCOMPARE(edits.InspectTerrainPoint(point).value->pathingFlags,0x82);
+        QVERIFY(edits.Redo() && edits.IsDirty()); QCOMPARE(edits.InspectTerrainPoint(point).value->pathingFlags,expectedFlags);
+        QVERIFY(!edits.VerifyTerrainPathingForSave().Succeeded());
+    } else QVERIFY(edits.Replacements().empty() && !edits.CanUndo() && edits.VerifyTerrainPathingForSave().Succeeded());
+    auto baseline = MapArchiveSession::Open((*prepared.value)->BaselinePath()); QVERIFY(baseline.Succeeded());
+    QCOMPARE(baseline.value->SourceSha256(),sourceSha); QCOMPARE(baseline.value->Members().size(),namedCount);
+    QCOMPARE(baseline.value->OpaqueMemberCount(),opaqueCount); QCOMPARE(baseline.value->ReadMember("(listfile)").value,list.value);
+    QCOMPARE(baseline.value->HasMember("war3map.w3e"),listTerrain); QCOMPARE(baseline.value->HasMember("war3map.wpm"),listPathing);
+    QCOMPARE(project.archiveSession_->Members().size(),namedCount); QCOMPARE(project.archiveSession_->OpaqueMemberCount(),opaqueCount);
+    QCOMPARE(Sha256File(source).value,std::optional{sourceSha});
+}
+
+void EditorProjectTests::ProjectRestoreKeepsMissingAndUnreadableTerrainDistinct() {
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto bytes = [](const std::string& text) { const auto span = std::as_bytes(std::span(text)); return std::vector<std::byte>(span.begin(),span.end()); };
+    const auto manifest = bytes("{\"format\":\"forge-project\",\"version\":1,\"sourceKind\":\"archive\"}");
+    for (const auto mode : {"missing-w3e","missing-wpm","unsupported","over-budget"}) {
+        const auto source = std::filesystem::path(root.filePath(QString::fromLatin1(mode)+".w3x").toStdWString());
+        if (std::string_view(mode) == "missing-w3e") {
+            QVERIFY(WriteVerifiedArchive(source,std::vector<MapArchiveMember>{{"known.bin",{std::byte{1}}}}).Succeeded());
+        } else if (std::string_view(mode) == "missing-wpm") {
+            QVERIFY(WriteVerifiedArchive(source,std::vector<MapArchiveMember>{{"war3map.w3e",UnlistedTerrainBytes()}}).Succeeded());
+        } else QVERIFY(WriteUnlistedTerrain(QString::fromStdWString(source.wstring()),UnlistedTerrainBytes(),
+            std::string_view(mode) == "unsupported" ? Mpq::kFilePatch : Mpq::kFileCompress,
+            std::string_view(mode) == "over-budget" ? 64u*1024u*1024u+1u : 0u));
+        QFile original(QString::fromStdWString(source.wstring())); QVERIFY(original.open(QIODevice::ReadOnly)); const auto raw = original.readAll(); original.close();
+        std::vector<std::byte> baseline(static_cast<std::size_t>(raw.size())); std::memcpy(baseline.data(),raw.constData(),baseline.size());
+        const auto projectPath = std::filesystem::path(root.filePath(QString::fromLatin1(mode)+".forge").toStdWString());
+        std::vector<MapArchiveMember> members{{"project.json",manifest},{"baseline/source.w3x",baseline}};
+        if (std::string_view(mode) == "missing-w3e") members.push_back({"overlay/map/war3map.w3e",UnlistedTerrainBytes()});
+        if (std::string_view(mode) == "missing-wpm") members.push_back({"overlay/map/war3map.wpm",{std::byte{1}}});
+        QVERIFY(WriteVerifiedArchive(projectPath,members).Succeeded());
+        const auto rejected = PrepareProjectOpen(projectPath); QVERIFY(!rejected.Succeeded() && !rejected.value);
+        if (std::string_view(mode) == "unsupported" || std::string_view(mode) == "over-budget") {
+            QVERIFY(HasReadDiagnostic(rejected,std::string_view(mode) == "unsupported" ? "EXACT_MEMBER_ENCODING_UNSUPPORTED" : "FILE_READ_BUDGET_EXCEEDED"));
+            QVERIFY(!HasReadDiagnostic(rejected,"TERRAIN_ABSENT") && !HasReadDiagnostic(rejected,"PATHING_ABSENT"));
+        } else {
+            QVERIFY(HasReadDiagnostic(rejected,"PROJECT_OPEN_FAILED"));
+            QVERIFY(rejected.diagnostics.front().message.find(std::string_view(mode) == "missing-w3e" ? "源 W3E" : "源 WPM") != std::string::npos);
+            members.resize(2); const auto clean = std::filesystem::path(root.filePath(QString::fromLatin1(mode)+"-clean.forge").toStdWString());
+            QVERIFY(WriteVerifiedArchive(clean,members).Succeeded()); auto restored = PrepareProjectOpen(clean); QVERIFY(restored.Succeeded());
+            QCOMPARE((*restored.value)->mapDataEdits->Terrain() != nullptr,std::string_view(mode) != "missing-w3e");
+            QVERIFY(!(*restored.value)->mapDataEdits->HasTerrainPathing() && !(*restored.value)->mapDataEdits->IsDirty());
+        }
     }
 }
 

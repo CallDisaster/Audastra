@@ -275,11 +275,29 @@ Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(const std::files
             ? (baseline->HasMember("war3map.w3e") ? baseline->ReadMember("war3map.w3e")
                 : Result<std::vector<std::byte>>::Failure("Project", "TERRAIN_ABSENT", "基线没有地形"))
             : EditorProject::ReadWorkspaceMember(*workspace, "war3map.w3e");
-        const bool attached = terrain.Succeeded() && terrain.value && mapDataEdits->AttachTerrain(*terrain.value).Succeeded();
         auto pathing = baseline
             ? (baseline->HasMember("war3map.wpm") ? baseline->ReadMember("war3map.wpm")
                 : Result<std::vector<std::byte>>::Failure("Project", "PATHING_ABSENT", "基线没有通行性图"))
             : EditorProject::ReadWorkspaceMember(*workspace, "war3map.wpm");
+        if (baseline) {
+            // 命名快照缺项不证明MPQ缺失；同批精确读取未列名的W3E/WPM，不修改原清单。
+            // 已命名成员沿原内存路径，避免将其既有容量另套进64MiB精确捕获合计帽。
+            std::vector<std::string> unlisted;
+            if (!baseline->HasMember("war3map.w3e")) unlisted.push_back("war3map.w3e");
+            if (!baseline->HasMember("war3map.wpm")) unlisted.push_back("war3map.wpm");
+            if (!unlisted.empty()) {
+                ArchiveExactMemberLimits limits;
+                limits.memberCount = unlisted.size(); // 单项/合计仍是原64MiB硬上限。
+                auto captured = baseline->CaptureExactMembers(unlisted, limits);
+                if (!captured.Succeeded() || !captured.value) return {{}, std::move(captured.diagnostics)};
+                for (auto& member : *captured.value) {
+                    if (!member.present) continue; // 仅真实Missing保留上面的原诊断及overlay拒绝。
+                    auto& target = member.name == "war3map.w3e" ? terrain : pathing;
+                    target = Result<std::vector<std::byte>>::Success(std::move(member.bytes));
+                }
+            }
+        }
+        const bool attached = terrain.Succeeded() && terrain.value && mapDataEdits->AttachTerrain(*terrain.value).Succeeded();
         const bool pathingAttached = attached && pathing.Succeeded() && pathing.value
             && mapDataEdits->AttachPathing(*pathing.value).Succeeded();
         const bool terrainOverlay = archive.HasMember("overlay/map/war3map.w3e");
