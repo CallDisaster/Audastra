@@ -262,6 +262,11 @@ Result<TerrainCliffs> BuildTerrainCliffs(const MapData::TerrainGridSnapshot& ter
     MeshSink sink(output.meshes);
     std::unordered_map<std::string, CachedModel> cache;
     std::map<std::string, std::size_t> missing;
+    const auto modelFailure = [](const std::string& path, std::vector<Diagnostic> diagnostics) -> Result<const MdxModel*> {
+        diagnostics.push_back({DiagnosticSeverity::Info, std::string(kSubsystem), std::string(kTerrainCliffModelFailureContextCode),
+            "悬崖模型读取或解析失败请求：" + path, std::nullopt});
+        return {std::nullopt, std::move(diagnostics)};
+    };
     // nullptr成功只代表reader明确回执Missing；读取/解析失败必须沿Result返回，
     // 不能被变体、坡道方向或普通悬崖的后续尝试掩盖。这不新增归档存在性认证。
     const auto load = [&](const std::string& path) -> Result<const MdxModel*> {
@@ -271,10 +276,10 @@ Result<TerrainCliffs> BuildTerrainCliffs(const MapData::TerrainGridSnapshot& ter
             auto bytes = read(path);
             if (!bytes.Succeeded()) {
                 if (bytes.diagnostics.size() != 1 || bytes.diagnostics.front().code != "RESOURCE_NOT_FOUND")
-                    return {std::nullopt, std::move(bytes.diagnostics)};
+                    return modelFailure(path, std::move(bytes.diagnostics));
             } else {
                 auto model = ParseMdx(*bytes.value);
-                if (!model.Succeeded()) return {std::nullopt, std::move(model.diagnostics)};
+                if (!model.Succeeded()) return modelFailure(path, std::move(model.diagnostics));
                 entry.model = std::move(*model.value);
             }
             found = cache.emplace(path, std::move(entry)).first;

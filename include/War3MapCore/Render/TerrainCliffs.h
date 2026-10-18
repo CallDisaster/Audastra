@@ -6,9 +6,12 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace War3Map::Render {
+
+inline constexpr std::string_view kTerrainCliffModelFailureContextCode = "TERRAIN_CLIFF_MODEL_FAILURE_CONTEXT";
 
 // 一种悬崖（CliffTypes.slk 一行）：模型目录（如 Cliffs / CityCliffs）、坡道模型目录（如 CliffTrans）
 // 与替换贴图 11 使用的贴图。坡道目录为空时该类型的坡道边按普通悬崖处理。
@@ -52,7 +55,8 @@ struct TerrainCliffs {
 // （去掉层级后的高度）双线性抬升，因此悬崖贴合地面。普通悬崖材质按 SW/SE/NW/NE 取首个非15，
 // 全15时有界搜索5×5再退slot0；坡道仍保留当前预览选择规则，与形状字母顺序无关。
 // 只读取模型，不修改地形。只有单条明确 RESOURCE_NOT_FOUND 回执允许变体回退/缺失计数；
-// 此处不独立认证归档存在性。其它读取或解析失败保留原诊断并拒绝整批，不发布部分覆盖。
+// 此处不独立认证归档存在性。其它读取或解析失败保留原诊断前缀并拒绝整批，不发布部分覆盖；
+// 仅在该即时失败点追加一条独立Info上下文（上述稳定code、实际请求path），Bake/前置失败不追加。
 [[nodiscard]] Result<TerrainCliffs> BuildTerrainCliffs(const MapData::TerrainGridSnapshot& terrain,
     std::span<const std::optional<CliffTypeSource>> cliffTypes, const ModelFileReader& read);
 
