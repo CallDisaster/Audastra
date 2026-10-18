@@ -1,5 +1,6 @@
 #include "War3MapCore/Services/TerrainMinimapSave.h"
 
+#include "War3MapCore/Hash.h"
 #include "War3MapCore/MapData/MapPlacements.h"
 #include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
@@ -62,13 +63,15 @@ Bytes Atlas() {
     }
     return bytes;
 }
+enum class MissingInput { None, GroundTexture, CameraMargins, DeepLevelPathing };
 struct Fixture {
     std::filesystem::path directory;
     Bytes w3e, wpm, w3i, doo, originalMinimap = Text("author minimap bytes must stay exact");
     MapArchiveSession archive;
     std::unique_ptr<MapDataEditSession> edits;
     bool hadMinimap;
-    explicit Fixture(bool special = false, bool minimap = true, bool tga = false) : hadMinimap(minimap) {
+    explicit Fixture(bool special = false, bool minimap = true, bool tga = false,
+        MissingInput missing = MissingInput::None) : hadMinimap(minimap) {
         static std::atomic<unsigned> sequence{0};
         directory = std::filesystem::temp_directory_path() / ("Audastra-minimap-fallback-"
             + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()) + "-" + std::to_string(sequence++));
@@ -78,6 +81,7 @@ struct Fixture {
         terrain.header.groundTilesets = {"Tg01"}; terrain.header.cliffTilesets = {"CLdi"}; terrain.vertices.resize(81);
         for (auto& vertex : terrain.vertices) {
             vertex.groundHeightRaw = 8192; vertex.waterHeightAndFlagsRaw = 7936; vertex.cliffAndLayerRaw = 2;
+            if (missing == MissingInput::DeepLevelPathing) vertex.textureAndFlagsRaw |= 0x40;
         }
         RefreshTerrainDerived(terrain, 0, 0, 9, 9); w3e = Take(SerializeMapTerrain(terrain));
         wpm = Text("MP3W"); wpm.resize(16 + 32 * 32); Put32(wpm, 8, 32); Put32(wpm, 12, 32);
@@ -93,6 +97,20 @@ struct Fixture {
             {"TerrainArt\\Water.slk", Slk({"waterID"})}, {"Fixture\\Ground.blp", Atlas()}, {"Fixture\\Cliff.blp", Atlas()},
             {"UI\\MiscData.txt", Text("[Water]\nDeepLevelPathing=64\n")},
             {"UI\\WorldEditData.txt", Text("[CameraMargins]\nLeft=0\nRight=0\nBottom=0\nTop=0\n")}};
+        for (auto& member : members) {
+            if (missing == MissingInput::CameraMargins && member.name == "UI\\WorldEditData.txt")
+                member.data = Text("[CameraMargins]\nLeft=0\nRight=0\nBottom=0\n");
+            if (missing == MissingInput::DeepLevelPathing && member.name == "UI\\MiscData.txt")
+                member.data = Text("[Water]\n");
+            if (missing == MissingInput::DeepLevelPathing && member.name == "TerrainArt\\Water.slk")
+                member.data = Slk({
+                    "waterID|texFile|height|numTex|texRate|texOffset|cells|alphaMode|lighting|impassable|mmRed|mmGreen|mmBlue|mmAlpha|Smin_R|Smin_G|Smin_B|Smin_A|Smax_R|Smax_G|Smax_B|Smax_A|Dmin_R|Dmin_G|Dmin_B|Dmin_A|Dmax_R|Dmax_G|Dmax_B|Dmax_A",
+                    "LSha|Fixture\\Water|0|1|1|0|1|0|0|0|20|50|90|128|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0"});
+        }
+        if (missing == MissingInput::GroundTexture)
+            std::erase_if(members, [](const auto& member) { return member.name == "Fixture\\Ground.blp"; });
+        if (missing == MissingInput::DeepLevelPathing)
+            members.push_back({"Fixture\\Water.blp", Atlas()});
         if (minimap) members.push_back({"war3mapMap.blp", originalMinimap});
         if (tga) members.push_back({"war3mapMap.tga", Text("author custom TGA bytes")});
         Take(WriteVerifiedArchive(directory / "source.w3x", members)); archive = Take(MapArchiveSession::Open(directory / "source.w3x"));
@@ -134,6 +152,52 @@ void PreserveThroughActualSave(bool present, bool inPlace) {
         Require(IO::WriteFileBytes(task.target, Take(IO::ReadFileBytes(altered.path))).Succeeded(), "只替换自有目标以验证回读字节门");
         const auto changedTarget = Take(MapArchiveSession::Open(task.target));
         Require(!guard->VerifyReadback(task, changedTarget).Succeeded(), "同一目标路径的小地图正文变化不能通过回读");
+    }
+}
+void MissingGenerationInputsPreserveActualSave() {
+    for (const auto missing : {MissingInput::GroundTexture, MissingInput::CameraMargins, MissingInput::DeepLevelPathing}) {
+        for (const bool present : {false, true}) {
+            // 不含特殊装饰物；必须由本次实际资源/配置缺失触发降级，不能复用别的能力错误。
+            Fixture fixture(false, present, false, missing); MapSaveTask task; fixture.Freeze(task);
+            const auto sourceSha = Take(Sha256File(fixture.archive.SourcePath()));
+            const auto result = TerrainMinimapSave::PrepareAutomaticOrPreserve(task, *fixture.edits, {});
+            Require(result.Succeeded() && result.value && !result.value->generated && result.value->preserved,
+                "真实资源或配置不可得时仍能取得原小地图保留资格");
+            Require(HasCode(result.diagnostics, missing == MissingInput::GroundTexture
+                    ? "RESOURCE_NOT_FOUND" : "CLASSIC_MINIMAP_CONFIG_MISSING")
+                && HasCode(result.diagnostics, "MINIMAP_GENERATION_SKIPPED")
+                && !HasCode(result.diagnostics, "CLASSIC_OBJECT_CAPTURE_SPECIAL_UNRESOLVED"),
+                "降级原因必须来自实际缺资源或缺配置");
+            if (missing != MissingInput::GroundTexture) {
+                const auto key = missing == MissingInput::CameraMargins ? "cameramargins.top" : "water.deeplevelpathing";
+                Require(std::any_of(result.diagnostics.begin(), result.diagnostics.end(), [&](const auto& diagnostic) {
+                    return diagnostic.code == "CLASSIC_MINIMAP_CONFIG_MISSING"
+                        && diagnostic.message.find(key) != std::string::npos;
+                }), "分别定位本次真实缺失的相机边距或深水配置键");
+            }
+            Require(std::none_of(result.diagnostics.begin(), result.diagnostics.end(), [](const auto& diagnostic) {
+                return diagnostic.severity == DiagnosticSeverity::Error;
+            }), "能力不可得只有警告，来源与保存安全门继续执行");
+            const auto guard = result.value->preserved;
+            Require(guard->VerifyCurrent(task, *fixture.edits).Succeeded(), "缺输入分支绑定本次会话和源成员");
+            task.diagnostics = result.diagnostics;
+            task.beforePublish = [&] { return guard->VerifyFrozenOutput(task); };
+            MapSaveService::Run(task);
+            Require(task.succeeded && task.nextSession, "缺资源或配置不阻断其它合法编辑实际保存");
+            const auto saved = Take(MapArchiveSession::Open(task.target));
+            Require(guard->VerifyReadback(task, saved).Succeeded(), "缺输入分支由独立打开的输出核对小地图");
+            Require(saved.HasMember("war3mapMap.blp") == present && !saved.HasMember("war3mapMap.tga"),
+                "缺输入时保留原小地图存在性，不新造或删除图像");
+            if (present) Require(Take(saved.ReadMember("war3mapMap.blp")) == fixture.originalMinimap,
+                "缺输入时已有BLP逐字节保留");
+            Require(Take(saved.ReadMember("war3map.w3e")) == fixture.w3e
+                && Take(saved.ReadMember("war3map.wpm")) == fixture.wpm
+                && Take(saved.ReadMember("war3map.doo")) == fixture.doo
+                && Take(saved.ReadMember("Fixture\\Unused.blp")) == Text("new fixture resource"),
+                "地形与摆放来源保持原字节，其它本次合法成员确实写出");
+            Require(Take(Sha256File(fixture.archive.SourcePath())) == sourceSha,
+                "能力缺失的另存路径未改动原图");
+        }
     }
 }
 void BudgetAndTga() {
@@ -184,6 +248,6 @@ void SourceStaleAndFinalMutationStillReject() {
 int main() {
     try {
         PreserveThroughActualSave(true, false); PreserveThroughActualSave(false, false); PreserveThroughActualSave(true, true);
-        BudgetAndTga(); SourceStaleAndFinalMutationStillReject(); return 0;
+        MissingGenerationInputsPreserveActualSave(); BudgetAndTga(); SourceStaleAndFinalMutationStillReject(); return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
