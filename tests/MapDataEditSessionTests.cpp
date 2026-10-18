@@ -673,12 +673,36 @@ void DryHeightGatePreservesProjectRecovery() {
     Require(gate.Succeeded(), "the shared save gate accepts a recovered dry-height overlay by its raw effect");
     raise.strength = 16;
     Require(reopened.EditTerrain(raise, std::span(&center, 1)).Succeeded()
-        && !reopened.VerifyTerrainPathingForSave().Succeeded(),
-        "successive strokes cannot exceed raw delta 156 from the source baseline");
+        && reopened.VerifyTerrainPathingForSave().Succeeded(),
+        "已证干地height不影响六种通行查询，连续笔划不再受历史raw156实验幅度限制");
     Require(reopened.Undo() && reopened.VerifyTerrainPathingForSave().Succeeded(),
         "undo restores the bounded height overlay");
     Require(reopened.Undo() && !reopened.IsDirty() && reopened.Redo() && reopened.IsDirty(),
         "the recovered draft remains one undoable command");
+}
+
+void DryHeightAllowsEditorRawRangeAndPreservesAuthoredPathing() {
+    const auto sourceTerrain = SmallTerrain();
+    auto pathing = SmallPathing();
+    for (std::size_t index = 16; index < pathing.size(); ++index)
+        pathing[index] = static_cast<std::byte>((index * 29u + 17u) & 255u);
+    auto parsed = ParseMapTerrain(sourceTerrain);
+    Require(parsed.Succeeded() && parsed.value, "全幅干地高度夹具可解析");
+    for (const std::uint16_t raw : {std::uint16_t{0}, std::uint16_t{0x3fff}}) {
+        auto grid = *parsed.value->Snapshot();
+        grid.vertices[2 * 5 + 2].groundHeightRaw = raw;
+        RefreshTerrainDerived(grid, 0, 0, 5, 5);
+        const auto next = SerializeMapTerrain(grid);
+        Require(next.Succeeded() && next.value, "编辑器已有14位raw高度范围完整序列化");
+        MapDataEditSession edits(MapDocument::FromMembers({}));
+        Require(edits.AttachTerrain(sourceTerrain).Succeeded() && edits.AttachPathing(pathing).Succeeded(), "附入真实地形与作者WPM原字");
+        Require(edits.SetTerrainAndPathing(*next.value, pathing).Succeeded(), "恢复超出旧幅度的真实干地高度编辑");
+        Require(edits.VerifyTerrainPathingForSave().Succeeded(), "合法干地raw范围两端均保持原版WPM查询结果");
+        const auto replacements = edits.Replacements();
+        Require(replacements.size() == 1 && replacements.front().name == "war3map.w3e", "高度修改不生成WPM替换或清除未知位");
+        Require(edits.Undo() && !edits.IsDirty() && edits.Redo() && edits.VerifyTerrainPathingForSave().Succeeded(),
+            "全幅干地高度仍使用同一撤销重做和保存门");
+    }
 }
 
 void PureHeightSaveGateKeepsUnverifiedTerrainClosed() {
@@ -736,8 +760,9 @@ int main() {
         MismatchedPathingBaselineFailsClosed();
         SaveGateKeepsRemoteMismatchAndRejectsUnpairedMembers();
         DryHeightGatePreservesProjectRecovery();
+        DryHeightAllowsEditorRawRangeAndPreservesAuthoredPathing();
         PureHeightSaveGateKeepsUnverifiedTerrainClosed();
-        std::cout << "MapDataEditSession: 14 scenario groups passed\n";
+        std::cout << "MapDataEditSession: all scenario groups passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

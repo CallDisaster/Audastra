@@ -145,10 +145,16 @@ void OriginalSaveGateRemainsAuthoritative() {
     Fixture height;
     height.Stroke(TerrainBrushKind::Raise, 40.0f);
     const auto plan = Take(TerrainSavePlan::Prepare(height.source, height.edits));
-    Require(!plan.SaveGate().Succeeded() && plan.Members()[0].action == TerrainSaveMemberAction::Reject,
-        "height over original verified bound produces a rejected plan");
-    Require(HasCode(plan.SaveGate().diagnostics, "MAP_TERRAIN_PATHING_UNVERIFIED"), "original gate diagnostic preserved");
-    Require(!plan.VerifyForSave(height.edits, height.source.aggregateSha256, height.Output()).Succeeded(), "rejected plan cannot publish");
+    Require(plan.SaveGate().Succeeded() && plan.Members()[0].action == TerrainSaveMemberAction::WriteEdited,
+        "超过历史原版单点实验幅度的干地高度按已证通行不变规则放行");
+    Require(plan.Members()[1].action == TerrainSaveMemberAction::Preserve
+        && plan.VerifyForSave(height.edits, height.source.aggregateSha256, height.Output()).Succeeded(),
+        "干地高度保存保留原WPM而非清理作者未知/手画限制");
+    auto wet = *height.edits.Terrain(); wet.vertices[4 * 9 + 4].textureAndFlagsRaw |= 0x40;
+    Require(height.edits.SetTerrain(Take(SerializeMapTerrain(wet))).Succeeded(), "涉水高度仍可保留为工程草稿");
+    const auto rejected = Take(TerrainSavePlan::Prepare(height.source, height.edits));
+    Require(!rejected.SaveGate().Succeeded() && rejected.Members()[0].action == TerrainSaveMemberAction::Reject
+        && HasCode(rejected.SaveGate().diagnostics, "MAP_TERRAIN_PATHING_UNVERIFIED"), "水语义未知时不借干地新规则放行");
 
     Fixture texture;
     Require(texture.edits.EditTerrainTextureSlot(TerrainTextureTable::Ground, 0, "Tg02").Succeeded(), "edit texture header draft");
@@ -162,6 +168,30 @@ void OriginalSaveGateRemainsAuthoritative() {
     const auto restricted = Take(TerrainSavePlan::Prepare(restrictions.source, restrictions.edits));
     Require(!restricted.SaveGate().Succeeded() && restricted.Members()[1].action == TerrainSaveMemberAction::Reject,
         "WPM-only restriction draft stays blocked");
+}
+
+void DryHeightFreezesRangePlacementsDefinitionsAndResources() {
+    Fixture fixture;
+    Bytes objects(12); objects[0] = std::byte{1}; // classic v1，空original/custom表
+    fixture.AddSource("war3map.w3b", objects);
+    fixture.Stroke(TerrainBrushKind::Raise, 512.0f);
+    const auto plan = Take(TerrainSavePlan::Prepare(fixture.source, fixture.edits));
+    Require(plan.SaveGate().Succeeded(), "高幅度干地修改须走实际共用保存计划");
+    auto output = fixture.Output(); output.push_back({"war3map.w3b", objects});
+    Require(plan.VerifyFrozenOutput(fixture.source.aggregateSha256, output).Succeeded(),
+        "脚本模板可以重现源物编原字，不能凭成员名误报发生变化");
+    output.back().data.push_back(std::byte{4});
+    Require(!plan.VerifyFrozenOutput(fixture.source.aggregateSha256, output).Succeeded(),
+        "改变静态对象定义不能借干地高度不变规则发布旧WPM");
+    output = fixture.Output(); output.push_back({"war3map.w3i", {std::byte{25}}});
+    Require(!plan.VerifyFrozenOutput(fixture.source.aggregateSha256, output).Succeeded(), "最终可玩范围变化必须拒绝");
+    output = fixture.Output(); output.push_back({"PathTextures/changed.tga", {std::byte{1}}});
+    const auto changedTexture = plan.VerifyFrozenOutput(fixture.source.aggregateSha256, output);
+    Require(!changedTexture.Succeeded() && HasCode(changedTexture.diagnostics, "TERRAIN_SAVE_PLAN_HEIGHT_RESOURCE_SCOPE"),
+        "高度和导入占地资源混合保存不具备原通行不变证明");
+    const std::array<std::string, 1> removals{"PathTextures/old.tga"};
+    Require(!plan.VerifyFrozenOutput(fixture.source.aggregateSha256, fixture.Output(), removals).Succeeded(),
+        "删除资源同样不能清理未知或作者手画通行位");
 }
 
 void SessionAndBaselineChangesInvalidatePlans() {
@@ -446,6 +476,7 @@ int main() {
         DryHeightHasExplicitDerivedRisks();
         BlightOutputCannotBeChangedAfterPlanning();
         OriginalSaveGateRemainsAuthoritative();
+        DryHeightFreezesRangePlacementsDefinitionsAndResources();
         SessionAndBaselineChangesInvalidatePlans();
         PreservedMembersCannotBeSilentlyRebuilt();
         DefaultMissingMinimapRemainsPreserved();

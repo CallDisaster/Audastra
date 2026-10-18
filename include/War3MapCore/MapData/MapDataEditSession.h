@@ -142,7 +142,8 @@ public:
     // 贴图槽替换/追加也进入同一撤销、工程恢复和原生地图保存门。
     [[nodiscard]] Result<TerrainStrokeResult> EditTerrainTextureSlot(TerrainTextureTable table,
         std::uint32_t slot, const std::string& rawcode);
-    // 正式地图保存门禁：仅证实原地形荒芜位与 WPM bit5 的逐格同步；其它地形改动拒绝保存。
+    // 正式地图保存门：干地高度按原版六模式查询不变条件保留WPM；荒芜位与
+    // WPM bit5逐格同步。涉水高度、材质通行属性与其它派生数据未知时仍拒绝。
     [[nodiscard]] Status VerifyTerrainPathingForSave() const;
     [[nodiscard]] EditReceipt LastEdit() const;
     // 最近一次真实应用（提交/Replay/Undo/Redo）；LastEdit仍供原统一撤销栈取得命令。

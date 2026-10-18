@@ -14,11 +14,15 @@ namespace {
 
 constexpr std::array<std::string_view, 5> kNames{
     "war3map.w3e", "war3map.wpm", "war3map.shd", "war3map.mmp", "war3mapMap.blp"};
+constexpr std::array<std::string_view, 10> kInvariantNames{
+    "war3map.w3i", "war3mapUnits.doo", "war3map.doo", "war3map.w3u", "war3map.w3t",
+    "war3map.w3b", "war3map.w3d", "war3map.w3a", "war3map.w3h", "war3map.w3q"};
 constexpr std::string_view kSubsystem = "Terrain.SavePlan";
 
-std::array<std::string, kNames.size()> ExactNames() {
-    std::array<std::string, kNames.size()> names;
-    std::copy(kNames.begin(), kNames.end(), names.begin());
+std::vector<std::string> ExactNames() {
+    std::vector<std::string> names;
+    for (const auto name : kNames) names.emplace_back(name);
+    for (const auto name : kInvariantNames) names.emplace_back(name);
     return names;
 }
 
@@ -115,10 +119,10 @@ Result<TerrainSavePlan> TerrainSavePlan::Prepare(const MapArchiveSession& source
         TerrainSavePlan plan;
         plan.sourceSha256_ = source.SourceSha256();
         ArchiveExactMemberLimits captureLimits;
-        captureLimits.memberCount = kNames.size();
+        captureLimits.memberCount = kNames.size() + kInvariantNames.size();
         captureLimits.memberBytes = limits.maximumBytes;
         captureLimits.totalBytes = limits.maximumBytes;
-        // listfile 不是完整性证据。明确查询五个名字，连同未列名成员一起在同一
+        // listfile不是完整性证据。明确查询地形与不变性依赖，连同未列名成员在同一
         // 已核源 SHA 的只读租约内捕获；解码失败不得降为 Missing/Unknown。
         const auto names = ExactNames();
         const auto captured = Take(source.DescribeExactMemberIdentities(plan.sourceSha256_, names, captureLimits));
@@ -134,6 +138,15 @@ Result<TerrainSavePlan> TerrainSavePlan::Prepare(const MapArchiveSession& source
                 member.sourceSha256 = identity.sha256;
             } else {
                 member.sourceState = TerrainSaveSourceState::Missing;
+            }
+        }
+        for (std::size_t index = 0; index < kInvariantNames.size(); ++index) {
+            auto& member = plan.invariantMembers_[index]; member.name = kInvariantNames[index];
+            const auto& identity = captured.members[kNames.size() + index];
+            member.sourceState = identity.present ? TerrainSaveSourceState::Present : TerrainSaveSourceState::Missing;
+            if (identity.present) {
+                AddBytes(static_cast<std::size_t>(*identity.byteSize), total, limits);
+                member.sourceBytes = static_cast<std::size_t>(*identity.byteSize); member.sourceSha256 = identity.sha256;
             }
         }
         return Complete(std::move(plan), edits, limits, total);
@@ -167,6 +180,22 @@ Result<TerrainSavePlan> TerrainSavePlan::Prepare(const WorkspaceSnapshot& source
                 member.sourceSha256 = entry.sha256;
             }
         }
+        for (std::size_t index = 0; index < kInvariantNames.size(); ++index) {
+            auto& member = plan.invariantMembers_[index]; member.name = kInvariantNames[index];
+            member.sourceState = TerrainSaveSourceState::Missing;
+            const auto key = Canonical(member.name);
+            for (const auto& entry : source.files) {
+                const auto path = Canonical(IO::GenericPathUtf8(entry.relativePath));
+                if (path != key && path != "map/" + key) continue;
+                if (member.sourceState == TerrainSaveSourceState::Present || !ValidSha(entry.sha256)
+                    || entry.size > std::numeric_limits<std::size_t>::max())
+                    return Result<TerrainSavePlan>::Failure(std::string(kSubsystem), "TERRAIN_SAVE_PLAN_SOURCE_AMBIGUOUS",
+                        "干地高度依赖缺少唯一的冻结来源：" + member.name);
+                AddBytes(static_cast<std::size_t>(entry.size), total, limits);
+                member.sourceState = TerrainSaveSourceState::Present; member.sourceBytes = static_cast<std::size_t>(entry.size);
+                member.sourceSha256 = entry.sha256;
+            }
+        }
         return Complete(std::move(plan), edits, limits, total);
     });
 }
@@ -189,6 +218,21 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
     RequireStatus(MatchBytes(plan.members_[0], original, false));
     RequireStatus(MatchBytes(plan.members_[1], *edits.pathingOriginal_, false));
     plan.saveGate_ = edits.VerifyTerrainPathingForSave();
+    if (edits.terrain_->vertices.size() == edits.terrainOriginal_->vertices.size())
+        for (std::size_t index = 0; index < edits.terrain_->vertices.size(); ++index)
+            plan.dryHeightInvariant_ = plan.dryHeightInvariant_
+                || edits.terrain_->vertices[index].groundHeightRaw != edits.terrainOriginal_->vertices[index].groundHeightRaw;
+    if (plan.dryHeightInvariant_ && plan.saveGate_.Succeeded()) {
+        constexpr std::array<MapDataKind, 3> kinds{MapDataKind::Settings, MapDataKind::Units, MapDataKind::Doodads};
+        for (std::size_t index = 0; index < kinds.size(); ++index) {
+            const auto& originalBytes = edits.original_[MapDataEditSession::Index(kinds[index])];
+            const auto& source = plan.invariantMembers_[index];
+            if ((source.sourceState == TerrainSaveSourceState::Present) != originalBytes.has_value())
+                return Result<TerrainSavePlan>::Failure(std::string(kSubsystem), "TERRAIN_SAVE_PLAN_INVARIANT_SOURCE",
+                    "干地高度的范围/摆放会话基线与真实来源成员存在性不同：" + source.name);
+            if (originalBytes) RequireStatus(MatchBytes(source, *originalBytes, false));
+        }
+    }
     for (auto& member : plan.members_) {
         member.outputBytes = member.sourceBytes;
         member.outputSha256 = member.sourceSha256;
@@ -253,7 +297,7 @@ Status TerrainSavePlan::VerifyMissingMinimapEligibility(const MapDataEditSession
     if (!terrainChanged_ || !edits.terrain_ || !edits.terrainOriginal_ || !edits.pathing_ || !edits.pathingOriginal_
         || edits.pathing_ != edits.pathingOriginal_ || edits.current_ != edits.original_)
         return Reject("MINIMAP_SAVE_DOMAIN", "首次missing-only小地图保存要求纯高度净变化，WPM与其它地图数据成员必须保持原字。");
-    // 原SaveGate已核header、raw156上限、安全一格与DOO；这里只求更窄的交集，
+    // 原SaveGate已核header、干地通行不变条件、安全一格与DOO；这里只求更窄的交集，
     // 不另造高度保存规则，也不把荒芜、贴图或pathing资格扩到小地图生成域。
     bool changed = false;
     for (std::size_t index = 0; index < edits.terrain_->vertices.size(); ++index) {
@@ -351,6 +395,11 @@ std::size_t TerrainSavePlan::OwnedCapacityBytes() const noexcept {
         if (member.sourceSha256) text(*member.sourceSha256);
         if (member.outputSha256) text(*member.outputSha256);
     }
+    for (const auto& member : invariantMembers_) {
+        text(member.name); text(member.reasonCode); text(member.reason);
+        if (member.sourceSha256) text(*member.sourceSha256);
+        if (member.outputSha256) text(*member.outputSha256);
+    }
     add(replacements_.capacity() * sizeof(MemberReplacement));
     for (const auto& member : replacements_) { text(member.name); add(member.data.capacity()); }
     add((diagnostics_.capacity() + saveGate_.diagnostics.capacity()) * sizeof(Diagnostic));
@@ -398,6 +447,43 @@ Status TerrainSavePlan::VerifyFrozenOutput(std::string_view sourceSha256,
             if (!checked.Succeeded()) return checked;
         }
     }
+    if (dryHeightInvariant_) {
+        for (const auto& member : invariantMembers_) {
+            const auto key = Canonical(member.name);
+            const MemberReplacement* actual = nullptr;
+            for (const auto& replacement : replacements) if (Canonical(replacement.name) == key) {
+                if (actual) return Reject("TERRAIN_SAVE_PLAN_DUPLICATE", "干地高度依赖被重复覆盖：" + member.name);
+                actual = &replacement;
+            }
+            for (const auto& removed : removals) if (Canonical(removed) == key && member.sourceState != TerrainSaveSourceState::Missing)
+                return Reject("TERRAIN_SAVE_PLAN_INVARIANT_CHANGED", "干地高度保存不能同时删除范围、摆放或物编来源：" + member.name);
+            if (actual) {
+                const auto matched = MatchBytes(member, actual->data, false);
+                if (!matched.Succeeded()) return matched;
+            }
+        }
+        const auto additionalSafe = [](const std::string& name) {
+            return name == "war3map.wtg" || name == "war3map.wct" || name == "war3map.w3r" || name == "war3map.w3c"
+                || name == "war3map.w3s" || name == "war3map.wts" || name == "war3map.imp"
+                || name.ends_with(".j") || name.ends_with(".lua") || name.ends_with(".dll");
+        };
+        const auto frozenInput = [&](const std::string& name) {
+            return std::any_of(members_.begin(), members_.end(), [&](const auto& member) { return Canonical(member.name) == name; })
+                || std::any_of(invariantMembers_.begin(), invariantMembers_.end(), [&](const auto& member) { return Canonical(member.name) == name; });
+        };
+        for (const auto& replacement : replacements) {
+            const auto key = Canonical(replacement.name);
+            if (!frozenInput(key) && !additionalSafe(key))
+                return Reject("TERRAIN_SAVE_PLAN_HEIGHT_RESOURCE_SCOPE",
+                    "干地高度保留原WPM时不能同时导入或覆盖资源；请先单独保存资源变更：" + replacement.name);
+        }
+        for (const auto& removed : removals) {
+            const auto key = Canonical(removed);
+            if (!frozenInput(key) && !additionalSafe(key))
+                return Reject("TERRAIN_SAVE_PLAN_HEIGHT_RESOURCE_SCOPE",
+                    "干地高度保留原WPM时不能同时删除资源：" + removed);
+        }
+    }
     return Status::Ok();
 }
 
@@ -407,7 +493,7 @@ Status TerrainSavePlan::VerifyReadback(const MapArchiveSession& saved, const Ter
         return Reject("TERRAIN_SAVE_PLAN_BUDGET", "地形五成员回读只能收紧64MiB读取预算。");
     const auto names = ExactNames();
     ArchiveExactMemberLimits limits;
-    limits.memberCount = kNames.size();
+    limits.memberCount = kNames.size() + kInvariantNames.size();
     limits.memberBytes = limits.totalBytes = readLimits.maximumBytes;
     const auto captured = saved.CaptureExactMembers(names, limits);
     if (!captured.Succeeded() || !captured.value) return {captured.diagnostics};
@@ -437,6 +523,16 @@ Status TerrainSavePlan::VerifyReadback(const MapArchiveSession& saved, const Ter
         }
         if (!member.outputSha256 && actual.present) {
             return Reject("TERRAIN_SAVE_PLAN_READBACK_UNEXPECTED", "回读发现计划之外的新地形成员：" + member.name);
+        }
+    }
+    if (dryHeightInvariant_) for (std::size_t index = 0; index < invariantMembers_.size(); ++index) {
+        const auto& member = invariantMembers_[index];
+        const auto& actual = (*captured.value)[kNames.size() + index];
+        if (actual.present != (member.sourceState == TerrainSaveSourceState::Present))
+            return Reject("TERRAIN_SAVE_PLAN_INVARIANT_CHANGED", "保存后的范围/摆放/物编依赖存在性不同：" + member.name);
+        if (actual.present) {
+            const auto matched = MatchBytes(member, actual.bytes, false);
+            if (!matched.Succeeded()) return matched;
         }
     }
     return Status::Ok();

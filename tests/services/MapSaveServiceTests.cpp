@@ -942,7 +942,7 @@ void TestBlightSaveRejectsStaleOrMissingTerrainPair() {
     Require(!std::filesystem::exists(request.targetCandidate), "failed blight saves must not publish a candidate");
 }
 
-void TestGenericTerrainSaveRejectsUnverifiedAmplitude() {
+void TestGenericTerrainSaveRejectsUnverifiedCliffChange() {
     // 真实地图来源由专用验收运行显式提供；CI 无地图资产时仍执行上面的合成门禁。
     const DWORD capacity = GetEnvironmentVariableW(L"FORGE_D1_PARITY_MAP", nullptr, 0);
     if (capacity == 0) return;
@@ -960,23 +960,23 @@ void TestGenericTerrainSaveRejectsUnverifiedAmplitude() {
     Require(terrainSha.Succeeded() && terrainSha.value, "hash isolated W3E");
     MapEditSaveRequest request;
     request.sourceMap = mapPath;
-    request.targetCandidate = directory.Path() / "height-over-evidence-limit.w3x";
+    request.targetCandidate = directory.Path() / "unverified-cliff-edit.w3x";
     request.toolRoot = directory.Path() / "unused-tool";
     request.gameRoot = directory.Path() / "unused-game";
     request.expectedSourceSha256 = opened.value->SourceSha256();
     request.expectedTerrainSha256 = *terrainSha.value;
     MapEditTerrainStroke stroke;
-    stroke.brush.kind = MapData::TerrainBrushKind::Raise;
+    stroke.brush.kind = MapData::TerrainBrushKind::CliffLevel;
     stroke.brush.radius = 1;
-    stroke.brush.strength = 64.0f; // raw 净差最多 256，超过原版真保存已取证的 156。
+    stroke.brush.levelDelta = 1; // 干地高度不变证明不能放宽悬崖层级变化。
     stroke.pointSpace = MapEditPointSpace::TerrainVertex;
     stroke.points.push_back({10, 10});
     request.terrainStrokes.push_back(std::move(stroke));
     auto result = SaveMapEditCandidate(request);
     Require(!result.Succeeded() && HasCode(result.diagnostics, "MAP_TERRAIN_PATHING_UNVERIFIED"),
-        "generic height save must retain the bounded native-evidence gate");
-    Require(!std::filesystem::exists(request.targetCandidate), "over-limit height cannot publish a candidate");
-    std::cout << "Generic terrain over-limit height reached WPM safety gate\n";
+        "generic terrain save must keep unverified cliff/pathing changes closed");
+    Require(!std::filesystem::exists(request.targetCandidate), "unverified cliff change cannot publish a candidate");
+    std::cout << "Generic terrain cliff change reached WPM safety gate\n";
 }
 
 void TestMissingMinimapChoiceCannotBroadenTerrainSaveScope() {
@@ -1047,8 +1047,8 @@ void TestMissingMinimapChoiceCannotBroadenTerrainSaveScope() {
     const auto declaredNoChange = SaveMapEditCandidate(request);
     Require(!declaredNoChange.Succeeded() && HasCode(declaredNoChange.diagnostics, "SAVE_NO_TERRAIN_CHANGE"),
         "declared generation cannot produce a no-op terrain candidate");
-    request.terrainStrokes[0].brush.kind = MapData::TerrainBrushKind::Raise;
-    request.terrainStrokes[0].brush.strength = 40; // raw160，仍超出现有raw156正式门。
+    request.terrainStrokes[0].brush.kind = MapData::TerrainBrushKind::CliffLevel;
+    request.terrainStrokes[0].brush.levelDelta = 1;
     for (const auto choice : {TerrainMinimapSaveChoice::Preserve, TerrainMinimapSaveChoice::GenerateMissingGroundOnly,
             TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly}) {
         request.minimapChoice = choice;
@@ -2035,7 +2035,7 @@ int main() {
         TestAutomaticPartialArchivePreservesExistingMinimapOnSave();
         TestProgramExceptionsFailClosedWithoutCollectingPrivateWhat();
         TestBlightSaveRejectsStaleOrMissingTerrainPair();
-        TestGenericTerrainSaveRejectsUnverifiedAmplitude();
+        TestGenericTerrainSaveRejectsUnverifiedCliffChange();
         TestMissingMinimapChoiceCannotBroadenTerrainSaveScope();
         TestOptionalRealMissingMinimapUsesTheExistingSaveService();
         TestFieldEditsBindSourceAndStayInScope();

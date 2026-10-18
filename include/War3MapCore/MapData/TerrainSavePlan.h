@@ -25,11 +25,13 @@ struct TerrainSaveMemberPlan {
 };
 
 struct TerrainSavePlanLimits {
-    // 五个来源成员、基线序列化核对与 W3E/WPM 输出的累计工作字节预算；只能收紧。
+    // 五个地形成员、十个范围/摆放/物编依赖、基线序列化核对与W3E/WPM
+    // 输出的累计工作字节预算；只能收紧。
     std::size_t maximumBytes = 64u * 1024u * 1024u;
 };
 
-// 当前只计划已有保存门允许的干地高度和荒芜净变化，不扩大保存资格。
+// 当前计划原版通行查询已证不变的干地高度及荒芜净变化；不重建WPM，
+// 不清除源图的静态对象、手画或未知通行位。
 // 默认SHD、MMP、小地图原样保留或已证明缺失；只有Services的密封missing-only
 // 准备单元能在原干地height门内增加MapBLP，普通计划与任意调用方不能授予其写入。
 // 归档 Prepare 在同一已核来源的只读租约内按五个明确名字捕获，不依赖 listfile。
@@ -87,7 +89,11 @@ private:
     std::string sourceSha256_;
     std::uint64_t sessionIdentity_ = 0, revision_ = 0, terrainSourceRevision_ = 0;
     bool terrainChanged_ = false;
+    bool dryHeightInvariant_ = false;
     std::array<TerrainSaveMemberPlan, 5> members_;
+    // 高度只保存不变通行时冻结：W3I、两DOO、七类native物编。它们不新增
+    // 写出能力；最终列表与回读必须沿用源身份，防止混入占地/范围变化。
+    std::array<TerrainSaveMemberPlan, 10> invariantMembers_;
     std::vector<MemberReplacement> replacements_;
     Status saveGate_;
     std::vector<Diagnostic> diagnostics_;

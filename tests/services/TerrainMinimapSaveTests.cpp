@@ -266,7 +266,10 @@ void PreserveAndEarlyRejections() {
     Fixture blight; blight.Stroke(TerrainBrushKind::Blight); MapSaveTask blightTask; blight.Freeze(blightTask);
     Rejected(TerrainMinimapSave::Prepare(blightTask, blight.edits, blight.gameRoot,
         TerrainMinimapSaveChoice::GenerateMissingGroundOnly), "MINIMAP_SAVE_DOMAIN");
-    Fixture overHeight; overHeight.Stroke(TerrainBrushKind::Raise, 40); MapSaveTask heightTask; overHeight.Freeze(heightTask);
+    Fixture overHeight; overHeight.Stroke(TerrainBrushKind::Raise, 40);
+    auto wetHeight = *overHeight.edits.Terrain(); wetHeight.vertices[4 * 9 + 4].textureAndFlagsRaw |= 0x40;
+    Require(overHeight.edits.SetTerrain(Take(SerializeMapTerrain(wetHeight))).Succeeded(), "混合涉水修改保持草稿但不能正式保存");
+    MapSaveTask heightTask; overHeight.Freeze(heightTask);
     Rejected(TerrainMinimapSave::Prepare(heightTask, overHeight.edits, overHeight.gameRoot,
         TerrainMinimapSaveChoice::GenerateMissingGroundOnly), "MAP_TERRAIN_PATHING_UNVERIFIED");
     Fixture bounded; bounded.Stroke(); MapSaveTask task; bounded.Freeze(task);

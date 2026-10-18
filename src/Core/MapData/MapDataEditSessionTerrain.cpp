@@ -31,11 +31,11 @@ namespace {
 constexpr std::uint32_t kTerrainChunk = 16;
 constexpr std::size_t kPathingHeaderBytes = 16;
 constexpr std::uint8_t kBlightBit = 0x20;
-// 原版单点实验中，连续六次降低（raw 8192 -> 8036）仍保留原 WPM。
-// 更大的高度变化尚无原版对照，正式保存先限制在已取证的幅度内。
-constexpr std::uint16_t kVerifiedHeightDeltaRaw = 156;
-
-bool HeightNeighborhoodSafe(const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
+// 原版六种地形通行查询在没有水的格上不读取 groundHeightRaw：边界只看XY，
+// 悬崖/坡道只看固定层级与分类，材质属性也独立于高度。因此，只要下列
+// 原始字段和对象占地保持不变，合法raw高度的任意净差均保留原WPM。
+// 这不是坡度近似或幅度白名单；水与未知标志仍明确拒绝。
+bool DryHeightPathingInvariant(const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
     std::size_t changedIndex) {
     const auto width = before.header.width, height = before.header.height;
     const auto x = static_cast<std::uint32_t>(changedIndex % width);
@@ -51,6 +51,7 @@ bool HeightNeighborhoodSafe(const TerrainGridSnapshot& before, const TerrainGrid
             if (original.HasWater() || edited.HasWater() || original.IsRamp() || edited.IsRamp()
                 || original.IsBoundary() || edited.IsBoundary() || original.IsMapEdge() || edited.IsMapEdge()
                 || original.UnknownWaterFlags() != 0 || edited.UnknownWaterFlags() != 0
+                || original.UnknownTextureFlags() != 0 || edited.UnknownTextureFlags() != 0
                 || original.CliffLevel() != level || edited.CliffLevel() != level) return false;
         }
     }
@@ -515,16 +516,19 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
             return reject("W3E 修改了高度或荒芜位以外的字段，尚无安全的 WPM 联动规则");
         if (before.groundHeightRaw != after.groundHeightRaw) {
             heightChanged = true;
-            const auto delta = before.groundHeightRaw > after.groundHeightRaw
-                ? before.groundHeightRaw - after.groundHeightRaw : after.groundHeightRaw - before.groundHeightRaw;
-            if (delta > kVerifiedHeightDeltaRaw)
-                return reject("高度变化超过原版真保存已取证的每顶点 raw 净差 156（39 世界单位）");
-            if (!HeightNeighborhoodSafe(*terrainOriginal_, *terrain, index))
+            // 不扩大原笔刷的可写高度范围。wire bit14/15即使parser保留，
+            // 也不能借“通行不变”把未知高度语义变成新保存能力。
+            if ((before.groundHeightRaw & 0xc000) != 0 || (after.groundHeightRaw & 0xc000) != 0)
+                return reject("高度修改超出现有14位可写范围，未知wire高度位必须原样保留");
+            if (!DryHeightPathingInvariant(*terrainOriginal_, *terrain, index))
                 return reject("高度变化周边一格存在水面、坡道、悬崖边界或未识别标志");
         }
     }
     if (heightChanged && doodads != original_[Index(MapDataKind::Doodads)])
         return reject("高度变化联动了装饰物成员；装饰物通行性尚未取证");
+    if (heightChanged && (current_[Index(MapDataKind::Units)] != original_[Index(MapDataKind::Units)]
+        || current_[Index(MapDataKind::Settings)] != original_[Index(MapDataKind::Settings)]))
+        return reject("高度变化同时修改了单位摆放或可玩范围；不能沿用原通行性和小地图标记");
     const auto width = (terrain->header.width - 1) * 4, height = (terrain->header.height - 1) * 4;
     const auto expectedBytes = kPathingHeaderBytes + static_cast<std::size_t>(width) * height;
     if (pathing->size() != expectedBytes || pathingOriginal_->size() != expectedBytes
