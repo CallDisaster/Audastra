@@ -111,7 +111,12 @@ struct CaptureContext {
         for (const auto& replacement : output) {
             if (replacement.name.size() > ArchiveExactMemberLimits{}.pathBytes)
                 Fail("TERRAIN_ASSETS_BUDGET", "地形资源overlay成员路径过长。");
-            const auto path = Canonical(replacement.name);
+            const auto canonical = Resources::CanonicalImportPath(replacement.name);
+            // 保存任务还可能带有与地形无关的任意成员。资源捕获只消费
+            // 可安全规范化的依赖路径，不能因为无关的非ASCII文件名替保存门
+            // 读取或拒绝正文；通用归档校验仍由保存服务负责。
+            if (!canonical.Succeeded() || !canonical.value) continue;
+            const auto& path = *canonical.value;
             Add(pathBytes, path.size(), ArchiveExactMemberLimits{}.totalPathBytes);
             if (!all.emplace(path).second)
                 Fail("TERRAIN_ASSETS_FINAL_DUPLICATE", "地形资源overlay存在规范路径重复：" + path);
@@ -120,7 +125,9 @@ struct CaptureContext {
         for (const auto& removal : removed) {
             if (removal.size() > ArchiveExactMemberLimits{}.pathBytes)
                 Fail("TERRAIN_ASSETS_BUDGET", "地形资源overlay成员路径过长。");
-            const auto path = Canonical(removal);
+            const auto canonical = Resources::CanonicalImportPath(removal);
+            if (!canonical.Succeeded() || !canonical.value) continue;
+            const auto& path = *canonical.value;
             Add(pathBytes, path.size(), ArchiveExactMemberLimits{}.totalPathBytes);
             if (!all.emplace(path).second)
                 Fail("TERRAIN_ASSETS_FINAL_CONFLICT", "地形资源overlay同时重复删除或替换：" + path);
