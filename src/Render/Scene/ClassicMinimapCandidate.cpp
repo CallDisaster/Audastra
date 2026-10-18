@@ -7,6 +7,7 @@
 #include <array>
 #include <limits>
 #include <new>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>

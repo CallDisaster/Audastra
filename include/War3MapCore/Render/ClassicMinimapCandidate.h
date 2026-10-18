@@ -1,6 +1,7 @@
 #pragma once
 
 #include "War3MapCore/Image/BlpJpegEncode.h"
+#include "War3MapCore/Render/TerrainMinimapCandidate.h"
 #include "War3MapCore/Render/TerrainMinimapPostprocess.h"
 #include "War3MapCore/Render/TerrainMinimapRepresentativeColor.h"
 
