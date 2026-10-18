@@ -94,11 +94,43 @@ void TestFailClosedInputs() {
     Require(!EncodeBlpJpegSingleMip(image).Succeeded(), "non-256 input was accepted");
 }
 
+void TestRawBgraColorAndCapacityLimits() {
+    auto source = Gradient();
+    constexpr std::array<std::uint8_t, 4> expected{9, 100, 231, 255};
+    for (std::size_t pixel = 0; pixel < source.rgba.size() / 4; ++pixel)
+        for (std::size_t channel = 0; channel < 4; ++channel)
+            source.rgba[pixel * 4 + channel] = static_cast<std::byte>(expected[channel]);
+    const auto encoded = EncodeBlpJpegSingleMip(source);
+    Require(encoded.Succeeded(), "constant asymmetric RGB fixture must encode");
+    const auto decoded = DecodeBlp(encoded.value->bytes);
+    Require(decoded.Succeeded(), "constant fixture must decode");
+    // Qdc=20，常色的重建误差界为20/(2*8)+半字节舍入，最多2 code；
+    // 独立R/B值同时拒绝交换分量及错误YCbCr/CMYK变换。
+    for (std::size_t pixel = 0; pixel < source.rgba.size() / 4; ++pixel) {
+        for (std::size_t channel = 0; channel < 3; ++channel) {
+            const auto actual = static_cast<int>(std::to_integer<std::uint8_t>(decoded.value->rgba[pixel * 4 + channel]));
+            const auto error = actual - static_cast<int>(expected[channel]);
+            Require(error >= -2 && error <= 2, "raw BGRA DC reconstruction exceeded analytic q40 constant-color bound");
+        }
+        Require(decoded.value->rgba[pixel * 4 + 3] == std::byte{255}, "opaque constant alpha");
+    }
+    auto limits = BlpJpegEncodeLimits{}; limits.maxOutputBytes = 8;
+    auto refused = EncodeBlpJpegSingleMip(source, limits);
+    Require(!refused.Succeeded() && !refused.value && refused.diagnostics.front().code == "BLP_JPEG_OUTPUT_BUDGET",
+        "small output cap must reject without publishing a partial stream");
+    limits = {}; limits.maxWorkingBytes = 4u * 1024u * 1024u;
+    Require(EncodeBlpJpegSingleMip(source, limits).Succeeded(), "normal retained input fits the fixed working cap");
+    source.rgba.reserve(2u * 1024u * 1024u);
+    refused = EncodeBlpJpegSingleMip(source, limits);
+    Require(!refused.Succeeded() && !refused.value && refused.diagnostics.front().code == "BLP_JPEG_WORKING_BUDGET",
+        "input capacity rather than just pixel size must count toward peak");
+}
+
 } // namespace
 
 int main() {
     try {
-        TestContainerAndMarkers(); TestFailClosedInputs();
+        TestContainerAndMarkers(); TestFailClosedInputs(); TestRawBgraColorAndCapacityLimits();
         std::cout << "BlpJpegEncode: container, decoder and fail-closed cases passed\n";
         return 0;
     } catch (const std::exception& error) {
