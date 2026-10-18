@@ -232,7 +232,7 @@ Result<std::shared_ptr<const TerrainMinimapSave>> TerrainMinimapSave::PrepareAut
         auto plan = std::make_shared<MapData::TerrainSavePlan>(Take(MapData::TerrainSavePlan::Prepare(*task.archive, edits, planLimits)));
         Check(plan->VerifyForSave(edits, task.sourceSha256, task.replacements, task.removals));
         auto terrain = Take(Render::CaptureTerrainMinimapAssets(*task.archive, edits, gameRoot,
-            limits.assets, Render::TerrainMinimapRangePolicy::ClassicPlayable));
+            limits.assets, Render::TerrainMinimapRangePolicy::ClassicPlayable, task.replacements, task.removals));
         auto objectLimits = limits.objects;
         objectLimits.maxWorkingBytes = std::min(objectLimits.maxWorkingBytes, Available(limits, Add(TaskCapacity(task), plan->OwnedCapacityBytes())));
         auto assets = Take(Render::CaptureClassicMinimapObjectAssets(std::move(terrain), *task.archive, edits,

@@ -36,7 +36,7 @@ struct TerrainMinimapAssetDependency {
     // 其中嵌套 tileset 包包含父包/嵌套名/SHA。不能拿笼统 Game sourceId 代替。
     std::string containerIdentity, encodedSha256;
     std::size_t encodedBytes = 0;
-    bool mapMemberPresent = false; // false 为本阶段准确批量捕获已证明 missing
+    bool mapMemberPresent = false; // 实际最终地图层存在性；删除overlay也可准确证明missing。
     std::vector<TerrainMinimapMipFacts> decodedMips; // table为空；atlas来自本次唯一decoder
 };
 
@@ -52,7 +52,8 @@ struct TerrainMinimapGroundAsset {
 };
 
 struct TerrainMinimapAssetCaptureFacts {
-    // 成功固定3次：基线五成员、三表(显式crop同批带W3I)、唯一atlas；不按材质散列源图。
+    // 固定3个逻辑批次：基线五成员、三表(显式crop同批带W3I)、唯一atlas。
+    // 地图字节包含实际owned overlay读取；全覆盖批次不再读被覆盖的旧正文。
     std::size_t exactMemberCaptureBatches = 0, baselineSourceBytes = 0, mapDependencyBytes = 0, gameDependencyBytes = 0;
     std::size_t cumulativeSourceBytes = 0;
     std::size_t maximumMapBatchRetainedBytes = 0; // 本次phase编码字节size，不是容器capacity或完整内存峰值
@@ -71,10 +72,14 @@ class TerrainMinimapAssetSnapshot;
 // 调用者必须串行排除 edits 写入。只接真实 ArchiveAndGame 来源，不接任意SHA/atlas/callback。
 // 两种声明边距政策均要求真实map-only W3I同源/当前原字闭环，不根据MapEdge自动选择。
 // Prepare只复用来源基线匹配；其Result成功与SaveGate成功不同，本接口不执行或放宽保存。
+// final列表只覆盖实际消费的地形表、配置和贴图，W3E/W3I仍沿原会话/来源合同。
+// 列表必须由保存宿主持有，调用期间不可修改；snapshot不保留其span或正文借用。
 [[nodiscard]] Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(
     const MapArchiveSession& source, const MapData::MapDataEditSession& edits,
     const std::filesystem::path& gameRoot, const TerrainMinimapAssetCaptureLimits& limits = {},
-    TerrainMinimapRangePolicy rangePolicy = TerrainMinimapRangePolicy::FullW3e);
+    TerrainMinimapRangePolicy rangePolicy = TerrainMinimapRangePolicy::FullW3e,
+    std::span<const MemberReplacement> replacements = {},
+    std::span<const std::string> removals = {});
 
 class TerrainMinimapAssetSnapshot {
 public:
@@ -89,9 +94,11 @@ public:
     [[nodiscard]] const std::vector<TerrainMinimapGroundAsset>& GroundAssets() const noexcept { return ground_; }
     [[nodiscard]] const TerrainMinimapAssetCaptureFacts& Facts() const noexcept { return facts_; }
     [[nodiscard]] const std::string& IdentitySha256() const noexcept { return identitySha256_; }
-    static constexpr const char* sourcePolicy = "archive-and-game-capture-v3";
+    static constexpr const char* sourcePolicy = "archive-final-resources-and-game-capture-v4";
     static constexpr bool formalSaveAuthorized = false, nativeEditorOrGameVerified = false;
     static constexpr bool pendingImportReplaceRemoveCovered = false, w3iDooShdSemanticsCovered = false;
+    // 仅地形资源最终覆盖；上面的完整跨域导入/删除与原生文件语义没有因此放开。
+    static constexpr bool terrainResourceOverlayCovered = true;
 private:
     TerrainMinimapAssetSnapshot() = default;
     TerrainMinimapInput input_;
@@ -103,7 +110,8 @@ private:
     std::string identitySha256_;
     friend Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(
         const MapArchiveSession&, const MapData::MapDataEditSession&, const std::filesystem::path&,
-        const TerrainMinimapAssetCaptureLimits&, TerrainMinimapRangePolicy);
+        const TerrainMinimapAssetCaptureLimits&, TerrainMinimapRangePolicy,
+        std::span<const MemberReplacement>, std::span<const std::string>);
 };
 
 // 有界重新捕获并核对来源配置/修订和显式依赖；不以同像素或同W3E SHA复活旧会话。
@@ -111,7 +119,9 @@ private:
 // 复核仍要求调用者排除 edits 写入；没有长期来源租约或正式保存授权含义。
 [[nodiscard]] Status VerifyTerrainMinimapAssetsCurrent(const TerrainMinimapAssetSnapshot& snapshot,
     const MapArchiveSession& source, const MapData::MapDataEditSession& edits,
-    const std::filesystem::path& gameRoot, const TerrainMinimapAssetCaptureLimits& limits = {});
+    const std::filesystem::path& gameRoot, const TerrainMinimapAssetCaptureLimits& limits = {},
+    std::span<const MemberReplacement> replacements = {},
+    std::span<const std::string> removals = {});
 
 // 对保存任务实际最终列表核验所消费的W3E/Settings/Table/Atlas；不接caller填的SHA或来源。
 // 准备线程先用VerifyCurrent核编辑代际；worker只消费owned snapshot和真实source/最终列表，

@@ -18,6 +18,7 @@
 #include <cmath>
 #include <map>
 #include <new>
+#include <set>
 #include <stdexcept>
 
 namespace War3Map::Render {
@@ -40,6 +41,10 @@ template<class T, class Function> Result<T> Callback(Function&& function) {
     catch (Failure& failure) { return {std::nullopt, std::move(failure.diagnostics)}; }
 }
 std::string Canonical(std::string_view path) { return Take(Resources::CanonicalImportPath(path)); }
+bool ResourceOverlayPath(std::string_view path) {
+    // W3E/W3I只能来自已经验证的编辑会话/源crop；资源覆盖不扩大原生编辑域。
+    return path != "WAR3MAP.W3E" && path != "WAR3MAP.W3I";
+}
 
 void Add(std::size_t& used, std::size_t bytes, std::size_t maximum) {
     if (used > maximum || bytes > maximum - used) Fail("TERRAIN_ASSETS_BUDGET", "实际读取或保留容量超过捕获预算。");
@@ -88,14 +93,40 @@ struct CaptureContext {
     std::vector<ArchiveExactMember> mapMembers;
     std::map<std::string, std::size_t, std::less<>> mapIndices;
     std::map<std::string, std::size_t, std::less<>> dependencyIndices;
+    std::map<std::string, const MemberReplacement*, std::less<>> replacements;
+    std::set<std::string, std::less<>> removals;
     std::size_t memberLimit = 0;
     TerrainMinimapDependencyKind kind = TerrainMinimapDependencyKind::Table;
     Resources::ResourceResolver resolver;
 
     CaptureContext(const MapArchiveSession& archive, const TerrainMinimapAssetCaptureLimits& budget,
         TerrainMinimapAssetCaptureFacts& observed, std::vector<TerrainMinimapAssetDependency>& records,
-        std::filesystem::path root, std::uint8_t tileset)
-        : source(archive), limits(budget), facts(observed), dependencies(records), gameRoot(std::move(root)), mainTileset(tileset) {}
+        std::filesystem::path root, std::uint8_t tileset,
+        std::span<const MemberReplacement> output = {}, std::span<const std::string> removed = {})
+        : source(archive), limits(budget), facts(observed), dependencies(records), gameRoot(std::move(root)), mainTileset(tileset) {
+        if (output.size() > 16384 || removed.size() > 16384)
+            Fail("TERRAIN_ASSETS_BUDGET", "地形资源overlay超过有界成员数量。");
+        std::set<std::string, std::less<>> all;
+        std::size_t pathBytes = 0;
+        for (const auto& replacement : output) {
+            if (replacement.name.size() > ArchiveExactMemberLimits{}.pathBytes)
+                Fail("TERRAIN_ASSETS_BUDGET", "地形资源overlay成员路径过长。");
+            const auto path = Canonical(replacement.name);
+            Add(pathBytes, path.size(), ArchiveExactMemberLimits{}.totalPathBytes);
+            if (!all.emplace(path).second)
+                Fail("TERRAIN_ASSETS_FINAL_DUPLICATE", "地形资源overlay存在规范路径重复：" + path);
+            if (ResourceOverlayPath(path)) replacements.emplace(path, &replacement);
+        }
+        for (const auto& removal : removed) {
+            if (removal.size() > ArchiveExactMemberLimits{}.pathBytes)
+                Fail("TERRAIN_ASSETS_BUDGET", "地形资源overlay成员路径过长。");
+            const auto path = Canonical(removal);
+            Add(pathBytes, path.size(), ArchiveExactMemberLimits{}.totalPathBytes);
+            if (!all.emplace(path).second)
+                Fail("TERRAIN_ASSETS_FINAL_CONFLICT", "地形资源overlay同时重复删除或替换：" + path);
+            if (ResourceOverlayPath(path)) removals.emplace(path);
+        }
+    }
 
     void EnsureGame() {
         if (game) return;
@@ -104,16 +135,20 @@ struct CaptureContext {
         Check(guard.Verify()); facts.gameMounted = true;
     }
 
-    Resources::ResourceLocation Location(std::string_view path, bool map) const {
-        return {std::string(path), map ? Resources::ResourceLayer::MapImport : Resources::ResourceLayer::Game,
-            map ? Resources::ResourcePriority::MapArchive : Resources::ResourcePriority::GameBase,
-            map ? "terrain-minimap-map:" + source.SourceSha256() : "terrain-minimap-game", std::string(path)};
+    Resources::ResourceLocation Location(std::string_view path, bool map, bool overlay = false) const {
+        return {std::string(path), overlay ? Resources::ResourceLayer::SessionOverride
+            : map ? Resources::ResourceLayer::MapImport : Resources::ResourceLayer::Game,
+            overlay ? Resources::ResourcePriority::SessionOverride
+                : map ? Resources::ResourcePriority::MapArchive : Resources::ResourcePriority::GameBase,
+            overlay ? "terrain-minimap-overlay" : map ? "terrain-minimap-map:" + source.SourceSha256() : "terrain-minimap-game",
+            std::string(path)};
     }
 
-    void Record(std::string_view path, std::span<const std::byte> bytes, bool map, std::string container) {
+    void Record(std::string_view path, std::span<const std::byte> bytes, bool map, std::string container,
+        bool overlay = false) {
         if (dependencyIndices.contains(path)) Fail("TERRAIN_ASSETS_DEPENDENCY", "同一捕获阶段重复消费了资源。");
         TerrainMinimapAssetDependency dependency;
-        dependency.kind = kind; dependency.winner = Location(path, map); dependency.containerIdentity = std::move(container);
+        dependency.kind = kind; dependency.winner = Location(path, map, overlay); dependency.containerIdentity = std::move(container);
         dependency.encodedBytes = bytes.size(); dependency.encodedSha256 = Take(Sha256(bytes)); dependency.mapMemberPresent = map;
         dependencyIndices.emplace(std::string(path), dependencies.size()); dependencies.push_back(std::move(dependency));
     }
@@ -123,36 +158,70 @@ struct CaptureContext {
         memberLimit = perMember; kind = purpose;
         ArchiveExactMemberLimits exact;
         exact.memberCount = 64; exact.memberBytes = perMember;
-        exact.totalBytes = limits.maxSourceBytes - facts.cumulativeSourceBytes;
         // baseline一轮，三表一轮，全部唯一texture一轮；无逐材质CaptureExactMembers热路径。
-        mapMembers = Take(source.CaptureExactMembers(names, exact)); ++facts.exactMemberCaptureBatches;
+        std::vector<std::string> sourceNames;
+        sourceNames.reserve(names.size());
+        for (const auto& name : names) {
+            const auto path = Canonical(name);
+            if (const auto replacement = replacements.find(path); replacement != replacements.end()) {
+                if (replacement->second->data.size() > memberLimit)
+                    Fail("TERRAIN_ASSETS_BUDGET", "地形资源overlay超过本阶段成员预算：" + path);
+                Add(facts.cumulativeSourceBytes, replacement->second->data.size(), limits.maxSourceBytes);
+            } else if (!removals.contains(path)) sourceNames.push_back(name);
+        }
+        exact.totalBytes = limits.maxSourceBytes - facts.cumulativeSourceBytes;
+        auto sourceMembers = sourceNames.empty()
+            ? std::vector<ArchiveExactMember>{}
+            : Take(source.CaptureExactMembers(sourceNames, exact));
+        std::map<std::string, ArchiveExactMember, std::less<>> sourceByPath;
+        for (auto& member : sourceMembers) sourceByPath.emplace(Canonical(member.name), std::move(member));
+        mapMembers.reserve(names.size());
+        for (const auto& name : names) {
+            const auto path = Canonical(name);
+            if (const auto replacement = replacements.find(path); replacement != replacements.end()) {
+                mapMembers.push_back({std::string(name), true, replacement->second->data});
+                Add(facts.mapDependencyBytes, replacement->second->data.size(), limits.maxSourceBytes);
+            } else if (removals.contains(path)) {
+                mapMembers.push_back({std::string(name), false, {}});
+            } else if (const auto source = sourceByPath.find(path); source != sourceByPath.end()) {
+                mapMembers.push_back(std::move(source->second));
+            } else {
+                mapMembers.push_back({std::string(name), false, {}});
+            }
+        }
+        ++facts.exactMemberCaptureBatches;
         std::size_t batchBytes = 0;
         for (std::size_t i = 0; i < mapMembers.size(); ++i) {
             if (!mapIndices.emplace(Canonical(mapMembers[i].name), i).second)
                 Fail("TERRAIN_ASSETS_DEPENDENCY", "阶段请求有规范路径冲突。");
-            Add(facts.cumulativeSourceBytes, mapMembers[i].bytes.size(), limits.maxSourceBytes);
-            Add(facts.mapDependencyBytes, mapMembers[i].bytes.size(), limits.maxSourceBytes);
+            if (!replacements.contains(Canonical(mapMembers[i].name))) {
+                Add(facts.cumulativeSourceBytes, mapMembers[i].bytes.size(), limits.maxSourceBytes);
+                Add(facts.mapDependencyBytes, mapMembers[i].bytes.size(), limits.maxSourceBytes);
+            }
             Add(batchBytes, mapMembers[i].bytes.size(), limits.maxSourceBytes);
         }
         facts.maximumMapBatchRetainedBytes = std::max(facts.maximumMapBatchRetainedBytes, batchBytes);
-        Resources::ResourceSource mapSource;
-        mapSource.id = "terrain-minimap-map:" + source.SourceSha256(); mapSource.layer = Resources::ResourceLayer::MapImport;
-        mapSource.priority = Resources::ResourcePriority::MapArchive;
-        mapSource.probe = [this](std::string_view path) {
-            const auto found = mapIndices.find(path);
-            if (found == mapIndices.end()) return Result<Resources::ResourceProbe>::Failure(kSubsystem,
-                "TERRAIN_ASSETS_UNPLANNED_RESOURCE", "请求不在本阶段准确捕获名单内。");
-            return Result<Resources::ResourceProbe>::Success(mapMembers[found->second].present
-                ? Resources::ResourceProbe{Resources::ResourceProbeState::Found, std::string(path)} : Resources::ResourceProbe{});
-        };
-        mapSource.read = [this](std::string_view path) {
-            return Callback<std::vector<std::byte>>([&] {
-                auto& member = mapMembers.at(mapIndices.at(std::string(path)));
-                Record(path, member.bytes, true, source.SourceSha256());
-                return std::move(member.bytes);
-            });
-        };
-        Check(resolver.AddSource(std::move(mapSource)));
+        for (const bool overlay : {true, false}) {
+            Resources::ResourceSource mapSource;
+            const auto location = Location(std::string_view{}, true, overlay);
+            mapSource.id = location.sourceId; mapSource.layer = location.layer; mapSource.priority = location.priority;
+            mapSource.probe = [this, overlay](std::string_view path) {
+                const auto found = mapIndices.find(path);
+                if (found == mapIndices.end()) return Result<Resources::ResourceProbe>::Failure(kSubsystem,
+                    "TERRAIN_ASSETS_UNPLANNED_RESOURCE", "请求不在本阶段准确捕获名单内。");
+                return Result<Resources::ResourceProbe>::Success(mapMembers[found->second].present
+                    && replacements.contains(path) == overlay
+                    ? Resources::ResourceProbe{Resources::ResourceProbeState::Found, std::string(path)} : Resources::ResourceProbe{});
+            };
+            mapSource.read = [this, overlay](std::string_view path) {
+                return Callback<std::vector<std::byte>>([&] {
+                    auto& member = mapMembers.at(mapIndices.at(std::string(path)));
+                    Record(path, member.bytes, true, source.SourceSha256(), overlay);
+                    return std::move(member.bytes);
+                });
+            };
+            Check(resolver.AddSource(std::move(mapSource)));
+        }
         Resources::ResourceSource gameSource;
         gameSource.id = "terrain-minimap-game"; gameSource.layer = Resources::ResourceLayer::Game;
         gameSource.priority = Resources::ResourcePriority::GameBase;
@@ -332,7 +401,9 @@ FinalMembers SelectFinalMembers(const TerrainMinimapAssetSnapshot& snapshot,
     for (const auto& [path, member] : selected) {
         if (member.removed && member.replacement)
             Fail("TERRAIN_ASSETS_FINAL_CONFLICT", "最终列表同时删除和替换小地图依赖：" + path);
-        if (member.removed)
+        // 资源删除只屏蔽地图层；若捕获时确实选中game，最终列表必须仍能
+        // 重现该winner。W3E/Settings和地图winner依然不能被删除。
+        if (member.removed && (!member.dependency || member.dependency->mapMemberPresent))
             Fail("TERRAIN_ASSETS_FINAL_REMOVAL", "最终列表删除了小地图依赖：" + path);
     }
     return selected;
@@ -377,6 +448,9 @@ void VerifyFinalBytes(const TerrainMinimapAssetSnapshot& snapshot, const FinalMe
     for (const auto& [path, member] : selected) {
         if (!member.dependency && !member.replacement && binding.originalTerrainSha256 != binding.currentTerrainSha256)
             Fail("TERRAIN_ASSETS_FINAL_W3E_MISSING", "最终列表缺少冻结的已编辑W3E输出。");
+        if (member.dependency && member.dependency->winner.layer == Resources::ResourceLayer::SessionOverride
+            && !member.replacement)
+            Fail("TERRAIN_ASSETS_FINAL_WINNER", "最终列表缺少捕获时实际消费的资源overlay：" + path);
         if (!member.replacement) continue;
         if (member.dependency && !member.dependency->mapMemberPresent)
             Fail("TERRAIN_ASSETS_FINAL_WINNER", "最终新增地图成员将覆盖冻结game winner：" + path);
@@ -390,11 +464,18 @@ void VerifyFinalBytes(const TerrainMinimapAssetSnapshot& snapshot, const FinalMe
 bool SameWinner(const TerrainMinimapAssetDependency& a, const TerrainMinimapAssetDependency& b, std::string_view savedMapSha) {
     // 新归档map资源的容器/sourceId必然随整档SHA改变；其实际路径/层级/正文仍必须相同。
     const bool rebindMap = !savedMapSha.empty() && a.mapMemberPresent && b.mapMemberPresent;
+    const bool reemittedMap = savedMapSha.empty() && a.mapMemberPresent && b.mapMemberPresent
+        && a.winner.layer == Resources::ResourceLayer::SessionOverride && b.winner.layer == Resources::ResourceLayer::MapImport;
     const bool sameContainer = rebindMap
         ? a.containerIdentity == savedMapSha && a.winner.sourceId == "terrain-minimap-map:" + std::string(savedMapSha)
+        : reemittedMap ? a.containerIdentity == b.containerIdentity
         : a.winner.sourceId == b.winner.sourceId && a.containerIdentity == b.containerIdentity;
-    return a.winner.canonicalPath == b.winner.canonicalPath && a.winner.layer == b.winner.layer
-        && a.winner.priority == b.winner.priority && a.winner.sourcePath == b.winner.sourcePath && sameContainer
+    const bool sameLayer = rebindMap
+        ? a.winner.layer == Resources::ResourceLayer::MapImport && a.winner.priority == Resources::ResourcePriority::MapArchive
+            && (b.winner.layer == Resources::ResourceLayer::MapImport || b.winner.layer == Resources::ResourceLayer::SessionOverride)
+        : reemittedMap || (a.winner.layer == b.winner.layer && a.winner.priority == b.winner.priority);
+    return a.winner.canonicalPath == b.winner.canonicalPath && sameLayer
+        && a.winner.sourcePath == b.winner.sourcePath && sameContainer
         && a.mapMemberPresent == b.mapMemberPresent && a.encodedBytes == b.encodedBytes && a.encodedSha256 == b.encodedSha256;
 }
 
@@ -422,7 +503,8 @@ void VerifyDependencyPhase(CaptureContext& context, const TerrainMinimapAssetSna
 
 Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(const MapArchiveSession& source,
     const MapData::MapDataEditSession& edits, const std::filesystem::path& gameRoot,
-    const TerrainMinimapAssetCaptureLimits& limits, TerrainMinimapRangePolicy rangePolicy) {
+    const TerrainMinimapAssetCaptureLimits& limits, TerrainMinimapRangePolicy rangePolicy,
+    std::span<const MemberReplacement> replacements, std::span<const std::string> removals) {
     try {
         ValidateLimits(limits);
         if (rangePolicy != TerrainMinimapRangePolicy::FullW3e && rangePolicy != TerrainMinimapRangePolicy::DeclaredW3iMargins
@@ -458,7 +540,8 @@ Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(const MapArchive
         binding.currentTerrainSha256 = Take(Sha256(result.input_.currentW3e));
         result.input_.binding = {"terrain-session:" + std::to_string(binding.sessionIdentity), binding.sessionIdentity,
             binding.revision, binding.archiveSha256, binding.currentTerrainSha256};
-        CaptureContext context{source, limits, facts, result.dependencies_, binding.gameRoot, terrain->header.mainTileset};
+        CaptureContext context{source, limits, facts, result.dependencies_, binding.gameRoot, terrain->header.mainTileset,
+            replacements, removals};
         Check(context.guard.Watch(source.SourcePath()));
         std::vector<Diagnostic> diagnostics;
         std::vector<std::string> texturePaths;
@@ -628,11 +711,14 @@ Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(const MapArchive
 }
 
 Status VerifyTerrainMinimapAssetsCurrent(const TerrainMinimapAssetSnapshot& snapshot, const MapArchiveSession& source,
-    const MapData::MapDataEditSession& edits, const std::filesystem::path& gameRoot, const TerrainMinimapAssetCaptureLimits& limits) {
+    const MapData::MapDataEditSession& edits, const std::filesystem::path& gameRoot,
+    const TerrainMinimapAssetCaptureLimits& limits, std::span<const MemberReplacement> replacements,
+    std::span<const std::string> removals) {
     try {
         if (!Current(source, edits, snapshot.Binding()) || GameRoot(gameRoot) != snapshot.Binding().gameRoot)
             return Status::Failure(kSubsystem, "TERRAIN_ASSETS_STALE", "资源快照不属于当前来源或编辑修订。");
-        auto current = CaptureTerrainMinimapAssets(source, edits, gameRoot, limits, snapshot.Input().rangePolicy);
+        auto current = CaptureTerrainMinimapAssets(source, edits, gameRoot, limits, snapshot.Input().rangePolicy,
+            replacements, removals);
         if (!current.Succeeded()) return {std::move(current.diagnostics)};
         if (current.value->IdentitySha256() != snapshot.IdentitySha256())
             return Status::Failure(kSubsystem, "TERRAIN_ASSETS_STALE", "实际winner、编码字节或解码mip身份已变化。");
@@ -654,7 +740,8 @@ Status VerifyTerrainMinimapAssetsFrozenOutput(const TerrainMinimapAssetSnapshot&
         TerrainMinimapAssetCaptureFacts facts;
         facts.cumulativeSourceBytes = hashedBytes;
         std::vector<TerrainMinimapAssetDependency> dependencies;
-        CaptureContext context{source, limits, facts, dependencies, binding.gameRoot, binding.mainTileset};
+        CaptureContext context{source, limits, facts, dependencies, binding.gameRoot, binding.mainTileset,
+            replacements, removals};
         Check(context.guard.Watch(source.SourcePath()));
         context.Phase({"war3map.w3e"}, binding.originalTerrainBytes, TerrainMinimapDependencyKind::Table);
         const auto& original = context.mapMembers.front();

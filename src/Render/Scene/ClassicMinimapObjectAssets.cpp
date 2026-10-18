@@ -316,7 +316,8 @@ Status VerifyClassicMinimapObjectAssetsCurrent(const ClassicMinimapObjectAssets&
     std::span<const MemberReplacement> replacements, std::span<const std::string> removals) {
     try {
         ValidateLimits(objectLimits);
-        Check(VerifyTerrainMinimapAssetsCurrent(snapshot.TerrainAssets(), source, edits, gameRoot, terrainLimits));
+        Check(VerifyTerrainMinimapAssetsCurrent(snapshot.TerrainAssets(), source, edits, gameRoot, terrainLimits,
+            replacements, removals));
         for (std::size_t i = 0; i < 2; ++i) {
             const auto current = Take(edits.Snapshot(kKinds[i], objectLimits.maxCurrentSnapshotBytes));
             const auto& member = current.Member(kKinds[i]); const auto& expected = snapshot.CapturedMembers()[i];

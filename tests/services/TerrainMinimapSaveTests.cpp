@@ -491,6 +491,29 @@ void AutomaticGeneratedBlpIsVerifiedThroughSaveCopyAndInPlace() {
     }
 }
 
+void AutomaticResourceOverlaySavesAndReadsBack() {
+    auto settings = W3i(); Put32(settings, 72, 0x400);
+    Fixture fixture(false, false, false, settings, false, {}, true);
+    MapSaveTask task;
+    fixture.Freeze(task);
+    const auto overlay = Atlas(true);
+    task.replacements.push_back({"Fixture\\Ground.blp", overlay});
+    const auto prepared = Take(TerrainMinimapSave::Prepare(task, fixture.edits, fixture.gameRoot,
+        TerrainMinimapSaveChoice::Automatic));
+    Require(prepared && prepared->ClassicManifest(), "Automatic资源overlay必须生成完整Classic候选");
+    task.replacements.push_back(prepared->MinimapReplacement());
+    Require(prepared->VerifyCurrent(task, fixture.edits, fixture.gameRoot).Succeeded(),
+        "Automatic资源overlay当前来源复核");
+    task.beforePublish = [&] { return prepared->VerifyFrozenOutput(task); };
+    MapSaveService::Run(task);
+    Require(task.succeeded && task.nextSession, "Automatic资源overlay必须真实写出候选");
+    const auto saved = Take(MapArchiveSession::Open(task.target));
+    Require(prepared->VerifyReadback(task, saved).Succeeded(),
+        "Automatic资源overlay必须独立回读验证");
+    Require(Take(saved.ReadMember("Fixture\\Ground.blp")) == overlay,
+        "保存归档必须包含最终资源overlay正文");
+}
+
 } // namespace
 
 int main() {
@@ -500,6 +523,7 @@ int main() {
         ExistingTgaCannotBeShadowedByGeneratedBlp();
         AutomaticDecisionUsesExactSourceMembers();
         AutomaticGeneratedBlpIsVerifiedThroughSaveCopyAndInPlace();
+        AutomaticResourceOverlaySavesAndReadsBack();
         std::cout << "Terrain missing-only minimap save tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

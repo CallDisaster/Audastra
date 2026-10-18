@@ -256,6 +256,84 @@ void TestActualMapWinnerAndOriginalMips() {
         "真实捕获输入可接既有候选，但仍无地图保存资格");
 }
 
+void TestFinalTerrainResourceOverlayWinsAndIsBound() {
+    Fixture fixture;
+    auto source = fixture.Source("overlay-source.w3x");
+    const auto replacementBytes = Blp({210, 30, 10});
+    const auto replacementTable = Slk({"tileID", "dir", "file"}, {{"Tg01", "Fixture", "NewGround"}});
+    std::vector<MemberReplacement> replacements{{"TerrainArt\\Terrain.slk", replacementTable},
+        {"Fixture\\NewGround.blp", replacementBytes}};
+    const auto captured = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {},
+        TerrainMinimapRangePolicy::FullW3e, replacements, {}));
+    const auto ground = captured.GroundAssets().front();
+    const auto& dependency = captured.Dependencies().at(ground.dependencyIndex);
+    const auto& tableDependency = captured.Dependencies().at(captured.Tables().front().dependencyIndex);
+    Require(tableDependency.winner.layer == Resources::ResourceLayer::SessionOverride
+        && tableDependency.encodedSha256 == Take(Sha256(replacementTable))
+        && ground.canonicalTexturePath == "FIXTURE\\NEWGROUND.BLP"
+        && dependency.winner.layer == Resources::ResourceLayer::SessionOverride
+        && dependency.winner.sourceId == "terrain-minimap-overlay"
+        && dependency.mapMemberPresent && dependency.encodedSha256 == Take(Sha256(replacementBytes)),
+        "最终地形贴图overlay必须赢过原地图成员并绑定实际字节");
+    Require(VerifyTerrainMinimapAssetsCurrent(captured, source, fixture.edits, {}, {}, replacements, {}).Succeeded(),
+        "当前复核必须消费同一最终地形资源overlay");
+    Require(VerifyTerrainMinimapAssetsFrozenOutput(captured, source, replacements).Succeeded(),
+        "冻结输出必须接受同一overlay且不再读取旧地图正文");
+    RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(captured, source, {}), "TERRAIN_ASSETS_FINAL_WINNER");
+    replacements.front().data[0] = std::byte{'X'};
+    Require(!VerifyTerrainMinimapAssetsFrozenOutput(captured, source, replacements).Succeeded(),
+        "overlay字节改动后冻结输出必须拒绝");
+    const std::array<std::string, 1> removedGround{"Fixture\\Ground.blp"};
+    const auto noGame = CaptureTerrainMinimapAssets(source, fixture.edits, {}, {},
+        TerrainMinimapRangePolicy::FullW3e, {}, removedGround);
+    Rejected(noGame);
+}
+
+void TestFinalTerrainResourceRemovalUsesActualGameAndReadback() {
+    Fixture fixture;
+    auto source = fixture.Source("resource-removal-source.w3x");
+    const auto game = fixture.Game(Materials(Blp({220, 40, 20})));
+    const std::array<std::string, 1> removals{"Fixture\\Ground.blp"};
+    const auto captured = Take(CaptureTerrainMinimapAssets(source, fixture.edits, game, {},
+        TerrainMinimapRangePolicy::FullW3e, {}, removals));
+    const auto& dependency = captured.Dependencies().at(captured.GroundAssets().front().dependencyIndex);
+    Require(!dependency.mapMemberPresent && dependency.winner.layer == Resources::ResourceLayer::Game
+        && dependency.encodedSha256 == Take(Sha256(Blp({220, 40, 20}))),
+        "删除地图贴图后必须消费真实game winner，不能仍用被删map正文");
+    Require(VerifyTerrainMinimapAssetsCurrent(captured, source, fixture.edits, game, {}, {}, removals).Succeeded()
+        && VerifyTerrainMinimapAssetsFrozenOutput(captured, source, {}, removals).Succeeded(),
+        "同一删除与真实game fallback必须通过Current/Frozen生命周期");
+    RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(captured, source, {}), "TERRAIN_ASSETS_FINAL_WINNER");
+    const auto target = fixture.directory.Path() / "resource-removal-saved.w3x";
+    Take(source.SaveCandidate(target, {}, removals));
+    const auto saved = Take(MapArchiveSession::Open(target));
+    Require(VerifyTerrainMinimapAssetsReadback(captured, saved).Succeeded(),
+        "独立Open必须核输出map准确missing及同一game来源");
+    const auto oldWinner = Take(MapArchiveSession::Open(source.SourcePath()));
+    RequireRejected(VerifyTerrainMinimapAssetsReadback(captured, oldWinner), "TERRAIN_ASSETS_FINAL_WINNER");
+}
+
+void TestFinalTerrainOverlayDoesNotReadBrokenOldResource() {
+    Fixture fixture;
+    auto members = Materials();
+    members.push_back({"war3map.w3e", fixture.w3e}); members.push_back({"war3map.wpm", fixture.wpm});
+    const auto path = fixture.directory.Path() / "broken-old-resource.w3x";
+    Require(IO::WriteFileBytes(path, UnlistedArchive(members, true)).Succeeded(), "写入准确不可读旧贴图来源");
+    const auto source = Take(MapArchiveSession::Open(path));
+    const std::array replacement{MemberReplacement{"Fixture\\Ground.blp", Blp({110, 20, 90})}};
+    const auto captured = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {},
+        TerrainMinimapRangePolicy::FullW3e, replacement));
+    Require(VerifyTerrainMinimapAssetsFrozenOutput(captured, source, replacement).Succeeded(),
+        "被合法最终overlay覆盖的旧坏资源不应再读取正文");
+    auto duplicate = std::vector<MemberReplacement>{replacement.front(), {"fixture/ground.BLP", Blp()}};
+    Rejected(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, TerrainMinimapRangePolicy::FullW3e, duplicate));
+    auto limits = TerrainMinimapAssetCaptureLimits{};
+    limits.atlas.maxInputBytes = replacement.front().data.size() - 1;
+    Rejected(CaptureTerrainMinimapAssets(source, fixture.edits, {}, limits, TerrainMinimapRangePolicy::FullW3e, replacement));
+    const std::array empty{MemberReplacement{"Fixture\\Ground.blp", {}}};
+    Rejected(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, TerrainMinimapRangePolicy::FullW3e, empty));
+}
+
 void TestGameFallbackAndWinnerChange() {
     Fixture fixture; auto source = fixture.Source("fallback.w3x", {}); const auto game = fixture.Game();
     const auto captured = Take(CaptureTerrainMinimapAssets(source, fixture.edits, game));
@@ -900,6 +978,9 @@ int main() {
     try {
         TestClassicPlayableCaptureAndDependencyReadback();
         TestActualMapWinnerAndOriginalMips(); TestGameFallbackAndWinnerChange(); TestSameGamePathChangedMember();
+        TestFinalTerrainResourceOverlayWinsAndIsBound();
+        TestFinalTerrainResourceRemovalUsesActualGameAndReadback();
+        TestFinalTerrainOverlayDoesNotReadBrokenOldResource();
         TestMissingDoesNotHideUnreadable(); TestUnlistedExactAndReadError();
         TestBaselineAndCurrentRevision(); TestDuplicatePathsAndBudgets();
         TestRealHeightEditsGenerateWithoutChangingSaveAuthority();
