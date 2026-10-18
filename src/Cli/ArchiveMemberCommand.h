@@ -10,4 +10,8 @@ namespace War3Map::Cli {
 [[nodiscard]] int RunArchiveMemberAdd(int argc, wchar_t** argv);
 [[nodiscard]] int RunArchiveMemberRemove(int argc, wchar_t** argv);
 
+// 把地图包的具名成员展开到新目录，供 war3-map-mcp --workspace 使用；源图只读。
+// 参数：<source-map> <expected-source-sha256> <new-directory> [--data-only]
+[[nodiscard]] int RunArchiveExpand(int argc, wchar_t** argv);
+
 } // namespace War3Map::Cli

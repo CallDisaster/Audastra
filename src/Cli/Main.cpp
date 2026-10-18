@@ -111,6 +111,7 @@ void PrintUsage() {
         << "war3-map-cli archive-candidate-copy <map-archive> <new-candidate-path>\n"
         << "war3-map-cli archive-member-add <source-map> <expected-source-sha256> <new-candidate.w3x> <member> <file> [<member> <file> ...]\n"
         << "war3-map-cli archive-member-remove <source-map> <expected-source-sha256> <new-candidate.w3x> <member> [<member> ...]\n"
+        << "war3-map-cli archive-expand <source-map> <expected-source-sha256> <new-directory> [--data-only]\n"
         << "war3-map-cli inspect <expanded-workspace> [profile-id]\n"
         << "war3-map-cli validate <expanded-workspace> [profile-id]\n"
         << "war3-map-cli trigger-inspect <ydwe-root> <war3map.wtg> <war3map.wct>\n"
@@ -301,6 +302,7 @@ int wmain(int argc, wchar_t** argv) {
     if (command == L"archive-session-inspect") return RunArchiveInspectCommand(argc, argv);
     if (command == L"archive-member-add") return War3Map::Cli::RunArchiveMemberAdd(argc, argv);
     if (command == L"archive-member-remove") return War3Map::Cli::RunArchiveMemberRemove(argc, argv);
+    if (command == L"archive-expand") return War3Map::Cli::RunArchiveExpand(argc, argv);
     if (command == L"update-check" || command == L"update-apply") return RunUpdateCommand(argc, argv);
     if (command == L"imports-query" || command == L"imports-get") return RunImportQueryCommand(argc, argv);
     if (command == L"archive-candidate-copy" && argc == 4) {
