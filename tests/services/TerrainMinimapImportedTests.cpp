@@ -104,16 +104,17 @@ void ImportedExistingBlpSuppressesAutomaticGenerationAndPreservesBytes() {
     Require(!Take(TerrainMinimapSave::RequiresAutomaticGeneration(task)),
         "导入清单声明的MapBLP在w3u净变化时仍应保护作者小地图");
     MapData::MapDataEditSession edits(MapDocument::FromMembers({}));
-    const auto prepared = Take(TerrainMinimapSave::Prepare(task, edits, {}, TerrainMinimapSaveChoice::Automatic));
-    Require(!prepared, "导入MapBLP保存不得启动自动生成器");
+    const auto prepared = Take(TerrainMinimapSave::PrepareAutomaticOrPreserve(task, edits, {}));
+    Require(!prepared.generated, "导入MapBLP保存不得启动自动生成器");
 
     MapSaveService::Run(task);
     Require(task.succeeded && task.nextSession, "导入MapBLP普通保存必须完成");
-    Require(Take(task.nextSession->ReadMember("war3mapMap.blp")) == fixture.blp,
+    const auto saved = Take(MapArchiveSession::Open(task.target));
+    Require(Take(saved.ReadMember("war3mapMap.blp")) == fixture.blp,
         "导入MapBLP保存必须保留原小地图正文");
-    Require(Take(task.nextSession->ReadMember("war3map.imp")) == fixture.imp,
+    Require(Take(saved.ReadMember("war3map.imp")) == fixture.imp,
         "导入清单未变化时必须保留原字节");
-    Require(Take(task.nextSession->ReadMember("war3map.w3u")) == replacement,
+    Require(Take(saved.ReadMember("war3map.w3u")) == replacement,
         "普通物编替换仍应写出");
 }
 
@@ -127,8 +128,14 @@ void FinalImportedBlpReplacementSuppressesGeneration() {
     Require(!Take(TerrainMinimapSave::RequiresAutomaticGeneration(task)),
         "本次最终列表同时提供导入清单和MapBLP时不得再生成小地图");
     MapData::MapDataEditSession edits(MapDocument::FromMembers({}));
-    Require(!Take(TerrainMinimapSave::Prepare(task, edits, {}, TerrainMinimapSaveChoice::Automatic)),
-        "最终导入MapBLP替换应直接沿用保存列表");
+    const auto prepared = Take(TerrainMinimapSave::PrepareAutomaticOrPreserve(task, edits, {}));
+    Require(!prepared.generated, "最终导入MapBLP替换应直接沿用保存列表");
+    MapSaveService::Run(task);
+    Require(task.succeeded && task.nextSession, "本次导入MapBLP必须沿原保存链完成");
+    const auto saved = Take(MapArchiveSession::Open(task.target));
+    Require(Take(saved.ReadMember("war3map.imp")) == finalImp
+        && Take(saved.ReadMember("war3mapMap.blp")) == finalBlp,
+        "独立Open确认final imp和MapBLP替换正文没有被自动生成覆盖");
 }
 
 void OrdinaryExistingBlpWithoutImportStillRequiresGeneration() {
