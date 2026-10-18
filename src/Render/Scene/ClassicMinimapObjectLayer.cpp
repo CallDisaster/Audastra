@@ -88,11 +88,15 @@ std::optional<ObjectData::StandardObjectEntry> FindObject(const ClassicMinimapOb
     auto result = *standard; result.key = {type, std::string(rawcode)};
     for (auto it = chain.rbegin(); it != chain.rend(); ++it) for (const auto& modification : (*it)->modifications) {
         const auto* definition = input.schema ? input.schema->FindNative(type, modification.key.fieldId) : nullptr;
-        if (!definition || modification.valueWasOpaque || std::holds_alternative<ObjectData::UnknownBytesValue>(modification.value)) continue;
+        if (!definition) continue;
         auto key = Lower(definition->sourceField);
         const bool minimapField = key == "showinmm" || key == "usemmcolor" || key == "mmred" || key == "mmgreen" || key == "mmblue"
             || key == "file" || key == "pathtex" || key == "numvar" || key == "texfile" || key == "texid";
-        if (minimapField) result.fields[key] = ObjectData::ValueToDisplayString(modification.value);
+        if (minimapField) {
+            if (modification.valueWasOpaque || std::holds_alternative<ObjectData::UnknownBytesValue>(modification.value))
+                return std::nullopt;
+            result.fields[key] = ObjectData::ValueToDisplayString(modification.value);
+        }
     }
     return result;
 }
@@ -169,8 +173,8 @@ Result<std::array<std::uint8_t, 4>> ModelColor(const ClassicMinimapObjectStyle& 
         // 原版先对每个材质纹理做整图平均，再等权平均这些代表色；不会按贴图面积加权。
         channels[0] += average[0]; channels[1] += average[1]; channels[2] += average[2]; ++count;
     }
-    if (!count) { AddDiagnostic(output, "CLASSIC_MINIMAP_OBJECT_MODEL_COLOR", "对象模型没有可用纹理像素，使用原版固定回退色。");
-        return Result<std::array<std::uint8_t, 4>>::Success(kFallback); }
+    if (!count) { AddDiagnostic(output, "CLASSIC_MINIMAP_OBJECT_MODEL_COLOR", "对象模型未枚举到有效纹理，使用原版默认白色。");
+        return Result<std::array<std::uint8_t, 4>>::Success({255, 255, 255, 255}); }
     success = true;
     return Result<std::array<std::uint8_t, 4>>::Success({static_cast<std::uint8_t>(channels[0] / count),
         static_cast<std::uint8_t>(channels[1] / count), static_cast<std::uint8_t>(channels[2] / count), 255});
@@ -236,6 +240,7 @@ Result<ClassicMinimapObjectLayer> BuildClassicMinimapObjectLayer(
         const auto variations = std::max(1, Integer(entry->Field("numvar")).value_or(1));
         if (placement.variation < 0) return Fail("CLASSIC_MINIMAP_OBJECT_VARIATION", "对象变体编号不能为负。");
         style.modelPath = MdxModelFile(entry->Field("file"), static_cast<std::uint32_t>(placement.variation), static_cast<std::uint32_t>(variations));
+        if (style.modelPath.empty()) style.modelPath = "WorldEditArt\\InvalidModel.mdx";
         style.pathingTexture = std::string(entry->Field("pathtex"));
         if (style.pathingTexture == "_") style.pathingTexture.clear();
         style.replaceableTexture = std::string(entry->Field("texfile"));
