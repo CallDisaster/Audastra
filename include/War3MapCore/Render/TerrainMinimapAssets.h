@@ -69,6 +69,7 @@ struct TerrainMinimapAssetCaptureFacts {
 class TerrainMinimapAssetSnapshot;
 
 // 调用者必须串行排除 edits 写入。只接真实 ArchiveAndGame 来源，不接任意SHA/atlas/callback。
+// 两种声明边距政策均要求真实map-only W3I同源/当前原字闭环，不根据MapEdge自动选择。
 // Prepare只复用来源基线匹配；其Result成功与SaveGate成功不同，本接口不执行或放宽保存。
 [[nodiscard]] Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(
     const MapArchiveSession& source, const MapData::MapDataEditSession& edits,

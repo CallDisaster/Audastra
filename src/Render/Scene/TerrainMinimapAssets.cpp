@@ -384,7 +384,8 @@ Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(const MapArchive
     const TerrainMinimapAssetCaptureLimits& limits, TerrainMinimapRangePolicy rangePolicy) {
     try {
         ValidateLimits(limits);
-        if (rangePolicy != TerrainMinimapRangePolicy::FullW3e && rangePolicy != TerrainMinimapRangePolicy::DeclaredW3iMargins)
+        if (rangePolicy != TerrainMinimapRangePolicy::FullW3e && rangePolicy != TerrainMinimapRangePolicy::DeclaredW3iMargins
+            && rangePolicy != TerrainMinimapRangePolicy::DeclaredW3iMarginsExteriorMapEdge)
             Fail("TERRAIN_ASSETS_RANGE_POLICY", "未知的小地图范围政策。");
         TerrainMinimapAssetSnapshot result;
         result.input_.rangePolicy = rangePolicy;
@@ -422,10 +423,10 @@ Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(const MapArchive
         {
             const std::vector<std::string> tablePaths{"TerrainArt\\Terrain.slk", "TerrainArt\\CliffTypes.slk", "TerrainArt\\Water.slk"};
             auto exactPaths = tablePaths;
-            if (rangePolicy == TerrainMinimapRangePolicy::DeclaredW3iMargins) exactPaths.emplace_back("war3map.w3i");
+            if (rangePolicy != TerrainMinimapRangePolicy::FullW3e) exactPaths.emplace_back("war3map.w3i");
             // 四名共用原三表member cap；绝不为W3I抬高调用方给表设定的读取上限。
             context.Phase(exactPaths, limits.tables.maxTableBytes, TerrainMinimapDependencyKind::Table);
-            if (rangePolicy == TerrainMinimapRangePolicy::DeclaredW3iMargins) {
+            if (rangePolicy != TerrainMinimapRangePolicy::FullW3e) {
                 const auto path = Canonical("war3map.w3i");
                 auto& member = context.mapMembers.at(context.mapIndices.at(path));
                 if (!member.present) Fail("TERRAIN_ASSETS_W3I_MISSING", "地图准确捕获证明缺少W3I；禁止回退game。");

@@ -11,6 +11,7 @@
 #include <Windows.h>
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <iostream>
 #include <stdexcept>
 
@@ -68,6 +69,31 @@ Bytes W3i() {
     Put32(bytes, 64, 4); Put32(bytes, 68, 5); bytes[76] = std::byte{'L'};
     return bytes;
 }
+
+Bytes CreateW3i() {
+    auto bytes = W3i();
+    const std::array<float, 8> bounds{-2816, -3328, 2816, 2816, -2816, 2816, 2816, -3328};
+    for (std::size_t i = 0; i < bounds.size(); ++i) Put32(bytes, 16 + i * 4, std::bit_cast<std::uint32_t>(bounds[i]));
+    Put32(bytes, 48, 6); Put32(bytes, 52, 6); Put32(bytes, 56, 4); Put32(bytes, 60, 8);
+    Put32(bytes, 64, 52); Put32(bytes, 68, 52); return bytes;
+}
+
+Bytes CreateW3e() {
+    // 独立标准Create原字；包含六ground/two cliff和原SW-anchor MapEdge，绝不先清位。
+    Bytes bytes(69 + 65 * 65 * 7);
+    const auto magic = Text("W3E!"), ground = Text("LdrtLdroLdrgLrokLgrsLgrd"), cliff = Text("CLdiCLgr");
+    std::copy(magic.begin(), magic.end(), bytes.begin()); Put32(bytes, 4, 11); bytes[8] = std::byte{'L'};
+    Put32(bytes, 13, 6); std::copy(ground.begin(), ground.end(), bytes.begin() + 17);
+    Put32(bytes, 41, 2); std::copy(cliff.begin(), cliff.end(), bytes.begin() + 45);
+    Put32(bytes, 53, 65); Put32(bytes, 57, 65);
+    Put32(bytes, 61, std::bit_cast<std::uint32_t>(-4096.0f)); Put32(bytes, 65, std::bit_cast<std::uint32_t>(-4096.0f));
+    for (std::size_t y = 0; y < 65; ++y) for (std::size_t x = 0; x < 65; ++x) {
+        const auto at = 69 + (y * 65 + x) * 7;
+        const bool edge = x < 64 && y < 64 && (x < 6 || x >= 58 || y < 4 || y >= 56);
+        bytes[at + 1] = std::byte{32}; bytes[at + 3] = edge ? std::byte{96} : std::byte{32}; bytes[at + 6] = std::byte{0xf2};
+    }
+    return bytes;
+}
 MapDocument SettingsDocument(const std::optional<Bytes>& bytes) {
     if (!bytes) return MapDocument::FromMembers({});
     const std::vector<MapArchiveMember> members{{"war3map.w3i", *bytes}};
@@ -116,6 +142,14 @@ std::vector<MapArchiveMember> Materials(Bytes blp = Blp()) {
         {"Fixture\\Ground.blp", std::move(blp)}};
 }
 
+std::vector<MapArchiveMember> CreateMaterials() {
+    auto materials = Materials();
+    materials.front().data = Slk({"tileID", "dir", "file"}, {{"Ldrt", "Fixture", "Ground"},
+        {"Ldro", "Fixture", "Ground"}, {"Ldrg", "Fixture", "Ground"}, {"Lrok", "Fixture", "Ground"},
+        {"Lgrs", "Fixture", "Ground"}, {"Lgrd", "Fixture", "Ground"}});
+    return materials;
+}
+
 // 沿用既有TerrainSavePlan测试的独立未压缩MPQ布局思路；listfile只列W3E/WPM，
 // 真正材质hash/块在清单之外。badTexture故意使用精确读取器明确拒绝的patch块标志。
 Bytes UnlistedArchive(std::vector<MapArchiveMember> members, bool badTexture = false,
@@ -156,15 +190,18 @@ struct Fixture {
     Bytes w3e, wpm;
     std::optional<Bytes> w3i;
     MapDataEditSession edits;
-    Fixture(bool duplicatePath = false, std::optional<Bytes> settings = {})
+    Fixture(bool duplicatePath = false, std::optional<Bytes> settings = {}, bool standardCreate = false)
         : w3i(std::move(settings)), edits(SettingsDocument(w3i)) {
         TerrainGridSnapshot terrain;
         terrain.header.width = terrain.header.height = 9; terrain.header.mainTileset = 'L';
         terrain.header.groundTilesets = duplicatePath ? std::vector<std::string>{"Tg01", "Tg02"} : std::vector<std::string>{"Tg01"};
         terrain.header.cliffTilesets = {"CLdi"}; terrain.vertices.resize(81);
         for (auto& v : terrain.vertices) { v.groundHeightRaw = 8192; v.waterHeightAndFlagsRaw = 8192; v.cliffAndLayerRaw = 2; }
-        RefreshTerrainDerived(terrain, 0, 0, 9, 9); w3e = Take(SerializeMapTerrain(terrain));
-        wpm = Text("MP3W"); wpm.resize(16 + 32 * 32); Put32(wpm, 8, 32); Put32(wpm, 12, 32);
+        RefreshTerrainDerived(terrain, 0, 0, 9, 9); w3e = standardCreate ? CreateW3e() : Take(SerializeMapTerrain(terrain));
+        const auto pathingSize = standardCreate ? 256u : 32u;
+        wpm = Text("MP3W"); wpm.resize(16 + pathingSize * pathingSize); Put32(wpm, 8, pathingSize); Put32(wpm, 12, pathingSize);
+        if (standardCreate) for (unsigned y = 0; y < 256; ++y) for (unsigned x = 0; x < 256; ++x)
+            wpm[16 + y * 256 + x] = x < 24 || x >= 232 || y < 16 || y >= 224 ? std::byte{0xce} : std::byte{0x40};
         Require(edits.AttachTerrain(w3e).Succeeded() && edits.AttachPathing(wpm).Succeeded(), "附上真实源W3E/WPM");
     }
     MapArchiveSession Source(std::string_view name = "source.w3x", std::vector<MapArchiveMember> resources = Materials()) {
@@ -692,6 +729,144 @@ void TestReadbackExactPoliciesBudgetsAndOutputIdentity() {
     RequireRejected(VerifyTerrainMinimapAssetsReadback(crop, reopened, limits), "TERRAIN_ASSETS_BUDGET");
 }
 
+void TestDeclaredExteriorMapEdgeSourceHeightAndOutputClosure() {
+    constexpr auto policy = TerrainMinimapRangePolicy::DeclaredW3iMarginsExteriorMapEdge;
+    Fixture fixture(false, CreateW3i(), true); auto source = fixture.Source("create-edge-source.w3x", CreateMaterials());
+    const auto originalArchive = Take(Sha256File(source.SourcePath())); const auto sourceBytes = fixture.w3e;
+    const auto original = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, policy));
+    const auto legacy = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, TerrainMinimapRangePolicy::DeclaredW3iMargins));
+    Rejected(BuildTerrainMinimapCandidate(legacy.Input()));
+    Require(original.IdentitySha256() != legacy.IdentitySha256() && original.Input().currentW3e == sourceBytes,
+        "同W3E/W3I来源也必须把新显式policy纳入snapshot身份，标准MapEdge原字仍保留");
+    const auto originalCandidate = Take(BuildTerrainMinimapCandidate(original.Input()));
+    Require(originalCandidate.manifest.mapEdge.exteriorMapEdgeAnchors == 1392
+        && originalCandidate.manifest.reserializedW3eSha256 == Take(Sha256(sourceBytes)), "标准真实归档原字须通过独立mask与重序列化核验");
+    TerrainBrush brush; brush.kind = TerrainBrushKind::Raise; brush.radius = 0; brush.strength = 39;
+    const TerrainStrokePoint center{0, 0};
+    Require(fixture.edits.EditTerrain(brush, std::span(&center, 1), false).Succeeded(), "标准Create中心产生非空raw156高度修改");
+    const auto revision = fixture.edits.Revision(); const auto dirty = fixture.edits.IsDirty();
+    const auto snapshot = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, policy));
+    const auto current = snapshot.Input().currentW3e;
+    Require(current != sourceBytes && snapshot.Binding().originalTerrainSha256 == Take(Sha256(sourceBytes))
+        && snapshot.Binding().currentTerrainSha256 == Take(Sha256(current)), "源/current身份不能因同像素而合并");
+    for (std::size_t vertex = 0; vertex < 65 * 65; ++vertex) {
+        const auto at = 69 + vertex * 7;
+        Require(std::equal(current.begin() + at + 2, current.begin() + at + 7, sourceBytes.begin() + at + 2),
+            "合法height编辑必须保留每vertex完整water/MapEdge/texture/variation/cliff原字");
+    }
+    const auto candidate = Take(BuildTerrainMinimapCandidate(snapshot.Input()));
+    Require(candidate.image.rgba == originalCandidate.image.rgba
+        && candidate.manifest.meshSha256 != originalCandidate.manifest.meshSha256
+        && candidate.manifest.mapEdge.maskSha256 == originalCandidate.manifest.mapEdge.maskSha256,
+        "非空height生成仍保留真实mesh身份和未修改mask，不能靠清bit通过");
+    Require(snapshot.Facts().exactMemberCaptureBatches == 3 && snapshot.Facts().uniqueAtlasCount == 1
+        && snapshot.Dependencies().size() == 5 && snapshot.Input().sourceW3i == fixture.w3i,
+        "新policy须沿三批准确来源并复用六slot唯一atlas，W3I保持map原字");
+    const auto settings = std::find_if(snapshot.Dependencies().begin(), snapshot.Dependencies().end(),
+        [](const auto& dependency) { return dependency.kind == TerrainMinimapDependencyKind::Settings; });
+    Require(settings != snapshot.Dependencies().end() && settings->mapMemberPresent
+        && settings->winner.layer == Resources::ResourceLayer::MapImport
+        && settings->containerIdentity == source.SourceSha256() && settings->encodedSha256 == Take(Sha256(*fixture.w3i)),
+        "Settings依赖须认证实际map-only来源，而非caller标签或game同名项");
+    Require(VerifyTerrainMinimapAssetsCurrent(snapshot, source, fixture.edits, {}).Succeeded(), "新policy current复核须保留原显式选择");
+    Require(!VerifyTerrainMinimapAssetsCurrent(original, source, fixture.edits, {}).Succeeded(), "高度新修订不能复活旧snapshot");
+    const auto plan = Take(TerrainSavePlan::Prepare(source, fixture.edits));
+    Require(plan.SaveGate().Succeeded(), "原有SaveGate应接受标准图中心raw156，不经本策略放宽");
+    const std::vector<MemberReplacement> output{{"war3map.w3e", current}};
+    RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(snapshot, source, {}), "TERRAIN_ASSETS_FINAL_W3E_MISSING");
+    Require(VerifyTerrainMinimapAssetsFrozenOutput(snapshot, source, output).Succeeded(), "最终输出须核当前W3E及原W3I/三表/atlas完整依赖");
+    auto same = output; same.push_back({"war3map.w3i", *fixture.w3i});
+    Require(VerifyTerrainMinimapAssetsFrozenOutput(snapshot, source, same).Succeeded(), "唯一同字W3I最终替换允许");
+    auto renamed = *fixture.w3i; renamed.insert(renamed.begin() + 12, std::byte{'N'});
+    auto changed = output; changed.push_back({"war3map.w3i", renamed});
+    RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(snapshot, source, changed), "TERRAIN_ASSETS_FINAL_BYTES");
+    const std::vector<std::string> removed{"war3map.w3i"};
+    RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(snapshot, source, output, removed), "TERRAIN_ASSETS_FINAL_REMOVAL");
+    auto saved = Saved(fixture, source, "create-edge-saved.w3x", output);
+    Require(VerifyTerrainMinimapAssetsReadback(snapshot, saved).Succeeded(), "标准原edge加合法height输出应逐字回读完整依赖");
+    auto stale = Saved(fixture, source, "create-edge-stale.w3x");
+    RequireRejected(VerifyTerrainMinimapAssetsReadback(snapshot, stale), "TERRAIN_ASSETS_READBACK_TERRAIN");
+    auto nameOutput = Saved(fixture, source, "create-edge-name.w3x", changed);
+    RequireRejected(VerifyTerrainMinimapAssetsReadback(snapshot, nameOutput), "TERRAIN_ASSETS_FINAL_DEPENDENCY");
+    auto noSettings = Saved(fixture, source, "create-edge-no-settings.w3x", output, removed);
+    RequireRejected(VerifyTerrainMinimapAssetsReadback(snapshot, noSettings));
+    Require(Take(Sha256File(source.SourcePath())) == originalArchive && source.VerifySourceUnchanged().Succeeded()
+        && fixture.edits.Revision() == revision && fixture.edits.IsDirty() == dirty,
+        "候选/frozen/readback均不得写原归档或活跃编辑会话");
+    Require(!snapshot.formalSaveAuthorized && !snapshot.nativeEditorOrGameVerified && !candidate.manifest.formalSaveAuthorized,
+        "来源闭环与SaveGate通过仍不自行授权MapBLP写入或native验收");
+}
+
+void TestDeclaredExteriorMapEdgeW3iSourceCurrentAndBudgets() {
+    constexpr auto policy = TerrainMinimapRangePolicy::DeclaredW3iMarginsExteriorMapEdge;
+    Fixture fixture(false, CreateW3i(), true); auto source = fixture.Source("create-current-source.w3x", CreateMaterials());
+    const auto captured = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, policy));
+    auto changed = *fixture.w3i; changed.insert(changed.begin() + 12, std::byte{'N'});
+    Require(fixture.edits.EditSerialized(MapDataKind::Settings, changed).Succeeded(), "建立同选区同像素W3I名称修改");
+    Rejected(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, policy));
+    Require(!VerifyTerrainMinimapAssetsCurrent(captured, source, fixture.edits, {}).Succeeded(), "同像素W3I变化也须使新policy快照stale");
+    Require(fixture.edits.Undo(), "撤销真实W3I名称修改");
+    Require(!VerifyTerrainMinimapAssetsCurrent(captured, source, fixture.edits, {}).Succeeded(), "Undo字节一致不能复活旧revision");
+    const auto restored = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, policy));
+    Require(restored.IdentitySha256() != captured.IdentitySha256(), "新revision须新快照身份");
+    Fixture foreign(false, changed, true); foreign.w3i = CreateW3i(); auto foreignSource = foreign.Source("create-foreign.w3x", CreateMaterials());
+    Require(foreign.edits.EditSerialized(MapDataKind::Settings, CreateW3i()).Succeeded(), "foreign originalB/currentA与sourceA夹具");
+    const auto foreignResult = CaptureTerrainMinimapAssets(foreignSource, foreign.edits, {}, {}, policy); Rejected(foreignResult);
+    Require(std::any_of(foreignResult.diagnostics.begin(), foreignResult.diagnostics.end(), [](const auto& d) {
+        return d.code == "TERRAIN_EDIT_INSPECTION_SOURCE_MISMATCH";
+    }), "新policy必须继续核真实原W3I基线，不能只比较currentA/sourceA");
+    TerrainMinimapAssetCaptureLimits limits; limits.maxSourceBytes = restored.Facts().estimatedSettingsWorkingBytes - 1;
+    const auto settingsBudget = CaptureTerrainMinimapAssets(source, fixture.edits, {}, limits, policy); Rejected(settingsBudget);
+    Require(std::any_of(settingsBudget.diagnostics.begin(), settingsBudget.diagnostics.end(), [](const auto& d) {
+        return d.code == "TERRAIN_ASSETS_BUDGET";
+    }), "新policy Settings固定64KiB加64N预留应在Snapshot前执行");
+    limits = {}; limits.maxCurrentW3eBytes = fixture.w3e.size() - 1;
+    Rejected(CaptureTerrainMinimapAssets(source, fixture.edits, {}, limits, policy));
+    limits = {}; limits.maxTiles = 2704; Rejected(CaptureTerrainMinimapAssets(source, fixture.edits, {}, limits, policy));
+    auto longSettings = CreateW3i(); longSettings.insert(longSettings.begin() + 12, 1024, std::byte{'N'});
+    Fixture bounded(false, longSettings, true); auto boundedSource = bounded.Source("create-table-cap.w3x", CreateMaterials());
+    limits = {}; limits.tables.maxTableBytes = 768;
+    Require(CaptureTerrainMinimapAssets(boundedSource, bounded.edits, {}, limits).Succeeded(), "三表原字可在原768B成员cap内单独捕获");
+    Rejected(CaptureTerrainMinimapAssets(boundedSource, bounded.edits, {}, limits, policy));
+    auto files = CreateMaterials(); files.push_back({"war3map.w3e", fixture.w3e}); files.push_back({"war3map.wpm", fixture.wpm});
+    files.push_back({"war3map.w3i", *fixture.w3i});
+    const auto exactPath = fixture.directory.Path() / "create-unlisted-w3i.w3x";
+    Require(IO::WriteFileBytes(exactPath, UnlistedArchive(files)).Succeeded(), "写标准清单外W3I归档");
+    auto exact = Take(MapArchiveSession::Open(exactPath));
+    const auto unlisted = Take(CaptureTerrainMinimapAssets(exact, fixture.edits, {}, {}, policy));
+    Require(VerifyTerrainMinimapAssetsReadback(unlisted, exact).Succeeded(), "新policy实际W3I读取不依赖listfile列名");
+    std::size_t required = 2 * fixture.w3e.size() + fixture.w3i->size();
+    for (const auto& material : CreateMaterials()) required += material.data.size();
+    limits = {}; limits.maxSourceBytes = required;
+    Require(VerifyTerrainMinimapAssetsReadback(unlisted, exact, limits).Succeeded(), "新policy回读按原字独立预算精确边界允许");
+    --limits.maxSourceBytes; RequireRejected(VerifyTerrainMinimapAssetsReadback(unlisted, exact, limits), "TERRAIN_ASSETS_BUDGET");
+}
+
+void TestDeclaredExteriorMapEdgeW3iFailuresAndGameWinners() {
+    constexpr auto policy = TerrainMinimapRangePolicy::DeclaredW3iMarginsExteriorMapEdge;
+    Fixture missing(false, {}, true); auto missingSource = missing.Source("create-missing-w3i.w3x", CreateMaterials());
+    auto resources = CreateMaterials(); resources.push_back({"war3map.w3i", CreateW3i()}); const auto missingGame = missing.Game(resources);
+    const auto noSettings = CaptureTerrainMinimapAssets(missingSource, missing.edits, missingGame, {}, policy); Rejected(noSettings);
+    Require(std::any_of(noSettings.diagnostics.begin(), noSettings.diagnostics.end(), [](const auto& d) {
+        return d.code == "TERRAIN_ASSETS_W3I_MISSING";
+    }), "新policy W3I准确missing不得回退game同名项");
+    for (const auto& bytes : {Bytes{}, Text("broken-W3I"), [] { auto partial = CreateW3i(); partial.push_back(std::byte{0}); return partial; }()}) {
+        Fixture malformed(false, bytes, true); auto badSource = malformed.Source("create-bad-w3i.w3x", CreateMaterials());
+        Rejected(CaptureTerrainMinimapAssets(badSource, malformed.edits, {}, {}, policy));
+    }
+    Fixture fixture(false, CreateW3i(), true); auto source = fixture.Source("create-game-source.w3x", {});
+    const auto game = fixture.Game(CreateMaterials());
+    const auto snapshot = Take(CaptureTerrainMinimapAssets(source, fixture.edits, game, {}, policy));
+    auto saved = Saved(fixture, source, "create-game-saved.w3x");
+    Require(VerifyTerrainMinimapAssetsReadback(snapshot, saved).Succeeded(), "新policy回读仍须重读真实game winners并保留map W3I");
+    const auto mapMaterial = CreateMaterials().back(); const std::vector<MemberReplacement> sameAtlas{mapMaterial};
+    auto override = Saved(fixture, source, "create-game-map-override.w3x", sameAtlas);
+    RequireRejected(VerifyTerrainMinimapAssetsReadback(snapshot, override), "TERRAIN_ASSETS_FINAL_WINNER");
+    Take(WriteVerifiedArchive(game / "war3patch.mpq", std::vector<MapArchiveMember>{{"Fixture\\Ground.blp", Blp({7, 8, 9})}}));
+    RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(snapshot, source, {}), "TERRAIN_ASSETS_FINAL_DEPENDENCY");
+    RequireRejected(VerifyTerrainMinimapAssetsReadback(snapshot, saved), "TERRAIN_ASSETS_FINAL_DEPENDENCY");
+}
+
 } // namespace
 
 int main() {
@@ -704,6 +879,8 @@ int main() {
         TestFinalMapDependenciesAndPolicies(); TestFinalCanonicalConflictsAndEditedW3e(); TestFinalBudgetAndUnrelatedBodies();
         TestReadbackCurrentTerrainAndSourcePreservation(); TestReadbackGameWinnersAndMapOverrides();
         TestReadbackExactPoliciesBudgetsAndOutputIdentity();
+        TestDeclaredExteriorMapEdgeSourceHeightAndOutputClosure(); TestDeclaredExteriorMapEdgeW3iSourceCurrentAndBudgets();
+        TestDeclaredExteriorMapEdgeW3iFailuresAndGameWinners();
         std::cout << "TerrainMinimapAssetsTests: all tests passed\n"; return 0;
     } catch (const std::exception& e) {
         std::cerr << "TerrainMinimapAssetsTests: " << e.what() << '\n'; return 1;

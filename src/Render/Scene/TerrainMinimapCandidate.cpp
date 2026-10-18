@@ -132,7 +132,8 @@ std::size_t ValidateInputs(const TerrainMinimapInput& input, const TerrainMinima
         Fail("TERRAIN_MINIMAP_BINDING", "候选需要完整的冻结文档及当前 W3E SHA 身份。");
     if (input.groundAtlases.empty() || input.groundAtlases.size() > 16)
         Fail("TERRAIN_MINIMAP_ATLAS", "候选需要有界、与地面表同序的冻结 atlas 快照。");
-    if (input.rangePolicy != TerrainMinimapRangePolicy::FullW3e && input.rangePolicy != TerrainMinimapRangePolicy::DeclaredW3iMargins)
+    if (input.rangePolicy != TerrainMinimapRangePolicy::FullW3e && input.rangePolicy != TerrainMinimapRangePolicy::DeclaredW3iMargins
+        && input.rangePolicy != TerrainMinimapRangePolicy::DeclaredW3iMarginsExteriorMapEdge)
         Fail("TERRAIN_MINIMAP_RANGE_POLICY", "未知的小地图范围政策。");
     std::size_t retained = sizeof(input), rgba = 0;
     ChargeBinding(retained, input.binding); Charge(retained, input.currentW3e.capacity());
@@ -239,14 +240,15 @@ std::size_t MeshCapacity(const TerrainGroundMesh& mesh) {
     return bytes;
 }
 
-void CheckDomain(const MapData::TerrainGridSnapshot& grid) {
+void CheckDomain(const MapData::TerrainGridSnapshot& grid, TerrainMinimapRangePolicy rangePolicy) {
     if (grid.header.version != 11) Fail("TERRAIN_MINIMAP_VERSION", "第一版候选仅支持 classic W3E v11。");
     if (grid.header.groundTilesets.empty() || grid.header.groundTilesets.size() > 16)
         Fail("TERRAIN_MINIMAP_PALETTE", "第一版候选需要 1..16 个地面材质槽。");
     const auto level = grid.vertices.front().CliffLevel();
     for (const auto& vertex : grid.vertices) {
         if (vertex.IsBoundary()) Fail("TERRAIN_MINIMAP_BOUNDARY", "第一版候选不解释 Boundary 边界标志。");
-        if (vertex.IsMapEdge()) Fail("TERRAIN_MINIMAP_MAP_EDGE", "第一版候选不解释 MapEdge 外缘标志。");
+        if (vertex.IsMapEdge() && rangePolicy != TerrainMinimapRangePolicy::DeclaredW3iMarginsExteriorMapEdge)
+            Fail("TERRAIN_MINIMAP_MAP_EDGE", "第一版候选不解释 MapEdge 外缘标志。");
         if (vertex.UnknownWaterFlags() || vertex.UnknownTextureFlags())
             Fail("TERRAIN_MINIMAP_UNKNOWN_FLAGS", "候选不忽略未知地形标志。");
         if (vertex.IsRamp()) Fail("TERRAIN_MINIMAP_RAMP", "第一版候选不近似坡道。");
@@ -344,6 +346,34 @@ SamplingRectangle SelectRange(const TerrainMinimapInput& input, const MapData::T
     if (manifest.renderExtent[0] >= manifest.renderExtent[2] || manifest.renderExtent[1] >= manifest.renderExtent[3])
         Fail("TERRAIN_MINIMAP_W3I_MARGINS", "声明世界范围为空或因坐标精度而退化。");
     return {static_cast<double>(left), static_cast<double>(bottom), static_cast<double>(tx - left - right), static_cast<double>(ty - bottom - top)};
+}
+
+void CheckDeclaredExteriorMapEdge(const MapData::TerrainGridSnapshot& grid, TerrainMinimapManifest& manifest) {
+    if (manifest.rangePolicy != TerrainMinimapRangePolicy::DeclaredW3iMarginsExteriorMapEdge) return;
+    // SelectRange已经验证完整classic W3I及整数边距；这里核全源编码，不裁网格或清标志。
+    const auto tx = grid.header.width - 1, ty = grid.header.height - 1;
+    const auto left = static_cast<std::uint32_t>(manifest.w3i.cameraMargins[0]);
+    const auto right = static_cast<std::uint32_t>(manifest.w3i.cameraMargins[1]);
+    const auto bottom = static_cast<std::uint32_t>(manifest.w3i.cameraMargins[2]);
+    const auto top = static_cast<std::uint32_t>(manifest.w3i.cameraMargins[3]);
+    auto& facts = manifest.mapEdge;
+    Digest mask(manifest.memory.maximumObservedHashScratchBytes);
+    for (std::uint32_t y = 0; y <= ty; ++y) for (std::uint32_t x = 0; x <= tx; ++x) {
+        const auto& vertex = grid.vertices[static_cast<std::size_t>(y) * grid.header.width + x];
+        const bool terminal = x == tx || y == ty;
+        const bool exterior = !terminal && (x < left || x >= tx - right || y < bottom || y >= ty - top);
+        if (vertex.IsMapEdge() != exterior)
+            Fail("TERRAIN_MINIMAP_MAP_EDGE_MASK", "MapEdge必须逐SW锚点精确匹配W3I声明域外，最后顶点行列必须clear。");
+        const std::array<std::byte, 1> bit{vertex.IsMapEdge() ? std::byte{1} : std::byte{0}};
+        mask.Bytes(bit);
+        if (terminal) ++facts.terminalClearVertices;
+        else {
+            ++facts.sourceTileAnchors;
+            if (exterior) ++facts.exteriorMapEdgeAnchors;
+            else ++facts.declaredTileAnchors;
+        }
+    }
+    facts.maskSha256 = mask.Finish(); facts.state = "Validated";
 }
 
 const Image::DecodedImage& Mip(const TerrainAtlasSnapshot& atlas, std::uint32_t level) {
@@ -563,7 +593,8 @@ std::size_t OutputCapacity(const TerrainMinimapCandidate& result) {
     std::size_t bytes = sizeof(result); Charge(bytes, result.image.rgba.capacity());
     Charge(bytes, result.encoded.bytes.capacity()); ChargeBinding(bytes, m.binding);
     for (const auto* text : {&m.currentW3eSha256, &m.reserializedW3eSha256, &m.meshSha256,
-        &m.outputRgbaSha256, &m.outputBlpSha256, &m.manifestSha256, &m.w3i.state, &m.w3i.stage, &m.w3i.sha256})
+        &m.outputRgbaSha256, &m.outputBlpSha256, &m.manifestSha256, &m.w3i.state, &m.w3i.stage, &m.w3i.sha256,
+        &m.mapEdge.state, &m.mapEdge.maskSha256})
         ChargeText(bytes, *text);
     Charge(bytes, m.atlases.capacity(), sizeof(TerrainMinimapAtlasFacts));
     for (const auto& a : m.atlases) {
@@ -576,7 +607,7 @@ std::size_t OutputCapacity(const TerrainMinimapCandidate& result) {
 
 std::string ManifestHash(TerrainMinimapManifest& m) {
     Digest hash(m.memory.maximumObservedHashScratchBytes);
-    hash.String("TerrainMinimapManifest-v3"); hash.String(m.samplingPolicy); hash.String(m.encodingPolicy); HashBinding(hash, m.binding);
+    hash.String("TerrainMinimapManifest-v4"); hash.String(m.samplingPolicy); hash.String(m.encodingPolicy); HashBinding(hash, m.binding);
     hash.String(m.currentW3eSha256); hash.String(m.reserializedW3eSha256);
     for (const auto value : m.worldExtent) hash.F64(value);
     for (const auto value : m.renderExtent) hash.F64(value);
@@ -586,6 +617,9 @@ std::string ManifestHash(TerrainMinimapManifest& m) {
     hash.U32(static_cast<std::uint32_t>(m.w3i.playableWidth)); hash.U32(static_cast<std::uint32_t>(m.w3i.playableHeight));
     for (const auto value : m.w3i.cameraBounds) hash.F32(value);
     for (const auto value : m.w3i.cameraMargins) hash.U32(static_cast<std::uint32_t>(value));
+    hash.U32(m.mapEdge.policyVersion); hash.String(m.mapEdge.maskPolicy); hash.String(m.mapEdge.state); hash.String(m.mapEdge.maskSha256);
+    hash.U64(m.mapEdge.sourceTileAnchors); hash.U64(m.mapEdge.declaredTileAnchors);
+    hash.U64(m.mapEdge.exteriorMapEdgeAnchors); hash.U64(m.mapEdge.terminalClearVertices);
     for (const auto value : m.contentRectangle) hash.F64(value);
     hash.U32(kSize); hash.U32(kSize); hash.U64(kOutputBytes);
     hash.U64(m.sourceTiles); hash.U64(m.meshQuads); hash.U64(m.meshBatches); hash.String(m.meshSha256); hash.String(m.outputRgbaSha256);
@@ -625,7 +659,7 @@ Result<TerrainMinimapCandidate> BuildTerrainMinimapCandidate(const TerrainMinima
         TerrainMinimapCandidate result;
         auto& manifest = result.manifest; auto& memory = manifest.memory;
         memory.retainedInputCapacityBytes = ValidateInputs(input, limits);
-        if (input.rangePolicy == TerrainMinimapRangePolicy::DeclaredW3iMargins && input.sourceW3i) {
+        if (input.rangePolicy != TerrainMinimapRangePolicy::FullW3e && input.sourceW3i) {
             memory.estimatedSettingsScratchBytes = TerrainMinimapMemoryFacts::settingsScratchFixedBytes;
             Charge(memory.estimatedSettingsScratchBytes, input.sourceW3i->size(), TerrainMinimapMemoryFacts::settingsScratchBytesPerSourceByte);
         }
@@ -652,10 +686,11 @@ Result<TerrainMinimapCandidate> BuildTerrainMinimapCandidate(const TerrainMinima
         const auto grid = terrain.Snapshot();
         if (grid->header.groundTilesets.size() != input.groundAtlases.size())
             Fail("TERRAIN_MINIMAP_ATLAS", "冻结 atlas 数量与当前 W3E 地面表不同。");
-        CheckDomain(*grid);
+        CheckDomain(*grid, input.rangePolicy);
         const Counts counts{grid->vertices.size(), grid->tiles.size(), grid->header.groundTilesets.size() + grid->header.cliffTilesets.size()};
         Estimate(input, counts, memory, limits);
         const auto rectangle = SelectRange(input, *grid, manifest);
+        CheckDeclaredExteriorMapEdge(*grid, manifest);
         const auto serialized = Take(MapData::SerializeMapTerrain(*grid));
         manifest.reserializedW3eSha256 = HashBytes(serialized, memory.maximumObservedHashScratchBytes);
         if (serialized != input.currentW3e || manifest.reserializedW3eSha256 != manifest.currentW3eSha256)

@@ -7,8 +7,8 @@
 
 namespace War3Map::Render {
 
-// full-w3e / declared-w3i-margins；后者仅是声明边距政策，未验证1.27a native crop。
-enum class TerrainMinimapRangePolicy { FullW3e, DeclaredW3iMargins };
+// 声明边距仅是源W3I政策，未验证1.27a native crop；新外缘域必须显式选择。
+enum class TerrainMinimapRangePolicy { FullW3e, DeclaredW3iMargins, DeclaredW3iMarginsExteriorMapEdge };
 
 struct TerrainMinimapInput {
     TerrainInspectionBinding binding;
@@ -76,8 +76,16 @@ struct TerrainMinimapW3iFacts {
     std::array<std::int32_t, 4> cameraMargins{}; // L/R/B/T，tile 单位；不是 native crop 证明。
 };
 
+struct TerrainMinimapMapEdgeFacts {
+    // 仅独立外缘政策为Validated；摘要按原row-major每顶点单byte 0/1，不改源标志。
+    static constexpr std::uint32_t policyVersion = 1;
+    static constexpr const char* maskPolicy = "declared-w3i-margins-sw-anchor-exterior-terminal-clear-v1";
+    std::string state = "NotRequested", maskSha256;
+    std::size_t sourceTileAnchors = 0, declaredTileAnchors = 0, exteriorMapEdgeAnchors = 0, terminalClearVertices = 0;
+};
+
 struct TerrainMinimapManifest {
-    static constexpr std::uint32_t algorithmVersion = 3; // v3增加显式声明边距，默认像素策略保持。
+    static constexpr std::uint32_t algorithmVersion = 4; // v4增加独立声明外缘mask，像素策略保持。
     static constexpr const char* samplingPolicy = "original-mips-cell-clamped-trilinear-unorm-v1";
     static constexpr const char* encodingPolicy = "opaque-full-chain-shared-adaptive-palette-v1";
     TerrainInspectionBinding binding;
@@ -86,8 +94,9 @@ struct TerrainMinimapManifest {
     std::array<double, 4> worldExtent{};
     std::array<double, 4> renderExtent{}; // 实际选区；worldExtent 始终保留完整 W3E。
     TerrainMinimapRangePolicy rangePolicy = TerrainMinimapRangePolicy::FullW3e;
-    static constexpr std::uint32_t rangePolicyVersion = 1;
+    static constexpr std::uint32_t rangePolicyVersion = 2;
     TerrainMinimapW3iFacts w3i;
+    TerrainMinimapMapEdgeFacts mapEdge;
     // 256 画布上的连续边界 [left,top,width,height]；像素中心落在半开范围才采样。
     std::array<double, 4> contentRectangle{};
     std::size_t sourceTiles = 0, meshQuads = 0, meshBatches = 0;
@@ -113,7 +122,9 @@ struct TerrainMinimapCandidate {
 };
 
 // 独立、只读 CPU 候选，不执行 I/O/GPU/保存。仅接受 classic v11 干地heightfield，统一
-// cliff layer，无坡道/水/荒芜/边界/MapEdge/未知位。合法 cliff palette 索引不等于悬崖。
+// cliff layer，无坡道/水/荒芜/边界/未知位；旧两政策仍拒MapEdge。独立外缘政策只接
+// 完整W3I声明域外的SW锚点MapEdge且末行/列clear，不清bit，不豁免其它全网格拒域。
+// 采样内域quad可共享带MapEdge的外部锚点；合法 cliff palette 索引不等于悬崖。
 // 保留真实Z及其mesh身份；顶视unlit覆盖/UV/LOD不使用Z，不计算坡度明暗、阴影或遮挡。
 // 普通高程坡面不等于Ramp flag或cliff层变化；生成域不授予正式保存的幅度资格。
 // 内部从当前 W3E 构建 Strict unlit 完整 GroundMesh，逐批次索引追溯原 tile 与全部层。

@@ -10,6 +10,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string_view>
+#include <tuple>
 
 namespace {
 
@@ -94,6 +95,41 @@ TerrainMinimapInput Fixture(std::uint32_t width = 2, std::uint32_t height = 2, s
 
 std::size_t Record(const TerrainMinimapInput& input, std::size_t index) {
     return 41 + 4 * input.groundAtlases.size() + index * 7;
+}
+
+constexpr std::size_t CreateRecord(std::size_t x, std::size_t y) { return 69 + (y * 65 + x) * 7; }
+
+std::vector<std::byte> CreateW3i() {
+    auto bytes = W3i({6, 6, 4, 8}, 52, 52);
+    // 原创CreateMapCandidate的八cameraBounds；它们有意不等于声明边距的世界范围。
+    const std::array<float, 8> bounds{-2816, -3328, 2816, 2816, -2816, 2816, 2816, -3328};
+    for (std::size_t i = 0; i < bounds.size(); ++i) {
+        const auto raw = std::bit_cast<std::uint32_t>(bounds[i]);
+        for (unsigned b = 0; b < 4; ++b) bytes[16 + i * 4 + b] = static_cast<std::byte>((raw >> (b * 8)) & 255);
+    }
+    return bytes;
+}
+
+TerrainMinimapInput CreateTerrainFixture() {
+    // 独立编码标准原创种子，保留全部MapEdge原位；不调用Create/Parse/Serialize生成期望字节。
+    auto input = Fixture(); input.currentW3e.clear(); input.groundAtlases.clear();
+    auto& bytes = input.currentW3e;
+    Raw(bytes, "W3E!"); U32(bytes, 11); bytes.push_back(std::byte{'L'}); U32(bytes, 0);
+    U32(bytes, 6); Raw(bytes, "LdrtLdroLdrgLrokLgrsLgrd"); U32(bytes, 2); Raw(bytes, "CLdiCLgr");
+    U32(bytes, 65); U32(bytes, 65);
+    U32(bytes, std::bit_cast<std::uint32_t>(-4096.0f)); U32(bytes, std::bit_cast<std::uint32_t>(-4096.0f));
+    for (std::size_t y = 0; y < 65; ++y) for (std::size_t x = 0; x < 65; ++x) {
+        const bool edge = x < 64 && y < 64 && (x < 6 || x >= 58 || y < 4 || y >= 56);
+        bytes.insert(bytes.end(), {std::byte{0}, std::byte{32}, std::byte{0}, edge ? std::byte{96} : std::byte{32},
+            std::byte{0}, std::byte{0}, std::byte{0xf2}});
+    }
+    const auto atlas = Atlas(); input.groundAtlases.assign(6, atlas);
+    input.rangePolicy = TerrainMinimapRangePolicy::DeclaredW3iMarginsExteriorMapEdge;
+    input.sourceW3i = CreateW3i(); Rebind(input); return input;
+}
+
+void CreateMapEdge(TerrainMinimapInput& input, std::size_t x, std::size_t y, bool edge) {
+    input.currentW3e[CreateRecord(x, y) + 3] = edge ? std::byte{96} : std::byte{32}; Rebind(input);
 }
 
 void HeightRaw(TerrainMinimapInput& input, std::size_t vertex, std::uint16_t value) {
@@ -408,7 +444,9 @@ void TestDryHeightfieldKeepsPixelsButChangesGeometryIdentity() {
     const auto flat = Build(input); const auto flatMesh = Mesh(input);
     const auto expected = Solid(256, 256, {12, 34, 56, 255});
     Require(flat.image.rgba == expected.rgba, "固定单色顶视oracle必须覆盖全部256平方像素，忽略base alpha");
-    static_assert(TerrainMinimapManifest::algorithmVersion == 3);
+    static_assert(TerrainMinimapManifest::algorithmVersion == 4);
+    static_assert(TerrainMinimapManifest::rangePolicyVersion == 2);
+    static_assert(TerrainMinimapMapEdgeFacts::policyVersion == 1);
     Require(std::string_view(TerrainMinimapManifest::samplingPolicy) == "original-mips-cell-clamped-trilinear-unorm-v1"
         && std::string_view(TerrainMinimapManifest::encodingPolicy) == "opaque-full-chain-shared-adaptive-palette-v1",
         "声明边距v3不能暗改默认采样/编码v1策略");
@@ -546,6 +584,146 @@ void TestDeclaredMarginsPolicyAndRefusals() {
     input.rangePolicy = static_cast<TerrainMinimapRangePolicy>(42); Rejected(input, "TERRAIN_MINIMAP_RANGE_POLICY");
 }
 
+void TestDeclaredExteriorMapEdgeCreateBytesAndSharedCorners() {
+    auto input = CreateTerrainFixture(); const auto original = input.currentW3e;
+    const auto flat = Build(input); const auto flatMesh = Mesh(input);
+    Require(input.currentW3e == original && flat.manifest.currentW3eSha256 == *Sha256(original).value
+        && flat.manifest.reserializedW3eSha256 == flat.manifest.currentW3eSha256,
+        "标准Create原字与MapEdge不得为生成而清位或改写，内部重序列化须逐字一致");
+    Require(flat.manifest.rangePolicy == TerrainMinimapRangePolicy::DeclaredW3iMarginsExteriorMapEdge
+        && flat.manifest.worldExtent == std::array<double, 4>{-4096, -4096, 4096, 4096}
+        && flat.manifest.renderExtent == std::array<double, 4>{-3328, -3584, 3328, 3072}
+        && flat.manifest.contentRectangle == std::array<double, 4>{0, 0, 256, 256},
+        "标准Create须由真实非对称W3I边距取52乘52半开域，不能改用cameraBounds");
+    std::vector<std::byte> expectedMask;
+    for (std::size_t y = 0; y < 65; ++y) for (std::size_t x = 0; x < 65; ++x)
+        expectedMask.push_back(x < 64 && y < 64 && (x < 6 || x >= 58 || y < 4 || y >= 56) ? std::byte{1} : std::byte{0});
+    const auto& edge = flat.manifest.mapEdge;
+    Require(edge.state == "Validated" && edge.maskSha256 == *Sha256(expectedMask).value
+        && edge.sourceTileAnchors == 4096 && edge.declaredTileAnchors == 2704
+        && edge.exteriorMapEdgeAnchors == 1392 && edge.terminalClearVertices == 129,
+        "mask事实须绑定完整row-major逐vertex单byte，SW外域和末行列分别计数");
+    Require(std::string_view(TerrainMinimapMapEdgeFacts::maskPolicy)
+        == "declared-w3i-margins-sw-anchor-exterior-terminal-clear-v1", "精确mask政策必须版本化");
+    const auto parsed = MapData::ParseMapTerrain(original);
+    Require(parsed.Succeeded(), "标准原字必须可解析");
+    const auto grid = parsed.value->Snapshot();
+    Require(!grid->vertices[55 * 65 + 57].IsMapEdge() && grid->vertices[55 * 65 + 58].IsMapEdge()
+        && grid->vertices[56 * 65 + 57].IsMapEdge() && grid->vertices[56 * 65 + 58].IsMapEdge(),
+        "最后内部quad允许SE/NW/NE三共享角为MapEdge，不能误做quad四角clear政策");
+    Require(flat.manifest.sourceTiles == 4096 && flat.manifest.meshQuads == 4096
+        && flatMesh.vertices.size() == 4096 * 4 && flatMesh.indices.size() == 4096 * 6
+        && flatMesh.budget.base.displayed == 4096 && !flatMesh.budget.reduced && !flatMesh.hiddenTileCount,
+        "声明采样域不能缩完整Strict网格、原tile索引或基础层预算");
+    const auto shared = static_cast<std::size_t>(55 * 64 + 57) * 4;
+    Require(flatMesh.vertices[shared].x == 3200 && flatMesh.vertices[shared].y == 2944
+        && flatMesh.vertices[shared + 1].x == 3328 && flatMesh.vertices[shared + 2].y == 3072
+        && flatMesh.vertices[shared + 3].x == 3328 && flatMesh.vertices[shared + 3].y == 3072,
+        "共享边缘quad须追溯原tile57,55与原XY，不可重编号或裁断");
+    auto legacy = input; legacy.rangePolicy = TerrainMinimapRangePolicy::FullW3e; Rejected(legacy, "TERRAIN_MINIMAP_MAP_EDGE");
+    legacy.rangePolicy = TerrainMinimapRangePolicy::DeclaredW3iMargins; Rejected(legacy, "TERRAIN_MINIMAP_MAP_EDGE");
+    // 原保存门范围内的非空中心高程；仅验证Render保留真实Z，不自行宣称SaveGate授权。
+    const auto center = CreateRecord(32, 32); input.currentW3e[center] = std::byte{156}; Rebind(input);
+    const auto raised = Build(input); const auto raisedMesh = Mesh(input);
+    Require(input.currentW3e[center + 3] == original[center + 3]
+        && raised.image.rgba == flat.image.rgba && raised.encoded.bytes == flat.encoded.bytes
+        && raised.manifest.meshSha256 != flat.manifest.meshSha256
+        && raised.manifest.mapEdge.maskSha256 == edge.maskSha256
+        && raised.manifest.manifestSha256 != flat.manifest.manifestSha256,
+        "中心raw156应保持原MapEdge与顶视像素，同时保留非空高程/mesh/manifest身份");
+    std::size_t centerCopies = 0;
+    for (std::size_t i = 0; i < flatMesh.vertices.size(); ++i) {
+        const auto& before = flatMesh.vertices[i]; const auto& after = raisedMesh.vertices[i];
+        Require(before.x == after.x && before.y == after.y && before.u == after.u && before.v == after.v,
+            "中心高度改动不能改变任何原XY/UV");
+        const bool centerVertex = after.x == 0 && after.y == 0;
+        Require(after.z == (centerVertex ? 39.0f : 0.0f), "中心真实Z必须是raw156除4而非flatten"); centerCopies += centerVertex;
+    }
+    Require(centerCopies == 4 && raisedMesh.indices == flatMesh.indices, "完整原格中心应在四quad各保留一次");
+    auto renamed = input; renamed.sourceW3i->insert(renamed.sourceW3i->begin() + 12, std::byte{'N'});
+    const auto samePixels = Build(renamed);
+    Require(samePixels.image.rgba == raised.image.rgba && samePixels.manifest.mapEdge.maskSha256 == edge.maskSha256
+        && samePixels.manifest.w3i.sha256 != raised.manifest.w3i.sha256
+        && samePixels.manifest.manifestSha256 != raised.manifest.manifestSha256,
+        "同mask同像素仍须绑定W3I整字来源，不可只hash边距语义");
+    Require(!raised.manifest.archiveSourceIndependentlyVerified && !raised.manifest.nativeEditorOrGameVerified
+        && !raised.manifest.formalSaveAuthorized, "新显式mask政策不能自授来源/native/保存权限");
+    const auto unrequested = Build(Fixture()).manifest.mapEdge;
+    Require(unrequested.state == "NotRequested" && unrequested.maskSha256.empty()
+        && !unrequested.sourceTileAnchors && !unrequested.declaredTileAnchors
+        && !unrequested.exteriorMapEdgeAnchors && !unrequested.terminalClearVertices, "旧Full无mask请求不能伪造Validated事实");
+}
+
+void TestDeclaredExteriorMapEdgeRefusals() {
+    const auto original = CreateTerrainFixture();
+    for (const auto [x, y, edge] : {std::tuple{6u, 4u, true}, std::tuple{57u, 55u, true},
+        std::tuple{0u, 32u, false}, std::tuple{60u, 32u, false}, std::tuple{32u, 0u, false}, std::tuple{32u, 60u, false},
+        std::tuple{64u, 0u, true}, std::tuple{0u, 64u, true}, std::tuple{64u, 64u, true}}) {
+        auto input = original; CreateMapEdge(input, x, y, edge); Rejected(input, "TERRAIN_MINIMAP_MAP_EDGE_MASK");
+    }
+    for (unsigned side = 0; side < 4; ++side) {
+        auto input = original; std::array<std::int32_t, 4> margins{6, 6, 4, 8}; ++margins[side];
+        input.sourceW3i = W3i(margins, side < 2 ? 51 : 52, side >= 2 ? 51 : 52);
+        Rejected(input, "TERRAIN_MINIMAP_MAP_EDGE_MASK");
+    }
+    auto input = original; input.sourceW3i = W3i({6, 6, 4, 8}, 51, 52); Rejected(input, "TERRAIN_MINIMAP_W3I_MARGINS");
+    input = original; input.sourceW3i.reset(); Rejected(input, "TERRAIN_MINIMAP_W3I_MISSING");
+    input = original; input.sourceW3i.emplace(); Rejected(input, "TERRAIN_MINIMAP_W3I_EMPTY");
+    input = original; input.sourceW3i->push_back(std::byte{0}); Rejected(input, "TERRAIN_MINIMAP_W3I_PARTIAL");
+    input = original; input.sourceW3i = W3i({6, 6, 4, 8}, 52, 52, 28); Rejected(input, "TERRAIN_MINIMAP_W3I_POLICY_LAYOUT");
+    // 每个点仍在完整源拒域：0,0为外域且本来就带MapEdge，32,32为内部，64,64为终端。
+    for (const auto [x, y] : {std::pair{0u, 0u}, std::pair{32u, 32u}, std::pair{64u, 64u}}) {
+        for (const auto [flag, code] : {std::pair{0x80u, "TERRAIN_MINIMAP_BOUNDARY"}, {0x10u, "TERRAIN_MINIMAP_RAMP"},
+            {0x40u, "TERRAIN_MINIMAP_WATER"}, {0x20u, "TERRAIN_MINIMAP_BLIGHT"}}) {
+            input = original; input.currentW3e[CreateRecord(x, y) + 4] = static_cast<std::byte>(flag); Rebind(input); Rejected(input, code);
+        }
+        input = original; input.currentW3e[CreateRecord(x, y) + 3] |= std::byte{0x80}; Rebind(input); Rejected(input, "TERRAIN_MINIMAP_UNKNOWN_FLAGS");
+        input = original; input.currentW3e[CreateRecord(x, y) + 6] = std::byte{0xf3}; Rebind(input); Rejected(input, "TERRAIN_MINIMAP_NOT_FLAT");
+    }
+    input = original; input.currentW3e[CreateRecord(0, 0) + 4] = std::byte{6}; Rebind(input); Rejected(input, "TERRAIN_MINIMAP_PALETTE");
+    input = original; input.currentW3e[CreateRecord(0, 0) + 6] = std::byte{0x22}; Rebind(input); Rejected(input, "TERRAIN_MINIMAP_PALETTE");
+    input = original; input.currentW3e[CreateRecord(0, 0) + 5] = std::byte{18}; Rebind(input); Rejected(input, "TERRAIN_MINIMAP_VARIATION");
+}
+
+void TestDeclaredExteriorMapEdgeRealFootprintAndBudgets() {
+    auto input = CreateTerrainFixture();
+    auto atlas = Atlas(8, {255, 0, 255, 255}); SetCell(atlas->image, 8, 0, 0, {0, 0, 200, 255});
+    atlas->additionalMips.push_back(Solid(16, 16, {255, 0, 255, 255}));
+    atlas->additionalMips.push_back(Solid(8, 8, {255, 0, 255, 255}));
+    SetCell(atlas->additionalMips[0], 4, 0, 0, {0, 200, 0, 255});
+    SetCell(atlas->additionalMips[1], 2, 0, 0, {200, 0, 0, 255}); atlas->validatedMipCount = 3;
+    input.groundAtlases.assign(6, atlas);
+    const auto crop = Build(input);
+    // rho=(8-1)*52/256=91/64，lambda=log2(91/64)，byte空间最终(0,102,98)。
+    Require(Pixel(crop, 127, 127) == Rgba{0, 102, 98, 255}, "声明52tile原足迹必须参与mip混合，不能先Full256再裁缩");
+    Near(crop.manifest.atlases[0].maximumRequestedLod, std::log2(91.0 / 64), "真实声明域足迹须独立手算");
+    Near(crop.manifest.atlases[0].maximumSampledLod, std::log2(91.0 / 64), "新mask不改变原链cell安全采样");
+    // 单独的无MapEdge Full对照只证明采样数学，不作为标准源准入路径。
+    auto fullInput = input;
+    for (std::size_t y = 0; y < 65; ++y) for (std::size_t x = 0; x < 65; ++x)
+        fullInput.currentW3e[CreateRecord(x, y) + 3] = std::byte{32};
+    Rebind(fullInput); fullInput.rangePolicy = TerrainMinimapRangePolicy::FullW3e;
+    const auto full = Build(fullInput);
+    Require(Pixel(full, 127, 127) == Rgba{0, 161, 39, 255}
+        && crop.manifest.meshSha256 == full.manifest.meshSha256 && crop.image.rgba != full.image.rgba,
+        "独立Full足迹7/4颜色不同，而mesh始终保留同一4096原格");
+    const auto& memory = crop.manifest.memory;
+    Require(memory.estimatedSettingsScratchBytes == TerrainMinimapMemoryFacts::settingsScratchFixedBytes
+        + TerrainMinimapMemoryFacts::settingsScratchBytesPerSourceByte * input.sourceW3i->size()
+        && memory.parsedSettingsCapacityBytes > input.sourceW3i->size()
+        && memory.parsedSettingsCapacityBytes <= memory.estimatedSettingsScratchBytes
+        && memory.outputCapacityBytes >= sizeof(TerrainMinimapCandidate) + crop.manifest.mapEdge.maskSha256.capacity() + 1
+        && memory.observedContainerCapacityBytes <= memory.estimatedPeakBytes, "新mask字符串与Settings解析必须进入capacity/working账");
+    TerrainMinimapLimits limits; limits.maxTiles = 2704; Rejected(input, "TERRAIN_TILE_LIMIT", limits);
+    limits = {}; limits.maxRetainedInputBytes = memory.retainedInputCapacityBytes - 1; Rejected(input, "TERRAIN_MINIMAP_BUDGET", limits);
+    limits = {}; limits.maxWorkingBytes = memory.estimatedPeakBytes - 1; Rejected(input, "TERRAIN_MINIMAP_BUDGET", limits);
+    limits.maxWorkingBytes = memory.estimatedPeakBytes;
+    Require(Build(input, limits).encoded.bytes == crop.encoded.bytes, "新策略精确working边界应可容纳完整网格和mask事实");
+    auto oversized = input; oversized.sourceW3i->reserve(input.sourceW3i->capacity() + 1024 * 1024);
+    limits = {}; limits.maxRetainedInputBytes = memory.retainedInputCapacityBytes + 512 * 1024;
+    Rejected(oversized, "TERRAIN_MINIMAP_BUDGET", limits);
+}
+
 } // namespace
 
 int main() {
@@ -555,6 +733,8 @@ int main() {
         TestEncodedCandidateUsesCurrentImage();
         TestDryHeightfieldKeepsPixelsButChangesGeometryIdentity();
         TestDeclaredMarginsFixedPixelsAndLod(); TestDeclaredMarginsPolicyAndRefusals();
+        TestDeclaredExteriorMapEdgeCreateBytesAndSharedCorners(); TestDeclaredExteriorMapEdgeRefusals();
+        TestDeclaredExteriorMapEdgeRealFootprintAndBudgets();
         std::cout << "TerrainMinimapCandidateTests: all tests passed\n"; return 0;
     } catch (const std::exception& exception) {
         std::cerr << "TerrainMinimapCandidateTests: " << exception.what() << '\n'; return 1;
