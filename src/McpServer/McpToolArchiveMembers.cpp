@@ -22,9 +22,16 @@ QJsonObject SourceSchema() {
 QJsonObject ReceiptJson(const Services::ArchiveMemberEditReceipt& receipt) {
     QJsonArray added, removed;
     for (const auto& member : receipt.added) added.append(QString::fromStdString(member));
-    for (const auto& [member, records] : receipt.removed)
+    for (std::size_t index = 0; index < receipt.removed.size(); ++index) {
+        const auto& [member, records] = receipt.removed[index];
+        QJsonArray mentions;
+        if (index < receipt.mentions.size())
+            for (const auto& mention : receipt.mentions[index])
+                mentions.append(QJsonObject{{"member", QString::fromStdString(mention.member)},
+                    {"kind", QString::fromStdString(mention.kind)}, {"count", static_cast<qint64>(mention.count)}});
         removed.append(QJsonObject{{"archive_path", QString::fromStdString(member)},
-            {"import_records_removed", static_cast<qint64>(records)}});
+            {"import_records_removed", static_cast<qint64>(records)}, {"mentioned_in", mentions}});
+    }
     QJsonObject result{{"ok", true}, {"output_path", QString::fromStdWString(receipt.candidate.wstring())},
         {"candidate_sha256", QString::fromStdString(receipt.candidateSha256)},
         {"source_sha256", QString::fromStdString(receipt.sourceSha256)},
@@ -107,16 +114,18 @@ void RegisterArchiveMemberTools(McpServer& server) {
         ToolDefinition tool;
         tool.name = "archive_members_remove";
         tool.description = "删除地图里已有的导入成员及解析到它的全部 war3map.imp 记录，写出新的候选地图；源图不改。"
-            "不在导入清单里的成员也可删，地图数据文件不能删，不重建脚本。不检查模型、脚本或物编是否仍引用这些文件，删除前须先确认。"
+            "不在导入清单里的成员也可删，地图数据文件不能删，不重建脚本。删除前在脚本、物编、模型和 UI 文本里按字符串查找路径，"
+            "找到就拒绝（MEMBER_REFERENCED，并列出位置），确认要删时传 allow_referenced=true；找不到不等于没有引用，动态拼接的路径查不出。"
             "与 CLI archive-member-remove 共用同一服务。";
         tool.permission = ToolPermission::Save;
         auto properties = SourceSchema();
         properties.insert("archive_paths", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 256},
             {"items", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 1024}}}});
+        properties.insert("allow_referenced", QJsonObject{{"type", "boolean"}, {"default", false}});
         tool.inputSchema = BasicSchema(properties, {"source_map_path", "expected_source_sha256", "output_path", "archive_paths"});
         tool.handler = [](const QJsonObject& parameters) -> QJsonValue {
             QJsonObject error;
-            if (!OnlyFields(parameters, {"source_map_path", "expected_source_sha256", "output_path", "archive_paths"}, error)) return error;
+            if (!OnlyFields(parameters, {"source_map_path", "expected_source_sha256", "output_path", "archive_paths", "allow_referenced"}, error)) return error;
             std::filesystem::path source, output;
             std::string sha;
             if (!ParseSource(parameters, source, output, sha, error)) return error;
@@ -125,7 +134,13 @@ void RegisterArchiveMemberTools(McpServer& server) {
                 if (!item.isString()) return Failure("MCP_ARCHIVE_MEMBER_ARGUMENT_INVALID", "archive_paths 每项必须是字符串。");
                 members.push_back(item.toString().toStdString());
             }
-            auto result = Services::RemoveArchiveMembers(source, sha, output, members);
+            Services::ArchiveMemberRemoveOptions options;
+            if (parameters.contains("allow_referenced")) {
+                if (!parameters.value("allow_referenced").isBool())
+                    return Failure("MCP_ARCHIVE_MEMBER_ARGUMENT_INVALID", "allow_referenced 必须是布尔值。");
+                options.allowReferenced = parameters.value("allow_referenced").toBool();
+            }
+            auto result = Services::RemoveArchiveMembers(source, sha, output, members, options);
             if (!result.Succeeded() || !result.value) return Failure(result);
             return ReceiptJson(*result.value);
         };

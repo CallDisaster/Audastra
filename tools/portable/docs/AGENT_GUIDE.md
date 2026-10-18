@@ -100,13 +100,13 @@ war3-map-cli map-edit-save <source-map> <source-sha256> <terrain-sha256> <ydwe-r
 war3-map-cli terrain-blight-save <source-map> <source-sha256> <terrain-sha256> <ydwe-root> <war3-root> <vertex-x> <vertex-y> <radius-0..16> <set|clear> <new-candidate.w3x> [--layer <id> ...]
 war3-map-cli script-build <ydwe-root> <war3-root> <map> <out.j> [--compile <work-dir> [--external|--cross-check]]
 war3-map-cli archive-member-add <source-map> <source-sha256> <new-candidate.w3x> <member> <file> [<member> <file> ...]
-war3-map-cli archive-member-remove <source-map> <source-sha256> <new-candidate.w3x> <member> [<member> ...]
+war3-map-cli archive-member-remove <source-map> <source-sha256> <new-candidate.w3x> <member> [<member> ...] [--allow-referenced]
 war3-map-cli archive-expand <source-map> <source-sha256> <new-directory> [--data-only]
 ```
 
 往地图里补文件只能用 `archive-member-add`（CLI）、独立 MCP 的 `archive_members_add` 或编辑器端口的 `imports_add`。保存只写本次改动涉及的成员，不扫描工作目录，把文件拷进展开目录不会进入候选。导入清单里标志不明的旧记录，在补回它指向的唯一成员后按原记录保留；两个可能路径都有成员时仍拒绝。
 
-删除导入文件用 `archive-member-remove`（CLI）、独立 MCP 的 `archive_members_remove` 或编辑器端口的 `imports_remove`，成员和它在 `war3map.imp` 里的记录一起删除，地图数据文件不能删。这些入口都不检查模型、脚本或物编是否还在用这些文件，删除前要先自己确认；没有查到引用不等于可以删。
+删除导入文件用 `archive-member-remove`（CLI）、独立 MCP 的 `archive_members_remove` 或编辑器端口的 `imports_remove`，成员和它在 `war3map.imp` 里的记录一起删除，地图数据文件不能删。CLI 和独立 MCP 删除前会在脚本、七类物编、w3i/wts、导入模型和 UI 文本里按字符串找这个路径（`.mdl`/`.mdx` 互通），找到就拒绝（`MEMBER_REFERENCED`，列出位置）；确认要删时加 `--allow-referenced` 或 `allow_referenced=true`，回执的 `mentioned_in` 仍会列出这些位置。找不到不等于没有引用：脚本里拼接出来的路径查不出，所以回执始终是 `references_checked=false`。编辑器端口的 `imports_remove` 目前不做这项查找。
 
 旋转角度范围为 `[0,360)`；复制最多4096个来源实例；笔划最多16笔，CLI 点位是地形顶点索引。raise/lower strength 为 `>0..1024`，smooth 为 `>0..1`；通行性和布局门禁仍会进一步拒绝不安全来源。地物跟随、其他未开放笔刷不因此放开。`--layer` 必须是已发现的真实函数库层，不能拿虚构层绕过目录检查。
 
@@ -172,7 +172,7 @@ stdio 是 UTF-8 **newline JSON-RPC**：每行一条完整 JSON，响应以换行
 
 1. 不带 `--workspace` 启动独立 MCP，调用 `archive_expand`（或 CLI `archive-expand`），参数是源图、源图 SHA 和一个尚不存在的新目录，一般加 `data_only=true`。
 2. 用 `--workspace <该目录>` 重新启动 MCP，`get_revision` 确认 `identity_current=true`。
-3. `begin_edit` 后用 `objects_set_fields` / `objects_create` / 触发器写工具修改，再 `preview_edit`、`validate_edit`。
+3. 先 `begin_edit`，**之后**再用 `objects_list` / `objects_get` 查询并拿 `project_identity`、`revision`，然后用 `objects_set_fields` / `objects_create` / 触发器写工具修改，再 `preview_edit`、`validate_edit`。`begin_edit` 会改变修订，在它之前查到的 `revision` 拿去修改会返回 `OBJECT_REVISION_CONFLICT`。
 4. `save_map_edit_candidate` 带 `source_map_path`（原 .w3x）、`expected_source_sha256`、新的 `output_path`、`transaction_id` 和当前 `expected_revision`，写出新地图包。工作区的物编基线必须与原图一致，否则拒绝。
 5. 不带工作区对新候选再查一次（例如 `objects_get` + `source_map_path`）确认改动。
 
