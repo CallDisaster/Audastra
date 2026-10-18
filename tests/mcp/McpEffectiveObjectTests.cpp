@@ -1,6 +1,7 @@
 #include "McpWorkspace.h"
 #include "McpObjectTools.h"
 #include "War3MapCore/IO/FileBytes.h"
+#include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/Mpq/MpqWriter.h"
 #include "War3MapCore/ObjectData/EffectiveObjectCatalog.h"
 #include "War3MapCore/Services/ObjectCommands.h"
@@ -303,23 +304,35 @@ void IndependentWorkspacesDoNotShareMapRows() {
         "same rawcode remains bound to its own map");
 }
 
+struct ScopedGameRoot {
+    std::optional<std::wstring> old;
+    explicit ScopedGameRoot(const std::filesystem::path& value) {
+        SetLastError(ERROR_SUCCESS);
+        const DWORD size = GetEnvironmentVariableW(L"FORGE_MCP_WAR3_ROOT", nullptr, 0);
+        if (size) {
+            std::wstring buffer(size, L'\0');
+            const auto length = GetEnvironmentVariableW(L"FORGE_MCP_WAR3_ROOT", buffer.data(), size);
+            Require(length < size && length > 0, "capture process-local environment");
+            buffer.resize(length); old = std::move(buffer);
+        } else if (GetLastError() != ERROR_ENVVAR_NOT_FOUND) old = std::wstring{};
+        Require(SetEnvironmentVariableW(L"FORGE_MCP_WAR3_ROOT", value.c_str()), "configure only this test process");
+    }
+    ~ScopedGameRoot() { SetEnvironmentVariableW(L"FORGE_MCP_WAR3_ROOT", old ? old->c_str() : nullptr); }
+};
+QJsonObject CallTool(McpServer& server, const QString& name, const QJsonObject& arguments) {
+    const QJsonObject request{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/call"},
+        {"params", QJsonObject{{"name", name}, {"arguments", arguments}}}};
+    const auto response = server.HandleMessage(QJsonDocument(request).toJson(QJsonDocument::Compact));
+    Require(response.has_value(), "tools/call returns a response");
+    if (response->error) return QJsonObject{{"ok", false}, {"protocol_error", true}};
+    const auto content = response->result.toObject().value("content").toArray();
+    Require(content.size() == 1, "tool uses one text payload");
+    return QJsonDocument::fromJson(content.first().toObject().value("text").toString().toUtf8()).object();
+}
+
 void ProtocolReportsActualCatalogSources() {
     Fixture fixture;
-    struct ScopedGameRoot {
-        std::optional<std::wstring> old;
-        explicit ScopedGameRoot(const std::filesystem::path& value) {
-            SetLastError(ERROR_SUCCESS);
-            const DWORD size = GetEnvironmentVariableW(L"FORGE_MCP_WAR3_ROOT", nullptr, 0);
-            if (size) {
-                std::wstring buffer(size, L'\0');
-                const auto length = GetEnvironmentVariableW(L"FORGE_MCP_WAR3_ROOT", buffer.data(), size);
-                Require(length < size && length > 0, "capture process-local environment");
-                buffer.resize(length); old = std::move(buffer);
-            } else if (GetLastError() != ERROR_ENVVAR_NOT_FOUND) old = std::wstring{};
-            Require(SetEnvironmentVariableW(L"FORGE_MCP_WAR3_ROOT", value.c_str()), "configure only this test process");
-        }
-        ~ScopedGameRoot() { SetEnvironmentVariableW(L"FORGE_MCP_WAR3_ROOT", old ? old->c_str() : nullptr); }
-    } configured(fixture.game);
+    const ScopedGameRoot configured(fixture.game);
     McpServer server;
     RegisterObjectTools(server);
     server.SetWorkspace(fixture.source, fixture.ui);
@@ -348,6 +361,54 @@ void ProtocolReportsActualCatalogSources() {
     }
     fixture.OriginalPairUnchanged();
 }
+
+// 独立服务没有展开工作区时，物编查询直接只读打开 .w3x；行与来源和展开工作区相同。
+void ProtocolQueriesMapArchiveWithoutWorkspace() {
+    Fixture fixture;
+    const ScopedGameRoot configured(fixture.game);
+    const auto mapPath = fixture.temporary.Path() / "map.w3x";
+    const std::vector<MapArchiveMember> members{{"war3map.wtg", fixture.originalWtg}, {"war3map.wct", fixture.originalWct},
+        {"Units\\UnitData.slk", Tests::ObjectBytes(UnitTable("M001", "MapA.mdx"))},
+        {"Units\\UnitMetaData.slk", Tests::ObjectBytes(Metadata("evil"))}};
+    const auto written = WriteVerifiedArchive(mapPath, members);
+    Require(written.Succeeded() && written.value, "write synthetic map archive\n" + Codes(written));
+    const auto sha = QString::fromStdString(written.value->sha256);
+    const auto before = IO::ReadFileBytes(mapPath, 1024 * 1024);
+    McpServer server;
+    RegisterObjectTools(server);
+    Require(!server.Workspace(), "no expanded workspace is open");
+    const QJsonObject source{{"source_map_path", QString::fromStdWString(mapPath.wstring())}, {"expected_source_sha256", sha}};
+    auto list = source; list.insert("kind", "unit"); list.insert("query", "M001");
+    const auto listed = CallTool(server, "objects_list", list);
+    Require(listed.value("ok").toBool() && listed.value("workspace_kind") == "map-archive-readonly"
+        && listed.value("project_identity") == "archive-readonly-" + sha && listed.value("revision") == sha,
+        "archive list is bound to the archive SHA");
+    const auto items = listed.value("items").toArray();
+    Require(items.size() == 1 && items.first().toObject().value("id") == "M001", "archive list reads the map table row");
+    const auto sources = listed.value("catalog_sources").toArray();
+    Require(std::any_of(sources.begin(), sources.end(), [](const QJsonValue& value) {
+        const auto row = value.toObject();
+        return row.value("logical_path").toString().compare("UNITS\\UNITDATA.SLK", Qt::CaseInsensitive) == 0
+            && row.value("layer") == "map" && row.value("sha256").toString().size() == 64;
+    }), "archive list reports the map-layer source");
+    auto get = source; get.insert("kind", "unit"); get.insert("id", "M001");
+    const auto detail = CallTool(server, "objects_get", get);
+    Require(detail.value("ok").toBool() && detail.value("workspace_kind") == "map-archive-readonly", "archive get succeeds");
+    // 绑定与只读：SHA 不对、缺 SHA、写工具带归档路径都拒绝。
+    auto stale = list; stale.insert("expected_source_sha256", QString(64, QLatin1Char('0')));
+    Require(CallTool(server, "objects_list", stale).value("diagnostics").toArray().first().toObject().value("code")
+        == "MAP_OBJECT_SOURCE_STALE", "stale archive SHA is rejected");
+    auto missing = list; missing.remove("expected_source_sha256");
+    Require(!CallTool(server, "objects_list", missing).value("ok").toBool(), "archive query needs the source SHA");
+    auto write = source; write.insert("kind", "unit"); write.insert("id", "M001");
+    write.insert("changes", QJsonArray{QJsonObject{{"field", "file"}, {"value", "X.mdx"}}});
+    write.insert("project_identity", "archive-readonly-" + sha); write.insert("expected_revision", sha);
+    Require(!CallTool(server, "objects_set_fields", write).value("ok").toBool(), "write tools do not accept archive sources");
+    Require(!CallTool(server, "objects_list", QJsonObject{{"kind", "unit"}}).value("ok").toBool(),
+        "without a workspace or archive source the query still fails");
+    const auto after = IO::ReadFileBytes(mapPath, 1024 * 1024);
+    Require(before.Succeeded() && after.Succeeded() && *before.value == *after.value, "archive bytes are unchanged");
+}
 } // namespace
 
 int main() {
@@ -360,6 +421,7 @@ int main() {
         Run("BadMapTableNeverBecomesGameData", BadMapTableNeverBecomesGameData);
         Run("IndependentWorkspacesDoNotShareMapRows", IndependentWorkspacesDoNotShareMapRows);
         Run("ProtocolReportsActualCatalogSources", ProtocolReportsActualCatalogSources);
+        Run("ProtocolQueriesMapArchiveWithoutWorkspace", ProtocolQueriesMapArchiveWithoutWorkspace);
         std::cout << "MCP effective object catalog passed\n";
         return 0;
     } catch (const std::exception& error) {

@@ -1,5 +1,6 @@
 #include "McpWorkspace.h"
 #include "McpWorkspaceObjectsState.h"
+#include "McpObjectSourceCapture.h"
 
 #include "War3MapCore/Game/GameDataSource.h"
 #include "War3MapCore/Hash.h"
@@ -17,15 +18,7 @@ namespace War3Map::Mcp {
 namespace {
 using namespace ObjectData;
 constexpr std::size_t kMemberBudget = 64U * 1024U * 1024U;
-constexpr std::size_t kMapBudget = 256U * 1024U * 1024U;
-constexpr std::size_t kGameBudget = 128U * 1024U * 1024U;
 
-std::string Lower(std::string text) {
-    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
-    return text;
-}
 std::string Utf8(const std::filesystem::path& path) {
     const auto value = path.generic_u8string();
     return {reinterpret_cast<const char*>(value.data()), value.size()};
@@ -33,15 +26,6 @@ std::string Utf8(const std::filesystem::path& path) {
 template<class T> Result<T> Failed(const auto& value) { return {{}, value.diagnostics}; }
 Status Failure(std::string code, std::string message) {
     return Status::Failure("MCP.Object", std::move(code), std::move(message));
-}
-Result<std::shared_ptr<const LniObjectDocument>> ParseLni(ObjectType type, std::span<const std::byte> bytes) {
-    auto parsed = LniObjectCodec(type).Parse(bytes);
-    const auto* document = dynamic_cast<const LniObjectDocument*>(parsed.document.get());
-    if (!parsed.Succeeded() || !document || !document->IsStructurallySafe()) {
-        if (!parsed.diagnostics.empty()) return Failed<std::shared_ptr<const LniObjectDocument>>(parsed);
-        return {{}, Failure("OBJECT_SOURCE_INVALID", "物编来源不能建立完整可编辑 LNI 文档。").diagnostics};
-    }
-    return Result<std::shared_ptr<const LniObjectDocument>>::Success(std::make_shared<const LniObjectDocument>(*document));
 }
 }
 
@@ -62,8 +46,6 @@ Status McpWorkspace::CaptureObjectSources() {
         "七类物编需要宿主实际配置 FORGE_MCP_WAR3_ROOT；不猜标准目录或字段定义。");
     const auto environment = CheckEnvironmentUnchanged();
     if (!environment.Succeeded()) return environment;
-    auto game = Game::GameDataSource::MountStrict(gameRoot_);
-    if (!game.Succeeded()) return {game.diagnostics};
     auto directory = DirectoryWorkspace::Open(projectRoot_);
     if (!directory.Succeeded()) return {directory.diagnostics};
     if (directory.value->Snapshot().aggregateSha256 != session_.Revision().sourceSha256)
@@ -71,119 +53,18 @@ Status McpWorkspace::CaptureObjectSources() {
     Services::ObjectCatalogSources sources;
     sources.directory = &*directory.value;
     sources.gameRoot = gameRoot_;
-    auto effective = Services::LoadEffectiveObjectCatalog(sources);
-    if (!effective.Succeeded()) return {effective.diagnostics};
-    auto state = std::make_unique<McpObjectWorkspaceState>(
-        std::make_shared<const EffectiveObjectCatalog>(std::move(*effective.value)));
-    std::size_t gameBytes = 0;
-    Status gameRead = Status::Ok();
-    const StandardObjectCatalog::FileReader reader = [&](const std::string& name) -> Result<std::vector<std::byte>> {
-        auto existing = state->gameInputs.find(name);
-        if (existing == state->gameInputs.end()) {
-            McpObjectWorkspaceState::GameInput input;
-            if (game.value->HasFile(name)) {
-                auto value = game.value->ReadFileBoundedWithSource(name, CatalogLoadOptions{}.maximumFileBytes);
-                if (!value.Succeeded()) { gameRead.diagnostics = value.diagnostics; return Failed<std::vector<std::byte>>(value); }
-                if (value.value->bytes.size() > kGameBudget - gameBytes) {
-                    gameRead = Failure("OBJECT_GAME_SNAPSHOT_BUDGET", "游戏字段元数据的实际读取超过 128 MiB 累积预算。");
-                    return Failed<std::vector<std::byte>>(gameRead);
-                }
-                gameBytes += value.value->bytes.size();
-                input.archive = std::move(value.value->archiveName);
-                input.bytes = std::move(value.value->bytes);
-            }
-            existing = state->gameInputs.emplace(name, std::move(input)).first;
-        }
-        if (!existing->second.bytes) return Result<std::vector<std::byte>>::Failure("MCP.Object",
-            "OBJECT_GAME_MEMBER_MISSING", "游戏来源明确缺失：" + name);
-        return Result<std::vector<std::byte>>::Success(*existing->second.bytes);
+    ObjectMemberSource members;
+    for (const auto& file : directory.value->Snapshot().files) members.files.push_back(file.relativePath);
+    members.read = [this](const std::filesystem::path& path, std::size_t maximumBytes) {
+        return IO::ReadFileBytes(projectRoot_ / path, maximumBytes);
     };
-    // 字段定义仍只信任宿主游戏来源，地图内的完整 SLK 只提供对象数据。
-    auto schema = ObjectFieldSchema::Load(reader);
-    if (!gameRead.Succeeded()) return gameRead;
-    if (!schema.Succeeded()) return {schema.diagnostics};
-    state->schema = std::move(*schema.value);
-    std::size_t mapBytes = 0;
-    for (std::size_t index = 0; index < state->mapInputs.size(); ++index) {
-        const auto type = static_cast<ObjectType>(index);
-        auto& input = state->mapInputs[index];
-        std::vector<std::filesystem::path> lniPaths, nativePaths;
-        for (const auto& file : directory.value->Snapshot().files) {
-            const auto name = Lower(Utf8(file.relativePath));
-            const auto lni = std::string(LniFileName(type));
-            const auto native = std::string(NativeFileName(type));
-            if (name == lni || name == "table/" + lni) lniPaths.push_back(file.relativePath);
-            if (name == native || name == "map/" + native) nativePaths.push_back(file.relativePath);
-        }
-        if (lniPaths.size() > 1 || nativePaths.size() > 1)
-            return Failure("OBJECT_SOURCE_AMBIGUOUS", "同类物编存在多个 root/map/table 来源：" + std::string(ToString(type)));
-        if (!nativePaths.empty()) {
-            auto bytes = IO::ReadFileBytes(projectRoot_ / nativePaths.front(), kMemberBudget);
-            if (!bytes.Succeeded()) return {bytes.diagnostics};
-            if (bytes.value->size() > kMapBudget - mapBytes) return Failure("OBJECT_MAP_SNAPSHOT_BUDGET", "地图物编超过 256 MiB 累积预算。");
-            mapBytes += bytes.value->size();
-            const auto parsed = NativeObjectCodec(type).Parse(*bytes.value);
-            const auto* native = dynamic_cast<const NativeObjectDocument*>(parsed.document.get());
-            if (!parsed.Succeeded() || !native || !native->IsStructurallySafe()) return {parsed.diagnostics};
-            input.native = *native;
-            input.nativeBytes = std::move(*bytes.value);
-        }
-        if (!lniPaths.empty()) {
-            input.sourcePresent = true;
-            input.relativePath = lniPaths.front();
-            auto bytes = IO::ReadFileBytes(projectRoot_ / input.relativePath, kMemberBudget);
-            if (!bytes.Succeeded()) return {bytes.diagnostics};
-            if (bytes.value->size() > kMapBudget - mapBytes) return Failure("OBJECT_MAP_SNAPSHOT_BUDGET", "地图物编超过 256 MiB 累积预算。");
-            mapBytes += bytes.value->size();
-            auto parsed = ParseLni(type, *bytes.value);
-            if (!parsed.Succeeded()) return {parsed.diagnostics};
-            input.initial = *parsed.value;
-            input.sourceBytes = std::move(*bytes.value);
-            if (input.native) {
-                auto projected = *input.native;
-                const auto status = ApplyLniChangesToNative(projected, *input.initial, &state->schema, &state->standard);
-                if (!status.Succeeded()) return status;
-                const auto encoded = NativeObjectCodec(type).Serialize(projected);
-                if (!encoded.Succeeded()) return {encoded.diagnostics};
-                if (*encoded.value != *input.nativeBytes)
-                    return Failure("OBJECT_SOURCE_PROJECTION_CONFLICT", "LNI 与保留的 native 来源不一致；请先明确生效来源：" + Utf8(input.relativePath));
-            }
-        } else if (input.native) {
-            input.sourcePresent = true;
-            input.relativePath = nativePaths.front();
-            input.nativeSource = true;
-            input.sourceBytes = *input.nativeBytes;
-            auto bytes = ConvertNativeObjectDataToLni(type, *input.nativeBytes);
-            if (!bytes.Succeeded()) return {bytes.diagnostics};
-            auto parsed = ParseLni(type, *bytes.value);
-            if (!parsed.Succeeded()) return {parsed.diagnostics};
-            input.initial = *parsed.value;
-        } else {
-            input.relativePath = std::filesystem::path("table") / std::string(LniFileName(type));
-            auto parsed = ParseLni(type, {});
-            if (!parsed.Succeeded()) return {parsed.diagnostics};
-            input.initial = *parsed.value;
-        }
-        input.committed = input.initial;
-    }
     auto map = MapDocument::FromDirectory(*directory.value);
     if (!map.Succeeded()) return {map.diagnostics};
-    state->map = std::make_unique<MapDocument>(std::move(*map.value));
-    // 只读实际主脚本供删除提示；.ai 不读取、不检查。
-    for (const auto& file : directory.value->Snapshot().files) {
-        const auto name = Lower(Utf8(file.relativePath));
-        if (name != "war3map.j" && name != "map/war3map.j" && name != "scripts/war3map.j" &&
-            name != "war3map.lua" && name != "map/war3map.lua" && name != "scripts/war3map.lua") continue;
-        auto bytes = IO::ReadFileBytes(projectRoot_ / file.relativePath, kMemberBudget);
-        if (!bytes.Succeeded()) return {bytes.diagnostics};
-        if (bytes.value->size() > kMapBudget - mapBytes) return Failure("OBJECT_MAP_SNAPSHOT_BUDGET", "地图与脚本提示超过 256 MiB 累积预算。");
-        mapBytes += bytes.value->size();
-        state->scriptNames.push_back(Utf8(file.relativePath));
-        state->scriptBytes.push_back(std::move(*bytes.value));
-    }
+    auto state = CaptureObjectWorkspaceState(sources, members, std::move(*map.value));
+    if (!state.Succeeded()) return {state.diagnostics};
     const auto source = session_.VerifySourceUnchanged();
     if (!source.Succeeded()) return source;
-    objectState_ = std::move(state);
+    objectState_ = std::move(*state.value);
     const auto verified = CheckObjectSourcesUnchanged();
     if (!verified.Succeeded()) { objectState_.reset(); return verified; }
     return Status::Ok();
@@ -221,18 +102,15 @@ Result<Services::ObjectCommandContext> McpWorkspace::ObjectContext(ObjectType ty
     if (!captured.Succeeded()) return Failed<Services::ObjectCommandContext>(captured);
     const auto current = CheckEnvironmentUnchanged();
     if (!current.Succeeded()) return Failed<Services::ObjectCommandContext>(current);
-    const auto index = static_cast<std::size_t>(type);
-    if (index >= objectState_->mapInputs.size()) return Failed<Services::ObjectCommandContext>(Failure("OBJECT_KIND_INVALID", "物编类别无效。"));
-    if (objectState_->standard.Count(type) == 0)
-        return Failed<Services::ObjectCommandContext>(Failure("OBJECT_STANDARD_CATEGORY_MISSING", "实际生效目录没有此类对象：" + std::string(ToString(type))));
-    Services::ObjectCommandContext context;
-    context.type = type; context.standard = &objectState_->standard; context.schema = &objectState_->schema;
-    for (std::size_t i = 0; i < context.documents.size(); ++i)
-        context.documents[i] = activeEdit_ && activeEdit_->objects[i] ? activeEdit_->objects[i].get() : objectState_->mapInputs[i].committed.get();
-    context.document = context.documents[index];
-    context.nameMap = activeEdit_ && activeEdit_->mapData ? activeEdit_->mapData.get()
-        : committedMapData_ ? committedMapData_.get() : objectState_->map.get();
-    return Result<Services::ObjectCommandContext>::Success(context);
+    auto context = CommittedObjectContext(*objectState_, type);
+    if (!context.Succeeded()) return context;
+    // 活动事务的七类文档与 WTS overlay 覆盖已提交快照。
+    for (std::size_t i = 0; i < context.value->documents.size(); ++i)
+        if (activeEdit_ && activeEdit_->objects[i]) context.value->documents[i] = activeEdit_->objects[i].get();
+    context.value->document = context.value->documents[static_cast<std::size_t>(type)];
+    if (activeEdit_ && activeEdit_->mapData) context.value->nameMap = activeEdit_->mapData.get();
+    else if (committedMapData_) context.value->nameMap = committedMapData_.get();
+    return context;
 }
 
 Status McpWorkspace::ApplyObjectOverlay(ObjectType type, const LniObjectDocument& document, TransactionId transactionId) {

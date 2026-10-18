@@ -41,11 +41,13 @@ war3-map-cli archive-session-inspect <map-archive>
 war3-map-cli map-data-inspect <map-archive-or-directory>
 war3-map-cli map-data-query <map-archive> <source-sha256> <settings|units|doodads|regions|cameras|sounds|strings> <start-index> <limit-1..128>
 war3-map-cli map-data-roundtrip <map-archive>
-war3-map-cli object-layer-inspect <map-archive>
-war3-map-cli object-layer-query <map-archive> <source-sha256> <unit|ability|item|buff|upgrade|doodad|destructable> <start-index> <limit-1..128>
+war3-map-cli skin-layer-inspect <map-archive>
+war3-map-cli skin-layer-query <map-archive> <source-sha256> <unit|ability|item|buff|upgrade|doodad|destructable> <start-index> <limit-1..128>
 war3-map-cli archive-candidate-copy <map-archive> <new-candidate-path>
 war3-map-cli map-edit-save --help
 ```
+
+`skin-layer-inspect` / `skin-layer-query` 只读 `war3mapSkin.*` 皮肤层，不是普通物编；旧名字 `object-layer-*` 仍可用。普通七类物编用 MCP `objects_list` / `objects_get`。
 
 `map-field-catalog` 给出字段标识、类型、目录写入能力和约束；`map-data-query` 的行字段还给出该来源布局实际是否可写。读取的 `source_index`、`row_key`、成员 SHA 和 `fields[].raw` 只对本次来源身份有效。不要从显示名称或角度文本重建 raw 前值。分页使用返回的 `next_cursor.next_index`；更换地图或 SHA 后从新快照开始。
 
@@ -161,6 +163,7 @@ stdio 是 UTF-8 **newline JSON-RPC**：每行一条完整 JSON，响应以换行
 - 页查询必须带 `expected_source_sha256`。
 - 绑定为 `archive-readonly-<SHA>`，`workspace_kind` 为 `map-archive-readonly`，与 CLI `map-data-query` 相同。
 - 返回的 `source_index`、`row_key`、成员 `member_sha256` 和字段 `raw` 直接用于下文 `save_map_edit_candidate` 的 `field_edits`；保存后对候选再查一次以回读确认。
+- 七类物编的 `objects_list`、`objects_get`、`objects_field_options` 同样接受 `source_map_path` + `expected_source_sha256`（两者都要给），按游戏数据与地图物编合并后的结果只读返回，`project_identity` 为 `archive-readonly-<SHA>`。需要宿主配置 `FORGE_MCP_WAR3_ROOT`。物编的新增、修改、删除仍要展开工作区或编辑器端口。
 
 ### 字段候选保存
 

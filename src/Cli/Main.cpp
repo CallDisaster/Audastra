@@ -122,8 +122,8 @@ void PrintUsage() {
         << "war3-map-cli script-template <ydwe-root> <war3-root> <map> <wave-output.j> <out.j>\n"
         << "war3-map-cli object-field <war3-root> <unit|item|ability> <rawcode>\n"
         << "war3-map-cli object-model-list <war3-root> <new-models.txt>\n"
-        << "war3-map-cli object-layer-inspect <map-archive>\n"
-        << "war3-map-cli object-layer-query <map-archive> <source-sha256> <unit|ability|item|buff|upgrade|doodad|destructable> <start-index> <limit-1..128>\n"
+        << "war3-map-cli skin-layer-inspect <map-archive>\n"
+        << "war3-map-cli skin-layer-query <map-archive> <source-sha256> <unit|ability|item|buff|upgrade|doodad|destructable> <start-index> <limit-1..128>\n"
         << "war3-map-cli object-inspect <type> <table.ini>\n"
         << "war3-map-cli object-roundtrip <type> <table.ini>\n"
         << "war3-map-cli game-extract <war3-root> <internal\\path> <out-file> [--tileset <A-Z>]\n"
@@ -443,8 +443,9 @@ int wmain(int argc, wchar_t** argv) {
     if (command == L"object-model-list" && argc == 4) {
         return RunObjectModelList(argv[2], argv[3]);
     }
-    if (command == L"object-layer-inspect" && argc == 3) return RunObjectLayerInspect(argv[2]);
-    if (command == L"object-layer-query" && argc == 7) {
+    // object-layer-* 是旧名字：实际只读 war3mapSkin.* 皮肤层，保留给已有脚本。
+    if ((command == L"skin-layer-inspect" || command == L"object-layer-inspect") && argc == 3) return RunObjectLayerInspect(argv[2]);
+    if ((command == L"skin-layer-query" || command == L"object-layer-query") && argc == 7) {
         return RunObjectLayerQuery(argv[2], Utf8Argument(argv[3]), Utf8Argument(argv[4]),
             Utf8Argument(argv[5]), Utf8Argument(argv[6]));
     }

@@ -3,6 +3,8 @@
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/ObjectData/ObjectFieldSchema.h"
 #include "War3MapCore/ObjectData/EffectiveObjectCatalog.h"
+#include "War3MapCore/ObjectData/LniObjectCodec.h"
+#include "War3MapCore/ObjectData/NativeObjectCodec.h"
 
 #include <array>
 #include <map>
