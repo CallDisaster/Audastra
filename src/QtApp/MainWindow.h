@@ -309,6 +309,7 @@ private:
     QAction* saveProjectAction_ = nullptr;
     QAction* saveMapAction_ = nullptr;
     QAction* saveMissingMinimapAction_ = nullptr;
+    QAction* saveDeclaredMissingMinimapAction_ = nullptr;
     QAction* saveMapInPlaceAction_ = nullptr;
     QAction* buildMapAction_ = nullptr;
     QAction* testMapAction_ = nullptr;

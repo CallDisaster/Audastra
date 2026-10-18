@@ -122,7 +122,8 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         SaveNotice(*this, background, false, failureSummary, details, warnings);
     };
     if (minimapChoice != War3Map::Services::TerrainMinimapSaveChoice::Preserve) {
-        if (minimapChoice != War3Map::Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly
+        if ((minimapChoice != War3Map::Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly
+                && minimapChoice != War3Map::Services::TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly)
             || inPlace || testSnapshot || testHotReload || (CurrentModule() == "campaign" && campaignModule_->Session())) {
             project_->AddDiagnostic(tr("错误"), tr("地图"), tr("MINIMAP_SAVE_TARGET"),
                 tr("补建缺失的地形小地图仅用于本次正式另存，不支持原地、测试或战役保存。"));
@@ -259,7 +260,10 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         : saved->savedTriggerChanges ? tr("脚本未重建（工具链未就绪，详见诊断）") : tr("脚本未变");
     QStringList details{tr("文件：%1").arg(name), tr("已写入：%1").arg(ChangedMembers(*job)), script};
     if (job->minimapSave && job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded()) {
-        details << tr("已补建源图缺失的地形小地图；阴影和标记没有重建，仍需原版编辑器或游戏验证。");
+        const auto actualRange = job->minimapSave->Manifest().rangePolicy;
+        details << (actualRange == War3Map::Render::TerrainMinimapRangePolicy::DeclaredW3iMarginsExteriorMapEdge
+            ? tr("已按源图声明边距补建缺失的地形小地图；阴影和标记没有重建，仍需原版编辑器或游戏验证。")
+            : tr("已补建源图缺失的地形小地图；阴影和标记没有重建，仍需原版编辑器或游戏验证。"));
     }
     if (!saved->backup.empty()) details << (job->inPlaceOptions.keepBackups == 0
         ? tr("原文件备份：%1（不限保留数量）").arg(QString::fromStdWString(saved->backup.wstring()))

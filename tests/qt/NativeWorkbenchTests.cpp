@@ -54,7 +54,9 @@
 #include "War3MapCore/Image/BlpImage.h"
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
+#include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/MapData/MapDataFieldEditing.h"
+#include "War3MapCore/Services/MapCreateService.h"
 #include "War3MapCore/Services/TerrainBlightSaveService.h"
 #include "../MapDataFixtures.h"
 #include "War3MapCore/Resources/ImportTable.h"
@@ -649,6 +651,8 @@ private slots:
     void SaveMapInPlaceWritesBackAndKeepsBackups();
     void MissingMinimapSaveIsSingleChoiceAndCancelPreservesEdits();
     void OptionalMissingMinimapActualQtSaveCopy();
+    void DeclaredMissingMinimapSaveIsSingleChoiceAndCancelPreservesEdits();
+    void OptionalDeclaredMissingMinimapStandardCreateQtSaveCopy();
     void RecoveryProjectSavesBackToOriginalMap();
     void TestMapSnapshotPreservesSourceDirtyRevisionAndUndo();
     void TestMapSnapshotRejectsStaleInitializationScript();
@@ -4421,6 +4425,142 @@ void NativeWorkbenchTests::OptionalMissingMinimapActualQtSaveCopy() {
     QVERIFY(*preserved.value == *encoded.value);
     QCOMPARE(War3Map::Sha256File(source).value, originalSha.value);
     qInfo().noquote() << "真实Qt missing-only SaveCopy/默认下次Preserve（不含原版编辑器或游戏验收）证据目录=" << evidence.path();
+    if (auto* notice = window.findChild<QMessageBox*>(QStringLiteral("mapSaveResult"))) notice->close();
+}
+
+void NativeWorkbenchTests::DeclaredMissingMinimapSaveIsSingleChoiceAndCancelPreservesEdits() {
+    QTemporaryDir fixture; QVERIFY(fixture.isValid());
+    War3Map::MapData::TerrainGridSnapshot terrain;
+    terrain.header.width = terrain.header.height = 9; terrain.header.mainTileset = 'L';
+    terrain.header.groundTilesets = {"Tg01"}; terrain.header.cliffTilesets = {"CLdi"}; terrain.vertices.resize(81);
+    for (unsigned y = 0; y < 9; ++y) for (unsigned x = 0; x < 9; ++x) {
+        auto& vertex = terrain.vertices[y * 9 + x];
+        vertex.groundHeightRaw = 8192; vertex.waterHeightAndFlagsRaw = 7936; vertex.cliffAndLayerRaw = 2;
+        if (x < 8 && y < 8 && (x < 1 || x >= 5 || y < 2 || y >= 7)) vertex.waterHeightAndFlagsRaw |= 0x4000;
+    }
+    War3Map::MapData::RefreshTerrainDerived(terrain, 0, 0, 9, 9);
+    const auto w3e = War3Map::MapData::SerializeMapTerrain(terrain); QVERIFY(w3e.Succeeded());
+    MapDataFixtures::Fixture wpm; wpm.Raw("MP3W"); wpm.UInt(0); wpm.UInt(32); wpm.UInt(32); wpm.bytes.resize(16 + 1024);
+    std::vector<std::byte> w3i(147);
+    const auto put = [&](std::size_t at, std::uint32_t value) {
+        for (unsigned shift = 0; shift < 4; ++shift) w3i[at + shift] = static_cast<std::byte>((value >> (shift * 8)) & 255);
+    };
+    put(0, 25); put(8, 6061); put(48, 1); put(52, 3); put(56, 2); put(60, 1); put(64, 4); put(68, 5); w3i[76] = std::byte{'L'};
+    const auto source = NativePath(fixture.filePath("declared-height.w3x"));
+    const auto target = NativePath(fixture.filePath("must-not-exist.w3x"));
+    const std::vector<War3Map::MapArchiveMember> members{{"war3map.w3e", *w3e.value}, {"war3map.wpm", wpm.bytes}, {"war3map.w3i", w3i}};
+    QVERIFY(War3Map::WriteVerifiedArchive(source, members).Succeeded()); const auto original = ReadFile(source);
+    MainWindow window(MainWindow::StartupMode::HeadlessProbe);
+    auto* action = window.findChild<QAction*>(QStringLiteral("saveMapDeclaredMissingMinimapAction")); QVERIFY(action);
+    QVERIFY(action != window.findChild<QAction*>(QStringLiteral("saveMapMissingMinimapAction")));
+    QVERIFY(!action->isEnabled() && !action->isCheckable() && action->shortcut().isEmpty());
+    QCOMPARE(action->text(), MainWindow::tr("另存地图并按声明边距补建缺失小地图…"));
+    QVERIFY(window.OpenMapArchivePath(source)); window.UpdateExportAvailability(); QVERIFY(action->isEnabled());
+    War3Map::MapData::TerrainBrush brush; brush.kind = War3Map::MapData::TerrainBrushKind::Raise; brush.radius = 0; brush.strength = 1;
+    const War3Map::MapData::TerrainStrokePoint point{384, 512};
+    QVERIFY(window.project_->mapEdits_->EditTerrain(brush, std::span(&point, 1), false).Succeeded());
+    QVERIFY(window.project_->ObserveMapDataEdit("声明边距单次小地图另存取消夹具"));
+    window.project_->mapDataUndoStack_->push(new QUndoCommand("declared height undo marker"));
+    const auto revision = window.project_->editRevision_.Revision(); const auto undoCount = window.project_->mapDataUndoStack_->count();
+    const auto baseline = window.project_->editRevision_.Baseline(War3Map::EditSaveTarget::Map); QVERIFY(baseline);
+    bool cancelled = false; QObject scope;
+    QTimer::singleShot(0, &scope, [&cancelled] {
+        for (auto* widget : QApplication::topLevelWidgets()) if (auto* dialog = qobject_cast<QFileDialog*>(widget)) {
+            cancelled = true; dialog->reject();
+        }
+    });
+    action->trigger(); QVERIFY(cancelled && window.project_->HasUnsavedMapChanges());
+    const auto choice = War3Map::Services::TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly;
+    QVERIFY(!window.RunMapSave(target, true, false, false, false, choice));
+    QVERIFY(!window.RunMapSave(target, false, false, true, false, choice));
+    QVERIFY(!window.RunMapSave(target, false, false, false, true, choice));
+    window.project_->campaignScope_ = War3Map::Services::CampaignSession::Create(); QVERIFY(window.project_->campaignScope_);
+    window.UpdateExportAvailability(); QVERIFY(!action->isEnabled());
+    QVERIFY(!window.RunMapSave(target, false, false, false, false, choice)); window.project_->campaignScope_.reset();
+    window.project_->savingMap_ = true; window.UpdateExportAvailability(); QVERIFY(!action->isEnabled());
+    window.project_->savingMap_ = false; window.UpdateExportAvailability(); QVERIFY(action->isEnabled());
+    War3Map::QtProject::MapSaveJob next;
+    QVERIFY(next.minimapChoice == War3Map::Services::TerrainMinimapSaveChoice::Preserve && !next.minimapSave);
+    QCOMPARE(window.project_->editRevision_.Revision(), revision);
+    QCOMPARE(window.project_->editRevision_.Baseline(War3Map::EditSaveTarget::Map)->scopes, baseline->scopes);
+    QCOMPARE(window.project_->mapDataUndoStack_->count(), undoCount);
+    QCOMPARE(ReadFile(source), original); QVERIFY(!std::filesystem::exists(target));
+    QVERIFY(window.project_->sourceArchivePath_ == source && window.project_->HasUnsavedMapChanges());
+}
+
+void NativeWorkbenchTests::OptionalDeclaredMissingMinimapStandardCreateQtSaveCopy() {
+    const auto tools = qEnvironmentVariable("FORGE_YDWE_ROOT"), game = qEnvironmentVariable("FORGE_WAR3_ROOT");
+    if (qEnvironmentVariable("FORGE_MINIMAP_QT_DECLARED_CREATE") != QLatin1String("1") || tools.isEmpty() || game.isEmpty())
+        QSKIP("标准Create原MapEdge的真实Qt专项需FORGE_MINIMAP_QT_DECLARED_CREATE=1及工具/游戏资源路径，内部job不替代此层。");
+    const auto evidenceRoot = QCoreApplication::instance()->property("nativeWorkbenchOriginalTempRoot").toString();
+    QVERIFY(!evidenceRoot.isEmpty());
+    QTemporaryDir evidence(QDir(evidenceRoot).filePath("Audastra-Qt-declared-minimap-XXXXXX")); QVERIFY(evidence.isValid());
+    evidence.setAutoRemove(false);
+    qInfo().noquote() << "标准Create声明边距Qt证据目录（成功/失败均保留）=" << evidence.path();
+    War3Map::Services::MapCreateRequest create;
+    create.options.name = "Declared minimap Qt fixture"; create.options.initTriggerName = "Init"; create.options.initCustomScript = {"call DoNothing()"};
+    create.target = NativePath(evidence.filePath("standard-source.w3x")); create.workspace = NativePath(evidence.filePath("create-work"));
+    create.toolRoot = NativePath(tools); create.gameRoot = NativePath(game);
+    const auto created = War3Map::Services::CreateMapCandidate(create);
+    QVERIFY2(created.Succeeded(), created.diagnostics.empty() ? "Create failed without diagnostics" : created.diagnostics.back().message.c_str());
+    QVERIFY(created.value && created.value->scriptRebuilt);
+    const auto source = created.value->path; const auto originalSha = War3Map::Sha256File(source); QVERIFY(originalSha.Succeeded());
+    const auto original = War3Map::MapArchiveSession::Open(source); QVERIFY(original.Succeeded());
+    const auto sourceW3e = original.value->ReadMember("war3map.w3e"), sourceW3i = original.value->ReadMember("war3map.w3i");
+    const auto sourceWpm = original.value->ReadMember("war3map.wpm");
+    QVERIFY(sourceW3e.Succeeded() && sourceW3i.Succeeded() && sourceWpm.Succeeded());
+    const auto terrain = War3Map::MapData::ParseMapTerrain(*sourceW3e.value); QVERIFY(terrain.Succeeded());
+    const auto settings = War3Map::MapData::MapSettings::Parse(*sourceW3i.value); QVERIFY(settings.Succeeded());
+    const auto grid = terrain.value->Snapshot();
+    QCOMPARE(grid->header.width, 65u); QCOMPARE(grid->header.height, 65u);
+    QVERIFY((grid->header.offset == std::array<float, 2>{-4096, -4096}));
+    QVERIFY((settings.value->cameraMargins == std::array<std::int32_t, 4>{6, 6, 4, 8}));
+    QCOMPARE(settings.value->playableWidth, 52); QCOMPARE(settings.value->playableHeight, 52);
+    std::size_t edgeCount = 0;
+    for (unsigned y = 0; y < 65; ++y) for (unsigned x = 0; x < 65; ++x) {
+        const auto& vertex = grid->vertices[y * 65 + x];
+        const bool edge = x < 64 && y < 64 && (x < 6 || x >= 58 || y < 4 || y >= 56);
+        QVERIFY(vertex.IsMapEdge() == edge && vertex.waterHeightAndFlagsRaw == (edge ? 24576 : 8192));
+        QCOMPARE(vertex.cliffAndLayerRaw, std::uint8_t{0xf2}); edgeCount += edge;
+    }
+    QCOMPARE(edgeCount, std::size_t{1392});
+    const std::array<std::string, 1> names{"war3mapMap.blp"}; const auto missing = original.value->CaptureExactMembers(names);
+    QVERIFY(missing.Succeeded() && !missing.value->front().present);
+    MainWindow window(MainWindow::StartupMode::HeadlessProbe);
+    QVERIFY(window.UseUiDataRoot(NativePath(tools))); QVERIFY(window.OpenGameResources(NativePath(game))); QVERIFY(window.OpenMapArchivePath(source));
+    const auto stroke = [&] {
+        War3Map::MapData::TerrainBrush brush; brush.kind = War3Map::MapData::TerrainBrushKind::Raise; brush.radius = 0; brush.strength = 1;
+        const War3Map::MapData::TerrainStrokePoint point{0, 0};
+        return window.project_->mapEdits_->EditTerrain(brush, std::span(&point, 1), false).Succeeded()
+            && window.project_->ObserveMapDataEdit("标准Create声明边距Qt中心高度夹具");
+    };
+    QVERIFY(stroke());
+    const auto first = NativePath(evidence.filePath("declared-generated.w3x")), second = NativePath(evidence.filePath("preserved-next.w3x"));
+    QVERIFY2(window.RunMapSave(first, false, true, false, false,
+        War3Map::Services::TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly),
+        qPrintable(LastMapSaveDiagnostics(*window.project_->diagnosticsModel_)));
+    QVERIFY(LastMapSaveDiagnostics(*window.project_->diagnosticsModel_).contains(QStringLiteral("已按源图声明边距补建")));
+    QVERIFY(!window.project_->HasUnsavedMapChanges());
+    const auto output = War3Map::MapArchiveSession::Open(first); QVERIFY(output.Succeeded());
+    const auto encoded = output.value->ReadMember("war3mapMap.blp"), savedW3e = output.value->ReadMember("war3map.w3e");
+    QVERIFY(encoded.Succeeded() && savedW3e.Succeeded() && *savedW3e.value != *sourceW3e.value);
+    const auto decoded = War3Map::Image::DecodeBlp(*encoded.value); QVERIFY(decoded.Succeeded());
+    QCOMPARE(decoded.value->width, 256u); QCOMPARE(decoded.value->height, 256u);
+    QCOMPARE(savedW3e.value->size(), sourceW3e.value->size());
+    const auto records = 37 + 4 * (grid->header.groundTilesets.size() + grid->header.cliffTilesets.size());
+    QVERIFY(std::equal(sourceW3e.value->begin(), sourceW3e.value->begin() + records, savedW3e.value->begin()));
+    for (std::size_t vertex = 0; vertex < grid->vertices.size(); ++vertex) {
+        const auto at = records + vertex * 7;
+        QVERIFY(std::equal(sourceW3e.value->begin() + at + 2, sourceW3e.value->begin() + at + 7, savedW3e.value->begin() + at + 2));
+    }
+    QCOMPARE(output.value->ReadMember("war3map.w3i").value, sourceW3i.value);
+    QCOMPARE(output.value->ReadMember("war3map.wpm").value, sourceWpm.value);
+    if (auto* notice = window.findChild<QMessageBox*>(QStringLiteral("mapSaveResult"))) notice->close();
+    QVERIFY(stroke()); QVERIFY2(window.RunMapSave(second, false, true), qPrintable(LastMapSaveDiagnostics(*window.project_->diagnosticsModel_)));
+    const auto next = War3Map::MapArchiveSession::Open(second); QVERIFY(next.Succeeded());
+    QCOMPARE(next.value->ReadMember("war3mapMap.blp").value, encoded.value);
+    QVERIFY(!window.project_->HasUnsavedMapChanges()); QCOMPARE(War3Map::Sha256File(source).value, originalSha.value);
+    qInfo().noquote() << "标准原MapEdge→正式Qt声明边距另存→下一次Preserve（无native/game验收）=" << evidence.path();
     if (auto* notice = window.findChild<QMessageBox*>(QStringLiteral("mapSaveResult"))) notice->close();
 }
 

@@ -211,7 +211,8 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
         AddDiagnostic(tr("错误"), tr("地图"), code, message);
         return std::unique_ptr<MapSaveJob>{};
     };
-    const bool generateMinimap = minimapChoice == Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly;
+    const bool generateMinimap = minimapChoice == Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly
+        || minimapChoice == Services::TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly;
     if (minimapChoice != Services::TerrainMinimapSaveChoice::Preserve && !generateMinimap)
         return fail(tr("MINIMAP_SAVE_CHOICE"), tr("未知的地形小地图保存选项。"));
     if (generateMinimap) {

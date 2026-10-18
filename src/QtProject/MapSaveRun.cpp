@@ -46,7 +46,8 @@ Status PrepareWorkerMinimap(MapSaveJob& job) {
     const auto reject = [](const char* code, const char* message) {
         return Status::Failure("TerrainMinimapSave.Qt", code, message);
     };
-    if (job.minimapChoice != Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly)
+    if (job.minimapChoice != Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly
+        && job.minimapChoice != Services::TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly)
         return reject("MINIMAP_SAVE_CHOICE", "未知的单次地形小地图保存选项。");
     if (!job.archive || job.inPlace || job.testCopyOnly || job.triggerChanges || !job.objectTransactions.empty()
         || !job.removals.empty() || job.replacements.size() != 1
@@ -185,9 +186,19 @@ std::optional<MapCopySaveResult> EditorProject::CommitMapSave(MapSaveJob& job) {
         }
         return std::nullopt;
     };
-    if (job.minimapChoice != Services::TerrainMinimapSaveChoice::Preserve && job.nextSession
-        && (!job.minimapSave || job.terrainSavePlan != job.minimapSave->Plan()))
-        return rejectStaleCommit(tr("MINIMAP_SAVE_READBACK_MISSING"), tr("小地图保存缺少同一任务的生成资格和地形计划"));
+    if (job.nextSession && (job.minimapChoice != Services::TerrainMinimapSaveChoice::Preserve || job.minimapSave)) {
+        const bool full = job.minimapChoice == Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly;
+        const bool declared = job.minimapChoice == Services::TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly;
+        if (!full && !declared)
+            return rejectStaleCommit(tr("MINIMAP_SAVE_POLICY_MISMATCH"), tr("小地图保存选项与本次实际生成范围不一致"));
+        if (!job.minimapSave || job.terrainSavePlan != job.minimapSave->Plan())
+            return rejectStaleCommit(tr("MINIMAP_SAVE_READBACK_MISSING"), tr("小地图保存缺少同一任务的生成资格和地形计划"));
+        // 只比较明确选择与同次helper事实；不在Qt重解地图或推测范围政策。
+        const auto actualRange = job.minimapSave->Manifest().rangePolicy;
+        if ((full && actualRange != Render::TerrainMinimapRangePolicy::FullW3e)
+            || (declared && actualRange != Render::TerrainMinimapRangePolicy::DeclaredW3iMarginsExteriorMapEdge))
+            return rejectStaleCommit(tr("MINIMAP_SAVE_POLICY_MISMATCH"), tr("小地图保存选项与本次实际生成范围不一致"));
+    }
     if (job.terrainSavePlan && job.nextSession) {
         if (!job.terrainReadbackStatus) {
             return rejectStaleCommit(tr("TERRAIN_SAVE_PLAN_READBACK_MISSING"), tr("尚未核对保存后的地形结果"));
