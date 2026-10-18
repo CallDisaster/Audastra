@@ -373,9 +373,7 @@ Status MapSaveTask::FreezeArchive(const MapArchiveSession& source) {
     }
 }
 
-namespace {
-
-void ExecuteSaveTask(MapSaveTask& task, const MapSaveService::Progress& progress, bool preflight) {
+void MapSaveService::Execute(MapSaveTask& task, const Progress& progress, bool preflight) {
     if (task.executed) {
         task.succeeded = false;
         Error(task, "SAVE_TASK_ALREADY_EXECUTED", "同一冻结保存任务不能再次执行。");
@@ -425,7 +423,22 @@ void ExecuteSaveTask(MapSaveTask& task, const MapSaveService::Progress& progress
         if (!verifyObjects()) return;
         RebuildScript(task, progress);
         if (HasError(task.diagnostics)) return;
-        // 模板产物可能替换分类成员；必须对最终成员再校验，不能只信编译前的类型。
+        if (task.prepareFinalDerived) {
+            // 消费回调，避免它的借用在任务结束后继续保留，也不能重复调用。
+            auto prepare = std::move(task.prepareFinalDerived);
+            task.finalDerivedActive_ = true;
+            Status prepared;
+            try {
+                prepared = prepare(task);
+            } catch (...) {
+                task.finalDerivedActive_ = false;
+                throw;
+            }
+            task.finalDerivedActive_ = false;
+            Append(task.diagnostics, prepared.diagnostics);
+            if (!prepared.Succeeded() || HasError(task.diagnostics)) return;
+        }
+        // 模板和派生产物可能替换成员；必须对最终列表再校验，不能只信编译前的类型。
         if (!verifyObjects()) return;
         if (task.generatedLuaTestUnit) {
             const auto binding = CaptureLuaTestMapBinding(*task.archive, task.replacements, task.removals, task.generatedScriptMembers);
@@ -498,14 +511,12 @@ void ExecuteSaveTask(MapSaveTask& task, const MapSaveService::Progress& progress
     }
 }
 
-} // namespace
-
 void MapSaveService::Run(MapSaveTask& task, const Progress& progress) {
-    ExecuteSaveTask(task, progress, false);
+    Execute(task, progress, false);
 }
 
 Status MapSaveService::Preflight(MapSaveTask& task, const Progress& progress) {
-    ExecuteSaveTask(task, progress, true);
+    Execute(task, progress, true);
     return Status{task.diagnostics};
 }
 

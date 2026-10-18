@@ -68,8 +68,9 @@ Status PrepareWorkerMinimap(MapSaveJob& job) {
         }
     }
     if (!job.archive || (!automatic && (job.inPlace || job.testCopyOnly || job.triggerChanges || !job.objectTransactions.empty()
-        || !job.removals.empty() || job.replacements.size() != 1
-        || MinimapMemberName(job.replacements.front().name) != "war3map.w3e")))
+        || !job.removals.empty() || std::count_if(job.replacements.begin(), job.replacements.end(), [](const auto& member) {
+            return MinimapMemberName(member.name) == "war3map.w3e";
+        }) != 1)))
         return reject("MINIMAP_SAVE_DOMAIN", "worker补建只接受真实独立另存任务与唯一高度W3E，拒绝测试副本或混合领域。");
 
     // FromArchive仅复制七类MapData原生成员，不复制整幅地图。保留原有
@@ -156,7 +157,7 @@ Status PrepareWorkerMinimap(MapSaveJob& job) {
         }
         return minimap->VerifyFrozenOutput(*task);
     };
-    // 私有edits随本函数销毁。后续脚本、发布与回读仅消费owned task/封闭helper，
+    // 私有edits随本函数销毁。脚本已经完成；发布与回读仅消费owned task/封闭helper，
     // 不持EditorProject、mapEdits_或前台会话指针；UI代际由原Commit门独立核对。
     return Status::Ok();
 }
@@ -173,20 +174,16 @@ void EditorProject::RunMapSave(MapSaveJob& job) {
         return;
     }
     if (job.minimapChoice != Services::TerrainMinimapSaveChoice::Preserve) {
-        try { job.Report(tr("正在生成缺失的地形小地图…")); } catch (...) {}
-        try {
-            const auto prepared = PrepareWorkerMinimap(job);
-            if (!prepared.Succeeded()) {
-                job.executed = true; job.succeeded = false;
-                job.diagnostics.insert(job.diagnostics.end(), prepared.diagnostics.begin(), prepared.diagnostics.end());
-                return;
+        job.prepareFinalDerived = [&job, previous = std::move(job.prepareFinalDerived)](Services::MapSaveTask& task) -> Status {
+            if (previous) { const auto checked = previous(task); if (!checked.Succeeded()) return checked; }
+            try { job.Report(tr("正在生成缺失的地形小地图…")); } catch (...) {}
+            try {
+                return PrepareWorkerMinimap(job);
+            } catch (...) {
+                return Status::Failure("TerrainMinimapSave.Qt", "MINIMAP_SAVE_WORKER_EXCEPTION",
+                    "worker准备小地图时发生异常，本次任务已终止；未接受保存结果，当前编辑和原图保留。");
             }
-        } catch (...) {
-            job.executed = true; job.succeeded = false;
-            job.diagnostics.push_back({DiagnosticSeverity::Error, "TerrainMinimapSave.Qt", "MINIMAP_SAVE_WORKER_EXCEPTION",
-                "worker准备小地图时发生异常，本次任务已终止；未接受保存结果，当前编辑和原图保留。"});
-            return;
-        }
+        };
     }
     Services::MapSaveService::Run(job, [&job](std::string_view stage) { job.Report(StageText(stage)); });
     if (!job.succeeded || !job.nextSession || !job.terrainSavePlan) return;

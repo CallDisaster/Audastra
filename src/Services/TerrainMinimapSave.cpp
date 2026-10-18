@@ -295,14 +295,15 @@ Result<std::shared_ptr<const TerrainMinimapSave>> TerrainMinimapSave::Prepare(
         : Render::TerrainMinimapRangePolicy::FullW3e;
     try {
         Limits(limits); SourceTask(task);
-        if (task.executed) Fail("MINIMAP_SAVE_SOURCE", "已执行的保存任务不能重新准备小地图。");
+        if (task.executed && !task.InFinalDerivedStage())
+            Fail("MINIMAP_SAVE_SOURCE", "已执行的保存任务只能在同次最终派生阶段准备小地图。");
         const auto taskBytes = TaskReplacementCapacity(task);
         // 最终脚本/native原字副本和MapBLP append也可能与Readback重叠。
         // 此上界在工厂冻结；后续最终列表必须落在同一预留内，回读不遗漏task旧副本。
         auto available = Remaining(limits.maxWorkingBytes, Sum({taskBytes, kMetadataReserve, kHashReserve}));
         const auto taskCeiling = Sum({taskBytes, kEncodedReserve, std::min(16 * kMiB, available / 4)});
         available = Remaining(limits.maxWorkingBytes, Sum({taskCeiling, kMetadataReserve, kHashReserve}));
-        FinalMembers(task, true, available);
+        FinalMembers(task, !task.InFinalDerivedStage(), available);
         auto planLimits = limits.plan;
         planLimits.maximumBytes = std::min(planLimits.maximumBytes, available);
         auto plan = std::make_shared<MapData::TerrainSavePlan>(Take(MapData::TerrainSavePlan::Prepare(*task.archive, edits, planLimits)));

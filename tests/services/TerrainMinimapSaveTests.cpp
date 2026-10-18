@@ -433,6 +433,23 @@ void AutomaticDecisionUsesExactSourceMembers() {
             "源图已有TGA（包括present空成员）时不生成BLP");
         Require(!Take(TerrainMinimapSave::Prepare(task, original.edits, original.gameRoot, TerrainMinimapSaveChoice::Automatic)),
             "TGA保留不要求加载地形贴图或返回生成资格");
+        task.removals.push_back("war3mapMap.tga");
+        const auto removed = TerrainMinimapSave::RequiresAutomaticGeneration(task);
+        Require(!removed.Succeeded() && HasCode(removed.diagnostics, "MINIMAP_SAVE_TGA_REMOVED"),
+            "作者TGA不能通过删除后自动改写为BLP");
+    }
+    {
+        Fixture complete(true, false, false, W3i());
+        const auto blp = complete.source.ReadMember("war3mapMap.blp");
+        Require(blp.Succeeded() && blp.value, "read partial-archive BLP fixture");
+        const auto partialPath = complete.directory.Path() / "partial-with-blp.w3x";
+        Require(WriteVerifiedArchive(partialPath, std::vector<MapArchiveMember>{{"war3mapMap.blp", *blp.value}}).Succeeded(),
+            "write partial archive without W3E");
+        auto partial = MapArchiveSession::Open(partialPath);
+        Require(partial.Succeeded() && partial.value, "open partial archive without W3E");
+        MapSaveTask task; task.FreezeArchive(*partial.value);
+        Require(!Take(TerrainMinimapSave::RequiresAutomaticGeneration(task)),
+            "accurately missing W3E partial archives do not trigger automatic minimap generation");
     }
     MapSaveTask unowned;
     Rejected(TerrainMinimapSave::RequiresAutomaticGeneration(unowned), "MINIMAP_SAVE_SOURCE");

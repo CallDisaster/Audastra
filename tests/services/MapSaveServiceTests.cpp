@@ -818,6 +818,51 @@ void TestThrowingProgressCallbackDoesNotChangeSaveResult() {
         && !HasCode(task.diagnostics, "SAVE_INTERNAL_NONSTANDARD_EXCEPTION"), "progress callback must not misreport archive failure");
 }
 
+void TestFinalDerivedPreparationRunsOnceAfterScriptStage() {
+    TempDirectory directory;
+    const auto source = Source(directory);
+    auto opened = MapArchiveSession::Open(source);
+    Require(opened.Succeeded() && opened.value, "open final-derived fixture");
+    MapSaveTask task;
+    Require(task.FreezeArchive(*opened.value).Succeeded(), "freeze final-derived fixture");
+    task.target = directory.Path() / "final-derived.w3x";
+    unsigned calls = 0;
+    bool entered = false;
+    task.prepareFinalDerived = [&calls, &entered](MapSaveTask& current) {
+        ++calls;
+        entered = current.InFinalDerivedStage();
+        current.replacements.push_back({"derived.bin", Bytes("prepared after final script list")});
+        return Status::Ok();
+    };
+    MapSaveService::Run(task);
+    Require(task.succeeded && task.nextSession && calls == 1 && entered,
+        "final-derived preparation must run once in its private stage");
+    Require(!task.InFinalDerivedStage() && task.prepareFinalDerived == nullptr,
+        "final-derived stage must close and consume its callback");
+    const auto generated = task.nextSession->ReadMember("derived.bin");
+    Require(generated.Succeeded() && generated.value && *generated.value == Bytes("prepared after final script list"),
+        "derived member must be published from the final replacement list");
+    MapSaveService::Run(task);
+    Require(calls == 1 && HasCode(task.diagnostics, "SAVE_TASK_ALREADY_EXECUTED"),
+        "repeated save task must reject without invoking final-derived preparation again");
+}
+
+void TestFinalDerivedExceptionClosesStage() {
+    TempDirectory directory;
+    const auto source = Source(directory);
+    auto opened = MapArchiveSession::Open(source);
+    Require(opened.Succeeded() && opened.value, "open final-derived exception fixture");
+    MapSaveTask task;
+    Require(task.FreezeArchive(*opened.value).Succeeded(), "freeze final-derived exception fixture");
+    task.target = directory.Path() / "final-derived-exception.w3x";
+    task.prepareFinalDerived = [](MapSaveTask&) -> Status { throw std::runtime_error("derived callback failed"); };
+    MapSaveService::Run(task);
+    Require(!task.succeeded && !task.InFinalDerivedStage() && !std::filesystem::exists(task.target),
+        "final-derived exception must fail closed and reset its stage");
+    Require(HasCode(task.diagnostics, "SAVE_INTERNAL_CPP_EXCEPTION"),
+        "final-derived exception must use the common save exception boundary");
+}
+
 void TestProgramExceptionsFailClosedWithoutCollectingPrivateWhat() {
     TempDirectory directory;
     const auto source = Source(directory);
@@ -1911,6 +1956,8 @@ int main() {
         TestPreflightUsesSharedGuardsAndChecksLateSourceChanges();
         TestVersionedFormatCannotBypassScriptGate();
         TestThrowingProgressCallbackDoesNotChangeSaveResult();
+        TestFinalDerivedPreparationRunsOnceAfterScriptStage();
+        TestFinalDerivedExceptionClosesStage();
         TestProgramExceptionsFailClosedWithoutCollectingPrivateWhat();
         TestBlightSaveRejectsStaleOrMissingTerrainPair();
         TestGenericTerrainSaveRejectsUnverifiedAmplitude();

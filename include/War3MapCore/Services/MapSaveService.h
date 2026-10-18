@@ -61,6 +61,10 @@ struct MapSaveTask {
 
     [[nodiscard]] Status FreezeArchive(const MapArchiveSession& source);
 
+    // 只在共用保存服务完成脚本/模板、尚未发布归档的派生阶段为真。
+    // 宿主不能自行打开此阶段，也不能据此重复执行同一任务。
+    [[nodiscard]] bool InFinalDerivedStage() const noexcept { return executed && finalDerivedActive_; }
+
     std::filesystem::path target;
     bool inPlace = false;
     // 宿主显式标记独立测试副本；热重载登记层仅可用于此任务或其只读预检。
@@ -90,7 +94,11 @@ struct MapSaveTask {
     // 工作目录在脚本快照释放后仍供最终提交点标记与有界清理使用。
     std::filesystem::path scriptWorkspace;
 
-    // 宿主事务 lease 的最终复核：脚本完成后、归档发布前执行。失败保留全部
+    // 可信宿主的派生文件准备：脚本/模板的最终成员已确定后执行一次，
+    // 小地图等派生文件必须消费这一份列表。失败或异常都不得发布归档。
+    std::function<Status(MapSaveTask&)> prepareFinalDerived;
+
+    // 宿主事务 lease 的最终复核：派生文件完成后、归档发布前执行。失败保留全部
     // 冻结输入并拒绝写出；源归档本身仍由归档服务独立验证。
     std::function<Status()> beforePublish;
 
@@ -113,6 +121,10 @@ struct MapSaveTask {
     // 同一保存链实际生成或明确移除的脚本成员；其余作者脚本仍参与地图内容绑定。
     std::vector<std::string> generatedScriptMembers;
     std::string luaTestMapBinding;
+
+private:
+    friend class MapSaveService;
+    bool finalDerivedActive_ = false;
 };
 
 class MapSaveService final {
@@ -128,6 +140,9 @@ public:
     // 编译链仍可写独占临时目录，并非完全零磁盘写入；不证明输出、回读或原地备份成功。
     // 返回诊断，task.executed=true；task.succeeded 只代表 Run，预检成功也保持 false。
     [[nodiscard]] static Status Preflight(MapSaveTask& task, const Progress& progress = {});
+
+private:
+    static void Execute(MapSaveTask& task, const Progress& progress, bool preflight);
 };
 
 } // namespace War3Map::Services

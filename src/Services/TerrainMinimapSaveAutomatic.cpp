@@ -160,10 +160,22 @@ std::string ManifestIdentity(const Render::ClassicMinimapManifest& manifest) {
 Result<bool> TerrainMinimapSave::RequiresAutomaticGeneration(const MapSaveTask& task) {
     try {
         SourceTask(task);
-        const std::array<std::string, 2> names{"war3mapMap.tga", "war3mapMap.blp"};
-        ArchiveExactMemberLimits limits; limits.memberCount = 2;
+        const std::array<std::string, 3> names{"war3mapMap.tga", "war3mapMap.blp", "war3map.w3e"};
+        ArchiveExactMemberLimits limits; limits.memberCount = names.size();
         const auto identities = Take(task.archive->DescribeExactMemberIdentities(task.sourceSha256, names, limits));
-        if (identities.members[0].present || Replacement(task, "war3mapmap.tga")) return Result<bool>::Success(false);
+        const auto* tga = Replacement(task, "war3mapmap.tga");
+        if (identities.members[0].present) {
+            for (const auto& removed : task.removals) if (Key(removed) == "war3mapmap.tga")
+                Fail("MINIMAP_SAVE_TGA_REMOVED", "源图已有TGA小地图，保存必须保留作者原图，不能删除后改写BLP。");
+            if (tga && (tga->data.size() != identities.members[0].byteSize || !identities.members[0].sha256
+                || Take(Sha256(tga->data)) != *identities.members[0].sha256))
+                Fail("MINIMAP_SAVE_TGA_CHANGED", "源图已有TGA小地图，自动保存不能覆盖作者原图。");
+            return Result<bool>::Success(false);
+        }
+        if (tga) return Result<bool>::Success(false);
+        // 物编等局部归档可能准确地没有地形。缺少MapBLP不能强迫此类
+        // 数据归档生成小地图；present空/损坏W3E与读取失败仍保留错误身份。
+        if (!identities.members[2].present && !Replacement(task, "war3map.w3e")) return Result<bool>::Success(false);
         if (!identities.members[1].present) return Result<bool>::Success(true);
         // 模板经常重现原W3I/DOO/native原字；成员出现在替换列表里不等于
         // 内容发生变化。所有相关成员在同一次源租约中批量取身份，避免
@@ -209,7 +221,8 @@ Result<std::shared_ptr<const TerrainMinimapSave>> TerrainMinimapSave::PrepareAut
     using Output = Result<std::shared_ptr<const TerrainMinimapSave>>;
     try {
         if (!Take(RequiresAutomaticGeneration(task))) return Output::Success({});
-        if (task.executed) Fail("MINIMAP_SAVE_SOURCE", "已执行任务不能重新生成小地图。");
+        if (task.executed && !task.InFinalDerivedStage())
+            Fail("MINIMAP_SAVE_SOURCE", "已执行任务只能在同次最终派生阶段生成小地图。");
         if (Replacement(task, "war3mapmap.blp"))
             Fail("MINIMAP_SAVE_OUTPUT_CONFLICT", "保存列表已经手动提供MapBLP，不能和自动重建混用。");
         RequireNotRemoved(task, "war3mapmap.blp");
