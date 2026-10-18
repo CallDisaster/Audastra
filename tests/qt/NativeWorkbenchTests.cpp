@@ -4380,7 +4380,11 @@ void NativeWorkbenchTests::OptionalMissingMinimapActualQtSaveCopy() {
     const std::array<std::string, 1> names{"war3mapMap.blp"};
     const auto missing = original.value->CaptureExactMembers(names); QVERIFY(missing.Succeeded());
     QVERIFY2(!missing.value->front().present, "显式正例来源必须准确缺失MapBLP，不改写已有图像");
-    QTemporaryDir evidence(QDir::tempPath() + "/Audastra-Qt-missing-minimap-XXXXXX"); QVERIFY(evidence.isValid());
+    // main把TMP重定向到自动清理的提取目录；证据必须放在该父目录之外，
+    // 否则仅对本子目录setAutoRemove(false)仍会在进程退出时被一并删除。
+    const auto evidenceRoot = QCoreApplication::instance()->property("nativeWorkbenchOriginalTempRoot").toString();
+    QVERIFY(!evidenceRoot.isEmpty());
+    QTemporaryDir evidence(QDir(evidenceRoot).filePath("Audastra-Qt-missing-minimap-XXXXXX")); QVERIFY(evidence.isValid());
     evidence.setAutoRemove(false); // 真正执行前保留路径，失败后已落盘的候选也不能被fixture析构删除。
     qInfo().noquote() << "真实Qt小地图另存证据目录（成功/失败均保留）=" << evidence.path();
     const auto first = NativePath(evidence.filePath("generated.w3x")), second = NativePath(evidence.filePath("preserved-next.w3x"));
