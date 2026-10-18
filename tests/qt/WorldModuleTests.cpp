@@ -1641,6 +1641,7 @@ void WorldModuleTests::CliffSourceFailuresKeepWinnerAndReobserveReadFailures() {
         })); // codec不接路径；请求与真实来源必须由独立事实补足，不能改写这些原诊断。
     }
     const auto globalRows = project.diagnosticsModel_->rowCount();
+    auto expectedGlobalRows = globalRows;
     std::shared_ptr<WorldTerrainCache> cache;
     const auto loaded = LoadWorldTerrain(members[1].data, sources, {}, {}, &cache);
     QVERIFY2(loaded.Succeeded(), loaded.diagnostics.empty() ? "cliff fixture load failed" : loaded.diagnostics.front().message.c_str());
@@ -1694,9 +1695,12 @@ void WorldModuleTests::CliffSourceFailuresKeepWinnerAndReobserveReadFailures() {
         QVERIFY(!cache->modelFiles.contains(Cliff::lower));
     } else if (mode == "malformed-owned") {
         // 成功读到的坏正文属于原immutable owner；更换owner并显式通知导入，沿原来源失效链新建cache。
+        QCOMPARE(project.diagnosticsModel_->rowCount(), globalRows); // 原失败及重建没有发布全局诊断。
         const auto repaired = Cliff::Model(37);
         project.pendingImports_[0].ownedPayload = std::make_shared<const std::vector<std::byte>>(repaired);
         project.pendingImports_[0].size = static_cast<qint64>(repaired.size()); project.NotifyImportsChanged(true);
+        // 导入信号会调用既有物编目录刷新；其独立诊断不属于下方地形加载的副作用。
+        expectedGlobalRows = project.diagnosticsModel_->rowCount();
         const auto changed = CaptureWorldTerrainSources(project); QVERIFY(changed.Succeeded());
         QVERIFY(!SameWorldTerrainSources(*sources.value, *changed.value) && !cache->reader->MatchesSources(*changed.value));
         std::shared_ptr<WorldTerrainCache> repairedCache;
@@ -1706,7 +1710,7 @@ void WorldModuleTests::CliffSourceFailuresKeepWinnerAndReobserveReadFailures() {
         QVERIFY(Cliff::CachesResource(*cache, Cliff::requested, winner, *requestedLocation.value));
         QVERIFY(!repairedCache->modelFiles.contains(Cliff::lower));
     }
-    QCOMPARE(project.diagnosticsModel_->rowCount(), globalRows);
+    QCOMPARE(project.diagnosticsModel_->rowCount(), expectedGlobalRows);
     const auto terrain = project.ReadMapMember("war3map.w3e"); QVERIFY(terrain.Succeeded()); QCOMPARE(*terrain.value, members[1].data);
     const auto finalSha = Sha256File(path); QVERIFY(finalSha.Succeeded()); QCOMPARE(*finalSha.value, sourceSha);
     QVERIFY(!project.mapEdits_->IsDirty());
