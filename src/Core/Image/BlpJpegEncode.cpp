@@ -212,8 +212,10 @@ Result<BlpJpegSingleMip> EncodeBlpJpegSingleMip(const DecodedImage& image, const
     const auto quant = Quant(40); const auto dc = MakeHuffman(kDcBits, kDcValues); const auto ac = MakeHuffman(kAcBits, kAcValues);
     const auto outputPeak = limits.maxOutputBytes > std::numeric_limits<std::size_t>::max() / 3
         ? std::numeric_limits<std::size_t>::max() : limits.maxOutputBytes * 3;
-    const auto estimatedWorking = image.rgba.capacity() > std::numeric_limits<std::size_t>::max() - outputPeak - 256 * 1024
-        ? std::numeric_limits<std::size_t>::max() : image.rgba.capacity() + outputPeak + 256 * 1024;
+    const auto extraPeak = outputPeak > std::numeric_limits<std::size_t>::max() - 256 * 1024
+        ? std::numeric_limits<std::size_t>::max() : outputPeak + 256 * 1024;
+    const auto estimatedWorking = image.rgba.capacity() > std::numeric_limits<std::size_t>::max() - extraPeak
+        ? std::numeric_limits<std::size_t>::max() : image.rgba.capacity() + extraPeak;
     if (estimatedWorking > limits.maxWorkingBytes) return fail("BLP_JPEG_WORKING_BUDGET", "JPEG编码工作预算不足。");
     try {
         Bytes header; header.Limit(std::min<std::size_t>(limits.maxOutputBytes, 64u * 1024u));

@@ -133,7 +133,7 @@ add_custom_command(
         "$<TARGET_FILE_DIR:war3-map-core-tests>")
 add_test(NAME core-foundation COMMAND war3-map-core-tests)
 
-foreach(service_test IN ITEMS MapArchiveSession MapBackupInspection ProjectStore EditRevision VerifiedFile ImportTable ResourceResolver MapDocument MapDataEditSession MapDataFieldEditing MapDataPlacementEditing PlacementEditing PlacementCreateDelete TerrainEditing TerrainRampEditing TerrainSavePlan TerrainDerivedCodec PathingRestrictionEditing PathingSavePolicy MapSettings LniMapSettings MapPlacements MapAuxiliary CoreTextIo WorldEditStrings BlpImage BlpOpaqueQuantize)
+foreach(service_test IN ITEMS MapArchiveSession MapBackupInspection ProjectStore EditRevision VerifiedFile ImportTable ResourceResolver MapDocument MapDataEditSession MapDataFieldEditing MapDataPlacementEditing PlacementEditing PlacementCreateDelete TerrainEditing TerrainRampEditing TerrainSavePlan TerrainDerivedCodec PathingRestrictionEditing PathingSavePolicy MapSettings LniMapSettings MapPlacements MapAuxiliary CoreTextIo WorldEditStrings BlpImage BlpOpaqueQuantize BlpJpegEncode)
     add_executable(war3-map-${service_test}-tests ${service_test}Tests.cpp)
     target_link_libraries(war3-map-${service_test}-tests PRIVATE War3MapEditor::Core)
     target_compile_definitions(war3-map-${service_test}-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
@@ -353,7 +353,7 @@ target_compile_definitions(war3-terrain-edit-inspection-tests PRIVATE NOMINMAX W
 target_compile_options(war3-terrain-edit-inspection-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME terrain-edit-inspection COMMAND war3-terrain-edit-inspection-tests)
 
-foreach(render_part IN ITEMS TerrainTable TerrainMaterials TerrainTextureAtlas BlpMipChain TerrainPicking TerrainInspection ViewRay TerrainGroundMesh TerrainMinimapCandidate TerrainMinimapAssets WorldModelScene StaticModelTexsSampler TerrainCliffs SceneLighting BuildingSplatPreview OwnedStaticModel ClassicObjectTexture)
+foreach(render_part IN ITEMS TerrainTable TerrainMaterials TerrainTextureAtlas BlpMipChain TerrainPicking TerrainInspection ViewRay TerrainGroundMesh TerrainMinimapCandidate TerrainMinimapPostprocess TerrainMinimapRepresentativeColor TerrainMinimapAssets WorldModelScene StaticModelTexsSampler TerrainCliffs SceneLighting BuildingSplatPreview OwnedStaticModel ClassicObjectTexture)
     add_executable(war3-map-${render_part}-tests ${render_part}Tests.cpp)
     target_link_libraries(war3-map-${render_part}-tests PRIVATE War3MapEditor::RenderSupport)
     target_compile_definitions(war3-map-${render_part}-tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
