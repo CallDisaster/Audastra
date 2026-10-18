@@ -270,7 +270,7 @@ void NativePlayableRectangleUsesW3iAndClamps() {
     Require(RgbaAt(cropped.raw, 0, 0) == std::array<unsigned, 4>{20, 40, 60, 255}
         && RgbaAt(cropped.raw, 0, 1) == std::array<unsigned, 4>{100, 120, 140, 255}, "裁剪保持原网格锚点");
     settings.flags = 0;
-    settings.cameraBounds = {127.9f, -500, 128.1f, 500, 127.9f, 500, 128.1f, -500};
+    settings.cameraBounds = {127.9f, -500, 128.1f, 500, -9000, 9999, 9000, -9999};
     auto& colors = input.terrain.classicColors.emplace();
     colors.cameraMarginsConfigured = true; colors.cameraMargins = {0, 1, 0, 0};
     input.terrain.sourceW3i = Take(settings.Serialize());

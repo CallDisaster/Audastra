@@ -214,15 +214,9 @@ std::array<std::uint32_t, 4> PlayableRectangle(const TerrainMinimapInput& input,
         const auto& margins = input.classicColors->cameraMargins;
         for (const auto value : margins) if (!std::isfinite(value) || value < 0 || value > 65536)
             Fail("CLASSIC_MINIMAP_CAMERA_CONFIG", "CameraMargins必须是有界非负数。");
-        double west = settings.cameraBounds[0], east = west, south = settings.cameraBounds[1], north = south;
-        for (std::size_t i = 0; i < settings.cameraBounds.size(); i += 2) {
-            if (!std::isfinite(settings.cameraBounds[i]) || !std::isfinite(settings.cameraBounds[i + 1]))
-                Fail("CLASSIC_MINIMAP_CAMERA_BOUNDS", "W3I相机边界含非有限坐标。");
-            west = std::min(west, static_cast<double>(settings.cameraBounds[i]));
-            east = std::max(east, static_cast<double>(settings.cameraBounds[i]));
-            south = std::min(south, static_cast<double>(settings.cameraBounds[i + 1]));
-            north = std::max(north, static_cast<double>(settings.cameraBounds[i + 1]));
-        }
+        // W3I前两个角经原版0/3/2/1重排后供5E6D00取矩形；另两角不参与min/max。
+        const double west = settings.cameraBounds[0], south = settings.cameraBounds[1],
+            east = settings.cameraBounds[2], north = settings.cameraBounds[3];
         rectangle = {(west - grid.header.offset[0]) / 128.0 - margins[0],
             (south - grid.header.offset[1]) / 128.0 - margins[2],
             (east - grid.header.offset[0]) / 128.0 + margins[1],
@@ -334,6 +328,8 @@ Result<ClassicMinimapCandidate> Build(const InputView& input,
         }
         ClassicMinimapCandidate output;
         output.manifest.sourceSha256 = input.terrain.binding.sourceSha256;
+        if (input.terrain.rangePolicy == TerrainMinimapRangePolicy::ClassicPlayable)
+            output.manifest.rangePolicy = "classic-playable-w3i-v1";
         output.manifest.terrainSha256 = terrainSha;
         output.manifest.objectDomainPolicy = input.captured ? ClassicMinimapObjectAssetFacts::capturePolicy
             : ClassicMinimapManifest::objectDomainDeclaration;

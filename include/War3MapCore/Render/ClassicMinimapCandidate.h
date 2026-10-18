@@ -18,8 +18,8 @@ enum class ClassicMinimapMemberState { Unknown, Missing, Empty, ParsedEmpty, Par
 
 class ClassicMinimapObjectAssets;
 
-// 0x08 对应对象管理器尚未由独立原版对照确定。第一版只接收 caller 声明的
-// Missing/Empty 一致性字段，不绘制对象；Unknown、非零成员或不一致身份 fail-closed。
+// 旧纯算法入口只接收 caller 声明的 Missing/Empty 一致性字段。
+// ParsedEmpty/Parsed 必须来自实际对象捕获；对象资源和当前修订由保存服务复核。
 // 这些公开字段只属于caller入口，不是来源读取证明，也不构成 native/editor/game 资格。
 // 真实archive/edits捕获由独立sealed typed入口消费，不能用公开声明代替。
 struct ClassicMinimapObjectDomain {
@@ -60,7 +60,7 @@ struct ClassicMinimapCandidateLimits {
 
 struct ClassicMinimapManifest {
     static constexpr std::uint32_t algorithmVersion = 2;
-    static constexpr const char* rangePolicy = "FullW3eAlgorithmCandidate-v1";
+    std::string rangePolicy = "FullW3eAlgorithmCandidate-v1";
     static constexpr const char* groundPolicy = "sw-ground-atlas-representative-v1";
     static constexpr const char* boundaryPolicy = "boundary-a230-black-truncate-v1";
     static constexpr const char* objectDomainDeclaration = "caller-declared-v1/native=false";
@@ -95,18 +95,14 @@ struct ClassicMinimapCandidate {
     ClassicMinimapManifest manifest;
 };
 
-// 纯离线、FullW3eAlgorithmCandidate：解析冻结 W3E，逐 tile 使用 SW 顶点和真实 ground
-// atlas 代表色，处理已知 BoundaryTerrain=A230 黑色混合，随后调用纯 CPU postprocess 与
-// BLP1/JPEG q40 单 mip 编码。保存层忽略 blight/variation 但把其出现记录到 manifest。
-// 实际遇到水、悬崖层级/坡道、对象非空、声明W3I crop 或未知标志均拒绝；MapEdge
-// 与已知 BoundaryTerrain 同样使用 A230 黑混合。对象域只是 caller 声明，未认证来源。
-// 不读地图、不捕获对象、不写归档、不证明原版/native/game 输出等价。调用者提供的
-// Ground rawcode/table winner、archive当前来源和对象为空均未被本纯算法入口独立认证。
+// 纯CPU算法：按SW顶点选地面/悬崖代表色，按水深逐次混色，再混边界；
+// ClassicPlayable 消费同源W3I的可玩区，后处理和BLP1/JPEG q40单mip共用。
+// 旧FullW3e无配置输入仍拒未知水/坡道；本入口不读写归档，不认证caller来源。
 [[nodiscard]] Result<ClassicMinimapCandidate> BuildClassicMinimapCandidate(
     const ClassicMinimapCandidateInput& input,
     const ClassicMinimapCandidateLimits& limits = {});
 
-// 借用真实捕获的sealed Terrain与ParsedEmpty见证，不复制W3E/atlas/settings。
+// 借用真实捕获的Terrain和对象图层，按DOO顺序覆盖像素，不复制W3E/atlas/settings。
 // 只消费冻结资产；不重新验证当前来源，不授予长期有效或正式保存资格。
 [[nodiscard]] Result<ClassicMinimapCandidate> BuildClassicMinimapCandidate(
     const ClassicMinimapObjectAssets& assets,

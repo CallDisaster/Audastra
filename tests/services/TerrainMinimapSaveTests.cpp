@@ -440,7 +440,8 @@ void AutomaticDecisionUsesExactSourceMembers() {
 
 void AutomaticGeneratedBlpIsVerifiedThroughSaveCopyAndInPlace() {
     for (const auto [existing, inPlace] : {std::pair{false, false}, std::pair{true, false}, std::pair{true, true}}) {
-        Fixture fixture(existing, false, false, W3i(), false, {}, true);
+        auto settings = W3i(); Put32(settings, 72, 0x400); // 原版自动补足相机边距模式
+        Fixture fixture(existing, false, false, settings, false, {}, true);
         if (existing) fixture.Stroke();
         MapSaveTask task; fixture.Freeze(task);
         task.inPlace = inPlace;

@@ -1011,6 +1011,8 @@ void EditorProjectTests::TerrainSavePrepareStillRequiresToolchain() {
 void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
     QTemporaryDir root; QVERIFY(root.isValid());
     auto members = DeclaredMissingMinimapQtMembers();
+    for (auto& member : members) if (member.name == "war3map.w3i")
+        member.data[73] |= std::byte{4}; // v25 flags0x400，使用已声明的补足相机边距
     const auto text = [](std::string_view value) {
         const auto bytes = std::as_bytes(std::span(value.data(), value.size()));
         return std::vector<std::byte>(bytes.begin(), bytes.end());
