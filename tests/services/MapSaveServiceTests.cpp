@@ -1241,6 +1241,83 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
     Require(copySaved.Succeeded() && copySaved.value,
         "默认Automatic只做单位复制必须不再命中MAP_TERRAIN_ATTACH_LATE");
 
+    // 原创特殊装饰物尚不受小地图生成器支持；仅改单位生命的正常保存
+    // 必须保留作者小地图（或其准确缺失），不能因生成器能力不足拒绝整次保存。
+    for (const bool existingMinimap : {false, true}) {
+        auto specialMembers = members;
+        MapData::DoodadPlacements specialLayer;
+        for (std::int32_t index = 0; index < 20; ++index) {
+            MapData::SpecialDoodadPlacement placement;
+            placement.rawcode = "SPC1"; placement.position = {index, 1};
+            specialLayer.specialDoodads.push_back(placement);
+        }
+        const auto specialDoo = specialLayer.Serialize();
+        auto specialUnits = unitLayer;
+        specialUnits.units.front().hitPoints = 0;
+        const auto specialUnitBytes = specialUnits.Serialize();
+        Require(specialDoo.Succeeded() && specialDoo.value && specialUnitBytes.Succeeded() && specialUnitBytes.value,
+            "serialize original special doodads and hit_points=0 unit fixture");
+        const auto put = [&](std::string name, const std::vector<std::byte>& bytes) {
+            const auto found = std::find_if(specialMembers.begin(), specialMembers.end(),
+                [&](const auto& member) { return member.name == name; });
+            if (found == specialMembers.end()) specialMembers.push_back({std::move(name), bytes});
+            else found->data = bytes;
+        };
+        put("war3map.doo", *specialDoo.value);
+        put("war3mapUnits.doo", *specialUnitBytes.value);
+        const auto authorMinimap = Bytes("author original minimap bytes, never regenerated");
+        if (existingMinimap) put("war3mapMap.blp", authorMinimap);
+        const auto specialSourcePath = directory.Path() / (existingMinimap
+            ? "special-with-minimap.w3x" : "special-without-minimap.w3x");
+        const auto specialWritten = WriteVerifiedArchive(specialSourcePath, specialMembers);
+        auto specialSource = MapArchiveSession::Open(specialSourcePath);
+        Require(specialWritten.Succeeded() && specialWritten.value && specialSource.Succeeded() && specialSource.value,
+            "write and independently open special doodad source fixture");
+        const auto specialMap = MapDocument::FromArchive(*specialSource.value);
+        const auto specialRow = MapData::MapFieldRowKey(specialMap, MapDataKind::Units, 0);
+        const auto specialBefore = MapData::ReadMapField(specialMap, MapDataKind::Units, 0, *hitPoints);
+        const auto specialSha = Sha256(*specialUnitBytes.value);
+        Require(specialRow.Succeeded() && specialRow.value && specialBefore.Succeeded() && specialBefore.value
+            && specialSha.Succeeded() && specialSha.value && specialBefore.value->integer == 0,
+            "bind original unit hit_points=0 and exact member SHA");
+        MapEditSaveRequest specialRequest;
+        specialRequest.sourceMap = specialSourcePath;
+        specialRequest.targetCandidate = directory.Path() / (existingMinimap
+            ? "special-with-minimap-saved.w3x" : "special-without-minimap-saved.w3x");
+        specialRequest.expectedSourceSha256 = specialSource.value->SourceSha256();
+        specialRequest.toolRoot = ydwe; specialRequest.gameRoot = game;
+        specialRequest.fieldEdits = {{*specialSha.value, {MapDataKind::Units, 0, *specialRow.value,
+            "hit_points", *specialBefore.value, *unitAfter.value}}};
+        Require(specialRequest.minimapChoice == TerrainMinimapSaveChoice::Automatic,
+            "special doodad unit field save must use the product default Automatic policy");
+        const auto specialSaved = SaveMapEditCandidate(specialRequest);
+        if (!specialSaved.Succeeded()) for (const auto& note : specialSaved.diagnostics)
+            std::cerr << "special doodad Automatic save: " << note.code << ": " << note.message << '\n';
+        Require(specialSaved.Succeeded() && specialSaved.value && !specialSaved.value->generatedMissingMinimap,
+            "unsupported special doodad minimap must not block ordinary unit field save");
+        Require(std::any_of(specialSaved.diagnostics.begin(), specialSaved.diagnostics.end(), [](const auto& diagnostic) {
+            return diagnostic.severity == DiagnosticSeverity::Warning && diagnostic.code == "MINIMAP_GENERATION_SKIPPED";
+        }), "special doodad save must report the minimap generation skip as a warning");
+        auto independent = MapArchiveSession::Open(specialRequest.targetCandidate);
+        Require(independent.Succeeded() && independent.value, "independently open special doodad save output");
+        const auto savedMap = MapDocument::FromArchive(*independent.value);
+        const auto savedLife = MapData::ReadMapField(savedMap, MapDataKind::Units, 0, *hitPoints);
+        Require(savedLife.Succeeded() && savedLife.value && savedLife.value->integer == 1,
+            "independent readback must contain unit hit_points=1");
+        const auto savedMinimap = independent.value->DescribeExactMemberIdentities(
+            independent.value->SourceSha256(), minimapNames);
+        Require(savedMinimap.Succeeded() && savedMinimap.value
+            && savedMinimap.value->members.front().present == existingMinimap,
+            "special doodad save must preserve exact minimap presence or absence");
+        if (existingMinimap) {
+            const auto actualMinimap = independent.value->ReadMember("war3mapMap.blp");
+            Require(actualMinimap.Succeeded() && actualMinimap.value && *actualMinimap.value == authorMinimap,
+                "special doodad save must preserve author minimap bytes");
+        }
+        Require(Sha256File(specialSourcePath).value == std::optional<std::string>(specialSource.value->SourceSha256()),
+            "special doodad candidate save must leave the original source unchanged");
+    }
+
     request.minimapChoice = TerrainMinimapSaveChoice::Automatic;
     request.targetCandidate = directory.Path() / "automatic.w3x";
     const auto automatic = SaveMapEditCandidate(request);
