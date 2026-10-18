@@ -1613,14 +1613,14 @@ void WorldModuleTests::CliffSourceFailuresKeepWinnerAndReobserveReadFailures() {
     QTemporaryDir directory; QVERIFY(directory.isValid());
     auto members = Cliff::Members(ShadowObservationMembers(), *FlatGrid(2, 2)); QVERIFY(!members.empty());
     // 请求路径在原地图也有效；会话winner损坏/不可读时不能改取原地图正文或低变体。
-    if (mode != "missing") members.push_back({Cliff::requested, Cliff::Model(11)});
+    if (mode != "missing") members.push_back({Cliff::storedRequested, Cliff::Model(11)});
     const auto path = std::filesystem::path(directory.filePath("cliff-source.w3x").toStdWString());
     QVERIFY(WriteVerifiedArchive(path, members).Succeeded()); auto archive = MapArchiveSession::Open(path); QVERIFY(archive.Succeeded());
     const auto sourceSha = archive.value->SourceSha256();
     QtProject::EditorProject project; project.sourceArchivePath_ = path; project.projectRoot_ = path.parent_path();
     project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*archive.value)); project.LoadMapDocument(); project.ResetEditTracking();
     QVERIFY(project.mapEdits_ && project.mapEdits_->Terrain());
-    const auto requestedName = QString::fromStdString(Cliff::requested);
+    const auto requestedName = QString::fromStdString(Cliff::storedRequested);
     const auto diskPath = directory.filePath("explicit-next-rebuild.mdx");
     auto winner = Cliff::Model(37, mode == "sampler-unsupported" ? 8u : 0u);
     if (mode == "malformed-owned") winner.resize(winner.size() - 6);
@@ -1716,9 +1716,10 @@ void WorldModuleTests::CliffSamplerFailureAfterMissingDoesNotInventModelContext(
     namespace Cliff = Tests::WorldCliffSourceFailure;
     QTemporaryDir directory; QVERIFY(directory.isValid());
     auto members = Cliff::Members(ShadowObservationMembers(), *FlatGrid(3, 2)); QVERIFY(!members.empty());
-    std::erase_if(members, [](const auto& member) { return member.name == Cliff::lower; });
-    const std::string second = "Doodads\\Terrain\\Cliffs\\CliffsBAAA0.mdx";
-    const auto sampler = Cliff::Model(37, 8); members.push_back({second, sampler});
+    std::erase_if(members, [](const auto& member) { return member.name == Cliff::storedLower; });
+    const std::string second = "Doodads\\Terrain\\CLIFFS\\CLIFFSBAAA0.mdx";
+    const std::string storedSecond = "Doodads\\Terrain\\Cliffs\\CliffsBAAA0.mdx";
+    const auto sampler = Cliff::Model(37, 8); members.push_back({storedSecond, sampler});
     const auto path = std::filesystem::path(directory.filePath("cliff-missing-then-bake.w3x").toStdWString());
     QVERIFY(WriteVerifiedArchive(path, members).Succeeded()); auto source = MapArchiveSession::Open(path); QVERIFY(source.Succeeded());
     const auto sourceSha = source.value->SourceSha256();

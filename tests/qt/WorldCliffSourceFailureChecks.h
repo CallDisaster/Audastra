@@ -11,8 +11,11 @@
 // 复用WorldModuleTests的原创地图/FlatGrid夹具，只补悬崖数据和断言；不新增运行器。
 namespace War3Map::Tests::WorldCliffSourceFailure {
 
-inline const std::string requested = "Doodads\\Terrain\\Cliffs\\CliffsAAAB1.mdx";
-inline const std::string lower = "Doodads\\Terrain\\Cliffs\\CliffsAAAB0.mdx";
+// 归档/会话保留原mixed-case；SLK目录经现材料解析器规范为大写，builder请求须逐字核对。
+inline const std::string storedRequested = "Doodads\\Terrain\\Cliffs\\CliffsAAAB1.mdx";
+inline const std::string storedLower = "Doodads\\Terrain\\Cliffs\\CliffsAAAB0.mdx";
+inline const std::string requested = "Doodads\\Terrain\\CLIFFS\\CLIFFSAAAB1.mdx";
+inline const std::string lower = "Doodads\\Terrain\\CLIFFS\\CLIFFSAAAB0.mdx";
 
 // 原创单层三角面；请求变体与低变体有不同真实Z，不以文件名或计数冒充选中几何。
 inline std::vector<std::byte> Model(float z, std::uint32_t samplerFlags = 0) {
@@ -63,7 +66,7 @@ inline std::vector<MapArchiveMember> Members(std::vector<MapArchiveMember> base,
         "C;X5;Y2;K\"CliffTrans\"\nC;X6;Y2;K\"Ldrt\"\nC;X7;Y2;K\"1\"\nE\n";
     const auto bytes = std::as_bytes(std::span(slk.data(), slk.size()));
     for (auto& member : base) if (member.name == "TerrainArt/CliffTypes.slk") member.data.assign(bytes.begin(), bytes.end());
-    base.push_back({lower, Model(0)});
+    base.push_back({storedLower, Model(0)});
     return base;
 }
 
