@@ -18,8 +18,10 @@
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <initializer_list>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <span>
 #include <type_traits>
@@ -248,6 +250,10 @@ void TestZeroNonzeroStaleAndBudget() {
     auto nonzero = MapDataFixtures::EmptyUnitsV8Sub11(); Put32(nonzero, 12, 1);
     Fixture count(nonzero, MapDataFixtures::EmptyDoodadsV8Sub11(), nonzero, MapDataFixtures::EmptyDoodadsV8Sub11()); auto countSource = count.Source("count.w3x");
     Rejected(CaptureClassicMinimapObjectAssets(CaptureTerrain(count, countSource), countSource, count.edits), "PLACEMENT_RECORD_LIMIT");
+    auto special = MapDataFixtures::EmptyDoodadsV8Sub11(); Put32(special, 20, 1);
+    Fixture specialCount(MapDataFixtures::EmptyUnitsV8Sub11(), special, MapDataFixtures::EmptyUnitsV8Sub11(), special);
+    auto specialSource = specialCount.Source("special-count.w3x");
+    Rejected(CaptureClassicMinimapObjectAssets(CaptureTerrain(specialCount, specialSource), specialSource, specialCount.edits), "PLACEMENT_RECORD_LIMIT");
     Fixture stale; auto staleSource = stale.Source("stale.w3x"); auto terrain = CaptureTerrain(stale, staleSource);
     TerrainBrush brush; brush.kind = TerrainBrushKind::Raise; brush.radius = 0; brush.strength = 1;
     const TerrainStrokePoint point{256, 256};
