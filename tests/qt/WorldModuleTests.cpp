@@ -65,6 +65,7 @@
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QSignalSpy>
+#include <QStandardItemModel>
 #include <QSemaphore>
 #include <QSpinBox>
 #include <QToolButton>
