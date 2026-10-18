@@ -101,7 +101,8 @@ std::size_t ManifestCapacity(const Render::TerrainMinimapManifest& manifest) {
     std::size_t total = sizeof(manifest); BindingCapacity(total, manifest.binding);
     for (const auto* text : {&manifest.currentW3eSha256, &manifest.reserializedW3eSha256, &manifest.meshSha256,
         &manifest.outputRgbaSha256, &manifest.outputBlpSha256, &manifest.manifestSha256,
-        &manifest.w3i.state, &manifest.w3i.stage, &manifest.w3i.sha256}) TextCapacity(total, *text);
+        &manifest.w3i.state, &manifest.w3i.stage, &manifest.w3i.sha256,
+        &manifest.mapEdge.state, &manifest.mapEdge.maskSha256}) TextCapacity(total, *text);
     Charge(total, manifest.atlases.capacity(), sizeof(Render::TerrainMinimapAtlasFacts));
     for (const auto& atlas : manifest.atlases) {
         LocationCapacity(total, atlas.declaredSource); TextCapacity(total, atlas.declaredEncodedSha256);
@@ -159,7 +160,8 @@ void Limits(const TerrainMinimapSaveLimits& limits) {
 // Capture的三表phase与atlas phase不重叠。表的编码副本/节点/重放/catalog预留
 // 按每表16×原字+1024×cell+512×row计；atlas保留+当前decoder工作同时计。
 // 通过收紧既有子预算预收，而不是让每个子系统各自使用128MiB。
-std::size_t CaptureEnvelope(const Render::TerrainMinimapAssetCaptureLimits& limits) {
+std::size_t CaptureEnvelope(const Render::TerrainMinimapAssetCaptureLimits& limits,
+    Render::TerrainMinimapRangePolicy rangePolicy) {
     std::size_t tables = kMetadataReserve + kHashReserve;
     Charge(tables, limits.maxSourceBytes, 3); Charge(tables, limits.maxCurrentW3eBytes);
     Charge(tables, limits.tables.maxTableBytes, 3 * 16);
@@ -167,10 +169,22 @@ std::size_t CaptureEnvelope(const Render::TerrainMinimapAssetCaptureLimits& limi
     std::size_t atlas = kMetadataReserve + kHashReserve;
     Charge(atlas, limits.maxSourceBytes, 3); Charge(atlas, limits.maxCurrentW3eBytes);
     Charge(atlas, limits.maxRetainedAtlasCapacityBytes); Charge(atlas, limits.atlas.maxWorkingBytes);
-    return std::max(tables, atlas);
+    if (rangePolicy == Render::TerrainMinimapRangePolicy::FullW3e) return std::max(tables, atlas);
+    // W3I在表批次移入snapshot，直到atlas/candidate结束仍保活；不计入三张表的解析预留。
+    // 成员读取cap约束size；capacity仍以Assets在解析前核过的maxSourceBytes为界。
+    const auto retainedW3i = limits.maxSourceBytes;
+    Charge(tables, retainedW3i); Charge(atlas, retainedW3i);
+    // Assets在Snapshot/Settings解析前已将64KiB+64×实际W3I字节与原字/current容量
+    // 共同预收在maxSourceBytes内。用这个内限界定独立Settings phase，再保守叠加
+    // 原字副本及current；不是用64×总source cap挤占不重叠的atlas解码阶段。
+    std::size_t settings = kMetadataReserve + kHashReserve;
+    Charge(settings, limits.maxSourceBytes, 4); Charge(settings, limits.maxCurrentW3eBytes);
+    Charge(settings, retainedW3i);
+    return std::max({tables, atlas, settings});
 }
-Render::TerrainMinimapAssetCaptureLimits CaptureLimits(Render::TerrainMinimapAssetCaptureLimits limits, std::size_t available) {
-    while (CaptureEnvelope(limits) > available) {
+Render::TerrainMinimapAssetCaptureLimits CaptureLimits(Render::TerrainMinimapAssetCaptureLimits limits,
+    std::size_t available, Render::TerrainMinimapRangePolicy rangePolicy) {
+    while (CaptureEnvelope(limits, rangePolicy) > available) {
         if (limits.maxSourceBytes <= 1 || limits.tables.maxCells <= 1 || limits.atlas.maxWorkingBytes <= 1)
             Fail("MINIMAP_SAVE_BUDGET", "剩余共享预算无法容纳最小资源捕获。");
         limits.maxSourceBytes = std::max<std::size_t>(1, limits.maxSourceBytes / 2);
@@ -271,8 +285,12 @@ Result<std::shared_ptr<const TerrainMinimapSave>> TerrainMinimapSave::Prepare(
     TerrainMinimapSaveChoice choice, const TerrainMinimapSaveLimits& limits) {
     using Output = Result<std::shared_ptr<const TerrainMinimapSave>>;
     if (choice == TerrainMinimapSaveChoice::Preserve) return Output::Success({});
-    if (choice != TerrainMinimapSaveChoice::GenerateMissingGroundOnly)
+    if (choice != TerrainMinimapSaveChoice::GenerateMissingGroundOnly
+        && choice != TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly)
         return Output::Failure(kSubsystem, "MINIMAP_SAVE_CHOICE", "未知的小地图保存choice。");
+    const auto rangePolicy = choice == TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly
+        ? Render::TerrainMinimapRangePolicy::DeclaredW3iMarginsExteriorMapEdge
+        : Render::TerrainMinimapRangePolicy::FullW3e;
     try {
         Limits(limits); SourceTask(task);
         if (task.executed) Fail("MINIMAP_SAVE_SOURCE", "已执行的保存任务不能重新准备小地图。");
@@ -289,9 +307,9 @@ Result<std::shared_ptr<const TerrainMinimapSave>> TerrainMinimapSave::Prepare(
         Check(plan->VerifyMissingMinimapEligibility(edits));
         Check(plan->VerifyForSave(edits, task.sourceSha256, task.replacements, task.removals));
         available = Remaining(available, plan->OwnedCapacityBytes());
-        auto captureLimits = CaptureLimits(limits.assets, available);
+        auto captureLimits = CaptureLimits(limits.assets, available, rangePolicy);
         auto assets = Take(Render::CaptureTerrainMinimapAssets(*task.archive, edits, gameRoot, captureLimits,
-            Render::TerrainMinimapRangePolicy::FullW3e));
+            rangePolicy));
         // Candidate本身已计输入保活；此处再保守计一次，确保snapshot metadata、Plan和task副本
         // 与mesh/raster/encoder同时存在。另预留生成BLP的task copy及真实解码/散列。
         std::size_t outside = Sum({taskCeiling, plan->OwnedCapacityBytes(), SnapshotCapacity(assets), kMetadataReserve,
@@ -300,7 +318,8 @@ Result<std::shared_ptr<const TerrainMinimapSave>> TerrainMinimapSave::Prepare(
         candidateLimits.maxWorkingBytes = std::min(candidateLimits.maxWorkingBytes, Remaining(limits.maxWorkingBytes, outside));
         auto candidate = Take(Render::BuildTerrainMinimapCandidate(assets.Input(), candidateLimits));
         const auto& manifest = candidate.manifest;
-        if (manifest.encodedMipCount != 9 || manifest.encodedTotalMipPixels != 87381
+        if (manifest.rangePolicy != rangePolicy
+            || manifest.encodedMipCount != 9 || manifest.encodedTotalMipPixels != 87381
             || manifest.encodedBlpBytes != candidate.encoded.bytes.size()
             || manifest.outputBlpSha256 != Take(Sha256(candidate.encoded.bytes))
             || manifest.formalSaveAuthorized || manifest.nativeEditorOrGameVerified)
@@ -357,7 +376,7 @@ Status TerrainMinimapSave::VerifyCurrent(const MapSaveTask& task, const MapData:
             || (!gameRoot.empty() && Path(gameRoot, "MINIMAP_SAVE_SOURCE") != Path(assets_->Binding().gameRoot, "MINIMAP_SAVE_SOURCE")))
             Fail("MINIMAP_SAVE_SOURCE", "小地图资格的gameRoot已变化。");
         std::size_t used = RetainedCapacityBytes(); Charge(used, taskReplacementCapacityCeiling_);
-        auto limits = CaptureLimits(limits_.assets, Remaining(limits_.maxWorkingBytes, used));
+        auto limits = CaptureLimits(limits_.assets, Remaining(limits_.maxWorkingBytes, used), manifest_.rangePolicy);
         Check(Render::VerifyTerrainMinimapAssetsCurrent(*assets_, *task.archive, edits, gameRoot, limits));
     });
 }
@@ -366,7 +385,7 @@ Status TerrainMinimapSave::VerifyFrozenOutput(const MapSaveTask& task) const {
     return GuardStatus([&] {
         Check(VerifyTask(task, false));
         std::size_t used = RetainedCapacityBytes(); Charge(used, taskReplacementCapacityCeiling_);
-        auto limits = CaptureLimits(limits_.assets, Remaining(limits_.maxWorkingBytes, used));
+        auto limits = CaptureLimits(limits_.assets, Remaining(limits_.maxWorkingBytes, used), manifest_.rangePolicy);
         Check(Render::VerifyTerrainMinimapAssetsFrozenOutput(*assets_, *task.archive, task.replacements, task.removals, limits));
     });
 }
@@ -393,7 +412,7 @@ Status TerrainMinimapSave::VerifyReadback(const MapSaveTask& task, const MapArch
         Check(plan_->VerifyFrozenOutput(task.sourceSha256, task.replacements, task.removals));
         const MapData::TerrainSavePlanLimits readLimits{std::min(limits_.plan.maximumBytes, available / 3)};
         Check(plan_->VerifyReadback(saved, readLimits));
-        auto limits = CaptureLimits(limits_.assets, available);
+        auto limits = CaptureLimits(limits_.assets, available, manifest_.rangePolicy);
         Check(Render::VerifyTerrainMinimapAssetsReadback(*assets_, saved, limits));
         const std::array<std::string, 1> names{"war3mapMap.blp"};
         ArchiveExactMemberLimits capture;

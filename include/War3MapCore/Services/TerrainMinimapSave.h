@@ -6,7 +6,11 @@
 
 namespace War3Map::Services {
 
-enum class TerrainMinimapSaveChoice { Preserve, GenerateMissingGroundOnly };
+enum class TerrainMinimapSaveChoice {
+    Preserve,
+    GenerateMissingGroundOnly,
+    GenerateMissingDeclaredGroundOnly
+};
 
 struct TerrainMinimapSaveLimits {
     // 只可收紧。计本单元拥有的容器、重叠task替换副本和有界临时工作；

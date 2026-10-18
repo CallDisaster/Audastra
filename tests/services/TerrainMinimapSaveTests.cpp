@@ -58,6 +58,18 @@ Bytes Text(std::string_view text) {
 void Put32(Bytes& bytes, std::size_t at, std::uint32_t value) {
     for (unsigned shift = 0; shift < 4; ++shift) bytes[at + shift] = static_cast<std::byte>((value >> (shift * 8)) & 255);
 }
+Bytes W3i() {
+    // 独立classic v25原字：8×8 tiles扣L/R/B/T=[1,3,2,1]后为4×5。
+    Bytes bytes(147); Put32(bytes, 0, 25); Put32(bytes, 8, 6061);
+    Put32(bytes, 48, 1); Put32(bytes, 52, 3); Put32(bytes, 56, 2); Put32(bytes, 60, 1);
+    Put32(bytes, 64, 4); Put32(bytes, 68, 5); bytes[76] = std::byte{'L'};
+    return bytes;
+}
+MapDocument SettingsDocument(const std::optional<Bytes>& settings) {
+    if (!settings) return MapDocument::FromMembers({});
+    const std::vector<MapArchiveMember> members{{"war3map.w3i", *settings}};
+    return MapDocument::FromMembers(members);
+}
 Bytes Slk(const std::vector<std::string>& headers, const std::vector<std::vector<std::string>>& rows = {}) {
     std::string text = "ID;PWXL;N;E\n";
     const auto row = [&](const auto& values, std::size_t y) {
@@ -97,21 +109,30 @@ std::vector<MapArchiveMember> Materials(bool colorful = false) {
 struct Fixture {
     Directory directory;
     Bytes w3e, wpm;
-    MapDataEditSession edits{MapDocument::FromMembers({})};
+    std::optional<Bytes> w3i;
+    MapDataEditSession edits;
     std::filesystem::path gameRoot;
     MapArchiveSession source;
-    explicit Fixture(bool presentMinimap = false, bool gameWinner = false, bool colorful = false) {
+    explicit Fixture(bool presentMinimap = false, bool gameWinner = false, bool colorful = false,
+        std::optional<Bytes> settings = {}, bool standardEdges = false)
+        : w3i(std::move(settings)), edits(SettingsDocument(w3i)) {
         TerrainGridSnapshot terrain;
         terrain.header.width = terrain.header.height = 9; terrain.header.mainTileset = 'L';
         terrain.header.groundTilesets = {"Tg01"}; terrain.header.cliffTilesets = {"CLdi"}; terrain.vertices.resize(81);
         for (auto& vertex : terrain.vertices) {
             vertex.groundHeightRaw = 8192; vertex.waterHeightAndFlagsRaw = 7936; vertex.cliffAndLayerRaw = 2;
         }
+        if (standardEdges) {
+            for (std::size_t y = 0; y < 8; ++y) for (std::size_t x = 0; x < 8; ++x)
+                if (x < 1 || x >= 5 || y < 2 || y >= 7)
+                    terrain.vertices[y * 9 + x].waterHeightAndFlagsRaw |= 0x4000;
+        }
         RefreshTerrainDerived(terrain, 0, 0, 9, 9); w3e = Take(SerializeMapTerrain(terrain));
         wpm = Text("MP3W"); wpm.resize(16 + 32 * 32, std::byte{0x82}); Put32(wpm, 4, 0); Put32(wpm, 8, 32); Put32(wpm, 12, 32);
         Require(edits.AttachTerrain(w3e).Succeeded() && edits.AttachPathing(wpm).Succeeded(), "附上真实原始W3E/WPM");
         auto members = gameWinner ? std::vector<MapArchiveMember>{} : Materials(colorful);
         members.push_back({"war3map.w3e", w3e}); members.push_back({"war3map.wpm", wpm});
+        if (w3i) members.push_back({"war3map.w3i", *w3i});
         members.push_back({"war3map.j", Text("function config takes nothing returns nothing\nendfunction\nfunction main takes nothing returns nothing\nendfunction\n")});
         Bytes native(12); Put32(native, 0, 1); members.push_back({"war3map.w3u", native});
         members.push_back({"war3map.shd", {std::byte{17}, std::byte{25}}});
@@ -122,19 +143,84 @@ struct Fixture {
         gameRoot = directory.Path() / "game"; Require(std::filesystem::create_directory(gameRoot), "创建原创game来源目录");
         Take(WriteVerifiedArchive(gameRoot / "war3.mpq", Materials(colorful)));
     }
-    void Stroke(TerrainBrushKind kind = TerrainBrushKind::Raise, float strength = 10.0f) {
+    void Stroke(TerrainBrushKind kind = TerrainBrushKind::Raise, float strength = 10.0f,
+        TerrainStrokePoint point = {512, 512}) {
         TerrainBrush brush; brush.kind = kind; brush.radius = 0; brush.strength = strength;
-        const TerrainStrokePoint point{512, 512};
         Require(edits.EditTerrain(brush, std::span(&point, 1), false).Succeeded(), "应用真实height/blight笔刷事务");
     }
     void Freeze(MapSaveTask& task) {
         Require(task.FreezeArchive(source).Succeeded(), "FreezeArchive拥有实际来源");
         task.target = directory.Path() / "candidate.w3x"; task.replacements = edits.Replacements();
     }
-    std::shared_ptr<const TerrainMinimapSave> Prepare(MapSaveTask& task) {
-        return Take(TerrainMinimapSave::Prepare(task, edits, gameRoot, TerrainMinimapSaveChoice::GenerateMissingGroundOnly));
+    std::shared_ptr<const TerrainMinimapSave> Prepare(MapSaveTask& task,
+        TerrainMinimapSaveChoice choice = TerrainMinimapSaveChoice::GenerateMissingGroundOnly) {
+        return Take(TerrainMinimapSave::Prepare(task, edits, gameRoot, choice));
     }
 };
+
+void DeclaredChoiceRequiresActualW3iAndRetainsStandardEdges() {
+    constexpr auto declared = TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly;
+    Fixture fixture(false, false, true, W3i(), true); fixture.Stroke(TerrainBrushKind::Raise, 10, {384, 512});
+    MapSaveTask task; fixture.Freeze(task);
+    Rejected(TerrainMinimapSave::Prepare(task, fixture.edits, fixture.gameRoot,
+        TerrainMinimapSaveChoice::GenerateMissingGroundOnly), "TERRAIN_MINIMAP_MAP_EDGE");
+    const auto prepared = fixture.Prepare(task, declared);
+    Require(prepared->Manifest().rangePolicy == Render::TerrainMinimapRangePolicy::DeclaredW3iMarginsExteriorMapEdge
+        && prepared->Manifest().w3i.sha256 == Take(Sha256(*fixture.w3i))
+        && prepared->Manifest().renderExtent == std::array<double, 4>{128, 256, 640, 896},
+        "显式新choice绑定真实W3I声明范围与实际manifest政策");
+    task.replacements.push_back(prepared->MinimapReplacement());
+    Require(prepared->VerifyCurrent(task, fixture.edits, fixture.gameRoot).Succeeded()
+        && prepared->VerifyFrozenOutput(task).Succeeded(), "标准源/当前MapEdge不必清位即可进入独立生成政策");
+    task.replacements.push_back({"war3map.w3i", *fixture.w3i});
+    Rejected(prepared->VerifyFrozenOutput(task), "MINIMAP_SAVE_DOMAIN"); task.replacements.pop_back();
+    task.beforePublish = [&] { return prepared->VerifyFrozenOutput(task); };
+    MapSaveService::Run(task);
+    Require(task.succeeded && task.nextSession, "声明范围候选走真实Archive SaveCopy");
+    auto opened = Take(MapArchiveSession::Open(task.target));
+    Require(prepared->VerifyReadback(task, opened).Succeeded()
+        && Take(opened.ReadMember("war3map.w3i")) == *fixture.w3i,
+        "独立Open回读绑定实际完整MapBLP与未改动W3I原字");
+    const auto saved = Take(ParseMapTerrain(Take(opened.ReadMember("war3map.w3e"))));
+    const auto original = Take(ParseMapTerrain(fixture.w3e));
+    for (std::size_t i = 0; i < original.Snapshot()->vertices.size(); ++i)
+        Require(saved.Snapshot()->vertices[i].waterHeightAndFlagsRaw == original.Snapshot()->vertices[i].waterHeightAndFlagsRaw,
+            "生成与保存不清除源/当前任何water或MapEdge位");
+    auto changedW3i = *fixture.w3i; Put32(changedW3i, 4, 1);
+    const std::array changed{MemberReplacement{"war3map.w3i", changedW3i}};
+    Take(opened.SaveCandidate(fixture.directory.Path() / "changed-readback.w3x", changed));
+    auto changedArchive = Take(MapArchiveSession::Open(fixture.directory.Path() / "changed-readback.w3x"));
+    Rejected(prepared->VerifyReadback(task, changedArchive), "MINIMAP_SAVE_TARGET");
+    Require(IO::WriteFileBytes(task.target, Take(IO::ReadFileBytes(changedArchive.SourcePath()))).Succeeded(),
+        "只改自有SaveCopy目标的W3I原字以测试实际回读依赖");
+    auto changedSameTarget = Take(MapArchiveSession::Open(task.target));
+    Rejected(prepared->VerifyReadback(task, changedSameTarget), "TERRAIN_ASSETS_FINAL_DEPENDENCY");
+
+    Fixture current(false, false, false, W3i(), true); current.Stroke(TerrainBrushKind::Raise, 10, {384, 512});
+    MapSaveTask currentTask; current.Freeze(currentTask); const auto currentPrepared = current.Prepare(currentTask, declared);
+    currentTask.replacements.push_back(currentPrepared->MinimapReplacement());
+    auto currentW3i = *current.w3i; Put32(currentW3i, 4, 1);
+    Require(current.edits.EditSerialized(MapDataKind::Settings, currentW3i).Succeeded(), "建立真实当前Settings修改");
+    Rejected(currentPrepared->VerifyCurrent(currentTask, current.edits, current.gameRoot), "TERRAIN_SAVE_PLAN_STALE");
+
+    Fixture missing; missing.Stroke(); MapSaveTask missingTask; missing.Freeze(missingTask);
+    Rejected(TerrainMinimapSave::Prepare(missingTask, missing.edits, missing.gameRoot, declared), "TERRAIN_ASSETS_W3I_MISSING");
+    Fixture mask(false, false, false, W3i()); mask.Stroke(TerrainBrushKind::Raise, 10, {384, 512});
+    MapSaveTask maskTask; mask.Freeze(maskTask);
+    Rejected(TerrainMinimapSave::Prepare(maskTask, mask.edits, mask.gameRoot, declared), "TERRAIN_MINIMAP_MAP_EDGE_MASK");
+    Fixture bounded(false, false, false, W3i(), true); bounded.Stroke(TerrainBrushKind::Raise, 10, {384, 512});
+    MapSaveTask boundedTask; bounded.Freeze(boundedTask);
+    TerrainMinimapSaveLimits limits; limits.assets.maxSourceBytes = 32 * 1024;
+    Rejected(TerrainMinimapSave::Prepare(boundedTask, bounded.edits, bounded.gameRoot, declared, limits), "TERRAIN_ASSETS_BUDGET");
+    limits = {}; limits.candidate.maxWorkingBytes = 64 * 1024;
+    Rejected(TerrainMinimapSave::Prepare(boundedTask, bounded.edits, bounded.gameRoot, declared, limits), "TERRAIN_MINIMAP_BUDGET");
+    Fixture flat(false, false, false, W3i(), true); flat.Stroke(TerrainBrushKind::Smooth, 1, {384, 512});
+    MapSaveTask flatTask; flat.Freeze(flatTask);
+    Rejected(TerrainMinimapSave::Prepare(flatTask, flat.edits, flat.gameRoot, declared), "MINIMAP_SAVE_DOMAIN");
+    Fixture present(true, false, false, W3i(), true); present.Stroke(TerrainBrushKind::Raise, 10, {384, 512});
+    MapSaveTask presentTask; present.Freeze(presentTask);
+    Rejected(TerrainMinimapSave::Prepare(presentTask, present.edits, present.gameRoot, declared), "MINIMAP_SAVE_NOT_MISSING");
+}
 
 void PreserveAndEarlyRejections() {
     MapSaveTask empty; MapDataEditSession noEdits{MapDocument::FromMembers({})};
@@ -282,6 +368,7 @@ void PersistentArchiveSaveCopyAndIndependentOpen() {
 int main() {
     try {
         PreserveAndEarlyRejections(); FinalListRevisionAndWinnersAreReal(); PersistentArchiveSaveCopyAndIndependentOpen();
+        DeclaredChoiceRequiresActualW3iAndRetainsStandardEdges();
         std::cout << "Terrain missing-only minimap save tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

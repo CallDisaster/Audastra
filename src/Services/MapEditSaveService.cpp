@@ -595,9 +595,10 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         const bool objectRequest = !request.objectTransactions.empty();
         const bool auxiliaryRequest = request.auxiliaryTransaction != nullptr;
         if (request.minimapChoice != TerrainMinimapSaveChoice::Preserve
-            && request.minimapChoice != TerrainMinimapSaveChoice::GenerateMissingGroundOnly)
+            && request.minimapChoice != TerrainMinimapSaveChoice::GenerateMissingGroundOnly
+            && request.minimapChoice != TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly)
             return Fail("SAVE_MINIMAP_CHOICE_INVALID", "小地图保存选项未获识别。");
-        if (request.minimapChoice == TerrainMinimapSaveChoice::GenerateMissingGroundOnly && !terrainRequest)
+        if (request.minimapChoice != TerrainMinimapSaveChoice::Preserve && !terrainRequest)
             return Fail("SAVE_MINIMAP_SCOPE_INVALID", "补建缺失小地图只能伴随非空干地高度另存事务。");
         if (request.triggerEdits && request.triggerTransaction)
             return Fail("SAVE_TRIGGER_INPUT_CONFLICT", "触发器批次与完整冻结事务不能在同一次保存中混用。");
@@ -727,7 +728,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         if (!frozen.Succeeded()) return Forward(frozen.diagnostics);
         task.diagnostics.insert(task.diagnostics.end(), fieldDiagnostics.begin(), fieldDiagnostics.end());
         task.replacements = std::move(replacements);
-        if (request.minimapChoice == TerrainMinimapSaveChoice::GenerateMissingGroundOnly) {
+        if (request.minimapChoice != TerrainMinimapSaveChoice::Preserve) {
             auto prepared = TerrainMinimapSave::Prepare(task, edits, request.gameRoot, request.minimapChoice);
             if (!prepared.Succeeded() || !prepared.value) return Forward(std::move(prepared.diagnostics));
             minimapSave = std::move(*prepared.value);
@@ -803,7 +804,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             const auto& mip0 = minimapSave->DecodedMip0();
             result.value->generatedMissingMinimap = MapEditMinimapReceipt{
                 manifest.outputBlpSha256, mip0.decodedRgbaSha256, manifest.manifestSha256,
-                manifest.encodedBlpBytes, mip0.width, mip0.height, manifest.encodedMipCount};
+                manifest.encodedBlpBytes, mip0.width, mip0.height, manifest.encodedMipCount, manifest.rangePolicy};
         }
         result.diagnostics = std::move(task.diagnostics);
         return result;

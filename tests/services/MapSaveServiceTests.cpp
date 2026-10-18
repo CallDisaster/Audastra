@@ -938,6 +938,9 @@ void TestMissingMinimapChoiceCannotBroadenTerrainSaveScope() {
     request.minimapChoice = TerrainMinimapSaveChoice::GenerateMissingGroundOnly;
     Require(HasCode(SaveMapEditCandidate(request).diagnostics, "SAVE_MINIMAP_SCOPE_INVALID"),
         "minimap choice alone is not an edit transaction");
+    request.minimapChoice = TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly;
+    Require(HasCode(SaveMapEditCandidate(request).diagnostics, "SAVE_MINIMAP_SCOPE_INVALID"),
+        "declared minimap choice alone is not an edit transaction");
     request.minimapChoice = static_cast<TerrainMinimapSaveChoice>(99);
     Require(HasCode(SaveMapEditCandidate(request).diagnostics, "SAVE_MINIMAP_CHOICE_INVALID"),
         "invalid typed choice never becomes preserve or generate");
@@ -963,9 +966,14 @@ void TestMissingMinimapChoiceCannotBroadenTerrainSaveScope() {
     }
     Require(!noChange.Succeeded() && HasCode(noChange.diagnostics, "SAVE_NO_TERRAIN_CHANGE"),
         "explicit generation cannot produce a no-op terrain candidate");
+    request.minimapChoice = TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly;
+    const auto declaredNoChange = SaveMapEditCandidate(request);
+    Require(!declaredNoChange.Succeeded() && HasCode(declaredNoChange.diagnostics, "SAVE_NO_TERRAIN_CHANGE"),
+        "declared generation cannot produce a no-op terrain candidate");
     request.terrainStrokes[0].brush.kind = MapData::TerrainBrushKind::Raise;
     request.terrainStrokes[0].brush.strength = 40; // raw160，仍超出现有raw156正式门。
-    for (const auto choice : {TerrainMinimapSaveChoice::Preserve, TerrainMinimapSaveChoice::GenerateMissingGroundOnly}) {
+    for (const auto choice : {TerrainMinimapSaveChoice::Preserve, TerrainMinimapSaveChoice::GenerateMissingGroundOnly,
+            TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly}) {
         request.minimapChoice = choice;
         Require(HasCode(SaveMapEditCandidate(request).diagnostics, "MAP_TERRAIN_PATHING_UNVERIFIED"),
             "optional minimap generation cannot bypass the existing terrain save gate");
@@ -985,6 +993,9 @@ void TestMissingMinimapChoiceCannotBroadenTerrainSaveScope() {
     request.minimapChoice = TerrainMinimapSaveChoice::GenerateMissingGroundOnly;
     Require(HasCode(SaveMapEditCandidate(request).diagnostics, "MINIMAP_SAVE_NOT_MISSING"),
         "explicit missing-only option never overwrites an empty existing MapBLP");
+    request.minimapChoice = TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly;
+    Require(HasCode(SaveMapEditCandidate(request).diagnostics, "MINIMAP_SAVE_NOT_MISSING"),
+        "declared missing-only option never overwrites an empty existing MapBLP");
     Require(!std::filesystem::exists(request.targetCandidate), "present-empty rejection publishes no candidate");
 }
 
@@ -1008,6 +1019,7 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
     auto opened = MapArchiveSession::Open(created.value->path);
     Require(opened.Succeeded() && opened.value, "reopen original creation fixture");
     std::vector<MapArchiveMember> members(opened.value->Members().begin(), opened.value->Members().end());
+    const auto standardMembers = members; // 新政策独立场景保留Create实际产生的标准SW-anchor MapEdge原字。
     bool hadTerrain = false;
     for (auto& member : members) {
         if (member.name != "war3map.w3e") continue;
@@ -1096,6 +1108,7 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
         && *decodedSha.value == receipt.decodedMip0RgbaSha256 && blp.value->size() == receipt.encodedBlpBytes
         && receipt.width == decoded.value->width && receipt.height == decoded.value->height
         && receipt.width == 256 && receipt.height == 256 && receipt.encodedMipCount == 9
+        && receipt.rangePolicy == Render::TerrainMinimapRangePolicy::FullW3e
         && receipt.manifestSha256.size() == 64, "receipt binds encoded bytes and actual decoded mip0 separately");
     // 当前是顶视unlit ground-only策略；高度变化不要求改变输出像素，也不声称原版小地图等价。
     verifyPreservedMembers(*candidate.value);
@@ -1107,6 +1120,75 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
     }
     const auto after = Sha256File(sourcePath);
     Require(after.Succeeded() && *after.value == request.expectedSourceSha256, "both candidate saves preserve original source bytes");
+
+    const auto standardPath = directory.Path() / "standard-edge-source.w3x";
+    const auto standardWritten = WriteVerifiedArchive(standardPath, standardMembers);
+    auto standardSource = MapArchiveSession::Open(standardPath);
+    Require(standardWritten.Succeeded() && standardWritten.value && standardSource.Succeeded() && standardSource.value,
+        "freeze separate standard MapEdge/W3I source without clearing any source flags");
+    const auto standardTerrain = standardSource.value->ReadMember("war3map.w3e");
+    Require(standardTerrain.Succeeded() && standardTerrain.value, "read unchanged standard source W3E");
+    const auto standardTerrainSha = Sha256(*standardTerrain.value);
+    Require(standardTerrainSha.Succeeded() && standardTerrainSha.value, "bind unchanged standard source terrain SHA");
+    request.sourceMap = standardPath; request.expectedSourceSha256 = standardSource.value->SourceSha256();
+    request.expectedTerrainSha256 = *standardTerrainSha.value;
+    request.minimapChoice = TerrainMinimapSaveChoice::GenerateMissingGroundOnly;
+    request.targetCandidate = directory.Path() / "standard-old-choice-rejected.w3x";
+    const auto standardOld = SaveMapEditCandidate(request);
+    Require(!standardOld.Succeeded() && HasCode(standardOld.diagnostics, "TERRAIN_MINIMAP_MAP_EDGE")
+        && !std::filesystem::exists(request.targetCandidate), "old FullW3e flag still rejects standard exterior MapEdge");
+    request.minimapChoice = TerrainMinimapSaveChoice::Preserve;
+    request.targetCandidate = directory.Path() / "standard-preserved.w3x";
+    const auto standardPreserved = SaveMapEditCandidate(request);
+    Require(standardPreserved.Succeeded() && standardPreserved.value && !standardPreserved.value->generatedMissingMinimap,
+        "standard source default save continues to preserve missing MapBLP");
+    request.minimapChoice = TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly;
+    request.targetCandidate = directory.Path() / "standard-declared-generated.w3x";
+    const auto standardGenerated = SaveMapEditCandidate(request);
+    if (!standardGenerated.Succeeded()) for (const auto& note : standardGenerated.diagnostics)
+        std::cerr << "declared missing-minimap: " << note.code << ": " << note.message << '\n';
+    Require(standardGenerated.Succeeded() && standardGenerated.value && standardGenerated.value->scriptPreserved
+        && standardGenerated.value->generatedMissingMinimap
+        && standardGenerated.value->generatedMissingMinimap->rangePolicy
+            == Render::TerrainMinimapRangePolicy::DeclaredW3iMarginsExteriorMapEdge
+        && standardGenerated.value->savedTerrainSha256 == standardPreserved.value->savedTerrainSha256
+        && standardGenerated.value->savedPathingSha256 == standardPreserved.value->savedPathingSha256,
+        "new explicit choice binds actual declared manifest without changing paired terrain outcome");
+    auto standardCandidate = MapArchiveSession::Open(request.targetCandidate);
+    Require(standardCandidate.Succeeded() && standardCandidate.value, "independently reopen declared standard candidate");
+    const auto standardBlp = standardCandidate.value->ReadMember("war3mapMap.blp");
+    Require(standardBlp.Succeeded() && standardBlp.value, "read declared actual BLP");
+    const auto standardDecoded = Image::DecodeBlp(*standardBlp.value);
+    const auto standardBlpSha = Sha256(*standardBlp.value);
+    Require(standardDecoded.Succeeded() && standardDecoded.value && standardBlpSha.Succeeded() && standardBlpSha.value,
+        "independently decode and hash declared actual BLP");
+    const auto standardDecodedSha = Sha256(standardDecoded.value->rgba);
+    const auto& standardReceipt = *standardGenerated.value->generatedMissingMinimap;
+    Require(standardDecodedSha.Succeeded() && standardDecodedSha.value
+        && *standardDecodedSha.value == standardReceipt.decodedMip0RgbaSha256
+        && *standardBlpSha.value == standardReceipt.encodedBlpSha256
+        && standardReceipt.encodedBlpBytes == standardBlp.value->size()
+        && standardReceipt.width == 256 && standardReceipt.height == 256 && standardReceipt.encodedMipCount == 9,
+        "declared service receipt binds actual complete encoding and decoded mip0");
+    const auto standardSavedTerrain = standardCandidate.value->ReadMember("war3map.w3e");
+    Require(standardSavedTerrain.Succeeded() && standardSavedTerrain.value, "read declared candidate actual W3E");
+    const auto standardBefore = MapData::ParseMapTerrain(*standardTerrain.value);
+    const auto standardAfter = MapData::ParseMapTerrain(*standardSavedTerrain.value);
+    Require(standardBefore.Succeeded() && standardBefore.value && standardAfter.Succeeded() && standardAfter.value,
+        "parse source/candidate W3E to compare every water/MapEdge flag");
+    for (std::size_t index = 0; index < standardBefore.value->Snapshot()->vertices.size(); ++index)
+        Require(standardBefore.value->Snapshot()->vertices[index].waterHeightAndFlagsRaw
+            == standardAfter.value->Snapshot()->vertices[index].waterHeightAndFlagsRaw,
+            "declared service never clears or changes source/current water or MapEdge flags");
+    for (const auto& member : standardMembers) {
+        if (member.name == "war3map.w3e" || member.name == "(listfile)") continue;
+        const auto saved = standardCandidate.value->ReadMember(member.name);
+        Require(saved.Succeeded() && saved.value && *saved.value == member.data,
+            "declared save preserves W3I, WPM, JASS, triggers and every other original member");
+    }
+    const auto standardAfterSha = Sha256File(standardPath);
+    Require(standardAfterSha.Succeeded() && standardAfterSha.value && *standardAfterSha.value == request.expectedSourceSha256,
+        "declared standard candidate saves preserve original source SHA");
 }
 
 // 一张含五类成员的源图；请求像 Agent 一样先从源文档读行身份与字段原值，再写新值。

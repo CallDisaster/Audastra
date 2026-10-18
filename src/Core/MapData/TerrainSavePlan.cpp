@@ -284,7 +284,7 @@ Status TerrainSavePlan::AdmitMissingMinimap(const MapDataEditSession& edits, std
         member.outputSha256 = std::move(sha);
         member.action = TerrainSaveMemberAction::WriteEdited;
         member.reasonCode = "TERRAIN_SAVE_WRITE_MISSING_MINIMAP";
-        member.reason = "显式单次新建Missing MapBLP；原干地height门与完整FullW3e ground-only生成域交集，不含阴影/标记重建或native验收。";
+        member.reason = "显式单次新建Missing MapBLP；原干地height门与显式ground-only生成政策交集，实际范围见生成清单，不含阴影/标记重建或native验收。";
         std::erase_if(diagnostics_, [](const auto& diagnostic) {
             return diagnostic.code == "TERRAIN_SAVE_MINIMAP_NOT_REBUILT";
         });

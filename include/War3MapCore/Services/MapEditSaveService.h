@@ -114,6 +114,8 @@ struct MapEditMinimapReceipt {
     std::string encodedBlpSha256, decodedMip0RgbaSha256, manifestSha256;
     std::size_t encodedBlpBytes = 0;
     std::uint32_t width = 0, height = 0, encodedMipCount = 0;
+    // 来自同次 helper 的实际 Manifest，不能由请求选项代填。
+    Render::TerrainMinimapRangePolicy rangePolicy = Render::TerrainMinimapRangePolicy::FullW3e;
 };
 
 struct MapEditSaveReceipt {
