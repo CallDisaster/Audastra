@@ -1,5 +1,7 @@
 #include "War3MapCore/Services/MapCreateService.h"
 #include "War3MapCore/Services/ScriptSavePreparation.h"
+#include "War3MapCore/Services/TerrainMinimapSave.h"
+#include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/MapData/MapPlacements.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
@@ -9,6 +11,7 @@
 #include <Windows.h>
 #include <algorithm>
 #include <bit>
+#include <cctype>
 #include <exception>
 #include <utility>
 
@@ -185,6 +188,21 @@ CreateResult CreateMapCandidate(const MapCreateRequest& request, const MapSaveSe
         if (!seed.Succeeded() || !seed.value) return Forward<CreateResult>(seed.diagnostics);
         auto opened = MapArchiveSession::Open(seed.value->path);
         if (!opened.Succeeded() || !opened.value) return Forward<CreateResult>(std::move(opened.diagnostics));
+
+        // 新建地图的派生小地图也必须消费已写入并重新打开的真实 seed。
+        // MapDataEditSession 只借用解析后的基础成员；W3E/WPM 仍由同一
+        // seed 会话精确读取并 Attach，不复制 TerrainMinimapSave 的算法。
+        const auto terrainBytes = opened.value->ReadMember("war3map.w3e");
+        const auto pathingBytes = opened.value->ReadMember("war3map.wpm");
+        if (!terrainBytes.Succeeded() || !terrainBytes.value) return Forward<CreateResult>(terrainBytes.diagnostics);
+        if (!pathingBytes.Succeeded() || !pathingBytes.value) return Forward<CreateResult>(pathingBytes.diagnostics);
+        const auto seedDocument = MapDocument::FromMembers(opened.value->Members(), opened.value->SourcePath());
+        MapData::MapDataEditSession minimapEdits(seedDocument);
+        auto attached = minimapEdits.AttachTerrain(*terrainBytes.value);
+        if (!attached.Succeeded()) return Forward<CreateResult>(attached.diagnostics);
+        attached = minimapEdits.AttachPathing(*pathingBytes.value);
+        if (!attached.Succeeded()) return Forward<CreateResult>(attached.diagnostics);
+
         MapSaveTask task; task.target = request.target; task.requireGeneratedNativeByteEquality = true;
         const auto frozen = task.FreezeArchive(*opened.value);
         if (!frozen.Succeeded()) return Forward<CreateResult>(frozen.diagnostics);
@@ -197,8 +215,53 @@ CreateResult CreateMapCandidate(const MapCreateRequest& request, const MapSaveSe
         if (!prepared.Succeeded() || !prepared.value || *prepared.value != ScriptSavePreparationState::Ready)
             return Forward<CreateResult>(prepared.diagnostics);
         task.diagnostics.insert(task.diagnostics.end(), prepared.diagnostics.begin(), prepared.diagnostics.end());
+        std::shared_ptr<const TerrainMinimapSave> minimapSave;
+        task.prepareFinalDerived = [&task, &minimapEdits, &request, &minimapSave](MapSaveTask&) -> Status {
+            const auto canonical = [](std::string value) {
+                std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+                    return static_cast<char>(c == '\\' ? '/' : std::tolower(c));
+                });
+                return value;
+            };
+            // 脚本阶段可能附加最终 native/W3I/摆放替换；先把这些最终正文
+            // 交给同一个 MapDataEditSession，TerrainMinimapSave 才能绑定
+            // 小地图与最终列表，而不是只看到 seed 的旧数据。
+            for (const auto& member : task.replacements) {
+                const auto name = canonical(member.name);
+                Status synced = Status::Ok();
+                if (name == "war3map.w3e") synced = minimapEdits.SetTerrain(member.data);
+                else if (name == "war3map.wpm") synced = minimapEdits.SetPathing(member.data);
+                else if (name == "war3map.w3i") synced = minimapEdits.SetSerialized(MapData::MapDataKind::Settings, member.data);
+                else if (name == "war3mapunits.doo") synced = minimapEdits.SetSerialized(MapData::MapDataKind::Units, member.data);
+                else if (name == "war3map.doo") synced = minimapEdits.SetSerialized(MapData::MapDataKind::Doodads, member.data);
+                else if (name == "war3map.w3r") synced = minimapEdits.SetSerialized(MapData::MapDataKind::Regions, member.data);
+                else if (name == "war3map.w3c") synced = minimapEdits.SetSerialized(MapData::MapDataKind::Cameras, member.data);
+                else if (name == "war3map.w3s") synced = minimapEdits.SetSerialized(MapData::MapDataKind::Sounds, member.data);
+                else if (name == "war3map.wts") synced = minimapEdits.SetSerialized(MapData::MapDataKind::Strings, member.data);
+                if (!synced.Succeeded()) return synced;
+            }
+            const auto required = TerrainMinimapSave::RequiresAutomaticGeneration(task);
+            if (!required.Succeeded() || !required.value) return {required.diagnostics};
+            if (!*required.value) return Status::Ok();
+            const auto generated = TerrainMinimapSave::Prepare(task, minimapEdits, request.gameRoot,
+                TerrainMinimapSaveChoice::Automatic);
+            if (!generated.Succeeded() || !generated.value) return {generated.diagnostics};
+            minimapSave = std::move(*generated.value);
+            if (!minimapSave) return Status::Failure("MapCreate", "CREATE_MINIMAP_MISSING",
+                "新建地图的自动小地图准备未返回完整保存资格。");
+            task.replacements.push_back(minimapSave->MinimapReplacement());
+            const auto current = minimapSave->VerifyCurrent(task, minimapEdits, request.gameRoot);
+            if (!current.Succeeded()) return current;
+            task.beforePublish = [&task, minimapSave] { return minimapSave->VerifyFrozenOutput(task); };
+            return Status::Ok();
+        };
         MapSaveService::Run(task, progress);
         if (!task.succeeded || !task.scriptRebuilt || !task.nextSession) return Forward<CreateResult>(std::move(task.diagnostics));
+        if (minimapSave) {
+            const auto readback = minimapSave->VerifyReadback(task, *task.nextSession);
+            task.diagnostics.insert(task.diagnostics.end(), readback.diagnostics.begin(), readback.diagnostics.end());
+            if (!readback.Succeeded()) return Forward<CreateResult>(std::move(task.diagnostics));
+        }
         auto result = CreateResult::Success({task.written, task.nextSession->SourceSha256(),
             request.options.profile, task.memberCount, true});
         FinalizeScriptWorkspace(task);
