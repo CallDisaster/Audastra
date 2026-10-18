@@ -4,6 +4,8 @@
 
 #include <cstddef>
 #include <functional>
+#include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -48,6 +50,28 @@ struct ResourceProbe {
 using ResourceProbeCallback = std::function<Result<ResourceProbe>(std::string_view canonicalPath)>;
 using ResourceReadCallback = std::function<Result<std::vector<std::byte>>(std::string_view sourcePath)>;
 
+// 与成功读取的正文同次产生；不改变sourcePath的读取键或source的逻辑层/优先级。
+// Synthetic仅供明确的生成者使用，不能从路径文字推断；nullopt表示尚未取证。
+enum class ResourceReadOrigin { MapArchive, GameArchive, SessionOwned, SessionFile, Synthetic };
+
+struct ResourceReadProvenance {
+    ResourceReadOrigin origin = ResourceReadOrigin::MapArchive;
+    // 实际容器标识：如地图路径、同次GameFileContents.archiveName、会话owner版本或生成者ID。
+    // 游戏嵌套包保留完整opaque名称；不将gameRoot伪作winning archive或猜拼物理路径。
+    std::string containerIdentity;
+    std::string memberPath;
+    // 解释容器所需的来源上下文，如地图SHA或gameRoot；不是独立的winner证明。
+    std::string sourceContext;
+    [[nodiscard]] bool operator==(const ResourceReadProvenance&) const = default;
+};
+
+struct ResourceReadResult {
+    std::vector<std::byte> bytes;
+    std::optional<ResourceReadProvenance> provenance;
+};
+
+using ResourceReadWithProvenanceCallback = std::function<Result<ResourceReadResult>(std::string_view sourcePath)>;
+
 struct ResourceSource {
     std::string id;
     ResourceLayer layer = ResourceLayer::Game;
@@ -55,6 +79,9 @@ struct ResourceSource {
     int priority = 0;
     ResourceProbeCallback probe;
     ResourceReadCallback read;
+    // 两回调同时存在时只调用本项；本项失败/缺少有效provenance绝不回退read或低优先级来源。
+    // 原read回调保持兼容，成功时provenance仍为空。追加字段保留旧aggregate初始化顺序。
+    ResourceReadWithProvenanceCallback readWithProvenance;
 };
 
 struct ResourceLocation {
@@ -63,6 +90,9 @@ struct ResourceLocation {
     int priority = 0;
     std::string sourceId;
     std::string sourcePath;
+    // Locate只查询来源，始终为空；Read验证rich结果后冻结单份，行级location复制不深拷贝字符串。
+    // 回调只返回value，不能保留此const owner的可写shared alias；身份比较必须按内容而非地址。
+    std::shared_ptr<const ResourceReadProvenance> readProvenance;
 };
 
 struct ResolvedResource {

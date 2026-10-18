@@ -218,6 +218,11 @@ std::size_t AtlasWorkingBytes(const TerrainAtlasSnapshot& texture) noexcept {
     };
     add(texture.source.canonicalPath.capacity()); add(texture.source.sourceId.capacity());
     add(texture.source.sourcePath.capacity()); add(texture.sourceSha256.capacity());
+    if (const auto& provenance = texture.source.readProvenance) {
+        add(sizeof(Resources::ResourceReadProvenance));
+        add(provenance->containerIdentity.capacity()); add(provenance->memberPath.capacity());
+        add(provenance->sourceContext.capacity());
+    }
     add(texture.image.rgba.capacity()); add(texture.additionalMips.capacity(), sizeof(Image::DecodedImage));
     add(texture.cells.capacity(), sizeof(TerrainAtlasCell));
     for (const auto& mip : texture.additionalMips) add(mip.rgba.capacity());

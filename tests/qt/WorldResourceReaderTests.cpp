@@ -7,6 +7,7 @@
 #include "War3MapCore/Mpq/MpqWriter.h"
 
 #include <QCoreApplication>
+#include <QFile>
 #include <QTemporaryDir>
 #include <QUndoStack>
 #include <Windows.h>
@@ -20,6 +21,10 @@ using namespace War3Map::Modules;
 namespace {
 void Require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
 void Require(bool value, const std::string& message) { Require(value, message.c_str()); }
+std::string PathText(const std::filesystem::path& path) {
+    const auto text = path.generic_u8string();
+    return {reinterpret_cast<const char*>(text.data()), text.size()};
+}
 std::shared_ptr<const std::vector<std::byte>> Payload(std::string_view text) {
     std::vector<std::byte> bytes;
     for (const unsigned char value : text) bytes.push_back(static_cast<std::byte>(value));
@@ -156,6 +161,11 @@ void OwnedImportsWinAndKeepAnimationProvenance() {
         const auto read = (*opened.value)->Resolver().Read(path);
         Require(read.Succeeded() && read.value->bytes == *expected && read.value->location.layer == Resources::ResourceLayer::MapImport,
             "owned import wins over old map and same-name game resource");
+        const auto& winner = read.value->location.readProvenance;
+        Require(winner && winner->origin == Resources::ResourceReadOrigin::SessionOwned
+            && winner->containerIdentity == "owned-version:" + std::to_string(Entry(sources, path).ownedPayloadVersion)
+            && winner->memberPath == read.value->location.sourcePath && winner->sourceContext == sources.archiveSha,
+            "static owned read records its controlled version and map context rather than the old archive member");
     }
     const auto fallback = (*opened.value)->Resolver().Read("GameOnly.bin");
     Require(fallback.Succeeded() && fallback.value->bytes == gameFiles[2].data, "uncovered game resource remains available");
@@ -195,6 +205,9 @@ void EmptyOwnedOverridesAndPerResourceBudgetsRemainLocal() {
     Require(read.Succeeded() && read.value->bytes.empty() && animation.Succeeded() && animation.value->bytes.empty()
         && animation.value->digest == *emptyDigest.value && animation.value->sourceLayer.ends_with("|session:owned"),
         "empty owned bytes override archive and invalid disk without fallback");
+    Require(read.value->location.readProvenance
+        && read.value->location.readProvenance->origin == Resources::ResourceReadOrigin::SessionOwned,
+        "real empty owned content still has an actual read winner");
     project.pendingImports_.clear(); project.AssetUndoStack()->clear();
     const auto large = std::make_shared<const std::vector<std::byte>>(50 * 1024 * 1024, std::byte{4});
     project.pendingImports_.push_back({QStringLiteral("UnusedSound.wav"), {}, static_cast<qint64>(large->size()), large});
@@ -371,6 +384,69 @@ void WeakVersionsRejectAliasesAndKeepCompleteBatchesStable() {
     project.pendingImports_ = validImports;
     Require(SameWorldTerrainSources(views, Capture(project)), "invalid ownership does not invalidate accepted owner-view identities");
 }
+
+void StaticReadProvenanceRecordsMapDiskAndActualGameContainers() {
+    QTemporaryDir directory; Require(directory.isValid(), "static provenance temporary directory");
+    auto sources = Fixture(std::filesystem::path(directory.path().toStdWString()) / L"source.w3x");
+    const auto nestedPath = sources.archivePath.parent_path() / L"nested.mpq";
+    const std::vector<Mpq::MpqBuildFile> nestedFiles{{"NestedOnly.bin", {std::byte{4}}}};
+    Require(Mpq::WriteMpqArchive(nestedPath, nestedFiles).Succeeded(), "write nested source fixture");
+    QFile nested(QString::fromStdWString(nestedPath.wstring()));
+    Require(nested.open(QIODevice::ReadOnly), "read original nested fixture bytes");
+    const auto raw = nested.readAll(); nested.close();
+    std::vector<std::byte> nestedBytes;
+    for (const auto value : raw) nestedBytes.push_back(static_cast<std::byte>(static_cast<unsigned char>(value)));
+    const auto nestedSha = Sha256(nestedBytes); Require(nestedSha.Succeeded(), "hash actual nested fixture");
+    sources.gameRoot = sources.archivePath.parent_path() / L"game"; sources.mainTileset = 'L';
+    std::filesystem::create_directory(sources.gameRoot);
+    const std::vector<Mpq::MpqBuildFile> gameFiles{{"L.mpq", std::move(nestedBytes)},
+        {"GameOnly.bin", {std::byte{7}}}, {"Fixture.bin", {std::byte{9}}}};
+    const std::vector<Mpq::MpqBuildFile> patchFiles{{"GameOnly.bin", {std::byte{8}}}};
+    Require(Mpq::WriteMpqArchive(sources.gameRoot / L"War3.mpq", gameFiles).Succeeded()
+        && Mpq::WriteMpqArchive(sources.gameRoot / L"War3Patch.mpq", patchFiles).Succeeded(), "write competing game containers");
+    auto opened = WorldResourceReader::Open(sources); Require(opened.Succeeded(), "open actual source fixture");
+    const auto located = (*opened.value)->Resolver().Locate("Fixture.bin");
+    Require(located.Succeeded() && !located.value->readProvenance, "World Locate leaves unread provenance unknown");
+    const auto map = (*opened.value)->Resolver().Read("Fixture.bin");
+    Require(map.Succeeded() && map.value->bytes == std::vector<std::byte>{std::byte{1},std::byte{2},std::byte{3}}
+        && map.value->location.readProvenance, "map bytes win over the competing game member");
+    const auto& mapWinner = *map.value->location.readProvenance;
+    Require(mapWinner.origin == Resources::ResourceReadOrigin::MapArchive
+        && mapWinner.containerIdentity == PathText(sources.archivePath) && mapWinner.memberPath == "Fixture.bin"
+        && mapWinner.sourceContext == sources.archiveSha && map.value->location.sourcePath == "FIXTURE.BIN",
+        "map archive path and actual member are separate from the canonical read key");
+    const auto game = (*opened.value)->Resolver().Read("GameOnly.bin");
+    Require(game.Succeeded() && game.value->bytes == patchFiles.front().data && game.value->location.readProvenance,
+        "game read actually uses the patch container");
+    const auto& gameWinner = *game.value->location.readProvenance;
+    Require(gameWinner.origin == Resources::ResourceReadOrigin::GameArchive
+        && gameWinner.containerIdentity == "war3patch.mpq" && gameWinner.memberPath == "GAMEONLY.BIN"
+        && gameWinner.sourceContext == PathText(sources.gameRoot), "game root is context, not the winning archive identity");
+    const auto inner = (*opened.value)->Resolver().Read("NestedOnly.bin");
+    Require(inner.Succeeded() && inner.value->bytes == nestedFiles.front().data && inner.value->location.readProvenance
+        && inner.value->location.readProvenance->containerIdentity == "war3.mpq|L.mpq|sha256:" + *nestedSha.value,
+        "same-call nested winner retains the parent, member and nested byte SHA without path guessing");
+
+    const auto diskPath = sources.archivePath.parent_path() / L"session.bin";
+    QFile disk(QString::fromStdWString(diskPath.wstring()));
+    Require(disk.open(QIODevice::WriteOnly | QIODevice::NewOnly) && disk.write("disk", 4) == 4, "write session file fixture");
+    disk.close();
+    auto diskSources = sources; diskSources.entries.front().diskPath = diskPath;
+    auto diskReader = WorldResourceReader::Open(diskSources); Require(diskReader.Succeeded(), "open session file override");
+    const auto diskRead = (*diskReader.value)->Resolver().Read("Fixture.bin");
+    Require(diskRead.Succeeded() && diskRead.value->bytes == *Payload("disk") && diskRead.value->location.readProvenance
+        && diskRead.value->location.readProvenance->origin == Resources::ResourceReadOrigin::SessionFile
+        && diskRead.value->location.readProvenance->containerIdentity == PathText(diskPath)
+        && diskRead.value->location.readProvenance->sourceContext == sources.archiveSha,
+        "session disk winner describes the actual verified file, not the old map or game member");
+    diskSources.entries.front().diskPath = sources.archivePath.parent_path() / L"missing.bin";
+    auto refused = WorldResourceReader::Open(diskSources); Require(refused.Succeeded(), "defer disk content reading until requested");
+    const auto failed = (*refused.value)->Resolver().Read("Fixture.bin");
+    Require(!failed.Succeeded() && !failed.value && failed.diagnostics.front().code == "RESOURCE_READ_FAILED"
+        && std::any_of(failed.diagnostics.begin(), failed.diagnostics.end(),
+            [](const auto& diagnostic) { return diagnostic.code == "WORLD_ASSET_READ"; }),
+        "unreadable selected session file cannot fall back to a real map or game member");
+}
 }
 int main(int argc, char** argv) {
     QCoreApplication application(argc, argv);
@@ -381,6 +457,7 @@ int main(int argc, char** argv) {
         EmptyOwnedOverridesAndPerResourceBudgetsRemainLocal();
         ReplacementUndoRedoAndBranchesInvalidateLongLivedKeys();
         WeakVersionsRejectAliasesAndKeepCompleteBatchesStable();
+        StaticReadProvenanceRecordsMapDiskAndActualGameContainers();
         std::cout << "world-resource-reader: source lease, owned payload and cache identity regressions passed\n";
         return 0;
     } catch (const std::exception& error) {

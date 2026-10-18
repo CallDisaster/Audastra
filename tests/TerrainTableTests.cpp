@@ -104,7 +104,9 @@ struct Fixture {
 };
 bool SameLocation(const ResourceLocation& a, const ResourceLocation& b) {
     return a.canonicalPath == b.canonicalPath && a.layer == b.layer && a.priority == b.priority
-        && a.sourceId == b.sourceId && a.sourcePath == b.sourcePath;
+        && a.sourceId == b.sourceId && a.sourcePath == b.sourcePath
+        && ((!a.readProvenance && !b.readProvenance)
+            || (a.readProvenance && b.readProvenance && *a.readProvenance == *b.readProvenance));
 }
 bool SameRows(const std::vector<TerrainTableRow>& a, const std::vector<TerrainTableRow>& b) {
     return std::equal(a.begin(), a.end(), b.begin(), b.end(), [](const auto& first, const auto& second) {
@@ -250,6 +252,56 @@ void EqualBytesRequireTheSameFullLocation() {
     Rejected(VerifyTerrainTableSnapshot(snapshot, fixture.resolver), "RESOURCE_NOT_FOUND");
 }
 
+void ActualReadWinnerIsValueIdentityAndSharedAcrossRows() {
+    Fixture fixture;
+    const auto legacy = fixture.Capture();
+    const auto advertised = std::make_shared<ResourceReadProvenance>(ResourceReadProvenance{
+        ResourceReadOrigin::GameArchive, "war3patch.mpq", "TerrainArt/Terrain.slk", "fixture-game-root"});
+    auto source = Source("original-base", ResourceLayer::Game, ResourcePriority::GameBase, fixture.backing);
+    source.readWithProvenance = [backing = fixture.backing, advertised](std::string_view path) {
+        Require(path == backing->actualPath, "rich table read retains the probe's actual read key");
+        ++backing->reads;
+        return Result<ResourceReadResult>::Success({backing->bytes, *advertised});
+    };
+    fixture.resolver.ClearSources();
+    Require(fixture.resolver.AddSource(std::move(source)).Succeeded(), "register actual table read provenance");
+    const auto snapshot = fixture.Capture();
+    Require(snapshot.Location().readProvenance && !legacy.Location().readProvenance
+        && snapshot.SourceSha256() == legacy.SourceSha256() && snapshot.IdentitySha256() != legacy.IdentitySha256(),
+        "unknown legacy and known actual winner are distinct despite identical table bytes");
+    Rejected(VerifyTerrainTableSnapshot(legacy, fixture.resolver), "TERRAIN_TABLE_SOURCE_CHANGED");
+    for (const auto& row : snapshot.Rows())
+        Require(row.table.readProvenance == snapshot.Location().readProvenance,
+            "all table rows share one immutable provenance instead of copying its strings");
+    const auto equivalent = fixture.Capture();
+    Require(equivalent.Location().readProvenance != snapshot.Location().readProvenance
+        && equivalent.IdentitySha256() == snapshot.IdentitySha256()
+        && VerifyTerrainTableSnapshot(snapshot, fixture.resolver).Succeeded(),
+        "equal provenance values in different owned objects have the same source identity");
+
+    const auto original = *advertised;
+    for (unsigned field = 0; field < 4; ++field) {
+        *advertised = original;
+        if (field == 0) advertised->origin = ResourceReadOrigin::MapArchive;
+        if (field == 1) advertised->containerIdentity = "war3.mpq";
+        if (field == 2) advertised->memberPath = "Other/Terrain.slk";
+        if (field == 3) advertised->sourceContext = "other-game-root";
+        Require(*snapshot.Location().readProvenance == original,
+            "callback mutation cannot change the completed immutable winner");
+        const auto changed = fixture.Capture();
+        Require(changed.SourceSha256() == snapshot.SourceSha256() && changed.IdentitySha256() != snapshot.IdentitySha256(),
+            "every actual read provenance field participates in table identity");
+        Rejected(VerifyTerrainTableSnapshot(snapshot, fixture.resolver), "TERRAIN_TABLE_SOURCE_CHANGED");
+    }
+    const auto replay = ReplayTerrainTable(snapshot);
+    Require(replay.Succeeded() && SameRows(*replay.value, snapshot.Rows()),
+        "memory replay retains the original read winner after source mutation");
+    fixture.resolver.ClearSources();
+    Require(fixture.resolver.AddSource(Source("original-base", ResourceLayer::Game,
+        ResourcePriority::GameBase, fixture.backing)).Succeeded(), "restore legacy-only source");
+    Rejected(VerifyTerrainTableSnapshot(snapshot, fixture.resolver), "TERRAIN_TABLE_SOURCE_CHANGED");
+}
+
 void ShadowsAndBadHigherSourcesNeverFallBack() {
     Fixture fixture;
     const auto snapshot = fixture.Capture();
@@ -303,9 +355,10 @@ int main() {
         BudgetsOnlyTightenAndArePartOfIdentity();
         ActualByteChangesInvalidateEvenEquivalentRows();
         EqualBytesRequireTheSameFullLocation();
+        ActualReadWinnerIsValueIdentityAndSharedAcrossRows();
         ShadowsAndBadHigherSourcesNeverFallBack();
         RenderAdapterKeepsItsExistingDiagnostics();
-        std::cout << "terrain-table: 7 scenario groups passed\n";
+        std::cout << "terrain-table: 8 scenario groups passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "terrain-table: " << error.what() << '\n';

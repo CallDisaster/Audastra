@@ -118,6 +118,11 @@ std::string Identity(const ResourceLocation& location, std::size_t byteCount, st
     append(std::to_string(location.priority));
     append(location.sourceId);
     append(location.sourcePath);
+    append(location.readProvenance ? "read-provenance-v1" : "read-provenance-unrecorded");
+    if (const auto& provenance = location.readProvenance) {
+        append(std::to_string(static_cast<int>(provenance->origin)));
+        append(provenance->containerIdentity); append(provenance->memberPath); append(provenance->sourceContext);
+    }
     append(std::to_string(byteCount));
     append(sourceSha256);
     append(idColumn);
@@ -129,8 +134,10 @@ std::string Identity(const ResourceLocation& location, std::size_t byteCount, st
 }
 
 bool SameLocation(const ResourceLocation& a, const ResourceLocation& b) {
+    const bool sameRead = (!a.readProvenance && !b.readProvenance)
+        || (a.readProvenance && b.readProvenance && *a.readProvenance == *b.readProvenance);
     return a.canonicalPath == b.canonicalPath && a.layer == b.layer && a.priority == b.priority
-        && a.sourceId == b.sourceId && a.sourcePath == b.sourcePath;
+        && a.sourceId == b.sourceId && a.sourcePath == b.sourcePath && sameRead;
 }
 
 template <typename T, typename Operation>

@@ -181,6 +181,21 @@ Result<std::vector<std::byte>> ReadDisk(const std::filesystem::path& path) {
     return ReadVerifiedFile(path, *hash.value, kResourceLimit);
 }
 
+std::string ResourcePathText(const std::filesystem::path& path) {
+    const auto utf8 = path.generic_u8string();
+    return {reinterpret_cast<const char*>(utf8.data()), utf8.size()};
+}
+
+Result<Resources::ResourceReadResult> WithReadProvenance(Result<std::vector<std::byte>> read,
+    Resources::ResourceReadOrigin origin, std::string container, std::string member, std::string context) {
+    if (!read.Succeeded()) return {std::nullopt, std::move(read.diagnostics)};
+    Result<Resources::ResourceReadResult> result;
+    result.value = Resources::ResourceReadResult{std::move(*read.value),
+        Resources::ResourceReadProvenance{origin, std::move(container), std::move(member), std::move(context)}};
+    result.diagnostics = std::move(read.diagnostics);
+    return result;
+}
+
 Result<std::string> BlightTexturePath(Resources::ResourceResolver& resolver, std::uint8_t mainTileset) {
     auto table = resolver.Read("UI\\WorldEditData.txt");
     if (!table.Succeeded()) return {std::nullopt, std::move(table.diagnostics)};
@@ -438,20 +453,27 @@ Result<std::unique_ptr<WorldResourceReader>> WorldResourceReader::Open(const Wor
         return Result<ResourceProbe>::Success(shared->entries.contains(path) || unlisted(path)
             ? ResourceProbe{ResourceProbeState::Found, std::string(path)} : ResourceProbe{});
     };
-    mapSource.read = [shared, unlisted](std::string_view path) {
+    mapSource.readWithProvenance = [shared, unlisted](std::string_view path) -> Result<ResourceReadResult> {
         const auto found = shared->entries.find(path);
         if (found == shared->entries.end()) {
-            if (unlisted(path)) return shared->archive->ReadFileBounded(path, kResourceLimit);
-            return Result<std::vector<std::byte>>::Failure("World", "WORLD_ASSET_MISSING", "资源快照内没有所请求的地图成员。");
+            if (unlisted(path)) return WithReadProvenance(shared->archive->ReadFileBounded(path, kResourceLimit),
+                ResourceReadOrigin::MapArchive, ResourcePathText(shared->sources.archivePath),
+                std::string(path), shared->sources.archiveSha);
+            return Result<ResourceReadResult>::Failure("World", "WORLD_ASSET_MISSING", "资源快照内没有所请求的地图成员。");
         }
         if (found->second.ownedPayload) {
             if (found->second.ownedPayload->size() > kResourceLimit)
-                return Result<std::vector<std::byte>>::Failure("World", "WORLD_ASSET_READ", "导入地形资源超过 16 MiB。");
+                return Result<ResourceReadResult>::Failure("World", "WORLD_ASSET_READ", "导入地形资源超过 16 MiB。");
             // 空正文仍是明确的会话覆盖，不回退磁盘、旧地图或游戏包。
-            return Result<std::vector<std::byte>>::Success(*found->second.ownedPayload);
+            return WithReadProvenance(Result<std::vector<std::byte>>::Success(*found->second.ownedPayload),
+                ResourceReadOrigin::SessionOwned, "owned-version:" + std::to_string(found->second.ownedPayloadVersion),
+                std::string(path), shared->sources.archiveSha);
         }
-        if (!found->second.diskPath.empty()) return ReadDisk(found->second.diskPath);
-        return shared->archive->ReadFileBounded(found->second.archivePath, kResourceLimit);
+        if (!found->second.diskPath.empty()) return WithReadProvenance(ReadDisk(found->second.diskPath),
+            ResourceReadOrigin::SessionFile, ResourcePathText(found->second.diskPath), std::string(path), shared->sources.archiveSha);
+        return WithReadProvenance(shared->archive->ReadFileBounded(found->second.archivePath, kResourceLimit),
+            ResourceReadOrigin::MapArchive, ResourcePathText(shared->sources.archivePath),
+            found->second.archivePath, shared->sources.archiveSha);
     };
     if (const auto added = state.resolver.AddSource(std::move(mapSource)); !added.Succeeded()) return {std::nullopt, added.diagnostics};
     if (!sources.gameRoot.empty()) {
@@ -477,7 +499,17 @@ Result<std::unique_ptr<WorldResourceReader>> WorldResourceReader::Open(const Wor
             return Result<ResourceProbe>::Success(shared->game->HasFile(std::string(path))
                 ? ResourceProbe{ResourceProbeState::Found, std::string(path)} : ResourceProbe{});
         };
-        gameSource.read = [shared](std::string_view path) { return shared->game->ReadFileBounded(std::string(path), kResourceLimit); };
+        gameSource.readWithProvenance = [shared](std::string_view path) -> Result<ResourceReadResult> {
+            // bytes与container都来自同一次命中查找；不再次Locate或根据gameRoot猜winning包。
+            auto read = shared->game->ReadFileBoundedWithSource(std::string(path), kResourceLimit);
+            if (!read.Succeeded()) return {std::nullopt, std::move(read.diagnostics)};
+            Result<ResourceReadResult> result;
+            result.value = ResourceReadResult{std::move(read.value->bytes), ResourceReadProvenance{
+                ResourceReadOrigin::GameArchive, std::move(read.value->archiveName), std::string(path),
+                ResourcePathText(shared->sources.gameRoot)}};
+            result.diagnostics = std::move(read.diagnostics);
+            return result;
+        };
         if (const auto added = state.resolver.AddSource(std::move(gameSource)); !added.Succeeded()) return {std::nullopt, added.diagnostics};
     }
     const auto current = reader->VerifyCurrentSource();

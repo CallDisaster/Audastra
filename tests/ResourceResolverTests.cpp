@@ -18,6 +18,9 @@ using War3Map::Resources::ResourceProbeState;
 namespace Priority = War3Map::Resources::ResourcePriority;
 using War3Map::Resources::ResourceResolver;
 using War3Map::Resources::ResourceSource;
+using War3Map::Resources::ResourceReadOrigin;
+using War3Map::Resources::ResourceReadProvenance;
+using War3Map::Resources::ResourceReadResult;
 
 void Require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
@@ -154,7 +157,8 @@ void TestCanonicalPathAndNoCache() {
         "source registration failed");
     auto read = resolver.Read("ui/icon.blp");
     Require(read.Succeeded() && read.value->location.canonicalPath == "UI\\ICON.BLP" &&
-        read.value->bytes == Bytes("one"), "case and separator normalization failed");
+        read.value->bytes == Bytes("one") && !read.value->location.readProvenance,
+        "legacy read keeps case normalization and explicitly unrecorded provenance");
     backing->files["UI\\ICON.BLP"] = Bytes("two");
     read = resolver.Read("UI\\ICON.BLP");
     Require(read.Succeeded() && read.value->bytes == Bytes("two") && backing->reads == 2,
@@ -224,6 +228,100 @@ void TestSourceRegistration() {
         "custom layer priority must be injectable rather than enum-bound");
 }
 
+void TestRichReadsFreezeWinnerAndKeepReadKeys() {
+    ResourceResolver resolver;
+    auto backing = std::make_shared<FakeBacking>();
+    auto source = MakeSource("game", ResourceLayer::Game, Priority::GameBase, backing);
+    source.probe = [](std::string_view) {
+        return Result<ResourceProbe>::Success({ResourceProbeState::Found, "original-read-key.bin"});
+    };
+    int richReads = 0;
+    source.readWithProvenance = [&richReads](std::string_view key) {
+        Require(key == "original-read-key.bin", "actual container must not replace the original read key");
+        ++richReads;
+        return Result<ResourceReadResult>::Success({Bytes(richReads == 1 ? "patch bytes" : "base bytes"),
+            ResourceReadProvenance{ResourceReadOrigin::GameArchive,
+                richReads == 1 ? "war3patch.mpq" : "war3.mpq", "Textures/Actual.blp", "fixture-game-root"}});
+    };
+    Require(resolver.AddSource(std::move(source)).Succeeded(), "register rich and legacy callbacks");
+    const auto located = resolver.Locate("Textures/Requested.blp");
+    Require(located.Succeeded() && !located.value->readProvenance && richReads == 0 && backing->reads == 0,
+        "Locate cannot claim or invoke a completed read winner");
+    const auto first = resolver.Read("Textures/Requested.blp");
+    const auto second = resolver.Read("Textures/Requested.blp");
+    Require(first.Succeeded() && second.Succeeded() && first.value->location.readProvenance
+        && second.value->location.readProvenance && richReads == 2 && backing->reads == 0,
+        "rich callback takes precedence without invoking legacy read");
+    Require(first.value->bytes == Bytes("patch bytes") && second.value->bytes == Bytes("base bytes")
+        && first.value->location.readProvenance->containerIdentity == "war3patch.mpq"
+        && second.value->location.readProvenance->containerIdentity == "war3.mpq",
+        "each byte result retains the winner from that same callback invocation");
+    Require(first.value->location.sourcePath == "original-read-key.bin"
+        && first.value->location.readProvenance->memberPath == "Textures/Actual.blp"
+        && first.value->location.readProvenance->origin == ResourceReadOrigin::GameArchive,
+        "logical read key and actual read provenance remain independent");
+    const auto locatedAgain = resolver.Locate("Textures/Requested.blp");
+    Require(locatedAgain.Succeeded() && !locatedAgain.value->readProvenance && richReads == 2,
+        "Locate never reuses a prior successful read winner");
+    Require(resolver.RemoveSource("game"), "remove rich fixture");
+    Require(first.value->location.readProvenance->containerIdentity == "war3patch.mpq",
+        "completed winner is owned independently of the resolver and later reads");
+
+    auto richOnly = MakeSource("rich-only", ResourceLayer::Other, 700, backing);
+    richOnly.read = {};
+    richOnly.readWithProvenance = [](std::string_view) {
+        return Result<ResourceReadResult>::Success({{}, ResourceReadProvenance{
+            ResourceReadOrigin::SessionOwned, "owned-version:1", "Empty.bin", "fixture-map-sha"}});
+    };
+    backing->files["EMPTY.BIN"] = {};
+    Require(resolver.AddSource(std::move(richOnly)).Succeeded(), "rich-only callback is a valid source");
+    const auto empty = resolver.Read("Empty.bin");
+    Require(empty.Succeeded() && empty.value->bytes.empty() && empty.value->location.readProvenance,
+        "real empty content retains its actual rich winner");
+}
+
+void TestBadRichReadsNeverFallBack() {
+    ResourceResolver resolver;
+    auto upper = std::make_shared<FakeBacking>(), lower = std::make_shared<FakeBacking>();
+    upper->files["TEST.BLP"] = Bytes("legacy upper"); lower->files["TEST.BLP"] = Bytes("lower");
+    auto source = MakeSource("upper", ResourceLayer::MapImport, Priority::MapArchive, upper);
+    int mode = 0, richReads = 0;
+    source.readWithProvenance = [&mode, &richReads](std::string_view) -> Result<ResourceReadResult> {
+        ++richReads;
+        if (mode == 5) return Result<ResourceReadResult>::Failure("Fixture", "RICH_FAILURE", "真实读取失败");
+        if (mode == 6) throw std::runtime_error("rich callback exception");
+        ResourceReadResult read{Bytes("must not publish"), ResourceReadProvenance{
+            ResourceReadOrigin::MapArchive, "fixture.w3x", "Test.blp", "fixture-map-sha"}};
+        if (mode == 0) read.provenance.reset();
+        if (mode == 1) read.provenance->origin = static_cast<ResourceReadOrigin>(999);
+        if (mode == 2) read.provenance->containerIdentity.clear();
+        if (mode == 3) read.provenance->memberPath = "../unsafe.blp";
+        if (mode == 4) read.provenance->containerIdentity.reserve(128u * 1024u + 1);
+        if (mode == 7) read.provenance->sourceContext = std::string("bad\0context", 11);
+        if (mode == 8) {
+            for (auto* text : {&read.provenance->containerIdentity, &read.provenance->memberPath, &read.provenance->sourceContext}) {
+                text->reserve(96u * 1024u);
+                Require(text->capacity() <= 128u * 1024u, "aggregate fixture stays within each individual capacity cap");
+            }
+            Require(read.provenance->containerIdentity.capacity() + read.provenance->memberPath.capacity()
+                + read.provenance->sourceContext.capacity() > 256u * 1024u, "aggregate fixture exceeds only the total capacity cap");
+        }
+        return Result<ResourceReadResult>::Success(std::move(read));
+    };
+    Require(resolver.AddSource(std::move(source)).Succeeded()
+        && resolver.AddSource(MakeSource("lower", ResourceLayer::Game, Priority::GameBase, lower)).Succeeded(),
+        "register fail-closed rich source and lower control");
+    for (mode = 0; mode < 9; ++mode) {
+        const auto read = resolver.Read("Test.blp");
+        Require(!read.Succeeded() && !read.value && HasCode(read, "RESOURCE_READ_FAILED"),
+            "invalid rich winner, error or exception cannot publish partial content");
+        if (mode == 5) Require(HasCode(read, "RICH_FAILURE"), "rich source diagnostics are retained");
+        else if (mode != 6) Require(HasCode(read, "RESOURCE_PROVENANCE_INVALID"), "invalid winner has an explicit diagnostic");
+    }
+    Require(richReads == 9 && upper->reads == 0 && lower->probes == 0 && lower->reads == 0,
+        "failed rich reads cannot invoke legacy or lower-priority fallback");
+}
+
 } // namespace
 
 int main() {
@@ -232,7 +330,9 @@ int main() {
         TestCanonicalPathAndNoCache();
         TestConflictAndFailuresBlockFallback();
         TestSourceRegistration();
-        std::cout << "ResourceResolver: 4 scenario groups passed\n";
+        TestRichReadsFreezeWinnerAndKeepReadKeys();
+        TestBadRichReadsNeverFallBack();
+        std::cout << "ResourceResolver: 6 scenario groups passed\n";
         return 0;
     } catch (const std::exception& exception) {
         std::cerr << "ResourceResolver: " << exception.what() << '\n';

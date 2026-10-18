@@ -43,14 +43,44 @@ Result<ResourceProbe> ProbeSource(const ResourceSource& source, std::string_view
     }
 }
 
-Result<std::vector<std::byte>> ReadSource(const ResourceSource& source, std::string_view path) {
+bool ValidProvenance(const ResourceReadProvenance& provenance) {
+    switch (provenance.origin) {
+    case ResourceReadOrigin::MapArchive:
+    case ResourceReadOrigin::GameArchive:
+    case ResourceReadOrigin::SessionOwned:
+    case ResourceReadOrigin::SessionFile:
+    case ResourceReadOrigin::Synthetic: break;
+    default: return false;
+    }
+    // 只限制新增rich元数据，不对legacy回调添加路径/正文限额；兼容Windows UTF-8长路径。
+    constexpr std::size_t maximumText = 128u * 1024u, maximumTotal = 256u * 1024u;
+    const auto text = [](const std::string& value) {
+        return value.capacity() <= maximumText && value.find('\0') == std::string::npos;
+    };
+    if (provenance.containerIdentity.empty() || provenance.memberPath.empty()
+        || !text(provenance.containerIdentity) || !text(provenance.memberPath) || !text(provenance.sourceContext)) return false;
+    return provenance.containerIdentity.capacity() + provenance.memberPath.capacity() + provenance.sourceContext.capacity() <= maximumTotal
+        && CanonicalImportPath(provenance.memberPath).Succeeded();
+}
+
+Result<ResourceReadResult> ReadSource(const ResourceSource& source, std::string_view path) {
     try {
-        return source.read(path);
+        if (source.readWithProvenance) {
+            auto result = source.readWithProvenance(path);
+            if (!result.Succeeded()) return result;
+            if (!result.value || !result.value->provenance || !ValidProvenance(*result.value->provenance))
+                return Result<ResourceReadResult>::Failure(std::string(kSubsystem), "RESOURCE_PROVENANCE_INVALID",
+                    "实际读取来源缺失、无效或超过元数据预算（" + source.id + "）");
+            return result;
+        }
+        auto bytes = source.read(path);
+        if (!bytes.Succeeded()) return {std::nullopt, std::move(bytes.diagnostics)};
+        return Result<ResourceReadResult>::Success({std::move(*bytes.value), std::nullopt});
     } catch (const std::exception& exception) {
-        return Result<std::vector<std::byte>>::Failure(std::string(kSubsystem), "RESOURCE_READ_FAILED",
+        return Result<ResourceReadResult>::Failure(std::string(kSubsystem), "RESOURCE_READ_FAILED",
             "资源来源读取异常（" + source.id + "）：" + exception.what());
     } catch (...) {
-        return Result<std::vector<std::byte>>::Failure(std::string(kSubsystem), "RESOURCE_READ_FAILED",
+        return Result<ResourceReadResult>::Failure(std::string(kSubsystem), "RESOURCE_READ_FAILED",
             "资源来源读取异常（" + source.id + "）");
     }
 }
@@ -58,7 +88,7 @@ Result<std::vector<std::byte>> ReadSource(const ResourceSource& source, std::str
 } // namespace
 
 Status ResourceResolver::AddSource(ResourceSource source) {
-    if (source.id.empty() || !source.probe || !source.read) {
+    if (source.id.empty() || !source.probe || (!source.read && !source.readWithProvenance)) {
         return Status::Failure(std::string(kSubsystem), "RESOURCE_SOURCE_INVALID",
             "资源来源需要唯一非空 ID，以及查询和读取回调");
     }
@@ -135,7 +165,7 @@ Result<ResourceLocation> ResourceResolver::Locate(std::string_view virtualPath) 
 }
 
 Result<ResolvedResource> ResourceResolver::Read(std::string_view virtualPath) const {
-    const auto location = Locate(virtualPath);
+    auto location = Locate(virtualPath);
     if (!location.Succeeded()) {
         Result<ResolvedResource> result;
         result.diagnostics = location.diagnostics;
@@ -148,13 +178,15 @@ Result<ResolvedResource> ResourceResolver::Read(std::string_view virtualPath) co
         return Result<ResolvedResource>::Failure(std::string(kSubsystem), "RESOURCE_SOURCE_MISSING",
             "资源来源在查询后已不存在：" + location.value->sourceId);
     }
-    auto bytes = ReadSource(*source, location.value->sourcePath);
-    if (!bytes.Succeeded()) {
+    auto read = ReadSource(*source, location.value->sourcePath);
+    if (!read.Succeeded()) {
         return FailedCallback<ResolvedResource>("RESOURCE_READ_FAILED",
             "资源来源读取失败（" + source->id + "）：" + location.value->sourcePath,
-            bytes.diagnostics);
+            read.diagnostics);
     }
-    return Result<ResolvedResource>::Success(ResolvedResource{*location.value, std::move(*bytes.value)});
+    if (read.value->provenance)
+        location.value->readProvenance = std::make_shared<const ResourceReadProvenance>(std::move(*read.value->provenance));
+    return Result<ResolvedResource>::Success(ResolvedResource{std::move(*location.value), std::move(read.value->bytes)});
 }
 
 } // namespace War3Map::Resources
