@@ -74,7 +74,7 @@ ClassicMinimapObjectLayerInput Input(const ObjectData::StandardObjectCatalog& ca
     const Resources::ResourceResolver& resources, const std::vector<MapData::DoodadPlacement>& placements) {
     ClassicMinimapObjectLayerInput input; input.placements = placements; input.catalog = &catalog;
     input.resources = &resources; input.sourceRectangle = {0, 0, 8, 8};
-    input.invalidModelPath = "WorldEditArt\\InvalidModel.mdx"; return input;
+    input.invalidModelPath = "Fixture\\ConfiguredInvalidModel.mdx"; return input;
 }
 
 void FixedFieldsAndOrder() {
