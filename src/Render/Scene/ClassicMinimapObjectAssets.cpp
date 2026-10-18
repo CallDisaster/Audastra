@@ -7,6 +7,7 @@
 #include "War3MapCore/Resources/ImportTable.h"
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <limits>
 #include <new>
