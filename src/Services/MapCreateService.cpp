@@ -216,7 +216,8 @@ CreateResult CreateMapCandidate(const MapCreateRequest& request, const MapSaveSe
             return Forward<CreateResult>(prepared.diagnostics);
         task.diagnostics.insert(task.diagnostics.end(), prepared.diagnostics.begin(), prepared.diagnostics.end());
         std::shared_ptr<const TerrainMinimapSave> minimapSave;
-        task.prepareFinalDerived = [&task, &minimapEdits, &request, &minimapSave](MapSaveTask&) -> Status {
+        std::shared_ptr<const TerrainMinimapPreserveGuard> minimapPreserve;
+        task.prepareFinalDerived = [&task, &minimapEdits, &request, &minimapSave, &minimapPreserve](MapSaveTask&) -> Status {
             const auto canonical = [](std::string value) {
                 std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
                     return static_cast<char>(c == '\\' ? '/' : std::tolower(c));
@@ -240,15 +241,19 @@ CreateResult CreateMapCandidate(const MapCreateRequest& request, const MapSaveSe
                 else if (name == "war3map.wts") synced = minimapEdits.SetSerialized(MapDataKind::Strings, member.data);
                 if (!synced.Succeeded()) return synced;
             }
-            const auto required = TerrainMinimapSave::RequiresAutomaticGeneration(task);
-            if (!required.Succeeded() || !required.value) return {required.diagnostics};
-            if (!*required.value) return Status::Ok();
-            const auto generated = TerrainMinimapSave::Prepare(task, minimapEdits, request.gameRoot,
-                TerrainMinimapSaveChoice::Automatic);
+            auto generated = TerrainMinimapSave::PrepareAutomaticOrPreserve(task, minimapEdits, request.gameRoot);
             if (!generated.Succeeded() || !generated.value) return {generated.diagnostics};
-            minimapSave = std::move(*generated.value);
-            if (!minimapSave) return Status::Failure("MapCreate", "CREATE_MINIMAP_MISSING",
-                "新建地图的自动小地图准备未返回完整保存资格。");
+            task.diagnostics.insert(task.diagnostics.end(), generated.diagnostics.begin(), generated.diagnostics.end());
+            minimapSave = std::move(generated.value->generated);
+            minimapPreserve = std::move(generated.value->preserved);
+            if (!minimapSave) {
+                if (minimapPreserve) {
+                    const auto checked = minimapPreserve->VerifyCurrent(task, minimapEdits);
+                    if (!checked.Succeeded()) return checked;
+                    task.beforePublish = [&task, minimapPreserve] { return minimapPreserve->VerifyFrozenOutput(task); };
+                }
+                return Status::Ok();
+            }
             task.replacements.push_back(minimapSave->MinimapReplacement());
             const auto current = minimapSave->VerifyCurrent(task, minimapEdits, request.gameRoot);
             if (!current.Succeeded()) return current;
@@ -259,6 +264,11 @@ CreateResult CreateMapCandidate(const MapCreateRequest& request, const MapSaveSe
         if (!task.succeeded || !task.scriptRebuilt || !task.nextSession) return Forward<CreateResult>(std::move(task.diagnostics));
         if (minimapSave) {
             const auto readback = minimapSave->VerifyReadback(task, *task.nextSession);
+            task.diagnostics.insert(task.diagnostics.end(), readback.diagnostics.begin(), readback.diagnostics.end());
+            if (!readback.Succeeded()) return Forward<CreateResult>(std::move(task.diagnostics));
+        }
+        if (minimapPreserve) {
+            const auto readback = minimapPreserve->VerifyReadback(task, *task.nextSession);
             task.diagnostics.insert(task.diagnostics.end(), readback.diagnostics.begin(), readback.diagnostics.end());
             if (!readback.Succeeded()) return Forward<CreateResult>(std::move(task.diagnostics));
         }

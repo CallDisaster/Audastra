@@ -14,6 +14,7 @@
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/MapTerrain.h"
+#include "War3MapCore/MapData/MapPlacements.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/Services/TerrainMinimapSave.h"
 #include "War3MapCore/Services/CampaignService.h"
@@ -282,6 +283,7 @@ private slots:
     void TerrainSaveReadbackGatesCommit_data();
     void TerrainSaveReadbackGatesCommit();
     void TerrainSavePrepareStillRequiresToolchain();
+    void AutomaticMinimapDefaultPrepareAndSaveCopy_data();
     void AutomaticMinimapDefaultPrepareAndSaveCopy();
     void MissingMinimapWorkerReadbackGatesCommit_data();
     void MissingMinimapWorkerReadbackGatesCommit();
@@ -1008,7 +1010,15 @@ void EditorProjectTests::TerrainSavePrepareStillRequiresToolchain() {
     QCOMPARE(Sha256File(source).value, originalSha.value);
 }
 
+void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy_data() {
+    QTest::addColumn<bool>("special"); QTest::addColumn<bool>("existing");
+    QTest::newRow("generated") << false << false;
+    QTest::newRow("unsupported-missing") << true << false;
+    QTest::newRow("unsupported-existing") << true << true;
+}
+
 void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
+    QFETCH(bool, special); QFETCH(bool, existing);
     QTemporaryDir root; QVERIFY(root.isValid());
     auto members = DeclaredMissingMinimapQtMembers();
     for (auto& member : members) if (member.name == "war3map.w3i")
@@ -1028,6 +1038,15 @@ void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
     members.push_back({"Fixture\\Cliff.blp", cliffBytes});
     members.push_back({"UI\\MiscData.txt", text("[Water]\nDeepLevelPathing=64\n")});
     members.push_back({"UI\\WorldEditData.txt", text("[CameraMargins]\nLeft=0\nRight=0\nBottom=0\nTop=0\n")});
+    const auto oldMinimap = text("author minimap bytes must survive unsupported generation");
+    if (existing) members.push_back({"war3mapMap.blp", oldMinimap});
+    if (special) {
+        MapData::DoodadPlacements doodads;
+        MapData::SpecialDoodadPlacement placement; placement.rawcode = "SPC1";
+        doodads.specialDoodads.push_back(placement);
+        const auto bytes = doodads.Serialize(); QVERIFY(bytes.Succeeded() && bytes.value);
+        members.push_back({"war3map.doo", *bytes.value});
+    }
     const auto source = std::filesystem::path(root.filePath("original-plain.w3x").toStdWString());
     const auto target = std::filesystem::path(root.filePath("default-save-copy.w3x").toStdWString());
     QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
@@ -1039,8 +1058,22 @@ void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
     QVERIFY(job);
     QCOMPARE(job->minimapChoice, Services::TerrainMinimapSaveChoice::Automatic);
     QVERIFY(!job->minimapSave);
+    // 新资源通过同一生产 worker 输入触发自动判定，不伪造生成结果。
+    if (existing) job->replacements.push_back({"Fixture\\NewIcon.blp", text("unused resource")});
     EditorProject::RunMapSave(*job);
     QVERIFY2(job->succeeded, job->diagnostics.empty() ? "default automatic save failed" : job->diagnostics.back().message.c_str());
+    if (special) {
+        QVERIFY(!job->minimapSave && job->minimapPreserve);
+        QVERIFY(HasReadDiagnostic(*job, "CLASSIC_OBJECT_CAPTURE_SPECIAL_UNRESOLVED"));
+        QVERIFY(HasReadDiagnostic(*job, "MINIMAP_GENERATION_SKIPPED"));
+        QVERIFY(job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded());
+        QVERIFY(project.CommitMapSave(*job));
+        auto saved = MapArchiveSession::Open(target); QVERIFY(saved.Succeeded() && saved.value);
+        QCOMPARE(saved.value->HasMember("war3mapMap.blp"), existing);
+        if (existing) QCOMPARE(saved.value->ReadMember("war3mapMap.blp").value, std::optional(oldMinimap));
+        QCOMPARE(Sha256File(source).value, sourceSha.value);
+        return;
+    }
     QVERIFY(job->minimapSave && job->minimapSave->ClassicManifest());
     QCOMPARE(job->minimapSave->Manifest().encodedMipCount, 1u);
     QVERIFY(job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded());

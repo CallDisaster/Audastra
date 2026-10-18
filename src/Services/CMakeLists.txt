@@ -54,6 +54,7 @@ add_library(War3MapServices STATIC
     TerrainBlightSaveService.cpp
     TerrainMinimapSave.cpp
     TerrainMinimapSaveAutomatic.cpp
+    TerrainMinimapSaveFallback.cpp
     TerrainPathingRestrictionCandidate.cpp
     TerrainEditService.cpp)
 add_library(War3MapEditor::Services ALIAS War3MapServices)

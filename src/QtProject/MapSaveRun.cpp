@@ -42,7 +42,24 @@ std::string MinimapMemberName(std::string_view name) {
     return key;
 }
 
-Status PrepareWorkerMinimap(MapSaveJob& job) {
+Status InstallPreservedMinimap(MapSaveJob& job, const MapData::MapDataEditSession& edits,
+    Services::TerrainMinimapAutomaticPreparation prepared) {
+    if (!prepared.preserved) return Status::Ok();
+    const auto current = prepared.preserved->VerifyCurrent(job, edits);
+    if (!current.Succeeded()) return current;
+    job.minimapPreserve = std::move(prepared.preserved);
+    job.beforePublish = [&job, previous = std::move(job.beforePublish)] {
+        if (previous) { const auto checked = previous(); if (!checked.Succeeded()) return checked; }
+        if (job.terrainSavePlan) {
+            const auto checked = job.terrainSavePlan->VerifyFrozenOutput(job.sourceSha256, job.replacements, job.removals);
+            if (!checked.Succeeded()) return checked;
+        }
+        return job.minimapPreserve->VerifyFrozenOutput(job);
+    };
+    return Status::Ok();
+}
+
+Status PrepareWorkerMinimapInputs(MapSaveJob& job, std::unique_ptr<MapData::MapDataEditSession>& edits) {
     const auto reject = [](const char* code, const char* message) {
         return Status::Failure("TerrainMinimapSave.Qt", code, message);
     };
@@ -91,7 +108,7 @@ Status PrepareWorkerMinimap(MapSaveJob& job) {
     std::vector<MapArchiveMember> nativeMembers;
     for (auto& member : *native.value) if (member.present) nativeMembers.push_back({member.name, std::move(member.bytes)});
     // 依赖明确名字捕获，DOO未列在(listfile)中也不能被误认成缺失。
-    auto edits = std::make_unique<MapData::MapDataEditSession>(MapDocument::FromMembers(nativeMembers));
+    edits = std::make_unique<MapData::MapDataEditSession>(MapDocument::FromMembers(nativeMembers));
     {
         const std::array<std::string, 2> names{"war3map.w3e", "war3map.wpm"};
         ArchiveExactMemberLimits limits;
@@ -137,9 +154,18 @@ Status PrepareWorkerMinimap(MapSaveJob& job) {
             const auto restored = edits->Remove(kind);
             if (!restored.Succeeded()) return restored;
         }
-    auto prepared = Services::TerrainMinimapSave::Prepare(job, *edits, job.minimapGameRoot, job.minimapChoice);
-    if (!prepared.Succeeded() || !prepared.value) return {std::move(prepared.diagnostics)};
-    auto minimap = std::move(*prepared.value);
+    std::shared_ptr<const Services::TerrainMinimapSave> minimap;
+    if (automatic) {
+        auto prepared = Services::TerrainMinimapSave::PrepareAutomaticOrPreserve(job, *edits, job.minimapGameRoot);
+        if (!prepared.Succeeded() || !prepared.value) return {std::move(prepared.diagnostics)};
+        job.diagnostics.insert(job.diagnostics.end(), prepared.diagnostics.begin(), prepared.diagnostics.end());
+        minimap = prepared.value->generated;
+        if (!minimap) return InstallPreservedMinimap(job, *edits, std::move(*prepared.value));
+    } else {
+        auto prepared = Services::TerrainMinimapSave::Prepare(job, *edits, job.minimapGameRoot, job.minimapChoice);
+        if (!prepared.Succeeded() || !prepared.value) return {std::move(prepared.diagnostics)};
+        minimap = std::move(*prepared.value);
+    }
     if (!minimap || !minimap->Plan())
         return reject("MINIMAP_SAVE_SOURCE", "worker未取得本次实际生成的小地图保存资格。");
     job.replacements.push_back(minimap->MinimapReplacement());
@@ -162,6 +188,19 @@ Status PrepareWorkerMinimap(MapSaveJob& job) {
     return Status::Ok();
 }
 
+Status PrepareWorkerMinimap(MapSaveJob& job) {
+    // 若输入捕获本身超出生成器预算，仍由同一个能力分类决定能否保留。
+    // 该临时会话只绑定本次 worker；编辑器代际仍由 Commit 的原门禁核对。
+    auto edits = std::make_unique<MapData::MapDataEditSession>(MapDocument::FromMembers({}));
+    auto status = PrepareWorkerMinimapInputs(job, edits);
+    if (status.Succeeded() || job.minimapChoice != Services::TerrainMinimapSaveChoice::Automatic) return status;
+    auto preserved = Services::TerrainMinimapSave::PreserveUnsupportedAutomatic(job, *edits, std::move(status.diagnostics));
+    if (!preserved.Succeeded() || !preserved.value) return {std::move(preserved.diagnostics)};
+    const auto installed = InstallPreservedMinimap(job, *edits, std::move(*preserved.value));
+    if (!installed.Succeeded()) return installed;
+    return {std::move(preserved.diagnostics)};
+}
+
 } // namespace
 
 void EditorProject::RunMapSave(MapSaveJob& job) {
@@ -170,6 +209,7 @@ void EditorProject::RunMapSave(MapSaveJob& job) {
     job.terrainReadbackArchiveSha256.clear();
     if (job.executed) {
         job.minimapSave.reset();
+        job.minimapPreserve.reset();
         Services::MapSaveService::Run(job); // 原服务统一报告SAVE_TASK_ALREADY_EXECUTED，不能再生成。
         return;
     }
@@ -186,15 +226,16 @@ void EditorProject::RunMapSave(MapSaveJob& job) {
         };
     }
     Services::MapSaveService::Run(job, [&job](std::string_view stage) { job.Report(StageText(stage)); });
-    if (!job.succeeded || !job.nextSession || !job.terrainSavePlan) return;
+    if (!job.succeeded || !job.nextSession || (!job.terrainSavePlan && !job.minimapPreserve)) return;
     // 展示回调沿用通用保存服务的合同，异常不能改变实际写出或回读资格。
     try { job.Report(tr("正在核对保存后的地形…")); } catch (...) {}
     try {
         // UI由既有worker调用；公开同步保存helper仍同步执行，不在Commit重复散列。
         job.terrainReadbackArchiveSha256 = job.nextSession->SourceSha256();
-        job.terrainReadbackStatus = job.minimapSave
-            ? job.minimapSave->VerifyReadback(job, *job.nextSession)
-            : job.terrainSavePlan->VerifyReadback(*job.nextSession);
+        job.terrainReadbackStatus = job.minimapSave ? job.minimapSave->VerifyReadback(job, *job.nextSession)
+            : job.terrainSavePlan ? job.terrainSavePlan->VerifyReadback(*job.nextSession) : Status::Ok();
+        if (job.terrainReadbackStatus->Succeeded() && job.minimapPreserve)
+            job.terrainReadbackStatus = job.minimapPreserve->VerifyReadback(job, *job.nextSession);
     } catch (...) {
         // 领域回读位于通用Run的异常边界之外，失败须保留已写出路径及备份。
         job.terrainReadbackStatus = Status::Failure("Terrain.SavePlan", "TERRAIN_SAVE_PLAN_READBACK_EXCEPTION",
@@ -234,16 +275,18 @@ std::optional<MapCopySaveResult> EditorProject::CommitMapSave(MapSaveJob& job) {
         const bool declared = job.minimapChoice == Services::TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly;
         if (!automatic && !full && !declared)
             return rejectStaleCommit(tr("MINIMAP_SAVE_POLICY_MISMATCH"), tr("小地图保存选项与本次实际生成范围不一致"));
-        if (!job.minimapSave || job.terrainSavePlan != job.minimapSave->Plan())
-            return rejectStaleCommit(tr("MINIMAP_SAVE_READBACK_MISSING"), tr("小地图保存缺少同一任务的生成资格和地形计划"));
-        // 只比较明确选择与同次helper事实；不在Qt重解地图或推测范围政策。
-        const auto actualRange = job.minimapSave->Manifest().rangePolicy;
-        if ((automatic && (!job.minimapSave->ClassicManifest() || actualRange != Render::TerrainMinimapRangePolicy::ClassicPlayable))
-            || (full && actualRange != Render::TerrainMinimapRangePolicy::FullW3e)
-            || (declared && actualRange != Render::TerrainMinimapRangePolicy::DeclaredW3iMarginsExteriorMapEdge))
-            return rejectStaleCommit(tr("MINIMAP_SAVE_POLICY_MISMATCH"), tr("小地图保存选项与本次实际生成范围不一致"));
+        // 保留分支由同一任务的 FrozenOutput/Readback 保护，不要求生成资格。
+        if (!(automatic && job.minimapPreserve && !job.minimapSave)) {
+            if (!job.minimapSave || job.terrainSavePlan != job.minimapSave->Plan())
+                return rejectStaleCommit(tr("MINIMAP_SAVE_READBACK_MISSING"), tr("小地图保存缺少同一任务的生成资格和地形计划"));
+            const auto actualRange = job.minimapSave->Manifest().rangePolicy;
+            if ((automatic && (!job.minimapSave->ClassicManifest() || actualRange != Render::TerrainMinimapRangePolicy::ClassicPlayable))
+                || (full && actualRange != Render::TerrainMinimapRangePolicy::FullW3e)
+                || (declared && actualRange != Render::TerrainMinimapRangePolicy::DeclaredW3iMarginsExteriorMapEdge))
+                return rejectStaleCommit(tr("MINIMAP_SAVE_POLICY_MISMATCH"), tr("小地图保存选项与本次实际生成范围不一致"));
+        }
     }
-    if (job.terrainSavePlan && job.nextSession) {
+    if ((job.terrainSavePlan || job.minimapPreserve) && job.nextSession) {
         if (!job.terrainReadbackStatus) {
             return rejectStaleCommit(tr("TERRAIN_SAVE_PLAN_READBACK_MISSING"), tr("尚未核对保存后的地形结果"));
         }

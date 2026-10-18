@@ -13,7 +13,7 @@
 #include <string>
 
 namespace War3Map::MapData { class TerrainSavePlan; }
-namespace War3Map::Services { class TerrainMinimapSave; }
+namespace War3Map::Services { class TerrainMinimapSave; class TerrainMinimapPreserveGuard; }
 
 // Qt job追加阶段文案、冻结地形计划与本次回读结果。归档、编辑输入、脚本目录及输出
 // 均由无Qt的MapSaveTask自持有；执行阶段不得借用EditorProject的可变文档。
@@ -42,6 +42,7 @@ struct MapSaveJob final : Services::MapSaveTask {
     Services::TerrainMinimapSaveChoice minimapChoice = Services::TerrainMinimapSaveChoice::Preserve;
     std::filesystem::path minimapGameRoot;
     std::shared_ptr<const Services::TerrainMinimapSave> minimapSave;
+    std::shared_ptr<const Services::TerrainMinimapPreserveGuard> minimapPreserve;
     std::optional<Status> terrainReadbackStatus;
     std::string terrainReadbackArchiveSha256;
     // 阶段提示可从工作线程调用，由 UI 调用方排队到界面线程。

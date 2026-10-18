@@ -3,6 +3,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Image/BlpImage.h"
 #include "War3MapCore/MapData/MapSettings.h"
+#include "War3MapCore/Resources/ImportTable.h"
 
 #include <algorithm>
 #include <array>
@@ -257,6 +258,42 @@ Result<bool> TerrainMinimapSave::RequiresAutomaticGeneration(const MapSaveTask& 
             return Result<bool>::Success(false);
         }
         if (tga) return Result<bool>::Success(false);
+        // 显式提供的图像就是本次保存的最终内容；自动生成不能覆盖导入动作。
+        if (Replacement(task, "war3mapmap.blp")) {
+            RequireNotRemoved(task, "war3mapmap.blp");
+            return Result<bool>::Success(false);
+        }
+        if (identities.members[1].present) {
+            // 用原始导入清单识别作者自定义 BLP。仅读取准确成员，不通过
+            // listfile 缺名推断不存在，也不把普通自动生成的 BLP 当成自定义。
+            const std::array<std::string, 1> importNames{"war3map.imp"};
+            const auto imports = Capture(*task.archive, importNames);
+            const auto imported = [&](std::span<const std::byte> bytes, bool final) {
+                const auto table = Take(Resources::ImportTable::Parse(bytes));
+                for (const auto& record : table.Entries()) {
+                    const auto path = Resources::CanonicalImportPath(record.path);
+                    if (!path.Succeeded() || !path.value || Key(*path.value) != "war3mapmap.blp") continue;
+                    const std::array<std::string, 2> paths{"war3mapMap.blp", "war3mapImported\\war3mapMap.blp"};
+                    ArchiveExactMemberLimits identityLimits; identityLimits.memberCount = paths.size();
+                    const auto actual = Take(task.archive->DescribeExactMemberIdentities(task.sourceSha256, paths, identityLimits));
+                    const auto resolved = Take(Resources::ResolveArchivePath(record, [&](std::string_view name) {
+                        const auto key = Key(name);
+                        if (final) {
+                            if (Replacement(task, key)) return true;
+                            for (const auto& removed : task.removals) if (Key(removed) == key) return false;
+                        }
+                        for (std::size_t index = 0; index < paths.size(); ++index)
+                            if (Key(paths[index]) == key) return actual.members[index].present;
+                        return false;
+                    }));
+                    if (Key(resolved) == "war3mapmap.blp") return true;
+                }
+                return false;
+            };
+            if (imports[0].present && imported(imports[0].bytes, false)) return Result<bool>::Success(false);
+            if (const auto* finalImports = Replacement(task, "war3map.imp"); finalImports && imported(finalImports->data, true))
+                return Result<bool>::Success(false);
+        }
         // 物编等局部归档可能准确地没有地形。缺少MapBLP不能强迫此类
         // 数据归档生成小地图；present空/损坏W3E与读取失败仍保留错误身份。
         if (!identities.members[2].present && !Replacement(task, "war3map.w3e")) return Result<bool>::Success(false);

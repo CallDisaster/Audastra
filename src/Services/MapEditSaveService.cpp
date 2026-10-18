@@ -648,6 +648,8 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         std::optional<Trigger::TriggerTransactionReceipt> transactionReceipt;
         std::shared_ptr<const MapData::TerrainSavePlan> terrainPlan;
         std::shared_ptr<const TerrainMinimapSave> minimapSave;
+        std::shared_ptr<const TerrainMinimapPreserveGuard> minimapPreserve;
+        std::vector<Diagnostic> minimapInputFailure;
 
         // Automatic 小地图需要一个稳定的源地形会话。必须在任何
         // settings/物编/摆放编辑前附加 W3E/WPM，否则最终派生阶段再附加
@@ -656,12 +658,11 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic) {
             const std::array<std::string, 2> names{"war3map.w3e", "war3map.wpm"};
             const auto members = source.CaptureExactMembers(names);
-            if (!members.Succeeded() || !members.value) return Forward(members.diagnostics);
-            if ((*members.value)[0].present && (*members.value)[1].present) {
+            if (!members.Succeeded() || !members.value) minimapInputFailure = members.diagnostics;
+            else if ((*members.value)[0].present && (*members.value)[1].present) {
                 auto attached = edits.AttachTerrain((*members.value)[0].bytes);
-                if (!attached.Succeeded()) return Forward(attached.diagnostics);
-                attached = edits.AttachPathing((*members.value)[1].bytes);
-                if (!attached.Succeeded()) return Forward(attached.diagnostics);
+                if (attached.Succeeded()) attached = edits.AttachPathing((*members.value)[1].bytes);
+                if (!attached.Succeeded()) minimapInputFailure = attached.diagnostics;
             }
         }
         if (fieldRequest) {
@@ -765,16 +766,13 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         // 小地图/地形派生必须在最终脚本和模板替换完成后准备，避免其原字
         // 门禁看到过期的 replacements。回调只在共用保存服务的一次最终阶段执行。
         if (request.minimapChoice != TerrainMinimapSaveChoice::Preserve) {
-            task.prepareFinalDerived = [&task, &edits, &source, &request, &terrainPlan, &minimapSave](MapSaveTask&) mutable -> Status {
+            task.prepareFinalDerived = [&task, &edits, &request, &terrainPlan, &minimapSave,
+                &minimapPreserve, &minimapInputFailure](MapSaveTask&) mutable -> Status {
                 bool automaticRequired = true;
                 if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic) {
                     const auto required = TerrainMinimapSave::RequiresAutomaticGeneration(task);
-                    if (!required.Succeeded() || !required.value) return Status{required.diagnostics};
-                    automaticRequired = *required.value;
-                }
-                if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic && automaticRequired && !edits.Terrain()) {
-                    return Status::Failure("MapEditSaveService", "SAVE_MINIMAP_TERRAIN_MISSING",
-                        "自动小地图重建需要在编辑开始前准确附加源W3E和WPM。");
+                    if (!required.Succeeded() || !required.value) minimapInputFailure = required.diagnostics;
+                    else automaticRequired = *required.value;
                 }
                 if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic && !automaticRequired) {
                     auto previous = std::move(task.beforePublish);
@@ -790,9 +788,23 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                     }
                     return Status::Ok();
                 }
-                const auto prepared = TerrainMinimapSave::Prepare(task, edits, request.gameRoot, request.minimapChoice);
-                if (!prepared.Succeeded() || !prepared.value) return Status{prepared.diagnostics};
-                minimapSave = std::move(*prepared.value);
+                if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic) {
+                    auto prepared = minimapInputFailure.empty()
+                        ? TerrainMinimapSave::PrepareAutomaticOrPreserve(task, edits, request.gameRoot)
+                        : TerrainMinimapSave::PreserveUnsupportedAutomatic(task, edits, minimapInputFailure);
+                    if (!prepared.Succeeded() || !prepared.value) return Status{std::move(prepared.diagnostics)};
+                    minimapSave = std::move(prepared.value->generated);
+                    minimapPreserve = std::move(prepared.value->preserved);
+                    task.diagnostics.insert(task.diagnostics.end(), prepared.diagnostics.begin(), prepared.diagnostics.end());
+                    if (minimapPreserve) {
+                        const auto checked = minimapPreserve->VerifyCurrent(task, edits);
+                        if (!checked.Succeeded()) return checked;
+                    }
+                } else {
+                    const auto prepared = TerrainMinimapSave::Prepare(task, edits, request.gameRoot, request.minimapChoice);
+                    if (!prepared.Succeeded() || !prepared.value) return Status{prepared.diagnostics};
+                    minimapSave = *prepared.value;
+                }
                 if (!minimapSave && request.minimapChoice != TerrainMinimapSaveChoice::Automatic)
                     return Status::Failure("MapEditSaveService", "SAVE_MINIMAP_PREPARATION_MISSING",
                         "补建小地图未返回本次实际保存任务的完整计划。");
@@ -803,13 +815,19 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                     if (!current.Succeeded()) return current;
                 }
                 auto previous = std::move(task.beforePublish);
-                if (terrainPlan) {
-                    const auto& notes = terrainPlan->Diagnostics();
-                    task.diagnostics.insert(task.diagnostics.end(), notes.begin(), notes.end());
-                    task.beforePublish = [taskPtr = &task, terrainPlan, minimapSave, previous = std::move(previous)]() {
+                if (terrainPlan || minimapPreserve) {
+                    if (terrainPlan) {
+                        const auto& notes = terrainPlan->Diagnostics();
+                        task.diagnostics.insert(task.diagnostics.end(), notes.begin(), notes.end());
+                    }
+                    task.beforePublish = [taskPtr = &task, terrainPlan, minimapSave, minimapPreserve,
+                        previous = std::move(previous)]() {
                         if (previous) { const auto checked = previous(); if (!checked.Succeeded()) return checked; }
-                        return minimapSave ? minimapSave->VerifyFrozenOutput(*taskPtr)
-                            : terrainPlan->VerifyFrozenOutput(taskPtr->sourceSha256, taskPtr->replacements, taskPtr->removals);
+                        const auto checked = minimapSave ? minimapSave->VerifyFrozenOutput(*taskPtr)
+                            : terrainPlan ? terrainPlan->VerifyFrozenOutput(taskPtr->sourceSha256, taskPtr->replacements, taskPtr->removals)
+                            : Status::Ok();
+                        if (!checked.Succeeded()) return checked;
+                        return minimapPreserve ? minimapPreserve->VerifyFrozenOutput(*taskPtr) : Status::Ok();
                     };
                 } else if (previous) {
                     task.beforePublish = std::move(previous);
@@ -838,6 +856,10 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         if (terrainPlan) {
             const auto readback = minimapSave ? minimapSave->VerifyReadback(task, *task.nextSession)
                 : terrainPlan->VerifyReadback(*task.nextSession);
+            if (!readback.Succeeded()) return Forward(readback.diagnostics);
+        }
+        if (minimapPreserve) {
+            const auto readback = minimapPreserve->VerifyReadback(task, *task.nextSession);
             if (!readback.Succeeded()) return Forward(readback.diagnostics);
         }
         // 保存服务已回读归档；再核对配对成员确实对应本次语义候选，不能只凭编译器 exit 0。
