@@ -132,14 +132,14 @@ public:
 
     // 将当前工作区重打包为 .w3x（另存为）。
     bool SaveAsMapArchive(War3Map::Services::TerrainMinimapSaveChoice minimapChoice =
-        War3Map::Services::TerrainMinimapSaveChoice::Preserve);
+        War3Map::Services::TerrainMinimapSaveChoice::Automatic);
     // 无模态旁路写入；仅在完整输出成功后提交来源路径、基线和脏状态。
     bool SaveMapArchiveToPath(const std::filesystem::path& outputPath,
-        War3Map::Services::TerrainMinimapSaveChoice minimapChoice = War3Map::Services::TerrainMinimapSaveChoice::Preserve);
+        War3Map::Services::TerrainMinimapSaveChoice minimapChoice = War3Map::Services::TerrainMinimapSaveChoice::Automatic);
     // 地图保存（MapSaveActions.cpp）：background 为真时在工作线程执行并显示进度框。
     bool RunMapSave(const std::filesystem::path& target, bool inPlace, bool background, bool testSnapshot = false,
         bool testHotReload = false,
-        War3Map::Services::TerrainMinimapSaveChoice minimapChoice = War3Map::Services::TerrainMinimapSaveChoice::Preserve);
+        War3Map::Services::TerrainMinimapSaveChoice minimapChoice = War3Map::Services::TerrainMinimapSaveChoice::Automatic);
     bool SaveEditorProjectToPath(const std::filesystem::path& outputPath, bool recovery = false);
     bool OpenEditorProjectPath(const std::filesystem::path& path);
 
@@ -308,8 +308,6 @@ private:
     QLineEdit* globalSearch_ = nullptr;
     QAction* saveProjectAction_ = nullptr;
     QAction* saveMapAction_ = nullptr;
-    QAction* saveMissingMinimapAction_ = nullptr;
-    QAction* saveDeclaredMissingMinimapAction_ = nullptr;
     QAction* saveMapInPlaceAction_ = nullptr;
     QAction* buildMapAction_ = nullptr;
     QAction* testMapAction_ = nullptr;

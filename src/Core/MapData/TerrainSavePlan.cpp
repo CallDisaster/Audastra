@@ -299,6 +299,45 @@ Status TerrainSavePlan::AdmitMissingMinimap(const MapDataEditSession& edits, std
     }
 }
 
+Status TerrainSavePlan::AdmitGeneratedMinimap(const MapDataEditSession& edits, std::vector<std::byte> generatedBytes) {
+    try {
+        if (edits.SessionIdentity() != sessionIdentity_ || edits.Revision() != revision_
+            || edits.TerrainSourceRevision() != terrainSourceRevision_)
+            return Reject("TERRAIN_SAVE_PLAN_STALE", "自动小地图重建必须绑定原会话、修订和地形来源。");
+        if (!saveGate_.Succeeded()) return saveGate_;
+        // SaveGate 是同一正式地形保存门；生成 MapBLP 不会授予任何新的
+        // W3E/WPM/SHD/MMP 编辑能力。也允许未修改地形的新图补建缺失图像，
+        // 或对象层变化后仅重建小地图。
+        if (members_[4].sourceState == TerrainSaveSourceState::Unknown)
+            return Reject("MINIMAP_SAVE_SOURCE_UNKNOWN", "自动小地图重建要求准确已知的源MapBLP状态。");
+        if (generatedBytes.empty()) return Reject("MINIMAP_SAVE_DOMAIN", "实际生成的MapBLP不能是空字节。");
+        auto total = cumulativeBytes_;
+        AddBytes(generatedBytes.size(), total, {maximumBytes_});
+        auto sha = Take(Sha256(generatedBytes));
+        auto& member = members_[4];
+        replacements_.erase(std::remove_if(replacements_.begin(), replacements_.end(), [&](const auto& replacement) {
+            return Canonical(replacement.name) == Canonical(member.name);
+        }), replacements_.end());
+        replacements_.push_back({member.name, std::move(generatedBytes)});
+        member.outputBytes = replacements_.back().data.size();
+        member.outputSha256 = std::move(sha);
+        member.action = TerrainSaveMemberAction::WriteEdited;
+        member.reasonCode = "TERRAIN_SAVE_WRITE_REBUILT_MINIMAP";
+        member.reason = "正常保存按当前地形重建MapBLP；同一地形保存门、来源和回读门仍然有效。";
+        std::erase_if(diagnostics_, [](const auto& diagnostic) {
+            return diagnostic.code == "TERRAIN_SAVE_MINIMAP_NOT_REBUILT";
+        });
+        cumulativeBytes_ = total;
+        return Status::Ok();
+    } catch (Failure& failure) {
+        return {std::move(failure.diagnostics)};
+    } catch (const std::bad_alloc&) {
+        return Reject("TERRAIN_SAVE_PLAN_ALLOCATION", "自动小地图重建分配失败；调用方必须丢弃此部分计划。");
+    } catch (const std::length_error&) {
+        return Reject("TERRAIN_SAVE_PLAN_ALLOCATION", "自动小地图重建容量异常；调用方必须丢弃此部分计划。");
+    }
+}
+
 std::size_t TerrainSavePlan::OwnedCapacityBytes() const noexcept {
     std::size_t bytes = sizeof(*this);
     const auto add = [&](std::size_t value) {

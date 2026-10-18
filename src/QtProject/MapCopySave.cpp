@@ -211,11 +211,15 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
         AddDiagnostic(tr("错误"), tr("地图"), code, message);
         return std::unique_ptr<MapSaveJob>{};
     };
-    const bool generateMinimap = minimapChoice == Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly
+    const bool explicitMinimap = minimapChoice == Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly
         || minimapChoice == Services::TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly;
-    if (minimapChoice != Services::TerrainMinimapSaveChoice::Preserve && !generateMinimap)
+    const bool automaticMinimap = minimapChoice == Services::TerrainMinimapSaveChoice::Automatic;
+    // 正常保存只把策略交给worker；缺失、TGA、实际依赖变化均在真实冻结
+    // 任务上准确判断，界面线程不读贴图、不生成小地图。
+    const bool generateMinimap = explicitMinimap || (automaticMinimap && !contentOnly);
+    if (minimapChoice != Services::TerrainMinimapSaveChoice::Preserve && !generateMinimap && !automaticMinimap)
         return fail(tr("MINIMAP_SAVE_CHOICE"), tr("未知的地形小地图保存选项。"));
-    if (generateMinimap) {
+    if (explicitMinimap) {
         if (inPlace || contentOnly || campaignScope_)
             return fail(tr("MINIMAP_SAVE_TARGET"), tr("补建缺失的地形小地图仅用于本次独立另存；原地保存、预检和战役不支持。"));
         if (!mapEdits_ || !MapData::TerrainSavePlan::HasTerrainChanges(*mapEdits_)
@@ -279,7 +283,9 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
     auto job = std::make_unique<MapSaveJob>();
     job->target = target;
     job->inPlace = inPlace;
-    job->minimapChoice = minimapChoice;
+    // Automatic 无地形变化时保持 Preserve，避免 worker 无意义地捕获资源；
+    // 有地形变化才把 Automatic 带入后台生成阶段。
+    job->minimapChoice = generateMinimap ? minimapChoice : Services::TerrainMinimapSaveChoice::Preserve;
     if (generateMinimap) job->minimapGameRoot = war3GameRoot_;
     if (inPlace) {
         const auto options = ReadMapInPlaceSaveOptions();
@@ -311,7 +317,7 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
     std::optional<MapData::TerrainSavePlan> terrainPlan;
     std::vector<MapArchiveMember> auxiliarySaveMembers;
     if (mapEdits_ && mapEdits_->IsDirty()) {
-        if (!generateMinimap && MapData::TerrainSavePlan::HasTerrainChanges(*mapEdits_)) {
+        if (!explicitMinimap && MapData::TerrainSavePlan::HasTerrainChanges(*mapEdits_)) {
             auto prepared = MapData::TerrainSavePlan::Prepare(*job->archive, *mapEdits_);
             AddDiagnostics(prepared.diagnostics);
             if (!prepared.Succeeded() || !prepared.value) return nullptr;
@@ -335,7 +341,7 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
             job->diagnostics.insert(job->diagnostics.end(), diagnostics.begin(), diagnostics.end());
         }
     }
-    if (generateMinimap && (!job->removals.empty() || job->replacements.size() != 1
+    if (explicitMinimap && (!job->removals.empty() || job->replacements.size() != 1
         || CanonicalMember(job->replacements.front().name) != "war3map.w3e"))
         return fail(tr("MINIMAP_SAVE_DOMAIN"), tr("补建准备只能包含唯一的高度W3E输出，不能混入其它地图数据。"));
     if (triggerDirty_) {
@@ -399,7 +405,7 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
 
     auto importTable = Resources::ImportTable::CreateEmpty();
     QStringList missingDisabledIcons = MissingDisabledIcons();
-    if (generateMinimap && !missingDisabledIcons.isEmpty())
+    if (explicitMinimap && !missingDisabledIcons.isEmpty())
         return fail(tr("MINIMAP_SAVE_DOMAIN"), tr("本次保存还需要补建暂停图标，不能与地形小地图补建混用；请先普通另存，再单独修改高度。"));
     if (!missingDisabledIcons.isEmpty() && archiveSession_->HasOpaqueMembers()) {
         // 匿名成员的归档不能安全新增文件；普通保存也不能因此附带未请求的资源修改。
@@ -598,7 +604,7 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
         const auto plan = std::make_shared<const MapData::TerrainSavePlan>(std::move(*terrainPlan));
         job->terrainSavePlan = plan;
         const auto* task = job.get();
-        job->beforePublish = [plan, task, previous = std::move(job->beforePublish)]() {
+        if (!automaticMinimap || contentOnly) job->beforePublish = [plan, task, previous = std::move(job->beforePublish)]() {
             if (previous) {
                 const auto status = previous();
                 if (!status.Succeeded()) return status;
@@ -606,7 +612,7 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
             return plan->VerifyFrozenOutput(task->sourceSha256, task->replacements, task->removals);
         };
     }
-    if (generateMinimap) {
+    if (explicitMinimap) {
         // 只查看本任务已有列表，不在界面线程捕获资源、解析额外快照或生成小地图。
         // 原脚本Prepare只冻结script输入；native/template实际输出仍在worker原Run中形成。
         if (!job->removals.empty() || job->replacements.size() != 1

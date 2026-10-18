@@ -934,7 +934,7 @@ void TestMissingMinimapChoiceCannotBroadenTerrainSaveScope() {
     request.toolRoot = request.gameRoot = directory.Path();
     request.expectedSourceSha256 = written.value->sha256;
     request.expectedTerrainSha256 = *terrainSha.value;
-    Require(request.minimapChoice == TerrainMinimapSaveChoice::Preserve, "existing callers preserve minimap by default");
+    Require(request.minimapChoice == TerrainMinimapSaveChoice::Automatic, "正常保存默认按实际地图变化自动重建小地图");
     request.minimapChoice = TerrainMinimapSaveChoice::GenerateMissingGroundOnly;
     Require(HasCode(SaveMapEditCandidate(request).diagnostics, "SAVE_MINIMAP_SCOPE_INVALID"),
         "minimap choice alone is not an edit transaction");

@@ -121,7 +121,8 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
             : errors.isEmpty() ? summary : tr("地图未保存：%1").arg(errors.back().section(QLatin1Char('\n'), 0, 0));
         SaveNotice(*this, background, false, failureSummary, details, warnings);
     };
-    if (minimapChoice != War3Map::Services::TerrainMinimapSaveChoice::Preserve) {
+    if (minimapChoice != War3Map::Services::TerrainMinimapSaveChoice::Preserve
+        && minimapChoice != War3Map::Services::TerrainMinimapSaveChoice::Automatic) {
         if ((minimapChoice != War3Map::Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly
                 && minimapChoice != War3Map::Services::TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly)
             || inPlace || testSnapshot || testHotReload || (CurrentModule() == "campaign" && campaignModule_->Session())) {
@@ -261,7 +262,9 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
     QStringList details{tr("文件：%1").arg(name), tr("已写入：%1").arg(ChangedMembers(*job)), script};
     if (job->minimapSave && job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded()) {
         const auto actualRange = job->minimapSave->Manifest().rangePolicy;
-        details << (actualRange == War3Map::Render::TerrainMinimapRangePolicy::DeclaredW3iMarginsExteriorMapEdge
+        details << (job->minimapSave->ClassicManifest()
+            ? tr("已按当前地图重建小地图，并核对保存后的图像文件。")
+            : actualRange == War3Map::Render::TerrainMinimapRangePolicy::DeclaredW3iMarginsExteriorMapEdge
             ? tr("已按源图声明边距补建缺失的地形小地图；阴影和标记没有重建，仍需原版编辑器或游戏验证。")
             : tr("已补建源图缺失的地形小地图；阴影和标记没有重建，仍需原版编辑器或游戏验证。"));
     }
@@ -308,7 +311,8 @@ void MainWindow::SaveMapInPlace() {
 
 bool MainWindow::SaveAsMapArchive(War3Map::Services::TerrainMinimapSaveChoice minimapChoice) {
     if (CurrentModule() == "campaign" && campaignModule_->Session()) {
-        if (minimapChoice != War3Map::Services::TerrainMinimapSaveChoice::Preserve) return false;
+        if (minimapChoice != War3Map::Services::TerrainMinimapSaveChoice::Preserve
+            && minimapChoice != War3Map::Services::TerrainMinimapSaveChoice::Automatic) return false;
         return campaignModule_->Save(true);
     }
     // 先完成路径选择；取消时不读取、回灌或修改任何会话文档。

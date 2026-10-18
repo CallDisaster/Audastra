@@ -199,14 +199,14 @@ Render::TerrainMinimapAssetCaptureLimits CaptureLimits(Render::TerrainMinimapAss
     return limits;
 }
 
-void SourceTask(const MapSaveTask& task) {
+void SourceTask(const MapSaveTask& task, bool automatic = false) {
     if (!task.archive || task.sourceSha256 != task.archive->SourceSha256()
         || Path(task.sourcePath, "MINIMAP_SAVE_SOURCE") != Path(task.archive->SourcePath(), "MINIMAP_SAVE_SOURCE"))
         Fail("MINIMAP_SAVE_SOURCE", "小地图准备需要FreezeArchive真实owned来源，sourcePath/sourceSha必须与owned归档一致。");
-    if (task.inPlace || Path(task.target, "MINIMAP_SAVE_TARGET") == Path(task.sourcePath, "MINIMAP_SAVE_SOURCE"))
+    if (!automatic && (task.inPlace || Path(task.target, "MINIMAP_SAVE_TARGET") == Path(task.sourcePath, "MINIMAP_SAVE_SOURCE")))
         Fail("MINIMAP_SAVE_TARGET", "首次missing-only小地图只允许独立绝对SaveCopy目标。");
     std::error_code error;
-    if (std::filesystem::exists(task.target, error) || error)
+    if (!automatic && (std::filesystem::exists(task.target, error) || error))
         Fail("MINIMAP_SAVE_TARGET", "missing-only SaveCopy目标已存在或无法准确确定其缺失。");
     if (task.triggerChanges || !task.objectTransactions.empty() || !task.removals.empty() || task.replacements.size() > 12)
         Fail("MINIMAP_SAVE_DOMAIN", "missing-only小地图拒绝触发器/物编混合事务、任意删除或额外成员领域。");
@@ -285,6 +285,8 @@ Result<std::shared_ptr<const TerrainMinimapSave>> TerrainMinimapSave::Prepare(
     TerrainMinimapSaveChoice choice, const TerrainMinimapSaveLimits& limits) {
     using Output = Result<std::shared_ptr<const TerrainMinimapSave>>;
     if (choice == TerrainMinimapSaveChoice::Preserve) return Output::Success({});
+    if (choice == TerrainMinimapSaveChoice::Automatic)
+        return PrepareAutomatic(task, edits, gameRoot, limits);
     if (choice != TerrainMinimapSaveChoice::GenerateMissingGroundOnly
         && choice != TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly)
         return Output::Failure(kSubsystem, "MINIMAP_SAVE_CHOICE", "未知的小地图保存choice。");
@@ -362,7 +364,7 @@ Result<std::shared_ptr<const TerrainMinimapSave>> TerrainMinimapSave::Prepare(
 
 Status TerrainMinimapSave::VerifyTask(const MapSaveTask& task, bool beforeAdmission) const {
     return GuardStatus([&] {
-        SourceTask(task);
+        SourceTask(task, automatic_);
         if (&task != taskIdentity_ || task.archive.get() != archiveIdentity_ || task.sourceSha256 != plan_->SourceSha256()
             || Path(task.sourcePath, "MINIMAP_SAVE_SOURCE") != sourcePath_)
             Fail("MINIMAP_SAVE_SOURCE", "小地图资格不是此真实冻结任务/owned来源。");
@@ -378,6 +380,7 @@ Status TerrainMinimapSave::VerifyTask(const MapSaveTask& task, bool beforeAdmiss
 
 Status TerrainMinimapSave::VerifyCurrent(const MapSaveTask& task, const MapData::MapDataEditSession& edits,
     const std::filesystem::path& gameRoot) const {
+    if (automatic_) return VerifyAutomaticCurrent(task, edits, gameRoot);
     return GuardStatus([&] {
         Check(VerifyTask(task, false));
         Check(plan_->VerifyForSave(edits, task.sourceSha256, task.replacements, task.removals));
@@ -391,6 +394,7 @@ Status TerrainMinimapSave::VerifyCurrent(const MapSaveTask& task, const MapData:
 }
 
 Status TerrainMinimapSave::VerifyFrozenOutput(const MapSaveTask& task) const {
+    if (automatic_) return VerifyAutomaticFrozenOutput(task);
     return GuardStatus([&] {
         Check(VerifyTask(task, false));
         std::size_t used = RetainedCapacityBytes(); Charge(used, taskReplacementCapacityCeiling_);
@@ -400,6 +404,7 @@ Status TerrainMinimapSave::VerifyFrozenOutput(const MapSaveTask& task) const {
 }
 
 Status TerrainMinimapSave::VerifyReadback(const MapSaveTask& task, const MapArchiveSession& saved) const {
+    if (automatic_) return VerifyAutomaticReadback(task, saved);
     return GuardStatus([&] {
         if (&task != taskIdentity_ || task.archive.get() != archiveIdentity_ || task.sourceSha256 != plan_->SourceSha256()
             || task.sourceSha256 != task.archive->SourceSha256()

@@ -86,8 +86,8 @@ struct MapEditSaveRequest {
     // 显式层序供 Agent/工程宿主传入；省略只允许证明 config 默认层序完全一致。
     std::optional<std::vector<std::string>> effectiveLayers;
     std::vector<MapEditTerrainStroke> terrainStrokes;
-    // 单次明确选择：只为真实非空干地高度另存补建已证明缺失的 MapBLP，不接收客户端图像或 SHA。
-    TerrainMinimapSaveChoice minimapChoice = TerrainMinimapSaveChoice::Preserve;
+    // 普通保存根据本次实际地图变化自动重建小地图；不接客户端图像或SHA。
+    TerrainMinimapSaveChoice minimapChoice = TerrainMinimapSaveChoice::Automatic;
     std::vector<MapEditFieldOperation> fieldEdits;
     MapEditPlacementOperation placementEdit;
     // 一个领域批次与地图 SHA 同时绑定，不能提供任意 WTG/WCT/脚本成员字节。

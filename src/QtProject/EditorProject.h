@@ -279,7 +279,7 @@ public:
     //   CommitMapSave（界面线程）：写入诊断，切换到新基线。运行期间 savingMap_ 为真，界面不得修改工程。
     // inPlace 为真时写回打开的地图（原图移入备份目录），target 被忽略。
     [[nodiscard]] std::unique_ptr<MapSaveJob> PrepareMapSave(const std::filesystem::path& target, bool inPlace,
-        Services::TerrainMinimapSaveChoice minimapChoice = Services::TerrainMinimapSaveChoice::Preserve);
+        Services::TerrainMinimapSaveChoice minimapChoice = Services::TerrainMinimapSaveChoice::Automatic);
     [[nodiscard]] Result<std::shared_ptr<const Trigger::MapObjectReferenceSnapshot>> CaptureTriggerMapObjectReferences() const;
     // 同一冻结准备路径，无输出目标；正式预检仍可在专属临时目录构建脚本。
     [[nodiscard]] std::unique_ptr<MapSaveJob> PrepareMapPreflight();
@@ -292,7 +292,7 @@ public:
     [[nodiscard]] std::optional<MapCopySaveResult> CommitMapSave(MapSaveJob& job);
     // 同步执行三段（无界面探针与测试使用）。
     [[nodiscard]] std::optional<MapCopySaveResult> SaveMapCopy(const std::filesystem::path& outputPath,
-        Services::TerrainMinimapSaveChoice minimapChoice = Services::TerrainMinimapSaveChoice::Preserve);
+        Services::TerrainMinimapSaveChoice minimapChoice = Services::TerrainMinimapSaveChoice::Automatic);
     [[nodiscard]] std::optional<MapCopySaveResult> SaveMapInPlace();
     // 是否有尚未写入地图的修改（触发器、物编、资源）。
     [[nodiscard]] bool HasUnsavedMapChanges() const;
@@ -532,7 +532,7 @@ private:
     std::shared_ptr<const detail::TriggerUiBaseline> editTrackingUiBaseline_;
     [[nodiscard]] std::unique_ptr<MapSaveJob> PrepareMapSaveImpl(
         const std::filesystem::path& target, bool inPlace, bool contentOnly,
-        Services::TerrainMinimapSaveChoice minimapChoice = Services::TerrainMinimapSaveChoice::Preserve);
+        Services::TerrainMinimapSaveChoice minimapChoice = Services::TerrainMinimapSaveChoice::Automatic);
     [[nodiscard]] std::optional<std::string> CaptureTriggerFingerprint() const;
 };
 

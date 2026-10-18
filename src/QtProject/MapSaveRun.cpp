@@ -46,12 +46,30 @@ Status PrepareWorkerMinimap(MapSaveJob& job) {
     const auto reject = [](const char* code, const char* message) {
         return Status::Failure("TerrainMinimapSave.Qt", code, message);
     };
-    if (job.minimapChoice != Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly
+    const bool automatic = job.minimapChoice == Services::TerrainMinimapSaveChoice::Automatic;
+    if (!automatic && job.minimapChoice != Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly
         && job.minimapChoice != Services::TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly)
         return reject("MINIMAP_SAVE_CHOICE", "未知的单次地形小地图保存选项。");
-    if (!job.archive || job.inPlace || job.testCopyOnly || job.triggerChanges || !job.objectTransactions.empty()
+    if (automatic) {
+        const auto required = Services::TerrainMinimapSave::RequiresAutomaticGeneration(job);
+        if (!required.Succeeded() || !required.value) return {required.diagnostics};
+        if (!*required.value) {
+            // TGA或完全未变化的已有BLP不重新编码。地形本身的计划仍然必须
+            // 在最终列表和回读阶段核验，不因跳过小地图而跳过正式保存门。
+            if (job.terrainSavePlan) {
+                const auto* task = &job;
+                job.beforePublish = [plan = job.terrainSavePlan, task, previous = std::move(job.beforePublish)] {
+                    if (previous) { const auto status = previous(); if (!status.Succeeded()) return status; }
+                    return plan->VerifyFrozenOutput(task->sourceSha256, task->replacements, task->removals);
+                };
+            }
+            job.minimapChoice = Services::TerrainMinimapSaveChoice::Preserve;
+            return Status::Ok();
+        }
+    }
+    if (!job.archive || (!automatic && (job.inPlace || job.testCopyOnly || job.triggerChanges || !job.objectTransactions.empty()
         || !job.removals.empty() || job.replacements.size() != 1
-        || MinimapMemberName(job.replacements.front().name) != "war3map.w3e")
+        || MinimapMemberName(job.replacements.front().name) != "war3map.w3e")))
         return reject("MINIMAP_SAVE_DOMAIN", "worker补建只接受真实独立另存任务与唯一高度W3E，拒绝测试副本或混合领域。");
 
     // FromArchive仅复制七类MapData原生成员，不复制整幅地图。保留原有
@@ -63,17 +81,16 @@ Status PrepareWorkerMinimap(MapSaveJob& job) {
         "war3map.w3r", "war3map.w3c", "war3map.w3s", "war3map.wts"};
     constexpr auto maximumRaw = MapData::TerrainSavePlanLimits{}.maximumBytes;
     constexpr auto maximumW3e = Render::TerrainMinimapAssetCaptureLimits{}.maxCurrentW3eBytes;
-    std::size_t nativeRaw = 0;
-    for (const auto& member : job.archive->Members()) {
-        const auto key = MinimapMemberName(member.name);
-        if (std::find(nativeNames.begin(), nativeNames.end(), key) == nativeNames.end()) continue;
-        if (member.data.size() > maximumRaw - nativeRaw)
-            return reject("MINIMAP_SAVE_BUDGET", "worker私有会话的七类原生成员超过既有64MiB原字读取额度。");
-        nativeRaw += member.data.size();
-    }
-    if (job.replacements.front().data.size() > maximumW3e)
-        return reject("MINIMAP_SAVE_BUDGET", "worker高度输入超过既有4MiB地形额度。");
-    auto edits = std::make_unique<MapData::MapDataEditSession>(MapDocument::FromArchive(*job.archive));
+    std::vector<std::string> exactNativeNames;
+    for (const auto name : nativeNames) exactNativeNames.emplace_back(name);
+    ArchiveExactMemberLimits nativeLimits;
+    nativeLimits.memberCount = nativeNames.size(); nativeLimits.memberBytes = maximumRaw; nativeLimits.totalBytes = maximumRaw;
+    auto native = job.archive->CaptureExactMembers(exactNativeNames, nativeLimits);
+    if (!native.Succeeded() || !native.value) return {native.diagnostics};
+    std::vector<MapArchiveMember> nativeMembers;
+    for (auto& member : *native.value) if (member.present) nativeMembers.push_back({member.name, std::move(member.bytes)});
+    // 依赖明确名字捕获，DOO未列在(listfile)中也不能被误认成缺失。
+    auto edits = std::make_unique<MapData::MapDataEditSession>(MapDocument::FromMembers(nativeMembers));
     {
         const std::array<std::string, 2> names{"war3map.w3e", "war3map.wpm"};
         ArchiveExactMemberLimits limits;
@@ -89,8 +106,36 @@ Status PrepareWorkerMinimap(MapSaveJob& job) {
         const auto pathing = edits->AttachPathing((*captured.value)[1].bytes);
         if (!pathing.Succeeded()) return pathing;
     } // 在SetTerrain/Capture/Build之前释放本轮源raw临时缓冲。
-    const auto restored = edits->SetTerrain(job.replacements.front().data);
-    if (!restored.Succeeded()) return restored;
+    const MemberReplacement* terrainOutput = nullptr;
+    const MemberReplacement* pathingOutput = nullptr;
+    const std::array<std::pair<std::string_view, MapDataKind>, 7> editableMembers{{
+        {"war3map.w3i", MapDataKind::Settings}, {"war3mapunits.doo", MapDataKind::Units},
+        {"war3map.doo", MapDataKind::Doodads}, {"war3map.w3r", MapDataKind::Regions},
+        {"war3map.w3c", MapDataKind::Cameras}, {"war3map.w3s", MapDataKind::Sounds}, {"war3map.wts", MapDataKind::Strings}}};
+    for (const auto& member : job.replacements) {
+        const auto key = MinimapMemberName(member.name);
+        if (key == "war3map.w3e") terrainOutput = &member;
+        else if (key == "war3map.wpm") pathingOutput = &member;
+        else for (const auto& [name, kind] : editableMembers) if (key == name) {
+            const auto restored = edits->SetSerialized(kind, member.data);
+            if (!restored.Succeeded()) return restored;
+        }
+    }
+    if (terrainOutput && terrainOutput->data.size() > maximumW3e)
+        return reject("MINIMAP_SAVE_BUDGET", "worker地形输入超过既有4MiB地形额度。");
+    if (terrainOutput) {
+        const auto restored = pathingOutput ? edits->SetTerrainAndPathing(terrainOutput->data, pathingOutput->data)
+                                            : edits->SetTerrain(terrainOutput->data);
+        if (!restored.Succeeded()) return restored;
+    } else if (pathingOutput) {
+        const auto restored = edits->SetPathing(pathingOutput->data);
+        if (!restored.Succeeded()) return restored;
+    }
+    for (const auto& removed : job.removals) for (const auto& [name, kind] : editableMembers)
+        if (MinimapMemberName(removed) == name) {
+            const auto restored = edits->Remove(kind);
+            if (!restored.Succeeded()) return restored;
+        }
     auto prepared = Services::TerrainMinimapSave::Prepare(job, *edits, job.minimapGameRoot, job.minimapChoice);
     if (!prepared.Succeeded() || !prepared.value) return {std::move(prepared.diagnostics)};
     auto minimap = std::move(*prepared.value);
@@ -187,15 +232,17 @@ std::optional<MapCopySaveResult> EditorProject::CommitMapSave(MapSaveJob& job) {
         return std::nullopt;
     };
     if (job.nextSession && (job.minimapChoice != Services::TerrainMinimapSaveChoice::Preserve || job.minimapSave)) {
+        const bool automatic = job.minimapChoice == Services::TerrainMinimapSaveChoice::Automatic;
         const bool full = job.minimapChoice == Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly;
         const bool declared = job.minimapChoice == Services::TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly;
-        if (!full && !declared)
+        if (!automatic && !full && !declared)
             return rejectStaleCommit(tr("MINIMAP_SAVE_POLICY_MISMATCH"), tr("小地图保存选项与本次实际生成范围不一致"));
         if (!job.minimapSave || job.terrainSavePlan != job.minimapSave->Plan())
             return rejectStaleCommit(tr("MINIMAP_SAVE_READBACK_MISSING"), tr("小地图保存缺少同一任务的生成资格和地形计划"));
         // 只比较明确选择与同次helper事实；不在Qt重解地图或推测范围政策。
         const auto actualRange = job.minimapSave->Manifest().rangePolicy;
-        if ((full && actualRange != Render::TerrainMinimapRangePolicy::FullW3e)
+        if ((automatic && (!job.minimapSave->ClassicManifest() || actualRange != Render::TerrainMinimapRangePolicy::ClassicPlayable))
+            || (full && actualRange != Render::TerrainMinimapRangePolicy::FullW3e)
             || (declared && actualRange != Render::TerrainMinimapRangePolicy::DeclaredW3iMarginsExteriorMapEdge))
             return rejectStaleCommit(tr("MINIMAP_SAVE_POLICY_MISMATCH"), tr("小地图保存选项与本次实际生成范围不一致"));
     }

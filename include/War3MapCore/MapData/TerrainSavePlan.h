@@ -78,6 +78,9 @@ private:
     TerrainSavePlan() = default;
     [[nodiscard]] Status VerifyMissingMinimapEligibility(const MapDataEditSession& edits) const;
     [[nodiscard]] Status AdmitMissingMinimap(const MapDataEditSession& edits, std::vector<std::byte> generatedBytes);
+    // 正常保存的自动小地图重建：仍受同一正式地形保存门和会话绑定约束，
+    // 但允许源图已有非空 BLP，输出会精确替换该成员；不改变 WPM/SHD/MMP 资格。
+    [[nodiscard]] Status AdmitGeneratedMinimap(const MapDataEditSession& edits, std::vector<std::byte> generatedBytes);
     [[nodiscard]] std::size_t OwnedCapacityBytes() const noexcept;
     [[nodiscard]] static Result<TerrainSavePlan> Complete(TerrainSavePlan plan,
         const MapDataEditSession& edits, const TerrainSavePlanLimits& limits, std::size_t sourceBytes);

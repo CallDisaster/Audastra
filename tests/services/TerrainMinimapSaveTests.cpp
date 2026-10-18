@@ -120,7 +120,8 @@ struct Fixture {
     std::filesystem::path gameRoot;
     MapArchiveSession source;
     explicit Fixture(bool presentMinimap = false, bool gameWinner = false, bool colorful = false,
-        std::optional<Bytes> settings = {}, bool standardEdges = false, std::optional<Bytes> minimapTga = {})
+        std::optional<Bytes> settings = {}, bool standardEdges = false, std::optional<Bytes> minimapTga = {},
+        bool classicMaterials = false)
         : w3i(std::move(settings)), edits(SettingsDocument(w3i)) {
         TerrainGridSnapshot terrain;
         terrain.header.width = terrain.header.height = 9; terrain.header.mainTileset = 'L';
@@ -137,6 +138,13 @@ struct Fixture {
         wpm = Text("MP3W"); wpm.resize(16 + 32 * 32, std::byte{0x82}); Put32(wpm, 4, 0); Put32(wpm, 8, 32); Put32(wpm, 12, 32);
         Require(edits.AttachTerrain(w3e).Succeeded() && edits.AttachPathing(wpm).Succeeded(), "附上真实原始W3E/WPM");
         auto members = gameWinner ? std::vector<MapArchiveMember>{} : Materials(colorful);
+        if (classicMaterials) {
+            for (auto& member : members) if (member.name == "TerrainArt\\CliffTypes.slk")
+                member.data = Slk({"cliffID", "texDir", "texFile"}, {{"CLdi", "Fixture", "Cliff"}});
+            members.push_back({"Fixture\\Cliff.blp", Atlas(false)});
+            members.push_back({"UI\\MiscData.txt", Text("[Water]\nDeepLevelPathing=64\n")});
+            members.push_back({"UI\\WorldEditData.txt", Text("[CameraMargins]\nLeft=0\nRight=0\nBottom=0\nTop=0\n")});
+        }
         members.push_back({"war3map.w3e", w3e}); members.push_back({"war3map.wpm", wpm});
         if (w3i) members.push_back({"war3map.w3i", *w3i});
         members.push_back({"war3map.j", Text("function config takes nothing returns nothing\nendfunction\nfunction main takes nothing returns nothing\nendfunction\n")});
@@ -238,7 +246,8 @@ void DeclaredChoiceRequiresActualW3iAndRetainsStandardEdges() {
 
 void PreserveAndEarlyRejections() {
     MapSaveTask empty; MapDataEditSession noEdits{MapDocument::FromMembers({})};
-    Require(!Take(TerrainMinimapSave::Prepare(empty, noEdits, {})), "默认Preserve成功null且不访问无效源/gameRoot");
+    Require(!Take(TerrainMinimapSave::Prepare(empty, noEdits, {}, TerrainMinimapSaveChoice::Preserve)),
+        "显式Preserve成功null且不访问无效源/gameRoot");
     Rejected(TerrainMinimapSave::Prepare(empty, noEdits, {}, static_cast<TerrainMinimapSaveChoice>(99)), "MINIMAP_SAVE_CHOICE");
     Fixture noChange; MapSaveTask noChangeTask; noChange.Freeze(noChangeTask);
     Rejected(TerrainMinimapSave::Prepare(noChangeTask, noChange.edits, noChange.gameRoot,
@@ -396,6 +405,62 @@ void PersistentArchiveSaveCopyAndIndependentOpen() {
         << task.target.string() << " source=" << sourceSha << " encoded=" << prepared->Manifest().outputBlpSha256 << '\n';
 }
 
+void AutomaticDecisionUsesExactSourceMembers() {
+    Fixture existing(true, false, false, W3i());
+    MapSaveTask untouched; existing.Freeze(untouched);
+    Require(!Take(TerrainMinimapSave::RequiresAutomaticGeneration(untouched)),
+        "已有BLP且地形与对象未变时必须沿用原字，空BLP仍是已存在成员");
+    existing.Stroke(); MapSaveTask changed; existing.Freeze(changed);
+    Require(Take(TerrainMinimapSave::RequiresAutomaticGeneration(changed)),
+        "地形变化后普通保存必须自动重建已有BLP，而不是仅在缺失时补建");
+    Fixture missing(false, false, false, W3i()); MapSaveTask newMap; missing.Freeze(newMap);
+    Require(Take(TerrainMinimapSave::RequiresAutomaticGeneration(newMap)), "完整新图缺少小地图时自动生成");
+    for (const auto& tga : {Bytes{}, Text("original tga bytes")}) {
+        Fixture original(false, false, false, W3i(), false, tga); original.Stroke();
+        MapSaveTask task; original.Freeze(task);
+        Require(!Take(TerrainMinimapSave::RequiresAutomaticGeneration(task)),
+            "源图已有TGA（包括present空成员）时不生成BLP");
+        Require(!Take(TerrainMinimapSave::Prepare(task, original.edits, original.gameRoot, TerrainMinimapSaveChoice::Automatic)),
+            "TGA保留不要求加载地形贴图或返回生成资格");
+    }
+    MapSaveTask unowned;
+    Rejected(TerrainMinimapSave::RequiresAutomaticGeneration(unowned), "MINIMAP_SAVE_SOURCE");
+}
+
+void AutomaticGeneratedBlpIsVerifiedThroughSaveCopyAndInPlace() {
+    for (const auto [existing, inPlace] : {std::pair{false, false}, std::pair{true, false}, std::pair{true, true}}) {
+        Fixture fixture(existing, false, false, W3i(), false, {}, true);
+        if (existing) fixture.Stroke();
+        MapSaveTask task; fixture.Freeze(task);
+        task.inPlace = inPlace;
+        if (inPlace) {
+            task.target = fixture.source.SourcePath();
+            task.inPlaceOptions.backupDirectory = fixture.directory.Path() / "backups";
+        }
+        const auto prepared = Take(TerrainMinimapSave::Prepare(task, fixture.edits, fixture.gameRoot,
+            TerrainMinimapSaveChoice::Automatic));
+        Require(prepared && prepared->ClassicManifest(), "正常保存必须使用原版逐格算法清单");
+        Require(prepared->Manifest().encodedMipCount == 1 && prepared->Manifest().encodedTotalMipPixels == 65536,
+            "正常保存生成JPEGq40单mip，不沿用旧调色板九mip政策");
+        task.replacements.push_back(prepared->MinimapReplacement());
+        Require(prepared->VerifyCurrent(task, fixture.edits, fixture.gameRoot).Succeeded(), "自动小地图当前会话与依赖复核");
+        task.beforePublish = [&] { return prepared->VerifyFrozenOutput(task); };
+        MapSaveService::Run(task);
+        if (!task.succeeded || !task.nextSession) {
+            std::string message = "自动小地图正式保存失败";
+            for (const auto& diagnostic : task.diagnostics) message += " | " + diagnostic.code + ":" + diagnostic.message;
+            throw std::runtime_error(message);
+        }
+        auto saved = Take(MapArchiveSession::Open(task.target));
+        Require(prepared->VerifyReadback(task, saved).Succeeded(), "自动小地图独立Open回读真实输出");
+        Require(Take(saved.ReadMember("war3mapMap.blp")) == prepared->MinimapReplacement().data,
+            "自动小地图保存字节与实际生成完全一致");
+        Require(Take(saved.ReadMember("war3map.shd")) == Text(std::string_view("\x11\x19", 2)),
+            "自动小地图准入不改变SHD保存资格或原字");
+        if (inPlace) Require(!task.backup.empty() && std::filesystem::exists(task.backup), "原地保存保留真实备份");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -403,6 +468,8 @@ int main() {
         PreserveAndEarlyRejections(); FinalListRevisionAndWinnersAreReal(); PersistentArchiveSaveCopyAndIndependentOpen();
         DeclaredChoiceRequiresActualW3iAndRetainsStandardEdges();
         ExistingTgaCannotBeShadowedByGeneratedBlp();
+        AutomaticDecisionUsesExactSourceMembers();
+        AutomaticGeneratedBlpIsVerifiedThroughSaveCopyAndInPlace();
         std::cout << "Terrain missing-only minimap save tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

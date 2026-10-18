@@ -594,11 +594,13 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         const bool triggerRequest = request.triggerEdits.has_value() || request.triggerTransaction != nullptr;
         const bool objectRequest = !request.objectTransactions.empty();
         const bool auxiliaryRequest = request.auxiliaryTransaction != nullptr;
-        if (request.minimapChoice != TerrainMinimapSaveChoice::Preserve
+        if (request.minimapChoice != TerrainMinimapSaveChoice::Automatic
+            && request.minimapChoice != TerrainMinimapSaveChoice::Preserve
             && request.minimapChoice != TerrainMinimapSaveChoice::GenerateMissingGroundOnly
             && request.minimapChoice != TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly)
             return Fail("SAVE_MINIMAP_CHOICE_INVALID", "小地图保存选项未获识别。");
-        if (request.minimapChoice != TerrainMinimapSaveChoice::Preserve && !terrainRequest)
+        if (request.minimapChoice != TerrainMinimapSaveChoice::Preserve
+            && request.minimapChoice != TerrainMinimapSaveChoice::Automatic && !terrainRequest)
             return Fail("SAVE_MINIMAP_SCOPE_INVALID", "补建缺失小地图只能伴随非空干地高度另存事务。");
         if (request.triggerEdits && request.triggerTransaction)
             return Fail("SAVE_TRIGGER_INPUT_CONFLICT", "触发器批次与完整冻结事务不能在同一次保存中混用。");
@@ -706,7 +708,8 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             originalTerrainShaValue = *terrainSha.value;
             savedTerrainShaValue = *savedTerrainSha.value;
             savedPathingShaValue = *savedPathingSha.value;
-            if (request.minimapChoice == TerrainMinimapSaveChoice::Preserve) {
+            if (request.minimapChoice == TerrainMinimapSaveChoice::Preserve
+                || request.minimapChoice == TerrainMinimapSaveChoice::Automatic) {
                 auto prepared = MapData::TerrainSavePlan::Prepare(source, edits);
                 if (!prepared.Succeeded() || !prepared.value) return Forward(std::move(prepared.diagnostics));
                 terrainPlan = std::make_shared<const MapData::TerrainSavePlan>(std::move(*prepared.value));
@@ -728,17 +731,34 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         if (!frozen.Succeeded()) return Forward(frozen.diagnostics);
         task.diagnostics.insert(task.diagnostics.end(), fieldDiagnostics.begin(), fieldDiagnostics.end());
         task.replacements = std::move(replacements);
+        if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic) {
+            const auto required = TerrainMinimapSave::RequiresAutomaticGeneration(task);
+            if (!required.Succeeded() || !required.value) return Forward(required.diagnostics);
+            if (*required.value && !edits.Terrain()) {
+                const std::array<std::string, 2> names{"war3map.w3e", "war3map.wpm"};
+                const auto members = source.CaptureExactMembers(names);
+                if (!members.Succeeded() || !members.value) return Forward(members.diagnostics);
+                if (!(*members.value)[0].present || !(*members.value)[1].present)
+                    return Fail("SAVE_MINIMAP_TERRAIN_MISSING", "自动小地图重建需要准确可读取的源W3E和WPM。");
+                auto attached = edits.AttachTerrain((*members.value)[0].bytes);
+                if (!attached.Succeeded()) return Forward(attached.diagnostics);
+                attached = edits.AttachPathing((*members.value)[1].bytes);
+                if (!attached.Succeeded()) return Forward(attached.diagnostics);
+            }
+        }
         if (request.minimapChoice != TerrainMinimapSaveChoice::Preserve) {
             auto prepared = TerrainMinimapSave::Prepare(task, edits, request.gameRoot, request.minimapChoice);
             if (!prepared.Succeeded() || !prepared.value) return Forward(std::move(prepared.diagnostics));
             minimapSave = std::move(*prepared.value);
-            if (!minimapSave || !minimapSave->Plan())
+            if (!minimapSave && request.minimapChoice != TerrainMinimapSaveChoice::Automatic)
                 return Fail("SAVE_MINIMAP_PREPARATION_MISSING", "补建小地图未返回本次实际保存任务的完整计划。");
-            task.replacements.push_back(minimapSave->MinimapReplacement());
-            // 同一个扩展计划负责五成员；不能继续用旧 Preserve 计划拒绝本次生成的 MapBLP。
-            terrainPlan = minimapSave->Plan();
-            const auto current = minimapSave->VerifyCurrent(task, edits, request.gameRoot);
-            if (!current.Succeeded()) return Forward(current.diagnostics);
+            if (minimapSave) {
+                task.replacements.push_back(minimapSave->MinimapReplacement());
+                // 同一个扩展计划负责五成员；不能继续用旧 Preserve 计划拒绝本次生成的 MapBLP。
+                terrainPlan = minimapSave->Plan();
+                const auto current = minimapSave->VerifyCurrent(task, edits, request.gameRoot);
+                if (!current.Succeeded()) return Forward(current.diagnostics);
+            }
         }
         if (terrainPlan) {
             const auto& diagnostics = terrainPlan->Diagnostics();

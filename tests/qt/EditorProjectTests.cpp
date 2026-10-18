@@ -282,6 +282,7 @@ private slots:
     void TerrainSaveReadbackGatesCommit_data();
     void TerrainSaveReadbackGatesCommit();
     void TerrainSavePrepareStillRequiresToolchain();
+    void AutomaticMinimapDefaultPrepareAndSaveCopy();
     void MissingMinimapWorkerReadbackGatesCommit_data();
     void MissingMinimapWorkerReadbackGatesCommit();
     void MissingMinimapPrepareKeepsDefaultAndRejectsMixedChanges();
@@ -1005,6 +1006,54 @@ void EditorProjectTests::TerrainSavePrepareStillRequiresToolchain() {
     QCOMPARE(project.editRevision_.Current(), scopes);
     QCOMPARE(project.editRevision_.Baseline(EditSaveTarget::Map)->scopes, baseline->scopes);
     QCOMPARE(Sha256File(source).value, originalSha.value);
+}
+
+void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
+    QTemporaryDir root; QVERIFY(root.isValid());
+    auto members = DeclaredMissingMinimapQtMembers();
+    const auto text = [](std::string_view value) {
+        const auto bytes = std::as_bytes(std::span(value.data(), value.size()));
+        return std::vector<std::byte>(bytes.begin(), bytes.end());
+    };
+    for (auto& member : members) if (member.name == "TerrainArt\\CliffTypes.slk")
+        member.data = text("ID;PWXL;N;E\nC;X1;Y1;K\"cliffID\"\nC;X2;Y1;K\"texDir\"\nC;X3;Y1;K\"texFile\"\n"
+            "C;X1;Y2;K\"Cl01\"\nC;X2;Y2;K\"Fixture\"\nC;X3;Y2;K\"Cliff\"\nE\n");
+    const auto ground = std::find_if(members.begin(), members.end(), [](const auto& member) { return member.name == "Fixture\\Ground.blp"; });
+    QVERIFY(ground != members.end());
+    const auto cliffBytes = ground->data;
+    members.push_back({"Fixture\\Cliff.blp", cliffBytes});
+    members.push_back({"UI\\MiscData.txt", text("[Water]\nDeepLevelPathing=64\n")});
+    members.push_back({"UI\\WorldEditData.txt", text("[CameraMargins]\nLeft=0\nRight=0\nBottom=0\nTop=0\n")});
+    const auto source = std::filesystem::path(root.filePath("original-plain.w3x").toStdWString());
+    const auto target = std::filesystem::path(root.filePath("default-save-copy.w3x").toStdWString());
+    QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
+    EditorProject project; QVERIFY(BindTerrainSaveProject(project, source));
+    const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
+    // 真实生产Prepare入口，没有显式小地图选项，也没有伪造ScriptRebuild结果。
+    // 无业务修改且缺少小地图的新图不需要另造脚本工具链；worker补齐图像。
+    auto job = project.PrepareMapSave(target, false);
+    QVERIFY(job);
+    QCOMPARE(job->minimapChoice, Services::TerrainMinimapSaveChoice::Automatic);
+    QVERIFY(!job->minimapSave);
+    EditorProject::RunMapSave(*job);
+    QVERIFY2(job->succeeded, job->diagnostics.empty() ? "default automatic save failed" : job->diagnostics.back().message.c_str());
+    QVERIFY(job->minimapSave && job->minimapSave->ClassicManifest());
+    QCOMPARE(job->minimapSave->Manifest().encodedMipCount, 1u);
+    QVERIFY(job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded());
+    const auto generated = job->minimapSave->MinimapReplacement().data;
+    QVERIFY(project.CommitMapSave(*job));
+    QVERIFY(!project.HasUnsavedMapChanges());
+    auto saved = MapArchiveSession::Open(target); QVERIFY(saved.Succeeded());
+    QCOMPARE(saved.value->ReadMember("war3mapMap.blp").value, std::optional(generated));
+    QCOMPARE(Sha256File(source).value, sourceSha.value);
+    // 第二次没有任何修改时沿用上次BLP，不再读配置、生成噪点或编码。
+    const auto secondTarget = std::filesystem::path(root.filePath("unchanged-save-copy.w3x").toStdWString());
+    auto second = project.PrepareMapSave(secondTarget, false); QVERIFY(second);
+    EditorProject::RunMapSave(*second);
+    QVERIFY2(second->succeeded, second->diagnostics.empty() ? "unchanged save failed" : second->diagnostics.back().message.c_str());
+    QVERIFY(!second->minimapSave);
+    auto unchanged = MapArchiveSession::Open(secondTarget); QVERIFY(unchanged.Succeeded());
+    QCOMPARE(unchanged.value->ReadMember("war3mapMap.blp").value, std::optional(generated));
 }
 
 void EditorProjectTests::MissingMinimapWorkerReadbackGatesCommit_data() {
