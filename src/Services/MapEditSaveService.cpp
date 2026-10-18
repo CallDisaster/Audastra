@@ -628,6 +628,16 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         if (source.SourceSha256() != request.expectedSourceSha256) {
             return Fail("SAVE_SOURCE_STALE", "源归档 SHA-256 与编辑请求不符，请重新获取数据快照。");
         }
+        // 旧的显式 missing-only 入口必须在编辑/脚本准备前拒绝已有成员，
+        // 包括 present-empty；最终派生阶段仍会再次核验，不能先写再发现冲突。
+        if (request.minimapChoice == TerrainMinimapSaveChoice::GenerateMissingGroundOnly
+            || request.minimapChoice == TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly) {
+            const std::array<std::string, 1> names{"war3mapMap.blp"};
+            const auto mini = source.DescribeExactMemberIdentities(source.SourceSha256(), names);
+            if (!mini.Succeeded() || !mini.value) return Forward(mini.diagnostics);
+            if (mini.value->members[0].present)
+                return Fail("MINIMAP_SAVE_NOT_MISSING", "源图已有BLP小地图，不能使用只补建缺失小地图的选项。");
+        }
         // 本轮默认小地图会消费W3I和两份DOO；匿名MPQ里“没列名”不代表
         // 不存在。所有已知地图数据在同一真实来源上按明确名字捕获，再交
         // 原MapDocument解析器，不能让对象捕获把未列名的现有摆放当作删除。

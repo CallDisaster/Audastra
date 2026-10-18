@@ -1066,6 +1066,7 @@ void TestMissingMinimapChoiceCannotBroadenTerrainSaveScope() {
     Require(present.Succeeded() && present.value, "write independent present-empty source");
     request.sourceMap = presentSource;
     request.expectedSourceSha256 = present.value->sha256;
+    request.terrainStrokes[0].brush.kind = MapData::TerrainBrushKind::Raise;
     request.terrainStrokes[0].brush.strength = 1;
     request.minimapChoice = TerrainMinimapSaveChoice::GenerateMissingGroundOnly;
     Require(HasCode(SaveMapEditCandidate(request).diagnostics, "MINIMAP_SAVE_NOT_MISSING"),
@@ -1096,7 +1097,10 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
     auto opened = MapArchiveSession::Open(created.value->path);
     Require(opened.Succeeded() && opened.value, "reopen original creation fixture");
     std::vector<MapArchiveMember> members(opened.value->Members().begin(), opened.value->Members().end());
-    const auto standardMembers = members; // 新政策独立场景保留Create实际产生的标准SW-anchor MapEdge原字。
+    members.erase(std::remove_if(members.begin(), members.end(), [](const auto& member) {
+        return member.name == "war3mapMap.blp";
+    }), members.end());
+    const auto standardMembers = members; // 新政策独立场景保留标准SW-anchor MapEdge原字，但不预置小地图。
     bool hadTerrain = false;
     for (auto& member : members) {
         if (member.name != "war3map.w3e") continue;
