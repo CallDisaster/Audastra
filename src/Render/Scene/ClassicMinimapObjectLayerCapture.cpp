@@ -6,6 +6,7 @@
 #include "War3MapCore/ObjectData/ObjectFieldSchema.h"
 #include "War3MapCore/Render/AnimationSourceGuard.h"
 #include "War3MapCore/Resources/ImportTable.h"
+#include "War3MapCore/Text/TextUtil.h"
 
 #include <map>
 #include <memory>
@@ -139,6 +140,22 @@ struct Context {
     void Verify() { Check(guard.Verify()); Check(source.VerifySourceUnchanged()); }
 };
 
+std::string ConfiguredInvalidModel(Context& context) {
+    const auto& file = context.Read("UI/WorldEditData.txt");
+    if (!file) Fail("CLASSIC_OBJECT_LAYER_INVALID_MODEL_CONFIG_MISSING",
+        "对象模型路径为空，且游戏/地图没有可读的 UI/WorldEditData.txt。");
+    const auto text = std::string(reinterpret_cast<const char*>(file->bytes.data()), file->bytes.size());
+    const auto profile = Text::ParseProfile(text);
+    const auto section = profile.find("worldeditart");
+    if (section == profile.end()) Fail("CLASSIC_OBJECT_LAYER_INVALID_MODEL_CONFIG_MISSING",
+        "UI/WorldEditData.txt 缺少 [WorldEditArt] 节，不能确定 InvalidModel。");
+    const auto entry = section->second.find("invalidmodel");
+    if (entry == section->second.end() || entry->second.empty())
+        Fail("CLASSIC_OBJECT_LAYER_INVALID_MODEL_CONFIG_MISSING",
+            "UI/WorldEditData.txt 的 [WorldEditArt] 节缺少 InvalidModel 值，不能猜测模型路径。");
+    return Canonical(entry->second);
+}
+
 std::unique_ptr<CodecDocument> Native(Context& context, ObjectData::ObjectType type) {
     const auto& file = context.Read(ObjectData::NativeFileName(type));
     if (!file) return {};
@@ -185,6 +202,9 @@ Result<ClassicMinimapObjectLayer> CaptureClassicMinimapObjectLayer(
         input.doodadOverrides = dynamic_cast<const ObjectData::NativeObjectDocument*>(doodads.get());
         input.destructableOverrides = dynamic_cast<const ObjectData::NativeObjectDocument*>(destructables.get());
         input.resources = &resolver; input.worldOrigin = worldOrigin; input.sourceRectangle = rectangle;
+        // 与地形/物编读取共用同一张 WorldEdit profile：Read 会记录真实
+        // map/session/game winner，后续 frozen/readback 会再次核对该依赖。
+        input.invalidModelPath = ConfiguredInvalidModel(context);
         auto output = Take(BuildClassicMinimapObjectLayer(input, limits));
         output.dependencies = std::move(context.dependencies); context.Verify();
         return Result<ClassicMinimapObjectLayer>::Success(std::move(output));

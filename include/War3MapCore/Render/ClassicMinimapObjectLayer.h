@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -19,7 +20,8 @@
 namespace War3Map::Render {
 
 // 原版对象层颜色：MM* 字段优先；useMMColor=0 时尝试模型纹理代表色，模型/贴图
-// 缺失时使用 WorldEdit 的固定深绿色 (RGB 0,64,0)。不使用位置、rawcode 或路径猜色。
+// 缺失时使用 WorldEdit 的固定深绿色 (RGB 0,64,0)。InvalidModel 路径必须来自
+// 同一次捕获的 [WorldEditArt] / InvalidModel profile，不使用猜测路径。
 enum class ClassicMinimapObjectColorSource : std::uint8_t { CustomFields, ModelTextures, FallbackDarkGreen };
 
 struct ClassicMinimapObjectStyle {
@@ -59,6 +61,9 @@ struct ClassicMinimapObjectLayerInput {
     std::array<float, 2> worldOrigin{};
     std::array<std::uint32_t, 4> sourceRectangle{}; // x0,y0,x1,y1, half-open map cells
     bool highResolution = false;
+    // [WorldEditArt] InvalidModel 的实际配置值。对象捕获会把配置文件纳入
+    // dependency；独立构造层时未提供它则对缺失模型 fail-closed。
+    std::optional<std::string> invalidModelPath;
 };
 
 struct ClassicMinimapObjectLayer {

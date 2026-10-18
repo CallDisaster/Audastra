@@ -73,7 +73,8 @@ MapData::DoodadPlacement Placement(std::string rawcode = "TEST") {
 ClassicMinimapObjectLayerInput Input(const ObjectData::StandardObjectCatalog& catalog,
     const Resources::ResourceResolver& resources, const std::vector<MapData::DoodadPlacement>& placements) {
     ClassicMinimapObjectLayerInput input; input.placements = placements; input.catalog = &catalog;
-    input.resources = &resources; input.sourceRectangle = {0, 0, 8, 8}; return input;
+    input.resources = &resources; input.sourceRectangle = {0, 0, 8, 8};
+    input.invalidModelPath = "WorldEditArt\\InvalidModel.mdx"; return input;
 }
 
 void FixedFieldsAndOrder() {
@@ -109,6 +110,11 @@ void RejectBrokenAndOverBudget() {
     Require(!BuildClassicMinimapObjectLayer(Input(badColor, none, placements)).Succeeded(), "无效MM字段不得省略对象后成功");
     placements.front().rawcode = "NOPE";
     Require(!BuildClassicMinimapObjectLayer(Input(catalog, resources, placements)).Succeeded(), "未知对象不等于空对象层");
+    auto noConfigCatalog = Catalog();
+    const std::vector<MapData::DoodadPlacement> noConfigPlacements{Placement("AUTO")};
+    auto withoutConfig = Input(noConfigCatalog, resources, noConfigPlacements);
+    withoutConfig.invalidModelPath.reset();
+    Require(!BuildClassicMinimapObjectLayer(withoutConfig).Succeeded(), "缺少InvalidModel配置不得猜测模型路径");
 }
 }
 

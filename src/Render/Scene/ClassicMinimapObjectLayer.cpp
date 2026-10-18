@@ -240,7 +240,12 @@ Result<ClassicMinimapObjectLayer> BuildClassicMinimapObjectLayer(
         const auto variations = std::max(1, Integer(entry->Field("numvar")).value_or(1));
         if (placement.variation < 0) return Fail("CLASSIC_MINIMAP_OBJECT_VARIATION", "对象变体编号不能为负。");
         style.modelPath = MdxModelFile(entry->Field("file"), static_cast<std::uint32_t>(placement.variation), static_cast<std::uint32_t>(variations));
-        if (style.modelPath.empty()) style.modelPath = "WorldEditArt\\InvalidModel.mdx";
+        if (style.modelPath.empty()) {
+            if (!input.invalidModelPath || input.invalidModelPath->empty())
+                return Fail("CLASSIC_MINIMAP_OBJECT_INVALID_MODEL_CONFIG",
+                    "对象模型路径为空，但未提供同一次捕获的 WorldEditArt/InvalidModel 配置。");
+            style.modelPath = *input.invalidModelPath;
+        }
         style.pathingTexture = std::string(entry->Field("pathtex"));
         if (style.pathingTexture == "_") style.pathingTexture.clear();
         style.replaceableTexture = std::string(entry->Field("texfile"));
