@@ -18,8 +18,8 @@ int main(int argc, char* argv[]) {
     QCoreApplication::setApplicationVersion(QString::fromUtf8(War3Map::BuildInfo::Version));
 
     QCommandLineParser parser;
-    parser.setApplicationDescription("War3MapEditor64 MCP Server (stdio / local Streamable HTTP)");
-    parser.addHelpOption();
+    parser.setApplicationDescription("Audastra MCP Server (stdio / local Streamable HTTP)");
+    const QCommandLineOption helpOpt = parser.addHelpOption();
     parser.addVersionOption();
 
     QCommandLineOption workspaceOpt(
@@ -42,6 +42,11 @@ int main(int argc, char* argv[]) {
     parser.addOption(httpTokenEnvOpt);
     QCommandLineOption feedbackDataOpt("feedback-data-dir", "使用显式本地反馈队列目录；不恢复用户同意、不发送网络请求", "path");
     parser.addOption(feedbackDataOpt);
+    // 帮助与 war3-map-cli 一样按 UTF-8 输出；Qt 默认按系统代码页输出，管道读取方会得到乱码。
+    if (parser.parse(app.arguments()) && parser.isSet(helpOpt)) {
+        std::cout << parser.helpText().toUtf8().constData() << std::flush;
+        return 0;
+    }
     parser.process(app);
 
     War3Map::Mcp::McpServer server;

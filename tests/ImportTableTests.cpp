@@ -161,8 +161,24 @@ void TestUnrecognizedAndArchiveDisambiguation() {
     Require(withDangling.value->Upsert("ReplaceableTextures/new.blp", noDanglingMember).Succeeded(),
         "proven dangling record must not block unrelated imports");
     Require(withDangling.value->Entries().front() == ImportRecord{0, "[effe][0058].mdx"}, "dangling record must stay verbatim");
-    Require(!withDangling.value->Upsert("war3mapImported/[effe][0058].mdx", noDanglingMember).Succeeded(),
-        "import that may alias the dangling record must be rejected");
+    // 补回悬空记录指向的成员：保存后只有标准前缀路径存在，记录唯一指向本次导入，原样沿用、不追加。
+    {
+        auto restored = ImportTable::Parse(dangling);
+        Require(restored.value->Upsert("war3mapImported/[effe][0058].mdx", noDanglingMember).Succeeded(),
+            "restoring the member a dangling record names must resolve that record");
+        Require(!restored.value->IsModified() && restored.value->Serialize().value == dangling,
+            "restored dangling record must stay verbatim without a duplicate entry");
+        Require(!restored.value->Upsert("war3mapImported/[effe][0058].mdx").Succeeded(),
+            "without archive evidence the dangling record must still block its own paths");
+        auto direct = ImportTable::Parse(dangling);
+        Require(direct.value->Upsert("[effe][0058].mdx", noDanglingMember).Succeeded()
+            && !direct.value->IsModified() && direct.value->Serialize().value == dangling,
+            "restoring the unprefixed candidate also resolves the record verbatim");
+        const auto prefixedOnly = [](std::string_view path) { return path == "war3mapImported\\Darion.blp"; };
+        auto standard = ImportTable::Parse(Fixture({{5, "Darion.blp"}}));
+        Require(standard.value->Upsert("Darion.blp", prefixedOnly).Succeeded() && standard.value->Entries().size() == 2,
+            "standard records keep resolving from the real archive, a root-level file of the same name still appends");
+    }
     Require(withDangling.value->Remove("Keep.blp", noDanglingMember).Succeeded() && withDangling.value->Entries().size() == 2,
         "removal next to a dangling record must succeed");
 

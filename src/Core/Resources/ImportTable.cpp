@@ -201,9 +201,20 @@ Status ImportTable::Upsert(std::string_view archivePath, const ImportMemberExist
     }
     const auto wanted = CanonicalImportPath(archivePath);
     if (!wanted.Succeeded()) return FailureStatus(wanted);
+    // 本次导入的成员保存后必然存在。未知标志记录若仅因缺少成员证据而可能指向它，
+    // 就把它计入证据重新解析：唯一指向本次路径时沿用原记录（不改写 flags），另一路径也存在仍是歧义。
+    // 只对“缺证据”的记录补证据，标准/完整路径记录的解析不受影响；没有归档证据的调用方保持拒绝。
+    const ImportMemberExists afterImport = exists ? ImportMemberExists([&](std::string_view path) {
+        const auto canonical = CanonicalImportPath(path);
+        return (canonical.Succeeded() && *canonical.value == *wanted.value) || exists(path);
+    }) : ImportMemberExists{};
     bool found = false;
     for (const auto& entry : entries_) {
-        const auto matches = MatchesRecord(entry, *wanted.value, exists, scope_);
+        auto matches = MatchesRecord(entry, *wanted.value, exists, scope_);
+        if (!matches.Succeeded() && afterImport && !matches.diagnostics.empty()
+            && matches.diagnostics.front().code == "IMPORT_FLAGS_UNSUPPORTED") {
+            matches = MatchesRecord(entry, *wanted.value, afterImport, scope_);
+        }
         if (!matches.Succeeded()) return FailureStatus(matches);
         found = found || *matches.value;
     }

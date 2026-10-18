@@ -97,7 +97,10 @@ war3-map-cli terrain-block <map-archive> <source-sha256> <terrain-sha256> <x> <y
 war3-map-cli map-edit-save <source-map> <source-sha256> <terrain-sha256> <ydwe-root> <war3-root> <new-candidate.w3x> --stroke <raise|lower|smooth> <circle|square> <vertex-x> <vertex-y> <radius-0..16> <strength> [--stroke ...] [--layer <id> ...]
 war3-map-cli terrain-blight-save <source-map> <source-sha256> <terrain-sha256> <ydwe-root> <war3-root> <vertex-x> <vertex-y> <radius-0..16> <set|clear> <new-candidate.w3x> [--layer <id> ...]
 war3-map-cli script-build <ydwe-root> <war3-root> <map> <out.j> [--compile <work-dir> [--external|--cross-check]]
+war3-map-cli archive-member-add <source-map> <source-sha256> <new-candidate.w3x> <member> <file> [<member> <file> ...]
 ```
+
+往地图里补文件只能用 `archive-member-add`（CLI）或编辑器端口的 `imports_add`（MCP）。保存只写本次改动涉及的成员，不扫描工作目录，把文件拷进展开目录不会进入候选。导入清单里标志不明的旧记录，在补回它指向的唯一成员后按原记录保留；两个可能路径都有成员时仍拒绝。
 
 旋转角度范围为 `[0,360)`；复制最多4096个来源实例；笔划最多16笔，CLI 点位是地形顶点索引。raise/lower strength 为 `>0..1024`，smooth 为 `>0..1`；通行性和布局门禁仍会进一步拒绝不安全来源。地物跟随、其他未开放笔刷不因此放开。`--layer` 必须是已发现的真实函数库层，不能拿虚构层绕过目录检查。
 

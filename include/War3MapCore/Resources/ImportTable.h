@@ -49,6 +49,7 @@ public:
 
     // 新增使用 flags=13 的完整路径；已有同一归档路径时保持原记录和字节不变。
     // 验证全部已有记录后再修改，歧义/不安全路径失败不影响文档。
+    // 提供 exists 时，本次路径计为保存后存在的成员：缺证据的未知标志记录因此唯一指向它时沿用该记录。
     [[nodiscard]] Status Upsert(
         std::string_view archivePath,
         const ImportMemberExists& exists = {});

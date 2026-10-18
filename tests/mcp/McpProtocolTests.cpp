@@ -102,6 +102,10 @@ void TestToolSurface() {
                 && properties.contains("expected_source_sha256") && properties.contains("expected_catalog_sha256"),
                 "public text query exposes bounded pages and the same source identity guards");
         }
+        if (tool.value("name") == "imports_add" || tool.value("name") == "lua_file_write") {
+            Expect(tool.value("description").toString().startsWith(QStringLiteral("仅编辑器 MCP 端口可用")),
+                "standalone server must mark editor-only tools in their description");
+        }
         if (tool.value("name") != "save_terrain_blight_candidate") continue;
         const QJsonObject schema = tool.value("inputSchema").toObject();
         const QJsonObject properties = schema.value("properties").toObject();

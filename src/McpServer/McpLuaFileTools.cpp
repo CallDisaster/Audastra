@@ -122,7 +122,8 @@ QJsonObject InvokeLuaFileTool(const QString& name, const QJsonObject& args, cons
         if (args.contains("replace_existing") && !args.value("replace_existing").isBool())
             return Failure("IMPORTS_ADD_ARGUMENT_INVALID", "replace_existing 必须是 true 或 false。");
     }
-    if (!host.invoke) return Failure("LUA_FILE_NO_EDITOR", "此宿主没有打开的地图，请连接正在编辑该地图的编辑器 MCP 端口。");
+    if (!host.invoke) return Failure("LUA_FILE_NO_EDITOR",
+        "此宿主没有打开的地图。请在编辑器中打开该地图，于“应用设置 → MCP 连接”启用服务，再连接编辑器的 MCP 端口调用本工具。");
     auto result = host.invoke(name, args);
     if (name == "lua_files_list" && result.value("ok").toBool()) {
         // MCP会把compact正文作为content[0].text再次JSON转义；给128B request id与外壳留512B。
@@ -137,6 +138,8 @@ QJsonObject InvokeLuaFileTool(const QString& name, const QJsonObject& args, cons
 void RegisterLuaFileTools(McpServer& server) {
     for (auto tool : LuaFileToolDefinitions()) {
         const auto name = tool.name;
+        // 独立服务没有打开的地图：保留同一份清单与参数，但在说明里标明只能通过编辑器端口执行。
+        tool.description = QStringLiteral("仅编辑器 MCP 端口可用（独立服务只校验参数）。") + tool.description;
         tool.handler = [name](const QJsonObject& args) { return InvokeLuaFileTool(name, args, {}); };
         server.RegisterTool(std::move(tool));
     }
