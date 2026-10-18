@@ -1168,6 +1168,41 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
     Require(automatic.Succeeded() && automatic.value && automatic.value->generatedMissingMinimap,
         "automatic service path generates a missing minimap after final script preparation");
 
+    // 同样走MapEditSaveService的真实最终派生回调；局部归档明确没有地形，
+    // 仍能保存地图设置，不能因Automatic默认值而无条件读取W3E/WPM。
+    auto partialMembers = members;
+    std::erase_if(partialMembers, [](const auto& member) {
+        return member.name == "war3map.w3e" || member.name == "war3map.wpm";
+    });
+    const auto partialPath = directory.Path() / "partial-settings-source.w3x";
+    Require(WriteVerifiedArchive(partialPath, partialMembers).Succeeded(), "write real partial settings fixture");
+    auto partial = MapArchiveSession::Open(partialPath);
+    Require(partial.Succeeded() && partial.value, "open real partial settings fixture");
+    const auto partialMap = MapDocument::FromArchive(*partial.value);
+    const auto* mapName = MapData::FindMapField(MapDataKind::Settings, "map_name");
+    Require(mapName != nullptr, "resolve settings name field for partial save");
+    const auto row = MapData::MapFieldRowKey(partialMap, MapDataKind::Settings, 0);
+    const auto beforeName = MapData::ReadMapField(partialMap, MapDataKind::Settings, 0, *mapName);
+    const auto afterName = MapData::ParseMapFieldInput(*mapName, "Partial settings saved");
+    const auto w3iSha = Sha256(partialMap.Member(MapDataKind::Settings).sources.front().data);
+    Require(row.Succeeded() && row.value && beforeName.Succeeded() && beforeName.value
+        && afterName.Succeeded() && afterName.value && w3iSha.Succeeded() && w3iSha.value,
+        "bind partial settings source row and exact field value");
+    MapEditSaveRequest partialRequest;
+    partialRequest.sourceMap = partialPath;
+    partialRequest.targetCandidate = directory.Path() / "partial-settings-saved.w3x";
+    partialRequest.expectedSourceSha256 = partial.value->SourceSha256();
+    partialRequest.toolRoot = ydwe; partialRequest.gameRoot = game;
+    partialRequest.fieldEdits = {{*w3iSha.value, {MapDataKind::Settings, 0, *row.value,
+        "map_name", *beforeName.value, *afterName.value}}};
+    const auto partialSaved = SaveMapEditCandidate(partialRequest);
+    Require(partialSaved.Succeeded() && partialSaved.value && !partialSaved.value->generatedMissingMinimap,
+        "partial MapEditSaveService automatic save must complete without requiring terrain");
+    auto partialReadback = MapArchiveSession::Open(partialRequest.targetCandidate);
+    Require(partialReadback.Succeeded() && partialReadback.value
+        && !partialReadback.value->HasMember("war3map.w3e") && !partialReadback.value->HasMember("war3map.wpm"),
+        "partial settings save must preserve accurate terrain absence");
+
     request.minimapChoice = TerrainMinimapSaveChoice::GenerateMissingGroundOnly;
     request.targetCandidate = directory.Path() / "generated.w3x";
     const auto generated = SaveMapEditCandidate(request);

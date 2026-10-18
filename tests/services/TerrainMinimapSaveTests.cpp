@@ -435,8 +435,7 @@ void AutomaticDecisionUsesExactSourceMembers() {
             "TGA保留不要求加载地形贴图或返回生成资格");
         task.removals.push_back("war3mapMap.tga");
         const auto removed = TerrainMinimapSave::RequiresAutomaticGeneration(task);
-        Require(!removed.Succeeded() && Code(removed.diagnostics, "MINIMAP_SAVE_TGA_REMOVED"),
-            "作者TGA不能通过删除后自动改写为BLP");
+        Rejected(removed, "MINIMAP_SAVE_TGA_REMOVED");
     }
     {
         Fixture complete(true, false, false, W3i());
@@ -447,7 +446,7 @@ void AutomaticDecisionUsesExactSourceMembers() {
             "write partial archive without W3E");
         auto partial = MapArchiveSession::Open(partialPath);
         Require(partial.Succeeded() && partial.value, "open partial archive without W3E");
-        MapSaveTask task; task.FreezeArchive(*partial.value);
+        MapSaveTask task; Require(task.FreezeArchive(*partial.value).Succeeded(), "freeze partial-archive source");
         Require(!Take(TerrainMinimapSave::RequiresAutomaticGeneration(task)),
             "accurately missing W3E partial archives do not trigger automatic minimap generation");
     }
