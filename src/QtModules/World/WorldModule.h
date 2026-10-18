@@ -11,6 +11,7 @@
 #include "War3MapCore/Services/WorldSelection.h"
 #include "War3MapCore/Services/WorldInstanceRegistry.h"
 #include "WorldEnvironment.h"
+#include "WorldShadowRelationMemo.h"
 #include "WorldSelectionProperties.h"
 #include "WorldStartLocations.h"
 #include "WorldAnimationDiagnostics.h"
@@ -533,6 +534,7 @@ private:
     [[nodiscard]] QString MapKey() const;
     std::shared_ptr<WorldTerrainCache> terrainCache_; // 完整读取建立，地形编辑重建复用；只在 worker_ 中使用
     std::optional<WorldEnvironmentInputs> environmentInputs_; // 当前显示环境对应的地图设置输入
+    WorldShadowRelationMemo shadowRelationMemo_; // UI同步关系事实，按会话/修订/来源代际失效；不借给worker。
     QJsonObject pendingCamera_;
     QString pendingCameraMap_;
     QString shownMap_; // 视口当前显示的地图

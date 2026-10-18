@@ -13,6 +13,7 @@
 #include "WorldTerrainAssets.h"
 #include "WorldTerrainBuild.h"
 #include "WorldCliffSourceFailureChecks.h"
+#include "WorldShadowRelationMemo.h"
 #include "WorldDiagnosticJson.h"
 #include "WorldSelectionPresenter.h"
 #include "WorldPlacementPreview.h"
@@ -25,6 +26,7 @@
 #include "War3MapCore/MapData/MapAuxiliary.h"
 #include "War3MapCore/MapData/PlacementEditing.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
+#include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/MapData/MapShadow.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Workspace.h"
@@ -853,6 +855,9 @@ private slots:
     void PlacementParticleClock();
     void NativePlacementFrames();
     void DockWorkspaceUsesLeftTabsAndRestoresBottomAssets();
+    void ShadowRelationMemoRejectsForeignSourcesAndReusesRevision();
+    void ShadowRelationMemoTracksHeightUndoRedoAndSavedBaseline();
+    void ShadowRelationMemoTracksAttachGenerationsAndSessionIdentity();
 };
 
 void WorldModuleTests::PlacementCaptureFileScopeMatchesFullCapture() {
@@ -4671,6 +4676,134 @@ void WorldModuleTests::NavigationBookmarkRestoresPagedOutlinePrimaryAndCamera() 
     QVERIFY(module.PrepareNavigationLeave()); QCOMPARE(project.mapEdits_->Revision(), revision);
     regions.entries[128].creationNumber = 999; QVERIFY(project.mapEdits_->EditRegions(regions).Succeeded());
     QCOMPARE(module.RestoreNavigationBookmark(*saved), Shell::NavigationRestoreResult::Invalid);
+}
+
+void WorldModuleTests::ShadowRelationMemoRejectsForeignSourcesAndReusesRevision() {
+    auto grid = FlatGrid(5, 5); grid->header.mainTileset = 'A';
+    grid->header.groundTilesets = {"Ldrt"}; grid->header.cliffTilesets = {"Cldi"};
+    const auto bytes = MapData::SerializeMapTerrain(*grid); QVERIFY(bytes.Succeeded());
+    MapData::MapDataEditSession edits(MapDocument::FromMembers({}));
+    WorldShadowRelationMemo memo;
+    int comparisons = 0;
+    const auto compare = [&](const auto& current) {
+        ++comparisons;
+        return MapData::TerrainSavePlan::HasTerrainChanges(current);
+    };
+    QVERIFY(!memo.Query(edits, nullptr, compare));
+    QVERIFY(!memo.Query(edits, grid.get(), compare));
+    QCOMPARE(comparisons, 0);
+    const auto sourceRevision = edits.TerrainSourceRevision();
+    QVERIFY(edits.AttachTerrain(*bytes.value).Succeeded());
+    QCOMPARE(edits.Revision(), std::uint64_t{0});
+    QVERIFY(edits.TerrainSourceRevision() > sourceRevision);
+    const auto source = edits.Terrain(); QVERIFY(source && source.get() != grid.get());
+    QVERIFY(memo.Query(edits, source.get(), compare) == std::optional<bool>{false});
+    QCOMPARE(comparisons, 1);
+    // 同修订水帧和预览只取已有关系；字段相同的外来快照也不能借memo通行。
+    for (int repeated = 0; repeated < 3; ++repeated)
+        QVERIFY(memo.Query(edits, source.get(), compare) == std::optional<bool>{false});
+    QVERIFY(!memo.Query(edits, grid.get(), compare));
+    QVERIFY(!memo.Query(edits, nullptr, compare));
+    QVERIFY(memo.Query(edits, source.get(), compare) == std::optional<bool>{false});
+    QCOMPARE(comparisons, 1);
+    QVERIFY(!edits.IsDirty());
+}
+
+void WorldModuleTests::ShadowRelationMemoTracksHeightUndoRedoAndSavedBaseline() {
+    auto grid = FlatGrid(5, 5); grid->header.mainTileset = 'A';
+    grid->header.groundTilesets = {"Ldrt"}; grid->header.cliffTilesets = {"Cldi"};
+    const auto bytes = MapData::SerializeMapTerrain(*grid); QVERIFY(bytes.Succeeded());
+    MapData::MapDataEditSession edits(MapDocument::FromMembers({}));
+    QVERIFY(edits.AttachTerrain(*bytes.value).Succeeded());
+    WorldShadowRelationMemo memo;
+    int comparisons = 0;
+    const auto compare = [&](const auto& current) {
+        ++comparisons;
+        return MapData::TerrainSavePlan::HasTerrainChanges(current);
+    };
+    const auto original = edits.Terrain();
+    QVERIFY(memo.Query(edits, original.get(), compare) == std::optional<bool>{false});
+    QCOMPARE(comparisons, 1);
+    MapData::TerrainBrush brush; brush.kind = MapData::TerrainBrushKind::Raise; brush.radius = 0; brush.strength = 1;
+    const MapData::TerrainStrokePoint point{128, 192};
+    QVERIFY(edits.EditTerrain(brush, std::span(&point, 1), false).Succeeded());
+    QVERIFY(edits.Terrain().get() != original.get());
+    // 新修订的旧请求先拒绝，不能用它刷新key或覆盖上一份已核关系。
+    QVERIFY(!memo.Query(edits, original.get(), compare)); QCOMPARE(comparisons, 1);
+    QVERIFY(memo.Query(edits, edits.Terrain().get(), compare) == std::optional<bool>{true});
+    QVERIFY(memo.Query(edits, edits.Terrain().get(), compare) == std::optional<bool>{true});
+    QCOMPARE(comparisons, 2);
+    const auto raisedRevision = edits.Revision();
+    QVERIFY(edits.Undo()); QVERIFY(edits.Revision() > raisedRevision);
+    const auto undone = MapData::SerializeMapTerrain(*edits.Terrain()); QVERIFY(undone.Succeeded());
+    QCOMPARE(*undone.value, *bytes.value); // Undo是实际净同，不以Revision或指针相同代替比较。
+    QVERIFY(memo.Query(edits, edits.Terrain().get(), compare) == std::optional<bool>{false});
+    QCOMPARE(comparisons, 3);
+    const auto undoneRevision = edits.Revision();
+    QVERIFY(edits.Redo()); QVERIFY(edits.Revision() > undoneRevision);
+    QVERIFY(memo.Query(edits, edits.Terrain().get(), compare) == std::optional<bool>{true});
+    QCOMPARE(comparisons, 4);
+    const auto savedTerrain = edits.Terrain();
+    const auto revision = edits.Revision(), sourceRevision = edits.TerrainSourceRevision();
+    edits.CommitSaved(edits.Snapshot());
+    QCOMPARE(edits.Revision(), revision); QCOMPARE(edits.Terrain().get(), savedTerrain.get());
+    QVERIFY(edits.TerrainSourceRevision() > sourceRevision);
+    QVERIFY(memo.Query(edits, savedTerrain.get(), compare) == std::optional<bool>{false});
+    QVERIFY(memo.Query(edits, savedTerrain.get(), compare) == std::optional<bool>{false});
+    QCOMPARE(comparisons, 5);
+    // 保存后Undo反而偏离新基线，Redo回到新基线；不能复用保存前的布尔结论。
+    QVERIFY(edits.Undo());
+    QVERIFY(memo.Query(edits, edits.Terrain().get(), compare) == std::optional<bool>{true});
+    QCOMPARE(comparisons, 6);
+    QVERIFY(edits.Redo());
+    QVERIFY(memo.Query(edits, edits.Terrain().get(), compare) == std::optional<bool>{false});
+    QCOMPARE(comparisons, 7);
+}
+
+void WorldModuleTests::ShadowRelationMemoTracksAttachGenerationsAndSessionIdentity() {
+    auto grid = FlatGrid(5, 5); grid->header.mainTileset = 'A';
+    grid->header.groundTilesets = {"Ldrt"}; grid->header.cliffTilesets = {"Cldi"};
+    const auto bytes = MapData::SerializeMapTerrain(*grid); QVERIFY(bytes.Succeeded());
+    MapData::MapDataEditSession edits(MapDocument::FromMembers({}));
+    QVERIFY(edits.AttachTerrain(*bytes.value).Succeeded());
+    WorldShadowRelationMemo memo;
+    int comparisons = 0;
+    const auto compare = [&](const auto& current) {
+        ++comparisons;
+        return MapData::TerrainSavePlan::HasTerrainChanges(current);
+    };
+    const auto source = edits.Terrain();
+    QVERIFY(memo.Query(edits, source.get(), compare) == std::optional<bool>{false});
+    QCOMPARE(comparisons, 1);
+    QByteArray wpm("MP3W", 4); Append32(wpm, 0); Append32(wpm, 16); Append32(wpm, 16);
+    wpm.append(QByteArray(16 * 16, static_cast<char>(0x82)));
+    const auto pathing = std::as_bytes(std::span(wpm.constData(), static_cast<std::size_t>(wpm.size())));
+    const auto revision = edits.Revision(), sourceRevision = edits.TerrainSourceRevision();
+    QVERIFY(edits.AttachPathing(pathing).Succeeded());
+    QCOMPARE(edits.Revision(), revision); QCOMPARE(edits.Terrain().get(), source.get());
+    QVERIFY(edits.TerrainSourceRevision() > sourceRevision);
+    QVERIFY(memo.Query(edits, source.get(), compare) == std::optional<bool>{false});
+    QCOMPARE(comparisons, 2);
+    MapData::TerrainBrush brush; brush.kind = MapData::TerrainBrushKind::PathingRestriction;
+    brush.radius = 0; brush.pathingRestrictions = 0x04;
+    const MapData::TerrainStrokePoint point{144, 208};
+    QVERIFY(edits.EditTerrain(brush, std::span(&point, 1), false).Succeeded());
+    QCOMPARE(edits.Terrain().get(), source.get()); // 仅WPM变化也须重新计算，不能按W3E指针缓存。
+    QVERIFY(memo.Query(edits, source.get(), compare) == std::optional<bool>{true});
+    QVERIFY(memo.Query(edits, source.get(), compare) == std::optional<bool>{true});
+    QCOMPARE(comparisons, 3);
+    MapData::MapDataEditSession other(MapDocument::FromMembers({}));
+    QVERIFY(other.AttachTerrain(*bytes.value).Succeeded() && other.AttachPathing(pathing).Succeeded());
+    QVERIFY(other.EditRegions(MapData::RegionsDocument{5, {}, {}}).Succeeded());
+    QVERIFY(other.IsDirty() && !MapData::TerrainSavePlan::HasTerrainChanges(other));
+    QCOMPARE(other.Revision(), edits.Revision()); QCOMPARE(other.TerrainSourceRevision(), edits.TerrainSourceRevision());
+    QVERIFY(other.SessionIdentity() != edits.SessionIdentity());
+    QVERIFY(!memo.Query(other, source.get(), compare)); QCOMPARE(comparisons, 3);
+    QVERIFY(memo.Query(other, other.Terrain().get(), compare) == std::optional<bool>{false});
+    QVERIFY(memo.Query(other, other.Terrain().get(), compare) == std::optional<bool>{false});
+    QCOMPARE(comparisons, 4);
+    QVERIFY(memo.Query(edits, source.get(), compare) == std::optional<bool>{true});
+    QCOMPARE(comparisons, 5);
 }
 
 int main(int argc, char** argv) {

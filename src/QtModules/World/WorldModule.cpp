@@ -58,14 +58,20 @@ namespace {
 
 QString Count(std::size_t value) { return QLocale().toString(static_cast<qulonglong>(value)); }
 
-WorldShadowContext ShadowContextFor(const QtProject::EditorProject& project, const MapData::TerrainGridSnapshot* source) {
+WorldShadowContext ShadowContextFor(const QtProject::EditorProject& project, const MapData::TerrainGridSnapshot* source,
+    WorldShadowRelationMemo& memo) {
     WorldShadowContext context;
-    if (const auto* edits = project.MapEdits(); edits && source && edits->Terrain().get() == source) {
-        // 共用公开净变化比较器也包含WPM；说明据此覆盖地形/通行性，不能冒称纯W3E变化。
-        context.terrainRelation = MapData::TerrainSavePlan::HasTerrainChanges(*edits) ? WorldShadowTerrainRelation::TerrainOrPathingEdited
-            : WorldShadowTerrainRelation::TerrainAndPathingUnchanged;
-        context.sessionIdentity = edits->SessionIdentity(); context.revision = edits->Revision();
-        context.terrainSourceRevision = edits->TerrainSourceRevision();
+    if (const auto* edits = project.MapEdits()) {
+        const auto changed = memo.Query(*edits, source, [](const auto& current) {
+            // 首个新修订复用唯一公开净变化比较器（含WPM）；同修订水帧/preview只读memo。
+            return MapData::TerrainSavePlan::HasTerrainChanges(current);
+        });
+        if (changed) {
+            context.terrainRelation = *changed ? WorldShadowTerrainRelation::TerrainOrPathingEdited
+                : WorldShadowTerrainRelation::TerrainAndPathingUnchanged;
+            context.sessionIdentity = edits->SessionIdentity(); context.revision = edits->Revision();
+            context.terrainSourceRevision = edits->TerrainSourceRevision();
+        }
     }
     const auto isShadow = [](const QString& path) {
         auto canonical = path; canonical.replace(QLatin1Char('\\'), QLatin1Char('/'));
@@ -503,7 +509,7 @@ void WorldModule::Refresh() {
     environmentInputs_ = settings;
     // 保留完整读取结果：失败的存在性仍Unknown，成功空正文仍为Present；不重试或回退game。
     WorldShadowInput shadow;
-    shadow.context = ShadowContextFor(project_, sourceRaw.get());
+    shadow.context = ShadowContextFor(project_, sourceRaw.get(), shadowRelationMemo_);
     shadow.read.emplace(project_.ReadMapMember("war3map.shd"));
     auto result = std::make_shared<Result<WorldTerrainLoaded>>();
     auto cache = std::make_shared<std::shared_ptr<WorldTerrainCache>>();
@@ -1105,7 +1111,7 @@ void WorldModule::StartTerrainRender() {
     const auto serial = request.serial;
     const bool preview = request.preview;
     const auto source = request.source;
-    const auto shadowContext = ShadowContextFor(project_, source.get());
+    const auto shadowContext = ShadowContextFor(project_, source.get(), shadowRelationMemo_);
     const auto representation = viewport_->HasTerrainGridSupport()
         ? Render::TerrainGroundRepresentation::SharedGrid : Render::TerrainGroundRepresentation::Expanded;
     const auto blightPolicy = representation == Render::TerrainGroundRepresentation::SharedGrid || viewport_->HasTerrainBlightSupport()
