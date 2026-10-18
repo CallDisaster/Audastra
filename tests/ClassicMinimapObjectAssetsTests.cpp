@@ -19,7 +19,21 @@ static_assert(!std::is_copy_assignable_v<ClassicMinimapObjectAssets>);
 static_assert(!std::is_default_constructible_v<ClassicMinimapObjectAssets>);
 static_assert(std::is_nothrow_move_constructible_v<ClassicMinimapObjectAssets>);
 static_assert(std::is_nothrow_move_assignable_v<ClassicMinimapObjectAssets>);
-static_assert(ClassicMinimapObjectAssetFacts::snapshotScratchBytesPerWireByte == 128);
+constexpr auto kScratch = ClassicMinimapObjectAssetFacts::snapshotScratchBytesPerWireByte;
+// 与classic reader的最短wire逐类约束ABI，而不是钉死某个历史乘数。
+static_assert(sizeof(MapData::UnitPlacement) <= 91 * kScratch);
+static_assert(sizeof(MapData::DoodadPlacement) <= 42 * kScratch);
+static_assert(sizeof(MapData::SpecialDoodadPlacement) <= 16 * kScratch);
+static_assert(sizeof(MapData::PlacementItemChoice) <= 8 * kScratch);
+static_assert(sizeof(MapData::PlacementItemSet) <= 4 * kScratch);
+static_assert(sizeof(MapData::PlacementInventoryItem) <= 8 * kScratch);
+static_assert(sizeof(MapData::PlacementAbility) <= 12 * kScratch);
+static_assert(sizeof(MapData::MapPlayerSettings) <= 33 * kScratch);
+static_assert(sizeof(MapData::MapForceSettings) <= 9 * kScratch);
+static_assert(sizeof(MapData::MapRandomUnitTable) <= 13 * kScratch);
+static_assert(sizeof(MapData::MapRandomUnitRow) <= 4 * kScratch);
+static_assert(sizeof(MapData::MapRandomItemTable) <= 9 * kScratch);
+static_assert(sizeof(std::vector<MapData::MapRandomItem>) <= 4 * kScratch);
 using TypedCandidateBuilder = Result<ClassicMinimapCandidate> (*)(
     const ClassicMinimapObjectAssets&, const TerrainMinimapPostprocessSettings&, const ClassicMinimapCandidateLimits&);
 [[maybe_unused]] constexpr TypedCandidateBuilder kTypedCandidateBuilder = &BuildClassicMinimapCandidate;

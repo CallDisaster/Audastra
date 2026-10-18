@@ -129,19 +129,23 @@ std::array<std::uint8_t, 4> Average(const Image::DecodedImage& image, bool& hasP
         static_cast<std::uint8_t>(channels[2] / count), 255};
 }
 
-std::array<std::uint8_t, 4> ModelColor(const ClassicMinimapObjectStyle& style,
+Result<std::array<std::uint8_t, 4>> ModelColor(const ClassicMinimapObjectStyle& style,
     const Resources::ResourceResolver& resources, std::size_t maxModelBytes,
     ClassicMinimapObjectLayer& output, bool& success) {
     success = false;
-    if (style.modelPath.empty()) return kFallback;
+    if (style.modelPath.empty()) return Result<std::array<std::uint8_t, 4>>::Success(kFallback);
     auto modelBytes = resources.Read(style.modelPath);
-    if (!modelBytes.Succeeded() || !modelBytes.value || modelBytes.value->bytes.size() > maxModelBytes) {
-        AddDiagnostic(output, "CLASSIC_MINIMAP_OBJECT_MODEL", "对象模型缺失或超过读取预算，使用原版固定回退色。"); return kFallback;
+    if (!modelBytes.Succeeded() || !modelBytes.value) {
+        if (!Resources::ClassicObjectTextureMissing(modelBytes.diagnostics)) return {std::nullopt, std::move(modelBytes.diagnostics)};
+        AddDiagnostic(output, "CLASSIC_MINIMAP_OBJECT_MODEL", "对象模型明确缺失，使用原版固定回退色。");
+        return Result<std::array<std::uint8_t, 4>>::Success(kFallback);
     }
+    if (modelBytes.value->bytes.size() > maxModelBytes) return Result<std::array<std::uint8_t, 4>>::Failure(
+        kSubsystem, "CLASSIC_MINIMAP_OBJECT_MODEL_BUDGET", "对象模型超过读取预算。");
     CaptureDependency(*modelBytes.value, output);
     auto model = ParseMdx(modelBytes.value->bytes);
     if (!model.Succeeded() || !model.value) {
-        AddDiagnostic(output, "CLASSIC_MINIMAP_OBJECT_MODEL", "对象模型解析失败，使用原版固定回退色。"); return kFallback;
+        return {std::nullopt, std::move(model.diagnostics)};
     }
     std::uint64_t channels[3]{}; std::uint64_t count = 0;
     for (const auto& material : model.value->materials) for (const auto& layer : material.layers) {
@@ -153,19 +157,23 @@ std::array<std::uint8_t, 4> ModelColor(const ClassicMinimapObjectStyle& style,
         else if (texture.replaceableId != 0) continue;
         if (texturePath.empty()) continue;
         auto resource = resources.Read(texturePath);
-        if (!resource.Succeeded() || !resource.value) continue;
+        if (!resource.Succeeded() || !resource.value) {
+            if (Resources::ClassicObjectTextureMissing(resource.diagnostics)) continue;
+            return {std::nullopt, std::move(resource.diagnostics)};
+        }
         CaptureDependency(*resource.value, output);
         auto image = Image::DecodeTexture(texturePath, resource.value->bytes);
-        if (!image.Succeeded() || !image.value) continue;
+        if (!image.Succeeded() || !image.value) return {std::nullopt, std::move(image.diagnostics)};
         bool hasPixels = false; const auto average = Average(*image.value, hasPixels);
         if (!hasPixels) continue;
         // 原版先对每个材质纹理做整图平均，再等权平均这些代表色；不会按贴图面积加权。
         channels[0] += average[0]; channels[1] += average[1]; channels[2] += average[2]; ++count;
     }
-    if (!count) { AddDiagnostic(output, "CLASSIC_MINIMAP_OBJECT_MODEL_COLOR", "对象模型没有可用纹理像素，使用原版固定回退色。"); return kFallback; }
+    if (!count) { AddDiagnostic(output, "CLASSIC_MINIMAP_OBJECT_MODEL_COLOR", "对象模型没有可用纹理像素，使用原版固定回退色。");
+        return Result<std::array<std::uint8_t, 4>>::Success(kFallback); }
     success = true;
-    return {static_cast<std::uint8_t>(channels[0] / count), static_cast<std::uint8_t>(channels[1] / count),
-        static_cast<std::uint8_t>(channels[2] / count), 255};
+    return Result<std::array<std::uint8_t, 4>>::Success({static_cast<std::uint8_t>(channels[0] / count),
+        static_cast<std::uint8_t>(channels[1] / count), static_cast<std::uint8_t>(channels[2] / count), 255});
 }
 
 struct Mask { std::uint32_t width = 0, height = 0; std::vector<std::uint8_t> cells; };
@@ -177,12 +185,10 @@ Result<std::optional<Mask>> ReadMask(const ClassicMinimapObjectStyle& style,
     auto resource = Resources::ReadClassicObjectTexture<Resources::ResolvedResource>(style.pathingTexture,
         [&](std::string_view name) { return resources.Read(name); });
     if (!resource.Succeeded() || !resource.value) {
-        const bool missing = !resource.diagnostics.empty() && std::all_of(resource.diagnostics.begin(), resource.diagnostics.end(),
-            [](const auto& diagnostic) { return diagnostic.code == "RESOURCE_MISSING" || diagnostic.code == "OBJECT_RESOURCE_MISSING"; });
+        const bool missing = Resources::ClassicObjectTextureMissing(resource.diagnostics);
         if (missing) {
             AddDiagnostic(output, "CLASSIC_MINIMAP_OBJECT_PATHING_MISSING", "对象通行纹理明确缺失，按原版单格回退。");
-            Result<std::optional<Mask>> fallback;
-            fallback.value.emplace(std::nullopt); fallback.diagnostics = std::move(resource.diagnostics); return fallback;
+            return Result<std::optional<Mask>>::Success(std::nullopt);
         }
         return {std::nullopt, std::move(resource.diagnostics)};
     }
@@ -237,7 +243,10 @@ Result<ClassicMinimapObjectLayer> BuildClassicMinimapObjectLayer(
         style.useMMColor = Boolean(entry->Field("usemmcolor")).value_or(false);
         if (style.useMMColor && ColorFields(*entry, style.color)) style.colorSource = ClassicMinimapObjectColorSource::CustomFields;
         else if (!style.useMMColor) {
-            bool modelColor = false; style.color = ModelColor(style, *input.resources, limits.maxModelBytes, output, modelColor);
+            bool modelColor = false;
+            auto color = ModelColor(style, *input.resources, limits.maxModelBytes, output, modelColor);
+            if (!color.Succeeded() || !color.value) return {std::nullopt, std::move(color.diagnostics)};
+            style.color = *color.value;
             style.colorSource = modelColor ? ClassicMinimapObjectColorSource::ModelTextures : ClassicMinimapObjectColorSource::FallbackDarkGreen;
         } else {
             return Fail("CLASSIC_MINIMAP_OBJECT_COLOR", "对象声明useMMColor但MM颜色字段无效，不能猜测颜色。");

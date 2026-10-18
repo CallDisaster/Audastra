@@ -44,6 +44,11 @@ struct ClassicMinimapObjectMemberFacts {
 
 struct ClassicMinimapObjectAssetFacts {
     static constexpr const char* capturePolicy = "source-capture-parsed-objects-v2/native=false";
+    // classic最短wire：unit91、doodad42、item/inventory8、ability12、itemset4；
+    // W3I player33/force9/random-unit-table13/random-row4/random-item-set4。
+    // 每类vector reserve(count)无几何倍增，string额外正文<=wire；固定MapDocument/
+    // MapSettings、空string/vector头放入捕获固定预留。16倍覆盖这些typed载荷，调用处
+    // 另外加4倍收Snapshot成员原字、W3I原字与当前DOO复制/散列，不是allocator/RSS帽。
     static constexpr std::size_t snapshotScratchBytesPerWireByte = 16;
     std::array<ClassicMinimapObjectMemberFacts, 2> members; // units、doodads
     std::size_t retainedTerrainCapacityBytes = 0;

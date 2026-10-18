@@ -230,14 +230,36 @@ void TestMissingAndMismatch() {
         && missingDoodadsAssets.CapturedMembers()[1].state == ClassicMinimapCapturedObjectState::Missing, "ParsedEmpty/Missing必须逐成员保留");
     Fixture sourceOnly({}, MapDataFixtures::EmptyDoodadsV8Sub11(), {}, {});
     auto sourceOnlyArchive = sourceOnly.Source("source-only.w3x");
-    Rejected(CaptureClassicMinimapObjectAssets(CaptureTerrain(sourceOnly, sourceOnlyArchive), sourceOnlyArchive, sourceOnly.edits), "CLASSIC_OBJECT_CAPTURE_CURRENT_MISMATCH");
+    auto sourceOnlyAssets = Take(CaptureClassicMinimapObjectAssets(CaptureTerrain(sourceOnly, sourceOnlyArchive), sourceOnlyArchive, sourceOnly.edits));
+    Require(sourceOnlyAssets.CapturedMembers()[1].sourcePresent && !sourceOnlyAssets.CapturedMembers()[1].currentPresent,
+        "显式删除必须保留源Present/当前Missing，而不是把源当成空");
+    Require(!VerifyClassicMinimapObjectAssetsFrozenOutput(sourceOnlyAssets, sourceOnlyArchive, {}).Succeeded(),
+        "当前Missing但最终没有删除DOO必须拒绝");
+    const std::array<std::string, 1> deletedDoo{"war3map.doo"};
+    Require(VerifyClassicMinimapObjectAssetsFrozenOutput(sourceOnlyAssets, sourceOnlyArchive, {}, deletedDoo).Succeeded(),
+        "当前Missing与最终删除闭环后允许保存");
     Fixture currentOnly({}, {}, MapDataFixtures::EmptyUnitsV8Sub11(), MapDataFixtures::EmptyDoodadsV8Sub11());
     auto currentOnlyArchive = currentOnly.Source("current-only.w3x");
-    Rejected(CaptureClassicMinimapObjectAssets(CaptureTerrain(currentOnly, currentOnlyArchive), currentOnlyArchive, currentOnly.edits), "CLASSIC_OBJECT_CAPTURE_CURRENT_MISMATCH");
+    auto currentOnlyAssets = Take(CaptureClassicMinimapObjectAssets(CaptureTerrain(currentOnly, currentOnlyArchive), currentOnlyArchive, currentOnly.edits));
+    Require(!currentOnlyAssets.CapturedMembers()[0].sourcePresent && currentOnlyAssets.CapturedMembers()[0].currentPresent,
+        "新增合法空单位表必须保留两侧不同存在性");
+    Require(!VerifyClassicMinimapObjectAssetsFrozenOutput(currentOnlyAssets, currentOnlyArchive, {}).Succeeded(),
+        "新增当前成员没有进入最终replacement时必须拒绝");
+    const std::array<MemberReplacement, 2> createdDoo{{{"war3mapUnits.doo", MapDataFixtures::EmptyUnitsV8Sub11()},
+        {"war3map.doo", MapDataFixtures::EmptyDoodadsV8Sub11()}}};
+    Require(VerifyClassicMinimapObjectAssetsFrozenOutput(currentOnlyAssets, currentOnlyArchive, createdDoo).Succeeded(),
+        "新增当前成员与实际最终replacement闭环允许保存");
     auto v7 = MapDataFixtures::EmptyUnitsV8Sub11(); Put32(v7, 4, 7); Put32(v7, 8, 9);
     Fixture bytes(MapDataFixtures::EmptyUnitsV8Sub11(), MapDataFixtures::EmptyDoodadsV8Sub11(), v7, MapDataFixtures::EmptyDoodadsV8Sub11());
     auto bytesSource = bytes.Source("bytes-mismatch.w3x");
-    Rejected(CaptureClassicMinimapObjectAssets(CaptureTerrain(bytes, bytesSource), bytesSource, bytes.edits), "CLASSIC_OBJECT_CAPTURE_CURRENT_MISMATCH");
+    auto bytesAssets = Take(CaptureClassicMinimapObjectAssets(CaptureTerrain(bytes, bytesSource), bytesSource, bytes.edits));
+    Require(bytesAssets.CapturedMembers()[0].sourceSha256 != bytesAssets.CapturedMembers()[0].currentSha256,
+        "合法classic布局编辑必须独立保存源SHA与当前SHA");
+    Require(!VerifyClassicMinimapObjectAssetsFrozenOutput(bytesAssets, bytesSource, {}).Succeeded(),
+        "当前布局编辑未写到最终DOO必须拒绝");
+    const std::array<MemberReplacement, 1> changedUnits{{{"war3mapUnits.doo", v7}}};
+    Require(VerifyClassicMinimapObjectAssetsFrozenOutput(bytesAssets, bytesSource, changedUnits).Succeeded(),
+        "合法当前布局与最终replacement相符后允许");
     Fixture unlisted; auto unlistedSource = unlisted.Source("unlisted.w3x", true);
     auto unlistedAssets = Take(CaptureClassicMinimapObjectAssets(CaptureTerrain(unlisted, unlistedSource), unlistedSource, unlisted.edits));
     Require(unlistedAssets.CapturedMembers()[0].state == ClassicMinimapCapturedObjectState::ParsedEmpty
@@ -252,11 +274,11 @@ void TestZeroNonzeroStaleAndBudget() {
     Rejected(CaptureClassicMinimapObjectAssets(CaptureTerrain(zero, zeroSource), zeroSource, zero.edits), "CLASSIC_OBJECT_CAPTURE_ZERO_BYTES");
     auto nonzero = MapDataFixtures::EmptyUnitsV8Sub11(); Put32(nonzero, 12, 1);
     Fixture count(nonzero, MapDataFixtures::EmptyDoodadsV8Sub11(), nonzero, MapDataFixtures::EmptyDoodadsV8Sub11()); auto countSource = count.Source("count.w3x");
-    Rejected(CaptureClassicMinimapObjectAssets(CaptureTerrain(count, countSource), countSource, count.edits), "PLACEMENT_RECORD_LIMIT");
+    Rejected(CaptureClassicMinimapObjectAssets(CaptureTerrain(count, countSource), countSource, count.edits), "PLACEMENT_TRUNCATED");
     auto special = MapDataFixtures::EmptyDoodadsV8Sub11(); Put32(special, 20, 1);
     Fixture specialCount(MapDataFixtures::EmptyUnitsV8Sub11(), special, MapDataFixtures::EmptyUnitsV8Sub11(), special);
     auto specialSource = specialCount.Source("special-count.w3x");
-    Rejected(CaptureClassicMinimapObjectAssets(CaptureTerrain(specialCount, specialSource), specialSource, specialCount.edits), "PLACEMENT_RECORD_LIMIT");
+    Rejected(CaptureClassicMinimapObjectAssets(CaptureTerrain(specialCount, specialSource), specialSource, specialCount.edits), "PLACEMENT_TRUNCATED");
     Fixture stale; auto staleSource = stale.Source("stale.w3x"); auto terrain = CaptureTerrain(stale, staleSource);
     TerrainBrush brush; brush.kind = TerrainBrushKind::Raise; brush.radius = 0; brush.strength = 1;
     const TerrainStrokePoint point{256, 256};
@@ -270,7 +292,7 @@ void TestZeroNonzeroStaleAndBudget() {
     auto snapshotSource = snapshotBudget.Source("snapshot-budget.w3x");
     auto snapshotTerrain = CaptureTerrain(snapshotBudget, snapshotSource);
     limits = {}; limits.maxCurrentSnapshotBytes = 16;
-    Rejected(CaptureClassicMinimapObjectAssets(std::move(snapshotTerrain), snapshotSource, snapshotBudget.edits, limits), "MAP_SNAPSHOT_BUDGET");
+    Rejected(CaptureClassicMinimapObjectAssets(std::move(snapshotTerrain), snapshotSource, snapshotBudget.edits, limits), "CLASSIC_OBJECT_CAPTURE_BUDGET");
     Fixture memberBudget; auto memberSource = memberBudget.Source("member-budget.w3x");
     auto memberTerrain = CaptureTerrain(memberBudget, memberSource);
     limits = {}; limits.maxObjectMemberBytes = 15;
@@ -286,9 +308,42 @@ void TestMovedFrom() {
     Require(candidate.raw.width == 8 && candidate.raw.height == 8, "move目标仍可消费sealed捕获");
 }
 
+void TestMeasuredLargeNestedUnitsAndNewCurrentMember() {
+    UnitPlacements placements;
+    placements.units.resize(4096);
+    for (std::size_t i = 0; i < placements.units.size(); ++i) {
+        auto& unit = placements.units[i]; unit.rawcode = "hfoo"; unit.scale = {1, 1, 1};
+        unit.creationId = static_cast<std::int32_t>(i);
+        unit.itemSets.resize(5);
+        for (auto& set : unit.itemSets) set.items.assign(8, PlacementItemChoice{"I000", 100});
+        unit.inventory.assign(3, PlacementInventoryItem{0, "I000"});
+        unit.abilities.assign(3, PlacementAbility{"A000", false, 1});
+    }
+    const auto bytes = Take(placements.Serialize());
+    Require(bytes.size() > 64u * 1024u, "真实规模原创样例必须超过旧64KiB对象上限");
+    Fixture fixture({}, {}, bytes, {});
+    auto source = fixture.Source("large-new-units.w3x");
+    Require(Take(fixture.edits.SnapshotByteSize(MapDataKind::Units)) == bytes.size(), "wire计量与唯一当前成员一致且无正文副本");
+    const auto bounded = fixture.edits.Snapshot(MapDataKind::Units, bytes.size() - 1);
+    Require(!bounded.Succeeded(), "Snapshot必须复用相同wire门而不是忽略收紧预算");
+    auto assets = Take(CaptureClassicMinimapObjectAssets(CaptureTerrain(fixture, source), source, fixture.edits));
+    const auto& fact = assets.CapturedMembers()[0];
+    Require(!fact.sourcePresent && fact.currentPresent && fact.sourceSha256.empty() && fact.currentSha256.size() == 64
+        && fact.state == ClassicMinimapCapturedObjectState::Parsed && assets.Units().units.size() == 4096,
+        "源Missing和当前非空Parsed必须分别有身份，不能把当前domain写成空SHA");
+    const auto candidate = Take(BuildClassicMinimapCandidate(assets, FlatPostprocess()));
+    Require(candidate.raw.width == 8 && candidate.raw.height == 8, "单位不属于0x08层但其存在不得阻止地图生成");
+    Require(!VerifyClassicMinimapObjectAssetsFrozenOutput(assets, source, {}).Succeeded(), "新增大单位层缺最终replacement必须拒绝");
+    const std::array<MemberReplacement, 1> replacement{{{"war3mapUnits.doo", bytes}}};
+    Require(VerifyClassicMinimapObjectAssetsFrozenOutput(assets, source, replacement).Succeeded(), "真实当前大单位原字进入最终列表后允许");
+    ClassicMinimapObjectAssetLimits limit; limit.maxNestedRecords = 1;
+    Rejected(CaptureClassicMinimapObjectAssets(CaptureTerrain(fixture, source), source, fixture.edits, limit), "PLACEMENT_RECORD_LIMIT");
+}
+
 int main() {
     try {
         TestRealParsedEmptyAndTypedPixels(); TestMissingAndMismatch(); TestZeroNonzeroStaleAndBudget(); TestMovedFrom();
+        TestMeasuredLargeNestedUnitsAndNewCurrentMember();
         std::cout << "ClassicMinimapObjectCaptureTests: real capture scenarios declared\n"; return 0;
     } catch (const std::exception& error) {
         std::cerr << "ClassicMinimapObjectCaptureTests: " << error.what() << '\n'; return 1;

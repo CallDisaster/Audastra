@@ -233,10 +233,12 @@ std::size_t AuxiliaryCapacity(const ClassicMinimapObjectDomain& domain, const Cl
     }
     Charge(bytes, objectLayer.dependencies.capacity(), sizeof(ClassicMinimapObjectLayer::Dependency));
     for (const auto& dependency : objectLayer.dependencies) {
-        TextCapacity(bytes, dependency.winner.canonicalPath); TextCapacity(bytes, dependency.winner.sourceId);
-        TextCapacity(bytes, dependency.winner.sourcePath); TextCapacity(bytes, dependency.encodedSha256);
+        LocationCapacity(bytes, dependency.winner); TextCapacity(bytes, dependency.encodedSha256);
     }
-    for (const auto& diagnostic : objectLayer.diagnostics) TextCapacity(bytes, diagnostic.message);
+    Charge(bytes, objectLayer.diagnostics.capacity(), sizeof(Diagnostic));
+    for (const auto& diagnostic : objectLayer.diagnostics) {
+        TextCapacity(bytes, diagnostic.message); TextCapacity(bytes, diagnostic.code); TextCapacity(bytes, diagnostic.subsystem);
+    }
     TextCapacity(bytes, identity);
     return bytes;
 }
@@ -246,16 +248,22 @@ std::size_t PlacementCapacity(std::size_t bytes, const MapData::UnitPlacements& 
     Charge(bytes, units.units.capacity(), sizeof(MapData::UnitPlacement));
     for (const auto& unit : units.units) {
         TextCapacity(bytes, unit.rawcode); if (unit.skinId) TextCapacity(bytes, *unit.skinId);
+        Charge(bytes, unit.itemSets.capacity(), sizeof(MapData::PlacementItemSet));
         for (const auto& set : unit.itemSets) { Charge(bytes, set.items.capacity(), sizeof(MapData::PlacementItemChoice));
             for (const auto& item : set.items) TextCapacity(bytes, item.rawcode); }
         Charge(bytes, unit.inventory.capacity(), sizeof(MapData::PlacementInventoryItem));
         for (const auto& item : unit.inventory) TextCapacity(bytes, item.rawcode);
         Charge(bytes, unit.abilities.capacity(), sizeof(MapData::PlacementAbility));
         for (const auto& ability : unit.abilities) TextCapacity(bytes, ability.rawcode);
+        if (const auto* custom = std::get_if<MapData::RandomCustomTable>(&unit.random)) {
+            Charge(bytes, custom->choices.capacity(), sizeof(MapData::PlacementItemChoice));
+            for (const auto& choice : custom->choices) TextCapacity(bytes, choice.rawcode);
+        }
     }
     Charge(bytes, doodads.doodads.capacity(), sizeof(MapData::DoodadPlacement));
     for (const auto& doodad : doodads.doodads) {
         TextCapacity(bytes, doodad.rawcode); if (doodad.skinId) TextCapacity(bytes, *doodad.skinId);
+        Charge(bytes, doodad.itemSets.capacity(), sizeof(MapData::PlacementItemSet));
         for (const auto& set : doodad.itemSets) { Charge(bytes, set.items.capacity(), sizeof(MapData::PlacementItemChoice));
             for (const auto& item : set.items) TextCapacity(bytes, item.rawcode); }
     }

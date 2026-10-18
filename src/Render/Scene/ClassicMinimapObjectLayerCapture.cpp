@@ -206,7 +206,7 @@ Status VerifyClassicMinimapObjectLayerDependencies(const ClassicMinimapObjectLay
                 || actual.encodedSha256 != expected.encodedSha256 || actual.mapMemberPresent != expected.mapMemberPresent)
                 Fail("CLASSIC_OBJECT_LAYER_STALE", "对象层依赖的存在性、正文或来源层已改变：" + expected.winner.canonicalPath);
             if (!expected.present) continue;
-            const bool reboundMap = actual.mapMemberPresent && expected.mapMemberPresent;
+            const bool reboundMap = readback && actual.mapMemberPresent && expected.mapMemberPresent;
             const auto& a = actual.winner.readProvenance; const auto& e = expected.winner.readProvenance;
             if (!a || !e || (!reboundMap && a->containerIdentity != e->containerIdentity)
                 || (!reboundMap && actual.winner.layer != expected.winner.layer))
