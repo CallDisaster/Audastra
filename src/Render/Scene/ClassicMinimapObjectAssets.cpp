@@ -106,7 +106,9 @@ void ValidateLimits(const ClassicMinimapObjectAssetLimits& limits) {
     if (!limits.maxWorkingBytes || limits.maxWorkingBytes > kHard.maxWorkingBytes
         || !limits.maxObjectMemberBytes || limits.maxObjectMemberBytes > kHard.maxObjectMemberBytes
         || !limits.maxCurrentSnapshotBytes || limits.maxCurrentSnapshotBytes > kHard.maxCurrentSnapshotBytes
-        || !limits.maxCurrentTerrainBytes || limits.maxCurrentTerrainBytes > kHard.maxCurrentTerrainBytes)
+        || !limits.maxCurrentTerrainBytes || limits.maxCurrentTerrainBytes > kHard.maxCurrentTerrainBytes
+        || !limits.maxPlacements || limits.maxPlacements > kHard.maxPlacements
+        || !limits.maxNestedRecords || limits.maxNestedRecords > kHard.maxNestedRecords)
         Fail("CLASSIC_OBJECT_CAPTURE_LIMITS", "对象捕获预算只能在非零硬上限内收紧。");
 }
 
@@ -126,32 +128,39 @@ bool MatchesTerrainCaptureBinding(const TerrainMinimapAssetSnapshot& terrain, co
         && terrain.Input().binding.revision == binding.revision;
 }
 
-void ParsedEmpty(std::size_t index, const ArchiveExactMember& source,
-    ClassicMinimapObjectMemberFacts& facts, const ClassicMinimapObjectAssetLimits& limits) {
+void ParseObjectMember(std::size_t index, const ArchiveExactMember& source,
+    ClassicMinimapObjectMemberFacts& facts, const ClassicMinimapObjectAssetLimits& limits,
+    MapData::UnitPlacements& units, MapData::DoodadPlacements& doodads) {
     facts.memberName = kMembers[index];
     if (!source.present) return;
     if (source.bytes.empty())
         Fail("CLASSIC_OBJECT_CAPTURE_ZERO_BYTES", "present零字节DOO不是合法空对象层。");
     MapData::PlacementReadLimits parser;
-    parser.maxBytes = limits.maxObjectMemberBytes; parser.maxPlacements = 0; parser.maxNestedRecords = 0;
+    parser.maxBytes = limits.maxObjectMemberBytes;
+    parser.maxPlacements = limits.maxPlacements; parser.maxNestedRecords = limits.maxNestedRecords;
     if (!index) {
-        const auto parsed = Take(MapData::ParseUnitPlacements(source.bytes, parser));
-        if (!parsed.units.empty() || parsed.recordLayout != MapData::PlacementRecordLayout::Classic)
-            Fail("CLASSIC_OBJECT_CAPTURE_NONEMPTY", "单位层未由唯一classic parser证明为空。");
+        auto parsed = Take(MapData::ParseUnitPlacements(source.bytes, parser));
+        if (parsed.recordLayout != MapData::PlacementRecordLayout::Classic)
+            Fail("CLASSIC_OBJECT_CAPTURE_LAYOUT", "单位层未由唯一classic parser证明为classic布局。");
         facts.version = parsed.version; facts.subversion = parsed.subversion;
         facts.recordLayout = parsed.recordLayout; facts.parserFullyConsumed = true;
+        facts.ordinaryPlacements = parsed.units.size();
+        facts.state = parsed.units.empty() ? ClassicMinimapCapturedObjectState::ParsedEmpty
+                                           : ClassicMinimapCapturedObjectState::Parsed;
+        units = std::move(parsed);
     } else {
-        const auto parsed = Take(MapData::ParseDoodadPlacements(source.bytes, parser));
-        if (!parsed.doodads.empty() || !parsed.specialDoodads.empty() || parsed.specialVersion != 0
-            || parsed.recordLayout != MapData::PlacementRecordLayout::Classic)
-            Fail("CLASSIC_OBJECT_CAPTURE_NONEMPTY", "普通或特殊装饰物层未由唯一classic parser证明为空。");
+        auto parsed = Take(MapData::ParseDoodadPlacements(source.bytes, parser));
+        if (parsed.recordLayout != MapData::PlacementRecordLayout::Classic)
+            Fail("CLASSIC_OBJECT_CAPTURE_LAYOUT", "装饰物层未由唯一classic parser证明为classic布局。");
         facts.version = parsed.version; facts.subversion = parsed.subversion;
         facts.recordLayout = parsed.recordLayout; facts.specialVersion = parsed.specialVersion; facts.parserFullyConsumed = true;
+        facts.ordinaryPlacements = parsed.doodads.size(); facts.specialPlacements = parsed.specialDoodads.size();
+        facts.state = (parsed.doodads.empty() && parsed.specialDoodads.empty())
+            ? ClassicMinimapCapturedObjectState::ParsedEmpty : ClassicMinimapCapturedObjectState::Parsed;
+        doodads = std::move(parsed);
     }
-    facts.state = ClassicMinimapCapturedObjectState::ParsedEmpty;
     facts.sourceBytes = source.bytes.size();
     facts.sourceSha256 = Take(Sha256(source.bytes));
-    facts.ordinaryPlacements = 0; facts.specialPlacements = 0;
 }
 
 void CheckCurrentMember(std::size_t index, const ArchiveExactMember& source,
@@ -170,11 +179,9 @@ void CheckCurrentMember(std::size_t index, const ArchiveExactMember& source,
         || member.sources.front().name != kMembers[index] || member.sources.front().data != source.bytes)
         Fail("CLASSIC_OBJECT_CAPTURE_CURRENT_MISMATCH", "当前对象成员必须唯一Ready且与准确源字节相同。");
     if (!index) {
-        if (!current.Units() || !current.Units()->units.empty()
-            || current.Units()->recordLayout != MapData::PlacementRecordLayout::Classic)
-            Fail("CLASSIC_OBJECT_CAPTURE_CURRENT_LAYOUT", "当前单位层不是已接通的classic零记录布局。");
-    } else if (!current.Doodads() || !current.Doodads()->doodads.empty() || !current.Doodads()->specialDoodads.empty()
-        || current.Doodads()->specialVersion != 0 || current.Doodads()->recordLayout != MapData::PlacementRecordLayout::Classic) {
+        if (!current.Units() || current.Units()->recordLayout != MapData::PlacementRecordLayout::Classic)
+            Fail("CLASSIC_OBJECT_CAPTURE_CURRENT_LAYOUT", "当前单位层不是已接通的classic布局。");
+    } else if (!current.Doodads() || current.Doodads()->recordLayout != MapData::PlacementRecordLayout::Classic) {
         Fail("CLASSIC_OBJECT_CAPTURE_CURRENT_LAYOUT", "当前装饰物层不是已接通的classic零记录布局。");
     }
     facts.currentBytes = member.sources.front().data.size();
@@ -198,8 +205,12 @@ private:
     Sha256Stream digest_;
 };
 
+std::size_t PlacementCapacity(std::size_t bytes, const MapData::UnitPlacements& units,
+    const MapData::DoodadPlacements& doodads);
+
 std::size_t AuxiliaryCapacity(const ClassicMinimapObjectDomain& domain, const ClassicMinimapObjectAssetFacts& facts,
-    const std::array<std::vector<std::byte>, 2>& sourceMembers, const std::string& identity) {
+    const std::array<std::vector<std::byte>, 2>& sourceMembers, const MapData::UnitPlacements& units,
+    const MapData::DoodadPlacements& doodads, const std::string& identity) {
     // 组合对象的其余固定字段和padding也计入，Terrain owner本体已在TerrainCapacity收取。
     std::size_t bytes = sizeof(ClassicMinimapObjectAssets) - sizeof(TerrainMinimapAssetSnapshot);
     TextCapacity(bytes, domain.sourceSha256); TextCapacity(bytes, domain.documentId);
@@ -208,7 +219,32 @@ std::size_t AuxiliaryCapacity(const ClassicMinimapObjectDomain& domain, const Cl
         TextCapacity(bytes, member.memberName); TextCapacity(bytes, member.sourceSha256); TextCapacity(bytes, member.currentSha256);
     }
     for (const auto& member : sourceMembers) Charge(bytes, member.capacity());
+    bytes = PlacementCapacity(bytes, units, doodads);
     TextCapacity(bytes, identity);
+    return bytes;
+}
+
+std::size_t PlacementCapacity(std::size_t bytes, const MapData::UnitPlacements& units,
+    const MapData::DoodadPlacements& doodads) {
+    Charge(bytes, units.units.capacity(), sizeof(MapData::UnitPlacement));
+    for (const auto& unit : units.units) {
+        TextCapacity(bytes, unit.rawcode); if (unit.skinId) TextCapacity(bytes, *unit.skinId);
+        for (const auto& set : unit.itemSets) { Charge(bytes, set.items.capacity(), sizeof(MapData::PlacementItemChoice));
+            for (const auto& item : set.items) TextCapacity(bytes, item.rawcode); }
+        Charge(bytes, unit.inventory.capacity(), sizeof(MapData::PlacementInventoryItem));
+        for (const auto& item : unit.inventory) TextCapacity(bytes, item.rawcode);
+        Charge(bytes, unit.abilities.capacity(), sizeof(MapData::PlacementAbility));
+        for (const auto& ability : unit.abilities) TextCapacity(bytes, ability.rawcode);
+    }
+    Charge(bytes, doodads.doodads.capacity(), sizeof(MapData::DoodadPlacement));
+    for (const auto& doodad : doodads.doodads) {
+        TextCapacity(bytes, doodad.rawcode); if (doodad.skinId) TextCapacity(bytes, *doodad.skinId);
+        for (const auto& set : doodad.itemSets) { Charge(bytes, set.items.capacity(), sizeof(MapData::PlacementItemChoice));
+            for (const auto& item : set.items) TextCapacity(bytes, item.rawcode); }
+    }
+    Charge(bytes, doodads.specialDoodads.capacity(), sizeof(MapData::SpecialDoodadPlacement));
+    for (const auto& special : doodads.specialDoodads) TextCapacity(bytes, special.rawcode);
+    Charge(bytes, units.OriginalBytes().capacity()); Charge(bytes, doodads.OriginalBytes().capacity());
     return bytes;
 }
 
@@ -258,8 +294,10 @@ Result<ClassicMinimapObjectAssets> CaptureClassicMinimapObjectAssets(TerrainMini
         auto members = Take(source.CaptureExactMembers(kMembers, exact));
         if (members.size() != 2 || members[0].name != kMembers[0] || members[1].name != kMembers[1])
             Fail("CLASSIC_OBJECT_CAPTURE_SOURCE", "准确捕获没有返回要求的两个对象成员身份。");
+        MapData::UnitPlacements units;
+        MapData::DoodadPlacements doodads;
         for (std::size_t i = 0; i < 2; ++i) {
-            ParsedEmpty(i, members[i], facts.members[i], limits);
+            ParseObjectMember(i, members[i], facts.members[i], limits, units, doodads);
             CheckCurrentMember(i, members[i], edits, facts.members[i], limits);
         }
         Check(source.VerifySourceUnchanged());
@@ -270,8 +308,16 @@ Result<ClassicMinimapObjectAssets> CaptureClassicMinimapObjectAssets(TerrainMini
         domain.documentId = terrain.Input().binding.documentId;
         domain.documentGeneration = terrain.Binding().sessionIdentity;
         domain.revision = terrain.Binding().revision; domain.terrainSourceRevision = terrain.Binding().terrainSourceRevision;
-        domain.unitsState = members[0].present ? ClassicMinimapMemberState::ParsedEmpty : ClassicMinimapMemberState::Missing;
-        domain.doodadsState = members[1].present ? ClassicMinimapMemberState::ParsedEmpty : ClassicMinimapMemberState::Missing;
+        const auto toDomainState = [](ClassicMinimapCapturedObjectState state) {
+            switch (state) {
+            case ClassicMinimapCapturedObjectState::Missing: return ClassicMinimapMemberState::Missing;
+            case ClassicMinimapCapturedObjectState::ParsedEmpty: return ClassicMinimapMemberState::ParsedEmpty;
+            case ClassicMinimapCapturedObjectState::Parsed: return ClassicMinimapMemberState::Parsed;
+            }
+            return ClassicMinimapMemberState::Unknown;
+        };
+        domain.unitsState = toDomainState(facts.members[0].state);
+        domain.doodadsState = toDomainState(facts.members[1].state);
         domain.unitsMemberBytes = facts.members[0].sourceBytes; domain.doodadsMemberBytes = facts.members[1].sourceBytes;
         domain.unitsMemberSha256 = facts.members[0].sourceSha256; domain.doodadsMemberSha256 = facts.members[1].sourceSha256;
         Identity identity;
@@ -289,13 +335,15 @@ Result<ClassicMinimapObjectAssets> CaptureClassicMinimapObjectAssets(TerrainMini
         }
         auto identitySha = identity.Finish();
         std::array<std::vector<std::byte>, 2> owned{std::move(members[0].bytes), std::move(members[1].bytes)};
-        facts.retainedAuxiliaryCapacityBytes = AuxiliaryCapacity(domain, facts, owned, identitySha);
-        if (facts.retainedAuxiliaryCapacityBytes > kMetadataReserve + 6 * limits.maxObjectMemberBytes)
+        facts.retainedAuxiliaryCapacityBytes = AuxiliaryCapacity(domain, facts, owned, units, doodads, identitySha);
+        if (facts.retainedAuxiliaryCapacityBytes > kMetadataReserve + 6 * limits.maxObjectMemberBytes
+            + limits.maxPlacements * (sizeof(MapData::UnitPlacement) + sizeof(MapData::DoodadPlacement)))
             Fail("CLASSIC_OBJECT_CAPTURE_BUDGET", "对象见证实际capacity超过预收元数据与正文。");
         // 至此所有失败门已通过才move既有Terrain owner；失败不损耗调用者的原快照。
         ClassicMinimapObjectAssets output(std::move(terrain));
         output.domain_ = std::move(domain); output.facts_ = std::move(facts);
         output.sourceMembers_ = std::move(owned); output.identitySha256_ = std::move(identitySha);
+        output.units_ = std::move(units); output.doodads_ = std::move(doodads);
         return Result<ClassicMinimapObjectAssets>::Success(std::move(output));
     } catch (Failure& failure) {
         return {std::nullopt, std::move(failure.diagnostics)};
