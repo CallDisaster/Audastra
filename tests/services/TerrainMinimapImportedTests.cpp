@@ -139,6 +139,41 @@ void OrdinaryExistingBlpWithoutImportStillRequiresGeneration() {
         "没有导入声明时，已有MapBLP在w3u净变化后仍需自动重建判定");
 }
 
+void UnchangedMinimapDoesNotParseUnknownImportTable() {
+    Fixture fixture;
+    fixture.imp = Bytes{std::byte{99}, std::byte{0}, std::byte{0}, std::byte{0},
+        std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}}; // 未支持版本，不能当作空清单。
+    fixture.Write(true, true);
+    MapSaveTask task; fixture.Freeze(task);
+    task.replacements.push_back({"unrelated.bin", Text("unrelated edit")});
+    Require(!Take(TerrainMinimapSave::RequiresAutomaticGeneration(task)),
+        "已有BLP且没有相关净变化时，不得为无关编辑解析未知imp而拒绝保存");
+    MapSaveService::Run(task);
+    Require(task.succeeded && task.nextSession, "未知imp的无关编辑仍能沿原保存链完成");
+    const auto saved = Take(MapArchiveSession::Open(task.target));
+    Require(Take(saved.ReadMember("war3map.imp")) == fixture.imp
+        && Take(saved.ReadMember("war3mapMap.blp")) == fixture.blp,
+        "独立Open确认未知imp和已有BLP原字保留");
+}
+
+void FullPathImportFlagsProtectCaseVariants() {
+    for (const auto spelling : {std::string_view{"WAR3MAPMAP.BLP"}, std::string_view{"War3MapMap.BlP"}}) {
+        Fixture fixture;
+        fixture.imp = Bytes{std::byte{1}, std::byte{0}, std::byte{0}, std::byte{0},
+            std::byte{1}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{13}};
+        const auto path = Text(spelling);
+        fixture.imp.insert(fixture.imp.end(), path.begin(), path.end()); fixture.imp.push_back(std::byte{0});
+        fixture.Write(true, true);
+        MapSaveTask task; fixture.Freeze(task);
+        task.replacements.push_back({"war3map.w3u", Text("changed-units")});
+        Require(!Take(TerrainMinimapSave::RequiresAutomaticGeneration(task)),
+            "flags13完整路径的大小写变体必须指向同一受保护MapBLP");
+        MapData::MapDataEditSession edits(MapDocument::FromMembers({}));
+        Require(!Take(TerrainMinimapSave::Prepare(task, edits, {}, TerrainMinimapSaveChoice::Automatic)),
+            "大小写变体导入声明不得启动自动小地图生成器");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -146,6 +181,8 @@ int main() {
         ImportedExistingBlpSuppressesAutomaticGenerationAndPreservesBytes();
         FinalImportedBlpReplacementSuppressesGeneration();
         OrdinaryExistingBlpWithoutImportStillRequiresGeneration();
+        UnchangedMinimapDoesNotParseUnknownImportTable();
+        FullPathImportFlagsProtectCaseVariants();
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n'; return 1;
