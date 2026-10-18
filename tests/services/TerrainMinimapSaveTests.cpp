@@ -140,7 +140,8 @@ struct Fixture {
         auto members = gameWinner ? std::vector<MapArchiveMember>{} : Materials(colorful);
         if (classicMaterials) {
             for (auto& member : members) if (member.name == "TerrainArt\\CliffTypes.slk")
-                member.data = Slk({"cliffID", "texDir", "texFile"}, {{"CLdi", "Fixture", "Cliff"}});
+                member.data = Slk({"cliffID", "texDir", "texFile", "cliffModelDir", "rampModelDir", "groundTile", "cliffClass"},
+                    {{"CLdi", "Fixture", "Cliff", "Cliff", "Ramp", "Tg01", "0"}});
             members.push_back({"Fixture\\Cliff.blp", Atlas(false)});
             members.push_back({"UI\\MiscData.txt", Text("[Water]\nDeepLevelPathing=64\n")});
             members.push_back({"UI\\WorldEditData.txt", Text("[CameraMargins]\nLeft=0\nRight=0\nBottom=0\nTop=0\n")});
@@ -447,6 +448,7 @@ void AutomaticDecisionUsesExactSourceMembers() {
         auto partial = MapArchiveSession::Open(partialPath);
         Require(partial.Succeeded() && partial.value, "open partial archive without W3E");
         MapSaveTask task; Require(task.FreezeArchive(*partial.value).Succeeded(), "freeze partial-archive source");
+        task.target = complete.directory.Path() / "partial-saved.w3x";
         Require(!Take(TerrainMinimapSave::RequiresAutomaticGeneration(task)),
             "accurately missing W3E partial archives do not trigger automatic minimap generation");
     }

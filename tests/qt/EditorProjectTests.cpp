@@ -1019,7 +1019,9 @@ void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
     };
     for (auto& member : members) if (member.name == "TerrainArt\\CliffTypes.slk")
         member.data = text("ID;PWXL;N;E\nC;X1;Y1;K\"cliffID\"\nC;X2;Y1;K\"texDir\"\nC;X3;Y1;K\"texFile\"\n"
-            "C;X1;Y2;K\"Cl01\"\nC;X2;Y2;K\"Fixture\"\nC;X3;Y2;K\"Cliff\"\nE\n");
+            "C;X4;Y1;K\"cliffModelDir\"\nC;X5;Y1;K\"rampModelDir\"\nC;X6;Y1;K\"groundTile\"\nC;X7;Y1;K\"cliffClass\"\n"
+            "C;X1;Y2;K\"Cl01\"\nC;X2;Y2;K\"Fixture\"\nC;X3;Y2;K\"Cliff\"\n"
+            "C;X4;Y2;K\"Cliff\"\nC;X5;Y2;K\"Ramp\"\nC;X6;Y2;K\"Tg01\"\nC;X7;Y2;K\"0\"\nE\n");
     const auto ground = std::find_if(members.begin(), members.end(), [](const auto& member) { return member.name == "Fixture\\Ground.blp"; });
     QVERIFY(ground != members.end());
     const auto cliffBytes = ground->data;
