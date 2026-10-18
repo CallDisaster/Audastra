@@ -213,7 +213,7 @@ std::size_t PlacementCapacity(std::size_t bytes, const MapData::UnitPlacements& 
 
 std::size_t AuxiliaryCapacity(const ClassicMinimapObjectDomain& domain, const ClassicMinimapObjectAssetFacts& facts,
     const std::array<std::vector<std::byte>, 2>& sourceMembers, const MapData::UnitPlacements& units,
-    const MapData::DoodadPlacements& doodads, const std::string& identity) {
+    const MapData::DoodadPlacements& doodads, const ClassicMinimapObjectLayer& objectLayer, const std::string& identity) {
     // 组合对象的其余固定字段和padding也计入，Terrain owner本体已在TerrainCapacity收取。
     std::size_t bytes = sizeof(ClassicMinimapObjectAssets) - sizeof(TerrainMinimapAssetSnapshot);
     TextCapacity(bytes, domain.sourceSha256); TextCapacity(bytes, domain.documentId);
@@ -223,6 +223,18 @@ std::size_t AuxiliaryCapacity(const ClassicMinimapObjectDomain& domain, const Cl
     }
     for (const auto& member : sourceMembers) Charge(bytes, member.capacity());
     bytes = PlacementCapacity(bytes, units, doodads);
+    Charge(bytes, objectLayer.pixels.capacity(), sizeof(ClassicMinimapObjectPixel));
+    Charge(bytes, objectLayer.styles.capacity(), sizeof(ClassicMinimapObjectStyle));
+    for (const auto& style : objectLayer.styles) {
+        TextCapacity(bytes, style.object.rawcode); TextCapacity(bytes, style.modelPath);
+        TextCapacity(bytes, style.pathingTexture); TextCapacity(bytes, style.replaceableTexture);
+    }
+    Charge(bytes, objectLayer.dependencies.capacity(), sizeof(ClassicMinimapObjectLayer::Dependency));
+    for (const auto& dependency : objectLayer.dependencies) {
+        TextCapacity(bytes, dependency.winner.canonicalPath); TextCapacity(bytes, dependency.winner.sourceId);
+        TextCapacity(bytes, dependency.winner.sourcePath); TextCapacity(bytes, dependency.encodedSha256);
+    }
+    for (const auto& diagnostic : objectLayer.diagnostics) TextCapacity(bytes, diagnostic.message);
     TextCapacity(bytes, identity);
     return bytes;
 }
@@ -253,15 +265,98 @@ std::size_t PlacementCapacity(std::size_t bytes, const MapData::UnitPlacements& 
 
 } // namespace
 
+namespace {
+void VerifyObjectMemberBytes(const ClassicMinimapObjectAssets& snapshot, const MapArchiveSession& source,
+    std::span<const MemberReplacement> replacements, std::span<const std::string> removals,
+    bool readback, const ClassicMinimapObjectAssetLimits& limits) {
+    ArchiveExactMemberLimits exact;
+    exact.memberCount = 2; exact.memberBytes = limits.maxObjectMemberBytes; exact.totalBytes = limits.maxObjectMemberBytes * 2;
+    const auto members = Take(source.CaptureExactMembers(kMembers, exact));
+    for (std::size_t i = 0; i < 2; ++i) {
+        const auto& expected = snapshot.CapturedMembers()[i];
+        const auto normalize = [](std::string_view name) { std::string result(name);
+            for (auto& c : result) { if (c == '/') c = '\\'; else c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); }
+            return result; };
+        const auto key = normalize(kMembers[i]);
+        const MemberReplacement* replacement = nullptr; bool removed = false;
+        for (const auto& entry : replacements) if (normalize(entry.name) == key) {
+            if (replacement) Fail("CLASSIC_OBJECT_CAPTURE_FINAL_DUPLICATE", "最终对象成员有重复替换。");
+            replacement = &entry;
+        }
+        for (const auto& entry : removals) if (normalize(entry) == key) {
+            if (removed || replacement) Fail("CLASSIC_OBJECT_CAPTURE_FINAL_CONFLICT", "最终对象成员重复删除或同时被替换和删除。");
+            removed = true;
+        }
+        const bool present = replacement || (!removed && members[i].present);
+        const auto& bytes = replacement ? replacement->data : members[i].bytes;
+        if (present != expected.currentPresent || (present && (bytes.size() != expected.currentBytes
+            || Take(Sha256(bytes)) != expected.currentSha256)))
+            Fail("CLASSIC_OBJECT_CAPTURE_FINAL_BYTES", "最终对象成员与小地图捕获的当前摆放不同。");
+        if (!readback && (members[i].present != expected.sourcePresent || (members[i].present
+            && (members[i].bytes.size() != expected.sourceBytes || Take(Sha256(members[i].bytes)) != expected.sourceSha256))))
+            Fail("CLASSIC_OBJECT_CAPTURE_SOURCE_STALE", "原始对象成员来源已改变。");
+    }
+}
+}
+
+Status VerifyClassicMinimapObjectAssetsCurrent(const ClassicMinimapObjectAssets& snapshot,
+    const MapArchiveSession& source, const MapData::MapDataEditSession& edits, const std::filesystem::path& gameRoot,
+    const TerrainMinimapAssetCaptureLimits& terrainLimits, const ClassicMinimapObjectAssetLimits& objectLimits,
+    std::span<const MemberReplacement> replacements, std::span<const std::string> removals) {
+    try {
+        ValidateLimits(objectLimits);
+        Check(VerifyTerrainMinimapAssetsCurrent(snapshot.TerrainAssets(), source, edits, gameRoot, terrainLimits));
+        for (std::size_t i = 0; i < 2; ++i) {
+            const auto current = Take(edits.Snapshot(kKinds[i], objectLimits.maxCurrentSnapshotBytes));
+            const auto& member = current.Member(kKinds[i]); const auto& expected = snapshot.CapturedMembers()[i];
+            if ((member.state != MapDataState::Missing) != expected.currentPresent)
+                Fail("CLASSIC_OBJECT_CAPTURE_CURRENT_MISMATCH", "当前对象层存在性与捕获不同。");
+            if (expected.currentPresent && (member.state != MapDataState::Ready || member.sources.size() != 1
+                || member.sources.front().data.size() != expected.currentBytes
+                || Take(Sha256(member.sources.front().data)) != expected.currentSha256))
+                Fail("CLASSIC_OBJECT_CAPTURE_CURRENT_MISMATCH", "当前对象层正文与捕获不同。");
+        }
+        Check(VerifyClassicMinimapObjectLayerDependencies(snapshot.ObjectLayer(), source, gameRoot,
+            snapshot.TerrainAssets().Binding().mainTileset, replacements, removals));
+        return Status::Ok();
+    } catch (Failure& failure) { return {std::move(failure.diagnostics)}; }
+}
+
+Status VerifyClassicMinimapObjectAssetsFrozenOutput(const ClassicMinimapObjectAssets& snapshot,
+    const MapArchiveSession& source, std::span<const MemberReplacement> replacements,
+    std::span<const std::string> removals, const TerrainMinimapAssetCaptureLimits& terrainLimits,
+    const ClassicMinimapObjectAssetLimits& objectLimits) {
+    try {
+        ValidateLimits(objectLimits);
+        Check(VerifyTerrainMinimapAssetsFrozenOutput(snapshot.TerrainAssets(), source, replacements, removals, terrainLimits));
+        VerifyObjectMemberBytes(snapshot, source, replacements, removals, false, objectLimits);
+        Check(VerifyClassicMinimapObjectLayerDependencies(snapshot.ObjectLayer(), source,
+            snapshot.TerrainAssets().Binding().gameRoot, snapshot.TerrainAssets().Binding().mainTileset, replacements, removals));
+        return Status::Ok();
+    } catch (Failure& failure) { return {std::move(failure.diagnostics)}; }
+}
+
+Status VerifyClassicMinimapObjectAssetsReadback(const ClassicMinimapObjectAssets& snapshot,
+    const MapArchiveSession& saved, const TerrainMinimapAssetCaptureLimits& terrainLimits,
+    const ClassicMinimapObjectAssetLimits& objectLimits) {
+    try {
+        ValidateLimits(objectLimits);
+        Check(VerifyTerrainMinimapAssetsReadback(snapshot.TerrainAssets(), saved, terrainLimits));
+        VerifyObjectMemberBytes(snapshot, saved, {}, {}, true, objectLimits);
+        Check(VerifyClassicMinimapObjectLayerDependencies(snapshot.ObjectLayer(), saved,
+            snapshot.TerrainAssets().Binding().gameRoot, snapshot.TerrainAssets().Binding().mainTileset, {}, {}, true));
+        return Status::Ok();
+    } catch (Failure& failure) { return {std::move(failure.diagnostics)}; }
+}
+
 Result<ClassicMinimapObjectAssets> CaptureClassicMinimapObjectAssets(TerrainMinimapAssetSnapshot&& terrain,
     const MapArchiveSession& source, const MapData::MapDataEditSession& edits,
-    const ClassicMinimapObjectAssetLimits& limits) {
+    const ClassicMinimapObjectAssetLimits& limits, std::span<const MemberReplacement> replacements,
+    std::span<const std::string> removals) {
     try {
         ValidateLimits(limits);
-        if (terrain.Input().rangePolicy != TerrainMinimapRangePolicy::FullW3e)
-            Fail("CLASSIC_OBJECT_CAPTURE_PLAYABLE_RECT_UNRESOLVED", "对象捕获只接FullW3e，不能为未证实的W3I crop服务。");
-        if (terrain.Input().sourceW3i)
-            Fail("CLASSIC_OBJECT_CAPTURE_W3I_UNEXPECTED", "FullW3e对象捕获不静默保留额外W3I来源。");
+        // FullW3e只供离线候选；正式保存由root的ClassicPlayable策略核W3I/camera来源。
+        // 对象层本身在完整地图坐标下绘制，候选组合时再裁进实际输出rect。
         // 先预收，再进行任何新的IO/hash/parse。已有输入内部provider/MPQ缓冲不在载荷口径。
         ClassicMinimapObjectAssetFacts facts;
         facts.retainedTerrainCapacityBytes = TerrainCapacity(terrain);
@@ -300,9 +395,30 @@ Result<ClassicMinimapObjectAssets> CaptureClassicMinimapObjectAssets(TerrainMini
         MapData::UnitPlacements units;
         MapData::DoodadPlacements doodads;
         for (std::size_t i = 0; i < 2; ++i) {
-            ParseObjectMember(i, members[i], facts.members[i], limits, units, doodads);
-            CheckCurrentMember(i, members[i], edits, facts.members[i], limits);
+            const auto current = Take(edits.Snapshot(kKinds[i], limits.maxCurrentSnapshotBytes));
+            const auto& member = current.Member(kKinds[i]);
+            ArchiveExactMember currentMember{kMembers[i], member.state != MapDataState::Missing, {}};
+            if (currentMember.present) {
+                if (member.state != MapDataState::Ready || member.sources.size() != 1 || member.sources.front().name != kMembers[i])
+                    Fail("CLASSIC_OBJECT_CAPTURE_CURRENT_LAYOUT", "当前对象层必须是唯一且可完整解析的Ready成员。");
+                currentMember.bytes = member.sources.front().data;
+            }
+            MapData::UnitPlacements sourceUnits; MapData::DoodadPlacements sourceDoodads;
+            ClassicMinimapObjectMemberFacts sourceFacts, currentFacts;
+            ParseObjectMember(i, members[i], sourceFacts, limits, sourceUnits, sourceDoodads);
+            ParseObjectMember(i, currentMember, currentFacts, limits, units, doodads);
+            auto& fact = facts.members[i] = std::move(currentFacts);
+            fact.memberName = kMembers[i]; fact.sourcePresent = members[i].present; fact.currentPresent = currentMember.present;
+            fact.sourceBytes = members[i].bytes.size(); fact.currentBytes = currentMember.bytes.size();
+            fact.sourceSha256 = fact.sourcePresent ? Take(Sha256(members[i].bytes)) : std::string{};
+            fact.currentSha256 = fact.currentPresent ? Take(Sha256(currentMember.bytes)) : std::string{};
+            fact.sourceAndCurrentBytesEqual = fact.sourcePresent == fact.currentPresent && members[i].bytes == currentMember.bytes;
+            if (fact.sourcePresent != fact.currentPresent || (fact.sourcePresent && !fact.sourceAndCurrentBytesEqual))
+                Fail("CLASSIC_OBJECT_CAPTURE_CURRENT_MISMATCH", "源与当前对象成员正文不同，不能建立对象层快照。");
         }
+        auto objectLayer = Take(CaptureClassicMinimapObjectLayer(doodads.doodads, source, terrain.Binding().gameRoot,
+            currentTerrain->header.mainTileset, currentTerrain->header.offset,
+            {0, 0, currentTerrain->header.width - 1, currentTerrain->header.height - 1}, replacements, removals));
         Check(source.VerifySourceUnchanged());
         if (!MatchesTerrainCaptureBinding(terrain, source, edits) || edits.Terrain() != currentTerrain)
             Fail("CLASSIC_OBJECT_CAPTURE_STALE", "对象捕获期间来源、会话或当前Terrain已变化。");
@@ -321,8 +437,8 @@ Result<ClassicMinimapObjectAssets> CaptureClassicMinimapObjectAssets(TerrainMini
         };
         domain.unitsState = toDomainState(facts.members[0].state);
         domain.doodadsState = toDomainState(facts.members[1].state);
-        domain.unitsMemberBytes = facts.members[0].sourceBytes; domain.doodadsMemberBytes = facts.members[1].sourceBytes;
-        domain.unitsMemberSha256 = facts.members[0].sourceSha256; domain.doodadsMemberSha256 = facts.members[1].sourceSha256;
+        domain.unitsMemberBytes = facts.members[0].currentBytes; domain.doodadsMemberBytes = facts.members[1].currentBytes;
+        domain.unitsMemberSha256 = facts.members[0].currentSha256; domain.doodadsMemberSha256 = facts.members[1].currentSha256;
         Identity identity;
         identity.Text(ClassicMinimapObjectAssetFacts::capturePolicy); identity.Text(terrain.IdentitySha256());
         identity.Text(domain.sourceSha256); identity.Text(domain.documentId); identity.U64(domain.documentGeneration);
@@ -331,14 +447,19 @@ Result<ClassicMinimapObjectAssets> CaptureClassicMinimapObjectAssets(TerrainMini
             identity.Text(member.memberName); identity.U64(static_cast<std::uint64_t>(member.state));
             identity.U64(member.sourceBytes); identity.Text(member.sourceSha256);
             identity.U64(member.currentBytes); identity.Text(member.currentSha256);
+            identity.U64(member.sourcePresent); identity.U64(member.currentPresent);
             identity.U64(static_cast<std::uint32_t>(member.version)); identity.U64(static_cast<std::uint32_t>(member.subversion));
             identity.U64(static_cast<std::uint32_t>(member.recordLayout)); identity.U64(static_cast<std::uint32_t>(member.specialVersion));
             identity.U64(member.ordinaryPlacements); identity.U64(member.specialPlacements);
             identity.U64(member.parserFullyConsumed ? 1u : 0u);
         }
+        for (const auto& dependency : objectLayer.dependencies) {
+            identity.Text(dependency.winner.canonicalPath); identity.Text(dependency.encodedSha256);
+            identity.U64(dependency.present); identity.U64(dependency.mapMemberPresent);
+        }
         auto identitySha = identity.Finish();
         std::array<std::vector<std::byte>, 2> owned{std::move(members[0].bytes), std::move(members[1].bytes)};
-        facts.retainedAuxiliaryCapacityBytes = AuxiliaryCapacity(domain, facts, owned, units, doodads, identitySha);
+        facts.retainedAuxiliaryCapacityBytes = AuxiliaryCapacity(domain, facts, owned, units, doodads, objectLayer, identitySha);
         if (facts.retainedAuxiliaryCapacityBytes > kMetadataReserve + 6 * limits.maxObjectMemberBytes
             + limits.maxPlacements * (sizeof(MapData::UnitPlacement) + sizeof(MapData::DoodadPlacement)))
             Fail("CLASSIC_OBJECT_CAPTURE_BUDGET", "对象见证实际capacity超过预收元数据与正文。");
@@ -347,6 +468,7 @@ Result<ClassicMinimapObjectAssets> CaptureClassicMinimapObjectAssets(TerrainMini
         output.domain_ = std::move(domain); output.facts_ = std::move(facts);
         output.sourceMembers_ = std::move(owned); output.identitySha256_ = std::move(identitySha);
         output.units_ = std::move(units); output.doodads_ = std::move(doodads);
+        output.objectLayer_ = std::move(objectLayer);
         return Result<ClassicMinimapObjectAssets>::Success(std::move(output));
     } catch (Failure& failure) {
         return {std::nullopt, std::move(failure.diagnostics)};

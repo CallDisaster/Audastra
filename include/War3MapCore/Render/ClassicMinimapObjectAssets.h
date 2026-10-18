@@ -3,6 +3,7 @@
 #include "War3MapCore/Render/ClassicMinimapCandidate.h"
 #include "War3MapCore/Render/TerrainMinimapAssets.h"
 #include "War3MapCore/MapData/MapPlacements.h"
+#include "War3MapCore/Render/ClassicMinimapObjectLayer.h"
 
 #include <array>
 #include <cstddef>
@@ -17,8 +18,8 @@ struct ClassicMinimapObjectAssetLimits {
     // 只收紧：此账包含已有Terrain快照载荷和本次新增捕获/快照/解析/SHA预留。
     // 不含已存在的edits历史、MapArchiveSession/MPQ/Game挂载内部、allocator或进程RSS。
     std::size_t maxWorkingBytes = 128u * 1024u * 1024u;
-    std::size_t maxObjectMemberBytes = 64u * 1024u;
-    std::size_t maxCurrentSnapshotBytes = 256u * 1024u; // Snapshot(kind)还复制/解析W3I
+    std::size_t maxObjectMemberBytes = 2u * 1024u * 1024u;
+    std::size_t maxCurrentSnapshotBytes = 2u * 1024u * 1024u;
     std::size_t maxCurrentTerrainBytes = 4u * 1024u * 1024u;
     // 解析后的实例仍受界限约束；这是对象图层的输入容量，不是地图编辑器的通用上限。
     std::size_t maxPlacements = 65536;
@@ -31,6 +32,7 @@ struct ClassicMinimapObjectMemberFacts {
     std::string memberName;
     ClassicMinimapCapturedObjectState state = ClassicMinimapCapturedObjectState::Missing;
     std::size_t sourceBytes = 0, currentBytes = 0;
+    bool sourcePresent = false, currentPresent = false;
     std::string sourceSha256, currentSha256;
     std::int32_t version = 0, subversion = 0;
     MapData::PlacementRecordLayout recordLayout = MapData::PlacementRecordLayout::Undetermined;
@@ -42,7 +44,7 @@ struct ClassicMinimapObjectMemberFacts {
 
 struct ClassicMinimapObjectAssetFacts {
     static constexpr const char* capturePolicy = "source-capture-parsed-objects-v2/native=false";
-    static constexpr std::size_t snapshotScratchBytesPerWireByte = 128;
+    static constexpr std::size_t snapshotScratchBytesPerWireByte = 16;
     std::array<ClassicMinimapObjectMemberFacts, 2> members; // units、doodads
     std::size_t retainedTerrainCapacityBytes = 0;
     std::size_t estimatedExtraPeakBytes = 0, estimatedPeakBytes = 0;
@@ -61,7 +63,8 @@ class ClassicMinimapObjectAssets;
 // 本接口未提供Current/FrozenOutput/Readback生命周期，只供一次只读冻结候选，不接保存。
 [[nodiscard]] Result<ClassicMinimapObjectAssets> CaptureClassicMinimapObjectAssets(
     TerrainMinimapAssetSnapshot&& terrain, const MapArchiveSession& source,
-    const MapData::MapDataEditSession& edits, const ClassicMinimapObjectAssetLimits& limits = {});
+    const MapData::MapDataEditSession& edits, const ClassicMinimapObjectAssetLimits& limits = {},
+    std::span<const MemberReplacement> replacements = {}, std::span<const std::string> removals = {});
 
 class ClassicMinimapObjectAssets {
 public:
@@ -69,12 +72,14 @@ public:
         : terrain_(std::move(other.terrain_)), domain_(std::move(other.domain_)), facts_(std::move(other.facts_)),
           sourceMembers_(std::move(other.sourceMembers_)), identitySha256_(std::move(other.identitySha256_)),
           units_(std::move(other.units_)), doodads_(std::move(other.doodads_)),
+          objectLayer_(std::move(other.objectLayer_)),
           captured_(std::exchange(other.captured_, false)) {}
     ClassicMinimapObjectAssets& operator=(ClassicMinimapObjectAssets&& other) noexcept {
         if (this != &other) {
             terrain_ = std::move(other.terrain_); domain_ = std::move(other.domain_); facts_ = std::move(other.facts_);
             sourceMembers_ = std::move(other.sourceMembers_); identitySha256_ = std::move(other.identitySha256_);
             units_ = std::move(other.units_); doodads_ = std::move(other.doodads_);
+            objectLayer_ = std::move(other.objectLayer_);
             captured_ = std::exchange(other.captured_, false);
         }
         return *this;
@@ -90,6 +95,7 @@ public:
     // 由同源物编目录按rawcode解析，缺失时应拒绝绘制而不是猜颜色。
     [[nodiscard]] const MapData::UnitPlacements& Units() const noexcept { return units_; }
     [[nodiscard]] const MapData::DoodadPlacements& Doodads() const noexcept { return doodads_; }
+    [[nodiscard]] const ClassicMinimapObjectLayer& ObjectLayer() const noexcept { return objectLayer_; }
     [[nodiscard]] const ClassicMinimapObjectAssetFacts& Facts() const noexcept { return facts_; }
     [[nodiscard]] const std::string& IdentitySha256() const noexcept { return identitySha256_; }
 
@@ -101,14 +107,27 @@ private:
     std::array<std::vector<std::byte>, 2> sourceMembers_;
     MapData::UnitPlacements units_;
     MapData::DoodadPlacements doodads_;
+    ClassicMinimapObjectLayer objectLayer_;
     std::string identitySha256_;
     bool captured_ = true; // move后源对象不能再次消费捕获资格，不依赖容器的未指定状态。
     friend Result<ClassicMinimapObjectAssets> CaptureClassicMinimapObjectAssets(
         TerrainMinimapAssetSnapshot&&, const MapArchiveSession&, const MapData::MapDataEditSession&,
-        const ClassicMinimapObjectAssetLimits&);
+        const ClassicMinimapObjectAssetLimits&, std::span<const MemberReplacement>, std::span<const std::string>);
     friend Result<ClassicMinimapCandidate> BuildClassicMinimapCandidate(
         const ClassicMinimapObjectAssets&, const TerrainMinimapPostprocessSettings&,
         const ClassicMinimapCandidateLimits&);
 };
+
+[[nodiscard]] Status VerifyClassicMinimapObjectAssetsCurrent(const ClassicMinimapObjectAssets& snapshot,
+    const MapArchiveSession& source, const MapData::MapDataEditSession& edits, const std::filesystem::path& gameRoot,
+    const TerrainMinimapAssetCaptureLimits& terrainLimits = {}, const ClassicMinimapObjectAssetLimits& objectLimits = {},
+    std::span<const MemberReplacement> replacements = {}, std::span<const std::string> removals = {});
+[[nodiscard]] Status VerifyClassicMinimapObjectAssetsFrozenOutput(const ClassicMinimapObjectAssets& snapshot,
+    const MapArchiveSession& source, std::span<const MemberReplacement> replacements,
+    std::span<const std::string> removals = {}, const TerrainMinimapAssetCaptureLimits& terrainLimits = {},
+    const ClassicMinimapObjectAssetLimits& objectLimits = {});
+[[nodiscard]] Status VerifyClassicMinimapObjectAssetsReadback(const ClassicMinimapObjectAssets& snapshot,
+    const MapArchiveSession& saved, const TerrainMinimapAssetCaptureLimits& terrainLimits = {},
+    const ClassicMinimapObjectAssetLimits& objectLimits = {});
 
 } // namespace War3Map::Render
