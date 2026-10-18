@@ -131,6 +131,13 @@ void MainWindow::BuildHeader() {
     saveMapAction_->setEnabled(false);
     RegisterCommandAction("file.save.map", saveMapInPlaceAction_, tr("工程"));
     RegisterCommandAction("file.save.map.copy", saveMapAction_, tr("工程"));
+    saveMissingMinimapAction_ = fileMenu->addAction(tr("另存地图并补建缺失的地形小地图…"), this, [this] {
+        (void)SaveAsMapArchive(War3Map::Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly);
+    });
+    saveMissingMinimapAction_->setObjectName("saveMapMissingMinimapAction");
+    saveMissingMinimapAction_->setToolTip(tr("仅本次另存时补建源图缺失的地形小地图；已有图像不覆盖，需使用普通另存；要求纯高度修改，阴影和标记不重建"));
+    saveMissingMinimapAction_->setEnabled(false);
+    RegisterCommandAction("file.save.map.missing-minimap", saveMissingMinimapAction_, tr("工程"));
     testMapAction_ = MenuAction(this, "lucide/play", tr("测试"), tr("测试地图 · F9"));
     testMapAction_->setObjectName(QStringLiteral("testMapAction"));
     testMapAction_->setShortcut(QKeySequence(Qt::Key_F9));

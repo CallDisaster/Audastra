@@ -63,7 +63,8 @@ QString ChangedMembers(const MapSaveJob& job) {
         {"war3map.w3q", "升级物编"}, {"war3map.wtg", "触发器与变量"}, {"war3map.wct", "自定义脚本"},
         {"war3map.w3i", "地图设置"}, {"war3map.w3s", "声音"}, {"war3map.w3r", "区域"},
         {"war3map.w3c", "镜头"}, {"war3mapUnits.doo", "单位与物品摆放"}, {"war3map.doo", "地物摆放"},
-        {"war3map.w3e", "地形"}, {"war3map.wpm", "通行性"}, {"war3map.wts", "字符串表"}};
+        {"war3map.w3e", "地形"}, {"war3map.wpm", "通行性"}, {"war3map.wts", "字符串表"},
+        {"war3mapMap.blp", "地形小地图"}};
     QStringList labels;
     for (const auto& [member, label] : known)
         if (std::any_of(job.replacements.begin(), job.replacements.end(), [member](const auto& r) { return r.name == member; }))
@@ -74,7 +75,8 @@ QString ChangedMembers(const MapSaveJob& job) {
 }
 }
 
-bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, bool background, bool testSnapshot, bool testHotReload) {
+bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, bool background, bool testSnapshot, bool testHotReload,
+    War3Map::Services::TerrainMinimapSaveChoice minimapChoice) {
     // 测试快照绝不能进入原地保存分支，也不能把当前工程切换到测试副本。
     if ((testSnapshot && inPlace) || (testHotReload && !testSnapshot)) return false;
     if (project_->savingMap_) return false;
@@ -113,9 +115,24 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         details.append(errors);
         if (details.size() == 1) details << tr("请查看当前模块中标出的无效值；编辑内容仍然保留。");
         // 标题取最后一条错误：它是中止保存的结论，前面的通常是不致命的来源提示。
-        SaveNotice(*this, background, false, errors.isEmpty() ? summary
-            : tr("地图未保存：%1").arg(errors.back().section(QLatin1Char('\n'), 0, 0)), details, warnings);
+        const auto failureSummary = job && !job->written.empty()
+            ? tr("文件已写出，但保存结果未被接受；当前编辑仍未保存")
+            : errors.isEmpty() ? summary : tr("地图未保存：%1").arg(errors.back().section(QLatin1Char('\n'), 0, 0));
+        SaveNotice(*this, background, false, failureSummary, details, warnings);
     };
+    if (minimapChoice != War3Map::Services::TerrainMinimapSaveChoice::Preserve) {
+        if (minimapChoice != War3Map::Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly
+            || inPlace || testSnapshot || testHotReload || (CurrentModule() == "campaign" && campaignModule_->Session())) {
+            project_->AddDiagnostic(tr("错误"), tr("地图"), tr("MINIMAP_SAVE_TARGET"),
+                tr("补建缺失的地形小地图仅用于本次正式另存，不支持原地、测试或战役保存。"));
+            reportFailure(tr("小地图补建范围不支持")); return false;
+        }
+        if (settingsModule_->HasPendingDraft() || soundsModule_->HasPendingDraft() || triggersModule_->HasPendingCodeDraft()) {
+            project_->AddDiagnostic(tr("错误"), tr("地图"), tr("MINIMAP_SAVE_DOMAIN"),
+                tr("请先处理地图设置、声音或代码草稿，再单独另存纯高度修改。"));
+            reportFailure(tr("小地图补建不能混入其它草稿")); return false;
+        }
+    }
     if (settingsModule_->HasPendingDraft() && !settingsModule_->ApplyDraft()) {
         reportFailure(tr("地图设置未通过校验，保存已取消"));
         return false;
@@ -129,7 +146,7 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         return false;
     }
     const auto sourceBeforeSave = project_->sourceArchivePath_;
-    auto job = project_->PrepareMapSave(target, inPlace);
+    auto job = project_->PrepareMapSave(target, inPlace, minimapChoice);
     if (!job) {
         UpdateEditDirtyFlags();
         reportFailure(tr("地图未保存：保存准备未通过"));
@@ -145,6 +162,7 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         job->script->luaTestOptions.testHotReload = true;
     }
     project_->savingMap_ = true;
+    UpdateExportAvailability();
     const auto execute = [reporter = programIssueReporter_](MapSaveJob& task) {
         const auto failed = [&](bool standardException) {
             task.succeeded = false;
@@ -188,6 +206,7 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         execute(*job);
     }
     project_->savingMap_ = false;
+    UpdateExportAvailability();
     if (testSnapshot) {
         project_->AddDiagnostics(job->diagnostics);
         const auto diagnosticCount = job->diagnostics.size();
@@ -238,6 +257,9 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         : saved->scriptRebuilt ? tr("脚本已重建并通过语法检查")
         : saved->savedTriggerChanges ? tr("脚本未重建（工具链未就绪，详见诊断）") : tr("脚本未变");
     QStringList details{tr("文件：%1").arg(name), tr("已写入：%1").arg(ChangedMembers(*job)), script};
+    if (job->minimapSave && job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded()) {
+        details << tr("已补建源图缺失的地形小地图；阴影和标记没有重建，仍需原版编辑器或游戏验证。");
+    }
     if (!saved->backup.empty()) details << (job->inPlaceOptions.keepBackups == 0
         ? tr("原文件备份：%1（不限保留数量）").arg(QString::fromStdWString(saved->backup.wstring()))
         : tr("原文件备份：%1（每张源图保留最近 %2 份）").arg(QString::fromStdWString(saved->backup.wstring()))
@@ -279,8 +301,11 @@ void MainWindow::SaveMapInPlace() {
     (void)RunMapSave({}, true, true);
 }
 
-bool MainWindow::SaveAsMapArchive() {
-    if (CurrentModule() == "campaign" && campaignModule_->Session()) return campaignModule_->Save(true);
+bool MainWindow::SaveAsMapArchive(War3Map::Services::TerrainMinimapSaveChoice minimapChoice) {
+    if (CurrentModule() == "campaign" && campaignModule_->Session()) {
+        if (minimapChoice != War3Map::Services::TerrainMinimapSaveChoice::Preserve) return false;
+        return campaignModule_->Save(true);
+    }
     // 先完成路径选择；取消时不读取、回灌或修改任何会话文档。
     // 恢复副本不提示临时目录；放在作者原图旁边，文件名加“恢复”避免与原图重名（另存为不覆盖已有文件）。
     auto suggested = project_->sourceArchivePath_;
@@ -291,10 +316,11 @@ bool MainWindow::SaveAsMapArchive() {
     const QString target = QFileDialog::getSaveFileName(
         this, tr("另存地图为"), QString::fromStdWString(suggested.wstring()),
         tr("Warcraft III 地图 (*.w3x);;所有文件 (*.*)"));
-    return !target.isEmpty() && RunMapSave(std::filesystem::path(target.toStdWString()), false, true);
+    return !target.isEmpty() && RunMapSave(std::filesystem::path(target.toStdWString()), false, true, false, false, minimapChoice);
 }
 
-bool MainWindow::SaveMapArchiveToPath(const std::filesystem::path& outputPath) {
+bool MainWindow::SaveMapArchiveToPath(const std::filesystem::path& outputPath,
+    War3Map::Services::TerrainMinimapSaveChoice minimapChoice) {
     // 同步执行（无界面探针与测试使用），不显示模态窗口。
-    return RunMapSave(outputPath, false, false);
+    return RunMapSave(outputPath, false, false, false, false, minimapChoice);
 }

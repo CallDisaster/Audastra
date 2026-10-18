@@ -195,8 +195,9 @@ bool EditorProject::HasUnsavedMapChanges() const {
         || std::any_of(objectDirty_.begin(), objectDirty_.end(), [](bool dirty) { return dirty; });
 }
 
-std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSave(const std::filesystem::path& outputPath, bool inPlace) {
-    return PrepareMapSaveImpl(outputPath, inPlace, false);
+std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSave(const std::filesystem::path& outputPath, bool inPlace,
+    Services::TerrainMinimapSaveChoice minimapChoice) {
+    return PrepareMapSaveImpl(outputPath, inPlace, false, minimapChoice);
 }
 
 std::unique_ptr<MapSaveJob> EditorProject::PrepareMapPreflight() {
@@ -204,11 +205,23 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapPreflight() {
 }
 
 std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
-    const std::filesystem::path& outputPath, bool inPlace, bool contentOnly) {
+    const std::filesystem::path& outputPath, bool inPlace, bool contentOnly,
+    Services::TerrainMinimapSaveChoice minimapChoice) {
     const auto fail = [this](const QString& code, const QString& message) {
         AddDiagnostic(tr("错误"), tr("地图"), code, message);
         return std::unique_ptr<MapSaveJob>{};
     };
+    const bool generateMinimap = minimapChoice == Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly;
+    if (minimapChoice != Services::TerrainMinimapSaveChoice::Preserve && !generateMinimap)
+        return fail(tr("MINIMAP_SAVE_CHOICE"), tr("未知的地形小地图保存选项。"));
+    if (generateMinimap) {
+        if (inPlace || contentOnly || campaignScope_)
+            return fail(tr("MINIMAP_SAVE_TARGET"), tr("补建缺失的地形小地图仅用于本次独立另存；原地保存、预检和战役不支持。"));
+        if (!mapEdits_ || !MapData::TerrainSavePlan::HasTerrainChanges(*mapEdits_)
+            || triggerDirty_ || luaMapTarget_ || !pendingImports_.empty() || !assetEdits_.empty()
+            || std::any_of(objectDirty_.begin(), objectDirty_.end(), [](bool dirty) { return dirty; }))
+            return fail(tr("MINIMAP_SAVE_DOMAIN"), tr("本次补建只允许已有地图的纯高度净变化；请先单独处理触发器、物编、资源和脚本档案变化。"));
+    }
     // 作者手写的 Lua 文件按普通导入资源写入地图（YDWE 约定：由 Cheat("exec-lua: ...") 加载）；
     // 写入前用内置 Lua 5.3（含 YDWE |xxxx| 四字码）检查语法，有错误时不保存并指出文件与行。
     for (const auto& pending : pendingImports_) {
@@ -265,6 +278,8 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
     auto job = std::make_unique<MapSaveJob>();
     job->target = target;
     job->inPlace = inPlace;
+    job->minimapChoice = minimapChoice;
+    if (generateMinimap) job->minimapGameRoot = war3GameRoot_;
     if (inPlace) {
         const auto options = ReadMapInPlaceSaveOptions();
         if (!options.Succeeded()) {
@@ -295,7 +310,7 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
     std::optional<MapData::TerrainSavePlan> terrainPlan;
     std::vector<MapArchiveMember> auxiliarySaveMembers;
     if (mapEdits_ && mapEdits_->IsDirty()) {
-        if (MapData::TerrainSavePlan::HasTerrainChanges(*mapEdits_)) {
+        if (!generateMinimap && MapData::TerrainSavePlan::HasTerrainChanges(*mapEdits_)) {
             auto prepared = MapData::TerrainSavePlan::Prepare(*job->archive, *mapEdits_);
             AddDiagnostics(prepared.diagnostics);
             if (!prepared.Succeeded() || !prepared.value) return nullptr;
@@ -319,6 +334,9 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
             job->diagnostics.insert(job->diagnostics.end(), diagnostics.begin(), diagnostics.end());
         }
     }
+    if (generateMinimap && (!job->removals.empty() || job->replacements.size() != 1
+        || CanonicalMember(job->replacements.front().name) != "war3map.w3e"))
+        return fail(tr("MINIMAP_SAVE_DOMAIN"), tr("补建准备只能包含唯一的高度W3E输出，不能混入其它地图数据。"));
     if (triggerDirty_) {
         if (!triggerDocument_ || !uiCatalog_) {
             return fail(tr("REPACK_TRIGGER_STATE_INVALID"), tr("触发器存在修改，但文档或函数目录不可用。"));
@@ -380,6 +398,8 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
 
     auto importTable = Resources::ImportTable::CreateEmpty();
     QStringList missingDisabledIcons = MissingDisabledIcons();
+    if (generateMinimap && !missingDisabledIcons.isEmpty())
+        return fail(tr("MINIMAP_SAVE_DOMAIN"), tr("本次保存还需要补建暂停图标，不能与地形小地图补建混用；请先普通另存，再单独修改高度。"));
     if (!missingDisabledIcons.isEmpty() && archiveSession_->HasOpaqueMembers()) {
         // 匿名成员的归档不能安全新增文件；普通保存也不能因此附带未请求的资源修改。
         // 在计算导入修改前跳过自动补图标，保留显式导入和新增成员的原有保存门禁。
@@ -584,6 +604,13 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
             }
             return plan->VerifyFrozenOutput(task->sourceSha256, task->replacements, task->removals);
         };
+    }
+    if (generateMinimap) {
+        // 只查看本任务已有列表，不在界面线程捕获资源、解析额外快照或生成小地图。
+        // 原脚本Prepare只冻结script输入；native/template实际输出仍在worker原Run中形成。
+        if (!job->removals.empty() || job->replacements.size() != 1
+            || CanonicalMember(job->replacements.front().name) != "war3map.w3e")
+            return fail(tr("MINIMAP_SAVE_DOMAIN"), tr("补建准备必须只有唯一的高度W3E输出，不能夹带通行性、其它地图数据或资源成员。"));
     }
     job->preparedRevision = MapSaveRevisionBinding{frozenGeneration, frozenRevision, frozenScopes, luaMapTargetGeneration_};
     return job;

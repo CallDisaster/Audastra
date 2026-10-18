@@ -500,6 +500,8 @@ void MainWindow::UpdateExportAvailability() {
     buildMapAction_->setEnabled(open && !campaign);
     if (auto* button = assetsModule_->Widget()->findChild<QPushButton*>("addImportButton")) button->setEnabled(open);
     saveMapAction_->setEnabled(campaign || project_->archiveSession_ != nullptr);
+    if (saveMissingMinimapAction_) saveMissingMinimapAction_->setEnabled(!campaign && !project_->campaignScope_ && project_->archiveSession_
+        && !project_->savingMap_ && project_->MapEdits() && project_->MapEdits()->Terrain());
     saveMapAction_->setText(campaign ? tr("另存战役为…") : tr("另存地图为…"));
     saveMapInPlaceAction_->setText(campaign ? tr("保存战役") : tr("保存地图"));
     saveMapInPlaceAction_->setToolTip(campaign

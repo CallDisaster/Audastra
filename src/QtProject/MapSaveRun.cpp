@@ -1,12 +1,15 @@
 #include "EditorProject.h"
 #include "MapSaveJob.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
+#include "War3MapCore/MapData/MapDataEditSession.h"
+#include "War3MapCore/MapDocument.h"
 #include "War3MapCore/Services/ScriptSavePreparation.h"
 
 #include <QDateTime>
 #include <QUndoStack>
 
 #include <algorithm>
+#include <cctype>
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
 
 // 地图保存的执行与提交阶段。执行阶段只读任务里的输入（可在工作线程运行，期间工程不得修改）；
@@ -30,12 +33,114 @@ QString StageText(std::string_view stage) {
     return EditorProject::tr("正在构建游戏脚本…");
 }
 
+std::string MinimapMemberName(std::string_view name) {
+    std::string key(name);
+    std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
+        return c == '\\' ? '/' : static_cast<char>(std::tolower(c));
+    });
+    return key;
+}
+
+Status PrepareWorkerMinimap(MapSaveJob& job) {
+    const auto reject = [](const char* code, const char* message) {
+        return Status::Failure("TerrainMinimapSave.Qt", code, message);
+    };
+    if (job.minimapChoice != Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly)
+        return reject("MINIMAP_SAVE_CHOICE", "未知的单次地形小地图保存选项。");
+    if (!job.archive || job.inPlace || job.testCopyOnly || job.triggerChanges || !job.objectTransactions.empty()
+        || !job.removals.empty() || job.replacements.size() != 1
+        || MinimapMemberName(job.replacements.front().name) != "war3map.w3e")
+        return reject("MINIMAP_SAVE_DOMAIN", "worker补建只接受真实独立另存任务与唯一高度W3E，拒绝测试副本或混合领域。");
+
+    // FromArchive仅复制七类MapData原生成员，不复制整幅地图。保留原有
+    // Invalid/Ambiguous/Partial基线，不能以空MapDocument伪造DOO等成员不存在。
+    // raw intake沿既有64MiB帽；解析/私有session/撤销历史沿各codec原上限，
+    // 属于Qt重建工作，在helper的128MiB容器账之外，不宣称全保存/RSS上限。
+    constexpr std::array<std::string_view, 8> nativeNames{
+        "war3map.w3i", "table/w3i.ini", "war3mapunits.doo", "war3map.doo",
+        "war3map.w3r", "war3map.w3c", "war3map.w3s", "war3map.wts"};
+    constexpr auto maximumRaw = MapData::TerrainSavePlanLimits{}.maximumBytes;
+    constexpr auto maximumW3e = Render::TerrainMinimapAssetCaptureLimits{}.maxCurrentW3eBytes;
+    std::size_t nativeRaw = 0;
+    for (const auto& member : job.archive->Members()) {
+        const auto key = MinimapMemberName(member.name);
+        if (std::find(nativeNames.begin(), nativeNames.end(), key) == nativeNames.end()) continue;
+        if (member.data.size() > maximumRaw - nativeRaw)
+            return reject("MINIMAP_SAVE_BUDGET", "worker私有会话的七类原生成员超过既有64MiB原字读取额度。");
+        nativeRaw += member.data.size();
+    }
+    if (job.replacements.front().data.size() > maximumW3e)
+        return reject("MINIMAP_SAVE_BUDGET", "worker高度输入超过既有4MiB地形额度。");
+    auto edits = std::make_unique<MapData::MapDataEditSession>(MapDocument::FromArchive(*job.archive));
+    {
+        const std::array<std::string, 2> names{"war3map.w3e", "war3map.wpm"};
+        ArchiveExactMemberLimits limits;
+        // 同一4MiB单成员帽也覆盖WPM：允许域最多65536 tiles，其WPM至多
+        // 65536×16 cells+16字节头，小于此上限；没有放宽原Capture累计额度。
+        limits.memberCount = names.size(); limits.memberBytes = maximumW3e; limits.totalBytes = maximumRaw;
+        const auto captured = job.archive->CaptureExactMembers(names, limits);
+        if (!captured.Succeeded() || !captured.value) return {captured.diagnostics};
+        if (!(*captured.value)[0].present || !(*captured.value)[1].present)
+            return reject("MINIMAP_SAVE_SOURCE", "worker重建必须准确读到原W3E和WPM，不能把未知或缺失当作空来源。");
+        const auto terrain = edits->AttachTerrain((*captured.value)[0].bytes);
+        if (!terrain.Succeeded()) return terrain;
+        const auto pathing = edits->AttachPathing((*captured.value)[1].bytes);
+        if (!pathing.Succeeded()) return pathing;
+    } // 在SetTerrain/Capture/Build之前释放本轮源raw临时缓冲。
+    const auto restored = edits->SetTerrain(job.replacements.front().data);
+    if (!restored.Succeeded()) return restored;
+    auto prepared = Services::TerrainMinimapSave::Prepare(job, *edits, job.minimapGameRoot, job.minimapChoice);
+    if (!prepared.Succeeded() || !prepared.value) return {std::move(prepared.diagnostics)};
+    auto minimap = std::move(*prepared.value);
+    if (!minimap || !minimap->Plan())
+        return reject("MINIMAP_SAVE_SOURCE", "worker未取得本次实际生成的小地图保存资格。");
+    job.replacements.push_back(minimap->MinimapReplacement());
+    const auto current = minimap->VerifyCurrent(job, *edits, job.minimapGameRoot);
+    if (!current.Succeeded()) return current;
+    job.minimapSave = minimap;
+    job.terrainSavePlan = minimap->Plan();
+    const auto& diagnostics = job.terrainSavePlan->Diagnostics();
+    job.diagnostics.insert(job.diagnostics.end(), diagnostics.begin(), diagnostics.end());
+    const auto* task = &job;
+    job.beforePublish = [minimap = std::move(minimap), task, previous = std::move(job.beforePublish)] {
+        if (previous) {
+            const auto checked = previous();
+            if (!checked.Succeeded()) return checked;
+        }
+        return minimap->VerifyFrozenOutput(*task);
+    };
+    // 私有edits随本函数销毁。后续脚本、发布与回读仅消费owned task/封闭helper，
+    // 不持EditorProject、mapEdits_或前台会话指针；UI代际由原Commit门独立核对。
+    return Status::Ok();
+}
+
 } // namespace
 
 void EditorProject::RunMapSave(MapSaveJob& job) {
     // Run拒绝重复执行时，也不能留下上次的Passed结果供本次提交复用。
     job.terrainReadbackStatus.reset();
     job.terrainReadbackArchiveSha256.clear();
+    if (job.executed) {
+        job.minimapSave.reset();
+        Services::MapSaveService::Run(job); // 原服务统一报告SAVE_TASK_ALREADY_EXECUTED，不能再生成。
+        return;
+    }
+    if (job.minimapChoice != Services::TerrainMinimapSaveChoice::Preserve) {
+        try { job.Report(tr("正在生成缺失的地形小地图…")); } catch (...) {}
+        try {
+            const auto prepared = PrepareWorkerMinimap(job);
+            if (!prepared.Succeeded()) {
+                job.executed = true; job.succeeded = false;
+                job.diagnostics.insert(job.diagnostics.end(), prepared.diagnostics.begin(), prepared.diagnostics.end());
+                return;
+            }
+        } catch (...) {
+            job.executed = true; job.succeeded = false;
+            job.diagnostics.push_back({DiagnosticSeverity::Error, "TerrainMinimapSave.Qt", "MINIMAP_SAVE_WORKER_EXCEPTION",
+                "worker准备小地图时发生异常，本次任务已终止；未接受保存结果，当前编辑和原图保留。"});
+            return;
+        }
+    }
     Services::MapSaveService::Run(job, [&job](std::string_view stage) { job.Report(StageText(stage)); });
     if (!job.succeeded || !job.nextSession || !job.terrainSavePlan) return;
     // 展示回调沿用通用保存服务的合同，异常不能改变实际写出或回读资格。
@@ -43,7 +148,9 @@ void EditorProject::RunMapSave(MapSaveJob& job) {
     try {
         // UI由既有worker调用；公开同步保存helper仍同步执行，不在Commit重复散列。
         job.terrainReadbackArchiveSha256 = job.nextSession->SourceSha256();
-        job.terrainReadbackStatus = job.terrainSavePlan->VerifyReadback(*job.nextSession);
+        job.terrainReadbackStatus = job.minimapSave
+            ? job.minimapSave->VerifyReadback(job, *job.nextSession)
+            : job.terrainSavePlan->VerifyReadback(*job.nextSession);
     } catch (...) {
         // 领域回读位于通用Run的异常边界之外，失败须保留已写出路径及备份。
         job.terrainReadbackStatus = Status::Failure("Terrain.SavePlan", "TERRAIN_SAVE_PLAN_READBACK_EXCEPTION",
@@ -77,6 +184,9 @@ std::optional<MapCopySaveResult> EditorProject::CommitMapSave(MapSaveJob& job) {
         }
         return std::nullopt;
     };
+    if (job.minimapChoice != Services::TerrainMinimapSaveChoice::Preserve && job.nextSession
+        && (!job.minimapSave || job.terrainSavePlan != job.minimapSave->Plan()))
+        return rejectStaleCommit(tr("MINIMAP_SAVE_READBACK_MISSING"), tr("小地图保存缺少同一任务的生成资格和地形计划"));
     if (job.terrainSavePlan && job.nextSession) {
         if (!job.terrainReadbackStatus) {
             return rejectStaleCommit(tr("TERRAIN_SAVE_PLAN_READBACK_MISSING"), tr("尚未核对保存后的地形结果"));
@@ -177,8 +287,9 @@ std::optional<MapCopySaveResult> EditorProject::CommitMapSave(MapSaveJob& job) {
     return result;
 }
 
-std::optional<MapCopySaveResult> EditorProject::SaveMapCopy(const std::filesystem::path& outputPath) {
-    auto job = PrepareMapSave(outputPath, false);
+std::optional<MapCopySaveResult> EditorProject::SaveMapCopy(const std::filesystem::path& outputPath,
+    Services::TerrainMinimapSaveChoice minimapChoice) {
+    auto job = PrepareMapSave(outputPath, false, minimapChoice);
     if (!job) return std::nullopt;
     savingMap_ = true;
     RunMapSave(*job);

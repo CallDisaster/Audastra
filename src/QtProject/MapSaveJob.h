@@ -37,6 +37,10 @@ struct MapSaveJob final : Services::MapSaveTask {
     std::optional<MapSaveRevisionBinding> preparedRevision;
     // 与发布前闭包共享同一冻结计划；无状态表示尚未执行本次领域回读。
     std::shared_ptr<const MapData::TerrainSavePlan> terrainSavePlan;
+    // 单次请求只冻结枚举和路径；完整捕获/生成及会话复核均在worker执行。
+    Services::TerrainMinimapSaveChoice minimapChoice = Services::TerrainMinimapSaveChoice::Preserve;
+    std::filesystem::path minimapGameRoot;
+    std::shared_ptr<const Services::TerrainMinimapSave> minimapSave;
     std::optional<Status> terrainReadbackStatus;
     std::string terrainReadbackArchiveSha256;
     // 阶段提示可从工作线程调用，由 UI 调用方排队到界面线程。
