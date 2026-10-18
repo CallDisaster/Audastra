@@ -45,7 +45,7 @@
 | 简单 T 编辑 | create_trigger、append_root_eca、append_argument_call、set_scalar_argument | 老式窄操作不代表完整图操作资格 |
 | 归档保存 | save_map_edit_candidate | 完整来源/工具/UI/overlay 输入，同一地图保存服务；保存后新身份 |
 | 展开目录导出 | export_map_candidate | 不要与归档保存工具混淆 |
-| 归档展开与导入成员 | archive_expand、archive_members_add、archive_members_remove | 独立服务，Save 权限。archive_expand 把 .w3x 具名成员写到新目录供 --workspace 使用，data_only 不写导入资源；成员增删写新候选，只改请求成员和 war3map.imp，不重建脚本，删除不检查引用 |
+| 归档展开与导入成员 | archive_expand、archive_members_add、archive_members_remove | 独立服务，Save 权限。archive_expand 把 .w3x 具名成员写到新目录供 --workspace 使用，data_only 不写导入资源；成员增删写新候选，只改请求成员和 war3map.imp，不重建脚本；删除前按字符串查找路径出现处，找到即拒绝（MEMBER_REFERENCED），allow_referenced=true 才删，查不到不等于无引用 |
 | 地形/模型 | get_terrain_snapshot、query_terrain_block、capture_model_animation | 读取快照/区块；完成帧身份和设备证据另核 |
 
 这张表用于独立宿主的 stdio/本机 HTTP 工作区，不替代 tools/list 的真实结果；关闭或缺失的工具不能调用。`forge://skills/manifest` 提供此次服务捕获的 Skill 版本、逐文件 SHA 与可读 URI；资源是不可变捕获字节，文件更新后须由宿主重新注册。

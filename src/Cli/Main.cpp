@@ -110,7 +110,7 @@ void PrintUsage() {
         << "war3-map-cli archive-session-inspect <map-archive> [--expected-source-sha256 <64hex>] [--member <internal-path> ...]\n"
         << "war3-map-cli archive-candidate-copy <map-archive> <new-candidate-path>\n"
         << "war3-map-cli archive-member-add <source-map> <expected-source-sha256> <new-candidate.w3x> <member> <file> [<member> <file> ...]\n"
-        << "war3-map-cli archive-member-remove <source-map> <expected-source-sha256> <new-candidate.w3x> <member> [<member> ...]\n"
+        << "war3-map-cli archive-member-remove <source-map> <expected-source-sha256> <new-candidate.w3x> <member> [<member> ...] [--allow-referenced]\n"
         << "war3-map-cli archive-expand <source-map> <expected-source-sha256> <new-directory> [--data-only]\n"
         << "war3-map-cli inspect <expanded-workspace> [profile-id]\n"
         << "war3-map-cli validate <expanded-workspace> [profile-id]\n"

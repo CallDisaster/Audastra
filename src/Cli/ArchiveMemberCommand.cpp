@@ -31,8 +31,9 @@ int InvalidArguments(std::string_view reason) {
 
 int InvalidRemoveArguments(std::string_view reason) {
     std::cerr << "Archive.MemberRemove: ARCHIVE_MEMBER_REMOVE_ARGUMENT_INVALID: " << reason << '\n'
-        << "usage: archive-member-remove <source-map> <expected-source-sha256> <new-candidate.w3x> <member> [<member> ...]\n"
-        << "  只删除已有导入成员和它在 war3map.imp 里的记录；不重建脚本，不检查模型、脚本或物编是否仍引用这些文件。\n";
+        << "usage: archive-member-remove <source-map> <expected-source-sha256> <new-candidate.w3x> <member> [<member> ...] [--allow-referenced]\n"
+        << "  只删除已有导入成员和它在 war3map.imp 里的记录；不重建脚本。路径仍出现在脚本、物编、模型或 UI 文本里时拒绝，\n"
+        << "  确认要删时加 --allow-referenced。找不到出现处不等于没有引用（动态拼接的路径查不出）。\n";
     return 2;
 }
 
@@ -72,8 +73,14 @@ int Report(const Result<Services::ArchiveMemberEditReceipt>& result) {
               << "source_sha256=" << receipt.sourceSha256 << '\n';
     for (const auto& member : receipt.added) std::cout << "added_member=" << member << '\n';
     if (!receipt.removed.empty()) std::cout << "references_checked=false\n";
-    for (const auto& [member, records] : receipt.removed)
+    for (std::size_t index = 0; index < receipt.removed.size(); ++index) {
+        const auto& [member, records] = receipt.removed[index];
         std::cout << "removed_member=" << member << " import_records_removed=" << records << '\n';
+        if (index < receipt.mentions.size())
+            for (const auto& mention : receipt.mentions[index])
+                std::cout << "mentioned_in=" << mention.member << " kind=" << mention.kind << " count=" << mention.count
+                          << " removed_member=" << member << '\n';
+    }
     return 0;
 }
 
@@ -103,12 +110,15 @@ int RunArchiveMemberRemove(int argc, wchar_t** argv) {
         const auto expected = ParseSha(argv[3]);
         if (!expected) return InvalidRemoveArguments("expected-source-sha256 必须是 64 位十六进制。");
         std::vector<std::string> members;
+        Services::ArchiveMemberRemoveOptions options;
         for (int index = 5; index < argc; ++index) {
+            if (std::wstring_view(argv[index]) == L"--allow-referenced") { options.allowReferenced = true; continue; }
             auto member = Utf8Argument(argv[index], 1024);
             if (!member) return InvalidRemoveArguments("member 路径为空、过长或不是有效 UTF-8。");
             members.push_back(std::move(*member));
         }
-        return Report(Services::RemoveArchiveMembers(argv[2], *expected, argv[4], members));
+        if (members.empty()) return InvalidRemoveArguments("至少需要一个 member。");
+        return Report(Services::RemoveArchiveMembers(argv[2], *expected, argv[4], members, options));
     } catch (const std::exception&) {
         std::cerr << "Archive.MemberRemove: ARCHIVE_MEMBER_REMOVE_FAILED: 未预期异常，源图未被修改。\n";
         return 2;

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <exception>
+#include <span>
 
 namespace War3Map::Services {
 namespace {
@@ -73,7 +74,89 @@ Receipt Publish(const char* subsystem, const MapArchiveSession& archive, const s
     return Receipt::Success(std::move(receipt));
 }
 
+std::string UpperKey(std::string_view name) {
+    std::string key(name);
+    for (auto& c : key) {
+        if (c == '/') c = '\\';
+        else if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
+    }
+    return key;
+}
+
+// 查找用的归一化文本：小写 ASCII、斜杠统一为反斜杠、连续反斜杠（JASS 转义）按一个算。
+std::string NormalizePathText(std::span<const std::byte> bytes) {
+    std::string text;
+    text.reserve(bytes.size());
+    for (const auto byte : bytes) {
+        auto c = static_cast<char>(byte);
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        else if (c == '/') c = '\\';
+        if (c == '\\' && !text.empty() && text.back() == '\\') continue;
+        text.push_back(c);
+    }
+    return text;
+}
+
+bool WordCharacter(char c) { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'; }
+bool PathCharacter(char c) { return WordCharacter(c) || c == '-' || c == '.' || c == '\\'; }
+
+// 只读这些成员找路径；.ai 等不透明导入不读。
+std::optional<const char*> MentionKind(const std::string& key) {
+    if (key == "WAR3MAP.J" || key == "SCRIPTS\\WAR3MAP.J" || key == "WAR3MAP.LUA" || key == "SCRIPTS\\WAR3MAP.LUA") return "script";
+    const auto endsWith = [&key](std::string_view suffix) { return key.ends_with(suffix); };
+    if (key.find('\\') == std::string::npos && (key.starts_with("WAR3MAP.") || key.starts_with("WAR3MAPSKIN.")))
+        for (const auto* extension : {".W3U", ".W3T", ".W3B", ".W3D", ".W3A", ".W3H", ".W3Q"})
+            if (endsWith(extension)) return "object-data";
+    if (key == "WAR3MAP.W3I" || key == "WAR3MAP.WTS" || key == "WAR3MAPMISC.TXT" || key == "WAR3MAPSKIN.TXT" ||
+        key == "WAR3MAPEXTRA.TXT") return "map-data";
+    if (Resources::IsEditorManagedMemberPath(key)) return std::nullopt;
+    if (endsWith(".MDX") || endsWith(".MDL")) return "model";
+    if (endsWith(".J") || endsWith(".LUA")) return "script";
+    for (const auto* extension : {".TXT", ".FDF", ".TOC", ".SLK", ".INI"})
+        if (endsWith(extension)) return "ui-text";
+    return std::nullopt;
+}
+
+std::size_t CountMentions(const std::string& text, const std::vector<std::string>& needles) {
+    std::size_t count = 0;
+    for (const auto& needle : needles)
+        for (auto position = text.find(needle); position != std::string::npos; position = text.find(needle, position + 1)) {
+            const auto end = position + needle.size();
+            if ((position == 0 || !PathCharacter(text[position - 1])) && (end == text.size() || !WordCharacter(text[end]))) ++count;
+        }
+    return count;
+}
+
 } // namespace
+
+std::vector<std::vector<ArchivePathMention>> FindArchivePathMentions(std::span<const MapArchiveMember> members,
+    std::span<const std::string> targets) {
+    std::set<std::string> targetKeys;
+    std::vector<std::vector<std::string>> needles;
+    for (const auto& target : targets) {
+        auto key = UpperKey(target);
+        targetKeys.insert(key);
+        auto lower = key;
+        for (auto& c : lower) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        std::vector<std::string> forms{lower};
+        // 物编和脚本常写 .mdl，游戏按 .mdx 读取，两种都算。
+        if (lower.ends_with(".mdx") || lower.ends_with(".mdl"))
+            forms.push_back(lower.substr(0, lower.size() - 1) + (lower.back() == 'x' ? 'l' : 'x'));
+        needles.push_back(std::move(forms));
+    }
+    std::vector<std::vector<ArchivePathMention>> result(targets.size());
+    for (const auto& member : members) {
+        const auto key = UpperKey(member.name);
+        if (targetKeys.contains(key)) continue;
+        const auto kind = MentionKind(key);
+        if (!kind) continue;
+        const auto text = NormalizePathText(member.data);
+        for (std::size_t index = 0; index < targets.size(); ++index)
+            if (const auto count = CountMentions(text, needles[index]); count != 0)
+                result[index].push_back({member.name, *kind, count});
+    }
+    return result;
+}
 
 Result<std::string> NormalizeArchiveMemberPath(std::string_view member, std::set<std::string>& requested) {
     if (member.empty() || member.size() > 1024)
@@ -148,7 +231,7 @@ Result<ArchiveMemberEditReceipt> AddArchiveMembers(const std::filesystem::path& 
 }
 
 Result<ArchiveMemberEditReceipt> RemoveArchiveMembers(const std::filesystem::path& source, std::string_view expectedSourceSha256,
-    const std::filesystem::path& target, const std::vector<std::string>& requestedMembers) {
+    const std::filesystem::path& target, const std::vector<std::string>& requestedMembers, const ArchiveMemberRemoveOptions& options) {
     constexpr const char* kSubsystem = "Archive.MemberRemove";
     try {
         if (requestedMembers.empty() || requestedMembers.size() > ArchiveMemberEditLimits::maxMembers)
@@ -171,6 +254,20 @@ Result<ArchiveMemberEditReceipt> RemoveArchiveMembers(const std::filesystem::pat
             const auto present = MemberPresent(archive, member, causes);
             if (!present) return Fail(kSubsystem, std::move(causes), "MEMBER_PRESENCE_UNKNOWN", "无法确认源地图是否有该成员：" + member);
             if (!*present) return Fail(kSubsystem, {}, "MEMBER_MISSING", "源地图没有该成员：" + member);
+        }
+        receipt.mentions = FindArchivePathMentions(archive.Members(), members);
+        if (!options.allowReferenced) {
+            std::string found;
+            std::size_t listed = 0;
+            for (std::size_t index = 0; index < members.size(); ++index)
+                for (const auto& mention : receipt.mentions[index])
+                    if (listed++ < 16)
+                        found += "\n  " + members[index] + " ← " + mention.member + "（" + mention.kind + " ×" + std::to_string(mention.count) + "）";
+            if (listed != 0)
+                return Fail(kSubsystem, {}, "MEMBER_REFERENCED", "要删除的文件路径仍出现在 " + std::to_string(listed) +
+                    " 处，确认要删时加 allow_referenced（CLI 为 --allow-referenced）：" + found);
+        }
+        for (const auto& member : members) {
             const auto before = table.Entries().size();
             auto removed = table.Remove(member, [&archive](std::string_view path) { return archive.HasMember(path); });
             if (!removed.Succeeded())
