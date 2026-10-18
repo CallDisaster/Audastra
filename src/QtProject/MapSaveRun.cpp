@@ -77,7 +77,7 @@ Status PrepareWorkerMinimap(MapSaveJob& job) {
     // raw intake沿既有64MiB帽；解析/私有session/撤销历史沿各codec原上限，
     // 属于Qt重建工作，在helper的128MiB容器账之外，不宣称全保存/RSS上限。
     constexpr std::array<std::string_view, 8> nativeNames{
-        "war3map.w3i", "table/w3i.ini", "war3mapunits.doo", "war3map.doo",
+        "war3map.w3i", "table/w3i.ini", "war3mapUnits.doo", "war3map.doo",
         "war3map.w3r", "war3map.w3c", "war3map.w3s", "war3map.wts"};
     constexpr auto maximumRaw = MapData::TerrainSavePlanLimits{}.maximumBytes;
     constexpr auto maximumW3e = Render::TerrainMinimapAssetCaptureLimits{}.maxCurrentW3eBytes;

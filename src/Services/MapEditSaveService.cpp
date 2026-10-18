@@ -628,7 +628,17 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         if (source.SourceSha256() != request.expectedSourceSha256) {
             return Fail("SAVE_SOURCE_STALE", "源归档 SHA-256 与编辑请求不符，请重新获取数据快照。");
         }
-        const auto map = MapDocument::FromArchive(source);
+        // 本轮默认小地图会消费W3I和两份DOO；匿名MPQ里“没列名”不代表
+        // 不存在。所有已知地图数据在同一真实来源上按明确名字捕获，再交
+        // 原MapDocument解析器，不能让对象捕获把未列名的现有摆放当作删除。
+        const std::array<std::string, 8> nativeNames{"war3map.w3i", "table/w3i.ini", "war3mapUnits.doo",
+            "war3map.doo", "war3map.w3r", "war3map.w3c", "war3map.w3s", "war3map.wts"};
+        auto capturedNative = source.CaptureExactMembers(nativeNames);
+        if (!capturedNative.Succeeded() || !capturedNative.value) return Forward(capturedNative.diagnostics);
+        std::vector<MapArchiveMember> nativeMembers;
+        for (auto& member : *capturedNative.value)
+            if (member.present) nativeMembers.push_back({member.name, std::move(member.bytes)});
+        const auto map = MapDocument::FromMembers(nativeMembers, source.SourcePath());
         MapData::MapDataEditSession edits(map);
         std::string originalTerrainShaValue, savedTerrainShaValue, savedPathingShaValue;
         std::vector<MapEditMemberReceipt> editedMembers;
