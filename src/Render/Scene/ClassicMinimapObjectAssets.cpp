@@ -1,0 +1,309 @@
+#include "War3MapCore/Render/ClassicMinimapObjectAssets.h"
+
+#include "War3MapCore/Hash.h"
+#include "War3MapCore/MapData/MapPlacements.h"
+#include "War3MapCore/MapData/TerrainEditing.h"
+
+#include <algorithm>
+#include <filesystem>
+#include <limits>
+#include <new>
+#include <span>
+#include <stdexcept>
+#include <utility>
+
+namespace War3Map::Render {
+namespace {
+
+constexpr const char* kSubsystem = "ClassicMinimapObjectAssets";
+constexpr ClassicMinimapObjectAssetLimits kHard{};
+constexpr std::size_t kFixedScratch = 2u * 1024u * 1024u;
+constexpr std::size_t kMetadataReserve = 64u * 1024u;
+constexpr std::array<MapDataKind, 2> kKinds{MapDataKind::Units, MapDataKind::Doodads};
+const std::array<std::string, 2> kMembers{"war3mapUnits.doo", "war3map.doo"};
+
+// Snapshot(kind)先复制DOO/W3I再使用现有MapDocument解析器。128N用于其有界wire
+// 到各类容器的保守载荷预留；下面锁定现有结构ABI，不把它称为allocator/RSS实测。
+static_assert(sizeof(std::string) <= 64 && sizeof(MapData::MapSettings) <= 2048
+    && sizeof(MapData::UnitPlacement) <= 1024 && sizeof(MapData::DoodadPlacement) <= 512
+    && sizeof(MapData::SpecialDoodadPlacement) <= 128 && sizeof(MapData::PlacementItemSet) <= 64
+    && sizeof(MapData::PlacementItemChoice) <= 128 && sizeof(MapData::MapPlayerSettings) <= 160
+    && sizeof(MapData::MapRandomUnitRow) <= 64 && sizeof(MapData::MapRandomUnitTable) <= 192
+    && sizeof(MapData::MapRandomItemTable) <= 192);
+
+struct Failure { std::vector<Diagnostic> diagnostics; };
+
+[[noreturn]] void Fail(const char* code, const char* message) {
+    throw Failure{{{DiagnosticSeverity::Error, kSubsystem, code, message, {}}}};
+}
+
+template<class T> T Take(Result<T> result) {
+    if (!result.Succeeded()) throw Failure{std::move(result.diagnostics)};
+    if (!result.value) Fail("CLASSIC_OBJECT_CAPTURE_NO_VALUE", "来源依赖没有返回完整值。");
+    return std::move(*result.value);
+}
+
+void Check(Status status) { if (!status.Succeeded()) throw Failure{std::move(status.diagnostics)}; }
+
+void Charge(std::size_t& bytes, std::size_t count, std::size_t element = 1) {
+    if (element && count > (std::numeric_limits<std::size_t>::max() - bytes) / element)
+        Fail("CLASSIC_OBJECT_CAPTURE_BUDGET", "对象捕获载荷乘加溢出。");
+    bytes += count * element;
+}
+
+void TextCapacity(std::size_t& bytes, const std::string& text) {
+    Charge(bytes, text.capacity()); Charge(bytes, 1);
+}
+
+void LocationCapacity(std::size_t& bytes, const Resources::ResourceLocation& location) {
+    TextCapacity(bytes, location.canonicalPath); TextCapacity(bytes, location.sourceId); TextCapacity(bytes, location.sourcePath);
+    if (location.readProvenance) {
+        Charge(bytes, sizeof(Resources::ResourceReadProvenance));
+        TextCapacity(bytes, location.readProvenance->containerIdentity);
+        TextCapacity(bytes, location.readProvenance->memberPath);
+        TextCapacity(bytes, location.readProvenance->sourceContext);
+    }
+}
+
+std::size_t TerrainCapacity(const TerrainMinimapAssetSnapshot& snapshot) {
+    const auto& input = snapshot.Input();
+    const auto& binding = snapshot.Binding();
+    std::size_t bytes = sizeof(snapshot);
+    TextCapacity(bytes, binding.archiveSha256); TextCapacity(bytes, binding.originalTerrainSha256);
+    TextCapacity(bytes, binding.currentTerrainSha256);
+    Charge(bytes, binding.gameRoot.native().capacity(), sizeof(std::filesystem::path::value_type));
+    Charge(bytes, 1, sizeof(std::filesystem::path::value_type));
+    TextCapacity(bytes, input.binding.documentId); TextCapacity(bytes, input.binding.sourceSha256);
+    TextCapacity(bytes, input.binding.terrainSha256); Charge(bytes, input.currentW3e.capacity());
+    if (input.sourceW3i) Charge(bytes, input.sourceW3i->capacity());
+    Charge(bytes, input.groundAtlases.capacity(), sizeof(std::shared_ptr<const TerrainAtlasSnapshot>));
+    for (std::size_t i = 0; i < input.groundAtlases.size(); ++i) {
+        const auto& owner = input.groundAtlases[i];
+        if (!owner) Fail("CLASSIC_OBJECT_CAPTURE_TERRAIN", "传入地形快照缺少atlas owner。");
+        if (std::find(input.groundAtlases.begin(), input.groundAtlases.begin() + static_cast<std::ptrdiff_t>(i), owner)
+            != input.groundAtlases.begin() + static_cast<std::ptrdiff_t>(i)) continue;
+        Charge(bytes, sizeof(*owner)); LocationCapacity(bytes, owner->source); TextCapacity(bytes, owner->sourceSha256);
+        Charge(bytes, owner->image.rgba.capacity()); Charge(bytes, owner->cells.capacity(), sizeof(TerrainAtlasCell));
+        Charge(bytes, owner->additionalMips.capacity(), sizeof(Image::DecodedImage));
+        for (const auto& mip : owner->additionalMips) Charge(bytes, mip.rgba.capacity());
+    }
+    Charge(bytes, snapshot.Dependencies().capacity(), sizeof(TerrainMinimapAssetDependency));
+    for (const auto& dependency : snapshot.Dependencies()) {
+        LocationCapacity(bytes, dependency.winner); TextCapacity(bytes, dependency.containerIdentity);
+        TextCapacity(bytes, dependency.encodedSha256);
+        Charge(bytes, dependency.decodedMips.capacity(), sizeof(TerrainMinimapMipFacts));
+        for (const auto& mip : dependency.decodedMips) TextCapacity(bytes, mip.decodedRgbaSha256);
+    }
+    Charge(bytes, snapshot.Tables().capacity(), sizeof(TerrainMinimapTableFacts));
+    for (const auto& table : snapshot.Tables()) { TextCapacity(bytes, table.idColumn); TextCapacity(bytes, table.identitySha256); }
+    Charge(bytes, snapshot.GroundAssets().capacity(), sizeof(TerrainMinimapGroundAsset));
+    for (const auto& ground : snapshot.GroundAssets()) { TextCapacity(bytes, ground.rawcode); TextCapacity(bytes, ground.canonicalTexturePath); }
+    TextCapacity(bytes, snapshot.IdentitySha256());
+    return bytes;
+}
+
+void ValidateLimits(const ClassicMinimapObjectAssetLimits& limits) {
+    if (!limits.maxWorkingBytes || limits.maxWorkingBytes > kHard.maxWorkingBytes
+        || !limits.maxObjectMemberBytes || limits.maxObjectMemberBytes > kHard.maxObjectMemberBytes
+        || !limits.maxCurrentSnapshotBytes || limits.maxCurrentSnapshotBytes > kHard.maxCurrentSnapshotBytes
+        || !limits.maxCurrentTerrainBytes || limits.maxCurrentTerrainBytes > kHard.maxCurrentTerrainBytes)
+        Fail("CLASSIC_OBJECT_CAPTURE_LIMITS", "对象捕获预算只能在非零硬上限内收紧。");
+}
+
+bool MatchesTerrainCaptureBinding(const TerrainMinimapAssetSnapshot& terrain, const MapArchiveSession& source,
+    const MapData::MapDataEditSession& edits) {
+    const auto& binding = terrain.Binding();
+    const auto validSha = [](std::string_view value) {
+        return value.size() == 64 && std::all_of(value.begin(), value.end(), [](char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        });
+    };
+    return validSha(terrain.IdentitySha256()) && source.SourceSha256() == binding.archiveSha256 && edits.SessionIdentity() == binding.sessionIdentity
+        && edits.Revision() == binding.revision && edits.TerrainSourceRevision() == binding.terrainSourceRevision
+        && terrain.Input().binding.sourceSha256 == binding.archiveSha256
+        && terrain.Input().binding.terrainSha256 == binding.currentTerrainSha256
+        && terrain.Input().binding.documentGeneration == binding.sessionIdentity
+        && terrain.Input().binding.revision == binding.revision;
+}
+
+void ParsedEmpty(std::size_t index, const ArchiveExactMember& source,
+    ClassicMinimapObjectMemberFacts& facts, const ClassicMinimapObjectAssetLimits& limits) {
+    facts.memberName = kMembers[index];
+    if (!source.present) return;
+    if (source.bytes.empty())
+        Fail("CLASSIC_OBJECT_CAPTURE_ZERO_BYTES", "present零字节DOO不是合法空对象层。");
+    MapData::PlacementReadLimits parser;
+    parser.maxBytes = limits.maxObjectMemberBytes; parser.maxPlacements = 0; parser.maxNestedRecords = 0;
+    if (!index) {
+        const auto parsed = Take(MapData::ParseUnitPlacements(source.bytes, parser));
+        if (!parsed.units.empty() || parsed.recordLayout != MapData::PlacementRecordLayout::Classic)
+            Fail("CLASSIC_OBJECT_CAPTURE_NONEMPTY", "单位层未由唯一classic parser证明为空。");
+        facts.version = parsed.version; facts.subversion = parsed.subversion;
+        facts.recordLayout = parsed.recordLayout; facts.parserFullyConsumed = true;
+    } else {
+        const auto parsed = Take(MapData::ParseDoodadPlacements(source.bytes, parser));
+        if (!parsed.doodads.empty() || !parsed.specialDoodads.empty() || parsed.specialVersion != 0
+            || parsed.recordLayout != MapData::PlacementRecordLayout::Classic)
+            Fail("CLASSIC_OBJECT_CAPTURE_NONEMPTY", "普通或特殊装饰物层未由唯一classic parser证明为空。");
+        facts.version = parsed.version; facts.subversion = parsed.subversion;
+        facts.recordLayout = parsed.recordLayout; facts.specialVersion = parsed.specialVersion; facts.parserFullyConsumed = true;
+    }
+    facts.state = ClassicMinimapCapturedObjectState::ParsedEmpty;
+    facts.sourceBytes = source.bytes.size();
+    facts.sourceSha256 = Take(Sha256(source.bytes));
+    facts.ordinaryPlacements = 0; facts.specialPlacements = 0;
+}
+
+void CheckCurrentMember(std::size_t index, const ArchiveExactMember& source,
+    const MapData::MapDataEditSession& edits, ClassicMinimapObjectMemberFacts& facts,
+    const ClassicMinimapObjectAssetLimits& limits) {
+    // 两次Snapshot串行，MapDocument在本函数返回时释放，避免并存两个W3I解析。
+    const auto current = Take(edits.Snapshot(kKinds[index], limits.maxCurrentSnapshotBytes));
+    const auto& member = current.Member(kKinds[index]);
+    if (!source.present) {
+        if (member.state != MapDataState::Missing || !member.sources.empty())
+            Fail("CLASSIC_OBJECT_CAPTURE_CURRENT_MISMATCH", "源Missing与当前对象成员存在性不一致。");
+        facts.sourceAndCurrentBytesEqual = true;
+        return;
+    }
+    if (member.state != MapDataState::Ready || member.memberName != kMembers[index] || member.sources.size() != 1
+        || member.sources.front().name != kMembers[index] || member.sources.front().data != source.bytes)
+        Fail("CLASSIC_OBJECT_CAPTURE_CURRENT_MISMATCH", "当前对象成员必须唯一Ready且与准确源字节相同。");
+    if (!index) {
+        if (!current.Units() || !current.Units()->units.empty()
+            || current.Units()->recordLayout != MapData::PlacementRecordLayout::Classic)
+            Fail("CLASSIC_OBJECT_CAPTURE_CURRENT_LAYOUT", "当前单位层不是已接通的classic零记录布局。");
+    } else if (!current.Doodads() || !current.Doodads()->doodads.empty() || !current.Doodads()->specialDoodads.empty()
+        || current.Doodads()->specialVersion != 0 || current.Doodads()->recordLayout != MapData::PlacementRecordLayout::Classic) {
+        Fail("CLASSIC_OBJECT_CAPTURE_CURRENT_LAYOUT", "当前装饰物层不是已接通的classic零记录布局。");
+    }
+    facts.currentBytes = member.sources.front().data.size();
+    facts.currentSha256 = Take(Sha256(member.sources.front().data));
+    if (facts.currentBytes != facts.sourceBytes || facts.currentSha256 != facts.sourceSha256)
+        Fail("CLASSIC_OBJECT_CAPTURE_CURRENT_MISMATCH", "对象当前原字与源摘要不一致。");
+    facts.sourceAndCurrentBytesEqual = true;
+}
+
+class Identity {
+public:
+    Identity() : digest_(1024u * 1024u) {}
+    void U64(std::uint64_t value) {
+        std::array<std::byte, 8> bytes{};
+        for (unsigned i = 0; i < 8; ++i) bytes[i] = static_cast<std::byte>((value >> (i * 8)) & 255);
+        Check(digest_.Update(bytes));
+    }
+    void Text(std::string_view text) { U64(text.size()); Check(digest_.Update(std::as_bytes(std::span(text.data(), text.size())))); }
+    std::string Finish() { return Take(digest_.Finish()); }
+private:
+    Sha256Stream digest_;
+};
+
+std::size_t AuxiliaryCapacity(const ClassicMinimapObjectDomain& domain, const ClassicMinimapObjectAssetFacts& facts,
+    const std::array<std::vector<std::byte>, 2>& sourceMembers, const std::string& identity) {
+    // 组合对象的其余固定字段和padding也计入，Terrain owner本体已在TerrainCapacity收取。
+    std::size_t bytes = sizeof(ClassicMinimapObjectAssets) - sizeof(TerrainMinimapAssetSnapshot);
+    TextCapacity(bytes, domain.sourceSha256); TextCapacity(bytes, domain.documentId);
+    TextCapacity(bytes, domain.unitsMemberSha256); TextCapacity(bytes, domain.doodadsMemberSha256);
+    for (const auto& member : facts.members) {
+        TextCapacity(bytes, member.memberName); TextCapacity(bytes, member.sourceSha256); TextCapacity(bytes, member.currentSha256);
+    }
+    for (const auto& member : sourceMembers) Charge(bytes, member.capacity());
+    TextCapacity(bytes, identity);
+    return bytes;
+}
+
+} // namespace
+
+Result<ClassicMinimapObjectAssets> CaptureClassicMinimapObjectAssets(TerrainMinimapAssetSnapshot&& terrain,
+    const MapArchiveSession& source, const MapData::MapDataEditSession& edits,
+    const ClassicMinimapObjectAssetLimits& limits) {
+    try {
+        ValidateLimits(limits);
+        if (terrain.Input().rangePolicy != TerrainMinimapRangePolicy::FullW3e)
+            Fail("CLASSIC_OBJECT_CAPTURE_PLAYABLE_RECT_UNRESOLVED", "对象捕获只接FullW3e，不能为未证实的W3I crop服务。");
+        if (terrain.Input().sourceW3i)
+            Fail("CLASSIC_OBJECT_CAPTURE_W3I_UNEXPECTED", "FullW3e对象捕获不静默保留额外W3I来源。");
+        // 先预收，再进行任何新的IO/hash/parse。已有输入内部provider/MPQ缓冲不在载荷口径。
+        ClassicMinimapObjectAssetFacts facts;
+        facts.retainedTerrainCapacityBytes = TerrainCapacity(terrain);
+        auto extra = kFixedScratch;
+        Charge(extra, kMetadataReserve);
+        Charge(extra, limits.maxCurrentTerrainBytes, 2); // Serialize copy + SHA正文chunk
+        Charge(extra, limits.maxObjectMemberBytes, 6); // exact双成员、parser原字/散列及结果保活
+        Charge(extra, limits.maxCurrentSnapshotBytes, ClassicMinimapObjectAssetFacts::snapshotScratchBytesPerWireByte + 4);
+        facts.estimatedExtraPeakBytes = extra; facts.estimatedPeakBytes = facts.retainedTerrainCapacityBytes;
+        Charge(facts.estimatedPeakBytes, extra);
+        if (facts.estimatedPeakBytes > limits.maxWorkingBytes)
+            Fail("CLASSIC_OBJECT_CAPTURE_BUDGET", "既有Terrain与对象捕获/当前快照解析峰值超过累计预算。");
+        if (!MatchesTerrainCaptureBinding(terrain, source, edits))
+            Fail("CLASSIC_OBJECT_CAPTURE_STALE", "Terrain快照不属于当前archive或编辑代际。");
+        const auto currentTerrain = edits.Terrain();
+        if (!currentTerrain || terrain.Input().currentW3e.size() > limits.maxCurrentTerrainBytes)
+            Fail("CLASSIC_OBJECT_CAPTURE_TERRAIN", "当前W3E缺失或超过对象捕获序列化预算。");
+        std::size_t serializedBytes = 37;
+        Charge(serializedBytes, currentTerrain->header.groundTilesets.size(), 4);
+        Charge(serializedBytes, currentTerrain->header.cliffTilesets.size(), 4);
+        Charge(serializedBytes, currentTerrain->vertices.size(), 7);
+        if (currentTerrain->header.version != 11 || serializedBytes > limits.maxCurrentTerrainBytes)
+            Fail("CLASSIC_OBJECT_CAPTURE_TERRAIN", "当前Terrain不是有界classic v11序列化域。");
+        {
+            const auto currentBytes = Take(MapData::SerializeMapTerrain(*currentTerrain));
+            if (currentBytes != terrain.Input().currentW3e
+                || Take(Sha256(currentBytes)) != terrain.Binding().currentTerrainSha256)
+                Fail("CLASSIC_OBJECT_CAPTURE_STALE", "真实当前W3E与传入Terrain快照不同。");
+        }
+        ArchiveExactMemberLimits exact;
+        exact.memberCount = 2; exact.memberBytes = limits.maxObjectMemberBytes;
+        exact.totalBytes = limits.maxObjectMemberBytes * 2;
+        auto members = Take(source.CaptureExactMembers(kMembers, exact));
+        if (members.size() != 2 || members[0].name != kMembers[0] || members[1].name != kMembers[1])
+            Fail("CLASSIC_OBJECT_CAPTURE_SOURCE", "准确捕获没有返回要求的两个对象成员身份。");
+        for (std::size_t i = 0; i < 2; ++i) {
+            ParsedEmpty(i, members[i], facts.members[i], limits);
+            CheckCurrentMember(i, members[i], edits, facts.members[i], limits);
+        }
+        Check(source.VerifySourceUnchanged());
+        if (!MatchesTerrainCaptureBinding(terrain, source, edits) || edits.Terrain() != currentTerrain)
+            Fail("CLASSIC_OBJECT_CAPTURE_STALE", "对象捕获期间来源、会话或当前Terrain已变化。");
+        ClassicMinimapObjectDomain domain;
+        domain.sourceSha256 = terrain.Binding().archiveSha256;
+        domain.documentId = terrain.Input().binding.documentId;
+        domain.documentGeneration = terrain.Binding().sessionIdentity;
+        domain.revision = terrain.Binding().revision; domain.terrainSourceRevision = terrain.Binding().terrainSourceRevision;
+        domain.unitsState = members[0].present ? ClassicMinimapMemberState::ParsedEmpty : ClassicMinimapMemberState::Missing;
+        domain.doodadsState = members[1].present ? ClassicMinimapMemberState::ParsedEmpty : ClassicMinimapMemberState::Missing;
+        domain.unitsMemberBytes = facts.members[0].sourceBytes; domain.doodadsMemberBytes = facts.members[1].sourceBytes;
+        domain.unitsMemberSha256 = facts.members[0].sourceSha256; domain.doodadsMemberSha256 = facts.members[1].sourceSha256;
+        Identity identity;
+        identity.Text(ClassicMinimapObjectAssetFacts::capturePolicy); identity.Text(terrain.IdentitySha256());
+        identity.Text(domain.sourceSha256); identity.Text(domain.documentId); identity.U64(domain.documentGeneration);
+        identity.U64(domain.revision); identity.U64(domain.terrainSourceRevision);
+        for (const auto& member : facts.members) {
+            identity.Text(member.memberName); identity.U64(static_cast<std::uint64_t>(member.state));
+            identity.U64(member.sourceBytes); identity.Text(member.sourceSha256);
+            identity.U64(member.currentBytes); identity.Text(member.currentSha256);
+            identity.U64(static_cast<std::uint32_t>(member.version)); identity.U64(static_cast<std::uint32_t>(member.subversion));
+            identity.U64(static_cast<std::uint32_t>(member.recordLayout)); identity.U64(static_cast<std::uint32_t>(member.specialVersion));
+            identity.U64(member.ordinaryPlacements); identity.U64(member.specialPlacements);
+            identity.U64(member.parserFullyConsumed ? 1u : 0u);
+        }
+        auto identitySha = identity.Finish();
+        std::array<std::vector<std::byte>, 2> owned{std::move(members[0].bytes), std::move(members[1].bytes)};
+        facts.retainedAuxiliaryCapacityBytes = AuxiliaryCapacity(domain, facts, owned, identitySha);
+        if (facts.retainedAuxiliaryCapacityBytes > kMetadataReserve + 6 * limits.maxObjectMemberBytes)
+            Fail("CLASSIC_OBJECT_CAPTURE_BUDGET", "对象见证实际capacity超过预收元数据与正文。");
+        // 至此所有失败门已通过才move既有Terrain owner；失败不损耗调用者的原快照。
+        ClassicMinimapObjectAssets output(std::move(terrain));
+        output.domain_ = std::move(domain); output.facts_ = std::move(facts);
+        output.sourceMembers_ = std::move(owned); output.identitySha256_ = std::move(identitySha);
+        return Result<ClassicMinimapObjectAssets>::Success(std::move(output));
+    } catch (Failure& failure) {
+        return {std::nullopt, std::move(failure.diagnostics)};
+    } catch (const std::bad_alloc&) {
+        return Result<ClassicMinimapObjectAssets>::Failure(kSubsystem, "CLASSIC_OBJECT_CAPTURE_ALLOCATION", "对象捕获分配失败。");
+    } catch (const std::length_error&) {
+        return Result<ClassicMinimapObjectAssets>::Failure(kSubsystem, "CLASSIC_OBJECT_CAPTURE_ALLOCATION", "对象捕获容器容量异常。");
+    }
+}
+
+} // namespace War3Map::Render

@@ -1,4 +1,5 @@
 #include "War3MapCore/Render/ClassicMinimapCandidate.h"
+#include "War3MapCore/Render/ClassicMinimapObjectAssets.h"
 
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapData/MapTerrain.h"
@@ -21,6 +22,15 @@ constexpr std::size_t kHardWorkingBytes = 128u * 1024u * 1024u;
 constexpr std::string_view kEmptySha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 struct Failure { std::string code; std::string message; };
+
+struct InputView {
+    const TerrainMinimapInput& terrain;
+    const ClassicMinimapObjectDomain& objectDomain;
+    std::uint64_t terrainSourceRevision = 0;
+    const TerrainMinimapPostprocessSettings& postprocess;
+    const ClassicMinimapObjectAssets* captured = nullptr; // 仅下方typed入口可提供，非public解锁参数
+    std::size_t additionalRetainedBytes = 0;
+};
 
 [[noreturn]] void Fail(const char* code, const char* message) { throw Failure{code, message}; }
 
@@ -65,7 +75,13 @@ void ValidateLimits(const ClassicMinimapCandidateLimits& limits) {
 }
 
 void ValidateObjectState(ClassicMinimapMemberState state, std::string_view hash, std::size_t bytes,
-    std::size_t maximumText) {
+    std::size_t maximumText, const ClassicMinimapObjectAssets* captured) {
+    if (state == ClassicMinimapMemberState::ParsedEmpty) {
+        if (!captured) Fail("CLASSIC_MINIMAP_OBJECT_CAPTURE_REQUIRED", "ParsedEmpty只能由sealed实际捕获入口提供。");
+        if (!bytes || !Sha(hash) || hash.size() > maximumText)
+            Fail("CLASSIC_MINIMAP_OBJECT_DOMAIN_IDENTITY", "ParsedEmpty必须保留实际非零成员长度与SHA。");
+        return;
+    }
     if (state != ClassicMinimapMemberState::Unknown && state != ClassicMinimapMemberState::Missing
         && state != ClassicMinimapMemberState::Empty)
         Fail("CLASSIC_MINIMAP_OBJECT_DOMAIN_INVALID", "对象成员状态枚举无效。");
@@ -79,7 +95,7 @@ void ValidateObjectState(ClassicMinimapMemberState state, std::string_view hash,
         Fail("CLASSIC_MINIMAP_OBJECT_DOMAIN_IDENTITY", "Empty对象成员必须是零字节且SHA256(empty)。");
 }
 
-void ValidateObjectDomain(const ClassicMinimapCandidateInput& input, const ClassicMinimapCandidateLimits& limits) {
+void ValidateObjectDomain(const InputView& input, const ClassicMinimapCandidateLimits& limits) {
     const auto& expected = input.terrain.binding;
     const auto& domain = input.objectDomain;
     if (!Sha(expected.sourceSha256) || !Sha(expected.terrainSha256)
@@ -89,17 +105,16 @@ void ValidateObjectDomain(const ClassicMinimapCandidateInput& input, const Class
         || domain.documentGeneration != expected.documentGeneration || domain.revision != expected.revision
         || domain.terrainSourceRevision != input.terrainSourceRevision)
         Fail("CLASSIC_MINIMAP_OBJECT_DOMAIN_STALE", "对象域与当前地形来源、会话代际或修订不一致。");
-    ValidateObjectState(domain.unitsState, domain.unitsMemberSha256, domain.unitsMemberBytes, limits.maxSourceTextBytes);
-    ValidateObjectState(domain.doodadsState, domain.doodadsMemberSha256, domain.doodadsMemberBytes, limits.maxSourceTextBytes);
+    ValidateObjectState(domain.unitsState, domain.unitsMemberSha256, domain.unitsMemberBytes, limits.maxSourceTextBytes, input.captured);
+    ValidateObjectState(domain.doodadsState, domain.doodadsMemberSha256, domain.doodadsMemberBytes, limits.maxSourceTextBytes, input.captured);
 }
 
 void AddTextCaps(std::size_t& bytes, const std::string& text) {
     Add(bytes, text.capacity()); Add(bytes, 1);
 }
 
-std::size_t RetainedInputBytes(const ClassicMinimapCandidateInput& input) {
-    const auto& terrain = input.terrain;
-    std::size_t bytes = kFixedReserve + sizeof(input) + sizeof(terrain);
+std::size_t TerrainInputCapacity(const TerrainMinimapInput& terrain) {
+    std::size_t bytes = sizeof(terrain);
     AddTextCaps(bytes, terrain.binding.documentId); AddTextCaps(bytes, terrain.binding.sourceSha256);
     AddTextCaps(bytes, terrain.binding.terrainSha256); Add(bytes, terrain.currentW3e.capacity());
     if (terrain.sourceW3i) Add(bytes, terrain.sourceW3i->capacity());
@@ -123,6 +138,14 @@ std::size_t RetainedInputBytes(const ClassicMinimapCandidateInput& input) {
         AddMul(bytes, atlas.additionalMips.capacity(), sizeof(Image::DecodedImage));
         for (const auto& mip : atlas.additionalMips) Add(bytes, mip.rgba.capacity());
     }
+    return bytes;
+}
+
+std::size_t RetainedInputBytes(const InputView& input) {
+    std::size_t bytes = kFixedReserve + sizeof(input);
+    Add(bytes, sizeof(input.objectDomain)); Add(bytes, sizeof(input.postprocess));
+    Add(bytes, TerrainInputCapacity(input.terrain));
+    Add(bytes, input.additionalRetainedBytes);
     AddTextCaps(bytes, input.objectDomain.sourceSha256); AddTextCaps(bytes, input.objectDomain.documentId);
     AddTextCaps(bytes, input.objectDomain.unitsMemberSha256); AddTextCaps(bytes, input.objectDomain.doodadsMemberSha256);
     if (input.postprocess.noiseSamples) AddMul(bytes, input.postprocess.noiseSamples->capacity(), sizeof(std::uint16_t));
@@ -149,10 +172,10 @@ void ValidateAtlas(const TerrainAtlasSnapshot& atlas, std::size_t sourceTextLimi
     }
 }
 
-std::string ObjectDomainIdentity(const ClassicMinimapObjectDomain& domain) {
+std::string ObjectDomainIdentity(const ClassicMinimapObjectDomain& domain, std::string_view policy) {
     std::string text;
     text.reserve(512);
-    text.append(ClassicMinimapObjectDomain::declarationPolicy).append("|").append(domain.sourceSha256).append("|")
+    text.append(policy).append("|").append(domain.sourceSha256).append("|")
         .append(domain.documentId).append("|").append(std::to_string(domain.documentGeneration)).append("|")
         .append(std::to_string(domain.revision)).append("|").append(std::to_string(domain.terrainSourceRevision)).append("|")
         .append(std::to_string(static_cast<unsigned>(domain.unitsState))).append("|").append(domain.unitsMemberSha256).append("|")
@@ -178,9 +201,7 @@ Result<ClassicMinimapCandidate> FailureResult(std::string_view code, std::string
     return Result<ClassicMinimapCandidate>::Failure(kSubsystem, std::string(code), std::string(message));
 }
 
-} // namespace
-
-Result<ClassicMinimapCandidate> BuildClassicMinimapCandidate(const ClassicMinimapCandidateInput& input,
+Result<ClassicMinimapCandidate> Build(const InputView& input,
     const ClassicMinimapCandidateLimits& limits) {
     try {
         ValidateLimits(limits);
@@ -257,7 +278,10 @@ Result<ClassicMinimapCandidate> BuildClassicMinimapCandidate(const ClassicMinima
         ClassicMinimapCandidate output;
         output.manifest.sourceSha256 = input.terrain.binding.sourceSha256;
         output.manifest.terrainSha256 = terrainSha;
-        output.manifest.objectDomainSha256 = ObjectDomainIdentity(input.objectDomain);
+        output.manifest.objectDomainPolicy = input.captured ? ClassicMinimapObjectAssetFacts::capturePolicy
+            : ClassicMinimapManifest::objectDomainDeclaration;
+        output.manifest.objectDomainSha256 = ObjectDomainIdentity(input.objectDomain, output.manifest.objectDomainPolicy);
+        if (input.captured) output.manifest.objectCaptureIdentitySha256 = input.captured->IdentitySha256();
         output.manifest.sourceWidth = tileWidth; output.manifest.sourceHeight = tileHeight;
         output.manifest.sourceTiles = tileCount; output.manifest.sourceRectangle = {0, 0, tileWidth, tileHeight};
         output.raw.width = tileWidth; output.raw.height = tileHeight;
@@ -308,6 +332,36 @@ Result<ClassicMinimapCandidate> BuildClassicMinimapCandidate(const ClassicMinima
         output.manifest.blpSha256 = Take(Sha256(encoded.bytes));
         output.encoded = std::move(encoded);
         return Result<ClassicMinimapCandidate>::Success(std::move(output));
+    } catch (const Failure& failure) {
+        return FailureResult(failure.code, failure.message);
+    } catch (const std::bad_alloc&) {
+        return FailureResult("CLASSIC_MINIMAP_ALLOCATION", "候选分配失败，不返回部分结果。");
+    } catch (const std::length_error&) {
+        return FailureResult("CLASSIC_MINIMAP_ALLOCATION", "候选容器容量异常，不返回部分结果。");
+    }
+}
+
+} // namespace
+
+Result<ClassicMinimapCandidate> BuildClassicMinimapCandidate(const ClassicMinimapCandidateInput& input,
+    const ClassicMinimapCandidateLimits& limits) {
+    return Build({input.terrain, input.objectDomain, input.terrainSourceRevision, input.postprocess}, limits);
+}
+
+Result<ClassicMinimapCandidate> BuildClassicMinimapCandidate(const ClassicMinimapObjectAssets& assets,
+    const TerrainMinimapPostprocessSettings& postprocess, const ClassicMinimapCandidateLimits& limits) {
+    try {
+        ValidateLimits(limits);
+        if (!assets.captured_ || !Sha(assets.identitySha256_) || !Sha(assets.terrain_.IdentitySha256()))
+            Fail("CLASSIC_MINIMAP_OBJECT_CAPTURE_STALE", "sealed资产缺少有效捕获身份或已被move。");
+        // 不复制TerrainMinimapInput/W3E/atlas或settings。额外计入组合快照持有的表/依赖与对象见证。
+        const auto inputCapacity = TerrainInputCapacity(assets.terrain_.Input());
+        if (inputCapacity > assets.facts_.retainedTerrainCapacityBytes)
+            Fail("CLASSIC_MINIMAP_OBJECT_CAPTURE_STALE", "sealed资产容量账与当前拥有的Terrain输入不同。");
+        auto extra = assets.facts_.retainedTerrainCapacityBytes - inputCapacity;
+        Add(extra, assets.facts_.retainedAuxiliaryCapacityBytes);
+        return Build({assets.terrain_.Input(), assets.domain_, assets.terrain_.Binding().terrainSourceRevision, postprocess,
+            &assets, extra}, limits);
     } catch (const Failure& failure) {
         return FailureResult(failure.code, failure.message);
     } catch (const std::bad_alloc&) {

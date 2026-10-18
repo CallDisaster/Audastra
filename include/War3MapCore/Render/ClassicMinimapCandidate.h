@@ -13,12 +13,15 @@
 
 namespace War3Map::Render {
 
-enum class ClassicMinimapMemberState { Unknown, Missing, Empty };
+// ParsedEmpty仅供sealed对象捕获入口，旧caller声明入口拒绝该值。
+enum class ClassicMinimapMemberState { Unknown, Missing, Empty, ParsedEmpty };
+
+class ClassicMinimapObjectAssets;
 
 // 0x08 对应对象管理器尚未由独立原版对照确定。第一版只接收 caller 声明的
 // Missing/Empty 一致性字段，不绘制对象；Unknown、非零成员或不一致身份 fail-closed。
-// 这些字段不是来源读取证明，也不构成 native/editor/game 资格；真实 archive/edits
-// 捕获工厂尚未接入，调用者不能以此宣称已证明对象层为空。
+// 这些公开字段只属于caller入口，不是来源读取证明，也不构成 native/editor/game 资格。
+// 真实archive/edits捕获由独立sealed typed入口消费，不能用公开声明代替。
 struct ClassicMinimapObjectDomain {
     static constexpr const char* declarationPolicy = "caller-declared-v1";
     std::string sourceSha256;
@@ -65,6 +68,8 @@ struct ClassicMinimapManifest {
     std::string sourceSha256;
     std::string terrainSha256;
     std::string objectDomainSha256;
+    std::string objectDomainPolicy = "caller-declared-v1/native=false";
+    std::string objectCaptureIdentitySha256;
     std::string rawRgbaSha256;
     std::string preNoiseRgbaSha256;
     std::string finalRgbaSha256;
@@ -98,6 +103,13 @@ struct ClassicMinimapCandidate {
 // Ground rawcode/table winner、archive当前来源和对象为空均未被本纯算法入口独立认证。
 [[nodiscard]] Result<ClassicMinimapCandidate> BuildClassicMinimapCandidate(
     const ClassicMinimapCandidateInput& input,
+    const ClassicMinimapCandidateLimits& limits = {});
+
+// 借用真实捕获的sealed Terrain与ParsedEmpty见证，不复制W3E/atlas/settings。
+// 只消费冻结资产；不重新验证当前来源，不授予长期有效或正式保存资格。
+[[nodiscard]] Result<ClassicMinimapCandidate> BuildClassicMinimapCandidate(
+    const ClassicMinimapObjectAssets& assets,
+    const TerrainMinimapPostprocessSettings& postprocess = {},
     const ClassicMinimapCandidateLimits& limits = {});
 
 } // namespace War3Map::Render
