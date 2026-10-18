@@ -1,4 +1,5 @@
 #include "War3MapCore/Render/ClassicMinimapObjectAssets.h"
+#include "War3MapCore/MapData/MapSettings.h"
 
 #include <iostream>
 #include <array>
