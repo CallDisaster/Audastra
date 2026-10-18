@@ -79,6 +79,10 @@ void NewMapGetsAutomaticMinimap() {
 } // namespace
 
 int main() {
+    if (EnvironmentPath(L"FORGE_YDWE_ROOT").empty() || EnvironmentPath(L"FORGE_WORLD_GAME_ROOT").empty()) {
+        std::cout << "SKIP create minimap: FORGE_YDWE_ROOT / FORGE_WORLD_GAME_ROOT unset\n";
+        return 77;
+    }
     try {
         NewMapGetsAutomaticMinimap();
         return 0;

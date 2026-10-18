@@ -560,6 +560,13 @@ target_compile_options(war3-map-terrain-minimap-save-tests PRIVATE /W4 /permissi
 add_test(NAME services-terrain-minimap-save COMMAND war3-map-terrain-minimap-save-tests)
 set_tests_properties(services-terrain-minimap-save PROPERTIES TIMEOUT 120)
 
+add_executable(war3-map-create-minimap-tests services/MapCreateMinimapTests.cpp)
+target_link_libraries(war3-map-create-minimap-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(war3-map-create-minimap-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(war3-map-create-minimap-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-map-create-minimap COMMAND war3-map-create-minimap-tests)
+set_tests_properties(services-map-create-minimap PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77)
+
 add_executable(war3-map-terrain-pathing-candidate-tests services/TerrainPathingRestrictionCandidateTests.cpp)
 target_link_libraries(war3-map-terrain-pathing-candidate-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(war3-map-terrain-pathing-candidate-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
