@@ -44,7 +44,7 @@ struct ClassicMinimapObjectMemberFacts {
 
 struct ClassicMinimapObjectAssetFacts {
     static constexpr const char* capturePolicy = "source-capture-parsed-objects-v2/native=false";
-    static constexpr std::size_t snapshotScratchBytesPerWireByte = 4;
+    static constexpr std::size_t snapshotScratchBytesPerWireByte = 16;
     std::array<ClassicMinimapObjectMemberFacts, 2> members; // units、doodads
     std::size_t retainedTerrainCapacityBytes = 0;
     std::size_t estimatedExtraPeakBytes = 0, estimatedPeakBytes = 0;

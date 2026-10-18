@@ -3,6 +3,8 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapData/MapPlacements.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
+#include "War3MapCore/Mpq/MpqArchive.h"
+#include "War3MapCore/Resources/ImportTable.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -360,11 +362,27 @@ Result<ClassicMinimapObjectAssets> CaptureClassicMinimapObjectAssets(TerrainMini
         // 先预收，再进行任何新的IO/hash/parse。已有输入内部provider/MPQ缓冲不在载荷口径。
         ClassicMinimapObjectAssetFacts facts;
         facts.retainedTerrainCapacityBytes = TerrainCapacity(terrain);
+        std::size_t measuredSnapshotBytes = 0;
+        for (const auto kind : kKinds) {
+            const auto wire = Take(edits.SnapshotByteSize(kind));
+            if (wire > limits.maxCurrentSnapshotBytes)
+                Fail("CLASSIC_OBJECT_CAPTURE_BUDGET", "当前DOO及W3I实际wire超过成员快照上限。");
+            Charge(measuredSnapshotBytes, wire);
+        }
+        std::size_t sourceObjectBytes = 0;
+        {
+            const auto metadata = Take(Mpq::MpqArchive::OpenReadOnly(source.SourcePath()));
+            for (const auto& name : kMembers) if (const auto info = metadata.GetFileInfo(name)) {
+                if (info->fileSize > limits.maxObjectMemberBytes || info->compressedSize > limits.maxObjectMemberBytes)
+                    Fail("CLASSIC_OBJECT_CAPTURE_BUDGET", "原始DOO实际wire超过成员上限。");
+                Charge(sourceObjectBytes, info->fileSize);
+            }
+        }
         auto extra = kFixedScratch;
         Charge(extra, kMetadataReserve);
         Charge(extra, limits.maxCurrentTerrainBytes, 2); // Serialize copy + SHA正文chunk
-        Charge(extra, limits.maxObjectMemberBytes, 6); // exact双成员、parser原字/散列及结果保活
-        Charge(extra, limits.maxCurrentSnapshotBytes, ClassicMinimapObjectAssetFacts::snapshotScratchBytesPerWireByte + 4);
+        Charge(extra, sourceObjectBytes, 6); // exact双成员、源parser原字/散列及结果保活
+        Charge(extra, measuredSnapshotBytes, ClassicMinimapObjectAssetFacts::snapshotScratchBytesPerWireByte + 4);
         facts.estimatedExtraPeakBytes = extra; facts.estimatedPeakBytes = facts.retainedTerrainCapacityBytes;
         Charge(facts.estimatedPeakBytes, extra);
         if (facts.estimatedPeakBytes > limits.maxWorkingBytes)
@@ -394,14 +412,13 @@ Result<ClassicMinimapObjectAssets> CaptureClassicMinimapObjectAssets(TerrainMini
             Fail("CLASSIC_OBJECT_CAPTURE_SOURCE", "准确捕获没有返回要求的两个对象成员身份。");
         MapData::UnitPlacements units;
         MapData::DoodadPlacements doodads;
-        std::size_t measuredSnapshotBytes = 0;
-        for (const auto kind : kKinds) Charge(measuredSnapshotBytes, Take(edits.SnapshotByteSize(kind)));
         for (std::size_t i = 0; i < 2; ++i) {
             const auto current = Take(edits.Snapshot(kKinds[i], limits.maxCurrentSnapshotBytes));
             const auto& member = current.Member(kKinds[i]);
             ArchiveExactMember currentMember{kMembers[i], member.state != MapDataState::Missing, {}};
             if (currentMember.present) {
-                if (member.state != MapDataState::Ready || member.sources.size() != 1 || member.sources.front().name != kMembers[i])
+                if (member.state != MapDataState::Ready || member.sources.size() != 1
+                    || Take(Resources::CanonicalImportPath(member.sources.front().name)) != Take(Resources::CanonicalImportPath(kMembers[i])))
                     Fail("CLASSIC_OBJECT_CAPTURE_CURRENT_LAYOUT", "当前对象层必须是唯一且可完整解析的Ready成员。");
                 currentMember.bytes = member.sources.front().data;
             }
@@ -433,6 +450,13 @@ Result<ClassicMinimapObjectAssets> CaptureClassicMinimapObjectAssets(TerrainMini
         auto objectLayer = Take(CaptureClassicMinimapObjectLayer(doodads.doodads, source, terrain.Binding().gameRoot,
             currentTerrain->header.mainTileset, currentTerrain->header.offset,
             {0, 0, currentTerrain->header.width - 1, currentTerrain->header.height - 1}, replacements, removals));
+        auto objectResultBytes = PlacementCapacity(0, units, doodads);
+        Charge(objectResultBytes, objectLayer.pixels.capacity(), sizeof(ClassicMinimapObjectPixel));
+        Charge(objectResultBytes, objectLayer.styles.capacity(), sizeof(ClassicMinimapObjectStyle));
+        Charge(objectResultBytes, objectLayer.dependencies.capacity(), sizeof(ClassicMinimapObjectLayer::Dependency));
+        Charge(objectWorking, objectResultBytes);
+        if (objectWorking > limits.maxWorkingBytes)
+            Fail("CLASSIC_OBJECT_CAPTURE_BUDGET", "对象像素、样式和实际依赖容量超过累计捕获预算。");
         Check(source.VerifySourceUnchanged());
         if (!MatchesTerrainCaptureBinding(terrain, source, edits) || edits.Terrain() != currentTerrain)
             Fail("CLASSIC_OBJECT_CAPTURE_STALE", "对象捕获期间来源、会话或当前Terrain已变化。");
