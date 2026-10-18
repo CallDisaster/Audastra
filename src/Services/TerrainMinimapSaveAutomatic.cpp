@@ -2,14 +2,16 @@
 
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Image/BlpImage.h"
+#include "War3MapCore/MapData/MapSettings.h"
 
 #include <algorithm>
 #include <array>
+#include <bit>
+#include <charconv>
 #include <cctype>
 #include <cwctype>
 #include <limits>
 #include <map>
-#include <random>
 #include <set>
 #include <stdexcept>
 
@@ -155,6 +157,88 @@ std::string ManifestIdentity(const Render::ClassicMinimapManifest& manifest) {
         + (manifest.postprocessFacts.noiseSeed ? std::to_string(*manifest.postprocessFacts.noiseSeed) : "none");
     return Take(Sha256(std::as_bytes(std::span(text))));
 }
+
+std::uint32_t ContentNoiseSeed(const Render::ClassicMinimapObjectAssets& assets,
+    const Render::TerrainMinimapPostprocessSettings& postprocess, std::size_t maximumWorkingBytes) {
+    // v1 固定输入序列，只绑定小地图内容。归档压缩/无关成员、路径、来源层、
+    // session/revision、W3I保存次数与来源身份证明均不得改变同一张图的噪点。
+    const auto& terrain = assets.TerrainAssets();
+    const auto& input = terrain.Input();
+    Sha256Stream hash(32 * kMiB);
+    const auto bytes = [&](std::span<const std::byte> value) { Check(hash.Update(value)); };
+    const auto integer = [&](std::uint64_t value) {
+        std::array<std::byte, 8> encoded{};
+        for (unsigned index = 0; index < encoded.size(); ++index)
+            encoded[index] = static_cast<std::byte>((value >> (index * 8)) & 255);
+        bytes(encoded);
+    };
+    const auto text = [&](std::string_view value) { integer(value.size()); bytes(std::as_bytes(std::span(value))); };
+    const auto real = [&](double value) { integer(std::bit_cast<std::uint64_t>(value)); };
+    text("classic-minimap-content-noise-seed-v1");
+    integer(Render::ClassicMinimapManifest::algorithmVersion);
+    integer(Render::TerrainMinimapPostprocessFacts::algorithmVersion);
+    integer(static_cast<std::uint32_t>(postprocess.medianRadius));
+    real(postprocess.blurRadius); real(postprocess.noisePercent);
+    text(terrain.Binding().currentTerrainSha256); // sealed捕获实际当前W3E的内容SHA，无整档SHA
+    integer(static_cast<std::uint64_t>(input.rangePolicy));
+    if (!input.sourceW3i || input.sourceW3i->empty())
+        Fail("CLASSIC_MINIMAP_W3I_MISSING", "自动小地图噪点种子需要同次捕获的可玩区设置。");
+    // 与候选使用同一有界Settings解析器；临时解析和SHA流不与候选滤波/JPEG同时保活。
+    auto scratch = Add(Add(assets.Facts().retainedTerrainCapacityBytes,
+        assets.Facts().retainedAuxiliaryCapacityBytes), hash.ScratchBytes());
+    scratch = Add(scratch, Render::TerrainMinimapMemoryFacts::settingsScratchFixedBytes);
+    if (input.sourceW3i->size() > maximumWorkingBytes / Render::TerrainMinimapMemoryFacts::settingsScratchBytesPerSourceByte
+        || Add(scratch, input.sourceW3i->size() * Render::TerrainMinimapMemoryFacts::settingsScratchBytesPerSourceByte)
+            > maximumWorkingBytes)
+        Fail("MINIMAP_SAVE_BUDGET", "自动小地图内容种子的设置解析超过共享工作预算。");
+    const auto settings = Take(MapData::MapSettings::Parse(*input.sourceW3i));
+    if (!settings.FullyParsed() || settings.formatVersion != 25)
+        Fail("CLASSIC_MINIMAP_W3I_LAYOUT", "自动小地图噪点种子需要完整classic v25可玩区设置。");
+    const bool automaticBounds = (settings.flags & 0x400u) != 0;
+    integer(automaticBounds ? 1u : 0u);
+    if (automaticBounds) {
+        for (const auto value : settings.cameraMargins) integer(static_cast<std::uint32_t>(value));
+    } else {
+        for (std::size_t index = 0; index < 4; ++index) integer(std::bit_cast<std::uint32_t>(settings.cameraBounds[index]));
+    }
+    integer(input.groundAtlases.size());
+    for (const auto& atlas : input.groundAtlases) {
+        if (!atlas) Fail("CLASSIC_MINIMAP_ATLAS", "自动小地图内容种子缺少冻结地面贴图。");
+        text(atlas->sourceSha256); // palette同序的实际编码内容，不采用ResourceLocation
+    }
+    integer(input.classicColors.has_value() ? 1u : 0u);
+    if (input.classicColors) {
+        const auto& colors = *input.classicColors;
+        integer(colors.cliffColors.size());
+        for (const auto& color : colors.cliffColors) bytes(std::as_bytes(std::span(color)));
+        integer(colors.waterConfigured ? 1u : 0u);
+        if (colors.waterConfigured) {
+            bytes(std::as_bytes(std::span(colors.waterColor)));
+            real(colors.waterHeightOffset); real(colors.deepLevelPathing);
+        }
+        if (!automaticBounds) {
+            integer(colors.cameraMarginsConfigured ? 1u : 0u);
+            for (const auto value : colors.cameraMargins) real(value);
+        }
+    }
+    // 层序决定重叠涂色；只使用实际像素，不引入对象实例序号、资源路径或未绘制单位。
+    integer(assets.ObjectLayer().pixels.size());
+    for (const auto& pixel : assets.ObjectLayer().pixels) {
+        std::array<std::byte, 12> encoded{};
+        for (unsigned index = 0; index < 4; ++index) {
+            encoded[index] = static_cast<std::byte>((pixel.x >> (index * 8)) & 255);
+            encoded[4 + index] = static_cast<std::byte>((pixel.y >> (index * 8)) & 255);
+            encoded[8 + index] = static_cast<std::byte>(pixel.color[index]);
+        }
+        bytes(encoded);
+    }
+    const auto digest = Take(hash.Finish());
+    std::uint32_t seed = 0;
+    const auto converted = std::from_chars(digest.data(), digest.data() + 8, seed, 16);
+    if (converted.ec != std::errc{} || converted.ptr != digest.data() + 8)
+        Fail("MINIMAP_SAVE_ENCODING", "自动小地图内容种子摘要无效。");
+    return seed;
+}
 } // namespace
 
 Result<bool> TerrainMinimapSave::RequiresAutomaticGeneration(const MapSaveTask& task) {
@@ -241,9 +325,8 @@ Result<std::shared_ptr<const TerrainMinimapSave>> TerrainMinimapSave::PrepareAut
         candidateLimits.maxWorkingBytes = std::min(candidateLimits.maxWorkingBytes,
             Available(limits, Add(Add(TaskCapacity(task), plan->OwnedCapacityBytes()), kReadReserve)));
         Render::TerrainMinimapPostprocessSettings postprocess;
-        // 原版的进程级rand状态不是地图内容。每次保存使用新的显式种子，
-        // 既保持10%噪点，也在本次manifest中保留复现依据。
-        postprocess.noiseSeed = std::random_device{}();
+        // 保留10%噪点并由同内容导出固定种子；manifest已有noiseSeed记录复现依据。
+        postprocess.noiseSeed = ContentNoiseSeed(assets, postprocess, candidateLimits.maxWorkingBytes);
         auto candidate = Take(Render::BuildClassicMinimapCandidate(assets, postprocess, candidateLimits));
         if (candidate.manifest.blpSha256 != Take(Sha256(candidate.encoded.bytes))
             || candidate.manifest.terrainSha256 != assets.TerrainAssets().Binding().currentTerrainSha256)
