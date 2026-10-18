@@ -71,6 +71,10 @@ std::array<HuffCode, 256> MakeHuffman(const std::array<std::uint8_t, 17>& counts
 class Bytes {
 public:
     void Limit(std::size_t limit) noexcept { limit_ = limit; }
+    void ReserveLimit() {
+        bytes_.reserve(limit_);
+        if (bytes_.capacity() > limit_) throw CapacityFailure{};
+    }
     void U8(std::uint8_t value) { Ensure(1); bytes_.push_back(static_cast<std::byte>(value)); }
     void U16(std::uint16_t value) { U8(static_cast<std::uint8_t>(value >> 8)); U8(static_cast<std::uint8_t>(value)); }
     void Marker(std::uint8_t marker) { U8(0xff); U8(marker); }
@@ -218,13 +222,14 @@ Result<BlpJpegSingleMip> EncodeBlpJpegSingleMip(const DecodedImage& image, const
         ? std::numeric_limits<std::size_t>::max() : image.rgba.capacity() + extraPeak;
     if (estimatedWorking > limits.maxWorkingBytes) return fail("BLP_JPEG_WORKING_BUDGET", "JPEG编码工作预算不足。");
     try {
-        Bytes header; header.Limit(std::min<std::size_t>(limits.maxOutputBytes, 64u * 1024u));
+        Bytes header; header.Limit(std::min<std::size_t>(limits.maxOutputBytes, 64u * 1024u)); header.ReserveLimit();
         header.Marker(0xd8); EmitDqt(header, quant); EmitDht(header);
         const auto sharedHeader = header.Take();
         Bytes frame;
         const auto frameBudget = limits.maxOutputBytes > kBlpHeaderBytes + kJpegHeaderPrefixBytes + sharedHeader.size()
             ? limits.maxOutputBytes - kBlpHeaderBytes - kJpegHeaderPrefixBytes - sharedHeader.size() : 0;
         frame.Limit(frameBudget);
+        frame.ReserveLimit();
         std::array<std::byte, 18> sof{}; sof[0] = std::byte{8}; sof[1] = std::byte{1}; sof[2] = std::byte{0}; sof[3] = std::byte{1}; sof[4] = std::byte{0}; sof[5] = std::byte{4};
         for (int i = 0; i < 4; ++i) { sof[6 + i * 3] = static_cast<std::byte>(i + 1); sof[7 + i * 3] = std::byte{0x11}; sof[8 + i * 3] = std::byte{0}; }
         frame.Segment(0xc0, std::span<const std::byte>(sof));
@@ -244,8 +249,10 @@ Result<BlpJpegSingleMip> EncodeBlpJpegSingleMip(const DecodedImage& image, const
         if (totalBytes > limits.maxOutputBytes || mipOffset > std::numeric_limits<std::uint32_t>::max()
             || frameBytes.size() > std::numeric_limits<std::uint32_t>::max())
             return fail("BLP_JPEG_OUTPUT_BUDGET", "BLP JPEG输出超过预算或偏移范围。");
-        std::vector<std::byte> output(kBlpHeaderBytes, std::byte{0});
-        output.resize(kBlpHeaderBytes + kJpegHeaderPrefixBytes);
+        std::vector<std::byte> output;
+        output.reserve(totalBytes);
+        if (output.capacity() > limits.maxOutputBytes) return fail("BLP_JPEG_OUTPUT_BUDGET", "BLP输出实际capacity超过预算。");
+        output.resize(kBlpHeaderBytes + kJpegHeaderPrefixBytes, std::byte{0});
         std::copy(sharedHeader.begin(), sharedHeader.end(), std::back_inserter(output));
         output.insert(output.end(), frameBytes.begin(), frameBytes.end());
         output[0] = std::byte{'B'}; output[1] = std::byte{'L'}; output[2] = std::byte{'P'}; output[3] = std::byte{'1'};
