@@ -217,6 +217,13 @@ void DeclaredChoiceRequiresActualW3iAndRetainsStandardEdges() {
     Fixture bounded(false, false, false, W3i(), true); bounded.Stroke(TerrainBrushKind::Raise, 10, {384, 512});
     MapSaveTask boundedTask; bounded.Freeze(boundedTask);
     TerrainMinimapSaveLimits limits; limits.assets.maxSourceBytes = 32 * 1024;
+    // 只测W3I Settings固定64KiB预收。把不参与本例的表/atlas上限也收紧，
+    // 避免共享envelope为默认大限额整体缩减，先在基线Plan处耗尽32KiB。
+    limits.assets.maxCurrentW3eBytes = 4 * 1024;
+    limits.assets.tables.maxTableBytes = 4 * 1024;
+    limits.assets.tables.maxRows = 16; limits.assets.tables.maxCells = 64;
+    limits.assets.maxRetainedAtlasCapacityBytes = 1024 * 1024;
+    limits.assets.atlas.maxWorkingBytes = 1024 * 1024;
     Rejected(TerrainMinimapSave::Prepare(boundedTask, bounded.edits, bounded.gameRoot, declared, limits), "TERRAIN_ASSETS_BUDGET");
     limits = {}; limits.candidate.maxWorkingBytes = 64 * 1024;
     Rejected(TerrainMinimapSave::Prepare(boundedTask, bounded.edits, bounded.gameRoot, declared, limits), "TERRAIN_MINIMAP_BUDGET");
