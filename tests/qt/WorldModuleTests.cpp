@@ -12,6 +12,7 @@
 #include "WorldAssetBrowser.h"
 #include "WorldTerrainAssets.h"
 #include "WorldTerrainBuild.h"
+#include "WorldCliffSourceFailureChecks.h"
 #include "WorldDiagnosticJson.h"
 #include "WorldSelectionPresenter.h"
 #include "WorldPlacementPreview.h"
@@ -793,6 +794,9 @@ private slots:
     void SourceShadowObservationKeepsUnknownAndCodecFailures_data();
     void SourceShadowObservationKeepsUnknownAndCodecFailures();
     void SourceShadowObservationSurvivesRebuildWithoutRawOrRepeatedDiagnostics();
+    void CliffSourceFailuresKeepWinnerAndReobserveReadFailures_data();
+    void CliffSourceFailuresKeepWinnerAndReobserveReadFailures();
+    void CliffSamplerFailureAfterMissingDoesNotInventModelContext();
     void MeshBoundsAndSampling();
     void ViewportLifecycleAndInput();
     void MapSwitchDoesNotEdit();
@@ -1589,6 +1593,151 @@ void WorldModuleTests::SourceShadowObservationSurvivesRebuildWithoutRawOrRepeate
     QVERIFY(WorldShadowDetails(undone.value->shadowObservation, originalEnvironment.get()).contains(QStringLiteral("不证明源阴影")));
     const auto raw = project.ReadMapMember("war3map.shd"); QVERIFY(raw.Succeeded()); QCOMPARE(*raw.value, originalShadow);
     QCOMPARE(*Sha256File(path).value, sourceSha);
+}
+
+void WorldModuleTests::CliffSourceFailuresKeepWinnerAndReobserveReadFailures_data() {
+    QTest::addColumn<QString>("mode");
+    for (const auto* mode : {"missing", "malformed-owned", "read-failure", "valid-owned", "sampler-unsupported"})
+        QTest::newRow(mode) << QString::fromLatin1(mode);
+}
+
+void WorldModuleTests::CliffSourceFailuresKeepWinnerAndReobserveReadFailures() {
+    namespace Cliff = Tests::WorldCliffSourceFailure;
+    QFETCH(QString, mode);
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    auto members = Cliff::Members(ShadowObservationMembers(), *FlatGrid(2, 2)); QVERIFY(!members.empty());
+    // 请求路径在原地图也有效；会话winner损坏/不可读时不能改取原地图正文或低变体。
+    if (mode != "missing") members.push_back({Cliff::requested, Cliff::Model(11)});
+    const auto path = std::filesystem::path(directory.filePath("cliff-source.w3x").toStdWString());
+    QVERIFY(WriteVerifiedArchive(path, members).Succeeded()); auto archive = MapArchiveSession::Open(path); QVERIFY(archive.Succeeded());
+    const auto sourceSha = archive.value->SourceSha256();
+    QtProject::EditorProject project; project.sourceArchivePath_ = path; project.projectRoot_ = path.parent_path();
+    project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*archive.value)); project.LoadMapDocument(); project.ResetEditTracking();
+    QVERIFY(project.mapEdits_ && project.mapEdits_->Terrain());
+    const auto requestedName = QString::fromStdString(Cliff::requested);
+    const auto diskPath = directory.filePath("explicit-next-rebuild.mdx");
+    auto winner = Cliff::Model(37, mode == "sampler-unsupported" ? 8u : 0u);
+    if (mode == "malformed-owned") winner.resize(winner.size() - 6);
+    if (mode == "read-failure") project.pendingImports_.push_back({requestedName, diskPath, static_cast<qint64>(winner.size())});
+    else if (mode != "missing") project.pendingImports_.push_back({requestedName, {}, static_cast<qint64>(winner.size()),
+        std::make_shared<const std::vector<std::byte>>(winner)});
+    const auto sources = CaptureWorldTerrainSources(project); QVERIFY(sources.Succeeded());
+    auto independent = WorldResourceReader::Open(*sources.value); QVERIFY(independent.Succeeded());
+    const auto requestedLocation = (*independent.value)->Resolver().Locate(Cliff::requested);
+    std::vector<Diagnostic> expected;
+    if (mode == "read-failure") {
+        const auto read = (*independent.value)->Resolver().Read(Cliff::requested); QVERIFY(!read.Succeeded()); expected = read.diagnostics;
+        QVERIFY(std::any_of(expected.begin(), expected.end(), [](const auto& diagnostic) { return diagnostic.code == "WORLD_ASSET_READ"; }));
+    } else if (mode == "malformed-owned") {
+        const auto parsed = Render::ParseMdx(winner); QVERIFY(!parsed.Succeeded()); expected = parsed.diagnostics;
+        QVERIFY(std::all_of(expected.begin(), expected.end(), [](const auto& diagnostic) {
+            return diagnostic.message.find(Cliff::requested) == std::string::npos && (!diagnostic.origin || diagnostic.origin->source.empty());
+        })); // codec不接路径；请求与真实来源必须由独立事实补足，不能改写这些原诊断。
+    }
+    const auto globalRows = project.diagnosticsModel_->rowCount();
+    std::shared_ptr<WorldTerrainCache> cache;
+    const auto loaded = LoadWorldTerrain(members[1].data, sources, {}, {}, &cache);
+    QVERIFY2(loaded.Succeeded(), loaded.diagnostics.empty() ? "cliff fixture load failed" : loaded.diagnostics.front().message.c_str());
+    QVERIFY(cache && cache->reader && loaded.value->ground);
+    if (mode == "missing") {
+        QVERIFY(!requestedLocation.Succeeded() && requestedLocation.diagnostics.size() == 1
+            && requestedLocation.diagnostics.front().code == "RESOURCE_NOT_FOUND");
+        QVERIFY(Cliff::SelectsGeometry(*loaded.value, 0));
+        const auto lowerLocation = cache->reader->Resolver().Locate(Cliff::lower); QVERIFY(lowerLocation.Succeeded());
+        QVERIFY(Cliff::CachesResource(*cache, Cliff::lower, Cliff::Model(0), *lowerLocation.value));
+        QVERIFY(!cache->modelFiles.contains(Cliff::requested));
+    } else {
+        QVERIFY(requestedLocation.Succeeded());
+        if (mode == "valid-owned") {
+            QVERIFY(Cliff::SelectsGeometry(*loaded.value, 37));
+            QVERIFY(Cliff::CachesResource(*cache, Cliff::requested, winner, *requestedLocation.value));
+        } else if (mode == "sampler-unsupported") {
+            QVERIFY(!loaded.value->cliffs && !loaded.value->cliffFailure && loaded.value->ground->hiddenTileCount == 0);
+            QVERIFY(loaded.value->cliffDiagnostics.size() == 1
+                && loaded.value->cliffDiagnostics.front().code == "TERRAIN_CLIFF_SAMPLER_UNSUPPORTED");
+            QVERIFY(!loaded.value->materialNote.contains(QString::fromStdString(std::string(Render::kTerrainCliffModelFailureContextCode))));
+            QVERIFY(Cliff::CachesResource(*cache, Cliff::requested, winner, *requestedLocation.value));
+            // Qt成功正文cache复用后仍是Bake失败；最后reader回调不能被当成确定的失败模型归因。
+            const auto repeated = RebuildWorldTerrain(*project.mapEdits_->Terrain(), *cache, {});
+            QVERIFY(repeated.Succeeded() && !repeated.value->cliffs && !repeated.value->cliffFailure && repeated.value->ground
+                && repeated.value->ground->hiddenTileCount == 0);
+            QVERIFY(Cliff::SameDiagnostics(repeated.value->cliffDiagnostics, loaded.value->cliffDiagnostics));
+            QVERIFY(!repeated.value->materialNote.contains(QString::fromStdString(std::string(Render::kTerrainCliffModelFailureContextCode))));
+        } else {
+            QVERIFY(Cliff::RetainsFailure(*loaded.value, expected));
+            if (mode == "read-failure") QVERIFY(cache->modelFiles.empty() && !loaded.value->cliffFailure->location);
+            else {
+                QVERIFY(Cliff::CachesResource(*cache, Cliff::requested, winner, *requestedLocation.value));
+                QVERIFY(loaded.value->cliffFailure->location && Cliff::SameLocation(*loaded.value->cliffFailure->location, *requestedLocation.value));
+                QVERIFY(loaded.value->materialNote.contains(QString::fromStdString(requestedLocation.value->sourceId))
+                    && loaded.value->materialNote.contains(QString::fromStdString(requestedLocation.value->sourcePath)));
+            }
+        }
+        QVERIFY(!cache->modelFiles.contains(Cliff::lower));
+    }
+    if (mode == "read-failure") {
+        // 原失败没有跨job固定为nullopt；写入同一声明disk来源后，只有显式重建才重新读取。
+        const auto repeated = RebuildWorldTerrain(*project.mapEdits_->Terrain(), *cache, {});
+        QVERIFY(repeated.Succeeded() && Cliff::RetainsFailure(*repeated.value, expected));
+        QVERIFY(cache->modelFiles.empty());
+        QVERIFY(Write(diskPath, QByteArray(reinterpret_cast<const char*>(winner.data()), static_cast<qsizetype>(winner.size()))));
+        QVERIFY(cache->modelFiles.empty());
+        const auto recovered = RebuildWorldTerrain(*project.mapEdits_->Terrain(), *cache, {});
+        QVERIFY(recovered.Succeeded() && Cliff::SelectsGeometry(*recovered.value, 37));
+        QVERIFY(Cliff::CachesResource(*cache, Cliff::requested, winner, *requestedLocation.value));
+        QVERIFY(!cache->modelFiles.contains(Cliff::lower));
+    } else if (mode == "malformed-owned") {
+        // 成功读到的坏正文属于原immutable owner；更换owner并显式通知导入，沿原来源失效链新建cache。
+        const auto repaired = Cliff::Model(37);
+        project.pendingImports_[0].ownedPayload = std::make_shared<const std::vector<std::byte>>(repaired);
+        project.pendingImports_[0].size = static_cast<qint64>(repaired.size()); project.NotifyImportsChanged(true);
+        const auto changed = CaptureWorldTerrainSources(project); QVERIFY(changed.Succeeded());
+        QVERIFY(!SameWorldTerrainSources(*sources.value, *changed.value) && !cache->reader->MatchesSources(*changed.value));
+        std::shared_ptr<WorldTerrainCache> repairedCache;
+        const auto reloaded = LoadWorldTerrain(members[1].data, changed, {}, {}, &repairedCache);
+        QVERIFY(reloaded.Succeeded() && repairedCache && Cliff::SelectsGeometry(*reloaded.value, 37));
+        QVERIFY(Cliff::CachesResource(*repairedCache, Cliff::requested, repaired, *requestedLocation.value));
+        QVERIFY(Cliff::CachesResource(*cache, Cliff::requested, winner, *requestedLocation.value));
+        QVERIFY(!repairedCache->modelFiles.contains(Cliff::lower));
+    }
+    QCOMPARE(project.diagnosticsModel_->rowCount(), globalRows);
+    const auto terrain = project.ReadMapMember("war3map.w3e"); QVERIFY(terrain.Succeeded()); QCOMPARE(*terrain.value, members[1].data);
+    const auto finalSha = Sha256File(path); QVERIFY(finalSha.Succeeded()); QCOMPARE(*finalSha.value, sourceSha);
+    QVERIFY(!project.mapEdits_->IsDirty());
+}
+
+void WorldModuleTests::CliffSamplerFailureAfterMissingDoesNotInventModelContext() {
+    namespace Cliff = Tests::WorldCliffSourceFailure;
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    auto members = Cliff::Members(ShadowObservationMembers(), *FlatGrid(3, 2)); QVERIFY(!members.empty());
+    std::erase_if(members, [](const auto& member) { return member.name == Cliff::lower; });
+    const std::string second = "Doodads\\Terrain\\Cliffs\\CliffsBAAA0.mdx";
+    const auto sampler = Cliff::Model(37, 8); members.push_back({second, sampler});
+    const auto path = std::filesystem::path(directory.filePath("cliff-missing-then-bake.w3x").toStdWString());
+    QVERIFY(WriteVerifiedArchive(path, members).Succeeded()); auto source = MapArchiveSession::Open(path); QVERIFY(source.Succeeded());
+    const auto sourceSha = source.value->SourceSha256();
+    QtProject::EditorProject project; project.sourceArchivePath_ = path; project.projectRoot_ = path.parent_path();
+    project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*source.value)); project.LoadMapDocument(); project.ResetEditTracking();
+    QVERIFY(project.mapEdits_ && project.mapEdits_->Terrain());
+    const auto sources = CaptureWorldTerrainSources(project); QVERIFY(sources.Succeeded());
+    std::shared_ptr<WorldTerrainCache> cache;
+    const auto loaded = LoadWorldTerrain(members[1].data, sources, {}, {}, &cache);
+    QVERIFY(loaded.Succeeded() && cache && cache->reader && loaded.value->ground);
+    QVERIFY(!loaded.value->cliffs && !loaded.value->cliffFailure && loaded.value->ground->hiddenTileCount == 0);
+    QVERIFY(loaded.value->cliffDiagnostics.size() == 1
+        && loaded.value->cliffDiagnostics.front().code == "TERRAIN_CLIFF_SAMPLER_UNSUPPORTED");
+    QVERIFY(!cache->modelFiles.contains(Cliff::requested) && !cache->modelFiles.contains(Cliff::lower) && cache->modelFiles.size() == 1);
+    const auto location = cache->reader->Resolver().Locate(second); QVERIFY(location.Succeeded());
+    QVERIFY(Cliff::CachesResource(*cache, second, sampler, *location.value));
+    // 再次显式重建：先读明确Missing，再复用Qt成功正文；Bake失败仍不能借前一Missing或最后callback归因。
+    const auto repeated = RebuildWorldTerrain(*project.mapEdits_->Terrain(), *cache, {});
+    QVERIFY(repeated.Succeeded() && !repeated.value->cliffs && !repeated.value->cliffFailure && repeated.value->ground
+        && repeated.value->ground->hiddenTileCount == 0);
+    QVERIFY(Cliff::SameDiagnostics(repeated.value->cliffDiagnostics, loaded.value->cliffDiagnostics));
+    QVERIFY(!repeated.value->materialNote.contains(QString::fromStdString(std::string(Render::kTerrainCliffModelFailureContextCode)))
+        && !repeated.value->materialNote.contains(QStringLiteral("实际模型来源：")));
+    const auto finalSha = Sha256File(path); QVERIFY(finalSha.Succeeded()); QCOMPARE(*finalSha.value, sourceSha);
+    QVERIFY(!project.mapEdits_->IsDirty());
 }
 
 void WorldModuleTests::DockWorkspaceUsesLeftTabsAndRestoresBottomAssets() {

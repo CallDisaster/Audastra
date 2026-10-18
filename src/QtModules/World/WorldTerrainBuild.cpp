@@ -15,19 +15,30 @@ QStringList Messages(const std::vector<Diagnostic>& diagnostics) {
     return messages;
 }
 
-// 悬崖烘焙：模型文件按路径缓存（含读取失败），编辑重建不重复读取。
-Result<Render::TerrainCliffs> BuildCliffs(const MapData::TerrainGridSnapshot& shown, WorldTerrainCache& cache) {
+// 悬崖烘焙：仅成功读取按路径缓存并保留真实来源；失败原样交给builder，不新增预解析/自动重试。
+Result<Render::TerrainCliffs> BuildCliffs(const MapData::TerrainGridSnapshot& shown, WorldTerrainCache& cache,
+    std::optional<WorldCliffFailureFacts>& failure) {
+    failure.reset();
+    std::optional<WorldCliffFailureFacts> lastRequest;
     auto& resolver = cache.reader->Resolver();
-    return Render::BuildTerrainCliffs(shown, cache.cliffTypes, [&](std::string_view path) {
+    auto built = Render::BuildTerrainCliffs(shown, cache.cliffTypes, [&](std::string_view path) -> Result<std::vector<std::byte>> {
+        lastRequest = WorldCliffFailureFacts{std::string(path), std::nullopt};
         auto found = cache.modelFiles.find(path);
         if (found == cache.modelFiles.end()) {
             auto read = resolver.Read(path);
-            found = cache.modelFiles.emplace(std::string(path),
-                read.Succeeded() ? std::optional(std::move(read.value->bytes)) : std::nullopt).first;
+            if (!read.Succeeded()) return {std::nullopt, std::move(read.diagnostics)};
+            found = cache.modelFiles.emplace(std::string(path), std::move(read)).first;
         }
-        if (!found->second) return Result<std::vector<std::byte>>::Failure("World", "WORLD_CLIFF_MODEL", "悬崖模型不可用。");
-        return Result<std::vector<std::byte>>::Success(*found->second);
+        lastRequest->location = found->second.value->location;
+        return {found->second.value->bytes, found->second.diagnostics};
     });
+    // 只接受builder在即时read/Parse失败点追加的明确回执；无此回执时不借最后callback归因。
+    if (!built.Succeeded() && !built.diagnostics.empty()) {
+        const auto& context = built.diagnostics.back();
+        if (context.severity == DiagnosticSeverity::Info && context.subsystem == "Render.TerrainCliffs"
+            && context.code == Render::kTerrainCliffModelFailureContextCode) failure = std::move(lastRequest);
+    }
+    return built;
 }
 
 // 显示副本（坡道抬高）与高度网格；超出逐格贴图预算时只给高度预览。
@@ -91,9 +102,18 @@ void Surface(WorldTerrainLoaded& loaded, WorldTerrainCache& cache, std::shared_p
     if (cache.atlases.empty()) { loaded.materialNote = notes.join(QLatin1Char('\n')); return; }
     std::shared_ptr<const Render::TerrainCliffs> cliffs = std::move(keepCliffs);
     if (!cliffs) {
-        auto built = BuildCliffs(*loaded.terrain, cache);
-        if (!built.Succeeded()) notes << Messages(built.diagnostics).join(QLatin1Char('\n')) + QObject::tr("（悬崖保留高度色）");
-        else {
+        auto built = BuildCliffs(*loaded.terrain, cache, loaded.cliffFailure);
+        if (!built.Succeeded()) {
+            loaded.cliffDiagnostics = std::move(built.diagnostics);
+            if (loaded.cliffFailure) {
+                if (const auto& location = loaded.cliffFailure->location)
+                    notes << QObject::tr("实际模型来源：%1 · %2").arg(QString::fromStdString(location->sourceId),
+                        QString::fromStdString(location->sourcePath));
+            }
+            for (const auto& diagnostic : loaded.cliffDiagnostics)
+                notes << QString::fromStdString(diagnostic.code) + QStringLiteral(": ") + QString::fromUtf8(diagnostic.message);
+            notes << QObject::tr("悬崖模型未显示，保留高度预览。");
+        } else {
             notes << Messages(built.value->warnings);
             cliffs = std::make_shared<const Render::TerrainCliffs>(std::move(*built.value));
         }

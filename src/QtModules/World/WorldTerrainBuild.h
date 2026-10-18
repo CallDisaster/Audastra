@@ -46,6 +46,11 @@ struct WorldShadowObservation {
 [[nodiscard]] QString WorldShadowSummary(const WorldShadowObservation& shadow, const Render::SceneEnvironment* environment);
 [[nodiscard]] QString WorldShadowDetails(const WorldShadowObservation& shadow, const Render::SceneEnvironment* environment);
 
+struct WorldCliffFailureFacts {
+    std::string requestedPath; // 仅read/Parse即时失败的实际请求；Bake/前置失败不定位，不改原origin/message。
+    std::optional<Resources::ResourceLocation> location; // 仅成功读取/缓存命中有证明；读取失败不猜来源。
+};
+
 struct WorldTerrainLoaded {
     WorldTerrainMesh mesh;
     std::shared_ptr<const MapData::TerrainGridSnapshot> rawTerrain; // 解析后的原始 W3E，显式水帧重建不二次抬高坡道
@@ -56,6 +61,8 @@ struct WorldTerrainLoaded {
     std::optional<Render::TerrainWaterStyle> selectedWater; // worker 产物；UI 成功提交完成帧后才写入缓存
     std::optional<WorldCliffLayerFrame> cliffLayer; // 请求时为新烘焙的悬崖准备的独立层
     std::vector<Diagnostic> cliffLayerDiagnostics;
+    std::vector<Diagnostic> cliffDiagnostics; // 本次悬崖烘焙原诊断；失败保留高度预览，不发布部分覆盖。
+    std::optional<WorldCliffFailureFacts> cliffFailure;
     QString materialNote;
     WorldShadowObservation shadowObservation;
 };
@@ -73,7 +80,9 @@ struct WorldTerrainCache {
     Render::TerrainLighting lighting;
     std::vector<std::optional<Render::CliffTypeSource>> cliffTypes;
     WorldTerrainNames names; // 完整读取时的贴图表显示名（与 header 同序）
-    std::map<std::string, std::optional<std::vector<std::byte>>, std::less<>> modelFiles;
+    // 仅缓存成功读取的完整正文/真实location/原诊断；读取失败不跨任务固定，下次显式重建才重新观测。
+    // 复用仍受reader既有来源租约约束，不额外声称持续监视所有diskPath。
+    std::map<std::string, Result<Resources::ResolvedResource>, std::less<>> modelFiles;
     QStringList notes; // 光照、环境等与地形内容无关的提示
     std::shared_ptr<const Render::SceneEnvironment> environment;
     WorldShadowObservation shadowObservation; // 无raw，不因编辑重建重新读取或重复发布失败诊断。
