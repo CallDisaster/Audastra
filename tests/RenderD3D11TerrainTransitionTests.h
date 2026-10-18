@@ -252,7 +252,7 @@ std::optional<Sample> Pixel(const std::array<Triangle, 4>& triangles, double x, 
 struct Observation {
     CapturedFrame frame;
     War3RenderTerrainGridCaptureFactsV2 facts{sizeof(facts)};
-    std::array<std::size_t, 2> samples{}, near{}, baselineMismatch{};
+    std::array<std::size_t, 2> samples{}, nearSamples{}, baselineMismatch{};
     std::array<std::array<std::size_t, 4>, 2> tBins{};
     double maximum = 0, sumSquares = 0, baselineMaximum = 0;
     std::size_t residualValues = 0, overLimitPixels = 0;
@@ -270,7 +270,7 @@ void Analyze(Observation& result, Case mode) {
         if (p.t < kTLow || p.t > kTHigh || p.edgeDistance < 0 || p.edgeDistance > kSeamBand) continue;
         const auto at = (static_cast<std::size_t>(y) * kWidth + x) * 4;
         Check(result.frame.pixels[at + 3] == 255, "transition ROI output alpha is not opaque");
-        ++result.samples[p.tile]; if (p.edgeDistance <= kNearBand) ++result.near[p.tile];
+        ++result.samples[p.tile]; if (p.edgeDistance <= kNearBand) ++result.nearSamples[p.tile];
         const auto bin = std::min(3u, static_cast<unsigned>((p.t - kTLow) * 4 / (kTHigh - kTLow))); ++result.tBins[p.tile][bin];
         const auto expected = Expected(mode, p.tile, p.s, p.t), baseline = Expected(Case::Continuous, p.tile, p.s, p.t);
         double maximum = 0, wrong = 0;
@@ -358,14 +358,14 @@ void Export(const std::filesystem::path& directory, const Fixture& fixture, cons
             {"perspective_correct_triangle_barycentrics", true}, {"top_left_edge_rule", true}}},
         {"minimum_samples_per_side", kMinimumSide}, {"minimum_near_samples_per_side", kMinimumNearSide},
         {"minimum_samples_per_t_bin", 32}, {"minimum_negative_baseline_mismatch_right", kMinimumControlMismatch},
-        {"residual_limit_codes", kResidualLimit}, {"rms_limit_codes", kRmsLimit}, {"samples", result.samples}, {"near_samples", result.near},
+        {"residual_limit_codes", kResidualLimit}, {"rms_limit_codes", kRmsLimit}, {"samples", result.samples}, {"near_samples", result.nearSamples},
         {"t_bins", result.tBins}, {"max_residual", result.maximum}, {"over_limit_pixels", result.overLimitPixels},
         {"rms_residual", result.residualValues ? std::sqrt(result.sumSquares / result.residualValues) : -1},
         {"baseline_oracle_max_residual", result.baselineMaximum}, {"baseline_oracle_over8_pixels", result.baselineMismatch},
         {"original_editor_validated", false}, {"runtime_validated", false}};
     for (const auto v : result.frame.receipt.view.viewProjection) j["MVP"].push_back(v);
     std::cout << "terrain transition " << name << " residual=" << result.maximum << " over=" << result.overLimitPixels
-        << " samples=" << result.samples[0] << '/' << result.samples[1] << " near=" << result.near[0] << '/' << result.near[1] << '\n';
+        << " samples=" << result.samples[0] << '/' << result.samples[1] << " near=" << result.nearSamples[0] << '/' << result.nearSamples[1] << '\n';
     if (directory.empty()) { std::cout << j.dump() << '\n'; return; }
     for (unsigned i = 0; i < 2; ++i) Write(directory / (std::string(name) + (i ? "-B.rgba" : "-A.rgba")), fixture.atlases[i]->image.rgba);
     Write(directory / (std::string(name) + ".rgba"), std::as_bytes(std::span(result.frame.pixels)));
@@ -378,7 +378,7 @@ void RequireObservation(const Observation& value) {
     Check(value.overLimitPixels == 0 && value.maximum <= kResidualLimit && value.residualValues
         && std::sqrt(value.sumSquares / value.residualValues) <= kRmsLimit, "transition pixel residual exceeds predeclared analytic bound");
     for (unsigned tile = 0; tile < 2; ++tile) {
-        Check(value.samples[tile] >= kMinimumSide && value.near[tile] >= kMinimumNearSide, "transition shared-edge ROI has insufficient two-sided coverage");
+        Check(value.samples[tile] >= kMinimumSide && value.nearSamples[tile] >= kMinimumNearSide, "transition shared-edge ROI has insufficient two-sided coverage");
         for (const auto count : value.tBins[tile]) Check(count >= 32, "transition shared-edge ROI does not span declared t range");
     }
 }
