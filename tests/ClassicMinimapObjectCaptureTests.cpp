@@ -24,6 +24,7 @@
 #include <string>
 #include <string_view>
 #include <span>
+#include <source_location>
 #include <type_traits>
 #include <vector>
 
@@ -43,11 +44,13 @@ template<class T> T Take(Result<T> result) {
     return std::move(*result.value);
 }
 
-template<class T> void Rejected(const Result<T>& result, std::string_view code = {}) {
-    Require(!result.Succeeded() && !result.value && !result.diagnostics.empty(), "失败必须无部分结果且带诊断");
+template<class T> void Rejected(const Result<T>& result, std::string_view code = {},
+    const std::source_location location = std::source_location::current()) {
+    const auto context = "capture negative at line " + std::to_string(location.line()) + ": ";
+    Require(!result.Succeeded() && !result.value && !result.diagnostics.empty(), context + "失败必须无部分结果且带诊断");
     if (!code.empty()) {
         Require(std::any_of(result.diagnostics.begin(), result.diagnostics.end(),
-            [&](const auto& diagnostic) { return diagnostic.code == code; }), "失败诊断不是预期的fail-closed门");
+            [&](const auto& diagnostic) { return diagnostic.code == code; }), context + "失败诊断不是预期的fail-closed门");
     }
 }
 
@@ -261,17 +264,17 @@ void TestZeroNonzeroStaleAndBudget() {
     Rejected(CaptureClassicMinimapObjectAssets(std::move(terrain), staleSource, stale.edits), "CLASSIC_OBJECT_CAPTURE_STALE");
     Fixture budget; auto budgetSource = budget.Source("budget.w3x"); auto budgetTerrain = CaptureTerrain(budget, budgetSource);
     ClassicMinimapObjectAssetLimits limits; limits.maxWorkingBytes = 1;
-    Rejected(CaptureClassicMinimapObjectAssets(std::move(budgetTerrain), budgetSource, budget.edits), "CLASSIC_OBJECT_CAPTURE_BUDGET");
+    Rejected(CaptureClassicMinimapObjectAssets(std::move(budgetTerrain), budgetSource, budget.edits, limits), "CLASSIC_OBJECT_CAPTURE_BUDGET");
     Fixture snapshotBudget(MapDataFixtures::EmptyUnitsV8Sub11(), MapDataFixtures::EmptyDoodadsV8Sub11(),
         MapDataFixtures::EmptyUnitsV8Sub11(), MapDataFixtures::EmptyDoodadsV8Sub11(), MapDataFixtures::FullMapSettingsV25().bytes);
     auto snapshotSource = snapshotBudget.Source("snapshot-budget.w3x");
     auto snapshotTerrain = CaptureTerrain(snapshotBudget, snapshotSource);
     limits = {}; limits.maxCurrentSnapshotBytes = 16;
-    Rejected(CaptureClassicMinimapObjectAssets(std::move(snapshotTerrain), snapshotSource, snapshotBudget.edits), "MAP_SNAPSHOT_BUDGET");
+    Rejected(CaptureClassicMinimapObjectAssets(std::move(snapshotTerrain), snapshotSource, snapshotBudget.edits, limits), "MAP_SNAPSHOT_BUDGET");
     Fixture memberBudget; auto memberSource = memberBudget.Source("member-budget.w3x");
     auto memberTerrain = CaptureTerrain(memberBudget, memberSource);
     limits = {}; limits.maxObjectMemberBytes = 15;
-    Rejected(CaptureClassicMinimapObjectAssets(std::move(memberTerrain), memberSource, memberBudget.edits));
+    Rejected(CaptureClassicMinimapObjectAssets(std::move(memberTerrain), memberSource, memberBudget.edits, limits));
 }
 
 void TestMovedFrom() {
