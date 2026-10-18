@@ -3,14 +3,9 @@
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/Render/TerrainMinimapAssets.h"
 #include "War3MapCore/Services/MapSaveService.h"
+#include "War3MapCore/Services/TerrainMinimapSaveChoice.h"
 
 namespace War3Map::Services {
-
-enum class TerrainMinimapSaveChoice {
-    Preserve,
-    GenerateMissingGroundOnly,
-    GenerateMissingDeclaredGroundOnly
-};
 
 struct TerrainMinimapSaveLimits {
     // 只可收紧。计本单元拥有的容器、重叠task替换副本和有界临时工作；

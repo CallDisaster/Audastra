@@ -33,6 +33,7 @@
 #include "WorldOutlinerModel.h"
 #include "WorldAnimationPlayer.h"
 #include "MapSaveJob.h"
+#include "War3MapCore/Services/TerrainMinimapSave.h"
 #include "ProjectSaveJob.h"
 #include "LiveEditorTools.h"
 #include "AgentWindow.h"

@@ -13,6 +13,7 @@
 #include <string>
 
 namespace War3Map::MapData { class TerrainSavePlan; }
+namespace War3Map::Services { class TerrainMinimapSave; }
 
 // Qt job追加阶段文案、冻结地形计划与本次回读结果。归档、编辑输入、脚本目录及输出
 // 均由无Qt的MapSaveTask自持有；执行阶段不得借用EditorProject的可变文档。

@@ -4,6 +4,7 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/Services/ScriptSavePreparation.h"
+#include "War3MapCore/Services/TerrainMinimapSave.h"
 
 #include <QDateTime>
 #include <QUndoStack>

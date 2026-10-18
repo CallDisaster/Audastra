@@ -18,7 +18,7 @@
 #include "War3MapCore/ProjectStore.h"
 #include "War3MapCore/Script/ScriptToolchainProfile.h"
 #include "War3MapCore/Services/MapScriptTargetSelection.h"
-#include "War3MapCore/Services/TerrainMinimapSave.h"
+#include "War3MapCore/Services/TerrainMinimapSaveChoice.h"
 #include "War3MapCore/Trigger/GuiConversionSnapshots.h"
 
 #include <array>

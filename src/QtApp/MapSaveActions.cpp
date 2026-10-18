@@ -5,6 +5,7 @@
 #include "ProgramIssueReporter.h"
 #include "War3MapCore/Services/ScriptSavePreparation.h"
 #include "War3MapCore/Services/LuaTestReloadController.h"
+#include "War3MapCore/Services/TerrainMinimapSave.h"
 #include "ObjectModule.h"
 #include "TriggerModule.h"
 #include "MapSettingsModule.h"

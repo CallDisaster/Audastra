@@ -15,6 +15,7 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/MapTerrain.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
+#include "War3MapCore/Services/TerrainMinimapSave.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
 #include "../../src/Core/Mpq/MpqCrypt.h"
 #include "../MapDataFixtures.h"
