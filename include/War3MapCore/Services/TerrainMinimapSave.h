@@ -19,6 +19,33 @@ struct TerrainMinimapSaveLimits {
     Render::ClassicMinimapCandidateLimits classic;
 };
 
+class TerrainMinimapSave;
+
+// 自动生成能力暂不支持时，只保护本次真实来源的小地图成员；不授予地形、
+// 脚本或归档写出资格。调用方继续沿原保存链，并在发布前与回读时复核。
+class TerrainMinimapPreserveGuard final {
+public:
+    [[nodiscard]] Status VerifyCurrent(const MapSaveTask& task,
+        const MapData::MapDataEditSession& edits) const;
+    [[nodiscard]] Status VerifyFrozenOutput(const MapSaveTask& task) const;
+    [[nodiscard]] Status VerifyReadback(const MapSaveTask& task, const MapArchiveSession& saved) const;
+private:
+    friend class TerrainMinimapSave;
+    TerrainMinimapPreserveGuard() = default;
+    const MapSaveTask* taskIdentity_ = nullptr;
+    const MapArchiveSession* archiveIdentity_ = nullptr;
+    std::filesystem::path sourcePath_, targetPath_;
+    std::string sourceSha256_;
+    std::uint64_t sessionIdentity_ = 0, revision_ = 0, terrainSourceRevision_ = 0;
+    std::vector<ArchiveExactMemberIdentity> members_;
+};
+
+struct TerrainMinimapAutomaticPreparation {
+    // 生成、保留至多一个非空；正常不需要生成时允许二者均空。
+    std::shared_ptr<const TerrainMinimapSave> generated;
+    std::shared_ptr<const TerrainMinimapPreserveGuard> preserved;
+};
+
 // 单次小地图保存资格。构造器封闭；输入必须是FreezeArchive后的真实任务，
 // 不接caller像素、BLP、SHA或候选。Automatic用于普通保存/另存；保留旧
 // missing-only策略只用于既有回归。任何策略都不得放宽地形与通行保存门。
@@ -34,6 +61,17 @@ public:
     // 仅查看真实冻结来源及当前最终成员列表。已有 TGA（包括空成员）一律
     // 不补写 BLP；否则在地图缺少 BLP、地形或对象净变化时自动重建。
     [[nodiscard]] static Result<bool> RequiresAutomaticGeneration(const MapSaveTask& actualTask);
+
+    // 仅将明确列出的生成能力/预算不足降为 warning；来源、身份、过期、
+    // 内容不一致、I/O 与未知异常继续失败。preserved 保护旧 BLP/TGA 原字，
+    // 原来缺少的仍不写；调用方须挂接其 FrozenOutput 与 Readback。
+    [[nodiscard]] static Result<TerrainMinimapAutomaticPreparation> PrepareAutomaticOrPreserve(
+        const MapSaveTask& actualTask, const MapData::MapDataEditSession& edits,
+        const std::filesystem::path& gameRoot, const TerrainMinimapSaveLimits& limits = {});
+    // 调用者重建生成输入时失败也经过同一 allowlist，不自行复制错误码分类。
+    [[nodiscard]] static Result<TerrainMinimapAutomaticPreparation> PreserveUnsupportedAutomatic(
+        const MapSaveTask& actualTask, const MapData::MapDataEditSession& edits,
+        std::vector<Diagnostic> generationDiagnostics);
 
     // Preserve、已有TGA或Automatic判定未变化时返回null。非null时只append这一份MapBLP，
     // 并以Plan替换旧Preserve计划；W3E/WPM已在任务里，不能再次append整份计划。
