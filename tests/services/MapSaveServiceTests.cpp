@@ -1173,6 +1173,12 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
     };
     verifyPreservedMembers(*preservedArchive.value);
 
+    request.minimapChoice = TerrainMinimapSaveChoice::Automatic;
+    request.targetCandidate = directory.Path() / "terrain-auto.w3x";
+    const auto terrainAutomatic = SaveMapEditCandidate(request);
+    Require(terrainAutomatic.Succeeded() && terrainAutomatic.value,
+        "默认Automatic地形笔划在编辑前附加来源后不能重复Attach或失败");
+
     // 作者反馈回归：默认Automatic下只改单位字段，地形必须已经在编辑前附加，
     // 不能在finalDerived阶段触发MAP_TERRAIN_ATTACH_LATE。
     auto unitMap = MapDocument::FromArchive(*source.value);

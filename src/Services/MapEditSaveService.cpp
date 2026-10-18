@@ -688,10 +688,12 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                 return Fail("SAVE_TERRAIN_STALE", "W3E SHA-256 与编辑请求不符，请重新获取地形快照。");
             }
 
-            const auto attachedTerrain = edits.AttachTerrain(*terrainBytes.value);
-            if (!attachedTerrain.Succeeded()) return Forward(attachedTerrain.diagnostics);
-            const auto attachedPathing = edits.AttachPathing(*pathingBytes.value);
-            if (!attachedPathing.Succeeded()) return Forward(attachedPathing.diagnostics);
+            if (!edits.HasTerrainPathing()) {
+                const auto attachedTerrain = edits.AttachTerrain(*terrainBytes.value);
+                if (!attachedTerrain.Succeeded()) return Forward(attachedTerrain.diagnostics);
+                const auto attachedPathing = edits.AttachPathing(*pathingBytes.value);
+                if (!attachedPathing.Succeeded()) return Forward(attachedPathing.diagnostics);
+            }
             const auto grid = edits.Terrain();
             if (!grid) return Fail("SAVE_TERRAIN_UNAVAILABLE", "源 W3E 无法建立地形编辑快照。");
             for (const auto& stroke : request.terrainStrokes) {
