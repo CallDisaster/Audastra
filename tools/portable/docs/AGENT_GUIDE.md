@@ -41,11 +41,13 @@ war3-map-cli archive-session-inspect <map-archive>
 war3-map-cli map-data-inspect <map-archive-or-directory>
 war3-map-cli map-data-query <map-archive> <source-sha256> <settings|units|doodads|regions|cameras|sounds|strings> <start-index> <limit-1..128>
 war3-map-cli map-data-roundtrip <map-archive>
-war3-map-cli object-layer-inspect <map-archive>
-war3-map-cli object-layer-query <map-archive> <source-sha256> <unit|ability|item|buff|upgrade|doodad|destructable> <start-index> <limit-1..128>
+war3-map-cli skin-layer-inspect <map-archive>
+war3-map-cli skin-layer-query <map-archive> <source-sha256> <unit|ability|item|buff|upgrade|doodad|destructable> <start-index> <limit-1..128>
 war3-map-cli archive-candidate-copy <map-archive> <new-candidate-path>
 war3-map-cli map-edit-save --help
 ```
+
+`skin-layer-inspect` / `skin-layer-query` 只读 `war3mapSkin.*` 皮肤层，不是普通物编；旧名字 `object-layer-*` 仍可用。普通七类物编用 MCP `objects_list` / `objects_get`。
 
 `map-field-catalog` 给出字段标识、类型、目录写入能力和约束；`map-data-query` 的行字段还给出该来源布局实际是否可写。读取的 `source_index`、`row_key`、成员 SHA 和 `fields[].raw` 只对本次来源身份有效。不要从显示名称或角度文本重建 raw 前值。分页使用返回的 `next_cursor.next_index`；更换地图或 SHA 后从新快照开始。
 
@@ -99,11 +101,12 @@ war3-map-cli terrain-blight-save <source-map> <source-sha256> <terrain-sha256> <
 war3-map-cli script-build <ydwe-root> <war3-root> <map> <out.j> [--compile <work-dir> [--external|--cross-check]]
 war3-map-cli archive-member-add <source-map> <source-sha256> <new-candidate.w3x> <member> <file> [<member> <file> ...]
 war3-map-cli archive-member-remove <source-map> <source-sha256> <new-candidate.w3x> <member> [<member> ...]
+war3-map-cli archive-expand <source-map> <source-sha256> <new-directory> [--data-only]
 ```
 
-往地图里补文件只能用 `archive-member-add`（CLI）或编辑器端口的 `imports_add`（MCP）。保存只写本次改动涉及的成员，不扫描工作目录，把文件拷进展开目录不会进入候选。导入清单里标志不明的旧记录，在补回它指向的唯一成员后按原记录保留；两个可能路径都有成员时仍拒绝。
+往地图里补文件只能用 `archive-member-add`（CLI）、独立 MCP 的 `archive_members_add` 或编辑器端口的 `imports_add`。保存只写本次改动涉及的成员，不扫描工作目录，把文件拷进展开目录不会进入候选。导入清单里标志不明的旧记录，在补回它指向的唯一成员后按原记录保留；两个可能路径都有成员时仍拒绝。
 
-删除导入文件用 `archive-member-remove`（CLI）或编辑器端口的 `imports_remove`（MCP），成员和它在 `war3map.imp` 里的记录一起删除，地图数据文件不能删。这两个入口都不检查模型、脚本或物编是否还在用这些文件，删除前要先自己确认；没有查到引用不等于可以删。
+删除导入文件用 `archive-member-remove`（CLI）、独立 MCP 的 `archive_members_remove` 或编辑器端口的 `imports_remove`，成员和它在 `war3map.imp` 里的记录一起删除，地图数据文件不能删。这些入口都不检查模型、脚本或物编是否还在用这些文件，删除前要先自己确认；没有查到引用不等于可以删。
 
 旋转角度范围为 `[0,360)`；复制最多4096个来源实例；笔划最多16笔，CLI 点位是地形顶点索引。raise/lower strength 为 `>0..1024`，smooth 为 `>0..1`；通行性和布局门禁仍会进一步拒绝不安全来源。地物跟随、其他未开放笔刷不因此放开。`--layer` 必须是已发现的真实函数库层，不能拿虚构层绕过目录检查。
 
@@ -116,7 +119,9 @@ war3-map-cli wtg-source-query <wtg-file> <source-sha256> <ui-data-root> <catalog
 
 先用 `items` 表找到触发器所在的行号（`item_type` 不是 1/4/64 的行），再加 `--trigger <行号>` 查 `ecas` 或 `arguments`，只返回这个触发器自己的节点，按树的顺序分页；行号仍是全表行号，可以和 `argument_indices`、`child_indices` 对照。不加 `--trigger` 时按全表分页。节点上限默认 100 万，大型旧版地图不用另外调；`--max-nodes` 只用来收紧。
 
-`archive-candidate-copy` 是已有归档复制入口，不是脚本修改或游戏验收。物编查询也不表示 Agent 已拥有通用七类物编写接口。
+`archive-candidate-copy` 是已有归档复制入口，不是脚本修改或游戏验收。
+
+`archive-expand` 把地图包的具名成员写到一个新目录，给 MCP `--workspace` 用（见第 4 节“拿到 .w3x 时”）。目录必须尚不存在；源图只读。`--data-only` 只写 `war3map*`、`Scripts\war3map.j` 这类地图数据文件，不写导入资源，大地图几秒即可完成；写回时没展开的成员从原图保留，所以通常用它就够。路径不安全、大小写冲突或没有名字的成员不会写出，输出里逐条列出。
 
 ## 4. MCP 配置与协议
 
@@ -128,7 +133,7 @@ $env:FORGE_MCP_WAR3_ROOT = 'C:/Games/Warcraft III'
 & 'C:/Tools/Audastra/bin/war3-map-mcp.exe' --workspace 'C:/Maps/MyMap-Expanded' --ui-data 'C:/Games/YDWE/ui'
 ```
 
-环境变量只作用当前终端及其子进程。`--workspace`/`-w` 必须指向现存展开地图目录，`--ui-data`/`-u` 指向有效 UI 数据。没有 `--workspace` 时服务取当前目录，不能依靠客户端偶然的 CWD。搬家后更新 `command` 的绝对路径及必要的参数路径。
+环境变量只作用当前终端及其子进程。`--workspace`/`-w` 必须指向现存展开地图目录（不能直接给 .w3x，先用 `archive-expand` 或 `archive_expand` 展开），`--ui-data`/`-u` 指向有效 UI 数据。没有 `--workspace` 时服务取当前目录，不能依靠客户端偶然的 CWD。搬家后更新 `command` 的绝对路径及必要的参数路径。
 
 stdio 是 UTF-8 **newline JSON-RPC**：每行一条完整 JSON，响应以换行结尾，不使用 `Content-Length`。stdin 关闭会结束服务。不要在协议 stdout 写欢迎词、shell echo 或调试日志。初始化/发现消息示例，每个代码行是一条消息：
 
@@ -161,6 +166,17 @@ stdio 是 UTF-8 **newline JSON-RPC**：每行一条完整 JSON，响应以换行
 - 页查询必须带 `expected_source_sha256`。
 - 绑定为 `archive-readonly-<SHA>`，`workspace_kind` 为 `map-archive-readonly`，与 CLI `map-data-query` 相同。
 - 返回的 `source_index`、`row_key`、成员 `member_sha256` 和字段 `raw` 直接用于下文 `save_map_edit_candidate` 的 `field_edits`；保存后对候选再查一次以回读确认。
+- 七类物编的 `objects_list`、`objects_get`、`objects_field_options` 同样接受 `source_map_path` + `expected_source_sha256`（两者都要给），按游戏数据与地图物编合并后的结果只读返回，`project_identity` 为 `archive-readonly-<SHA>`。需要宿主配置 `FORGE_MCP_WAR3_ROOT`。物编的新增、修改、删除要先展开工作区（见下一小节）或用编辑器端口。
+
+### 拿到 .w3x 时：展开、修改、写回
+
+1. 不带 `--workspace` 启动独立 MCP，调用 `archive_expand`（或 CLI `archive-expand`），参数是源图、源图 SHA 和一个尚不存在的新目录，一般加 `data_only=true`。
+2. 用 `--workspace <该目录>` 重新启动 MCP，`get_revision` 确认 `identity_current=true`。
+3. `begin_edit` 后用 `objects_set_fields` / `objects_create` / 触发器写工具修改，再 `preview_edit`、`validate_edit`。
+4. `save_map_edit_candidate` 带 `source_map_path`（原 .w3x）、`expected_source_sha256`、新的 `output_path`、`transaction_id` 和当前 `expected_revision`，写出新地图包。工作区的物编基线必须与原图一致，否则拒绝。
+5. 不带工作区对新候选再查一次（例如 `objects_get` + `source_map_path`）确认改动。
+
+放进展开目录的新文件不会自动进入地图包；要加导入文件，对写出的候选再调用 `archive_members_add`。目前保存仍会重建整份脚本。
 
 ### 字段候选保存
 

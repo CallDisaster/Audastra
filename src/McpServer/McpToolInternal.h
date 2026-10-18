@@ -38,6 +38,7 @@ QJsonObject BasicSchema(QJsonObject properties = {}, QJsonArray required = {});
 
 void RegisterReadOnlyTools(McpServer& server);
 void RegisterArchiveIdentityTools(McpServer& server);
+void RegisterArchiveMemberTools(McpServer& server);
 void RegisterImportTools(McpServer& server);
 void RegisterProjectSearchTools(McpServer& server);
 void RegisterTerrainTools(McpServer& server);

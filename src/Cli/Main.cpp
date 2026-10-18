@@ -111,6 +111,7 @@ void PrintUsage() {
         << "war3-map-cli archive-candidate-copy <map-archive> <new-candidate-path>\n"
         << "war3-map-cli archive-member-add <source-map> <expected-source-sha256> <new-candidate.w3x> <member> <file> [<member> <file> ...]\n"
         << "war3-map-cli archive-member-remove <source-map> <expected-source-sha256> <new-candidate.w3x> <member> [<member> ...]\n"
+        << "war3-map-cli archive-expand <source-map> <expected-source-sha256> <new-directory> [--data-only]\n"
         << "war3-map-cli inspect <expanded-workspace> [profile-id]\n"
         << "war3-map-cli validate <expanded-workspace> [profile-id]\n"
         << "war3-map-cli trigger-inspect <ydwe-root> <war3map.wtg> <war3map.wct>\n"
@@ -122,8 +123,8 @@ void PrintUsage() {
         << "war3-map-cli script-template <ydwe-root> <war3-root> <map> <wave-output.j> <out.j>\n"
         << "war3-map-cli object-field <war3-root> <unit|item|ability> <rawcode>\n"
         << "war3-map-cli object-model-list <war3-root> <new-models.txt>\n"
-        << "war3-map-cli object-layer-inspect <map-archive>\n"
-        << "war3-map-cli object-layer-query <map-archive> <source-sha256> <unit|ability|item|buff|upgrade|doodad|destructable> <start-index> <limit-1..128>\n"
+        << "war3-map-cli skin-layer-inspect <map-archive>\n"
+        << "war3-map-cli skin-layer-query <map-archive> <source-sha256> <unit|ability|item|buff|upgrade|doodad|destructable> <start-index> <limit-1..128>\n"
         << "war3-map-cli object-inspect <type> <table.ini>\n"
         << "war3-map-cli object-roundtrip <type> <table.ini>\n"
         << "war3-map-cli game-extract <war3-root> <internal\\path> <out-file> [--tileset <A-Z>]\n"
@@ -301,6 +302,7 @@ int wmain(int argc, wchar_t** argv) {
     if (command == L"archive-session-inspect") return RunArchiveInspectCommand(argc, argv);
     if (command == L"archive-member-add") return War3Map::Cli::RunArchiveMemberAdd(argc, argv);
     if (command == L"archive-member-remove") return War3Map::Cli::RunArchiveMemberRemove(argc, argv);
+    if (command == L"archive-expand") return War3Map::Cli::RunArchiveExpand(argc, argv);
     if (command == L"update-check" || command == L"update-apply") return RunUpdateCommand(argc, argv);
     if (command == L"imports-query" || command == L"imports-get") return RunImportQueryCommand(argc, argv);
     if (command == L"archive-candidate-copy" && argc == 4) {
@@ -443,8 +445,9 @@ int wmain(int argc, wchar_t** argv) {
     if (command == L"object-model-list" && argc == 4) {
         return RunObjectModelList(argv[2], argv[3]);
     }
-    if (command == L"object-layer-inspect" && argc == 3) return RunObjectLayerInspect(argv[2]);
-    if (command == L"object-layer-query" && argc == 7) {
+    // object-layer-* 是旧名字：实际只读 war3mapSkin.* 皮肤层，保留给已有脚本。
+    if ((command == L"skin-layer-inspect" || command == L"object-layer-inspect") && argc == 3) return RunObjectLayerInspect(argv[2]);
+    if ((command == L"skin-layer-query" || command == L"object-layer-query") && argc == 7) {
         return RunObjectLayerQuery(argv[2], Utf8Argument(argv[3]), Utf8Argument(argv[4]),
             Utf8Argument(argv[5]), Utf8Argument(argv[6]));
     }

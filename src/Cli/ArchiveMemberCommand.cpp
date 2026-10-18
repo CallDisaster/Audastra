@@ -1,29 +1,21 @@
 #include "ArchiveMemberCommand.h"
 
-#include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
-#include "War3MapCore/MapArchiveSession.h"
-#include "War3MapCore/Resources/ImportTable.h"
+#include "War3MapCore/Services/ArchiveExpand.h"
+#include "War3MapCore/Services/ArchiveMemberEdit.h"
 
 #include <Windows.h>
 
-#include <algorithm>
-#include <array>
 #include <exception>
 #include <filesystem>
 #include <iostream>
-#include <limits>
 #include <optional>
-#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace War3Map::Cli {
 namespace {
-
-constexpr std::uint64_t kMaxMemberBytes = 64ull * 1024 * 1024;
-constexpr std::uint64_t kMaxTotalBytes = 256ull * 1024 * 1024;
 
 void PrintDiagnostics(const std::vector<Diagnostic>& diagnostics) {
     for (const auto& diagnostic : diagnostics)
@@ -34,6 +26,13 @@ int InvalidArguments(std::string_view reason) {
     std::cerr << "Archive.MemberAdd: ARCHIVE_MEMBER_ADD_ARGUMENT_INVALID: " << reason << '\n'
         << "usage: archive-member-add <source-map> <expected-source-sha256> <new-candidate.w3x> <member> <file> [<member> <file> ...]\n"
         << "  只新增导入成员并更新 war3map.imp；不重建脚本，不覆盖已有成员或编辑器管理成员。\n";
+    return 2;
+}
+
+int InvalidRemoveArguments(std::string_view reason) {
+    std::cerr << "Archive.MemberRemove: ARCHIVE_MEMBER_REMOVE_ARGUMENT_INVALID: " << reason << '\n'
+        << "usage: archive-member-remove <source-map> <expected-source-sha256> <new-candidate.w3x> <member> [<member> ...]\n"
+        << "  只删除已有导入成员和它在 war3map.imp 里的记录；不重建脚本，不检查模型、脚本或物编是否仍引用这些文件。\n";
     return 2;
 }
 
@@ -61,38 +60,21 @@ std::optional<std::string> Utf8Argument(std::wstring_view text, std::size_t maxi
     return result;
 }
 
-int InvalidRemoveArguments(std::string_view reason) {
-    std::cerr << "Archive.MemberRemove: ARCHIVE_MEMBER_REMOVE_ARGUMENT_INVALID: " << reason << '\n'
-        << "usage: archive-member-remove <source-map> <expected-source-sha256> <new-candidate.w3x> <member> [<member> ...]\n"
-        << "  只删除已有导入成员和它在 war3map.imp 里的记录；不重建脚本，不检查模型、脚本或物编是否仍引用这些文件。\n";
-    return 2;
-}
-
-// 校验一个 member 参数：安全的归档相对路径、不是编辑器管理文件、本次请求内不重复。
-// 返回作者写法（统一为反斜杠）；失败时 reason 给出原因。
-std::optional<std::string> ParseMemberArgument(std::wstring_view text, std::set<std::string>& requested, std::string& reason) {
-    auto member = Utf8Argument(text, 1024);
-    if (!member) {
-        reason = "member 路径为空、过长或不是有效 UTF-8。";
-        return {};
+int Report(const Result<Services::ArchiveMemberEditReceipt>& result) {
+    if (!result.Succeeded() || !result.value) {
+        PrintDiagnostics(result.diagnostics);
+        return 2;
     }
-    const auto canonical = Resources::CanonicalImportPath(*member);
-    if (!canonical.Succeeded() || !canonical.value) {
-        PrintDiagnostics(canonical.diagnostics);
-        reason = "member 路径不是安全的归档相对路径： " + *member;
-        return {};
-    }
-    if (Resources::IsEditorManagedMemberPath(*member)) {
-        reason = "不能通过本命令改动编辑器管理的地图数据文件： " + *member;
-        return {};
-    }
-    if (!requested.insert(*canonical.value).second) {
-        reason = "同一 member 出现多次： " + *member;
-        return {};
-    }
-    // 规范形式只用于比较；成员和导入清单保留作者写的大小写，统一为反斜杠。
-    std::replace(member->begin(), member->end(), '/', '\\');
-    return member;
+    const auto& receipt = *result.value;
+    std::cout << "candidate=" << IO::PathUtf8(receipt.candidate) << '\n'
+              << "candidate_sha256=" << receipt.candidateSha256 << '\n'
+              << "member_count=" << receipt.memberCount << '\n'
+              << "source_sha256=" << receipt.sourceSha256 << '\n';
+    for (const auto& member : receipt.added) std::cout << "added_member=" << member << '\n';
+    if (!receipt.removed.empty()) std::cout << "references_checked=false\n";
+    for (const auto& [member, records] : receipt.removed)
+        std::cout << "removed_member=" << member << " import_records_removed=" << records << '\n';
+    return 0;
 }
 
 } // namespace
@@ -102,109 +84,13 @@ int RunArchiveMemberAdd(int argc, wchar_t** argv) {
         if (argc < 7 || (argc - 5) % 2 != 0) return InvalidArguments("需要 source-map、source-sha、candidate 和至少一组 member/file。");
         const auto expected = ParseSha(argv[3]);
         if (!expected) return InvalidArguments("expected-source-sha256 必须是 64 位十六进制。");
-        const std::filesystem::path source(argv[2]);
-        const std::filesystem::path target(argv[4]);
-        std::error_code existsError;
-        if (std::filesystem::exists(target, existsError) || existsError)
-            return InvalidArguments("候选路径已存在；请换一个新的输出路径。");
-
-        std::vector<std::pair<std::string, std::filesystem::path>> inputs;
-        std::set<std::string> requested;
+        std::vector<Services::ArchiveMemberAddition> additions;
         for (int index = 5; index + 1 < argc; index += 2) {
-            std::string reason;
-            auto member = ParseMemberArgument(argv[index], requested, reason);
-            if (!member) return InvalidArguments(reason);
-            inputs.emplace_back(std::move(*member), std::filesystem::path(argv[index + 1]));
+            auto member = Utf8Argument(argv[index], 1024);
+            if (!member) return InvalidArguments("member 路径为空、过长或不是有效 UTF-8。");
+            additions.push_back({std::move(*member), std::filesystem::path(argv[index + 1])});
         }
-
-        auto opened = MapArchiveSession::Open(source);
-        if (!opened.Succeeded() || !opened.value) {
-            PrintDiagnostics(opened.diagnostics);
-            std::cerr << "Archive.MemberAdd: ARCHIVE_OPEN_FAILED: 无法打开源地图。\n";
-            return 2;
-        }
-        auto& archive = *opened.value;
-        if (archive.SourceSha256() != *expected) {
-            std::cerr << "Archive.MemberAdd: ARCHIVE_SOURCE_STALE: 源地图 SHA 与期望不一致。\n"
-                << "  actual=" << archive.SourceSha256() << "\n  expected=" << *expected << '\n';
-            return 2;
-        }
-        auto impBytes = archive.ReadMember("war3map.imp");
-        if (!impBytes.Succeeded() || !impBytes.value) {
-            PrintDiagnostics(impBytes.diagnostics);
-            std::cerr << "Archive.MemberAdd: IMPORT_TABLE_MISSING: 源地图没有可解析的 war3map.imp。\n";
-            return 2;
-        }
-        auto parsed = Resources::ImportTable::Parse(*impBytes.value);
-        if (!parsed.Succeeded() || !parsed.value) {
-            PrintDiagnostics(parsed.diagnostics);
-            std::cerr << "Archive.MemberAdd: IMPORT_TABLE_INVALID: 原导入清单无法安全编辑。\n";
-            return 2;
-        }
-        auto& table = *parsed.value;
-
-        std::vector<MemberReplacement> replacements;
-        replacements.reserve(inputs.size() + 1);
-        std::uint64_t total = 0;
-        for (const auto& [member, file] : inputs) {
-            // 按名字精确核对：未列入文件清单的成员同样不能被覆盖。
-            const std::array<std::string, 1> names{member};
-            const auto exact = archive.CaptureExactMembers(names);
-            if (!exact.Succeeded() || !exact.value || exact.value->size() != 1) {
-                PrintDiagnostics(exact.diagnostics);
-                std::cerr << "Archive.MemberAdd: MEMBER_PRESENCE_UNKNOWN: 无法确认源地图是否已有该成员： " << member << '\n';
-                return 2;
-            }
-            if (exact.value->front().present) {
-                std::cerr << "Archive.MemberAdd: MEMBER_EXISTS: 已存在成员，不能用本命令覆盖： " << member << '\n';
-                return 2;
-            }
-            auto bytes = IO::ReadFileBytes(file, kMaxMemberBytes);
-            if (!bytes.Succeeded() || !bytes.value) {
-                PrintDiagnostics(bytes.diagnostics);
-                std::cerr << "Archive.MemberAdd: MEMBER_FILE_UNREADABLE: 无法读取或超过 64 MiB： " << IO::PathUtf8(file) << '\n';
-                return 2;
-            }
-            total += bytes.value->size();
-            if (total > kMaxTotalBytes) return InvalidArguments("新增成员总字节超过 256 MiB。");
-            const auto registered = table.Upsert(member, [&archive](std::string_view path) { return archive.HasMember(path); });
-            if (!registered.Succeeded()) {
-                PrintDiagnostics(registered.diagnostics);
-                std::cerr << "Archive.MemberAdd: IMPORT_RECORD_FAILED: 写入导入记录失败： " << member << '\n';
-                return 2;
-            }
-            replacements.push_back({member, std::move(*bytes.value)});
-        }
-        auto encoded = table.Serialize();
-        if (!encoded.Succeeded() || !encoded.value) {
-            PrintDiagnostics(encoded.diagnostics);
-            std::cerr << "Archive.MemberAdd: IMPORT_TABLE_SERIALIZE_FAILED: 导入清单序列化失败。\n";
-            return 2;
-        }
-        replacements.push_back({"war3map.imp", std::move(*encoded.value)});
-
-        const auto preflight = archive.PreflightSave(replacements, {}, target);
-        if (!preflight.Succeeded()) {
-            PrintDiagnostics(preflight.diagnostics);
-            std::cerr << "Archive.MemberAdd: PREFLIGHT_FAILED: 候选保存输入未通过。\n";
-            return 2;
-        }
-        auto saved = archive.SaveCandidate(target, replacements, {});
-        if (!saved.Succeeded() || !saved.value) {
-            PrintDiagnostics(saved.diagnostics);
-            std::cerr << "Archive.MemberAdd: SAVE_FAILED: 候选写出失败。\n";
-            return 2;
-        }
-
-        std::cout << "candidate=" << IO::PathUtf8(saved.value->path) << '\n'
-                  << "candidate_sha256=" << saved.value->sha256 << '\n'
-                  << "member_count=" << saved.value->memberCount << '\n'
-                  << "source_sha256=" << archive.SourceSha256() << '\n';
-        for (const auto& [member, file] : inputs) {
-            (void)file;
-            std::cout << "added_member=" << member << '\n';
-        }
-        return 0;
+        return Report(Services::AddArchiveMembers(argv[2], *expected, argv[4], additions));
     } catch (const std::exception&) {
         std::cerr << "Archive.MemberAdd: ARCHIVE_MEMBER_ADD_FAILED: 未预期异常，源图未被修改。\n";
         return 2;
@@ -216,103 +102,56 @@ int RunArchiveMemberRemove(int argc, wchar_t** argv) {
         if (argc < 6) return InvalidRemoveArguments("需要 source-map、source-sha、candidate 和至少一个 member。");
         const auto expected = ParseSha(argv[3]);
         if (!expected) return InvalidRemoveArguments("expected-source-sha256 必须是 64 位十六进制。");
-        const std::filesystem::path source(argv[2]);
-        const std::filesystem::path target(argv[4]);
-        std::error_code existsError;
-        if (std::filesystem::exists(target, existsError) || existsError)
-            return InvalidRemoveArguments("候选路径已存在；请换一个新的输出路径。");
-
         std::vector<std::string> members;
-        std::set<std::string> requested;
         for (int index = 5; index < argc; ++index) {
-            std::string reason;
-            auto member = ParseMemberArgument(argv[index], requested, reason);
-            if (!member) return InvalidRemoveArguments(reason);
+            auto member = Utf8Argument(argv[index], 1024);
+            if (!member) return InvalidRemoveArguments("member 路径为空、过长或不是有效 UTF-8。");
             members.push_back(std::move(*member));
         }
-
-        auto opened = MapArchiveSession::Open(source);
-        if (!opened.Succeeded() || !opened.value) {
-            PrintDiagnostics(opened.diagnostics);
-            std::cerr << "Archive.MemberRemove: ARCHIVE_OPEN_FAILED: 无法打开源地图。\n";
-            return 2;
-        }
-        auto& archive = *opened.value;
-        if (archive.SourceSha256() != *expected) {
-            std::cerr << "Archive.MemberRemove: ARCHIVE_SOURCE_STALE: 源地图 SHA 与期望不一致。\n"
-                << "  actual=" << archive.SourceSha256() << "\n  expected=" << *expected << '\n';
-            return 2;
-        }
-        auto impBytes = archive.ReadMember("war3map.imp");
-        if (!impBytes.Succeeded() || !impBytes.value) {
-            PrintDiagnostics(impBytes.diagnostics);
-            std::cerr << "Archive.MemberRemove: IMPORT_TABLE_MISSING: 源地图没有可解析的 war3map.imp。\n";
-            return 2;
-        }
-        auto parsed = Resources::ImportTable::Parse(*impBytes.value);
-        if (!parsed.Succeeded() || !parsed.value) {
-            PrintDiagnostics(parsed.diagnostics);
-            std::cerr << "Archive.MemberRemove: IMPORT_TABLE_INVALID: 原导入清单无法安全编辑。\n";
-            return 2;
-        }
-        auto& table = *parsed.value;
-
-        std::vector<std::size_t> recordsRemoved;
-        for (const auto& member : members) {
-            const std::array<std::string, 1> names{member};
-            const auto exact = archive.CaptureExactMembers(names);
-            if (!exact.Succeeded() || !exact.value || exact.value->size() != 1) {
-                PrintDiagnostics(exact.diagnostics);
-                std::cerr << "Archive.MemberRemove: MEMBER_PRESENCE_UNKNOWN: 无法确认源地图是否有该成员： " << member << '\n';
-                return 2;
-            }
-            if (!exact.value->front().present) {
-                std::cerr << "Archive.MemberRemove: MEMBER_MISSING: 源地图没有该成员： " << member << '\n';
-                return 2;
-            }
-            const auto before = table.Entries().size();
-            const auto removed = table.Remove(member, [&archive](std::string_view path) { return archive.HasMember(path); });
-            if (!removed.Succeeded()) {
-                PrintDiagnostics(removed.diagnostics);
-                std::cerr << "Archive.MemberRemove: IMPORT_RECORD_FAILED: 删除导入记录失败： " << member << '\n';
-                return 2;
-            }
-            recordsRemoved.push_back(before - table.Entries().size());
-        }
-        std::vector<MemberReplacement> replacements;
-        if (table.IsModified()) {
-            auto encoded = table.Serialize();
-            if (!encoded.Succeeded() || !encoded.value) {
-                PrintDiagnostics(encoded.diagnostics);
-                std::cerr << "Archive.MemberRemove: IMPORT_TABLE_SERIALIZE_FAILED: 导入清单序列化失败。\n";
-                return 2;
-            }
-            replacements.push_back({"war3map.imp", std::move(*encoded.value)});
-        }
-
-        const auto preflight = archive.PreflightSave(replacements, members, target);
-        if (!preflight.Succeeded()) {
-            PrintDiagnostics(preflight.diagnostics);
-            std::cerr << "Archive.MemberRemove: PREFLIGHT_FAILED: 候选保存输入未通过。\n";
-            return 2;
-        }
-        auto saved = archive.SaveCandidate(target, replacements, members);
-        if (!saved.Succeeded() || !saved.value) {
-            PrintDiagnostics(saved.diagnostics);
-            std::cerr << "Archive.MemberRemove: SAVE_FAILED: 候选写出失败。\n";
-            return 2;
-        }
-
-        std::cout << "candidate=" << IO::PathUtf8(saved.value->path) << '\n'
-                  << "candidate_sha256=" << saved.value->sha256 << '\n'
-                  << "member_count=" << saved.value->memberCount << '\n'
-                  << "source_sha256=" << archive.SourceSha256() << '\n'
-                  << "references_checked=false\n";
-        for (std::size_t index = 0; index < members.size(); ++index)
-            std::cout << "removed_member=" << members[index] << " import_records_removed=" << recordsRemoved[index] << '\n';
-        return 0;
+        return Report(Services::RemoveArchiveMembers(argv[2], *expected, argv[4], members));
     } catch (const std::exception&) {
         std::cerr << "Archive.MemberRemove: ARCHIVE_MEMBER_REMOVE_FAILED: 未预期异常，源图未被修改。\n";
+        return 2;
+    }
+}
+
+int RunArchiveExpand(int argc, wchar_t** argv) {
+    const auto invalid = [](std::string_view reason) {
+        std::cerr << "Archive.Expand: ARCHIVE_EXPAND_ARGUMENT_INVALID: " << reason << '\n'
+            << "usage: archive-expand <source-map> <expected-source-sha256> <new-directory> [--data-only]\n"
+            << "  把地图包展开成新目录，供 war3-map-mcp --workspace 打开；源图只读。\n";
+        return 2;
+    };
+    try {
+        if (argc != 5 && argc != 6) return invalid("需要 source-map、source-sha 和新目录。");
+        Services::ArchiveExpandOptions options;
+        if (argc == 6) {
+            if (std::wstring_view(argv[5]) != L"--data-only") return invalid("只接受 --data-only 选项。");
+            options.dataOnly = true;
+        }
+        const auto expected = ParseSha(argv[3]);
+        if (!expected) return invalid("expected-source-sha256 必须是 64 位十六进制。");
+        const auto result = Services::ExpandArchive(argv[2], *expected, argv[4], options);
+        if (!result.Succeeded() || !result.value) {
+            PrintDiagnostics(result.diagnostics);
+            return 2;
+        }
+        const auto& receipt = *result.value;
+        std::size_t imports = 0;
+        std::cout << "directory=" << IO::PathUtf8(receipt.directory) << '\n'
+                  << "source_sha256=" << receipt.sourceSha256 << '\n'
+                  << "written_members=" << receipt.writtenMembers << '\n'
+                  << "written_bytes=" << receipt.writtenBytes << '\n'
+                  << "opaque_members=" << receipt.opaqueMembers << '\n'
+                  << "trigger_pair=" << (receipt.triggerPairPresent ? "true" : "false") << '\n';
+        for (const auto& skipped : receipt.skipped) {
+            if (skipped.reason == "import") { ++imports; continue; }
+            std::cout << "skipped_member=" << skipped.member << " reason=" << skipped.reason << '\n';
+        }
+        if (options.dataOnly) std::cout << "skipped_imports=" << imports << '\n';
+        return 0;
+    } catch (const std::exception&) {
+        std::cerr << "Archive.Expand: ARCHIVE_EXPAND_FAILED: 未预期异常，源图未被修改。\n";
         return 2;
     }
 }

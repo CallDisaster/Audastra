@@ -7,6 +7,7 @@
 #include "McpLuaFileTools.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Mpq/MpqWriter.h"
+#include "War3MapCore/Resources/ImportTable.h"
 #include "War3MapCore/Trigger/TriggerTypes.h"
 
 #include <QJsonArray>
@@ -422,6 +423,75 @@ void TestArchiveMapDataQuery() {
     Expect(failedWith(call("query_map_data_page", both), "MCP_MAP_DATA_SOURCE_SCOPE"), "archive and workspace sources were mixed");
     Expect(failedWith(call("describe_map_data", {}), "MCP_MAP_DATA_SOURCE_SCOPE"), "describe without any source was accepted");
     Expect(War3Map::Sha256File(path).value == sourceSha.value, "readonly archive map data query changed source bytes");
+}
+
+// 独立 MCP 的导入成员增删与 CLI 共用服务：写新候选、源图不变，删除结果说明未检查引用。
+void TestArchiveMemberTools() {
+    QTemporaryDir temporary; Expect(temporary.isValid(), "archive member temporary directory missing");
+    const auto root = std::filesystem::path(temporary.path().toStdWString());
+    const auto path = root / L"导入 增删.w3x";
+    const auto imp = War3Map::Resources::ImportTable::CreateEmpty().Serialize();
+    Expect(imp.Succeeded() && imp.value.has_value(), "empty import table fixture failed");
+    const std::vector<War3Map::Mpq::MpqBuildFile> files{{"war3map.imp", *imp.value, false, {}},
+        {"war3mapImported\\old.mdx", {std::byte{'o'}, std::byte{'l'}, std::byte{'d'}}, false, {}}};
+    Expect(War3Map::Mpq::WriteMpqArchive(path, files).Succeeded(), "archive member fixture failed");
+    const auto sourceSha = War3Map::Sha256File(path);
+    Expect(sourceSha.Succeeded(), "archive member fixture hash missing");
+    const auto disk = root / L"Hero.mdx";
+    { std::ofstream out(disk, std::ios::binary); out << "MDLX"; }
+    War3Map::Mcp::McpServer server; War3Map::Mcp::RegisterAllTools(server);
+    const auto call = [&](const char* name, QJsonObject arguments) {
+        const auto response = server.HandleMessage(QJsonDocument(QJsonObject{{"jsonrpc", "2.0"}, {"id", 34},
+            {"method", "tools/call"}, {"params", QJsonObject{{"name", name}, {"arguments", arguments}}}}).toJson(QJsonDocument::Compact));
+        Expect(response && !response->error, "archive member protocol failed");
+        const auto content = response->result.toObject().value("content").toArray();
+        Expect(content.size() == 1, "archive member response missing");
+        return QJsonDocument::fromJson(content[0].toObject().value("text").toString().toUtf8()).object(); };
+    const auto failedWith = [](const QJsonObject& result, const char* code) {
+        return !result.value("ok").toBool() && QJsonDocument(result).toJson().contains(code); };
+    const auto text = [](const std::filesystem::path& value) { return QString::fromStdWString(value.wstring()); };
+    const auto file = [&](const char* member) {
+        return QJsonArray{QJsonObject{{"disk_path", text(disk)}, {"archive_path", member}}}; };
+    const QJsonObject source{{"source_map_path", text(path)}, {"expected_source_sha256", QString::fromStdString(*sourceSha.value)}};
+
+    auto add = source; add["output_path"] = text(root / L"added.w3x"); add["files"] = file("war3mapImported/Hero.mdx");
+    const auto added = call("archive_members_add", add);
+    Expect(added.value("ok").toBool() && added.value("added").toArray().size() == 1
+        && added.value("added").toArray()[0].toString() == "war3mapImported\\Hero.mdx"
+        && added.value("candidate_sha256").toString().size() == 64, "archive_members_add must write a new candidate");
+    auto existing = source; existing["output_path"] = text(root / L"existing.w3x"); existing["files"] = file("WAR3MAPIMPORTED\\OLD.MDX");
+    Expect(failedWith(call("archive_members_add", existing), "MEMBER_EXISTS")
+        && !std::filesystem::exists(root / L"existing.w3x"), "archive_members_add overwrote an existing member");
+    auto stale = add; stale["output_path"] = text(root / L"stale.w3x"); stale["expected_source_sha256"] = QString(64, QLatin1Char('0'));
+    Expect(failedWith(call("archive_members_add", stale), "ARCHIVE_SOURCE_STALE"), "archive_members_add accepted a stale source");
+    auto relative = add; relative["output_path"] = "relative.w3x";
+    Expect(failedWith(call("archive_members_add", relative), "MCP_MAP_PATH_INVALID"), "archive_members_add accepted a relative output");
+
+    QJsonObject remove{{"source_map_path", text(root / L"added.w3x")}, {"expected_source_sha256", added.value("candidate_sha256")},
+        {"output_path", text(root / L"removed.w3x")}, {"archive_paths", QJsonArray{"WAR3MAPIMPORTED\\HERO.MDX"}}};
+    const auto removed = call("archive_members_remove", remove);
+    const auto row = removed.value("removed").toArray().first().toObject();
+    Expect(removed.value("ok").toBool() && row.value("import_records_removed").toInt() == 1
+        && removed.value("references_checked") == false, "archive_members_remove must drop the member and its import record");
+    auto managed = remove; managed["output_path"] = text(root / L"managed.w3x"); managed["archive_paths"] = QJsonArray{"war3map.imp"};
+    Expect(failedWith(call("archive_members_remove", managed), "ARCHIVE_MEMBER_MANAGED"), "archive_members_remove deleted a map data file");
+    Expect(War3Map::Sha256File(path).value == sourceSha.value, "archive member tools changed the source map");
+
+    // 展开：具名成员按归档路径写到新目录；data_only 不写导入资源；已有目录拒绝。
+    auto expand = source; expand["output_path"] = text(root / L"展开");
+    const auto expanded = call("archive_expand", expand);
+    Expect(expanded.value("ok").toBool() && expanded.value("written_members").toInt() == 2
+        && std::filesystem::is_regular_file(root / L"展开" / L"war3map.imp")
+        && std::filesystem::file_size(root / L"展开" / L"war3mapImported" / L"old.mdx") == 3
+        && expanded.value("trigger_pair_present") == false, "archive_expand must write every named member");
+    Expect(failedWith(call("archive_expand", expand), "ARCHIVE_EXPAND_TARGET_EXISTS"), "archive_expand overwrote a directory");
+    auto dataOnly = source; dataOnly["output_path"] = text(root / L"data-only"); dataOnly["data_only"] = true;
+    const auto data = call("archive_expand", dataOnly);
+    Expect(data.value("ok").toBool() && data.value("written_members").toInt() == 1
+        && data.value("skipped_counts").toObject().value("import").toInt() == 1
+        && !std::filesystem::exists(root / L"data-only" / L"war3mapImported"), "archive_expand data_only wrote imports");
+    for (const auto& entry : std::filesystem::directory_iterator(root))
+        Expect(entry.path().filename().wstring().find(L".expanding-") == std::wstring::npos, "archive_expand left a staging directory");
 }
 
 void TestMapDataPageBinding() {
@@ -995,6 +1065,7 @@ int main() {
         TestLuaListPagingProtocol();
         TestArchiveMemberIdentities();
         TestArchiveMapDataQuery();
+        TestArchiveMemberTools();
         TestMapDataPageBinding();
         TestProjectSearchTypePreparation();
         TestProjectSearchImportInputBudgets();

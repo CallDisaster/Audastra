@@ -25,6 +25,7 @@ void RegisterAllTools(McpServer& server) {
     RegisterWorldViewportTools(server);
     RegisterReadOnlyTools(server);
     RegisterArchiveIdentityTools(server);
+    RegisterArchiveMemberTools(server);
     RegisterImportTools(server);
     RegisterObjectResourceTools(server);
     RegisterProjectSearchTools(server);
