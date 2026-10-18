@@ -80,7 +80,12 @@ Status PrepareWorkerMinimapInputs(MapSaveJob& job, std::unique_ptr<MapData::MapD
                     return plan->VerifyFrozenOutput(task->sourceSha256, task->replacements, task->removals);
                 };
             }
-            job.minimapChoice = Services::TerrainMinimapSaveChoice::Preserve;
+            auto prepared = Services::TerrainMinimapSave::PrepareAutomaticOrPreserve(job, *edits, job.minimapGameRoot);
+            if (!prepared.Succeeded() || !prepared.value) return {std::move(prepared.diagnostics)};
+            job.diagnostics.insert(job.diagnostics.end(), prepared.diagnostics.begin(), prepared.diagnostics.end());
+            const auto installed = InstallPreservedMinimap(job, *edits, std::move(*prepared.value));
+            if (!installed.Succeeded()) return installed;
+            if (!job.minimapPreserve) job.minimapChoice = Services::TerrainMinimapSaveChoice::Preserve;
             return Status::Ok();
         }
     }

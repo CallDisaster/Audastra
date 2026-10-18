@@ -263,7 +263,7 @@ Result<bool> TerrainMinimapSave::RequiresAutomaticGeneration(const MapSaveTask& 
             RequireNotRemoved(task, "war3mapmap.blp");
             return Result<bool>::Success(false);
         }
-        if (identities.members[1].present) {
+        const auto importedBlp = [&]() {
             // 用原始导入清单识别作者自定义 BLP。仅读取准确成员，不通过
             // listfile 缺名推断不存在，也不把普通自动生成的 BLP 当成自定义。
             const std::array<std::string, 1> importNames{"war3map.imp"};
@@ -290,10 +290,11 @@ Result<bool> TerrainMinimapSave::RequiresAutomaticGeneration(const MapSaveTask& 
                 }
                 return false;
             };
-            if (imports[0].present && imported(imports[0].bytes, false)) return Result<bool>::Success(false);
+            if (imports[0].present && imported(imports[0].bytes, false)) return true;
             if (const auto* finalImports = Replacement(task, "war3map.imp"); finalImports && imported(finalImports->data, true))
-                return Result<bool>::Success(false);
-        }
+                return true;
+            return false;
+        };
         // 物编等局部归档可能准确地没有地形。缺少MapBLP不能强迫此类
         // 数据归档生成小地图；present空/损坏W3E与读取失败仍保留错误身份。
         if (!identities.members[2].present && !Replacement(task, "war3map.w3e")) return Result<bool>::Success(false);
@@ -322,12 +323,12 @@ Result<bool> TerrainMinimapSave::RequiresAutomaticGeneration(const MapSaveTask& 
         for (const auto& [path, replacement] : relevant) {
             const auto& source = baseline.members[index++];
             if (!replacement) {
-                if (source.present) return Result<bool>::Success(true);
+                if (source.present) return Result<bool>::Success(!importedBlp());
                 continue;
             }
             if (!source.present || source.byteSize != replacement->data.size()
                 || !source.sha256 || Take(Sha256(replacement->data)) != *source.sha256)
-                return Result<bool>::Success(true);
+                return Result<bool>::Success(!importedBlp());
         }
         return Result<bool>::Success(false);
     } catch (Failure& failure) { return {{}, std::move(failure.diagnostics)}; }

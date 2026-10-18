@@ -634,9 +634,18 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         const std::array<std::string, 8> nativeNames{"war3map.w3i", "table/w3i.ini", "war3mapUnits.doo",
             "war3map.doo", "war3map.w3r", "war3map.w3c", "war3map.w3s", "war3map.wts"};
         auto capturedNative = source.CaptureExactMembers(nativeNames);
-        if (!capturedNative.Succeeded() || !capturedNative.value) return Forward(capturedNative.diagnostics);
+        std::vector<Diagnostic> minimapInputFailure;
+        const bool nativeCaptureFailed = !capturedNative.Succeeded() || !capturedNative.value;
+        if (nativeCaptureFailed) {
+            // 触发器/物编有自己的来源封印和解析链。这里的其它 native 成员
+            // 只用于小地图，不能因它们超出生成预算而阻止本领域合法保存。
+            // 失败仍交共用分类；来源/I/O等错误不会被当作空地图接受。
+            if (request.minimapChoice != TerrainMinimapSaveChoice::Automatic || (!triggerRequest && !objectRequest))
+                return Forward(capturedNative.diagnostics);
+            minimapInputFailure = capturedNative.diagnostics;
+        }
         std::vector<MapArchiveMember> nativeMembers;
-        for (auto& member : *capturedNative.value)
+        if (!nativeCaptureFailed) for (auto& member : *capturedNative.value)
             if (member.present) nativeMembers.push_back({member.name, std::move(member.bytes)});
         const auto map = MapDocument::FromMembers(nativeMembers, source.SourcePath());
         MapData::MapDataEditSession edits(map);
@@ -649,7 +658,6 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         std::shared_ptr<const MapData::TerrainSavePlan> terrainPlan;
         std::shared_ptr<const TerrainMinimapSave> minimapSave;
         std::shared_ptr<const TerrainMinimapPreserveGuard> minimapPreserve;
-        std::vector<Diagnostic> minimapInputFailure;
 
         // Automatic 小地图需要一个稳定的源地形会话。必须在任何
         // settings/物编/摆放编辑前附加 W3E/WPM，否则最终派生阶段再附加
@@ -658,11 +666,13 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic) {
             const std::array<std::string, 2> names{"war3map.w3e", "war3map.wpm"};
             const auto members = source.CaptureExactMembers(names);
-            if (!members.Succeeded() || !members.value) minimapInputFailure = members.diagnostics;
+            if (!members.Succeeded() || !members.value)
+                minimapInputFailure.insert(minimapInputFailure.end(), members.diagnostics.begin(), members.diagnostics.end());
             else if ((*members.value)[0].present && (*members.value)[1].present) {
                 auto attached = edits.AttachTerrain((*members.value)[0].bytes);
                 if (attached.Succeeded()) attached = edits.AttachPathing((*members.value)[1].bytes);
-                if (!attached.Succeeded()) minimapInputFailure = attached.diagnostics;
+                if (!attached.Succeeded())
+                    minimapInputFailure.insert(minimapInputFailure.end(), attached.diagnostics.begin(), attached.diagnostics.end());
             }
         }
         if (fieldRequest) {
@@ -767,29 +777,16 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         // 门禁看到过期的 replacements。回调只在共用保存服务的一次最终阶段执行。
         if (request.minimapChoice != TerrainMinimapSaveChoice::Preserve) {
             task.prepareFinalDerived = [&task, &edits, &request, &terrainPlan, &minimapSave,
-                &minimapPreserve, &minimapInputFailure](MapSaveTask&) mutable -> Status {
+                &minimapPreserve, &minimapInputFailure, nativeCaptureFailed](MapSaveTask&) mutable -> Status {
                 bool automaticRequired = true;
                 if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic) {
                     const auto required = TerrainMinimapSave::RequiresAutomaticGeneration(task);
-                    if (!required.Succeeded() || !required.value) minimapInputFailure = required.diagnostics;
+                    if (!required.Succeeded() || !required.value)
+                        minimapInputFailure.insert(minimapInputFailure.end(), required.diagnostics.begin(), required.diagnostics.end());
                     else automaticRequired = *required.value;
                 }
-                if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic && !automaticRequired) {
-                    auto previous = std::move(task.beforePublish);
-                    if (terrainPlan) {
-                        const auto& notes = terrainPlan->Diagnostics();
-                        task.diagnostics.insert(task.diagnostics.end(), notes.begin(), notes.end());
-                        task.beforePublish = [&task, terrainPlan, previous = std::move(previous)]() {
-                            if (previous) { const auto checked = previous(); if (!checked.Succeeded()) return checked; }
-                            return terrainPlan->VerifyFrozenOutput(task.sourceSha256, task.replacements, task.removals);
-                        };
-                    } else if (previous) {
-                        task.beforePublish = std::move(previous);
-                    }
-                    return Status::Ok();
-                }
                 if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic) {
-                    auto prepared = minimapInputFailure.empty()
+                    auto prepared = (minimapInputFailure.empty() || (!automaticRequired && !nativeCaptureFailed))
                         ? TerrainMinimapSave::PrepareAutomaticOrPreserve(task, edits, request.gameRoot)
                         : TerrainMinimapSave::PreserveUnsupportedAutomatic(task, edits, minimapInputFailure);
                     if (!prepared.Succeeded() || !prepared.value) return Status{std::move(prepared.diagnostics)};
