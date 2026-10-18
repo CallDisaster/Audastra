@@ -1226,6 +1226,15 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
     Require(rotationSaved.Succeeded() && rotationSaved.value,
         "默认Automatic只做单位旋转必须不再命中MAP_TERRAIN_ATTACH_LATE");
 
+    MapEditSaveRequest copyRequest = unitRequest;
+    copyRequest.targetCandidate = directory.Path() / "copy-auto.w3x";
+    copyRequest.fieldEdits.clear();
+    copyRequest.placementEdit = MapEditPlacementCopy{{
+        {MapData::PlacementFile::Units, 0, *unitKey.value, *unitMemberSha.value}}, {64.0f, 0.0f, 0.0f}};
+    const auto copySaved = SaveMapEditCandidate(copyRequest);
+    Require(copySaved.Succeeded() && copySaved.value,
+        "默认Automatic只做单位复制必须不再命中MAP_TERRAIN_ATTACH_LATE");
+
     request.minimapChoice = TerrainMinimapSaveChoice::Automatic;
     request.targetCandidate = directory.Path() / "automatic.w3x";
     const auto automatic = SaveMapEditCandidate(request);
