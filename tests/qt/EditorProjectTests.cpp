@@ -879,7 +879,13 @@ void EditorProjectTests::MissingMinimapWorkerReadbackGatesCommit() {
         if (text == EditorProject::tr("正在生成缺失的地形小地图…")) { generationThread = QThread::currentThread(); ++generateCalls; }
     };
     std::unique_ptr<QThread> worker(QThread::create([task = job.get()] { EditorProject::RunMapSave(*task); }));
-    worker->start(); QVERIFY(worker->wait(60000));
+    worker->start();
+    const auto finished = worker->wait(60000);
+    if (!finished) {
+        // 先收束真实线程，再让QVERIFY返回；不能析构运行中的worker或悬空其task/回调。
+        worker->requestInterruption(); worker->quit(); worker->wait();
+    }
+    QVERIFY2(finished, "原创小地图worker超过测试期限；已等待线程收束，未强杀任务");
     QVERIFY2(job->succeeded, job->diagnostics.empty() ? "worker failed without diagnostics" : job->diagnostics.back().message.c_str());
     QVERIFY(generationThread == worker.get() && generationThread != QThread::currentThread());
     QCOMPARE(generateCalls.load(), 1u); QVERIFY(previousCalls.load() >= 1);
