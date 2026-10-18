@@ -1,6 +1,8 @@
 #include "War3MapCore/Render/DayNightLighting.h"
 #include "War3MapCore/Render/SceneEnvironment.h"
+#include "War3MapCore/MapData/MapShadow.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -163,6 +165,65 @@ void TestEnvironment() {
     Near(TerrainLightingFrom(&below).ambient[0], TerrainLighting{}.ambient[0], "光向朝下时保留默认光照");
 }
 
+void TestShadowInputRetainsCodecFactsAndExistingPixels() {
+    auto grid = Grid(); grid.header.height = 9; // 8×32字节，独立覆盖所有256种合法原强度。
+    std::vector<std::byte> source;
+    for (unsigned value = 0; value < 256; ++value) source.push_back(static_cast<std::byte>(value));
+    const auto original = source;
+    auto environment = BuildSceneEnvironment(nullptr, nullptr, false, grid, std::span<const std::byte>(source));
+    Require(source == original && environment.shadowInput.state == SceneShadowInputState::Parsed
+        && environment.shadowInput.sourceBytes == 256 && environment.shadowInput.diagnostics.empty(),
+        "全部原强度合法且raw逐字不变，Parsed只记录本次codec结果");
+    Require(environment.shadow.size() == 256 && environment.shadow.front() == 0 && environment.notes.empty(),
+        "合法正文保留既有预览尺寸和无额外告警");
+    for (std::size_t index = 1; index < environment.shadow.size(); ++index)
+        Require(environment.shadow[index] == 255, "预览仍非零到255，不能把raw非二值误拒或改像素政策");
+    Require(environment.values.shadowWidth == 8 && environment.values.shadowHeight == 32
+        && environment.values.shadowOriginX == -256 && environment.values.shadowOriginY == 64
+        && environment.values.shadowCellSize == 32 && environment.values.shadowDarkness == kStaticShadowDarkness,
+        "codec接入不改变旧空间、暗度或渲染ABI");
+    auto zeros = source; std::fill(zeros.begin(), zeros.end(), std::byte{0});
+    const auto zero = BuildSceneEnvironment(nullptr, nullptr, false, grid, std::span<const std::byte>(zeros));
+    Require(zero.shadowInput.state == SceneShadowInputState::Parsed && zero.shadow.size() == 256
+        && DescribeSceneEnvironment(zero).shadow != nullptr && std::all_of(zero.shadow.begin(), zero.shadow.end(), [](auto value) { return value == 0; }),
+        "真实全零正文是已解析预览，不能按无暗像素误判为未提供或缺失");
+    const auto absent = BuildSceneEnvironment(nullptr, nullptr, false, grid, std::nullopt);
+    Require(absent.shadowInput.state == SceneShadowInputState::NotProvided && !absent.shadowInput.sourceBytes
+        && absent.shadowInput.diagnostics.empty() && absent.shadow.empty() && absent.notes.empty(),
+        "nullopt只证明未提供，不捏造成员Missing或codec失败");
+    const auto sameDiagnostics = [](const std::vector<Diagnostic>& actual, const std::vector<Diagnostic>& expected) {
+        Require(actual.size() == expected.size(), "codec诊断不能丢失或重复");
+        for (std::size_t i = 0; i < actual.size(); ++i) {
+            const auto& a = actual[i]; const auto& b = expected[i];
+            Require(a.severity == b.severity && a.subsystem == b.subsystem && a.code == b.code && a.message == b.message
+                && a.origin.has_value() == b.origin.has_value(), "codec原诊断不得压码或改写语义");
+            if (a.origin) Require(a.origin->source == b.origin->source && a.origin->offset == b.origin->offset
+                && a.origin->length == b.origin->length && a.origin->fingerprint == b.origin->fingerprint, "codec origin须完整保留");
+        }
+    };
+    const auto rejected = [&](const MapData::TerrainGridSnapshot& rejectedGrid, std::vector<std::byte> raw,
+        std::uint32_t columns, std::uint32_t rows, SceneShadowInputState state, const char* code) {
+        const auto codec = MapData::ParseMapShadow(raw, columns, rows);
+        Require(!codec.Succeeded() && codec.diagnostics.front().code == code, "独立codec对照必须命中预期拒绝");
+        const auto before = raw;
+        auto result = BuildSceneEnvironment(nullptr, nullptr, false, rejectedGrid, std::span<const std::byte>(raw));
+        Require(raw == before && result.shadowInput.state == state && result.shadowInput.sourceBytes == raw.size()
+            && result.shadow.empty() && !DescribeSceneEnvironment(result).shadow && result.notes.size() == 1
+            && result.notes.front().code == "SCENE_SHADOW_SIZE", "坏正文保留一条兼容说明，不返回部分阴影或改源字节");
+        sameDiagnostics(result.shadowInput.diagnostics, codec.diagnostics);
+        ApplySceneFog(result, nullptr, false);
+        sameDiagnostics(result.shadowInput.diagnostics, codec.diagnostics);
+        Require(result.notes.size() == 1 && result.notes.front().code == "SCENE_SHADOW_SIZE", "重算雾不能清除或复制原阴影诊断");
+    };
+    rejected(grid, {}, 8, 32, SceneShadowInputState::PresentEmpty, "SHADOW_TRUNCATED");
+    source.pop_back(); rejected(grid, source, 8, 32, SceneShadowInputState::Rejected, "SHADOW_TRUNCATED");
+    source = original; source.push_back(std::byte{0}); rejected(grid, source, 8, 32, SceneShadowInputState::Rejected, "SHADOW_TRAILING_DATA");
+    auto dimensions = grid; dimensions.header.width = 1;
+    rejected(dimensions, {std::byte{1}}, 0, 32, SceneShadowInputState::Rejected, "SHADOW_DIMENSIONS");
+    dimensions.header.width = 2050;
+    rejected(dimensions, {std::byte{1}}, 8196, 32, SceneShadowInputState::Rejected, "SHADOW_GRID_LIMIT");
+}
+
 } // namespace
 
 int main() {
@@ -171,6 +232,7 @@ int main() {
         TestDayNight();
         TestModelPath();
         TestEnvironment();
+        TestShadowInputRetainsCodecFactsAndExistingPixels();
         std::cout << "scene lighting: profile, MDX lights, day/night sampling, DNC paths, fog and static shadow passed\n";
         return 0;
     } catch (const std::exception& error) {

@@ -24,6 +24,7 @@
 #include "War3MapCore/MapData/MapAuxiliary.h"
 #include "War3MapCore/MapData/PlacementEditing.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
+#include "War3MapCore/MapData/MapShadow.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Workspace.h"
 #include "War3MapCore/Game/GameDataSource.h"
@@ -597,6 +598,36 @@ std::shared_ptr<MapData::TerrainGridSnapshot> FlatGrid(std::uint32_t width, std:
     }
     return grid;
 }
+
+bool SameShadowDiagnostics(const std::vector<Diagnostic>& left, const std::vector<Diagnostic>& right) {
+    if (left.size() != right.size()) return false;
+    for (std::size_t i = 0; i < left.size(); ++i) {
+        const auto& a = left[i]; const auto& b = right[i];
+        if (a.severity != b.severity || a.subsystem != b.subsystem || a.code != b.code || a.message != b.message
+            || a.origin.has_value() != b.origin.has_value()) return false;
+        if (a.origin && (a.origin->source != b.origin->source || a.origin->offset != b.origin->offset
+            || a.origin->length != b.origin->length || a.origin->fingerprint != b.origin->fingerprint)) return false;
+    }
+    return true;
+}
+
+std::vector<MapArchiveMember> ShadowObservationMembers() {
+    auto grid = FlatGrid(5, 5); grid->header.mainTileset = 'A';
+    grid->header.groundTilesets = {"Ldrt"}; grid->header.cliffTilesets = {"Cldi"};
+    const auto terrain = MapData::SerializeMapTerrain(*grid);
+    if (!terrain.Succeeded()) return {};
+    const auto text = [](std::string_view value) {
+        const auto bytes = std::as_bytes(std::span(value.data(), value.size())); return std::vector<std::byte>(bytes.begin(), bytes.end());
+    };
+    Image::DecodedImage image{16, 16, std::vector<std::byte>(16 * 16 * 4, std::byte{255})};
+    const auto texture = Image::EncodeBlpPaletted(image); if (!texture.Succeeded()) return {};
+    return {{"war3map.w3i", MapDataFixtures::FullMapSettingsV25().bytes}, {"war3map.w3e", *terrain.value},
+        {"war3mapUnits.doo", MapDataFixtures::EmptyUnitsV8Sub11()}, {"war3map.doo", MapDataFixtures::EmptyDoodadsV8Sub11()},
+        {"TerrainArt/Terrain.slk", text("ID;PWXL;N;E\nC;X1;Y1;K\"tileID\"\nC;X2;Y1;K\"dir\"\nC;X3;Y1;K\"file\"\n"
+            "C;X1;Y2;K\"Ldrt\"\nC;X2;Y2;K\"Terrain/Test\"\nC;X3;Y2;K\"stone\"\nE\n")},
+        {"TerrainArt/CliffTypes.slk", text("ID;PWXL;N;E\nC;X1;Y1;K\"cliffID\"\nE\n")},
+        {"TerrainArt/Water.slk", text("ID;PWXL;N;E\nC;X1;Y1;K\"waterID\"\nE\n")}, {"Terrain/Test/stone.blp", *texture.value}};
+}
 bool BindTerrain(WorldViewport& viewport, std::shared_ptr<const MapData::TerrainGridSnapshot> terrain, std::uint64_t revision = 12) {
     if (!terrain) return false;
     auto mesh = BuildWorldTerrainMesh(*terrain);
@@ -759,6 +790,9 @@ class WorldModuleTests final : public QObject {
 private slots:
     void HeroLevelEditsOnlyHeroes();
     void TerrainFogFollowsMapSettingsFlag();
+    void SourceShadowObservationKeepsUnknownAndCodecFailures_data();
+    void SourceShadowObservationKeepsUnknownAndCodecFailures();
+    void SourceShadowObservationSurvivesRebuildWithoutRawOrRepeatedDiagnostics();
     void MeshBoundsAndSampling();
     void ViewportLifecycleAndInput();
     void MapSwitchDoesNotEdit();
@@ -1419,6 +1453,142 @@ void WorldModuleTests::TerrainFogFollowsMapSettingsFlag() {
     QTest::qWait(200);
     QCOMPARE(state.terrainSubmits, terrainSubmits);
     QCOMPARE(state.revision, revision);
+}
+
+void WorldModuleTests::SourceShadowObservationKeepsUnknownAndCodecFailures_data() {
+    QTest::addColumn<QString>("mode");
+    for (const auto* mode : {"not-observed", "missing-unknown", "read-failure", "empty", "short", "trailing", "zero", "nonbinary"})
+        QTest::newRow(mode) << QString::fromLatin1(mode);
+}
+
+void WorldModuleTests::SourceShadowObservationKeepsUnknownAndCodecFailures() {
+    QFETCH(QString, mode);
+    QTemporaryDir directory; QVERIFY(directory.isValid()); auto members = ShadowObservationMembers(); QVERIFY(!members.empty());
+    std::vector<std::byte> raw(256);
+    if (mode == "nonbinary") for (unsigned i = 0; i < 256; ++i) raw[i] = static_cast<std::byte>(i);
+    if (mode == "empty") raw.clear();
+    else if (mode == "short") raw.pop_back();
+    else if (mode == "trailing") raw.push_back(std::byte{7});
+    if (mode != "not-observed" && mode != "missing-unknown" && mode != "read-failure") members.push_back({"war3map.shd", raw});
+    const auto path = std::filesystem::path(directory.filePath("shadow-observation.w3x").toStdWString());
+    QVERIFY(WriteVerifiedArchive(path, members).Succeeded());
+    auto source = MapArchiveSession::Open(path); QVERIFY(source.Succeeded());
+    const auto sourceSha = source.value->SourceSha256();
+    QtProject::EditorProject project; project.sourceArchivePath_ = path; project.projectRoot_ = path.parent_path();
+    project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*source.value)); project.LoadMapDocument(); project.ResetEditTracking();
+    QVERIFY(project.mapEdits_ && project.mapEdits_->Terrain());
+    // 游戏内同名合法SHD不能补入map缺失、读取失败或坏正文；材质仍正常使用现资源链。
+    const auto game = std::filesystem::path(directory.filePath("game").toStdWString()); QVERIFY(std::filesystem::create_directory(game));
+    const std::vector<MapArchiveMember> gameMembers{{"war3map.shd", std::vector<std::byte>(256, std::byte{255})}};
+    QVERIFY(WriteVerifiedArchive(game / "war3.mpq", gameMembers).Succeeded());
+    QVERIFY(WriteVerifiedArchive(game / "war3x.mpq", gameMembers).Succeeded()); project.war3GameRoot_ = game;
+    const auto sources = CaptureWorldTerrainSources(project); QVERIFY(sources.Succeeded());
+    WorldShadowInput input;
+    input.context = {WorldShadowTerrainRelation::TerrainAndPathingUnchanged, project.mapEdits_->SessionIdentity(),
+        project.mapEdits_->Revision(), project.mapEdits_->TerrainSourceRevision(), false};
+    if (mode != "not-observed") input.read = project.ReadMapMember("war3map.shd");
+    if (mode == "read-failure") {
+        input.read = Result<std::vector<std::byte>>::Failure("OwnedShadowRead", "OWNED_SHD_READ_FAILURE", "原创读取故障，存在性未知");
+        input.read->diagnostics.front().origin = OriginSpan{"war3map.shd", 7, 3, "owned-shadow-origin"};
+    }
+    const auto readDiagnostics = input.read ? input.read->diagnostics : std::vector<Diagnostic>{};
+    std::shared_ptr<WorldTerrainCache> cache;
+    const auto loaded = LoadWorldTerrain(members[1].data, sources, {}, input, &cache);
+    QVERIFY2(loaded.Succeeded(), loaded.diagnostics.empty() ? "shadow load failed" : loaded.diagnostics.front().message.c_str());
+    QVERIFY(cache && loaded.value->environment && loaded.value->ground);
+    const auto& observed = loaded.value->shadowObservation; const auto& environment = *loaded.value->environment;
+    QCOMPARE(observed.sourceArchiveSha, sourceSha);
+    QCOMPARE(observed.context.sessionIdentity, project.mapEdits_->SessionIdentity());
+    const auto summary = WorldShadowSummary(observed, &environment), details = WorldShadowDetails(observed, &environment);
+    if (mode == "not-observed") {
+        QVERIFY(observed.readState == WorldShadowReadState::NotObserved && observed.readDiagnostics.empty());
+        QVERIFY(summary.contains(QStringLiteral("未观测")));
+        QVERIFY(environment.shadowInput.state == Render::SceneShadowInputState::NotProvided && environment.shadow.empty());
+    } else if (mode == "missing-unknown" || mode == "read-failure") {
+        QVERIFY(input.read && !input.read->Succeeded() && observed.readState == WorldShadowReadState::ReadFailed);
+        QVERIFY(SameShadowDiagnostics(observed.readDiagnostics, readDiagnostics));
+        QVERIFY(summary.contains(QStringLiteral("存在性未确认")) && !summary.contains(QStringLiteral("无静态阴影")));
+        QVERIFY(details.contains(QString::fromStdString(readDiagnostics.front().code)) && !observed.sourceBytes);
+        QVERIFY(environment.shadow.empty() && environment.shadowInput.state == Render::SceneShadowInputState::NotProvided);
+    } else {
+        QVERIFY(observed.readState == WorldShadowReadState::Present && observed.sourceBytes == raw.size());
+        QVERIFY(input.read && input.read->Succeeded() && *input.read->value == raw);
+        const auto codec = MapData::ParseMapShadow(raw, 16, 16);
+        QVERIFY(SameShadowDiagnostics(environment.shadowInput.diagnostics, codec.diagnostics));
+        QCOMPARE(environment.shadowInput.sourceBytes, raw.size());
+        if (mode == "empty") {
+            QVERIFY(environment.shadowInput.state == Render::SceneShadowInputState::PresentEmpty);
+            QVERIFY(summary.contains(QStringLiteral("为空")) && environment.shadow.empty());
+        } else if (mode == "short" || mode == "trailing") {
+            QVERIFY(environment.shadowInput.state == Render::SceneShadowInputState::Rejected && environment.shadow.empty());
+            QCOMPARE(environment.shadowInput.diagnostics.front().code, std::string(mode == "short" ? "SHADOW_TRUNCATED" : "SHADOW_TRAILING_DATA"));
+            QVERIFY(details.contains(QString::fromStdString(environment.shadowInput.diagnostics.front().code)));
+        } else {
+            QVERIFY(codec.Succeeded() && environment.shadowInput.state == Render::SceneShadowInputState::Parsed);
+            QCOMPARE(environment.shadow.size(), raw.size());
+            for (std::size_t i = 0; i < raw.size(); ++i) QCOMPARE(environment.shadow[i], raw[i] == std::byte{0} ? std::uint8_t{0} : std::uint8_t{255});
+        }
+    }
+    QCOMPARE(cache->shadowObservation.sourceArchiveSha, observed.sourceArchiveSha);
+    QVERIFY(SameShadowDiagnostics(cache->shadowObservation.readDiagnostics, observed.readDiagnostics));
+    const auto globalRows = project.diagnosticsModel_->rowCount(); const auto notesCount = cache->notes.size();
+    input.read.reset(); // 重建只借cache里的事实及environment，原Result/raw已释放。
+    const auto repeated = RebuildWorldTerrain(*project.mapEdits_->Terrain(), *cache, {});
+    QVERIFY(repeated.Succeeded() && repeated.value->environment == loaded.value->environment);
+    QVERIFY(SameShadowDiagnostics(repeated.value->shadowObservation.readDiagnostics, readDiagnostics));
+    for (unsigned i = 0; i < 3; ++i) {
+        QCOMPARE(WorldShadowSummary(repeated.value->shadowObservation, repeated.value->environment.get()), summary);
+        QCOMPARE(WorldShadowDetails(repeated.value->shadowObservation, repeated.value->environment.get()), details);
+    }
+    QCOMPARE(project.diagnosticsModel_->rowCount(), globalRows); QCOMPARE(cache->notes.size(), notesCount);
+    QCOMPARE(*Sha256File(path).value, sourceSha); QVERIFY(!project.mapEdits_->IsDirty());
+}
+
+void WorldModuleTests::SourceShadowObservationSurvivesRebuildWithoutRawOrRepeatedDiagnostics() {
+    QTemporaryDir directory; QVERIFY(directory.isValid()); auto members = ShadowObservationMembers(); QVERIFY(!members.empty());
+    const std::vector<std::byte> originalShadow(256, std::byte{7}); members.push_back({"war3map.shd", originalShadow});
+    const auto path = std::filesystem::path(directory.filePath("shadow-rebuild.w3x").toStdWString());
+    QVERIFY(WriteVerifiedArchive(path, members).Succeeded()); auto source = MapArchiveSession::Open(path); QVERIFY(source.Succeeded());
+    const auto sourceSha = source.value->SourceSha256();
+    QtProject::EditorProject project; project.sourceArchivePath_ = path; project.projectRoot_ = path.parent_path();
+    project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*source.value)); project.LoadMapDocument(); project.ResetEditTracking();
+    QVERIFY(project.mapEdits_ && project.mapEdits_->Terrain()); const auto sources = CaptureWorldTerrainSources(project); QVERIFY(sources.Succeeded());
+    std::shared_ptr<WorldTerrainCache> cache;
+    {
+        WorldShadowInput input; input.read = project.ReadMapMember("war3map.shd"); QVERIFY(input.read->Succeeded());
+        input.context = {WorldShadowTerrainRelation::TerrainAndPathingUnchanged, project.mapEdits_->SessionIdentity(),
+            project.mapEdits_->Revision(), project.mapEdits_->TerrainSourceRevision(), false};
+        const auto loaded = LoadWorldTerrain(members[1].data, sources, {}, input, &cache); QVERIFY(loaded.Succeeded());
+    } // 输入Result及raw销毁，cache只拥有事实/诊断和既有environment。
+    QVERIFY(cache && cache->environment); const auto originalEnvironment = cache->environment;
+    const auto diagnosticsRows = project.diagnosticsModel_->rowCount(); const auto cachedNotes = cache->notes.size();
+    MapData::TerrainBrush brush; brush.kind = MapData::TerrainBrushKind::Raise; brush.radius = 0; brush.strength = 1;
+    const MapData::TerrainStrokePoint point{128, 192};
+    QVERIFY(project.mapEdits_->EditTerrain(brush, std::span(&point, 1), false).Succeeded());
+    WorldShadowContext context{WorldShadowTerrainRelation::TerrainOrPathingEdited, project.mapEdits_->SessionIdentity(),
+        project.mapEdits_->Revision(), project.mapEdits_->TerrainSourceRevision(), true};
+    const auto rebuilt = RebuildWorldTerrain(*project.mapEdits_->Terrain(), *cache, {}, {},
+        Render::TerrainGroundBlightPolicy::Legacy, Render::TerrainGroundRepresentation::Expanded, context);
+    QVERIFY(rebuilt.Succeeded() && rebuilt.value->environment == originalEnvironment);
+    QVERIFY(rebuilt.value->shadowObservation.context.terrainRelation == WorldShadowTerrainRelation::TerrainOrPathingEdited);
+    QVERIFY(cache->shadowObservation.context.terrainRelation == WorldShadowTerrainRelation::TerrainAndPathingUnchanged);
+    const auto summary = WorldShadowSummary(rebuilt.value->shadowObservation, rebuilt.value->environment.get());
+    const auto details = WorldShadowDetails(rebuilt.value->shadowObservation, rebuilt.value->environment.get());
+    QVERIFY(summary.contains(QStringLiteral("地形或通行性已变化")) && details.contains(QStringLiteral("草稿未用于")));
+    for (unsigned i = 0; i < 4; ++i) {
+        QCOMPARE(WorldShadowSummary(rebuilt.value->shadowObservation, originalEnvironment.get()), summary);
+        QCOMPARE(WorldShadowDetails(rebuilt.value->shadowObservation, originalEnvironment.get()), details);
+    }
+    QCOMPARE(project.diagnosticsModel_->rowCount(), diagnosticsRows); QCOMPARE(cache->notes.size(), cachedNotes);
+    QVERIFY(project.mapEdits_->Undo()); context.terrainRelation = WorldShadowTerrainRelation::TerrainAndPathingUnchanged;
+    context.revision = project.mapEdits_->Revision(); context.pendingSourceChanges = false;
+    const auto undone = RebuildWorldTerrain(*project.mapEdits_->Terrain(), *cache, {}, {},
+        Render::TerrainGroundBlightPolicy::Legacy, Render::TerrainGroundRepresentation::Expanded, context);
+    QVERIFY(undone.Succeeded() && undone.value->environment == originalEnvironment);
+    QVERIFY(undone.value->shadowObservation.context.terrainRelation == WorldShadowTerrainRelation::TerrainAndPathingUnchanged);
+    QVERIFY(WorldShadowDetails(undone.value->shadowObservation, originalEnvironment.get()).contains(QStringLiteral("不证明源阴影")));
+    const auto raw = project.ReadMapMember("war3map.shd"); QVERIFY(raw.Succeeded()); QCOMPARE(*raw.value, originalShadow);
+    QCOMPARE(*Sha256File(path).value, sourceSha);
 }
 
 void WorldModuleTests::DockWorkspaceUsesLeftTabsAndRestoresBottomAssets() {

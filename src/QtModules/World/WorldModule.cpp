@@ -20,6 +20,7 @@
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
+#include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/Render/SceneEnvironment.h"
 
 #include "Widgets/ElidedLabel.h"
@@ -56,6 +57,26 @@ namespace War3Map::Modules {
 namespace {
 
 QString Count(std::size_t value) { return QLocale().toString(static_cast<qulonglong>(value)); }
+
+WorldShadowContext ShadowContextFor(const QtProject::EditorProject& project, const MapData::TerrainGridSnapshot* source) {
+    WorldShadowContext context;
+    if (const auto* edits = project.MapEdits(); edits && source && edits->Terrain().get() == source) {
+        // 共用公开净变化比较器也包含WPM；说明据此覆盖地形/通行性，不能冒称纯W3E变化。
+        context.terrainRelation = MapData::TerrainSavePlan::HasTerrainChanges(*edits) ? WorldShadowTerrainRelation::TerrainOrPathingEdited
+            : WorldShadowTerrainRelation::TerrainAndPathingUnchanged;
+        context.sessionIdentity = edits->SessionIdentity(); context.revision = edits->Revision();
+        context.terrainSourceRevision = edits->TerrainSourceRevision();
+    }
+    const auto isShadow = [](const QString& path) {
+        auto canonical = path; canonical.replace(QLatin1Char('\\'), QLatin1Char('/'));
+        return canonical.compare(QLatin1String("war3map.shd"), Qt::CaseInsensitive) == 0;
+    };
+    context.pendingSourceChanges = std::any_of(project.pendingImports_.begin(), project.pendingImports_.end(),
+        [&](const auto& entry) { return isShadow(entry.archivePath); })
+        || std::any_of(project.assetEdits_.begin(), project.assetEdits_.end(),
+            [&](const auto& entry) { return isShadow(entry.from) || isShadow(entry.to); });
+    return context;
+}
 
 // 属性栏的悬崖一行：短句给数量，悬停给逐项原因。
 QString CliffSummary(const Render::TerrainCliffs* cliffs) {
@@ -194,12 +215,12 @@ QString GroundBudgetDetails(const Render::TerrainGroundMesh& ground) {
     return lines.join(QLatin1Char('\n'));
 }
 
-QString EnvironmentSummary(const Render::SceneEnvironment* environment) {
-    if (!environment) return QObject::tr("默认光照");
+QString EnvironmentSummary(const Render::SceneEnvironment* environment, const WorldShadowObservation& shadow) {
+    if (!environment) return QObject::tr("默认光照 · ") + WorldShadowSummary(shadow, nullptr);
     const auto& v = environment->values;
     QString text = v.fogMode == WAR3_RENDER_FOG_NONE ? QObject::tr("无雾")
         : QObject::tr("雾 %1–%2").arg(static_cast<double>(v.fogStart), 0, 'f', 0).arg(static_cast<double>(v.fogEnd), 0, 'f', 0);
-    text += environment->shadow.empty() ? QObject::tr(" · 无静态阴影") : QObject::tr(" · 静态阴影");
+    text += QStringLiteral(" · ") + WorldShadowSummary(shadow, environment);
     return text;
 }
 
@@ -347,7 +368,8 @@ void WorldModule::ShowSceneFacts(const WorldTerrainLoaded& loaded, const Render:
     }
     sceneCliffs_->setText(CliffSummary(ground ? cliffs_.get() : nullptr));
     sceneCliffs_->setToolTip(CliffDetails(ground ? cliffs_.get() : nullptr));
-    sceneLighting_->setText(EnvironmentSummary(loaded.environment.get()));
+    sceneLighting_->setText(EnvironmentSummary(loaded.environment.get(), loaded.shadowObservation));
+    sceneLighting_->setToolTip(WorldShadowDetails(loaded.shadowObservation, loaded.environment.get()));
     sceneNotes_->setVisible(!loaded.materialNote.isEmpty());
     sceneNotes_->setText(ground && ground->budget.reduced ? tr("已保留基础贴图，部分地形细节未显示")
         : tr("部分资源不可用，已按近似方式显示"));
@@ -479,9 +501,10 @@ void WorldModule::Refresh() {
     if (const auto document = CurrentDocument(); document && document->Settings())
         settings = CaptureWorldEnvironment(&*document->Settings());
     environmentInputs_ = settings;
-    // 静态阴影可缺省；读取失败视为没有阴影。
-    std::optional<std::vector<std::byte>> shadow;
-    if (auto shd = project_.ReadMapMember("war3map.shd"); shd.Succeeded()) shadow = std::move(*shd.value);
+    // 保留完整读取结果：失败的存在性仍Unknown，成功空正文仍为Present；不重试或回退game。
+    WorldShadowInput shadow;
+    shadow.context = ShadowContextFor(project_, sourceRaw.get());
+    shadow.read.emplace(project_.ReadMapMember("war3map.shd"));
     auto result = std::make_shared<Result<WorldTerrainLoaded>>();
     auto cache = std::make_shared<std::shared_ptr<WorldTerrainCache>>();
     // 先加载函数表并实际查询（renderer可为null）；不能等首次height mesh提交后才发现新能力。
@@ -1082,6 +1105,7 @@ void WorldModule::StartTerrainRender() {
     const auto serial = request.serial;
     const bool preview = request.preview;
     const auto source = request.source;
+    const auto shadowContext = ShadowContextFor(project_, source.get());
     const auto representation = viewport_->HasTerrainGridSupport()
         ? Render::TerrainGroundRepresentation::SharedGrid : Render::TerrainGroundRepresentation::Expanded;
     const auto blightPolicy = representation == Render::TerrainGroundRepresentation::SharedGrid || viewport_->HasTerrainBlightSupport()
@@ -1092,15 +1116,18 @@ void WorldModule::StartTerrainRender() {
     if (cliffsInLayer_ && cliffLayer_ && animation_ && !selectedWaterFrame)
         if (const auto scene = animation_->Scene())
             cliffSession = Render::AnimationSession{scene->generation, scene->documentRevision, scene->sourceIdentity};
-    auto* worker = QThread::create([request = std::move(request), cache, keepCliffs, result, cliffSession, blightPolicy, representation] {
+    auto* worker = QThread::create([request = std::move(request), cache, keepCliffs, result, cliffSession, blightPolicy, representation, shadowContext] {
         if (request.selectedWaterFrame)
-            *result = RebuildWorldTerrain(*request.source, *cache, keepCliffs, request.selectedWaterFrame, blightPolicy, representation);
+            *result = RebuildWorldTerrain(*request.source, *cache, keepCliffs, request.selectedWaterFrame, blightPolicy, representation, shadowContext);
         else if (request.preview) {
             auto preview = std::make_shared<MapData::TerrainGridSnapshot>(*request.source);
             auto stroke = MapData::ApplyTerrainStroke(*preview, request.brush, request.points);
             if (!stroke.Succeeded()) { result->diagnostics = std::move(stroke.diagnostics); return; }
-            *result = RebuildWorldTerrain(*preview, *cache, keepCliffs, std::nullopt, blightPolicy, representation);
-        } else *result = RebuildWorldTerrain(*request.source, *cache, nullptr, std::nullopt, blightPolicy, representation);
+            auto previewContext = shadowContext;
+            if (!stroke.value->Empty() && previewContext.terrainRelation != WorldShadowTerrainRelation::Unknown)
+                previewContext.terrainRelation = WorldShadowTerrainRelation::TerrainOrPathingEdited;
+            *result = RebuildWorldTerrain(*preview, *cache, keepCliffs, std::nullopt, blightPolicy, representation, previewContext);
+        } else *result = RebuildWorldTerrain(*request.source, *cache, nullptr, std::nullopt, blightPolicy, representation, shadowContext);
         if (!cliffSession || !result->Succeeded() || !result->value->cliffs || result->value->cliffs == keepCliffs || !cache->reader) return;
         try {
             auto layer = PrepareWorldCliffLayer(result->value->cliffs, [&cache](std::string_view path, std::uint64_t maximum) {

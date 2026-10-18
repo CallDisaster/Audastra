@@ -46,6 +46,18 @@ bool Textured(const WorldTerrainLoaded& loaded) {
     return loaded.mesh.stride == 1 && loaded.terrain->tiles.size() * 4 <= Render::TerrainGroundMeshLimits{}.maxVertices;
 }
 
+WorldShadowObservation ObserveShadow(const WorldShadowInput& input, const Result<WorldTerrainSources>& sources) {
+    WorldShadowObservation observation;
+    observation.context = input.context;
+    if (sources.Succeeded()) observation.sourceArchiveSha = sources.value->archiveSha;
+    if (input.read) {
+        observation.readDiagnostics = input.read->diagnostics;
+        observation.readState = input.read->Succeeded() ? WorldShadowReadState::Present : WorldShadowReadState::ReadFailed;
+        if (input.read->Succeeded()) observation.sourceBytes = input.read->value->size();
+    }
+    return observation;
+}
+
 // 地表网格与悬崖（缓存已就绪时）。
 void Surface(WorldTerrainLoaded& loaded, WorldTerrainCache& cache, std::shared_ptr<const Render::TerrainCliffs> keepCliffs,
     const Render::TerrainWaterStyle* selectedWater, Render::TerrainGroundBlightPolicy blightPolicy,
@@ -128,8 +140,52 @@ bool SameWorldFog(const WorldEnvironmentInputs& left, const WorldEnvironmentInpu
         && a.fogColor.alpha == b.fogColor.alpha;
 }
 
+QString WorldShadowSummary(const WorldShadowObservation& shadow, const Render::SceneEnvironment* environment) {
+    if (shadow.readState == WorldShadowReadState::NotObserved) return QObject::tr("静态阴影未观测");
+    if (shadow.readState == WorldShadowReadState::ReadFailed) return QObject::tr("静态阴影未加载（存在性未确认）");
+    QString text = QObject::tr("源图静态阴影未解析");
+    if (environment) switch (environment->shadowInput.state) {
+        case Render::SceneShadowInputState::NotProvided: break;
+        case Render::SceneShadowInputState::Parsed: text = QObject::tr("源图静态阴影"); break;
+        case Render::SceneShadowInputState::PresentEmpty: text = QObject::tr("源图静态阴影为空（未显示）"); break;
+        case Render::SceneShadowInputState::Rejected: text = QObject::tr("源图静态阴影不可用（未显示）"); break;
+    }
+    if (shadow.context.terrainRelation == WorldShadowTerrainRelation::TerrainOrPathingEdited)
+        text += QObject::tr(" · 地形或通行性已变化，阴影未重建");
+    else if (shadow.context.terrainRelation == WorldShadowTerrainRelation::Unknown)
+        text += QObject::tr(" · 地形关系未观测");
+    return text;
+}
+
+QString WorldShadowDetails(const WorldShadowObservation& shadow, const Render::SceneEnvironment* environment) {
+    QStringList lines{WorldShadowSummary(shadow, environment)};
+    lines << QObject::tr("仅观察源图基线SHD；不从游戏同名资源补入，不证明原版烘焙或强度语义。");
+    if (!shadow.sourceArchiveSha.empty()) lines << QObject::tr("源图 SHA：%1").arg(QString::fromStdString(shadow.sourceArchiveSha));
+    if (shadow.readState == WorldShadowReadState::Present)
+        lines << QObject::tr("已读原字：%1 字节").arg(static_cast<qulonglong>(shadow.sourceBytes));
+    else lines << QObject::tr("没有准确缺失证明，成员存在性仍未确认。");
+    if (shadow.context.terrainRelation == WorldShadowTerrainRelation::TerrainAndPathingUnchanged)
+        lines << QObject::tr("当前会话地形与通行性未改；这不证明源阴影已经按当前场景重新烘焙。");
+    if (shadow.context.sessionIdentity) lines << QObject::tr("会话 %1 · 修订 %2 · 地形来源代际 %3")
+        .arg(static_cast<qulonglong>(shadow.context.sessionIdentity)).arg(static_cast<qulonglong>(shadow.context.revision))
+        .arg(static_cast<qulonglong>(shadow.context.terrainSourceRevision));
+    if (shadow.context.pendingSourceChanges)
+        lines << QObject::tr("存在静态阴影资源草稿，当前资源草稿未用于此源图阴影预览。");
+    const auto append = [&lines](const std::vector<Diagnostic>& diagnostics) {
+        for (const auto& diagnostic : diagnostics) {
+            auto text = QString::fromStdString(diagnostic.subsystem) + QStringLiteral(" · ")
+                + QString::fromStdString(diagnostic.code) + QStringLiteral(" · ") + QString::fromUtf8(diagnostic.message);
+            if (diagnostic.origin) text += QStringLiteral(" · ") + QString::fromStdWString(diagnostic.origin->source.wstring());
+            lines << text;
+        }
+    };
+    append(shadow.readDiagnostics);
+    if (environment) append(environment->shadowInput.diagnostics);
+    return lines.join(QLatin1Char('\n'));
+}
+
 Result<WorldTerrainLoaded> LoadWorldTerrain(std::span<const std::byte> bytes, const Result<WorldTerrainSources>& sources,
-    const std::optional<WorldEnvironmentInputs>& environmentInputs, const std::optional<std::vector<std::byte>>& shadow,
+    const std::optional<WorldEnvironmentInputs>& environmentInputs, const WorldShadowInput& shadow,
     std::shared_ptr<WorldTerrainCache>* cache, Render::TerrainGroundBlightPolicy blightPolicy,
     Render::TerrainGroundRepresentation representation) {
     const auto* settings = environmentInputs ? &environmentInputs->settings : nullptr;
@@ -142,6 +198,7 @@ Result<WorldTerrainLoaded> LoadWorldTerrain(std::span<const std::byte> bytes, co
         if (!shaped.Succeeded()) return shaped;
         auto& loaded = *shaped.value;
         loaded.rawTerrain = std::move(raw);
+        loaded.shadowObservation = ObserveShadow(shadow, sources);
         if (!sources.Succeeded()) {
             // 目录资源尚未接入时保留高度预览；身份失效、读取失败和预算拒绝不能伪装成成功。
             if (sources.diagnostics.size() != 1 || sources.diagnostics.front().code != "WORLD_ASSET_DIRECTORY_UNSUPPORTED")
@@ -153,6 +210,7 @@ Result<WorldTerrainLoaded> LoadWorldTerrain(std::span<const std::byte> bytes, co
         if (!reader.Succeeded()) return {std::nullopt, std::move(reader.diagnostics)};
         auto created = std::make_shared<WorldTerrainCache>();
         created->reader = std::move(*reader.value);
+        created->shadowObservation = loaded.shadowObservation;
         if (!Textured(loaded)) {
             loaded.materialNote = QObject::tr("地表网格超过逐格贴图预算，当前显示高度预览");
             // 高度预览也持有来源租约，UI 提交前仍须复核，不因贴图预算跳过身份检查。
@@ -165,7 +223,8 @@ Result<WorldTerrainLoaded> LoadWorldTerrain(std::span<const std::byte> bytes, co
             settings ? settings->lightEnvironment : std::uint8_t{0});
         auto environment = Render::BuildSceneEnvironment(lighting.unit ? &*lighting.unit : nullptr,
             settings, environmentInputs && environmentInputs->terrainFog, *loaded.terrain,
-            shadow ? std::optional<std::span<const std::byte>>(*shadow) : std::nullopt);
+            shadow.read && shadow.read->Succeeded()
+                ? std::optional<std::span<const std::byte>>(*shadow.read->value) : std::nullopt);
         created->notes << Messages(lighting.notes) << Messages(environment.notes);
         created->environment = std::make_shared<const Render::SceneEnvironment>(std::move(environment));
         created->lighting = Render::TerrainLightingFrom(lighting.terrain ? &*lighting.terrain : nullptr);
@@ -186,7 +245,8 @@ Result<WorldTerrainLoaded> LoadWorldTerrain(std::span<const std::byte> bytes, co
 
 Result<WorldTerrainLoaded> RebuildWorldTerrain(const MapData::TerrainGridSnapshot& raw, WorldTerrainCache& cache,
     std::shared_ptr<const Render::TerrainCliffs> keepCliffs, std::optional<std::uint32_t> selectedWaterFrame,
-    Render::TerrainGroundBlightPolicy blightPolicy, Render::TerrainGroundRepresentation representation) {
+    Render::TerrainGroundBlightPolicy blightPolicy, Render::TerrainGroundRepresentation representation,
+    const std::optional<WorldShadowContext>& shadowContext) {
     try {
         if (cache.reader) {
             const auto current = cache.reader->VerifyCurrentSource();
@@ -194,6 +254,8 @@ Result<WorldTerrainLoaded> RebuildWorldTerrain(const MapData::TerrainGridSnapsho
         }
         auto shaped = Shape(raw);
         if (!shaped.Succeeded()) return shaped;
+        shaped.value->shadowObservation = cache.shadowObservation;
+        if (shadowContext) shaped.value->shadowObservation.context = *shadowContext;
         if (selectedWaterFrame && (!cache.reader || !cache.water || !cache.waterDefinition
             || raw.header.mainTileset != cache.header.mainTileset
             || raw.header.groundTilesets != cache.header.groundTilesets))

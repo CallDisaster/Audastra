@@ -18,6 +18,34 @@
 // 世界视图的地形构建（后台线程）：完整读取与地形编辑后的快速重建共用一处实现。
 namespace War3Map::Modules {
 
+enum class WorldShadowReadState { NotObserved, ReadFailed, Present };
+// 复用现公开净变化比较器，包含W3E或WPM变化，不推断源阴影bake身份。
+enum class WorldShadowTerrainRelation { Unknown, TerrainAndPathingUnchanged, TerrainOrPathingEdited };
+
+struct WorldShadowContext {
+    WorldShadowTerrainRelation terrainRelation = WorldShadowTerrainRelation::Unknown;
+    std::uint64_t sessionIdentity = 0, revision = 0, terrainSourceRevision = 0;
+    bool pendingSourceChanges = false;
+};
+
+struct WorldShadowInput {
+    // nullopt为未观测；失败仍带原诊断，成功空正文仍是Present。没有ExactMissing推断。
+    std::optional<Result<std::vector<std::byte>>> read;
+    WorldShadowContext context;
+};
+
+struct WorldShadowObservation {
+    WorldShadowReadState readState = WorldShadowReadState::NotObserved;
+    std::string sourceArchiveSha;
+    std::size_t sourceBytes = 0;
+    std::vector<Diagnostic> readDiagnostics;
+    WorldShadowContext context;
+};
+
+// 只格式化已有事实，不读来源、不重试、不写全局诊断；便于UI重绘复用同一次观测。
+[[nodiscard]] QString WorldShadowSummary(const WorldShadowObservation& shadow, const Render::SceneEnvironment* environment);
+[[nodiscard]] QString WorldShadowDetails(const WorldShadowObservation& shadow, const Render::SceneEnvironment* environment);
+
 struct WorldTerrainLoaded {
     WorldTerrainMesh mesh;
     std::shared_ptr<const MapData::TerrainGridSnapshot> rawTerrain; // 解析后的原始 W3E，显式水帧重建不二次抬高坡道
@@ -29,6 +57,7 @@ struct WorldTerrainLoaded {
     std::optional<WorldCliffLayerFrame> cliffLayer; // 请求时为新烘焙的悬崖准备的独立层
     std::vector<Diagnostic> cliffLayerDiagnostics;
     QString materialNote;
+    WorldShadowObservation shadowObservation;
 };
 
 // 完整读取时建立、编辑重建时复用的资源：已打开的资源读取器（不重新校验整张地图）、地表贴图、
@@ -47,13 +76,14 @@ struct WorldTerrainCache {
     std::map<std::string, std::optional<std::vector<std::byte>>, std::less<>> modelFiles;
     QStringList notes; // 光照、环境等与地形内容无关的提示
     std::shared_ptr<const Render::SceneEnvironment> environment;
+    WorldShadowObservation shadowObservation; // 无raw，不因编辑重建重新读取或重复发布失败诊断。
 };
 
 // 完整读取：解析地形并读取全部地表资源。地表资源可用时 *cache 为新建的缓存，否则为空。
 // blightPolicy由UI在worker开始前实际查询provider能力后传入；默认Legacy保持旧provider/minimap语义。
 [[nodiscard]] Result<WorldTerrainLoaded> LoadWorldTerrain(std::span<const std::byte> bytes,
     const Result<WorldTerrainSources>& sources, const std::optional<WorldEnvironmentInputs>& environment,
-    const std::optional<std::vector<std::byte>>& shadow, std::shared_ptr<WorldTerrainCache>* cache,
+    const WorldShadowInput& shadow, std::shared_ptr<WorldTerrainCache>* cache,
     Render::TerrainGroundBlightPolicy blightPolicy = Render::TerrainGroundBlightPolicy::Legacy,
     Render::TerrainGroundRepresentation representation = Render::TerrainGroundRepresentation::Expanded);
 
@@ -65,6 +95,7 @@ struct WorldTerrainCache {
     WorldTerrainCache& cache, std::shared_ptr<const Render::TerrainCliffs> keepCliffs,
     std::optional<std::uint32_t> selectedWaterFrame = std::nullopt,
     Render::TerrainGroundBlightPolicy blightPolicy = Render::TerrainGroundBlightPolicy::Legacy,
-    Render::TerrainGroundRepresentation representation = Render::TerrainGroundRepresentation::Expanded);
+    Render::TerrainGroundRepresentation representation = Render::TerrainGroundRepresentation::Expanded,
+    const std::optional<WorldShadowContext>& shadowContext = std::nullopt);
 
 } // namespace War3Map::Modules

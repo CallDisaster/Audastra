@@ -1,7 +1,10 @@
 #include "War3MapCore/Render/SceneEnvironment.h"
+#include "War3MapCore/MapData/MapShadow.h"
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <utility>
 
 namespace War3Map::Render {
 namespace {
@@ -71,15 +74,25 @@ SceneEnvironment BuildSceneEnvironment(const SceneLight* unitLight, const MapDat
     ApplySceneFog(output, settings, terrainFog);
 
     if (shadowMap) {
+        output.shadowInput.sourceBytes = shadowMap->size();
         const auto columns = static_cast<std::uint64_t>(grid.header.width > 0 ? grid.header.width - 1 : 0) * kShadowCellsPerTile;
         const auto rows = static_cast<std::uint64_t>(grid.header.height > 0 ? grid.header.height - 1 : 0) * kShadowCellsPerTile;
-        if (columns == 0 || rows == 0 || columns > 8192 || rows > 8192 || shadowMap->size() != columns * rows) {
-            Note(output, "SCENE_SHADOW_SIZE", "war3map.shd 大小与地形不符（应为 " + std::to_string(columns) + "×"
-                + std::to_string(rows) + " 字节），未显示静态阴影。");
+        // W3E维度先扩展为u64，超出u32时用codec的零维度拒绝，不截断成另一布局。
+        const auto dimension = [](std::uint64_t value) {
+            return value <= std::numeric_limits<std::uint32_t>::max() ? static_cast<std::uint32_t>(value) : 0u;
+        };
+        auto parsed = MapData::ParseMapShadow(*shadowMap, dimension(columns), dimension(rows));
+        if (!parsed.Succeeded()) {
+            output.shadowInput.state = shadowMap->empty() ? SceneShadowInputState::PresentEmpty : SceneShadowInputState::Rejected;
+            output.shadowInput.diagnostics = std::move(parsed.diagnostics);
+            Note(output, "SCENE_SHADOW_SIZE", "war3map.shd 无法用于当前预览网格（" + std::to_string(columns) + "×"
+                + std::to_string(rows) + " 字节），未显示静态阴影；原诊断见阴影详情。");
         } else {
-            output.shadow.resize(shadowMap->size());
-            std::transform(shadowMap->begin(), shadowMap->end(), output.shadow.begin(),
-                [](std::byte value) { return value != std::byte{0} ? std::uint8_t{255} : std::uint8_t{0}; });
+            output.shadowInput.state = SceneShadowInputState::Parsed;
+            // move唯一codec输出后原位归一化，不同时保留raw/parsed/preview三份格数组。
+            output.shadow = std::move(parsed.value->intensities);
+            std::transform(output.shadow.begin(), output.shadow.end(), output.shadow.begin(),
+                [](std::uint8_t value) { return value != 0 ? std::uint8_t{255} : std::uint8_t{0}; });
             v.shadowWidth = static_cast<std::uint32_t>(columns);
             v.shadowHeight = static_cast<std::uint32_t>(rows);
             v.shadowOriginX = grid.header.offset[0];
