@@ -8,6 +8,7 @@
 #include <cctype>
 #include <cwctype>
 #include <limits>
+#include <map>
 #include <random>
 #include <set>
 #include <stdexcept>
@@ -131,25 +132,6 @@ Render::TerrainMinimapMipFacts DecodeClassic(std::span<const std::byte> bytes) {
         if (decoded.rgba[index] != std::byte{255}) Fail("MINIMAP_SAVE_ENCODING", "自动小地图真实解码必须完全不透明。");
     return {decoded.width, decoded.height, decoded.rgba.size(), decoded.rgba.capacity(), Take(Sha256(decoded.rgba))};
 }
-void MatchObjectMembers(const Render::ClassicMinimapObjectAssets& assets, const MapArchiveSession& archive,
-    const MapSaveTask* task, bool saved) {
-    const auto& facts = assets.CapturedMembers();
-    std::array<std::string, 2> names{facts[0].memberName, facts[1].memberName};
-    const auto actual = Capture(archive, names, Render::ClassicMinimapObjectAssetLimits{}.maxObjectMemberBytes * 2);
-    for (std::size_t index = 0; index < facts.size(); ++index) {
-        const auto& expected = saved ? facts[index].currentSha256 : facts[index].sourceSha256;
-        if (actual[index].present != !expected.empty()
-            || (actual[index].present && Take(Sha256(actual[index].bytes)) != expected))
-            Fail("MINIMAP_SAVE_OBJECT_SOURCE", "自动小地图对象成员来源或回读与真实捕获不一致。");
-        if (!task) continue;
-        const auto key = Key(names[index]);
-        RequireNotRemoved(*task, key);
-        const auto* replacement = Replacement(*task, key);
-        const auto finalSha = replacement ? Take(Sha256(replacement->data)) : expected;
-        if (finalSha != facts[index].currentSha256)
-            Fail("MINIMAP_SAVE_OBJECT_STALE", "最终DOO成员与自动小地图本次捕获的对象不一致。");
-    }
-}
 void NoTga(const MapSaveTask& task, const MapArchiveSession& archive) {
     const std::array<std::string, 1> names{"war3mapMap.tga"};
     // 只问真实存在性，不读取或解析作者可能很大的TGA正文。
@@ -183,13 +165,37 @@ Result<bool> TerrainMinimapSave::RequiresAutomaticGeneration(const MapSaveTask& 
         const auto identities = Take(task.archive->DescribeExactMemberIdentities(task.sourceSha256, names, limits));
         if (identities.members[0].present || Replacement(task, "war3mapmap.tga")) return Result<bool>::Success(false);
         if (!identities.members[1].present) return Result<bool>::Success(true);
+        // 模板经常重现原W3I/DOO/native原字；成员出现在替换列表里不等于
+        // 内容发生变化。所有相关成员在同一次源租约中批量取身份，避免
+        // 每比较一个成员都重新散列整张大地图。
+        std::map<std::string, const MemberReplacement*> relevant;
         for (const auto& replacement : task.replacements) {
             const auto key = Key(replacement.name);
-            if (AffectsMinimap(key))
+            if (AffectsMinimap(key) && !relevant.emplace(key, &replacement).second)
+                Fail("MINIMAP_SAVE_DOMAIN", "小地图依赖成员在最终保存列表中重复出现。");
+        }
+        for (const auto& removed : task.removals) {
+            const auto key = Key(removed);
+            if (AffectsMinimap(key) && !relevant.emplace(key, nullptr).second)
+                Fail("MINIMAP_SAVE_DOMAIN", "小地图依赖成员重复删除或同时替换和删除。");
+        }
+        if (relevant.empty()) return Result<bool>::Success(false);
+        std::vector<std::string> paths;
+        paths.reserve(relevant.size());
+        for (const auto& [path, replacement] : relevant) paths.push_back(path);
+        limits.memberCount = paths.size();
+        const auto baseline = Take(task.archive->DescribeExactMemberIdentities(task.sourceSha256, paths, limits));
+        std::size_t index = 0;
+        for (const auto& [path, replacement] : relevant) {
+            const auto& source = baseline.members[index++];
+            if (!replacement) {
+                if (source.present) return Result<bool>::Success(true);
+                continue;
+            }
+            if (!source.present || source.byteSize != replacement->data.size()
+                || !source.sha256 || Take(Sha256(replacement->data)) != *source.sha256)
                 return Result<bool>::Success(true);
         }
-        for (const auto& removed : task.removals)
-            if (AffectsMinimap(Key(removed))) return Result<bool>::Success(true);
         return Result<bool>::Success(false);
     } catch (Failure& failure) { return {{}, std::move(failure.diagnostics)}; }
     catch (const std::exception&) {
@@ -256,37 +262,30 @@ Result<std::shared_ptr<const TerrainMinimapSave>> TerrainMinimapSave::PrepareAut
 Status TerrainMinimapSave::VerifyAutomaticCurrent(const MapSaveTask& task, const MapData::MapDataEditSession& edits,
     const std::filesystem::path& gameRoot) const {
     return Guard([&] {
-        Check(VerifyAutomaticFrozenOutput(task));
+        Check(VerifyAutomaticTaskIdentity(task));
         Check(plan_->VerifyForSave(edits, task.sourceSha256, task.replacements, task.removals));
-        Check(Render::VerifyTerrainMinimapAssetsCurrent(classicAssets_->TerrainAssets(), *task.archive, edits, gameRoot,
-            limits_.assets));
-        MatchObjectMembers(*classicAssets_, *task.archive, &task, false);
-        // 当前编辑身份同时由Terrain资产和plan复核；对象当前字节还要来自该会话，
-        // 不能只比较源DOO或最终task哈希。
-        for (std::size_t index = 0; index < 2; ++index) {
-            const auto document = Take(edits.Snapshot(index == 0 ? MapDataKind::Units : MapDataKind::Doodads,
-                limits_.objects.maxCurrentSnapshotBytes));
-            const auto& member = document.Member(index == 0 ? MapDataKind::Units : MapDataKind::Doodads);
-            const auto& expected = classicAssets_->CapturedMembers()[index].currentSha256;
-            if (member.state == MapDataState::Missing) {
-                if (!expected.empty()) Fail("MINIMAP_SAVE_OBJECT_STALE", "当前对象成员已不再存在。");
-            } else if (member.sources.size() != 1 || Take(Sha256(member.sources[0].data)) != expected)
-                Fail("MINIMAP_SAVE_OBJECT_STALE", "当前对象成员与自动小地图冻结输入不同。");
-        }
+        NoTga(task, *task.archive);
+        Check(Render::VerifyClassicMinimapObjectAssetsCurrent(*classicAssets_, *task.archive, edits, gameRoot,
+            limits_.assets, limits_.objects, task.replacements, task.removals));
     });
 }
 
-Status TerrainMinimapSave::VerifyAutomaticFrozenOutput(const MapSaveTask& task) const {
+Status TerrainMinimapSave::VerifyAutomaticTaskIdentity(const MapSaveTask& task) const {
     return Guard([&] {
         SourceTask(task);
         if (&task != taskIdentity_ || task.archive.get() != archiveIdentity_ || Path(task.sourcePath) != sourcePath_
             || Path(task.target) != targetPath_ || task.sourceSha256 != plan_->SourceSha256())
             Fail("MINIMAP_SAVE_SOURCE", "自动小地图资格不属于本次冻结任务或目标。");
         Check(plan_->VerifyFrozenOutput(task.sourceSha256, task.replacements, task.removals));
+    });
+}
+
+Status TerrainMinimapSave::VerifyAutomaticFrozenOutput(const MapSaveTask& task) const {
+    return Guard([&] {
+        Check(VerifyAutomaticTaskIdentity(task));
         NoTga(task, *task.archive);
-        MatchObjectMembers(*classicAssets_, *task.archive, &task, false);
-        Check(Render::VerifyTerrainMinimapAssetsFrozenOutput(classicAssets_->TerrainAssets(), *task.archive,
-            task.replacements, task.removals, limits_.assets));
+        Check(Render::VerifyClassicMinimapObjectAssetsFrozenOutput(*classicAssets_, *task.archive,
+            task.replacements, task.removals, limits_.assets, limits_.objects));
     });
 }
 
@@ -299,8 +298,7 @@ Status TerrainMinimapSave::VerifyAutomaticReadback(const MapSaveTask& task, cons
             Fail("MINIMAP_SAVE_TARGET", "自动小地图回读不是本次真实保存目标。");
         Check(plan_->VerifyFrozenOutput(task.sourceSha256, task.replacements, task.removals));
         Check(plan_->VerifyReadback(saved, limits_.plan));
-        Check(Render::VerifyTerrainMinimapAssetsReadback(classicAssets_->TerrainAssets(), saved, limits_.assets));
-        MatchObjectMembers(*classicAssets_, saved, nullptr, true);
+        Check(Render::VerifyClassicMinimapObjectAssetsReadback(*classicAssets_, saved, limits_.assets, limits_.objects));
         NoTga(task, saved);
         const std::array<std::string, 1> names{"war3mapMap.blp"};
         const auto members = Capture(saved, names, limits_.classic.maxBlpBytes);

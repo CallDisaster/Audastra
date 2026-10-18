@@ -60,6 +60,7 @@ private:
         const std::filesystem::path& gameRoot, const TerrainMinimapSaveLimits& limits);
     [[nodiscard]] Status VerifyAutomaticCurrent(const MapSaveTask& task, const MapData::MapDataEditSession& edits,
         const std::filesystem::path& gameRoot) const;
+    [[nodiscard]] Status VerifyAutomaticTaskIdentity(const MapSaveTask& task) const;
     [[nodiscard]] Status VerifyAutomaticFrozenOutput(const MapSaveTask& task) const;
     [[nodiscard]] Status VerifyAutomaticReadback(const MapSaveTask& task, const MapArchiveSession& saved) const;
     [[nodiscard]] Status VerifyTask(const MapSaveTask& task, bool beforeAdmission) const;

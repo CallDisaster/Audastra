@@ -410,6 +410,17 @@ void AutomaticDecisionUsesExactSourceMembers() {
     MapSaveTask untouched; existing.Freeze(untouched);
     Require(!Take(TerrainMinimapSave::RequiresAutomaticGeneration(untouched)),
         "已有BLP且地形与对象未变时必须沿用原字，空BLP仍是已存在成员");
+    untouched.replacements.push_back({"WAR3MAP.W3E", existing.w3e});
+    untouched.replacements.push_back({"war3map.w3i", *existing.w3i});
+    untouched.replacements.push_back({"war3map.w3u", Take(existing.source.ReadMember("war3map.w3u"))});
+    Require(!Take(TerrainMinimapSave::RequiresAutomaticGeneration(untouched)),
+        "模板重现原W3E/W3I/native原字不算净变化，不能额外读取贴图和重建噪点");
+    untouched.replacements.push_back({"unrelated.bin", Text("changed unrelated member")});
+    untouched.removals.push_back("not-present.blp");
+    Require(!Take(TerrainMinimapSave::RequiresAutomaticGeneration(untouched)),
+        "无关成员变化和不存在的依赖删除不应重建小地图");
+    untouched.removals.push_back("Fixture/Ground.blp");
+    Require(Take(TerrainMinimapSave::RequiresAutomaticGeneration(untouched)), "真正删除贴图依赖会触发重建");
     existing.Stroke(); MapSaveTask changed; existing.Freeze(changed);
     Require(Take(TerrainMinimapSave::RequiresAutomaticGeneration(changed)),
         "地形变化后普通保存必须自动重建已有BLP，而不是仅在缺失时补建");
