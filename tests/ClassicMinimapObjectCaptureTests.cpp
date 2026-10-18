@@ -273,12 +273,25 @@ void TestZeroNonzeroStaleAndBudget() {
     auto zeroSource = zero.Source("zero-present.w3x", false, true);
     Rejected(CaptureClassicMinimapObjectAssets(CaptureTerrain(zero, zeroSource), zeroSource, zero.edits), "CLASSIC_OBJECT_CAPTURE_ZERO_BYTES");
     auto nonzero = MapDataFixtures::EmptyUnitsV8Sub11(); Put32(nonzero, 12, 1);
-    Fixture count(nonzero, MapDataFixtures::EmptyDoodadsV8Sub11(), nonzero, MapDataFixtures::EmptyDoodadsV8Sub11()); auto countSource = count.Source("count.w3x");
+    Fixture count(nonzero, MapDataFixtures::EmptyDoodadsV8Sub11(),
+        MapDataFixtures::EmptyUnitsV8Sub11(), MapDataFixtures::EmptyDoodadsV8Sub11());
+    auto countSource = count.Source("count.w3x");
     Rejected(CaptureClassicMinimapObjectAssets(CaptureTerrain(count, countSource), countSource, count.edits), "PLACEMENT_TRUNCATED");
+    Fixture currentCount(MapDataFixtures::EmptyUnitsV8Sub11(), MapDataFixtures::EmptyDoodadsV8Sub11(),
+        nonzero, MapDataFixtures::EmptyDoodadsV8Sub11());
+    auto currentCountSource = currentCount.Source("current-count.w3x");
+    Rejected(CaptureClassicMinimapObjectAssets(CaptureTerrain(currentCount, currentCountSource),
+        currentCountSource, currentCount.edits), "MAP_SOURCE_UNSAFE");
     auto special = MapDataFixtures::EmptyDoodadsV8Sub11(); Put32(special, 20, 1);
-    Fixture specialCount(MapDataFixtures::EmptyUnitsV8Sub11(), special, MapDataFixtures::EmptyUnitsV8Sub11(), special);
+    Fixture specialCount(MapDataFixtures::EmptyUnitsV8Sub11(), special,
+        MapDataFixtures::EmptyUnitsV8Sub11(), MapDataFixtures::EmptyDoodadsV8Sub11());
     auto specialSource = specialCount.Source("special-count.w3x");
     Rejected(CaptureClassicMinimapObjectAssets(CaptureTerrain(specialCount, specialSource), specialSource, specialCount.edits), "PLACEMENT_TRUNCATED");
+    Fixture currentSpecialCount(MapDataFixtures::EmptyUnitsV8Sub11(), MapDataFixtures::EmptyDoodadsV8Sub11(),
+        MapDataFixtures::EmptyUnitsV8Sub11(), special);
+    auto currentSpecialSource = currentSpecialCount.Source("current-special-count.w3x");
+    Rejected(CaptureClassicMinimapObjectAssets(CaptureTerrain(currentSpecialCount, currentSpecialSource),
+        currentSpecialSource, currentSpecialCount.edits), "MAP_SOURCE_UNSAFE");
     Fixture stale; auto staleSource = stale.Source("stale.w3x"); auto terrain = CaptureTerrain(stale, staleSource);
     TerrainBrush brush; brush.kind = TerrainBrushKind::Raise; brush.radius = 0; brush.strength = 1;
     const TerrainStrokePoint point{256, 256};
