@@ -103,6 +103,8 @@ add_library(War3MapRenderSupport STATIC
     Scene/ClassicMinimapCandidate.cpp
     Scene/ClassicMinimapTerrainRules.cpp
     Scene/ClassicMinimapObjectAssets.cpp
+    Scene/ClassicMinimapObjectLayer.cpp
+    Scene/ClassicMinimapObjectLayerCapture.cpp
     Scene/TerrainMinimapRepresentativeColor.cpp
     Scene/TerrainMinimapAssets.cpp
     Scene/ViewRay.cpp
@@ -117,7 +119,7 @@ add_library(War3MapRenderSupport STATIC
     Scene/ModelPickingPrecise.cpp
     Scene/EditorOverlay.cpp)
 add_library(War3MapEditor::RenderSupport ALIAS War3MapRenderSupport)
-target_link_libraries(War3MapRenderSupport PUBLIC War3MapEditor::Core War3RenderCore::CPU)
+target_link_libraries(War3MapRenderSupport PUBLIC War3MapEditor::Core War3MapEditor::ObjectData War3RenderCore::CPU)
 target_compile_definitions(War3MapRenderSupport PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(War3MapRenderSupport PRIVATE /W4 /permissive- /utf-8)
 

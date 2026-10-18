@@ -368,7 +368,7 @@ Result<ClassicMinimapCandidate> Build(const InputView& input,
             if (input.terrain.classicColors) {
                 const auto& classic = *input.terrain.classicColors;
                 if (const auto cliff = Take(ClassicMinimapCliffTextureAt(*grid, x, y))) {
-                    if (*cliff >= classic.cliffColors.size())
+                    if (*cliff >= classic.cliffColors.size() || classic.cliffColors[*cliff][3] != 255)
                         Fail("CLASSIC_MINIMAP_CLIFF_COLOR", "实际悬崖类型缺少冻结的代表色。");
                     color = classic.cliffColors[*cliff]; ++output.manifest.cliffTiles;
                 }
@@ -395,6 +395,13 @@ Result<ClassicMinimapCandidate> Build(const InputView& input,
             color[3] = 255;
             const auto pixel = static_cast<std::size_t>(y - rectangle[1]) * imageWidth + x - rectangle[0];
             SetRgba(output.raw, pixel, color);
+        }
+        if (input.captured) {
+            for (const auto& pixel : input.captured->ObjectLayer().pixels) {
+                if (pixel.x < rectangle[0] || pixel.x >= rectangle[2] || pixel.y < rectangle[1] || pixel.y >= rectangle[3]) continue;
+                SetRgba(output.raw, static_cast<std::size_t>(pixel.y - rectangle[1]) * imageWidth + pixel.x - rectangle[0], pixel.color);
+                ++output.manifest.objectPixels;
+            }
         }
         output.manifest.rawRgbaSha256 = Take(Sha256(output.raw.rgba));
         TerrainMinimapPostprocessLimits postLimits;

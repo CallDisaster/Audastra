@@ -244,6 +244,7 @@ public:
         for (unsigned i = 0; i < 8; ++i) bytes[i] = static_cast<std::byte>((value >> (i * 8)) & 255);
         Check(stream_.Update(bytes));
     }
+    void F64(double value) { U64(std::bit_cast<std::uint64_t>(value)); }
     void Text(std::string_view value) { U64(value.size()); Check(stream_.Update(std::as_bytes(std::span(value.data(), value.size())))); }
     std::string Finish() { return Take(stream_.Finish()); }
 private:

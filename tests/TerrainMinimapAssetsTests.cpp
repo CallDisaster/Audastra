@@ -6,6 +6,7 @@
 #include "War3MapCore/MapData/TerrainEditing.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/MapDocument.h"
+#include "War3MapCore/Render/ClassicMinimapObjectAssets.h"
 #include "../src/Core/Mpq/MpqCrypt.h"
 
 #include <Windows.h>
@@ -867,10 +868,37 @@ void TestDeclaredExteriorMapEdgeW3iFailuresAndGameWinners() {
     RequireRejected(VerifyTerrainMinimapAssetsReadback(snapshot, saved), "TERRAIN_ASSETS_FINAL_DEPENDENCY");
 }
 
+void TestClassicPlayableCaptureAndDependencyReadback() {
+    auto settings = W3i(); Put32(settings, 72, 0x400);
+    Fixture fixture(false, settings);
+    auto resources = Materials();
+    resources.push_back({"UI\\MiscData.txt", Text("; original fixture\n")});
+    resources.push_back({"UI\\WorldEditData.txt", Text("[CameraMargins]\nLeft=4\nRight=4\nBottom=2\nTop=2\n")});
+    auto source = fixture.Source("classic-playable.w3x", resources);
+    auto terrain = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, TerrainMinimapRangePolicy::ClassicPlayable));
+    Require(terrain.Input().classicColors && terrain.Input().classicColors->cameraMarginsConfigured
+        && terrain.Input().classicColors->cameraMargins == std::array<double, 4>{4, 4, 2, 2},
+        "Classic必须从同次实际资源读取配置，不能用调用者verified标记");
+    Require(terrain.Dependencies().size() == 7, "三表、W3I、两配置和atlas都必须计入依赖");
+    Require(VerifyTerrainMinimapAssetsCurrent(terrain, source, fixture.edits, {}).Succeeded(), "Classic真实当前来源复核");
+    Require(VerifyTerrainMinimapAssetsFrozenOutput(terrain, source, {}).Succeeded(), "Classic冻结来源复核");
+    const std::vector<MemberReplacement> changed{{"UI\\WorldEditData.txt", Text("[CameraMargins]\nLeft=9\n")}};
+    RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(terrain, source, changed), "TERRAIN_ASSETS_FINAL_BYTES");
+    auto saved = Saved(fixture, source, "classic-readback.w3x");
+    Require(VerifyTerrainMinimapAssetsReadback(terrain, saved).Succeeded(), "Classic同源依赖输出回读");
+    auto objects = Take(CaptureClassicMinimapObjectAssets(std::move(terrain), source, fixture.edits));
+    TerrainMinimapPostprocessSettings filters; filters.noisePercent = 0;
+    const auto candidate = Take(BuildClassicMinimapCandidate(objects, filters));
+    Require(candidate.manifest.sourceRectangle == std::array<std::uint32_t, 4>{1, 2, 5, 7}
+        && candidate.raw.width == 4 && candidate.raw.height == 5, "真实捕获应通到Classic可玩域逐格图");
+    Require(candidate.encoded.quality == 40 && candidate.finalImage.width == 256, "实际捕获应接到单mip JPEG输出");
+}
+
 } // namespace
 
 int main() {
     try {
+        TestClassicPlayableCaptureAndDependencyReadback();
         TestActualMapWinnerAndOriginalMips(); TestGameFallbackAndWinnerChange(); TestSameGamePathChangedMember();
         TestMissingDoesNotHideUnreadable(); TestUnlistedExactAndReadError();
         TestBaselineAndCurrentRevision(); TestDuplicatePathsAndBudgets();
