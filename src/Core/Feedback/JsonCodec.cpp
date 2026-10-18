@@ -96,7 +96,8 @@ QueueState State(const Json& value) {
 AgentIssue Issue(const Json& value) {
     return Enum<AgentIssue>(String(value, 64), {{"unspecified", AgentIssue::Unspecified}, {"internal-tool-error", AgentIssue::InternalToolError},
         {"unhandled-exception", AgentIssue::UnhandledException}, {"application-save-defect", AgentIssue::ApplicationSaveDefect},
-        {"assertion-failure", AgentIssue::AssertionFailure}, {"unexplained-render-failure", AgentIssue::UnexplainedRenderFailure}, {"user-map-error", AgentIssue::UserMapError}});
+        {"assertion-failure", AgentIssue::AssertionFailure}, {"unexplained-render-failure", AgentIssue::UnexplainedRenderFailure}, {"user-map-error", AgentIssue::UserMapError},
+        {"tool-usability-gap", AgentIssue::ToolUsabilityGap}, {"compatibility-gap", AgentIssue::CompatibilityGap}});
 }
 std::string HexBytes(std::span<const std::byte> bytes) {
     constexpr std::string_view digits = "0123456789abcdef";

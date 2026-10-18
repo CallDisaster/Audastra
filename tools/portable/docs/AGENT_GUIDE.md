@@ -98,9 +98,12 @@ war3-map-cli map-edit-save <source-map> <source-sha256> <terrain-sha256> <ydwe-r
 war3-map-cli terrain-blight-save <source-map> <source-sha256> <terrain-sha256> <ydwe-root> <war3-root> <vertex-x> <vertex-y> <radius-0..16> <set|clear> <new-candidate.w3x> [--layer <id> ...]
 war3-map-cli script-build <ydwe-root> <war3-root> <map> <out.j> [--compile <work-dir> [--external|--cross-check]]
 war3-map-cli archive-member-add <source-map> <source-sha256> <new-candidate.w3x> <member> <file> [<member> <file> ...]
+war3-map-cli archive-member-remove <source-map> <source-sha256> <new-candidate.w3x> <member> [<member> ...]
 ```
 
 往地图里补文件只能用 `archive-member-add`（CLI）或编辑器端口的 `imports_add`（MCP）。保存只写本次改动涉及的成员，不扫描工作目录，把文件拷进展开目录不会进入候选。导入清单里标志不明的旧记录，在补回它指向的唯一成员后按原记录保留；两个可能路径都有成员时仍拒绝。
+
+删除导入文件用 `archive-member-remove`（CLI）或编辑器端口的 `imports_remove`（MCP），成员和它在 `war3map.imp` 里的记录一起删除，地图数据文件不能删。这两个入口都不检查模型、脚本或物编是否还在用这些文件，删除前要先自己确认；没有查到引用不等于可以删。
 
 旋转角度范围为 `[0,360)`；复制最多4096个来源实例；笔划最多16笔，CLI 点位是地形顶点索引。raise/lower strength 为 `>0..1024`，smooth 为 `>0..1`；通行性和布局门禁仍会进一步拒绝不安全来源。地物跟随、其他未开放笔刷不因此放开。`--layer` 必须是已发现的真实函数库层，不能拿虚构层绕过目录检查。
 
@@ -141,7 +144,14 @@ stdio 是 UTF-8 **newline JSON-RPC**：每行一条完整 JSON，响应以换行
 - 页查询传入 `expected_map_data_binding`、`kind`、`expected_member_snapshot`、字符串 `start_index` 和数值 `limit`（1..128）。可设 `max_logical_bytes`（1..262144）；单次输出还受 JSON 字节预算限制。
 - 使用页返回的 row identity 和 raw，未知/缺失/部分/歧义不是空表成功。目录或 Catalog 漂移时重新取身份，不能自己修改 revision 或续用旧 cursor。
 
-这些目录数据查询仅包括已提交来源，不包括未保存 GUI 状态；活动触发器事务时拒绝。直接查询归档副本可用 CLI。
+这些目录数据查询仅包括已提交来源，不包括未保存 GUI 状态；活动触发器事务时拒绝。
+
+**直接查询地图归档**（独立 MCP，无需展开目录）：`describe_map_data` 和 `query_map_data_page` 以 `source_map_path` 代替 `expected_revision`，二者只能给一个。
+
+- `describe_map_data` 可不带 SHA，返回的 `binding.source_sha256` 即该归档的 SHA。
+- 页查询必须带 `expected_source_sha256`。
+- 绑定为 `archive-readonly-<SHA>`，`workspace_kind` 为 `map-archive-readonly`，与 CLI `map-data-query` 相同。
+- 返回的 `source_index`、`row_key`、成员 `member_sha256` 和字段 `raw` 直接用于下文 `save_map_edit_candidate` 的 `field_edits`；保存后对候选再查一次以回读确认。
 
 ### 字段候选保存
 

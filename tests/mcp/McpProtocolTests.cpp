@@ -370,6 +370,60 @@ void TestArchiveMemberIdentities() {
     Expect(War3Map::Sha256File(path).value == sourceSha.value, "readonly archive query changed source bytes");
 }
 
+// 独立 MCP 不展开目录也能只读查询地图归档：绑定与 CLI map-data-query 相同，结果可交给 field_edits。
+void TestArchiveMapDataQuery() {
+    QTemporaryDir temporary; Expect(temporary.isValid(), "archive map data temporary directory missing");
+    const auto path = std::filesystem::path(temporary.path().toStdWString()) / L"归档 查询.w3x";
+    const std::string wts = "STRING 1\r\n{\r\nHello\r\n}\r\n";
+    std::vector<std::byte> wtsBytes(wts.size());
+    std::transform(wts.begin(), wts.end(), wtsBytes.begin(), [](char c) { return static_cast<std::byte>(c); });
+    const std::vector<War3Map::Mpq::MpqBuildFile> files{{"war3map.wts", wtsBytes, false, {}}};
+    Expect(War3Map::Mpq::WriteMpqArchive(path, files).Succeeded(), "archive map data fixture failed");
+    const auto sourceSha = War3Map::Sha256File(path);
+    Expect(sourceSha.Succeeded(), "archive map data fixture hash missing");
+    const QString sha = QString::fromStdString(*sourceSha.value), pathText = QString::fromStdWString(path.wstring());
+    War3Map::Mcp::McpServer server; War3Map::Mcp::RegisterAllTools(server);
+    const auto request = [](const char* name, QJsonObject arguments) { return QJsonDocument(QJsonObject{{"jsonrpc", "2.0"},
+        {"id", 33}, {"method", "tools/call"}, {"params", QJsonObject{{"name", name}, {"arguments", arguments}}}})
+        .toJson(QJsonDocument::Compact); };
+    const auto call = [&](const char* name, QJsonObject arguments) {
+        const auto response = server.HandleMessage(request(name, std::move(arguments)));
+        Expect(response && !response->error, "archive map data protocol failed");
+        const auto content = response->result.toObject().value("content").toArray();
+        Expect(content.size() == 1, "archive map data response missing");
+        return QJsonDocument::fromJson(content[0].toObject().value("text").toString().toUtf8()).object(); };
+    const auto failedWith = [](const QJsonObject& result, const char* code) {
+        return !result.value("ok").toBool() && QJsonDocument(result).toJson().contains(code); };
+
+    const auto described = call("describe_map_data", {{"source_map_path", pathText}});
+    const auto binding = described.value("binding").toObject();
+    Expect(described.value("ok").toBool() && described.value("workspace_kind") == "map-archive-readonly"
+        && described.value("revision").isNull() && binding.value("source_sha256").toString() == sha
+        && binding.value("document_id").toString() == "archive-readonly-" + sha,
+        "archive describe must work without a directory workspace and report the source SHA binding");
+    QJsonObject strings;
+    for (const auto& value : described.value("members").toArray())
+        if (value.toObject().value("kind") == "strings") strings = value.toObject();
+    Expect(strings.value("state") == "ready" && strings.value("member_sha256").isString(), "archive strings member not described");
+
+    QJsonObject page{{"source_map_path", pathText}, {"expected_source_sha256", sha},
+        {"expected_map_data_binding", binding}, {"kind", "strings"},
+        {"expected_member_snapshot", strings.value("snapshot_token")}, {"start_index", "0"}, {"limit", 8}};
+    const auto rows = call("query_map_data_page", page);
+    Expect(rows.value("ok").toBool() && rows.value("rows").toArray().size() == 1
+        && rows.value("rows").toArray()[0].toObject().value("row_key").isString(),
+        "archive page must return rows with row keys usable by field_edits");
+
+    auto noSha = page; noSha.remove("expected_source_sha256");
+    Expect(failedWith(call("query_map_data_page", noSha), "MCP_MAP_DATA_SOURCE_SHA_INVALID"), "archive page accepted a missing source SHA");
+    auto stale = page; stale["expected_source_sha256"] = QString(64, QLatin1Char('0'));
+    Expect(failedWith(call("query_map_data_page", stale), "MAP_DATA_QUERY_STALE"), "archive page accepted a stale source SHA");
+    auto both = page; both["expected_revision"] = QJsonObject{{"generation", "1"}, {"source_sha256", sha}, {"ui_catalog_sha256", sha}};
+    Expect(failedWith(call("query_map_data_page", both), "MCP_MAP_DATA_SOURCE_SCOPE"), "archive and workspace sources were mixed");
+    Expect(failedWith(call("describe_map_data", {}), "MCP_MAP_DATA_SOURCE_SCOPE"), "describe without any source was accepted");
+    Expect(War3Map::Sha256File(path).value == sourceSha.value, "readonly archive map data query changed source bytes");
+}
+
 void TestMapDataPageBinding() {
     using War3Map::Mcp::McpServer;
     using War3Map::Mcp::RegisterAllTools;
@@ -940,6 +994,7 @@ int main() {
         TestToolSurface();
         TestLuaListPagingProtocol();
         TestArchiveMemberIdentities();
+        TestArchiveMapDataQuery();
         TestMapDataPageBinding();
         TestProjectSearchTypePreparation();
         TestProjectSearchImportInputBudgets();

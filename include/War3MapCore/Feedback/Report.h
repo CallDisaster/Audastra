@@ -8,7 +8,9 @@ enum class ReportSource : std::uint8_t { User, Agent };
 enum class ReportKind : std::uint8_t { Problem, Suggestion };
 enum class AgentIssue : std::uint8_t {
     Unspecified, InternalToolError, UnhandledException, ApplicationSaveDefect,
-    AssertionFailure, UnexplainedRenderFailure, UserMapError
+    AssertionFailure, UnexplainedRenderFailure, UserMapError,
+    // 程序工具本身不合理或缺能力（非崩溃）：仍属程序自身问题，不承载地图内容。
+    ToolUsabilityGap, CompatibilityGap
 };
 
 struct ApplicationInfo {

@@ -31,14 +31,14 @@
 | 需求 | 已见工具 | 使用要点 |
 |---|---|---|
 | 工作区身份/事务 | get_revision、begin_edit、preview_edit、validate_edit、rollback_edit | 阅读实际 revision、来源复核、transaction 和 edit generation 合同 |
-| 地图只读/归档 | describe_map_data、query_map_data_page、query_map_archive_member_identities | 分页、覆盖和真实成员身份；成员哈希不授权读不透明正文 |
+| 地图只读/归档 | describe_map_data、query_map_data_page、query_map_archive_member_identities | 分页、覆盖和真实成员身份；成员哈希不授权读不透明正文。前两者可用 source_map_path 直接只读查询 .w3x（与 expected_revision 二选一），结果直接用于 save_map_edit_candidate 的 field_edits |
 | 七类物编 | objects_list、objects_get、objects_field_options、objects_set_fields、objects_create、objects_delete | GUI/独立入口共用 schema；rawcode区分大小写，未知引用覆盖禁止删除 |
 | 变量 | variables_list、variables_get、variables_create、variables_update、variables_rename、variables_delete | 当前StableId与opaque修订；改名需要实际代码块SHA审计，未知引用删除拒绝 |
 | 实体字段 C1 | entities_query、entities_set_fields | 当前typed覆盖查询；source_index、row_key、完整成员SHA、精确raw与CAS成组绑定；doodads只读 |
 | 预放命令 C2 有限范围 | entities_rotate、entities_copy | classic普通units/doodads；绝对朝向弧度与共同XYZ偏移copy，原Undo/有限原来源保存；真实单位两类保存与回读通过，地物真实保存及整个实体CRUD尚未验收 |
 | 设置与字符串 D | map_settings_get/set、strings_query/set | 稳定w3i/string_id、当前成员SHA/raw/CAS；v25 literal与已有WTS shared_string显式区分；原Undo/字段保存，不创建WTS或整组D–H |
 | 已有声音 E0 | sounds_list/get/update | 原名字字节sound_id、当前成员SHA/raw/CAS；只改完整classic v1的volume/fade_in/fade_out整数，原Undo/字段保存；扩展、歧义及其它属性拒绝，真实/原版/游戏验收另记 |
-| 导入元数据 E1 | imports_list/get | 区分原IMP记录、物理成员与GUI待导入队列，绑定source/inventory及当前修订的cursor；默认64/最多128行、每页最多4096行匹配检查。保留原flags/path hex/歧义与覆盖未知；pending只reported_bytes，不读磁盘、不造SHA。只读，不提供正文、导入写或删除 |
+| 导入元数据 E1 | imports_list/get | 区分原IMP记录、物理成员与GUI待导入队列，绑定source/inventory及当前修订的cursor；默认64/最多128行、每页最多4096行匹配检查。保留原flags/path hex/歧义与覆盖未知；pending只reported_bytes，不读磁盘、不造SHA。只读，不提供正文。新增/删除走编辑器端口的 imports_add / imports_remove（进资源撤销栈，删除不检查引用）或 CLI archive-member-add / archive-member-remove |
 | 单位查询 C3 | 原 entities_query | 可选精确type_id/player组合筛选，绑定同身份/成员SHA/过滤的原索引cursor；每页128行、4096原记录检查，大表总数未知；不新增工具或改变保存 |
 | 普通单位坐标 C4 | 原 entities_set_fields | Ready classic8/11 non-sloc行绝对native x/y/z；有限±1000000先double校验，原Undo/fieldEdits保存；sloc/Skin/Partial拒绝，三轴实图原保存回读通过 |
 | 自然 T 图 | query_trigger_graph、edit_trigger_graph | categories/variables/triggers/ecas/arguments/map_objects；真实 ID、类型和 guard |

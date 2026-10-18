@@ -124,6 +124,16 @@ data:text/plain;base64,cHJpdmF0ZQ==
         auto agent = AgentDraft();
         agent.agentIssue = AgentIssue::UserMapError;
         Require(!CleanDraft(agent, context).Succeeded(), "agent cannot report user map errors");
+        for (const auto gap : {AgentIssue::ToolUsabilityGap, AgentIssue::CompatibilityGap}) {
+            agent.agentIssue = gap;
+            const auto report = CleanDraft(agent, context);
+            Require(report.Succeeded() && report.value->agentIssue == gap, "agent may report tool usability and compatibility gaps");
+            auto withoutCode = agent;
+            withoutCode.errorCode.clear();
+            Require(!CleanDraft(withoutCode, context).Succeeded(), "gap reports still need an error code");
+        }
+        Require(AgentIssueName(AgentIssue::ToolUsabilityGap) == "tool-usability-gap"
+            && AgentIssueName(AgentIssue::CompatibilityGap) == "compatibility-gap", "gap names are stable");
         agent.agentIssue = AgentIssue::InternalToolError;
         agent.includeConversation = true;
         agent.conversationSnippet = "no automatic conversation";

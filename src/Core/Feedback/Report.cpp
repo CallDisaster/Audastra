@@ -27,7 +27,8 @@ bool ValidCommit(std::string_view commit, const PrivacyContext& context) {
     return std::none_of(context.secretValues.begin(), context.secretValues.end(), [&](const auto& secret) { return commit.find(secret) != std::string_view::npos; });
 }
 bool ProgramIssue(AgentIssue issue) {
-    return issue >= AgentIssue::InternalToolError && issue <= AgentIssue::UnexplainedRenderFailure;
+    return (issue >= AgentIssue::InternalToolError && issue <= AgentIssue::UnexplainedRenderFailure)
+        || issue == AgentIssue::ToolUsabilityGap || issue == AgentIssue::CompatibilityGap;
 }
 
 } // namespace
@@ -53,6 +54,8 @@ std::string_view AgentIssueName(AgentIssue value) noexcept {
     case AgentIssue::AssertionFailure: return "assertion-failure";
     case AgentIssue::UnexplainedRenderFailure: return "unexplained-render-failure";
     case AgentIssue::UserMapError: return "user-map-error";
+    case AgentIssue::ToolUsabilityGap: return "tool-usability-gap";
+    case AgentIssue::CompatibilityGap: return "compatibility-gap";
     }
     return "invalid";
 }
