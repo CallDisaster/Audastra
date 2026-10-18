@@ -422,6 +422,13 @@ Result<ClassicMinimapObjectAssets> CaptureClassicMinimapObjectAssets(TerrainMini
         MapData::UnitPlacements units;
         MapData::DoodadPlacements doodads;
         for (std::size_t i = 0; i < 2; ++i) {
+            // 先解析冻结源正文，再读取当前会话。这样源成员损坏时优先
+            // 返回其确定的布局/截断门，而不会被当前会话的同一损坏副本
+            // 先折叠成泛化的 current-layout 诊断。
+            MapData::UnitPlacements sourceUnits; MapData::DoodadPlacements sourceDoodads;
+            ClassicMinimapObjectMemberFacts sourceFacts, currentFacts;
+            ParseObjectMember(i, members[i], sourceFacts, limits, sourceUnits, sourceDoodads);
+
             const auto current = Take(edits.Snapshot(kKinds[i], limits.maxCurrentSnapshotBytes));
             const auto& member = current.Member(kKinds[i]);
             ArchiveExactMember currentMember{kMembers[i], member.state != MapDataState::Missing, {}};
@@ -431,9 +438,6 @@ Result<ClassicMinimapObjectAssets> CaptureClassicMinimapObjectAssets(TerrainMini
                     Fail("CLASSIC_OBJECT_CAPTURE_CURRENT_LAYOUT", "当前对象层必须是唯一且可完整解析的Ready成员。");
                 currentMember.bytes = member.sources.front().data;
             }
-            MapData::UnitPlacements sourceUnits; MapData::DoodadPlacements sourceDoodads;
-            ClassicMinimapObjectMemberFacts sourceFacts, currentFacts;
-            ParseObjectMember(i, members[i], sourceFacts, limits, sourceUnits, sourceDoodads);
             ParseObjectMember(i, currentMember, currentFacts, limits, units, doodads);
             auto& fact = facts.members[i] = std::move(currentFacts);
             fact.memberName = kMembers[i]; fact.sourcePresent = members[i].present; fact.currentPresent = currentMember.present;
