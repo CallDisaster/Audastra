@@ -305,6 +305,15 @@ Result<std::shared_ptr<const TerrainMinimapSave>> TerrainMinimapSave::Prepare(
         planLimits.maximumBytes = std::min(planLimits.maximumBytes, available);
         auto plan = std::make_shared<MapData::TerrainSavePlan>(Take(MapData::TerrainSavePlan::Prepare(*task.archive, edits, planLimits)));
         Check(plan->VerifyMissingMinimapEligibility(edits));
+        // RoC及作者自定义小地图可以使用TGA。BLP缺失不等于小地图缺失；必须在
+        // 同一真实来源上按准确名字核验，未列名/空正文仍是已存在，读取失败不降级。
+        const std::array<std::string, 1> tgaName{"war3mapMap.tga"};
+        ArchiveExactMemberLimits tgaLimits;
+        tgaLimits.memberCount = 1;
+        tgaLimits.memberBytes = tgaLimits.totalBytes = std::min(tgaLimits.totalBytes, available);
+        const auto tga = Take(task.archive->DescribeExactMemberIdentities(task.sourceSha256, tgaName, tgaLimits));
+        if (tga.members.front().present)
+            Fail("MINIMAP_SAVE_TGA_PRESENT", "源图已有TGA小地图，本次保留作者原图，不补建BLP。");
         Check(plan->VerifyForSave(edits, task.sourceSha256, task.replacements, task.removals));
         available = Remaining(available, plan->OwnedCapacityBytes());
         auto captureLimits = CaptureLimits(limits.assets, available, rangePolicy);

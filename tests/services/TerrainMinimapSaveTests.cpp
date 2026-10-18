@@ -120,7 +120,7 @@ struct Fixture {
     std::filesystem::path gameRoot;
     MapArchiveSession source;
     explicit Fixture(bool presentMinimap = false, bool gameWinner = false, bool colorful = false,
-        std::optional<Bytes> settings = {}, bool standardEdges = false)
+        std::optional<Bytes> settings = {}, bool standardEdges = false, std::optional<Bytes> minimapTga = {})
         : w3i(std::move(settings)), edits(SettingsDocument(w3i)) {
         TerrainGridSnapshot terrain;
         terrain.header.width = terrain.header.height = 9; terrain.header.mainTileset = 'L';
@@ -144,6 +144,7 @@ struct Fixture {
         members.push_back({"war3map.shd", {std::byte{17}, std::byte{25}}});
         members.push_back({"unrelated.bin", Text("original unrelated member")});
         if (presentMinimap) members.push_back({"war3mapMap.blp", {}});
+        if (minimapTga) members.push_back({"war3mapMap.TGA", *minimapTga});
         Take(WriteVerifiedArchive(directory.Path() / "source.w3x", members));
         source = Take(MapArchiveSession::Open(directory.Path() / "source.w3x"));
         gameRoot = directory.Path() / "game"; Require(std::filesystem::create_directory(gameRoot), "创建原创game来源目录");
@@ -324,6 +325,25 @@ void FinalListRevisionAndWinnersAreReal() {
     Rejected(gamePrepared->VerifyFrozenOutput(gameTask));
 }
 
+void ExistingTgaCannotBeShadowedByGeneratedBlp() {
+    for (const auto& tga : {Bytes{}, Text("original custom TGA payload")}) {
+        Fixture fixture(false, false, false, {}, false, tga);
+        fixture.Stroke(); MapSaveTask task; fixture.Freeze(task);
+        const auto sourceSha = Take(Sha256File(fixture.source.SourcePath()));
+        const auto replacements = task.replacements;
+        const auto revision = fixture.edits.Revision();
+        for (const auto choice : {TerrainMinimapSaveChoice::GenerateMissingGroundOnly,
+            TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly})
+            Rejected(TerrainMinimapSave::Prepare(task, fixture.edits, fixture.gameRoot, choice), "MINIMAP_SAVE_TGA_PRESENT");
+        const auto preserve = TerrainMinimapSave::Prepare(task, fixture.edits, fixture.gameRoot, TerrainMinimapSaveChoice::Preserve);
+        Require(preserve.Succeeded() && !*preserve.value, "ordinary preserve does not regenerate or decode author TGA");
+        Require(task.replacements.size() == replacements.size() && !task.executed && !std::filesystem::exists(task.target)
+            && fixture.edits.Revision() == revision && fixture.edits.IsDirty(), "TGA refusal leaves task, target and pending edits unchanged");
+        Require(Take(fixture.source.ReadMember("war3mapMap.TGA")) == tga
+            && Take(Sha256File(fixture.source.SourcePath())) == sourceSha, "existing and empty TGA bytes/source remain unchanged");
+    }
+}
+
 void PersistentArchiveSaveCopyAndIndependentOpen() {
     Fixture fixture(false, false, true); fixture.Stroke(); MapSaveTask task; fixture.Freeze(task);
     const auto sourceSha = Take(Sha256File(fixture.source.SourcePath()));
@@ -382,6 +402,7 @@ int main() {
     try {
         PreserveAndEarlyRejections(); FinalListRevisionAndWinnersAreReal(); PersistentArchiveSaveCopyAndIndependentOpen();
         DeclaredChoiceRequiresActualW3iAndRetainsStandardEdges();
+        ExistingTgaCannotBeShadowedByGeneratedBlp();
         std::cout << "Terrain missing-only minimap save tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
