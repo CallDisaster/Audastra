@@ -322,7 +322,8 @@ foreach(slk_service IN ITEMS MapSourceSnapshot OrderedCreation)
     add_test(NAME slk-${slk_service} COMMAND war3-map-slk-${slk_service}-tests)
 endforeach()
 
-add_executable(war3-map-render-d3d11-tests RenderD3D11Tests.cpp RealTerrainPairAudit.cpp RenderD3D11ModelSourceMipTests.h)
+add_executable(war3-map-render-d3d11-tests RenderD3D11Tests.cpp RealTerrainPairAudit.cpp RenderD3D11ModelSourceMipTests.h
+    RenderD3D11TerrainTransitionTests.h)
 target_include_directories(war3-map-render-d3d11-tests PRIVATE "${PROJECT_SOURCE_DIR}/include")
 target_compile_definitions(war3-map-render-d3d11-tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-render-d3d11-tests PRIVATE /W4 /permissive- /utf-8)
@@ -337,6 +338,8 @@ add_test(NAME render-d3d11-headless COMMAND war3-map-render-d3d11-tests)
 set_tests_properties(render-d3d11-headless PROPERTIES TIMEOUT 60)
 add_test(NAME render-d3d11-model-source-mips COMMAND war3-map-render-d3d11-tests --model-source-mips)
 set_tests_properties(render-d3d11-model-source-mips PROPERTIES TIMEOUT 60)
+add_test(NAME render-terrain-transition-seams COMMAND war3-map-render-d3d11-tests --terrain-transition-seams)
+set_tests_properties(render-terrain-transition-seams PROPERTIES TIMEOUT 60)
 
 add_executable(war3-map-terrain-tests MapTerrainTests.cpp)
 target_link_libraries(war3-map-terrain-tests PRIVATE War3MapEditor::Core)

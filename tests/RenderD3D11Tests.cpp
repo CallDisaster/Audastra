@@ -2075,14 +2075,19 @@ void TestEditorVisibility(const War3RenderPluginApiV2* api, const War3RenderCrea
 }
 
 #include "RenderTerrainGridChecks.h"
+#include "RenderD3D11TerrainTransitionTests.h"
 
 int wmain(int argc, wchar_t** argv) {
     HMODULE module = nullptr;
     try {
         const bool realPair = argc > 1 && std::wstring_view(argv[1]) == L"--real-terrain-pair";
         const bool realCliffGround = argc > 1 && std::wstring_view(argv[1]) == L"--real-cliff-ground";
+        const bool terrainTransitionSeams = argc > 1 && std::wstring_view(argv[1]) == L"--terrain-transition-seams";
         const bool modelSourceMips = argc > 1 && std::wstring_view(argv[1]) == L"--model-source-mips";
         for (int argument = 1; argument < argc; ++argument) {
+            if (std::wstring_view(argv[argument]).starts_with(L"--terrain-transition-seams"))
+                Require(argument == 1 && terrainTransitionSeams && argc == 2,
+                    "terrain transition seams requires its sole option; output uses the optional audit environment");
             if (std::wstring_view(argv[argument]).starts_with(L"--real-terrain-pair"))
                 Require(argument == 1 && realPair && argc == 5,
                     "real terrain pair requires the sole first option, manifest, SHA and empty output directory");
@@ -2095,7 +2100,7 @@ int wmain(int argc, wchar_t** argv) {
                 Require(argument == 1 && modelSourceMips && (argc == 2 || argc == 3),
                     "model source mips requires the sole first option and optional new absolute output directory");
         }
-        if (!modelSourceMips) {
+        if (!modelSourceMips && !terrainTransitionSeams) {
             War3Map::Tests::RunRealTerrainPairValidationTests();
             War3Map::Tests::RunRealCliffGroundValidationTests();
         }
@@ -2109,6 +2114,12 @@ int wmain(int argc, wchar_t** argv) {
         Require(getApi != nullptr && getApi(99) == nullptr, "ABI version gate failed");
         const auto* api = getApi(WAR3_RENDER_PLUGIN_API_V2);
         Require(api && api->structSize == sizeof(*api), "V2 ABI unavailable");
+        if (terrainTransitionSeams) {
+            const War3RenderCreateInfoV2 seamInfo{sizeof(seamInfo),512,384,1};
+            TerrainTransitionTest::Run(api,seamInfo);
+            FreeLibrary(module); module = nullptr;
+            return 0;
+        }
         // 原创因果回归只执行CPU来源门与两张完成帧，不进入普通多帧/窗口/硬件测试。
         if (modelSourceMips) {
             ModelSourceMipTest::Run(api,dll,argc == 3 ? std::filesystem::path(argv[2]) : std::filesystem::path{});
