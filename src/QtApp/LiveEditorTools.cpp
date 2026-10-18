@@ -39,6 +39,7 @@
 #include <QJsonDocument>
 #include <QPointer>
 #include <QScopedValueRollback>
+#include <QSet>
 #include <QThread>
 #include <QUndoCommand>
 #include <QUndoStack>
@@ -879,6 +880,41 @@ private:
                 {"project_identity", projectIdentity_}, {"revision", QString::number(project_.editRevision_.Revision())},
                 {"changes", QJsonObject{{"files", added.size()}, {"items", items}}}};
         }
+        if (name == "imports_remove") {
+            // 与资源页的删除同一路径：已有成员记为删除改动，待导入文件直接移出队列；整批一个撤销步骤。
+            const auto entries = project_.AssetEntries();
+            QStringList paths;
+            QSet<QString> requested;
+            QJsonArray removed, items;
+            for (const auto& item : arguments.value("archive_paths").toArray()) {
+                const auto path = item.toString();
+                if (const auto problem = QtProject::EditorProject::CheckAssetPath(path); !problem.isEmpty())
+                    return Mcp::Failure("IMPORTS_REMOVE_REJECTED", (path + QStringLiteral("：") + problem).toStdString());
+                const auto key = QtProject::EditorProject::AssetKey(path);
+                if (requested.contains(key)) return Mcp::Failure("IMPORTS_REMOVE_REJECTED", "同一路径出现多次：" + path.toStdString());
+                requested.insert(key);
+                const auto entry = std::find_if(entries.begin(), entries.end(),
+                    [&](const QtProject::AssetEntry& value) { return QtProject::EditorProject::AssetKey(value.path) == key; });
+                if (entry == entries.end()) return Mcp::Failure("IMPORTS_REMOVE_REJECTED", "找不到资源：" + path.toStdString());
+                paths << path;
+                removed.append(QJsonObject{{"archive_path", entry->path}, {"pending", entry->Pending()},
+                    {"in_source_map", !entry->originalPath.isEmpty()}});
+                items.append(QJsonObject{{"kind", "import"}, {"object_id", ""}, {"title", entry->path},
+                    {"target", entry->path}, {"before", entry->path}, {"after", QJsonValue::Null}});
+            }
+            const auto rejected = project_.RecordAssetEdit(QObject::tr("AI 删除 %1 个导入文件").arg(paths.size()),
+                [&](QtProject::AssetState& state) -> QString {
+                    for (const auto& path : paths)
+                        if (const auto problem = project_.RemoveAsset(state, path); !problem.isEmpty()) return problem;
+                    return {};
+                });
+            if (!rejected.isEmpty()) return Mcp::Failure("IMPORTS_REMOVE_REJECTED", rejected.toStdString());
+            SyncIdentity();
+            emit owner_.Changed();
+            return QJsonObject{{"ok", true}, {"removed", removed}, {"saved", false}, {"references_checked", false},
+                {"project_identity", projectIdentity_}, {"revision", QString::number(project_.editRevision_.Revision())},
+                {"changes", QJsonObject{{"files", removed.size()}, {"items", items}}}};
+        }
         if (!mapTest_) return Mcp::Failure("MAP_TEST_UNAVAILABLE", "宿主尚未接通地图测试。");
         const auto rejected = mapTest_();
         if (!rejected.isEmpty()) return Mcp::Failure("MAP_TEST_REJECTED", rejected.toStdString());
@@ -985,7 +1021,7 @@ private:
                 [this, name](const QJsonObject& args) -> QJsonObject {
                     const Mcp::LuaFileToolHost host{[this](const QString& tool, const QJsonObject& arguments) { return LuaFile(tool, arguments); }};
                     // 写入走共同写门：先提交界面草稿，再核对工程身份与修订。
-                    if (name == "lua_file_write" || name == "imports_add")
+                    if (name == "lua_file_write" || name == "imports_add" || name == "imports_remove")
                         return Write(args, false, [&] { return Mcp::InvokeLuaFileTool(name, args, host); });
                     if (busy_ || project_.savingMap_) return Mcp::Failure("LIVE_EDITOR_BUSY", "地图保存或另一个写命令正在执行。");
                     const auto check = CheckContext(args, false, false);

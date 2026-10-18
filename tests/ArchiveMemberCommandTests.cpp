@@ -31,6 +31,13 @@ int Run(std::vector<std::wstring> arguments) {
     return Cli::RunArchiveMemberAdd(static_cast<int>(argv.size()), argv.data());
 }
 
+int RunRemove(std::vector<std::wstring> arguments) {
+    arguments.insert(arguments.begin(), {L"war3-map-cli", L"archive-member-remove"});
+    std::vector<wchar_t*> argv;
+    for (auto& argument : arguments) argv.push_back(argument.data());
+    return Cli::RunArchiveMemberRemove(static_cast<int>(argv.size()), argv.data());
+}
+
 std::wstring Wide(const std::string& text) { return {text.begin(), text.end()}; }
 
 } // namespace
@@ -77,6 +84,39 @@ int main() {
         Require(listed, "member keeps the author's spelling");
         const auto table = Resources::ImportTable::Parse(*opened.value->ReadMember("war3map.imp").value);
         Require(table.Succeeded() && table.value && table.value->Entries().size() == 1, "import table records the new file");
+
+        // 删除：只删已有的非编辑器管理成员，同时删掉它的导入记录。
+        const auto addedSha = Wide(opened.value->SourceSha256());
+        Require(RunRemove({candidate.wstring(), addedSha, (root / "r1.w3x").wstring(), L"war3map.j"}) == 2,
+            "managed member cannot be removed");
+        Require(RunRemove({candidate.wstring(), addedSha, (root / "r2.w3x").wstring(), L"war3mapImported\\missing.mdx"}) == 2,
+            "missing member is rejected");
+        Require(RunRemove({candidate.wstring(), addedSha, (root / "r3.w3x").wstring(), L"war3mapImported\\Hero.mdx",
+            L"WAR3MAPIMPORTED/HERO.MDX"}) == 2, "duplicate removal is rejected");
+        Require(RunRemove({candidate.wstring(), sha, (root / "r4.w3x").wstring(), L"war3mapImported\\Hero.mdx"}) == 2,
+            "stale source sha is rejected");
+        Require(!std::filesystem::exists(root / "r1.w3x") && !std::filesystem::exists(root / "r2.w3x")
+            && !std::filesystem::exists(root / "r3.w3x") && !std::filesystem::exists(root / "r4.w3x"),
+            "rejected removals write no candidate");
+        const auto removedPath = root / "removed.w3x";
+        Require(RunRemove({candidate.wstring(), addedSha, removedPath.wstring(), L"WAR3MAPIMPORTED/HERO.MDX"}) == 0,
+            "listed member is removed regardless of spelling");
+        auto removed = MapArchiveSession::Open(removedPath);
+        Require(removed.Succeeded() && removed.value, "reopen removal candidate");
+        Require(!removed.value->HasMember("war3mapImported\\Hero.mdx"), "member is gone");
+        Require(removed.value->ReadMember("war3mapImported\\old.mdx").value == std::optional{Bytes("old")},
+            "other members are kept");
+        const auto afterTable = Resources::ImportTable::Parse(*removed.value->ReadMember("war3map.imp").value);
+        Require(afterTable.Succeeded() && afterTable.value && afterTable.value->Entries().empty(), "import record is removed");
+
+        // 未列入导入清单的成员也能删，清单保持原字节。
+        const auto unlistedPath = root / "unlisted.w3x";
+        Require(RunRemove({source.wstring(), sha, unlistedPath.wstring(), L"war3mapImported\\old.mdx"}) == 0,
+            "unlisted member is removed");
+        auto unlisted = MapArchiveSession::Open(unlistedPath);
+        Require(unlisted.Succeeded() && unlisted.value && !unlisted.value->HasMember("war3mapImported\\old.mdx"),
+            "unlisted member is gone");
+        Require(unlisted.value->ReadMember("war3map.imp").value == std::optional{*imp.value}, "import table bytes unchanged");
         std::filesystem::remove_all(root);
         std::cout << "archive-member-add tests passed\n";
         return 0;
