@@ -487,6 +487,17 @@ Status MapDataEditSession::VerifyTerrainPathingForSave() const {
     return VerifyTerrainCandidateForSave(terrain_, pathing_, current_[Index(MapDataKind::Doodads)]);
 }
 
+Status MapDataEditSession::VerifyTerrainSourceBaseline(std::span<const std::byte> sourceBytes) const {
+    if (!terrainOriginal_ || !terrain_)
+        return Status::Failure("MapData.Edit", "TERRAIN_EDIT_INSPECTION_SOURCE_UNSAFE", "地形会话缺少原始或当前 W3E 快照。");
+    const auto serialized = SerializeMapTerrain(*terrainOriginal_);
+    if (!serialized.Succeeded() || !serialized.value)
+        return Status::Failure("MapData.Edit", "TERRAIN_EDIT_INSPECTION_SOURCE_MISMATCH", "无法序列化地形原始基线进行来源核对。");
+    if (*serialized.value != std::vector<std::byte>(sourceBytes.begin(), sourceBytes.end()))
+        return Status::Failure("MapData.Edit", "TERRAIN_EDIT_INSPECTION_SOURCE_MISMATCH", "W3E原始字节与编辑会话基线不同。");
+    return Status::Ok();
+}
+
 Status MapDataEditSession::VerifyTerrainCandidateForSave(
     const std::shared_ptr<const TerrainGridSnapshot>& terrain,
     const std::optional<std::vector<std::byte>>& pathing,

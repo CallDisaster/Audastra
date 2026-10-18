@@ -447,7 +447,7 @@ void TestRealHeightEditsGenerateWithoutChangingSaveAuthority() {
         Require(fixture.edits.EditTerrain(brush, std::span(&point, 1), false).Succeeded(), "真实会话产生中心普通高程编辑");
         Require(fixture.edits.Terrain()->vertices[40].groundHeightRaw == 8192 + delta, "真实笔刷应给出手算raw净差");
         const auto plan = Take(TerrainSavePlan::Prepare(source, fixture.edits));
-        Require(plan.SaveGate().Succeeded() == (delta == 156), "生成域扩大不能放宽正式raw156保存门");
+        Require(plan.SaveGate().Succeeded(), "原版干地高度不变性允许两个14位范围内的纯干地高度差");
         const auto captured = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}));
         const auto candidate = Take(BuildTerrainMinimapCandidate(captured.Input()));
         Require(captured.Binding().archiveSha256 == source.SourceSha256()
@@ -466,9 +466,9 @@ void TestRealHeightEditsGenerateWithoutChangingSaveAuthority() {
             && !TerrainMinimapAssetSnapshot::formalSaveAuthorized && !TerrainMinimapAssetSnapshot::nativeEditorOrGameVerified,
             "真实来源与生成成功仍不授予新派生成员保存或原版资格");
         Require(!VerifyTerrainMinimapAssetsCurrent(original, source, fixture.edits, {}).Succeeded(), "相同像素不能复活旧来源修订");
-        if (delta == 156) {
+        {
             Require(plan.Members()[1].sourceSha256 == plan.Members()[1].outputSha256, "纯高度编辑应原字保留WPM");
-            const auto saved = Take(source.SaveCandidate(fixture.directory.Path() / "height156.w3x", plan.Replacements()));
+            const auto saved = Take(source.SaveCandidate(fixture.directory.Path() / ("height" + std::to_string(delta) + ".w3x"), plan.Replacements()));
             const auto readback = Take(MapArchiveSession::Open(saved.path));
             Require(plan.VerifyReadback(readback).Succeeded(), "现有正式门内W3E输出仍按五成员精确回读");
             const auto savedTerrain = Take(readback.ReadMember("war3map.w3e"));

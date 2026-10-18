@@ -145,6 +145,8 @@ public:
     // 正式地图保存门：干地高度按原版六模式查询不变条件保留WPM；荒芜位与
     // WPM bit5逐格同步。涉水高度、材质通行属性与其它派生数据未知时仍拒绝。
     [[nodiscard]] Status VerifyTerrainPathingForSave() const;
+    // 只核对附入会话的原始 W3E 与外部冻结来源，不读取其它地图成员。
+    [[nodiscard]] Status VerifyTerrainSourceBaseline(std::span<const std::byte> sourceBytes) const;
     [[nodiscard]] EditReceipt LastEdit() const;
     // 最近一次真实应用（提交/Replay/Undo/Redo）；LastEdit仍供原统一撤销栈取得命令。
     [[nodiscard]] EditReceipt LastAppliedEdit() const { return lastApplied_; }

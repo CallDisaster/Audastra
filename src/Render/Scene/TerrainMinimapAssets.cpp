@@ -531,13 +531,30 @@ Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(const MapArchive
         binding.mainTileset = terrain->header.mainTileset;
         {
             // 此处只取得真实基线关系。SaveGate可失败，不能因此授予/改变正式保存资格。
-            const auto plan = Take(MapData::TerrainSavePlan::Prepare(source, edits, {limits.maxSourceBytes}));
-            facts.exactMemberCaptureBatches = 1;
-            for (const auto& member : plan.Members()) if (member.sourceBytes) Add(facts.baselineSourceBytes, *member.sourceBytes, limits.maxSourceBytes);
-            facts.cumulativeSourceBytes = facts.baselineSourceBytes;
-            if (!plan.Members()[0].sourceSha256) Fail("TERRAIN_ASSETS_BASELINE", "源W3E缺少准确成员身份。");
-            binding.originalTerrainSha256 = *plan.Members()[0].sourceSha256;
-            binding.originalTerrainBytes = *plan.Members()[0].sourceBytes;
+            if (rangePolicy == TerrainMinimapRangePolicy::FullW3e) {
+                const std::array<std::string, 1> names{"war3map.w3e"};
+                ArchiveExactMemberLimits captureLimits;
+                captureLimits.memberCount = names.size(); captureLimits.memberBytes = limits.maxSourceBytes;
+                captureLimits.totalBytes = limits.maxSourceBytes;
+                const auto identities = Take(source.DescribeExactMemberIdentities(source.SourceSha256(), names, captureLimits));
+                if (!identities.members[0].present || !identities.members[0].sha256 || !identities.members[0].byteSize)
+                    Fail("TERRAIN_ASSETS_BASELINE", "源W3E缺少准确成员身份。");
+                facts.exactMemberCaptureBatches = 1;
+                facts.baselineSourceBytes = *identities.members[0].byteSize;
+                facts.cumulativeSourceBytes = facts.baselineSourceBytes;
+                binding.originalTerrainSha256 = *identities.members[0].sha256;
+                binding.originalTerrainBytes = *identities.members[0].byteSize;
+                const auto originalBytes = Take(source.ReadMember(names[0]));
+                Check(edits.VerifyTerrainSourceBaseline(originalBytes));
+            } else {
+                const auto plan = Take(MapData::TerrainSavePlan::Prepare(source, edits, {limits.maxSourceBytes}));
+                facts.exactMemberCaptureBatches = 1;
+                for (const auto& member : plan.Members()) if (member.sourceBytes) Add(facts.baselineSourceBytes, *member.sourceBytes, limits.maxSourceBytes);
+                facts.cumulativeSourceBytes = facts.baselineSourceBytes;
+                if (!plan.Members()[0].sourceSha256) Fail("TERRAIN_ASSETS_BASELINE", "源W3E缺少准确成员身份。");
+                binding.originalTerrainSha256 = *plan.Members()[0].sourceSha256;
+                binding.originalTerrainBytes = *plan.Members()[0].sourceBytes;
+            }
         }
         const auto serializedBytes = 37 + (terrain->header.groundTilesets.size() + terrain->header.cliffTilesets.size()) * 4
             + terrain->vertices.size() * 7;
@@ -583,9 +600,17 @@ Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(const MapArchive
                 {
                     const auto current = Take(edits.Snapshot(MapDataKind::Settings, member.bytes.size()));
                     const auto& settingsMember = current.Member(MapDataKind::Settings);
+                    const MemberReplacement* finalSettings = nullptr;
+                    for (const auto& replacement : replacements) if (Canonical(replacement.name) == path) {
+                        if (finalSettings) Fail("TERRAIN_ASSETS_W3I_CURRENT", "最终保存列表重复覆盖W3I。");
+                        finalSettings = &replacement;
+                    }
+                    const auto& currentBytes = finalSettings ? finalSettings->data : member.bytes;
                     if (settingsMember.state != MapDataState::Ready || settingsMember.memberName != "war3map.w3i"
-                        || settingsMember.sources.size() != 1 || settingsMember.sources.front().data != member.bytes)
-                        Fail("TERRAIN_ASSETS_W3I_CURRENT", "当前W3I必须Ready、唯一且逐字等于本次源捕获；修改或删除不能套用源crop。");
+                        || settingsMember.sources.size() != 1 || settingsMember.sources.front().data != currentBytes)
+                        Fail("TERRAIN_ASSETS_W3I_CURRENT", "当前W3I必须Ready、唯一且逐字等于本次最终输出；缺失或不一致不能继续保存。");
+                    if (finalSettings && finalSettings->data != member.bytes)
+                        Fail("CLASSIC_MINIMAP_PLAYABLE_RECT_UNRESOLVED", "当前W3I已通过最终列表核对，但生成器尚不支持对变更后的可玩范围取色。");
                     if (!current.Settings() || current.Settings()->formatVersion != 25 || !current.Settings()->FullyParsed())
                         Fail("TERRAIN_ASSETS_W3I_LAYOUT", "声明边距仅消费完整classic v25源W3I。");
                 }
