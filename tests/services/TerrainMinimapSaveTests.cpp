@@ -210,7 +210,7 @@ void DeclaredChoiceRequiresActualW3iAndRetainsStandardEdges() {
     Require(IO::WriteFileBytes(task.target, Take(IO::ReadFileBytes(changedArchive.SourcePath()))).Succeeded(),
         "只改自有SaveCopy目标的W3I原字以测试实际回读依赖");
     auto changedSameTarget = Take(MapArchiveSession::Open(task.target));
-    Rejected(prepared->VerifyReadback(task, changedSameTarget), "TERRAIN_ASSETS_FINAL_DEPENDENCY");
+    Rejected(prepared->VerifyReadback(task, changedSameTarget), "TERRAIN_SAVE_PLAN_MEMBER_MISMATCH");
 
     Fixture current(false, false, false, W3i(), true); current.Stroke(TerrainBrushKind::Raise, 10, {384, 512});
     MapSaveTask currentTask; current.Freeze(currentTask); const auto currentPrepared = current.Prepare(currentTask, declared);
