@@ -207,21 +207,7 @@ int RunMapEditSave(int argc, wchar_t** argv) {
     for (int index = 8; index < argc;) {
         const std::wstring_view flag(argv[index]);
         std::string error;
-        if (flag == L"--generate-missing-minimap") {
-            if (request.minimapChoice == Services::TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly)
-                return Invalid("--generate-missing-minimap and --generate-missing-playable-minimap are mutually exclusive");
-            if (request.minimapChoice != Services::TerrainMinimapSaveChoice::Preserve)
-                return Invalid("--generate-missing-minimap may appear only once");
-            request.minimapChoice = Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly;
-            ++index;
-        } else if (flag == L"--generate-missing-playable-minimap") {
-            if (request.minimapChoice == Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly)
-                return Invalid("--generate-missing-minimap and --generate-missing-playable-minimap are mutually exclusive");
-            if (request.minimapChoice != Services::TerrainMinimapSaveChoice::Preserve)
-                return Invalid("--generate-missing-playable-minimap may appear only once");
-            request.minimapChoice = Services::TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly;
-            ++index;
-        } else if (flag == L"--ui-root") {
+        if (flag == L"--ui-root") {
             if (index + 1 >= argc || argv[index + 1][0] == L'\0' || !request.uiRoot.empty())
                 return Invalid("--ui-root requires one nonempty UI data root");
             request.uiRoot = argv[index + 1];
@@ -375,12 +361,6 @@ int RunMapEditSave(int argc, wchar_t** argv) {
     if (request.terrainStrokes.empty() && request.fieldEdits.empty()
         && std::holds_alternative<std::monostate>(request.placementEdit) && !request.triggerEdits)
         return Invalid("at least one bounded edit operation is required");
-    if (request.minimapChoice != Services::TerrainMinimapSaveChoice::Preserve
-        && (request.terrainStrokes.empty() || !request.fieldEdits.empty()
-            || !std::holds_alternative<std::monostate>(request.placementEdit) || request.triggerEdits))
-        return Invalid(request.minimapChoice == Services::TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly
-            ? "--generate-missing-playable-minimap requires only nonempty height strokes in a save copy"
-            : "--generate-missing-minimap requires only nonempty height strokes in a save copy");
     auto saved = Services::SaveMapEditCandidate(request);
     PrintDiagnostics(saved.diagnostics);
     if (!saved.Succeeded() || !saved.value) return 1;

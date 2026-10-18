@@ -10,7 +10,18 @@
 namespace War3Map::Render {
 
 // 声明边距仅是源W3I政策，未验证1.27a native crop；新外缘域必须显式选择。
-enum class TerrainMinimapRangePolicy { FullW3e, DeclaredW3iMargins, DeclaredW3iMarginsExteriorMapEdge };
+enum class TerrainMinimapRangePolicy { FullW3e, DeclaredW3iMargins, DeclaredW3iMarginsExteriorMapEdge, ClassicPlayable };
+
+// 原版保存用的取色参数；资源捕获层从实际表/配置/贴图填入，不靠调用者的已验证开关。
+struct ClassicMinimapTerrainColors {
+    std::vector<std::array<std::uint8_t, 4>> cliffColors; // 与W3E cliff palette同序
+    std::array<std::uint8_t, 4> waterColor{}; // Water.slk mm*，不是Smin_*
+    double waterHeightOffset = 0;
+    double deepLevelPathing = 0;
+    bool waterConfigured = false;
+    std::array<double, 4> cameraMargins{}; // UI配置L/R/B/T，tile单位
+    bool cameraMarginsConfigured = false;
+};
 
 // 原版保存小地图的五项未决来源只能由独立原版实例/静态证据填入；这些字段不是
 // “给一个默认值就通过”的开关。未验证或当前候选未接通时，Build 会返回稳定诊断。
@@ -47,6 +58,7 @@ struct TerrainMinimapInput {
     std::optional<std::vector<std::byte>> sourceW3i;
     // 旧调用保持空值并沿用当前严格域；非空只启用下列 fail-closed 合同验证。
     std::optional<TerrainMinimapGenerationConfig> generation;
+    std::optional<ClassicMinimapTerrainColors> classicColors;
 };
 
 struct TerrainMinimapLimits {

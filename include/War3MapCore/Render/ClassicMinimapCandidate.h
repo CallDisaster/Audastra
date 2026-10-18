@@ -14,7 +14,7 @@
 namespace War3Map::Render {
 
 // ParsedEmpty仅供sealed对象捕获入口，旧caller声明入口拒绝该值。
-enum class ClassicMinimapMemberState { Unknown, Missing, Empty, ParsedEmpty };
+enum class ClassicMinimapMemberState { Unknown, Missing, Empty, ParsedEmpty, Parsed };
 
 class ClassicMinimapObjectAssets;
 
@@ -59,7 +59,7 @@ struct ClassicMinimapCandidateLimits {
 };
 
 struct ClassicMinimapManifest {
-    static constexpr std::uint32_t algorithmVersion = 1;
+    static constexpr std::uint32_t algorithmVersion = 2;
     static constexpr const char* rangePolicy = "FullW3eAlgorithmCandidate-v1";
     static constexpr const char* groundPolicy = "sw-ground-atlas-representative-v1";
     static constexpr const char* boundaryPolicy = "boundary-a230-black-truncate-v1";
@@ -80,6 +80,7 @@ struct ClassicMinimapManifest {
     std::size_t sourceTiles = 0;
     std::array<std::uint32_t, 4> sourceRectangle{};
     std::size_t boundaryTiles = 0;
+    std::size_t cliffTiles = 0, shallowWaterTiles = 0, deepWaterTiles = 0, objectPixels = 0;
     bool ignoredBlightSeen = false;
     bool ignoredVariationSeen = false;
     bool nativeEditorOrGameVerified = false;

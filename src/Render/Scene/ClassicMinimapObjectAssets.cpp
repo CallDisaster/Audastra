@@ -77,6 +77,9 @@ std::size_t TerrainCapacity(const TerrainMinimapAssetSnapshot& snapshot) {
     TextCapacity(bytes, input.binding.terrainSha256); Charge(bytes, input.currentW3e.capacity());
     if (input.sourceW3i) Charge(bytes, input.sourceW3i->capacity());
     Charge(bytes, input.groundAtlases.capacity(), sizeof(std::shared_ptr<const TerrainAtlasSnapshot>));
+    if (input.classicColors) {
+        Charge(bytes, input.classicColors->cliffColors.capacity(), sizeof(std::array<std::uint8_t, 4>));
+    }
     for (std::size_t i = 0; i < input.groundAtlases.size(); ++i) {
         const auto& owner = input.groundAtlases[i];
         if (!owner) Fail("CLASSIC_OBJECT_CAPTURE_TERRAIN", "传入地形快照缺少atlas owner。");

@@ -49,54 +49,21 @@ void Rejected(const Invocation& result, std::string_view detail) {
         && result.error.find(detail) != std::string::npos, "argument rejection must identify its exact scope");
 }
 
-void MissingMinimapChoiceIsExplicitAndTerrainOnly() {
+void LegacyMinimapSwitchesAreRemoved() {
     auto arguments = Arguments();
-    arguments.insert(arguments.end(), {L"--generate-missing-minimap", L"--generate-missing-minimap"});
-    Rejected(Invoke(arguments), "may appear only once");
-
-    arguments = Arguments();
     arguments.push_back(L"--generate-missing-minimap");
-    Rejected(Invoke(arguments), "at least one bounded edit operation");
+    Rejected(Invoke(arguments), "unknown map-edit-save option");
 
     arguments = Arguments();
-    arguments.insert(arguments.end(), {L"--generate-missing-minimap", L"--rotate", L"units", L"0",
-        L"row-key", std::wstring(64, L'c'), L"90"});
-    Rejected(Invoke(arguments), "requires only nonempty height strokes");
-
-    arguments = Arguments();
-    arguments.insert(arguments.end(), {L"--stroke", L"raise", L"circle", L"4", L"4", L"0", L"1",
-        L"--generate-missing-minimap", L"--rotate", L"units", L"0", L"row-key", std::wstring(64, L'c'), L"90"});
-    Rejected(Invoke(arguments), "requires only nonempty height strokes");
-}
-
-void PlayableMinimapChoiceCannotAliasTheOldFlag() {
-    auto arguments = Arguments();
-    arguments.insert(arguments.end(), {L"--generate-missing-playable-minimap", L"--generate-missing-playable-minimap"});
-    Rejected(Invoke(arguments), "--generate-missing-playable-minimap may appear only once");
-    for (const bool reverse : {false, true}) {
-        arguments = Arguments();
-        arguments.push_back(reverse ? L"--generate-missing-playable-minimap" : L"--generate-missing-minimap");
-        arguments.push_back(reverse ? L"--generate-missing-minimap" : L"--generate-missing-playable-minimap");
-        Rejected(Invoke(arguments), "--generate-missing-minimap and --generate-missing-playable-minimap are mutually exclusive");
-    }
-    arguments = Arguments(); arguments.push_back(L"--generate-missing-playable-minimap");
-    Rejected(Invoke(arguments), "at least one bounded edit operation");
-    arguments = Arguments();
-    arguments.insert(arguments.end(), {L"--generate-missing-playable-minimap", L"--rotate", L"units", L"0",
-        L"row-key", std::wstring(64, L'c'), L"90"});
-    Rejected(Invoke(arguments), "--generate-missing-playable-minimap requires only nonempty height strokes");
-    arguments = Arguments();
-    arguments.insert(arguments.end(), {L"--stroke", L"raise", L"circle", L"4", L"4", L"0", L"1",
-        L"--generate-missing-playable-minimap", L"--rotate", L"units", L"0", L"row-key", std::wstring(64, L'c'), L"90"});
-    Rejected(Invoke(arguments), "--generate-missing-playable-minimap requires only nonempty height strokes");
+    arguments.push_back(L"--generate-missing-playable-minimap");
+    Rejected(Invoke(arguments), "unknown map-edit-save option");
 }
 
 } // namespace
 
 int main() {
     try {
-        MissingMinimapChoiceIsExplicitAndTerrainOnly();
-        PlayableMinimapChoiceCannotAliasTheOldFlag();
+        LegacyMinimapSwitchesAreRemoved();
         std::cout << "Map edit save CLI minimap option gates passed\n";
         return 0;
     } catch (const std::exception& error) {

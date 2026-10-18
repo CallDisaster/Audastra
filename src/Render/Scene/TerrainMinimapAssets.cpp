@@ -7,10 +7,15 @@
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/Render/AnimationSourceGuard.h"
 #include "War3MapCore/Render/TerrainMaterials.h"
+#include "War3MapCore/Render/TerrainMinimapRepresentativeColor.h"
+#include "War3MapCore/Image/BlpMipChain.h"
 #include "War3MapCore/Resources/ImportTable.h"
+#include "War3MapCore/Text/TextUtil.h"
 
 #include <algorithm>
 #include <bit>
+#include <charconv>
+#include <cmath>
 #include <map>
 #include <new>
 #include <stdexcept>
@@ -117,7 +122,7 @@ struct CaptureContext {
         mapMembers.clear(); mapIndices.clear(); dependencyIndices.clear(); resolver.ClearSources();
         memberLimit = perMember; kind = purpose;
         ArchiveExactMemberLimits exact;
-        exact.memberCount = 16; exact.memberBytes = perMember;
+        exact.memberCount = 64; exact.memberBytes = perMember;
         exact.totalBytes = limits.maxSourceBytes - facts.cumulativeSourceBytes;
         // baseline一轮，三表一轮，全部唯一texture一轮；无逐材质CaptureExactMembers热路径。
         mapMembers = Take(source.CaptureExactMembers(names, exact)); ++facts.exactMemberCaptureBatches;
@@ -195,6 +200,32 @@ Resources::ResourceResolver ReplayTables(const std::vector<Resources::TerrainTab
     return replay;
 }
 
+Text::ProfileSections MinimapConfiguration(CaptureContext& context) {
+    Text::ProfileSections merged;
+    // 与原版通用配置的后两层顺序相同。需要的键必须在实际读取的配置中存在。
+    for (const auto path : {"UI\\MiscData.txt", "UI\\WorldEditData.txt"}) {
+        const auto read = Take(context.resolver.Read(path));
+        auto text = std::string_view(reinterpret_cast<const char*>(read.bytes.data()), read.bytes.size());
+        if (text.starts_with("\xef\xbb\xbf")) text.remove_prefix(3);
+        for (auto& [section, fields] : Text::ParseProfile(text))
+            for (auto& [key, value] : fields) merged[section][key] = std::move(value);
+    }
+    return merged;
+}
+
+double ConfigurationNumber(const Text::ProfileSections& profile, const char* section, const char* key) {
+    const auto group = profile.find(section);
+    if (group == profile.end() || !group->second.contains(key))
+        Fail("CLASSIC_MINIMAP_CONFIG_MISSING", std::string("小地图配置缺少 ") + section + "." + key);
+    const auto text = Text::TrimCWhitespace(group->second.at(key));
+    double value = 0;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || !std::isfinite(value)
+        || value < 0 || value > 65536)
+        Fail("CLASSIC_MINIMAP_CONFIG_INVALID", std::string("小地图配置数值无效：") + section + "." + key);
+    return value;
+}
+
 std::vector<TerrainMinimapMipFacts> MipFacts(const TerrainAtlasSnapshot& atlas) {
     std::vector<TerrainMinimapMipFacts> facts; facts.reserve(atlas.additionalMips.size() + 1);
     const auto append = [&](const Image::DecodedImage& mip) {
@@ -244,6 +275,15 @@ std::string SnapshotIdentity(const TerrainMinimapAssetSnapshot& snapshot) {
     for (const auto& g : snapshot.GroundAssets()) {
         hash.Text(g.rawcode); hash.Text(g.canonicalTexturePath); hash.U64(static_cast<std::uint64_t>(g.tableRow)); hash.U64(g.dependencyIndex);
     }
+    if (snapshot.Input().classicColors) {
+        const auto& c = *snapshot.Input().classicColors;
+        hash.U64(1); hash.U64(c.waterConfigured ? 1u : 0u); hash.F64(c.waterHeightOffset);
+        hash.F64(c.deepLevelPathing); hash.U64(c.cameraMarginsConfigured ? 1u : 0u);
+        for (const auto value : c.cameraMargins) hash.F64(value);
+        hash.U64(c.waterColor[0]); hash.U64(c.waterColor[1]); hash.U64(c.waterColor[2]); hash.U64(c.waterColor[3]);
+        hash.U64(c.cliffColors.size());
+        for (const auto& color : c.cliffColors) for (const auto value : color) hash.U64(value);
+    } else hash.U64(0);
     return hash.Finish();
 }
 
@@ -385,7 +425,8 @@ Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(const MapArchive
     try {
         ValidateLimits(limits);
         if (rangePolicy != TerrainMinimapRangePolicy::FullW3e && rangePolicy != TerrainMinimapRangePolicy::DeclaredW3iMargins
-            && rangePolicy != TerrainMinimapRangePolicy::DeclaredW3iMarginsExteriorMapEdge)
+            && rangePolicy != TerrainMinimapRangePolicy::DeclaredW3iMarginsExteriorMapEdge
+            && rangePolicy != TerrainMinimapRangePolicy::ClassicPlayable)
             Fail("TERRAIN_ASSETS_RANGE_POLICY", "未知的小地图范围政策。");
         TerrainMinimapAssetSnapshot result;
         result.input_.rangePolicy = rangePolicy;
@@ -420,10 +461,15 @@ Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(const MapArchive
         Check(context.guard.Watch(source.SourcePath()));
         std::vector<Diagnostic> diagnostics;
         std::vector<std::string> texturePaths;
+        std::vector<std::string> cliffPaths;
         {
             const std::vector<std::string> tablePaths{"TerrainArt\\Terrain.slk", "TerrainArt\\CliffTypes.slk", "TerrainArt\\Water.slk"};
             auto exactPaths = tablePaths;
             if (rangePolicy != TerrainMinimapRangePolicy::FullW3e) exactPaths.emplace_back("war3map.w3i");
+            if (rangePolicy == TerrainMinimapRangePolicy::ClassicPlayable) {
+                exactPaths.emplace_back("UI\\MiscData.txt");
+                exactPaths.emplace_back("UI\\WorldEditData.txt");
+            }
             // 四名共用原三表member cap；绝不为W3I抬高调用方给表设定的读取上限。
             context.Phase(exactPaths, limits.tables.maxTableBytes, TerrainMinimapDependencyKind::Table);
             if (rangePolicy != TerrainMinimapRangePolicy::FullW3e) {
@@ -481,12 +527,64 @@ Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(const MapArchive
                 if (unique.emplace(path, texturePaths.size()).second) texturePaths.push_back(path);
                 result.ground_.push_back({rawcode, path, found->second.source.row, 0});
             }
+            if (rangePolicy == TerrainMinimapRangePolicy::ClassicPlayable) {
+                auto& colors = result.input_.classicColors.emplace();
+                const auto configuration = MinimapConfiguration(context);
+                constexpr std::array<const char*, 4> margins{"left", "right", "bottom", "top"};
+                for (std::size_t i = 0; i < margins.size(); ++i)
+                    colors.cameraMargins[i] = ConfigurationNumber(configuration, "cameramargins", margins[i]);
+                colors.cameraMarginsConfigured = true;
+                if (std::any_of(terrain->vertices.begin(), terrain->vertices.end(), [](const auto& v) { return v.HasWater(); })) {
+                    const auto id = std::string(1, static_cast<char>(terrain->header.mainTileset)) + "Sha";
+                    const auto row = catalog.water.find(id);
+                    if (row == catalog.water.end()) Fail("CLASSIC_MINIMAP_WATER_MISSING", "Water.slk缺少当前地形集的浅水行。");
+                    colors.waterColor = row->second.minimapColor;
+                    colors.waterHeightOffset = row->second.heightOffsetWorld;
+                    colors.deepLevelPathing = ConfigurationNumber(configuration, "water", "deeplevelpathing");
+                    colors.waterConfigured = true;
+                }
+                const bool hasCliffs = std::any_of(terrain->tiles.begin(), terrain->tiles.end(), [&](const auto& tile) {
+                    const auto level = terrain->vertices.at(tile.vertices[0]).CliffLevel();
+                    return std::any_of(tile.vertices.begin() + 1, tile.vertices.end(), [&](const auto index) {
+                        return terrain->vertices.at(index).CliffLevel() != level;
+                    });
+                });
+                for (const auto& id : terrain->header.cliffTilesets) {
+                    if (!hasCliffs) { cliffPaths.emplace_back(); continue; }
+                    const auto row = catalog.cliffs.find(id);
+                    if (row == catalog.cliffs.end()) Fail("CLASSIC_MINIMAP_CLIFF_MISSING", "CliffTypes.slk缺少当前悬崖类型。");
+                    const auto path = Canonical(row->second.declaredTexturePath);
+                    cliffPaths.push_back(path);
+                    if (unique.emplace(path, texturePaths.size()).second) texturePaths.push_back(path);
+                }
+            }
         } // 释放三表原字节与catalog后才捕获/解码atlas，避免长期保留重复表解析中间体。
         Check(context.guard.Verify());
         context.Phase(texturePaths, limits.atlas.maxInputBytes, TerrainMinimapDependencyKind::Atlas);
         std::map<std::string, std::shared_ptr<const TerrainAtlasSnapshot>, std::less<>> atlases;
         for (const auto& path : texturePaths) {
             auto resource = Take(context.resolver.Read(path));
+            const bool groundAtlas = std::any_of(result.ground_.begin(), result.ground_.end(),
+                [&](const auto& ground) { return ground.canonicalTexturePath == path; });
+            if (!groundAtlas) {
+                const auto& configured = limits.atlas;
+                Image::BlpMipChainLimits decodeLimits{configured.maxInputBytes, configured.maxDimension,
+                    configured.maxRgbaBytes, configured.maxRetainedRgbaBytes, configured.maxTotalMipPixels,
+                    configured.maxWorkingBytes, configured.maxJpegSegments, configured.maxJpegScans};
+                decodeLimits.maxRetainedRgbaBytes = std::min(decodeLimits.maxRetainedRgbaBytes,
+                    limits.maxRetainedAtlasCapacityBytes - facts.retainedAtlasRgbaCapacityBytes);
+                auto decoded = Take(Image::DecodeBlpMipChain(resource.bytes, decodeLimits));
+                const auto color = Take(ComputeTerrainMinimapRepresentativeColor(decoded.image, TerrainMinimapTextureRole::Cliff)).rgba;
+                const auto index = context.dependencyIndices.at(path);
+                result.dependencies_[index].decodedMips.push_back({decoded.image.width, decoded.image.height,
+                    decoded.image.rgba.size(), decoded.image.rgba.capacity(), Take(Sha256(decoded.image.rgba))});
+                for (std::size_t i = 0; i < cliffPaths.size(); ++i) if (cliffPaths[i] == path) {
+                    auto& colors = result.input_.classicColors->cliffColors;
+                    if (colors.size() < cliffPaths.size()) colors.resize(cliffPaths.size());
+                    colors[i] = color;
+                }
+                continue;
+            }
             auto atlasLimits = limits.atlas;
             atlasLimits.maxRetainedRgbaBytes = std::min(atlasLimits.maxRetainedRgbaBytes,
                 limits.maxRetainedAtlasCapacityBytes - facts.retainedAtlasRgbaCapacityBytes);
@@ -505,6 +603,12 @@ Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(const MapArchive
         for (auto& ground : result.ground_) {
             ground.dependencyIndex = context.dependencyIndices.at(ground.canonicalTexturePath);
             result.input_.groundAtlases.push_back(atlases.at(ground.canonicalTexturePath));
+        }
+        if (result.input_.classicColors) {
+            auto& colors = result.input_.classicColors->cliffColors;
+            colors.resize(cliffPaths.size());
+            for (std::size_t i = 0; i < cliffPaths.size(); ++i) if (const auto atlas = atlases.find(cliffPaths[i]); atlas != atlases.end())
+                colors[i] = Take(ComputeTerrainMinimapRepresentativeColor(atlas->second->image, TerrainMinimapTextureRole::Cliff)).rgba;
         }
         Check(context.guard.Verify());
         // 不额外VerifySourceUnchanged重复散列整图：最后一批精确捕获已核SHA/租约，

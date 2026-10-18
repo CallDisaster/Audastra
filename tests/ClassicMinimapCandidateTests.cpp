@@ -1,4 +1,5 @@
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/Render/ClassicMinimapCandidate.h"
 
 #include <algorithm>
@@ -233,6 +234,54 @@ void PostprocessRandomSourceMustBeExplicit() {
     RequireRejected(BuildClassicMinimapCandidate(input), "TERRAIN_MINIMAP_POSTPROCESS_NOISE_SOURCE_REQUIRED");
 }
 
+void ClassicWaterDepthAndBoundaryOrdering() {
+    auto input = Input(W3e(false, false, false, true));
+    auto& colors = input.terrain.classicColors.emplace();
+    colors.cliffColors = {{10, 20, 30, 255}};
+    colors.waterConfigured = true; colors.waterColor = {20, 40, 80, 128}; colors.deepLevelPathing = 64;
+    const auto shallow = Take(BuildClassicMinimapCandidate(input));
+    Require(RgbaAt(shallow.raw, 0, 0) == std::array<unsigned, 4>{59, 79, 109, 255}, "浅水按mm色混合一次");
+    Require(shallow.manifest.shallowWaterTiles == 1 && shallow.manifest.deepWaterTiles == 0, "浅水逐SW锚点统计");
+    colors.waterHeightOffset = 64;
+    const auto deep = Take(BuildClassicMinimapCandidate(input));
+    Require(RgbaAt(deep.raw, 0, 0) == std::array<unsigned, 4>{39, 59, 94, 255}, "深水含等阈值并逐次截断混合两次");
+    Require(deep.manifest.deepWaterTiles == 1 && deep.manifest.shallowWaterTiles == 0, "深水阈值等号不能当浅水");
+    colors.waterHeightOffset = -1;
+    const auto dry = Take(BuildClassicMinimapCandidate(input));
+    Require(RgbaAt(dry.raw, 0, 0) == std::array<unsigned, 4>{100, 120, 140, 255}, "地面高于水面不混水色");
+    colors.waterHeightOffset = 64;
+    input.terrain.currentW3e[49] |= std::byte{0x80};
+    input.terrain.binding.terrainSha256 = Take(Sha256(input.terrain.currentW3e));
+    const auto edge = Take(BuildClassicMinimapCandidate(input));
+    Require(RgbaAt(edge.raw, 0, 0) == std::array<unsigned, 4>{3, 5, 9, 255}, "边界应在两次水色后混黑");
+}
+
+void NativePlayableRectangleUsesW3iAndClamps() {
+    auto input = Input(TwoGroundW3e());
+    input.terrain.groundAtlases.push_back(Atlas({20, 40, 60, 255}));
+    MapData::MapSettings settings;
+    settings.formatVersion = 25; settings.custom.emplace(); settings.flags = 0x400;
+    settings.cameraMargins = {1, 0, 0, 0}; settings.playableWidth = 1; settings.playableHeight = 2;
+    input.terrain.sourceW3i = Take(settings.Serialize());
+    input.terrain.rangePolicy = TerrainMinimapRangePolicy::ClassicPlayable;
+    const auto cropped = Take(BuildClassicMinimapCandidate(input));
+    Require(cropped.manifest.sourceRectangle == std::array<std::uint32_t, 4>{1, 0, 2, 2}
+        && cropped.raw.width == 1 && cropped.raw.height == 2, "补足边距模式应精确裁剪真实W3I");
+    Require(RgbaAt(cropped.raw, 0, 0) == std::array<unsigned, 4>{20, 40, 60, 255}
+        && RgbaAt(cropped.raw, 0, 1) == std::array<unsigned, 4>{100, 120, 140, 255}, "裁剪保持原网格锚点");
+    settings.flags = 0;
+    settings.cameraBounds = {127.9f, -500, 128.1f, 500, 127.9f, 500, 128.1f, -500};
+    auto& colors = input.terrain.classicColors.emplace();
+    colors.cameraMarginsConfigured = true; colors.cameraMargins = {0, 1, 0, 0};
+    input.terrain.sourceW3i = Take(settings.Serialize());
+    const auto camera = Take(BuildClassicMinimapCandidate(input));
+    Require(camera.manifest.sourceRectangle == std::array<std::uint32_t, 4>{1, 0, 2, 2},
+        "自定义相机应加回配置边距、限制全图后按最近格截断");
+    settings.flags = 0x400; settings.cameraMargins = {1, 1, 0, 0};
+    input.terrain.sourceW3i = Take(settings.Serialize());
+    RequireRejected(BuildClassicMinimapCandidate(input), "CLASSIC_MINIMAP_PLAYABLE_EMPTY");
+}
+
 } // namespace
 
 int main() {
@@ -243,6 +292,8 @@ int main() {
         ActualUnresolvedLayersReject();
         ObjectDeclarationAndAtlasIdentityReject();
         PostprocessRandomSourceMustBeExplicit();
+        ClassicWaterDepthAndBoundaryOrdering();
+        NativePlayableRectangleUsesW3iAndClamps();
         std::cout << "Classic minimap candidate tests passed\n";
         return 0;
     } catch (const std::exception& error) {

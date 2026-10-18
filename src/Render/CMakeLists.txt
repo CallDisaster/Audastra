@@ -101,6 +101,7 @@ add_library(War3MapRenderSupport STATIC
     Scene/TerrainMinimapCandidate.cpp
     Scene/TerrainMinimapPostprocess.cpp
     Scene/ClassicMinimapCandidate.cpp
+    Scene/ClassicMinimapTerrainRules.cpp
     Scene/ClassicMinimapObjectAssets.cpp
     Scene/TerrainMinimapRepresentativeColor.cpp
     Scene/TerrainMinimapAssets.cpp
