@@ -108,4 +108,44 @@ void TestWtgSource(const War3Map::Trigger::UiCatalog& catalog, std::span<const s
         && !QueryWtgSource(*classic.value,data->sourceSha256,data->catalogSha256,WtgSourceTable::Items,0,129).Succeeded(), "身份/页预算未拒绝");
     const auto large=ParseWtgSource(Fixture(7,0x80000004u,"DoNothing",std::string(600000,'x')).bytes,catalog);
     Require(large.Succeeded() && !QueryWtgSource(*large.value,large.value->Snapshot()->sourceSha256,catalog.Sha256(),WtgSourceTable::Items,2,1).Succeeded(), "大行查询返回了超预算结果");
+    Require(WtgSourceLimits{}.maxNodes==WtgSourceLimits::hardMaxNodes, "默认节点预算与触发器事务不一致");
+
+    // 3. 按触发器查询：只返回该触发器的 ECA/参数，行号仍是全表下标；分类/变量行和其它表拒绝。
+    const auto marked=ParseWtgSource(Fixture(7,0x80000004u).bytes,catalog); Require(marked.Succeeded(), "扩展来源读取失败");
+    const auto markedData=marked.value->Snapshot();
+    const auto byTrigger=[&](const WtgSource& source, std::size_t item, WtgSourceTable table, std::size_t start, std::size_t limit) {
+        const auto snapshot=source.Snapshot();
+        return QueryWtgSourceTrigger(source,snapshot->sourceSha256,snapshot->catalogSha256,item,table,start,limit);
+    };
+    std::optional<std::size_t> guiItem;
+    for (std::size_t i=0;i<markedData->items.size();++i) if (markedData->items[i].type==8) guiItem=i;
+    Require(guiItem.has_value(), "扩展来源缺少触发器行");
+    const auto guiEcas=byTrigger(*marked.value,*guiItem,WtgSourceTable::Ecas,1,2);
+    Require(guiEcas.Succeeded() && guiEcas.value->totalRows==4 && guiEcas.value->rows.size()==2
+        && guiEcas.value->rows[0].index==1 && guiEcas.value->rows[1].index==2, "触发器 ECA 页或全表行号错误");
+    const auto guiArguments=byTrigger(*marked.value,*guiItem,WtgSourceTable::Arguments,0,128);
+    Require(guiArguments.Succeeded() && guiArguments.value->totalRows==0, "零参数触发器返回了参数");
+    Require(byTrigger(*marked.value,0,WtgSourceTable::Ecas,0,1).diagnostics.front().code=="WTG_SOURCE_TRIGGER_ITEM"
+        && byTrigger(*marked.value,markedData->items.size(),WtgSourceTable::Ecas,0,1).diagnostics.front().code=="WTG_SOURCE_TRIGGER_ITEM"
+        && byTrigger(*marked.value,*guiItem,WtgSourceTable::Items,0,1).diagnostics.front().code=="WTG_SOURCE_TABLE"
+        && byTrigger(*marked.value,*guiItem,WtgSourceTable::Ecas,5,1).diagnostics.front().code=="WTG_SOURCE_QUERY_BOUNDS"
+        && !QueryWtgSourceTrigger(*marked.value,std::string(64,'0'),markedData->catalogSha256,*guiItem,WtgSourceTable::Ecas,0,1).Succeeded(),
+        "按触发器查询的拒绝条件错误");
+    // 经典样例：各触发器的节点合起来恰好覆盖全表，每个节点只属于一个触发器。
+    std::vector<int> ecaOwners(data->document.ecaNodes.size()), argumentOwners(data->document.argumentNodes.size());
+    for (std::size_t item=0;item<data->items.size();++item) {
+        const auto type=data->items[item].type;
+        if (type==1 || type==4 || type==64) continue;
+        for (const auto table : {WtgSourceTable::Ecas, WtgSourceTable::Arguments}) {
+            auto& owners = table==WtgSourceTable::Ecas ? ecaOwners : argumentOwners;
+            for (std::size_t start=0;;start+=128) {
+                const auto page=byTrigger(*classic.value,item,table,start,128);
+                Require(page.Succeeded(), "经典触发器分页失败");
+                for (const auto& row : page.value->rows) ++owners[row.index];
+                if (start+128>=page.value->totalRows) break;
+            }
+        }
+    }
+    Require(std::ranges::all_of(ecaOwners,[](int count){ return count==1; })
+        && std::ranges::all_of(argumentOwners,[](int count){ return count==1; }), "按触发器的节点没有恰好覆盖全表");
 }

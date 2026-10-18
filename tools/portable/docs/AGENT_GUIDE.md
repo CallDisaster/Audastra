@@ -107,6 +107,15 @@ war3-map-cli archive-member-remove <source-map> <source-sha256> <new-candidate.w
 
 旋转角度范围为 `[0,360)`；复制最多4096个来源实例；笔划最多16笔，CLI 点位是地形顶点索引。raise/lower strength 为 `>0..1024`，smooth 为 `>0..1`；通行性和布局门禁仍会进一步拒绝不安全来源。地物跟随、其他未开放笔刷不因此放开。`--layer` 必须是已发现的真实函数库层，不能拿虚构层绕过目录检查。
 
+### 只读查看触发器原始数据
+
+```text
+war3-map-cli wtg-source-inspect <wtg-file> <source-sha256> <ui-data-root> [--max-nodes N]
+war3-map-cli wtg-source-query <wtg-file> <source-sha256> <ui-data-root> <catalog-sha256> <items|variables|deleted|ecas|arguments> <start> <limit-1..128> [--max-nodes N] [--trigger <items-row>]
+```
+
+先用 `items` 表找到触发器所在的行号（`item_type` 不是 1/4/64 的行），再加 `--trigger <行号>` 查 `ecas` 或 `arguments`，只返回这个触发器自己的节点，按树的顺序分页；行号仍是全表行号，可以和 `argument_indices`、`child_indices` 对照。不加 `--trigger` 时按全表分页。节点上限默认 100 万，大型旧版地图不用另外调；`--max-nodes` 只用来收紧。
+
 `archive-candidate-copy` 是已有归档复制入口，不是脚本修改或游戏验收。物编查询也不表示 Agent 已拥有通用七类物编写接口。
 
 ## 4. MCP 配置与协议

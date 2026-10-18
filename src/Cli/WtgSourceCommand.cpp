@@ -90,7 +90,7 @@ int RunWtgSourceInspect(const std::filesystem::path& file, std::string_view sha,
 
 int RunWtgSourceQuery(const std::filesystem::path& file, std::string_view sha, const std::filesystem::path& uiRoot,
     std::string_view catalogSha, std::string_view tableName, std::string_view startText, std::string_view limitText,
-    std::string_view maxNodes) {
+    std::string_view maxNodes, std::string_view triggerItem) {
     std::optional<WtgSourceTable> table;
     if (tableName == "items") table = WtgSourceTable::Items;
     else if (tableName == "variables") table = WtgSourceTable::Variables;
@@ -101,13 +101,20 @@ int RunWtgSourceQuery(const std::filesystem::path& file, std::string_view sha, c
     if (!table || !start || !limit || *limit == 0 || *limit > 128 || catalogSha.empty()) {
         std::cerr << "WTG_SOURCE_QUERY_ARGUMENT: invalid table/page/Catalog identity\n"; return 1;
     }
+    const auto trigger = triggerItem.empty() ? std::optional<std::size_t>{} : Index(triggerItem);
+    if (!triggerItem.empty() && (!trigger || (table != WtgSourceTable::Ecas && table != WtgSourceTable::Arguments))) {
+        std::cerr << "WTG_SOURCE_QUERY_ARGUMENT: --trigger needs an items row number and the ecas or arguments table\n"; return 1;
+    }
     auto source = Open(file, sha, uiRoot, catalogSha, maxNodes);
     if (!source) return 1;
-    const auto page = QueryWtgSource(*source, sha, catalogSha, *table, *start, *limit);
+    const auto page = trigger ? QueryWtgSourceTrigger(*source, sha, catalogSha, *trigger, *table, *start, *limit)
+                              : QueryWtgSource(*source, sha, catalogSha, *table, *start, *limit);
     if (!page.Succeeded()) { Errors(page.diagnostics); return 1; }
     std::ostringstream out; Header(out, *source->Snapshot());
     if (!maxNodes.empty()) out << "parse_max_nodes\t" << ReadLimits(maxNodes)->maxNodes << '\n';
-    out << "table\t" << tableName << "\ntotal_rows\t" << page.value->totalRows << '\n';
+    out << "table\t" << tableName << '\n';
+    if (trigger) out << "trigger_item\t" << *trigger << '\n';
+    out << "total_rows\t" << page.value->totalRows << '\n';
     for (const auto& row : page.value->rows) {
         out << "row\t" << row.index << '\t' << row.sourceId << '\t' << row.origin.offset << '\t' << row.origin.length << '\n';
         for (const auto& field : row.fields)

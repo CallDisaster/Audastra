@@ -145,6 +145,65 @@ void FillRow(RowWriter& writer, const WtgSourceSnapshot& data, WtgSourceTable ta
         break;
     }
 }
+
+// 一个触发器的节点下标，按深度优先：ECA → 它的参数（参数里的函数调用 ECA、数组下标参数）→ 子 ECA。
+// 节点只能被访问一次；越界或重复引用说明索引表不是树，返回空而不是去重。
+struct TriggerNodes {
+    std::vector<std::size_t> ecas, arguments;
+};
+std::optional<TriggerNodes> CollectTriggerNodes(const TriggerDocument& document, const std::vector<std::uint32_t>& roots) {
+    struct Frame {
+        bool eca;
+        std::size_t index;
+    };
+    TriggerNodes nodes;
+    std::vector<bool> seenEca(document.ecaNodes.size()), seenArgument(document.argumentNodes.size());
+    std::vector<Frame> stack;
+    for (auto root = roots.rbegin(); root != roots.rend(); ++root) stack.push_back({true, *root});
+    while (!stack.empty()) {
+        const auto frame = stack.back();
+        stack.pop_back();
+        if (frame.eca) {
+            if (frame.index >= document.ecaNodes.size() || seenEca[frame.index]) return std::nullopt;
+            seenEca[frame.index] = true;
+            nodes.ecas.push_back(frame.index);
+            const auto& eca = document.ecaNodes[frame.index];
+            for (auto child = eca.children.rbegin(); child != eca.children.rend(); ++child) stack.push_back({true, *child});
+            for (auto argument = eca.arguments.rbegin(); argument != eca.arguments.rend(); ++argument)
+                stack.push_back({false, *argument});
+        } else {
+            if (frame.index >= document.argumentNodes.size() || seenArgument[frame.index]) return std::nullopt;
+            seenArgument[frame.index] = true;
+            nodes.arguments.push_back(frame.index);
+            const auto& argument = document.argumentNodes[frame.index];
+            if (argument.indexArgument) stack.push_back({false, *argument.indexArgument});
+            if (argument.callEca) stack.push_back({true, *argument.callEca});
+        }
+    }
+    return nodes;
+}
+
+template <class IndexAt>
+PageResult BuildPage(const WtgSourceSnapshot& data, WtgSourceTable table, std::size_t total,
+    std::size_t start, std::size_t limit, IndexAt indexAt) {
+    if (limit == 0 || limit > 128 || start > total) return Failure("WTG_SOURCE_QUERY_BOUNDS", "页范围无效，单页必须为 1..128 行");
+    try {
+        WtgSourcePage page{data.sourceSha256, data.catalogSha256, total, {}};
+        const auto count = std::min(limit, total - start);
+        std::size_t remaining = 1024 * 1024;
+        page.rows.reserve(count);
+        for (std::size_t n = 0; n < count; ++n) {
+            RowWriter writer(remaining);
+            FillRow(writer, data, table, indexAt(start + n));
+            page.rows.push_back(std::move(writer.row));
+        }
+        return PageResult::Success(std::move(page));
+    } catch (const std::bad_alloc&) {
+        return Failure("WTG_SOURCE_QUERY_ALLOCATION", "无法分配查询结果");
+    } catch (const Detail::FormatError&) {
+        return Failure("WTG_SOURCE_QUERY_BUDGET", "查询结果超过 1 MiB 字符载荷预算，请缩小范围");
+    }
+}
 } // namespace
 
 Result<WtgSource> ParseWtgSource(std::span<const std::byte> bytes, const UiCatalog& catalog, const WtgSourceLimits& limits) {
@@ -187,22 +246,28 @@ Result<WtgSourcePage> QueryWtgSource(const WtgSource& source, std::string_view e
         return Failure("WTG_SOURCE_STALE", "WTG 或 Catalog 来源身份已改变");
     const auto total = Total(*data, table);
     if (!total) return Failure("WTG_SOURCE_TABLE", "未知的只读触发器表");
-    if (limit == 0 || limit > 128 || start > *total) return Failure("WTG_SOURCE_QUERY_BOUNDS", "页范围无效，单页必须为 1..128 行");
+    return BuildPage(*data, table, *total, start, limit, [](std::size_t index) { return index; });
+}
+
+Result<WtgSourcePage> QueryWtgSourceTrigger(const WtgSource& source, std::string_view expectedSourceSha256,
+    std::string_view expectedCatalogSha256, std::size_t triggerItem, WtgSourceTable table, std::size_t start, std::size_t limit) {
+    const auto data = source.Snapshot();
+    if (!data) return Failure("WTG_SOURCE_UNAVAILABLE", "尚无完整的 WTG 来源");
+    if (data->sourceSha256 != expectedSourceSha256 || data->catalogSha256 != expectedCatalogSha256)
+        return Failure("WTG_SOURCE_STALE", "WTG 或 Catalog 来源身份已改变");
+    if (table != WtgSourceTable::Ecas && table != WtgSourceTable::Arguments)
+        return Failure("WTG_SOURCE_TABLE", "按触发器只能查询 ecas 或 arguments");
+    if (triggerItem >= data->items.size()) return Failure("WTG_SOURCE_TRIGGER_ITEM", "items 下标超出范围");
+    const auto& item = data->items[triggerItem];
+    if (item.type == 1 || item.type == 4 || item.type == 64)
+        return Failure("WTG_SOURCE_TRIGGER_ITEM", "该 items 行是分类或变量，不是触发器");
     try {
-        WtgSourcePage page{data->sourceSha256, data->catalogSha256, *total, {}};
-        const auto count = std::min(limit, *total - start);
-        std::size_t remaining = 1024 * 1024;
-        page.rows.reserve(count);
-        for (std::size_t n = 0; n < count; ++n) {
-            RowWriter writer(remaining);
-            FillRow(writer, *data, table, start + n);
-            page.rows.push_back(std::move(writer.row));
-        }
-        return PageResult::Success(std::move(page));
+        const auto nodes = CollectTriggerNodes(data->document, data->document.triggers[item.recordIndex].ecas);
+        if (!nodes) return Failure("WTG_SOURCE_TREE_INVALID", "触发器节点引用越界或被重复引用，不能按树返回");
+        const auto& indices = table == WtgSourceTable::Ecas ? nodes->ecas : nodes->arguments;
+        return BuildPage(*data, table, indices.size(), start, limit, [&](std::size_t index) { return indices[index]; });
     } catch (const std::bad_alloc&) {
         return Failure("WTG_SOURCE_QUERY_ALLOCATION", "无法分配查询结果");
-    } catch (const Detail::FormatError&) {
-        return Failure("WTG_SOURCE_QUERY_BUDGET", "查询结果超过 1 MiB 字符载荷预算，请缩小范围");
     }
 }
 } // namespace War3Map::Trigger

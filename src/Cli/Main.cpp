@@ -91,7 +91,8 @@ void PrintUsage() {
         << "war3-map-cli map-data-roundtrip <map-archive>\n"
         << "war3-map-cli script-migration-check <map-archive> <source-sha256> <classic-jass|lua> [ydwe-root]\n"
         << "war3-map-cli wtg-source-inspect <wtg-file> <source-sha256> <ui-data-root> [--max-nodes N]\n"
-        << "war3-map-cli wtg-source-query <wtg-file> <source-sha256> <ui-data-root> <catalog-sha256> <items|variables|deleted|ecas|arguments> <start> <limit-1..128> [--max-nodes N]\n"
+        << "war3-map-cli wtg-source-query <wtg-file> <source-sha256> <ui-data-root> <catalog-sha256> <items|variables|deleted|ecas|arguments> <start> <limit-1..128> [--max-nodes N] [--trigger <items-row>]\n"
+        << "  --trigger only returns that trigger's ecas or arguments, in tree order; row numbers stay table-wide.\n"
         << "war3-map-cli lua-trigger-candidate <wtg-file> <wct-file> <ui-root> <target-tsv> <inspect|input-revision> [--sources <script-sha> <line-or-0> <offset> <limit>]\n"
         << "war3-map-cli terrain-snapshot <map-archive>\n"
         << "war3-map-cli terrain-block <map-archive> <source-sha256> <terrain-sha256> <x> <y> <width> <height>\n"
@@ -362,10 +363,19 @@ int wmain(int argc, wchar_t** argv) {
     if (command == L"wtg-source-inspect" && (argc == 5 ||
             (argc == 7 && std::wstring_view(argv[5]) == L"--max-nodes" && argv[6][0])))
         return RunWtgSourceInspect(argv[2], Utf8Argument(argv[3]), argv[4], argc == 7 ? Utf8Argument(argv[6]) : "");
-    if (command == L"wtg-source-query" && (argc == 9 ||
-            (argc == 11 && std::wstring_view(argv[9]) == L"--max-nodes" && argv[10][0])))
-        return RunWtgSourceQuery(argv[2], Utf8Argument(argv[3]), argv[4], Utf8Argument(argv[5]),
-            Utf8Argument(argv[6]), Utf8Argument(argv[7]), Utf8Argument(argv[8]), argc == 11 ? Utf8Argument(argv[10]) : "");
+    if (command == L"wtg-source-query" && argc >= 9 && argc <= 13 && (argc - 9) % 2 == 0) {
+        std::string maxNodes, triggerItem;
+        bool valid = true;
+        for (int index = 9; index + 1 < argc && valid; index += 2) {
+            const std::wstring_view option(argv[index]);
+            auto& target = option == L"--max-nodes" ? maxNodes : triggerItem;
+            valid = (option == L"--max-nodes" || option == L"--trigger") && argv[index + 1][0] && target.empty();
+            if (valid) target = Utf8Argument(argv[index + 1]);
+        }
+        if (valid)
+            return RunWtgSourceQuery(argv[2], Utf8Argument(argv[3]), argv[4], Utf8Argument(argv[5]),
+                Utf8Argument(argv[6]), Utf8Argument(argv[7]), Utf8Argument(argv[8]), maxNodes, triggerItem);
+    }
     if (command == L"lua-trigger-candidate" && argc >= 7) {
         std::vector<std::string> options;
         for (int index = 7; index < argc; ++index) options.push_back(Utf8Argument(argv[index]));

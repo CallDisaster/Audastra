@@ -8,12 +8,14 @@ namespace War3Map::Trigger {
 
 struct WtgSourceLimits {
     // 计入来源、记录、字符串和节点载荷，不含分配器管理开销。
-    // 默认节点预算可显式配置到hardMaxNodes；其他来源/解码/深度预算仍只能收紧。
+    // 节点预算可显式收紧；其他来源/解码/深度预算仍只能收紧。
     static constexpr std::size_t hardMaxNodes = 1000000;
     std::size_t maxBytes = 64 * 1024 * 1024;
     std::size_t maxDecodedBytes = 256 * 1024 * 1024;
     std::size_t maxItems = 100000;
-    std::size_t maxNodes = 250000; // ECA与参数合计；不是地图实例数量限制。
+    // ECA与参数合计，不是地图实例数量限制。与触发器事务共用 100 万默认值：大型旧版 YDWE 图约 29 万，
+    // 内存仍由来源与解码字节预算约束。
+    std::size_t maxNodes = hardMaxNodes;
     std::size_t maxStringBytes = 1024 * 1024;
     std::size_t maxDepth = 128;
 };
@@ -93,5 +95,12 @@ struct WtgSourcePage {
 [[nodiscard]] Result<WtgSourcePage> QueryWtgSource(const WtgSource& source,
     std::string_view expectedSourceSha256, std::string_view expectedCatalogSha256,
     WtgSourceTable table, std::size_t start, std::size_t limit);
+
+// 只返回一个触发器的 ECA 或参数行：triggerItem 是 items 表里触发器行的下标，table 只能是 Ecas/Arguments。
+// 按树的深度优先顺序（ECA → 它的参数及参数里的函数调用 → 子 ECA）分页；行号仍是全表下标，
+// 可与 argument_indices/child_indices 对照。节点越界或被重复引用时拒绝，不去重猜测。
+[[nodiscard]] Result<WtgSourcePage> QueryWtgSourceTrigger(const WtgSource& source,
+    std::string_view expectedSourceSha256, std::string_view expectedCatalogSha256,
+    std::size_t triggerItem, WtgSourceTable table, std::size_t start, std::size_t limit);
 
 } // namespace War3Map::Trigger
