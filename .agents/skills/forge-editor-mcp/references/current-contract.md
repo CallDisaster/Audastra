@@ -31,7 +31,7 @@
 | 需求 | 已见工具 | 使用要点 |
 |---|---|---|
 | 工作区身份/事务 | get_revision、begin_edit、preview_edit、validate_edit、rollback_edit | 阅读实际 revision、来源复核、transaction 和 edit generation 合同 |
-| 地图只读/归档 | describe_map_data、query_map_data_page、query_map_archive_member_identities | 分页、覆盖和真实成员身份；成员哈希不授权读不透明正文 |
+| 地图只读/归档 | describe_map_data、query_map_data_page、query_map_archive_member_identities | 分页、覆盖和真实成员身份；成员哈希不授权读不透明正文。前两者可用 source_map_path 直接只读查询 .w3x（与 expected_revision 二选一），结果直接用于 save_map_edit_candidate 的 field_edits |
 | 七类物编 | objects_list、objects_get、objects_field_options、objects_set_fields、objects_create、objects_delete | GUI/独立入口共用 schema；rawcode区分大小写，未知引用覆盖禁止删除 |
 | 变量 | variables_list、variables_get、variables_create、variables_update、variables_rename、variables_delete | 当前StableId与opaque修订；改名需要实际代码块SHA审计，未知引用删除拒绝 |
 | 实体字段 C1 | entities_query、entities_set_fields | 当前typed覆盖查询；source_index、row_key、完整成员SHA、精确raw与CAS成组绑定；doodads只读 |

@@ -2,6 +2,8 @@
 #include "McpMapDataJson.h"
 
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/MapArchiveSession.h"
+#include "War3MapCore/MapDocument.h"
 #include "War3MapCore/MapData/MapFields.h"
 #include "War3MapCore/Services/MapDataQuery.h"
 #include "War3MapCore/Workspace.h"
@@ -13,6 +15,7 @@
 #include <array>
 #include <bit>
 #include <cmath>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -28,6 +31,9 @@ constexpr std::size_t kMapDataMaxJsonBytes = 1024 * 1024;
 
 struct MapDataReadState {
     std::optional<MapDataQuerySnapshot> snapshot;
+    // 地图归档只读模式：与 CLI map-data-query 同一绑定（archive-readonly-<SHA>），按路径与 SHA 复用快照。
+    std::optional<MapDataQuerySnapshot> archiveSnapshot;
+    std::filesystem::path archivePath;
 };
 
 std::optional<MapDataKind> MapKind(const QString& text) {
@@ -66,6 +72,116 @@ Status EnsureSnapshot(McpServer& server, McpWorkspace& workspace,
     return Status::Ok();
 }
 
+MapDataQueryBinding ArchiveBinding(const std::string& sourceSha256) {
+    return {"archive-readonly-" + sourceSha256, 1, 0, sourceSha256};
+}
+
+// 归档模式：只读打开 .w3x/.w3m，核对来源 SHA（未给出时采用实际 SHA），每次请求都重新确认来源未变。
+// 返回的行标识与成员 SHA 可直接用于 save_map_edit_candidate 的 field_edits。
+Status EnsureArchiveSnapshot(const QJsonObject& parameters, bool requireSha, MapDataReadState& state) {
+    auto path = ParseAbsolutePath(parameters, "source_map_path");
+    if (!path.Succeeded()) return {std::move(path.diagnostics)};
+    const auto expectedSha = parameters.value("expected_source_sha256").toString().toStdString();
+    if ((requireSha || parameters.contains("expected_source_sha256")) && !IsLowerHexSha256(expectedSha))
+        return Status::Failure("MCP", "MCP_MAP_DATA_SOURCE_SHA_INVALID", "expected_source_sha256 必须是 64 位小写十六进制。");
+    auto archive = MapArchiveSession::Open(*path.value);
+    if (!archive.Succeeded() || !archive.value) return {std::move(archive.diagnostics)};
+    const auto& sourceSha = archive.value->SourceSha256();
+    if (!expectedSha.empty() && sourceSha != expectedSha)
+        return Status::Failure("MCP", "MAP_DATA_QUERY_STALE", "地图归档的 SHA-256 与 expected_source_sha256 不一致。");
+    const auto binding = ArchiveBinding(sourceSha);
+    if (!(state.archiveSnapshot && state.archiveSnapshot->Binding() == binding && state.archivePath == *path.value)) {
+        state.archiveSnapshot.reset();
+        auto captured = CaptureMapDataSnapshot(MapDocument::FromArchive(*archive.value), binding,
+            archive.value->HasOpaqueMembers());
+        if (!captured.Succeeded() || !captured.value) return {std::move(captured.diagnostics)};
+        state.archiveSnapshot.emplace(std::move(*captured.value));
+        state.archivePath = *path.value;
+    }
+    return archive.value->VerifySourceUnchanged();
+}
+
+// 两种来源互斥：展开目录会话用 expected_revision，地图归档用 source_map_path。
+std::optional<bool> ArchiveMode(const QJsonObject& parameters, QJsonObject& error) {
+    const bool archive = parameters.contains("source_map_path");
+    const bool workspace = parameters.contains("expected_revision");
+    if (archive == workspace) {
+        error = Failure("MCP_MAP_DATA_SOURCE_SCOPE",
+            "只能二选一：展开目录会话给 expected_revision，地图归档给 source_map_path（可附 expected_source_sha256）。");
+        return std::nullopt;
+    }
+    if (!archive && parameters.contains("expected_source_sha256")) {
+        error = Failure("MCP_MAP_DATA_SOURCE_SCOPE", "expected_source_sha256 只用于地图归档模式。");
+        return std::nullopt;
+    }
+    return archive;
+}
+
+// 当前请求可用的快照与绑定；归档模式的修订为占位（generation 1 / revision 0）。
+struct MapDataSource {
+    const MapDataQuerySnapshot* snapshot = nullptr;
+    MapDataQueryBinding binding;
+    McpWorkspace* workspace = nullptr;
+    std::optional<ProjectRevision> revision;
+};
+
+Result<MapDataSource> ResolveMapDataSource(McpServer& server, const QJsonObject& parameters, bool requireSha,
+    MapDataReadState& state, QJsonObject& error) {
+    const auto archive = ArchiveMode(parameters, error);
+    if (!archive) return Result<MapDataSource>::Failure("MCP", "MCP_MAP_DATA_SOURCE_SCOPE", "来源参数无效。");
+    MapDataSource source;
+    if (*archive) {
+        const Status loaded = EnsureArchiveSnapshot(parameters, requireSha, state);
+        if (!loaded.Succeeded()) {
+            error = Failure(loaded);
+            return {std::nullopt, loaded.diagnostics};
+        }
+        source.snapshot = &*state.archiveSnapshot;
+        source.binding = state.archiveSnapshot->Binding();
+        return Result<MapDataSource>::Success(std::move(source));
+    }
+    auto expected = ParseRevision(parameters);
+    if (!expected.Succeeded()) {
+        error = Failure(expected);
+        return {std::nullopt, expected.diagnostics};
+    }
+    source.workspace = RequireWorkspace(server, error);
+    if (!source.workspace) return Result<MapDataSource>::Failure("MCP", "MCP_WORKSPACE_REQUIRED", "需要展开目录会话。");
+    const Status loaded = EnsureSnapshot(server, *source.workspace, *expected.value, state);
+    if (!loaded.Succeeded()) {
+        error = Failure(loaded);
+        return {std::nullopt, loaded.diagnostics};
+    }
+    source.snapshot = &*state.snapshot;
+    source.binding = CurrentBinding(server, *expected.value);
+    source.revision = *expected.value;
+    return Result<MapDataSource>::Success(std::move(source));
+}
+
+QJsonObject SourceProperties() {
+    auto properties = BasicSchema({}, {"expected_revision"}).value("properties").toObject();
+    properties["source_map_path"] = QJsonObject{{"type", "string"}};
+    properties["expected_source_sha256"] = QJsonObject{{"type", "string"}, {"pattern", "^[0-9a-f]{64}$"}};
+    return properties;
+}
+
+QJsonObject MergeProperties(QJsonObject base, const QJsonObject& extra) {
+    for (auto it = extra.begin(); it != extra.end(); ++it) base[it.key()] = it.value();
+    return base;
+}
+
+QString WorkspaceKind(const MapDataSource& source) {
+    return source.workspace ? QStringLiteral("expanded-directory") : QStringLiteral("map-archive-readonly");
+}
+
+QJsonValue RevisionValue(const MapDataSource& source) {
+    return source.revision ? QJsonValue(RevisionJson(*source.revision)) : QJsonValue(QJsonValue::Null);
+}
+
+Status AfterStatus(const MapDataSource& source) {
+    return source.workspace ? source.workspace->EnvironmentStatus() : Status::Ok();
+}
+
 QJsonObject BoundedJson(QJsonObject result) {
     if (static_cast<std::size_t>(QJsonDocument(result).toJson(QJsonDocument::Compact).size()) > kMapDataMaxJsonBytes)
         return Failure("MCP_MAP_DATA_JSON_BUDGET", "完整地图数据响应超过 1 MiB；请缩小页长。");
@@ -86,29 +202,27 @@ void RegisterReadOnlyTools(McpServer& server) {
     {
         ToolDefinition tool;
         tool.name = "describe_map_data";
-        tool.description = "只读描述当前展开目录会话的七类地图数据、成员 SHA 与字段目录（字段标识、类型、是否可写及约束）；仅已提交来源，活动事务和未保存 UI 修订不可见";
+        tool.description = "只读描述七类地图数据、成员 SHA 与字段目录（字段标识、类型、是否可写及约束）。来源二选一："
+            "展开目录会话给 expected_revision；地图归档（.w3x/.w3m）给 source_map_path，可附 expected_source_sha256，"
+            "返回的 binding.source_sha256 与成员 SHA 可直接用于 save_map_edit_candidate 的 field_edits。仅已提交来源";
         tool.maxResponseBytes = kMapDataMaxJsonBytes;
-        tool.inputSchema = BasicSchema({}, {"expected_revision"});
+        tool.inputSchema = BasicSchema(SourceProperties());
         tool.handler = [&server, mapData](const QJsonObject& parameters) -> QJsonValue {
-            auto expected = ParseRevision(parameters);
-            if (!expected.Succeeded()) return Failure(expected);
             QJsonObject error;
-            McpWorkspace* workspace = RequireWorkspace(server, error);
-            if (!workspace) return error;
-            const Status loaded = EnsureSnapshot(server, *workspace, *expected.value, *mapData);
-            if (!loaded.Succeeded()) return Failure(loaded);
-            auto description = DescribeMapData(*mapData->snapshot, CurrentBinding(server, *expected.value));
+            auto source = ResolveMapDataSource(server, parameters, false, *mapData, error);
+            if (!source.Succeeded()) return error;
+            auto description = DescribeMapData(*source.value->snapshot, source.value->binding);
             if (!description.Succeeded()) return Failure(description);
             QJsonArray members;
             for (const auto& member : description.value->members) members.append(MemberJson(member));
             QJsonObject result{{"ok", true}, {"schema_version", 1},
-                {"workspace_kind", "expanded-directory"}, {"content_scope", "committed-source"},
+                {"workspace_kind", WorkspaceKind(*source.value)}, {"content_scope", "committed-source"},
                 {"includes_active_transaction_overlay", false}, {"includes_unsaved_ui_revision", false},
                 {"binding", BindingJson(description.value->binding)},
-                {"revision", RevisionJson(*expected.value)},
+                {"revision", RevisionValue(*source.value)},
                 {"has_opaque_archive_members", description.value->hasOpaqueArchiveMembers}, {"members", members},
                 {"field_catalog", FieldCatalogJson()}};
-            const Status after = workspace->EnvironmentStatus();
+            const Status after = AfterStatus(*source.value);
             if (!after.Succeeded()) return Failure(after);
             return BoundedJson(std::move(result));
         };
@@ -117,9 +231,11 @@ void RegisterReadOnlyTools(McpServer& server) {
     {
         ToolDefinition tool;
         tool.name = "query_map_data_page";
-        tool.description = "按会话绑定和成员 SHA 分页读取七类地图数据；最多 128 行/256 KiB 逻辑数据/1 MiB JSON，续页索引仅在同一修订有效";
+        tool.description = "按绑定和成员 SHA 分页读取七类地图数据；最多 128 行/256 KiB 逻辑数据/1 MiB JSON，续页索引仅在同一修订有效。"
+            "来源与 describe_map_data 相同二选一；地图归档模式必须给 expected_source_sha256";
         tool.maxResponseBytes = kMapDataMaxJsonBytes;
-        tool.inputSchema = BasicSchema({
+        auto queryProperties = SourceProperties();
+        tool.inputSchema = BasicSchema(MergeProperties(queryProperties, {
             {"expected_map_data_binding", bindingSchema},
             {"kind", QJsonObject{{"type", "string"}, {"enum", QJsonArray{
                 "settings", "units", "doodads", "regions", "cameras", "sounds", "strings"}}}},
@@ -128,16 +244,11 @@ void RegisterReadOnlyTools(McpServer& server) {
             {"start_index", unsignedSchema},
             {"limit", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 128}}},
             {"max_logical_bytes", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 262144}}},
-        }, {"expected_revision", "expected_map_data_binding", "kind", "expected_member_snapshot",
-            "start_index", "limit"});
+        }), {"expected_map_data_binding", "kind", "expected_member_snapshot", "start_index", "limit"});
         tool.handler = [&server, mapData](const QJsonObject& parameters) -> QJsonValue {
-            auto expected = ParseRevision(parameters);
-            if (!expected.Succeeded()) return Failure(expected);
             QJsonObject error;
-            McpWorkspace* workspace = RequireWorkspace(server, error);
-            if (!workspace) return error;
-            const Status loaded = EnsureSnapshot(server, *workspace, *expected.value, *mapData);
-            if (!loaded.Succeeded()) return Failure(loaded);
+            auto source = ResolveMapDataSource(server, parameters, true, *mapData, error);
+            if (!source.Succeeded()) return error;
             const auto rawBinding = parameters.value("expected_map_data_binding").toObject();
             const std::string documentId = rawBinding.value("document_id").toString().toStdString();
             if (documentId.empty() || documentId.size() > 128 || documentId.find('\0') != std::string::npos)
@@ -152,9 +263,9 @@ void RegisterReadOnlyTools(McpServer& server) {
                 rawBinding.value("source_sha256").toString().toStdString()};
             const auto kind = MapKind(parameters.value("kind").toString());
             if (!kind) return Failure("MCP_MAP_DATA_KIND_INVALID", "未知地图数据类别。");
-            if (binding != CurrentBinding(server, *expected.value))
+            if (binding != source.value->binding)
                 return Failure("MAP_DATA_QUERY_STALE", "地图数据文档身份、世代、修订或来源 SHA-256 已变化。");
-            auto described = DescribeMapData(*mapData->snapshot, binding);
+            auto described = DescribeMapData(*source.value->snapshot, binding);
             if (!described.Succeeded()) return Failure(described);
             const auto& member = described.value->members[static_cast<std::size_t>(*kind)];
             const QString memberSha = member.memberSha256 ? QString::fromStdString(*member.memberSha256) : "missing";
@@ -165,7 +276,7 @@ void RegisterReadOnlyTools(McpServer& server) {
                 ? parameters.value("max_logical_bytes").toInt() : 256 * 1024;
             if (limit < 1 || limit > 128 || maxLogicalBytes < 1 || maxLogicalBytes > 256 * 1024)
                 return Failure("MCP_MAP_DATA_LIMIT", "单页预算只能为 1..128 行、1..262144 逻辑字节。");
-            auto page = QueryMapDataPage(*mapData->snapshot, binding, *kind,
+            auto page = QueryMapDataPage(*source.value->snapshot, binding, *kind,
                 MapDataQueryCursor{binding, *kind, *start.value},
                 static_cast<std::size_t>(limit), static_cast<std::size_t>(maxLogicalBytes));
             if (!page.Succeeded()) return Failure(page);
@@ -176,13 +287,13 @@ void RegisterReadOnlyTools(McpServer& server) {
                 {"kind", MapKindName(page.value->next->kind)},
                 {"next_index", QString::number(page.value->next->nextIndex)}};
             QJsonObject result{{"ok", true}, {"schema_version", 1},
-                {"workspace_kind", "expanded-directory"}, {"content_scope", "committed-source"},
+                {"workspace_kind", WorkspaceKind(*source.value)}, {"content_scope", "committed-source"},
                 {"includes_active_transaction_overlay", false}, {"includes_unsaved_ui_revision", false},
-                {"binding", BindingJson(page.value->binding)}, {"revision", RevisionJson(*expected.value)},
+                {"binding", BindingJson(page.value->binding)}, {"revision", RevisionValue(*source.value)},
                 {"member", MemberJson(page.value->member)},
                 {"logical_bytes", QString::number(page.value->logicalBytes)},
                 {"rows", rows}, {"next_cursor", next}};
-            const Status after = workspace->EnvironmentStatus();
+            const Status after = AfterStatus(*source.value);
             if (!after.Succeeded()) return Failure(after);
             return BoundedJson(std::move(result));
         };

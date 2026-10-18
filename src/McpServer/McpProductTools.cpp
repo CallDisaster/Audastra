@@ -26,7 +26,8 @@ QJsonObject TextSchema(int limit) { return {{"type", "string"}, {"maxLength", li
 QJsonObject Properties(const QString& name) {
     if (name == "feedback.draft") return {
         {"issue", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"internal_tool_error", "unhandled_exception",
-            "application_save_defect", "assertion_failure", "unexplained_render_failure"}}}},
+            "application_save_defect", "assertion_failure", "unexplained_render_failure",
+            "tool_usability_gap", "compatibility_gap"}}}},
         {"error_code", TextSchema(256)}, {"call_site", TextSchema(4096)}, {"tool_name", TextSchema(256)},
         {"diagnostic", TextSchema(32768)}, {"description", TextSchema(16384)},
         {"call_stack", QJsonObject{{"type", "array"}, {"maxItems", 64}, {"items", TextSchema(4096)}}}};
@@ -77,6 +78,8 @@ AgentIssue Issue(const std::string& value) {
     if (value == "application_save_defect") return AgentIssue::ApplicationSaveDefect;
     if (value == "assertion_failure") return AgentIssue::AssertionFailure;
     if (value == "unexplained_render_failure") return AgentIssue::UnexplainedRenderFailure;
+    if (value == "tool_usability_gap") return AgentIssue::ToolUsabilityGap;
+    if (value == "compatibility_gap") return AgentIssue::CompatibilityGap;
     throw std::invalid_argument("not an application issue");
 }
 QJsonObject Budget(QJsonObject body) {
@@ -94,6 +97,7 @@ std::vector<ToolDefinition> ProductToolDefinitions() {
         tool.name = name;
         tool.description = name == "feedback.draft"
             ? "起草程序自身问题的清理后本地报告；不附地图/触发器/对话/日志/截图，不发送。未同意时只留本地；用户可在反馈队列查看和导出。"
+              "工具不合理或缺能力用 tool_usability_gap，与旧版地图/框架兼容缺口用 compatibility_gap；地图内容本身的问题不在此提交。"
             : name == "update.status" ? "只读当前版本、发布信任配置和宿主的检查状态；不检查网络、不触发下载或安装。"
             : "读取本地反馈队列的清理后状态；不发送、不修改同意项。";
         tool.inputSchema = {{"type", "object"}, {"properties", Properties(name)},

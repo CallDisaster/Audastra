@@ -141,7 +141,14 @@ stdio 是 UTF-8 **newline JSON-RPC**：每行一条完整 JSON，响应以换行
 - 页查询传入 `expected_map_data_binding`、`kind`、`expected_member_snapshot`、字符串 `start_index` 和数值 `limit`（1..128）。可设 `max_logical_bytes`（1..262144）；单次输出还受 JSON 字节预算限制。
 - 使用页返回的 row identity 和 raw，未知/缺失/部分/歧义不是空表成功。目录或 Catalog 漂移时重新取身份，不能自己修改 revision 或续用旧 cursor。
 
-这些目录数据查询仅包括已提交来源，不包括未保存 GUI 状态；活动触发器事务时拒绝。直接查询归档副本可用 CLI。
+这些目录数据查询仅包括已提交来源，不包括未保存 GUI 状态；活动触发器事务时拒绝。
+
+**直接查询地图归档**（独立 MCP，无需展开目录）：`describe_map_data` 和 `query_map_data_page` 以 `source_map_path` 代替 `expected_revision`，二者只能给一个。
+
+- `describe_map_data` 可不带 SHA，返回的 `binding.source_sha256` 即该归档的 SHA。
+- 页查询必须带 `expected_source_sha256`。
+- 绑定为 `archive-readonly-<SHA>`，`workspace_kind` 为 `map-archive-readonly`，与 CLI `map-data-query` 相同。
+- 返回的 `source_index`、`row_key`、成员 `member_sha256` 和字段 `raw` 直接用于下文 `save_map_edit_candidate` 的 `field_edits`；保存后对候选再查一次以回读确认。
 
 ### 字段候选保存
 
