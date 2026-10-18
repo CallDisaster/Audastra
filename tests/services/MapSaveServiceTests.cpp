@@ -1115,6 +1115,17 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
     Require(hadTerrain && std::none_of(members.begin(), members.end(), [](const auto& member) {
         return member.name == "war3mapMap.blp";
     }), "original fixture has terrain and no MapBLP");
+    MapData::UnitPlacements unitLayer;
+    MapData::UnitPlacement unit;
+    unit.rawcode = "hfoo"; unit.position = {128.0f, 128.0f, 0.0f}; unit.owner = 0; unit.creationId = 1;
+    unit.scale = {1.0f, 1.0f, 1.0f}; unitLayer.units.push_back(unit);
+    const auto unitBytes = unitLayer.Serialize();
+    Require(unitBytes.Succeeded() && unitBytes.value, "serialize one classic unit for Automatic field regression");
+    const auto existingUnits = std::find_if(members.begin(), members.end(), [](const auto& member) {
+        return member.name == "war3mapUnits.doo";
+    });
+    if (existingUnits == members.end()) members.push_back({"war3mapUnits.doo", *unitBytes.value});
+    else existingUnits->data = *unitBytes.value;
     const auto sourcePath = directory.Path() / "dry-source.w3x";
     const auto written = WriteVerifiedArchive(sourcePath, members);
     auto source = MapArchiveSession::Open(sourcePath);
@@ -1161,6 +1172,59 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
         }
     };
     verifyPreservedMembers(*preservedArchive.value);
+
+    // 作者反馈回归：默认Automatic下只改单位字段，地形必须已经在编辑前附加，
+    // 不能在finalDerived阶段触发MAP_TERRAIN_ATTACH_LATE。
+    auto unitMap = MapDocument::FromArchive(*source.value);
+    const auto* hitPoints = MapData::FindMapField(MapDataKind::Units, "hit_points");
+    Require(hitPoints != nullptr, "resolve unit hit_points field for attach-late regression");
+    const auto unitRow = MapData::MapFieldRowKey(unitMap, MapDataKind::Units, 0);
+    const auto unitBefore = MapData::ReadMapField(unitMap, MapDataKind::Units, 0, *hitPoints);
+    const auto unitAfter = MapData::ParseMapFieldInput(*hitPoints, "1");
+    const auto unitMemberSha = Sha256(unitMap.Member(MapDataKind::Units).sources.front().data);
+    Require(unitRow.Succeeded() && unitRow.value && unitBefore.Succeeded() && unitBefore.value
+        && unitAfter.Succeeded() && unitAfter.value && unitMemberSha.Succeeded() && unitMemberSha.value,
+        "bind unit row, previous hit_points and member SHA");
+    MapEditSaveRequest unitRequest;
+    unitRequest.sourceMap = sourcePath; unitRequest.targetCandidate = directory.Path() / "unit-auto.w3x";
+    unitRequest.expectedSourceSha256 = source.value->SourceSha256();
+    unitRequest.expectedTerrainSha256 = *terrainSha.value;
+    unitRequest.toolRoot = ydwe; unitRequest.gameRoot = game;
+    unitRequest.fieldEdits = {{*unitMemberSha.value, {MapDataKind::Units, 0, *unitRow.value,
+        "hit_points", *unitBefore.value, *unitAfter.value}}};
+    const auto unitSaved = SaveMapEditCandidate(unitRequest);
+    if (!unitSaved.Succeeded()) for (const auto& note : unitSaved.diagnostics)
+        std::cerr << "unit automatic attach regression: " << note.code << ": " << note.message << '\n';
+    Require(unitSaved.Succeeded() && unitSaved.value,
+        "默认Automatic只改单位字段必须不再命中MAP_TERRAIN_ATTACH_LATE");
+
+    const auto settingsField = MapData::FindMapField(MapDataKind::Settings, "map_name");
+    Require(settingsField != nullptr, "resolve settings map_name field for Automatic attach regression");
+    const auto settingsRow = MapData::MapFieldRowKey(unitMap, MapDataKind::Settings, 0);
+    const auto settingsBefore = MapData::ReadMapField(unitMap, MapDataKind::Settings, 0, *settingsField);
+    const auto settingsAfter = MapData::ParseMapFieldInput(*settingsField, "Automatic settings");
+    const auto settingsSha = Sha256(unitMap.Member(MapDataKind::Settings).sources.front().data);
+    Require(settingsField && settingsRow.Succeeded() && settingsRow.value && settingsBefore.Succeeded() && settingsBefore.value
+        && settingsAfter.Succeeded() && settingsAfter.value && settingsSha.Succeeded() && settingsSha.value,
+        "bind settings row for Automatic attach regression");
+    MapEditSaveRequest settingsRequest = unitRequest;
+    settingsRequest.targetCandidate = directory.Path() / "settings-auto.w3x";
+    settingsRequest.fieldEdits = {{*settingsSha.value, {MapDataKind::Settings, 0, *settingsRow.value,
+        "map_name", *settingsBefore.value, *settingsAfter.value}}};
+    const auto settingsSaved = SaveMapEditCandidate(settingsRequest);
+    Require(settingsSaved.Succeeded() && settingsSaved.value,
+        "默认Automatic只改设置字段必须不再命中MAP_TERRAIN_ATTACH_LATE");
+
+    const auto unitKey = MapData::MapFieldRowKey(unitMap, MapDataKind::Units, 0);
+    Require(unitKey.Succeeded() && unitKey.value, "bind unit row for Automatic rotation regression");
+    MapEditSaveRequest rotationRequest = unitRequest;
+    rotationRequest.targetCandidate = directory.Path() / "rotation-auto.w3x";
+    rotationRequest.fieldEdits.clear();
+    rotationRequest.placementEdit = MapEditPlacementRotation{
+        {MapData::PlacementFile::Units, 0, *unitKey.value, *unitMemberSha.value}, 0.75f};
+    const auto rotationSaved = SaveMapEditCandidate(rotationRequest);
+    Require(rotationSaved.Succeeded() && rotationSaved.value,
+        "默认Automatic只做单位旋转必须不再命中MAP_TERRAIN_ATTACH_LATE");
 
     request.minimapChoice = TerrainMinimapSaveChoice::Automatic;
     request.targetCandidate = directory.Path() / "automatic.w3x";

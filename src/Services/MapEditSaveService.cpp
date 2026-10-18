@@ -648,6 +648,22 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         std::optional<Trigger::TriggerTransactionReceipt> transactionReceipt;
         std::shared_ptr<const MapData::TerrainSavePlan> terrainPlan;
         std::shared_ptr<const TerrainMinimapSave> minimapSave;
+
+        // Automatic 小地图需要一个稳定的源地形会话。必须在任何
+        // settings/物编/摆放编辑前附加 W3E/WPM，否则最终派生阶段再附加
+        // 会撞上 MapDataEditSession 的 AttachLate 门禁。准确缺失的局部归档
+        // 保持未附加，后续 RequiresAutomaticGeneration 会按真实成员决定是否跳过。
+        if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic) {
+            const std::array<std::string, 2> names{"war3map.w3e", "war3map.wpm"};
+            const auto members = source.CaptureExactMembers(names);
+            if (!members.Succeeded() || !members.value) return Forward(members.diagnostics);
+            if ((*members.value)[0].present && (*members.value)[1].present) {
+                auto attached = edits.AttachTerrain((*members.value)[0].bytes);
+                if (!attached.Succeeded()) return Forward(attached.diagnostics);
+                attached = edits.AttachPathing((*members.value)[1].bytes);
+                if (!attached.Succeeded()) return Forward(attached.diagnostics);
+            }
+        }
         if (fieldRequest) {
             const auto applied = ApplyFieldEdits(request, map, edits, replacements, editedMembers);
             if (!applied.Succeeded()) return Forward(applied.diagnostics);
@@ -755,16 +771,8 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                     automaticRequired = *required.value;
                 }
                 if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic && automaticRequired && !edits.Terrain()) {
-                    const std::array<std::string, 2> names{"war3map.w3e", "war3map.wpm"};
-                    const auto members = source.CaptureExactMembers(names);
-                    if (!members.Succeeded() || !members.value) return Status{members.diagnostics};
-                    if (!(*members.value)[0].present || !(*members.value)[1].present)
-                        return Status::Failure("MapEditSaveService", "SAVE_MINIMAP_TERRAIN_MISSING",
-                            "自动小地图重建需要准确可读取的源W3E和WPM。");
-                    auto attached = edits.AttachTerrain((*members.value)[0].bytes);
-                    if (!attached.Succeeded()) return attached;
-                    attached = edits.AttachPathing((*members.value)[1].bytes);
-                    if (!attached.Succeeded()) return attached;
+                    return Status::Failure("MapEditSaveService", "SAVE_MINIMAP_TERRAIN_MISSING",
+                        "自动小地图重建需要在编辑开始前准确附加源W3E和WPM。");
                 }
                 if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic && !automaticRequired) {
                     auto previous = std::move(task.beforePublish);
