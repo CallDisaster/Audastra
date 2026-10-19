@@ -520,6 +520,10 @@ void OriginMetadataFormatTests() {
         return result;
     };
     accepted(wideBytes(L"[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=https://origin.invalid/\u4e2d\u6587\r\n"));
+    // \u89e3\u538b\u5de5\u5177\u5199\u5165\u7684\u7ed3\u5c3eNUL\uff1a\u672c\u673a\u8def\u5f84\u6765\u6e90\u3001\u65e0\u7ed3\u5c3e\u6362\u884c\u3002
+    accepted(std::string("[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=C:\\Download\\fixture.zip") + '\0');
+    accepted(std::string("[ZoneTransfer]\nZoneId=3\n") + '\0' + '\0');
+    accepted(wideBytes(L"[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=C:\\Download\\fixture.zip") + std::string(2, '\0'));
     const std::string prefix = "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=";
     const auto limit = static_cast<std::size_t>(Detail::kMaxZoneIdentifierBytes);
     Check(limit > prefix.size(), "origin metadata boundary fixture has room for a URL value");
@@ -533,7 +537,9 @@ void OriginMetadataFormatTests() {
         "[ZoneTransfer]\r\nZoneId=3\r\nzoneid=3\r\n", "[ZoneTransfer]\r\nZoneId=3\r\n[ZoneTransfer]\r\nZoneId=3\r\n",
         "[ZoneTransfer]\r\nZoneId=3\r\n[Other]\r\nEntry=value\r\n", "[ZoneTransfer]\r\nZoneId=5\r\n",
         "[ZoneTransfer]\r\nZoneId=-1\r\n", "[ZoneTransfer]\r\nZoneId=00\r\n", "[ZoneTransfer]\r\nZoneId=\r\n",
-        "[ZoneTransfer]\r\nZoneId=x\r\n", std::string("[ZoneTransfer]\nZoneId=3\n") + '\0',
+        "[ZoneTransfer]\r\nZoneId=x\r\n", std::string(1, '\0'),
+        std::string("[ZoneTransfer]\nZoneId=3\n") + '\0' + "HostUrl=https://origin.invalid/inner-nul\n",
+        wideBytes(L"[ZoneTransfer]\r\nZoneId=3\r\n") + std::string(2, '\0') + wideBytes(L"x").substr(2),
         std::string("[ZoneTransfer]\nZoneId=3\nHostUrl=") + char(1),
         std::string("[ZoneTransfer]\nZoneId=3\nHostUrl=") + char(127),
         wideBytes(L"[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=\x0001"),

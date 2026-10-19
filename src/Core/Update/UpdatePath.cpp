@@ -45,6 +45,7 @@ Result<bool> EnumerateOriginStream(const std::filesystem::path& path) {
 
 bool ValidZoneIdentifier(std::span<const std::byte> bytes) {
     // 来源URL只是不可执行的元数据；只辨识ZoneTransfer和唯一ZoneId，原字节不重编码。
+    // 部分解压工具在末尾写入NUL结束符（如 "...zip\0"），只容许出现在结尾，中间的NUL仍拒绝。
     std::string text;
     std::size_t at = 0;
     const auto byte = [&](std::size_t i) { return std::to_integer<unsigned char>(bytes[i]); };
@@ -53,8 +54,10 @@ bool ValidZoneIdentifier(std::span<const std::byte> bytes) {
     };
     if (bytes.size() >= 2 && byte(0) == 0xff && byte(1) == 0xfe) {
         if (bytes.size() % 2) return false;
+        auto size = bytes.size();
+        while (size > 2 && byte(size - 2) == 0 && byte(size - 1) == 0) size -= 2;
         std::wstring wide;
-        for (at = 2; at < bytes.size(); at += 2) {
+        for (at = 2; at < size; at += 2) {
             const auto value = byte(at) | (unsigned(byte(at + 1)) << 8);
             if (!allowed(value)) return false;
             wide.push_back(static_cast<wchar_t>(value));
@@ -67,8 +70,10 @@ bool ValidZoneIdentifier(std::span<const std::byte> bytes) {
         if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide.data(), static_cast<int>(wide.size()),
             text.data(), length, nullptr, nullptr) != length) return false;
     } else {
-        if (bytes.size() >= 3 && byte(0) == 0xef && byte(1) == 0xbb && byte(2) == 0xbf) at = 3;
-        for (; at < bytes.size(); ++at) {
+        auto size = bytes.size();
+        while (size > 0 && byte(size - 1) == 0) --size;
+        if (size >= 3 && byte(0) == 0xef && byte(1) == 0xbb && byte(2) == 0xbf) at = 3;
+        for (; at < size; ++at) {
             const auto value = byte(at);
             if (!allowed(value)) return false;
             text.push_back(static_cast<char>(value));
