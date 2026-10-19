@@ -211,7 +211,9 @@ stdio 是 UTF-8 **newline JSON-RPC**：每行一条完整 JSON，响应以换行
 
 入口为 `list_triggers`、`get_trigger`、`get_ui_catalog`。修改顺序是 `get_revision` → `begin_edit` → 已注册的修改工具 → `preview_edit` → `validate_edit` → `export_map_candidate`，每步使用正确的 `transaction_id` 与完整 `expected_revision`。每次修改都会使先前 preview/validate 失效。
 
-当前注册的写工具包括 `create_trigger`、`append_root_eca`、`append_argument_call`、`set_scalar_argument`；参数/类型必须由真实 Catalog 和现存所有者证明。错误时用 `rollback_edit` 释放自己的事务。不要同时开两个写事务，不要把源变化当成可以跳过校验的理由。
+当前注册的写工具包括 `create_trigger`、`append_root_eca`、`append_argument_call`、`set_scalar_argument`；参数/类型必须由真实 Catalog 和现存所有者证明。
+
+`set_scalar_argument` 的 `value_kind`：0 = 预设（TriggerParams 名，例如 `PlayerUnitEventSpellEffect`）；1 = 变量，写 `udg_` 加变量名，变量须非数组且类型与参数一致；3 = 直接值，可写整数、实数、`true`/`false`、文本、自定义代码（如注释文本的 `scriptcode`）和物编对象编号（技能、单位等写四字符编号，如 `A04W`，不加引号）。单位、点这类句柄没有直接值写法，请用变量或函数。例：“施放的技能 == 某技能”用条件 `OperatorCompareAbilityId`，`append_root_eca` 的回执给出三个参数编号，第三个参数用 `value_kind=3` 写 `A04W`。错误时用 `rollback_edit` 释放自己的事务。不要同时开两个写事务，不要把源变化当成可以跳过校验的理由。
 
 `export_map_candidate` 导出新的**展开目录候选**，不是 `.w3x/.w3m` 封包；后者会明确拒绝。它与 `save_map_edit_candidate` 是不同的现有出口，不能把目录事务导出描述成地图归档真保存。旧 `set_object_field/create_object/delete_object` 不再注册。
 

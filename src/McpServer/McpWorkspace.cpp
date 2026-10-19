@@ -541,7 +541,7 @@ Status McpWorkspace::ValidateScalarValue(
         if (preset == nullptr) {
             return Status::Failure(
                 "MCP", "MCP_PRESET_NOT_ALLOWED",
-                "预设必须是当前 Catalog 的 TriggerParams 定义。");
+                "预设必须是当前 Catalog 的 TriggerParams 定义名；物编对象编号（如技能 A04W）、文本和自定义代码请用 value_kind=3 直接值。");
         }
         const auto raw = Field(preset->Active().fields, "value");
         // 引号不成对的定义不可信：拒绝，而不是按宽松切列猜测。
@@ -575,11 +575,21 @@ Status McpWorkspace::ValidateScalarValue(
             }
             variable = &candidate;
         }
-        if (variable == nullptr || variable->isArray != 0 ||
-            variable->typeName.text != expectedType) {
+        if (variable == nullptr) {
+            return Status::Failure(
+                "MCP", "MCP_VARIABLE_UNKNOWN",
+                "当前事务里没有变量 " + std::string(declaredName) + "（引用写 udg_ 加变量名，变量名本身不含 udg_）。");
+        }
+        if (variable->isArray != 0) {
+            return Status::Failure(
+                "MCP", "MCP_VARIABLE_ARRAY_UNSUPPORTED",
+                "数组变量 " + std::string(declaredName) + " 不能作为普通标量参数；请用数组取值函数。");
+        }
+        if (variable->typeName.text != expectedType) {
             return Status::Failure(
                 "MCP", "MCP_VARIABLE_TYPE_MISMATCH",
-                "变量必须存在、非数组，且声明类型与目标参数完全匹配。");
+                "变量 " + std::string(declaredName) + " 的类型是 " + variable->typeName.text +
+                "，目标参数需要 " + std::string(expectedType) + "。");
         }
         return Status::Ok();
     }
@@ -588,45 +598,15 @@ Status McpWorkspace::ValidateScalarValue(
             "MCP", "MCP_ARGUMENT_KIND_INVALID",
             "标量参数类型只能是预设、变量或直接值。");
     }
-    if (expectedType == "string") {
-        return Status::Ok();
-    }
-    if (expectedType == "boolean") {
-        if (value == "true" || value == "false") {
-            return Status::Ok();
-        }
+    // 直接值与界面、typed 图共用同一套字面量规则：整数/实数/布尔/文本/自定义代码/物编对象编号（如技能 'A04W'
+    // 写作 A04W）。没有固定值写法的类型（单位、点等句柄）仍拒绝。
+    const Trigger::TriggerTypeSystem types(catalog_);
+    if (types.LiteralKind(expectedType) == Trigger::TriggerTypeSystem::Literal::Other) {
         return Status::Failure(
-            "MCP", "MCP_DIRECT_BOOLEAN_INVALID",
-            "boolean 直接值只能是 true 或 false。");
+            "MCP", "MCP_DIRECT_TYPE_UNSUPPORTED",
+            "参数类型 " + std::string(expectedType) + " 没有固定值写法；请改用预设、变量或函数调用。");
     }
-    if (expectedType == "integer") {
-        std::int32_t parsed = 0;
-        const auto converted = std::from_chars(
-            value.data(), value.data() + value.size(), parsed, 10);
-        if (!value.empty() && converted.ec == std::errc{} &&
-            converted.ptr == value.data() + value.size()) {
-            return Status::Ok();
-        }
-        return Status::Failure(
-            "MCP", "MCP_DIRECT_INTEGER_INVALID",
-            "integer 直接值必须是严格 int32 文本。");
-    }
-    if (expectedType == "real") {
-        float parsed = 0.0F;
-        const auto converted = std::from_chars(
-            value.data(), value.data() + value.size(), parsed,
-            std::chars_format::general);
-        if (!value.empty() && converted.ec == std::errc{} &&
-            converted.ptr == value.data() + value.size() && std::isfinite(parsed)) {
-            return Status::Ok();
-        }
-        return Status::Failure(
-            "MCP", "MCP_DIRECT_REAL_INVALID",
-            "real 直接值必须是有限且可完整解析的数字文本。");
-    }
-    return Status::Failure(
-        "MCP", "MCP_DIRECT_TYPE_UNSUPPORTED",
-        "该 Catalog 参数类型不允许 MCP 写入未经类型证明的直接值。");
+    return types.ValidateLiteral(expectedType, value);
 }
 
 Status McpWorkspace::SealDocument(

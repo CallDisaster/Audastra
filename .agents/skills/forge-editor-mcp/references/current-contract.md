@@ -42,7 +42,7 @@
 | 单位查询 C3 | 原 entities_query | 可选精确type_id/player组合筛选，绑定同身份/成员SHA/过滤的原索引cursor；每页128行、4096原记录检查，大表总数未知；不新增工具或改变保存 |
 | 普通单位坐标 C4 | 原 entities_set_fields | Ready classic8/11 non-sloc行绝对native x/y/z；有限±1000000先double校验，原Undo/fieldEdits保存；sloc/Skin/Partial拒绝，三轴实图原保存回读通过 |
 | 自然 T 图 | query_trigger_graph、edit_trigger_graph | categories/variables/triggers/ecas/arguments/map_objects；真实 ID、类型和 guard |
-| 简单 T 编辑 | create_trigger、append_root_eca、append_argument_call、set_scalar_argument | 老式窄操作不代表完整图操作资格 |
+| 简单 T 编辑 | create_trigger、append_root_eca、append_argument_call、set_scalar_argument | 老式窄操作不代表完整图操作资格；直接值支持整数/实数/布尔/文本/自定义代码/物编对象编号（`A04W`），句柄类型须用变量或函数 |
 | 归档保存 | save_map_edit_candidate | 完整来源/工具/UI/overlay 输入，同一地图保存服务；保存后新身份 |
 | 展开目录导出 | export_map_candidate | 不要与归档保存工具混淆 |
 | 归档展开与导入成员 | archive_expand、archive_members_add、archive_members_remove | 独立服务，Save 权限。archive_expand 把 .w3x 具名成员写到新目录供 --workspace 使用，data_only 不写导入资源；成员增删写新候选，只改请求成员和 war3map.imp，不重建脚本；删除前按字符串查找路径出现处，找到即拒绝（MEMBER_REFERENCED），allow_referenced=true 才删，查不到不等于无引用 |
