@@ -80,9 +80,12 @@ std::vector<ToolDefinition> LuaFileToolDefinitions() {
                     {"description", "地图内路径，例如 war3mapImported\\hero.mdx"}}}}, {"disk_path", "archive_path"})}}},
             {"replace_existing", QJsonObject{{"type", "boolean"}, {"default", false}}}}, {"files"});
     add("imports_remove", "删除地图里的导入文件或尚未保存的待导入文件，整批进入资源撤销栈，保存地图时生效；一次1..32个。"
-        "不检查模型、脚本或物编是否仍引用这些文件，删除前须先确认。地图数据文件和 Lua 文件不在本工具范围", ToolPermission::Edit,
+        "删除前按当前内容（含未保存修改）在脚本、触发器、物编、地图数据、模型和 UI 文本里按字符串查找路径，找到就拒绝"
+        "（IMPORTS_REMOVE_REFERENCED，并列出位置），确认要删时传 allow_referenced=true；找不到不等于没有引用，"
+        "动态拼接的路径查不出，读不到的来源列在 unread_sources。地图数据文件和 Lua 文件不在本工具范围", ToolPermission::Edit,
         {{"archive_paths", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", kMaxImportFiles},
-            {"items", QJsonObject{{"type", "string"}, {"maxLength", 260}}}}}}, {"archive_paths"});
+            {"items", QJsonObject{{"type", "string"}, {"maxLength", 260}}}}},
+            {"allow_referenced", QJsonObject{{"type", "boolean"}, {"default", false}}}}, {"archive_paths"});
     add("map_test_start", "用当前编辑内容启动单人测试（与界面“测试”相同，独立副本，不改原图）", ToolPermission::External, {}, {});
     return result;
 }
@@ -93,7 +96,7 @@ QJsonObject InvokeLuaFileTool(const QString& name, const QJsonObject& args, cons
     else if (name == "lua_file_read") allowed << "path";
     else if (name == "lua_file_write") allowed << "path" << "text" << "expected_sha256";
     else if (name == "imports_add") allowed << "files" << "replace_existing";
-    else if (name == "imports_remove") allowed << "archive_paths";
+    else if (name == "imports_remove") allowed << "archive_paths" << "allow_referenced";
     else if (name != "lua_files_list" && name != "map_test_start") return Failure("LUA_FILE_TOOL_UNKNOWN", "未知 Lua 文件工具。");
     for (auto it = args.begin(); it != args.end(); ++it)
         if (!allowed.contains(it.key())) return Failure("LUA_FILE_ARGUMENT_INVALID", "不接受的参数：" + it.key().toStdString());
@@ -134,6 +137,8 @@ QJsonObject InvokeLuaFileTool(const QString& name, const QJsonObject& args, cons
         for (const auto& item : paths.toArray())
             if (!ValidImportTarget(item))
                 return Failure("IMPORTS_REMOVE_ARGUMENT_INVALID", "每项必须是地图内相对路径，不能是 .lua。");
+        if (args.contains("allow_referenced") && !args.value("allow_referenced").isBool())
+            return Failure("IMPORTS_REMOVE_ARGUMENT_INVALID", "allow_referenced 必须是 true 或 false。");
     }
     if (!host.invoke) return Failure("LUA_FILE_NO_EDITOR",
         "此宿主没有打开的地图。请在编辑器中打开该地图，于“应用设置 → MCP 连接”启用服务，再连接编辑器的 MCP 端口调用本工具。");

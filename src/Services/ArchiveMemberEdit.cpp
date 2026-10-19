@@ -109,6 +109,8 @@ std::optional<const char*> MentionKind(const std::string& key) {
             if (endsWith(extension)) return "object-data";
     if (key == "WAR3MAP.W3I" || key == "WAR3MAP.WTS" || key == "WAR3MAPMISC.TXT" || key == "WAR3MAPSKIN.TXT" ||
         key == "WAR3MAPEXTRA.TXT") return "map-data";
+    // 触发器参数和自定义代码里的路径；脚本重建前它们可能还没进入 war3map.j。
+    if (key == "WAR3MAP.WTG" || key == "WAR3MAP.WCT") return "trigger";
     if (Resources::IsEditorManagedMemberPath(key)) return std::nullopt;
     if (endsWith(".MDX") || endsWith(".MDL")) return "model";
     if (endsWith(".J") || endsWith(".LUA")) return "script";

@@ -32,6 +32,7 @@ qt_add_library(War3MapQtProject STATIC
     ProjectFileIO.h
     ImportQueue.cpp
     AssetEdits.cpp
+    ProjectAssetMentions.cpp
     AssetOwnedPayload.cpp AssetOwnedPayload.h
     PendingImportPayload.cpp PendingImportPayload.h
     ProjectDiagnostics.cpp

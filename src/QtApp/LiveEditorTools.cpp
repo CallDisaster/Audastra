@@ -896,12 +896,32 @@ private:
                 const auto entry = std::find_if(entries.begin(), entries.end(),
                     [&](const QtProject::AssetEntry& value) { return QtProject::EditorProject::AssetKey(value.path) == key; });
                 if (entry == entries.end()) return Mcp::Failure("IMPORTS_REMOVE_REJECTED", "找不到资源：" + path.toStdString());
-                paths << path;
+                paths << entry->path;
                 removed.append(QJsonObject{{"archive_path", entry->path}, {"pending", entry->Pending()},
                     {"in_source_map", !entry->originalPath.isEmpty()}});
                 items.append(QJsonObject{{"kind", "import"}, {"object_id", ""}, {"title", entry->path},
                     {"target", entry->path}, {"before", entry->path}, {"after", QJsonValue::Null}});
             }
+            // 与独立 MCP 的 archive_members_remove 同一查找规则，只是按当前（含未保存修改）内容查。
+            const auto scan = project_.FindAssetMentions(paths);
+            QString found;
+            int listed = 0;
+            for (int index = 0; index < paths.size(); ++index) {
+                QJsonArray mentions;
+                for (const auto& mention : scan.mentions[static_cast<std::size_t>(index)]) {
+                    const auto member = QString::fromStdString(mention.member), kind = QString::fromStdString(mention.kind);
+                    mentions.append(QJsonObject{{"member", member}, {"kind", kind}, {"count", static_cast<qint64>(mention.count)}});
+                    if (listed++ < 16) found += QStringLiteral("\n  %1 ← %2（%3 ×%4）").arg(paths[index], member, kind).arg(mention.count);
+                }
+                auto row = removed[index].toObject();
+                row.insert("mentioned_in", mentions);
+                removed[index] = row;
+            }
+            if (listed != 0 && !arguments.value("allow_referenced").toBool(false))
+                return Mcp::Failure("IMPORTS_REMOVE_REFERENCED", QStringLiteral("要删除的文件路径仍出现在 %1 处，确认要删时加 "
+                    "allow_referenced=true：%2").arg(listed).arg(found).toStdString());
+            QJsonArray unread;
+            for (const auto& source : scan.unread) unread.append(source);
             const auto rejected = project_.RecordAssetEdit(QObject::tr("AI 删除 %1 个导入文件").arg(paths.size()),
                 [&](QtProject::AssetState& state) -> QString {
                     for (const auto& path : paths)
@@ -912,6 +932,7 @@ private:
             SyncIdentity();
             emit owner_.Changed();
             return QJsonObject{{"ok", true}, {"removed", removed}, {"saved", false}, {"references_checked", false},
+                {"unread_sources", unread},
                 {"project_identity", projectIdentity_}, {"revision", QString::number(project_.editRevision_.Revision())},
                 {"changes", QJsonObject{{"files", removed.size()}, {"items", items}}}};
         }

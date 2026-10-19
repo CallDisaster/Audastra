@@ -27,7 +27,7 @@ struct ArchiveMemberAddition {
     std::filesystem::path file; // 本机文件，调用时读入
 };
 
-// 某个成员的路径在另一个成员里以字符串出现。kind：script / object-data / map-data / model / ui-text。
+// 某个成员的路径在另一个成员里以字符串出现。kind：script / trigger / object-data / map-data / model / ui-text。
 struct ArchivePathMention {
     std::string member;
     std::string kind;
@@ -49,7 +49,7 @@ struct ArchiveMemberEditReceipt {
     bool referencesChecked = false; // 路径查找不覆盖动态拼接的路径，不能证明没有引用
 };
 
-// 在脚本、七类物编（含 Skin）、w3i/wts/misc、导入模型和 UI 文本里按字符串查找每个目标路径。
+// 在脚本、触发器（wtg/wct）、七类物编（含 Skin）、w3i/wts/misc、导入模型和 UI 文本里按字符串查找每个目标路径。
 // 大小写和斜杠方向不限，.mdl/.mdx 互通，JASS 字符串里的双反斜杠按一个算；.ai 等不透明成员不读。
 // 目标自身之间的出现不计。结果与 targets 对齐；找不到不等于没有引用（动态拼接查不出）。
 [[nodiscard]] std::vector<std::vector<ArchivePathMention>> FindArchivePathMentions(

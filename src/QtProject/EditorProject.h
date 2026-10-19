@@ -11,6 +11,7 @@
 #include <QString>
 #include <QStringList>
 
+#include "War3MapCore/Services/ArchiveMemberEdit.h"
 #include "War3MapCore/Services/ProjectReferenceIndex.h"
 #include "War3MapCore/Services/ObjectDeletionAssessment.h"
 #include "War3MapCore/Services/ProjectChanges.h"
@@ -330,6 +331,15 @@ public:
     // 私有候选状态规划供资源与 Lua 页面共用；这些重载不发布信号或修改当前工程。
     [[nodiscard]] QString MoveAsset(AssetState& state, const QString& from, const QString& to) const;
     [[nodiscard]] QString RemoveAsset(AssetState& state, const QString& path) const;
+    // 删除资源前的路径查找（ProjectAssetMentions.cpp）：按当前内容（含未保存修改）在脚本、触发器、七类物编、
+    // 地图数据、导入模型与界面文本里查找路径字符串，与独立 MCP 删除导入文件同一规则。
+    // unread 列出读不到的来源；找不到不等于没有引用（动态拼接的路径查不出）。
+    struct AssetMentionScan {
+        std::vector<std::vector<Services::ArchivePathMention>> mentions; // 与 paths 对齐
+        QStringList unread;
+        std::size_t scannedMembers = 0;
+    };
+    [[nodiscard]] AssetMentionScan FindAssetMentions(const QStringList& paths) const;
     // 搜索等只读调用可请求当前序列的有界前缀；原无参数调用仍取完整资源列表。
     [[nodiscard]] std::vector<AssetEntry> AssetEntries(
         std::size_t maxEntries = (std::numeric_limits<std::size_t>::max)()) const;

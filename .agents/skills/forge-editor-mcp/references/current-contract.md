@@ -38,7 +38,7 @@
 | 预放命令 C2 有限范围 | entities_rotate、entities_copy | classic普通units/doodads；绝对朝向弧度与共同XYZ偏移copy，原Undo/有限原来源保存；真实单位两类保存与回读通过，地物真实保存及整个实体CRUD尚未验收 |
 | 设置与字符串 D | map_settings_get/set、strings_query/set | 稳定w3i/string_id、当前成员SHA/raw/CAS；v25 literal与已有WTS shared_string显式区分；原Undo/字段保存，不创建WTS或整组D–H |
 | 已有声音 E0 | sounds_list/get/update | 原名字字节sound_id、当前成员SHA/raw/CAS；只改完整classic v1的volume/fade_in/fade_out整数，原Undo/字段保存；扩展、歧义及其它属性拒绝，真实/原版/游戏验收另记 |
-| 导入元数据 E1 | imports_list/get | 区分原IMP记录、物理成员与GUI待导入队列，绑定source/inventory及当前修订的cursor；默认64/最多128行、每页最多4096行匹配检查。保留原flags/path hex/歧义与覆盖未知；pending只reported_bytes，不读磁盘、不造SHA。只读，不提供正文。新增/删除走编辑器端口的 imports_add / imports_remove（进资源撤销栈，删除不检查引用），独立服务的 archive_members_add / archive_members_remove，或 CLI archive-member-add / archive-member-remove |
+| 导入元数据 E1 | imports_list/get | 区分原IMP记录、物理成员与GUI待导入队列，绑定source/inventory及当前修订的cursor；默认64/最多128行、每页最多4096行匹配检查。保留原flags/path hex/歧义与覆盖未知；pending只reported_bytes，不读磁盘、不造SHA。只读，不提供正文。新增/删除走编辑器端口的 imports_add / imports_remove（进资源撤销栈；删除前按当前内容查路径，找到拒绝 IMPORTS_REMOVE_REFERENCED，allow_referenced=true 才删，回执 mentioned_in / unread_sources），独立服务的 archive_members_add / archive_members_remove，或 CLI archive-member-add / archive-member-remove |
 | 单位查询 C3 | 原 entities_query | 可选精确type_id/player组合筛选，绑定同身份/成员SHA/过滤的原索引cursor；每页128行、4096原记录检查，大表总数未知；不新增工具或改变保存 |
 | 普通单位坐标 C4 | 原 entities_set_fields | Ready classic8/11 non-sloc行绝对native x/y/z；有限±1000000先double校验，原Undo/fieldEdits保存；sloc/Skin/Partial拒绝，三轴实图原保存回读通过 |
 | 自然 T 图 | query_trigger_graph、edit_trigger_graph | categories/variables/triggers/ecas/arguments/map_objects；真实 ID、类型和 guard |
