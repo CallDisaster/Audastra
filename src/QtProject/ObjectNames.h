@@ -34,6 +34,10 @@ struct ObjectPresentation {
 [[nodiscard]] War3Map::Services::NameResolution ResolveProjectName(
     const War3Map::QtProject::EditorProject& project, std::string_view rawValue,
     std::string_view uiType = {});
+// 字符串表引用（TRIGSTR_n）在当前工程 overlay 中的原始正文，不去颜色码或换行，供编辑框使用。
+// 不是引用、字符串表未加载或条目缺失/重复时返回空，调用方照旧显示原值。
+[[nodiscard]] std::optional<std::string> ResolveProjectStringText(
+    const War3Map::QtProject::EditorProject& project, std::string_view rawValue);
 [[nodiscard]] ObjectPresentation ResolveProjectObjectPresentation(
     const War3Map::QtProject::EditorProject& project, const War3Map::ObjectData::ObjectKey& key);
 [[nodiscard]] War3Map::Trigger::ReferencePresentation ResolveProjectReferencePresentation(

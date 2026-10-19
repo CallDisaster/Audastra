@@ -54,6 +54,10 @@ public:
     using ValuePresentationResolver = std::function<QString(const War3Map::ObjectData::ObjectFieldDefinition*, const QString&)>;
     void SetValuePresentationResolver(ValuePresentationResolver resolver);
     [[nodiscard]] QString PresentedValue(const War3Map::ObjectData::ObjectFieldDefinition* definition, const QString& value) const;
+    // 文本字段的值是字符串表引用时，编辑框显示引用的正文；未改动则保留原引用，改动后写入新文字。
+    using StringReferenceResolver = std::function<std::optional<std::string>(std::string_view)>;
+    void SetStringReferenceResolver(StringReferenceResolver resolver) { stringReference_ = std::move(resolver); }
+    [[nodiscard]] std::optional<std::string> ReferencedTextAt(int row) const;
     using ColourPreviewFactory = std::function<War3Map::UiKit::WarcraftTextSourceResolver()>;
     void SetColourPreviewFactory(ColourPreviewFactory factory);
     [[nodiscard]] War3Map::UiKit::WarcraftTextSourceResolver PrepareColourPreview() const;
@@ -120,6 +124,7 @@ private:
     bool showRawFields_ = false;
     ValuePresentationResolver valuePresentation_;
     ColourPreviewFactory colourPreviewFactory_;
+    StringReferenceResolver stringReference_;
     const War3Map::ObjectData::StandardObjectCatalog* catalog_ = nullptr;
     const War3Map::ObjectData::ObjectFieldSchema* schema_ = nullptr;
     QPointer<QUndoStack> undoStack_;

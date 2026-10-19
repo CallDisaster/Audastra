@@ -278,6 +278,12 @@ const ObjectFieldDefinition* ObjectFieldModel::DefinitionAt(int row) const {
     const auto* field = RowAt(row);
     return field ? field->definition : nullptr;
 }
+std::optional<std::string> ObjectFieldModel::ReferencedTextAt(int row) const {
+    const auto* field = RowAt(row);
+    if (!field || !stringReference_ || !std::holds_alternative<std::string>(field->effective.value)) return std::nullopt;
+    return stringReference_(std::get<std::string>(field->effective.value));
+}
+
 std::optional<Value> ObjectFieldModel::EditorValueAt(int row) const {
     const auto* field = RowAt(row);
     if (!field) return {};
@@ -310,8 +316,10 @@ QVariant ObjectFieldModel::data(const QModelIndex& index, int role) const {
                 field->baselineSource.isEmpty() ? tr("未解析") : field->baselineSource,
                 field->overridden ? tr("已修改") : tr("默认"),
                 field->editable ? QString{} : QChar('\n') + (field->reason.isEmpty() ? tr("只读") : field->reason));
-        if (IsMultilineTextField(field->definition, EditorValueAt(index.row())))
-            tooltip += tr("\n\n完整内容:\n%1").arg(ToQString(ValueToDisplayString(field->effective.value)));
+        if (IsMultilineTextField(field->definition, EditorValueAt(index.row()))) {
+            const auto referenced = ReferencedTextAt(index.row());
+            tooltip += tr("\n\n完整内容:\n%1").arg(ToQString(referenced ? *referenced : ValueToDisplayString(field->effective.value)));
+        }
         return tooltip;
     }
     if (role != Qt::DisplayRole && role != Qt::EditRole) return {};
@@ -371,6 +379,9 @@ bool ObjectFieldModel::setData(const QModelIndex& index, const QVariant& input, 
     if (role == Qt::EditRole && writeGate_ && !writeGate_()) return false;
     const auto* field = RowAt(index.row());
     if (role != Qt::EditRole || index.column() != 3 || !field || !field->editable || !document_ || !object_) return false;
+    // 编辑框里是引用的正文；原样提交表示没有修改，保留 TRIGSTR 引用。
+    if (const auto referenced = ReferencedTextAt(index.row());
+        referenced && input.metaType().id() == QMetaType::QString && input.toString().toStdString() == *referenced) return true;
     QVariant value = input;
     if (field->definition && !field->definition->referenceTypes.empty()) {
         const QStringList ids = input.metaType().id() == QMetaType::QStringList ? input.toStringList()

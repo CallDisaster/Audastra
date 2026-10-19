@@ -12,6 +12,7 @@
 #include <QEvent>
 #include <QFrame>
 #include <QKeyEvent>
+#include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QTableView>
@@ -123,6 +124,7 @@ private slots:
     void LevelAndDataAddressesRemainDistinct();
     void OrderedReferenceEditorCommitsOneUndoableChange();
     void NumericEditingStartsAtValueAndSelectsText();
+    void StringReferenceEditorsShowReferencedText();
     void RemovingOneOverlayPreservesSurroundingLines();
     void CustomParentChainMergesNearestValuesAndSources();
     void CustomParentResetAndEditsOnlyChangeSelectedObject();
@@ -621,6 +623,51 @@ void ObjectFieldModelTests::NumericEditingStartsAtValueAndSelectsText() {
     QCOMPARE(abilities.data(Qt::EditRole).toString(), QStringLiteral("A001,A002"));
     model.SetShowRawFields(true);
     QCOMPARE(model.index(FindRow(model, "uabi"), 3).data().toString(), QStringLiteral("A001,A002"));
+}
+
+void ObjectFieldModelTests::StringReferenceEditorsShowReferencedText() {
+    Fixture fixture; QVERIFY(fixture.valid);
+    auto document = Parse(ObjectType::Unit,
+        "[u000]\n_parent=\"hfoo\"\nunam=\"TRIGSTR_007\"\nUbertip=\"TRIGSTR_008\"\nZZZZ=\"untouched\"\n");
+    QVERIFY(document);
+    const ObjectKey object{ObjectType::Unit, "u000"};
+    ObjectFieldModel model; QUndoStack undo; model.SetUndoStack(&undo);
+    model.SetContext(&fixture.catalog, &fixture.schema); model.SetDocument(document.get(), &object);
+    model.SetStringReferenceResolver([](std::string_view raw) -> std::optional<std::string> {
+        if (raw == "TRIGSTR_007") return std::string("圣光突袭(Q)");
+        if (raw == "TRIGSTR_008") return std::string("|cffffcc00第一行|r|n第二行");
+        return std::nullopt;
+    });
+    QTableView view; view.setModel(&model); ObjectFieldDelegate delegate(&view); view.setItemDelegate(&delegate);
+    view.resize(900, 600); view.show(); view.setFocus();
+    const auto value = [&](const char* id) { return model.index(FindRow(model, id), 3).data(Qt::EditRole).toString(); };
+
+    // 单行：编辑框是引用的正文；原样提交保留引用，改动后写入新文字。
+    view.setCurrentIndex(model.index(FindRow(model, "unam"), 3)); QTest::keyClick(&view, Qt::Key_F2);
+    auto* edit = view.findChild<QLineEdit*>(); QVERIFY(edit);
+    QCOMPARE(edit->text(), QStringLiteral("圣光突袭(Q)"));
+    QTest::keyClick(edit, Qt::Key_Return);
+    QCoreApplication::processEvents();
+    QCOMPARE(value("unam"), QStringLiteral("TRIGSTR_007"));
+    QCOMPARE(undo.count(), 0);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    view.setCurrentIndex(model.index(FindRow(model, "unam"), 3)); QTest::keyClick(&view, Qt::Key_F2);
+    edit = view.findChild<QLineEdit*>(); QVERIFY(edit);
+    edit->setText(QStringLiteral("圣光突袭(W)")); QTest::keyClick(edit, Qt::Key_Return);
+    QTRY_COMPARE(value("unam"), QStringLiteral("圣光突袭(W)"));
+    QCOMPARE(undo.count(), 1);
+
+    // 多行：面板里是引用的原始正文（保留颜色码）；未改动直接应用不写入。
+    const QModelIndex tip = model.index(FindRow(model, "Ubertip"), 3);
+    QStyleOptionViewItem option; option.widget = view.viewport(); option.rect = view.visualRect(tip);
+    QKeyEvent open(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+    QVERIFY(delegate.editorEvent(&open, &model, option, tip));
+    auto* panel = view.findChild<QFrame*>(QStringLiteral("objectMultilineEditor")); QVERIFY(panel);
+    auto* text = panel->findChild<QPlainTextEdit*>(QStringLiteral("objectMultilineText")); QVERIFY(text);
+    QCOMPARE(text->toPlainText(), QStringLiteral("|cffffcc00第一行|r|n第二行"));
+    QTest::mouseClick(panel->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Apply), Qt::LeftButton);
+    QCOMPARE(value("Ubertip"), QStringLiteral("TRIGSTR_008"));
+    QCOMPARE(undo.count(), 1);
 }
 
 void ObjectFieldModelTests::RemovingOneOverlayPreservesSurroundingLines() {

@@ -119,6 +119,9 @@ void ObjectModule::UpdateObjectReferenceEntries() {
                 : UiKit::WarcraftTextSourceResolver{};
         };
         objectFieldModel_->SetColourPreviewFactory(previewFactory);
+        objectFieldModel_->SetStringReferenceResolver([project = project_](std::string_view raw) -> std::optional<std::string> {
+            return project ? ResolveProjectStringText(*project, raw) : std::nullopt;
+        });
         if (!objectFieldModel_->property("colourPreviewSourceWatch").toBool()) {
             objectFieldModel_->setProperty("colourPreviewSourceWatch", true);
             const QPointer<ObjectFieldModel> model(objectFieldModel_);

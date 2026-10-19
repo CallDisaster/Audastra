@@ -96,7 +96,8 @@ void ObjectFieldDelegate::setEditorData(QWidget* editor, const QModelIndex& inde
         return;
     }
     if (auto* edit = qobject_cast<QLineEdit*>(editor)) {
-        edit->setText(text); edit->setFocus(Qt::OtherFocusReason); edit->selectAll();
+        const auto referenced = model->ReferencedTextAt(index.row());
+        edit->setText(referenced ? ToQString(*referenced) : text); edit->setFocus(Qt::OtherFocusReason); edit->selectAll();
     }
 }
 void ObjectFieldDelegate::setModelData(QWidget* editor, QAbstractItemModel* model, const QModelIndex& index) const {
@@ -158,7 +159,8 @@ bool ObjectFieldDelegate::editorEvent(QEvent* event, QAbstractItemModel* abstrac
         layout->addWidget(new QLabel(label, panel));
         auto* text = new QPlainTextEdit(panel);
         text->setObjectName(QStringLiteral("objectMultilineText"));
-        const std::string rawOriginal = ValueToDisplayString(*value);
+        const auto referenced = model->ReferencedTextAt(index.row());
+        const std::string rawOriginal = referenced ? *referenced : ValueToDisplayString(*value);
         const QString original = ToQString(rawOriginal);
         text->setPlainText(original);
         const QString editorBaseline = text->toPlainText(); // Qt 仅规范化控件显示；未编辑时仍保留原字节。

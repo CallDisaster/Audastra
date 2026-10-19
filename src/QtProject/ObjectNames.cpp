@@ -202,6 +202,16 @@ War3Map::Services::NameResolution ResolveProjectName(const War3Map::QtProject::E
     return resolved;
 }
 
+std::optional<std::string> ResolveProjectStringText(const War3Map::QtProject::EditorProject& project,
+    std::string_view rawValue) {
+    if (!War3Map::Services::StringReferenceId(rawValue)) return std::nullopt;
+    const auto* map = CurrentNameMap(project);
+    if (!map) return std::nullopt;
+    auto resolved = map->ResolveString(rawValue);
+    if (!resolved.Succeeded() || !resolved.value) return std::nullopt;
+    return std::move(*resolved.value);
+}
+
 ObjectPresentation ResolveProjectObjectPresentation(const War3Map::QtProject::EditorProject& project,
     const War3Map::ObjectData::ObjectKey& key) {
     auto& cache = CurrentNameCache(project);
