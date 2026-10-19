@@ -618,7 +618,10 @@ void TestSharedPerFileEncodingDeclarations() {
     Require(prepare(accessTask, {{outside, Script::ScriptProfileEncoding::Utf8}}, {}, {*access.value}).Succeeded()
         && accessTask.script && accessTask.script->toolchain.frameworkInputs, "shared include access reaches frozen task");
     const auto& accessFrozen = *accessTask.script->toolchain.frameworkInputs;
-    Require(accessFrozen.profile.ordinaryIncludeAccess == std::vector<Script::ScriptProfileIncludeAccess>{*access.value}
+    // 档案默认只授予工具根内的相对 ..；声明的资格并入，不覆盖默认项。
+    const auto& granted = accessFrozen.profile.ordinaryIncludeAccess;
+    Require(granted.size() == 2 && std::find(granted.begin(), granted.end(), *access.value) != granted.end()
+        && std::any_of(granted.begin(), granted.end(), [&](const auto& item) { return item.path == accessFrozen.layout.root; })
         && Script::VerifyScriptFrameworkInputs(accessFrozen, *accessTask.script->toolchain.layout).Succeeded(),
         "access list participates in common Capture/Verify identity");
     auto accessInput = input; const auto absolute = outside.generic_u8string();

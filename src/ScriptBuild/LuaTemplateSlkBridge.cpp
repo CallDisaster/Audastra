@@ -204,6 +204,23 @@ std::optional<GameTypes> ReadGameTypes(const std::filesystem::path& path) {
     return types;
 }
 
+GameTypes TypesFromMetadata(const SlkDatasetMetadata& metadata) {
+    GameTypes types;
+    const auto add = [&](const std::string& scope, const SlkDatasetMetadataScope& fields) {
+        for (const auto& [name, field] : fields.fields) {
+            const auto found = field.fields.find("type");
+            if (found == field.fields.end()) continue;
+            const auto* scalar = std::get_if<SlkSessionScalar>(&found->second.value);
+            const auto* type = scalar ? std::get_if<std::int64_t>(scalar) : nullptr;
+            if (type && *type >= 0 && *type <= 3) types[scope][name] = static_cast<int>(*type);
+        }
+    };
+    for (std::size_t c = 0; c < kClasses.size(); ++c) add(std::string(kClasses[c]), metadata.common[c]);
+    add("misc", metadata.misc);
+    for (const auto& [code, scope] : metadata.byCode) add(code, scope);
+    return types;
+}
+
 std::optional<std::size_t> SlkClass(std::string_view name) {
     constexpr std::pair<std::string_view, std::size_t> tables[] = {
         {"UNITS\\UNITDATA.SLK", 0}, {"UNITS\\UNITBALANCE.SLK", 0}, {"UNITS\\UNITUI.SLK", 0},
@@ -342,8 +359,9 @@ std::string PushSlkData(lua_State* lua, const LuaTemplateSlkSources& sources,
         const auto& w3i = members[8];
         if (w3i.identity.presence != SlkSessionSourcePresence::Present) return "地图缺少 war3map.w3i，模板 slk 库无法确定数据集。";
         SlkDatasetRequest request;
-        request.coreRoot = sources.w3x2lniRoot / "plugin" / "w3x2lni" / "script" / "core";
+        request.coreRoot = SlkDatasetCoreRoot(sources.w3x2lniRoot, sources.layout);
         request.installedYdweRoot = sources.w3x2lniRoot;
+        request.layout = sources.layout;
         request.finalW3i = w3i.bytes;
         request.documentRevision = sources.map->Revision();
         auto read = ReadSlkTypedDataset(request);
@@ -353,10 +371,15 @@ std::string PushSlkData(lua_State* lua, const LuaTemplateSlkSources& sources,
             return message;
         }
         dataset = std::move(*read.value);
-        const auto gameTypesPath = sources.w3x2lniRoot / "plugin" / "w3x2lni" / "data" / dataset.dataSetId / "prebuilt" / "metadata.ini";
-        auto readTypes = ReadGameTypes(gameTypesPath);
-        if (!readTypes) return "无法读取游戏字段类型表 " + gameTypesPath.generic_string() + "，模板不能确定物编字段的存储类型。";
-        gameTypes = std::move(*readTypes);
+        if (dataset.layout == SlkDatasetLayout::ScriptPrebuiltDefault) {
+            // 旧入口没有单独的游戏字段表，物编读写都用同一份 defined/metadata.ini 的 type。
+            gameTypes = TypesFromMetadata(dataset.metadata);
+        } else {
+            const auto gameTypesPath = sources.w3x2lniRoot / "plugin" / "w3x2lni" / "data" / dataset.dataSetId / "prebuilt" / "metadata.ini";
+            auto readTypes = ReadGameTypes(gameTypesPath);
+            if (!readTypes) return "无法读取游戏字段类型表 " + gameTypesPath.generic_string() + "，模板不能确定物编字段的存储类型。";
+            gameTypes = std::move(*readTypes);
+        }
         std::optional<MapData::StringTableDocument> strings;
         if (members[kStrings].identity.presence == SlkSessionSourcePresence::Present) {
             auto parsed = MapData::ParseStringTable(members[kStrings].bytes);

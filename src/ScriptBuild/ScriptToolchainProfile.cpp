@@ -175,6 +175,31 @@ Result<std::string> ValidateScriptToolchainProfile(const ScriptToolchainProfile&
             return Fail("SCRIPT_PROFILE_API_INVALID", "模板API必须为有界、唯一的公开标识符，不能声明宿主文件、系统或动态加载入口。");
         }
     }
+    if (profile.featureExtensions.size() > 64 || profile.unsupportedPlugins.size() > 64)
+        return Fail("SCRIPT_PROFILE_LIMIT", "框架编译插件声明超过64项。");
+    const auto identifier = [](std::string_view text) {
+        return !text.empty() && text.size() <= 128 && !(text.front() >= '0' && text.front() <= '9') &&
+            std::all_of(text.begin(), text.end(), [](unsigned char c) {
+                return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+            });
+    };
+    for (std::size_t index = 0; index < profile.featureExtensions.size(); ++index) {
+        const auto& extension = profile.featureExtensions[index];
+        // 头文件只是单个文件名，由已绑定的包含根查找；不接受路径、驱动器或 ..。
+        const bool header = !extension.forceInclude.empty() && extension.forceInclude.size() <= 128 &&
+            extension.forceInclude.front() != '.' && std::all_of(extension.forceInclude.begin(), extension.forceInclude.end(),
+                [](unsigned char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '.' || c == '-'; });
+        if (!identifier(extension.feature) || !header ||
+            (!extension.templateLibrary.empty() && extension.templateLibrary != kUserdataGcTemplateLibrary) ||
+            std::any_of(profile.featureExtensions.begin(), profile.featureExtensions.begin() + index,
+                [&](const auto& prior) { return prior.feature == extension.feature; }))
+            return Fail("SCRIPT_PROFILE_PLUGIN_INVALID", "框架特性插件需要唯一特性名、单个头文件名和已实现的模板函数集。");
+    }
+    for (const auto& plugin : profile.unsupportedPlugins) {
+        if (!identifier(plugin.name) || plugin.identifiers.empty() || plugin.identifiers.size() > 64 ||
+            !std::all_of(plugin.identifiers.begin(), plugin.identifiers.end(), identifier))
+            return Fail("SCRIPT_PROFILE_PLUGIN_INVALID", "未支持插件声明需要插件名和有界的触发标识符。");
+    }
     for (std::size_t index = 0; index < profile.directives.size(); ++index) {
         const auto directive = profile.directives[index];
         if (!IsDirective(directive) || std::find(profile.directives.begin(), profile.directives.begin() + index, directive) != profile.directives.begin() + index) {
@@ -246,6 +271,16 @@ Result<std::string> ValidateScriptToolchainProfile(const ScriptToolchainProfile&
             for (const auto& access : profile.ordinaryIncludeAccess) valid = valid && identity.Path(access.path) &&
                 identity.Number(static_cast<std::uint64_t>(access.kind)) && identity.Number(static_cast<std::uint64_t>(access.encoding)) &&
                 identity.Number(access.required ? 1 : 0);
+        }
+        if (!profile.featureExtensions.empty() || !profile.unsupportedPlugins.empty()) {
+            valid = valid && identity.Add("War3Map.FrameworkPlugins.v1") && identity.Number(profile.featureExtensions.size());
+            for (const auto& extension : profile.featureExtensions) valid = valid && identity.Add(extension.feature) &&
+                identity.Add(extension.forceInclude) && identity.Add(extension.templateLibrary);
+            valid = valid && identity.Number(profile.unsupportedPlugins.size());
+            for (const auto& plugin : profile.unsupportedPlugins) {
+                valid = valid && identity.Add(plugin.name) && identity.Number(plugin.identifiers.size());
+                for (const auto& name : plugin.identifiers) valid = valid && identity.Add(name);
+            }
         }
         if (!valid) return Fail("SCRIPT_PROFILE_LIMIT", "工具链档案的完整逻辑身份超过1MiB预算。");
         return Sha256Text(identity.Text());

@@ -19,7 +19,11 @@ struct ScriptFrameworkInputs {
 
 [[nodiscard]] Result<ScriptToolchainProfile> MakeLegacyFrameworkProfile(
     const ScriptToolchainLayout& layout, const Trigger::UiCatalog& catalog,
-    const std::filesystem::path& uiRoot, const std::filesystem::path& mainDirectory);
+    const std::filesystem::path& uiRoot, const std::filesystem::path& mapDirectory);
+// 把用户声明的普通include资格并入档案：同一路径以用户声明为准，档案默认的工具根资格保留。
+void MergeDeclaredIncludeAccess(ScriptToolchainProfile& profile, std::vector<ScriptProfileIncludeAccess> declared);
+// 旧框架档案是否为这张地图生成：地图目录是档案的第一个用户包含根。
+[[nodiscard]] bool LegacyFrameworkProfileBindsMap(const ScriptToolchainProfile& profile, const std::filesystem::path& mapDirectory);
 [[nodiscard]] Result<ScriptFrameworkInputs> CaptureScriptFrameworkInputs(
     ScriptToolchainProfile profile, const ScriptToolchainLayout& layout,
     const Trigger::UiCatalog& catalog);

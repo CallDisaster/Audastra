@@ -84,7 +84,9 @@ struct TemplateContext {
     std::function<std::optional<std::int64_t>(std::string_view ability, std::string_view type)> abilityOrder;
     // 可选：内置求值遇到不支持的语句块（如 slk 物编生成）时，改由此回调整份执行模板。
     // 未提供时这类块报错并中止；回调失败同样中止，不回退到跳过语句块。
-    std::function<Result<TemplateTransactionOutput>(std::string_view preprocessed)> wholeChunk;
+    // libraries 为框架档案已开启的原创模板函数集（见 ScriptProfileFeatureExtension），可为空。
+    std::function<Result<TemplateTransactionOutput>(std::string_view preprocessed,
+        const std::vector<std::string>& libraries)> wholeChunk;
     // import 的路径形式相对此目录读取（YDWE 约定：地图文件所在目录），只读、不越出该目录。
     // 为空时只核对 import 写法与名称，不读文件、不产生成员（代码检查等只读场景）。
     std::optional<std::filesystem::path> importRoot;
