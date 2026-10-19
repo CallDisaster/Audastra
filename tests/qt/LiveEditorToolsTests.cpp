@@ -1986,6 +1986,33 @@ void LiveEditorToolsTests::ImportsAddQueuesOwnedBytesWithUndo() {
     QCOMPARE(ErrorCode(f.tools->Invoke("imports_remove",
         removeRequest({"war3mapImported\\hero.mdx", "WAR3MAPIMPORTED/HERO.MDX"}))), QString("IMPORTS_REMOVE_REJECTED"));
     QCOMPARE(f.project.AssetUndoStack()->count(), 2);
+    // 删除前按当前内容查找路径：待导入的界面文本写着 hero.mdl（.mdl/.mdx 互通）时默认拒绝，确认后才删。
+    const auto note = f.outputs.filePath("ref.txt");
+    QVERIFY(WriteFile(note, "Art=war3mapImported\\\\Hero.mdl\n"));
+    const auto noteAdded = f.tools->Invoke("imports_add", request(note, "war3mapImported\\ref.txt"));
+    QVERIFY2(noteAdded.value("ok").toBool(), qPrintable(Explain(noteAdded)));
+    QCOMPARE(f.project.AssetUndoStack()->count(), 3);
+    auto badFlag = removeRequest({"war3mapImported\\hero.mdx"}); badFlag.insert("allow_referenced", "yes");
+    // 非布尔值在协议层按 schema 拒绝，不进入删除。
+    QCOMPARE(ErrorCode(f.tools->Invoke("imports_remove", badFlag)), QString("LIVE_EDITOR_RPC_ERROR"));
+    QCOMPARE(ErrorCode(f.tools->Invoke("imports_remove", removeRequest({"war3mapImported\\hero.mdx"}))),
+        QString("IMPORTS_REMOVE_REFERENCED"));
+    QCOMPARE(f.project.AssetUndoStack()->count(), 3);
+    auto allowed = removeRequest({"war3mapImported\\hero.mdx"}); allowed.insert("allow_referenced", true);
+    const auto forced = f.tools->Invoke("imports_remove", allowed);
+    QVERIFY2(forced.value("ok").toBool(), qPrintable(Explain(forced)));
+    const auto mentions = forced.value("removed").toArray()[0].toObject().value("mentioned_in").toArray();
+    QCOMPARE(mentions.size(), 1);
+    QCOMPARE(mentions[0].toObject().value("member").toString(), QStringLiteral("war3mapImported\\ref.txt"));
+    QCOMPARE(mentions[0].toObject().value("kind").toString(), QStringLiteral("ui-text"));
+    QCOMPARE(f.project.AssetUndoStack()->count(), 4);
+    f.project.AssetUndoStack()->undo();
+    // 同一批删除的文件之间互相提到不算引用。
+    const auto together = f.tools->Invoke("imports_remove", removeRequest({"war3mapImported\\hero.mdx", "war3mapImported\\ref.txt"}));
+    QVERIFY2(together.value("ok").toBool(), qPrintable(Explain(together)));
+    f.project.AssetUndoStack()->undo();
+    f.project.AssetUndoStack()->undo();
+    QCOMPARE(f.project.AssetUndoStack()->index(), 2);
     const auto removedResult = f.tools->Invoke("imports_remove",
         removeRequest({"war3mapImported\\hero.mdx", "war3mapImported\\old.mdx"}));
     QVERIFY2(removedResult.value("ok").toBool(), qPrintable(Explain(removedResult)));

@@ -106,7 +106,7 @@ war3-map-cli archive-expand <source-map> <source-sha256> <new-directory> [--data
 
 往地图里补文件只能用 `archive-member-add`（CLI）、独立 MCP 的 `archive_members_add` 或编辑器端口的 `imports_add`。保存只写本次改动涉及的成员，不扫描工作目录，把文件拷进展开目录不会进入候选。导入清单里标志不明的旧记录，在补回它指向的唯一成员后按原记录保留；两个可能路径都有成员时仍拒绝。
 
-删除导入文件用 `archive-member-remove`（CLI）、独立 MCP 的 `archive_members_remove` 或编辑器端口的 `imports_remove`，成员和它在 `war3map.imp` 里的记录一起删除，地图数据文件不能删。CLI 和独立 MCP 删除前会在脚本、七类物编、w3i/wts、导入模型和 UI 文本里按字符串找这个路径（`.mdl`/`.mdx` 互通），找到就拒绝（`MEMBER_REFERENCED`，列出位置）；确认要删时加 `--allow-referenced` 或 `allow_referenced=true`，回执的 `mentioned_in` 仍会列出这些位置。找不到不等于没有引用：脚本里拼接出来的路径查不出，所以回执始终是 `references_checked=false`。编辑器端口的 `imports_remove` 目前不做这项查找。
+删除导入文件用 `archive-member-remove`（CLI）、独立 MCP 的 `archive_members_remove` 或编辑器端口的 `imports_remove`，成员和它在 `war3map.imp` 里的记录一起删除，地图数据文件不能删。三处删除前都会在脚本、触发器、七类物编、w3i/wts、导入模型和 UI 文本里按字符串找这个路径（`.mdl`/`.mdx` 互通），找到就拒绝（CLI 和独立 MCP 为 `MEMBER_REFERENCED`，编辑器端口为 `IMPORTS_REMOVE_REFERENCED`，都列出位置）；确认要删时加 `--allow-referenced` 或 `allow_referenced=true`，回执的 `mentioned_in` 仍会列出这些位置。找不到不等于没有引用：脚本里拼接出来的路径查不出，所以回执始终是 `references_checked=false`。编辑器端口按当前内容查找，包括还没保存的触发器、物编和待导入文件；读不到的来源列在 `unread_sources`。
 
 旋转角度范围为 `[0,360)`；复制最多4096个来源实例；笔划最多16笔，CLI 点位是地形顶点索引。raise/lower strength 为 `>0..1024`，smooth 为 `>0..1`；通行性和布局门禁仍会进一步拒绝不安全来源。地物跟随、其他未开放笔刷不因此放开。`--layer` 必须是已发现的真实函数库层，不能拿虚构层绕过目录检查。
 

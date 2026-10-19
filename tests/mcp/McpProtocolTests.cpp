@@ -437,9 +437,12 @@ void TestArchiveMemberTools() {
         "call AddSpecialEffect(\"war3mapImported\\\\Hero2.mdx\", 0, 0)\n";
     std::vector<std::byte> scriptBytes;
     for (const char c : script) scriptBytes.push_back(static_cast<std::byte>(c));
+    // 触发器自定义代码里写的路径同样要查到（只按文本查找，不需要完整 WCT 结构）。
+    std::vector<std::byte> wctBytes;
+    for (const char c : std::string("call Preload(\"war3mapImported\\\\old.mdx\")\n")) wctBytes.push_back(static_cast<std::byte>(c));
     const std::vector<War3Map::Mpq::MpqBuildFile> files{{"war3map.imp", *imp.value, false, {}},
         {"war3mapImported\\old.mdx", {std::byte{'o'}, std::byte{'l'}, std::byte{'d'}}, false, {}},
-        {"war3map.j", scriptBytes, false, {}}};
+        {"war3map.j", scriptBytes, false, {}}, {"war3map.wct", wctBytes, false, {}}};
     Expect(War3Map::Mpq::WriteMpqArchive(path, files).Succeeded(), "archive member fixture failed");
     const auto sourceSha = War3Map::Sha256File(path);
     Expect(sourceSha.Succeeded(), "archive member fixture hash missing");
@@ -486,6 +489,12 @@ void TestArchiveMemberTools() {
         && mentions[0].toObject().value("member").toString() == "war3map.j"
         && mentions[0].toObject().value("kind").toString() == "script"
         && mentions[0].toObject().value("count").toInt() == 1, "archive_members_remove must drop the member and its import record");
+    auto oldRemove = remove; oldRemove["output_path"] = text(root / L"old-removed.w3x");
+    oldRemove["archive_paths"] = QJsonArray{"war3mapImported\\old.mdx"};
+    const auto oldRow = call("archive_members_remove", oldRemove).value("removed").toArray().first().toObject();
+    const auto oldMentions = oldRow.value("mentioned_in").toArray();
+    Expect(oldMentions.size() == 1 && oldMentions[0].toObject().value("member").toString() == "war3map.wct"
+        && oldMentions[0].toObject().value("kind").toString() == "trigger", "trigger custom code mentions must be reported");
     auto managed = remove; managed["output_path"] = text(root / L"managed.w3x"); managed["archive_paths"] = QJsonArray{"war3map.imp"};
     Expect(failedWith(call("archive_members_remove", managed), "ARCHIVE_MEMBER_MANAGED"), "archive_members_remove deleted a map data file");
     Expect(War3Map::Sha256File(path).value == sourceSha.value, "archive member tools changed the source map");
@@ -493,14 +502,14 @@ void TestArchiveMemberTools() {
     // 展开：具名成员按归档路径写到新目录；data_only 不写导入资源；已有目录拒绝。
     auto expand = source; expand["output_path"] = text(root / L"展开");
     const auto expanded = call("archive_expand", expand);
-    Expect(expanded.value("ok").toBool() && expanded.value("written_members").toInt() == 3
+    Expect(expanded.value("ok").toBool() && expanded.value("written_members").toInt() == 4
         && std::filesystem::is_regular_file(root / L"展开" / L"war3map.imp")
         && std::filesystem::file_size(root / L"展开" / L"war3mapImported" / L"old.mdx") == 3
         && expanded.value("trigger_pair_present") == false, "archive_expand must write every named member");
     Expect(failedWith(call("archive_expand", expand), "ARCHIVE_EXPAND_TARGET_EXISTS"), "archive_expand overwrote a directory");
     auto dataOnly = source; dataOnly["output_path"] = text(root / L"data-only"); dataOnly["data_only"] = true;
     const auto data = call("archive_expand", dataOnly);
-    Expect(data.value("ok").toBool() && data.value("written_members").toInt() == 2
+    Expect(data.value("ok").toBool() && data.value("written_members").toInt() == 3
         && data.value("skipped_counts").toObject().value("import").toInt() == 1
         && !std::filesystem::exists(root / L"data-only" / L"war3mapImported"), "archive_expand data_only wrote imports");
     for (const auto& entry : std::filesystem::directory_iterator(root))
