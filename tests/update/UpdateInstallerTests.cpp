@@ -1175,6 +1175,31 @@ void OriginCommitRollbackTests() {
             && std::filesystem::exists(second.value->backupDirectory), "only verified older marked backup is removed; latest backup remains");
     }
     {
+        // 部分解压工具写入的来源标记以NUL结尾、无结尾换行；同样是正常下载标记，原字节保留。
+        Fixture fixture;
+        const std::string nulZone = std::string("[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=C:\\Download\\fixture.zip") + '\0';
+        for (const auto& path : {fixture.request.installDirectory, fixture.request.installDirectory / L"user-empty/inner",
+                 fixture.request.installDirectory / L"settings.json", fixture.request.installDirectory / L"program.txt",
+                 fixture.request.installDirectory / L"update-manifest.json", fixture.request.installDirectory / L"update-manifest.json.sig"})
+            Write(ZonePath(path), nulZone);
+        const auto original = Detail::InspectUpdateTree(fixture.request.installDirectory);
+        Check(original.Succeeded(), "install marked with NUL-terminated origin metadata inventories completely");
+        if (!original.Succeeded()) return;
+        fixture.original = *original.value;
+        Check(DiscoverInstalledUpdateBaseline(fixture.request.installDirectory, "0.1.0", fixture.signer.key).Succeeded(),
+            "NUL-terminated download marks do not reject an otherwise exact signed installed baseline");
+        auto update = InstallUpdate(fixture.request, fixture.signer.key);
+        Diagnostics(update, "NUL MOTW commit");
+        Check(update.Succeeded() && update.value->outcome == UpdateInstallOutcome::Committed,
+            "signed update commits over NUL-terminated origin metadata");
+        if (!update.Succeeded() || update.value->outcome != UpdateInstallOutcome::Committed) return;
+        WaitNatural(update.value->childProcess);
+        const auto backup = Detail::InspectUpdateTree(update.value->backupDirectory);
+        Check(backup.Succeeded() && backup.value->sha256 == fixture.original.sha256
+            && Read(ZonePath(fixture.request.installDirectory / L"settings.json")) == Data(nulZone),
+            "NUL-terminated marks stay byte-exact in the backup and on retained user files");
+    }
+    {
         Fixture fixture(true);
         Write(ZonePath(fixture.request.installDirectory / L"settings.json"), kOriginalZone);
         Write(ZonePath(fixture.request.installDirectory / L"user-empty/inner"), kOriginalZone);
