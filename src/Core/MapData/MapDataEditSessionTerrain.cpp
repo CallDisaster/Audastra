@@ -1,6 +1,7 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "MapDataEditSessionTerrainInternal.h"
 #include "War3MapCore/MapData/MapPathing.h"
+#include "War3MapCore/MapData/TerrainPathingResources.h"
 
 #include <algorithm>
 #include <array>
@@ -55,6 +56,39 @@ bool DryHeightPathingInvariant(const TerrainGridSnapshot& before, const TerrainG
                 || original.CliffLevel() != level || edited.CliffLevel() != level) return false;
         }
     }
+    return true;
+}
+
+// 水深直接由原始高度计算时，不能夹带相邻坡道的派生高度变化。
+bool PlainWaterNeighborhood(const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
+    std::size_t index) {
+    const auto width = before.header.width, height = before.header.height;
+    const auto x = static_cast<std::uint32_t>(index % width), y = static_cast<std::uint32_t>(index / width);
+    if (x == 0 || y == 0 || x + 1 >= width || y + 1 >= height) return false;
+    for (std::uint32_t ny = y - 1; ny <= y + 1; ++ny) for (std::uint32_t nx = x - 1; nx <= x + 1; ++nx) {
+        for (const auto* grid : {&before, &after}) {
+            const auto& vertex = grid->vertices[static_cast<std::size_t>(ny) * width + nx];
+            if (vertex.IsRamp() || vertex.IsBoundary() || vertex.IsMapEdge()
+                || vertex.UnknownWaterFlags() || vertex.UnknownTextureFlags()) return false;
+        }
+    }
+    return true;
+}
+
+bool SameCliffPathingFootprint(const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
+    std::size_t index) {
+    if (!PlainWaterNeighborhood(before, after, index)) return false;
+    const auto width = before.header.width;
+    const auto x = static_cast<std::uint32_t>(index % width), y = static_cast<std::uint32_t>(index / width);
+    // 无坡道时原版 C 只取该地格四角层级是否不同；四个受影响地格均须不变。
+    const auto blocked = [width](const TerrainGridSnapshot& grid, std::uint32_t tx, std::uint32_t ty) {
+        const auto sw = static_cast<std::size_t>(ty) * width + tx;
+        const auto level = grid.vertices[sw].CliffLevel();
+        return grid.vertices[sw + 1].CliffLevel() != level || grid.vertices[sw + width].CliffLevel() != level
+            || grid.vertices[sw + width + 1].CliffLevel() != level;
+    };
+    for (auto ty = y - 1; ty <= y; ++ty) for (auto tx = x - 1; tx <= x; ++tx)
+        if (blocked(before, tx, ty) != blocked(after, tx, ty)) return false;
     return true;
 }
 
@@ -501,7 +535,8 @@ Status MapDataEditSession::VerifyTerrainSourceBaseline(std::span<const std::byte
 Status MapDataEditSession::VerifyTerrainCandidateForSave(
     const std::shared_ptr<const TerrainGridSnapshot>& terrain,
     const std::optional<std::vector<std::byte>>& pathing,
-    const std::optional<std::vector<std::byte>>& doodads) const {
+    const std::optional<std::vector<std::byte>>& doodads,
+    const TerrainPathingResources* resources) const {
     const auto reject = [](const char* reason) {
         return Status::Failure("MapData.Edit", "MAP_TERRAIN_PATHING_UNVERIFIED", reason);
     };
@@ -511,35 +546,65 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
     }
     if (!terrain || !terrainOriginal_ || !pathing || !pathingOriginal_)
         return reject("已修改地形但缺少源 W3E 或唯一可验证的 WPM，拒绝正式地图保存");
-    if (!SameHeader(terrain->header, terrainOriginal_->header)
+    const auto& oldHeader = terrainOriginal_->header;
+    const auto& newHeader = terrain->header;
+    const bool resourceHeader = resources && oldHeader.version == newHeader.version
+        && oldHeader.version == 11 && oldHeader.mainTileset == newHeader.mainTileset
+        && oldHeader.width == newHeader.width && oldHeader.height == newHeader.height
+        && std::bit_cast<std::uint64_t>(oldHeader.offset) == std::bit_cast<std::uint64_t>(newHeader.offset)
+        && oldHeader.cliffTilesets == newHeader.cliffTilesets && !newHeader.groundTilesets.empty()
+        && newHeader.groundTilesets.size() <= 16;
+    if ((!SameHeader(newHeader, oldHeader) && !resourceHeader)
         || terrain->vertices.size() != terrainOriginal_->vertices.size())
         return reject("W3E 头部、贴图表或顶点数量已改变，尚无对应 WPM 生成规则");
     // 按源图到当前 W3E 的最终原始净差判定；工程恢复没有可靠的笔刷来源身份，
     // 不能只检查 Raise/Lower/Smooth 枚举来保护 UI 与 Agent 共用的保存路径。
-    bool heightChanged = false;
+    bool invariantChanged = !SameHeader(newHeader, oldHeader);
     for (std::size_t index = 0; index < terrain->vertices.size(); ++index) {
         const auto& before = terrainOriginal_->vertices[index];
         const auto& after = terrain->vertices[index];
-        if (before.waterHeightAndFlagsRaw != after.waterHeightAndFlagsRaw
-            || before.variationRaw != after.variationRaw
-            || before.cliffAndLayerRaw != after.cliffAndLayerRaw
-            || ((before.textureAndFlagsRaw ^ after.textureAndFlagsRaw) & ~kBlightBit) != 0)
-            return reject("W3E 修改了高度或荒芜位以外的字段，尚无安全的 WPM 联动规则");
+        const bool waterChanged = before.waterHeightAndFlagsRaw != after.waterHeightAndFlagsRaw;
+        const bool cliffChanged = before.CliffLevel() != after.CliffLevel();
+        if ((waterChanged && (!resources || ((before.waterHeightAndFlagsRaw ^ after.waterHeightAndFlagsRaw) & 0xc000) != 0))
+            || ((before.variationRaw ^ after.variationRaw) & 0xe0) != 0
+            || (before.cliffAndLayerRaw != after.cliffAndLayerRaw && (!resources
+                || ((before.cliffAndLayerRaw ^ after.cliffAndLayerRaw) & 0xf0) != 0))
+            || ((before.textureAndFlagsRaw ^ after.textureAndFlagsRaw) & ~(kBlightBit | (resources ? 0x0f : 0))) != 0)
+            return reject("地形修改包含尚未验证的悬崖、坡道、水标志或边界变化，不能保留原 WPM");
+        if (before.GroundVariation() != after.GroundVariation() && after.GroundVariation() > 17)
+            return reject("新地面变体不在已支持的 0 到 17 范围内，未知变体只能原样保留");
+        const auto ground = [](const TerrainHeader& header, const TerrainVertex& vertex) -> std::string_view {
+            return vertex.GroundTextureIndex() < header.groundTilesets.size()
+                ? std::string_view(header.groundTilesets[vertex.GroundTextureIndex()]) : std::string_view{};
+        };
+        const auto oldGround = ground(oldHeader, before), newGround = ground(newHeader, after);
+        if (oldGround != newGround && (!resources || !resources->EquivalentGround(oldGround, newGround)))
+            return reject("旧/新地面贴图的实际 walkable、flyable、buildable 属性不同或缺少可信来源，不能保留原 WPM");
+        invariantChanged = invariantChanged || before.variationRaw != after.variationRaw
+            || oldGround != newGround || waterChanged || cliffChanged;
+        if (cliffChanged && (!SameCliffPathingFootprint(*terrainOriginal_, *terrain, index)
+            || !resources->EquivalentWater(before, after)))
+            return reject("悬崖修改改变了通行阻断轮廓或水深分类，或涉及坡道/边界；尚需重建通行性");
+        if (waterChanged && (!PlainWaterNeighborhood(*terrainOriginal_, *terrain, index)
+            || !resources->EquivalentWater(before, after)))
+            return reject("水面修改跨过浅深水或严格覆水阈值，或涉及坡道/边界；尚需重建通行性");
         if (before.groundHeightRaw != after.groundHeightRaw) {
-            heightChanged = true;
+            invariantChanged = true;
             // 不扩大原笔刷的可写高度范围。wire bit14/15即使parser保留，
             // 也不能借“通行不变”把未知高度语义变成新保存能力。
             if ((before.groundHeightRaw & 0xc000) != 0 || (after.groundHeightRaw & 0xc000) != 0)
                 return reject("高度修改超出现有14位可写范围，未知wire高度位必须原样保留");
-            if (!DryHeightPathingInvariant(*terrainOriginal_, *terrain, index))
+            if (!DryHeightPathingInvariant(*terrainOriginal_, *terrain, index)
+                && (!resources || !PlainWaterNeighborhood(*terrainOriginal_, *terrain, index)
+                    || !resources->EquivalentWater(before, after)))
                 return reject("高度变化周边一格存在水面、坡道、悬崖边界或未识别标志");
         }
     }
-    if (heightChanged && doodads != original_[Index(MapDataKind::Doodads)])
-        return reject("高度变化联动了装饰物成员；装饰物通行性尚未取证");
-    if (heightChanged && (current_[Index(MapDataKind::Units)] != original_[Index(MapDataKind::Units)]
+    if (invariantChanged && doodads != original_[Index(MapDataKind::Doodads)])
+        return reject("地形通行不变保存不能同时改变装饰物摆放");
+    if (invariantChanged && (current_[Index(MapDataKind::Units)] != original_[Index(MapDataKind::Units)]
         || current_[Index(MapDataKind::Settings)] != original_[Index(MapDataKind::Settings)]))
-        return reject("高度变化同时修改了单位摆放或可玩范围；不能沿用原通行性和小地图标记");
+        return reject("地形通行不变保存不能同时修改单位摆放或可玩范围");
     const auto width = (terrain->header.width - 1) * 4, height = (terrain->header.height - 1) * 4;
     const auto expectedBytes = kPathingHeaderBytes + static_cast<std::size_t>(width) * height;
     if (pathing->size() != expectedBytes || pathingOriginal_->size() != expectedBytes

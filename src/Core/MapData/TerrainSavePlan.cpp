@@ -3,6 +3,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
+#include "War3MapCore/MapData/TerrainPathingResources.h"
 
 #include <algorithm>
 #include <cctype>
@@ -114,6 +115,16 @@ bool TerrainSavePlan::HasTerrainChanges(const MapDataEditSession& edits) noexcep
 
 Result<TerrainSavePlan> TerrainSavePlan::Prepare(const MapArchiveSession& source,
     const MapDataEditSession& edits, const TerrainSavePlanLimits& limits) {
+    return PrepareArchive(source, edits, limits, nullptr);
+}
+
+Result<TerrainSavePlan> TerrainSavePlan::PrepareForSave(const MapArchiveSession& source,
+    const MapDataEditSession& edits, const std::filesystem::path& gameRoot, const TerrainSavePlanLimits& limits) {
+    return PrepareArchive(source, edits, limits, &gameRoot);
+}
+
+Result<TerrainSavePlan> TerrainSavePlan::PrepareArchive(const MapArchiveSession& source,
+    const MapDataEditSession& edits, const TerrainSavePlanLimits& limits, const std::filesystem::path* gameRoot) {
     return Guard([&]() {
         CheckLimits(limits);
         TerrainSavePlan plan;
@@ -149,7 +160,7 @@ Result<TerrainSavePlan> TerrainSavePlan::Prepare(const MapArchiveSession& source
                 member.sourceBytes = static_cast<std::size_t>(*identity.byteSize); member.sourceSha256 = identity.sha256;
             }
         }
-        return Complete(std::move(plan), edits, limits, total);
+        return Complete(std::move(plan), edits, limits, total, &source, gameRoot);
     });
 }
 
@@ -201,7 +212,8 @@ Result<TerrainSavePlan> TerrainSavePlan::Prepare(const WorkspaceSnapshot& source
 }
 
 Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
-    const MapDataEditSession& edits, const TerrainSavePlanLimits& limits, std::size_t total) {
+    const MapDataEditSession& edits, const TerrainSavePlanLimits& limits, std::size_t total,
+    const MapArchiveSession* sourceArchive, const std::filesystem::path* gameRoot) {
     if (!ValidSha(plan.sourceSha256_))
         return Result<TerrainSavePlan>::Failure(std::string(kSubsystem), "TERRAIN_SAVE_PLAN_SOURCE_INVALID",
             "地形保存计划需要有效的来源 SHA-256。");
@@ -218,18 +230,35 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
     RequireStatus(MatchBytes(plan.members_[0], original, false));
     RequireStatus(MatchBytes(plan.members_[1], *edits.pathingOriginal_, false));
     plan.saveGate_ = edits.VerifyTerrainPathingForSave();
-    if (edits.terrain_->vertices.size() == edits.terrainOriginal_->vertices.size())
-        for (std::size_t index = 0; index < edits.terrain_->vertices.size(); ++index)
-            plan.dryHeightInvariant_ = plan.dryHeightInvariant_
-                || edits.terrain_->vertices[index].groundHeightRaw != edits.terrainOriginal_->vertices[index].groundHeightRaw;
-    if (plan.dryHeightInvariant_ && plan.saveGate_.Succeeded()) {
+    if (!plan.saveGate_.Succeeded() && sourceArchive && gameRoot
+        && TerrainPathingResources::Needed(*edits.terrainOriginal_, *edits.terrain_)) {
+        auto resources = Take(TerrainPathingResources::Capture(*sourceArchive, *edits.terrainOriginal_, *edits.terrain_,
+            *gameRoot, limits.maximumBytes - total));
+        AddBytes(resources.SourceBytes(), total, limits);
+        plan.pathingResources_ = std::make_shared<const TerrainPathingResources>(std::move(resources));
+        plan.saveGate_ = edits.VerifyTerrainCandidateForSave(edits.terrain_, edits.pathing_,
+            edits.current_[MapDataEditSession::Index(MapDataKind::Doodads)], plan.pathingResources_.get());
+    }
+    plan.pathingInvariant_ = edits.terrain_->header.groundTilesets != edits.terrainOriginal_->header.groundTilesets
+        || edits.terrain_->header.usesCustomTileset != edits.terrainOriginal_->header.usesCustomTileset;
+    if (edits.terrain_->vertices.size() == edits.terrainOriginal_->vertices.size()) {
+        for (std::size_t index = 0; index < edits.terrain_->vertices.size(); ++index) {
+            const auto& before = edits.terrainOriginal_->vertices[index];
+            const auto& after = edits.terrain_->vertices[index];
+            plan.pathingInvariant_ = plan.pathingInvariant_ || before.groundHeightRaw != after.groundHeightRaw
+                || before.waterHeightAndFlagsRaw != after.waterHeightAndFlagsRaw || before.variationRaw != after.variationRaw
+                || ((before.textureAndFlagsRaw ^ after.textureAndFlagsRaw) & ~0x20u) != 0
+                || before.cliffAndLayerRaw != after.cliffAndLayerRaw;
+        }
+    }
+    if (plan.pathingInvariant_ && plan.saveGate_.Succeeded()) {
         constexpr std::array<MapDataKind, 3> kinds{MapDataKind::Settings, MapDataKind::Units, MapDataKind::Doodads};
         for (std::size_t index = 0; index < kinds.size(); ++index) {
             const auto& originalBytes = edits.original_[MapDataEditSession::Index(kinds[index])];
             const auto& source = plan.invariantMembers_[index];
             if ((source.sourceState == TerrainSaveSourceState::Present) != originalBytes.has_value())
                 return Result<TerrainSavePlan>::Failure(std::string(kSubsystem), "TERRAIN_SAVE_PLAN_INVARIANT_SOURCE",
-                    "干地高度的范围/摆放会话基线与真实来源成员存在性不同：" + source.name);
+                    "地形通行不变的范围/摆放会话基线与真实来源成员存在性不同：" + source.name);
             if (originalBytes) RequireStatus(MatchBytes(source, *originalBytes, false));
         }
     }
@@ -252,7 +281,7 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
     };
     if (edits.TerrainDirty()) {
         setOutput(0, TerrainBytes(*edits.terrain_, total, limits),
-            "写出已编辑 W3E；资格仍限于现有门允许的干地高度和荒芜净变化。");
+            "写出已编辑 W3E；保留原通行的修改已核对原版语义与实际输入，荒芜按原位联动。");
     }
     if (edits.pathing_ != edits.pathingOriginal_) {
         AddBytes(edits.pathing_->size(), total, limits);
@@ -390,6 +419,7 @@ std::size_t TerrainSavePlan::OwnedCapacityBytes() const noexcept {
     };
     const auto text = [&](const std::string& value) { add(value.capacity()); add(1); };
     text(sourceSha256_);
+    if (pathingResources_) add(pathingResources_->OwnedCapacityBytes());
     for (const auto& member : members_) {
         text(member.name); text(member.reasonCode); text(member.reason);
         if (member.sourceSha256) text(*member.sourceSha256);
@@ -447,16 +477,16 @@ Status TerrainSavePlan::VerifyFrozenOutput(std::string_view sourceSha256,
             if (!checked.Succeeded()) return checked;
         }
     }
-    if (dryHeightInvariant_) {
+    if (pathingInvariant_) {
         for (const auto& member : invariantMembers_) {
             const auto key = Canonical(member.name);
             const MemberReplacement* actual = nullptr;
             for (const auto& replacement : replacements) if (Canonical(replacement.name) == key) {
-                if (actual) return Reject("TERRAIN_SAVE_PLAN_DUPLICATE", "干地高度依赖被重复覆盖：" + member.name);
+                if (actual) return Reject("TERRAIN_SAVE_PLAN_DUPLICATE", "地形通行不变依赖被重复覆盖：" + member.name);
                 actual = &replacement;
             }
             for (const auto& removed : removals) if (Canonical(removed) == key && member.sourceState != TerrainSaveSourceState::Missing)
-                return Reject("TERRAIN_SAVE_PLAN_INVARIANT_CHANGED", "干地高度保存不能同时删除范围、摆放或物编来源：" + member.name);
+                return Reject("TERRAIN_SAVE_PLAN_INVARIANT_CHANGED", "地形通行不变保存不能同时删除范围、摆放或物编来源：" + member.name);
             if (actual) {
                 const auto matched = MatchBytes(member, actual->data, false);
                 if (!matched.Succeeded()) return matched;
@@ -475,15 +505,16 @@ Status TerrainSavePlan::VerifyFrozenOutput(std::string_view sourceSha256,
             const auto key = Canonical(replacement.name);
             if (!frozenInput(key) && !additionalSafe(key))
                 return Reject("TERRAIN_SAVE_PLAN_HEIGHT_RESOURCE_SCOPE",
-                    "干地高度保留原WPM时不能同时导入或覆盖资源；请先单独保存资源变更：" + replacement.name);
+                    "地形保留原WPM时不能同时导入或覆盖资源；请先单独保存资源变更：" + replacement.name);
         }
         for (const auto& removed : removals) {
             const auto key = Canonical(removed);
             if (!frozenInput(key) && !additionalSafe(key))
                 return Reject("TERRAIN_SAVE_PLAN_HEIGHT_RESOURCE_SCOPE",
-                    "干地高度保留原WPM时不能同时删除资源：" + removed);
+                    "地形保留原WPM时不能同时删除资源：" + removed);
         }
     }
+    if (pathingResources_) return pathingResources_->VerifyFrozenOutput(replacements, removals);
     return Status::Ok();
 }
 
@@ -525,7 +556,7 @@ Status TerrainSavePlan::VerifyReadback(const MapArchiveSession& saved, const Ter
             return Reject("TERRAIN_SAVE_PLAN_READBACK_UNEXPECTED", "回读发现计划之外的新地形成员：" + member.name);
         }
     }
-    if (dryHeightInvariant_) for (std::size_t index = 0; index < invariantMembers_.size(); ++index) {
+    if (pathingInvariant_) for (std::size_t index = 0; index < invariantMembers_.size(); ++index) {
         const auto& member = invariantMembers_[index];
         const auto& actual = (*captured.value)[kNames.size() + index];
         if (actual.present != (member.sourceState == TerrainSaveSourceState::Present))
@@ -534,6 +565,11 @@ Status TerrainSavePlan::VerifyReadback(const MapArchiveSession& saved, const Ter
             const auto matched = MatchBytes(member, actual.bytes, false);
             if (!matched.Succeeded()) return matched;
         }
+    }
+    if (pathingResources_) {
+        std::size_t consumed = 0;
+        for (const auto& member : *captured.value) consumed += member.bytes.size();
+        return pathingResources_->VerifyReadback(saved, readLimits.maximumBytes - consumed);
     }
     return Status::Ok();
 }

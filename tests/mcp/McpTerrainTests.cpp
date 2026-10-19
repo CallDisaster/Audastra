@@ -394,6 +394,25 @@ void TestBlightSaveForwardsServiceDiagnosticsAndRejectsActiveOverlay() {
         "active overlay refusal produced a candidate");
 }
 
+void TestNormalSaveTextureAndWaterSchema() {
+    McpServer server; RegisterAllTools(server);
+    const auto response = server.HandleMessage(R"({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}})");
+    Expect(response && !response->error, "terrain save tool list must be available");
+    bool texture = false, water = false;
+    for (const auto& tool : response->result.toObject().value("tools").toArray()) {
+        if (tool.toObject().value("name") != "save_map_edit_candidate") continue;
+        const auto properties = tool.toObject().value("inputSchema").toObject().value("properties").toObject();
+        for (const auto& variant : properties.value("terrain_strokes").toObject().value("items").toObject().value("oneOf").toArray()) {
+            const auto fields = variant.toObject().value("properties").toObject();
+            const auto kind = fields.value("kind").toObject().value("const").toString();
+            if (kind == "texture") texture = fields.contains("ground_texture") && !fields.contains("strength");
+            if (kind == "water_height") water = fields.value("water_height").toObject().value("minimum").toInt() == -2048
+                && !fields.contains("strength");
+        }
+    }
+    Expect(texture && water, "normal save must expose typed texture and water parameters without overloading strength");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -423,6 +442,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         Expect(arguments.size() == 1, "usage: test executable [--write-fixture <new-or-empty-directory>]");
+        TestNormalSaveTextureAndWaterSchema();
         TestTypedReadAndSourcePreservation();
         TestStaleBindingsAndLifetime();
         TestTransactionsAndFailures();

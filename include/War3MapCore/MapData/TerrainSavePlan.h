@@ -11,6 +11,7 @@ namespace War3Map::Services { class TerrainMinimapSave; }
 namespace War3Map::MapData {
 
 class MapDataEditSession;
+class TerrainPathingResources;
 
 enum class TerrainSaveSourceState { Present, Missing, Unknown };
 enum class TerrainSaveMemberAction { Preserve, WriteEdited, Reject };
@@ -30,7 +31,8 @@ struct TerrainSavePlanLimits {
     std::size_t maximumBytes = 64u * 1024u * 1024u;
 };
 
-// 当前计划原版通行查询已证不变的干地高度及荒芜净变化；不重建WPM，
+// 计划只接受原版通行查询已证不变的修改及荒芜净变化；PrepareForSave还会
+// 从实际来源验证等属性地面替换与同通行水深。它不重建WPM，
 // 不清除源图的静态对象、手画或未知通行位。
 // 默认SHD、MMP、小地图原样保留或已证明缺失；只有Services的密封missing-only
 // 准备单元能在原干地height门内增加MapBLP，普通计划与任意调用方不能授予其写入。
@@ -47,6 +49,10 @@ public:
     [[nodiscard]] static bool HasTerrainChanges(const MapDataEditSession& edits) noexcept;
     [[nodiscard]] static Result<TerrainSavePlan> Prepare(const MapArchiveSession& source,
         const MapDataEditSession& edits, const TerrainSavePlanLimits& limits = {});
+    // 正常保存使用实际地图/游戏表补充通行等价判断；缺少或改变的来源仍拒绝。
+    [[nodiscard]] static Result<TerrainSavePlan> PrepareForSave(const MapArchiveSession& source,
+        const MapDataEditSession& edits, const std::filesystem::path& gameRoot,
+        const TerrainSavePlanLimits& limits = {});
     // 目录来源使用已捕获的完整快照；不读取或信任快照之外的磁盘内容。
     [[nodiscard]] static Result<TerrainSavePlan> Prepare(const WorkspaceSnapshot& source,
         const MapDataEditSession& edits, const TerrainSavePlanLimits& limits = {});
@@ -78,6 +84,9 @@ public:
 private:
     friend class Services::TerrainMinimapSave;
     TerrainSavePlan() = default;
+    [[nodiscard]] static Result<TerrainSavePlan> PrepareArchive(const MapArchiveSession& source,
+        const MapDataEditSession& edits, const TerrainSavePlanLimits& limits,
+        const std::filesystem::path* gameRoot);
     [[nodiscard]] Status VerifyMissingMinimapEligibility(const MapDataEditSession& edits) const;
     [[nodiscard]] Status AdmitMissingMinimap(const MapDataEditSession& edits, std::vector<std::byte> generatedBytes);
     // 正常保存的自动小地图重建：仍受同一正式地形保存门和会话绑定约束，
@@ -85,13 +94,15 @@ private:
     [[nodiscard]] Status AdmitGeneratedMinimap(const MapDataEditSession& edits, std::vector<std::byte> generatedBytes);
     [[nodiscard]] std::size_t OwnedCapacityBytes() const noexcept;
     [[nodiscard]] static Result<TerrainSavePlan> Complete(TerrainSavePlan plan,
-        const MapDataEditSession& edits, const TerrainSavePlanLimits& limits, std::size_t sourceBytes);
+        const MapDataEditSession& edits, const TerrainSavePlanLimits& limits, std::size_t sourceBytes,
+        const MapArchiveSession* source = nullptr, const std::filesystem::path* gameRoot = nullptr);
     std::string sourceSha256_;
     std::uint64_t sessionIdentity_ = 0, revision_ = 0, terrainSourceRevision_ = 0;
     bool terrainChanged_ = false;
-    bool dryHeightInvariant_ = false;
+    bool pathingInvariant_ = false;
+    std::shared_ptr<const TerrainPathingResources> pathingResources_;
     std::array<TerrainSaveMemberPlan, 5> members_;
-    // 高度只保存不变通行时冻结：W3I、两DOO、七类native物编。它们不新增
+    // 地形只保存不变通行时冻结：W3I、两DOO、七类native物编。它们不新增
     // 写出能力；最终列表与回读必须沿用源身份，防止混入占地/范围变化。
     std::array<TerrainSaveMemberPlan, 10> invariantMembers_;
     std::vector<MemberReplacement> replacements_;

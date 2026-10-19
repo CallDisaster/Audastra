@@ -420,9 +420,9 @@ void WorldModule::BuildStatusBar(QVBoxLayout* layout) {
     rendererStatus_->setObjectName(QStringLiteral("worldRendererStatus"));
     terrainStatus_ = new UiKit::ElidedLabel(tr("打开地图以查看地形"), bar);
     terrainStatus_->setObjectName(QStringLiteral("worldTerrainStatus"));
-    terrainPathingWarning_ = new QLabel(tr("通行性未重建"), bar);
+    terrainPathingWarning_ = new QLabel(tr("通行性待核对"), bar);
     terrainPathingWarning_->setObjectName(QStringLiteral("worldTerrainPathingWarning"));
-    terrainPathingWarning_->setToolTip(tr("贴图或地形形状修改后，通行性尚未重建；当前地图保存会被阻止。可撤销这笔编辑。"));
+    terrainPathingWarning_->setToolTip(tr("保存时会核对地面贴图和水深对通行的影响；无法确认或需要重建时会阻止保存，编辑仍可保存在工程中。"));
     terrainPathingWarning_->hide();
     selectionStatus_ = new UiKit::ElidedLabel(bar);
     selectionStatus_->setObjectName(QStringLiteral("worldToolHint"));

@@ -5,6 +5,7 @@
 #include "War3MapCore/Services/MapScriptTargetSelection.h"
 #include "War3MapCore/Services/ScriptSavePreparation.h"
 
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
@@ -151,7 +152,7 @@ std::optional<Trigger::TriggerEditEcaTarget> ParseTriggerEcaTarget(wchar_t** arg
     return target;
 }
 
-// --stroke <raise|lower|smooth> <circle|square> <vertex-x> <vertex-y> <radius-0..16> <strength>
+// --stroke <kind> <circle|square> <vertex-x> <vertex-y> <radius-0..16> <value>
 std::optional<Services::MapEditTerrainStroke> ParseStroke(wchar_t** argv, int index, std::string& error) {
     const auto x = ParseNumber<std::uint64_t>(argv[index + 3]);
     const auto y = ParseNumber<std::uint64_t>(argv[index + 4]);
@@ -171,8 +172,25 @@ std::optional<Services::MapEditTerrainStroke> ParseStroke(wchar_t** argv, int in
         error = "stroke shape must be circle or square";
         return std::nullopt;
     }
+    if (kind == L"texture") {
+        stroke.brush.kind = MapData::TerrainBrushKind::Texture;
+        stroke.brush.groundTexture = Utf8Argument(argv[index + 6]);
+        if (stroke.brush.groundTexture.size() != 4 || !std::all_of(stroke.brush.groundTexture.begin(),
+            stroke.brush.groundTexture.end(), [](unsigned char c) { return c >= 33 && c <= 126; })) {
+            error = "texture value must be a four-byte ASCII rawcode"; return std::nullopt;
+        }
+        return stroke;
+    }
+    if (kind == L"water-height" || kind == L"water_height") {
+        const auto height = ParseNumber<float>(argv[index + 6]);
+        if (!height || !std::isfinite(*height) || *height < -2048 || *height > 2047.75f) {
+            error = "water height must be finite and within -2048..2047.75"; return std::nullopt;
+        }
+        stroke.brush.kind = MapData::TerrainBrushKind::WaterHeight; stroke.brush.waterHeight = *height;
+        return stroke;
+    }
     if (kind != L"raise" && kind != L"lower" && kind != L"smooth") {
-        error = "this CLI version accepts only raise, lower, and smooth; other brushes need explicit parameters";
+        error = "stroke kind must be raise, lower, smooth, texture, or water-height";
         return std::nullopt;
     }
     const auto strength = ParseNumber<float>(argv[index + 6]);

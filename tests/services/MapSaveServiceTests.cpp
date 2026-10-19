@@ -1473,6 +1473,78 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
         "declared standard candidate saves preserve original source SHA");
 }
 
+void TestOptionalRealTextureAndWaterUseNormalSave() {
+    const auto tool = ObjectV1EnvironmentPath(L"FORGE_YDWE_ROOT");
+    const auto game = ObjectV1EnvironmentPath(L"FORGE_WORLD_GAME_ROOT");
+    if (tool.empty() || game.empty()) {
+        std::cout << "SKIP texture/water toolchain save: FORGE_YDWE_ROOT / FORGE_WORLD_GAME_ROOT unset\n";
+        return;
+    }
+    TempDirectory directory;
+    MapCreateRequest create;
+    create.options.name = "Terrain preservation regression";
+    create.target = directory.Path() / "source.w3x";
+    create.workspace = directory.Path() / "seed";
+    create.toolRoot = tool; create.gameRoot = game;
+    const auto created = CreateMapCandidate(create);
+    Require(created.Succeeded() && created.value, "create original texture save fixture through real toolchain");
+    auto original = MapArchiveSession::Open(create.target);
+    Require(original.Succeeded() && original.value, "open created texture fixture");
+    for (const bool wet : {false, true}) {
+        auto source = MapArchiveSession::Open(create.target);
+        Require(source.Succeeded() && source.value, "open independent terrain source");
+        if (wet) {
+            const auto raw = source.value->ReadMember("war3map.w3e");
+            Require(raw.Succeeded() && raw.value, "read own terrain for wet synthetic seed");
+            const auto parsed = MapData::ParseMapTerrain(*raw.value);
+            Require(parsed.Succeeded() && parsed.value, "parse wet synthetic seed");
+            auto terrain = *parsed.value->Snapshot();
+            for (auto& vertex : terrain.vertices) {
+                vertex.textureAndFlagsRaw |= 0x40;
+                vertex.waterHeightAndFlagsRaw = static_cast<std::uint16_t>((vertex.waterHeightAndFlagsRaw & 0xc000) | (8192 + 160 * 4));
+            }
+            const auto encoded = MapData::SerializeMapTerrain(terrain);
+            Require(encoded.Succeeded() && encoded.value, "encode original synthetic wet source");
+            const std::vector<MemberReplacement> seed{{"war3map.w3e", *encoded.value}};
+            const auto seeded = source.value->SaveCandidate(directory.Path() / "wet-source.w3x", seed);
+            Require(seeded.Succeeded() && seeded.value, "make independent synthetic water source");
+            source = MapArchiveSession::Open(seeded.value->path);
+            Require(source.Succeeded() && source.value, "open independent synthetic water source");
+        }
+        const auto w3e = source.value->ReadMember("war3map.w3e");
+        const auto wpm = source.value->ReadMember("war3map.wpm");
+        const auto script = source.value->ReadMember("war3map.j");
+        Require(w3e.Succeeded() && w3e.value && wpm.Succeeded() && wpm.value && script.Succeeded() && script.value,
+            "freeze original terrain, author pathing and script");
+        MapEditSaveRequest request;
+        request.sourceMap = source.value->SourcePath(); request.targetCandidate = directory.Path() / (wet ? "water-saved.w3x" : "texture-saved.w3x");
+        request.toolRoot = tool; request.gameRoot = game;
+        request.expectedSourceSha256 = source.value->SourceSha256(); request.expectedTerrainSha256 = ObjectV1MemberHash(*w3e.value);
+        MapEditTerrainStroke stroke;
+        stroke.pointSpace = MapEditPointSpace::TerrainVertex; stroke.points = {{32, 32}}; stroke.brush.radius = 0;
+        if (wet) { stroke.brush.kind = MapData::TerrainBrushKind::WaterHeight; stroke.brush.waterHeight = 170; }
+        else { stroke.brush.kind = MapData::TerrainBrushKind::Texture; stroke.brush.groundTexture = "Lgrs"; }
+        request.terrainStrokes = {stroke}; // 保留默认 Automatic，覆盖最终自动小地图准备的新计划。
+        const auto saved = SaveMapEditCandidate(request);
+        if (!saved.Succeeded()) for (const auto& diagnostic : saved.diagnostics)
+            std::cerr << "terrain normal save: " << diagnostic.code << ": " << diagnostic.message << '\n';
+        Require(saved.Succeeded() && saved.value && saved.value->scriptPreserved, "normal terrain save uses shared service and keeps script");
+        auto reopened = MapArchiveSession::Open(saved.value->candidate);
+        Require(reopened.Succeeded() && reopened.value, "reopen normal terrain candidate independently");
+        const auto finalWpm = reopened.value->ReadMember("war3map.wpm"), finalW3e = reopened.value->ReadMember("war3map.w3e");
+        const auto finalScript = reopened.value->ReadMember("war3map.j");
+        Require(finalWpm.Succeeded() && finalWpm.value && *finalWpm.value == *wpm.value,
+            "normal texture/water save preserves every original pathing byte");
+        Require(finalW3e.Succeeded() && finalW3e.value && *finalW3e.value != *w3e.value,
+            "normal texture/water save writes actual edited terrain");
+        Require(finalScript.Succeeded() && finalScript.value && *finalScript.value == *script.value,
+            "terrain-only save cannot silently rewrite the author script");
+        const auto sourceAfter = Sha256File(request.sourceMap);
+        Require(sourceAfter.Succeeded() && sourceAfter.value && *sourceAfter.value == request.expectedSourceSha256,
+            "all source map bytes remain unchanged");
+    }
+}
+
 // 一张含五类成员的源图；请求像 Agent 一样先从源文档读行身份与字段原值，再写新值。
 struct FieldFixture {
     TempDirectory directory;
@@ -2201,6 +2273,7 @@ int main() {
         TestGenericTerrainSaveRejectsUnverifiedCliffChange();
         TestMissingMinimapChoiceCannotBroadenTerrainSaveScope();
         TestOptionalRealMissingMinimapUsesTheExistingSaveService();
+        TestOptionalRealTextureAndWaterUseNormalSave();
         TestFieldEditsBindSourceAndStayInScope();
         TestFieldValueTextIsExact();
         TestDFieldsUseOriginalSaveWorkerAndUndoReplay();

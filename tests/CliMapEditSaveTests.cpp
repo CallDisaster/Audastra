@@ -59,11 +59,30 @@ void LegacyMinimapSwitchesAreRemoved() {
     Rejected(Invoke(arguments), "unknown map-edit-save option");
 }
 
+void TypedTextureAndWaterReachTheSaveService() {
+    const auto stroke = [](std::wstring kind, std::wstring value) {
+        auto args = Arguments();
+        args.insert(args.end(), {L"--stroke", std::move(kind), L"circle", L"4", L"4", L"0", std::move(value)});
+        return Invoke(std::move(args));
+    };
+    for (const auto result : {stroke(L"texture", L"Lgrs"), stroke(L"water-height", L"0"),
+            stroke(L"water_height", L"-1.25")}) {
+        Require(result.exitCode != 0 && result.output.empty()
+            && result.error.find("SAVE_ARGUMENT_INVALID") == std::string::npos,
+            "valid typed terrain parameters must reach the shared source checks");
+    }
+    Rejected(stroke(L"texture", L"bad"), "four-byte ASCII rawcode");
+    Rejected(stroke(L"texture", L"中文"), "four-byte ASCII rawcode");
+    Rejected(stroke(L"water-height", L"nan"), "water height must be finite");
+    Rejected(stroke(L"water-height", L"2048"), "water height must be finite");
+}
+
 } // namespace
 
 int main() {
     try {
         LegacyMinimapSwitchesAreRemoved();
+        TypedTextureAndWaterReachTheSaveService();
         std::cout << "Map edit save CLI minimap option gates passed\n";
         return 0;
     } catch (const std::exception& error) {

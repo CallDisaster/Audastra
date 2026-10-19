@@ -351,7 +351,7 @@ Result<std::shared_ptr<const TerrainMinimapSave>> TerrainMinimapSave::PrepareAut
         NoTga(task, *task.archive);
         auto available = Available(limits, Add(TaskCapacity(task), kReadReserve));
         auto planLimits = limits.plan; planLimits.maximumBytes = std::min(planLimits.maximumBytes, available);
-        auto plan = std::make_shared<MapData::TerrainSavePlan>(Take(MapData::TerrainSavePlan::Prepare(*task.archive, edits, planLimits)));
+        auto plan = std::make_shared<MapData::TerrainSavePlan>(Take(MapData::TerrainSavePlan::PrepareForSave(*task.archive, edits, gameRoot, planLimits)));
         Check(plan->VerifyForSave(edits, task.sourceSha256, task.replacements, task.removals));
         auto terrain = Take(Render::CaptureTerrainMinimapAssets(*task.archive, edits, gameRoot,
             limits.assets, Render::TerrainMinimapRangePolicy::ClassicPlayable, task.replacements, task.removals));

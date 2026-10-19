@@ -318,7 +318,7 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
     std::vector<MapArchiveMember> auxiliarySaveMembers;
     if (mapEdits_ && mapEdits_->IsDirty()) {
         if (!explicitMinimap && MapData::TerrainSavePlan::HasTerrainChanges(*mapEdits_)) {
-            auto prepared = MapData::TerrainSavePlan::Prepare(*job->archive, *mapEdits_);
+            auto prepared = MapData::TerrainSavePlan::PrepareForSave(*job->archive, *mapEdits_, war3GameRoot_);
             AddDiagnostics(prepared.diagnostics);
             if (!prepared.Succeeded() || !prepared.value) return nullptr;
             terrainPlan = std::move(*prepared.value);

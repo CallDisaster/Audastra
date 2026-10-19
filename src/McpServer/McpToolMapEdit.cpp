@@ -6,6 +6,7 @@
 
 #include <QJsonDocument>
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cmath>
@@ -121,19 +122,26 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
         return std::nullopt;
     }
     const bool blight = kind.toString() == "blight";
+    const bool texture = kind.toString() == "texture", water = kind.toString() == "water_height";
     Services::MapEditTerrainStroke stroke;
     if (blight) stroke.brush.kind = MapData::TerrainBrushKind::Blight;
     else if (kind.toString() == "raise") stroke.brush.kind = MapData::TerrainBrushKind::Raise;
     else if (kind.toString() == "lower") stroke.brush.kind = MapData::TerrainBrushKind::Lower;
     else if (kind.toString() == "smooth") stroke.brush.kind = MapData::TerrainBrushKind::Smooth;
+    else if (texture) stroke.brush.kind = MapData::TerrainBrushKind::Texture;
+    else if (water) stroke.brush.kind = MapData::TerrainBrushKind::WaterHeight;
     else {
         error = Failure("MCP_MAP_EDIT_TERRAIN_KIND_UNSUPPORTED",
-            "当前只接受 raise/lower/smooth/blight；贴图、悬崖、高原、水面和地物跟随尚无通用安全验收。");
+            "当前接受 raise/lower/smooth/blight/texture/water_height；通行性仍由同一保存服务核验。");
         return std::nullopt;
     }
     if (!OnlyFields(object, blight
             ? std::initializer_list<std::string_view>{"kind", "shape", "point_space", "radius",
                   "points", "follow_doodads", "set_blight"}
+            : texture ? std::initializer_list<std::string_view>{"kind", "shape", "point_space", "radius",
+                  "points", "follow_doodads", "ground_texture"}
+            : water ? std::initializer_list<std::string_view>{"kind", "shape", "point_space", "radius",
+                  "points", "follow_doodads", "water_height"}
             : std::initializer_list<std::string_view>{"kind", "shape", "point_space", "radius",
                   "points", "follow_doodads", "strength"}, error)) return std::nullopt;
     const auto shape = object.value("shape");
@@ -180,6 +188,23 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
             return std::nullopt;
         }
         stroke.brush.value = set.toBool();
+    } else if (texture) {
+        const auto id = RequiredText(object, "ground_texture", 4, error);
+        if (!id) return std::nullopt;
+        stroke.brush.groundTexture = *id;
+        if (stroke.brush.groundTexture.size() != 4 || !std::all_of(stroke.brush.groundTexture.begin(),
+            stroke.brush.groundTexture.end(), [](unsigned char c) { return c >= 33 && c <= 126; })) {
+            error = Failure("MCP_MAP_EDIT_TERRAIN_TEXTURE_INVALID", "ground_texture 必须是四字节 ASCII rawcode。");
+            return std::nullopt;
+        }
+    } else if (water) {
+        const auto height = FiniteFloat(object, "water_height", error);
+        if (!height) return std::nullopt;
+        if (*height < -2048 || *height > 2047.75f) {
+            error = Failure("MCP_MAP_EDIT_TERRAIN_WATER_HEIGHT_INVALID", "水面基础高度必须在 -2048..2047.75 世界单位内。");
+            return std::nullopt;
+        }
+        stroke.brush.waterHeight = *height;
     } else {
         auto strength = FiniteFloat(object, "strength", error);
         if (!strength) return std::nullopt;
@@ -506,12 +531,20 @@ QJsonObject TerrainStrokeSchema() {
     QJsonObject blight = shared;
     blight["kind"] = QJsonObject{{"type", "string"}, {"const", "blight"}};
     blight["set_blight"] = QJsonObject{{"type", "boolean"}};
+    QJsonObject texture = shared;
+    texture["kind"] = QJsonObject{{"type", "string"}, {"const", "texture"}};
+    texture["ground_texture"] = QJsonObject{{"type", "string"}, {"minLength", 4}, {"maxLength", 4}, {"pattern", "^[!-~]{4}$"}};
+    QJsonObject water = shared;
+    water["kind"] = QJsonObject{{"type", "string"}, {"const", "water_height"}};
+    water["water_height"] = QJsonObject{{"type", "number"}, {"minimum", -2048}, {"maximum", 2047.75}};
     const QJsonArray required{"kind", "shape", "point_space", "radius", "points", "follow_doodads"};
-    QJsonArray heightRequired = required, blightRequired = required;
+    QJsonArray heightRequired = required, blightRequired = required, textureRequired = required, waterRequired = required;
     heightRequired.append("strength");
     blightRequired.append("set_blight");
+    textureRequired.append("ground_texture"); waterRequired.append("water_height");
     return {{"oneOf", QJsonArray{BasicSchema(height, heightRequired),
-        BasicSchema(smooth, heightRequired), BasicSchema(blight, blightRequired)}}};
+        BasicSchema(smooth, heightRequired), BasicSchema(blight, blightRequired),
+        BasicSchema(texture, textureRequired), BasicSchema(water, waterRequired)}}};
 }
 
 bool ReadEffectiveLayers(const QJsonObject& parameters, std::optional<std::vector<std::string>>& layers, QJsonObject& error) {

@@ -102,6 +102,7 @@ Status ValidateStrokes(std::span<const MapEditTerrainStroke> strokes) {
         case MapData::TerrainBrushKind::Plateau:
         case MapData::TerrainBrushKind::Smooth:
         case MapData::TerrainBrushKind::CliffLevel:
+        case MapData::TerrainBrushKind::WaterHeight:
             break;
         default:
             return Status::Failure("MapEdit.Save", "SAVE_STROKE_KIND", "地形笔刷种类未获识别。");

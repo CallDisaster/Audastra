@@ -759,7 +759,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             savedPathingShaValue = *savedPathingSha.value;
             if (request.minimapChoice == TerrainMinimapSaveChoice::Preserve
                 || request.minimapChoice == TerrainMinimapSaveChoice::Automatic) {
-                auto prepared = MapData::TerrainSavePlan::Prepare(source, edits);
+                auto prepared = MapData::TerrainSavePlan::PrepareForSave(source, edits, request.gameRoot);
                 if (!prepared.Succeeded() || !prepared.value) return Forward(std::move(prepared.diagnostics));
                 terrainPlan = std::make_shared<const MapData::TerrainSavePlan>(std::move(*prepared.value));
             }

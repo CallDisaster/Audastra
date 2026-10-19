@@ -22,6 +22,7 @@ namespace detail { struct PlacementEditingAccess; struct TerrainInspectionAccess
 class PreparedMapDataFields;
 class PreparedMapDataPlacement;
 class TerrainSavePlan;
+class TerrainPathingResources;
 
 // 仅已提交的摆放操作提供完整行谱系；空目标表示删除，未被指向的新行表示新增。
 // 不能用rawcode、创建编号或坐标猜测映射。此值在EditReceipt中只读。
@@ -217,7 +218,8 @@ private:
     [[nodiscard]] Status VerifyTerrainCandidateForSave(
         const std::shared_ptr<const TerrainGridSnapshot>& terrain,
         const std::optional<std::vector<std::byte>>& pathing,
-        const std::optional<std::vector<std::byte>>& doodads) const;
+        const std::optional<std::vector<std::byte>>& doodads,
+        const TerrainPathingResources* resources = nullptr) const;
     [[nodiscard]] Status PrepareUnits(const UnitPlacements& value, std::vector<MemberChange>& changes) const;
     [[nodiscard]] Status DeserializeAndApply(MapDataKind kind, std::span<const std::byte> bytes,
         bool linkStartLocations);
