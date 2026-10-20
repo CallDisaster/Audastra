@@ -43,7 +43,9 @@ struct Fixture {
             "[DynamicStore]\n[[.args]]\ntype=AnyGlobal\n[[.args]]\ntype=Null\n"
             "[SelectedStore]\n[[.args]]\ntype=typename\n[[.args]]\ntype=Null\n"
             "[ForLoopVarMultiple]\n[[.args]]\ntype=integervar\n[[.args]]\ntype=integer\n[[.args]]\ntype=integer\n"
-            "[ForLoopVar]\n[[.args]]\ntype=integervar\n[[.args]]\ntype=integer\n[[.args]]\ntype=integer\n[[.args]]\ntype=code\n");
+            "[ForLoopVar]\n[[.args]]\ntype=integervar\n[[.args]]\ntype=integer\n[[.args]]\ntype=integer\n[[.args]]\ntype=code\n"
+            "[AddTriggerEvent]\n[[.args]]\ntype=trigger\n[[.args]]\ntype=eventcall\n[UseFilter]\n[[.args]]\ntype=boolexpr\n");
+        Write(root / "ui/base/event.txt", "[TriggerRegisterUnitEvent]\n[[.args]]\ntype=unit\n");
         Write(root / "ui/base/call.txt", "[ReadInteger]\nreturns=integer\n[AddInteger]\nreturns=integer\n[[.args]]\ntype=integer\n[[.args]]\ntype=integer\n[ReadString]\nreturns=string\n"
             "[GetTriggerUnit]\nreturns=unit\n[GetUnitAbilityLevel]\nreturns=integer\n[[.args]]\ntype=unit\n[[.args]]\ntype=abilcode\n"
             "[IdentityUnit]\nreturns=unit\n[[.args]]\ntype=unit\n[ReadCode]\nreturns=integer\n[[.args]]\ntype=scriptcode\n"
@@ -463,8 +465,54 @@ void TestArgumentReplacementOpaqueAndDynamicTypes() {
         "replacement cannot silently reinterpret untouched dependent sibling type");
 }
 } // namespace
+// AddTriggerEvent 这类函数槽：eventcall 填事件、boolexpr 填条件，与 WE 存法一致并能往返。
+void TestFunctionSlotArguments() {
+    Fixture f; auto batch = f.Batch(); const auto trigger = Id(GraphRecordKind::Trigger, f.doc.triggers[0].id);
+    batch.operations.emplace_back(GraphCreate{"trig", GraphVariableValue{"Trig", "trigger", false, 1, false, ""}, Parent(GraphParentKind::Variables), {}});
+    auto add = Eca("add", "AddTriggerEvent"); add->arguments.push_back(Scalar(1, "Trig"));
+    GraphArgumentValue event, unit; unit.call = Eca("unit", "GetTriggerUnit", UiDefinitionKind::Call);
+    auto registerCall = Eca("register", "TriggerRegisterUnitEvent", UiDefinitionKind::Event); registerCall->arguments.push_back(unit);
+    event.call = registerCall; add->arguments.push_back(event);
+    batch.operations.emplace_back(GraphInsertSubtree{Parent(GraphParentKind::TriggerEcas, trigger), {}, add});
+    auto filter = Eca("filter", "UseFilter"); GraphArgumentValue condition;
+    auto compare = Eca("compare", "OperatorCompareInteger", UiDefinitionKind::Condition);
+    compare->arguments = {Scalar(3, "1"), Scalar(0, "OperatorGreater"), Scalar(3, "0")}; condition.call = compare; filter->arguments.push_back(condition);
+    batch.operations.emplace_back(GraphInsertSubtree{Parent(GraphParentKind::TriggerEcas, trigger, {Local(GraphRecordKind::Eca, "add")}), {}, filter});
+    const auto applied = ApplyTriggerGraphEditBatch(f.doc, f.catalog, batch);
+    Require(applied.Succeeded(), "event/condition slot calls are creatable");
+    Require(TriggerDocumentEditor::FindEca(f.doc, applied.value->created.at("register").id)->type == 0
+        && TriggerDocumentEditor::FindEca(f.doc, applied.value->created.at("compare").id)->type == 1, "slot calls keep WE event/condition ECA types");
+    const auto encoded = WtgWctCodec{}.Serialize(f.doc, f.catalog); Require(encoded.Succeeded(), "serialize slot calls");
+    const auto parsed = WtgWctCodec{}.Parse(encoded.value->wtg, encoded.value->wct, f.catalog); Require(parsed.Succeeded(), "slot calls read back");
+    Require(parsed.value->ecaNodes.size() == f.doc.ecaNodes.size() && parsed.value->argumentNodes.size() == f.doc.argumentNodes.size(), "slot call graph survives codec");
+    const std::vector<GraphRecordRef> roots{Id(GraphRecordKind::Eca, applied.value->created.at("add").id), Id(GraphRecordKind::Eca, applied.value->created.at("filter").id)};
+    const auto rejects = [&](std::shared_ptr<GraphEcaValue> root, const char* code, const char* message) {
+        auto bad = f.Batch(); bad.operations.emplace_back(GraphInsertSubtree{Parent(GraphParentKind::TriggerEcas, trigger, roots), {}, root});
+        const auto result = ApplyTriggerGraphEditBatch(f.doc, f.catalog, bad);
+        Require(!result.Succeeded() && std::any_of(result.diagnostics.begin(), result.diagnostics.end(),
+            [code](const auto& diagnostic) { return diagnostic.code == code; }), message);
+    };
+    auto wrongSlot = Eca("wrong", "AddTriggerEvent"); wrongSlot->arguments.push_back(Scalar(1, "Trig"));
+    GraphArgumentValue conditionInEvent; auto misplaced = Eca("c", "OperatorCompareInteger", UiDefinitionKind::Condition);
+    misplaced->arguments = compare->arguments; conditionInEvent.call = misplaced; wrongSlot->arguments.push_back(conditionInEvent);
+    rejects(wrongSlot, "TRIGGER_GRAPH_CALL_INVALID", "condition cannot fill an eventcall slot");
+    auto eventAsCall = Eca("asCall", "AddTriggerEvent"); eventAsCall->arguments.push_back(Scalar(1, "Trig"));
+    GraphArgumentValue named; auto namedCall = Eca("e", "TriggerRegisterUnitEvent", UiDefinitionKind::Call); namedCall->arguments.push_back(unit);
+    named.call = namedCall; eventAsCall->arguments.push_back(named);
+    rejects(eventAsCall, "TRIGGER_CALL_SLOT_MISMATCH", "event named as call gets a kind hint");
+    auto plain = Eca("plain", "StoreInteger"); GraphArgumentValue eventInInteger;
+    auto eventCall = Eca("e2", "TriggerRegisterUnitEvent", UiDefinitionKind::Event); eventCall->arguments.push_back(unit);
+    eventInInteger.call = eventCall; plain->arguments.push_back(eventInInteger);
+    rejects(plain, "TRIGGER_GRAPH_CALL_INVALID", "event cannot fill a plain value slot");
+    // 窄接口不带种类时按槽位自动找同名事件。
+    auto root = TriggerDocumentEditor::AppendRootEca(f.doc, f.catalog, f.doc.triggers[0].id, UiDefinitionKind::Action, "AddTriggerEvent");
+    Require(root.Succeeded(), "append add event");
+    const auto slotId = f.doc.argumentNodes[TriggerDocumentEditor::FindEca(f.doc, root.value->rootEcaId)->arguments[1]].id;
+    const auto picked = TriggerDocumentEditor::AppendArgumentCall(f.doc, f.catalog, slotId, "eventcall", "TriggerRegisterUnitEvent");
+    Require(picked.Succeeded() && TriggerDocumentEditor::FindEca(f.doc, picked.value->rootEcaId)->type == 0, "narrow append picks the event slot");
+}
 int main() {
-    try { TestRecursiveBatchAndAtomicNames(); TestFailurePublishesNothing(); TestWritableLoopTargets(); TestObjectCodeGraphAndAtomicRename();
+    try { TestFunctionSlotArguments(); TestRecursiveBatchAndAtomicNames(); TestFailurePublishesNothing(); TestWritableLoopTargets(); TestObjectCodeGraphAndAtomicRename();
         TestArgumentReplacementKeepsSiblingCode(); TestArgumentReplacementRejectsStaleAndRollsBack(); TestArgumentReplacementOpaqueAndDynamicTypes();
         std::cout << "public typed graph batch guards and recursive codec roundtrip passed\n"; return 0; }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

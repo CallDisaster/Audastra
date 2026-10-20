@@ -70,6 +70,7 @@ C2使用相同查询定位；旋转传数值 `facing_radians`，复制传同类1
 - `edit_trigger_graph` 在目录单写事务中完成核心支持的创建/字段/精确改名/移动/删除/类型子树及受 guard 的替换。CallerAsserted 的 opaque code 审计仅是调用方声明，不是服务端自动证明“代码无引用”。
 - 引用一律用查询结果各行 `ref` 里的 `{kind, id}`。分类行另有 `category_id`（WTG 分类号），不能当引用编号；误用时报 `TRIGGER_GRAPH_RECORD_MISSING` 并给出正确的 `ref.id`。
 - `move` 的 `from`/`to` 写 `{"kind":"category_triggers","owner":<分类行 ref>,"ordered_children":[该分类当前全部触发器 ref，按移动前顺序]}`；同分类内调整顺序时两者相同。`before` 是要排到其前面的触发器 ref，省略则放到末尾。例如把末尾的 A 移到 `.7` 之后：`before` 写原本紧跟 `.7` 的那个触发器。
+- 函数槽参数（`eventcall` / `boolexpr`、`boolcall` / `code`）的 `call` 分别写 `kind` 为 `event` / `condition` / `action`，例如 `AddTriggerEvent` 第二个参数填 `TriggerRegisterUnitEvent`（event）；也可填返回该类型的普通 call。其余参数只能是 call。
 - 大批重构分批查询、编辑和保存。保存从冻结输入构建脚本和归档；候选生成、独立重开及新图查询各自取得新身份，不在已失效 overlay 上继续使用旧 ID。
 - 编码、include、工具身份、未知语言 API 和类型门禁仍由共用保存服务检查；来源变化或失败不回落到旁边另一套安装。
 - 默认自然 T；`script_target` 是编译输出目标，不是把作者触发器转换成自定义代码的授权。

@@ -86,7 +86,10 @@ public:
         const UiCatalog& catalog,
         StableId argumentId,
         std::string_view expectedReturnType,
-        std::string_view functionName);
+        std::string_view functionName,
+        // 函数槽参数（eventcall/boolexpr/boolcall/code）可填事件/条件/动作 ECA；
+        // 为空时按槽位优先找同名事件/条件/动作，找不到再按返回类型找 Call。
+        std::optional<UiDefinitionKind> kind = std::nullopt);
 
     [[nodiscard]] static Status UndoAppend(
         TriggerDocument& document,

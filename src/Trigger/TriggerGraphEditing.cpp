@@ -472,10 +472,15 @@ struct Editor {
         if (auto status = ClearDefaultCall(id); !status.Succeeded()) return status;
         typedArguments.insert(id);
         if (spec.call) {
+            // 函数槽（eventcall/boolexpr/boolcall/code）可填对应的事件/条件/动作；其余只能是 Call。
+            const auto slot = TriggerTypeSystem::FunctionSlotKind(expected);
             if (spec.index || spec.scalar.kind != 3 || !spec.scalar.value.empty()
-                || spec.call->kind != UiDefinitionKind::Call || spec.call->childBranch || !spec.call->children.empty())
-                return Fail("TRIGGER_GRAPH_CALL_INVALID", "参数函数须为真实 Call，无子分支或数组下标。");
-            auto appended = TriggerDocumentEditor::AppendArgumentCall(doc, catalog, id, expected, spec.call->function);
+                || (spec.call->kind != UiDefinitionKind::Call && spec.call->kind != slot)
+                || spec.call->childBranch || !spec.call->children.empty())
+                return Fail("TRIGGER_GRAPH_CALL_INVALID", slot
+                    ? "参数类型 " + expected + " 的函数须为 " + std::string(ToString(*slot)) + " 或返回该类型的 call，无子分支或数组下标。"
+                    : "参数函数须为真实 Call，无子分支或数组下标。");
+            auto appended = TriggerDocumentEditor::AppendArgumentCall(doc, catalog, id, expected, spec.call->function, spec.call->kind);
             if (!appended.Succeeded()) return {appended.diagnostics};
             if (auto status = FreshAppend(*appended.value); !status.Succeeded()) return status;
             return ConfigureEca(appended.value->rootEcaId, *spec.call, depth + 1);
@@ -605,8 +610,15 @@ struct Editor {
             if (!types.Accepts(expected, reference.value->type) || reference.value->isArray != argument.indexArgument.has_value())
                 return Fail("TRIGGER_GRAPH_TYPE_MISMATCH", "变量类型或数组下标资格不符：" + argument.value.text);
         } else if (argument.type == 2 && argument.callEca && *argument.callEca < doc.ecaNodes.size()) {
-            const auto actual = types.ReturnType(doc, doc.ecaNodes[*argument.callEca]);
-            if (actual.empty() || !types.Accepts(expected, actual)) return Fail("TRIGGER_GRAPH_TYPE_MISMATCH", "参数函数返回类型不符。");
+            const auto& call = doc.ecaNodes[*argument.callEca];
+            if (call.type != 3) {
+                const auto slot = TriggerTypeSystem::FunctionSlotKind(expected);
+                if (!slot || EcaTypeFromUiDefinitionKind(*slot) != call.type)
+                    return Fail("TRIGGER_GRAPH_TYPE_MISMATCH", "函数槽种类与参数类型不符：" + call.name.text);
+            } else {
+                const auto actual = types.ReturnType(doc, call);
+                if (actual.empty() || !types.Accepts(expected, actual)) return Fail("TRIGGER_GRAPH_TYPE_MISMATCH", "参数函数返回类型不符。");
+            }
         } else if (argument.type == 3) {
             if (expected == "code") return Fail("TRIGGER_GRAPH_CODE_UNSUPPORTED", "代码回调不能由字面源码代替 typed 函数。");
             if (auto status = types.ValidateLiteral(expected, argument.value.text); !status.Succeeded()) return status;

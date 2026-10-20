@@ -216,7 +216,8 @@ Result<EcaAppendReceipt> TriggerDocumentEditor::AppendArgumentCall(
     const UiCatalog& catalog,
     StableId argumentId,
     std::string_view expectedReturnType,
-    std::string_view functionName) {
+    std::string_view functionName,
+    std::optional<UiDefinitionKind> kind) {
     ArgumentNode* target = FindArgument(document, argumentId);
     if (target == nullptr) {
         return Result<EcaAppendReceipt>::Failure(
@@ -227,14 +228,32 @@ Result<EcaAppendReceipt> TriggerDocumentEditor::AppendArgumentCall(
             "Trigger.Edit", "TRIGGER_CALL_REPLACE_UNSUPPORTED",
             "该参数已经包含函数；请进入现有函数编辑其参数。");
     }
-    const UiDefinition* definition = catalog.Find(UiDefinitionKind::Call, functionName);
+    // 函数槽（如 AddTriggerEvent 的 eventcall）存的是事件/条件/动作 ECA，与 WE 相同；
+    // 其余参数只接受按返回类型匹配的 Call。
+    const auto slot = TriggerTypeSystem::FunctionSlotKind(expectedReturnType);
+    const UiDefinitionKind chosen = kind.value_or(
+        slot && catalog.Find(*slot, functionName) != nullptr ? *slot : UiDefinitionKind::Call);
+    if (chosen != UiDefinitionKind::Call && chosen != slot) {
+        return Result<EcaAppendReceipt>::Failure(
+            "Trigger.Edit", "TRIGGER_CALL_SLOT_MISMATCH",
+            slot ? "参数类型 " + std::string(expectedReturnType) + " 只接受" + std::string(ToString(*slot))
+                    + " 函数或返回该类型的 call。"
+                 : "参数类型 " + std::string(expectedReturnType) + " 不是函数槽，只接受返回该类型的 call。");
+    }
+    const UiDefinition* definition = catalog.Find(chosen, functionName);
     if (definition == nullptr) {
+        if (chosen == UiDefinitionKind::Call && slot && catalog.Find(*slot, functionName) != nullptr) {
+            return Result<EcaAppendReceipt>::Failure(
+                "Trigger.Edit", "TRIGGER_CALL_SLOT_MISMATCH",
+                std::string(functionName) + " 是" + std::string(ToString(*slot)) + " 函数；此参数槽请按 "
+                    + std::string(ToString(*slot)) + " 种类填写。");
+        }
         return Result<EcaAppendReceipt>::Failure(
             "Trigger.Edit", "TRIGGER_CALL_NOT_CREATABLE",
-            "所选函数在当前 UI Catalog 中不存在。");
+            "所选函数在当前 UI Catalog 中不存在：" + std::string(ToString(chosen)) + " " + std::string(functionName));
     }
     const auto returnType = Field(definition->Active(), "returns");
-    if (!expectedReturnType.empty() &&
+    if (chosen == UiDefinitionKind::Call && !expectedReturnType.empty() &&
         (!returnType.has_value() ||
             !TriggerTypeSystem(catalog).Accepts(expectedReturnType, *returnType))) {
         return Result<EcaAppendReceipt>::Failure(

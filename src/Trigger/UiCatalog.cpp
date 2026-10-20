@@ -1164,6 +1164,16 @@ UiDefinitionKind UiDefinitionKindFromEcaType(std::int32_t type) noexcept {
     }
 }
 
+std::optional<std::int32_t> EcaTypeFromUiDefinitionKind(UiDefinitionKind kind) noexcept {
+    switch (kind) {
+    case UiDefinitionKind::Event: return 0;
+    case UiDefinitionKind::Condition: return 1;
+    case UiDefinitionKind::Action: return 2;
+    case UiDefinitionKind::Call: return 3;
+    default: return std::nullopt;
+    }
+}
+
 std::string_view ToString(UiDefinitionKind kind) noexcept {
     switch (kind) {
     case UiDefinitionKind::Define: return "define";
