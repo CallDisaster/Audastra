@@ -1,6 +1,7 @@
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
+#include "War3MapCore/Trigger/TriggerTextNotation.h"
 #include "War3MapCore/Trigger/TriggerTypes.h"
 
 #include <Windows.h>
@@ -44,7 +45,8 @@ struct Fixture {
             "[SelectedStore]\n[[.args]]\ntype=typename\n[[.args]]\ntype=Null\n"
             "[ForLoopVarMultiple]\n[[.args]]\ntype=integervar\n[[.args]]\ntype=integer\n[[.args]]\ntype=integer\n"
             "[ForLoopVar]\n[[.args]]\ntype=integervar\n[[.args]]\ntype=integer\n[[.args]]\ntype=integer\n[[.args]]\ntype=code\n"
-            "[AddTriggerEvent]\n[[.args]]\ntype=trigger\n[[.args]]\ntype=eventcall\n[UseFilter]\n[[.args]]\ntype=boolexpr\n");
+            "[AddTriggerEvent]\n[[.args]]\ntype=trigger\n[[.args]]\ntype=eventcall\n[UseFilter]\n[[.args]]\ntype=boolexpr\n"
+            "[IfThenElseMultiple]\n[DoForMultiple]\n[[.args]]\ntype=integer\n");
         Write(root / "ui/base/event.txt", "[TriggerRegisterUnitEvent]\n[[.args]]\ntype=unit\n");
         Write(root / "ui/base/call.txt", "[ReadInteger]\nreturns=integer\n[AddInteger]\nreturns=integer\n[[.args]]\ntype=integer\n[[.args]]\ntype=integer\n[ReadString]\nreturns=string\n"
             "[GetTriggerUnit]\nreturns=unit\n[GetUnitAbilityLevel]\nreturns=integer\n[[.args]]\ntype=unit\n[[.args]]\ntype=abilcode\n"
@@ -511,8 +513,150 @@ void TestFunctionSlotArguments() {
     const auto picked = TriggerDocumentEditor::AppendArgumentCall(f.doc, f.catalog, slotId, "eventcall", "TriggerRegisterUnitEvent");
     Require(picked.Succeeded() && TriggerDocumentEditor::FindEca(f.doc, picked.value->rootEcaId)->type == 0, "narrow append picks the event slot");
 }
+// 紧凑 T 写法：一次写入整段、导出后整体替换结果不变；名称错误一次列全，类型错误带行列。
+bool HasCode(const std::vector<Diagnostic>& diagnostics, std::string_view code) {
+    return std::any_of(diagnostics.begin(), diagnostics.end(), [code](const auto& diagnostic) { return diagnostic.code == code; });
+}
+void TestTextNotation() {
+    Fixture f; auto batch = f.Batch(); const auto trigger = Id(GraphRecordKind::Trigger, f.doc.triggers[0].id);
+    batch.operations.emplace_back(GraphCreate{"count", GraphVariableValue{"Count", "integer", false, 1, false, ""}, Parent(GraphParentKind::Variables), {}});
+    batch.operations.emplace_back(GraphCreate{"cache", GraphVariableValue{"Cache", "integer", true, 8, false, ""},
+        Parent(GraphParentKind::Variables, {}, {Local(GraphRecordKind::Variable, "count")}), {}});
+    batch.operations.emplace_back(GraphCreate{"trig", GraphVariableValue{"Trig", "trigger", false, 1, false, ""},
+        Parent(GraphParentKind::Variables, {}, {Local(GraphRecordKind::Variable, "count"), Local(GraphRecordKind::Variable, "cache")}), {}});
+    const std::string expected =
+        "events:\n"
+        "    TriggerRegisterUnitEvent(GetTriggerUnit())\n"
+        "conditions:\n"
+        "    OperatorCompareInteger(udg_Count, OperatorGreater, 3)\n"
+        "actions:\n"
+        "    StoreInteger(AddInteger(2, -5))\n"
+        "    ~StoreString(\"a \\\"q\\\" b\")\n"
+        "    UseAbilityAlias('A0E0')\n"
+        "    IfThenElseMultiple() {\n"
+        "        if:\n"
+        "            OperatorCompareInteger(ReadInteger(), OperatorGreater, 0)\n"
+        "        then:\n"
+        "            StoreInteger(udg_Cache[1])\n"
+        "        else:\n"
+        "            AddTriggerEvent(udg_Trig, TriggerRegisterUnitEvent(GetTriggerUnit()))\n"
+        "    }\n";
+    const std::string written =
+        "// 写法可以紧凑，导出时规范化\n"
+        "events: TriggerRegisterUnitEvent(GetTriggerUnit())\n"
+        "conditions: OperatorCompareInteger(Count, OperatorGreater, 3)\n"
+        "actions:\n"
+        "  StoreInteger(AddInteger(2, -5)); ~StoreString(\"a \\\"q\\\" b\")\n"
+        "  UseAbilityAlias('A0E0')\n"
+        "  IfThenElseMultiple {\n"
+        "    if: OperatorCompareInteger(ReadInteger(), OperatorGreater, 0)\n"
+        "    then: StoreInteger(udg_Cache[1])\n"
+        "    否则: AddTriggerEvent(udg_Trig, TriggerRegisterUnitEvent(GetTriggerUnit()))\n"
+        "  }\n";
+    batch.operations.emplace_back(GraphInsertText{Parent(GraphParentKind::TriggerEcas, trigger), {}, written});
+    const auto inserted = ApplyTriggerGraphEditBatch(f.doc, f.catalog, batch);
+    Require(inserted.Succeeded(), "compact text inserts a whole trigger body");
+    auto rendered = RenderTriggerText(f.doc, f.catalog, f.doc.triggers[0].id);
+    Require(rendered.Succeeded() && *rendered.value == expected, "compact text renders canonically");
+    const auto ecaCount = f.doc.ecaNodes.size(), argumentCount = f.doc.argumentNodes.size();
+    auto replace = f.Batch(); replace.operations.emplace_back(GraphReplaceTriggerText{trigger, *rendered.value});
+    Require(ApplyTriggerGraphEditBatch(f.doc, f.catalog, replace).Succeeded(), "rendered text replaces the trigger body");
+    rendered = RenderTriggerText(f.doc, f.catalog, f.doc.triggers[0].id);
+    Require(rendered.Succeeded() && *rendered.value == expected && f.doc.ecaNodes.size() == ecaCount
+        && f.doc.argumentNodes.size() == argumentCount, "render -> replace -> render is stable");
+    const auto encoded = WtgWctCodec{}.Serialize(f.doc, f.catalog); Require(encoded.Succeeded(), "text graph serializes");
+    Require(WtgWctCodec{}.Parse(encoded.value->wtg, encoded.value->wct, f.catalog).Succeeded(), "text graph reads back");
+
+    const auto unchanged = f.Batch().expected.currentWtgSha256;
+    auto names = f.Batch(); names.operations.emplace_back(GraphInsertText{Parent(GraphParentKind::TriggerEcas, trigger,
+        [&] { std::vector<GraphRecordRef> refs; for (const auto index : f.doc.triggers[0].ecas) refs.push_back(Id(GraphRecordKind::Eca, f.doc.ecaNodes[index].id)); return refs; }()), {},
+        "NoSuchAction(1)\nStoreInteger(1, 2)\nStoreInteger(Unknown)\nOperatorCompareInteger(1, OperatorGreater, 2)\n"});
+    const auto named = ApplyTriggerGraphEditBatch(f.doc, f.catalog, names);
+    Require(!named.Succeeded() && named.diagnostics.size() == 4 && HasCode(named.diagnostics, "TRIGGER_TEXT_UNKNOWN_FUNCTION")
+        && HasCode(named.diagnostics, "TRIGGER_TEXT_ARGUMENT_COUNT") && HasCode(named.diagnostics, "TRIGGER_TEXT_UNKNOWN_NAME")
+        && HasCode(named.diagnostics, "TRIGGER_TEXT_KIND_MISMATCH"), "all name errors are listed at once");
+    Require(f.Batch().expected.currentWtgSha256 == unchanged, "failed text leaves the document unchanged");
+    auto syntax = names; std::get<GraphInsertText>(syntax.operations[0]).text = "actions:\n  StoreInteger(1\n";
+    const auto broken = ApplyTriggerGraphEditBatch(f.doc, f.catalog, syntax);
+    Require(!broken.Succeeded() && broken.diagnostics.front().code == "TRIGGER_TEXT_SYNTAX"
+        && broken.diagnostics.front().message.find("第 2 行") != std::string::npos, "syntax error carries its line");
+    auto typed = names; std::get<GraphInsertText>(typed.operations[0]).text = "StoreInteger(\"abc\")\nUseAbilityAlias(5)\n";
+    const auto mistyped = ApplyTriggerGraphEditBatch(f.doc, f.catalog, typed);
+    Require(!mistyped.Succeeded() && mistyped.diagnostics.size() == 2
+        && mistyped.diagnostics[0].message.find("【位置：第 1 行") != std::string::npos
+        && mistyped.diagnostics[1].message.find("【位置：第 2 行") != std::string::npos, "type errors are all listed with positions");
+
+    const auto& block = *std::find_if(f.doc.ecaNodes.begin(), f.doc.ecaNodes.end(), [](const auto& eca) { return eca.name.text == "IfThenElseMultiple"; });
+    std::vector<GraphRecordRef> children;
+    for (const auto index : block.children) children.push_back(Id(GraphRecordKind::Eca, f.doc.ecaNodes[index].id));
+    const auto before = block.children.size();
+    auto nested = f.Batch(); auto into = Parent(GraphParentKind::EcaChildren, Id(GraphRecordKind::Eca, block.id), children); into.childBranch = 1;
+    nested.operations.emplace_back(GraphInsertText{into, {}, "StoreInteger(9)\nDoForMultiple(3) { StoreInteger(udg_Count) }"});
+    Require(ApplyTriggerGraphEditBatch(f.doc, f.catalog, nested).Succeeded(), "text inserts into a block branch");
+    const auto& updated = *std::find_if(f.doc.ecaNodes.begin(), f.doc.ecaNodes.end(), [](const auto& eca) { return eca.name.text == "IfThenElseMultiple"; });
+    Require(updated.children.size() == before + 2 && std::count_if(updated.children.begin(), updated.children.end(),
+        [&](const auto index) { return f.doc.ecaNodes[index].childId == 1; }) == 3, "block branch received the statements");
+}
+// 代码类参数：标识符（YDWE 局部变量名）可写；新代码拒绝；整体替换时原有代码只能原样保留。
+void TestCodeArguments() {
+    Fixture f; const auto trigger = Id(GraphRecordKind::Trigger, f.doc.triggers[0].id);
+    const auto insert = [&](const std::string& text) {
+        auto batch = f.Batch(); std::vector<GraphRecordRef> roots;
+        for (const auto index : f.doc.triggers[0].ecas) roots.push_back(Id(GraphRecordKind::Eca, f.doc.ecaNodes[index].id));
+        batch.operations.emplace_back(GraphInsertText{Parent(GraphParentKind::TriggerEcas, trigger, roots), {}, text});
+        return ApplyTriggerGraphEditBatch(f.doc, f.catalog, batch);
+    };
+    // WE 允许禁用语句里留着未设置的参数（?）；启用的语句不行。
+    Require(insert("~StoreInteger(?)").Succeeded(), "unset argument stays inside a disabled statement");
+    const auto unset = insert("StoreInteger(?)");
+    Require(!unset.Succeeded() && unset.diagnostics.front().code == "TRIGGER_GRAPH_ARGUMENT_UNSET", "enabled statement cannot keep an unset argument");
+    Require(insert("WithCodeSibling(GetTriggerUnit(), loc_u)\nWithCodeSibling(GetTriggerUnit(), 局部单位)").Succeeded(), "identifier code arguments are names, not code");
+    const auto code = insert("WithCodeSibling(GetTriggerUnit(), \"call Foo()\")");
+    Require(!code.Succeeded() && code.diagnostics.front().code == "TRIGGER_GRAPH_CODE_UNSUPPORTED", "new code is still refused");
+    // 作者原有代码：直接经编辑器写入，模拟地图里已有的自定义代码参数。
+    const auto existing = TriggerDocumentEditor::AppendRootEca(f.doc, f.catalog, f.doc.triggers[0].id, UiDefinitionKind::Action, "WithCodeSibling");
+    Require(existing.Succeeded(), "author code fixture");
+    const auto& node = *TriggerDocumentEditor::FindEca(f.doc, existing.value->rootEcaId);
+    const auto unitArgument = f.doc.argumentNodes[node.arguments[0]].id, codeArgument = f.doc.argumentNodes[node.arguments[1]].id;
+    Require(TriggerDocumentEditor::AppendArgumentCall(f.doc, f.catalog, unitArgument, "unit", "GetTriggerUnit").Succeeded()
+        && TriggerDocumentEditor::SetScalarArgument(f.doc, codeArgument, 3, "call Foo()").Succeeded(), "author code value");
+    const auto text = RenderTriggerText(f.doc, f.catalog, f.doc.triggers[0].id);
+    Require(text.Succeeded() && text.value->find("\"call Foo()\"") != std::string::npos, "author code renders verbatim");
+    auto keep = f.Batch(); keep.operations.emplace_back(GraphReplaceTriggerText{trigger, *text.value});
+    Require(ApplyTriggerGraphEditBatch(f.doc, f.catalog, keep).Succeeded(), "replace keeps the author's code verbatim");
+    auto changed = *text.value; changed.replace(changed.find("call Foo()"), 10, "call Bar()");
+    auto edit = f.Batch(); edit.operations.emplace_back(GraphReplaceTriggerText{trigger, changed});
+    const auto refused = ApplyTriggerGraphEditBatch(f.doc, f.catalog, edit);
+    Require(!refused.Succeeded() && refused.diagnostics.front().code == "TRIGGER_GRAPH_CODE_UNSUPPORTED", "replace cannot rewrite the code");
+    // 原有代码只能留在原触发器：同一批次也不能借给另一个触发器。
+    const auto other = TriggerDocumentEditor::AddTrigger(f.doc, f.doc.categories[0].categoryId, "Other");
+    Require(other.Succeeded(), "second trigger");
+    auto borrow = f.Batch(); borrow.operations.emplace_back(GraphReplaceTriggerText{trigger, *text.value});
+    borrow.operations.emplace_back(GraphReplaceTriggerText{Id(GraphRecordKind::Trigger, *other.value),
+        "WithCodeSibling(GetTriggerUnit(), \"call Foo()\")"});
+    const auto borrowed = ApplyTriggerGraphEditBatch(f.doc, f.catalog, borrow);
+    Require(!borrowed.Succeeded() && borrowed.diagnostics.front().code == "TRIGGER_GRAPH_CODE_UNSUPPORTED", "author code cannot move to another trigger");
+    // 原有不规范固定值可原样保留，新写同样的值仍报错。
+    const auto odd = TriggerDocumentEditor::AppendRootEca(f.doc, f.catalog, f.doc.triggers[0].id, UiDefinitionKind::Action, "StoreInteger");
+    Require(odd.Succeeded() && TriggerDocumentEditor::SetScalarArgument(f.doc,
+        f.doc.argumentNodes[TriggerDocumentEditor::FindEca(f.doc, odd.value->rootEcaId)->arguments[0]].id, 3, "TRUE").Succeeded(), "odd literal fixture");
+    // 非块语句也可能带子节点（WTG 只存分支号），导出为 #分支号:。
+    const auto child = TriggerDocumentEditor::AppendRootEca(f.doc, f.catalog, f.doc.triggers[0].id, UiDefinitionKind::Action, "StoreInteger");
+    Require(child.Succeeded() && TriggerDocumentEditor::SetScalarArgument(f.doc,
+        f.doc.argumentNodes[TriggerDocumentEditor::FindEca(f.doc, child.value->rootEcaId)->arguments[0]].id, 3, "7").Succeeded()
+        && TriggerDocumentEditor::MoveEca(f.doc, child.value->rootEcaId, 0, odd.value->rootEcaId, 1).Succeeded(), "undeclared branch fixture");
+    const auto quirky = RenderTriggerText(f.doc, f.catalog, f.doc.triggers[0].id);
+    Require(quirky.Succeeded() && quirky.value->find("StoreInteger(\"TRUE\") {") != std::string::npos
+        && quirky.value->find("#1:") != std::string::npos, "odd literal and undeclared branch render faithfully");
+    auto again = f.Batch(); again.operations.emplace_back(GraphReplaceTriggerText{trigger, *quirky.value});
+    Require(ApplyTriggerGraphEditBatch(f.doc, f.catalog, again).Succeeded(), "existing odd values and branches survive replace");
+    const auto rerendered = RenderTriggerText(f.doc, f.catalog, f.doc.triggers[0].id);
+    Require(rerendered.Succeeded() && *rerendered.value == *quirky.value, "quirky trigger round-trips");
+    const auto fresh = insert("StoreInteger(\"TRUE\")");
+    Require(!fresh.Succeeded(), "new invalid literal is still refused");
+}
 int main() {
-    try { TestFunctionSlotArguments(); TestRecursiveBatchAndAtomicNames(); TestFailurePublishesNothing(); TestWritableLoopTargets(); TestObjectCodeGraphAndAtomicRename();
+    try { TestCodeArguments(); TestTextNotation(); TestFunctionSlotArguments(); TestRecursiveBatchAndAtomicNames(); TestFailurePublishesNothing(); TestWritableLoopTargets(); TestObjectCodeGraphAndAtomicRename();
         TestArgumentReplacementKeepsSiblingCode(); TestArgumentReplacementRejectsStaleAndRollsBack(); TestArgumentReplacementOpaqueAndDynamicTypes();
         std::cout << "public typed graph batch guards and recursive codec roundtrip passed\n"; return 0; }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

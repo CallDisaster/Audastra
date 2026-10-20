@@ -420,10 +420,11 @@ Status TriggerDocumentEditor::SetScalarArgument(
             "Trigger.Edit", "TRIGGER_COMPLEX_ARGUMENT_READ_ONLY",
             "嵌套函数或数组索引参数需要进入对应节点编辑，不能改写为标量。");
     }
-    if (valueKind != 0 && valueKind != 1 && valueKind != 3) {
+    // -1 是 WE 的“参数未设置”，只能是空值。
+    if ((valueKind != 0 && valueKind != 1 && valueKind != 3 && valueKind != -1) || (valueKind == -1 && !value.empty())) {
         return Status::Failure(
             "Trigger.Edit", "TRIGGER_ARGUMENT_KIND_INVALID",
-            "标量参数类型只能是预设、变量或直接值。");
+            "标量参数类型只能是预设、变量、直接值或未设置。");
     }
     if (value.find('\0') != std::string::npos) {
         return Status::Failure(
@@ -1139,6 +1140,27 @@ TriggerDocumentEditor::RemoveEcaSubtree(
         receipt.removedArgumentOldIndices);
     CompactNodes(document, removedEca, removedArg);
     return ResultT::Success(std::move(receipt));
+}
+
+Status TriggerDocumentEditor::ClearTriggerEcas(
+    TriggerDocument& document,
+    StableId triggerId) {
+    const auto trigger = std::find_if(document.triggers.begin(), document.triggers.end(),
+        [triggerId](const TriggerRecord& row) { return row.id == triggerId; });
+    if (trigger == document.triggers.end()) {
+        return Status::Failure("Trigger.Edit", "TRIGGER_OWNER_MISSING", "找不到目标触发器。");
+    }
+    for (const auto index : trigger->ecas) {
+        if (index >= document.ecaNodes.size()) {
+            return Status::Failure("Trigger.Edit", "TRIGGER_ECA_INDEX_INVALID", "触发器根节点索引无效。");
+        }
+    }
+    std::vector<char> removedEca(document.ecaNodes.size(), 0);
+    std::vector<char> removedArg(document.argumentNodes.size(), 0);
+    MarkSubtreeNodes(document, trigger->ecas, removedEca, removedArg);
+    trigger->ecas.clear();
+    CompactNodes(document, removedEca, removedArg);
+    return Status{};
 }
 
 Result<TriggerDocumentEditor::ArgumentCallDetachReceipt>

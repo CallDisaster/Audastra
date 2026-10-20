@@ -186,6 +186,10 @@ public:
         TriggerDocument& document,
         const ArgumentCallDetachReceipt& receipt);
 
+    // 一次删掉触发器的全部根 ECA 子树（只压实一次）；整体替换内容用，撤销由调用方的文档快照负责。
+    [[nodiscard]] static Status ClearTriggerEcas(
+        TriggerDocument& document,
+        StableId triggerId);
     // 撤销 RemoveEcaSubtree：按回执把子树补回原索引并重挂到原挂载点。
     [[nodiscard]] static Status UndoRemoveEcaSubtree(
         TriggerDocument& document,

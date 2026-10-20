@@ -1188,19 +1188,11 @@ private:
                 });
         }
         auto query = IdentityProperties();
-        query.insert("table", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"categories", "variables", "triggers", "ecas", "arguments", "map_objects"}}});
-        query.insert("schema_version", QJsonObject{{"type", "integer"}, {"enum", QJsonArray{1}}});
-        query.insert("start", QJsonObject{{"type", "integer"}, {"minimum", 0}});
-        query.insert("limit", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 128}});
-        query.insert("argument_ids", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 16},
-            {"items", QJsonObject{{"type", "string"}, {"pattern", "^[1-9][0-9]*$"}}}});
-        query.insert("variable_ids", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 16},
-            {"uniqueItems", true}, {"items", QJsonObject{{"type", "string"}, {"pattern", "^[1-9][0-9]*$"}}}});
-        query.insert("include_replacement_guard", QJsonObject{{"type", "boolean"}});
-        query.insert("functions", Mcp::EcaFunctionFilterSchema());
-        query.insert("ui_layer", QJsonObject{{"type", "string"}, {"minLength", 1}});
+        const auto graphQuery = Mcp::GraphQueryProperties();
+        for (auto it = graphQuery.begin(); it != graphQuery.end(); ++it) query.insert(it.key(), it.value());
         AddTool("editor_query_trigger_graph",
-            "查询作者当前可见的触发器（T）结构；ecas 表可用 functions（精确函数名）或 ui_layer（函数库层，如 WarVK）筛选", Mcp::ToolPermission::Query,
+            "查询作者当前可见的触发器（T）结构；ecas 表可用 functions（精确函数名）或 ui_layer（函数库层，如 WarVK）筛选；"
+            "trigger_text 表配 trigger_id 把整个触发器导出为紧凑 T 写法", Mcp::ToolPermission::Query,
             Schema(query, {"project_identity", "expected_revision", "table"}), [this](const QJsonObject& arguments) { return Query(arguments); });
         auto edit = Mcp::GraphOperationSchema();
         auto properties = edit.value("properties").toObject();
@@ -1208,7 +1200,8 @@ private:
         for (auto it = identity.begin(); it != identity.end(); ++it) properties.insert(it.key(), it.value());
         edit.insert("properties", properties);
         edit.insert("required", QJsonArray{"project_identity", "expected_revision", "expected", "operations"});
-        AddTool("editor_edit_trigger_graph", "在共用撤销栈中整批编辑触发器（T）", Mcp::ToolPermission::Edit, edit,
+        AddTool("editor_edit_trigger_graph", "在共用撤销栈中整批编辑触发器（T）；insert_text / replace_trigger_text 可用紧凑 T 写法一次写入整段逻辑",
+            Mcp::ToolPermission::Edit, edit,
             [this](const QJsonObject& arguments) { return Edit(arguments); });
         auto save = IdentityProperties(); save.insert("path", StringSchema()); save.insert("in_place", QJsonObject{{"type", "boolean"}, {"default", false}});
         AddTool("editor_save_map", "通过原编辑器地图保存服务写回或另存", Mcp::ToolPermission::Save,

@@ -5,6 +5,7 @@
 #include "War3MapCore/MapData/PlacementInitializationRules.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
 #include "War3MapCore/ObjectData/StandardObjectCatalog.h"
+#include "War3MapCore/Trigger/TriggerDirectory.h"
 #include "War3MapCore/Text/SlkCells.h"
 
 #include <algorithm>
@@ -223,6 +224,97 @@ void ReadStandard(CaptureState& state) {
     // 名称/profile不参与类型资格；缺失已逐槽记录，不能把展示名warning算解析失败。
 }
 
+// 区域/镜头/声音：脚本生成器为每条记录声明 gg_rct_/gg_cam_/gg_snd_ 全局，命名规则与生成器相同。
+// 成员不完整时只给出提示、不授予该类资格，不影响单位/物品。
+struct NamedKind {
+    MapDataKind kind;
+    const char* role;
+    const char* prefix;
+    const char* type;
+};
+constexpr std::array<NamedKind, 3> kNamedKinds{{
+    {MapDataKind::Regions, "named-regions", "gg_rct_", "rect"},
+    {MapDataKind::Cameras, "named-cameras", "gg_cam_", "camerasetup"},
+    {MapDataKind::Sounds, "named-sounds", "gg_snd_", "sound"},
+}};
+
+// (名称, 类型)；音乐与生成器一致声明为 string，其余用该类的句柄类型。
+std::vector<std::pair<std::string, std::string>> NamedEntries(const MapDocument& map, const NamedKind& named) {
+    std::vector<std::pair<std::string, std::string>> names;
+    const auto collect = [&](const auto& document) {
+        if (!document) return;
+        for (const auto& entry : document->entries) names.emplace_back(entry.name, named.type);
+    };
+    if (named.kind == MapDataKind::Regions) collect(map.Regions());
+    else if (named.kind == MapDataKind::Cameras) collect(map.Cameras());
+    else if (map.Sounds()) {
+        for (const auto& sound : map.Sounds()->entries) names.emplace_back(sound.name, sound.IsMusic() ? "string" : named.type);
+    }
+    return names;
+}
+
+void CaptureNamed(CaptureState& state, const MapDocument& map) {
+    for (const auto& named : kNamedKinds) {
+        const auto& member = map.Member(named.kind);
+        Input input{named.role, MapSource(map, member.memberName), false, {}, {}};
+        if (member.state == MapDataState::Missing && member.sources.empty()) {
+            state.inputs.push_back(std::move(input));
+            continue;
+        }
+        const auto names = NamedEntries(map, named);
+        if (member.state != MapDataState::Ready || member.sources.size() != 1 || (names.empty() && member.recordCount.value_or(0) != 0)) {
+            state.Diagnose(DiagnosticSeverity::Warning, "MAP_OBJECT_REFERENCE_NAMED_UNQUALIFIED",
+                std::string(named.prefix) + " 来源成员不完整或不唯一，未授予这一类引用资格。", input.source);
+            state.inputs.push_back(std::move(input));
+            continue;
+        }
+        const auto& source = member.sources.front();
+        input.source = MapSource(map, source.name);
+        input.present = true;
+        input.bytes = source.data;
+        state.Hash(input);
+        for (std::size_t i = 0; i < names.size(); ++i) {
+            const auto& [name, type] = names[i];
+            auto symbol = named.kind == MapDataKind::Sounds && name.starts_with("gg_snd_")
+                ? name : std::string(named.prefix) + Trigger::TriggerDirectoryEditor::ScriptName(name);
+            state.references.push_back({std::move(symbol), type, {}, 0, i, member.memberName, input.sha256, input.source});
+        }
+        state.inputs.push_back(std::move(input));
+    }
+}
+
+// 可破坏物：与脚本生成器相同，war3map.doo 中创建标志为 0/4 的记录由 CreateAllDestructables
+// 创建并可被 gg_dest_<编号>_<创建号> 引用；其余标志不在脚本里创建，不授予资格。
+void CaptureDestructables(CaptureState& state, const MapDocument& map) {
+    const auto& member = map.Member(MapDataKind::Doodads);
+    Input input{"placement-doodads", MapSource(map, member.memberName), false, {}, {}};
+    if (member.state == MapDataState::Missing && member.sources.empty()) {
+        state.inputs.push_back(std::move(input));
+        return;
+    }
+    if (member.state != MapDataState::Ready || member.sources.size() != 1 || !map.Doodads()) {
+        state.Diagnose(DiagnosticSeverity::Warning, "MAP_OBJECT_REFERENCE_NAMED_UNQUALIFIED",
+            "gg_dest_ 来源成员不完整或不唯一，未授予可破坏物引用资格。", input.source);
+        state.inputs.push_back(std::move(input));
+        return;
+    }
+    const auto& source = member.sources.front();
+    input.source = MapSource(map, source.name);
+    input.present = true;
+    input.bytes = source.data;
+    state.Hash(input);
+    const auto& doodads = map.Doodads()->doodads;
+    for (std::size_t i = 0; i < doodads.size(); ++i) {
+        const auto& entry = doodads[i];
+        if (entry.flags != 0 && entry.flags != 4) continue;
+        auto symbol = MapData::GeneratedObjectSymbol("dest", entry.rawcode, entry.creationId);
+        if (!symbol.Succeeded() || !symbol.value) continue;
+        state.references.push_back({std::move(*symbol.value), "destructable", entry.rawcode, entry.creationId, i,
+            member.memberName, input.sha256, input.source});
+    }
+    state.inputs.push_back(std::move(input));
+}
+
 void BuildReferences(CaptureState& state, const MapDocument& map) {
     if (!state.inputs.front().present) return;
     const auto& placements = map.Units()->units;
@@ -273,6 +365,10 @@ void BuildReferences(CaptureState& state, const MapDocument& map) {
         state.references.push_back({std::move(*symbol.value), type, placement.rawcode, placement.creationId,
             i, map.Member(MapDataKind::Units).memberName, member.sha256, std::move(sources)});
     }
+}
+
+void UniqueReferences(CaptureState& state) {
+    const auto& member = state.inputs.front();
     std::sort(state.references.begin(), state.references.end(), [](const auto& left, const auto& right) {
         return left.symbol < right.symbol;
     });
@@ -297,7 +393,7 @@ Result<std::string> Identity(const CaptureState& state) {
         manifest += ':';
         manifest += value;
     };
-    append("forge-map-object-reference-v2");
+    append("forge-map-object-reference-v3");
     for (const auto& input : state.inputs) {
         append(input.role); append(input.source); append(input.present ? "present" : "missing");
         append(std::to_string(static_cast<int>(input.scope)));
@@ -312,13 +408,16 @@ Result<std::shared_ptr<const Trigger::MapObjectReferenceSnapshot>> MapObjectRefe
     try {
         CaptureState state;
         if (!nativeReader) state.Reject("MAP_OBJECT_REFERENCE_READER_MISSING", "必须提供能证明native成员存在或缺失的来源读取器。");
-        state.inputs.reserve(5);
+        state.inputs.reserve(6 + kNamedKinds.size());
         CapturePlacements(state, map);
         for (std::size_t i = 0; i < kNames.size(); ++i) CaptureInput(state, i < 2 ? nativeReader : standardReader, i);
         ReadNative(state, 1, ObjectData::ObjectType::Unit);
         ReadNative(state, 2, ObjectData::ObjectType::Item);
         ReadStandard(state);
         BuildReferences(state, map);
+        CaptureNamed(state, map);
+        CaptureDestructables(state, map);
+        UniqueReferences(state);
         auto identity = Identity(state);
         if (!identity.Succeeded()) {
             state.Append(std::move(identity.diagnostics));

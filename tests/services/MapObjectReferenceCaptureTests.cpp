@@ -133,7 +133,7 @@ void PositiveOwnedInputsAndOldVersions() {
     const auto result = MapObjectReferenceCapture::Capture(map, native.Reader(), standard.Reader());
     Require(result.Succeeded(), "native v1 read-only warning must not reject positive category evidence");
     const auto& snapshot = **result.value;
-    Require(snapshot.References().size() == 3 && snapshot.Inputs().size() == 5, "three qualified references and five owned slots");
+    Require(snapshot.References().size() == 3 && snapshot.Inputs().size() == 9, "three qualified references and nine owned slots");
     const auto* unit = snapshot.Find("gg_unit_n00Q_0017");
     Require(unit && unit->type == "unit" && unit->rawcode == "n00Q" && unit->creationId == 17
         && unit->sourceIndex == 0 && unit->memberName == "war3mapUnits.doo"
@@ -146,10 +146,12 @@ void PositiveOwnedInputsAndOldVersions() {
     Require(native.requested == std::vector<std::string>{"war3map.w3u", "war3map.w3t"}
         && standard.requested == std::vector<std::string>{"Units/UnitData.slk", "Units/ItemData.slk"},
         "capture reads only the four contracted inputs, without profiles or strings");
-    for (const auto& input : snapshot.Inputs()) {
+    for (const auto& input : snapshot.Inputs().first(5)) {
         const auto hash = Sha256(input.bytes);
         Require(input.present && hash.Succeeded() && input.sha256 == *hash.value, "every present input hash comes from owned actual bytes");
     }
+    Require(std::none_of(snapshot.Inputs().begin() + 5, snapshot.Inputs().end(), [](const auto& input) { return input.present; }),
+        "absent region/camera/sound members stay absent");
     const auto ownedBytes = snapshot.Inputs()[1].bytes;
     native.files["war3map.w3u"] = Native({"xxxx"});
     Require(snapshot.Inputs()[1].bytes == ownedBytes && snapshot.Find("gg_unit_n00Q_0017"), "later provider mutations cannot alter the frozen snapshot");
@@ -350,8 +352,33 @@ void DoesNotIntroduceAnInstanceCap() {
 }
 } // namespace
 
+// 区域按脚本生成器同一规则得到 gg_rct_ 名；脚本名冲突的一组整体不授权。
+void NamedRegionsFollowTheScriptGenerator() {
+    MapData::RegionsDocument regions;
+    for (const auto* name : {"Spawn Point", "Boss-Room", "Boss Room"}) {
+        MapData::RegionRecord region;
+        region.left = 0; region.bottom = 0; region.right = 128; region.top = 128;
+        region.name = name; region.creationNumber = static_cast<std::int32_t>(regions.entries.size());
+        regions.entries.push_back(std::move(region));
+    }
+    auto bytes = regions.Serialize();
+    Require(bytes.Succeeded(), "region fixture serializes");
+    const std::array<MapArchiveMember, 2> members{{{"war3mapUnits.doo", UnitBytes({})}, {"war3map.w3r", std::move(*bytes.value)}}};
+    const auto map = MapDocument::FromMembers(members, "synthetic-map.w3x");
+    Sources native, standard;
+    const auto result = MapObjectReferenceCapture::Capture(map, native.Reader(), standard.Reader());
+    Require(result.Succeeded(), "region capture");
+    const auto& snapshot = **result.value;
+    const auto* spawn = snapshot.Find("gg_rct_Spawn_Point");
+    Require(spawn && spawn->type == "rect" && spawn->sourceIndex == 0 && spawn->memberSha256 == snapshot.Inputs()[5].sha256,
+        "region reference carries its member identity");
+    Require(!snapshot.Find("gg_rct_Boss_Room") && HasCode(snapshot.Diagnostics(), "MAP_OBJECT_REFERENCE_SYMBOL_AMBIGUOUS"),
+        "colliding generated names are withdrawn together");
+}
+
 int main() {
     try {
+        NamedRegionsFollowTheScriptGenerator();
         PositiveOwnedInputsAndOldVersions();
         MissingAndUnknownDoNotBecomeUnit();
         PlacementAmbiguityAndUnsupportedRecords();

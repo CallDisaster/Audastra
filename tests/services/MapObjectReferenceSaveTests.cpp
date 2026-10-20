@@ -319,7 +319,7 @@ void MissingStandardSourceStillHasAnIdentity() {
     const auto game = fixture.directory.Path() / "game-without-classification-tables";
     WriteGame(game, "war3.mpq", "Synthetic", false);
     const auto references = Captured(CaptureDirectoryMapObjectReferences(fixture.expanded, game));
-    Require(references->Inputs().size() == 5 && !references->Inputs()[3].present && !references->Inputs()[4].present,
+    Require(references->Inputs().size() == 9 && !references->Inputs()[3].present && !references->Inputs()[4].present,
         "real absent game members are captured as missing");
     const auto check = VerifyMapObjectReferenceStandardSources(*references, {});
     Require(!check.Succeeded() && HasCode(check.diagnostics, "MAP_OBJECT_REFERENCE_SOURCE_CHANGED"),
@@ -332,7 +332,7 @@ void MissingStandardSourceStillHasAnIdentity() {
 void OrdinaryWtgOnlyWorkspaceNeedsNoDooQualification() {
     Fixture fixture(false);
     const auto references = Captured(CaptureDirectoryMapObjectReferences(fixture.expanded));
-    Require(references->References().empty() && references->Inputs().size() == 5 && !references->Inputs().front().present
+    Require(references->References().empty() && references->Inputs().size() == 9 && !references->Inputs().front().present
         && HasCode(references->Diagnostics(), "MAP_OBJECT_REFERENCE_MEMBER_MISSING"), "WTG-only workspace captures empty external-object qualification");
     const auto archive = Captured(CaptureArchiveMapObjectReferences(*fixture.archive));
     Require(VerifyMapObjectReferenceContents(*references, *archive).Succeeded(), "matching missing DOO survives source migration");

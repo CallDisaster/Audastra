@@ -5,6 +5,7 @@
 #include "War3MapCore/Trigger/TriggerCodeEditing.h"
 #include "War3MapCore/Trigger/TriggerDataText.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
+#include "War3MapCore/Trigger/TriggerTextNotation.h"
 #include "War3MapCore/Trigger/TriggerTypes.h"
 #include "War3MapCore/Trigger/TriggerVariableReference.h"
 #include "TriggerArgumentReplacement.h"
@@ -12,9 +13,11 @@
 #include "TriggerCodecDefinitionLookupMemo.h"
 
 #include <algorithm>
+#include <cctype>
 #include <limits>
 #include <new>
 #include <set>
+#include <tuple>
 #include <type_traits>
 
 namespace War3Map::Trigger {
@@ -112,6 +115,10 @@ struct RequestBudget {
             } else if constexpr (std::is_same_v<T, GraphReplaceArgument>) {
                 return Ref(item.target) && AddText(item.expected.uiSignature) && AddText(item.expected.expectedType)
                     && AddText(item.expected.subtreeSha256) && Arg(item.value, 0, true);
+            } else if constexpr (std::is_same_v<T, GraphInsertText>) {
+                return Parent(item.parent) && (!item.before || Ref(*item.before)) && AddText(item.text);
+            } else if constexpr (std::is_same_v<T, GraphReplaceTriggerText>) {
+                return Ref(item.trigger) && AddText(item.text);
             } else {
                 return Parent(item.parent) && (!item.before || Ref(*item.before)) && item.root && Eca(*item.root, 0);
             }
@@ -128,6 +135,10 @@ struct Editor {
     TriggerGraphEditReceipt receipt;
     std::set<StableId> typedEcas, typedArguments, typedVariables;
     std::uint64_t nextId;
+    std::map<StableId, std::string> origins; // 紧凑写法节点的行列，诊断定位用
+    // 整体替换时目标触发器原有的值，按所属触发器记录，只能留在原触发器里。
+    std::set<std::pair<StableId, std::string>> preservedCode; // (触发器, 代码类参数值)
+    std::set<std::tuple<StableId, std::string, std::string>> preservedLiterals; // (触发器, 期望类型, 固定值)
 
     Result<StableId> NewId() {
         const auto id = detail::AllocateId(nextId);
@@ -485,8 +496,8 @@ struct Editor {
             if (auto status = FreshAppend(*appended.value); !status.Succeeded()) return status;
             return ConfigureEca(appended.value->rootEcaId, *spec.call, depth + 1);
         }
-        if (spec.scalar.kind != 0 && spec.scalar.kind != 1 && spec.scalar.kind != 3)
-            return Fail("TRIGGER_GRAPH_ARGUMENT_KIND", "参数种类须为预设、变量、字面值或显式递归函数。");
+        if (spec.scalar.kind != 0 && spec.scalar.kind != 1 && spec.scalar.kind != 3 && spec.scalar.kind != -1)
+            return Fail("TRIGGER_GRAPH_ARGUMENT_KIND", "参数种类须为预设、变量、字面值、未设置或显式递归函数。");
         if (auto status = TriggerDocumentEditor::SetScalarArgument(doc, id, spec.scalar.kind, spec.scalar.value); !status.Succeeded()) return status;
         if (spec.index) {
             if (spec.scalar.kind != 1) return Fail("TRIGGER_GRAPH_INDEX_INVALID", "只有真实数组变量可携带下标。");
@@ -504,7 +515,50 @@ struct Editor {
         }
         return Status::Ok();
     }
+    // 最深一层带位置的失败节点给首条诊断补上位置；外层不重复追加。
+    // 代码类参数（scriptcode）：默认自然 T，不由批次新写代码。放行两种不是新代码的值：
+    // 纯标识符（如 YDWE 局部变量名 loc_u，中文名亦可）；整体替换时原样保留的目标触发器已有代码。
+    static bool PlainIdentifier(std::string_view value) {
+        if (value.empty() || std::isdigit(static_cast<unsigned char>(value.front()))) return false;
+        return std::all_of(value.begin(), value.end(), [](char c) {
+            const auto byte = static_cast<unsigned char>(c);
+            return byte >= 0x80 || std::isalnum(byte) || c == '_';
+        });
+    }
+    bool CodeValueAllowed(StableId trigger, const std::string& value) const {
+        return PlainIdentifier(value) || preservedCode.contains({trigger, value});
+    }
+    Status CodeRejected() const {
+        return Status::Failure(kDomain, "TRIGGER_GRAPH_CODE_UNSUPPORTED",
+            "代码类参数只接受标识符（如 YDWE 局部变量名）或整体替换时原样保留的已有代码；新写代码须作者授权，默认用自然 T。");
+    }
+    void CollectCode(std::uint32_t index, const std::vector<LocalVariable>& locals, std::size_t depth) {
+        if (depth > 256 || index >= doc.ecaNodes.size()) return;
+        const auto& eca = doc.ecaNodes[index];
+        for (std::size_t i = 0; i < eca.arguments.size(); ++i) {
+            if (eca.arguments[i] >= doc.argumentNodes.size()) continue;
+            const auto& argument = doc.argumentNodes[eca.arguments[i]];
+            if (argument.type == 3) {
+                const auto expected = types.ExpectedType(doc, eca, i, locals);
+                if (types.LiteralKind(expected) == TriggerTypeSystem::Literal::Script) preservedCode.emplace(eca.sourceTriggerId, argument.value.text);
+                else preservedLiterals.emplace(eca.sourceTriggerId, expected, argument.value.text);
+            }
+            if (argument.type == 2 && argument.callEca) CollectCode(*argument.callEca, locals, depth + 1);
+        }
+        for (const auto child : eca.children) CollectCode(child, locals, depth + 1);
+    }
+    static void Locate(Status& status, const std::string& origin) {
+        if (origin.empty() || status.diagnostics.empty()) return;
+        auto& message = status.diagnostics.front().message;
+        if (message.find("【位置") == std::string::npos) message += "【位置：" + origin + "】";
+    }
     Status ConfigureEca(StableId id, const GraphEcaValue& spec, std::size_t depth) {
+        if (!spec.origin.empty()) origins[id] = spec.origin;
+        auto status = ConfigureEcaBody(id, spec, depth);
+        if (!status.Succeeded()) Locate(status, spec.origin);
+        return status;
+    }
+    Status ConfigureEcaBody(StableId id, const GraphEcaValue& spec, std::size_t depth) {
         if (depth > limits.maxDepth) return Fail("TRIGGER_GRAPH_BUDGET", "ECA 递归超过预算。");
         if (auto status = Bind(spec.clientKey, GraphRecordKind::Eca, id); !status.Succeeded()) return status;
         auto* node = Find(doc.ecaNodes, id);
@@ -516,8 +570,13 @@ struct Editor {
             node = Find(doc.ecaNodes, id);
             const auto expected = types.ExpectedType(doc, *node, i);
             if (expected.empty() || expected == "Null") return Fail("TRIGGER_GRAPH_TYPE_UNRESOLVED", "递归参数期望类型无法从真实 Catalog 和已配置前参数确定。");
-            if (types.LiteralKind(expected) == TriggerTypeSystem::Literal::Script)
-                return Fail("TRIGGER_GRAPH_CODE_UNSUPPORTED", "通用 T 图批次不能接受代码参数。");
+            if (types.LiteralKind(expected) == TriggerTypeSystem::Literal::Script) {
+                const auto& value = spec.arguments[i];
+                // 函数库定义的预设也不是新代码。
+                const bool preset = value.scalar.kind == 0 && FindPreset(catalog, value.scalar.value).has_value();
+                if (value.call || value.index || (!preset && (value.scalar.kind != 3 || !CodeValueAllowed(node->sourceTriggerId, value.scalar.value))))
+                    return CodeRejected();
+            }
             if (auto status = ConfigureArgument(arguments[i], spec.arguments[i], expected, depth + 1); !status.Succeeded()) return status;
         }
         for (const auto& child : spec.children) {
@@ -539,14 +598,51 @@ struct Editor {
         if (auto status = Guard(op.parent); !status.Succeeded()) return status;
         const auto before = Before(op.parent, op.before); if (!before.Succeeded()) return {before.diagnostics};
         const auto owner = Resolve(op.parent.owner); if (!owner.Succeeded()) return {owner.diagnostics};
-        if (op.root->kind == UiDefinitionKind::Call || op.root->childBranch != op.parent.childBranch)
-            return Fail("TRIGGER_GRAPH_BRANCH_INVALID", "根 ECA 的种类或分支与父挂载不符。");
         const auto triggerId = op.parent.kind == GraphParentKind::TriggerEcas ? *owner.value : Find(doc.ecaNodes, *owner.value)->sourceTriggerId;
-        auto created = TriggerDocumentEditor::AppendRootEca(doc, catalog, triggerId, op.root->kind, op.root->function);
-        if (!created.Succeeded()) return {created.diagnostics};
+        return InsertRoot(op.parent, *before.value, triggerId, *op.root);
+    }
+    Status InsertRoot(const GraphParentExpectation& parent, StableId before, StableId triggerId, const GraphEcaValue& root) {
+        if (root.kind == UiDefinitionKind::Call || root.childBranch != parent.childBranch)
+            return Fail("TRIGGER_GRAPH_BRANCH_INVALID", "根 ECA 的种类或分支与父挂载不符。");
+        auto created = TriggerDocumentEditor::AppendRootEca(doc, catalog, triggerId, root.kind, root.function);
+        if (!created.Succeeded()) { Status status{created.diagnostics}; Locate(status, root.origin); return status; }
         if (auto status = FreshAppend(*created.value); !status.Succeeded()) return status;
-        if (auto status = Position(GraphRecordKind::Eca, created.value->rootEcaId, op.parent, *before.value); !status.Succeeded()) return status;
-        return ConfigureEca(created.value->rootEcaId, *op.root, 0);
+        if (auto status = Position(GraphRecordKind::Eca, created.value->rootEcaId, parent, before); !status.Succeeded()) return status;
+        return ConfigureEca(created.value->rootEcaId, root, 0);
+    }
+    Status Apply(const GraphInsertText& op) {
+        if (op.parent.kind != GraphParentKind::TriggerEcas && op.parent.kind != GraphParentKind::EcaChildren)
+            return Fail("TRIGGER_GRAPH_PARENT_INVALID", "紧凑写法须插入触发器根或 ECA children。");
+        if (auto status = Guard(op.parent); !status.Succeeded()) return status;
+        const auto before = Before(op.parent, op.before); if (!before.Succeeded()) return {before.diagnostics};
+        const auto owner = Resolve(op.parent.owner); if (!owner.Succeeded()) return {owner.diagnostics};
+        TriggerTextTarget target;
+        StableId triggerId = *owner.value;
+        if (op.parent.kind == GraphParentKind::EcaChildren) {
+            const auto* block = Find(doc.ecaNodes, *owner.value);
+            target.blockFunction = block->name.text; target.childBranch = *op.parent.childBranch; triggerId = block->sourceTriggerId;
+        }
+        const auto roots = ParseTriggerText(op.text, doc, catalog, target, limits);
+        if (!roots.Succeeded()) return {roots.diagnostics};
+        if (roots.value->empty()) return Fail("TRIGGER_TEXT_EMPTY", "文本里没有任何语句。");
+        for (const auto& root : *roots.value)
+            if (auto status = InsertRoot(op.parent, *before.value, triggerId, *root); !status.Succeeded()) return status;
+        return Status::Ok();
+    }
+    Status Apply(const GraphReplaceTriggerText& op) {
+        if (op.trigger.kind != GraphRecordKind::Trigger) return Fail("TRIGGER_GRAPH_PARENT_INVALID", "整体替换的目标必须是触发器。");
+        const auto id = Resolve(op.trigger); if (!id.Succeeded()) return {id.diagnostics};
+        const auto* trigger = Find(doc.triggers, *id.value);
+        if (trigger->customTextFlag != 0) return Fail("TRIGGER_GRAPH_CUSTOM_READ_ONLY", "自定义代码触发器没有 T 树，不能用紧凑写法替换。");
+        const auto roots = ParseTriggerText(op.text, doc, catalog, {}, limits);
+        if (!roots.Succeeded()) return {roots.diagnostics};
+        const auto locals = types.CollectLocals(doc, *trigger);
+        for (const auto index : trigger->ecas) CollectCode(index, locals, 0);
+        if (auto cleared = TriggerDocumentEditor::ClearTriggerEcas(doc, *id.value); !cleared.Succeeded()) return cleared;
+        const GraphParentExpectation parent{GraphParentKind::TriggerEcas, {GraphRecordKind::Trigger, *id.value, {}}, {}, std::nullopt};
+        for (const auto& root : *roots.value)
+            if (auto status = InsertRoot(parent, 0, *id.value, *root); !status.Succeeded()) return status;
+        return Status::Ok();
     }
     Status Apply(const GraphReplaceArgument& op) {
         if (op.target.kind != GraphRecordKind::Argument)
@@ -598,9 +694,11 @@ struct Editor {
         receipt.argumentReplacements.push_back(std::move(replacement));
         return Status::Ok();
     }
-    Status TypedArgument(const ArgumentNode& argument, const std::string& expected) {
+    Status TypedArgument(const ArgumentNode& argument, const std::string& expected, StableId trigger) {
         if (expected.empty() || expected == "Null") return Fail("TRIGGER_GRAPH_TYPE_UNRESOLVED", "期望类型不确定，不能将未知当兼容。");
-        if (types.LiteralKind(expected) == TriggerTypeSystem::Literal::Script) return Fail("TRIGGER_GRAPH_CODE_UNSUPPORTED", "批次不编辑代码参数。");
+        if (types.LiteralKind(expected) == TriggerTypeSystem::Literal::Script)
+            return !argument.indexArgument && ((argument.type == 3 && CodeValueAllowed(trigger, argument.value.text))
+                || (argument.type == 0 && FindPreset(catalog, argument.value.text).has_value())) ? Status::Ok() : CodeRejected();
         if (argument.type == 0) {
             const auto actual = types.PresetType(argument.value.text);
             if (!actual || !types.Accepts(expected, *actual)) return Fail("TRIGGER_GRAPH_TYPE_MISMATCH", "预设缺失或类型不符：" + argument.value.text);
@@ -621,15 +719,36 @@ struct Editor {
             }
         } else if (argument.type == 3) {
             if (expected == "code") return Fail("TRIGGER_GRAPH_CODE_UNSUPPORTED", "代码回调不能由字面源码代替 typed 函数。");
-            if (auto status = types.ValidateLiteral(expected, argument.value.text); !status.Succeeded()) return status;
+            // 整体替换可原样保留触发器里已有的值（即使不规范），但不能新写无效值。
+            if (auto status = types.ValidateLiteral(expected, argument.value.text);
+                !status.Succeeded() && !preservedLiterals.contains({trigger, expected, argument.value.text})) return status;
         } else return Fail("TRIGGER_GRAPH_ARGUMENT_KIND", "参数来源结构无效。");
         if (argument.indexArgument) {
             if (*argument.indexArgument >= doc.argumentNodes.size()) return Fail("TRIGGER_GRAPH_INDEX_INVALID", "数组下标索引无效。");
-            return TypedArgument(doc.argumentNodes[*argument.indexArgument], "integer");
+            return TypedArgument(doc.argumentNodes[*argument.indexArgument], "integer", trigger);
         }
         return Status::Ok();
     }
+    // 一次列出全部参数类型问题（上限 64 条），紧凑写法的节点带行列。
+    // 自身或上级语句被禁用的 ECA（含参数函数）。
+    std::vector<char> InactiveEcas() const {
+        std::vector<char> inactive(doc.ecaNodes.size(), 0);
+        const auto mark = [&](const auto& self, std::uint32_t index, bool off, std::size_t depth) -> void {
+            if (index >= doc.ecaNodes.size() || depth > 512) return;
+            const auto& node = doc.ecaNodes[index];
+            off = off || node.enabled == 0;
+            inactive[index] = off ? 1 : 0;
+            for (const auto argument : node.arguments)
+                if (argument < doc.argumentNodes.size() && doc.argumentNodes[argument].callEca)
+                    self(self, *doc.argumentNodes[argument].callEca, off, depth + 1);
+            for (const auto child : node.children) self(self, child, off, depth + 1);
+        };
+        for (const auto& trigger : doc.triggers) for (const auto root : trigger.ecas) mark(mark, root, false, 0);
+        return inactive;
+    }
     Status ValidateTouched() {
+        Status failures;
+        std::optional<std::vector<char>> inactive;
         std::map<StableId, std::vector<LocalVariable>> replacementLocals;
         for (const auto id : typedVariables) if (const auto* row = Find(doc.variables, id)) {
             if (auto status = ValidateVariable(*row); !status.Succeeded()) return status;
@@ -648,6 +767,9 @@ struct Editor {
                 index = *current.indexArgument;
             }
             if (changed) {
+                // 禁用语句（含其禁用上级下的语句）不生成脚本，WE 允许其中留着未设置或失效的参数，不做类型门禁。
+                if (!inactive) inactive = InactiveEcas();
+                if ((*inactive)[static_cast<std::size_t>(&eca - doc.ecaNodes.data())]) continue;
                 if (eca.type == 2 && eca.name.text == "SetVariable" && !eca.arguments.empty()) {
                     const auto& target = doc.argumentNodes[eca.arguments[0]];
                     if (auto status = types.ValidateWritableVariable(doc, target, types.ValueType(doc, target)); !status.Succeeded()) return status;
@@ -666,10 +788,18 @@ struct Editor {
                     }
                     expected = types.ExpectedType(doc, eca, i, found->second);
                 }
-                if (auto status = TypedArgument(argument, expected); !status.Succeeded()) return status;
+                auto status = argument.type == -1
+                    ? Fail("TRIGGER_GRAPH_ARGUMENT_UNSET", "参数未设置（?）只能留在禁用的语句里。")
+                    : TypedArgument(argument, expected, eca.sourceTriggerId);
+                if (!status.Succeeded()) {
+                    if (const auto found = origins.find(eca.id); found != origins.end())
+                        Locate(status, found->second + " 第 " + std::to_string(i + 1) + " 个参数");
+                    for (auto& diagnostic : status.diagnostics) failures.diagnostics.push_back(std::move(diagnostic));
+                    if (failures.diagnostics.size() >= 64) return failures;
+                }
             }
         }
-        return Status::Ok();
+        return failures.diagnostics.empty() ? Status::Ok() : failures;
     }
 };
 } // namespace
