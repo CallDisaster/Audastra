@@ -222,8 +222,10 @@ public:
     }
     GraphArgumentValue Argument(const QJsonValue& value, std::size_t depth) {
         Count(depth);
-        const auto object = Object(value, {"scalar"}, {"client_key", "call", "index"});
-        GraphArgumentValue result; result.scalar = Scalar(object.value("scalar"));
+        const auto object = Object(value, {}, {"scalar", "client_key", "call", "index"});
+        // 函数参数可省略 scalar（默认空字面值即“由 call 提供”）；两者都没有才算缺值。
+        if (!object.contains("scalar") && !object.contains("call")) throw GraphJsonError("参数须给出 scalar 或 call。");
+        GraphArgumentValue result; if (object.contains("scalar")) result.scalar = Scalar(object.value("scalar"));
         result.clientKey = ClientKey(object, false);
         if (object.contains("call")) result.call = std::make_shared<const GraphEcaValue>(Eca(object.value("call"), depth + 1));
         if (object.contains("index")) result.index = std::make_shared<const GraphArgumentValue>(Argument(object.value("index"), depth + 1));
@@ -641,7 +643,7 @@ QJsonObject GraphSchema() {
     const auto eca = Shape({{"client_key", string}, {"function", string}, {"kind", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"event", "condition", "action", "call"}}}},
         {"enabled", boolean}, {"child_branch", integer}, {"arguments", ArraySchema(argumentRef)}, {"children", ArraySchema(ecaRef)}},
         {"function", "kind", "enabled", "arguments", "children"});
-    const auto argument = Shape({{"client_key", string}, {"scalar", scalar}, {"call", ecaRef}, {"index", argumentRef}}, {"scalar"});
+    const auto argument = Shape({{"client_key", string}, {"scalar", scalar}, {"call", ecaRef}, {"index", argumentRef}});
     const auto argumentGuard = Shape({{"schema_version", QJsonObject{{"type", "integer"}, {"enum", QJsonArray{1}}}},
         {"owner_eca_id", QJsonObject{{"type", "string"}, {"pattern", "^[1-9][0-9]*$"}}},
         {"source_trigger_id", QJsonObject{{"type", "string"}, {"pattern", "^[1-9][0-9]*$"}}},

@@ -801,8 +801,12 @@ void TestMapDataPageBinding() {
     };
     const QJsonObject getter{{"function", "ReadCall"}, {"kind", "call"}, {"enabled", true}, {"arguments", QJsonArray{}}, {"children", QJsonArray{}}};
     const QJsonObject store{{"function", "StoreInteger"}, {"kind", "action"}, {"enabled", true},
-        {"arguments", QJsonArray{QJsonObject{{"client_key", "retained_argument"},
-            {"scalar", QJsonObject{{"kind", 3}, {"value", ""}}}, {"call", getter}}}}, {"children", QJsonArray{}}};
+        {"arguments", QJsonArray{QJsonObject{{"client_key", "retained_argument"}, {"call", getter}}}}, {"children", QJsonArray{}}};
+    auto emptyArgument = store; emptyArgument["arguments"] = QJsonArray{QJsonObject{{"client_key", "empty_argument"}}};
+    code(call("edit_trigger_graph", argumentRequest(activeGraph.value("binding").toObject(),
+        QJsonArray{QJsonObject{{"op", "insert_subtree"}, {"root", emptyArgument},
+            {"parent", QJsonObject{{"kind", "trigger_ecas"}, {"owner", target}, {"ordered_children", graphRow.value("ecas")}}}}})),
+        "MCP_TRIGGER_GRAPH_REQUEST_INVALID");
     const QJsonObject inserted = call("edit_trigger_graph", argumentRequest(activeGraph.value("binding").toObject(),
         QJsonArray{QJsonObject{{"op", "insert_subtree"}, {"root", store},
             {"parent", QJsonObject{{"kind", "trigger_ecas"}, {"owner", target}, {"ordered_children", graphRow.value("ecas")}}}}}));
