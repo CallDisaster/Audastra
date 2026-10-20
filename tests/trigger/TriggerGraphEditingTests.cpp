@@ -129,6 +129,45 @@ void TestFailurePublishesNothing() {
     batch = f.Batch(); batch.operations.emplace_back(GraphMove{Id(GraphRecordKind::Trigger, f.doc.triggers[0].id),
         Parent(GraphParentKind::CategoryTriggers, category), Parent(GraphParentKind::CategoryTriggers, category), {}});
     Require(!ApplyTriggerGraphEditBatch(f.doc, f.catalog, batch).Succeeded(), "incomplete ordered parent rejected");
+    {
+        // 把分类行的 WTG 分类号 category_id 当成引用编号：报错写出种类、编号，并给出正确的 ref.id。
+        auto numbered = f.doc;
+        const auto added = TriggerDirectoryEditor::AddCategory(numbered, "Numbered"); Require(added.Succeeded(), "second category");
+        const auto& row = *std::find_if(numbered.categories.begin(), numbered.categories.end(), [&](const auto& c) { return c.categoryId == *added.value; });
+        const auto wrong = static_cast<StableId>(row.categoryId);
+        Require(wrong != 0 && wrong != row.id && std::none_of(numbered.categories.begin(), numbered.categories.end(),
+            [&](const auto& other) { return other.id == wrong; }), "fixture category number differs from its stable id");
+        const auto binding = CaptureTriggerGraphBinding(numbered, f.catalog); Require(binding.Succeeded(), "numbered binding");
+        batch = {*binding.value, {}}; batch.operations.emplace_back(GraphMove{Id(GraphRecordKind::Trigger, f.doc.triggers[0].id),
+            Parent(GraphParentKind::CategoryTriggers, Id(GraphRecordKind::Category, wrong)),
+            Parent(GraphParentKind::CategoryTriggers, Id(GraphRecordKind::Category, wrong)), {}});
+        const auto misused = ApplyTriggerGraphEditBatch(numbered, f.catalog, batch);
+        Require(!misused.Succeeded() && misused.diagnostics.front().code == "TRIGGER_GRAPH_RECORD_MISSING" &&
+            misused.diagnostics.front().message.find("category_id") != std::string::npos &&
+            misused.diagnostics.front().message.find(std::to_string(row.id)) != std::string::npos,
+            ("a category number used as a ref names the right ref id: " + (misused.diagnostics.empty() ? std::string() :
+            misused.diagnostics.front().code + " " + misused.diagnostics.front().message)).c_str());
+    }
+    {
+        // 同一分类内调整顺序：from 与 to 相同，ordered_children 为移动前的完整顺序，before 指定落点。
+        auto order = f.doc;
+        const auto folder = TriggerDirectoryEditor::AddCategory(order, "Order"); Require(folder.Succeeded(), "order category");
+        std::vector<StableId> ids;
+        for (const auto* name : {"First", "Second", "Third"}) {
+            const auto added = TriggerDocumentEditor::AddTrigger(order, *folder.value, name); Require(added.Succeeded(), "order trigger");
+            ids.push_back(*added.value);
+        }
+        const auto owner = std::find_if(order.categories.begin(), order.categories.end(), [&](const auto& c) { return c.categoryId == *folder.value; })->id;
+        const auto current = Parent(GraphParentKind::CategoryTriggers, Id(GraphRecordKind::Category, owner),
+            {Id(GraphRecordKind::Trigger, ids[0]), Id(GraphRecordKind::Trigger, ids[1]), Id(GraphRecordKind::Trigger, ids[2])});
+        const auto binding = CaptureTriggerGraphBinding(order, f.catalog); Require(binding.Succeeded(), "order binding");
+        TriggerGraphEditBatch reorder{*binding.value, {}};
+        reorder.operations.emplace_back(GraphMove{Id(GraphRecordKind::Trigger, ids[2]), current, current, Id(GraphRecordKind::Trigger, ids[1])});
+        Require(ApplyTriggerGraphEditBatch(order, f.catalog, reorder).Succeeded(), "same-category reorder applies");
+        std::vector<StableId> after;
+        for (const auto& row : order.triggers) if (row.categoryId == *folder.value) after.push_back(row.id);
+        Require(after == std::vector<StableId>{ids[0], ids[2], ids[1]}, "the moved trigger lands before the named sibling");
+    }
     Require(f.Batch().expected.currentWtgSha256 == unchanged.currentWtgSha256 && f.Batch().expected.currentWctSha256 == unchanged.currentWctSha256, "all failed mutations preserve bytes");
     batch = f.Batch();
     batch.operations.emplace_back(GraphCreate{"removed", GraphCategoryValue{"Temporary"}, Parent(GraphParentKind::Categories, {}, {category}), {}});

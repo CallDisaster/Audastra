@@ -159,6 +159,19 @@ struct Editor {
         }
         return false;
     }
+    // 引用须用查询结果各行 ref 里的稳定编号；分类行另有 WTG 分类号 category_id，常被误用，单独指出。
+    std::string MissingMessage(GraphRecordKind kind, StableId id) const {
+        static constexpr const char* names[] = {"category", "variable", "trigger", "eca", "argument"};
+        const auto index = static_cast<std::size_t>(kind);
+        std::string message = std::string("目标对象不在当前文档中：") + (index < std::size(names) ? names[index] : "unknown") +
+            " " + std::to_string(id) + "。引用请用查询结果中该行 ref 的 id。";
+        const auto category = std::find_if(doc.categories.begin(), doc.categories.end(),
+            [&](const auto& row) { return static_cast<StableId>(row.categoryId) == id; });
+        if (kind == GraphRecordKind::Category && category != doc.categories.end())
+            message += "该数字是分类“" + category->name.text + "”的 WTG 分类号 category_id，它的 ref.id 是 " +
+                std::to_string(category->id) + "。";
+        return message;
+    }
     Result<StableId> Resolve(const GraphRecordRef& ref) {
         if ((ref.id != 0) == !ref.clientKey.empty())
             return Result<StableId>::Failure(kDomain, "TRIGGER_GRAPH_REF_INVALID", "对象引用须恰有 stableId 或批内 clientKey。");
@@ -169,7 +182,7 @@ struct Editor {
                 return Result<StableId>::Failure(kDomain, "TRIGGER_GRAPH_LOCAL_KEY_MISSING", "批内对象尚未创建或记录种类不符：" + ref.clientKey);
             id = found->second.id;
         }
-        if (!Exists(ref.kind, id)) return Result<StableId>::Failure(kDomain, "TRIGGER_GRAPH_RECORD_MISSING", "目标对象不在当前文档中。");
+        if (!Exists(ref.kind, id)) return Result<StableId>::Failure(kDomain, "TRIGGER_GRAPH_RECORD_MISSING", MissingMessage(ref.kind, id));
         return Result<StableId>::Success(id);
     }
     Status Bind(std::string_view key, GraphRecordKind kind, StableId id, bool required = false) {
