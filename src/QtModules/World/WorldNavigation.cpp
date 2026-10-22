@@ -69,7 +69,7 @@ void CollectGroups(const WorldOutlinerModel& model, std::map<QByteArray, QModelI
 
 bool WorldModule::PrepareNavigationLeave() {
     if (dragStart_ || dragPosition_ || dragRotation_ || rotationOrigin_ || regionDraft_ || cameraDraft_
-        || strokeBase_ || !strokePoints_.empty() || pasting_ || placing_ || (viewport_ && viewport_->StrokeActive())) return false;
+        || strokeBase_ || waterCommit_ || !strokePoints_.empty() || pasting_ || placing_ || (viewport_ && viewport_->StrokeActive())) return false;
     if (inspectorBody_) for (const auto* edit : inspectorBody_->findChildren<QLineEdit*>())
         if ((edit->hasFocus() && edit->isModified()) || edit->property("worldEdited").toBool()) return false;
     if (inspectorBody_) for (const auto* spin : inspectorBody_->findChildren<QDoubleSpinBox*>())

@@ -31,6 +31,7 @@
 #include <QCheckBox>
 #include <QElapsedTimer>
 #include <QJsonArray>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLocale>
 #include <QPushButton>
@@ -1013,11 +1014,12 @@ void WorldModule::RefreshMapEdits() {
     if (!page_ || !viewport_) return;
     InvalidateWaterBrushCapture();
     RefreshAssetBrowser();
-    terrainPathingPending_ = project_.mapEdits_ && !project_.mapEdits_->VerifyTerrainPathingForSave().Succeeded();
-    if (terrainPathingWarning_) terrainPathingWarning_->setVisible(terrainPathingPending_);
     // push() 的首次 redo 不改动地图，只同步发出 indexChanged；最终地形已经在 FinishTerrainStroke
     // 排队。此时按钮为防止对旧完成帧下笔而暂时取消勾选，不能把它解释为用户退出笔刷。
+    // 本笔发布也已更新保存状态；这里不能在GUI再次扫描整份WPM。
     if (pushingTerrainStrokeUndo_) { RefreshPlacements(); return; }
+    terrainPathingPending_ = project_.mapEdits_ && !project_.mapEdits_->VerifyTerrainPathingForSave().Succeeded();
+    if (terrainPathingWarning_) terrainPathingWarning_->setVisible(terrainPathingPending_);
     if (RefreshEnvironment()) return;
     const auto source = project_.mapEdits_ ? project_.mapEdits_->Terrain() : nullptr;
     if (source && source != rawTerrain_) {
@@ -1350,6 +1352,12 @@ bool WorldModule::Reveal(const Shell::NavigationTarget& target) {
 }
 
 bool WorldModule::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == viewport_ && event->type() == QEvent::KeyPress && waterCommit_
+        && static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape) {
+        // 核验期间视口不在brushMode；它的普通Esc逻辑不知道这份待提交事务。
+        CancelTerrainStroke(); resumeBrushAfterRender_ = false;
+        event->accept(); return true;
+    }
     if (watched->objectName() == QStringLiteral("worldToolbar") &&
         (event->type() == QEvent::Resize || event->type() == QEvent::FontChange))
         QTimer::singleShot(0, this, &WorldModule::UpdateToolbarLayout);

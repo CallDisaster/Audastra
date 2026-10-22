@@ -457,15 +457,18 @@ void WorldModule::ConnectEditing() {
     connect(showRegions_, &QPushButton::toggled, this, &WorldModule::UpdateOverlay);
     connect(showCameras_, &QPushButton::toggled, this, &WorldModule::UpdateOverlay);
     connect(selectTool_, &QPushButton::clicked, this, [this] {
-        resumeBrushAfterRender_ = false; // 用户主动离开地形工具：渲染完成后不再恢复笔刷
         StopPlacing();
         terrainToggle_->setChecked(false);
+        // 松手核验期间按钮已暂时取消勾选，不能只依赖toggled(false)取消事务。
+        CancelTerrainStroke();
+        resumeBrushAfterRender_ = false;
         UpdateToolState();
     });
     connect(placeToggle_, &QPushButton::toggled, this, [this](bool shown) {
         if (shown) {
-            resumeBrushAfterRender_ = false;
             if (terrainToggle_->isChecked()) terrainToggle_->setChecked(false);
+            CancelTerrainStroke();
+            resumeBrushAfterRender_ = false;
         } else StopPlacing();
         UpdateToolState(); // 先切到摆放页：目录只在可见时填充
         if (shown) { RefreshAssetBrowser(); if (assetDock_) { assetDock_->show(); assetDock_->raise(); } assetBrowser_->setFocus(); }
