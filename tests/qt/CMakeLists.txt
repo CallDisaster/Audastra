@@ -589,8 +589,11 @@ set_tests_properties(qt-native-lua-code PROPERTIES TIMEOUT 40 ENVIRONMENT "QT_QP
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 target_link_libraries(war3-map-editor-project-tests PRIVATE War3MapEditor::QtProject Qt6::Test)
 target_compile_options(war3-map-editor-project-tests PRIVATE /W4 /permissive- /utf-8)
-add_test(NAME qt-editor-project COMMAND war3-map-editor-project-tests)
+set(editor_project_log "${CMAKE_CURRENT_BINARY_DIR}/qt-editor-project-$<CONFIG>.qtest.txt")
+add_test(NAME qt-editor-project COMMAND war3-map-editor-project-tests
+    -o -,txt -o "${editor_project_log},txt")
 set_tests_properties(qt-editor-project PROPERTIES TIMEOUT 30
+    ATTACHED_FILES_ON_FAIL "${editor_project_log}"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
 target_link_libraries(war3-map-qt-model-tests PRIVATE War3MapEditor::QtModuleTriggers War3MapEditor::QtModuleObjects)
