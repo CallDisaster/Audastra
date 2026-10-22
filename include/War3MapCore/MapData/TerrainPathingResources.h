@@ -26,6 +26,7 @@ public:
 
 private:
     TerrainPathingResources() = default;
+    [[nodiscard]] Status VerifyGameDependencies(std::size_t remainingBytes) const;
     struct Dependency {
         std::string name, sha256, gameArchive;
         std::size_t bytes = 0;
@@ -36,6 +37,7 @@ private:
     std::filesystem::path gameRoot_;
     std::uint8_t tileset_ = 0;
     std::size_t sourceBytes_ = 0;
+    std::size_t capturedMaximumBytes_ = 0;
     double waterOffset_ = 0, deepThreshold_ = 0;
     bool waterConfigured_ = false;
 };

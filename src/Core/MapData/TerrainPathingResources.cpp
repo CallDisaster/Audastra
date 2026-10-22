@@ -105,6 +105,7 @@ Result<TerrainPathingResources> TerrainPathingResources::Capture(const MapArchiv
     return Guard<TerrainPathingResources>([&] {
         TerrainPathingResources result;
         result.tileset_ = before.header.mainTileset;
+        result.capturedMaximumBytes_ = maximumBytes;
         if (!gameRoot.empty()) {
             std::error_code error;
             result.gameRoot_ = std::filesystem::absolute(gameRoot, error).lexically_normal();
@@ -122,11 +123,17 @@ Result<TerrainPathingResources> TerrainPathingResources::Capture(const MapArchiv
         ArchiveExactMemberLimits limits;
         limits.memberCount = names.size(); limits.memberBytes = std::min(kTableBytes, maximumBytes);
         limits.totalBytes = std::min(names.size() * kTableBytes, maximumBytes);
-        const auto captured = Take(source.CaptureExactMembers(names, limits));
+        auto captured = Take(source.CaptureExactMembers(names, limits));
+        // 地图成员已整批读入；游戏回退前必须扣除全部已保留的解码字节。
+        for (const auto& member : captured) {
+            if (member.bytes.size() > maximumBytes - result.sourceBytes_)
+                Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "通行表与配置超过保存计划剩余预算。");
+            result.sourceBytes_ += member.bytes.size();
+        }
         std::optional<Game::GameDataSource> game;
         Text::ProfileSections configuration;
         for (std::size_t i = 0; i < captured.size(); ++i) {
-            auto bytes = captured[i].bytes;
+            auto bytes = std::move(captured[i].bytes);
             Dependency dependency;
             dependency.name = Canonical(names[i]); dependency.mapPresent = captured[i].present;
             if (!dependency.mapPresent) {
@@ -134,9 +141,11 @@ Result<TerrainPathingResources> TerrainPathingResources::Capture(const MapArchiv
                 if (!game) game = Take(Game::GameDataSource::MountStrict(result.gameRoot_, result.tileset_));
                 auto file = Take(game->ReadFileBoundedWithSource(names[i], std::min(kTableBytes, maximumBytes - result.sourceBytes_)));
                 bytes = std::move(file.bytes); dependency.gameArchive = std::move(file.archiveName);
+                if (bytes.size() > maximumBytes - result.sourceBytes_)
+                    Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "通行表与配置超过保存计划剩余预算。");
+                result.sourceBytes_ += bytes.size();
             }
-            if (bytes.size() > maximumBytes - result.sourceBytes_) Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "通行表与配置超过保存计划剩余预算。");
-            result.sourceBytes_ += bytes.size(); dependency.bytes = bytes.size(); dependency.sha256 = Take(Sha256(bytes));
+            dependency.bytes = bytes.size(); dependency.sha256 = Take(Sha256(bytes));
             result.dependencies_.push_back(std::move(dependency));
             if (names[i] == "TerrainArt/Terrain.slk") {
                 const auto table = Table(names[i], "tileid", bytes);
@@ -197,7 +206,7 @@ bool TerrainPathingResources::EquivalentWater(const TerrainVertex& before, const
 Status TerrainPathingResources::VerifyFrozenOutput(std::span<const MemberReplacement> replacements,
     std::span<const std::string> removals) const {
     auto checked = Guard<bool>([&] {
-        std::optional<Game::GameDataSource> game;
+        auto remaining = capturedMaximumBytes_;
         for (const auto& dependency : dependencies_) {
             const MemberReplacement* replacement = nullptr;
             for (const auto& member : replacements) if (Canonical(member.name) == dependency.name) {
@@ -209,13 +218,10 @@ Status TerrainPathingResources::VerifyFrozenOutput(std::span<const MemberReplace
             if (replacement && (!dependency.mapPresent || replacement->data.size() != dependency.bytes
                 || Take(Sha256(replacement->data)) != dependency.sha256))
                 Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "最终通行输入与准备时不同：" + dependency.name);
-            if (dependency.mapPresent) continue;
-            if (!game) game = Take(Game::GameDataSource::MountStrict(gameRoot_, tileset_));
-            const auto actual = Take(game->ReadFileBoundedWithSource(dependency.name, dependency.bytes));
-            if (actual.archiveName != dependency.gameArchive || actual.bytes.size() != dependency.bytes
-                || Take(Sha256(actual.bytes)) != dependency.sha256)
-                Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "游戏通行输入的实际来源或内容已经改变：" + dependency.name);
+            if (dependency.mapPresent) remaining -= dependency.bytes;
         }
+        const auto game = VerifyGameDependencies(remaining);
+        if (!game.Succeeded()) throw Failure{game.diagnostics};
         return true;
     });
     return {std::move(checked.diagnostics)};
@@ -230,16 +236,37 @@ Status TerrainPathingResources::VerifyReadback(const MapArchiveSession& saved, s
         if (names.empty()) return true;
         ArchiveExactMemberLimits limits;
         limits.memberCount = names.size(); limits.memberBytes = std::min(kTableBytes, maximumBytes);
-        limits.totalBytes = sourceBytes_;
+        // 读取上限同时约束存储和解码大小；不能以解码长度代替调用者预算。
+        limits.totalBytes = maximumBytes;
         const auto actual = Take(saved.CaptureExactMembers(names, limits));
+        auto remaining = maximumBytes;
         for (std::size_t i = 0; i < actual.size(); ++i) {
             const auto& expected = dependencies_[i];
             if (actual[i].present != expected.mapPresent || (actual[i].present
                 && (actual[i].bytes.size() != expected.bytes || Take(Sha256(actual[i].bytes)) != expected.sha256)))
                 Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "保存回读的通行输入不同：" + expected.name);
+            remaining -= actual[i].bytes.size();
         }
-        const auto game = VerifyFrozenOutput({}, {});
+        const auto game = VerifyGameDependencies(remaining);
         if (!game.Succeeded()) throw Failure{game.diagnostics};
+        return true;
+    });
+    return {std::move(checked.diagnostics)};
+}
+
+Status TerrainPathingResources::VerifyGameDependencies(std::size_t remainingBytes) const {
+    auto checked = Guard<bool>([&] {
+        std::optional<Game::GameDataSource> game;
+        for (const auto& dependency : dependencies_) {
+            if (dependency.mapPresent) continue;
+            if (!game) game = Take(Game::GameDataSource::MountStrict(gameRoot_, tileset_));
+            const auto actual = Take(game->ReadFileBoundedWithSource(dependency.name,
+                std::min(kTableBytes, remainingBytes)));
+            if (actual.archiveName != dependency.gameArchive || actual.bytes.size() != dependency.bytes
+                || Take(Sha256(actual.bytes)) != dependency.sha256)
+                Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "游戏通行输入的实际来源或内容已经改变：" + dependency.name);
+            remainingBytes -= actual.bytes.size();
+        }
         return true;
     });
     return {std::move(checked.diagnostics)};

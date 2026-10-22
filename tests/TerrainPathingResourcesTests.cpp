@@ -2,6 +2,7 @@
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/Mpq/MpqArchive.h"
 
 #include <Windows.h>
 #include <algorithm>
@@ -216,6 +217,72 @@ void FinalResourcesAndGameWinnersAreRechecked() {
     Take(WriteVerifiedArchive(gameRoot / "war3patch.mpq", std::vector<MapArchiveMember>{{"TerrainArt/Terrain.slk", GroundTable()}}));
     Require(!gamePlan.VerifyFrozenOutput(gameSource.SourceSha256(), edits.Replacements()).Succeeded(), "same bytes in a changed winning game archive invalidate the input");
 }
+
+void StoredAndDecodedBudgetsShareTheCallerAllowance() {
+    const std::vector<std::string> names{"TerrainArt/Terrain.slk", "TerrainArt/Water.slk",
+        "UI/MiscData.txt", "UI/WorldEditData.txt"};
+    for (const int mapCount : {4, 0, 2}) {
+        Directory directory; Fixture fixture(true);
+        const auto resources = std::vector<MapArchiveMember>(fixture.members.begin() + 5, fixture.members.end());
+        fixture.members.resize(5);
+        // 混合例中前两项由游戏提供，后两项在地图中，覆盖整批地图先读入的计费顺序。
+        fixture.members.insert(fixture.members.end(), resources.end() - mapCount, resources.end());
+        const auto source = fixture.Write(directory.path / "source.w3x");
+        const auto gameRoot = directory.path / "game";
+        Require(std::filesystem::create_directory(gameRoot), "private game directory");
+        const auto gamePath = Take(WriteVerifiedArchive(gameRoot / "war3.mpq", resources)).path;
+        const auto map = Take(Mpq::MpqArchive::OpenReadOnly(source.SourcePath()));
+        const auto game = Take(Mpq::MpqArchive::OpenReadOnly(gamePath));
+        const auto tiny = game.GetFileInfo(names.back());
+        Require(tiny && tiny->compressedSize > tiny->fileSize, "fixture must include sector-table overhead");
+        std::size_t decoded = 0, minimumBudget = 0;
+        const auto account = [&](const Mpq::MpqFileInfo& file) {
+            minimumBudget = std::max(minimumBudget, decoded + std::max(file.fileSize, file.compressedSize));
+            decoded += file.fileSize;
+        };
+        for (const auto& name : names) if (const auto file = map.GetFileInfo(name)) account(*file);
+        for (const auto& name : names) if (!map.HasFile(name)) account(*game.GetFileInfo(name));
+        MapDataEditSession edits(MapDocument::FromMembers({})); fixture.Attach(edits);
+        fixture.Paint(edits); fixture.Water(edits, 80);
+        const auto captured = Take(TerrainPathingResources::Capture(source, fixture.grid, *edits.Terrain(), gameRoot, minimumBudget));
+        Require(captured.SourceBytes() == decoded, "decoded accounting must not include stored overhead or double-count map data");
+        Check(captured.VerifyFrozenOutput({}, {}));
+        Check(captured.VerifyReadback(source, minimumBudget));
+        Require(!TerrainPathingResources::Capture(source, fixture.grid, *edits.Terrain(), gameRoot, minimumBudget - 1).Succeeded(),
+            "one byte below the actual stored/decoded envelope must refuse");
+        Require(!captured.VerifyReadback(source, minimumBudget - 1).Succeeded(),
+            "readback must use the caller remaining budget across map and game");
+        Require(!captured.VerifyReadback(source, decoded - 1).Succeeded(), "cumulative decoded budget remains bounded");
+        if (mapCount == 0) {
+            Require(!captured.VerifyFrozenOutput(std::vector<MemberReplacement>{resources.front()}, {}).Succeeded(),
+                "new map override cannot reuse game-source equivalence even with identical bytes");
+            Take(WriteVerifiedArchive(gameRoot / "war3patch.mpq", resources));
+            Require(!captured.VerifyReadback(source, minimumBudget).Succeeded(), "readback must detect changed game winners");
+        } else if (mapCount == 4) {
+            const std::vector<MemberReplacement> duplicate{resources.front(), resources.front()};
+            Require(!captured.VerifyFrozenOutput(duplicate, {}).Succeeded(), "duplicate resource replacement must refuse");
+            Require(!captured.VerifyFrozenOutput({}, std::vector<std::string>{names.front()}).Succeeded(),
+                "removing a winning map dependency must refuse");
+        }
+    }
+
+    Directory directory; Fixture fixture(true);
+    auto invalidGround = GroundTable(); std::fill(invalidGround.begin(), invalidGround.end(), std::byte{'x'});
+    fixture.members.erase(fixture.members.begin() + 5);
+    const auto source = fixture.Write(directory.path / "mixed.w3x");
+    const auto gameRoot = directory.path / "game";
+    Require(std::filesystem::create_directory(gameRoot), "private mixed game directory");
+    Take(WriteVerifiedArchive(gameRoot / "war3.mpq", std::vector<MapArchiveMember>{{names.front(), invalidGround}}));
+    MapDataEditSession edits(MapDocument::FromMembers({})); fixture.Attach(edits);
+    fixture.Paint(edits); fixture.Water(edits, 80);
+    std::size_t mapBytes = 0;
+    for (std::size_t i = 5; i < fixture.members.size(); ++i) mapBytes += fixture.members[i].data.size();
+    const auto failed = TerrainPathingResources::Capture(source, fixture.grid, *edits.Terrain(), gameRoot,
+        mapBytes + invalidGround.size() - 1);
+    Require(!failed.Succeeded() && std::any_of(failed.diagnostics.begin(), failed.diagnostics.end(), [](const auto& d) {
+        return d.code == "FILE_READ_BUDGET_EXCEEDED";
+    }), "all already captured map bytes must be charged before reading or parsing the first game fallback");
+}
 } // namespace
 
 void CliffRefinementRequiresTheSameBlockingOutline() {
@@ -249,6 +316,7 @@ int main() {
         DifferentOrUnavailablePropertiesRefuse();
         WaterThresholdsUseDepthAndStrictCoverage();
         FinalResourcesAndGameWinnersAreRechecked();
+        StoredAndDecodedBudgetsShareTheCallerAllowance();
         CliffRefinementRequiresTheSameBlockingOutline();
         std::cout << "Terrain pathing resources tests passed\n";
         return 0;

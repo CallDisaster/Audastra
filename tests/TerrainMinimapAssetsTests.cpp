@@ -408,12 +408,22 @@ void TestBaselineAndCurrentRevision() {
     Fixture fixture; auto source = fixture.Source();
     auto original = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}));
     fixture.TextureVariation();
-    Require(!fixture.edits.VerifyTerrainPathingForSave().Succeeded(), "variation草稿仍应受共同save gate拒绝");
+    Require(fixture.edits.VerifyTerrainPathingForSave().Succeeded(), "地面低位变体不改变通行，应通过共同保存检查");
     auto current = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}));
     Require(current.Binding().originalTerrainSha256 == original.Binding().originalTerrainSha256
         && current.Binding().currentTerrainSha256 != original.Binding().currentTerrainSha256
         && current.Input().currentW3e != fixture.w3e && current.Binding().revision == fixture.edits.Revision(),
         "工厂须捕获当前真实未保存W3E，Prepare成功不能混成SaveGate已放行");
+    const auto plan = Take(TerrainSavePlan::Prepare(source, fixture.edits));
+    Require(plan.SaveGate().Succeeded()
+        && plan.VerifyForSave(fixture.edits, source.SourceSha256(), fixture.edits.Replacements()).Succeeded(),
+        "当前合法变体应通过来源与修订检查");
+    const auto saved = Take(source.SaveCandidate(fixture.directory.Path() / "variation.w3x", plan.Replacements()));
+    const auto readback = Take(MapArchiveSession::Open(saved.path));
+    Require(plan.VerifyReadback(readback).Succeeded()
+        && Take(readback.ReadMember("war3map.w3e")) == current.Input().currentW3e
+        && Take(readback.ReadMember("war3map.wpm")) == fixture.wpm,
+        "变体修改必须实际写入地图并独立回读，WPM逐字保留");
     Require(!VerifyTerrainMinimapAssetsCurrent(original, source, fixture.edits, {}).Succeeded(), "旧修订不能继续签收");
     Require(fixture.edits.Undo(), "撤销真实variation修改");
     Require(!VerifyTerrainMinimapAssetsCurrent(original, source, fixture.edits, {}).Succeeded(), "undo回相同字节也不能复活旧修订");
