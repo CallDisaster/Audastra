@@ -31,6 +31,9 @@ void Check(Status status) {
         throw std::runtime_error(message);
     }
 }
+bool HasCode(const std::vector<Diagnostic>& diagnostics, std::string_view code) {
+    return std::any_of(diagnostics.begin(), diagnostics.end(), [&](const auto& diagnostic) { return diagnostic.code == code; });
+}
 Bytes Text(std::string_view value) { return Bytes(reinterpret_cast<const std::byte*>(value.data()), reinterpret_cast<const std::byte*>(value.data() + value.size())); }
 
 class Directory {
@@ -87,6 +90,10 @@ struct Fixture {
     MapArchiveSession Write(const std::filesystem::path& path) const {
         return Take(MapArchiveSession::Open(Take(WriteVerifiedArchive(path, members)).path));
     }
+    void Palette(std::vector<std::string> ids) {
+        grid.header.groundTilesets = std::move(ids);
+        terrain = Take(SerializeMapTerrain(grid)); members[0].data = terrain;
+    }
     void Attach(MapDataEditSession& edits) const { Check(edits.AttachTerrain(terrain)); Check(edits.AttachPathing(pathing)); }
     void Paint(MapDataEditSession& edits, std::string texture = "Tg02") const {
         TerrainBrush brush; brush.kind = TerrainBrushKind::Texture; brush.radius = 0; brush.groundTexture = std::move(texture);
@@ -138,6 +145,116 @@ void PaletteReplacementAppendAndVariation() {
     const auto plan = Take(TerrainSavePlan::Prepare(source, edits)); Check(plan.SaveGate());
     auto output = edits.Replacements(); output.push_back({"war3map.w3b", Text("changed-definition")});
     Require(!plan.VerifyFrozenOutput(source.SourceSha256(), output).Succeeded(), "variation cannot smuggle changed static definitions");
+}
+
+void UnusedPaletteEntriesRequireValidMaterials() {
+    Directory directory;
+    for (const bool append : {false, true}) for (const bool invalidProperty : {false, true}) {
+        Fixture fixture;
+        fixture.Palette(append ? std::vector<std::string>{"Tg01"} : std::vector<std::string>{"Tg01", "Tg03"});
+        if (invalidProperty) fixture.members.back().data = GroundTable("2");
+        const auto name = std::string(append ? "append-" : "replace-") + (invalidProperty ? "invalid" : "missing");
+        const auto source = fixture.Write(directory.path / (name + ".w3x"));
+        MapDataEditSession edits(MapDocument::FromMembers({})); fixture.Attach(edits);
+        Take(edits.EditTerrainTextureSlot(TerrainTextureTable::Ground, 1, invalidProperty ? "Tg02" : "ZZZZ"));
+        const auto plan = TerrainSavePlan::PrepareForSave(source, edits, {});
+        Require(!plan.Succeeded() && HasCode(plan.diagnostics, invalidProperty
+            ? "TERRAIN_PATHING_PROPERTY_INVALID" : "TERRAIN_PATHING_PROPERTY_MISSING"),
+            "unused new slots require real, valid material properties");
+        Require(Take(source.ReadMember("war3map.w3e")) == fixture.terrain, "rejected palette leaves source unchanged");
+    }
+}
+
+void UnusedKnownPaletteEntriesSaveWithoutChangingPathing() {
+    Directory directory;
+    const std::vector<std::vector<std::string>> palettes{{"Tg01"}, {"Tg01", "Tg02"}, {"Tg01", "ZZZZ"}};
+    unsigned index = 0;
+    for (const auto& palette : palettes) {
+        Fixture fixture; fixture.Palette(palette);
+        const auto name = std::to_string(index++);
+        const auto source = fixture.Write(directory.path / (name + ".w3x"));
+        MapDataEditSession edits(MapDocument::FromMembers({})); fixture.Attach(edits);
+        Take(edits.EditTerrainTextureSlot(TerrainTextureTable::Ground, 1, "Tg03"));
+        const auto plan = Take(TerrainSavePlan::PrepareForSave(source, edits, {})); Check(plan.SaveGate());
+        Check(plan.VerifyForSave(edits, source.SourceSha256(), edits.Replacements()));
+        const auto saved = Take(MapArchiveSession::Open(Take(source.SaveCandidate(
+            directory.path / (name + "-saved.w3x"), plan.Replacements())).path));
+        Check(plan.VerifyReadback(saved));
+        Require(Take(saved.ReadMember("war3map.w3e")) == Take(SerializeMapTerrain(*edits.Terrain())),
+            "unused palette change reaches the saved terrain");
+        Require(Take(saved.ReadMember("war3map.wpm")) == fixture.pathing,
+            "different properties in an unused slot preserve every original pathing byte");
+        Require(Take(source.ReadMember("war3map.w3e")) == fixture.terrain, "palette save leaves source unchanged");
+    }
+}
+
+void UnusedPaletteDependenciesRemainBound() {
+    Directory directory;
+    for (const bool fromGame : {false, true}) {
+        Fixture fixture; fixture.Palette({"Tg01", "Tg03"});
+        const auto gameRoot = directory.path / "game";
+        if (fromGame) {
+            fixture.members.pop_back();
+            Require(std::filesystem::create_directory(gameRoot), "private palette game directory");
+            Take(WriteVerifiedArchive(gameRoot / "war3.mpq", std::vector<MapArchiveMember>{{"TerrainArt/Terrain.slk", GroundTable()}}));
+        }
+        const auto name = std::string(fromGame ? "game" : "map");
+        const auto source = fixture.Write(directory.path / (name + ".w3x"));
+        MapDataEditSession edits(MapDocument::FromMembers({})); fixture.Attach(edits);
+        Take(edits.EditTerrainTextureSlot(TerrainTextureTable::Ground, 1, "Tg02"));
+        const auto plan = Take(TerrainSavePlan::PrepareForSave(source, edits, fromGame ? gameRoot : std::filesystem::path{}));
+        Check(plan.SaveGate()); Check(plan.VerifyForSave(edits, source.SourceSha256(), edits.Replacements()));
+        const auto saved = Take(MapArchiveSession::Open(Take(source.SaveCandidate(
+            directory.path / (name + "-saved.w3x"), plan.Replacements())).path));
+        Check(plan.VerifyReadback(saved));
+        if (fromGame) {
+            Take(WriteVerifiedArchive(gameRoot / "war3patch.mpq", std::vector<MapArchiveMember>{{"TerrainArt/Terrain.slk", GroundTable()}}));
+            const auto frozen = plan.VerifyForSave(edits, source.SourceSha256(), edits.Replacements());
+            const auto readback = plan.VerifyReadback(saved);
+            Require(!frozen.Succeeded() && HasCode(frozen.diagnostics, "TERRAIN_PATHING_RESOURCE_CHANGED")
+                && !readback.Succeeded() && HasCode(readback.diagnostics, "TERRAIN_PATHING_RESOURCE_CHANGED"),
+                "same-byte winner change invalidates unused palette capture before save and at readback");
+        } else {
+            std::vector<MemberReplacement> altered(plan.Replacements().begin(), plan.Replacements().end());
+            altered.push_back({"TerrainArt\\Terrain.slk", GroundTable("0")});
+            const auto replaced = Take(MapArchiveSession::Open(Take(source.SaveCandidate(
+                directory.path / "table-replaced.w3x", altered)).path));
+            const auto replacementCheck = plan.VerifyReadback(replaced);
+            Require(!replacementCheck.Succeeded() && HasCode(replacementCheck.diagnostics, "TERRAIN_PATHING_RESOURCE_CHANGED"),
+                "independent readback detects changed unused palette material table");
+            const std::vector<std::string> removed{"TerrainArt/Terrain.slk"};
+            const auto missing = Take(MapArchiveSession::Open(Take(source.SaveCandidate(
+                directory.path / "table-removed.w3x", plan.Replacements(), removed)).path));
+            const auto removalCheck = plan.VerifyReadback(missing);
+            Require(!removalCheck.Succeeded() && HasCode(removalCheck.diagnostics, "TERRAIN_PATHING_RESOURCE_CHANGED"),
+                "independent readback detects removed unused palette material table");
+        }
+    }
+}
+
+void UnresolvedGroundIndicesCannotChangeThroughPaletteEdits() {
+    Directory directory; Fixture fixture;
+    fixture.grid.vertices[40].textureAndFlagsRaw = 14;
+    fixture.Palette({"Tg01"});
+    const auto source = fixture.Write(directory.path / "unresolved.w3x");
+    for (const bool changeIndex : {false, true}) {
+        MapDataEditSession edits(MapDocument::FromMembers({})); fixture.Attach(edits);
+        Take(edits.EditTerrainTextureSlot(TerrainTextureTable::Ground, 1, "Tg02"));
+        if (changeIndex) {
+            auto current = *edits.Terrain(); current.vertices[40].textureAndFlagsRaw = 15;
+            Check(edits.SetTerrain(Take(SerializeMapTerrain(current))));
+        }
+        const auto plan = Take(TerrainSavePlan::PrepareForSave(source, edits, {}));
+        Require(plan.SaveGate().Succeeded() != changeIndex,
+            "an unchanged historical unresolved index survives; changing one unresolved index to another must refuse");
+        if (!changeIndex) {
+            Check(plan.VerifyForSave(edits, source.SourceSha256(), edits.Replacements()));
+            const auto saved = Take(MapArchiveSession::Open(Take(source.SaveCandidate(
+                directory.path / "unresolved-preserved.w3x", plan.Replacements())).path));
+            Check(plan.VerifyReadback(saved));
+            Require(Take(saved.ReadMember("war3map.wpm")) == fixture.pathing, "unknown historical index does not alter pathing");
+        }
+    }
 }
 
 void DifferentOrUnavailablePropertiesRefuse() {
@@ -313,6 +430,10 @@ int main() {
     try {
         EqualMaterialsSaveRealArchiveWithoutChangingPathing();
         PaletteReplacementAppendAndVariation();
+        UnusedPaletteEntriesRequireValidMaterials();
+        UnusedKnownPaletteEntriesSaveWithoutChangingPathing();
+        UnusedPaletteDependenciesRemainBound();
+        UnresolvedGroundIndicesCannotChangeThroughPaletteEdits();
         DifferentOrUnavailablePropertiesRefuse();
         WaterThresholdsUseDepthAndStrictCoverage();
         FinalResourcesAndGameWinnersAreRechecked();

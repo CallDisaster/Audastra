@@ -47,6 +47,12 @@ struct Needs {
 Needs Required(const TerrainGridSnapshot& before, const TerrainGridSnapshot& after) {
     Needs needs;
     if (before.vertices.size() != after.vertices.size()) return needs;
+    // 未使用的新槽位也必须存在于真实资源表；未使用的旧槽位不参与通行等价比较。
+    for (std::size_t i = 0; i < after.header.groundTilesets.size(); ++i) {
+        if (i >= before.header.groundTilesets.size()
+            || after.header.groundTilesets[i] != before.header.groundTilesets[i])
+            needs.ground.insert(after.header.groundTilesets[i]);
+    }
     for (std::size_t i = 0; i < before.vertices.size(); ++i) {
         const auto& a = before.vertices[i]; const auto& b = after.vertices[i];
         const auto oldGround = Ground(before.header, a), newGround = Ground(after.header, b);

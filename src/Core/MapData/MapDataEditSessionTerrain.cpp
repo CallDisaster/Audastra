@@ -578,6 +578,8 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
                 ? std::string_view(header.groundTilesets[vertex.GroundTextureIndex()]) : std::string_view{};
         };
         const auto oldGround = ground(oldHeader, before), newGround = ground(newHeader, after);
+        if (before.GroundTextureIndex() != after.GroundTextureIndex() && (oldGround.empty() || newGround.empty()))
+            return reject("地面贴图索引越界，无法确认修改前后的通行属性；未修改的历史索引可原样保留");
         if (oldGround != newGround && (!resources || !resources->EquivalentGround(oldGround, newGround)))
             return reject("旧/新地面贴图的实际 walkable、flyable、buildable 属性不同或缺少可信来源，不能保留原 WPM");
         invariantChanged = invariantChanged || before.variationRaw != after.variationRaw
