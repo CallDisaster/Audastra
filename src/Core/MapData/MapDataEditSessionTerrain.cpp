@@ -417,11 +417,34 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
     auto next = std::make_shared<TerrainGridSnapshot>(*terrain_);
     auto stroke = ApplyTerrainStroke(*next, brush, points);
     if (!stroke.Succeeded() || !stroke.value) return {{}, std::move(stroke.diagnostics)};
-    const auto& changed = *stroke.value;
+    const bool shaping = brush.kind == TerrainBrushKind::Raise || brush.kind == TerrainBrushKind::Lower
+        || brush.kind == TerrainBrushKind::Plateau || brush.kind == TerrainBrushKind::Smooth
+        || brush.kind == TerrainBrushKind::CliffLevel || brush.kind == TerrainBrushKind::Noise
+        || brush.kind == TerrainBrushKind::Ramp;
+    auto prepared = PrepareTerrainCandidate(std::move(next), *stroke.value, points, followDoodads,
+        shaping, brush.kind == TerrainBrushKind::Blight, inspectSaveGate);
+    if (prepared.value) prepared.value->brush_ = brush;
+    return prepared;
+}
+
+Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerrainCandidate(
+    std::shared_ptr<const TerrainGridSnapshot> next, const TerrainStrokeResult& changed,
+    std::span<const TerrainStrokePoint> points, bool followDoodads, bool shaping,
+    bool synchronizeBlight, bool inspectSaveGate, DoodadPlacements* parsedDoodads) const {
     Command command;
     if (!changed.Empty()) command.terrain = DiffChunks<TerrainChunk>(*terrain_, *next, changed.x0, changed.y0, changed.x1, changed.y1);
     if (changed.headerChanged) { command.headerBefore = terrain_->header; command.headerAfter = next->header; }
-    if (brush.kind == TerrainBrushKind::Blight && !changed.Empty()) {
+    bool blightChanged = false;
+    if (synchronizeBlight) {
+        for (auto y = changed.y0; y < changed.y1 && !blightChanged; ++y)
+            for (auto x = changed.x0; x < changed.x1 && !blightChanged; ++x) {
+                const auto index = static_cast<std::size_t>(y) * terrain_->header.width + x;
+                blightChanged = terrain_->vertices[index].IsBlight() != next->vertices[index].IsBlight();
+            }
+    }
+    if (blightChanged) {
+        if (!pathing_) return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "MAP_PATHING_UNAVAILABLE",
+            "本笔改变了荒芜，但缺少可解析的源WPM，不能提交失配的地形。");
         auto patched = PatchBlightPathing(*terrain_, *next, changed, *pathing_);
         if (!patched.Succeeded() || !patched.value) {
             Result<PreparedTerrainEdit> failed;
@@ -433,10 +456,6 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
             command.pathingAfter = std::move(*patched.value);
         }
     }
-    const bool shaping = brush.kind == TerrainBrushKind::Raise || brush.kind == TerrainBrushKind::Lower
-        || brush.kind == TerrainBrushKind::Plateau || brush.kind == TerrainBrushKind::Smooth
-        || brush.kind == TerrainBrushKind::CliffLevel || brush.kind == TerrainBrushKind::Noise
-        || brush.kind == TerrainBrushKind::Ramp;
     const auto& doodadBytes = current_[Index(MapDataKind::Doodads)];
     const auto& unitBytes = current_[Index(MapDataKind::Units)];
     if (followDoodads && shaping && !command.terrain.empty()) {
@@ -473,14 +492,19 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
             lineage.push_back(std::move(map));
         };
         if (doodadBytes) {
-            auto doodads = ParseDoodadPlacements(*doodadBytes);
-            if (!doodads.Succeeded() || !doodads.value)
-                return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "MAP_DOODADS_UNSAFE",
-                    "装饰物放置无法解析，不能让装饰物随地面高度变化");
-            if (follow(doodads.value->doodads)) {
-                if (const auto status = Prepare(MapDataKind::Doodads, doodads.value->Serialize(), command.changes); !status.Succeeded())
+            std::optional<DoodadPlacements> ownedDoodads;
+            if (!parsedDoodads) {
+                auto parsed = ParseDoodadPlacements(*doodadBytes);
+                if (!parsed.Succeeded() || !parsed.value)
+                    return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "MAP_DOODADS_UNSAFE",
+                        "装饰物放置无法解析，不能让装饰物随地面高度变化");
+                ownedDoodads = std::move(*parsed.value);
+                parsedDoodads = &*ownedDoodads;
+            }
+            if (follow(parsedDoodads->doodads)) {
+                if (const auto status = Prepare(MapDataKind::Doodads, parsedDoodads->Serialize(), command.changes); !status.Succeeded())
                     return fail(status.diagnostics);
-                keepRows(MapDataKind::Doodads, doodads.value->doodads.size());
+                keepRows(MapDataKind::Doodads, parsedDoodads->doodads.size());
             }
         }
         // 单位与物品同在 war3mapUnits.doo；原版 WE 改地形时它们也随地面升降，不能被埋进地里或悬空。
@@ -513,7 +537,6 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
         command.pathingAfter ? command.pathingAfter : pathing_,
         doodadChange == command.changes.end() ? doodadBytes : doodadChange->after, nullptr, nullptr, &candidateUnits)
         : Status::Failure("MapData.Edit", "TERRAIN_SAVE_GATE_NOT_INSPECTED", "此落笔尚未检查地形保存资格。");
-    prepared.brush_ = brush;
     prepared.points_.assign(points.begin(), points.end());
     prepared.followDoodads_ = followDoodads;
     prepared.command_ = std::make_shared<const Command>(std::move(command));
@@ -649,10 +672,12 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
         const auto& after = terrain->vertices[index];
         const bool waterChanged = before.waterHeightAndFlagsRaw != after.waterHeightAndFlagsRaw;
         const bool cliffChanged = before.CliffLevel() != after.CliffLevel();
+        const bool cliffVariationChanged = before.CliffVariation() != after.CliffVariation();
+        const bool cliffTextureChanged = before.CliffTextureIndex() != after.CliffTextureIndex();
         if ((waterChanged && ((!resources && !nativeRebuild) || ((before.waterHeightAndFlagsRaw ^ after.waterHeightAndFlagsRaw) & 0xc000) != 0))
-            || ((before.variationRaw ^ after.variationRaw) & 0xe0) != 0
+            || (cliffVariationChanged && !nativeRebuild)
             || (before.cliffAndLayerRaw != after.cliffAndLayerRaw && ((!resources && !nativeRebuild)
-                || ((before.cliffAndLayerRaw ^ after.cliffAndLayerRaw) & 0xf0) != 0))
+                || (cliffTextureChanged && !nativeRebuild)))
             || ((before.textureAndFlagsRaw ^ after.textureAndFlagsRaw)
                 & ~(kBlightBit | ((resources || nativeRebuild) ? 0x0f : 0) | (nativeRebuild ? 0x40 : 0))) != 0)
             return reject("地形修改包含尚未验证的悬崖、坡道、水标志或边界变化，不能保留原 WPM");
@@ -668,6 +693,14 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
         if (nativeRebuild) {
             // 此内部路径仅跳过“原通行必须不变”的比较；正式计划仍须用真实规则
             // 对完整旧/新输入重算，并逐格核对旧WPM。普通公开保存门不走此分支。
+            // 水刷会从既有悬崖表选槽并生成0..2变体；未知旧变体不能借覆盖清除后获准保存。
+            // 资源owner另核对CliffTypes的真实旧/新行，不能单凭槽位合法授予规则来源。
+            if ((cliffChanged || cliffTextureChanged || cliffVariationChanged)
+                && (before.CliffVariation() > 2 || after.CliffVariation() > 2
+                    || before.CliffTextureIndex() >= oldHeader.cliffTilesets.size()
+                    || after.CliffTextureIndex() >= newHeader.cliffTilesets.size()
+                    || before.CliffTextureIndex() >= 15 || after.CliffTextureIndex() >= 15))
+                return reject("悬崖修改需要旧新均为既有有效槽和0到2变体，未知旧值不能改写为已验证形态");
             if (before.groundHeightRaw != after.groundHeightRaw
                 && ((before.groundHeightRaw | after.groundHeightRaw) & 0xc000) != 0)
                 return reject("高度修改超出现有14位可写范围，未知wire高度位必须原样保留");
