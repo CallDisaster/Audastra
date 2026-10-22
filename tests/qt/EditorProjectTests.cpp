@@ -334,7 +334,9 @@ std::unique_ptr<MapSaveJob> FreezeNativePathingQtJob(EditorProject& project, con
     job->target = target; job->minimapChoice = minimap;
     job->replacements = project.mapEdits_->Replacements(); job->removals = project.mapEdits_->Removals();
     job->terrainDerivationRequired = MapData::TerrainSavePlan::HasTerrainChanges(*project.mapEdits_);
-    job->pathingRestrictionDraft = std::make_shared<const std::vector<std::byte>>(*draft.value);
+    // 与生产Prepare一致：没有意图层时不传声明；显式传入的空声明仍由worker拒绝。
+    if (!draft.value->empty())
+        job->pathingRestrictionDraft = std::make_shared<const std::vector<std::byte>>(*draft.value);
     job->preparedRevision = MapSaveRevisionBinding{project.editRevision_.Generation(), project.editRevision_.Revision(),
         project.editRevision_.Current(), project.luaMapTargetGeneration_};
     return job;
@@ -1364,6 +1366,7 @@ void EditorProjectTests::NativePathingWorkerRebuildsAndRebinds() {
     auto job = FreezeNativePathingQtJob(project,
         mode == 1 ? source : std::filesystem::path(root.filePath("deep.w3x").toStdWString()), minimap);
     QVERIFY(job && job->terrainDerivationRequired && !job->terrainSavePlan);
+    QVERIFY(!job->pathingRestrictionDraft); // 单纯水深修改没有本工程额外通行限制。
     if (mode == 1) {
         job->inPlace = true;
         job->inPlaceOptions.backupDirectory = std::filesystem::path(root.filePath("backups").toStdWString());
@@ -1432,6 +1435,7 @@ void EditorProjectTests::NativePathingWorkerPreflightAndFailure_data() {
     QTest::newRow("preflight-executes-final-derivation") << QStringLiteral("preflight");
     QTest::newRow("missing-pathing-rule-is-not-minimap-fallback") << QStringLiteral("missing-rule");
     QTest::newRow("special-pathing-is-not-minimap-fallback") << QStringLiteral("special");
+    QTest::newRow("empty-pathing-declaration-is-rejected") << QStringLiteral("empty-declaration");
     QTest::newRow("late-edit-rejects-front-state-commit") << QStringLiteral("late-edit");
     QTest::newRow("missing-readback-rejects-front-state-commit") << QStringLiteral("missing-readback");
 }
@@ -1456,10 +1460,16 @@ void EditorProjectTests::NativePathingWorkerPreflightAndFailure() {
     QVERIFY(DeepenNativePathingQtProject(project));
     const auto sessionIdentity = project.mapEdits_->SessionIdentity();
     const auto sourceRevision = project.mapEdits_->TerrainSourceRevision();
+    const auto editRevision = project.mapEdits_->Revision();
+    const auto commandIdentity = project.mapEdits_->LastEdit().CommandIdentity();
+    const auto terrainBefore = MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()); QVERIFY(terrainBefore.Succeeded());
     const auto baseline = project.editRevision_.Baseline(EditSaveTarget::Map); QVERIFY(baseline);
-    const auto minimap = scenario == "missing-rule" || scenario == "special"
+    const bool rejectsBeforeWrite = scenario == "missing-rule" || scenario == "special" || scenario == "empty-declaration";
+    const auto minimap = rejectsBeforeWrite
         ? Services::TerrainMinimapSaveChoice::Automatic : Services::TerrainMinimapSaveChoice::Preserve;
     auto job = FreezeNativePathingQtJob(project, target, minimap); QVERIFY(job);
+    if (scenario == "empty-declaration")
+        job->pathingRestrictionDraft = std::make_shared<const std::vector<std::byte>>();
     InstallMapSaveDerivedPreparation(*job);
     if (scenario == "preflight") {
         const auto checked = Services::MapSaveService::Preflight(*job);
@@ -1468,10 +1478,12 @@ void EditorProjectTests::NativePathingWorkerPreflightAndFailure() {
         QVERIFY(!job->nextSession && !job->terrainReadbackStatus && !std::filesystem::exists(target));
     } else {
         EditorProject::RunMapSave(*job);
-        if (scenario == "missing-rule" || scenario == "special") {
+        if (rejectsBeforeWrite) {
             QVERIFY(!job->succeeded && !job->minimapPreserve && !std::filesystem::exists(target));
             QVERIFY(!HasReadDiagnostic(*job, "MINIMAP_GENERATION_SKIPPED"));
-            QVERIFY(HasReadDiagnostic(*job, scenario == "special" ? "TERRAIN_NATIVE_SPECIAL_UNSUPPORTED" : "TERRAIN_PATHING_RESOURCE_MISSING"));
+            const auto code = scenario == "empty-declaration" ? "PATHING_DRAFT_MISSING"
+                : scenario == "special" ? "TERRAIN_NATIVE_SPECIAL_UNSUPPORTED" : "TERRAIN_PATHING_RESOURCE_MISSING";
+            QVERIFY(HasReadDiagnostic(*job, code));
             QVERIFY(!project.CommitMapSave(*job));
         } else {
             QVERIFY2(job->succeeded, job->diagnostics.empty() ? "worker failed" : job->diagnostics.back().message.c_str());
@@ -1487,6 +1499,11 @@ void EditorProjectTests::NativePathingWorkerPreflightAndFailure() {
     QCOMPARE(project.mapEdits_->InspectTerrainPoint({512, 512}).value->pathingFlags, 0x19);
     QCOMPARE(project.mapEdits_->InspectTerrainPoint({512, 512}).value->originalPathingFlags, 0x19);
     QCOMPARE(project.editRevision_.Baseline(EditSaveTarget::Map)->scopes, baseline->scopes);
+    if (scenario != "late-edit") {
+        QCOMPARE(project.mapEdits_->Revision(), editRevision);
+        QCOMPARE(project.mapEdits_->LastEdit().CommandIdentity(), commandIdentity);
+        QCOMPARE(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, terrainBefore.value);
+    }
     QVERIFY(project.HasUnsavedMapChanges() && project.mapEdits_->CanUndo());
     QCOMPARE(Sha256File(source).value, sourceSha.value);
 }
@@ -1773,7 +1790,7 @@ void EditorProjectTests::MissingMinimapWorkerReadbackGatesCommit() {
     QThread* generationThread = nullptr;
     job->beforePublish = [&previousCalls] { ++previousCalls; return Status::Ok(); };
     job->progress = [&](const QString& text) {
-        if (text == EditorProject::tr("正在生成缺失的地形小地图…")) { generationThread = QThread::currentThread(); ++generateCalls; }
+        if (text == EditorProject::tr("正在更新地形通行与小地图…")) { generationThread = QThread::currentThread(); ++generateCalls; }
     };
     std::unique_ptr<QThread> worker(QThread::create([task = job.get()] { EditorProject::RunMapSave(*task); }));
     worker->start();
@@ -1892,7 +1909,7 @@ void EditorProjectTests::DeclaredMissingMinimapWorkerReadbackGatesCommit() {
     std::atomic<unsigned> previousCalls{0}, generateCalls{0}; QThread* generationThread = nullptr;
     job->beforePublish = [&previousCalls] { ++previousCalls; return Status::Ok(); };
     job->progress = [&](const QString& text) {
-        if (text == EditorProject::tr("正在生成缺失的地形小地图…")) { generationThread = QThread::currentThread(); ++generateCalls; }
+        if (text == EditorProject::tr("正在更新地形通行与小地图…")) { generationThread = QThread::currentThread(); ++generateCalls; }
     };
     std::unique_ptr<QThread> worker(QThread::create([task = job.get()] { EditorProject::RunMapSave(*task); }));
     worker->start(); const auto finished = worker->wait(60000);
