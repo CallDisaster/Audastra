@@ -1031,7 +1031,8 @@ void WorldModule::PublishTerrainStrokeResult(Result<MapData::TerrainStrokeResult
     if (pathing) UpdateOverlay();
     else QueueTerrainRender(next, false);
     if (project_.mapEdits_->Revision() == before) return; // 未改变字节，不生成空撤销项。
-    terrainPathingPending_ = !project_.mapEdits_->VerifyTerrainPathingForSave().Succeeded();
+    // 水刷Prepare刻意不检查保存资格；实际保存统一重建native通行，GUI不做必失败的全图等价扫描。
+    terrainPathingPending_ = water || !project_.mapEdits_->VerifyTerrainPathingForSave().Succeeded();
     UpdateStatusIndicators();
     (void)project_.ObserveMapDataEdit("修改地形");
     pushingTerrainStrokeUndo_ = true;

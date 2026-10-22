@@ -3654,9 +3654,11 @@ void WorldModuleTests::TerrainWaterBrushRejectsChangedGameResources() {
 
 void WorldModuleTests::TerrainWaterBrushDropsCancelledCommit_data() {
     QTest::addColumn<int>("mode");
-    QTest::newRow("cancel-pending-commit") << 0;
-    QTest::newRow("refresh-pending-commit") << 1;
-    QTest::newRow("switch-map-pending-commit") << 2;
+    QTest::newRow("escape-pending-commit") << 0;
+    QTest::newRow("select-tool-pending-commit") << 1;
+    QTest::newRow("place-tool-pending-commit") << 2;
+    QTest::newRow("refresh-pending-commit") << 3;
+    QTest::newRow("switch-map-pending-commit") << 4;
 }
 
 void WorldModuleTests::TerrainWaterBrushDropsCancelledCommit() {
@@ -3670,8 +3672,10 @@ void WorldModuleTests::TerrainWaterBrushDropsCancelledCommit() {
     page->resize(900, 600); page->show(); QTRY_COMPARE(viewport->VertexCount(), std::size_t{81});
     auto* brush = page->findChild<QToolButton*>("worldTerrainBrushShallowWater");
     auto* toggle = page->findChild<QPushButton*>("worldTerrainToggle");
+    auto* select = page->findChild<QPushButton*>("worldSelectTool");
+    auto* place = page->findChild<QPushButton*>("worldPlaceToggle");
     auto* status = page->findChild<QLabel*>("worldTerrainWaterBrushStatus");
-    QVERIFY(brush && toggle && status); brush->click();
+    QVERIFY(brush && toggle && select && place && status); brush->click();
     QTRY_VERIFY(status->property("ready").toBool()); toggle->click();
     const auto original = Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
     const auto frame = viewport->DocumentRevision();
@@ -3680,9 +3684,12 @@ void WorldModuleTests::TerrainWaterBrushDropsCancelledCommit() {
     // 预览已完成，松手启动后台复核；在允许回调执行前取消或切图。
     viewport->TerrainStrokeFinished();
     QVERIFY(!toggle->isEnabled());
-    if (mode == 0) viewport->TerrainStrokeCancelled();
+    QVERIFY(!module.PrepareNavigationLeave());
+    if (mode == 0) QTest::keyClick(viewport, Qt::Key_Escape);
+    else if (mode == 1) QTest::mouseClick(select, Qt::LeftButton);
+    else if (mode == 2) QTest::mouseClick(place, Qt::LeftButton);
     else {
-        if (mode == 2)
+        if (mode == 4)
             Tests::InstallTerrainWaterProject(project, replacement.path().toStdWString(), false);
         module.Refresh();
     }
@@ -3694,6 +3701,8 @@ void WorldModuleTests::TerrainWaterBrushDropsCancelledCommit() {
     QCOMPARE(project.mapDataUndoStack_->count(), 0);
     QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), original);
     QVERIFY(!toggle->isChecked());
+    QCOMPARE(place->isChecked(), mode == 2);
+    QVERIFY(module.PrepareNavigationLeave());
 }
 
 void WorldModuleTests::TerrainBrushUsesSharedTransactionAndUndo() {
