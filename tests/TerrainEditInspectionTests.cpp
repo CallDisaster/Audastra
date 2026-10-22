@@ -280,6 +280,49 @@ void RestrictionInspectionProvesBytesWithoutGrantingSaveEligibility() {
         "all read-only inspection and synthetic session rebases leave the source archive untouched");
 }
 
+void OverlappingIntentSnapshotsShareOwnershipAndBudget() {
+    TempDirectory directory;
+    const auto members = Members();
+    auto source = WriteSource(directory.Path() / "intent-inspection.w3x", members);
+    std::optional<TerrainEditInspection> retained;
+    {
+        MapDataEditSession edits(MapDocument::FromArchive(source));
+        Attach(edits, members);
+        const auto ordinary = Take(CaptureTerrainEditInspection(source, edits));
+        Require(!ordinary.PathingRestrictionIntent(), "zero A needs no retained intent owner");
+        const auto terrain = edits.Terrain();
+        TerrainBrush brush; brush.kind = TerrainBrushKind::PathingRestriction; brush.size = 1; brush.pathingRestrictions = 2;
+        const TerrainStrokePoint point{80, 16}; // cell2源0x1a已经包含不可走。
+        (void)Take(edits.EditTerrain(brush, std::span(&point, 1), false));
+        const auto first = Take(CaptureTerrainEditInspection(source, edits));
+        const auto repeated = Take(CaptureTerrainEditInspection(source, edits));
+        Require(first.PathingRestrictionIntent() && first.PathingRestrictionIntent() == repeated.PathingRestrictionIntent(),
+            "unchanged captures share the same immutable A owner");
+        Require(first.Members()[0].current == first.Members()[0].original
+            && first.Members()[1].current == first.Members()[1].original && edits.Terrain() == terrain
+            && edits.Replacements().empty(), "A-only does not duplicate terrain or native WPM output");
+        const auto exact = ordinary.OwnedBytes() + members[1].data.size() - 16;
+        Require(first.OwnedBytes() == exact && Take(CaptureTerrainEditInspection(source, edits, {exact})).OwnedBytes() == exact,
+            "existing inspection budget charges the retained shared A once");
+        Rejected(CaptureTerrainEditInspection(source, edits, {exact - 1}), "TERRAIN_EDIT_INSPECTION_BUDGET");
+        Require(first.TerrainPathingGate().Succeeded() && Take(first.PathingPreservation()).Kind() == PathingPreservationKind::PreserveExact
+            && Take(first.PathingPreservation()).ChangedCells() == 0, "intent overlap grants no new native permission");
+        const TerrainStrokePoint secondPoint{112, 16};
+        (void)Take(edits.EditTerrain(brush, std::span(&secondPoint, 1), false));
+        const auto second = Take(CaptureTerrainEditInspection(source, edits));
+        Require(second.PathingRestrictionIntent() != first.PathingRestrictionIntent()
+            && (*first.PathingRestrictionIntent())[2] == std::byte{2} && (*first.PathingRestrictionIntent())[3] == std::byte{0}
+            && (*second.PathingRestrictionIntent())[3] == std::byte{2}, "later edit cannot mutate an older shared snapshot");
+        Require(edits.Undo() && Take(CaptureTerrainEditInspection(source, edits)).PathingRestrictionIntent() == first.PathingRestrictionIntent(),
+            "undo restores the identical first A owner");
+        Require(edits.Redo() && Take(CaptureTerrainEditInspection(source, edits)).PathingRestrictionIntent() == second.PathingRestrictionIntent(),
+            "redo restores the identical second A owner");
+        retained.emplace(first);
+    }
+    Require(retained->PathingRestrictionIntent() && (*retained->PathingRestrictionIntent())[2] == std::byte{2},
+        "inspection retains immutable A after the editing session is destroyed");
+}
+
 void FullRawTerrainAndPathingBaselinesMustMatch() {
     TempDirectory directory;
     const auto members = Members();
@@ -561,6 +604,7 @@ int main() {
         BaselineAndUndoCaptureAreReadOnly();
         AcceptedAndRejectedTerrainRemainInspectable();
         RestrictionInspectionProvesBytesWithoutGrantingSaveEligibility();
+        OverlappingIntentSnapshotsShareOwnershipAndBudget();
         FullRawTerrainAndPathingBaselinesMustMatch();
         NativeSourcesCannotBeInventedOrDiscarded();
         SettingsBaselineComparisonIsReadOnly();
@@ -568,7 +612,7 @@ int main() {
         AggregateBudgetsAndIdentityUseFinalOwnedBytes();
         ChangedOrReplacedSourceIsRejectedAndSnapshotOwnsData();
         ExactCaptureDoesNotDependOnListfile();
-        std::cout << "terrain-edit-inspection: 10 scenario groups passed\n";
+        std::cout << "terrain-edit-inspection: 11 scenario groups passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "terrain-edit-inspection: " << error.what() << '\n';

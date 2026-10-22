@@ -36,8 +36,7 @@ Result<TerrainPointSample> MapDataEditSession::InspectTerrainPoint(const Terrain
             output.pathingFlags = std::to_integer<std::uint8_t>((*pathing_)[index]);
             if (pathingOriginal_ && index < pathingOriginal_->size()) {
                 output.originalPathingFlags = std::to_integer<std::uint8_t>((*pathingOriginal_)[index]);
-                output.addedPathingRestrictions = static_cast<std::uint8_t>(
-                    *output.pathingFlags & ~*output.originalPathingFlags & kPathingRestrictionBits);
+                output.addedPathingRestrictions = std::to_integer<std::uint8_t>((*pathingRestrictions_)[index - 16]);
             }
         }
     }

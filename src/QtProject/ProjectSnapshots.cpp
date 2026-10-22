@@ -83,6 +83,13 @@ std::optional<EditScopeSnapshot> EditorProject::CaptureMapEditScopes() const {
             scopes["map/" + member.name] = *hash.value;
         }
         for (const auto& name : mapEdits_->Removals()) scopes["map/" + name] = "removed";
+        const auto restrictions = mapEdits_->SerializePathingRestrictionDraft();
+        if (!restrictions.Succeeded() || !restrictions.value) return {};
+        if (!restrictions.value->empty()) {
+            const auto hash = Sha256(*restrictions.value);
+            if (!hash.Succeeded() || !hash.value) return {};
+            scopes["map/editor/pathing-restrictions"] = *hash.value;
+        }
     }
     return scopes;
 }
@@ -131,6 +138,9 @@ std::string EditorProject::ProjectFingerprint(std::span<const std::string> impor
             hash.addData(Array(member.data));
         }
         for (const auto& name : mapEdits_->Removals()) add("map-removed:" + name);
+        const auto restrictions = mapEdits_->SerializePathingRestrictionDraft();
+        if (!restrictions.Succeeded() || !restrictions.value) return {};
+        add("pathing-intent:"); hash.addData(Array(*restrictions.value));
     }
     return hash.result().toHex().toStdString();
 }

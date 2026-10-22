@@ -139,6 +139,26 @@ void AllSourceBytesAndRestrictionSubsetsArePreserved() {
     }
 }
 
+void CompleteIntentCanOverlapSourceWithoutGrantingNewPermission() {
+    const Fixture fixture;
+    std::vector<std::uint8_t> masks(256);
+    masks[2] = 2; masks[6] = 4; masks[8] = 8; // 每项都已存在于相应来源字节。
+    auto declaration = fixture.Draft(masks); declaration[3] = std::byte{2};
+    const auto proof = Take(fixture.Prepare(fixture.pathing, declaration));
+    Require(proof.Kind() == PathingPreservationKind::PreserveExact && proof.ChangedCells() == 0,
+        "valid full intent preserves exact native bytes and cannot become a restriction candidate");
+    auto missingSource = fixture.pathing; missingSource[16 + 2] &= ~std::byte{2};
+    Refused(fixture.Prepare(missingSource, declaration), "PATHING_POLICY_SOURCE_RESTRICTION_REMOVED");
+    auto invalid = declaration; invalid[132] = std::byte{2};
+    Refused(fixture.Prepare(fixture.pathing, invalid), "PATHING_DRAFT_IDENTITY");
+    invalid = declaration; invalid[132 + 2] |= std::byte{0x20};
+    Refused(fixture.Prepare(fixture.pathing, invalid), "PATHING_DRAFT_IDENTITY");
+    invalid = declaration; invalid[4] ^= std::byte{1};
+    Refused(fixture.Prepare(fixture.pathing, invalid), "PATHING_DRAFT_IDENTITY");
+    invalid = declaration; invalid.pop_back();
+    Refused(fixture.Prepare(fixture.pathing, invalid), "PATHING_DRAFT_IDENTITY");
+}
+
 void RectangularGridAndDeclarationMustBeComplete() {
     const Fixture fixture(3, 4); // WPM 8×12，不能把 X/Y 或顶点/tile 数混用。
     auto current = fixture.pathing;
@@ -365,6 +385,7 @@ void RealSessionUndoAndSaveGateStaySeparate() {
 int main() {
     try {
         AllSourceBytesAndRestrictionSubsetsArePreserved();
+        CompleteIntentCanOverlapSourceWithoutGrantingNewPermission();
         RectangularGridAndDeclarationMustBeComplete();
         ReportedCellLimitNeverLimitsValidation();
         SourceBitsTerrainAndShapeRemainStrict();
@@ -372,7 +393,7 @@ int main() {
         RestrictionProofBindsEveryCurrentByteAndLength();
         CumulativeInputAndDecodedTerrainBudgetBoundariesAreExact();
         RealSessionUndoAndSaveGateStaySeparate();
-        std::cout << "Pathing preservation policy: 8 scenario groups passed\n";
+        std::cout << "Pathing preservation policy: 9 scenario groups passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n'; return 1;

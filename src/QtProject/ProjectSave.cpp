@@ -162,7 +162,7 @@ Result<std::unique_ptr<ProjectSaveJob>> EditorProject::PrepareProjectSave(
             if (!restrictions.value->empty()) {
                 if (!append("overlay/editor/pathing-restrictions.bin", std::move(*restrictions.value)))
                     return fail(tr("工程超过容量限制"));
-                job->manifest_["pathingRestrictions"] = 1;
+                job->manifest_["pathingRestrictions"] = 2;
             }
         }
         job->manifest_["mapDataRemovals"] = mapDataRemovals;

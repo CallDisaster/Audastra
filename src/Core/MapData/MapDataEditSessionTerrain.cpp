@@ -258,7 +258,10 @@ Status MapDataEditSession::AttachPathing(std::span<const std::byte> bytes) {
         status.diagnostics = std::move(parsed.diagnostics);
         return status;
     }
+    auto restrictions = std::make_shared<const std::vector<std::byte>>(bytes.size() - kPathingHeaderBytes);
     pathingOriginal_ = pathing_ = parsed.value->OriginalBytes();
+    pathingRestrictions_.swap(restrictions);
+    originalPathingRestrictions_ = pathingRestrictions_;
     ++terrainSourceRevision_;
     return Status::Ok();
 }
@@ -268,6 +271,8 @@ Status MapDataEditSession::SetPathing(std::span<const std::byte> bytes) {
         return Status::Failure("MapData.Edit", "MAP_PATHING_UNAVAILABLE", "源地形或源通行性不可用，不能恢复通行性覆盖");
     if (const auto status = ValidatePathingOverlay(bytes, *pathingOriginal_, *terrainOriginal_, *terrain_);
         !status.Succeeded()) return status;
+    const auto declaration = EncodePathingRestrictionDraft(*terrainOriginal_, *pathingOriginal_, bytes, *pathingRestrictions_);
+    if (!declaration.Succeeded()) return {declaration.diagnostics};
     if (std::equal(bytes.begin(), bytes.end(), pathing_->begin())) return Status::Ok();
     Command command;
     command.pathingBefore = *pathing_;
@@ -307,8 +312,9 @@ Status MapDataEditSession::SetTerrainAndPathingInternal(std::span<const std::byt
         return Status::Failure("MapData.Edit", "MAP_TERRAIN_SHAPE_CHANGED",
             "地形覆盖的尺寸或原点与源地形不同，不能联合恢复");
     std::vector<std::byte> withoutRestrictions;
+    std::vector<std::byte> restrictions(pathingOriginal_->size() - kPathingHeaderBytes);
     if (!restrictionDraft.empty()) {
-        auto checked = StripPathingRestrictionDraft(*terrainOriginal_, *pathingOriginal_, pathingBytes, restrictionDraft);
+        auto checked = StripPathingRestrictionDraft(*terrainOriginal_, *pathingOriginal_, pathingBytes, restrictionDraft, &restrictions);
         if (!checked.Succeeded() || !checked.value) return {checked.diagnostics};
         withoutRestrictions = std::move(*checked.value);
     }
@@ -317,6 +323,10 @@ Status MapDataEditSession::SetTerrainAndPathingInternal(std::span<const std::byt
         !status.Succeeded()) return status;
     Command command;
     command.terrain = DiffChunks<TerrainChunk>(*terrain_, next, 0, 0, header.width, header.height);
+    if (restrictions != *pathingRestrictions_) {
+        command.restrictionBefore = pathingRestrictions_;
+        command.restrictionAfter = std::make_shared<const std::vector<std::byte>>(std::move(restrictions));
+    }
     if (!SameHeader(header, next.header)) { command.headerBefore = header; command.headerAfter = next.header; }
     if (!std::equal(pathingBytes.begin(), pathingBytes.end(), pathing_->begin())) {
         command.pathingBefore = *pathing_;
@@ -466,7 +476,7 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
 
 bool MapDataEditSession::PreparedTerrainEdit::HasChanges() const noexcept {
     return command_ && (!command_->changes.empty() || !command_->terrain.empty()
-        || command_->headerAfter || command_->pathingAfter);
+        || command_->headerAfter || command_->pathingAfter || command_->restrictionAfter);
 }
 
 Result<TerrainStrokeResult> MapDataEditSession::ApplyPreparedTerrainEdit(const PreparedTerrainEdit& plan,

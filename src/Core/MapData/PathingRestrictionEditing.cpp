@@ -106,6 +106,18 @@ std::optional<TerrainBrushFootprint> GetPathingRestrictionFootprint(
 Result<PathingRestrictionStroke> ApplyPathingRestrictionStroke(
     const TerrainHeader& terrain, std::span<const std::byte> original, std::span<const std::byte> current,
     const TerrainBrush& brush, std::span<const TerrainStrokePoint> points) {
+    if (const auto checked = CheckPair(terrain, original, current); !checked.Succeeded()) return {{}, checked.diagnostics};
+    std::vector<std::byte> intent(original.size() - kWpmHeader);
+    for (std::size_t i = 0; i < intent.size(); ++i)
+        intent[i] = (current[kWpmHeader + i] & ~original[kWpmHeader + i]) & std::byte{kPathingRestrictionBits};
+    auto result = ApplyPathingRestrictionStroke(terrain, original, current, intent, brush, points);
+    if (result.Succeeded() && result.value && result.value->bytes.empty()) result.value->bytes.assign(current.begin(), current.end());
+    return result;
+}
+
+Result<PathingRestrictionStroke> ApplyPathingRestrictionStroke(
+    const TerrainHeader& terrain, std::span<const std::byte> original, std::span<const std::byte> current,
+    std::span<const std::byte> intent, const TerrainBrush& brush, std::span<const TerrainStrokePoint> points) {
     using Output = Result<PathingRestrictionStroke>;
     if (brush.kind != TerrainBrushKind::PathingRestriction || brush.pathingRestrictions == 0
         || (brush.pathingRestrictions & ~kPathingRestrictionBits) != 0)
@@ -115,6 +127,15 @@ Result<PathingRestrictionStroke> ApplyPathingRestrictionStroke(
     if (points.empty() || points.size() > 65536)
         return Output::Failure("Pathing.Edit", "TERRAIN_BRUSH_POINTS", "通行笔划需要 1 到 65536 个落点。");
     if (const auto checked = CheckPair(terrain, original, current); !checked.Succeeded()) return {{}, checked.diagnostics};
+    if (intent.size() != original.size() - kWpmHeader)
+        return Output::Failure("Pathing.Edit", "PATHING_DRAFT_SHAPE", "限制意图层与源 WPM 格数不符。");
+    for (std::size_t i = 0; i < intent.size(); ++i) {
+        const auto mask = std::to_integer<std::uint8_t>(intent[i]);
+        if ((mask & ~kPathingRestrictionBits) != 0
+            || ((original[kWpmHeader + i] | intent[i]) & std::byte{kPathingRestrictionBits})
+                != (current[kWpmHeader + i] & std::byte{kPathingRestrictionBits}))
+            return Output::Failure("Pathing.Edit", "PATHING_DRAFT_IDENTITY", "限制意图层不能解释当前 WPM，未应用笔划。");
+    }
     std::vector<TerrainBrushFootprint> footprints;
     footprints.reserve(points.size());
     for (const auto& point : points) {
@@ -123,7 +144,7 @@ Result<PathingRestrictionStroke> ApplyPathingRestrictionStroke(
         footprints.push_back(*footprint);
     }
     PathingRestrictionStroke output;
-    output.bytes.assign(current.begin(), current.end());
+    output.intent.assign(intent.begin(), intent.end());
     const auto width = (terrain.width - 1) * 4;
     const double radius = brush.size ? *brush.size - 1 : brush.radius;
     for (const auto& footprint : footprints) {
@@ -133,11 +154,19 @@ Result<PathingRestrictionStroke> ApplyPathingRestrictionStroke(
             const double dx = x - cx, dy = y - cy;
             if (brush.shape == TerrainBrushShape::Circle && dx * dx + dy * dy > radius * radius) continue;
             const auto index = kWpmHeader + static_cast<std::size_t>(y) * width + x;
-            const auto before = std::to_integer<std::uint8_t>(output.bytes[index]);
-            const auto removable = brush.pathingRestrictions & ~std::to_integer<std::uint8_t>(original[index]);
-            const auto after = static_cast<std::uint8_t>(brush.value ? before | brush.pathingRestrictions : before & ~removable);
-            if (after == before) continue;
-            output.bytes[index] = static_cast<std::byte>(after);
+            const auto before = std::to_integer<std::uint8_t>(output.bytes.empty() ? current[index] : output.bytes[index]);
+            const auto cell = index - kWpmHeader;
+            const auto oldIntent = std::to_integer<std::uint8_t>(output.intent[cell]);
+            const auto nextIntent = static_cast<std::uint8_t>(brush.value ? oldIntent | brush.pathingRestrictions
+                : oldIntent & ~brush.pathingRestrictions);
+            if (nextIntent == oldIntent) continue;
+            output.intent[cell] = static_cast<std::byte>(nextIntent);
+            const auto after = static_cast<std::uint8_t>((before & ~kPathingRestrictionBits)
+                | (std::to_integer<std::uint8_t>(original[index]) & kPathingRestrictionBits) | nextIntent);
+            if (after != before) {
+                if (output.bytes.empty()) output.bytes.assign(current.begin(), current.end());
+                output.bytes[index] = static_cast<std::byte>(after);
+            }
             auto& changed = output.changed;
             const auto vx = x / 4, vy = y / 4;
             if (changed.Empty()) changed = {vx, vy, vx + 2, vy + 2};
@@ -166,17 +195,64 @@ Result<std::vector<std::byte>> EncodePathingRestrictionDraft(
 
 Result<std::vector<std::byte>> StripPathingRestrictionDraft(
     const TerrainGridSnapshot& terrain, std::span<const std::byte> original,
-    std::span<const std::byte> current, std::span<const std::byte> draft) {
+    std::span<const std::byte> current, std::span<const std::byte> draft, std::vector<std::byte>* decodedIntent) {
     using Output = Result<std::vector<std::byte>>;
-    auto encoded = EncodePathingRestrictionDraft(terrain, original, current);
-    if (!encoded.Succeeded()) return encoded;
-    // 重新编码同时核对来源 SHA、长度、版本和每一格的声明，拒绝多余/缺失或未知位。
-    if (!encoded.value || encoded.value->empty() || !std::equal(draft.begin(), draft.end(), encoded.value->begin(), encoded.value->end()))
-        return DraftMismatch(terrain.header, encoded.value ? std::span<const std::byte>(*encoded.value) : std::span<const std::byte>{}, draft);
+    auto decoded = DecodePathingRestrictionDraft(terrain, original, current, draft);
+    if (!decoded.Succeeded()) return decoded;
     std::vector<std::byte> stripped(current.begin(), current.end());
     for (std::size_t i = kWpmHeader; i < stripped.size(); ++i)
-        stripped[i] &= ~draft[kDraftHeader + i - kWpmHeader];
+        stripped[i] = (stripped[i] & ~std::byte{kPathingRestrictionBits}) | (original[i] & std::byte{kPathingRestrictionBits});
+    if (decodedIntent) decodedIntent->swap(*decoded.value);
     return Output::Success(std::move(stripped));
+}
+
+Result<std::vector<std::byte>> EncodePathingRestrictionDraft(
+    const TerrainGridSnapshot& terrain, std::span<const std::byte> original,
+    std::span<const std::byte> current, std::span<const std::byte> intent) {
+    using Output = Result<std::vector<std::byte>>;
+    if (const auto checked = CheckPair(terrain.header, original, current); !checked.Succeeded()) return {{}, checked.diagnostics};
+    if (intent.size() != original.size() - kWpmHeader)
+        return Output::Failure("Pathing.Edit", "PATHING_DRAFT_SHAPE", "限制意图层与源 WPM 格数不符。");
+    for (std::size_t i = 0; i < intent.size(); ++i) {
+        if ((intent[i] & ~std::byte{kPathingRestrictionBits}) != std::byte{0}
+            || ((original[kWpmHeader + i] | intent[i]) & std::byte{kPathingRestrictionBits})
+                != (current[kWpmHeader + i] & std::byte{kPathingRestrictionBits}))
+            return Output::Failure("Pathing.Edit", "PATHING_DRAFT_IDENTITY", "限制意图层包含未知位或与合成 WPM 不一致。");
+    }
+    if (std::none_of(intent.begin(), intent.end(), [](std::byte value) { return value != std::byte{0}; })) return Output::Success({});
+    auto bytes = Header(terrain, original);
+    if (!bytes.Succeeded()) return bytes;
+    (*bytes.value)[3] = std::byte{2};
+    bytes.value->insert(bytes.value->end(), intent.begin(), intent.end());
+    return bytes;
+}
+
+Result<std::vector<std::byte>> DecodePathingRestrictionDraft(
+    const TerrainGridSnapshot& terrain, std::span<const std::byte> original,
+    std::span<const std::byte> current, std::span<const std::byte> draft) {
+    using Output = Result<std::vector<std::byte>>;
+    if (const auto checked = CheckPair(terrain.header, original, current); !checked.Succeeded()) return {{}, checked.diagnostics};
+    if (draft.size() >= 4 && draft[3] == std::byte{2}) {
+        auto expected = Header(terrain, original);
+        if (!expected.Succeeded()) return expected;
+        (*expected.value)[3] = std::byte{2};
+        expected.value->resize(kDraftHeader + original.size() - kWpmHeader);
+        // 仅来源已含的位可与 A 重叠；来源没有的限制必须由完整声明逐格解释。
+        for (std::size_t i = kWpmHeader; i < original.size(); ++i) {
+            const auto at = kDraftHeader + i - kWpmHeader;
+            const auto declared = at < draft.size() ? draft[at] : std::byte{0};
+            (*expected.value)[at] = ((declared & original[i]) | (current[i] & ~original[i])) & std::byte{kPathingRestrictionBits};
+        }
+        const bool nonempty = std::any_of(expected.value->begin() + kDraftHeader, expected.value->end(), [](std::byte value) { return value != std::byte{0}; });
+        if (!nonempty || !std::equal(draft.begin(), draft.end(), expected.value->begin(), expected.value->end()))
+            return DraftMismatch(terrain.header, *expected.value, draft);
+        return Output::Success(std::vector<std::byte>(expected.value->begin() + kDraftHeader, expected.value->end()));
+    }
+    auto encoded = EncodePathingRestrictionDraft(terrain, original, current);
+    if (!encoded.Succeeded()) return encoded;
+    if (!encoded.value || encoded.value->empty() || !std::equal(draft.begin(), draft.end(), encoded.value->begin(), encoded.value->end()))
+        return DraftMismatch(terrain.header, encoded.value ? std::span<const std::byte>(*encoded.value) : std::span<const std::byte>{}, draft);
+    return Output::Success(std::vector<std::byte>(encoded.value->begin() + kDraftHeader, encoded.value->end()));
 }
 
 } // namespace War3Map::MapData

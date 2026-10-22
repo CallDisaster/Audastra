@@ -192,6 +192,7 @@ private:
         std::vector<TerrainChunk> terrain;
         std::optional<TerrainHeader> headerBefore, headerAfter;
         std::optional<std::vector<std::byte>> pathingBefore, pathingAfter;
+        std::shared_ptr<const std::vector<std::byte>> restrictionBefore, restrictionAfter;
         std::uint64_t sessionIdentity = 0, logicalIdentity = 0;
         std::uint64_t beforeRevision = 0, afterRevision = 0;
         bool logicalForward = true;
@@ -242,6 +243,7 @@ private:
     std::shared_ptr<const TerrainGridSnapshot> terrain_;
     std::optional<std::vector<std::byte>> pathingOriginal_;
     std::optional<std::vector<std::byte>> pathing_;
+    std::shared_ptr<const std::vector<std::byte>> pathingRestrictions_, originalPathingRestrictions_;
 };
 
 } // namespace War3Map::MapData

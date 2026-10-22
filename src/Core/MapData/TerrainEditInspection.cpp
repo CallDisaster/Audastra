@@ -27,6 +27,7 @@ struct TerrainInspectionAccess {
         std::shared_ptr<const TerrainGridSnapshot> terrainOriginal, terrain;
         const std::optional<Bytes>* pathingOriginal;
         const std::optional<Bytes>* pathing;
+        std::shared_ptr<const Bytes> pathingIntent;
         bool terrainChanged;
     };
 
@@ -37,7 +38,7 @@ struct TerrainInspectionAccess {
                 &edits.original_[index], &edits.current_[index]};
         };
         return {{member(MapDataKind::Doodads), member(MapDataKind::Units), member(MapDataKind::Settings)},
-            edits.terrainOriginal_, edits.terrain_, &edits.pathingOriginal_, &edits.pathing_, edits.TerrainDirty()};
+            edits.terrainOriginal_, edits.terrain_, &edits.pathingOriginal_, &edits.pathing_, edits.pathingRestrictions_, edits.TerrainDirty()};
     }
 };
 
@@ -46,7 +47,7 @@ namespace {
 
 using Bytes = std::vector<std::byte>;
 constexpr std::string_view kSubsystem = "MapData.TerrainInspection";
-constexpr std::string_view kVersion = "forge-terrain-edit-inspection-v2";
+constexpr std::string_view kVersion = "forge-terrain-edit-inspection-v3";
 const std::array<std::string, 5> kMembers{
     "war3map.w3e", "war3map.wpm", "war3map.doo", "war3mapUnits.doo", "war3map.w3i"};
 
@@ -165,6 +166,7 @@ std::string Identity(const TerrainEditInspection& snapshot) {
     append(std::to_string(snapshot.Limits().maximumOwnedBytes));
     append(std::to_string(snapshot.OwnedBytes()));
     append(snapshot.TerrainChanged() ? "changed" : "unchanged");
+    append(snapshot.PathingRestrictionIntent() ? Take(Sha256(*snapshot.PathingRestrictionIntent())) : "no-pathing-intent");
     for (const auto& member : snapshot.Members()) {
         append(member.name);
         for (bool current : {false, true}) {
@@ -281,6 +283,11 @@ Result<TerrainEditInspection> CaptureTerrainEditInspection(const MapArchiveSessi
             if (!result.members_[1].original || **view.pathingOriginal != *result.members_[1].original)
                 Fail("TERRAIN_EDIT_INSPECTION_SOURCE_MISMATCH", "WPM原字节与编辑会话基线不同。");
             SetCurrent(result.members_[1], *view.pathing, result.ownedBytes_, limits.maximumOwnedBytes);
+        }
+        if (view.pathingIntent && std::any_of(view.pathingIntent->begin(), view.pathingIntent->end(),
+            [](std::byte value) { return value != std::byte{0}; })) {
+            AddBytes(view.pathingIntent->size(), result.ownedBytes_, limits.maximumOwnedBytes);
+            result.pathingIntent_ = view.pathingIntent;
         }
         // 未附入编辑会话的地形／通行成员仅透传，包括只读v12和真实空成员。
         for (std::size_t index = 0; index < view.native.size(); ++index)

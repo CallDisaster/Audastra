@@ -50,12 +50,14 @@ public:
     // 固定顺序：W3E、WPM、DOO、Units.doo、W3I；不依赖listfile是否列出。
     [[nodiscard]] const std::array<TerrainInspectionMember, 5>& Members() const noexcept { return members_; }
     [[nodiscard]] std::size_t OwnedBytes() const noexcept { return ownedBytes_; }
+    // 与会话命令共享的不可变 A；空指针表示没有本工程限制声明。
+    [[nodiscard]] const std::shared_ptr<const std::vector<std::byte>>& PathingRestrictionIntent() const noexcept { return pathingIntent_; }
     [[nodiscard]] const TerrainInspectionLimits& Limits() const noexcept { return limits_; }
     [[nodiscard]] bool TerrainChanged() const noexcept { return terrainChanged_; }
     // 只复制同一冻结点的既有地形/通行门禁，不是整图保存许可；被拒仍可提供影响快照。
     [[nodiscard]] const Status& TerrainPathingGate() const noexcept { return terrainPathingGate_; }
     // 独立只读分类，绑定本次归档/会话冻结点；失败不使可检查快照失效，也不改变旧保存门。
-    // proof 另按逻辑span累计输入并限制摘要；OwnedBytes仍只计五成员唯一拥有的原／现字节。
+    // proof 另按逻辑span累计输入并限制摘要；OwnedBytes计五成员原／现字节与非空A的唯一共享正文。
     [[nodiscard]] const Result<PathingPreservationProof>& PathingPreservation() const noexcept { return pathingPreservation_; }
 
 private:
@@ -65,6 +67,7 @@ private:
     std::size_t ownedBytes_ = 0;
     TerrainInspectionLimits limits_;
     std::array<TerrainInspectionMember, 5> members_;
+    std::shared_ptr<const std::vector<std::byte>> pathingIntent_;
     bool terrainChanged_ = false;
     Status terrainPathingGate_;
     Result<PathingPreservationProof> pathingPreservation_;

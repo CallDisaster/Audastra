@@ -1177,7 +1177,7 @@ void LiveEditorToolsTests::BoundaryDraftSavesAndReopensAsProject() {
                 if (item.name == "project.json" && scenario != 0) {
                     auto manifest = QJsonDocument::fromJson(Bytes(*bytes.value)).object();
                     if (scenario == 1) manifest.remove("pathingRestrictions");
-                    else manifest["pathingRestrictions"] = 2;
+                    else manifest["pathingRestrictions"] = 3;
                     const auto json = QJsonDocument(manifest).toJson(QJsonDocument::Compact);
                     bytes.value->assign(reinterpret_cast<const std::byte*>(json.constData()),
                         reinterpret_cast<const std::byte*>(json.constData()) + json.size());

@@ -305,9 +305,10 @@ Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(const std::files
         const bool restrictionDraft = archive.HasMember("overlay/editor/pathing-restrictions.bin");
         if (restrictionDraft != manifest.contains("pathingRestrictions")
             || (restrictionDraft && (!manifest["pathingRestrictions"].isDouble()
-                || manifest["pathingRestrictions"].toDouble() != 1 || !pathingOverlay || !pathingAttached)))
+                || (manifest["pathingRestrictions"].toDouble() != 1 && manifest["pathingRestrictions"].toDouble() != 2)
+                || (manifest["pathingRestrictions"].toDouble() == 1 && !pathingOverlay) || !pathingAttached)))
             return fail(QObject::tr("工程附加通行限制声明缺失、版本未知或没有对应 WPM 覆盖"));
-        if (terrainOverlay || pathingOverlay) {
+        if (terrainOverlay || pathingOverlay || restrictionDraft) {
             auto nextTerrain = terrainOverlay ? archive.ReadMember("overlay/map/war3map.w3e") : std::move(terrain);
             auto nextPathing = pathingOverlay ? archive.ReadMember("overlay/map/war3map.wpm") : std::move(pathing);
             if (!attached || !nextTerrain.Succeeded() || !nextTerrain.value)
@@ -319,6 +320,9 @@ Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(const std::files
                     : Result<std::vector<std::byte>>::Success({});
                 if (!draft.Succeeded() || !draft.value)
                     return fail(QObject::tr("工程附加通行限制声明无法读取"));
+                if (restrictionDraft && (draft.value->size() < 4
+                    || std::to_integer<unsigned>((*draft.value)[3]) != manifest["pathingRestrictions"].toDouble()))
+                    return fail(QObject::tr("工程附加通行限制声明版本与清单不一致"));
                 const auto restored = restrictionDraft
                     ? mapDataEdits->SetTerrainAndPathingDraft(*nextTerrain.value, *nextPathing.value, *draft.value)
                     : mapDataEdits->SetTerrainAndPathing(*nextTerrain.value, *nextPathing.value);

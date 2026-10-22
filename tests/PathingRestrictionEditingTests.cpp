@@ -71,6 +71,91 @@ void PreviewAndSharedUndoKeepEverySourceBit() {
         "returning to exact source restores original eligibility and removes draft");
 }
 
+void OverlappingIntentIsAnIndependentTransaction() {
+    Fixture f; const auto brush = f.Brush(0x02);
+    const auto plan = f.edits.PrepareTerrainEdit(brush, std::span(&f.point, 1));
+    Require(plan.Succeeded() && plan.value->HasChanges() && plan.value->TerrainPathingGate().Succeeded(),
+        "source-blocked paint prepares A-only without inventing a native change");
+    Require(!f.edits.ApplyPreparedTerrainEdit(*plan.value, [](const auto&) {
+        return Status::Failure("Test", "REFUSED", "拒绝"); }).Succeeded()
+        && f.edits.Revision() == 0 && !f.edits.IsDirty() && !f.edits.CanUndo(), "A-only host refusal is atomic");
+    Require(f.edits.ApplyPreparedTerrainEdit(*plan.value).Succeeded(), "A-only command applies");
+    const auto receipt = f.edits.LastEdit();
+    const auto revision = f.edits.Revision();
+    Require(revision == 1 && f.edits.IsDirty() && f.edits.Replacements().empty() && f.Current() == f.wpm,
+        "A-only revision and dirtiness do not create W3E or WPM replacements");
+    Require(f.edits.InspectTerrainPoint(f.point).value->addedPathingRestrictions == 0x02
+        && f.edits.QueryPathingRestrictions().value->totalCells == 1, "queries expose overlap intent");
+    const auto draft = *f.edits.SerializePathingRestrictionDraft().value;
+    Require(draft[3] == std::byte{2} && draft.size() == 132 + f.wpm.size() - 16, "APR2 holds the complete A grid");
+    Require(f.edits.EditTerrain(brush, std::span(&f.point, 1)).Succeeded() && f.edits.Revision() == revision,
+        "repainting the same intent is the actual no-op");
+    Require(!f.edits.ApplyPreparedTerrainEdit(*plan.value).Succeeded(), "A-only invalidates older previews");
+    Require(f.edits.Undo() && !f.edits.IsDirty() && f.Current() == f.wpm
+        && f.edits.SerializePathingRestrictionDraft().value->empty(), "undo removes intent without clearing source");
+    Require(f.edits.Redo() && f.edits.SerializePathingRestrictionDraft().value == draft, "redo restores exact intent");
+    Require(f.edits.Replay(receipt, false).Succeeded() && f.edits.Replay(receipt, true).Succeeded(),
+        "Qt receipt replay shares the A-only transaction");
+    f.edits.CommitSaved(MapDocument::FromMembers({}));
+    Require(!f.edits.IsDirty() && f.edits.Replacements().empty()
+        && f.edits.SerializePathingRestrictionDraft().value == draft, "native save marks A baseline while retaining its declaration");
+    Require(f.edits.Undo() && f.edits.IsDirty() && f.Current() == f.wpm
+        && f.edits.SerializePathingRestrictionDraft().value->empty(), "undo across A-only save changes A without clearing source");
+    Require(f.edits.Redo() && !f.edits.IsDirty() && f.edits.SerializePathingRestrictionDraft().value == draft,
+        "redo across A-only save restores its saved baseline");
+    Require(f.edits.EditTerrain(f.Brush(0x02, false), std::span(&f.point, 1)).Succeeded()
+        && f.Current() == f.wpm && f.edits.InspectTerrainPoint(f.point).value->addedPathingRestrictions == 0,
+        "withdrawing overlap never clears the opaque source restriction or unknown bits");
+
+    MapDataEditSession restored(MapDocument::FromMembers({})); Require(f.Attach(restored).Succeeded(), "A-only restore source");
+    Require(restored.SetTerrainAndPathingDraft(f.w3e, f.wpm, draft).Succeeded() && restored.IsDirty()
+        && restored.Replacements().empty(), "A-only restores in one transaction without a WPM overlay");
+    Require(restored.Undo() && restored.SerializePathingRestrictionDraft().value->empty() && restored.Redo(), "restored A-only undo/redo");
+}
+
+void SavedSourceRestrictionsSurviveOlderHistory() {
+    Fixture f;
+    Require(f.edits.EditTerrain(f.Brush(0x04), std::span(&f.point, 1)).Succeeded(), "prepare synthetic rebased source");
+    const auto receipt = f.edits.LastEdit();
+    Require(!f.edits.VerifyTerrainPathingForSave().Succeeded(), "ordinary native saving still rejects the new restriction");
+    // 公共Core重绑定不代表产品保存放行；只验证未来来源重绑定也不能让历史清除底层。
+    f.edits.CommitSaved(MapDocument::FromMembers({}));
+    Require(!f.edits.IsDirty() && f.edits.InspectTerrainPoint(f.point).value->originalPathingFlags == 0x86,
+        "synthetic saved source includes its opaque restriction");
+    Require(f.edits.Undo() && f.edits.InspectTerrainPoint(f.point).value->pathingFlags == 0x86
+        && f.edits.SerializePathingRestrictionDraft().value->empty(), "old undo preserves new source restriction and clears only A");
+    Require(f.edits.Redo() && !f.edits.IsDirty() && f.edits.InspectTerrainPoint(f.point).value->addedPathingRestrictions == 4,
+        "old redo recomposes against the current source");
+    Require(f.edits.Replay(receipt, false).Succeeded() && f.edits.Replay(receipt, true).Succeeded()
+        && f.edits.InspectTerrainPoint(f.point).value->pathingFlags == 0x86
+        && f.edits.SerializePathingRestrictionDraft().Succeeded(), "receipt replay uses the same source-preserving composition");
+}
+
+void LegacyDeclarationsMigrateWithoutInventingOverlap() {
+    Fixture f; const auto brush = f.Brush(0x04);
+    Require(f.edits.EditTerrain(brush, std::span(&f.point, 1)).Succeeded(), "legacy current WPM");
+    const auto current = f.Current();
+    const auto legacy = *EncodePathingRestrictionDraft(f.terrain, f.wpm, current).value;
+    Require(legacy[3] == std::byte{1}, "legacy encoder remains APR1");
+    MapDataEditSession restored(MapDocument::FromMembers({})); Require(f.Attach(restored).Succeeded(), "legacy source attaches");
+    for (unsigned mutation = 0; mutation < 3; ++mutation) {
+        auto invalid = legacy;
+        if (mutation == 0) invalid[4] ^= std::byte{1};
+        else if (mutation == 1) invalid.pop_back();
+        else invalid[3] = std::byte{3};
+        Require(!restored.SetTerrainAndPathingDraft(f.w3e, current, invalid).Succeeded() && !restored.CanUndo(),
+            "old wrong identity, truncation and unknown versions remain closed");
+    }
+    Require(restored.SetTerrainAndPathingDraft(f.w3e, current, legacy).Succeeded(), "valid APR1 restores");
+    const auto migrated = *restored.SerializePathingRestrictionDraft().value;
+    Require(migrated[3] == std::byte{2} && restored.InspectTerrainPoint(f.point).value->addedPathingRestrictions == 4,
+        "migration retains only declared old additions, never source walk overlap");
+    auto forged = migrated; forged[132] |= std::byte{2};
+    MapDataEditSession bad(MapDocument::FromMembers({})); Require(f.Attach(bad).Succeeded(), "bad source attaches");
+    Require(!bad.SetTerrainAndPathingDraft(f.w3e, current, forged).Succeeded() && !bad.CanUndo(),
+        "a declaration cannot claim a restriction missing from the composed WPM");
+}
+
 void InvalidInputsRejectWholeStroke() {
     Fixture f;
     for (auto flags : {std::uint8_t{0}, std::uint8_t{0x20}, std::uint8_t{0x12}}) {
@@ -201,8 +286,10 @@ int main(int argc, char** argv) {
         if (argc == 2 && std::string_view(argv[1]) == "--benchmark") { ReportSyntheticCosts(); return 0; }
         Require(argc == 1, "unsupported test argument");
         PreviewAndSharedUndoKeepEverySourceBit(); InvalidInputsRejectWholeStroke(); ShapeAndFootprintUsePathingCells();
+        OverlappingIntentIsAnIndependentTransaction(); LegacyDeclarationsMigrateWithoutInventingOverlap();
+        SavedSourceRestrictionsSurviveOlderHistory();
         OldPlansCannotOverwriteNewChanges(); DraftRestoresOnlyWithExactDeclaration();
         BlightAndRestrictionDraftsRemainIndependent(); BoundedPreviewReportsOriginalCount();
-        std::cout << "PathingRestrictionEditing: 7 scenario groups passed\n"; return 0;
+        std::cout << "PathingRestrictionEditing: 10 scenario groups passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

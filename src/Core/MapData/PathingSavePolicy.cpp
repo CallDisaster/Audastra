@@ -109,18 +109,16 @@ Result<PathingPreservationProof> PathingPreservationProof::Prepare(const Pathing
             if (proof.cells_.size() < limits.maximumReportedCells)
                 proof.cells_.push_back({x, y, before, after, static_cast<std::uint8_t>(after & ~before)});
         }
-        if (proof.changedCells_ == 0) {
-            if (!restrictionDraft.empty())
+        if (!restrictionDraft.empty()) {
+            if (proof.changedCells_ == 0 && (restrictionDraft.size() < 4 || restrictionDraft[3] != std::byte{2}))
                 Require(Reject("PATHING_POLICY_REDUNDANT_DECLARATION", "WPM 与来源原字相同，不能夹带附加限制声明或伪造脏状态。"));
-        } else {
-            if (restrictionDraft.empty())
-                Require(Reject("PATHING_POLICY_DECLARATION_MISSING", "WPM 附加限制缺少完整的来源绑定声明。"));
             // 声明规则只有现有 APR 编解码这一处；不复制它的格式、SHA 或掩码验证。
             const auto stripped = Take(StripPathingRestrictionDraft(*terrain.Snapshot(), originalPathing, currentPathing, restrictionDraft));
             if (!Equal(stripped, originalPathing))
                 Require(Reject("PATHING_POLICY_UNEXPLAINED_DELTA", "撤回声明的附加限制后仍有未说明的 WPM 差分。"));
-            proof.kind_ = PathingPreservationKind::ExplicitRestrictionCandidate;
-        }
+            if (proof.changedCells_) proof.kind_ = PathingPreservationKind::ExplicitRestrictionCandidate;
+        } else if (proof.changedCells_)
+            Require(Reject("PATHING_POLICY_DECLARATION_MISSING", "WPM 附加限制缺少完整的来源绑定声明。"));
         proof.outputPathingSha256_ = Take(Sha256(currentPathing));
         proof.declarationSha256_ = Take(Sha256(restrictionDraft));
         return Result<PathingPreservationProof>::Success(std::move(proof));

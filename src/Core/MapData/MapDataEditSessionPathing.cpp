@@ -10,12 +10,16 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PreparePathi
         return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "MAP_PATHING_UNAVAILABLE", "通行限制需要唯一且可解析的源 W3E/WPM。");
     if (terrain_->header.version != 11)
         return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "MAP_TERRAIN_READ_ONLY", "新版地形只读，不能编辑关联通行限制。");
-    auto result = ApplyPathingRestrictionStroke(terrain_->header, *pathingOriginal_, *pathing_, brush, points);
+    auto result = ApplyPathingRestrictionStroke(terrain_->header, *pathingOriginal_, *pathing_, *pathingRestrictions_, brush, points);
     if (!result.Succeeded() || !result.value) return {{}, std::move(result.diagnostics)};
     Command command;
-    if (result.value->bytes != *pathing_) {
+    if (!result.value->bytes.empty()) {
         command.pathingBefore = *pathing_;
         command.pathingAfter = std::move(result.value->bytes);
+    }
+    if (result.value->intent != *pathingRestrictions_) {
+        command.restrictionBefore = pathingRestrictions_;
+        command.restrictionAfter = std::make_shared<const std::vector<std::byte>>(std::move(result.value->intent));
     }
     PreparedTerrainEdit prepared;
     prepared.before_ = terrain_;
@@ -35,7 +39,7 @@ Result<std::vector<std::byte>> MapDataEditSession::SerializePathingRestrictionDr
     if (!pathing_) return Result<std::vector<std::byte>>::Success({});
     if (!terrainOriginal_ || !pathingOriginal_)
         return Result<std::vector<std::byte>>::Failure("MapData.Edit", "PATHING_DRAFT_SOURCE_MISSING", "通行限制草稿没有完整来源。");
-    return EncodePathingRestrictionDraft(*terrainOriginal_, *pathingOriginal_, *pathing_);
+    return EncodePathingRestrictionDraft(*terrainOriginal_, *pathingOriginal_, *pathing_, *pathingRestrictions_);
 }
 
 Result<PathingRestrictionPreview> MapDataEditSession::QueryPathingRestrictions(std::size_t maximumCells) const {
@@ -45,8 +49,7 @@ Result<PathingRestrictionPreview> MapDataEditSession::QueryPathingRestrictions(s
     if (maximumCells == 0 || maximumCells > 4096)
         return Output::Failure("MapData.Edit", "PATHING_QUERY_BUDGET", "通行限制预览最多返回 1 到 4096 格。");
     const auto additions = [this](std::size_t i) {
-        return static_cast<std::uint8_t>(std::to_integer<std::uint8_t>((*pathing_)[i])
-            & ~std::to_integer<std::uint8_t>((*pathingOriginal_)[i]) & kPathingRestrictionBits);
+        return std::to_integer<std::uint8_t>((*pathingRestrictions_)[i - 16]);
     };
     PathingRestrictionPreview output;
     for (std::size_t i = 16; i < pathing_->size(); ++i) if (additions(i)) ++output.totalCells;
