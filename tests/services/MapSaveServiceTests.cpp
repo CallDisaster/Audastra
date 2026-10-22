@@ -1,4 +1,5 @@
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/Image/BlpImage.h"
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/MapData/MapAuxiliary.h"
@@ -1687,9 +1688,21 @@ void TestOptionalRealTerrainAndPathingUseNormalSave() {
             restrictionStroke.brush.pathingRestrictions = 0x0e; restrictionStroke.followDoodads = false;
             request.terrainStrokes.insert(request.terrainStrokes.begin(), restrictionStroke);
         }
+        const std::string label = newWater ? (deepWater ? "deep-water" : "shallow-water")
+            : nativeWater ? "native-water" : wet ? "water" : restriction ? "restriction" : follow ? "following" : "texture";
         const auto saved = SaveMapEditCandidate(request);
-        if (!saved.Succeeded()) for (const auto& diagnostic : saved.diagnostics)
-            std::cerr << "terrain normal save: " << diagnostic.code << ": " << diagnostic.message << '\n';
+        if (!saved.Succeeded()) {
+            for (const auto& diagnostic : saved.diagnostics)
+                std::cerr << "terrain normal save: " << diagnostic.code << ": " << diagnostic.message << '\n';
+            if (!evidence.empty()) {
+                const auto retained = evidence / (label + "-failed-source.w3x");
+                Require(std::filesystem::copy_file(request.sourceMap, retained), "retain failed original terrain source");
+                const auto retainedSha = Sha256File(retained);
+                Require(retainedSha.Succeeded() && retainedSha.value && *retainedSha.value == request.expectedSourceSha256,
+                    "retained failure source is the exact tested input");
+                std::cerr << "terrain normal save: failed source retained at " << IO::PathUtf8(retained) << '\n';
+            }
+        }
         Require(saved.Succeeded() && saved.value && saved.value->scriptPreserved, "normal terrain save uses shared service and keeps script");
         auto reopened = MapArchiveSession::Open(saved.value->candidate);
         Require(reopened.Succeeded() && reopened.value, "reopen normal terrain candidate independently");
@@ -1754,8 +1767,6 @@ void TestOptionalRealTerrainAndPathingUseNormalSave() {
         const auto sourceAfter = Sha256File(request.sourceMap);
         Require(sourceAfter.Succeeded() && sourceAfter.value && *sourceAfter.value == request.expectedSourceSha256,
             "all source map bytes remain unchanged");
-        const std::string label = newWater ? (deepWater ? "deep-water" : "shallow-water")
-            : nativeWater ? "native-water" : wet ? "water" : restriction ? "restriction" : follow ? "following" : "texture";
         if (!evidence.empty()) {
             const auto retainedSource = evidence / (label + "-source.w3x");
             const auto retainedSaved = evidence / (label + "-saved.w3x");
