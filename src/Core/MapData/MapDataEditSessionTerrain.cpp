@@ -217,6 +217,10 @@ std::vector<Chunk> DiffChunks(const TerrainGridSnapshot& before, const TerrainGr
     std::uint32_t x0, std::uint32_t y0, std::uint32_t x1, std::uint32_t y1) {
     std::vector<Chunk> chunks;
     const auto width = before.header.width, height = before.header.height;
+    // 一次预留覆盖块数，避免增长期间old/new向量同时存活，超出调用方已收取的区块预算。
+    if (x0 < x1 && y0 < y1) chunks.reserve(
+        std::size_t((x1 - 1) / kTerrainChunk - x0 / kTerrainChunk + 1)
+        * ((y1 - 1) / kTerrainChunk - y0 / kTerrainChunk + 1));
     for (std::uint32_t cy = y0 / kTerrainChunk * kTerrainChunk; cy < y1; cy += kTerrainChunk) {
         for (std::uint32_t cx = x0 / kTerrainChunk * kTerrainChunk; cx < x1; cx += kTerrainChunk) {
             const auto ex = std::min(cx + kTerrainChunk, width), ey = std::min(cy + kTerrainChunk, height);
@@ -451,10 +455,10 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
             failed.diagnostics = std::move(patched.diagnostics);
             return failed;
         }
-        if (*patched.value != *pathing_) {
-            command.pathingBefore = *pathing_;
-            command.pathingAfter = std::move(*patched.value);
-        }
+        // 已有真实blight净差，Patch又逐格确认旧位与before一致；成功后必有位改变，
+        // 不必再扫描整份WPM比较一次来重新确认同一事实。
+        command.pathingBefore = *pathing_;
+        command.pathingAfter = std::move(*patched.value);
     }
     const auto& doodadBytes = current_[Index(MapDataKind::Doodads)];
     const auto& unitBytes = current_[Index(MapDataKind::Units)];
