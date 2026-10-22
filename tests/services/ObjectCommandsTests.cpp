@@ -1,4 +1,5 @@
 #include "ObjectCommandsFixture.h"
+#include "War3MapCore/Services/ObjectFieldText.h"
 
 #include <cmath>
 #include <iostream>
@@ -70,6 +71,44 @@ void AtomicFieldTypesAndReferences() {
     Require(!ResolveObjectField(ability, "A001", "adat", 0).Succeeded(), "level zero never silently becomes first level");
     Require(!ResolveObjectField(ability, "A001", "dataa1", 2).Succeeded(), "source key level mismatch rejects");
 }
+void CompactTextRoundtrip() {
+    ObjectCommandsFixture fixture;
+    auto context = fixture.Context(ObjectType::Unit);
+    const std::array edits{ObjectFieldChange{"uhpm", {}, {}, std::int32_t{250}},
+        ObjectFieldChange{"uabi", {}, {}, RawcodeListValue{{"A001", "A001"}}}, ObjectFieldChange{"uspe", {}, {}, true}};
+    const auto edited = PlanObjectFieldChanges(context, "u001", edits);
+    Require(edited.Succeeded(), "text fixture edit");
+    *fixture.documents[0] = edited.value->after; context = fixture.Context(ObjectType::Unit);
+    const auto fields = ReadObjectFields(context, "u001");
+    Require(fields.Succeeded(), "text fixture fields");
+    const auto text = RenderObjectFieldText(*fields.value);
+    Require(text.Succeeded(), "render overridden fields");
+    Require(text.value->find("(uhpm) = 250\n") != std::string::npos, "integer line");
+    Require(text.value->find("(uabi) = ['A001', 'A001']") != std::string::npos, "ordered list keeps duplicates");
+    Require(text.value->find("(uspe) = true") != std::string::npos, "boolean line");
+    ObjectFieldTextOptions all; all.all = true;
+    const auto full = RenderObjectFieldText(*fields.value, all);
+    Require(full.Succeeded() && full.value->size() > text.value->size(), "all lists inherited fields");
+    // 原样写回：解析成功且不产生任何变化。
+    const auto parsed = ParseObjectFieldText(*text.value);
+    Require(parsed.Succeeded() && parsed.value->size() == 3, "rendered text parses back");
+    std::vector<ObjectFieldChange> same;
+    for (const auto& row : *parsed.value) same.push_back(row.change);
+    const auto unchanged = PlanObjectFieldChanges(context, "u001", same);
+    Require(unchanged.Succeeded() && unchanged.value->changes.Empty(), "roundtrip is a no-op");
+    // 只写要改的行；显示名、注释、空行和 # 行都可省略或保留。
+    const auto edit = ParseObjectFieldText("# 改血量\n\n生命值 (uhpm) = 300  // 旧 250\nuspe = false\r\n");
+    Require(edit.Succeeded() && edit.value->size() == 2 && edit.value->at(0).line == 3 && edit.value->at(1).line == 4, "edit lines");
+    Require(std::get<std::int32_t>(edit.value->at(0).change.value) == 300 && !std::get<bool>(edit.value->at(1).change.value), "edit values");
+    const auto leveled = ParseObjectFieldText("伤害 (adat:2) = 50\n模型 (umdl:1:3) = \"a\\\\b \\\"c\\\"\"\n缩放 = 1.5\n列表 = []");
+    Require(leveled.Succeeded() && leveled.value->at(0).change.level == 2u && leveled.value->at(1).change.variation == 3u
+        && std::get<std::string>(leveled.value->at(1).change.value) == "a\\b \"c\"" && std::get<float>(leveled.value->at(2).change.value) == 1.5f
+        && std::get<RawcodeListValue>(leveled.value->at(3).change.value).values.empty(), "levels, variations, escapes, decimals");
+    const auto bad = ParseObjectFieldText("(uhpm) = 1\n(uhpm:0) = 1\n(uspe) = yes\n(umdl) = \"open\nnothing here");
+    Require(!bad.Succeeded() && bad.diagnostics.size() == 4, "every bad line reported");
+    Require(bad.diagnostics[0].message.starts_with("第 2 行") && bad.diagnostics[3].message.starts_with("第 5 行"), "line numbers");
+    Require(!ParseObjectFieldText("# only comment\n").Succeeded(), "empty text rejected");
+}
 void DeletionRemainsFailClosed() {
     ObjectCommandsFixture fixture;
     auto context = fixture.Context(ObjectType::Unit);
@@ -85,7 +124,7 @@ void DeletionRemainsFailClosed() {
 }
 }
 int main() {
-    try { AllKindsReadCreateAndRoundtrip(); AtomicFieldTypesAndReferences(); DeletionRemainsFailClosed();
+    try { AllKindsReadCreateAndRoundtrip(); AtomicFieldTypesAndReferences(); CompactTextRoundtrip(); DeletionRemainsFailClosed();
         std::cout << "ObjectCommands tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << "ObjectCommands test failure: " << error.what() << '\n'; return 1; }
 }

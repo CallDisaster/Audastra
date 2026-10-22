@@ -255,7 +255,7 @@ public:
     Mcp::McpServer& Server() noexcept { return server_; }
     void SetSaveHandler(std::function<bool(const std::filesystem::path&, bool)> handler) { save_ = std::move(handler); }
     void SetLuaTestHandler(std::function<QJsonObject(bool)> handler) { luaTest_ = std::move(handler); }
-    void SetMapTestHandler(std::function<QString()> handler) { mapTest_ = std::move(handler); }
+    void SetMapTestHandler(std::function<QJsonObject(const QString&, const QJsonObject&)> handler) { mapTest_ = std::move(handler); }
     void SetWorldViewportHandler(std::function<QJsonObject(const QString&, const QJsonObject&)> handler) {
         worldViewport_ = std::move(handler);
     }
@@ -471,7 +471,9 @@ private:
                 return result;
             }
             QJsonArray diffs;
-            for (const auto& change : Trigger::DiffTriggerTexts(*project_.triggerDocument_, preview, *project_.uiCatalog_)) {
+            const auto diffObjects = project_.CaptureTriggerMapObjectReferences();
+            const auto* objects = diffObjects.Succeeded() && diffObjects.value ? diffObjects.value->get() : nullptr;
+            for (const auto& change : Trigger::DiffTriggerTexts(*project_.triggerDocument_, preview, *project_.uiCatalog_, 256U * 1024U, objects)) {
                 QJsonObject row{{"trigger_id", QString::number(change.triggerId)}, {"name", QString::fromStdString(change.name)},
                     {"status", QString::fromStdString(change.status)}, {"diff", QString::fromStdString(change.diff)}};
                 if (!change.note.empty()) row.insert("note", QString::fromStdString(change.note));
@@ -1029,9 +1031,13 @@ private:
                 {"changes", QJsonObject{{"files", removed.size()}, {"items", items}}}};
         }
         if (!mapTest_) return Mcp::Failure("MAP_TEST_UNAVAILABLE", "宿主尚未接通地图测试。");
-        const auto rejected = mapTest_();
-        if (!rejected.isEmpty()) return Mcp::Failure("MAP_TEST_REJECTED", rejected.toStdString());
-        return QJsonObject{{"ok", true}, {"started", true}, {"game_verified", false}};
+        auto result = mapTest_(name, arguments);
+        if (result.value("ok").toBool() || result.contains("diagnostics")) return result;
+        // 宿主只给 code/message 时转成统一的失败格式，保留其余字段（如已执行步骤的输出）。
+        auto failure = Mcp::Failure(result.value("code").toString(QStringLiteral("MAP_TEST_REJECTED")).toStdString(),
+            result.value("message").toString().toStdString());
+        for (auto it = result.begin(); it != result.end(); ++it) if (!failure.contains(it.key())) failure.insert(it.key(), it.value());
+        return failure;
     }
 
     QJsonObject Catalog(const QJsonObject& arguments) {
@@ -1332,7 +1338,7 @@ private:
     std::function<bool(const std::filesystem::path&, bool)> save_;
     std::function<bool()> beforeWrite_;
     std::function<QJsonObject(bool)> luaTest_;
-    std::function<QString()> mapTest_;
+    std::function<QJsonObject(const QString&, const QJsonObject&)> mapTest_;
     std::function<QJsonObject(const QString&, const QJsonObject&)> worldViewport_;
     ProjectSearchRevisionQuery projectSearchRevision_;
     ProjectSearchPageQuery projectSearchQuery_;
@@ -1357,7 +1363,7 @@ LiveEditorTools::~LiveEditorTools() = default;
 Mcp::McpServer& LiveEditorTools::Server() noexcept { return impl_->Server(); }
 void LiveEditorTools::SetSaveHandler(std::function<bool(const std::filesystem::path&, bool)> handler) { impl_->SetSaveHandler(std::move(handler)); }
 void LiveEditorTools::SetLuaTestHandler(std::function<QJsonObject(bool)> handler) { impl_->SetLuaTestHandler(std::move(handler)); }
-void LiveEditorTools::SetMapTestHandler(std::function<QString()> handler) { impl_->SetMapTestHandler(std::move(handler)); }
+void LiveEditorTools::SetMapTestHandler(std::function<QJsonObject(const QString&, const QJsonObject&)> handler) { impl_->SetMapTestHandler(std::move(handler)); }
 void LiveEditorTools::SetWorldViewportHandler(std::function<QJsonObject(const QString&, const QJsonObject&)> handler) {
     impl_->SetWorldViewportHandler(std::move(handler));
 }

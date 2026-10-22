@@ -1,6 +1,7 @@
 #pragma once
 
 #include "War3MapCore/Trigger/TriggerDocument.h"
+#include "War3MapCore/Trigger/MapObjectReferences.h"
 #include "War3MapCore/Trigger/UiCatalog.h"
 #include "War3MapCore/Types.h"
 
@@ -23,6 +24,6 @@ struct TriggerTextChange {
 // 只比较节点结构与参数值；名称、开关等触发器字段的变化也算 changed（diff 可能为空）。
 // 结果按 after 中的顺序，删除的排在最后；总字节超出 maxBytes 时截断并在最后一项 note 中注明。
 [[nodiscard]] std::vector<TriggerTextChange> DiffTriggerTexts(const TriggerDocument& before, const TriggerDocument& after,
-    const UiCatalog& catalog, std::size_t maxBytes = 256U * 1024U);
+    const UiCatalog& catalog, std::size_t maxBytes = 256U * 1024U, const MapObjectReferenceSnapshot* mapObjects = nullptr);
 
 } // namespace War3Map::Trigger

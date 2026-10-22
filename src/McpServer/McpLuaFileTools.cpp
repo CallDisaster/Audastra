@@ -87,6 +87,12 @@ std::vector<ToolDefinition> LuaFileToolDefinitions() {
             {"items", QJsonObject{{"type", "string"}, {"maxLength", 260}}}}},
             {"allow_referenced", QJsonObject{{"type", "boolean"}, {"default", false}}}}, {"archive_paths"});
     add("map_test_start", "用当前编辑内容启动单人测试（与界面“测试”相同，独立副本，不改原图）", ToolPermission::External, {}, {});
+    add("map_test_stop", "结束本次由编辑器启动的测试游戏（只结束这次启动的进程）", ToolPermission::External, {}, {});
+    add("map_test_eval", "在运行中的测试游戏里执行一段紧凑 T 动作并读回全局变量（仅 Lua 地图且开热重载）；不改地图",
+        ToolPermission::External,
+        {{"actions", QJsonObject{{"type", "string"}, {"maxLength", 65536}}},
+            {"reads", QJsonObject{{"type", "array"}, {"maxItems", 32}, {"items", QJsonObject{{"type", "string"}, {"maxLength", 160}}}}},
+            {"wait_ms", QJsonObject{{"type", "integer"}, {"minimum", 0}, {"maximum", 60000}, {"default", 10000}}}}, {"actions"});
     return result;
 }
 
@@ -97,7 +103,8 @@ QJsonObject InvokeLuaFileTool(const QString& name, const QJsonObject& args, cons
     else if (name == "lua_file_write") allowed << "path" << "text" << "expected_sha256";
     else if (name == "imports_add") allowed << "files" << "replace_existing";
     else if (name == "imports_remove") allowed << "archive_paths" << "allow_referenced";
-    else if (name != "lua_files_list" && name != "map_test_start") return Failure("LUA_FILE_TOOL_UNKNOWN", "未知 Lua 文件工具。");
+    else if (name == "map_test_eval") allowed << "actions" << "reads" << "wait_ms";
+    else if (name != "lua_files_list" && name != "map_test_start" && name != "map_test_stop") return Failure("LUA_FILE_TOOL_UNKNOWN", "未知 Lua 文件工具。");
     for (auto it = args.begin(); it != args.end(); ++it)
         if (!allowed.contains(it.key())) return Failure("LUA_FILE_ARGUMENT_INVALID", "不接受的参数：" + it.key().toStdString());
     const auto identity = args.value("project_identity");
@@ -110,6 +117,20 @@ QJsonObject InvokeLuaFileTool(const QString& name, const QJsonObject& args, cons
         && ((args.contains("offset") && !ValidPageNumber(args.value("offset"), 0, kMaxLuaPageIndex))
             || (args.contains("limit") && !ValidPageNumber(args.value("limit"), 1, kMaxLuaPageLimit))))
         return Failure("LUA_FILE_ARGUMENT_INVALID", "offset 必须是0..2147483647的整数，limit 必须是1..256的整数。");
+    if (name == "map_test_eval") {
+        const auto actions = args.value("actions");
+        if (!actions.isString() || actions.toString().isEmpty() || actions.toString().size() > 65536 || actions.toString().contains(QChar::Null))
+            return Failure("MAP_TEST_ARGUMENT_INVALID", "actions 必须是非空的紧凑 T 文本。");
+        if (args.contains("reads")) {
+            const auto reads = args.value("reads");
+            if (!reads.isArray() || reads.toArray().size() > 32) return Failure("MAP_TEST_ARGUMENT_INVALID", "reads 必须是最多32项的数组。");
+            for (const auto& read : reads.toArray())
+                if (!read.isString() || read.toString().isEmpty() || read.toString().size() > 160)
+                    return Failure("MAP_TEST_ARGUMENT_INVALID", "reads 每项是变量名或 名字[下标]。");
+        }
+        if (args.contains("wait_ms") && !ValidPageNumber(args.value("wait_ms"), 0, 60000))
+            return Failure("MAP_TEST_ARGUMENT_INVALID", "wait_ms 必须是0..60000的整数。");
+    }
     if (name == "lua_file_write") {
         if (!args.value("text").isString() || args.value("text").toString().size() > kMaxLuaText || args.value("text").toString().contains(QChar::Null))
             return Failure("LUA_FILE_ARGUMENT_INVALID", "text 必须是不超过 2 MiB 的文本。");

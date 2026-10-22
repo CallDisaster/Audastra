@@ -793,7 +793,7 @@ struct Editor {
     Status Apply(const GraphPatchTriggerText& op) {
         if (op.trigger.kind != GraphRecordKind::Trigger) return Fail("TRIGGER_GRAPH_PARENT_INVALID", "局部替换的目标必须是触发器。");
         const auto id = Resolve(op.trigger); if (!id.Succeeded()) return {id.diagnostics};
-        const auto current = RenderTriggerText(doc, catalog, *id.value, limits.maxRequestTextBytes);
+        const auto current = RenderTriggerText(doc, catalog, *id.value, limits.maxRequestTextBytes, nullptr, mapObjects);
         if (!current.Succeeded() || !current.value) return {current.diagnostics};
         std::vector<std::string_view> lines;
         for (std::string_view rest = *current.value; !rest.empty();) {

@@ -37,7 +37,7 @@ int RunMapTest(int argc, wchar_t** argv) {
     std::filesystem::path ydwe;
     double seconds = 60;
     auto engine = Services::MapTestLuaEngine::Owned;
-    bool hotReload = true;
+    bool hotReload = true, stopAfter = false;
     std::vector<Reload> reloads;
     for (int index = 5; index < argc; ++index) {
         const std::wstring option = argv[index];
@@ -48,6 +48,7 @@ int RunMapTest(int argc, wchar_t** argv) {
             if (value != L"owned" && value != L"ydwe") return 2;
             engine = value == L"ydwe" ? Services::MapTestLuaEngine::Ydwe : Services::MapTestLuaEngine::Owned;
         } else if (option == L"--no-hot-reload") hotReload = false;
+        else if (option == L"--stop") stopAfter = true;
         else if (option == L"--reload-after" && index + 3 < argc) {
             Reload reload;
             reload.after = std::stod(argv[index + 1]); reload.module = Utf8(argv[index + 2]); reload.file = argv[index + 3];
@@ -126,6 +127,12 @@ int RunMapTest(int argc, wchar_t** argv) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
     std::cout << "observation_done=true\nwaiting_for_game_exit=true" << std::endl;
+    // --stop：观察结束后结束本次启动的进程树（与编辑器 map_test_stop 相同）。
+    if (stopAfter && receipt.lease && receipt.lease->IsActive()) {
+        const auto stopped = receipt.lease->Stop();
+        Print(stopped.diagnostics);
+        std::cout << "stop_requested=" << (stopped.Succeeded() ? "true" : "false") << std::endl;
+    }
     while (receipt.lease && receipt.lease->IsActive()) std::this_thread::sleep_for(std::chrono::milliseconds(500));
     const auto cleaned = receipt.lease ? receipt.lease->Cleanup() : War3Map::Status::Ok();
     Print(cleaned.diagnostics);

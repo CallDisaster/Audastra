@@ -32,7 +32,7 @@
 |---|---|---|
 | 工作区身份/事务 | get_revision、begin_edit、preview_edit、validate_edit、rollback_edit | 阅读实际 revision、来源复核、transaction 和 edit generation 合同 |
 | 地图只读/归档 | describe_map_data、query_map_data_page、query_map_archive_member_identities | 分页、覆盖和真实成员身份；成员哈希不授权读不透明正文。前两者可用 source_map_path 直接只读查询 .w3x（与 expected_revision 二选一），结果直接用于 save_map_edit_candidate 的 field_edits |
-| 七类物编 | objects_list、objects_get、objects_field_options、objects_set_fields、objects_create、objects_delete | GUI/独立入口共用 schema；rawcode区分大小写，未知引用覆盖禁止删除。独立服务的三个查询工具可用 source_map_path + expected_source_sha256 直接只读查 .w3x |
+| 七类物编 | objects_list、objects_get、objects_text、objects_field_options、objects_set_fields、objects_apply_text、objects_create、objects_delete | GUI/独立入口共用 schema；rawcode区分大小写，未知引用覆盖禁止删除。独立服务的四个查询工具可用 source_map_path + expected_source_sha256 直接只读查 .w3x |
 | 变量 | variables_list、variables_get、variables_create、variables_update、variables_rename、variables_delete | 当前StableId与opaque修订；改名需要实际代码块SHA审计，未知引用删除拒绝 |
 | 实体字段 C1 | entities_query、entities_set_fields | 当前typed覆盖查询；source_index、row_key、完整成员SHA、精确raw与CAS成组绑定；doodads只读 |
 | 预放命令 C2 有限范围 | entities_rotate、entities_copy | classic普通units/doodads；绝对朝向弧度与共同XYZ偏移copy，原Undo/有限原来源保存；真实单位两类保存与回读通过，地物真实保存及整个实体CRUD尚未验收 |
@@ -43,6 +43,7 @@
 | 普通单位坐标 C4 | 原 entities_set_fields | Ready classic8/11 non-sloc行绝对native x/y/z；有限±1000000先double校验，原Undo/fieldEdits保存；sloc/Skin/Partial拒绝，三轴实图原保存回读通过 |
 | 自然 T 图 | query_trigger_graph、edit_trigger_graph | categories/variables/triggers/ecas/arguments/map_objects/trigger_text/feature_text/presets/function_examples；真实 ID、类型和 guard；insert_text / replace_trigger_text / patch_trigger_text 紧凑写法，apply_feature_text 功能写法；编辑器内 dry_run 预览差异 |
 | T 整图检查 | editor_check_trigger_graph（CLI trigger-check） | 同保存链生成整图并检查；可带批次只在私有副本上检查；诊断带 t（紧凑 T 行列） |
+| 进游戏测试 | map_test_start、map_test_eval、map_test_stop（编辑器端口） | eval 用紧凑 T 动作在运行中的测试游戏里执行并读回全局变量（reads），仅 Lua 地图且开热重载，JASS 地图返回 MAP_TEST_STEPS_UNSUPPORTED；stop 只结束本次启动的进程。不改地图 |
 | 简单 T 编辑 | create_trigger、append_root_eca、append_argument_call、set_scalar_argument | 老式窄操作不代表完整图操作资格；直接值支持整数/实数/布尔/文本/自定义代码/物编对象编号（`A04W`），句柄类型须用变量或函数 |
 | 归档保存 | save_map_edit_candidate | 完整来源/工具/UI/overlay 输入，同一地图保存服务；保存后新身份 |
 | 展开目录导出 | export_map_candidate | 不要与归档保存工具混淆 |

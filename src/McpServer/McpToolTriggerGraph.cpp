@@ -422,7 +422,7 @@ QJsonObject QueryDocumentImpl(const TriggerDocument& document, const UiCatalog& 
         const auto triggerId = Id(request, "trigger_id");
         const auto binding = CaptureTriggerGraphBinding(document, catalog, mapObjects);
         if (!binding.Succeeded()) return Failure(binding);
-        const auto text = RenderTriggerText(document, catalog, triggerId, kResponseBytes / 2);
+        const auto text = RenderTriggerText(document, catalog, triggerId, kResponseBytes / 2, nullptr, mapObjects);
         if (!text.Succeeded()) return Failure(text);
         const auto trigger = std::find_if(document.triggers.begin(), document.triggers.end(),
             [triggerId](const auto& row) { return row.id == triggerId; });
@@ -439,7 +439,7 @@ QJsonObject QueryDocumentImpl(const TriggerDocument& document, const UiCatalog& 
         if (category == document.categories.end()) throw GraphJsonError("找不到该类别。", "MCP_TRIGGER_GRAPH_RECORD_MISSING");
         const auto binding = CaptureTriggerGraphBinding(document, catalog, mapObjects);
         if (!binding.Succeeded()) return Failure(binding);
-        const auto text = RenderFeatureText(document, catalog, category->categoryId, kResponseBytes / 2);
+        const auto text = RenderFeatureText(document, catalog, category->categoryId, kResponseBytes / 2, mapObjects);
         if (!text.Succeeded()) return Failure(text);
         return {{"ok", true}, {"schema_version", 1}, {"binding", BindingJson(*binding.value)}, {"table", "feature_text"},
             {"category", RefJson(GraphRecordKind::Category, categoryRef)}, {"name", QString::fromStdString(category->name.text)},
@@ -476,7 +476,7 @@ QJsonObject QueryDocumentImpl(const TriggerDocument& document, const UiCatalog& 
                 if (renders >= 64 || bytes >= kResponseBytes / 2) { truncated = true; continue; }
                 ++renders;
                 std::vector<TriggerTextAnchor> anchors;
-                auto text = RenderTriggerText(document, catalog, eca.sourceTriggerId, kResponseBytes / 4, &anchors);
+                auto text = RenderTriggerText(document, catalog, eca.sourceTriggerId, kResponseBytes / 4, &anchors, mapObjects);
                 found = rendered.emplace(eca.sourceTriggerId, std::make_pair(text.Succeeded() && text.value ? std::move(*text.value)
                     : std::string{}, std::move(anchors))).first;
             }

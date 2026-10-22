@@ -432,5 +432,6 @@ LuaHostResult LuaHost::BindNatives(std::shared_ptr<NativeProvider> provider) {
 std::size_t LuaHost::MemoryBytes() const noexcept { return impl_->memory; }
 std::size_t LuaHost::CallbackCount() const noexcept { return impl_->callbacks.Count(); }
 std::string_view LuaHost::ConsoleText() const noexcept { return impl_->console; }
+void LuaHost::ClearConsole() noexcept { impl_->console.clear(); }
 
 } // namespace Audastra::Runtime32::OwnLua

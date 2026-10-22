@@ -166,7 +166,7 @@ stdio 是 UTF-8 **newline JSON-RPC**：每行一条完整 JSON，响应以换行
 - 页查询必须带 `expected_source_sha256`。
 - 绑定为 `archive-readonly-<SHA>`，`workspace_kind` 为 `map-archive-readonly`，与 CLI `map-data-query` 相同。
 - 返回的 `source_index`、`row_key`、成员 `member_sha256` 和字段 `raw` 直接用于下文 `save_map_edit_candidate` 的 `field_edits`；保存后对候选再查一次以回读确认。
-- 七类物编的 `objects_list`、`objects_get`、`objects_field_options` 同样接受 `source_map_path` + `expected_source_sha256`（两者都要给），按游戏数据与地图物编合并后的结果只读返回，`project_identity` 为 `archive-readonly-<SHA>`。需要宿主配置 `FORGE_MCP_WAR3_ROOT`。物编的新增、修改、删除要先展开工作区（见下一小节）或用编辑器端口。
+- 七类物编的 `objects_list`、`objects_get`、`objects_text`、`objects_field_options` 同样接受 `source_map_path` + `expected_source_sha256`（两者都要给），按游戏数据与地图物编合并后的结果只读返回，`project_identity` 为 `archive-readonly-<SHA>`。需要宿主配置 `FORGE_MCP_WAR3_ROOT`。物编的新增、修改、删除要先展开工作区（见下一小节）或用编辑器端口。
 
 ### 拿到 .w3x 时：展开、修改、写回
 
@@ -177,6 +177,16 @@ stdio 是 UTF-8 **newline JSON-RPC**：每行一条完整 JSON，响应以换行
 5. 不带工作区对新候选再查一次（例如 `objects_get` + `source_map_path`）确认改动。
 
 放进展开目录的新文件不会自动进入地图包；要加导入文件，对写出的候选再调用 `archive_members_add`。目前保存仍会重建整份脚本。
+
+### 物编紧凑文本
+
+看一个对象、改几项字段时，用文本比逐项 JSON 省事：
+
+- `objects_text`（kind、id）返回一段文本，一行一个字段：`显示名 (字段[:等级[:变体]]) = 值  // 引用对象名`。默认只列与父对象不同的字段，`all=true` 列全部，`fields` 可筛选。
+- 值的写法与紧凑 T 相同：数字、`"文本"`、`'A000'`、`true`/`false`、列表 `['A000', 'A001']`（顺序和重复都保留）。小数总带小数点。
+- `objects_apply_text`（kind、id、text，加 `project_identity`、`expected_revision`）只写要改的行。括号里的字段键决定改哪一项；显示名、`//` 注释、空行和 `#` 行都会忽略，也可以只写 `uhpm = 300`。
+- 一次 1..128 行，整批校验、整批生效，进入撤销栈，不保存。写法错误返回 `OBJECT_TEXT_INVALID`，字段值不合法时诊断也带行号；任何一行失败，整批都不改。
+- 行尾写“只读”或“不透明的原始字节”的字段不能用文本写回。
 
 ### 字段候选保存
 
@@ -253,7 +263,7 @@ actions:
 - 禁用语句不生成脚本，里面的参数不做类型检查（与 WE 一致）；启用语句照常严格检查。
 - 少数原图里非块语句也带子节点，导出为 `#分支号:`；写回时子语句种类按函数库里唯一同名的事件/条件/动作确定。
 - 地图对象：预放单位/物品 `gg_unit_`/`gg_item_`、脚本创建的可破坏物 `gg_dest_`、区域 `gg_rct_`、镜头 `gg_cam_`、声音 `gg_snd_`（音乐按字符串）都可直接引用；名字与类型以 `query_trigger_graph` 的 `map_objects` 表为准。
-- 触发器、区域、镜头、声音参数也可以直接写显示名，如 `` AddTriggerEvent(`9-1 技能命中`, ...) ``、`` GetRectCenter(`Arena`) ``，按保存时的命名规则换成 `gg_trg_`/`gg_rct_`/`gg_cam_`/`gg_snd_` 全局。触发器名须唯一，同名多个时报错让你写 `gg_trg_` 生成名；导出时触发器参数写回显示名。
+- 触发器、区域、镜头、声音参数也可以直接写显示名，如 `` AddTriggerEvent(`9-1 技能命中`, ...) ``、`` GetRectCenter(`Arena`) ``，按保存时的命名规则换成 `gg_trg_`/`gg_rct_`/`gg_cam_`/`gg_snd_` 全局。触发器名须唯一，同名多个时报错让你写 `gg_trg_` 生成名。导出（`trigger_text`、`feature_text`、预览差异）时这几类参数也写成显示名；只有一个生成名对应多个对象时保留生成名。中文名按字节换成下划线，字数相同的两个名字可能生成同一个脚本名，保存和整图检查会报 `TRIGGER_SCRIPT_NAME_DUPLICATE` / `OBJECT_SCRIPT_NAME_DUPLICATE` 并指出是哪两个，改名其中一个即可。
 - 预设名写错时，报错会列出这个参数类型的前几个预设；全部预设用 `{"table": "presets", "type": "<类型>"}` 查（可分页 `start`/`limit`）。
 - 不确定某个函数怎么写，用 `{"table": "function_examples", "functions": ["函数名", ...]}` 查地图里现成的写法：每个函数最多返回 `limit` 条（默认 4，上限 16），带触发器名和导出文本行号，可直接照抄后改参数。
 - `?` 是 WE 里“参数未设置”（编辑器里的红色空参数），只能留在禁用的语句里；启用的语句写 `?` 会报 `TRIGGER_GRAPH_ARGUMENT_UNSET`。
@@ -327,6 +337,26 @@ actions:
 - `submit` 返回 `request_id`；带 `wait_ms`（最多 60000）会直接等结果。没等完就用 `{"action": "status", "request_id": ..., "wait_ms": ...}` 再取。
 - 每条诊断落在 T 语句生成的代码上时带 `t`：`trigger_name`、`function`、`line`/`column`（就是 `trigger_text` 导出文本的行列）和出错的生成代码 `generated`。这类错误排在最前面。没有 `t` 的诊断来自函数库、作者代码或触发器自身的生成代码。
 - 整图来源不完整时不检查，报 `TRIGGER_CHECK_CONTEXT_INCOMPLETE` 并说明原因，不能当作通过。
+
+### 进游戏测试
+
+编辑器端口有三个工具，用当前编辑内容（含未保存修改）启动一局单人测试，原图不变：
+
+- `map_test_start`：启动测试，游戏窗口照常显示。回执的 `steps_supported` 说明本局能否执行测试步骤。
+- `map_test_eval`：在正在运行的测试游戏里执行一段紧凑 T 动作，并读取全局变量：
+
+```json
+{"actions": "SetVariable(udg_VJ_Voodoo, 3)\nUnitAddAbility(udg_Hero, 'A04W')", "reads": ["VJ_Voodoo", "Marks[1]"], "wait_ms": 20000}
+```
+
+  - `actions` 写法同 `replace_trigger_text`，在一个临时触发器里编译，只执行动作；写错时报错带 `actions` 自身的行列，什么都不发送。
+  - `reads` 是执行后要读的全局变量（可带 `udg_`，数组写下标），结果在 `reads` 里按顺序给出文本值；句柄类变量只能看到 Lua 的对象描述。
+  - 游戏还在载入时会在 `wait_ms`（默认 10000，最多 60000）内等待就绪。超时且步骤尚未执行时会撤回；已经开始执行的不能撤回，回执会说明结果未知。
+  - 回执的 `result` 为 `success` / `syntax_error` / `runtime_error` 等，`output` 是本次期间游戏里的其他打印。运行错误时前面的动作可能已经生效。
+  - 目前只支持脚本语言为 Lua、开启了热重载的地图（自有 Lua 运行时）；JASS 地图返回 `MAP_TEST_STEPS_UNSUPPORTED`。
+- `map_test_stop`：结束本局测试游戏（只结束这次启动的进程）。
+
+测试步骤只改游戏里的状态，不改地图；要把逻辑写进地图仍用 `edit_trigger_graph`。
 
 ## 5. 结果应如何记录
 

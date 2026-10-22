@@ -189,7 +189,7 @@ Result<FeatureText> ParseFeatureText(std::string_view text) {
 }
 
 Result<std::string> RenderFeatureText(const TriggerDocument& document, const UiCatalog& catalog,
-    std::int32_t categoryId, std::size_t maxBytes) {
+    std::int32_t categoryId, std::size_t maxBytes, const MapObjectReferenceSnapshot* mapObjects) {
     if (std::none_of(document.categories.begin(), document.categories.end(), [&](const auto& row) { return row.categoryId == categoryId; }))
         return Result<std::string>::Failure(kDomain, "TRIGGER_FEATURE_CATEGORY_MISSING", "找不到类别 " + std::to_string(categoryId) + "。");
     std::set<std::string> referenced;
@@ -219,7 +219,7 @@ Result<std::string> RenderFeatureText(const TriggerDocument& document, const UiC
     }
     for (const auto& trigger : document.triggers) {
         if (trigger.categoryId != categoryId) continue;
-        auto body = RenderTriggerText(document, catalog, trigger.id, maxBytes);
+        auto body = RenderTriggerText(document, catalog, trigger.id, maxBytes, nullptr, mapObjects);
         if (!body.Succeeded() || !body.value) return {std::nullopt, std::move(body.diagnostics)};
         std::vector<std::string> options;
         if (trigger.runOnInit != 0) options.emplace_back("init");

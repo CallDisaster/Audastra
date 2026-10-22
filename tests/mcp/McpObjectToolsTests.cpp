@@ -69,7 +69,7 @@ struct Fixture {
 void SevenKindsAndSharedSchemas() {
     Fixture f;
     const auto definitions = ObjectToolDefinitions();
-    Require(definitions.size() == 6, "all six A tools declared in one schema source");
+    Require(definitions.size() == 8, "all eight object tools declared in one schema source");
     std::set<QString> names;
     for (const auto& tool : definitions) {
         names.insert(tool.name);
@@ -123,6 +123,29 @@ void SetOptionsRevisionAndAtomicity() {
     request = f.Request(ObjectType::Unit); request.insert("page", QJsonObject{{"limit", 129}});
     Require(!f.Invoke("objects_list", request).value("ok").toBool(), "page cap enforced beyond generic schema validation");
 }
+void CompactTextTools() {
+    Fixture f;
+    auto request = f.Request(ObjectType::Unit, true); request.insert("id", "u001");
+    request.insert("text", QStringLiteral("# 只写要改的行\n生命值 (uhpm) = 260  // 注释忽略\n技能 (uabi) = ['A001']\n"));
+    const auto applied = f.Invoke("objects_apply_text", request);
+    Require(applied.value("ok").toBool() && f.commits == 1 && !applied.value("saved").toBool(), "text edit commits once");
+    request = f.Request(ObjectType::Unit); request.insert("id", "u001");
+    const auto text = f.Invoke("objects_text", request).value("text").toString();
+    Require(text.contains("(uhpm) = 260\n") && text.contains("(uabi) = ['A001']"), "text shows overridden fields");
+    request.insert("all", true);
+    Require(f.Invoke("objects_text", request).value("text").toString().size() > text.size(), "all lists inherited fields");
+    request.insert("all", 1);
+    Require(!f.Invoke("objects_text", request).value("ok").toBool(), "boolean argument type checked");
+    const auto fingerprint = f.objects.documents[0]->DocumentFingerprint();
+    request = f.Request(ObjectType::Unit, true); request.insert("id", "u001");
+    request.insert("text", QStringLiteral("(uhpm) = 300\n\n(uabi) = ['A999']"));
+    const auto rejected = f.Invoke("objects_apply_text", request);
+    const auto message = rejected.value("diagnostics").toArray().first().toObject().value("message").toString();
+    Require(!rejected.value("ok").toBool() && message.startsWith(QStringLiteral("第 3 行")), "plan failure located by line");
+    request.insert("text", QStringLiteral("(uhpm) = abc"));
+    Require(Code(f.Invoke("objects_apply_text", request)) == "OBJECT_TEXT_INVALID", "syntax error code");
+    Require(f.commits == 1 && f.objects.documents[0]->DocumentFingerprint() == fingerprint, "rejected text changes nothing");
+}
 void PolicyAndDeletionCoverage() {
     Fixture f;
     auto request = f.Request(ObjectType::Unit, true); request.insert("base_id", "u001"); request.insert("new_id", "U001");
@@ -169,7 +192,7 @@ void QueriedScalarAddressesRemainWritable() {
 }
 }
 int main() {
-    try { SevenKindsAndSharedSchemas(); SetOptionsRevisionAndAtomicity(); PolicyAndDeletionCoverage(); QueriedScalarAddressesRemainWritable();
+    try { SevenKindsAndSharedSchemas(); SetOptionsRevisionAndAtomicity(); CompactTextTools(); PolicyAndDeletionCoverage(); QueriedScalarAddressesRemainWritable();
         std::cout << "McpObjectTools tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << "McpObjectTools test failure: " << error.what() << '\n'; return 1; }
 }

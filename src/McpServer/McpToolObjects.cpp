@@ -24,7 +24,7 @@ struct ArchiveObjectCache {
 };
 
 bool IsArchiveQueryTool(const QString& name) {
-    return name == "objects_list" || name == "objects_get" || name == "objects_field_options";
+    return name == "objects_list" || name == "objects_get" || name == "objects_text" || name == "objects_field_options";
 }
 
 QJsonArray CatalogSourcesJson(const ObjectData::EffectiveObjectCatalog& catalog) {
