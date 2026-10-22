@@ -336,7 +336,8 @@ Result<FileReadLease> OpenSafeReadFile(const std::filesystem::path& input, std::
     if (!listed.Succeeded()) return {std::nullopt, listed.diagnostics};
     if (*listed.value != parent.lease_->origin.zoneIdentifier.has_value()) return Failure<FileReadLease>(input,
         "UPDATE_INVENTORY_CHANGED", "共享目录的下载来源数据流在租约期间变化。");
-    return OpenValidatedReadFile(input, std::move(*normalized.value), maxBytes, {}, parent);
+    DirectoryReadLease emptyParent;
+    return OpenValidatedReadFile(input, std::move(*normalized.value), maxBytes, std::move(emptyParent), parent);
 }
 
 } // namespace War3Map::Update::Detail
