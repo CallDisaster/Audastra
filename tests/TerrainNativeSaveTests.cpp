@@ -2,6 +2,7 @@
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/TerrainPatchCodec.h"
+#include "War3MapCore/MapData/TerrainPathingResources.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 
 #include <Windows.h>
@@ -118,6 +119,53 @@ void WaterCrossingAndUndoUseActualSavedPathing() {
     Require(Take(f.edits->InspectTerrainPoint(f.point)).pathingFlags == 0x1b, "redo resaves the native output");
 }
 
+void NewHasWaterUsesIndependentG0G1AndPreservesSourceProtection() {
+    for (const bool deep : {false, true}) {
+        Fixture f(false);
+        const auto original = Take(ParseMapTerrain(f.members[0].data));
+        auto current = *original.Snapshot();
+        for (auto& vertex : current.vertices) {
+            vertex.textureAndFlagsRaw |= 0x40;
+            vertex.waterHeightAndFlagsRaw = static_cast<std::uint16_t>(8192 + (deep ? 80 : 48) * 4);
+        }
+        RefreshTerrainDerived(current, 0, 0, 9, 9);
+        Check(f.edits->SetTerrainAndPathing(Take(SerializeMapTerrain(current)), f.members[1].data));
+        const auto owner = Take(TerrainPathingResources::CaptureNative(*f.archive, *original.Snapshot(), current, {}, 1024 * 1024));
+        const auto g0 = Take(owner.GenerateNative(*original.Snapshot(), 1024 * 1024));
+        const auto g1 = Take(owner.GenerateNative(current, 1024 * 1024));
+        const auto expected = deep ? std::byte{0x0a} : std::byte{0x08};
+        Require(std::all_of(g0.begin(), g0.end(), [](auto value) { return value == std::byte{0x40}; })
+            && std::all_of(g1.begin(), g1.end(), [&](auto value) { return value == expected; }),
+            "new HasWater changes independent dry G0=40 to shallow G1=08 or deep G1=0a");
+        TerrainBrush restriction; restriction.kind = TerrainBrushKind::PathingRestriction;
+        restriction.size = 1; restriction.pathingRestrictions = 0x04; f.Paint(restriction);
+        const auto plan = f.Plan(); Check(plan.SaveGate());
+        auto output = f.edits->Replacements(); Check(plan.InstallPathingOutput(*f.edits, output));
+        const auto wpm = std::find_if(output.begin(), output.end(), [](const auto& member) { return member.name == "war3map.wpm"; });
+        Require(wpm != output.end() && wpm->data[16] == (std::byte{0x11} | expected)
+            && wpm->data[16 + 16 * 32 + 16] == (std::byte{0x15} | expected),
+            "new HasWater output replaces native six bits and preserves source 11 plus explicit intent 04");
+        f.Save(deep ? "new-deep.w3x" : "new-shallow.w3x");
+        Require(f.edits->Undo() && f.edits->Undo(), "undo saved intent and new HasWater raw delta");
+        f.Save("dry-restored.w3x");
+        Require(Take(f.archive->ReadMember("war3map.wpm")) == f.members[1].data,
+            "undoing HasWater regenerates dry G1 without retaining former water restrictions");
+    }
+
+    Fixture unexplained(false);
+    unexplained.members[1].data[16] ^= std::byte{0x04}; unexplained.Open("unexplained-dry.w3x");
+    const auto parsed = Take(ParseMapTerrain(unexplained.members[0].data));
+    auto wet = *parsed.Snapshot();
+    for (auto& vertex : wet.vertices) vertex.textureAndFlagsRaw |= 0x40;
+    RefreshTerrainDerived(wet, 0, 0, 9, 9);
+    Check(unexplained.edits->SetTerrainAndPathing(Take(SerializeMapTerrain(wet)), unexplained.members[1].data));
+    const auto refused = unexplained.Plan();
+    Require(!refused.SaveGate().Succeeded() && !refused.RebuiltPathing()
+        && std::any_of(refused.SaveGate().diagnostics.begin(), refused.SaveGate().diagnostics.end(), [](const auto& diagnostic) {
+            return diagnostic.code == "TERRAIN_PATHING_SOURCE_UNEXPLAINED" && diagnostic.message.find("(0,0)") != std::string::npos;
+        }), "new HasWater cannot bypass old WPM matching against dry G0 and saved intent");
+}
+
 void OverlappingSavedIntentIsNotRecoveredBySubtractingBits() {
     Fixture f;
     TerrainBrush restriction; restriction.kind = TerrainBrushKind::PathingRestriction;
@@ -202,6 +250,7 @@ void DirectoryRecipeUsesGeneratedWpm() {
 int main() {
     try {
         WaterCrossingAndUndoUseActualSavedPathing();
+        NewHasWaterUsesIndependentG0G1AndPreservesSourceProtection();
         OverlappingSavedIntentIsNotRecoveredBySubtractingBits();
         MaterialsAndCliffsRebuildThePathing();
         UnexplainedSourceAndOutputTamperingRefuse();

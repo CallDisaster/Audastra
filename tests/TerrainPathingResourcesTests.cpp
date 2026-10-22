@@ -12,6 +12,7 @@
 #include <atomic>
 #include <iostream>
 #include <stdexcept>
+#include <utility>
 
 namespace {
 using namespace War3Map;
@@ -57,6 +58,11 @@ Bytes GroundTable(std::string_view secondWalk = "1", std::string_view secondBuil
         "C;X1;Y2;K\"Tg01\"\nC;X2;K1\nC;X3;K1\nC;X4;K1\n"
         "C;X1;Y3;K\"Tg02\"\nC;X2;K" + std::string(secondWalk) + "\nC;X3;K1\nC;X4;K" + std::string(secondBuild) + "\n"
         "C;X1;Y4;K\"Tg03\"\nC;X2;K0\nC;X3;K1\nC;X4;K0\nE\n");
+}
+
+Bytes CliffTable(std::string_view first = "Cl01", std::string_view second = "Cl02") {
+    return Text("ID;PWXL;N;E\nB;X1;Y3;D0\nC;X1;Y1;K\"cliffID\"\n"
+        "C;X1;Y2;K\"" + std::string(first) + "\"\nC;X1;Y3;K\"" + std::string(second) + "\"\nE\n");
 }
 
 struct Fixture {
@@ -557,6 +563,8 @@ void NativeCaptureBindsFullRulesAndBothTerrainRevisions() {
     const auto source = fixture.Write(directory.path / "native.w3x");
     auto after = fixture.grid; after.vertices[40].variationRaw = 1;
     const auto captured = Take(TerrainPathingResources::CaptureNative(source, fixture.grid, after, {}, 1024 * 1024));
+    Require(!captured.VerifyWaterBrushInput(fixture.grid, after).Succeeded(),
+        "native save resources do not grant editing rule input identity");
     const auto beforeGrid = Take(captured.GenerateNative(fixture.grid, 1024 * 1024));
     Require(beforeGrid.size() == 1024 && std::all_of(beforeGrid.begin(), beforeGrid.end(), [](auto v) { return v == std::byte{0x40}; }),
         "unchanged full dry ground uses actual source properties, not random source WPM");
@@ -603,6 +611,78 @@ void NativeWaterAndFractionalWorldBoundsUseActualSources() {
     dry.members.back().data = Text("[CameraMargins]\nleft=1\n");
     const auto conflict = dry.Write(directory.path / "camera-conflict.w3x");
     Require(!TerrainPathingResources::CaptureNative(conflict, dry.grid, dry.grid, {}, 1024 * 1024).Succeeded(), "conflicting camera definitions cannot hide native first value");
+}
+
+void NativeChangedCliffSlotsBindActualRowsAndWinners() {
+    Directory directory; Fixture fixture;
+    fixture.grid.header.cliffTilesets.push_back("Cl02");
+    fixture.terrain = Take(SerializeMapTerrain(fixture.grid)); fixture.members[0].data = fixture.terrain;
+    NativeSources(fixture, NativeSettings());
+    fixture.members.push_back({"TerrainArt/CliffTypes.slk", CliffTable()});
+    const auto source = fixture.Write(directory.path / "cliff-slots.w3x");
+    for (const std::uint8_t variation : {0, 1, 2}) {
+        auto after = fixture.grid;
+        after.vertices[40].cliffAndLayerRaw |= 0x10;
+        after.vertices[40].variationRaw = static_cast<std::uint8_t>(variation << 5);
+        const auto captured = Take(TerrainPathingResources::CaptureNative(source, fixture.grid, after, {}, 1024 * 1024));
+        Require(Take(captured.GenerateNative(after, 1024 * 1024)) == Take(captured.GenerateNative(fixture.grid, 1024 * 1024)),
+            "valid existing cliff slot and legal visual variation preserve G0/G1 when levels do not change");
+        const std::vector<MemberReplacement> replacements{{"war3map.w3e", Take(SerializeMapTerrain(after))}};
+        Check(captured.VerifyFrozenOutput(replacements, {}));
+        const auto saved = Take(MapArchiveSession::Open(Take(source.SaveCandidate(
+            directory.path / ("cliff-saved-" + std::to_string(variation) + ".w3x"), replacements)).path));
+        Check(captured.VerifyReadback(saved, 1024 * 1024));
+        auto altered = replacements;
+        auto table = CliffTable(); table.push_back(std::byte{'\n'});
+        altered.push_back({"TerrainArt/CliffTypes.slk", table});
+        Require(!captured.VerifyFrozenOutput(altered, {}).Succeeded(), "changed cliff table bytes invalidate frozen output");
+        const auto changed = Take(MapArchiveSession::Open(Take(source.SaveCandidate(
+            directory.path / ("cliff-drift-" + std::to_string(variation) + ".w3x"), altered)).path));
+        Require(!captured.VerifyReadback(changed, 1024 * 1024).Succeeded(), "independent readback binds the actual cliff table");
+    }
+    auto after = fixture.grid; after.vertices[40].cliffAndLayerRaw |= 0x10;
+    for (const auto& pair : {std::pair{"ClXX", "Cl02"}, std::pair{"Cl01", "ClXX"}}) {
+        fixture.members.back().data = CliffTable(pair.first, pair.second);
+        const auto missing = fixture.Write(directory.path / (std::string(pair.first) + pair.second + ".w3x"));
+        const auto refused = TerrainPathingResources::CaptureNative(missing, fixture.grid, after, {}, 1024 * 1024);
+        Require(!refused.Succeeded() && HasCode(refused.diagnostics, "TERRAIN_PATHING_PROPERTY_MISSING"),
+            "both changed old and new cliff rawcodes need actual rows");
+    }
+    fixture.members.pop_back();
+    const auto without = fixture.Write(directory.path / "missing-cliff-table.w3x");
+    Require(!TerrainPathingResources::CaptureNative(without, fixture.grid, after, {}, 1024 * 1024).Succeeded(),
+        "missing actual cliff table has no compatibility fallback");
+    const auto game = directory.path / "cliff-game"; Require(std::filesystem::create_directory(game), "private cliff game");
+    const std::vector<MapArchiveMember> table{{"TerrainArt/CliffTypes.slk", CliffTable()}};
+    Take(WriteVerifiedArchive(game / "war3.mpq", table));
+    const auto gameOwner = Take(TerrainPathingResources::CaptureNative(without, fixture.grid, after, game, 1024 * 1024));
+    Take(WriteVerifiedArchive(game / "war3patch.mpq", table));
+    Require(!gameOwner.VerifyReadback(without, 1024 * 1024).Succeeded(),
+        "same cliff bytes in a different game archive winner invalidate source identity");
+}
+
+void NativeCliffSlotsDoNotExpandThePaletteDomain() {
+    Directory directory; Fixture fixture;
+    NativeSources(fixture, NativeSettings());
+    const auto source = fixture.Write(directory.path / "slot-domain.w3x");
+    for (const std::uint8_t slot : {1, 15}) {
+        auto after = fixture.grid; after.vertices[40].cliffAndLayerRaw = static_cast<std::uint8_t>((slot << 4) | 2);
+        const auto result = TerrainPathingResources::CaptureNative(source, fixture.grid, after, {}, 1024 * 1024);
+        Require(!result.Succeeded() && HasCode(result.diagnostics, "TERRAIN_NATIVE_CLIFF_SLOT"),
+            "out-of-palette and sentinel cliff slots cannot acquire native save resources");
+    }
+    auto appended = fixture.grid; appended.header.cliffTilesets.push_back("Cl02");
+    appended.vertices[40].cliffAndLayerRaw |= 0x10;
+    const auto palette = TerrainPathingResources::CaptureNative(source, fixture.grid, appended, {}, 1024 * 1024);
+    Require(!palette.Succeeded() && HasCode(palette.diagnostics, "TERRAIN_NATIVE_SOURCE_SHAPE"),
+        "this save domain only permits existing cliff slots, not palette mutation");
+    fixture.grid.vertices[40].cliffAndLayerRaw = 0xf2;
+    fixture.members[0].data = Take(SerializeMapTerrain(fixture.grid));
+    const auto sentinel = fixture.Write(directory.path / "old-sentinel.w3x");
+    auto resolved = fixture.grid; resolved.vertices[40].cliffAndLayerRaw = 2;
+    const auto oldInvalid = TerrainPathingResources::CaptureNative(sentinel, fixture.grid, resolved, {}, 1024 * 1024);
+    Require(!oldInvalid.Succeeded() && HasCode(oldInvalid.diagnostics, "TERRAIN_NATIVE_CLIFF_SLOT"),
+        "a new valid slot does not legitimize an unknown old sentinel");
 }
 
 void NativeObjectZeroDomainRequiresRealClassificationAndWalkability() {
@@ -692,6 +772,8 @@ int main() {
         StoredAndDecodedBudgetsShareTheCallerAllowance();
         NativeCaptureBindsFullRulesAndBothTerrainRevisions();
         NativeWaterAndFractionalWorldBoundsUseActualSources();
+        NativeChangedCliffSlotsBindActualRowsAndWinners();
+        NativeCliffSlotsDoNotExpandThePaletteDomain();
         NativeObjectZeroDomainRequiresRealClassificationAndWalkability();
         NativeDirectoryCaptureUsesTheSameFrozenResources();
         CliffRefinementRequiresTheSameBlockingOutline();

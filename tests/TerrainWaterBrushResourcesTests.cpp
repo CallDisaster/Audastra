@@ -345,6 +345,40 @@ void CurrentDraftHasIndependentInputIdentityAndActualPaletteRules() {
     Require(!TerrainPathingResources::CaptureWaterBrushRules(source, fixture.grid, shifted, game, true, kBudget).Succeeded(),
         "current draft cannot change the source coordinate shape through rule capture");
 }
+
+void OwnerVerifiesSourceAndCurrentIndependently() {
+    Directory directory; Fixture fixture; const auto game = GameRoot(directory);
+    const auto source = fixture.Write(directory.path / "identity.w3x");
+    auto current = fixture.grid; current.vertices[40].groundHeightRaw += 16;
+    RefreshTerrainDerived(current, 0, 0, 9, 9);
+    const auto owner = Take(TerrainPathingResources::CaptureWaterBrushRules(source, fixture.grid, current, game, true, kBudget));
+    Check(owner.VerifyWaterBrushInput(fixture.grid, current));
+    const auto hasCode = [](const Status& status, std::string_view code) {
+        return !status.Succeeded() && std::any_of(status.diagnostics.begin(), status.diagnostics.end(),
+            [&](const auto& diagnostic) { return diagnostic.code == code; });
+    };
+    auto wrongSource = fixture.grid; wrongSource.vertices[1].variationRaw = 1;
+    Require(hasCode(owner.VerifyWaterBrushInput(wrongSource, current), "TERRAIN_WATER_RULE_SOURCE_CHANGED"),
+        "a matching current draft cannot grant a different original source identity");
+    auto changed = current; changed.vertices[40].groundHeightRaw += 4;
+    RefreshTerrainDerived(changed, 0, 0, 9, 9);
+    Require(hasCode(owner.VerifyWaterBrushInput(fixture.grid, changed), "TERRAIN_WATER_RULE_INPUT_CHANGED"),
+        "the edited after-candidate cannot substitute for the frozen stroke input");
+    Require(hasCode(owner.VerifyWaterBrushInput(current, fixture.grid), "TERRAIN_WATER_RULE_SOURCE_CHANGED"),
+        "source and current roles cannot be swapped");
+    const auto equivalent = Take(TerrainPathingResources::Capture(source, fixture.grid, fixture.grid, game, kBudget));
+    Require(hasCode(equivalent.VerifyWaterBrushInput(fixture.grid, fixture.grid), "TERRAIN_WATER_RULES_UNAVAILABLE"),
+        "an ordinary equivalence owner cannot grant water editing rules");
+    Require(!owner.GenerateNative(current, kBudget).Succeeded() && !owner.VerifyFrozenOutput({}, {}).Succeeded(),
+        "successful input verification remains editing-only and never grants native generation or saving");
+    const auto mapRoot = directory.path / "identity-map"; fixture.WriteDirectory(mapRoot);
+    const auto workspace = Take(DirectoryWorkspace::Open(mapRoot));
+    const auto directoryOwner = Take(TerrainPathingResources::CaptureWaterBrushRules(
+        workspace.Snapshot(), fixture.grid, current, game, true, kBudget));
+    Check(directoryOwner.VerifyWaterBrushInput(fixture.grid, current));
+    Require(hasCode(directoryOwner.VerifyWaterBrushInput(fixture.grid, changed), "TERRAIN_WATER_RULE_INPUT_CHANGED"),
+        "directory and archive owners enforce the same canonical input identity");
+}
 } // namespace
 
 int main() {
@@ -358,6 +392,7 @@ int main() {
         DirectoryCaptureUsesVerifiedSourceAndRejectsUnknownLayout();
         RuleAndMetadataReadsShareCallerBudget();
         CurrentDraftHasIndependentInputIdentityAndActualPaletteRules();
+        OwnerVerifiesSourceAndCurrentIndependently();
         std::cout << "Terrain water brush resource tests passed\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

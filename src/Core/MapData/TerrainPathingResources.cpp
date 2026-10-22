@@ -23,10 +23,7 @@ namespace {
 constexpr auto kSubsystem = "Terrain.PathingResources";
 constexpr std::size_t kTableBytes = 2 * 1024 * 1024;
 struct ClassicProfileInput { const char* path; bool alwaysLoad; };
-// 已有只读证据：release-016-20261017/water-terrain-config01/MAP.md及
-// profile-load-list.json，WorldEdit.exe表0x7BCA80，SHA256：
-// 5F645DB7C436ED2DE0C52712D98ACAF75E518847E6234D4CC1E5C5BEE2D76DFC。
-// 这是本编辑器采用的完整经典固定初始化链，不声称是任意运行中WE的最终profile。
+// 本编辑器采用的完整经典固定初始化链；不声称是任意运行中编辑器的最终profile。
 constexpr std::array<ClassicProfileInput, 56> kClassicProfiles{{
     {"Units/MiscData.txt", false}, {"Units/MiscGame.txt", false},
     {"UI/MiscData.txt", true}, {"UI/WorldEditData.txt", true},
@@ -332,12 +329,24 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
         auto needs = Required(before, after);
         std::optional<MapSettings> settings;
         std::optional<DoodadPlacements> doodads;
+        std::set<std::string, std::less<>> cliffs;
         bool nativeOverrides = false;
         if (native) {
             if (before.header.version != 11 || after.header.version != 11
                 || before.header.width != after.header.width || before.header.height != after.header.height
-                || before.header.offset != after.header.offset || before.header.mainTileset != after.header.mainTileset)
+                || before.header.offset != after.header.offset || before.header.mainTileset != after.header.mainTileset
+                || before.header.cliffTilesets != after.header.cliffTilesets
+                || before.vertices.size() != after.vertices.size())
                 Fail("TERRAIN_NATIVE_SOURCE_SHAPE", "原版通行重建要求旧/新经典地形尺寸、偏移与地形集不变。");
+            for (std::size_t i = 0; i < before.vertices.size(); ++i) {
+                const auto oldSlot = before.vertices[i].CliffTextureIndex(), newSlot = after.vertices[i].CliffTextureIndex();
+                if (oldSlot == newSlot) continue;
+                if (oldSlot >= 15 || newSlot >= 15 || oldSlot >= before.header.cliffTilesets.size()
+                    || newSlot >= after.header.cliffTilesets.size())
+                    Fail("TERRAIN_NATIVE_CLIFF_SLOT", "悬崖槽变化需要旧/新均属于已有有效palette槽：顶点" + std::to_string(i));
+                cliffs.insert(before.header.cliffTilesets[oldSlot]);
+                cliffs.insert(after.header.cliffTilesets[newSlot]);
+            }
             const std::vector<std::string> metadata{"war3map.w3e", "war3map.w3i", "war3map.doo", "war3map.w3b"};
             ArchiveExactMemberLimits limits;
             limits.memberCount = metadata.size(); limits.memberBytes = limits.totalBytes = maximumBytes;
@@ -393,6 +402,7 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
         std::vector<std::string> names;
         if (!needs.ground.empty()) names.emplace_back("TerrainArt/Terrain.slk");
         if (needs.water) names.emplace_back("TerrainArt/Water.slk");
+        if (!cliffs.empty()) names.emplace_back("TerrainArt/CliffTypes.slk");
         const bool camera = native;
         if (needs.water || camera) {
             names.emplace_back("UI/MiscData.txt");
@@ -423,6 +433,11 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
                 // 原版记录先存float再乘128；不以视觉深水阈值64替代通行阈值。
                 waterHeight = Number(Field(*row, "height"), "Water.height");
                 if (native) waterImpassable = Boolean(Field(*row, "impassable"), "Water.impassable");
+            } else if (names[i] == "TerrainArt/CliffTypes.slk") {
+                const auto table = Table(names[i], "cliffid", bytes);
+                for (const auto& id : cliffs) if (std::none_of(table.Rows().begin(), table.Rows().end(),
+                    [&](const auto& row) { return row.id == id; }))
+                    Fail("TERRAIN_PATHING_PROPERTY_MISSING", "CliffTypes.slk缺少悬崖槽变化的实际行：" + id);
             } else if (names[i] == "Units/DestructableData.slk") {
                 const auto table = Table(names[i], "destructableid", bytes);
                 for (std::size_t rowIndex = 0; rowIndex < doodads->doodads.size(); ++rowIndex) {
@@ -480,8 +495,8 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
             if ((settings->flags & 0x400u) != 0) {
                 for (const auto margin : settings->cameraMargins) if (margin < 0)
                     Fail("TERRAIN_NATIVE_PLAYABLE_BOUNDS", "W3I可玩边距不能为负。");
-                // 5E69A0先将补足边距与CameraMargins组合并存F32相机角，
-                // 5E72C0再扩回F32查询矩形；不能仅在double中约去两次边距。
+                // 先将补足边距与CameraMargins组合并存F32相机角，
+                // 再扩回F32查询矩形；不能仅在double中约去两次边距。
                 bounds = {expandLow(grid.offset[0] + settings->cameraMargins[0] * 128.0, 0),
                     expandLow(grid.offset[1] + settings->cameraMargins[2] * 128.0, 2),
                     expandHigh(grid.offset[0] + (static_cast<double>(grid.width - 1) - settings->cameraMargins[1]) * 128.0, 1),
@@ -492,7 +507,7 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
                     static_cast<float>(settings->cameraBounds[2] + world(1)),
                     static_cast<float>(settings->cameraBounds[3] + world(3))};
             }
-            // 5E72C0使用world浮点矩形；不借用小地图clamp+tile取整。
+            // 通行查询使用world浮点矩形；不借用小地图clamp+tile取整。
             if (!std::isfinite(bounds.left) || !std::isfinite(bounds.bottom) || !std::isfinite(bounds.right)
                 || !std::isfinite(bounds.top) || bounds.left >= bounds.right || bounds.bottom >= bounds.top)
                 Fail("TERRAIN_NATIVE_PLAYABLE_BOUNDS", "W3I实际世界可玩矩形无效或为空。");
@@ -571,7 +586,7 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureWaterBrushInputs
                         [&](const auto& item) { return item.id == id; });
                     if (row == table.Rows().end())
                         Fail("TERRAIN_PATHING_PROPERTY_MISSING", "Terrain.slk缺少水刷地面palette行：" + id);
-                    // water-blight-resource01：4F45D0字段7/buildable，不能误用blightPri。
+                    // 荒芜资格使用实际buildable，不能误用显示优先级blightPri。
                     ground.push_back({id, Boolean(Field(*row, "buildable"), "Terrain.buildable")});
                 }
                 return;
@@ -582,7 +597,7 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureWaterBrushInputs
                 const auto row = std::find_if(table.Rows().begin(), table.Rows().end(), [&](const auto& item) { return item.id == id; });
                 if (row == table.Rows().end())
                     Fail("TERRAIN_PATHING_PROPERTY_MISSING", "Water.slk缺少水刷当前地形集浅水行。");
-                // R2_NATIVE_SAVE_RE.md：height先存F32，乘128再落F32；深水阈值不乘128。
+                // height先存F32，乘128再落F32；深水阈值不乘128。
                 waterOffset = Number(Field(*row, "height"), "Water.height") * 128.0f;
                 return;
             }
@@ -609,7 +624,7 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureWaterBrushInputs
                     else if (key == "maxheight") slot = 2;
                 } else if (section == "water" && key == "deeplevelpathing") slot = 3;
                 if (!slot) return;
-                // 4D1D40/index0读取追加链首值。本有限域要求所有出现均为同一单scalar；
+                // 经典getter读取追加链首值。本有限域要求所有出现均为同一单scalar；
                 // CSV/非法值由完整数值解析拒绝，故不能被后续合法定义掩盖。
                 SameScalar(values[*slot], Number(value, fields[*slot]), fields[*slot]);
                 unguarded[*slot] |= kClassicProfiles[i - 3].alwaysLoad;
@@ -618,10 +633,10 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureWaterBrushInputs
         const auto resources = result.CaptureResourceMembers(reader, names, 3, visitResource);
         if (!resources.Succeeded()) throw Failure{resources.diagnostics};
         for (std::size_t i = 0; i < fields.size(); ++i) if (!values[i] || !unguarded[i])
-            Fail("TERRAIN_WATER_RULE_SOURCE", std::string(fields[i]) + "未由flag1固定链完整提供；不能猜测未知820000加载guard。");
+            Fail("TERRAIN_WATER_RULE_SOURCE", std::string(fields[i]) + "未由flag1固定链完整提供；不能猜测未知加载guard。");
         if (*values[0] < 0 || *values[0] > 90 || *values[1] > *values[2] || *values[3] < 0)
             Fail("TERRAIN_PATHING_PROPERTY_INVALID", "实际水刷Terrain/Water规则不在有限支持域内。");
-        // water-maxcliff01：源MaxHeight是F32，随后double计算并向零截断；原版没有clamp14。
+        // 源MaxHeight是F32，随后double计算并向零截断；经典规则没有clamp14。
         const double maximumLevel = std::trunc((static_cast<double>(*values[2]) - static_cast<double>(-256.0f)) / 128.0);
         if (maximumLevel < 0 || maximumLevel > 14)
             Fail("TERRAIN_PATHING_PROPERTY_INVALID", "实际MaxHeight派生悬崖上限超出水刷0..14域，不能截断为兼容默认值。");
@@ -629,6 +644,30 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureWaterBrushInputs
             static_cast<std::uint8_t>(maximumLevel), enforceWaterLimits, std::move(ground), std::move(cliffs));
         return result;
     });
+}
+
+Status TerrainPathingResources::VerifyWaterBrushInput(const TerrainGridSnapshot& sourceTerrain,
+    const TerrainGridSnapshot& currentTerrain) const {
+    auto checked = Guard<bool>([&] {
+        if (!waterBrushRules_ || waterBrushInputSha_.empty())
+            Fail("TERRAIN_WATER_RULES_UNAVAILABLE", "此owner未从实际来源捕获水刷编辑规则。");
+        const auto source = std::find_if(dependencies_.begin(), dependencies_.end(),
+            [](const auto& dependency) { return dependency.name == "war3map.w3e" && dependency.mapOnly && dependency.mapPresent; });
+        if (source == dependencies_.end())
+            Fail("TERRAIN_WATER_RULES_UNAVAILABLE", "水刷规则缺少实际来源W3E身份。");
+        {
+            const auto wire = TerrainWire(sourceTerrain, capturedMaximumBytes_);
+            if (wire.size() != source->bytes || Take(Sha256(wire)) != source->sha256)
+                Fail("TERRAIN_WATER_RULE_SOURCE_CHANGED", "Session原始地形不属于本次实际来源W3E。");
+        }
+        {
+            const auto wire = TerrainWire(currentTerrain, capturedMaximumBytes_);
+            if (wire.size() != waterBrushInputBytes_ || Take(Sha256(wire)) != waterBrushInputSha_)
+                Fail("TERRAIN_WATER_RULE_INPUT_CHANGED", "Session当前草稿不属于本笔规则捕获时的冻结输入。");
+        }
+        return true;
+    });
+    return {std::move(checked.diagnostics)};
 }
 
 bool TerrainPathingResources::EquivalentGround(std::string_view before, std::string_view after) const {
