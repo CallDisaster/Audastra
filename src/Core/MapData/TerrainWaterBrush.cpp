@@ -120,6 +120,8 @@ public:
             ClearMarkers();
             ApplyCliff(*center, targetLevel);
         }
+        // 岸线和第二轮层级收敛仍可改写 L；提交前再次核对最终实际处理域。
+        CheckSpecialDoodads();
         // 只比较实际访问过的记录；没有全图坡道或未知位拒绝。
         Work(grid_.vertices.size());
         for (std::uint32_t y = 0; y < height_; ++y) for (std::uint32_t x = 0; x < width_; ++x) {
@@ -159,10 +161,14 @@ private:
         if (count > limits_.maximumWork - result_.work) Reject("TERRAIN_WATER_WORK_BUDGET", "水刷超过显式工作量预算，整笔未修改。");
         result_.work += count;
     }
-    TerrainVertex& Read(std::uint32_t x, std::uint32_t y) {
+    TerrainVertex& Inspect(std::uint32_t x, std::uint32_t y) {
         Work(); auto& vertex = grid_.vertices[Index(x, y)]; ValidateVertex(vertex, x, y);
         if (vertex.CliffTextureIndex() != 15 && vertex.CliffTextureIndex() >= grid_.header.cliffTilesets.size())
             Reject("TERRAIN_WATER_CLIFF_RESOURCE", "实际处理点的悬崖 palette 不在源 W3E 表中。");
+        return vertex;
+    }
+    TerrainVertex& Read(std::uint32_t x, std::uint32_t y) {
+        auto& vertex = Inspect(x, y);
         visited_[Index(x, y)] = 1; Include(result_.processed, x, y); return vertex;
     }
     DirtyBlocks NewBlocks() { Work(BlockCount()); return DirtyBlocks(BlockCount()); }
@@ -340,10 +346,11 @@ private:
                 for (auto y = shape.y0; y <= shape.y1; ++y) { Work(); if (visited_[Index(x, y)]) { intersects = true; break; } }
             if (!intersects) continue;
             const auto columns = shape.x1 - shape.x0 + 1;
-            const int base = int(Read(shape.x0, shape.y0).CliffLevel()) - shape.relativeCliffLevels.front();
+            // 资源形态核验不扩展实际处理域，避免相邻 special 因输入顺序被级联纳入。
+            const int base = int(Inspect(shape.x0, shape.y0).CliffLevel()) - shape.relativeCliffLevels.front();
             for (auto x = shape.x0; x <= shape.x1; ++x) for (auto y = shape.y0; y <= shape.y1; ++y) {
                 const auto index = std::size_t(y - shape.y0) * columns + x - shape.x0;
-                if (Read(x, y).CliffLevel() != base + shape.relativeCliffLevels[index])
+                if (Inspect(x, y).CliffLevel() != base + shape.relativeCliffLevels[index])
                     Reject("TERRAIN_WATER_SPECIAL_DOODAD_DELETE", "水刷需要删除 DOO special 记录 "
                         + std::to_string(shape.sourceRecordIndex) + "（" + shape.rawcode + "）；当前有限域不修改该集合。");
             }

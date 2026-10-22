@@ -193,6 +193,58 @@ void SpecialDoodadFactsAndImpact() {
         "an impacted special record whose relative levels still match needs no deletion");
 }
 
+void SpecialDoodadRejectsLateShoreChange() {
+    const TerrainStrokePoint point{1024, 1024};
+    auto grid = Flat();
+    At(grid, 8, 8).textureAndFlagsRaw |= 0x40;
+    At(grid, 8, 8).waterHeightAndFlagsRaw = 10240; // R=512，B=0，锚点 L=2。
+    At(grid, 9, 8).cliffAndLayerRaw = 0;
+    At(grid, 8, 9).cliffAndLayerRaw = 0;
+    At(grid, 9, 9).cliffAndLayerRaw = 0;
+    const auto brush = Brush(grid);
+    const auto source = Bytes(grid);
+    auto unrestricted = grid;
+    Require(ApplyTerrainWaterStroke(unrestricted, Rules(), brush, std::span(&point, 1), EmptyDoodads()).Succeeded(),
+        "late-shore fixture succeeds without a special record");
+    Require(At(unrestricted, 8, 8).CliffLevel() == 6 && At(unrestricted, 9, 8).CliffLevel() == 7
+        && At(unrestricted, 8, 9).CliffLevel() == 7 && At(unrestricted, 9, 9).CliffLevel() == 7,
+        "dry-shore cleanup raises the three level-four corners to seven after initial convergence");
+
+    auto doodads = EmptyDoodads();
+    doodads.specialDoodads.push_back({"YTfb", 0, {8, 8}});
+    const TerrainWaterSpecialDoodadShape shape{0, "YTfb", 0, {8, 8}, 8, 8, 9, 9, {2, 0, 0, 0}};
+    // 源角为 {2,0,0,0}；首轮收敛后 {6,4,4,4} 仍匹配，岸线处理后 {6,7,7,7} 不再匹配。
+    const auto result = ApplyTerrainWaterStroke(grid, Rules(), brush, std::span(&point, 1), doodads, std::span(&shape, 1));
+    Require(!result.Succeeded() && Bytes(grid) == source, "late special deletion requirement rolls back the entire candidate");
+    Require(std::any_of(result.diagnostics.begin(), result.diagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.code == "TERRAIN_WATER_SPECIAL_DOODAD_DELETE";
+    }), "late shore rejection reports the concrete special deletion diagnostic");
+}
+
+void SpecialDoodadChecksDoNotExpandProcessing() {
+    const TerrainStrokePoint point{1024, 1024};
+    auto source = Flat();
+    At(source, 8, 8).textureAndFlagsRaw |= 0x40;
+    At(source, 8, 8).waterHeightAndFlagsRaw = 8192; // 已湿锚点保持 L=2，无岸线改层。
+    const auto brush = Brush(source);
+    const auto original = Bytes(source);
+    auto doodads = EmptyDoodads();
+    doodads.specialDoodads.push_back({"YTfb", 0, {8, 8}});
+    doodads.specialDoodads.push_back({"YTfb", 0, {28, 28}});
+    // 第一个匹配形态跨至远区；第二个不匹配形态只与它相交，不与真实笔刷处理域相交。
+    const TerrainWaterSpecialDoodadShape bridge{0, "YTfb", 0, {8, 8}, 8, 8, 28, 28, std::vector<std::int8_t>(21 * 21, 0)};
+    const TerrainWaterSpecialDoodadShape far{1, "YTfb", 0, {28, 28}, 28, 28, 29, 29, {0, 1, 0, 0}};
+    std::array shapes{bridge, far};
+    for (int order = 0; order < 2; ++order) {
+        auto grid = source;
+        const auto result = ApplyTerrainWaterStroke(grid, Rules(false), brush, std::span(&point, 1), doodads, shapes);
+        Require(result.Succeeded() && Bytes(grid) == original, "special validation order does not enroll an unrelated mismatch");
+        Require(result.value->processed.x1 < 28 && result.value->processed.y1 < 28,
+            "pure special validation does not expand the actual processed bounds");
+        std::reverse(shapes.begin(), shapes.end());
+    }
+}
+
 void HeightFalloffIndependentBoundaries() {
     Require(!Math::MakeHeightFalloffCenter(-256, -200, 100) && !Math::MakeHeightFalloffCenter(100, -200, 100)
         && !Math::MakeHeightFalloffCenter(0, -200, 100), "legal closed bounds produce no falloff");
@@ -230,7 +282,8 @@ void HeightFalloffIndependentBoundaries() {
 int main() {
     try {
         DryAnchorAndExactCoupling(); WetAnchorExactStepAndFixedStroke(); WaterLimitsAndOrderedShore();
-        AtomicFailureAndLocalDomain(); PropagationAndDepthBudget(); SpecialDoodadFactsAndImpact(); HeightFalloffIndependentBoundaries();
-        std::cout << "TerrainWaterBrush: 7 scenario groups passed\n"; return 0;
+        AtomicFailureAndLocalDomain(); PropagationAndDepthBudget(); SpecialDoodadFactsAndImpact();
+        SpecialDoodadRejectsLateShoreChange(); SpecialDoodadChecksDoNotExpandProcessing(); HeightFalloffIndependentBoundaries();
+        std::cout << "TerrainWaterBrush: 9 scenario groups passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << "TerrainWaterBrush: " << error.what() << '\n'; return 1; }
 }
