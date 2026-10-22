@@ -22,6 +22,41 @@ namespace War3Map::MapData {
 namespace {
 constexpr auto kSubsystem = "Terrain.PathingResources";
 constexpr std::size_t kTableBytes = 2 * 1024 * 1024;
+struct ClassicProfileInput { const char* path; bool alwaysLoad; };
+// 已有只读证据：release-016-20261017/water-terrain-config01/MAP.md及
+// profile-load-list.json，WorldEdit.exe表0x7BCA80，SHA256：
+// 5F645DB7C436ED2DE0C52712D98ACAF75E518847E6234D4CC1E5C5BEE2D76DFC。
+// 这是本编辑器采用的完整经典固定初始化链，不声称是任意运行中WE的最终profile。
+constexpr std::array<ClassicProfileInput, 56> kClassicProfiles{{
+    {"Units/MiscData.txt", false}, {"Units/MiscGame.txt", false},
+    {"UI/MiscData.txt", true}, {"UI/WorldEditData.txt", true},
+    {"UI/WorldEditStrings.txt", false}, {"UI/WorldEditGameStrings.txt", true},
+    {"UI/UnitEditorData.txt", false}, {"UI/AIEditorData.txt", false},
+    {"UI/WorldEditLayout.txt", false}, {"Units/CommandFunc.txt", false},
+    {"Units/CommandStrings.txt", false}, {"UI/TriggerData.txt", false},
+    {"UI/TriggerStrings.txt", false}, {"Units/HumanUnitStrings.txt", false},
+    {"Units/NeutralUnitStrings.txt", false}, {"Units/NightElfUnitStrings.txt", false},
+    {"Units/OrcUnitStrings.txt", false}, {"Units/UndeadUnitStrings.txt", false},
+    {"Units/CampaignUnitStrings.txt", false}, {"Units/UnitGlobalStrings.txt", false},
+    {"Units/HumanUnitFunc.txt", false}, {"Units/NeutralUnitFunc.txt", false},
+    {"Units/NightElfUnitFunc.txt", false}, {"Units/OrcUnitFunc.txt", false},
+    {"Units/UndeadUnitFunc.txt", false}, {"Units/CampaignUnitFunc.txt", false},
+    {"Units/ItemStrings.txt", false}, {"Units/ItemFunc.txt", false},
+    {"Units/HumanAbilityFunc.txt", false}, {"Units/NeutralAbilityFunc.txt", false},
+    {"Units/NightElfAbilityFunc.txt", false}, {"Units/OrcAbilityFunc.txt", false},
+    {"Units/UndeadAbilityFunc.txt", false}, {"Units/CommonAbilityFunc.txt", false},
+    {"Units/ItemAbilityFunc.txt", false}, {"Units/CampaignAbilityFunc.txt", false},
+    {"Units/HumanAbilityStrings.txt", false}, {"Units/NeutralAbilityStrings.txt", false},
+    {"Units/NightElfAbilityStrings.txt", false}, {"Units/OrcAbilityStrings.txt", false},
+    {"Units/UndeadAbilityStrings.txt", false}, {"Units/CommonAbilityStrings.txt", false},
+    {"Units/ItemAbilityStrings.txt", false}, {"Units/CampaignAbilityStrings.txt", false},
+    {"Units/HumanUpgradeFunc.txt", false}, {"Units/OrcUpgradeFunc.txt", false},
+    {"Units/UndeadUpgradeFunc.txt", false}, {"Units/NightElfUpgradeFunc.txt", false},
+    {"Units/CampaignUpgradeFunc.txt", false}, {"Units/NeutralUpgradeFunc.txt", false},
+    {"Units/HumanUpgradeStrings.txt", false}, {"Units/OrcUpgradeStrings.txt", false},
+    {"Units/UndeadUpgradeStrings.txt", false}, {"Units/NightElfUpgradeStrings.txt", false},
+    {"Units/CampaignUpgradeStrings.txt", false}, {"Units/NeutralUpgradeStrings.txt", false},
+}};
 struct Failure { std::vector<Diagnostic> diagnostics; };
 
 [[noreturn]] void Fail(const char* code, std::string message) {
@@ -117,7 +152,8 @@ std::vector<ArchiveExactMember> DirectoryMembers(const WorkspaceSnapshot& expect
         for (const auto& file : directory.Snapshot().files) {
             const auto path = Canonical(IO::GenericPathUtf8(file.relativePath));
             if ((key == "war3map.w3i" && path == "table/w3i.ini")
-                || (key == "war3map.w3b" && (path == "table/destructable.ini" || path == "table/doodad.ini")))
+                || (key == "war3map.w3b" && (path == "table/destructable.ini" || path == "table/doodad.ini"))
+                || (key == "war3mapmisc.txt" && path == "table/misc.ini"))
                 Fail("TERRAIN_NATIVE_SOURCE_LAYOUT", "目录含尚未绑定到原生通行输入的LNI覆盖：" + path);
             if (path != key && path != "map/" + key) continue;
             if (selected) Fail("TERRAIN_PATHING_RESOURCE_AMBIGUOUS", "目录通行输入有多个同名来源：" + name);
@@ -153,6 +189,24 @@ void SameScalar(std::optional<float>& target, float value, const char* name) {
         Fail("TERRAIN_PATHING_PROPERTY_AMBIGUOUS", std::string(name) + " 存在不同的重复定义，不能以后值覆盖原版首值。");
     target = value;
 }
+void RejectLooseInput(const std::filesystem::path& root, std::string_view name) {
+    if (root.empty()) return;
+    // 不读取HKCU来猜AllowLocalFiles；已知同名loose入口一律拒绝，包括悬空链接。
+    // 每级检查可区分真正缺失与非目录父项/无法检查，不能把检查错误当作不存在。
+    auto current = root;
+    const auto relative = std::filesystem::u8path(name);
+    for (auto item = relative.begin(); item != relative.end(); ++item) {
+        current /= *item;
+        std::error_code error;
+        const auto state = std::filesystem::symlink_status(current, error);
+        if (error == std::errc::no_such_file_or_directory) return;
+        if (error) Fail("TERRAIN_WATER_RULE_SOURCE", "无法检查经典规则的loose来源：" + IO::GenericPathUtf8(current));
+        if (!std::filesystem::exists(state)) return;
+        auto next = item; ++next;
+        if (next == relative.end() || !std::filesystem::is_directory(state))
+            Fail("TERRAIN_WATER_RULE_SOURCE", "经典规则存在未纳入MPQ来源链的loose入口：" + IO::GenericPathUtf8(current));
+    }
+}
 } // namespace
 
 bool TerrainPathingResources::Needed(const TerrainGridSnapshot& before, const TerrainGridSnapshot& after) {
@@ -183,6 +237,84 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureNative(const Wor
     return CaptureInputs([&](auto names, const auto& limits) {
         return Guard<std::vector<ArchiveExactMember>>([&] { return DirectoryMembers(source, names, limits); });
     }, before, after, gameRoot, maximumBytes, true);
+}
+
+Result<TerrainPathingResources> TerrainPathingResources::CaptureWaterBrushRules(const MapArchiveSession& source,
+    const TerrainGridSnapshot& sourceTerrain, const TerrainGridSnapshot& currentTerrain,
+    const std::filesystem::path& gameRoot, bool enforceWaterLimits, std::size_t maximumBytes) {
+    return CaptureWaterBrushInputs([&](auto names, const auto& limits) { return source.CaptureExactMembers(names, limits); },
+        sourceTerrain, currentTerrain, gameRoot, enforceWaterLimits, maximumBytes);
+}
+
+Result<TerrainPathingResources> TerrainPathingResources::CaptureWaterBrushRules(const WorkspaceSnapshot& source,
+    const TerrainGridSnapshot& sourceTerrain, const TerrainGridSnapshot& currentTerrain,
+    const std::filesystem::path& gameRoot, bool enforceWaterLimits, std::size_t maximumBytes) {
+    return CaptureWaterBrushInputs([&](auto names, const auto& limits) {
+        return Guard<std::vector<ArchiveExactMember>>([&] { return DirectoryMembers(source, names, limits); });
+    }, sourceTerrain, currentTerrain, gameRoot, enforceWaterLimits, maximumBytes);
+}
+
+Result<TerrainPathingResources> TerrainPathingResources::CaptureWaterBrushRules(const MapArchiveSession& source,
+    const TerrainGridSnapshot& before, const std::filesystem::path& gameRoot,
+    bool enforceWaterLimits, std::size_t maximumBytes) {
+    return CaptureWaterBrushRules(source, before, before, gameRoot, enforceWaterLimits, maximumBytes);
+}
+
+Result<TerrainPathingResources> TerrainPathingResources::CaptureWaterBrushRules(const WorkspaceSnapshot& source,
+    const TerrainGridSnapshot& before, const std::filesystem::path& gameRoot,
+    bool enforceWaterLimits, std::size_t maximumBytes) {
+    return CaptureWaterBrushRules(source, before, before, gameRoot, enforceWaterLimits, maximumBytes);
+}
+
+Status TerrainPathingResources::CaptureResourceMembers(const MemberReader& reader,
+    std::span<const std::string> names, std::size_t requiredCount, const ResourceVisitor& visitor) {
+    auto checked = Guard<bool>([&] {
+        if (sourceBytes_ > capturedMaximumBytes_ || requiredCount > names.size()
+            || names.size() > std::numeric_limits<std::size_t>::max() / kTableBytes)
+            Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "通行资源成员列表或累计额度无效。");
+        ArchiveExactMemberLimits limits;
+        limits.memberCount = names.size();
+        limits.memberBytes = std::min(kTableBytes, capturedMaximumBytes_ - sourceBytes_);
+        limits.totalBytes = std::min(names.size() * kTableBytes, capturedMaximumBytes_ - sourceBytes_);
+        auto captured = Take(reader(names, limits));
+        if (captured.size() != names.size())
+            Fail("TERRAIN_PATHING_RESOURCE_MISSING", "精确资源捕获未返回完整成员集合。");
+        // 地图成员整批保留后才读取游戏回退；两类调用共享同一存储/解码预算。
+        for (const auto& member : captured) {
+            if (member.bytes.size() > capturedMaximumBytes_ - sourceBytes_)
+                Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "通行表与配置超过保存计划剩余预算。");
+            sourceBytes_ += member.bytes.size();
+        }
+        std::optional<Game::GameDataSource> game;
+        for (std::size_t i = 0; i < captured.size(); ++i) {
+            auto& member = captured[i];
+            auto bytes = std::move(member.bytes);
+            bool present = member.present;
+            Dependency dependency;
+            dependency.name = Canonical(names[i]); dependency.mapPresent = member.present;
+            if (!member.present) {
+                if (gameRoot_.empty())
+                    Fail("TERRAIN_PATHING_RESOURCE_MISSING", "资源回退来源未知，不能把未知当缺失：" + names[i]);
+                if (!game) game = Take(Game::GameDataSource::MountStrict(gameRoot_, tileset_));
+                if (i >= requiredCount && !game->HasFile(names[i])) {
+                    dependency.gameAbsent = true;
+                } else {
+                    auto file = Take(game->ReadFileBoundedWithSource(names[i],
+                        std::min(kTableBytes, capturedMaximumBytes_ - sourceBytes_)));
+                    bytes = std::move(file.bytes); dependency.gameArchive = std::move(file.archiveName);
+                    if (bytes.size() > capturedMaximumBytes_ - sourceBytes_)
+                        Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "通行表与配置超过保存计划剩余预算。");
+                    sourceBytes_ += bytes.size(); present = true;
+                }
+            }
+            dependency.bytes = bytes.size(); dependency.sha256 = Take(Sha256(bytes));
+            dependencies_.push_back(std::move(dependency));
+            // 保留既有native顺序：逐项fallback、解析、释放，不同时保留所有游戏原字节。
+            visitor(i, present, bytes);
+        }
+        return true;
+    });
+    return {std::move(checked.diagnostics)};
 }
 
 Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const MemberReader& reader,
@@ -268,36 +400,11 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
         }
         if (native && !doodads->doodads.empty()) names.emplace_back("Units/DestructableData.slk");
         if (names.empty()) return result;
-        ArchiveExactMemberLimits limits;
-        limits.memberCount = names.size(); limits.memberBytes = std::min(kTableBytes, maximumBytes - result.sourceBytes_);
-        limits.totalBytes = std::min(names.size() * kTableBytes, maximumBytes - result.sourceBytes_);
-        auto captured = Take(reader(names, limits));
-        // 地图成员已整批读入；游戏回退前必须扣除全部已保留的解码字节。
-        for (const auto& member : captured) {
-            if (member.bytes.size() > maximumBytes - result.sourceBytes_)
-                Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "通行表与配置超过保存计划剩余预算。");
-            result.sourceBytes_ += member.bytes.size();
-        }
-        std::optional<Game::GameDataSource> game;
         std::optional<float> deepThreshold;
         std::array<std::optional<float>, 4> cameraMargins;
         std::optional<float> waterHeight;
         bool waterImpassable = false;
-        for (std::size_t i = 0; i < captured.size(); ++i) {
-            auto bytes = std::move(captured[i].bytes);
-            Dependency dependency;
-            dependency.name = Canonical(names[i]); dependency.mapPresent = captured[i].present;
-            if (!dependency.mapPresent) {
-                if (result.gameRoot_.empty()) Fail("TERRAIN_PATHING_RESOURCE_MISSING", "通行语义需要真实地图或游戏资源：" + names[i]);
-                if (!game) game = Take(Game::GameDataSource::MountStrict(result.gameRoot_, result.tileset_));
-                auto file = Take(game->ReadFileBoundedWithSource(names[i], std::min(kTableBytes, maximumBytes - result.sourceBytes_)));
-                bytes = std::move(file.bytes); dependency.gameArchive = std::move(file.archiveName);
-                if (bytes.size() > maximumBytes - result.sourceBytes_)
-                    Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "通行表与配置超过保存计划剩余预算。");
-                result.sourceBytes_ += bytes.size();
-            }
-            dependency.bytes = bytes.size(); dependency.sha256 = Take(Sha256(bytes));
-            result.dependencies_.push_back(std::move(dependency));
+        const auto visitResource = [&](std::size_t i, bool, const std::vector<std::byte>& bytes) {
             if (names[i] == "TerrainArt/Terrain.slk") {
                 const auto table = Table(names[i], "tileid", bytes);
                 for (const auto& row : table.Rows()) if (needs.ground.contains(row.id)) {
@@ -350,7 +457,9 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
                     deepThreshold = threshold;
                 });
             }
-        }
+        };
+        const auto resources = result.CaptureResourceMembers(reader, names, names.size(), visitResource);
+        if (!resources.Succeeded()) throw Failure{resources.diagnostics};
         if (needs.water) {
             if (!deepThreshold)
                 Fail("TERRAIN_PATHING_PROPERTY_MISSING", "当前配置缺少 Water.DeepLevelPathing，不能猜测水深通行状态。");
@@ -393,6 +502,135 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
     });
 }
 
+Result<TerrainPathingResources> TerrainPathingResources::CaptureWaterBrushInputs(const MemberReader& reader,
+    const TerrainGridSnapshot& sourceTerrain, const TerrainGridSnapshot& currentTerrain,
+    const std::filesystem::path& gameRoot, bool enforceWaterLimits, std::size_t maximumBytes) {
+    return Guard<TerrainPathingResources>([&] {
+        TerrainPathingResources result;
+        result.tileset_ = sourceTerrain.header.mainTileset;
+        result.capturedMaximumBytes_ = maximumBytes;
+        if (!gameRoot.empty()) {
+            std::error_code error;
+            result.gameRoot_ = std::filesystem::absolute(gameRoot, error).lexically_normal();
+            if (error) Fail("TERRAIN_PATHING_RESOURCE_ROOT", "无法固定水刷规则的游戏来源路径。");
+        }
+        if (sourceTerrain.header.version != 11 || currentTerrain.header.version != 11
+            || sourceTerrain.header.width != currentTerrain.header.width
+            || sourceTerrain.header.height != currentTerrain.header.height
+            || sourceTerrain.header.offset != currentTerrain.header.offset
+            || sourceTerrain.header.mainTileset != currentTerrain.header.mainTileset
+            || currentTerrain.header.groundTilesets.empty() || currentTerrain.header.groundTilesets.size() > 256
+            || currentTerrain.header.cliffTilesets.empty() || currentTerrain.header.cliffTilesets.size() > 256)
+            Fail("TERRAIN_WATER_RULE_SOURCE", "水刷规则需要经典W3E及有界的实际地面/悬崖palette。");
+        const std::vector<std::string> metadata{"war3map.w3e"};
+        ArchiveExactMemberLimits metadataLimits;
+        metadataLimits.memberCount = 1; metadataLimits.memberBytes = metadataLimits.totalBytes = maximumBytes;
+        auto actual = Take(reader(metadata, metadataLimits));
+        if (actual.size() != 1 || !actual.front().present)
+            Fail("TERRAIN_WATER_RULE_SOURCE", "水刷规则需要实际来源W3E。");
+        {
+            const auto wire = TerrainWire(sourceTerrain, maximumBytes);
+            if (wire != actual.front().bytes)
+                Fail("TERRAIN_WATER_RULE_SOURCE", "水刷sourceTerrain快照不属于本次实际来源W3E。");
+        }
+        if (actual.front().bytes.size() > maximumBytes)
+            Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "水刷规则的W3E身份超过捕获预算。");
+        Dependency terrain;
+        terrain.name = "war3map.w3e"; terrain.mapPresent = terrain.mapOnly = true;
+        terrain.bytes = actual.front().bytes.size(); terrain.sha256 = Take(Sha256(actual.front().bytes));
+        result.sourceBytes_ = terrain.bytes; result.dependencies_.push_back(std::move(terrain));
+        // W3E仅验证这次规则捕获的原始来源，不建立after或最终保存资格。
+        actual.clear();
+        {
+            const auto wire = TerrainWire(currentTerrain, maximumBytes);
+            result.waterBrushInputSha_ = Take(Sha256(wire));
+            result.waterBrushInputBytes_ = wire.size();
+        }
+
+        std::vector<std::string> names{"TerrainArt/Terrain.slk", "TerrainArt/Water.slk", "TerrainArt/CliffTypes.slk"};
+        for (const auto& input : kClassicProfiles) names.emplace_back(input.path);
+        // 固定初始化证据未证明自定义misc合并；存在时明确拒绝，不猜覆盖顺序。
+        names.emplace_back("war3mapMisc.txt");
+        for (const auto& name : names) RejectLooseInput(result.gameRoot_, name);
+        std::vector<TerrainWaterGroundRule> ground;
+        std::vector<std::string> cliffs;
+        float waterOffset = 0;
+        constexpr std::array<const char*, 4> fields{"Terrain.MaxSlope", "Terrain.MinHeight", "Terrain.MaxHeight", "Water.DeepLevelPathing"};
+        std::array<std::optional<float>, 4> values;
+        std::array<bool, 4> unguarded{};
+        const auto visitResource = [&](std::size_t i, bool present, const std::vector<std::byte>& bytes) {
+            if (i == names.size() - 1) {
+                if (present) Fail("TERRAIN_WATER_RULE_SOURCE", "war3mapMisc.txt不属于已闭合的经典初始化规则来源链。");
+                return;
+            }
+            if (i == 0) {
+                const auto table = Table(names[i], "tileid", bytes);
+                std::set<std::string, std::less<>> ids;
+                for (const auto& id : currentTerrain.header.groundTilesets) if (ids.insert(id).second) {
+                    const auto row = std::find_if(table.Rows().begin(), table.Rows().end(),
+                        [&](const auto& item) { return item.id == id; });
+                    if (row == table.Rows().end())
+                        Fail("TERRAIN_PATHING_PROPERTY_MISSING", "Terrain.slk缺少水刷地面palette行：" + id);
+                    // water-blight-resource01：4F45D0字段7/buildable，不能误用blightPri。
+                    ground.push_back({id, Boolean(Field(*row, "buildable"), "Terrain.buildable")});
+                }
+                return;
+            }
+            if (i == 1) {
+                const auto table = Table(names[i], "waterid", bytes);
+                const auto id = std::string(1, static_cast<char>(result.tileset_)) + "Sha";
+                const auto row = std::find_if(table.Rows().begin(), table.Rows().end(), [&](const auto& item) { return item.id == id; });
+                if (row == table.Rows().end())
+                    Fail("TERRAIN_PATHING_PROPERTY_MISSING", "Water.slk缺少水刷当前地形集浅水行。");
+                // R2_NATIVE_SAVE_RE.md：height先存F32，乘128再落F32；深水阈值不乘128。
+                waterOffset = Number(Field(*row, "height"), "Water.height") * 128.0f;
+                return;
+            }
+            if (i == 2) {
+                const auto table = Table(names[i], "cliffid", bytes);
+                for (const auto& id : currentTerrain.header.cliffTilesets) {
+                    if (std::none_of(table.Rows().begin(), table.Rows().end(), [&](const auto& item) { return item.id == id; }))
+                        Fail("TERRAIN_PATHING_PROPERTY_MISSING", "CliffTypes.slk缺少水刷悬崖palette行：" + id);
+                    if (std::find(cliffs.begin(), cliffs.end(), id) == cliffs.end()) cliffs.push_back(id);
+                }
+                return;
+            }
+            if (!present) return;
+            std::string_view text;
+            if (!bytes.empty()) text = {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+            if (text.starts_with("\xef\xbb\xbf")) text.remove_prefix(3);
+            if (text.find('\0') != std::string_view::npos)
+                Fail("TERRAIN_WATER_RULE_SOURCE", "经典规则profile含未知NUL/编码，不能跳过潜在定义：" + names[i]);
+            Text::VisitProfileFields(text, [&](std::string_view section, std::string_view key, std::string_view value) {
+                std::optional<std::size_t> slot;
+                if (section == "terrain") {
+                    if (key == "maxslope") slot = 0;
+                    else if (key == "minheight") slot = 1;
+                    else if (key == "maxheight") slot = 2;
+                } else if (section == "water" && key == "deeplevelpathing") slot = 3;
+                if (!slot) return;
+                // 4D1D40/index0读取追加链首值。本有限域要求所有出现均为同一单scalar；
+                // CSV/非法值由完整数值解析拒绝，故不能被后续合法定义掩盖。
+                SameScalar(values[*slot], Number(value, fields[*slot]), fields[*slot]);
+                unguarded[*slot] |= kClassicProfiles[i - 3].alwaysLoad;
+            });
+        };
+        const auto resources = result.CaptureResourceMembers(reader, names, 3, visitResource);
+        if (!resources.Succeeded()) throw Failure{resources.diagnostics};
+        for (std::size_t i = 0; i < fields.size(); ++i) if (!values[i] || !unguarded[i])
+            Fail("TERRAIN_WATER_RULE_SOURCE", std::string(fields[i]) + "未由flag1固定链完整提供；不能猜测未知820000加载guard。");
+        if (*values[0] < 0 || *values[0] > 90 || *values[1] > *values[2] || *values[3] < 0)
+            Fail("TERRAIN_PATHING_PROPERTY_INVALID", "实际水刷Terrain/Water规则不在有限支持域内。");
+        // water-maxcliff01：源MaxHeight是F32，随后double计算并向零截断；原版没有clamp14。
+        const double maximumLevel = std::trunc((static_cast<double>(*values[2]) - static_cast<double>(-256.0f)) / 128.0);
+        if (maximumLevel < 0 || maximumLevel > 14)
+            Fail("TERRAIN_PATHING_PROPERTY_INVALID", "实际MaxHeight派生悬崖上限超出水刷0..14域，不能截断为兼容默认值。");
+        result.waterBrushRules_.emplace(*values[0], *values[1], *values[2], waterOffset, *values[3],
+            static_cast<std::uint8_t>(maximumLevel), enforceWaterLimits, std::move(ground), std::move(cliffs));
+        return result;
+    });
+}
+
 bool TerrainPathingResources::EquivalentGround(std::string_view before, std::string_view after) const {
     if (before.empty() || after.empty()) return false;
     if (before == after) return true;
@@ -431,6 +669,8 @@ Result<std::vector<std::byte>> TerrainPathingResources::GenerateNative(const Ter
 
 Status TerrainPathingResources::VerifyFrozenOutput(std::span<const MemberReplacement> replacements,
     std::span<const std::string> removals) const {
+    if (waterBrushRules_)
+        return Status::Failure(kSubsystem, "TERRAIN_WATER_RULES_EDIT_ONLY", "水刷规则捕获只用于编辑；最终输出必须重新CaptureNative旧/新修订。");
     auto checked = Guard<bool>([&] {
         auto remaining = capturedMaximumBytes_;
         for (const auto& dependency : dependencies_) {
@@ -480,7 +720,8 @@ Status TerrainPathingResources::VerifyReadbackMembers(const MemberReader& reader
         for (const auto& dependency : dependencies_) names.push_back(dependency.name);
         if (names.empty()) return true;
         ArchiveExactMemberLimits limits;
-        limits.memberCount = names.size(); limits.memberBytes = nativeBounds_ ? maximumBytes : std::min(kTableBytes, maximumBytes);
+        limits.memberCount = names.size();
+        limits.memberBytes = nativeBounds_ || waterBrushRules_ ? maximumBytes : std::min(kTableBytes, maximumBytes);
         // 读取上限同时约束存储和解码大小；不能以解码长度代替调用者预算。
         limits.totalBytes = maximumBytes;
         const auto actual = Take(reader(names, limits));
@@ -513,8 +754,14 @@ Status TerrainPathingResources::VerifyGameDependencies(std::size_t remainingByte
     auto checked = Guard<bool>([&] {
         std::optional<Game::GameDataSource> game;
         for (const auto& dependency : dependencies_) {
+            if (waterBrushRules_ && !dependency.mapOnly) RejectLooseInput(gameRoot_, dependency.name);
             if (dependency.mapPresent || dependency.mapOnly) continue;
             if (!game) game = Take(Game::GameDataSource::MountStrict(gameRoot_, tileset_));
+            if (dependency.gameAbsent) {
+                if (game->HasFile(dependency.name))
+                    Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "准备时缺失的游戏规则输入已出现：" + dependency.name);
+                continue;
+            }
             const auto actual = Take(game->ReadFileBoundedWithSource(dependency.name,
                 std::min(kTableBytes, remainingBytes)));
             if (actual.archiveName != dependency.gameArchive || actual.bytes.size() != dependency.bytes
@@ -536,6 +783,13 @@ std::size_t TerrainPathingResources::OwnedCapacityBytes() const noexcept {
     bytes += nativeGround_.capacity() * sizeof(TerrainNativeGroundRule) + nativeDoodads_.capacity();
     for (const auto& rule : nativeGround_) bytes += rule.rawcode.capacity() + 1;
     for (const auto& sha : nativeTerrainSha_) bytes += sha.capacity() + 1;
+    bytes += waterBrushInputSha_.capacity() + 1;
+    if (waterBrushRules_) {
+        bytes += waterBrushRules_->groundRules.capacity() * sizeof(TerrainWaterGroundRule)
+            + waterBrushRules_->availableCliffTilesets.capacity() * sizeof(std::string);
+        for (const auto& rule : waterBrushRules_->groundRules) bytes += rule.rawcode.capacity() + 1;
+        for (const auto& id : waterBrushRules_->availableCliffTilesets) bytes += id.capacity() + 1;
+    }
     return bytes;
 }
 

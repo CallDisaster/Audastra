@@ -3,6 +3,7 @@
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/MapData/MapTerrain.h"
 #include "War3MapCore/MapData/TerrainNativePathing.h"
+#include "War3MapCore/MapData/TerrainWaterBrush.h"
 #include "War3MapCore/Workspace.h"
 
 #include <functional>
@@ -10,9 +11,10 @@
 
 namespace War3Map::MapData {
 
-// 保存时实际读取的通行语义输入；只能由真实地图/游戏来源建立。
+// 实际读取的地形语义输入；只能由真实地图/游戏来源建立。
 // 旧Capture证明等价修改；CaptureNative另捕获完整生成输入，仍由保存计划
 // 比较旧WPM六位并保留0x11与显式工程意图，不从合成位猜作者来源。
+// CaptureWaterBrushRules仅捕获编辑规则，不建立保存资格。
 class TerrainPathingResources {
 public:
     [[nodiscard]] static bool Needed(const TerrainGridSnapshot& before, const TerrainGridSnapshot& after);
@@ -27,6 +29,29 @@ public:
     [[nodiscard]] static Result<TerrainPathingResources> CaptureNative(const WorkspaceSnapshot& source,
         const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
         const std::filesystem::path& gameRoot, std::size_t maximumBytes);
+    // 编辑器采用的经典固定初始化规则链；完整捕获其map/coreMPQ winner或缺失。
+    // sourceTerrain必须属于实际来源W3E；currentTerrain为本笔冻结的Session草稿，
+    // 其palette可包含此前的贴图编辑。enforceWaterLimits是本笔选项，不读取注册表。
+    // 仅提供编辑算法输入，不授予原版运行时配置或保存资格；保存仍须CaptureNative。
+    [[nodiscard]] static Result<TerrainPathingResources> CaptureWaterBrushRules(const MapArchiveSession& source,
+        const TerrainGridSnapshot& sourceTerrain, const TerrainGridSnapshot& currentTerrain,
+        const std::filesystem::path& gameRoot, bool enforceWaterLimits, std::size_t maximumBytes);
+    [[nodiscard]] static Result<TerrainPathingResources> CaptureWaterBrushRules(const WorkspaceSnapshot& source,
+        const TerrainGridSnapshot& sourceTerrain, const TerrainGridSnapshot& currentTerrain,
+        const std::filesystem::path& gameRoot, bool enforceWaterLimits, std::size_t maximumBytes);
+    // 未编辑来源的便利重载，转发sourceTerrain=currentTerrain。
+    [[nodiscard]] static Result<TerrainPathingResources> CaptureWaterBrushRules(const MapArchiveSession& source,
+        const TerrainGridSnapshot& before, const std::filesystem::path& gameRoot,
+        bool enforceWaterLimits, std::size_t maximumBytes);
+    [[nodiscard]] static Result<TerrainPathingResources> CaptureWaterBrushRules(const WorkspaceSnapshot& source,
+        const TerrainGridSnapshot& before, const std::filesystem::path& gameRoot,
+        bool enforceWaterLimits, std::size_t maximumBytes);
+    [[nodiscard]] const TerrainWaterLoadedRules* WaterBrushRules() const noexcept {
+        return waterBrushRules_ ? &*waterBrushRules_ : nullptr;
+    }
+    // 调用方须将冻结current的canonical W3E身份与落笔前Session核对；不是after身份。
+    [[nodiscard]] std::string_view WaterBrushInputSha256() const noexcept { return waterBrushInputSha_; }
+    [[nodiscard]] std::size_t WaterBrushInputBytes() const noexcept { return waterBrushInputBytes_; }
     // 只允许本次捕获的旧/新W3E内容；输出不含头、源WPM及工程意图。
     // 身份缓冲在生成输出前释放；maximumBytes分别约束该缓冲和生成输出。
     [[nodiscard]] Result<std::vector<std::byte>> GenerateNative(const TerrainGridSnapshot& terrain,
@@ -36,6 +61,7 @@ public:
     [[nodiscard]] bool EquivalentWater(const TerrainVertex& before, const TerrainVertex& after) const;
     [[nodiscard]] Status VerifyFrozenOutput(std::span<const MemberReplacement> replacements,
         std::span<const std::string> removals) const;
+    // 水刷规则owner在此只复核原始来源W3E/规则；不能用编辑后的输出冒充原始来源。
     [[nodiscard]] Status VerifyReadback(const MapArchiveSession& saved, std::size_t maximumBytes) const;
     [[nodiscard]] Status VerifyReadback(const WorkspaceSnapshot& saved, std::size_t maximumBytes) const;
     [[nodiscard]] std::size_t SourceBytes() const noexcept { return sourceBytes_; }
@@ -48,6 +74,13 @@ private:
     [[nodiscard]] static Result<TerrainPathingResources> CaptureInputs(const MemberReader& reader,
         const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
         const std::filesystem::path& gameRoot, std::size_t maximumBytes, bool native);
+    [[nodiscard]] static Result<TerrainPathingResources> CaptureWaterBrushInputs(const MemberReader& reader,
+        const TerrainGridSnapshot& sourceTerrain, const TerrainGridSnapshot& currentTerrain,
+        const std::filesystem::path& gameRoot, bool enforceWaterLimits, std::size_t maximumBytes);
+    // requiredCount之前的成员必须有实际winner；余项允许缺失并固定缺失身份。
+    using ResourceVisitor = std::function<void(std::size_t, bool, const std::vector<std::byte>&)>;
+    [[nodiscard]] Status CaptureResourceMembers(const MemberReader& reader,
+        std::span<const std::string> names, std::size_t requiredCount, const ResourceVisitor& visitor);
     [[nodiscard]] Status VerifyReadbackMembers(const MemberReader& reader, std::size_t maximumBytes) const;
     [[nodiscard]] Status VerifyGameDependencies(std::size_t remainingBytes) const;
     struct Dependency {
@@ -55,6 +88,7 @@ private:
         std::size_t bytes = 0;
         bool mapPresent = false;
         bool mapOnly = false;
+        bool gameAbsent = false;
     };
     std::vector<Dependency> dependencies_;
     std::map<std::string, std::array<bool, 3>, std::less<>> ground_;
@@ -64,6 +98,9 @@ private:
     std::size_t capturedMaximumBytes_ = 0;
     std::vector<TerrainNativeGroundRule> nativeGround_;
     std::optional<TerrainNativeWaterRules> waterRules_;
+    std::optional<TerrainWaterLoadedRules> waterBrushRules_;
+    std::string waterBrushInputSha_;
+    std::size_t waterBrushInputBytes_ = 0;
     std::optional<TerrainNativePlayableBounds> nativeBounds_;
     std::vector<std::byte> nativeDoodads_;
     std::array<std::string, 2> nativeTerrainSha_;
