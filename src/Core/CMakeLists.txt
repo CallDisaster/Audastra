@@ -23,6 +23,7 @@ add_library(War3MapCore STATIC
     MapData/LniMapSettings.cpp
     MapData/MapPlacements.cpp
     MapData/MapPlacementsWriter.cpp
+    MapData/PlacementElevationInvariant.cpp
     MapData/MapAuxiliary.cpp
     MapData/MapAuxiliaryWriter.cpp
     MapData/StringTableWriter.cpp
