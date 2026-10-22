@@ -666,23 +666,120 @@ void NativeCliffSlotsDoNotExpandThePaletteDomain() {
     NativeSources(fixture, NativeSettings());
     const auto source = fixture.Write(directory.path / "slot-domain.w3x");
     for (const std::uint8_t slot : {1, 15}) {
-        auto after = fixture.grid; after.vertices[40].cliffAndLayerRaw = static_cast<std::uint8_t>((slot << 4) | 2);
+        // 15号哨兵只新增完整内圈平地能力；边缘没有完整3×3，仍须拒绝。
+        auto after = fixture.grid; after.vertices[slot == 15 ? 0 : 40].cliffAndLayerRaw = static_cast<std::uint8_t>((slot << 4) | 2);
         const auto result = TerrainPathingResources::CaptureNative(source, fixture.grid, after, {}, 1024 * 1024);
         Require(!result.Succeeded() && HasCode(result.diagnostics, "TERRAIN_NATIVE_CLIFF_SLOT"),
-            "out-of-palette and sentinel cliff slots cannot acquire native save resources");
+            "out-of-palette and incomplete-edge sentinel slots cannot acquire native save resources");
     }
     auto appended = fixture.grid; appended.header.cliffTilesets.push_back("Cl02");
     appended.vertices[40].cliffAndLayerRaw |= 0x10;
     const auto palette = TerrainPathingResources::CaptureNative(source, fixture.grid, appended, {}, 1024 * 1024);
     Require(!palette.Succeeded() && HasCode(palette.diagnostics, "TERRAIN_NATIVE_SOURCE_SHAPE"),
         "this save domain only permits existing cliff slots, not palette mutation");
-    fixture.grid.vertices[40].cliffAndLayerRaw = 0xf2;
+    fixture.grid.vertices[0].cliffAndLayerRaw = 0xf2;
     fixture.members[0].data = Take(SerializeMapTerrain(fixture.grid));
     const auto sentinel = fixture.Write(directory.path / "old-sentinel.w3x");
-    auto resolved = fixture.grid; resolved.vertices[40].cliffAndLayerRaw = 2;
+    auto resolved = fixture.grid; resolved.vertices[0].cliffAndLayerRaw = 2;
     const auto oldInvalid = TerrainPathingResources::CaptureNative(sentinel, fixture.grid, resolved, {}, 1024 * 1024);
     Require(!oldInvalid.Succeeded() && HasCode(oldInvalid.diagnostics, "TERRAIN_NATIVE_CLIFF_SLOT"),
-        "a new valid slot does not legitimize an unknown old sentinel");
+        "a new valid slot does not legitimize a sentinel with an incomplete edge neighborhood");
+}
+
+void NativeFlatSentinelTransitionsBindOnlyConcreteResources() {
+    Directory directory;
+    for (const bool reverse : {false, true}) for (const std::uint8_t level : {2, 3}) {
+        const auto suffix = std::string(reverse ? "restore-" : "select-") + std::to_string(level);
+        Fixture fixture; fixture.grid.header.cliffTilesets.push_back("Cl02");
+        for (auto& vertex : fixture.grid.vertices) vertex.cliffAndLayerRaw = 0xf2;
+        auto after = fixture.grid;
+        (reverse ? fixture.grid : after).vertices[40].cliffAndLayerRaw = static_cast<std::uint8_t>(0x10 | level);
+        fixture.terrain = Take(SerializeMapTerrain(fixture.grid)); fixture.members[0].data = fixture.terrain;
+        NativeSources(fixture, NativeSettings());
+        // 只有实际槽1的Cl02需要存在；15不是第16个材质，未用的Cl01不应被伪造或强求。
+        fixture.members.push_back({"TerrainArt/CliffTypes.slk", CliffTable("ClXX", "Cl02")});
+        const auto source = fixture.Write(directory.path / (suffix + ".w3x"));
+        const auto captured = Take(TerrainPathingResources::CaptureNative(source, fixture.grid, after, {}, 1024 * 1024));
+        Bytes flat(32 * 32, std::byte{0x40}), concrete = flat;
+        if (level == 3) for (std::size_t y = 12; y < 20; ++y) for (std::size_t x = 12; x < 20; ++x)
+            concrete[y * 32 + x] = std::byte{0xca};
+        Require(Take(captured.GenerateNative(fixture.grid, 1024 * 1024)) == (reverse ? concrete : flat)
+            && Take(captured.GenerateNative(after, 1024 * 1024)) == (reverse ? flat : concrete),
+            "sentinel transition retains independently expected whole old/new grids, including changed cliff blocking");
+        const std::vector<MemberReplacement> output{{"war3map.w3e", Take(SerializeMapTerrain(after))}};
+        Check(captured.VerifyFrozenOutput(output, {}));
+        Require(!captured.VerifyFrozenOutput({}, {}).Succeeded(), "sentinel output must carry the captured new W3E");
+        const auto saved = Take(MapArchiveSession::Open(Take(source.SaveCandidate(directory.path / (suffix + "-saved.w3x"), output)).path));
+        Check(captured.VerifyReadback(saved, 1024 * 1024));
+        const auto falseSource = TerrainPathingResources::CaptureNative(source, after, fixture.grid, {}, 1024 * 1024);
+        Require(!falseSource.Succeeded() && HasCode(falseSource.diagnostics, "TERRAIN_NATIVE_SOURCE_IDENTITY"),
+            "symmetric sentinel handling cannot substitute the edited terrain for the actual old source");
+        auto extra = after; extra.vertices[40].groundHeightRaw += 1;
+        const auto outsidePair = captured.GenerateNative(extra, 1024 * 1024);
+        Require(!outsidePair.Succeeded() && HasCode(outsidePair.diagnostics, "TERRAIN_NATIVE_SOURCE_IDENTITY"),
+            "sentinel capture still binds both exact terrain revisions");
+
+        auto altered = output;
+        altered.push_back({"TerrainArt/CliffTypes.slk", CliffTable("ClXX", "ClYY")});
+        Require(!captured.VerifyFrozenOutput(altered, {}).Succeeded(), "actual concrete cliff table remains a frozen dependency");
+        const auto drift = Take(MapArchiveSession::Open(Take(source.SaveCandidate(directory.path / (suffix + "-drift.w3x"), altered)).path));
+        Require(!captured.VerifyReadback(drift, 1024 * 1024).Succeeded(), "readback detects replaced concrete cliff resources");
+        fixture.members.back().data = altered.back().data;
+        const auto missing = fixture.Write(directory.path / (suffix + "-missing-row.w3x"));
+        const auto refused = TerrainPathingResources::CaptureNative(missing, fixture.grid, after, {}, 1024 * 1024);
+        Require(!refused.Succeeded() && HasCode(refused.diagnostics, "TERRAIN_PATHING_PROPERTY_MISSING"),
+            "both sentinel directions still require the actual concrete-side CliffTypes row");
+
+        // 同一输入的地图winner可胜过游戏中的缺行；移除地图表后必须采用实际游戏winner。
+        const auto game = directory.path / (suffix + "-game"); Require(std::filesystem::create_directory(game), "private sentinel game fixture");
+        const std::vector<MapArchiveMember> wrongGame{{"TerrainArt/CliffTypes.slk", CliffTable("ClXX", "ClYY")}};
+        Take(WriteVerifiedArchive(game / "war3.mpq", wrongGame));
+        const auto mapWinner = Take(TerrainPathingResources::CaptureNative(source, fixture.grid, after, game, 1024 * 1024));
+        Check(mapWinner.VerifyFrozenOutput(output, {}));
+        fixture.members.pop_back();
+        const auto without = fixture.Write(directory.path / (suffix + "-without-table.w3x"));
+        const auto wrongWinner = TerrainPathingResources::CaptureNative(without, fixture.grid, after, game, 1024 * 1024);
+        Require(!wrongWinner.Succeeded() && HasCode(wrongWinner.diagnostics, "TERRAIN_PATHING_PROPERTY_MISSING"),
+            "missing map table cannot borrow the previously captured map winner");
+        const std::vector<MapArchiveMember> actualGame{{"TerrainArt/CliffTypes.slk", CliffTable("ClXX", "Cl02")}};
+        Take(WriteVerifiedArchive(game / "war3patch.mpq", actualGame));
+        const auto gameWinner = Take(TerrainPathingResources::CaptureNative(without, fixture.grid, after, game, 1024 * 1024));
+        Check(gameWinner.VerifyFrozenOutput(output, {}));
+        const auto gameSaved = Take(MapArchiveSession::Open(Take(without.SaveCandidate(
+            directory.path / (suffix + "-game-saved.w3x"), output)).path));
+        Check(gameWinner.VerifyReadback(gameSaved, 1024 * 1024));
+    }
+}
+
+void NativeSentinelTransitionsRequireSafeCompleteFlatNeighborhoods() {
+    Directory directory;
+    for (const bool reverse : {false, true}) for (const unsigned failure : {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}) {
+        Fixture fixture; fixture.grid.header.cliffTilesets.push_back("Cl02");
+        for (auto& vertex : fixture.grid.vertices) vertex.cliffAndLayerRaw = 0xf2;
+        auto after = fixture.grid;
+        auto& sentinel = reverse ? after : fixture.grid;
+        auto& concrete = reverse ? fixture.grid : after;
+        const std::size_t index = failure == 9 ? 0 : 40;
+        concrete.vertices[index].cliffAndLayerRaw = 0x12;
+        switch (failure) {
+        case 0: sentinel.vertices[50].cliffAndLayerRaw = 0xf3; break; // 对角点使incident cell非平。
+        case 1: fixture.grid.vertices[30].textureAndFlagsRaw |= 0x10; break;
+        case 2: after.vertices[50].textureAndFlagsRaw |= 0x80; break;
+        case 3: fixture.grid.vertices[39].waterHeightAndFlagsRaw |= 0x4000; break;
+        case 4: after.vertices[41].waterHeightAndFlagsRaw |= 0x8000; break;
+        case 5: fixture.grid.vertices[31].groundHeightRaw |= 0x4000; break;
+        case 6: sentinel.vertices[49].variationRaw = 3u << 5; break;
+        case 7: concrete.vertices[49].variationRaw = 3u << 5; break;
+        case 8: sentinel.vertices[48].cliffAndLayerRaw = 0x22; break;
+        default: break;
+        }
+        fixture.terrain = Take(SerializeMapTerrain(fixture.grid)); fixture.members[0].data = fixture.terrain;
+        NativeSources(fixture, NativeSettings()); fixture.members.push_back({"TerrainArt/CliffTypes.slk", CliffTable()});
+        const auto source = fixture.Write(directory.path / (std::string(reverse ? "reverse-" : "forward-") + std::to_string(failure) + ".w3x"));
+        const auto result = TerrainPathingResources::CaptureNative(source, fixture.grid, after, {}, 1024 * 1024);
+        Require(!result.Succeeded() && HasCode(result.diagnostics, "TERRAIN_NATIVE_CLIFF_SLOT"),
+            "actual cliff rows cannot legitimize a nonflat, ramp, boundary, unknown or incomplete sentinel neighborhood");
+    }
 }
 
 void NativeCoreRequiresObjectAdapterForNonemptyPlacements() {
@@ -766,6 +863,8 @@ int main() {
         NativeWaterAndFractionalWorldBoundsUseActualSources();
         NativeChangedCliffSlotsBindActualRowsAndWinners();
         NativeCliffSlotsDoNotExpandThePaletteDomain();
+        NativeFlatSentinelTransitionsBindOnlyConcreteResources();
+        NativeSentinelTransitionsRequireSafeCompleteFlatNeighborhoods();
         NativeCoreRequiresObjectAdapterForNonemptyPlacements();
         NativeDirectoryCaptureUsesTheSameFrozenResources();
         CliffRefinementRequiresTheSameBlockingOutline();
