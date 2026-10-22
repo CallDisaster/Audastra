@@ -1519,7 +1519,8 @@ void TestOptionalRealTerrainAndPathingUseNormalSave() {
             const auto encoded = MapData::SerializeMapTerrain(terrain);
             Require(encoded.Succeeded() && encoded.value, "encode original synthetic wet source");
             const std::vector<MemberReplacement> seed{{"war3map.w3e", *encoded.value}};
-            const auto seeded = source.value->SaveCandidate(directory.Path() / "wet-source.w3x", seed);
+            const auto seeded = source.value->SaveCandidate(directory.Path()
+                / (nativeWater ? "native-water-seed.w3x" : "wet-source.w3x"), seed);
             Require(seeded.Succeeded() && seeded.value, "make independent synthetic water source");
             source = MapArchiveSession::Open(seeded.value->path);
             Require(source.Succeeded() && source.value, "open independent synthetic water source");
