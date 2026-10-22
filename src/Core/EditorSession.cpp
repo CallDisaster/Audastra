@@ -347,6 +347,11 @@ public:
                     "Validated patch was not produced from the current source member: " +
                         patch.relativePath.string());
             }
+            const auto previous = transaction->overlay.find(patch.relativePath);
+            if (previous != transaction->overlay.end() && previous->second.kind != kind
+                && (replaceKind || previous->second.kind == "terrain"))
+                return Status::Failure("Terrain.Patch", "TERRAIN_PATCH_OVERLAY_CONFLICT",
+                    "地形跟随高度不能覆盖同一成员上已有的其它领域修改。");
         }
         // 所有节点分配与覆盖构造完成后一次交换；后项失败不能留下前项已发布的覆盖。
         auto nextOverlay = transaction->overlay;

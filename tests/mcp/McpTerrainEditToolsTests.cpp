@@ -4,6 +4,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/MapPlacements.h"
+#include "War3MapCore/MapData/MapDataFieldPatchCodec.h"
 #include "War3MapCore/MapData/TerrainPatchCodec.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
 
@@ -446,6 +447,44 @@ void FollowingPlacementsAndRestrictionsUseNormalDirectorySave() {
     }
 }
 
+void TerrainAndFieldOverlaysCannotOverwriteEachOther() {
+    Fixture fixture(true);
+    const auto directory = DirectoryWorkspace::Open(fixture.source);
+    Expect(directory.Succeeded(), "cross-domain fixture opens");
+    auto raise = Raise(); raise.followDoodads = true;
+    Expect(fixture.edits.EditTerrain(raise.brush, raise.points, true).Succeeded(), "height candidate follows both placements");
+    auto fields = *fixture.document.Units(); fields.units[0].hitPoints = 50;
+    MapDataEditSession fieldEdits(fixture.document);
+    Expect(fieldEdits.EditUnits(fields).Succeeded(), "independent field candidate changes unit health");
+    const std::array kinds{MapDataKind::Units};
+    for (const bool terrainFirst : {false, true}) {
+        auto editor = EditorSession::Open({fixture.source, CompatibilityProfile::Default(), "synthetic-catalog"});
+        Expect(editor.Succeeded(), "cross-domain editor opens");
+        const auto transaction = editor.value->BeginEdit(editor.value->Revision());
+        Expect(transaction.Succeeded(), "cross-domain transaction opens");
+        auto terrain = TerrainPatchCodec::Seal(fixture.document, fixture.terrain, fixture.pathing,
+            directory.value->Snapshot(), fixture.edits, std::span(&raise, 1));
+        auto field = MapDataFieldPatchCodec::Seal(fixture.document, fieldEdits.Snapshot(), directory.value->Snapshot(), kinds);
+        Expect(terrain.Succeeded() && field.Succeeded(), "both individual domains have valid sealed source bindings");
+        const auto applyTerrain = [&] { return editor.value->ApplyTerrainPatch(*transaction.value, std::move(*terrain.value)); };
+        const auto applyField = [&] { return editor.value->ApplyMapDataPatch(*transaction.value, std::move(*field.value)); };
+        Expect((terrainFirst ? applyTerrain() : applyField()).Succeeded(), "first domain applies");
+        const auto before = editor.value->PreviewEdit(*transaction.value);
+        const auto rejected = terrainFirst ? applyField() : applyTerrain();
+        Expect(!rejected.Succeeded() && std::any_of(rejected.diagnostics.begin(), rejected.diagnostics.end(),
+            [](const auto& item) { return item.code == "TERRAIN_PATCH_OVERLAY_CONFLICT"; }),
+            "second domain cannot silently overwrite an existing placement edit");
+        const auto after = editor.value->PreviewEdit(*transaction.value);
+        Expect(before.Succeeded() && after.Succeeded() && before.value->changes.size() == after.value->changes.size(),
+            "rejected cross-domain patch does not publish a partial overlay");
+        for (std::size_t index = 0; index < before.value->changes.size(); ++index) {
+            const auto& a = before.value->changes[index]; const auto& b = after.value->changes[index];
+            Expect(a.path == b.path && a.kind == b.kind && a.beforeSha256 == b.beforeSha256 && a.afterSha256 == b.afterSha256,
+                "every first-domain output stays exact after rejection");
+        }
+    }
+}
+
 void FollowingHeightRestorationRemovesObsoletePlacementOverlay() {
     Fixture fixture(true); McpServer server; OpenWorkspace(fixture, server);
     auto* workspace = server.Workspace();
@@ -627,8 +666,9 @@ int main(int argc, char** argv) {
         BoundaryDraftSchemaAndNativeGateStaySeparate();
         PathingRestrictionsKeepSourceBitsThroughNormalDirectorySave();
         FollowingPlacementsAndRestrictionsUseNormalDirectorySave();
+        TerrainAndFieldOverlaysCannotOverwriteEachOther();
         FollowingHeightRestorationRemovesObsoletePlacementOverlay();
-        std::cout << "12 terrain MCP and sealed transaction scenarios passed\n";
+        std::cout << "terrain MCP and sealed transaction scenarios passed\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

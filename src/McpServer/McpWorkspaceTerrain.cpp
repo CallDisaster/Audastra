@@ -219,8 +219,15 @@ Result<MapData::TerrainStrokeResult> McpWorkspace::ApplyTerrainPlan(const Servic
     if (!prior.Succeeded()) return Failed<Receipt>(prior);
     if (!HasTerrainOverlay() && !prior.value->changes.empty())
         return Result<Receipt>::Failure("MCP", "MCP_TERRAIN_MIXED_UNSUPPORTED", "现有事务包含其它领域变化，不能混入独立地形候选。");
-    const auto priorCheck = ValidateTerrainOverlay();
-    if (!priorCheck.Succeeded()) return Failed<Receipt>(priorCheck);
+    std::optional<TerrainPatch> previousPatch;
+    if (HasTerrainOverlay()) {
+        auto previous = MapData::TerrainPatchCodec::Seal(*initialMapData_, terrainState_->terrain, terrainState_->pathing,
+            mapDataSource_->Snapshot(), activeEdit_->terrain->edits, activeEdit_->terrain->strokes);
+        if (!previous.Succeeded()) return Failed<Receipt>(previous);
+        const auto priorCheck = CheckOnlyTerrainFiles(*prior.value, *previous.value);
+        if (!priorCheck.Succeeded()) return Failed<Receipt>(priorCheck);
+        previousPatch.emplace(std::move(*previous.value));
+    }
     auto overlay = activeEdit_->terrain;
     auto strokes = overlay->strokes;
     strokes.push_back({plan.Plan().Brush(), {plan.Plan().Points().begin(), plan.Plan().Points().end()}, plan.Plan().FollowDoodads()});
@@ -257,10 +264,12 @@ Result<MapData::TerrainStrokeResult> McpWorkspace::ApplyTerrainPlan(const Servic
             if (!unchangedOverlay.value->changes.empty())
                 return Status::Failure("MCP", "MCP_TERRAIN_OVERLAY_MISMATCH", "发布前回调改变了原目录覆盖。");
         } else {
-            const auto unchanged = CheckOnlyTerrainFiles(*unchangedOverlay.value, *terrainState_, *overlay);
+            if (!previousPatch)
+                return Status::Failure("MCP", "MCP_TERRAIN_OVERLAY_MISMATCH", "缺少发布前已核对的地形覆盖。");
+            const auto unchanged = CheckOnlyTerrainFiles(*unchangedOverlay.value, *previousPatch);
             if (!unchanged.Succeeded()) return unchanged;
         }
-        // 最后的可失败写步骤：原 EditorSession 一次 swap 发布两成员，之后 Core 发布预分配命令。
+        // 最后的可失败写步骤：原 EditorSession 一次 swap 发布完整净结果，之后 Core 发布预分配命令。
         return session_.ApplyTerrainPatch(transaction, std::move(*sealed.value));
     });
     if (!applied.Succeeded()) return applied;
