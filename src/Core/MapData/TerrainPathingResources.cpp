@@ -360,11 +360,14 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
             for (std::size_t i = 0; i < before.vertices.size(); ++i) {
                 const auto oldSlot = before.vertices[i].CliffTextureIndex(), newSlot = after.vertices[i].CliffTextureIndex();
                 if (oldSlot == newSlot) continue;
-                if (oldSlot >= 15 || newSlot >= 15 || oldSlot >= before.header.cliffTilesets.size()
-                    || newSlot >= after.header.cliffTilesets.size())
-                    Fail("TERRAIN_NATIVE_CLIFF_SLOT", "悬崖槽变化需要旧/新均属于已有有效palette槽：顶点" + std::to_string(i));
-                cliffs.insert(before.header.cliffTilesets[oldSlot]);
-                cliffs.insert(after.header.cliffTilesets[newSlot]);
+                const bool oldKnown = oldSlot < 15 && oldSlot < before.header.cliffTilesets.size();
+                const bool newKnown = newSlot < 15 && newSlot < after.header.cliffTilesets.size();
+                if ((!oldKnown || !newKnown) && !IsNativeTerrainCliffSentinelTransition(before, after, i))
+                    Fail("TERRAIN_NATIVE_CLIFF_SLOT", "悬崖槽变化需要实际有效槽，或已证明平坦安全的15号哨兵过渡：顶点" + std::to_string(i));
+                // 平坦15号哨兵没有材质行；只捕获实际有效一侧，不伪造旧/新资源。
+                // 哨兵侧的完整邻域仍由共享判定核实，G0/G1和旧WPM逐格比较不变。
+                if (oldKnown) cliffs.insert(before.header.cliffTilesets[oldSlot]);
+                if (newKnown) cliffs.insert(after.header.cliffTilesets[newSlot]);
             }
             const std::vector<std::string> metadata{"war3map.w3e", "war3map.w3i", "war3map.doo", "war3map.w3b"};
             ArchiveExactMemberLimits limits;
