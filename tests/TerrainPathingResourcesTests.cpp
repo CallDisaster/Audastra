@@ -296,7 +296,10 @@ void WaterThresholdsUseDepthAndStrictCoverage() {
     Fixture fixture(true); fixture.members.back().data = Text("[Water]\nDeepLevelPathing=100\n");
     const auto overridden = fixture.Write(directory.path / "override.w3x");
     MapDataEditSession edits(MapDocument::FromMembers({})); fixture.Attach(edits); fixture.Water(edits, 110);
-    Require(!Take(TerrainSavePlan::PrepareForSave(overridden, edits, {})).SaveGate().Succeeded(), "actual later WorldEditData value wins over MiscData");
+    const auto ambiguous = TerrainSavePlan::PrepareForSave(overridden, edits, {});
+    Require(!ambiguous.Succeeded() && HasCode(ambiguous.diagnostics, "TERRAIN_PATHING_PROPERTY_AMBIGUOUS"),
+        "conflicting profile definitions cannot silently use the last value");
+    fixture.members[7].data = Text("[Other]\nValue=1\n");
     fixture.members.back().data = Text("[Water]\nDeepLevelPathing=nan\n");
     const auto invalid = fixture.Write(directory.path / "invalid.w3x");
     Require(!TerrainSavePlan::PrepareForSave(invalid, edits, {}).Succeeded(), "invalid water threshold is not defaulted");
@@ -315,6 +318,68 @@ void WaterThresholdsUseDepthAndStrictCoverage() {
         Require(Take(TerrainSavePlan::PrepareForSave(heightSource, heightEdits, {})).SaveGate().Succeeded() != crossing,
             "wet ground height uses the same native depth boundary");
     }
+}
+
+void WaterProfileDuplicatesCannotHideDifferentNativeDepths() {
+    Directory directory;
+    struct Case { std::string_view misc, editor, error; };
+    const Case cases[]{
+        {"[Water]\nDeepLevelPathing=64\nDeepLevelPathing=128\n", "", "TERRAIN_PATHING_PROPERTY_AMBIGUOUS"},
+        {"[Water]\nDeepLevelPathing=64\n[Other]\nValue=1\n[ water ]\n deepLEVELpathing = 128\n", "", "TERRAIN_PATHING_PROPERTY_AMBIGUOUS"},
+        {"[Water]\nDeepLevelPathing=64\n", "[Water]\nDeepLevelPathing=128\n", "TERRAIN_PATHING_PROPERTY_AMBIGUOUS"},
+        {"[Water]\nDeepLevelPathing=64,128\nDeepLevelPathing=128\n", "", "TERRAIN_PATHING_PROPERTY_INVALID"},
+        {"[Water]\nDeepLevelPathing=64,128\n", "[Water]\nDeepLevelPathing=128\n", "TERRAIN_PATHING_PROPERTY_INVALID"},
+        {"[Water]\nDeepLevelPathing=nan\nDeepLevelPathing=128\n", "", "TERRAIN_PATHING_PROPERTY_INVALID"},
+        {"[Water]\nDeepLevelPathing=-1\nDeepLevelPathing=128\n", "", "TERRAIN_PATHING_PROPERTY_INVALID"},
+        {"[Water]\nDeepLevelPathing=128\n", "[Water]\nDeepLevelPathing=128.0\n", ""},
+        {"\xef\xbb\xbf[ WATER ]\r\n DeepLevelPathing = 128 \r\n;DeepLevelPathing=64\n//DeepLevelPathing=64\n", "[Other]\nDeepLevelPathing=64\n", ""},
+        {"[Other]\nDeepLevelPathing=64\n", "[Water]\nDeepLevelPathing=128\n", ""},
+    };
+    unsigned count = 0;
+    for (const auto& item : cases) {
+        Fixture fixture(true, 48);
+        fixture.members[7].data = Text(item.misc); fixture.members[8].data = Text(item.editor);
+        const auto name = std::to_string(count++);
+        const auto source = fixture.Write(directory.path / (name + ".w3x"));
+        MapDataEditSession edits(MapDocument::FromMembers({})); fixture.Attach(edits); fixture.Water(edits, 80);
+        const auto plan = TerrainSavePlan::PrepareForSave(source, edits, {});
+        if (!item.error.empty()) {
+            Require(!plan.Succeeded() && HasCode(plan.diagnostics, item.error),
+                "all raw definitions are checked before a later scalar can hide an unsafe water threshold");
+        } else {
+            Require(plan.Succeeded(), "equal scalar duplicates and unrelated keys remain supported");
+            Check(plan.value->SaveGate());
+            const auto saved = Take(MapArchiveSession::Open(Take(source.SaveCandidate(
+                directory.path / (name + "-saved.w3x"), plan.value->Replacements())).path));
+            Check(plan.value->VerifyReadback(saved));
+            Require(Take(saved.ReadMember("war3map.wpm")) == fixture.pathing, "valid scalar-only water saves keep original pathing");
+        }
+        MapDataEditSession textureOnly(MapDocument::FromMembers({})); fixture.Attach(textureOnly); fixture.Paint(textureOnly);
+        Check(Take(TerrainSavePlan::PrepareForSave(source, textureOnly, {})).SaveGate());
+        Require(Take(source.ReadMember("war3map.w3e")) == fixture.terrain
+            && Take(source.ReadMember("war3map.wpm")) == fixture.pathing, "profile checks never change the source map");
+    }
+    for (const bool miscFromGame : {false, true}) {
+        Fixture fixture(true, 48);
+        fixture.members[7].data = Text("[Water]\nDeepLevelPathing=64\n");
+        fixture.members[8].data = Text("[Water]\nDeepLevelPathing=128\n");
+        const auto member = fixture.members[miscFromGame ? 7 : 8];
+        fixture.members.erase(fixture.members.begin() + (miscFromGame ? 7 : 8));
+        const auto name = miscFromGame ? "misc-from-game" : "editor-from-game";
+        const auto gameRoot = directory.path / name;
+        Require(std::filesystem::create_directory(gameRoot), "private profile fixture directory");
+        Take(WriteVerifiedArchive(gameRoot / "war3.mpq", std::vector<MapArchiveMember>{member}));
+        const auto source = fixture.Write(directory.path / (std::string(name) + ".w3x"));
+        MapDataEditSession edits(MapDocument::FromMembers({})); fixture.Attach(edits); fixture.Water(edits, 80);
+        const auto failed = TerrainSavePlan::PrepareForSave(source, edits, gameRoot);
+        Require(!failed.Succeeded() && HasCode(failed.diagnostics, "TERRAIN_PATHING_PROPERTY_AMBIGUOUS"),
+            "conflicting actual map and game definitions cannot produce false water equivalence");
+    }
+    Fixture firstValue(true, 48); firstValue.members[7].data = Text("[Water]\nDeepLevelPathing=64\n");
+    const auto source = firstValue.Write(directory.path / "first-value.w3x");
+    MapDataEditSession edits(MapDocument::FromMembers({})); firstValue.Attach(edits); firstValue.Water(edits, 80);
+    Require(!Take(TerrainSavePlan::PrepareForSave(source, edits, {})).SaveGate().Succeeded(),
+        "the native first scalar classifies 48 to 80 as a shallow-to-deep transition");
 }
 
 void RestrictionAndTerrainChangesUseIndependentSaveChecks() {
@@ -494,6 +559,7 @@ int main() {
         UnresolvedGroundIndicesCannotChangeThroughPaletteEdits();
         DifferentOrUnavailablePropertiesRefuse();
         WaterThresholdsUseDepthAndStrictCoverage();
+        WaterProfileDuplicatesCannotHideDifferentNativeDepths();
         RestrictionAndTerrainChangesUseIndependentSaveChecks();
         FinalResourcesAndGameWinnersAreRechecked();
         StoredAndDecodedBudgetsShareTheCallerAllowance();

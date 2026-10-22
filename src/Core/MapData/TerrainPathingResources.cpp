@@ -137,7 +137,7 @@ Result<TerrainPathingResources> TerrainPathingResources::Capture(const MapArchiv
             result.sourceBytes_ += member.bytes.size();
         }
         std::optional<Game::GameDataSource> game;
-        Text::ProfileSections configuration;
+        std::optional<float> deepThreshold;
         for (std::size_t i = 0; i < captured.size(); ++i) {
             auto bytes = std::move(captured[i].bytes);
             Dependency dependency;
@@ -171,16 +171,21 @@ Result<TerrainPathingResources> TerrainPathingResources::Capture(const MapArchiv
             } else {
                 auto text = std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size());
                 if (text.starts_with("\xef\xbb\xbf")) text.remove_prefix(3);
-                for (auto& [section, fields] : Text::ParseProfile(text))
-                    for (auto& [key, value] : fields) configuration[section][key] = std::move(value);
+                Text::VisitProfileFields(text, [&](std::string_view section, std::string_view key, std::string_view value) {
+                    if (section != "water" || key != "deeplevelpathing") return;
+                    const auto threshold = Number(value, "Water.DeepLevelPathing");
+                    if (threshold < 0) Fail("TERRAIN_PATHING_PROPERTY_INVALID", "DeepLevelPathing 不能为负。");
+                    // 原版读取追加值链的首值。来源合并尚有未决项，不能用后值覆盖冲突后声称通行等价。
+                    if (deepThreshold && *deepThreshold != threshold)
+                        Fail("TERRAIN_PATHING_PROPERTY_AMBIGUOUS", "Water.DeepLevelPathing 存在不同的重复定义，无法确认水深通行阈值。");
+                    deepThreshold = threshold;
+                });
             }
         }
         if (needs.water) {
-            const auto water = configuration.find("water");
-            if (water == configuration.end() || !water->second.contains("deeplevelpathing"))
+            if (!deepThreshold)
                 Fail("TERRAIN_PATHING_PROPERTY_MISSING", "当前配置缺少 Water.DeepLevelPathing，不能猜测水深通行状态。");
-            result.deepThreshold_ = Number(water->second.at("deeplevelpathing"), "Water.DeepLevelPathing");
-            if (result.deepThreshold_ < 0) Fail("TERRAIN_PATHING_PROPERTY_INVALID", "DeepLevelPathing 不能为负。");
+            result.deepThreshold_ = *deepThreshold;
             result.waterConfigured_ = true;
         }
         return result;

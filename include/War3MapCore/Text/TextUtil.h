@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <map>
 #include <string>
 #include <string_view>
@@ -31,6 +32,9 @@ namespace War3Map::Text {
 // WE/游戏 profile 文本（[节] 与 键=值 行）：节名与键转小写、值去两端空白；
 // “//” 或 “;” 开头的行是注释，节外的键归入空节名，同节同键后者覆盖。调用方负责去 BOM。
 using ProfileSections = std::map<std::string, std::unordered_map<std::string, std::string>>;
+// 按文件顺序访问原始字段，保留重复定义；view 仅在回调期间有效，规范化规则同 ParseProfile。
+using ProfileFieldVisitor = std::function<void(std::string_view section, std::string_view key, std::string_view value)>;
+void VisitProfileFields(std::string_view text, const ProfileFieldVisitor& visitor);
 [[nodiscard]] ProfileSections ParseProfile(std::string_view text);
 
 } // namespace War3Map::Text

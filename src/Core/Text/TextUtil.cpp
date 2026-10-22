@@ -85,8 +85,7 @@ std::vector<std::string_view> SplitPlain(std::string_view text, char separator) 
     return parts;
 }
 
-ProfileSections ParseProfile(std::string_view text) {
-    ProfileSections result;
+void VisitProfileFields(std::string_view text, const ProfileFieldVisitor& visitor) {
     std::string section;
     while (!text.empty()) {
         const auto newline = text.find('\n');
@@ -97,9 +96,16 @@ ProfileSections ParseProfile(std::string_view text) {
             const auto closing = line.find(']');
             section = closing == std::string_view::npos ? std::string{} : LowerAscii(TrimCWhitespace(line.substr(1, closing - 1)));
         } else if (const auto equals = line.find('='); equals != std::string_view::npos) {
-            result[section][LowerAscii(TrimCWhitespace(line.substr(0, equals)))] = std::string(TrimCWhitespace(line.substr(equals + 1)));
+            visitor(section, LowerAscii(TrimCWhitespace(line.substr(0, equals))), TrimCWhitespace(line.substr(equals + 1)));
         }
     }
+}
+
+ProfileSections ParseProfile(std::string_view text) {
+    ProfileSections result;
+    VisitProfileFields(text, [&](std::string_view section, std::string_view key, std::string_view value) {
+        result[std::string(section)][std::string(key)] = std::string(value);
+    });
     return result;
 }
 

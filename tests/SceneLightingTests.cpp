@@ -80,6 +80,14 @@ void TestProfile() {
     const auto profile = Text::ParseProfile("// c\n[TerrainLights]\r\nA = x.mdl \n; skip\nL=\n[Other]\nA=y\n");
     Require(profile.at("terrainlights").at("a") == "x.mdl" && profile.at("terrainlights").at("l").empty()
         && profile.at("other").at("a") == "y" && profile.size() == 2, "profile 节/键小写、值去空白、跳过注释");
+    constexpr std::string_view duplicate = "[ WATER ]\r\n DeepLevelPathing = 64\n; ignored\n[water]\nDeepLevelPathing=128 \n";
+    std::vector<std::string> values;
+    Text::VisitProfileFields(duplicate, [&](std::string_view section, std::string_view key, std::string_view value) {
+        Require(section == "water" && key == "deeplevelpathing", "profile visitor uses the shared normalization rules");
+        values.emplace_back(value);
+    });
+    Require(values == std::vector<std::string>{"64", "128"}, "profile visitor preserves ordered duplicate definitions");
+    Require(Text::ParseProfile(duplicate).at("water").at("deeplevelpathing") == "128", "legacy profile consumers keep last-value semantics");
 }
 
 void TestDayNight() {
