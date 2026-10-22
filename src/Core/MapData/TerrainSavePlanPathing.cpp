@@ -22,14 +22,14 @@ bool SameSha(std::span<const std::byte> bytes, const std::optional<std::string>&
 
 Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEditSession& edits,
     const MapArchiveSession* source, const WorkspaceSnapshot* workspace, const std::filesystem::path& gameRoot,
-    const TerrainSavePlanLimits& limits, std::size_t& total) {
+    const TerrainSavePlanLimits& limits, std::size_t& total, const NativeResourceCapture* nativeCapture) {
     using Output = Result<std::vector<std::byte>>;
     const auto shape = edits.VerifyTerrainCandidateForSave(edits.terrain_, edits.pathing_,
         edits.current_[MapDataEditSession::Index(MapDataKind::Doodads)], nullptr, nullptr, nullptr, true);
     if (!shape.Succeeded()) return {{}, shape.diagnostics};
     if ((!source && !workspace) || total > limits.maximumBytes)
         return Output::Failure(kSubsystem, "TERRAIN_PATHING_REBUILD_SOURCE", "通行重建缺少唯一来源或剩余预算。");
-    auto captured = source
+    auto captured = nativeCapture ? (*nativeCapture)(*edits.terrainOriginal_, *edits.terrain_, limits.maximumBytes - total) : source
         ? TerrainPathingResources::CaptureNative(*source, *edits.terrainOriginal_, *edits.terrain_, gameRoot, limits.maximumBytes - total)
         : TerrainPathingResources::CaptureNative(*workspace, *edits.terrainOriginal_, *edits.terrain_, gameRoot, limits.maximumBytes - total);
     if (!captured.Succeeded() || !captured.value) return {{}, std::move(captured.diagnostics)};
@@ -38,7 +38,7 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
         total += bytes;
         return true;
     };
-    if (!reserve(captured.value->SourceBytes()))
+    if (!reserve(captured.value->CaptureBudgetBytes()))
         return Output::Failure(kSubsystem, "TERRAIN_SAVE_PLAN_BUDGET", "完整通行规则超过保存计划预算。");
     const auto& oldWpm = *edits.pathingOriginal_;
     const auto& savedIntent = *edits.originalPathingRestrictions_;

@@ -125,7 +125,8 @@ Result<TerrainSavePlan> TerrainSavePlan::PrepareForSave(const MapArchiveSession&
 }
 
 Result<TerrainSavePlan> TerrainSavePlan::PrepareArchive(const MapArchiveSession& source,
-    const MapDataEditSession& edits, const TerrainSavePlanLimits& limits, const std::filesystem::path* gameRoot) {
+    const MapDataEditSession& edits, const TerrainSavePlanLimits& limits, const std::filesystem::path* gameRoot,
+    const NativeResourceCapture* nativeCapture) {
     return Guard([&]() {
         CheckLimits(limits);
         TerrainSavePlan plan;
@@ -161,7 +162,7 @@ Result<TerrainSavePlan> TerrainSavePlan::PrepareArchive(const MapArchiveSession&
                 member.sourceBytes = static_cast<std::size_t>(*identity.byteSize); member.sourceSha256 = identity.sha256;
             }
         }
-        return Complete(std::move(plan), edits, limits, total, &source, gameRoot);
+        return Complete(std::move(plan), edits, limits, total, &source, gameRoot, nullptr, nativeCapture);
     });
 }
 
@@ -176,7 +177,8 @@ Result<TerrainSavePlan> TerrainSavePlan::PrepareForSave(const WorkspaceSnapshot&
 }
 
 Result<TerrainSavePlan> TerrainSavePlan::PrepareWorkspace(const WorkspaceSnapshot& source,
-    const MapDataEditSession& edits, const TerrainSavePlanLimits& limits, const std::filesystem::path* gameRoot) {
+    const MapDataEditSession& edits, const TerrainSavePlanLimits& limits, const std::filesystem::path* gameRoot,
+    const NativeResourceCapture* nativeCapture) {
     return Guard([&]() {
         CheckLimits(limits);
         TerrainSavePlan plan;
@@ -218,13 +220,14 @@ Result<TerrainSavePlan> TerrainSavePlan::PrepareWorkspace(const WorkspaceSnapsho
                 member.sourceSha256 = entry.sha256;
             }
         }
-        return Complete(std::move(plan), edits, limits, total, nullptr, gameRoot, &source);
+        return Complete(std::move(plan), edits, limits, total, nullptr, gameRoot, &source, nativeCapture);
     });
 }
 
 Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
     const MapDataEditSession& edits, const TerrainSavePlanLimits& limits, std::size_t total,
-    const MapArchiveSession* sourceArchive, const std::filesystem::path* gameRoot, const WorkspaceSnapshot* workspace) {
+    const MapArchiveSession* sourceArchive, const std::filesystem::path* gameRoot, const WorkspaceSnapshot* workspace,
+    const NativeResourceCapture* nativeCapture) {
     if (!ValidSha(plan.sourceSha256_))
         return Result<TerrainSavePlan>::Failure(std::string(kSubsystem), "TERRAIN_SAVE_PLAN_SOURCE_INVALID",
             "地形保存计划需要有效的来源 SHA-256。");
@@ -268,7 +271,7 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
     }
     std::optional<std::vector<std::byte>> rebuiltPathing;
     if (!plan.saveGate_.Succeeded() && gameRoot && (sourceArchive || workspace)) {
-        auto rebuilt = plan.RebuildPathing(edits, sourceArchive, workspace, *gameRoot, limits, total);
+        auto rebuilt = plan.RebuildPathing(edits, sourceArchive, workspace, *gameRoot, limits, total, nativeCapture);
         if (!rebuilt.Succeeded() || !rebuilt.value) {
             plan.saveGate_ = rebuilt.diagnostics.empty()
                 ? Reject("TERRAIN_PATHING_REBUILD_OUTPUT", "原版通行重算没有返回完整结果。")

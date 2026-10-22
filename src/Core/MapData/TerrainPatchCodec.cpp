@@ -32,6 +32,14 @@ Result<TerrainPatch> TerrainPatchCodec::Seal(const MapDocument& original,
     std::span<const std::byte> terrain, std::span<const std::byte> pathing,
     const WorkspaceSnapshot& source, const MapDataEditSession& current,
     std::span<const TerrainStrokeIntent> strokes, const std::filesystem::path& gameRoot) {
+    return SealWithPlan(original, terrain, pathing, source, current, strokes, gameRoot, nullptr);
+}
+
+Result<TerrainPatch> TerrainPatchCodec::SealWithPlan(const MapDocument& original,
+    std::span<const std::byte> terrain, std::span<const std::byte> pathing,
+    const WorkspaceSnapshot& source, const MapDataEditSession& current,
+    std::span<const TerrainStrokeIntent> strokes, const std::filesystem::path& gameRoot,
+    const TerrainSavePlan* prepared) {
     if (strokes.empty() || strokes.size() > 128)
         return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_STROKE_BUDGET", "地形目录事务需要 1 到 128 笔原始命令。");
     std::size_t pointCount = 0;
@@ -84,12 +92,17 @@ Result<TerrainPatch> TerrainPatchCodec::Seal(const MapDocument& original,
             || !current.original_[index] || !current.current_[index])
             return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_MEMBER_SCOPE", "地形目录事务只支持命令重放产生的原有摆放高度变化。");
     }
-    const auto plan = TerrainSavePlan::PrepareForSave(source, current, gameRoot);
-    if (!plan.Succeeded() || !plan.value) return {{}, plan.diagnostics};
+    std::optional<TerrainSavePlan> captured;
+    if (!prepared) {
+        auto plan = TerrainSavePlan::PrepareForSave(source, current, gameRoot);
+        if (!plan.Succeeded() || !plan.value) return {{}, plan.diagnostics};
+        captured = std::move(*plan.value);
+        prepared = &*captured;
+    }
     auto replacements = current.Replacements();
-    const auto installed = plan.value->InstallPathingOutput(current, replacements);
+    const auto installed = prepared->InstallPathingOutput(current, replacements);
     if (!installed.Succeeded()) return {{}, installed.diagnostics};
-    const auto planned = plan.value->VerifyForSave(current, source.aggregateSha256,
+    const auto planned = prepared->VerifyForSave(current, source.aggregateSha256,
         replacements, current.Removals());
     if (!planned.Succeeded()) return {{}, planned.diagnostics};
     auto terrainFile = BindMember(source, "war3map.w3e", terrain, *currentTerrain.value);
@@ -110,7 +123,7 @@ Result<TerrainPatch> TerrainPatchCodec::Seal(const MapDocument& original,
         files.push_back(std::move(*placement.value));
     }
     auto result = Result<TerrainPatch>::Success(TerrainPatch(std::move(files)));
-    result.diagnostics = plan.value->Diagnostics();
+    result.diagnostics = prepared->Diagnostics();
     return result;
 }
 

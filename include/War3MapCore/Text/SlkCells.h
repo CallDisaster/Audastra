@@ -15,6 +15,9 @@ enum class SlkCellMode {
     CatalogStrict,
     // 历史脚本标签：保留 SoundQueries 的宽松读取、atoi 坐标与原文引号行为。
     SoundQueriesLegacy,
+    // 保存资格读取：在CatalogStrict基础上拒绝重复坐标及同记录重复X/Y/K。
+    // 行ID、列名和业务类型的唯一性仍由使用方检查，不改变普通目录读取。
+    CatalogUnique,
 };
 
 // 只解析 SYLK C 单元格的 X/Y/K；表的业务列、声音路径和对象 rawcode 由调用者解释。

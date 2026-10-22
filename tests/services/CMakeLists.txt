@@ -262,6 +262,25 @@ target_compile_definitions(audastra-terrain-water-edit-service-tests PRIVATE NOM
 target_compile_options(audastra-terrain-water-edit-service-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-terrain-water-edit COMMAND audastra-terrain-water-edit-service-tests)
 
+add_executable(audastra-native-destructable-pathing-tests NativeDestructablePathingTests.cpp)
+target_link_libraries(audastra-native-destructable-pathing-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(audastra-native-destructable-pathing-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-native-destructable-pathing-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-native-destructable-pathing COMMAND audastra-native-destructable-pathing-tests)
+
+add_executable(audastra-terrain-native-object-save-tests TerrainNativeObjectSaveTests.cpp)
+target_link_libraries(audastra-terrain-native-object-save-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(audastra-terrain-native-object-save-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-terrain-native-object-save-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-terrain-native-object-save COMMAND audastra-terrain-native-object-save-tests)
+
+add_executable(audastra-terrain-native-object-real-tests TerrainNativeObjectRealSourceTests.cpp)
+target_link_libraries(audastra-terrain-native-object-real-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(audastra-terrain-native-object-real-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-terrain-native-object-real-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-terrain-native-object-real COMMAND audastra-terrain-native-object-real-tests)
+set_tests_properties(services-terrain-native-object-real PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
+
 add_executable(war3-map-import-inventory-tests ImportInventoryQueryTests.cpp)
 target_link_libraries(war3-map-import-inventory-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(war3-map-import-inventory-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)

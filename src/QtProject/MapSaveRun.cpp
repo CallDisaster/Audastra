@@ -1,4 +1,5 @@
 #include "EditorProject.h"
+#include "War3MapCore/Services/TerrainPathingSave.h"
 #include "MapSaveJob.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
@@ -169,7 +170,7 @@ Status PrepareWorkerDerivedInputs(MapSaveJob& job, std::unique_ptr<MapData::MapD
             if (!restored.Succeeded()) return restored;
         }
     if (job.terrainDerivationRequired) {
-        auto prepared = MapData::TerrainSavePlan::PrepareForSave(*job.archive, *edits, job.minimapGameRoot);
+        auto prepared = Services::TerrainPathingSave::PrepareForSave(*job.archive, *edits, job.minimapGameRoot);
         if (!prepared.Succeeded() || !prepared.value) return {std::move(prepared.diagnostics)};
         const auto installed = prepared.value->InstallPathingOutput(*edits, job.replacements);
         if (!installed.Succeeded()) return installed;

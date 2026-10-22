@@ -1,4 +1,5 @@
 #include "McpWorkspace.h"
+#include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/TerrainPatchCodec.h"
@@ -169,7 +170,7 @@ Status McpWorkspace::SeedTerrainOverlay(ActiveEdit& edit) {
     if (!replay.Succeeded()) return {replay.diagnostics};
     edit.terrain = std::move(*replay.value);
     if (edit.terrain->strokes.empty()) return Status::Ok();
-    auto sealed = MapData::TerrainPatchCodec::Seal(*initialMapData_, terrainState_->terrain, terrainState_->pathing,
+    auto sealed = Services::TerrainPathingSave::Seal(*initialMapData_, terrainState_->terrain, terrainState_->pathing,
         mapDataSource_->Snapshot(), edit.terrain->edits, edit.terrain->strokes, gameRoot_);
     if (!sealed.Succeeded()) return {sealed.diagnostics};
     const auto published = session_.ApplyTerrainPatch(edit.id, std::move(*sealed.value));
@@ -190,7 +191,7 @@ Status McpWorkspace::CheckTerrainMixingAllowed() const {
 
 Status McpWorkspace::ValidateTerrainOverlay() const {
     if (!HasTerrainOverlay()) return Status::Ok();
-    const auto sealed = MapData::TerrainPatchCodec::Seal(*initialMapData_, terrainState_->terrain, terrainState_->pathing,
+    const auto sealed = Services::TerrainPathingSave::Seal(*initialMapData_, terrainState_->terrain, terrainState_->pathing,
         mapDataSource_->Snapshot(), activeEdit_->terrain->edits, activeEdit_->terrain->strokes, gameRoot_);
     if (!sealed.Succeeded()) return {sealed.diagnostics};
     const auto preview = session_.PreviewEdit(activeEdit_->id);
@@ -221,7 +222,7 @@ Result<MapData::TerrainStrokeResult> McpWorkspace::ApplyTerrainPlan(const Servic
         return Result<Receipt>::Failure("MCP", "MCP_TERRAIN_MIXED_UNSUPPORTED", "现有事务包含其它领域变化，不能混入独立地形候选。");
     std::optional<TerrainPatch> previousPatch;
     if (HasTerrainOverlay()) {
-        auto previous = MapData::TerrainPatchCodec::Seal(*initialMapData_, terrainState_->terrain, terrainState_->pathing,
+        auto previous = Services::TerrainPathingSave::Seal(*initialMapData_, terrainState_->terrain, terrainState_->pathing,
             mapDataSource_->Snapshot(), activeEdit_->terrain->edits, activeEdit_->terrain->strokes, gameRoot_);
         if (!previous.Succeeded()) return Failed<Receipt>(previous);
         const auto priorCheck = CheckOnlyTerrainFiles(*prior.value, *previous.value);
@@ -235,7 +236,7 @@ Result<MapData::TerrainStrokeResult> McpWorkspace::ApplyTerrainPlan(const Servic
     if (!budget.Succeeded()) return Failed<Receipt>(budget);
     auto candidate = Replay(*initialMapData_, *terrainState_, strokes);
     if (!candidate.Succeeded()) return Failed<Receipt>(candidate);
-    auto sealed = MapData::TerrainPatchCodec::Seal(*initialMapData_, terrainState_->terrain, terrainState_->pathing,
+    auto sealed = Services::TerrainPathingSave::Seal(*initialMapData_, terrainState_->terrain, terrainState_->pathing,
         mapDataSource_->Snapshot(), (*candidate.value)->edits, strokes, gameRoot_);
     if (!sealed.Succeeded()) return Failed<Receipt>(sealed);
     if (toolEpoch_ == (std::numeric_limits<std::uint64_t>::max)()

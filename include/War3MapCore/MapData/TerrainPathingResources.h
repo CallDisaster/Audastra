@@ -9,6 +9,8 @@
 #include <functional>
 #include <map>
 
+namespace War3Map::Services { class TerrainPathingSave; }
+
 namespace War3Map::MapData {
 
 // 实际读取的地形语义输入；只能由真实地图/游戏来源建立。
@@ -69,20 +71,34 @@ public:
     [[nodiscard]] Status VerifyReadback(const MapArchiveSession& saved, std::size_t maximumBytes) const;
     [[nodiscard]] Status VerifyReadback(const WorkspaceSnapshot& saved, std::size_t maximumBytes) const;
     [[nodiscard]] std::size_t SourceBytes() const noexcept { return sourceBytes_; }
+    // 原字节读取和严格物编解析的累计工作预留；保存计划还需计入输出缓冲。
+    [[nodiscard]] std::size_t CaptureBudgetBytes() const noexcept { return sourceBytes_ + objectWorkBytes_; }
     [[nodiscard]] std::size_t OwnedCapacityBytes() const noexcept;
 
 private:
+    friend class Services::TerrainPathingSave;
     TerrainPathingResources() = default;
+    // 只有Services可信适配器可提供解析器；输入只能是同一次实际捕获的字节。
+    // 成功值为已经在maximumBytes内预留的解析工作量，不是外部资格布尔。
+    using NativeObjectValidator = std::function<Result<std::size_t>(
+        std::span<const std::string_view>, std::span<const ArchiveExactMember>, std::size_t)>;
+    [[nodiscard]] static Result<TerrainPathingResources> CaptureNativeWithObjects(const MapArchiveSession& source,
+        const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
+        const std::filesystem::path& gameRoot, std::size_t maximumBytes, const NativeObjectValidator& validator);
+    [[nodiscard]] static Result<TerrainPathingResources> CaptureNativeWithObjects(const WorkspaceSnapshot& source,
+        const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
+        const std::filesystem::path& gameRoot, std::size_t maximumBytes, const NativeObjectValidator& validator);
     using MemberReader = std::function<Result<std::vector<ArchiveExactMember>>(
         std::span<const std::string>, const ArchiveExactMemberLimits&)>;
     [[nodiscard]] static Result<TerrainPathingResources> CaptureInputs(const MemberReader& reader,
         const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
-        const std::filesystem::path& gameRoot, std::size_t maximumBytes, bool native);
+        const std::filesystem::path& gameRoot, std::size_t maximumBytes, bool native,
+        const NativeObjectValidator* validator = nullptr);
     [[nodiscard]] static Result<TerrainPathingResources> CaptureWaterBrushInputs(const MemberReader& reader,
         const TerrainGridSnapshot& sourceTerrain, const TerrainGridSnapshot& currentTerrain,
         const std::filesystem::path& gameRoot, bool enforceWaterLimits, std::size_t maximumBytes);
     // requiredCount之前的成员必须有实际winner；余项允许缺失并固定缺失身份。
-    using ResourceVisitor = std::function<void(std::size_t, bool, const std::vector<std::byte>&)>;
+    using ResourceVisitor = std::function<void(std::size_t, bool, std::vector<std::byte>&&)>;
     [[nodiscard]] Status CaptureResourceMembers(const MemberReader& reader,
         std::span<const std::string> names, std::size_t requiredCount, const ResourceVisitor& visitor);
     [[nodiscard]] Status VerifyReadbackMembers(const MemberReader& reader, std::size_t maximumBytes) const;
@@ -99,6 +115,7 @@ private:
     std::filesystem::path gameRoot_;
     std::uint8_t tileset_ = 0;
     std::size_t sourceBytes_ = 0;
+    std::size_t objectWorkBytes_ = 0;
     std::size_t capturedMaximumBytes_ = 0;
     std::vector<TerrainNativeGroundRule> nativeGround_;
     std::optional<TerrainNativeWaterRules> waterRules_;

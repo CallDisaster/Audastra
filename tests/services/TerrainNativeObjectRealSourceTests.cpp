@@ -1,0 +1,187 @@
+#include "War3MapCore/Game/GameDataSource.h"
+#include "War3MapCore/Hash.h"
+#include "War3MapCore/IO/FileBytes.h"
+#include "War3MapCore/MapData/MapPlacements.h"
+#include "War3MapCore/ObjectData/NativeObjectCodec.h"
+#include "War3MapCore/ObjectData/ObjectFieldSchema.h"
+#include "War3MapCore/ObjectData/StandardObjectCatalog.h"
+#include "War3MapCore/Services/MapCreateService.h"
+#include "War3MapCore/Services/MapEditSaveService.h"
+#include "War3MapCore/Services/TerrainPathingSave.h"
+#include "War3MapCore/Text/TextUtil.h"
+
+#include <Windows.h>
+#include <algorithm>
+#include <array>
+#include <iostream>
+#include <stdexcept>
+
+namespace {
+using namespace War3Map;
+using namespace War3Map::MapData;
+using namespace War3Map::ObjectData;
+using namespace War3Map::Services;
+constexpr std::size_t kSaveBytes = 64u * 1024u * 1024u;
+
+void Require(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
+void Check(const Status& status) {
+    if (status.Succeeded()) return;
+    std::string message;
+    for (const auto& diagnostic : status.diagnostics) message += diagnostic.code + ": " + diagnostic.message + "\n";
+    throw std::runtime_error(message);
+}
+template<class T> T Take(Result<T> result) {
+    if (!result.Succeeded() || !result.value) { Check({result.diagnostics}); throw std::runtime_error("missing result"); }
+    return std::move(*result.value);
+}
+std::filesystem::path EnvironmentPath(const wchar_t* name) {
+    const DWORD capacity = GetEnvironmentVariableW(name, nullptr, 0);
+    if (!capacity) return {};
+    std::wstring value(capacity, L'\0');
+    const DWORD length = GetEnvironmentVariableW(name, value.data(), capacity);
+    Require(length > 0 && length < capacity, "environment path changed while reading");
+    value.resize(length); return value;
+}
+struct OwnedDirectory {
+    std::filesystem::path path;
+    bool keep = false;
+    OwnedDirectory() {
+        const auto evidence = EnvironmentPath(L"FORGE_TERRAIN_SAVE_EVIDENCE_DIR");
+        keep = !evidence.empty();
+        path = (keep ? evidence : std::filesystem::temp_directory_path()) / ("native-objects-"
+            + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
+        Require(std::filesystem::create_directories(path), "exclusive real-source evidence directory");
+    }
+    ~OwnedDirectory() { if (!keep) { std::error_code error; std::filesystem::remove_all(path, error); } }
+};
+
+void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const std::filesystem::path& game) {
+    OwnedDirectory directory;
+    try {
+        MapCreateRequest create;
+        create.options.name = "Native object pathing regression";
+        create.target = directory.path / "created.w3x"; create.workspace = directory.path / "seed";
+        create.toolRoot = tool; create.gameRoot = game;
+        const auto created = Take(CreateMapCandidate(create));
+        Require(created.scriptRebuilt, "original map has a real-toolchain checked script");
+        auto original = Take(MapArchiveSession::Open(created.path));
+        const auto sourceScript = Take(original.ReadMember("war3map.j"));
+        const auto parsed = Take(ParseMapTerrain(Take(original.ReadMember("war3map.w3e"))));
+        auto before = *parsed.Snapshot();
+        Require(before.header.width > 32 && before.header.height > 32, "original map contains the edited center");
+        auto mounted = Take(Game::GameDataSource::MountStrict(game, before.header.mainTileset));
+        constexpr std::array<const char*, 3> names{"Units/DestructableData.slk", "Doodads/Doodads.slk", "Units/DestructableMetaData.slk"};
+        std::array<Game::GameFileContents, names.size()> captured;
+        for (std::size_t i = 0; i < names.size(); ++i) {
+            captured[i] = Take(mounted.ReadFileBoundedWithSource(names[i], 2u * 1024u * 1024u));
+            std::cout << names[i] << " winner=" << captured[i].archiveName << " bytes=" << captured[i].bytes.size()
+                << " sha256=" << Take(Sha256(captured[i].bytes)) << '\n';
+            Require(!original.HasMember(names[i]), "fixture must use actual game-winning object tables");
+        }
+        const auto reader = [&](const std::string& name) -> Result<std::vector<std::byte>> {
+            for (std::size_t i = 0; i < names.size(); ++i)
+                if (Text::LowerAscii(name) == Text::LowerAscii(names[i])) return Result<std::vector<std::byte>>::Success(captured[i].bytes);
+            return Result<std::vector<std::byte>>::Failure("test", "UNEXPECTED_OBJECT_SOURCE", "测试不能用未捕获的物编来源。");
+        };
+        CatalogLoadOptions catalogOptions;
+        catalogOptions.sources = {{ObjectType::Destructable, {names[0]}, {}}, {ObjectType::Doodad, {names[1]}, {}}};
+        catalogOptions.stringFiles.clear(); catalogOptions.maximumFileBytes = 2u * 1024u * 1024u;
+        catalogOptions.rejectInvalidPresentSources = true;
+        const auto catalog = Take(StandardObjectCatalog::Load(reader, catalogOptions));
+        ObjectFieldSchemaOptions schemaOptions;
+        schemaOptions.sources = {{ObjectType::Destructable, names[2]}};
+        schemaOptions.stringFiles.clear(); schemaOptions.worldEditDataFile.clear(); schemaOptions.unitEditorDataFile.clear();
+        schemaOptions.maximumFileBytes = 2u * 1024u * 1024u;
+        const auto schema = Take(ObjectFieldSchema::Load(reader, schemaOptions));
+        std::string rawcode;
+        ModificationKey walkable;
+        for (const auto& object : catalog.Entries()) {
+            if (object.key.type != ObjectType::Destructable || object.Field("walkable") != "0"
+                || catalog.Find(ObjectType::Doodad, object.key.rawcode)) continue;
+            ObjectFieldContext context; context.rawcode = object.key.rawcode; context.baseCode = object.Field("code");
+            const auto field = schema.MatchSourceField(ObjectType::Destructable, "walkable", context);
+            if (!field.definition || !field.safeToEdit || field.sourceKey != "walkable" || field.sourceIndex
+                || field.definition->nativeValueType != NativeValueType::Int32 || field.definition->repeat != 0
+                || field.definition->data != 0 || Text::LowerAscii(field.definition->sourceTable) != "destructabledata") continue;
+            const auto type = Text::LowerAscii(field.definition->valueType);
+            if (type != "bool" && type != "int") continue;
+            rawcode = object.key.rawcode; walkable = field.modification; break;
+        }
+        Require(!rawcode.empty(), "actual metadata contains an unambiguous standard nonwalkable destructable");
+        auto native = Take(NativeObjectDocument::CreateEmpty(ObjectType::Destructable));
+        Check(native.AddOriginalObject(rawcode));
+        Check(native.AddModification({ObjectType::Destructable, rawcode}, walkable, NativeValueType::Int32, std::int32_t{0}));
+        const auto w3b = Take(NativeObjectCodec(ObjectType::Destructable).Serialize(native));
+        DoodadPlacements doodads; DoodadPlacement placed;
+        placed.rawcode = rawcode; placed.creationId = 1; placed.flags = 2; placed.scale = {1, 1, 1};
+        placed.position = {before.header.offset[0] + 32 * 128, before.header.offset[1] + 32 * 128, 0};
+        doodads.doodads.push_back(placed);
+        const auto doo = Take(doodads.Serialize());
+        for (auto& vertex : before.vertices) {
+            vertex.textureAndFlagsRaw |= 0x40;
+            vertex.waterHeightAndFlagsRaw = static_cast<std::uint16_t>((vertex.waterHeightAndFlagsRaw & 0xc000) | (8192 + 160 * 4));
+        }
+        RefreshTerrainDerived(before, 0, 0, before.header.width, before.header.height);
+        const auto beforeW3e = Take(SerializeMapTerrain(before));
+        const std::array<MemberReplacement, 3> seed{{{"war3map.w3e", beforeW3e}, {"war3map.doo", doo}, {"war3map.w3b", w3b}}};
+        auto seeded = Take(MapArchiveSession::Open(Take(original.SaveCandidate(directory.path / "seeded.w3x", seed)).path));
+        auto after = before;
+        const auto center = std::size_t{32} * before.header.width + 32;
+        after.vertices[center].waterHeightAndFlagsRaw = static_cast<std::uint16_t>((after.vertices[center].waterHeightAndFlagsRaw & 0xc000) | 8192);
+        const auto expectedW3e = Take(SerializeMapTerrain(after));
+        const auto rules = Take(TerrainPathingSave::CaptureNative(seeded, before, after, game, kSaveBytes));
+        const auto oldNative = Take(rules.GenerateNative(before, kSaveBytes));
+        const auto newNative = Take(rules.GenerateNative(after, kSaveBytes));
+        Require(oldNative != newNative, "selected water edit crosses a real pathing threshold");
+        std::cout << "selected_object=" << rawcode << " metadata_field=" << walkable.fieldId
+            << " captured_bytes=" << rules.SourceBytes() << " cumulative_capture_budget=" << rules.CaptureBudgetBytes() << '\n';
+        auto wpm = Take(seeded.ReadMember("war3map.wpm"));
+        Require(wpm.size() == oldNative.size() + 16 && oldNative.size() == newNative.size(), "real pathing shape matches original fixture");
+        auto expectedWpm = wpm;
+        for (std::size_t i = 0; i < oldNative.size(); ++i) {
+            wpm[i + 16] = (wpm[i + 16] & std::byte{0x11}) | oldNative[i];
+            expectedWpm[i + 16] = (wpm[i + 16] & std::byte{0x11}) | newNative[i];
+        }
+        // 此原图一致性夹具复用生成器，只验证实际资源和公开保存链；不是原版算法对照。
+        const std::array<MemberReplacement, 1> pathing{{{"war3map.wpm", std::move(wpm)}}};
+        auto source = Take(MapArchiveSession::Open(Take(seeded.SaveCandidate(directory.path / "source.w3x", pathing)).path));
+        const auto sourceSha = Take(Sha256File(source.SourcePath()));
+        MapEditSaveRequest request;
+        request.sourceMap = source.SourcePath(); request.targetCandidate = directory.path / "saved.w3x";
+        request.toolRoot = tool; request.gameRoot = game;
+        request.expectedSourceSha256 = source.SourceSha256(); request.expectedTerrainSha256 = Take(Sha256(beforeW3e));
+        MapEditTerrainStroke stroke;
+        stroke.pointSpace = MapEditPointSpace::TerrainVertex; stroke.points = {{32, 32}};
+        stroke.brush.kind = TerrainBrushKind::WaterHeight; stroke.brush.radius = 0; stroke.brush.waterHeight = 0;
+        request.terrainStrokes = {stroke}; // 保留Automatic，覆盖最终小地图准备的正常保存路径。
+        const auto saved = Take(SaveMapEditCandidate(request));
+        Require(saved.scriptPreserved, "public terrain save preserves the original checked script");
+        const auto readback = Take(MapArchiveSession::Open(saved.candidate));
+        Require(Take(readback.ReadMember("war3map.w3e")) == expectedW3e, "complete independently edited W3E matches public output");
+        Require(Take(readback.ReadMember("war3map.wpm")) == expectedWpm, "complete WPM matches frozen actual source rules");
+        Require(Take(readback.ReadMember("war3map.j")) == sourceScript, "public save preserves every source script byte");
+        Require(Take(readback.ReadMember("war3map.w3b")) == w3b && Take(readback.ReadMember("war3map.doo")) == doo,
+            "public save preserves native object and placement bytes");
+        Require(Take(Sha256File(source.SourcePath())) == sourceSha, "public save leaves the source map untouched");
+        Check(rules.VerifyReadback(readback, kSaveBytes));
+        std::cout << "public_map_edit_save_passed source_sha256=" << sourceSha << " candidate_sha256=" << saved.candidateSha256
+            << " native_editor_verified=false game_verified=false\n";
+    } catch (...) {
+        directory.keep = true;
+        std::cerr << "Real-source failure artifacts preserved at " << IO::PathUtf8(directory.path) << '\n';
+        throw;
+    }
+}
+} // namespace
+
+int main() {
+    try {
+        const auto tool = EnvironmentPath(L"FORGE_YDWE_ROOT");
+        const auto game = EnvironmentPath(L"FORGE_WORLD_GAME_ROOT");
+        if (tool.empty() || game.empty()) {
+            std::cout << "SKIP native object public save: FORGE_YDWE_ROOT / FORGE_WORLD_GAME_ROOT unset\n";
+            return 77;
+        }
+        RealResourcesUsePublicMapEditSave(tool, game); return 0;
+    } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
+}

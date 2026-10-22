@@ -3,7 +3,11 @@
 #include "War3MapCore/EditorSession.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 
+namespace War3Map::Services { class TerrainPathingSave; }
+
 namespace War3Map::MapData {
+
+class TerrainSavePlan;
 
 struct TerrainStrokeIntent {
     TerrainBrush brush;
@@ -19,6 +23,14 @@ public:
         std::span<const std::byte> terrain, std::span<const std::byte> pathing,
         const WorkspaceSnapshot& source, const MapDataEditSession& current,
         std::span<const TerrainStrokeIntent> strokes, const std::filesystem::path& gameRoot = {});
+private:
+    friend class Services::TerrainPathingSave;
+    // 仅同一Services保存适配器能传入计划；仍完整重放并核会话/来源/最终字节。
+    [[nodiscard]] static Result<TerrainPatch> SealWithPlan(const MapDocument& original,
+        std::span<const std::byte> terrain, std::span<const std::byte> pathing,
+        const WorkspaceSnapshot& source, const MapDataEditSession& current,
+        std::span<const TerrainStrokeIntent> strokes, const std::filesystem::path& gameRoot,
+        const TerrainSavePlan* prepared);
 };
 
 } // namespace War3Map::MapData

@@ -1,4 +1,5 @@
 #include "War3MapCore/Services/MapEditSaveService.h"
+#include "War3MapCore/Services/TerrainPathingSave.h"
 #include "MapEditSaveValidation.h"
 
 #include "War3MapCore/Hash.h"
@@ -819,7 +820,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             task.prepareFinalDerived = [&task, &edits, &request, &terrainPlan, &minimapSave,
                 &minimapPreserve, &minimapInputFailure, nativeCaptureFailed, terrainRequest](MapSaveTask&) mutable -> Status {
                 if (terrainRequest) {
-                    auto prepared = MapData::TerrainSavePlan::PrepareForSave(*task.archive, edits, request.gameRoot);
+                    auto prepared = TerrainPathingSave::PrepareForSave(*task.archive, edits, request.gameRoot);
                     if (!prepared.Succeeded() || !prepared.value) return {std::move(prepared.diagnostics)};
                     terrainPlan = std::make_shared<const MapData::TerrainSavePlan>(std::move(*prepared.value));
                     const auto installed = terrainPlan->InstallPathingOutput(edits, task.replacements);

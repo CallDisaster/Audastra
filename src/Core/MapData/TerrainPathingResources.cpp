@@ -237,6 +237,21 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureNative(const Wor
     }, before, after, gameRoot, maximumBytes, true);
 }
 
+Result<TerrainPathingResources> TerrainPathingResources::CaptureNativeWithObjects(const MapArchiveSession& source,
+    const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
+    const std::filesystem::path& gameRoot, std::size_t maximumBytes, const NativeObjectValidator& validator) {
+    return CaptureInputs([&](auto names, const auto& limits) { return source.CaptureExactMembers(names, limits); },
+        before, after, gameRoot, maximumBytes, true, &validator);
+}
+
+Result<TerrainPathingResources> TerrainPathingResources::CaptureNativeWithObjects(const WorkspaceSnapshot& source,
+    const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
+    const std::filesystem::path& gameRoot, std::size_t maximumBytes, const NativeObjectValidator& validator) {
+    return CaptureInputs([&](auto names, const auto& limits) {
+        return Guard<std::vector<ArchiveExactMember>>([&] { return DirectoryMembers(source, names, limits); });
+    }, before, after, gameRoot, maximumBytes, true, &validator);
+}
+
 Result<TerrainPathingResources> TerrainPathingResources::CaptureWaterBrushRules(const MapArchiveSession& source,
     const TerrainGridSnapshot& sourceTerrain, const TerrainGridSnapshot& currentTerrain,
     const std::filesystem::path& gameRoot, bool enforceWaterLimits, std::size_t maximumBytes) {
@@ -307,8 +322,9 @@ Status TerrainPathingResources::CaptureResourceMembers(const MemberReader& reade
             }
             dependency.bytes = bytes.size(); dependency.sha256 = Take(Sha256(bytes));
             dependencies_.push_back(std::move(dependency));
-            // 保留既有native顺序：逐项fallback、解析、释放，不同时保留所有游戏原字节。
-            visitor(i, present, bytes);
+            // 仍按原顺序逐项读取winner；严格对象适配可移走需要共同解析的原字节，
+            // 其读取量和解析工作均计入同一次捕获预算。
+            visitor(i, present, std::move(bytes));
         }
         return true;
     });
@@ -317,7 +333,8 @@ Status TerrainPathingResources::CaptureResourceMembers(const MemberReader& reade
 
 Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const MemberReader& reader,
     const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
-    const std::filesystem::path& gameRoot, std::size_t maximumBytes, bool native) {
+    const std::filesystem::path& gameRoot, std::size_t maximumBytes, bool native,
+    const NativeObjectValidator* validator) {
     return Guard<TerrainPathingResources>([&] {
         TerrainPathingResources result;
         result.tileset_ = before.header.mainTileset;
@@ -332,6 +349,7 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
         std::optional<DoodadPlacements> doodads;
         std::set<std::string, std::less<>> cliffs;
         bool nativeOverrides = false;
+        std::vector<ArchiveExactMember> objectSources;
         if (native) {
             if (before.header.version != 11 || after.header.version != 11
                 || before.header.width != after.header.width || before.header.height != after.header.height
@@ -389,7 +407,10 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
                             + std::to_string(doodads->specialDoodads.front().position[0]) + ","
                             + std::to_string(doodads->specialDoodads.front().position[1]) + "）尚未接入原版通行重建。");
                     result.nativeDoodads_ = std::move(member.bytes);
-                } else nativeOverrides = member.present;
+                } else {
+                    nativeOverrides = member.present;
+                    if (validator && member.present) objectSources.push_back(std::move(member));
+                }
             }
             for (const auto* grid : {&before, &after}) for (std::size_t i = 0; i < grid->vertices.size(); ++i) {
                 const auto id = Ground(grid->header, grid->vertices[i]);
@@ -397,8 +418,22 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
                 needs.ground.emplace(id);
                 needs.water |= grid->vertices[i].HasWater();
             }
-            if (!doodads->doodads.empty() && nativeOverrides)
+            if (!doodads->doodads.empty() && nativeOverrides && !validator)
                 Fail("TERRAIN_NATIVE_OBJECT_OVERRIDE_UNSUPPORTED", "非空普通DOO存在war3map.w3b覆盖；尚未从有效物编winner证明静态贡献。");
+        }
+        const bool typedObjects = native && !doodads->doodads.empty() && nativeOverrides && validator;
+        if (typedObjects) {
+            // W3D只在需要严格分类的分支读取；缺失也固定身份，不能用新导入遮蔽分类。
+            const std::array<std::string, 1> names{"war3map.w3d"};
+            ArchiveExactMemberLimits limits;
+            limits.memberCount = 1; limits.memberBytes = limits.totalBytes = maximumBytes - result.sourceBytes_;
+            auto captured = Take(reader(names, limits));
+            if (captured.size() != 1 || captured[0].bytes.size() > maximumBytes - result.sourceBytes_)
+                Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "W3D分类来源不完整或超过累计预算。");
+            auto& member = captured[0];
+            result.sourceBytes_ += member.bytes.size();
+            result.dependencies_.push_back({Canonical(names[0]), Take(Sha256(member.bytes)), {}, member.bytes.size(), member.present, true, false});
+            objectSources.push_back(std::move(member));
         }
         std::vector<std::string> names;
         if (!needs.ground.empty()) names.emplace_back("TerrainArt/Terrain.slk");
@@ -410,12 +445,21 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
             names.emplace_back("UI/WorldEditData.txt");
         }
         if (native && !doodads->doodads.empty()) names.emplace_back("Units/DestructableData.slk");
+        if (typedObjects) {
+            names.emplace_back("Doodads/Doodads.slk");
+            names.emplace_back("Units/DestructableMetaData.slk");
+        }
         if (names.empty()) return result;
         std::optional<float> deepThreshold;
         std::array<std::optional<float>, 4> cameraMargins;
         std::optional<float> waterHeight;
         bool waterImpassable = false;
-        const auto visitResource = [&](std::size_t i, bool, const std::vector<std::byte>& bytes) {
+        const auto visitResource = [&](std::size_t i, bool present, std::vector<std::byte>&& bytes) {
+            if (typedObjects && (names[i] == "Units/DestructableData.slk"
+                    || names[i] == "Doodads/Doodads.slk" || names[i] == "Units/DestructableMetaData.slk")) {
+                objectSources.push_back({names[i], present, std::move(bytes)});
+                return;
+            }
             if (names[i] == "TerrainArt/Terrain.slk") {
                 const auto table = Table(names[i], "tileid", bytes);
                 for (const auto& row : table.Rows()) if (needs.ground.contains(row.id)) {
@@ -476,6 +520,17 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
         };
         const auto resources = result.CaptureResourceMembers(reader, names, names.size(), visitResource);
         if (!resources.Succeeded()) throw Failure{resources.diagnostics};
+        if (typedObjects) {
+            // 在reserve之前检查列表额度；validator的累计工作预留包括这块空间。
+            if (doodads->doodads.size() > (maximumBytes - result.sourceBytes_) / (sizeof(std::string_view) * 4))
+                Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "摆放分类列表超过剩余解析预算。");
+            std::vector<std::string_view> rawcodes;
+            rawcodes.reserve(doodads->doodads.size());
+            for (const auto& object : doodads->doodads) rawcodes.emplace_back(object.rawcode);
+            result.objectWorkBytes_ = Take((*validator)(rawcodes, objectSources, maximumBytes - result.sourceBytes_));
+            if (result.objectWorkBytes_ > maximumBytes - result.sourceBytes_)
+                Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "严格物编解析超过保存计划剩余预算。");
+        }
         if (needs.water) {
             if (!deepThreshold)
                 Fail("TERRAIN_PATHING_PROPERTY_MISSING", "当前配置缺少 Water.DeepLevelPathing，不能猜测水深通行状态。");

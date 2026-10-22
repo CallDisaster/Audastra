@@ -1,13 +1,14 @@
 #pragma once
 
 #include "War3MapCore/MapArchiveSession.h"
+#include "War3MapCore/MapData/TerrainPathingResources.h"
 #include "War3MapCore/Workspace.h"
 
 #include <array>
 #include <span>
 
 namespace War3Map { class MapDocument; }
-namespace War3Map::Services { class TerrainMinimapSave; }
+namespace War3Map::Services { class TerrainMinimapSave; class TerrainPathingSave; }
 
 namespace War3Map::MapData {
 
@@ -92,13 +93,18 @@ public:
 
 private:
     friend class Services::TerrainMinimapSave;
+    friend class Services::TerrainPathingSave;
+    // 仅Services工厂可提供。只在既有原版重建分支按剩余额度捕获，
+    // 不接受协议布尔、外部对象结论或任意输出字节。
+    using NativeResourceCapture = std::function<Result<TerrainPathingResources>(
+        const TerrainGridSnapshot&, const TerrainGridSnapshot&, std::size_t)>;
     TerrainSavePlan() = default;
     [[nodiscard]] static Result<TerrainSavePlan> PrepareArchive(const MapArchiveSession& source,
         const MapDataEditSession& edits, const TerrainSavePlanLimits& limits,
-        const std::filesystem::path* gameRoot);
+        const std::filesystem::path* gameRoot, const NativeResourceCapture* nativeCapture = nullptr);
     [[nodiscard]] static Result<TerrainSavePlan> PrepareWorkspace(const WorkspaceSnapshot& source,
         const MapDataEditSession& edits, const TerrainSavePlanLimits& limits,
-        const std::filesystem::path* gameRoot);
+        const std::filesystem::path* gameRoot, const NativeResourceCapture* nativeCapture = nullptr);
     [[nodiscard]] Status VerifyMissingMinimapEligibility(const MapDataEditSession& edits) const;
     [[nodiscard]] Status AdmitMissingMinimap(const MapDataEditSession& edits, std::vector<std::byte> generatedBytes);
     // 正常保存的自动小地图重建：仍受同一正式地形保存门和会话绑定约束，
@@ -108,10 +114,11 @@ private:
     [[nodiscard]] static Result<TerrainSavePlan> Complete(TerrainSavePlan plan,
         const MapDataEditSession& edits, const TerrainSavePlanLimits& limits, std::size_t sourceBytes,
         const MapArchiveSession* source = nullptr, const std::filesystem::path* gameRoot = nullptr,
-        const WorkspaceSnapshot* workspace = nullptr);
+        const WorkspaceSnapshot* workspace = nullptr, const NativeResourceCapture* nativeCapture = nullptr);
     [[nodiscard]] Result<std::vector<std::byte>> RebuildPathing(const MapDataEditSession& edits,
         const MapArchiveSession* source, const WorkspaceSnapshot* workspace,
-        const std::filesystem::path& gameRoot, const TerrainSavePlanLimits& limits, std::size_t& bytes);
+        const std::filesystem::path& gameRoot, const TerrainSavePlanLimits& limits, std::size_t& bytes,
+        const NativeResourceCapture* nativeCapture);
     std::string sourceSha256_;
     std::uint64_t sessionIdentity_ = 0, revision_ = 0, terrainSourceRevision_ = 0;
     bool terrainChanged_ = false;

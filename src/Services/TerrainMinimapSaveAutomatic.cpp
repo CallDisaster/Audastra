@@ -1,4 +1,5 @@
 #include "War3MapCore/Services/TerrainMinimapSave.h"
+#include "War3MapCore/Services/TerrainPathingSave.h"
 
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Image/BlpImage.h"
@@ -359,7 +360,7 @@ Result<std::shared_ptr<const TerrainMinimapSave>> TerrainMinimapSave::PrepareAut
             (void)Available(limits, Add(Add(retainedBytes, kReadReserve), existingPlan->OwnedCapacityBytes()));
         }
         auto plan = existingPlan ? std::make_shared<MapData::TerrainSavePlan>(*existingPlan)
-            : std::make_shared<MapData::TerrainSavePlan>(Take(MapData::TerrainSavePlan::PrepareForSave(*task.archive, edits, gameRoot, planLimits)));
+            : std::make_shared<MapData::TerrainSavePlan>(Take(TerrainPathingSave::PrepareForSave(*task.archive, edits, gameRoot, planLimits)));
         Check(plan->VerifyForSave(edits, task.sourceSha256, task.replacements, task.removals));
         auto terrain = Take(Render::CaptureTerrainMinimapAssets(*task.archive, edits, gameRoot,
             limits.assets, Render::TerrainMinimapRangePolicy::ClassicPlayable, task.replacements, task.removals));
