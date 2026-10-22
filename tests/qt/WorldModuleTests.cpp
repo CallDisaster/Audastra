@@ -3746,14 +3746,27 @@ void WorldModuleTests::TerrainPathingUsesCellsAndPreservesSource() {
     QCOMPARE(flags(-112), std::optional<std::uint8_t>{0x86}); QCOMPARE(flags(-80), std::optional<std::uint8_t>{0x86});
     QCOMPARE(flags(-48), std::optional<std::uint8_t>{0x82}); QCOMPARE(project.mapEdits_->Terrain().get(), originalTerrain.get());
     QVERIFY(toggle->isChecked() && viewport->BrushMode());
-    QVERIFY(!project.mapEdits_->VerifyTerrainPathingForSave().Succeeded());
+    // 笔刷声明的新增限制可正式保存；完整输出须保留头部、其它格和所有来源位。
+    QVERIFY(project.mapEdits_->VerifyTerrainPathingForSave().Succeeded());
+    const auto replacements = project.mapEdits_->Replacements();
+    QCOMPARE(replacements.size(), std::size_t{1});
+    QCOMPARE(replacements.front().name, std::string("war3map.wpm"));
+    const auto* sourcePathing = reinterpret_cast<const std::byte*>(wpm.constData());
+    std::vector<std::byte> expectedPathing(sourcePathing, sourcePathing + wpm.size());
+    expectedPathing[16] = std::byte{0x86}; expectedPathing[17] = std::byte{0x86};
+    QCOMPARE(replacements.front().data, expectedPathing);
     QTRY_COMPARE(status->property("pathingMarkerCount").toULongLong(), overlaySupported ? qulonglong{2} : qulonglong{0});
     if (overlaySupported) { QCOMPARE(status->property("pathingAddedCellCount").toULongLong(), qulonglong{2}); QVERIFY(!state.overlayLines.empty()); }
     project.mapDataUndoStack_->undo();
     QCOMPARE(flags(-112), std::optional<std::uint8_t>{0x82}); QCOMPARE(flags(-80), std::optional<std::uint8_t>{0x82});
+    QVERIFY(project.mapEdits_->Replacements().empty());
+    QVERIFY(project.mapEdits_->VerifyTerrainPathingForSave().Succeeded());
     QTRY_COMPARE(status->property("pathingMarkerCount").toULongLong(), qulonglong{0});
     project.mapDataUndoStack_->redo();
     QCOMPARE(flags(-112), std::optional<std::uint8_t>{0x86});
+    const auto redone = project.mapEdits_->Replacements();
+    QCOMPARE(redone.size(), std::size_t{1}); QCOMPARE(redone.front().data, expectedPathing);
+    QVERIFY(project.mapEdits_->VerifyTerrainPathingForSave().Succeeded());
     QTRY_COMPARE(status->property("pathingMarkerCount").toULongLong(), overlaySupported ? qulonglong{2} : qulonglong{0});
     auto* clear = page->findChild<QPushButton*>("worldTerrainPathingMode1"); QVERIFY(clear); clear->click();
     auto* walk = page->findChild<QPushButton*>("worldTerrainPathingType0"); QVERIFY(walk); walk->click();
@@ -3764,6 +3777,8 @@ void WorldModuleTests::TerrainPathingUsesCellsAndPreservesSource() {
     viewport->TerrainStrokeStarted(-112, -48); viewport->TerrainStrokeMoved(-80, -48); viewport->TerrainStrokeFinished();
     QCOMPARE(project.mapDataUndoStack_->count(), 2); QCOMPARE(flags(-112), std::optional<std::uint8_t>{0x82});
     QCOMPARE(flags(-80), std::optional<std::uint8_t>{0x82});
+    QVERIFY(project.mapEdits_->Replacements().empty());
+    QVERIFY(project.mapEdits_->VerifyTerrainPathingForSave().Succeeded());
     QTRY_COMPARE(status->property("pathingMarkerCount").toULongLong(), qulonglong{0});
     project.mapDataUndoStack_->undo(); QCOMPARE(flags(-112), std::optional<std::uint8_t>{0x86});
     viewport->TerrainStrokeStarted(-112, -48);
@@ -3778,6 +3793,10 @@ void WorldModuleTests::TerrainPathingUsesCellsAndPreservesSource() {
     viewport->TerrainStrokeStarted(-112, -48); viewport->TerrainStrokeMoved(-112, 64); viewport->TerrainStrokeFinished();
     QCOMPARE(project.mapEdits_->Revision(), externallyChanged); // 北边界半开，坏后续点整笔取消。
     QCOMPARE(*MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, std::vector<std::byte>(bytes.begin(), bytes.end()));
+    QFile originalWpm(directory.filePath("war3map.wpm")); QVERIFY(originalWpm.open(QIODevice::ReadOnly));
+    QCOMPARE(originalWpm.readAll(), wpm);
+    QFile originalW3e(directory.filePath("war3map.w3e")); QVERIFY(originalW3e.open(QIODevice::ReadOnly));
+    QCOMPARE(originalW3e.readAll(), source);
 }
 
 void WorldModuleTests::TerrainRampKeepsCellAndWholeStroke() {

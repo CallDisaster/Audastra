@@ -97,7 +97,10 @@ void FollowAndSaveRoundtrip() {
     const auto saved = Take(MapArchiveSession::Open(Take(f.source->SaveCandidate(f.directory / "raised.w3x", output)).path));
     Check(plan.VerifyReadback(saved));
     Require(Take(saved.ReadMember("war3map.wpm")) == f.members[1].data, "source WPM retained byte-for-byte");
-    Require(Take(saved.ReadMember("war3map.shd")) == f.members[5].data, "source shadow retained");
+    const auto shadow = std::find_if(f.members.begin(), f.members.end(),
+        [](const auto& member) { return member.name == "war3map.shd"; });
+    Require(shadow != f.members.end(), "source fixture contains shadow bytes");
+    Require(Take(saved.ReadMember("war3map.shd")) == shadow->data, "source shadow retained");
     const auto savedDoodads = Take(ParseDoodadPlacements(Take(saved.ReadMember("war3map.doo"))));
     Require(savedDoodads.specialDoodads.size() == 1 && savedDoodads.specialDoodads[0].variation == 4,
         "special tail retained");
