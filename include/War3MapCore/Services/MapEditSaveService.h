@@ -3,6 +3,7 @@
 #include "War3MapCore/MapData/MapFields.h"
 #include "War3MapCore/MapData/PlacementEditing.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
+#include "War3MapCore/MapData/TerrainWaterBrush.h"
 #include "War3MapCore/Services/MapSaveService.h"
 #include "War3MapCore/Services/TerrainMinimapSave.h"
 #include "War3MapCore/Script/ScriptToolchainProfile.h"
@@ -29,12 +30,15 @@ enum class MapEditPointSpace {
 };
 
 // 同一保存事务内按顺序施加。TerrainVertex 使用源 W3E 顶点索引；World 使用
-// Warcraft 世界坐标。两者最后都通过同一 MapDataEditSession::EditTerrain。
+// Warcraft 世界坐标。普通笔刷与浅/深水最终都通过同一Core准备/提交事务。
 struct MapEditTerrainStroke {
     MapData::TerrainBrush brush;
     std::vector<MapData::TerrainStrokePoint> points;
     MapEditPointSpace pointSpace = MapEditPointSpace::World;
     bool followDoodads = false;
+    // 有值时brush必须逐字段等于TerrainBrush{}；不接受两种笔刷同时指定。
+    // 不接受客户端anchor，服务从当前有序地形的第一点捕获并固定整笔。
+    std::optional<MapData::TerrainWaterStrokeOptions> waterBrush;
 };
 
 // 地图数据字段修改：类别 / 行 / 字段寻址（字段目录见 MapData/MapFields.h），绑定成员 SHA、

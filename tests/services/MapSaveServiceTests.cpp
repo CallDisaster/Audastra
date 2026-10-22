@@ -1500,8 +1500,9 @@ void TestOptionalRealTerrainAndPathingUseNormalSave() {
     Require(created.Succeeded() && created.value, "create original texture save fixture through real toolchain");
     auto original = MapArchiveSession::Open(create.target);
     Require(original.Succeeded() && original.value, "open created texture fixture");
-    for (const int variant : {0, 1, 2, 3, 4}) {
+    for (const int variant : {0, 1, 2, 3, 4, 5, 6}) {
         const bool nativeWater = variant == 4;
+        const bool newWater = variant == 5 || variant == 6, deepWater = variant == 6;
         const bool wet = variant == 1 || nativeWater, restriction = variant == 2, follow = variant == 3;
         std::vector<std::byte> expectedUnits, expectedDoodads;
         auto source = MapArchiveSession::Open(create.target);
@@ -1542,6 +1543,26 @@ void TestOptionalRealTerrainAndPathingUseNormalSave() {
                 source = MapArchiveSession::Open(nativeSource.value->path);
                 Require(source.Succeeded() && source.value, "open consistent native water source");
             }
+        }
+        if (newWater) {
+            // 原创浅/深水来源先用真实资源建立可解释的干地G0；保留保护11，
+            // 不使用作者图，也不把生成器自洽结果称为原版编辑器验收。
+            const auto raw = source.value->ReadMember("war3map.w3e"), originalWpm = source.value->ReadMember("war3map.wpm");
+            Require(raw.Succeeded() && raw.value && originalWpm.Succeeded() && originalWpm.value, "read new-water dry source pair");
+            const auto terrain = MapData::ParseMapTerrain(*raw.value);
+            Require(terrain.Succeeded() && terrain.value, "parse new-water dry source");
+            const auto native = MapData::TerrainPathingResources::CaptureNative(*source.value,
+                *terrain.value->Snapshot(), *terrain.value->Snapshot(), game, 64 * 1024 * 1024);
+            Require(native.Succeeded() && native.value, "capture actual dry source native resources");
+            const auto g0 = native.value->GenerateNative(*terrain.value->Snapshot(), 64 * 1024 * 1024);
+            Require(g0.Succeeded() && g0.value && originalWpm.value->size() == g0.value->size() + 16, "generate complete dry source G0");
+            auto pathing = *originalWpm.value;
+            for (std::size_t i = 0; i < g0.value->size(); ++i) pathing[i + 16] = (pathing[i + 16] & std::byte{0x11}) | (*g0.value)[i];
+            const std::vector<MemberReplacement> seed{{"war3map.wpm", std::move(pathing)}};
+            const auto written = source.value->SaveCandidate(directory.Path() / (deepWater ? "deep-water-source.w3x" : "shallow-water-source.w3x"), seed);
+            Require(written.Succeeded() && written.value, "write independent consistent dry water source");
+            source = MapArchiveSession::Open(written.value->path);
+            Require(source.Succeeded() && source.value, "reopen independent consistent dry water source");
         }
         if (follow) {
             const auto raw = source.value->ReadMember("war3map.w3e");
@@ -1591,13 +1612,20 @@ void TestOptionalRealTerrainAndPathingUseNormalSave() {
             "freeze original terrain, author pathing and script");
         MapEditSaveRequest request;
         request.sourceMap = source.value->SourcePath();
-        request.targetCandidate = directory.Path() / (nativeWater ? "native-water-saved.w3x" : wet ? "water-saved.w3x" : restriction ? "restriction-saved.w3x"
+        request.targetCandidate = directory.Path() / (newWater ? (deepWater ? "deep-water-saved.w3x" : "shallow-water-saved.w3x")
+            : nativeWater ? "native-water-saved.w3x" : wet ? "water-saved.w3x" : restriction ? "restriction-saved.w3x"
             : follow ? "following-saved.w3x" : "texture-saved.w3x");
         request.toolRoot = tool; request.gameRoot = game;
         request.expectedSourceSha256 = source.value->SourceSha256(); request.expectedTerrainSha256 = ObjectV1MemberHash(*w3e.value);
         MapEditTerrainStroke stroke;
-        stroke.pointSpace = MapEditPointSpace::TerrainVertex; stroke.points = {{32, 32}}; stroke.brush.radius = 0;
-        if (wet) { stroke.brush.kind = MapData::TerrainBrushKind::WaterHeight; stroke.brush.waterHeight = nativeWater ? 0.0f : 170.0f; }
+        stroke.pointSpace = MapEditPointSpace::TerrainVertex; stroke.points = {{32, 32}};
+        if (!newWater) stroke.brush.radius = 0;
+        if (newWater) {
+            MapData::TerrainWaterStrokeOptions options;
+            options.kind = deepWater ? MapData::TerrainWaterBrushKind::Deep : MapData::TerrainWaterBrushKind::Shallow;
+            options.shape = MapData::TerrainBrushShape::Square; options.randomSeed = 17;
+            stroke.waterBrush = options;
+        } else if (wet) { stroke.brush.kind = MapData::TerrainBrushKind::WaterHeight; stroke.brush.waterHeight = nativeWater ? 0.0f : 170.0f; }
         else if (restriction) { stroke.brush.kind = MapData::TerrainBrushKind::PathingRestriction; stroke.brush.pathingRestrictions = 0x0e; }
         else if (follow) { stroke.brush.kind = MapData::TerrainBrushKind::Raise; stroke.brush.strength = 32; stroke.followDoodads = true; }
         else { stroke.brush.kind = MapData::TerrainBrushKind::Texture; stroke.brush.groundTexture = "Lgrs"; }
@@ -1616,10 +1644,15 @@ void TestOptionalRealTerrainAndPathingUseNormalSave() {
         const auto finalWpm = reopened.value->ReadMember("war3map.wpm"), finalW3e = reopened.value->ReadMember("war3map.w3e");
         const auto finalScript = reopened.value->ReadMember("war3map.j");
         auto expectedPathing = *wpm.value;
-        if (nativeWater) {
+        if (nativeWater || newWater) {
             Require(finalW3e.Succeeded() && finalW3e.value, "read saved native water terrain");
             const auto before = MapData::ParseMapTerrain(*w3e.value), after = MapData::ParseMapTerrain(*finalW3e.value);
             Require(before.Succeeded() && before.value && after.Succeeded() && after.value, "parse saved native water pair");
+            if (newWater) {
+                const auto center = std::size_t{32} * before.value->Snapshot()->header.width + 32;
+                Require(!before.value->Snapshot()->vertices[center].HasWater() && after.value->Snapshot()->vertices[center].HasWater(),
+                    "explicit shallow/deep save creates actual HasWater instead of being treated as water-height");
+            }
             const auto rules = MapData::TerrainPathingResources::CaptureNative(*source.value,
                 *before.value->Snapshot(), *after.value->Snapshot(), game, 64 * 1024 * 1024);
             Require(rules.Succeeded() && rules.value, "independently capture saved native pair rules");
@@ -1669,7 +1702,8 @@ void TestOptionalRealTerrainAndPathingUseNormalSave() {
         const auto sourceAfter = Sha256File(request.sourceMap);
         Require(sourceAfter.Succeeded() && sourceAfter.value && *sourceAfter.value == request.expectedSourceSha256,
             "all source map bytes remain unchanged");
-        const std::string label = nativeWater ? "native-water" : wet ? "water" : restriction ? "restriction" : follow ? "following" : "texture";
+        const std::string label = newWater ? (deepWater ? "deep-water" : "shallow-water")
+            : nativeWater ? "native-water" : wet ? "water" : restriction ? "restriction" : follow ? "following" : "texture";
         if (!evidence.empty()) {
             const auto retainedSource = evidence / (label + "-source.w3x");
             const auto retainedSaved = evidence / (label + "-saved.w3x");

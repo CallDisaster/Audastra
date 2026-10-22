@@ -9,6 +9,17 @@ namespace War3Map::MapData {
 
 enum class TerrainWaterBrushKind { Shallow, Deep };
 
+// 外部有序笔划只指定选项；锚点由可信服务在本笔第一点从当前地形捕获。
+// 与只调已有水面的TerrainBrushKind::WaterHeight保持独立。
+struct TerrainWaterStrokeOptions {
+    TerrainWaterBrushKind kind = TerrainWaterBrushKind::Shallow;
+    TerrainBrushShape shape = TerrainBrushShape::Circle;
+    std::uint32_t size = 1;
+    std::uint8_t cliffTexture = 0;
+    std::uint32_t randomSeed = 0;
+    bool enforceWaterLimits = true;
+};
+
 struct TerrainWaterGroundRule {
     std::string rawcode;
     bool permitsBlight;
