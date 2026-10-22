@@ -102,7 +102,8 @@ Status TerrainSavePlan::InstallPathingOutput(const MapDataEditSession& edits,
     for (auto it = replacements.begin(); it != replacements.end(); ++it) {
         const auto key = Resources::CanonicalImportPath(it->name);
         if (!key.Succeeded() || !key.value) return {key.diagnostics};
-        if (*key.value != "war3map.wpm") continue;
+        // CanonicalImportPath 统一为大写，不能漏掉已有草稿或大小写别名。
+        if (*key.value != "WAR3MAP.WPM") continue;
         if (existing != replacements.end() || it->data != *edits.pathing_)
             return Reject("TERRAIN_PATHING_REBUILD_CONFLICT", "最终列表存在重复或非当前草稿的WPM，拒绝覆盖。");
         existing = it;

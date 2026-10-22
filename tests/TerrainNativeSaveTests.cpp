@@ -167,22 +167,89 @@ void NewHasWaterUsesIndependentG0G1AndPreservesSourceProtection() {
 }
 
 void OverlappingSavedIntentIsNotRecoveredBySubtractingBits() {
-    Fixture f;
-    TerrainBrush restriction; restriction.kind = TerrainBrushKind::PathingRestriction;
-    restriction.size = 1; restriction.pathingRestrictions = 0x02;
-    f.Paint(restriction); f.Paint(f.Water()); f.Save("overlap.w3x");
-    const auto draft = Take(f.edits->SerializePathingRestrictionDraft());
-    Require(draft.size() > 4 && draft[3] == std::byte{3}, "saved overlap retains APR3 layers");
-    const auto terrain = Take(f.archive->ReadMember("war3map.w3e"));
-    const auto pathing = Take(f.archive->ReadMember("war3map.wpm"));
-    MapDataEditSession restored(MapDocument::FromArchive(*f.archive));
-    Check(restored.AttachTerrain(terrain)); Check(restored.AttachPathing(pathing));
-    Check(restored.SetTerrainAndPathingDraft(terrain, pathing, draft));
-    Require(Take(restored.SerializePathingRestrictionDraft()) == draft, "APR3 recovers the exact saved P/S/A layers");
-    Require(f.edits->Undo() && f.edits->Undo(), "undo water and saved explicit intent");
-    f.Save("overlap-undone.w3x");
-    Require(Take(f.archive->ReadMember("war3map.wpm")) == f.members[1].data,
-        "withdrawing S does not preserve it as guessed native provenance");
+    // 行走限制与深水贡献重叠；飞行限制不重叠，撤销后会留下真实WPM净差。
+    for (const auto bits : {0x02u, 0x04u}) {
+        Fixture f;
+        TerrainBrush restriction; restriction.kind = TerrainBrushKind::PathingRestriction;
+        restriction.size = 1; restriction.pathingRestrictions = static_cast<std::uint8_t>(bits);
+        f.Paint(restriction); f.Paint(f.Water()); f.Save("restricted-deep.w3x");
+        const auto draft = Take(f.edits->SerializePathingRestrictionDraft());
+        Require(draft.size() > 4 && draft[3] == std::byte{3}, "saved intent retains APR3 layers");
+        const auto terrain = Take(f.archive->ReadMember("war3map.w3e"));
+        const auto pathing = Take(f.archive->ReadMember("war3map.wpm"));
+        MapDataEditSession restored(MapDocument::FromArchive(*f.archive));
+        Check(restored.AttachTerrain(terrain)); Check(restored.AttachPathing(pathing));
+        Check(restored.SetTerrainAndPathingDraft(terrain, pathing, draft));
+        Require(Take(restored.SerializePathingRestrictionDraft()) == draft, "APR3 recovers the exact saved P/S/A layers");
+        Require(f.edits->Undo() && f.edits->Undo(), "undo water and saved explicit intent");
+        f.Save("restriction-undone.w3x");
+        Require(Take(f.archive->ReadMember("war3map.wpm")) == f.members[1].data,
+            "withdrawing S does not preserve it as guessed native provenance");
+        Require(f.edits->Redo() && f.edits->Redo(), "redo saved intent and water against the latest saved source");
+        f.Save("restriction-redone.w3x");
+        Require(Take(f.archive->ReadMember("war3map.w3e")) == terrain
+            && Take(f.archive->ReadMember("war3map.wpm")) == pathing,
+            "redo and resave restore the full saved terrain and pathing, including explicit restrictions");
+    }
+}
+
+void PathingOutputRecognizesNamesAndPreservesConflictChecks() {
+    for (const bool changedDraft : {false, true}) {
+        Fixture f;
+        if (changedDraft) {
+            TerrainBrush restriction; restriction.kind = TerrainBrushKind::PathingRestriction;
+            restriction.size = 1; restriction.pathingRestrictions = 0x04;
+            f.Paint(restriction);
+        }
+        f.Paint(f.Water());
+        const auto plan = f.Plan(); Check(plan.SaveGate());
+        Require(plan.RebuiltPathing(), "combined save uses the native pathing output");
+        const auto current = f.edits->Replacements();
+        const auto wpm = std::find_if(current.begin(), current.end(), [](const auto& member) {
+            return member.name == "war3map.wpm";
+        });
+        Require((wpm != current.end()) == changedDraft, "session includes WPM exactly when its bytes changed");
+        const auto draftBytes = changedDraft ? wpm->data : f.members[1].data;
+        auto explicitWpm = current;
+        if (!changedDraft) explicitWpm.push_back({"war3map.wpm", draftBytes});
+        for (const auto name : {"war3map.wpm", "WAR3MAP.WPM", "War3Map.WpM"}) {
+            auto output = explicitWpm;
+            const auto member = std::find_if(output.begin(), output.end(), [](const auto& value) {
+                return value.name == "war3map.wpm";
+            });
+            Require(member != output.end(), "explicit draft WPM is present");
+            member->name = name;
+            Check(plan.InstallPathingOutput(*f.edits, output));
+            Require(output.size() == explicitWpm.size(), "native output replaces the existing WPM without appending a duplicate");
+            Check(plan.VerifyForSave(*f.edits, f.archive->SourceSha256(), output));
+        }
+        const auto rejectUnchanged = [&](std::vector<MemberReplacement> output, const char* message) {
+            const auto before = output;
+            const auto status = plan.InstallPathingOutput(*f.edits, output);
+            Require(!status.Succeeded() && std::any_of(status.diagnostics.begin(), status.diagnostics.end(), [](const auto& d) {
+                return d.code == "TERRAIN_PATHING_REBUILD_CONFLICT";
+            }), message);
+            Require(std::equal(output.begin(), output.end(), before.begin(), before.end(), [](const auto& a, const auto& b) {
+                return a.name == b.name && a.data == b.data;
+            }), "rejected native installation preserves the entire caller replacement list");
+        };
+        auto missing = current;
+        std::erase_if(missing, [](const auto& member) { return member.name == "war3map.wpm"; });
+        if (changedDraft) rejectUnchanged(std::move(missing), "omitting a real WPM edit is still rejected");
+        else {
+            Check(plan.InstallPathingOutput(*f.edits, missing));
+            Check(plan.VerifyForSave(*f.edits, f.archive->SourceSha256(), missing));
+        }
+        auto tampered = explicitWpm;
+        const auto altered = std::find_if(tampered.begin(), tampered.end(), [](const auto& member) {
+            return member.name == "war3map.wpm";
+        });
+        altered->name = "WAR3MAP.WPM"; altered->data[16] ^= std::byte{0x04};
+        rejectUnchanged(std::move(tampered), "non-current WPM cannot be hidden by a rebuilt output");
+        auto duplicate = explicitWpm;
+        duplicate.push_back({"War3Map.WpM", draftBytes});
+        rejectUnchanged(std::move(duplicate), "case aliases of WPM are still duplicate outputs");
+    }
 }
 
 void MaterialsAndCliffsRebuildThePathing() {
@@ -252,6 +319,7 @@ int main() {
         WaterCrossingAndUndoUseActualSavedPathing();
         NewHasWaterUsesIndependentG0G1AndPreservesSourceProtection();
         OverlappingSavedIntentIsNotRecoveredBySubtractingBits();
+        PathingOutputRecognizesNamesAndPreservesConflictChecks();
         MaterialsAndCliffsRebuildThePathing();
         UnexplainedSourceAndOutputTamperingRefuse();
         DirectoryRecipeUsesGeneratedWpm();
