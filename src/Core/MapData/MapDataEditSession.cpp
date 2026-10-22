@@ -31,17 +31,17 @@ constexpr std::string_view kTerrainMember = "war3map.w3e";
 constexpr std::string_view kPathingMember = "war3map.wpm";
 std::atomic<std::uint64_t> nextSessionIdentity{1};
 
-// 保存可更新不可拆的来源底层；旧命令只恢复自身的非限制位与对应 A，不能清掉新来源。
+// 历史只恢复自身的非限制位与对应 A；受保护来源保持独立，不把已保存 A 当成来源。
 std::byte HistoryPathingValue(std::span<const std::byte> bytes, std::span<const std::byte> source,
     std::span<const std::byte> intent, std::size_t index) {
     if (index < 16) return bytes[index];
     return (bytes[index] & ~std::byte{kPathingRestrictionBits})
-        | (source[index] & std::byte{kPathingRestrictionBits}) | intent[index - 16];
+        | source[index - 16] | intent[index - 16];
 }
 
 bool HistoryPathingMatches(std::span<const std::byte> current, std::span<const std::byte> bytes,
     std::span<const std::byte> source, std::span<const std::byte> intent) {
-    if (current.size() != bytes.size() || source.size() != bytes.size() || intent.size() + 16 != bytes.size()) return false;
+    if (current.size() != bytes.size() || source.size() + 16 != bytes.size() || intent.size() + 16 != bytes.size()) return false;
     for (std::size_t i = 0; i < bytes.size(); ++i)
         if (current[i] != HistoryPathingValue(bytes, source, intent, i)) return false;
     return true;
@@ -49,7 +49,7 @@ bool HistoryPathingMatches(std::span<const std::byte> current, std::span<const s
 
 std::vector<std::byte> HistoryPathing(std::span<const std::byte> bytes,
     std::span<const std::byte> source, std::span<const std::byte> intent) {
-    if (source.size() != bytes.size() || intent.size() + 16 != bytes.size())
+    if (source.size() + 16 != bytes.size() || intent.size() + 16 != bytes.size())
         throw std::logic_error("pathing history shape changed");
     std::vector<std::byte> result(bytes.begin(), bytes.end());
     for (std::size_t i = 16; i < result.size(); ++i) result[i] = HistoryPathingValue(bytes, source, intent, i);
@@ -563,10 +563,10 @@ Status MapDataEditSession::Replay(const EditReceipt& receipt, bool forward) {
             ? (forward ? source.restrictionBefore : source.restrictionAfter) : pathingRestrictions_;
         const auto& targetIntent = source.restrictionAfter
             ? (forward ? source.restrictionAfter : source.restrictionBefore) : pathingRestrictions_;
-        if (!pathing_ || !HistoryPathingMatches(*pathing_, *expected, *pathingOriginal_, *expectedIntent))
+        if (!pathing_ || !HistoryPathingMatches(*pathing_, *expected, *pathingProtected_, *expectedIntent))
             return Status::Failure("MapData.Edit", "MAP_EDIT_STALE", "事务涉及的通行性已由其他操作修改；未覆盖新内容");
         command.pathingBefore = *pathing_;
-        command.pathingAfter = HistoryPathing(*target, *pathingOriginal_, *targetIntent);
+        command.pathingAfter = HistoryPathing(*target, *pathingProtected_, *targetIntent);
     }
     if (source.restrictionAfter) {
         const auto& expected = forward ? source.restrictionBefore : source.restrictionAfter;
@@ -594,7 +594,7 @@ void MapDataEditSession::Restore(const Command& command, bool forward) {
     std::optional<std::vector<std::byte>> nextPathing;
     auto nextRestrictions = forward ? command.restrictionAfter : command.restrictionBefore;
     if (command.pathingAfter) nextPathing = HistoryPathing(
-        *(forward ? command.pathingAfter : command.pathingBefore), *pathingOriginal_,
+        *(forward ? command.pathingAfter : command.pathingBefore), *pathingProtected_,
         *(nextRestrictions ? nextRestrictions : pathingRestrictions_));
     for (std::size_t i = 0; i < command.changes.size(); ++i)
         current_[Index(command.changes[i].kind)].swap(next[i]);
@@ -650,7 +650,7 @@ std::vector<std::string> MapDataEditSession::Removals() const {
 }
 
 void MapDataEditSession::CommitSaved(const MapDocument& saved) {
-    // 意图不在 native WPM 中单独编码；更新保存基线时保留完整 A，后续 APR 绑定新来源。
+    // native WPM 合并了 P|A；只更新已保存 A，P 保持来源身份，不从合并结果反推。
     auto savedRestrictions = pathingRestrictions_;
     // 计数耗尽后不回绕；地形准备与有修订约束的查询将明确拒绝，不能复活旧候选。
     if (terrainSourceRevision_ != std::numeric_limits<std::uint64_t>::max()) ++terrainSourceRevision_;

@@ -3,6 +3,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
+#include "War3MapCore/MapData/PathingSavePolicy.h"
 #include "War3MapCore/MapData/TerrainPathingResources.h"
 
 #include <algorithm>
@@ -230,6 +231,22 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
     RequireStatus(MatchBytes(plan.members_[0], original, false));
     RequireStatus(MatchBytes(plan.members_[1], *edits.pathingOriginal_, false));
     plan.saveGate_ = edits.VerifyTerrainPathingForSave();
+    if (plan.saveGate_.Succeeded() && !edits.TerrainDirty() && edits.pathing_ != edits.pathingOriginal_) {
+        const bool savedIntent = std::any_of(edits.originalPathingRestrictions_->begin(),
+            edits.originalPathingRestrictions_->end(), [](std::byte value) { return value != std::byte{0}; });
+        const auto layers = savedIntent ? 3u : 1u;
+        AddBytes(132, total, limits);
+        for (unsigned i = 0; i < layers; ++i) AddBytes(edits.pathingRestrictions_->size(), total, limits);
+        auto draft = Take(edits.SerializePathingRestrictionDraft());
+        const PathingPreservationBinding binding{plan.sourceSha256_, *plan.members_[0].sourceSha256,
+            *plan.members_[1].sourceSha256, plan.sessionIdentity_, plan.revision_, plan.terrainSourceRevision_};
+        const auto proof = PathingPreservationProof::Prepare(binding, original, *edits.pathingOriginal_,
+            original, *edits.pathing_, draft);
+        if (!proof.Succeeded() || !proof.value)
+            plan.saveGate_ = proof.diagnostics.empty()
+                ? Reject("TERRAIN_SAVE_PLAN_PATHING_PROOF", "未取得完整的通行限制来源验证结果。")
+                : Status{proof.diagnostics};
+    }
     if (!plan.saveGate_.Succeeded() && sourceArchive && gameRoot
         && TerrainPathingResources::Needed(*edits.terrainOriginal_, *edits.terrain_)) {
         auto resources = Take(TerrainPathingResources::Capture(*sourceArchive, *edits.terrainOriginal_, *edits.terrain_,
@@ -241,6 +258,10 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
     }
     plan.pathingInvariant_ = edits.terrain_->header.groundTilesets != edits.terrainOriginal_->header.groundTilesets
         || edits.terrain_->header.usesCustomTileset != edits.terrainOriginal_->header.usesCustomTileset;
+    if (edits.pathing_->size() == edits.pathingOriginal_->size())
+        for (std::size_t i = 16; i < edits.pathing_->size(); ++i)
+            plan.pathingInvariant_ = plan.pathingInvariant_
+                || (((*edits.pathing_)[i] ^ (*edits.pathingOriginal_)[i]) & std::byte{kPathingRestrictionBits}) != std::byte{0};
     if (edits.terrain_->vertices.size() == edits.terrainOriginal_->vertices.size()) {
         for (std::size_t index = 0; index < edits.terrain_->vertices.size(); ++index) {
             const auto& before = edits.terrainOriginal_->vertices[index];
@@ -285,7 +306,7 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
     }
     if (edits.pathing_ != edits.pathingOriginal_) {
         AddBytes(edits.pathing_->size(), total, limits);
-        setOutput(1, *edits.pathing_, "仅写出与 W3E 荒芜逐格一致的 WPM 位变化，保留其它原始位；未通用重建通行性。");
+        setOutput(1, *edits.pathing_, "写出来源绑定的本工程通行限制与对应荒芜变化；原有限制、重叠限制和其它位保持，不作通用通行重建。");
     }
     if (plan.terrainChanged_) {
         constexpr std::array<std::string_view, 3> descriptions{

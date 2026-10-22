@@ -1476,11 +1476,11 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
         "declared standard candidate saves preserve original source SHA");
 }
 
-void TestOptionalRealTextureAndWaterUseNormalSave() {
+void TestOptionalRealTerrainAndPathingUseNormalSave() {
     const auto tool = ObjectV1EnvironmentPath(L"FORGE_YDWE_ROOT");
     const auto game = ObjectV1EnvironmentPath(L"FORGE_WORLD_GAME_ROOT");
     if (tool.empty() || game.empty()) {
-        std::cout << "SKIP texture/water toolchain save: FORGE_YDWE_ROOT / FORGE_WORLD_GAME_ROOT unset\n";
+        std::cout << "SKIP terrain/pathing toolchain save: FORGE_YDWE_ROOT / FORGE_WORLD_GAME_ROOT unset\n";
         return;
     }
     TempDirectory directory;
@@ -1493,7 +1493,8 @@ void TestOptionalRealTextureAndWaterUseNormalSave() {
     Require(created.Succeeded() && created.value, "create original texture save fixture through real toolchain");
     auto original = MapArchiveSession::Open(create.target);
     Require(original.Succeeded() && original.value, "open created texture fixture");
-    for (const bool wet : {false, true}) {
+    for (const int variant : {0, 1, 2}) {
+        const bool wet = variant == 1, restriction = variant == 2;
         auto source = MapArchiveSession::Open(create.target);
         Require(source.Succeeded() && source.value, "open independent terrain source");
         if (wet) {
@@ -1520,12 +1521,14 @@ void TestOptionalRealTextureAndWaterUseNormalSave() {
         Require(w3e.Succeeded() && w3e.value && wpm.Succeeded() && wpm.value && script.Succeeded() && script.value,
             "freeze original terrain, author pathing and script");
         MapEditSaveRequest request;
-        request.sourceMap = source.value->SourcePath(); request.targetCandidate = directory.Path() / (wet ? "water-saved.w3x" : "texture-saved.w3x");
+        request.sourceMap = source.value->SourcePath();
+        request.targetCandidate = directory.Path() / (wet ? "water-saved.w3x" : restriction ? "restriction-saved.w3x" : "texture-saved.w3x");
         request.toolRoot = tool; request.gameRoot = game;
         request.expectedSourceSha256 = source.value->SourceSha256(); request.expectedTerrainSha256 = ObjectV1MemberHash(*w3e.value);
         MapEditTerrainStroke stroke;
         stroke.pointSpace = MapEditPointSpace::TerrainVertex; stroke.points = {{32, 32}}; stroke.brush.radius = 0;
         if (wet) { stroke.brush.kind = MapData::TerrainBrushKind::WaterHeight; stroke.brush.waterHeight = 170; }
+        else if (restriction) { stroke.brush.kind = MapData::TerrainBrushKind::PathingRestriction; stroke.brush.pathingRestrictions = 0x0e; }
         else { stroke.brush.kind = MapData::TerrainBrushKind::Texture; stroke.brush.groundTexture = "Lgrs"; }
         request.terrainStrokes = {stroke}; // 保留默认 Automatic，覆盖最终自动小地图准备的新计划。
         const auto saved = SaveMapEditCandidate(request);
@@ -1536,10 +1539,17 @@ void TestOptionalRealTextureAndWaterUseNormalSave() {
         Require(reopened.Succeeded() && reopened.value, "reopen normal terrain candidate independently");
         const auto finalWpm = reopened.value->ReadMember("war3map.wpm"), finalW3e = reopened.value->ReadMember("war3map.w3e");
         const auto finalScript = reopened.value->ReadMember("war3map.j");
-        Require(finalWpm.Succeeded() && finalWpm.value && *finalWpm.value == *wpm.value,
-            "normal texture/water save preserves every original pathing byte");
-        Require(finalW3e.Succeeded() && finalW3e.value && *finalW3e.value != *w3e.value,
-            "normal texture/water save writes actual edited terrain");
+        auto expectedPathing = *wpm.value;
+        if (restriction) {
+            const auto grid = MapData::ParseMapTerrain(*w3e.value); Require(grid.Succeeded() && grid.value, "read original restriction grid");
+            const auto stride = (grid.value->Snapshot()->header.width - 1) * 4;
+            expectedPathing[16 + 128 * stride + 128] |= std::byte{0x0e};
+            Require(expectedPathing != *wpm.value, "original fixture center has an unblocked restriction bit");
+        }
+        Require(finalWpm.Succeeded() && finalWpm.value && *finalWpm.value == expectedPathing,
+            "normal save preserves all source pathing except the one explicit restriction cell");
+        Require(finalW3e.Succeeded() && finalW3e.value && (*finalW3e.value != *w3e.value) == !restriction,
+            "restriction-only save keeps W3E exact; texture/water save writes actual terrain edits");
         Require(finalScript.Succeeded() && finalScript.value && *finalScript.value == *script.value,
             "terrain-only save cannot silently rewrite the author script");
         const auto sourceAfter = Sha256File(request.sourceMap);
@@ -2276,7 +2286,7 @@ int main() {
         TestGenericTerrainSaveRejectsUnverifiedCliffChange();
         TestMissingMinimapChoiceCannotBroadenTerrainSaveScope();
         TestOptionalRealMissingMinimapUsesTheExistingSaveService();
-        TestOptionalRealTextureAndWaterUseNormalSave();
+        TestOptionalRealTerrainAndPathingUseNormalSave();
         TestFieldEditsBindSourceAndStayInScope();
         TestFieldValueTextIsExact();
         TestDFieldsUseOriginalSaveWorkerAndUndoReplay();

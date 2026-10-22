@@ -739,7 +739,11 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                 }
                 seen[index] = true;
             }
-            if (!seen[0]) return Fail("SAVE_EDIT_SCOPE_INVALID", "地形事务缺少 W3E 替换成员。");
+            const bool restrictionOnly = seen[1] && !seen[2]
+                && std::all_of(request.terrainStrokes.begin(), request.terrainStrokes.end(),
+                    [](const auto& stroke) { return stroke.brush.kind == MapData::TerrainBrushKind::PathingRestriction; });
+            if (!seen[0] && !restrictionOnly)
+                return Fail("SAVE_EDIT_SCOPE_INVALID", "地形事务缺少 W3E 替换，且不属于仅修改 WPM 的通行限制笔划。");
             if (seen[2] && std::none_of(request.terrainStrokes.begin(), request.terrainStrokes.end(),
                     [](const auto& stroke) { return stroke.followDoodads; })) {
                 return Fail("SAVE_EDIT_SCOPE_INVALID", "未请求装饰物随地面移动，却生成了装饰物替换成员。");
@@ -750,7 +754,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             const auto wpm = std::find_if(replacements.begin(), replacements.end(), [](const auto& member) {
                 return member.name == "war3map.wpm";
             });
-            auto savedTerrainSha = Sha256(w3e->data);
+            auto savedTerrainSha = Sha256(w3e == replacements.end() ? *terrainBytes.value : w3e->data);
             auto savedPathingSha = Sha256(wpm == replacements.end() ? *pathingBytes.value : wpm->data);
             if (!savedTerrainSha.Succeeded() || !savedTerrainSha.value) return Forward(std::move(savedTerrainSha.diagnostics));
             if (!savedPathingSha.Succeeded() || !savedPathingSha.value) return Forward(std::move(savedPathingSha.diagnostics));

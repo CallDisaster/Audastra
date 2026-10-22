@@ -1,4 +1,5 @@
 #include "MapEditSaveValidation.h"
+#include "War3MapCore/MapData/PathingRestrictionEditing.h"
 
 #include <algorithm>
 #include <cmath>
@@ -103,10 +104,14 @@ Status ValidateStrokes(std::span<const MapEditTerrainStroke> strokes) {
         case MapData::TerrainBrushKind::Smooth:
         case MapData::TerrainBrushKind::CliffLevel:
         case MapData::TerrainBrushKind::WaterHeight:
+        case MapData::TerrainBrushKind::PathingRestriction:
             break;
         default:
             return Status::Failure("MapEdit.Save", "SAVE_STROKE_KIND", "地形笔刷种类未获识别。");
         }
+        if (stroke.brush.kind == MapData::TerrainBrushKind::PathingRestriction
+            && (!stroke.brush.pathingRestrictions || (stroke.brush.pathingRestrictions & ~MapData::kPathingRestrictionBits) != 0))
+            return Status::Failure("MapEdit.Save", "PATHING_RESTRICTION_FLAGS", "通行笔划只允许不可走、不可飞和不可建限制。");
         if (stroke.brush.shape != MapData::TerrainBrushShape::Circle
             && stroke.brush.shape != MapData::TerrainBrushShape::Square) {
             return Status::Failure("MapEdit.Save", "SAVE_STROKE_SHAPE", "地形笔刷形状未获识别。");

@@ -16,7 +16,7 @@ struct TerrainPathingCandidateLimits {
 
 // 密封的离线WPM附加限制候选，不是普通地图保存许可。只消费FreezeArchive实际任务和真实会话，
 // 不接caller的proof、WPM或SHA。宿主须串行排除edits写入，独立testCopyOnly目标不得已存在。
-// 默认MapDataEditSession/TerrainSavePlan保存门保持拒绝；不接Qt/CLI/脚本或原地保存。
+// 普通保存独立通过TerrainSavePlan；本离线服务不接Qt/CLI/脚本或原地保存。
 // inspection只验证五个地形相关成员；regions/cameras等其它未保存编辑不输出、不提交新基线，
 // 不能把本结果解释成整会话已保存或验证。宿主仍须保留该会话及其全部待编辑/Undo历史。
 // 含(attributes)/(signature)来源拒绝，避免既有普通writer的元数据清理越出零删除域。

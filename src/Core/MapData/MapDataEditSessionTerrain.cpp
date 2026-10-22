@@ -93,7 +93,7 @@ bool SameCliffPathingFootprint(const TerrainGridSnapshot& before, const TerrainG
 }
 
 bool PathingBlightDeltaMatchesTerrain(std::span<const std::byte> source, std::span<const std::byte> current,
-    const TerrainGridSnapshot& before, const TerrainGridSnapshot& after) {
+    const TerrainGridSnapshot& before, const TerrainGridSnapshot& after, std::uint8_t separatelyVerified = 0) {
     if (before.header.width != after.header.width || before.header.height != after.header.height
         || before.vertices.size() != after.vertices.size()) return false;
     const auto width = (before.header.width - 1) * 4, height = (before.header.height - 1) * 4;
@@ -110,17 +110,18 @@ bool PathingBlightDeltaMatchesTerrain(std::span<const std::byte> source, std::sp
             const auto sourceCell = std::to_integer<std::uint8_t>(source[index]);
             const auto currentCell = std::to_integer<std::uint8_t>(current[index]);
             if (sourceVertex.IsBlight() == currentVertex.IsBlight()) {
-                if (sourceCell != currentCell) return false;
+                if (((sourceCell ^ currentCell) & ~separatelyVerified) != 0) return false;
             } else if (((sourceCell & kBlightBit) != 0) != sourceVertex.IsBlight()
                 || ((currentCell & kBlightBit) != 0) != currentVertex.IsBlight()
-                || ((sourceCell ^ currentCell) & ~kBlightBit) != 0) return false;
+                || ((sourceCell ^ currentCell) & ~(kBlightBit | separatelyVerified)) != 0) return false;
         }
     }
     return true;
 }
 
 Status ValidatePathingOverlay(std::span<const std::byte> bytes, std::span<const std::byte> original,
-    const TerrainGridSnapshot& originalTerrain, const TerrainGridSnapshot& nextTerrain) {
+    const TerrainGridSnapshot& originalTerrain, const TerrainGridSnapshot& nextTerrain,
+    std::uint8_t separatelyVerified = 0) {
     auto parsed = ParseMapPathing(bytes, &nextTerrain.header);
     if (!parsed.Succeeded() || !parsed.value) {
         Status status;
@@ -132,10 +133,10 @@ Status ValidatePathingOverlay(std::span<const std::byte> bytes, std::span<const 
         return Status::Failure("MapData.Edit", "MAP_PATHING_HEADER_CHANGED", "通行性覆盖改变了源 WPM 头或长度，拒绝恢复");
     for (std::size_t index = kPathingHeaderBytes; index < bytes.size(); ++index) {
         const auto difference = std::to_integer<std::uint8_t>(bytes[index] ^ original[index]);
-        if ((difference & ~kBlightBit) != 0)
+        if ((difference & ~(kBlightBit | separatelyVerified)) != 0)
             return Status::Failure("MapData.Edit", "MAP_PATHING_UNKNOWN_BITS", "通行性覆盖改动了未验证位，拒绝恢复");
     }
-    if (!PathingBlightDeltaMatchesTerrain(original, bytes, originalTerrain, nextTerrain))
+    if (!PathingBlightDeltaMatchesTerrain(original, bytes, originalTerrain, nextTerrain, separatelyVerified))
         return Status::Failure("MapData.Edit", "MAP_PATHING_BLIGHT_MISMATCH",
             "通行性覆盖未精确对应已改变的荒芜顶点，或触碰了未改变顶点的原始格");
     return Status::Ok();
@@ -259,7 +260,13 @@ Status MapDataEditSession::AttachPathing(std::span<const std::byte> bytes) {
         return status;
     }
     auto restrictions = std::make_shared<const std::vector<std::byte>>(bytes.size() - kPathingHeaderBytes);
+    std::vector<std::byte> protectedBytes;
+    protectedBytes.reserve(bytes.size() - kPathingHeaderBytes);
+    for (std::size_t i = kPathingHeaderBytes; i < bytes.size(); ++i)
+        protectedBytes.push_back(bytes[i] & std::byte{kPathingRestrictionBits});
+    auto protectedSource = std::make_shared<const std::vector<std::byte>>(std::move(protectedBytes));
     pathingOriginal_ = pathing_ = parsed.value->OriginalBytes();
+    pathingProtected_.swap(protectedSource);
     pathingRestrictions_.swap(restrictions);
     originalPathingRestrictions_ = pathingRestrictions_;
     ++terrainSourceRevision_;
@@ -271,7 +278,8 @@ Status MapDataEditSession::SetPathing(std::span<const std::byte> bytes) {
         return Status::Failure("MapData.Edit", "MAP_PATHING_UNAVAILABLE", "源地形或源通行性不可用，不能恢复通行性覆盖");
     if (const auto status = ValidatePathingOverlay(bytes, *pathingOriginal_, *terrainOriginal_, *terrain_);
         !status.Succeeded()) return status;
-    const auto declaration = EncodePathingRestrictionDraft(*terrainOriginal_, *pathingOriginal_, bytes, *pathingRestrictions_);
+    const auto declaration = EncodePathingRestrictionDraft(*terrainOriginal_, *pathingOriginal_, bytes,
+        *pathingProtected_, *originalPathingRestrictions_, *pathingRestrictions_);
     if (!declaration.Succeeded()) return {declaration.diagnostics};
     if (std::equal(bytes.begin(), bytes.end(), pathing_->begin())) return Status::Ok();
     Command command;
@@ -311,28 +319,62 @@ Status MapDataEditSession::SetTerrainAndPathingInternal(std::span<const std::byt
         || std::bit_cast<std::uint64_t>(next.header.offset) != std::bit_cast<std::uint64_t>(header.offset))
         return Status::Failure("MapData.Edit", "MAP_TERRAIN_SHAPE_CHANGED",
             "地形覆盖的尺寸或原点与源地形不同，不能联合恢复");
-    std::vector<std::byte> withoutRestrictions;
-    std::vector<std::byte> restrictions(pathingOriginal_->size() - kPathingHeaderBytes);
+    auto protectedSource = pathingProtected_;
+    auto savedIntent = originalPathingRestrictions_;
+    auto intent = savedIntent;
     if (!restrictionDraft.empty()) {
-        auto checked = StripPathingRestrictionDraft(*terrainOriginal_, *pathingOriginal_, pathingBytes, restrictionDraft, &restrictions);
+        auto checked = DecodePathingRestrictionLayers(*terrainOriginal_, *pathingOriginal_, pathingBytes, restrictionDraft);
         if (!checked.Succeeded() || !checked.value) return {checked.diagnostics};
-        withoutRestrictions = std::move(*checked.value);
+        if (checked.value->protectedSource != *protectedSource)
+            protectedSource = std::make_shared<const std::vector<std::byte>>(std::move(checked.value->protectedSource));
+        if (checked.value->savedIntent != *savedIntent)
+            savedIntent = std::make_shared<const std::vector<std::byte>>(std::move(checked.value->savedIntent));
+        intent = checked.value->intent == *savedIntent ? savedIntent
+            : std::make_shared<const std::vector<std::byte>>(std::move(checked.value->intent));
     }
-    const auto rawOverlay = restrictionDraft.empty() ? pathingBytes : std::span<const std::byte>(withoutRestrictions);
-    if (const auto status = ValidatePathingOverlay(rawOverlay, *pathingOriginal_, *terrainOriginal_, next);
+    const bool restoreLayers = protectedSource != pathingProtected_ || savedIntent != originalPathingRestrictions_;
+    if (restoreLayers) {
+        // 工程分层只能在原始地形/通行会话中恢复。不能在旧历史下面偷换保护来源。
+        const bool hasTerrainHistory = std::any_of(history_.begin(), history_.end(), [](const auto& command) {
+            return !command->terrain.empty() || command->headerAfter || command->pathingAfter || command->restrictionAfter;
+        });
+        if (hasTerrainHistory || TerrainDirty() || pathing_ != pathingOriginal_
+            || pathingRestrictions_ != originalPathingRestrictions_
+            || terrainSourceRevision_ == std::numeric_limits<std::uint64_t>::max())
+            return Status::Failure("MapData.Edit", "PATHING_DRAFT_REBIND_LATE", "须在地形或通行编辑前恢复工程来源分层。");
+    }
+    if (const auto status = ValidatePathingOverlay(pathingBytes, *pathingOriginal_, *terrainOriginal_, next,
+            restrictionDraft.empty() ? 0 : kPathingRestrictionBits);
         !status.Succeeded()) return status;
     Command command;
     command.terrain = DiffChunks<TerrainChunk>(*terrain_, next, 0, 0, header.width, header.height);
-    if (restrictions != *pathingRestrictions_) {
-        command.restrictionBefore = pathingRestrictions_;
-        command.restrictionAfter = std::make_shared<const std::vector<std::byte>>(std::move(restrictions));
+    const auto beforeIntent = restoreLayers ? savedIntent : pathingRestrictions_;
+    if (*intent != *beforeIntent) {
+        command.restrictionBefore = beforeIntent;
+        command.restrictionAfter = intent;
     }
     if (!SameHeader(header, next.header)) { command.headerBefore = header; command.headerAfter = next.header; }
     if (!std::equal(pathingBytes.begin(), pathingBytes.end(), pathing_->begin())) {
         command.pathingBefore = *pathing_;
         command.pathingAfter = std::vector<std::byte>(pathingBytes.begin(), pathingBytes.end());
     }
-    return CommitCommand(std::move(command));
+    const auto previousProtected = pathingProtected_, previousSaved = originalPathingRestrictions_, previousIntent = pathingRestrictions_;
+    if (restoreLayers) {
+        pathingProtected_ = protectedSource;
+        originalPathingRestrictions_ = savedIntent;
+        pathingRestrictions_ = savedIntent;
+    }
+    const auto rollback = [&] {
+        pathingProtected_ = previousProtected;
+        originalPathingRestrictions_ = previousSaved;
+        pathingRestrictions_ = previousIntent;
+    };
+    try {
+        const auto status = CommitCommand(std::move(command));
+        if (!status.Succeeded()) { rollback(); return status; }
+        if (restoreLayers) ++terrainSourceRevision_;
+        return status;
+    } catch (...) { rollback(); throw; }
 }
 
 Status MapDataEditSession::SetTerrain(std::span<const std::byte> bytes) {
@@ -546,16 +588,21 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
     const std::shared_ptr<const TerrainGridSnapshot>& terrain,
     const std::optional<std::vector<std::byte>>& pathing,
     const std::optional<std::vector<std::byte>>& doodads,
-    const TerrainPathingResources* resources) const {
+    const TerrainPathingResources* resources, const std::vector<std::byte>* restrictions) const {
     const auto reject = [](const char* reason) {
         return Status::Failure("MapData.Edit", "MAP_TERRAIN_PATHING_UNVERIFIED", reason);
     };
-    if (!TerrainDiffers(terrain, terrainOriginal_)) {
-        return pathing == pathingOriginal_ ? Status::Ok()
-            : reject("W3E 与基线相同但 WPM 已改变，拒绝无地形对应的通行性覆盖");
-    }
+    if (!TerrainDiffers(terrain, terrainOriginal_) && pathing == pathingOriginal_) return Status::Ok();
     if (!terrain || !terrainOriginal_ || !pathing || !pathingOriginal_)
         return reject("已修改地形但缺少源 W3E 或唯一可验证的 WPM，拒绝正式地图保存");
+    if (!pathingProtected_ || !originalPathingRestrictions_ || !pathingRestrictions_)
+        return reject("通行修改缺少受保护来源和保存前后的独立意图，拒绝正式地图保存");
+    const auto layers = VerifyPathingRestrictionLayers(terrainOriginal_->header, *pathingOriginal_, *pathing,
+        *pathingProtected_, *originalPathingRestrictions_, restrictions ? *restrictions : *pathingRestrictions_);
+    if (!layers.Succeeded()) return layers;
+    if (!TerrainDiffers(terrain, terrainOriginal_))
+        return PathingBlightDeltaMatchesTerrain(*pathingOriginal_, *pathing, *terrainOriginal_, *terrain, kPathingRestrictionBits)
+            ? Status::Ok() : reject("W3E 未变，WPM 只能写入已声明的本工程通行限制变化");
     const auto& oldHeader = terrainOriginal_->header;
     const auto& newHeader = terrain->header;
     const bool resourceHeader = resources && oldHeader.version == newHeader.version
@@ -622,7 +669,7 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
     if (pathing->size() != expectedBytes || pathingOriginal_->size() != expectedBytes
         || !std::equal(pathing->begin(), pathing->begin() + kPathingHeaderBytes, pathingOriginal_->begin()))
         return reject("WPM 头部或格子数量与原成员不同");
-    if (!PathingBlightDeltaMatchesTerrain(*pathingOriginal_, *pathing, *terrainOriginal_, *terrain))
+    if (!PathingBlightDeltaMatchesTerrain(*pathingOriginal_, *pathing, *terrainOriginal_, *terrain, kPathingRestrictionBits))
         return reject("WPM 改动未逐格对应 W3E 荒芜位，或原始通行位发生变化");
     return Status::Ok();
 }

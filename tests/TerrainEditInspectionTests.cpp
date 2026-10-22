@@ -207,7 +207,7 @@ void AcceptedAndRejectedTerrainRemainInspectable() {
     }
 }
 
-void RestrictionInspectionProvesBytesWithoutGrantingSaveEligibility() {
+void RestrictionInspectionSharesNormalSavePolicyWithoutNativeAcceptance() {
     TempDirectory directory;
     const auto members = Members();
     auto source = WriteSource(directory.Path() / "restriction-inspection.w3x", members);
@@ -226,9 +226,7 @@ void RestrictionInspectionProvesBytesWithoutGrantingSaveEligibility() {
     const auto proof = Take(snapshot.PathingPreservation());
     Require(proof.Kind() == PathingPreservationKind::ExplicitRestrictionCandidate && proof.ChangedCells() == 1
         && proof.RequiresNativeVerification(), "inspection proves the one declared cell without native acceptance");
-    Require(!snapshot.TerrainPathingGate().Succeeded() && !snapshot.TerrainPathingGate().diagnostics.empty()
-        && snapshot.TerrainPathingGate().diagnostics.front().code == "MAP_TERRAIN_PATHING_UNVERIFIED",
-        "proof success cannot replace the unchanged formal-save rejection");
+    Require(snapshot.TerrainPathingGate().Succeeded(), "inspection reports the shared declared-restriction save policy");
     SameStatus(snapshot.TerrainPathingGate(), edits.VerifyTerrainPathingForSave());
     Require(snapshot.Members()[0].original == snapshot.Members()[0].current
         && snapshot.Members()[1].original != snapshot.Members()[1].current,
@@ -603,7 +601,7 @@ int main() {
     try {
         BaselineAndUndoCaptureAreReadOnly();
         AcceptedAndRejectedTerrainRemainInspectable();
-        RestrictionInspectionProvesBytesWithoutGrantingSaveEligibility();
+        RestrictionInspectionSharesNormalSavePolicyWithoutNativeAcceptance();
         OverlappingIntentSnapshotsShareOwnershipAndBudget();
         FullRawTerrainAndPathingBaselinesMustMatch();
         NativeSourcesCannotBeInventedOrDiscarded();

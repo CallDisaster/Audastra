@@ -151,6 +151,14 @@ void CodecProvesSourceIntentAndNetBytes() {
     wrong.files.push_back(duplicate);
     Expect(!seal(wrong, std::span(&stroke, 1)).Succeeded(), "root/map duplicate source rejects");
     Expect(!seal(directory.value->Snapshot(), {}).Succeeded(), "no arbitrary-byte patch without intent");
+    TerrainStrokeIntent overlap; overlap.brush.kind = TerrainBrushKind::PathingRestriction;
+    overlap.brush.size = 1; overlap.brush.pathingRestrictions = 2; overlap.points = {{0, 0}};
+    Expect(fixture.edits.EditTerrain(overlap.brush, overlap.points, false).Succeeded(), "source-overlap intent changes only ownership");
+    Expect(!seal(directory.value->Snapshot(), std::span(&stroke, 1)).Succeeded(),
+        "equal WPM bytes cannot hide an omitted overlap-intent command");
+    const std::array withOverlap{stroke, overlap};
+    Expect(seal(directory.value->Snapshot(), withOverlap).Succeeded(), "complete recipe preserves identical WPM and explicit ownership");
+    Expect(fixture.edits.Undo(), "restore ownership before independent blight fixture");
     TerrainStrokeIntent extra; extra.brush.kind = TerrainBrushKind::Blight; extra.brush.size = 1; extra.points = {{128, 0}};
     Expect(fixture.edits.EditTerrain(extra.brush, extra.points, false).Succeeded(), "extra actual command applies");
     Expect(!seal(directory.value->Snapshot(), std::span(&stroke, 1)).Succeeded(), "omitted command cannot seal unrelated final WPM");
@@ -250,13 +258,13 @@ void BoundaryDraftSchemaAndNativeGateStaySeparate() {
     Expect(Current(server) == before, "rejected boundary candidate retains source, generation and original typed session");
 }
 
-void PathingRestrictionsKeepSourceBitsAndNativeRefusal() {
+void PathingRestrictionsKeepSourceBitsThroughNormalDirectorySave() {
     Fixture fixture;
     auto request = Stroke(State(fixture));
     request["brush"] = QJsonObject{{"kind", "pathing_restriction"}, {"blocked_type", "fly"}, {"value", true}};
     auto response = InvokeTerrainEditTool("edit_terrain_stroke", request, fixture.Host());
-    Expect(response.value("ok").toBool() && !response.value("terrain_pathing_gate").toObject().value("passed").toBool()
-        && !fixture.edits.CanUndo(), "pathing draft previews without a native save claim");
+    Expect(response.value("ok").toBool() && response.value("terrain_pathing_gate").toObject().value("passed").toBool()
+        && !response.value("map_saved").toBool() && !fixture.edits.CanUndo(), "pathing preview shares save eligibility without claiming a write");
     request["dry_run"] = false;
     response = InvokeTerrainEditTool("edit_terrain_stroke", request, fixture.Host());
     Expect(response.value("ok").toBool() && response.value("applied").toBool(), "draft-capable host applies pathing via shared command");
@@ -271,14 +279,24 @@ void PathingRestrictionsKeepSourceBitsAndNativeRefusal() {
         && fixture.edits.InspectTerrainPoint({0, 0}).value->pathingFlags == 6, "removal cannot erase original walk bit");
     Expect(fixture.edits.Undo() && !fixture.edits.IsDirty(), "pathing uses the original undo stack");
     McpServer server; OpenWorkspace(fixture, server);
-    Expect(server.Workspace()->BeginEdit(server.Workspace()->Revision()).Succeeded(), "standalone transaction opens");
+    auto* workspace = server.Workspace(); const auto revision = workspace->Revision();
+    const auto transaction = workspace->BeginEdit(revision);
+    Expect(transaction.Succeeded(), "standalone transaction opens");
     request = Stroke(Current(server));
     request["brush"] = QJsonObject{{"kind", "pathing_restriction"}, {"blocked_type", "build"}};
-    const auto before = Current(server);
     Expect(Call(server, "edit_terrain_stroke", request).value("ok").toBool(), "standalone preview accepts typed pathing intent");
     request["dry_run"] = false;
-    Expect(!Call(server, "edit_terrain_stroke", request).value("ok").toBool() && Current(server) == before,
-        "standalone does not publish an unproven pathing candidate");
+    Expect(Call(server, "edit_terrain_stroke", request).value("ok").toBool(), "standalone applies the same fully declared restriction");
+    Expect(workspace->PreviewEdit(*transaction.value, revision).Succeeded()
+        && workspace->ValidateEdit(*transaction.value, revision).satisfied, "normal directory transaction validates the complete stroke recipe");
+    const auto output = std::filesystem::path(fixture.temporary.path().toStdWString()) / "pathing-candidate";
+    Expect(workspace->ExportCandidate(*transaction.value, revision, output).Succeeded(), "normal directory exporter writes restriction output");
+    const auto terrain = IO::ReadFileBytes(output / "war3map.w3e"), pathing = IO::ReadFileBytes(output / "war3map.wpm");
+    Expect(terrain.Succeeded() && pathing.Succeeded() && *terrain.value == fixture.terrain, "pathing output preserves every W3E byte");
+    auto expected = fixture.pathing; expected[16 + 32 * 64 + 32] = std::byte{0x0a};
+    Expect(*pathing.value == expected, "output changes only the declared cell and retains its original walk restriction");
+    Expect(*IO::ReadFileBytes(fixture.source / "war3map.w3e").value == fixture.terrain
+        && *IO::ReadFileBytes(fixture.source / "war3map.wpm").value == fixture.pathing, "original directory remains byte-identical");
 }
 
 void RegisteredHostRetainsTransactionAndPublishesDirectory() {
@@ -431,7 +449,7 @@ int main(int argc, char** argv) {
         MissingPathingRemainsReadableAndSourceDriftRejects();
         ArchiveExportBindsPathingAndCompanionMembers();
         BoundaryDraftSchemaAndNativeGateStaySeparate();
-        PathingRestrictionsKeepSourceBitsAndNativeRefusal();
+        PathingRestrictionsKeepSourceBitsThroughNormalDirectorySave();
         std::cout << "10 terrain MCP and sealed transaction scenarios passed\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

@@ -418,7 +418,7 @@ void EditorProjectTests::ProjectRestoreReadsUnlistedTerrainAndPathing() {
             QVERIFY(project.mapEdits_->EditTerrain(brush,std::span(&point,1)).Succeeded());
         }
         QVERIFY(project.ObserveMapDataEdit("unlisted terrain/pathing project recovery"));
-        QVERIFY(!project.mapEdits_->VerifyTerrainPathingForSave().Succeeded());
+        QCOMPARE(project.mapEdits_->VerifyTerrainPathingForSave().Succeeded(), !terrainOverlay);
     }
     const auto expectedTerrain = MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()); QVERIFY(expectedTerrain.Succeeded());
     const auto expectedDraft = project.mapEdits_->SerializePathingRestrictionDraft(); QVERIFY(expectedDraft.Succeeded());
@@ -436,10 +436,10 @@ void EditorProjectTests::ProjectRestoreReadsUnlistedTerrainAndPathing() {
     const auto expectedFlags = draft && !terrainOverlay ? 0x86 : 0x82;
     QCOMPARE(sample.value->pathingFlags,expectedFlags); QCOMPARE(sample.value->originalPathingFlags,0x82);
     if (draft) {
-        QVERIFY(!edits.VerifyTerrainPathingForSave().Succeeded());
+        QCOMPARE(edits.VerifyTerrainPathingForSave().Succeeded(), !terrainOverlay);
         QVERIFY(edits.Undo() && !edits.IsDirty()); QCOMPARE(edits.InspectTerrainPoint(point).value->pathingFlags,0x82);
         QVERIFY(edits.Redo() && edits.IsDirty()); QCOMPARE(edits.InspectTerrainPoint(point).value->pathingFlags,expectedFlags);
-        QVERIFY(!edits.VerifyTerrainPathingForSave().Succeeded());
+        QCOMPARE(edits.VerifyTerrainPathingForSave().Succeeded(), !terrainOverlay);
     } else QVERIFY(edits.Replacements().empty() && !edits.CanUndo() && edits.VerifyTerrainPathingForSave().Succeeded());
     auto baseline = MapArchiveSession::Open((*prepared.value)->BaselinePath()); QVERIFY(baseline.Succeeded());
     QCOMPARE(baseline.value->SourceSha256(),sourceSha); QCOMPARE(baseline.value->Members().size(),namedCount);
@@ -1018,16 +1018,19 @@ void EditorProjectTests::TerrainSavePrepareStillRequiresToolchain() {
 
 void EditorProjectTests::PathingIntentNativeSaveKeepsProjectState_data() {
     QTest::addColumn<bool>("inPlace"); QTest::addColumn<bool>("lateEdit"); QTest::addColumn<bool>("blight");
-    QTest::newRow("intent-copy") << false << false << false;
-    QTest::newRow("intent-in-place") << true << false << false;
-    QTest::newRow("late-intent-copy") << false << true << false;
-    QTest::newRow("late-intent-in-place") << true << true << false;
-    QTest::newRow("intent-and-blight-copy") << false << false << true;
-    QTest::newRow("intent-and-blight-in-place") << true << false << true;
+    QTest::addColumn<int>("restriction"); QTest::addColumn<bool>("failPublish");
+    for (const int flags : {2, 4}) for (const bool inPlace : {false, true}) {
+        const auto row = QByteArray::number(flags) + (inPlace ? "-in-place" : "-copy");
+        QTest::newRow(row.constData()) << inPlace << false << false << flags << false;
+        QTest::newRow((row + "-late").constData()) << inPlace << true << false << flags << false;
+        QTest::newRow((row + "-blight").constData()) << inPlace << false << true << flags << false;
+        QTest::newRow((row + "-failure").constData()) << inPlace << false << false << flags << true;
+    }
 }
 
 void EditorProjectTests::PathingIntentNativeSaveKeepsProjectState() {
     QFETCH(bool, inPlace); QFETCH(bool, lateEdit); QFETCH(bool, blight);
+    QFETCH(int, restriction); QFETCH(bool, failPublish);
     QTemporaryDir root; QVERIFY(root.isValid());
     const auto members = TerrainSaveMembers(); QVERIFY(!members.empty());
     const auto source = std::filesystem::path(root.filePath("source.w3x").toStdWString());
@@ -1039,8 +1042,8 @@ void EditorProjectTests::PathingIntentNativeSaveKeepsProjectState() {
     const auto baseline = project.editRevision_.Baseline(EditSaveTarget::Map); QVERIFY(baseline);
     const auto sourceRevision = project.mapEdits_->TerrainSourceRevision();
     MapData::TerrainBrush brush; brush.kind = MapData::TerrainBrushKind::PathingRestriction;
-    brush.size = 1; brush.pathingRestrictions = 2;
-    const MapData::TerrainStrokePoint point{48, 48}; // 全部源WPM为0x82，只有A改变。
+    brush.size = 1; brush.pathingRestrictions = static_cast<std::uint8_t>(restriction);
+    const MapData::TerrainStrokePoint point{48, 48}; // 源WPM为0x82：2只改A，4同时改变WPM。
     QVERIFY(project.mapEdits_->EditTerrain(brush, std::span(&point, 1), false).Succeeded());
     if (blight) {
         MapData::TerrainBrush terrainBrush; terrainBrush.kind = MapData::TerrainBrushKind::Blight; terrainBrush.size = 1;
@@ -1049,7 +1052,7 @@ void EditorProjectTests::PathingIntentNativeSaveKeepsProjectState() {
     }
     QVERIFY(project.ObserveMapDataEdit("仅限制意图保存夹具"));
     const auto declaration = project.mapEdits_->SerializePathingRestrictionDraft(); QVERIFY(declaration.Succeeded());
-    QVERIFY(!declaration.value->empty()); QCOMPARE(project.mapEdits_->Replacements().empty(), !blight);
+    QVERIFY(!declaration.value->empty()); QCOMPARE(project.mapEdits_->Replacements().empty(), !blight && restriction == 2);
     QVERIFY(project.HasUnsavedMapChanges() && project.editRevision_.IsDirty(EditSaveTarget::Project));
     const auto fingerprint = project.ProjectFingerprint(); QVERIFY(!fingerprint.empty());
     auto prepared = MapData::TerrainSavePlan::Prepare(*project.archiveSession_, *project.mapEdits_); QVERIFY(prepared.Succeeded());
@@ -1066,14 +1069,25 @@ void EditorProjectTests::PathingIntentNativeSaveKeepsProjectState() {
     job->replacements = project.mapEdits_->Replacements(); job->removals = project.mapEdits_->Removals();
     job->preparedRevision = MapSaveRevisionBinding{project.editRevision_.Generation(), project.editRevision_.Revision(), project.editRevision_.Current()};
     job->terrainSavePlan = plan;
+    job->pathingRestrictionDraft = std::make_shared<const std::vector<std::byte>>(*declaration.value);
     const auto* task = job.get();
     job->beforePublish = [plan, task] { return plan->VerifyFrozenOutput(task->sourceSha256, task->replacements, task->removals); };
+    if (failPublish) job->beforePublish = [] { return Status::Failure("Test", "REFUSED", "拒绝发布夹具"); };
     if (lateEdit) {
         const MapData::TerrainStrokePoint second{80, 48};
         QVERIFY(project.mapEdits_->EditTerrain(brush, std::span(&second, 1), false).Succeeded());
         QVERIFY(project.ProjectFingerprint() != fingerprint); // 未先通知observer也必须看见实际A。
     }
     EditorProject::RunMapSave(*job);
+    if (failPublish) {
+        QVERIFY(!job->succeeded && !project.CommitMapSave(*job));
+        QCOMPARE(project.mapEdits_->SerializePathingRestrictionDraft().value, declaration.value);
+        QCOMPARE(project.mapEdits_->TerrainSourceRevision(), sourceRevision);
+        QCOMPARE(project.editRevision_.Baseline(EditSaveTarget::Map)->scopes, baseline->scopes);
+        QVERIFY(project.mapEdits_->CanUndo() && project.HasUnsavedMapChanges());
+        QCOMPARE(Sha256File(source).value, sourceSha.value);
+        return;
+    }
     QVERIFY(job->succeeded && job->nextSession && job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded());
     if (lateEdit) {
         QVERIFY(!project.CommitMapSave(*job).has_value());
@@ -1088,14 +1102,15 @@ void EditorProjectTests::PathingIntentNativeSaveKeepsProjectState() {
     QVERIFY(project.editRevision_.IsDirty(EditSaveTarget::Project));
     QVERIFY(project.mapEdits_->TerrainSourceRevision() > sourceRevision);
     const auto savedDeclaration = project.mapEdits_->SerializePathingRestrictionDraft(); QVERIFY(savedDeclaration.Succeeded());
-    QCOMPARE(savedDeclaration.value == declaration.value, !blight); // 荒芜保存后APR精确重绑新的W3E/WPM来源。
-    QCOMPARE(project.mapEdits_->InspectTerrainPoint(point).value->pathingFlags, 0x82);
+    QVERIFY(savedDeclaration.value != declaration.value && (*savedDeclaration.value)[3] == std::byte{3});
+    QCOMPARE(project.mapEdits_->InspectTerrainPoint(point).value->pathingFlags, 0x82 | restriction);
     if (blight) {
         QVERIFY(project.mapEdits_->Undo() && project.ObserveMapDataEdit("保存后撤销荒芜"));
         QCOMPARE(project.mapEdits_->QueryPathingRestrictions().value->totalCells, std::size_t{1});
     }
     QVERIFY(project.mapEdits_->Undo() && project.ObserveMapDataEdit("保存后撤销意图"));
-    QVERIFY(project.HasUnsavedMapChanges() && project.mapEdits_->SerializePathingRestrictionDraft().value->empty());
+    QVERIFY(project.HasUnsavedMapChanges() && !project.mapEdits_->SerializePathingRestrictionDraft().value->empty());
+    QCOMPARE(project.mapEdits_->QueryPathingRestrictions().value->totalCells, std::size_t{0});
     QCOMPARE(project.mapEdits_->InspectTerrainPoint(point).value->pathingFlags, 0x82);
     QVERIFY(project.mapEdits_->Redo() && project.ObserveMapDataEdit("保存后重做意图"));
     if (blight) QVERIFY(project.mapEdits_->Redo() && project.ObserveMapDataEdit("保存后重做荒芜"));
@@ -1108,18 +1123,52 @@ void EditorProjectTests::PathingIntentNativeSaveKeepsProjectState() {
         && !saved.value->HasMember("overlay/map/war3map.wpm") && !saved.value->HasMember("overlay/map/war3map.w3e"));
     const auto manifest = saved.value->ReadMember("project.json"); QVERIFY(manifest.Succeeded());
     QCOMPARE(QJsonDocument::fromJson(QByteArray(reinterpret_cast<const char*>(manifest.value->data()), static_cast<qsizetype>(manifest.value->size())))
-        .object()["pathingRestrictions"].toInt(), 2);
+        .object()["pathingRestrictions"].toInt(), 3);
     auto reopened = PrepareProjectOpen(forge); QVERIFY(reopened.Succeeded());
     auto& edits = *(*reopened.value)->mapDataEdits;
     QCOMPARE(edits.SerializePathingRestrictionDraft().value, savedDeclaration.value);
-    QCOMPARE(edits.InspectTerrainPoint(point).value->addedPathingRestrictions, 2);
+    QCOMPARE(edits.InspectTerrainPoint(point).value->addedPathingRestrictions, restriction);
     QVERIFY(edits.Replacements().empty() && edits.VerifyTerrainPathingForSave().Succeeded());
-    QVERIFY(edits.Undo() && edits.SerializePathingRestrictionDraft().value->empty() && edits.Redo());
+    QVERIFY(!edits.IsDirty() && !edits.CanUndo());
+    brush.value = false;
+    QVERIFY(edits.EditTerrain(brush, std::span(&point, 1), false).Succeeded());
     QCOMPARE(edits.InspectTerrainPoint(point).value->pathingFlags, 0x82);
+    QVERIFY(edits.VerifyTerrainPathingForSave().Succeeded() && edits.Undo() && !edits.IsDirty());
+    QCOMPARE(edits.InspectTerrainPoint(point).value->pathingFlags, 0x82 | restriction);
     if (inPlace) {
         QVERIFY(!job->backup.empty() && std::filesystem::exists(job->backup));
         QCOMPARE(Sha256File(job->backup).value, sourceSha.value);
     } else QCOMPARE(Sha256File(source).value, sourceSha.value);
+
+    // 实际地图已包含S。第二次保存擦除，必须写回P而不是继续把S当来源保护。
+    QVERIFY(project.mapEdits_->EditTerrain(brush, std::span(&point, 1), false).Succeeded());
+    QVERIFY(project.ObserveMapDataEdit("擦除本工程已保存的限制"));
+    auto removedPlan = MapData::TerrainSavePlan::Prepare(*project.archiveSession_, *project.mapEdits_);
+    QVERIFY(removedPlan.Succeeded() && removedPlan.value->SaveGate().Succeeded());
+    const auto eraseDeclaration = project.mapEdits_->SerializePathingRestrictionDraft();
+    QVERIFY(eraseDeclaration.Succeeded() && (*eraseDeclaration.value)[3] == std::byte{3});
+    auto erase = std::make_unique<MapSaveJob>(); QVERIFY(erase->FreezeArchive(*project.archiveSession_).Succeeded());
+    erase->target = inPlace ? project.archiveSession_->SourcePath()
+        : std::filesystem::path(root.filePath("erased.w3x").toStdWString());
+    erase->inPlace = inPlace; erase->inPlaceOptions = job->inPlaceOptions;
+    erase->replacements = project.mapEdits_->Replacements();
+    erase->pathingRestrictionDraft = std::make_shared<const std::vector<std::byte>>(*eraseDeclaration.value);
+    erase->preparedRevision = MapSaveRevisionBinding{project.editRevision_.Generation(), project.editRevision_.Revision(), project.editRevision_.Current()};
+    erase->terrainSavePlan = std::make_shared<const MapData::TerrainSavePlan>(std::move(*removedPlan.value));
+    const auto* eraseTask = erase.get();
+    erase->beforePublish = [eraseTask] {
+        return eraseTask->terrainSavePlan->VerifyFrozenOutput(eraseTask->sourceSha256, eraseTask->replacements, eraseTask->removals);
+    };
+    EditorProject::RunMapSave(*erase);
+    QVERIFY(erase->succeeded && erase->nextSession && erase->terrainReadbackStatus && erase->terrainReadbackStatus->Succeeded());
+    const auto erasedWpm = erase->nextSession->ReadMember("war3map.wpm"); QVERIFY(erasedWpm.Succeeded());
+    QCOMPARE((*erasedWpm.value)[16 + 33], std::byte{0x82});
+    QVERIFY(project.CommitMapSave(*erase));
+    QVERIFY(!project.HasUnsavedMapChanges() && project.mapEdits_->SerializePathingRestrictionDraft().value->empty());
+    QVERIFY(project.mapEdits_->Undo() && project.ObserveMapDataEdit("第二次保存后撤销擦除"));
+    QCOMPARE(project.mapEdits_->InspectTerrainPoint(point).value->pathingFlags, 0x82 | restriction);
+    QVERIFY(project.mapEdits_->VerifyTerrainPathingForSave().Succeeded());
+    QVERIFY(project.mapEdits_->Redo() && project.ObserveMapDataEdit("第二次保存后重做擦除") && !project.HasUnsavedMapChanges());
 }
 
 void EditorProjectTests::PathingIntentLateEditStalesFrozenProject() {
@@ -1187,19 +1236,23 @@ void EditorProjectTests::LegacyPathingIntentProjectKeepsStrictCompatibility() {
         QCOMPARE(edits.InspectTerrainPoint(point).value->addedPathingRestrictions, 4);
         QCOMPARE(edits.InspectTerrainPoint(point).value->pathingFlags, 0x86);
         QVERIFY((*edits.SerializePathingRestrictionDraft().value)[3] == std::byte{2});
-        QVERIFY(!edits.VerifyTerrainPathingForSave().Succeeded());
+        QVERIFY(edits.VerifyTerrainPathingForSave().Succeeded());
     }
 }
 
 void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy_data() {
     QTest::addColumn<bool>("special"); QTest::addColumn<bool>("existing");
-    QTest::newRow("generated") << false << false;
-    QTest::newRow("unsupported-missing") << true << false;
-    QTest::newRow("unsupported-existing") << true << true;
+    QTest::addColumn<int>("pathingPhase");
+    QTest::newRow("generated") << false << false << 0;
+    QTest::newRow("unsupported-missing") << true << false << 0;
+    QTest::newRow("unsupported-existing") << true << true << 0;
+    QTest::newRow("worker-add-apr2") << false << false << 1;
+    QTest::newRow("worker-withdraw-apr3") << false << false << 2;
+    QTest::newRow("worker-bad-apr-identity") << false << false << 3;
 }
 
 void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
-    QFETCH(bool, special); QFETCH(bool, existing);
+    QFETCH(bool, special); QFETCH(bool, existing); QFETCH(int, pathingPhase);
     QTemporaryDir root; QVERIFY(root.isValid());
     auto members = DeclaredMissingMinimapQtMembers();
     for (auto& member : members) if (member.name == "war3map.w3i")
@@ -1233,15 +1286,62 @@ void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
     QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
     EditorProject project; QVERIFY(BindTerrainSaveProject(project, source));
     const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
-    // 真实生产Prepare入口，没有显式小地图选项，也没有伪造ScriptRebuild结果。
-    // 无业务修改且缺少小地图的新图不需要另造脚本工具链；worker补齐图像。
-    auto job = project.PrepareMapSave(target, false);
+    // 原三行走生产Prepare；新增行只测真实worker恢复APR，不绕过并冒称脚本工具链验收。
+    const auto freezePathingJob = [&](const std::filesystem::path& destination) -> std::unique_ptr<MapSaveJob> {
+        auto job = std::make_unique<MapSaveJob>();
+        if (!job->FreezeArchive(*project.archiveSession_).Succeeded()) return {};
+        auto plan = MapData::TerrainSavePlan::Prepare(*project.archiveSession_, *project.mapEdits_);
+        auto declaration = project.mapEdits_->SerializePathingRestrictionDraft();
+        if (!plan.Succeeded() || !plan.value || !plan.value->SaveGate().Succeeded()
+            || !declaration.Succeeded() || !declaration.value) return {};
+        job->target = destination; job->replacements = project.mapEdits_->Replacements();
+        job->pathingRestrictionDraft = std::make_shared<const std::vector<std::byte>>(std::move(*declaration.value));
+        job->terrainSavePlan = std::make_shared<const MapData::TerrainSavePlan>(std::move(*plan.value));
+        job->preparedRevision = MapSaveRevisionBinding{project.editRevision_.Generation(), project.editRevision_.Revision(), project.editRevision_.Current()};
+        const auto* task = job.get();
+        job->beforePublish = [task] {
+            return task->terrainSavePlan->VerifyFrozenOutput(task->sourceSha256, task->replacements, task->removals);
+        };
+        return job;
+    };
+    if (pathingPhase) {
+        MapData::TerrainBrush brush; brush.kind = MapData::TerrainBrushKind::PathingRestriction;
+        brush.size = 1; brush.pathingRestrictions = 4;
+        const MapData::TerrainStrokePoint point{48, 48};
+        QVERIFY(project.mapEdits_->EditTerrain(brush, std::span(&point, 1), false).Succeeded());
+        QVERIFY(project.ObserveMapDataEdit("自动小地图通行限制夹具"));
+        if (pathingPhase == 2) {
+            auto first = freezePathingJob(std::filesystem::path(root.filePath("owned-restriction.w3x").toStdWString()));
+            QVERIFY(first); EditorProject::RunMapSave(*first);
+            QVERIFY(first->succeeded && project.CommitMapSave(*first));
+            brush.value = false;
+            QVERIFY(project.mapEdits_->EditTerrain(brush, std::span(&point, 1), false).Succeeded());
+            QVERIFY(project.ObserveMapDataEdit("自动小地图撤回已保存限制夹具"));
+        }
+    }
+    auto job = pathingPhase ? freezePathingJob(target) : project.PrepareMapSave(target, false);
     QVERIFY(job);
+    if (pathingPhase) {
+        job->minimapChoice = Services::TerrainMinimapSaveChoice::Automatic;
+        QVERIFY(job->pathingRestrictionDraft && !job->pathingRestrictionDraft->empty());
+        QCOMPARE((*job->pathingRestrictionDraft)[3], pathingPhase == 2 ? std::byte{3} : std::byte{2});
+        if (pathingPhase == 3) {
+            auto wrong = *job->pathingRestrictionDraft; wrong[4] ^= std::byte{1};
+            job->pathingRestrictionDraft = std::make_shared<const std::vector<std::byte>>(std::move(wrong));
+        }
+    }
     QCOMPARE(job->minimapChoice, Services::TerrainMinimapSaveChoice::Automatic);
     QVERIFY(!job->minimapSave);
     // 新资源通过同一生产 worker 输入触发自动判定，不伪造生成结果。
     if (existing) job->replacements.push_back({"Fixture\\NewIcon.blp", text("unused resource")});
     EditorProject::RunMapSave(*job);
+    if (pathingPhase == 3) {
+        QVERIFY(!job->succeeded && HasReadDiagnostic(*job, "PATHING_DRAFT_IDENTITY"));
+        QVERIFY(!job->minimapPreserve && !std::filesystem::exists(target));
+        QVERIFY(project.mapEdits_->IsDirty() && project.mapEdits_->CanUndo());
+        QCOMPARE(Sha256File(source).value, sourceSha.value);
+        return;
+    }
     QVERIFY2(job->succeeded, job->diagnostics.empty() ? "default automatic save failed" : job->diagnostics.back().message.c_str());
     if (special) {
         QVERIFY(!job->minimapSave && job->minimapPreserve);
@@ -1263,6 +1363,10 @@ void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
     QVERIFY(!project.HasUnsavedMapChanges());
     auto saved = MapArchiveSession::Open(target); QVERIFY(saved.Succeeded());
     QCOMPARE(saved.value->ReadMember("war3mapMap.blp").value, std::optional(generated));
+    if (pathingPhase) {
+        const auto savedPathing = saved.value->ReadMember("war3map.wpm"); QVERIFY(savedPathing.Succeeded());
+        QCOMPARE((*savedPathing.value)[16 + 33], pathingPhase == 2 ? std::byte{0x82} : std::byte{0x86});
+    }
     QCOMPARE(Sha256File(source).value, sourceSha.value);
     // 第二次没有任何修改时沿用上次BLP，不再读配置、生成噪点或编码。
     const auto secondTarget = std::filesystem::path(root.filePath("unchanged-save-copy.w3x").toStdWString());

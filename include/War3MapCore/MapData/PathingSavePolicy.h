@@ -37,7 +37,7 @@ struct PathingPreservationBounds {
 };
 
 // 只读来源/掩码证明。成功仅表示逐格字节均有说明，绝不授予地图写出资格。
-// 不写成员，不重建 WPM，不改变 MapDataEditSession 或 TerrainSavePlan 的保存门。
+// 不写成员、不重建 WPM；普通保存仍由 TerrainSavePlan 核对来源、最终成员和回读。
 class PathingPreservationProof {
 public:
     PathingPreservationProof(const PathingPreservationProof&) = default;
@@ -57,7 +57,7 @@ public:
     [[nodiscard]] std::span<const PathingPreservationCell> ReportedCells() const noexcept { return cells_; }
     [[nodiscard]] const std::string& OutputPathingSha256() const noexcept { return outputPathingSha256_; }
     [[nodiscard]] const std::string& DeclarationSha256() const noexcept { return declarationSha256_; }
-    [[nodiscard]] static constexpr std::uint32_t RuleVersion() noexcept { return 1; }
+    [[nodiscard]] static constexpr std::uint32_t RuleVersion() noexcept { return 2; }
     [[nodiscard]] bool RequiresNativeVerification() const noexcept {
         return kind_ == PathingPreservationKind::ExplicitRestrictionCandidate;
     }

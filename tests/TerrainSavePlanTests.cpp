@@ -166,8 +166,9 @@ void OriginalSaveGateRemainsAuthoritative() {
     brush.kind = TerrainBrushKind::PathingRestriction; brush.radius = 0; brush.pathingRestrictions = 4;
     Require(restrictions.edits.EditTerrain(brush, std::span(&restrictions.point, 1), false).Succeeded(), "edit pathing restriction draft");
     const auto restricted = Take(TerrainSavePlan::Prepare(restrictions.source, restrictions.edits));
-    Require(!restricted.SaveGate().Succeeded() && restricted.Members()[1].action == TerrainSaveMemberAction::Reject,
-        "WPM-only restriction draft stays blocked");
+    Require(restricted.SaveGate().Succeeded() && restricted.Members()[1].action == TerrainSaveMemberAction::WriteEdited
+        && restricted.VerifyForSave(restrictions.edits, restrictions.source.aggregateSha256, restrictions.Output()).Succeeded(),
+        "complete WPM-only restriction declaration uses the normal save plan");
 }
 
 void DryHeightFreezesRangePlacementsDefinitionsAndResources() {

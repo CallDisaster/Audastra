@@ -160,9 +160,10 @@ Result<std::unique_ptr<ProjectSaveJob>> EditorProject::PrepareProjectSave(
             auto restrictions = mapEdits_->SerializePathingRestrictionDraft();
             if (!restrictions.Succeeded() || !restrictions.value) return fail(tr("附加通行限制无法绑定原始来源"));
             if (!restrictions.value->empty()) {
+                const auto restrictionVersion = std::to_integer<unsigned>((*restrictions.value)[3]);
                 if (!append("overlay/editor/pathing-restrictions.bin", std::move(*restrictions.value)))
                     return fail(tr("工程超过容量限制"));
-                job->manifest_["pathingRestrictions"] = 2;
+                job->manifest_["pathingRestrictions"] = static_cast<int>(restrictionVersion);
             }
         }
         job->manifest_["mapDataRemovals"] = mapDataRemovals;

@@ -220,7 +220,8 @@ private:
         const std::shared_ptr<const TerrainGridSnapshot>& terrain,
         const std::optional<std::vector<std::byte>>& pathing,
         const std::optional<std::vector<std::byte>>& doodads,
-        const TerrainPathingResources* resources = nullptr) const;
+        const TerrainPathingResources* resources = nullptr,
+        const std::vector<std::byte>* restrictions = nullptr) const;
     [[nodiscard]] Status PrepareUnits(const UnitPlacements& value, std::vector<MemberChange>& changes) const;
     [[nodiscard]] Status DeserializeAndApply(MapDataKind kind, std::span<const std::byte> bytes,
         bool linkStartLocations);
@@ -243,6 +244,8 @@ private:
     std::shared_ptr<const TerrainGridSnapshot> terrain_;
     std::optional<std::vector<std::byte>> pathingOriginal_;
     std::optional<std::vector<std::byte>> pathing_;
+    // 首次从真实 WPM 捕获；地图保存不会把本工程新增限制升级为受保护来源。
+    std::shared_ptr<const std::vector<std::byte>> pathingProtected_;
     std::shared_ptr<const std::vector<std::byte>> pathingRestrictions_, originalPathingRestrictions_;
 };
 

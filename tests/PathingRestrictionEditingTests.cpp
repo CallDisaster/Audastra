@@ -51,7 +51,7 @@ struct Fixture {
 void PreviewAndSharedUndoKeepEverySourceBit() {
     Fixture f; auto brush = f.Brush();
     const auto prepared = f.edits.PrepareTerrainEdit(brush, std::span(&f.point, 1));
-    Require(prepared.Succeeded() && prepared.value->HasChanges() && !prepared.value->TerrainPathingGate().Succeeded(), "draft preview has no native approval");
+    Require(prepared.Succeeded() && prepared.value->HasChanges() && prepared.value->TerrainPathingGate().Succeeded(), "declared source-preserving restriction can use normal save");
     Require(!f.edits.CanUndo() && f.Current() == f.wpm, "preview does not mutate");
     Require(f.edits.ApplyPreparedTerrainEdit(*prepared.value).Succeeded(), "sealed command applies");
     const auto query = f.edits.InspectTerrainPoint(f.point);
@@ -97,11 +97,12 @@ void OverlappingIntentIsAnIndependentTransaction() {
     Require(f.edits.Replay(receipt, false).Succeeded() && f.edits.Replay(receipt, true).Succeeded(),
         "Qt receipt replay shares the A-only transaction");
     f.edits.CommitSaved(MapDocument::FromMembers({}));
+    const auto savedDraft = *f.edits.SerializePathingRestrictionDraft().value;
     Require(!f.edits.IsDirty() && f.edits.Replacements().empty()
-        && f.edits.SerializePathingRestrictionDraft().value == draft, "native save marks A baseline while retaining its declaration");
+        && savedDraft[3] == std::byte{3}, "native save records protected source and saved A in APR3");
     Require(f.edits.Undo() && f.edits.IsDirty() && f.Current() == f.wpm
-        && f.edits.SerializePathingRestrictionDraft().value->empty(), "undo across A-only save changes A without clearing source");
-    Require(f.edits.Redo() && !f.edits.IsDirty() && f.edits.SerializePathingRestrictionDraft().value == draft,
+        && f.edits.QueryPathingRestrictions().value->totalCells == 0, "undo across A-only save changes A without clearing source");
+    Require(f.edits.Redo() && !f.edits.IsDirty() && f.edits.SerializePathingRestrictionDraft().value == savedDraft,
         "redo across A-only save restores its saved baseline");
     Require(f.edits.EditTerrain(f.Brush(0x02, false), std::span(&f.point, 1)).Succeeded()
         && f.Current() == f.wpm && f.edits.InspectTerrainPoint(f.point).value->addedPathingRestrictions == 0,
@@ -113,22 +114,64 @@ void OverlappingIntentIsAnIndependentTransaction() {
     Require(restored.Undo() && restored.SerializePathingRestrictionDraft().value->empty() && restored.Redo(), "restored A-only undo/redo");
 }
 
-void SavedSourceRestrictionsSurviveOlderHistory() {
+void SavedIntentCanBeWithdrawnWithoutClearingProtectedSource() {
     Fixture f;
     Require(f.edits.EditTerrain(f.Brush(0x04), std::span(&f.point, 1)).Succeeded(), "prepare synthetic rebased source");
     const auto receipt = f.edits.LastEdit();
-    Require(!f.edits.VerifyTerrainPathingForSave().Succeeded(), "ordinary native saving still rejects the new restriction");
-    // 公共Core重绑定不代表产品保存放行；只验证未来来源重绑定也不能让历史清除底层。
+    Require(f.edits.VerifyTerrainPathingForSave().Succeeded(), "declared new restriction is eligible for normal saving");
+    const auto savedPathing = f.Current();
     f.edits.CommitSaved(MapDocument::FromMembers({}));
     Require(!f.edits.IsDirty() && f.edits.InspectTerrainPoint(f.point).value->originalPathingFlags == 0x86,
         "synthetic saved source includes its opaque restriction");
-    Require(f.edits.Undo() && f.edits.InspectTerrainPoint(f.point).value->pathingFlags == 0x86
-        && f.edits.SerializePathingRestrictionDraft().value->empty(), "old undo preserves new source restriction and clears only A");
+    Require(f.edits.Undo() && f.edits.InspectTerrainPoint(f.point).value->pathingFlags == 0x82
+        && f.edits.VerifyTerrainPathingForSave().Succeeded(), "undo withdraws only saved A while preserving original walk and unknown bits");
     Require(f.edits.Redo() && !f.edits.IsDirty() && f.edits.InspectTerrainPoint(f.point).value->addedPathingRestrictions == 4,
         "old redo recomposes against the current source");
     Require(f.edits.Replay(receipt, false).Succeeded() && f.edits.Replay(receipt, true).Succeeded()
         && f.edits.InspectTerrainPoint(f.point).value->pathingFlags == 0x86
         && f.edits.SerializePathingRestrictionDraft().Succeeded(), "receipt replay uses the same source-preserving composition");
+
+    const auto savedDraft = *f.edits.SerializePathingRestrictionDraft().value;
+    Require(savedDraft[3] == std::byte{3}, "saved ownership is persisted as APR3");
+    MapDataEditSession reopened(MapDocument::FromMembers({}));
+    Require(reopened.AttachTerrain(f.w3e).Succeeded() && reopened.AttachPathing(savedPathing).Succeeded(), "reopen actual saved pair");
+    Require(reopened.SetTerrainAndPathingDraft(f.w3e, savedPathing, savedDraft).Succeeded()
+        && !reopened.IsDirty() && !reopened.CanUndo(), "saved-only ownership restores as a clean source baseline");
+    Require(reopened.EditTerrain(f.Brush(0x0e, false), std::span(&f.point, 1)).Succeeded()
+        && reopened.InspectTerrainPoint(f.point).value->pathingFlags == 0x82
+        && reopened.VerifyTerrainPathingForSave().Succeeded(), "project reopen can erase its own saved restriction");
+    const auto erasedDraft = *reopened.SerializePathingRestrictionDraft().value;
+    Require(erasedDraft[3] == std::byte{3} && reopened.QueryPathingRestrictions().value->totalCells == 0,
+        "zero current A still preserves saved provenance until the map is saved again");
+    Require(reopened.Undo() && reopened.InspectTerrainPoint(f.point).value->pathingFlags == 0x86 && !reopened.IsDirty()
+        && reopened.Redo(), "post-reopen erase participates in exact undo and redo");
+
+    MapDataEditSession bare(MapDocument::FromMembers({}));
+    Require(bare.AttachTerrain(f.w3e).Succeeded() && bare.AttachPathing(savedPathing).Succeeded(), "bare map reopens conservatively");
+    Require(bare.EditTerrain(f.Brush(0x0e, false), std::span(&f.point, 1)).Succeeded()
+        && bare.InspectTerrainPoint(f.point).value->pathingFlags == 0x86 && !bare.IsDirty(),
+        "without a project declaration every original restriction remains protected");
+    for (unsigned mutation = 0; mutation < 5; ++mutation) {
+        auto invalid = savedDraft;
+        const auto count = savedPathing.size() - 16;
+        if (mutation == 0) invalid[4] ^= std::byte{1};
+        if (mutation == 1) invalid[132 + 33] &= ~std::byte{2}; // P|S no longer equals actual source.
+        if (mutation == 2) invalid[132 + count + 33] = std::byte{0};
+        if (mutation == 3) invalid[132 + 2 * count + 33] = std::byte{0};
+        if (mutation == 4) invalid.pop_back();
+        const auto before = bare.SerializePathingRestrictionDraft(); const auto revision = bare.Revision();
+        Require(!bare.SetTerrainAndPathingDraft(f.w3e, savedPathing, invalid).Succeeded()
+            && bare.Revision() == revision && bare.SerializePathingRestrictionDraft().value == before.value
+            && !bare.CanUndo(), "bad APR3 never partially installs protected or saved layers");
+    }
+    std::vector<std::byte> legacyIntent(savedPathing.size() - 16, std::byte{0});
+    legacyIntent[33] = std::byte{4};
+    const auto lateLegacy = EncodePathingRestrictionDraft(f.terrain, savedPathing, savedPathing, legacyIntent);
+    Require(lateLegacy.Succeeded() && lateLegacy.value, "legal conservative APR2 fixture");
+    const auto beforeLate = reopened.SerializePathingRestrictionDraft(); const auto lateRevision = reopened.Revision();
+    Require(!reopened.SetTerrainAndPathingDraft(f.w3e, savedPathing, *lateLegacy.value).Succeeded()
+        && reopened.Revision() == lateRevision && reopened.SerializePathingRestrictionDraft().value == beforeLate.value,
+        "existing terrain history rejects a different protected-source provenance atomically");
 }
 
 void LegacyDeclarationsMigrateWithoutInventingOverlap() {
@@ -223,7 +266,7 @@ void DraftRestoresOnlyWithExactDeclaration() {
         "candidate cannot carry an unmentioned cell");
     Require(reopened.SetTerrainAndPathingDraft(f.w3e, changed, *draft.value).Succeeded(), "typed declaration restores together");
     Require(reopened.InspectTerrainPoint(f.point).value->pathingFlags == 0x86
-        && !reopened.VerifyTerrainPathingForSave().Succeeded(), "restoration retains native save refusal");
+        && reopened.VerifyTerrainPathingForSave().Succeeded(), "valid declaration restores the shared normal save policy");
     Require(reopened.Undo() && reopened.InspectTerrainPoint(f.point).value->pathingFlags == 0x82
         && reopened.Redo(), "restored draft remains one undo transaction");
     Require(reopened.EditTerrain(f.Brush(0x0e, false), std::span(&f.point, 1)).Succeeded()
@@ -287,7 +330,7 @@ int main(int argc, char** argv) {
         Require(argc == 1, "unsupported test argument");
         PreviewAndSharedUndoKeepEverySourceBit(); InvalidInputsRejectWholeStroke(); ShapeAndFootprintUsePathingCells();
         OverlappingIntentIsAnIndependentTransaction(); LegacyDeclarationsMigrateWithoutInventingOverlap();
-        SavedSourceRestrictionsSurviveOlderHistory();
+        SavedIntentCanBeWithdrawnWithoutClearingProtectedSource();
         OldPlansCannotOverwriteNewChanges(); DraftRestoresOnlyWithExactDeclaration();
         BlightAndRestrictionDraftsRemainIndependent(); BoundedPreviewReportsOriginalCount();
         std::cout << "PathingRestrictionEditing: 10 scenario groups passed\n"; return 0;

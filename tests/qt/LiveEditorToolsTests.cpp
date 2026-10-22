@@ -1150,7 +1150,7 @@ void LiveEditorToolsTests::BoundaryDraftSavesAndReopensAsProject() {
     request.insert("points", QJsonArray{QJsonObject{{"x", 0}, {"y", 0}}});
     const auto applied = f.tools->Invoke("edit_terrain_stroke", request);
     QVERIFY2(applied.value("ok").toBool(), qPrintable(Explain(applied)));
-    QVERIFY(!applied.value("terrain_pathing_gate").toObject().value("passed").toBool());
+    QCOMPARE(applied.value("terrain_pathing_gate").toObject().value("passed").toBool(), pathing);
     QCOMPARE(f.project.mapDataUndoStack_->count(), 1);
     const auto changed = MapData::SerializeMapTerrain(*f.project.mapEdits_->Terrain()); QVERIFY(changed.Succeeded());
     const auto target = std::filesystem::path(f.outputs.filePath("boundary.forge").toStdWString());
@@ -1162,7 +1162,7 @@ void LiveEditorToolsTests::BoundaryDraftSavesAndReopensAsProject() {
     QCOMPARE(*MapData::SerializeMapTerrain(*edits->Terrain()).value, *changed.value);
     QCOMPARE(edits->InspectTerrainPoint({0, 0}).value->pathingFlags,
         std::optional<std::uint8_t>{static_cast<std::uint8_t>(pathing ? 6 : 2)});
-    QVERIFY(!edits->VerifyTerrainPathingForSave().Succeeded());
+    QCOMPARE(edits->VerifyTerrainPathingForSave().Succeeded(), pathing);
     QFile source(f.source.filePath("map/war3map.w3e")); QVERIFY(source.open(QIODevice::ReadOnly));
     QCOMPARE(source.readAll(), Bytes(*terrain.value));
     QFile originalPathing(f.source.filePath("map/war3map.wpm")); QVERIFY(originalPathing.open(QIODevice::ReadOnly));

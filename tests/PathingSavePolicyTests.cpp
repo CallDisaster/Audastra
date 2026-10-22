@@ -346,7 +346,7 @@ Bytes CurrentPathing(const MapDataEditSession& edits, const Bytes& original) {
     return original;
 }
 
-void RealSessionUndoAndSaveGateStaySeparate() {
+void RealSessionUndoUsesTheSameNormalSavePolicy() {
     const Fixture fixture;
     MapDataEditSession edits(MapDocument::FromMembers({}));
     Require(edits.AttachTerrain(fixture.terrain).Succeeded() && edits.AttachPathing(fixture.pathing).Succeeded(), "attach hand-authored native layouts");
@@ -360,14 +360,15 @@ void RealSessionUndoAndSaveGateStaySeparate() {
     const auto proof = Take(PathingPreservationProof::Prepare(binding, fixture.terrain, fixture.pathing, fixture.terrain, current, draft));
     Require(proof.Kind() == PathingPreservationKind::ExplicitRestrictionCandidate && proof.ChangedCells() == 1,
         "existing APR command is fully explained by the independent policy");
-    Refused(edits.VerifyTerrainPathingForSave(), "MAP_TERRAIN_PATHING_UNVERIFIED");
+    Require(edits.VerifyTerrainPathingForSave().Succeeded(), "normal session accepts a complete declared restriction");
     WorkspaceSnapshot source;
     source.aggregateSha256 = binding.archiveSha256;
     source.files = {{"map/war3map.w3e", fixture.terrain.size(), 0, binding.terrainSha256},
         {"map/war3map.wpm", fixture.pathing.size(), 0, binding.pathingSha256}};
     const auto plan = Take(TerrainSavePlan::Prepare(source, edits));
-    Refused(plan.SaveGate(), "MAP_TERRAIN_PATHING_UNVERIFIED");
-    Refused(plan.VerifyForSave(edits, source.aggregateSha256, edits.Replacements()), "MAP_TERRAIN_PATHING_UNVERIFIED");
+    Require(plan.SaveGate().Succeeded()
+        && plan.VerifyForSave(edits, source.aggregateSha256, edits.Replacements()).Succeeded(),
+        "normal save plan verifies the actual source and complete declaration");
     Require(edits.Undo() && CurrentPathing(edits, fixture.pathing) == fixture.pathing && edits.Redo()
         && CurrentPathing(edits, fixture.pathing) == current, "undo-redo preserves exact source and output bytes");
     binding.revision = edits.Revision();
@@ -378,6 +379,42 @@ void RealSessionUndoAndSaveGateStaySeparate() {
     edits.CommitSaved(MapDocument::FromMembers({}));
     binding.terrainSourceRevision = edits.TerrainSourceRevision();
     Refused(exact.VerifyCurrent(binding, fixture.terrain, fixture.pathing, {}), "PATHING_POLICY_STALE_BINDING");
+}
+
+void SavedIntentWithdrawalRequiresExactProtectedLayers() {
+    const Fixture fixture;
+    MapDataEditSession edits(MapDocument::FromMembers({}));
+    Require(edits.AttachTerrain(fixture.terrain).Succeeded() && edits.AttachPathing(fixture.pathing).Succeeded(), "saved intent fixture");
+    TerrainBrush brush; brush.kind = TerrainBrushKind::PathingRestriction; brush.size = 1; brush.pathingRestrictions = 4;
+    const TerrainStrokePoint point{-464, -592};
+    Require(edits.EditTerrain(brush, std::span(&point, 1), false).Succeeded(), "add a missing source restriction");
+    const auto saved = CurrentPathing(edits, fixture.pathing);
+    edits.CommitSaved(MapDocument::FromMembers({}));
+    brush.value = false;
+    Require(edits.EditTerrain(brush, std::span(&point, 1), false).Succeeded(), "withdraw saved project intent");
+    const auto current = CurrentPathing(edits, saved), draft = Take(edits.SerializePathingRestrictionDraft());
+    Require(current == fixture.pathing && draft[3] == std::byte{3}, "withdrawal keeps exact original bytes and APR3 ownership");
+    auto binding = fixture.binding;
+    binding.pathingSha256 = Take(Sha256(saved)); binding.sessionIdentity = edits.SessionIdentity();
+    binding.revision = edits.Revision(); binding.terrainSourceRevision = edits.TerrainSourceRevision();
+    const auto prepare = [&](const Bytes& output, const Bytes& declaration) {
+        return PathingPreservationProof::Prepare(binding, fixture.terrain, saved, fixture.terrain, output, declaration);
+    };
+    const auto proof = Take(prepare(current, draft));
+    Require(proof.ChangedCells() == 1 && proof.RequiresNativeVerification(), "declared withdrawal has byte proof, not native acceptance");
+    Refused(prepare(current, {}), "PATHING_POLICY_SOURCE_RESTRICTION_REMOVED");
+    auto bad = draft; bad[132 + 17] |= std::byte{4};
+    Refused(prepare(current, bad), "PATHING_DRAFT_IDENTITY"); // P cannot also own a withdrawn bit.
+    bad = draft; bad[132 + 256 + 17] = std::byte{0};
+    Refused(prepare(current, bad), "PATHING_DRAFT_IDENTITY"); // P|S must explain the actual saved source.
+    auto unknown = current; unknown[16 + 17] ^= std::byte{0x80};
+    Refused(prepare(unknown, draft), "PATHING_DRAFT_IDENTITY");
+    edits.CommitSaved(MapDocument::FromMembers({}));
+    Require(Take(edits.SerializePathingRestrictionDraft()).empty() && !edits.IsDirty(), "saving withdrawal retires empty ownership");
+    Require(edits.Undo() && edits.VerifyTerrainPathingForSave().Succeeded()
+        && CurrentPathing(edits, fixture.pathing) == saved, "undo remains valid after the second native save");
+    Require(edits.Redo() && !edits.IsDirty() && CurrentPathing(edits, fixture.pathing) == fixture.pathing,
+        "redo after the second save retains every original byte");
 }
 
 } // namespace
@@ -392,8 +429,9 @@ int main() {
         BindingBudgetsAndCurrentBytesNeverReviveAProof();
         RestrictionProofBindsEveryCurrentByteAndLength();
         CumulativeInputAndDecodedTerrainBudgetBoundariesAreExact();
-        RealSessionUndoAndSaveGateStaySeparate();
-        std::cout << "Pathing preservation policy: 9 scenario groups passed\n";
+        RealSessionUndoUsesTheSameNormalSavePolicy();
+        SavedIntentWithdrawalRequiresExactProtectedLayers();
+        std::cout << "Pathing preservation policy tests passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n'; return 1;

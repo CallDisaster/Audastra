@@ -10,14 +10,21 @@ namespace War3Map::MapData {
 namespace {
 constexpr std::size_t kWpmHeader = 16;
 constexpr std::size_t kDraftHeader = 4 + 64 + 64;
+constexpr std::size_t kMaximumDraftBytes = 64u * 1024u * 1024u;
 constexpr std::array kDraftMagic{std::byte{'A'}, std::byte{'P'}, std::byte{'R'}, std::byte{1}};
 
-Status CheckPair(const TerrainHeader& terrain, std::span<const std::byte> original,
+Status CheckShape(const TerrainHeader& terrain, std::span<const std::byte> original,
     std::span<const std::byte> current) {
     const auto parsed = ParseMapPathing(original, &terrain);
     if (!parsed.Succeeded()) return {parsed.diagnostics};
     if (current.size() != original.size() || !std::equal(original.begin(), original.begin() + kWpmHeader, current.begin()))
         return Status::Failure("Pathing.Edit", "PATHING_DRAFT_SHAPE", "通行草稿与源 WPM 的头或长度不符。");
+    return Status::Ok();
+}
+
+Status CheckPair(const TerrainHeader& terrain, std::span<const std::byte> original,
+    std::span<const std::byte> current) {
+    if (const auto checked = CheckShape(terrain, original, current); !checked.Succeeded()) return checked;
     for (std::size_t i = kWpmHeader; i < original.size(); ++i) {
         const auto before = std::to_integer<std::uint8_t>(original[i]);
         const auto after = std::to_integer<std::uint8_t>(current[i]);
@@ -115,9 +122,10 @@ Result<PathingRestrictionStroke> ApplyPathingRestrictionStroke(
     return result;
 }
 
-Result<PathingRestrictionStroke> ApplyPathingRestrictionStroke(
+static Result<PathingRestrictionStroke> ApplyRestrictionStrokeImpl(
     const TerrainHeader& terrain, std::span<const std::byte> original, std::span<const std::byte> current,
-    std::span<const std::byte> intent, const TerrainBrush& brush, std::span<const TerrainStrokePoint> points) {
+    std::span<const std::byte> intent, std::span<const std::byte> protectedSource,
+    const TerrainBrush& brush, std::span<const TerrainStrokePoint> points) {
     using Output = Result<PathingRestrictionStroke>;
     if (brush.kind != TerrainBrushKind::PathingRestriction || brush.pathingRestrictions == 0
         || (brush.pathingRestrictions & ~kPathingRestrictionBits) != 0)
@@ -126,13 +134,12 @@ Result<PathingRestrictionStroke> ApplyPathingRestrictionStroke(
         return Output::Failure("Pathing.Edit", "TERRAIN_BRUSH_SHAPE", "通行笔刷只支持圆形或方形。");
     if (points.empty() || points.size() > 65536)
         return Output::Failure("Pathing.Edit", "TERRAIN_BRUSH_POINTS", "通行笔划需要 1 到 65536 个落点。");
-    if (const auto checked = CheckPair(terrain, original, current); !checked.Succeeded()) return {{}, checked.diagnostics};
     if (intent.size() != original.size() - kWpmHeader)
         return Output::Failure("Pathing.Edit", "PATHING_DRAFT_SHAPE", "限制意图层与源 WPM 格数不符。");
     for (std::size_t i = 0; i < intent.size(); ++i) {
         const auto mask = std::to_integer<std::uint8_t>(intent[i]);
         if ((mask & ~kPathingRestrictionBits) != 0
-            || ((original[kWpmHeader + i] | intent[i]) & std::byte{kPathingRestrictionBits})
+            || (((protectedSource.empty() ? original[kWpmHeader + i] : protectedSource[i]) | intent[i]) & std::byte{kPathingRestrictionBits})
                 != (current[kWpmHeader + i] & std::byte{kPathingRestrictionBits}))
             return Output::Failure("Pathing.Edit", "PATHING_DRAFT_IDENTITY", "限制意图层不能解释当前 WPM，未应用笔划。");
     }
@@ -162,7 +169,8 @@ Result<PathingRestrictionStroke> ApplyPathingRestrictionStroke(
             if (nextIntent == oldIntent) continue;
             output.intent[cell] = static_cast<std::byte>(nextIntent);
             const auto after = static_cast<std::uint8_t>((before & ~kPathingRestrictionBits)
-                | (std::to_integer<std::uint8_t>(original[index]) & kPathingRestrictionBits) | nextIntent);
+                | (std::to_integer<std::uint8_t>(protectedSource.empty() ? original[index] : protectedSource[cell])
+                    & kPathingRestrictionBits) | nextIntent);
             if (after != before) {
                 if (output.bytes.empty()) output.bytes.assign(current.begin(), current.end());
                 output.bytes[index] = static_cast<std::byte>(after);
@@ -175,6 +183,46 @@ Result<PathingRestrictionStroke> ApplyPathingRestrictionStroke(
         }
     }
     return Output::Success(std::move(output));
+}
+
+Result<PathingRestrictionStroke> ApplyPathingRestrictionStroke(
+    const TerrainHeader& terrain, std::span<const std::byte> original, std::span<const std::byte> current,
+    std::span<const std::byte> intent, const TerrainBrush& brush, std::span<const TerrainStrokePoint> points) {
+    if (const auto checked = CheckPair(terrain, original, current); !checked.Succeeded()) return {{}, checked.diagnostics};
+    return ApplyRestrictionStrokeImpl(terrain, original, current, intent, {}, brush, points);
+}
+
+Status VerifyPathingRestrictionLayers(const TerrainHeader& terrain,
+    std::span<const std::byte> original, std::span<const std::byte> current,
+    std::span<const std::byte> protectedSource, std::span<const std::byte> savedIntent,
+    std::span<const std::byte> intent) {
+    if (const auto checked = CheckShape(terrain, original, current); !checked.Succeeded()) return checked;
+    const auto count = original.size() - kWpmHeader;
+    if (protectedSource.size() != count || savedIntent.size() != count || intent.size() != count)
+        return Status::Failure("Pathing.Edit", "PATHING_DRAFT_SHAPE", "受保护来源及保存前后意图的格数与 WPM 不符。");
+    const auto mask = std::byte{kPathingRestrictionBits};
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto before = original[kWpmHeader + i], after = current[kWpmHeader + i];
+        if (((protectedSource[i] | savedIntent[i] | intent[i]) & ~mask) != std::byte{0}
+            || (protectedSource[i] | savedIntent[i]) != (before & mask)
+            || (protectedSource[i] | intent[i]) != (after & mask)
+            || ((before ^ after) & ~std::byte{kPathingRestrictionBits | 0x20}) != std::byte{0}) {
+            auto result = Status::Failure("Pathing.Edit", "PATHING_DRAFT_IDENTITY",
+                "通行分层与实际来源或候选不符；不能撤回原有/重叠限制，也不能改动未知位。");
+            result.diagnostics.front().origin = OriginSpan{"war3map.wpm", kWpmHeader + i, 1, {}};
+            return result;
+        }
+    }
+    return Status::Ok();
+}
+
+Result<PathingRestrictionStroke> ApplyPathingRestrictionStroke(
+    const TerrainHeader& terrain, std::span<const std::byte> original, std::span<const std::byte> current,
+    std::span<const std::byte> protectedSource, std::span<const std::byte> savedIntent,
+    std::span<const std::byte> intent, const TerrainBrush& brush, std::span<const TerrainStrokePoint> points) {
+    const auto checked = VerifyPathingRestrictionLayers(terrain, original, current, protectedSource, savedIntent, intent);
+    if (!checked.Succeeded()) return {{}, checked.diagnostics};
+    return ApplyRestrictionStrokeImpl(terrain, original, current, intent, protectedSource, brush, points);
 }
 
 Result<std::vector<std::byte>> EncodePathingRestrictionDraft(
@@ -231,6 +279,11 @@ Result<std::vector<std::byte>> DecodePathingRestrictionDraft(
     const TerrainGridSnapshot& terrain, std::span<const std::byte> original,
     std::span<const std::byte> current, std::span<const std::byte> draft) {
     using Output = Result<std::vector<std::byte>>;
+    if (draft.size() >= 4 && draft[3] == std::byte{3}) {
+        auto layers = DecodePathingRestrictionLayers(terrain, original, current, draft);
+        if (!layers.Succeeded()) return {{}, std::move(layers.diagnostics)};
+        return Output::Success(std::move(layers.value->intent));
+    }
     if (const auto checked = CheckPair(terrain.header, original, current); !checked.Succeeded()) return {{}, checked.diagnostics};
     if (draft.size() >= 4 && draft[3] == std::byte{2}) {
         auto expected = Header(terrain, original);
@@ -253,6 +306,61 @@ Result<std::vector<std::byte>> DecodePathingRestrictionDraft(
     if (!encoded.value || encoded.value->empty() || !std::equal(draft.begin(), draft.end(), encoded.value->begin(), encoded.value->end()))
         return DraftMismatch(terrain.header, encoded.value ? std::span<const std::byte>(*encoded.value) : std::span<const std::byte>{}, draft);
     return Output::Success(std::vector<std::byte>(encoded.value->begin() + kDraftHeader, encoded.value->end()));
+}
+
+Result<std::vector<std::byte>> EncodePathingRestrictionDraft(
+    const TerrainGridSnapshot& terrain, std::span<const std::byte> original,
+    std::span<const std::byte> current, std::span<const std::byte> protectedSource,
+    std::span<const std::byte> savedIntent, std::span<const std::byte> intent) {
+    using Output = Result<std::vector<std::byte>>;
+    const auto checked = VerifyPathingRestrictionLayers(terrain.header, original, current, protectedSource, savedIntent, intent);
+    if (!checked.Succeeded()) return {{}, checked.diagnostics};
+    if (std::none_of(savedIntent.begin(), savedIntent.end(), [](std::byte value) { return value != std::byte{0}; }))
+        return EncodePathingRestrictionDraft(terrain, original, current, intent);
+    if (intent.size() > (kMaximumDraftBytes - kDraftHeader) / 3)
+        return Output::Failure("Pathing.Edit", "PATHING_DRAFT_BUDGET", "完整通行来源分层超过 64 MiB 工程声明预算。");
+    auto bytes = Header(terrain, original);
+    if (!bytes.Succeeded()) return bytes;
+    (*bytes.value)[3] = std::byte{3};
+    bytes.value->reserve(kDraftHeader + 3 * intent.size());
+    for (const auto layer : {protectedSource, savedIntent, intent})
+        bytes.value->insert(bytes.value->end(), layer.begin(), layer.end());
+    return bytes;
+}
+
+Result<PathingRestrictionLayers> DecodePathingRestrictionLayers(
+    const TerrainGridSnapshot& terrain, std::span<const std::byte> original,
+    std::span<const std::byte> current, std::span<const std::byte> draft) {
+    using Output = Result<PathingRestrictionLayers>;
+    if (const auto checked = CheckShape(terrain.header, original, current); !checked.Succeeded()) return {{}, checked.diagnostics};
+    const auto count = original.size() - kWpmHeader;
+    if (draft.size() >= 4 && draft[3] == std::byte{3}) {
+        if (count > (kMaximumDraftBytes - kDraftHeader) / 3 || draft.size() != kDraftHeader + 3 * count)
+            return Output::Failure("Pathing.Edit", "PATHING_DRAFT_SHAPE", "APR3 格数、长度或声明预算无效。");
+        auto header = Header(terrain, original);
+        if (!header.Succeeded()) return {{}, std::move(header.diagnostics)};
+        (*header.value)[3] = std::byte{3};
+        if (!std::equal(header.value->begin(), header.value->end(), draft.begin()))
+            return Output::Failure("Pathing.Edit", "PATHING_DRAFT_IDENTITY", "APR3 不属于当前实际源 W3E/WPM。");
+        const auto protectedSource = draft.subspan(kDraftHeader, count);
+        const auto savedIntent = draft.subspan(kDraftHeader + count, count);
+        const auto intent = draft.subspan(kDraftHeader + 2 * count, count);
+        const auto checked = VerifyPathingRestrictionLayers(terrain.header, original, current, protectedSource, savedIntent, intent);
+        if (!checked.Succeeded()) return {{}, checked.diagnostics};
+        if (std::none_of(savedIntent.begin(), savedIntent.end(), [](std::byte value) { return value != std::byte{0}; }))
+            return Output::Failure("Pathing.Edit", "PATHING_DRAFT_IDENTITY", "APR3 必须记录已保存的本工程意图；未保存声明沿用 APR2。");
+        return Output::Success({{protectedSource.begin(), protectedSource.end()}, {savedIntent.begin(), savedIntent.end()},
+            {intent.begin(), intent.end()}});
+    }
+    auto decoded = DecodePathingRestrictionDraft(terrain, original, current, draft);
+    if (!decoded.Succeeded()) return {{}, std::move(decoded.diagnostics)};
+    PathingRestrictionLayers layers;
+    layers.intent = std::move(*decoded.value);
+    layers.savedIntent.resize(count);
+    layers.protectedSource.reserve(count);
+    for (std::size_t i = kWpmHeader; i < original.size(); ++i)
+        layers.protectedSource.push_back(original[i] & std::byte{kPathingRestrictionBits});
+    return Output::Success(std::move(layers));
 }
 
 } // namespace War3Map::MapData

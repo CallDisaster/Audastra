@@ -62,8 +62,12 @@ Result<TerrainPatch> TerrainPatchCodec::Seal(const MapDocument& original,
         if (!edited.Succeeded()) return {{}, edited.diagnostics};
     }
     // 净结果必须只来自这些笔划；不能夹带任何地图数据字段或任意 WPM 覆盖。
-    if (current.current_ != replay.current_ || current.pathing_ != replay.pathing_)
-        return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_REPLAY_MISMATCH", "当前地图成员或 WPM 不能由原始地形命令完整重放。");
+    if (current.current_ != replay.current_ || current.pathing_ != replay.pathing_
+        || !current.pathingProtected_ || !current.originalPathingRestrictions_ || !current.pathingRestrictions_
+        || *current.pathingProtected_ != *replay.pathingProtected_
+        || *current.originalPathingRestrictions_ != *replay.originalPathingRestrictions_
+        || *current.pathingRestrictions_ != *replay.pathingRestrictions_)
+        return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_REPLAY_MISMATCH", "当前地图成员、WPM或通行限制归属不能由原始地形命令完整重放。");
     const auto replayTerrain = SerializeMapTerrain(*replay.terrain_);
     const auto currentTerrain = SerializeMapTerrain(*current.terrain_);
     if (!replayTerrain.Succeeded() || !replayTerrain.value) return {{}, replayTerrain.diagnostics};

@@ -317,6 +317,64 @@ void WaterThresholdsUseDepthAndStrictCoverage() {
     }
 }
 
+void RestrictionAndTerrainChangesUseIndependentSaveChecks() {
+    Directory directory;
+    enum class Edit { Height, EqualTexture, Water, CrossingWater, DifferentTexture };
+    unsigned count = 0;
+    for (const auto edit : {Edit::Height, Edit::EqualTexture, Edit::Water, Edit::CrossingWater, Edit::DifferentTexture})
+        for (const bool restrictionFirst : {false, true}) {
+            const bool wet = edit == Edit::Water || edit == Edit::CrossingWater;
+            const bool allowed = edit != Edit::CrossingWater && edit != Edit::DifferentTexture;
+            Fixture fixture(wet);
+            const auto name = std::to_string(count++);
+            const auto source = fixture.Write(directory.path / (name + ".w3x"));
+            MapDataEditSession edits(MapDocument::FromMembers({})); fixture.Attach(edits);
+            const TerrainStrokePoint point{512, 512};
+            const auto paintRestriction = [&] {
+                TerrainBrush brush; brush.kind = TerrainBrushKind::PathingRestriction;
+                brush.size = 1; brush.pathingRestrictions = 0x0e; brush.value = true;
+                Take(edits.EditTerrain(brush, std::span(&point, 1), false));
+            };
+            if (restrictionFirst) paintRestriction();
+            if (edit == Edit::Height) {
+                TerrainBrush brush; brush.kind = TerrainBrushKind::Raise; brush.radius = 0; brush.strength = 4;
+                Take(edits.EditTerrain(brush, std::span(&point, 1), false));
+            } else if (edit == Edit::EqualTexture || edit == Edit::DifferentTexture) {
+                fixture.Paint(edits, edit == Edit::EqualTexture ? "Tg02" : "Tg03");
+            } else {
+                fixture.Water(edits, edit == Edit::Water ? 80.0f : 51.75f);
+            }
+            if (!restrictionFirst) paintRestriction();
+            const auto plan = Take(TerrainSavePlan::PrepareForSave(source, edits, {}));
+            Require(plan.SaveGate().Succeeded() == allowed,
+                "declared restrictions compose with proven terrain changes but cannot authorize changed terrain pathing");
+            Require(Take(source.ReadMember("war3map.w3e")) == fixture.terrain
+                && Take(source.ReadMember("war3map.wpm")) == fixture.pathing, "combined edits keep original source bytes");
+            if (!allowed) {
+                Require(!plan.VerifyForSave(edits, source.SourceSha256(), edits.Replacements()).Succeeded(),
+                    "restriction declaration does not waive changed water depth or material properties");
+                continue;
+            }
+            Check(plan.VerifyForSave(edits, source.SourceSha256(), edits.Replacements()));
+            Require(plan.Replacements().size() == 2, "one normal-save plan includes W3E and WPM");
+            const auto saved = Take(MapArchiveSession::Open(Take(source.SaveCandidate(
+                directory.path / (name + "-saved.w3x"), plan.Replacements())).path));
+            Check(plan.VerifyReadback(saved));
+            auto expected = fixture.pathing;
+            expected[16 + 16 * 32 + 16] |= std::byte{0x0e};
+            Require(Take(saved.ReadMember("war3map.wpm")) == expected,
+                "combined save changes only declared restrictions and keeps all protected and unknown bits");
+            Require(Take(saved.ReadMember("war3map.w3e")) == Take(SerializeMapTerrain(*edits.Terrain()))
+                && Take(saved.ReadMember("war3map.w3e")) != fixture.terrain, "combined save writes the actual edited terrain");
+            Require(Take(saved.ReadMember("war3map.shd")) == Text("author-shadow")
+                && Take(saved.ReadMember("war3map.mmp")) == Text("author-markers"), "combined save preserves derived members");
+            auto changedOutput = edits.Replacements();
+            changedOutput.push_back({"TerrainArt/Terrain.slk", GroundTable("0")});
+            Require(!plan.VerifyFrozenOutput(source.SourceSha256(), changedOutput).Succeeded(),
+                "combined save still rejects a changed final material source");
+        }
+}
+
 void FinalResourcesAndGameWinnersAreRechecked() {
     Directory directory; Fixture fixture;
     const auto source = fixture.Write(directory.path / "source.w3x");
@@ -436,6 +494,7 @@ int main() {
         UnresolvedGroundIndicesCannotChangeThroughPaletteEdits();
         DifferentOrUnavailablePropertiesRefuse();
         WaterThresholdsUseDepthAndStrictCoverage();
+        RestrictionAndTerrainChangesUseIndependentSaveChecks();
         FinalResourcesAndGameWinnersAreRechecked();
         StoredAndDecodedBudgetsShareTheCallerAllowance();
         CliffRefinementRequiresTheSameBlockingOutline();

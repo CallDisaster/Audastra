@@ -329,6 +329,11 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
             return fail(tr("REPACK_TERRAIN_PATHING_UNVERIFIED"),
                 tr("地形变化尚无可验证的通行性更新；地图候选未写出。请先撤销这类地形笔划。"));
         }
+        auto restrictions = mapEdits_->SerializePathingRestrictionDraft();
+        AddDiagnostics(restrictions.diagnostics);
+        if (!restrictions.Succeeded() || !restrictions.value) return nullptr;
+        if (!restrictions.value->empty())
+            job->pathingRestrictionDraft = std::make_shared<const std::vector<std::byte>>(std::move(*restrictions.value));
         for (auto& member : mapEdits_->Replacements()) {
             const auto key = CanonicalMember(member.name);
             if (key == "war3map.w3r" || key == "war3map.w3c") auxiliarySaveMembers.push_back(member);

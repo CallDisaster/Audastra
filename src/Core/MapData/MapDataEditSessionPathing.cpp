@@ -10,7 +10,8 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PreparePathi
         return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "MAP_PATHING_UNAVAILABLE", "通行限制需要唯一且可解析的源 W3E/WPM。");
     if (terrain_->header.version != 11)
         return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "MAP_TERRAIN_READ_ONLY", "新版地形只读，不能编辑关联通行限制。");
-    auto result = ApplyPathingRestrictionStroke(terrain_->header, *pathingOriginal_, *pathing_, *pathingRestrictions_, brush, points);
+    auto result = ApplyPathingRestrictionStroke(terrain_->header, *pathingOriginal_, *pathing_,
+        *pathingProtected_, *originalPathingRestrictions_, *pathingRestrictions_, brush, points);
     if (!result.Succeeded() || !result.value) return {{}, std::move(result.diagnostics)};
     Command command;
     if (!result.value->bytes.empty()) {
@@ -27,7 +28,8 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PreparePathi
     prepared.sourceRevision_ = terrainSourceRevision_;
     prepared.changed_ = result.value->changed;
     prepared.terrainPathingGate_ = inspectSaveGate ? VerifyTerrainCandidateForSave(terrain_,
-        command.pathingAfter ? command.pathingAfter : pathing_, current_[Index(MapDataKind::Doodads)])
+        command.pathingAfter ? command.pathingAfter : pathing_, current_[Index(MapDataKind::Doodads)], nullptr,
+        (command.restrictionAfter ? command.restrictionAfter : pathingRestrictions_).get())
         : Status::Failure("MapData.Edit", "TERRAIN_SAVE_GATE_NOT_INSPECTED", "此落笔尚未检查地形保存资格。");
     prepared.brush_ = brush; prepared.points_.assign(points.begin(), points.end());
     prepared.followDoodads_ = followDoodads; // 不改地形，也不移动装饰物。
@@ -39,7 +41,8 @@ Result<std::vector<std::byte>> MapDataEditSession::SerializePathingRestrictionDr
     if (!pathing_) return Result<std::vector<std::byte>>::Success({});
     if (!terrainOriginal_ || !pathingOriginal_)
         return Result<std::vector<std::byte>>::Failure("MapData.Edit", "PATHING_DRAFT_SOURCE_MISSING", "通行限制草稿没有完整来源。");
-    return EncodePathingRestrictionDraft(*terrainOriginal_, *pathingOriginal_, *pathing_, *pathingRestrictions_);
+    return EncodePathingRestrictionDraft(*terrainOriginal_, *pathingOriginal_, *pathing_,
+        *pathingProtected_, *originalPathingRestrictions_, *pathingRestrictions_);
 }
 
 Result<PathingRestrictionPreview> MapDataEditSession::QueryPathingRestrictions(std::size_t maximumCells) const {

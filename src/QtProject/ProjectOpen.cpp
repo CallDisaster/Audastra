@@ -305,7 +305,8 @@ Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(const std::files
         const bool restrictionDraft = archive.HasMember("overlay/editor/pathing-restrictions.bin");
         if (restrictionDraft != manifest.contains("pathingRestrictions")
             || (restrictionDraft && (!manifest["pathingRestrictions"].isDouble()
-                || (manifest["pathingRestrictions"].toDouble() != 1 && manifest["pathingRestrictions"].toDouble() != 2)
+                || (manifest["pathingRestrictions"].toDouble() != 1 && manifest["pathingRestrictions"].toDouble() != 2
+                    && manifest["pathingRestrictions"].toDouble() != 3)
                 || (manifest["pathingRestrictions"].toDouble() == 1 && !pathingOverlay) || !pathingAttached)))
             return fail(QObject::tr("工程附加通行限制声明缺失、版本未知或没有对应 WPM 覆盖"));
         if (terrainOverlay || pathingOverlay || restrictionDraft) {

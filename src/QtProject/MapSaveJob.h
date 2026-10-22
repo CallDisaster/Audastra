@@ -6,11 +6,13 @@
 #include <QString>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace War3Map::MapData { class TerrainSavePlan; }
 namespace War3Map::Services { class TerrainMinimapSave; class TerrainMinimapPreserveGuard; }
@@ -38,6 +40,8 @@ struct MapSaveJob final : Services::MapSaveTask {
     std::optional<MapSaveRevisionBinding> preparedRevision;
     // 与发布前闭包共享同一冻结计划；无状态表示尚未执行本次领域回读。
     std::shared_ptr<const MapData::TerrainSavePlan> terrainSavePlan;
+    // 与本次来源和编辑修订一同冻结；worker 不从 WPM 差分反推本工程限制。
+    std::shared_ptr<const std::vector<std::byte>> pathingRestrictionDraft;
     // 单次请求只冻结枚举和路径；完整捕获/生成及会话复核均在worker执行。
     Services::TerrainMinimapSaveChoice minimapChoice = Services::TerrainMinimapSaveChoice::Preserve;
     std::filesystem::path minimapGameRoot;

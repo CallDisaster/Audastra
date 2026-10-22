@@ -123,7 +123,7 @@ std::size_t Reservation(std::size_t sourceBytes, std::size_t w3eBytes, std::size
     Charge(decoded, w3eBytes, 2); Charge(decoded, w3eBytes / 7, sizeof(MapData::TerrainVertex) + sizeof(MapData::TerrainTile));
     // 精确捕获返回的8成员正文最多3×capacity；上游reader表/解码scratch单独受既有硬限。
     // inspection5成员原/现与WPM替换共存，proof的
-    // 原/现WPM、共享A、APR2编码/解码/剥离副本及task append预留合计12×source；两倍terrain
+    // 原/现WPM、共享A、APR编码/分层解码/剥离副本及task append预留合计12×source；两倍terrain
     // 顶点/tiles/原字临时上界覆盖唯一parser与proof阶段，不只计最终retained。
     std::size_t bytes = kMetadataAndHashReserve; Charge(bytes, sourceBytes, 12); Charge(bytes, decoded, 2); Charge(bytes, taskBytes); Charge(bytes, prefixBytes, 2);
     return bytes;
@@ -209,7 +209,7 @@ Result<std::shared_ptr<const TerrainPathingRestrictionCandidate>> TerrainPathing
         Source(task, false);
         auto result = Output::Success(std::move(candidate));
         result.diagnostics.push_back({DiagnosticSeverity::Info, kSubsystem, "PATHING_CANDIDATE_OFFLINE_ONLY",
-            "仅离线WPM附加限制候选；普通保存门未放开，未取得原版或游戏验证。工作字节预算不含归档reader内部表或进程RSS。", std::nullopt});
+            "本结果仅为离线WPM限制候选；正式保存仍须通过共享保存计划，未取得原版或游戏验证。工作字节预算不含归档reader内部表或进程RSS。", std::nullopt});
         return result;
     } catch (Failure& failure) { return {std::nullopt, std::move(failure.diagnostics)}; }
     catch (const std::bad_alloc&) { return Output::Failure(kSubsystem, "PATHING_CANDIDATE_ALLOCATION", "准备分配失败，不返回部分候选。"); }

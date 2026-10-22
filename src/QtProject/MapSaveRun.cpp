@@ -114,13 +114,14 @@ Status PrepareWorkerMinimapInputs(MapSaveJob& job, std::unique_ptr<MapData::MapD
     for (auto& member : *native.value) if (member.present) nativeMembers.push_back({member.name, std::move(member.bytes)});
     // 依赖明确名字捕获，DOO未列在(listfile)中也不能被误认成缺失。
     edits = std::make_unique<MapData::MapDataEditSession>(MapDocument::FromMembers(nativeMembers));
+    std::vector<std::byte> sourceTerrain, sourcePathing;
     {
         const std::array<std::string, 2> names{"war3map.w3e", "war3map.wpm"};
         ArchiveExactMemberLimits limits;
         // 同一4MiB单成员帽也覆盖WPM：允许域最多65536 tiles，其WPM至多
         // 65536×16 cells+16字节头，小于此上限；没有放宽原Capture累计额度。
         limits.memberCount = names.size(); limits.memberBytes = maximumW3e; limits.totalBytes = maximumRaw;
-        const auto captured = job.archive->CaptureExactMembers(names, limits);
+        auto captured = job.archive->CaptureExactMembers(names, limits);
         if (!captured.Succeeded() || !captured.value) return {captured.diagnostics};
         if (!(*captured.value)[0].present || !(*captured.value)[1].present)
             return reject("MINIMAP_SAVE_SOURCE", "worker重建必须准确读到原W3E和WPM，不能把未知或缺失当作空来源。");
@@ -128,6 +129,10 @@ Status PrepareWorkerMinimapInputs(MapSaveJob& job, std::unique_ptr<MapData::MapD
         if (!terrain.Succeeded()) return terrain;
         const auto pathing = edits->AttachPathing((*captured.value)[1].bytes);
         if (!pathing.Succeeded()) return pathing;
+        if (job.pathingRestrictionDraft) {
+            sourceTerrain = std::move((*captured.value)[0].bytes);
+            sourcePathing = std::move((*captured.value)[1].bytes);
+        }
     } // 在SetTerrain/Capture/Build之前释放本轮源raw临时缓冲。
     const MemberReplacement* terrainOutput = nullptr;
     const MemberReplacement* pathingOutput = nullptr;
@@ -146,7 +151,12 @@ Status PrepareWorkerMinimapInputs(MapSaveJob& job, std::unique_ptr<MapData::MapD
     }
     if (terrainOutput && terrainOutput->data.size() > maximumW3e)
         return reject("MINIMAP_SAVE_BUDGET", "worker地形输入超过既有4MiB地形额度。");
-    if (terrainOutput) {
+    if (job.pathingRestrictionDraft) {
+        const auto restored = edits->SetTerrainAndPathingDraft(
+            terrainOutput ? terrainOutput->data : sourceTerrain,
+            pathingOutput ? pathingOutput->data : sourcePathing, *job.pathingRestrictionDraft);
+        if (!restored.Succeeded()) return restored;
+    } else if (terrainOutput) {
         const auto restored = pathingOutput ? edits->SetTerrainAndPathing(terrainOutput->data, pathingOutput->data)
                                             : edits->SetTerrain(terrainOutput->data);
         if (!restored.Succeeded()) return restored;

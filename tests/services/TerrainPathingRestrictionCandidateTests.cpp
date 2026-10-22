@@ -142,8 +142,9 @@ void OriginalMembersSurviveOnlyWpmChanges() {
         Require(prepared->Proof().Kind() == PathingPreservationKind::ExplicitRestrictionCandidate && prepared->Proof().ChangedCells() == 1, "消费真实proof");
         for (std::size_t i = 5; i < 8; ++i) Require(prepared->SourceMembers()[i].present == (derived != 0), "empty与Missing存在性不同");
         if (derived == 2) Require(prepared->SourceMembers()[5].byteSize == 0, "真实空SHD保有长度身份");
-        Refused(f.edits->VerifyTerrainPathingForSave(), "MAP_TERRAIN_PATHING_UNVERIFIED");
-        auto ordinary = Take(TerrainSavePlan::Prepare(f.source, *f.edits)); Refused(ordinary.SaveGate(), "MAP_TERRAIN_PATHING_UNVERIFIED");
+        Require(f.edits->VerifyTerrainPathingForSave().Succeeded(), "完整声明也可进入普通保存");
+        auto ordinary = Take(TerrainSavePlan::Prepare(f.source, *f.edits));
+        Require(ordinary.SaveGate().Succeeded(), "普通保存计划独立验证声明，不借离线候选授权");
         task.replacements.push_back(prepared->Replacement()); Require(prepared->VerifyCurrent(task, *f.edits).Succeeded(), "来源和当前完整inspection复核");
         const auto written = Take(task.archive->SaveCandidate(task.target, task.replacements));
         const auto saved = Take(task.archive->AfterSave(written, task.replacements));

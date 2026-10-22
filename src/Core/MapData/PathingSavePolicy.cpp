@@ -89,10 +89,14 @@ Result<PathingPreservationProof> PathingPreservationProof::Prepare(const Pathing
         proof.terrainBytes_ = currentTerrain.size(); proof.pathingBytes_ = currentPathing.size();
         proof.declarationBytes_ = restrictionDraft.size();
         proof.cells_.reserve(limits.maximumReportedCells);
+        // APR3 用完整 P/S/A 解释已保存的本工程位；没有这份来源绑定声明，
+        // 任何来源限制清除仍拒绝。不能由 source/new 的差分猜出 P。
+        const bool layered = restrictionDraft.size() >= 4 && restrictionDraft[3] == std::byte{3};
+        if (layered) (void)Take(DecodePathingRestrictionLayers(*terrain.Snapshot(), originalPathing, currentPathing, restrictionDraft));
         for (std::size_t offset = kPathingHeaderBytes; offset < originalPathing.size(); ++offset) {
             const auto before = std::to_integer<std::uint8_t>(originalPathing[offset]);
             const auto after = std::to_integer<std::uint8_t>(currentPathing[offset]);
-            if ((before & kPathingRestrictionBits & ~after) != 0)
+            if (!layered && (before & kPathingRestrictionBits & ~after) != 0)
                 Require(Reject("PATHING_POLICY_SOURCE_RESTRICTION_REMOVED", "候选清除了来源原有的通行限制。", offset));
             if (((before ^ after) & ~kPathingRestrictionBits) != 0)
                 Require(Reject("PATHING_POLICY_UNSUPPORTED_BITS", "候选改动了附加限制以外的原始位，包括荒芜或未知位。", offset));
@@ -110,7 +114,8 @@ Result<PathingPreservationProof> PathingPreservationProof::Prepare(const Pathing
                 proof.cells_.push_back({x, y, before, after, static_cast<std::uint8_t>(after & ~before)});
         }
         if (!restrictionDraft.empty()) {
-            if (proof.changedCells_ == 0 && (restrictionDraft.size() < 4 || restrictionDraft[3] != std::byte{2}))
+            if (proof.changedCells_ == 0 && (restrictionDraft.size() < 4
+                || (restrictionDraft[3] != std::byte{2} && restrictionDraft[3] != std::byte{3})))
                 Require(Reject("PATHING_POLICY_REDUNDANT_DECLARATION", "WPM 与来源原字相同，不能夹带附加限制声明或伪造脏状态。"));
             // 声明规则只有现有 APR 编解码这一处；不复制它的格式、SHA 或掩码验证。
             const auto stripped = Take(StripPathingRestrictionDraft(*terrain.Snapshot(), originalPathing, currentPathing, restrictionDraft));
