@@ -10,6 +10,7 @@
 #include "War3MapCore/MapData/MapPlacements.h"
 #include "War3MapCore/MapData/MapTerrain.h"
 #include "War3MapCore/MapData/TerrainPathingResources.h"
+#include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/Services/MapSaveService.h"
 #include "War3MapCore/Services/MapCreateService.h"
 #include "War3MapCore/Services/MapEditSaveService.h"
@@ -946,7 +947,7 @@ void TestBlightSaveRejectsStaleOrMissingTerrainPair() {
     Require(!std::filesystem::exists(request.targetCandidate), "failed blight saves must not publish a candidate");
 }
 
-void TestGenericTerrainSaveRejectsUnverifiedCliffChange() {
+void TestOptionalRealCliffDraftRequiresPathingRebuildQualification() {
     // 真实地图来源由专用验收运行显式提供；CI 无地图资产时仍执行上面的合成门禁。
     const DWORD capacity = GetEnvironmentVariableW(L"FORGE_D1_PARITY_MAP", nullptr, 0);
     if (capacity == 0) return;
@@ -960,27 +961,42 @@ void TestGenericTerrainSaveRejectsUnverifiedCliffChange() {
     Require(opened.Succeeded() && opened.value, "open isolated terrain map");
     auto terrain = opened.value->ReadMember("war3map.w3e");
     Require(terrain.Succeeded() && terrain.value, "read isolated W3E");
-    auto terrainSha = Sha256(*terrain.value);
-    Require(terrainSha.Succeeded() && terrainSha.value, "hash isolated W3E");
-    MapEditSaveRequest request;
-    request.sourceMap = mapPath;
-    request.targetCandidate = directory.Path() / "unverified-cliff-edit.w3x";
-    request.toolRoot = directory.Path() / "unused-tool";
-    request.gameRoot = directory.Path() / "unused-game";
-    request.expectedSourceSha256 = opened.value->SourceSha256();
-    request.expectedTerrainSha256 = *terrainSha.value;
-    MapEditTerrainStroke stroke;
-    stroke.brush.kind = MapData::TerrainBrushKind::CliffLevel;
-    stroke.brush.radius = 1;
-    stroke.brush.levelDelta = 1; // 干地高度不变证明不能放宽悬崖层级变化。
-    stroke.pointSpace = MapEditPointSpace::TerrainVertex;
-    stroke.points.push_back({10, 10});
-    request.terrainStrokes.push_back(std::move(stroke));
-    auto result = SaveMapEditCandidate(request);
-    Require(!result.Succeeded() && HasCode(result.diagnostics, "MAP_TERRAIN_PATHING_UNVERIFIED"),
-        "generic terrain save must keep unverified cliff/pathing changes closed");
-    Require(!std::filesystem::exists(request.targetCandidate), "unverified cliff change cannot publish a candidate");
-    std::cout << "Generic terrain cliff change reached WPM safety gate\n";
+    const auto pathing = opened.value->ReadMember("war3map.wpm");
+    Require(pathing.Succeeded() && pathing.value, "read isolated WPM");
+    const auto sourceSha = opened.value->SourceSha256();
+    MapData::MapDataEditSession edits(MapDocument::FromArchive(*opened.value));
+    Require(edits.AttachTerrain(*terrain.value).Succeeded() && edits.AttachPathing(*pathing.value).Succeeded(),
+        "attach isolated terrain/pathing pair before editing");
+    const auto& header = edits.Terrain()->header;
+    Require(header.width > 10 && header.height > 10, "isolated fixture must contain the configured cliff vertex");
+    MapData::TerrainBrush brush; brush.kind = MapData::TerrainBrushKind::CliffLevel;
+    brush.radius = 1; brush.levelDelta = 1;
+    const MapData::TerrainStrokePoint point{header.offset[0] + 10 * MapData::TerrainGridSnapshot::tileSize,
+        header.offset[1] + 10 * MapData::TerrainGridSnapshot::tileSize};
+    Require(edits.EditTerrain(brush, std::span(&point, 1), false).Succeeded() && edits.TerrainDirty(),
+        "create a real cliff draft without changing the source map");
+    const auto revision = edits.Revision();
+    const auto changed = MapData::SerializeMapTerrain(*edits.Terrain());
+    Require(changed.Succeeded() && changed.value, "serialize isolated cliff draft");
+    MapSaveTask task; Require(task.FreezeArchive(*opened.value).Succeeded(), "freeze isolated cliff source");
+    task.target = directory.Path() / "unverified-cliff-edit.w3x"; task.replacements = edits.Replacements();
+    unsigned calls = 0; bool entered = false;
+    task.prepareFinalDerived = [&](MapSaveTask& current) -> Status {
+        ++calls; entered = current.InFinalDerivedStage();
+        // 这里只证明没有真实重建资格时不能沿用旧WPM；具备规则的正式保存走PrepareForSave。
+        const auto plan = MapData::TerrainSavePlan::Prepare(*current.archive, edits);
+        if (!plan.Succeeded() || !plan.value) return {plan.diagnostics};
+        return plan.value->VerifyForSave(edits, current.sourceSha256, current.replacements, current.removals);
+    };
+    MapSaveService::Run(task);
+    Require(calls == 1 && entered && !task.InFinalDerivedStage() && !task.scriptRebuilt,
+        "isolated cliff check uses the actual final stage without claiming script compilation");
+    Require(!task.succeeded && !task.nextSession && HasCode(task.diagnostics, "MAP_TERRAIN_PATHING_UNVERIFIED")
+        && !std::filesystem::exists(task.target), "unqualified cliff draft cannot preserve WPM and publish a candidate");
+    Require(Sha256File(mapPath).value == std::optional(sourceSha) && edits.Revision() == revision
+        && edits.IsDirty() && edits.CanUndo() && MapData::SerializeMapTerrain(*edits.Terrain()).value == changed.value,
+        "final cliff rejection preserves source bytes and the current undoable draft");
+    std::cout << "Isolated cliff draft reached the final WPM qualification gate\n";
 }
 
 void TestMissingMinimapChoiceCannotBroadenTerrainSaveScope() {
@@ -1053,11 +1069,44 @@ void TestMissingMinimapChoiceCannotBroadenTerrainSaveScope() {
         "declared generation cannot produce a no-op terrain candidate");
     request.terrainStrokes[0].brush.kind = MapData::TerrainBrushKind::CliffLevel;
     request.terrainStrokes[0].brush.levelDelta = 1;
+    // 公开保存先准备真实脚本，再进入最终派生。此原创夹具没有工具链，不能用
+    // 早到的工具链失败代替地形门；下面只验证真实最终派生工厂，不伪造脚本成功。
+    auto opened = MapArchiveSession::Open(source);
+    Require(opened.Succeeded() && opened.value, "open original archive for final terrain gate");
+    MapData::MapDataEditSession edits(MapDocument::FromArchive(*opened.value));
+    Require(edits.AttachTerrain(*terrain.value).Succeeded() && edits.AttachPathing(pathing.bytes).Succeeded(),
+        "attach source W3E/WPM before the cliff edit");
+    const MapData::TerrainStrokePoint point{512, 512};
+    Require(edits.EditTerrain(request.terrainStrokes[0].brush, std::span(&point, 1), false).Succeeded()
+        && edits.TerrainDirty(), "apply a real cliff edit without granting pathing save qualification");
+    const auto editRevision = edits.Revision();
+    const auto cliffTerrain = MapData::SerializeMapTerrain(*edits.Terrain());
+    Require(cliffTerrain.Succeeded() && cliffTerrain.value, "serialize current cliff draft for non-mutation check");
     for (const auto choice : {TerrainMinimapSaveChoice::Preserve, TerrainMinimapSaveChoice::GenerateMissingGroundOnly,
             TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly}) {
-        request.minimapChoice = choice;
-        Require(HasCode(SaveMapEditCandidate(request).diagnostics, "MAP_TERRAIN_PATHING_UNVERIFIED"),
-            "optional minimap generation cannot bypass the existing terrain save gate");
+        MapSaveTask task;
+        Require(task.FreezeArchive(*opened.value).Succeeded(), "freeze actual terrain gate source");
+        task.target = request.targetCandidate; task.replacements = edits.Replacements();
+        unsigned calls = 0; bool entered = false;
+        task.prepareFinalDerived = [&](MapSaveTask& current) -> Status {
+            ++calls; entered = current.InFinalDerivedStage();
+            if (choice == TerrainMinimapSaveChoice::Preserve) {
+                const auto plan = MapData::TerrainSavePlan::Prepare(*current.archive, edits);
+                if (!plan.Succeeded() || !plan.value) return {plan.diagnostics};
+                return plan.value->VerifyForSave(edits, current.sourceSha256, current.replacements, current.removals);
+            }
+            const auto prepared = TerrainMinimapSave::Prepare(current, edits, request.gameRoot, choice);
+            return {prepared.diagnostics};
+        };
+        MapSaveService::Run(task);
+        Require(calls == 1 && entered && !task.InFinalDerivedStage() && !task.scriptRebuilt,
+            "terrain factory is checked once in the real final stage without claiming script compilation");
+        Require(!task.succeeded && !task.nextSession && !std::filesystem::exists(task.target)
+            && HasCode(task.diagnostics, "MAP_TERRAIN_PATHING_UNVERIFIED"),
+            "preserving or generating a minimap cannot grant an unverified cliff draft save qualification");
+        Require(edits.Revision() == editRevision && edits.IsDirty() && edits.CanUndo()
+            && MapData::SerializeMapTerrain(*edits.Terrain()).value == cliffTerrain.value,
+            "rejected final derivation preserves the current cliff draft and undo history");
     }
     const auto after = Sha256File(source);
     Require(after.Succeeded() && *after.value == written.value->sha256
@@ -1078,7 +1127,8 @@ void TestMissingMinimapChoiceCannotBroadenTerrainSaveScope() {
     request.minimapChoice = TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly;
     Require(HasCode(SaveMapEditCandidate(request).diagnostics, "MINIMAP_SAVE_NOT_MISSING"),
         "declared missing-only option never overwrites an empty existing MapBLP");
-    Require(!std::filesystem::exists(request.targetCandidate), "present-empty rejection publishes no candidate");
+    Require(!std::filesystem::exists(request.targetCandidate) && Sha256File(presentSource).value == std::optional(present.value->sha256),
+        "present-empty rejection preserves source bytes and publishes no candidate");
 }
 
 void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
@@ -2449,7 +2499,7 @@ int main() {
         TestAutomaticPartialArchivePreservesExistingMinimapOnSave();
         TestProgramExceptionsFailClosedWithoutCollectingPrivateWhat();
         TestBlightSaveRejectsStaleOrMissingTerrainPair();
-        TestGenericTerrainSaveRejectsUnverifiedCliffChange();
+        TestOptionalRealCliffDraftRequiresPathingRebuildQualification();
         TestMissingMinimapChoiceCannotBroadenTerrainSaveScope();
         TestOptionalRealMissingMinimapUsesTheExistingSaveService();
         TestOptionalRealTerrainAndPathingUseNormalSave();
