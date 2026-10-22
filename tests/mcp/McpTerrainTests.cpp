@@ -461,7 +461,9 @@ void TestNativeWaterSaveTransport() {
         auto mixed = stroke;
         mixed[field] = 1;
         args["terrain_strokes"] = QJsonArray{mixed};
-        InvalidParams(server, "save_map_edit_candidate", args);
+        // 通用 schema 验证器不展开 oneOf；准确验证 typed gate 在尝试来源租约前拒绝，
+        // 不能用 missing.w3x 的 SOURCE_LEASE_FAILED 代替不支持字段的拒绝。
+        Code(Call(server, "save_map_edit_candidate", args), "MCP_MAP_EDIT_FIELD_UNSUPPORTED");
     }
     Expect(!std::filesystem::exists(fixture.root / "water-candidate.w3x"),
         "water transport rejection must not produce a partial map");
