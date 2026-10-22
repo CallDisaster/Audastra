@@ -1562,18 +1562,19 @@ void EditorProjectTests::LegacyPathingIntentProjectKeepsStrictCompatibility() {
 
 void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy_data() {
     QTest::addColumn<bool>("special"); QTest::addColumn<bool>("existing");
-    QTest::addColumn<int>("pathingPhase");
-    QTest::newRow("generated") << false << false << 0;
-    QTest::newRow("unsupported-missing") << true << false << 0;
-    QTest::newRow("unsupported-existing") << true << true << 0;
-    QTest::newRow("worker-add-apr2") << false << false << 1;
-    QTest::newRow("worker-withdraw-apr3") << false << false << 2;
-    QTest::newRow("worker-bad-apr-identity") << false << false << 3;
-    QTest::newRow("worker-saved-apr3-and-placement-height") << true << true << 4;
+    QTest::addColumn<int>("pathingPhase"); QTest::addColumn<bool>("injectResource");
+    QTest::newRow("generated") << false << false << 0 << false;
+    QTest::newRow("unsupported-missing") << true << false << 0 << false;
+    QTest::newRow("unsupported-existing") << true << true << 0 << true;
+    QTest::newRow("worker-add-apr2") << false << false << 1 << false;
+    QTest::newRow("worker-withdraw-apr3") << false << false << 2 << false;
+    QTest::newRow("worker-bad-apr-identity") << false << false << 3 << false;
+    QTest::newRow("worker-saved-apr3-and-placement-height") << true << true << 4 << false;
+    QTest::newRow("worker-saved-apr3-height-resource-rejected") << true << true << 4 << true;
 }
 
 void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
-    QFETCH(bool, special); QFETCH(bool, existing); QFETCH(int, pathingPhase);
+    QFETCH(bool, special); QFETCH(bool, existing); QFETCH(int, pathingPhase); QFETCH(bool, injectResource);
     QTemporaryDir root; QVERIFY(root.isValid());
     auto members = DeclaredMissingMinimapQtMembers();
     for (auto& member : members) if (member.name == "war3map.w3i")
@@ -1678,8 +1679,22 @@ void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
     QCOMPARE(job->minimapChoice, Services::TerrainMinimapSaveChoice::Automatic);
     QVERIFY(!job->minimapSave);
     // 新资源通过同一生产 worker 输入触发自动判定，不伪造生成结果。
-    if (existing) job->replacements.push_back({"Fixture\\NewIcon.blp", text("unused resource")});
+    if (injectResource) job->replacements.push_back({"Fixture\\NewIcon.blp", text("unused resource")});
+    const auto revisionBeforeRun = project.mapEdits_->Revision();
+    const auto commandBeforeRun = project.mapEdits_->LastEdit().CommandIdentity();
+    const auto archiveBeforeRun = project.archiveSession_->SourceSha256();
     EditorProject::RunMapSave(*job);
+    if (pathingPhase == 4 && injectResource) {
+        QVERIFY(!job->succeeded && HasReadDiagnostic(*job, "TERRAIN_SAVE_PLAN_HEIGHT_RESOURCE_SCOPE"));
+        QVERIFY(!job->minimapPreserve && !std::filesystem::exists(target));
+        QVERIFY(!project.CommitMapSave(*job));
+        QCOMPARE(project.archiveSession_->SourceSha256(), archiveBeforeRun);
+        QCOMPARE(project.mapEdits_->Revision(), revisionBeforeRun);
+        QCOMPARE(project.mapEdits_->LastEdit().CommandIdentity(), commandBeforeRun);
+        QVERIFY(project.mapEdits_->IsDirty() && project.mapEdits_->CanUndo());
+        QCOMPARE(Sha256File(source).value, sourceSha.value);
+        return;
+    }
     if (pathingPhase == 3) {
         QVERIFY(!job->succeeded && HasReadDiagnostic(*job, "PATHING_DRAFT_IDENTITY"));
         QVERIFY(!job->minimapPreserve && !std::filesystem::exists(target));
