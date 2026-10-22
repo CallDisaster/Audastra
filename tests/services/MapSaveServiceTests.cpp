@@ -33,6 +33,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -67,7 +68,7 @@ bool HasCode(const std::vector<Diagnostic>& diagnostics, std::string_view code) 
 
 class TempDirectory final {
 public:
-    TempDirectory() {
+    explicit TempDirectory(bool preserveOnFailure = false) : preserveOnFailure_(preserveOnFailure) {
         static std::atomic<unsigned> sequence{0};
         path_ = std::filesystem::temp_directory_path() / ("Forge-map-save-service-"
             + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64())
@@ -75,6 +76,7 @@ public:
         Require(std::filesystem::create_directories(path_), "create private test directory");
     }
     ~TempDirectory() {
+        if (preserveOnFailure_ && std::uncaught_exceptions() > 0) return;
         std::error_code error;
         std::filesystem::remove_all(path_, error);
     }
@@ -82,6 +84,7 @@ public:
 
 private:
     std::filesystem::path path_;
+    bool preserveOnFailure_ = false;
 };
 
 std::filesystem::path Source(const TempDirectory& directory) {
@@ -1537,7 +1540,8 @@ void TestOptionalRealTerrainAndPathingUseNormalSave() {
         std::cout << "SKIP terrain/pathing toolchain save: FORGE_YDWE_ROOT / FORGE_WORLD_GAME_ROOT unset\n";
         return;
     }
-    TempDirectory directory;
+    TempDirectory directory(true);
+    std::cout << "terrain toolchain work directory (retained on failure): " << IO::PathUtf8(directory.Path()) << '\n';
     std::filesystem::path evidence;
     const auto evidenceRoot = ObjectV1EnvironmentPath(L"FORGE_TERRAIN_SAVE_EVIDENCE_DIR");
     if (!evidenceRoot.empty()) {
