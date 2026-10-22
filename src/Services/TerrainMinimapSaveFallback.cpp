@@ -163,7 +163,8 @@ Status TerrainMinimapPreserveGuard::VerifyReadback(const MapSaveTask& task, cons
 
 Result<TerrainMinimapAutomaticPreparation> TerrainMinimapSave::PrepareAutomaticOrPreserve(
     const MapSaveTask& task, const MapData::MapDataEditSession& edits,
-    const std::filesystem::path& gameRoot, const TerrainMinimapSaveLimits& limits) {
+    const std::filesystem::path& gameRoot, const TerrainMinimapSaveLimits& limits,
+    std::shared_ptr<const MapData::TerrainSavePlan> existingPlan) {
     using Output = Result<TerrainMinimapAutomaticPreparation>;
     try {
         Preparing(task);
@@ -175,7 +176,7 @@ Result<TerrainMinimapAutomaticPreparation> TerrainMinimapSave::PrepareAutomaticO
         preserve->revision_ = edits.Revision(); preserve->terrainSourceRevision_ = edits.TerrainSourceRevision();
         preserve->members_ = Identities(*task.archive);
 
-        auto generated = PrepareAutomatic(task, edits, gameRoot, limits);
+        auto generated = PrepareAutomatic(task, edits, gameRoot, limits, std::move(existingPlan));
         if (generated.Succeeded() && generated.value) {
             TerrainMinimapAutomaticPreparation result{std::move(*generated.value), {}};
             if (!result.generated && preserve->members_[1].present) {

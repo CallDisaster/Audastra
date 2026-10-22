@@ -133,7 +133,7 @@ add_custom_command(
         "$<TARGET_FILE_DIR:war3-map-core-tests>")
 add_test(NAME core-foundation COMMAND war3-map-core-tests)
 
-foreach(service_test IN ITEMS MapArchiveSession MapBackupInspection ProjectStore EditRevision VerifiedFile ImportTable ResourceResolver MapDocument MapDataEditSession MapDataFieldEditing MapDataPlacementEditing PlacementEditing PlacementCreateDelete PlacementElevationInvariant TerrainPlacementElevationSave TerrainEditing TerrainRampEditing TerrainSavePlan TerrainPathingResources TerrainDerivedCodec PathingRestrictionEditing PathingSavePolicy MapSettings LniMapSettings MapPlacements MapAuxiliary CoreTextIo WorldEditStrings BlpImage BlpOpaqueQuantize BlpJpegEncode)
+foreach(service_test IN ITEMS MapArchiveSession MapBackupInspection ProjectStore EditRevision VerifiedFile ImportTable ResourceResolver MapDocument MapDataEditSession MapDataFieldEditing MapDataPlacementEditing PlacementEditing PlacementCreateDelete PlacementElevationInvariant TerrainPlacementElevationSave TerrainEditing TerrainRampEditing TerrainSavePlan TerrainPathingResources TerrainNativePathing TerrainNativeSave TerrainDerivedCodec PathingRestrictionEditing PathingSavePolicy MapSettings LniMapSettings MapPlacements MapAuxiliary CoreTextIo WorldEditStrings BlpImage BlpOpaqueQuantize BlpJpegEncode)
     add_executable(war3-map-${service_test}-tests ${service_test}Tests.cpp)
     target_link_libraries(war3-map-${service_test}-tests PRIVATE War3MapEditor::Core)
     target_compile_definitions(war3-map-${service_test}-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)

@@ -31,28 +31,30 @@ constexpr std::string_view kTerrainMember = "war3map.w3e";
 constexpr std::string_view kPathingMember = "war3map.wpm";
 std::atomic<std::uint64_t> nextSessionIdentity{1};
 
-// 历史只恢复自身的非限制位与对应 A；受保护来源保持独立，不把已保存 A 当成来源。
+// 历史恢复该笔荒芜与A；自动生成的水/地形位取最近一次真实保存基线。
+// 这样跨水深保存后Undo不会把上一代0x40/0x80重新注入当前WPM。
 std::byte HistoryPathingValue(std::span<const std::byte> bytes, std::span<const std::byte> source,
-    std::span<const std::byte> intent, std::size_t index) {
+    std::span<const std::byte> baseline, std::span<const std::byte> intent, std::size_t index) {
     if (index < 16) return bytes[index];
-    return (bytes[index] & ~std::byte{kPathingRestrictionBits})
+    return (baseline[index] & std::byte{0xd1}) | (bytes[index] & std::byte{0x20})
         | source[index - 16] | intent[index - 16];
 }
 
 bool HistoryPathingMatches(std::span<const std::byte> current, std::span<const std::byte> bytes,
-    std::span<const std::byte> source, std::span<const std::byte> intent) {
-    if (current.size() != bytes.size() || source.size() + 16 != bytes.size() || intent.size() + 16 != bytes.size()) return false;
+    std::span<const std::byte> source, std::span<const std::byte> baseline, std::span<const std::byte> intent) {
+    if (current.size() != bytes.size() || baseline.size() != bytes.size()
+        || source.size() + 16 != bytes.size() || intent.size() + 16 != bytes.size()) return false;
     for (std::size_t i = 0; i < bytes.size(); ++i)
-        if (current[i] != HistoryPathingValue(bytes, source, intent, i)) return false;
+        if (current[i] != HistoryPathingValue(bytes, source, baseline, intent, i)) return false;
     return true;
 }
 
 std::vector<std::byte> HistoryPathing(std::span<const std::byte> bytes,
-    std::span<const std::byte> source, std::span<const std::byte> intent) {
-    if (source.size() + 16 != bytes.size() || intent.size() + 16 != bytes.size())
+    std::span<const std::byte> source, std::span<const std::byte> baseline, std::span<const std::byte> intent) {
+    if (baseline.size() != bytes.size() || source.size() + 16 != bytes.size() || intent.size() + 16 != bytes.size())
         throw std::logic_error("pathing history shape changed");
     std::vector<std::byte> result(bytes.begin(), bytes.end());
-    for (std::size_t i = 16; i < result.size(); ++i) result[i] = HistoryPathingValue(bytes, source, intent, i);
+    for (std::size_t i = 16; i < result.size(); ++i) result[i] = HistoryPathingValue(bytes, source, baseline, intent, i);
     return result;
 }
 } // namespace
@@ -563,10 +565,10 @@ Status MapDataEditSession::Replay(const EditReceipt& receipt, bool forward) {
             ? (forward ? source.restrictionBefore : source.restrictionAfter) : pathingRestrictions_;
         const auto& targetIntent = source.restrictionAfter
             ? (forward ? source.restrictionAfter : source.restrictionBefore) : pathingRestrictions_;
-        if (!pathing_ || !HistoryPathingMatches(*pathing_, *expected, *pathingProtected_, *expectedIntent))
+        if (!pathing_ || !HistoryPathingMatches(*pathing_, *expected, *pathingProtected_, *pathingOriginal_, *expectedIntent))
             return Status::Failure("MapData.Edit", "MAP_EDIT_STALE", "事务涉及的通行性已由其他操作修改；未覆盖新内容");
         command.pathingBefore = *pathing_;
-        command.pathingAfter = HistoryPathing(*target, *pathingProtected_, *targetIntent);
+        command.pathingAfter = HistoryPathing(*target, *pathingProtected_, *pathingOriginal_, *targetIntent);
     }
     if (source.restrictionAfter) {
         const auto& expected = forward ? source.restrictionBefore : source.restrictionAfter;
@@ -594,7 +596,7 @@ void MapDataEditSession::Restore(const Command& command, bool forward) {
     std::optional<std::vector<std::byte>> nextPathing;
     auto nextRestrictions = forward ? command.restrictionAfter : command.restrictionBefore;
     if (command.pathingAfter) nextPathing = HistoryPathing(
-        *(forward ? command.pathingAfter : command.pathingBefore), *pathingProtected_,
+        *(forward ? command.pathingAfter : command.pathingBefore), *pathingProtected_, *pathingOriginal_,
         *(nextRestrictions ? nextRestrictions : pathingRestrictions_));
     for (std::size_t i = 0; i < command.changes.size(); ++i)
         current_[Index(command.changes[i].kind)].swap(next[i]);
@@ -650,20 +652,34 @@ std::vector<std::string> MapDataEditSession::Removals() const {
 }
 
 void MapDataEditSession::CommitSaved(const MapDocument& saved) {
-    // native WPM 合并了 P|A；只更新已保存 A，P 保持来源身份，不从合并结果反推。
-    auto savedRestrictions = pathingRestrictions_;
-    // 计数耗尽后不回绕；地形准备与有修订约束的查询将明确拒绝，不能复活旧候选。
-    if (terrainSourceRevision_ != std::numeric_limits<std::uint64_t>::max()) ++terrainSourceRevision_;
-    original_ = current_;
-    terrainOriginal_ = terrain_;
-    pathingOriginal_ = pathing_;
-    originalPathingRestrictions_.swap(savedRestrictions);
+    CommitSavedBaseline(saved, pathing_, pathingProtected_);
+}
+
+void MapDataEditSession::CommitSavedBaseline(const MapDocument& saved,
+    std::optional<std::vector<std::byte>> pathing,
+    std::shared_ptr<const std::vector<std::byte>> protectedPathing) {
+    // 所有复制在交换前完成，分配失败时连来源代际也保持不变。
+    auto original = current_;
+    auto originalPathing = pathing;
+    std::array<MapDataState, 7> states{};
+    std::array<std::optional<MapMemberState>, 7> preservedSources{};
     for (std::size_t i = 0; i < states_.size(); ++i) {
         const auto& member = saved.Member(static_cast<MapDataKind>(i));
-        states_[i] = member.state;
-        preservedSources_[i].reset();
-        if (!original_[i] && member.state != MapDataState::Missing) preservedSources_[i] = member;
+        states[i] = member.state;
+        if (!original[i] && member.state != MapDataState::Missing) preservedSources[i] = member;
     }
+    static_assert(noexcept(original_.swap(original)));
+    static_assert(noexcept(preservedSources_.swap(preservedSources)));
+    original_.swap(original);
+    pathingOriginal_.swap(originalPathing);
+    pathing_.swap(pathing);
+    pathingProtected_.swap(protectedPathing);
+    states_.swap(states);
+    preservedSources_.swap(preservedSources);
+    terrainOriginal_ = terrain_;
+    // 不从P|A反推来源P，已保存意图S单独保留。
+    originalPathingRestrictions_ = pathingRestrictions_;
+    if (terrainSourceRevision_ != std::numeric_limits<std::uint64_t>::max()) ++terrainSourceRevision_;
 }
 
 MapDocument MapDataEditSession::Snapshot() const {

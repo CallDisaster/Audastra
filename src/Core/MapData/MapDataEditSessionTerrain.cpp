@@ -593,7 +593,7 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
     const std::optional<std::vector<std::byte>>& pathing,
     const std::optional<std::vector<std::byte>>& doodads,
     const TerrainPathingResources* resources, const std::vector<std::byte>* restrictions,
-    const std::optional<std::vector<std::byte>>* units) const {
+    const std::optional<std::vector<std::byte>>* units, bool nativeRebuild) const {
     const auto reject = [](const char* reason) {
         return Status::Failure("MapData.Edit", "MAP_TERRAIN_PATHING_UNVERIFIED", reason);
     };
@@ -632,7 +632,7 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
     }
     const auto& oldHeader = terrainOriginal_->header;
     const auto& newHeader = terrain->header;
-    const bool resourceHeader = resources && oldHeader.version == newHeader.version
+    const bool resourceHeader = (resources || nativeRebuild) && oldHeader.version == newHeader.version
         && oldHeader.version == 11 && oldHeader.mainTileset == newHeader.mainTileset
         && oldHeader.width == newHeader.width && oldHeader.height == newHeader.height
         && std::bit_cast<std::uint64_t>(oldHeader.offset) == std::bit_cast<std::uint64_t>(newHeader.offset)
@@ -649,11 +649,12 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
         const auto& after = terrain->vertices[index];
         const bool waterChanged = before.waterHeightAndFlagsRaw != after.waterHeightAndFlagsRaw;
         const bool cliffChanged = before.CliffLevel() != after.CliffLevel();
-        if ((waterChanged && (!resources || ((before.waterHeightAndFlagsRaw ^ after.waterHeightAndFlagsRaw) & 0xc000) != 0))
+        if ((waterChanged && ((!resources && !nativeRebuild) || ((before.waterHeightAndFlagsRaw ^ after.waterHeightAndFlagsRaw) & 0xc000) != 0))
             || ((before.variationRaw ^ after.variationRaw) & 0xe0) != 0
-            || (before.cliffAndLayerRaw != after.cliffAndLayerRaw && (!resources
+            || (before.cliffAndLayerRaw != after.cliffAndLayerRaw && ((!resources && !nativeRebuild)
                 || ((before.cliffAndLayerRaw ^ after.cliffAndLayerRaw) & 0xf0) != 0))
-            || ((before.textureAndFlagsRaw ^ after.textureAndFlagsRaw) & ~(kBlightBit | (resources ? 0x0f : 0))) != 0)
+            || ((before.textureAndFlagsRaw ^ after.textureAndFlagsRaw)
+                & ~(kBlightBit | ((resources || nativeRebuild) ? 0x0f : 0) | (nativeRebuild ? 0x40 : 0))) != 0)
             return reject("地形修改包含尚未验证的悬崖、坡道、水标志或边界变化，不能保留原 WPM");
         if (before.GroundVariation() != after.GroundVariation() && after.GroundVariation() > 17)
             return reject("新地面变体不在已支持的 0 到 17 范围内，未知变体只能原样保留");
@@ -664,6 +665,15 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
         const auto oldGround = ground(oldHeader, before), newGround = ground(newHeader, after);
         if (before.GroundTextureIndex() != after.GroundTextureIndex() && (oldGround.empty() || newGround.empty()))
             return reject("地面贴图索引越界，无法确认修改前后的通行属性；未修改的历史索引可原样保留");
+        if (nativeRebuild) {
+            // 此内部路径仅跳过“原通行必须不变”的比较；正式计划仍须用真实规则
+            // 对完整旧/新输入重算，并逐格核对旧WPM。普通公开保存门不走此分支。
+            if (before.groundHeightRaw != after.groundHeightRaw
+                && ((before.groundHeightRaw | after.groundHeightRaw) & 0xc000) != 0)
+                return reject("高度修改超出现有14位可写范围，未知wire高度位必须原样保留");
+            invariantChanged = true;
+            continue;
+        }
         if (oldGround != newGround && (!resources || !resources->EquivalentGround(oldGround, newGround)))
             return reject("旧/新地面贴图的实际 walkable、flyable、buildable 属性不同或缺少可信来源，不能保留原 WPM");
         invariantChanged = invariantChanged || before.variationRaw != after.variationRaw

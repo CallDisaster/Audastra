@@ -167,6 +167,16 @@ Result<TerrainSavePlan> TerrainSavePlan::PrepareArchive(const MapArchiveSession&
 
 Result<TerrainSavePlan> TerrainSavePlan::Prepare(const WorkspaceSnapshot& source,
     const MapDataEditSession& edits, const TerrainSavePlanLimits& limits) {
+    return PrepareWorkspace(source, edits, limits, nullptr);
+}
+
+Result<TerrainSavePlan> TerrainSavePlan::PrepareForSave(const WorkspaceSnapshot& source,
+    const MapDataEditSession& edits, const std::filesystem::path& gameRoot, const TerrainSavePlanLimits& limits) {
+    return PrepareWorkspace(source, edits, limits, &gameRoot);
+}
+
+Result<TerrainSavePlan> TerrainSavePlan::PrepareWorkspace(const WorkspaceSnapshot& source,
+    const MapDataEditSession& edits, const TerrainSavePlanLimits& limits, const std::filesystem::path* gameRoot) {
     return Guard([&]() {
         CheckLimits(limits);
         TerrainSavePlan plan;
@@ -208,13 +218,13 @@ Result<TerrainSavePlan> TerrainSavePlan::Prepare(const WorkspaceSnapshot& source
                 member.sourceSha256 = entry.sha256;
             }
         }
-        return Complete(std::move(plan), edits, limits, total);
+        return Complete(std::move(plan), edits, limits, total, nullptr, gameRoot, &source);
     });
 }
 
 Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
     const MapDataEditSession& edits, const TerrainSavePlanLimits& limits, std::size_t total,
-    const MapArchiveSession* sourceArchive, const std::filesystem::path* gameRoot) {
+    const MapArchiveSession* sourceArchive, const std::filesystem::path* gameRoot, const WorkspaceSnapshot* workspace) {
     if (!ValidSha(plan.sourceSha256_))
         return Result<TerrainSavePlan>::Failure(std::string(kSubsystem), "TERRAIN_SAVE_PLAN_SOURCE_INVALID",
             "地形保存计划需要有效的来源 SHA-256。");
@@ -255,6 +265,18 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
         plan.pathingResources_ = std::make_shared<const TerrainPathingResources>(std::move(resources));
         plan.saveGate_ = edits.VerifyTerrainCandidateForSave(edits.terrain_, edits.pathing_,
             edits.current_[MapDataEditSession::Index(MapDataKind::Doodads)], plan.pathingResources_.get());
+    }
+    std::optional<std::vector<std::byte>> rebuiltPathing;
+    if (!plan.saveGate_.Succeeded() && gameRoot && (sourceArchive || workspace)) {
+        auto rebuilt = plan.RebuildPathing(edits, sourceArchive, workspace, *gameRoot, limits, total);
+        if (!rebuilt.Succeeded() || !rebuilt.value) {
+            plan.saveGate_ = rebuilt.diagnostics.empty()
+                ? Reject("TERRAIN_PATHING_REBUILD_OUTPUT", "原版通行重算没有返回完整结果。")
+                : Status{std::move(rebuilt.diagnostics)};
+        } else {
+            rebuiltPathing = std::move(*rebuilt.value);
+            plan.saveGate_ = Status::Ok();
+        }
     }
     plan.pathingInvariant_ = edits.terrain_->header.groundTilesets != edits.terrainOriginal_->header.groundTilesets
         || edits.terrain_->header.usesCustomTileset != edits.terrainOriginal_->header.usesCustomTileset;
@@ -320,7 +342,9 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
         setOutput(0, TerrainBytes(*edits.terrain_, total, limits),
             "写出已编辑 W3E；保留原通行的修改已核对原版语义与实际输入，荒芜按原位联动。");
     }
-    if (edits.pathing_ != edits.pathingOriginal_) {
+    if (rebuiltPathing) {
+        setOutput(1, std::move(*rebuiltPathing), "按实际地形、范围和对象规则重建通行；旧输入已逐格匹配源六位，保留其它源位与本工程限制。");
+    } else if (edits.pathing_ != edits.pathingOriginal_) {
         AddBytes(edits.pathing_->size(), total, limits);
         setOutput(1, *edits.pathing_, "写出来源绑定的本工程通行限制与对应荒芜变化；原有限制、重叠限制和其它位保持，不作通用通行重建。");
     }
@@ -456,6 +480,8 @@ std::size_t TerrainSavePlan::OwnedCapacityBytes() const noexcept {
     };
     const auto text = [&](const std::string& value) { add(value.capacity()); add(1); };
     text(sourceSha256_);
+    text(pathingDraftSha256_); text(pathingIntentSha256_);
+    add(nativePathingProtected_.capacity());
     if (pathingResources_) add(pathingResources_->OwnedCapacityBytes());
     for (const auto& member : members_) {
         text(member.name); text(member.reasonCode); text(member.reason);

@@ -339,7 +339,7 @@ Result<bool> TerrainMinimapSave::RequiresAutomaticGeneration(const MapSaveTask& 
 
 Result<std::shared_ptr<const TerrainMinimapSave>> TerrainMinimapSave::PrepareAutomatic(
     const MapSaveTask& task, const MapData::MapDataEditSession& edits, const std::filesystem::path& gameRoot,
-    const TerrainMinimapSaveLimits& limits) {
+    const TerrainMinimapSaveLimits& limits, std::shared_ptr<const MapData::TerrainSavePlan> existingPlan) {
     using Output = Result<std::shared_ptr<const TerrainMinimapSave>>;
     try {
         if (!Take(RequiresAutomaticGeneration(task))) return Output::Success({});
@@ -349,19 +349,27 @@ Result<std::shared_ptr<const TerrainMinimapSave>> TerrainMinimapSave::PrepareAut
             Fail("MINIMAP_SAVE_OUTPUT_CONFLICT", "保存列表已经手动提供MapBLP，不能和自动重建混用。");
         RequireNotRemoved(task, "war3mapmap.blp");
         NoTga(task, *task.archive);
-        auto available = Available(limits, Add(TaskCapacity(task), kReadReserve));
+        // 调用方保留旧计划直到本次准备返回；整个捕获/生成阶段都计入该容量。
+        const auto retainedBytes = Add(TaskCapacity(task), existingPlan ? existingPlan->OwnedCapacityBytes() : 0);
+        auto available = Available(limits, Add(retainedBytes, kReadReserve));
         auto planLimits = limits.plan; planLimits.maximumBytes = std::min(planLimits.maximumBytes, available);
-        auto plan = std::make_shared<MapData::TerrainSavePlan>(Take(MapData::TerrainSavePlan::PrepareForSave(*task.archive, edits, gameRoot, planLimits)));
+        if (existingPlan) {
+            Check(existingPlan->VerifyForSave(edits, task.sourceSha256, task.replacements, task.removals));
+            // 克隆同时保留原计划的容量；在分配前预收，不能把共享重算当成免预算。
+            (void)Available(limits, Add(Add(retainedBytes, kReadReserve), existingPlan->OwnedCapacityBytes()));
+        }
+        auto plan = existingPlan ? std::make_shared<MapData::TerrainSavePlan>(*existingPlan)
+            : std::make_shared<MapData::TerrainSavePlan>(Take(MapData::TerrainSavePlan::PrepareForSave(*task.archive, edits, gameRoot, planLimits)));
         Check(plan->VerifyForSave(edits, task.sourceSha256, task.replacements, task.removals));
         auto terrain = Take(Render::CaptureTerrainMinimapAssets(*task.archive, edits, gameRoot,
             limits.assets, Render::TerrainMinimapRangePolicy::ClassicPlayable, task.replacements, task.removals));
         auto objectLimits = limits.objects;
-        objectLimits.maxWorkingBytes = std::min(objectLimits.maxWorkingBytes, Available(limits, Add(TaskCapacity(task), plan->OwnedCapacityBytes())));
+        objectLimits.maxWorkingBytes = std::min(objectLimits.maxWorkingBytes, Available(limits, Add(retainedBytes, plan->OwnedCapacityBytes())));
         auto assets = Take(Render::CaptureClassicMinimapObjectAssets(std::move(terrain), *task.archive, edits,
             objectLimits, task.replacements, task.removals));
         auto candidateLimits = limits.classic;
         candidateLimits.maxWorkingBytes = std::min(candidateLimits.maxWorkingBytes,
-            Available(limits, Add(Add(TaskCapacity(task), plan->OwnedCapacityBytes()), kReadReserve)));
+            Available(limits, Add(Add(retainedBytes, plan->OwnedCapacityBytes()), kReadReserve)));
         Render::TerrainMinimapPostprocessSettings postprocess;
         // 保留10%噪点并由同内容导出固定种子；manifest已有noiseSeed记录复现依据。
         postprocess.noiseSeed = ContentNoiseSeed(assets, postprocess, candidateLimits.maxWorkingBytes);

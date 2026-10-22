@@ -6,6 +6,7 @@
 #include <array>
 #include <span>
 
+namespace War3Map { class MapDocument; }
 namespace War3Map::Services { class TerrainMinimapSave; }
 
 namespace War3Map::MapData {
@@ -31,11 +32,9 @@ struct TerrainSavePlanLimits {
     std::size_t maximumBytes = 64u * 1024u * 1024u;
 };
 
-// 计划只接受原版通行查询已证不变的修改及荒芜净变化；PrepareForSave还会
-// 从实际来源验证等属性地面替换与同通行水深。它不重建WPM，
-// 不清除源图的静态对象、手画或未知通行位。
-// 默认SHD、MMP、小地图原样保留或已证明缺失；只有Services的密封missing-only
-// 准备单元能在原干地height门内增加MapBLP，普通计划与任意调用方不能授予其写入。
+// Prepare验证通行不变、荒芜及本工程限制；PrepareForSave还从实际资源
+// 判断等价替换，或在旧输入逐格重现源WPM六位后重建通行。不能解释的源位拒绝。
+// SHD、MMP默认保留；小地图由Services自动生成或准确保护作者原图。
 // 归档 Prepare 在同一已核来源的只读租约内按五个明确名字捕获，不依赖 listfile。
 // 目录 Prepare 只使用已冻结快照；实际保存仍须执行 MapSaveService 的源租约检查。
 // 调用方须串行排除会话写入。Result 成功表示计划完整，SaveGate 才表示地形门通过。
@@ -49,13 +48,16 @@ public:
     [[nodiscard]] static bool HasTerrainChanges(const MapDataEditSession& edits) noexcept;
     [[nodiscard]] static Result<TerrainSavePlan> Prepare(const MapArchiveSession& source,
         const MapDataEditSession& edits, const TerrainSavePlanLimits& limits = {});
-    // 正常保存使用实际地图/游戏表补充通行等价判断；缺少或改变的来源仍拒绝。
+    // 正常保存使用实际地图/游戏表验证或重建通行；缺少或改变的来源仍拒绝。
     [[nodiscard]] static Result<TerrainSavePlan> PrepareForSave(const MapArchiveSession& source,
         const MapDataEditSession& edits, const std::filesystem::path& gameRoot,
         const TerrainSavePlanLimits& limits = {});
     // 目录来源使用已捕获的完整快照；不读取或信任快照之外的磁盘内容。
     [[nodiscard]] static Result<TerrainSavePlan> Prepare(const WorkspaceSnapshot& source,
         const MapDataEditSession& edits, const TerrainSavePlanLimits& limits = {});
+    [[nodiscard]] static Result<TerrainSavePlan> PrepareForSave(const WorkspaceSnapshot& source,
+        const MapDataEditSession& edits, const std::filesystem::path& gameRoot,
+        const TerrainSavePlanLimits& limits = {});
 
     [[nodiscard]] const std::string& SourceSha256() const noexcept { return sourceSha256_; }
     [[nodiscard]] std::uint64_t SessionIdentity() const noexcept { return sessionIdentity_; }
@@ -65,6 +67,13 @@ public:
     [[nodiscard]] const std::array<TerrainSaveMemberPlan, 5>& Members() const noexcept { return members_; }
     [[nodiscard]] std::span<const MemberReplacement> Replacements() const noexcept { return replacements_; }
     [[nodiscard]] const Status& SaveGate() const noexcept { return saveGate_; }
+    [[nodiscard]] bool RebuiltPathing() const noexcept { return !nativePathingProtected_.empty(); }
+    // 在最终派生阶段把本会话草稿WPM换成唯一已验证输出；不能覆盖调用者夹带的WPM。
+    [[nodiscard]] Status InstallPathingOutput(const MapDataEditSession& edits,
+        std::vector<MemberReplacement>& replacements) const;
+    // 回读成功且前台修订核对通过后调用，一次提交整个新基线。
+    // worker拥有独立会话，因此这里逐字核对来源、当前W3E/WPM和完整限制意图。
+    [[nodiscard]] Status CommitSaved(MapDataEditSession& edits, const MapDocument& saved) const;
     [[nodiscard]] const std::vector<Diagnostic>& Diagnostics() const noexcept { return diagnostics_; }
     [[nodiscard]] bool RequiresNativeVerification() const noexcept { return terrainChanged_; }
 
@@ -87,6 +96,9 @@ private:
     [[nodiscard]] static Result<TerrainSavePlan> PrepareArchive(const MapArchiveSession& source,
         const MapDataEditSession& edits, const TerrainSavePlanLimits& limits,
         const std::filesystem::path* gameRoot);
+    [[nodiscard]] static Result<TerrainSavePlan> PrepareWorkspace(const WorkspaceSnapshot& source,
+        const MapDataEditSession& edits, const TerrainSavePlanLimits& limits,
+        const std::filesystem::path* gameRoot);
     [[nodiscard]] Status VerifyMissingMinimapEligibility(const MapDataEditSession& edits) const;
     [[nodiscard]] Status AdmitMissingMinimap(const MapDataEditSession& edits, std::vector<std::byte> generatedBytes);
     // 正常保存的自动小地图重建：仍受同一正式地形保存门和会话绑定约束，
@@ -95,12 +107,18 @@ private:
     [[nodiscard]] std::size_t OwnedCapacityBytes() const noexcept;
     [[nodiscard]] static Result<TerrainSavePlan> Complete(TerrainSavePlan plan,
         const MapDataEditSession& edits, const TerrainSavePlanLimits& limits, std::size_t sourceBytes,
-        const MapArchiveSession* source = nullptr, const std::filesystem::path* gameRoot = nullptr);
+        const MapArchiveSession* source = nullptr, const std::filesystem::path* gameRoot = nullptr,
+        const WorkspaceSnapshot* workspace = nullptr);
+    [[nodiscard]] Result<std::vector<std::byte>> RebuildPathing(const MapDataEditSession& edits,
+        const MapArchiveSession* source, const WorkspaceSnapshot* workspace,
+        const std::filesystem::path& gameRoot, const TerrainSavePlanLimits& limits, std::size_t& bytes);
     std::string sourceSha256_;
     std::uint64_t sessionIdentity_ = 0, revision_ = 0, terrainSourceRevision_ = 0;
     bool terrainChanged_ = false;
     bool pathingInvariant_ = false;
     std::shared_ptr<const TerrainPathingResources> pathingResources_;
+    std::vector<std::byte> nativePathingProtected_;
+    std::string pathingDraftSha256_, pathingIntentSha256_;
     std::array<TerrainSaveMemberPlan, 5> members_;
     // 通行不变时冻结W3I、两DOO、七类native物编；普通DOO只允许已核对的Z变化。
     // 源身份与输出身份分别保存，最终列表与回读不能漏掉Z更新或夹带占地/范围变化。

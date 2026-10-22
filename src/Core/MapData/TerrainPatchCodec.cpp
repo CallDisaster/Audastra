@@ -31,7 +31,7 @@ Result<BinaryFilePatch> BindMember(const WorkspaceSnapshot& source, const char* 
 Result<TerrainPatch> TerrainPatchCodec::Seal(const MapDocument& original,
     std::span<const std::byte> terrain, std::span<const std::byte> pathing,
     const WorkspaceSnapshot& source, const MapDataEditSession& current,
-    std::span<const TerrainStrokeIntent> strokes) {
+    std::span<const TerrainStrokeIntent> strokes, const std::filesystem::path& gameRoot) {
     if (strokes.empty() || strokes.size() > 128)
         return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_STROKE_BUDGET", "地形目录事务需要 1 到 128 笔原始命令。");
     std::size_t pointCount = 0;
@@ -74,8 +74,6 @@ Result<TerrainPatch> TerrainPatchCodec::Seal(const MapDocument& original,
     if (!currentTerrain.Succeeded() || !currentTerrain.value) return {{}, currentTerrain.diagnostics};
     if (*replayTerrain.value != *currentTerrain.value)
         return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_REPLAY_MISMATCH", "当前 W3E 不能由原始地形命令完整重放。");
-    const auto gate = replay.VerifyTerrainPathingForSave();
-    if (!gate.Succeeded()) return {{}, gate.diagnostics};
     // 上面的完整重放和保存门已证明两种摆放只改变 Z。其它成员仍不属于地形事务。
     const bool follows = std::any_of(strokes.begin(), strokes.end(),
         [](const auto& stroke) { return stroke.followDoodads; });
@@ -86,14 +84,20 @@ Result<TerrainPatch> TerrainPatchCodec::Seal(const MapDocument& original,
             || !current.original_[index] || !current.current_[index])
             return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_MEMBER_SCOPE", "地形目录事务只支持命令重放产生的原有摆放高度变化。");
     }
-    const auto plan = TerrainSavePlan::Prepare(source, current);
+    const auto plan = TerrainSavePlan::PrepareForSave(source, current, gameRoot);
     if (!plan.Succeeded() || !plan.value) return {{}, plan.diagnostics};
+    auto replacements = current.Replacements();
+    const auto installed = plan.value->InstallPathingOutput(current, replacements);
+    if (!installed.Succeeded()) return {{}, installed.diagnostics};
     const auto planned = plan.value->VerifyForSave(current, source.aggregateSha256,
-        current.Replacements(), current.Removals());
+        replacements, current.Removals());
     if (!planned.Succeeded()) return {{}, planned.diagnostics};
     auto terrainFile = BindMember(source, "war3map.w3e", terrain, *currentTerrain.value);
     if (!terrainFile.Succeeded() || !terrainFile.value) return {{}, terrainFile.diagnostics};
-    auto pathingFile = BindMember(source, "war3map.wpm", pathing, *current.pathing_);
+    const auto generated = std::find_if(replacements.begin(), replacements.end(),
+        [](const auto& member) { return member.name == "war3map.wpm"; });
+    auto pathingFile = BindMember(source, "war3map.wpm", pathing,
+        generated == replacements.end() ? *current.pathing_ : generated->data);
     if (!pathingFile.Succeeded() || !pathingFile.value) return {{}, pathingFile.diagnostics};
     std::vector<BinaryFilePatch> files;
     files.push_back(std::move(*terrainFile.value)); files.push_back(std::move(*pathingFile.value));

@@ -517,6 +517,31 @@ void AutomaticResourceOverlaySavesAndReadsBack() {
         "保存归档必须包含最终资源overlay正文");
 }
 
+void AutomaticReusesVerifiedPlanAndPreservesOnBudgetFailure() {
+    auto settings = W3i(); Put32(settings, 72, 0x400);
+    Fixture fixture(true, false, false, settings, false, {}, true);
+    fixture.Stroke();
+    MapSaveTask task; fixture.Freeze(task);
+    const auto plan = std::make_shared<const TerrainSavePlan>(Take(
+        TerrainSavePlan::PrepareForSave(fixture.source, fixture.edits, fixture.gameRoot)));
+    Require(plan->SaveGate().Succeeded(), "shared terrain plan passes before minimap generation");
+    TerrainMinimapSaveLimits bounded; bounded.maxWorkingBytes = 1;
+    const auto preserved = Take(TerrainMinimapSave::PrepareAutomaticOrPreserve(
+        task, fixture.edits, fixture.gameRoot, bounded, plan));
+    Require(preserved.preserved && !preserved.generated, "budget exhaustion keeps the source image");
+    Require(preserved.preserved->VerifyCurrent(task, fixture.edits).Succeeded(), "preservation binds the same actual task");
+    Require(plan->VerifyForSave(fixture.edits, task.sourceSha256, task.replacements).Succeeded(),
+        "failed minimap generation does not mutate the shared terrain plan");
+    const auto generated = Take(TerrainMinimapSave::PrepareAutomaticOrPreserve(
+        task, fixture.edits, fixture.gameRoot, {}, plan));
+    Require(generated.generated && !generated.preserved, "same shared terrain plan can generate with sufficient budget");
+    Require(generated.generated->Plan()->Members()[1].outputSha256 == plan->Members()[1].outputSha256,
+        "automatic image generation keeps the existing pathing output identity");
+    task.replacements.push_back(generated.generated->MinimapReplacement());
+    Require(generated.generated->VerifyCurrent(task, fixture.edits, fixture.gameRoot).Succeeded(),
+        "cloned plan binds the real task and inputs");
+}
+
 } // namespace
 
 int main() {
@@ -527,6 +552,7 @@ int main() {
         AutomaticDecisionUsesExactSourceMembers();
         AutomaticGeneratedBlpIsVerifiedThroughSaveCopyAndInPlace();
         AutomaticResourceOverlaySavesAndReadsBack();
+        AutomaticReusesVerifiedPlanAndPreservesOnBudgetFailure();
         std::cout << "Terrain missing-only minimap save tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

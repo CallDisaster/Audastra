@@ -762,16 +762,10 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             originalTerrainShaValue = *terrainSha.value;
             savedTerrainShaValue = *savedTerrainSha.value;
             savedPathingShaValue = *savedPathingSha.value;
-            if (request.minimapChoice == TerrainMinimapSaveChoice::Preserve
-                || request.minimapChoice == TerrainMinimapSaveChoice::Automatic) {
-                auto prepared = MapData::TerrainSavePlan::PrepareForSave(source, edits, request.gameRoot);
-                if (!prepared.Succeeded() || !prepared.value) return Forward(std::move(prepared.diagnostics));
-                terrainPlan = std::make_shared<const MapData::TerrainSavePlan>(std::move(*prepared.value));
-            }
         }
-        const auto pathingGate = terrainPlan
-            ? terrainPlan->VerifyForSave(edits, source.SourceSha256(), replacements, edits.Removals())
-            : edits.VerifyTerrainPathingForSave();
+        // 原版通行生成在最终脚本完成后执行；此时还未取得最终替换列表，
+        // 不把“须重建通行”提前当成不能保存。其它领域仍走原保存门。
+        const auto pathingGate = terrainRequest ? Status::Ok() : edits.VerifyTerrainPathingForSave();
         if (!pathingGate.Succeeded()) return Forward(pathingGate.diagnostics);
 
         MapSaveTask task;
@@ -790,9 +784,18 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
 
         // 小地图/地形派生必须在最终脚本和模板替换完成后准备，避免其原字
         // 门禁看到过期的 replacements。回调只在共用保存服务的一次最终阶段执行。
-        if (request.minimapChoice != TerrainMinimapSaveChoice::Preserve) {
+        if (terrainRequest || request.minimapChoice != TerrainMinimapSaveChoice::Preserve) {
             task.prepareFinalDerived = [&task, &edits, &request, &terrainPlan, &minimapSave,
-                &minimapPreserve, &minimapInputFailure, nativeCaptureFailed](MapSaveTask&) mutable -> Status {
+                &minimapPreserve, &minimapInputFailure, nativeCaptureFailed, terrainRequest](MapSaveTask&) mutable -> Status {
+                if (terrainRequest) {
+                    auto prepared = MapData::TerrainSavePlan::PrepareForSave(*task.archive, edits, request.gameRoot);
+                    if (!prepared.Succeeded() || !prepared.value) return {std::move(prepared.diagnostics)};
+                    terrainPlan = std::make_shared<const MapData::TerrainSavePlan>(std::move(*prepared.value));
+                    const auto installed = terrainPlan->InstallPathingOutput(edits, task.replacements);
+                    if (!installed.Succeeded()) return installed;
+                    const auto checked = terrainPlan->VerifyForSave(edits, task.sourceSha256, task.replacements, task.removals);
+                    if (!checked.Succeeded()) return checked;
+                }
                 bool automaticRequired = true;
                 if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic) {
                     const auto required = TerrainMinimapSave::RequiresAutomaticGeneration(task);
@@ -802,7 +805,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                 }
                 if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic) {
                     auto prepared = (minimapInputFailure.empty() || (!automaticRequired && !nativeCaptureFailed))
-                        ? TerrainMinimapSave::PrepareAutomaticOrPreserve(task, edits, request.gameRoot)
+                        ? TerrainMinimapSave::PrepareAutomaticOrPreserve(task, edits, request.gameRoot, {}, terrainPlan)
                         : TerrainMinimapSave::PreserveUnsupportedAutomatic(task, edits, minimapInputFailure);
                     if (!prepared.Succeeded() || !prepared.value) return Status{std::move(prepared.diagnostics)};
                     minimapSave = std::move(prepared.value->generated);
@@ -812,12 +815,13 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                         const auto checked = minimapPreserve->VerifyCurrent(task, edits);
                         if (!checked.Succeeded()) return checked;
                     }
-                } else {
+                } else if (request.minimapChoice != TerrainMinimapSaveChoice::Preserve) {
                     const auto prepared = TerrainMinimapSave::Prepare(task, edits, request.gameRoot, request.minimapChoice);
                     if (!prepared.Succeeded() || !prepared.value) return Status{prepared.diagnostics};
                     minimapSave = *prepared.value;
                 }
-                if (!minimapSave && request.minimapChoice != TerrainMinimapSaveChoice::Automatic)
+                if (!minimapSave && request.minimapChoice != TerrainMinimapSaveChoice::Automatic
+                    && request.minimapChoice != TerrainMinimapSaveChoice::Preserve)
                     return Status::Failure("MapEditSaveService", "SAVE_MINIMAP_PREPARATION_MISSING",
                         "补建小地图未返回本次实际保存任务的完整计划。");
                 if (minimapSave) {
@@ -846,13 +850,6 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                 }
                 return Status::Ok();
             };
-        } else if (terrainPlan) {
-            const auto& notes = terrainPlan->Diagnostics();
-            task.diagnostics.insert(task.diagnostics.end(), notes.begin(), notes.end());
-            task.beforePublish = [&task, terrainPlan, previous = std::move(task.beforePublish)]() {
-                if (previous) { const auto checked = previous(); if (!checked.Succeeded()) return checked; }
-                return terrainPlan->VerifyFrozenOutput(task.sourceSha256, task.replacements, task.removals);
-            };
         }
         if (auxiliaryRequest) {
             task.beforePublish = [&task, snapshot = request.auxiliaryTransaction, previous = std::move(task.beforePublish)]() -> Status {
@@ -869,6 +866,9 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             const auto readback = minimapSave ? minimapSave->VerifyReadback(task, *task.nextSession)
                 : terrainPlan->VerifyReadback(*task.nextSession);
             if (!readback.Succeeded()) return Forward(readback.diagnostics);
+            // 回执绑定最终重建的WPM，不返回生成前草稿的摘要。
+            if (terrainPlan->Members()[1].outputSha256)
+                savedPathingShaValue = *terrainPlan->Members()[1].outputSha256;
         }
         if (minimapPreserve) {
             const auto readback = minimapPreserve->VerifyReadback(task, *task.nextSession);

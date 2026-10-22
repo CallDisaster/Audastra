@@ -222,11 +222,16 @@ private:
         const std::optional<std::vector<std::byte>>& doodads,
         const TerrainPathingResources* resources = nullptr,
         const std::vector<std::byte>* restrictions = nullptr,
-        const std::optional<std::vector<std::byte>>* units = nullptr) const;
+        const std::optional<std::vector<std::byte>>* units = nullptr,
+        bool nativeRebuild = false) const;
     [[nodiscard]] Status PrepareUnits(const UnitPlacements& value, std::vector<MemberChange>& changes) const;
     [[nodiscard]] Status DeserializeAndApply(MapDataKind kind, std::span<const std::byte> bytes,
         bool linkStartLocations);
     void Restore(const Command& command, bool forward);
+    // 先准备全部新基线，再无异常交换；供已回读的通行重建输出原子提交。
+    void CommitSavedBaseline(const MapDocument& saved,
+        std::optional<std::vector<std::byte>> pathing,
+        std::shared_ptr<const std::vector<std::byte>> protectedPathing);
     [[nodiscard]] static std::size_t Index(MapDataKind kind) noexcept;
 
     std::array<MapDataState, 7> states_{};

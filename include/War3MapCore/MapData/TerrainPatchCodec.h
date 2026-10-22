@@ -18,7 +18,7 @@ public:
     [[nodiscard]] static Result<TerrainPatch> Seal(const MapDocument& original,
         std::span<const std::byte> terrain, std::span<const std::byte> pathing,
         const WorkspaceSnapshot& source, const MapDataEditSession& current,
-        std::span<const TerrainStrokeIntent> strokes);
+        std::span<const TerrainStrokeIntent> strokes, const std::filesystem::path& gameRoot = {});
 };
 
 } // namespace War3Map::MapData

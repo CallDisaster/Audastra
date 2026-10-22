@@ -170,7 +170,7 @@ Status McpWorkspace::SeedTerrainOverlay(ActiveEdit& edit) {
     edit.terrain = std::move(*replay.value);
     if (edit.terrain->strokes.empty()) return Status::Ok();
     auto sealed = MapData::TerrainPatchCodec::Seal(*initialMapData_, terrainState_->terrain, terrainState_->pathing,
-        mapDataSource_->Snapshot(), edit.terrain->edits, edit.terrain->strokes);
+        mapDataSource_->Snapshot(), edit.terrain->edits, edit.terrain->strokes, gameRoot_);
     if (!sealed.Succeeded()) return {sealed.diagnostics};
     const auto published = session_.ApplyTerrainPatch(edit.id, std::move(*sealed.value));
     if (published.Succeeded()) ++edit.generation;
@@ -191,7 +191,7 @@ Status McpWorkspace::CheckTerrainMixingAllowed() const {
 Status McpWorkspace::ValidateTerrainOverlay() const {
     if (!HasTerrainOverlay()) return Status::Ok();
     const auto sealed = MapData::TerrainPatchCodec::Seal(*initialMapData_, terrainState_->terrain, terrainState_->pathing,
-        mapDataSource_->Snapshot(), activeEdit_->terrain->edits, activeEdit_->terrain->strokes);
+        mapDataSource_->Snapshot(), activeEdit_->terrain->edits, activeEdit_->terrain->strokes, gameRoot_);
     if (!sealed.Succeeded()) return {sealed.diagnostics};
     const auto preview = session_.PreviewEdit(activeEdit_->id);
     if (!preview.Succeeded()) return {preview.diagnostics};
@@ -222,7 +222,7 @@ Result<MapData::TerrainStrokeResult> McpWorkspace::ApplyTerrainPlan(const Servic
     std::optional<TerrainPatch> previousPatch;
     if (HasTerrainOverlay()) {
         auto previous = MapData::TerrainPatchCodec::Seal(*initialMapData_, terrainState_->terrain, terrainState_->pathing,
-            mapDataSource_->Snapshot(), activeEdit_->terrain->edits, activeEdit_->terrain->strokes);
+            mapDataSource_->Snapshot(), activeEdit_->terrain->edits, activeEdit_->terrain->strokes, gameRoot_);
         if (!previous.Succeeded()) return Failed<Receipt>(previous);
         const auto priorCheck = CheckOnlyTerrainFiles(*prior.value, *previous.value);
         if (!priorCheck.Succeeded()) return Failed<Receipt>(priorCheck);
@@ -236,7 +236,7 @@ Result<MapData::TerrainStrokeResult> McpWorkspace::ApplyTerrainPlan(const Servic
     auto candidate = Replay(*initialMapData_, *terrainState_, strokes);
     if (!candidate.Succeeded()) return Failed<Receipt>(candidate);
     auto sealed = MapData::TerrainPatchCodec::Seal(*initialMapData_, terrainState_->terrain, terrainState_->pathing,
-        mapDataSource_->Snapshot(), (*candidate.value)->edits, strokes);
+        mapDataSource_->Snapshot(), (*candidate.value)->edits, strokes, gameRoot_);
     if (!sealed.Succeeded()) return Failed<Receipt>(sealed);
     if (toolEpoch_ == (std::numeric_limits<std::uint64_t>::max)()
         || activeEdit_->generation == (std::numeric_limits<std::uint64_t>::max)())

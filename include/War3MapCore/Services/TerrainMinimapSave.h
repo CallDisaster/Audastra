@@ -67,7 +67,8 @@ public:
     // 原来缺少的仍不写；调用方须挂接其 FrozenOutput 与 Readback。
     [[nodiscard]] static Result<TerrainMinimapAutomaticPreparation> PrepareAutomaticOrPreserve(
         const MapSaveTask& actualTask, const MapData::MapDataEditSession& edits,
-        const std::filesystem::path& gameRoot, const TerrainMinimapSaveLimits& limits = {});
+        const std::filesystem::path& gameRoot, const TerrainMinimapSaveLimits& limits = {},
+        std::shared_ptr<const MapData::TerrainSavePlan> existingPlan = {});
     // 调用者重建生成输入时失败也经过同一 allowlist，不自行复制错误码分类。
     [[nodiscard]] static Result<TerrainMinimapAutomaticPreparation> PreserveUnsupportedAutomatic(
         const MapSaveTask& actualTask, const MapData::MapDataEditSession& edits,
@@ -95,7 +96,8 @@ private:
     TerrainMinimapSave() = default;
     [[nodiscard]] static Result<std::shared_ptr<const TerrainMinimapSave>> PrepareAutomatic(
         const MapSaveTask& task, const MapData::MapDataEditSession& edits,
-        const std::filesystem::path& gameRoot, const TerrainMinimapSaveLimits& limits);
+        const std::filesystem::path& gameRoot, const TerrainMinimapSaveLimits& limits,
+        std::shared_ptr<const MapData::TerrainSavePlan> existingPlan = {});
     [[nodiscard]] Status VerifyAutomaticCurrent(const MapSaveTask& task, const MapData::MapDataEditSession& edits,
         const std::filesystem::path& gameRoot) const;
     [[nodiscard]] Status VerifyAutomaticTaskIdentity(const MapSaveTask& task) const;
