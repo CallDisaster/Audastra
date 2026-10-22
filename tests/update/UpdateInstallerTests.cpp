@@ -1243,6 +1243,13 @@ void OriginCommitRollbackTests() {
 }
 
 void OriginMetadataBudgetTests() {
+    auto stage = std::chrono::steady_clock::now();
+    const auto elapsed = [&](std::string_view name) {
+        const auto now = std::chrono::steady_clock::now();
+        std::cout << "origin-metadata-budget " << name << " ms="
+            << std::chrono::duration_cast<std::chrono::milliseconds>(now - stage).count() << std::endl;
+        stage = now;
+    };
     Temp temp;
     const auto root = temp.path / L"origin-budget";
     std::filesystem::create_directory(root);
@@ -1257,7 +1264,9 @@ void OriginMetadataBudgetTests() {
         last = root / (L"original-" + std::to_wstring(i) + L".txt");
         Write(last, "original bounded user bytes"); Write(ZonePath(last), full);
     }
+    elapsed("fixture");
     const auto exact = Detail::InspectUpdateTree(root);
+    elapsed("exact-inventory");
     Check(exact.Succeeded() && exact.value->origins.size() == count,
         "root and file origin streams at exactly 16MiB aggregate are accepted without a partial inventory");
     const auto directory = root / L"original-empty";
@@ -1266,6 +1275,7 @@ void OriginMetadataBudgetTests() {
     Write(ZonePath(last), std::string_view(full).substr(0, full.size() - minimal.size() + 1));
     Write(ZonePath(directory), minimal);
     const auto oversized = Detail::InspectUpdateTree(root);
+    elapsed("over-budget-inventory");
     Check(Code(oversized, "UPDATE_ORIGIN_METADATA_BUDGET") && !oversized.value,
         "root file and empty-directory origin streams at aggregate limit plus one fail closed without a partial inventory");
     Check(Read(ZonePath(root)) == Data(full) && Read(ZonePath(directory)) == Data(minimal),
@@ -1427,13 +1437,22 @@ int Child(const std::map<std::wstring, std::wstring>& arguments) {
 int wmain(int argc, wchar_t** argv) {
     try {
         if (sodium_init() < 0) throw std::runtime_error("fixture sodium init failed");
-        if (argc > 1) {
+        std::string selectedSuite;
+        if (argc == 3 && std::wstring_view(argv[1]) == L"--suite") {
+            selectedSuite = IO::PathUtf8(std::filesystem::path(argv[2]));
+            if (selectedSuite.empty()) return 3;
+        } else if (argc > 1) {
             std::map<std::wstring, std::wstring> arguments;
             for (int index = 1; index + 1 < argc; index += 2) arguments.emplace(argv[index], argv[index + 1]);
             if (arguments.contains(L"--fixture-child")) return Child(arguments);
             return 3;
         }
-        const auto suite = [](std::string_view name, auto test) {
+        unsigned suitesRun = 0;
+        // 定位失败时可单独运行场景；CTest 仍无参数运行全部并保留原总时限。
+        // 选择错误必须失败，不能把零场景当作通过。
+        const auto suite = [&](std::string_view name, auto test) {
+            if (!selectedSuite.empty() && selectedSuite != name) return;
+            ++suitesRun;
             const auto started = std::chrono::steady_clock::now();
             std::cout << "RUN " << name << std::endl;
             test();
@@ -1449,6 +1468,7 @@ int wmain(int argc, wchar_t** argv) {
         suite("origin-inventory-copy", OriginInventoryCopyTests); suite("origin-commit-rollback", OriginCommitRollbackTests);
         suite("origin-metadata-budget", OriginMetadataBudgetTests); suite("origin-mutation-cleanup", OriginMutationAndCleanupTests);
         suite("health-failure", HealthFailureTests); suite("parent-wait", ParentWaitTests);
+        Check(suitesRun != 0, "selected installer suite must exist");
     } catch (const std::exception& error) {
         ++failures; std::cerr << "FAIL: unexpected original fixture error: " << error.what() << '\n';
     }
