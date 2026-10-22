@@ -286,6 +286,7 @@ private slots:
     void TerrainSaveReadbackGatesCommit();
     void PathingIntentNativeSaveKeepsProjectState_data();
     void PathingIntentNativeSaveKeepsProjectState();
+    void PlacementHeightAndSavedPathingWorkerRoundtrip();
     void PathingIntentLateEditStalesFrozenProject();
     void LegacyPathingIntentProjectKeepsStrictCompatibility();
     void TerrainSavePrepareStillRequiresToolchain();
@@ -1171,6 +1172,81 @@ void EditorProjectTests::PathingIntentNativeSaveKeepsProjectState() {
     QVERIFY(project.mapEdits_->Redo() && project.ObserveMapDataEdit("第二次保存后重做擦除") && !project.HasUnsavedMapChanges());
 }
 
+void EditorProjectTests::PlacementHeightAndSavedPathingWorkerRoundtrip() {
+    QTemporaryDir root; QVERIFY(root.isValid());
+    auto members = TerrainSaveMembers();
+    MapData::UnitPlacements units;
+    MapData::UnitPlacement unit;
+    unit.rawcode = "u001"; unit.creationId = 1; unit.flags = 2;
+    unit.position = {512, 512, 10}; unit.scale = {1, 1, 1}; units.units.push_back(unit);
+    MapData::DoodadPlacements doodads;
+    MapData::DoodadPlacement tree;
+    tree.rawcode = "d001"; tree.creationId = 2; tree.flags = 2;
+    tree.position = {512, 512, 5}; tree.scale = {1, 1, 1}; doodads.doodads.push_back(tree);
+    const auto unitBytes = units.Serialize(), doodadBytes = doodads.Serialize();
+    QVERIFY(unitBytes.Succeeded() && doodadBytes.Succeeded());
+    members.push_back({"war3mapUnits.doo", *unitBytes.value});
+    members.push_back({"war3map.doo", *doodadBytes.value});
+    const auto source = std::filesystem::path(root.filePath("source.w3x").toStdWString());
+    QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
+    const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
+    EditorProject project; QVERIFY(BindTerrainSaveProject(project, source));
+    // 这里只验证真实worker与UI提交，脚本工具链由Services原创地图专项单独覆盖。
+    const auto freeze = [&](const char* name) -> std::unique_ptr<MapSaveJob> {
+        auto job = std::make_unique<MapSaveJob>();
+        if (!job->FreezeArchive(*project.archiveSession_).Succeeded()) return {};
+        auto plan = MapData::TerrainSavePlan::Prepare(*project.archiveSession_, *project.mapEdits_);
+        auto declaration = project.mapEdits_->SerializePathingRestrictionDraft();
+        if (!plan.Succeeded() || !plan.value->SaveGate().Succeeded() || !declaration.Succeeded()) return {};
+        job->target = std::filesystem::path(root.path().toStdWString()) / name;
+        job->replacements = project.mapEdits_->Replacements();
+        job->pathingRestrictionDraft = std::make_shared<const std::vector<std::byte>>(*declaration.value);
+        job->terrainSavePlan = std::make_shared<const MapData::TerrainSavePlan>(std::move(*plan.value));
+        job->preparedRevision = MapSaveRevisionBinding{project.editRevision_.Generation(), project.editRevision_.Revision(), project.editRevision_.Current()};
+        const auto* task = job.get();
+        job->beforePublish = [task] {
+            return task->terrainSavePlan->VerifyFrozenOutput(task->sourceSha256, task->replacements, task->removals);
+        };
+        return job;
+    };
+    MapData::TerrainBrush restriction; restriction.kind = MapData::TerrainBrushKind::PathingRestriction;
+    restriction.size = 1; restriction.pathingRestrictions = 6;
+    const MapData::TerrainStrokePoint point{512, 512}, second{544, 512};
+    QVERIFY(project.mapEdits_->EditTerrain(restriction, std::span(&point, 1)).Succeeded());
+    QVERIFY(project.ObserveMapDataEdit("先保存通行限制"));
+    auto initial = freeze("restricted.w3x"); QVERIFY(initial);
+    EditorProject::RunMapSave(*initial); QVERIFY(initial->succeeded && project.CommitMapSave(*initial));
+    MapData::TerrainBrush height; height.kind = MapData::TerrainBrushKind::Raise;
+    height.radius = 0; height.strength = 32;
+    QVERIFY(project.mapEdits_->EditTerrain(height, std::span(&point, 1), true).Succeeded());
+    QVERIFY(project.ObserveMapDataEdit("摆放随地面高度移动"));
+    restriction.pathingRestrictions = 8;
+    QVERIFY(project.mapEdits_->EditTerrain(restriction, std::span(&second, 1)).Succeeded());
+    QVERIFY(project.ObserveMapDataEdit("追加通行限制"));
+    auto raised = freeze("raised.w3x"); QVERIFY(raised);
+    QCOMPARE(raised->replacements.size(), std::size_t{4});
+    QCOMPARE((*raised->pathingRestrictionDraft)[3], std::byte{3});
+    EditorProject::RunMapSave(*raised);
+    QVERIFY2(raised->succeeded, raised->diagnostics.empty() ? "worker failed" : raised->diagnostics.back().message.c_str());
+    QVERIFY(raised->terrainReadbackStatus && raised->terrainReadbackStatus->Succeeded());
+    QVERIFY(project.CommitMapSave(*raised));
+    QCOMPARE(project.mapEdits_->Snapshot().Units()->units[0].position[2], 42.0f);
+    QCOMPARE(project.mapEdits_->Snapshot().Doodads()->doodads[0].position[2], 37.0f);
+    QVERIFY(project.mapEdits_->Undo() && project.ObserveMapDataEdit("撤销追加限制"));
+    QVERIFY(project.mapEdits_->Undo() && project.ObserveMapDataEdit("撤销已保存高度"));
+    restriction.pathingRestrictions = 0x0e; restriction.value = false;
+    QVERIFY(project.mapEdits_->EditTerrain(restriction, std::span(&point, 1)).Succeeded());
+    QVERIFY(project.ObserveMapDataEdit("擦除本工程限制，保留作者限制"));
+    auto restored = freeze("restored.w3x"); QVERIFY(restored);
+    EditorProject::RunMapSave(*restored);
+    QVERIFY(restored->succeeded && restored->nextSession && project.CommitMapSave(*restored));
+    for (const auto& member : members)
+        QCOMPARE(project.archiveSession_->ReadMember(member.name).value, std::optional(member.data));
+    QVERIFY(!project.HasUnsavedMapChanges());
+    QVERIFY(project.mapEdits_->SerializePathingRestrictionDraft().value->empty());
+    QCOMPARE(Sha256File(source).value, sourceSha.value);
+}
+
 void EditorProjectTests::PathingIntentLateEditStalesFrozenProject() {
     QTemporaryDir root; QVERIFY(root.isValid());
     const auto source = std::filesystem::path(root.filePath("source.w3x").toStdWString());
@@ -1249,6 +1325,7 @@ void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy_data() {
     QTest::newRow("worker-add-apr2") << false << false << 1;
     QTest::newRow("worker-withdraw-apr3") << false << false << 2;
     QTest::newRow("worker-bad-apr-identity") << false << false << 3;
+    QTest::newRow("worker-saved-apr3-and-placement-height") << true << true << 4;
 }
 
 void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
@@ -1278,6 +1355,18 @@ void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
         MapData::DoodadPlacements doodads;
         MapData::SpecialDoodadPlacement placement; placement.rawcode = "SPC1";
         doodads.specialDoodads.push_back(placement);
+        if (pathingPhase == 4) {
+            MapData::DoodadPlacement tree;
+            tree.rawcode = "d001"; tree.creationId = 1; tree.flags = 2;
+            tree.position = {384, 512, 5}; tree.scale = {1, 1, 1};
+            doodads.doodads.push_back(tree);
+            MapData::UnitPlacements units;
+            MapData::UnitPlacement unit;
+            unit.rawcode = "u001"; unit.creationId = 2; unit.flags = 2;
+            unit.position = {384, 512, 10}; unit.scale = {1, 1, 1}; units.units.push_back(unit);
+            const auto unitBytes = units.Serialize(); QVERIFY(unitBytes.Succeeded());
+            members.push_back({"war3mapUnits.doo", *unitBytes.value});
+        }
         const auto bytes = doodads.Serialize(); QVERIFY(bytes.Succeeded() && bytes.value);
         members.push_back({"war3map.doo", *bytes.value});
     }
@@ -1310,13 +1399,25 @@ void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
         const MapData::TerrainStrokePoint point{48, 48};
         QVERIFY(project.mapEdits_->EditTerrain(brush, std::span(&point, 1), false).Succeeded());
         QVERIFY(project.ObserveMapDataEdit("自动小地图通行限制夹具"));
-        if (pathingPhase == 2) {
+        if (pathingPhase == 2 || pathingPhase == 4) {
             auto first = freezePathingJob(std::filesystem::path(root.filePath("owned-restriction.w3x").toStdWString()));
             QVERIFY(first); EditorProject::RunMapSave(*first);
             QVERIFY(first->succeeded && project.CommitMapSave(*first));
-            brush.value = false;
-            QVERIFY(project.mapEdits_->EditTerrain(brush, std::span(&point, 1), false).Succeeded());
-            QVERIFY(project.ObserveMapDataEdit("自动小地图撤回已保存限制夹具"));
+            if (pathingPhase == 2) {
+                brush.value = false;
+                QVERIFY(project.mapEdits_->EditTerrain(brush, std::span(&point, 1), false).Succeeded());
+                QVERIFY(project.ObserveMapDataEdit("自动小地图撤回已保存限制夹具"));
+            } else {
+                MapData::TerrainBrush height; height.kind = MapData::TerrainBrushKind::Raise;
+                height.radius = 0; height.strength = 32;
+                const MapData::TerrainStrokePoint center{384, 512}, extra{80, 48};
+                QVERIFY(project.mapEdits_->EditTerrain(height, std::span(&center, 1), true).Succeeded());
+                QVERIFY(project.ObserveMapDataEdit("自动小地图摆放跟随高度"));
+                brush.pathingRestrictions = 8;
+                QVERIFY(project.mapEdits_->EditTerrain(brush, std::span(&extra, 1), false).Succeeded());
+                QVERIFY(project.ObserveMapDataEdit("自动小地图追加限制"));
+                QCOMPARE(project.mapEdits_->Replacements().size(), std::size_t{4});
+            }
         }
     }
     auto job = pathingPhase ? freezePathingJob(target) : project.PrepareMapSave(target, false);
@@ -1324,7 +1425,7 @@ void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
     if (pathingPhase) {
         job->minimapChoice = Services::TerrainMinimapSaveChoice::Automatic;
         QVERIFY(job->pathingRestrictionDraft && !job->pathingRestrictionDraft->empty());
-        QCOMPARE((*job->pathingRestrictionDraft)[3], pathingPhase == 2 ? std::byte{3} : std::byte{2});
+        QCOMPARE((*job->pathingRestrictionDraft)[3], (pathingPhase == 2 || pathingPhase == 4) ? std::byte{3} : std::byte{2});
         if (pathingPhase == 3) {
             auto wrong = *job->pathingRestrictionDraft; wrong[4] ^= std::byte{1};
             job->pathingRestrictionDraft = std::make_shared<const std::vector<std::byte>>(std::move(wrong));
@@ -1349,6 +1450,12 @@ void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
         QVERIFY(HasReadDiagnostic(*job, "MINIMAP_GENERATION_SKIPPED"));
         QVERIFY(job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded());
         QVERIFY(project.CommitMapSave(*job));
+        if (pathingPhase == 4) {
+            QCOMPARE(project.mapEdits_->Snapshot().Units()->units[0].position[2], 42.0f);
+            QCOMPARE(project.mapEdits_->Snapshot().Doodads()->doodads[0].position[2], 37.0f);
+            QCOMPARE(project.mapEdits_->InspectTerrainPoint({48, 48}).value->pathingFlags, 0x86);
+            QCOMPARE(project.mapEdits_->InspectTerrainPoint({80, 48}).value->pathingFlags, 0x8a);
+        }
         auto saved = MapArchiveSession::Open(target); QVERIFY(saved.Succeeded() && saved.value);
         QCOMPARE(saved.value->HasMember("war3mapMap.blp"), existing);
         if (existing) QCOMPARE(saved.value->ReadMember("war3mapMap.blp").value, std::optional(oldMinimap));

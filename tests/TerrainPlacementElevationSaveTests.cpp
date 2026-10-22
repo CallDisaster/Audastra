@@ -97,7 +97,7 @@ void FollowAndSaveRoundtrip() {
     const auto saved = Take(MapArchiveSession::Open(Take(f.source->SaveCandidate(f.directory / "raised.w3x", output)).path));
     Check(plan.VerifyReadback(saved));
     Require(Take(saved.ReadMember("war3map.wpm")) == f.members[1].data, "source WPM retained byte-for-byte");
-    Require(Take(saved.ReadMember("war3map.shd")) == f.members[4].data, "source shadow retained");
+    Require(Take(saved.ReadMember("war3map.shd")) == f.members[5].data, "source shadow retained");
     const auto savedDoodads = Take(ParseDoodadPlacements(Take(saved.ReadMember("war3map.doo"))));
     Require(savedDoodads.specialDoodads.size() == 1 && savedDoodads.specialDoodads[0].variation == 4,
         "special tail retained");
@@ -151,11 +151,52 @@ void NonElevationEditsRemainRejected() {
     Require(!f.edits->VerifyTerrainPathingForSave().Succeeded(), "special placement change still rejected");
 }
 
+void SavedRestrictionsAndFollowingShareUndoAndSave() {
+    Fixture f;
+    const TerrainStrokePoint point{512, 512}, secondPoint{544, 512};
+    TerrainBrush restriction;
+    restriction.kind = TerrainBrushKind::PathingRestriction;
+    restriction.size = 1; restriction.pathingRestrictions = 0x06;
+    Take(f.edits->EditTerrain(restriction, std::span(&point, 1)));
+    const auto save = [&](const MapArchiveSession& source, const char* name) {
+        const auto plan = Take(TerrainSavePlan::Prepare(source, *f.edits));
+        Check(plan.SaveGate());
+        const auto replacements = f.edits->Replacements();
+        Check(plan.VerifyForSave(*f.edits, source.SourceSha256(), replacements));
+        auto saved = Take(MapArchiveSession::Open(Take(source.SaveCandidate(f.directory / name, replacements)).path));
+        Check(plan.VerifyReadback(saved));
+        f.edits->CommitSaved(f.edits->Snapshot());
+        Require(!f.edits->IsDirty(), "successful readback commits the exact baseline");
+        return saved;
+    };
+    const auto first = save(*f.source, "restrictions.w3x");
+    Require(Take(f.edits->SerializePathingRestrictionDraft())[3] == std::byte{3},
+        "saved intent remains distinct from protected original restrictions");
+    f.Raise();
+    restriction.pathingRestrictions = 0x08;
+    Take(f.edits->EditTerrain(restriction, std::span(&secondPoint, 1)));
+    Require(f.edits->Replacements().size() == 4, "height, two placements and pathing coexist in one save");
+    const auto raised = save(first, "restrictions-and-height.w3x");
+    Require(Take(f.edits->InspectTerrainPoint(point)).pathingFlags == 0x86
+        && Take(f.edits->InspectTerrainPoint(secondPoint)).pathingFlags == 0x8a,
+        "height save retains both distinct authored restrictions");
+    Require(f.edits->Undo() && f.edits->Undo(), "saved restriction and placement-following commands remain undoable");
+    restriction.pathingRestrictions = 0x0e; restriction.value = false;
+    Take(f.edits->EditTerrain(restriction, std::span(&point, 1)));
+    Require(Take(f.edits->InspectTerrainPoint(point)).pathingFlags == 0x82,
+        "erasing saved intent preserves overlapped original walk and unknown flags");
+    const auto restored = save(raised, "restored.w3x");
+    for (const auto& member : f.members)
+        Require(Take(restored.ReadMember(member.name)) == member.data,
+            "saving undo and erase restores terrain, both placements and protected source bytes");
+    Require(Take(f.edits->SerializePathingRestrictionDraft()).empty(), "no saved intent remains after final erase save");
+}
+
 } // namespace
 
 int main() {
     try {
-        FollowAndSaveRoundtrip(); NonElevationEditsRemainRejected();
+        FollowAndSaveRoundtrip(); NonElevationEditsRemainRejected(); SavedRestrictionsAndFollowingShareUndoAndSave();
         std::cout << "terrain placement elevation save passed\n";
         return 0;
     } catch (const std::exception& error) {
