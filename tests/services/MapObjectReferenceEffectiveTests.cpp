@@ -85,6 +85,17 @@ std::shared_ptr<const Snapshot> Capture(Result<std::shared_ptr<const Snapshot>> 
     Require(result.value && *result.value, "capture owns a real qualification snapshot");
     return std::move(*result.value);
 }
+// 一个具名区域：脚本生成器为它声明 gg_rct_Arena，归档与目录都须授予引用资格。
+std::vector<std::byte> Regions() {
+    MapData::RegionsDocument regions;
+    MapData::RegionRecord arena{};
+    arena.left = -64; arena.bottom = -64; arena.right = 64; arena.top = 64;
+    arena.name = "Arena"; arena.creationNumber = 1;
+    regions.entries.push_back(std::move(arena));
+    auto bytes = regions.Serialize();
+    Require(bytes.Succeeded() && bytes.value.has_value(), "serialize original region fixture");
+    return std::move(*bytes.value);
+}
 struct Fixture {
     TempDirectory temporary;
     std::filesystem::path directory = temporary.Path() / "expanded";
@@ -96,7 +107,7 @@ struct Fixture {
         members = {{"war3map.w3i", MapDataFixtures::FullMapSettingsV25().bytes},
             {"war3mapUnits.doo", Placements()}, {"war3map.w3u", EmptyNative()}, {"war3map.w3t", EmptyNative()},
             {"war3map.j", Text("function main takes nothing returns nothing\nendfunction\n")},
-            {"payload.bin", Text("original payload")}};
+            {"payload.bin", Text("original payload")}, {"war3map.w3r", Regions()}};
         if (mapTables) {
             members.push_back({"Units/UnitData.slk", Slk("U001")});
             members.push_back({"Units/ItemData.slk", Slk("I001")});
@@ -144,6 +155,8 @@ void MapTableMigrationAndFinalSaveStayBound() {
     const auto directory = Capture(CaptureDirectoryMapObjectReferences(fixture.directory, fixture.game));
     const auto archive = Capture(CaptureArchiveMapObjectReferences(*fixture.archive, fixture.game));
     Require(directory->Identity() != archive->Identity(), "strict identities retain actual containers");
+    Require(directory->Find("gg_rct_Arena") && archive->Find("gg_rct_Arena"),
+        "archive capture qualifies named regions like the expanded directory");
     Require(VerifyMapObjectReferenceContents(*directory, *archive).Succeeded(), "explicit save migration accepts equal map table contents");
     MapSaveTask task;
     fixture.Prepare(task, directory, "same-map-tables.w3x");

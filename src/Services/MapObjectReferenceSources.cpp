@@ -114,7 +114,11 @@ SnapshotResult CaptureArchiveMapObjectReferences(const MapArchiveSession& archiv
     std::span<const std::string> removals, const ObjectCatalogSources* classificationSources) {
     // 一次归档身份校验捕获所有未覆盖输入，避免参数面板为每个小成员重哈希整张大地图。
     std::vector<std::string> requested;
-    for (const auto name : {"war3map.w3i", "war3mapUnits.doo", "war3map.w3u", "war3map.w3t"}) {
+    // 区域、镜头、声音与可破坏物同样授予 gg_ 预放引用资格，须和单位一起捕获。
+    constexpr std::array kPlacementMembers{"war3map.w3i", "war3mapUnits.doo", "war3map.w3r", "war3map.w3c",
+        "war3map.w3s", "war3map.doo"};
+    for (const auto name : {"war3map.w3i", "war3mapUnits.doo", "war3map.w3u", "war3map.w3t", "war3map.w3r",
+             "war3map.w3c", "war3map.w3s", "war3map.doo"}) {
         const auto key = Canonical(name);
         if (std::none_of(replacements.begin(), replacements.end(), [&](const auto& entry) { return Canonical(entry.name) == key; })
             && std::none_of(removals.begin(), removals.end(), [&](const auto& entry) { return Canonical(entry) == key; }))
@@ -122,7 +126,7 @@ SnapshotResult CaptureArchiveMapObjectReferences(const MapArchiveSession& archiv
     }
     ArchiveExactMemberLimits limits;
     // 复用明确成员读取的既有64MiB硬预算，只缩小成员数量，不提高全局读取上限。
-    limits.memberCount = 4;
+    limits.memberCount = 8;
     auto captured = archive.CaptureExactMembers(requested, limits);
     if (!captured.Succeeded() || !captured.value) return {{}, std::move(captured.diagnostics)};
     const auto reader = [&](std::string_view member) -> SourceResult {
@@ -145,7 +149,7 @@ SnapshotResult CaptureArchiveMapObjectReferences(const MapArchiveSession& archiv
         return SourceResult::Success(std::move(source));
     };
     std::vector<MapArchiveMember> members;
-    for (const auto name : {"war3map.w3i", "war3mapUnits.doo"}) {
+    for (const auto name : kPlacementMembers) {
         auto source = reader(name);
         if (!source.Succeeded() || !source.value) return {{}, std::move(source.diagnostics)};
         if (source.value->bytes) members.push_back({name, std::move(*source.value->bytes)});
