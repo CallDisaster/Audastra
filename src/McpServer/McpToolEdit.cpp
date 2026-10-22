@@ -170,7 +170,8 @@ void RegisterEditTools(McpServer& server) {
         ToolDefinition tool;
         tool.name = "set_scalar_argument";
         tool.permission = ToolPermission::Edit;
-        tool.description = "设置普通非嵌套参数：value_kind 仅允许 0(预设)/1(变量)/3(直接值)";
+        tool.description = "设置普通非嵌套参数：value_kind 0=预设（TriggerParams 名）、1=变量（udg_名，类型须一致）、"
+            "3=直接值（整数/实数/true|false/文本/自定义代码/物编对象编号，如技能写 A04W 不加引号）";
         tool.inputSchema = BasicSchema({
             {"value_kind", QJsonObject{
                 {"type", "integer"},

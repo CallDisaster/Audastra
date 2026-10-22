@@ -378,7 +378,7 @@ Result<ScriptSavePreparationState> PrepareScriptSaveInputs(
             if (!profile.Succeeded()) return Forward(std::move(profile.diagnostics), "SCRIPT_FRAMEWORK_PROFILE_INVALID");
             // 仅覆写既有来源的解码选择；其余档案身份仍由已核实的布局和Catalog生成。
             profile.value->sourceEncodings = std::move(*declarations.value);
-            profile.value->ordinaryIncludeAccess = std::move(*includeAccess.value);
+            Script::MergeDeclaredIncludeAccess(*profile.value, std::move(*includeAccess.value));
             auto framework = Script::CaptureScriptFrameworkInputs(std::move(*profile.value), *frozen.toolchain.layout, *frozen.catalog);
             if (!framework.Succeeded()) return Forward(std::move(framework.diagnostics), "SCRIPT_FRAMEWORK_CAPTURE_FAILED");
             result.diagnostics.insert(result.diagnostics.end(), framework.diagnostics.begin(), framework.diagnostics.end());

@@ -211,9 +211,52 @@ stdio 是 UTF-8 **newline JSON-RPC**：每行一条完整 JSON，响应以换行
 
 入口为 `list_triggers`、`get_trigger`、`get_ui_catalog`。修改顺序是 `get_revision` → `begin_edit` → 已注册的修改工具 → `preview_edit` → `validate_edit` → `export_map_candidate`，每步使用正确的 `transaction_id` 与完整 `expected_revision`。每次修改都会使先前 preview/validate 失效。
 
-当前注册的写工具包括 `create_trigger`、`append_root_eca`、`append_argument_call`、`set_scalar_argument`；参数/类型必须由真实 Catalog 和现存所有者证明。错误时用 `rollback_edit` 释放自己的事务。不要同时开两个写事务，不要把源变化当成可以跳过校验的理由。
+当前注册的写工具包括 `create_trigger`、`append_root_eca`、`append_argument_call`、`set_scalar_argument`；参数/类型必须由真实 Catalog 和现存所有者证明。
+
+`set_scalar_argument` 的 `value_kind`：0 = 预设（TriggerParams 名，例如 `PlayerUnitEventSpellEffect`）；1 = 变量，写 `udg_` 加变量名，变量须非数组且类型与参数一致；3 = 直接值，可写整数、实数、`true`/`false`、文本、自定义代码（如注释文本的 `scriptcode`）和物编对象编号（技能、单位等写四字符编号，如 `A04W`，不加引号）。单位、点这类句柄没有直接值写法，请用变量或函数。例：“施放的技能 == 某技能”用条件 `OperatorCompareAbilityId`，`append_root_eca` 的回执给出三个参数编号，第三个参数用 `value_kind=3` 写 `A04W`。错误时用 `rollback_edit` 释放自己的事务。不要同时开两个写事务，不要把源变化当成可以跳过校验的理由。
+
+函数槽参数（类型为 `eventcall`、`boolexpr`/`boolcall`、`code`）里放的是事件、条件、动作本身，与 WE 存法相同。例如 YDWE 的“为触发器添加事件” `AddTriggerEvent`：第二个参数是 `eventcall`，在 `edit_trigger_graph` 的 `insert_subtree` 里写 `{"call": {"function": "TriggerRegisterUnitEvent", "kind": "event", ...}}`，事件自己的参数照常填（单位可用 `YDWEGetAnyTypeLocalVariable` 等函数）。`boolexpr` 写 `"kind": "condition"`，`code` 写 `"kind": "action"`。`append_argument_call` 不带种类，会先按槽位找同名事件/条件/动作。把事件写成 `"kind": "call"` 会报 `TRIGGER_CALL_SLOT_MISMATCH` 并提示正确种类。
 
 `export_map_candidate` 导出新的**展开目录候选**，不是 `.w3x/.w3m` 封包；后者会明确拒绝。它与 `save_map_edit_candidate` 是不同的现有出口，不能把目录事务导出描述成地图归档真保存。旧 `set_object_field/create_object/delete_object` 不再注册。
+
+### 紧凑 T 写法（推荐的整段写入方式）
+
+写一整段触发器逻辑时，不必逐个节点拼 JSON。`edit_trigger_graph` / `editor_edit_trigger_graph` 有两种文本操作：
+
+- `{"op": "insert_text", "parent": <同 insert_subtree 的父列表>, "before": <可选>, "text": "..."}`：把一段文本里的全部语句按顺序插到触发器根或某个块语句分支。插到块分支时，`parent` 写 `eca_children` 加 `child_branch`，文本里不再写分支标签。
+- `{"op": "replace_trigger_text", "trigger": <触发器 ref>, "text": "..."}`：用文本整体替换触发器的全部事件/条件/动作。新鲜度由批次的 `expected` 绑定保证。
+
+读取用 `query_trigger_graph`（或 `editor_query_trigger_graph`）的 `{"table": "trigger_text", "trigger_id": "<ref.id>"}`：把整个触发器导出成同一写法。导出文本可以直接改，再用 `replace_trigger_text` 写回；导出、写回、再导出结果不变。
+
+写法就是函数库里的函数名加参数，每个函数对应 WE 里的一个节点，写进去仍是普通 T 树，不是 JASS：
+
+```text
+events:
+    TriggerRegisterUnitEvent(udg_Hero, UnitEventSpellEffect)
+conditions:
+    OperatorCompareAbilityId(GetSpellAbilityId(), OperatorEqualENE, 'A04W')
+actions:
+    SetVariable(udg_Count, 0)
+    IfThenElseMultiple() {
+        if:   OperatorCompareInteger(udg_Count, OperatorGreater, 3)
+        then: KillUnit(GetTriggerUnit())
+        else: CommentString("还没满")
+    }
+    ~DisplayTextToForce(GetPlayersAll(), "这一行被禁用")
+```
+
+- 触发器根用 `events:` / `conditions:` / `actions:`（或 `事件:` / `条件:` / `动作:`）分段，不写时默认是动作。
+- 节点种类不用写：语句按所在段落或分支决定，参数位置按槽位类型决定。`AddTriggerEvent(udg_T, TriggerRegisterUnitEvent(...))` 这类函数槽会自动当事件/条件/动作处理。
+- 参数：函数写 `Name(...)`，没有参数也要写 `()`；文本写 `"..."`（`\"`、`\\`、`\n`、`\r`、`\t` 转义）；物编编号写 `'A04W'`；数字和 `true`/`false` 直接写；预设直接写名字（如 `OperatorGreater`）；变量写 `udg_名` 或变量原名，数组写 `udg_名[下标]`；预放对象、触发器写 `gg_` 开头的名字；自定义代码类参数（如 YDWE 局部变量名）可直接写标识符；含空格等特殊字符的名字用反引号 `` `名字` ``。
+- 块语句（如果/循环/选取单位/计时器等）用 `{ 分支标签: 语句... }`。分支标签写英文 key（`if`/`then`/`else`、`actions`、`params`、`events`、`conditions`），也可写中文短名（`如果`/`则`/`否则`）或 `#分支号`。只有一个分支的块（循环、选取单位等）可以不写标签。
+- 语句前加 `~` 表示禁用；`//` 到行尾是注释；语句之间用换行或 `;`。
+- 禁用语句不生成脚本，里面的参数不做类型检查（与 WE 一致）；启用语句照常严格检查。
+- 少数原图里非块语句也带子节点，导出为 `#分支号:`；写回时子语句种类按函数库里唯一同名的事件/条件/动作确定。
+- 地图对象：预放单位/物品 `gg_unit_`/`gg_item_`、脚本创建的可破坏物 `gg_dest_`、区域 `gg_rct_`、镜头 `gg_cam_`、声音 `gg_snd_`（音乐按字符串）都可直接引用；名字与类型以 `query_trigger_graph` 的 `map_objects` 表为准。
+- `?` 是 WE 里“参数未设置”（编辑器里的红色空参数），只能留在禁用的语句里；启用的语句写 `?` 会报 `TRIGGER_GRAPH_ARGUMENT_UNSET`。
+- 代码类参数（如 `CustomScriptCode`、YDWE 局部变量名所在的参数）只接受标识符（如 `loc_u`）或函数库预设；`replace_trigger_text` 可以原样保留该触发器里已有的代码和已有的不规范固定值，但不能改写、新写，也不能挪到别的触发器（报 `TRIGGER_GRAPH_CODE_UNSUPPORTED` 等）。需要新代码时先问作者。
+
+出错时整段都不写入。名字、参数个数、分支标签这类错误一次全部列出，每条带“第几行第几列”；参数类型错误也会一次列出，并标明是哪一行的第几个参数。语法错误只报第一处。
 
 ## 5. 结果应如何记录
 

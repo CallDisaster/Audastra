@@ -6,6 +6,8 @@
 #include "War3MapCore/Script/ScriptInjectionSources.h"
 #include "War3MapCore/Script/ScriptPreprocessSources.h"
 #include "War3MapCore/Script/ScriptFrameworkInputs.h"
+#include "War3MapCore/Script/ScriptQueries.h"
+#include "War3MapCore/Script/LuaTemplateSandbox.h"
 #include "War3MapCore/Jass/IdentifierRewrite.h"
 #include "War3MapCore/Text/SourceEncoding.h"
 #include "War3MapCore/Hash.h"
@@ -188,6 +190,28 @@ void TestTemplates() {
     const auto unknownOrder = EvaluateTemplates("<?=abilityOrder(\"'B000'\", \"Order\")?>", context);
     Require(unknownOrder.Succeeded() && unknownOrder.text == "0" && HasCode(unknownOrder.diagnostics, "ABILITY_ORDER_UNKNOWN"),
         "unknown ability order falls back to 0 with a warning");
+}
+
+// 命令表按框架模板宿主的位置读取：旧版 share/script/computed，新版 compiler/script/computed；两者并存不猜。
+void TestAbilityOrderTables(const std::filesystem::path& root) {
+    const auto write = [](const std::filesystem::path& computed, std::string_view entry, std::string_view order) {
+        WriteText(computed / entry, "-- original fixture\n");
+        WriteText(computed / "order_id.lua", "local order2id = {\n\tstop = 0xD0004,\n}\n");
+        WriteText(computed / "order_list.lua", "return {\n['Order'] = {\n    AHbz = " + std::string(order) + ",\n},\n}\n");
+    };
+    ObjectData::ObjectRecord custom;
+    custom.key = {ObjectData::ObjectType::Ability, "A001"};
+    custom.parentRawcode = "AHbz";
+    const auto order = [&](const std::filesystem::path& tool) {
+        return BuildTemplateContext(tool, nullptr, {custom}).abilityOrder("'A001'", "Order");
+    };
+    write(root / "legacy" / "share" / "script" / "computed", "ability2order.lua", "0xD0001");
+    Require(order(root / "legacy") == 0xD0001, "legacy share/script/computed order table not used");
+    write(root / "modern" / "compiler" / "script" / "computed", "abilityOrder.lua", "0xD0002");
+    Require(order(root / "modern") == 0xD0002, "modern compiler/script/computed order table not used");
+    write(root / "both" / "share" / "script" / "computed", "ability2order.lua", "0xD0001");
+    write(root / "both" / "compiler" / "script" / "computed", "abilityOrder.lua", "0xD0002");
+    Require(!order(root / "both").has_value(), "ambiguous template host guessed an order table");
 }
 
 // 原创样例：YDWE 模板 import 的几种写法（文本、长字符串、拼接、地图目录下的文件）。
@@ -892,6 +916,87 @@ void TestToolchainLayouts(const std::filesystem::path& root) {
         && !std::filesystem::exists(options.workDir), "legacy semantic gate rejects before creating stage workDir");
 }
 
+// 原创样例：框架编译插件按安装目录里的文件登记；$def 开启后追加强制头文件，模板函数集改写 TriggerAddAction；
+// 未实现的插件触发名出现即拒绝。
+void TestFrameworkPlugins(const std::filesystem::path& root) {
+    const auto tool = root / "framework", ui = tool / "share" / "mpq", map = root / "map-source";
+    WriteText(ui / "config", "base\n");
+    WriteText(ui / "base" / "define.txt", "[TriggerTypes]\ninteger=0,1,1,Integer,integer\n");
+    WriteText(tool / "plugin" / "wave" / "include" / "WaveForce.i", "#define FORCE_VALUE 11\n");
+    WriteText(tool / "plugin" / "wave" / "include" / "XGuserdataGC.h",
+        "#define gc_bind_unit(trig) <?= gc_bind_unit_lua([=[trig]=]) ?>\n"
+        "#define TriggerAddAction(trig,action) <?= TriggerAddAction_lua([=[trig]=],[==[action]==]) ?>\n");
+    WriteText(tool / "share" / "script" / "compile" / "userdataGC.lua", "-- original fixture\n");
+    WriteText(tool / "share" / "script" / "compile" / "XGMacro.lua", "-- original fixture\n");
+    WriteText(tool / "jass" / "system" / "ht" / "common.j", "type agent extends handle\ntype trigger extends agent\n"
+        "type triggeraction extends handle\nnative CreateTrigger takes nothing returns trigger\n"
+        "native TriggerAddAction takes trigger whichTrigger, code actionFunc returns triggeraction\n");
+    WriteText(tool / "jass" / "system" / "ht" / "blizzard.j", "function DoNothing takes nothing returns nothing\nendfunction\n");
+    WriteText(tool / "jass" / "Family.cfg", "FamilyCall\r\n");
+    WriteText(tool / "jass" / "Family.j", "library Family\nfunction FamilyCallLong takes nothing returns nothing\nendfunction\nendlibrary\n");
+    std::filesystem::create_directories(map);
+    const auto layout = ResolveScriptToolchainLayout({tool, 24, 127});
+    const std::array<std::string, 1> layers{"base"};
+    const auto catalog = Trigger::UiCatalog::LoadLayers(ui, layers);
+    Require(layout.Succeeded() && catalog.Succeeded(), "plugin fixture has real layout and catalog");
+    auto profile = MakeLegacyFrameworkProfile(*layout.value, *catalog.value, ui, map);
+    Require(profile.Succeeded() && profile.value->featureExtensions == std::vector<ScriptProfileFeatureExtension>{
+            {"XGuserdataGC", "XGuserdataGC.h", std::string(kUserdataGcTemplateLibrary)}} &&
+        profile.value->unsupportedPlugins.size() == 1 && profile.value->unsupportedPlugins[0].name == "XGMacro",
+        "only plugins whose files exist in the tool root are declared");
+    auto unknown = *profile.value; unknown.featureExtensions[0].templateLibrary = "unimplemented-library";
+    Require(!ValidateScriptToolchainProfile(unknown).Succeeded(), "a profile cannot name an unimplemented template library");
+    auto path = *profile.value; path.featureExtensions[0].forceInclude = "../outside.h";
+    Require(!ValidateScriptToolchainProfile(path).Succeeded(), "a plugin header is a single file name, not a path");
+    const auto captured = CaptureScriptFrameworkInputs(*profile.value, *layout.value, *catalog.value);
+    Require(captured.Succeeded(), "plugin profile freezes");
+    // cfg 只写函数族前缀：代码里用到库内定义的更长名字时注入；库里没有的名字、注释里的名字不注入。
+    const auto injects = [&](std::string_view text) {
+        std::vector<std::filesystem::path> paths;
+        const auto output = InjectScriptFramework(text, *captured.value, paths);
+        Require(output.Succeeded(), "family injection fixture runs");
+        return std::any_of(paths.begin(), paths.end(), [](const auto& path) { return path.filename() == "Family.j"; });
+    };
+    Require(injects("function main takes nothing returns nothing\ncall FamilyCallLong()\nendfunction\n"),
+        "a cfg prefix selects the library that defines the longer name used in code");
+    Require(!injects("function main takes nothing returns nothing\ncall FamilyCallOther()\nendfunction\n"),
+        "a longer name the library does not contain does not select it");
+    Require(!injects("// FamilyCallLong\nfunction main takes nothing returns nothing\nendfunction\n"),
+        "a name inside a comment does not select the library");
+    ToolchainOptions options; options.toolRoot = tool; options.uiRoot = ui;
+    options.actualVersionMacro = 127; options.layout = std::make_shared<const ScriptToolchainLayout>(*layout.value);
+    options.frameworkInputs = std::make_shared<const ScriptFrameworkInputs>(*captured.value); options.scriptInjection = false;
+    TemplateContext templates;
+    templates.wholeChunk = [](std::string_view text, const std::vector<std::string>& libraries) {
+        LuaTemplateRequest request; request.preprocessed = text; request.libraries = libraries;
+        return RunLuaTemplate(request);
+    };
+    const std::string body = "globals\ntrigger gg_trg = null\nendglobals\n"
+        "function F takes nothing returns nothing\nendfunction\n"
+        "function gc_bind_unit takes code c returns nothing\nendfunction\n"
+        "function main takes nothing returns nothing\nset gg_trg = CreateTrigger()\n"
+        "call gc_bind_unit(gg_trg)\ncall TriggerAddAction(gg_trg, function F)\nendfunction\n";
+    options.workDir = root / "plugin-on";
+    const auto enabled = CompileMapScript("$def XGuserdataGC\n" + body, options, templates);
+    Require(enabled.Succeeded() && enabled.script.find("call DoNothing()") != std::string::npos &&
+        enabled.script.find("call gc_bind_unit(function F)") != std::string::npos,
+        "the enabled feature force-includes its header and the template library appends the GC binding");
+    options.workDir = root / "plugin-off";
+    auto plain = body; plain.erase(plain.find("call gc_bind_unit(gg_trg)\n"), std::string_view("call gc_bind_unit(gg_trg)\n").size());
+    const auto disabled = CompileMapScript(plain, options, templates);
+    Require(disabled.Succeeded() && disabled.script.find("call TriggerAddAction(gg_trg, function F)") != std::string::npos &&
+        disabled.script.find("call gc_bind_unit(function F)") == std::string::npos,
+        "without the feature the header is not included and calls stay unchanged");
+    options.workDir = root / "plugin-unsupported";
+    const auto unsupported = CompileMapScript("function main takes nothing returns nothing\ncall XG_Macro_Set()\nendfunction\n",
+        options, templates);
+    Require(!unsupported.Succeeded() && HasCode(unsupported.diagnostics, "SCRIPT_FRAMEWORK_PLUGIN_UNSUPPORTED"),
+        "a call to an unimplemented framework plugin is rejected instead of reaching jasshelper");
+    const auto comment = CompileMapScript("// XG_Macro_Set\nfunction main takes nothing returns nothing\nendfunction\n",
+        options, templates);
+    Require(comment.Succeeded(), "a plugin name inside a comment does not trigger the plugin");
+}
+
 void TestFrameworkPipeline(const std::filesystem::path& root) {
     const auto tool = root / "framework", ui = tool / "share" / "mpq", map = root / "map-source";
     WriteText(ui / "config", "base\n");
@@ -937,6 +1042,17 @@ void TestFrameworkPipeline(const std::filesystem::path& root) {
     const auto replay = ReplayScriptPreprocessSources(*compiled.frameworkPreprocessSources);
     Require(replay.Succeeded() && replay.text == compiled.frameworkPreprocessSources->preprocessed.text,
         "owned preprocessing has deterministic replay");
+    // 框架把主脚本放在 <工具根>/logs 编译："../memory_hack/x.j" 指工具根下的库；越出工具根仍拒绝。
+    WriteText(tool / "memory_hack" / "mh.j", "#define MH_VALUE 3\n");
+    WriteText(root / "outside.j", "#define OUTSIDE_VALUE 4\n");
+    const auto frameworkRelative = [&](const std::string& include, const char* name) {
+        auto relative = options; relative.workDir = root / name;
+        return CompileMapScript("#include \"" + include + "\"\nglobals\ninteger udg_value = 1\nendglobals\n"
+            "function main takes nothing returns nothing\nendfunction\n", relative, {});
+    };
+    const auto parent = frameworkRelative("../memory_hack/mh.j", "owned-parent");
+    Require(parent.Succeeded() && parent.syntaxChecked, "framework main resolves ../ against the tool compile directory");
+    Require(!frameworkRelative("../../outside.j", "owned-outside").Succeeded(), "../ beyond the bound tool root stays rejected");
     Require(std::filesystem::remove(map / "local.j"), "remove only the synthetic include");
     Require(ReplayScriptPreprocessSources(*compiled.frameworkPreprocessSources).Succeeded() &&
         !VerifyScriptPreprocessSources(*compiled.frameworkPreprocessSources, FrameworkSourceRequest(*captured.value),
@@ -944,7 +1060,7 @@ void TestFrameworkPipeline(const std::filesystem::path& root) {
     WriteText(map / "local.j", local);
     WriteText(map / "feature.j", "$def FEATURE\nglobals\ninteger IncludedValue=7\nendglobals\n");
     ScriptPreprocessSourceRequest feature;
-    feature.mainDirectory = map; feature.frameworkDirectivePolicy = ScriptFrameworkDirectivePolicy::FeatureFlagsV1;
+    feature.mainDirectory = captured.value->profile.mainSourceDirectory; feature.frameworkDirectivePolicy = ScriptFrameworkDirectivePolicy::FeatureFlagsV1;
     feature.mainText = "#ifdef FEATURE\n#error wrong C namespace\n#endif\n#define CFLAG 1\n"
         "$ifdef CFLAG\n#error wrong dollar namespace\n$endif\n$ifdef FEATURE\n"
         "function Chosen takes nothing returns nothing\nendfunction\n$else\n#error missing feature\n$endif\n"
@@ -1151,6 +1267,15 @@ void TestFrameworkPipeline(const std::filesystem::path& root) {
         "later output only rebinds a complete literal copied unchanged from an owned qualified source");
     Require(!RebindFrameworkLexicalView("globals\nstring value=\"new\x81\x5c\"\nendglobals\n", mixedReplay.text, mixedReplay.lexicalView).Succeeded(),
         "new or transformed opaque output cannot inherit unrelated source encoding qualification");
+    // 两处原字节完全相同的中文注释：输出字节确定，只是诊断位置取首次出现处，不当作歧义。
+    const std::string repeated = "// \xd6\xd0\nglobals\n// \xd6\xd0\nendglobals\n";
+    const auto repeatedView = MakeFrameworkLexicalView(repeated, map / "repeated.j", ScriptProfileEncoding::Gbk);
+    Require(repeatedView.Succeeded() && repeatedView.value->opaque.size() == 2, "repeated GBK comments produce two qualified spans");
+    const auto repeatedRebound = RebindFrameworkLexicalView(repeated, repeated, *repeatedView.value);
+    Require(repeatedRebound.Succeeded() && repeatedRebound.value->opaque.size() == 2 &&
+        HasCode(repeatedRebound.diagnostics, "SCRIPT_FRAMEWORK_OUTPUT_OPAQUE_SHARED_BYTES") &&
+        repeatedRebound.value->opaque[1].origin.offset == repeatedView.value->opaque[0].origin.offset,
+        "identical opaque bytes from several places rebind deterministically to the first origin");
     auto forged = mixedReplay.lexicalView; forged.text[0] = '#';
     Require(!Jass::ValidateSourceLexicalView(mixedReplay.text, forged).Succeeded(),
         "the lexical provider cannot hide or replace arbitrary original ASCII code");
@@ -1806,10 +1931,12 @@ int main() {
         TestYDTriggerStorage();
         TestTemplates();
         TestTemplateImports(root / "imports");
+        TestAbilityOrderTables(root / "order-tables");
         TestInject(root / "inject");
         TestToolRoot(root / "tools");
         TestToolchainLayouts(root / "layouts");
         TestFrameworkPipeline(root / "framework");
+        TestFrameworkPlugins(root / "framework-plugins");
         TestNamesAndTerrain();
         TestObjectCodeEditAndCompilation(root / "object-code");
         TestWritableLoopGeneration(root / "loop-targets");

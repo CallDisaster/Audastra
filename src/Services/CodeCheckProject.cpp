@@ -358,7 +358,7 @@ struct CodeCheckProjectCache::Impl {
                 Trigger::UiCatalog::ResolveUiRoot(next->uiRoot.empty() ? next->toolRoot : next->uiRoot), archive->SourcePath().parent_path());
             if (!profile.Succeeded() || !profile.value) { fail(Reason(profile.diagnostics, "框架档案无法绑定。")); return; }
             profile.value->sourceEncodings = next->sourceEncodings;
-            profile.value->ordinaryIncludeAccess = next->includeAccess;
+            Script::MergeDeclaredIncludeAccess(*profile.value, next->includeAccess);
             auto captured = Script::CaptureScriptFrameworkInputs(std::move(*profile.value), *layout, *next->catalog);
             if (!captured.Succeeded() || !captured.value) { fail(Reason(captured.diagnostics, "框架包含未能完整捕获。")); return; }
             framework.emplace(std::move(*captured.value));

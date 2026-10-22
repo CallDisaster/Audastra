@@ -106,9 +106,11 @@ struct Fixture {
             + '-' + std::to_string(GetTickCount64()) + '-' + std::to_string(++sequence));
         source = root / "source"; ui = root / "ui";
         Write(ui / "config", "base\n");
-        Write(ui / "base/define.txt", "[TriggerTypes]\nunit=0,1,0,Unit,unit\nitem=0,1,0,Item,item\n");
+        Write(ui / "base/define.txt", "[TriggerTypes]\nunit=0,1,0,Unit,unit\nitem=0,1,0,Item,item\n"
+            "abilcode=0,1,1,Ability,integer\nscriptcode=1,0,0,Script,string\n");
         Write(ui / "base/action.txt", "[SetVariable]\n[[.args]]\ntype=AnyGlobal\n[[.args]]\ntype=Null\n"
-            "[UseItem]\n[[.args]]\ntype=item\n");
+            "[UseItem]\n[[.args]]\ntype=item\n"
+            "[LiteralProbe]\n[[.args]]\ntype=abilcode\n[[.args]]\ntype=scriptcode\n[[.args]]\ntype=unit\n");
         const auto catalog = UiCatalog::Load(ui); Require(catalog.Succeeded(), Codes(catalog));
         auto created = WtgWctCodec{}.CreateEmpty(*catalog.value); Require(created.Succeeded(), Codes(created));
         auto& document = *created.value;
@@ -117,6 +119,7 @@ struct Fixture {
         for (const auto* name : {"Target", "Other"})
             Require(TriggerDocumentEditor::AddVariable(document, name, "unit").Succeeded(), "declare original unit variable");
         Require(TriggerDocumentEditor::AddVariable(document, "ItemTarget", "item").Succeeded(), "declare original item variable");
+        Require(TriggerDocumentEditor::AddVariable(document, "Spell", "abilcode").Succeeded(), "declare original ability-code variable");
         const auto assignment = TriggerDocumentEditor::AppendRootEca(document, *catalog.value, *trigger.value,
             UiDefinitionKind::Action, "SetVariable");
         Require(assignment.Succeeded() && assignment.value->appendedArguments.size() == 2, Codes(assignment));
@@ -255,6 +258,40 @@ void LegacyScalarEntryUsesTheSameQualification() {
     SamePair(*workspace, fixture.original); fixture.SourcePairUnchanged();
 }
 
+// 直接值与界面共用字面量规则：物编对象编号与自定义代码可写；句柄类型没有固定值写法。
+void DirectLiteralsUseTheSharedRules() {
+    Fixture fixture; auto workspace = fixture.Open();
+    const auto revision = workspace->Revision(); const auto transaction = workspace->BeginEdit(revision);
+    Require(transaction.Succeeded(), Codes(transaction));
+    const auto appended = workspace->AppendRootEca(*transaction.value, revision, workspace->VisibleDocument().triggers.front().id,
+        UiDefinitionKind::Action, "LiteralProbe");
+    Require(appended.Succeeded() && appended.value->appendedArguments.size() == 3, Codes(appended));
+    const auto ability = appended.value->appendedArguments[0].id, script = appended.value->appendedArguments[1].id,
+        unit = appended.value->appendedArguments[2].id;
+    const auto code = workspace->SetScalarArgument(*transaction.value, revision, ability, 3, "A04W");
+    Require(code.Succeeded() && ArgumentValue(*workspace, ability) == "A04W", Codes(code));
+    const auto shortCode = workspace->SetScalarArgument(*transaction.value, revision, ability, 3, "A04");
+    Require(!shortCode.Succeeded() && HasCode(shortCode, "TRIGGER_LITERAL_INVALID"), "object codes are exactly four bytes");
+    const auto preset = workspace->SetScalarArgument(*transaction.value, revision, ability, 0, "A04W");
+    Require(!preset.Succeeded() && HasCode(preset, "MCP_PRESET_NOT_ALLOWED"), "a rawcode is not a preset name");
+    const auto variable = workspace->SetScalarArgument(*transaction.value, revision, ability, 1, "udg_Spell");
+    Require(variable.Succeeded(), Codes(variable));
+    const auto wrongType = workspace->SetScalarArgument(*transaction.value, revision, ability, 1, "udg_ItemTarget");
+    Require(!wrongType.Succeeded() && HasCode(wrongType, "MCP_VARIABLE_TYPE_MISMATCH"), "an item variable is not an ability code");
+    const auto missing = workspace->SetScalarArgument(*transaction.value, revision, ability, 1, "udg_Missing");
+    Require(!missing.Succeeded() && HasCode(missing, "MCP_VARIABLE_UNKNOWN"), "an undeclared variable is reported as unknown");
+    const auto text = workspace->SetScalarArgument(*transaction.value, revision, script, 3, "call DoNothing()");
+    Require(text.Succeeded() && ArgumentValue(*workspace, script) == "call DoNothing()", Codes(text));
+    const auto handle = workspace->SetScalarArgument(*transaction.value, revision, unit, 3, "hfoo");
+    Require(!handle.Succeeded() && HasCode(handle, "MCP_DIRECT_TYPE_UNSUPPORTED"), "handle types have no literal form");
+    Require(workspace->SetScalarArgument(*transaction.value, revision, unit, 1, "udg_Target").Succeeded(), "handle argument takes a variable");
+    Require(workspace->PreviewEdit(*transaction.value, revision).Succeeded(), "literal edits preview");
+    const auto literalValidation = workspace->ValidateEdit(*transaction.value, revision);
+    Require(literalValidation.satisfied, "literal edits remain a valid paired transaction: " + Codes(literalValidation));
+    Require(workspace->Rollback(*transaction.value, revision).Succeeded(), "literal transaction rolls back");
+    SamePair(*workspace, fixture.original); fixture.SourcePairUnchanged();
+}
+
 void ExternalSourceChangesRejectActiveWork() {
     for (const bool mutateClassification : {false, true}) {
         Fixture fixture; auto workspace = fixture.Open(); const auto objects = workspace->MapObjectReferences();
@@ -287,6 +324,7 @@ int main() {
         LegacyBindingAndWtgOnlyRemainUsable();
         CaptureDiagnosticsSurviveCacheHits();
         LegacyScalarEntryUsesTheSameQualification();
+        DirectLiteralsUseTheSharedRules();
         ExternalSourceChangesRejectActiveWork();
         std::cout << "MCP real map object references passed\n"; return 0;
     } catch (const std::exception& error) {

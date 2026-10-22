@@ -43,12 +43,14 @@ add_library(War3MapTrigger STATIC
     TriggerDataText.cpp
     TriggerDirectory.cpp
     TriggerEcaMove.cpp
+    TriggerBlocks.cpp
     TriggerEditing.cpp
     TriggerEditBatch.cpp
     TriggerTransactionSnapshot.cpp
     TriggerGraphEditing.cpp
     TriggerArgumentReplacement.cpp
     TriggerPresentation.cpp
+    TriggerTextNotation.cpp
     TriggerTypes.cpp
     TriggerVariableReference.cpp
     UiCallbackActions.cpp

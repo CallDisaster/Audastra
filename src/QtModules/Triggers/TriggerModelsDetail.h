@@ -3,6 +3,7 @@
 
 #include "Icons/GeometricIcons.h"
 #include "Icons/IconProvider.h"
+#include "War3MapCore/Trigger/TriggerBlocks.h"
 #include "War3MapCore/Trigger/TriggerEditing.h"
 #include "War3MapCore/Trigger/TriggerPresentation.h"
 #include "War3MapCore/Trigger/UiCatalog.h"
@@ -122,41 +123,16 @@ inline QString NestedRoleLabel(std::int32_t branch, std::int32_t type) {
     }
 }
 
-// 块语句的分支（WTG 只存子节点的分支号，分支的类型与名称由编辑器按函数名决定）。
-// 原版块语句与 YDWE 的块语句（计时器 / 注册触发器 / 运行触发器 / 选取单位 / 区域 / 循环）的分支表
-// 参照两者的公开行为；其余 …Multiple 视为单个“循环 - 动作”。
+// 块语句的分支表在核心层（War3MapCore/Trigger/TriggerBlocks.h），界面与紧凑 T 写法共用。
 // 声明的分支即使为空也显示，这样可以直接往空的“否则”“参数”里添加语句。
-struct BranchSpec {
-    std::int32_t branch = 0;
-    std::int32_t type = 2;
-    const char* label = nullptr; // UTF-8；为空时按类型 / 分支号取通用名称
-};
+using BranchSpec = War3Map::Trigger::TriggerBlockBranch;
 
 inline bool IsIfBlock(std::string_view name) {
-    return name.find("IfThenElse") != std::string_view::npos && name.ends_with("Multiple");
+    return War3Map::Trigger::IsIfThenElseBlock(name);
 }
 
-// catalog 给出时，函数库声明多一个末尾 code 参数的动作（回调块）也有一个“动作”分支。
 inline const std::vector<BranchSpec>* KnownBlock(std::string_view name, const War3Map::Trigger::UiCatalog* catalog = nullptr) {
-    static const std::vector<BranchSpec> ifBlock{{0, 1, "如果 - 条件"}, {1, 2, "则 - 动作"}, {2, 2, "否则 - 动作"}};
-    static const std::vector<BranchSpec> conditions{{0, 1, "条件"}};
-    static const std::vector<BranchSpec> loop{{0, 2, "循环 - 动作"}};
-    static const std::vector<BranchSpec> actions{{0, 2, "动作"}};
-    static const std::vector<BranchSpec> timer{{0, 2, "参数"}, {1, 2, "动作"}};
-    static const std::vector<BranchSpec> registerTrigger{{0, 0, "事件"}, {1, 2, "参数"}, {2, 2, "动作"}};
-    static const std::vector<BranchSpec> parameters{{0, 2, "参数"}};
-    static const std::vector<BranchSpec> callback{{0, 2, "动作"}};
-    if (IsIfBlock(name)) return &ifBlock;
-    if (name == "AndMultiple" || name == "OrMultiple") return &conditions;
-    if (name == "YDWETimerStartMultiple") return &timer;
-    if (name == "YDWERegisterTriggerMultiple") return &registerTrigger;
-    if (name == "YDWEExecuteTriggerMultiple") return &parameters;
-    if (name == "YDWEEnumUnitsInRangeMultiple" || name == "YDWERegionMultiple") return &actions;
-    // Dz 异步注册（多项）：块内是回调动作，不是循环。
-    if ((name.starts_with("DzTriggerRegister") || name.starts_with("DzFrameSet")) && name.ends_with("Multiple")) return &actions;
-    if (name.ends_with("Multiple")) return &loop;
-    if (catalog != nullptr && catalog->CallbackActions().Find(name) != nullptr) return &callback;
-    return nullptr;
+    return War3Map::Trigger::FindTriggerBlockBranches(name, catalog);
 }
 
 inline std::vector<BranchSpec> DeclaredBranches(std::string_view name, const War3Map::Trigger::UiCatalog* catalog = nullptr) {

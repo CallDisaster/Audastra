@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 
@@ -271,18 +272,72 @@ void LimitsAreFailClosed() {
     limits.values = minimumValues + 2;
     const auto added = fixture.Read(limits); (void)Good(added);
 }
+void LegacyScriptPrebuiltLayout() {
+    // 旧入口：metadata 与默认数据都在 script/prebuilt 下，一份默认数据，"名称:序号" 键统一成 名称_序号。
+    Fixture fixture;
+    const auto prebuilt = fixture.installed / "plugin/w3x2lni/script/prebuilt";
+    fixture.files.clear();
+    auto metadata = Metadata();
+    metadata.insert(metadata.find("[P001]"), "[.\"buttonpos:1\"]\nfield = Buttonpos:1\nid = abpx\nindex = 1\nkey = buttonpos\ntype = 0\n");
+    fixture.files[prebuilt / "defined/metadata.ini"] = Bytes(metadata);
+    for (const auto type : kTypes)
+        fixture.files[prebuilt / "default" / (std::string(type) + ".ini")] =
+            Bytes("[P001]\n_id=\"P001\"\n_type=\"" + std::string(type) + "\"\nname=\"legacy\"\n\"buttonpos:1\"=2\n");
+    fixture.files[prebuilt / "default/txt.ini"] = Bytes("[P001]\nname = {\"原创文本\"}\n");
+    fixture.files[prebuilt / "default/misc.ini"] = Bytes("[FontScope]\n_type=\"misc\"\nheight=0.013\n");
+    auto request = fixture.Request();
+    request.coreRoot = prebuilt; request.layout = SlkDatasetLayout::ScriptPrebuiltDefault;
+    for (const auto dataSet : {1, 2}) {
+        fixture.w3i = W3i(dataSet); request.finalW3i = fixture.w3i; fixture.requested.clear();
+        const auto result = ReadSlkTypedDataset(request, fixture.Reader());
+        const auto& data = Good(result);
+        Require(data.layout == SlkDatasetLayout::ScriptPrebuiltDefault && data.dataSetId.empty(), "legacy layout identity lost");
+        Require(data.sources.size() == 10 && data.sources[0].path == prebuilt / "defined/metadata.ini", "legacy read config or wrong metadata");
+        const auto& fields = data.defaults[1].at("P001").fields;
+        Require(Value<std::string>(fields, "name") == "legacy" && Value<std::int64_t>(fields, "buttonpos_1") == 2, "indexed key not canonical");
+        const auto& field = data.metadata.common[6].fields.at("buttonpos_1").fields; // 插在 destructable 节末
+        Require(Value<std::string>(field, "field") == "Buttonpos_1", "metadata indexed field not canonical");
+    }
+    // 新版布局仍拒绝引号键；旧布局拒绝不是 名称:序号 的引号键。
+    auto modern = Fixture();
+    modern.files[modern.Prebuilt("Custom", "ability")] = Bytes("[P001]\n\"buttonpos:1\"=2\n");
+    Rejected(modern.Read(), "SLK_DATASET_SYNTAX");
+    fixture.files[prebuilt / "default/ability.ini"] = Bytes("[P001]\n\"button pos\"=2\n");
+    Rejected(ReadSlkTypedDataset(request, fixture.Reader()), "SLK_DATASET_SYNTAX");
+    fixture.files[prebuilt / "default/ability.ini"] = Bytes("[P001]\n\"buttonpos:1\"=2\nbuttonpos_1=3\n");
+    Rejected(ReadSlkTypedDataset(request, fixture.Reader()), "SLK_DATASET_DUPLICATE");
+}
+void LayoutDetection() {
+    const auto root = std::filesystem::temp_directory_path() / "audastra-slk-layout-fixture";
+    std::filesystem::remove_all(root);
+    const auto plugin = root / "plugin/w3x2lni";
+    const auto layout = [&]() { return DetectSlkDatasetLayout(root); };
+    Require(!layout().Succeeded() && layout().diagnostics.front().code == "SLK_DATASET_LAYOUT_MISSING", "empty root guessed a layout");
+    std::filesystem::create_directories(plugin / "script/prebuilt/default");
+    { std::ofstream(plugin / "script/w3x2lni.lua") << "-- original fixture\n"; }
+    Require(layout().Succeeded() && *layout().value == SlkDatasetLayout::ScriptPrebuiltDefault, "legacy entry not detected");
+    Require(SlkDatasetCoreRoot(root, SlkDatasetLayout::ScriptPrebuiltDefault) == plugin / "script/prebuilt", "legacy core root differs");
+    std::filesystem::create_directories(plugin / "data");
+    Require(!layout().Succeeded() && layout().diagnostics.front().code == "SLK_DATASET_LAYOUT_AMBIGUOUS", "ambiguous layout guessed");
+    std::filesystem::remove(plugin / "script/w3x2lni.lua");
+    Require(layout().Succeeded() && *layout().value == SlkDatasetLayout::DataSetPrebuilt, "data-set layout not detected");
+    Require(SlkDatasetCoreRoot(root, SlkDatasetLayout::DataSetPrebuilt) == plugin / "script/core", "core root differs");
+    std::filesystem::remove_all(root);
+}
 int Probe(int argc, char** argv) {
     if (argc != 5 || std::string_view(argv[1]) != "--probe" ||
-        (std::string_view(argv[4]) != "Custom" && std::string_view(argv[4]) != "Melee")) {
-        std::cerr << "Usage: --probe <core-root> <installed-ydwe-root> <Custom|Melee>\n"; return 2;
+        (std::string_view(argv[4]) != "Custom" && std::string_view(argv[4]) != "Melee" && std::string_view(argv[4]) != "Legacy")) {
+        std::cerr << "Usage: --probe <core-root> <installed-ydwe-root> <Custom|Melee|Legacy>\n"; return 2;
     }
-    const auto w3i = W3i(std::string_view(argv[4]) == "Custom" ? 1 : 2);
+    const bool legacy = std::string_view(argv[4]) == "Legacy";
+    const auto w3i = W3i(std::string_view(argv[4]) == "Melee" ? 2 : 1);
     const auto utf8Path = [](std::string_view input) {
         std::u8string text;
         for (const unsigned char byte : input) text.push_back(static_cast<char8_t>(byte));
         return std::filesystem::path(text);
     };
-    const auto result = ReadSlkTypedDataset({utf8Path(argv[2]), utf8Path(argv[3]), w3i, 0});
+    const auto result = ReadSlkTypedDataset({utf8Path(argv[2]), utf8Path(argv[3]), w3i, 0,
+        legacy ? SlkDatasetLayout::ScriptPrebuiltDefault : SlkDatasetLayout::DataSetPrebuilt});
     if (!result.Succeeded()) {
         for (const auto& diagnostic : result.diagnostics) {
             std::cerr << diagnostic.code << ": " << diagnostic.message;
@@ -306,7 +361,7 @@ int main(int argc, char** argv) {
     try {
         if (argc > 1) return Probe(argc, argv);
         SelectionAndTypedValues(); MetadataLayersAndReceipts(); MetadataShortFieldIds(); MissingFilesAndInvalidSyntax();
-        BareCommentsAreRejected(); LimitsAreFailClosed();
+        BareCommentsAreRejected(); LimitsAreFailClosed(); LegacyScriptPrebuiltLayout(); LayoutDetection();
         std::cout << "SLK typed dataset original-fixture tests passed\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

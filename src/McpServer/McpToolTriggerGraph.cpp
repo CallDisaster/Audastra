@@ -2,6 +2,7 @@
 #include "McpTriggerGraphJson.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
+#include "War3MapCore/Trigger/TriggerTextNotation.h"
 #include "War3MapCore/Trigger/TriggerTypes.h"
 
 #include <QJsonDocument>
@@ -222,8 +223,10 @@ public:
     }
     GraphArgumentValue Argument(const QJsonValue& value, std::size_t depth) {
         Count(depth);
-        const auto object = Object(value, {"scalar"}, {"client_key", "call", "index"});
-        GraphArgumentValue result; result.scalar = Scalar(object.value("scalar"));
+        const auto object = Object(value, {}, {"scalar", "client_key", "call", "index"});
+        // 函数参数可省略 scalar（默认空字面值即“由 call 提供”）；两者都没有才算缺值。
+        if (!object.contains("scalar") && !object.contains("call")) throw GraphJsonError("参数须给出 scalar 或 call。");
+        GraphArgumentValue result; if (object.contains("scalar")) result.scalar = Scalar(object.value("scalar"));
         result.clientKey = ClientKey(object, false);
         if (object.contains("call")) result.call = std::make_shared<const GraphEcaValue>(Eca(object.value("call"), depth + 1));
         if (object.contains("index")) result.index = std::make_shared<const GraphArgumentValue>(Argument(object.value("index"), depth + 1));
@@ -342,6 +345,14 @@ public:
                 GraphInsertSubtree insert; insert.parent = Parent(object.value("parent")); insert.root = std::make_shared<const GraphEcaValue>(Eca(object.value("root")));
                 if (object.contains("before")) insert.before = Ref(object.value("before"));
                 batch.operations.emplace_back(std::move(insert));
+            } else if (op == "insert_text") {
+                const auto object = Object(value, {"op", "parent", "text"}, {"before"});
+                GraphInsertText insert; insert.parent = Parent(object.value("parent")); insert.text = String(object, "text");
+                if (object.contains("before")) insert.before = Ref(object.value("before"));
+                batch.operations.emplace_back(std::move(insert));
+            } else if (op == "replace_trigger_text") {
+                const auto object = Object(value, {"op", "trigger", "text"});
+                batch.operations.emplace_back(GraphReplaceTriggerText{Ref(object.value("trigger")), String(object, "text")});
             } else if (op == "replace_argument") {
                 const auto object = Object(value, {"op", "target", "expected", "value"});
                 GraphReplaceArgument replace;
@@ -379,9 +390,24 @@ QJsonValue OptionalIndex(const TriggerDocument& document, const std::optional<st
 QJsonObject QueryDocumentImpl(const TriggerDocument& document, const UiCatalog& catalog,
     const MapObjectReferenceSnapshot* mapObjects, const QJsonObject& request, const GraphNameResolver& names = {}) {
     Object(request, {"table"}, {"start", "limit", "schema_version", "argument_ids", "variable_ids", "include_replacement_guard",
-        "functions", "ui_layer"});
+        "functions", "ui_layer", "trigger_id"});
     if (request.contains("schema_version") && Integer(request, "schema_version") != 1) throw GraphJsonError("未知图 schema_version。");
     const auto table = String(request, "table");
+    if (table == "trigger_text") {
+        // 整个触发器导出为紧凑 T 写法，可直接修改后用 replace_trigger_text 写回。
+        Object(request, {"table", "trigger_id"}, {"schema_version"});
+        const auto triggerId = Id(request, "trigger_id");
+        const auto binding = CaptureTriggerGraphBinding(document, catalog, mapObjects);
+        if (!binding.Succeeded()) return Failure(binding);
+        const auto text = RenderTriggerText(document, catalog, triggerId, kResponseBytes / 2);
+        if (!text.Succeeded()) return Failure(text);
+        const auto trigger = std::find_if(document.triggers.begin(), document.triggers.end(),
+            [triggerId](const auto& row) { return row.id == triggerId; });
+        return {{"ok", true}, {"schema_version", 1}, {"binding", BindingJson(*binding.value)}, {"table", "trigger_text"},
+            {"trigger", RefJson(GraphRecordKind::Trigger, triggerId)}, {"name", QString::fromStdString(trigger->name.text)},
+            {"text", QString::fromStdString(*text.value)}};
+    }
+    if (request.contains("trigger_id")) throw GraphJsonError("trigger_id 只适用于 trigger_text 表。");
     const bool exactArguments = request.contains("argument_ids"), exactVariables = request.contains("variable_ids");
     const bool exact = exactArguments || exactVariables;
     const bool guards = request.contains("include_replacement_guard") && Boolean(request, "include_replacement_guard");
@@ -641,7 +667,7 @@ QJsonObject GraphSchema() {
     const auto eca = Shape({{"client_key", string}, {"function", string}, {"kind", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"event", "condition", "action", "call"}}}},
         {"enabled", boolean}, {"child_branch", integer}, {"arguments", ArraySchema(argumentRef)}, {"children", ArraySchema(ecaRef)}},
         {"function", "kind", "enabled", "arguments", "children"});
-    const auto argument = Shape({{"client_key", string}, {"scalar", scalar}, {"call", ecaRef}, {"index", argumentRef}}, {"scalar"});
+    const auto argument = Shape({{"client_key", string}, {"scalar", scalar}, {"call", ecaRef}, {"index", argumentRef}});
     const auto argumentGuard = Shape({{"schema_version", QJsonObject{{"type", "integer"}, {"enum", QJsonArray{1}}}},
         {"owner_eca_id", QJsonObject{{"type", "string"}, {"pattern", "^[1-9][0-9]*$"}}},
         {"source_trigger_id", QJsonObject{{"type", "string"}, {"pattern", "^[1-9][0-9]*$"}}},
@@ -668,6 +694,8 @@ QJsonObject GraphSchema() {
     variants.append(Shape({{"op", op("insert_subtree")}, {"parent", parent}, {"root", ecaRef}, {"before", ref}}, {"op", "parent", "root"}));
     variants.append(Shape({{"op", op("replace_argument")}, {"target", ref}, {"expected", argumentGuard}, {"value", argumentRef}},
         {"op", "target", "expected", "value"}));
+    variants.append(Shape({{"op", op("insert_text")}, {"parent", parent}, {"text", string}, {"before", ref}}, {"op", "parent", "text"}));
+    variants.append(Shape({{"op", op("replace_trigger_text")}, {"trigger", ref}, {"text", string}}, {"op", "trigger", "text"}));
     auto schema = BasicSchema({{"schema_version", QJsonObject{{"type", "integer"}, {"enum", QJsonArray{1}}}}, {"expected", binding},
         {"operations", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 256}, {"items", QJsonObject{{"oneOf", variants}}}}}},
         {"transaction_id", "expected_revision", "expected", "operations"});
@@ -752,6 +780,18 @@ QJsonObject EcaFunctionFilterSchema() {
         {"items", QJsonObject{{"type", "string"}, {"minLength", 1}}}};
 }
 
+QJsonObject GraphQueryProperties() {
+    const auto id = QJsonObject{{"type", "string"}, {"pattern", "^[1-9][0-9]*$"}};
+    return {{"schema_version", QJsonObject{{"type", "integer"}, {"enum", QJsonArray{1}}}},
+        {"table", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"categories", "variables", "triggers", "ecas", "arguments",
+            "map_objects", "trigger_text"}}}},
+        {"start", QJsonObject{{"type", "integer"}, {"minimum", 0}}}, {"limit", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 128}}},
+        {"argument_ids", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 16}, {"uniqueItems", true}, {"items", id}}},
+        {"variable_ids", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 16}, {"uniqueItems", true}, {"items", id}}},
+        {"include_replacement_guard", QJsonObject{{"type", "boolean"}}}, {"functions", EcaFunctionFilterSchema()},
+        {"ui_layer", QJsonObject{{"type", "string"}, {"minLength", 1}}}, {"trigger_id", id}};
+}
+
 QJsonObject GraphOperationSchema() {
     const auto original = GraphSchema();
     auto properties = original.value("properties").toObject();
@@ -771,16 +811,9 @@ QJsonObject QueryGraphDocument(const Trigger::TriggerDocument& document, const T
 void RegisterTriggerGraphTools(McpServer& server) {
     ToolDefinition query;
     query.name = "query_trigger_graph";
-    query.description = "分页查询 GUI 图；ecas 可用 functions（精确函数名）或 ui_layer（函数库层）筛选后再分页；arguments 可用 argument_ids 定点查询最多16项，并通过 include_replacement_guard 取得共用核心的原位替换资格。";
-    query.inputSchema = BasicSchema({{"schema_version", QJsonObject{{"type", "integer"}, {"enum", QJsonArray{1}}}},
-        {"table", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"categories", "variables", "triggers", "ecas", "arguments", "map_objects"}}}},
-        {"start", QJsonObject{{"type", "integer"}, {"minimum", 0}}}, {"limit", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 128}}},
-        {"argument_ids", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 16}, {"uniqueItems", true},
-            {"items", QJsonObject{{"type", "string"}, {"pattern", "^[1-9][0-9]*$"}}}}},
-        {"variable_ids", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 16}, {"uniqueItems", true},
-            {"items", QJsonObject{{"type", "string"}, {"pattern", "^[1-9][0-9]*$"}}}}},
-        {"include_replacement_guard", QJsonObject{{"type", "boolean"}}}, {"functions", EcaFunctionFilterSchema()},
-        {"ui_layer", QJsonObject{{"type", "string"}, {"minLength", 1}}}}, {"table"});
+    query.description = "分页查询 GUI 图；ecas 可用 functions（精确函数名）或 ui_layer（函数库层）筛选后再分页；arguments 可用 argument_ids 定点查询最多16项，并通过 include_replacement_guard 取得共用核心的原位替换资格；"
+        "trigger_text 表配 trigger_id 把整个触发器导出为紧凑 T 写法。";
+    query.inputSchema = BasicSchema(GraphQueryProperties(), {"table"});
     query.maxResponseBytes = kResponseBytes;
     query.handler = [&server](const QJsonObject& request) -> QJsonValue {
         QJsonObject error; auto* workspace = RequireWorkspace(server, error); if (!workspace) return error;
@@ -791,7 +824,8 @@ void RegisterTriggerGraphTools(McpServer& server) {
     ToolDefinition edit;
     edit.name = "edit_trigger_graph";
     edit.permission = ToolPermission::Edit;
-    edit.description = "在单一目录事务内原子编辑 GUI 图：创建、字段、精确改名、顺序移动、删除、类型子树和受guard保护的参数原位替换。代码审计仅 CallerAsserted，不创建自定义脚本。";
+    edit.description = "在单一目录事务内原子编辑 GUI 图：创建、字段、精确改名、顺序移动、删除、类型子树和受guard保护的参数原位替换。"
+        "insert_text / replace_trigger_text 用紧凑 T 写法一次写入整段事件/条件/动作（写法见 AGENT_GUIDE）。代码审计仅 CallerAsserted，不创建自定义脚本。";
     edit.inputSchema = GraphSchema(); edit.maxResponseBytes = kResponseBytes;
     edit.handler = [&server](const QJsonObject& request) -> QJsonValue {
         QJsonObject error; auto* workspace = RequireWorkspace(server, error); if (!workspace) return error;

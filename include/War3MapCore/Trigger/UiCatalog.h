@@ -204,6 +204,7 @@ private:
 };
 
 [[nodiscard]] UiDefinitionKind UiDefinitionKindFromEcaType(std::int32_t type) noexcept;
+[[nodiscard]] std::optional<std::int32_t> EcaTypeFromUiDefinitionKind(UiDefinitionKind kind) noexcept;
 [[nodiscard]] std::string_view ToString(UiDefinitionKind kind) noexcept;
 
 } // namespace War3Map::Trigger

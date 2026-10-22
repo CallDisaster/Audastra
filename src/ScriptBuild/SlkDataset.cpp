@@ -8,6 +8,7 @@
 #include <charconv>
 #include <cmath>
 #include <fstream>
+#include <optional>
 #include <stdexcept>
 
 namespace War3Map::Script {
@@ -42,6 +43,20 @@ bool Identifier(std::string_view text) {
     // LNI 数字起首 key 会进入数字解析，不能假设为字符串键；纯 section 的数字起首另行保留。
     return PlainSection(text) && !(text.front() >= '0' && text.front() <= '9');
 }
+// 旧版 w3x2lni 把多分量字段写成带引号的 "名称:序号"（metadata 的 field 值为不带引号的 名称:序号），
+// 新版写作 名称_序号，含义相同；统一成新版键，其余引号键仍拒绝。
+std::optional<std::string> IndexedKey(std::string_view text, bool quoted) {
+    if (quoted) {
+        if (text.size() < 2 || text.front() != '"' || text.back() != '"') return std::nullopt;
+        text = text.substr(1, text.size() - 2);
+    }
+    const auto colon = text.find(':');
+    if (colon == std::string_view::npos || colon + 1 == text.size() || !Identifier(text.substr(0, colon))) return std::nullopt;
+    const auto index = text.substr(colon + 1);
+    if (index.size() > 3 || !std::all_of(index.begin(), index.end(), [](unsigned char c) { return c >= '0' && c <= '9'; }))
+        return std::nullopt;
+    return std::string(text.substr(0, colon)) + "_" + std::string(index);
+}
 bool Rawcode(std::string_view text) {
     return text.size() == 4 && std::all_of(text.begin(), text.end(), [](unsigned char c) { return c >= 0x21 && c <= 0x7e && c != '[' && c != ']'; });
 }
@@ -72,8 +87,8 @@ struct Budget {
 
 class ValueParser {
 public:
-    ValueParser(std::string_view input, bool bare, Budget& budget, OriginSpan source)
-        : input_(input), bare_(bare), budget_(budget), source_(std::move(source)) {}
+    ValueParser(std::string_view input, bool bare, Budget& budget, OriginSpan source, bool indexed = false)
+        : input_(input), bare_(bare), indexed_(indexed), budget_(budget), source_(std::move(source)) {}
     SlkSessionValue Parse() {
         Space();
         if (at_ == input_.size()) Bad("缺少值，不能猜测为空字符串。");
@@ -152,15 +167,15 @@ private:
             if (parsed.ec != std::errc{} || parsed.ptr != token.data() + token.size() || !std::isfinite(number)) Bad("实数不是有限 double 字面量。");
             return number;
         }
-        if (!bare || !std::all_of(token.begin(), token.end(), [](unsigned char c) {
+        if (!bare || !std::all_of(token.begin(), token.end(), [this](unsigned char c) {
             return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-                c == '_' || c == '-' || c == '.' || c == '$' || c == '{' || c == '}';
+                c == '_' || c == '-' || c == '.' || c == '$' || c == '{' || c == '}' || (indexed_ && c == ':');
         })) Bad("仅 metadata/config 接受已界定的裸字符串；不执行 Lua。");
         budget_.Text(token.size(), source_);
         return std::string(token);
     }
     std::string_view input_;
-    bool bare_;
+    bool bare_, indexed_;
     Budget& budget_;
     OriginSpan source_;
     std::size_t at_ = 0;
@@ -168,7 +183,7 @@ private:
 
 using Document = std::map<std::string, SlkDatasetMetadataScope>;
 Document Parse(std::span<const std::byte> bytes, std::size_t sourceIndex, const SlkDatasetSourceReceipt& receipt,
-    bool sections, bool bare, Budget& budget) {
+    bool sections, bool bare, bool indexed, Budget& budget) {
     const auto input = bytes.empty() ? std::string_view{} : std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size());
     OriginSpan source{receipt.path, 0, 0, receipt.sha256};
     if (input.find('\0') != std::string_view::npos) Reject("SLK_DATASET_SYNTAX", "数据文件含 NUL。", source);
@@ -184,38 +199,53 @@ Document Parse(std::span<const std::byte> bytes, std::size_t sourceIndex, const 
         if (!line.empty()) {
             if (line.front() == '[') {
                 if (line.back() != ']') Reject("SLK_DATASET_SYNTAX", "section 未闭合。", source);
-                auto name = line.substr(1, line.size() - 2);
-                const bool child = name.starts_with('.');
-                if (child) name.remove_prefix(1);
-                // ':' 是继承语法，'.'/引号等另有 LNI 含义；只接受已确认的纯名称。
+                auto rawName = line.substr(1, line.size() - 2);
+                const bool child = rawName.starts_with('.');
+                if (child) rawName.remove_prefix(1);
+                // ':' 是继承语法，'.'/引号等另有 LNI 含义；只接受已确认的纯名称（旧布局的引号分量字段除外）。
+                const auto indexedName = indexed && child ? IndexedKey(rawName, true) : std::nullopt;
+                const std::string name = indexedName ? *indexedName : std::string(rawName);
                 if (!PlainSection(name))
                     Reject("SLK_DATASET_SYNTAX", "section 名称不在已确认范围。", source);
                 budget.Key(name, source); budget.Spend(budget.records, 1, budget.limits.records, source);
                 const SlkDatasetPosition position{sourceIndex, lineStart, lineEnd - lineStart};
                 if (child) {
                     if (!sections || !scope || !Identifier(name)) Reject("SLK_DATASET_SYNTAX", "不支持此相对 section。", source);
-                    if (scope->fields.contains(std::string(name)) || scope->properties.contains(std::string(name)))
+                    if (scope->fields.contains(name) || scope->properties.contains(name))
                         Reject("SLK_DATASET_DUPLICATE", "重复 canonical metadata 字段，或与同 scope 属性重名。", source);
                     budget.Spend(budget.metadata, 1, budget.limits.metadataFields, source);
-                    auto [at, inserted] = scope->fields.emplace(std::string(name), SlkDatasetRecord{{}, position});
+                    auto [at, inserted] = scope->fields.emplace(name, SlkDatasetRecord{{}, position});
                     (void)inserted; fields = &at->second.fields;
                 } else {
-                    if (result.contains(std::string(name))) Reject("SLK_DATASET_DUPLICATE", "重复数据 section。", source);
-                    auto [at, inserted] = result.emplace(std::string(name), SlkDatasetMetadataScope{{}, {}, position});
+                    if (result.contains(name)) Reject("SLK_DATASET_DUPLICATE", "重复数据 section。", source);
+                    auto [at, inserted] = result.emplace(name, SlkDatasetMetadataScope{{}, {}, position});
                     (void)inserted; scope = &at->second; fields = &scope->properties;
                 }
             } else {
                 const auto equal = line.find('=');
                 if (!fields || equal == std::string_view::npos) Reject("SLK_DATASET_SYNTAX", "只支持 section 内的键值数据。", source);
-                const auto key = Trim(line.substr(0, equal));
+                const auto rawKey = Trim(line.substr(0, equal));
+                const auto indexedKey = indexed ? IndexedKey(rawKey, true) : std::nullopt;
+                const std::string key = indexedKey ? *indexedKey : std::string(rawKey);
                 if (!Identifier(key)) Reject("SLK_DATASET_SYNTAX", "字段名不在已确认范围。", source);
-                if (fields->contains(std::string(key))) Reject("SLK_DATASET_DUPLICATE", "重复字段，不能按最后值吞掉来源。", source);
+                if (fields->contains(key)) Reject("SLK_DATASET_DUPLICATE", "重复字段，不能按最后值吞掉来源。", source);
                 budget.Key(key, source); budget.Spend(budget.fields, 1, budget.limits.fields, source); budget.Value(source);
                 const auto value = Trim(line.substr(equal + 1));
                 const auto valueOffset = static_cast<std::size_t>(value.data() - input.data());
                 auto valueSource = source; valueSource.offset = valueOffset; valueSource.length = value.size();
-                auto parsed = ValueParser(value, bare, budget, valueSource).Parse();
-                fields->emplace(std::string(key), SlkDatasetValue{std::move(parsed), {sourceIndex, valueOffset, value.size()}});
+                const bool indexedField = indexed && sections && scope && fields != &scope->properties && key == "field";
+                auto parsed = ValueParser(value, bare, budget, valueSource, indexedField).Parse();
+                if (indexedField) {
+                    // metadata 的 field 与节名对应，同样统一成 名称_序号。
+                    auto* scalar = std::get_if<SlkSessionScalar>(&parsed);
+                    auto* text = scalar ? std::get_if<std::string>(scalar) : nullptr;
+                    if (text && text->find(':') != std::string::npos) {
+                        const auto canonical = IndexedKey(*text, false);
+                        if (!canonical) Reject("SLK_DATASET_SYNTAX", "metadata field 的分量写法不在已确认范围。", valueSource);
+                        *text = *canonical;
+                    }
+                }
+                fields->emplace(key, SlkDatasetValue{std::move(parsed), {sourceIndex, valueOffset, value.size()}});
             }
         }
         if (end == std::string_view::npos) break;
@@ -329,6 +359,9 @@ Result<SlkTypedDataset> ReadSlkTypedDataset(const SlkDatasetRequest& request, co
         else if (w3i.value->gameDataSet == 0 || w3i.value->gameDataSet == -1)
             output.family = w3i.value->flags & 4 ? SlkDatasetFamily::Melee : SlkDatasetFamily::Custom;
         else Reject("SLK_DATASET_W3I_UNSUPPORTED", "未知 W3I 数据集选择，不能猜测版本。", origin);
+        output.layout = request.layout;
+        const bool legacy = request.layout == SlkDatasetLayout::ScriptPrebuiltDefault;
+        if (!legacy && request.layout != SlkDatasetLayout::DataSetPrebuilt) Reject("SLK_DATASET_SELECTION_UNSUPPORTED", "未知 w3x2lni 布局。", origin);
         output.coreRoot = Root(request.coreRoot, !reader);
         output.installedYdweRoot = Root(request.installedYdweRoot, !reader);
         const auto read = [&](const std::filesystem::path& root, const std::filesystem::path& relative,
@@ -353,15 +386,18 @@ Result<SlkTypedDataset> ReadSlkTypedDataset(const SlkDatasetRequest& request, co
             budget.Spend(budget.bytes, bytes.value->size(), limits.totalBytes, source);
             const auto index = output.sources.size();
             output.sources.push_back({std::move(role), path, Digest(*bytes.value, source), bytes.value->size()});
-            return Parse(*bytes.value, index, output.sources.back(), children, bare, budget);
+            return Parse(*bytes.value, index, output.sources.back(), children, bare, legacy, budget);
         };
-        auto config = read(output.coreRoot, "config.ini", "core-config", false, false, true);
-        const auto global = config.find("global");
-        const auto* data = global == config.end() ? nullptr : String(global->second.properties, "data");
-        if (!data || data->empty() || data->size() > 128 || data->front() == '.' || data->find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-") != std::string::npos)
-            Reject("SLK_DATASET_SELECTION_UNSUPPORTED", "config global.data 必须是明确的单级数据集目录。",
-                {output.sources.back().path, 0, output.sources.back().byteCount, output.sources.back().sha256});
-        budget.Text(data->size(), origin); output.dataSetId = *data;
+        // 旧入口只有一份默认数据，其 config.ini 不选数据集，不读取。
+        if (!legacy) {
+            auto config = read(output.coreRoot, "config.ini", "core-config", false, false, true);
+            const auto global = config.find("global");
+            const auto* data = global == config.end() ? nullptr : String(global->second.properties, "data");
+            if (!data || data->empty() || data->size() > 128 || data->front() == '.' || data->find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-") != std::string::npos)
+                Reject("SLK_DATASET_SELECTION_UNSUPPORTED", "config global.data 必须是明确的单级数据集目录。",
+                    {output.sources.back().path, 0, output.sources.back().byteCount, output.sources.back().sha256});
+            budget.Text(data->size(), origin); output.dataSetId = *data;
+        }
         auto metadata = read(output.coreRoot, "defined/metadata.ini", "canonical-metadata", false, true, true);
         const OriginSpan metadataOrigin{output.sources.back().path, 0, output.sources.back().byteCount, output.sources.back().sha256};
         CheckMetadata(metadata, metadataOrigin);
@@ -372,10 +408,12 @@ Result<SlkTypedDataset> ReadSlkTypedDataset(const SlkDatasetRequest& request, co
         }
         if (auto node = metadata.extract("misc"); !node.empty()) output.metadata.misc = std::move(node.mapped());
         output.metadata.byCode = std::move(metadata);
-        const std::string family = output.family == SlkDatasetFamily::Custom ? "Custom" : "Melee";
+        const std::string family = legacy ? "default" : output.family == SlkDatasetFamily::Custom ? "Custom" : "Melee";
         for (const auto type : kPrebuilt) {
-            const auto relative = std::filesystem::path("plugin/w3x2lni/data") / output.dataSetId / "prebuilt" / family / (std::string(type) + ".ini");
-            auto parsed = read(output.installedYdweRoot, relative, "prebuilt-" + std::string(type), true, false, false);
+            const auto file = std::string(type) + ".ini";
+            auto parsed = legacy ? read(output.coreRoot, std::filesystem::path("default") / file, "prebuilt-" + std::string(type), true, false, false)
+                : read(output.installedYdweRoot, std::filesystem::path("plugin/w3x2lni/data") / output.dataSetId / "prebuilt" / family / file,
+                    "prebuilt-" + std::string(type), true, false, false);
             SlkDatasetTable* target = type == "txt" ? &output.txt : type == "misc" ? &output.misc : nullptr;
             if (!target) target = &output.defaults[static_cast<std::size_t>(std::find(kClasses.begin(), kClasses.end(), type) - kClasses.begin())];
             for (auto& [id, record] : parsed) {
@@ -415,5 +453,25 @@ Result<SlkTypedDataset> ReadSlkTypedDataset(const SlkDatasetRequest& request, co
     } catch (const std::exception&) {
         return Result<SlkTypedDataset>::Failure("Script.SlkDataset", "SLK_DATASET_RESOURCE_FAILURE", "数据集读取未完成，未返回部分结果。");
     }
+}
+
+Result<SlkDatasetLayout> DetectSlkDatasetLayout(const std::filesystem::path& w3x2lniRoot) {
+    const auto plugin = w3x2lniRoot / "plugin" / "w3x2lni";
+    std::error_code error;
+    const bool dataSets = std::filesystem::is_directory(plugin / "data", error);
+    const bool legacyEntry = std::filesystem::is_regular_file(plugin / "script" / "w3x2lni.lua", error) &&
+        std::filesystem::is_directory(plugin / "script" / "prebuilt" / "default", error);
+    if (dataSets && legacyEntry)
+        return Result<SlkDatasetLayout>::Failure("Script.SlkDataset", "SLK_DATASET_LAYOUT_AMBIGUOUS",
+            "w3x2lni 同时有 data 数据集目录与旧入口 script/prebuilt/default，不能确定框架使用哪一套。");
+    if (dataSets) return Result<SlkDatasetLayout>::Success(SlkDatasetLayout::DataSetPrebuilt);
+    if (legacyEntry) return Result<SlkDatasetLayout>::Success(SlkDatasetLayout::ScriptPrebuiltDefault);
+    return Result<SlkDatasetLayout>::Failure("Script.SlkDataset", "SLK_DATASET_LAYOUT_MISSING",
+        "w3x2lni 既没有 data 数据集目录，也没有旧入口的 script/prebuilt/default。");
+}
+
+std::filesystem::path SlkDatasetCoreRoot(const std::filesystem::path& w3x2lniRoot, SlkDatasetLayout layout) {
+    const auto script = w3x2lniRoot / "plugin" / "w3x2lni" / "script";
+    return layout == SlkDatasetLayout::ScriptPrebuiltDefault ? script / "prebuilt" : script / "core";
 }
 } // namespace War3Map::Script

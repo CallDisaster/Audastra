@@ -37,6 +37,8 @@ struct ScriptUserSourcePlan {
     int profileTargetVersionMacro = 0;
     std::string profileDirectiveDialectVersion;
     std::vector<ScriptProfileDirective> profileDirectives;
+    std::vector<ScriptProfileFeatureExtension> profileFeatureExtensions;
+    std::vector<ScriptProfileUnsupportedPlugin> profileUnsupportedPlugins;
     ScriptProfileEncoding profileMainEncoding = ScriptProfileEncoding::Utf8;
     std::vector<ScriptProfileSourceRoot> profileEncodingRoots;
     std::vector<ScriptProfileSourceEncoding> profileSourceEncodings;

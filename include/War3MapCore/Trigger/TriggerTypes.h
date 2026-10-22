@@ -62,6 +62,9 @@ public:
     [[nodiscard]] static bool IsRealLiteral(std::string_view value);
     // 不带外层引号的四个可安全编码字节；与JASS/Lua生成器共用。
     [[nodiscard]] static bool IsObjectCodeLiteral(std::string_view value);
+    // 函数槽参数的 ECA 种类：eventcall → 事件，boolexpr/boolcall → 条件，code → 动作；
+    // 其余类型返回空（参数函数为普通 Call，按返回类型匹配）。编辑、校验与编解码共用。
+    [[nodiscard]] static std::optional<UiDefinitionKind> FunctionSlotKind(std::string_view type);
 
     [[nodiscard]] const TriggerTypeInfo* Find(std::string_view type) const;
     // 显示名：TriggerTypes 第 4 列（WESTRING_ 键经目录的字符串表解析），无法解析时为类型名本身。

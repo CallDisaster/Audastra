@@ -1,4 +1,5 @@
 #include "War3MapCore/Script/LuaTemplateSandbox.h"
+#include "War3MapCore/Script/ScriptToolchainProfile.h"
 
 #include "LuaTemplateSlkBridge.h"
 #include "ScriptNames.h"
@@ -384,6 +385,42 @@ void PushEnvironment(lua_State* lua) {
     lua_setmetatable(lua, -2);
 }
 
+// 原创实现：框架 XGuserdataGC 插件头文件调用的模板函数。gc_bind_unit/gc_bind_item 先标记触发器，
+// 之后同一触发器的 TriggerAddAction 照常输出，并追加一次对应的绑定调用；未标记的触发器原样输出。
+constexpr std::string_view kUserdataGcLibrary = R"lua(
+local pending = {}
+local function trim(text) return (text:match('^%s*(.-)%s*$')) end
+function gc_bind_unit_lua(trig) pending[trim(trig)] = 'gc_bind_unit'; return 'DoNothing()' end
+function gc_bind_item_lua(trig) pending[trim(trig)] = 'gc_bind_item'; return 'DoNothing()' end
+function TriggerAddAction_lua(trig, action)
+    local text = 'TriggerAddAction(' .. trig .. ',' .. action .. ')'
+    local key = trim(trig)
+    local bind = pending[key]
+    if not bind then return text end
+    pending[key] = nil
+    return text .. '\ncall ' .. bind .. '(' .. trim(action) .. ')'
+end
+)lua";
+
+// 把已开启的函数集定义到模板环境（栈顶）；失败时返回原因。
+std::string LoadLibraries(lua_State* lua, const std::vector<std::string>& libraries) {
+    for (const auto& id : libraries) {
+        if (id != kUserdataGcTemplateLibrary) return "未知模板函数集：" + id;
+        int status = luaL_loadbufferx(lua, kUserdataGcLibrary.data(), kUserdataGcLibrary.size(), "=userdata-gc", "t");
+        if (status == LUA_OK) {
+            lua_pushvalue(lua, -2); // 函数集写进模板环境
+            lua_setupvalue(lua, -2, 1);
+            status = lua_pcall(lua, 0, 0, 0);
+        }
+        if (status != LUA_OK) {
+            std::string message = lua_type(lua, -1) == LUA_TSTRING ? lua_tostring(lua, -1) : "未知错误";
+            lua_pop(lua, 1);
+            return "模板函数集 " + id + " 加载失败：" + message;
+        }
+    }
+    return {};
+}
+
 struct StateCloser {
     void operator()(lua_State* lua) const noexcept { lua_close(lua); }
 };
@@ -397,7 +434,10 @@ Result<TemplateTransactionOutput> Fail(std::string code, std::string message) {
 std::optional<std::filesystem::path> FindTemplateW3x2lniRoot(const std::filesystem::path& toolRoot) {
     std::error_code error;
     for (const auto& candidate : {toolRoot, toolRoot / "share" / "w3x2lni"}) {
-        if (std::filesystem::is_regular_file(candidate / "plugin" / "w3x2lni" / "script" / "core" / "defined" / "metadata.ini", error))
+        // 新版 core 或旧入口 prebuilt 的 metadata 任一存在；具体用哪套由 DetectSlkDatasetLayout 判定。
+        const auto script = candidate / "plugin" / "w3x2lni" / "script";
+        if (std::filesystem::is_regular_file(script / "core" / "defined" / "metadata.ini", error) ||
+            std::filesystem::is_regular_file(script / "prebuilt" / "defined" / "metadata.ini", error))
             return candidate;
     }
     return std::nullopt;
@@ -433,6 +473,7 @@ Result<TemplateTransactionOutput> RunLuaTemplate(const LuaTemplateRequest& reque
     chunk.code.clear();
     chunk.code.shrink_to_fit();
     PushEnvironment(lua);
+    if (const auto error = LoadLibraries(lua, request.libraries); !error.empty()) return Fail("TEMPLATE_HOST_FAILED", error);
     lua_setupvalue(lua, -2, 1);
     lua_pushcfunction(lua, Put);
     lua_pushcfunction(lua, Finish);

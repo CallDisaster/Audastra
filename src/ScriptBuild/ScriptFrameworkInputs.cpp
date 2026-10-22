@@ -263,14 +263,19 @@ Result<Jass::SourceLexicalView> RebindFrameworkLexicalView(std::string_view outp
         return R::Failure("Script.Framework", "SCRIPT_FRAMEWORK_OUTPUT_ENCODING_BUDGET", "最终来源精确片段查询超过有界预算。");
     Jass::SourceLexicalView rebound; rebound.text = output;
     std::map<std::uint32_t, Jass::SourceOpaqueSpan> selected;
+    std::size_t shared = 0;
     for (const auto& region : regions) {
         const auto bytes = ownedOriginal.substr(region.begin, region.end - region.begin);
         for (std::size_t found = output.find(bytes); found != std::string_view::npos; found = output.find(bytes, found + bytes.size())) {
             for (auto span : region.spans) {
                 span.offset = static_cast<std::uint32_t>(found) + span.offset - region.begin;
                 const auto [prior, inserted] = selected.emplace(span.offset, span);
-                if (!inserted && prior->second != span) return R::Failure("Script.Framework",
-                    "SCRIPT_FRAMEWORK_OUTPUT_ENCODING_AMBIGUOUS", "相同最终不透明片段对应多个原来源；未猜测归属。");
+                if (inserted || prior->second == span) continue;
+                // 多处原文字节完全相同（如重复的中文注释）：遮挡位置、长度与类别一致，输出字节确定，
+                // 只是诊断位置有多个候选，保留首次出现处。遮挡范围不同才是真歧义。
+                if (prior->second.length != span.length || prior->second.kind != span.kind) return R::Failure("Script.Framework",
+                    "SCRIPT_FRAMEWORK_OUTPUT_ENCODING_AMBIGUOUS", "相同最终不透明片段对应多个原来源且遮挡范围不同；未猜测归属。");
+                ++shared;
             }
         }
     }
@@ -279,29 +284,63 @@ Result<Jass::SourceLexicalView> RebindFrameworkLexicalView(std::string_view outp
     }
     valid = Jass::ValidateSourceLexicalView(output, rebound);
     if (!valid.Succeeded()) return {{}, std::move(valid.diagnostics)};
-    return R::Success(std::move(rebound));
+    auto result = R::Success(std::move(rebound));
+    if (shared > 0) result.diagnostics.push_back({DiagnosticSeverity::Info, "Script.Framework",
+        "SCRIPT_FRAMEWORK_OUTPUT_OPAQUE_SHARED_BYTES", std::to_string(shared) +
+        " 处不透明片段的原字节在多个来源中完全相同，输出字节不受影响；诊断位置取首次出现处。", std::nullopt});
+    return result;
 }
 ScriptFrameworkDirectivePolicy FrameworkDirectivePolicy(const ScriptFrameworkInputs& inputs) {
     return inputs.profile.directiveDialectVersion == "ydwe-dollar-features-v1" && inputs.profile.directives == kFeatureDirectives
         ? ScriptFrameworkDirectivePolicy::FeatureFlagsV1 : ScriptFrameworkDirectivePolicy::None;
 }
 
+// 部分旧框架分支（如雪月）在保存流程里内置编译插件。按安装目录里实际存在的插件文件登记，
+// 不按分支名判断；同样带这些文件的其他旧框架共用同一规则。
+static void AddFrameworkPlugins(ScriptToolchainProfile& profile, const ScriptToolchainLayout& layout) {
+    std::error_code error;
+    const auto exists = [&](const std::filesystem::path& path) { return std::filesystem::is_regular_file(path, error); };
+    const auto header = [&](std::string_view name) {
+        return std::any_of(layout.systemIncludes.begin(), layout.systemIncludes.end(),
+            [&](const std::filesystem::path& root) { return exists(root / name); });
+    };
+    const auto compile = layout.root / "share" / "script" / "compile";
+    // $def 特性 → 强制包含，顺序与框架追加 Wave --forceinclude 的顺序一致。
+    if (header("XGJAPI.h")) profile.featureExtensions.push_back({"XG_JAPI", "XGJAPI.h", {}});
+    if (header("XGuserdataGC.h") && exists(compile / "userdataGC.lua"))
+        profile.featureExtensions.push_back({"XGuserdataGC", "XGuserdataGC.h", std::string(kUserdataGcTemplateLibrary)});
+    if (header("WenHaoJapi_xjass.h")) profile.featureExtensions.push_back({"WenHao__Japi", "WenHaoJapi_xjass.h", {}});
+    // 按正文标识符触发、尚未实现的插件：出现即拒绝。
+    if (exists(compile / "XGMacro.lua")) profile.unsupportedPlugins.push_back({"XGMacro", {"XG_Macro_Set", "XG_Macro_Get"}});
+    if (exists(compile / "XGStrFormat.lua"))
+        profile.unsupportedPlugins.push_back({"XGStrFormat", {"XG_StrFormat_Reg", "XG_StrFormat_Do", "XG_StrFormat_AIO"}});
+    if (exists(layout.root / "jass" / "XueYue" / "SystemLibs" / "AutoGetAttr.j"))
+        profile.unsupportedPlugins.push_back({"AutoGetAttr", {"XG_AutoAttr_SetClassA", "XG_AutoAttr_AddAttrA", "XG_AutoAttr_StartA",
+            "XG_AutoAttr_GetAttrNum", "XG_AutoAttr_GetAttrKey", "XG_AutoAttr_GetAttrVal"}});
+    if (exists(layout.root / "jass" / "XueYue" / "Calls" / "GetHeroMainAttr.j"))
+        profile.unsupportedPlugins.push_back({"GetHeroMainAttr", {"XG_GetHeroMainAttr"}});
+}
+
 Result<ScriptToolchainProfile> MakeLegacyFrameworkProfile(const ScriptToolchainLayout& layout,
     const Trigger::UiCatalog& catalog, const std::filesystem::path& uiRoot,
-    const std::filesystem::path& mainDirectory) {
+    const std::filesystem::path& mapDirectory) {
     if (layout.executionPolicy != ScriptToolchainExecutionPolicy::FrameworkInputsRequired ||
         layout.kind != ScriptToolchainLayoutKind::LegacyShareMpq || catalog.Layers().empty()) {
         return Result<ScriptToolchainProfile>::Failure("Script.Framework", "SCRIPT_FRAMEWORK_LAYOUT_UNSUPPORTED",
             "正常旧框架档案需要已绑定share/mpq布局和实际有效目录。");
     }
     ScriptToolchainProfile profile;
-    profile.profileId = "ydwe-legacy-framework-subset-v1";
+    profile.profileId = "ydwe-legacy-framework-subset-v2";
     profile.layoutKind = ScriptProfileLayoutKind::LegacyShareMpq;
     profile.toolRoot = layout.root;
+    // 框架保存时把地图脚本解出到 <工具根>/logs 再交给 Wave，主文的“当前目录”就是这里：
+    // 地图里写的 "../memory_hack/x.j" 指工具根下的库。地图目录是随后的第一个用户包含根。
+    std::filesystem::path map;
     if (!Detail::NormalizeSourcePath(uiRoot, profile.uiRoot) ||
-        !Detail::NormalizeSourcePath(mainDirectory, profile.mainSourceDirectory)) {
+        !Detail::NormalizeSourcePath(layout.root / "logs", profile.mainSourceDirectory) ||
+        !Detail::NormalizeSourcePath(mapDirectory, map)) {
         return Result<ScriptToolchainProfile>::Failure("Script.Framework", "SCRIPT_FRAMEWORK_ROOT_INVALID",
-            "工具/UI与地图真实主文目录必须显式绑定，不使用构建临时目录或猜测Component根。");
+            "工具/UI根、框架编译目录与地图目录必须显式绑定，不使用构建临时目录或猜测Component根。");
     }
     profile.targetVersionMacro = layout.versionMacro;
     profile.baseLibraryCategory = layout.allowReturnBug ? ScriptProfileBaseLibraryCategory::Pre124
@@ -312,17 +351,41 @@ Result<ScriptToolchainProfile> MakeLegacyFrameworkProfile(const ScriptToolchainL
     profile.templateApiVersion = "forge-restricted-template-v1";
     profile.templateApis = kTemplateApis;
     profile.sourceRoots.push_back({ScriptProfileSourceRole::Injection, layout.root / "jass"});
-    profile.sourceRoots.push_back({ScriptProfileSourceRole::UserInclude, profile.mainSourceDirectory});
+    // 与框架 Wave 的 --include 顺序一致：地图目录、工具根 jass。
+    profile.sourceRoots.push_back({ScriptProfileSourceRole::UserInclude, map});
     profile.sourceRoots.push_back({ScriptProfileSourceRole::UserInclude, layout.root / "jass"});
+    // 相对 .. 只在工具根内取得读取资格，越出工具根仍拒绝。
+    profile.ordinaryIncludeAccess.push_back({layout.root, ScriptIncludeAccessKind::Directory,
+        ScriptProfileEncoding::UniqueUtf8OrGbk, true});
     for (const auto& path : layout.systemIncludes)
         profile.sourceRoots.push_back({ScriptProfileSourceRole::SystemInclude, path});
     for (const auto& path : layout.forceIncludes)
         profile.sourceRoots.push_back({ScriptProfileSourceRole::ForceInclude, path});
     profile.sourceRoots.push_back({ScriptProfileSourceRole::Native, layout.root / "jass" / "native", false});
     for (auto& source : profile.sourceRoots) source.encoding = ScriptProfileEncoding::UniqueUtf8OrGbk;
+    AddFrameworkPlugins(profile, layout);
     auto valid = ValidateScriptToolchainProfile(profile);
     if (!valid.Succeeded()) return {{}, std::move(valid.diagnostics)};
     return Result<ScriptToolchainProfile>::Success(std::move(profile));
+}
+
+void MergeDeclaredIncludeAccess(ScriptToolchainProfile& profile, std::vector<ScriptProfileIncludeAccess> declared) {
+    for (auto& access : declared) {
+        const auto same = std::find_if(profile.ordinaryIncludeAccess.begin(), profile.ordinaryIncludeAccess.end(),
+            [&](const ScriptProfileIncludeAccess& prior) {
+                return CompareStringOrdinal(prior.path.c_str(), -1, access.path.c_str(), -1, TRUE) == CSTR_EQUAL;
+            });
+        if (same != profile.ordinaryIncludeAccess.end()) *same = std::move(access);
+        else profile.ordinaryIncludeAccess.push_back(std::move(access));
+    }
+}
+
+bool LegacyFrameworkProfileBindsMap(const ScriptToolchainProfile& profile, const std::filesystem::path& mapDirectory) {
+    const auto first = std::find_if(profile.sourceRoots.begin(), profile.sourceRoots.end(),
+        [](const ScriptProfileSourceRoot& root) { return root.role == ScriptProfileSourceRole::UserInclude; });
+    std::filesystem::path map;
+    return first != profile.sourceRoots.end() && Detail::NormalizeSourcePath(mapDirectory, map) &&
+        CompareStringOrdinal(first->path.c_str(), -1, map.c_str(), -1, TRUE) == CSTR_EQUAL;
 }
 
 Result<ScriptFrameworkInputs> CaptureScriptFrameworkInputs(ScriptToolchainProfile profile,
@@ -431,10 +494,32 @@ Result<std::string> InjectScriptFramework(std::string_view script, const ScriptF
     if (auto missing = CheckMissingInjectionLibraries(inputs.injection, identifiers); !missing.Succeeded())
         return {{}, std::move(missing.diagnostics)};
     std::set<std::size_t> files;
+    // 旧框架按子串查找 cfg 名，作者常只写函数族前缀（如 XG_CreateJumpText 覆盖 XG_CreateJumpTextFormLoc）。
+    // 这里只在代码标识符以 cfg 名开头、且该标识符确实出现在所选库文件的代码里时选中；
+    // 不匹配注释、字符串或名字中段。
+    const std::set<std::string_view> ordered(identifiers.begin(), identifiers.end());
+    const auto libraryDeclares = [&](const ScriptInjectionSourceFile& file, std::string_view key) -> Result<bool> {
+        std::vector<std::string_view> longer;
+        for (auto at = ordered.upper_bound(key); at != ordered.end() && at->starts_with(key); ++at) longer.push_back(*at);
+        if (longer.empty()) return Result<bool>::Success(false);
+        const std::string_view text(file.bytes.empty() ? "" : reinterpret_cast<const char*>(file.bytes.data()), file.bytes.size());
+        auto view = MakeFrameworkLexicalView(text, file.binding.path, FrameworkEncodingFor(inputs, file.binding.path));
+        if (!view.Succeeded()) return {{}, std::move(view.diagnostics)};
+        auto lexed = Jass::detail::LexPp(view.value->text, Text::SourceEncoding::Utf8);
+        if (!lexed.Succeeded()) return {{}, std::move(lexed.diagnostics)};
+        for (const auto& token : *lexed.value)
+            if (token.kind == Jass::detail::PpKind::Identifier && std::find(longer.begin(), longer.end(), token.text) != longer.end())
+                return Result<bool>::Success(true);
+        return Result<bool>::Success(false);
+    };
     for (const auto& choice : inputs.injection.choices) {
         if (choice.selectedFile >= inputs.injection.files.size())
             return Result<std::string>::Failure("Script.Framework", "SCRIPT_FRAMEWORK_INJECTION_INVALID", "注入来源索引无效。");
-        if (identifiers.contains(choice.key)) files.insert(choice.selectedFile);
+        if (files.contains(choice.selectedFile)) continue;
+        if (identifiers.contains(choice.key)) { files.insert(choice.selectedFile); continue; }
+        auto declared = libraryDeclares(inputs.injection.files[choice.selectedFile], choice.key);
+        if (!declared.Succeeded()) return {{}, std::move(declared.diagnostics)};
+        if (*declared.value) files.insert(choice.selectedFile);
     }
     std::vector<const ScriptInjectionSourceFile*> selected;
     for (const auto index : files) selected.push_back(&inputs.injection.files[index]);

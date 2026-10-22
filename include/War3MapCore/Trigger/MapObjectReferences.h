@@ -14,7 +14,9 @@ namespace War3Map::Trigger {
 // 真实地图成员衍生的只读标量；不授予全局赋值或数组资格。
 struct MapObjectReference {
     std::string symbol;
-    std::string type; // 仅正向证明的 unit/item；未知项不进入此表。
+    // 正向证明的 unit/item；脚本创建的 destructable；区域 rect、镜头 camerasetup、声音 sound（音乐为 string）。
+    // 未知或不完整的来源不进入此表。
+    std::string type;
     std::string rawcode;
     std::int32_t creationId = 0;
     std::size_t sourceIndex = 0;

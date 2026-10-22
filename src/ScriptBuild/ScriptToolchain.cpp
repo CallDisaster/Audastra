@@ -737,6 +737,7 @@ PipelineResult CompileMapScript(std::string_view generated, const ToolchainOptio
                     "模板结果的不透明原字节位置无法严格恢复；未发布部分产物。");
                 templateStage.exitCode = 1; return result;
             }
+            result.diagnostics.insert(result.diagnostics.end(), rebound.diagnostics.begin(), rebound.diagnostics.end());
             frameworkEvaluatedView = std::move(*rebound.value);
         } else frameworkEvaluatedView.text = evaluated.text;
     }
@@ -749,7 +750,16 @@ PipelineResult CompileMapScript(std::string_view generated, const ToolchainOptio
     }
     if (wholeChunk) {
         // 内置求值覆盖不了的模板：与 YDWE 保存相同，整份在 Lua 沙盒执行一次；不混用内置求值结果。
-        auto whole = templates.wholeChunk(preprocessed);
+        std::vector<std::string> libraries;
+        if (options.frameworkInputs && result.frameworkPreprocessSources) {
+            const auto& sources = *result.frameworkPreprocessSources;
+            for (const auto& extension : sources.entryPlan.profileFeatureExtensions) {
+                if (!extension.templateLibrary.empty() && std::find(sources.frameworkFeatureFlags.begin(),
+                        sources.frameworkFeatureFlags.end(), extension.feature) != sources.frameworkFeatureFlags.end())
+                    libraries.push_back(extension.templateLibrary);
+            }
+        }
+        auto whole = templates.wholeChunk(preprocessed, libraries);
         templateStage.elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - templateStarted);
         for (auto& diagnostic : whole.diagnostics) result.diagnostics.push_back(std::move(diagnostic));
         if (!whole.Succeeded()) { templateStage.exitCode = 1; return result; }
@@ -779,6 +789,7 @@ PipelineResult CompileMapScript(std::string_view generated, const ToolchainOptio
                         "模板结果的不透明原字节位置无法严格恢复；未发布部分产物。");
                     templateStage.exitCode = 1; return result;
                 }
+                result.diagnostics.insert(result.diagnostics.end(), rebound.diagnostics.begin(), rebound.diagnostics.end());
                 frameworkEvaluatedView = std::move(*rebound.value);
             }
         }

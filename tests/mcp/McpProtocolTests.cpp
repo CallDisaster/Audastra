@@ -801,8 +801,12 @@ void TestMapDataPageBinding() {
     };
     const QJsonObject getter{{"function", "ReadCall"}, {"kind", "call"}, {"enabled", true}, {"arguments", QJsonArray{}}, {"children", QJsonArray{}}};
     const QJsonObject store{{"function", "StoreInteger"}, {"kind", "action"}, {"enabled", true},
-        {"arguments", QJsonArray{QJsonObject{{"client_key", "retained_argument"},
-            {"scalar", QJsonObject{{"kind", 3}, {"value", ""}}}, {"call", getter}}}}, {"children", QJsonArray{}}};
+        {"arguments", QJsonArray{QJsonObject{{"client_key", "retained_argument"}, {"call", getter}}}}, {"children", QJsonArray{}}};
+    auto emptyArgument = store; emptyArgument["arguments"] = QJsonArray{QJsonObject{{"client_key", "empty_argument"}}};
+    code(call("edit_trigger_graph", argumentRequest(activeGraph.value("binding").toObject(),
+        QJsonArray{QJsonObject{{"op", "insert_subtree"}, {"root", emptyArgument},
+            {"parent", QJsonObject{{"kind", "trigger_ecas"}, {"owner", target}, {"ordered_children", graphRow.value("ecas")}}}}})),
+        "MCP_TRIGGER_GRAPH_REQUEST_INVALID");
     const QJsonObject inserted = call("edit_trigger_graph", argumentRequest(activeGraph.value("binding").toObject(),
         QJsonArray{QJsonObject{{"op", "insert_subtree"}, {"root", store},
             {"parent", QJsonObject{{"kind", "trigger_ecas"}, {"owner", target}, {"ordered_children", graphRow.value("ecas")}}}}}));
@@ -837,6 +841,22 @@ void TestMapDataPageBinding() {
     const auto staleResult = call("edit_trigger_graph", argumentRequest(afterPoint.value("binding").toObject(), {replacement}));
     Expect(!staleResult.value("ok").toBool()
         && call("query_trigger_graph", pointRequest).value("binding") == afterPoint.value("binding"), "stale argument guard mutated document");
+    // 紧凑 T 写法：夹具触发器含 WE 不会产生的“调用”根节点，导出须如实拒绝；整体替换后导出与写入一致；错误名字不写入。
+    const auto exportText = [&] {
+        return call("query_trigger_graph", {{"table", "trigger_text"}, {"trigger_id", target.value("id")}});
+    };
+    code(exportText(), "TRIGGER_TEXT_RENDER");
+    const QString canonical = "events:\n    ReadEvent()\nactions:\n    StoreInteger(42)\n    ~StoreInteger(ReadCall())\n";
+    const QString written = "events: ReadEvent()\nactions: StoreInteger(42); ~StoreInteger(ReadCall())";
+    const auto textEdit = call("edit_trigger_graph", argumentRequest(call("query_trigger_graph", {{"table", "triggers"}}).value("binding").toObject(),
+        {QJsonObject{{"op", "replace_trigger_text"}, {"trigger", target}, {"text", written}}}));
+    Expect(textEdit.value("ok").toBool(), "replace_trigger_text failed through MCP JSON");
+    const auto exported = exportText();
+    Expect(exported.value("ok").toBool() && exported.value("text").toString() == canonical, "trigger_text did not export the replaced body");
+    code(call("edit_trigger_graph", argumentRequest(exported.value("binding").toObject(),
+        {QJsonObject{{"op", "replace_trigger_text"}, {"trigger", target}, {"text", "actions:\n    Missing()\n"}}})),
+        "TRIGGER_TEXT_UNKNOWN_FUNCTION");
+    Expect(exportText().value("text").toString() == canonical, "rejected text changed the trigger");
     Expect(server.Workspace()->Rollback(*argumentEdit.value, revision).Succeeded(), "argument replacement rollback failed");
     server.SetWorkspace(source, ui);
     code(call("query_map_data_page", args), "MAP_DATA_QUERY_STALE");

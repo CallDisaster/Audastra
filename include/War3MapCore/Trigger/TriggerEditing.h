@@ -86,7 +86,10 @@ public:
         const UiCatalog& catalog,
         StableId argumentId,
         std::string_view expectedReturnType,
-        std::string_view functionName);
+        std::string_view functionName,
+        // 函数槽参数（eventcall/boolexpr/boolcall/code）可填事件/条件/动作 ECA；
+        // 为空时按槽位优先找同名事件/条件/动作，找不到再按返回类型找 Call。
+        std::optional<UiDefinitionKind> kind = std::nullopt);
 
     [[nodiscard]] static Status UndoAppend(
         TriggerDocument& document,
@@ -183,6 +186,10 @@ public:
         TriggerDocument& document,
         const ArgumentCallDetachReceipt& receipt);
 
+    // 一次删掉触发器的全部根 ECA 子树（只压实一次）；整体替换内容用，撤销由调用方的文档快照负责。
+    [[nodiscard]] static Status ClearTriggerEcas(
+        TriggerDocument& document,
+        StableId triggerId);
     // 撤销 RemoveEcaSubtree：按回执把子树补回原索引并重挂到原挂载点。
     [[nodiscard]] static Status UndoRemoveEcaSubtree(
         TriggerDocument& document,

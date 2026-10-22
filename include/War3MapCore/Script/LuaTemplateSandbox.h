@@ -1,6 +1,7 @@
 #pragma once
 
 #include "War3MapCore/Script/ScriptPipeline.h"
+#include "War3MapCore/Script/SlkDataset.h"
 #include "War3MapCore/Script/SlkMapSourceSnapshot.h"
 
 #include <chrono>
@@ -18,9 +19,10 @@
 namespace War3Map::Script {
 
 struct LuaTemplateSlkSources {
-    // 含 plugin/w3x2lni/script/core 与 plugin/w3x2lni/data 的根（YDWE 根，或 KKWE 的 share/w3x2lni）。
+    // 含 plugin/w3x2lni 的根（YDWE 根，或 KKWE 的 share/w3x2lni）。
     std::filesystem::path w3x2lniRoot;
     const SlkMapSourceSnapshot* map = nullptr; // 本次保存的最终成员；须在执行期间存活
+    SlkDatasetLayout layout = SlkDatasetLayout::DataSetPrebuilt; // 由 DetectSlkDatasetLayout 确定
 };
 
 // 在工具根下查找 w3x2lni 数据根；找不到返回空。
@@ -40,6 +42,8 @@ struct LuaTemplateRequest {
     std::optional<std::filesystem::path> importRoot;
     // 首次 require 'slk' 时调用；未提供或失败时 require 报错。
     std::function<Result<LuaTemplateSlkSources>()> slk;
+    // 框架档案已开启的原创模板函数集 ID；未知 ID 拒绝执行。
+    std::vector<std::string> libraries;
     LuaTemplateLimits limits;
 };
 

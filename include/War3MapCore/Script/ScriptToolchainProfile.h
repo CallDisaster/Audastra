@@ -39,6 +39,22 @@ struct ScriptProfileIncludeAccess {
     [[nodiscard]] bool operator==(const ScriptProfileIncludeAccess&) const = default;
 };
 
+// 框架编译插件中由 $def 特性开启的部分：开启时在框架强制包含之后追加该头文件（按包含根查找），
+// 并让模板宿主加载对应的原创函数集。只登记已原创实现且安装目录里确有对应文件的项。
+struct ScriptProfileFeatureExtension {
+    std::string feature;         // $def 特性名
+    std::string forceInclude;    // 头文件拼写，单个文件名
+    std::string templateLibrary; // 原创模板函数集 ID；空表示只追加头文件
+    [[nodiscard]] bool operator==(const ScriptProfileFeatureExtension&) const = default;
+};
+// 框架按正文标识符触发、本编辑器尚未实现的编译插件；预处理后正文出现任一标识符即拒绝。
+struct ScriptProfileUnsupportedPlugin {
+    std::string name;
+    std::vector<std::string> identifiers;
+    [[nodiscard]] bool operator==(const ScriptProfileUnsupportedPlugin&) const = default;
+};
+inline constexpr std::string_view kUserdataGcTemplateLibrary = "xueyue-userdata-gc-v1";
+
 // 纯词法资格/编码匹配，不访问FS。ExactFile优先，其余用最具体Directory；调用方先验证档案。
 // 同一规范路径的重复/类型/编码冲突由Validate拒绝；更具体条目是显式覆盖，不依声明顺序猜编码。
 [[nodiscard]] const ScriptProfileIncludeAccess* MatchScriptIncludeAccess(
@@ -73,6 +89,8 @@ struct ScriptToolchainProfile {
     std::string returnbugPatternSetVersion;
     std::string directiveDialectVersion = "ydwe-dollar-v1";
     std::vector<ScriptProfileDirective> directives;
+    std::vector<ScriptProfileFeatureExtension> featureExtensions;
+    std::vector<ScriptProfileUnsupportedPlugin> unsupportedPlugins;
     [[nodiscard]] bool operator==(const ScriptToolchainProfile&) const = default;
 };
 

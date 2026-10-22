@@ -4,6 +4,7 @@
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
 #include "War3MapCore/Trigger/TriggerEditing.h"
+#include "War3MapCore/Trigger/TriggerTypes.h"
 #include "TriggerIdAllocation.h"
 
 #include <algorithm>
@@ -772,7 +773,8 @@ Result<TriggerCodeEditPlan> TriggerCodeEditor::PrepareRecovery(const TriggerDocu
                 const auto& slots = definition->Active().arguments;
                 if (slot >= slots.size()) return fail("CODE_EDIT_FRAGMENT", "转回 T 的候选参数超出函数库声明。");
                 const auto& type = slots[slot].type;
-                int required = type == "code" ? 2 : type == "boolexpr" || type == "boolcall" ? 1 : type == "eventcall" ? 0 : 3;
+                const auto slotKind = TriggerTypeSystem::FunctionSlotKind(type);
+                int required = slotKind ? EcaTypeFromUiDefinitionKind(*slotKind).value_or(3) : 3;
                 for (;;) {
                     if (argumentIndex >= argumentCount || seenArgument[argumentIndex]) return fail("CODE_EDIT_FRAGMENT", "转回 T 的候选参数引用无效。");
                     seenArgument[argumentIndex] = 1;

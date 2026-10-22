@@ -134,7 +134,7 @@ MapScriptBuildResult BuildMapScript(const MapScriptBuildRequest& request) {
             options.frameworkInputs = std::make_shared<const ScriptFrameworkInputs>(std::move(*captured.value));
         } else if (options.frameworkInputs->catalog.Sha256() != request.catalog->Sha256() ||
             options.frameworkInputs->catalog.Layers() != request.layers ||
-            options.frameworkInputs->profile.mainSourceDirectory != request.archive->SourcePath().parent_path().lexically_normal()) {
+            !LegacyFrameworkProfileBindsMap(options.frameworkInputs->profile, request.archive->SourcePath().parent_path())) {
             diagnostics.push_back({DiagnosticSeverity::Error, "Script.Build", "SCRIPT_FRAMEWORK_CATALOG_STALE",
                 "框架输入目录/层序与本次生成器不同；拒绝借用另一张地图的来源。", {}});
             return result;
@@ -296,9 +296,10 @@ MapScriptBuildResult BuildMapScript(const MapScriptBuildRequest& request) {
     }
     // 内置求值覆盖不了的模板（slk 物编生成、控制语句等）由进程内 Lua 沙盒整份执行一次，
     // slk 库首次 require 时才捕获本次保存的最终成员，同一快照供保存时的三方合并使用。
-    templates.wholeChunk = [&](std::string_view preprocessed) -> Result<TemplateTransactionOutput> {
+    templates.wholeChunk = [&](std::string_view preprocessed, const std::vector<std::string>& libraries) -> Result<TemplateTransactionOutput> {
         LuaTemplateRequest lua;
         lua.preprocessed = preprocessed;
+        lua.libraries = libraries;
         lua.abilityOrder = templates.abilityOrder;
         lua.importRoot = templates.importRoot;
         lua.slk = [&]() -> Result<LuaTemplateSlkSources> {
@@ -306,12 +307,14 @@ MapScriptBuildResult BuildMapScript(const MapScriptBuildRequest& request) {
             if (!root)
                 return Result<LuaTemplateSlkSources>::Failure("Script.LuaTemplate", "TEMPLATE_SLK_DATA_MISSING",
                     "工具目录里找不到 w3x2lni 物编数据（plugin/w3x2lni），模板 slk 库不能使用。");
+            auto layout = DetectSlkDatasetLayout(*root);
+            if (!layout.Succeeded() || !layout.value) return {std::nullopt, std::move(layout.diagnostics)};
             if (!result.slkSources) {
                 auto snapshot = SlkMapSourceSnapshot::Capture(archive, edits, removals, request.documentRevision);
                 if (!snapshot.Succeeded() || !snapshot.value) return {std::nullopt, std::move(snapshot.diagnostics)};
                 result.slkSources = std::move(*snapshot.value);
             }
-            return Result<LuaTemplateSlkSources>::Success({*root, &*result.slkSources});
+            return Result<LuaTemplateSlkSources>::Success({*root, &*result.slkSources, *layout.value});
         };
         if (options.onStage) options.onStage("lua-template");
         return RunLuaTemplate(lua);

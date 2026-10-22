@@ -108,6 +108,7 @@ bool Equal(const ScriptUserSourcePlan& a, const ScriptUserSourcePlan& b) {
         a.bindings.size() != b.bindings.size() || a.profileIdentitySha256 != b.profileIdentitySha256 ||
         a.profileTargetVersionMacro != b.profileTargetVersionMacro ||
         a.profileDirectiveDialectVersion != b.profileDirectiveDialectVersion || a.profileDirectives != b.profileDirectives ||
+        a.profileFeatureExtensions != b.profileFeatureExtensions || a.profileUnsupportedPlugins != b.profileUnsupportedPlugins ||
         a.profileMainEncoding != b.profileMainEncoding || a.profileEncodingRoots != b.profileEncodingRoots ||
         a.profileSourceEncodings != b.profileSourceEncodings ||
         a.profileOrdinaryIncludeAccess != b.profileOrdinaryIncludeAccess ||
@@ -162,6 +163,8 @@ Result<ScriptUserSourcePlan> CaptureScriptUserSourcePlan(const ScriptUserSourceR
             plan.profileTargetVersionMacro = profile.targetVersionMacro;
             plan.profileDirectiveDialectVersion = profile.directiveDialectVersion;
             plan.profileDirectives = profile.directives;
+            plan.profileFeatureExtensions = profile.featureExtensions;
+            plan.profileUnsupportedPlugins = profile.unsupportedPlugins;
             plan.profileMainEncoding = profile.mainEncoding;
             plan.profileEncodingRoots = profile.sourceRoots;
             plan.profileSourceEncodings = profile.sourceEncodings;
@@ -175,9 +178,10 @@ Result<ScriptUserSourcePlan> CaptureScriptUserSourcePlan(const ScriptUserSourceR
             }
             return Bind(plan, output, Kind::Directory, required, result.diagnostics);
         };
+        // 档案的主文目录可以是框架编译目录（如尚未生成的 logs）；缺失时记为负绑定，只是不能从中找到 include。
         if (!directory(request.layout->root, plan.toolRoot, true) ||
             !directory(request.uiRoot, plan.uiRoot, true) || (!request.mapDirectory.empty() &&
-                !directory(request.mapDirectory, plan.mapDirectory, true))) {
+                !directory(request.mapDirectory, plan.mapDirectory, request.profile == nullptr))) {
             if (result.diagnostics.empty()) Fail(result.diagnostics, "SCRIPT_USER_SOURCE_PATH_INVALID", "根路径无效。");
             return result;
         }

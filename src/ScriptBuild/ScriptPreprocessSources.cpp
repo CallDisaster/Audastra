@@ -504,6 +504,31 @@ Jass::PreprocessOptions Options(const ScriptPreprocessSources& sources) {
     }
     return options;
 }
+// 框架编译插件：已开启的 $def 特性按档案顺序在框架强制包含之后追加头文件；
+// 未实现的插件在框架阶段正文（代码标识符，不含注释/字符串）出现触发名时拒绝，不静默交给 jasshelper。
+Status ApplyFrameworkPlugins(const ScriptUserSourcePlan& plan, const FrameworkPhaseResult& framework,
+    Jass::PreprocessOptions& options) {
+    for (const auto& extension : plan.profileFeatureExtensions) {
+        if (std::binary_search(framework.flags.begin(), framework.flags.end(), extension.feature))
+            options.forceIncludes.push_back(extension.forceInclude);
+    }
+    if (plan.profileUnsupportedPlugins.empty()) return {};
+    auto lex = Jass::detail::LexPp(framework.lexicalView.text, War3Map::Text::SourceEncoding::Utf8);
+    if (!lex.Succeeded()) return {std::move(lex.diagnostics)};
+    for (const auto& token : *lex.value) {
+        if (token.kind != Jass::detail::PpKind::Identifier) continue;
+        for (const auto& plugin : plan.profileUnsupportedPlugins) {
+            if (std::find(plugin.identifiers.begin(), plugin.identifiers.end(), token.text) == plugin.identifiers.end()) continue;
+            auto failure = Status::Failure("Script.PreprocessSources", "SCRIPT_FRAMEWORK_PLUGIN_UNSUPPORTED",
+                "框架编译插件 " + plugin.name + " 尚未支持（触发名 " + std::string(token.text) + "）；未发布部分结果。");
+            const auto position = framework.sourceMap.Find(token.line);
+            if (position && position->file < framework.sourceMap.Files().size())
+                failure.diagnostics.back().message += " 位置：" + framework.sourceMap.Files()[position->file] + ":" + std::to_string(position->line);
+            return failure;
+        }
+    }
+    return {};
+}
 Jass::PreprocessResult PreprocessOwned(const ScriptPreprocessSources& sources, std::string_view text,
     Jass::PreprocessOptions options, FrameworkPhaseResult& framework, Jass::PreprocessCache& cache) {
     if (sources.request.frameworkDirectivePolicy == ScriptFrameworkDirectivePolicy::None)
@@ -511,6 +536,9 @@ Jass::PreprocessResult PreprocessOwned(const ScriptPreprocessSources& sources, s
     auto phase = FrameworkFeatures(options).Run(text, sources.request.mainDirectory / sources.request.mainName);
     if (!phase.Succeeded()) { Jass::PreprocessResult result; result.diagnostics = std::move(phase.diagnostics); return result; }
     framework = std::move(*phase.value);
+    if (auto plugins = ApplyFrameworkPlugins(sources.entryPlan, framework, options); !plugins.Succeeded()) {
+        Jass::PreprocessResult result; result.diagnostics = std::move(plugins.diagnostics); return result;
+    }
     options.mainLexicalView = framework.lexicalView;
     const auto provider = options.includeProvider;
     options.includeProvider = [provider, viewProvider = options.lexicalViewProvider](const std::filesystem::path& path) -> ContentResult {

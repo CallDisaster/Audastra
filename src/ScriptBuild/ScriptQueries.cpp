@@ -130,10 +130,17 @@ TemplateContext BuildTemplateContext(const std::filesystem::path& toolRoot, cons
         const ObjectData::StandardObjectCatalog* standard = nullptr;
     };
     auto state = std::make_shared<State>();
-    const auto computed = toolRoot / "compiler" / "script" / "computed";
-    auto ids = ReadOrderTable(computed / "order_id.lua");
+    // 命令表放在框架模板宿主的 computed 目录：新版 compiler/script（abilityOrder.lua），
+    // 旧版 share/script（ability2order.lua）。两者都在时无法确定宿主，不读表，查询按未知失败。
+    const auto modern = toolRoot / "compiler" / "script" / "computed";
+    const auto legacy = toolRoot / "share" / "script" / "computed";
+    std::error_code error;
+    const bool hasModern = std::filesystem::is_regular_file(modern / "abilityOrder.lua", error);
+    const bool hasLegacy = std::filesystem::is_regular_file(legacy / "ability2order.lua", error);
+    const auto computed = hasModern && hasLegacy ? std::filesystem::path{} : hasLegacy ? legacy : modern;
+    auto ids = computed.empty() ? decltype(ReadOrderTable(modern)){} : ReadOrderTable(computed / "order_id.lua");
     for (auto& [group, table] : ids) state->orderIds.merge(table);
-    state->orderLists = ReadOrderTable(computed / "order_list.lua");
+    if (!computed.empty()) state->orderLists = ReadOrderTable(computed / "order_list.lua");
     for (auto& record : abilities) state->abilities.emplace(record.key.rawcode, std::move(record));
     state->standard = standard;
 

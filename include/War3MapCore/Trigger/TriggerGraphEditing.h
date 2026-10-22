@@ -57,6 +57,7 @@ struct GraphEcaValue {
     std::optional<std::int32_t> childBranch;
     std::vector<GraphArgumentValue> arguments;
     std::vector<std::shared_ptr<const GraphEcaValue>> children;
+    std::string origin; // 紧凑写法里的行列与函数名，只用于诊断定位
 };
 struct GraphCreate {
     std::string clientKey;
@@ -114,7 +115,19 @@ struct GraphArgumentReplacementReceipt {
     std::string beforeSubtreeSha256, afterSubtreeSha256;
     std::size_t removedEcas = 0, removedArguments = 0;
 };
-using GraphEditOperation = std::variant<GraphCreate, GraphSet, GraphRename, GraphMove, GraphRemove, GraphInsertSubtree, GraphReplaceArgument>;
+// 紧凑 T 写法（TriggerTextNotation.h）：一段文本解析成若干完整子树，按顺序插到同一父列表（before 之前或末尾）。
+struct GraphInsertText {
+    GraphParentExpectation parent;
+    std::optional<GraphRecordRef> before;
+    std::string text;
+};
+// 用紧凑写法整体替换触发器的全部根 ECA；新鲜度由批次绑定保证。
+struct GraphReplaceTriggerText {
+    GraphRecordRef trigger;
+    std::string text;
+};
+using GraphEditOperation = std::variant<GraphCreate, GraphSet, GraphRename, GraphMove, GraphRemove, GraphInsertSubtree,
+    GraphReplaceArgument, GraphInsertText, GraphReplaceTriggerText>;
 struct TriggerGraphBinding {
     std::string sourceWtgSha256, sourceWctSha256, uiCatalogSha256;
     std::string currentWtgSha256, currentWctSha256;

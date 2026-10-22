@@ -174,6 +174,13 @@ bool TriggerTypeSystem::IsObjectCodeLiteral(std::string_view value) {
     });
 }
 
+std::optional<UiDefinitionKind> TriggerTypeSystem::FunctionSlotKind(std::string_view type) {
+    if (type == "eventcall") return UiDefinitionKind::Event;
+    if (type == "boolexpr" || type == "boolcall") return UiDefinitionKind::Condition;
+    if (type == "code") return UiDefinitionKind::Action;
+    return std::nullopt;
+}
+
 bool TriggerTypeSystem::IsIntegerLiteral(std::string_view value) {
     return ParseIntegerLiteral(value).has_value();
 }
