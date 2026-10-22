@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <vector>
@@ -57,6 +58,16 @@ struct CodeCheckRequest {
     Lua::SyntaxOptions lua;
 };
 
+// 触发器检查：诊断落在 GUI 语句生成的代码上时，它对应的 T 位置。
+struct CodeCheckTriggerLocation {
+    StableId triggerId = 0;
+    StableId ecaId = 0; // 语句或参数中函数调用；0 表示触发器自身的函数头/初始化等生成代码
+    std::string triggerName;
+    std::string function;
+    std::uint32_t line = 0, column = 0; // 紧凑 T 文本中的行列（列按字符）；无法定位时为 0
+    std::string generated; // 出错的生成代码原行（截断）
+};
+
 struct CodeCheckDiagnostic {
     DiagnosticSeverity severity = DiagnosticSeverity::Error;
     std::string source;
@@ -67,6 +78,7 @@ struct CodeCheckDiagnostic {
     std::uint32_t byteLength = 0;
     bool originMapped = false;
     bool byteRangeExact = false; // 与可靠原行分开；行映射/生成锚点不声称字节范围精确。
+    std::optional<CodeCheckTriggerLocation> trigger;
 };
 struct CodeSymbolPosition {
     std::uint32_t file = 0, line = 0, byteColumn = 1, byteLength = 0;

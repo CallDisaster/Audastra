@@ -55,6 +55,7 @@ void TriggerEmitter::PutCondition(const Eca& eca, const std::string& name, std::
 }
 
 void TriggerEmitter::PutConditionEx(const Eca& eca, const std::string& name) {
+    const Owned owned(*this, eca);
     // 比较运算：第一个比较运算符槽前后各一个操作数。
     for (const char* operatorType : {"ComparisonOperator", "EqualNotEqualOperator"}) {
         for (std::size_t i = 1; i + 1 < eca.arguments.size(); ++i) {
@@ -278,6 +279,7 @@ void TriggerEmitter::PutCallbackFunction(const Eca& eca, const std::string& name
 }
 
 void TriggerEmitter::PutActionEx(const Eca& eca, const std::string& name) {
+    const Owned owned(*this, eca);
     if (SearchAnyPlayer(eca)) Warn("any-player-action", "“任意玩家”只能用于事件，动作中会生成无效脚本。");
     const Gui gui = GuiOf(eca);
     const auto simple = [&](const std::string& prefix, std::initializer_list<std::size_t> args, const std::string& suffix) {

@@ -2,6 +2,8 @@
 #include "ProjectObjectCatalog.h"
 
 #include <QDateTime>
+#include <QDir>
+#include <QFileInfo>
 #include <QFileSystemWatcher>
 #include <QTemporaryDir>
 #include <QUndoStack>
@@ -17,6 +19,8 @@
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/Trigger/UiCatalog.h"
 #include "War3MapCore/Workspace.h"
+
+#include <algorithm>
 
 namespace War3Map::QtProject {
 
@@ -40,7 +44,19 @@ EditorProject::EditorProject()
         emit SourceStateChanged();
     };
     connect(projectWatch_, &QFileSystemWatcher::fileChanged, this, changed);
-    connect(projectWatch_, &QFileSystemWatcher::directoryChanged, this, changed);
+    connect(projectWatch_, &QFileSystemWatcher::directoryChanged, this, [this, changed](const QString& path) {
+        // 地图所在文件夹里新增备份等无关文件时，只要被观察的文件本身没变就不算来源变化。
+        const auto parent = parentWatchStamps_.find(QDir::cleanPath(path).toCaseFolded());
+        if (parent != parentWatchStamps_.end()) {
+            const bool same = std::ranges::all_of(parent->second, [](const auto& entry) {
+                const QFileInfo info(entry.first);
+                return info.exists() && info.size() == entry.second.first
+                    && info.lastModified().toMSecsSinceEpoch() == entry.second.second;
+            });
+            if (same) return;
+        }
+        changed(path);
+    });
 }
 
 EditorProject::~EditorProject() {

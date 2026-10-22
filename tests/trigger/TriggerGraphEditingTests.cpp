@@ -1,6 +1,8 @@
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
+#include "War3MapCore/Trigger/TriggerFeatureText.h"
+#include "War3MapCore/Trigger/TriggerTextDiff.h"
 #include "War3MapCore/Trigger/TriggerTextNotation.h"
 #include "War3MapCore/Trigger/TriggerTypes.h"
 
@@ -655,8 +657,94 @@ void TestCodeArguments() {
     const auto fresh = insert("StoreInteger(\"TRUE\")");
     Require(!fresh.Succeeded(), "new invalid literal is still refused");
 }
+// 功能写法：一次写入变量与多个触发器；导出再写回不变；冲突与未知函数一次列出且带整段文本行号；失败不落地。
+void TestFeatureText() {
+    Fixture f;
+    const std::string text =
+        "变量:\n"
+        "    FeatCount: integer = 3\n"
+        "    FeatNames: string[4]\n"
+        "触发器 Feature One (init):\n"
+        "    actions:\n"
+        "        StoreInteger(udg_FeatCount)\n"
+        "触发器 \"Feature: Two\" (off):\n"
+        "    StoreString(udg_FeatNames[1])\n";
+    auto batch = f.Batch(); batch.operations.emplace_back(GraphApplyFeatureText{"Feature", text, {}});
+    const auto applied = ApplyTriggerGraphEditBatch(f.doc, f.catalog, batch);
+    Require(applied.Succeeded(), "feature text writes variables and triggers in one batch");
+    const auto category = std::find_if(f.doc.categories.begin(), f.doc.categories.end(), [](const auto& row) { return row.name.text == "Feature"; });
+    Require(category != f.doc.categories.end(), "feature category created");
+    const auto count = std::find_if(f.doc.variables.begin(), f.doc.variables.end(), [](const auto& row) { return row.name.text == "FeatCount"; });
+    Require(count != f.doc.variables.end() && count->typeName.text == "integer" && count->hasDefault != 0 && count->value.text == "3", "scalar variable with initial value");
+    const auto names = std::find_if(f.doc.variables.begin(), f.doc.variables.end(), [](const auto& row) { return row.name.text == "FeatNames"; });
+    Require(names != f.doc.variables.end() && names->isArray != 0 && names->size == 4, "array variable with size");
+    const auto one = std::find_if(f.doc.triggers.begin(), f.doc.triggers.end(), [](const auto& row) { return row.name.text == "Feature One"; });
+    const auto two = std::find_if(f.doc.triggers.begin(), f.doc.triggers.end(), [](const auto& row) { return row.name.text == "Feature: Two"; });
+    Require(one != f.doc.triggers.end() && one->runOnInit != 0 && one->ecas.size() == 1 && one->categoryId == category->categoryId,
+        "first trigger created with run-on-init");
+    Require(two != f.doc.triggers.end() && two->initiallyClosed != 0 && two->ecas.size() == 1, "quoted trigger name with options");
+    const auto exported = RenderFeatureText(f.doc, f.catalog, category->categoryId);
+    Require(exported.Succeeded() && exported.value->find("FeatCount: integer = 3") != std::string::npos
+        && exported.value->find("触发器 \"Feature: Two\" (off):") != std::string::npos,
+        (std::string("feature export: ") + (exported.Succeeded() ? *exported.value : exported.diagnostics.front().message)).c_str());
+    auto again = f.Batch(); again.operations.emplace_back(GraphApplyFeatureText{"Feature", *exported.value, {}});
+    Require(ApplyTriggerGraphEditBatch(f.doc, f.catalog, again).Succeeded(), "exported feature text writes back");
+    const auto reexported = RenderFeatureText(f.doc, f.catalog, category->categoryId);
+    Require(reexported.Succeeded() && *reexported.value == *exported.value, "feature text round-trips");
+
+    // 已有变量只可改初值；改类型与未知函数一次列出，各带行号；整批不落地。
+    const auto before = WtgWctCodec{}.Serialize(f.doc, f.catalog);
+    const std::string broken =
+        "变量:\n"
+        "    FeatCount: string = \"x\"\n"
+        "触发器 Feature One:\n"
+        "    actions:\n"
+        "        MissingAction()\n";
+    auto failing = f.Batch(); failing.operations.emplace_back(GraphApplyFeatureText{"Feature", broken, {}});
+    const auto refused = ApplyTriggerGraphEditBatch(f.doc, f.catalog, failing);
+    Require(!refused.Succeeded() && refused.diagnostics.front().code == "TRIGGER_FEATURE_VARIABLE_CONFLICT"
+        && refused.diagnostics.front().message.find("第 2 行") != std::string::npos, "type change is refused with its line");
+    const auto after = WtgWctCodec{}.Serialize(f.doc, f.catalog);
+    Require(before.Succeeded() && after.Succeeded() && before.value->wtg == after.value->wtg, "refused feature changes nothing");
+    auto unknown = f.Batch(); unknown.operations.emplace_back(GraphApplyFeatureText{"Feature",
+        "变量:\n    FeatCount: integer = 5\n触发器 Feature One:\n    actions:\n        MissingAction()\n", {}});
+    const auto missing = ApplyTriggerGraphEditBatch(f.doc, f.catalog, unknown);
+    Require(!missing.Succeeded() && missing.diagnostics.front().code == "TRIGGER_TEXT_UNKNOWN_FUNCTION"
+        && missing.diagnostics.front().message.find("第 5 行") != std::string::npos, "body errors use whole-text lines");
+    const auto structure = ParseFeatureText("变量:\n    X integer\n其他:\n");
+    Require(!structure.Succeeded() && structure.diagnostics.size() == 2, "structure errors are all listed");
+}
+// 局部替换按导出行号与原文 guard 修改；过期行号拒绝；预览差异只列改动附近的行。
+void TestPatchAndDiff() {
+    Fixture f;
+    const auto trigger = Id(GraphRecordKind::Trigger, f.doc.triggers[0].id);
+    auto write = f.Batch();
+    write.operations.emplace_back(GraphReplaceTriggerText{trigger, "actions:\n    StoreInteger(1)\n    StoreInteger(2)\n    StoreInteger(3)\n"});
+    Require(ApplyTriggerGraphEditBatch(f.doc, f.catalog, write).Succeeded(), "seed trigger text");
+    const TriggerDocument before = f.doc;
+    auto patch = f.Batch();
+    patch.operations.emplace_back(GraphPatchTriggerText{trigger, 3, 3, "    StoreInteger(2)", "    StoreInteger(20)\n    StoreInteger(21)\n"});
+    Require(ApplyTriggerGraphEditBatch(f.doc, f.catalog, patch).Succeeded(), "patch one line into two");
+    auto text = RenderTriggerText(f.doc, f.catalog, trigger.id);
+    Require(text.Succeeded() && *text.value == "actions:\n    StoreInteger(1)\n    StoreInteger(20)\n    StoreInteger(21)\n    StoreInteger(3)\n",
+        "patched text");
+    auto stale = f.Batch();
+    stale.operations.emplace_back(GraphPatchTriggerText{trigger, 3, 3, "    StoreInteger(2)", "    StoreInteger(9)"});
+    const auto refused = ApplyTriggerGraphEditBatch(f.doc, f.catalog, stale);
+    Require(!refused.Succeeded() && refused.diagnostics.front().code == "TRIGGER_TEXT_PATCH_STALE", "stale line guard refuses");
+    auto insert = f.Batch();
+    insert.operations.emplace_back(GraphPatchTriggerText{trigger, 2, 1, "", "    StoreInteger(0)"});
+    Require(ApplyTriggerGraphEditBatch(f.doc, f.catalog, insert).Succeeded(), "insert before line 2");
+    text = RenderTriggerText(f.doc, f.catalog, trigger.id);
+    Require(text.Succeeded() && text.value->starts_with("actions:\n    StoreInteger(0)\n    StoreInteger(1)\n"), "inserted line");
+    const auto diffs = DiffTriggerTexts(before, f.doc, f.catalog);
+    Require(diffs.size() == 1 && diffs[0].status == "changed" && diffs[0].diff.find("-     StoreInteger(2)\n") != std::string::npos
+        && diffs[0].diff.find("+     StoreInteger(20)\n") != std::string::npos && diffs[0].diff.find("+     StoreInteger(0)\n") != std::string::npos,
+        "line diff of the changed trigger");
+    Require(DiffTriggerTexts(f.doc, f.doc, f.catalog).empty(), "no diff for identical documents");
+}
 int main() {
-    try { TestCodeArguments(); TestTextNotation(); TestFunctionSlotArguments(); TestRecursiveBatchAndAtomicNames(); TestFailurePublishesNothing(); TestWritableLoopTargets(); TestObjectCodeGraphAndAtomicRename();
+    try { TestPatchAndDiff(); TestFeatureText(); TestCodeArguments(); TestTextNotation(); TestFunctionSlotArguments(); TestRecursiveBatchAndAtomicNames(); TestFailurePublishesNothing(); TestWritableLoopTargets(); TestObjectCodeGraphAndAtomicRename();
         TestArgumentReplacementKeepsSiblingCode(); TestArgumentReplacementRejectsStaleAndRollsBack(); TestArgumentReplacementOpaqueAndDynamicTypes();
         std::cout << "public typed graph batch guards and recursive codec roundtrip passed\n"; return 0; }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

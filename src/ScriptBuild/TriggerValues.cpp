@@ -179,6 +179,7 @@ void TriggerEmitter::PutVarOther(const Eca& owner, std::size_t slot, const Arg& 
 
 void TriggerEmitter::PutCallValue(const std::string& slotType, const Eca& call, const std::string& name,
     std::size_t index) {
+    const Owned owned(*this, call);
     const std::string child = Numbered(name, index);
     if (call.arguments.size() == 3 && DeclaredType(call, 1) == "ArithmeticOperator") {
         out_.Put("(");

@@ -190,6 +190,17 @@ void TestTemplates() {
     const auto unknownOrder = EvaluateTemplates("<?=abilityOrder(\"'B000'\", \"Order\")?>", context);
     Require(unknownOrder.Succeeded() && unknownOrder.text == "0" && HasCode(unknownOrder.diagnostics, "ABILITY_ORDER_UNKNOWN"),
         "unknown ability order falls back to 0 with a warning");
+
+    // 整份执行的输出逐段对回：块外文本与内置已求值的块须逐字节一致，未执行块的输出止于下一段块外文本。
+    const std::string mixed = "a\n<?='x'?>\nb<? local slk = require 'slk' slk.ability.Afoo:new('T') ?>\nc\nd";
+    const auto builtin = EvaluateTemplates(mixed, context);
+    Require(!builtin.Succeeded() && builtin.spans.size() == 2, "mixed template has one evaluated and one skipped block");
+    const auto aligned = AlignTemplateOutput(mixed, builtin, "a\nx\nbOUT\nc\nd");
+    Require(aligned && aligned->spans.size() == 2 && aligned->spans[0].outputBegin == 2 && aligned->spans[0].outputEnd == 3
+        && aligned->spans[1].outputBegin == 5 && aligned->spans[1].outputEnd == 8 && aligned->text == "a\nx\nbOUT\nc\nd",
+        "whole-chunk output aligns block by block");
+    Require(!AlignTemplateOutput(mixed, builtin, "a\ny\nbOUT\nc\nd"), "an evaluated block with different output must not align");
+    Require(!AlignTemplateOutput(mixed, builtin, "a\nx\nbOUT"), "missing literal text must not align");
 }
 
 // 命令表按框架模板宿主的位置读取：旧版 share/script/computed，新版 compiler/script/computed；两者并存不猜。

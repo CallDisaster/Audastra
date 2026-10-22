@@ -95,12 +95,22 @@ struct MapScriptCodeSpan {
     std::size_t byteLength = 0;
 };
 
+// GUI 触发器生成代码的来源：按写出位置记录属于哪条语句（ecaId 为语句或参数中函数调用的稳定身份；
+// 0 表示该触发器自身的函数头、初始化等生成代码）。按 byteOffset 递增且互不重叠。
+struct MapScriptStatementSpan {
+    StableId triggerId = 0;
+    StableId ecaId = 0;
+    std::size_t byteOffset = 0;
+    std::size_t byteLength = 0;
+};
+
 struct MapScriptResult {
     std::string text;
     std::vector<Diagnostic> diagnostics;
     std::size_t triggerCount = 0;
     std::size_t functionCount = 0;
     std::vector<MapScriptCodeSpan> authorCode;
+    std::vector<MapScriptStatementSpan> statements;
 
     [[nodiscard]] bool Succeeded() const noexcept {
         for (const auto& diagnostic : diagnostics) {

@@ -111,6 +111,12 @@ struct TemplateResult {
 
 [[nodiscard]] TemplateResult EvaluateTemplates(std::string_view text, const TemplateContext& context);
 
+// 整份执行（wholeChunk）的输出没有逐块位置。按 builtin（同一输入的内置求值）登记的块位置，把块外文本
+// 逐段对回输出：块外文本须逐字节出现；内置求值已得到结果的块，其输出也须与整份执行一致；只有未执行的块
+// 输出长度由下一段块外文本的位置确定。任何一处对不上返回空，不按近似位置猜测。
+[[nodiscard]] std::optional<TemplateResult> AlignTemplateOutput(std::string_view input, const TemplateResult& builtin,
+    std::string output);
+
 // ---- 工具链 ----
 // 各阶段使用的实现：内置（自研）或外部程序（YDWE 自带）。
 enum class ScriptEngine { Builtin, External };

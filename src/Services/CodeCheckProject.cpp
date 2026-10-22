@@ -4,6 +4,7 @@
 #include "War3MapCore/Game/GameDataSource.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/ObjectData/ObjectImport.h"
+#include "War3MapCore/Script/LuaTemplateSandbox.h"
 #include "War3MapCore/Script/ReadOnlyScriptSource.h"
 #include "War3MapCore/Script/ScriptBaseInputs.h"
 #include "War3MapCore/Script/ScriptFrameworkInputs.h"
@@ -12,15 +13,18 @@
 #include "War3MapCore/Script/ScriptQueries.h"
 #include "War3MapCore/Services/ScriptSavePreparation.h"
 #include "War3MapCore/Trigger/TriggerEditing.h"
+#include "War3MapCore/Trigger/TriggerTextNotation.h"
 
 #include <algorithm>
 #include <chrono>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <limits>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace War3Map::Services {
 namespace {
@@ -297,11 +301,12 @@ struct CodeCheckProjectCache::Impl {
     std::optional<Script::ScriptInjectionSources> injection;
     Script::ObjectQuerySources objects;
     std::optional<Script::TemplateContext> templates; // 与保存链同一构造：工具链命令表 + 原版与本图技能
+    std::optional<Script::SlkMapSourceSnapshot> slk; // 整份执行模板时 slk 库读取的已保存地图物编，随归档复用
     std::string incomplete;
     bool captureFinished = false;
 
     void Capture(const std::shared_ptr<const CodeCheckProjectSnapshot>& next, std::stop_token cancel, Clock::time_point deadline) {
-        snapshot = next; archive.reset(); map.reset(); game.reset(); standard.reset(); layout.reset(); bases.reset();
+        snapshot = next; archive.reset(); map.reset(); game.reset(); standard.reset(); layout.reset(); bases.reset(); slk.reset();
         framework.reset(); entry.reset(); injection.reset(); objects = {}; templates.reset();
         incomplete = "上下文捕获尚未完成。"; captureFinished = false;
         const auto fail = [&](std::string reason) { incomplete = std::move(reason); captureFinished = true; };
@@ -385,6 +390,282 @@ std::string CodeCheckTargetSourceName(Trigger::CodeBlockTarget target, CodeLangu
         : "WCT/trigger-" + std::to_string(target.triggerId) + suffix;
 }
 
+namespace {
+// 冻结上下文：缓存捕获完成且实际来源未变时返回空，并把实际基础库声明写入 request；
+// 否则返回不完整原因（基础库仍可独立复核时也写入声明，供正文语法检查使用）。
+const Trigger::TriggerRecord* FindTriggerRecord(const Trigger::TriggerDocument& document, StableId id) {
+    const auto found = std::find_if(document.triggers.begin(), document.triggers.end(), [id](const auto& row) { return row.id == id; });
+    return found == document.triggers.end() ? nullptr : &*found;
+}
+std::optional<std::string> PrepareContext(CodeCheckProjectCache::Impl& owned,
+    const std::shared_ptr<const CodeCheckProjectSnapshot>& snapshot, CodeCheckRequest& request,
+    std::stop_token cancel, Clock::time_point deadline) {
+    if (!owned.captureFinished || owned.snapshot != snapshot || !snapshot
+        || owned.snapshot->binding != snapshot->binding) owned.Capture(snapshot, cancel, deadline);
+    if (!owned.incomplete.empty()) {
+        // 框架/整图来源不完整时仍可展示已独立复核的实际基础库签名；不授予语义资格。
+        if (owned.layout && owned.bases
+            && Script::VerifyScriptToolchainLayout(*owned.layout).Succeeded()
+            && Script::VerifyScriptBaseInputs(*owned.bases, *owned.layout, Script::ScriptBasePolicy::BoundLayout).Succeeded()) {
+            request.context.declarations = {{"Save/common.j", BytesText(owned.bases->common.bytes)},
+                {"Save/blizzard.j", BytesText(owned.bases->blizzard.bytes)}};
+            request.jass.returnBug = owned.bases->allowReturnBug;
+        }
+        return owned.incomplete;
+    }
+    Poll(cancel, deadline);
+    auto currentLayout = Script::VerifyScriptToolchainLayout(*owned.layout);
+    auto currentBases = Script::VerifyScriptBaseInputs(*owned.bases, *owned.layout, Script::ScriptBasePolicy::BoundLayout);
+    if (!currentLayout.Succeeded() || !currentBases.Succeeded()) {
+        owned.captureFinished = false;
+        return "基础库或工具链实际来源已改变，下次检查将重新捕获。";
+    }
+    request.context.declarations = {{"Save/common.j", BytesText(owned.bases->common.bytes)},
+        {"Save/blizzard.j", BytesText(owned.bases->blizzard.bytes)}};
+    request.jass.returnBug = owned.bases->allowReturnBug;
+    if (owned.framework) {
+        const auto current = Script::VerifyScriptFrameworkInputs(*owned.framework, *owned.layout);
+        if (!current.Succeeded()) { owned.captureFinished = false; return Reason(current.diagnostics, "框架来源已改变。"); }
+    } else {
+        auto sources = ModernUserSources(*owned.layout, *snapshot, owned.archive->SourcePath().parent_path());
+        const auto current = Script::VerifyScriptInjectionSources(*owned.injection, *owned.entry, sources, !owned.layout->allowReturnBug);
+        if (!current.Succeeded()) { owned.captureFinished = false; return Reason(current.diagnostics, "函数库注入来源已改变。"); }
+    }
+    return std::nullopt;
+}
+
+// 用给定触发器文档按保存链生成整图 → 注入/预处理 → 模板 → 同一 JASS 检查。
+// requiredAuthor：须发射该作者代码块，否则不能用整图结果代表它。generatedOut 取回本次生成结果。
+// executeTemplates：内置求值覆盖不了的模板按保存链在 Lua 沙盒整份执行（slk 读已保存地图物编）；
+// 为假时与代码编辑器一致，不执行这类模板，只检查作者代码所在段。
+CodeCheckResult CheckGeneratedMap(CodeCheckProjectCache::Impl& owned, const std::shared_ptr<const CodeCheckProjectSnapshot>& snapshot,
+    CodeCheckRequest& request, const Trigger::TriggerDocument& document, std::optional<StableId> requiredAuthor,
+    bool executeTemplates, const std::function<CodeCheckResult(std::string)>& fallback, std::stop_token cancel,
+    Clock::time_point deadline, Script::MapScriptResult* generatedOut) {
+    Script::MapScriptInputs inputs;
+    inputs.triggers = &document; inputs.catalog = snapshot->catalog.get(); inputs.queries = Script::BuildObjectQueries(owned.objects);
+    Script::AttachSoundQueries(inputs.queries, owned.game ? &*owned.game : nullptr, &*owned.archive);
+    inputs.settings = &*owned.map->Settings(); inputs.units = owned.map->Units() ? &*owned.map->Units() : nullptr;
+    inputs.doodads = owned.map->Doodads() ? &*owned.map->Doodads() : nullptr;
+    inputs.regions = owned.map->Regions() ? &*owned.map->Regions() : nullptr;
+    inputs.cameras = owned.map->Cameras() ? &*owned.map->Cameras() : nullptr;
+    inputs.sounds = owned.map->Sounds() ? &*owned.map->Sounds() : nullptr;
+    inputs.strings = owned.map->Strings() ? &*owned.map->Strings() : nullptr;
+    inputs.terrain = snapshot->terrain; inputs.debug = snapshot->debug;
+    std::error_code error;
+    inputs.nullSafeHandleSet = std::any_of(owned.layout->systemIncludes.begin(), owned.layout->systemIncludes.end(),
+        [&](const auto& directory) { return std::filesystem::exists(directory / "YDTrigger/SaveLoadSystem/HTSystem.j", error); });
+    auto generated = Script::GenerateMapScript(inputs);
+    if (!generated.Succeeded()) return fallback(Reason(generated.diagnostics, "生产整图生成尚不能完成。"));
+    if (requiredAuthor && std::none_of(generated.authorCode.begin(), generated.authorCode.end(),
+        [&](const auto& span) { return span.triggerId == *requiredAuthor; }))
+        return fallback("生产整图未发射当前代码块，不能用其他脚本的检查结果代表此草稿。");
+    auto author = AuthorMap(generated, cancel, deadline);
+    std::string injected;
+    std::vector<std::filesystem::path> paths;
+    std::vector<std::string> templateLibraries; // 与保存链相同：框架档案已开启的原创模板函数集
+    Jass::PreprocessResult preprocessed;
+    if (owned.framework) {
+        Jass::SourceLexicalView lexical;
+        auto injection = Script::InjectScriptFramework(generated.text, *owned.framework, paths, &lexical);
+        if (!injection.Succeeded() || !injection.value) return fallback(Reason(injection.diagnostics, "框架注入尚不能完成。"));
+        MapInjected(author, generated.text, paths, owned.framework->injection, true, cancel, deadline);
+        Script::ScriptPreprocessSourceRequest preprocess;
+        preprocess.check = request.jass; preprocess.check.maxSources = 1024;
+        preprocess.mainText = std::move(*injection.value); preprocess.mainDirectory = owned.framework->profile.mainSourceDirectory;
+        preprocess.frameworkDirectivePolicy = Script::FrameworkDirectivePolicy(*owned.framework);
+        preprocess.includeCandidatePolicy = Script::ScriptIncludeCandidatePolicy::BoundRootsSearch;
+        preprocess.mainLexicalView = std::move(lexical);
+        preprocess.defines = {{"WARCRAFT_VERSION", std::to_string(owned.layout->versionMacro)}, {"YDWE_VERSION_STRING", "\"1.32.13\""}, {"SCRIPT_INJECTION", "1"}};
+        if (snapshot->debug) preprocess.defines.emplace_back("DEBUG", "1");
+        auto captured = Script::CaptureScriptPreprocessSources(owned.framework->entryPlan,
+            Script::FrameworkSourceRequest(*owned.framework), preprocess);
+        if (!captured.Succeeded() || !captured.value) return fallback(Reason(captured.diagnostics, "本次草稿的框架预处理来源无法冻结。"));
+        auto valid = Script::ValidateFrameworkIncludes(*owned.framework, *captured.value);
+        if (!valid.Succeeded()) return fallback(Reason(valid.diagnostics, "框架包含编码尚不能绑定。"));
+        const auto& flags = captured.value->frameworkFeatureFlags;
+        for (const auto& extension : captured.value->entryPlan.profileFeatureExtensions)
+            if (!extension.templateLibrary.empty() && std::find(flags.begin(), flags.end(), extension.feature) != flags.end())
+                templateLibraries.push_back(extension.templateLibrary);
+        preprocessed = Script::ReplayScriptPreprocessSources(*captured.value);
+        if (preprocessed.text != captured.value->preprocessed.text) return fallback("owned预处理回放与同次草稿捕获不一致。");
+        for (const auto& source : captured.value->includes)
+            if (source.binding.kind == Script::ScriptToolchainBindingKind::RegularFile)
+                request.context.includes.push_back({PathText(source.binding.path), BytesText(source.bytes)});
+    } else {
+        auto injection = Script::InjectOwnedCode(generated.text, *owned.injection, request.jass, &paths);
+        if (!injection.Succeeded() || !injection.value) return fallback(Reason(injection.diagnostics, "函数库注入尚不能完成。"));
+        injected = std::move(*injection.value);
+        MapInjected(author, generated.text, paths, *owned.injection, false, cancel, deadline);
+        Jass::PreprocessOptions options;
+        options.check = request.jass; options.check.maxSources = 1024;
+        options.systemIncludes = owned.layout->systemIncludes; options.userIncludes = owned.entry->orderedUserIncludes;
+        options.defines = {{"WARCRAFT_VERSION", std::to_string(owned.layout->versionMacro)}, {"YDWE_VERSION_STRING", "\"1.32.13\""}, {"SCRIPT_INJECTION", "1"}};
+        if (snapshot->debug) options.defines.emplace_back("DEBUG", "1");
+        for (const auto& path : owned.layout->forceIncludes) options.forceIncludes.push_back(PathText(path));
+        options.maxOutputBytes = 16 * 1024 * 1024;
+        std::map<std::filesystem::path, Jass::PreprocessIncludeContent> includes;
+        std::size_t bytes = 0;
+        options.includeCandidatePolicy = [&](const Jass::IncludeCandidateRequest& candidate) {
+            const auto allowed = Within(candidate.candidate, owned.archive->SourcePath().parent_path())
+                || std::any_of(options.systemIncludes.begin(), options.systemIncludes.end(), [&](const auto& root) { return Within(candidate.candidate, root); })
+                || std::any_of(options.userIncludes.begin(), options.userIncludes.end(), [&](const auto& root) { return Within(candidate.candidate, root); });
+            return Result<Jass::IncludeCandidateEligibility>::Success(allowed ? Jass::IncludeCandidateEligibility::Allowed
+                : Jass::IncludeCandidateEligibility::SkippedOutOfScope);
+        };
+        options.includeProvider = [&](const std::filesystem::path& path) -> Result<Jass::PreprocessIncludeContent> {
+            Poll(cancel, deadline);
+            const auto name = path.lexically_normal();
+            if (const auto found = includes.find(name); found != includes.end()) return Result<Jass::PreprocessIncludeContent>::Success(found->second);
+            if (includes.size() >= 512) return Result<Jass::PreprocessIncludeContent>::Failure("Code.Check", "CODE_CHECK_INCLUDE_BUDGET", "包含候选超过512项。");
+            auto source = Script::CaptureReadOnlyScriptSource(name);
+            if (!source.Succeeded() || !source.value) return {{}, std::move(source.diagnostics)};
+            if (source.value->bytes.size() > 32 * 1024 * 1024 - bytes) return Result<Jass::PreprocessIncludeContent>::Failure("Code.Check", "CODE_CHECK_INCLUDE_BUDGET", "包含文本超过32MiB。");
+            bytes += source.value->bytes.size();
+            Jass::PreprocessIncludeContent content{source.value->binding.kind == Script::ScriptToolchainBindingKind::RegularFile, BytesText(source.value->bytes)};
+            includes.emplace(name, content); return Result<Jass::PreprocessIncludeContent>::Success(std::move(content));
+        };
+        preprocessed = Jass::Preprocess(injected, "war3map.j", owned.archive->SourcePath().parent_path(), options);
+        for (const auto& [path, source] : includes)
+            if (source.exists) request.context.includes.push_back({PathText(path), source.text});
+    }
+    Poll(cancel, deadline);
+    if (!preprocessed.Succeeded()) return fallback(Reason(preprocessed.diagnostics, "预处理未能完成。"));
+    request.sourceMap = MapPreprocessed(preprocessed, author, cancel, deadline);
+    std::string templateNote;
+    if (preprocessed.text.find("<?") != std::string::npos) {
+        // 与保存链相同的内置模板求值（如 YDNL 展开为换行）；需要整段执行的块（物编生成等）只在 executeTemplates 时执行。
+        auto evaluated = Script::EvaluateTemplates(preprocessed.text, *owned.templates);
+        const bool whole = executeTemplates && (evaluated.skippedBlocks > 0 || !evaluated.Succeeded())
+            && std::none_of(evaluated.diagnostics.begin(), evaluated.diagnostics.end(),
+                [](const auto& diagnostic) { return diagnostic.code == "TEMPLATE_IMPORT_FAILED"; });
+        if (whole) {
+            auto run = Script::MakeLuaWholeChunk(*owned.templates,
+                {snapshot->toolRoot, &*owned.archive, {}, {}, snapshot->revision, {}}, owned.slk);
+            auto output = run(preprocessed.text, templateLibraries);
+            if (!output.Succeeded() || !output.value) return fallback(Reason(output.diagnostics, "模板整份执行未能完成。"));
+            auto aligned = Script::AlignTemplateOutput(preprocessed.text, evaluated, std::move(output.value->script));
+            if (!aligned) return fallback("模板整份执行结果无法逐段对回原文，未用近似位置检查。");
+            evaluated = std::move(*aligned);
+            templateNote = "模板按保存链在沙盒中整份执行（slk 读取已保存的地图物编）。";
+        } else if (!evaluated.Succeeded()) {
+            std::vector<Diagnostic> errors;
+            std::copy_if(evaluated.diagnostics.begin(), evaluated.diagnostics.end(), std::back_inserter(errors),
+                [](const auto& diagnostic) { return diagnostic.severity == DiagnosticSeverity::Error; });
+            const auto reason = Reason(errors, "模板求值未能完成");
+            if (auto section = CheckAuthorSection(request, preprocessed.text, *owned.templates, reason, cancel, deadline))
+                return std::move(*section);
+            return fallback(reason + "；编辑器不执行该模板，保存链仍完整执行并检查。");
+        }
+        Poll(cancel, deadline);
+        const auto lines = LineCount(evaluated.text, cancel, deadline);
+        request.sourceMap = MapTemplateOutput(preprocessed.text, evaluated, cancel, deadline).ComposeWith(request.sourceMap, lines);
+        preprocessed.text = std::move(evaluated.text);
+    }
+    request.source.text = std::move(preprocessed.text);
+    request.context.declarations = {{"Save/common.j", BytesText(owned.bases->common.bytes)}, {"Save/blizzard.j", BytesText(owned.bases->blizzard.bytes)}};
+    request.context.complete = true; request.jass.returnBug = owned.bases->allowReturnBug;
+    request.language = CodeLanguage::VJass; // 整图依赖也可能含库；统一展开后仍交给同一JASS检查器。
+    request.preprocessed = true;
+    auto result = CheckCode(request, cancel);
+    if (!templateNote.empty()) result.reason += (result.reason.empty() ? "" : " ") + templateNote;
+    std::size_t externalBytes = 0;
+    for (const auto& source : result.externalSources) externalBytes += source.text.size();
+    if (externalBytes > 32 * 1024 * 1024) {
+        result.externalSources.clear(); externalBytes = 0; result.externalSourcesComplete = false;
+    }
+    // GUI/初始化声明映射到这一份实际生成正文；导航使用同次冻结内容。
+    AddExternalSource(result, "Map/generated.j", generated.text, externalBytes);
+    const auto& injectionSources = owned.framework ? owned.framework->injection : *owned.injection;
+    for (const auto& path : paths) {
+        Poll(cancel, deadline);
+        const auto found = std::find_if(injectionSources.files.begin(), injectionSources.files.end(),
+            [&](const auto& source) { return source.binding.path == path; });
+        if (found != injectionSources.files.end()) AddExternalSource(result, PathText(path), BytesText(found->bytes), externalBytes);
+    }
+    for (const auto& span : generated.authorCode) {
+        Poll(cancel, deadline);
+        const auto* trigger = span.triggerId == 0 ? nullptr
+            : FindTriggerRecord(document, span.triggerId);
+        const auto* block = span.triggerId == 0 ? &document.wct.customCode : trigger ? &trigger->customText : nullptr;
+        if (block) AddExternalSource(result, CodeCheckTargetSourceName({span.triggerId == 0
+            ? Trigger::CodeBlockKind::GlobalHeader : Trigger::CodeBlockKind::CustomTrigger, span.triggerId}),
+            Trigger::TriggerCodeEditor::NormalizedText(*block), externalBytes);
+    }
+    VerifySemanticLineCopies(result, request.source.text, cancel, deadline);
+    if (!result.externalSourcesComplete) result.reason += " 只读导航来源清单达到显示预算，尚未完整列出。";
+    if (generatedOut) *generatedOut = std::move(generated);
+    return result;
+}
+
+// 生成文本的行首偏移；换行规则与 LineCount 一致（CRLF、单独 CR 或 LF）。
+std::vector<std::size_t> LineStarts(std::string_view text, std::stop_token cancel, Clock::time_point deadline) {
+    std::vector<std::size_t> starts{0};
+    for (std::size_t at = 0; at < text.size(); ++at) {
+        if ((at & 4095u) == 0) Poll(cancel, deadline);
+        if (text[at] == '\r') { if (at + 1 < text.size() && text[at + 1] == '\n') ++at; starts.push_back(at + 1); }
+        else if (text[at] == '\n') starts.push_back(at + 1);
+    }
+    return starts;
+}
+
+// 落在 GUI 语句生成代码上的诊断附上 T 位置：语句或参数调用的稳定身份、函数名和紧凑 T 文本中的行列。
+// 列不精确时按该行第一个非空字符归属，不按文本搜索猜测。
+void LocateTriggerDiagnostics(CodeCheckResult& result, const Script::MapScriptResult& generated,
+    const Trigger::TriggerDocument& document, const Trigger::UiCatalog& catalog, std::stop_token cancel, Clock::time_point deadline) {
+    if (generated.statements.empty()) return;
+    const auto starts = LineStarts(generated.text, cancel, deadline);
+    std::unordered_map<StableId, std::size_t> ecaIndex;
+    struct Rendered { bool ok = false; std::vector<Trigger::TriggerTextAnchor> anchors; };
+    std::map<StableId, Rendered> rendered;
+    for (auto& diagnostic : result.diagnostics) {
+        Poll(cancel, deadline);
+        if (diagnostic.source != "Map/generated.j" || diagnostic.line == 0 || diagnostic.line > starts.size()) continue;
+        const auto lineBegin = starts[diagnostic.line - 1];
+        auto lineEnd = diagnostic.line < starts.size() ? starts[diagnostic.line] : generated.text.size();
+        while (lineEnd > lineBegin && (generated.text[lineEnd - 1] == '\n' || generated.text[lineEnd - 1] == '\r')) --lineEnd;
+        auto offset = lineBegin;
+        while (offset < lineEnd && (generated.text[offset] == ' ' || generated.text[offset] == '\t')) ++offset;
+        if (diagnostic.byteRangeExact && diagnostic.byteColumn > 0 && lineBegin + diagnostic.byteColumn - 1 < lineEnd)
+            offset = lineBegin + diagnostic.byteColumn - 1;
+        const auto span = std::upper_bound(generated.statements.begin(), generated.statements.end(), offset,
+            [](std::size_t value, const auto& entry) { return value < entry.byteOffset; });
+        if (span == generated.statements.begin()) continue;
+        const auto& owner = *std::prev(span);
+        if (offset >= owner.byteOffset + owner.byteLength) continue;
+        CodeCheckTriggerLocation location;
+        location.triggerId = owner.triggerId; location.ecaId = owner.ecaId;
+        if (const auto* trigger = FindTriggerRecord(document, owner.triggerId)) location.triggerName = trigger->name.text;
+        if (owner.ecaId != 0) {
+            if (ecaIndex.empty()) for (std::size_t i = 0; i < document.ecaNodes.size(); ++i) ecaIndex.emplace(document.ecaNodes[i].id, i);
+            if (const auto found = ecaIndex.find(owner.ecaId); found != ecaIndex.end()) location.function = document.ecaNodes[found->second].name.text;
+            auto cached = rendered.find(owner.triggerId);
+            if (cached == rendered.end()) {
+                Rendered entry;
+                entry.ok = Trigger::RenderTriggerText(document, catalog, owner.triggerId, 4U * 1024U * 1024U, &entry.anchors).Succeeded();
+                cached = rendered.emplace(owner.triggerId, std::move(entry)).first;
+            }
+            if (cached->second.ok) {
+                for (const auto& anchor : cached->second.anchors) if (anchor.ecaId == owner.ecaId) {
+                    location.line = static_cast<std::uint32_t>(anchor.line); location.column = static_cast<std::uint32_t>(anchor.column);
+                    break;
+                }
+            }
+        }
+        // 生成代码原行，供理解报错；按 UTF-8 字符边界截断。
+        auto text = std::string_view(generated.text).substr(lineBegin, lineEnd - lineBegin);
+        while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) text.remove_prefix(1);
+        if (text.size() > 240) {
+            std::size_t cut = 240;
+            while (cut > 0 && (static_cast<unsigned char>(text[cut]) & 0xC0U) == 0x80U) --cut;
+            text = text.substr(0, cut);
+        }
+        location.generated = std::string(text);
+        diagnostic.trigger = std::move(location);
+    }
+}
+} // namespace
+
 CodeCheckResult CheckProjectCode(const std::shared_ptr<const CodeCheckProjectSnapshot>& snapshot,
     CodeCheckProjectCache& cache, Trigger::CodeBlockTarget target, std::string draft,
     CodeLanguage language, std::uint64_t generation, std::stop_token cancel, CodeCheckLuaSources lua) {
@@ -421,180 +702,62 @@ CodeCheckResult CheckProjectCode(const std::shared_ptr<const CodeCheckProjectSna
         }
         std::lock_guard lock(cache.impl_->mutex);
         auto& owned = *cache.impl_;
-        if (!owned.captureFinished || owned.snapshot != snapshot || !snapshot
-            || owned.snapshot->binding != snapshot->binding) owned.Capture(snapshot, cancel, deadline);
-        if (!owned.incomplete.empty()) {
-            // 框架/整图来源不完整时仍可展示已独立复核的实际基础库签名；不授予语义资格。
-            if (owned.layout && owned.bases
-                && Script::VerifyScriptToolchainLayout(*owned.layout).Succeeded()
-                && Script::VerifyScriptBaseInputs(*owned.bases, *owned.layout, Script::ScriptBasePolicy::BoundLayout).Succeeded()) {
-                request.context.declarations = {{"Save/common.j", BytesText(owned.bases->common.bytes)},
-                    {"Save/blizzard.j", BytesText(owned.bases->blizzard.bytes)}};
-                request.jass.returnBug = owned.bases->allowReturnBug;
-            }
-            return fallback(owned.incomplete);
-        }
-        Poll(cancel, deadline);
-        auto currentLayout = Script::VerifyScriptToolchainLayout(*owned.layout);
-        auto currentBases = Script::VerifyScriptBaseInputs(*owned.bases, *owned.layout, Script::ScriptBasePolicy::BoundLayout);
-        if (!currentLayout.Succeeded() || !currentBases.Succeeded()) {
-            owned.captureFinished = false;
-            return fallback("基础库或工具链实际来源已改变，下次检查将重新捕获。");
-        }
-        request.context.declarations = {{"Save/common.j", BytesText(owned.bases->common.bytes)},
-            {"Save/blizzard.j", BytesText(owned.bases->blizzard.bytes)}};
-        request.jass.returnBug = owned.bases->allowReturnBug;
-        if (owned.framework) {
-            const auto current = Script::VerifyScriptFrameworkInputs(*owned.framework, *owned.layout);
-            if (!current.Succeeded()) { owned.captureFinished = false; return fallback(Reason(current.diagnostics, "框架来源已改变。")); }
-        } else {
-            auto sources = ModernUserSources(*owned.layout, *snapshot, owned.archive->SourcePath().parent_path());
-            const auto current = Script::VerifyScriptInjectionSources(*owned.injection, *owned.entry, sources, !owned.layout->allowReturnBug);
-            if (!current.Succeeded()) { owned.captureFinished = false; return fallback(Reason(current.diagnostics, "函数库注入来源已改变。")); }
-        }
+        if (auto reason = PrepareContext(owned, snapshot, request, cancel, deadline)) return fallback(std::move(*reason));
         auto document = *snapshot->triggers;
         auto plan = Trigger::TriggerCodeEditor::PrepareText(document, *snapshot->catalog, target, request.source.text);
         if (!plan.Succeeded() || !plan.value) return fallback(Reason(plan.diagnostics, "草稿尚不能进入私有作者候选。"));
         auto applied = Trigger::TriggerCodeEditor::Apply(document, *snapshot->catalog, *plan.value);
         if (!applied.Succeeded()) return fallback(Reason(applied.diagnostics, "私有作者候选来源已过期。"));
-        Script::MapScriptInputs inputs;
-        inputs.triggers = &document; inputs.catalog = snapshot->catalog.get(); inputs.queries = Script::BuildObjectQueries(owned.objects);
-        Script::AttachSoundQueries(inputs.queries, owned.game ? &*owned.game : nullptr, &*owned.archive);
-        inputs.settings = &*owned.map->Settings(); inputs.units = owned.map->Units() ? &*owned.map->Units() : nullptr;
-        inputs.doodads = owned.map->Doodads() ? &*owned.map->Doodads() : nullptr;
-        inputs.regions = owned.map->Regions() ? &*owned.map->Regions() : nullptr;
-        inputs.cameras = owned.map->Cameras() ? &*owned.map->Cameras() : nullptr;
-        inputs.sounds = owned.map->Sounds() ? &*owned.map->Sounds() : nullptr;
-        inputs.strings = owned.map->Strings() ? &*owned.map->Strings() : nullptr;
-        inputs.terrain = snapshot->terrain; inputs.debug = snapshot->debug;
-        std::error_code error;
-        inputs.nullSafeHandleSet = std::any_of(owned.layout->systemIncludes.begin(), owned.layout->systemIncludes.end(),
-            [&](const auto& directory) { return std::filesystem::exists(directory / "YDTrigger/SaveLoadSystem/HTSystem.j", error); });
-        auto generated = Script::GenerateMapScript(inputs);
-        if (!generated.Succeeded()) return fallback(Reason(generated.diagnostics, "生产整图生成尚不能完成。"));
-        if (std::none_of(generated.authorCode.begin(), generated.authorCode.end(),
-            [&](const auto& span) { return span.triggerId == target.triggerId; }))
-            return fallback("生产整图未发射当前代码块，不能用其他脚本的检查结果代表此草稿。");
-        auto author = AuthorMap(generated, cancel, deadline);
-        std::string injected;
-        std::vector<std::filesystem::path> paths;
-        Jass::PreprocessResult preprocessed;
-        if (owned.framework) {
-            Jass::SourceLexicalView lexical;
-            auto injection = Script::InjectScriptFramework(generated.text, *owned.framework, paths, &lexical);
-            if (!injection.Succeeded() || !injection.value) return fallback(Reason(injection.diagnostics, "框架注入尚不能完成。"));
-            MapInjected(author, generated.text, paths, owned.framework->injection, true, cancel, deadline);
-            Script::ScriptPreprocessSourceRequest preprocess;
-            preprocess.check = request.jass; preprocess.check.maxSources = 1024;
-            preprocess.mainText = std::move(*injection.value); preprocess.mainDirectory = owned.framework->profile.mainSourceDirectory;
-            preprocess.frameworkDirectivePolicy = Script::FrameworkDirectivePolicy(*owned.framework);
-            preprocess.includeCandidatePolicy = Script::ScriptIncludeCandidatePolicy::BoundRootsSearch;
-            preprocess.mainLexicalView = std::move(lexical);
-            preprocess.defines = {{"WARCRAFT_VERSION", std::to_string(owned.layout->versionMacro)}, {"YDWE_VERSION_STRING", "\"1.32.13\""}, {"SCRIPT_INJECTION", "1"}};
-            if (snapshot->debug) preprocess.defines.emplace_back("DEBUG", "1");
-            auto captured = Script::CaptureScriptPreprocessSources(owned.framework->entryPlan,
-                Script::FrameworkSourceRequest(*owned.framework), preprocess);
-            if (!captured.Succeeded() || !captured.value) return fallback(Reason(captured.diagnostics, "本次草稿的框架预处理来源无法冻结。"));
-            auto valid = Script::ValidateFrameworkIncludes(*owned.framework, *captured.value);
-            if (!valid.Succeeded()) return fallback(Reason(valid.diagnostics, "框架包含编码尚不能绑定。"));
-            preprocessed = Script::ReplayScriptPreprocessSources(*captured.value);
-            if (preprocessed.text != captured.value->preprocessed.text) return fallback("owned预处理回放与同次草稿捕获不一致。");
-            for (const auto& source : captured.value->includes)
-                if (source.binding.kind == Script::ScriptToolchainBindingKind::RegularFile)
-                    request.context.includes.push_back({PathText(source.binding.path), BytesText(source.bytes)});
-        } else {
-            auto injection = Script::InjectOwnedCode(generated.text, *owned.injection, request.jass, &paths);
-            if (!injection.Succeeded() || !injection.value) return fallback(Reason(injection.diagnostics, "函数库注入尚不能完成。"));
-            injected = std::move(*injection.value);
-            MapInjected(author, generated.text, paths, *owned.injection, false, cancel, deadline);
-            Jass::PreprocessOptions options;
-            options.check = request.jass; options.check.maxSources = 1024;
-            options.systemIncludes = owned.layout->systemIncludes; options.userIncludes = owned.entry->orderedUserIncludes;
-            options.defines = {{"WARCRAFT_VERSION", std::to_string(owned.layout->versionMacro)}, {"YDWE_VERSION_STRING", "\"1.32.13\""}, {"SCRIPT_INJECTION", "1"}};
-            if (snapshot->debug) options.defines.emplace_back("DEBUG", "1");
-            for (const auto& path : owned.layout->forceIncludes) options.forceIncludes.push_back(PathText(path));
-            options.maxOutputBytes = 16 * 1024 * 1024;
-            std::map<std::filesystem::path, Jass::PreprocessIncludeContent> includes;
-            std::size_t bytes = 0;
-            options.includeCandidatePolicy = [&](const Jass::IncludeCandidateRequest& candidate) {
-                const auto allowed = Within(candidate.candidate, owned.archive->SourcePath().parent_path())
-                    || std::any_of(options.systemIncludes.begin(), options.systemIncludes.end(), [&](const auto& root) { return Within(candidate.candidate, root); })
-                    || std::any_of(options.userIncludes.begin(), options.userIncludes.end(), [&](const auto& root) { return Within(candidate.candidate, root); });
-                return Result<Jass::IncludeCandidateEligibility>::Success(allowed ? Jass::IncludeCandidateEligibility::Allowed
-                    : Jass::IncludeCandidateEligibility::SkippedOutOfScope);
-            };
-            options.includeProvider = [&](const std::filesystem::path& path) -> Result<Jass::PreprocessIncludeContent> {
-                Poll(cancel, deadline);
-                const auto name = path.lexically_normal();
-                if (const auto found = includes.find(name); found != includes.end()) return Result<Jass::PreprocessIncludeContent>::Success(found->second);
-                if (includes.size() >= 512) return Result<Jass::PreprocessIncludeContent>::Failure("Code.Check", "CODE_CHECK_INCLUDE_BUDGET", "包含候选超过512项。");
-                auto source = Script::CaptureReadOnlyScriptSource(name);
-                if (!source.Succeeded() || !source.value) return {{}, std::move(source.diagnostics)};
-                if (source.value->bytes.size() > 32 * 1024 * 1024 - bytes) return Result<Jass::PreprocessIncludeContent>::Failure("Code.Check", "CODE_CHECK_INCLUDE_BUDGET", "包含文本超过32MiB。");
-                bytes += source.value->bytes.size();
-                Jass::PreprocessIncludeContent content{source.value->binding.kind == Script::ScriptToolchainBindingKind::RegularFile, BytesText(source.value->bytes)};
-                includes.emplace(name, content); return Result<Jass::PreprocessIncludeContent>::Success(std::move(content));
-            };
-            preprocessed = Jass::Preprocess(injected, "war3map.j", owned.archive->SourcePath().parent_path(), options);
-            for (const auto& [path, source] : includes)
-                if (source.exists) request.context.includes.push_back({PathText(path), source.text});
-        }
-        Poll(cancel, deadline);
-        if (!preprocessed.Succeeded()) return fallback(Reason(preprocessed.diagnostics, "预处理未能完成。"));
-        request.sourceMap = MapPreprocessed(preprocessed, author, cancel, deadline);
-        if (preprocessed.text.find("<?") != std::string::npos) {
-            // 与保存链相同的内置模板求值（如 YDNL 展开为换行）；需要整段执行的块（物编生成等）不在编辑器里执行。
-            auto evaluated = Script::EvaluateTemplates(preprocessed.text, *owned.templates);
-            if (!evaluated.Succeeded()) {
-                std::vector<Diagnostic> errors;
-                std::copy_if(evaluated.diagnostics.begin(), evaluated.diagnostics.end(), std::back_inserter(errors),
-                    [](const auto& diagnostic) { return diagnostic.severity == DiagnosticSeverity::Error; });
-                const auto reason = Reason(errors, "模板求值未能完成");
-                if (auto section = CheckAuthorSection(request, preprocessed.text, *owned.templates, reason, cancel, deadline))
-                    return std::move(*section);
-                return fallback(reason + "；编辑器不执行该模板，保存链仍完整执行并检查。");
-            }
-            Poll(cancel, deadline);
-            const auto lines = LineCount(evaluated.text, cancel, deadline);
-            request.sourceMap = MapTemplateOutput(preprocessed.text, evaluated, cancel, deadline).ComposeWith(request.sourceMap, lines);
-            preprocessed.text = std::move(evaluated.text);
-        }
-        request.source.text = std::move(preprocessed.text);
-        request.context.declarations = {{"Save/common.j", BytesText(owned.bases->common.bytes)}, {"Save/blizzard.j", BytesText(owned.bases->blizzard.bytes)}};
-        request.context.complete = true; request.jass.returnBug = owned.bases->allowReturnBug;
-        request.language = CodeLanguage::VJass; // 整图依赖也可能含库；统一展开后仍交给同一JASS检查器。
-        request.preprocessed = true;
-        auto result = CheckCode(request, cancel);
-        std::size_t externalBytes = 0;
-        for (const auto& source : result.externalSources) externalBytes += source.text.size();
-        if (externalBytes > 32 * 1024 * 1024) {
-            result.externalSources.clear(); externalBytes = 0; result.externalSourcesComplete = false;
-        }
-        // GUI/初始化声明映射到这一份实际生成正文；导航使用同次冻结内容。
-        AddExternalSource(result, "Map/generated.j", generated.text, externalBytes);
-        const auto& injectionSources = owned.framework ? owned.framework->injection : *owned.injection;
-        for (const auto& path : paths) {
-            Poll(cancel, deadline);
-            const auto found = std::find_if(injectionSources.files.begin(), injectionSources.files.end(),
-                [&](const auto& source) { return source.binding.path == path; });
-            if (found != injectionSources.files.end()) AddExternalSource(result, PathText(path), BytesText(found->bytes), externalBytes);
-        }
-        for (const auto& span : generated.authorCode) {
-            Poll(cancel, deadline);
-            const auto* trigger = span.triggerId == 0 ? nullptr
-                : Trigger::TriggerDocumentEditor::FindTrigger(document, span.triggerId);
-            const auto* block = span.triggerId == 0 ? &document.wct.customCode : trigger ? &trigger->customText : nullptr;
-            if (block) AddExternalSource(result, CodeCheckTargetSourceName({span.triggerId == 0
-                ? Trigger::CodeBlockKind::GlobalHeader : Trigger::CodeBlockKind::CustomTrigger, span.triggerId}),
-                Trigger::TriggerCodeEditor::NormalizedText(*block), externalBytes);
-        }
-        VerifySemanticLineCopies(result, request.source.text, cancel, deadline);
-        if (!result.externalSourcesComplete) result.reason += " 只读导航来源清单达到显示预算，尚未完整列出。";
-        return result;
+        return CheckGeneratedMap(owned, snapshot, request, document, target.triggerId, false, fallback, cancel, deadline, nullptr);
     } catch (const std::exception&) {
         CodeCheckResult failed;
         failed.generation = generation; failed.contextBinding = request.context.binding; failed.cancelled = cancel.stop_requested();
         failed.reason = failed.cancelled ? "代码检查已取消。" : "代码检查未能完整执行或超过时间预算。";
+        failed.diagnostics.push_back({DiagnosticSeverity::Error, {}, failed.cancelled ? "CODE_CHECK_CANCELLED" : "CODE_CHECK_CONTEXT_INCOMPLETE", failed.reason});
+        return failed;
+    }
+}
+
+CodeCheckResult CheckProjectTriggers(const std::shared_ptr<const CodeCheckProjectSnapshot>& snapshot,
+    CodeCheckProjectCache& cache, std::shared_ptr<const Trigger::TriggerDocument> document,
+    std::uint64_t generation, std::stop_token cancel) {
+    CodeCheckRequest request;
+    request.language = CodeLanguage::Jass; request.source = {"Map/generated.j", {}};
+    request.generation = generation; request.context.binding = snapshot ? snapshot->binding : "unbound";
+    request.debug = snapshot && snapshot->debug;
+    request.jass.cancel = cancel; request.lua.cancel = cancel;
+    const auto deadline = Clock::now() + std::chrono::seconds(60);
+    request.jass.deadline = deadline; request.lua.deadline = deadline;
+    // 没有完整整图上下文时不检查：GUI 生成代码脱离函数库与基础库只会得到无意义的未定义报错。
+    const auto incomplete = [&](std::string reason) {
+        CodeCheckResult result;
+        result.generation = generation; result.contextBinding = request.context.binding;
+        result.reason = "未做整图检查：" + std::move(reason);
+        result.diagnostics.push_back({DiagnosticSeverity::Error, {}, "TRIGGER_CHECK_CONTEXT_INCOMPLETE", result.reason});
+        return result;
+    };
+    try {
+        if (!snapshot || !snapshot->catalog || !document) return incomplete("工程没有完整的冻结触发器来源。");
+        std::lock_guard lock(cache.impl_->mutex);
+        auto& owned = *cache.impl_;
+        if (auto reason = PrepareContext(owned, snapshot, request, cancel, deadline)) return incomplete(std::move(*reason));
+        Script::MapScriptResult generated;
+        auto result = CheckGeneratedMap(owned, snapshot, request, *document, std::nullopt, true, incomplete, cancel, deadline, &generated);
+        if (result.contextComplete) LocateTriggerDiagnostics(result, generated, *document, *snapshot->catalog, cancel, deadline);
+        // 先列能定位到 T 语句的错误，再列其他错误与提示，便于分页读取。
+        const auto rank = [](const CodeCheckDiagnostic& diagnostic) {
+            const bool error = diagnostic.severity == DiagnosticSeverity::Error;
+            return error && diagnostic.trigger ? 0 : error ? 1 : 2;
+        };
+        std::stable_sort(result.diagnostics.begin(), result.diagnostics.end(),
+            [&](const auto& left, const auto& right) { return rank(left) < rank(right); });
+        // 外部来源只服务代码编辑器导航；T 检查不返回这些大文本。
+        result.externalSources.clear();
+        return result;
+    } catch (const std::exception&) {
+        CodeCheckResult failed;
+        failed.generation = generation; failed.contextBinding = request.context.binding; failed.cancelled = cancel.stop_requested();
+        failed.reason = failed.cancelled ? "触发器检查已取消。" : "触发器检查未能完整执行或超过时间预算。";
         failed.diagnostics.push_back({DiagnosticSeverity::Error, {}, failed.cancelled ? "CODE_CHECK_CANCELLED" : "CODE_CHECK_CONTEXT_INCOMPLETE", failed.reason});
         return failed;
     }

@@ -5,6 +5,7 @@
 #include "War3MapCore/Trigger/TriggerCodeEditing.h"
 #include "War3MapCore/Trigger/TriggerDataText.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
+#include "War3MapCore/Trigger/TriggerFeatureText.h"
 #include "War3MapCore/Trigger/TriggerTextNotation.h"
 #include "War3MapCore/Trigger/TriggerTypes.h"
 #include "War3MapCore/Trigger/TriggerVariableReference.h"
@@ -119,6 +120,10 @@ struct RequestBudget {
                 return Parent(item.parent) && (!item.before || Ref(*item.before)) && AddText(item.text);
             } else if constexpr (std::is_same_v<T, GraphReplaceTriggerText>) {
                 return Ref(item.trigger) && AddText(item.text);
+            } else if constexpr (std::is_same_v<T, GraphApplyFeatureText>) {
+                return AddText(item.category) && AddText(item.text) && AddText(item.clientKey);
+            } else if constexpr (std::is_same_v<T, GraphPatchTriggerText>) {
+                return Ref(item.trigger) && AddText(item.expected) && AddText(item.text);
             } else {
                 return Parent(item.parent) && (!item.before || Ref(*item.before)) && item.root && Eca(*item.root, 0);
             }
@@ -643,6 +648,131 @@ struct Editor {
         for (const auto& root : *roots.value)
             if (auto status = InsertRoot(parent, 0, *id.value, *root); !status.Succeeded()) return status;
         return Status::Ok();
+    }
+    // 功能写法：按名字对齐类别、变量与触发器，各步复用本批次的创建、设置与整体替换（同一校验与撤销）；
+    // 变量与触发器的错误一次列出，各带功能文本中的行号。
+    Status Apply(const GraphApplyFeatureText& op) {
+        auto feature = ParseFeatureText(op.text);
+        if (!feature.Succeeded() || !feature.value) return {feature.diagnostics};
+        const std::string prefix = op.clientKey.empty() ? "feature" : op.clientKey;
+        const auto key = [&](std::string_view kind, const std::string& name, std::size_t index) {
+            const auto readable = prefix + "/" + std::string(kind) + "/" + name;
+            return readable.size() <= 128 ? readable : prefix + "/" + std::string(kind) + "#" + std::to_string(index);
+        };
+        const auto ordered = [&](GraphParentKind kind, GraphRecordRef owner) {
+            GraphParentExpectation parent{kind, std::move(owner), {}, std::nullopt};
+            if (const auto ids = Children(parent); ids.Succeeded())
+                for (const auto id : *ids.value) parent.orderedChildren.push_back({ChildKind(kind), id, {}});
+            return parent;
+        };
+        std::vector<Diagnostic> errors;
+        const auto collect = [&](Status status, std::size_t line, const std::string& what) {
+            for (auto& diagnostic : status.diagnostics) {
+                if (diagnostic.severity != DiagnosticSeverity::Error || errors.size() >= 64) continue;
+                // 触发器体的紧凑 T 报错已带整段文本的行列；其余补上标题行号。
+                if (diagnostic.message.find("第 ") != 0) diagnostic.message = "第 " + std::to_string(line) + " 行（" + what + "）：" + diagnostic.message;
+                errors.push_back(std::move(diagnostic));
+            }
+            return status.Succeeded();
+        };
+        const auto set = [&](GraphRecordRef target, GraphField field, GraphFieldValue value) -> Status {
+            auto current = Field(target.kind, target.id, field);
+            if (!current.Succeeded() || !current.value) return {current.diagnostics};
+            if (*current.value == value) return Status::Ok();
+            return Apply(GraphSet{target, field, *current.value, std::move(value)});
+        };
+
+        StableId category = 0;
+        for (const auto& row : doc.categories) {
+            if (row.name.text != op.category) continue;
+            if (category != 0) return Fail("TRIGGER_FEATURE_CATEGORY_AMBIGUOUS", "有多个类别叫“" + op.category + "”，无法确定写入哪一个。");
+            category = row.id;
+        }
+        if (category == 0) {
+            const auto categoryKey = prefix + "/category";
+            if (auto status = Apply(GraphCreate{categoryKey, GraphCategoryValue{op.category, false},
+                    ordered(GraphParentKind::Categories, {}), std::nullopt}); !status.Succeeded()) return status;
+            category = receipt.created.at(categoryKey).id;
+        }
+
+        for (std::size_t index = 0; index < feature.value->variables.size(); ++index) {
+            const auto& variable = feature.value->variables[index];
+            const auto what = "变量 " + variable.name;
+            const auto existing = std::find_if(doc.variables.begin(), doc.variables.end(),
+                [&](const auto& row) { return row.name.text == variable.name; });
+            if (existing == doc.variables.end()) {
+                collect(Apply(GraphCreate{key("variable", variable.name, index),
+                    GraphVariableValue{variable.name, variable.type, variable.isArray, variable.size,
+                        variable.initial.has_value(), variable.initial.value_or("")},
+                    ordered(GraphParentKind::Variables, {}), std::nullopt}), variable.line, what);
+                continue;
+            }
+            if (existing->typeName.text != variable.type || (existing->isArray != 0) != variable.isArray) {
+                collect(Fail("TRIGGER_FEATURE_VARIABLE_CONFLICT", "已有同名变量，类型为 " + existing->typeName.text
+                    + (existing->isArray != 0 ? "[]" : "") + "；功能文本不能改变已有变量的类型或是否数组。"), variable.line, what);
+                continue;
+            }
+            const GraphRecordRef ref{GraphRecordKind::Variable, existing->id, {}};
+            if (variable.isArray && !collect(set(ref, GraphField::VariableArraySize, variable.size), variable.line, what)) continue;
+            if (!collect(set(ref, GraphField::VariableInitialized, variable.initial.has_value()), variable.line, what)) continue;
+            if (variable.initial) collect(set(ref, GraphField::VariableInitialValue, *variable.initial), variable.line, what);
+        }
+        if (!errors.empty()) return {std::move(errors)};
+
+        const auto categoryId = Find(doc.categories, category)->categoryId;
+        for (std::size_t index = 0; index < feature.value->triggers.size(); ++index) {
+            const auto& trigger = feature.value->triggers[index];
+            const auto what = "触发器 " + trigger.name;
+            const TriggerRecord* existing = nullptr;
+            std::size_t matches = 0;
+            for (const auto& row : doc.triggers) if (row.name.text == trigger.name) { existing = &row; ++matches; }
+            GraphRecordRef ref;
+            if (matches > 1 || (existing && existing->categoryId != categoryId)) {
+                collect(Fail("TRIGGER_FEATURE_TRIGGER_ELSEWHERE", matches > 1 ? "有多个同名触发器。" : "同名触发器在其他类别里；先移动或改名。"),
+                    trigger.line, what);
+                continue;
+            }
+            if (!existing) {
+                const auto triggerKey = key("trigger", trigger.name, index);
+                if (!collect(Apply(GraphCreate{triggerKey, GraphTriggerValue{trigger.name, {}, trigger.enabled, trigger.initiallyOn, trigger.runOnInit, false},
+                        ordered(GraphParentKind::CategoryTriggers, {GraphRecordKind::Category, category, {}}), std::nullopt}), trigger.line, what)) continue;
+                ref = receipt.created.at(triggerKey);
+            } else {
+                ref = {GraphRecordKind::Trigger, existing->id, {}};
+                if (!collect(set(ref, GraphField::Enabled, trigger.enabled), trigger.line, what)
+                    || !collect(set(ref, GraphField::InitiallyOn, trigger.initiallyOn), trigger.line, what)
+                    || !collect(set(ref, GraphField::RunOnInit, trigger.runOnInit), trigger.line, what)) continue;
+            }
+            collect(Apply(GraphReplaceTriggerText{ref, trigger.body}), trigger.line, what);
+        }
+        if (!errors.empty()) return {std::move(errors)};
+        return Status::Ok();
+    }
+    Status Apply(const GraphPatchTriggerText& op) {
+        if (op.trigger.kind != GraphRecordKind::Trigger) return Fail("TRIGGER_GRAPH_PARENT_INVALID", "局部替换的目标必须是触发器。");
+        const auto id = Resolve(op.trigger); if (!id.Succeeded()) return {id.diagnostics};
+        const auto current = RenderTriggerText(doc, catalog, *id.value, limits.maxRequestTextBytes);
+        if (!current.Succeeded() || !current.value) return {current.diagnostics};
+        std::vector<std::string_view> lines;
+        for (std::string_view rest = *current.value; !rest.empty();) {
+            const auto end = rest.find('\n');
+            lines.push_back(rest.substr(0, end));
+            rest = end == std::string_view::npos ? std::string_view{} : rest.substr(end + 1);
+        }
+        if (op.fromLine < 1 || op.fromLine > lines.size() + 1 || op.toLine + 1 < op.fromLine || op.toLine > lines.size())
+            return Fail("TRIGGER_TEXT_PATCH_RANGE", "行号范围无效：当前导出共 " + std::to_string(lines.size()) + " 行。");
+        std::string actual, composed;
+        for (std::size_t line = op.fromLine; line <= op.toLine; ++line) { actual.append(lines[line - 1]); actual += '\n'; }
+        auto expected = op.expected;
+        if (!expected.empty() && expected.back() != '\n') expected += '\n';
+        if (expected != actual)
+            return Fail("TRIGGER_TEXT_PATCH_STALE", "第 " + std::to_string(op.fromLine) + "–" + std::to_string(op.toLine)
+                + " 行与 expected 不同，未修改；请重新读取 trigger_text。当前内容：\n" + actual.substr(0, 4096));
+        for (std::size_t line = 1; line < op.fromLine; ++line) { composed.append(lines[line - 1]); composed += '\n'; }
+        composed += op.text;
+        if (!op.text.empty() && op.text.back() != '\n') composed += '\n';
+        for (std::size_t line = op.toLine + 1; line <= lines.size(); ++line) { composed.append(lines[line - 1]); composed += '\n'; }
+        return Apply(GraphReplaceTriggerText{{GraphRecordKind::Trigger, *id.value, {}}, std::move(composed)});
     }
     Status Apply(const GraphReplaceArgument& op) {
         if (op.target.kind != GraphRecordKind::Argument)

@@ -430,6 +430,12 @@ MapScriptResult GenerateMapScript(const MapScriptInputs& inputs) {
     detail::WriteMain(context, upgrades, techTree);
     detail::WriteConfig(context);
 
+    const auto& marks = out.OwnerMarks();
+    for (std::size_t i = 0; i < marks.size(); ++i) {
+        if (marks[i].owner.trigger == 0) continue;
+        const std::size_t end = i + 1 < marks.size() ? marks[i + 1].offset : out.Size();
+        if (end > marks[i].offset) result.statements.push_back({marks[i].owner.trigger, marks[i].owner.eca, marks[i].offset, end - marks[i].offset});
+    }
     result.text = out.Take();
     for (std::size_t position = 0; (position = result.text.find("\nfunction ", position)) != std::string::npos; ++position) {
         ++result.functionCount;

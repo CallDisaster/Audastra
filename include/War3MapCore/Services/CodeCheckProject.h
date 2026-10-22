@@ -62,6 +62,8 @@ private:
     friend CodeCheckResult CheckProjectCode(const std::shared_ptr<const CodeCheckProjectSnapshot>&,
         CodeCheckProjectCache&, Trigger::CodeBlockTarget, std::string, CodeLanguage,
         std::uint64_t, std::stop_token, CodeCheckLuaSources);
+    friend CodeCheckResult CheckProjectTriggers(const std::shared_ptr<const CodeCheckProjectSnapshot>&,
+        CodeCheckProjectCache&, std::shared_ptr<const Trigger::TriggerDocument>, std::uint64_t, std::stop_token);
 };
 
 [[nodiscard]] std::string CodeCheckTargetSourceName(Trigger::CodeBlockTarget target, CodeLanguage language = CodeLanguage::Jass);
@@ -73,6 +75,13 @@ private:
     const std::shared_ptr<const CodeCheckProjectSnapshot>& snapshot,
     CodeCheckProjectCache& cache, Trigger::CodeBlockTarget target, std::string draft,
     CodeLanguage language, std::uint64_t generation, std::stop_token cancel = {}, CodeCheckLuaSources lua = {});
+
+// 用给定触发器文档（通常是尚未发布的编辑候选）按保存链生成整图并做同一 JASS 检查。
+// 落在 GUI 语句生成代码上的诊断附 trigger 位置（紧凑 T 行列）；不写地图、不执行代码。
+// 没有完整整图上下文时不检查，明确返回 TRIGGER_CHECK_CONTEXT_INCOMPLETE。
+[[nodiscard]] CodeCheckResult CheckProjectTriggers(const std::shared_ptr<const CodeCheckProjectSnapshot>& snapshot,
+    CodeCheckProjectCache& cache, std::shared_ptr<const Trigger::TriggerDocument> document,
+    std::uint64_t generation, std::stop_token cancel = {});
 
 // 独立Lua文本使用与工程代码块相同的只读本机运行库捕获，不接收外部伪造库存事实。
 // 不把文本加入地图/执行代码，不授予全图上下文或保存发布资格。lua 与 CheckProjectCode 相同。

@@ -1,6 +1,7 @@
 #include "EditorProject.h"
 #include "War3MapCore/Workspace.h"
 
+#include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
 #include <QFileSystemWatcher>
@@ -23,6 +24,7 @@ void EditorProject::ResetProjectWatch() {
         if (!files.isEmpty()) projectWatch_->removePaths(files);
         if (!directories.isEmpty()) projectWatch_->removePaths(directories);
     }
+    parentWatchStamps_.clear();
     sourceChangeSuspected_ = false;
     sourceChangeConfirmed_ = false;
     projectWatchLimited_ = false;
@@ -40,6 +42,7 @@ void EditorProject::RefreshProjectWatch() {
         if (!files.isEmpty()) projectWatch_->removePaths(files);
         if (!directories.isEmpty()) projectWatch_->removePaths(directories);
         projectWatchLimited_ = false;
+        parentWatchStamps_.clear();
         QStringList paths;
         QSet<QString> keys;
         const auto append = [&](const std::filesystem::path& path) {
@@ -61,9 +64,21 @@ void EditorProject::RefreshProjectWatch() {
             append(path.parent_path());
             append(path);
         };
+        // 单个工程/地图文件的父目录只为捕获替换；记下文件身份，供目录事件判断是否真的变了。
+        const auto stampParent = [&](const std::filesystem::path& path) {
+            if (path.empty()) return;
+            const QFileInfo info(PathText(path));
+            if (!info.exists()) return;
+            const auto parent = QDir::cleanPath(QFileInfo(PathText(path.parent_path())).absoluteFilePath()).toCaseFolded();
+            parentWatchStamps_[parent].push_back({info.absoluteFilePath(),
+                {info.size(), info.lastModified().toMSecsSinceEpoch()}});
+        };
         appendFile(projectFilePath_);
+        // 目录工作区还要靠父目录捕获根目录被替换，那时父目录事件一律按变化处理。
+        if (!sourceArchivePath_.empty() || !directorySnapshot_) stampParent(projectFilePath_);
         if (!sourceArchivePath_.empty()) {
             appendFile(sourceArchivePath_);
+            stampParent(sourceArchivePath_);
         } else if (directorySnapshot_) {
             append(directorySnapshot_->Snapshot().root.parent_path());
             append(directorySnapshot_->Snapshot().root);

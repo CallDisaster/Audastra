@@ -547,6 +547,45 @@ bool TemplateResult::Succeeded() const noexcept {
     return true;
 }
 
+std::optional<TemplateResult> AlignTemplateOutput(std::string_view input, const TemplateResult& builtin, std::string output) {
+    TemplateResult aligned;
+    std::size_t inputAt = 0, outputAt = 0;
+    const auto literal = [&](std::size_t end) { return input.substr(inputAt, end - inputAt); };
+    for (std::size_t index = 0; index < builtin.spans.size(); ++index) {
+        const auto& span = builtin.spans[index];
+        if (span.sourceBegin < inputAt || span.sourceEnd < span.sourceBegin || span.sourceEnd > input.size()) return std::nullopt;
+        const auto before = literal(span.sourceBegin);
+        if (output.compare(outputAt, before.size(), before) != 0) return std::nullopt;
+        outputAt += before.size();
+        inputAt = span.sourceEnd;
+        const auto source = input.substr(span.sourceBegin, span.sourceEnd - span.sourceBegin);
+        const auto known = std::string_view(builtin.text).substr(span.outputBegin, span.outputEnd - span.outputBegin);
+        std::size_t blockEnd = std::string::npos;
+        if (known != source) {
+            // 内置求值已有结果：整份执行须得到相同输出。
+            if (output.compare(outputAt, known.size(), known) != 0) return std::nullopt;
+            blockEnd = outputAt + known.size();
+        } else {
+            // 未执行的块：输出到下一段块外文本出现为止。
+            const auto nextEnd = index + 1 < builtin.spans.size() ? builtin.spans[index + 1].sourceBegin : input.size();
+            const auto next = literal(nextEnd);
+            if (next.empty()) {
+                if (index + 1 < builtin.spans.size()) return std::nullopt; // 相邻的未执行块无法分界
+                blockEnd = output.size();
+            } else {
+                blockEnd = index + 1 < builtin.spans.size() ? output.find(next, outputAt) : output.size() - next.size();
+                if (blockEnd == std::string::npos || blockEnd < outputAt || blockEnd > output.size()) return std::nullopt;
+            }
+        }
+        aligned.spans.push_back({span.sourceBegin, span.sourceEnd, outputAt, blockEnd});
+        outputAt = blockEnd;
+    }
+    const auto rest = input.substr(inputAt);
+    if (output.size() - outputAt != rest.size() || output.compare(outputAt, rest.size(), rest) != 0) return std::nullopt;
+    aligned.text = std::move(output);
+    return aligned;
+}
+
 TemplateResult EvaluateTemplates(std::string_view text, const TemplateContext& context) {
     TemplateResult result;
     result.text.reserve(text.size());

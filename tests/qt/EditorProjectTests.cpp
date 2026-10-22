@@ -272,6 +272,7 @@ private slots:
     void FailedObservationPreservesBaselineAndRecovers();
     void NewlyCreatedEmptyCategoryReturnsToClean();
     void SourceWatchAndChecksWorkWithoutWindow();
+    void SourceWatchIgnoresUnrelatedSiblingFiles();
     void SourceIdentityMismatchReturnsDiagnostics();
     void SaveAndRecoveryWorkWithoutUndoWidgets();
     void PreparedOpenPreservesSessionAndCleansCancelledFiles();
@@ -1581,6 +1582,24 @@ void EditorProjectTests::SourceWatchAndChecksWorkWithoutWindow() {
         QVERIFY(!project.sourceChangeSuspected_ && !project.sourceChangeConfirmed_);
     }
     QVERIFY(watcher.isNull()); // 无主窗口也能正确销毁监视器。
+}
+
+void EditorProjectTests::SourceWatchIgnoresUnrelatedSiblingFiles() {
+    QTemporaryDir root;
+    const auto write = [&](const QString& name, const QByteArray& bytes) {
+        QFile file(root.filePath(name));
+        return file.open(QIODevice::WriteOnly | QIODevice::Truncate) && file.write(bytes) == bytes.size();
+    };
+    QVERIFY(write("map.w3x", "original"));
+    EditorProject project;
+    project.sourceArchivePath_ = std::filesystem::path(root.filePath("map.w3x").toStdWString());
+    project.RefreshProjectWatch();
+    // 地图旁边放一份备份：文件夹有变化，但地图本身没变。
+    QVERIFY(write("map-backup.w3x", "original"));
+    QTest::qWait(1500);
+    QVERIFY(!project.sourceChangeSuspected_);
+    QVERIFY(write("map.w3x", "replaced by another program"));
+    QTRY_VERIFY_WITH_TIMEOUT(project.sourceChangeSuspected_, 4000);
 }
 
 void EditorProjectTests::SourceIdentityMismatchReturnsDiagnostics() {

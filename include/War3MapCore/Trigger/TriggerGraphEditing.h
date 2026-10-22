@@ -126,8 +126,22 @@ struct GraphReplaceTriggerText {
     GraphRecordRef trigger;
     std::string text;
 };
+// 功能写法（TriggerFeatureText.h）：类别按名字找（没有就新建）；变量按名字新建，已有时只更新初值与数组长度
+// （类型与是否数组须一致）；触发器按名字在该类别内整体替换内容或新建。未提到的记录不动，不删除任何记录。
+struct GraphApplyFeatureText {
+    std::string category;
+    std::string text;
+    std::string clientKey; // 新建记录的 clientKey 前缀；空时为 "feature"
+};
+// 局部替换：按 trigger_text 导出的行号替换第 fromLine..toLine 行（toLine = fromLine - 1 表示插在 fromLine 之前），
+// expected 须与当前导出中这几行逐字相同，防止按过期行号改错位置；替换后整段按紧凑 T 重新写入（同整体替换）。
+struct GraphPatchTriggerText {
+    GraphRecordRef trigger;
+    std::size_t fromLine = 1, toLine = 0;
+    std::string expected, text;
+};
 using GraphEditOperation = std::variant<GraphCreate, GraphSet, GraphRename, GraphMove, GraphRemove, GraphInsertSubtree,
-    GraphReplaceArgument, GraphInsertText, GraphReplaceTriggerText>;
+    GraphReplaceArgument, GraphInsertText, GraphReplaceTriggerText, GraphApplyFeatureText, GraphPatchTriggerText>;
 struct TriggerGraphBinding {
     std::string sourceWtgSha256, sourceWctSha256, uiCatalogSha256;
     std::string currentWtgSha256, currentWctSha256;

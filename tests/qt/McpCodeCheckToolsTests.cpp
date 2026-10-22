@@ -132,7 +132,7 @@ void McpCodeCheckToolsTests::CancellationOverridesLateSuccessfulPublication() {
     };
     const auto first = session.Invoke(Submit(), host); const auto id = first.value("request_id").toString();
     QTRY_VERIFY_WITH_TIMEOUT(gate->entered.load(), 2000);
-    auto cancel = StatusArguments(id); cancel.insert("action", "cancel"); session.Invoke(cancel, host);
+    auto cancel = StatusArguments(id); cancel.insert("action", "cancel"); static_cast<void>(session.Invoke(cancel, host));
     gate->Release(); QTRY_VERIFY_WITH_TIMEOUT(gate->exited.load(), 2000);
     auto result = session.Invoke(StatusArguments(id), host);
     QCOMPARE(result.value("state").toString(), QString("cancelled"));
