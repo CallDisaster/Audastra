@@ -116,13 +116,17 @@ void SeedUnselectedCliffTerrain(Fixture& fixture) {
     for (auto& member : fixture.members) if (member.name == "UI/MiscData.txt")
         member.data = Text("[Terrain]\nMaxSlope=90\nMinHeight=-256\nMaxHeight=1536\n"
             "[Water]\nDeepLevelPathing=64\n[CameraMargins]\nLeft=0\nRight=0\nBottom=0\nTop=0\n");
+    const auto game = fixture.directory / "game";
+    Require(std::filesystem::create_directory(game), "create original fallback source for optional profiles");
+    const std::vector<MapArchiveMember> gameMembers{{"fixture.txt", Text("original water save fixture")}};
+    Take(WriteVerifiedArchive(game / "war3.mpq", gameMembers));
     fixture.Open("unselected-source.w3x");
 }
 
 void PaintWaterOnUnselectedCliffTerrain(Fixture& fixture, bool deep) {
     const auto& terrain = *fixture.edits->Terrain();
     const auto rules = Take(TerrainPathingResources::CaptureWaterBrushRules(*fixture.archive,
-        terrain, terrain, {}, true, 8u * 1024u * 1024u));
+        terrain, terrain, fixture.directory / "game", true, 8u * 1024u * 1024u));
     const TerrainWaterBrush brush{deep ? TerrainWaterBrushKind::Deep : TerrainWaterBrushKind::Shallow,
         TerrainBrushShape::Square, 1, 0, 17, Take(CaptureTerrainWaterStrokeAnchor(terrain, fixture.point))};
     const auto prepared = Take(fixture.edits->PrepareTerrainWaterEdit(rules, brush, std::span(&fixture.point, 1), false));
