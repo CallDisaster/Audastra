@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -116,6 +117,8 @@ public:
     TerrainPatch& operator=(TerrainPatch&&) noexcept = default;
     TerrainPatch(const TerrainPatch&) = delete;
     TerrainPatch& operator=(const TerrainPatch&) = delete;
+    // 只读查看已由codec核对的完整成员集，宿主复核使用同一份来源和输出。
+    [[nodiscard]] std::span<const BinaryFilePatch> Files() const noexcept { return files_; }
 private:
     friend class MapData::TerrainPatchCodec;
     friend class EditorSession;

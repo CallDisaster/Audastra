@@ -14,6 +14,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <span>
 #include <sstream>
 #include <string_view>
@@ -90,7 +91,9 @@ bool IsMapDataFieldMember(const std::filesystem::path& path) {
 bool IsTerrainMember(const std::filesystem::path& path) {
     const auto value = LowerGenericPath(path);
     return value == "war3map.w3e" || value == "map/war3map.w3e"
-        || value == "war3map.wpm" || value == "map/war3map.wpm";
+        || value == "war3map.wpm" || value == "map/war3map.wpm"
+        || value == "war3map.doo" || value == "map/war3map.doo"
+        || value == "war3mapunits.doo" || value == "map/war3mapunits.doo";
 }
 
 bool IsSafeRelativePath(const std::filesystem::path& path) {
@@ -303,7 +306,7 @@ public:
         TransactionId transactionId,
         std::vector<BinaryFilePatch> patches,
         const std::string& kind,
-        bool (*isAllowedMember)(const std::filesystem::path&)) {
+        bool (*isAllowedMember)(const std::filesystem::path&), bool replaceKind = false) {
         std::scoped_lock lock(mutex);
         if (!transaction || transaction->id != transactionId) {
             return Status::Failure(
@@ -347,6 +350,11 @@ public:
         }
         // 所有节点分配与覆盖构造完成后一次交换；后项失败不能留下前项已发布的覆盖。
         auto nextOverlay = transaction->overlay;
+        if (replaceKind) {
+            // 地形补丁是全部笔划的净结果。后续笔划抵消摆放高度时，必须移除
+            // 旧地形覆盖，不能将已回到源高度的DOO留在上一笔输出中。
+            std::erase_if(nextOverlay, [&](const auto& entry) { return entry.second.kind == kind; });
+        }
         for (auto& patch : patches) {
             nextOverlay.insert_or_assign(
                 patch.relativePath,
@@ -517,9 +525,18 @@ Status EditorSession::ApplyMapDataPatch(TransactionId transactionId, MapDataPatc
 }
 
 Status EditorSession::ApplyTerrainPatch(TransactionId transactionId, TerrainPatch patch) {
-    if (patch.files_.size() != 2)
+    if (patch.files_.size() < 2 || patch.files_.size() > 4)
         return Status::Failure("Terrain.Patch", "TERRAIN_PATCH_SCOPE_INVALID", "密封地形事务必须同时绑定已有 W3E 和 WPM。");
-    return impl_->ApplyFiles(transactionId, std::move(patch.files_), "terrain", &IsTerrainMember);
+    std::set<std::string> names;
+    for (const auto& file : patch.files_) {
+        auto name = LowerGenericPath(file.relativePath.lexically_normal());
+        if (name.starts_with("map/")) name.erase(0, 4);
+        if (!names.insert(name).second)
+            return Status::Failure("Terrain.Patch", "TERRAIN_PATCH_SCOPE_INVALID", "密封地形事务包含重复成员。");
+    }
+    if (!names.contains("war3map.w3e") || !names.contains("war3map.wpm"))
+        return Status::Failure("Terrain.Patch", "TERRAIN_PATCH_SCOPE_INVALID", "密封地形事务缺少 W3E 或 WPM 来源。");
+    return impl_->ApplyFiles(transactionId, std::move(patch.files_), "terrain", &IsTerrainMember, true);
 }
 
 Status EditorSession::ApplyAuxiliaryPatch(TransactionId transactionId, AuxiliaryPatch patch) {

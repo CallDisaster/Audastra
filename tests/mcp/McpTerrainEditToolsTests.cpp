@@ -446,6 +446,34 @@ void FollowingPlacementsAndRestrictionsUseNormalDirectorySave() {
     }
 }
 
+void FollowingHeightRestorationRemovesObsoletePlacementOverlay() {
+    Fixture fixture(true); McpServer server; OpenWorkspace(fixture, server);
+    auto* workspace = server.Workspace();
+    const auto revision = workspace->Revision();
+    const auto transaction = workspace->BeginEdit(revision);
+    Expect(transaction.Succeeded(), "restoration starts a normal directory transaction");
+    auto raise = Stroke(Current(server), false); raise["follow_doodads"] = true;
+    Expect(Call(server, "edit_terrain_stroke", raise).value("ok").toBool(), "first following stroke applies");
+    Expect(workspace->PreviewEdit(*transaction.value, revision).value->changes.size() == 4,
+        "first stroke owns two placement outputs");
+    auto lower = Stroke(Current(server), false); lower["follow_doodads"] = true;
+    lower["brush"] = QJsonObject{{"kind", "lower"}, {"size", 1}, {"strength", 16}};
+    Expect(Call(server, "edit_terrain_stroke", lower).value("ok").toBool(), "opposite following stroke restores original elevations");
+    const auto preview = workspace->PreviewEdit(*transaction.value, revision);
+    Expect(preview.Succeeded() && preview.value->changes.size() == 2
+        && std::all_of(preview.value->changes.begin(), preview.value->changes.end(),
+            [](const auto& change) { return change.beforeSha256 == change.afterSha256; })
+        && workspace->ValidateEdit(*transaction.value, revision).satisfied,
+        "replacement recipe drops stale placement overlays and keeps exact source restoration");
+    const auto output = std::filesystem::path(fixture.temporary.path().toStdWString()) / "restored-placements";
+    Expect(workspace->ExportCandidate(*transaction.value, revision, output).Succeeded(), "restored directory exports normally");
+    for (const auto& member : fixture.placements)
+        Expect(IO::ReadFileBytes(output / member.name).value == std::optional(member.data), "original placement bytes survive net-zero height edits");
+    Expect(IO::ReadFileBytes(output / "war3map.w3e").value == std::optional(fixture.terrain)
+        && IO::ReadFileBytes(output / "war3map.wpm").value == std::optional(fixture.pathing),
+        "net-zero candidate preserves every terrain and pathing byte");
+}
+
 void RegisteredHostRetainsTransactionAndPublishesDirectory() {
     Fixture fixture; McpServer server; OpenWorkspace(fixture, server);
     auto* workspace = server.Workspace();
@@ -599,6 +627,7 @@ int main(int argc, char** argv) {
         BoundaryDraftSchemaAndNativeGateStaySeparate();
         PathingRestrictionsKeepSourceBitsThroughNormalDirectorySave();
         FollowingPlacementsAndRestrictionsUseNormalDirectorySave();
+        FollowingHeightRestorationRemovesObsoletePlacementOverlay();
         std::cout << "12 terrain MCP and sealed transaction scenarios passed\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

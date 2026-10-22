@@ -79,26 +79,19 @@ Status StrokeBudget(const std::vector<MapData::TerrainStrokeIntent>& strokes) {
     return Status::Ok();
 }
 
-Status CheckOnlyTerrainFiles(const SemanticDiff& diff, const McpTerrainWorkspaceState& source,
-    const McpTerrainOverlay& current) {
-    if (!source.pathingFile || diff.changes.size() != 2)
-        return Status::Failure("MCP", "MCP_TERRAIN_OVERLAY_MISMATCH", "地形候选必须完整且仅包含 W3E/WPM 两个密封成员。");
-    auto terrain = source.terrain, pathing = source.pathing;
-    for (const auto& member : current.edits.Replacements()) {
-        if (member.name == "war3map.w3e") terrain = member.data;
-        else if (member.name == "war3map.wpm") pathing = member.data;
-        else return Status::Failure("MCP", "MCP_TERRAIN_MIXED_UNSUPPORTED", "地形目录事务尚不支持其它地图成员联动。");
-    }
-    const auto terrainSha = Sha256(terrain), pathingSha = Sha256(pathing);
-    if (!terrainSha.Succeeded()) return {terrainSha.diagnostics};
-    if (!pathingSha.Succeeded()) return {pathingSha.diagnostics};
+Status CheckOnlyTerrainFiles(const SemanticDiff& diff, const TerrainPatch& sealed) {
+    if (diff.changes.size() != sealed.Files().size())
+        return Status::Failure("MCP", "MCP_TERRAIN_OVERLAY_MISMATCH", "地形候选必须恰好包含共用笔划重放产生的成员。");
     std::set<std::filesystem::path> matched;
     for (const auto& change : diff.changes) {
-        const bool ground = change.path == source.terrainFile.relativePath;
-        const bool path = change.path == source.pathingFile->relativePath;
-        if (change.kind != "terrain" || (!ground && !path) || !matched.insert(change.path).second
-            || change.beforeSha256 != (ground ? source.terrainFile.sha256 : source.pathingFile->sha256)
-            || change.afterSha256 != (ground ? *terrainSha.value : *pathingSha.value))
+        const auto file = std::find_if(sealed.Files().begin(), sealed.Files().end(),
+            [&](const auto& item) { return item.relativePath == change.path; });
+        if (change.kind != "terrain" || file == sealed.Files().end() || !matched.insert(change.path).second
+            || change.beforeSha256 != file->expectedSourceSha256)
+            return Status::Failure("MCP", "MCP_TERRAIN_OVERLAY_MISMATCH", "地形目录覆盖与已证明重放结果不一致。");
+        const auto sha = Sha256(file->replacement);
+        if (!sha.Succeeded()) return {sha.diagnostics};
+        if (change.afterSha256 != *sha.value)
             return Status::Failure("MCP", "MCP_TERRAIN_OVERLAY_MISMATCH", "地形目录覆盖与已证明重放结果不一致。");
     }
     return Status::Ok();
@@ -202,7 +195,7 @@ Status McpWorkspace::ValidateTerrainOverlay() const {
     if (!sealed.Succeeded()) return {sealed.diagnostics};
     const auto preview = session_.PreviewEdit(activeEdit_->id);
     if (!preview.Succeeded()) return {preview.diagnostics};
-    return CheckOnlyTerrainFiles(*preview.value, *terrainState_, *activeEdit_->terrain);
+    return CheckOnlyTerrainFiles(*preview.value, *sealed.value);
 }
 
 void McpWorkspace::CommitTerrainOverlay() {
