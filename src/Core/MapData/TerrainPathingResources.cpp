@@ -206,10 +206,6 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
                 || before.header.width != after.header.width || before.header.height != after.header.height
                 || before.header.offset != after.header.offset || before.header.mainTileset != after.header.mainTileset)
                 Fail("TERRAIN_NATIVE_SOURCE_SHAPE", "原版通行重建要求旧/新经典地形尺寸、偏移与地形集不变。");
-            const auto oldWire = TerrainWire(before, maximumBytes);
-            const auto newWire = TerrainWire(after, maximumBytes);
-            result.nativeTerrainSha_ = {Take(Sha256(oldWire)), Take(Sha256(newWire))};
-            result.nativeTerrainBytes_ = {oldWire.size(), newWire.size()};
             const std::vector<std::string> metadata{"war3map.w3e", "war3map.w3i", "war3map.doo", "war3map.w3b"};
             ArchiveExactMemberLimits limits;
             limits.memberCount = metadata.size(); limits.memberBytes = limits.totalBytes = maximumBytes;
@@ -224,8 +220,19 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
                 dependency.bytes = member.bytes.size(); dependency.sha256 = Take(Sha256(member.bytes));
                 result.dependencies_.push_back(std::move(dependency));
                 if (i == 0) {
-                    if (!member.present || member.bytes != oldWire)
-                        Fail("TERRAIN_NATIVE_SOURCE_IDENTITY", "旧地形快照不属于本次实际来源W3E。");
+                    // 两份身份缓冲分开存活，不让其伴随整个元数据捕获生命周期。
+                    {
+                        const auto wire = TerrainWire(before, maximumBytes);
+                        if (!member.present || member.bytes != wire)
+                            Fail("TERRAIN_NATIVE_SOURCE_IDENTITY", "旧地形快照不属于本次实际来源W3E。");
+                        result.nativeTerrainSha_[0] = Take(Sha256(wire));
+                        result.nativeTerrainBytes_[0] = wire.size();
+                    }
+                    {
+                        const auto wire = TerrainWire(after, maximumBytes);
+                        result.nativeTerrainSha_[1] = Take(Sha256(wire));
+                        result.nativeTerrainBytes_[1] = wire.size();
+                    }
                 } else if (i == 1) {
                     if (!member.present) Fail("TERRAIN_NATIVE_W3I_MISSING", "原版通行需要实际来源W3I。");
                     settings = Take(MapSettings::Parse(member.bytes));
@@ -406,11 +413,13 @@ Result<std::vector<std::byte>> TerrainPathingResources::GenerateNative(const Ter
     std::size_t maximumBytes) const {
     return Guard<std::vector<std::byte>>([&] {
         if (!nativeBounds_) Fail("TERRAIN_NATIVE_INPUT_UNAVAILABLE", "此资源捕获只授予原WPM等价保留，未捕获完整生成输入。");
-        const auto wire = TerrainWire(terrain, maximumBytes);
-        const auto sha = Take(Sha256(wire));
-        if ((wire.size() != nativeTerrainBytes_[0] || sha != nativeTerrainSha_[0])
-            && (wire.size() != nativeTerrainBytes_[1] || sha != nativeTerrainSha_[1]))
-            Fail("TERRAIN_NATIVE_SOURCE_IDENTITY", "请求地形不属于本次捕获的旧/新W3E修订。");
+        {
+            const auto wire = TerrainWire(terrain, maximumBytes);
+            const auto sha = Take(Sha256(wire));
+            if ((wire.size() != nativeTerrainBytes_[0] || sha != nativeTerrainSha_[0])
+                && (wire.size() != nativeTerrainBytes_[1] || sha != nativeTerrainSha_[1]))
+                Fail("TERRAIN_NATIVE_SOURCE_IDENTITY", "请求地形不属于本次捕获的旧/新W3E修订。");
+        }
         TerrainNativePathingInput input;
         input.terrain = &terrain; input.playableBounds = *nativeBounds_;
         input.groundRules = nativeGround_; input.water = waterRules_;

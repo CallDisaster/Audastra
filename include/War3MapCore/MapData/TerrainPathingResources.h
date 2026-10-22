@@ -19,6 +19,8 @@ public:
     [[nodiscard]] static Result<TerrainPathingResources> Capture(const MapArchiveSession& source,
         const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
         const std::filesystem::path& gameRoot, std::size_t maximumBytes);
+    // maximumBytes约束累计实际来源读取，并限制每次W3E身份序列化缓冲；
+    // 不是整个保存事务的峰值工作内存预算，调用者另计快照、G0/G1和输出容量。
     [[nodiscard]] static Result<TerrainPathingResources> CaptureNative(const MapArchiveSession& source,
         const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
         const std::filesystem::path& gameRoot, std::size_t maximumBytes);
@@ -26,6 +28,7 @@ public:
         const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
         const std::filesystem::path& gameRoot, std::size_t maximumBytes);
     // 只允许本次捕获的旧/新W3E内容；输出不含头、源WPM及工程意图。
+    // 身份缓冲在生成输出前释放；maximumBytes分别约束该缓冲和生成输出。
     [[nodiscard]] Result<std::vector<std::byte>> GenerateNative(const TerrainGridSnapshot& terrain,
         std::size_t maximumBytes) const;
     [[nodiscard]] bool EquivalentGround(std::string_view before, std::string_view after) const;
