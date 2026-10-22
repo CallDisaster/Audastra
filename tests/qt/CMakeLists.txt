@@ -481,6 +481,14 @@ add_test(NAME qt-object-context-provider COMMAND audastra-object-context-provide
 set_tests_properties(qt-object-context-provider PROPERTIES TIMEOUT 60
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
+qt_add_executable(audastra-terrain-water-edit-tests TerrainWaterEditPreparationTests.cpp)
+target_link_libraries(audastra-terrain-water-edit-tests PRIVATE War3MapEditor::QtProject Qt6::Test)
+target_compile_definitions(audastra-terrain-water-edit-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-terrain-water-edit-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME qt-terrain-water-edit COMMAND audastra-terrain-water-edit-tests)
+set_tests_properties(qt-terrain-water-edit PROPERTIES TIMEOUT 60
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+
 qt_add_executable(war3-map-world-module-tests WorldModuleTests.cpp)
 target_link_libraries(war3-map-world-module-tests PRIVATE War3MapEditor::QtModuleWorld
     War3MapEditor::QtModuleMapEntities War3MapEditor::QtModuleMapSettings Qt6::Test War3RenderCore::SkinInput)

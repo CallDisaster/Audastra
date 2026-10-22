@@ -50,6 +50,7 @@ qt_add_library(War3MapQtProject STATIC
     LuaMapTargetProject.cpp
     ProjectMapData.cpp
     ProjectAuxiliaryEdits.cpp ProjectAuxiliaryEdits.h
+    TerrainWaterEditPreparation.cpp TerrainWaterEditPreparation.h
     ProjectChanges.cpp
     ProjectQuerySources.cpp
     ProjectSummary.cpp

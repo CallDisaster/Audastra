@@ -12,6 +12,7 @@
 #include "War3MapCore/MapData/TerrainEditing.h"
 
 #include <QButtonGroup>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QGridLayout>
@@ -44,8 +45,9 @@ constexpr int kStrengthSteps = 100;
 // 地形剖面图标：以横截面表达每种笔刷对地面的作用，颜色随图标状态与当前主题变化。
 class BrushGlyph final : public QIconEngine {
 public:
-    explicit BrushGlyph(MapData::TerrainBrushKind kind) : kind_(kind) {}
-    QIconEngine* clone() const override { return new BrushGlyph(kind_); }
+    explicit BrushGlyph(MapData::TerrainBrushKind kind, std::optional<MapData::TerrainWaterBrushKind> water = {})
+        : kind_(kind), water_(water) {}
+    QIconEngine* clone() const override { return new BrushGlyph(kind_, water_); }
     void paint(QPainter* painter, const QRect& rect, QIcon::Mode mode, QIcon::State state) override {
         const auto colors = UiKit::CurrentIconPalette();
         const QColor color = mode == QIcon::Disabled ? colors.disabled : state == QIcon::On ? colors.on
@@ -59,6 +61,14 @@ public:
         painter->setPen(pen);
         QColor soft = color; soft.setAlphaF(0.32f);
         QPainterPath path;
+        if (water_) {
+            const qreal bottom = *water_ == MapData::TerrainWaterBrushKind::Deep ? 21 : 16;
+            painter->fillRect(QRectF(7, 10, 10, bottom - 10), soft);
+            path.moveTo(3, 5); path.lineTo(7, 5); path.lineTo(7, bottom);
+            path.lineTo(17, bottom); path.lineTo(17, 5); path.lineTo(21, 5);
+            path.moveTo(3, 10); path.lineTo(21, 10);
+            painter->drawPath(path); painter->restore(); return;
+        }
         switch (kind_) {
         case MapData::TerrainBrushKind::Texture:
             painter->fillRect(QRectF(5, 5, 7, 7), soft); painter->fillRect(QRectF(12, 12, 7, 7), soft);
@@ -140,6 +150,7 @@ public:
 
 private:
     MapData::TerrainBrushKind kind_;
+    std::optional<MapData::TerrainWaterBrushKind> water_;
 };
 
 // 地表贴图缩略图：取 atlas 左上格（完整贴图格），圆角裁切。
@@ -212,6 +223,23 @@ QWidget* WorldModule::BuildTerrainPage() {
         terrainKinds_->addButton(button, static_cast<int>(kind));
         kinds->addWidget(button, static_cast<int>(index / 4), static_cast<int>(index % 4));
     }
+    const std::array waterBrushes{
+        std::tuple{tr("浅水"), MapData::TerrainWaterBrushKind::Shallow, kShallowWaterBrushId, "ShallowWater"},
+        std::tuple{tr("深水"), MapData::TerrainWaterBrushKind::Deep, kDeepWaterBrushId, "DeepWater"}};
+    for (std::size_t index = 0; index < waterBrushes.size(); ++index) {
+        const auto& [label, kind, id, name] = waterBrushes[index];
+        auto* button = new QToolButton(terrainPalette_);
+        button->setObjectName(QStringLiteral("worldTerrainBrush") + QLatin1String(name));
+        button->setProperty("brushTile", true); button->setCheckable(true);
+        button->setIcon(QIcon(new BrushGlyph(MapData::TerrainBrushKind::WaterHeight, kind)));
+        button->setIconSize(QSize(20, 20)); button->setText(label);
+        button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+        button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        button->setMinimumHeight(52); button->setCursor(Qt::PointingHandCursor);
+        terrainKinds_->addButton(button, id);
+        const auto position = brushes.size() + index;
+        kinds->addWidget(button, static_cast<int>(position / 4), static_cast<int>(position % 4));
+    }
     terrainKinds_->button(static_cast<int>(MapData::TerrainBrushKind::Texture))->setChecked(true);
     column->addLayout(kinds);
     column->addSpacing(8);
@@ -274,6 +302,22 @@ QWidget* WorldModule::BuildTerrainPage() {
     terrainWaterHeight_->setSingleStep(0.25);
     water->addWidget(terrainWaterHeight_);
     column->addWidget(terrainWaterSection_);
+
+    terrainWaterBrushSection_ = Surface(terrainPalette_);
+    auto* waterBrush = new QVBoxLayout(terrainWaterBrushSection_);
+    waterBrush->setContentsMargins(0, 8, 0, 0); waterBrush->setSpacing(8);
+    terrainEnforceWaterLimits_ = new QCheckBox(tr("限制水面高度"), terrainWaterBrushSection_);
+    terrainEnforceWaterLimits_->setObjectName(QStringLiteral("worldTerrainEnforceWaterLimits"));
+    terrainEnforceWaterLimits_->setChecked(true);
+    waterBrush->addWidget(terrainEnforceWaterLimits_);
+    terrainWaterBrushStatus_ = new QLabel(terrainWaterBrushSection_);
+    terrainWaterBrushStatus_->setObjectName(QStringLiteral("worldTerrainWaterBrushStatus"));
+    terrainWaterBrushStatus_->setWordWrap(true);
+    waterBrush->addWidget(terrainWaterBrushStatus_);
+    column->addWidget(terrainWaterBrushSection_);
+    connect(terrainEnforceWaterLimits_, &QCheckBox::toggled, this, [this] {
+        CancelTerrainStroke(); InvalidateWaterBrushCapture(); QueueWaterBrushCapture();
+    });
 
     terrainRampSection_ = Surface(terrainPalette_);
     auto* ramp = new QVBoxLayout(terrainRampSection_);
@@ -386,7 +430,16 @@ QWidget* WorldModule::BuildTerrainPage() {
 
 MapData::TerrainBrushKind WorldModule::CurrentBrushKind() const {
     const int id = terrainKinds_ ? terrainKinds_->checkedId() : -1;
+    // 水刷单独分派。此返回值只供共用光标的格点足迹使用，不执行普通笔刷。
+    if (id == kShallowWaterBrushId || id == kDeepWaterBrushId) return MapData::TerrainBrushKind::Plateau;
     return id < 0 ? MapData::TerrainBrushKind::Texture : static_cast<MapData::TerrainBrushKind>(id);
+}
+
+std::optional<MapData::TerrainWaterBrushKind> WorldModule::CurrentWaterBrushKind() const {
+    const int id = terrainKinds_ ? terrainKinds_->checkedId() : -1;
+    if (id == kShallowWaterBrushId) return MapData::TerrainWaterBrushKind::Shallow;
+    if (id == kDeepWaterBrushId) return MapData::TerrainWaterBrushKind::Deep;
+    return std::nullopt;
 }
 
 QString WorldModule::TerrainName(const std::string& raw, const std::string& rawcode) const {
@@ -511,11 +564,13 @@ void WorldModule::AppendTerrainBoundaryOverlay(std::vector<War3RenderOverlayLine
 void WorldModule::UpdateTerrainBrushControls() {
     if (!terrainKinds_) return;
     const auto kind = CurrentBrushKind();
+    const bool waterBrush = CurrentWaterBrushKind().has_value();
     const bool shaping = kind == MapData::TerrainBrushKind::Raise || kind == MapData::TerrainBrushKind::Lower
         || kind == MapData::TerrainBrushKind::Smooth || kind == MapData::TerrainBrushKind::Noise;
     const std::array sections{std::pair{terrainTextureSection_, kind == MapData::TerrainBrushKind::Texture},
-        std::pair{terrainCliffSection_, kind == MapData::TerrainBrushKind::CliffLevel || kind == MapData::TerrainBrushKind::CliffTexture},
+        std::pair{terrainCliffSection_, waterBrush || kind == MapData::TerrainBrushKind::CliffLevel || kind == MapData::TerrainBrushKind::CliffTexture},
         std::pair{terrainWaterSection_, kind == MapData::TerrainBrushKind::WaterHeight},
+        std::pair{terrainWaterBrushSection_, waterBrush},
         std::pair{terrainRampSection_, kind == MapData::TerrainBrushKind::Ramp},
         std::pair{terrainBlightSection_, kind == MapData::TerrainBrushKind::Blight},
         std::pair{terrainBoundarySection_, kind == MapData::TerrainBrushKind::Boundary},
