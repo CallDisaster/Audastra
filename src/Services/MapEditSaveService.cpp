@@ -5,11 +5,13 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/MapDataFieldEditing.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
+#include "War3MapCore/MapData/TerrainPathingResources.h"
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/ObjectData/ObjectImport.h"
 #include "War3MapCore/Services/ScriptSavePreparation.h"
 #include "War3MapCore/Services/ObjectTransactionSnapshot.h"
 #include "War3MapCore/Services/AuxiliaryTransaction.h"
+#include "War3MapCore/Services/TerrainEditService.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/UiLibrary/UiLibrary.h"
 
@@ -666,6 +668,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         std::optional<Trigger::TriggerEditBatchReceipt> triggerReceipt;
         std::optional<Trigger::TriggerTransactionReceipt> transactionReceipt;
         std::shared_ptr<const MapData::TerrainSavePlan> terrainPlan;
+        std::vector<MapData::TerrainPathingResources> waterRuleResources;
         std::shared_ptr<const TerrainMinimapSave> minimapSave;
         std::shared_ptr<const TerrainMinimapPreserveGuard> minimapPreserve;
 
@@ -717,11 +720,27 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             }
             const auto grid = edits.Terrain();
             if (!grid) return Fail("SAVE_TERRAIN_UNAVAILABLE", "源 W3E 无法建立地形编辑快照。");
+            const MapDataQueryBinding terrainDocument{"map-edit-save", 1, 0, source.SourceSha256()};
             for (const auto& stroke : request.terrainStrokes) {
                 const auto points = WorldPoints(stroke, *grid);
                 if (!points.Succeeded() || !points.value) return Forward(points.diagnostics);
-                const auto edited = edits.EditTerrain(stroke.brush, *points.value, stroke.followDoodads);
-                if (!edited.Succeeded() || !edited.value) return Forward(edited.diagnostics);
+                if (stroke.waterBrush) {
+                    // 原始来源保持grid；本笔规则必须绑定此前有序笔划之后的当前草稿。
+                    auto resources = MapData::TerrainPathingResources::CaptureWaterBrushRules(source, *grid,
+                        *edits.Terrain(), request.gameRoot, stroke.waterBrush->enforceWaterLimits,
+                        MapData::TerrainSavePlanLimits{}.maximumBytes);
+                    if (!resources.Succeeded() || !resources.value) return Forward(resources.diagnostics);
+                    const TerrainEditBinding binding{terrainDocument, edits.SessionIdentity(), edits.Revision(), edits.TerrainSourceRevision()};
+                    auto plan = PrepareTerrainWaterEdit(edits, terrainDocument, binding, *resources.value,
+                        *stroke.waterBrush, *points.value, stroke.followDoodads);
+                    if (!plan.Succeeded() || !plan.value) return Forward(plan.diagnostics);
+                    const auto edited = ApplyTerrainEdit(edits, terrainDocument, *plan.value);
+                    if (!edited.Succeeded() || !edited.value) return Forward(edited.diagnostics);
+                    waterRuleResources.push_back(std::move(*resources.value));
+                } else {
+                    const auto edited = edits.EditTerrain(stroke.brush, *points.value, stroke.followDoodads);
+                    if (!edited.Succeeded() || !edited.value) return Forward(edited.diagnostics);
+                }
             }
             if (!edits.IsDirty()) {
                 return Fail("SAVE_NO_TERRAIN_CHANGE", "全部笔划结束后地形与源图相同；未生成空改动候选。");
@@ -742,7 +761,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             }
             const bool restrictionOnly = seen[1] && !seen[2] && !seen[3]
                 && std::all_of(request.terrainStrokes.begin(), request.terrainStrokes.end(),
-                    [](const auto& stroke) { return stroke.brush.kind == MapData::TerrainBrushKind::PathingRestriction; });
+                    [](const auto& stroke) { return !stroke.waterBrush && stroke.brush.kind == MapData::TerrainBrushKind::PathingRestriction; });
             if (!seen[0] && !restrictionOnly)
                 return Fail("SAVE_EDIT_SCOPE_INVALID", "地形事务缺少 W3E 替换，且不属于仅修改 WPM 的通行限制笔划。");
             if ((seen[2] || seen[3]) && std::none_of(request.terrainStrokes.begin(), request.terrainStrokes.end(),
@@ -770,6 +789,18 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
 
         MapSaveTask task;
         task.beforePublish = request.beforePublish;
+        if (!waterRuleResources.empty()) {
+            // 每个owner都绑定原始W3E与本笔当前草稿；只向原始归档复核来源，
+            // 不把编辑后的输出当成水刷来源。最终WPM另由下方Native保存计划证明。
+            task.beforePublish = [&source, resources = std::move(waterRuleResources), previous = std::move(task.beforePublish)]() {
+                if (previous) { const auto checked = previous(); if (!checked.Succeeded()) return checked; }
+                for (const auto& owner : resources) {
+                    const auto checked = owner.VerifyReadback(source, MapData::TerrainSavePlanLimits{}.maximumBytes);
+                    if (!checked.Succeeded()) return checked;
+                }
+                return Status::Ok();
+            };
+        }
         task.mapObjectReferences = request.mapObjectReferences;
         task.mapObjectReferenceGameRoot = request.gameRoot;
         task.target = request.targetCandidate;

@@ -95,32 +95,49 @@ Status ValidateStrokes(std::span<const MapEditTerrainStroke> strokes) {
     }
     std::size_t pointCount = 0;
     for (const auto& stroke : strokes) {
-        switch (stroke.brush.kind) {
-        case MapData::TerrainBrushKind::Texture:
-        case MapData::TerrainBrushKind::Blight:
-        case MapData::TerrainBrushKind::Raise:
-        case MapData::TerrainBrushKind::Lower:
-        case MapData::TerrainBrushKind::Plateau:
-        case MapData::TerrainBrushKind::Smooth:
-        case MapData::TerrainBrushKind::CliffLevel:
-        case MapData::TerrainBrushKind::WaterHeight:
-        case MapData::TerrainBrushKind::PathingRestriction:
-            break;
-        default:
-            return Status::Failure("MapEdit.Save", "SAVE_STROKE_KIND", "地形笔刷种类未获识别。");
-        }
-        if (stroke.brush.kind == MapData::TerrainBrushKind::PathingRestriction
-            && (!stroke.brush.pathingRestrictions || (stroke.brush.pathingRestrictions & ~MapData::kPathingRestrictionBits) != 0))
-            return Status::Failure("MapEdit.Save", "PATHING_RESTRICTION_FLAGS", "通行笔划只允许不可走、不可飞和不可建限制。");
-        if (stroke.brush.shape != MapData::TerrainBrushShape::Circle
-            && stroke.brush.shape != MapData::TerrainBrushShape::Square) {
-            return Status::Failure("MapEdit.Save", "SAVE_STROKE_SHAPE", "地形笔刷形状未获识别。");
-        }
-        if (stroke.brush.radius > 16 || !std::isfinite(stroke.brush.strength)
-            || stroke.brush.strength < 0 || stroke.brush.strength > 1024
-            || stroke.brush.groundTexture.size() > 4
-            || stroke.brush.levelDelta < -1 || stroke.brush.levelDelta > 1) {
-            return Status::Failure("MapEdit.Save", "SAVE_STROKE_BRUSH_BOUNDS", "地形笔刷参数超过有界请求范围。");
+        if (stroke.waterBrush) {
+            const auto& brush = stroke.brush;
+            const MapData::TerrainBrush neutral;
+            if (brush.kind != neutral.kind || brush.shape != neutral.shape || brush.radius != neutral.radius
+                || brush.groundTexture != neutral.groundTexture || brush.cliffTexture != neutral.cliffTexture
+                || brush.levelDelta != neutral.levelDelta || brush.value != neutral.value
+                || brush.strength != neutral.strength || brush.seed != neutral.seed || brush.anchor
+                || brush.size || brush.variation || brush.randomizeVariation != neutral.randomizeVariation
+                || brush.waterHeight != neutral.waterHeight || brush.pathingRestrictions != neutral.pathingRestrictions)
+                return Status::Failure("MapEdit.Save", "SAVE_STROKE_BRUSH_CONFLICT", "浅/深水笔划不能同时指定普通地形笔刷参数。");
+            const auto& water = *stroke.waterBrush;
+            if ((water.kind != MapData::TerrainWaterBrushKind::Shallow && water.kind != MapData::TerrainWaterBrushKind::Deep)
+                || (water.shape != MapData::TerrainBrushShape::Circle && water.shape != MapData::TerrainBrushShape::Square)
+                || water.size < 1 || water.size > 8 || water.cliffTexture >= 15)
+                return Status::Failure("MapEdit.Save", "SAVE_STROKE_WATER_BOUNDS", "浅/深水笔刷种类、形状、经典尺寸或悬崖槽位非法。");
+        } else {
+            switch (stroke.brush.kind) {
+            case MapData::TerrainBrushKind::Texture:
+            case MapData::TerrainBrushKind::Blight:
+            case MapData::TerrainBrushKind::Raise:
+            case MapData::TerrainBrushKind::Lower:
+            case MapData::TerrainBrushKind::Plateau:
+            case MapData::TerrainBrushKind::Smooth:
+            case MapData::TerrainBrushKind::CliffLevel:
+            case MapData::TerrainBrushKind::WaterHeight:
+            case MapData::TerrainBrushKind::PathingRestriction:
+                break;
+            default:
+                return Status::Failure("MapEdit.Save", "SAVE_STROKE_KIND", "地形笔刷种类未获识别。");
+            }
+            if (stroke.brush.kind == MapData::TerrainBrushKind::PathingRestriction
+                && (!stroke.brush.pathingRestrictions || (stroke.brush.pathingRestrictions & ~MapData::kPathingRestrictionBits) != 0))
+                return Status::Failure("MapEdit.Save", "PATHING_RESTRICTION_FLAGS", "通行笔划只允许不可走、不可飞和不可建限制。");
+            if (stroke.brush.shape != MapData::TerrainBrushShape::Circle
+                && stroke.brush.shape != MapData::TerrainBrushShape::Square) {
+                return Status::Failure("MapEdit.Save", "SAVE_STROKE_SHAPE", "地形笔刷形状未获识别。");
+            }
+            if (stroke.brush.radius > 16 || !std::isfinite(stroke.brush.strength)
+                || stroke.brush.strength < 0 || stroke.brush.strength > 1024
+                || stroke.brush.groundTexture.size() > 4
+                || stroke.brush.levelDelta < -1 || stroke.brush.levelDelta > 1) {
+                return Status::Failure("MapEdit.Save", "SAVE_STROKE_BRUSH_BOUNDS", "地形笔刷参数超过有界请求范围。");
+            }
         }
         if (stroke.pointSpace != MapEditPointSpace::World
             && stroke.pointSpace != MapEditPointSpace::TerrainVertex) {

@@ -1,4 +1,5 @@
 #include "War3MapCore/Services/TerrainEditService.h"
+#include "War3MapCore/MapData/TerrainPathingResources.h"
 
 #include <algorithm>
 #include <limits>
@@ -75,6 +76,33 @@ Result<PreparedTerrainEdit> PrepareTerrainEdit(const MapData::MapDataEditSession
         if (!checked.Succeeded() || !checked.value) return {{}, checked.diagnostics};
     }
     auto plan = session.PrepareTerrainEdit(brush, points, followDoodads);
+    if (!plan.Succeeded() || !plan.value) return {{}, std::move(plan.diagnostics)};
+    return Result<PreparedTerrainEdit>::Success(PreparedTerrainEdit(expected, std::move(*plan.value)));
+}
+
+Result<PreparedTerrainEdit> PrepareTerrainWaterEdit(const MapData::MapDataEditSession& session,
+    const MapDataQueryBinding& document, const TerrainEditBinding& expected,
+    const MapData::TerrainPathingResources& resources, const MapData::TerrainWaterStrokeOptions& options,
+    std::span<const MapData::TerrainStrokePoint> points, bool followDoodads,
+    const MapData::TerrainWaterBrushLimits& limits) {
+    if (const auto checked = CheckExpected(session, document, expected); !checked.Succeeded()) return {{}, checked.diagnostics};
+    if (points.empty() || points.size() > TerrainEditMaximumPoints)
+        return Result<PreparedTerrainEdit>::Failure("Terrain.Edit", "TERRAIN_EDIT_POINT_BUDGET", "单次地形编辑需要 1 到 4096 个采样点。");
+    if ((options.kind != MapData::TerrainWaterBrushKind::Shallow && options.kind != MapData::TerrainWaterBrushKind::Deep)
+        || (options.shape != MapData::TerrainBrushShape::Circle && options.shape != MapData::TerrainBrushShape::Square)
+        || options.size < 1 || options.size > 8 || options.cliffTexture >= 15)
+        return Result<PreparedTerrainEdit>::Failure("Terrain.Edit", "TERRAIN_WATER_BRUSH", "水刷种类、形状、经典尺寸或悬崖槽位非法。");
+    if (!resources.WaterBrushRules() || resources.WaterBrushRules()->enforceWaterLimits != options.enforceWaterLimits)
+        return Result<PreparedTerrainEdit>::Failure("Terrain.Edit", "TERRAIN_WATER_RULE_OPTIONS", "水刷选项与实际捕获的规则不一致。");
+    for (const auto& point : points) {
+        const auto checked = session.InspectTerrainPoint(point);
+        if (!checked.Succeeded() || !checked.value) return {{}, checked.diagnostics};
+    }
+    auto anchor = MapData::CaptureTerrainWaterStrokeAnchor(*session.Terrain(), points.front());
+    if (!anchor.Succeeded() || !anchor.value) return {{}, std::move(anchor.diagnostics)};
+    const MapData::TerrainWaterBrush brush{options.kind, options.shape, options.size, options.cliffTexture,
+        options.randomSeed, *anchor.value};
+    auto plan = session.PrepareTerrainWaterEdit(resources, brush, points, followDoodads, limits);
     if (!plan.Succeeded() || !plan.value) return {{}, std::move(plan.diagnostics)};
     return Result<PreparedTerrainEdit>::Success(PreparedTerrainEdit(expected, std::move(*plan.value)));
 }

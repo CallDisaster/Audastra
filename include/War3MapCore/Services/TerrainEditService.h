@@ -40,6 +40,10 @@ private:
     friend Result<PreparedTerrainEdit> PrepareTerrainEdit(const MapData::MapDataEditSession&,
         const MapDataQueryBinding&, const TerrainEditBinding&, const MapData::TerrainBrush&,
         std::span<const MapData::TerrainStrokePoint>, bool);
+    friend Result<PreparedTerrainEdit> PrepareTerrainWaterEdit(const MapData::MapDataEditSession&,
+        const MapDataQueryBinding&, const TerrainEditBinding&, const MapData::TerrainPathingResources&,
+        const MapData::TerrainWaterStrokeOptions&, std::span<const MapData::TerrainStrokePoint>, bool,
+        const MapData::TerrainWaterBrushLimits&);
 };
 
 // 宿主在同一串行临界区提供实际文档身份；服务不读盘、不替宿主猜来源或修订。
@@ -54,6 +58,13 @@ private:
     const MapData::MapDataEditSession& session, const MapDataQueryBinding& document,
     const TerrainEditBinding& expected, const MapData::TerrainBrush& brush,
     std::span<const MapData::TerrainStrokePoint> points, bool followDoodads = false);
+// resources须由宿主从实际地图/游戏来源和本笔当前地形捕获；服务不读盘。
+// 第一采样点只捕获一次anchor，整笔固定seed/anchor/points，仍不授予保存资格。
+[[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainWaterEdit(
+    const MapData::MapDataEditSession& session, const MapDataQueryBinding& document,
+    const TerrainEditBinding& expected, const MapData::TerrainPathingResources& resources,
+    const MapData::TerrainWaterStrokeOptions& options, std::span<const MapData::TerrainStrokePoint> points,
+    bool followDoodads = false, const MapData::TerrainWaterBrushLimits& limits = {});
 [[nodiscard]] Result<MapData::TerrainStrokeResult> ApplyTerrainEdit(
     MapData::MapDataEditSession& session, const MapDataQueryBinding& document,
     const PreparedTerrainEdit& prepared,
