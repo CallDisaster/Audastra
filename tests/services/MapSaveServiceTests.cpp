@@ -1493,8 +1493,9 @@ void TestOptionalRealTerrainAndPathingUseNormalSave() {
     Require(created.Succeeded() && created.value, "create original texture save fixture through real toolchain");
     auto original = MapArchiveSession::Open(create.target);
     Require(original.Succeeded() && original.value, "open created texture fixture");
-    for (const int variant : {0, 1, 2}) {
-        const bool wet = variant == 1, restriction = variant == 2;
+    for (const int variant : {0, 1, 2, 3}) {
+        const bool wet = variant == 1, restriction = variant == 2, follow = variant == 3;
+        std::vector<std::byte> expectedUnits, expectedDoodads;
         auto source = MapArchiveSession::Open(create.target);
         Require(source.Succeeded() && source.value, "open independent terrain source");
         if (wet) {
@@ -1515,6 +1516,47 @@ void TestOptionalRealTerrainAndPathingUseNormalSave() {
             source = MapArchiveSession::Open(seeded.value->path);
             Require(source.Succeeded() && source.value, "open independent synthetic water source");
         }
+        if (follow) {
+            const auto raw = source.value->ReadMember("war3map.w3e");
+            const auto pathing = source.value->ReadMember("war3map.wpm");
+            Require(raw.Succeeded() && raw.value && pathing.Succeeded() && pathing.value,
+                "read original terrain and pathing for following-placement seed");
+            const auto parsed = MapData::ParseMapTerrain(*raw.value);
+            Require(parsed.Succeeded() && parsed.value && parsed.value->Snapshot()->header.width > 36
+                && parsed.value->Snapshot()->header.height > 36, "following-placement fixture contains center and outside points");
+            const auto& header = parsed.value->Snapshot()->header;
+            const float x = header.offset[0] + 32 * 128, y = header.offset[1] + 32 * 128;
+            MapData::UnitPlacements units;
+            MapData::UnitPlacement unit;
+            unit.rawcode = "hfoo"; unit.creationId = 7; unit.position = {x, y, 10};
+            unit.scale = {1, 1, 1}; unit.rotation = 0.75f; unit.flags = 2; unit.hitPoints = 73;
+            units.units.push_back(unit);
+            unit.creationId = 8; unit.position = {x + 512, y + 512, 20}; units.units.push_back(unit);
+            MapData::DoodadPlacements doodads;
+            MapData::DoodadPlacement tree;
+            tree.rawcode = "LTlt"; tree.creationId = 9; tree.position = {x, y, 5};
+            tree.scale = {1, 1, 1}; tree.rotation = 1.25f; tree.flags = 2; tree.lifePercent = 61;
+            doodads.doodads.push_back(tree);
+            tree.creationId = 10; tree.position = {x + 512, y + 512, 15}; doodads.doodads.push_back(tree);
+            const auto unitBytes = units.Serialize(), doodadBytes = doodads.Serialize();
+            Require(unitBytes.Succeeded() && unitBytes.value && doodadBytes.Succeeded() && doodadBytes.value,
+                "serialize original native unit and doodad placements");
+            auto protectedPathing = *pathing.value;
+            const auto center = 16 + 128 * ((header.width - 1) * 4) + 128;
+            Require(center < protectedPathing.size(), "following-placement pathing center exists");
+            protectedPathing[center] |= std::byte{0x02};
+            const std::vector<MemberReplacement> seed{{"war3mapUnits.doo", *unitBytes.value},
+                {"war3map.doo", *doodadBytes.value}, {"war3map.wpm", std::move(protectedPathing)}};
+            const auto seeded = source.value->SaveCandidate(directory.Path() / "follow-source.w3x", seed);
+            Require(seeded.Succeeded() && seeded.value, "make independent original four-member save fixture");
+            source = MapArchiveSession::Open(seeded.value->path);
+            Require(source.Succeeded() && source.value, "open independent following-placement source");
+            units.units[0].position[2] += 32; doodads.doodads[0].position[2] += 32;
+            const auto raisedUnits = units.Serialize(), raisedDoodads = doodads.Serialize();
+            Require(raisedUnits.Succeeded() && raisedUnits.value && raisedDoodads.Succeeded() && raisedDoodads.value,
+                "encode exact expected placement bytes with only covered Z changed");
+            expectedUnits = *raisedUnits.value; expectedDoodads = *raisedDoodads.value;
+        }
         const auto w3e = source.value->ReadMember("war3map.w3e");
         const auto wpm = source.value->ReadMember("war3map.wpm");
         const auto script = source.value->ReadMember("war3map.j");
@@ -1522,15 +1564,22 @@ void TestOptionalRealTerrainAndPathingUseNormalSave() {
             "freeze original terrain, author pathing and script");
         MapEditSaveRequest request;
         request.sourceMap = source.value->SourcePath();
-        request.targetCandidate = directory.Path() / (wet ? "water-saved.w3x" : restriction ? "restriction-saved.w3x" : "texture-saved.w3x");
+        request.targetCandidate = directory.Path() / (wet ? "water-saved.w3x" : restriction ? "restriction-saved.w3x"
+            : follow ? "following-saved.w3x" : "texture-saved.w3x");
         request.toolRoot = tool; request.gameRoot = game;
         request.expectedSourceSha256 = source.value->SourceSha256(); request.expectedTerrainSha256 = ObjectV1MemberHash(*w3e.value);
         MapEditTerrainStroke stroke;
         stroke.pointSpace = MapEditPointSpace::TerrainVertex; stroke.points = {{32, 32}}; stroke.brush.radius = 0;
         if (wet) { stroke.brush.kind = MapData::TerrainBrushKind::WaterHeight; stroke.brush.waterHeight = 170; }
         else if (restriction) { stroke.brush.kind = MapData::TerrainBrushKind::PathingRestriction; stroke.brush.pathingRestrictions = 0x0e; }
+        else if (follow) { stroke.brush.kind = MapData::TerrainBrushKind::Raise; stroke.brush.strength = 32; stroke.followDoodads = true; }
         else { stroke.brush.kind = MapData::TerrainBrushKind::Texture; stroke.brush.groundTexture = "Lgrs"; }
         request.terrainStrokes = {stroke}; // 保留默认 Automatic，覆盖最终自动小地图准备的新计划。
+        if (follow) {
+            auto restrictionStroke = stroke; restrictionStroke.brush.kind = MapData::TerrainBrushKind::PathingRestriction;
+            restrictionStroke.brush.pathingRestrictions = 0x0e; restrictionStroke.followDoodads = false;
+            request.terrainStrokes.insert(request.terrainStrokes.begin(), restrictionStroke);
+        }
         const auto saved = SaveMapEditCandidate(request);
         if (!saved.Succeeded()) for (const auto& diagnostic : saved.diagnostics)
             std::cerr << "terrain normal save: " << diagnostic.code << ": " << diagnostic.message << '\n';
@@ -1540,7 +1589,7 @@ void TestOptionalRealTerrainAndPathingUseNormalSave() {
         const auto finalWpm = reopened.value->ReadMember("war3map.wpm"), finalW3e = reopened.value->ReadMember("war3map.w3e");
         const auto finalScript = reopened.value->ReadMember("war3map.j");
         auto expectedPathing = *wpm.value;
-        if (restriction) {
+        if (restriction || follow) {
             const auto grid = MapData::ParseMapTerrain(*w3e.value); Require(grid.Succeeded() && grid.value, "read original restriction grid");
             const auto stride = (grid.value->Snapshot()->header.width - 1) * 4;
             expectedPathing[16 + 128 * stride + 128] |= std::byte{0x0e};
@@ -1549,9 +1598,33 @@ void TestOptionalRealTerrainAndPathingUseNormalSave() {
         Require(finalWpm.Succeeded() && finalWpm.value && *finalWpm.value == expectedPathing,
             "normal save preserves all source pathing except the one explicit restriction cell");
         Require(finalW3e.Succeeded() && finalW3e.value && (*finalW3e.value != *w3e.value) == !restriction,
-            "restriction-only save keeps W3E exact; texture/water save writes actual terrain edits");
+            "restriction-only save keeps W3E exact; texture, water and following-height saves write actual terrain edits");
         Require(finalScript.Succeeded() && finalScript.value && *finalScript.value == *script.value,
             "terrain-only save cannot silently rewrite the author script");
+        if (follow) {
+            const auto savedUnits = reopened.value->ReadMember("war3mapUnits.doo");
+            const auto savedDoodads = reopened.value->ReadMember("war3map.doo");
+            Require(savedUnits.Succeeded() && savedUnits.value && savedDoodads.Succeeded() && savedDoodads.value
+                && *savedUnits.value == expectedUnits && *savedDoodads.value == expectedDoodads,
+                "normal service saves both following DOO files with every unrelated placement field exact");
+            const auto originalUnits = source.value->ReadMember("war3mapUnits.doo");
+            const auto originalDoodads = source.value->ReadMember("war3map.doo");
+            Require(originalUnits.Succeeded() && originalUnits.value && originalDoodads.Succeeded() && originalDoodads.value
+                && *savedUnits.value != *originalUnits.value && *savedDoodads.value != *originalDoodads.value,
+                "four-member regression includes actual changes to both placement outputs");
+            const auto map = MapDocument::FromMembers(reopened.value->Members());
+            Require(map.Units() && map.Doodads() && map.Units()->units.size() == 2 && map.Doodads()->doodads.size() == 2
+                && map.Units()->units[0].position[2] == 42 && map.Units()->units[1].position[2] == 20
+                && map.Doodads()->doodads[0].position[2] == 37 && map.Doodads()->doodads[1].position[2] == 15,
+                "independent saved map parses covered and uncovered native placement elevations");
+            for (const auto& member : source.value->Members()) {
+                if (member.name == "war3map.w3e" || member.name == "war3map.wpm"
+                    || member.name == "war3mapUnits.doo" || member.name == "war3map.doo" || member.name == "war3mapMap.blp") continue;
+                const auto after = reopened.value->ReadMember(member.name);
+                Require(after.Succeeded() && after.value && *after.value == member.data,
+                    "four-member save preserves script, triggers, shadow, minimap icons and all other original members");
+            }
+        }
         const auto sourceAfter = Sha256File(request.sourceMap);
         Require(sourceAfter.Succeeded() && sourceAfter.value && *sourceAfter.value == request.expectedSourceSha256,
             "all source map bytes remain unchanged");

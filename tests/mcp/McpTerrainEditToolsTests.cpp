@@ -3,6 +3,7 @@
 #include "McpWorkspace.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
+#include "War3MapCore/MapData/MapPlacements.h"
 #include "War3MapCore/MapData/TerrainPatchCodec.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
 
@@ -11,8 +12,9 @@
 #include <QJsonDocument>
 #include <QTemporaryDir>
 
-#include <fstream>
 #include <algorithm>
+#include <array>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 
@@ -25,13 +27,36 @@ namespace {
 
 void Expect(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
 
+std::vector<MapArchiveMember> FollowPlacementMembers() {
+    UnitPlacements units;
+    UnitPlacement unit;
+    unit.rawcode = "hfoo"; unit.creationId = 7; unit.position = {0, 0, 10};
+    unit.scale = {1, 1, 1}; unit.rotation = 0.75f; unit.flags = 2; unit.hitPoints = 73;
+    unit.inventory.push_back({0, "ratf"}); units.units.push_back(unit);
+    unit.creationId = 8; unit.position = {512, 512, 20}; units.units.push_back(unit);
+    DoodadPlacements doodads;
+    DoodadPlacement tree;
+    tree.rawcode = "LTlt"; tree.creationId = 9; tree.position = {0, 0, 5};
+    tree.scale = {1, 1, 1}; tree.rotation = 1.25f; tree.flags = 2; tree.lifePercent = 61;
+    tree.itemSets.push_back({{{"ratf", 100}}}); doodads.doodads.push_back(tree);
+    tree.creationId = 10; tree.position = {512, 512, 15}; doodads.doodads.push_back(tree);
+    doodads.specialDoodads.push_back({"D001", 3, {1, 2}});
+    const auto unitBytes = units.Serialize(), doodadBytes = doodads.Serialize();
+    Expect(unitBytes.Succeeded() && unitBytes.value && doodadBytes.Succeeded() && doodadBytes.value,
+        "original following-placement fixtures encode");
+    return {{"war3mapUnits.doo", *unitBytes.value}, {"war3map.doo", *doodadBytes.value}};
+}
+
 struct Fixture {
     QTemporaryDir temporary;
     std::filesystem::path source;
     std::vector<std::byte> terrain, pathing;
-    MapDocument document = MapDocument::FromMembers({});
-    MapDataEditSession edits{document};
-    Fixture() {
+    std::vector<MapArchiveMember> placements;
+    MapDocument document;
+    MapDataEditSession edits;
+    explicit Fixture(bool withPlacements = false)
+        : placements(withPlacements ? FollowPlacementMembers() : std::vector<MapArchiveMember>{}),
+          document(MapDocument::FromMembers(placements)), edits(document) {
         Expect(temporary.isValid(), "temporary directory available");
         source = std::filesystem::path(temporary.path().toStdWString()) / "source";
         TerrainGridSnapshot grid;
@@ -45,6 +70,7 @@ struct Fixture {
             pathing.push_back(static_cast<std::byte>((value >> shift) & 0xff));
         pathing.resize(16 + 64 * 64, std::byte{0x02});
         Write(source / "war3map.w3e", terrain); Write(source / "war3map.wpm", pathing);
+        for (const auto& member : placements) Write(source / member.name, member.data);
         Expect(edits.AttachTerrain(terrain).Succeeded() && edits.AttachPathing(pathing).Succeeded(), "fixture terrain sources attach");
     }
     static void Write(const std::filesystem::path& path, std::span<const std::byte> bytes) {
@@ -168,6 +194,57 @@ void CodecProvesSourceIntentAndNetBytes() {
     Expect(fixture.edits.EditTerrain(extra.brush, extra.points, false).Succeeded(), "unproven texture remains project-editable");
     const std::array blocked{stroke, intents[1], extra};
     Expect(!seal(directory.value->Snapshot(), blocked).Succeeded(), "matching bytes alone do not bypass native-save gate");
+}
+
+void FollowingPlacementsRequireExactSourceAndCompleteRecipe() {
+    Fixture fixture(true);
+    const auto directory = DirectoryWorkspace::Open(fixture.source);
+    Expect(directory.Succeeded() && directory.value, "placement source directory opens");
+    auto raise = Raise(); raise.followDoodads = true;
+    TerrainStrokeIntent restrictionStroke;
+    restrictionStroke.brush.kind = TerrainBrushKind::PathingRestriction;
+    restrictionStroke.brush.size = 1; restrictionStroke.brush.pathingRestrictions = 8; restrictionStroke.points = {{0, 0}};
+    Expect(fixture.edits.EditTerrain(raise.brush, raise.points, true).Succeeded()
+        && fixture.edits.EditTerrain(restrictionStroke.brush, restrictionStroke.points, false).Succeeded(),
+        "following height and restriction share one source session");
+    const std::array recipe{raise, restrictionStroke};
+    const auto seal = [&](const WorkspaceSnapshot& source, std::span<const TerrainStrokeIntent> strokes) {
+        return TerrainPatchCodec::Seal(fixture.document, fixture.terrain, fixture.pathing, source, fixture.edits, strokes);
+    };
+    Expect(fixture.edits.Replacements().size() == 4 && seal(directory.value->Snapshot(), recipe).Succeeded(),
+        "complete recipe seals W3E, WPM and both placement members");
+    Expect(!seal(directory.value->Snapshot(), std::span(&raise, 1)).Succeeded(),
+        "following elevation cannot hide an omitted restriction command");
+    auto missingFollow = recipe; missingFollow[0].followDoodads = false;
+    Expect(!seal(directory.value->Snapshot(), missingFollow).Succeeded(),
+        "same terrain and WPM cannot hide an omitted following-placement instruction");
+    for (const auto& member : fixture.placements) {
+        auto wrong = directory.value->Snapshot();
+        const auto found = std::find_if(wrong.files.begin(), wrong.files.end(), [&](const auto& file) {
+            return file.relativePath == std::filesystem::path(member.name);
+        });
+        Expect(found != wrong.files.end(), "both placement sources are present in the source snapshot");
+        found->sha256 = std::string(64, 'f');
+        Expect(!seal(wrong, recipe).Succeeded(), "following recipe cannot borrow a different placement source SHA");
+    }
+    auto units = *fixture.edits.Snapshot().Units();
+    units.units[0].position[0] += 1; units.units[0].position[2] += 1;
+    Expect(fixture.edits.EditUnits(units).Succeeded(), "unit X and Z change remains a real draft edit");
+    Expect(!fixture.edits.VerifyTerrainPathingForSave().Succeeded()
+        && !seal(directory.value->Snapshot(), recipe).Succeeded(), "unit XZ change is not a terrain-following elevation");
+    Expect(fixture.edits.Undo(), "undo unrelated unit movement");
+    auto doodads = *fixture.edits.Snapshot().Doodads();
+    doodads.doodads[0].position[0] += 1; doodads.doodads[0].position[2] += 1;
+    Expect(fixture.edits.EditDoodads(doodads).Succeeded(), "doodad X and Z change remains a real draft edit");
+    Expect(!fixture.edits.VerifyTerrainPathingForSave().Succeeded()
+        && !seal(directory.value->Snapshot(), recipe).Succeeded(), "doodad XZ change is not a terrain-following elevation");
+    Expect(fixture.edits.Undo() && seal(directory.value->Snapshot(), recipe).Succeeded(),
+        "undo restores the exact four-member recipe");
+    for (const auto& member : fixture.placements) {
+        const auto source = IO::ReadFileBytes(fixture.source / member.name);
+        Expect(source.Succeeded() && source.value && *source.value == member.data,
+            "positive and rejected seals never modify placement sources");
+    }
 }
 
 void SealedTerrainUsesExistingDirectoryTransaction() {
@@ -297,6 +374,76 @@ void PathingRestrictionsKeepSourceBitsThroughNormalDirectorySave() {
     Expect(*pathing.value == expected, "output changes only the declared cell and retains its original walk restriction");
     Expect(*IO::ReadFileBytes(fixture.source / "war3map.w3e").value == fixture.terrain
         && *IO::ReadFileBytes(fixture.source / "war3map.wpm").value == fixture.pathing, "original directory remains byte-identical");
+}
+
+void FollowingPlacementsAndRestrictionsUseNormalDirectorySave() {
+    for (const bool restrictionFirst : {false, true}) {
+        Fixture fixture(true); McpServer server; OpenWorkspace(fixture, server);
+        const auto source = DirectoryWorkspace::Open(fixture.source);
+        Expect(source.Succeeded() && source.value, "freeze original directory with both placement members");
+        auto* workspace = server.Workspace(); const auto revision = workspace->Revision();
+        const auto transaction = workspace->BeginEdit(revision);
+        Expect(transaction.Succeeded() && transaction.value, "following placement transaction opens");
+        for (const bool restriction : {restrictionFirst, !restrictionFirst}) {
+            auto request = Stroke(Current(server));
+            if (restriction) request["brush"] = QJsonObject{{"kind", "pathing_restriction"}, {"size", 1}, {"blocked_type", "build"}};
+            else request["follow_doodads"] = true;
+            const auto before = Current(server);
+            const auto preview = Call(server, "edit_terrain_stroke", request);
+            Expect(preview.value("ok").toBool() && preview.value("terrain_pathing_gate").toObject().value("passed").toBool()
+                && Current(server) == before, "both stroke orders preview without consuming terrain identity");
+            request["dry_run"] = false;
+            const auto applied = Call(server, "edit_terrain_stroke", request);
+            Expect(applied.value("ok").toBool() && applied.value("applied").toBool(),
+                "registered MCP applies height following and explicit restrictions through shared session");
+            Expect(!Call(server, "edit_terrain_stroke", request).value("ok").toBool(),
+                "four-member support preserves stale terrain binding refusal");
+        }
+        const auto preview = workspace->PreviewEdit(*transaction.value, revision);
+        Expect(preview.Succeeded() && preview.value && preview.value->changes.size() == 4
+            && workspace->ValidateEdit(*transaction.value, revision).satisfied,
+            "normal directory transaction retains all four proven native members");
+        const auto output = std::filesystem::path(fixture.temporary.path().toStdWString()) / "following-candidate";
+        Expect(workspace->ExportCandidate(*transaction.value, revision, output).Succeeded(),
+            "normal directory exporter publishes height, restrictions and both following placements");
+        auto units = *fixture.document.Units(); units.units[0].position[2] += 16;
+        auto doodads = *fixture.document.Doodads(); doodads.doodads[0].position[2] += 16;
+        const auto expectedUnits = units.Serialize(), expectedDoodads = doodads.Serialize();
+        Expect(expectedUnits.Succeeded() && expectedUnits.value && expectedDoodads.Succeeded() && expectedDoodads.value,
+            "expected placement bytes encode");
+        const auto savedUnits = IO::ReadFileBytes(output / "war3mapUnits.doo");
+        const auto savedDoodads = IO::ReadFileBytes(output / "war3map.doo");
+        const auto savedTerrain = IO::ReadFileBytes(output / "war3map.w3e"), savedPathing = IO::ReadFileBytes(output / "war3map.wpm");
+        Expect(savedUnits.Succeeded() && savedUnits.value && savedDoodads.Succeeded() && savedDoodads.value
+            && savedTerrain.Succeeded() && savedTerrain.value && savedPathing.Succeeded() && savedPathing.value,
+            "all four exported native files independently reopen");
+        Expect(*savedUnits.value == *expectedUnits.value && *savedDoodads.value == *expectedDoodads.value,
+            "only covered Z values change; other placements, fields and special tail remain exact");
+        auto expectedPathing = fixture.pathing; expectedPathing[16 + 32 * 64 + 32] = std::byte{0x0a};
+        Expect(*savedPathing.value == expectedPathing, "following placement save preserves protected WPM bits and exact unedited cells");
+        const std::array reopenedMembers{MapArchiveMember{"war3mapUnits.doo", *savedUnits.value},
+            MapArchiveMember{"war3map.doo", *savedDoodads.value}};
+        auto reopened = MapDocument::FromMembers(reopenedMembers);
+        MapDataEditSession edits(reopened);
+        Expect(reopened.Units() && reopened.Doodads() && edits.AttachTerrain(*savedTerrain.value).Succeeded()
+            && edits.AttachPathing(*savedPathing.value).Succeeded(),
+            "exported terrain and both native placement parsers reopen the same elevation change");
+        const auto center = edits.InspectTerrainPoint({0, 0});
+        Expect(center.Succeeded() && center.value && center.value->groundHeight == 16,
+            "independent reopened terrain has the saved height");
+        const auto sourceAfter = DirectoryWorkspace::Open(fixture.source);
+        Expect(sourceAfter.Succeeded() && sourceAfter.value
+            && sourceAfter.value->Snapshot().aggregateSha256 == source.value->Snapshot().aggregateSha256,
+            "normal MCP export preserves the complete original directory identity");
+        for (const auto& file : source.value->Snapshot().files) {
+            const auto name = IO::GenericPathUtf8(file.relativePath);
+            if (name == "war3map.w3e" || name == "war3map.wpm" || name == "war3mapUnits.doo" || name == "war3map.doo") continue;
+            const auto before = IO::ReadFileBytes(fixture.source / file.relativePath);
+            const auto after = IO::ReadFileBytes(output / file.relativePath);
+            Expect(before.Succeeded() && after.Succeeded() && *before.value == *after.value,
+                "normal terrain export keeps trigger pair and every unrelated member exact");
+        }
+    }
 }
 
 void RegisteredHostRetainsTransactionAndPublishesDirectory() {
@@ -443,6 +590,7 @@ int main(int argc, char** argv) {
         FacadeQueryPreviewApplyAndUndo();
         FacadeRejectsUnknownTypesBoundsAndStaleSources();
         CodecProvesSourceIntentAndNetBytes();
+        FollowingPlacementsRequireExactSourceAndCompleteRecipe();
         SealedTerrainUsesExistingDirectoryTransaction();
         RegisteredHostRetainsTransactionAndPublishesDirectory();
         HostRejectsWithoutPartialOverlayOrSourceWrites();
@@ -450,7 +598,8 @@ int main(int argc, char** argv) {
         ArchiveExportBindsPathingAndCompanionMembers();
         BoundaryDraftSchemaAndNativeGateStaySeparate();
         PathingRestrictionsKeepSourceBitsThroughNormalDirectorySave();
-        std::cout << "10 terrain MCP and sealed transaction scenarios passed\n";
+        FollowingPlacementsAndRestrictionsUseNormalDirectorySave();
+        std::cout << "12 terrain MCP and sealed transaction scenarios passed\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
