@@ -16,6 +16,7 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <utility>
 
 namespace {
 using namespace War3Map;
@@ -54,7 +55,7 @@ struct Fixture {
     std::unique_ptr<MapDataEditSession> edits;
     TerrainStrokePoint point{2048, 2048};
 
-    Fixture() {
+    explicit Fixture(bool variedProtection = false) {
         static std::atomic<unsigned> next{0};
         root = std::filesystem::temp_directory_path() / ("Audastra-water-service-"
             + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()) + "-" + std::to_string(next++));
@@ -75,6 +76,11 @@ struct Fixture {
             pathing.push_back(static_cast<std::byte>((value >> shift) & 0xff));
         // 原创平干地的独立六mode基线40，加作者保护11；不调用待测生成器制造G0。
         pathing.resize(16 + 128 * 128, std::byte{0x51});
+        if (variedProtection) {
+            constexpr std::array protection{std::byte{0x00}, std::byte{0x01}, std::byte{0x10}, std::byte{0x11}};
+            for (std::size_t index = 16; index < pathing.size(); ++index)
+                pathing[index] = std::byte{0x40} | protection[(index - 16) % protection.size()];
+        }
         members = {{"war3map.w3e", Take(SerializeMapTerrain(grid))}, {"war3map.wpm", std::move(pathing)},
             {"TerrainArt/Terrain.slk", Text("ID;PWXL;N;E\nB;X4;Y2;D0\n"
                 "C;X1;Y1;K\"tileID\"\nC;X2;K\"walkable\"\nC;X3;K\"flyable\"\nC;X4;K\"buildable\"\n"
@@ -204,6 +210,80 @@ void WaterServiceCandidatesPassNativePlanAndIndependentArchiveReadback() {
     }
 }
 
+void SavedWaterStrokeUndoAndRedoRebaseAgainstEachSavedSource() {
+    for (const auto kind : {TerrainWaterBrushKind::Shallow, TerrainWaterBrushKind::Deep}) {
+        Fixture f(true);
+        const auto originalTerrain = f.members[0].data, originalPathing = f.members[1].data;
+        const auto sessionIdentity = f.edits->SessionIdentity();
+        const auto rules = f.Rules();
+        TerrainWaterStrokeOptions options;
+        options.kind = kind; options.shape = TerrainBrushShape::Square; options.size = 2;
+        options.cliffTexture = 1; options.randomSeed = 17;
+        const std::array points{f.point, TerrainStrokePoint{2176, 2048}};
+        const auto prepared = Take(PrepareTerrainWaterEdit(*f.edits, f.Document(), f.Binding(), rules, options, points));
+        Take(ApplyTerrainEdit(*f.edits, f.Document(), prepared));
+        const auto wetTerrain = Take(SerializeMapTerrain(*f.edits->Terrain()));
+        Require(wetTerrain != originalTerrain && std::any_of(f.edits->Terrain()->vertices.begin(),
+            f.edits->Terrain()->vertices.end(), [](const auto& vertex) { return vertex.HasWater(); }),
+            "the saved history regression creates new water on originally dry ground");
+        Require(std::any_of(f.edits->Terrain()->vertices.begin(), f.edits->Terrain()->vertices.end(),
+            [](const auto& vertex) { return vertex.CliffTextureIndex() == 1 && vertex.CliffVariation() != 0; }),
+            "the saved water command also changes cliff palette and variation");
+        Require(f.edits->CanUndo() && !f.edits->CanRedo(), "one water command precedes the first save");
+        Require(rules.VerifyReadback(*f.source, kResourceBudget).Succeeded(), "the original water rule owner is still current");
+
+        std::vector<std::pair<std::filesystem::path, std::string>> sources{
+            {f.source->SourcePath(), f.source->SourceSha256()}};
+        const auto saveAndCommit = [&](const char* name, const Bytes& expectedTerrain, const Bytes* expectedPathing) {
+            // 每次从上次实际保存并回读的归档重新捕获Native规则，不能复用第一份保存计划。
+            const auto plan = Take(TerrainSavePlan::PrepareForSave(*f.source, *f.edits, f.game));
+            Require(plan.SaveGate().Succeeded() && plan.RebuiltPathing()
+                && plan.SourceSha256() == f.source->SourceSha256(), "each history state prepares native pathing from its current saved source");
+            auto replacements = f.edits->Replacements();
+            Require(plan.InstallPathingOutput(*f.edits, replacements).Succeeded()
+                && plan.VerifyForSave(*f.edits, f.source->SourceSha256(), replacements).Succeeded(),
+                "the history state installs and verifies its complete native output");
+            const auto written = Take(f.source->SaveCandidate(f.root / name, replacements));
+            auto saved = Take(MapArchiveSession::Open(written.path));
+            Require(plan.VerifyReadback(saved).Succeeded(), "independent archive readback verifies this history state");
+            const auto actualTerrain = Take(saved.ReadMember("war3map.w3e"));
+            auto actualPathing = Take(saved.ReadMember("war3map.wpm"));
+            Require(actualTerrain == expectedTerrain, "saved history restores the entire expected W3E byte stream");
+            Require(actualPathing.size() == originalPathing.size()
+                && std::equal(actualPathing.begin(), actualPathing.begin() + 16, originalPathing.begin()),
+                "saved history preserves the complete WPM header and dimensions");
+            if (expectedPathing)
+                Require(actualPathing == *expectedPathing, "saved history restores the entire expected WPM byte stream");
+            for (std::size_t index = 16; index < actualPathing.size(); ++index)
+                Require((actualPathing[index] & std::byte{0x11}) == (originalPathing[index] & std::byte{0x11}),
+                    "every save preserves each original author protection bit, including absent bits");
+            for (const auto& [path, sha] : sources)
+                Require(Take(Sha256File(path)) == sha, "saving a later history state never modifies an earlier source archive");
+            const auto revision = f.edits->Revision(), sourceRevision = f.edits->TerrainSourceRevision();
+            Require(plan.CommitSaved(*f.edits, MapDocument::FromArchive(saved)).Succeeded(),
+                "the real saved document becomes the next session baseline");
+            Require(!f.edits->IsDirty() && f.edits->Replacements().empty()
+                && f.edits->SessionIdentity() == sessionIdentity && f.edits->Revision() == revision
+                && f.edits->TerrainSourceRevision() == sourceRevision + 1,
+                "saving rebases the same session without adding an edit or discarding its history");
+            sources.emplace_back(saved.SourcePath(), saved.SourceSha256());
+            f.source = std::make_unique<MapArchiveSession>(std::move(saved));
+            return actualPathing;
+        };
+
+        const auto wetPathing = saveAndCommit("water-first-save.w3x", wetTerrain, nullptr);
+        Require(wetPathing != originalPathing, "new water changes the native WPM contribution");
+        Require(f.edits->Undo() && !f.edits->CanUndo() && f.edits->CanRedo() && f.edits->IsDirty()
+            && Take(SerializeMapTerrain(*f.edits->Terrain())) == originalTerrain,
+            "one Undo after saving restores all original W3E bytes, including water and cliff variation");
+        (void)saveAndCommit("water-undo-save.w3x", originalTerrain, &originalPathing);
+        Require(f.edits->Redo() && f.edits->CanUndo() && !f.edits->CanRedo() && f.edits->IsDirty()
+            && Take(SerializeMapTerrain(*f.edits->Terrain())) == wetTerrain,
+            "one Redo after saving the Undo restores the exact water command without rerunning its random sequence");
+        (void)saveAndCommit("water-redo-save.w3x", wetTerrain, &wetPathing);
+    }
+}
+
 void DirectSaveRejectsEveryConflictingOrdinaryField() {
     Fixture f;
     const std::vector<std::function<void(TerrainBrush&)>> conflicts{
@@ -252,6 +332,7 @@ int main() {
         OneAnchorAndWholePointSequenceShareCoreCommand();
         OrderedSourceAndOptionsCannotBeSubstituted();
         WaterServiceCandidatesPassNativePlanAndIndependentArchiveReadback();
+        SavedWaterStrokeUndoAndRedoRebaseAgainstEachSavedSource();
         DirectSaveRejectsEveryConflictingOrdinaryField();
         DirectSaveUsesOrderedWaterAndOriginalScriptGate();
         std::cout << "TerrainWaterEditServiceTests passed\n"; return 0;
