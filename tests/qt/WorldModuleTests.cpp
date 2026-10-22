@@ -21,6 +21,7 @@
 #include "WorldAuxiliaryDialog.h"
 #include "WorldStartLocations.h"
 #include "ProjectAuxiliaryEdits.h"
+#include "TerrainWaterEditFixture.h"
 #include "War3MapCore/Trigger/TriggerDocument.h"
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/MapData/MapAuxiliary.h"
@@ -826,6 +827,13 @@ private slots:
     void PlacementClickDragAndKeys();
     void TerrainBrushPreservesCameraAndModels();
     void TerrainBrushUsesSharedTransactionAndUndo();
+    void TerrainWaterBrushUsesFrozenPrefixAndSharedUndo_data();
+    void TerrainWaterBrushUsesFrozenPrefixAndSharedUndo();
+    void TerrainWaterBrushRejectsChangedInputs();
+    void TerrainWaterBrushRejectsChangedGameResources_data();
+    void TerrainWaterBrushRejectsChangedGameResources();
+    void TerrainWaterBrushDropsCancelledCommit_data();
+    void TerrainWaterBrushDropsCancelledCommit();
     void TerrainTextureSlotUsesSharedTransaction();
     void TerrainRampKeepsCellAndWholeStroke();
     void TerrainBoundaryMarksAndRestores_data();
@@ -3509,6 +3517,183 @@ void WorldModuleTests::TerrainBrushPreservesCameraAndModels() {
     Mouse(viewport, QEvent::MouseButtonRelease, right, Qt::LeftButton, Qt::NoButton);
     QCOMPARE(finished.count(), 1);
     QCOMPARE(viewport.SaveCamera(), camera);
+}
+
+void WorldModuleTests::TerrainWaterBrushUsesFrozenPrefixAndSharedUndo_data() {
+    QTest::addColumn<bool>("deep");
+    QTest::newRow("shallow") << false;
+    QTest::newRow("deep") << true;
+}
+
+void WorldModuleTests::TerrainWaterBrushUsesFrozenPrefixAndSharedUndo() {
+    QFETCH(bool, deep);
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    QtProject::EditorProject project;
+    Tests::InstallTerrainWaterProject(project, directory.path().toStdWString(), false);
+    BackendState state; activeBackend = &state;
+    WorldModule module(project, &backend);
+    auto* page = module.Widget(); auto* viewport = module.Viewport(); state.viewport = viewport;
+    page->resize(900, 600); page->show(); QTRY_COMPARE(viewport->VertexCount(), std::size_t{81});
+    auto* brush = page->findChild<QToolButton*>(deep ? "worldTerrainBrushDeepWater" : "worldTerrainBrushShallowWater");
+    auto* toggle = page->findChild<QPushButton*>("worldTerrainToggle");
+    auto* status = page->findChild<QLabel*>("worldTerrainWaterBrushStatus");
+    auto* radius = page->findChild<QSpinBox*>("worldTerrainRadius");
+    QVERIFY(brush && toggle && status && radius); radius->setValue(1);
+    brush->click();
+    QTRY_VERIFY(status->property("ready").toBool());
+    const auto captures = status->property("captureCount").toULongLong();
+    toggle->click(); QVERIFY(viewport->BrushMode());
+    const auto original = Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
+    const MapData::TerrainStrokePoint first{384, 384};
+    auto request = std::make_shared<QtProject::TerrainWaterEditRequest>(
+        Tests::WaterTake(QtProject::CaptureTerrainWaterEditRequest(project, true)));
+    auto resources = Tests::WaterTake(QtProject::LoadTerrainWaterEditResources(request));
+    const MapData::TerrainWaterBrush expectedBrush{deep ? MapData::TerrainWaterBrushKind::Deep : MapData::TerrainWaterBrushKind::Shallow,
+        MapData::TerrainBrushShape::Circle, 1, 0, static_cast<std::uint32_t>(project.mapEdits_->Revision()),
+        Tests::WaterTake(MapData::CaptureTerrainWaterStrokeAnchor(*request->terrain, first))};
+    const std::array points{first, MapData::TerrainStrokePoint{512, 384}, MapData::TerrainStrokePoint{640, 384}};
+    const auto expected = Tests::WaterTake(MapData::PrepareTerrainWaterStroke(*request->terrain,
+        *resources.resources.WaterBrushRules(), expectedBrush, points, request->doodads));
+    const auto frame = viewport->DocumentRevision();
+    viewport->TerrainStrokeStarted(first.x, first.y);
+    viewport->TerrainStrokeMoved(points[1].x, points[1].y);
+    viewport->TerrainStrokeMoved(points[2].x, points[2].y);
+    QTRY_VERIFY(viewport->DocumentRevision() > frame);
+    QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), original);
+    QCOMPARE(status->property("captureCount").toULongLong(), captures); // 预览不重新打开来源。
+    viewport->TerrainStrokeFinished();
+    QTRY_COMPARE(project.mapDataUndoStack_->count(), 1);
+    const auto changed = Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
+    QCOMPARE(changed, Tests::WaterTake(MapData::SerializeMapTerrain(expected.terrain)));
+    QVERIFY(changed != original);
+    QVERIFY(status->property("prepareMilliseconds").isValid());
+    QTRY_VERIFY(toggle->isChecked()); QTRY_VERIFY(status->property("ready").toBool());
+    project.mapDataUndoStack_->undo();
+    QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), original);
+    project.mapDataUndoStack_->redo();
+    QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), changed);
+    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QTRY_VERIFY(status->property("ready").toBool());
+}
+
+void WorldModuleTests::TerrainWaterBrushRejectsChangedInputs() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    QtProject::EditorProject project;
+    Tests::InstallTerrainWaterProject(project, directory.path().toStdWString(), false);
+    BackendState state; activeBackend = &state;
+    WorldModule module(project, &backend);
+    auto* page = module.Widget(); auto* viewport = module.Viewport(); state.viewport = viewport;
+    page->resize(900, 600); page->show(); QTRY_COMPARE(viewport->VertexCount(), std::size_t{81});
+    auto* brush = page->findChild<QToolButton*>("worldTerrainBrushShallowWater");
+    auto* toggle = page->findChild<QPushButton*>("worldTerrainToggle");
+    auto* status = page->findChild<QLabel*>("worldTerrainWaterBrushStatus");
+    QVERIFY(brush && toggle && status); brush->click();
+    // queued规则捕获完成前改变来源状态；旧成功回调不能重新启用笔刷。
+    project.sourceChangeSuspected_ = true;
+    project.SourceStateChanged();
+    QTRY_VERIFY(!status->property("ready").toBool());
+    QVERIFY(!viewport->BrushMode());
+    project.sourceChangeSuspected_ = false; project.SourceStateChanged();
+    QTRY_VERIFY(status->property("ready").toBool());
+    toggle->click(); QVERIFY(viewport->BrushMode());
+    viewport->TerrainStrokeStarted(384, 384);
+    MapData::TerrainBrush external; external.kind = MapData::TerrainBrushKind::Raise;
+    external.size = 1; external.strength = 1;
+    const MapData::TerrainStrokePoint elsewhere{128, 128};
+    QVERIFY(project.mapEdits_->EditTerrain(external, std::span(&elsewhere, 1), false).Succeeded());
+    const auto changed = Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
+    viewport->TerrainStrokeFinished();
+    QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), changed);
+    QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    QTRY_VERIFY(status->property("ready").toBool());
+    QTRY_VERIFY(toggle->isChecked());
+    project.pendingImports_.push_back({QStringLiteral("TerrainArt/Terrain.slk"), {}, 1,
+        std::make_shared<const std::vector<std::byte>>(Tests::WaterText("pending"))});
+    viewport->TerrainStrokeStarted(384, 384); viewport->TerrainStrokeFinished();
+    QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), changed);
+    QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    QVERIFY(!status->property("ready").toBool());
+}
+
+void WorldModuleTests::TerrainWaterBrushRejectsChangedGameResources_data() {
+    QTest::addColumn<bool>("patch");
+    QTest::newRow("loose-after-ready") << false;
+    QTest::newRow("patch-after-ready") << true;
+}
+
+void WorldModuleTests::TerrainWaterBrushRejectsChangedGameResources() {
+    QFETCH(bool, patch);
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    QtProject::EditorProject project;
+    Tests::InstallTerrainWaterProject(project, directory.path().toStdWString(), false);
+    BackendState state; activeBackend = &state;
+    WorldModule module(project, &backend);
+    auto* page = module.Widget(); auto* viewport = module.Viewport(); state.viewport = viewport;
+    page->resize(900, 600); page->show(); QTRY_COMPARE(viewport->VertexCount(), std::size_t{81});
+    auto* brush = page->findChild<QToolButton*>("worldTerrainBrushDeepWater");
+    auto* toggle = page->findChild<QPushButton*>("worldTerrainToggle");
+    auto* status = page->findChild<QLabel*>("worldTerrainWaterBrushStatus");
+    QVERIFY(brush && toggle && status); brush->click();
+    QTRY_VERIFY(status->property("ready").toBool()); toggle->click();
+    const auto original = Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
+    if (patch) {
+        const std::array members{MapArchiveMember{"UI/WorldEditGameStrings.txt", Tests::WaterText("[Terrain]\nMaxSlope=12\n")}};
+        QVERIFY(WriteVerifiedArchive(project.war3GameRoot_ / "war3patch.mpq", members).Succeeded());
+    } else {
+        std::filesystem::create_directory(project.war3GameRoot_ / "UI");
+        QVERIFY(IO::WriteFileBytes(project.war3GameRoot_ / "UI/MiscData.txt", Tests::WaterText("[Terrain]\nMaxSlope=12\n")).Succeeded());
+    }
+    // 没有地图来源通知，Session和project修订也没变；实际游戏规则仍必须重新核对。
+    viewport->TerrainStrokeStarted(384, 384); viewport->TerrainStrokeFinished();
+    QTRY_VERIFY(status->property("verifyMilliseconds").isValid());
+    QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), original);
+    QTRY_VERIFY(toggle->isEnabled());
+    QVERIFY(!toggle->isChecked()); // 旧规则的一笔被拒绝；新规则重新捕获不恢复这笔。
+}
+
+void WorldModuleTests::TerrainWaterBrushDropsCancelledCommit_data() {
+    QTest::addColumn<int>("mode");
+    QTest::newRow("cancel-pending-commit") << 0;
+    QTest::newRow("refresh-pending-commit") << 1;
+    QTest::newRow("switch-map-pending-commit") << 2;
+}
+
+void WorldModuleTests::TerrainWaterBrushDropsCancelledCommit() {
+    QFETCH(int, mode);
+    QTemporaryDir directory, replacement; QVERIFY(directory.isValid() && replacement.isValid());
+    QtProject::EditorProject project;
+    Tests::InstallTerrainWaterProject(project, directory.path().toStdWString(), false);
+    BackendState state; activeBackend = &state;
+    WorldModule module(project, &backend);
+    auto* page = module.Widget(); auto* viewport = module.Viewport(); state.viewport = viewport;
+    page->resize(900, 600); page->show(); QTRY_COMPARE(viewport->VertexCount(), std::size_t{81});
+    auto* brush = page->findChild<QToolButton*>("worldTerrainBrushShallowWater");
+    auto* toggle = page->findChild<QPushButton*>("worldTerrainToggle");
+    auto* status = page->findChild<QLabel*>("worldTerrainWaterBrushStatus");
+    QVERIFY(brush && toggle && status); brush->click();
+    QTRY_VERIFY(status->property("ready").toBool()); toggle->click();
+    const auto original = Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
+    const auto frame = viewport->DocumentRevision();
+    viewport->TerrainStrokeStarted(384, 384);
+    QTRY_VERIFY(viewport->DocumentRevision() > frame);
+    // 预览已完成，松手启动后台复核；在允许回调执行前取消或切图。
+    viewport->TerrainStrokeFinished();
+    QVERIFY(!toggle->isEnabled());
+    if (mode == 0) viewport->TerrainStrokeCancelled();
+    else {
+        if (mode == 2)
+            Tests::InstallTerrainWaterProject(project, replacement.path().toStdWString(), false);
+        module.Refresh();
+    }
+    const auto expectedIdentity = project.mapEdits_->SessionIdentity();
+    QTRY_VERIFY(module.ViewportForTools() != nullptr);
+    QTRY_VERIFY(toggle->isEnabled());
+    QCOMPARE(project.mapEdits_->SessionIdentity(), expectedIdentity);
+    QCOMPARE(project.mapEdits_->Revision(), std::uint64_t{0});
+    QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), original);
+    QVERIFY(!toggle->isChecked());
 }
 
 void WorldModuleTests::TerrainBrushUsesSharedTransactionAndUndo() {

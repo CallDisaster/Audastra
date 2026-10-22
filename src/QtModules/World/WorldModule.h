@@ -19,6 +19,7 @@
 #include "WorldPlacementPending.h"
 #include "WorldInstanceTiming.h"
 #include "RenderPluginFailure.h"
+#include "TerrainWaterEditPreparation.h"
 
 #include <QObject>
 #include <QPointer>
@@ -30,6 +31,7 @@
 class QAbstractButton;
 class QButtonGroup;
 class QComboBox;
+class QCheckBox;
 class QFrame;
 class QGridLayout;
 class QLabel;
@@ -212,6 +214,13 @@ private:
     void UpdateTerrainBrushControls();
     void EditTerrainTextureSlot(bool cliff, bool append);
     [[nodiscard]] MapData::TerrainBrushKind CurrentBrushKind() const;
+    [[nodiscard]] std::optional<MapData::TerrainWaterBrushKind> CurrentWaterBrushKind() const;
+    [[nodiscard]] bool WaterBrushCaptureCurrent() const;
+    void QueueWaterBrushCapture();
+    void StartWaterBrushCapture();
+    void InvalidateWaterBrushCapture();
+    // UI标识不进入Core普通笔刷枚举；浅水/深水只调用独立水刷事务。
+    static constexpr int kShallowWaterBrushId = 1000, kDeepWaterBrushId = 1001;
     [[nodiscard]] QString TerrainName(const std::string& raw, const std::string& rawcode) const;
     // 右侧属性（WorldInspector.cpp）：选中对象的可编辑属性与地图概况。
     [[nodiscard]] QWidget* BuildInspector();
@@ -229,6 +238,10 @@ private:
     void StartTerrainStroke(double x, double y);
     void ExtendTerrainStroke(double x, double y);
     void FinishTerrainStroke();
+    void StartWaterBrushCommit();
+    void PublishTerrainStrokeResult(Result<MapData::TerrainStrokeResult> edited,
+        std::shared_ptr<const MapData::TerrainGridSnapshot> beforeTerrain, std::uint64_t beforeRevision,
+        bool pathing, bool water, bool resumeBrush);
     // 落笔前可站立、落笔后落在悬崖面等处的地面单位：询问移除、移到最近可站立点或撤销这一笔。
     void ResolveStrandedUnits(std::shared_ptr<const MapData::TerrainGridSnapshot> before, std::uint64_t revision);
     void CancelTerrainStroke();
@@ -349,6 +362,9 @@ private:
     QButtonGroup* terrainCliffDeltas_ = nullptr;
     QWidget* terrainWaterSection_ = nullptr;
     QDoubleSpinBox* terrainWaterHeight_ = nullptr;
+    QWidget* terrainWaterBrushSection_ = nullptr;
+    QCheckBox* terrainEnforceWaterLimits_ = nullptr;
+    QLabel* terrainWaterBrushStatus_ = nullptr;
     QWidget* terrainRampSection_ = nullptr;
     QButtonGroup* terrainRampModes_ = nullptr;
     QWidget* terrainBlightSection_ = nullptr;
@@ -514,6 +530,8 @@ private:
     struct TerrainRenderRequest {
         std::shared_ptr<const MapData::TerrainGridSnapshot> source;
         MapData::TerrainBrush brush;
+        std::optional<MapData::TerrainWaterBrush> waterBrush;
+        std::shared_ptr<const QtProject::TerrainWaterEditCapture> waterCapture;
         std::vector<MapData::TerrainStrokePoint> points;
         std::uint64_t serial = 0;
         bool preview = false;
@@ -523,6 +541,20 @@ private:
     std::shared_ptr<const MapData::TerrainGridSnapshot> strokeBase_;
     std::uint64_t strokeRevision_ = 0;
     MapData::TerrainBrush strokeBrush_;
+    std::optional<MapData::TerrainWaterBrush> strokeWaterBrush_;
+    std::shared_ptr<const QtProject::TerrainWaterEditCapture> strokeWaterCapture_;
+    std::shared_ptr<const QtProject::TerrainWaterEditRequest> waterCaptureRequest_;
+    std::shared_ptr<const QtProject::TerrainWaterEditCapture> waterCapture_;
+    std::uint64_t waterCaptureSerial_ = 0, waterCaptureCount_ = 0;
+    bool waterCapturePending_ = false;
+    struct WaterBrushCommit {
+        std::shared_ptr<const QtProject::TerrainWaterEditCapture> capture;
+        MapData::TerrainWaterBrush brush;
+        std::vector<MapData::TerrainStrokePoint> points;
+        bool resumeBrush = false;
+    };
+    std::shared_ptr<const WaterBrushCommit> waterCommit_;
+    bool waterCommitPending_ = false;
     std::vector<MapData::TerrainStrokePoint> strokePoints_;
     std::uint64_t terrainRenderSerial_ = 0;
     std::uint64_t viewportRevision_ = 0;

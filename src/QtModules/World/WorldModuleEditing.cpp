@@ -23,13 +23,16 @@
 #include <QAbstractButton>
 #include <QButtonGroup>
 #include <QComboBox>
+#include <QCheckBox>
 #include <QDoubleSpinBox>
+#include <QElapsedTimer>
 #include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QTimer>
+#include <QThread>
 #include <QUndoStack>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -773,6 +776,36 @@ void WorldModule::StartTerrainStroke(double x, double y) {
         terrainToggle_->setChecked(false);
         return;
     }
+    if (const auto kind = CurrentWaterBrushKind()) {
+        if (!WaterBrushCaptureCurrent()) {
+            QueueWaterBrushCapture();
+            selectionStatus_->setText(tr("请等待水面规则就绪后重新落笔"));
+            return;
+        }
+        if (terrainCliffTexture_->currentIndex() < 0) {
+            selectionStatus_->setText(tr("当前地图没有可用的悬崖贴图")); return;
+        }
+        const auto anchor = MapData::CaptureTerrainWaterStrokeAnchor(*source, {x, y});
+        if (!anchor.Succeeded()) {
+            selectionStatus_->setText(tr("不能建立水刷锚点：%1").arg(WorldDiagnosticText(anchor.diagnostics))); return;
+        }
+        strokeWaterBrush_ = MapData::TerrainWaterBrush{*kind,
+            static_cast<MapData::TerrainBrushShape>(std::max(0, terrainShapes_->checkedId())),
+            static_cast<std::uint32_t>(terrainRadius_->value()),
+            static_cast<std::uint8_t>(terrainCliffTexture_->currentIndex()),
+            static_cast<std::uint32_t>(project_.mapEdits_->Revision()), *anchor.value};
+        strokeWaterCapture_ = waterCapture_;
+        // 共用采样器只借普通笔刷的格点尺寸；执行与预览都由waterBrush显式分派。
+        strokeBrush_ = {};
+        strokeBrush_.kind = MapData::TerrainBrushKind::Plateau;
+        strokeBrush_.size = strokeWaterBrush_->size;
+        strokeBrush_.shape = strokeWaterBrush_->shape;
+        strokeBase_ = std::move(source);
+        strokeRevision_ = project_.mapEdits_->Revision();
+        strokePoints_.clear();
+        ExtendTerrainStroke(x, y); UpdateSelectionText(); return;
+    }
+    strokeWaterBrush_.reset(); strokeWaterCapture_.reset();
     MapData::TerrainBrush brush;
     brush.kind = CurrentBrushKind();
     brush.shape = static_cast<MapData::TerrainBrushShape>(std::max(0, terrainShapes_->checkedId()));
@@ -890,8 +923,8 @@ void WorldModule::ExtendTerrainStroke(double x, double y) {
             added = true;
         }
         if (strokePoints_.size() == 65536) {
-            if (pathing && (gx != tx || gy != ty)) {
-                CancelTerrainStroke(); selectionStatus_->setText(tr("通行笔划超过采样预算，本笔已取消")); return;
+            if ((pathing || strokeWaterBrush_) && (gx != tx || gy != ty)) {
+                CancelTerrainStroke(); selectionStatus_->setText(tr("笔划超过采样预算，本笔已取消")); return;
             }
             selectionStatus_->setText(tr("笔划已达到 65536 个采样点，请松开后继续"));
         }
@@ -908,22 +941,90 @@ void WorldModule::FinishTerrainStroke() {
     }
     const auto before = project_.mapEdits_->Revision();
     const bool pathing = strokeBrush_.kind == MapData::TerrainBrushKind::PathingRestriction;
-    if (pathing && before != strokeRevision_) {
-        CancelTerrainStroke(); selectionStatus_->setText(tr("通行性来源已变化，请重新落笔")); return;
+    const bool water = strokeWaterBrush_.has_value();
+    if ((pathing || water) && before != strokeRevision_) {
+        CancelTerrainStroke(); selectionStatus_->setText(tr("地形编辑修订已变化，请重新落笔")); return;
+    }
+    if (water && (!strokeWaterCapture_ || !QtProject::TerrainWaterEditRequestCurrent(project_,
+            *strokeWaterCapture_->request, terrainEnforceWaterLimits_->isChecked()))) {
+        CancelTerrainStroke(); InvalidateWaterBrushCapture(); QueueWaterBrushCapture();
+        selectionStatus_->setText(tr("水刷来源已变化，请等待规则更新后重新落笔")); return;
     }
     const auto terrainBefore = project_.mapEdits_->Terrain();
+    if (water) {
+        auto commit = std::make_shared<WaterBrushCommit>(WaterBrushCommit{strokeWaterCapture_,
+            *strokeWaterBrush_, std::move(strokePoints_), terrainToggle_->isChecked()});
+        strokeBase_.reset(); strokePoints_.clear(); strokeWaterBrush_.reset(); strokeWaterCapture_.reset();
+        ++terrainRenderSerial_; pendingTerrainRender_.reset();
+        // toggled(false)同步调用Cancel；先关控件，再发布pending事务，避免自行取消。
+        terrainToggle_->setChecked(false); terrainToggle_->setEnabled(false);
+        waterCommit_ = std::move(commit); waterCommitPending_ = true;
+        terrainWaterBrushStatus_->setText(tr("正在核对本笔水面资源…"));
+        StartTerrainRender(); return;
+    }
     auto edited = project_.mapEdits_->EditTerrain(strokeBrush_, strokePoints_, true);
-    strokeBase_.reset(); strokePoints_.clear();
+    strokeBase_.reset(); strokePoints_.clear(); strokeWaterBrush_.reset(); strokeWaterCapture_.reset();
+    PublishTerrainStrokeResult(std::move(edited), terrainBefore, before, pathing, false, terrainToggle_->isChecked());
+}
+
+void WorldModule::StartWaterBrushCommit() {
+    if (worker_ || !waterCommitPending_ || !waterCommit_ || !page_) return;
+    waterCommitPending_ = false;
+    const auto request = waterCommit_;
+    const auto generation = generation_;
+    auto status = std::make_shared<Status>();
+    auto elapsed = std::make_shared<qint64>(0);
+    auto* worker = QThread::create([request, status, elapsed] {
+        QElapsedTimer timer; timer.start();
+        *status = QtProject::VerifyTerrainWaterEditResources(*request->capture);
+        *elapsed = timer.elapsed();
+    });
+    worker_ = worker;
+    connect(worker, &QThread::finished, this, [this, request, generation, status, elapsed] {
+        worker_ = nullptr;
+        if (reloadQueued_) { Refresh(); return; }
+        if (!page_ || generation != generation_) return;
+        if (waterCommit_ != request) { StartTerrainRender(); return; }
+        waterCommit_.reset();
+        terrainWaterBrushStatus_->setProperty("verifyMilliseconds", *elapsed);
+        const bool current = QtProject::TerrainWaterEditRequestCurrent(project_, *request->capture->request,
+            terrainEnforceWaterLimits_->isChecked());
+        Result<MapData::TerrainStrokeResult> edited;
+        if (!current) edited.diagnostics = Status::Failure("Terrain.Water", "TERRAIN_WATER_COMMIT_STALE",
+            "水刷等待核验时地图或资源修订已变化，本笔未提交。").diagnostics;
+        else if (!status->Succeeded()) edited.diagnostics = status->diagnostics;
+        else {
+            // live Session只在GUI线程使用。最终Prepare一次，来源I/O已在worker完成。
+            QElapsedTimer timer; timer.start();
+            auto plan = project_.mapEdits_->PrepareTerrainWaterEdit(request->capture->resources,
+                request->brush, request->points, true);
+            terrainWaterBrushStatus_->setProperty("prepareMilliseconds", timer.elapsed());
+            if (plan.Succeeded()) edited = project_.mapEdits_->ApplyPreparedTerrainEdit(*plan.value);
+            else edited.diagnostics = std::move(plan.diagnostics);
+        }
+        if (!status->Succeeded() || !current) InvalidateWaterBrushCapture();
+        PublishTerrainStrokeResult(std::move(edited), request->capture->request->terrain,
+            request->capture->request->revision, false, true, current && status->Succeeded() && request->resumeBrush);
+        StartTerrainRender();
+        UpdateWaterFrameControl();
+    });
+    connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    worker->start(QThread::LowPriority);
+}
+
+void WorldModule::PublishTerrainStrokeResult(Result<MapData::TerrainStrokeResult> edited,
+    std::shared_ptr<const MapData::TerrainGridSnapshot> terrainBefore, std::uint64_t before,
+    bool pathing, bool water, bool resumeBrush) {
     if (!pathing) {
-        resumeBrushAfterRender_ = terrainToggle_ && terrainToggle_->isChecked();
-        if (resumeBrushAfterRender_) terrainToggle_->setChecked(false);
+        resumeBrushAfterRender_ = resumeBrush;
+        if (terrainToggle_ && terrainToggle_->isChecked()) terrainToggle_->setChecked(false);
         if (terrainToggle_) terrainToggle_->setEnabled(false);
     }
     UpdateSelectionText();
     if (!edited.Succeeded()) {
         project_.AddDiagnostics(edited.diagnostics);
         selectionStatus_->setText(tr("地形未修改：%1").arg(WorldDiagnosticText(edited.diagnostics)));
-        if (!pathing) QueueTerrainRender(project_.mapEdits_->Terrain(), false);
+        if (!pathing && project_.mapEdits_) QueueTerrainRender(project_.mapEdits_->Terrain(), false);
         return;
     }
     const auto next = project_.mapEdits_->Terrain();
@@ -937,6 +1038,11 @@ void WorldModule::FinishTerrainStroke() {
     QtProject::PushMapDataEdit(project_, tr("地形笔刷"), "修改地形");
     pushingTerrainStrokeUndo_ = false;
     if (!project_.mapDataUndoStack_) RefreshPlacements();
+    if (water) {
+        // 水刷只允许同事务的Z跟随；不能调用下方会搬移XY或删除对象的补救对话框。
+        selectionStatus_->setText(tr("水面已修改；水边对象的站立位置请另行检查，可撤销本笔"));
+        return;
+    }
     // 落笔事件结束后再询问，避免在鼠标释放处理中开模态窗口。
     const auto revision = project_.mapEdits_->Revision();
     QTimer::singleShot(0, this, [this, terrainBefore, revision] { ResolveStrandedUnits(terrainBefore, revision); });
@@ -1019,8 +1125,10 @@ void WorldModule::ResolveStrandedUnits(std::shared_ptr<const MapData::TerrainGri
 }
 
 void WorldModule::CancelTerrainStroke() {
-    if (!strokeBase_) return;
-    strokeBase_.reset(); strokePoints_.clear();
+    const bool pendingWater = waterCommit_ != nullptr;
+    waterCommit_.reset(); waterCommitPending_ = false;
+    if (!strokeBase_ && !pendingWater) return;
+    strokeBase_.reset(); strokePoints_.clear(); strokeWaterBrush_.reset(); strokeWaterCapture_.reset();
     if (strokeBrush_.kind == MapData::TerrainBrushKind::PathingRestriction) {
         UpdateOverlay(); UpdateSelectionText(); return;
     }

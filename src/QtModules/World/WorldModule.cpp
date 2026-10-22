@@ -28,6 +28,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QEvent>
+#include <QCheckBox>
+#include <QElapsedTimer>
 #include <QJsonArray>
 #include <QLabel>
 #include <QLocale>
@@ -253,6 +255,9 @@ WorldModule::WorldModule(QtProject::EditorProject& project, const War3RenderPlug
     connect(&project_, &QtProject::EditorProject::ImportsChanged, this, &WorldModule::Refresh);
     connect(&project_, &QtProject::EditorProject::WorldEditStringsChanged, this, &WorldModule::Refresh);
     connect(&project_, &QtProject::EditorProject::ObjectDocumentsReplaced, this, &WorldModule::Refresh);
+    connect(&project_, &QtProject::EditorProject::SourceStateChanged, this, [this] {
+        CancelTerrainStroke(); InvalidateWaterBrushCapture(); QueueWaterBrushCapture();
+    });
     for (auto* stack : project_.objectUndoStacks_)
         if (stack) connect(stack, &QUndoStack::indexChanged, this, &WorldModule::Refresh);
     if (project_.mapDataUndoStack_)
@@ -451,8 +456,11 @@ void WorldModule::Refresh() {
     if (terrainPathingWarning_) terrainPathingWarning_->setVisible(terrainPathingPending_);
     ++terrainRenderSerial_;
     pendingTerrainRender_.reset();
+    // 关闭视口笔刷会同步发出取消信号；切图时先清本笔，不能重新排队旧地图快照。
+    strokeBase_.reset(); strokePoints_.clear(); strokeWaterBrush_.reset(); strokeWaterCapture_.reset();
+    waterCommit_.reset(); waterCommitPending_ = false;
+    InvalidateWaterBrushCapture();
     resumeBrushAfterRender_ = false;
-    strokeBase_.reset(); strokePoints_.clear();
     if (terrainToggle_ && terrainToggle_->isChecked()) terrainToggle_->setChecked(false);
     // 同一张地图重新读取时保留当前视角；换图时下面的比较不成立，回到默认游戏视角。
     if (viewport_ && viewport_->VertexCount() != 0 && !shownMap_.isEmpty()) {
@@ -578,6 +586,8 @@ void WorldModule::Refresh() {
         PresentSelection(); // typed 属性独立于模型加载；地形就绪后重新启用现有选择。
         if (project_.mapEdits_ && project_.mapEdits_->Terrain() != rawTerrain_)
             RefreshMapEdits();
+        QueueWaterBrushCapture();
+        StartTerrainRender();
     });
     connect(worker, &QThread::finished, worker, &QObject::deleteLater);
     worker->start(QThread::LowPriority);
@@ -1001,6 +1011,7 @@ void WorldModule::RefreshPlacements() {
 
 void WorldModule::RefreshMapEdits() {
     if (!page_ || !viewport_) return;
+    InvalidateWaterBrushCapture();
     RefreshAssetBrowser();
     terrainPathingPending_ = project_.mapEdits_ && !project_.mapEdits_->VerifyTerrainPathingForSave().Succeeded();
     if (terrainPathingWarning_) terrainPathingWarning_->setVisible(terrainPathingPending_);
@@ -1010,7 +1021,7 @@ void WorldModule::RefreshMapEdits() {
     if (RefreshEnvironment()) return;
     const auto source = project_.mapEdits_ ? project_.mapEdits_->Terrain() : nullptr;
     if (source && source != rawTerrain_) {
-        strokeBase_.reset(); strokePoints_.clear();
+        strokeBase_.reset(); strokePoints_.clear(); strokeWaterBrush_.reset(); strokeWaterCapture_.reset();
         resumeBrushAfterRender_ = terrainToggle_ && terrainToggle_->isChecked();
         if (resumeBrushAfterRender_) terrainToggle_->setChecked(false);
         else if (viewport_->StrokeActive()) viewport_->SetBrushMode(false);
@@ -1022,6 +1033,80 @@ void WorldModule::RefreshMapEdits() {
     // WPM 草稿和撤销不换 W3E 快照；仍须按会话修订刷新当前通行格标记。
     if (CurrentTool() == Tool::Terrain && CurrentBrushKind() == MapData::TerrainBrushKind::PathingRestriction)
         UpdateOverlay();
+    QueueWaterBrushCapture();
+}
+
+bool WorldModule::WaterBrushCaptureCurrent() const {
+    return waterCapture_ && terrainEnforceWaterLimits_
+        && QtProject::TerrainWaterEditRequestCurrent(project_, *waterCapture_->request,
+            terrainEnforceWaterLimits_->isChecked());
+}
+
+void WorldModule::InvalidateWaterBrushCapture() {
+    ++waterCaptureSerial_;
+    waterCapturePending_ = false;
+    waterCapture_.reset(); waterCaptureRequest_.reset();
+    if (terrainWaterBrushStatus_) terrainWaterBrushStatus_->setProperty("ready", false);
+    if (viewport_ && CurrentWaterBrushKind()) viewport_->SetBrushMode(false);
+}
+
+void WorldModule::QueueWaterBrushCapture() {
+    if (!page_ || !CurrentWaterBrushKind() || strokeBase_ || waterCommit_ || !terrainEnforceWaterLimits_) return;
+    const bool enforce = terrainEnforceWaterLimits_->isChecked();
+    if (WaterBrushCaptureCurrent()) return;
+    if (waterCaptureRequest_ && QtProject::TerrainWaterEditRequestCurrent(project_, *waterCaptureRequest_, enforce)) return;
+    InvalidateWaterBrushCapture();
+    auto request = QtProject::CaptureTerrainWaterEditRequest(project_, enforce);
+    if (!request.Succeeded()) {
+        terrainWaterBrushStatus_->setText(tr("水刷不可用：%1").arg(DiagnosticText(request.diagnostics)));
+        return;
+    }
+    waterCaptureRequest_ = std::make_shared<QtProject::TerrainWaterEditRequest>(std::move(*request.value));
+    waterCapturePending_ = true;
+    terrainWaterBrushStatus_->setText(tr("正在读取水面规则…"));
+    StartTerrainRender();
+}
+
+void WorldModule::StartWaterBrushCapture() {
+    if (worker_ || !waterCapturePending_ || !waterCaptureRequest_ || !page_) return;
+    waterCapturePending_ = false;
+    const auto request = waterCaptureRequest_;
+    const auto generation = generation_, serial = waterCaptureSerial_;
+    auto result = std::make_shared<Result<QtProject::TerrainWaterEditCapture>>();
+    auto elapsed = std::make_shared<qint64>(0);
+    ++waterCaptureCount_;
+    terrainWaterBrushStatus_->setProperty("captureCount", QVariant::fromValue(qulonglong{waterCaptureCount_}));
+    terrainWaterBrushStatus_->setProperty("terrainVertices", QVariant::fromValue(qulonglong{request->terrain->vertices.size()}));
+    auto* worker = QThread::create([request, result, elapsed] {
+        QElapsedTimer timer; timer.start();
+        *result = QtProject::LoadTerrainWaterEditResources(request);
+        *elapsed = timer.elapsed();
+    });
+    worker_ = worker;
+    connect(worker, &QThread::finished, this, [this, generation, serial, request, result, elapsed] {
+        worker_ = nullptr;
+        if (reloadQueued_) { Refresh(); return; }
+        if (!page_ || generation != generation_) return;
+        if (serial == waterCaptureSerial_) {
+            terrainWaterBrushStatus_->setProperty("captureMilliseconds", *elapsed);
+            if (!QtProject::TerrainWaterEditRequestCurrent(project_, *request, terrainEnforceWaterLimits_->isChecked())) {
+                waterCaptureRequest_.reset();
+                terrainWaterBrushStatus_->setText(tr("地图或资源修订已变化，请重新选择水刷"));
+            } else if (!result->Succeeded()) {
+                waterCaptureRequest_.reset();
+                terrainWaterBrushStatus_->setText(tr("水刷不可用：%1").arg(DiagnosticText(result->diagnostics)));
+            } else {
+                waterCapture_ = std::make_shared<QtProject::TerrainWaterEditCapture>(std::move(*result->value));
+                terrainWaterBrushStatus_->setText(tr("水面规则已就绪"));
+                terrainWaterBrushStatus_->setProperty("ready", true);
+                if (CurrentWaterBrushKind() && terrainToggle_->isChecked()) viewport_->SetBrushMode(true);
+            }
+        }
+        StartTerrainRender();
+        UpdateWaterFrameControl();
+    });
+    connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    worker->start(QThread::LowPriority);
 }
 
 bool WorldModule::RefreshEnvironment() {
@@ -1051,7 +1136,10 @@ void WorldModule::QueueTerrainRender(std::shared_ptr<const MapData::TerrainGridS
     request.source = std::move(source);
     request.preview = preview;
     request.serial = ++terrainRenderSerial_;
-    if (preview) { request.brush = strokeBrush_; request.points = strokePoints_; }
+    if (preview) {
+        request.brush = strokeBrush_; request.points = strokePoints_;
+        request.waterBrush = strokeWaterBrush_; request.waterCapture = strokeWaterCapture_;
+    }
     pendingTerrainRender_ = std::move(request); // 拖动期间只保留最新完整前缀，旧完成结果绝不覆盖新笔迹。
     StartTerrainRender();
     UpdateWaterFrameControl();
@@ -1098,19 +1186,22 @@ void WorldModule::QueueWaterFrame(std::uint32_t frame) {
 }
 
 void WorldModule::StartTerrainRender() {
-    if (worker_ || !pendingTerrainRender_ || !page_ || !viewport_) return;
+    if (worker_ || !page_ || !viewport_) return;
+    if (waterCommitPending_) { StartWaterBrushCommit(); return; }
+    if (!pendingTerrainRender_) { StartWaterBrushCapture(); return; }
     auto request = std::move(*pendingTerrainRender_);
     pendingTerrainRender_.reset();
     if (!terrainCache_) terrainCache_ = std::make_shared<WorldTerrainCache>(); // 没有原版材质时仍可更新高度预览。
     auto cache = terrainCache_;
     const auto selectedWaterFrame = request.selectedWaterFrame;
-    const bool keepPreviewCliffs = request.preview && (request.brush.kind == MapData::TerrainBrushKind::Texture
+    const bool keepPreviewCliffs = request.preview && !request.waterBrush && (request.brush.kind == MapData::TerrainBrushKind::Texture
         || request.brush.kind == MapData::TerrainBrushKind::Blight || request.brush.kind == MapData::TerrainBrushKind::WaterHeight);
     const auto keepCliffs = keepPreviewCliffs || selectedWaterFrame ? cliffs_ : nullptr;
     const auto generation = generation_;
     const auto serial = request.serial;
     const bool preview = request.preview;
     const auto source = request.source;
+    const auto waterCapture = request.waterCapture;
     const auto shadowContext = ShadowContextFor(project_, source.get(), shadowRelationMemo_);
     const auto representation = viewport_->HasTerrainGridSupport()
         ? Render::TerrainGroundRepresentation::SharedGrid : Render::TerrainGroundRepresentation::Expanded;
@@ -1126,13 +1217,29 @@ void WorldModule::StartTerrainRender() {
         if (request.selectedWaterFrame)
             *result = RebuildWorldTerrain(*request.source, *cache, keepCliffs, request.selectedWaterFrame, blightPolicy, representation, shadowContext);
         else if (request.preview) {
-            auto preview = std::make_shared<MapData::TerrainGridSnapshot>(*request.source);
-            auto stroke = MapData::ApplyTerrainStroke(*preview, request.brush, request.points);
-            if (!stroke.Succeeded()) { result->diagnostics = std::move(stroke.diagnostics); return; }
-            auto previewContext = shadowContext;
-            if (!stroke.value->Empty() && previewContext.terrainRelation != WorldShadowTerrainRelation::Unknown)
-                previewContext.terrainRelation = WorldShadowTerrainRelation::TerrainOrPathingEdited;
-            *result = RebuildWorldTerrain(*preview, *cache, keepCliffs, std::nullopt, blightPolicy, representation, previewContext);
+            if (request.waterBrush) {
+                if (!request.waterCapture || !request.waterCapture->resources.WaterBrushRules()) {
+                    result->diagnostics = Status::Failure("Terrain.Water", "TERRAIN_WATER_PREVIEW_INPUT",
+                        "水刷预览缺少本笔冻结的规则或装饰物来源。").diagnostics; return;
+                }
+                auto candidate = MapData::PrepareTerrainWaterStroke(*request.source,
+                    *request.waterCapture->resources.WaterBrushRules(), *request.waterBrush, request.points,
+                    request.waterCapture->request->doodads);
+                if (!candidate.Succeeded()) { result->diagnostics = std::move(candidate.diagnostics); return; }
+                auto previewContext = shadowContext;
+                if (!candidate.value->result.changed.Empty() && previewContext.terrainRelation != WorldShadowTerrainRelation::Unknown)
+                    previewContext.terrainRelation = WorldShadowTerrainRelation::TerrainOrPathingEdited;
+                *result = RebuildWorldTerrain(candidate.value->terrain, *cache, nullptr, std::nullopt,
+                    blightPolicy, representation, previewContext);
+            } else {
+                auto preview = std::make_shared<MapData::TerrainGridSnapshot>(*request.source);
+                auto stroke = MapData::ApplyTerrainStroke(*preview, request.brush, request.points);
+                if (!stroke.Succeeded()) { result->diagnostics = std::move(stroke.diagnostics); return; }
+                auto previewContext = shadowContext;
+                if (!stroke.value->Empty() && previewContext.terrainRelation != WorldShadowTerrainRelation::Unknown)
+                    previewContext.terrainRelation = WorldShadowTerrainRelation::TerrainOrPathingEdited;
+                *result = RebuildWorldTerrain(*preview, *cache, keepCliffs, std::nullopt, blightPolicy, representation, previewContext);
+            }
         } else *result = RebuildWorldTerrain(*request.source, *cache, nullptr, std::nullopt, blightPolicy, representation, shadowContext);
         if (!cliffSession || !result->Succeeded() || !result->value->cliffs || result->value->cliffs == keepCliffs || !cache->reader) return;
         try {
@@ -1147,11 +1254,17 @@ void WorldModule::StartTerrainRender() {
     });
     worker_ = worker;
     connect(worker, &QThread::finished, this, [this, generation, serial, preview, source, result,
-        selectedWaterFrame, cache] {
+        selectedWaterFrame, cache, waterCapture] {
         worker_ = nullptr;
         if (reloadQueued_) { Refresh(); return; }
         if (generation != generation_ || !page_) return;
         if (serial == terrainRenderSerial_) {
+            if (waterCapture && !QtProject::TerrainWaterEditRequestCurrent(project_, *waterCapture->request,
+                    terrainEnforceWaterLimits_->isChecked())) {
+                result->value.reset();
+                result->diagnostics = Status::Failure("Terrain.Water", "TERRAIN_WATER_PREVIEW_STALE",
+                    "水刷预览对应的地图或资源修订已变化，未显示旧结果。").diagnostics;
+            }
             if (result->Succeeded() && cache->reader) {
                 const auto current = cache->reader->VerifyCurrentSource();
                 if (!current.Succeeded()) {
@@ -1226,6 +1339,7 @@ bool WorldModule::PresentTerrainRender(WorldTerrainLoaded& loaded, bool preview,
         if (current && terrainToggle_ && terrainToggle_->isEnabled()) terrainToggle_->setChecked(true);
     }
     if (placementsDirty_) RefreshPlacements();
+    if (!preview && !waterFrameOnly) QueueWaterBrushCapture();
     return true;
 }
 
