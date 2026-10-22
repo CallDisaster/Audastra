@@ -221,7 +221,8 @@ private:
         const std::optional<std::vector<std::byte>>& pathing,
         const std::optional<std::vector<std::byte>>& doodads,
         const TerrainPathingResources* resources = nullptr,
-        const std::vector<std::byte>* restrictions = nullptr) const;
+        const std::vector<std::byte>* restrictions = nullptr,
+        const std::optional<std::vector<std::byte>>* units = nullptr) const;
     [[nodiscard]] Status PrepareUnits(const UnitPlacements& value, std::vector<MemberChange>& changes) const;
     [[nodiscard]] Status DeserializeAndApply(MapDataKind kind, std::span<const std::byte> bytes,
         bool linkStartLocations);

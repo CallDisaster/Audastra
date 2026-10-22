@@ -727,26 +727,27 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                 return Fail("SAVE_NO_TERRAIN_CHANGE", "全部笔划结束后地形与源图相同；未生成空改动候选。");
             }
             replacements = edits.Replacements();
-            if (replacements.empty() || replacements.size() > 3 || !edits.Removals().empty())
+            if (replacements.empty() || replacements.size() > 4 || !edits.Removals().empty())
                 return Fail("SAVE_EDIT_SCOPE_INVALID", "地形事务生成了空替换、过多成员或删除成员。");
-            std::array<bool, 3> seen{};
+            std::array<bool, 4> seen{};
             for (const auto& member : replacements) {
                 const std::size_t index = member.name == "war3map.w3e" ? 0
                     : member.name == "war3map.wpm" ? 1
-                    : member.name == "war3map.doo" ? 2 : 3;
+                    : member.name == "war3map.doo" ? 2
+                    : member.name == "war3mapUnits.doo" ? 3 : 4;
                 if (index >= seen.size() || seen[index]) {
                     return Fail("SAVE_EDIT_SCOPE_INVALID", "地形事务生成了未获允许或重复的地图成员：" + member.name);
                 }
                 seen[index] = true;
             }
-            const bool restrictionOnly = seen[1] && !seen[2]
+            const bool restrictionOnly = seen[1] && !seen[2] && !seen[3]
                 && std::all_of(request.terrainStrokes.begin(), request.terrainStrokes.end(),
                     [](const auto& stroke) { return stroke.brush.kind == MapData::TerrainBrushKind::PathingRestriction; });
             if (!seen[0] && !restrictionOnly)
                 return Fail("SAVE_EDIT_SCOPE_INVALID", "地形事务缺少 W3E 替换，且不属于仅修改 WPM 的通行限制笔划。");
-            if (seen[2] && std::none_of(request.terrainStrokes.begin(), request.terrainStrokes.end(),
+            if ((seen[2] || seen[3]) && std::none_of(request.terrainStrokes.begin(), request.terrainStrokes.end(),
                     [](const auto& stroke) { return stroke.followDoodads; })) {
-                return Fail("SAVE_EDIT_SCOPE_INVALID", "未请求装饰物随地面移动，却生成了装饰物替换成员。");
+                return Fail("SAVE_EDIT_SCOPE_INVALID", "未请求摆放对象随地面移动，却生成了摆放替换成员。");
             }
             const auto w3e = std::find_if(replacements.begin(), replacements.end(), [](const auto& member) {
                 return member.name == "war3map.w3e";

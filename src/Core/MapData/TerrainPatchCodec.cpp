@@ -76,9 +76,16 @@ Result<TerrainPatch> TerrainPatchCodec::Seal(const MapDocument& original,
         return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_REPLAY_MISMATCH", "当前 W3E 不能由原始地形命令完整重放。");
     const auto gate = replay.VerifyTerrainPathingForSave();
     if (!gate.Succeeded()) return {{}, gate.diagnostics};
-    // 当前规则只准 W3E/WPM；有地物联动时必须等独立派生一致性证明，不能偷放进 map-data。
-    if (current.current_ != current.original_)
-        return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_MEMBER_SCOPE", "地形目录事务尚不支持联动其它地图数据成员。");
+    // 上面的完整重放和保存门已证明两种摆放只改变 Z。其它成员仍不属于地形事务。
+    const bool follows = std::any_of(strokes.begin(), strokes.end(),
+        [](const auto& stroke) { return stroke.followDoodads; });
+    for (std::size_t index = 0; index < current.current_.size(); ++index) {
+        if (current.current_[index] == current.original_[index]) continue;
+        if (!follows || (index != MapDataEditSession::Index(MapDataKind::Units)
+                && index != MapDataEditSession::Index(MapDataKind::Doodads))
+            || !current.original_[index] || !current.current_[index])
+            return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_MEMBER_SCOPE", "地形目录事务只支持命令重放产生的原有摆放高度变化。");
+    }
     const auto plan = TerrainSavePlan::Prepare(source, current);
     if (!plan.Succeeded() || !plan.value) return {{}, plan.diagnostics};
     const auto planned = plan.value->VerifyForSave(current, source.aggregateSha256,
@@ -90,6 +97,14 @@ Result<TerrainPatch> TerrainPatchCodec::Seal(const MapDocument& original,
     if (!pathingFile.Succeeded() || !pathingFile.value) return {{}, pathingFile.diagnostics};
     std::vector<BinaryFilePatch> files;
     files.push_back(std::move(*terrainFile.value)); files.push_back(std::move(*pathingFile.value));
+    for (const auto kind : {MapDataKind::Units, MapDataKind::Doodads}) {
+        const auto index = MapDataEditSession::Index(kind);
+        if (current.current_[index] == current.original_[index]) continue;
+        const auto name = kind == MapDataKind::Units ? "war3mapunits.doo" : "war3map.doo";
+        auto placement = BindMember(source, name, *current.original_[index], *current.current_[index]);
+        if (!placement.Succeeded() || !placement.value) return {{}, placement.diagnostics};
+        files.push_back(std::move(*placement.value));
+    }
     auto result = Result<TerrainPatch>::Success(TerrainPatch(std::move(files)));
     result.diagnostics = plan.value->Diagnostics();
     return result;

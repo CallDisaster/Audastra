@@ -273,14 +273,30 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
         }
     }
     if (plan.pathingInvariant_ && plan.saveGate_.Succeeded()) {
+        for (auto& member : plan.invariantMembers_) {
+            member.outputBytes = member.sourceBytes;
+            member.outputSha256 = member.sourceSha256;
+        }
         constexpr std::array<MapDataKind, 3> kinds{MapDataKind::Settings, MapDataKind::Units, MapDataKind::Doodads};
         for (std::size_t index = 0; index < kinds.size(); ++index) {
             const auto& originalBytes = edits.original_[MapDataEditSession::Index(kinds[index])];
-            const auto& source = plan.invariantMembers_[index];
+            auto& source = plan.invariantMembers_[index];
             if ((source.sourceState == TerrainSaveSourceState::Present) != originalBytes.has_value())
                 return Result<TerrainSavePlan>::Failure(std::string(kSubsystem), "TERRAIN_SAVE_PLAN_INVARIANT_SOURCE",
                     "地形通行不变的范围/摆放会话基线与真实来源成员存在性不同：" + source.name);
             if (originalBytes) RequireStatus(MatchBytes(source, *originalBytes, false));
+            const auto& currentBytes = edits.current_[MapDataEditSession::Index(kinds[index])];
+            if (currentBytes != originalBytes) {
+                // 保存门已核对两DOO仅Z改变；这里先核真实原字节，再冻结该次确切输出。
+                // 不把当前字节伪装成源，也不允许后台省略或二次改写摆放成员。
+                if (index == 0 || !currentBytes || !originalBytes)
+                    return Result<TerrainSavePlan>::Failure(std::string(kSubsystem), "TERRAIN_SAVE_PLAN_INVARIANT_CHANGED",
+                        "范围或摆放成员存在性改变，无法保持原通行：" + source.name);
+                AddBytes(currentBytes->size(), total, limits);
+                source.outputBytes = currentBytes->size();
+                source.outputSha256 = Take(Sha256(*currentBytes));
+                source.action = TerrainSaveMemberAction::WriteEdited;
+            }
         }
     }
     for (auto& member : plan.members_) {
@@ -509,8 +525,10 @@ Status TerrainSavePlan::VerifyFrozenOutput(std::string_view sourceSha256,
             for (const auto& removed : removals) if (Canonical(removed) == key && member.sourceState != TerrainSaveSourceState::Missing)
                 return Reject("TERRAIN_SAVE_PLAN_INVARIANT_CHANGED", "地形通行不变保存不能同时删除范围、摆放或物编来源：" + member.name);
             if (actual) {
-                const auto matched = MatchBytes(member, actual->data, false);
+                const auto matched = MatchBytes(member, actual->data, true);
                 if (!matched.Succeeded()) return matched;
+            } else if (member.action == TerrainSaveMemberAction::WriteEdited) {
+                return Reject("TERRAIN_SAVE_PLAN_OUTPUT_MISSING", "保存任务缺少已核对的摆放高度输出：" + member.name);
             }
         }
         const auto additionalSafe = [](const std::string& name) {
@@ -583,7 +601,7 @@ Status TerrainSavePlan::VerifyReadback(const MapArchiveSession& saved, const Ter
         if (actual.present != (member.sourceState == TerrainSaveSourceState::Present))
             return Reject("TERRAIN_SAVE_PLAN_INVARIANT_CHANGED", "保存后的范围/摆放/物编依赖存在性不同：" + member.name);
         if (actual.present) {
-            const auto matched = MatchBytes(member, actual.bytes, false);
+            const auto matched = MatchBytes(member, actual.bytes, true);
             if (!matched.Succeeded()) return matched;
         }
     }

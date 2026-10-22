@@ -102,8 +102,8 @@ private:
     bool pathingInvariant_ = false;
     std::shared_ptr<const TerrainPathingResources> pathingResources_;
     std::array<TerrainSaveMemberPlan, 5> members_;
-    // 地形只保存不变通行时冻结：W3I、两DOO、七类native物编。它们不新增
-    // 写出能力；最终列表与回读必须沿用源身份，防止混入占地/范围变化。
+    // 通行不变时冻结W3I、两DOO、七类native物编；普通DOO只允许已核对的Z变化。
+    // 源身份与输出身份分别保存，最终列表与回读不能漏掉Z更新或夹带占地/范围变化。
     std::array<TerrainSaveMemberPlan, 10> invariantMembers_;
     std::vector<MemberReplacement> replacements_;
     Status saveGate_;

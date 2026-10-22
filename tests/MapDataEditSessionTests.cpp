@@ -735,8 +735,12 @@ void PureHeightSaveGateKeepsUnverifiedTerrainClosed() {
     Require(linked.AttachTerrain(terrain).Succeeded() && linked.AttachPathing(pathing).Succeeded(),
         "doodad-linked source attaches");
     Require(linked.EditTerrain(brush, std::span(&center, 1), true).Succeeded()
-        && linked.Replacements().size() == 2 && !linked.VerifyTerrainPathingForSave().Succeeded(),
-        "height and doodad relocation stay editable as a draft but cannot save yet");
+        && linked.Replacements().size() == 2 && linked.VerifyTerrainPathingForSave().Succeeded(),
+        "height and exact Z-only doodad following can preserve source pathing");
+    auto moved = *linked.Snapshot().Doodads();
+    moved.doodads[0].position[0] += 1.0f;
+    Require(linked.EditDoodads(moved).Succeeded() && !linked.VerifyTerrainPathingForSave().Succeeded(),
+        "an unrelated XY move still requires a pathing rebuild");
 }
 
 } // namespace

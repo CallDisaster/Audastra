@@ -1,6 +1,7 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "MapDataEditSessionTerrainInternal.h"
 #include "War3MapCore/MapData/MapPathing.h"
+#include "War3MapCore/MapData/PlacementElevationInvariant.h"
 #include "War3MapCore/MapData/TerrainPathingResources.h"
 
 #include <algorithm>
@@ -498,6 +499,9 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
     }
     const auto doodadChange = std::find_if(command.changes.begin(), command.changes.end(),
         [](const auto& change) { return change.kind == MapDataKind::Doodads; });
+    const auto unitChange = std::find_if(command.changes.begin(), command.changes.end(),
+        [](const auto& change) { return change.kind == MapDataKind::Units; });
+    const auto& candidateUnits = unitChange == command.changes.end() ? unitBytes : unitChange->after;
     PreparedTerrainEdit prepared;
     prepared.before_ = terrain_;
     prepared.sessionIdentity_ = sessionIdentity_; prepared.revision_ = revision_;
@@ -507,7 +511,7 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
     // 两者实际保存仍必经同一个 VerifyTerrainPathingForSave，未检查不能报成通过。
     prepared.terrainPathingGate_ = inspectSaveGate ? VerifyTerrainCandidateForSave(next,
         command.pathingAfter ? command.pathingAfter : pathing_,
-        doodadChange == command.changes.end() ? doodadBytes : doodadChange->after)
+        doodadChange == command.changes.end() ? doodadBytes : doodadChange->after, nullptr, nullptr, &candidateUnits)
         : Status::Failure("MapData.Edit", "TERRAIN_SAVE_GATE_NOT_INSPECTED", "此落笔尚未检查地形保存资格。");
     prepared.brush_ = brush;
     prepared.points_.assign(points.begin(), points.end());
@@ -588,7 +592,8 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
     const std::shared_ptr<const TerrainGridSnapshot>& terrain,
     const std::optional<std::vector<std::byte>>& pathing,
     const std::optional<std::vector<std::byte>>& doodads,
-    const TerrainPathingResources* resources, const std::vector<std::byte>* restrictions) const {
+    const TerrainPathingResources* resources, const std::vector<std::byte>* restrictions,
+    const std::optional<std::vector<std::byte>>* units) const {
     const auto reject = [](const char* reason) {
         return Status::Failure("MapData.Edit", "MAP_TERRAIN_PATHING_UNVERIFIED", reason);
     };
@@ -600,9 +605,31 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
     const auto layers = VerifyPathingRestrictionLayers(terrainOriginal_->header, *pathingOriginal_, *pathing,
         *pathingProtected_, *originalPathingRestrictions_, restrictions ? *restrictions : *pathingRestrictions_);
     if (!layers.Succeeded()) return layers;
-    if (!TerrainDiffers(terrain, terrainOriginal_))
+    const auto checkPlacements = [&]() -> Status {
+        if (current_[Index(MapDataKind::Settings)] != original_[Index(MapDataKind::Settings)])
+            return reject("地形通行不变保存不能同时修改可玩范围");
+        const auto check = [&](MapDataKind kind, const auto& current, auto verify) -> Status {
+            const auto& before = original_[Index(kind)];
+            if (before == current) return Status::Ok();
+            if (!before || !current) return reject("地形通行不变保存不能新增或删除摆放成员");
+            const auto status = verify(*before, *current);
+            if (status.Succeeded()) return status;
+            auto result = reject("摆放高度变化未通过核对，或同时改变了XY、朝向、缩放等其它字段");
+            result.diagnostics.insert(result.diagnostics.end(), status.diagnostics.begin(), status.diagnostics.end());
+            return result;
+        };
+        const auto doo = check(MapDataKind::Doodads, doodads, [](const auto& before, const auto& after) {
+            return VerifyDoodadPlacementElevationOnly(before, after);
+        });
+        if (!doo.Succeeded()) return doo;
+        return check(MapDataKind::Units, units ? *units : current_[Index(MapDataKind::Units)],
+            [](const auto& before, const auto& after) { return VerifyUnitPlacementElevationOnly(before, after); });
+    };
+    if (!TerrainDiffers(terrain, terrainOriginal_)) {
+        if (const auto checked = checkPlacements(); !checked.Succeeded()) return checked;
         return PathingBlightDeltaMatchesTerrain(*pathingOriginal_, *pathing, *terrainOriginal_, *terrain, kPathingRestrictionBits)
             ? Status::Ok() : reject("W3E 未变，WPM 只能写入已声明的本工程通行限制变化");
+    }
     const auto& oldHeader = terrainOriginal_->header;
     const auto& newHeader = terrain->header;
     const bool resourceHeader = resources && oldHeader.version == newHeader.version
@@ -659,11 +686,13 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
                 return reject("高度变化周边一格存在水面、坡道、悬崖边界或未识别标志");
         }
     }
-    if (invariantChanged && doodads != original_[Index(MapDataKind::Doodads)])
-        return reject("地形通行不变保存不能同时改变装饰物摆放");
-    if (invariantChanged && (current_[Index(MapDataKind::Units)] != original_[Index(MapDataKind::Units)]
-        || current_[Index(MapDataKind::Settings)] != original_[Index(MapDataKind::Settings)]))
-        return reject("地形通行不变保存不能同时修改单位摆放或可玩范围");
+    // 源限制和地形贡献各自已验证；只改变普通摆放Z不会改变对象的XY通行占地。
+    // 荒芜与本工程限制合并时，同样不能混入其它摆放或范围变化。
+    for (std::size_t i = kPathingHeaderBytes; !invariantChanged && i < pathing->size(); ++i)
+        invariantChanged = (((*pathing)[i] ^ (*pathingOriginal_)[i]) & std::byte{kPathingRestrictionBits}) != std::byte{0};
+    if (invariantChanged) {
+        if (const auto checked = checkPlacements(); !checked.Succeeded()) return checked;
+    }
     const auto width = (terrain->header.width - 1) * 4, height = (terrain->header.height - 1) * 4;
     const auto expectedBytes = kPathingHeaderBytes + static_cast<std::size_t>(width) * height;
     if (pathing->size() != expectedBytes || pathingOriginal_->size() != expectedBytes
