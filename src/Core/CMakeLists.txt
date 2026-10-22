@@ -47,6 +47,7 @@ add_library(War3MapCore STATIC
     MapData/PathingSavePolicy.cpp
     MapData/MapDataEditSessionPathing.cpp
     MapData/TerrainRampEditing.cpp
+    MapData/TerrainWaterBrush.cpp
     MapData/TerrainPatchCodec.cpp
     MapData/TerrainSavePlan.cpp
     MapData/TerrainSavePlanPathing.cpp
