@@ -76,13 +76,24 @@ struct TerrainWaterBrushResult {
     bool requiresObjectValidityRefresh = false;
 };
 
+struct TerrainWaterStrokeCandidate {
+    TerrainGridSnapshot terrain;
+    TerrainWaterBrushResult result;
+};
+
 [[nodiscard]] Result<TerrainWaterStrokeAnchor> CaptureTerrainWaterStrokeAnchor(
     const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point);
 
 // owned W3E 候选内依原顺序执行水面、扩大平台、层级/palette/variation、岸线、
 // 荒芜、越界地高衰减和 palette 传播。旧坡道/未知位只在实际访问区域拒绝。
 // specialShapes 必须与实际解析的 special 记录一一对应；需要删除的相交记录明确拒绝。
-// 所有失败（含预算与分配失败）都不修改 terrain；成功后一次性替换候选。
+// 只复制一次source，返回独占候选；成功或失败均不修改source。
+[[nodiscard]] Result<TerrainWaterStrokeCandidate> PrepareTerrainWaterStroke(
+    const TerrainGridSnapshot& source, const TerrainWaterLoadedRules& rules, const TerrainWaterBrush& brush,
+    std::span<const TerrainStrokePoint> points, const DoodadPlacements& doodads,
+    std::span<const TerrainWaterSpecialDoodadShape> specialShapes = {}, const TerrainWaterBrushLimits& limits = {});
+
+// 复用纯候选入口；所有失败（含预算与分配失败）都不修改terrain，成功后一次性移动候选。
 [[nodiscard]] Result<TerrainWaterBrushResult> ApplyTerrainWaterStroke(
     TerrainGridSnapshot& terrain, const TerrainWaterLoadedRules& rules, const TerrainWaterBrush& brush,
     std::span<const TerrainStrokePoint> points, const DoodadPlacements& doodads,

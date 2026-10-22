@@ -623,19 +623,28 @@ Result<TerrainWaterStrokeAnchor> CaptureTerrainWaterStrokeAnchor(const TerrainGr
     } catch (const Rejection& error) { return Result<TerrainWaterStrokeAnchor>::Failure(std::string(kSubsystem), error.code, error.text); }
 }
 
-Result<TerrainWaterBrushResult> ApplyTerrainWaterStroke(TerrainGridSnapshot& terrain, const TerrainWaterLoadedRules& rules,
+Result<TerrainWaterStrokeCandidate> PrepareTerrainWaterStroke(const TerrainGridSnapshot& source, const TerrainWaterLoadedRules& rules,
     const TerrainWaterBrush& brush, std::span<const TerrainStrokePoint> points, const DoodadPlacements& doodads,
     std::span<const TerrainWaterSpecialDoodadShape> specialShapes, const TerrainWaterBrushLimits& limits) {
     try {
-        const auto initialWork = ValidateInputs(terrain, rules, brush, points, doodads, specialShapes, limits);
-        auto candidate = terrain;
+        const auto initialWork = ValidateInputs(source, rules, brush, points, doodads, specialShapes, limits);
+        auto candidate = source;
         WaterTransaction transaction(candidate, rules, brush, doodads, specialShapes, limits, initialWork);
-        auto result = transaction.Run(points, terrain);
-        terrain = std::move(candidate);
-        return Result<TerrainWaterBrushResult>::Success(std::move(result));
-    } catch (const Rejection& error) { return Result<TerrainWaterBrushResult>::Failure(std::string(kSubsystem), error.code, error.text); }
-    catch (const std::bad_alloc&) { return Result<TerrainWaterBrushResult>::Failure(std::string(kSubsystem), "TERRAIN_WATER_ALLOCATION", "水刷候选分配失败，原地形未修改。"); }
-    catch (const std::length_error&) { return Result<TerrainWaterBrushResult>::Failure(std::string(kSubsystem), "TERRAIN_WATER_ALLOCATION", "水刷候选超出容器容量，原地形未修改。"); }
+        auto result = transaction.Run(points, source);
+        return Result<TerrainWaterStrokeCandidate>::Success({std::move(candidate), std::move(result)});
+    } catch (const Rejection& error) { return Result<TerrainWaterStrokeCandidate>::Failure(std::string(kSubsystem), error.code, error.text); }
+    catch (const std::bad_alloc&) { return Result<TerrainWaterStrokeCandidate>::Failure(std::string(kSubsystem), "TERRAIN_WATER_ALLOCATION", "水刷候选分配失败，原地形未修改。"); }
+    catch (const std::length_error&) { return Result<TerrainWaterStrokeCandidate>::Failure(std::string(kSubsystem), "TERRAIN_WATER_ALLOCATION", "水刷候选超出容器容量，原地形未修改。"); }
+}
+
+Result<TerrainWaterBrushResult> ApplyTerrainWaterStroke(TerrainGridSnapshot& terrain, const TerrainWaterLoadedRules& rules,
+    const TerrainWaterBrush& brush, std::span<const TerrainStrokePoint> points, const DoodadPlacements& doodads,
+    std::span<const TerrainWaterSpecialDoodadShape> specialShapes, const TerrainWaterBrushLimits& limits) {
+    auto prepared = PrepareTerrainWaterStroke(terrain, rules, brush, points, doodads, specialShapes, limits);
+    if (!prepared.Succeeded() || !prepared.value)
+        return {std::nullopt, std::move(prepared.diagnostics)};
+    terrain = std::move(prepared.value->terrain);
+    return Result<TerrainWaterBrushResult>::Success(std::move(prepared.value->result));
 }
 
 } // namespace War3Map::MapData
