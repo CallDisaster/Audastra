@@ -6,6 +6,7 @@
 #include "War3MapCore/MapData/MapPlacements.h"
 #include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/MapData/PlacementElevationInvariant.h"
+#include "War3MapCore/MapData/TerrainEditing.h"
 #include "War3MapCore/Resources/TerrainTable.h"
 #include "War3MapCore/Text/TextUtil.h"
 #include "War3MapCore/VerifiedFile.h"
