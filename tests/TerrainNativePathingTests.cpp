@@ -76,6 +76,70 @@ void Uniform(const Fixture& fixture, unsigned expected, const char* message) {
     Require(Take(fixture.Generate()) == grid, "native output is deterministic for identical inputs");
 }
 
+void CliffSentinelTransitionsRequireFlatKnownNeighborhoods() {
+    Fixture fixture(5, 5);
+    for (auto& vertex : fixture.grid.vertices) vertex.cliffAndLayerRaw = 0xf2;
+    auto changed = fixture.grid;
+    constexpr std::size_t center = 2 * 5 + 2;
+    for (std::size_t y = 1; y <= 3; ++y) for (std::size_t x = 1; x <= 3; ++x) {
+        auto& vertex = changed.vertices[y * 5 + x];
+        vertex.cliffAndLayerRaw = x == 2 && y == 2 ? 1 : 2;
+        vertex.variationRaw = static_cast<std::uint8_t>(((x + y) % 3) << 5);
+        Require(IsNativeTerrainCliffSentinelTransition(fixture.grid, changed, y * 5 + x)
+            && IsNativeTerrainCliffSentinelTransition(changed, fixture.grid, y * 5 + x),
+            "flat unselected material can be resolved and restored while the concrete side gains ordinary cliffs");
+    }
+    Uniform(fixture, 0x40, "flat slot15 remains dry ground in the independent native baseline");
+    auto input = fixture.Input(); input.terrain = &changed;
+    const auto generated = Take(GenerateTerrainNativePathing(input));
+    for (std::size_t y = 0; y < 16; ++y) for (std::size_t x = 0; x < 16; ++x) {
+        const bool cliffCell = x / 4 >= 1 && x / 4 <= 2 && y / 4 >= 1 && y / 4 <= 2;
+        Require(generated[y * 16 + x] == (cliffCell ? std::byte{0xca} : std::byte{0x40}),
+            "resolving a sentinel still generates every new cliff restriction instead of preserving dry G0");
+    }
+    for (const bool sentinelSide : {false, true}) for (unsigned mode = 0; mode < 11; ++mode) {
+        auto before = fixture.grid, after = changed;
+        auto& bad = (sentinelSide ? before : after).vertices[1 * 5 + 1];
+        switch (mode) {
+        case 0: bad.textureAndFlagsRaw |= 0x10; break;
+        case 1: bad.textureAndFlagsRaw |= 0x80; break;
+        case 2: bad.waterHeightAndFlagsRaw |= 0x4000; break;
+        case 3: bad.waterHeightAndFlagsRaw |= 0x8000; break;
+        case 4: bad.groundHeightRaw |= 0x4000; break;
+        case 5: bad.groundHeightRaw |= 0x8000; break;
+        case 6: bad.extendedTextureLayout = true; break;
+        case 7: bad.textureFlagsExtensionRaw = 1; break;
+        case 8: bad.variationRaw = 3 << 5; break;
+        case 9: bad.cliffAndLayerRaw = 0xe2; break;
+        case 10: bad.cliffAndLayerRaw = static_cast<std::uint8_t>((bad.cliffAndLayerRaw & 0xf0) | 15); break;
+        }
+        Require(!IsNativeTerrainCliffSentinelTransition(before, after, center)
+            && !IsNativeTerrainCliffSentinelTransition(after, before, center),
+            "neighborhood unknown flags, invalid slots, variations, levels and boundaries reject in both directions");
+    }
+    for (std::size_t y = 1; y <= 3; ++y) for (std::size_t x = 1; x <= 3; ++x) {
+        auto nonflat = fixture.grid; nonflat.vertices[y * 5 + x].cliffAndLayerRaw = 0xf3;
+        Require(!IsNativeTerrainCliffSentinelTransition(nonflat, changed, center)
+            && !IsNativeTerrainCliffSentinelTransition(changed, nonflat, center),
+            "every corner of all four sentinel-side cells must be flat, including diagonals");
+    }
+    for (const std::size_t edge : {0u, 2u, 10u, 14u, 22u, 24u}) {
+        auto atEdge = changed; atEdge.vertices[edge].cliffAndLayerRaw = 2;
+        Require(!IsNativeTerrainCliffSentinelTransition(fixture.grid, atEdge, edge),
+            "an incomplete outer-edge neighborhood does not qualify");
+    }
+    auto invalid = changed; invalid.vertices[center].cliffAndLayerRaw = 0xe1;
+    Require(!IsNativeTerrainCliffSentinelTransition(fixture.grid, invalid, center), "the concrete slot must actually exist");
+    invalid = changed; invalid.vertices[center].cliffAndLayerRaw = 0xf1;
+    Require(!IsNativeTerrainCliffSentinelTransition(fixture.grid, invalid, center), "slot15-to-slot15 is not material resolution");
+    invalid = changed; invalid.vertices.pop_back();
+    Require(!IsNativeTerrainCliffSentinelTransition(fixture.grid, invalid, center), "truncated grid is rejected before indexing");
+    invalid = changed; invalid.header.cliffTilesets[0] = "Cl02";
+    Require(!IsNativeTerrainCliffSentinelTransition(fixture.grid, invalid, center), "changing the palette table does not qualify");
+    Require(!IsNativeTerrainCliffSentinelTransition(fixture.grid, changed, fixture.grid.vertices.size()),
+        "out-of-range changed vertex is rejected before indexing");
+}
+
 void SixModesUseTheirDistinctRules() {
     Fixture dry;
     Uniform(dry, 0x40, "ordinary dry ground blocks floating only");
@@ -355,6 +419,7 @@ void ValidationIsBoundedAndRejectsUnknownRules() {
 
 int main() {
     try {
+        CliffSentinelTransitionsRequireFlatKnownNeighborhoods();
         SixModesUseTheirDistinctRules();
         NearestVertexDiffersFromTileOwner();
         StrictWaterRequiresAllFourCorners();

@@ -2,6 +2,7 @@
 #include "MapDataEditSessionTerrainInternal.h"
 #include "War3MapCore/MapData/MapPathing.h"
 #include "War3MapCore/MapData/PlacementElevationInvariant.h"
+#include "War3MapCore/MapData/TerrainNativePathing.h"
 #include "War3MapCore/MapData/TerrainPathingResources.h"
 
 #include <algorithm>
@@ -697,14 +698,16 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
         if (nativeRebuild) {
             // 此内部路径仅跳过“原通行必须不变”的比较；正式计划仍须用真实规则
             // 对完整旧/新输入重算，并逐格核对旧WPM。普通公开保存门不走此分支。
-            // 水刷会从既有悬崖表选槽并生成0..2变体；未知旧变体不能借覆盖清除后获准保存。
+            // 水刷会从既有悬崖表选槽并生成0..2变体；平地slot15可选材质并在撤销时复原。
+            // 此例外只使用共享的完整邻域检查，未知旧变体不能借覆盖清除后获准保存。
             // 资源owner另核对CliffTypes的真实旧/新行，不能单凭槽位合法授予规则来源。
             if ((cliffChanged || cliffTextureChanged || cliffVariationChanged)
                 && (before.CliffVariation() > 2 || after.CliffVariation() > 2
-                    || before.CliffTextureIndex() >= oldHeader.cliffTilesets.size()
-                    || after.CliffTextureIndex() >= newHeader.cliffTilesets.size()
-                    || before.CliffTextureIndex() >= 15 || after.CliffTextureIndex() >= 15))
-                return reject("悬崖修改需要旧新均为既有有效槽和0到2变体，未知旧值不能改写为已验证形态");
+                    || ((before.CliffTextureIndex() >= oldHeader.cliffTilesets.size()
+                        || after.CliffTextureIndex() >= newHeader.cliffTilesets.size()
+                        || before.CliffTextureIndex() >= 15 || after.CliffTextureIndex() >= 15)
+                        && !IsNativeTerrainCliffSentinelTransition(*terrainOriginal_, *terrain, index))))
+                return reject("悬崖修改需要有效槽和0到2变体；未选材质哨兵只允许无坡道、边界或未知字段的平地完整邻域互转");
             if (before.groundHeightRaw != after.groundHeightRaw
                 && ((before.groundHeightRaw | after.groundHeightRaw) & 0xc000) != 0)
                 return reject("高度修改超出现有14位可写范围，未知wire高度位必须原样保留");

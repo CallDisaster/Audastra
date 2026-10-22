@@ -44,6 +44,13 @@ struct TerrainNativeWaterState {
 [[nodiscard]] Result<TerrainNativeWaterState> ClassifyNativeTerrainWater(
     const TerrainVertex& vertex, const TerrainNativeWaterRules& rules);
 
+// slot15 是未选悬崖材质的哨兵，不是第16个材质。只允许其所在侧的四个
+// 相邻地格全平、双侧完整3×3无坡道/边界/未知字段时，与实际有效槽互转。
+// 对称检查保留保存后撤销的能力；它不授予资源来源或WPM保存资格，调用方
+// 仍须核实有效槽的CliffTypes行，并完整生成和核对旧/新通行网格。
+[[nodiscard]] bool IsNativeTerrainCliffSentinelTransition(
+    const TerrainGridSnapshot& before, const TerrainGridSnapshot& after, std::size_t index) noexcept;
+
 struct TerrainNativePathingInput {
     const TerrainGridSnapshot* terrain = nullptr;
     TerrainNativePlayableBounds playableBounds;

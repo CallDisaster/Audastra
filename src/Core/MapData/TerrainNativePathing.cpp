@@ -204,6 +204,42 @@ Result<TerrainNativeWaterState> ClassifyNativeTerrainWater(
     });
 }
 
+bool IsNativeTerrainCliffSentinelTransition(
+    const TerrainGridSnapshot& before, const TerrainGridSnapshot& after, std::size_t index) noexcept {
+    const auto& header = before.header;
+    if (header.version != 11 || after.header.version != 11
+        || header.width < 3 || header.height < 3 || header.width > 2049 || header.height > 2049
+        || header.width != after.header.width || header.height != after.header.height
+        || header.mainTileset != after.header.mainTileset || header.offset != after.header.offset
+        || header.cliffTilesets != after.header.cliffTilesets
+        || before.vertices.size() != std::size_t(header.width) * header.height
+        || before.vertices.size() != after.vertices.size() || index >= before.vertices.size()) return false;
+    const auto oldSlot = before.vertices[index].CliffTextureIndex();
+    const auto newSlot = after.vertices[index].CliffTextureIndex();
+    if ((oldSlot == 15) == (newSlot == 15)) return false;
+    const auto concreteSlot = oldSlot == 15 ? newSlot : oldSlot;
+    if (concreteSlot >= 15 || concreteSlot >= header.cliffTilesets.size()) return false;
+    const auto x = index % header.width, y = index / header.width;
+    if (x == 0 || y == 0 || x + 1 >= header.width || y + 1 >= header.height) return false;
+    const auto& sentinel = oldSlot == 15 ? before : after;
+    const auto level = sentinel.vertices[index].CliffLevel();
+    for (auto ny = y - 1; ny <= y + 1; ++ny) for (auto nx = x - 1; nx <= x + 1; ++nx) {
+        const auto at = ny * header.width + nx;
+        // 四个相邻地格全部平等价于其九个角点层级相同；只看轴向四邻会漏掉对角悬崖。
+        if (sentinel.vertices[at].CliffLevel() != level) return false;
+        for (const auto* grid : {&before, &after}) {
+            const auto& vertex = grid->vertices[at];
+            if (vertex.extendedTextureLayout || vertex.textureFlagsExtensionRaw != 0
+                || (vertex.groundHeightRaw & 0xc000) != 0 || vertex.UnknownWaterFlags() != 0
+                || vertex.IsRamp() || vertex.IsBoundary() || vertex.IsMapEdge()
+                || vertex.CliffLevel() > 14 || vertex.CliffVariation() > 2
+                || (vertex.CliffTextureIndex() != 15 && vertex.CliffTextureIndex() >= header.cliffTilesets.size()))
+                return false;
+        }
+    }
+    return true;
+}
+
 Result<std::vector<std::byte>> GenerateTerrainNativePathing(
     const TerrainNativePathingInput& input, std::size_t maximumBytes) {
     return Guard<std::vector<std::byte>>([&] {

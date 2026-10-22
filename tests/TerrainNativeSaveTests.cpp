@@ -102,6 +102,110 @@ struct Fixture {
     }
 };
 
+void SeedUnselectedCliffTerrain(Fixture& fixture) {
+    const auto parsed = Take(ParseMapTerrain(fixture.members[0].data));
+    auto terrain = *parsed.Snapshot();
+    for (auto& vertex : terrain.vertices) {
+        vertex.cliffAndLayerRaw = 0xf2;
+        vertex.waterHeightAndFlagsRaw = 7936;
+    }
+    RefreshTerrainDerived(terrain, 0, 0, 9, 9);
+    fixture.members[0].data = Take(SerializeMapTerrain(terrain));
+    fixture.members.push_back({"TerrainArt/CliffTypes.slk", Text("ID;PWXL;N;E\nB;X1;Y2;D0\n"
+        "C;X1;Y1;K\"cliffID\"\nC;X1;Y2;K\"Cl01\"\nE\n")});
+    for (auto& member : fixture.members) if (member.name == "UI/MiscData.txt")
+        member.data = Text("[Terrain]\nMaxSlope=90\nMinHeight=-256\nMaxHeight=1536\n"
+            "[Water]\nDeepLevelPathing=64\n[CameraMargins]\nLeft=0\nRight=0\nBottom=0\nTop=0\n");
+    fixture.Open("unselected-source.w3x");
+}
+
+void PaintWaterOnUnselectedCliffTerrain(Fixture& fixture, bool deep) {
+    const auto& terrain = *fixture.edits->Terrain();
+    const auto rules = Take(TerrainPathingResources::CaptureWaterBrushRules(*fixture.archive,
+        terrain, terrain, {}, true, 8u * 1024u * 1024u));
+    const TerrainWaterBrush brush{deep ? TerrainWaterBrushKind::Deep : TerrainWaterBrushKind::Shallow,
+        TerrainBrushShape::Square, 1, 0, 17, Take(CaptureTerrainWaterStrokeAnchor(terrain, fixture.point))};
+    const auto prepared = Take(fixture.edits->PrepareTerrainWaterEdit(rules, brush, std::span(&fixture.point, 1), false));
+    Require(prepared.HasChanges() && prepared.WaterResult() && prepared.WaterResult()->requiresPathingRebuild,
+        "actual water brush materializes the flat unselected cliff source");
+    Take(fixture.edits->ApplyPreparedTerrainEdit(prepared));
+    const auto& center = fixture.edits->Terrain()->vertices[4 * 9 + 4];
+    Require(center.HasWater() && center.CliffTextureIndex() == 0 && center.CliffLevel() == (deep ? 0 : 1),
+        "new water changes the real sentinel to an existing cliff slot and lowers the center level");
+}
+
+void UnselectedCliffWaterSavesAndRestoresExactSource() {
+    for (const bool deep : {false, true}) {
+        Fixture fixture(false); SeedUnselectedCliffTerrain(fixture);
+        const auto originalArchive = fixture.archive->SourcePath();
+        const auto originalSha = Take(Sha256File(originalArchive));
+        PaintWaterOnUnselectedCliffTerrain(fixture, deep);
+        const auto finalTerrain = Take(SerializeMapTerrain(*fixture.edits->Terrain()));
+        Require(finalTerrain != fixture.members[0].data, "real brush changes the complete W3E payload");
+        Require(!fixture.edits->VerifyTerrainPathingForSave().Succeeded(),
+            "materialized water never gains permission to preserve the dry draft WPM");
+        fixture.Save(deep ? "sentinel-deep.w3x" : "sentinel-shallow.w3x");
+        const auto finalWpm = Take(fixture.archive->ReadMember("war3map.wpm"));
+        Require(finalWpm != fixture.members[1].data && Take(fixture.archive->ReadMember("war3map.w3e")) == finalTerrain,
+            "normal save publishes actual materialized W3E and regenerated WPM together");
+        for (std::size_t i = 16; i < finalWpm.size(); ++i)
+            Require((finalWpm[i] & std::byte{0x11}) == (fixture.members[1].data[i] & std::byte{0x11}),
+                "sentinel conversion preserves all author-owned pathing bits");
+        Require(fixture.edits->Undo(), "saved water remains one undoable command");
+        fixture.Save("sentinel-restored.w3x");
+        Require(Take(fixture.archive->ReadMember("war3map.w3e")) == fixture.members[0].data
+            && Take(fixture.archive->ReadMember("war3map.wpm")) == fixture.members[1].data,
+            "undo and normal save restore every original W3E byte including slot15 and every original WPM byte");
+        Require(fixture.edits->Redo(), "saved sentinel restoration retains redo");
+        fixture.Save("sentinel-water-again.w3x");
+        Require(Take(fixture.archive->ReadMember("war3map.w3e")) == finalTerrain
+            && Take(fixture.archive->ReadMember("war3map.wpm")) == finalWpm,
+            "redo and save reproduce the exact prior water result without another random stroke");
+        Require(Take(Sha256File(originalArchive)) == originalSha, "water save cycle does not modify the source archive");
+    }
+    Fixture unexplained(false); SeedUnselectedCliffTerrain(unexplained);
+    unexplained.members[1].data[16] ^= std::byte{0x04}; unexplained.Open("unexplained-sentinel.w3x");
+    PaintWaterOnUnselectedCliffTerrain(unexplained, false);
+    const auto before = unexplained.edits->Revision();
+    const auto plan = unexplained.Plan();
+    Require(!plan.SaveGate().Succeeded() && !plan.RebuiltPathing()
+        && std::any_of(plan.SaveGate().diagnostics.begin(), plan.SaveGate().diagnostics.end(), [](const auto& diagnostic) {
+            return diagnostic.code == "TERRAIN_PATHING_SOURCE_UNEXPLAINED" && diagnostic.message.find("(0,0)") != std::string::npos;
+        }), "known sentinel conversion still requires exact independent old G0 versus source WPM agreement");
+    Require(unexplained.edits->Revision() == before && unexplained.edits->IsDirty()
+        && !std::filesystem::exists(unexplained.directory / "candidate.w3x"),
+        "failed source pathing proof does not publish output or consume the edit");
+}
+
+void UnsafeCliffSentinelChangesRemainDraftOnly() {
+    for (unsigned mode = 0; mode < 5; ++mode) {
+        Fixture fixture(false); SeedUnselectedCliffTerrain(fixture);
+        const auto parsed = Take(ParseMapTerrain(fixture.members[0].data));
+        auto before = *parsed.Snapshot();
+        constexpr std::size_t center = 4 * 9 + 4, diagonal = 3 * 9 + 3;
+        if (mode == 0) before.vertices[diagonal].cliffAndLayerRaw = 0xf3;
+        if (mode == 1) before.vertices[center].cliffAndLayerRaw = 0xe2;
+        if (mode == 2) {
+            for (auto& vertex : before.vertices) vertex.cliffAndLayerRaw = 2;
+            before.vertices[center].cliffAndLayerRaw = 1;
+        }
+        if (mode == 4) before.vertices[diagonal].waterHeightAndFlagsRaw |= 0x4000;
+        auto after = before;
+        after.vertices[center].cliffAndLayerRaw = mode == 2 || mode == 3 ? 0xf1 : 2;
+        RefreshTerrainDerived(before, 0, 0, 9, 9); RefreshTerrainDerived(after, 0, 0, 9, 9);
+        fixture.members[0].data = Take(SerializeMapTerrain(before)); fixture.Open("unsafe-sentinel.w3x");
+        Check(fixture.edits->SetTerrainAndPathing(Take(SerializeMapTerrain(after)), fixture.members[1].data));
+        const auto revision = fixture.edits->Revision();
+        const auto plan = fixture.Plan();
+        Require(!plan.SaveGate().Succeeded() && !plan.RebuiltPathing()
+            && std::any_of(plan.SaveGate().diagnostics.begin(), plan.SaveGate().diagnostics.end(), [](const auto& diagnostic) {
+                return diagnostic.code == "MAP_TERRAIN_PATHING_UNVERIFIED";
+            }), "nonflat sentinel, invalid old slot, sentinel-to-sentinel and boundary neighborhoods do not gain native save qualification");
+        Require(fixture.edits->Revision() == revision && fixture.edits->IsDirty(),
+            "rejected sentinel changes remain an intact editable draft");
+    }
+}
+
 void WaterCrossingAndUndoUseActualSavedPathing() {
     Fixture f;
     f.Paint(f.Water());
@@ -316,6 +420,8 @@ void DirectoryRecipeUsesGeneratedWpm() {
 
 int main() {
     try {
+        UnselectedCliffWaterSavesAndRestoresExactSource();
+        UnsafeCliffSentinelChangesRemainDraftOnly();
         WaterCrossingAndUndoUseActualSavedPathing();
         NewHasWaterUsesIndependentG0G1AndPreservesSourceProtection();
         OverlappingSavedIntentIsNotRecoveredBySubtractingBits();
