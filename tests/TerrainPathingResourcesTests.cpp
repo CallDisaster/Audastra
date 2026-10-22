@@ -1,7 +1,10 @@
 #include "War3MapCore/MapData/TerrainPathingResources.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
+#include "War3MapCore/MapData/MapSettings.h"
+#include "War3MapCore/MapData/MapPlacements.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
 
 #include <Windows.h>
@@ -523,6 +526,130 @@ void StoredAndDecodedBudgetsShareTheCallerAllowance() {
         return d.code == "FILE_READ_BUDGET_EXCEEDED";
     }), "all already captured map bytes must be charged before reading or parsing the first game fallback");
 }
+
+MapSettings NativeSettings() {
+    MapSettings settings;
+    settings.formatVersion = 25; settings.custom.emplace(); settings.flags = 0x400;
+    settings.tileset = 'L'; settings.playableWidth = settings.playableHeight = 8;
+    return settings;
+}
+void NativeSources(Fixture& fixture, const MapSettings& settings, const DoodadPlacements& doodads = {}) {
+    fixture.members.push_back({"war3map.w3i", Take(settings.Serialize())});
+    fixture.members.push_back({"war3map.doo", Take(doodads.Serialize())});
+    if (fixture.grid.vertices.front().HasWater()) for (auto& member : fixture.members)
+        if (member.name == "TerrainArt/Water.slk") member.data = Text(
+            "ID;PWXL;N;E\nB;X3;Y2;D0\nC;X1;Y1;K\"waterID\"\nC;X2;K\"height\"\nC;X3;K\"impassable\"\n"
+            "C;X1;Y2;K\"LSha\"\nC;X2;K0\nC;X3;K0\nE\n");
+    const auto camera = Text("[CameraMargins]\nleft=0\nright=0\nbottom=0\ntop=0\n");
+    const auto misc = std::find_if(fixture.members.begin(), fixture.members.end(), [](const auto& member) { return member.name == "UI/MiscData.txt"; });
+    if (misc != fixture.members.end()) misc->data.insert(misc->data.end(), camera.begin(), camera.end());
+    else fixture.members.push_back({"UI/MiscData.txt", camera});
+    if (std::none_of(fixture.members.begin(), fixture.members.end(), [](const auto& member) { return member.name == "UI/WorldEditData.txt"; }))
+        fixture.members.push_back({"UI/WorldEditData.txt", Text("[Other]\nValue=1\n")});
+}
+
+void NativeCaptureBindsFullRulesAndBothTerrainRevisions() {
+    Directory directory; Fixture fixture;
+    NativeSources(fixture, NativeSettings());
+    // 非空Units不写保存selector2；资源捕获不能以Units是否为空代替原版层规则。
+    UnitPlacements units; UnitPlacement unit; unit.rawcode = "hfoo"; unit.scale = {1, 1, 1};
+    units.units.push_back(unit); fixture.members.push_back({"war3mapUnits.doo", Take(units.Serialize())});
+    const auto source = fixture.Write(directory.path / "native.w3x");
+    auto after = fixture.grid; after.vertices[40].variationRaw = 1;
+    const auto captured = Take(TerrainPathingResources::CaptureNative(source, fixture.grid, after, {}, 1024 * 1024));
+    const auto beforeGrid = Take(captured.GenerateNative(fixture.grid, 1024 * 1024));
+    Require(beforeGrid.size() == 1024 && std::all_of(beforeGrid.begin(), beforeGrid.end(), [](auto v) { return v == std::byte{0x40}; }),
+        "unchanged full dry ground uses actual source properties, not random source WPM");
+    Require(Take(captured.GenerateNative(after, 1024 * 1024)) == beforeGrid, "both captured W3E revisions are permitted");
+    auto unrelated = after; unrelated.vertices[41].variationRaw = 2;
+    Require(!captured.GenerateNative(unrelated, 1024 * 1024).Succeeded(), "arbitrary third terrain revision must refuse");
+    Require(!captured.GenerateNative(fixture.grid, 100).Succeeded(), "native generation cannot exceed caller budget");
+    const std::vector<MemberReplacement> replacements{{"war3map.w3e", Take(SerializeMapTerrain(after))}};
+    Check(captured.VerifyFrozenOutput(replacements, {}));
+    Require(!captured.VerifyFrozenOutput({}, {}).Succeeded(), "changed captured W3E cannot be omitted from output");
+    Require(!captured.VerifyFrozenOutput(replacements, std::vector<std::string>{"war3map.w3i"}).Succeeded(), "native W3I source cannot disappear");
+    const auto saved = Take(MapArchiveSession::Open(Take(source.SaveCandidate(directory.path / "native-saved.w3x", replacements)).path));
+    Check(captured.VerifyReadback(saved, 1024 * 1024));
+    Require(!captured.VerifyReadback(saved, captured.SourceBytes() - 1).Succeeded(), "native metadata consumes readback budget");
+    const auto preserveOnly = Take(TerrainPathingResources::Capture(source, fixture.grid, fixture.grid, {}, 1024 * 1024));
+    Require(!preserveOnly.GenerateNative(fixture.grid, 1024 * 1024).Succeeded(), "equivalence capture does not grant full generation");
+    auto wrongSource = fixture.grid; wrongSource.vertices[0].variationRaw = 1;
+    const auto mismatch = TerrainPathingResources::CaptureNative(source, wrongSource, after, {}, 1024 * 1024);
+    Require(!mismatch.Succeeded() && HasCode(mismatch.diagnostics, "TERRAIN_NATIVE_SOURCE_IDENTITY"), "before must be actual source W3E");
+}
+
+void NativeWaterAndFractionalWorldBoundsUseActualSources() {
+    Directory directory; Fixture wet(true);
+    NativeSources(wet, NativeSettings());
+    const auto wetSource = wet.Write(directory.path / "wet.w3x");
+    const auto water = Take(TerrainPathingResources::CaptureNative(wetSource, wet.grid, wet.grid, {}, 1024 * 1024));
+    Require(Take(water.GenerateNative(wet.grid, 1024 * 1024)).front() == std::byte{0x0a}, "actual deep water blocks walk/build only");
+    for (auto& member : wet.members) if (member.name == "TerrainArt/Water.slk") {
+        auto text = std::string(reinterpret_cast<const char*>(member.data.data()), member.data.size());
+        const auto at = text.find("C;X3;K0"); text.replace(at, 7, "C;X3;K1"); member.data = Text(text);
+    }
+    const auto impassableSource = wet.Write(directory.path / "impassable.w3x");
+    const auto impassable = Take(TerrainPathingResources::CaptureNative(impassableSource, wet.grid, wet.grid, {}, 1024 * 1024));
+    Require(Take(impassable.GenerateNative(wet.grid, 1024 * 1024)).front() == std::byte{0xca}, "impassable must be read from Water.slk");
+
+    Fixture dry; auto settings = NativeSettings(); settings.flags = 0;
+    settings.cameraBounds = {128.25f, 0, 1024, 1024, 0, 0, 0, 0};
+    NativeSources(dry, settings);
+    const auto source = dry.Write(directory.path / "fractional.w3x");
+    const auto captured = Take(TerrainPathingResources::CaptureNative(source, dry.grid, dry.grid, {}, 1024 * 1024));
+    const auto generated = Take(captured.GenerateNative(dry.grid, 1024 * 1024));
+    Require(generated[4] == std::byte{0xce} && generated[8] == std::byte{0x40}, "128.25 world bound cannot become tile-rounded 128");
+    Require(generated.back() == std::byte{0x40}, "right/top equality stays inside playable bounds");
+    dry.members.back().data = Text("[CameraMargins]\nleft=1\n");
+    const auto conflict = dry.Write(directory.path / "camera-conflict.w3x");
+    Require(!TerrainPathingResources::CaptureNative(conflict, dry.grid, dry.grid, {}, 1024 * 1024).Succeeded(), "conflicting camera definitions cannot hide native first value");
+}
+
+void NativeObjectZeroDomainRequiresRealClassificationAndWalkability() {
+    Directory directory;
+    for (const auto mode : {0, 1, 2, 3}) {
+        Fixture fixture; DoodadPlacements doodads; DoodadPlacement record;
+        record.rawcode = "Dtr1"; record.scale = {1, 1, 1}; doodads.doodads.push_back(record);
+        NativeSources(fixture, NativeSettings(), doodads);
+        fixture.members.push_back({"Units/DestructableData.slk", Text("ID;PWXL;N;E\nB;X2;Y2;D0\n"
+            "C;X1;Y1;K\"DestructableID\"\nC;X2;K\"walkable\"\nC;X1;Y2;K\""
+            + std::string(mode == 2 ? "Dtr2" : "Dtr1") + "\"\nC;X2;K" + (mode == 1 ? "1" : "0") + "\nE\n")});
+        if (mode == 3) fixture.members.push_back({"war3map.w3b", Text("unparsed-overrides")});
+        const auto source = fixture.Write(directory.path / ("object-" + std::to_string(mode) + ".w3x"));
+        auto captured = TerrainPathingResources::CaptureNative(source, fixture.grid, fixture.grid, {}, 1024 * 1024);
+        if (mode != 0) {
+            Require(!captured.Succeeded(), "walkable, unclassified or overridden DOO cannot be called zero static contribution");
+            continue;
+        }
+        Require(captured.Succeeded(), "actual nonwalkable DestructableData row proves zero selector2");
+        Require(Take(captured.value->GenerateNative(fixture.grid, 1024 * 1024)).front() == std::byte{0x40}, "nonwalkable destructable ordinary layer4 does not enter WPM");
+        doodads.doodads.front().position[2] = 20;
+        Check(captured.value->VerifyFrozenOutput(std::vector<MemberReplacement>{{"war3map.doo", Take(doodads.Serialize())}}, {}));
+        doodads.doodads.front().position[0] = 20;
+        Require(!captured.value->VerifyFrozenOutput(std::vector<MemberReplacement>{{"war3map.doo", Take(doodads.Serialize())}}, {}).Succeeded(), "XY cannot hide behind zero-domain capture");
+        Require(!captured.value->VerifyFrozenOutput(std::vector<MemberReplacement>{{"war3map.w3b", Text("new overrides")}}, {}).Succeeded(), "new w3b cannot replace proven absence");
+    }
+    Fixture fixture; DoodadPlacements special; special.specialDoodads.push_back({"Dtr1", 0, {1, 1}});
+    NativeSources(fixture, NativeSettings(), special);
+    const auto source = fixture.Write(directory.path / "special.w3x");
+    const auto result = TerrainPathingResources::CaptureNative(source, fixture.grid, fixture.grid, {}, 1024 * 1024);
+    Require(!result.Succeeded() && HasCode(result.diagnostics, "TERRAIN_NATIVE_SPECIAL_UNSUPPORTED"), "special TerrainModel cannot be silently ignored");
+}
+
+void NativeDirectoryCaptureUsesTheSameFrozenResources() {
+    Directory directory; Fixture fixture; NativeSources(fixture, NativeSettings());
+    const auto root = directory.path / "map"; Require(std::filesystem::create_directory(root), "native map directory");
+    for (const auto& member : fixture.members) {
+        const auto path = root / member.name;
+        std::filesystem::create_directories(path.parent_path()); Check(IO::WriteFileBytes(path, member.data));
+    }
+    const auto workspace = Take(DirectoryWorkspace::Open(root));
+    const auto captured = Take(TerrainPathingResources::CaptureNative(workspace.Snapshot(), fixture.grid, fixture.grid, {}, 1024 * 1024));
+    Require(Take(captured.GenerateNative(fixture.grid, 1024 * 1024)).front() == std::byte{0x40}, "directory uses same actual ground rules");
+    Check(captured.VerifyReadback(workspace.Snapshot(), 1024 * 1024));
+    Check(IO::WriteFileBytes(root / "TerrainArt/Terrain.slk", GroundTable("0")));
+    Require(!captured.VerifyReadback(workspace.Snapshot(), 1024 * 1024).Succeeded(), "directory source drift cannot reuse old identity");
+}
 } // namespace
 
 void CliffRefinementRequiresTheSameBlockingOutline() {
@@ -563,6 +690,10 @@ int main() {
         RestrictionAndTerrainChangesUseIndependentSaveChecks();
         FinalResourcesAndGameWinnersAreRechecked();
         StoredAndDecodedBudgetsShareTheCallerAllowance();
+        NativeCaptureBindsFullRulesAndBothTerrainRevisions();
+        NativeWaterAndFractionalWorldBoundsUseActualSources();
+        NativeObjectZeroDomainRequiresRealClassificationAndWalkability();
+        NativeDirectoryCaptureUsesTheSameFrozenResources();
         CliffRefinementRequiresTheSameBlockingOutline();
         std::cout << "Terrain pathing resources tests passed\n";
         return 0;
