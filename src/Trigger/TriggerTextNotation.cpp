@@ -2,12 +2,14 @@
 
 #include "War3MapCore/Trigger/TriggerBlocks.h"
 #include "War3MapCore/Trigger/TriggerDataText.h"
+#include "War3MapCore/Trigger/TriggerDirectory.h"
 #include "War3MapCore/Trigger/TriggerTypes.h"
 
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <map>
+#include <optional>
 
 namespace War3Map::Trigger {
 namespace {
@@ -478,14 +480,44 @@ private:
             argument.scalar = {1, variable->name.text};
         } else if (name.starts_with("gg_")) {
             argument.scalar = {1, name};
+        } else if (const auto symbol = NamedObjectSymbol(name, declaredType, expression.at)) {
+            if (!symbol->empty()) argument.scalar = {1, *symbol};
         } else if (types_.LiteralKind(declaredType) == TriggerTypeSystem::Literal::Script) {
             argument.scalar = {3, name};
         } else if (name.starts_with("udg_")) {
             Error("TRIGGER_TEXT_UNKNOWN_NAME", expression.at, "没有变量 " + name + "。");
         } else {
-            Error("TRIGGER_TEXT_UNKNOWN_NAME", expression.at, name + " 不是预设、变量或预放对象；文本请加引号，函数请写 " + name + "()。");
+            Error("TRIGGER_TEXT_UNKNOWN_NAME", expression.at, name + " 不是预设、变量或预放对象；文本请加引号，函数请写 " + name + "()。"
+                + PresetHint(declaredType));
         }
         return argument;
+    }
+
+    std::string PresetHint(const std::string& type) const {
+        const auto presets = PresetsOfType(catalog_, type);
+        if (presets.empty()) return {};
+        std::string hint = "此处类型 " + type + " 的预设有：";
+        for (std::size_t i = 0; i < presets.size() && i < 8; ++i) hint += (i ? "、" : "") + presets[i].name;
+        return hint + (presets.size() > 8 ? " 等 " + std::to_string(presets.size()) + " 个。" : "。");
+    }
+    // 触发器、区域、镜头、声音参数可直接写显示名，按脚本生成器的命名规则换成 gg_ 全局；
+    // 区域/镜头/声音是否真实存在由图编辑的预放对象校验决定。nullopt：类型不适用；空串：已报错。
+    std::optional<std::string> NamedObjectSymbol(const std::string& name, const std::string& type, const Position& at) {
+        if (type == "trigger") {
+            std::vector<const TriggerRecord*> found;
+            for (const auto& trigger : document_.triggers)
+                if (trigger.type == 0 && trigger.name.text == name) found.push_back(&trigger);
+            if (found.size() != 1) {
+                Error("TRIGGER_TEXT_UNKNOWN_NAME", at, found.empty() ? "没有名为“" + name + "”的触发器。"
+                    : "有多个名为“" + name + "”的触发器，请写 gg_trg_ 生成名。");
+                return std::string{};
+            }
+            return "gg_trg_" + TriggerDirectoryEditor::ScriptName(name);
+        }
+        if (type == "rect") return "gg_rct_" + TriggerDirectoryEditor::ScriptName(name);
+        if (type == "camerasetup") return "gg_cam_" + TriggerDirectoryEditor::ScriptName(name);
+        if (type == "sound") return "gg_snd_" + TriggerDirectoryEditor::ScriptName(name);
+        return std::nullopt;
     }
 
     const TriggerDocument& document_;
@@ -606,6 +638,10 @@ private:
             if (!Name(value)) return false;
             const bool plain = !value.starts_with("udg_") && !value.starts_with("gg_") && std::any_of(document_.variables.begin(),
                 document_.variables.end(), [&](const VariableRecord& row) { return row.name.text == value; });
+            if (const auto name = TriggerDisplayName(value, expected); !argument.indexArgument && name) {
+                out += NameText(*name);
+                return true;
+            }
             out += NameText(plain ? "udg_" + value : value);
             if (argument.indexArgument) {
                 if (*argument.indexArgument >= document_.argumentNodes.size()) return Fail("数组下标索引无效。");
@@ -630,6 +666,26 @@ private:
         default:
             return Fail("未知参数来源 " + std::to_string(argument.type) + "，值“" + value + "”");
         }
+    }
+    // 触发器参数导出为触发器显示名（比 gg_trg_ 生成名可读）；只在解析能唯一换回同一生成名时这样写。
+    std::optional<std::string> TriggerDisplayName(const std::string& symbol, const std::string& expected) const {
+        if (expected != "trigger" || !symbol.starts_with("gg_trg_")) return std::nullopt;
+        const TriggerRecord* found = nullptr;
+        for (const auto& trigger : document_.triggers) {
+            if (trigger.type != 0 || "gg_trg_" + TriggerDirectoryEditor::ScriptName(trigger.name.text) != symbol) continue;
+            if (found) return std::nullopt;
+            found = &trigger;
+        }
+        if (!found) return std::nullopt;
+        const auto& name = found->name.text;
+        if (name.empty() || name.find_first_of("`\r\n") != std::string::npos || name == "true" || name == "false"
+            || name.starts_with("udg_") || name.starts_with("gg_") || FindPreset(catalog_, name).has_value()
+            || std::count_if(document_.triggers.begin(), document_.triggers.end(),
+                   [&](const TriggerRecord& trigger) { return trigger.type == 0 && trigger.name.text == name; }) != 1
+            || std::any_of(document_.variables.begin(), document_.variables.end(),
+                   [&](const VariableRecord& row) { return row.name.text == name; }))
+            return std::nullopt;
+        return name;
     }
     std::string Literal(const std::string& value, const std::string& expected) const {
         using Kind = TriggerTypeSystem::Literal;

@@ -872,6 +872,30 @@ void TestMapDataPageBinding() {
     Expect(featureText.value("ok").toBool()
         && featureText.value("text").toString() == "触发器 Feature Trigger:\n    actions:\n        StoreInteger(7)\n",
         "feature_text did not export the written feature");
+    // after 锚点：新触发器插在指定触发器之后；轻量 move 只凭 before 锚点。
+    const auto firstTrigger = feature.value("created").toObject().value("feature/trigger/Feature Trigger").toObject();
+    const auto anchored = call("edit_trigger_graph", argumentRequest(feature.value("binding").toObject(),
+        {QJsonObject{{"op", "apply_feature_text"}, {"category", "MCP Feature"}, {"client_key", "second"}, {"after", firstTrigger},
+            {"text", "触发器 Second:\n    StoreInteger(8)\n"}}}));
+    Expect(anchored.value("ok").toBool(), "apply_feature_text with after failed through MCP JSON");
+    const auto secondTrigger = anchored.value("created").toObject().value("second/trigger/Second").toObject();
+    const auto placed = call("edit_trigger_graph", argumentRequest(anchored.value("binding").toObject(),
+        {QJsonObject{{"op", "move"}, {"target", secondTrigger}, {"before", firstTrigger}}}));
+    Expect(placed.value("ok").toBool(), "light move failed through MCP JSON");
+    const auto movedText = call("query_trigger_graph", {{"table", "feature_text"}, {"category_id", featureCategory.value("id")}})
+        .value("text").toString();
+    Expect(movedText.indexOf("触发器 Second:") >= 0 && movedText.indexOf("触发器 Second:") < movedText.indexOf("触发器 Feature Trigger:"),
+        "light move did not put Second before the anchor");
+    code(call("edit_trigger_graph", argumentRequest(placed.value("binding").toObject(),
+        {QJsonObject{{"op", "move"}, {"target", secondTrigger}, {"before", firstTrigger}, {"after", firstTrigger}}})), "MCP_TRIGGER_GRAPH_REQUEST_INVALID");
+    // 真实用法原句：刚写入的 StoreInteger(7) 能按函数名找回。
+    const auto examples = call("query_trigger_graph", {{"table", "function_examples"}, {"functions", QJsonArray{"StoreInteger"}}});
+    const auto storeExamples = examples.value("examples").toObject().value("StoreInteger").toArray();
+    Expect(examples.value("ok").toBool() && std::any_of(storeExamples.begin(), storeExamples.end(),
+        [](const QJsonValue& row) { return row.toObject().value("text").toString() == "StoreInteger(7)"; }),
+        "function_examples did not return the real usage line");
+    const auto presets = call("query_trigger_graph", {{"table", "presets"}, {"type", "no_such_type"}});
+    Expect(presets.value("ok").toBool() && presets.value("total").toString() == "0", "presets table did not filter by type");
     Expect(server.Workspace()->Rollback(*argumentEdit.value, revision).Succeeded(), "argument replacement rollback failed");
     server.SetWorkspace(source, ui);
     code(call("query_map_data_page", args), "MAP_DATA_QUERY_STALE");

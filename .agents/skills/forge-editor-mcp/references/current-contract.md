@@ -41,7 +41,7 @@
 | 导入元数据 E1 | imports_list/get | 区分原IMP记录、物理成员与GUI待导入队列，绑定source/inventory及当前修订的cursor；默认64/最多128行、每页最多4096行匹配检查。保留原flags/path hex/歧义与覆盖未知；pending只reported_bytes，不读磁盘、不造SHA。只读，不提供正文。新增/删除走编辑器端口的 imports_add / imports_remove（进资源撤销栈；删除前按当前内容查路径，找到拒绝 IMPORTS_REMOVE_REFERENCED，allow_referenced=true 才删，回执 mentioned_in / unread_sources），独立服务的 archive_members_add / archive_members_remove，或 CLI archive-member-add / archive-member-remove |
 | 单位查询 C3 | 原 entities_query | 可选精确type_id/player组合筛选，绑定同身份/成员SHA/过滤的原索引cursor；每页128行、4096原记录检查，大表总数未知；不新增工具或改变保存 |
 | 普通单位坐标 C4 | 原 entities_set_fields | Ready classic8/11 non-sloc行绝对native x/y/z；有限±1000000先double校验，原Undo/fieldEdits保存；sloc/Skin/Partial拒绝，三轴实图原保存回读通过 |
-| 自然 T 图 | query_trigger_graph、edit_trigger_graph | categories/variables/triggers/ecas/arguments/map_objects/trigger_text/feature_text；真实 ID、类型和 guard；insert_text / replace_trigger_text / patch_trigger_text 紧凑写法，apply_feature_text 功能写法；编辑器内 dry_run 预览差异 |
+| 自然 T 图 | query_trigger_graph、edit_trigger_graph | categories/variables/triggers/ecas/arguments/map_objects/trigger_text/feature_text/presets/function_examples；真实 ID、类型和 guard；insert_text / replace_trigger_text / patch_trigger_text 紧凑写法，apply_feature_text 功能写法；编辑器内 dry_run 预览差异 |
 | T 整图检查 | editor_check_trigger_graph（CLI trigger-check） | 同保存链生成整图并检查；可带批次只在私有副本上检查；诊断带 t（紧凑 T 行列） |
 | 简单 T 编辑 | create_trigger、append_root_eca、append_argument_call、set_scalar_argument | 老式窄操作不代表完整图操作资格；直接值支持整数/实数/布尔/文本/自定义代码/物编对象编号（`A04W`），句柄类型须用变量或函数 |
 | 归档保存 | save_map_edit_candidate | 完整来源/工具/UI/overlay 输入，同一地图保存服务；保存后新身份 |
@@ -70,10 +70,10 @@ C2使用相同查询定位；旋转传数值 `facing_radians`，复制传同类1
 - `query_trigger_graph` 可分页，`arguments` 定点查询最多16个 ID，并可请求参数原位替换 guard；参数及限制以 schema 为准。
 - `edit_trigger_graph` 在目录单写事务中完成核心支持的创建/字段/精确改名/移动/删除/类型子树及受 guard 的替换。CallerAsserted 的 opaque code 审计仅是调用方声明，不是服务端自动证明“代码无引用”。
 - 引用一律用查询结果各行 `ref` 里的 `{kind, id}`。分类行另有 `category_id`（WTG 分类号），不能当引用编号；误用时报 `TRIGGER_GRAPH_RECORD_MISSING` 并给出正确的 `ref.id`。
-- `move` 的 `from`/`to` 写 `{"kind":"category_triggers","owner":<分类行 ref>,"ordered_children":[该分类当前全部触发器 ref，按移动前顺序]}`；同分类内调整顺序时两者相同。`before` 是要排到其前面的触发器 ref，省略则放到末尾。例如把末尾的 A 移到 `.7` 之后：`before` 写原本紧跟 `.7` 的那个触发器。
+- `move` 的 `from`/`to` 写 `{"kind":"category_triggers","owner":<分类行 ref>,"ordered_children":[该分类当前全部触发器 ref，按移动前顺序]}`；同分类内调整顺序时两者相同。`before` 是要排到其前面的触发器 ref，省略则放到末尾。例如把末尾的 A 移到 `.7` 之后：`before` 写原本紧跟 `.7` 的那个触发器。只调位置时可省略 `from`/`to`，写 `{"op":"move","target":A,"after":.7}`（或 `before`）：触发器/类别放到锚点旁，触发器可借此换类别。
 - 函数槽参数（`eventcall` / `boolexpr`、`boolcall` / `code`）的 `call` 分别写 `kind` 为 `event` / `condition` / `action`，例如 `AddTriggerEvent` 第二个参数填 `TriggerRegisterUnitEvent`（event）；也可填返回该类型的普通 call。其余参数只能是 call。
 - 整段写入优先用紧凑 T 写法：`insert_text`（插到触发器根或块分支）、`replace_trigger_text`（整体替换触发器内容），读取用 `trigger_text` 表加 `trigger_id` 导出同一写法；规则见随包 AGENT_GUIDE 的“紧凑 T 写法”。仍是普通 T 树，走同一类型检查、撤销与保存。
-- 一个功能（变量 + 多个触发器）用 `apply_feature_text` 一次写进一个类别，读取用 `feature_text` 表；只改几行用 `patch_trigger_text`（导出行号 + 原文 guard）；编辑器内 `dry_run: true` 只预览 `trigger_diffs`，不发布。
+- 一个功能（变量 + 多个触发器）用 `apply_feature_text` 一次写进一个类别（`after` 指定新触发器插在哪个触发器之后），读取用 `feature_text` 表；触发器/区域/镜头/声音参数可写显示名；预设查 `presets` 表，现成写法查 `function_examples` 表；只改几行用 `patch_trigger_text`（导出行号 + 原文 guard）；编辑器内 `dry_run: true` 只预览 `trigger_diffs`，不发布。
 - 写入前后用 `editor_check_trigger_graph` 做整图检查（`wait_ms` 直接等结果）；带同一批次时只在私有副本上检查。整图来源不完整报 `TRIGGER_CHECK_CONTEXT_INCOMPLETE`，不算通过。
 - 大批重构分批查询、编辑和保存。保存从冻结输入构建脚本和归档；候选生成、独立重开及新图查询各自取得新身份，不在已失效 overlay 上继续使用旧 ID。
 - 编码、include、工具身份、未知语言 API 和类型门禁仍由共用保存服务检查；来源变化或失败不回落到旁边另一套安装。

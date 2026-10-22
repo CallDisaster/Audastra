@@ -1284,7 +1284,8 @@ private:
         for (auto it = graphQuery.begin(); it != graphQuery.end(); ++it) query.insert(it.key(), it.value());
         AddTool("editor_query_trigger_graph",
             "查询作者当前可见的触发器（T）结构；ecas 表可用 functions（精确函数名）或 ui_layer（函数库层，如 WarVK）筛选；"
-            "trigger_text 表配 trigger_id 把整个触发器导出为紧凑 T 写法；feature_text 表配 category_id 把整个类别导出为功能写法", Mcp::ToolPermission::Query,
+            "trigger_text 表配 trigger_id 把整个触发器导出为紧凑 T 写法；feature_text 表配 category_id 把整个类别导出为功能写法；"
+            "presets 表（可配 type）列预设；function_examples 表配 functions 给出本图里的真实用法原句", Mcp::ToolPermission::Query,
             Schema(query, {"project_identity", "expected_revision", "table"}), [this](const QJsonObject& arguments) { return Query(arguments); });
         auto edit = Mcp::GraphOperationSchema();
         auto properties = edit.value("properties").toObject();

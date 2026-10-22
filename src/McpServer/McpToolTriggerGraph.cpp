@@ -1,6 +1,7 @@
 #include "McpToolInternal.h"
 #include "McpTriggerGraphJson.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
+#include "War3MapCore/Trigger/TriggerDataText.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
 #include "War3MapCore/Trigger/TriggerFeatureText.h"
 #include "War3MapCore/Trigger/TriggerTextNotation.h"
@@ -334,7 +335,16 @@ public:
                 if (object.contains("code_audits")) for (const auto& audit : Array(object, "code_audits")) rename.codeAudits.push_back(Audit(audit));
                 batch.operations.emplace_back(std::move(rename));
             } else if (op == "move") {
-                const auto object = Object(value, {"op", "target", "from", "to"}, {"before"});
+                const auto object = Object(value, {"op", "target"}, {"from", "to", "before", "after"});
+                if (!object.contains("from") && !object.contains("to")) {
+                    // 轻量移动：只给 before 或 after 之一，父列表取自该锚点。
+                    if (object.contains("before") == object.contains("after")) throw GraphJsonError("轻量 move 须恰给 before 或 after 之一。");
+                    const auto after = object.contains("after");
+                    batch.operations.emplace_back(GraphPlace{Ref(object.value("target")), Ref(object.value(after ? "after" : "before")), after});
+                    continue;
+                }
+                if (!object.contains("from") || !object.contains("to") || object.contains("after"))
+                    throw GraphJsonError("完整 move 须同时给 from 与 to，并只用 before 定位；或省略 from/to 用 before/after 轻量移动。");
                 GraphMove move; move.target = Ref(object.value("target")); move.from = Parent(object.value("from")); move.to = Parent(object.value("to"));
                 if (object.contains("before")) move.before = Ref(object.value("before"));
                 batch.operations.emplace_back(std::move(move));
@@ -361,9 +371,11 @@ public:
                 batch.operations.emplace_back(GraphPatchTriggerText{Ref(object.value("trigger")), static_cast<std::size_t>(from),
                     static_cast<std::size_t>(to), String(object, "expected"), String(object, "text")});
             } else if (op == "apply_feature_text") {
-                const auto object = Object(value, {"op", "category", "text"}, {"client_key"});
-                batch.operations.emplace_back(GraphApplyFeatureText{String(object, "category"), String(object, "text"),
-                    object.contains("client_key") ? String(object, "client_key") : std::string{}});
+                const auto object = Object(value, {"op", "category", "text"}, {"client_key", "after"});
+                GraphApplyFeatureText feature{String(object, "category"), String(object, "text"),
+                    object.contains("client_key") ? String(object, "client_key") : std::string{}, std::nullopt};
+                if (object.contains("after")) feature.after = Ref(object.value("after"));
+                batch.operations.emplace_back(std::move(feature));
             } else if (op == "replace_argument") {
                 const auto object = Object(value, {"op", "target", "expected", "value"});
                 GraphReplaceArgument replace;
@@ -401,7 +413,7 @@ QJsonValue OptionalIndex(const TriggerDocument& document, const std::optional<st
 QJsonObject QueryDocumentImpl(const TriggerDocument& document, const UiCatalog& catalog,
     const MapObjectReferenceSnapshot* mapObjects, const QJsonObject& request, const GraphNameResolver& names = {}) {
     Object(request, {"table"}, {"start", "limit", "schema_version", "argument_ids", "variable_ids", "include_replacement_guard",
-        "functions", "ui_layer", "trigger_id", "category_id"});
+        "functions", "ui_layer", "trigger_id", "category_id", "type"});
     if (request.contains("schema_version") && Integer(request, "schema_version") != 1) throw GraphJsonError("未知图 schema_version。");
     const auto table = String(request, "table");
     if (table == "trigger_text") {
@@ -433,6 +445,65 @@ QJsonObject QueryDocumentImpl(const TriggerDocument& document, const UiCatalog& 
             {"category", RefJson(GraphRecordKind::Category, categoryRef)}, {"name", QString::fromStdString(category->name.text)},
             {"text", QString::fromStdString(*text.value)}};
     }
+    if (table == "presets") {
+        // 函数库预设（固定选项），可按参数类型筛选；写紧凑 T 时直接写预设名。
+        Object(request, {"table"}, {"schema_version", "type", "start", "limit"});
+        const auto type = request.contains("type") ? String(request, "type") : std::string{};
+        const auto presets = PresetsOfType(catalog, type);
+        const auto start = request.contains("start") ? static_cast<std::size_t>(Integer(request, "start")) : 0U;
+        const auto limit = request.contains("limit") ? static_cast<std::size_t>(Integer(request, "limit")) : 64U;
+        QJsonArray rows;
+        for (std::size_t i = start; i < presets.size() && i < start + limit; ++i)
+            rows.append(QJsonObject{{"name", QString::fromStdString(presets[i].name)}, {"type", QString::fromStdString(presets[i].type)},
+                {"display", QString::fromStdString(presets[i].display)}, {"script", QString::fromStdString(presets[i].script)}});
+        return {{"ok", true}, {"schema_version", 1}, {"table", "presets"}, {"type", QString::fromStdString(type)},
+            {"total", QString::number(presets.size())}, {"eof", start + limit >= presets.size()}, {"rows", rows}};
+    }
+    if (table == "function_examples") {
+        // 函数在本图里的真实用法：所在触发器与该处的紧凑 T 原句，便于照着写参数与预设。
+        Object(request, {"table", "functions"}, {"schema_version", "limit"});
+        const auto perFunction = request.contains("limit") ? std::min<std::size_t>(static_cast<std::size_t>(Integer(request, "limit")), 16U) : 4U;
+        std::set<std::string> wanted;
+        for (const auto& value : request.value("functions").toArray()) wanted.insert(value.toString().toStdString());
+        std::map<StableId, std::pair<std::string, std::vector<TriggerTextAnchor>>> rendered;
+        std::map<std::string, QJsonArray> examples;
+        std::size_t renders = 0, bytes = 0;
+        bool truncated = false;
+        for (const auto& eca : document.ecaNodes) {
+            if (!wanted.contains(eca.name.text) || examples[eca.name.text].size() >= static_cast<qsizetype>(perFunction)) continue;
+            auto found = rendered.find(eca.sourceTriggerId);
+            if (found == rendered.end()) {
+                if (renders >= 64 || bytes >= kResponseBytes / 2) { truncated = true; continue; }
+                ++renders;
+                std::vector<TriggerTextAnchor> anchors;
+                auto text = RenderTriggerText(document, catalog, eca.sourceTriggerId, kResponseBytes / 4, &anchors);
+                found = rendered.emplace(eca.sourceTriggerId, std::make_pair(text.Succeeded() && text.value ? std::move(*text.value)
+                    : std::string{}, std::move(anchors))).first;
+            }
+            const auto& [text, anchors] = found->second;
+            const auto anchor = std::find_if(anchors.begin(), anchors.end(), [&](const auto& row) { return row.ecaId == eca.id; });
+            if (anchor == anchors.end()) continue;
+            std::size_t begin = 0;
+            for (std::size_t line = 1; line < anchor->line && begin != std::string::npos; ++line) {
+                begin = text.find('\n', begin);
+                if (begin != std::string::npos) ++begin;
+            }
+            if (begin == std::string::npos) continue;
+            auto line = text.substr(begin, text.find('\n', begin) - begin);
+            line.erase(0, line.find_first_not_of(' '));
+            if (line.size() > 2048) line = line.substr(0, 2048) + "…";
+            bytes += line.size();
+            const auto trigger = std::find_if(document.triggers.begin(), document.triggers.end(),
+                [&](const auto& row) { return row.id == eca.sourceTriggerId; });
+            examples[eca.name.text].append(QJsonObject{{"trigger", RefJson(GraphRecordKind::Trigger, eca.sourceTriggerId)},
+                {"trigger_name", trigger == document.triggers.end() ? QString{} : QString::fromStdString(trigger->name.text)},
+                {"line", static_cast<qint64>(anchor->line)}, {"text", QString::fromStdString(line)}});
+        }
+        QJsonObject byFunction;
+        for (const auto& name : wanted) byFunction.insert(QString::fromStdString(name), examples[name]);
+        return {{"ok", true}, {"schema_version", 1}, {"table", "function_examples"}, {"examples", byFunction}, {"truncated", truncated}};
+    }
+    if (request.contains("type")) throw GraphJsonError("type 只适用于 presets 表。");
     if (request.contains("trigger_id")) throw GraphJsonError("trigger_id 只适用于 trigger_text 表。");
     if (request.contains("category_id")) throw GraphJsonError("category_id 只适用于 feature_text 表。");
     const bool exactArguments = request.contains("argument_ids"), exactVariables = request.contains("variable_ids");
@@ -716,14 +787,15 @@ QJsonObject GraphSchema() {
         {"op", "target", "field", "expected", "value"}));
     variants.append(Shape({{"op", op("rename")}, {"target", ref}, {"expected_name", raw}, {"name", string}, {"code_audits", ArraySchema(audit)}},
         {"op", "target", "expected_name", "name"}));
-    variants.append(Shape({{"op", op("move")}, {"target", ref}, {"from", parent}, {"to", parent}, {"before", ref}}, {"op", "target", "from", "to"}));
+    // move：from+to(+before) 为带完整顺序 guard 的移动；省略 from/to 时只给 before 或 after 之一做轻量移动（触发器/类别）。
+    variants.append(Shape({{"op", op("move")}, {"target", ref}, {"from", parent}, {"to", parent}, {"before", ref}, {"after", ref}}, {"op", "target"}));
     variants.append(Shape({{"op", op("remove")}, {"target", ref}, {"expected_name", string}, {"parent", parent}}, {"op", "target", "expected_name", "parent"}));
     variants.append(Shape({{"op", op("insert_subtree")}, {"parent", parent}, {"root", ecaRef}, {"before", ref}}, {"op", "parent", "root"}));
     variants.append(Shape({{"op", op("replace_argument")}, {"target", ref}, {"expected", argumentGuard}, {"value", argumentRef}},
         {"op", "target", "expected", "value"}));
     variants.append(Shape({{"op", op("insert_text")}, {"parent", parent}, {"text", string}, {"before", ref}}, {"op", "parent", "text"}));
     variants.append(Shape({{"op", op("replace_trigger_text")}, {"trigger", ref}, {"text", string}}, {"op", "trigger", "text"}));
-    variants.append(Shape({{"op", op("apply_feature_text")}, {"category", string}, {"text", string}, {"client_key", string}},
+    variants.append(Shape({{"op", op("apply_feature_text")}, {"category", string}, {"text", string}, {"client_key", string}, {"after", ref}},
         {"op", "category", "text"}));
     const QJsonObject line{{"type", "integer"}, {"minimum", 0}};
     variants.append(Shape({{"op", op("patch_trigger_text")}, {"trigger", ref}, {"from_line", line}, {"to_line", line},
@@ -816,12 +888,13 @@ QJsonObject GraphQueryProperties() {
     const auto id = QJsonObject{{"type", "string"}, {"pattern", "^[1-9][0-9]*$"}};
     return {{"schema_version", QJsonObject{{"type", "integer"}, {"enum", QJsonArray{1}}}},
         {"table", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"categories", "variables", "triggers", "ecas", "arguments",
-            "map_objects", "trigger_text", "feature_text"}}}},
+            "map_objects", "trigger_text", "feature_text", "presets", "function_examples"}}}},
         {"start", QJsonObject{{"type", "integer"}, {"minimum", 0}}}, {"limit", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 128}}},
         {"argument_ids", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 16}, {"uniqueItems", true}, {"items", id}}},
         {"variable_ids", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 16}, {"uniqueItems", true}, {"items", id}}},
         {"include_replacement_guard", QJsonObject{{"type", "boolean"}}}, {"functions", EcaFunctionFilterSchema()},
-        {"ui_layer", QJsonObject{{"type", "string"}, {"minLength", 1}}}, {"trigger_id", id}, {"category_id", id}};
+        {"ui_layer", QJsonObject{{"type", "string"}, {"minLength", 1}}}, {"trigger_id", id}, {"category_id", id},
+        {"type", QJsonObject{{"type", "string"}, {"minLength", 1}}}};
 }
 
 QJsonObject GraphOperationSchema() {
@@ -844,7 +917,8 @@ void RegisterTriggerGraphTools(McpServer& server) {
     ToolDefinition query;
     query.name = "query_trigger_graph";
     query.description = "分页查询 GUI 图；ecas 可用 functions（精确函数名）或 ui_layer（函数库层）筛选后再分页；arguments 可用 argument_ids 定点查询最多16项，并通过 include_replacement_guard 取得共用核心的原位替换资格；"
-        "trigger_text 表配 trigger_id 把整个触发器导出为紧凑 T 写法；feature_text 表配 category_id 把整个类别（触发器与引用的变量）导出为功能写法。";
+        "trigger_text 表配 trigger_id 把整个触发器导出为紧凑 T 写法；feature_text 表配 category_id 把整个类别（触发器与引用的变量）导出为功能写法；"
+        "presets 表（可配 type）列出函数库预设；function_examples 表配 functions 给出这些函数在本图里的真实用法原句。";
     query.inputSchema = BasicSchema(GraphQueryProperties(), {"table"});
     query.maxResponseBytes = kResponseBytes;
     query.handler = [&server](const QJsonObject& request) -> QJsonValue {
@@ -857,7 +931,8 @@ void RegisterTriggerGraphTools(McpServer& server) {
     edit.name = "edit_trigger_graph";
     edit.permission = ToolPermission::Edit;
     edit.description = "在单一目录事务内原子编辑 GUI 图：创建、字段、精确改名、顺序移动、删除、类型子树和受guard保护的参数原位替换。"
-        "insert_text / replace_trigger_text 用紧凑 T 写法一次写入整段事件/条件/动作；apply_feature_text 一次写入一个功能的变量与多个触发器（写法见 AGENT_GUIDE）。代码审计仅 CallerAsserted，不创建自定义脚本。";
+        "insert_text / replace_trigger_text 用紧凑 T 写法一次写入整段事件/条件/动作；apply_feature_text 一次写入一个功能的变量与多个触发器（after 指定新触发器插在哪个触发器之后，写法见 AGENT_GUIDE）；"
+        "move 省略 from/to 时只给 before 或 after 即可把触发器/类别放到锚点旁。代码审计仅 CallerAsserted，不创建自定义脚本。";
     edit.inputSchema = GraphSchema(); edit.maxResponseBytes = kResponseBytes;
     edit.handler = [&server](const QJsonObject& request) -> QJsonValue {
         QJsonObject error; auto* workspace = RequireWorkspace(server, error); if (!workspace) return error;

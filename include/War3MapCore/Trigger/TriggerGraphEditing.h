@@ -132,6 +132,8 @@ struct GraphApplyFeatureText {
     std::string category;
     std::string text;
     std::string clientKey; // 新建记录的 clientKey 前缀；空时为 "feature"
+    // 新建触发器依次放在该触发器之后（须在同一类别）；空时放到类别末尾。已有触发器不移动。
+    std::optional<GraphRecordRef> after;
 };
 // 局部替换：按 trigger_text 导出的行号替换第 fromLine..toLine 行（toLine = fromLine - 1 表示插在 fromLine 之前），
 // expected 须与当前导出中这几行逐字相同，防止按过期行号改错位置；替换后整段按紧凑 T 重新写入（同整体替换）。
@@ -140,8 +142,14 @@ struct GraphPatchTriggerText {
     std::size_t fromLine = 1, toLine = 0;
     std::string expected, text;
 };
+// 轻量移动：把触发器或类别放到 anchor 紧前/紧后，父列表取自 anchor 当前所在位置（触发器可借此换类别），
+// 不需要完整兄弟顺序；以两个记录的身份为前提，不校验其他兄弟。ECA 用 patch_trigger_text 改写。
+struct GraphPlace {
+    GraphRecordRef target, anchor;
+    bool after = true;
+};
 using GraphEditOperation = std::variant<GraphCreate, GraphSet, GraphRename, GraphMove, GraphRemove, GraphInsertSubtree,
-    GraphReplaceArgument, GraphInsertText, GraphReplaceTriggerText, GraphApplyFeatureText, GraphPatchTriggerText>;
+    GraphReplaceArgument, GraphInsertText, GraphReplaceTriggerText, GraphApplyFeatureText, GraphPatchTriggerText, GraphPlace>;
 struct TriggerGraphBinding {
     std::string sourceWtgSha256, sourceWctSha256, uiCatalogSha256;
     std::string currentWtgSha256, currentWctSha256;
