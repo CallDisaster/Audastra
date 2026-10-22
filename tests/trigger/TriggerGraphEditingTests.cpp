@@ -748,8 +748,61 @@ void TestPatchAndDiff() {
         "line diff of the changed trigger");
     Require(DiffTriggerTexts(f.doc, f.doc, f.catalog).empty(), "no diff for identical documents");
 }
+// 触发器参数可直接写触发器显示名：解析成脚本生成名，导出时再写回显示名。
+void TestTriggerNames() {
+    Fixture f;
+    const auto other = TriggerDocumentEditor::AddTrigger(f.doc, f.doc.categories[0].categoryId, "9-1 Spell Hit");
+    Require(other.Succeeded(), "named trigger fixture");
+    const auto trigger = Id(GraphRecordKind::Trigger, f.doc.triggers[0].id);
+    auto write = f.Batch();
+    write.operations.emplace_back(GraphReplaceTriggerText{trigger,
+        "AddTriggerEvent(`9-1 Spell Hit`, TriggerRegisterUnitEvent(GetTriggerUnit()))"});
+    const auto written = ApplyTriggerGraphEditBatch(f.doc, f.catalog, write);
+    Require(written.Succeeded(), written.Succeeded() ? "" : written.diagnostics.front().message.c_str());
+    const auto stored = std::find_if(f.doc.argumentNodes.begin(), f.doc.argumentNodes.end(),
+        [](const auto& argument) { return argument.type == 1 && argument.value.text.starts_with("gg_trg_"); });
+    Require(stored != f.doc.argumentNodes.end() && stored->value.text == "gg_trg_9_1_Spell_Hit", "display name stored as the generated symbol");
+    const auto text = RenderTriggerText(f.doc, f.catalog, trigger.id);
+    Require(text.Succeeded() && text.value->find("AddTriggerEvent(`9-1 Spell Hit`, ") != std::string::npos, "exported with the display name");
+    auto missing = f.Batch();
+    missing.operations.emplace_back(GraphReplaceTriggerText{trigger, "AddTriggerEvent(`No Such`, TriggerRegisterUnitEvent(GetTriggerUnit()))"});
+    const auto refused = ApplyTriggerGraphEditBatch(f.doc, f.catalog, missing);
+    Require(!refused.Succeeded() && refused.diagnostics.front().code == "TRIGGER_TEXT_UNKNOWN_NAME", "unknown trigger name refused");
+}
+// 功能文本新触发器按 after 锚点依次插入；轻量移动只凭锚点定位。
+void TestPlacement() {
+    Fixture f;
+    const auto categoryId = f.doc.categories[0].categoryId;
+    const auto first = f.doc.triggers[0].id;
+    Require(TriggerDocumentEditor::AddTrigger(f.doc, categoryId, "Tail").Succeeded(), "tail trigger fixture");
+    const auto order = [&] {
+        std::vector<std::string> names;
+        for (const auto& row : f.doc.triggers) if (row.categoryId == categoryId) names.push_back(row.name.text);
+        return names;
+    };
+    const auto firstName = f.doc.triggers[0].name.text;
+    auto feature = f.Batch();
+    feature.operations.emplace_back(GraphApplyFeatureText{f.doc.categories[0].name.text,
+        "触发器 New1:\n    StoreInteger(7)\n触发器 New2:\n    StoreInteger(8)\n", {}, Id(GraphRecordKind::Trigger, first)});
+    const auto applied = ApplyTriggerGraphEditBatch(f.doc, f.catalog, feature);
+    Require(applied.Succeeded(), applied.Succeeded() ? "" : applied.diagnostics.front().message.c_str());
+    Require(order() == std::vector<std::string>{firstName, "New1", "New2", "Tail"}, "feature triggers inserted after the anchor in order");
+
+    const auto tail = std::find_if(f.doc.triggers.begin(), f.doc.triggers.end(), [](const auto& row) { return row.name.text == "Tail"; })->id;
+    auto place = f.Batch();
+    place.operations.emplace_back(GraphPlace{Id(GraphRecordKind::Trigger, tail), Id(GraphRecordKind::Trigger, first), false});
+    Require(ApplyTriggerGraphEditBatch(f.doc, f.catalog, place).Succeeded(), "light move before anchor");
+    Require(order() == std::vector<std::string>{"Tail", firstName, "New1", "New2"}, "tail moved before the first trigger");
+    auto last = f.Batch();
+    last.operations.emplace_back(GraphPlace{Id(GraphRecordKind::Trigger, tail), Id(GraphRecordKind::Trigger, f.doc.triggers.back().id), true});
+    Require(ApplyTriggerGraphEditBatch(f.doc, f.catalog, last).Succeeded() && order().back() == "Tail", "light move after the last trigger");
+    auto self = f.Batch();
+    self.operations.emplace_back(GraphPlace{Id(GraphRecordKind::Trigger, tail), Id(GraphRecordKind::Trigger, tail), true});
+    Require(!ApplyTriggerGraphEditBatch(f.doc, f.catalog, self).Succeeded(), "self anchor refused");
+}
+
 int main() {
-    try { TestPatchAndDiff(); TestFeatureText(); TestCodeArguments(); TestTextNotation(); TestFunctionSlotArguments(); TestRecursiveBatchAndAtomicNames(); TestFailurePublishesNothing(); TestWritableLoopTargets(); TestObjectCodeGraphAndAtomicRename();
+    try { TestPlacement(); TestTriggerNames(); TestPatchAndDiff(); TestFeatureText(); TestCodeArguments(); TestTextNotation(); TestFunctionSlotArguments(); TestRecursiveBatchAndAtomicNames(); TestFailurePublishesNothing(); TestWritableLoopTargets(); TestObjectCodeGraphAndAtomicRename();
         TestArgumentReplacementKeepsSiblingCode(); TestArgumentReplacementRejectsStaleAndRollsBack(); TestArgumentReplacementOpaqueAndDynamicTypes();
         std::cout << "public typed graph batch guards and recursive codec roundtrip passed\n"; return 0; }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

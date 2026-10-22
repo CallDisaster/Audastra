@@ -121,9 +121,11 @@ struct RequestBudget {
             } else if constexpr (std::is_same_v<T, GraphReplaceTriggerText>) {
                 return Ref(item.trigger) && AddText(item.text);
             } else if constexpr (std::is_same_v<T, GraphApplyFeatureText>) {
-                return AddText(item.category) && AddText(item.text) && AddText(item.clientKey);
+                return AddText(item.category) && AddText(item.text) && AddText(item.clientKey) && (!item.after || Ref(*item.after));
             } else if constexpr (std::is_same_v<T, GraphPatchTriggerText>) {
                 return Ref(item.trigger) && AddText(item.expected) && AddText(item.text);
+            } else if constexpr (std::is_same_v<T, GraphPlace>) {
+                return Ref(item.target) && Ref(item.anchor);
             } else {
                 return Parent(item.parent) && (!item.before || Ref(*item.before)) && item.root && Eca(*item.root, 0);
             }
@@ -440,6 +442,28 @@ struct Editor {
         const auto before = Before(op.to, op.before); if (!before.Succeeded()) return {before.diagnostics};
         return Position(op.target.kind, *id.value, op.to, *before.value);
     }
+    Status Apply(const GraphPlace& op) {
+        if (op.target.kind != op.anchor.kind || (op.target.kind != GraphRecordKind::Trigger && op.target.kind != GraphRecordKind::Category))
+            return Fail("TRIGGER_GRAPH_PLACE_UNSUPPORTED", "轻量移动只支持触发器或类别，且 target 与 anchor 种类相同；ECA 用 patch_trigger_text 改写。");
+        const auto id = Resolve(op.target); if (!id.Succeeded()) return {id.diagnostics};
+        const auto anchor = Resolve(op.anchor); if (!anchor.Succeeded()) return {anchor.diagnostics};
+        if (*id.value == *anchor.value) return Fail("TRIGGER_GRAPH_PLACE_SELF", "target 与 anchor 是同一个记录。");
+        GraphParentExpectation parent{GraphParentKind::Categories, {}, {}, std::nullopt};
+        if (op.target.kind == GraphRecordKind::Trigger) {
+            const auto categoryId = Find(doc.triggers, *anchor.value)->categoryId;
+            const auto category = std::find_if(doc.categories.begin(), doc.categories.end(), [&](const auto& row) { return row.categoryId == categoryId; });
+            if (category == doc.categories.end()) return Fail("TRIGGER_GRAPH_PARENT_INVALID", "anchor 所在类别不存在。");
+            parent = {GraphParentKind::CategoryTriggers, {GraphRecordKind::Category, category->id, {}}, {}, std::nullopt};
+        }
+        const auto children = Children(parent); if (!children.Succeeded()) return {children.diagnostics};
+        auto at = std::find(children.value->begin(), children.value->end(), *anchor.value);
+        StableId before = *anchor.value;
+        if (op.after) {
+            before = 0;
+            for (++at; at != children.value->end(); ++at) if (*at != *id.value) { before = *at; break; }
+        }
+        return Position(op.target.kind, *id.value, parent, before);
+    }
     bool HasOpaqueCode() const {
         if (!doc.wct.customCode.text.empty()) return true;
         for (const auto& row : doc.triggers) if (!row.customText.text.empty()) return true;
@@ -726,6 +750,14 @@ struct Editor {
         if (!errors.empty()) return {std::move(errors)};
 
         const auto categoryId = Find(doc.categories, category)->categoryId;
+        std::optional<GraphRecordRef> anchor = op.after;
+        if (anchor) {
+            const auto id = anchor->kind == GraphRecordKind::Trigger ? Resolve(*anchor)
+                : Result<StableId>::Failure(kDomain, "TRIGGER_FEATURE_ANCHOR_INVALID", "after 须是触发器。");
+            if (!id.Succeeded()) return {id.diagnostics};
+            if (Find(doc.triggers, *id.value)->categoryId != categoryId)
+                return Fail("TRIGGER_FEATURE_ANCHOR_INVALID", "after 指定的触发器不在类别“" + op.category + "”里。");
+        }
         for (std::size_t index = 0; index < feature.value->triggers.size(); ++index) {
             const auto& trigger = feature.value->triggers[index];
             const auto what = "触发器 " + trigger.name;
@@ -743,6 +775,10 @@ struct Editor {
                 if (!collect(Apply(GraphCreate{triggerKey, GraphTriggerValue{trigger.name, {}, trigger.enabled, trigger.initiallyOn, trigger.runOnInit, false},
                         ordered(GraphParentKind::CategoryTriggers, {GraphRecordKind::Category, category, {}}), std::nullopt}), trigger.line, what)) continue;
                 ref = receipt.created.at(triggerKey);
+                if (anchor) {
+                    if (!collect(Apply(GraphPlace{ref, *anchor, true}), trigger.line, what)) continue;
+                    anchor = ref;
+                }
             } else {
                 ref = {GraphRecordKind::Trigger, existing->id, {}};
                 if (!collect(set(ref, GraphField::Enabled, trigger.enabled), trigger.line, what)

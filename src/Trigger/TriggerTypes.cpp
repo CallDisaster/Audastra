@@ -244,6 +244,15 @@ Status TriggerTypeSystem::ValidateLiteral(std::string_view type, std::string_vie
     else if (kind == Literal::String && std::any_of(value.begin(), value.end(), [](unsigned char c) {
             return c < 32 && c != '\n' && c != '\r';
         })) message = "字符串含尚未支持的控制字符。";
+    // 该类型有预设时列出几个，免得只看到底层整数/实数格式要求而猜不出该写什么。
+    if (!message.empty() && kind != Literal::String) {
+        const auto presets = PresetsOfType(catalog_, type);
+        if (!presets.empty()) {
+            message += " 类型 " + std::string(type) + " 的预设有：";
+            for (std::size_t i = 0; i < presets.size() && i < 8; ++i) message += (i ? "、" : "") + presets[i].name;
+            message += presets.size() > 8 ? " 等 " + std::to_string(presets.size()) + " 个（查询 presets 表可列全）。" : "。";
+        }
+    }
     return message.empty() ? Status{} : Status::Failure("Trigger.Type", "TRIGGER_LITERAL_INVALID", std::move(message));
 }
 
