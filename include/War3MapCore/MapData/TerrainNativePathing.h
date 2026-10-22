@@ -7,8 +7,10 @@
 
 namespace War3Map::MapData {
 
-// 原版通行使用未取整的轴对齐世界范围，四边包含等号；
-// 不使用小地图的整数地格裁剪范围。
+// 原版通行使用未取整的轴对齐世界范围。四数须为实际 binary32 值；
+// 包含判断保留原版正/反投影及 float 落点，不是普通四边比较，
+// 也不使用小地图的整数地格裁剪范围。X 跨度目前须可精确表示为
+// 不超过26个有效二进制位；超出已证明等价的精度域会明确拒绝。
 struct TerrainNativePlayableBounds {
     double left = 0;
     double bottom = 0;
@@ -58,8 +60,9 @@ struct TerrainNativePathingInput {
 // 只返回 row-major 的原版六位 0xEE，不带 WPM 文件头、不混入源 WPM 或
 // 工程限制。绑定输入、旧基线比较、0x11 保留及事务回读归统一保存计划。
 // maximumBytes 限制输出占用；当前算法不另建与地图等大的临时网格。
-// 支持普通无坡道悬崖；特殊地形覆盖、坡道、未知字段或不完整规则
-// 明确失败，绝不返回部分网格。
+// 支持普通无坡道悬崖；地形偏移须128对齐，所有顶点世界XY须落在
+// 原版九位坐标打包的 [-32768,32640] 内。特殊地形覆盖、坡道、
+// 未知字段、不完整规则或未闭合的坐标/范围精度明确失败，绝不返回部分网格。
 [[nodiscard]] Result<std::vector<std::byte>> GenerateTerrainNativePathing(
     const TerrainNativePathingInput& input, std::size_t maximumBytes = 64 * 1024 * 1024);
 

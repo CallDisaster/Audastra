@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <new>
 #include <stdexcept>
 #include <string_view>
@@ -12,6 +13,10 @@ namespace {
 constexpr auto kSubsystem = "Terrain.NativePathing";
 constexpr std::size_t kMaximumCells = 8192ull * 8192ull;
 constexpr double kMaximumCoordinate = 16777216.0;
+constexpr double kPackedCoordinateMinimum = -32768.0;
+constexpr double kPackedCoordinateMaximum = 32640.0;
+static_assert(std::numeric_limits<float>::is_iec559 && std::numeric_limits<float>::digits == 24);
+static_assert(std::numeric_limits<double>::is_iec559 && std::numeric_limits<double>::digits == 53);
 struct Failure { std::vector<Diagnostic> diagnostics; };
 
 [[noreturn]] void Fail(const char* code, std::string message) {
@@ -68,6 +73,71 @@ TerrainNativeWaterState WaterState(const TerrainVertex& vertex, const TerrainNat
 
 bool FiniteCoordinate(double value) {
     return std::isfinite(value) && std::abs(value) <= kMaximumCoordinate;
+}
+
+bool ExactPrimarySpan(double left, double right, double span) {
+    // TwoDiff 保留 binary64 相减丢失的尾数；仅检查 span 的位数会漏过
+    // 如 128 - (-最小binary32次正规数) 这种已经丢失低位的跨度。
+    const double leftVirtual = right - span;
+    const double rightVirtual = span + leftVirtual;
+    const double leftRoundoff = leftVirtual - left;
+    const double rightRoundoff = right - rightVirtual;
+    if (rightRoundoff + leftRoundoff != 0.0) return false;
+    int exponent = 0;
+    const double significant = std::ldexp(std::frexp(span, &exponent), 26);
+    return std::trunc(significant) == significant;
+}
+
+struct NativeBoundsProjection {
+    double left = 0;
+    double bottom = 0;
+    double right = 0;
+    double top = 0;
+    double width = 0;
+    float height = 0;
+
+    static bool FromOrigin(double x, double y, double originX, double originY,
+        double edgeX, float edgeY) {
+        const float deltaX = static_cast<float>(x - originX);
+        const float deltaY = static_cast<float>(y - originY);
+        // 原版主轴平方最多52位，分子最多50位，x87均能精确保存。
+        // 在本支持域，商若不等于0/1，与边界有超过binary64舍入误差的
+        // 距离，故可约去共同边长；这里不把主轴商落为binary32。
+        const double horizontal = static_cast<double>(deltaX) / edgeX;
+        // 次轴的边长、差值和最终商均有binary32落点。两个24位数的
+        // 商可用binary64中间值后落binary32，不会跨越其舍入中点。
+        const float vertical = static_cast<float>(static_cast<double>(deltaY) / edgeY);
+        return horizontal >= 0.0 && horizontal <= 1.0 && vertical >= 0.0f && vertical <= 1.0f;
+    }
+
+    bool Contains(double x, double y) const {
+        // 原版先从SW投影，失败后从NE重试；合法端点的正向deltaX
+        // 可能舍入到跨度外，不能删掉第二组，也不能分轴任意拼接。
+        return FromOrigin(x, y, left, bottom, width, height)
+            || FromOrigin(x, y, right, top, -width, -height);
+    }
+};
+
+NativeBoundsProjection PrepareBounds(const TerrainNativePlayableBounds& bounds) {
+    for (const auto value : {bounds.left, bounds.bottom, bounds.right, bounds.top})
+        if (static_cast<double>(static_cast<float>(value)) != value)
+            Fail("TERRAIN_NATIVE_BOUNDS_PRECISION", "世界可玩范围不是实际 binary32 值，不能静默取整后判断通行。");
+    const double width = bounds.right - bounds.left;
+    if (!ExactPrimarySpan(bounds.left, bounds.right, width))
+        Fail("TERRAIN_NATIVE_BOUNDS_PRECISION", "世界可玩范围的 X 跨度超出已证明的26位精度域，尚不能等价重现原版投影。");
+    return {bounds.left, bounds.bottom, bounds.right, bounds.top, width,
+        static_cast<float>(bounds.top - bounds.bottom)};
+}
+
+void CheckPackedCoordinates(const TerrainHeader& header) {
+    for (std::size_t axis = 0; axis < 2; ++axis) {
+        const double first = header.offset[axis];
+        const auto count = axis == 0 ? header.width : header.height;
+        const double last = first + static_cast<double>(count - 1) * 128.0;
+        if (std::fmod(first, 128.0) != 0.0 || first < kPackedCoordinateMinimum
+            || last > kPackedCoordinateMaximum)
+            Fail("TERRAIN_NATIVE_COORDINATE_DOMAIN", "地形偏移须128对齐，全部顶点世界XY须位于原版九位坐标范围 [-32768,32640]；未支持的取整或回绕不能猜测。");
+    }
 }
 
 using GroundProperties = std::array<bool, 3>;
@@ -160,6 +230,8 @@ Result<std::vector<std::byte>> GenerateTerrainNativePathing(
             || !FiniteCoordinate(static_cast<double>(header.offset[0]) + (columns - 1) * 128.0)
             || !FiniteCoordinate(static_cast<double>(header.offset[1]) + (rows - 1) * 128.0))
             Fail("TERRAIN_NATIVE_BOUNDS", "通行生成需要有限、未取整且有效的世界可玩范围与地形偏移。");
+        CheckPackedCoordinates(header);
+        const auto projection = PrepareBounds(bounds);
         if (input.specialDoodadCount != 0)
             Fail("TERRAIN_NATIVE_SPECIAL_UNSUPPORTED", "地图含 " + std::to_string(input.specialDoodadCount)
                 + " 条特殊地形摆放，尚未接入其原版通行贴图覆盖。");
@@ -190,8 +262,8 @@ Result<std::vector<std::byte>> GenerateTerrainNativePathing(
             const double left = static_cast<double>(header.offset[0]) + x * 128.0;
             const double bottom = static_cast<double>(header.offset[1]) + y * 128.0;
             // 世界范围检查四角；Boundary/MapEdge 则只检查 Q 自己的 SW 记录。
-            const bool playable = left >= bounds.left && bottom >= bounds.bottom
-                && left + 128.0 <= bounds.right && bottom + 128.0 <= bounds.top
+            const bool playable = projection.Contains(left, bottom) && projection.Contains(left + 128.0, bottom)
+                && projection.Contains(left, bottom + 128.0) && projection.Contains(left + 128.0, bottom + 128.0)
                 && !corners.front()->IsBoundary() && !corners.front()->IsMapEdge();
             std::array<std::uint8_t, 4> terrainMasks{};
             for (std::size_t corner = 0; corner < corners.size(); ++corner) {

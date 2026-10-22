@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -190,15 +191,15 @@ void OrdinaryCliffsUseLevelsAndRawGroundPalette() {
 
 void PlayableBoundsAreWorldCoordinates() {
     Fixture fixture;
-    fixture.grid.header.offset = {-0.25f, -64.5f};
-    fixture.bounds = {-0.25, -64.5, 127.75, 63.5};
+    fixture.grid.header.offset = {-128, -128};
+    fixture.bounds = {-128, -128, 0, 0};
     Uniform(fixture, 0x40, "all four world corners on inclusive bounds are playable");
-    fixture.bounds.left = -0.125;
+    fixture.bounds.left = -127.875;
     Uniform(fixture, 0xce, "a fractional world crop cannot be rounded to a terrain tile");
-    fixture.bounds.left = -0.25;
-    fixture.bounds.top = 63.499;
+    fixture.bounds.left = -128;
+    fixture.bounds.top = -0x1p-10;
     Uniform(fixture, 0xce, "the northeast corner must also fit the actual world range");
-    fixture.bounds.top = 63.5;
+    fixture.bounds.top = 0;
     fixture.grid.vertices[3].textureAndFlagsRaw |= 0x80;
     Uniform(fixture, 0x40, "boundary flags belong to tile SW rather than being ORed across all four corners");
     fixture.grid.vertices[3].textureAndFlagsRaw = 0;
@@ -209,6 +210,69 @@ void PlayableBoundsAreWorldCoordinates() {
     Uniform(fixture, 0xce, "map-edge flag rejects every non-blight movement mode");
     for (auto& vertex : fixture.grid.vertices) vertex.textureAndFlagsRaw |= 0x20;
     Uniform(fixture, 0xee, "blight survives world and tile boundary rejection");
+}
+
+void BoundsRetainNativeFloatLandingsAndReverseProjection() {
+    Fixture secondary(2, 3);
+    secondary.grid.header.offset = {0, -128};
+    secondary.bounds = {0, -128, 128, std::nextafter(128.0f, 0.0f)};
+    // 上边比顶点128略低；原版的次轴跨度/差值在binary32都落为256。
+    Uniform(secondary, 0x40, "native secondary projection can include a tiny upper overshoot");
+    secondary.bounds.bottom = std::nextafter(-128.0f, 0.0f);
+    secondary.bounds.top = 128;
+    Uniform(secondary, 0x40, "reverse secondary projection can include a tiny lower overshoot");
+    secondary.bounds.bottom = -128;
+    secondary.bounds.top = 127.99f;
+    const auto clipped = Take(secondary.Generate());
+    for (std::size_t i = 0; i < clipped.size(); ++i)
+        Require(clipped[i] == (i < 16 ? std::byte{0x40} : std::byte{0xce}),
+            "a representable larger overshoot stays outside despite float landings");
+
+    Fixture subnormal;
+    subnormal.grid.header.offset = {0, -128};
+    subnormal.bounds = {0, -128, 128, -std::numeric_limits<float>::denorm_min()};
+    Uniform(subnormal, 0x40, "secondary range comparison preserves native binary32 rounding near zero");
+
+    Fixture reverse;
+    reverse.grid.header.offset = {16256, 0};
+    reverse.bounds = {0x1p-11, 0, 16384, 128};
+    // 正向dx在16384处舍入为16384，大于原版仍留x87的25位跨度。
+    // 反向dx为0，端点仍合法；若删去NE重试，这一格会全变边界。
+    Uniform(reverse, 0x40, "reverse projection rescues an inclusive endpoint rounded outward from SW");
+    reverse.bounds.left = 0x1p-12;
+    Uniform(reverse, 0x40, "a provably exact 26-bit primary span remains supported");
+
+    Fixture primary;
+    primary.bounds = {0x1p-11, 0, 16384, 128};
+    Uniform(primary, 0xce, "primary x87 projection must not round a slightly excessive ratio down to binary32 one");
+    primary.bounds = {0, 0, 128.25, 128.25};
+    Uniform(primary, 0x40, "fractional camera bounds remain supported without requiring tile alignment");
+}
+
+void BoundsRejectUnprovenPrecisionAndPackedCoordinates() {
+    Fixture fixture;
+    fixture.bounds = {0x1p-13, 0, 16384, 128};
+    Refused(fixture.Generate(), "TERRAIN_NATIVE_BOUNDS_PRECISION");
+    fixture.bounds = {-static_cast<double>(std::numeric_limits<float>::denorm_min()), 0, 128, 128};
+    Refused(fixture.Generate(), "TERRAIN_NATIVE_BOUNDS_PRECISION");
+    fixture.bounds = {0, 0, 128.00000001, 128};
+    Refused(fixture.Generate(), "TERRAIN_NATIVE_BOUNDS_PRECISION");
+
+    fixture = Fixture{};
+    fixture.grid.header.offset[0] = 0.25f;
+    Refused(fixture.Generate(), "TERRAIN_NATIVE_COORDINATE_DOMAIN");
+    fixture.grid.header.offset = {-32768, -32768};
+    fixture.bounds = {-32768, -32768, -32640, -32640};
+    Uniform(fixture, 0x40, "the minimum decoded native packed vertex is inclusive");
+    fixture.grid.header.offset = {32512, 32512};
+    fixture.bounds = {32512, 32512, 32640, 32640};
+    Uniform(fixture, 0x40, "the maximum decoded native packed vertex is inclusive");
+    fixture.grid.header.offset[0] = 32640;
+    Refused(fixture.Generate(), "TERRAIN_NATIVE_COORDINATE_DOMAIN");
+    fixture.grid.header.offset = {-32896, 0};
+    Refused(fixture.Generate(), "TERRAIN_NATIVE_COORDINATE_DOMAIN");
+    fixture.grid.header.offset = {0, -128.5f};
+    Refused(fixture.Generate(), "TERRAIN_NATIVE_COORDINATE_DOMAIN");
 }
 
 void StaticSuppressionIncludesBlightAndBoundaries() {
@@ -297,6 +361,8 @@ int main() {
         SharedWaterClassifierKeepsNativePrecision();
         OrdinaryCliffsUseLevelsAndRawGroundPalette();
         PlayableBoundsAreWorldCoordinates();
+        BoundsRetainNativeFloatLandingsAndReverseProjection();
+        BoundsRejectUnprovenPrecisionAndPackedCoordinates();
         StaticSuppressionIncludesBlightAndBoundaries();
         InvalidPaletteSlotAndZeroSentinelAreDistinct();
         ValidationIsBoundedAndRejectsUnknownRules();
