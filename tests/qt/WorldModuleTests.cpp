@@ -3522,19 +3522,34 @@ void WorldModuleTests::TerrainBrushPreservesCameraAndModels() {
 
 void WorldModuleTests::TerrainWaterBrushUsesFrozenPrefixAndSharedUndo_data() {
     QTest::addColumn<bool>("deep");
-    QTest::newRow("shallow") << false;
-    QTest::newRow("deep") << true;
+    QTest::addColumn<int>("dimension");
+    QTest::newRow("shallow") << false << 9;
+    QTest::newRow("deep") << true << 9;
+    QTest::newRow("shallow-257") << false << 257;
+    QTest::newRow("deep-257") << true << 257;
 }
 
 void WorldModuleTests::TerrainWaterBrushUsesFrozenPrefixAndSharedUndo() {
-    QFETCH(bool, deep);
+    QFETCH(bool, deep); QFETCH(int, dimension);
+    if (dimension > 9 && qEnvironmentVariableIntValue("FORGE_TERRAIN_WATER_BENCHMARK") != 1)
+        QSKIP("257x257 water-brush measurement requires FORGE_TERRAIN_WATER_BENCHMARK=1; small functional rows remain enabled.");
     QTemporaryDir directory; QVERIFY(directory.isValid());
     QtProject::EditorProject project;
-    Tests::InstallTerrainWaterProject(project, directory.path().toStdWString(), false);
+    Tests::InstallTerrainWaterProject(project, directory.path().toStdWString(), false,
+        Tests::TerrainWaterMembers(static_cast<std::uint32_t>(dimension)));
+    std::uint32_t stride = 0;
+    {
+        const auto mesh = BuildWorldTerrainMesh(*project.mapEdits_->Terrain()); QVERIFY(mesh.Succeeded());
+        stride = mesh.value->stride; QCOMPARE(stride, std::uint32_t{1});
+    }
     BackendState state; activeBackend = &state;
+    // 完成帧固定覆盖 XY[0,1024]、Z[2048,-2048]，深水也必须经真实鼠标拾取。
+    state.viewProjection = {1.0f / 512, 0, 0, 0, 0, 1.0f / 512, 0, 0,
+        0, 0, -1.0f / 4096, 0, -1, -1, 0.5f, 1};
     WorldModule module(project, &backend);
     auto* page = module.Widget(); auto* viewport = module.Viewport(); state.viewport = viewport;
-    page->resize(900, 600); page->show(); QTRY_COMPARE(viewport->VertexCount(), std::size_t{81});
+    const auto vertexCount = std::size_t(dimension) * dimension;
+    page->resize(900, 600); page->show(); QTRY_COMPARE(viewport->VertexCount(), vertexCount);
     auto* brush = page->findChild<QToolButton*>(deep ? "worldTerrainBrushDeepWater" : "worldTerrainBrushShallowWater");
     auto* toggle = page->findChild<QPushButton*>("worldTerrainToggle");
     auto* status = page->findChild<QLabel*>("worldTerrainWaterBrushStatus");
@@ -3542,38 +3557,87 @@ void WorldModuleTests::TerrainWaterBrushUsesFrozenPrefixAndSharedUndo() {
     QVERIFY(brush && toggle && status && radius); radius->setValue(1);
     brush->click();
     QTRY_VERIFY(status->property("ready").toBool());
-    const auto captures = status->property("captureCount").toULongLong();
+    QVERIFY(toggle->isEnabled());
     toggle->click(); QVERIFY(viewport->BrushMode());
-    const auto original = Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
-    const MapData::TerrainStrokePoint first{384, 384};
+    QSignalSpy started(viewport, &WorldViewport::TerrainStrokeStarted);
+    QSignalSpy moved(viewport, &WorldViewport::TerrainStrokeMoved);
+    QSignalSpy finished(viewport, &WorldViewport::TerrainStrokeFinished);
+    QSignalSpy cancelled(viewport, &WorldViewport::TerrainStrokeCancelled);
+    std::array<std::vector<std::byte>, 3> saved;
+    saved[0] = Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
     auto request = std::make_shared<QtProject::TerrainWaterEditRequest>(
         Tests::WaterTake(QtProject::CaptureTerrainWaterEditRequest(project, true)));
     auto resources = Tests::WaterTake(QtProject::LoadTerrainWaterEditResources(request));
-    const MapData::TerrainWaterBrush expectedBrush{deep ? MapData::TerrainWaterBrushKind::Deep : MapData::TerrainWaterBrushKind::Shallow,
-        MapData::TerrainBrushShape::Circle, 1, 0, static_cast<std::uint32_t>(project.mapEdits_->Revision()),
-        Tests::WaterTake(MapData::CaptureTerrainWaterStrokeAnchor(*request->terrain, first))};
-    const std::array points{first, MapData::TerrainStrokePoint{512, 384}, MapData::TerrainStrokePoint{640, 384}};
-    const auto expected = Tests::WaterTake(MapData::PrepareTerrainWaterStroke(*request->terrain,
-        *resources.resources.WaterBrushRules(), expectedBrush, points, request->doodads));
-    const auto frame = viewport->DocumentRevision();
-    viewport->TerrainStrokeStarted(first.x, first.y);
-    viewport->TerrainStrokeMoved(points[1].x, points[1].y);
-    viewport->TerrainStrokeMoved(points[2].x, points[2].y);
-    QTRY_VERIFY(viewport->DocumentRevision() > frame);
-    QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), original);
-    QCOMPARE(status->property("captureCount").toULongLong(), captures); // 预览不重新打开来源。
-    viewport->TerrainStrokeFinished();
-    QTRY_COMPARE(project.mapDataUndoStack_->count(), 1);
-    const auto changed = Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
-    QCOMPARE(changed, Tests::WaterTake(MapData::SerializeMapTerrain(expected.terrain)));
-    QVERIFY(changed != original);
-    QVERIFY(status->property("prepareMilliseconds").isValid());
-    QTRY_VERIFY(toggle->isChecked()); QTRY_VERIFY(status->property("ready").toBool());
-    project.mapDataUndoStack_->undo();
-    QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), original);
-    project.mapDataUndoStack_->redo();
-    QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), changed);
-    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    const auto frameReady = [&] {
+        return state.completed.frameCount > 0 && state.completed.surfaceEpoch == state.surfaceEpoch
+            && state.completed.sceneEpoch == state.sceneEpoch && state.completed.viewEpoch == state.viewEpoch
+            && state.completed.documentRevision == viewport->DocumentRevision();
+    };
+    const auto screen = [&](const MapData::TerrainStrokePoint& point) {
+        // 1.25 DPR 下要用完成帧的物理尺寸，不能用取整前的逻辑宽高。
+        const double scale = viewport->devicePixelRatioF();
+        return QPointF(point.x / 1024 * state.completed.width / scale,
+            (1 - point.y / 1024) * state.completed.height / scale);
+    };
+    for (int stroke = 0; stroke < 2; ++stroke) {
+        QTRY_VERIFY(toggle->isChecked() && status->property("ready").toBool() && viewport->BrushMode());
+        const auto captures = status->property("captureCount").toULongLong();
+        QVERIFY(captures > 0);
+        QVERIFY(status->property("captureMilliseconds").isValid());
+        const auto captureMilliseconds = status->property("captureMilliseconds").toLongLong();
+        QCOMPARE(status->property("terrainVertices").toULongLong(), qulonglong(vertexCount));
+        const double y = 384 + stroke * 256;
+        const std::array points{MapData::TerrainStrokePoint{384, y}, MapData::TerrainStrokePoint{512, y},
+            MapData::TerrainStrokePoint{640, y}};
+        const auto source = project.mapEdits_->Terrain();
+        const MapData::TerrainWaterBrush expectedBrush{deep ? MapData::TerrainWaterBrushKind::Deep : MapData::TerrainWaterBrushKind::Shallow,
+            MapData::TerrainBrushShape::Circle, 1, 0, static_cast<std::uint32_t>(project.mapEdits_->Revision()),
+            Tests::WaterTake(MapData::CaptureTerrainWaterStrokeAnchor(*source, points[0]))};
+        const auto expected = Tests::WaterTake(MapData::PrepareTerrainWaterStroke(*source,
+            *resources.resources.WaterBrushRules(), expectedBrush, points, request->doodads));
+        QTRY_VERIFY(frameReady());
+        Mouse(*viewport, QEvent::MouseMove, screen(points[0]), Qt::NoButton, Qt::NoButton);
+        QTRY_VERIFY(viewport->HoverCoordinate().has_value());
+        QTRY_VERIFY(frameReady());
+        const auto frame = viewport->DocumentRevision();
+        Mouse(*viewport, QEvent::MouseButtonPress, screen(points[0]), Qt::LeftButton, Qt::LeftButton);
+        QCOMPARE(started.count(), stroke + 1); QVERIFY(viewport->StrokeActive());
+        QVERIFY(std::abs(started.last()[0].toDouble() - points[0].x) < 0.001);
+        QVERIFY(std::abs(started.last()[1].toDouble() - points[0].y) < 0.001);
+        Mouse(*viewport, QEvent::MouseMove, screen(points[1]), Qt::NoButton, Qt::LeftButton);
+        const auto releasePoint = screen(points[2]);
+        Mouse(*viewport, QEvent::MouseMove, releasePoint, Qt::NoButton, Qt::LeftButton);
+        QCOMPARE(moved.count(), 2 * (stroke + 1));
+        QTRY_VERIFY(viewport->DocumentRevision() > frame);
+        QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), saved[stroke]);
+        // 上笔结束后会捕获新修订；本笔按下和完整前缀预览复用已就绪owner，不重新打开来源。
+        QCOMPARE(status->property("captureCount").toULongLong(), captures);
+        Mouse(*viewport, QEvent::MouseButtonRelease, releasePoint, Qt::LeftButton, Qt::NoButton);
+        QCOMPARE(finished.count(), stroke + 1); QCOMPARE(cancelled.count(), 0);
+        QTRY_COMPARE(project.mapDataUndoStack_->count(), stroke + 1);
+        saved[stroke + 1] = Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
+        QCOMPARE(saved[stroke + 1], Tests::WaterTake(MapData::SerializeMapTerrain(expected.terrain)));
+        QVERIFY(saved[stroke + 1] != saved[stroke]);
+        QVERIFY(status->property("verifyMilliseconds").isValid());
+        QVERIFY(status->property("prepareMilliseconds").isValid());
+        // 分项都是生产计时属性；整数0只表示小于1ms，不含排队、Apply/Undo或最终出帧。
+        qInfo().noquote() << QStringLiteral("water-ui row=%1 dimension=%2 vertices=%3 stride=%4 stroke=%5 captureCount=%6 captureMs=%7 verifyMs=%8 prepareMs=%9")
+            .arg(QString::fromLatin1(QTest::currentDataTag())).arg(dimension).arg(qulonglong(vertexCount)).arg(stride)
+            .arg(stroke + 1).arg(captures).arg(captureMilliseconds)
+            .arg(status->property("verifyMilliseconds").toLongLong()).arg(status->property("prepareMilliseconds").toLongLong());
+    }
+    QTRY_VERIFY(toggle->isChecked() && status->property("ready").toBool());
+    for (int index = 1; index >= 0; --index) {
+        project.mapDataUndoStack_->undo();
+        QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), saved[index]);
+        QCOMPARE(project.mapDataUndoStack_->index(), index);
+    }
+    for (int index = 1; index <= 2; ++index) {
+        project.mapDataUndoStack_->redo();
+        QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), saved[index]);
+        QCOMPARE(project.mapDataUndoStack_->index(), index);
+    }
+    QCOMPARE(project.mapDataUndoStack_->count(), 2);
     QTRY_VERIFY(status->property("ready").toBool());
 }
 

@@ -18,18 +18,19 @@ template<class T> T WaterTake(Result<T> value) {
 inline std::vector<std::byte> WaterText(std::string_view text) {
     return {reinterpret_cast<const std::byte*>(text.data()), reinterpret_cast<const std::byte*>(text.data() + text.size())};
 }
-inline std::vector<MapArchiveMember> TerrainWaterMembers() {
+inline std::vector<MapArchiveMember> TerrainWaterMembers(std::uint32_t dimension = 9) {
+    if (dimension < 9 || dimension > 257) throw std::runtime_error("water fixture dimension outside test budget");
     MapData::TerrainGridSnapshot grid;
-    grid.header.width = grid.header.height = 9;
+    grid.header.width = grid.header.height = dimension;
     grid.header.mainTileset = 'L';
     grid.header.groundTilesets = {"Tg01"}; grid.header.cliffTilesets = {"Cl01"};
-    grid.vertices.resize(81);
+    grid.vertices.resize(std::size_t{dimension} * dimension);
     for (auto& vertex : grid.vertices) {
         vertex.groundHeightRaw = 8192;
         vertex.waterHeightAndFlagsRaw = 8192;
         vertex.cliffAndLayerRaw = 2;
     }
-    MapData::RefreshTerrainDerived(grid, 0, 0, 9, 9);
+    MapData::RefreshTerrainDerived(grid, 0, 0, dimension, dimension);
     return {{"war3map.w3e", WaterTake(MapData::SerializeMapTerrain(grid))},
         {"TerrainArt/Terrain.slk", WaterText("ID;PWXL;N;E\nB;X4;Y2;D0\nC;X1;Y1;K\"tileID\"\n"
             "C;X2;K\"walkable\"\nC;X3;K\"flyable\"\nC;X4;K\"buildable\"\n"
