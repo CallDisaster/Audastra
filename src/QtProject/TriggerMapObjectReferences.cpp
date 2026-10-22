@@ -38,16 +38,23 @@ EditorProject::CaptureTriggerMapObjectReferences() const {
     std::vector<MemberReplacement> replacements;
     std::vector<std::string> removals;
     if (mapEdits_) {
-        // 只复制实例及其布局上下文，避免为参数面板复制无关的地形、声音等成员。
-        const auto current = mapEdits_->Snapshot(MapDataKind::Units, 128U * 1024U * 1024U);
-        if (!current.Succeeded() || !current.value) return {{}, current.diagnostics};
-        for (const auto kind : {MapDataKind::Settings, MapDataKind::Units}) {
-            const auto& member = current.value->Member(kind);
+        // 只复制授予预放引用资格的成员（实例、可破坏物、区域、镜头、声音及布局上下文），不复制地形等。
+        const auto take = [&](const MapDocument& current, MapDataKind kind) {
+            const auto& member = current.Member(kind);
             if (member.state == MapDataState::Missing) removals.push_back(member.memberName);
             else {
                 // 原字节交由同一捕获服务解析；歧义、未知布局不在适配层放行。
                 for (const auto& source : member.sources) replacements.push_back(source);
             }
+        };
+        const auto units = mapEdits_->Snapshot(MapDataKind::Units, 128U * 1024U * 1024U);
+        if (!units.Succeeded() || !units.value) return {{}, units.diagnostics};
+        take(*units.value, MapDataKind::Settings);
+        take(*units.value, MapDataKind::Units);
+        for (const auto kind : {MapDataKind::Doodads, MapDataKind::Regions, MapDataKind::Cameras, MapDataKind::Sounds}) {
+            const auto current = mapEdits_->Snapshot(kind, 128U * 1024U * 1024U);
+            if (!current.Succeeded() || !current.value) return {{}, current.diagnostics};
+            take(*current.value, kind);
         }
     }
 

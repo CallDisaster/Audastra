@@ -42,6 +42,7 @@ struct Fixture {
         Write(root / "ui/base/action.txt", "[Block]\n[StoreInteger]\n[[.args]]\ntype=integer\n"
             "[UseAbilityAlias]\n[[.args]]\ntype=abilityalias2\n[UseCustomCode]\n[[.args]]\ntype=customcode\n"
             "[WithCodeSibling]\n[[.args]]\ntype=unit\n[[.args]]\ntype=scriptcode\n"
+            "[CommentString]\n[[.args]]\ntype=scriptcode\n"
             "[CustomScriptCode]\n[[.args]]\ntype=string\n[StoreString]\n[[.args]]\ntype=string\n"
             "[DynamicStore]\n[[.args]]\ntype=AnyGlobal\n[[.args]]\ntype=Null\n"
             "[SelectedStore]\n[[.args]]\ntype=typename\n[[.args]]\ntype=Null\n"
@@ -613,6 +614,10 @@ void TestCodeArguments() {
     const auto unset = insert("StoreInteger(?)");
     Require(!unset.Succeeded() && unset.diagnostics.front().code == "TRIGGER_GRAPH_ARGUMENT_UNSET", "enabled statement cannot keep an unset argument");
     Require(insert("WithCodeSibling(GetTriggerUnit(), loc_u)\nWithCodeSibling(GetTriggerUnit(), 局部单位)").Succeeded(), "identifier code arguments are names, not code");
+    // 注释按 // 单行输出不执行：单行文本可写，换行可能夹带代码仍拒绝。
+    Require(insert("CommentString(\"巫毒 +1：set x = 1\")").Succeeded(), "single-line comment text is not code");
+    const auto multiline = insert("CommentString(\"a\\nset x = 1\")");
+    Require(!multiline.Succeeded() && multiline.diagnostics.front().code == "TRIGGER_GRAPH_CODE_UNSUPPORTED", "comment with a line break is refused");
     const auto code = insert("WithCodeSibling(GetTriggerUnit(), \"call Foo()\")");
     Require(!code.Succeeded() && code.diagnostics.front().code == "TRIGGER_GRAPH_CODE_UNSUPPORTED", "new code is still refused");
     // 作者原有代码：直接经编辑器写入，模拟地图里已有的自定义代码参数。

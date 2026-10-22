@@ -533,6 +533,10 @@ struct Editor {
     bool CodeValueAllowed(StableId trigger, const std::string& value) const {
         return PlainIdentifier(value) || preservedCode.contains({trigger, value});
     }
+    // “注释”动作的参数按 // 单行输出，不执行；单行文本不是新代码，换行可能夹带代码，仍拒绝。
+    static bool CommentText(std::string_view function, std::string_view value) {
+        return function == "CommentString" && value.find_first_of("\r\n") == std::string_view::npos;
+    }
     Status CodeRejected() const {
         return Status::Failure(kDomain, "TRIGGER_GRAPH_CODE_UNSUPPORTED",
             "代码类参数只接受标识符（如 YDWE 局部变量名）或整体替换时原样保留的已有代码；新写代码须作者授权，默认用自然 T。");
@@ -579,7 +583,9 @@ struct Editor {
                 const auto& value = spec.arguments[i];
                 // 函数库定义的预设也不是新代码。
                 const bool preset = value.scalar.kind == 0 && FindPreset(catalog, value.scalar.value).has_value();
-                if (value.call || value.index || (!preset && (value.scalar.kind != 3 || !CodeValueAllowed(node->sourceTriggerId, value.scalar.value))))
+                const bool comment = value.scalar.kind == 3 && CommentText(node->name.text, value.scalar.value);
+                if (value.call || value.index || (!preset && !comment
+                        && (value.scalar.kind != 3 || !CodeValueAllowed(node->sourceTriggerId, value.scalar.value))))
                     return CodeRejected();
             }
             if (auto status = ConfigureArgument(arguments[i], spec.arguments[i], expected, depth + 1); !status.Succeeded()) return status;
@@ -824,10 +830,12 @@ struct Editor {
         receipt.argumentReplacements.push_back(std::move(replacement));
         return Status::Ok();
     }
-    Status TypedArgument(const ArgumentNode& argument, const std::string& expected, StableId trigger) {
+    Status TypedArgument(const ArgumentNode& argument, const std::string& expected, StableId trigger,
+        std::string_view function = {}) {
         if (expected.empty() || expected == "Null") return Fail("TRIGGER_GRAPH_TYPE_UNRESOLVED", "期望类型不确定，不能将未知当兼容。");
         if (types.LiteralKind(expected) == TriggerTypeSystem::Literal::Script)
-            return !argument.indexArgument && ((argument.type == 3 && CodeValueAllowed(trigger, argument.value.text))
+            return !argument.indexArgument && ((argument.type == 3 && (CodeValueAllowed(trigger, argument.value.text)
+                || CommentText(function, argument.value.text)))
                 || (argument.type == 0 && FindPreset(catalog, argument.value.text).has_value())) ? Status::Ok() : CodeRejected();
         if (argument.type == 0) {
             const auto actual = types.PresetType(argument.value.text);
@@ -920,7 +928,7 @@ struct Editor {
                 }
                 auto status = argument.type == -1
                     ? Fail("TRIGGER_GRAPH_ARGUMENT_UNSET", "参数未设置（?）只能留在禁用的语句里。")
-                    : TypedArgument(argument, expected, eca.sourceTriggerId);
+                    : TypedArgument(argument, expected, eca.sourceTriggerId, eca.name.text);
                 if (!status.Succeeded()) {
                     if (const auto found = origins.find(eca.id); found != origins.end())
                         Locate(status, found->second + " 第 " + std::to_string(i + 1) + " 个参数");
