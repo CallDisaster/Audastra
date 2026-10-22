@@ -192,20 +192,20 @@ Result<TreeInventory> InspectUpdateTree(const std::filesystem::path& root) {
     using R = Result<TreeInventory>;
     TreeInventory inventory;
     std::uint64_t originBytes = 0;
-    const auto remember = [&](const std::wstring& key, const OriginStreamReadLease& origin) {
-        if (!origin.zoneIdentifier) return true;
-        if (origin.zoneIdentifier->bytes.size() > kMaxOriginMetadataBytes - originBytes) return false;
-        originBytes += origin.zoneIdentifier->bytes.size(); inventory.origins.emplace(key, *origin.zoneIdentifier);
+    const auto remember = [&](const std::wstring& key, const OriginMetadata* origin) {
+        if (!origin) return true;
+        if (origin->bytes.size() > kMaxOriginMetadataBytes - originBytes) return false;
+        originBytes += origin->bytes.size(); inventory.origins.emplace(key, *origin);
         return true;
     };
     std::vector<std::pair<std::filesystem::path, unsigned>> pending{{root, 0}};
     while (!pending.empty()) {
         auto [directory, depth] = std::move(pending.back()); pending.pop_back();
         if (depth > 64) return R::Failure("Update", "UPDATE_INVENTORY_DEPTH_BUDGET", "安装目录超过64层，未返回部分盘点。");
-        const auto directoryLease = LockSafeDirectory(directory);
+        const auto directoryLease = LockSharedSafeDirectory(directory);
         if (!directoryLease.Succeeded()) return {std::nullopt, directoryLease.diagnostics};
         const auto directoryKey = directory == root ? std::wstring{} : directory.lexically_relative(root).generic_wstring();
-        if (!remember(directoryKey, directoryLease.value->origin))
+        if (!remember(directoryKey, directoryLease.value->Origin()))
             return R::Failure("Update", "UPDATE_ORIGIN_METADATA_BUDGET", "安装树下载来源元数据超过累计有界容量。");
         WIN32_FIND_DATAW data{};
         FindHandle find(FindFirstFileW((directory / L"*").c_str(), &data));
@@ -228,9 +228,9 @@ Result<TreeInventory> InspectUpdateTree(const std::filesystem::path& root) {
             if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
                 inventory.directories.insert(std::move(key)); pending.emplace_back(path, depth + 1);
             } else {
-                auto lease = OpenSafeReadFile(path, 64ULL * 1024 * 1024 * 1024);
+                auto lease = OpenSafeReadFile(path, 64ULL * 1024 * 1024 * 1024, *directoryLease.value);
                 if (!lease.Succeeded()) return {std::nullopt, std::move(lease.diagnostics)};
-                if (!remember(key, lease.value->origin))
+                if (!remember(key, lease.value->origin.zoneIdentifier ? &*lease.value->origin.zoneIdentifier : nullptr))
                     return R::Failure("Update", "UPDATE_ORIGIN_METADATA_BUDGET", "安装树下载来源元数据超过累计有界容量。");
                 if (lease.value->bytes > 64ULL * 1024 * 1024 * 1024 - inventory.bytes)
                     return R::Failure("Update", "UPDATE_INVENTORY_SIZE_BUDGET", "安装树累计超过64GiB。");

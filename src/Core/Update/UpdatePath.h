@@ -4,6 +4,8 @@
 
 #include <Windows.h>
 
+#include <memory>
+
 namespace War3Map::Update::Detail {
 
 class NativeHandle {
@@ -47,10 +49,29 @@ struct DirectoryReadLease {
     OriginStreamReadLease origin;
 };
 
+struct FileReadLease;
+class SharedDirectoryReadLease {
+public:
+    SharedDirectoryReadLease() = default;
+    [[nodiscard]] bool Valid() const noexcept { return lease_ != nullptr; }
+    // 只读元数据不暴露目录/命名流句柄；有效owner只能由真实锁定工厂创建。
+    [[nodiscard]] const OriginMetadata* Origin() const noexcept {
+        return lease_ && lease_->origin.zoneIdentifier ? &*lease_->origin.zoneIdentifier : nullptr;
+    }
+private:
+    explicit SharedDirectoryReadLease(std::shared_ptr<const DirectoryReadLease> lease) : lease_(std::move(lease)) {}
+    friend Result<SharedDirectoryReadLease> LockSharedSafeDirectory(const std::filesystem::path& path);
+    friend Result<FileReadLease> OpenSafeReadFile(const std::filesystem::path& path, std::uint64_t maxBytes,
+        const SharedDirectoryReadLease& parent);
+    std::shared_ptr<const DirectoryReadLease> lease_;
+};
+
 struct FileReadLease {
     std::filesystem::path path;
     std::uint64_t bytes = 0;
     DirectoryReadLease parent;
+    // 先声明父owner，逆序析构时保证文件及其ADS先关闭，再释放祖先目录锁。
+    SharedDirectoryReadLease sharedParent;
     NativeHandle file;
     OriginStreamReadLease origin;
 };
@@ -64,7 +85,10 @@ struct FileReadLease {
 [[nodiscard]] Result<std::filesystem::path> NormalizeLocalPath(
     const std::filesystem::path& input, bool requireAbsolute);
 [[nodiscard]] Result<DirectoryReadLease> LockSafeDirectory(const std::filesystem::path& path);
+[[nodiscard]] Result<SharedDirectoryReadLease> LockSharedSafeDirectory(const std::filesystem::path& path);
 [[nodiscard]] Result<FileReadLease> OpenSafeReadFile(const std::filesystem::path& path, std::uint64_t maxBytes);
+[[nodiscard]] Result<FileReadLease> OpenSafeReadFile(const std::filesystem::path& path, std::uint64_t maxBytes,
+    const SharedDirectoryReadLease& parent);
 [[nodiscard]] bool SafeWindowsComponent(std::wstring_view component);
 // 创建/rename的目标仍通过同一普通磁盘、单链接、final-path门禁；调用方持有父租约。
 [[nodiscard]] Status CheckOpenedPath(HANDLE handle, const std::filesystem::path& path, bool directory);

@@ -19,6 +19,7 @@
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
+#include <type_traits>
 
 namespace {
 
@@ -190,7 +191,7 @@ void Put32(std::vector<std::byte>& bytes, std::size_t offset, std::uint32_t valu
     for (unsigned i = 0; i < 4; ++i) bytes.at(offset + i) = static_cast<std::byte>((value >> (8 * i)) & 0xff);
 }
 
-bool CreateJunction(const std::filesystem::path& junction, const std::filesystem::path& target) {
+bool CreateJunction(const std::filesystem::path& junction, const std::filesystem::path& target, bool existing = false) {
     struct MountPointBuffer {
         DWORD tag = IO_REPARSE_TAG_MOUNT_POINT;
         WORD dataLength = 0, reserved = 0;
@@ -206,8 +207,9 @@ bool CreateJunction(const std::filesystem::path& junction, const std::filesystem
     buffer.dataLength = static_cast<WORD>(8 + buffer.printOffset + buffer.printLength + sizeof(wchar_t));
     std::memcpy(buffer.path, substitute.data(), buffer.substituteLength);
     std::memcpy(reinterpret_cast<std::byte*>(buffer.path) + buffer.printOffset, print.data(), buffer.printLength);
-    if (!std::filesystem::create_directory(junction)) return false;
-    const auto handle = CreateFileW(junction.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+    if (!existing && !std::filesystem::create_directory(junction)) return false;
+    const auto handle = CreateFileW(junction.c_str(), GENERIC_READ | GENERIC_WRITE,
+        existing ? FILE_SHARE_READ | FILE_SHARE_WRITE : 0, nullptr, OPEN_EXISTING,
         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (handle == INVALID_HANDLE_VALUE) return false;
     DWORD returned = 0;
@@ -479,6 +481,135 @@ bool OriginalZone(const Detail::OriginStreamReadLease& lease, std::string_view b
         && lease.zoneIdentifier->bytes == std::vector<std::byte>(Bytes(bytes).begin(), Bytes(bytes).end())
         && lease.zoneIdentifier->sha256 == Hash(bytes)
         && Detail::OriginMatches(lease, &*lease.zoneIdentifier) && !Detail::OriginMatches(lease, nullptr);
+}
+
+void SharedParentLeaseTests() {
+    using SharedLease = Detail::SharedDirectoryReadLease;
+    static_assert(!std::is_aggregate_v<SharedLease>);
+    static_assert(!std::is_constructible_v<SharedLease, Detail::DirectoryReadLease>);
+    static_assert(!std::is_constructible_v<SharedLease, std::shared_ptr<Detail::DirectoryReadLease>>);
+    static_assert(!std::is_constructible_v<SharedLease, std::shared_ptr<const Detail::DirectoryReadLease>>);
+    static_assert(std::is_same_v<decltype(std::declval<const SharedLease&>().Origin()), const Detail::OriginMetadata*>);
+    TempDirectory temp;
+    const auto ancestor = temp.Path() / L"shared-parent", directory = ancestor / L"leaf",
+        file = directory / L"user.txt", other = ancestor / L"other",
+        movedDirectory = ancestor / L"leaf-moved", movedAncestor = temp.Path() / L"parent-moved";
+    const std::string contents = "original shared parent file bytes";
+    const std::string zone = "[ZoneTransfer]\r\nZoneId=3\r\nHostUrl=https://origin.invalid/shared\r\n";
+    Write(file, contents); std::filesystem::create_directory(other);
+    Write(ZonePath(directory), zone); Write(ZonePath(file), zone);
+    const auto exactOrigin = [&](const Detail::OriginMetadata* origin) {
+        return origin && origin->bytes == std::vector<std::byte>(Bytes(zone).begin(), Bytes(zone).end())
+            && origin->sha256 == Hash(zone);
+    };
+    const SharedLease empty;
+    Check(!empty.Valid() && !empty.Origin()
+        && Code(Detail::OpenSafeReadFile(file, 1024, empty), "UPDATE_PARENT_LEASE_MISMATCH"),
+        "an empty shared directory owner cannot authorize a file read");
+    auto owner = Detail::LockSharedSafeDirectory(directory);
+    Check(owner.Succeeded() && owner.value->Valid() && exactOrigin(owner.value->Origin()),
+        "shared owner comes from real directory locking and exposes only exact original metadata");
+    if (!owner.Succeeded()) return;
+    {
+        const auto wrong = Detail::LockSharedSafeDirectory(other);
+        Check(wrong.Succeeded() && Code(Detail::OpenSafeReadFile(file, 1024, *wrong.value), "UPDATE_PARENT_LEASE_MISMATCH"),
+            "a genuine owner for another direct parent cannot authorize the file");
+    }
+    auto moved = std::move(*owner.value);
+    Check(!owner.value->Valid() && !owner.value->Origin()
+        && Code(Detail::OpenSafeReadFile(file, 1024, *owner.value), "UPDATE_PARENT_LEASE_MISMATCH"),
+        "a moved-from shared directory owner cannot authorize a file read");
+    auto held = Detail::OpenSafeReadFile(ancestor / L"LeAf" / L"USER.txt", 1024, moved);
+    auto reused = Detail::OpenSafeReadFile(file, 1024, moved);
+    Check(held.Succeeded() && reused.Succeeded(), "one real shared parent supports repeated reads and Windows case-insensitive binding");
+    if (!held.Succeeded() || !reused.Succeeded()) return;
+    Check(held.value->bytes == contents.size() && OriginalZone(held.value->origin, zone)
+        && exactOrigin(held.value->sharedParent.Origin())
+        && Sha256Handle(held.value->file.Get()).value == std::optional<std::string>(Hash(contents)),
+        "shared-parent file reading preserves exact default bytes and separate directory/file origin bytes");
+    owner.value.reset(); moved = SharedLease{}; reused.value.reset();
+    Check(held.value->sharedParent.Valid() && exactOrigin(held.value->sharedParent.Origin()),
+        "file lease independently retains its shared parent after all caller owners are released");
+    const auto cannotRename = [&](const std::filesystem::path& source, const std::filesystem::path& destination) {
+        const bool renamed = MoveFileExW(source.c_str(), destination.c_str(), 0) != FALSE;
+        const auto error = renamed ? ERROR_SUCCESS : GetLastError();
+        Check(!renamed && error == ERROR_SHARING_VIOLATION,
+            "file-owned shared lease prevents native parent and ancestor rename with sharing violation");
+        if (renamed && !MoveFileExW(destination.c_str(), source.c_str(), 0))
+            throw std::runtime_error("shared directory rename fixture restore failed");
+    };
+    cannotRename(directory, movedDirectory); cannotRename(ancestor, movedAncestor);
+    for (const auto& path : {directory, file}) {
+        Detail::NativeHandle writer(CreateFileW(ZonePath(path).c_str(), GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr));
+        const auto error = writer.Valid() ? ERROR_SUCCESS : GetLastError();
+        Check(!writer.Valid() && error == ERROR_SHARING_VIOLATION,
+            "file-owned shared parent and file origin handles continue to refuse native metadata writers");
+    }
+    held.value.reset();
+    Check(MoveFileExW(directory.c_str(), movedDirectory.c_str(), 0) != FALSE,
+        "native direct-parent rename succeeds after the last file-owned shared lease releases");
+    Check(MoveFileExW(movedDirectory.c_str(), directory.c_str(), 0) != FALSE, "shared direct-parent fixture restored");
+    Check(MoveFileExW(ancestor.c_str(), movedAncestor.c_str(), 0) != FALSE,
+        "native ancestor rename succeeds after the last file-owned shared lease releases");
+    Check(MoveFileExW(movedAncestor.c_str(), ancestor.c_str(), 0) != FALSE, "shared ancestor fixture restored");
+    {
+        auto checkedOwner = Detail::LockSharedSafeDirectory(directory);
+        Check(checkedOwner.Succeeded(), "shared file refusal fixture owner acquired");
+        if (!checkedOwner.Succeeded()) return;
+        Check(Code(Detail::OpenSafeReadFile(file, contents.size() - 1, *checkedOwner.value), "UPDATE_FILE_BUDGET"),
+            "shared-parent reuse retains the exact per-file byte budget");
+        const auto unknown = std::filesystem::path(file.native() + L":shared-unknown");
+        Write(unknown, "original unknown file stream");
+        Check(Code(Detail::OpenSafeReadFile(file, 1024, *checkedOwner.value), "UPDATE_ADS_REJECTED"),
+            "shared-parent reuse still performs the complete per-file unknown ADS gate");
+        Check(DeleteFileW(unknown.c_str()) != FALSE, "only original unknown shared-file stream removed");
+        const auto alias = directory / L"alias.txt";
+        Check(CreateHardLinkW(alias.c_str(), file.c_str(), nullptr) != FALSE, "shared hardlink fixture created");
+        Check(Code(Detail::OpenSafeReadFile(file, 1024, *checkedOwner.value), "UPDATE_REPARSE_OR_PATH_REJECTED"),
+            "shared-parent reuse still rejects a file with multiple hard links");
+        Check(DeleteFileW(alias.c_str()) != FALSE, "only original shared hardlink alias removed");
+    }
+    const auto unknownParent = std::filesystem::path(directory.native() + L":shared-parent-unknown");
+    {
+        auto checkedOwner = Detail::LockSharedSafeDirectory(directory);
+        Check(checkedOwner.Succeeded(), "shared directory unknown-stream mutation fixture owner acquired");
+        if (!checkedOwner.Succeeded()) return;
+        Write(unknownParent, "original late directory stream");
+        Check(Code(Detail::OpenSafeReadFile(file, 1024, *checkedOwner.value), "UPDATE_ADS_REJECTED"),
+            "shared parent re-enumeration rejects unknown directory ADS created after the factory snapshot");
+    }
+    Check(DeleteFileW(unknownParent.c_str()) != FALSE, "only original late directory stream removed after owner release");
+    const auto absentDirectory = ancestor / L"absent", absentFile = absentDirectory / L"user.txt";
+    Write(absentFile, contents);
+    {
+        auto absentOwner = Detail::LockSharedSafeDirectory(absentDirectory);
+        Check(absentOwner.Succeeded() && !absentOwner.value->Origin(), "shared parent records original metadata absence");
+        if (!absentOwner.Succeeded()) return;
+        Write(ZonePath(absentDirectory), zone);
+        Check(Code(Detail::OpenSafeReadFile(absentFile, 1024, *absentOwner.value), "UPDATE_INVENTORY_CHANGED"),
+            "shared parent rejects newly-present Zone metadata instead of reusing a stale absent snapshot");
+    }
+    Check(Sha256File(file).value == std::optional<std::string>(Hash(contents))
+        && Sha256File(ZonePath(directory)).value == std::optional<std::string>(Hash(zone))
+        && Sha256File(ZonePath(file)).value == std::optional<std::string>(Hash(zone)),
+        "shared parent reuse and refusal cases preserve original file and both origin streams exactly");
+    const auto mutableDirectory = ancestor / L"mutable-empty", target = ancestor / L"junction-target";
+    std::filesystem::create_directory(mutableDirectory);
+    Write(target / L"original.txt", contents);
+    {
+        const auto mutableOwner = Detail::LockSharedSafeDirectory(mutableDirectory);
+        Check(mutableOwner.Succeeded(), "shared empty-directory reparse mutation fixture owner acquired");
+        if (!mutableOwner.Succeeded()) return;
+        // 对既有空目录申请兼容RW共享写句柄；持有no-delete租约不保证拒绝FSCTL_SET_REPARSE_POINT。
+        const bool changed = CreateJunction(mutableDirectory, target, true);
+        Check(changed, "held no-delete directory can actually be changed to a junction through compatible write sharing");
+        if (changed) Check(Code(Detail::OpenSafeReadFile(mutableDirectory / L"missing.txt", 1024, *mutableOwner.value),
+            "UPDATE_REPARSE_OR_PATH_REJECTED"), "shared anchor revalidation rejects new reparse before trying to open the absent file");
+    }
+    Check(RemoveDirectoryW(mutableDirectory.c_str()) != FALSE, "only original reparse mutation fixture directory removed");
+    Check(Sha256File(target / L"original.txt").value == std::optional<std::string>(Hash(contents)),
+        "shared parent reparse refusal leaves the junction target bytes intact");
 }
 
 void OriginMetadataFormatTests() {
@@ -791,6 +922,7 @@ int main() {
         PackageTests(signer);
         PathAncestorStreamTests(signer);
         PathDirectoryLeaseTests();
+        SharedParentLeaseTests();
         OriginMetadataFormatTests();
         OriginNamedStreamLeaseTests();
         OriginPackageAndPlanTests(signer);

@@ -137,6 +137,43 @@ bool RegularInfo(HANDLE handle, bool directory, const std::filesystem::path& pat
     return true;
 }
 
+bool HeldDirectoryMatches(const DirectoryReadLease& lease) {
+    if (!lease.path.is_absolute() || lease.anchors.empty() || lease.anchors.size() > 66
+        || lease.origin.zoneIdentifier.has_value() != lease.origin.stream.Valid()) return false;
+    // 目录句柄允许WRITE共享；拒绝rename不代表能跳过后续reparse及final-path检查。
+    auto prefix = lease.path.root_path();
+    std::size_t index = 0;
+    const auto checked = [&] {
+        if (index >= lease.anchors.size() || !lease.anchors[index].Valid()) return false;
+        BY_HANDLE_FILE_INFORMATION info{};
+        return RegularInfo(lease.anchors[index++].Get(), true, prefix, info);
+    };
+    if (!checked()) return false;
+    for (const auto& component : lease.path.relative_path()) {
+        prefix /= component;
+        if (!checked()) return false;
+    }
+    return index == lease.anchors.size();
+}
+
+Result<FileReadLease> OpenValidatedReadFile(const std::filesystem::path& input,
+    std::filesystem::path normalized, std::uint64_t maxBytes, DirectoryReadLease parent,
+    SharedDirectoryReadLease sharedParent) {
+    NativeHandle handle(CreateFileW(normalized.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+        OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+    if (!handle.Valid()) return Failure<FileReadLease>(input, "UPDATE_FILE_OPEN_FAILED",
+        "无法只读锁定更新文件；文件可能不存在、不可访问或正在写入/删除。");
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (!RegularInfo(handle.Get(), false, normalized, info)) return Failure<FileReadLease>(input,
+        "UPDATE_REPARSE_OR_PATH_REJECTED", "更新文件不是单链接普通文件、含reparse或实际路径不符。");
+    const auto length = (static_cast<std::uint64_t>(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
+    if (length > maxBytes) return Failure<FileReadLease>(input, "UPDATE_FILE_BUDGET", "更新文件超过读取容量限制。");
+    auto streams = LockUpdateOriginStreams(normalized, handle.Get());
+    if (!streams.Succeeded()) return {std::nullopt, streams.diagnostics};
+    return Result<FileReadLease>::Success(FileReadLease{std::move(normalized), length,
+        std::move(parent), std::move(sharedParent), std::move(handle), std::move(*streams.value)});
+}
+
 } // namespace
 
 Result<OriginStreamReadLease> LockUpdateOriginStreams(const std::filesystem::path& path, HANDLE base, bool shareDelete) {
@@ -270,24 +307,36 @@ Result<DirectoryReadLease> LockSafeDirectory(const std::filesystem::path& input)
     return Result<DirectoryReadLease>::Success(std::move(lease));
 }
 
+Result<SharedDirectoryReadLease> LockSharedSafeDirectory(const std::filesystem::path& input) {
+    auto locked = LockSafeDirectory(input);
+    if (!locked.Succeeded()) return {std::nullopt, std::move(locked.diagnostics)};
+    return Result<SharedDirectoryReadLease>::Success(
+        SharedDirectoryReadLease(std::make_shared<const DirectoryReadLease>(std::move(*locked.value))));
+}
+
 Result<FileReadLease> OpenSafeReadFile(const std::filesystem::path& input, std::uint64_t maxBytes) {
     auto normalized = NormalizeLocalPath(input, false);
     if (!normalized.Succeeded()) return {std::nullopt, std::move(normalized.diagnostics)};
     auto parent = LockSafeDirectory(normalized.value->parent_path());
     if (!parent.Succeeded()) return {std::nullopt, std::move(parent.diagnostics)};
-    NativeHandle handle(CreateFileW(normalized.value->c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-        OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN | FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
-    if (!handle.Valid()) return Failure<FileReadLease>(input, "UPDATE_FILE_OPEN_FAILED",
-        "无法只读锁定更新文件；文件可能不存在、不可访问或正在写入/删除。");
-    BY_HANDLE_FILE_INFORMATION info{};
-    if (!RegularInfo(handle.Get(), false, *normalized.value, info)) return Failure<FileReadLease>(input,
-        "UPDATE_REPARSE_OR_PATH_REJECTED", "更新文件不是单链接普通文件、含reparse或实际路径不符。");
-    const auto length = (static_cast<std::uint64_t>(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
-    if (length > maxBytes) return Failure<FileReadLease>(input, "UPDATE_FILE_BUDGET", "更新文件超过读取容量限制。");
-    auto streams = LockUpdateOriginStreams(*normalized.value, handle.Get());
-    if (!streams.Succeeded()) return {std::nullopt, streams.diagnostics};
-    return Result<FileReadLease>::Success(FileReadLease{std::move(*normalized.value), length,
-        std::move(*parent.value), std::move(handle), std::move(*streams.value)});
+    return OpenValidatedReadFile(input, std::move(*normalized.value), maxBytes, std::move(*parent.value), {});
+}
+
+Result<FileReadLease> OpenSafeReadFile(const std::filesystem::path& input, std::uint64_t maxBytes,
+    const SharedDirectoryReadLease& parent) {
+    auto normalized = NormalizeLocalPath(input, false);
+    if (!normalized.Succeeded()) return {std::nullopt, std::move(normalized.diagnostics)};
+    if (!parent.lease_ || !Equal(normalized.value->parent_path().native(), parent.lease_->path.native()))
+        return Failure<FileReadLease>(input, "UPDATE_PARENT_LEASE_MISMATCH", "共享目录租约为空或不属于文件的直接父目录。");
+    if (!HeldDirectoryMatches(*parent.lease_)) return Failure<FileReadLease>(input,
+        "UPDATE_REPARSE_OR_PATH_REJECTED", "共享目录租约的祖先句柄、普通目录或实际路径身份不再成立。");
+    // 已存在的Zone句柄持续拒绝WRITE/DELETE，因此不重读/重哈希原字节；
+    // 其它stream名称仍可新增，每文件复核枚举及presence，不能将工厂时的absent永久缓存。
+    const auto listed = EnumerateOriginStream(parent.lease_->path);
+    if (!listed.Succeeded()) return {std::nullopt, listed.diagnostics};
+    if (*listed.value != parent.lease_->origin.zoneIdentifier.has_value()) return Failure<FileReadLease>(input,
+        "UPDATE_INVENTORY_CHANGED", "共享目录的下载来源数据流在租约期间变化。");
+    return OpenValidatedReadFile(input, std::move(*normalized.value), maxBytes, {}, parent);
 }
 
 } // namespace War3Map::Update::Detail
