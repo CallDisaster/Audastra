@@ -157,6 +157,8 @@ void MapTableMigrationAndFinalSaveStayBound() {
     Require(directory->Identity() != archive->Identity(), "strict identities retain actual containers");
     Require(directory->Find("gg_rct_Arena") && archive->Find("gg_rct_Arena"),
         "archive capture qualifies named regions like the expanded directory");
+    Require(directory->Find("gg_rct_Arena")->name == "Arena" && archive->Find("gg_rct_Arena")->name == "Arena",
+        "named regions keep their display name for compact T export");
     Require(VerifyMapObjectReferenceContents(*directory, *archive).Succeeded(), "explicit save migration accepts equal map table contents");
     MapSaveTask task;
     fixture.Prepare(task, directory, "same-map-tables.w3x");

@@ -28,6 +28,9 @@ public:
     // 子进程捕获不完整但Job已空时允许重试；Cleanup仍保留副本并说明缺失证据。
     // 宿主存活时观察Job新进程；宿主退出后仅已捕获进程持有Job，不继续观察新后代。
     [[nodiscard]] bool IsActive() const noexcept;
+    // 结束本次 Job 里的全部进程（只作用于本次启动的进程树，不枚举其他游戏）。已结束时直接成功；
+    // 返回只代表已发出终止，终态仍由 IsActive/Cleanup 确认。
+    [[nodiscard]] Status Stop();
     // 仅原进程树终态后调用；在后台核对并清理本次短路径副本，返回启动终态诊断。
     [[nodiscard]] Status Cleanup();
 private:

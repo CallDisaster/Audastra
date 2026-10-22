@@ -1,5 +1,9 @@
 #include "War3MapCore/Script/LuaTestReload.h"
 #include "War3MapCore/Services/LuaTestReloadController.h"
+#include "War3MapCore/Services/LuaTestEval.h"
+#include "War3MapCore/Trigger/TriggerCodec.h"
+#include "War3MapCore/Trigger/TriggerDirectory.h"
+#include "War3MapCore/Trigger/TriggerEditing.h"
 #include "War3MapCore/Services/MapSaveService.h"
 #include "../src/Core/Services/LuaTestMailboxSessionInternal.h"
 #include "../src/WarcraftRuntime32/OwnLua/LuaMailboxRuntime.h"
@@ -393,10 +397,48 @@ void Check(const std::filesystem::path& root) {
     Lua::SyntaxOptions tiny; tiny.maxSourceBytes = 1;
     Require(!PrepareLuaTestReload(baseline, next, "same", "same", tiny).Succeeded(), "Syntax compile budget ignored");
 }
+// Agent 测试步骤：紧凑 T 动作在文档副本里编成临时触发器，取出函数后在已运行的同一宿主里执行并读回变量。
+void Eval(const std::filesystem::path& root) {
+    Fixture fixture(root);
+    // 图编辑只接受真实 codec 读入的文档（带来源封印）：按作者文档的样子建一份再经编码往返。
+    auto empty = Trigger::WtgWctCodec{}.CreateEmpty(fixture.catalog);
+    Require(empty.Succeeded() && empty.value, "sealed empty document");
+    auto sealed = std::move(*empty.value);
+    const auto category = Trigger::TriggerDirectoryEditor::AddCategory(sealed, "Author");
+    Require(category.Succeeded() && Trigger::TriggerDocumentEditor::AddTrigger(sealed, *category.value, "Original").Succeeded()
+        && Trigger::TriggerDocumentEditor::AddVariable(sealed, "Existing", "integer").Succeeded(), "author fixture");
+    const auto encoded = Trigger::WtgWctCodec{}.Serialize(sealed, fixture.catalog);
+    Require(encoded.Succeeded() && encoded.value, "author fixture encoded");
+    const auto parsed = Trigger::WtgWctCodec{}.Parse(encoded.value->wtg, encoded.value->wct, fixture.catalog);
+    Require(parsed.Succeeded() && parsed.value, "author fixture sealed");
+    fixture.document = *parsed.value;
+    auto copy = fixture.document;
+    const auto plan = Services::AddLuaTestEvalTrigger(copy, fixture.catalog, {"Record(7)\nRecord(udg_Existing)", {"udg_Existing"}});
+    Require(plan.Succeeded() && plan.value, plan.Succeeded() ? "eval plan missing" : plan.diagnostics.front().message.c_str());
+    Require(fixture.document.triggers.size() == 1 && fixture.document.categories.size() == 1, "eval changed the author document");
+    const auto unit = GenerateLuaTriggerUnit(copy, fixture.catalog, fixture.target, {}, {}, {true});
+    Require(unit.Succeeded(), "eval unit failed");
+    const auto chunk = Services::BuildLuaTestEvalChunk(unit, *plan.value);
+    Require(chunk.Succeeded() && chunk.value, "eval chunk failed");
+    Host host; host.Run(fixture.Generate().text);
+    host.Run("InitGlobals(); udg_Existing = 5; printed = ''; function print(s) printed = printed .. s .. '\\n' end");
+    host.Run(*chunk.value);
+    host.Run("assert(recorded == 5, 'eval actions did not run'); assert(printed == '@audastra-read\\t0\\t5\\n', printed)");
+
+    auto other = fixture.document;
+    const auto unknown = Services::AddLuaTestEvalTrigger(other, fixture.catalog, {"Missing()", {}});
+    Require(!unknown.Succeeded() && unknown.diagnostics.front().code == "TRIGGER_TEXT_UNKNOWN_FUNCTION", "unknown step function accepted");
+    const auto badRead = Services::AddLuaTestEvalTrigger(other, fixture.catalog, {"Record(1)", {"Nope"}});
+    Require(!badRead.Succeeded() && badRead.diagnostics.front().code == "LUA_TEST_EVAL_READ_UNKNOWN", "unknown read accepted");
+    const auto indexed = Services::AddLuaTestEvalTrigger(other, fixture.catalog, {"Record(1)", {"Existing[1]"}});
+    Require(!indexed.Succeeded() && indexed.diagnostics.front().code == "LUA_TEST_EVAL_READS", "scalar read with index accepted");
+    Require(other.triggers.size() == 1, "refused eval changed the copy");
+}
 }
 int main() {
     try {
         const auto root = std::filesystem::temp_directory_path() / ("audastra-reload-fixture-" + std::to_string(GetCurrentProcessId()));
+        Eval(root / "eval");
         Check(root); Controller(root / "controller"); FinalAckAfterExit(root / "final-ack");
         FrozenBindings(root / "bindings"); MapFacts(root); std::filesystem::remove_all(root);
         std::cout << "Lua test generation/diff and 20 original offline host updates passed; game evidence=0\n"; return 0;

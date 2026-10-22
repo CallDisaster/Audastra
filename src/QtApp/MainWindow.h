@@ -224,6 +224,12 @@ private:
     void TestMap();
     // 启动单人测试；成功返回空串，否则返回原因。interactive 为 false 时不弹窗（供助手调用）。
     QString StartMapTest(bool interactive);
+    // Agent 进游戏测试：map_test_start / map_test_stop / map_test_eval（MapTestAgentActions.cpp）。
+    QJsonObject MapTestTool(const QString& name, const QJsonObject& arguments);
+    QJsonObject MapTestSteps(const QJsonObject& arguments);
+    // 热重载与测试步骤共用：在后台对测试副本任务做脚本预检并生成 Lua 测试单元；thenInWorker 在同一后台线程接着执行。
+    War3Map::Status RunLuaTestPreflight(War3Map::QtProject::MapSaveJob& task, const QString& label,
+        const std::function<void()>& thenInWorker = {});
     // 本局测试仍对应当前地图：生成的触发器 Lua 要求修订不变；手写 Lua 文件按内容比对，应用草稿后仍可热重载。
     [[nodiscard]] bool LuaTestSessionCurrent() const;
     QJsonObject LuaTestReload(bool submit);

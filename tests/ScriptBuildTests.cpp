@@ -1893,6 +1893,13 @@ void TestGenerate(const std::filesystem::path& root) {
     const auto duplicated = GenerateMapScript(inputs);
     Require(!duplicated.Succeeded() && HasCode(duplicated.diagnostics, "TRIGGER_SCRIPT_NAME_DUPLICATE"), "duplicate script names must fail");
     document.triggers.pop_back();
+    // 字节数相同的两个中文区域名会生成同一个 gg_rct_ 名，必须指出撞名。
+    MapData::RegionsDocument clashingRegions;
+    clashingRegions.entries.push_back({0, 0, 128, 128, "竞技场", 0, {}, "", {}});
+    clashingRegions.entries.push_back({0, 0, 128, 128, "祭坛区", 1, {}, "", {}});
+    auto regionInputs = inputs; regionInputs.regions = &clashingRegions;
+    const auto regionClash = GenerateMapScript(regionInputs);
+    Require(!regionClash.Succeeded() && HasCode(regionClash.diagnostics, "OBJECT_SCRIPT_NAME_DUPLICATE"), "duplicate region script names must fail");
     auto chinese = Trigger::TriggerDocumentEditor::AddTrigger(document, 1, "技能");
     Require(chinese.Succeeded(), "Chinese trigger name");
     Require(Trigger::TriggerDocumentEditor::AppendRootEca(document, *catalog.value, *chinese.value,

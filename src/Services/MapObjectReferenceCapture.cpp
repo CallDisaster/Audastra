@@ -277,7 +277,7 @@ void CaptureNamed(CaptureState& state, const MapDocument& map) {
             const auto& [name, type] = names[i];
             auto symbol = named.kind == MapDataKind::Sounds && name.starts_with("gg_snd_")
                 ? name : std::string(named.prefix) + Trigger::TriggerDirectoryEditor::ScriptName(name);
-            state.references.push_back({std::move(symbol), type, {}, 0, i, member.memberName, input.sha256, input.source});
+            state.references.push_back({std::move(symbol), type, {}, 0, i, member.memberName, input.sha256, input.source, name});
         }
         state.inputs.push_back(std::move(input));
     }

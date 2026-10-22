@@ -2,6 +2,7 @@
 
 #include "War3MapCore/Trigger/TriggerBlocks.h"
 #include "War3MapCore/Trigger/TriggerDataText.h"
+#include "War3MapCore/Trigger/MapObjectReferences.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
 #include "War3MapCore/Trigger/TriggerTypes.h"
 
@@ -564,8 +565,9 @@ std::string Quoted(std::string_view value) {
 
 class Renderer {
 public:
-    Renderer(const TriggerDocument& document, const UiCatalog& catalog, const TriggerRecord& trigger)
-        : document_(document), catalog_(catalog), types_(catalog), locals_(types_.CollectLocals(document, trigger)) {}
+    Renderer(const TriggerDocument& document, const UiCatalog& catalog, const TriggerRecord& trigger,
+        const MapObjectReferenceSnapshot* mapObjects = nullptr)
+        : document_(document), catalog_(catalog), mapObjects_(mapObjects), types_(catalog), locals_(types_.CollectLocals(document, trigger)) {}
 
     std::string error;
     std::vector<std::pair<StableId, std::size_t>> offsets; // (节点, 在输出中的字节位置)
@@ -638,7 +640,7 @@ private:
             if (!Name(value)) return false;
             const bool plain = !value.starts_with("udg_") && !value.starts_with("gg_") && std::any_of(document_.variables.begin(),
                 document_.variables.end(), [&](const VariableRecord& row) { return row.name.text == value; });
-            if (const auto name = TriggerDisplayName(value, expected); !argument.indexArgument && name) {
+            if (const auto name = !argument.indexArgument ? DisplayName(value, expected) : std::nullopt) {
                 out += NameText(*name);
                 return true;
             }
@@ -667,21 +669,32 @@ private:
             return Fail("未知参数来源 " + std::to_string(argument.type) + "，值“" + value + "”");
         }
     }
-    // 触发器参数导出为触发器显示名（比 gg_trg_ 生成名可读）；只在解析能唯一换回同一生成名时这样写。
-    std::optional<std::string> TriggerDisplayName(const std::string& symbol, const std::string& expected) const {
-        if (expected != "trigger" || !symbol.starts_with("gg_trg_")) return std::nullopt;
-        const TriggerRecord* found = nullptr;
-        for (const auto& trigger : document_.triggers) {
-            if (trigger.type != 0 || "gg_trg_" + TriggerDirectoryEditor::ScriptName(trigger.name.text) != symbol) continue;
-            if (found) return std::nullopt;
-            found = &trigger;
-        }
-        if (!found) return std::nullopt;
-        const auto& name = found->name.text;
+    // 触发器、区域、镜头、声音参数导出为显示名（比 gg_ 生成名可读）；只在解析能唯一换回同一生成名时这样写，
+    // 同一生成名对应多个对象（撞名）时保留生成名。
+    std::optional<std::string> DisplayName(const std::string& symbol, const std::string& expected) const {
+        std::string name;
+        if (expected == "trigger" && symbol.starts_with("gg_trg_")) {
+            const TriggerRecord* found = nullptr;
+            for (const auto& trigger : document_.triggers) {
+                if (trigger.type != 0 || "gg_trg_" + TriggerDirectoryEditor::ScriptName(trigger.name.text) != symbol) continue;
+                if (found) return std::nullopt;
+                found = &trigger;
+            }
+            if (!found || std::count_if(document_.triggers.begin(), document_.triggers.end(),
+                    [&](const TriggerRecord& trigger) { return trigger.type == 0 && trigger.name.text == found->name.text; }) != 1)
+                return std::nullopt;
+            name = found->name.text;
+        } else if (mapObjects_ && ((expected == "rect" && symbol.starts_with("gg_rct_"))
+                || (expected == "camerasetup" && symbol.starts_with("gg_cam_")) || (expected == "sound" && symbol.starts_with("gg_snd_")))) {
+            const auto references = mapObjects_->References();
+            auto at = std::lower_bound(references.begin(), references.end(), symbol,
+                [](const MapObjectReference& entry, const std::string& key) { return entry.symbol < key; });
+            if (at == references.end() || at->symbol != symbol || at->name.empty() || at->name == symbol
+                || (at + 1 != references.end() && (at + 1)->symbol == symbol)) return std::nullopt;
+            name = at->name;
+        } else return std::nullopt;
         if (name.empty() || name.find_first_of("`\r\n") != std::string::npos || name == "true" || name == "false"
             || name.starts_with("udg_") || name.starts_with("gg_") || FindPreset(catalog_, name).has_value()
-            || std::count_if(document_.triggers.begin(), document_.triggers.end(),
-                   [&](const TriggerRecord& trigger) { return trigger.type == 0 && trigger.name.text == name; }) != 1
             || std::any_of(document_.variables.begin(), document_.variables.end(),
                    [&](const VariableRecord& row) { return row.name.text == name; }))
             return std::nullopt;
@@ -701,6 +714,7 @@ private:
 
     const TriggerDocument& document_;
     const UiCatalog& catalog_;
+    const MapObjectReferenceSnapshot* mapObjects_ = nullptr;
     TriggerTypeSystem types_;
     std::vector<LocalVariable> locals_;
     bool located_ = false;
@@ -767,14 +781,14 @@ std::string TriggerTextQuoted(std::string_view value) { return Quoted(value); }
 std::string TriggerTextName(std::string_view name) { return NameText(name); }
 
 Result<std::string> RenderTriggerText(const TriggerDocument& document, const UiCatalog& catalog,
-    StableId triggerId, std::size_t maxBytes, std::vector<TriggerTextAnchor>* anchors) {
+    StableId triggerId, std::size_t maxBytes, std::vector<TriggerTextAnchor>* anchors, const MapObjectReferenceSnapshot* mapObjects) {
     const auto trigger = std::find_if(document.triggers.begin(), document.triggers.end(),
         [triggerId](const TriggerRecord& row) { return row.id == triggerId; });
     if (trigger == document.triggers.end())
         return Result<std::string>::Failure(kDomain, "TRIGGER_TEXT_TRIGGER_MISSING", "找不到触发器 " + std::to_string(triggerId) + "。");
     if (trigger->customTextFlag != 0)
         return Result<std::string>::Failure(kDomain, "TRIGGER_TEXT_CUSTOM_CODE", "自定义代码触发器没有事件/条件/动作树。");
-    Renderer renderer(document, catalog, *trigger);
+    Renderer renderer(document, catalog, *trigger, mapObjects);
     static constexpr std::array<const char*, 3> kSections{"events", "conditions", "actions"};
     std::string out;
     for (std::int32_t type = 0; type < 3; ++type) {

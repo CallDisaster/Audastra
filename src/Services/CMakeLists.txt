@@ -22,6 +22,7 @@ add_library(War3MapServices STATIC
     AuxiliaryTransaction.cpp
     ObjectDeletionAssessment.cpp
     ObjectCommands.cpp
+    ObjectFieldText.cpp
     ObjectResourceQuery.cpp
     ObjectResourceCatalog.cpp
     ObjectResourceFiles.cpp
@@ -48,6 +49,7 @@ add_library(War3MapServices STATIC
     MapObjectReferenceCapture.cpp
     MapObjectReferenceSources.cpp
     ScriptMigrationPreflight.cpp
+    LuaTestEval.cpp
     LuaTriggerCandidate.cpp
     LuaSourceQueries.cpp
     LuaCandidateProfile.cpp

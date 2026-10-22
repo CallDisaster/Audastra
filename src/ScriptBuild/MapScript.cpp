@@ -365,6 +365,21 @@ MapScriptResult GenerateMapScript(const MapScriptInputs& inputs) {
                     triggerVariables.back() + "），请改名", {}});
         }
     }
+    // 区域、镜头、声音同样按字节转换名称；撞名时两条记录会声明同一个全局，指出是哪两个。
+    const auto duplicates = [&](const char* kind, const auto& entries, auto symbol) {
+        std::unordered_map<std::string, std::string> seen;
+        for (const auto& entry : entries) {
+            const auto [found, inserted] = seen.emplace(symbol(entry), entry.name);
+            if (!inserted)
+                result.diagnostics.push_back({DiagnosticSeverity::Error, "Script.Map", "OBJECT_SCRIPT_NAME_DUPLICATE",
+                    std::string(kind) + "“" + entry.name + "”与“" + found->second + "”在脚本中的名称相同（" + found->first + "），请改名", {}});
+        }
+    };
+    if (inputs.regions) duplicates("区域", inputs.regions->entries, [&](const auto& region) { return context.RegionVariable(region.name); });
+    if (inputs.cameras) duplicates("镜头", inputs.cameras->entries, [](const auto& camera) { return "gg_cam_" + ConvertObjectName(camera.name); });
+    if (inputs.sounds) duplicates("声音", inputs.sounds->entries, [](const auto& sound) {
+        return sound.name.rfind("gg_snd_", 0) == 0 ? sound.name : "gg_snd_" + ConvertObjectName(sound.name);
+    });
 
     detail::WriteHeader(context);
     const std::size_t storageSwitch = detail::WriteGlobals(context, triggerVariables);

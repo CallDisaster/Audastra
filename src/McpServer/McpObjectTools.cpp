@@ -1,9 +1,11 @@
 #include "McpObjectTools.h"
 #include "McpToolInternal.h"
+#include "War3MapCore/Services/ObjectFieldText.h"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <set>
 #include <type_traits>
 
@@ -92,6 +94,18 @@ QJsonObject FieldJson(const ObjectFieldRow& row) {
         result.insert("ordered_list", field->isList);
     }
     return result;
+}
+std::optional<QJsonObject> FieldFilterError(const QJsonArray& filter) {
+    if (filter.size() > 128) return Failure("OBJECT_FIELDS_BUDGET", "fields最多128项。");
+    for (const auto& field : filter) if (!field.isString() || field.toString().isEmpty() || field.toString().size() > 128)
+        return Failure("OBJECT_FIELD_ADDRESS_INVALID", "fields各项必须是1..128字符的字段键。");
+    return std::nullopt;
+}
+bool FieldSelected(const QJsonArray& filter, const ObjectFieldRow& row) {
+    return filter.isEmpty() || std::any_of(filter.begin(), filter.end(), [&](const QJsonValue& field) {
+        return field.toString() == QString::fromStdString(row.key.fieldId) ||
+            field.toString().compare(QString::fromStdString(row.sourceKey), Qt::CaseInsensitive) == 0;
+    });
 }
 QJsonObject AuditJson(const ObjectDeletionAssessment& assessment) {
     QJsonArray reasons, definite, possible, coverage;
@@ -253,6 +267,15 @@ std::vector<ToolDefinition> ObjectToolDefinitions() {
     auto remove = properties; remove.remove("page"); remove.insert("id", Id());
     add("objects_delete", "先用共用引用审计检查确定/可能引用和覆盖缺口；未证明完整无引用时拒绝删除并返回位置，不用静态零命中放行。",
         remove, {"kind", "id", "project_identity", "expected_revision"}, ToolPermission::Edit);
+    auto text = properties; text.remove("page"); text.remove("expected_revision"); text.remove("project_identity");
+    text.insert("id", Id()); text.insert("all", QJsonObject{{"type", "boolean"}, {"default", false}});
+    text.insert("fields", QJsonObject{{"type", "array"}, {"maxItems", 128}, {"items", String()}});
+    add("objects_text", "把对象字段读成紧凑文本，一行一个：显示名 (字段[:等级[:变体]]) = 值  // 引用对象名。默认只列已覆盖的字段，all=true 列全部；fields 可筛选。改几行后交给 objects_apply_text。",
+        text, {"kind", "id"}, ToolPermission::Query);
+    auto applyText = properties; applyText.remove("page"); applyText.insert("id", Id());
+    applyText.insert("text", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 262144}});
+    add("objects_apply_text", "按 objects_text 的写法修改字段：只写要改的行，括号里的字段键决定改哪一项，显示名和 // 注释忽略。值写数字、\"文本\"、'A000'、true/false 或 ['A000','A001']。1..128 行整批校验、整批生效，错误带行号；进入撤销栈，不保存。",
+        applyText, {"kind", "id", "text", "project_identity", "expected_revision"}, ToolPermission::Edit);
     auto options = properties; options.insert("field", String()); options.insert("id", Id());
     add("objects_field_options", "分页查询字段真实枚举或可选引用对象。受对象/技能限制的字段可提供id；不会要求猜rawcode。布尔返回真/假，列表选项仅为条目。",
         options, {"kind", "field"}, ToolPermission::Query);
@@ -271,11 +294,12 @@ QJsonObject InvokeObjectTool(const QString& name, const QJsonObject& arguments, 
         if (!properties.contains(it.key())) return Failure("OBJECT_ARGUMENT_UNKNOWN", "未知参数：" + it.key().toStdString());
         const auto type = properties.value(it.key()).toObject().value("type").toString();
         if ((type == "string" && !it.value().isString()) || (type == "array" && !it.value().isArray()) ||
-            (type == "object" && !it.value().isObject())) return Failure("OBJECT_ARGUMENT_TYPE", "参数类型不符：" + it.key().toStdString());
+            (type == "object" && !it.value().isObject()) || (type == "boolean" && !it.value().isBool()))
+            return Failure("OBJECT_ARGUMENT_TYPE", "参数类型不符：" + it.key().toStdString());
     }
     const auto type = Kind(arguments.value("kind").toString());
     if (!type) return Failure("OBJECT_KIND_INVALID", "kind 必须是七类物编之一。");
-    const bool write = name == "objects_set_fields" || name == "objects_create" || name == "objects_delete";
+    const bool write = name == "objects_set_fields" || name == "objects_apply_text" || name == "objects_create" || name == "objects_delete";
     const auto identity = host.identity();
     if (write || arguments.contains("expected_revision") || arguments.contains("project_identity")) {
         if (!arguments.value("project_identity").isString() || !arguments.value("expected_revision").isString() ||
@@ -324,15 +348,10 @@ QJsonObject InvokeObjectTool(const QString& name, const QJsonObject& arguments, 
         auto fields = ReadObjectFields(*context.value, arguments.value("id").toString().toStdString());
         if (!fields.Succeeded()) return Failure(fields);
         const auto filter = arguments.value("fields").toArray();
-        if (filter.size() > 128) return Failure("OBJECT_FIELDS_BUDGET", "fields最多128项。");
-        for (const auto& field : filter) if (!field.isString() || field.toString().isEmpty() || field.toString().size() > 128)
-            return Failure("OBJECT_FIELD_ADDRESS_INVALID", "fields各项必须是1..128字符的字段键。");
+        if (const auto invalid = FieldFilterError(filter)) return *invalid;
         QJsonArray items; qint64 total = 0;
         for (const auto& row : *fields.value) {
-            if (!filter.isEmpty() && std::none_of(filter.begin(), filter.end(), [&](const QJsonValue& field) {
-                return field.toString() == QString::fromStdString(row.key.fieldId) ||
-                    field.toString().compare(QString::fromStdString(row.sourceKey), Qt::CaseInsensitive) == 0;
-            })) continue;
+            if (!FieldSelected(filter, row)) continue;
             if (total >= page.value->offset && items.size() < page.value->limit) {
                 auto item = FieldJson(row);
                 if (row.value) {
@@ -352,6 +371,48 @@ QJsonObject InvokeObjectTool(const QString& name, const QJsonObject& arguments, 
         }
         return finish({{"ok", true}, {"id", arguments.value("id")}, {"fields", items}, {"total", total},
             {"offset", page.value->offset}, {"limit", page.value->limit}, {"truncated", total > page.value->offset + items.size()}});
+    }
+    if (name == "objects_text") {
+        const auto id = arguments.value("id").toString().toStdString();
+        auto fields = ReadObjectFields(*context.value, id);
+        if (!fields.Succeeded()) return Failure(fields);
+        const auto filter = arguments.value("fields").toArray();
+        if (const auto invalid = FieldFilterError(filter)) return *invalid;
+        std::vector<ObjectFieldRow> rows;
+        for (const auto& row : *fields.value) if (FieldSelected(filter, row)) rows.push_back(row);
+        // 行尾注释：引用字段写出对象名，其余字段只在名称解析得到不同的可读文本（如 TRIGSTR）时注释。
+        std::map<ObjectType, std::map<std::string, std::string>> objectNames;
+        NameResolutionContext names;
+        names.mapDocument = context.value->nameMap;
+        names.standardObjects = context.value->standard;
+        const auto namer = [&](const ObjectFieldRow& row, const std::string& raw) -> std::string {
+            if (row.definition && !row.definition->referenceTypes.empty()) {
+                std::string out;
+                for (std::size_t start = 0; start <= raw.size();) {
+                    const auto comma = raw.find(',', start);
+                    const auto item = raw.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+                    start = comma == std::string::npos ? raw.size() + 1 : comma + 1;
+                    for (const auto targetType : row.definition->referenceTypes) {
+                        auto [cache, fresh] = objectNames.try_emplace(targetType);
+                        if (fresh) if (const auto target = host.context(targetType); target.Succeeded())
+                            if (const auto listed = ListObjects(*target.value, ObjectListScope::All); listed.Succeeded())
+                                for (const auto& object : *listed.value) cache->second.emplace(object.key.rawcode, object.name);
+                        if (const auto found = cache->second.find(item); found != cache->second.end() && !found->second.empty()) {
+                            out += (out.empty() ? "" : "、") + found->second;
+                            break;
+                        }
+                    }
+                }
+                return out;
+            }
+            const auto resolved = ResolveName(names, raw);
+            return resolved.state == NameResolutionState::Resolved && resolved.displayName != raw ? resolved.displayName : std::string{};
+        };
+        ObjectFieldTextOptions options; options.all = arguments.value("all").toBool(false);
+        auto rendered = RenderObjectFieldText(rows, options, namer);
+        if (!rendered.Succeeded()) return Failure(rendered);
+        return finish({{"ok", true}, {"id", arguments.value("id")}, {"text", QString::fromStdString(*rendered.value)},
+            {"all", options.all}});
     }
     if (name == "objects_field_options") {
         const auto fieldName = arguments.value("field").toString().toStdString();
@@ -427,6 +488,28 @@ QJsonObject InvokeObjectTool(const QString& name, const QJsonObject& arguments, 
             changes.push_back(std::move(row));
         }
         plan = PlanObjectFieldChanges(*context.value, arguments.value("id").toString().toStdString(), changes);
+    } else if (name == "objects_apply_text") {
+        const auto id = arguments.value("id").toString().toStdString();
+        auto parsed = ParseObjectFieldText(arguments.value("text").toString().toStdString());
+        if (!parsed.Succeeded()) return Failure(parsed);
+        std::vector<ObjectFieldChange> changes;
+        for (const auto& row : *parsed.value) changes.push_back(row.change);
+        plan = PlanObjectFieldChanges(*context.value, id, changes);
+        // 整批失败时逐行复核，把问题落到行号上；仍整批拒绝。
+        if (!plan.Succeeded() && changes.size() > 1) {
+            std::vector<Diagnostic> located;
+            for (const auto& row : *parsed.value) {
+                const auto single = PlanObjectFieldChanges(*context.value, id, std::span(&row.change, 1));
+                for (auto diagnostic : single.diagnostics) if (diagnostic.severity == DiagnosticSeverity::Error) {
+                    diagnostic.message = "第 " + std::to_string(row.line) + " 行：" + diagnostic.message;
+                    located.push_back(std::move(diagnostic));
+                }
+            }
+            if (!located.empty()) plan.diagnostics = std::move(located);
+        } else if (!plan.Succeeded()) {
+            for (auto& diagnostic : plan.diagnostics)
+                diagnostic.message = "第 " + std::to_string(parsed.value->front().line) + " 行：" + diagnostic.message;
+        }
     } else if (name == "objects_create") {
         plan = PlanObjectCreation(*context.value, arguments.value("base_id").toString().toStdString(),
             arguments.contains("new_id") ? std::optional{arguments.value("new_id").toString().toStdString()} : std::nullopt,

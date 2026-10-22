@@ -1,6 +1,7 @@
 #pragma once
 
 #include "War3MapCore/Trigger/TriggerDocument.h"
+#include "War3MapCore/Trigger/MapObjectReferences.h"
 #include "War3MapCore/Trigger/UiCatalog.h"
 #include "War3MapCore/Types.h"
 
@@ -56,6 +57,6 @@ struct FeatureText {
 // 把一个类别导出为同一写法：类别下全部触发器，以及它们引用到的全局变量（按变量表顺序）。
 // 无法如实表达的内容明确报错。
 [[nodiscard]] Result<std::string> RenderFeatureText(const TriggerDocument& document, const UiCatalog& catalog,
-    std::int32_t categoryId, std::size_t maxBytes = 2U * 1024U * 1024U);
+    std::int32_t categoryId, std::size_t maxBytes = 2U * 1024U * 1024U, const MapObjectReferenceSnapshot* mapObjects = nullptr);
 
 } // namespace War3Map::Trigger

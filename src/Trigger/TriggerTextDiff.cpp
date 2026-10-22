@@ -94,9 +94,10 @@ std::string LineDiff(std::string_view before, std::string_view after) {
     return out;
 }
 
-std::string Render(const TriggerDocument& document, const UiCatalog& catalog, const TriggerRecord& trigger, std::string& note) {
+std::string Render(const TriggerDocument& document, const UiCatalog& catalog, const TriggerRecord& trigger, std::string& note,
+    const MapObjectReferenceSnapshot* mapObjects) {
     if (trigger.customTextFlag != 0) { note = "自定义代码触发器，没有紧凑 T 文本。"; return {}; }
-    auto text = RenderTriggerText(document, catalog, trigger.id);
+    auto text = RenderTriggerText(document, catalog, trigger.id, 1024U * 1024U, nullptr, mapObjects);
     if (!text.Succeeded() || !text.value) {
         note = text.diagnostics.empty() ? "无法导出紧凑 T 文本。" : text.diagnostics.front().message;
         return {};
@@ -107,7 +108,7 @@ std::string Render(const TriggerDocument& document, const UiCatalog& catalog, co
 } // namespace
 
 std::vector<TriggerTextChange> DiffTriggerTexts(const TriggerDocument& before, const TriggerDocument& after,
-    const UiCatalog& catalog, std::size_t maxBytes) {
+    const UiCatalog& catalog, std::size_t maxBytes, const MapObjectReferenceSnapshot* mapObjects) {
     std::map<StableId, const TriggerRecord*> old;
     for (const auto& trigger : before.triggers) old.emplace(trigger.id, &trigger);
     std::vector<TriggerTextChange> changes;
@@ -129,8 +130,8 @@ std::vector<TriggerTextChange> DiffTriggerTexts(const TriggerDocument& before, c
         if (found != old.end() && SameTrigger(before, *found->second, after, trigger)) { old.erase(found); continue; }
         TriggerTextChange change{trigger.id, trigger.name.text, found == old.end() ? "added" : "changed", {}, {}};
         std::string beforeNote, afterNote;
-        const auto next = Render(after, catalog, trigger, afterNote);
-        const auto previous = found == old.end() ? std::string{} : Render(before, catalog, *found->second, beforeNote);
+        const auto next = Render(after, catalog, trigger, afterNote, mapObjects);
+        const auto previous = found == old.end() ? std::string{} : Render(before, catalog, *found->second, beforeNote, mapObjects);
         change.note = !afterNote.empty() ? afterNote : beforeNote;
         if (change.note.empty()) change.diff = LineDiff(previous, next);
         if (found != old.end()) old.erase(found);
@@ -138,7 +139,7 @@ std::vector<TriggerTextChange> DiffTriggerTexts(const TriggerDocument& before, c
     }
     for (const auto& [id, trigger] : old) {
         TriggerTextChange change{id, trigger->name.text, "removed", {}, {}};
-        const auto previous = Render(before, catalog, *trigger, change.note);
+        const auto previous = Render(before, catalog, *trigger, change.note, mapObjects);
         if (change.note.empty()) change.diff = LineDiff(previous, {});
         add(std::move(change));
     }

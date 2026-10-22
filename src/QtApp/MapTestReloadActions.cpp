@@ -39,6 +39,45 @@ QJsonObject Snapshot(const Services::LuaReloadControllerSnapshot& snapshot) {
 }
 }
 
+War3Map::Status MainWindow::RunLuaTestPreflight(War3Map::QtProject::MapSaveJob& task, const QString& label,
+    const std::function<void()>& thenInWorker) {
+    task.testCopyOnly = true; task.script->luaTestOptions.testHotReload = true;
+    QScopedValueRollback<bool> busy(project_->savingMap_, true);
+    QProgressDialog progress(label, QString(), 0, 0, this);
+    progress.setWindowTitle(tr("Lua 测试")); progress.setCancelButton(nullptr);
+    progress.setWindowModality(Qt::WindowModal); progress.setMinimumDuration(0);
+    auto status = War3Map::Status::Ok();
+    const QPointer<MainWindow> window(this);
+    auto worker = std::unique_ptr<QThread>(QThread::create([&task, &status, &thenInWorker] {
+        try {
+            // PrepareMapPreflight 刚创建的独占空目录；先持有原句柄，成功后只清理本次拥有的文件。
+            const auto workspace = Services::FreezeMapTestWorkspace(task.scriptWorkspace);
+            if (!workspace.Succeeded() || !workspace.value) { status.diagnostics = workspace.diagnostics; return; }
+            const auto checked = Services::MapSaveService::Preflight(task);
+            if (!checked.Succeeded()) { status.diagnostics = checked.diagnostics; return; }
+            const auto captured = (*workspace.value)->Refresh();
+            task.diagnostics.insert(task.diagnostics.end(), captured.diagnostics.begin(), captured.diagnostics.end());
+            if (captured.Succeeded()) {
+                const auto cleanup = (*workspace.value)->Cleanup(true);
+                task.diagnostics.insert(task.diagnostics.end(), cleanup.diagnostics.begin(), cleanup.diagnostics.end());
+            }
+            if (!task.generatedLuaTestUnit || task.luaTestMapBinding.empty()) {
+                status = War3Map::Status::Failure("Lua.Test", "LUA_TEST_GENERATION_MISSING", "没有本次实际生成的 Lua 测试单元，代码没有发送。");
+                return;
+            }
+            if (thenInWorker) thenInWorker();
+        } catch (...) {
+            status = War3Map::Status::Failure("Lua.Test", "LUA_TEST_PREPARE_FAILED", "测试代码准备未完成，没有发送。");
+        }
+    }));
+    QEventLoop loop; connect(worker.get(), &QThread::finished, &loop, &QEventLoop::quit);
+    worker->start(QThread::LowPriority); progress.show(); loop.exec(); worker->wait();
+    if (!window) return War3Map::Status::Failure("Lua.Test", "LUA_TEST_WINDOW_CLOSED", "编辑器窗口已关闭。");
+    progress.hide();
+    project_->AddDiagnostics(task.diagnostics);
+    return status;
+}
+
 bool MainWindow::LuaTestSessionCurrent() const {
     if (luaFileReload_) return !luaTestSource_.empty() && luaTestSource_ == project_->sourceArchivePath_;
     return luaTestGeneration_ == project_->editRevision_.Generation();
@@ -92,43 +131,15 @@ QJsonObject MainWindow::LuaTestReload(bool submit) {
     auto task = project_->PrepareMapPreflight();
     if (!task || !task->script || !task->script->luaTarget)
         return Failure("LUA_RELOAD_PROFILE_REQUIRED", "当前 Lua 保存档案不可用，差异没有发送。");
-    task->testCopyOnly = true; task->script->luaTestOptions.testHotReload = true;
-    QScopedValueRollback<bool> busy(project_->savingMap_, true);
-    QProgressDialog progress(tr("正在检查触发器差异…"), QString(), 0, 0, this);
-    progress.setWindowTitle(tr("Lua 热重载")); progress.setCancelButton(nullptr);
-    progress.setWindowModality(Qt::WindowModal); progress.setMinimumDuration(0);
     War3Map::Result<Services::LuaReloadControllerSnapshot> result;
     const auto controller = luaReloadController_;
     const QPointer<MainWindow> window(this);
-    auto worker = std::unique_ptr<QThread>(QThread::create([&task, &result, controller] {
-        try {
-            // PrepareMapPreflight 刚创建的独占空目录；先持有原句柄，成功后只清理本次拥有的文件。
-            const auto workspace = Services::FreezeMapTestWorkspace(task->scriptWorkspace);
-            if (!workspace.Succeeded() || !workspace.value) {
-                result.diagnostics = workspace.diagnostics; return;
-            }
-            const auto checked = Services::MapSaveService::Preflight(*task);
-            if (!checked.Succeeded()) { result.diagnostics = checked.diagnostics; return; }
-            const auto captured = (*workspace.value)->Refresh();
-            task->diagnostics.insert(task->diagnostics.end(), captured.diagnostics.begin(), captured.diagnostics.end());
-            if (captured.Succeeded()) {
-                const auto cleanup = (*workspace.value)->Cleanup(true);
-                task->diagnostics.insert(task->diagnostics.end(), cleanup.diagnostics.begin(), cleanup.diagnostics.end());
-            }
-            if (!task->generatedLuaTestUnit || task->luaTestMapBinding.empty()) {
-                result = War3Map::Result<Services::LuaReloadControllerSnapshot>::Failure("Lua.Test", "LUA_RELOAD_GENERATION_MISSING",
-                    "没有本次实际生成的 Lua 测试单元，差异没有发送。"); return;
-            }
-            result = controller->Submit(std::move(*task->generatedLuaTestUnit), task->luaTestMapBinding);
-        } catch (...) {
-            result = War3Map::Result<Services::LuaReloadControllerSnapshot>::Failure("Lua.Test", "LUA_RELOAD_PREPARE_FAILED",
-                "差异准备未完成，基线保留。");
-        }
-    }));
-    QEventLoop loop; connect(worker.get(), &QThread::finished, &loop, &QEventLoop::quit);
-    worker->start(QThread::LowPriority); progress.show(); loop.exec(); worker->wait(); progress.hide();
+    const auto prepared = RunLuaTestPreflight(*task, tr("正在检查触发器差异…"), [&task, &result, controller] {
+        result = controller->Submit(std::move(*task->generatedLuaTestUnit), task->luaTestMapBinding);
+    });
     if (!window) return Failure("LUA_RELOAD_WINDOW_CLOSED", "编辑器窗口已关闭。");
-    project_->AddDiagnostics(task->diagnostics); project_->AddDiagnostics(result.diagnostics);
+    if (!prepared.Succeeded()) result.diagnostics = prepared.diagnostics;
+    project_->AddDiagnostics(result.diagnostics);
     // 预检没有地图发布点，不把差异准备标记为正式保存；失败目录保留诊断。
     if (!result.Succeeded() || !result.value) {
         const auto failure = Failure(result.diagnostics); ShowStatusMessage(failure.value("message").toString()); return failure;
@@ -161,8 +172,10 @@ void MainWindow::PollLuaTestReload() {
     if (freshDiagnostic) {
         luaRuntimeDiagnosticSequence_ = diagnosticSequence;
         const auto message = result.value("runtime_message").toString();
-        project_->AddDiagnostics({War3Map::Diagnostic{War3Map::DiagnosticSeverity::Error, "Lua.Test",
-            "LUA_TEST_RUNTIME_ERROR", message.toStdString()}});
+        // 运行时转发的普通打印（结果码为成功）只作信息，不算错误。
+        const bool printed = result.value("runtime_diagnostic_code").toInt() == static_cast<int>(Audastra::Runtime32::LuaReloadResult::Success);
+        project_->AddDiagnostics({War3Map::Diagnostic{printed ? War3Map::DiagnosticSeverity::Info : War3Map::DiagnosticSeverity::Error,
+            "Lua.Test", printed ? "LUA_TEST_OUTPUT" : "LUA_TEST_RUNTIME_ERROR", message.toStdString()}});
         ShowStatusMessage(message);
     }
     // 一局持续查询回调异常；相同ACK/等待提示不反复刷状态栏或跳转代码。

@@ -278,7 +278,7 @@ void MainWindow::SetupAgentWorkspace(bool readUserConfiguration) {
         return RunMapSave(path, inPlace, true);
     });
     state->tools->SetLuaTestHandler([this](bool submit) { return LuaTestReload(submit); });
-    state->tools->SetMapTestHandler([this] { return StartMapTest(false); });
+    state->tools->SetMapTestHandler([this](const QString& name, const QJsonObject& arguments) { return MapTestTool(name, arguments); });
     const QPointer<War3Map::Modules::WorldModule> world(worldModule_);
     auto viewportTools = std::make_shared<War3Map::Modules::WorldViewportToolService>([world]() {
         return world ? world->ViewportForTools() : nullptr;

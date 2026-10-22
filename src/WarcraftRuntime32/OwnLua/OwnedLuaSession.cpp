@@ -51,7 +51,8 @@ public:
             if (console.size() > consoleBytes) {
                 if (!message.empty()) message += '\n';
                 message.append(console.substr(consoleBytes));
-                consoleBytes = console.size();
+                host->ClearConsole();
+                consoleBytes = 0;
             }
         }
         if (!message.empty() && mailbox) (void)mailbox->Report(result.code, message);

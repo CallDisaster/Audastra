@@ -318,9 +318,10 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "get_terrain_edit_state",
         "imports_add", "imports_get", "imports_list", "imports_remove", "lua_file_read", "lua_file_write", "lua_files_list",
         "lua_test_hot_reload", "lua_test_reload_result",
-        "map_settings_get", "map_settings_set", "map_test_start",
+        "map_settings_get", "map_settings_set", "map_test_eval", "map_test_start", "map_test_stop",
         "object_resource_inspect", "object_resource_query", "object_resource_state",
-        "objects_create", "objects_delete", "objects_field_options", "objects_get", "objects_list", "objects_set_fields",
+        "objects_apply_text", "objects_create", "objects_delete", "objects_field_options", "objects_get", "objects_list", "objects_set_fields",
+        "objects_text",
         "open_campaign", "project_search", "query_campaign", "query_campaign_objects", "query_terrain_points", "redo_campaign", "save_campaign",
         "sounds_get", "sounds_list", "sounds_update",
         "strings_query", "strings_set",
@@ -329,7 +330,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{70});
+    QCOMPARE(expected.size(), qsizetype{74});
     for (const auto& definition : Mcp::AuxiliaryToolDefinitions()) {
         QCOMPARE(definition.permission, Mcp::ToolPermission::Edit);
         int matches = 0;
@@ -1852,7 +1853,11 @@ void LiveEditorToolsTests::LuaFileToolsShareAssetUndoAndRejectStaleText() {
 
     QCOMPARE(ErrorCode(f.tools->Invoke("map_test_start", f.Context())), QString("MAP_TEST_UNAVAILABLE"));
     int launches = 0;
-    f.tools->SetMapTestHandler([&launches] { return ++launches == 1 ? QString() : QStringLiteral("没有找到游戏"); });
+    f.tools->SetMapTestHandler([&launches](const QString& name, const QJsonObject& arguments) {
+        if (name != "map_test_start" || !arguments.contains("project_identity")) return QJsonObject{{"ok", false}};
+        return ++launches == 1 ? QJsonObject{{"ok", true}, {"started", true}}
+            : QJsonObject{{"ok", false}, {"code", "MAP_TEST_REJECTED"}, {"message", "没有找到游戏"}};
+    });
     QVERIFY(f.tools->Invoke("map_test_start", f.Context()).value("started").toBool());
     QCOMPARE(ErrorCode(f.tools->Invoke("map_test_start", f.Context())), QString("MAP_TEST_REJECTED"));
     auto staleTest = f.Context(); staleTest.insert("expected_revision", "9999");

@@ -50,6 +50,8 @@ public:
     [[nodiscard]] std::size_t MemoryBytes() const noexcept;
     [[nodiscard]] std::size_t CallbackCount() const noexcept;
     [[nodiscard]] std::string_view ConsoleText() const noexcept;
+    // 已转发的打印清空，长时间测试不会因 16 KiB 上限而丢掉后续输出。
+    void ClearConsole() noexcept;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

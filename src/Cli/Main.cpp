@@ -83,7 +83,7 @@ void PrintUsage() {
         << "war3-map-cli update-apply --package <zip> --manifest <json> --signature <sig> --install-dir <directory> [--baseline-manifest <json> --baseline-signature <sig>] --dry-run\n"
         << "war3-map-cli profiles\n"
         << "war3-map-cli map-create <profile> <new-map.w3x> <new-work-directory> <ydwe-root> <war3-root> <name> [author] [--init-trigger <name> --init-code <jass-line> ...] [--add-file <member> <file> ...]\n"
-        << "war3-map-cli map-test <map.w3x> <war3-root> <helper-dir> [--ydwe <root>] [--lua-engine owned|ydwe] [--no-hot-reload] [--seconds N] [--reload-after <seconds> <module> <file> ...]\n"
+        << "war3-map-cli map-test <map.w3x> <war3-root> <helper-dir> [--ydwe <root>] [--lua-engine owned|ydwe] [--no-hot-reload] [--stop] [--seconds N] [--reload-after <seconds> <module> <file> ...]\n"
         << "war3-map-cli map-data-inspect <map-archive-or-directory>\n"
         << "war3-map-cli resource-check <map-archive> <war3-root>\n"
         << "war3-map-cli name-query <map-archive> <source-sha256> <ui-root-or-dash> <game-root-or-dash> <raw-value> <ui-type>\n"

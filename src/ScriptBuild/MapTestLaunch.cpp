@@ -163,6 +163,19 @@ bool MapTestLaunchLease::IsActive() const noexcept {
 #endif
 }
 
+Status MapTestLaunchLease::Stop() {
+#ifdef _WIN32
+    if (!impl_) return Status::Failure("Map.Test", "MAP_TEST_STOP_FAILED", "测试启动记录无效。");
+    std::lock_guard lock(impl_->lifecycle);
+    if (impl_->finished || !impl_->job) return Status::Ok();
+    if (!TerminateJobObject(impl_->job, 1))
+        return Status::Failure("Map.Test", "MAP_TEST_STOP_FAILED", "无法结束本次测试的游戏进程（Win32=" + std::to_string(GetLastError()) + "）。");
+    return Status::Ok();
+#else
+    return Status::Failure("Map.Test", "MAP_TEST_STOP_FAILED", "当前平台不支持结束测试。");
+#endif
+}
+
 Status MapTestLaunchLease::Cleanup() {
 #ifdef _WIN32
     if (IsActive()) return Status::Failure("Map.Test", "MAP_TEST_STILL_ACTIVE", "游戏进程树仍在运行或终态未确认，测试副本已保留。");

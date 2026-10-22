@@ -23,6 +23,8 @@ struct MapObjectReference {
     std::string memberName;
     std::string memberSha256;
     std::string classificationSource;
+    // 区域、镜头、声音的显示名（导出紧凑 T 时代替 gg_ 生成名）；其他种类为空。
+    std::string name;
 };
 
 // 地图内数据可随显式保存迁移；外部游戏与战役仍绑定实际来源。
