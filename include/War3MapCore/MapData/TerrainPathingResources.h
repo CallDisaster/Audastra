@@ -52,6 +52,10 @@ public:
     // 调用方须将冻结current的canonical W3E身份与落笔前Session核对；不是after身份。
     [[nodiscard]] std::string_view WaterBrushInputSha256() const noexcept { return waterBrushInputSha_; }
     [[nodiscard]] std::size_t WaterBrushInputBytes() const noexcept { return waterBrushInputBytes_; }
+    // 仅真实水刷规则owner可验证捕获时的source/current；分别比较canonical W3E身份。
+    // 不读盘、不授予保存资格；宿主另复核实际资源来源与Session修订。
+    [[nodiscard]] Status VerifyWaterBrushInput(const TerrainGridSnapshot& sourceTerrain,
+        const TerrainGridSnapshot& currentTerrain) const;
     // 只允许本次捕获的旧/新W3E内容；输出不含头、源WPM及工程意图。
     // 身份缓冲在生成输出前释放；maximumBytes分别约束该缓冲和生成输出。
     [[nodiscard]] Result<std::vector<std::byte>> GenerateNative(const TerrainGridSnapshot& terrain,

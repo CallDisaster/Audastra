@@ -55,6 +55,50 @@ std::vector<std::byte> Bytes(const TerrainGridSnapshot& grid) {
     auto result = SerializeMapTerrain(grid); Require(result.Succeeded(), "fixture serializes"); return *result.value;
 }
 
+void OwnedCandidateMatchesApplyAndPreservesInput() {
+    const auto doodads = EmptyDoodads();
+    const std::array points{TerrainStrokePoint{1024, 1024}, TerrainStrokePoint{1280, 1152}};
+    const auto sameRange = [](const TerrainStrokeResult& a, const TerrainStrokeResult& b) {
+        return a.x0 == b.x0 && a.y0 == b.y0 && a.x1 == b.x1 && a.y1 == b.y1 && a.headerChanged == b.headerChanged;
+    };
+    for (const auto kind : {TerrainWaterBrushKind::Shallow, TerrainWaterBrushKind::Deep}) {
+        auto source = Flat(); const auto brush = Brush(source, kind);
+        const auto original = Bytes(source);
+        const auto prepared = PrepareTerrainWaterStroke(source, Rules(), brush, points, doodads);
+        Require(prepared.Succeeded() && prepared.value && Bytes(source) == original,
+            "owned preparation succeeds without changing its const input");
+        auto applied = source;
+        const auto result = ApplyTerrainWaterStroke(applied, Rules(), brush, points, doodads);
+        Require(result.Succeeded() && result.value && Bytes(applied) == Bytes(prepared.value->terrain),
+            "Apply moves the same deterministic owned terrain candidate");
+        const auto& a = *result.value; const auto& b = prepared.value->result;
+        Require(sameRange(a.changed, b.changed) && sameRange(a.processed, b.processed)
+            && a.changedVertices == b.changedVertices && a.work == b.work && a.finalRandomState == b.finalRandomState
+            && a.requiresPathingRebuild == b.requiresPathingRebuild
+            && a.requiresObjectValidityRefresh == b.requiresObjectValidityRefresh,
+            "owned and in-place adapters retain exact ranges, budgets, random stream and derived work flags");
+    }
+    auto source = Flat(); const auto brush = Brush(source); const auto original = Bytes(source);
+    for (const bool allocation : {false, true}) {
+        TerrainWaterBrushLimits limits;
+        if (allocation) limits.maximumCandidateBytes = 1;
+        else limits.maximumWork = 4500;
+        const auto prepared = PrepareTerrainWaterStroke(source, Rules(), brush, points, doodads, {}, limits);
+        const auto applied = ApplyTerrainWaterStroke(source, Rules(), brush, points, doodads, {}, limits);
+        Require(!prepared.Succeeded() && !prepared.value && !applied.Succeeded() && !applied.value && Bytes(source) == original,
+            "budget failure publishes no owned candidate and neither entry point mutates input");
+        Require(!prepared.diagnostics.empty() && !applied.diagnostics.empty()
+            && prepared.diagnostics.front().code == applied.diagnostics.front().code,
+            "owned and Apply failures preserve the same diagnostic");
+    }
+    At(source, 20, 20).textureAndFlagsRaw |= 0x10; RefreshTerrainDerived(source, 0, 0, 33, 33);
+    const auto rejected = Bytes(source);
+    const std::array invalidPoints{points.front(), TerrainStrokePoint{2560, 2560}};
+    const auto invalid = PrepareTerrainWaterStroke(source, Rules(), brush, invalidPoints, doodads);
+    Require(!invalid.Succeeded() && !invalid.value && Bytes(source) == rejected,
+        "late terrain-domain failure leaves the source intact and exposes no partial candidate");
+}
+
 void DryAnchorAndExactCoupling() {
     const auto doodads = EmptyDoodads(); const TerrainStrokePoint point{1024, 1024};
     for (const auto kind : {TerrainWaterBrushKind::Shallow, TerrainWaterBrushKind::Deep}) {
@@ -281,6 +325,7 @@ void HeightFalloffIndependentBoundaries() {
 
 int main() {
     try {
+        OwnedCandidateMatchesApplyAndPreservesInput();
         DryAnchorAndExactCoupling(); WetAnchorExactStepAndFixedStroke(); WaterLimitsAndOrderedShore();
         AtomicFailureAndLocalDomain(); PropagationAndDepthBudget(); SpecialDoodadFactsAndImpact();
         SpecialDoodadRejectsLateShoreChange(); SpecialDoodadChecksDoNotExpandProcessing(); HeightFalloffIndependentBoundaries();
