@@ -260,6 +260,85 @@ bool RaiseDeclaredMinimapProject(EditorProject& project, float strength = 39) {
     return project.mapEdits_ && project.mapEdits_->EditTerrain(brush, std::span(&point, 1), false).Succeeded()
         && project.ObserveMapDataEdit("声明边距单次小地图高度夹具");
 }
+
+std::vector<MapArchiveMember> NativePathingQtMembers() {
+    auto members = MissingMinimapQtMembers();
+    const auto text = [](std::string_view value) {
+        const auto bytes = std::as_bytes(std::span(value.data(), value.size()));
+        return std::vector<std::byte>(bytes.begin(), bytes.end());
+    };
+    MapData::MapSettings settings;
+    settings.formatVersion = 25; settings.custom.emplace(); settings.flags = 0x400;
+    settings.tileset = 'L'; settings.playableWidth = settings.playableHeight = 8;
+    const auto settingsBytes = settings.Serialize();
+    const auto doo = MapData::DoodadPlacements{}.Serialize();
+    if (!settingsBytes.Succeeded() || !settingsBytes.value || !doo.Succeeded() || !doo.value) return {};
+    const auto terrain = MapData::ParseMapTerrain(members[1].data);
+    if (!terrain.Succeeded() || !terrain.value) return {};
+    auto grid = *terrain.value->Snapshot();
+    for (auto& vertex : grid.vertices) {
+        vertex.waterHeightAndFlagsRaw = 8384; // 基础水高48；原地高0，独立期望为浅水。
+        vertex.textureAndFlagsRaw = 0x40;
+    }
+    MapData::RefreshTerrainDerived(grid, 0, 0, 9, 9);
+    const auto wire = MapData::SerializeMapTerrain(grid);
+    if (!wire.Succeeded() || !wire.value) return {};
+    members[0].data = *settingsBytes.value; members[1].data = *wire.value;
+    // 独立手写原版浅水G0=0x08，并保留不属于原版生成位的0x11；不调用生成器造期望。
+    std::fill(members[2].data.begin() + 16, members[2].data.end(), std::byte{0x19});
+    for (auto& member : members) {
+        if (member.name == "TerrainArt\\Terrain.slk")
+            member.data = text("ID;PWXL;N;E\nC;X1;Y1;K\"tileID\"\nC;X2;Y1;K\"dir\"\nC;X3;Y1;K\"file\"\n"
+                "C;X4;Y1;K\"walkable\"\nC;X5;Y1;K\"flyable\"\nC;X6;Y1;K\"buildable\"\n"
+                "C;X1;Y2;K\"Tg01\"\nC;X2;Y2;K\"Fixture\"\nC;X3;Y2;K\"Ground\"\n"
+                "C;X4;Y2;K1\nC;X5;Y2;K1\nC;X6;Y2;K1\nE\n");
+        if (member.name == "TerrainArt\\Water.slk") {
+            const std::pair<std::string_view, std::string_view> fields[]{
+                {"waterID", "LSha"}, {"texFile", "Fixture\\Water"}, {"height", "0"}, {"numTex", "1"},
+                {"texRate", "1"}, {"texOffset", "0"}, {"cells", "1"}, {"alphaMode", "0"},
+                {"lighting", "0"}, {"impassable", "0"}, {"mmRed", "20"}, {"mmGreen", "50"},
+                {"mmBlue", "90"}, {"mmAlpha", "128"}, {"Smin_R", "0"}, {"Smin_G", "0"},
+                {"Smin_B", "0"}, {"Smin_A", "0"}, {"Smax_R", "0"}, {"Smax_G", "0"},
+                {"Smax_B", "0"}, {"Smax_A", "0"}, {"Dmin_R", "0"}, {"Dmin_G", "0"},
+                {"Dmin_B", "0"}, {"Dmin_A", "0"}, {"Dmax_R", "0"}, {"Dmax_G", "0"},
+                {"Dmax_B", "0"}, {"Dmax_A", "0"}};
+            std::string table = "ID;PWXL;N;E\n";
+            std::size_t column = 0;
+            for (const auto& [name, value] : fields) {
+                const auto x = std::to_string(++column);
+                table += "C;X" + x + ";Y1;K\"" + std::string(name) + "\"\nC;X" + x + ";Y2;K\"" + std::string(value) + "\"\n";
+            }
+            member.data = text(table + "E\n");
+        }
+    }
+    members.push_back({"war3map.doo", *doo.value});
+    members.push_back({"UI\\MiscData.txt", text("[Water]\nDeepLevelPathing=64\n")});
+    members.push_back({"UI\\WorldEditData.txt", text("[CameraMargins]\nLeft=0\nRight=0\nBottom=0\nTop=0\n")});
+    return members;
+}
+
+bool DeepenNativePathingQtProject(EditorProject& project) {
+    MapData::TerrainBrush brush; brush.kind = MapData::TerrainBrushKind::WaterHeight;
+    brush.radius = 0; brush.waterHeight = 80;
+    const MapData::TerrainStrokePoint point{512, 512};
+    return project.mapEdits_->EditTerrain(brush, std::span(&point, 1), false).Succeeded()
+        && project.ObserveMapDataEdit("原创浅水改为深水");
+}
+
+std::unique_ptr<MapSaveJob> FreezeNativePathingQtJob(EditorProject& project, const std::filesystem::path& target,
+    Services::TerrainMinimapSaveChoice minimap = Services::TerrainMinimapSaveChoice::Preserve) {
+    // 仅替代脚本工具链准备；实际最终派生、归档写出、回读和前台提交走生产入口。
+    auto job = std::make_unique<MapSaveJob>();
+    const auto draft = project.mapEdits_->SerializePathingRestrictionDraft();
+    if (!draft.Succeeded() || !draft.value || !job->FreezeArchive(*project.archiveSession_).Succeeded()) return {};
+    job->target = target; job->minimapChoice = minimap;
+    job->replacements = project.mapEdits_->Replacements(); job->removals = project.mapEdits_->Removals();
+    job->terrainDerivationRequired = MapData::TerrainSavePlan::HasTerrainChanges(*project.mapEdits_);
+    job->pathingRestrictionDraft = std::make_shared<const std::vector<std::byte>>(*draft.value);
+    job->preparedRevision = MapSaveRevisionBinding{project.editRevision_.Generation(), project.editRevision_.Revision(),
+        project.editRevision_.Current(), project.luaMapTargetGeneration_};
+    return job;
+}
 }
 
 class EditorProjectTests final : public QObject {
@@ -287,6 +366,10 @@ private slots:
     void PathingIntentNativeSaveKeepsProjectState_data();
     void PathingIntentNativeSaveKeepsProjectState();
     void PlacementHeightAndSavedPathingWorkerRoundtrip();
+    void NativePathingWorkerRebuildsAndRebinds_data();
+    void NativePathingWorkerRebuildsAndRebinds();
+    void NativePathingWorkerPreflightAndFailure_data();
+    void NativePathingWorkerPreflightAndFailure();
     void PathingIntentLateEditStalesFrozenProject();
     void LegacyPathingIntentProjectKeepsStrictCompatibility();
     void TerrainSavePrepareStillRequiresToolchain();
@@ -1244,6 +1327,167 @@ void EditorProjectTests::PlacementHeightAndSavedPathingWorkerRoundtrip() {
         QCOMPARE(project.archiveSession_->ReadMember(member.name).value, std::optional(member.data));
     QVERIFY(!project.HasUnsavedMapChanges());
     QVERIFY(project.mapEdits_->SerializePathingRestrictionDraft().value->empty());
+    QCOMPARE(Sha256File(source).value, sourceSha.value);
+}
+
+void EditorProjectTests::NativePathingWorkerRebuildsAndRebinds_data() {
+    QTest::addColumn<int>("mode");
+    QTest::newRow("preserve-copy") << 0;
+    QTest::newRow("preserve-in-place") << 1;
+    QTest::newRow("automatic-author-tga") << 2;
+    QTest::newRow("automatic-imported-blp") << 3;
+    QTest::newRow("automatic-minimap-unavailable") << 4;
+    QTest::newRow("automatic-generated") << 5;
+}
+
+void EditorProjectTests::NativePathingWorkerRebuildsAndRebinds() {
+    QFETCH(int, mode);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    auto members = NativePathingQtMembers(); QVERIFY(!members.empty());
+    const std::vector<std::byte> originalMinimap{std::byte{17}, std::byte{2}, std::byte{199}};
+    const auto minimapName = mode == 2 ? "war3mapMap.tga" : "war3mapMap.blp";
+    members.push_back({minimapName, originalMinimap});
+    if (mode == 3) {
+        MapDataFixtures::Fixture imports; imports.UInt(1); imports.UInt(1);
+        imports.Byte(13); imports.String("war3mapMap.blp");
+        members.push_back({"war3map.imp", std::move(imports.bytes)});
+    }
+    if (mode == 4) std::erase_if(members, [](const auto& member) { return member.name == "Fixture\\Ground.blp"; });
+    const auto source = std::filesystem::path(root.filePath("shallow.w3x").toStdWString());
+    QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
+    const auto originalSha = Sha256File(source); QVERIFY(originalSha.Succeeded());
+    EditorProject project; QVERIFY(BindTerrainSaveProject(project, source));
+    QVERIFY(DeepenNativePathingQtProject(project));
+    const auto sessionIdentity = project.mapEdits_->SessionIdentity();
+    const auto sourceRevision = project.mapEdits_->TerrainSourceRevision();
+    const auto minimap = mode < 2 ? Services::TerrainMinimapSaveChoice::Preserve : Services::TerrainMinimapSaveChoice::Automatic;
+    auto job = FreezeNativePathingQtJob(project,
+        mode == 1 ? source : std::filesystem::path(root.filePath("deep.w3x").toStdWString()), minimap);
+    QVERIFY(job && job->terrainDerivationRequired && !job->terrainSavePlan);
+    if (mode == 1) {
+        job->inPlace = true;
+        job->inPlaceOptions.backupDirectory = std::filesystem::path(root.filePath("backups").toStdWString());
+        QVERIFY(std::filesystem::create_directory(job->inPlaceOptions.backupDirectory));
+    }
+    int previousCalls = 0;
+    job->prepareFinalDerived = [&](Services::MapSaveTask&) { ++previousCalls; return Status::Ok(); };
+    InstallMapSaveDerivedPreparation(*job);
+    InstallMapSaveDerivedPreparation(*job);
+    QCOMPARE(previousCalls, 0); QVERIFY(!job->terrainSavePlan); // 准备阶段不读资源、不做重建。
+    EditorProject::RunMapSave(*job);
+    QVERIFY2(job->succeeded, job->diagnostics.empty() ? "native worker failed" : job->diagnostics.back().message.c_str());
+    QCOMPARE(previousCalls, 1);
+    QVERIFY(job->terrainSavePlan && job->terrainSavePlan->RebuiltPathing());
+    QVERIFY(job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded());
+    QCOMPARE(std::count_if(job->replacements.begin(), job->replacements.end(),
+        [](const auto& member) { return member.name == "war3map.wpm"; }), 1);
+    auto expected = members[2].data;
+    // 最近顶点(4,4)覆盖通行格14..17；独立写定深水G1=0x0A，未知0x11保留。
+    for (std::size_t y = 14; y <= 17; ++y) for (std::size_t x = 14; x <= 17; ++x)
+        expected[16 + y * 32 + x] = std::byte{0x1b};
+    QCOMPARE(job->nextSession->ReadMember("war3map.wpm").value, std::optional(expected));
+    QCOMPARE(project.mapEdits_->InspectTerrainPoint({512, 512}).value->pathingFlags, 0x19);
+    if (mode == 5) {
+        QVERIFY(job->minimapSave && job->minimapSave->Plan() == job->terrainSavePlan);
+        QVERIFY(job->nextSession->ReadMember(minimapName).value != std::optional(originalMinimap));
+    } else {
+        QVERIFY(!job->minimapSave);
+        QCOMPARE(job->nextSession->ReadMember(minimapName).value, std::optional(originalMinimap));
+        if (mode == 4) QVERIFY(job->minimapPreserve && HasReadDiagnostic(*job, "MINIMAP_GENERATION_SKIPPED"));
+    }
+    QVERIFY(project.CommitMapSave(*job));
+    QCOMPARE(project.mapEdits_->SessionIdentity(), sessionIdentity);
+    QVERIFY(project.mapEdits_->TerrainSourceRevision() > sourceRevision);
+    const auto point = project.mapEdits_->InspectTerrainPoint({512, 512}); QVERIFY(point.Succeeded() && point.value);
+    QCOMPARE(point.value->pathingFlags, 0x1b); QCOMPARE(point.value->originalPathingFlags, 0x1b);
+    QVERIFY(!project.mapEdits_->IsDirty() && !project.HasUnsavedMapChanges());
+    for (const auto* preserved : {"war3map.shd", "war3map.mmp", "war3map.j"}) {
+        const auto original = std::find_if(members.begin(), members.end(),
+            [preserved](const auto& member) { return member.name == preserved; });
+        QVERIFY(original != members.end());
+        QCOMPARE(project.archiveSession_->ReadMember(preserved).value, std::optional(original->data));
+    }
+    if (mode == 1) {
+        QVERIFY(!job->backup.empty()); QCOMPARE(Sha256File(job->backup).value, originalSha.value);
+    } else QCOMPARE(Sha256File(source).value, originalSha.value);
+
+    QVERIFY(project.mapEdits_->Undo() && project.ObserveMapDataEdit("撤销已保存的深水"));
+    QCOMPARE(project.mapEdits_->Terrain()->vertices[4 * 9 + 4].waterBaseHeight, 48.0f);
+    QVERIFY(project.HasUnsavedMapChanges() && project.mapEdits_->CanRedo());
+    auto undone = FreezeNativePathingQtJob(project, std::filesystem::path(root.filePath("shallow-again.w3x").toStdWString()));
+    QVERIFY(undone); EditorProject::RunMapSave(*undone);
+    QVERIFY2(undone->succeeded, undone->diagnostics.empty() ? "undo save failed" : undone->diagnostics.back().message.c_str());
+    QCOMPARE(undone->nextSession->ReadMember("war3map.wpm").value, std::optional(members[2].data));
+    QVERIFY(project.CommitMapSave(*undone));
+    QCOMPARE(project.mapEdits_->InspectTerrainPoint({512, 512}).value->originalPathingFlags, 0x19);
+    QVERIFY(!project.HasUnsavedMapChanges());
+    QVERIFY(project.mapEdits_->Redo() && project.ObserveMapDataEdit("重做已保存前的水深笔划"));
+    QCOMPARE(project.mapEdits_->Terrain()->vertices[4 * 9 + 4].waterBaseHeight, 80.0f);
+    QVERIFY(project.HasUnsavedMapChanges());
+    QCOMPARE(project.mapEdits_->SessionIdentity(), sessionIdentity);
+}
+
+void EditorProjectTests::NativePathingWorkerPreflightAndFailure_data() {
+    QTest::addColumn<QString>("scenario");
+    QTest::newRow("preflight-executes-final-derivation") << QStringLiteral("preflight");
+    QTest::newRow("missing-pathing-rule-is-not-minimap-fallback") << QStringLiteral("missing-rule");
+    QTest::newRow("special-pathing-is-not-minimap-fallback") << QStringLiteral("special");
+    QTest::newRow("late-edit-rejects-front-state-commit") << QStringLiteral("late-edit");
+    QTest::newRow("missing-readback-rejects-front-state-commit") << QStringLiteral("missing-readback");
+}
+
+void EditorProjectTests::NativePathingWorkerPreflightAndFailure() {
+    QFETCH(QString, scenario);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    auto members = NativePathingQtMembers(); QVERIFY(!members.empty());
+    if (scenario == "missing-rule")
+        std::erase_if(members, [](const auto& member) { return member.name == "TerrainArt\\Terrain.slk"; });
+    if (scenario == "special") {
+        MapData::DoodadPlacements doodads; MapData::SpecialDoodadPlacement placement; placement.rawcode = "SPC1";
+        doodads.specialDoodads.push_back(placement);
+        const auto wire = doodads.Serialize(); QVERIFY(wire.Succeeded() && wire.value);
+        for (auto& member : members) if (member.name == "war3map.doo") member.data = *wire.value;
+    }
+    const auto source = std::filesystem::path(root.filePath("source.w3x").toStdWString());
+    const auto target = std::filesystem::path(root.filePath("saved.w3x").toStdWString());
+    QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
+    const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
+    EditorProject project; QVERIFY(BindTerrainSaveProject(project, source));
+    QVERIFY(DeepenNativePathingQtProject(project));
+    const auto sessionIdentity = project.mapEdits_->SessionIdentity();
+    const auto sourceRevision = project.mapEdits_->TerrainSourceRevision();
+    const auto baseline = project.editRevision_.Baseline(EditSaveTarget::Map); QVERIFY(baseline);
+    const auto minimap = scenario == "missing-rule" || scenario == "special"
+        ? Services::TerrainMinimapSaveChoice::Automatic : Services::TerrainMinimapSaveChoice::Preserve;
+    auto job = FreezeNativePathingQtJob(project, target, minimap); QVERIFY(job);
+    InstallMapSaveDerivedPreparation(*job);
+    if (scenario == "preflight") {
+        const auto checked = Services::MapSaveService::Preflight(*job);
+        QVERIFY2(checked.Succeeded(), checked.diagnostics.empty() ? "preflight failed" : checked.diagnostics.back().message.c_str());
+        QVERIFY(job->terrainSavePlan && job->terrainSavePlan->RebuiltPathing());
+        QVERIFY(!job->nextSession && !job->terrainReadbackStatus && !std::filesystem::exists(target));
+    } else {
+        EditorProject::RunMapSave(*job);
+        if (scenario == "missing-rule" || scenario == "special") {
+            QVERIFY(!job->succeeded && !job->minimapPreserve && !std::filesystem::exists(target));
+            QVERIFY(!HasReadDiagnostic(*job, "MINIMAP_GENERATION_SKIPPED"));
+            QVERIFY(HasReadDiagnostic(*job, scenario == "special" ? "TERRAIN_NATIVE_SPECIAL_UNSUPPORTED" : "TERRAIN_PATHING_RESOURCE_MISSING"));
+            QVERIFY(!project.CommitMapSave(*job));
+        } else {
+            QVERIFY2(job->succeeded, job->diagnostics.empty() ? "worker failed" : job->diagnostics.back().message.c_str());
+            if (scenario == "late-edit") QVERIFY(RaiseTerrainSaveProject(project));
+            else job->terrainReadbackStatus.reset();
+            QVERIFY(!project.CommitMapSave(*job));
+            QVERIFY(ModelHasCode(*project.diagnosticsModel_, scenario == "late-edit"
+                ? QStringLiteral("SAVE_REVISION_CHANGED") : QStringLiteral("TERRAIN_SAVE_PLAN_READBACK_MISSING")));
+        }
+    }
+    QCOMPARE(project.mapEdits_->SessionIdentity(), sessionIdentity);
+    QCOMPARE(project.mapEdits_->TerrainSourceRevision(), sourceRevision);
+    QCOMPARE(project.mapEdits_->InspectTerrainPoint({512, 512}).value->pathingFlags, 0x19);
+    QCOMPARE(project.mapEdits_->InspectTerrainPoint({512, 512}).value->originalPathingFlags, 0x19);
+    QCOMPARE(project.editRevision_.Baseline(EditSaveTarget::Map)->scopes, baseline->scopes);
+    QVERIFY(project.HasUnsavedMapChanges() && project.mapEdits_->CanUndo());
     QCOMPARE(Sha256File(source).value, sourceSha.value);
 }
 

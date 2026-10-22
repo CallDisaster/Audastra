@@ -283,10 +283,10 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
     auto job = std::make_unique<MapSaveJob>();
     job->target = target;
     job->inPlace = inPlace;
-    // Automatic 无地形变化时保持 Preserve，避免 worker 无意义地捕获资源；
-    // 有地形变化才把 Automatic 带入后台生成阶段。
+    // 正常保存将自动小地图策略冻结给worker；内容预检只重建通行，
+    // 是否需要生成小地图由最终来源和成员列表判定。
     job->minimapChoice = generateMinimap ? minimapChoice : Services::TerrainMinimapSaveChoice::Preserve;
-    if (generateMinimap) job->minimapGameRoot = war3GameRoot_;
+    job->minimapGameRoot = war3GameRoot_;
     if (inPlace) {
         const auto options = ReadMapInPlaceSaveOptions();
         if (!options.Succeeded()) {
@@ -314,21 +314,11 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
             nextBaselines[index] = std::make_unique<ObjectData::NativeObjectDocument>(*nativeObjectDocuments_[index]);
         }
     }
-    std::optional<MapData::TerrainSavePlan> terrainPlan;
     std::vector<MapArchiveMember> auxiliarySaveMembers;
     if (mapEdits_ && mapEdits_->IsDirty()) {
-        if (!explicitMinimap && MapData::TerrainSavePlan::HasTerrainChanges(*mapEdits_)) {
-            auto prepared = MapData::TerrainSavePlan::PrepareForSave(*job->archive, *mapEdits_, war3GameRoot_);
-            AddDiagnostics(prepared.diagnostics);
-            if (!prepared.Succeeded() || !prepared.value) return nullptr;
-            terrainPlan = std::move(*prepared.value);
-        }
-        const auto pathing = terrainPlan ? terrainPlan->SaveGate() : mapEdits_->VerifyTerrainPathingForSave();
-        if (!pathing.Succeeded()) {
-            AddDiagnostics(pathing.diagnostics);
-            return fail(tr("REPACK_TERRAIN_PATHING_UNVERIFIED"),
-                tr("地形变化尚无可验证的通行性更新；地图候选未写出。请先撤销这类地形笔划。"));
-        }
+        job->terrainDerivationRequired = !explicitMinimap && MapData::TerrainSavePlan::HasTerrainChanges(*mapEdits_);
+        // 原始成员与APR完整意图随任务冻结；worker在脚本/模板最终列表形成后
+        // 才建立地形计划。这里只准备输入，不把尚未执行的通行门标记为通过。
         auto restrictions = mapEdits_->SerializePathingRestrictionDraft();
         AddDiagnostics(restrictions.diagnostics);
         if (!restrictions.Succeeded() || !restrictions.value) return nullptr;
@@ -341,10 +331,6 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
         }
         const auto removed = mapEdits_->Removals();
         job->removals.insert(job->removals.end(), removed.begin(), removed.end());
-        if (terrainPlan) {
-            const auto& diagnostics = terrainPlan->Diagnostics();
-            job->diagnostics.insert(job->diagnostics.end(), diagnostics.begin(), diagnostics.end());
-        }
     }
     if (explicitMinimap && (!job->removals.empty() || job->replacements.size() != 1
         || CanonicalMember(job->replacements.front().name) != "war3map.w3e"))
@@ -600,23 +586,6 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
             return Services::VerifyAuxiliarySaveOutput(members, task->replacements, task->removals);
         };
     }
-    if (terrainPlan) {
-        const auto checked = terrainPlan->VerifyForSave(*mapEdits_, job->sourceSha256, job->replacements, job->removals);
-        AddDiagnostics(checked.diagnostics);
-        if (!checked.Succeeded()) return nullptr;
-        // 后台仅捕获冻结计划和自有任务；不借用仍在前台编辑的会话。
-        // 脚本模板合并完毕后再核一次，防止派生成员被后续阶段悄悄覆盖。
-        const auto plan = std::make_shared<const MapData::TerrainSavePlan>(std::move(*terrainPlan));
-        job->terrainSavePlan = plan;
-        const auto* task = job.get();
-        if (!automaticMinimap || contentOnly) job->beforePublish = [plan, task, previous = std::move(job->beforePublish)]() {
-            if (previous) {
-                const auto status = previous();
-                if (!status.Succeeded()) return status;
-            }
-            return plan->VerifyFrozenOutput(task->sourceSha256, task->replacements, task->removals);
-        };
-    }
     if (explicitMinimap) {
         // 只查看本任务已有列表，不在界面线程捕获资源、解析额外快照或生成小地图。
         // 原脚本Prepare只冻结script输入；native/template实际输出仍在worker原Run中形成。
@@ -625,6 +594,7 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
             return fail(tr("MINIMAP_SAVE_DOMAIN"), tr("补建准备必须只有唯一的高度W3E输出，不能夹带通行性、其它地图数据或资源成员。"));
     }
     job->preparedRevision = MapSaveRevisionBinding{frozenGeneration, frozenRevision, frozenScopes, luaMapTargetGeneration_};
+    InstallMapSaveDerivedPreparation(*job);
     return job;
 }
 

@@ -40,6 +40,9 @@ struct MapSaveJob final : Services::MapSaveTask {
     std::optional<MapSaveRevisionBinding> preparedRevision;
     // 与发布前闭包共享同一冻结计划；无状态表示尚未执行本次领域回读。
     std::shared_ptr<const MapData::TerrainSavePlan> terrainSavePlan;
+    // 前台只冻结是否有地形/通行净变化；实际资源捕获与WPM生成在最终worker阶段。
+    bool terrainDerivationRequired = false;
+    bool derivedPreparationInstalled = false;
     // 与本次来源和编辑修订一同冻结；worker 不从 WPM 差分反推本工程限制。
     std::shared_ptr<const std::vector<std::byte>> pathingRestrictionDraft;
     // 单次请求只冻结枚举和路径；完整捕获/生成及会话复核均在worker执行。
@@ -56,5 +59,8 @@ struct MapSaveJob final : Services::MapSaveTask {
         if (progress) progress(text);
     }
 };
+
+// 保存和内容预检共用；只安装回调，不在调用线程读取资源或生成派生文件。
+void InstallMapSaveDerivedPreparation(MapSaveJob& job);
 
 } // namespace War3Map::QtProject
