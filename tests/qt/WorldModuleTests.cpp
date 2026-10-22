@@ -62,6 +62,7 @@
 #include <QLineEdit>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QKeyEvent>
 #include <QScrollBar>
 #include <QMouseEvent>
 #include <QPushButton>
@@ -3685,9 +3686,12 @@ void WorldModuleTests::TerrainWaterBrushDropsCancelledCommit() {
     viewport->TerrainStrokeFinished();
     QVERIFY(!toggle->isEnabled());
     QVERIFY(!module.PrepareNavigationLeave());
-    if (mode == 0) QTest::keyClick(viewport, Qt::Key_Escape);
-    else if (mode == 1) QTest::mouseClick(select, Qt::LeftButton);
-    else if (mode == 2) QTest::mouseClick(place, Qt::LeftButton);
+    if (mode == 0) {
+        // 同步走真实键盘入口；不让QTest配置的键盘延迟先派发后台finished。
+        QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QApplication::sendEvent(viewport, &escape);
+    } else if (mode == 1) select->click();
+    else if (mode == 2) place->click();
     else {
         if (mode == 4)
             Tests::InstallTerrainWaterProject(project, replacement.path().toStdWString(), false);
