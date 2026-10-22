@@ -973,11 +973,12 @@ void TestOptionalRealCliffDraftRequiresPathingRebuildQualification() {
     brush.radius = 1; brush.levelDelta = 1;
     const MapData::TerrainStrokePoint point{header.offset[0] + 10 * MapData::TerrainGridSnapshot::tileSize,
         header.offset[1] + 10 * MapData::TerrainGridSnapshot::tileSize};
-    Require(edits.EditTerrain(brush, std::span(&point, 1), false).Succeeded() && edits.TerrainDirty(),
+    Require(edits.EditTerrain(brush, std::span(&point, 1), false).Succeeded() && edits.IsDirty(),
         "create a real cliff draft without changing the source map");
     const auto revision = edits.Revision();
     const auto changed = MapData::SerializeMapTerrain(*edits.Terrain());
-    Require(changed.Succeeded() && changed.value, "serialize isolated cliff draft");
+    Require(changed.Succeeded() && changed.value && *changed.value != *terrain.value,
+        "serialize an actually changed isolated cliff draft");
     MapSaveTask task; Require(task.FreezeArchive(*opened.value).Succeeded(), "freeze isolated cliff source");
     task.target = directory.Path() / "unverified-cliff-edit.w3x"; task.replacements = edits.Replacements();
     unsigned calls = 0; bool entered = false;
@@ -1078,10 +1079,11 @@ void TestMissingMinimapChoiceCannotBroadenTerrainSaveScope() {
         "attach source W3E/WPM before the cliff edit");
     const MapData::TerrainStrokePoint point{512, 512};
     Require(edits.EditTerrain(request.terrainStrokes[0].brush, std::span(&point, 1), false).Succeeded()
-        && edits.TerrainDirty(), "apply a real cliff edit without granting pathing save qualification");
+        && edits.IsDirty(), "apply a real cliff edit without granting pathing save qualification");
     const auto editRevision = edits.Revision();
     const auto cliffTerrain = MapData::SerializeMapTerrain(*edits.Terrain());
-    Require(cliffTerrain.Succeeded() && cliffTerrain.value, "serialize current cliff draft for non-mutation check");
+    Require(cliffTerrain.Succeeded() && cliffTerrain.value && *cliffTerrain.value != *terrain.value,
+        "serialize an actually changed cliff draft for non-mutation check");
     for (const auto choice : {TerrainMinimapSaveChoice::Preserve, TerrainMinimapSaveChoice::GenerateMissingGroundOnly,
             TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly}) {
         MapSaveTask task;
