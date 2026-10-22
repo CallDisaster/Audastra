@@ -256,6 +256,12 @@ target_compile_definitions(audastra-terrain-edit-service-tests PRIVATE NOMINMAX 
 target_compile_options(audastra-terrain-edit-service-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-terrain-edit COMMAND audastra-terrain-edit-service-tests)
 
+add_executable(audastra-terrain-water-edit-service-tests TerrainWaterEditServiceTests.cpp)
+target_link_libraries(audastra-terrain-water-edit-service-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(audastra-terrain-water-edit-service-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-terrain-water-edit-service-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-terrain-water-edit COMMAND audastra-terrain-water-edit-service-tests)
+
 add_executable(war3-map-import-inventory-tests ImportInventoryQueryTests.cpp)
 target_link_libraries(war3-map-import-inventory-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(war3-map-import-inventory-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)

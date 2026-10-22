@@ -68,7 +68,7 @@ void TypedTextureAndWaterReachTheSaveService() {
     for (const auto result : {stroke(L"texture", L"Lgrs"), stroke(L"water-height", L"0"),
             stroke(L"water_height", L"-1.25")}) {
         Require(result.exitCode != 0 && result.output.empty()
-            && result.error.find("SAVE_ARGUMENT_INVALID") == std::string::npos,
+            && result.error.find("SOURCE_LEASE_FAILED") != std::string::npos,
             "valid typed terrain parameters must reach the shared source checks");
     }
     Rejected(stroke(L"texture", L"bad"), "four-byte ASCII rawcode");
@@ -77,12 +77,42 @@ void TypedTextureAndWaterReachTheSaveService() {
     Rejected(stroke(L"water-height", L"2048"), "water height must be finite");
 }
 
+void NativeWaterUsesExplicitTypedArguments() {
+    const auto base = [] {
+        auto args = Arguments();
+        args.insert(args.end(), {L"--water-stroke", L"shallow", L"circle", L"32", L"32",
+            L"1", L"0", L"4294967295", L"true"});
+        return args;
+    };
+    auto args = base();
+    for (const auto kind : {L"shallow", L"deep"}) {
+        args[9] = kind;
+        const auto result = Invoke(args);
+        Require(result.exitCode != 0 && result.output.empty()
+            && result.error.find("SOURCE_LEASE_FAILED") != std::string::npos,
+            "typed water stroke must reach shared source checks without being treated as WaterHeight");
+    }
+    args = base(); args[13] = L"9";
+    Rejected(Invoke(args), "size 1..8");
+    args = base(); args[13] = L"0";
+    Rejected(Invoke(args), "size 1..8");
+    args = base(); args[14] = L"15";
+    Rejected(Invoke(args), "cliff slot 0..14");
+    args = base(); args[15] = L"4294967296";
+    Rejected(Invoke(args), "uint32 vertex indices and seed");
+    args = base(); args[16] = L"1";
+    Rejected(Invoke(args), "enforce-limits must be true or false");
+    args = base(); args.pop_back();
+    Rejected(Invoke(args), "requires eight arguments");
+}
+
 } // namespace
 
 int main() {
     try {
         LegacyMinimapSwitchesAreRemoved();
         TypedTextureAndWaterReachTheSaveService();
+        NativeWaterUsesExplicitTypedArguments();
         std::cout << "Map edit save CLI minimap option gates passed\n";
         return 0;
     } catch (const std::exception& error) {

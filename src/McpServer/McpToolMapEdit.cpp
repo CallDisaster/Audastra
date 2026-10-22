@@ -123,19 +123,26 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
     }
     const bool blight = kind.toString() == "blight";
     const bool texture = kind.toString() == "texture", water = kind.toString() == "water_height";
+    const bool newWater = kind.toString() == "shallow_water" || kind.toString() == "deep_water";
     Services::MapEditTerrainStroke stroke;
+    MapData::TerrainWaterStrokeOptions waterOptions;
     if (blight) stroke.brush.kind = MapData::TerrainBrushKind::Blight;
     else if (kind.toString() == "raise") stroke.brush.kind = MapData::TerrainBrushKind::Raise;
     else if (kind.toString() == "lower") stroke.brush.kind = MapData::TerrainBrushKind::Lower;
     else if (kind.toString() == "smooth") stroke.brush.kind = MapData::TerrainBrushKind::Smooth;
     else if (texture) stroke.brush.kind = MapData::TerrainBrushKind::Texture;
     else if (water) stroke.brush.kind = MapData::TerrainBrushKind::WaterHeight;
+    else if (newWater) waterOptions.kind = kind.toString() == "shallow_water"
+        ? MapData::TerrainWaterBrushKind::Shallow : MapData::TerrainWaterBrushKind::Deep;
     else {
         error = Failure("MCP_MAP_EDIT_TERRAIN_KIND_UNSUPPORTED",
-            "当前接受 raise/lower/smooth/blight/texture/water_height；通行性仍由同一保存服务核验。");
+            "当前接受 raise/lower/smooth/blight/texture/water_height/shallow_water/deep_water；通行性仍由同一保存服务核验。");
         return std::nullopt;
     }
-    if (!OnlyFields(object, blight
+    if (!OnlyFields(object, newWater
+            ? std::initializer_list<std::string_view>{"kind", "shape", "point_space", "size", "cliff_texture",
+                  "seed", "enforce_water_limits", "points", "follow_doodads"}
+            : blight
             ? std::initializer_list<std::string_view>{"kind", "shape", "point_space", "radius",
                   "points", "follow_doodads", "set_blight"}
             : texture ? std::initializer_list<std::string_view>{"kind", "shape", "point_space", "radius",
@@ -149,8 +156,12 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
         error = Failure("MCP_MAP_EDIT_TERRAIN_SHAPE_INVALID", "笔刷形状必须是 circle 或 square。");
         return std::nullopt;
     }
-    if (shape.toString() == "circle") stroke.brush.shape = MapData::TerrainBrushShape::Circle;
-    else if (shape.toString() == "square") stroke.brush.shape = MapData::TerrainBrushShape::Square;
+    if (shape.toString() == "circle" || shape.toString() == "square") {
+        const auto parsed = shape.toString() == "circle"
+            ? MapData::TerrainBrushShape::Circle : MapData::TerrainBrushShape::Square;
+        if (newWater) waterOptions.shape = parsed;
+        else stroke.brush.shape = parsed;
+    }
     else {
         error = Failure("MCP_MAP_EDIT_TERRAIN_SHAPE_INVALID", "笔刷形状必须是 circle 或 square。");
         return std::nullopt;
@@ -167,13 +178,35 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
         error = Failure("MCP_MAP_EDIT_TERRAIN_SPACE_INVALID", "点坐标系必须是 world 或 terrain_vertex。");
         return std::nullopt;
     }
-    auto radius = Integer(object, "radius", error);
-    if (!radius) return std::nullopt;
-    if (*radius < 0 || *radius > 16) {
-        error = Failure("MCP_MAP_EDIT_TERRAIN_RADIUS_INVALID", "笔刷半径必须为 0..16 个顶点。");
-        return std::nullopt;
+    if (newWater) {
+        const auto size = Integer(object, "size", error);
+        if (!size) return std::nullopt;
+        const auto cliff = Integer(object, "cliff_texture", error);
+        if (!cliff) return std::nullopt;
+        const auto seedValue = object.value("seed");
+        const auto seed = seedValue.toDouble(-1);
+        const auto enforce = object.value("enforce_water_limits");
+        if (*size < 1 || *size > 8 || *cliff < 0 || *cliff > 14 || !seedValue.isDouble()
+            || !std::isfinite(seed) || std::trunc(seed) != seed || seed < 0 || seed > 4294967295.0
+            || !enforce.isBool()) {
+            error = Failure("MCP_MAP_EDIT_TERRAIN_WATER_BRUSH_INVALID",
+                "水刷须明确指定 size=1..8、cliff_texture=0..14、uint32 seed 与 enforce_water_limits 布尔值。");
+            return std::nullopt;
+        }
+        waterOptions.size = static_cast<std::uint32_t>(*size);
+        waterOptions.cliffTexture = static_cast<std::uint8_t>(*cliff);
+        waterOptions.randomSeed = static_cast<std::uint32_t>(seed);
+        waterOptions.enforceWaterLimits = enforce.toBool();
+        stroke.waterBrush = waterOptions;
+    } else {
+        const auto radius = Integer(object, "radius", error);
+        if (!radius) return std::nullopt;
+        if (*radius < 0 || *radius > 16) {
+            error = Failure("MCP_MAP_EDIT_TERRAIN_RADIUS_INVALID", "笔刷半径必须为 0..16 个顶点。");
+            return std::nullopt;
+        }
+        stroke.brush.radius = static_cast<std::uint32_t>(*radius);
     }
-    stroke.brush.radius = static_cast<std::uint32_t>(*radius);
     const auto follow = object.value("follow_doodads");
     if (!follow.isBool() || follow.toBool()) {
         error = Failure("MCP_MAP_EDIT_TERRAIN_FOLLOW_UNSUPPORTED",
@@ -205,7 +238,7 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
             return std::nullopt;
         }
         stroke.brush.waterHeight = *height;
-    } else {
+    } else if (!newWater) {
         auto strength = FiniteFloat(object, "strength", error);
         if (!strength) return std::nullopt;
         const bool smooth = stroke.brush.kind == MapData::TerrainBrushKind::Smooth;
@@ -537,6 +570,13 @@ QJsonObject TerrainStrokeSchema() {
     QJsonObject water = shared;
     water["kind"] = QJsonObject{{"type", "string"}, {"const", "water_height"}};
     water["water_height"] = QJsonObject{{"type", "number"}, {"minimum", -2048}, {"maximum", 2047.75}};
+    QJsonObject newWater = shared;
+    newWater.remove("radius");
+    newWater["kind"] = QJsonObject{{"type", "string"}, {"enum", QJsonArray{"shallow_water", "deep_water"}}};
+    newWater["size"] = QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 8}};
+    newWater["cliff_texture"] = QJsonObject{{"type", "integer"}, {"minimum", 0}, {"maximum", 14}};
+    newWater["seed"] = QJsonObject{{"type", "integer"}, {"minimum", 0}, {"maximum", 4294967295.0}};
+    newWater["enforce_water_limits"] = QJsonObject{{"type", "boolean"}};
     const QJsonArray required{"kind", "shape", "point_space", "radius", "points", "follow_doodads"};
     QJsonArray heightRequired = required, blightRequired = required, textureRequired = required, waterRequired = required;
     heightRequired.append("strength");
@@ -544,7 +584,9 @@ QJsonObject TerrainStrokeSchema() {
     textureRequired.append("ground_texture"); waterRequired.append("water_height");
     return {{"oneOf", QJsonArray{BasicSchema(height, heightRequired),
         BasicSchema(smooth, heightRequired), BasicSchema(blight, blightRequired),
-        BasicSchema(texture, textureRequired), BasicSchema(water, waterRequired)}}};
+        BasicSchema(texture, textureRequired), BasicSchema(water, waterRequired),
+        BasicSchema(newWater, {"kind", "shape", "point_space", "size", "cliff_texture", "seed",
+            "enforce_water_limits", "points", "follow_doodads"})}}};
 }
 
 bool ReadEffectiveLayers(const QJsonObject& parameters, std::optional<std::vector<std::string>>& layers, QJsonObject& error) {

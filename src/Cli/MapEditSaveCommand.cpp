@@ -206,6 +206,40 @@ std::optional<Services::MapEditTerrainStroke> ParseStroke(wchar_t** argv, int in
     return stroke;
 }
 
+// --water-stroke <shallow|deep> <circle|square> <vertex-x> <vertex-y>
+//                <size-1..8> <cliff-slot-0..14> <seed-u32> <enforce-limits:true|false>
+std::optional<Services::MapEditTerrainStroke> ParseWaterStroke(wchar_t** argv, int index, std::string& error) {
+    MapData::TerrainWaterStrokeOptions water;
+    const std::wstring_view kind(argv[index + 1]), shape(argv[index + 2]), enforce(argv[index + 8]);
+    if (kind == L"shallow") water.kind = MapData::TerrainWaterBrushKind::Shallow;
+    else if (kind == L"deep") water.kind = MapData::TerrainWaterBrushKind::Deep;
+    else { error = "water stroke kind must be shallow or deep"; return std::nullopt; }
+    if (shape == L"circle") water.shape = MapData::TerrainBrushShape::Circle;
+    else if (shape == L"square") water.shape = MapData::TerrainBrushShape::Square;
+    else { error = "water stroke shape must be circle or square"; return std::nullopt; }
+    const auto x = ParseNumber<std::uint32_t>(argv[index + 3]);
+    const auto y = ParseNumber<std::uint32_t>(argv[index + 4]);
+    const auto size = ParseNumber<std::uint32_t>(argv[index + 5]);
+    const auto cliff = ParseNumber<std::uint32_t>(argv[index + 6]);
+    const auto seed = ParseNumber<std::uint32_t>(argv[index + 7]);
+    if (!x || !y || !size || *size < 1 || *size > 8 || !cliff || *cliff > 14 || !seed) {
+        error = "water stroke needs uint32 vertex indices and seed, size 1..8, and cliff slot 0..14";
+        return std::nullopt;
+    }
+    if (enforce != L"true" && enforce != L"false") {
+        error = "water stroke enforce-limits must be true or false"; return std::nullopt;
+    }
+    water.size = *size;
+    water.cliffTexture = static_cast<std::uint8_t>(*cliff);
+    water.randomSeed = *seed;
+    water.enforceWaterLimits = enforce == L"true";
+    Services::MapEditTerrainStroke stroke;
+    stroke.waterBrush = water;
+    stroke.pointSpace = Services::MapEditPointSpace::TerrainVertex;
+    stroke.points.push_back({static_cast<double>(*x), static_cast<double>(*y)});
+    return stroke;
+}
+
 } // namespace
 
 int RunMapEditSave(int argc, wchar_t** argv) {
@@ -342,6 +376,13 @@ int RunMapEditSave(int argc, wchar_t** argv) {
             if (!stroke) return Invalid(error);
             request.terrainStrokes.push_back(std::move(*stroke));
             index += 7;
+        } else if (flag == L"--water-stroke") {
+            if (index + 8 >= argc) return Invalid("--water-stroke requires eight arguments");
+            if (request.terrainStrokes.size() >= 16) return Invalid("at most 16 ordered strokes are allowed");
+            auto stroke = ParseWaterStroke(argv, index, error);
+            if (!stroke) return Invalid(error);
+            request.terrainStrokes.push_back(std::move(*stroke));
+            index += 9;
         } else if (flag == L"--copy-source") {
             if (index + 4 >= argc) return Invalid("--copy-source requires file, row, row key, and member SHA");
             if (copySources.size() >= 4096) return Invalid("at most 4096 placements may be copied");

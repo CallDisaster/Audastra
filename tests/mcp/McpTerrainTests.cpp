@@ -398,7 +398,7 @@ void TestNormalSaveTextureAndWaterSchema() {
     McpServer server; RegisterAllTools(server);
     const auto response = server.HandleMessage(R"({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}})");
     Expect(response && !response->error, "terrain save tool list must be available");
-    bool texture = false, water = false;
+    bool texture = false, water = false, waterBrush = false;
     for (const auto& tool : response->result.toObject().value("tools").toArray()) {
         if (tool.toObject().value("name") != "save_map_edit_candidate") continue;
         const auto properties = tool.toObject().value("inputSchema").toObject().value("properties").toObject();
@@ -408,9 +408,63 @@ void TestNormalSaveTextureAndWaterSchema() {
             if (kind == "texture") texture = fields.contains("ground_texture") && !fields.contains("strength");
             if (kind == "water_height") water = fields.value("water_height").toObject().value("minimum").toInt() == -2048
                 && !fields.contains("strength");
+            const auto kinds = fields.value("kind").toObject().value("enum").toArray();
+            if (kinds.contains("shallow_water") && kinds.contains("deep_water")) {
+                const auto required = variant.toObject().value("required").toArray();
+                waterBrush = fields.value("size").toObject().value("maximum").toInt() == 8
+                    && fields.value("seed").toObject().value("maximum").toDouble() == 4294967295.0
+                    && required.contains("cliff_texture") && required.contains("seed")
+                    && required.contains("enforce_water_limits") && !fields.contains("radius")
+                    && !fields.contains("anchor") && !fields.contains("water_height") && !fields.contains("strength");
+            }
         }
     }
     Expect(texture && water, "normal save must expose typed texture and water parameters without overloading strength");
+    Expect(waterBrush, "new shallow/deep water must expose explicit replay options and no caller-supplied anchor or rules");
+}
+
+void TestNativeWaterSaveTransport() {
+    Fixture fixture; McpServer server; RegisterAllTools(server);
+    ScopedSaveRoots roots; roots.Set(fixture.ui);
+    QJsonObject stroke{{"kind", "shallow_water"}, {"shape", "circle"}, {"point_space", "terrain_vertex"},
+        {"size", 1}, {"cliff_texture", 0}, {"seed", 4294967295.0}, {"enforce_water_limits", true},
+        {"points", QJsonArray{QJsonObject{{"x", 2}, {"y", 2}}}}, {"follow_doodads", false}};
+    QJsonObject args{{"source_map_path", QString::fromStdWString((fixture.root / "missing.w3x").wstring())},
+        {"output_path", QString::fromStdWString((fixture.root / "water-candidate.w3x").wstring())},
+        {"expected_source_sha256", QString(64, 'a')}, {"expected_terrain_sha256", QString(64, 'b')},
+        {"terrain_strokes", QJsonArray{stroke}}};
+    for (const auto kind : {"shallow_water", "deep_water"}) {
+        stroke["kind"] = kind;
+        for (const auto seed : {0.0, 2147483647.0, 2147483648.0, 4294967295.0}) {
+            stroke["seed"] = seed;
+            args["terrain_strokes"] = QJsonArray{stroke};
+            Code(Call(server, "save_map_edit_candidate", args), "SOURCE_LEASE_FAILED");
+        }
+    }
+    for (const auto seed : {-1.0, 1.5, 4294967296.0}) {
+        auto invalid = stroke;
+        invalid["seed"] = seed;
+        args["terrain_strokes"] = QJsonArray{invalid};
+        const auto response = server.HandleMessage(Request("save_map_edit_candidate", args));
+        Expect(response.has_value(), "invalid seed must have an explicit response");
+        if (response->error) {
+            Expect(response->error->value("code").toInt() == JsonRpcResponse::kInvalidParams,
+                "invalid seed must fail at the protocol or typed argument gate");
+        } else {
+            const auto content = response->result.toObject().value("content").toArray();
+            Expect(content.size() == 1, "invalid seed must produce one diagnostic envelope");
+            Code(QJsonDocument::fromJson(content[0].toObject().value("text").toString().toUtf8()).object(),
+                "MCP_MAP_EDIT_TERRAIN_WATER_BRUSH_INVALID");
+        }
+    }
+    for (const auto field : {"anchor", "loaded_rules", "strength", "water_height", "radius"}) {
+        auto mixed = stroke;
+        mixed[field] = 1;
+        args["terrain_strokes"] = QJsonArray{mixed};
+        InvalidParams(server, "save_map_edit_candidate", args);
+    }
+    Expect(!std::filesystem::exists(fixture.root / "water-candidate.w3x"),
+        "water transport rejection must not produce a partial map");
 }
 
 } // namespace
@@ -443,6 +497,7 @@ int main(int argc, char** argv) {
         }
         Expect(arguments.size() == 1, "usage: test executable [--write-fixture <new-or-empty-directory>]");
         TestNormalSaveTextureAndWaterSchema();
+        TestNativeWaterSaveTransport();
         TestTypedReadAndSourcePreservation();
         TestStaleBindingsAndLifetime();
         TestTransactionsAndFailures();
