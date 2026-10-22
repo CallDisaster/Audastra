@@ -39,7 +39,7 @@ std::string_view TextBytes(std::span<const std::byte> bytes) {
     if (text.starts_with("\xef\xbb\xbf")) text.remove_prefix(3);
     return text;
 }
-void UniqueTable(const ArchiveExactMember& input, std::string_view idHeader) {
+Text::SlkCells UniqueTable(const ArchiveExactMember& input, std::string_view idHeader) {
     if (!input.present || input.bytes.empty()) Fail("TERRAIN_NATIVE_OBJECT_TABLE_MISSING", "缺少实际对象表：" + input.name);
     if (input.bytes.size() > kTableBytes) Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "对象表超过单表预算：" + input.name);
     auto parsed = Text::ParseSlkCells(TextBytes(input.bytes), Text::SlkCellMode::CatalogUnique);
@@ -68,6 +68,38 @@ void UniqueTable(const ArchiveExactMember& input, std::string_view idHeader) {
         const auto id = values.find(1);
         if (id == values.end() || !Rawcode(id->second) || !ids.insert(id->second).second)
             Fail("TERRAIN_NATIVE_OBJECT_ID", input.name + "行" + std::to_string(row) + "缺少唯一四字节ID。");
+    }
+    return std::move(*parsed.value);
+}
+void ValidateSchemaSource(const Text::SlkCells& cells, const ObjectFieldSchema& schema) {
+    std::map<std::string, int, std::less<>> columns;
+    for (const auto& [column, name] : cells.at(1)) columns.emplace(Text::LowerAscii(name), column);
+    for (const auto& [rowNumber, row] : cells) {
+        if (rowNumber == 1) continue;
+        const auto* field = schema.FindNative(ObjectType::Destructable, row.at(1));
+        if (!field) continue;
+        const auto logical = [&](std::string_view name) -> std::string_view {
+            const auto column = columns.find(name);
+            if (column == columns.end()) return {};
+            const auto value = row.find(column->second);
+            return value == row.end() ? std::string_view{} : value->second;
+        };
+        // 普通schema的历史Token处理不能作为保存资格的再次解码。
+        // 绑定键必须与严格SLK读取的一次解码逻辑值相同，不能剥掉字面引号或空白后获得地址。
+        for (const auto& [name, column] : columns) {
+            const auto actual = row.find(column);
+            if (actual == row.end()) continue;
+            const auto interpreted = field->metadata.find(name);
+            if (interpreted == field->metadata.end() || interpreted->second != actual->second)
+                Fail("TERRAIN_NATIVE_OBJECT_METADATA", "元数据解析与实际SLK逻辑值不一致：" + field->fieldId + "." + name);
+        }
+        if (logical("field") != field->sourceField || logical("slk") != field->sourceTable
+            || logical("type") != field->valueType || logical("effecttype") != field->effectType)
+            Fail("TERRAIN_NATIVE_OBJECT_METADATA", "元数据绑定键经过再次解码，不能证明原生字段地址：" + field->fieldId);
+        // 适用对象列表仍由schema匹配；本入口不解释含字面引号的rawcode列表。
+        for (const auto* name : {"usespecific", "notspecific"})
+            if (logical(name).find('"') != std::string_view::npos)
+                Fail("TERRAIN_NATIVE_OBJECT_METADATA", "元数据适用对象列表含未支持的字面引号：" + field->fieldId);
     }
 }
 std::unique_ptr<CodecDocument> Native(const ArchiveExactMember& source, ObjectType type) {
@@ -131,8 +163,8 @@ Result<std::size_t> ValidateNativeDestructablePathing(std::span<const std::strin
         if (placedRawcodes.size() > (maximumWorkingBytes - work) / (sizeof(std::string_view) * 4))
             Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "摆放分类工作超过累计剩余预算。");
         work += placedRawcodes.size() * sizeof(std::string_view) * 4;
-        if (!inputs[0]->present) Fail("TERRAIN_NATIVE_OBJECT_SOURCE", "严格W3B解析入口缺少实际W3B。");
-        UniqueTable(*inputs[2], "destructableid"); UniqueTable(*inputs[3], "doodid"); UniqueTable(*inputs[4], "id");
+        UniqueTable(*inputs[2], "destructableid"); UniqueTable(*inputs[3], "doodid");
+        const auto metadataCells = UniqueTable(*inputs[4], "id");
         const auto reader = [&](const std::string& path) -> Result<std::vector<std::byte>> {
             const auto name = Text::LowerAscii(path);
             for (const auto* input : inputs) if (Text::LowerAscii(input->name) == name && input->present)
@@ -150,6 +182,7 @@ Result<std::size_t> ValidateNativeDestructablePathing(std::span<const std::strin
         schemaOptions.stringFiles.clear(); schemaOptions.worldEditDataFile.clear(); schemaOptions.unitEditorDataFile.clear();
         schemaOptions.maximumFileBytes = kTableBytes;
         const auto schema = Take(ObjectFieldSchema::Load(reader, schemaOptions));
+        ValidateSchemaSource(metadataCells, schema);
         const auto destructableOwner = Native(*inputs[0], ObjectType::Destructable), doodadOwner = Native(*inputs[1], ObjectType::Doodad);
         const auto* destructables = dynamic_cast<const NativeObjectDocument*>(destructableOwner.get());
         const auto* doodads = dynamic_cast<const NativeObjectDocument*>(doodadOwner.get());

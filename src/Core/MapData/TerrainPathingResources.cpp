@@ -409,7 +409,7 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
                     result.nativeDoodads_ = std::move(member.bytes);
                 } else {
                     nativeOverrides = member.present;
-                    if (validator && member.present) objectSources.push_back(std::move(member));
+                    if (validator) objectSources.push_back(std::move(member));
                 }
             }
             for (const auto* grid : {&before, &after}) for (std::size_t i = 0; i < grid->vertices.size(); ++i) {
@@ -418,12 +418,13 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
                 needs.ground.emplace(id);
                 needs.water |= grid->vertices[i].HasWater();
             }
-            if (!doodads->doodads.empty() && nativeOverrides && !validator)
-                Fail("TERRAIN_NATIVE_OBJECT_OVERRIDE_UNSUPPORTED", "非空普通DOO存在war3map.w3b覆盖；尚未从有效物编winner证明静态贡献。");
+            if (!doodads->doodads.empty() && !validator)
+                Fail(nativeOverrides ? "TERRAIN_NATIVE_OBJECT_OVERRIDE_UNSUPPORTED" : "TERRAIN_NATIVE_OBJECT_ADAPTER_REQUIRED",
+                    "非空普通DOO需要严格对象解析适配，不能只凭可破坏物单表证明类别和静态贡献。");
         }
-        const bool typedObjects = native && !doodads->doodads.empty() && nativeOverrides && validator;
+        const bool typedObjects = native && !doodads->doodads.empty() && validator;
         if (typedObjects) {
-            // W3D只在需要严格分类的分支读取；缺失也固定身份，不能用新导入遮蔽分类。
+            // 有无W3B均核对实际对象类别；W3D缺失也固定身份，不能用新导入遮蔽分类。
             const std::array<std::string, 1> names{"war3map.w3d"};
             ArchiveExactMemberLimits limits;
             limits.memberCount = 1; limits.memberBytes = limits.totalBytes = maximumBytes - result.sourceBytes_;
@@ -444,8 +445,8 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
             names.emplace_back("UI/MiscData.txt");
             names.emplace_back("UI/WorldEditData.txt");
         }
-        if (native && !doodads->doodads.empty()) names.emplace_back("Units/DestructableData.slk");
         if (typedObjects) {
+            names.emplace_back("Units/DestructableData.slk");
             names.emplace_back("Doodads/Doodads.slk");
             names.emplace_back("Units/DestructableMetaData.slk");
         }
@@ -483,18 +484,6 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
                 for (const auto& id : cliffs) if (std::none_of(table.Rows().begin(), table.Rows().end(),
                     [&](const auto& row) { return row.id == id; }))
                     Fail("TERRAIN_PATHING_PROPERTY_MISSING", "CliffTypes.slk缺少悬崖槽变化的实际行：" + id);
-            } else if (names[i] == "Units/DestructableData.slk") {
-                const auto table = Table(names[i], "destructableid", bytes);
-                for (std::size_t rowIndex = 0; rowIndex < doodads->doodads.size(); ++rowIndex) {
-                    const auto& object = doodads->doodads[rowIndex];
-                    const auto row = std::find_if(table.Rows().begin(), table.Rows().end(), [&](const auto& item) { return item.id == object.rawcode; });
-                    if (row == table.Rows().end())
-                        Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "war3map.doo 普通记录" + std::to_string(rowIndex)
-                            + "未由实际DestructableData胜出分类，不能忽略其静态像素。");
-                    if (Boolean(Field(*row, "walkable"), "Destructable.walkable"))
-                        Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "war3map.doo 普通记录" + std::to_string(rowIndex)
-                            + "为walkable破坏物；需要实际pathTex/pathTexDeath三通道贡献。");
-                }
             } else {
                 auto text = std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size());
                 if (text.starts_with("\xef\xbb\xbf")) text.remove_prefix(3);

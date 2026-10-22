@@ -685,7 +685,7 @@ void NativeCliffSlotsDoNotExpandThePaletteDomain() {
         "a new valid slot does not legitimize an unknown old sentinel");
 }
 
-void NativeObjectZeroDomainRequiresRealClassificationAndWalkability() {
+void NativeCoreRequiresObjectAdapterForNonemptyPlacements() {
     Directory directory;
     for (const auto mode : {0, 1, 2, 3}) {
         Fixture fixture; DoodadPlacements doodads; DoodadPlacement record;
@@ -697,17 +697,9 @@ void NativeObjectZeroDomainRequiresRealClassificationAndWalkability() {
         if (mode == 3) fixture.members.push_back({"war3map.w3b", Text("unparsed-overrides")});
         const auto source = fixture.Write(directory.path / ("object-" + std::to_string(mode) + ".w3x"));
         auto captured = TerrainPathingResources::CaptureNative(source, fixture.grid, fixture.grid, {}, 1024 * 1024);
-        if (mode != 0) {
-            Require(!captured.Succeeded(), "walkable, unclassified or overridden DOO cannot be called zero static contribution");
-            continue;
-        }
-        Require(captured.Succeeded(), "actual nonwalkable DestructableData row proves zero selector2");
-        Require(Take(captured.value->GenerateNative(fixture.grid, 1024 * 1024)).front() == std::byte{0x40}, "nonwalkable destructable ordinary layer4 does not enter WPM");
-        doodads.doodads.front().position[2] = 20;
-        Check(captured.value->VerifyFrozenOutput(std::vector<MemberReplacement>{{"war3map.doo", Take(doodads.Serialize())}}, {}));
-        doodads.doodads.front().position[0] = 20;
-        Require(!captured.value->VerifyFrozenOutput(std::vector<MemberReplacement>{{"war3map.doo", Take(doodads.Serialize())}}, {}).Succeeded(), "XY cannot hide behind zero-domain capture");
-        Require(!captured.value->VerifyFrozenOutput(std::vector<MemberReplacement>{{"war3map.w3b", Text("new overrides")}}, {}).Succeeded(), "new w3b cannot replace proven absence");
+        Require(!captured.Succeeded() && HasCode(captured.diagnostics, mode == 3
+                ? "TERRAIN_NATIVE_OBJECT_OVERRIDE_UNSUPPORTED" : "TERRAIN_NATIVE_OBJECT_ADAPTER_REQUIRED"),
+            "a destructable row alone cannot prove a unique class without the shared strict adapter");
     }
     Fixture fixture; DoodadPlacements special; special.specialDoodads.push_back({"Dtr1", 0, {1, 1}});
     NativeSources(fixture, NativeSettings(), special);
@@ -774,7 +766,7 @@ int main() {
         NativeWaterAndFractionalWorldBoundsUseActualSources();
         NativeChangedCliffSlotsBindActualRowsAndWinners();
         NativeCliffSlotsDoNotExpandThePaletteDomain();
-        NativeObjectZeroDomainRequiresRealClassificationAndWalkability();
+        NativeCoreRequiresObjectAdapterForNonemptyPlacements();
         NativeDirectoryCaptureUsesTheSameFrozenResources();
         CliffRefinementRequiresTheSameBlockingOutline();
         std::cout << "Terrain pathing resources tests passed\n";

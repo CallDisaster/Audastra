@@ -183,6 +183,69 @@ void TypedOverrideUsesTheNormalSaveAndUndoChain() {
     }
 }
 
+void MissingW3bStillUsesStrictClassificationAndTheSaveChain() {
+    const auto standardOnly = [](Fixture& f) {
+        std::erase_if(f.members, [](const auto& member) { return member.name == "war3map.w3b"; });
+        f.Member("Units/DestructableData.slk") = Slk({"destructableID", "code", "walkable"}, {{"Dst0", "Dst0", "0"}});
+    };
+    Fixture f; standardOnly(f); f.Open(); f.Paint();
+    const auto core = TerrainPathingResources::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, kBudget);
+    Require(!core.Succeeded() && HasCode(core, "TERRAIN_NATIVE_OBJECT_ADAPTER_REQUIRED"),
+        "Core must not infer the class from a destructable table without the shared object adapter");
+    const auto owner = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, kBudget));
+    const auto plan = f.Plan();
+    const auto output = f.Output(plan);
+    Check(owner.VerifyFrozenOutput(output, {}));
+    const auto saved = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(f.root / "classified.w3x", output)).path));
+    Check(owner.VerifyReadback(saved, kBudget));
+    auto placements = Take(ParseDoodadPlacements(f.Member("war3map.doo")));
+    placements.doodads.front().position[2] = 20;
+    auto elevation = output; elevation.push_back({"war3map.doo", Take(placements.Serialize())});
+    Check(owner.VerifyFrozenOutput(elevation, {}));
+    placements.doodads.front().position[0] += 20;
+    elevation.back().data = Take(placements.Serialize());
+    Require(!owner.VerifyFrozenOutput(elevation, {}).Succeeded(),
+        "a typed nonwalkable class cannot hide a changed XY position");
+    for (const auto type : {ObjectType::Destructable, ObjectType::Doodad}) {
+        const auto name = type == ObjectType::Destructable ? "war3map.w3b" : "war3map.w3d";
+        const auto inserted = Take(NativeObjectCodec(type).Serialize(Take(NativeObjectDocument::CreateEmpty(type))));
+        auto changed = output; changed.push_back({name, inserted});
+        Require(!owner.VerifyFrozenOutput(changed, {}).Succeeded(),
+            "both native object absences are frozen even without any W3B overrides");
+        const std::array<MemberReplacement, 1> changes{{{name, inserted}}};
+        const auto tampered = Take(MapArchiveSession::Open(Take(saved.SaveCandidate(f.root / (std::string(name) + ".w3x"), changes)).path));
+        Require(!owner.VerifyReadback(tampered, kBudget).Succeeded(), "owner readback checks absent-to-present object dependencies");
+    }
+    const auto directory = f.Directory();
+    const auto workspace = Take(DirectoryWorkspace::Open(directory));
+    const TerrainStrokeIntent intent{f.Water(), {f.point}, false};
+    Take(TerrainPathingSave::Seal(MapDocument::FromMembers(f.members), f.Member("war3map.w3e"),
+        f.Member("war3map.wpm"), workspace.Snapshot(), *f.edits, std::span(&intent, 1)));
+    Check(IO::WriteFileBytes(directory / "Doodads/Doodads.slk", Slk({"doodID", "code"}, {{"Dst0", "Dst0"}})));
+    Require(!TerrainPathingSave::Seal(MapDocument::FromMembers(f.members), f.Member("war3map.w3e"),
+        f.Member("war3map.wpm"), workspace.Snapshot(), *f.edits, std::span(&intent, 1)).Succeeded(),
+        "no-W3B directory recipe still binds the actual doodad classification table");
+    f.Save("standard-deep.w3x", true);
+    Require(f.edits->Undo(), "undo standard-only saved water brush"); f.Save("standard-shallow.w3x", false);
+    Require(f.edits->Redo(), "redo standard-only saved water brush"); f.Save("standard-deep-again.w3x", true);
+
+    for (const auto mode : {0, 1, 2}) {
+        Fixture conflict; standardOnly(conflict);
+        if (mode == 0) {
+            conflict.Member("Doodads/Doodads.slk") = Slk({"doodID", "code"}, {{"Doo0", "Doo0"}, {"Dst0", "Dst0"}});
+        } else {
+            auto doodads = Take(NativeObjectDocument::CreateEmpty(ObjectType::Doodad));
+            if (mode == 1) Check(doodads.AddOriginalObject("Dst0"));
+            else Check(doodads.AddCustomObject("Dst0", "Doo0"));
+            conflict.members.push_back({"war3map.w3d", Take(NativeObjectCodec(ObjectType::Doodad).Serialize(doodads))});
+        }
+        conflict.Open(); conflict.Paint();
+        const auto refused = conflict.Plan();
+        Require(!refused.SaveGate().Succeeded() && HasCode(refused.SaveGate(), "TERRAIN_NATIVE_OBJECT_CLASS_AMBIGUOUS"),
+            "without W3B, standard and native doodad aliases must still refuse ambiguous class");
+    }
+}
+
 void DependencyReplacementRemovalAndReadbackStayBound() {
     Fixture f; f.Paint(); const auto plan = f.Plan(); const auto output = f.Output(plan);
     for (const auto* name : {"war3map.w3b", "Units/DestructableData.slk", "Doodads/Doodads.slk", "Units/DestructableMetaData.slk"}) {
@@ -312,6 +375,7 @@ void DirectoryRecipePreservesReplayAndSourceChecks() {
 int main() {
     try {
         TypedOverrideUsesTheNormalSaveAndUndoChain();
+        MissingW3bStillUsesStrictClassificationAndTheSaveChain();
         DependencyReplacementRemovalAndReadbackStayBound();
         NativeObjectsDoNotWeakenSourceCasOrOldPathingChecks();
         MapAndGameMetadataWinnersRemainBound();

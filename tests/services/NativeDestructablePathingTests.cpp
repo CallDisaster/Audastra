@@ -279,6 +279,55 @@ void MetadataMustBeKnownAndUnambiguous() {
     Rejected(ambiguous.Validate(), "TERRAIN_NATIVE_OBJECT_METADATA", "不同原生ID映射walkable也必须拒绝歧义");
 }
 
+void MetadataLogicalCellsMustNotBeDecodedTwice() {
+    Fixture normal;
+    normal.SetNative(Original("S001"));
+    Accepted(normal.Validate({"S001"}), "正常metadata仍可用实际Int32 0覆盖标准true");
+
+    for (const auto& [key, value] : std::vector<std::pair<std::string, std::string>>{
+        {"field", "walkable"}, {"slk", "DestructableData"}, {"type", "bool"}}) {
+        // Quote已做一次合法SLK转义；这些是单元格的真实内容，不是待剥掉的语法。
+        for (const auto& logical : {"\"" + value + "\"", " " + value, value + " "}) {
+            Fixture changed;
+            changed.metadata[0][key] = logical;
+            changed.Tables();
+            changed.SetNative(Original("S001"));
+            Rejected(changed.Validate({"S001"}), "TERRAIN_NATIVE_OBJECT_METADATA",
+                "逻辑field/slk/type的字面引号或空白不能二次解码成合法通行地址");
+        }
+    }
+    for (const auto& [key, value] : std::vector<std::pair<std::string, std::string>>{
+        {"repeat", "0"}, {"data", "0"}, {"index", "-1"}, {"appendindex", "0"}, {"effectindex", "0"}}) {
+        Fixture changed;
+        changed.metadata[0][key] = "\"" + value + "\"";
+        changed.Tables();
+        changed.SetNative(Original("S001"));
+        Rejected(changed.Validate({"S001"}), "TERRAIN_NATIVE_OBJECT_METADATA",
+            "地址整数的字面引号不能被schema二次剥掉后授予保存资格");
+    }
+    for (const auto& [key, value] : std::vector<std::pair<std::string, std::string>>{
+        {"usespecific", "\"S001\""}, {"usespecific", "\"S001\",S003"},
+        {"notspecific", "\"S002\""}, {"notspecific", "S003,\"S002\""}}) {
+        Fixture changed;
+        changed.metadata[0][key] = value;
+        changed.Tables();
+        changed.SetNative(Original("S001"));
+        Rejected(changed.Validate({"S001"}), "TERRAIN_NATIVE_OBJECT_METADATA",
+            "适用对象列表的字面引号不能被二次Token解释为可信rawcode");
+    }
+
+    Fixture escaped;
+    escaped.metadata[0]["field"] = "WalkAble";
+    escaped.metadata[0]["slk"] = "destructableDATA";
+    escaped.metadata[0]["type"] = "BOOL";
+    escaped.metadata[0]["displayname"] = "Synthetic \"quoted\"; label";
+    escaped.metadata[0]["usespecific"] = "S001,B001";
+    escaped.metadata[0]["notspecific"] = "S002,S003";
+    escaped.Tables();
+    escaped.SetNative(Original("S001"));
+    Accepted(escaped.Validate({"S001"}), "正常大小写归一和无关说明的合法SLK引号转义不能被一并拒绝");
+}
+
 void StrictSlkStructurePrecedesLossyLoaders() {
     for (const auto member : {kDestructables, kDoodads, kMetadata}) {
         Fixture duplicateCell;
@@ -429,22 +478,50 @@ void CrossClassAndUnsupportedInheritance() {
     Rejected(unknown.Validate({"bad"}), "TERRAIN_NATIVE_OBJECT_ID", "坏摆放rawcode不能跳过");
 }
 
+void MissingW3bStillRequiresUniqueClassification() {
+    Fixture standard;
+    standard.sources[kW3b] = {"war3map.w3b", false, {}};
+    Accepted(standard.Validate({"S002"}), "准确Missing W3B允许实际标准walkable 0对象");
+    Rejected(standard.Validate({"S001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED",
+        "Missing W3B不能把标准walkable 1视为没有静态贡献");
+
+    Fixture sameStandard;
+    sameStandard.sources[kW3b] = {"war3map.w3b", false, {}};
+    sameStandard.doodads.push_back({{"doodID", "S002"}});
+    sameStandard.Tables();
+    Rejected(sameStandard.Validate(), "TERRAIN_NATIVE_OBJECT_CLASS_AMBIGUOUS",
+        "没有W3B时仍须拒绝两种标准目录同名");
+    for (const bool custom : {false, true}) {
+        Fixture sameNative;
+        sameNative.sources[kW3b] = {"war3map.w3b", false, {}};
+        auto document = Empty(ObjectType::Doodad);
+        if (custom) Check(document.AddCustomObject("S002", "D001"));
+        else Check(document.AddOriginalObject("S002"));
+        sameNative.SetNative(document);
+        Rejected(sameNative.Validate(), "TERRAIN_NATIVE_OBJECT_CLASS_AMBIGUOUS",
+            "没有W3B时仍须读取W3D的Original和Custom同名分类来源");
+    }
+}
+
 void CompleteSourcesAndWorkingBudget() {
     Fixture baseline;
     const auto work = Accepted(baseline.Validate(), "预算基线为真实合法输入");
     Accepted(baseline.Validate({"S002"}, work), "实际返回工作额度可作为同输入的精确上限");
     Rejected(baseline.Validate({"S002"}, work - 1), "TERRAIN_NATIVE_OBJECT_BUDGET", "少一字节的累计预算不能返回部分成功");
     Rejected(baseline.Validate({"S002"}, 0), "TERRAIN_NATIVE_OBJECT_BUDGET", "零额度不能开始解析");
-    for (const auto member : {kW3b, kDestructables, kDoodads, kMetadata}) {
+    for (const auto member : {kDestructables, kDoodads, kMetadata}) {
         Fixture absent;
         absent.sources[member].present = false;
         absent.sources[member].bytes.clear();
-        Rejected(absent.Validate(), member == kW3b ? "TERRAIN_NATIVE_OBJECT_SOURCE" : "TERRAIN_NATIVE_OBJECT_TABLE_MISSING",
+        Rejected(absent.Validate(), "TERRAIN_NATIVE_OBJECT_TABLE_MISSING",
             "必需来源缺失不可使用默认表");
     }
-    Fixture invalidAbsent;
-    invalidAbsent.sources[kW3d].bytes = Encode(Empty(ObjectType::Doodad));
-    Rejected(invalidAbsent.Validate(), "TERRAIN_NATIVE_OBJECT_SOURCE", "缺失W3D不得同时携带字节");
+    for (const auto member : {kW3b, kW3d}) {
+        Fixture invalidAbsent;
+        invalidAbsent.sources[member].present = false;
+        invalidAbsent.sources[member].bytes = Encode(Empty(member == kW3b ? ObjectType::Destructable : ObjectType::Doodad));
+        Rejected(invalidAbsent.Validate(), "TERRAIN_NATIVE_OBJECT_SOURCE", "缺失W3B/W3D不得同时携带字节");
+    }
     Fixture duplicateSource;
     duplicateSource.sources[kW3d].name = "WAR3MAP.W3B";
     Rejected(duplicateSource.Validate(), "TERRAIN_NATIVE_OBJECT_SOURCE", "来源名字大小写别名不能重复");
@@ -469,9 +546,11 @@ int main() {
         StandardAndSingleParentContext();
         WalkableValuesAndWireTypes();
         MetadataMustBeKnownAndUnambiguous();
+        MetadataLogicalCellsMustNotBeDecodedTwice();
         StrictSlkStructurePrecedesLossyLoaders();
         NativeDamageAndDuplicates();
         CrossClassAndUnsupportedInheritance();
+        MissingW3bStillRequiresUniqueClassification();
         CompleteSourcesAndWorkingBudget();
         std::cout << "native destructable pathing: typed fields, bounded inheritance, unique sources and rejection paths passed\n";
         return 0;
