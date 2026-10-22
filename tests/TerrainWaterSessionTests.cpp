@@ -150,7 +150,8 @@ void WaterBlightAndBothDooShareOneUndo() {
         initial.Verify(*f.edits);
         Require(plan.HasChanges() && plan.WaterBrush() && plan.WaterResult()
             && plan.WaterBrush()->kind == kind && plan.WaterResult()->requiresPathingRebuild
-            && !plan.TerrainPathingGate().Succeeded(), "water has its own operation identity and still needs a native save plan");
+            && HasCode(plan.TerrainPathingGate(), "TERRAIN_SAVE_GATE_NOT_INSPECTED"),
+            "water has its own operation identity and never calls an uninspected native save gate successful");
         Take(f.edits->ApplyPreparedTerrainEdit(plan));
         Require(f.edits->Revision() == 1 && f.edits->CanUndo(), "one water stroke commits one revision");
         const auto receipt = f.edits->LastEdit();
@@ -326,8 +327,44 @@ void LargerOriginalTerrainRecordsPreparationCost() {
     std::cout << "water-session prepare vertices=" << f.grid.vertices.size()
         << " source_w3e_bytes=" << Member(f.members, "war3map.w3e").size()
         << " source_wpm_bytes=" << Member(f.members, "war3map.wpm").size()
-        << " changed_vertices=" << plan.WaterResult()->changedVertices << " milliseconds=" << elapsed << '\n';
+        << " changed_vertices=" << plan.WaterResult()->changedVertices
+        << " algorithm_work=" << plan.WaterResult()->work << " preparation_work=" << plan.WaterPreparationWork()
+        << " milliseconds=" << elapsed << '\n';
     // 输出供实际测量，不提高测试时限，也不把耗时当成保存或游戏正确性的证据。
+}
+
+void FullSizeStrokeUsesActualPhaseBudget() {
+    for (const bool blight : {false, true}) {
+        Fixture f(blight, false, 513);
+        const auto rules = f.Rules(*f.edits); const auto brush = f.Brush(); const Unchanged before(*f.edits);
+        // 直接算法与Session使用相同真实规则和实际缺失DOO；中间owned地形在Session准备前释放。
+        const auto expected = [&] {
+            const auto pure = Take(PrepareTerrainWaterStroke(*f.edits->Terrain(), *rules.WaterBrushRules(),
+                brush, std::span(&f.point, 1), DoodadPlacements{}));
+            return std::pair{pure.result.work, Take(SerializeMapTerrain(pure.terrain))};
+        }();
+        const auto plan = Take(f.edits->PrepareTerrainWaterEdit(rules, brush, std::span(&f.point, 1)));
+        Require(plan.HasChanges() && plan.WaterResult()->work == expected.first
+            && plan.WaterPreparationWork() > expected.first
+            && plan.WaterPreparationWork() <= TerrainWaterBrushLimits{}.maximumWork,
+            "a full-size one-point stroke fits the unchanged hard budget without charging unrelated full-WPM work");
+        Require(HasCode(plan.TerrainPathingGate(), "TERRAIN_SAVE_GATE_NOT_INSPECTED"),
+            "successful full-size draft does not claim native save qualification");
+        TerrainWaterBrushLimits exact; exact.maximumWork = plan.WaterPreparationWork();
+        const auto bounded = Take(f.edits->PrepareTerrainWaterEdit(rules, brush, std::span(&f.point, 1), true, exact));
+        Require(bounded.WaterPreparationWork() == exact.maximumWork, "phase accounting is repeatable at the exact work budget");
+        --exact.maximumWork;
+        Require(HasCode(f.edits->PrepareTerrainWaterEdit(rules, brush, std::span(&f.point, 1), true, exact),
+            "TERRAIN_WATER_SESSION_BUDGET"), "one unit below the measured phase budget rejects before transaction publication");
+        before.Verify(*f.edits);
+        Take(f.edits->ApplyPreparedTerrainEdit(plan));
+        Require(Take(SerializeMapTerrain(*f.edits->Terrain())) == expected.second,
+            "session budgeting preserves the complete pure water result");
+        const auto output = f.edits->Replacements();
+        const bool writesWpm = std::any_of(output.begin(), output.end(), [](const auto& member) { return member.name == "war3map.wpm"; });
+        Require(writesWpm == blight, "WPM output exists only for actual CleanBlight net changes");
+        Require(f.edits->Undo() && !f.edits->IsDirty(), "full-size budgeted transaction remains one complete Undo");
+    }
 }
 } // namespace
 
@@ -340,6 +377,7 @@ int main() {
         ActualDoodadStateAndFollowOptionAreRespected();
         UserRestrictionsAndSeedRemainIndependent();
         LargerOriginalTerrainRecordsPreparationCost();
+        FullSizeStrokeUsesActualPhaseBudget();
         std::cout << "TerrainWaterSessionTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

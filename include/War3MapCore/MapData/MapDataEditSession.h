@@ -77,6 +77,8 @@ public:
         // 水刷使用自己的完整锚点与随机序列，不能当成普通高度笔刷重放。
         [[nodiscard]] const TerrainWaterBrush* WaterBrush() const noexcept { return waterBrush_ ? &*waterBrush_ : nullptr; }
         [[nodiscard]] const TerrainWaterBrushResult* WaterResult() const noexcept { return waterResult_ ? &*waterResult_ : nullptr; }
+        // 水刷来源检查、算法及事务准备的工作量预算结算；普通笔刷为0，算法计数仍在WaterResult中。
+        [[nodiscard]] std::size_t WaterPreparationWork() const noexcept { return waterPreparationWork_; }
         [[nodiscard]] std::span<const TerrainStrokePoint> Points() const noexcept { return points_; }
         [[nodiscard]] bool FollowDoodads() const noexcept { return followDoodads_; }
     private:
@@ -90,6 +92,7 @@ public:
         TerrainBrush brush_;
         std::optional<TerrainWaterBrush> waterBrush_;
         std::optional<TerrainWaterBrushResult> waterResult_;
+        std::size_t waterPreparationWork_ = 0;
         std::vector<TerrainStrokePoint> points_;
         bool followDoodads_ = false;
     };
