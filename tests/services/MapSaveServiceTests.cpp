@@ -1484,6 +1484,12 @@ void TestOptionalRealTerrainAndPathingUseNormalSave() {
         return;
     }
     TempDirectory directory;
+    std::filesystem::path evidence;
+    const auto evidenceRoot = ObjectV1EnvironmentPath(L"FORGE_TERRAIN_SAVE_EVIDENCE_DIR");
+    if (!evidenceRoot.empty()) {
+        evidence = evidenceRoot / ("terrain-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
+        Require(std::filesystem::create_directories(evidence), "create unique terrain evidence directory");
+    }
     MapCreateRequest create;
     create.options.name = "Terrain preservation regression";
     create.target = directory.Path() / "source.w3x";
@@ -1628,7 +1634,25 @@ void TestOptionalRealTerrainAndPathingUseNormalSave() {
         const auto sourceAfter = Sha256File(request.sourceMap);
         Require(sourceAfter.Succeeded() && sourceAfter.value && *sourceAfter.value == request.expectedSourceSha256,
             "all source map bytes remain unchanged");
+        const std::string label = wet ? "water" : restriction ? "restriction" : follow ? "following" : "texture";
+        if (!evidence.empty()) {
+            const auto retainedSource = evidence / (label + "-source.w3x");
+            const auto retainedSaved = evidence / (label + "-saved.w3x");
+            Require(std::filesystem::copy_file(request.sourceMap, retainedSource)
+                && std::filesystem::copy_file(saved.value->candidate, retainedSaved), "retain original terrain test maps for later native validation");
+            const auto retainedSourceHash = Sha256File(retainedSource), retainedSavedHash = Sha256File(retainedSaved);
+            const auto candidateHash = Sha256File(saved.value->candidate);
+            Require(retainedSourceHash.Succeeded() && retainedSourceHash.value && *retainedSourceHash.value == request.expectedSourceSha256
+                && retainedSavedHash.Succeeded() && retainedSavedHash.value && candidateHash.Succeeded() && candidateHash.value
+                && *retainedSavedHash.value == *candidateHash.value, "retained terrain maps exactly match the tested source and candidate");
+            std::ofstream hashes(evidence / "sha256.tsv", std::ios::app);
+            hashes << label << "-source.w3x\t" << *retainedSourceHash.value << '\n'
+                << label << "-saved.w3x\t" << *retainedSavedHash.value << '\n';
+            hashes.flush(); Require(hashes.good(), "write retained terrain map identities");
+        }
+        std::cout << "terrain normal save: " << label << " source preserved, candidate reread passed\n";
     }
+    if (!evidence.empty()) std::cout << "terrain save evidence: " << evidence << '\n';
 }
 
 // 一张含五类成员的源图；请求像 Agent 一样先从源文档读行身份与字段原值，再写新值。
