@@ -1,0 +1,169 @@
+#include "War3MapCore/MapData/MapDataEditSession.h"
+#include "War3MapCore/MapData/TerrainPathingResources.h"
+
+#include <algorithm>
+#include <new>
+#include <stdexcept>
+
+namespace War3Map::MapData {
+
+Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerrainWaterEdit(
+    const TerrainPathingResources& resources, const TerrainWaterBrush& brush,
+    std::span<const TerrainStrokePoint> points, bool followDoodads, const TerrainWaterBrushLimits& limits) const {
+    using Output = Result<PreparedTerrainEdit>;
+    const auto budgetFailure = [] {
+        return Output::Failure("MapData.Edit", "TERRAIN_WATER_SESSION_BUDGET",
+            "水刷地形候选、撤销区块、通行性或摆放联动超出本笔预算，尚未修改会话。");
+    };
+    if (!terrain_ || !terrainOriginal_)
+        return Output::Failure("MapData.Edit", "MAP_TERRAIN_UNAVAILABLE", "地形来源或当前草稿不可编辑。");
+    if (terrainSourceRevision_ == std::numeric_limits<std::uint64_t>::max())
+        return Output::Failure("MapData.Edit", "TERRAIN_SOURCE_REVISION_EXHAUSTED", "地形来源修订已用尽，请重新打开地图。");
+    const TerrainWaterBrushLimits hard;
+    if (!limits.maximumCandidateBytes || limits.maximumCandidateBytes > hard.maximumCandidateBytes
+        || !limits.maximumWork || limits.maximumWork > hard.maximumWork
+        || !limits.maximumPoints || limits.maximumPoints > hard.maximumPoints
+        || !limits.maximumRecursionDepth || limits.maximumRecursionDepth > hard.maximumRecursionDepth)
+        return Output::Failure("MapData.Edit", "TERRAIN_WATER_LIMITS", "水刷预算只能收紧硬上限，不能为零。");
+    if (points.empty() || points.size() > limits.maximumPoints)
+        return Output::Failure("MapData.Edit", "TERRAIN_WATER_POINTS", "水刷点数量不在显式预算内。");
+    if (!resources.WaterBrushRules())
+        return Output::Failure("MapData.Edit", "TERRAIN_WATER_RULE_OWNER", "水刷必须使用实际捕获的编辑规则，不能用保存规则或手工参数替代。");
+
+    const auto doodadIndex = Index(MapDataKind::Doodads), unitIndex = Index(MapDataKind::Units);
+    const auto available = [this](std::size_t index) {
+        // Ready/Missing来源之后的显式增删同样属于已知草稿；损坏、歧义和只读来源不是缺失。
+        return !preservedSources_[index]
+            && (states_[index] == MapDataState::Missing || states_[index] == MapDataState::Ready);
+    };
+    if (!available(doodadIndex))
+        return Output::Failure("MapData.Edit", "MAP_DOODADS_UNSAFE", "无法确认实际装饰物来源，不能以空表代替水刷输入。");
+    if (followDoodads && !available(unitIndex))
+        return Output::Failure("MapData.Edit", "MAP_UNITS_UNSAFE", "单位来源不可读，不能准备地面高度跟随。");
+
+    // 分阶段计量：规则身份和DOO解析先完成，随后才有算法候选；算法辅助表
+    // 销毁后，按真实净差准备撤销和联动。不能把根本不写的整份WPM预收三遍。
+    // 经典DOO的最小嵌套记录占4字节；每份展开结构不超过8倍wire。
+    static_assert(sizeof(UnitPlacement) <= 8 * 91 && sizeof(DoodadPlacement) <= 8 * 42
+        && sizeof(SpecialDoodadPlacement) <= 8 * 16 && sizeof(PlacementItemSet) <= 8 * 4
+        && sizeof(PlacementItemChoice) <= 8 * 8 && sizeof(PlacementInventoryItem) <= 8 * 8
+        && sizeof(PlacementAbility) <= 8 * 12, "Recalculate the bounded placement wire multiplier after layout growth");
+    std::size_t work = 0;
+    const auto reserve = [](std::size_t& used, std::size_t limit, std::size_t count, std::size_t element) {
+        if (element && count > (limit - used) / element) return false;
+        used += count * element;
+        return true;
+    };
+    // VerifyWaterBrushInput顺序释放两份canonical序列化缓冲，不与候选并存；
+    // 仍须先按本笔上限限制其输入大小，不能借较大的资源捕获预算绕过本笔预算。
+    for (const auto* grid : {terrainOriginal_.get(), terrain_.get()}) {
+        std::size_t identityBytes = 37;
+        if (identityBytes > limits.maximumCandidateBytes
+            || !reserve(identityBytes, limits.maximumCandidateBytes, grid->vertices.size(), 7)
+            || !reserve(identityBytes, limits.maximumCandidateBytes,
+                grid->header.groundTilesets.size() + grid->header.cliffTilesets.size(), 4)
+            || !reserve(work, limits.maximumWork, grid->vertices.size(), 1)) return budgetFailure();
+    }
+    const auto doodadWireBytes = current_[doodadIndex] ? current_[doodadIndex]->size() : 0;
+    // 解析阶段的双布局判定最多同时持有两份展开结构；算法阶段仅保留其成功结果与原字节。
+    std::size_t parseBytes = sizeof(DoodadPlacements), liveBytes = sizeof(DoodadPlacements);
+    if (parseBytes > limits.maximumCandidateBytes
+        || !reserve(parseBytes, limits.maximumCandidateBytes, doodadWireBytes, 32)
+        || !reserve(liveBytes, limits.maximumCandidateBytes, doodadWireBytes, 10)
+        || !reserve(work, limits.maximumWork, doodadWireBytes, 2)
+        || liveBytes == limits.maximumCandidateBytes || work == limits.maximumWork) return budgetFailure();
+
+    try {
+        const auto bound = resources.VerifyWaterBrushInput(*terrainOriginal_, *terrain_);
+        if (!bound.Succeeded()) return {{}, bound.diagnostics};
+        DoodadPlacements doodads;
+        if (current_[doodadIndex]) {
+            auto parsed = ParseDoodadPlacements(*current_[doodadIndex]);
+            if (!parsed.Succeeded() || !parsed.value) return {{}, std::move(parsed.diagnostics)};
+            doodads = std::move(*parsed.value);
+        }
+        // 本批尚无special资源形状捕获器，实际非空记录必须交算法明确拒绝，不能删掉或伪造空DOO。
+        auto algorithmLimits = limits;
+        algorithmLimits.maximumCandidateBytes -= liveBytes;
+        algorithmLimits.maximumWork -= work;
+        auto candidate = PrepareTerrainWaterStroke(*terrain_, *resources.WaterBrushRules(), brush,
+            points, doodads, {}, algorithmLimits);
+        if (!candidate.Succeeded() || !candidate.value) return {{}, std::move(candidate.diagnostics)};
+        // result.work已包括算法输入检查、唯一候选复制、全图差分与派生刷新，不重复收费。
+        if (!reserve(work, limits.maximumWork, candidate.value->result.work, 1)) return budgetFailure();
+        const auto& changed = candidate.value->result.changed;
+        const auto& grid = candidate.value->terrain;
+        const auto area = std::size_t(changed.x1 - changed.x0) * (changed.y1 - changed.y0);
+        // 这遍只计实际改变范围内的blight净差，后面在分配WPM前预收真实需要的联动。
+        if (!reserve(work, limits.maximumWork, area, 1)) return budgetFailure();
+        std::size_t blightCells = 0;
+        const auto pathingWidth = (grid.header.width - 1) * 4, pathingHeight = (grid.header.height - 1) * 4;
+        for (auto y = changed.y0; y < changed.y1; ++y) for (auto x = changed.x0; x < changed.x1; ++x) {
+            const auto index = std::size_t(y) * grid.header.width + x;
+            if (terrain_->vertices[index].IsBlight() == grid.vertices[index].IsBlight()) continue;
+            const auto x0 = x ? x * 4 - 2 : 0, y0 = y ? y * 4 - 2 : 0;
+            blightCells += std::size_t(std::min(pathingWidth, x * 4 + 2) - x0)
+                * (std::min(pathingHeight, y * 4 + 2) - y0);
+        }
+        if (blightCells && !pathing_)
+            return Output::Failure("MapData.Edit", "MAP_PATHING_UNAVAILABLE", "本笔改变了荒芜，但缺少可解析的源WPM，不能提交失配的地形。");
+
+        // 算法辅助表已销毁：此阶段仅计存活的owned地形、真实覆盖的16x16区块和后续联动。
+        std::size_t finalBytes = liveBytes;
+        if (!reserve(finalBytes, limits.maximumCandidateBytes, 1,
+                sizeof(Command) + sizeof(PreparedTerrainEdit) + sizeof(TerrainGridSnapshot) + 2 * sizeof(std::shared_ptr<void>))
+            || !reserve(finalBytes, limits.maximumCandidateBytes, grid.vertices.capacity(), sizeof(TerrainVertex))
+            || !reserve(finalBytes, limits.maximumCandidateBytes, grid.tiles.capacity(), sizeof(TerrainTile))
+            || !reserve(finalBytes, limits.maximumCandidateBytes,
+                grid.header.groundTilesets.capacity() + grid.header.cliffTilesets.capacity(), sizeof(std::string))
+            || !reserve(finalBytes, limits.maximumCandidateBytes, points.size(), sizeof(TerrainStrokePoint))) return budgetFailure();
+        for (const auto* table : {&grid.header.groundTilesets, &grid.header.cliffTilesets})
+            for (const auto& name : *table)
+                if (!reserve(finalBytes, limits.maximumCandidateBytes, name.capacity() + 1, 1)) return budgetFailure();
+        if (!changed.Empty()) {
+            const auto x0 = changed.x0 / 16 * 16, y0 = changed.y0 / 16 * 16;
+            const auto x1 = std::min((changed.x1 + 15) / 16 * 16, grid.header.width);
+            const auto y1 = std::min((changed.y1 + 15) / 16 * 16, grid.header.height);
+            const auto chunkVertices = std::size_t(x1 - x0) * (y1 - y0);
+            const auto chunks = std::size_t((x1 - x0 + 15) / 16) * ((y1 - y0 + 15) / 16);
+            // 两份raw区块读取及一次比较；finalize本身另有一次blight净差扫描。
+            if (!reserve(finalBytes, limits.maximumCandidateBytes, chunkVertices, 14)
+                || !reserve(finalBytes, limits.maximumCandidateBytes, chunks, 2 * sizeof(TerrainChunk))
+                || !reserve(work, limits.maximumWork, chunkVertices, 3)
+                || !reserve(work, limits.maximumWork, area, 1)) return budgetFailure();
+        }
+        if (changed.headerChanged && !reserve(finalBytes, limits.maximumCandidateBytes,
+            grid.header.groundTilesets.size() + grid.header.cliffTilesets.size(), 2 * (sizeof(std::string) + 16))) return budgetFailure();
+        if (blightCells) {
+            // 一次patched复制和一次before回执复制；真实blight净差已知，不再整份比较。
+            if (!reserve(finalBytes, limits.maximumCandidateBytes, pathing_->size(), 2)
+                || !reserve(work, limits.maximumWork, pathing_->size(), 2)
+                || !reserve(work, limits.maximumWork, area + blightCells, 1)) return budgetFailure();
+        }
+        if (followDoodads && !changed.Empty()) {
+            // 只在确实进入跟随分支时预留序列化/回读峰值。DOO已持有的10倍wire不重复收费。
+            if (!reserve(finalBytes, limits.maximumCandidateBytes, doodadWireBytes, 54)
+                || !reserve(work, limits.maximumWork, doodadWireBytes, 4)) return budgetFailure();
+            for (const auto index : {unitIndex, Index(MapDataKind::Settings)})
+                if (current_[index] && (!reserve(finalBytes, limits.maximumCandidateBytes, current_[index]->size(), 64)
+                    || !reserve(work, limits.maximumWork, current_[index]->size(), 4))) return budgetFailure();
+        }
+        auto next = std::make_shared<TerrainGridSnapshot>(std::move(candidate.value->terrain));
+        // 水刷保存须另跑CaptureNative/G0/G1。这里若预跑等价保存门，会在拒绝水变化
+        // 之前先解析并扫描整份WPM；省去这次重复工作，明确保持NOT_INSPECTED而非成功。
+        auto prepared = PrepareTerrainCandidate(std::move(next), candidate.value->result.changed, points,
+            followDoodads, true, true, false, &doodads);
+        if (prepared.value) {
+            prepared.value->waterBrush_ = brush;
+            prepared.value->waterResult_ = candidate.value->result;
+            prepared.value->waterPreparationWork_ = work;
+        }
+        return prepared;
+    } catch (const std::bad_alloc&) {
+        return budgetFailure();
+    } catch (const std::length_error&) {
+        return budgetFailure();
+    }
+}
+
+} // namespace War3Map::MapData

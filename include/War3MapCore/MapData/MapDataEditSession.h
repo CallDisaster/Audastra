@@ -5,6 +5,7 @@
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
 #include "War3MapCore/MapData/TerrainPointQuery.h"
+#include "War3MapCore/MapData/TerrainWaterBrush.h"
 
 #include <array>
 #include <cstdint>
@@ -71,7 +72,13 @@ public:
         [[nodiscard]] const TerrainStrokeResult& Changed() const noexcept { return changed_; }
         [[nodiscard]] const Status& TerrainPathingGate() const noexcept { return terrainPathingGate_; }
         [[nodiscard]] bool HasChanges() const noexcept;
+        // 只用于普通笔刷；WaterBrush非空时必须读取水刷描述，不用此兼容字段重放。
         [[nodiscard]] const TerrainBrush& Brush() const noexcept { return brush_; }
+        // 水刷使用自己的完整锚点与随机序列，不能当成普通高度笔刷重放。
+        [[nodiscard]] const TerrainWaterBrush* WaterBrush() const noexcept { return waterBrush_ ? &*waterBrush_ : nullptr; }
+        [[nodiscard]] const TerrainWaterBrushResult* WaterResult() const noexcept { return waterResult_ ? &*waterResult_ : nullptr; }
+        // 水刷来源检查、算法及事务准备的工作量预算结算；普通笔刷为0，算法计数仍在WaterResult中。
+        [[nodiscard]] std::size_t WaterPreparationWork() const noexcept { return waterPreparationWork_; }
         [[nodiscard]] std::span<const TerrainStrokePoint> Points() const noexcept { return points_; }
         [[nodiscard]] bool FollowDoodads() const noexcept { return followDoodads_; }
     private:
@@ -83,6 +90,9 @@ public:
         TerrainStrokeResult changed_;
         Status terrainPathingGate_;
         TerrainBrush brush_;
+        std::optional<TerrainWaterBrush> waterBrush_;
+        std::optional<TerrainWaterBrushResult> waterResult_;
+        std::size_t waterPreparationWork_ = 0;
         std::vector<TerrainStrokePoint> points_;
         bool followDoodads_ = false;
     };
@@ -134,6 +144,12 @@ public:
     [[nodiscard]] Result<TerrainPointSample> InspectTerrainPoint(const TerrainStrokePoint& point) const;
     [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainEdit(const TerrainBrush& brush,
         std::span<const TerrainStrokePoint> points, bool followDoodads = true) const;
+    // 实际捕获的规则必须同时匹配原始来源和当前草稿。W3E、荒芜WPM位与
+    // 两份DOO的Z跟随一起准备；本笔不搬移XY、不删除对象，也不生成用户通行限制。
+    // limits同时约束水刷候选和事务额外内存；保存资格仍由原生G0/G1计划决定。
+    [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainWaterEdit(const TerrainPathingResources& resources,
+        const TerrainWaterBrush& brush, std::span<const TerrainStrokePoint> points,
+        bool followDoodads = true, const TerrainWaterBrushLimits& limits = {}) const;
     [[nodiscard]] Result<TerrainStrokeResult> ApplyPreparedTerrainEdit(const PreparedTerrainEdit& plan,
         const std::function<Status(const EditReceipt&)>& prepublish = {});
     // 一笔地形笔刷为一次事务，撤销按 16×16 顶点区块保存前后原始字段。
@@ -214,6 +230,10 @@ private:
         std::span<const TerrainStrokePoint> points, bool followDoodads, bool inspectSaveGate) const;
     [[nodiscard]] Result<PreparedTerrainEdit> PreparePathingRestrictionEdit(const TerrainBrush& brush,
         std::span<const TerrainStrokePoint> points, bool followDoodads, bool inspectSaveGate) const;
+    [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainCandidate(
+        std::shared_ptr<const TerrainGridSnapshot> next, const TerrainStrokeResult& changed,
+        std::span<const TerrainStrokePoint> points, bool followDoodads, bool shaping,
+        bool synchronizeBlight, bool inspectSaveGate, DoodadPlacements* parsedDoodads = nullptr) const;
     [[nodiscard]] Status SetTerrainAndPathingInternal(std::span<const std::byte> terrainBytes,
         std::span<const std::byte> pathingBytes, std::span<const std::byte> restrictionDraft);
     [[nodiscard]] Status VerifyTerrainCandidateForSave(
