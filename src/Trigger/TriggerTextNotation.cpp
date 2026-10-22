@@ -536,6 +536,7 @@ public:
         : document_(document), catalog_(catalog), types_(catalog), locals_(types_.CollectLocals(document, trigger)) {}
 
     std::string error;
+    std::vector<std::pair<StableId, std::size_t>> offsets; // (节点, 在输出中的字节位置)
 
     bool Eca(std::uint32_t index, std::size_t indent, std::string& out) {
         if (index >= document_.ecaNodes.size()) return Fail("ECA 索引无效。");
@@ -544,9 +545,7 @@ public:
         if (!Name(eca.name.text)) return false;
         out.append(indent * 4, ' ');
         if (eca.enabled == 0) out += '~';
-        std::string call;
-        if (!Call(eca, call)) return false;
-        out += call;
+        if (!Call(eca, out)) return false;
         if (eca.children.empty()) { out += '\n'; return true; }
         out += " {\n";
         const auto* branches = FindTriggerBlockBranches(eca.name.text, &catalog_);
@@ -582,6 +581,7 @@ private:
         return true;
     }
     bool Call(const EcaNode& eca, std::string& out) {
+        offsets.emplace_back(eca.id, out.size());
         out += NameText(eca.name.text) + "(";
         for (std::size_t i = 0; i < eca.arguments.size(); ++i) {
             if (i != 0) out += ", ";
@@ -696,8 +696,22 @@ Result<std::vector<std::shared_ptr<const GraphEcaValue>>> ParseTriggerText(std::
     return Output::Success(std::move(roots));
 }
 
+Result<std::string> ParseTriggerTextValue(std::string_view text) {
+    auto tokens = Lexer(text).Run();
+    if (!tokens.Succeeded()) return {std::nullopt, std::move(tokens.diagnostics)};
+    const auto& list = *tokens.value;
+    if (list.size() != 2 || list[1].kind != TokenKind::End
+        || (list[0].kind != TokenKind::String && list[0].kind != TokenKind::Code && list[0].kind != TokenKind::Number
+            && list[0].kind != TokenKind::Name))
+        return Result<std::string>::Failure(kDomain, "TRIGGER_TEXT_VALUE", "这里只能写一个值（\"文本\"、'A000'、数字或名字）：" + std::string(text));
+    return Result<std::string>::Success(list[0].text);
+}
+
+std::string TriggerTextQuoted(std::string_view value) { return Quoted(value); }
+std::string TriggerTextName(std::string_view name) { return NameText(name); }
+
 Result<std::string> RenderTriggerText(const TriggerDocument& document, const UiCatalog& catalog,
-    StableId triggerId, std::size_t maxBytes) {
+    StableId triggerId, std::size_t maxBytes, std::vector<TriggerTextAnchor>* anchors) {
     const auto trigger = std::find_if(document.triggers.begin(), document.triggers.end(),
         [triggerId](const TriggerRecord& row) { return row.id == triggerId; });
     if (trigger == document.triggers.end())
@@ -721,6 +735,20 @@ Result<std::string> RenderTriggerText(const TriggerDocument& document, const UiC
     for (const auto index : trigger->ecas) {
         if (index >= document.ecaNodes.size() || document.ecaNodes[index].type < 0 || document.ecaNodes[index].type > 2)
             return Result<std::string>::Failure(kDomain, "TRIGGER_TEXT_RENDER", "触发器“" + trigger->name.text + "”的根节点类型无效。");
+    }
+    if (anchors != nullptr) {
+        anchors->clear();
+        anchors->reserve(renderer.offsets.size());
+        Position at;
+        std::size_t scanned = 0;
+        for (const auto& [eca, offset] : renderer.offsets) {
+            for (; scanned < offset; ++scanned) {
+                const auto byte = static_cast<unsigned char>(out[scanned]);
+                if (byte == '\n') { ++at.line; at.column = 1; }
+                else if ((byte & 0xC0U) != 0x80U) ++at.column;
+            }
+            anchors->push_back({eca, at.line, at.column});
+        }
     }
     return Result<std::string>::Success(std::move(out));
 }

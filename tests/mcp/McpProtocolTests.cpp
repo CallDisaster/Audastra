@@ -857,6 +857,21 @@ void TestMapDataPageBinding() {
         {QJsonObject{{"op", "replace_trigger_text"}, {"trigger", target}, {"text", "actions:\n    Missing()\n"}}})),
         "TRIGGER_TEXT_UNKNOWN_FUNCTION");
     Expect(exportText().value("text").toString() == canonical, "rejected text changed the trigger");
+    // 局部替换：按导出行号与原文改一行。
+    const auto patched = call("edit_trigger_graph", argumentRequest(exportText().value("binding").toObject(),
+        {QJsonObject{{"op", "patch_trigger_text"}, {"trigger", target}, {"from_line", 4}, {"to_line", 4},
+            {"expected", "    StoreInteger(42)"}, {"text", "    StoreInteger(43)"}}}));
+    Expect(patched.value("ok").toBool() && exportText().value("text").toString() == QString(canonical).replace("42", "43"),
+        "patch_trigger_text did not replace the guarded line");
+    // 功能写法：一次写入类别与触发器，再按类别导出。
+    const auto feature = call("edit_trigger_graph", argumentRequest(exportText().value("binding").toObject(),
+        {QJsonObject{{"op", "apply_feature_text"}, {"category", "MCP Feature"}, {"text", "触发器 Feature Trigger:\n    StoreInteger(7)\n"}}}));
+    Expect(feature.value("ok").toBool(), "apply_feature_text failed through MCP JSON");
+    const auto featureCategory = feature.value("created").toObject().value("feature/category").toObject();
+    const auto featureText = call("query_trigger_graph", {{"table", "feature_text"}, {"category_id", featureCategory.value("id")}});
+    Expect(featureText.value("ok").toBool()
+        && featureText.value("text").toString() == "触发器 Feature Trigger:\n    actions:\n        StoreInteger(7)\n",
+        "feature_text did not export the written feature");
     Expect(server.Workspace()->Rollback(*argumentEdit.value, revision).Succeeded(), "argument replacement rollback failed");
     server.SetWorkspace(source, ui);
     code(call("query_map_data_page", args), "MAP_DATA_QUERY_STALE");

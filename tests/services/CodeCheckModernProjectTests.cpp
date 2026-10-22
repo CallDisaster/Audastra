@@ -4,6 +4,9 @@
 #include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/Services/CodeCheckProject.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
+#include "War3MapCore/Trigger/TriggerEditing.h"
+#include "War3MapCore/Trigger/TriggerGraphEditing.h"
+#include "War3MapCore/Trigger/TriggerTextNotation.h"
 #include "../MapDataFixtures.h"
 
 #include <Windows.h>
@@ -132,7 +135,10 @@ constexpr std::string_view kOriginalCommon =
     "native SetMapDescription takes string description returns nothing\n"
     "native SetPlayers takes integer count returns nothing\n"
     "native SetTeams takes integer count returns nothing\n"
-    "native SetGamePlacement takes integer placement returns nothing\n";
+    "native SetGamePlacement takes integer placement returns nothing\n"
+    "type triggeraction extends handle\n"
+    "native CreateTrigger takes nothing returns trigger\n"
+    "native TriggerAddAction takes trigger whichTrigger, code actionFunc returns triggeraction\n";
 
 constexpr std::string_view kOriginalBlizzard =
     "function InitBlizzard takes nothing returns nothing\nendfunction\n"
@@ -178,6 +184,8 @@ public:
         WriteOriginalText(tool / "ui/config", "base\naddon\n");
         WriteOriginalText(tool / "ui/base/define.txt", "[TriggerTypes]\ntrigger=0,1,1,触发器\n");
         WriteOriginalText(tool / "ui/addon/define.txt", "[TriggerTypes]\nProbeInteger=0,1,1,原创类型,integer\n");
+        // T 检查用：一个有实现的动作（原创 blizzard 夹具中的函数）与一个脚本里不存在的动作。
+        WriteOriginalText(tool / "ui/addon/action.txt", "[InitBlizzard]\n[MissingProbeAction]\n");
         WriteOriginalText(tool / "compiler/jass/24/common.j", kOriginalCommon);
         WriteOriginalText(tool / "compiler/jass/24/blizzard.j", kOriginalBlizzard);
         WriteOriginalText(tool / "compiler/include/WaveForce.i", forcedInclude);
@@ -413,6 +421,44 @@ void UnexecutedTemplateElsewhereStillExpandsAuthorSection() {
     fixture.RequireSourceUnchanged();
 }
 
+// T 检查：未发布的触发器候选按保存链生成整图并做同一检查；GUI 语句生成代码上的错误
+// 附上紧凑 T 行列与函数名，冻结的实时文档和源地图都不改变。
+void TriggerCheckLocatesGuiStatements() {
+    ModernProjectFixture fixture;
+    CodeCheckProjectCache cache;
+    auto document = std::make_shared<Trigger::TriggerDocument>(*fixture.frozen->triggers);
+    document->categories.push_back({900001, 0, Trigger::RawText{"原创分类"}, 0, {}});
+    const auto trigger = Trigger::TriggerDocumentEditor::AddTrigger(*document, 0, "Probe");
+    Require(trigger.Succeeded() && trigger.value, "add the original probe trigger");
+    const auto replace = [&](std::string text) {
+        const auto binding = Trigger::CaptureTriggerGraphBinding(*document, *fixture.frozen->catalog);
+        Require(binding.Succeeded() && binding.value, "bind the candidate trigger document");
+        Trigger::TriggerGraphEditBatch batch{*binding.value, {}};
+        batch.operations.emplace_back(Trigger::GraphReplaceTriggerText{{Trigger::GraphRecordKind::Trigger, *trigger.value, {}}, std::move(text)});
+        const auto applied = Trigger::ApplyTriggerGraphEditBatch(*document, *fixture.frozen->catalog, batch);
+        Require(applied.Succeeded(), "write the compact T candidate");
+    };
+    replace("actions:\n    InitBlizzard()\n");
+    const auto passed = CheckProjectTriggers(fixture.frozen, cache, document, 601);
+    RequireFull(passed, "a GUI trigger calling a defined function must pass the complete check");
+
+    replace("actions:\n    InitBlizzard()\n    MissingProbeAction()\n");
+    const auto failed = CheckProjectTriggers(fixture.frozen, cache, document, 602);
+    std::string details = failed.reason;
+    for (const auto& diagnostic : failed.diagnostics) details += "\n" + diagnostic.source + ":" + std::to_string(diagnostic.line) + " " + diagnostic.message;
+    Require(failed.completed && failed.contextComplete && !failed.Succeeded(), "a missing script function must fail the complete check: " + details);
+    const auto located = std::find_if(failed.diagnostics.begin(), failed.diagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.severity == DiagnosticSeverity::Error && diagnostic.trigger;
+    });
+    Require(located != failed.diagnostics.end(), "the error must carry its T location: " + details);
+    const auto& at = *located->trigger;
+    Require(at.triggerId == *trigger.value && at.triggerName == "Probe" && at.function == "MissingProbeAction"
+        && at.line == 3 && at.column == 5 && at.generated.find("MissingProbeAction") != std::string::npos,
+        "the error must point at line 3 column 5 of the compact T text: " + at.function + " " + std::to_string(at.line)
+            + ":" + std::to_string(at.column) + " " + at.generated);
+    fixture.RequireSourceUnchanged();
+}
+
 } // namespace
 
 int main() {
@@ -422,6 +468,7 @@ int main() {
         UnboundRootsCannotSupplyQuotedIncludesOrInjection();
         TemplateMacrosExpandBeforeCheckingAndKeepAuthorLines();
         UnexecutedTemplateElsewhereStillExpandsAuthorSection();
+        TriggerCheckLocatesGuiStatements();
         std::cout << "Original modern project: enabled UI injection, quoted include, repeated cache, changed identity, unbound roots and template macros passed\n";
         return 0;
     } catch (const std::exception& error) {

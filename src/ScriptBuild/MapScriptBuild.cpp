@@ -296,29 +296,8 @@ MapScriptBuildResult BuildMapScript(const MapScriptBuildRequest& request) {
     }
     // 内置求值覆盖不了的模板（slk 物编生成、控制语句等）由进程内 Lua 沙盒整份执行一次，
     // slk 库首次 require 时才捕获本次保存的最终成员，同一快照供保存时的三方合并使用。
-    templates.wholeChunk = [&](std::string_view preprocessed, const std::vector<std::string>& libraries) -> Result<TemplateTransactionOutput> {
-        LuaTemplateRequest lua;
-        lua.preprocessed = preprocessed;
-        lua.libraries = libraries;
-        lua.abilityOrder = templates.abilityOrder;
-        lua.importRoot = templates.importRoot;
-        lua.slk = [&]() -> Result<LuaTemplateSlkSources> {
-            const auto root = options.toolRoot.empty() ? std::nullopt : FindTemplateW3x2lniRoot(options.toolRoot);
-            if (!root)
-                return Result<LuaTemplateSlkSources>::Failure("Script.LuaTemplate", "TEMPLATE_SLK_DATA_MISSING",
-                    "工具目录里找不到 w3x2lni 物编数据（plugin/w3x2lni），模板 slk 库不能使用。");
-            auto layout = DetectSlkDatasetLayout(*root);
-            if (!layout.Succeeded() || !layout.value) return {std::nullopt, std::move(layout.diagnostics)};
-            if (!result.slkSources) {
-                auto snapshot = SlkMapSourceSnapshot::Capture(archive, edits, removals, request.documentRevision);
-                if (!snapshot.Succeeded() || !snapshot.value) return {std::nullopt, std::move(snapshot.diagnostics)};
-                result.slkSources = std::move(*snapshot.value);
-            }
-            return Result<LuaTemplateSlkSources>::Success({*root, &*result.slkSources, *layout.value});
-        };
-        if (options.onStage) options.onStage("lua-template");
-        return RunLuaTemplate(lua);
-    };
+    templates.wholeChunk = MakeLuaWholeChunk(templates, {options.toolRoot, &archive, edits, removals, request.documentRevision,
+        options.onStage ? std::function<void()>([&] { options.onStage("lua-template"); }) : std::function<void()>{}}, result.slkSources);
     result.pipeline = CompileMapScript(result.generated.text, options, templates);
     if (std::any_of(result.pipeline->diagnostics.begin(), result.pipeline->diagnostics.end(), [](const Diagnostic& diagnostic) {
             return diagnostic.code == "TEMPLATE_SLK_SKIPPED";

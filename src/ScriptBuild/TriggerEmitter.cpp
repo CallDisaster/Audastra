@@ -293,6 +293,7 @@ void TriggerEmitter::PutExternItems(const Eca& eca, const std::string& name) {
 }
 
 void TriggerEmitter::PutExternFunc(const Eca& eca, const std::string& name) {
+    const Owned owned(*this, eca);
     const Gui gui = GuiOf(eca);
     const char* dz = DzCallbackSuffix(gui);
     if (gui != Gui::YDWETimerStartMultiple && gui != Gui::YDWERegisterTriggerMultiple && dz == nullptr) {
@@ -372,6 +373,7 @@ void TriggerEmitter::PutEventRegisterEx(const Eca& eca, const std::string& trigg
     (void)index;
     if (!Enabled(eca)) return;
     if (eca.name.text == "YDWEDisableRegister" || eca.name.text == "MapInitializationEvent") return;
+    const Owned owned(*this, eca);
     const std::size_t start = out_.Size();
     out_.Put("    call " + ScriptName(eca) + "(" + triggerVar);
     for (std::size_t i = 0; i < eca.arguments.size(); ++i) {
@@ -425,9 +427,12 @@ void TriggerEmitter::PutTriggerInit(const Trigger::TriggerRecord& trigger, const
 void TriggerEmitter::EmitGuiTrigger(const Trigger::TriggerRecord& trigger) {
     trigger_ = &trigger;
     saveLoadTypes_.clear();
+    const ScriptOwner saved = out_.Owner();
+    out_.SetOwner({trigger.id, 0});
     const std::string name = "Trig_" + ConvertObjectName(trigger.name.text);
     PutTriggerExterns(trigger, name);
     PutTriggerInit(trigger, name);
+    out_.SetOwner(saved);
     trigger_ = nullptr;
 }
 

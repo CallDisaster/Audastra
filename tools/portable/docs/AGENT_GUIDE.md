@@ -258,6 +258,68 @@ actions:
 
 出错时整段都不写入。名字、参数个数、分支标签这类错误一次全部列出，每条带“第几行第几列”；参数类型错误也会一次列出，并标明是哪一行的第几个参数。语法错误只报第一处。
 
+### 改一小段：局部替换
+
+大触发器只改几行时不必整段重写。用 `trigger_text` 导出后：
+
+```json
+{"op": "patch_trigger_text", "trigger": <触发器 ref>, "from_line": 12, "to_line": 14,
+ "expected": "<导出文本第 12–14 行原文>", "text": "<替换成的几行>"}
+```
+
+- 行号就是导出文本的行号（从 1 起）。`to_line = from_line - 1` 表示不删任何行，只把 `text` 插在第 `from_line` 行前面。
+- `expected` 必须与当前这几行逐字相同，否则报 `TRIGGER_TEXT_PATCH_STALE` 并给出当前内容，什么都不改。
+- 替换后整段重新按紧凑 T 解析写入（同 `replace_trigger_text`），所以报错的行号是替换后整段文本的行号；块语句的 `{ }` 要配对完整。
+
+### 一个功能一次写完：功能写法
+
+一个功能通常要几个全局变量和几个触发器。`apply_feature_text` 一次写进一个类别：
+
+```json
+{"op": "apply_feature_text", "category": "沃金", "text": "..."}
+```
+
+```text
+变量:
+    VJ_Voodoo: integer = 0
+    VJ_Marks: unit[]
+    VJ_Model: string = "war3mapImported\\bonespirit.mdx"
+触发器 沃金 Q 医疗波:
+    events:
+        TriggerRegisterAnyUnitEventBJ(EVENT_PLAYER_UNIT_SPELL_EFFECT)
+    actions:
+        SetVariable(udg_VJ_Voodoo, 0)
+触发器 沃金 初始化 (init):
+    actions:
+        ...
+```
+
+- 顶层（不缩进）只有 `变量:`（或 `variables:`）和 `触发器 名字:`（或 `trigger 名字:`），下面的内容要缩进；触发器体就是紧凑 T 写法。
+- 变量写 `名字: 类型`、`名字: 类型[]`（数组）或 `名字: 类型[长度]`，可加 `= 初值`（`"文本"`、`'A000'`、数字、预设名或 `null`）；名字可带 `udg_`。
+- 触发器名后可加选项：`init`（地图初始化时运行）、`off`（初始关闭）、`disabled`（禁用）。名字含 `:`、`(`、`)` 时用双引号括起来。
+- 类别不存在就新建。变量不存在就新建；已存在时类型和是否数组必须一致（否则报 `TRIGGER_FEATURE_VARIABLE_CONFLICT`），只更新初值和数组长度。触发器在该类别里同名的整体替换内容，不存在就新建；同名触发器在别的类别里会报错。文本里没提到的变量和触发器不动，也不会删除任何东西。
+- 报错一次列出，行号都是整段功能文本的行号；任何一处出错整批都不写入。
+- 读取用 `{"table": "feature_text", "category_id": "<类别 ref.id>"}`：导出该类别的全部触发器和它们用到的变量，可直接改了再写回，导出→写回→再导出不变。
+
+### 先预览再写入
+
+`editor_edit_trigger_graph` 带 `"dry_run": true` 时只在私有副本上应用，不发布、不进撤销栈。返回：
+
+- `change_summary`：新增/修改/删除了多少记录；
+- `trigger_diffs`：每个有变化的触发器的紧凑 T 逐行差异（`-` 删除、`+` 新增、`@@ 第 N 行` 是写入后文本的行号，只列改动附近两行）。
+
+确认无误后去掉 `dry_run` 用同一批次正式写入。
+
+### 写完先做整图检查
+
+上面的检查只保证 T 树本身合法。能不能编译要看整图脚本，用编辑器里的 `editor_check_trigger_graph`（也可在命令行用 `war3-map-cli trigger-check <ydwe根> <地图> <游戏根> [<触发器名> <紧凑T文件>]`）：
+
+- 与保存相同的流程：生成整图脚本 → 注入函数库 → 预处理 → 模板（同保存一样在沙盒里执行）→ JASS 检查。不写地图、不执行地图代码。
+- 可以带与 `editor_edit_trigger_graph` 相同的 `expected` 和 `operations`：批次只应用到私有副本上检查，不发布、不进撤销栈。通过后再用同一批次正式写入；不带批次时检查当前文档。
+- `submit` 返回 `request_id`；带 `wait_ms`（最多 60000）会直接等结果。没等完就用 `{"action": "status", "request_id": ..., "wait_ms": ...}` 再取。
+- 每条诊断落在 T 语句生成的代码上时带 `t`：`trigger_name`、`function`、`line`/`column`（就是 `trigger_text` 导出文本的行列）和出错的生成代码 `generated`。这类错误排在最前面。没有 `t` 的诊断来自函数库、作者代码或触发器自身的生成代码。
+- 整图来源不完整时不检查，报 `TRIGGER_CHECK_CONTEXT_INCOMPLETE` 并说明原因，不能当作通过。
+
 ## 5. 结果应如何记录
 
 保留源/候选路径与 SHA、包内源码身份、请求的绑定/raw、新值、退出码/业务 ok、原始诊断和重开结果。候选存在时换新路径，不覆盖源图或已有证据。

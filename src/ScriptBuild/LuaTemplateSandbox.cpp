@@ -526,4 +526,35 @@ Result<TemplateTransactionOutput> RunLuaTemplate(const LuaTemplateRequest& reque
     return Result<TemplateTransactionOutput>::Success(std::move(output));
 }
 
+std::function<Result<TemplateTransactionOutput>(std::string_view, const std::vector<std::string>&)>
+    MakeLuaWholeChunk(const TemplateContext& templates, LuaWholeChunkSources sources, std::optional<SlkMapSourceSnapshot>& slkCache) {
+    return [abilityOrder = templates.abilityOrder, importRoot = templates.importRoot, sources = std::move(sources), &slkCache](
+        std::string_view preprocessed, const std::vector<std::string>& libraries) -> Result<TemplateTransactionOutput> {
+        LuaTemplateRequest lua;
+        lua.preprocessed = preprocessed;
+        lua.libraries = libraries;
+        lua.abilityOrder = abilityOrder;
+        lua.importRoot = importRoot;
+        lua.slk = [&]() -> Result<LuaTemplateSlkSources> {
+            const auto root = sources.toolRoot.empty() ? std::nullopt : FindTemplateW3x2lniRoot(sources.toolRoot);
+            if (!root)
+                return Result<LuaTemplateSlkSources>::Failure("Script.LuaTemplate", "TEMPLATE_SLK_DATA_MISSING",
+                    "工具目录里找不到 w3x2lni 物编数据（plugin/w3x2lni），模板 slk 库不能使用。");
+            auto layout = DetectSlkDatasetLayout(*root);
+            if (!layout.Succeeded() || !layout.value) return {std::nullopt, std::move(layout.diagnostics)};
+            if (!slkCache) {
+                if (sources.archive == nullptr)
+                    return Result<LuaTemplateSlkSources>::Failure("Script.LuaTemplate", "TEMPLATE_SLK_SOURCE_MISSING",
+                        "没有地图归档来源，模板 slk 库不能读取本图物编。");
+                auto snapshot = SlkMapSourceSnapshot::Capture(*sources.archive, sources.edits, sources.removals, sources.revision);
+                if (!snapshot.Succeeded() || !snapshot.value) return {std::nullopt, std::move(snapshot.diagnostics)};
+                slkCache = std::move(*snapshot.value);
+            }
+            return Result<LuaTemplateSlkSources>::Success({*root, &*slkCache, *layout.value});
+        };
+        if (sources.beforeRun) sources.beforeRun();
+        return RunLuaTemplate(lua);
+    };
+}
+
 } // namespace War3Map::Script

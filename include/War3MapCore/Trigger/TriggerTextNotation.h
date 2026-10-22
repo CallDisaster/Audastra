@@ -43,8 +43,22 @@ struct TriggerTextTarget {
     std::string_view text, const TriggerDocument& document, const UiCatalog& catalog,
     const TriggerTextTarget& target, const TriggerGraphEditLimits& limits = {});
 
+// 导出文本里每个节点（语句及参数中的函数调用）开始的位置；行列从 1 起，列按字符计，与解析报错一致。
+struct TriggerTextAnchor {
+    StableId ecaId = 0;
+    std::size_t line = 1;
+    std::size_t column = 1;
+};
+
 // 把触发器的全部根 ECA 导出为同一写法；无法如实表达的结构明确报错，不输出近似文本。
+// anchors 非空时按文本顺序填入各节点位置（供检查结果定位回 T）。
 [[nodiscard]] Result<std::string> RenderTriggerText(const TriggerDocument& document, const UiCatalog& catalog,
-    StableId triggerId, std::size_t maxBytes = 1024U * 1024U);
+    StableId triggerId, std::size_t maxBytes = 1024U * 1024U, std::vector<TriggerTextAnchor>* anchors = nullptr);
+
+// 单个值的写法与参数相同："文本"（转义同上）、'A000'、数字、名字（可用反引号）；返回值本体。
+[[nodiscard]] Result<std::string> ParseTriggerTextValue(std::string_view text);
+// 文本加双引号并转义；名字在含特殊字符时加反引号。与解析互为往返。
+[[nodiscard]] std::string TriggerTextQuoted(std::string_view value);
+[[nodiscard]] std::string TriggerTextName(std::string_view name);
 
 } // namespace War3Map::Trigger

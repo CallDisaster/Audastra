@@ -2,6 +2,7 @@
 #include "McpTriggerGraphJson.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
+#include "War3MapCore/Trigger/TriggerFeatureText.h"
 #include "War3MapCore/Trigger/TriggerTextNotation.h"
 #include "War3MapCore/Trigger/TriggerTypes.h"
 
@@ -353,6 +354,16 @@ public:
             } else if (op == "replace_trigger_text") {
                 const auto object = Object(value, {"op", "trigger", "text"});
                 batch.operations.emplace_back(GraphReplaceTriggerText{Ref(object.value("trigger")), String(object, "text")});
+            } else if (op == "patch_trigger_text") {
+                const auto object = Object(value, {"op", "trigger", "from_line", "to_line", "expected", "text"});
+                const auto from = Integer(object, "from_line"), to = Integer(object, "to_line");
+                if (from < 1 || to < from - 1) throw GraphJsonError("from_line 须 >= 1，to_line 须 >= from_line - 1。");
+                batch.operations.emplace_back(GraphPatchTriggerText{Ref(object.value("trigger")), static_cast<std::size_t>(from),
+                    static_cast<std::size_t>(to), String(object, "expected"), String(object, "text")});
+            } else if (op == "apply_feature_text") {
+                const auto object = Object(value, {"op", "category", "text"}, {"client_key"});
+                batch.operations.emplace_back(GraphApplyFeatureText{String(object, "category"), String(object, "text"),
+                    object.contains("client_key") ? String(object, "client_key") : std::string{}});
             } else if (op == "replace_argument") {
                 const auto object = Object(value, {"op", "target", "expected", "value"});
                 GraphReplaceArgument replace;
@@ -390,7 +401,7 @@ QJsonValue OptionalIndex(const TriggerDocument& document, const std::optional<st
 QJsonObject QueryDocumentImpl(const TriggerDocument& document, const UiCatalog& catalog,
     const MapObjectReferenceSnapshot* mapObjects, const QJsonObject& request, const GraphNameResolver& names = {}) {
     Object(request, {"table"}, {"start", "limit", "schema_version", "argument_ids", "variable_ids", "include_replacement_guard",
-        "functions", "ui_layer", "trigger_id"});
+        "functions", "ui_layer", "trigger_id", "category_id"});
     if (request.contains("schema_version") && Integer(request, "schema_version") != 1) throw GraphJsonError("未知图 schema_version。");
     const auto table = String(request, "table");
     if (table == "trigger_text") {
@@ -407,7 +418,23 @@ QJsonObject QueryDocumentImpl(const TriggerDocument& document, const UiCatalog& 
             {"trigger", RefJson(GraphRecordKind::Trigger, triggerId)}, {"name", QString::fromStdString(trigger->name.text)},
             {"text", QString::fromStdString(*text.value)}};
     }
+    if (table == "feature_text") {
+        // 一个类别导出为功能写法（触发器 + 它们引用的变量），可修改后用 apply_feature_text 写回。
+        Object(request, {"table", "category_id"}, {"schema_version"});
+        const auto categoryRef = Id(request, "category_id");
+        const auto category = std::find_if(document.categories.begin(), document.categories.end(),
+            [categoryRef](const auto& row) { return row.id == categoryRef; });
+        if (category == document.categories.end()) throw GraphJsonError("找不到该类别。", "MCP_TRIGGER_GRAPH_RECORD_MISSING");
+        const auto binding = CaptureTriggerGraphBinding(document, catalog, mapObjects);
+        if (!binding.Succeeded()) return Failure(binding);
+        const auto text = RenderFeatureText(document, catalog, category->categoryId, kResponseBytes / 2);
+        if (!text.Succeeded()) return Failure(text);
+        return {{"ok", true}, {"schema_version", 1}, {"binding", BindingJson(*binding.value)}, {"table", "feature_text"},
+            {"category", RefJson(GraphRecordKind::Category, categoryRef)}, {"name", QString::fromStdString(category->name.text)},
+            {"text", QString::fromStdString(*text.value)}};
+    }
     if (request.contains("trigger_id")) throw GraphJsonError("trigger_id 只适用于 trigger_text 表。");
+    if (request.contains("category_id")) throw GraphJsonError("category_id 只适用于 feature_text 表。");
     const bool exactArguments = request.contains("argument_ids"), exactVariables = request.contains("variable_ids");
     const bool exact = exactArguments || exactVariables;
     const bool guards = request.contains("include_replacement_guard") && Boolean(request, "include_replacement_guard");
@@ -696,6 +723,11 @@ QJsonObject GraphSchema() {
         {"op", "target", "expected", "value"}));
     variants.append(Shape({{"op", op("insert_text")}, {"parent", parent}, {"text", string}, {"before", ref}}, {"op", "parent", "text"}));
     variants.append(Shape({{"op", op("replace_trigger_text")}, {"trigger", ref}, {"text", string}}, {"op", "trigger", "text"}));
+    variants.append(Shape({{"op", op("apply_feature_text")}, {"category", string}, {"text", string}, {"client_key", string}},
+        {"op", "category", "text"}));
+    const QJsonObject line{{"type", "integer"}, {"minimum", 0}};
+    variants.append(Shape({{"op", op("patch_trigger_text")}, {"trigger", ref}, {"from_line", line}, {"to_line", line},
+        {"expected", string}, {"text", string}}, {"op", "trigger", "from_line", "to_line", "expected", "text"}));
     auto schema = BasicSchema({{"schema_version", QJsonObject{{"type", "integer"}, {"enum", QJsonArray{1}}}}, {"expected", binding},
         {"operations", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 256}, {"items", QJsonObject{{"oneOf", variants}}}}}},
         {"transaction_id", "expected_revision", "expected", "operations"});
@@ -784,12 +816,12 @@ QJsonObject GraphQueryProperties() {
     const auto id = QJsonObject{{"type", "string"}, {"pattern", "^[1-9][0-9]*$"}};
     return {{"schema_version", QJsonObject{{"type", "integer"}, {"enum", QJsonArray{1}}}},
         {"table", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"categories", "variables", "triggers", "ecas", "arguments",
-            "map_objects", "trigger_text"}}}},
+            "map_objects", "trigger_text", "feature_text"}}}},
         {"start", QJsonObject{{"type", "integer"}, {"minimum", 0}}}, {"limit", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 128}}},
         {"argument_ids", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 16}, {"uniqueItems", true}, {"items", id}}},
         {"variable_ids", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 16}, {"uniqueItems", true}, {"items", id}}},
         {"include_replacement_guard", QJsonObject{{"type", "boolean"}}}, {"functions", EcaFunctionFilterSchema()},
-        {"ui_layer", QJsonObject{{"type", "string"}, {"minLength", 1}}}, {"trigger_id", id}};
+        {"ui_layer", QJsonObject{{"type", "string"}, {"minLength", 1}}}, {"trigger_id", id}, {"category_id", id}};
 }
 
 QJsonObject GraphOperationSchema() {
@@ -812,7 +844,7 @@ void RegisterTriggerGraphTools(McpServer& server) {
     ToolDefinition query;
     query.name = "query_trigger_graph";
     query.description = "分页查询 GUI 图；ecas 可用 functions（精确函数名）或 ui_layer（函数库层）筛选后再分页；arguments 可用 argument_ids 定点查询最多16项，并通过 include_replacement_guard 取得共用核心的原位替换资格；"
-        "trigger_text 表配 trigger_id 把整个触发器导出为紧凑 T 写法。";
+        "trigger_text 表配 trigger_id 把整个触发器导出为紧凑 T 写法；feature_text 表配 category_id 把整个类别（触发器与引用的变量）导出为功能写法。";
     query.inputSchema = BasicSchema(GraphQueryProperties(), {"table"});
     query.maxResponseBytes = kResponseBytes;
     query.handler = [&server](const QJsonObject& request) -> QJsonValue {
@@ -825,7 +857,7 @@ void RegisterTriggerGraphTools(McpServer& server) {
     edit.name = "edit_trigger_graph";
     edit.permission = ToolPermission::Edit;
     edit.description = "在单一目录事务内原子编辑 GUI 图：创建、字段、精确改名、顺序移动、删除、类型子树和受guard保护的参数原位替换。"
-        "insert_text / replace_trigger_text 用紧凑 T 写法一次写入整段事件/条件/动作（写法见 AGENT_GUIDE）。代码审计仅 CallerAsserted，不创建自定义脚本。";
+        "insert_text / replace_trigger_text 用紧凑 T 写法一次写入整段事件/条件/动作；apply_feature_text 一次写入一个功能的变量与多个触发器（写法见 AGENT_GUIDE）。代码审计仅 CallerAsserted，不创建自定义脚本。";
     edit.inputSchema = GraphSchema(); edit.maxResponseBytes = kResponseBytes;
     edit.handler = [&server](const QJsonObject& request) -> QJsonValue {
         QJsonObject error; auto* workspace = RequireWorkspace(server, error); if (!workspace) return error;

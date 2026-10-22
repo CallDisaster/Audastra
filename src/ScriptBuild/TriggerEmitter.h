@@ -84,6 +84,20 @@ private:
     using Arg = Trigger::ArgumentNode;
     using Children = std::span<const std::uint32_t>;
 
+    // 作用域内写出的文本记到这条语句名下，检查结果据此定位回 T；嵌套时内层优先，离开时恢复。
+    class Owned {
+    public:
+        Owned(TriggerEmitter& emitter, const Eca& eca) : out_(emitter.out_), saved_(out_.Owner()) {
+            out_.SetOwner({emitter.trigger_ != nullptr ? emitter.trigger_->id : saved_.trigger, eca.id});
+        }
+        ~Owned() { out_.SetOwner(saved_); }
+        Owned(const Owned&) = delete;
+        Owned& operator=(const Owned&) = delete;
+    private:
+        ScriptText& out_;
+        ScriptOwner saved_;
+    };
+
     // —— 文档与目录查询（TriggerEmitter.cpp）——
     [[nodiscard]] const Eca& EcaAt(std::uint32_t index) const;
     [[nodiscard]] const Arg* ArgAt(const Eca& eca, std::size_t index) const;

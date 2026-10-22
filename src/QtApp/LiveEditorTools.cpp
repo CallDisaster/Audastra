@@ -28,12 +28,15 @@
 
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Services/CodeCheckProject.h"
+#include "War3MapCore/Trigger/TriggerTextDiff.h"
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
 #include "War3MapCore/Trigger/UiCatalog.h"
 #include "War3MapCore/Workspace.h"
 
+#include <QCoreApplication>
 #include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -390,8 +393,10 @@ private:
         return result;
     }
 
+    // preview 非空时只在私有副本上应用并把结果交给调用方，不发布、不进撤销栈。
     Result<Trigger::TriggerGraphEditReceipt> ApplyGraphBatch(const Trigger::TriggerGraphEditBatch& batch,
-        const Mcp::VariablePrepublishValidator& prepublish = {}, QJsonObject* changesResult = nullptr) {
+        const Mcp::VariablePrepublishValidator& prepublish = {}, QJsonObject* changesResult = nullptr,
+        TriggerDocument* preview = nullptr) {
         using Receipt = Trigger::TriggerGraphEditReceipt;
         if (!project_.triggerUndoStack_)
             return Result<Receipt>::Failure("QtApp.Live", "LIVE_EDITOR_UNDO_UNAVAILABLE", "当前工程没有共用触发器撤销栈。");
@@ -421,6 +426,11 @@ private:
                 Result<Receipt> failure; failure.diagnostics = checked.diagnostics; return failure;
             }
         }
+        if (preview) {
+            *preview = std::move(candidate);
+            if (changesResult) *changesResult = payload;
+            return edited;
+        }
         if (edited.value->before.currentWtgSha256 != edited.value->after.currentWtgSha256 ||
             edited.value->before.currentWctSha256 != edited.value->after.currentWctSha256) {
             auto command = std::make_unique<QtProject::TriggerGraphSnapshotUndoCommand>(
@@ -440,19 +450,101 @@ private:
         return Write(arguments, true, [&] {
             auto request = arguments;
             request.remove("project_identity"); request.remove("expected_revision");
+            const bool dryRun = request.value("dry_run").toBool(false);
+            request.remove("dry_run");
             const auto decoded = Mcp::DecodeGraphBatch(request);
             if (!decoded.Succeeded()) return Mcp::Failure(decoded);
             QJsonObject changes;
-            const auto edited = ApplyGraphBatch(*decoded.value, {}, &changes);
+            TriggerDocument preview;
+            const auto edited = ApplyGraphBatch(*decoded.value, {}, &changes, dryRun ? &preview : nullptr);
             if (!edited.Succeeded()) return Mcp::Failure(edited);
             QJsonObject created;
             for (const auto& [key, ref] : edited.value->created) created.insert(QString::fromStdString(key),
                 QJsonObject{{"kind", RecordKind(ref.kind)}, {"id", QString::number(ref.id)}});
-            return QJsonObject{{"ok", true}, {"scope", "gui-visible-document"}, {"project_identity", projectIdentity_},
+            QJsonObject result{{"ok", true}, {"scope", "gui-visible-document"}, {"project_identity", projectIdentity_},
                 {"revision", QString::number(project_.editRevision_.Revision())}, {"before", Binding(edited.value->before)},
                 {"binding", Binding(edited.value->after)}, {"applied_operations", QString::number(edited.value->appliedOperations)},
-                {"created", created}, {"saved", false}, {"runtime_verified", false}, {"changes", changes}};
+                {"created", created}, {"saved", false}, {"runtime_verified", false}};
+            if (!dryRun) {
+                // 预览不发布变化，活动面板不能把它当作已写入。
+                result.insert("changes", changes);
+                return result;
+            }
+            QJsonArray diffs;
+            for (const auto& change : Trigger::DiffTriggerTexts(*project_.triggerDocument_, preview, *project_.uiCatalog_)) {
+                QJsonObject row{{"trigger_id", QString::number(change.triggerId)}, {"name", QString::fromStdString(change.name)},
+                    {"status", QString::fromStdString(change.status)}, {"diff", QString::fromStdString(change.diff)}};
+                if (!change.note.empty()) row.insert("note", QString::fromStdString(change.note));
+                diffs.append(row);
+            }
+            result.insert("dry_run", true); result.insert("published", false);
+            result.insert("change_summary", changes); result.insert("trigger_diffs", diffs);
+            return result;
         });
+    }
+
+    // 触发器整图检查：把（可选的）图编辑批次应用到当前文档的私有副本，不发布、不进撤销栈；
+    // 后台按保存链生成整图并检查，报错附紧凑 T 行列。status 可带 wait_ms 在编辑器线程上等待结果。
+    QJsonObject CheckTriggers(const QJsonObject& arguments) {
+        const auto action = arguments.value("action").toString(QStringLiteral("submit"));
+        if (action == QStringLiteral("status") || action == QStringLiteral("cancel")) {
+            const auto check = CheckContext(arguments, true, false);
+            if (!check.value("ok").toBool()) return check;
+            const auto requestId = arguments.value("request_id").toString().toStdString();
+            WaitForCheck(requestId, arguments.value("wait_ms").toInt(0));
+            return codeChecks_.Report(arguments, project_.CaptureCodeCheckSnapshot()->binding);
+        }
+        if (action != QStringLiteral("submit")) return Mcp::Failure("TRIGGER_CHECK_ACTION_INVALID", "action 须为 submit、status 或 cancel。");
+        if (busy_ || project_.savingMap_) return Mcp::Failure("LIVE_EDITOR_BUSY", "地图保存或另一个写命令正在执行。");
+        const auto check = CheckContext(arguments, true, false);
+        if (!check.value("ok").toBool()) return check;
+        TriggerDocument candidate(*project_.triggerDocument_);
+        const bool withEdits = arguments.contains("operations");
+        if (withEdits) {
+            QJsonObject request;
+            for (const auto* key : {"expected", "operations", "schema_version"})
+                if (arguments.contains(key)) request.insert(key, arguments.value(key));
+            const auto decoded = Mcp::DecodeGraphBatch(request);
+            if (!decoded.Succeeded()) return Mcp::Failure(decoded);
+            const auto references = project_.CaptureTriggerMapObjectReferences();
+            const auto* objects = references.Succeeded() && references.value && !(*references.value)->References().empty()
+                ? references.value->get() : nullptr;
+            const auto edited = Trigger::ApplyTriggerGraphEditBatch(candidate, *project_.uiCatalog_, *decoded.value, {}, objects);
+            if (!edited.Succeeded()) return Mcp::Failure(edited);
+        }
+        const auto snapshot = project_.CaptureCodeCheckSnapshot();
+        if (!snapshot || !snapshot->catalog) return Mcp::Failure("TRIGGER_CHECK_CONTEXT_UNAVAILABLE", "当前地图没有可冻结的检查来源。");
+        const auto generation = codeChecks_.ReserveGeneration();
+        if (!generation.Succeeded() || !generation.value) return Mcp::Failure(generation);
+        auto document = std::make_shared<const TriggerDocument>(std::move(candidate));
+        Mcp::CodeCheckToolWork work{snapshot->binding, "T/whole-map",
+            [snapshot, cache = codeCheckCache_, document, id = *generation.value](std::stop_token cancel) {
+                return Services::CheckProjectTriggers(snapshot, *cache, document, id, cancel);
+            }};
+        auto queued = codeChecks_.Enqueue(std::move(work), *generation.value);
+        if (!queued.value("ok").toBool()) return queued;
+        queued.insert("candidate", withEdits ? "operations-applied-privately" : "current-document");
+        queued.insert("published", false);
+        const auto requestId = queued.value("request_id").toString();
+        const auto wait = arguments.value("wait_ms").toInt(0);
+        if (wait <= 0) return queued;
+        WaitForCheck(requestId.toStdString(), wait);
+        QJsonObject status{{"action", "status"}, {"request_id", requestId}};
+        for (const auto* key : {"offset", "limit"}) if (arguments.contains(key)) status.insert(key, arguments.value(key));
+        auto report = codeChecks_.Report(status, snapshot->binding);
+        report.insert("candidate", queued.value("candidate"));
+        report.insert("published", false);
+        return report;
+    }
+
+    // 在编辑器线程上等待后台检查（最多 60 秒）；只处理非用户输入事件，不能嵌套等待。
+    void WaitForCheck(const std::string& requestId, int milliseconds) {
+        if (milliseconds <= 0 || waitingForCheck_) return;
+        QScopedValueRollback<bool> waiting(waitingForCheck_, true);
+        QElapsedTimer timer; timer.start();
+        const auto limit = std::min(milliseconds, 60000);
+        while (codeChecks_.Pending(requestId) && timer.elapsed() < limit)
+            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 50);
     }
 
     QJsonObject VariableTool(const QString& name, const QJsonObject& arguments, bool write) {
@@ -1192,17 +1284,34 @@ private:
         for (auto it = graphQuery.begin(); it != graphQuery.end(); ++it) query.insert(it.key(), it.value());
         AddTool("editor_query_trigger_graph",
             "查询作者当前可见的触发器（T）结构；ecas 表可用 functions（精确函数名）或 ui_layer（函数库层，如 WarVK）筛选；"
-            "trigger_text 表配 trigger_id 把整个触发器导出为紧凑 T 写法", Mcp::ToolPermission::Query,
+            "trigger_text 表配 trigger_id 把整个触发器导出为紧凑 T 写法；feature_text 表配 category_id 把整个类别导出为功能写法", Mcp::ToolPermission::Query,
             Schema(query, {"project_identity", "expected_revision", "table"}), [this](const QJsonObject& arguments) { return Query(arguments); });
         auto edit = Mcp::GraphOperationSchema();
         auto properties = edit.value("properties").toObject();
         const auto identity = IdentityProperties();
         for (auto it = identity.begin(); it != identity.end(); ++it) properties.insert(it.key(), it.value());
         edit.insert("properties", properties);
+        properties.insert("dry_run", QJsonObject{{"type", "boolean"}, {"default", false}});
+        edit.insert("properties", properties);
         edit.insert("required", QJsonArray{"project_identity", "expected_revision", "expected", "operations"});
-        AddTool("editor_edit_trigger_graph", "在共用撤销栈中整批编辑触发器（T）；insert_text / replace_trigger_text 可用紧凑 T 写法一次写入整段逻辑",
+        AddTool("editor_edit_trigger_graph", "在共用撤销栈中整批编辑触发器（T）；insert_text / replace_trigger_text 可用紧凑 T 写法一次写入整段逻辑，apply_feature_text 一次写入一个功能的变量与多个触发器",
             Mcp::ToolPermission::Edit, edit,
             [this](const QJsonObject& arguments) { return Edit(arguments); });
+        {
+            // 与 editor_edit_trigger_graph 相同的批次字段，另加检查任务字段；批次只用于私有候选，不发布。
+            auto checkSchema = Mcp::GraphOperationSchema();
+            auto checkProperties = checkSchema.value("properties").toObject();
+            for (auto it = identity.begin(); it != identity.end(); ++it) checkProperties.insert(it.key(), it.value());
+            const auto codeCheck = Mcp::CodeCheckToolDefinition().inputSchema.value("properties").toObject();
+            for (const auto* key : {"action", "request_id", "offset", "limit"}) checkProperties.insert(key, codeCheck.value(key));
+            checkProperties.insert("wait_ms", QJsonObject{{"type", "integer"}, {"minimum", 0}, {"maximum", 60000}});
+            checkSchema.insert("properties", checkProperties);
+            checkSchema.insert("required", QJsonArray{"project_identity", "expected_revision"});
+            AddTool("editor_check_trigger_graph",
+                "按保存链生成整图脚本并做同一 JASS 检查（模板与函数库同保存）；可附 operations 批次，只在私有副本上应用、不发布。"
+                "submit 返回 request_id，status 读取结果，wait_ms 可直接等待；报错落在 T 语句上时带 t 字段（trigger_text 导出的行列与函数名）",
+                Mcp::ToolPermission::Query, checkSchema, [this](const QJsonObject& arguments) { return CheckTriggers(arguments); });
+        }
         auto save = IdentityProperties(); save.insert("path", StringSchema()); save.insert("in_place", QJsonObject{{"type", "boolean"}, {"default", false}});
         AddTool("editor_save_map", "通过原编辑器地图保存服务写回或另存", Mcp::ToolPermission::Save,
             Schema(save, {"project_identity", "expected_revision"}), [this](const QJsonObject& arguments) { return Save(arguments); });
@@ -1236,6 +1345,7 @@ private:
     Trigger::UiCatalog* catalog_ = nullptr;
     std::string configSha_;
     Mcp::CodeCheckToolSession codeChecks_;
+    bool waitingForCheck_ = false;
     std::unique_ptr<LiveObjectResourceTools> objectResources_;
     std::shared_ptr<Services::CodeCheckProjectCache> codeCheckCache_ = std::make_shared<Services::CodeCheckProjectCache>();
 };

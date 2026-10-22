@@ -8,7 +8,9 @@
 #include <filesystem>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string_view>
+#include <vector>
 
 // YDWE/KKWE Lua 模板（<? 代码 ?> 与 <?= 表达式 ?>）的编辑器内执行。
 // 与 YDWE 保存时一样：整份预处理脚本转换成一个 Lua chunk，只执行一次；块外文本原样输出。
@@ -16,6 +18,8 @@
 // 不读写磁盘（import 的路径形式除外，只读地图所在目录）、不启动进程、不加载 dll。
 // require 只认 'slk'：原创实现的物编读取/生成库，数据来自 w3x2lni 的 prebuilt 默认值与本次保存的最终地图物编。
 // 任何失败都不返回部分结果。
+namespace War3Map { class MapArchiveSession; }
+
 namespace War3Map::Script {
 
 struct LuaTemplateSlkSources {
@@ -48,5 +52,19 @@ struct LuaTemplateRequest {
 };
 
 [[nodiscard]] Result<TemplateTransactionOutput> RunLuaTemplate(const LuaTemplateRequest& request);
+
+// 保存链与整图检查共用的整份执行入口（TemplateContext::wholeChunk）：slk 库首次 require 时才按
+// archive + edits/removals 捕获最终成员，存入 slkCache 供调用方复用（保存的三方合并使用同一快照）。
+// abilityOrder 与 importRoot 取自 templates；archive/edits/removals/slkCache 须在执行期间存活。
+struct LuaWholeChunkSources {
+    std::filesystem::path toolRoot;
+    const MapArchiveSession* archive = nullptr;
+    std::span<const MemberReplacement> edits;
+    std::span<const std::string> removals;
+    std::uint64_t revision = 0;
+    std::function<void()> beforeRun; // 每次执行前调用（如报告阶段），可空
+};
+[[nodiscard]] std::function<Result<TemplateTransactionOutput>(std::string_view, const std::vector<std::string>&)>
+    MakeLuaWholeChunk(const TemplateContext& templates, LuaWholeChunkSources sources, std::optional<SlkMapSourceSnapshot>& slkCache);
 
 } // namespace War3Map::Script

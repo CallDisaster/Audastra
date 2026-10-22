@@ -51,6 +51,8 @@ add_library(War3MapTrigger STATIC
     TriggerArgumentReplacement.cpp
     TriggerPresentation.cpp
     TriggerTextNotation.cpp
+    TriggerFeatureText.cpp
+    TriggerTextDiff.cpp
     TriggerTypes.cpp
     TriggerVariableReference.cpp
     UiCallbackActions.cpp

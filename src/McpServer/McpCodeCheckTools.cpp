@@ -49,12 +49,20 @@ std::uint64_t Unsigned(const QJsonObject& arguments, const char* key, std::uint6
     return number;
 }
 QJsonObject DiagnosticJson(const Services::CodeCheckDiagnostic& diagnostic) {
-    return {{"severity", diagnostic.severity == DiagnosticSeverity::Error ? "error"
+    QJsonObject output{{"severity", diagnostic.severity == DiagnosticSeverity::Error ? "error"
         : diagnostic.severity == DiagnosticSeverity::Warning ? "warning" : "info"},
         {"source", QString::fromStdString(diagnostic.source)}, {"code", QString::fromStdString(diagnostic.code)},
         {"message", QString::fromStdString(diagnostic.message)}, {"line", static_cast<qint64>(diagnostic.line)},
         {"byte_column", static_cast<qint64>(diagnostic.byteColumn)}, {"byte_length", static_cast<qint64>(diagnostic.byteLength)},
         {"origin_mapped", diagnostic.originMapped}, {"byte_range_exact", diagnostic.byteRangeExact}};
+    // 落在 GUI 语句生成代码上：给出紧凑 T 位置（trigger_text 导出的行列）。
+    if (const auto& at = diagnostic.trigger) {
+        output.insert("t", QJsonObject{{"trigger_id", QString::number(at->triggerId)},
+            {"trigger_name", QString::fromStdString(at->triggerName)}, {"eca_id", QString::number(at->ecaId)},
+            {"function", QString::fromStdString(at->function)}, {"line", static_cast<qint64>(at->line)},
+            {"column", static_cast<qint64>(at->column)}, {"generated", QString::fromStdString(at->generated)}});
+    }
+    return output;
 }
 } // namespace
 
@@ -156,44 +164,66 @@ QJsonObject CodeCheckToolSession::Invoke(const QJsonObject& arguments, const Cod
             if ((!input.block && !input.hasText) || (input.block && block == "trigger" && input.target.triggerId == 0))
                 return Failure("CODE_CHECK_SOURCE_REQUIRED", "文本请求须提供text，触发器代码块须提供稳定trigger_id。");
             if (!host.capture) return Failure("CODE_CHECK_HOST_UNAVAILABLE", "宿主没有代码来源冻结入口。");
-            {
-                std::lock_guard lock(impl_->mutex); impl_->Prune(true);
-                if (!impl_->available || impl_->stopped) return Failure("CODE_CHECK_WORKER_UNAVAILABLE", "后台检查工作线程不可用。");
-                if (impl_->pending.size() >= kPending || impl_->jobs.size() >= kJobs) return Failure("CODE_CHECK_QUEUE_FULL", "检查队列已满；取消旧请求或等待完成。");
-                if (impl_->generation == (std::numeric_limits<std::uint64_t>::max)())
-                    return Failure("CODE_CHECK_GENERATION_EXHAUSTED", "检查请求修订序号已耗尽，请重新建立会话。");
-                input.generation = ++impl_->generation;
-            }
-            const auto generation = input.generation;
+            const auto generation = ReserveGeneration();
+            if (!generation.Succeeded() || !generation.value) return Failure(generation);
+            input.generation = *generation.value;
             auto captured = host.capture(std::move(input));
             if (!captured.Succeeded() || !captured.value) return Failure(captured);
-            if (!captured.value->run || captured.value->binding.size() > 4096 || captured.value->targetKey.size() > 4096)
-                return Failure("CODE_CHECK_CAPTURE_INVALID", "宿主未冻结有界的完整工作项。");
-            auto job = std::make_shared<Job>();
-            job->id = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
-            job->binding = captured.value->binding; job->target = captured.value->targetKey; job->generation = generation;
-            job->run = std::move(captured.value->run);
-            {
-                std::lock_guard lock(impl_->mutex); impl_->Prune(true);
-                if (!impl_->available || impl_->stopped || impl_->pending.size() >= kPending || impl_->jobs.size() >= kJobs)
-                    return Failure("CODE_CHECK_QUEUE_FULL", "后台检查已停止或队列已满。");
-                for (auto& [id, old] : impl_->jobs) {
-                    (void)id;
-                    if (!old->done && old->binding == job->binding && old->target == job->target) {
-                        old->cancellation.request_stop();
-                        if (!old->running) { old->run = {}; old->done = true; }
-                    }
-                }
-                impl_->Prune(true); impl_->jobs.emplace(job->id, job); impl_->pending.push_back(job);
-            }
-            impl_->condition.notify_one();
-            return {{"ok", true}, {"schema_version", 1}, {"request_id", QString::fromStdString(job->id)},
-                {"state", "queued"}, {"generation", QString::number(job->generation)},
-                {"context_binding", QString::fromStdString(job->binding)}, {"executes_code", false}, {"writes_map", false}};
+            return Enqueue(std::move(*captured.value), *generation.value);
         }
         if (action != "status" && action != "cancel") return Failure("CODE_CHECK_ACTION_INVALID", "action须为submit、status或cancel。");
+        return Report(arguments, host.currentBinding ? host.currentBinding() : std::string{});
+    } catch (const std::exception&) { return Failure("CODE_CHECK_ARGUMENT_INVALID", "代码检查字段、预算或工作项无效，未执行作者代码。"); }
+}
+
+Result<std::uint64_t> CodeCheckToolSession::ReserveGeneration() {
+    std::lock_guard lock(impl_->mutex); impl_->Prune(true);
+    if (!impl_->available || impl_->stopped)
+        return Result<std::uint64_t>::Failure("MCP", "CODE_CHECK_WORKER_UNAVAILABLE", "后台检查工作线程不可用。");
+    if (impl_->pending.size() >= kPending || impl_->jobs.size() >= kJobs)
+        return Result<std::uint64_t>::Failure("MCP", "CODE_CHECK_QUEUE_FULL", "检查队列已满；取消旧请求或等待完成。");
+    if (impl_->generation == (std::numeric_limits<std::uint64_t>::max)())
+        return Result<std::uint64_t>::Failure("MCP", "CODE_CHECK_GENERATION_EXHAUSTED", "检查请求修订序号已耗尽，请重新建立会话。");
+    return Result<std::uint64_t>::Success(++impl_->generation);
+}
+
+QJsonObject CodeCheckToolSession::Enqueue(CodeCheckToolWork work, std::uint64_t generation) {
+    if (!work.run || work.binding.size() > 4096 || work.targetKey.size() > 4096)
+        return Failure("CODE_CHECK_CAPTURE_INVALID", "宿主未冻结有界的完整工作项。");
+    auto job = std::make_shared<Job>();
+    job->id = QUuid::createUuid().toString(QUuid::WithoutBraces).toStdString();
+    job->binding = work.binding; job->target = work.targetKey; job->generation = generation;
+    job->run = std::move(work.run);
+    {
+        std::lock_guard lock(impl_->mutex); impl_->Prune(true);
+        if (!impl_->available || impl_->stopped || impl_->pending.size() >= kPending || impl_->jobs.size() >= kJobs)
+            return Failure("CODE_CHECK_QUEUE_FULL", "后台检查已停止或队列已满。");
+        for (auto& [id, old] : impl_->jobs) {
+            (void)id;
+            if (!old->done && old->binding == job->binding && old->target == job->target) {
+                old->cancellation.request_stop();
+                if (!old->running) { old->run = {}; old->done = true; }
+            }
+        }
+        impl_->Prune(true); impl_->jobs.emplace(job->id, job); impl_->pending.push_back(job);
+    }
+    impl_->condition.notify_one();
+    return {{"ok", true}, {"schema_version", 1}, {"request_id", QString::fromStdString(job->id)},
+        {"state", "queued"}, {"generation", QString::number(job->generation)},
+        {"context_binding", QString::fromStdString(job->binding)}, {"executes_code", false}, {"writes_map", false}};
+}
+
+bool CodeCheckToolSession::Pending(const std::string& requestId) const {
+    std::lock_guard lock(impl_->mutex);
+    const auto found = impl_->jobs.find(requestId);
+    return found != impl_->jobs.end() && !found->second->done && !found->second->cancellation.stop_requested();
+}
+
+QJsonObject CodeCheckToolSession::Report(const QJsonObject& arguments, const std::string& currentBinding) {
+    try {
+        const auto action = Text(arguments, "action", 16, "status");
+        if (action != "status" && action != "cancel") return Failure("CODE_CHECK_ACTION_INVALID", "action须为status或cancel。");
         const auto id = Text(arguments, "request_id", 128);
-        const auto currentBinding = host.currentBinding ? host.currentBinding() : std::string{};
         std::lock_guard lock(impl_->mutex);
         impl_->Prune();
         const auto found = impl_->jobs.find(id);

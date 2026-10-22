@@ -24,6 +24,7 @@
 #include "WctSourceCommand.h"
 #include "WtgSourceCommand.h"
 #include "TriggerTextCommand.h"
+#include "TriggerCheckCommand.h"
 #include "LuaTriggerCandidateCommand.h"
 #include "MapCreateCommand.h"
 #include "MapTestCommand.h"
@@ -116,6 +117,7 @@ void PrintUsage() {
         << "war3-map-cli inspect <expanded-workspace> [profile-id]\n"
         << "war3-map-cli validate <expanded-workspace> [profile-id]\n"
         << "war3-map-cli trigger-compact <ui-root> <expanded-map-dir> <game-root> [trigger-name]\n"
+        << "war3-map-cli trigger-check <ydwe-root> <map> <game-root> [<trigger-name> <compact-t-file>]\n"
         << "war3-map-cli trigger-inspect <ydwe-root> <war3map.wtg> <war3map.wct>\n"
         << "war3-map-cli wct-source-inspect <wct-file> <member-sha256> <start-index> <limit-1..128>\n"
         << "war3-map-cli wct-source-chunk <wct-file> <member-sha256> <global|block-index> <byte-offset> <limit-1..65536>\n"
@@ -471,6 +473,11 @@ int wmain(int argc, wchar_t** argv) {
         const std::filesystem::path wtg = argc == 5 ? argv[3] : L"";
         const std::filesystem::path wct = argc == 5 ? argv[4] : L"";
         return RunUiLibraryInspect(argv[2], argc == 5 ? &wtg : nullptr, argc == 5 ? &wct : nullptr);
+    }
+    if (command == L"trigger-check" && (argc == 5 || argc == 7)) {
+        const auto name = argc == 7 ? std::filesystem::path(argv[5]).u8string() : std::u8string{};
+        return RunTriggerCheck(argv[2], argv[3], argv[4], std::string_view(reinterpret_cast<const char*>(name.data()), name.size()),
+            argc == 7 ? std::filesystem::path(argv[6]) : std::filesystem::path{});
     }
     if (command == L"trigger-compact" && (argc == 5 || argc == 6)) {
         const auto name = argc == 6 ? std::filesystem::path(argv[5]).u8string() : std::u8string{};

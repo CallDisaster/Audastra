@@ -26,6 +26,7 @@
 #include <filesystem>
 #include <functional>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -467,6 +468,8 @@ public:
 
     // ── 来源监视 ──
     QFileSystemWatcher* projectWatch_ = nullptr;
+    // 只为“替换检测”而观察的父目录 → 其中被观察文件的大小与修改时间；目录事件仅在这些文件变化时才算来源变化。
+    std::map<QString, std::vector<std::pair<QString, std::pair<qint64, qint64>>>> parentWatchStamps_;
     bool sourceChangeSuspected_ = false;
     bool sourceChangeConfirmed_ = false;
     bool projectWatchLimited_ = false;
