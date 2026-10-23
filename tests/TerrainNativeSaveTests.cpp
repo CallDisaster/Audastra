@@ -32,6 +32,7 @@ Bytes Text(std::string_view text) {
 
 struct Fixture {
     std::filesystem::path directory;
+    std::filesystem::path gameRoot;
     std::vector<MapArchiveMember> members;
     std::unique_ptr<MapArchiveSession> archive;
     std::unique_ptr<MapDataEditSession> edits;
@@ -88,7 +89,7 @@ struct Fixture {
         return brush;
     }
     void Paint(const TerrainBrush& brush) { Take(edits->EditTerrain(brush, std::span(&point, 1), false)); }
-    TerrainSavePlan Plan() const { return Take(TerrainSavePlan::PrepareForSave(*archive, *edits, {})); }
+    TerrainSavePlan Plan() const { return Take(TerrainSavePlan::PrepareForSave(*archive, *edits, gameRoot)); }
     void Save(const char* name, bool expectRebuild = true) {
         const auto plan = Plan(); Check(plan.SaveGate());
         Require(plan.RebuiltPathing() == expectRebuild, "correct native rebuild path");
@@ -101,6 +102,67 @@ struct Fixture {
         archive = std::make_unique<MapArchiveSession>(std::move(saved));
     }
 };
+
+void ExistingDryRampRemovalSavesAndRebasesUndoRedo() {
+    Fixture f(false);
+    auto terrain = *Take(ParseMapTerrain(f.members[0].data)).Snapshot();
+    for (std::size_t y = 0; y < 9; ++y) for (std::size_t x = 0; x < 9; ++x)
+        terrain.vertices[y * 9 + x].cliffAndLayerRaw = x <= 3 ? 3 : 2;
+    for (const auto x : {3u, 4u, 5u}) terrain.vertices[4 * 9 + x].textureAndFlagsRaw = 0x10;
+    RefreshTerrainDerived(terrain, 0, 0, 9, 9);
+    f.members[0].data = Take(SerializeMapTerrain(terrain));
+    // 原始单排三点坡道只有一个R角；x=4地格在y=3/4因此额外阻断。
+    // x=3是贯穿全图的原悬崖。完整WPM字面预期不调用分类器或生成器。
+    for (std::size_t y = 0; y < 32; ++y) for (std::size_t x = 0; x < 32; ++x) {
+        const bool blocked = x / 4 == 3 || (x / 4 == 4 && (y / 4 == 3 || y / 4 == 4));
+        f.members[1].data[16 + y * 32 + x] = blocked ? std::byte{0xdb} : std::byte{0x51};
+    }
+    for (auto& member : f.members) if (member.name == "UI/MiscData.txt") {
+        const auto max = Text("[Terrain]\nMaxHeight=1408\n"); // 实际M=13，不能默认14。
+        member.data.insert(member.data.end(), max.begin(), max.end());
+    }
+    f.gameRoot = f.directory / "game";
+    Require(std::filesystem::create_directory(f.gameRoot), "private dry ramp optional-profile source");
+    Take(WriteVerifiedArchive(f.gameRoot / "war3.mpq", std::vector<MapArchiveMember>{{"fixture.txt", Text("original dry ramp fixture")}}));
+    f.Open("dry-ramp-source.w3x");
+    const auto originalTerrain = f.members[0].data, originalWpm = f.members[1].data;
+    auto removedTerrain = terrain;
+    for (const auto x : {3u, 4u, 5u}) removedTerrain.vertices[4 * 9 + x].textureAndFlagsRaw = 0;
+    const auto expectedTerrain = Take(SerializeMapTerrain(removedTerrain));
+    auto expectedWpm = originalWpm;
+    for (std::size_t y = 12; y < 20; ++y) for (std::size_t x = 16; x < 20; ++x)
+        expectedWpm[16 + y * 32 + x] = std::byte{0x51};
+    TerrainBrush brush; brush.kind = TerrainBrushKind::Ramp; brush.value = false;
+    const TerrainStrokePoint point{3.5 * 128, 4 * 128};
+    Take(f.edits->EditTerrain(brush, std::span(&point, 1), false));
+    Require(!f.edits->VerifyTerrainPathingForSave().Succeeded(), "ramp-bit change cannot pass the old preservation-only gate");
+    f.Save("dry-ramp-removed.w3x");
+    Require(Take(f.archive->ReadMember("war3map.w3e")) == expectedTerrain
+        && Take(f.archive->ReadMember("war3map.wpm")) == expectedWpm,
+        "normal native save writes complete independent W3E and WPM after ramp removal");
+    Require(f.edits->Undo(), "undo saved dry ramp removal"); f.Save("dry-ramp-restored.w3x");
+    Require(Take(f.archive->ReadMember("war3map.w3e")) == originalTerrain
+        && Take(f.archive->ReadMember("war3map.wpm")) == originalWpm,
+        "save after undo restores every old ramp and WPM byte from the rebased source");
+    Require(f.edits->Redo(), "redo saved dry ramp removal"); f.Save("dry-ramp-redone.w3x");
+    Require(Take(f.archive->ReadMember("war3map.w3e")) == expectedTerrain
+        && Take(f.archive->ReadMember("war3map.wpm")) == expectedWpm,
+        "save after redo regenerates the same complete bytes against the second saved baseline");
+    auto badMembers = f.members; badMembers[1].data[16] ^= std::byte{0x04};
+    const auto badArchive = Take(MapArchiveSession::Open(Take(WriteVerifiedArchive(f.directory / "dry-ramp-unexplained.w3x", badMembers)).path));
+    MapDataEditSession badEdits(MapDocument::FromMembers(badMembers));
+    Check(badEdits.AttachTerrain(badMembers[0].data)); Check(badEdits.AttachPathing(badMembers[1].data));
+    Take(badEdits.EditTerrain(brush, std::span(&point, 1), false));
+    const auto badRevision = badEdits.Revision();
+    const auto rejected = Take(TerrainSavePlan::PrepareForSave(badArchive, badEdits, f.gameRoot));
+    Require(!rejected.SaveGate().Succeeded() && std::any_of(rejected.SaveGate().diagnostics.begin(),
+        rejected.SaveGate().diagnostics.end(), [](const auto& diagnostic) { return diagnostic.code == "TERRAIN_PATHING_SOURCE_UNEXPLAINED"; }),
+        "dry ramp support still rejects a single unexplained original WPM restriction");
+    Require(badEdits.Revision() == badRevision && badEdits.IsDirty()
+        && Take(badArchive.ReadMember("war3map.wpm")) == badMembers[1].data,
+        "source WPM refusal preserves the draft revision, undo history and complete source bytes");
+    Require(badEdits.Undo() && badEdits.Redo(), "rejected dry ramp save retains usable undo and redo");
+}
 
 void SeedUnselectedCliffTerrain(Fixture& fixture) {
     const auto parsed = Take(ParseMapTerrain(fixture.members[0].data));
@@ -424,6 +486,7 @@ void DirectoryRecipeUsesGeneratedWpm() {
 
 int main() {
     try {
+        ExistingDryRampRemovalSavesAndRebasesUndoRedo();
         UnselectedCliffWaterSavesAndRestoresExactSource();
         UnsafeCliffSentinelChangesRemainDraftOnly();
         WaterCrossingAndUndoUseActualSavedPathing();

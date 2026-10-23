@@ -1133,6 +1133,46 @@ void SpecialWaterDeletionUsesTheNormalSaveAndUndoChain() {
         && Take(currentDoodads().Serialize()) == deletedDoodads, "saved water Redo restores exact special order and ordinary data without rerunning deletion");
     f.SaveExpected("special-water-redo-saved.w3x", waterTerrain, expectedPathing, &deletedDoodads);
 }
+
+void ExistingDryRampsComposeWithOrdinaryAndSpecialSaveLayers() {
+    for (const bool special : {false, true}) {
+        Fixture f; SpecialDoodad(f, true);
+        f.original.vertices[60].textureAndFlagsRaw = 0x10; // 等高孤立点分类L，不伪造可通行R。
+        f.original.header.groundTilesets.push_back("Tg02");
+        f.Member("war3map.w3e") = Take(SerializeMapTerrain(f.original));
+        f.Member("TerrainArt/Terrain.slk") = Slk({"tileID","walkable","flyable","buildable"},
+            {{"Tg01","1","1","1"},{"Tg02","0","1","1"}});
+        auto placements = Take(ParseDoodadPlacements(f.Member("war3map.doo")));
+        if (!special) {
+            placements.specialDoodads.clear();
+            std::fill(f.Member("war3map.wpm").begin()+16, f.Member("war3map.wpm").end(), std::byte{0x51});
+        }
+        DoodadPlacement ordinary; ordinary.rawcode = "Ord0"; ordinary.position = {512,512,0};
+        ordinary.scale = {1,1,1}; ordinary.flags = 2; ordinary.creationId = 1;
+        placements.doodads.push_back(ordinary);
+        f.Member("war3map.doo") = Take(placements.Serialize());
+        f.Member("Doodads/Doodads.slk") = Slk({"doodID","code","pathTex","category","fixedRot"},
+            {{"Doo0","Doo0",std::string(kUniformDoodadTexture),"C","45"},{"Ord0","Ord0","_","E","-1"}});
+        f.Open();
+        TerrainBrush brush; brush.kind = TerrainBrushKind::Texture; brush.radius = 0;
+        brush.groundTexture = "Tg02"; brush.variation = 0;
+        const TerrainStrokePoint point{768,768}; Take(f.edits->EditTerrain(brush, std::span(&point,1), false));
+        auto terrain = f.original; terrain.vertices[60].textureAndFlagsRaw = 0x11;
+        auto pathing = f.Member("war3map.wpm");
+        for (unsigned y=22; y<26; ++y) for (unsigned x=22; x<26; ++x) pathing[16+y*32+x] = std::byte{0x53};
+        const auto owner = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot, kBudget));
+        Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot, owner.CaptureBudgetBytes()));
+        Require(!TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot,
+            owner.CaptureBudgetBytes()-1).Succeeded(),
+            "typed ordinary parse work and ramp/special profile reservations retain one exact shared budget");
+        const auto expectedTerrain = Take(SerializeMapTerrain(terrain));
+        f.SaveExpected("dry-ramp-layered.w3x", expectedTerrain, pathing);
+        Require(f.edits->Undo(), "undo saved texture on existing dry ramp with typed object layers");
+        f.SaveExpected("dry-ramp-layered-undone.w3x", f.Member("war3map.w3e"), f.Member("war3map.wpm"));
+        Require(f.edits->Redo(), "redo saved texture on existing dry ramp with typed object layers");
+        f.SaveExpected("dry-ramp-layered-redone.w3x", expectedTerrain, pathing);
+    }
+}
 } // namespace
 
 int main() {
@@ -1158,6 +1198,7 @@ int main() {
         SpecialDoodadsSaveWaterGroundAndCliffs();
         SharedSpecialAndOrdinaryResourcesRoundTripOnce();
         SpecialWaterDeletionUsesTheNormalSaveAndUndoChain();
+        ExistingDryRampsComposeWithOrdinaryAndSpecialSaveLayers();
         std::cout << "Native object terrain save tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

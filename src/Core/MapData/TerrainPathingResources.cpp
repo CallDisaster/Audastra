@@ -442,6 +442,7 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
         std::optional<DoodadPlacements> doodads;
         std::set<std::string, std::less<>> cliffs;
         bool nativeOverrides = false;
+        bool nativeRamp = false;
         std::vector<ArchiveExactMember> objectSources;
         if (native) {
             if (before.header.version != 11 || after.header.version != 11
@@ -450,6 +451,12 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
                 || before.header.cliffTilesets != after.header.cliffTilesets
                 || before.vertices.size() != after.vertices.size())
                 Fail("TERRAIN_NATIVE_SOURCE_SHAPE", "原版通行重建要求旧/新经典地形尺寸、偏移与地形集不变。");
+            bool wet = false;
+            for (const auto* grid : {&before, &after}) for (const auto& vertex : grid->vertices) {
+                nativeRamp = nativeRamp || vertex.IsRamp(); wet = wet || vertex.HasWater();
+            }
+            if (nativeRamp && wet)
+                Fail("TERRAIN_NATIVE_WATER_RAMP_UNSUPPORTED", "含坡道时源和候选必须全部无水，不能使用未闭合的坡道有效水地高。");
             for (std::size_t i = 0; i < before.vertices.size(); ++i) {
                 const auto oldSlot = before.vertices[i].CliffTextureIndex(), newSlot = after.vertices[i].CliffTextureIndex();
                 if (oldSlot == newSlot) continue;
@@ -657,7 +664,9 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
             if (!specialRawcodes.empty()) {
                 const bool nonempty = std::any_of(objectPathing.specialFootprints.begin(), objectPathing.specialFootprints.end(),
                     [](const auto& type) { return !type.pathTexture.empty(); });
-                const auto maximumLevel = nonempty ? Take(result.CaptureSpecialCliffLimit(reader)) : std::uint8_t{0};
+                if (nonempty && !result.nativeMaximumCliffLevel_)
+                    result.nativeMaximumCliffLevel_ = Take(result.CaptureNativeCliffLimit(reader));
+                const auto maximumLevel = nonempty ? *result.nativeMaximumCliffLevel_ : std::uint8_t{0};
                 if (!doodads->specialDoodads.empty()) {
                     const auto captured = result.CaptureSpecialFootprints(reader, before,
                         doodads->specialDoodads, objectPathing.specialFootprints, maximumLevel, 0);
@@ -670,6 +679,10 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
                 }
             }
         }
+        // 必须在严格物编工作预留赋值之后捕获；有special时复用其同一M，
+        // 无special也不能把缺省0当配置值。配置依赖与容器预留均保留在owner中。
+        if (nativeRamp && !result.nativeMaximumCliffLevel_)
+            result.nativeMaximumCliffLevel_ = Take(result.CaptureNativeCliffLimit(reader));
         if (needs.water) {
             if (!deepThreshold)
                 Fail("TERRAIN_PATHING_PROPERTY_MISSING", "当前配置缺少 Water.DeepLevelPathing，不能猜测水深通行状态。");
@@ -841,7 +854,7 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureWaterBrushInputs
     });
 }
 
-Result<std::uint8_t> TerrainPathingResources::CaptureSpecialCliffLimit(const MemberReader& reader) {
+Result<std::uint8_t> TerrainPathingResources::CaptureNativeCliffLimit(const MemberReader& reader) {
     return Guard<std::uint8_t>([&] {
         std::vector<std::string> names;
         names.reserve(kClassicProfiles.size() + 1);
@@ -851,19 +864,19 @@ Result<std::uint8_t> TerrainPathingResources::CaptureSpecialCliffLimit(const Mem
         constexpr std::size_t perSource = sizeof(ArchiveExactMember) + 2 * sizeof(Dependency) + 8 * 260;
         if (sourceBytes_ > capturedMaximumBytes_ || objectWorkBytes_ > capturedMaximumBytes_ - sourceBytes_
             || names.size() > (capturedMaximumBytes_ - sourceBytes_ - objectWorkBytes_) / perSource)
-            Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "特殊地形层级配置超过剩余捕获预算。");
+            Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "原版地形层级配置超过剩余捕获预算。");
         objectWorkBytes_ += names.size() * perSource;
         std::optional<float> maximum;
         bool unconditional = false;
         auto status = CaptureResourceMembers(reader, names, 0, [&](std::size_t i, bool present, std::vector<std::byte>&& bytes) {
             if (!present) return;
             if (i == kClassicProfiles.size())
-                Fail("TERRAIN_SPECIAL_RULE_SOURCE", "war3mapMisc.txt不属于已闭合的特殊地形初始化规则链。");
+                Fail("TERRAIN_SPECIAL_RULE_SOURCE", "war3mapMisc.txt不属于已闭合的原版地形初始化规则链。");
             std::string_view text;
             if (!bytes.empty()) text = {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
             if (text.starts_with("\xef\xbb\xbf")) text.remove_prefix(3);
             if (text.find('\0') != std::string_view::npos)
-                Fail("TERRAIN_SPECIAL_RULE_SOURCE", "特殊地形配置含未知NUL/编码：" + names[i]);
+                Fail("TERRAIN_SPECIAL_RULE_SOURCE", "原版地形配置含未知NUL/编码：" + names[i]);
             Text::VisitProfileFields(text, [&](std::string_view section, std::string_view key, std::string_view value) {
                 if (section != "terrain" || key != "maxheight") return;
                 SameScalar(maximum, Number(value, "Terrain.MaxHeight"), "Terrain.MaxHeight");
@@ -872,10 +885,10 @@ Result<std::uint8_t> TerrainPathingResources::CaptureSpecialCliffLimit(const Mem
         });
         if (!status.Succeeded()) throw Failure{std::move(status.diagnostics)};
         if (!maximum || !unconditional)
-            Fail("TERRAIN_SPECIAL_RULE_SOURCE", "特殊地形需要固定加载链中明确的Terrain.MaxHeight。");
+            Fail("TERRAIN_SPECIAL_RULE_SOURCE", "原版地形需要固定加载链中明确的Terrain.MaxHeight。");
         const auto level = std::trunc((static_cast<double>(*maximum) + 256.0) / 128.0);
         if (level < 0 || level > 14)
-            Fail("TERRAIN_SPECIAL_RULE_SOURCE", "实际特殊地形层级上限超出0..14支持域。");
+            Fail("TERRAIN_SPECIAL_RULE_SOURCE", "实际原版地形层级上限超出0..14支持域。");
         return static_cast<std::uint8_t>(level);
     });
 }
@@ -948,6 +961,7 @@ Result<std::vector<std::byte>> TerrainPathingResources::GenerateNative(const Ter
         input.groundRules = nativeGround_; input.water = waterRules_;
         input.staticAttributes = nativeStaticAttributes_;
         input.specialDoodadCount = nativeSpecialCount_[index]; input.specialAttributes = nativeSpecialAttributes_[index];
+        input.maximumCliffLevel = nativeMaximumCliffLevel_;
         return Take(GenerateTerrainNativePathing(input, maximumBytes));
     });
 }

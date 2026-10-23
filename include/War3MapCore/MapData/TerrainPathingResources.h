@@ -119,7 +119,7 @@ private:
         const TerrainGridSnapshot& terrain,
         std::span<const SpecialDoodadPlacement> placements, std::span<const TerrainNativeDoodadPathingType> types,
         std::uint8_t maximumCliffLevel, std::size_t stage);
-    [[nodiscard]] Result<std::uint8_t> CaptureSpecialCliffLimit(const MemberReader& reader);
+    [[nodiscard]] Result<std::uint8_t> CaptureNativeCliffLimit(const MemberReader& reader);
     [[nodiscard]] Status VerifyReadbackMembers(const MemberReader& reader, std::size_t maximumBytes) const;
     [[nodiscard]] Status VerifyGameDependencies(std::size_t remainingBytes) const;
     struct Dependency {
@@ -138,6 +138,7 @@ private:
     std::size_t capturedMaximumBytes_ = 0;
     std::vector<TerrainNativeGroundRule> nativeGround_;
     std::optional<TerrainNativeWaterRules> waterRules_;
+    std::optional<std::uint8_t> nativeMaximumCliffLevel_;
     std::optional<TerrainWaterLoadedRules> waterBrushRules_;
     std::string waterBrushInputSha_;
     std::size_t waterBrushInputBytes_ = 0;

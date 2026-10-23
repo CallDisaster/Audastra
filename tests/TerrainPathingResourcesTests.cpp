@@ -586,6 +586,67 @@ void NativeCaptureBindsFullRulesAndBothTerrainRevisions() {
     Require(!mismatch.Succeeded() && HasCode(mismatch.diagnostics, "TERRAIN_NATIVE_SOURCE_IDENTITY"), "before must be actual source W3E");
 }
 
+void DryRampCaptureBindsActualMaximumAndAllProfileSources() {
+    Directory directory; Fixture fixture;
+    fixture.grid.vertices[40].textureAndFlagsRaw = 0x10;
+    fixture.terrain = Take(SerializeMapTerrain(fixture.grid)); fixture.members[0].data = fixture.terrain;
+    NativeSources(fixture, NativeSettings());
+    const auto misc = std::find_if(fixture.members.begin(), fixture.members.end(),
+        [](const auto& member) { return member.name == "UI/MiscData.txt"; });
+    const auto maximum = Text("[Terrain]\nMaxHeight=-128\n"); // 实际M=1，故意低于R点层级2。
+    misc->data.insert(misc->data.end(), maximum.begin(), maximum.end());
+    const auto game = directory.path / "game";
+    Require(std::filesystem::create_directory(game), "private game source fixes optional profile absence");
+    Take(WriteVerifiedArchive(game / "war3.mpq", std::vector<MapArchiveMember>{{"fixture.txt", Text("original ramp source")}}));
+    const auto source = fixture.Write(directory.path / "dry-ramp.w3x");
+    auto after = fixture.grid; after.vertices[40].textureAndFlagsRaw = 0;
+    const auto owner = Take(TerrainPathingResources::CaptureNative(source, fixture.grid, after, game, 1024 * 1024));
+    const auto expected = Bytes(1024, std::byte{0x40});
+    Require(Take(owner.GenerateNative(fixture.grid, 1024 * 1024)) == expected
+        && Take(owner.GenerateNative(after, 1024 * 1024)) == expected,
+        "real nondefault maximum permits both dry-ramp revisions through the complete generated grid");
+    Take(TerrainPathingResources::CaptureNative(source, fixture.grid, after, game, owner.CaptureBudgetBytes()));
+    Require(!TerrainPathingResources::CaptureNative(source, fixture.grid, after, game,
+        owner.CaptureBudgetBytes() - 1).Succeeded(), "dry ramp profile reads and container reservations have an exact budget boundary");
+    const std::vector<MemberReplacement> output{{"war3map.w3e", Take(SerializeMapTerrain(after))}};
+    Check(owner.VerifyFrozenOutput(output, {}));
+    auto changedOutput = output;
+    changedOutput.push_back({"UI/MiscData.txt", Text("[Terrain]\nMaxHeight=1536\n")});
+    Require(!owner.VerifyFrozenOutput(changedOutput, {}).Succeeded(),
+        "identical ground textures cannot hide a changed MaxHeight source in final output");
+    const auto saved = Take(MapArchiveSession::Open(Take(source.SaveCandidate(directory.path / "dry-ramp-saved.w3x", output)).path));
+    Check(owner.VerifyReadback(saved, 1024 * 1024));
+    Take(WriteVerifiedArchive(game / "war3patch.mpq", std::vector<MapArchiveMember>{{"Units/MiscData.txt", maximum}}));
+    Require(!owner.VerifyReadback(saved, 1024 * 1024).Succeeded(),
+        "a previously absent optional profile becoming a same-valued winner still changes frozen source identity");
+
+    for (const auto config : {"", "[Terrain]\nMaxHeight=1664\n", "[Terrain]\nMaxHeight=nan\n"}) {
+        auto invalid = fixture;
+        auto& bytes = std::find_if(invalid.members.begin(), invalid.members.end(),
+            [](const auto& member) { return member.name == "UI/MiscData.txt"; })->data;
+        bytes = Text(std::string("[CameraMargins]\nLeft=0\nRight=0\nBottom=0\nTop=0\n") + config);
+        // 使用没有新增patch的独立实际来源，避免将配置拒绝混为上一个来源变化。
+        const auto blankGame = directory.path / (std::string("game-invalid-") + std::to_string(bytes.size()));
+        Require(std::filesystem::create_directory(blankGame), "private invalid-profile game source");
+        Take(WriteVerifiedArchive(blankGame / "war3.mpq", std::vector<MapArchiveMember>{{"fixture.txt", Text("original")}}));
+        const auto map = invalid.Write(directory.path / (std::string("invalid-") + std::to_string(bytes.size()) + ".w3x"));
+        Require(!TerrainPathingResources::CaptureNative(map, invalid.grid, after, blankGame, 1024 * 1024).Succeeded(),
+            "missing, out-of-domain and nonfinite actual maxima refuse instead of defaulting to14");
+    }
+    auto conflicting = fixture;
+    conflicting.members.push_back({"Units/MiscData.txt", Text("[Terrain]\nMaxHeight=1536\n")});
+    const auto conflict = conflicting.Write(directory.path / "conflicting-max.w3x");
+    const auto conflictResult = TerrainPathingResources::CaptureNative(conflict, conflicting.grid, after, game, 1024 * 1024);
+    Require(!conflictResult.Succeeded() && HasCode(conflictResult.diagnostics, "TERRAIN_PATHING_PROPERTY_AMBIGUOUS"),
+        "complete profile chain rejects conflicting maxima instead of choosing the last definition");
+    auto wetAfter = after; wetAfter.vertices.back().textureAndFlagsRaw = 0x40;
+    const auto waterResult = TerrainPathingResources::CaptureNative(source, fixture.grid, wetAfter, game, 1024 * 1024);
+    Require(!waterResult.Succeeded() && HasCode(waterResult.diagnostics, "TERRAIN_NATIVE_WATER_RAMP_UNSUPPORTED"),
+        "a source ramp and water only in the candidate cannot evade the pair-wide dry domain gate");
+    Require(!TerrainPathingResources::CaptureNative(source, fixture.grid, after, {}, 1024 * 1024).Succeeded(),
+        "unknown optional profile fallback cannot be invented as absence");
+}
+
 void NativeWaterAndFractionalWorldBoundsUseActualSources() {
     Directory directory; Fixture wet(true);
     NativeSources(wet, NativeSettings());
@@ -860,6 +921,7 @@ int main() {
         FinalResourcesAndGameWinnersAreRechecked();
         StoredAndDecodedBudgetsShareTheCallerAllowance();
         NativeCaptureBindsFullRulesAndBothTerrainRevisions();
+        DryRampCaptureBindsActualMaximumAndAllProfileSources();
         NativeWaterAndFractionalWorldBoundsUseActualSources();
         NativeChangedCliffSlotsBindActualRowsAndWinners();
         NativeCliffSlotsDoNotExpandThePaletteDomain();
