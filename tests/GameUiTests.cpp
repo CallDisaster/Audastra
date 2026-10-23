@@ -401,6 +401,7 @@ void TestGameCodeLayout() {
         "Frame \"FRAME\" \"Multiboard\" { Width 0.024, Height 0.024, }\n"
         "Frame \"FRAME\" \"Leaderboard\" { Width 0.17, Height 0.2, }\n"
         "Frame \"DIALOG\" \"ScriptDialog\" { Width 0.288, Height 0.112, }\n"
+        "Frame \"DIALOG\" \"SuspendDialog\" { Width 0.336, Height 0.432, }\n"
         "Frame \"FRAME\" \"MapPanel\" { Width 0.1, Height 0.1, SetPoint BOTTOM, \"Minimap\", TOP, 0.0, 0.0, }\n";
     auto parsed = ParseFdf(text, "UI\\Code.fdf");
     Require(parsed.Succeeded(), "code layout fixture parses");
@@ -408,7 +409,7 @@ void TestGameCodeLayout() {
     library.AddParsed(std::move(*parsed.value), "game");
     FrameTree tree;
     for (const char* name : {"ResourceBarFrame", "EscMenuMainPanel", "QuestDialog", "TimerDialog", "Multiboard", "Leaderboard",
-             "ScriptDialog"}) {
+             "ScriptDialog", "SuspendDialog"}) {
         const auto created = tree.Instantiate(library, nullptr, name);
         Require(created.Succeeded() && !HasCode(created.diagnostics, "GAMEUI_ROOT_PLACEMENT_UNKNOWN"),
             "game-code placement known");
@@ -429,6 +430,7 @@ void TestGameCodeLayout() {
     RequireRect(NodeNamed(tree, "Multiboard"), 0.7761f, 0.5528f, 0.8001f, 0.5768f, "multiboard at top right");
     RequireRect(NodeNamed(tree, "Leaderboard"), 0.625f, 0.365f, 0.795f, 0.565f, "leaderboard at top right");
     RequireRect(NodeNamed(tree, "ScriptDialog"), 0.256f, 0.299f, 0.544f, 0.411f, "script dialog centered on the world view");
+    RequireRect(NodeNamed(tree, "SuspendDialog"), 0.232f, 0.134f, 0.568f, 0.566f, "suspend dialog centred, raised 0.05");
 
     RequireRect(NodeNamed(tree, "Minimap"), 0.009375f, 0.006875f, 0.14875f, 0.145f, "minimap");
     RequireRect(NodeNamed(tree, "CommandBar"), 0.618125f, 0.002f, 0.792625f, 0.131f, "command card");
