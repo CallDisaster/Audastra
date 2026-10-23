@@ -1323,9 +1323,18 @@ void LiveEditorToolsTests::TerrainToolsKeepSessionPreviewAndOriginalUndo() {
 
 void LiveEditorToolsTests::WaterToolsCaptureActualResourcesAndKeepOriginalUndo() {
     std::vector<std::byte> shallow;
-    for (const bool deep : {false, true}) {
+    for (const int waterLayerOffset : {32, 0}) for (const bool deep : {false, true}) {
         Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
-        const auto members = Tests::TerrainWaterMembers();
+        auto members = Tests::TerrainWaterMembers();
+        if (waterLayerOffset == 0) {
+            const auto water = std::find_if(members.begin(), members.end(),
+                [](const auto& member) { return member.name == "TerrainArt/Water.slk"; });
+            QVERIFY(water != members.end());
+            auto table = Bytes(water->data);
+            QVERIFY(table.contains("C;X2;K0.25\n"));
+            table.replace("C;X2;K0.25\n", "C;X2;K0\n");
+            water->data = Tests::WaterText(table.toStdString());
+        }
         for (const auto& member : members)
             QVERIFY(WriteFile(f.source.filePath("map/" + QString::fromStdString(member.name)), Bytes(member.data)));
         const auto original = members.front().data;
@@ -1340,6 +1349,7 @@ void LiveEditorToolsTests::WaterToolsCaptureActualResourcesAndKeepOriginalUndo()
         QVERIFY(f.project.editTrackingReady_ && !f.project.editTrackingFailed_);
         auto* session = f.project.mapEdits_.get(); auto* undo = f.project.mapDataUndoStack_;
         QVERIFY(session && undo && session->Terrain());
+        const auto sessionIdentity = session->SessionIdentity();
         const auto triggerFingerprint = f.Fingerprint();
         const auto request = [&](bool dryRun) {
             auto args = f.Context();
@@ -1376,8 +1386,13 @@ void LiveEditorToolsTests::WaterToolsCaptureActualResourcesAndKeepOriginalUndo()
         QVERIFY(*changed.value != original);
         const auto center = session->InspectTerrainPoint({512, 512}); QVERIFY(center.Succeeded());
         QVERIFY(center.value->vertex.HasWater());
-        if (deep) QVERIFY(*changed.value != shallow);
-        else shallow = *changed.value;
+        // 正偏移32的岸线L3会经CleanWater/Converge将深水中心从L0收敛至L1；
+        // 零偏移没有该升层，必须同时保留浅L1/深L0及完整W3E不同的断言。
+        if (waterLayerOffset == 32) QCOMPARE(int(center.value->vertex.CliffLevel()), 1);
+        else if (deep) QCOMPARE(int(center.value->vertex.CliffLevel()), 0);
+        else QCOMPARE(int(center.value->vertex.CliffLevel()), 1);
+        if (deep && waterLayerOffset == 0) QVERIFY(*changed.value != shallow);
+        if (!deep) shallow = *changed.value;
         QVERIFY(!f.tools->Invoke("edit_terrain_stroke", denied).value("ok").toBool()); QCOMPARE(undo->count(), 1);
         undo->undo(); QCOMPARE(*MapData::SerializeMapTerrain(*session->Terrain()).value, original); QVERIFY(!session->IsDirty());
         undo->redo(); QCOMPARE(*MapData::SerializeMapTerrain(*session->Terrain()).value, *changed.value);
@@ -1395,6 +1410,8 @@ void LiveEditorToolsTests::WaterToolsCaptureActualResourcesAndKeepOriginalUndo()
         QVERIFY(WriteFile(f.source.filePath("map/war3map.w3e"), Bytes(altered)));
         QVERIFY(!f.tools->Invoke("get_terrain_edit_state", {}).value("ok").toBool());
         QCOMPARE(*MapData::SerializeMapTerrain(*session->Terrain()).value, *changed.value); QCOMPARE(undo->count(), 1);
+        QCOMPARE(f.project.mapEdits_.get(), session); QCOMPARE(session->SessionIdentity(), sessionIdentity);
+        QCOMPARE(f.project.mapDataUndoStack_, undo);
     }
 }
 
