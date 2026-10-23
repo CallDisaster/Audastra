@@ -26,6 +26,15 @@ constexpr std::uint64_t kProjectBytes = 512ull * 1024 * 1024;
 Result<ProjectSaveResult> Failed(const QString& message) {
     return Result<ProjectSaveResult>::Failure("工程", "PROJECT_SAVE_FAILED", message.toStdString());
 }
+void KeepTerrainJournalWarning(QJsonObject& manifest, std::vector<Diagnostic>& warnings, const QString& fallback) {
+    // 后续捕获或容量退回仍不能消除先前raw降级的具体原因。
+    const auto existing = manifest["terrainJournalWarning"].toString();
+    const auto text = existing.isEmpty() ? fallback : existing;
+    manifest["terrainJournalWarning"] = text;
+    auto warning = Status::Failure("Terrain.Journal", "TERRAIN_JOURNAL_DRAFT_ONLY", text.toStdString());
+    for (auto& diagnostic : warning.diagnostics) diagnostic.severity = DiagnosticSeverity::Warning;
+    warnings = std::move(warning.diagnostics);
+}
 std::vector<std::byte> Bytes(const QByteArray& value) {
     const auto* start = reinterpret_cast<const std::byte*>(value.constData());
     return {start, start + value.size()};
@@ -165,11 +174,8 @@ void EditorProject::RunProjectSave(ProjectSaveJob& job) {
                     job.terrainJournalPayload_ = std::move(*encoded.value);
                     job.manifest_["terrainStrokeJournal"] = 1;
                 } else {
-                    const auto text = tr("草稿已完整保留；前向记录超预算或来源无法表达，水刷来源未恢复。");
-                    job.manifest_["terrainJournalWarning"] = text;
-                    auto warning = Status::Failure("Terrain.Journal", "TERRAIN_JOURNAL_DRAFT_ONLY", text.toStdString());
-                    for (auto& diagnostic : warning.diagnostics) diagnostic.severity = DiagnosticSeverity::Warning;
-                    job.warnings_ = std::move(warning.diagnostics);
+                    KeepTerrainJournalWarning(job.manifest_, job.warnings_,
+                        tr("草稿已完整保留；前向记录超预算或来源无法表达，水刷来源未恢复。"));
                 }
             }
             if (job.recovery_) job.sourceLease_.reset();
@@ -201,11 +207,8 @@ void EditorProject::RunProjectSave(ProjectSaveJob& job) {
                 } else {
                     // 原raw草稿优先；不能让新增journal反向缩小既有工程可保存范围。
                     job.manifest_.remove("terrainStrokeJournal");
-                    const auto text = tr("草稿已完整保留；工程容量预算不足，前向笔划及水刷来源未恢复。");
-                    job.manifest_["terrainJournalWarning"] = text;
-                    auto warning = Status::Failure("Terrain.Journal", "TERRAIN_JOURNAL_DRAFT_ONLY", text.toStdString());
-                    for (auto& diagnostic : warning.diagnostics) diagnostic.severity = DiagnosticSeverity::Warning;
-                    job.warnings_ = std::move(warning.diagnostics);
+                    KeepTerrainJournalWarning(job.manifest_, job.warnings_,
+                        tr("草稿已完整保留；工程容量预算不足，前向笔划及水刷来源未恢复。"));
                     job.terrainJournalPayload_.clear();
                 }
             }

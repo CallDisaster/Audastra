@@ -2999,8 +2999,16 @@ void EditorProjectTests::TerrainJournalWaterFallbackKeepsRawAndWarning() {
     const auto saved = restored.SaveProjectToPath(resaved);
     QVERIFY2(saved.Succeeded(), ReadDiagnosticText(saved).c_str());
     QVERIFY(HasReadDiagnostic(saved, "TERRAIN_JOURNAL_DRAFT_ONLY"));
+    const auto savedWarning = std::find_if(saved.diagnostics.begin(), saved.diagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.code == "TERRAIN_JOURNAL_DRAFT_ONLY";
+    });
+    QVERIFY(savedWarning != saved.diagnostics.end()); QCOMPARE(savedWarning->message, warning);
     const auto raw = MapArchiveSession::Open(resaved); QVERIFY(raw.Succeeded());
     QVERIFY(!raw.value->HasMember("overlay/editor/terrain-strokes.bin"));
+    const auto manifestBytes = raw.value->ReadMember("project.json"); QVERIFY(manifestBytes.Succeeded());
+    const auto manifest = QJsonDocument::fromJson(QByteArray(reinterpret_cast<const char*>(manifestBytes.value->data()),
+        static_cast<qsizetype>(manifestBytes.value->size()))).object();
+    QCOMPARE(manifest["terrainJournalWarning"].toString().toStdString(), warning);
     for (const auto& [name, bytes] : draft) QCOMPARE(raw.value->ReadMember("overlay/map/" + name).value, std::optional(bytes));
     // 恢复了正确游戏目录后仍是已明确降级的raw草稿，不能从输出重新发明笔划来源。
     auto reopened = PrepareProjectOpen(resaved, game); QVERIFY(reopened.Succeeded());

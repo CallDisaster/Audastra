@@ -176,12 +176,15 @@ Result<std::unique_ptr<ProjectSaveJob>> EditorProject::PrepareProjectSave(
                     job->terrainJournalPrefix_ = std::move(*prefix.value);
                     job->terrainJournalBaseline_ = std::move(baseline);
                     // 旧raw草稿不能因后续一笔可表达命令清除未恢复警告。
-                } else if (mapEdits_->RequiresTerrainStrokeJournal() || (!prefix.Succeeded() && mapEdits_->Terrain())) {
+                } else if (journalWarning.empty()
+                    && (mapEdits_->RequiresTerrainStrokeJournal() || (!prefix.Succeeded() && mapEdits_->Terrain()))) {
+                    // 再存raw不能用笼统历史原因覆盖已记录的资源缺失或漂移原因。
                     journalWarning = "草稿已完整保留；历史跨保存边界、混合编辑或超出前向记录预算，前向笔划及水刷来源未恢复。";
                 }
             } catch (const std::exception&) {
                 job->terrainJournalPrefix_.reset(); job->terrainJournalBaseline_.reset();
-                journalWarning = "草稿已完整保留；前向记录冻结超过可用预算，前向笔划及水刷来源未恢复。";
+                if (journalWarning.empty())
+                    journalWarning = "草稿已完整保留；前向记录冻结超过可用预算，前向笔划及水刷来源未恢复。";
             }
             if (!journalWarning.empty()) {
                 job->manifest_["terrainJournalWarning"] = Text(journalWarning);
