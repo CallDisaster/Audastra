@@ -346,19 +346,21 @@ std::unique_ptr<MapSaveJob> FreezeNativePathingQtJob(EditorProject& project, con
     return job;
 }
 
+std::vector<std::byte> NativeDoodadQtTable(const std::vector<std::string>& columns,
+    const std::vector<std::vector<std::string>>& rows) {
+    std::string text = "ID;PWXL;N;E\n";
+    const auto append = [&](const std::vector<std::string>& cells, std::size_t row) {
+        for (std::size_t x = 0; x < cells.size(); ++x)
+            text += "C;X" + std::to_string(x + 1) + ";Y" + std::to_string(row) + ";K\"" + cells[x] + "\"\n";
+    };
+    append(columns, 1);
+    for (std::size_t y = 0; y < rows.size(); ++y) append(rows[y], y + 2);
+    return Tests::WaterText(text + "E\n");
+}
+
 std::vector<MapArchiveMember> CGridInvariantQtMembers(int divergentAxis = -1, bool occluded = false) {
     auto members = NativePathingQtMembers();
     if (members.empty()) return {};
-    const auto table = [](const std::vector<std::string>& columns, const std::vector<std::vector<std::string>>& rows) {
-        std::string text = "ID;PWXL;N;E\n";
-        const auto append = [&](const std::vector<std::string>& cells, std::size_t row) {
-            for (std::size_t x = 0; x < cells.size(); ++x)
-                text += "C;X" + std::to_string(x + 1) + ";Y" + std::to_string(row) + ";K\"" + cells[x] + "\"\n";
-        };
-        append(columns, 1);
-        for (std::size_t y = 0; y < rows.size(); ++y) append(rows[y], y + 2);
-        return Tests::WaterText(text + "E\n");
-    };
     const auto texture = [](std::size_t side) {
         std::vector<std::byte> bytes(18 + side * side * 4, std::byte{0});
         bytes[2] = std::byte{2}; bytes[12] = bytes[14] = static_cast<std::byte>(side);
@@ -367,10 +369,10 @@ std::vector<MapArchiveMember> CGridInvariantQtMembers(int divergentAxis = -1, bo
         for (std::size_t at = 18; at < bytes.size(); at += 4) bytes[at + 1] = std::byte{255};
         return bytes;
     };
-    members.push_back({"Units/DestructableData.slk", table({"destructableID", "code", "walkable"}, {{"Dst0", "Dst0", "0"}})});
-    members.push_back({"Units/DestructableMetaData.slk", table({"ID", "field", "slk", "type", "repeat", "data", "index"},
+    members.push_back({"Units/DestructableData.slk", NativeDoodadQtTable({"destructableID", "code", "walkable"}, {{"Dst0", "Dst0", "0"}})});
+    members.push_back({"Units/DestructableMetaData.slk", NativeDoodadQtTable({"ID", "field", "slk", "type", "repeat", "data", "index"},
         {{"p001", "walkable", "DestructableData", "bool", "0", "0", "-1"}})});
-    members.push_back({"Doodads/Doodads.slk", table({"doodID", "code", "pathTex", "category", "fixedRot"},
+    members.push_back({"Doodads/Doodads.slk", NativeDoodadQtTable({"doodID", "code", "pathTex", "category", "fixedRot"},
         {{"Cg01", "Cg01", "PathTextures/C-grid.tga", "C", "270"},
             {"Eg01", "Eg01", "PathTextures/00-cover.tga", "E", "270"}})});
     members.push_back({"PathTextures/C-grid.tga", texture(8)});
@@ -398,6 +400,64 @@ std::vector<MapArchiveMember> CGridInvariantQtMembers(int divergentAxis = -1, bo
     footprint(4, 4, 8);
     footprint(divergentAxis == 0 ? 14 : 12, divergentAxis == 1 ? 14 : 12, 8);
     if (occluded) footprint(8, 8, 16); // 此非C实例完全遮住第二C实例两种网格的差异。
+    return members;
+}
+
+std::vector<MapArchiveMember> FixedRotationQtMembers(bool custom, float degrees, bool wrongWireType = false) {
+    using namespace ObjectData;
+    auto members = NativePathingQtMembers();
+    if (members.empty()) return {};
+    members.push_back({"Units/DestructableData.slk", NativeDoodadQtTable({"destructableID", "code", "walkable"},
+        {{"Dst0", "Dst0", "0"}})});
+    members.push_back({"Units/DestructableMetaData.slk", NativeDoodadQtTable({"ID", "field", "slk", "type", "repeat", "data", "index"},
+        {{"p001", "walkable", "DestructableData", "bool", "0", "0", "-1"}})});
+    members.push_back({"Doodads/Doodads.slk", NativeDoodadQtTable({"doodID", "code", "pathTex", "category", "fixedRot"},
+        {{"Fr01", "Fr01", "PathTextures/fixed-rotation.tga", "E", "270"}})});
+    // 原创对象表使用已闭合的实际dfxr地址/类型契约：DoodadData、非重复零索引、Unreal F32。
+    members.push_back({"Doodads/DoodadMetaData.slk", NativeDoodadQtTable(
+        {"ID", "field", "slk", "type", "repeat", "data", "index"},
+        {{"dptx", "pathTex", "DoodadData", "pathingTexture", "0", "0", "0"},
+            {"dfxr", "fixedRot", "DoodadData", "unreal", "0", "0", "0"}})});
+    auto native = NativeObjectDocument::CreateEmpty(ObjectType::Doodad);
+    if (!native.Succeeded() || !native.value) return {};
+    const std::string rawcode = custom ? "Zr01" : "Fr01";
+    const auto added = custom ? native.value->AddCustomObject(rawcode, "Fr01") : native.value->AddOriginalObject(rawcode);
+    if (!added.Succeeded()) return {};
+    const auto modified = wrongWireType
+        ? native.value->AddModification({ObjectType::Doodad, rawcode}, {"dfxr"}, NativeValueType::Int32, std::int32_t{90})
+        : native.value->AddModification({ObjectType::Doodad, rawcode}, {"dfxr"}, NativeValueType::Unreal, degrees);
+    if (!modified.Succeeded()) return {};
+    const auto encoded = NativeObjectCodec(ObjectType::Doodad).Serialize(*native.value);
+    if (!encoded.Succeeded() || !encoded.value) return {};
+    members.push_back({"war3map.w3d", *encoded.value});
+    // 原创4×2顶原点BGRA：黑、蓝、绿、红、蓝绿、蓝红、黑、蓝；alpha=0仍保留通行。
+    std::vector<std::byte> texture(18, std::byte{0});
+    texture[2] = std::byte{2}; texture[12] = std::byte{4}; texture[14] = std::byte{2};
+    texture[16] = std::byte{32}; texture[17] = std::byte{40};
+    constexpr std::array<std::array<std::uint8_t, 3>, 8> pixels{{
+        {0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {1, 1, 0}, {1, 0, 1}, {0, 0, 0}, {1, 0, 0}}};
+    for (const auto& pixel : pixels) {
+        for (const auto channel : pixel) texture.push_back(static_cast<std::byte>(channel));
+        texture.push_back(std::byte{0});
+    }
+    members.push_back({"PathTextures/fixed-rotation.tga", std::move(texture)});
+    MapData::DoodadPlacements placements;
+    MapData::DoodadPlacement placed;
+    placed.rawcode = rawcode; placed.position = {512, 512, 0}; placed.rotation = 0;
+    placed.scale = {1, 1, 1}; placed.flags = 2; placed.creationId = 1;
+    placements.doodads.push_back(placed);
+    const auto doo = placements.Serialize();
+    if (!doo.Succeeded() || !doo.value) return {};
+    for (auto& member : members) if (member.name == "war3map.doo") member.data = *doo.value;
+    // 独立文字矩阵：wire角0先吸附XY。fixedRot=0得到2×4起点(16,14)，90得到4×2起点(15,15)。
+    // 标准270具有不同矩阵；忽略覆盖或按最终角度重新吸附均不能得到这些完整WPM。
+    constexpr std::array<std::uint8_t, 8> zero{0, 6, 4, 0x35, 2, 0, 0x31, 4};
+    constexpr std::array<std::uint8_t, 8> ninety{0x31, 2, 4, 0, 4, 0, 0x35, 6};
+    const bool forceZero = degrees == 0;
+    const auto& matrix = forceZero ? zero : ninety;
+    const std::size_t x0 = forceZero ? 16 : 15, y0 = forceZero ? 14 : 15, width = forceZero ? 2 : 4;
+    for (std::size_t at = 0; at < matrix.size(); ++at)
+        members[2].data[16 + (y0 + at / width) * 32 + x0 + at % width] |= static_cast<std::byte>(matrix[at]);
     return members;
 }
 
@@ -511,6 +571,10 @@ private slots:
     void CGridInvariantNormalSaveAndUndoRedo();
     void CGridVariantWorkerRejectsBeforeWrite_data();
     void CGridVariantWorkerRejectsBeforeWrite();
+    void FixedRotationNormalSaveAndUndoRedo_data();
+    void FixedRotationNormalSaveAndUndoRedo();
+    void FixedRotationWorkerRejectsBeforeWrite_data();
+    void FixedRotationWorkerRejectsBeforeWrite();
     void PathingIntentLateEditStalesFrozenProject();
     void LegacyPathingIntentProjectKeepsStrictCompatibility();
     void TerrainSavePrepareStillRequiresToolchain();
@@ -535,6 +599,10 @@ private slots:
     void ProjectRestoreReadsUnlistedTerrainAndPathing_data();
     void ProjectRestoreReadsUnlistedTerrainAndPathing();
     void ProjectRestoreKeepsMissingAndUnreadableTerrainDistinct();
+private:
+    void CheckNativeDoodadNormalSaveAndUndoRedo(const std::vector<MapArchiveMember>& members, bool inPlace);
+    void CheckNativeDoodadWorkerRejectsBeforeWrite(const std::vector<MapArchiveMember>& members, bool inPlace,
+        const char* expectedCode);
 };
 
 void EditorProjectTests::UnlistedTerrainReadPreservesNamedInventory() {
@@ -1661,14 +1729,20 @@ void EditorProjectTests::CGridInvariantNormalSaveAndUndoRedo_data() {
 
 void EditorProjectTests::CGridInvariantNormalSaveAndUndoRedo() {
     QFETCH(bool, inPlace);
-    QTemporaryDir root; QVERIFY(root.isValid());
     const auto members = CGridInvariantQtMembers(); QVERIFY(!members.empty());
-    const auto source = std::filesystem::path(root.filePath("c-grid-source.w3x").toStdWString());
+    QCOMPARE(members[2].data[16 + 12 * 32 + 12], std::byte{0x1d});
+    QCOMPARE(members[2].data[16 + 14 * 32 + 14] | std::byte{2}, std::byte{0x1f});
+    CheckNativeDoodadNormalSaveAndUndoRedo(members, inPlace);
+}
+
+void EditorProjectTests::CheckNativeDoodadNormalSaveAndUndoRedo(const std::vector<MapArchiveMember>& members, bool inPlace) {
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto source = std::filesystem::path(root.filePath("native-doodad-source.w3x").toStdWString());
     QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
     const auto originalSha = Sha256File(source); QVERIFY(originalSha.Succeeded());
     EditorProject project; QUndoStack undo; project.mapDataUndoStack_ = &undo;
     QVERIFY(BindTerrainSaveProject(project, source)); QVERIFY(DeepenNativePathingQtProject(project));
-    PushMapDataEdit(project, "C grid water depth", "C类网格等价的已有水深编辑");
+    PushMapDataEdit(project, "Native doodad water depth", "已有装饰物占地上的水深编辑");
     QCOMPARE(undo.count(), 1); QCOMPARE(undo.index(), 1);
     const auto session = project.mapEdits_->SessionIdentity();
     const auto parsed = MapData::ParseMapTerrain(members[1].data); QVERIFY(parsed.Succeeded() && parsed.value);
@@ -1678,13 +1752,10 @@ void EditorProjectTests::CGridInvariantNormalSaveAndUndoRedo() {
     const auto deepTerrain = MapData::SerializeMapTerrain(deepGrid); QVERIFY(deepTerrain.Succeeded());
     QCOMPARE(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, deepTerrain.value);
     auto deepPathing = members[2].data;
-    // 两个C实例的绿色8×8占地为WPM04；最近顶点深水再追加02，全部其它格保留独立来源。
+    // 原创占地的完整静态矩阵已独立写入来源；最近顶点深水再追加02，其余格保留。
     for (std::size_t y = 14; y <= 17; ++y) for (std::size_t x = 14; x <= 17; ++x)
         deepPathing[16 + y * 32 + x] |= std::byte{2};
-    QCOMPARE(members[2].data[16 + 12 * 32 + 12], std::byte{0x1d});
-    QCOMPARE(deepPathing[16 + 14 * 32 + 14], std::byte{0x1f});
-
-    // 不借C支持放宽脚本门；下方仅沿既有合法worker夹具替代脚本准备，领域保存走生产链。
+    // 不借占地支持放宽脚本门；仅沿既有合法worker夹具替代脚本准备，领域保存走生产链。
     project.compilerDataRoot_.clear(); project.activeUiDataRoot_.clear(); project.uiDataRoot_.clear();
     const auto blocked = std::filesystem::path(root.filePath("script-blocked.w3x").toStdWString());
     QVERIFY(!project.PrepareMapSave(blocked, false));
@@ -1704,7 +1775,7 @@ void EditorProjectTests::CGridInvariantNormalSaveAndUndoRedo() {
         const auto beforeSha = Sha256File(beforeSource); QVERIFY(beforeSha.Succeeded());
         const auto beforeRevision = project.mapEdits_->TerrainSourceRevision();
         const auto target = inPlace ? beforeSource
-            : std::filesystem::path(root.filePath(QString("c-grid-saved-%1.w3x").arg(phase)).toStdWString());
+            : std::filesystem::path(root.filePath(QString("native-doodad-saved-%1.w3x").arg(phase)).toStdWString());
         auto job = FreezeNativePathingQtJob(project, target); QVERIFY(job && job->terrainDerivationRequired);
         job->terrainSessionSnapshot = project.mapEdits_->FreezeForSave();
         if (inPlace) {
@@ -1713,7 +1784,7 @@ void EditorProjectTests::CGridInvariantNormalSaveAndUndoRedo() {
             QVERIFY(std::filesystem::create_directory(job->inPlaceOptions.backupDirectory));
         }
         InstallMapSaveDerivedPreparation(*job); EditorProject::RunMapSave(*job);
-        QVERIFY2(job->succeeded, job->diagnostics.empty() ? "C-grid native worker" : job->diagnostics.back().message.c_str());
+        QVERIFY2(job->succeeded, job->diagnostics.empty() ? "native doodad worker" : job->diagnostics.back().message.c_str());
         QVERIFY(job->nextSession && job->terrainSavePlan && job->terrainSavePlan->RebuiltPathing());
         QVERIFY(job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded());
         const auto readback = MapArchiveSession::Open(target); QVERIFY(readback.Succeeded());
@@ -1725,8 +1796,9 @@ void EditorProjectTests::CGridInvariantNormalSaveAndUndoRedo() {
         QCOMPARE(project.mapEdits_->SessionIdentity(), session); QCOMPARE(project.sourceArchivePath_, target);
         QVERIFY(project.mapEdits_->TerrainSourceRevision() > beforeRevision);
         QVERIFY(!project.HasUnsavedMapChanges() && !project.mapEdits_->IsDirty());
-        QCOMPARE(project.mapEdits_->InspectTerrainPoint({512, 512}).value->pathingFlags, deep ? 0x1f : 0x1d);
-        QCOMPARE(project.mapEdits_->InspectTerrainPoint({512, 512}).value->originalPathingFlags, deep ? 0x1f : 0x1d);
+        const auto centerFlags = std::to_integer<int>(expectedPathing[16 + 16 * 32 + 16]);
+        QCOMPARE(project.mapEdits_->InspectTerrainPoint({512, 512}).value->pathingFlags, centerFlags);
+        QCOMPARE(project.mapEdits_->InspectTerrainPoint({512, 512}).value->originalPathingFlags, centerFlags);
         QCOMPARE(undo.count(), 1); QCOMPARE(undo.index(), deep ? 1 : 0);
         if (inPlace) {
             QVERIFY(!job->backup.empty()); QCOMPARE(Sha256File(job->backup).value, beforeSha.value);
@@ -1745,19 +1817,24 @@ void EditorProjectTests::CGridVariantWorkerRejectsBeforeWrite_data() {
 
 void EditorProjectTests::CGridVariantWorkerRejectsBeforeWrite() {
     QFETCH(int, axis); QFETCH(bool, occluded); QFETCH(bool, inPlace);
-    QTemporaryDir root; QVERIFY(root.isValid());
     const auto members = CGridInvariantQtMembers(axis, occluded); QVERIFY(!members.empty());
     if (occluded) {
         const auto sameAggregate = CGridInvariantQtMembers(-1, true); QVERIFY(!sameAggregate.empty());
         QCOMPARE(members[2].data, sameAggregate[2].data); // 先证明本阴例的OR遮差前提确实成立。
     }
-    const auto source = std::filesystem::path(root.filePath("c-grid-source.w3x").toStdWString());
+    CheckNativeDoodadWorkerRejectsBeforeWrite(members, inPlace, "TERRAIN_UNIFORM_GRID_VARIANT");
+}
+
+void EditorProjectTests::CheckNativeDoodadWorkerRejectsBeforeWrite(const std::vector<MapArchiveMember>& members,
+    bool inPlace, const char* expectedCode) {
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto source = std::filesystem::path(root.filePath("native-doodad-source.w3x").toStdWString());
     const auto target = inPlace ? source : std::filesystem::path(root.filePath("must-not-exist.w3x").toStdWString());
     QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
     const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
     EditorProject project; QUndoStack undo; project.mapDataUndoStack_ = &undo;
     QVERIFY(BindTerrainSaveProject(project, source)); QVERIFY(DeepenNativePathingQtProject(project));
-    PushMapDataEdit(project, "Variant C grid water depth", "不能由最终OR结果放行C类不等价实例");
+    PushMapDataEdit(project, "Rejected native doodad water depth", "非法装饰物来源必须在写出前拒绝");
     const auto* archive = project.archiveSession_.get(); const auto* edits = project.mapEdits_.get();
     const auto session = project.mapEdits_->SessionIdentity();
     const auto sourceRevision = project.mapEdits_->TerrainSourceRevision();
@@ -1777,8 +1854,8 @@ void EditorProjectTests::CGridVariantWorkerRejectsBeforeWrite() {
     }
     InstallMapSaveDerivedPreparation(*job); EditorProject::RunMapSave(*job);
     QVERIFY(!job->succeeded && !job->nextSession && !job->terrainReadbackStatus && job->written.empty());
-    QVERIFY2(HasReadDiagnostic(*job, "TERRAIN_UNIFORM_GRID_VARIANT"),
-        job->diagnostics.empty() ? "C-grid variant must report its exact gate" : job->diagnostics.back().message.c_str());
+    QVERIFY2(HasReadDiagnostic(*job, expectedCode),
+        job->diagnostics.empty() ? "native doodad must report its exact gate" : job->diagnostics.back().message.c_str());
     QVERIFY(!project.CommitMapSave(*job)); QVERIFY(job->backup.empty());
     if (inPlace) QVERIFY(std::filesystem::is_empty(job->inPlaceOptions.backupDirectory));
     else QVERIFY(!std::filesystem::exists(target));
@@ -1795,6 +1872,48 @@ void EditorProjectTests::CGridVariantWorkerRejectsBeforeWrite() {
     QVERIFY(project.HasUnsavedMapChanges() && project.mapEdits_->CanUndo());
     QCOMPARE(undo.count(), 1); QCOMPARE(undo.index(), 1);
     QCOMPARE(Sha256File(source).value, sourceSha.value);
+}
+
+void EditorProjectTests::FixedRotationNormalSaveAndUndoRedo_data() {
+    QTest::addColumn<bool>("custom"); QTest::addColumn<float>("degrees"); QTest::addColumn<bool>("inPlace");
+    for (const bool custom : {false, true}) for (const int degrees : {0, 90}) for (const bool inPlace : {false, true}) {
+        const auto name = QString("fixed-rotation-%1-%2-%3")
+            .arg(custom ? "custom" : "original").arg(degrees).arg(inPlace ? "in-place" : "save-as").toUtf8();
+        QTest::newRow(name.constData()) << custom << static_cast<float>(degrees) << inPlace;
+    }
+}
+
+void EditorProjectTests::FixedRotationNormalSaveAndUndoRedo() {
+    QFETCH(bool, custom); QFETCH(float, degrees); QFETCH(bool, inPlace);
+    const auto members = FixedRotationQtMembers(custom, degrees); QVERIFY(!members.empty());
+    // 字面矩阵的代表点同时区分标准270回退、有效零覆盖和90覆盖；完整结果由共用循环逐字核对。
+    QCOMPARE(members[2].data[16 + 15 * 32 + 15], degrees == 0 ? std::byte{0x19} : std::byte{0x39});
+    QCOMPARE(members[2].data[16 + 14 * 32 + 17], degrees == 0 ? std::byte{0x1f} : std::byte{0x19});
+    CheckNativeDoodadNormalSaveAndUndoRedo(members, inPlace);
+}
+
+void EditorProjectTests::FixedRotationWorkerRejectsBeforeWrite_data() {
+    QTest::addColumn<bool>("custom"); QTest::addColumn<float>("degrees");
+    QTest::addColumn<bool>("wrongWireType"); QTest::addColumn<bool>("inPlace"); QTest::addColumn<QString>("code");
+    QTest::newRow("fixed-rotation-above-domain-original-copy")
+        << false << 361.0f << false << false << QStringLiteral("TERRAIN_DOODAD_FIXED_ROTATION");
+    QTest::newRow("fixed-rotation-below-domain-custom-in-place")
+        << true << -361.0f << false << true << QStringLiteral("TERRAIN_DOODAD_FIXED_ROTATION");
+    QTest::newRow("fixed-rotation-int32-original-in-place")
+        << false << 90.0f << true << true << QStringLiteral("TERRAIN_NATIVE_OBJECT_DOODAD_TYPE");
+    QTest::newRow("fixed-rotation-int32-custom-copy")
+        << true << 90.0f << true << false << QStringLiteral("TERRAIN_NATIVE_OBJECT_DOODAD_TYPE");
+    QTest::newRow("fixed-rotation-ambiguous-original-copy")
+        << false << 45.0f << false << false << QStringLiteral("TERRAIN_DOODAD_ANGLE_AMBIGUOUS");
+    QTest::newRow("fixed-rotation-ambiguous-custom-in-place")
+        << true << 45.0f << false << true << QStringLiteral("TERRAIN_DOODAD_ANGLE_AMBIGUOUS");
+}
+
+void EditorProjectTests::FixedRotationWorkerRejectsBeforeWrite() {
+    QFETCH(bool, custom); QFETCH(float, degrees); QFETCH(bool, wrongWireType); QFETCH(bool, inPlace); QFETCH(QString, code);
+    const auto members = FixedRotationQtMembers(custom, degrees, wrongWireType); QVERIFY(!members.empty());
+    const auto expectedCode = code.toUtf8();
+    CheckNativeDoodadWorkerRejectsBeforeWrite(members, inPlace, expectedCode.constData());
 }
 
 void EditorProjectTests::PathingIntentLateEditStalesFrozenProject() {
