@@ -346,6 +346,61 @@ std::unique_ptr<MapSaveJob> FreezeNativePathingQtJob(EditorProject& project, con
     return job;
 }
 
+std::vector<MapArchiveMember> CGridInvariantQtMembers(int divergentAxis = -1, bool occluded = false) {
+    auto members = NativePathingQtMembers();
+    if (members.empty()) return {};
+    const auto table = [](const std::vector<std::string>& columns, const std::vector<std::vector<std::string>>& rows) {
+        std::string text = "ID;PWXL;N;E\n";
+        const auto append = [&](const std::vector<std::string>& cells, std::size_t row) {
+            for (std::size_t x = 0; x < cells.size(); ++x)
+                text += "C;X" + std::to_string(x + 1) + ";Y" + std::to_string(row) + ";K\"" + cells[x] + "\"\n";
+        };
+        append(columns, 1);
+        for (std::size_t y = 0; y < rows.size(); ++y) append(rows[y], y + 2);
+        return Tests::WaterText(text + "E\n");
+    };
+    const auto texture = [](std::size_t side) {
+        std::vector<std::byte> bytes(18 + side * side * 4, std::byte{0});
+        bytes[2] = std::byte{2}; bytes[12] = bytes[14] = static_cast<std::byte>(side);
+        bytes[16] = std::byte{32}; bytes[17] = std::byte{8};
+        // 原创BGRA={0,255,0,0}：透明不清除绿色通行位，且不会被浅水的0x08掩盖。
+        for (std::size_t at = 18; at < bytes.size(); at += 4) bytes[at + 1] = std::byte{255};
+        return bytes;
+    };
+    members.push_back({"Units/DestructableData.slk", table({"destructableID", "code", "walkable"}, {{"Dst0", "Dst0", "0"}})});
+    members.push_back({"Units/DestructableMetaData.slk", table({"ID", "field", "slk", "type", "repeat", "data", "index"},
+        {{"p001", "walkable", "DestructableData", "bool", "0", "0", "-1"}})});
+    members.push_back({"Doodads/Doodads.slk", table({"doodID", "code", "pathTex", "category", "fixedRot"},
+        {{"Cg01", "Cg01", "PathTextures/C-grid.tga", "C", "270"},
+            {"Eg01", "Eg01", "PathTextures/00-cover.tga", "E", "270"}})});
+    members.push_back({"PathTextures/C-grid.tga", texture(8)});
+    members.push_back({"PathTextures/00-cover.tga", texture(16)});
+    MapData::DoodadPlacements placements;
+    MapData::DoodadPlacement placed;
+    placed.rawcode = "Cg01"; placed.position = {256, 256, 0}; placed.scale = {1, 1, 1};
+    placed.flags = 2; placed.creationId = 1; placements.doodads.push_back(placed);
+    placed.position = {512, 512, 0}; placed.creationId = 2;
+    if (divergentAxis >= 0) placed.position[static_cast<std::size_t>(divergentAxis)] += 32;
+    placements.doodads.push_back(placed);
+    if (occluded) {
+        auto cover = placed; cover.rawcode = "Eg01"; cover.position = {512, 512, 0}; cover.creationId = 3;
+        placements.doodads.insert(placements.doodads.begin(), cover);
+    }
+    const auto wire = placements.Serialize();
+    if (!wire.Succeeded() || !wire.value) return {};
+    for (auto& member : members) if (member.name == "war3map.doo") member.data = *wire.value;
+    // 独立格子预期：8x8在256和512中心起点为4、12；+32使snap2起点多2格，snap4仍为12。
+    // 非等价阴例的来源选择snap2的合法结果，不调用产品投影或生成器制造WPM。
+    const auto footprint = [&](std::size_t x0, std::size_t y0, std::size_t side) {
+        for (std::size_t y = y0; y < y0 + side; ++y) for (std::size_t x = x0; x < x0 + side; ++x)
+            members[2].data[16 + y * 32 + x] |= std::byte{4};
+    };
+    footprint(4, 4, 8);
+    footprint(divergentAxis == 0 ? 14 : 12, divergentAxis == 1 ? 14 : 12, 8);
+    if (occluded) footprint(8, 8, 16); // 此非C实例完全遮住第二C实例两种网格的差异。
+    return members;
+}
+
 std::vector<MapArchiveMember> TerrainJournalWaterMembers() {
     auto members = NativePathingQtMembers();
     const auto water = Tests::TerrainWaterMembers();
@@ -452,6 +507,10 @@ private slots:
     void NativePathingWorkerRebuildsAndRebinds();
     void NativePathingWorkerPreflightAndFailure_data();
     void NativePathingWorkerPreflightAndFailure();
+    void CGridInvariantNormalSaveAndUndoRedo_data();
+    void CGridInvariantNormalSaveAndUndoRedo();
+    void CGridVariantWorkerRejectsBeforeWrite_data();
+    void CGridVariantWorkerRejectsBeforeWrite();
     void PathingIntentLateEditStalesFrozenProject();
     void LegacyPathingIntentProjectKeepsStrictCompatibility();
     void TerrainSavePrepareStillRequiresToolchain();
@@ -1591,6 +1650,150 @@ void EditorProjectTests::NativePathingWorkerPreflightAndFailure() {
         QCOMPARE(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, terrainBefore.value);
     }
     QVERIFY(project.HasUnsavedMapChanges() && project.mapEdits_->CanUndo());
+    QCOMPARE(Sha256File(source).value, sourceSha.value);
+}
+
+void EditorProjectTests::CGridInvariantNormalSaveAndUndoRedo_data() {
+    QTest::addColumn<bool>("inPlace");
+    QTest::newRow("c-grid-equivalent-save-as") << false;
+    QTest::newRow("c-grid-equivalent-save-in-place") << true;
+}
+
+void EditorProjectTests::CGridInvariantNormalSaveAndUndoRedo() {
+    QFETCH(bool, inPlace);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto members = CGridInvariantQtMembers(); QVERIFY(!members.empty());
+    const auto source = std::filesystem::path(root.filePath("c-grid-source.w3x").toStdWString());
+    QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
+    const auto originalSha = Sha256File(source); QVERIFY(originalSha.Succeeded());
+    EditorProject project; QUndoStack undo; project.mapDataUndoStack_ = &undo;
+    QVERIFY(BindTerrainSaveProject(project, source)); QVERIFY(DeepenNativePathingQtProject(project));
+    PushMapDataEdit(project, "C grid water depth", "C类网格等价的已有水深编辑");
+    QCOMPARE(undo.count(), 1); QCOMPARE(undo.index(), 1);
+    const auto session = project.mapEdits_->SessionIdentity();
+    const auto parsed = MapData::ParseMapTerrain(members[1].data); QVERIFY(parsed.Succeeded() && parsed.value);
+    auto deepGrid = *parsed.value->Snapshot();
+    deepGrid.vertices[4 * 9 + 4].waterHeightAndFlagsRaw = 8192 + 80 * 4;
+    MapData::RefreshTerrainDerived(deepGrid, 0, 0, 9, 9);
+    const auto deepTerrain = MapData::SerializeMapTerrain(deepGrid); QVERIFY(deepTerrain.Succeeded());
+    QCOMPARE(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, deepTerrain.value);
+    auto deepPathing = members[2].data;
+    // 两个C实例的绿色8×8占地为WPM04；最近顶点深水再追加02，全部其它格保留独立来源。
+    for (std::size_t y = 14; y <= 17; ++y) for (std::size_t x = 14; x <= 17; ++x)
+        deepPathing[16 + y * 32 + x] |= std::byte{2};
+    QCOMPARE(members[2].data[16 + 12 * 32 + 12], std::byte{0x1d});
+    QCOMPARE(deepPathing[16 + 14 * 32 + 14], std::byte{0x1f});
+
+    // 不借C支持放宽脚本门；下方仅沿既有合法worker夹具替代脚本准备，领域保存走生产链。
+    project.compilerDataRoot_.clear(); project.activeUiDataRoot_.clear(); project.uiDataRoot_.clear();
+    const auto blocked = std::filesystem::path(root.filePath("script-blocked.w3x").toStdWString());
+    QVERIFY(!project.PrepareMapSave(blocked, false));
+    QVERIFY(ModelHasCode(*project.diagnosticsModel_, "REPACK_SCRIPT_REJECTED")); QVERIFY(!std::filesystem::exists(blocked));
+    for (int phase = 0; phase < 3; ++phase) {
+        if (phase == 1) {
+            undo.undo(); QCOMPARE(undo.index(), 0); QVERIFY(project.mapEdits_->CanRedo());
+        } else if (phase == 2) {
+            undo.redo(); QCOMPARE(undo.index(), 1); QVERIFY(project.mapEdits_->CanUndo());
+        }
+        const bool deep = phase != 1;
+        const auto& expectedTerrain = deep ? *deepTerrain.value : members[1].data;
+        const auto& expectedPathing = deep ? deepPathing : members[2].data;
+        QCOMPARE(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, std::optional(expectedTerrain));
+        QVERIFY(project.HasUnsavedMapChanges());
+        const auto beforeSource = project.sourceArchivePath_;
+        const auto beforeSha = Sha256File(beforeSource); QVERIFY(beforeSha.Succeeded());
+        const auto beforeRevision = project.mapEdits_->TerrainSourceRevision();
+        const auto target = inPlace ? beforeSource
+            : std::filesystem::path(root.filePath(QString("c-grid-saved-%1.w3x").arg(phase)).toStdWString());
+        auto job = FreezeNativePathingQtJob(project, target); QVERIFY(job && job->terrainDerivationRequired);
+        job->terrainSessionSnapshot = project.mapEdits_->FreezeForSave();
+        if (inPlace) {
+            job->inPlace = true;
+            job->inPlaceOptions.backupDirectory = std::filesystem::path(root.filePath(QString("backups-%1").arg(phase)).toStdWString());
+            QVERIFY(std::filesystem::create_directory(job->inPlaceOptions.backupDirectory));
+        }
+        InstallMapSaveDerivedPreparation(*job); EditorProject::RunMapSave(*job);
+        QVERIFY2(job->succeeded, job->diagnostics.empty() ? "C-grid native worker" : job->diagnostics.back().message.c_str());
+        QVERIFY(job->nextSession && job->terrainSavePlan && job->terrainSavePlan->RebuiltPathing());
+        QVERIFY(job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded());
+        const auto readback = MapArchiveSession::Open(target); QVERIFY(readback.Succeeded());
+        QCOMPARE(readback.value->ReadMember("war3map.w3e").value, std::optional(expectedTerrain));
+        QCOMPARE(readback.value->ReadMember("war3map.wpm").value, std::optional(expectedPathing));
+        for (const auto& member : members) if (member.name != "war3map.w3e" && member.name != "war3map.wpm")
+            QCOMPARE(readback.value->ReadMember(member.name).value, std::optional(member.data));
+        QVERIFY(project.CommitMapSave(*job));
+        QCOMPARE(project.mapEdits_->SessionIdentity(), session); QCOMPARE(project.sourceArchivePath_, target);
+        QVERIFY(project.mapEdits_->TerrainSourceRevision() > beforeRevision);
+        QVERIFY(!project.HasUnsavedMapChanges() && !project.mapEdits_->IsDirty());
+        QCOMPARE(project.mapEdits_->InspectTerrainPoint({512, 512}).value->pathingFlags, deep ? 0x1f : 0x1d);
+        QCOMPARE(project.mapEdits_->InspectTerrainPoint({512, 512}).value->originalPathingFlags, deep ? 0x1f : 0x1d);
+        QCOMPARE(undo.count(), 1); QCOMPARE(undo.index(), deep ? 1 : 0);
+        if (inPlace) {
+            QVERIFY(!job->backup.empty()); QCOMPARE(Sha256File(job->backup).value, beforeSha.value);
+        } else QCOMPARE(Sha256File(beforeSource).value, beforeSha.value);
+    }
+    if (!inPlace) QCOMPARE(Sha256File(source).value, originalSha.value);
+}
+
+void EditorProjectTests::CGridVariantWorkerRejectsBeforeWrite_data() {
+    QTest::addColumn<int>("axis"); QTest::addColumn<bool>("occluded"); QTest::addColumn<bool>("inPlace");
+    QTest::newRow("c-grid-x-variant-copy") << 0 << false << false;
+    QTest::newRow("c-grid-y-variant-in-place") << 1 << false << true;
+    QTest::newRow("c-grid-x-variant-hidden-by-other-object") << 0 << true << false;
+    QTest::newRow("c-grid-y-variant-hidden-in-place") << 1 << true << true;
+}
+
+void EditorProjectTests::CGridVariantWorkerRejectsBeforeWrite() {
+    QFETCH(int, axis); QFETCH(bool, occluded); QFETCH(bool, inPlace);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto members = CGridInvariantQtMembers(axis, occluded); QVERIFY(!members.empty());
+    if (occluded) {
+        const auto sameAggregate = CGridInvariantQtMembers(-1, true); QVERIFY(!sameAggregate.empty());
+        QCOMPARE(members[2].data, sameAggregate[2].data); // 先证明本阴例的OR遮差前提确实成立。
+    }
+    const auto source = std::filesystem::path(root.filePath("c-grid-source.w3x").toStdWString());
+    const auto target = inPlace ? source : std::filesystem::path(root.filePath("must-not-exist.w3x").toStdWString());
+    QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
+    const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
+    EditorProject project; QUndoStack undo; project.mapDataUndoStack_ = &undo;
+    QVERIFY(BindTerrainSaveProject(project, source)); QVERIFY(DeepenNativePathingQtProject(project));
+    PushMapDataEdit(project, "Variant C grid water depth", "不能由最终OR结果放行C类不等价实例");
+    const auto* archive = project.archiveSession_.get(); const auto* edits = project.mapEdits_.get();
+    const auto session = project.mapEdits_->SessionIdentity();
+    const auto sourceRevision = project.mapEdits_->TerrainSourceRevision();
+    const auto revision = project.mapEdits_->Revision();
+    const auto command = project.mapEdits_->LastEdit().CommandIdentity();
+    const auto terrain = MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()); QVERIFY(terrain.Succeeded());
+    const auto draft = TerrainJournalDraftBytes(*project.mapEdits_);
+    const auto scopes = project.editRevision_.Current();
+    const auto baseline = project.editRevision_.Baseline(EditSaveTarget::Map); QVERIFY(baseline);
+    const auto trackingGeneration = project.editRevision_.Generation(), trackingRevision = project.editRevision_.Revision();
+    auto job = FreezeNativePathingQtJob(project, target); QVERIFY(job && job->terrainDerivationRequired);
+    job->terrainSessionSnapshot = project.mapEdits_->FreezeForSave();
+    if (inPlace) {
+        job->inPlace = true;
+        job->inPlaceOptions.backupDirectory = std::filesystem::path(root.filePath("backups").toStdWString());
+        QVERIFY(std::filesystem::create_directory(job->inPlaceOptions.backupDirectory));
+    }
+    InstallMapSaveDerivedPreparation(*job); EditorProject::RunMapSave(*job);
+    QVERIFY(!job->succeeded && !job->nextSession && !job->terrainReadbackStatus && job->written.empty());
+    QVERIFY2(HasReadDiagnostic(*job, "TERRAIN_UNIFORM_GRID_VARIANT"),
+        job->diagnostics.empty() ? "C-grid variant must report its exact gate" : job->diagnostics.back().message.c_str());
+    QVERIFY(!project.CommitMapSave(*job)); QVERIFY(job->backup.empty());
+    if (inPlace) QVERIFY(std::filesystem::is_empty(job->inPlaceOptions.backupDirectory));
+    else QVERIFY(!std::filesystem::exists(target));
+    QCOMPARE(project.archiveSession_.get(), archive); QCOMPARE(project.mapEdits_.get(), edits);
+    QCOMPARE(project.mapEdits_->SessionIdentity(), session); QCOMPARE(project.sourceArchivePath_, source);
+    QCOMPARE(project.mapEdits_->TerrainSourceRevision(), sourceRevision); QCOMPARE(project.mapEdits_->Revision(), revision);
+    QCOMPARE(project.mapEdits_->LastEdit().CommandIdentity(), command);
+    QCOMPARE(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, terrain.value);
+    QCOMPARE(TerrainJournalDraftBytes(*project.mapEdits_), draft);
+    QCOMPARE(project.editRevision_.Generation(), trackingGeneration); QCOMPARE(project.editRevision_.Revision(), trackingRevision);
+    QCOMPARE(project.editRevision_.Current(), scopes);
+    QCOMPARE(project.editRevision_.Baseline(EditSaveTarget::Map)->revision, baseline->revision);
+    QCOMPARE(project.editRevision_.Baseline(EditSaveTarget::Map)->scopes, baseline->scopes);
+    QVERIFY(project.HasUnsavedMapChanges() && project.mapEdits_->CanUndo());
+    QCOMPARE(undo.count(), 1); QCOMPARE(undo.index(), 1);
     QCOMPARE(Sha256File(source).value, sourceSha.value);
 }
 
