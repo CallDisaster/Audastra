@@ -59,6 +59,7 @@ void CheckRealWalkableBridgeSave(const MapArchiveSession& original,
             colored = colored || footprint.value->pixels[i] != std::byte{}
                 || footprint.value->pixels[i + 1] != std::byte{} || footprint.value->pixels[i + 2] != std::byte{};
         if (!colored) continue;
+        Require(!original.HasMember(path), "actual bridge fixture must use the captured game-winning footprint");
         rawcode = object.key.rawcode;
         std::cout << "walkable_bridge_object=" << rawcode << " path=" << path << " fixed_rot=" << rotation
             << " winner=" << file.value->archiveName << " bytes=" << file.value->bytes.size()
