@@ -184,6 +184,35 @@ Status ValidatePlacement(std::span<std::uint8_t> staticAttributes, const Terrain
         return fail("TERRAIN_UNIFORM_SNAP_CELLS", "同色占地吸附网格只能使用实际类别确定的2格或4格。");
     return Status::Ok();
 }
+
+struct UniformRectangle {
+    std::int64_t firstX, firstY, lastX, lastY;
+    [[nodiscard]] bool Empty() const noexcept { return firstX >= lastX || firstY >= lastY; }
+    bool operator==(const UniformRectangle&) const = default;
+};
+static_assert(2 * sizeof(std::optional<UniformRectangle>) <= TerrainUniformGridInvariantBudgetBytes);
+
+std::optional<UniformRectangle> ProjectUniformRectangle(const TerrainHeader& terrain,
+    const DoodadPlacement& placement, std::uint32_t side, std::uint8_t snapCells) {
+    const auto x0 = ProjectAxis(placement.position[0], terrain.offset[0], side, snapCells, false, side);
+    const auto y0 = ProjectAxis(placement.position[1], terrain.offset[1], side, snapCells, true, side);
+    if (!x0 || !y0) return std::nullopt;
+    const auto columns = static_cast<std::int64_t>(terrain.width - 1) * 4;
+    const auto rows = static_cast<std::int64_t>(terrain.height - 1) * 4;
+    return UniformRectangle{std::max<std::int64_t>(0, *x0), std::max<std::int64_t>(0, *y0),
+        std::min(columns, *x0 + side), std::min(rows, *y0 + side)};
+}
+
+void AddUniformRectangle(std::span<std::uint8_t> attributes, const TerrainHeader& terrain,
+    const UniformRectangle& rectangle, std::uint8_t value) {
+    if (rectangle.Empty() || value == 0) return;
+    const auto columns = static_cast<std::size_t>(terrain.width - 1) * 4;
+    for (auto y = rectangle.firstY; y < rectangle.lastY; ++y) {
+        const auto row = static_cast<std::size_t>(y) * columns;
+        for (auto x = rectangle.firstX; x < rectangle.lastX; ++x)
+            attributes[row + static_cast<std::size_t>(x)] |= value;
+    }
+}
 } // namespace
 
 Status AddUniformDoodadFootprint(std::span<std::uint8_t> staticAttributes, const TerrainHeader& terrain,
@@ -193,21 +222,30 @@ Status AddUniformDoodadFootprint(std::span<std::uint8_t> staticAttributes, const
     if (!valid.Succeeded()) return valid;
     if (footprint.side == 0 || footprint.side > kMaximumSide || !ValidAttributes(footprint.attributes))
         return fail("TERRAIN_UNIFORM_FOOTPRINT", "同色占地尺寸或原版通道属性组合无效。");
-    const auto columns = static_cast<std::size_t>(terrain.width - 1) * 4;
-    const auto rows = static_cast<std::size_t>(terrain.height - 1) * 4;
-    const auto x0 = ProjectAxis(placement.position[0], terrain.offset[0], footprint.side, snapCells, false, footprint.side);
-    const auto y0 = ProjectAxis(placement.position[1], terrain.offset[1], footprint.side, snapCells, true, footprint.side);
-    if (!x0 || !y0)
+    const auto rectangle = ProjectUniformRectangle(terrain, placement, footprint.side, snapCells);
+    if (!rectangle)
         return fail("TERRAIN_UNIFORM_SNAP_AMBIGUOUS", "同色占地坐标靠近吸附边界，原版浮点舍入的结果不能唯一确定。");
-    const auto firstX = std::max<std::int64_t>(0, *x0), firstY = std::max<std::int64_t>(0, *y0);
-    const auto lastX = std::min<std::int64_t>(static_cast<std::int64_t>(columns), *x0 + footprint.side);
-    const auto lastY = std::min<std::int64_t>(static_cast<std::int64_t>(rows), *y0 + footprint.side);
     // 此后无失败分支。均匀像素使逐像素裁边可化为相同的矩形，不移动原起点。
-    for (auto y = firstY; y < lastY; ++y) {
-        const auto row = static_cast<std::size_t>(y) * columns;
-        for (auto x = firstX; x < lastX; ++x)
-            staticAttributes[row + static_cast<std::size_t>(x)] |= footprint.attributes;
-    }
+    AddUniformRectangle(staticAttributes, terrain, *rectangle, footprint.attributes);
+    return Status::Ok();
+}
+
+Status AddGridInvariantUniformDoodadFootprint(std::span<std::uint8_t> staticAttributes, const TerrainHeader& terrain,
+    const DoodadPlacement& placement, const TerrainUniformDoodadFootprint& footprint) {
+    const auto fail = [](const char* code, const char* message) { return Status::Failure(kSubsystem, code, message); };
+    // 姿态验证与原2格入口完全共用；两个合法常量网格各自仍须取得唯一投影。
+    const auto valid = ValidatePlacement(staticAttributes, terrain, placement, 2);
+    if (!valid.Succeeded()) return valid;
+    if (footprint.side == 0 || footprint.side > kMaximumSide || !ValidAttributes(footprint.attributes))
+        return fail("TERRAIN_UNIFORM_FOOTPRINT", "同色占地尺寸或原版通道属性组合无效。");
+    const auto two = ProjectUniformRectangle(terrain, placement, footprint.side, 2);
+    const auto four = ProjectUniformRectangle(terrain, placement, footprint.side, 4);
+    if (!two || !four)
+        return fail("TERRAIN_UNIFORM_SNAP_AMBIGUOUS", "同色占地的2格或4格投影不能唯一确定，未合并实例贡献。");
+    // 相同非零属性的完整贡献由裁剪矩形唯一决定；必须在接触已有OR层之前比较。
+    if (footprint.attributes != 0 && !(two->Empty() && four->Empty()) && *two != *four)
+        return fail("TERRAIN_UNIFORM_GRID_VARIANT", "该实例的2格与4格完整地图内占地贡献不同，尚不能保存C类占地。");
+    AddUniformRectangle(staticAttributes, terrain, *two, footprint.attributes);
     return Status::Ok();
 }
 

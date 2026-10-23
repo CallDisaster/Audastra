@@ -731,7 +731,8 @@ void NonemptyDoodadInspectionOwnsUniqueBoundedResults() {
     Require(result.footprints.size() == 2 && result.footprints[0].rawcode == "D001"
         && result.footprints[1].rawcode == "D002", "相同rawcode只列一次，不同rawcode共用路径仍各自列出并稳定排序");
     for (const auto& footprint : result.footprints)
-        Require(footprint.pathTexture == path && footprint.snapCells == 2, "实际路径原样保留，非C与小写c均为2格");
+        Require(footprint.pathTexture == path && footprint.gridPolicy == MapData::TerrainDoodadGridPolicy::TwoCells,
+            "实际路径原样保留，非C与小写c均为2格");
     Require(Take(fixture.Inspect({"D002", "S002", "D001", "D002"}, result.workBytes)).workBytes == result.workBytes,
         "包含临时索引、拥有字符串和最终结构的精确预算可以重用");
     Rejected(fixture.Inspect({"D002", "S002", "D001", "D002"}, result.workBytes - 1),
@@ -782,14 +783,17 @@ void NonemptyDoodadInspectionKeepsTheNarrowSourceDomain() {
     Rejected(missing.Inspect(), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "非空占地不能猜缺失类别");
     missing.doodads.push_back({{"doodID", "D002"}, {"category", "E"}, {"pathTex", "_"}}); missing.Tables();
     Rejected(missing.Inspect(), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "有category列但目标行缺格也不能猜类别");
-    for (const std::string category : {"", "_", "C", "CC", " C", "C ", "\"C\"", " ", "\t", "\x7f", "\xc3\xa9"}) {
+    for (const std::string category : {"", "_", "CC", " C", "C ", "\"C\"", " ", "\t", "\x7f", "\xc3\xa9"}) {
         Fixture invalid; prepare(invalid); invalid.doodads[0]["category"] = category; invalid.Tables();
         const auto result = invalid.Inspect();
-        Rejected(result, "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "类别必须是明确非C、非_的单可打印ASCII字符");
-        if (category == "C") Require(std::any_of(result.diagnostics.begin(), result.diagnostics.end(), [](const auto& diagnostic) {
-            return diagnostic.message.find("类别目录") != std::string::npos;
-        }), "C类明确说明尚缺实际类别目录绑定");
+        Rejected(result, "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "类别必须是明确非_的单可打印ASCII字符");
     }
+    Fixture categoryC; prepare(categoryC); categoryC.doodads[0]["category"] = "C"; categoryC.Tables();
+    const auto invariant = Take(categoryC.Inspect());
+    Require(invariant.footprints.size() == 1
+        && invariant.footprints.front().gridPolicy == MapData::TerrainDoodadGridPolicy::RequireTwoAndFourEquivalent,
+        "字面C只请求逐实例双网格等价验证，不签发已证4格身份");
+    Rejected(categoryC.Validate({"D001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "旧无占地兼容入口仍拒绝C非空占地");
     for (const unsigned mode : {0u, 1u, 2u, 3u}) {
         Fixture original; prepare(original);
         auto document = Empty(ObjectType::Doodad);
@@ -894,12 +898,16 @@ void SpecialDoodadFieldsDoNotBorrowOrdinaryPoseRules() {
     auto result = Take(InspectNativeTerrainObjects({}, ids, f.sources, kWorkingBytes));
     Require(result.footprints.empty() && result.specialFootprints.size() == 1
         && result.specialFootprints.front().pathTexture == "PathTextures\\special.tga"
-        && result.specialFootprints.front().snapCells == 0 && !result.specialFootprints.front().fixedRotationDegrees,
+        && result.specialFootprints.front().gridPolicy == MapData::TerrainDoodadGridPolicy::SpecialTerrain
+        && !result.specialFootprints.front().fixedRotationDegrees,
         "special records use actual pathTex but no ordinary category/rotation/snap rule");
     Take(InspectNativeTerrainObjects({}, ids, f.sources, result.workBytes));
     Rejected(InspectNativeTerrainObjects({}, ids, f.sources, result.workBytes-1), "TERRAIN_NATIVE_OBJECT_BUDGET", "special output has an exact bounded parse budget");
-    Rejected(InspectNativeTerrainObjects(ids, ids, f.sources, kWorkingBytes), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED",
-        "same rawcode in special cannot exempt its ordinary C-category placement");
+    const auto shared = Take(InspectNativeTerrainObjects(ids, ids, f.sources, kWorkingBytes));
+    Require(shared.footprints.size() == 1 && shared.specialFootprints.size() == 1
+        && shared.footprints.front().gridPolicy == MapData::TerrainDoodadGridPolicy::RequireTwoAndFourEquivalent
+        && shared.specialFootprints.front().gridPolicy == MapData::TerrainDoodadGridPolicy::SpecialTerrain,
+        "同rawcode普通C与special仍各自绑定独立策略，special不能豁免普通实例证明");
     auto document = Empty(ObjectType::Doodad); Check(document.AddCustomObject("C001", "D001"));
     Modification(document, "C001", "Dt00", NativeValueType::String, std::string{}); f.SetNative(document); f.AddDoodadMetadata();
     const std::array<std::string_view, 1> custom{"C001"};

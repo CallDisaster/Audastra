@@ -333,6 +333,56 @@ void OrCompositionIsStableAcrossOrderAndOverlapCount() {
     Require(first == reverse, "uniform black adds no contribution and preserves the existing grid");
 }
 
+void GridInvariantInstancesHaveIndependentLiteralContributions() {
+    const auto header = Header(9, 9);
+    struct Case { unsigned side; float position; std::size_t first, last; };
+    // 两套合法投影相同的完整裁剪矩形，以字面范围独立给定，不调用被测投影制造预期。
+    constexpr std::array cases{Case{4, 64, 0, 4}, Case{4, 192, 4, 8}, Case{8, 512, 12, 20},
+        Case{8, 0, 0, 5}, Case{8, -128, 0, 1}, Case{8, 1024, 28, 32}};
+    for (const auto& example : cases) {
+        std::vector<std::uint8_t> cells(32 * 32, 0x40);
+        Check(AddGridInvariantUniformDoodadFootprint(cells, header, Placement(example.position, example.position), {example.side, 4}));
+        Rectangle(cells, 32, example.first, example.first, example.last, example.last, 4, 0x40);
+    }
+    auto negative = header; negative.offset = {-128, -128};
+    std::vector<std::uint8_t> cells(32 * 32);
+    Check(AddGridInvariantUniformDoodadFootprint(cells, negative, Placement(-64, -64), {4, 0x31}));
+    Rectangle(cells, 32, 0, 0, 4, 4, 0x31);
+    cells.assign(32 * 32, 0x40);
+    Check(AddGridInvariantUniformDoodadFootprint(cells, header, Placement(-256, -256), {8, 4}));
+    Rectangle(cells, 32, 0, 0, 0, 0, 0, 0x40); // 两投影均完全在图外。
+    Check(AddGridInvariantUniformDoodadFootprint(cells, header, Placement(544, 512), {8, 0}));
+    Rectangle(cells, 32, 0, 0, 0, 0, 0, 0x40); // 零RGB的两套合法贡献都为空。
+    const auto transparent = Take(DecodeUniformDoodadFootprintTga(Tga(8, 32, {0, 255, 0, 0})));
+    cells.assign(32 * 32, 0);
+    Check(AddGridInvariantUniformDoodadFootprint(cells, header, Placement(512, 512), transparent));
+    Rectangle(cells, 32, 12, 12, 20, 20, 2); // alpha0不能清除非零绿色贡献。
+}
+
+void GridInvariantFailureCannotBeHiddenByExistingOrOrZeroColor() {
+    const auto header = Header(9, 9);
+    const auto refused = [&](DoodadPlacement placement, TerrainUniformDoodadFootprint footprint, std::string_view code) {
+        std::vector<std::uint8_t> cells(32 * 32, 0x37); const auto before = cells;
+        const auto status = AddGridInvariantUniformDoodadFootprint(cells, header, placement, footprint);
+        Require(!status.Succeeded() && HasCode(status.diagnostics, code), "two/four difference or uncertainty is explicit");
+        Require(cells == before, "even a fully OR-covered target cannot conceal a per-instance failure");
+    };
+    for (const auto axis : {0u, 1u}) {
+        auto placement = Placement(512, 512); placement.position[axis] += 32;
+        refused(placement, {8, 4}, "TERRAIN_UNIFORM_GRID_VARIANT");
+        placement = Placement(512, 512); placement.position[axis] = std::nextafter(544.0f, 512.0f);
+        refused(placement, {8, 0}, "TERRAIN_UNIFORM_SNAP_AMBIGUOUS"); // 2格不确定，零颜色也拒绝。
+        placement.position[axis] = std::nextafter(576.0f, 512.0f);
+        refused(placement, {8, 0}, "TERRAIN_UNIFORM_SNAP_AMBIGUOUS"); // 4格不确定。
+    }
+    auto placement = Placement(-256, -256); placement.rotation = std::numeric_limits<float>::quiet_NaN();
+    refused(placement, {8, 0}, "TERRAIN_UNIFORM_PLACEMENT_DOMAIN");
+    placement = Placement(512, 512); placement.scale[2] = std::numeric_limits<float>::infinity();
+    refused(placement, {8, 0}, "TERRAIN_UNIFORM_PLACEMENT_DOMAIN");
+    placement = Placement(512, 512); placement.position[0] = std::numeric_limits<float>::infinity();
+    refused(placement, {8, 0}, "TERRAIN_UNIFORM_COORDINATE_DOMAIN");
+}
+
 void InvalidInputsAreAtomic() {
     const auto goodHeader = Header(); const auto goodPlacement = Placement(64, 64);
     std::vector<std::uint8_t> cells(64, 0x40);
@@ -386,6 +436,8 @@ int main() {
         AmbiguousSnappingRefusesBeforeWriting();
         NonDefaultFloatModesAreRejectedWithoutMutation();
         OrCompositionIsStableAcrossOrderAndOverlapCount();
+        GridInvariantInstancesHaveIndependentLiteralContributions();
+        GridInvariantFailureCannotBeHiddenByExistingOrOrZeroColor();
         InvalidInputsAreAtomic();
         std::cout << "Terrain uniform doodad footprint tests passed\n";
         return 0;
