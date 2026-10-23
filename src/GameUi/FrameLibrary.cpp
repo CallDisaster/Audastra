@@ -2,6 +2,7 @@
 
 #include "War3MapCore/Text/TextUtil.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace War3Map::GameUi {
@@ -101,6 +102,15 @@ void FrameLibrary::Register(std::size_t fileIndex) {
 std::optional<FrameTemplateRef> FrameLibrary::FindTemplate(std::string_view name) const {
     if (const auto found = templates_.find(Text::LowerAscii(name)); found != templates_.end()) return found->second;
     return std::nullopt;
+}
+
+std::vector<FrameTemplateRef> FrameLibrary::Templates() const {
+    std::vector<std::pair<std::string, FrameTemplateRef>> sorted(templates_.begin(), templates_.end());
+    std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    std::vector<FrameTemplateRef> result;
+    result.reserve(sorted.size());
+    for (const auto& entry : sorted) result.push_back(entry.second);
+    return result;
 }
 
 std::optional<std::string> FrameLibrary::FindString(std::string_view key) const {

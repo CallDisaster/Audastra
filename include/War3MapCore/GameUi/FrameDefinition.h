@@ -58,6 +58,13 @@ struct FdfFile {
     std::vector<std::pair<std::string, std::string>> strings;
 };
 
+// 属性名比较不区分大小写；lowerKey 须为小写。
+[[nodiscard]] bool PropertyIs(const FdfProperty& property, std::string_view lowerKey);
+// 同名属性以最后一次出现为准（模板在前、自身在后时即自身覆盖模板）。
+[[nodiscard]] const FdfProperty* FindProperty(const std::vector<FdfProperty>& properties, std::string_view lowerKey);
+// 第 index 个参数按数字读取，接受 0.002f 这类带 f 后缀的写法；不是数字时为空。
+[[nodiscard]] std::optional<float> PropertyNumber(const FdfProperty& property, std::size_t index);
+
 // 锚点位置，顺序与游戏一致（0..8）。
 enum class FramePoint : std::uint8_t {
     TopLeft,

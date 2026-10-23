@@ -135,6 +135,12 @@ if(WAR3MAPEDITOR_BUILD_QT)
     add_subdirectory(src/QtModules/Campaign)
     add_subdirectory(src/QtModules/Manager)
     add_subdirectory(src/QtModules/World)
+    add_subdirectory(src/QtModules/GameUi)
+    # 界面工作区的离屏截图工具，仅开发者显式构建，不进入便携包。
+    qt_add_executable(audastra-game-ui-capture EXCLUDE_FROM_ALL tools/gameui/CaptureGameUi.cpp)
+    target_link_libraries(audastra-game-ui-capture PRIVATE War3MapEditor::QtModuleGameUi War3MapEditor::QtUiKit)
+    target_compile_definitions(audastra-game-ui-capture PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+    target_compile_options(audastra-game-ui-capture PRIVATE /W4 /permissive- /utf-8)
     add_subdirectory(src/QtApp)
 endif()
 

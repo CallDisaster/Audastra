@@ -2,6 +2,7 @@
 
 #include "AssetsModule.h"
 #include "CampaignModule.h"
+#include "GameUiModule.h"
 #include "ManagerModule.h"
 #include "MapEntitiesModule.h"
 #include "MapSettingsModule.h"
@@ -56,6 +57,7 @@ EditorParts::EditorParts(bool persistentSettings)
     modules_.Register(std::make_unique<PlaceholderModule>("ai",
         QCoreApplication::translate("EditorParts", "AI"), "lucide/shield", key(Qt::Key_8), pending));
     worldModule_ = Add(modules_, std::make_unique<War3Map::Modules::WorldModule>(*project_));
+    gameUiModule_ = Add(modules_, std::make_unique<War3Map::Modules::GameUiModule>(*project_));
 }
 
 EditorParts::~EditorParts() = default;

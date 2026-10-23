@@ -10,6 +10,7 @@
 namespace War3Map::Modules {
 class AssetsModule;
 class CampaignModule;
+class GameUiModule;
 class ManagerModule;
 class MapSettingsModule;
 class MapEntitiesModule;
@@ -43,4 +44,5 @@ struct EditorParts {
     War3Map::Modules::MapEntitiesModule* entitiesModule_ = nullptr;
     War3Map::Modules::SoundsModule* soundsModule_ = nullptr;
     War3Map::Modules::WorldModule* worldModule_ = nullptr;
+    War3Map::Modules::GameUiModule* gameUiModule_ = nullptr;
 };

@@ -1,6 +1,7 @@
 # 游戏界面（fdf/toc、皮肤、实例树与布局）。只依赖 Core，不依赖 Qt；编辑器与命令行共用。
 add_library(War3MapGameUi STATIC
     FrameDefinitionParser.cpp
+    FrameDraw.cpp
     FrameLibrary.cpp
     FrameTree.cpp
     UiSkin.cpp)

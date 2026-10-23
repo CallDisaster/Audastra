@@ -4,7 +4,9 @@
 
 #include <array>
 #include <cctype>
+#include <charconv>
 #include <cstddef>
+#include <system_error>
 #include <optional>
 #include <string>
 #include <utility>
@@ -443,6 +445,28 @@ private:
 };
 
 } // namespace
+
+bool PropertyIs(const FdfProperty& property, std::string_view lowerKey) {
+    return IsKeyword(property.key, lowerKey);
+}
+
+const FdfProperty* FindProperty(const std::vector<FdfProperty>& properties, std::string_view lowerKey) {
+    for (auto it = properties.rbegin(); it != properties.rend(); ++it) {
+        if (PropertyIs(*it, lowerKey)) return &*it;
+    }
+    return nullptr;
+}
+
+std::optional<float> PropertyNumber(const FdfProperty& property, std::size_t index) {
+    if (index >= property.values.size()) return std::nullopt;
+    std::string_view text = property.values[index].text;
+    if (!text.empty() && text.front() == '+') text.remove_prefix(1);
+    if (!text.empty() && (text.back() == 'f' || text.back() == 'F')) text.remove_suffix(1);
+    float value = 0.0f;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size()) return std::nullopt;
+    return value;
+}
 
 std::optional<FramePoint> ParseFramePoint(std::string_view text) {
     const std::string upper = Text::UpperAscii(text);

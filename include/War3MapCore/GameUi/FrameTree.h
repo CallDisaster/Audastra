@@ -93,6 +93,9 @@ struct FrameNode {
     FramePoint contentAnchor = FramePoint::Center;  // SizeFromContent 时文字对齐的定位点
 };
 
+// String 与 TEXT 框架：没有尺寸时由文字内容决定大小。
+[[nodiscard]] bool IsTextNode(const FrameNode& node);
+
 struct FrameTreeOptions {
     std::string race = "Human";
     bool expansion = true;

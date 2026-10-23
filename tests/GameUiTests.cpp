@@ -1,4 +1,4 @@
-#include "War3MapCore/GameUi/FrameTree.h"
+#include "War3MapCore/GameUi/FrameDraw.h"
 
 #include <cmath>
 #include <cstring>
@@ -341,6 +341,81 @@ void TestTree() {
         "map FrameDef string overrides fdf string");
 }
 
+void TestDrawList() {
+    const std::string text =
+        "Frame \"SIMPLEFRAME\" \"Panel\" {\n"
+        "    Width 0.4, Height 0.2,\n"
+        "    String \"PanelLabel\" { Text \"Hi\", Font \"F.ttf\", 0.01, FontJustificationH JUSTIFYLEFT, }\n"
+        "    Layer \"OVERLAY\" { Texture \"PanelTop\" { File \"Top.blp\", AlphaMode \"ADD\", } }\n"
+        "    Layer \"BACKGROUND\" { Texture \"PanelBack\" { File \"Back.blp\", TexCoord 0.1, 0.9, 0.2, 0.8, } }\n"
+        "    Frame \"BACKDROP\" \"PanelBox\" {\n"
+        "        SetAllPoints,\n"
+        "        BackdropBackground \"Bg.blp\",\n"
+        "        BackdropTileBackground,\n"
+        "        BackdropBackgroundSize 0.1,\n"
+        "        BackdropBackgroundInsets 0.01 0.01 0.01 0.01,\n"
+        "        BackdropEdgeFile \"Edge.blp\",\n"
+        "        BackdropCornerSize 0.02,\n"
+        "        BackdropCornerFlags \"UL|UR|BL|BR|T|L|B|R\",\n"
+        "    }\n"
+        "    Frame \"GLUETEXTBUTTON\" \"PanelButton\" {\n"
+        "        SetAllPoints,\n"
+        "        ControlMouseOverHighlight \"PanelGlow\",\n"
+        "        Frame \"HIGHLIGHT\" \"PanelGlow\" { HighlightAlphaFile \"Glow.blp\", }\n"
+        "    }\n"
+        "}\n";
+    auto parsed = ParseFdf(text, "UI\\Draw.fdf");
+    Require(parsed.Succeeded(), "draw fixture parses");
+    FrameLibrary library;
+    library.AddParsed(std::move(*parsed.value), "game");
+    FrameTree tree;
+    RootPlacement bottomLeft;
+    bottomLeft.anchors.push_back(FrameAnchor{FramePoint::BottomLeft, {}, FramePoint::BottomLeft, 0.0f, 0.0f});
+    const auto root = tree.Instantiate(library, nullptr, "Panel", bottomLeft);
+    Require(root.Succeeded(), "instantiate draw fixture");
+    (void)tree.Layout();
+
+    const FrameDrawList list = BuildDrawList(tree);
+    Require(list.commands.size() == 1 + 1 + 1 + 1 + 8, "layered images, text, backdrop background and eight edge pieces");
+    const auto nodeOf = [&](std::size_t index) { return tree.Nodes()[list.commands[index].node].name; };
+    Require(nodeOf(0) == "PanelBack" && nodeOf(1) == "PanelLabel" && nodeOf(2) == "PanelTop",
+        "layers ordered BACKGROUND, ARTWORK (no layer), OVERLAY");
+    Require(list.commands[0].image.uv[0].u == 0.1f && list.commands[0].image.uv[3].v == 0.8f, "texcoord corners");
+    Require(list.commands[2].image.blend == DrawBlend::Add, "alpha mode");
+    const TextDraw& label = list.commands[1].text;
+    Require(list.commands[1].kind == DrawKind::Text && label.text == "Hi" && label.justifyH == JustifyH::Left &&
+            label.justifyV == JustifyV::Middle && !label.sizeFromContent,
+        "text command with justification");
+
+    const ImageDraw& background = list.commands[3].image;
+    Require(nodeOf(3) == "PanelBox" && background.repeat && Near(background.rect.left, 0.01f) &&
+            Near(background.uv[3].u, 3.8f) && Near(background.uv[3].v, 1.8f),
+        "tiled backdrop background inset and repeated by tile size");
+    // 第 4 个起依次为 L、R、T、B、UL、UR、BL、BR。
+    const ImageDraw& left = list.commands[4].image;
+    Require(left.path == "Edge.blp" && Near(left.rect.Width(), 0.02f) && Near(left.uv[0].u, 0.0f) &&
+            Near(left.uv[1].u, 0.125f) && Near(left.uv[2].v, 8.0f),
+        "left edge uses cell 0 repeated along height");
+    const ImageDraw& top = list.commands[6].image;
+    Require(Near(top.rect.Height(), 0.02f) && Near(top.rect.top, 0.2f) && Near(top.uv[0].u, 0.25f) &&
+            Near(top.uv[0].v, 18.0f) && Near(top.uv[1].v, 0.0f) && Near(top.uv[2].u, 0.375f),
+        "top edge uses cell 2 rotated clockwise");
+    const ImageDraw& lowerRight = list.commands[11].image;
+    Require(!lowerRight.repeat && Near(lowerRight.rect.right, 0.4f) && Near(lowerRight.rect.bottom, 0.0f) &&
+            Near(lowerRight.uv[0].u, 0.875f),
+        "lower right corner uses cell 7");
+    Require(list.stateOnlyNodes.size() == 1 && tree.Nodes()[list.stateOnlyNodes[0]].name == "PanelGlow",
+        "mouse-over highlight not drawn in normal state");
+
+    FrameDrawOptions options;
+    options.hidden.insert(*tree.FindByName("PanelBox"));
+    options.hidden.insert(*tree.FindByName("PanelBack"));
+    const FrameDrawList hidden = BuildDrawList(tree, options);
+    Require(hidden.commands.size() == 2, "hidden subtree and texture skipped");
+    options.hidden = {*root.value};
+    Require(BuildDrawList(tree, options).commands.empty(), "hidden root hides everything");
+}
+
 } // namespace
 
 int main() {
@@ -349,6 +424,7 @@ int main() {
         TestSkin();
         TestLibrary();
         TestTree();
+        TestDrawList();
         std::cout << "Game UI tests passed\n";
         return 0;
     } catch (const std::exception& error) {

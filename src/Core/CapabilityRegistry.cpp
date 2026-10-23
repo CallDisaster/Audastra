@@ -19,7 +19,8 @@ constexpr std::array modules{
     ModuleCapability{"campaign", "战役", Unavailable, Unavailable, Unavailable, Unavailable, "章节、共享数据与运行"},
     ModuleCapability{"ai", "AI", Unavailable, Unavailable, Unavailable, Unavailable, "RTS AI 文档、编辑与编译"},
     ModuleCapability{"lua", "Lua", Unavailable, Unavailable, Unavailable, Unavailable, "目标版本适配和 Lua 后端"},
-    ModuleCapability{"world", "世界与地形", Partial, Partial, Partial, Unavailable, "荒芜与纯高度可保存；贴图/悬崖/水面受通行性门禁，动画与粒子未完成"}
+    ModuleCapability{"world", "世界与地形", Partial, Partial, Partial, Unavailable, "荒芜与纯高度可保存；贴图/悬崖/水面受通行性门禁，动画与粒子未完成"},
+    ModuleCapability{"game-ui", "游戏界面", Partial, Unavailable, Unavailable, Unavailable, "游戏代码定位的界面根、地图自建界面与编辑未完成"}
 };
 }
 std::span<const ModuleCapability> CapabilityRegistry::Modules() noexcept { return modules; }

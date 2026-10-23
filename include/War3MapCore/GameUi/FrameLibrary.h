@@ -46,6 +46,8 @@ public:
 
     // 顶层模板，名字不区分大小写；重名时后加载者生效，并记一条 Info 诊断。
     [[nodiscard]] std::optional<FrameTemplateRef> FindTemplate(std::string_view name) const;
+    // 当前生效的全部顶层模板，按名字排序（不区分大小写）。
+    [[nodiscard]] std::vector<FrameTemplateRef> Templates() const;
     // StringList 文字；同键后加载者生效。
     [[nodiscard]] std::optional<std::string> FindString(std::string_view key) const;
 

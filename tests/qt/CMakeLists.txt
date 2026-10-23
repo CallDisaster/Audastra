@@ -458,6 +458,7 @@ target_link_libraries(war3-map-native-workbench-tests PRIVATE War3MapEditor::QtM
 target_link_libraries(war3-map-native-workbench-tests PRIVATE War3MapEditor::QtModuleSounds)
 target_link_libraries(war3-map-native-workbench-tests PRIVATE War3MapEditor::QtModuleWorld)
 target_link_libraries(war3-map-native-workbench-tests PRIVATE War3MapEditor::QtModuleCampaign)
+target_link_libraries(war3-map-native-workbench-tests PRIVATE War3MapEditor::QtModuleGameUi)
 
 target_link_libraries(war3-map-project-watch-tests PRIVATE War3MapEditor::QtProject)
 target_link_libraries(war3-map-project-watch-tests PRIVATE War3MapEditor::QtModuleMapEntities)
@@ -465,6 +466,7 @@ target_link_libraries(war3-map-project-watch-tests PRIVATE War3MapEditor::QtModu
 target_link_libraries(war3-map-project-watch-tests PRIVATE War3MapEditor::QtModuleSounds)
 target_link_libraries(war3-map-project-watch-tests PRIVATE War3MapEditor::QtModuleWorld)
 target_link_libraries(war3-map-project-watch-tests PRIVATE War3MapEditor::QtModuleCampaign)
+target_link_libraries(war3-map-project-watch-tests PRIVATE War3MapEditor::QtModuleGameUi)
 
 qt_add_executable(audastra-object-save-catalog-gate-tests ObjectSaveCatalogGateTests.cpp)
 target_link_libraries(audastra-object-save-catalog-gate-tests PRIVATE War3MapEditor::QtProject)
@@ -680,6 +682,14 @@ target_link_libraries(war3-map-sound-module-tests PRIVATE War3MapEditor::QtModul
 target_compile_options(war3-map-sound-module-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME qt-sound-module COMMAND war3-map-sound-module-tests)
 set_tests_properties(qt-sound-module PROPERTIES TIMEOUT 45
+    ENVIRONMENT_MODIFICATION
+        "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_PLUGIN_PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>/../plugins")
+
+qt_add_executable(war3-map-game-ui-module-tests GameUiModuleTests.cpp)
+target_link_libraries(war3-map-game-ui-module-tests PRIVATE War3MapEditor::QtModuleGameUi Qt6::Test)
+target_compile_options(war3-map-game-ui-module-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME qt-game-ui-module COMMAND war3-map-game-ui-module-tests)
+set_tests_properties(qt-game-ui-module PROPERTIES TIMEOUT 45
     ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_PLUGIN_PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>/../plugins")
 

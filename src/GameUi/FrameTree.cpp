@@ -3,8 +3,6 @@
 #include "War3MapCore/Text/TextUtil.h"
 
 #include <algorithm>
-#include <charconv>
-#include <system_error>
 #include <utility>
 
 namespace War3Map::GameUi {
@@ -19,41 +17,11 @@ Diagnostic MakeDiagnostic(DiagnosticSeverity severity, const char* code, std::st
     return Diagnostic{severity, kSubsystem, code, std::move(message), std::nullopt};
 }
 
-bool KeyIs(const FdfProperty& property, std::string_view lowerKey) {
-    return property.key.size() == lowerKey.size() && Text::LowerAscii(property.key) == lowerKey;
-}
-
-const FdfProperty* FindLast(const std::vector<FdfProperty>& properties, std::string_view lowerKey) {
-    for (auto it = properties.rbegin(); it != properties.rend(); ++it) {
-        if (KeyIs(*it, lowerKey)) return &*it;
-    }
-    return nullptr;
-}
-
-std::optional<float> ParseFloat(std::string_view text) {
-    if (!text.empty() && text.front() == '+') text.remove_prefix(1);
-    if (!text.empty() && (text.back() == 'f' || text.back() == 'F')) text.remove_suffix(1);
-    float value = 0.0f;
-    const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
-    if (result.ec != std::errc{} || result.ptr != text.data() + text.size()) return std::nullopt;
-    return value;
-}
-
-std::optional<float> FloatAt(const FdfProperty& property, std::size_t index) {
-    if (index >= property.values.size()) return std::nullopt;
-    return ParseFloat(property.values[index].text);
-}
-
 std::string EnsureTextureExtension(std::string path) {
     const std::size_t slash = path.find_last_of("\\/");
     const std::size_t dot = path.find_last_of('.');
     if (!path.empty() && (dot == std::string::npos || (slash != std::string::npos && dot < slash))) path += ".blp";
     return path;
-}
-
-bool IsTextNode(const FrameNode& node) {
-    if (node.kind == DefinitionKind::String) return true;
-    return node.kind == DefinitionKind::Frame && Text::LowerAscii(node.frameType) == "text";
 }
 
 int PointColumn(FramePoint point) {
@@ -132,6 +100,11 @@ AxisResult SolveAxis(std::optional<float> low, std::optional<float> high, std::o
 }
 
 } // namespace
+
+bool IsTextNode(const FrameNode& node) {
+    if (node.kind == DefinitionKind::String) return true;
+    return node.kind == DefinitionKind::Frame && Text::LowerAscii(node.frameType) == "text";
+}
 
 std::optional<RootPlacement> KnownRootPlacement(std::string_view templateName) {
     // ConsoleUI 在 fdf 中没有尺寸，游戏创建后铺满整个屏幕。
@@ -273,29 +246,29 @@ void FrameTree::Build(BuildContext& context, const FdfDefinition& definition, co
         children, true);
     node.decorate = nodes_[parent].decorate ||
         std::any_of(node.properties.begin(), node.properties.end(),
-            [](const FdfProperty& property) { return KeyIs(property, "decoratefilenames"); });
+            [](const FdfProperty& property) { return PropertyIs(property, "decoratefilenames"); });
 
     for (const auto& property : node.properties) {
-        if (KeyIs(property, "width")) {
-            node.width = FloatAt(property, 0);
-        } else if (KeyIs(property, "height")) {
-            node.height = FloatAt(property, 0);
-        } else if (KeyIs(property, "anchor") && property.values.size() >= 1) {
+        if (PropertyIs(property, "width")) {
+            node.width = PropertyNumber(property, 0);
+        } else if (PropertyIs(property, "height")) {
+            node.height = PropertyNumber(property, 0);
+        } else if (PropertyIs(property, "anchor") && property.values.size() >= 1) {
             if (const auto point = ParseFramePoint(property.values[0].text)) {
-                UpsertAnchor(node.anchors, FrameAnchor{*point, {}, *point, FloatAt(property, 1).value_or(0.0f),
-                                               FloatAt(property, 2).value_or(0.0f)});
+                UpsertAnchor(node.anchors, FrameAnchor{*point, {}, *point, PropertyNumber(property, 1).value_or(0.0f),
+                                               PropertyNumber(property, 2).value_or(0.0f)});
             }
-        } else if (KeyIs(property, "setpoint") && property.values.size() >= 3) {
+        } else if (PropertyIs(property, "setpoint") && property.values.size() >= 3) {
             const auto point = ParseFramePoint(property.values[0].text);
             const auto relativePoint = ParseFramePoint(property.values[2].text);
             if (point && relativePoint) {
                 UpsertAnchor(node.anchors, FrameAnchor{*point, property.values[1].text, *relativePoint,
-                                               FloatAt(property, 3).value_or(0.0f), FloatAt(property, 4).value_or(0.0f)});
+                                               PropertyNumber(property, 3).value_or(0.0f), PropertyNumber(property, 4).value_or(0.0f)});
             } else {
                 context.diagnostics.push_back(MakeDiagnostic(DiagnosticSeverity::Warning, "GAMEUI_SETPOINT_INVALID",
                     file + " 第 " + std::to_string(property.line) + " 行：SetPoint 的定位点无法识别"));
             }
-        } else if (KeyIs(property, "setallpoints")) {
+        } else if (PropertyIs(property, "setallpoints")) {
             const std::string target = property.values.empty() ? std::string() : property.values[0].text;
             UpsertAnchor(node.anchors, FrameAnchor{FramePoint::TopLeft, target, FramePoint::TopLeft, 0.0f, 0.0f});
             UpsertAnchor(node.anchors, FrameAnchor{FramePoint::BottomRight, target, FramePoint::BottomRight, 0.0f, 0.0f});
@@ -364,7 +337,7 @@ void FrameTree::ResolveResources(BuildContext& context, FrameNode& node) {
     };
     const auto applyFont = [&](TextInfo& text, const std::vector<FdfProperty>& properties) {
         for (const auto& property : properties) {
-            if ((KeyIs(property, "font") || KeyIs(property, "framefont")) && !property.values.empty()) {
+            if ((PropertyIs(property, "font") || PropertyIs(property, "framefont")) && !property.values.empty()) {
                 text.fontKey = property.values[0].text;
                 text.fontPath = text.fontKey;
                 if (context.skin != nullptr) {
@@ -372,25 +345,25 @@ void FrameTree::ResolveResources(BuildContext& context, FrameNode& node) {
                         text.fontPath = found->value;
                     }
                 }
-                text.fontHeight = FloatAt(property, 1).value_or(text.fontHeight);
-            } else if (KeyIs(property, "fontcolor")) {
+                text.fontHeight = PropertyNumber(property, 1).value_or(text.fontHeight);
+            } else if (PropertyIs(property, "fontcolor")) {
                 for (std::size_t i = 0; i < 4 && i < property.values.size(); ++i) {
-                    if (const auto value = FloatAt(property, i)) text.color[i] = *value;
+                    if (const auto value = PropertyNumber(property, i)) text.color[i] = *value;
                 }
-            } else if (KeyIs(property, "fontjustificationh") && !property.values.empty()) {
+            } else if (PropertyIs(property, "fontjustificationh") && !property.values.empty()) {
                 text.justifyH = property.values[0].text;
-            } else if (KeyIs(property, "fontjustificationv") && !property.values.empty()) {
+            } else if (PropertyIs(property, "fontjustificationv") && !property.values.empty()) {
                 text.justifyV = property.values[0].text;
             }
         }
     };
     const auto applyTextureProperties = [&](TextureInfo& texture, const std::vector<FdfProperty>& properties) {
-        if (const auto* coords = FindLast(properties, "texcoord")) {
+        if (const auto* coords = FindProperty(properties, "texcoord")) {
             for (std::size_t i = 0; i < 4; ++i) {
-                if (const auto value = FloatAt(*coords, i)) texture.texCoord[i] = *value;
+                if (const auto value = PropertyNumber(*coords, i)) texture.texCoord[i] = *value;
             }
         }
-        if (const auto* alpha = FindLast(properties, "alphamode"); alpha && !alpha->values.empty()) {
+        if (const auto* alpha = FindProperty(properties, "alphamode"); alpha && !alpha->values.empty()) {
             texture.alphaMode = alpha->values[0].text;
         }
     };
@@ -410,7 +383,7 @@ void FrameTree::ResolveResources(BuildContext& context, FrameNode& node) {
 
     const std::string type = Text::LowerAscii(node.frameType);
     if (node.kind == DefinitionKind::Texture) {
-        if (const auto* file = FindLast(node.properties, "file"); file && !file->values.empty()) {
+        if (const auto* file = FindProperty(node.properties, "file"); file && !file->values.empty()) {
             node.texture = resolveTexture(file->values[0].text, node.decorate);
             applyTextureProperties(*node.texture, node.properties);
         }
@@ -418,41 +391,41 @@ void FrameTree::ResolveResources(BuildContext& context, FrameNode& node) {
     }
     if (IsTextNode(node)) {
         TextInfo text;
-        if (const auto* value = FindLast(node.properties, "text"); value && !value->values.empty()) {
+        if (const auto* value = FindProperty(node.properties, "text"); value && !value->values.empty()) {
             text = resolveText(value->values[0].text);
         }
         applyFont(text, node.properties);
         node.text = std::move(text);
         return;
     }
-    if (const auto* background = FindLast(node.properties, "backdropbackground");
+    if (const auto* background = FindProperty(node.properties, "backdropbackground");
         background && !background->values.empty()) {
         node.texture = resolveTexture(background->values[0].text, node.decorate);
     }
-    if (const auto* edge = FindLast(node.properties, "backdropedgefile"); edge && !edge->values.empty()) {
+    if (const auto* edge = FindProperty(node.properties, "backdropedgefile"); edge && !edge->values.empty()) {
         node.edge = resolveTexture(edge->values[0].text, node.decorate);
     }
     if (type == "simplebutton") {
-        if (const auto* normal = FindLast(node.properties, "normaltexture"); normal && !normal->values.empty()) {
+        if (const auto* normal = FindProperty(node.properties, "normaltexture"); normal && !normal->values.empty()) {
             const auto properties = templateProperties(normal->values[0].text);
-            if (const auto* file = FindLast(properties, "file"); file && !file->values.empty()) {
+            if (const auto* file = FindProperty(properties, "file"); file && !file->values.empty()) {
                 node.texture = resolveTexture(file->values[0].text, node.decorate);
                 applyTextureProperties(*node.texture, properties);
             }
         }
-        if (const auto* normalText = FindLast(node.properties, "normaltext"); normalText && normalText->values.size() >= 2) {
+        if (const auto* normalText = FindProperty(node.properties, "normaltext"); normalText && normalText->values.size() >= 2) {
             TextInfo text = resolveText(normalText->values[1].text);
             applyFont(text, templateProperties(normalText->values[0].text));
             node.text = std::move(text);
         }
     } else if (type == "simplestatusbar") {
-        if (const auto* bar = FindLast(node.properties, "bartexture"); bar && !bar->values.empty()) {
+        if (const auto* bar = FindProperty(node.properties, "bartexture"); bar && !bar->values.empty()) {
             node.texture = resolveTexture(bar->values[0].text, node.decorate);
         }
     } else if (type == "highlight") {
-        if (const auto* file = FindLast(node.properties, "highlightalphafile"); file && !file->values.empty()) {
+        if (const auto* file = FindProperty(node.properties, "highlightalphafile"); file && !file->values.empty()) {
             node.texture = resolveTexture(file->values[0].text, node.decorate);
-            if (const auto* mode = FindLast(node.properties, "highlightalphamode"); mode && !mode->values.empty()) {
+            if (const auto* mode = FindProperty(node.properties, "highlightalphamode"); mode && !mode->values.empty()) {
                 node.texture->alphaMode = mode->values[0].text;
             }
         }

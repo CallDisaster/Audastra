@@ -125,6 +125,7 @@ target_link_libraries(war3-map-editor
         War3MapEditor::QtModuleMapSettings
         War3MapEditor::QtModuleSounds
         War3MapEditor::QtModuleWorld
+        War3MapEditor::QtModuleGameUi
         Qt6::Core
         Qt6::Gui
         Qt6::Widgets)
