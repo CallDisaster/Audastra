@@ -8,7 +8,8 @@
 #include <vector>
 
 // 界面皮肤表：游戏 UI\war3skins.txt 按种族给出贴图、字体等的实际路径；
-// 地图 war3mapSkin.txt 的 [CustomSkin] 对所有种族覆盖同名键，[FrameDef] 覆盖界面文字。
+// 地图 war3mapSkin.txt 的 [CustomSkin] 对所有种族覆盖同名键，[FrameDef] 覆盖界面文字；
+// UI\MiscUI.txt 的 [FontHeights] 给出游戏代码创建的文字（多面板等）的字号。
 namespace War3Map::GameUi {
 
 // 一次查找的结果与来源，便于界面显示“这个贴图来自哪里”。
@@ -34,11 +35,17 @@ public:
     // 地图 [FrameDef] 对界面文字键的覆盖。
     [[nodiscard]] std::optional<std::string> MapFrameString(std::string_view key) const;
 
+    // UI\MiscUI.txt：调用方按资源优先级读取（地图导入的同名文件覆盖游戏文件）。
+    void SetMiscUi(std::string_view miscUiText);
+    // [FontHeights] 中游戏代码使用的字号，如 LeaderBoard（多面板与排行榜文字）；没有或不是数值时为空。
+    [[nodiscard]] std::optional<float> FontHeight(std::string_view key) const;
+
     [[nodiscard]] bool HasGameSkins() const noexcept { return !game_.empty(); }
 
 private:
     Text::ProfileSections game_;
     Text::ProfileSections map_;
+    Text::ProfileSections misc_;
 };
 
 } // namespace War3Map::GameUi

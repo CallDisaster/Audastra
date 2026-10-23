@@ -33,11 +33,31 @@ enum class CallKind : std::uint8_t {
     SetHidden,   // 框架, 是否隐藏
     AddButton,   // 对话框, 按钮文字
     ClearButtons,
+    BoardRows,      // 多面板, 行数
+    BoardColumns,   // 多面板, 列数
+    BoardMinimize,  // 多面板与是否最小化（参数位置见 targetArg / valueArg）
+    BoardItems,     // 多面板格子设置，作用范围见 CallSpec::board
+    BoardGetItem,   // MultiboardGetItem(多面板, 行, 列)：取格子
     Query,       // 只读取，不改变外观
     LoadToc,     // 由 MapUiFiles 处理
     FrameOther,  // 作用于框架，预览不还原
     Other,       // 其他界面调用（原版界面开关等），预览不还原
     Unknown,
+};
+
+// 多面板格子设置的作用范围。
+enum class BoardScope : std::uint8_t {
+    All,        // 多面板, 取值…：全部格子与新格子的默认值
+    Item,       // 格子, 取值…：MultiboardGetItem 取到的格子
+    ColumnRow,  // 多面板, 列, 行, 取值…：BJ 版本，列、行从 1 起，0 表示整列/整行
+};
+// 多面板格子的属性：文字、显示文字与图标（两个布尔）、宽度、图标、文字颜色（四个分量）。
+enum class BoardProperty : std::uint8_t { Value, Style, Width, Icon, Color };
+
+// 多面板格子位置（行、列从 0 起）。
+struct BoardCell {
+    std::uint32_t row = 0;
+    std::uint32_t column = 0;
 };
 
 struct CallSpec {
@@ -53,9 +73,23 @@ struct CallSpec {
     ScriptObjectKind object = ScriptObjectKind::Frame;  // Create / LastCreated 的对象种类
     std::int8_t titleArg = -1;                          // 原版界面对象创建时的标题参数
     std::int8_t targetArg = 0;                          // 设置作用的对象参数
-    std::int8_t valueArg = 1;                           // SetText、SetVisible、SetHidden、AddButton 的取值参数
+    std::int8_t valueArg = 1;                           // 取值参数（多个取值时为第一个）
     bool shown = false;                                 // 创建即显示（BJ 版本）
+    std::int8_t rowsArg = -1;                           // CreateMultiboardBJ 的行数、列数参数
+    std::int8_t columnsArg = -1;
+    BoardScope board = BoardScope::All;                 // BoardItems 的作用范围
+    BoardProperty property = BoardProperty::Value;      // BoardItems 的属性
+    bool percent = false;  // BJ 版本：宽度为屏幕宽度的百分比，颜色为百分比且第四个分量是透明度
 };
+
+// 取值参数的类型（预览模拟求值用）。
+enum class ArgumentType : std::uint8_t { Integer, Real, String, Boolean };
+// 一次设置调用的取值参数位置与类型，按参数顺序；作用对象参数不在其中。
+struct ArgumentSlot {
+    std::uint32_t index = 0;
+    ArgumentType type = ArgumentType::String;
+};
+[[nodiscard]] std::vector<ArgumentSlot> ValueArguments(const CallSpec& spec);
 
 // 表内函数，或属于界面函数族前缀的函数（Get/Is 开头视为只读，其余为不认识）；其他函数为空。
 [[nodiscard]] std::optional<CallSpec> LookupCall(std::string_view name);
@@ -75,5 +109,13 @@ struct CallSpec {
 // 对话框按钮文字无法确定时仍添加一个空文字按钮（按钮数不变），并返回 false。
 [[nodiscard]] bool ApplyFrameCall(ScriptFrame& frame, const CallSpec& spec,
     const std::vector<std::optional<ScriptValue>>& args, const ScriptFrameRef& relative);
+
+// 多面板设置（BoardRows、BoardColumns、BoardMinimize、BoardItems）；Item 范围的格子由 item 给出。
+// 框架不是多面板、参数无法确定或格子超出行列时返回 false，不改内容。
+[[nodiscard]] bool ApplyBoardCall(ScriptFrame& frame, const CallSpec& spec,
+    const std::vector<std::optional<ScriptValue>>& args, std::optional<BoardCell> item = std::nullopt);
+// MultiboardGetItem 的行、列参数；不是常量或为负时为空。
+[[nodiscard]] std::optional<BoardCell> BoardCellOf(const std::optional<ScriptValue>& row,
+    const std::optional<ScriptValue>& column);
 
 } // namespace War3Map::GameUi::detail

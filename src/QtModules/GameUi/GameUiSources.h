@@ -68,6 +68,7 @@ struct GameUiDescriptionFile {
 struct GameUiDefinitions {
     std::shared_ptr<const GameUi::FrameLibrary> library;
     std::string gameSkins;
+    std::string miscUi;  // UI\MiscUI.txt（字号表）
     std::string mapSkin;
     std::vector<GameUi::TocLoadCall> tocCalls;  // 地图脚本中加载界面目录的调用
     GameUi::ScriptFramePlan scriptFrames;       // 地图脚本创建的界面

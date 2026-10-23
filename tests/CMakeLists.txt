@@ -93,6 +93,12 @@ target_compile_definitions(war3-map-game-ui-tests PRIVATE NOMINMAX UNICODE _UNIC
 target_compile_options(war3-map-game-ui-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME core-game-ui COMMAND war3-map-game-ui-tests)
 
+add_executable(war3-map-game-ui-object-tests GameUiScriptObjectTests.cpp)
+target_link_libraries(war3-map-game-ui-object-tests PRIVATE War3MapEditor::GameUi)
+target_compile_definitions(war3-map-game-ui-object-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(war3-map-game-ui-object-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME core-game-ui-objects COMMAND war3-map-game-ui-object-tests)
+
 add_executable(war3-map-game-ui-description-tests GameUiDescriptionTests.cpp)
 target_link_libraries(war3-map-game-ui-description-tests PRIVATE War3MapEditor::GameUi)
 target_compile_definitions(war3-map-game-ui-description-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)

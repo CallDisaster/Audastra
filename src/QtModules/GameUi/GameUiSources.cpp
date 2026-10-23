@@ -16,6 +16,7 @@ namespace {
 
 constexpr const char* kTocPath = "UI\\FrameDef\\FrameDef.toc";
 constexpr const char* kSkinPath = "UI\\war3skins.txt";
+constexpr const char* kMiscUiPath = "UI\\MiscUI.txt";
 constexpr const char* kMapSkinPath = "war3mapSkin.txt";
 // 界面文本与贴图的单文件上限；游戏最大的界面贴图不到 1 MiB，中文字体约 10 MiB。
 constexpr std::size_t kMaxUiFileBytes = 16u * 1024u * 1024u;
@@ -213,6 +214,11 @@ GameUiDefinitions LoadGameUiDefinitions(GameUiReader& reader) {
         result.gameSkins = GameUi::BytesToText(*skins.value);
     } else {
         result.diagnostics.insert(result.diagnostics.end(), skins.diagnostics.begin(), skins.diagnostics.end());
+    }
+    if (auto misc = read(kMiscUiPath); misc.Succeeded() && misc.value) {
+        result.miscUi = GameUi::BytesToText(*misc.value);
+    } else {
+        result.diagnostics.insert(result.diagnostics.end(), misc.diagnostics.begin(), misc.diagnostics.end());
     }
     // 地图皮肤表只来自地图；不存在是常态，不记诊断。
     if (reader.HasMapLayer()) {

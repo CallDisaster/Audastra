@@ -1,5 +1,6 @@
 #include "War3MapCore/GameUi/UiSkin.h"
 
+#include <charconv>
 #include <string>
 
 namespace War3Map::GameUi {
@@ -61,6 +62,23 @@ std::optional<SkinLookup> UiSkin::Lookup(std::string_view key, std::string_view 
         if (auto found = LookupInSection(game_, Text::LowerAscii(race), lowerKey, expansion, "game:")) return found;
     }
     return LookupInSection(game_, "default", lowerKey, expansion, "game:");
+}
+
+void UiSkin::SetMiscUi(std::string_view miscUiText) {
+    misc_ = Text::ParseProfile(StripBom(miscUiText));
+}
+
+std::optional<float> UiSkin::FontHeight(std::string_view key) const {
+    const auto section = misc_.find("fontheights");
+    if (section == misc_.end()) return std::nullopt;
+    const auto entry = section->second.find(Text::LowerAscii(key));
+    if (entry == section->second.end()) return std::nullopt;
+    // 值后面常跟 “// 说明”，只取开头的数值。
+    const std::string& text = entry->second;
+    float value = 0.0f;
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (error != std::errc() || end == text.data() || !(value > 0.0f) || value > 0.1f) return std::nullopt;
+    return value;
 }
 
 std::optional<std::string> UiSkin::MapFrameString(std::string_view key) const {

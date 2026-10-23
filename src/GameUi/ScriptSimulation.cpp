@@ -119,6 +119,10 @@ public:
     SimulationResult Run() {
         for (const auto& local : state_.body.locals) {
             if (local.init < 0) continue;
+            if (auto item = ItemOf(local.init); item && Unwrap(local.init).kind == ExprKind::Call) {
+                items_[std::string(local.name)] = std::move(*item);
+                continue;
+            }
             if (auto value = Eval(local.init, TypeOfDeclared(local.name))) env_[std::string(local.name)] = std::move(*value);
         }
         Block(state_.body.statements);
@@ -441,37 +445,20 @@ private:
             static_cast<std::uint32_t>(spec->targetArg) >= call.argumentCount) {
             return;
         }
+        if (spec->kind == CallKind::BoardItems && spec->board == detail::BoardScope::Item) {
+            ItemCall(call, *spec);
+            return;
+        }
         const auto frames = FramesOf(Pool().Argument(call, static_cast<std::uint32_t>(spec->targetArg)));
         if (frames.empty()) {
             NoteOnce("GAMEUI_SIMULATION_UNTRACED", std::string(call.text) + " 第 " + std::to_string(call.line) +
                 " 行作用的框架不是脚本创建后保存的变量，模拟跳过");
             return;
         }
-        std::vector<std::optional<ScriptValue>> args(call.argumentCount);
+        const auto args = Arguments(call, *spec);
         ScriptFrameRef relative;
-        const auto value = [&](std::uint32_t i, Type type) {
-            if (i < call.argumentCount) args[i] = Eval(Pool().Argument(call, i), type);
-        };
-        switch (spec->kind) {
-        case CallKind::SetAbsPoint: value(1, Type::Integer); value(2, Type::Real); value(3, Type::Real); break;
-        case CallKind::SetPoint:
-            value(1, Type::Integer); value(3, Type::Integer); value(4, Type::Real); value(5, Type::Real);
-            if (call.argumentCount > 2) relative = RefOf(Pool().Argument(call, 2));
-            break;
-        case CallKind::SetAllPoints:
-            if (call.argumentCount > 1) relative = RefOf(Pool().Argument(call, 1));
-            break;
-        case CallKind::SetSize: value(1, Type::Real); value(2, Type::Real); break;
-        case CallKind::SetWidth: case CallKind::SetHeight: value(1, Type::Real); break;
-        case CallKind::SetTexture: value(1, Type::String); break;
-        case CallKind::SetText: case CallKind::AddButton:
-            if (spec->valueArg >= 0) value(static_cast<std::uint32_t>(spec->valueArg), Type::String);
-            break;
-        case CallKind::SetVisible: case CallKind::SetHidden:
-            if (spec->valueArg >= 0) value(static_cast<std::uint32_t>(spec->valueArg), Type::Boolean);
-            break;
-        default: break;
-        }
+        if (spec->kind == CallKind::SetPoint && call.argumentCount > 2) relative = RefOf(Pool().Argument(call, 2));
+        if (spec->kind == CallKind::SetAllPoints && call.argumentCount > 1) relative = RefOf(Pool().Argument(call, 1));
         for (const std::uint32_t frame : frames) {
             if (detail::ApplyFrameCall(result_.frames[frame], *spec, args, relative)) {
                 touched_.insert(frame);
@@ -479,6 +466,61 @@ private:
             } else {
                 result_.diagnostics.push_back(MakeDiagnostic(DiagnosticSeverity::Info, "GAMEUI_SIMULATION_ARGUMENT",
                     std::string(call.text) + " 第 " + std::to_string(call.line) + " 行的参数无法确定，未应用"));
+            }
+        }
+    }
+
+    // 按函数表的取值参数类型求值；作用对象参数为空。
+    std::vector<std::optional<ScriptValue>> Arguments(const Expr& call, const CallSpec& spec) {
+        std::vector<std::optional<ScriptValue>> args(call.argumentCount);
+        for (const auto& slot : detail::ValueArguments(spec)) {
+            if (slot.index >= call.argumentCount) continue;
+            const Type type = slot.type == detail::ArgumentType::Integer ? Type::Integer
+                : slot.type == detail::ArgumentType::Real                ? Type::Real
+                : slot.type == detail::ArgumentType::Boolean             ? Type::Boolean
+                                                                         : Type::String;
+            args[slot.index] = Eval(Pool().Argument(call, slot.index), type);
+        }
+        return args;
+    }
+
+    // MultiboardGetItem(多面板, 行, 列) 取到的格子；多面板不是脚本创建后保存的变量时为空。
+    struct Item {
+        std::vector<std::uint32_t> frames;
+        std::optional<detail::BoardCell> cell;
+    };
+
+    std::optional<Item> ItemOf(std::int32_t index) {
+        const Expr& expr = Unwrap(index);
+        if (expr.kind == ExprKind::Call && expr.left < 0) {
+            const auto spec = detail::LookupCall(expr.text);
+            if (!spec || spec->kind != CallKind::BoardGetItem || expr.argumentCount < 3) return std::nullopt;
+            Item item;
+            item.frames = FramesOf(Pool().Argument(expr, 0));
+            item.cell = detail::BoardCellOf(Eval(Pool().Argument(expr, 1), Type::Integer),
+                Eval(Pool().Argument(expr, 2), Type::Integer));
+            return item;
+        }
+        if (expr.kind != ExprKind::Name && expr.kind != ExprKind::Index) return std::nullopt;
+        const auto found = items_.find(detail::CompactSource(SourceOf(expr)));
+        return found == items_.end() ? std::nullopt : std::optional<Item>(found->second);
+    }
+
+    void ItemCall(const Expr& call, const CallSpec& spec) {
+        const auto item = ItemOf(Pool().Argument(call, 0));
+        const std::string where = std::string(call.text) + " 第 " + std::to_string(call.line) + " 行";
+        if (!item || item->frames.empty()) {
+            NoteOnce("GAMEUI_SIMULATION_UNTRACED", where + "作用的格子不属于脚本创建后保存的多面板，模拟跳过");
+            return;
+        }
+        const auto args = Arguments(call, spec);
+        for (const std::uint32_t frame : item->frames) {
+            if (item->cell && detail::ApplyBoardCall(result_.frames[frame], spec, args, item->cell)) {
+                touched_.insert(frame);
+                ++result_.appliedCalls;
+            } else {
+                result_.diagnostics.push_back(MakeDiagnostic(DiagnosticSeverity::Info, "GAMEUI_SIMULATION_ARGUMENT",
+                    where + "的格子或参数无法确定，未应用"));
             }
         }
     }
@@ -517,6 +559,14 @@ private:
             else if (target.kind == ExprKind::Index) key = detail::CompactSource(SourceOf(target));
             // 返回句柄的界面设置（如 DialogAddButton）：执行界面效果，返回值不模拟。
             const Expr* assigned = statement.value >= 0 ? &Unwrap(statement.value) : nullptr;
+            if (!key.empty()) items_.erase(key);
+            if (!key.empty() && statement.value >= 0) {
+                if (auto item = ItemOf(statement.value); item && assigned->kind == ExprKind::Call) {
+                    items_[key] = std::move(*item);
+                    env_.erase(key);
+                    return;
+                }
+            }
             if (assigned && assigned->kind == ExprKind::Call && assigned->left < 0) {
                 if (const auto spec = detail::LookupCall(assigned->text); spec && detail::IsSetter(spec->kind)) {
                     Call(statement.value);
@@ -574,6 +624,7 @@ private:
     const std::map<std::string, std::string>& values_;
     SimulationResult result_;
     std::unordered_map<std::string, ScriptValue> env_;
+    std::unordered_map<std::string, Item> items_;  // 保存格子的变量 → 格子
     std::unordered_map<std::string, std::size_t> inputIndex_;
     std::set<std::uint32_t> touched_;
     std::set<std::string> noted_;
