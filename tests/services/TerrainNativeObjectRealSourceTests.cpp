@@ -548,6 +548,31 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
                     && Take(Sha256File(source.SourcePath())) == sourceSha, "refused public save preserves both source copies");
                 std::cout << "nonempty_doodad_wpm_mismatch_refused source_sha256=" << overridden.SourceSha256() << '\n';
             }
+            if (withCategoryC) {
+                auto shifted = placements;
+                Require(shifted.doodads.back().rawcode == categoryCRawcode, "actual C instance is the final ordinary placement");
+                shifted.doodads.back().position[0] += 64;
+                const std::array<MemberReplacement, 1> changed{{{"war3map.doo", Take(shifted.Serialize())}}};
+                const auto shiftedSource = Take(MapArchiveSession::Open(Take(source.SaveCandidate(
+                    scenario / "shifted-grid-source.w3x", changed)).path));
+                Require(Take(shiftedSource.ReadMember("war3map.wpm")) == Take(source.ReadMember("war3map.wpm")),
+                    "grid disagreement fixture preserves every old WPM byte");
+                auto blocked = request;
+                blocked.sourceMap = shiftedSource.SourcePath(); blocked.expectedSourceSha256 = shiftedSource.SourceSha256();
+                blocked.targetCandidate = scenario / "grid-must-not-exist.w3x";
+                const auto rejected = SaveMapEditCandidate(blocked);
+                Require(!rejected.Succeeded() && !rejected.value
+                    && std::any_of(rejected.diagnostics.begin(), rejected.diagnostics.end(), [](const auto& diagnostic) {
+                        return diagnostic.code == "TERRAIN_UNIFORM_GRID_VARIANT";
+                    }) && std::none_of(rejected.diagnostics.begin(), rejected.diagnostics.end(), [](const auto& diagnostic) {
+                        return diagnostic.code == "TERRAIN_PATHING_SOURCE_UNEXPLAINED";
+                    }), "actual C instance rejects distinct grid projections before old WPM matching");
+                Require(!std::filesystem::exists(blocked.targetCandidate)
+                    && Take(Sha256File(shiftedSource.SourcePath())) == shiftedSource.SourceSha256()
+                    && Take(Sha256File(source.SourcePath())) == sourceSha,
+                    "grid disagreement leaves both original copies unchanged and publishes no candidate");
+                std::cout << "category_c_grid_variant_refused source_sha256=" << shiftedSource.SourceSha256() << '\n';
+            }
         }
         SpecialWaterDeletionUsesPublicSave(original, directory.path, tool, game, uniformRawcode, doodads, w3b, sourceScript);
         SpecialWaterDeletionUsesPublicSave(original, directory.path, tool, game, uniformRawcode, doodads, w3b, sourceScript, true);
