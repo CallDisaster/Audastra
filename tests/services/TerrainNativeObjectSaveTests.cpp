@@ -1137,6 +1137,8 @@ void SpecialWaterDeletionUsesTheNormalSaveAndUndoChain() {
 void ExistingDryRampsComposeWithOrdinaryAndSpecialSaveLayers() {
     for (const bool special : {false, true}) {
         Fixture f; SpecialDoodad(f, true);
+        // 精确累计解码/解析预算不等于微小MPQ成员的存储峰值；用合法空白固定本用例前提。
+        f.Member("UI/WorldEditData.txt") = Text("[Other]\nValue=1\n" + std::string(128, '\n'));
         f.original.vertices[60].textureAndFlagsRaw = 0x10; // 等高孤立点分类L，不伪造可通行R。
         f.original.header.groundTilesets.push_back("Tg02");
         f.Member("war3map.w3e") = Take(SerializeMapTerrain(f.original));

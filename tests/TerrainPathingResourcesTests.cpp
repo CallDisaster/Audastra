@@ -595,6 +595,11 @@ void DryRampCaptureBindsActualMaximumAndAllProfileSources() {
         [](const auto& member) { return member.name == "UI/MiscData.txt"; });
     const auto maximum = Text("[Terrain]\nMaxHeight=-128\n"); // 实际M=1，故意低于R点层级2。
     misc->data.insert(misc->data.end(), maximum.begin(), maximum.end());
+    // 本用例核累计解码/解析账本；末项留足可压缩空白，避免微小MPQ存储头成为更高的瞬时读取门。
+    const auto profile = std::find_if(fixture.members.begin(), fixture.members.end(),
+        [](const auto& member) { return member.name == "UI/WorldEditData.txt"; });
+    Require(profile != fixture.members.end(), "dry ramp fixture has the final profile input");
+    profile->data = Text("[Other]\nValue=1\n" + std::string(128, '\n'));
     const auto game = directory.path / "game";
     Require(std::filesystem::create_directory(game), "private game source fixes optional profile absence");
     Take(WriteVerifiedArchive(game / "war3.mpq", std::vector<MapArchiveMember>{{"fixture.txt", Text("original ramp source")}}));
