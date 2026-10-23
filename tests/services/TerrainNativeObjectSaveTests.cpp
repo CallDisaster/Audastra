@@ -1081,6 +1081,89 @@ void SpecialDoodad(Fixture& f, bool dry = false) {
         f.Member("war3map.wpm")[16+y*32+x] = static_cast<std::byte>((dry ? dryMask : shallow)[x-8]);
 }
 
+void NativeFixedRotationUsesTheNormalSaveAndUndoChain() {
+    const auto addExpected = [](Bytes& wpm, float rotation) {
+        // 原创3x2 top-origin源(黑蓝绿/红青紫)，wire角0始终以2x3吸附尺寸定中心(544,544)。
+        // fixedRot=90的最终3x2为(绿蓝黑/紫青红)，起点(15,16)；0/负值为2x3，起点(16,15)。
+        constexpr std::array<unsigned, 6> at90{4, 8, 0, 0xca, 0x0c, 0xc2};
+        constexpr std::array<unsigned, 6> at0{0, 0xc2, 8, 0x0c, 4, 0xca};
+        const bool turned = rotation == 90;
+        for (unsigned i = 0; i < 6; ++i) {
+            const unsigned width = turned ? 3u : 2u, x = turned ? 15u : 16u, y = turned ? 16u : 15u;
+            wpm[16 + (y + i / width) * 32 + x + i % width] |= static_cast<std::byte>((turned ? at90 : at0)[i]);
+        }
+    };
+    const auto configure = [&](Fixture& fixture, bool custom, float rotation) {
+        StandardDoodad(fixture);
+        fixture.Member("Doodads/Doodads.slk") = Slk({"doodID", "code", "pathTex", "category", "fixedRot"},
+            {{"Doo0", "Doo0", std::string(kUniformDoodadTexture), "E", rotation == 90 ? "0" : "90"}});
+        Bytes texture(18); texture[2] = std::byte{2}; texture[12] = std::byte{3}; texture[14] = std::byte{2};
+        texture[16] = std::byte{24}; texture[17] = std::byte{32};
+        constexpr std::array<std::uint8_t, 18> pixels{0,0,0, 1,0,0, 0,1,0, 0,0,1, 1,1,0, 1,0,1};
+        for (const auto value : pixels) texture.push_back(static_cast<std::byte>(value));
+        fixture.members.push_back({std::string(kUniformDoodadTexture), std::move(texture)});
+        auto placements = Take(ParseDoodadPlacements(fixture.Member("war3map.doo")));
+        placements.doodads.front().rotation = 0;
+        if (custom) placements.doodads.front().rawcode = "NewD";
+        fixture.Member("war3map.doo") = Take(placements.Serialize());
+        auto document = Take(NativeObjectDocument::CreateEmpty(ObjectType::Doodad));
+        if (custom) Check(document.AddCustomObject("NewD", "Doo0")); else Check(document.AddOriginalObject("Doo0"));
+        Check(document.AddModification({ObjectType::Doodad, custom ? "NewD" : "Doo0"}, {"Rot0"}, NativeValueType::Unreal, rotation));
+        fixture.members.push_back({"war3map.w3d", Take(NativeObjectCodec(ObjectType::Doodad).Serialize(document))});
+        fixture.members.push_back({"Doodads/DoodadMetaData.slk", Slk({"ID", "field", "slk", "type", "repeat", "index"},
+            {{"dpt0", "pathTex", "DoodadData", "pathingTexture", "0", "0"}, {"Rot0", "fixedRot", "DoodadData", "unreal", "0", "0"}})});
+        addExpected(fixture.Member("war3map.wpm"), rotation);
+    };
+    for (const bool custom : {false, true}) for (const float rotation : {-1.0f, 0.0f, 90.0f}) {
+        Fixture f; configure(f, custom, rotation); f.Open(); f.Paint();
+        const auto owner = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, kBudget));
+        Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, owner.CaptureBudgetBytes()));
+        Require(!TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, owner.CaptureBudgetBytes() - 1).Succeeded(),
+            "native F32 output and its actual metadata retain the exact cumulative capture budget");
+        const auto plan = f.Plan(); const auto output = f.Output(plan);
+        const auto saved = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(f.root / "rotation-frozen.w3x", output)).path));
+        for (const char* name : {"war3map.w3d", "Doodads/DoodadMetaData.slk"}) {
+            auto changed = f.Member(name);
+            if (std::string_view(name) == "war3map.w3d") {
+                const auto parsed = NativeObjectCodec(ObjectType::Doodad).Parse(changed);
+                const auto* document = dynamic_cast<const NativeObjectDocument*>(parsed.document.get());
+                Require(document != nullptr, "frozen rotation fixture parses as native W3D");
+                Require(document->Objects().size() == 1 && document->Objects().front().modifications.size() == 1,
+                    "frozen fixture has one exact native modification address");
+                const auto& object = document->Objects().front();
+                auto replacement = *document;
+                Check(replacement.SetModification(object.key, object.modifications.front().key,
+                    rotation == 90 ? Value{0.0f} : Value{90.0f}));
+                changed = Take(NativeObjectCodec(ObjectType::Doodad).Serialize(replacement));
+            } else changed.push_back(std::byte{'\n'});
+            auto altered = output; altered.push_back({name, changed});
+            Require(!plan.VerifyForSave(*f.edits, f.archive->SourceSha256(), altered).Succeeded(), "numeric rotation and metadata remain frozen before save");
+            const std::array<MemberReplacement, 1> replacement{{{name, changed}}};
+            const auto tampered = Take(MapArchiveSession::Open(Take(saved.SaveCandidate(f.root / (std::string(name) == "war3map.w3d"
+                ? "rotation-tampered.w3x" : "rotation-metadata-tampered.w3x"), replacement)).path));
+            Require(!plan.VerifyReadback(tampered).Succeeded(), "independent readback also rejects changed numeric rotation or metadata bytes");
+        }
+        auto deep = f.ExpectedPathing(true); addExpected(deep, rotation);
+        f.SaveExpected("rotation-deep.w3x", f.ExpectedTerrain(true), deep);
+        Require(f.edits->Undo(), "undo saved terrain with a native F32 rotation");
+        f.SaveExpected("rotation-undone.w3x", f.Member("war3map.w3e"), f.Member("war3map.wpm"));
+        Require(f.edits->Redo(), "redo saved terrain with a native F32 rotation");
+        f.SaveExpected("rotation-redone.w3x", f.ExpectedTerrain(true), deep);
+    }
+    for (const float rotation : {-361.0f, 361.0f, 45.0f, 90.0f}) {
+        Fixture f; configure(f, false, rotation);
+        if (rotation == 90) f.Member("war3map.wpm")[16] ^= std::byte{4};
+        f.Open(); f.Paint(); const auto sourceSha = f.archive->SourceSha256();
+        const auto draft = Take(SerializeMapTerrain(*f.edits->Terrain()));
+        const auto gate = f.Plan().SaveGate();
+        const char* code = rotation == 90 ? "TERRAIN_PATHING_SOURCE_UNEXPLAINED"
+            : rotation == 45 ? "TERRAIN_DOODAD_ANGLE_AMBIGUOUS" : "TERRAIN_DOODAD_FIXED_ROTATION";
+        Require(!gate.Succeeded() && HasCode(gate, code), "unsupported native rotation or unexplained WPM must fail before save");
+        Require(f.edits->IsDirty() && Take(Sha256File(f.archive->SourcePath())) == sourceSha
+            && Take(SerializeMapTerrain(*f.edits->Terrain())) == draft, "rotation rejection preserves source and the complete unsaved draft");
+    }
+}
+
 void SpecialDoodadsSaveWaterGroundAndCliffs() {
     for (const unsigned operation : {0u,1u,2u}) {
         Fixture f; SpecialDoodad(f, operation != 0);
@@ -1340,6 +1423,7 @@ int main() {
         UniformDoodadDuplicateInstancesHaveABoundedPixelWorkload();
         UniformDoodadRejectionDoesNotWeakenOldSaves();
         PatternedDoodadsUseTheNormalSaveAndUndoChain();
+        NativeFixedRotationUsesTheNormalSaveAndUndoChain();
         SpecialDoodadsSaveWaterGroundAndCliffs();
         SharedSpecialAndOrdinaryResourcesRoundTripOnce();
         SpecialWaterDeletionUsesTheNormalSaveAndUndoChain();

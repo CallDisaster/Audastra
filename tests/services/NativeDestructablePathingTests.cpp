@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -879,7 +880,8 @@ void DoodadOverridesUseBoundedStandardInheritance() {
         f.Tables(); f.AddDoodadMetadata();
         auto document = Empty(ObjectType::Doodad); Check(document.AddOriginalObject("D001"));
         Modification(document, "D001", "Pos0", NativeValueType::String, std::string("0")); f.SetNative(document);
-        Rejected(f.Inspect(), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "native pose override cannot borrow the standard pose");
+        Rejected(f.Inspect(), std::string_view(key) == "category" ? "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED"
+            : "TERRAIN_NATIVE_OBJECT_METADATA", "unsupported category or nonnumeric fixedRot cannot borrow the standard pose");
         Modification(document, "D001", "Dt00", NativeValueType::String, std::string{}); f.SetNative(document);
         Require(Take(f.Inspect()).footprints.empty(), "explicit zero footprint has no rotation contribution");
     }
@@ -887,6 +889,86 @@ void DoodadOverridesUseBoundedStandardInheritance() {
     auto document = Empty(ObjectType::Doodad);
     Check(document.AddCustomObject("C001", "D001")); Check(document.AddCustomObject("C002", "C001")); chain.SetNative(document);
     Rejected(chain.Inspect({"C002"}), "TERRAIN_NATIVE_OBJECT_INHERITANCE", "recursive custom inheritance remains explicit and refused");
+}
+
+void NativeDoodadRotationUsesExactValuesAndSources() {
+    const auto prepare = [](Fixture& fixture, NativeValueType type = NativeValueType::Unreal) {
+        fixture.doodads[0]["pathTex"] = "PathTextures\\pattern.tga";
+        fixture.doodads[0]["category"] = "E"; fixture.doodads[0]["fixedRot"] = "180";
+        fixture.doodadMetadata.push_back({{"ID", "Rot0"}, {"field", "fixedRot"}, {"slk", "DoodadData"},
+            {"type", type == NativeValueType::Real ? "real" : "unreal"}, {"repeat", "0"}, {"index", "0"}});
+        fixture.Tables(); fixture.AddDoodadMetadata();
+    };
+    for (const bool custom : {false, true}) for (const auto type : {NativeValueType::Real, NativeValueType::Unreal}) {
+        for (const float value : {-360.0f, -1.0f, -0.0f, 0.0f, 90.25f, 270.0f, 360.0f}) {
+            Fixture f; prepare(f, type);
+            auto document = Empty(ObjectType::Doodad);
+            const std::string id = custom ? "C001" : "D001";
+            if (custom) Check(document.AddCustomObject(id, "D001")); else Check(document.AddOriginalObject(id));
+            Modification(document, id, "Rot0", type, value);
+            Modification(document, id, "Dt00", NativeValueType::String, std::string("PathTextures\\actual.tga"));
+            f.SetNative(document);
+            const auto before = f.sources[kW3d].bytes;
+            const auto parsed = Take(f.Inspect({id, id}));
+            Require(parsed.footprints.size() == 1 && parsed.footprints[0].rawcode == id
+                && parsed.footprints[0].pathTexture == "PathTextures\\actual.tga"
+                && parsed.footprints[0].fixedRotationDegrees
+                && std::bit_cast<std::uint32_t>(*parsed.footprints[0].fixedRotationDegrees) == std::bit_cast<std::uint32_t>(value),
+                "Original and direct Custom use the exact metadata-bound wire F32, including signed zero and negative values");
+            Take(f.Inspect({id, id}, parsed.workBytes));
+            Rejected(f.Inspect({id, id}, parsed.workBytes - 1), "TERRAIN_NATIVE_OBJECT_BUDGET", "effective rotation keeps the exact work budget");
+            Require(f.sources[kW3d].bytes == before, "effective pose inspection does not rewrite native records");
+            if (custom) {
+                Check(document.AddOriginalObject("D001")); f.SetNative(document);
+                Rejected(f.Inspect({id}), "TERRAIN_NATIVE_OBJECT_INHERITANCE", "numeric getter does not authorize a native-overridden parent");
+            }
+        }
+    }
+    for (const float value : {-361.0f, 361.0f}) {
+        Fixture f; prepare(f);
+        auto document = Empty(ObjectType::Doodad); Check(document.AddOriginalObject("D001"));
+        Modification(document, "D001", "Rot0", NativeValueType::Unreal, value); f.SetNative(document);
+        Rejected(f.Inspect(), "TERRAIN_DOODAD_FIXED_ROTATION", "native rotation cannot enlarge the existing supported degree range");
+        Modification(document, "D001", "Dt00", NativeValueType::String, std::string{}); f.SetNative(document);
+        Require(Take(f.Inspect()).footprints.empty(), "an explicitly disabled footprint retains its prior zero-contribution domain");
+    }
+    for (const auto type : {NativeValueType::Int32, NativeValueType::Real, NativeValueType::String}) {
+        Fixture f; prepare(f);
+        auto document = Empty(ObjectType::Doodad); Check(document.AddOriginalObject("D001"));
+        const Value value = type == NativeValueType::Int32 ? Value{std::int32_t{90}}
+            : type == NativeValueType::String ? Value{std::string("90")} : Value{90.0f};
+        Modification(document, "D001", "Rot0", type, value); f.SetNative(document);
+        Rejected(f.Inspect(), "TERRAIN_NATIVE_OBJECT_DOODAD_TYPE", "matching numeric text or F32 width cannot replace the actual Unreal wire type");
+    }
+    for (const std::uint32_t bits : {0x7fc00000u, 0x7f800000u, 0xff800000u}) {
+        Fixture f; prepare(f);
+        auto document = Empty(ObjectType::Doodad); Check(document.AddOriginalObject("D001"));
+        Modification(document, "D001", "Rot0", NativeValueType::Unreal, 90.0f); f.SetNative(document);
+        Put32(f.sources[kW3d].bytes, 36, bits);
+        Rejected(f.Inspect(), {}, "nonfinite native bits must fail before returning a partial effective pose");
+    }
+    for (unsigned mode = 0; mode < 6; ++mode) {
+        Fixture f; prepare(f);
+        if (mode == 0) f.doodadMetadata.back()["repeat"] = "1";
+        if (mode == 1) f.doodadMetadata.back()["index"] = "1";
+        if (mode == 2) { auto duplicate = f.doodadMetadata.back(); duplicate["ID"] = "Rot1"; f.doodadMetadata.push_back(duplicate); }
+        if (mode == 3) { auto hidden = f.doodadMetadata.back(); hidden["ID"] = "Rot1"; hidden["slk"] = ""; f.doodadMetadata.push_back(hidden); }
+        if (mode == 4) f.doodadMetadata.push_back({{"ID", "Rot1"}, {"field", "fixedro"}, {"slk", "DoodadData"},
+            {"type", "unreal"}, {"repeat", "0"}, {"data", "20"}, {"index", "0"}});
+        if (mode == 5) f.doodadMetadata.back().erase("index");
+        f.Tables();
+        auto document = Empty(ObjectType::Doodad); Check(document.AddOriginalObject("D001"));
+        Modification(document, "D001", "Rot0", NativeValueType::Unreal, 90.0f); f.SetNative(document);
+        Rejected(f.Inspect(), "TERRAIN_NATIVE_OBJECT_METADATA", "fixedRot needs a unique actual nonrepeating zero-index metadata address, including hidden aliases");
+    }
+    Fixture category; prepare(category); category.doodads[0]["category"] = "C"; category.Tables();
+    auto document = Empty(ObjectType::Doodad); Check(document.AddOriginalObject("D001"));
+    Modification(document, "D001", "Rot0", NativeValueType::Unreal, 90.0f); category.SetNative(document);
+    Require(Take(category.Inspect()).footprints[0].gridPolicy == MapData::TerrainDoodadGridPolicy::RequireTwoAndFourEquivalent,
+        "a numeric override does not promote C to a verified four-cell grid");
+    category.doodadMetadata.push_back({{"ID", "Cat0"}, {"field", "category"}, {"slk", "DoodadData"}, {"type", "string"}, {"repeat", "0"}});
+    category.Tables(); Modification(document, "D001", "Cat0", NativeValueType::String, std::string("E")); category.SetNative(document);
+    Rejected(category.Inspect(), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "even a valid fixedRot does not authorize native category overrides");
 }
 
 void SpecialDoodadFieldsDoNotBorrowOrdinaryPoseRules() {
@@ -939,6 +1021,7 @@ int main() {
         NonemptyDoodadInspectionKeepsTheNarrowSourceDomain();
         PatternedFootprintReceivesTheActualFixedRotation();
         DoodadOverridesUseBoundedStandardInheritance();
+        NativeDoodadRotationUsesExactValuesAndSources();
         SpecialDoodadFieldsDoNotBorrowOrdinaryPoseRules();
         std::cout << "native destructable pathing: typed fields, bounded inheritance, unique sources and rejection paths passed\n";
         return 0;
