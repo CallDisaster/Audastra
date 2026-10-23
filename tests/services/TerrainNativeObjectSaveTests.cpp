@@ -12,6 +12,7 @@
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include <utility>
 
 namespace {
 using namespace War3Map;
@@ -20,6 +21,7 @@ using namespace War3Map::ObjectData;
 using War3Map::Services::TerrainPathingSave;
 using Bytes = std::vector<std::byte>;
 constexpr std::size_t kBudget = 8u * 1024u * 1024u;
+constexpr std::string_view kUniformDoodadTexture = "PathTextures/synthetic-uniform.tga";
 
 void Require(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
 void Check(Status status) {
@@ -180,6 +182,33 @@ void StandardDoodad(Fixture& fixture, bool mixed = false) {
     placements.doodads.push_back(std::move(doodad));
     fixture.Member("war3map.doo") = Take(placements.Serialize());
     fixture.Member("Doodads/Doodads.slk") = Slk({"doodID", "code", "pathTex"}, {{"Doo0", "Doo0", "_"}});
+}
+
+Bytes UniformDoodadTexture() {
+    Bytes bytes(18 + 4 * 4 * 3, std::byte{0});
+    bytes[2] = std::byte{2}; bytes[12] = bytes[14] = std::byte{4}; bytes[16] = std::byte{24};
+    for (std::size_t at = 18; at < bytes.size(); at += 3) bytes[at] = bytes[at + 2] = std::byte{0xff};
+    return bytes;
+}
+void UniformDoodadExpectedFootprint(Bytes& wpm, bool overlap = false) {
+    // 手写原版预期：4x4/BGR ff00ff的内部35编码为ca；与作者11及浅/深水、干地均合成db。
+    // 中心512、g=2的起点为14；第二中心576的起点为16，重复摆放不能改变完整OR结果。
+    for (std::size_t y = 14; y < 18; ++y) for (std::size_t x = 14; x < (overlap ? 20u : 18u); ++x)
+        wpm[16 + y * 32 + x] = std::byte{0xdb};
+}
+void UniformDoodad(Fixture& fixture, bool overlap = false) {
+    StandardDoodad(fixture);
+    fixture.Member("Doodads/Doodads.slk") = Slk({"doodID", "code", "pathTex", "category"},
+        {{"Doo0", "Doo0", std::string(kUniformDoodadTexture), "E"}});
+    fixture.members.push_back({std::string(kUniformDoodadTexture), UniformDoodadTexture()});
+    if (overlap) {
+        auto placements = Take(ParseDoodadPlacements(fixture.Member("war3map.doo")));
+        auto duplicate = placements.doodads.front(); duplicate.creationId = 3;
+        placements.doodads.push_back(duplicate);
+        duplicate.position[0] = 576; duplicate.creationId = 4; placements.doodads.push_back(duplicate);
+        fixture.Member("war3map.doo") = Take(placements.Serialize());
+    }
+    UniformDoodadExpectedFootprint(fixture.Member("war3map.wpm"), overlap);
 }
 
 Bytes DoodadOverride(const char* path = nullptr, std::string field = "dpt0") {
@@ -571,6 +600,132 @@ void DirectoryRecipePreservesReplayAndSourceChecks() {
     Require(!TerrainPathingSave::Seal(MapDocument::FromMembers(f.members), f.Member("war3map.w3e"), f.Member("war3map.wpm"),
         wrong, *f.edits, std::span(&intent, 1)).Succeeded(), "directory aggregate source identity is required");
 }
+
+void UniformDoodadsSaveWaterGroundAndCliffs() {
+    Fixture water; UniformDoodad(water, true); water.Open(); water.Paint();
+    auto deep = water.ExpectedPathing(true), shallow = water.ExpectedPathing(false);
+    UniformDoodadExpectedFootprint(deep, true); UniformDoodadExpectedFootprint(shallow, true);
+    water.SaveExpected("uniform-water.w3x", water.ExpectedTerrain(true), deep);
+    Require(water.edits->Undo(), "undo saved water with overlapping and duplicate footprints");
+    water.SaveExpected("uniform-water-undone.w3x", water.ExpectedTerrain(false), shallow);
+    Require(water.edits->Redo(), "redo saved water with overlapping and duplicate footprints");
+    water.SaveExpected("uniform-water-redone.w3x", water.ExpectedTerrain(true), deep);
+
+    for (const bool cliff : {false, true}) {
+        Fixture f; UniformDoodad(f);
+        f.original.header.groundTilesets.push_back("Tg02");
+        for (auto& vertex : f.original.vertices) vertex.textureAndFlagsRaw = 0;
+        RefreshTerrainDerived(f.original, 0, 0, 9, 9);
+        f.Member("war3map.w3e") = Take(SerializeMapTerrain(f.original));
+        std::fill(f.Member("war3map.wpm").begin() + 16, f.Member("war3map.wpm").end(), std::byte{0x51});
+        UniformDoodadExpectedFootprint(f.Member("war3map.wpm"));
+        f.Member("TerrainArt/Terrain.slk") = Slk({"tileID", "walkable", "flyable", "buildable"},
+            {{"Tg01", "1", "1", "1"}, {"Tg02", "0", "1", "1"}});
+        f.Open();
+        TerrainBrush brush; brush.radius = 0;
+        if (cliff) { brush.kind = TerrainBrushKind::CliffLevel; brush.levelDelta = 1; }
+        else { brush.kind = TerrainBrushKind::Texture; brush.groundTexture = "Tg02"; brush.variation = 0; }
+        const TerrainStrokePoint edited{256, 512};
+        Take(f.edits->EditTerrain(brush, std::span(&edited, 1), false));
+        auto terrain = f.original;
+        if (cliff) terrain.vertices[38].cliffAndLayerRaw = 3;
+        else terrain.vertices[38].textureAndFlagsRaw = 1;
+        auto pathing = f.Member("war3map.wpm");
+        // 修改在占地西侧，确保材质/悬崖派生变化没有被中心静态位完全遮住。
+        const std::size_t left = cliff ? 4 : 6, right = cliff ? 12 : 10, low = cliff ? 12 : 14, high = cliff ? 20 : 18;
+        for (auto y = low; y < high; ++y) for (auto x = left; x < right; ++x)
+            pathing[16 + y * 32 + x] = cliff ? std::byte{0xdb} : std::byte{0x53};
+        const auto expected = Take(SerializeMapTerrain(terrain));
+        f.SaveExpected(cliff ? "uniform-cliff.w3x" : "uniform-ground.w3x", expected, pathing);
+        Require(f.edits->Undo(), "undo saved terrain edit while retaining nonempty footprint");
+        f.SaveExpected("uniform-dry-undone.w3x", f.Member("war3map.w3e"), f.Member("war3map.wpm"));
+        Require(f.edits->Redo(), "redo saved terrain edit while retaining nonempty footprint");
+        f.SaveExpected("uniform-dry-redone.w3x", expected, pathing);
+    }
+}
+
+void UniformDoodadTextureIsFrozenAndBudgeted() {
+    Fixture f; UniformDoodad(f); f.Open(); f.Paint();
+    const auto owner = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, kBudget));
+    const auto exact = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, owner.CaptureBudgetBytes()));
+    Require(exact.CaptureBudgetBytes() == owner.CaptureBudgetBytes(), "texture and decoded footprint have a reusable exact capture budget");
+    const auto shortBudget = TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, owner.CaptureBudgetBytes() - 1);
+    Require(!shortBudget.Succeeded() && !shortBudget.value, "one missing capture byte cannot return a partial texture owner");
+    const auto plan = f.Plan(); const auto output = f.Output(plan);
+    Check(owner.VerifyFrozenOutput(output, {}));
+    const auto saved = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(f.root / "uniform-frozen.w3x", output)).path));
+    Check(owner.VerifyReadback(saved, kBudget));
+    auto changed = f.Member(kUniformDoodadTexture); changed[17] = std::byte{0x20};
+    const MemberReplacement replacement{std::string(kUniformDoodadTexture), changed};
+    auto altered = output; altered.push_back(replacement);
+    Require(!plan.VerifyForSave(*f.edits, f.archive->SourceSha256(), altered).Succeeded(), "same uniform pixels with changed TGA bytes invalidate the frozen plan");
+    auto tampered = Take(MapArchiveSession::Open(Take(saved.SaveCandidate(f.root / "uniform-replaced.w3x", std::span(&replacement, 1))).path));
+    Require(!owner.VerifyReadback(tampered, kBudget).Succeeded(), "independent readback binds the exact TGA bytes");
+    const std::array<std::string, 1> removed{std::string(kUniformDoodadTexture)};
+    Require(!plan.VerifyForSave(*f.edits, f.archive->SourceSha256(), output, removed).Succeeded(), "referenced TGA removal is refused before publication");
+    tampered = Take(MapArchiveSession::Open(Take(saved.SaveCandidate(f.root / "uniform-deleted.w3x", {}, removed)).path));
+    Require(!owner.VerifyReadback(tampered, kBudget).Succeeded(), "readback refuses a missing referenced TGA");
+    Require(!plan.VerifyForSave(*f.edits, std::string(64, '0'), output).Succeeded(), "nonempty footprint does not relax source SHA CAS");
+    TerrainBrush raise; raise.kind = TerrainBrushKind::Raise; raise.radius = 0; raise.strength = 1;
+    Take(f.edits->EditTerrain(raise, std::span(&f.point, 1), false));
+    Require(!plan.VerifyForSave(*f.edits, f.archive->SourceSha256(), output).Succeeded(), "later terrain revision invalidates the nonempty footprint plan");
+}
+
+void UniformDoodadGameTextureWinnerRemainsBound() {
+    Fixture f; UniformDoodad(f);
+    const auto texture = f.Member(kUniformDoodadTexture);
+    std::erase_if(f.members, [](const auto& member) { return member.name == kUniformDoodadTexture; });
+    const auto game = f.root / "game"; Require(std::filesystem::create_directory(game), "private footprint game fixture");
+    const std::array<MapArchiveMember, 1> gameMembers{{{std::string(kUniformDoodadTexture), texture}}};
+    Take(WriteVerifiedArchive(game / "war3.mpq", gameMembers));
+    f.Open(); f.Paint();
+    const auto owner = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), game, kBudget));
+    const auto plan = Take(TerrainPathingSave::PrepareForSave(*f.archive, *f.edits, game, {}));
+    const auto output = f.Output(plan);
+    Check(owner.VerifyFrozenOutput(output, {}));
+    const auto saved = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(f.root / "uniform-game.w3x", output)).path));
+    Check(owner.VerifyReadback(saved, kBudget));
+    auto expected = f.ExpectedPathing(true); UniformDoodadExpectedFootprint(expected);
+    Require(Take(saved.ReadMember("war3map.wpm")) == expected, "actual game-winning texture still produces complete independent WPM bytes");
+    auto inserted = output; inserted.push_back({std::string(kUniformDoodadTexture), texture});
+    Require(!owner.VerifyFrozenOutput(inserted, {}).Succeeded(), "map insertion cannot replace even an identical game-winning texture");
+    const auto tampered = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(f.root / "uniform-inserted.w3x", inserted)).path));
+    Require(!owner.VerifyReadback(tampered, kBudget).Succeeded(), "readback distinguishes identical bytes from the original winning source");
+    const auto gameBytes = Take(IO::ReadFileBytes(game / "war3.mpq"));
+    auto changed = texture; changed[17] = std::byte{0x20};
+    const std::array<MapArchiveMember, 1> changedMembers{{{std::string(kUniformDoodadTexture), changed}}};
+    const auto replacement = Take(WriteVerifiedArchive(game / "changed.mpq", changedMembers));
+    Check(IO::WriteFileBytes(game / "war3.mpq", Take(IO::ReadFileBytes(replacement.path))));
+    Require(!owner.VerifyFrozenOutput(output, {}).Succeeded(), "changed game texture winner is rechecked before publication");
+    Check(IO::WriteFileBytes(game / "war3.mpq", gameBytes));
+    Check(owner.VerifyFrozenOutput(output, {}));
+}
+
+void UniformDoodadRejectionDoesNotWeakenOldSaves() {
+    for (const unsigned mode : {0u, 1u, 2u}) {
+        Fixture f; UniformDoodad(f); auto& texture = f.Member(kUniformDoodadTexture);
+        if (mode == 0) texture.pop_back();
+        if (mode == 1) texture[21] = std::byte{0};
+        if (mode == 2) { texture[12] = std::byte{2}; texture.resize(18 + 2 * 4 * 3); }
+        f.Open(); f.Paint();
+        const auto capture = TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, kBudget);
+        Require(!capture.Succeeded() && !capture.value, "truncated, nonuniform and nonsquare textures cannot become footprint owners");
+    }
+    for (const auto& [offset, mask] : std::array<std::pair<std::size_t, unsigned>, 3>{{{16, 0x06}, {16, 0x88}, {16 + 16 * 32 + 16, 0x60}}}) {
+        Fixture f; UniformDoodad(f); f.Member("war3map.wpm")[offset] ^= static_cast<std::byte>(mask); f.Open(); f.Paint();
+        const auto plan = f.Plan();
+        Require(!plan.SaveGate().Succeeded() && HasCode(plan.SaveGate(), "TERRAIN_PATHING_SOURCE_UNEXPLAINED"),
+            "multiple unexplained old WPM bits outside or inside the footprint still refuse saving");
+    }
+    Fixture old; StandardDoodad(old); old.Open(); old.Paint();
+    const auto before = Take(TerrainPathingSave::CaptureNative(*old.archive, old.original, *old.edits->Terrain(), {}, kBudget));
+    old.members.push_back({std::string(kUniformDoodadTexture), Text("broken but unrelated imported texture")});
+    old.Open(); old.Paint();
+    const auto after = Take(TerrainPathingSave::CaptureNative(*old.archive, old.original, *old.edits->Terrain(), {}, kBudget));
+    Require(before.SourceBytes() == after.SourceBytes() && before.CaptureBudgetBytes() == after.CaptureBudgetBytes(),
+        "zero-footprint saves do not read or budget unrelated pathing textures");
+    old.Save("zero-footprint-unrelated-texture.w3x", true);
+}
 } // namespace
 
 int main() {
@@ -585,6 +740,10 @@ int main() {
         NativeObjectsDoNotWeakenSourceCasOrOldPathingChecks();
         MapAndGameMetadataWinnersRemainBound();
         DirectoryRecipePreservesReplayAndSourceChecks();
+        UniformDoodadsSaveWaterGroundAndCliffs();
+        UniformDoodadTextureIsFrozenAndBudgeted();
+        UniformDoodadGameTextureWinnerRemainsBound();
+        UniformDoodadRejectionDoesNotWeakenOldSaves();
         std::cout << "Native object terrain save tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
