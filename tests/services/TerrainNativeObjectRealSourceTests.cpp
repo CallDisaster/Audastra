@@ -59,6 +59,89 @@ struct OwnedDirectory {
     ~OwnedDirectory() { if (!keep) { std::error_code error; std::filesystem::remove_all(path, error); } }
 };
 
+void SpecialWaterDeletionUsesPublicSave(const MapArchiveSession& original,
+    const std::filesystem::path& directory, const std::filesystem::path& tool,
+    const std::filesystem::path& game, const std::string& rawcode,
+    const DoodadPlacements& ordinary, const std::vector<std::byte>& w3b,
+    const std::vector<std::byte>& script) {
+    const auto scenario = directory / "special-water-delete";
+    Require(std::filesystem::create_directory(scenario), "exclusive special water deletion scenario");
+    const auto parsed = Take(ParseMapTerrain(Take(original.ReadMember("war3map.w3e"))));
+    const auto before = *parsed.Snapshot();
+    auto placements = ordinary;
+    placements.specialDoodads = {{rawcode, 0, {32, 32}}, {rawcode, 0, {44, 44}}};
+    const auto beforeDoo = Take(placements.Serialize());
+    const std::array<MemberReplacement, 2> members{{{"war3map.doo", beforeDoo}, {"war3map.w3b", w3b}}};
+    const auto seeded = Take(MapArchiveSession::Open(Take(original.SaveCandidate(scenario / "seeded.w3x", members)).path));
+    const auto brushResources = Take(TerrainPathingSave::CaptureWaterBrushRules(seeded, before, before,
+        placements, game, true, kSaveBytes));
+    Require(brushResources.WaterBrushRules() && brushResources.WaterSpecialShapes().size() == 2,
+        "actual typed resource capture supplies both special model shapes");
+    const TerrainStrokePoint point{before.header.offset[0] + 32 * 128, before.header.offset[1] + 32 * 128};
+    const auto anchor = Take(CaptureTerrainWaterStrokeAnchor(before, point));
+    const TerrainWaterBrush brush{TerrainWaterBrushKind::Shallow, TerrainBrushShape::Square, 1, 0, 42, anchor};
+    const auto candidate = Take(PrepareTerrainWaterStroke(before, *brushResources.WaterBrushRules(), brush,
+        std::span(&point, 1), placements, brushResources.WaterSpecialShapes()));
+    Require(candidate.result.removedSpecialSourceRecords == std::vector<std::uint32_t>{0}
+        && candidate.doodads.specialDoodads.size() == 1
+        && candidate.doodads.specialDoodads.front().position == placements.specialDoodads.back().position,
+        "actual water stroke removes the intersected model and retains the distant swap-last model");
+    const auto afterDoo = Take(candidate.doodads.Serialize());
+    const auto afterW3e = Take(SerializeMapTerrain(candidate.terrain));
+    const auto oldRules = Take(TerrainPathingSave::CaptureNative(seeded, before, before, game, kSaveBytes));
+    const auto oldNative = Take(oldRules.GenerateNative(before, kSaveBytes));
+    const std::array<MemberReplacement, 2> afterMembers{{{"war3map.w3e", afterW3e}, {"war3map.doo", afterDoo}}};
+    const auto expectedArchive = Take(MapArchiveSession::Open(Take(seeded.SaveCandidate(
+        scenario / "expected-inputs.w3x", afterMembers)).path));
+    // 前后分别捕获实际DOO，独立检查保存链不会误用删除后的集合去解释旧WPM。
+    // 像其它实际资源专项一样，这里复用生成器，不冒充原版或独立算法oracle。
+    const auto newRules = Take(TerrainPathingSave::CaptureNative(expectedArchive,
+        candidate.terrain, candidate.terrain, game, kSaveBytes));
+    const auto newNative = Take(newRules.GenerateNative(candidate.terrain, kSaveBytes));
+    Require(oldNative != newNative, "real water deletion changes the complete native pathing contribution");
+    auto oldWpm = Take(seeded.ReadMember("war3map.wpm"));
+    Require(oldWpm.size() == oldNative.size() + 16 && oldNative.size() == newNative.size(),
+        "real water deletion keeps native pathing dimensions");
+    auto expectedWpm = oldWpm;
+    for (std::size_t i = 0; i < oldNative.size(); ++i) {
+        oldWpm[i + 16] = (oldWpm[i + 16] & std::byte{0x11}) | oldNative[i];
+        expectedWpm[i + 16] = (oldWpm[i + 16] & std::byte{0x11}) | newNative[i];
+    }
+    const std::array<MemberReplacement, 1> pathing{{{"war3map.wpm", oldWpm}}};
+    const auto source = Take(MapArchiveSession::Open(Take(seeded.SaveCandidate(scenario / "source.w3x", pathing)).path));
+    MapEditSaveRequest request;
+    request.sourceMap = source.SourcePath(); request.targetCandidate = scenario / "saved.w3x";
+    request.toolRoot = tool; request.gameRoot = game;
+    request.expectedSourceSha256 = source.SourceSha256();
+    request.expectedTerrainSha256 = Take(Sha256(Take(source.ReadMember("war3map.w3e"))));
+    MapEditTerrainStroke stroke;
+    stroke.pointSpace = MapEditPointSpace::TerrainVertex; stroke.points = {{32, 32}};
+    TerrainWaterStrokeOptions options;
+    options.shape = TerrainBrushShape::Square; options.randomSeed = 42;
+    stroke.waterBrush = options; request.terrainStrokes = {stroke};
+    const auto saved = Take(SaveMapEditCandidate(request));
+    const auto readback = Take(MapArchiveSession::Open(saved.candidate));
+    Require(saved.scriptPreserved && Take(readback.ReadMember("war3map.j")) == script,
+        "public special deletion preserves the checked source script");
+    Require(Take(readback.ReadMember("war3map.w3e")) == afterW3e
+        && Take(readback.ReadMember("war3map.doo")) == afterDoo
+        && Take(readback.ReadMember("war3map.wpm")) == expectedWpm,
+        "public save reads back complete coupled W3E, DOO and WPM with the correct old and new model sets");
+    Require(Take(readback.ReadMember("war3map.w3b")) == w3b,
+        "public special deletion preserves every native destructable byte");
+    for (const auto* member : {"war3map.shd", "war3map.mmp"}) {
+        Require(readback.HasMember(member) == source.HasMember(member)
+            && (!source.HasMember(member) || Take(readback.ReadMember(member)) == Take(source.ReadMember(member))),
+            "water deletion keeps existing shadow and minimap icon bytes or their absence");
+    }
+    Check(newRules.VerifyReadback(readback, kSaveBytes));
+    Require(Take(Sha256File(source.SourcePath())) == source.SourceSha256(),
+        "public water deletion leaves its original map copy untouched");
+    std::cout << "public_special_water_delete_passed object=" << rawcode
+        << " source_sha256=" << source.SourceSha256() << " candidate_sha256=" << saved.candidateSha256
+        << " native_editor_verified=false game_verified=false\n";
+}
+
 void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const std::filesystem::path& game) {
     OwnedDirectory directory;
     try {
@@ -305,6 +388,7 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
                 std::cout << "nonempty_doodad_wpm_mismatch_refused source_sha256=" << overridden.SourceSha256() << '\n';
             }
         }
+        SpecialWaterDeletionUsesPublicSave(original, directory.path, tool, game, uniformRawcode, doodads, w3b, sourceScript);
     } catch (...) {
         directory.keep = true;
         std::cerr << "Real-source failure artifacts preserved at " << IO::PathUtf8(directory.path) << '\n';
