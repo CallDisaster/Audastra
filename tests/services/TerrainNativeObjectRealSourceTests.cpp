@@ -2,6 +2,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/MapPlacements.h"
+#include "War3MapCore/MapData/TerrainStrokeJournal.h"
 #include "War3MapCore/MapData/TerrainUniformDoodadFootprint.h"
 #include "War3MapCore/MapData/TerrainDoodadFootprint.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
@@ -152,6 +153,53 @@ void SpecialWaterDeletionUsesPublicSave(const MapArchiveSession& original,
             "water deletion keeps existing shadow and minimap icon bytes or their absence");
     }
     Check(newRules.VerifyReadback(readback, kSaveBytes));
+    if (repeat) {
+        // 实际资源下补齐journal重放到正常地形保存计划的闭环；
+        // 工程容器/Qt安装另有独立回归，这里不冒充原版或游戏验收。
+        const auto baselineTerrain = Take(source.ReadMember("war3map.w3e"));
+        const auto baselinePathing = Take(source.ReadMember("war3map.wpm"));
+        const auto document = MapDocument::FromArchive(source);
+        std::vector<TerrainStrokeIntent> intents;
+        for (const auto& item : request.terrainStrokes) {
+            TerrainStrokeIntent intent;
+            intent.waterBrush = item.waterBrush;
+            intent.followDoodads = false;
+            for (const auto& sample : item.points) {
+                intent.points.push_back({before.header.offset[0] + sample.x * 128,
+                    before.header.offset[1] + sample.y * 128});
+            }
+            intents.push_back(std::move(intent));
+        }
+        const auto replayed = Take(TerrainPathingSave::ReplayStrokes(source, document,
+            baselineTerrain, baselinePathing, intents, game));
+        const auto journal = Take(TerrainPathingSave::CaptureJournal(source, *replayed.session));
+        const auto wire = Take(EncodeTerrainStrokeJournal(journal));
+        const auto decoded = Take(DecodeTerrainStrokeJournal(wire));
+        Require(decoded.strokes.size() == 2, "actual resource journal retains both complete water strokes");
+        auto restored = Take(TerrainPathingSave::RestoreJournal(source, document,
+            baselineTerrain, baselinePathing, decoded, *replayed.session, game));
+        Require(restored.receipts.size() == 2 && restored.session->RequiresTerrainStrokeJournal(),
+            "actual source replay restores complete receipts and private special deletion lineage");
+        const auto plan = Take(TerrainPathingSave::PrepareForSave(source, *restored.session, game));
+        auto replacements = restored.session->Replacements();
+        Check(plan.InstallPathingOutput(*restored.session, replacements));
+        const auto written = Take(source.SaveCandidate(scenario / "journal-restored.w3x", replacements));
+        const auto reopened = Take(MapArchiveSession::Open(written.path));
+        Check(plan.VerifyReadback(reopened));
+        Require(Take(reopened.ReadMember("war3map.w3e")) == afterW3e
+            && Take(reopened.ReadMember("war3map.doo")) == afterDoo
+            && Take(reopened.ReadMember("war3map.wpm")) == expectedWpm
+            && Take(reopened.ReadMember("war3map.j")) == script,
+            "journal-restored actual-resource save preserves complete terrain, placements, pathing and checked script");
+        for (const auto* member : {"war3map.shd", "war3map.mmp"}) {
+            Require(reopened.HasMember(member) == source.HasMember(member)
+                && (!source.HasMember(member) || Take(reopened.ReadMember(member)) == Take(source.ReadMember(member))),
+                "actual-resource journal save preserves baked shadow and minimap icon bytes or absence");
+        }
+        std::cout << "actual_journal_restore_save_passed strokes=2 wire_bytes=" << wire.size()
+            << " source_sha256=" << source.SourceSha256() << " candidate_sha256=" << written.sha256
+            << " native_editor_verified=false game_verified=false\n";
+    }
     Require(Take(Sha256File(source.SourcePath())) == source.SourceSha256(),
         "public water deletion leaves its original map copy untouched");
     std::cout << (repeat ? "public_special_water_delete_sequence_passed object=" : "public_special_water_delete_passed object=") << rawcode
