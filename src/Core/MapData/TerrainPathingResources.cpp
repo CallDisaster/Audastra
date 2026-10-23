@@ -323,7 +323,16 @@ Status TerrainPathingResources::CaptureResourceMembers(const MemberReader& reade
                 }
             }
             dependency.bytes = bytes.size(); dependency.sha256 = Take(Sha256(bytes));
-            dependencies_.push_back(std::move(dependency));
+            const auto previous = std::find_if(dependencies_.begin(), dependencies_.end(),
+                [&](const auto& value) { return value.name == dependency.name; });
+            if (previous == dependencies_.end()) {
+                dependencies_.push_back(std::move(dependency));
+            } else if (previous->bytes != dependency.bytes || previous->sha256 != dependency.sha256
+                || previous->mapPresent != dependency.mapPresent || previous->mapOnly != dependency.mapOnly
+                || previous->gameAbsent != dependency.gameAbsent || previous->gameArchive != dependency.gameArchive) {
+                Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "同次捕获的通行输入来源或内容不一致：" + dependency.name);
+            }
+            // 多类规则可共用同一输入；每次读取仍计预算并供各自解析，回读只请求一个确定身份。
             // 仍按原顺序逐项读取winner；严格对象适配可移走需要共同解析的原字节，
             // 其读取量和解析工作均计入同一次捕获预算。
             visitor(i, present, std::move(bytes));

@@ -991,6 +991,29 @@ void SpecialDoodadsSaveWaterGroundAndCliffs() {
     Require(bad.edits->IsDirty() && Take(Sha256File(bad.archive->SourcePath())) == originalSha,
         "special-model refusal preserves the source and unsaved terrain");
 }
+
+void SharedSpecialAndOrdinaryResourcesRoundTripOnce() {
+    Fixture f; SpecialDoodad(f);
+    auto& texture = f.Member(kUniformDoodadTexture);
+    std::fill(texture.begin() + 18, texture.end(), std::byte{0});
+    std::fill(f.Member("war3map.wpm").begin() + 16, f.Member("war3map.wpm").end(), std::byte{0x19});
+    f.Member("Doodads/Doodads.slk") = Slk({"doodID", "code", "pathTex", "category", "fixedRot"},
+        {{"Doo0", "Doo0", std::string(kUniformDoodadTexture), "C", "45"},
+         {"Ord0", "Ord0", std::string(kUniformDoodadTexture), "E", "-1"}});
+    auto placements = Take(ParseDoodadPlacements(f.Member("war3map.doo")));
+    DoodadPlacement ordinary; ordinary.rawcode = "Ord0"; ordinary.position = {512, 512, 0};
+    ordinary.scale = {1, 1, 1}; ordinary.flags = 2; ordinary.creationId = 1;
+    placements.doodads.push_back(ordinary);
+    f.Member("war3map.doo") = Take(placements.Serialize());
+    f.Open(); f.Paint();
+    // 完整独立字节预期：黑色占地图不阻挡，所有地格从浅水08变为深水0a，保护11保留。
+    // 普通/特殊对象共用贴图，水规则/MaxHeight共用配置，最终成员回读不能重复请求同名来源。
+    f.Save("shared-dependencies-deep.w3x", true);
+    Require(f.edits->Undo(), "undo saved water with shared ordinary/special dependencies");
+    f.Save("shared-dependencies-undone.w3x", false);
+    Require(f.edits->Redo(), "redo saved water with shared ordinary/special dependencies");
+    f.Save("shared-dependencies-redone.w3x", true);
+}
 } // namespace
 
 int main() {
@@ -1014,6 +1037,7 @@ int main() {
         UniformDoodadRejectionDoesNotWeakenOldSaves();
         PatternedDoodadsUseTheNormalSaveAndUndoChain();
         SpecialDoodadsSaveWaterGroundAndCliffs();
+        SharedSpecialAndOrdinaryResourcesRoundTripOnce();
         std::cout << "Native object terrain save tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
