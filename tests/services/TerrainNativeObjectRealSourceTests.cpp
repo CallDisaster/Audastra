@@ -276,11 +276,72 @@ void DryRampChangeUsesPublicSave(const MapArchiveSession& original,
         << " native_editor_verified=false game_verified=false\n";
 }
 
+void PlayableWaterUsesPublicSave(const MapArchiveSession& original,
+    const std::filesystem::path& directory, const std::filesystem::path& tool,
+    const std::filesystem::path& game, bool deep) {
+    const auto scenario = directory / (deep ? "playable-deep-water" : "playable-shallow-water");
+    Require(std::filesystem::create_directory(scenario), "exclusive playable water scenario");
+    const auto beforeBytes = Take(original.ReadMember("war3map.w3e"));
+    const auto before = *Take(ParseMapTerrain(beforeBytes)).Snapshot();
+    const auto oldRules = Take(TerrainPathingSave::CaptureNative(original, before, before, game, kSaveBytes));
+    const auto oldNative = Take(oldRules.GenerateNative(before, kSaveBytes));
+    auto wpm = Take(original.ReadMember("war3map.wpm"));
+    Require(wpm.size() == oldNative.size() + 16, "playable map has a complete pathing grid");
+    for (std::size_t i = 0; i < oldNative.size(); ++i)
+        wpm[i + 16] = (wpm[i + 16] & std::byte{0x11}) | oldNative[i];
+    const std::array<MemberReplacement, 1> pathing{{{"war3map.wpm", std::move(wpm)}}};
+    const auto source = Take(MapArchiveSession::Open(Take(original.SaveCandidate(scenario / "source.w3x", pathing)).path));
+    MapEditSaveRequest request;
+    request.sourceMap = source.SourcePath(); request.targetCandidate = scenario / "saved.w3x";
+    request.toolRoot = tool; request.gameRoot = game;
+    request.expectedSourceSha256 = source.SourceSha256(); request.expectedTerrainSha256 = Take(Sha256(beforeBytes));
+    MapEditTerrainStroke stroke; stroke.pointSpace = MapEditPointSpace::TerrainVertex; stroke.points = {{32, 32}};
+    TerrainWaterStrokeOptions options;
+    options.kind = deep ? TerrainWaterBrushKind::Deep : TerrainWaterBrushKind::Shallow;
+    options.shape = TerrainBrushShape::Square; options.size = 2; options.cliffTexture = 0; options.seed = 42;
+    options.enforceWaterLimits = true; stroke.waterBrush = options; request.terrainStrokes = {stroke};
+    const auto saved = Take(SaveMapEditCandidate(request));
+    const auto readback = Take(MapArchiveSession::Open(saved.candidate));
+    const auto afterBytes = Take(readback.ReadMember("war3map.w3e"));
+    const auto after = *Take(ParseMapTerrain(afterBytes)).Snapshot();
+    const auto center = std::size_t{32} * before.header.width + 32;
+    Require(!before.vertices[center].HasWater() && after.vertices[center].HasWater() && afterBytes != beforeBytes,
+        "playable public save creates local water from dry ground");
+    const auto newRules = Take(TerrainPathingSave::CaptureNative(readback, after, after, game, kSaveBytes));
+    const auto newNative = Take(newRules.GenerateNative(after, kSaveBytes));
+    Require(newNative.size() == oldNative.size() && newNative != oldNative, "playable water changes actual terrain pathing");
+    auto expectedWpm = Take(source.ReadMember("war3map.wpm"));
+    for (std::size_t i = 0; i < newNative.size(); ++i)
+        expectedWpm[i + 16] = (expectedWpm[i + 16] & std::byte{0x11}) | newNative[i];
+    Require(Take(readback.ReadMember("war3map.wpm")) == expectedWpm,
+        "playable map reads back the full actual-resource pathing grid");
+    Require(saved.scriptPreserved, "playable save preserves its compiled initialization trigger");
+    for (const auto& member : source.Members()) {
+        const auto name = Text::LowerAscii(member.name);
+        if (name == "war3map.w3e" || name == "war3map.wpm" || name == "war3mapmap.blp") continue;
+        Require(Take(readback.ReadMember(member.name)) == member.data, "playable save preserves every unrelated member");
+    }
+    Check(newRules.VerifyReadback(readback, kSaveBytes));
+    Require(Take(Sha256File(source.SourcePath())) == source.SourceSha256(), "playable source remains untouched");
+    std::cout << "playable_water_save_passed deep=" << deep << " source_sha256=" << source.SourceSha256()
+        << " candidate_sha256=" << saved.candidateSha256
+        << " unit_orders=manual units=(-512,0),(-512,512) target=(512,0) control=(512,512)"
+        << " native_editor_verified=false game_verified=false\n";
+}
+
 void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const std::filesystem::path& game) {
     OwnedDirectory directory;
     try {
         MapCreateRequest create;
         create.options.name = "Native object pathing regression";
+        // 原创验收输入提供可操作地面单位；保存/回读不冒充实际进图或移动验收。
+        create.options.initTriggerName = "Terrain pathing manual check";
+        create.options.initCustomScript = {
+            "call FogMaskEnable(false)", "call FogEnable(false)",
+            "call CreateUnit(Player(0), 'hfoo', -512.0, 0.0, 0.0)",
+            "call CreateUnit(Player(0), 'hfoo', -512.0, 512.0, 0.0)",
+            "call SetCameraPosition(0.0, 0.0)",
+            "call DisplayTextToPlayer(Player(0), 0.0, 0.0, \"Terrain check: move the lower footman across the center; upper footman is the control.\")"};
         create.target = directory.path / "created.w3x"; create.workspace = directory.path / "seed";
         create.toolRoot = tool; create.gameRoot = game;
         const auto created = Take(CreateMapCandidate(create));
@@ -578,6 +639,7 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         SpecialWaterDeletionUsesPublicSave(original, directory.path, tool, game, uniformRawcode, doodads, w3b, sourceScript, true);
         for (const bool distantWater : {false, true}) for (const bool createRamp : {false, true})
             DryRampChangeUsesPublicSave(original, directory.path, tool, game, doodads, w3b, sourceScript, createRamp, distantWater);
+        for (const bool deep : {false, true}) PlayableWaterUsesPublicSave(original, directory.path, tool, game, deep);
     } catch (...) {
         directory.keep = true;
         std::cerr << "Real-source failure artifacts preserved at " << IO::PathUtf8(directory.path) << '\n';
