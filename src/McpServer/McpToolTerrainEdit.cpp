@@ -11,6 +11,7 @@ void RegisterTerrainEditTools(McpServer& server) {
             auto* workspace = RequireWorkspace(server, error);
             if (!workspace) return error;
             TerrainEditToolHost host;
+            std::optional<MapData::TerrainPathingResources> waterOwner;
             host.identity = [&server, workspace] {
                 QJsonObject identity{{"project_identity", QString::fromStdString(server.DocumentId())},
                     {"revision", QString::fromStdString(workspace->ObjectRevision())},
@@ -26,6 +27,18 @@ void RegisterTerrainEditTools(McpServer& server) {
                     current.value->includesActiveTransactionOverlay, false});
             };
             host.apply = [workspace](const auto& plan, const auto& validate) { return workspace->ApplyTerrainPlan(plan, validate); };
+            host.prepareWater = [workspace, &waterOwner](const TerrainEditToolContext& context, const auto& binding,
+                const auto& options, auto points, bool follow) -> Result<Services::PreparedTerrainEdit> {
+                auto captured = workspace->CaptureTerrainWaterResources(options.enforceWaterLimits);
+                if (!captured.Succeeded() || !captured.value) return {{}, captured.diagnostics};
+                waterOwner = std::move(*captured.value);
+                return Services::PrepareTerrainWaterEdit(*context.session, context.document, binding,
+                    *waterOwner, options, points, follow);
+            };
+            host.verifyWater = [workspace, &waterOwner] {
+                return waterOwner ? workspace->VerifyTerrainWaterResources(*waterOwner)
+                    : Status::Failure("MCP", "TERRAIN_WATER_SOURCE_REQUIRED", "缺少本笔实际水刷资源。");
+            };
             return InvokeTerrainEditTool(name, arguments, host);
         };
         server.RegisterTool(std::move(definition));

@@ -129,14 +129,19 @@ void SetLevel(TerrainVertex& vertex, int level, std::optional<std::uint8_t> text
 }
 
 // 悬崖层级变化后向外传播，使相邻（八邻域）层级差不超过 2；边界顶点不改。
-void LimitLevelSteps(TerrainGridSnapshot& terrain, std::vector<std::uint32_t> queue, Changes& changes) {
+bool LimitLevelSteps(TerrainGridSnapshot& terrain, std::vector<std::uint32_t> queue, Changes& changes,
+    std::size_t& work, std::size_t maximumWork) {
     const auto width = terrain.header.width, height = terrain.header.height;
     while (!queue.empty()) {
+        if (work == maximumWork) return false;
+        ++work;
         const auto index = queue.back(); queue.pop_back();
         const auto x = index % width, y = index / width;
         const int level = terrain.vertices[index].CliffLevel();
         for (int dy = -1; dy <= 1; ++dy) {
             for (int dx = -1; dx <= 1; ++dx) {
+                if (work == maximumWork) return false;
+                ++work;
                 const auto nx = static_cast<std::int64_t>(x) + dx, ny = static_cast<std::int64_t>(y) + dy;
                 if ((dx == 0 && dy == 0) || nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
                 const auto neighbor = static_cast<std::uint32_t>(ny) * width + static_cast<std::uint32_t>(nx);
@@ -151,6 +156,7 @@ void LimitLevelSteps(TerrainGridSnapshot& terrain, std::vector<std::uint32_t> qu
             }
         }
     }
+    return true;
 }
 
 void RefreshPositions(TerrainGridSnapshot& terrain, std::uint32_t x0, std::uint32_t y0, std::uint32_t x1, std::uint32_t y1) {
@@ -380,8 +386,9 @@ Result<TerrainStrokeAnchor> CaptureTerrainStrokeAnchor(
     return Result<TerrainStrokeAnchor>::Success({vertex.groundHeightRaw, vertex.CliffLevel()});
 }
 
-Result<TerrainStrokeResult> ApplyTerrainStroke(
-    TerrainGridSnapshot& terrain, const TerrainBrush& brush, std::span<const TerrainStrokePoint> points) {
+static Result<TerrainStrokeResult> ApplyTerrainStrokeBounded(
+    TerrainGridSnapshot& terrain, const TerrainBrush& brush, std::span<const TerrainStrokePoint> points,
+    std::size_t maximumLevelPropagationWork) {
     if (auto status = Validate(terrain, brush, points); !status.Succeeded()) {
         Result<TerrainStrokeResult> failed;
         failed.diagnostics = std::move(status.diagnostics);
@@ -413,6 +420,7 @@ Result<TerrainStrokeResult> ApplyTerrainStroke(
     const int targetLevel = std::clamp(static_cast<int>(anchor.cliffLevel) + brush.levelDelta, 0, kMaximumCliffLevel);
     std::vector<std::uint32_t> levelChanged;
     std::vector<bool> noiseTouched;
+    std::size_t propagationWork = 0;
     if (brush.kind == TerrainBrushKind::Noise) noiseTouched.resize(terrain.vertices.size());
     for (const auto& point : points) {
         const auto at = FootprintAt(terrain, point, brush.radius, brush.size);
@@ -501,16 +509,48 @@ Result<TerrainStrokeResult> ApplyTerrainStroke(
             local.Touch(static_cast<std::uint32_t>(index % width), static_cast<std::uint32_t>(index / width));
             if (levelMoved) levelChanged.push_back(static_cast<std::uint32_t>(index));
         }
-        if (!levelChanged.empty()) LimitLevelSteps(terrain, std::exchange(levelChanged, {}), local);
+        if (!levelChanged.empty() && !LimitLevelSteps(terrain, std::exchange(levelChanged, {}), local,
+                propagationWork, maximumLevelPropagationWork))
+            return Result<TerrainStrokeResult>::Failure("MapTerrain.Edit", "TERRAIN_LEVEL_PROPAGATION_BUDGET",
+                "整笔悬崖层级传播已达到工作上限，未发布候选或部分采样。");
         // 下一个笔刷点（平滑、升降）要看到本点的结果；包围盒等统计在整笔结束后重算一次。
         if (const auto touched = local.Result(false); !touched.Empty()) {
+            if (brush.kind == TerrainBrushKind::CliffLevel) {
+                const auto area = std::size_t(touched.x1 - touched.x0) * (touched.y1 - touched.y0);
+                if (area > maximumLevelPropagationWork - propagationWork)
+                    return Result<TerrainStrokeResult>::Failure("MapTerrain.Edit", "TERRAIN_LEVEL_PROPAGATION_BUDGET",
+                        "悬崖传播后的采样刷新范围超过整笔剩余工作预算，未发布候选。");
+                propagationWork += area;
+            }
             RefreshPositions(terrain, touched.x0, touched.y0, touched.x1, touched.y1);
             changes.Touch(touched.x0, touched.y0); changes.Touch(touched.x1 - 1, touched.y1 - 1);
         }
     }
     auto result = changes.Result(headerChanged);
+    result.levelPropagationWork = propagationWork;
     if (!result.Empty() || headerChanged) RefreshTerrainDerived(terrain, result.x0, result.y0, result.x1, result.y1);
     return Result<TerrainStrokeResult>::Success(result);
+}
+
+Result<OwnedTerrainStroke> PrepareTerrainStroke(const TerrainGridSnapshot& terrain, const TerrainBrush& brush,
+    std::span<const TerrainStrokePoint> points, std::size_t maximumLevelPropagationWork) {
+    if (!maximumLevelPropagationWork || maximumLevelPropagationWork > TerrainLevelPropagationMaximumWork)
+        return Result<OwnedTerrainStroke>::Failure("MapTerrain.Edit", "TERRAIN_LEVEL_PROPAGATION_LIMITS", "层级传播预算只能收紧硬上限，不能为零。");
+    OwnedTerrainStroke candidate{terrain, {}};
+    auto result = ApplyTerrainStrokeBounded(candidate.terrain, brush, points, maximumLevelPropagationWork);
+    if (!result.Succeeded() || !result.value) return {{}, std::move(result.diagnostics)};
+    candidate.result = *result.value;
+    return Result<OwnedTerrainStroke>::Success(std::move(candidate));
+}
+
+Result<TerrainStrokeResult> ApplyTerrainStroke(
+    TerrainGridSnapshot& terrain, const TerrainBrush& brush, std::span<const TerrainStrokePoint> points) {
+    if (brush.kind != TerrainBrushKind::CliffLevel)
+        return ApplyTerrainStrokeBounded(terrain, brush, points, TerrainLevelPropagationMaximumWork);
+    auto candidate = PrepareTerrainStroke(terrain, brush, points);
+    if (!candidate.Succeeded() || !candidate.value) return {{}, std::move(candidate.diagnostics)};
+    terrain = std::move(candidate.value->terrain);
+    return Result<TerrainStrokeResult>::Success(candidate.value->result);
 }
 
 Result<TerrainStrokeResult> ReplaceTerrainTextureSlot(TerrainGridSnapshot& terrain,

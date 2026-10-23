@@ -110,7 +110,7 @@ TerrainBrush Brush(const QJsonValue& value) {
         {"ramp", TerrainBrushKind::Ramp}, {"boundary", TerrainBrushKind::Boundary},
         {"pathing_restriction", TerrainBrushKind::PathingRestriction}};
     const auto matched = std::find_if(std::begin(kinds), std::end(kinds), [&](const auto& entry) { return kind == entry.first; });
-    if (matched == std::end(kinds)) throw ArgumentError("TERRAIN_BRUSH_KIND", "未知地形笔刷；浅水和深水生成尚不支持。");
+    if (matched == std::end(kinds)) throw ArgumentError("TERRAIN_BRUSH_KIND", "未知地形笔刷。");
     TerrainBrush brush; brush.kind = matched->second; brush.size = 1;
     QJsonObject allowed{{"kind", {}}};
     if (brush.kind != TerrainBrushKind::Ramp) {
@@ -164,6 +164,23 @@ TerrainBrush Brush(const QJsonValue& value) {
     Keys(object, allowed, {"kind"});
     return brush;
 }
+std::optional<TerrainWaterStrokeOptions> WaterOptions(const QJsonValue& value) {
+    if (!value.isObject()) throw ArgumentError("TERRAIN_ARGUMENT_TYPE", "笔刷须为对象。");
+    const auto object = value.toObject(); const auto kind = Text(object, "kind", 24);
+    if (kind != "shallow_water" && kind != "deep_water") return {};
+    Keys(object, {{"kind", {}}, {"shape", {}}, {"size", {}}, {"cliff_texture", {}}, {"seed", {}}, {"enforce_water_limits", {}}},
+        {"kind", "shape", "size", "cliff_texture", "seed", "enforce_water_limits"});
+    TerrainWaterStrokeOptions options;
+    options.kind = kind == "deep_water" ? TerrainWaterBrushKind::Deep : TerrainWaterBrushKind::Shallow;
+    const auto shape = Text(object, "shape", 8);
+    if (shape != "circle" && shape != "square") throw ArgumentError("TERRAIN_BRUSH_SHAPE", "水刷形状只接受circle/square。");
+    options.shape = shape == "square" ? TerrainBrushShape::Square : TerrainBrushShape::Circle;
+    options.size = static_cast<std::uint32_t>(Number(object, "size", 1, 8, true));
+    options.cliffTexture = static_cast<std::uint8_t>(Number(object, "cliff_texture", 0, 14, true));
+    options.randomSeed = static_cast<std::uint32_t>(Number(object, "seed", 0, 4294967295.0, true));
+    options.enforceWaterLimits = Boolean(object, "enforce_water_limits", true);
+    return options;
+}
 QJsonValue Rawcode(const std::optional<std::string>& rawcode) {
     if (!rawcode) return QJsonValue(QJsonValue::Null);
     return QJsonObject{{"raw_hex", MapDataJson::Hex(*rawcode)}, {"raw_utf8", MapDataJson::Utf8OrNull(*rawcode)}};
@@ -214,12 +231,13 @@ std::vector<ToolDefinition> TerrainEditToolDefinitions() {
             {"items", BasicSchema({{"x", QJsonObject{{"type", "number"}}}, {"y", QJsonObject{{"type", "number"}}}}, {"x", "y"})}};
     };
     const auto brush = BasicSchema({{"kind", QJsonObject{{"type", "string"}, {"enum", QJsonArray{
-        "texture", "blight", "raise", "lower", "plateau", "smooth", "cliff_level", "noise", "cliff_texture", "water_height", "ramp", "boundary", "pathing_restriction"}}}},
+        "texture", "blight", "raise", "lower", "plateau", "smooth", "cliff_level", "noise", "cliff_texture", "water_height", "shallow_water", "deep_water", "ramp", "boundary", "pathing_restriction"}}}},
         {"blocked_type", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"walk", "fly", "build"}}}},
         {"size", IntegerSchema(1, 8)}, {"shape", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"circle", "square"}}}},
         {"ground_texture", TextSchema(4)}, {"cliff_texture", IntegerSchema(0, 14)}, {"level_delta", IntegerSchema(-1, 1)},
         {"strength", QJsonObject{{"type", "number"}, {"exclusiveMinimum", 0}, {"maximum", 1024}}},
         {"seed", IntegerSchema(0, 4294967295.0)}, {"variation", IntegerSchema(0, 17)},
+        {"enforce_water_limits", QJsonObject{{"type", "boolean"}}},
         {"value", QJsonObject{{"type", "boolean"}}}, {"randomize_variation", QJsonObject{{"type", "boolean"}}},
         {"water_height", QJsonObject{{"type", "number"}, {"minimum", -2048}, {"maximum", 2047.75}}}}, {"kind"});
     std::vector<ToolDefinition> definitions;
@@ -235,7 +253,7 @@ std::vector<ToolDefinition> TerrainEditToolDefinitions() {
     add("query_terrain_points", "按原terrain_binding查询1..256个世界坐标的地高、最近原顶点、贴图、悬崖和静态WPM原始通行位。缺WPM、超出WPM半开边界分别报告；不等同游戏动态寻路。", query, {"terrain_binding", "points"}, ToolPermission::Query);
     auto edit = identity; edit.insert("terrain_binding", binding); edit.insert("points", points(4096)); edit.insert("brush", brush);
     edit.insert("dry_run", QJsonObject{{"type", "boolean"}}); edit.insert("follow_doodads", QJsonObject{{"type", "boolean"}});
-    add("edit_terrain_stroke", "使用界面同一Core命令预览或提交一笔1..4096点地形。必须显式dry_run，提交沿原Undo/活动事务，不自行保存；默认尺寸1、圆形、装饰物不跟随。坡道仅一级干地直坡；water_height只调已有水面；boundary只改边界标志。pathing_restriction按32单位WPM格工作，必须指定blocked_type=walk/fly/build；value=false只撤回本工程新增限制，源限制全部保留。未知派生规则保持原生保存门关闭，独立宿主不可提交尚未通过保存门的笔划；越界和旧修订整笔拒绝。", edit,
+    add("edit_terrain_stroke", "使用界面同一Core命令预览或提交一笔1..4096点地形。必须显式dry_run，提交沿原Undo/活动事务，不自行保存；默认尺寸1、圆形、装饰物不跟随。坡道仅一级干地直坡；water_height只调已有水面。shallow_water/deep_water须显式给出kind/shape/size/cliff_texture/seed/enforce_water_limits六项，由宿主捕获实际资源；boundary只改边界标志。pathing_restriction按32单位WPM格工作，必须指定blocked_type=walk/fly/build；value=false只撤回本工程新增限制，源限制全部保留。未知派生规则保持原生保存门关闭，独立宿主不可提交尚未通过保存门的笔划；越界和旧修订整笔拒绝。", edit,
         {"project_identity", "expected_revision", "terrain_binding", "points", "brush", "dry_run"}, ToolPermission::Edit);
     return definitions;
 }
@@ -283,15 +301,22 @@ QJsonObject InvokeTerrainEditTool(const QString& name, const QJsonObject& argume
             return Stamp(std::move(body), identity);
         }
         const bool dryRun = Boolean(arguments, "dry_run", true);
-        const auto prepared = PrepareTerrainEdit(*context.session, context.document, binding,
-            Brush(arguments.value("brush")), points, Boolean(arguments, "follow_doodads", false));
+        const auto water = WaterOptions(arguments.value("brush"));
+        if (water && (!host.prepareWater || !host.verifyWater))
+            return Failure("TERRAIN_WATER_HOST_UNAVAILABLE", "宿主未接入实际来源水刷捕获与提交前复核。");
+        const auto prepared = water
+            ? host.prepareWater(context, binding, *water, points, Boolean(arguments, "follow_doodads", false))
+            : PrepareTerrainEdit(*context.session, context.document, binding,
+                Brush(arguments.value("brush")), points, Boolean(arguments, "follow_doodads", false));
         if (!prepared.Succeeded() || !prepared.value) return Failure(prepared);
+        if (water) { const auto verified = host.verifyWater(); if (!verified.Succeeded()) return Failure(verified); }
         QJsonObject body{{"ok", true}, {"dry_run", dryRun}, {"applied", false}, {"binding_before", bindingJson},
             {"scope", Scope(context)}, {"changes", ChangedJson(prepared.value->Plan())},
             {"terrain_pathing_gate", GateJson(prepared.value->Plan().TerrainPathingGate())}, {"map_saved", false}};
         if (dryRun || !prepared.value->Plan().HasChanges()) return Stamp(std::move(body), identity);
         if (!host.apply) return Failure("TERRAIN_EDIT_UNSUPPORTED", "宿主尚未接通同一事务的地形提交。");
         const auto validate = [&](const MapDataEditSession::EditReceipt& receipt) -> Status {
+            if (water) { const auto verified = host.verifyWater(); if (!verified.Succeeded()) return verified; }
             if (Identity(host) != identity || receipt.SessionIdentity() != context.session->SessionIdentity()
                 || receipt.BeforeRevision() != binding.terrainRevision)
                 return Status::Failure("MCP.Terrain", "TERRAIN_EDIT_STALE", "提交前工程、来源或原地形修订变化。");

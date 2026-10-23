@@ -250,8 +250,8 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
         stroke.brush.strength = *strength;
     }
     const auto points = object.value("points");
-    if (!points.isArray() || points.toArray().isEmpty() || points.toArray().size() > 1024) {
-        error = Failure("MCP_MAP_EDIT_TERRAIN_POINTS_INVALID", "每笔必须包含 1..1024 个点。");
+    if (!points.isArray() || points.toArray().isEmpty() || points.toArray().size() > 4096) {
+        error = Failure("MCP_MAP_EDIT_TERRAIN_POINTS_INVALID", "每笔必须包含 1..4096 个点。");
         return std::nullopt;
     }
     for (const auto& value : points.toArray()) {
@@ -547,7 +547,7 @@ QJsonObject TriggerEditsSchema() {
 QJsonObject TerrainStrokeSchema() {
     const QJsonObject pointSchema = BasicSchema({{"x", FloatSchema()}, {"y", FloatSchema()}},
         {"x", "y"});
-    const QJsonObject pointsSchema{{"type", "array"}, {"minItems", 1}, {"maxItems", 1024},
+    const QJsonObject pointsSchema{{"type", "array"}, {"minItems", 1}, {"maxItems", 4096},
         {"items", pointSchema}};
     const QJsonObject shapeSchema{{"type", "string"}, {"enum", QJsonArray{"circle", "square"}}};
     const QJsonObject spaceSchema{{"type", "string"}, {"enum", QJsonArray{"world", "terrain_vertex"}}};
@@ -735,7 +735,7 @@ void RegisterMapEditSaveTool(McpServer& server) {
         {"field_edits", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 32},
             {"items", FieldEditSchema()}}},
         {"terrain_strokes", QJsonObject{{"type", "array"}, {"minItems", 1},
-            {"maxItems", 16}, {"items", TerrainStrokeSchema()}}},
+            {"maxItems", 128}, {"items", TerrainStrokeSchema()}}},
     }, {"source_map_path", "output_path", "expected_source_sha256"});
     const auto envelopeProperties = BasicSchema({}, {"transaction_id", "expected_revision"}).value("properties").toObject();
     auto saveProperties = tool.inputSchema.value("properties").toObject();
@@ -869,16 +869,16 @@ void RegisterMapEditSaveTool(McpServer& server) {
             if (!terrainSha) return error;
             request.expectedTerrainSha256 = *terrainSha;
             const auto strokes = parameters.value("terrain_strokes");
-            if (!strokes.isArray() || strokes.toArray().isEmpty() || strokes.toArray().size() > 16)
-                return Failure("MCP_MAP_EDIT_TERRAIN_STROKES_INVALID", "地形请求必须包含 1..16 笔有序笔划。");
+            if (!strokes.isArray() || strokes.toArray().isEmpty() || strokes.toArray().size() > 128)
+                return Failure("MCP_MAP_EDIT_TERRAIN_STROKES_INVALID", "地形请求必须包含 1..128 笔有序笔划。");
             std::size_t totalPoints = 0;
             for (const auto& value : strokes.toArray()) {
                 if (!value.isObject()) return Failure("MCP_MAP_EDIT_TERRAIN_STROKE_INVALID",
                     "每笔地形操作必须是类型化对象。");
                 auto stroke = ParseTerrainStroke(value.toObject(), error);
                 if (!stroke) return error;
-                if (stroke->points.size() > 1024 - totalPoints)
-                    return Failure("MCP_MAP_EDIT_TERRAIN_POINTS_INVALID", "有序笔划总点数不得超过 1024。");
+                if (stroke->points.size() > 4096 - totalPoints)
+                    return Failure("MCP_MAP_EDIT_TERRAIN_POINTS_INVALID", "有序笔划总点数不得超过 4096。");
                 totalPoints += stroke->points.size();
                 request.terrainStrokes.push_back(std::move(*stroke));
             }

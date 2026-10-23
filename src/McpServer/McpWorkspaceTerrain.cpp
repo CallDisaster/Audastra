@@ -12,9 +12,14 @@
 namespace War3Map::Mcp {
 
 struct McpTerrainOverlay {
-    explicit McpTerrainOverlay(const MapDocument& original) : edits(original) {}
-    MapData::MapDataEditSession edits;
+    explicit McpTerrainOverlay(const MapDocument& original)
+        : owned(std::make_shared<MapData::MapDataEditSession>(original)), edits(*owned) {}
+    explicit McpTerrainOverlay(Services::TerrainReplayCandidate candidate)
+        : owned(std::move(candidate.session)), edits(*owned), waterOwners(std::move(candidate.waterOwners)) {}
+    std::shared_ptr<MapData::MapDataEditSession> owned;
+    MapData::MapDataEditSession& edits;
     std::vector<MapData::TerrainStrokeIntent> strokes;
+    std::vector<MapData::TerrainPathingResources> waterOwners;
 };
 
 struct McpTerrainWorkspaceState {
@@ -53,17 +58,22 @@ Result<std::vector<std::byte>> ReadSource(const WorkspaceSnapshot& source, const
 }
 
 Result<std::shared_ptr<McpTerrainOverlay>> Replay(const MapDocument& original,
-    const McpTerrainWorkspaceState& source, const std::vector<MapData::TerrainStrokeIntent>& strokes) {
+    const McpTerrainWorkspaceState& source, const std::vector<MapData::TerrainStrokeIntent>& strokes,
+    const WorkspaceSnapshot& snapshot, const std::filesystem::path& gameRoot) {
+    if (!strokes.empty()) {
+        auto replayed = Services::TerrainPathingSave::ReplayStrokes(snapshot, original,
+            source.terrain, source.pathing, strokes, gameRoot);
+        if (!replayed.Succeeded() || !replayed.value) return Failed<std::shared_ptr<McpTerrainOverlay>>(replayed);
+        auto overlay = std::make_shared<McpTerrainOverlay>(std::move(*replayed.value));
+        overlay->strokes = strokes;
+        return Result<std::shared_ptr<McpTerrainOverlay>>::Success(std::move(overlay));
+    }
     auto overlay = std::make_shared<McpTerrainOverlay>(original);
     const auto terrain = overlay->edits.AttachTerrain(source.terrain);
     if (!terrain.Succeeded()) return Failed<std::shared_ptr<McpTerrainOverlay>>(terrain);
     if (source.pathingFile) {
         const auto pathing = overlay->edits.AttachPathing(source.pathing);
         if (!pathing.Succeeded()) return Failed<std::shared_ptr<McpTerrainOverlay>>(pathing);
-    }
-    for (const auto& stroke : strokes) {
-        const auto edited = overlay->edits.EditTerrain(stroke.brush, stroke.points, stroke.followDoodads);
-        if (!edited.Succeeded()) return Failed<std::shared_ptr<McpTerrainOverlay>>(edited);
     }
     overlay->strokes = strokes;
     return Result<std::shared_ptr<McpTerrainOverlay>>::Success(std::move(overlay));
@@ -139,11 +149,11 @@ Status McpWorkspace::CaptureTerrainSources() {
         if (!pathing.Succeeded()) return {pathing.diagnostics};
         state->pathing = std::move(*pathing.value);
     }
-    auto committed = Replay(*initialMapData_, *state, {});
+    auto committed = Replay(*initialMapData_, *state, {}, source, gameRoot_);
     if (!committed.Succeeded()) return {committed.diagnostics};
     std::shared_ptr<McpTerrainOverlay> active;
     if (activeEdit_) {
-        auto created = Replay(*initialMapData_, *state, {});
+        auto created = Replay(*initialMapData_, *state, {}, source, gameRoot_);
         if (!created.Succeeded()) return {created.diagnostics};
         active = std::move(*created.value);
     }
@@ -166,7 +176,7 @@ Result<McpWorkspaceTerrainContext> McpWorkspace::TerrainContext(std::string docu
 
 Status McpWorkspace::SeedTerrainOverlay(ActiveEdit& edit) {
     if (!terrainState_) return Status::Ok();
-    auto replay = Replay(*initialMapData_, *terrainState_, terrainState_->committed->strokes);
+    auto replay = Replay(*initialMapData_, *terrainState_, terrainState_->committed->strokes, mapDataSource_->Snapshot(), gameRoot_);
     if (!replay.Succeeded()) return {replay.diagnostics};
     edit.terrain = std::move(*replay.value);
     if (edit.terrain->strokes.empty()) return Status::Ok();
@@ -176,6 +186,33 @@ Status McpWorkspace::SeedTerrainOverlay(ActiveEdit& edit) {
     const auto published = session_.ApplyTerrainPatch(edit.id, std::move(*sealed.value));
     if (published.Succeeded()) ++edit.generation;
     return published;
+}
+
+Result<MapData::TerrainPathingResources> McpWorkspace::CaptureTerrainWaterResources(bool enforceWaterLimits) {
+    using Output = Result<MapData::TerrainPathingResources>;
+    const auto captured = CaptureTerrainSources();
+    if (!captured.Succeeded()) return Failed<MapData::TerrainPathingResources>(captured);
+    const auto& overlay = activeEdit_ ? activeEdit_->terrain : terrainState_->committed;
+    if (!overlay || !overlay->edits.Terrain())
+        return Output::Failure("MCP", "TERRAIN_WATER_SESSION_REQUIRED", "水刷需要当前实际地形会话。");
+    const auto original = MapData::ParseMapTerrain(terrainState_->terrain);
+    if (!original.Succeeded() || !original.value) return Failed<MapData::TerrainPathingResources>(original);
+    const auto current = overlay->edits.Snapshot(MapDataKind::Doodads, MapData::TerrainSavePlanLimits{}.maximumBytes);
+    if (!current.Succeeded() || !current.value) return Failed<MapData::TerrainPathingResources>(current);
+    const auto& doodads = current.value->Doodads();
+    if (!doodads && current.value->Member(MapDataKind::Doodads).state != MapDataState::Missing)
+        return Output::Failure("MCP", "TERRAIN_WATER_DOODADS_UNAVAILABLE", "未知DOO不能作为空集合准备水刷。");
+    const MapData::DoodadPlacements empty;
+    return Services::TerrainPathingSave::CaptureWaterBrushRules(mapDataSource_->Snapshot(),
+        *original.value->Snapshot(), *overlay->edits.Terrain(), doodads ? *doodads : empty,
+        gameRoot_, enforceWaterLimits, MapData::TerrainSavePlanLimits{}.maximumBytes);
+}
+
+Status McpWorkspace::VerifyTerrainWaterResources(const MapData::TerrainPathingResources& owner) const {
+    const auto environment = CheckEnvironmentUnchanged();
+    if (!environment.Succeeded()) return environment;
+    if (!mapDataSource_) return Status::Failure("MCP", "TERRAIN_WATER_SOURCE_REQUIRED", "水刷实际目录来源已失效。");
+    return owner.VerifyReadback(mapDataSource_->Snapshot(), MapData::TerrainSavePlanLimits{}.maximumBytes);
 }
 
 bool McpWorkspace::HasTerrainOverlay() const noexcept {
@@ -231,10 +268,11 @@ Result<MapData::TerrainStrokeResult> McpWorkspace::ApplyTerrainPlan(const Servic
     }
     auto overlay = activeEdit_->terrain;
     auto strokes = overlay->strokes;
-    strokes.push_back({plan.Plan().Brush(), {plan.Plan().Points().begin(), plan.Plan().Points().end()}, plan.Plan().FollowDoodads()});
+    strokes.push_back({plan.Plan().Brush(), {plan.Plan().Points().begin(), plan.Plan().Points().end()},
+        plan.Plan().FollowDoodads(), plan.WaterOptions()});
     const auto budget = StrokeBudget(strokes);
     if (!budget.Succeeded()) return Failed<Receipt>(budget);
-    auto candidate = Replay(*initialMapData_, *terrainState_, strokes);
+    auto candidate = Replay(*initialMapData_, *terrainState_, strokes, mapDataSource_->Snapshot(), gameRoot_);
     if (!candidate.Succeeded()) return Failed<Receipt>(candidate);
     auto sealed = Services::TerrainPathingSave::Seal(*initialMapData_, terrainState_->terrain, terrainState_->pathing,
         mapDataSource_->Snapshot(), (*candidate.value)->edits, strokes, gameRoot_);
@@ -259,6 +297,10 @@ Result<MapData::TerrainStrokeResult> McpWorkspace::ApplyTerrainPlan(const Servic
             return Status::Failure("MCP", "TERRAIN_EDIT_STALE", "地形发布前活动事务或来源身份已变化。");
         const auto environment = CheckEnvironmentUnchanged();
         if (!environment.Succeeded()) return environment;
+        for (const auto& owner : (*candidate.value)->waterOwners) {
+            const auto unchanged = owner.VerifyReadback(mapDataSource_->Snapshot(), MapData::TerrainSavePlanLimits{}.maximumBytes);
+            if (!unchanged.Succeeded()) return unchanged;
+        }
         const auto unchangedOverlay = session_.PreviewEdit(transaction);
         if (!unchangedOverlay.Succeeded()) return Status{unchangedOverlay.diagnostics};
         if (overlay->strokes.empty()) {
@@ -275,6 +317,7 @@ Result<MapData::TerrainStrokeResult> McpWorkspace::ApplyTerrainPlan(const Servic
     });
     if (!applied.Succeeded()) return applied;
     overlay->strokes.swap(strokes);
+    overlay->waterOwners.swap((*candidate.value)->waterOwners);
     ++activeEdit_->generation; ++toolEpoch_;
     activeEdit_->previewedGeneration.reset(); activeEdit_->validatedGeneration.reset();
     return applied;
@@ -301,7 +344,7 @@ Result<Services::MapEditSaveReceipt> McpWorkspace::ExportTerrainArchiveCandidate
     if (!source.Succeeded()) return Failed<Receipt>(source);
     request.expectedTerrainSha256 = terrainState_->terrainFile.sha256;
     for (const auto& stroke : overlay->strokes)
-        request.terrainStrokes.push_back({stroke.brush, stroke.points, Services::MapEditPointSpace::World, stroke.followDoodads});
+        request.terrainStrokes.push_back({stroke.brush, stroke.points, Services::MapEditPointSpace::World, stroke.followDoodads, stroke.waterBrush});
     request.beforePublish = guard;
     return Services::SaveMapEditCandidate(request);
 }

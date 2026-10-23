@@ -8,9 +8,9 @@
 
 namespace War3Map::Services::MapEditValidation {
 
-constexpr std::size_t kMaximumStrokes = 16;
-constexpr std::size_t kMaximumPointsPerStroke = 1024;
-constexpr std::size_t kMaximumTotalPoints = 1024;
+constexpr std::size_t kMaximumStrokes = 128;
+constexpr std::size_t kMaximumPointsPerStroke = 4096;
+constexpr std::size_t kMaximumTotalPoints = 4096;
 
 bool ValidSha(std::string_view value) {
     return value.size() == 64 && std::all_of(value.begin(), value.end(), [](char c) {
@@ -91,7 +91,7 @@ Status ValidatePlacementOperation(const MapEditPlacementOperation& operation) {
 Status ValidateStrokes(std::span<const MapEditTerrainStroke> strokes) {
     if (strokes.empty() || strokes.size() > kMaximumStrokes) {
         return Status::Failure("MapEdit.Save", "SAVE_STROKE_COUNT",
-            "同一候选只接受 1 到 16 笔有序地形笔划。");
+            "同一候选只接受 1 到 128 笔有序地形笔划。");
     }
     std::size_t pointCount = 0;
     for (const auto& stroke : strokes) {
@@ -145,7 +145,7 @@ Status ValidateStrokes(std::span<const MapEditTerrainStroke> strokes) {
         }
         if (stroke.points.empty() || stroke.points.size() > kMaximumPointsPerStroke
             || stroke.points.size() > kMaximumTotalPoints - pointCount) {
-            return Status::Failure("MapEdit.Save", "SAVE_STROKE_POINTS", "笔划点总数必须在 1 到 1024 之间。");
+            return Status::Failure("MapEdit.Save", "SAVE_STROKE_POINTS", "笔划点总数必须在 1 到 4096 之间。");
         }
         pointCount += stroke.points.size();
         if (std::any_of(stroke.points.begin(), stroke.points.end(), [](const auto& point) {

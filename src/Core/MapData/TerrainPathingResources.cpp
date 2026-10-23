@@ -135,7 +135,7 @@ Resources::TerrainTableSnapshot Table(const std::string& path, std::string_view 
     return Take(Resources::CaptureTerrainTable(resolver, path, id));
 }
 std::vector<ArchiveExactMember> DirectoryMembers(const WorkspaceSnapshot& expected,
-    std::span<const std::string> names, const ArchiveExactMemberLimits& limits) {
+    std::span<const std::string> names, const ArchiveExactMemberLimits& limits, bool allowSettingsLni = false) {
     // 用现有目录快照与只读SHA租约读取；不按外部提供的files向量拼接任意路径。
     auto directory = Take(DirectoryWorkspace::Open(expected.root));
     if (directory.Snapshot().aggregateSha256 != expected.aggregateSha256)
@@ -149,7 +149,7 @@ std::vector<ArchiveExactMember> DirectoryMembers(const WorkspaceSnapshot& expect
         const WorkspaceFile* selected = nullptr;
         for (const auto& file : directory.Snapshot().files) {
             const auto path = Canonical(IO::GenericPathUtf8(file.relativePath));
-            if ((key == "war3map.w3i" && path == "table/w3i.ini")
+            if ((!allowSettingsLni && key == "war3map.w3i" && path == "table/w3i.ini")
                 || (key == "war3map.w3b" && (path == "table/destructable.ini" || path == "table/doodad.ini"))
                 || (key == "war3mapmisc.txt" && path == "table/misc.ini"))
                 Fail("TERRAIN_NATIVE_SOURCE_LAYOUT", "目录含尚未绑定到原生通行输入的LNI覆盖：" + path);
@@ -280,8 +280,8 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureWaterBrushRules(
 }
 
 Result<std::vector<ArchiveExactMember>> TerrainPathingResources::ReadDirectoryMembers(const WorkspaceSnapshot& source,
-    std::span<const std::string> names, const ArchiveExactMemberLimits& limits) {
-    return Guard<std::vector<ArchiveExactMember>>([&] { return DirectoryMembers(source, names, limits); });
+    std::span<const std::string> names, const ArchiveExactMemberLimits& limits, bool allowSettingsLni) {
+    return Guard<std::vector<ArchiveExactMember>>([&] { return DirectoryMembers(source, names, limits, allowSettingsLni); });
 }
 
 Status TerrainPathingResources::CaptureWaterSpecialInputs(const MemberReader& reader,

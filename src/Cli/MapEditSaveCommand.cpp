@@ -371,14 +371,14 @@ int RunMapEditSave(int argc, wchar_t** argv) {
             index += 8;
         } else if (flag == L"--stroke") {
             if (index + 6 >= argc) return Invalid("--stroke requires six arguments");
-            if (request.terrainStrokes.size() >= 16) return Invalid("at most 16 ordered strokes are allowed");
+            if (request.terrainStrokes.size() >= 128) return Invalid("at most 128 ordered strokes are allowed");
             auto stroke = ParseStroke(argv, index, error);
             if (!stroke) return Invalid(error);
             request.terrainStrokes.push_back(std::move(*stroke));
             index += 7;
         } else if (flag == L"--water-stroke") {
             if (index + 8 >= argc) return Invalid("--water-stroke requires eight arguments");
-            if (request.terrainStrokes.size() >= 16) return Invalid("at most 16 ordered strokes are allowed");
+            if (request.terrainStrokes.size() >= 128) return Invalid("at most 128 ordered strokes are allowed");
             auto stroke = ParseWaterStroke(argv, index, error);
             if (!stroke) return Invalid(error);
             request.terrainStrokes.push_back(std::move(*stroke));

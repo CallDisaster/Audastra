@@ -23,6 +23,7 @@
 #include "War3MapCore/MapData/MapDataFieldEditing.h"
 #include "../PlacementCreationFixtures.h"
 #include "SyntheticObjectCatalogFixture.h"
+#include "TerrainWaterEditFixture.h"
 #include "../MapDataFixtures.h"
 #include "../MapDataSpatialFixtures.h"
 
@@ -295,6 +296,7 @@ private slots:
     void AuxiliaryPreviewAndReferenceFailuresAreAtomic();
     void AuxiliaryReentryProjectReplacementAndSourceDrift();
     void TerrainToolsKeepSessionPreviewAndOriginalUndo();
+    void WaterToolsCaptureActualResourcesAndKeepOriginalUndo();
     void BoundaryDraftSavesAndReopensAsProject_data();
     void BoundaryDraftSavesAndReopensAsProject();
     void ImportMetadataUsesSourceAndCurrentAssetOverlay();
@@ -1317,6 +1319,83 @@ void LiveEditorToolsTests::TerrainToolsKeepSessionPreviewAndOriginalUndo() {
     QVERIFY(WriteFile(f.source.filePath("map/war3map.w3e"), Bytes(altered)));
     QVERIFY(!f.tools->Invoke("get_terrain_edit_state", {}).value("ok").toBool());
     QCOMPARE(session->InspectTerrainPoint({0, 0}).value->groundHeight, 16.f); QCOMPARE(undo->count(), 1);
+}
+
+void LiveEditorToolsTests::WaterToolsCaptureActualResourcesAndKeepOriginalUndo() {
+    std::vector<std::byte> shallow;
+    for (const bool deep : {false, true}) {
+        Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+        const auto members = Tests::TerrainWaterMembers();
+        for (const auto& member : members)
+            QVERIFY(WriteFile(f.source.filePath("map/" + QString::fromStdString(member.name)), Bytes(member.data)));
+        const auto original = members.front().data;
+        f.project.war3GameRoot_ = std::filesystem::path(f.outputs.path().toStdWString()) / "game";
+        QVERIFY(std::filesystem::create_directory(f.project.war3GameRoot_));
+        const auto game = WriteVerifiedArchive(f.project.war3GameRoot_ / "war3.mpq",
+            std::vector<MapArchiveMember>{{"fixture.txt", Tests::WaterText("owned optional profile source")}});
+        QVERIFY(game.Succeeded());
+        auto directory = DirectoryWorkspace::Open(f.project.projectRoot_); QVERIFY(directory.Succeeded());
+        f.project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*directory.value));
+        f.project.LoadMapDocument(); f.project.ResetEditTracking();
+        QVERIFY(f.project.editTrackingReady_ && !f.project.editTrackingFailed_);
+        auto* session = f.project.mapEdits_.get(); auto* undo = f.project.mapDataUndoStack_;
+        QVERIFY(session && undo && session->Terrain());
+        const auto triggerFingerprint = f.Fingerprint();
+        const auto request = [&](bool dryRun) {
+            auto args = f.Context();
+            const auto state = f.tools->Invoke("get_terrain_edit_state", {});
+            args["terrain_binding"] = state.value("terrain_binding"); args["dry_run"] = dryRun;
+            args["brush"] = QJsonObject{{"kind", deep ? "deep_water" : "shallow_water"}, {"shape", "square"},
+                {"size", 1}, {"cliff_texture", 0}, {"seed", 4294967295.0}, {"enforce_water_limits", true}};
+            args["points"] = QJsonArray{QJsonObject{{"x", 512}, {"y", 512}}};
+            return args;
+        };
+        int beforeWrites = 0;
+        f.tools->SetBeforeWrite([&] { ++beforeWrites; return false; });
+        const auto previewRequest = request(true);
+        const auto preview = f.tools->Invoke("edit_terrain_stroke", previewRequest);
+        QVERIFY2(preview.value("ok").toBool(), qPrintable(Explain(preview)));
+        QVERIFY(!preview.value("applied").toBool()); QVERIFY(!preview.value("map_saved").toBool());
+        QCOMPARE(beforeWrites, 0); QCOMPARE(undo->count(), 0); QCOMPARE(session->Revision(), std::uint64_t{0});
+        QCOMPARE(*MapData::SerializeMapTerrain(*session->Terrain()).value, original);
+        auto malformed = previewRequest; auto brush = malformed.value("brush").toObject();
+        brush["enforce_water_limits"] = "true"; malformed["brush"] = brush;
+        QVERIFY(!f.tools->Invoke("edit_terrain_stroke", malformed).value("ok").toBool()); QCOMPARE(beforeWrites, 0);
+        auto denied = previewRequest; denied["dry_run"] = false;
+        QCOMPARE(ErrorCode(f.tools->Invoke("edit_terrain_stroke", denied)), QString("LIVE_EDITOR_DRAFT_REJECTED"));
+        QCOMPARE(beforeWrites, 1); QCOMPARE(undo->count(), 0);
+        f.tools->SetBeforeWrite({});
+        QSignalSpy reloads(&f.project, &EditorProject::MapDocumentChanged);
+        QSignalSpy undoEvents(undo, &QUndoStack::indexChanged);
+        const auto applied = f.tools->Invoke("edit_terrain_stroke", denied);
+        QVERIFY2(applied.value("ok").toBool(), qPrintable(Explain(applied)));
+        QVERIFY(applied.value("applied").toBool()); QVERIFY(!applied.value("map_saved").toBool());
+        QCOMPARE(f.project.mapEdits_.get(), session); QCOMPARE(f.project.mapDataUndoStack_, undo);
+        QCOMPARE(undo->count(), 1); QCOMPARE(undoEvents.count(), 1); QCOMPARE(reloads.count(), 0);
+        const auto changed = MapData::SerializeMapTerrain(*session->Terrain()); QVERIFY(changed.Succeeded());
+        QVERIFY(*changed.value != original);
+        const auto center = session->InspectTerrainPoint({512, 512}); QVERIFY(center.Succeeded());
+        QVERIFY(center.value->vertex.HasWater());
+        if (deep) QVERIFY(*changed.value != shallow);
+        else shallow = *changed.value;
+        QVERIFY(!f.tools->Invoke("edit_terrain_stroke", denied).value("ok").toBool()); QCOMPARE(undo->count(), 1);
+        undo->undo(); QCOMPARE(*MapData::SerializeMapTerrain(*session->Terrain()).value, original); QVERIFY(!session->IsDirty());
+        undo->redo(); QCOMPARE(*MapData::SerializeMapTerrain(*session->Terrain()).value, *changed.value);
+        QCOMPARE(f.Fingerprint(), triggerFingerprint);
+        QCOMPARE(Tests::WaterTake(IO::ReadFileBytes(f.project.projectRoot_ / "map/war3map.w3e")), original);
+        // 可选profile的实际winner必须参与捕获，不能靠原有UI/MiscData默认值继续准备。
+        const auto patch = WriteVerifiedArchive(f.project.war3GameRoot_ / "war3patch.mpq",
+            std::vector<MapArchiveMember>{{"Units/MiscData.txt", Tests::WaterText("[Terrain]\nMaxHeight=1408\n")}});
+        QVERIFY(patch.Succeeded());
+        const auto refused = f.tools->Invoke("edit_terrain_stroke", request(true));
+        QVERIFY(!refused.value("ok").toBool()); QCOMPARE(undo->count(), 1);
+        QCOMPARE(*MapData::SerializeMapTerrain(*session->Terrain()).value, *changed.value);
+        QVERIFY(std::filesystem::remove(f.project.war3GameRoot_ / "war3patch.mpq"));
+        auto altered = original; altered.back() ^= std::byte{1};
+        QVERIFY(WriteFile(f.source.filePath("map/war3map.w3e"), Bytes(altered)));
+        QVERIFY(!f.tools->Invoke("get_terrain_edit_state", {}).value("ok").toBool());
+        QCOMPARE(*MapData::SerializeMapTerrain(*session->Terrain()).value, *changed.value); QCOMPARE(undo->count(), 1);
+    }
 }
 
 void LiveEditorToolsTests::EntityFieldsUseOriginalSessionAndAtomicUndo() {

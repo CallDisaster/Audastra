@@ -170,6 +170,7 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
             prepared.value->waterBrush_ = brush;
             prepared.value->waterResult_ = candidate.value->result;
             prepared.value->waterPreparationWork_ = work;
+            prepared.value->waterPreparationBytes_ = finalBytes;
         }
         return prepared;
     } catch (const std::bad_alloc&) {

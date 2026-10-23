@@ -32,14 +32,16 @@ class PreparedTerrainEdit {
 public:
     [[nodiscard]] const TerrainEditBinding& Binding() const noexcept { return binding_; }
     [[nodiscard]] const MapData::MapDataEditSession::PreparedTerrainEdit& Plan() const noexcept { return plan_; }
+    [[nodiscard]] const std::optional<MapData::TerrainWaterStrokeOptions>& WaterOptions() const noexcept { return waterOptions_; }
 private:
     PreparedTerrainEdit(TerrainEditBinding binding, MapData::MapDataEditSession::PreparedTerrainEdit plan)
         : binding_(std::move(binding)), plan_(std::move(plan)) {}
     TerrainEditBinding binding_;
     MapData::MapDataEditSession::PreparedTerrainEdit plan_;
+    std::optional<MapData::TerrainWaterStrokeOptions> waterOptions_;
     friend Result<PreparedTerrainEdit> PrepareTerrainEdit(const MapData::MapDataEditSession&,
         const MapDataQueryBinding&, const TerrainEditBinding&, const MapData::TerrainBrush&,
-        std::span<const MapData::TerrainStrokePoint>, bool);
+        std::span<const MapData::TerrainStrokePoint>, bool, std::size_t);
     friend Result<PreparedTerrainEdit> PrepareTerrainWaterEdit(const MapData::MapDataEditSession&,
         const MapDataQueryBinding&, const TerrainEditBinding&, const MapData::TerrainPathingResources&,
         const MapData::TerrainWaterStrokeOptions&, std::span<const MapData::TerrainStrokePoint>, bool,
@@ -57,7 +59,8 @@ private:
 [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainEdit(
     const MapData::MapDataEditSession& session, const MapDataQueryBinding& document,
     const TerrainEditBinding& expected, const MapData::TerrainBrush& brush,
-    std::span<const MapData::TerrainStrokePoint> points, bool followDoodads = false);
+    std::span<const MapData::TerrainStrokePoint> points, bool followDoodads = false,
+    std::size_t maximumLevelPropagationWork = MapData::TerrainLevelPropagationMaximumWork);
 // resources须由宿主从实际地图/游戏来源和本笔当前地形捕获；服务不读盘。
 // 第一采样点只捕获一次anchor，整笔固定seed/anchor/points，仍不授予保存资格。
 [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainWaterEdit(

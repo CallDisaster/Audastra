@@ -39,23 +39,28 @@ Result<TerrainPatch> TerrainPatchCodec::SealWithPlan(const MapDocument& original
     std::span<const std::byte> terrain, std::span<const std::byte> pathing,
     const WorkspaceSnapshot& source, const MapDataEditSession& current,
     std::span<const TerrainStrokeIntent> strokes, const std::filesystem::path& gameRoot,
-    const TerrainSavePlan* prepared) {
+    const TerrainSavePlan* prepared, const MapDataEditSession* trustedReplay) {
     if (strokes.empty() || strokes.size() > 128)
         return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_STROKE_BUDGET", "地形目录事务需要 1 到 128 笔原始命令。");
-    if (current.specialDoodads_ != current.savedSpecialDoodads_)
+    const bool water = std::any_of(strokes.begin(), strokes.end(), [](const auto& stroke) { return stroke.waterBrush.has_value(); });
+    if (!trustedReplay && (water || current.specialDoodads_ != current.savedSpecialDoodads_))
         return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_WATER_REPLAY_UNSUPPORTED",
-            "此目录事务尚未序列化水刷原始命令，不能从DOO/W3E覆盖恢复特殊模型删除授权；请通过当前地图会话的正常保存或另存完成。");
+            "Core普通重放入口不捕获水刷资源；须通过Services从实际来源逐笔重放，不能从DOO/W3E覆盖恢复特殊模型删除授权。");
     std::size_t pointCount = 0;
     for (const auto& stroke : strokes) {
         if (stroke.points.empty() || stroke.points.size() > 4096 - pointCount)
             return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_POINT_BUDGET", "地形目录事务累计采样点超过 4096 或包含空笔划。");
         pointCount += stroke.points.size();
     }
-    MapDataEditSession replay(original);
-    const auto attached = replay.AttachTerrain(terrain);
-    if (!attached.Succeeded()) return {{}, attached.diagnostics};
-    const auto attachedPathing = replay.AttachPathing(pathing);
-    if (!attachedPathing.Succeeded()) return {{}, attachedPathing.diagnostics};
+    std::unique_ptr<MapDataEditSession> ordinaryReplay;
+    if (!trustedReplay) {
+        ordinaryReplay = std::make_unique<MapDataEditSession>(original);
+        const auto attached = ordinaryReplay->AttachTerrain(terrain);
+        if (!attached.Succeeded()) return {{}, attached.diagnostics};
+        const auto attachedPathing = ordinaryReplay->AttachPathing(pathing);
+        if (!attachedPathing.Succeeded()) return {{}, attachedPathing.diagnostics};
+    }
+    const auto& replay = trustedReplay ? *trustedReplay : *ordinaryReplay;
     if (!current.terrainOriginal_ || !current.terrain_ || !current.pathingOriginal_ || !current.pathing_
         || current.original_ != replay.original_ || current.memberNames_ != replay.memberNames_
         || *current.pathingOriginal_ != *replay.pathingOriginal_)
@@ -64,16 +69,18 @@ Result<TerrainPatch> TerrainPatchCodec::SealWithPlan(const MapDocument& original
     if (!currentOriginal.Succeeded() || !currentOriginal.value) return {{}, currentOriginal.diagnostics};
     if (!std::equal(terrain.begin(), terrain.end(), currentOriginal.value->begin(), currentOriginal.value->end()))
         return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_BASELINE_MISMATCH", "地形会话原 W3E 与目录来源不一致。");
-    for (const auto& stroke : strokes) {
-        for (const auto& point : stroke.points) {
-            const auto checked = replay.InspectTerrainPoint(point);
-            if (!checked.Succeeded()) return {{}, checked.diagnostics};
+    if (!trustedReplay) {
+        for (const auto& stroke : strokes) {
+            for (const auto& point : stroke.points) {
+                const auto checked = replay.InspectTerrainPoint(point);
+                if (!checked.Succeeded()) return {{}, checked.diagnostics};
+            }
+            const auto edited = ordinaryReplay->EditTerrain(stroke.brush, stroke.points, stroke.followDoodads);
+            if (!edited.Succeeded()) return {{}, edited.diagnostics};
         }
-        const auto edited = replay.EditTerrain(stroke.brush, stroke.points, stroke.followDoodads);
-        if (!edited.Succeeded()) return {{}, edited.diagnostics};
     }
     // 净结果必须只来自这些笔划；不能夹带任何地图数据字段或任意 WPM 覆盖。
-    if (current.current_ != replay.current_ || current.pathing_ != replay.pathing_
+    if (current.current_ != replay.current_ || current.pathing_ != replay.pathing_ || current.Removals() != replay.Removals()
         || !current.pathingProtected_ || !current.originalPathingRestrictions_ || !current.pathingRestrictions_
         || *current.pathingProtected_ != *replay.pathingProtected_
         || *current.originalPathingRestrictions_ != *replay.originalPathingRestrictions_
@@ -85,15 +92,23 @@ Result<TerrainPatch> TerrainPatchCodec::SealWithPlan(const MapDocument& original
     if (!currentTerrain.Succeeded() || !currentTerrain.value) return {{}, currentTerrain.diagnostics};
     if (*replayTerrain.value != *currentTerrain.value)
         return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_REPLAY_MISMATCH", "当前 W3E 不能由原始地形命令完整重放。");
-    // 上面的完整重放和保存门已证明两种摆放只改变 Z。其它成员仍不属于地形事务。
+    // Services私有桥只接其自己真实重放的会话。完整DOO比较不替代双方私有谱系验证。
+    for (const auto* session : {&current, &replay}) {
+        const auto index = MapDataEditSession::Index(MapDataKind::Doodads);
+        if (session->original_[index] && session->current_[index]) {
+            const auto checked = session->VerifyTerrainDoodadChange(*session->original_[index], *session->current_[index]);
+            if (!checked.Succeeded()) return {{}, checked.diagnostics};
+        }
+    }
+    // Units仍只允许跟随；DOO可包含真实水刷命令产生且与独立重放逐字相等的special删除。
     const bool follows = std::any_of(strokes.begin(), strokes.end(),
         [](const auto& stroke) { return stroke.followDoodads; });
     for (std::size_t index = 0; index < current.current_.size(); ++index) {
         if (current.current_[index] == current.original_[index]) continue;
-        if (!follows || (index != MapDataEditSession::Index(MapDataKind::Units)
-                && index != MapDataEditSession::Index(MapDataKind::Doodads))
+        if (!((follows && index == MapDataEditSession::Index(MapDataKind::Units))
+                || ((follows || water) && index == MapDataEditSession::Index(MapDataKind::Doodads)))
             || !current.original_[index] || !current.current_[index])
-            return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_MEMBER_SCOPE", "地形目录事务只支持命令重放产生的原有摆放高度变化。");
+            return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_MEMBER_SCOPE", "地形目录事务只支持完整重放产生的摆放高度或水刷特殊模型变化。");
     }
     std::optional<TerrainSavePlan> captured;
     if (!prepared) {

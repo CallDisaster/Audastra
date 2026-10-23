@@ -97,8 +97,19 @@ struct TerrainStrokeResult {
     // 实际改动的顶点范围 [x0,x1)×[y0,y1)；没有改动时为空范围。
     std::uint32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
     bool headerChanged = false;
+    std::size_t levelPropagationWork = 0; // 本笔累计的层级传播队列/邻域及逐采样刷新访问。
     [[nodiscard]] bool Empty() const noexcept { return x0 >= x1 || y0 >= y1; }
 };
+
+inline constexpr std::size_t TerrainLevelPropagationMaximumWork = 16u * 1024u * 1024u;
+struct OwnedTerrainStroke {
+    TerrainGridSnapshot terrain;
+    TerrainStrokeResult result;
+};
+// 先在独立副本中落笔；传播预算只能收紧硬上限，失败不返回已修改前缀。
+[[nodiscard]] Result<OwnedTerrainStroke> PrepareTerrainStroke(
+    const TerrainGridSnapshot& terrain, const TerrainBrush& brush, std::span<const TerrainStrokePoint> points,
+    std::size_t maximumLevelPropagationWork = TerrainLevelPropagationMaximumWork);
 
 // 依次在每个点上施加笔刷，直接修改 terrain（含派生值）。输入非法时不修改并返回错误。
 // 地图边界顶点只接受贴图、荒芜与边界标志，不改高度与悬崖。
