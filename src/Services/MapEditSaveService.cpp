@@ -670,6 +670,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         std::optional<Trigger::TriggerTransactionReceipt> transactionReceipt;
         std::shared_ptr<const MapData::TerrainSavePlan> terrainPlan;
         std::vector<MapData::TerrainPathingResources> waterRuleResources;
+        std::shared_ptr<MapData::MapDataEditSession> terrainReplay;
         std::shared_ptr<const TerrainMinimapSave> minimapSave;
         std::shared_ptr<const TerrainMinimapPreserveGuard> minimapPreserve;
 
@@ -721,39 +722,22 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             }
             const auto grid = edits.Terrain();
             if (!grid) return Fail("SAVE_TERRAIN_UNAVAILABLE", "源 W3E 无法建立地形编辑快照。");
-            const MapDataQueryBinding terrainDocument{"map-edit-save", 1, 0, source.SourceSha256()};
+            std::vector<MapData::TerrainStrokeIntent> intents;
+            intents.reserve(request.terrainStrokes.size());
             for (const auto& stroke : request.terrainStrokes) {
                 const auto points = WorldPoints(stroke, *grid);
                 if (!points.Succeeded() || !points.value) return Forward(points.diagnostics);
-                if (stroke.waterBrush) {
-                    // 原始来源保持grid；本笔规则必须绑定此前有序笔划之后的当前草稿。
-                    auto currentDoo = edits.Snapshot(MapDataKind::Doodads, MapData::TerrainSavePlanLimits{}.maximumBytes);
-                    if (!currentDoo.Succeeded() || !currentDoo.value) return Forward(currentDoo.diagnostics);
-                    const MapData::DoodadPlacements emptyDoo;
-                    const auto& doodads = currentDoo.value->Doodads();
-                    if (!doodads && currentDoo.value->Member(MapDataKind::Doodads).state != MapDataState::Missing)
-                        return Fail("SAVE_WATER_DOODADS_UNAVAILABLE", "水刷需要当前完整DOO，不能以空集合替代未知来源。");
-                    auto resources = TerrainPathingSave::CaptureWaterBrushRules(source, *grid,
-                        *edits.Terrain(), doodads ? *doodads : emptyDoo, request.gameRoot, stroke.waterBrush->enforceWaterLimits,
-                        MapData::TerrainSavePlanLimits{}.maximumBytes);
-                    if (!resources.Succeeded() || !resources.value) return Forward(resources.diagnostics);
-                    const TerrainEditBinding binding{terrainDocument, edits.SessionIdentity(), edits.Revision(), edits.TerrainSourceRevision()};
-                    auto plan = PrepareTerrainWaterEdit(edits, terrainDocument, binding, *resources.value,
-                        *stroke.waterBrush, *points.value, stroke.followDoodads);
-                    if (!plan.Succeeded() || !plan.value) return Forward(plan.diagnostics);
-                    const auto edited = ApplyTerrainEdit(edits, terrainDocument, *plan.value);
-                    if (!edited.Succeeded() || !edited.value) return Forward(edited.diagnostics);
-                    waterRuleResources.push_back(std::move(*resources.value));
-                } else {
-                    const auto edited = edits.EditTerrain(stroke.brush, *points.value, stroke.followDoodads);
-                    if (!edited.Succeeded() || !edited.value) return Forward(edited.diagnostics);
-                }
+                intents.push_back({stroke.brush, *points.value, stroke.followDoodads, stroke.waterBrush});
             }
-            if (!edits.IsDirty()) {
+            auto replayed = TerrainPathingSave::ReplayStrokes(source, map, *terrainBytes.value, *pathingBytes.value, intents, request.gameRoot);
+            if (!replayed.Succeeded() || !replayed.value) return Forward(replayed.diagnostics);
+            waterRuleResources = std::move(replayed.value->waterOwners);
+            terrainReplay = std::move(replayed.value->session);
+            if (!terrainReplay->IsDirty()) {
                 return Fail("SAVE_NO_TERRAIN_CHANGE", "全部笔划结束后地形与源图相同；未生成空改动候选。");
             }
-            replacements = edits.Replacements();
-            if (replacements.empty() || replacements.size() > 4 || !edits.Removals().empty())
+            replacements = terrainReplay->Replacements();
+            if (replacements.empty() || replacements.size() > 4 || !terrainReplay->Removals().empty())
                 return Fail("SAVE_EDIT_SCOPE_INVALID", "地形事务生成了空替换、过多成员或删除成员。");
             std::array<bool, 4> seen{};
             for (const auto& member : replacements) {
@@ -771,7 +755,9 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                     [](const auto& stroke) { return !stroke.waterBrush && stroke.brush.kind == MapData::TerrainBrushKind::PathingRestriction; });
             if (!seen[0] && !restrictionOnly)
                 return Fail("SAVE_EDIT_SCOPE_INVALID", "地形事务缺少 W3E 替换，且不属于仅修改 WPM 的通行限制笔划。");
-            if ((seen[2] || seen[3]) && std::none_of(request.terrainStrokes.begin(), request.terrainStrokes.end(),
+            if ((seen[3] || (seen[2] && std::none_of(request.terrainStrokes.begin(), request.terrainStrokes.end(),
+                    [](const auto& stroke) { return stroke.waterBrush.has_value(); })))
+                && std::none_of(request.terrainStrokes.begin(), request.terrainStrokes.end(),
                     [](const auto& stroke) { return stroke.followDoodads; })) {
                 return Fail("SAVE_EDIT_SCOPE_INVALID", "未请求摆放对象随地面移动，却生成了摆放替换成员。");
             }
@@ -791,7 +777,8 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         }
         // 原版通行生成在最终脚本完成后执行；此时还未取得最终替换列表，
         // 不把“须重建通行”提前当成不能保存。其它领域仍走原保存门。
-        const auto pathingGate = terrainRequest ? Status::Ok() : edits.VerifyTerrainPathingForSave();
+        const auto& finalEdits = terrainReplay ? *terrainReplay : edits;
+        const auto pathingGate = terrainRequest ? Status::Ok() : finalEdits.VerifyTerrainPathingForSave();
         if (!pathingGate.Succeeded()) return Forward(pathingGate.diagnostics);
 
         MapSaveTask task;
@@ -823,15 +810,15 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         // 小地图/地形派生必须在最终脚本和模板替换完成后准备，避免其原字
         // 门禁看到过期的 replacements。回调只在共用保存服务的一次最终阶段执行。
         if (terrainRequest || request.minimapChoice != TerrainMinimapSaveChoice::Preserve) {
-            task.prepareFinalDerived = [&task, &edits, &request, &terrainPlan, &minimapSave,
+            task.prepareFinalDerived = [&task, &finalEdits, &request, &terrainPlan, &minimapSave,
                 &minimapPreserve, &minimapInputFailure, nativeCaptureFailed, terrainRequest](MapSaveTask&) mutable -> Status {
                 if (terrainRequest) {
-                    auto prepared = TerrainPathingSave::PrepareForSave(*task.archive, edits, request.gameRoot);
+                    auto prepared = TerrainPathingSave::PrepareForSave(*task.archive, finalEdits, request.gameRoot);
                     if (!prepared.Succeeded() || !prepared.value) return {std::move(prepared.diagnostics)};
                     terrainPlan = std::make_shared<const MapData::TerrainSavePlan>(std::move(*prepared.value));
-                    const auto installed = terrainPlan->InstallPathingOutput(edits, task.replacements);
+                    const auto installed = terrainPlan->InstallPathingOutput(finalEdits, task.replacements);
                     if (!installed.Succeeded()) return installed;
-                    const auto checked = terrainPlan->VerifyForSave(edits, task.sourceSha256, task.replacements, task.removals);
+                    const auto checked = terrainPlan->VerifyForSave(finalEdits, task.sourceSha256, task.replacements, task.removals);
                     if (!checked.Succeeded()) return checked;
                 }
                 bool automaticRequired = true;
@@ -843,18 +830,18 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                 }
                 if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic) {
                     auto prepared = (minimapInputFailure.empty() || (!automaticRequired && !nativeCaptureFailed))
-                        ? TerrainMinimapSave::PrepareAutomaticOrPreserve(task, edits, request.gameRoot, {}, terrainPlan)
-                        : TerrainMinimapSave::PreserveUnsupportedAutomatic(task, edits, minimapInputFailure);
+                        ? TerrainMinimapSave::PrepareAutomaticOrPreserve(task, finalEdits, request.gameRoot, {}, terrainPlan)
+                        : TerrainMinimapSave::PreserveUnsupportedAutomatic(task, finalEdits, minimapInputFailure);
                     if (!prepared.Succeeded() || !prepared.value) return Status{std::move(prepared.diagnostics)};
                     minimapSave = std::move(prepared.value->generated);
                     minimapPreserve = std::move(prepared.value->preserved);
                     task.diagnostics.insert(task.diagnostics.end(), prepared.diagnostics.begin(), prepared.diagnostics.end());
                     if (minimapPreserve) {
-                        const auto checked = minimapPreserve->VerifyCurrent(task, edits);
+                        const auto checked = minimapPreserve->VerifyCurrent(task, finalEdits);
                         if (!checked.Succeeded()) return checked;
                     }
                 } else if (request.minimapChoice != TerrainMinimapSaveChoice::Preserve) {
-                    const auto prepared = TerrainMinimapSave::Prepare(task, edits, request.gameRoot, request.minimapChoice);
+                    const auto prepared = TerrainMinimapSave::Prepare(task, finalEdits, request.gameRoot, request.minimapChoice);
                     if (!prepared.Succeeded() || !prepared.value) return Status{prepared.diagnostics};
                     minimapSave = *prepared.value;
                 }
@@ -865,7 +852,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                 if (minimapSave) {
                     task.replacements.push_back(minimapSave->MinimapReplacement());
                     terrainPlan = minimapSave->Plan();
-                    const auto current = minimapSave->VerifyCurrent(task, edits, request.gameRoot);
+                    const auto current = minimapSave->VerifyCurrent(task, finalEdits, request.gameRoot);
                     if (!current.Succeeded()) return current;
                 }
                 auto previous = std::move(task.beforePublish);

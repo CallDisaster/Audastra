@@ -7,6 +7,7 @@
 #include "War3MapCore/Services/ProjectSearch.h"
 #include "War3MapCore/Services/MapEditSaveService.h"
 #include "War3MapCore/Services/TerrainEditService.h"
+#include "War3MapCore/MapData/TerrainPathingResources.h"
 #include "War3MapCore/Services/ObjectCommands.h"
 #include "War3MapCore/Services/AuxiliaryTransaction.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
@@ -119,6 +120,8 @@ public:
         const Services::PreparedAuxiliaryEdit& plan, const MapData::MapDataPublishValidator& prepublish = {});
     [[nodiscard]] Result<McpWorkspaceTerrainContext> TerrainContext(std::string documentId,
         std::uint64_t documentGeneration);
+    [[nodiscard]] Result<MapData::TerrainPathingResources> CaptureTerrainWaterResources(bool enforceWaterLimits);
+    [[nodiscard]] Status VerifyTerrainWaterResources(const MapData::TerrainPathingResources& owner) const;
     [[nodiscard]] Result<MapData::TerrainStrokeResult> ApplyTerrainPlan(
         const Services::PreparedTerrainEdit& plan,
         const std::function<Status(const MapData::MapDataEditSession::EditReceipt&)>& prepublish = {});

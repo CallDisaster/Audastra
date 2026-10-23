@@ -405,12 +405,13 @@ Status MapDataEditSession::SetTerrain(std::span<const std::byte> bytes) {
 }
 
 Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerrainEdit(const TerrainBrush& brush,
-    std::span<const TerrainStrokePoint> points, bool followDoodads) const {
-    return PrepareTerrainEditInternal(brush, points, followDoodads, true);
+    std::span<const TerrainStrokePoint> points, bool followDoodads, std::size_t maximumLevelPropagationWork) const {
+    return PrepareTerrainEditInternal(brush, points, followDoodads, true, maximumLevelPropagationWork);
 }
 
 Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerrainEditInternal(const TerrainBrush& brush,
-    std::span<const TerrainStrokePoint> points, bool followDoodads, bool inspectSaveGate) const {
+    std::span<const TerrainStrokePoint> points, bool followDoodads, bool inspectSaveGate,
+    std::size_t maximumLevelPropagationWork) const {
     if (!terrain_) return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "MAP_TERRAIN_UNAVAILABLE", "地形不可编辑");
     if (terrainSourceRevision_ == std::numeric_limits<std::uint64_t>::max())
         return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "TERRAIN_SOURCE_REVISION_EXHAUSTED", "地形来源修订已用尽，请重新打开地图。");
@@ -419,14 +420,14 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
     if (brush.kind == TerrainBrushKind::Blight && !pathing_)
         return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "MAP_PATHING_UNAVAILABLE",
             "荒芜笔刷需要唯一且可解析的源 WPM；不能让地形与通行性数据失配");
-    auto next = std::make_shared<TerrainGridSnapshot>(*terrain_);
-    auto stroke = ApplyTerrainStroke(*next, brush, points);
+    auto stroke = PrepareTerrainStroke(*terrain_, brush, points, maximumLevelPropagationWork);
     if (!stroke.Succeeded() || !stroke.value) return {{}, std::move(stroke.diagnostics)};
+    auto next = std::make_shared<TerrainGridSnapshot>(std::move(stroke.value->terrain));
     const bool shaping = brush.kind == TerrainBrushKind::Raise || brush.kind == TerrainBrushKind::Lower
         || brush.kind == TerrainBrushKind::Plateau || brush.kind == TerrainBrushKind::Smooth
         || brush.kind == TerrainBrushKind::CliffLevel || brush.kind == TerrainBrushKind::Noise
         || brush.kind == TerrainBrushKind::Ramp;
-    auto prepared = PrepareTerrainCandidate(std::move(next), *stroke.value, points, followDoodads,
+    auto prepared = PrepareTerrainCandidate(std::move(next), stroke.value->result, points, followDoodads,
         shaping, brush.kind == TerrainBrushKind::Blight, inspectSaveGate);
     if (prepared.value) prepared.value->brush_ = brush;
     return prepared;
@@ -568,6 +569,40 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
 bool MapDataEditSession::PreparedTerrainEdit::HasChanges() const noexcept {
     return command_ && (!command_->changes.empty() || !command_->terrain.empty()
         || command_->headerAfter || command_->pathingAfter || command_->restrictionAfter);
+}
+
+std::size_t MapDataEditSession::PreparedTerrainEdit::RetainedCommandBytes() const noexcept {
+    if (!HasChanges()) return 0;
+    auto bytes = sizeof(Command) + 64 + 2 * sizeof(std::shared_ptr<void>);
+    const auto add = [&bytes](std::size_t count, std::size_t element = 1) {
+        const auto maximum = std::numeric_limits<std::size_t>::max();
+        bytes = element && count > (maximum - bytes) / element ? maximum : bytes + count * element;
+    };
+    const auto raw = [&add](const auto& value) { if (value) add(value->capacity()); };
+    add(command_->terrain.capacity(), sizeof(TerrainChunk));
+    for (const auto& chunk : command_->terrain) { add(chunk.before.capacity()); add(chunk.after.capacity()); }
+    add(command_->changes.capacity(), sizeof(MemberChange));
+    for (const auto& change : command_->changes) { raw(change.before); raw(change.after); }
+    raw(command_->pathingBefore); raw(command_->pathingAfter);
+    raw(command_->restrictionBefore); raw(command_->restrictionAfter);
+    for (const auto* restrictions : {&command_->restrictionBefore, &command_->restrictionAfter})
+        if (*restrictions) add(sizeof(std::vector<std::byte>) + 64);
+    for (const auto* header : {&command_->headerBefore, &command_->headerAfter}) if (*header)
+        for (const auto* table : {&(*header)->groundTilesets, &(*header)->cliffTilesets}) {
+            add(table->capacity(), sizeof(std::string));
+            for (const auto& value : *table) add(value.capacity() + 1);
+        }
+    if (command_->placements) {
+        add(sizeof(std::vector<PlacementRowLineage>) + 64);
+        add(command_->placements->capacity(), sizeof(PlacementRowLineage));
+        for (const auto& rows : *command_->placements) add(rows.beforeToAfter.capacity(), sizeof(std::optional<std::uint32_t>));
+    }
+    for (const auto* specials : {&command_->specialBefore, &command_->specialAfter}) if (*specials) {
+        add(sizeof(std::vector<SpecialDoodadPlacement>) + 64);
+        add((*specials)->capacity(), sizeof(SpecialDoodadPlacement));
+        for (const auto& special : **specials) add(special.rawcode.capacity() + 1);
+    }
+    return bytes;
 }
 
 Result<TerrainStrokeResult> MapDataEditSession::ApplyPreparedTerrainEdit(const PreparedTerrainEdit& plan,

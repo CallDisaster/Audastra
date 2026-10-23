@@ -18,6 +18,11 @@ struct TerrainEditToolContext {
 struct TerrainEditToolHost {
     std::function<QJsonObject()> identity;
     std::function<Result<TerrainEditToolContext>()> context;
+    std::function<Result<Services::PreparedTerrainEdit>(const TerrainEditToolContext&,
+        const Services::TerrainEditBinding&, const MapData::TerrainWaterStrokeOptions&,
+        std::span<const MapData::TerrainStrokePoint>, bool)> prepareWater;
+    // 准备水刷的实际owner由宿主保留到返回；提交前重新核来源和资源身份。
+    std::function<Status()> verifyWater;
     std::function<Result<MapData::TerrainStrokeResult>(const Services::PreparedTerrainEdit&,
         const std::function<Status(const MapData::MapDataEditSession::EditReceipt&)>&)> apply;
 };

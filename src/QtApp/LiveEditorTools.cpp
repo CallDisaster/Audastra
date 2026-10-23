@@ -7,6 +7,7 @@
 #include "McpCampaignTools.h"
 #include "LiveObjectTools.h"
 #include "EditorProject.h"
+#include "TerrainWaterEditPreparation.h"
 #include "ProjectLuaModules.h"
 #include "ObjectNames.h"
 #include "McpResources.h"
@@ -843,8 +844,28 @@ private:
         };
         const auto invoke = [&] {
             Mcp::TerrainEditToolHost host;
+            std::optional<QtProject::TerrainWaterEditCapture> waterCapture;
             host.identity = [this] { return State(); };
             host.context = context;
+            host.prepareWater = [this, &waterCapture](const Mcp::TerrainEditToolContext& current, const auto& binding,
+                const auto& options, auto points, bool follow) -> Result<Services::PreparedTerrainEdit> {
+                auto request = QtProject::CaptureTerrainWaterEditRequest(project_, options.enforceWaterLimits);
+                if (!request.Succeeded() || !request.value) return {{}, request.diagnostics};
+                auto loaded = QtProject::LoadTerrainWaterEditResources(
+                    std::make_shared<const QtProject::TerrainWaterEditRequest>(std::move(*request.value)));
+                if (!loaded.Succeeded() || !loaded.value) return {{}, loaded.diagnostics};
+                waterCapture = std::move(*loaded.value);
+                if (!QtProject::TerrainWaterEditRequestCurrent(project_, *waterCapture->request, options.enforceWaterLimits))
+                    return Result<Services::PreparedTerrainEdit>::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "水刷准备期间来源或会话已经变化。");
+                return Services::PrepareTerrainWaterEdit(*current.session, current.document, binding,
+                    waterCapture->resources, options, points, follow);
+            };
+            host.verifyWater = [this, &waterCapture] {
+                if (!waterCapture || !QtProject::TerrainWaterEditRequestCurrent(project_, *waterCapture->request,
+                    waterCapture->request->enforceWaterLimits))
+                    return Status::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "水刷实际来源或会话已变化。");
+                return QtProject::VerifyTerrainWaterEditResources(*waterCapture);
+            };
             host.apply = [this, &context](const Services::PreparedTerrainEdit& plan,
                 const std::function<Status(const MapData::MapDataEditSession::EditReceipt&)>& validate)
                 -> Result<MapData::TerrainStrokeResult> {

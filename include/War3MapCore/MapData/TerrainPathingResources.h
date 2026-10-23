@@ -106,7 +106,7 @@ private:
         const TerrainGridSnapshot& sourceTerrain, const TerrainGridSnapshot& currentTerrain,
         const std::filesystem::path& gameRoot, bool enforceWaterLimits, std::size_t maximumBytes);
     [[nodiscard]] static Result<std::vector<ArchiveExactMember>> ReadDirectoryMembers(const WorkspaceSnapshot& source,
-        std::span<const std::string> names, const ArchiveExactMemberLimits& limits);
+        std::span<const std::string> names, const ArchiveExactMemberLimits& limits, bool allowSettingsLni = false);
     [[nodiscard]] Status CaptureWaterSpecialInputs(const MemberReader& reader,
         const TerrainGridSnapshot& terrain, const DoodadPlacements& doodads, const NativeObjectValidator& validator);
     // requiredCount之前的成员必须有实际winner；余项允许缺失并固定缺失身份。

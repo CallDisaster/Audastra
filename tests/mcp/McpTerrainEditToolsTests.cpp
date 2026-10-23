@@ -5,7 +5,9 @@
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/MapPlacements.h"
 #include "War3MapCore/MapData/MapDataFieldPatchCodec.h"
+#include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/MapData/TerrainPatchCodec.h"
+#include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
 
 #include <QCoreApplication>
@@ -27,6 +29,14 @@ using namespace War3Map::Mcp;
 namespace {
 
 void Expect(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
+template<class T> T TerrainTake(Result<T> result) {
+    if (!result.Succeeded() || !result.value) {
+        std::string message = "terrain integration failed";
+        for (const auto& diagnostic : result.diagnostics) message += " | " + diagnostic.code + ": " + diagnostic.message;
+        throw std::runtime_error(message);
+    }
+    return std::move(*result.value);
+}
 
 std::vector<MapArchiveMember> FollowPlacementMembers() {
     UnitPlacements units;
@@ -88,6 +98,50 @@ struct Fixture {
         host.apply = [this](const auto& prepared, const auto& validate) { return ApplyTerrainEdit(edits, Binding(), prepared, validate); };
         return host;
     }
+    std::filesystem::path InstallWaterSources() {
+        const auto text = [](std::string_view value) {
+            return std::vector<std::byte>(reinterpret_cast<const std::byte*>(value.data()),
+                reinterpret_cast<const std::byte*>(value.data() + value.size()));
+        };
+        std::fill(pathing.begin() + 16, pathing.end(), std::byte{0x51});
+        Write(source / "war3map.wpm", pathing);
+        const std::vector<MapArchiveMember> resources{
+            {"TerrainArt/Terrain.slk", text("ID;PWXL;N;E\nC;X1;Y1;K\"tileID\"\nC;X2;K\"walkable\"\n"
+                "C;X3;K\"flyable\"\nC;X4;K\"buildable\"\nC;X1;Y2;K\"Ldrt\"\nC;X2;K1\nC;X3;K1\nC;X4;K1\n"
+                "C;X1;Y3;K\"Lgrs\"\nC;X2;K1\nC;X3;K1\nC;X4;K1\nE\n")},
+            {"TerrainArt/Water.slk", text("ID;PWXL;N;E\nC;X1;Y1;K\"waterID\"\nC;X2;K\"height\"\n"
+                "C;X3;K\"impassable\"\nC;X1;Y2;K\"LSha\"\nC;X2;K0\nC;X3;K0\nE\n")},
+            {"TerrainArt/CliffTypes.slk", text("ID;PWXL;N;E\nC;X1;Y1;K\"cliffID\"\nC;X1;Y2;K\"CLdi\"\nE\n")},
+            {"UI/MiscData.txt", text("[Terrain]\nMaxSlope=90\nMinHeight=-256\nMaxHeight=1536\n"
+                "[Water]\nDeepLevelPathing=128\n[CameraMargins]\nLeft=0\nRight=0\nBottom=0\nTop=0\n")},
+            {"UI/WorldEditData.txt", text("[Other]\nValue=1\n")},
+            {"war3map.doo", TerrainTake(DoodadPlacements{}.Serialize())},
+            {"war3mapUnits.doo", TerrainTake(UnitPlacements{}.Serialize())},
+            {"war3map.j", text("// original owned source\n")}};
+        for (const auto& member : resources) Write(source / member.name, member.data);
+        MapSettings settings; settings.formatVersion = 25; settings.custom.emplace(); settings.tileset = 'L';
+        settings.playableWidth = settings.playableHeight = 16; settings.flags |= 0x400;
+        const auto settingsBytes = settings.Serialize(); Expect(settingsBytes.Succeeded(), "owned native water bounds encode");
+        Write(source / "war3map.w3i", *settingsBytes.value);
+        const auto game = std::filesystem::path(temporary.path().toStdWString()) / "game";
+        Expect(std::filesystem::create_directory(game), "private water game directory");
+        const auto archive = WriteVerifiedArchive(game / "war3.mpq",
+            std::vector<MapArchiveMember>{{"fixture.txt", text("owned water fallback archive")}});
+        Expect(archive.Succeeded(), "owned fallback archive fixes optional resource absence");
+        return game;
+    }
+};
+
+struct ScopedWaterGameRoot {
+    bool present = qEnvironmentVariableIsSet("FORGE_MCP_WAR3_ROOT");
+    QByteArray previous = qgetenv("FORGE_MCP_WAR3_ROOT");
+    explicit ScopedWaterGameRoot(const std::filesystem::path& path) {
+        Expect(qputenv("FORGE_MCP_WAR3_ROOT", QString::fromStdWString(path.wstring()).toUtf8()), "set owned MCP water source");
+    }
+    ~ScopedWaterGameRoot() {
+        if (present) qputenv("FORGE_MCP_WAR3_ROOT", previous);
+        else qunsetenv("FORGE_MCP_WAR3_ROOT");
+    }
 };
 
 QJsonObject State(Fixture& fixture) {
@@ -98,6 +152,13 @@ QJsonObject Stroke(const QJsonObject& state, bool dryRun = true) {
         {"terrain_binding", state.value("terrain_binding")}, {"dry_run", dryRun},
         {"points", QJsonArray{QJsonObject{{"x", 0}, {"y", 0}}}},
         {"brush", QJsonObject{{"kind", "raise"}, {"size", 1}, {"strength", 16}}}};
+}
+
+QJsonObject WaterStroke(const QJsonObject& state, bool deep, bool dryRun = true) {
+    auto result = Stroke(state, dryRun);
+    result["brush"] = QJsonObject{{"kind", deep ? "deep_water" : "shallow_water"}, {"shape", "circle"},
+        {"size", 1}, {"cliff_texture", 0}, {"seed", 4294967295.0}, {"enforce_water_limits", true}};
+    return result;
 }
 
 void FacadeQueryPreviewApplyAndUndo() {
@@ -141,8 +202,25 @@ void FacadeRejectsUnknownTypesBoundsAndStaleSources() {
     Expect(!InvokeTerrainEditTool("edit_terrain_stroke", invalid, fixture.Host()).value("ok").toBool(), "irrelevant brush fields reject instead of silently ignoring");
     invalid = request; invalid["points"] = QJsonArray{QJsonObject{{"x", 0}, {"y", 0}}, QJsonObject{{"x", 1025}, {"y", 0}}};
     Expect(!InvokeTerrainEditTool("edit_terrain_stroke", invalid, fixture.Host()).value("ok").toBool(), "later outside point rejects whole explicit stroke");
-    invalid = request; invalid["brush"] = QJsonObject{{"kind", "shallow_water"}};
-    Expect(!InvokeTerrainEditTool("edit_terrain_stroke", invalid, fixture.Host()).value("ok").toBool(), "unimplemented shallow-water tool is explicit failure");
+    invalid = WaterStroke(state, false);
+    const auto unavailable = InvokeTerrainEditTool("edit_terrain_stroke", invalid, fixture.Host());
+    Expect(!unavailable.value("ok").toBool() && unavailable.value("diagnostics").toArray().size() == 1
+        && unavailable.value("diagnostics").toArray()[0].toObject().value("code") == "TERRAIN_WATER_HOST_UNAVAILABLE",
+        "water without an actual resource-capture host refuses explicitly");
+    for (const char* field : {"shape", "size", "cliff_texture", "seed", "enforce_water_limits"}) {
+        auto incomplete = invalid; auto water = incomplete.value("brush").toObject(); water.remove(field); incomplete["brush"] = water;
+        const auto missing = InvokeTerrainEditTool("edit_terrain_stroke", incomplete, fixture.Host());
+        Expect(!missing.value("ok").toBool() && missing.value("diagnostics").toArray().size() == 1
+            && missing.value("diagnostics").toArray()[0].toObject().value("code") == "TERRAIN_ARGUMENT_REQUIRED",
+            "water requires every explicit replay option before host dispatch");
+    }
+    for (const char* field : {"strength", "water_height", "anchor"}) {
+        auto conflict = invalid; auto water = conflict.value("brush").toObject(); water[field] = 1; conflict["brush"] = water;
+        const auto rejected = InvokeTerrainEditTool("edit_terrain_stroke", conflict, fixture.Host());
+        Expect(!rejected.value("ok").toBool() && rejected.value("diagnostics").toArray().size() == 1
+            && rejected.value("diagnostics").toArray()[0].toObject().value("code") == "TERRAIN_ARGUMENT_UNKNOWN",
+            "water cannot accept an ordinary field or a caller-supplied anchor");
+    }
     auto binding = request.value("terrain_binding").toObject(); binding["terrain_revision"] = 0;
     invalid = request; invalid["terrain_binding"] = binding;
     Expect(!InvokeTerrainEditTool("edit_terrain_stroke", invalid, fixture.Host()).value("ok").toBool(), "binding IDs require exact canonical string format");
@@ -617,6 +695,115 @@ void MissingPathingRemainsReadableAndSourceDriftRejects() {
     Expect(!Call(server, "get_terrain_edit_state").value("ok").toBool(), "readonly source drift invalidates cached terrain state");
 }
 
+void RegisteredWaterHostRetainsOrderedReplayAndCompleteDirectoryOutput() {
+    std::vector<std::byte> shallowTerrain;
+    for (const bool deep : {false, true}) {
+        Fixture fixture; const auto game = fixture.InstallWaterSources(); ScopedWaterGameRoot environment(game);
+        McpServer server; OpenWorkspace(fixture, server); auto* workspace = server.Workspace();
+        const auto original = TerrainTake(DirectoryWorkspace::Open(fixture.source));
+        const auto initial = Current(server);
+        const auto dry = Call(server, "edit_terrain_stroke", WaterStroke(initial, deep));
+        Expect(dry.value("ok").toBool() && !dry.value("applied").toBool()
+            && !workspace->HasActiveTransaction() && Current(server) == initial,
+            "registered shallow/deep preview captures actual resources without acquiring a transaction");
+        const auto revision = workspace->Revision(); const auto transaction = TerrainTake(workspace->BeginEdit(revision));
+        const auto before = TerrainTake(workspace->TerrainContext(server.DocumentId(), server.DocumentGeneration()));
+        const auto request = WaterStroke(Current(server), deep, false);
+        const auto applied = Call(server, "edit_terrain_stroke", request);
+        Expect(applied.value("ok").toBool() && applied.value("applied").toBool() && !applied.value("map_saved").toBool(),
+            "registered directory host publishes a real shallow/deep command without reporting a map save");
+        const auto after = TerrainTake(workspace->TerrainContext(server.DocumentId(), server.DocumentGeneration()));
+        Expect(after.session == before.session && after.session->Revision() == 1 && after.session->CanUndo()
+            && TerrainTake(after.session->InspectTerrainPoint({0, 0})).vertex.HasWater(),
+            "water publication keeps the original typed session and its undo command");
+        const auto firstTerrain = TerrainTake(SerializeMapTerrain(*after.session->Terrain()));
+        if (deep) Expect(firstTerrain != shallowTerrain, "deep options survive protocol parsing and differ from shallow output");
+        else shallowTerrain = firstTerrain;
+        Expect(!Call(server, "edit_terrain_stroke", request).value("ok").toBool(), "water request cannot replay on a newer revision");
+        auto raise = Stroke(Current(server), false);
+        raise["points"] = QJsonArray{QJsonObject{{"x", 512}, {"y", 512}}};
+        Expect(Call(server, "edit_terrain_stroke", raise).value("ok").toBool(),
+            "ordinary command replays prior water intent before sealing the cumulative candidate");
+        const auto current = TerrainTake(workspace->TerrainContext(server.DocumentId(), server.DocumentGeneration()));
+        const auto expectedTerrain = TerrainTake(SerializeMapTerrain(*current.session->Terrain()));
+        Expect(TerrainTake(current.session->InspectTerrainPoint({0, 0})).vertex.HasWater()
+            && TerrainTake(current.session->InspectTerrainPoint({512, 512})).groundHeight == 16,
+            "ordered water and ordinary commands both survive workspace replay");
+        const auto plan = TerrainTake(TerrainPathingSave::PrepareForSave(original.Snapshot(), *current.session, game));
+        Expect(plan.SaveGate().Succeeded() && plan.RebuiltPathing(), "same actual source passes complete native G0/G1 proof");
+        const auto pathing = std::find_if(plan.Replacements().begin(), plan.Replacements().end(),
+            [](const auto& member) { return member.name == "war3map.wpm"; });
+        Expect(pathing != plan.Replacements().end(), "water save has a complete regenerated WPM member");
+        const auto expectedPathing = pathing->data;
+        Expect(workspace->PreviewEdit(transaction, revision).Succeeded() && workspace->ValidateEdit(transaction, revision).satisfied,
+            "normal directory preview and validation accept the same water recipe");
+        const auto root = std::filesystem::path(fixture.temporary.path().toStdWString());
+        std::vector<MapArchiveMember> archiveMembers;
+        for (const auto& file : original.Snapshot().files)
+            archiveMembers.push_back({IO::GenericPathUtf8(file.relativePath), TerrainTake(IO::ReadFileBytes(fixture.source / file.relativePath))});
+        const auto archive = TerrainTake(WriteVerifiedArchive(root / "water-source.w3x", archiveMembers));
+        MapEditSaveRequest archiveRequest; archiveRequest.sourceMap = archive.path; archiveRequest.expectedSourceSha256 = archive.sha256;
+        archiveRequest.targetCandidate = root / "water-archive-candidate.w3x"; archiveRequest.gameRoot = game;
+        archiveRequest.uiRoot = root / "ui"; archiveRequest.toolRoot = root / "missing-toolchain";
+        archiveRequest.minimapChoice = TerrainMinimapSaveChoice::Preserve;
+        const auto pending = workspace->ExportArchiveCandidate(transaction, revision, archiveRequest);
+        Expect(!pending.Succeeded() && std::any_of(pending.diagnostics.begin(), pending.diagnostics.end(),
+            [](const auto& item) { return item.code == "SCRIPT_TOOLCHAIN_MISSING"; })
+            && !std::filesystem::exists(archiveRequest.targetCandidate) && workspace->HasActiveTransaction(),
+            "archive export retains water through actual save preparation and stops at the unchanged missing script toolchain");
+        const auto output = root / "water-directory-candidate";
+        Expect(workspace->ExportCandidate(transaction, revision, output).Succeeded(), "ordinary directory exporter publishes water recipe");
+        Expect(TerrainTake(IO::ReadFileBytes(output / "war3map.w3e")) == expectedTerrain
+            && TerrainTake(IO::ReadFileBytes(output / "war3map.wpm")) == expectedPathing,
+            "directory exporter preserves every W3E byte and complete native WPM output");
+        const auto nextRevision = workspace->Revision(); const auto next = TerrainTake(workspace->BeginEdit(nextRevision));
+        const auto seeded = TerrainTake(workspace->TerrainContext(server.DocumentId(), server.DocumentGeneration()));
+        Expect(seeded.session != current.session && TerrainTake(SerializeMapTerrain(*seeded.session->Terrain())) == expectedTerrain,
+            "continuation seeds the complete ordered water recipe into a fresh typed session");
+        auto extra = WaterStroke(Current(server), !deep, false);
+        extra["points"] = QJsonArray{QJsonObject{{"x", -512}, {"y", 0}}};
+        Expect(Call(server, "edit_terrain_stroke", extra).value("ok").toBool()
+            && TerrainTake(SerializeMapTerrain(*seeded.session->Terrain())) != expectedTerrain,
+            "continuation can add another explicitly configured water command");
+        Expect(workspace->Rollback(next, nextRevision).Succeeded(), "water continuation rolls back through the existing transaction");
+        const auto retained = TerrainTake(workspace->TerrainContext(server.DocumentId(), server.DocumentGeneration()));
+        Expect(TerrainTake(SerializeMapTerrain(*retained.session->Terrain())) == expectedTerrain,
+            "rollback preserves the previously exported cumulative water state");
+        Expect(TerrainTake(IO::ReadFileBytes(fixture.source / "war3map.w3e")) == fixture.terrain
+            && TerrainTake(IO::ReadFileBytes(fixture.source / "war3map.wpm")) == fixture.pathing,
+            "preview, archive rejection, directory publication and continuation never modify original terrain members");
+    }
+}
+
+void WaterResourceDriftAndPrepublishReentryLeaveTheOriginalTransactionIntact() {
+    Fixture fixture; const auto game = fixture.InstallWaterSources(); ScopedWaterGameRoot environment(game);
+    McpServer server; OpenWorkspace(fixture, server); auto* workspace = server.Workspace();
+    const auto revision = workspace->Revision(); const auto transaction = TerrainTake(workspace->BeginEdit(revision));
+    const auto context = TerrainTake(workspace->TerrainContext(server.DocumentId(), server.DocumentGeneration()));
+    const auto state = TerrainTake(CaptureTerrainEditState(*context.session, context.document));
+    const auto resources = TerrainTake(workspace->CaptureTerrainWaterResources(true));
+    const TerrainStrokePoint point{0, 0}; TerrainWaterStrokeOptions options; options.randomSeed = 991;
+    const auto prepared = TerrainTake(PrepareTerrainWaterEdit(*context.session, context.document,
+        state.binding, resources, options, std::span(&point, 1), false));
+    bool callbackReached = false;
+    const auto rejected = workspace->ApplyTerrainPlan(prepared, [&](const auto&) {
+        callbackReached = true;
+        Expect(!workspace->Rollback(transaction, revision).Succeeded(), "water prepublish reentry cannot discard its active transaction");
+        const std::string profile = "[Unused]\nValue=1\n";
+        TerrainTake(WriteVerifiedArchive(game / "war3patch.mpq", std::vector<MapArchiveMember>{{"Units/MiscData.txt",
+            {reinterpret_cast<const std::byte*>(profile.data()), reinterpret_cast<const std::byte*>(profile.data() + profile.size())}}}));
+        return Status::Ok();
+    });
+    Expect(callbackReached && !rejected.Succeeded() && context.session->Revision() == 0 && !context.session->CanUndo()
+        && TerrainTake(workspace->Session()->PreviewEdit(transaction)).changes.empty(),
+        "changed optional game profile fails final water resource verification before either session publishes");
+    Expect(std::filesystem::remove(game / "war3patch.mpq"), "remove only the owned injected profile archive");
+    Expect(workspace->ApplyTerrainPlan(prepared).Succeeded(), "resource rejection leaves the original prepared command reusable");
+    Expect(workspace->Rollback(transaction, revision).Succeeded(), "accepted water command retains normal rollback");
+    auto changed = fixture.terrain; changed.back() ^= std::byte{1}; Fixture::Write(fixture.source / "war3map.w3e", changed);
+    Expect(!Call(server, "get_terrain_edit_state").value("ok").toBool(), "water source drift invalidates actual registered host state");
+}
+
 void ArchiveExportBindsPathingAndCompanionMembers() {
     Fixture fixture; McpServer server; OpenWorkspace(fixture, server); auto* workspace = server.Workspace();
     const auto revision = workspace->Revision(); const auto transaction = workspace->BeginEdit(revision);
@@ -668,6 +855,8 @@ int main(int argc, char** argv) {
         FollowingPlacementsAndRestrictionsUseNormalDirectorySave();
         TerrainAndFieldOverlaysCannotOverwriteEachOther();
         FollowingHeightRestorationRemovesObsoletePlacementOverlay();
+        RegisteredWaterHostRetainsOrderedReplayAndCompleteDirectoryOutput();
+        WaterResourceDriftAndPrepublishReentryLeaveTheOriginalTransactionIntact();
         std::cout << "terrain MCP and sealed transaction scenarios passed\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

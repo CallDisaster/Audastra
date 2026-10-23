@@ -2,7 +2,10 @@
 
 #include "War3MapCore/ObjectData/NativeDestructablePathing.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
+#include "War3MapCore/Services/TerrainEditService.h"
 
+#include <algorithm>
+#include <cctype>
 #include <new>
 
 namespace War3Map::Services {
@@ -13,7 +16,273 @@ template<class T, class Function> Result<T> Guard(Function&& function) {
         return Result<T>::Failure("Terrain.PathingSave", "TERRAIN_NATIVE_OBJECT_BUDGET", "严格对象保存适配分配失败，未建立部分保存计划。");
     }
 }
+
+bool Neutral(const MapData::TerrainBrush& brush) {
+    const MapData::TerrainBrush other;
+    return brush.kind == other.kind && brush.shape == other.shape && brush.radius == other.radius
+        && brush.groundTexture == other.groundTexture && brush.cliffTexture == other.cliffTexture
+        && brush.levelDelta == other.levelDelta && brush.value == other.value && brush.strength == other.strength
+        && brush.seed == other.seed && !brush.anchor && !brush.size && !brush.variation
+        && brush.randomizeVariation == other.randomizeVariation && brush.waterHeight == other.waterHeight
+        && brush.pathingRestrictions == other.pathingRestrictions;
+}
+
+template<class Source>
+Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& source,
+    MapData::MapDataEditSession& candidate, const MapData::TerrainGridSnapshot& sourceTerrain,
+    std::size_t pathingBytes,
+    std::span<const MapData::TerrainStrokeIntent> strokes, const std::filesystem::path& gameRoot,
+    const TerrainReplayLimits& limits, const std::string& sourceSha) {
+    using Output = Result<std::vector<MapData::TerrainPathingResources>>;
+    // 工厂已将实际W3E逐字核对并Attach，并持有落笔前owner直到整个序列完成。
+    const auto fail = [](const char* code, const char* message) { return Output::Failure("Terrain.Replay", code, message); };
+    const TerrainReplayLimits hard;
+    if (!limits.maximumResourceBytes || limits.maximumResourceBytes > hard.maximumResourceBytes
+        || !limits.maximumWork || limits.maximumWork > hard.maximumWork
+        || !limits.maximumCandidateBytes || limits.maximumCandidateBytes > hard.maximumCandidateBytes)
+        return fail("TERRAIN_REPLAY_LIMITS", "重放预算只能收紧且不能为零。");
+    if (strokes.empty() || strokes.size() > 128)
+        return fail("TERRAIN_PATCH_STROKE_BUDGET", "地形重放需要1到128笔原始命令。");
+    std::size_t pointCount = 0;
+    for (const auto& stroke : strokes) {
+        if (stroke.points.empty() || stroke.points.size() > 4096 - pointCount)
+            return fail("TERRAIN_PATCH_POINT_BUDGET", "地形重放累计采样点超过4096或包含空笔划。");
+        pointCount += stroke.points.size();
+        if (stroke.waterBrush && !Neutral(stroke.brush))
+            return fail("TERRAIN_REPLAY_BRUSH_CONFLICT", "浅/深水笔划不能同时携带普通笔刷参数。");
+    }
+    std::vector<MapData::TerrainPathingResources> owners;
+    std::size_t resourceBytes = 0, ownedResources = 0, work = 0, historyBytes = 0;
+    const auto reserve = [](std::size_t& used, std::size_t limit, std::size_t count, std::size_t element = 1) {
+        if (element && count > (limit - used) / element) return false;
+        used += count * element; return true;
+    };
+    const MapDataQueryBinding document{"terrain-replay", 1, 0, sourceSha};
+    for (const auto& stroke : strokes) {
+        if (!candidate.Terrain()) return fail("TERRAIN_REPLAY_UNAVAILABLE", "重放候选缺少当前地形。");
+        const TerrainEditBinding binding{document, candidate.SessionIdentity(), candidate.Revision(), candidate.TerrainSourceRevision()};
+        if (stroke.waterBrush) {
+            const auto remaining = std::min(MapData::TerrainSavePlanLimits{}.maximumBytes,
+                std::min(limits.maximumResourceBytes - resourceBytes, limits.maximumResourceBytes - ownedResources));
+            if (!remaining || historyBytes == limits.maximumCandidateBytes || work == limits.maximumWork)
+                return fail("TERRAIN_REPLAY_BUDGET", "整个序列的资源、工作或候选预算已用尽。");
+            const auto wire = candidate.SnapshotByteSize(MapDataKind::Doodads);
+            if (!wire.Succeeded() || !wire.value) return {{}, wire.diagnostics};
+            // Snapshot解析本身在捕获前预收，不能先展开大DOO再检查累计预算。
+            if (!reserve(work, limits.maximumWork, *wire.value, 2)
+                || *wire.value > remaining || *wire.value > (limits.maximumCandidateBytes - historyBytes) / 32)
+                return fail("TERRAIN_REPLAY_BUDGET", "当前DOO快照超过整个重放序列的预算。");
+            auto resources = [&]() -> Result<MapData::TerrainPathingResources> {
+                auto current = candidate.Snapshot(MapDataKind::Doodads, remaining);
+                if (!current.Succeeded() || !current.value) return {{}, current.diagnostics};
+                const auto& doodads = current.value->Doodads();
+                if (!doodads && current.value->Member(MapDataKind::Doodads).state != MapDataState::Missing)
+                    return Result<MapData::TerrainPathingResources>::Failure("Terrain.Replay", "TERRAIN_REPLAY_DOODADS_UNAVAILABLE", "未知DOO不能按空集合捕获水刷资源。");
+                const MapData::DoodadPlacements empty;
+                return TerrainPathingSave::CaptureWaterBrushRules(source, sourceTerrain, *candidate.Terrain(),
+                    doodads ? *doodads : empty, gameRoot, stroke.waterBrush->enforceWaterLimits, remaining);
+            }(); // 外层DOO解析快照先释放，再进入水刷事务自己的已预算解析/候选阶段。
+            if (!resources.Succeeded() || !resources.value) return {{}, resources.diagnostics};
+            if (!reserve(resourceBytes, limits.maximumResourceBytes, resources.value->CaptureBudgetBytes())
+                || !reserve(ownedResources, limits.maximumResourceBytes, resources.value->OwnedCapacityBytes()))
+                return fail("TERRAIN_REPLAY_BUDGET", "逐笔实际资源的累计捕获或保留量超过重放预算。");
+            MapData::TerrainWaterBrushLimits waterLimits;
+            waterLimits.maximumCandidateBytes = std::min(waterLimits.maximumCandidateBytes, limits.maximumCandidateBytes - historyBytes);
+            waterLimits.maximumWork = std::min(waterLimits.maximumWork, limits.maximumWork - work);
+            if (!waterLimits.maximumWork) return fail("TERRAIN_REPLAY_BUDGET", "整个序列的工作预算已用尽。");
+            auto plan = PrepareTerrainWaterEdit(candidate, document, binding, *resources.value,
+                *stroke.waterBrush, stroke.points, stroke.followDoodads, waterLimits);
+            if (!plan.Succeeded() || !plan.value) return {{}, plan.diagnostics};
+            if (!reserve(work, limits.maximumWork, plan.value->Plan().WaterPreparationWork())
+                || !reserve(work, limits.maximumWork, candidate.Terrain()->vertices.size(), 4)
+                || !reserve(work, limits.maximumWork, plan.value->Plan().RetainedCommandBytes(), 2)
+                || plan.value->Plan().WaterPreparationBytes() > limits.maximumCandidateBytes - historyBytes
+                || !reserve(historyBytes, limits.maximumCandidateBytes, plan.value->Plan().RetainedCommandBytes()))
+                return fail("TERRAIN_REPLAY_BUDGET", "水刷事务累计工作或候选预算超限。");
+            const auto applied = ApplyTerrainEdit(candidate, document, *plan.value);
+            if (!applied.Succeeded()) return {{}, applied.diagnostics};
+            owners.push_back(std::move(*resources.value));
+        } else {
+            // 普通落笔的全图阶段与采样局部分开预收：两次网格复制、布局检查、
+            // 派生刷新、区块差分/写回及净差邻域检查共按32次顶点访问覆盖；
+            // WPM的解析副本、分层核对和最终blight核对按4次字节访问覆盖。
+            // 每个采样只扫描自身足迹（平滑含9邻域、pending和局部位置刷新），
+            // 不把一个尺寸1的落点按整张513²地图重复收费。
+            const auto vertices = candidate.Terrain()->vertices.size();
+            const auto pathingPasses = stroke.brush.kind == MapData::TerrainBrushKind::PathingRestriction ? 18u
+                : stroke.brush.kind == MapData::TerrainBrushKind::Blight ? 12u : 4u;
+            std::size_t peakBytes = 0;
+            const auto availableBytes = limits.maximumCandidateBytes - historyBytes;
+            if (!reserve(work, limits.maximumWork, vertices, 32)
+                || !reserve(work, limits.maximumWork, pathingBytes, pathingPasses)
+                || !reserve(peakBytes, availableBytes, vertices, 256)
+                || !reserve(peakBytes, availableBytes, pathingBytes, 6))
+                return fail("TERRAIN_REPLAY_BUDGET", "普通笔刷累计扫描或撤销候选预算超限。");
+            for (const auto& point : stroke.points) {
+                const auto footprint = stroke.brush.kind == MapData::TerrainBrushKind::PathingRestriction
+                    ? MapData::GetPathingRestrictionFootprint(candidate.Terrain()->header, stroke.brush, point)
+                    : MapData::GetTerrainBrushFootprint(*candidate.Terrain(), stroke.brush, point);
+                if (!footprint)
+                    return fail("TERRAIN_REPLAY_POINT", "普通笔刷尺寸、形态或落点无效，未返回部分候选。");
+                const auto area = std::size_t(footprint->x1 - footprint->x0) * (footprint->y1 - footprint->y0);
+                if (!reserve(work, limits.maximumWork, area, 16))
+                    return fail("TERRAIN_REPLAY_BUDGET", "普通笔刷采样足迹累计预算超限。");
+            }
+            for (const auto kind : {MapDataKind::Doodads, MapDataKind::Units, MapDataKind::Settings}) {
+                if (!stroke.followDoodads) break;
+                const auto size = candidate.SnapshotByteSize(kind);
+                if (!size.Succeeded() || !size.value) return {{}, size.diagnostics};
+                if (!reserve(work, limits.maximumWork, *size.value, 8)
+                    || !reserve(peakBytes, availableBytes, *size.value, 64))
+                    return fail("TERRAIN_REPLAY_BUDGET", "普通笔刷摆放联动累计预算超限。");
+            }
+            const auto propagationLimit = std::min(MapData::TerrainLevelPropagationMaximumWork, limits.maximumWork - work);
+            if (!propagationLimit) return fail("TERRAIN_REPLAY_BUDGET", "地形重放的工作预算已用尽。");
+            // 一次已计访问最多追加一个uint32队列项；vector增长时旧/新三倍容量先预留，
+            // 不能用很小网格的静态容量上界掩盖异常高低图的传播辅助队列。
+            if (stroke.brush.kind == MapData::TerrainBrushKind::CliffLevel
+                && !reserve(peakBytes, availableBytes, propagationLimit, 3 * sizeof(std::uint32_t)))
+                return fail("TERRAIN_REPLAY_BUDGET", "层级传播队列的临时峰值超过候选预算。");
+            auto plan = PrepareTerrainEdit(candidate, document, binding, stroke.brush, stroke.points, stroke.followDoodads, propagationLimit);
+            if (!plan.Succeeded() || !plan.value) return {{}, plan.diagnostics};
+            if (!reserve(work, limits.maximumWork, plan.value->Plan().Changed().levelPropagationWork))
+                return fail("TERRAIN_REPLAY_BUDGET", "悬崖层级传播超过整个序列剩余工作预算。");
+            if (!reserve(historyBytes, limits.maximumCandidateBytes, plan.value->Plan().RetainedCommandBytes()))
+                return fail("TERRAIN_REPLAY_BUDGET", "普通笔刷累计保留历史容量超限。");
+            const auto applied = ApplyTerrainEdit(candidate, document, *plan.value);
+            if (!applied.Succeeded()) return {{}, applied.diagnostics};
+        }
+    }
+    // 捕获之后可能发生来源变更；全部owners复核到同一实际来源后才返回候选。
+    for (const auto& owner : owners) {
+        const auto checked = owner.VerifyReadback(source, MapData::TerrainSavePlanLimits{}.maximumBytes);
+        if (!checked.Succeeded()) return {{}, checked.diagnostics};
+    }
+    return Output::Success(std::move(owners));
+}
+
+std::string Canonical(std::string name) {
+    std::replace(name.begin(), name.end(), '\\', '/');
+    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (name.starts_with("map/")) name.erase(0, 4);
+    return name;
+}
+
+bool SourceMatches(const MapDocument& original, std::span<const std::byte> terrain,
+    std::span<const std::byte> pathing, std::span<const ArchiveExactMember> actual) {
+    if (actual.size() != 10 || !actual[0].present || !actual[1].present
+        || !std::equal(terrain.begin(), terrain.end(), actual[0].bytes.begin(), actual[0].bytes.end())
+        || !std::equal(pathing.begin(), pathing.end(), actual[1].bytes.begin(), actual[1].bytes.end())) return false;
+    for (const auto& state : original.Members()) {
+        std::size_t present = 0;
+        for (std::size_t index = 2; index < actual.size(); ++index) {
+            const auto& member = actual[index];
+            if (state.kind == MapDataKind::Settings) {
+                if (Canonical(member.name) != "war3map.w3i" && Canonical(member.name) != "table/w3i.ini") continue;
+            } else if (Canonical(member.name) != Canonical(state.memberName)) continue;
+            if (!member.present) continue;
+            ++present;
+            const auto expected = std::find_if(state.sources.begin(), state.sources.end(), [&](const auto& item) {
+                return Canonical(item.name) == Canonical(member.name);
+            });
+            if (expected == state.sources.end() || expected->data != member.bytes) return false;
+        }
+        if (present != state.sources.size() || (present == 0 && state.state != MapDataState::Missing)) return false;
+    }
+    return true;
+}
+
+template<class Source, class Reader>
+Result<TerrainReplayCandidate> CreateReplay(const Source& source, const MapDocument& original,
+    std::span<const std::byte> terrain, std::span<const std::byte> pathing,
+    std::span<const MapData::TerrainStrokeIntent> strokes, const std::filesystem::path& gameRoot,
+    const TerrainReplayLimits& limits, const std::string& sha, Reader&& reader) {
+    using Output = Result<TerrainReplayCandidate>;
+    const auto mismatch = [] { return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_SOURCE_MISMATCH", "原始W3E/WPM、地图成员或已证缺失项与实际来源不一致。"); };
+    const auto budgetFailure = [] { return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_BUDGET", "实际来源、会话基线或累计重放预算超限。"); };
+    const TerrainReplayLimits hard;
+    if (!limits.maximumResourceBytes || limits.maximumResourceBytes > hard.maximumResourceBytes
+        || !limits.maximumWork || limits.maximumWork > hard.maximumWork
+        || !limits.maximumCandidateBytes || limits.maximumCandidateBytes > hard.maximumCandidateBytes)
+        return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_LIMITS", "重放预算只能收紧且不能为零。");
+    if (strokes.empty() || strokes.size() > 128)
+        return Output::Failure("Terrain.Replay", "TERRAIN_PATCH_STROKE_BUDGET", "地形重放需要1到128笔原始命令。");
+    std::size_t points = 0;
+    for (const auto& stroke : strokes) {
+        if (stroke.points.empty() || stroke.points.size() > 4096 - points)
+            return Output::Failure("Terrain.Replay", "TERRAIN_PATCH_POINT_BUDGET", "地形重放累计点数超过4096或包含空笔划。");
+        points += stroke.points.size();
+        if (stroke.waterBrush && !Neutral(stroke.brush))
+            return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_BRUSH_CONFLICT", "水刷不能同时指定普通笔刷。");
+    }
+    // 在实际捕获和Attach解析前预收。W3E的两次来源比较及解析/刷新按3倍wire，
+    // WPM按两次来源比较、解析cells/original、保护层构造、两个会话副本等8次计。
+    // 其它成员在此只做两个来源比较/原始会话副本，不重复按32倍解析opaque DOO/WTS。
+    // 原始/当前网格与来源副本为常驻基线；每笔临时峰值和真实历史在Replay中分开核对。
+    auto remainingLimits = limits;
+    const auto charge = [](std::size_t& remaining, std::size_t count, std::size_t multiple) {
+        if (count > remaining / multiple) return false;
+        remaining -= count * multiple; return true;
+    };
+    std::size_t sourceBytes = terrain.size();
+    if (pathing.size() > limits.maximumResourceBytes || sourceBytes > limits.maximumResourceBytes - pathing.size()) return budgetFailure();
+    sourceBytes += pathing.size();
+    if (!charge(remainingLimits.maximumCandidateBytes, terrain.size(), 64)
+        || !charge(remainingLimits.maximumCandidateBytes, pathing.size(), 4)
+        || !charge(remainingLimits.maximumWork, terrain.size(), 3)
+        || !charge(remainingLimits.maximumWork, pathing.size(), 8)
+        || !charge(remainingLimits.maximumResourceBytes, terrain.size(), 2)
+        || !charge(remainingLimits.maximumResourceBytes, pathing.size(), 2)) return budgetFailure();
+    for (const auto& member : original.Members()) for (const auto& input : member.sources) {
+        if (!charge(remainingLimits.maximumCandidateBytes, input.data.size(), 8)
+            || !charge(remainingLimits.maximumWork, input.data.size(), 6)
+            || !charge(remainingLimits.maximumResourceBytes, input.data.size(), 2)
+            || input.data.size() > limits.maximumResourceBytes - sourceBytes) return budgetFailure();
+        sourceBytes += input.data.size();
+    }
+    if (!remainingLimits.maximumCandidateBytes || !remainingLimits.maximumWork || !remainingLimits.maximumResourceBytes)
+        return budgetFailure();
+    // 精确捕获不依赖listfile；同时核原生/LNI来源和absence，在构造或落笔前拒绝替换。
+    const std::array<std::string, 10> names{"war3map.w3e", "war3map.wpm", "war3map.w3i", "table/w3i.ini",
+        "war3mapUnits.doo", "war3map.doo", "war3map.w3r", "war3map.w3c", "war3map.w3s", "war3map.wts"};
+    ArchiveExactMemberLimits sourceLimits;
+    sourceLimits.memberCount = names.size();
+    sourceLimits.totalBytes = std::min(MapData::TerrainSavePlanLimits{}.maximumBytes, sourceBytes);
+    sourceLimits.memberBytes = sourceLimits.totalBytes;
+    auto actual = reader(names, sourceLimits);
+    if (!actual.Succeeded() || !actual.value) return {{}, actual.diagnostics};
+    if (!SourceMatches(original, terrain, pathing, *actual.value)) return mismatch();
+    actual.value.reset(); // 完整来源副本不与候选、规则owner和历史并存。
+    auto candidate = std::make_shared<MapData::MapDataEditSession>(original);
+    const auto attached = candidate->AttachTerrain(terrain);
+    if (!attached.Succeeded()) return {{}, attached.diagnostics};
+    const auto attachedPathing = candidate->AttachPathing(pathing);
+    if (!attachedPathing.Succeeded()) return {{}, attachedPathing.diagnostics};
+    const auto baseline = candidate->Terrain();
+    auto replayed = Replay(source, *candidate, *baseline, pathing.size(), strokes, gameRoot, remainingLimits, sha);
+    if (!replayed.Succeeded() || !replayed.value) return {{}, replayed.diagnostics};
+    auto finalSource = reader(names, sourceLimits);
+    if (!finalSource.Succeeded() || !finalSource.value) return {{}, finalSource.diagnostics};
+    if (!SourceMatches(original, terrain, pathing, *finalSource.value)) return mismatch();
+    return Output::Success({std::move(candidate), std::move(*replayed.value)});
+}
 } // namespace
+
+Result<TerrainReplayCandidate> TerrainPathingSave::ReplayStrokes(
+    const MapArchiveSession& source, const MapDocument& original,
+    std::span<const std::byte> terrain, std::span<const std::byte> pathing, std::span<const MapData::TerrainStrokeIntent> strokes,
+    const std::filesystem::path& gameRoot, const TerrainReplayLimits& limits) {
+    return Guard<TerrainReplayCandidate>([&] { return CreateReplay(source, original, terrain, pathing, strokes, gameRoot, limits, source.SourceSha256(),
+        [&](auto names, const auto& captureLimits) { return source.CaptureExactMembers(names, captureLimits); }); });
+}
+
+Result<TerrainReplayCandidate> TerrainPathingSave::ReplayStrokes(
+    const WorkspaceSnapshot& source, const MapDocument& original,
+    std::span<const std::byte> terrain, std::span<const std::byte> pathing, std::span<const MapData::TerrainStrokeIntent> strokes,
+    const std::filesystem::path& gameRoot, const TerrainReplayLimits& limits) {
+    return Guard<TerrainReplayCandidate>([&] { return CreateReplay(source, original, terrain, pathing, strokes, gameRoot, limits, source.aggregateSha256,
+        [&](auto names, const auto& captureLimits) { return MapData::TerrainPathingResources::ReadDirectoryMembers(source, names, captureLimits, true); }); });
+}
 
 Result<MapData::TerrainPathingResources> TerrainPathingSave::CaptureNative(const MapArchiveSession& source,
     const MapData::TerrainGridSnapshot& before, const MapData::TerrainGridSnapshot& after,
@@ -92,9 +361,11 @@ Result<TerrainPatch> TerrainPathingSave::Seal(const MapDocument& original,
     const WorkspaceSnapshot& source, const MapData::MapDataEditSession& current,
     std::span<const MapData::TerrainStrokeIntent> strokes, const std::filesystem::path& gameRoot) {
     return Guard<TerrainPatch>([&]() -> Result<TerrainPatch> {
+        const auto replayed = ReplayStrokes(source, original, terrain, pathing, strokes, gameRoot);
+        if (!replayed.Succeeded() || !replayed.value) return {{}, replayed.diagnostics};
         const auto plan = PrepareForSave(source, current, gameRoot);
         if (!plan.Succeeded() || !plan.value) return {{}, plan.diagnostics};
-        return MapData::TerrainPatchCodec::SealWithPlan(original, terrain, pathing, source, current, strokes, gameRoot, &*plan.value);
+        return MapData::TerrainPatchCodec::SealWithPlan(original, terrain, pathing, source, current, strokes, gameRoot, &*plan.value, replayed.value->session.get());
     });
 }
 

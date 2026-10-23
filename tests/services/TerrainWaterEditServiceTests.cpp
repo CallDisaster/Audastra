@@ -1,4 +1,5 @@
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/TerrainPathingResources.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/MapData/MapSettings.h"
@@ -47,6 +48,16 @@ void Write(const std::filesystem::path& path, std::string_view text) {
     std::ofstream stream(path, std::ios::binary); stream << text;
     Require(stream.good(), "write private input");
 }
+Bytes Slk(const std::vector<std::string>& columns, std::initializer_list<std::vector<std::string>> rows) {
+    std::string text = "ID;PWXL;N;E\n";
+    const auto append = [&](const auto& values, std::size_t y) {
+        for (std::size_t x = 0; x < values.size(); ++x)
+            text += "C;X" + std::to_string(x + 1) + ";Y" + std::to_string(y) + ";K\"" + values[x] + "\"\n";
+    };
+    append(columns, 1); std::size_t y = 2;
+    for (const auto& row : rows) append(row, y++);
+    return Text(text + "E\n");
+}
 
 struct Fixture {
     std::filesystem::path root, game;
@@ -56,7 +67,7 @@ struct Fixture {
     std::unique_ptr<MapDataEditSession> edits;
     TerrainStrokePoint point{2048, 2048};
 
-    explicit Fixture(bool variedProtection = false) {
+    explicit Fixture(bool variedProtection = false, bool withSpecials = false) {
         static std::atomic<unsigned> next{0};
         root = std::filesystem::temp_directory_path() / ("Audastra-water-service-"
             + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()) + "-" + std::to_string(next++));
@@ -100,6 +111,29 @@ struct Fixture {
         members.push_back({"war3map.w3i", Take(settings.Serialize())});
         members.push_back({"war3map.doo", Take(DoodadPlacements{}.Serialize())});
         members.push_back({"war3mapUnits.doo", Take(UnitPlacements{}.Serialize())});
+        if (withSpecials) {
+            DoodadPlacements doodads;
+            doodads.specialDoodads = {{"Doo0", 0, {15, 15}}, {"Doo0", 0, {24, 24}},
+                {"Doo0", 0, {15, 15}}, {"Doo0", 0, {28, 28}}};
+            for (auto& member : members) {
+                if (member.name == "war3map.doo") member.data = Take(doodads.Serialize());
+                if (member.name == "war3map.wpm") for (const auto& special : doodads.specialDoodads)
+                    for (int y = 0; y < 4; ++y) for (int x = 0; x < 4; ++x) {
+                        const auto cell = 16 + std::size_t(special.position[1] * 4 + y) * 128 + special.position[0] * 4 + x;
+                        // 原创black RGB/alpha0 special独立预期：去掉地面0x40，保留作者0x11。
+                        member.data[cell] &= std::byte{0x11};
+                    }
+            }
+            Bytes texture(18 + 4 * 4 * 4);
+            texture[2] = std::byte{2}; texture[12] = texture[14] = std::byte{4}; texture[16] = std::byte{32};
+            texture[17] = std::byte{8};
+            members.push_back({"PathTextures/replay-special.tga", std::move(texture)});
+            members.push_back({"Units/DestructableData.slk", Slk({"destructableID", "code", "walkable"}, {{"Dst0", "Dst0", "0"}})});
+            members.push_back({"Doodads/Doodads.slk", Slk({"doodID", "code", "pathTex", "category", "fixedRot"},
+                {{"Doo0", "Doo0", "PathTextures/replay-special.tga", "C", "-1"}})});
+            members.push_back({"Units/DestructableMetaData.slk", Slk({"ID", "field", "slk", "type", "repeat", "data", "index"},
+                {{"dwlk", "walkable", "DestructableData", "bool", "0", "0", "-1"}})});
+        }
         Write(root / "ui/config", "base\n");
         Write(root / "ui/base/define.txt", "[TriggerTypes]\ninteger=0,1,1,Integer,integer\n");
         const auto catalog = Take(Trigger::UiCatalog::Load(root / "ui"));
@@ -131,6 +165,236 @@ struct Fixture {
         return request;
     }
 };
+
+std::vector<TerrainStrokeIntent> OrderedIntents(const Fixture& f) {
+    TerrainStrokeIntent raise;
+    raise.brush.kind = TerrainBrushKind::Raise; raise.brush.radius = 0; raise.brush.strength = 16;
+    raise.points = {{256, 256}};
+    TerrainStrokeIntent shallow; shallow.waterBrush = TerrainWaterStrokeOptions{};
+    shallow.waterBrush->randomSeed = 107; shallow.points = {f.point, f.point};
+    TerrainStrokeIntent deep; deep.waterBrush = TerrainWaterStrokeOptions{};
+    deep.waterBrush->kind = TerrainWaterBrushKind::Deep; deep.waterBrush->randomSeed = 991;
+    deep.waterBrush->enforceWaterLimits = false; deep.points = {{2048, 2176}};
+    return {raise, shallow, deep};
+}
+
+DirectoryWorkspace Directory(const Fixture& f) {
+    const auto root = f.root / "directory";
+    for (const auto& member : f.members) {
+        const auto path = root / member.name; std::filesystem::create_directories(path.parent_path());
+        Require(IO::WriteFileBytes(path, member.data).Succeeded(), "write independent directory member");
+    }
+    return Take(DirectoryWorkspace::Open(root));
+}
+
+std::unique_ptr<MapDataEditSession> Session(const Fixture& f) {
+    auto session = std::make_unique<MapDataEditSession>(MapDocument::FromMembers(f.members));
+    Require(session->AttachTerrain(f.members[0].data).Succeeded() && session->AttachPathing(f.members[1].data).Succeeded(), "attach independent replay");
+    return session;
+}
+
+template<class Source> Result<TerrainReplayCandidate> ReplayFixture(const Fixture& f, const Source& source,
+    std::span<const TerrainStrokeIntent> strokes, const TerrainReplayLimits& limits = {}) {
+    return TerrainPathingSave::ReplayStrokes(source, MapDocument::FromMembers(f.members),
+        f.members[0].data, f.members[1].data, strokes, f.game, limits);
+}
+
+void SharedReplayPreservesOrderSpecialDeletionAndCompleteDirectoryOutput() {
+    Fixture f(true, true); const auto directory = Directory(f); const auto intents = OrderedIntents(f);
+    auto archiveResult = Take(ReplayFixture(f, *f.source, intents));
+    auto directoryResult = Take(ReplayFixture(f, directory.Snapshot(), intents));
+    const auto archive = archiveResult.session, workspace = directoryResult.session;
+    Require(archiveResult.waterOwners.size() == 2 && directoryResult.waterOwners.size() == 2, "each water stroke captures a separate actual resource owner");
+    Require(Take(SerializeMapTerrain(*archive->Terrain())) == Take(SerializeMapTerrain(*workspace->Terrain()))
+        && archive->SerializePathingRestrictionDraft().value == workspace->SerializePathingRestrictionDraft().value,
+        "ordered archive and directory replay match full W3E and restriction provenance");
+    const auto specials = Take(workspace->Snapshot(MapDataKind::Doodads, kResourceBudget)).Doodads()->specialDoodads;
+    Require(specials.size() == 2 && specials[0].position == (std::array<std::int32_t, 2>{28, 28})
+        && specials[1].position == (std::array<std::int32_t, 2>{24, 24}), "duplicate XY removals retain native current-first swap-last ordering");
+    const auto sealed = Take(TerrainPathingSave::Seal(MapDocument::FromMembers(f.members), f.members[0].data,
+        f.members[1].data, directory.Snapshot(), *workspace, intents, f.game));
+    const auto archivePlan = Take(TerrainPathingSave::PrepareForSave(*f.source, *archive, f.game));
+    auto replacements = archive->Replacements();
+    Require(archivePlan.InstallPathingOutput(*archive, replacements).Succeeded(), "install independent archive native pathing");
+    for (const auto& name : {"war3map.w3e", "war3map.wpm", "war3map.doo", "war3mapUnits.doo"}) {
+        const auto source = Take(f.source->ReadMember(name));
+        const auto found = std::find_if(replacements.begin(), replacements.end(), [&](const auto& member) { return member.name == name; });
+        const auto& expected = found == replacements.end() ? source : found->data;
+        const auto actual = std::find_if(sealed.Files().begin(), sealed.Files().end(), [&](const auto& file) { return file.relativePath == name; });
+        Require((actual == sealed.Files().end() ? source : actual->replacement) == expected,
+            "complete W3E/DOO/Units/WPM bytes agree between archive and sealed directory");
+    }
+    Require(workspace->Undo() && workspace->Redo(), "directory replay owns real undo and redo commands");
+    Require(TerrainPathingSave::Seal(MapDocument::FromMembers(f.members), f.members[0].data, f.members[1].data,
+        directory.Snapshot(), *workspace, intents, f.game).Succeeded(), "redo restores the original water command and private provenance");
+    Require(!TerrainPatchCodec::Seal(MapDocument::FromMembers(f.members), f.members[0].data, f.members[1].data,
+        directory.Snapshot(), *workspace, intents, f.game).Succeeded(), "public Core entry cannot authorize water using final bytes");
+    auto untrusted = Session(f);
+    Require(untrusted->SetTerrainAndPathing(Take(SerializeMapTerrain(*workspace->Terrain())), f.members[1].data).Succeeded(),
+        "untrusted draft can carry the matching final W3E and static WPM");
+    const auto finalDoodads = Take(Take(workspace->Snapshot(MapDataKind::Doodads, kResourceBudget)).Doodads()->Serialize());
+    Require(untrusted->SetSerialized(MapDataKind::Doodads, finalDoodads).Succeeded(),
+        "final DOO remains an editable draft");
+    Require(!TerrainPathingSave::Seal(MapDocument::FromMembers(f.members), f.members[0].data, f.members[1].data,
+        directory.Snapshot(), *untrusted, intents, f.game).Succeeded(), "matching final DOO cannot substitute for replayed private water command");
+}
+
+void ReplayBudgetsAndTamperedIntentDoNotPublish() {
+    Fixture f; const auto directory = Directory(f); const auto intents = OrderedIntents(f);
+    const auto replayed = Take(ReplayFixture(f, directory.Snapshot(), intents));
+    const auto session = replayed.session;
+    auto changed = intents; changed[1].points = {{256, 512}};
+    Require(!TerrainPathingSave::Seal(MapDocument::FromMembers(f.members), f.members[0].data, f.members[1].data,
+        directory.Snapshot(), *session, changed, f.game).Succeeded(), "changed ordered points cannot seal another complete terrain result");
+    std::swap(changed[0], changed[1]);
+    Require(!TerrainPathingSave::Seal(MapDocument::FromMembers(f.members), f.members[0].data, f.members[1].data,
+        directory.Snapshot(), *session, changed, f.game).Succeeded(), "changed ordering cannot seal another result");
+    for (const auto mode : {0, 1, 2}) {
+        TerrainReplayLimits limits;
+        if (mode == 0) limits.maximumWork = 1;
+        if (mode == 1) limits.maximumCandidateBytes = 1;
+        if (mode == 2) limits.maximumResourceBytes = 1;
+        const auto rejected = ReplayFixture(f, directory.Snapshot(), std::span(intents).subspan(1), limits);
+        Require(!rejected.Succeeded() && !rejected.value, "tight aggregate budget returns no partially published session");
+    }
+    auto tooMany = std::vector<TerrainStrokeIntent>(129, intents[1]);
+    Require(HasCode(ReplayFixture(f, *f.source, tooMany), "TERRAIN_PATCH_STROKE_BUDGET"), "129 strokes rejected before mutation");
+    auto tooManyPoints = intents; tooManyPoints[1].points.resize(4096, f.point);
+    Require(HasCode(ReplayFixture(f, *f.source, tooManyPoints), "TERRAIN_PATCH_POINT_BUDGET"), "4096 is a whole-sequence point budget");
+    auto conflict = intents; conflict[1].brush.size = 1;
+    Require(HasCode(ReplayFixture(f, *f.source, conflict), "TERRAIN_REPLAY_BRUSH_CONFLICT"), "water intent cannot carry neutral-looking ordinary fields");
+    auto lateFailure = intents; lateFailure[1].points = {{90000, 90000}};
+    const auto rejectedPrefix = ReplayFixture(f, *f.source, lateFailure);
+    Require(!rejectedPrefix.Succeeded() && !rejectedPrefix.value
+        && session->Revision() == 3, "valid first stroke followed by an invalid water stroke returns no prefix session and leaves prior candidate intact");
+    auto changedSource = f.members; changedSource[0].data.back() ^= std::byte{1};
+    const auto wrongArchive = Take(MapArchiveSession::Open(Take(WriteVerifiedArchive(f.root / "different.w3x", changedSource)).path));
+    Require(!ReplayFixture(f, wrongArchive, std::span(intents).first(1)).Succeeded(), "ordinary-only replay also binds actual W3E before any edit");
+    changedSource = f.members;
+    for (auto& member : changedSource) if (member.name == "war3map.doo") {
+        DoodadPlacements added; added.specialDoodads.push_back({"Doo0", 0, {2, 2}}); member.data = Take(added.Serialize());
+    }
+    const auto changedDoo = Take(MapArchiveSession::Open(Take(WriteVerifiedArchive(f.root / "different-doo.w3x", changedSource)).path));
+    Require(!ReplayFixture(f, changedDoo, std::span(intents).first(1)).Succeeded(), "ordinary-only replay binds complete DOO and exact absent records too");
+    changedSource = f.members;
+    changedSource.push_back({"table/w3i.ini", Text("[w3i]\nmap_name=\"other settings\"\n")});
+    const auto ambiguous = Take(MapArchiveSession::Open(Take(WriteVerifiedArchive(f.root / "ambiguous.w3x", changedSource)).path));
+    std::erase_if(changedSource, [](const auto& member) { return member.name == "war3map.w3i"; });
+    const auto lniOnly = MapDocument::FromMembers(changedSource);
+    Require(!TerrainPathingSave::ReplayStrokes(ambiguous, lniOnly, f.members[0].data, f.members[1].data,
+        std::span(intents).first(1), f.game).Succeeded(), "a LNI-only document cannot hide the actual source native settings member");
+    Write(directory.Snapshot().root / "UI/MiscData.txt", "[Terrain]\nMaxSlope=1\n");
+    Require(!TerrainPathingSave::Seal(MapDocument::FromMembers(f.members), f.members[0].data, f.members[1].data,
+        directory.Snapshot(), *session, intents, f.game).Succeeded(), "late map resource modification refuses the exact captured directory source");
+}
+
+void ReplayAggregateResourceLimitRejectsOnlyTheSequence() {
+    Fixture f(false, true); const auto directory = Directory(f);
+    auto intents = OrderedIntents(f); intents.erase(intents.begin());
+    // 用实际owner容量选择可容纳一笔的预算；同一预算不能在第二笔重新开始记账。
+    const auto measured = Take(ReplayFixture(f, directory.Snapshot(), std::span(intents).first(1)));
+    const auto& owner = measured.waterOwners.front();
+    std::size_t sourceBytes = f.members[0].data.size() + f.members[1].data.size();
+    const auto document = MapDocument::FromMembers(f.members);
+    for (const auto& member : document.Members()) for (const auto& input : member.sources) sourceBytes += input.data.size();
+    TerrainReplayLimits limits;
+    const auto capture = owner.CaptureBudgetBytes(), retained = owner.OwnedCapacityBytes();
+    limits.maximumResourceBytes = sourceBytes * 2 + std::max(capture, retained) + std::min(capture, retained) / 2;
+    Require(ReplayFixture(f, directory.Snapshot(), std::span(intents).first(1), limits).Succeeded(),
+        "nonempty DOO and actual special shapes fit the first stroke under the same aggregate resource limit");
+    const auto rejected = ReplayFixture(f, directory.Snapshot(), intents, limits);
+    Require(!rejected.Succeeded() && !rejected.value && measured.session->Revision() == 1,
+        "the second actual resource capture cannot reset the aggregate ledger or return a prefix session");
+}
+
+void LargeOrdinaryReplayFitsTheUnchangedDefaultBudgets() {
+    Fixture f;
+    const auto vertex = f.grid.vertices.front();
+    f.grid.header.width = f.grid.header.height = 513;
+    f.grid.vertices.assign(513 * 513, vertex);
+    RefreshTerrainDerived(f.grid, 0, 0, 513, 513);
+    f.members[0].data = Take(SerializeMapTerrain(f.grid));
+    Bytes pathing{std::byte{'M'}, std::byte{'P'}, std::byte{'3'}, std::byte{'W'}};
+    for (const auto value : {0u, 2048u, 2048u}) for (unsigned shift = 0; shift < 32; shift += 8)
+        pathing.push_back(static_cast<std::byte>((value >> shift) & 0xff));
+    pathing.resize(16 + 2048 * 2048, std::byte{0x51}); f.members[1].data = std::move(pathing);
+    // 大而未跟随的普通DOO只能作为原始字节复制/身份核对，不能按解析32次计费。
+    DoodadPlacements doodads; doodads.doodads.resize(8192);
+    for (auto& doodad : doodads.doodads) { doodad.rawcode = "Doo0"; doodad.scale = {1, 1, 1}; }
+    for (auto& member : f.members) {
+        if (member.name == "war3map.doo") member.data = Take(doodads.Serialize());
+        if (member.name == "war3map.w3i") {
+            auto settings = Take(MapSettings::Parse(member.data)); settings.playableWidth = settings.playableHeight = 512;
+            member.data = Take(settings.Serialize());
+        }
+    }
+    const auto directory = Directory(f);
+    TerrainStrokeIntent stroke; stroke.brush.kind = TerrainBrushKind::Raise;
+    stroke.brush.radius = 0; stroke.brush.strength = 16; stroke.points = {{32768, 32768}};
+    const auto result = Take(ReplayFixture(f, directory.Snapshot(), std::span(&stroke, 1)));
+    Require(result.session->Revision() == 1 && Take(result.session->InspectTerrainPoint(stroke.points.front())).groundHeight == 48,
+        "a 513-square one-point ordinary edit and large untouched DOO fit the unchanged default work and capacity budgets");
+    Require(Take(result.session->Snapshot(MapDataKind::Doodads, kResourceBudget)).Doodads()->doodads.size() == 8192,
+        "large untouched DOO remains complete after replay");
+}
+
+void AggregateWorkAndHistoryCannotRestartAfterTheFirstCommand() {
+    Fixture f(false, true); const auto directory = Directory(f);
+    TerrainStrokeIntent stroke; stroke.brush.kind = TerrainBrushKind::Raise;
+    stroke.brush.radius = 0; stroke.brush.strength = 16; stroke.points = {{256, 256}};
+    const std::array pair{stroke, stroke};
+    for (const bool candidateBytes : {false, true}) {
+        TerrainReplayLimits limits;
+        // 从公开工厂搜索可容纳一笔的实际边界，不复制内部扫描/副本常数来生成预期。
+        std::size_t lower = 1, upper = candidateBytes ? limits.maximumCandidateBytes : limits.maximumWork;
+        while (upper - lower > 1) {
+            const auto middle = lower + (upper - lower) / 2;
+            if (candidateBytes) limits.maximumCandidateBytes = middle; else limits.maximumWork = middle;
+            if (ReplayFixture(f, directory.Snapshot(), std::span(&stroke, 1), limits).Succeeded()) upper = middle;
+            else lower = middle;
+        }
+        if (candidateBytes) limits.maximumCandidateBytes = upper; else limits.maximumWork = upper;
+        const auto first = Take(ReplayFixture(f, directory.Snapshot(), std::span(&stroke, 1), limits));
+        Require(first.session->Revision() == 1 && first.session->CanUndo(), "the measured boundary permits one complete command");
+        const auto sequence = ReplayFixture(f, directory.Snapshot(), pair, limits);
+        Require(!sequence.Succeeded() && !sequence.value && first.session->Revision() == 1,
+            "work and retained history share one aggregate limit and never return a valid prefix session");
+    }
+}
+
+void AnomalousCliffPropagationHasAnExactWholeStrokeBound() {
+    Fixture f;
+    for (const auto x : {16u, 20u}) {
+        f.grid.vertices[16 * 33 + x - 1].cliffAndLayerRaw = 0;
+        f.grid.vertices[16 * 33 + x + 1].cliffAndLayerRaw = 14;
+    }
+    RefreshTerrainDerived(f.grid, 0, 0, 33, 33);
+    const auto before = Take(SerializeMapTerrain(f.grid));
+    TerrainBrush brush; brush.kind = TerrainBrushKind::CliffLevel; brush.radius = 0; brush.levelDelta = 1;
+    const std::array points{TerrainStrokePoint{2048, 2048}, TerrainStrokePoint{2560, 2048}};
+    const auto first = Take(PrepareTerrainStroke(f.grid, brush, std::span(points).first(1)));
+    const auto whole = Take(PrepareTerrainStroke(f.grid, brush, points));
+    Require(first.result.levelPropagationWork > 0 && whole.result.levelPropagationWork > first.result.levelPropagationWork,
+        "abnormal high and low neighbors terminate and both samples consume one propagation ledger");
+    const auto exact = Take(PrepareTerrainStroke(f.grid, brush, points, whole.result.levelPropagationWork));
+    Require(Take(SerializeMapTerrain(exact.terrain)) == Take(SerializeMapTerrain(whole.terrain)),
+        "the exact measured whole-stroke limit returns the complete deterministic terrain");
+    const auto shortLimit = PrepareTerrainStroke(f.grid, brush, points, whole.result.levelPropagationWork - 1);
+    Require(HasCode(shortLimit, "TERRAIN_LEVEL_PROPAGATION_BUDGET") && !shortLimit.value
+        && Take(SerializeMapTerrain(f.grid)) == before, "one less visit fails without exposing a partly propagated source");
+    f.members[0].data = before;
+    f.source = std::make_unique<MapArchiveSession>(Take(MapArchiveSession::Open(
+        Take(WriteVerifiedArchive(f.root / "cliff-source.w3x", f.members)).path)));
+    auto session = Session(f);
+    const auto document = f.Document(); const TerrainEditBinding binding{document, session->SessionIdentity(), session->Revision(), session->TerrainSourceRevision()};
+    const auto rejected = PrepareTerrainEdit(*session, document, binding, brush, points, false, whole.result.levelPropagationWork - 1);
+    Require(HasCode(rejected, "TERRAIN_LEVEL_PROPAGATION_BUDGET") && session->Revision() == 0 && !session->CanUndo(),
+        "shared Services preparation forwards the same hard counter and preserves the original session");
+    const auto prepared = Take(PrepareTerrainEdit(*session, document, binding, brush, points, false, whole.result.levelPropagationWork));
+    Require(ApplyTerrainEdit(*session, document, prepared).Succeeded() && session->Undo()
+        && Take(SerializeMapTerrain(*session->Terrain())) == before && session->Redo(),
+        "a complete bounded cliff command keeps the original undo and redo path");
+}
 
 void OneAnchorAndWholePointSequenceShareCoreCommand() {
     for (const auto kind : {TerrainWaterBrushKind::Shallow, TerrainWaterBrushKind::Deep}) {
@@ -333,6 +597,12 @@ void DirectSaveUsesOrderedWaterAndOriginalScriptGate() {
 
 int main() {
     try {
+        SharedReplayPreservesOrderSpecialDeletionAndCompleteDirectoryOutput();
+        ReplayBudgetsAndTamperedIntentDoNotPublish();
+        ReplayAggregateResourceLimitRejectsOnlyTheSequence();
+        LargeOrdinaryReplayFitsTheUnchangedDefaultBudgets();
+        AggregateWorkAndHistoryCannotRestartAfterTheFirstCommand();
+        AnomalousCliffPropagationHasAnExactWholeStrokeBound();
         OneAnchorAndWholePointSequenceShareCoreCommand();
         OrderedSourceAndOptionsCannotBeSubstituted();
         WaterServiceCandidatesPassNativePlanAndIndependentArchiveReadback();

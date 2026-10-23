@@ -66,7 +66,7 @@ Result<std::vector<MapData::TerrainPointSample>> QueryTerrainPoints(const MapDat
 
 Result<PreparedTerrainEdit> PrepareTerrainEdit(const MapData::MapDataEditSession& session,
     const MapDataQueryBinding& document, const TerrainEditBinding& expected, const MapData::TerrainBrush& brush,
-    std::span<const MapData::TerrainStrokePoint> points, bool followDoodads) {
+    std::span<const MapData::TerrainStrokePoint> points, bool followDoodads, std::size_t maximumLevelPropagationWork) {
     if (const auto checked = CheckExpected(session, document, expected); !checked.Succeeded()) return {{}, checked.diagnostics};
     if (points.empty() || points.size() > TerrainEditMaximumPoints)
         return Result<PreparedTerrainEdit>::Failure("Terrain.Edit", "TERRAIN_EDIT_POINT_BUDGET", "单次地形编辑需要 1 到 4096 个采样点。");
@@ -75,7 +75,7 @@ Result<PreparedTerrainEdit> PrepareTerrainEdit(const MapData::MapDataEditSession
         const auto checked = session.InspectTerrainPoint(point);
         if (!checked.Succeeded() || !checked.value) return {{}, checked.diagnostics};
     }
-    auto plan = session.PrepareTerrainEdit(brush, points, followDoodads);
+    auto plan = session.PrepareTerrainEdit(brush, points, followDoodads, maximumLevelPropagationWork);
     if (!plan.Succeeded() || !plan.value) return {{}, std::move(plan.diagnostics)};
     return Result<PreparedTerrainEdit>::Success(PreparedTerrainEdit(expected, std::move(*plan.value)));
 }
@@ -104,7 +104,9 @@ Result<PreparedTerrainEdit> PrepareTerrainWaterEdit(const MapData::MapDataEditSe
         options.randomSeed, *anchor.value};
     auto plan = session.PrepareTerrainWaterEdit(resources, brush, points, followDoodads, limits);
     if (!plan.Succeeded() || !plan.value) return {{}, std::move(plan.diagnostics)};
-    return Result<PreparedTerrainEdit>::Success(PreparedTerrainEdit(expected, std::move(*plan.value)));
+    PreparedTerrainEdit prepared(expected, std::move(*plan.value));
+    prepared.waterOptions_ = options;
+    return Result<PreparedTerrainEdit>::Success(std::move(prepared));
 }
 
 Result<MapData::TerrainStrokeResult> ApplyTerrainEdit(MapData::MapDataEditSession& session,
