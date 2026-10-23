@@ -164,6 +164,72 @@ void ExistingDryRampRemovalSavesAndRebasesUndoRedo() {
     Require(badEdits.Undo() && badEdits.Redo(), "rejected dry ramp save retains usable undo and redo");
 }
 
+void ExistingWetRampSavesAndRebasesExactUndoRedo() {
+    Fixture f(false);
+    auto terrain = *Take(ParseMapTerrain(f.members[0].data)).Snapshot();
+    for (std::size_t y = 0; y < 9; ++y) for (std::size_t x = 0; x < 9; ++x)
+        terrain.vertices[y * 9 + x].cliffAndLayerRaw = x <= 3 ? 3 : 2;
+    for (const auto x : {3u, 4u, 5u}) terrain.vertices[4 * 9 + x].textureAndFlagsRaw = 0x10;
+    for (const auto at : {40u, 80u}) {
+        terrain.vertices[at].textureAndFlagsRaw |= 0x40;
+        terrain.vertices[at].waterHeightAndFlagsRaw = 8192 + 80 * 4;
+    }
+    RefreshTerrainDerived(terrain, 0, 0, 9, 9);
+    f.members[0].data = Take(SerializeMapTerrain(terrain));
+    // 中心R的G=64，W=80只浅水；远角非坡道G=0，W=80是深水。
+    // 三点单排坡道有一个R角，Qx=4且Qy=3/4仍阻断，Qx=3原悬崖贯穿全图。
+    for (std::size_t y = 0; y < 32; ++y) for (std::size_t x = 0; x < 32; ++x) {
+        const bool blocked = x / 4 == 3 || (x / 4 == 4 && (y / 4 == 3 || y / 4 == 4));
+        f.members[1].data[16 + y * 32 + x] = x >= 30 && y >= 30 ? std::byte{0x1b}
+            : blocked ? std::byte{0xdb} : std::byte{0x51};
+    }
+    for (auto& member : f.members) if (member.name == "UI/MiscData.txt") {
+        const auto maximum = Text("[Terrain]\nMaxHeight=1408\n");
+        member.data.insert(member.data.end(), maximum.begin(), maximum.end());
+    }
+    f.gameRoot = f.directory / "game";
+    Require(std::filesystem::create_directory(f.gameRoot), "private wet ramp optional-profile source");
+    Take(WriteVerifiedArchive(f.gameRoot / "war3.mpq", std::vector<MapArchiveMember>{{"fixture.txt", Text("original wet ramp fixture")}}));
+    f.Open("wet-ramp-source.w3x");
+    const auto sourcePath = f.archive->SourcePath();
+    const auto sourceSha = Take(Sha256File(sourcePath));
+    const auto originalTerrain = f.members[0].data, originalWpm = f.members[1].data;
+    auto expectedTerrain = terrain; expectedTerrain.vertices[40].waterHeightAndFlagsRaw = 8192 + 128 * 4;
+    const auto expectedWire = Take(SerializeMapTerrain(expectedTerrain));
+    auto expectedWpm = originalWpm;
+    // 最近顶点N=(4,4)覆盖4×4通行格，跨越四个Q；128==G64+Deep64，因此全部变深水。
+    for (std::size_t y = 14; y < 18; ++y) for (std::size_t x = 14; x < 18; ++x)
+        expectedWpm[16 + y * 32 + x] = std::byte{0x1b};
+    auto brush = f.Water(); brush.waterHeight = 128; f.Paint(brush);
+    f.Save("wet-ramp-deep.w3x");
+    Require(Take(f.archive->ReadMember("war3map.w3e")) == expectedWire
+        && Take(f.archive->ReadMember("war3map.wpm")) == expectedWpm,
+        "normal save writes independent complete wet-ramp W3E and nearest-vertex WPM threshold output");
+    Require(f.edits->Undo(), "undo saved wet-ramp water height"); f.Save("wet-ramp-restored.w3x");
+    Require(Take(f.archive->ReadMember("war3map.w3e")) == originalTerrain
+        && Take(f.archive->ReadMember("war3map.wpm")) == originalWpm,
+        "saved undo uses the restored complete ramp snapshot and recovers every source W3E/WPM byte");
+    Require(f.edits->Redo(), "redo saved wet-ramp water height"); f.Save("wet-ramp-redone.w3x");
+    Require(Take(f.archive->ReadMember("war3map.w3e")) == expectedWire
+        && Take(f.archive->ReadMember("war3map.wpm")) == expectedWpm,
+        "saved redo regenerates every prior wet-ramp output byte from its rebased source");
+    Require(Take(Sha256File(sourcePath)) == sourceSha, "wet-ramp save cycle preserves the original archive");
+    auto badMembers = f.members; badMembers[1].data[16] ^= std::byte{0x04};
+    const auto badArchive = Take(MapArchiveSession::Open(Take(WriteVerifiedArchive(f.directory / "wet-ramp-unexplained.w3x", badMembers)).path));
+    MapDataEditSession badEdits(MapDocument::FromMembers(badMembers));
+    Check(badEdits.AttachTerrain(badMembers[0].data)); Check(badEdits.AttachPathing(badMembers[1].data));
+    Take(badEdits.EditTerrain(brush, std::span(&f.point, 1), false));
+    const auto revision = badEdits.Revision();
+    const auto rejected = Take(TerrainSavePlan::PrepareForSave(badArchive, badEdits, f.gameRoot));
+    Require(!rejected.SaveGate().Succeeded() && std::any_of(rejected.SaveGate().diagnostics.begin(),
+        rejected.SaveGate().diagnostics.end(), [](const auto& d) { return d.code == "TERRAIN_PATHING_SOURCE_UNEXPLAINED"; }),
+        "wet-ramp support refuses one unexplained original WPM bit");
+    Require(badEdits.Revision() == revision && badEdits.IsDirty()
+        && Take(badArchive.ReadMember("war3map.wpm")) == badMembers[1].data
+        && badEdits.Undo() && badEdits.Redo(),
+        "wet-ramp refusal preserves source bytes, the current draft revision and usable history");
+}
+
 void SeedUnselectedCliffTerrain(Fixture& fixture) {
     const auto parsed = Take(ParseMapTerrain(fixture.members[0].data));
     auto terrain = *parsed.Snapshot();
@@ -487,6 +553,7 @@ void DirectoryRecipeUsesGeneratedWpm() {
 int main() {
     try {
         ExistingDryRampRemovalSavesAndRebasesUndoRedo();
+        ExistingWetRampSavesAndRebasesExactUndoRedo();
         UnselectedCliffWaterSavesAndRestoresExactSource();
         UnsafeCliffSentinelChangesRemainDraftOnly();
         WaterCrossingAndUndoUseActualSavedPathing();

@@ -72,16 +72,17 @@ struct TerrainNativePathingInput {
     // 完整special段及其实际贴图生成的逐格层。bit0为覆盖，0xCE为禁止位，
     // 覆盖时替换普通地面/悬崖查询，仍受可玩范围、边界和水规则约束。
     std::span<const std::uint8_t> specialAttributes;
-    // 干坡道角分类的实际 Terrain/MaxHeight 派生值。无坡道时不需要；
+    // 坡道角分类和有效水地高的实际 Terrain/MaxHeight 派生值。无坡道时不需要；
     // 不能由默认14或“已验证”标记代替。资源owner绑定完整配置来源。
     std::optional<std::uint8_t> maximumCliffLevel;
 };
 
 // 只返回 row-major 的原版六位 0xEE，不带 WPM 文件头、不混入源 WPM 或
 // 工程限制。绑定输入、旧基线比较、0x11 保留及事务回读归统一保存计划。
-// maximumBytes 限制输出及干坡道角分类工作数组的合计占用。
-// 支持普通悬崖和完整无水快照中的干坡道；地形偏移须128对齐，所有顶点世界XY须落在
-// 原版九位坐标打包的 [-32768,32640] 内。未提供完整特殊地形层、水坡道、
+// maximumBytes 限制输出及坡道角分类工作数组的合计占用。
+// 支持静态地图快照的普通悬崖、坡道与水：R加64，S依完整邻域加32/64/96或0；
+// 不包含运行时活动地形形变。地形偏移须128对齐，所有顶点世界XY须落在
+// 原版九位坐标打包的 [-32768,32640] 内。未提供完整特殊地形层、
 // 未知字段、不完整规则或未闭合的坐标/范围精度明确失败，绝不返回部分网格。
 [[nodiscard]] Result<std::vector<std::byte>> GenerateTerrainNativePathing(
     const TerrainNativePathingInput& input, std::size_t maximumBytes = 64 * 1024 * 1024);

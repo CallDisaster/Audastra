@@ -591,10 +591,15 @@ void DryRampCaptureBindsActualMaximumAndAllProfileSources() {
     fixture.grid.vertices[40].textureAndFlagsRaw = 0x10;
     fixture.terrain = Take(SerializeMapTerrain(fixture.grid)); fixture.members[0].data = fixture.terrain;
     NativeSources(fixture, NativeSettings());
+    fixture.members.push_back({"TerrainArt/Water.slk", Text("ID;PWXL;N;E\nB;X3;Y2;D0\n"
+        "C;X1;Y1;K\"waterID\"\nC;X2;K\"height\"\nC;X3;K\"impassable\"\n"
+        "C;X1;Y2;K\"LSha\"\nC;X2;K0\nC;X3;K0\nE\n")});
     const auto misc = std::find_if(fixture.members.begin(), fixture.members.end(),
         [](const auto& member) { return member.name == "UI/MiscData.txt"; });
     const auto maximum = Text("[Terrain]\nMaxHeight=-128\n"); // 实际M=1，故意低于R点层级2。
     misc->data.insert(misc->data.end(), maximum.begin(), maximum.end());
+    const auto waterConfig = Text("[Water]\nDeepLevelPathing=52\n");
+    misc->data.insert(misc->data.end(), waterConfig.begin(), waterConfig.end());
     // 本用例核累计解码/解析账本；末项留足可压缩空白，避免微小MPQ存储头成为更高的瞬时读取门。
     const auto profile = std::find_if(fixture.members.begin(), fixture.members.end(),
         [](const auto& member) { return member.name == "UI/WorldEditData.txt"; });
@@ -645,9 +650,19 @@ void DryRampCaptureBindsActualMaximumAndAllProfileSources() {
     Require(!conflictResult.Succeeded() && HasCode(conflictResult.diagnostics, "TERRAIN_PATHING_PROPERTY_AMBIGUOUS"),
         "complete profile chain rejects conflicting maxima instead of choosing the last definition");
     auto wetAfter = after; wetAfter.vertices.back().textureAndFlagsRaw = 0x40;
-    const auto waterResult = TerrainPathingResources::CaptureNative(source, fixture.grid, wetAfter, game, 1024 * 1024);
-    Require(!waterResult.Succeeded() && HasCode(waterResult.diagnostics, "TERRAIN_NATIVE_WATER_RAMP_UNSUPPORTED"),
-        "a source ramp and water only in the candidate cannot evade the pair-wide dry domain gate");
+    const auto waterOwner = Take(TerrainPathingResources::CaptureNative(source, fixture.grid, wetAfter, game, 1024 * 1024));
+    auto wetExpected = expected;
+    for (std::size_t y = 30; y < 32; ++y) for (std::size_t x = 30; x < 32; ++x)
+        wetExpected[y * 32 + x] = std::byte{0x0a};
+    Require(Take(waterOwner.GenerateNative(fixture.grid, TerrainNativeStage::Before, 1024 * 1024)) == expected
+        && Take(waterOwner.GenerateNative(wetAfter, TerrainNativeStage::After, 1024 * 1024)) == wetExpected,
+        "a source ramp and candidate-only distant water use actual M and water rules in their separate complete snapshots");
+    const std::vector<MemberReplacement> wetOutput{{"war3map.w3e", Take(SerializeMapTerrain(wetAfter))}};
+    Check(waterOwner.VerifyFrozenOutput(wetOutput, {}));
+    auto waterChanged = wetOutput;
+    waterChanged.push_back({"TerrainArt/Water.slk", Text("changed actual water source")});
+    Require(!waterOwner.VerifyFrozenOutput(waterChanged, {}).Succeeded(),
+        "mixed-ramp support cannot bypass actual water input identity");
     Require(!TerrainPathingResources::CaptureNative(source, fixture.grid, after, {}, 1024 * 1024).Succeeded(),
         "unknown optional profile fallback cannot be invented as absence");
 }

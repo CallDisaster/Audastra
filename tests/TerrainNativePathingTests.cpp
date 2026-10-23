@@ -7,6 +7,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 
 namespace {
 using namespace War3Map;
@@ -168,13 +169,104 @@ void DryRampCellsUseCornerWeightsAndExistingLayers() {
     fixture.maximumCliffLevel.reset();
     Refused(fixture.Generate(), "TERRAIN_NATIVE_RAMP_RULE_MISSING");
     fixture.maximumCliffLevel = 14; fixture.grid.vertices.back().textureAndFlagsRaw |= 0x40;
-    Refused(fixture.Generate(), "TERRAIN_NATIVE_WATER_RAMP_UNSUPPORTED");
+    fixture.objects.clear(); fixture.water = TerrainNativeWaterRules{0, 64, false};
+    const auto mixed = Take(fixture.Generate());
+    for (std::size_t y = 0; y < 16; ++y) for (std::size_t x = 0; x < 16; ++x) {
+        const auto mask = x >= 14 && y >= 14 ? 0x48u : expected[(y / 4) * 4 + x / 4];
+        Require(mixed[y * 16 + x] == static_cast<std::byte>(mask),
+            "remote water uses its own nearest vertex without rejecting the complete dry ramp map");
+    }
+    Refused(ClassifyNativeDryRampCorners(fixture.grid, 14), "TERRAIN_NATIVE_WATER_RAMP_UNSUPPORTED");
 
     Fixture singleS(5, 5); singleS.maximumCliffLevel = 14;
     for (const auto index : {7, 11, 12, 13, 17}) singleS.grid.vertices[index].textureAndFlagsRaw = 0x10;
     singleS.grid.vertices[13].cliffAndLayerRaw = singleS.grid.vertices[17].cliffAndLayerRaw = 3;
     const auto s = Take(singleS.Generate());
     Require(s[8 * 16 + 8] == std::byte{0x40}, "one S corner has weight two and opens its differing-level cell");
+}
+
+void WetRampOffsetsAndStrictWaterHaveLiteralOracles() {
+    const auto checkThresholds = [](Fixture& fixture, std::size_t vertex, int offset, std::size_t pixel) {
+        fixture.maximumCliffLevel = 14; fixture.water = TerrainNativeWaterRules{0, 64, false};
+        auto& wet = fixture.grid.vertices[vertex]; wet.textureAndFlagsRaw |= 0x40;
+        // 单个湿角不构成全格strict覆盖。64世界单位是实际deep阈值，比较包含等号。
+        for (const auto [quarterHeight, mask] : std::array<std::pair<int, unsigned>, 4>{
+            std::pair{offset * 4 - 1, 0x40u}, {offset * 4, 0x48u},
+            {(offset + 64) * 4 - 1, 0x48u}, {(offset + 64) * 4, 0x0au}}) {
+            wet.waterHeightAndFlagsRaw = static_cast<std::uint16_t>(8192 + quarterHeight);
+            Require(Take(fixture.Generate())[pixel] == static_cast<std::byte>(mask),
+                "literal effective ramp offset preserves dry, equality-shallow and equality-deep thresholds");
+        }
+        fixture.water->height = 0.25f;
+        wet.waterHeightAndFlagsRaw = static_cast<std::uint16_t>(8192 + (offset - 32) * 4);
+        Require(Take(fixture.Generate())[pixel] == std::byte{0x48},
+            "actual water layer height is added after raw water decoding and compared with the ramp ground");
+    };
+    Fixture r(5, 5);
+    for (std::size_t y : {1u, 2u}) for (std::size_t x = 0; x < 5; ++x) {
+        auto& vertex = r.grid.vertices[y * 5 + x];
+        vertex.textureAndFlagsRaw = 0x10; vertex.cliffAndLayerRaw = x < 2 ? 2 : 3;
+    }
+    checkThresholds(r, 6, 64, 4 * 16 + 4);
+    Require(Take(r.Generate(281)) == Take(r.Generate()), "wet ramp output and full labels fit the exact combined budget");
+    Refused(r.Generate(280), "TERRAIN_NATIVE_BUDGET");
+    for (const int offset : {32, 64, 96}) {
+        Fixture s(5, 5);
+        for (std::size_t y = 1; y <= 3; ++y) for (std::size_t x = 1; x <= 3; ++x) {
+            auto& vertex = s.grid.vertices[y * 5 + x]; vertex.textureAndFlagsRaw = 0x10;
+            if ((offset == 32 && x == 3 && y == 3)
+                || (offset == 64 && ((x == 1 && y == 1) || (x == 3 && y == 3)))
+                || (offset == 96 && (x == 3 || y == 3))) vertex.cliffAndLayerRaw = 3;
+        }
+        const std::string literal = offset == 32 ? "AAAAA" "ALLLA" "ALSRA" "ALRHA" "AAAAA"
+            : offset == 64 ? "AAAAA" "AHRLA" "ARSRA" "ALRHA" "AAAAA"
+            : "AAAAA" "ALRHA" "ARSHA" "AHHHA" "AAAAA";
+        Require(Take(ClassifyNativeDryRampCorners(s.grid, 14)) == std::vector<char>(literal.begin(), literal.end()),
+            "independent complete corner labels distinguish the three S height cases");
+        checkThresholds(s, 12, offset, 8 * 16 + 8);
+        if (offset == 32) {
+            s.water = TerrainNativeWaterRules{0, 200, false};
+            for (auto& vertex : s.grid.vertices) {
+                vertex.textureAndFlagsRaw |= 0x40; vertex.waterHeightAndFlagsRaw = 8192 + 128 * 4;
+            }
+            Require(Take(s.Generate())[8 * 16 + 8] == std::byte{0x48},
+                "H at exactly its water surface is shallow but prevents all-four strict coverage");
+            ++s.grid.vertices[18].waterHeightAndFlagsRaw;
+            Require(Take(s.Generate())[8 * 16 + 8] == std::byte{0x08},
+                "one raw quarter over H completes strict coverage using the same R/S/H ground rules");
+            s.water = TerrainNativeWaterRules{0, 64, false};
+            for (auto& vertex : s.grid.vertices) vertex.textureAndFlagsRaw &= ~0x40;
+            s.grid.vertices[12].textureAndFlagsRaw |= 0x40;
+            s.grid.vertices[12].waterHeightAndFlagsRaw = 8192 + 64 * 4;
+            Require(Take(s.Generate())[8 * 16 + 8] == std::byte{0x48},
+                "unmodified full snapshot gives center S the quarter-layer offset");
+            const auto outer = s.grid.vertices[5];
+            s.grid.vertices[5].textureAndFlagsRaw |= 0x10;
+            s.grid.vertices[5].cliffAndLayerRaw = 3;
+            Require(Take(s.Generate())[8 * 16 + 8] == std::byte{0x0a},
+                "a second-halo change alters a corner classification and invalidates S height without changing the center raw nine");
+            s.grid.vertices[5] = outer;
+            Require(Take(s.Generate())[8 * 16 + 8] == std::byte{0x48},
+                "restored snapshot rebuilds its own labels without leaking the prior revision's S subtype");
+        }
+    }
+    Fixture invalid(5, 5);
+    for (auto& vertex : invalid.grid.vertices) vertex.textureAndFlagsRaw = 0x10;
+    invalid.grid.vertices[18].cliffAndLayerRaw = 3;
+    Require(Take(ClassifyNativeDryRampCorners(invalid.grid, 14))[12] == 'S',
+        "all-nine ramps admit S even when surrounding corner labels do not admit a height subtype");
+    checkThresholds(invalid, 12, 0, 8 * 16 + 8);
+
+    Fixture edge(3, 3); edge.maximumCliffLevel = 14; edge.water = TerrainNativeWaterRules{0, 64, false};
+    for (const auto at : {0u, 3u, 6u}) edge.grid.vertices[at].textureAndFlagsRaw = 0x10;
+    edge.grid.vertices[6].cliffAndLayerRaw = 3;
+    edge.grid.vertices[3].textureAndFlagsRaw |= 0x40;
+    edge.grid.vertices[3].waterHeightAndFlagsRaw = 8192 + 64 * 4;
+    Require(Take(edge.Generate())[4 * 8] == std::byte{0xca},
+        "missing EW neighbors do not erase a valid NS R offset of64 at the map edge");
+    edge.grid.vertices[3].waterHeightAndFlagsRaw = 8192 + 128 * 4;
+    Require(Take(edge.Generate())[4 * 8] == std::byte{0x0a},
+        "edge R still reaches deep water at exactly its effective ground plus64");
 }
 
 void CliffSentinelTransitionsRequireFlatKnownNeighborhoods() {
@@ -522,6 +614,7 @@ int main() {
     try {
         DryRampCornerRulesHaveLiteralOracles();
         DryRampCellsUseCornerWeightsAndExistingLayers();
+        WetRampOffsetsAndStrictWaterHaveLiteralOracles();
         CliffSentinelTransitionsRequireFlatKnownNeighborhoods();
         SixModesUseTheirDistinctRules();
         NearestVertexDiffersFromTileOwner();

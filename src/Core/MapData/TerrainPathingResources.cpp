@@ -451,12 +451,9 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
                 || before.header.cliffTilesets != after.header.cliffTilesets
                 || before.vertices.size() != after.vertices.size())
                 Fail("TERRAIN_NATIVE_SOURCE_SHAPE", "原版通行重建要求旧/新经典地形尺寸、偏移与地形集不变。");
-            bool wet = false;
             for (const auto* grid : {&before, &after}) for (const auto& vertex : grid->vertices) {
-                nativeRamp = nativeRamp || vertex.IsRamp(); wet = wet || vertex.HasWater();
+                nativeRamp = nativeRamp || vertex.IsRamp();
             }
-            if (nativeRamp && wet)
-                Fail("TERRAIN_NATIVE_WATER_RAMP_UNSUPPORTED", "含坡道时源和候选必须全部无水，不能使用未闭合的坡道有效水地高。");
             for (std::size_t i = 0; i < before.vertices.size(); ++i) {
                 const auto oldSlot = before.vertices[i].CliffTextureIndex(), newSlot = after.vertices[i].CliffTextureIndex();
                 if (oldSlot == newSlot) continue;

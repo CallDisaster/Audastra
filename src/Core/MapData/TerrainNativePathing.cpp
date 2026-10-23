@@ -59,10 +59,14 @@ void CheckVertex(const TerrainVertex& vertex, bool dryRamp = false,
     if (code) Fail(code, "顶点" + (location ? Coordinate(location->first, location->second) : std::string{}) + detail);
 }
 
-TerrainNativeWaterState WaterState(const TerrainVertex& vertex, const TerrainNativeWaterRules& rules) {
+TerrainNativeWaterState WaterState(const TerrainVertex& vertex, const TerrainNativeWaterRules& rules,
+    double rampOffset = 0) {
     if (!vertex.HasWater()) return {};
-    const double ground = (static_cast<double>(vertex.groundHeightRaw) - 8192.0) / 4.0
+    const double base = (static_cast<double>(vertex.groundHeightRaw) - 8192.0) / 4.0
         + 128.0 * (static_cast<int>(vertex.CliffLevel()) - 2);
+    // 608880 在坡道调用前丢弃ST0，偏移加回已存F32基底；加法后没有返回F32落点。
+    // 经典14bit raw与4bit层级形成的四分之一单位值及32/64/96偏移在此域均精确。
+    const double ground = vertex.IsRamp() ? static_cast<double>(static_cast<float>(base)) + rampOffset : base;
     // 保持原版的 float 存储落点；surface 相加之后没有新的 float 落点。
     const float offset = rules.height * 128.0f;
     const double surface = (static_cast<double>(vertex.waterHeightAndFlagsRaw & 0x3fff) - 8192.0) / 4.0
@@ -182,9 +186,9 @@ std::uint8_t EncodeStatic(std::uint8_t attributes) {
 
 // 5A81A0/5A7DD0/5A8370：只读同一冻结W3E，邻域缺点保持缺失。
 // x外层、y内层的索引决定EW=1/7、NS=3/5，不能换成row-major。
-class DryRampClassifier {
+class NativeRampClassifier {
 public:
-    DryRampClassifier(const TerrainGridSnapshot& terrain, std::uint8_t maximum)
+    NativeRampClassifier(const TerrainGridSnapshot& terrain, std::uint8_t maximum)
         : terrain_(terrain), maximum_(maximum) {}
 
     char Classify(int x, int y) const {
@@ -255,28 +259,59 @@ private:
     std::uint8_t maximum_;
 };
 
-std::vector<char> DryRampLabels(const TerrainGridSnapshot& terrain, std::uint8_t maximum,
-    std::size_t maximumBytes) {
+std::vector<char> RampLabels(const TerrainGridSnapshot& terrain, std::uint8_t maximum,
+    std::size_t maximumBytes, bool dryOnly = false) {
     const auto& header = terrain.header;
     if (header.version != 11)
-        Fail("TERRAIN_NATIVE_VERSION", "干坡道分类只支持经典W3E v11。");
+        Fail("TERRAIN_NATIVE_VERSION", "坡道分类只支持经典W3E v11。");
     if (header.width < 2 || header.height < 2 || header.width > 2049 || header.height > 2049
         || terrain.vertices.size() != static_cast<std::size_t>(header.width) * header.height)
-        Fail("TERRAIN_NATIVE_DIMENSIONS", "干坡道分类需要完整的经典地形顶点网格。");
+        Fail("TERRAIN_NATIVE_DIMENSIONS", "坡道分类需要完整的经典地形顶点网格。");
     if (maximum > 14)
-        Fail("TERRAIN_NATIVE_RAMP_RULE_MISSING", "实际Terrain.MaxHeight派生值超出干坡道0..14支持域。");
+        Fail("TERRAIN_NATIVE_RAMP_RULE_MISSING", "实际Terrain.MaxHeight派生值超出坡道0..14支持域。");
     if (terrain.vertices.size() > maximumBytes)
-        Fail("TERRAIN_NATIVE_BUDGET", "干坡道角分类数组超过本次剩余预算。");
+        Fail("TERRAIN_NATIVE_BUDGET", "坡道角分类数组超过本次剩余预算。");
     for (std::size_t i = 0; i < terrain.vertices.size(); ++i) {
         CheckVertex(terrain.vertices[i], true, std::pair{i % header.width, i / header.width});
-        if (terrain.vertices[i].HasWater())
+        if (dryOnly && terrain.vertices[i].HasWater())
             Fail("TERRAIN_NATIVE_WATER_RAMP_UNSUPPORTED", "干坡道分类要求完整快照无水，不能忽略邻域水标志。");
     }
     std::vector<char> labels(terrain.vertices.size());
-    const DryRampClassifier classify(terrain, maximum);
+    const NativeRampClassifier classify(terrain, maximum);
     for (std::uint32_t y = 0; y < header.height; ++y) for (std::uint32_t x = 0; x < header.width; ++x)
         labels[static_cast<std::size_t>(y) * header.width + x] = classify.Classify(static_cast<int>(x), static_cast<int>(y));
     return labels;
+}
+
+// 5A8460(a4=0)/5A7FA0：S的种类使用同一快照九点的完整角分类，
+// 每个角分类仍读取自己的邻域；不能只用中心原始ramp位或四个地格角。
+double RampHeightOffset(const TerrainGridSnapshot& terrain, std::span<const char> labels,
+    std::size_t x, std::size_t y) {
+    const auto columns = static_cast<std::size_t>(terrain.header.width);
+    const char center = labels[y * columns + x];
+    if (center == 'R') return 64.0;
+    if (center != 'S') return 0.0; // H在a4=0时同样为零。
+    if (x == 0 || y == 0 || x + 1 >= columns || y + 1 >= terrain.header.height)
+        return 0.0; // 5A7FA0缺任一邻点返回-1，5A8460因而返回0。
+    std::array<char, 9> nine{};
+    for (std::size_t dx = 0; dx < 3; ++dx) for (std::size_t dy = 0; dy < 3; ++dy)
+        nine[dx * 3 + dy] = labels[(y + dy - 1) * columns + x + dx - 1];
+    int lowCount = 0, highCount = 0;
+    std::size_t lastLow = 0, lastHigh = 0;
+    for (const auto at : {0u, 2u, 6u, 8u}) {
+        if (nine[at] == 'L') { ++lowCount; lastLow = at; }
+        if (nine[at] == 'H') { ++highCount; lastHigh = at; }
+    }
+    const auto axes = [&](std::size_t at, char far) {
+        const auto x3 = (at / 3) * 3, y3 = at % 3;
+        return nine[x3 + 1] == 'R' && nine[3 + y3] == 'R'
+            && nine[7 - x3] == far && nine[5 - y3] == far;
+    };
+    if (lowCount == 1 && highCount == 3 && axes(lastLow, 'H')) return 96.0;
+    if (lowCount == 3 && highCount == 1 && axes(lastHigh, 'L')) return 32.0;
+    if (lowCount == 2 && highCount == 2 && nine[8 - lastLow] == 'L'
+        && nine[1] == 'R' && nine[7] == 'R' && nine[3] == 'R' && nine[5] == 'R') return 64.0;
+    return 0.0;
 }
 
 std::uint8_t TerrainMask(const TerrainVertex& nearest, const TerrainNativeWaterState& water,
@@ -305,7 +340,7 @@ Result<TerrainNativeWaterState> ClassifyNativeTerrainWater(
 
 Result<std::vector<char>> ClassifyNativeDryRampCorners(
     const TerrainGridSnapshot& terrain, std::uint8_t maximumCliffLevel, std::size_t maximumBytes) {
-    return Guard<std::vector<char>>([&] { return DryRampLabels(terrain, maximumCliffLevel, maximumBytes); });
+    return Guard<std::vector<char>>([&] { return RampLabels(terrain, maximumCliffLevel, maximumBytes, true); });
 }
 
 bool IsNativeTerrainCliffSentinelTransition(
@@ -390,18 +425,16 @@ Result<std::vector<std::byte>> GenerateTerrainNativePathing(
             wet = wet || terrain.vertices[i].HasWater();
             ramp = ramp || terrain.vertices[i].IsRamp();
         }
-        if (ramp && wet)
-            Fail("TERRAIN_NATIVE_WATER_RAMP_UNSUPPORTED", "含坡道的旧/新快照必须全部无水；坡道有效水地高尚未闭合。");
         if (ramp && (!input.maximumCliffLevel || *input.maximumCliffLevel > 14))
-            Fail("TERRAIN_NATIVE_RAMP_RULE_MISSING", "干坡道需要实际Terrain.MaxHeight派生的0..14层级上限。");
+            Fail("TERRAIN_NATIVE_RAMP_RULE_MISSING", "坡道需要实际Terrain.MaxHeight派生的0..14层级上限。");
         if (wet && !input.water)
             Fail("TERRAIN_NATIVE_WATER_RULE_MISSING", "地形含水标志，但缺少实际水高度、深度阈值和不可通行属性。");
         const auto palette = ReadPalette(terrain, input.groundRules);
         std::vector<char> labels;
         if (ramp) {
             if (terrain.vertices.size() > maximumBytes - cells)
-                Fail("TERRAIN_NATIVE_BUDGET", "完整通行网格及干坡道角分类超过本次保存剩余预算。");
-            labels = DryRampLabels(terrain, *input.maximumCliffLevel, maximumBytes - cells);
+                Fail("TERRAIN_NATIVE_BUDGET", "完整通行网格及坡道角分类超过本次保存剩余预算。");
+            labels = RampLabels(terrain, *input.maximumCliffLevel, maximumBytes - cells);
         }
         std::vector<std::byte> result(cells);
         for (std::size_t y = 0; y + 1 < rows; ++y) for (std::size_t x = 0; x + 1 < columns; ++x) {
@@ -419,7 +452,12 @@ Result<std::vector<std::byte>> GenerateTerrainNativePathing(
                 if (weight != 0) blocked = weight <= 1;
             }
             std::array<TerrainNativeWaterState, 4> water{};
-            if (input.water) for (std::size_t c = 0; c < corners.size(); ++c) water[c] = WaterState(*corners[c], *input.water);
+            if (input.water) for (std::size_t c = 0; c < corners.size(); ++c) {
+                // 无水早返不取坡道偏移；有水的N与strict四角均消费各自完整快照。
+                const auto offset = ramp && corners[c]->HasWater() && corners[c]->IsRamp()
+                    ? RampHeightOffset(terrain, labels, x + c % 2, y + c / 2) : 0.0;
+                water[c] = WaterState(*corners[c], *input.water, offset);
+            }
             const bool allStrictWater = std::all_of(water.begin(), water.end(), [](const auto& state) { return state.strictCoverage; });
             const double left = static_cast<double>(header.offset[0]) + x * 128.0;
             const double bottom = static_cast<double>(header.offset[1]) + y * 128.0;
