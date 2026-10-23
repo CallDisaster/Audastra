@@ -330,6 +330,101 @@ std::vector<std::byte> PlayableWaterUsesPublicSave(const MapArchiveSession& orig
     return expectedWpm;
 }
 
+void FixedRotationUsesPublicSave(const MapArchiveSession& original, const std::filesystem::path& directory,
+    const std::filesystem::path& tool, const std::filesystem::path& game,
+    const StandardObjectCatalog& catalog, const ObjectFieldSchema& schema, const Game::GameDataSource& mounted) {
+    const auto beforeBytes = Take(original.ReadMember("war3map.w3e"));
+    const auto before = *Take(ParseMapTerrain(beforeBytes)).Snapshot();
+    DoodadPlacement placement;
+    placement.creationId = 1; placement.flags = 2; placement.scale = {1, 1, 1};
+    placement.position = {before.header.offset[0] + 40 * 128 + 0.5f, before.header.offset[1] + 40 * 128 + 0.25f, 0};
+    std::string parent, path;
+    ModificationKey field;
+    NativeValueType wire = NativeValueType::Int32;
+    for (const auto& object : catalog.Entries()) {
+        const auto category = object.Field("category");
+        if (object.key.type != ObjectType::Doodad || catalog.Find(ObjectType::Destructable, object.key.rawcode)
+            || category.size() != 1 || category[0] < 0x21 || category[0] > 0x7e || category == "_" || category == "C") continue;
+        const auto candidatePath = std::string(object.Field("pathtex"));
+        if (!Text::LowerAscii(candidatePath).ends_with(".tga")) continue;
+        auto file = mounted.ReadFileBoundedWithSource(candidatePath, 512u * 1024u);
+        if (!file.Succeeded() || !file.value) continue;
+        const auto footprint = DecodeDoodadFootprintTga(file.value->bytes);
+        if (!footprint.Succeeded() || !footprint.value || footprint.value->width > 16 || footprint.value->height > 16) continue;
+        std::vector<std::uint8_t> zero(std::size_t{before.header.width - 1} * (before.header.height - 1) * 16), ninety(zero);
+        if (!AddDoodadFootprint(zero, before.header, placement, *footprint.value, 2, 0.0f).Succeeded()
+            || !AddDoodadFootprint(ninety, before.header, placement, *footprint.value, 2, 90.0f).Succeeded() || zero == ninety) continue;
+        ObjectFieldContext context; context.rawcode = object.key.rawcode; context.baseCode = object.Field("code");
+        const auto match = schema.MatchSourceField(ObjectType::Doodad, "fixedrot", context);
+        if (!match.definition || !match.safeToEdit || match.sourceKey != "fixedrot" || match.sourceIndex
+            || match.definition->repeat || match.definition->data
+            || Text::LowerAscii(match.definition->sourceTable) != "doodaddata"
+            || (match.definition->nativeValueType != NativeValueType::Real && match.definition->nativeValueType != NativeValueType::Unreal)) continue;
+        parent = object.key.rawcode; path = candidatePath; field = match.modification; wire = match.definition->nativeValueType;
+        std::cout << "fixed_rotation_object=" << parent << " path=" << path << " field=" << field.fieldId
+            << " wire=" << static_cast<int>(wire) << " winner=" << file.value->archiveName
+            << " bytes=" << file.value->bytes.size() << " sha256=" << Take(Sha256(file.value->bytes)) << '\n';
+        break;
+    }
+    Require(!parent.empty(), "actual sources contain an unambiguous fixedRot field and a footprint whose rotation matters");
+    for (const bool custom : {false, true}) {
+        const auto scenario = directory / (custom ? "custom-fixed-rotation" : "original-fixed-rotation");
+        Require(std::filesystem::create_directory(scenario), "exclusive fixed rotation scenario");
+        const std::string id = custom ? "Zr03" : parent;
+        Require(!custom || (!catalog.Find(ObjectType::Doodad, id) && !catalog.Find(ObjectType::Destructable, id)),
+            "custom fixed rotation ID must not shadow actual game data");
+        const auto native = [&](float degrees) {
+            auto document = Take(NativeObjectDocument::CreateEmpty(ObjectType::Doodad));
+            if (custom) Check(document.AddCustomObject(id, parent)); else Check(document.AddOriginalObject(id));
+            Check(document.AddModification({ObjectType::Doodad, id}, field, wire, degrees));
+            return Take(NativeObjectCodec(ObjectType::Doodad).Serialize(document));
+        };
+        DoodadPlacements placements; placement.rawcode = id; placements.doodads.push_back(placement);
+        const auto doo = Take(placements.Serialize()), w3d = native(90.0f);
+        const std::array<MemberReplacement, 2> seed{{{"war3map.doo", doo}, {"war3map.w3d", w3d}}};
+        const auto seeded = Take(MapArchiveSession::Open(Take(original.SaveCandidate(scenario / "seeded.w3x", seed)).path));
+        const auto rules = Take(TerrainPathingSave::CaptureNative(seeded, before, before, game, kSaveBytes));
+        const auto oldNative = Take(rules.GenerateNative(before, kSaveBytes));
+        const std::array<MemberReplacement, 1> unrotated{{{"war3map.w3d", native(0.0f)}}};
+        const auto control = Take(MapArchiveSession::Open(Take(seeded.SaveCandidate(scenario / "zero-angle-control.w3x", unrotated)).path));
+        const auto controlRules = Take(TerrainPathingSave::CaptureNative(control, before, before, game, kSaveBytes));
+        Require(Take(controlRules.GenerateNative(before, kSaveBytes)) != oldNative,
+            "actual native fixedRot changes the complete dry-source pathing instead of being ignored");
+        auto wpm = Take(seeded.ReadMember("war3map.wpm"));
+        Require(wpm.size() == oldNative.size() + 16, "actual rotated footprint pathing has complete dimensions");
+        for (std::size_t i = 0; i < oldNative.size(); ++i) wpm[i + 16] = (wpm[i + 16] & std::byte{0x11}) | oldNative[i];
+        const std::array<MemberReplacement, 1> pathing{{{"war3map.wpm", wpm}}};
+        const auto source = Take(MapArchiveSession::Open(Take(seeded.SaveCandidate(scenario / "source.w3x", pathing)).path));
+        MapEditSaveRequest request;
+        request.sourceMap = source.SourcePath(); request.targetCandidate = scenario / "saved.w3x";
+        request.toolRoot = tool; request.gameRoot = game;
+        request.expectedSourceSha256 = source.SourceSha256(); request.expectedTerrainSha256 = Take(Sha256(beforeBytes));
+        MapEditTerrainStroke stroke; stroke.pointSpace = MapEditPointSpace::TerrainVertex; stroke.points = {{32, 32}};
+        TerrainWaterStrokeOptions options; options.kind = TerrainWaterBrushKind::Shallow;
+        options.shape = TerrainBrushShape::Square; options.randomSeed = 42; stroke.waterBrush = options;
+        request.terrainStrokes = {stroke};
+        const auto saved = Take(SaveMapEditCandidate(request));
+        const auto readback = Take(MapArchiveSession::Open(saved.candidate));
+        const auto after = *Take(ParseMapTerrain(Take(readback.ReadMember("war3map.w3e")))).Snapshot();
+        Require(after.vertices[std::size_t{32} * after.header.width + 32].HasWater(), "public save creates water beside the rotated object");
+        const auto newRules = Take(TerrainPathingSave::CaptureNative(readback, after, after, game, kSaveBytes));
+        const auto newNative = Take(newRules.GenerateNative(after, kSaveBytes));
+        Require(newNative.size() == oldNative.size() && newNative != oldNative, "rotated-object save still changes actual water pathing");
+        for (std::size_t i = 0; i < newNative.size(); ++i) wpm[i + 16] = (wpm[i + 16] & std::byte{0x11}) | newNative[i];
+        Require(saved.scriptPreserved && Take(readback.ReadMember("war3map.wpm")) == wpm,
+            "public fixed rotation save reads back complete resource-derived pathing");
+        for (const auto& member : source.Members()) {
+            const auto name = Text::LowerAscii(member.name);
+            if (name == "war3map.w3e" || name == "war3map.wpm" || name == "war3mapmap.blp") continue;
+            Require(Take(readback.ReadMember(member.name)) == member.data, "fixed rotation save preserves all unrelated members");
+        }
+        Check(newRules.VerifyReadback(readback, kSaveBytes));
+        Require(Take(Sha256File(source.SourcePath())) == source.SourceSha256(), "fixed rotation source remains unchanged");
+        std::cout << "native_fixed_rotation_public_save_passed custom=" << custom << " source_sha256=" << source.SourceSha256()
+            << " candidate_sha256=" << saved.candidateSha256 << " native_editor_verified=false game_verified=false\n";
+    }
+}
+
 void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const std::filesystem::path& game) {
     OwnedDirectory directory;
     try {
@@ -643,6 +738,7 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         const auto playableShallow = PlayableWaterUsesPublicSave(original, directory.path, tool, game, false);
         const auto playableDeep = PlayableWaterUsesPublicSave(original, directory.path, tool, game, true);
         Require(playableShallow != playableDeep, "playable shallow and deep water must not produce identical pathing");
+        FixedRotationUsesPublicSave(original, directory.path, tool, game, catalog, schema, mounted);
     } catch (...) {
         directory.keep = true;
         std::cerr << "Real-source failure artifacts preserved at " << IO::PathUtf8(directory.path) << '\n';
