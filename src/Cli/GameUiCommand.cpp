@@ -165,6 +165,22 @@ nlohmann::json ScriptFrameJson(std::size_t index, const ScriptFrame& frame) {
             items.push_back(std::move(row));
         }
     }
+    if (frame.leaderboard) {
+        const ScriptLeaderboard& board = *frame.leaderboard;
+        auto& out = json["leaderboard"] = {{"size", board.size}, {"show_title", board.showTitle}};
+        if (board.clipped) out["clipped"] = true;
+        if (board.sortTies) out["sort_ties"] = true;
+        const auto color = [](const std::array<std::uint8_t, 4>& c) { return nlohmann::json{c[0], c[1], c[2], c[3]}; };
+        auto& items = out["items"] = nlohmann::json::array();
+        for (const auto& item : board.items) {
+            nlohmann::json entry{{"label", item.label}, {"value", item.value}, {"show_label", item.showLabel},
+                {"show_value", item.showValue}, {"show_icon", item.showIcon}};
+            entry["player"] = item.player ? nlohmann::json(*item.player) : nlohmann::json(nullptr);
+            if (item.labelColor) entry["label_color"] = color(*item.labelColor);
+            if (item.valueColor) entry["value_color"] = color(*item.valueColor);
+            items.push_back(std::move(entry));
+        }
+    }
     if (!frame.dynamic.empty()) json["dynamic"] = frame.dynamic;
     if (!frame.runtimeSamples.empty()) {
         auto& samples = json["runtime_samples"] = nlohmann::json::array();
@@ -264,17 +280,18 @@ int RunGameUiInspect(int argc, wchar_t* argv[]) {
             tocCalls.push_back({{"function", call.function}, {"path", call.path}, {"script", call.scriptFile},
                 {"line", call.line}});
         }
-        scriptPlan = FindScriptFrames(scripts);
-        AppendDiagnostics(diagnostics, scriptPlan.diagnostics);
+        TriggerStrings strings;
         if (map->HasFile("war3map.wts")) {
             auto bytes = map->ReadFileBounded("war3map.wts", kMaxScriptBytes);
             AppendDiagnostics(diagnostics, bytes.diagnostics);
             if (bytes.Succeeded() && bytes.value) {
                 if (auto table = MapData::ParseStringTable(*bytes.value); table.value) {
-                    for (auto& entry : table.value->entries) scriptPlan.strings[entry.id] = std::move(entry.value);
+                    for (auto& entry : table.value->entries) strings[entry.id] = std::move(entry.value);
                 }
             }
         }
+        scriptPlan = FindScriptFrames(scripts, std::move(strings));
+        AppendDiagnostics(diagnostics, scriptPlan.diagnostics);
     }
     UiSkin skin;
     if (auto bytes = reader(kSkinPath); bytes.Succeeded() && bytes.value) {
@@ -291,6 +308,15 @@ int RunGameUiInspect(int argc, wchar_t* argv[]) {
         auto bytes = map->ReadFileBounded(kMapSkinPath, kMaxUiFileBytes);
         AppendDiagnostics(diagnostics, bytes.diagnostics);
         if (bytes.Succeeded() && bytes.value) skin.SetMapSkin(BytesToText(*bytes.value));
+    }
+    if (skin.HasGameSkins()) {
+        std::vector<Diagnostic> colorDiagnostics;
+        skin.SetTeamColors(ReadTeamColors(skin, [&reader](const std::string& path) -> std::optional<std::vector<std::byte>> {
+            auto bytes = reader(path);
+            if (!bytes.Succeeded() || !bytes.value) return std::nullopt;
+            return std::move(*bytes.value);
+        }, colorDiagnostics));
+        AppendDiagnostics(diagnostics, colorDiagnostics);
     }
     AppendDiagnostics(diagnostics, library.Diagnostics());
 

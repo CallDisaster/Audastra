@@ -110,7 +110,10 @@ std::optional<RootPlacement> KnownRootPlacement(std::string_view templateName) {
         return placement;
     }
     if (key == "questdialog") return at(P::Center, P::Center, 0.0f, 0.064f);
-    if (key == "chatdialog" || key == "logdialog") return at(P::Center, P::Center, 0.0f, 0.05f);
+    // 游戏结束对话框（CGameOverMenu）与等待玩家对话框都居中于游戏界面根、上移 0.05。
+    if (key == "chatdialog" || key == "logdialog" || key == "gameresultdialog" || key == "suspenddialog") {
+        return at(P::Center, P::Center, 0.0f, 0.05f);
+    }
     // 以下几项游戏相对世界画面定位；世界画面上沿在屏幕顶下 0.02、下沿在屏幕底上 0.13，左右贴屏幕，
     // 这里换算成相对屏幕。右上角从上到下依次为计时器窗口、多面板、排行榜，表中是各自单独出现时的位置；
     // 多个计时器窗口向左排开（右边贴前一个的左边，间隔 0.002），多面板在第一个计时器窗口下 0.001，

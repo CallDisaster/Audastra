@@ -244,6 +244,18 @@ QJsonObject NodeJson(const FrameTree& tree, const FrameNode& node, double aspect
                 {"columns", static_cast<qint64>(board.columns)}, {"minimized", board.minimized}, {"values", values},
                 {"values_truncated", board.rows > kBoardRowsOut || board.columns > kBoardColumnsOut}});
         }
+        if (frame.leaderboard) {
+            // 项数在分析时已限制在 kMaxLeaderboardItems 以内。
+            const ScriptLeaderboard& board = *frame.leaderboard;
+            QJsonArray items;
+            for (const auto& item : board.items) {
+                items.append(QJsonObject{{"label", Text(item.label)}, {"value", item.value},
+                    {"player", item.player ? QJsonValue(static_cast<qint64>(*item.player)) : QJsonValue()},
+                    {"show_label", item.showLabel}, {"show_value", item.showValue}, {"show_icon", item.showIcon}});
+            }
+            script.insert("leaderboard", QJsonObject{{"size", board.size}, {"show_title", board.showTitle},
+                {"items", items}, {"clipped", board.clipped}, {"sort_ties", board.sortTies}});
+        }
         QJsonArray dynamic;
         for (const auto& item : frame.dynamic) dynamic.append(Text(item));
         if (!dynamic.isEmpty()) script.insert("dynamic", dynamic);

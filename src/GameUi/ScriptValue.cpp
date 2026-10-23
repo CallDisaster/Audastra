@@ -68,6 +68,14 @@ ScriptValue ScriptValue::Boolean(bool value) {
     return result;
 }
 
+ScriptValue ScriptValue::Player(std::int32_t index) {
+    ScriptValue result;
+    result.kind = Kind::Player;
+    result.number = index;
+    result.integer = true;
+    return result;
+}
+
 std::optional<ScriptValue> LiteralValue(const Expr& expr) {
     switch (expr.kind) {
     case ExprKind::Integer:
@@ -101,6 +109,19 @@ std::optional<ScriptValue> FrameConstant(std::string_view name) {
         value.text = std::string(name);
         return value;
     }
+    // common.j 与 Blizzard.j 里的整数常量（地图脚本不含它们的声明）。
+    struct IntegerConstant {
+        std::string_view name;
+        int value;
+    };
+    static constexpr IntegerConstant kIntegers[] = {
+        {"PLAYER_NEUTRAL_AGGRESSIVE", 12}, {"PLAYER_NEUTRAL_PASSIVE", 15}, {"bj_PLAYER_NEUTRAL_VICTIM", 13},
+        {"bj_PLAYER_NEUTRAL_EXTRA", 14}, {"bj_MAX_PLAYERS", 12}, {"bj_MAX_PLAYER_SLOTS", 16},
+        {"bj_SORTTYPE_SORTBYVALUE", 0}, {"bj_SORTTYPE_SORTBYPLAYER", 1}, {"bj_SORTTYPE_SORTBYLABEL", 2},
+    };
+    for (const auto& constant : kIntegers) {
+        if (constant.name == name) return ScriptValue::Number(constant.value, true);
+    }
     return std::nullopt;
 }
 
@@ -132,6 +153,7 @@ std::optional<ScriptValue> ApplyBinary(Operator op, const ScriptValue& left, con
         case Kind::Boolean: equal = left.boolean == right.boolean; break;
         case Kind::Point: equal = left.point == right.point; break;
         case Kind::Origin: equal = left.text == right.text; break;
+        case Kind::Player: equal = left.number == right.number; break;
         }
         return ScriptValue::Boolean(op == Operator::Equal ? equal : !equal);
     }
@@ -211,6 +233,9 @@ std::optional<ScriptValue> FoldExpression(const Jass::detail::SyntaxPool& pool, 
         if (expr.text == "I2R" && argument && argument->kind == ScriptValue::Kind::Number) {
             return ScriptValue::Number(argument->number);
         }
+        if (expr.text == "Player" && argument && argument->kind == ScriptValue::Kind::Number && argument->integer) {
+            return ScriptValue::Player(static_cast<std::int32_t>(argument->number));
+        }
         return std::nullopt;
     }
     default:
@@ -241,6 +266,11 @@ std::optional<std::string> StringOf(const std::optional<ScriptValue>& value) {
 std::optional<bool> BooleanOf(const std::optional<ScriptValue>& value) {
     if (!value || value->kind != ScriptValue::Kind::Boolean) return std::nullopt;
     return value->boolean;
+}
+
+std::optional<std::uint32_t> PlayerOf(const std::optional<ScriptValue>& value) {
+    if (!value || value->kind != ScriptValue::Kind::Player || value->number < 0.0) return std::nullopt;
+    return static_cast<std::uint32_t>(value->number);
 }
 
 } // namespace War3Map::GameUi::detail

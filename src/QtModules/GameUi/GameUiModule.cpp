@@ -216,6 +216,7 @@ void GameUiModule::RebuildScene() {
         skin.SetGameSkins(definitions_->gameSkins);
         skin.SetMiscUi(definitions_->miscUi);
         if (!definitions_->mapSkin.empty()) skin.SetMapSkin(definitions_->mapSkin);
+        skin.SetTeamColors(definitions_->teamColors);
         FrameTreeOptions options;
         options.race = race_.toStdString();
         options.expansion = expansion_;

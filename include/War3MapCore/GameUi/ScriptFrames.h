@@ -95,6 +95,33 @@ struct ScriptBoard {
 inline constexpr std::uint32_t kMaxBoardRows = 128;
 inline constexpr std::uint32_t kMaxBoardColumns = 32;
 
+// 排行榜的一项；默认值与游戏 LeaderboardAddItem 一致。
+struct ScriptLeaderboardItem {
+    std::string label;
+    std::int32_t value = 0;
+    std::optional<std::uint32_t> player;  // 玩家序号（Player(n) 的 n）；无法确定时为空
+    bool showLabel = true;
+    bool showValue = true;
+    bool showIcon = false;  // 新项不显示图标，与排行榜的样式无关
+    // 标签、数值的颜色（红、绿、蓝、不透明度）；为空时是该玩家的颜色。
+    std::optional<std::array<std::uint8_t, 4>> labelColor;
+    std::optional<std::array<std::uint8_t, 4>> valueColor;
+};
+
+// 排行榜内容。显示的行数只由 LeaderboardSetSizeByItemCount 设置（BJ 函数增删项后按项数重设）。
+struct ScriptLeaderboard {
+    std::vector<ScriptLeaderboardItem> items;
+    std::int32_t size = 0;
+    bool showTitle = false;   // 标签非空时显示；LeaderboardSetStyle 的第一个参数也能改变
+    bool showNames = true;    // 新项沿用的显示名字、显示数值
+    bool showValues = true;
+    bool clipped = false;     // 项数超过预览上限，其余未保留
+    bool sortTies = false;    // 排序时有相同的键，游戏里这些项的先后不一定与预览相同
+};
+
+// 预览保留的排行榜项数上限（游戏一次最多显示 24 行）。
+inline constexpr std::size_t kMaxLeaderboardItems = 64;
+
 struct ScriptFrame {
     UiApiFamily family = UiApiFamily::Blizzard;
     ScriptObjectKind object = ScriptObjectKind::Frame;
@@ -119,8 +146,9 @@ struct ScriptFrame {
     std::optional<bool> visible;
     // 对话框按钮文字，按添加顺序。
     std::vector<std::string> buttons;
-    // 多面板的行列与格子；其他对象为空。
+    // 多面板的行列与格子、排行榜的项；其他对象为空。
     std::optional<ScriptBoard> board;
+    std::optional<ScriptLeaderboard> leaderboard;
     // 参数不是常量、没有应用的设置，形如 “SetAbsolutePoint 第 12 行”。
     std::vector<std::string> dynamic;
     // 创建语句块之外作用在同一变量上的调用（运行时改变外观）。
@@ -143,16 +171,22 @@ struct ScriptUiCallGroup {
     std::vector<ScriptCallSite> samples;
 };
 
+// 地图字符串表（war3map.wts）：编号 → 文字。
+using TriggerStrings = std::map<std::uint32_t, std::string>;
+
+// 整段为 TRIGSTR_编号 的文字换成字符串表里的内容（游戏载入脚本时同样替换）；表里没有时原样返回。
+[[nodiscard]] std::string ResolveTriggerString(const TriggerStrings& strings, const std::string& text);
+
 struct ScriptFramePlan {
     std::vector<ScriptFrame> frames;
     std::vector<ScriptUiCallGroup> calls;
     std::vector<Diagnostic> diagnostics;
-    // 地图字符串表（war3map.wts）：显示时把整段为 TRIGSTR_编号 的文字换成表里的内容，计划里保留原文。
-    std::map<std::uint32_t, std::string> strings;
+    // 显示与判断文字是否为空、按文字排序时用 ResolveTriggerString 替换；计划里保留原文。
+    TriggerStrings strings;
 };
 
-// 只分析 JASS 脚本；Lua 脚本记 Info 诊断。
-[[nodiscard]] ScriptFramePlan FindScriptFrames(const std::vector<MapScriptText>& scripts);
+// 只分析 JASS 脚本；Lua 脚本记 Info 诊断。strings 为地图字符串表（排行榜标签是否为空、按标签排序要用）。
+[[nodiscard]] ScriptFramePlan FindScriptFrames(const std::vector<MapScriptText>& scripts, TriggerStrings strings = {});
 
 // 预览没有还原的界面调用，每个函数一条 Info 诊断（问题列表用）。
 [[nodiscard]] std::vector<Diagnostic> ScriptCallDiagnostics(const ScriptFramePlan& plan);
@@ -160,7 +194,8 @@ struct ScriptFramePlan {
 // 把脚本框架挂到界面树上（根节点名 kScriptRoot）；没有框架时不建根，返回 kNoNode。
 // 引用游戏代码区域时须先调用 FrameTree::AddGameCodeAreas，否则 GameUI 按屏幕处理、其他区域报告缺失。
 // 原版界面对象按游戏规则排布：显示中的计时器窗口在右上角向左排开，多面板、排行榜依次在其下，
-// 对话框居中于世界画面，按钮自上而下排列、高度随内容；多面板按行列画出格子（图标与文字）。
+// 对话框居中于世界画面，按钮自上而下排列、高度随内容；多面板按行列画出格子（图标与文字），
+// 排行榜按项画出名字、数值与玩家图标，文字颜色取皮肤里的队伍颜色。
 std::uint32_t AddScriptFrames(FrameTree& tree, const FrameLibrary& library, const UiSkin* skin,
     const ScriptFramePlan& plan, std::vector<Diagnostic>& diagnostics);
 
