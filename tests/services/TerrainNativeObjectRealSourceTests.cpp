@@ -126,7 +126,7 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
             const auto field = schema.MatchSourceField(ObjectType::Doodad, "pathtex", context);
             if (!field.definition || !field.safeToEdit || field.sourceKey != "pathtex" || field.sourceIndex
                 || field.definition->nativeValueType != NativeValueType::String || field.definition->repeat != 0
-                || field.definition->data != 0 || Text::LowerAscii(field.definition->sourceTable) != "doodads"
+                || field.definition->data != 0 || Text::LowerAscii(field.definition->sourceTable) != "doodaddata"
                 || Text::LowerAscii(field.definition->sourceField) != "pathtex") continue;
             originalDoodadRawcode = object.key.rawcode; originalDoodadPath = path->second; doodadPathField = field.modification; break;
         }

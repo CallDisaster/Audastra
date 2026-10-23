@@ -190,7 +190,8 @@ Bytes DoodadOverride(const char* path = nullptr, std::string field = "dpt0") {
     return Take(NativeObjectCodec(ObjectType::Doodad).Serialize(document));
 }
 Bytes DoodadMetadata(std::string field = "dpt0") {
-    return Slk({"ID", "field", "slk", "type", "repeat"}, {{std::move(field), "pathTex", "Doodads", "pathingTexture", "0"}});
+    return Slk({"ID", "field", "slk", "type", "repeat", "index"},
+        {{std::move(field), "pathTex", "DoodadData", "pathingTexture", "0", "0"}});
 }
 void AddDoodadOriginal(Fixture& fixture) {
     fixture.Member("Doodads/Doodads.slk") = Slk({"doodID", "code", "pathTex"}, {{"Doo0", "Doo0", "PathTextures\\synthetic.tga"}});

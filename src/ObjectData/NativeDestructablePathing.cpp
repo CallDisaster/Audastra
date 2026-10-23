@@ -156,12 +156,13 @@ void ValidateAddress(const ObjectFieldDefinition& field) {
 }
 void ValidateDoodadAddress(const ObjectFieldDefinition& field) {
     ValidateMetadataNumbers(field);
+    // metadata使用逻辑表名DoodadData，原版将其绑定到Doodads/Doodads.slk；文件干名Doodads不是别名。
     // 原版Doodad metadata的第二索引getter恒0；repeat=0才查询variation=0。
     // 不以通用schema的默认值吞掉坏文本，也不扩张到其支持的非零data/变体域。
     if (!field.metadata.contains("repeat") || field.repeat != 0 || field.data != 0
-        || Text::LowerAscii(field.sourceTable) != "doodads" || field.sourceField.empty()
+        || Text::LowerAscii(field.sourceTable) != "doodaddata" || field.sourceField.empty()
         || !field.nativeValueType)
-        Fail("TERRAIN_NATIVE_OBJECT_METADATA", "装饰物字段需要Doodads中的明确非重复零索引地址：" + field.fieldId);
+        Fail("TERRAIN_NATIVE_OBJECT_METADATA", "装饰物字段需要DoodadData中的明确非重复零索引地址：" + field.fieldId);
 }
 std::string_view DoodadOriginalPath(const StandardObjectEntry& standard, const ObjectRecord& original,
     const NativeObjectDocument& document, const ObjectFieldSchema& schema, std::string_view fallback) {
@@ -173,7 +174,7 @@ std::string_view DoodadOriginalPath(const StandardObjectEntry& standard, const O
     ValidateDoodadAddress(*field.definition);
     if (Text::LowerAscii(field.definition->sourceField) != "pathtex"
         || field.definition->nativeValueType != NativeValueType::String)
-        Fail("TERRAIN_NATIVE_OBJECT_METADATA", "pathTex必须是实际Doodads中的String字段。");
+        Fail("TERRAIN_NATIVE_OBJECT_METADATA", "pathTex必须是实际DoodadData中的String字段。");
     // MatchSourceField不返回无变体后缀的repeat字段，故另外排除同名及data拼接别名。
     for (const auto& candidate : schema.Definitions()) {
         if (candidate.objectType != ObjectType::Doodad || &candidate == field.definition) continue;

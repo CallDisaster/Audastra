@@ -157,8 +157,8 @@ struct Fixture {
             {"repeat", "0"}, {"data", "0"}, {"index", "-1"}, {"appendindex", "0"}, {"effectindex", "0"}},
         {{"ID", "Pth0"}, {"field", "pathTex"}, {"slk", "DestructableData"}, {"type", "pathingTexture"}}};
     std::vector<Row> doodadMetadata{
-        {{"ID", "Dt00"}, {"field", "pathTex"}, {"slk", "Doodads"}, {"type", "pathingTexture"}, {"repeat", "0"}},
-        {{"ID", "Nm00"}, {"field", "Name"}, {"slk", "Doodads"}, {"type", "string"}, {"repeat", "0"}}};
+        {{"ID", "Dt00"}, {"field", "pathTex"}, {"slk", "DoodadData"}, {"type", "pathingTexture"}, {"repeat", "0"}, {"index", "0"}},
+        {{"ID", "Nm00"}, {"field", "Name"}, {"slk", "DoodadData"}, {"type", "string"}, {"repeat", "0"}}};
     std::vector<ArchiveExactMember> sources;
 
     Fixture() {
@@ -637,7 +637,8 @@ void DoodadOriginalUsesExactMetadataAndStrings() {
     Rejected(duplicate.Validate({"D001"}), "TERRAIN_NATIVE_OBJECT_DOCUMENT", "重复精确地址不可取首条或末条");
 
     for (const auto& [key, value] : std::vector<std::pair<std::string, std::string>>{
-        {"slk", "Profile"}, {"type", "int"}, {"repeat", "1"}, {"repeat", "bad"}, {"data", "1"},
+        {"slk", "Doodads"}, {"slk", "UnknownDoodadData"}, {"slk", "Profile"},
+        {"type", "int"}, {"repeat", "1"}, {"repeat", "bad"}, {"data", "1"},
         {"data", "0tail"}, {"index", "bad"}, {"field", "\"pathTex\""}, {"repeat", "\"0\""}}) {
         Fixture fixture; prepare(fixture); fixture.doodadMetadata[0][key] = value; fixture.Tables();
         fixture.SetNative(original("Dt00", NativeValueType::String, std::string{}));
