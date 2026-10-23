@@ -9,9 +9,11 @@
 #include <QApplication>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QTextStream>
 #include <QWidget>
 
+#include <cstring>
 #include <functional>
 #include <map>
 #include <string>
@@ -37,7 +39,8 @@ int main(int argc, char** argv) {
     const QStringList arguments = app.arguments();
     if (arguments.size() < 3) {
         out << "usage: audastra-game-ui-capture <war3-root> <out-dir> [--map MAP] [--race R] [--classic] [--frame NAME]... "
-               "[--only NAME]... [--select NAME] [--bounds] [--names] [--simulate FUNC] [--set KEY=VALUE]...\n";
+               "[--only NAME]... [--select NAME] [--bounds] [--names] [--simulate FUNC] [--set KEY=VALUE]... "
+               "[--import ARCHIVE_PATH=FILE]... [--ui-state ID=STATE] [--ui-set ID:KEY=VALUE]... [--show-hidden]\n";
         return 2;
     }
     War3Map::UiKit::ApplyApplicationFont(War3Map::UiKit::LoadFonts(War3Map::UiKit::DefaultFontDirectory()));
@@ -59,6 +62,25 @@ int main(int argc, char** argv) {
         }
         project.readOnlyArchive_ = std::make_shared<const War3Map::MpqWorkspace>(std::move(*opened.value));
         project.sourceArchivePath_ = mapPath;
+    }
+    // --import 归档路径=本地文件：放进本次会话的导入层（不写地图），例如界面描述 AudastraUI\X.json。
+    for (qsizetype i = 3; i + 1 < arguments.size(); ++i) {
+        if (arguments[i] != QLatin1String("--import")) continue;
+        const QString pair = arguments[++i];
+        const qsizetype equals = pair.indexOf(QLatin1Char('='));
+        QFile file(pair.mid(equals + 1));
+        if (equals <= 0 || !file.open(QIODevice::ReadOnly)) {
+            out << "bad --import: " << pair << '\n';
+            return 7;
+        }
+        const QByteArray data = file.readAll();
+        auto bytes = std::make_shared<std::vector<std::byte>>(static_cast<std::size_t>(data.size()));
+        std::memcpy(bytes->data(), data.constData(), bytes->size());
+        std::vector<War3Map::QtProject::EditorProject::ImportPayload> payloads{{pair.left(equals), std::move(bytes), false}};
+        if (const QString error = project.AddImportPayloads(payloads, true, QStringLiteral("capture")); !error.isEmpty()) {
+            out << "import failed: " << error << '\n';
+            return 7;
+        }
     }
 
     War3Map::Modules::GameUiModule module(project);
@@ -84,6 +106,25 @@ int main(int argc, char** argv) {
             if (!module.AddRoot(arguments[++i])) out << "frame not found: " << arguments[i] << '\n';
         } else if (argument == QLatin1String("--select") && hasValue) select = arguments[++i];
         else if (argument == QLatin1String("--simulate") && hasValue) simulate = arguments[++i];
+        else if (argument == QLatin1String("--import") && hasValue) ++i;
+        else if (argument == QLatin1String("--show-hidden")) module.SetShowHidden(true);
+        else if ((argument == QLatin1String("--ui-state") || argument == QLatin1String("--ui-set")) && hasValue) {
+            // --ui-state 界面=状态；--ui-set 界面:数值键=值
+            const QString spec = arguments[++i];
+            QString error;
+            bool ok = false;
+            if (argument == QLatin1String("--ui-state")) {
+                const qsizetype equals = spec.indexOf(QLatin1Char('='));
+                ok = equals > 0 && module.SetDescriptionState(spec.left(equals), spec.mid(equals + 1), &error);
+            } else {
+                const qsizetype colon = spec.indexOf(QLatin1Char(':'));
+                const qsizetype equals = spec.indexOf(QLatin1Char('='), colon + 1);
+                ok = colon > 0 && equals > colon + 1 &&
+                     module.SetDescriptionValues(spec.left(colon),
+                         {{spec.mid(colon + 1, equals - colon - 1).toStdString(), spec.mid(equals + 1).toStdString()}}, &error);
+            }
+            if (!ok) out << "bad " << argument << ' ' << spec << ' ' << error << '\n';
+        }
         else if (argument == QLatin1String("--set") && hasValue) {
             const QString pair = arguments[++i];
             const qsizetype equals = pair.indexOf(QLatin1Char('='));

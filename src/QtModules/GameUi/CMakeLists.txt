@@ -1,7 +1,9 @@
-# 游戏界面工作区：显示游戏自带界面（贴图、文字、字体、层与节点）；资源读取复用世界模块的统一解析器。
+# 游戏界面工作区：显示游戏自带界面（贴图、文字、字体、层与节点）、地图脚本界面与地图自己的界面描述；
+# 资源读取复用世界模块的统一解析器。
 qt_add_library(War3MapQtModuleGameUi STATIC
     GameUiModule.cpp GameUiModule.h GameUiPanels.cpp
     GameUiCanvas.cpp GameUiCanvas.h
+    GameUiAuthoring.cpp GameUiDescriptionPreview.cpp GameUiInputs.h
     GameUiSimulation.cpp GameUiSources.cpp GameUiSources.h
     GameUiToolService.cpp GameUiToolService.h)
 add_library(War3MapEditor::QtModuleGameUi ALIAS War3MapQtModuleGameUi)

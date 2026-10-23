@@ -85,6 +85,7 @@ std::uint32_t AddScriptFrames(FrameTree& tree, const FrameLibrary& library, cons
         node.sourceFile = frame.created.scriptFile;
         node.sourceLine = frame.created.line;
         node.scriptFrame = static_cast<std::uint32_t>(i);
+        node.hidden = frame.visible && !*frame.visible;
         if (frame.width) node.width = frame.width;
         if (frame.height) node.height = frame.height;
         if (frame.texture) {

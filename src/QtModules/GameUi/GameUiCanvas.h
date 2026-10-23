@@ -13,7 +13,7 @@
 namespace War3Map::Modules {
 
 // 游戏界面画布：0.8×0.6 的界面坐标铺满所选宽高比的游戏画面（经典版在宽屏下横向拉伸），
-// 按绘制清单画贴图与文字。只显示，不修改界面树。
+// 按绘制清单画贴图与文字。不修改界面树：可拖动的选中节点拖动时只画虚线预览，松开后发出位移由调用方处理。
 class GameUiCanvas final : public QWidget {
     Q_OBJECT
 public:
@@ -30,6 +30,8 @@ public:
     void SetShowBounds(bool show);
     void SetShowNames(bool show);
     void SetSelected(std::uint32_t node);
+    // 选中节点能否拖动（自有界面描述的框架）。
+    void SetDraggable(bool draggable);
 
     [[nodiscard]] double Aspect() const noexcept { return aspect_; }
     [[nodiscard]] std::uint32_t Selected() const noexcept { return selected_; }
@@ -42,11 +44,14 @@ public:
 
 signals:
     void NodeClicked(std::uint32_t node);
+    // 拖动松开：位移为屏幕单位（右、上为正），已取到 0.001。
+    void NodeDragged(std::uint32_t node, double dx, double dy);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
 
 private:
     struct HitBox {
@@ -75,6 +80,11 @@ private:
     bool showBounds_ = false;
     bool showNames_ = false;
     std::uint32_t selected_ = GameUi::kNoNode;
+    bool draggable_ = false;
+    std::uint32_t dragNode_ = GameUi::kNoNode;  // 按下时可拖动的节点
+    QPointF dragStart_;
+    QPointF dragOffset_;  // 当前位移（像素）；超过阈值后才算拖动
+    bool dragging_ = false;
     mutable std::vector<HitBox> hits_;
 };
 

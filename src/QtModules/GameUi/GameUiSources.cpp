@@ -3,6 +3,7 @@
 #include "EditorProject.h"
 #include "War3MapCore/Game/GameDataSource.h"
 #include "War3MapCore/Image/TextureImage.h"
+#include "War3MapCore/Text/TextUtil.h"
 
 #include <QObject>
 
@@ -137,6 +138,42 @@ std::vector<GameUi::MapScriptText> ReadMapScripts(GameUiReader& reader, std::vec
     return scripts;
 }
 
+// 地图导入的界面描述：只认地图层（含会话导入）的文件；文件名须与描述编号一致，运行库按编号找文件。
+std::vector<GameUiDescriptionFile> ReadDescriptions(GameUiReader& reader, std::vector<Diagnostic>& diagnostics) {
+    std::vector<GameUiDescriptionFile> descriptions;
+    const auto warn = [&](const char* code, std::string message) {
+        diagnostics.push_back(Diagnostic{DiagnosticSeverity::Warning, "GameUi", code, std::move(message), std::nullopt});
+    };
+    for (const auto& path : reader.MapFiles()) {
+        if (!GameUi::IsUiDescriptionMember(path)) continue;
+        auto file = reader.Read(path);
+        if (!file.Succeeded() || !file.value || !file.value->fromMap) {
+            warn("AUI_UNREADABLE", path + " 读取失败，未显示这份界面描述");
+            continue;
+        }
+        if (file.value->bytes.size() > kMaxUiFileBytes) {
+            warn("AUI_UNREADABLE", path + " 超过界面文件大小上限");
+            continue;
+        }
+        const auto& bytes = file.value->bytes;
+        auto parsed = GameUi::ParseUiDescription(
+            std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()), path);
+        diagnostics.insert(diagnostics.end(), parsed.diagnostics.begin(), parsed.diagnostics.end());
+        if (!parsed.value) continue;
+        std::string expected = Text::LowerAscii(GameUi::UiDescriptionMemberPath(parsed.value->id));
+        std::string actual = Text::LowerAscii(path);
+        std::replace(actual.begin(), actual.end(), '/', '\\');
+        if (expected != actual) {
+            warn("AUI_ID_PATH", path + " 里的界面编号是 " + parsed.value->id + "，与文件名不一致，未显示");
+            continue;
+        }
+        descriptions.push_back({path, std::move(*parsed.value)});
+    }
+    std::sort(descriptions.begin(), descriptions.end(),
+        [](const auto& a, const auto& b) { return a.description.id < b.description.id; });
+    return descriptions;
+}
+
 } // namespace
 
 GameUiDefinitions LoadGameUiDefinitions(GameUiReader& reader) {
@@ -161,6 +198,7 @@ GameUiDefinitions LoadGameUiDefinitions(GameUiReader& reader) {
         mapDiagnostics.insert(mapDiagnostics.end(), result.scriptFrames.diagnostics.begin(),
             result.scriptFrames.diagnostics.end());
         result.scripts = std::move(scripts);
+        result.descriptions = ReadDescriptions(reader, mapDiagnostics);
     }
     result.diagnostics = library->Diagnostics();
     result.diagnostics.insert(result.diagnostics.end(), mapDiagnostics.begin(), mapDiagnostics.end());

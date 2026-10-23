@@ -4,6 +4,7 @@
 #include "War3MapCore/GameUi/FrameLibrary.h"
 #include "War3MapCore/GameUi/MapUiFiles.h"
 #include "War3MapCore/GameUi/ScriptFrames.h"
+#include "War3MapCore/GameUi/UiDescription.h"
 #include "War3MapCore/Image/BlpImage.h"
 
 #include <QString>
@@ -56,6 +57,12 @@ private:
     std::unique_ptr<State> state_;
 };
 
+// 地图导入的自有界面描述。
+struct GameUiDescriptionFile {
+    std::string path;
+    GameUi::UiDescription description;
+};
+
 // 界面定义：FrameDef.toc 全部 fdf（地图导入的同名文件覆盖游戏文件），再读地图脚本加载的界面目录
 // 与地图里的 .toc（来源记为 map）；游戏皮肤表与地图皮肤表。
 struct GameUiDefinitions {
@@ -65,6 +72,7 @@ struct GameUiDefinitions {
     std::vector<GameUi::TocLoadCall> tocCalls;  // 地图脚本中加载界面目录的调用
     GameUi::ScriptFramePlan scriptFrames;       // 地图脚本创建的界面
     std::vector<GameUi::MapScriptText> scripts;  // 地图脚本原文（预览模拟用）
+    std::vector<GameUiDescriptionFile> descriptions;  // AudastraUI\<编号>.json，按编号排序
     std::vector<Diagnostic> diagnostics;
 };
 [[nodiscard]] GameUiDefinitions LoadGameUiDefinitions(GameUiReader& reader);

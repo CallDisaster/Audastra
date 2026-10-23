@@ -12,6 +12,7 @@
 #include <QPointer>
 #include <QRect>
 #include <QSet>
+#include <QList>
 #include <QStringList>
 
 #include <cstdint>
@@ -24,11 +25,13 @@
 
 class QCheckBox;
 class QComboBox;
+class QLabel;
 class QLineEdit;
 class QPushButton;
 class QSplitter;
 class QStandardItemModel;
 class QTableWidget;
+class QToolButton;
 class QTreeWidget;
 class QTreeWidgetItem;
 class QVBoxLayout;
@@ -89,6 +92,25 @@ public:
     // 合并输入值并重新模拟。
     void SetSimulationValues(const std::map<std::string, std::string>& values);
     [[nodiscard]] const GameUi::SimulationResult* Simulation() const;
+    // 地图导入的自有界面描述（按编号排序；定义未读入时为空）与各自的预览状态、数值。
+    [[nodiscard]] const std::vector<GameUiDescriptionFile>& Descriptions() const;
+    [[nodiscard]] const GameUi::UiDescription* Description(const QString& id) const;
+    [[nodiscard]] GameUi::UiInstanceState DescriptionPreview(const QString& id) const;
+    // 切换预览状态（空为基础状态）、合并预览数值（键为 编号 或 编号[下标]）。不合法时整批不改并给出原因。
+    bool SetDescriptionState(const QString& id, const QString& state, QString* error = nullptr);
+    bool SetDescriptionValues(const QString& id, const std::map<std::string, std::string>& values, QString* error = nullptr);
+    // 也画脚本或描述设为隐藏的框架。
+    [[nodiscard]] bool ShowHidden() const noexcept { return showHidden_; }
+    void SetShowHidden(bool show);
+    // 编写地图界面描述。编辑先按 audastra.ui 的规则检查，再作为导入文件 AudastraUI\<编号>.json 放进地图的待保存修改，
+    // 与导入文件同一撤销栈和保存流程。失败时给出原因，什么都不改。edits 的写法见 UiDescriptionEdit.h。
+    bool CreateDescription(const QString& id, const QString& label, QString* error = nullptr);
+    bool EditDescription(const QString& id, const QString& edits, const QString& undoLabel, QString* error = nullptr);
+    // 在所选描述框架下（选中描述根节点时为顶层）添加一个框架并选中它；返回新框架编号，失败为空。
+    QString AddDescriptionFrame(GameUi::UiFrameType type, QString* error = nullptr);
+    bool RemoveSelectedDescriptionFrame(QString* error = nullptr);
+    // 平移描述框架的全部锚点（屏幕单位）；重复实例平移的是整组。
+    bool MoveDescriptionFrame(std::uint32_t node, double dx, double dy, QString* error = nullptr);
     [[nodiscard]] bool IsLoading() const noexcept { return definitionsPending_ || assetsPending_; }
     [[nodiscard]] QImage RenderImage(const QSize& size) const;
     void Reload();
@@ -118,6 +140,14 @@ private:
     void RunSimulation();
     void UpdateSimulationPanel();
     void ResetSimulation();
+    void BuildDescriptionPanel(QWidget* parent);
+    void UpdateDescriptionPanel();
+    QList<QWidget*> BuildAuthoringControls(QWidget* toolbar);
+    void UpdateAuthoringControls();
+    bool StageDescription(GameUi::UiDescription description, bool create, const QString& undoLabel, QString* error);
+    void AddEditableRows(QTreeWidgetItem* group, const GameUi::UiFrame& frame);
+    void OnPropertyEdited(QTreeWidgetItem* item, int column);
+    void ReportAuthoring(const QString& error);
     void OnItemChanged(QTreeWidgetItem* item, int column);
     [[nodiscard]] QString NodeKey(std::uint32_t node) const;
 
@@ -131,6 +161,7 @@ private:
     QPushButton* showContent_ = nullptr;
     QPushButton* showBounds_ = nullptr;
     QPushButton* showNames_ = nullptr;
+    QPushButton* showHiddenButton_ = nullptr;
     QLineEdit* search_ = nullptr;
     QTreeWidget* nodes_ = nullptr;
     GameUiCanvas* canvas_ = nullptr;
@@ -177,6 +208,20 @@ private:
     QComboBox* simulationBox_ = nullptr;
     QTableWidget* simulationInputs_ = nullptr;
     QStringList simulationKeys_;
+
+    std::map<std::string, GameUi::UiInstanceState> descriptionStates_;
+    bool showHidden_ = false;
+    QWidget* descriptionPanel_ = nullptr;
+    QLabel* descriptionTitle_ = nullptr;
+    QComboBox* descriptionStateBox_ = nullptr;
+    QTableWidget* descriptionInputs_ = nullptr;
+    QString descriptionPanelFor_;  // 面板当前对应的描述编号
+
+    bool stagingOwnImport_ = false;  // 自己放入描述文件引发的导入变化：已就地更新，不整体重读
+    std::vector<Diagnostic> authoringDiagnostics_;
+    QToolButton* newDescriptionButton_ = nullptr;
+    QToolButton* addFrameButton_ = nullptr;
+    QPushButton* removeFrameButton_ = nullptr;
 };
 
 } // namespace War3Map::Modules

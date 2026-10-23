@@ -4,6 +4,7 @@
 
 #include <QBuffer>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QThread>
 
 #include <algorithm>
@@ -108,6 +109,60 @@ QJsonObject SimulationJson(const GameUiModule& module) {
     return json;
 }
 
+// MCP 输入值统一成文字：布尔为 true/false，数值取最短往返写法。
+std::map<std::string, std::string> InputValues(const QJsonObject& given) {
+    std::map<std::string, std::string> values;
+    for (auto it = given.begin(); it != given.end(); ++it) {
+        const QJsonValue& value = it.value();
+        const QString text = value.isBool() ? (value.toBool() ? QStringLiteral("true") : QStringLiteral("false"))
+            : value.isDouble()             ? QString::number(value.toDouble(), 'g', 17)
+                                           : value.toString();
+        values[it.key().toStdString()] = text.toStdString();
+    }
+    return values;
+}
+
+const char* EventKindName(UiEventKind kind) {
+    switch (kind) {
+    case UiEventKind::Enter: return "enter";
+    case UiEventKind::Leave: return "leave";
+    default: return "click";
+    }
+}
+
+QJsonObject DescriptionJson(const GameUiModule& module, const GameUiDescriptionFile& file) {
+    const UiDescription& description = file.description;
+    const UiInstanceState preview = module.DescriptionPreview(Text(description.id));
+    QJsonObject json{{"id", Text(description.id)}, {"path", Text(file.path)}, {"state", Text(preview.state)}};
+    if (!description.label.empty()) json.insert("label", Text(description.label));
+    QJsonArray states;
+    for (const auto& state : description.states) states.append(QJsonObject{{"id", Text(state.id)}, {"label", Text(state.label)}});
+    json.insert("states", states);
+    QJsonArray values;
+    for (const auto& value : description.values) {
+        QJsonObject row{{"id", Text(value.id)}, {"type", Text(std::string(UiValueTypeName(value.type)))}};
+        if (!value.label.empty()) row.insert("label", Text(value.label));
+        if (value.min) row.insert("min", *value.min);
+        if (value.max) row.insert("max", *value.max);
+        if (value.size > 0) {
+            row.insert("size", static_cast<qint64>(value.size));
+            QJsonArray current;
+            for (std::uint32_t i = 0; i < value.size; ++i) current.append(Text(UiValueText(description, preview, value.id, i).value_or("")));
+            row.insert("current", current);
+        } else {
+            row.insert("current", Text(UiValueText(description, preview, value.id).value_or("")));
+        }
+        values.append(row);
+    }
+    json.insert("values", values);
+    QJsonArray events;
+    for (const auto& event : description.events) {
+        events.append(QJsonObject{{"id", Text(event.id)}, {"frame", Text(event.frame)}, {"on", EventKindName(event.kind)}});
+    }
+    if (!events.isEmpty()) json.insert("events", events);
+    return json;
+}
+
 QJsonArray StringArray(const QStringList& values, int limit) {
     QJsonArray array;
     for (qsizetype i = 0; i < values.size() && i < limit; ++i) array.append(values[i]);
@@ -146,6 +201,14 @@ QJsonObject View(const GameUiModule& module, QJsonObject result) {
     }
     result.insert("simulation_functions", StringArray(module.SimulationFunctions(), kMaxListed));
     result.insert("simulation", SimulationJson(module));
+    result.insert("show_hidden", module.ShowHidden());
+    QJsonArray descriptions;
+    const auto& files = module.Descriptions();
+    for (std::size_t i = 0; i < files.size() && i < static_cast<std::size_t>(kMaxListed); ++i) {
+        descriptions.append(DescriptionJson(module, files[i]));
+    }
+    result.insert("descriptions", descriptions);
+    result.insert("description_count", static_cast<qint64>(files.size()));
     return result;
 }
 
@@ -167,6 +230,13 @@ QJsonObject NodeJson(const FrameTree& tree, const FrameNode& node, double aspect
         if (!dynamic.isEmpty()) script.insert("dynamic", dynamic);
         row.insert("script", script);
     }
+    if (node.uiFrame) {
+        QJsonObject link{{"description", Text(node.uiFrame->description)}, {"frame", Text(node.uiFrame->frame)}};
+        if (node.uiFrame->instance) link.insert("instance", static_cast<qint64>(*node.uiFrame->instance));
+        row.insert("description", link);
+    }
+    if (node.hidden) row.insert("hidden", true);
+    if (node.fill) row.insert("fill", *node.fill);
     if (!node.templateName.empty()) row.insert("template", Text(node.templateName));
     if (!node.sourceFile.empty()) row.insert("source", QStringLiteral("%1:%2").arg(Text(node.sourceFile)).arg(node.sourceLine));
     if (node.layout == LayoutState::Placed || node.layout == LayoutState::SizeFromContent) {
@@ -220,6 +290,7 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
         for (const auto& value : args.value("add_roots").toArray()) {
             if (!module->AddRoot(value.toString())) missing.append(value);
         }
+        if (args.contains("show_hidden")) module->SetShowHidden(args.value("show_hidden").toBool());
         if (args.contains("show_only")) {
             const auto node = module->Tree() ? module->Tree()->FindByName(args.value("show_only").toString().toStdString())
                                              : std::nullopt;
@@ -239,18 +310,56 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
         if (args.contains("values")) {
             if (module->SimulationFunction().isEmpty())
                 return Failure("GAME_UI_SIMULATION", QObject::tr("未选择模拟函数，不能设置输入。"));
-            std::map<std::string, std::string> values;
-            const QJsonObject given = args.value("values").toObject();
-            for (auto it = given.begin(); it != given.end(); ++it) {
-                const QJsonValue& value = it.value();
-                const QString text = value.isBool() ? (value.toBool() ? QStringLiteral("true") : QStringLiteral("false"))
-                    : value.isDouble()             ? QString::number(value.toDouble(), 'g', 17)
-                                                   : value.toString();
-                values[it.key().toStdString()] = text.toStdString();
-            }
-            module->SetSimulationValues(values);
+            module->SetSimulationValues(InputValues(args.value("values").toObject()));
         }
         binding.insert("simulation", SimulationJson(*module));
+        return binding;
+    }
+
+    if (name == QLatin1String("game_ui_description_read") || name == QLatin1String("game_ui_description_create") ||
+        name == QLatin1String("game_ui_description_edit")) {
+        if (!module->Tree()) return Failure("GAME_UI_LOADING", QObject::tr("界面定义仍在读取，请稍后重试。"));
+        const QString id = args.value("description").toString();
+        QString error;
+        if (name == QLatin1String("game_ui_description_create") &&
+            !module->CreateDescription(id, args.value("label").toString(), &error)) {
+            return Failure("GAME_UI_DESCRIPTION", error);
+        }
+        if (name == QLatin1String("game_ui_description_edit")) {
+            const QString edits = QString::fromUtf8(QJsonDocument(args.value("edits").toArray()).toJson(QJsonDocument::Compact));
+            if (!module->EditDescription(id, edits, QObject::tr("界面 %1：Agent 修改").arg(id), &error))
+                return Failure("GAME_UI_DESCRIPTION", error);
+        }
+        const auto& files = module->Descriptions();
+        const auto file = std::find_if(files.begin(), files.end(),
+            [&](const GameUiDescriptionFile& candidate) { return Text(candidate.description.id) == id; });
+        if (file == files.end()) return Failure("GAME_UI_DESCRIPTION", QObject::tr("地图里没有界面描述 %1。").arg(id));
+        binding.insert("path", Text(file->path));
+        binding.insert("text", Text(SerializeUiDescription(file->description)));
+        return binding;
+    }
+
+    if (name == QLatin1String("game_ui_preview_set")) {
+        if (!module->Tree()) return Failure("GAME_UI_LOADING", QObject::tr("界面定义仍在读取，请稍后重试。"));
+        const QString id = args.value("description").toString();
+        const auto& files = module->Descriptions();
+        const auto file = std::find_if(files.begin(), files.end(),
+            [&](const GameUiDescriptionFile& candidate) { return Text(candidate.description.id) == id; });
+        if (file == files.end()) return Failure("GAME_UI_DESCRIPTION", QObject::tr("地图里没有界面描述 %1。").arg(id));
+        QString error;
+        // 先检查数值再换状态：任何一项不合法都不改预览。
+        if (args.contains("state")) {
+            const QString state = args.value("state").toString();
+            if (!state.isEmpty() && !std::any_of(file->description.states.begin(), file->description.states.end(),
+                                       [&](const UiState& candidate) { return Text(candidate.id) == state; })) {
+                return Failure("GAME_UI_DESCRIPTION", QObject::tr("界面 %1 没有状态 %2。").arg(id, state));
+            }
+        }
+        if (args.contains("values") && !module->SetDescriptionValues(id, InputValues(args.value("values").toObject()), &error))
+            return Failure("GAME_UI_DESCRIPTION", error);
+        if (args.contains("state") && !module->SetDescriptionState(id, args.value("state").toString(), &error))
+            return Failure("GAME_UI_DESCRIPTION", error);
+        binding.insert("description", DescriptionJson(*module, *file));
         return binding;
     }
 

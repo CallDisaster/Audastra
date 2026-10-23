@@ -11,6 +11,7 @@ constexpr int kMaxFunctionLength = 256;
 constexpr int kMaxSimulationValues = 200;
 constexpr int kMaxSimulationKey = 512;
 constexpr int kMaxSimulationText = 4096;
+constexpr int kMaxUiIdLength = 64;
 
 QJsonObject IdSchema() { return {{"type", "string"}, {"pattern", "^(0|[1-9][0-9]*)$"}, {"maxLength", 20}}; }
 QJsonObject NameSchema() { return {{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxNameLength}}; }
@@ -56,15 +57,18 @@ bool ValidSimulationValues(const QJsonValue& value) {
 
 std::vector<ToolDefinition> GameUiToolDefinitions() {
     std::vector<ToolDefinition> tools;
-    for (const auto* name : {"game_ui_view_read", "game_ui_view_set", "game_ui_nodes_query", "game_ui_render", "game_ui_simulate"}) {
+    for (const auto* name : {"game_ui_view_read", "game_ui_view_set", "game_ui_nodes_query", "game_ui_render", "game_ui_simulate",
+             "game_ui_preview_set", "game_ui_description_read", "game_ui_description_create", "game_ui_description_edit"}) {
         ToolDefinition tool; tool.name = name;
-        tool.permission = tool.name == "game_ui_view_set" || tool.name == "game_ui_simulate" ? ToolPermission::Edit
-                                                                                              : ToolPermission::Query;
+        const bool query = tool.name == "game_ui_view_read" || tool.name == "game_ui_nodes_query" || tool.name == "game_ui_render"
+                           || tool.name == "game_ui_description_read";
+        tool.permission = query ? ToolPermission::Query : ToolPermission::Edit;
         QJsonObject properties{{"project_identity", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 128}}},
             {"expected_revision", IdSchema()}};
         QJsonArray required{"project_identity", "expected_revision"};
         if (tool.name == "game_ui_view_read") {
-            tool.description = "读取界面工作区的预览设置（种族、版本、宽高比、根界面）、读取状态、问题、地图自带界面列表，以及地图脚本创建的界面数量与预览未还原的界面调用";
+            tool.description = "读取界面工作区的预览设置（种族、版本、宽高比、根界面、是否显示隐藏框架）、读取状态、问题、地图自带界面列表、"
+                "地图脚本创建的界面数量与预览未还原的界面调用，以及地图自己的界面描述（AudastraUI，含数值、状态、事件与当前预览取值）";
         } else if (tool.name == "game_ui_view_set") {
             tool.description = "设置界面预览：种族、版本、宽高比、增删根界面（GameUI 为游戏代码区域，MapScriptUI 为地图脚本创建的界面）、只显示某节点；只改预览，不改地图";
             properties.insert("race", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"Human", "Orc", "NightElf", "Undead"}}});
@@ -73,6 +77,7 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
             properties.insert("add_roots", NameListSchema());
             properties.insert("remove_roots", NameListSchema());
             properties.insert("show_only", NameSchema());
+            properties.insert("show_hidden", QJsonObject{{"type", "boolean"}});
         } else if (tool.name == "game_ui_nodes_query") {
             tool.description = "按名称或中文名分页查询界面节点：游戏内名称、类型、位置（屏幕单位与 1080p 像素）、锚点、贴图与文字来源；脚本创建的节点附创建位置、变量与未还原的设置";
             properties.insert("name_contains", QJsonObject{{"type", "string"}, {"maxLength", kMaxNameLength}});
@@ -84,6 +89,33 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
                 "values 按输入键给值（文字、数值或布尔）。只改预览，不执行脚本其他效果，不改地图";
             properties.insert("function", QJsonObject{{"type", "string"}, {"maxLength", kMaxFunctionLength}});
             properties.insert("values", QJsonObject{{"type", "object"}, {"maxProperties", kMaxSimulationValues}});
+        } else if (tool.name == "game_ui_description_read") {
+            tool.description = "读取地图界面描述的规范 JSON（audastra.ui，含未保存的修改）与它在地图里的路径 AudastraUI\\<编号>.json";
+            properties.insert("description", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
+            required.append("description");
+        } else if (tool.name == "game_ui_description_create") {
+            tool.description = "新建一份空的地图界面描述（编号为 ASCII 标识符），作为导入文件放进地图的待保存修改；与导入文件同一撤销与保存流程";
+            properties.insert("description", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
+            properties.insert("label", QJsonObject{{"type", "string"}, {"maxLength", 256}});
+            required.append("description");
+        } else if (tool.name == "game_ui_description_edit") {
+            tool.description = "按顺序作用一组编辑到地图界面描述，整组检查，任何一步或结果不合法都不改。每步一个 op："
+                "set_description{label}；add_frame{parent?,index?,frame}；set_frame{frame,fields}（null 删除字段，改 id 同步引用）；"
+                "move_frame{frame,parent,index?}；remove_frame{frame}；set_values{values}、set_states{states}、set_events{events}（整体替换）。"
+                "框架与字段按 audastra.ui 写法：type 为 panel/backdrop/text/bar/button/template，anchors 为 {point,to,toPoint,x,y}，"
+                "to 为 parent、screen、框架编号或 game:区域标识；value/visible 可写 编号、编号[] 或 编号[下标]，文字可写 {编号:小数位}。"
+                "结果作为导入文件进入待保存修改";
+            properties.insert("description", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
+            properties.insert("edits", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 256}, {"items", QJsonObject{{"type", "object"}}}});
+            required.append("edits");
+            required.append("description");
+        } else if (tool.name == "game_ui_preview_set") {
+            tool.description = "地图界面描述的预览：切换状态（空字符串为基础状态）、按 编号 或 编号[下标] 给数值（文字、数值或布尔），"
+                "之后的节点查询与绘图显示这组取值。整批检查，任何一项不合法都不改。只改预览，不改地图";
+            properties.insert("description", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
+            properties.insert("state", QJsonObject{{"type", "string"}, {"maxLength", kMaxUiIdLength}});
+            properties.insert("values", QJsonObject{{"type", "object"}, {"maxProperties", kMaxSimulationValues}});
+            required.append("description");
         } else {
             tool.description = "按当前预览设置绘制游戏界面 PNG（与界面工作区同一画法，不含边框与名称标记）";
             properties.insert("width", IntegerSchema(320, 2560));
@@ -116,8 +148,25 @@ QJsonObject InvokeGameUiTool(const QString& name, const QJsonObject& args, const
         const auto allowed = properties.value(key).toObject().value("enum").toArray();
         if (!allowed.contains(args.value(key))) return Failure("GAME_UI_ARGUMENT", "种族或宽高比不在可选范围内。");
     }
-    if (args.contains("expansion") && !args.value("expansion").isBool())
-        return Failure("GAME_UI_ARGUMENT", "expansion 必须是布尔值。");
+    for (const auto* key : {"expansion", "show_hidden"}) {
+        if (args.contains(key) && !args.value(key).isBool()) return Failure("GAME_UI_ARGUMENT", std::string(key) + " 必须是布尔值。");
+    }
+    if (args.contains("label") && (!args.value("label").isString() || args.value("label").toString().size() > 256))
+        return Failure("GAME_UI_ARGUMENT", "label 必须是不超过 256 字的文字。");
+    if (args.contains("edits")) {
+        const auto value = args.value("edits");
+        const QJsonArray edits = value.toArray();
+        if (!value.isArray() || edits.isEmpty() || edits.size() > 256
+            || !std::all_of(edits.begin(), edits.end(), [](const QJsonValue& item) { return item.isObject(); }))
+            return Failure("GAME_UI_ARGUMENT", "edits 必须是 1 到 256 个编辑对象。");
+    }
+    for (const auto* key : {"description", "state"}) {
+        if (!args.contains(key)) continue;
+        const auto value = args.value(key);
+        if (!value.isString() || value.toString().size() > kMaxUiIdLength || value.toString().contains(QChar::Null)
+            || (QLatin1String(key) == QLatin1String("description") && value.toString().isEmpty()))
+            return Failure("GAME_UI_ARGUMENT", std::string(key) + " 必须是不超过 64 字的编号。");
+    }
     for (const auto* key : {"add_roots", "remove_roots"}) {
         if (args.contains(key) && !ValidNameList(args.value(key)))
             return Failure("GAME_UI_ARGUMENT", "根界面列表最多 16 项，每项为非空名称。");
