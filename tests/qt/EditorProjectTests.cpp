@@ -2743,7 +2743,7 @@ void EditorProjectTests::TerrainJournalProjectRoundtripAndStrictManifest() {
     undo.undo(); QCOMPARE(MapData::SerializeMapTerrain(*restored.mapEdits_->Terrain()).value, firstTerrain.value);
     undo.redo(); QCOMPARE(MapData::SerializeMapTerrain(*restored.mapEdits_->Terrain()).value, finalTerrain.value);
 
-    auto files = opened.value->Members();
+    std::vector<MapArchiveMember> files(opened.value->Members().begin(), opened.value->Members().end());
     for (auto& member : files) if (member.name == "overlay/editor/terrain-strokes.bin") member.data[0] ^= std::byte{1};
     const auto corrupt = std::filesystem::path(root.filePath("corrupt.forge").toStdWString());
     QVERIFY(WriteVerifiedArchive(corrupt, files).Succeeded());
@@ -2753,7 +2753,7 @@ void EditorProjectTests::TerrainJournalProjectRoundtripAndStrictManifest() {
     QCOMPARE(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, finalTerrain.value);
 
     // 旧工程保持raw完整恢复；删除声明和载荷后不能推断typed谱系。
-    files = opened.value->Members();
+    files = std::vector<MapArchiveMember>(opened.value->Members().begin(), opened.value->Members().end());
     files.erase(std::remove_if(files.begin(), files.end(), [](const auto& member) {
         return member.name == "overlay/editor/terrain-strokes.bin";
     }), files.end());
