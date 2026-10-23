@@ -359,10 +359,24 @@ void WorldAssetBrowserTests::ObservedPlacementsRebindWithoutReloadButCatalogChan
     rows->setCurrentItem(retained); rows->verticalScrollBar()->setValue(rows->verticalScrollBar()->maximum() / 2);
     const auto scroll = rows->verticalScrollBar()->value(); QVERIFY(scroll > 0);
     constexpr int markerRole = Qt::UserRole + 90; retained->setData(markerRole, "retained");
+    QVERIFY(!project.editRevision_.Current().contains("map/editor/terrain-journal"));
     units.units.front().rotation = 0.5f; QVERIFY(project.mapEdits_->EditUnits(units).Succeeded());
-    QVERIFY(project.ObserveEditState("fixture placement edit")); rebind();
+    QVERIFY(project.ObserveEditState("fixture placement edit"));
+    // 单位命令使地形前向记录变为不可重放；这个实际工程scope仍不是目录内容。
+    QVERIFY(project.editRevision_.Current().contains("map/editor/terrain-journal")); rebind();
     QCOMPARE(find(), retained); QCOMPARE(rows->currentItem(), retained); QCOMPARE(rows->verticalScrollBar()->value(), scroll);
     QCOMPARE(retained->data(markerRole).toString(), QString("retained"));
+    project.terrainJournalWarning_ = "原创草稿的地形重放提示";
+    QVERIFY(project.ObserveEditState("fixture terrain journal warning"));
+    QVERIFY(project.editRevision_.Current().contains("map/editor/terrain-journal-warning")); rebind();
+    QCOMPARE(find(), retained); QCOMPARE(rows->currentItem(), retained); QCOMPARE(rows->verticalScrollBar()->value(), scroll);
+    QCOMPARE(retained->data(markerRole).toString(), QString("retained"));
+    project.terrainJournalWarning_.clear(); QVERIFY(project.ObserveEditState("fixture clear terrain journal warning")); rebind();
+    QCOMPARE(find(), retained); QCOMPARE(retained->data(markerRole).toString(), QString("retained"));
+    auto pathingScopes = project.editRevision_.Current();
+    pathingScopes["map/editor/pathing-restrictions"] = "synthetic changed pathing intent";
+    QVERIFY(project.editRevision_.Observe(std::move(pathingScopes), "fixture pathing intent").Succeeded()); rebind();
+    QCOMPARE(find(), retained); QCOMPARE(retained->data(markerRole).toString(), QString("retained"));
     int requests = 0; WorldAssetBinding received;
     connect(&browser, &WorldAssetBrowser::PlacementRequested, this, [&](const QtApp::ObjectViewEntry& entry, const WorldAssetBinding& binding) {
         QCOMPARE(entry.id, QString("U020")); received = binding; ++requests;
@@ -381,6 +395,13 @@ void WorldAssetBrowserTests::ObservedPlacementsRebindWithoutReloadButCatalogChan
     const auto revision = project.editRevision_.Revision(); units.units.front().rotation = 1.0f;
     QVERIFY(project.mapEdits_->EditUnits(units).Succeeded()); rebind(); // 故意不调用 Observe。
     QCOMPARE(project.editRevision_.Revision(), revision);
+    QTRY_VERIFY(find() && !find()->data(markerRole).isValid()); QCOMPARE(find()->text(), QString("Object updated"));
+    // 未Observe会清除可复用上下文；先重建并证明能复用，未知scope的断言才有区分力。
+    rebind(); QTRY_VERIFY(find() && find()->text() == "Object updated");
+    find()->setData(markerRole, "before unknown scope");
+    rebind(); QVERIFY(find()); QCOMPARE(find()->data(markerRole).toString(), QString("before unknown scope"));
+    auto scopes = project.editRevision_.Current(); scopes["map/editor/unknown-content"] = "synthetic changed scope";
+    QVERIFY(project.editRevision_.Observe(std::move(scopes), "fixture unknown editor scope").Succeeded()); rebind();
     QTRY_VERIFY(find() && !find()->data(markerRole).isValid()); QCOMPARE(find()->text(), QString("Object updated"));
 }
 void WorldAssetBrowserTests::MissingBackendNeverProducesModelImage() {

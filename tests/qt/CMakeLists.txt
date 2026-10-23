@@ -553,8 +553,10 @@ foreach(world_r08_part IN ITEMS WorldInspectorR08 WorldAssetBrowser WorldSelecti
     target_link_libraries(war3-map-${world_r08_part}-tests PRIVATE War3MapEditor::QtModuleWorld Qt6::Test)
     target_compile_definitions(war3-map-${world_r08_part}-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
     target_compile_options(war3-map-${world_r08_part}-tests PRIVATE /W4 /permissive- /utf-8)
-    add_test(NAME qt-${world_r08_part} COMMAND war3-map-${world_r08_part}-tests)
+    set(world_r08_qtest "${CMAKE_CURRENT_BINARY_DIR}/qt-${world_r08_part}-$<CONFIG>.qtest.txt")
+    add_test(NAME qt-${world_r08_part} COMMAND war3-map-${world_r08_part}-tests -o "${world_r08_qtest}" -txt)
     set_tests_properties(qt-${world_r08_part} PROPERTIES TIMEOUT 60
+        ATTACHED_FILES_ON_FAIL "${world_r08_qtest}"
         ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_PLUGIN_PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>/../plugins")
 endforeach()
 # 选取圈附加层须通过渲染核心同一份输入校验（插件提交前的规则）。

@@ -62,8 +62,11 @@ bool NonCatalogMapScope(std::string_view scope) {
     }
     if (name.starts_with("map/")) name.erase(0, 4);
     // WTS 与 W3I（数据集/tileset）必须参与目录身份；未知范围也不自动略过。
-    constexpr std::array<std::string_view, 7> names{"war3mapunits.doo", "war3map.doo", "war3map.w3r",
-        "war3map.w3c", "war3map.w3s", "war3map.w3e", "war3map.wpm"};
+    // 地形草稿的来源/可重放性和通行意图只影响工程保存，不改变物编目录或文件列表。
+    // 仅排除已知内部范围，不能把未来未知editor范围也当作无关。
+    constexpr std::array<std::string_view, 10> names{"war3mapunits.doo", "war3map.doo", "war3map.w3r",
+        "war3map.w3c", "war3map.w3s", "war3map.w3e", "war3map.wpm", "editor/terrain-journal",
+        "editor/terrain-journal-warning", "editor/pathing-restrictions"};
     return std::find(names.begin(), names.end(), name) != names.end();
 }
 } // namespace
