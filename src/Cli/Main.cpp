@@ -35,6 +35,7 @@
 #include "NameQueryCommand.h"
 #include "ResourceCheckCommand.h"
 #include "GameExtractCommand.h"
+#include "GameUiCommand.h"
 #include "AudastraVersion.generated.h"
 
 #include <algorithm>
@@ -133,6 +134,7 @@ void PrintUsage() {
         << "war3-map-cli object-roundtrip <type> <table.ini>\n"
         << "war3-map-cli game-extract <war3-root> <internal\\path> <out-file> [--tileset <A-Z>]\n"
         << "  --tileset: strict game-only JSON source and member SHA256, max 64 MiB; excludes map/session overrides\n"
+        << "war3-map-cli game-ui-inspect <war3-root> [--race <race>] [--classic] [--map <map>] [--frame <name>]...\n"
         << "war3-map-cli mpq-list <archive> [name-filter]\n"
         << "war3-map-cli mpq-extract <archive> <internal\\path> <out-file>\n"
         << "war3-map-cli blp-decode <in.blp> <out.ppm>\n"
@@ -507,6 +509,7 @@ int wmain(int argc, wchar_t** argv) {
     }
 
     if (command == L"game-extract") return RunGameExtract(argc, argv);
+    if (command == L"game-ui-inspect") return RunGameUiInspect(argc, argv);
 
     if (command == L"mpq-list" && (argc == 3 || argc == 4)) {
         auto archive = War3Map::Mpq::MpqArchive::OpenReadOnly(argv[2]);

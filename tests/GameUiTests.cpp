@@ -1,0 +1,358 @@
+#include "War3MapCore/GameUi/FrameTree.h"
+
+#include <cmath>
+#include <cstring>
+#include <iostream>
+#include <map>
+#include <stdexcept>
+#include <string>
+
+namespace {
+
+using namespace War3Map;
+using namespace War3Map::GameUi;
+
+void Require(bool condition, const char* reason) {
+    if (!condition) throw std::runtime_error(reason);
+}
+
+bool Near(float a, float b) {
+    return std::fabs(a - b) < 1e-5f;
+}
+
+bool HasCode(const std::vector<Diagnostic>& diagnostics, std::string_view code) {
+    for (const auto& diagnostic : diagnostics) {
+        if (diagnostic.code == code) return true;
+    }
+    return false;
+}
+
+const FrameNode& NodeNamed(const FrameTree& tree, std::string_view name) {
+    const auto id = tree.FindByName(name);
+    if (!id) throw std::runtime_error("node missing: " + std::string(name));
+    return tree.Nodes()[*id];
+}
+
+// 内存中的“归档”：路径不区分大小写，供 FrameLibrary 读取。
+FrameFileReader MemoryReader(const std::map<std::string, std::string>& files) {
+    return [files](const std::string& path) -> Result<std::vector<std::byte>> {
+        std::string key = Text::LowerAscii(path);
+        for (char& c : key) {
+            if (c == '/') c = '\\';
+        }
+        const auto found = files.find(key);
+        if (found == files.end()) return Result<std::vector<std::byte>>::Failure("Test", "MISSING", path);
+        std::vector<std::byte> bytes(found->second.size());
+        std::memcpy(bytes.data(), found->second.data(), bytes.size());
+        return Result<std::vector<std::byte>>::Success(std::move(bytes));
+    };
+}
+
+void TestParser() {
+    const std::string text =
+        "\xEF\xBB\xBF// header comment\n"
+        "IncludeFile \"UI\\FrameDef\\Base.fdf\",\n"
+        "StringList {\n"
+        "    KEY_OK \"|cffffcc00O|rK\",\n"
+        "    KEY_CANCEL \"Cancel\", // trailing\n"
+        "}\n"
+        "/* block\n comment */\n"
+        "Frame \"SIMPLEFRAME\" \"Panel\" INHERITS WITHCHILDREN \"PanelTemplate\"\n"
+        "{\n"
+        "    Width 0.2,\n"
+        "    SetPoint TOPLEFT, \"Other\", BOTTOMLEFT, 0.01, -0.02,\n"
+        "    Layer \"BACKGROUND\" {\n"
+        "        Texture \"PanelBg\" { File \"Bg\", TexCoord 0, 0.5, 0, 1, }\n"
+        "    }\n"
+        "    String \"PanelText\" INHERITS \"TextTemplate\" { Text \"KEY_OK\", }\n"
+        "}\n"
+        "Bogus line here\n"
+        "}\n";
+    const auto parsed = ParseFdf(text, "UI\\Test.fdf");
+    Require(parsed.value.has_value(), "parser returns a file");
+    const FdfFile& file = *parsed.value;
+    Require(file.includes.size() == 1 && file.includes[0] == "UI\\FrameDef\\Base.fdf", "include path keeps backslashes");
+    Require(file.strings.size() == 2 && file.strings[0].first == "KEY_OK" && file.strings[0].second == "|cffffcc00O|rK",
+        "string list entries");
+    Require(file.definitions.size() == 1, "one top-level definition");
+    const FdfDefinition& panel = file.definitions[0];
+    Require(panel.kind == DefinitionKind::Frame && panel.frameType == "SIMPLEFRAME" && panel.name == "Panel",
+        "frame header type and name");
+    Require(panel.inherits == "PanelTemplate" && panel.inheritsWithChildren, "inherits with children");
+    Require(panel.line == 9, "definition line counts block comment lines");
+    Require(panel.properties.size() == 2, "frame properties");
+    const FdfProperty& setPoint = panel.properties[1];
+    Require(setPoint.values.size() == 5 && setPoint.values[1].text == "Other" && setPoint.values[1].quoted &&
+            setPoint.values[4].text == "-0.02" && !setPoint.values[4].quoted,
+        "SetPoint values split on commas");
+    Require(panel.children.size() == 2, "layer and string children");
+    const FdfDefinition& layer = panel.children[0];
+    Require(layer.kind == DefinitionKind::Layer && layer.frameType == "BACKGROUND" && layer.children.size() == 1,
+        "layer keeps its name and texture");
+    Require(layer.children[0].properties.size() == 2 && layer.children[0].properties[1].values.size() == 4,
+        "single-line texture block properties");
+    Require(panel.children[1].kind == DefinitionKind::String && panel.children[1].inherits == "TextTemplate",
+        "string inherits");
+    Require(HasCode(parsed.diagnostics, "GAMEUI_FDF_TOPLEVEL_UNKNOWN"), "unknown top-level statement reported");
+    Require(HasCode(parsed.diagnostics, "GAMEUI_FDF_UNBALANCED_BRACE"), "stray brace reported");
+
+    const auto unterminated = ParseFdf("Frame \"FRAME\" \"Open\" {\n Width 0.1,\n", "Open.fdf");
+    Require(!unterminated.Succeeded() && HasCode(unterminated.diagnostics, "GAMEUI_FDF_UNBALANCED_BRACE"),
+        "missing closing brace is an error");
+    Require(unterminated.value && unterminated.value->definitions.size() == 1, "partial definition kept for display");
+
+    const auto toc = ParseToc("\xEF\xBB\xBFUI\\A.fdf\r\n\r\n// skip\r\n  UI\\B.fdf  \r\n");
+    Require(toc.size() == 2 && toc[0] == "UI\\A.fdf" && toc[1] == "UI\\B.fdf", "toc lines trimmed");
+}
+
+void TestSkin() {
+    UiSkin skin;
+    Require(skin.Races().size() == 4, "default races without skins file");
+    skin.SetGameSkins(
+        "[Main]\nSkins=Orc,Human\n"
+        "[Default]\nMasterFont=Fonts\\Default.ttf\nPanelBg=UI\\Default\\Bg\n"
+        "[Human]\nPanelBg=UI\\Human\\Bg\nPanelBg_V1=UI\\Human\\BgX\n"
+        "[Orc]\nPanelBg=UI\\Orc\\Bg\n");
+    Require(skin.Races().size() == 2 && skin.Races()[0] == "Orc", "races from [Main]");
+    auto human = skin.Lookup("PanelBg", "Human");
+    Require(human && human->value == "UI\\Human\\BgX" && human->source == "game:human" && human->matchedKey == "panelbg_v1",
+        "expansion prefers _V1");
+    human = skin.Lookup("panelbg", "HUMAN", false);
+    Require(human && human->value == "UI\\Human\\Bg", "classic ignores _V1, case-insensitive");
+    const auto orc = skin.Lookup("PanelBg", "Orc");
+    Require(orc && orc->value == "UI\\Orc\\Bg", "race without _V1 falls back to base key");
+    const auto font = skin.Lookup("MasterFont", "Orc");
+    Require(font && font->source == "game:default", "default section fallback");
+    Require(!skin.Lookup("Missing", "Orc"), "missing key");
+
+    skin.SetMapSkin("[CustomSkin]\nPanelBg=war3mapImported\\Bg.blp\n[FrameDef]\nKEY_OK=好\n");
+    const auto custom = skin.Lookup("PanelBg", "Orc");
+    Require(custom && custom->value == "war3mapImported\\Bg.blp" && custom->source == "map:customskin",
+        "map CustomSkin overrides every race");
+    Require(skin.MapFrameString("key_ok") == std::optional<std::string>("好"), "map FrameDef string");
+}
+
+void TestLibrary() {
+    const auto reader = MemoryReader({
+        {"ui\\framedef\\test.toc", "UI\\Main.fdf\nUI\\Missing.fdf\n"},
+        {"ui\\main.fdf", "IncludeFile \"UI\\Base.fdf\",\nFrame \"FRAME\" \"Shared\" { Width 0.2, }\n"
+                         "StringList { KEY_A \"Main\", }\n"},
+        {"ui\\base.fdf", "Frame \"FRAME\" \"Shared\" { Width 0.1, }\nFrame \"FRAME\" \"BaseOnly\" { }\n"
+                         "StringList { KEY_A \"Base\", KEY_B \"B\", }\nIncludeFile \"UI\\Main.fdf\",\n"},
+    });
+    FrameLibrary library;
+    library.LoadToc(reader, "UI\\FrameDef\\Test.toc", "game");
+    Require(library.Files().size() == 2, "each file loaded once despite mutual include");
+    Require(library.Files()[0]->file.path == "UI\\Base.fdf", "included file registered first");
+    const auto shared = library.FindTemplate("shared");
+    Require(shared && shared->definition->properties[0].values[0].text == "0.2", "includer overrides included template");
+    Require(library.FindTemplate("BaseOnly").has_value(), "included template visible");
+    Require(library.FindString("key_a") == std::optional<std::string>("Main"), "later string wins");
+    Require(library.FindString("KEY_B") == std::optional<std::string>("B"), "included string visible");
+    Require(HasCode(library.Diagnostics(), "GAMEUI_FDF_UNREADABLE"), "missing toc entry reported");
+    Require(HasCode(library.Diagnostics(), "GAMEUI_TEMPLATE_REDEFINED"), "redefinition reported");
+
+    FrameLibrary missingToc;
+    missingToc.LoadToc(reader, "UI\\None.toc", "game");
+    Require(HasCode(missingToc.Diagnostics(), "GAMEUI_TOC_UNREADABLE"), "missing toc is reported");
+}
+
+FrameLibrary LayoutLibrary() {
+    const std::string text =
+        "StringList { KEY_OK \"OK\", }\n"
+        "Texture \"ButtonBg\" { File \"ButtonSkin\", TexCoord 0, 0.5, 0.25, 0.75, AlphaMode \"BLEND\", }\n"
+        "String \"ButtonFont\" { Font \"MasterFont\", 0.012, FontColor 1.0 0.8 0.0, }\n"
+        "Frame \"SIMPLEBUTTON\" \"ButtonTemplate\" { Width 0.1, Height 0.02, NormalTexture \"ButtonBg\", NormalText \"ButtonFont\" \"KEY_OK\", }\n"
+        "Frame \"SIMPLEFRAME\" \"BarTemplate\" {\n"
+        "    DecorateFileNames,\n"
+        "    Layer \"BACKGROUND\" { Texture \"BarBg\" { File \"PanelBg\", } }\n"
+        "}\n"
+        "Frame \"SIMPLEFRAME\" \"Bar\" INHERITS WITHCHILDREN \"BarTemplate\" {\n"
+        "    Width 0.3,\n"
+        "    Height 0.05,\n"
+        "    Frame \"SIMPLEBUTTON\" \"BarButton\" INHERITS \"ButtonTemplate\" {\n"
+        "        SetPoint TOPLEFT, \"Bar\", TOPLEFT, 0.01, -0.01,\n"
+        "    }\n"
+        "    Frame \"SIMPLEBUTTON\" \"BarButton2\" INHERITS \"ButtonTemplate\" {\n"
+        "        SetPoint LEFT, \"BarButton\", RIGHT, 0.0, 0.0,\n"
+        "    }\n"
+        "    Layer \"ARTWORK\" {\n"
+        "        String \"BarLabel\" INHERITS \"ButtonFont\" { Anchor RIGHT, -0.01, 0.0, Text \"KEY_MISSING\", }\n"
+        "    }\n"
+        "}\n"
+        "Frame \"BACKDROP\" \"Box\" {\n"
+        "    DecorateFileNames,\n"
+        "    BackdropBackground \"PanelBg\",\n"
+        "    BackdropEdgeFile \"UI\\Literal\\Edge.tga\",\n"
+        "    SetPoint CENTER, \"Bar\", CENTER, 0.0, 0.1,\n"
+        "    Width 0.1, Height 0.1,\n"
+        "}\n"
+        "Frame \"FRAME\" \"Loose\" { Width 0.1, Height 0.1, }\n"
+        "Frame \"FRAME\" \"CycleA\" { Width 0.1, Height 0.1, SetPoint TOPLEFT, \"CycleB\", TOPLEFT, 0, 0, }\n"
+        "Frame \"FRAME\" \"CycleB\" { Width 0.1, Height 0.1, SetPoint TOPLEFT, \"CycleA\", TOPLEFT, 0, 0, }\n"
+        "Frame \"FRAME\" \"Orphan\" { Width 0.1, Height 0.1, SetPoint TOPLEFT, \"Nowhere\", TOPLEFT, 0, 0, }\n"
+        "Frame \"FRAME\" \"SelfLoop\" INHERITS WITHCHILDREN \"SelfLoop\" { }\n";
+    auto parsed = ParseFdf(text, "UI\\Layout.fdf");
+    Require(parsed.Succeeded(), "layout fixture parses cleanly");
+    FrameLibrary library;
+    library.AddParsed(std::move(*parsed.value), "game");
+    return library;
+}
+
+void TestTree() {
+    const FrameLibrary library = LayoutLibrary();
+    UiSkin skin;
+    skin.SetGameSkins("[Default]\nMasterFont=Fonts\\Main.ttf\n[Human]\nPanelBg=UI\\Human\\Panel\nButtonSkin=UI\\Human\\Button.tga\n");
+
+    FrameTree tree;
+    Require(tree.Nodes().size() == 1 && Near(tree.Nodes()[0].rect.right, 0.8f), "screen node");
+    RootPlacement bottomCenter;
+    bottomCenter.anchors.push_back(FrameAnchor{FramePoint::Bottom, {}, FramePoint::Bottom, 0.0f, 0.1f});
+    const auto bar = tree.Instantiate(library, &skin, "bar", bottomCenter);
+    Require(bar.Succeeded() && bar.value, "instantiate bar");
+    const auto box = tree.Instantiate(library, &skin, "Box");
+    Require(box.Succeeded(), "instantiate box");
+    const auto loose = tree.Instantiate(library, &skin, "Loose");
+    Require(loose.value && HasCode(loose.diagnostics, "GAMEUI_ROOT_PLACEMENT_UNKNOWN"), "unknown root placement reported");
+    (void)tree.Instantiate(library, &skin, "CycleA");
+    (void)tree.Instantiate(library, &skin, "CycleB");
+    (void)tree.Instantiate(library, &skin, "Orphan");
+    const auto missing = tree.Instantiate(library, &skin, "NotThere");
+    Require(!missing.Succeeded() && HasCode(missing.diagnostics, "GAMEUI_TEMPLATE_MISSING"), "missing template");
+    const auto selfLoop = tree.Instantiate(library, &skin, "SelfLoop");
+    Require(selfLoop.value && HasCode(selfLoop.diagnostics, "GAMEUI_TEMPLATE_CYCLE"), "self inheritance stopped");
+    const auto diagnostics = tree.Layout();
+
+    const FrameNode& barNode = NodeNamed(tree, "Bar");
+    Require(barNode.layout == LayoutState::Placed && Near(barNode.rect.left, 0.25f) && Near(barNode.rect.right, 0.55f) &&
+            Near(barNode.rect.bottom, 0.1f) && Near(barNode.rect.top, 0.15f),
+        "root placement with size");
+    Require(barNode.sourceFile == "UI\\Layout.fdf" && barNode.sourceLine == 9, "node source location");
+
+    const FrameNode& barBg = NodeNamed(tree, "BarBg");
+    Require(barBg.layer == "BACKGROUND" && barBg.decorate, "template child keeps layer and decoration");
+    Require(barBg.texture && barBg.texture->path == "UI\\Human\\Panel.blp" && barBg.texture->source == "game:human",
+        "decorated texture resolved through race skin with .blp added");
+    Require(barBg.layout == LayoutState::Placed && Near(barBg.rect.left, barNode.rect.left) &&
+            Near(barBg.rect.top, barNode.rect.top),
+        "anchorless texture fills frame through layer");
+    Require(tree.Nodes()[barBg.parent].kind == DefinitionKind::Layer, "texture parent is the layer node");
+
+    const FrameNode& button = NodeNamed(tree, "BarButton");
+    Require(button.layout == LayoutState::Placed && Near(button.rect.left, 0.26f) && Near(button.rect.top, 0.14f) &&
+            Near(button.rect.Width(), 0.1f),
+        "SetPoint relative to named parent");
+    Require(button.texture && button.texture->path == "UI\\Human\\Button.tga" && Near(button.texture->texCoord[1], 0.5f) &&
+            button.texture->alphaMode == "BLEND",
+        "button normal texture from texture template, existing extension kept");
+    Require(button.text && button.text->text == "OK" && button.text->source == "fdf" &&
+            button.text->fontPath == "Fonts\\Main.ttf" && Near(button.text->fontHeight, 0.012f) &&
+            Near(button.text->color[1], 0.8f),
+        "button normal text and font");
+
+    const FrameNode& button2 = NodeNamed(tree, "BarButton2");
+    Require(button2.layout == LayoutState::Placed && Near(button2.rect.left, button.rect.right) &&
+            Near(button2.rect.top, button.rect.top),
+        "chained sibling anchor with inherited size");
+    Require(button2.templateName == "ButtonTemplate", "template name recorded");
+
+    const FrameNode& label = NodeNamed(tree, "BarLabel");
+    Require(label.layout == LayoutState::SizeFromContent && label.contentAnchor == FramePoint::Right &&
+            Near(label.rect.right, barNode.rect.right - 0.01f),
+        "single-point string sized by content");
+    Require(label.text && label.text->text == "KEY_MISSING" && label.text->source == "literal" &&
+            label.text->fontKey == "MasterFont",
+        "missing string key falls back to literal, font inherited");
+
+    const FrameNode& boxNode = NodeNamed(tree, "Box");
+    Require(boxNode.layout == LayoutState::Placed && Near(boxNode.rect.left, 0.35f) && Near(boxNode.rect.bottom, 0.175f),
+        "center anchor relative to another root");
+    Require(boxNode.texture && boxNode.texture->source == "game:human", "backdrop background decorated");
+    Require(boxNode.edge && boxNode.edge->path == "UI\\Literal\\Edge.tga" && boxNode.edge->source == "literal",
+        "literal path kept when skin has no key");
+
+    Require(NodeNamed(tree, "Loose").layout == LayoutState::Unplaced, "root without placement stays unplaced");
+    Require(NodeNamed(tree, "Orphan").layout == LayoutState::Unplaced, "missing target leaves frame unplaced");
+    Require(HasCode(diagnostics, "GAMEUI_ANCHOR_TARGET_MISSING"), "missing anchor target reported");
+    Require(HasCode(diagnostics, "GAMEUI_LAYOUT_CYCLE"), "anchor cycle reported");
+    Require(NodeNamed(tree, "CycleA").layout != LayoutState::Placed, "cycle not placed");
+
+    // 地图皮肤覆盖与 ConsoleUI 铺满屏幕。
+    skin.SetMapSkin("[CustomSkin]\nPanelBg=war3mapImported\\Panel.blp\n[FrameDef]\nKEY_OK=确定\n");
+    const std::string console = "Frame \"SIMPLEFRAME\" \"ConsoleUI\" { DecorateFileNames, Texture \"ConsoleBg\" { File \"PanelBg\", } }\n";
+    auto parsed = ParseFdf(console, "UI\\Console.fdf");
+    FrameLibrary consoleLibrary;
+    consoleLibrary.AddParsed(std::move(*parsed.value), "game");
+    FrameTree consoleTree;
+    const auto consoleRoot = consoleTree.Instantiate(consoleLibrary, &skin, "ConsoleUI");
+    Require(consoleRoot.Succeeded() && consoleRoot.diagnostics.empty(), "ConsoleUI has a known placement");
+    (void)consoleTree.Layout();
+    const FrameNode& consoleBg = NodeNamed(consoleTree, "ConsoleBg");
+    Require(consoleBg.layout == LayoutState::Placed && Near(consoleBg.rect.Width(), 0.8f) && Near(consoleBg.rect.Height(), 0.6f),
+        "ConsoleUI fills screen");
+    Require(consoleBg.texture && consoleBg.texture->path == "war3mapImported\\Panel.blp" &&
+            consoleBg.texture->source == "map:customskin",
+        "map skin override applied");
+
+    // 按钮属性引用的子框架由游戏铺满按钮；未被引用的子框架保持自身锚点。
+    const std::string controls =
+        "Frame \"GLUETEXTBUTTON\" \"MenuButtonTemplate\" {\n"
+        "    Width 0.2, Height 0.03,\n"
+        "    ControlBackdrop \"MenuBg\",\n"
+        "    Frame \"BACKDROP\" \"MenuBg\" { DecorateFileNames, BackdropBackground \"PanelBg\", }\n"
+        "    ControlMouseOverHighlight \"MenuGlow\",\n"
+        "    Frame \"HIGHLIGHT\" \"MenuGlow\" { HighlightAlphaFile \"UI\\Glow.blp\", HighlightAlphaMode \"ADD\", }\n"
+        "    Frame \"BACKDROP\" \"Unreferenced\" { }\n"
+        "}\n"
+        "Frame \"GLUETEXTBUTTON\" \"MenuButton\" INHERITS WITHCHILDREN \"MenuButtonTemplate\" {\n"
+        "    SetPoint CENTER, \"MenuButton\", CENTER, 0, 0,\n"
+        "    ButtonText \"MenuButtonText\",\n"
+        "    Frame \"TEXT\" \"MenuButtonText\" { Text \"KEY_OK\", }\n"
+        "}\n";
+    auto controlParsed = ParseFdf(controls, "UI\\Controls.fdf");
+    Require(controlParsed.Succeeded(), "control fixture parses");
+    FrameLibrary controlLibrary;
+    controlLibrary.AddParsed(std::move(*controlParsed.value), "game");
+    FrameTree controlTree;
+    RootPlacement center;
+    center.anchors.push_back(FrameAnchor{FramePoint::Center, {}, FramePoint::Center, 0.0f, 0.0f});
+    (void)controlTree.Instantiate(controlLibrary, &skin, "MenuButton", center);
+    (void)controlTree.Layout();
+    const FrameNode& menuButton = NodeNamed(controlTree, "MenuButton");
+    Require(menuButton.layout == LayoutState::Placed && Near(menuButton.rect.left, 0.3f), "placement overrides own anchors");
+    const FrameNode& menuBg = NodeNamed(controlTree, "MenuBg");
+    Require(menuBg.autoFillBy == "ControlBackdrop" && menuBg.layout == LayoutState::Placed &&
+            Near(menuBg.rect.left, menuButton.rect.left) && Near(menuBg.rect.top, menuButton.rect.top),
+        "control backdrop fills the button");
+    const FrameNode& menuGlow = NodeNamed(controlTree, "MenuGlow");
+    Require(menuGlow.autoFillBy == "ControlMouseOverHighlight" && menuGlow.texture &&
+            menuGlow.texture->path == "UI\\Glow.blp" && menuGlow.texture->alphaMode == "ADD",
+        "highlight texture and fill");
+    const FrameNode& menuText = NodeNamed(controlTree, "MenuButtonText");
+    Require(menuText.autoFillBy == "ButtonText" && menuText.layout == LayoutState::Placed &&
+            Near(menuText.rect.Width(), 0.2f),
+        "button text fills the button");
+    Require(NodeNamed(controlTree, "Unreferenced").layout == LayoutState::Unplaced, "unreferenced child not auto-placed");
+
+    FrameTree mapText;
+    (void)mapText.Instantiate(library, &skin, "Bar");
+    Require(NodeNamed(mapText, "BarButton").text->text == "确定" &&
+            NodeNamed(mapText, "BarButton").text->source == "map:framedef",
+        "map FrameDef string overrides fdf string");
+}
+
+} // namespace
+
+int main() {
+    try {
+        TestParser();
+        TestSkin();
+        TestLibrary();
+        TestTree();
+        std::cout << "Game UI tests passed\n";
+        return 0;
+    } catch (const std::exception& error) {
+        std::cerr << error.what() << '\n';
+        return 1;
+    }
+}

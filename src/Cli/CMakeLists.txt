@@ -6,6 +6,7 @@ target_link_libraries(
         War3MapEditor::Trigger
         War3MapEditor::ObjectData
         War3MapEditor::UiLibrary
+        War3MapEditor::GameUi
         War3MapEditor::ScriptBuild
         War3MapEditor::Services
         War3MapEditor::RenderSupport)
@@ -26,6 +27,7 @@ target_sources(war3-map-cli PRIVATE UpdateCommand.cpp UpdateCommand.h)
 target_sources(war3-map-cli PRIVATE NameQueryCommand.cpp NameQueryCommand.h)
 target_sources(war3-map-cli PRIVATE ResourceCheckCommand.cpp ResourceCheckCommand.h)
 target_sources(war3-map-cli PRIVATE GameExtractCommand.cpp GameExtractCommand.h)
+target_sources(war3-map-cli PRIVATE GameUiCommand.cpp GameUiCommand.h)
 target_link_libraries(war3-map-cli PRIVATE audastra-json)
 target_compile_definitions(war3-map-cli PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-cli PRIVATE /W4 /permissive- /utf-8)
