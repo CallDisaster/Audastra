@@ -168,6 +168,20 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
             followDoodads, true, true, false, &doodads, specialChanged);
         if (prepared.value) {
             prepared.value->waterBrush_ = brush;
+            const auto digestBytes = resources.WaterBrushDependencyBudgetBytes();
+            auto journalPeak = finalBytes, journalWork = work;
+            if (points.size() <= 4096 && digestBytes
+                && reserve(journalPeak, limits.maximumCandidateBytes, digestBytes, 1)
+                && reserve(journalWork, limits.maximumWork, digestBytes, 3)) {
+                // 新记录的wire编码/散列也计入本笔实际峰值和累计工作。
+                finalBytes = journalPeak; work = journalWork;
+                const auto fingerprint = resources.WaterBrushDependencyFingerprint();
+                if (fingerprint.Succeeded() && fingerprint.value) {
+                    prepared.value->waterRulesSha256_ = *fingerprint.value;
+                    prepared.value->waterIntentOptions_ = TerrainWaterStrokeOptions{brush.kind, brush.shape, brush.size,
+                        brush.cliffTexture, brush.randomSeed, resources.WaterBrushRules()->enforceWaterLimits};
+                }
+            } // 旧Core兼容owner、超域或journal额外预算不足仍可编辑，但不记录typed来源。
             prepared.value->waterResult_ = candidate.value->result;
             prepared.value->waterPreparationWork_ = work;
             prepared.value->waterPreparationBytes_ = finalBytes;

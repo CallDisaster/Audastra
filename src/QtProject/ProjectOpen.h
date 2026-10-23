@@ -1,6 +1,7 @@
 #pragma once
 
 #include "EditorProject.h"
+#include "War3MapCore/MapData/MapDataEditSession.h"
 
 class QTemporaryDir;
 
@@ -32,11 +33,13 @@ struct PreparedProjectOpen {
     std::vector<PendingImport> imports;
     std::vector<AssetEdit> assetEdits;
     std::unique_ptr<MapData::MapDataEditSession> mapDataEdits;
+    std::vector<MapData::MapDataEditSession::EditReceipt> terrainReceipts;
+    std::string terrainJournalWarning;
 
     [[nodiscard]] std::filesystem::path BaselinePath() const;
 };
 
 [[nodiscard]] Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(
-    const std::filesystem::path& path);
+    const std::filesystem::path& path, const std::filesystem::path& gameRoot = {});
 
 } // namespace War3Map::QtProject

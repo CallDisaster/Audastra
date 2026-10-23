@@ -3,6 +3,7 @@
 #include "War3MapCore/ObjectData/NativeDestructablePathing.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/Services/TerrainEditService.h"
+#include "War3MapCore/Hash.h"
 
 #include <algorithm>
 #include <cctype>
@@ -32,7 +33,9 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& sourc
     MapData::MapDataEditSession& candidate, const MapData::TerrainGridSnapshot& sourceTerrain,
     std::size_t pathingBytes,
     std::span<const MapData::TerrainStrokeIntent> strokes, const std::filesystem::path& gameRoot,
-    const TerrainReplayLimits& limits, const std::string& sourceSha) {
+    const TerrainReplayLimits& limits, const std::string& sourceSha,
+    const MapData::TerrainStrokeJournal* journal = nullptr,
+    std::vector<MapData::MapDataEditSession::EditReceipt>* receipts = nullptr) {
     using Output = Result<std::vector<MapData::TerrainPathingResources>>;
     // 工厂已将实际W3E逐字核对并Attach，并持有落笔前owner直到整个序列完成。
     const auto fail = [](const char* code, const char* message) { return Output::Failure("Terrain.Replay", code, message); };
@@ -58,7 +61,9 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& sourc
         used += count * element; return true;
     };
     const MapDataQueryBinding document{"terrain-replay", 1, 0, sourceSha};
+    std::size_t strokeIndex = 0;
     for (const auto& stroke : strokes) {
+        const auto beforeRevision = candidate.Revision();
         if (!candidate.Terrain()) return fail("TERRAIN_REPLAY_UNAVAILABLE", "重放候选缺少当前地形。");
         const TerrainEditBinding binding{document, candidate.SessionIdentity(), candidate.Revision(), candidate.TerrainSourceRevision()};
         if (stroke.waterBrush) {
@@ -83,6 +88,15 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& sourc
                     doodads ? *doodads : empty, gameRoot, stroke.waterBrush->enforceWaterLimits, remaining);
             }(); // 外层DOO解析快照先释放，再进入水刷事务自己的已预算解析/候选阶段。
             if (!resources.Succeeded() || !resources.value) return {{}, resources.diagnostics};
+            if (journal) {
+                const auto digestBytes = resources.value->WaterBrushDependencyBudgetBytes();
+                if (!digestBytes || digestBytes > limits.maximumCandidateBytes - historyBytes
+                    || !reserve(work, limits.maximumWork, digestBytes, 3))
+                    return fail("TERRAIN_REPLAY_BUDGET", "水刷依赖摘要的临时wire或累计编码/散列工作超出预算。");
+                const auto digest = resources.value->WaterBrushDependencyFingerprint();
+                if (!digest.Succeeded() || !digest.value || *digest.value != journal->strokes[strokeIndex].rulesSha256)
+                    return fail("TERRAIN_JOURNAL_RESOURCE_DRIFT", "水刷实际依赖、winner或缺失项已变化，未安装记录中的任何前缀。");
+            }
             if (!reserve(resourceBytes, limits.maximumResourceBytes, resources.value->CaptureBudgetBytes())
                 || !reserve(ownedResources, limits.maximumResourceBytes, resources.value->OwnedCapacityBytes()))
                 return fail("TERRAIN_REPLAY_BUDGET", "逐笔实际资源的累计捕获或保留量超过重放预算。");
@@ -152,6 +166,10 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& sourc
             const auto applied = ApplyTerrainEdit(candidate, document, *plan.value);
             if (!applied.Succeeded()) return {{}, applied.diagnostics};
         }
+        if (candidate.Revision() != beforeRevision) {
+            if (receipts) receipts->push_back(candidate.LastEdit());
+        } else if (journal) return fail("TERRAIN_JOURNAL_NO_CHANGE", "记录包含未形成真实命令的空笔划，未安装任何前缀。");
+        ++strokeIndex;
     }
     // 捕获之后可能发生来源变更；全部owners复核到同一实际来源后才返回候选。
     for (const auto& owner : owners) {
@@ -196,10 +214,25 @@ template<class Source, class Reader>
 Result<TerrainReplayCandidate> CreateReplay(const Source& source, const MapDocument& original,
     std::span<const std::byte> terrain, std::span<const std::byte> pathing,
     std::span<const MapData::TerrainStrokeIntent> strokes, const std::filesystem::path& gameRoot,
-    const TerrainReplayLimits& limits, const std::string& sha, Reader&& reader) {
+    const TerrainReplayLimits& limits, const std::string& sha, Reader&& reader,
+    const MapData::TerrainStrokeJournal* journal = nullptr) {
     using Output = Result<TerrainReplayCandidate>;
     const auto mismatch = [] { return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_SOURCE_MISMATCH", "原始W3E/WPM、地图成员或已证缺失项与实际来源不一致。"); };
     const auto budgetFailure = [] { return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_BUDGET", "实际来源、会话基线或累计重放预算超限。"); };
+    const auto sourceReadFailure = [](std::vector<Diagnostic> diagnostics) {
+        // 只有精确读取自身的容量不足允许回退完整raw；实际基线的身份、结构或I/O失败须硬拒。
+        // 资源owner在Replay内另有捕获边界，不能按通用Mpq/IO子系统混判其资源缺失。
+        const bool budgetOnly = !diagnostics.empty() && std::all_of(diagnostics.begin(), diagnostics.end(), [](const auto& diagnostic) {
+            return (diagnostic.subsystem == "MapArchiveSession" && diagnostic.code == "EXACT_MEMBER_LIMIT")
+                || (diagnostic.subsystem == "Mpq" && diagnostic.code == "FILE_READ_BUDGET_EXCEEDED")
+                || (diagnostic.subsystem == "VerifiedFile" && diagnostic.code == "VERIFIED_FILE_BUDGET_EXCEEDED")
+                || (diagnostic.subsystem == "Terrain.PathingResources" && diagnostic.code == "TERRAIN_PATHING_RESOURCE_BUDGET");
+        });
+        if (budgetOnly) return Output{{}, std::move(diagnostics)};
+        auto failure = Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_SOURCE_READ_FAILED", "实际地图基线无法完整验证，未恢复或安装任何前缀。");
+        for (auto& diagnostic : diagnostics) failure.diagnostics.push_back(std::move(diagnostic));
+        return failure;
+    };
     const TerrainReplayLimits hard;
     if (!limits.maximumResourceBytes || limits.maximumResourceBytes > hard.maximumResourceBytes
         || !limits.maximumWork || limits.maximumWork > hard.maximumWork
@@ -224,6 +257,8 @@ Result<TerrainReplayCandidate> CreateReplay(const Source& source, const MapDocum
         if (count > remaining / multiple) return false;
         remaining -= count * multiple; return true;
     };
+    if (journal && (!charge(remainingLimits.maximumCandidateBytes, journal->baselinePathingLayers.size(), 4)
+        || !charge(remainingLimits.maximumWork, journal->baselinePathingLayers.size(), 4))) return budgetFailure();
     std::size_t sourceBytes = terrain.size();
     if (pathing.size() > limits.maximumResourceBytes || sourceBytes > limits.maximumResourceBytes - pathing.size()) return budgetFailure();
     sourceBytes += pathing.size();
@@ -252,23 +287,162 @@ Result<TerrainReplayCandidate> CreateReplay(const Source& source, const MapDocum
     sourceLimits.totalBytes = std::min({sourceLimits.totalBytes, limits.maximumResourceBytes, limits.maximumCandidateBytes});
     sourceLimits.memberBytes = sourceLimits.totalBytes;
     auto actual = reader(names, sourceLimits);
-    if (!actual.Succeeded() || !actual.value) return {{}, actual.diagnostics};
+    if (!actual.Succeeded() || !actual.value) return sourceReadFailure(std::move(actual.diagnostics));
     if (!SourceMatches(original, terrain, pathing, *actual.value)) return mismatch();
+    if (journal) {
+        if (journal->sourceSha256 != sha || journal->members.size() != actual.value->size())
+            return Output::Failure("Terrain.Journal", "TERRAIN_JOURNAL_BASELINE_MISMATCH", "地形记录不属于实际工程基线。");
+        for (std::size_t i = 0; i < actual.value->size(); ++i) {
+            const auto& member = (*actual.value)[i]; const auto& expected = journal->members[i];
+            if (expected.name != Canonical(member.name) || expected.present != member.present
+                || expected.bytes != member.bytes.size())
+                return Output::Failure("Terrain.Journal", "TERRAIN_JOURNAL_BASELINE_MISMATCH", "地形记录成员或缺失项与实际基线不符。");
+            if (member.present) {
+                const auto hash = Sha256(member.bytes);
+                if (!hash.Succeeded() || !hash.value || *hash.value != expected.sha256)
+                    return Output::Failure("Terrain.Journal", "TERRAIN_JOURNAL_BASELINE_MISMATCH", "地形记录完整来源成员身份不符。");
+            }
+        }
+    }
     actual.value.reset(); // 完整来源副本不与候选、规则owner和历史并存。
-    auto candidate = std::make_shared<MapData::MapDataEditSession>(original);
+    auto candidate = std::make_unique<MapData::MapDataEditSession>(original);
     const auto attached = candidate->AttachTerrain(terrain);
     if (!attached.Succeeded()) return {{}, attached.diagnostics};
     const auto attachedPathing = candidate->AttachPathing(pathing);
     if (!attachedPathing.Succeeded()) return {{}, attachedPathing.diagnostics};
+    if (journal && !journal->baselinePathingLayers.empty()) {
+        const auto restored = candidate->SetTerrainAndPathingDraft(terrain, pathing, journal->baselinePathingLayers);
+        if (!restored.Succeeded()) return {{}, restored.diagnostics};
+    }
     const auto baseline = candidate->Terrain();
-    auto replayed = Replay(source, *candidate, *baseline, pathing.size(), strokes, gameRoot, remainingLimits, sha);
+    std::vector<MapData::MapDataEditSession::EditReceipt> receipts;
+    receipts.reserve(strokes.size());
+    auto replayed = Replay(source, *candidate, *baseline, pathing.size(), strokes, gameRoot, remainingLimits, sha, journal, &receipts);
     if (!replayed.Succeeded() || !replayed.value) return {{}, replayed.diagnostics};
     auto finalSource = reader(names, sourceLimits);
-    if (!finalSource.Succeeded() || !finalSource.value) return {{}, finalSource.diagnostics};
+    if (!finalSource.Succeeded() || !finalSource.value) return sourceReadFailure(std::move(finalSource.diagnostics));
     if (!SourceMatches(original, terrain, pathing, *finalSource.value)) return mismatch();
-    return Output::Success({std::move(candidate), std::move(*replayed.value)});
+    return Output::Success({std::move(candidate), std::move(*replayed.value), std::move(receipts)});
+}
+
+template<class Reader>
+Result<MapData::TerrainStrokeJournal> CaptureJournal(const MapData::MapDataEditSession& edits,
+    MapData::TerrainStrokeJournal journal, const std::string& sourceSha, Reader&& reader) {
+    if (journal.strokes.empty()) return Result<MapData::TerrainStrokeJournal>::Success(std::move(journal));
+    std::vector<std::string> names;
+    for (const auto name : MapData::TerrainJournalMemberNames) names.emplace_back(name);
+    ArchiveExactMemberLimits limits; limits.memberCount = names.size();
+    // 精确成员API的原64MiB存储/解码帽保持不变，128MiB是owner累计资源预算。
+    const auto actual = reader(names, limits);
+    if (!actual.Succeeded() || !actual.value) return {{}, actual.diagnostics};
+    const auto checked = edits.VerifyTerrainJournalBaseline(*actual.value);
+    if (!checked.Succeeded()) return {{}, checked.diagnostics};
+    journal.sourceSha256 = sourceSha;
+    journal.members.clear();
+    for (std::size_t i = 0; i < actual.value->size(); ++i) {
+        const auto& member = (*actual.value)[i];
+        std::string hash;
+        if (member.present) {
+            const auto sha = Sha256(member.bytes);
+            if (!sha.Succeeded() || !sha.value) return {{}, sha.diagnostics};
+            hash = *sha.value;
+        }
+        journal.members.push_back({std::string(MapData::TerrainJournalMemberNames[i]), member.present, std::move(hash), member.bytes.size()});
+    }
+    return Result<MapData::TerrainStrokeJournal>::Success(std::move(journal));
+}
+
+template<class Source, class Reader>
+Result<TerrainReplayCandidate> RestoreJournal(const Source& source, const MapDocument& original,
+    std::span<const std::byte> terrain, std::span<const std::byte> pathing,
+    const MapData::TerrainStrokeJournal& journal, const MapData::MapDataEditSession& expected,
+    const std::filesystem::path& gameRoot, const TerrainReplayLimits& limits,
+    const std::string& sourceSha, Reader&& reader) {
+    const TerrainReplayLimits hard;
+    if (!limits.maximumResourceBytes || limits.maximumResourceBytes > hard.maximumResourceBytes
+        || !limits.maximumWork || limits.maximumWork > hard.maximumWork
+        || !limits.maximumCandidateBytes || limits.maximumCandidateBytes > hard.maximumCandidateBytes)
+        return Result<TerrainReplayCandidate>::Failure("Terrain.Replay", "TERRAIN_REPLAY_LIMITS", "重放预算只能收紧且不能为零。");
+    // 结构校验不编码、不分配64MiB临时wire；随后直接预收同一总预算。
+    const auto valid = MapData::ValidateTerrainStrokeJournal(journal);
+    if (!valid.Succeeded()) return {{}, valid.diagnostics};
+    auto remaining = limits;
+    const auto rawCost = expected.MeasureTerrainJournalDraft(limits.maximumCandidateBytes, limits.maximumWork);
+    if (!rawCost.Succeeded() || !rawCost.value) return {{}, rawCost.diagnostics};
+    remaining.maximumCandidateBytes -= rawCost.value->retainedBytes;
+    remaining.maximumWork -= rawCost.value->comparisonWork;
+    if (!remaining.maximumCandidateBytes || !remaining.maximumWork)
+        return Result<TerrainReplayCandidate>::Failure("Terrain.Journal", "TERRAIN_REPLAY_BUDGET", "raw草稿未给完整重放保留候选或工作预算。");
+    const auto charge = [](std::size_t& budget, std::size_t count, std::size_t element) {
+        if (count > budget / element) return false;
+        budget -= count * element; return true;
+    };
+    // owned factory现有接口接收连续typed intents；在复制任何点之前预收该有界副本。
+    if (!charge(remaining.maximumCandidateBytes, journal.strokes.size(), sizeof(MapData::TerrainStrokeIntent)))
+        return Result<TerrainReplayCandidate>::Failure("Terrain.Journal", "TERRAIN_REPLAY_BUDGET", "前向笔划副本超过候选预算。");
+    for (const auto& stroke : journal.strokes)
+        if (!charge(remaining.maximumCandidateBytes, stroke.intent.points.size(), sizeof(MapData::TerrainStrokePoint))
+            || !charge(remaining.maximumCandidateBytes, stroke.intent.brush.groundTexture.size(), 1)
+            || !charge(remaining.maximumWork, stroke.intent.points.size(), 2)
+            || !charge(remaining.maximumWork, 1, 64))
+            return Result<TerrainReplayCandidate>::Failure("Terrain.Journal", "TERRAIN_REPLAY_BUDGET", "前向点序列复制或工作预算不足。");
+    if (!remaining.maximumCandidateBytes || !remaining.maximumWork)
+        return Result<TerrainReplayCandidate>::Failure("Terrain.Journal", "TERRAIN_REPLAY_BUDGET", "前向笔划副本未留下完整重放预算。");
+    std::vector<MapData::TerrainStrokeIntent> intents;
+    intents.reserve(journal.strokes.size());
+    for (const auto& stroke : journal.strokes) intents.push_back(stroke.intent);
+    auto candidate = CreateReplay(source, original, terrain, pathing, intents, gameRoot, remaining, sourceSha,
+        std::forward<Reader>(reader), &journal);
+    if (!candidate.Succeeded() || !candidate.value) return candidate;
+    // W3E/WPM、完整DOO/Units和所有其它成员/删除、P/savedS/currentS必须共同相等。
+    if (!candidate.value->session->MatchesTerrainJournalDraft(expected))
+        return Result<TerrainReplayCandidate>::Failure("Terrain.Journal", "TERRAIN_JOURNAL_OUTPUT_MISMATCH",
+            "前向记录重放与完整工程草稿或通行来源分层不符，未安装任何前缀。");
+    return candidate;
 }
 } // namespace
+
+Result<MapData::TerrainStrokeJournal> TerrainPathingSave::CaptureJournal(const MapArchiveSession& source,
+    const MapData::MapDataEditSession& edits) {
+    return Guard<MapData::TerrainStrokeJournal>([&] {
+        auto prefix = edits.ExportTerrainStrokeJournal();
+        if (!prefix.Succeeded() || !prefix.value) return prefix;
+        return CaptureJournal(source, edits, std::move(*prefix.value));
+    });
+}
+Result<MapData::TerrainStrokeJournal> TerrainPathingSave::CaptureJournal(const WorkspaceSnapshot& source,
+    const MapData::MapDataEditSession& edits) {
+    return Guard<MapData::TerrainStrokeJournal>([&] {
+        auto prefix = edits.ExportTerrainStrokeJournal();
+        if (!prefix.Succeeded() || !prefix.value) return prefix;
+        return CaptureJournal(source, edits, std::move(*prefix.value));
+    });
+}
+Result<MapData::TerrainStrokeJournal> TerrainPathingSave::CaptureJournal(const MapArchiveSession& source,
+    const MapData::MapDataEditSession& frozenBaseline, MapData::TerrainStrokeJournal prefix) {
+    return Guard<MapData::TerrainStrokeJournal>([&] { return Services::CaptureJournal(frozenBaseline, std::move(prefix), source.SourceSha256(),
+        [&](auto names, const auto& limits) { return source.CaptureExactMembers(names, limits); }); });
+}
+Result<MapData::TerrainStrokeJournal> TerrainPathingSave::CaptureJournal(const WorkspaceSnapshot& source,
+    const MapData::MapDataEditSession& frozenBaseline, MapData::TerrainStrokeJournal prefix) {
+    return Guard<MapData::TerrainStrokeJournal>([&] { return Services::CaptureJournal(frozenBaseline, std::move(prefix), source.aggregateSha256,
+        [&](auto names, const auto& limits) { return MapData::TerrainPathingResources::ReadDirectoryMembers(source, names, limits, true); }); });
+}
+Result<TerrainReplayCandidate> TerrainPathingSave::RestoreJournal(const MapArchiveSession& source,
+    const MapDocument& original, std::span<const std::byte> terrain, std::span<const std::byte> pathing,
+    const MapData::TerrainStrokeJournal& journal, const MapData::MapDataEditSession& expectedDraft,
+    const std::filesystem::path& gameRoot, const TerrainReplayLimits& limits) {
+    return Guard<TerrainReplayCandidate>([&] { return Services::RestoreJournal(source, original, terrain, pathing, journal, expectedDraft,
+        gameRoot, limits, source.SourceSha256(), [&](auto names, const auto& captureLimits) { return source.CaptureExactMembers(names, captureLimits); }); });
+}
+Result<TerrainReplayCandidate> TerrainPathingSave::RestoreJournal(const WorkspaceSnapshot& source,
+    const MapDocument& original, std::span<const std::byte> terrain, std::span<const std::byte> pathing,
+    const MapData::TerrainStrokeJournal& journal, const MapData::MapDataEditSession& expectedDraft,
+    const std::filesystem::path& gameRoot, const TerrainReplayLimits& limits) {
+    return Guard<TerrainReplayCandidate>([&] { return Services::RestoreJournal(source, original, terrain, pathing, journal, expectedDraft,
+        gameRoot, limits, source.aggregateSha256, [&](auto names, const auto& captureLimits) {
+            return MapData::TerrainPathingResources::ReadDirectoryMembers(source, names, captureLimits, true); }); });
+}
 
 Result<TerrainReplayCandidate> TerrainPathingSave::ReplayStrokes(
     const MapArchiveSession& source, const MapDocument& original,

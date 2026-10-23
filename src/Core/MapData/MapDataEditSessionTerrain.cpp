@@ -404,6 +404,111 @@ Status MapDataEditSession::SetTerrain(std::span<const std::byte> bytes) {
     return CommitCommand(std::move(command));
 }
 
+Result<MapDataEditSession::TerrainJournalDraftCost> MapDataEditSession::MeasureTerrainJournalDraft(
+    std::size_t maximumBytes, std::size_t maximumWork) const {
+    using Output = Result<TerrainJournalDraftCost>;
+    const auto fail = [] { return Output::Failure("Terrain.Journal", "TERRAIN_REPLAY_BUDGET", "完整raw草稿驻留或输出比较超过恢复预算。"); };
+    TerrainJournalDraftCost cost;
+    const auto add = [](std::size_t& used, std::size_t limit, std::size_t count, std::size_t element = 1) {
+        if (count > (limit - used) / element) return false;
+        used += count * element; return true;
+    };
+    const auto bytes = [&](const auto& value, bool compare = true) {
+        return !value || (add(cost.retainedBytes, maximumBytes, value->capacity())
+            && (!compare || add(cost.comparisonWork, maximumWork, value->size())));
+    };
+    const auto header = [&](const TerrainHeader& value) {
+        for (const auto* table : {&value.groundTilesets, &value.cliffTilesets}) {
+            if (!add(cost.retainedBytes, maximumBytes, table->capacity(), sizeof(std::string))) return false;
+            for (const auto& id : *table) if (!add(cost.retainedBytes, maximumBytes, id.capacity())) return false;
+        }
+        return true;
+    };
+    const auto special = [&](const auto& value) {
+        if (!value) return true;
+        if (!add(cost.retainedBytes, maximumBytes, value->capacity(), sizeof(SpecialDoodadPlacement))) return false;
+        for (const auto& item : *value) if (!add(cost.retainedBytes, maximumBytes, item.rawcode.capacity())) return false;
+        return true;
+    };
+    if (!add(cost.comparisonWork, maximumWork, 1024)
+        || !special(specialDoodads_) || !special(savedSpecialDoodads_)) return fail();
+    for (std::size_t i = 0; i < original_.size(); ++i) {
+        if (!bytes(original_[i]) || !bytes(current_[i])) return fail();
+        if (preservedSources_[i]) {
+            if (!add(cost.retainedBytes, maximumBytes, preservedSources_[i]->sources.capacity(), sizeof(MapArchiveMember))) return fail();
+            for (const auto& member : preservedSources_[i]->sources)
+                if (!add(cost.retainedBytes, maximumBytes, member.data.capacity())
+                    || !add(cost.retainedBytes, maximumBytes, member.name.capacity())
+                    || !add(cost.comparisonWork, maximumWork, member.data.size())) return fail();
+        }
+    }
+    for (const auto& grid : {terrainOriginal_, terrain_}) if (grid) {
+        if (!add(cost.retainedBytes, maximumBytes, grid->vertices.capacity(), sizeof(TerrainVertex))
+            || !add(cost.retainedBytes, maximumBytes, grid->tiles.capacity(), sizeof(TerrainTile))
+            || !header(grid->header) || !add(cost.comparisonWork, maximumWork, grid->vertices.size(), 8)) return fail();
+        for (const auto& table : {&grid->header.groundTilesets, &grid->header.cliffTilesets})
+            for (const auto& id : *table) if (!add(cost.comparisonWork, maximumWork, id.size())) return fail();
+    }
+    if (!bytes(pathingOriginal_) || !bytes(pathing_) || !bytes(pathingProtected_)
+        || !bytes(originalPathingRestrictions_) || !bytes(pathingRestrictions_)) return fail();
+    // expected可来自API宿主。已有raw历史也计驻留，不能先克隆巨型DOO/WTS再报不符。
+    if (history_.size() > 4096) return fail();
+    if (!add(cost.retainedBytes, maximumBytes, history_.capacity(), sizeof(std::shared_ptr<const Command>))) return fail();
+    for (const auto& command : history_) {
+        if (!add(cost.retainedBytes, maximumBytes, 1, sizeof(Command))
+            || !add(cost.retainedBytes, maximumBytes, command->changes.capacity(), sizeof(MemberChange))
+            || !add(cost.retainedBytes, maximumBytes, command->terrain.capacity(), sizeof(TerrainChunk))
+            || !special(command->specialBefore) || !special(command->specialAfter)
+            || (command->headerBefore && !header(*command->headerBefore))
+            || (command->headerAfter && !header(*command->headerAfter))) return fail();
+        for (const auto& member : command->changes) if (!bytes(member.before, false) || !bytes(member.after, false)) return fail();
+        for (const auto& chunk : command->terrain)
+            if (!add(cost.retainedBytes, maximumBytes, chunk.before.capacity())
+                || !add(cost.retainedBytes, maximumBytes, chunk.after.capacity())) return fail();
+        if (!bytes(command->pathingBefore, false) || !bytes(command->pathingAfter, false)
+            || !bytes(command->restrictionBefore, false) || !bytes(command->restrictionAfter, false)) return fail();
+        if (command->terrainStroke && !add(cost.retainedBytes, maximumBytes,
+            command->terrainStroke->intent.points.capacity(), sizeof(TerrainStrokePoint))) return fail();
+        if (command->placements) {
+            if (!add(cost.retainedBytes, maximumBytes, command->placements->capacity(), sizeof(PlacementRowLineage))) return fail();
+            for (const auto& row : *command->placements)
+                if (!add(cost.retainedBytes, maximumBytes, row.beforeToAfter.capacity(), sizeof(std::optional<std::uint32_t>))) return fail();
+        }
+    }
+    return Output::Success(cost);
+}
+
+bool MapDataEditSession::MatchesTerrainJournalDraft(const MapDataEditSession& expected) const noexcept {
+    const auto equalLayer = [](const auto& a, const auto& b) { return bool(a) == bool(b) && (!a || *a == *b); };
+    if (states_ != expected.states_ || memberNames_ != expected.memberNames_
+        || original_ != expected.original_ || current_ != expected.current_
+        || pathingOriginal_ != expected.pathingOriginal_ || pathing_ != expected.pathing_
+        || !equalLayer(pathingProtected_, expected.pathingProtected_)
+        || !equalLayer(originalPathingRestrictions_, expected.originalPathingRestrictions_)
+        || !equalLayer(pathingRestrictions_, expected.pathingRestrictions_)) return false;
+    for (std::size_t i = 0; i < preservedSources_.size(); ++i) {
+        const auto& a = preservedSources_[i]; const auto& b = expected.preservedSources_[i];
+        if (bool(a) != bool(b)) return false;
+        if (!a) continue;
+        if (a->sources.size() != b->sources.size()) return false;
+        for (std::size_t n = 0; n < a->sources.size(); ++n)
+            if (a->sources[n].name != b->sources[n].name || a->sources[n].data != b->sources[n].data) return false;
+    }
+    const auto equalGrid = [](const auto& a, const auto& b) {
+        if (bool(a) != bool(b)) return false;
+        if (!a) return true;
+        if (!SameHeader(a->header, b->header) || a->vertices.size() != b->vertices.size()) return false;
+        return std::equal(a->vertices.begin(), a->vertices.end(), b->vertices.begin(), [](const auto& x, const auto& y) {
+            return x.groundHeightRaw == y.groundHeightRaw && x.waterHeightAndFlagsRaw == y.waterHeightAndFlagsRaw
+                && x.textureAndFlagsRaw == y.textureAndFlagsRaw && x.variationRaw == y.variationRaw
+                && x.cliffAndLayerRaw == y.cliffAndLayerRaw && x.textureFlagsExtensionRaw == y.textureFlagsExtensionRaw
+                && x.extendedTextureLayout == y.extendedTextureLayout;
+        });
+    };
+    // 不比较私有special指针；raw候选只能以完整DOO字节参加最终输出核对。
+    return equalGrid(terrainOriginal_, expected.terrainOriginal_) && equalGrid(terrain_, expected.terrain_);
+}
+
 Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerrainEdit(const TerrainBrush& brush,
     std::span<const TerrainStrokePoint> points, bool followDoodads, std::size_t maximumLevelPropagationWork) const {
     return PrepareTerrainEditInternal(brush, points, followDoodads, true, maximumLevelPropagationWork);
@@ -580,6 +685,11 @@ std::size_t MapDataEditSession::PreparedTerrainEdit::RetainedCommandBytes() cons
     };
     const auto raw = [&add](const auto& value) { if (value) add(value->capacity()); };
     add(command_->terrain.capacity(), sizeof(TerrainChunk));
+    // Apply只为有界且锚点可表达的笔划附加typed记录；预算先覆盖其最终保留容量。
+    if (points_.size() <= 4096) {
+        add(points_.size(), sizeof(TerrainStrokePoint));
+        add(sizeof(TerrainJournalStroke) + brush_.groundTexture.capacity() + 65);
+    }
     for (const auto& chunk : command_->terrain) { add(chunk.before.capacity()); add(chunk.after.capacity()); }
     add(command_->changes.capacity(), sizeof(MemberChange));
     for (const auto& change : command_->changes) { raw(change.before); raw(change.after); }
@@ -611,7 +721,32 @@ Result<TerrainStrokeResult> MapDataEditSession::ApplyPreparedTerrainEdit(const P
         || plan.sourceRevision_ != terrainSourceRevision_ || plan.before_ != terrain_)
         return Result<TerrainStrokeResult>::Failure("MapData.Edit", "TERRAIN_EDIT_STALE",
             "地形候选不属于当前会话、修订或来源，请重新预览。");
-    const auto status = CommitCommand(*plan.command_, prepublish);
+    auto command = *plan.command_;
+    // 超出持久化域不影响原始编辑。不能截断/拆笔或持久化caller锚点冒充来源。
+    bool expressible = !plan.points_.empty() && plan.points_.size() <= 4096;
+    TerrainJournalStroke stroke;
+    if (expressible) {
+        stroke.intent.points = plan.points_; stroke.intent.followDoodads = plan.followDoodads_;
+        if (plan.waterBrush_) {
+            const auto anchor = CaptureTerrainWaterStrokeAnchor(*plan.before_, plan.points_.front());
+            const auto& actual = plan.waterBrush_->anchor;
+            expressible = anchor.Succeeded() && anchor.value && plan.waterIntentOptions_
+                && anchor.value->groundHeightRaw == actual.groundHeightRaw && anchor.value->waterHeightRaw == actual.waterHeightRaw
+                && anchor.value->cliffLevel == actual.cliffLevel && anchor.value->hasWater == actual.hasWater;
+            stroke.intent.waterBrush = plan.waterIntentOptions_; stroke.rulesSha256 = plan.waterRulesSha256_;
+        } else {
+            stroke.intent.brush = plan.brush_;
+            if (plan.brush_.anchor) {
+                const auto anchor = CaptureTerrainStrokeAnchor(*plan.before_, plan.points_.front());
+                expressible = anchor.Succeeded() && anchor.value
+                    && anchor.value->groundHeightRaw == plan.brush_.anchor->groundHeightRaw
+                    && anchor.value->cliffLevel == plan.brush_.anchor->cliffLevel;
+            }
+            stroke.intent.brush.anchor.reset();
+        }
+    }
+    if (expressible) command.terrainStroke = std::move(stroke);
+    const auto status = CommitCommand(std::move(command), prepublish);
     if (!status.Succeeded()) return {{}, status.diagnostics};
     return Result<TerrainStrokeResult>::Success(plan.changed_);
 }

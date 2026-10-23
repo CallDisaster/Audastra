@@ -77,6 +77,11 @@ std::optional<EditScopeSnapshot> EditorProject::CaptureEditScopes() const {
 std::optional<EditScopeSnapshot> EditorProject::CaptureMapEditScopes() const {
     EditScopeSnapshot scopes;
     if (mapEdits_) {
+        const auto journal = mapEdits_->TerrainJournalStateFingerprint();
+        if (journal.empty()) return {};
+        // 无前缀基线不增加scope，避免仅打开地图就产生虚假的地图净差。
+        if (journal != "optional:empty") scopes["map/editor/terrain-journal"] = journal;
+        if (!terrainJournalWarning_.empty()) scopes["map/editor/terrain-journal-warning"] = terrainJournalWarning_;
         for (const auto& member : mapEdits_->Replacements()) {
             const auto hash = Sha256(member.data);
             if (!hash.Succeeded()) return {};
@@ -133,6 +138,9 @@ std::string EditorProject::ProjectFingerprint(std::span<const std::string> impor
         add(edit.to.toStdString());
     }
     if (mapEdits_) {
+        const auto journal = mapEdits_->TerrainJournalStateFingerprint();
+        if (journal.empty()) return {};
+        add("terrain-journal:" + journal); add("terrain-journal-warning:" + terrainJournalWarning_);
         for (const auto& member : mapEdits_->Replacements()) {
             add("map:" + member.name);
             hash.addData(Array(member.data));

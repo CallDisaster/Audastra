@@ -6,6 +6,7 @@
 #include "War3MapCore/MapData/TerrainEditing.h"
 #include "War3MapCore/MapData/TerrainPointQuery.h"
 #include "War3MapCore/MapData/TerrainWaterBrush.h"
+#include "War3MapCore/MapData/TerrainStrokeJournal.h"
 
 #include <array>
 #include <cstdint>
@@ -96,6 +97,8 @@ public:
         TerrainBrush brush_;
         std::optional<TerrainWaterBrush> waterBrush_;
         std::optional<TerrainWaterBrushResult> waterResult_;
+        std::optional<TerrainWaterStrokeOptions> waterIntentOptions_;
+        std::string waterRulesSha256_;
         std::size_t waterPreparationWork_ = 0;
         std::size_t waterPreparationBytes_ = 0;
         std::vector<TerrainStrokePoint> points_;
@@ -143,6 +146,18 @@ public:
     [[nodiscard]] Status SetTerrainAndPathingDraft(std::span<const std::byte> terrainBytes,
         std::span<const std::byte> pathingBytes, std::span<const std::byte> restrictionDraft);
     [[nodiscard]] Result<std::vector<std::byte>> SerializePathingRestrictionDraft() const;
+    // 只导出真实命令的基线后前向前缀。来源成员身份由Services从实际来源补齐；
+    // 返回值本身不授予special谱系，恢复必须经owned replay工厂。
+    [[nodiscard]] Result<TerrainStrokeJournal> ExportTerrainStrokeJournal() const;
+    [[nodiscard]] Status VerifyTerrainJournalBaseline(std::span<const ArchiveExactMember> actual) const;
+    struct TerrainJournalDraftCost { std::size_t retainedBytes = 0, comparisonWork = 0; };
+    // 不复制raw成员/APR；先量驻留和比较成本，再由Services从整个恢复预算预收。
+    [[nodiscard]] Result<TerrainJournalDraftCost> MeasureTerrainJournalDraft(
+        std::size_t maximumBytes, std::size_t maximumWork) const;
+    [[nodiscard]] bool MatchesTerrainJournalDraft(const MapDataEditSession& expected) const noexcept;
+    [[nodiscard]] bool RequiresTerrainStrokeJournal() const noexcept { return specialDoodads_ != savedSpecialDoodads_; }
+    // 工程CAS专用：包含可表达状态及完整typed前缀，不读取外部来源。
+    [[nodiscard]] std::string TerrainJournalStateFingerprint() const;
     [[nodiscard]] Result<PathingRestrictionPreview> QueryPathingRestrictions(std::size_t maximumCells = 4096) const;
     [[nodiscard]] std::shared_ptr<const TerrainGridSnapshot> Terrain() const noexcept { return terrain_; }
     [[nodiscard]] bool HasTerrainPathing() const noexcept { return pathing_.has_value(); }
@@ -223,6 +238,7 @@ private:
         bool replayed = false;
         std::shared_ptr<const std::vector<PlacementRowLineage>> placements;
         std::shared_ptr<const std::vector<SpecialDoodadPlacement>> specialBefore, specialAfter;
+        std::optional<TerrainJournalStroke> terrainStroke;
     };
     [[nodiscard]] Status Apply(MapDataKind kind, Result<std::vector<std::byte>> serialized);
     [[nodiscard]] Status Prepare(MapDataKind kind, Result<std::vector<std::byte>> serialized,
@@ -256,6 +272,7 @@ private:
         bool nativeRebuild = false) const;
     [[nodiscard]] Status VerifyTerrainDoodadChange(std::span<const std::byte> before,
         std::span<const std::byte> after) const;
+    [[nodiscard]] Result<TerrainStrokeJournal> ExportTerrainStrokeJournalInternal(bool baselineLayers) const;
     [[nodiscard]] Status PrepareUnits(const UnitPlacements& value, std::vector<MemberChange>& changes) const;
     [[nodiscard]] Status DeserializeAndApply(MapDataKind kind, std::span<const std::byte> bytes,
         bool linkStartLocations);
@@ -275,6 +292,9 @@ private:
     // 无法建立可写原生基线的成员仍属于来源；快照不能把损坏、歧义或只读成员改称缺失。
     std::array<std::optional<MapMemberState>, 7> preservedSources_{};
     std::vector<std::shared_ptr<const Command>> history_;
+    // 真保存边界的历史前缀身份。Qt Replay追加inverse，不能只比较cursor数字。
+    std::shared_ptr<const Command> terrainJournalSavedBoundary_;
+    std::size_t terrainJournalSavedCursor_ = 0;
     std::size_t cursor_ = 0;
     std::uint64_t revision_ = 0;
     std::uint64_t sessionIdentity_ = 0, nextCommandIdentity_ = 1;

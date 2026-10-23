@@ -2,6 +2,7 @@
 
 #include "EditorProject.h"
 #include "War3MapCore/MapArchiveSession.h"
+#include "War3MapCore/MapData/TerrainStrokeJournal.h"
 #include "War3MapCore/Workspace.h"
 
 #include <QJsonObject>
@@ -79,6 +80,10 @@ private:
     std::optional<EditSaveTicket> ticket_;
     ProjectSaveOptions options_;
     QJsonObject manifest_;
+    std::vector<Diagnostic> warnings_;
+    std::optional<MapData::TerrainStrokeJournal> terrainJournalPrefix_;
+    std::shared_ptr<const MapData::MapDataEditSession> terrainJournalBaseline_;
+    std::vector<std::byte> terrainJournalPayload_;
     std::vector<MapArchiveMember> overlays_;
     std::vector<Import> imports_;
     std::vector<NativeBaseline> nativeBaselines_;

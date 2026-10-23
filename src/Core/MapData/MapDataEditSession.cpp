@@ -2,11 +2,13 @@
 #include "MapDataEditSessionTerrainInternal.h"
 #include "War3MapCore/MapData/MapPathing.h"
 #include "War3MapCore/MapData/MapFields.h"
+#include "War3MapCore/Hash.h"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <bit>
+#include <cctype>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -548,6 +550,7 @@ Status MapDataEditSession::Replay(const EditReceipt& receipt, bool forward) {
     Command command;
     command.sessionIdentity = source.sessionIdentity; command.logicalIdentity = source.logicalIdentity;
     command.replayed = true;
+    command.terrainStroke = source.terrainStroke;
     command.specialBefore = forward ? source.specialBefore : source.specialAfter;
     command.specialAfter = forward ? source.specialAfter : source.specialBefore;
     command.logicalForward = source.logicalForward == forward; command.placements = source.placements;
@@ -685,6 +688,7 @@ void MapDataEditSession::CommitSavedBaseline(const MapDocument& saved,
     std::shared_ptr<const std::vector<std::byte>> protectedPathing) {
     // 所有复制在交换前完成，分配失败时连来源代际也保持不变。
     auto original = current_;
+    const auto savedBoundary = cursor_ ? history_[cursor_ - 1] : std::shared_ptr<const Command>{};
     auto originalPathing = pathing;
     auto savedSpecial = specialDoodads_;
     if (const auto& placed = saved.Doodads(); placed) {
@@ -708,6 +712,8 @@ void MapDataEditSession::CommitSavedBaseline(const MapDocument& saved,
     static_assert(noexcept(original_.swap(original)));
     static_assert(noexcept(preservedSources_.swap(preservedSources)));
     original_.swap(original);
+    terrainJournalSavedBoundary_ = savedBoundary;
+    terrainJournalSavedCursor_ = cursor_;
     pathingOriginal_.swap(originalPathing);
     pathing_.swap(pathing);
     pathingProtected_.swap(protectedPathing);
@@ -718,6 +724,106 @@ void MapDataEditSession::CommitSavedBaseline(const MapDocument& saved,
     // 不从P|A反推来源P，已保存意图S单独保留。
     originalPathingRestrictions_ = pathingRestrictions_;
     if (terrainSourceRevision_ != std::numeric_limits<std::uint64_t>::max()) ++terrainSourceRevision_;
+}
+
+Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainStrokeJournal() const {
+    return ExportTerrainStrokeJournalInternal(true);
+}
+
+Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainStrokeJournalInternal(bool baselineLayers) const {
+    using Output = Result<TerrainStrokeJournal>;
+    const auto fail = [](const char* code) {
+        return Output::Failure("Terrain.Journal", code, "草稿已保留；当前历史不能表达为保存基线后的完整前向笔划，水刷来源未恢复。");
+    };
+    // history只会追加或截断尾部；保存边界对象仍在同一索引，即证明此前不可变前缀未被替换。
+    if (cursor_ < terrainJournalSavedCursor_
+        || (terrainJournalSavedCursor_ && history_[terrainJournalSavedCursor_ - 1] != terrainJournalSavedBoundary_))
+        return fail("TERRAIN_JOURNAL_SAVED_BOUNDARY");
+    // 工程CAS是频繁冷读；原始Undo历史不裁剪，导出只扫描有界尾部。
+    if (cursor_ - terrainJournalSavedCursor_ > 4096) return fail("TERRAIN_JOURNAL_BUDGET");
+    std::vector<const Command*> active;
+    std::unordered_set<std::uint64_t> activeIdentities;
+    for (auto i = terrainJournalSavedCursor_; i < cursor_; ++i) {
+        const auto& command = *history_[i];
+        if (!command.logicalForward) {
+            if (active.empty() || active.back()->logicalIdentity != command.logicalIdentity)
+                return fail("TERRAIN_JOURNAL_SAVED_BOUNDARY");
+            activeIdentities.erase(command.logicalIdentity);
+            active.pop_back();
+        } else {
+            if (!activeIdentities.insert(command.logicalIdentity).second)
+                return fail("TERRAIN_JOURNAL_HISTORY_UNEXPRESSIBLE");
+            active.push_back(&command);
+        }
+    }
+    if (active.size() > 128) return fail("TERRAIN_JOURNAL_BUDGET");
+    TerrainStrokeJournal journal;
+    std::size_t points = 0;
+    for (const auto* command : active) {
+        if (!command->terrainStroke) return fail("TERRAIN_JOURNAL_HISTORY_UNEXPRESSIBLE");
+        const auto count = command->terrainStroke->intent.points.size();
+        if (!count || count > 4096 - points) return fail("TERRAIN_JOURNAL_BUDGET");
+        points += count; journal.strokes.push_back(*command->terrainStroke);
+    }
+    if (baselineLayers && !journal.strokes.empty()) {
+        if (!terrainOriginal_ || !pathingOriginal_ || !pathingProtected_ || !originalPathingRestrictions_)
+            return fail("TERRAIN_JOURNAL_BASELINE_MISSING");
+        auto layers = EncodePathingRestrictionDraft(*terrainOriginal_, *pathingOriginal_, *pathingOriginal_,
+            *pathingProtected_, *originalPathingRestrictions_, *originalPathingRestrictions_);
+        if (!layers.Succeeded() || !layers.value) return {{}, layers.diagnostics};
+        journal.baselinePathingLayers = std::move(*layers.value);
+    }
+    return Output::Success(std::move(journal));
+}
+
+Status MapDataEditSession::VerifyTerrainJournalBaseline(std::span<const ArchiveExactMember> actual) const {
+    const auto fail = [] { return Status::Failure("Terrain.Journal", "TERRAIN_JOURNAL_BASELINE_MISMATCH", "地形记录基线与实际来源的完整成员或缺失项不一致。"); };
+    if (actual.size() != TerrainJournalMemberNames.size() || !terrainOriginal_ || !pathingOriginal_) return fail();
+    const auto terrain = SerializeMapTerrain(*terrainOriginal_);
+    if (!terrain.Succeeded() || !terrain.value) return {terrain.diagnostics};
+    const auto canonical = [](std::string name) {
+        std::replace(name.begin(), name.end(), '\\', '/');
+        std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (name.starts_with("map/")) name.erase(0, 4);
+        return name;
+    };
+    for (std::size_t i = 0; i < actual.size(); ++i) {
+        if (canonical(actual[i].name) != TerrainJournalMemberNames[i]) return fail();
+        const std::vector<std::byte>* expected = nullptr;
+        if (i == 0) expected = &*terrain.value;
+        else if (i == 1) expected = &*pathingOriginal_;
+        else {
+            for (std::size_t kind = 0; kind < original_.size(); ++kind) {
+                if (original_[kind] && canonical(memberNames_[kind]) == TerrainJournalMemberNames[i]) {
+                    if (expected) return fail(); expected = &*original_[kind];
+                }
+                if (preservedSources_[kind]) for (const auto& source : preservedSources_[kind]->sources)
+                    if (canonical(source.name) == TerrainJournalMemberNames[i]) {
+                        if (expected) return fail(); expected = &source.data;
+                    }
+            }
+        }
+        if (actual[i].present != (expected != nullptr) || (expected && actual[i].bytes != *expected)) return fail();
+    }
+    return Status::Ok();
+}
+
+std::string MapDataEditSession::TerrainJournalStateFingerprint() const {
+    // 原始来源和P/savedS/S已有独立scope；CAS这里只编码有界typed前缀，
+    // 不为每次Observe重复构造最大64MiB的APR和journal副本。
+    auto journal = ExportTerrainStrokeJournalInternal(false);
+    const std::string required = RequiresTerrainStrokeJournal() ? "required:" : "optional:";
+    if (!journal.Succeeded() || !journal.value)
+        return required + (journal.diagnostics.empty() ? "unavailable" : journal.diagnostics.front().code);
+    if (journal.value->strokes.empty()) return required + "empty";
+    // 仅工程CAS使用占位身份；实际持久化必须由Services补真实source/member身份。
+    journal.value->sourceSha256.assign(64, '0');
+    for (std::size_t i = 0; i < TerrainJournalMemberNames.size(); ++i)
+        journal.value->members.push_back({std::string(TerrainJournalMemberNames[i]), i < 2, i < 2 ? std::string(64, '0') : std::string{}, 0});
+    const auto bytes = EncodeTerrainStrokeJournal(*journal.value);
+    if (!bytes.Succeeded() || !bytes.value) return required + "unexpressible";
+    const auto hash = Sha256(*bytes.value);
+    return hash.Succeeded() && hash.value ? required + *hash.value : std::string{};
 }
 
 MapDocument MapDataEditSession::Snapshot() const {

@@ -2,6 +2,7 @@
 #include "ProjectSaveJob.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
@@ -165,6 +166,29 @@ Result<std::unique_ptr<ProjectSaveJob>> EditorProject::PrepareProjectSave(
                     return fail(tr("工程超过容量限制"));
                 job->manifest_["pathingRestrictions"] = static_cast<int>(restrictionVersion);
             }
+            std::string journalWarning = terrainJournalWarning_;
+            try {
+                auto prefix = mapEdits_->ExportTerrainStrokeJournal();
+                if (prefix.Succeeded() && prefix.value && !prefix.value->strokes.empty()) {
+                    // 不在UI线程做全图SHA/MPQ/目录读取。只冻结有界前缀和无历史基线，
+                    // worker借本job来源租约补实际member身份，绝不访问活动会话。
+                    auto baseline = mapEdits_->FreezeForSave();
+                    job->terrainJournalPrefix_ = std::move(*prefix.value);
+                    job->terrainJournalBaseline_ = std::move(baseline);
+                    // 旧raw草稿不能因后续一笔可表达命令清除未恢复警告。
+                } else if (mapEdits_->RequiresTerrainStrokeJournal() || (!prefix.Succeeded() && mapEdits_->Terrain())) {
+                    journalWarning = "草稿已完整保留；历史跨保存边界、混合编辑或超出前向记录预算，前向笔划及水刷来源未恢复。";
+                }
+            } catch (const std::exception&) {
+                job->terrainJournalPrefix_.reset(); job->terrainJournalBaseline_.reset();
+                journalWarning = "草稿已完整保留；前向记录冻结超过可用预算，前向笔划及水刷来源未恢复。";
+            }
+            if (!journalWarning.empty()) {
+                job->manifest_["terrainJournalWarning"] = Text(journalWarning);
+                auto warning = Status::Failure("Terrain.Journal", "TERRAIN_JOURNAL_DRAFT_ONLY", journalWarning);
+                for (auto& diagnostic : warning.diagnostics) diagnostic.severity = DiagnosticSeverity::Warning;
+                job->warnings_ = std::move(warning.diagnostics);
+            }
         }
         job->manifest_["mapDataRemovals"] = mapDataRemovals;
         if (uiCatalog_) {
@@ -267,7 +291,10 @@ Result<ProjectSaveResult> EditorProject::CommitProjectSave(ProjectSaveJob& job) 
         // 恢复代表可信捕获时的历史修订，绝不证明当前磁盘来源仍可写回。
         // 目标父目录事件可与真实来源事件并发；保留所有 source flags，不能以自己的
         // 恢复写入清疑虑或抑制通知。相同会话的晚到编辑留给调用方排下一周期。
-        return job.outcome_;
+        auto written = job.outcome_;
+        try { written.diagnostics.insert(written.diagnostics.end(), job.warnings_.begin(), job.warnings_.end()); }
+        catch (...) {} // 警告已持久化进工程，不将已发布恢复文件伪报为失败。
+        return written;
     }
     bool baselineCommitted = false;
     try {
@@ -280,6 +307,7 @@ Result<ProjectSaveResult> EditorProject::CommitProjectSave(ProjectSaveJob& job) 
         }
         // 所有会分配的回执/身份副本先准备，提交后只 swap 小字段。
         auto written = job.outcome_;
+        written.diagnostics.insert(written.diagnostics.end(), job.warnings_.begin(), job.warnings_.end());
         auto fingerprint = job.fingerprint_;
         auto path = job.outcome_.value->path;
         auto sha256 = job.outcome_.value->sha256;

@@ -20,6 +20,49 @@
 #include <stdexcept>
 
 namespace War3Map::MapData {
+std::size_t TerrainPathingResources::WaterBrushDependencyBudgetBytes() const noexcept {
+    if (!waterBrushRules_ || waterBrushInputSha_.empty() || waterBrushDoodadsSha_.empty()) return 0;
+    std::size_t maximum = 1024;
+    if (dependencies_.size() > 4096) return 0;
+    for (const auto& dependency : dependencies_) {
+        for (const auto* value : {&dependency.name, &dependency.sha256, &dependency.gameArchive}) {
+            if (value->size() > 1024 * 1024 - maximum) return 0;
+            maximum += value->size();
+        }
+        if (64 > 1024 * 1024 - maximum) return 0;
+        maximum += 64;
+    }
+    return maximum;
+}
+
+Result<std::string> TerrainPathingResources::WaterBrushDependencyFingerprint() const try {
+    if (!waterBrushRules_ || waterBrushInputSha_.empty() || waterBrushDoodadsSha_.empty())
+        return Result<std::string>::Failure("Terrain.Journal", "TERRAIN_JOURNAL_RULES_MISSING", "水刷记录缺少实际规则或完整DOO依赖。");
+    const auto maximum = WaterBrushDependencyBudgetBytes();
+    if (!maximum)
+        return Result<std::string>::Failure("Terrain.Journal", "TERRAIN_JOURNAL_BUDGET", "水刷依赖摘要超过有界记录预算。");
+    // 长度前缀避免字符串拼接歧义；顺序取真实捕获链，不从最终输出反推。
+    std::vector<std::byte> wire;
+    wire.reserve(maximum);
+    const auto number = [&wire](std::uint64_t value) {
+        for (unsigned i = 0; i < 8; ++i) wire.push_back(std::byte((value >> (i * 8)) & 255));
+    };
+    const auto text = [&wire, &number](std::string_view value) {
+        number(value.size()); const auto bytes = std::as_bytes(std::span(value.data(), value.size()));
+        wire.insert(wire.end(), bytes.begin(), bytes.end());
+    };
+    text("terrain-water-dependencies-v1"); text(waterBrushInputSha_); number(waterBrushInputBytes_);
+    text(waterBrushDoodadsSha_); number(waterBrushRules_->enforceWaterLimits); number(dependencies_.size());
+    for (const auto& dependency : dependencies_) {
+        text(dependency.name); text(dependency.sha256); text(dependency.gameArchive); number(dependency.bytes);
+        number(dependency.mapPresent); number(dependency.mapOnly); number(dependency.gameAbsent);
+    }
+    return Sha256(wire);
+} catch (const std::bad_alloc&) {
+    return Result<std::string>::Failure("Terrain.Journal", "TERRAIN_JOURNAL_BUDGET", "水刷依赖摘要分配失败。");
+} catch (const std::length_error&) {
+    return Result<std::string>::Failure("Terrain.Journal", "TERRAIN_JOURNAL_BUDGET", "水刷依赖摘要超出容器预算。");
+}
 namespace {
 constexpr auto kSubsystem = "Terrain.PathingResources";
 constexpr std::size_t kTableBytes = 2 * 1024 * 1024;

@@ -191,6 +191,9 @@ std::filesystem::path EditorProject::AuthorMapPath() const {
 }
 
 bool EditorProject::HasUnsavedMapChanges() const {
+    // 标题/退出使用同一可信Map修订；相同raw字节仍可能有待保存的可撤销前缀。
+    // 不能在Ctrl+S入口将其误判为空而使脏状态永远无法提交。
+    if (editTrackingReady_ && !editTrackingFailed_ && editRevision_.IsDirty(EditSaveTarget::Map)) return true;
     return triggerDirty_ || HasPendingAssetEdits() || (mapEdits_ && mapEdits_->IsDirty())
         || std::any_of(objectDirty_.begin(), objectDirty_.end(), [](bool dirty) { return dirty; });
 }

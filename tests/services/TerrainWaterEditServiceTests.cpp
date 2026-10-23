@@ -203,7 +203,7 @@ void SharedReplayPreservesOrderSpecialDeletionAndCompleteDirectoryOutput() {
     Fixture f(true, true); const auto directory = Directory(f); const auto intents = OrderedIntents(f);
     auto archiveResult = Take(ReplayFixture(f, *f.source, intents));
     auto directoryResult = Take(ReplayFixture(f, directory.Snapshot(), intents));
-    const auto archive = archiveResult.session, workspace = directoryResult.session;
+    const auto* archive = archiveResult.session.get(); const auto* workspace = directoryResult.session.get();
     Require(archiveResult.waterOwners.size() == 2 && directoryResult.waterOwners.size() == 2, "each water stroke captures a separate actual resource owner");
     Require(Take(SerializeMapTerrain(*archive->Terrain())) == Take(SerializeMapTerrain(*workspace->Terrain()))
         && archive->SerializePathingRestrictionDraft().value == workspace->SerializePathingRestrictionDraft().value,
@@ -242,7 +242,7 @@ void SharedReplayPreservesOrderSpecialDeletionAndCompleteDirectoryOutput() {
 void ReplayBudgetsAndTamperedIntentDoNotPublish() {
     Fixture f; const auto directory = Directory(f); const auto intents = OrderedIntents(f);
     const auto replayed = Take(ReplayFixture(f, directory.Snapshot(), intents));
-    const auto session = replayed.session;
+    const auto* session = replayed.session.get();
     auto changed = intents; changed[1].points = {{256, 512}};
     Require(!TerrainPathingSave::Seal(MapDocument::FromMembers(f.members), f.members[0].data, f.members[1].data,
         directory.Snapshot(), *session, changed, f.game).Succeeded(), "changed ordered points cannot seal another complete terrain result");
@@ -624,6 +624,159 @@ void DirectSaveAllowsSpecialWaterDeletionWithoutPlacementFollow() {
             "the missing compiler leaves the original archive intact and publishes no special-water candidate");
     }
 }
+
+void ForwardJournalRestoresOwnedSpecialDeletionAndRejectsDrift() {
+    Fixture f(true, true); const auto directory = Directory(f); const auto intents = OrderedIntents(f);
+    auto replayed = Take(ReplayFixture(f, *f.source, intents));
+    const auto journal = Take(TerrainPathingSave::CaptureJournal(*f.source, *replayed.session));
+    const auto decoded = Take(DecodeTerrainStrokeJournal(Take(EncodeTerrainStrokeJournal(journal))));
+    Require(decoded.strokes.size() == intents.size() && decoded.members.size() == 10
+        && decoded.members[0].present && !decoded.members[6].present,
+        "journal captures the complete ordered prefix and exact source absence");
+    const auto before = Take(SerializeMapTerrain(*replayed.session->Terrain()));
+    auto restored = Take(TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members),
+        f.members[0].data, f.members[1].data, decoded, *replayed.session, f.game));
+    Require(restored.receipts.size() == intents.size() && restored.waterOwners.size() == 2
+        && restored.session->RequiresTerrainStrokeJournal(), "only actual replay restores special deletion lineage");
+    Require(TerrainPathingSave::PrepareForSave(*f.source, *restored.session, f.game).Succeeded(),
+        "restored private special lineage reaches the unchanged native save plan");
+    Require(restored.session->Replay(restored.receipts.back(), false).Succeeded()
+        && Take(restored.session->ExportTerrainStrokeJournal()).strokes.size() == 2,
+        "restored actual receipts support Qt-style one-stroke undo");
+    const auto directoryJournal = Take(TerrainPathingSave::CaptureJournal(directory.Snapshot(), *replayed.session));
+    Require(TerrainPathingSave::RestoreJournal(directory.Snapshot(), MapDocument::FromMembers(f.members),
+        f.members[0].data, f.members[1].data, directoryJournal, *replayed.session, f.game).Succeeded(),
+        "directory and archive use the same owned restore factory");
+
+    auto changed = decoded; changed.strokes[1].rulesSha256.assign(64, 'f');
+    const auto wrongRules = TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members),
+        f.members[0].data, f.members[1].data, changed, *replayed.session, f.game);
+    Require(!wrongRules.Succeeded() && !wrongRules.value && HasCode(wrongRules, "TERRAIN_JOURNAL_RESOURCE_DRIFT"),
+        "final output equality cannot replace actual dependency fingerprints");
+    changed = decoded; changed.members[6].present = true; changed.members[6].sha256.assign(64, 'e');
+    const auto wrongAbsence = TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members),
+        f.members[0].data, f.members[1].data, changed, *replayed.session, f.game);
+    Require(HasCode(wrongAbsence, "TERRAIN_JOURNAL_BASELINE_MISMATCH") && !wrongAbsence.value,
+        "an absent native member is part of the exact baseline identity");
+    auto raw = Session(f);
+    Require(raw->SetTerrain(before).Succeeded(), "old terrain draft remains readable");
+    for (const auto& member : replayed.session->Replacements()) if (member.name == "war3map.doo")
+        Require(raw->SetSerialized(MapDataKind::Doodads, member.data).Succeeded(), "complete final raw DOO remains readable");
+    Require(!raw->RequiresTerrainStrokeJournal()
+        && !TerrainPathingSave::PrepareForSave(*f.source, *raw, f.game).Succeeded(),
+        "raw overlay and matching bytes cannot install private special provenance");
+    Require(TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members), f.members[0].data,
+        f.members[1].data, decoded, *raw, f.game).Succeeded(), "raw draft can only gain provenance through complete owned replay");
+    TerrainReplayLimits tight; tight.maximumWork = 1;
+    const auto overBudget = TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members),
+        f.members[0].data, f.members[1].data, decoded, *replayed.session, f.game, tight);
+    Require(!overBudget.Succeeded() && !overBudget.value && Take(SerializeMapTerrain(*replayed.session->Terrain())) == before,
+        "budget failure never mutates or publishes a partial live prefix");
+
+    const auto equivalentRoot = f.root / "equivalent-game"; std::filesystem::create_directory(equivalentRoot);
+    const std::vector<MapArchiveMember> identicalGame{{"fixture.txt", Text("private fixture")}};
+    Take(WriteVerifiedArchive(equivalentRoot / "war3.mpq", identicalGame));
+    Require(TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members), f.members[0].data,
+        f.members[1].data, decoded, *replayed.session, equivalentRoot).Succeeded(), "content-identical game root relocation keeps dependency identity");
+    const auto driftRoot = f.root / "drift-game"; std::filesystem::create_directory(driftRoot);
+    const std::vector<MapArchiveMember> changedGame{{"fixture.txt", Text("private fixture")},
+        {"Units/MiscData.txt", Text("[Unrelated]\nValue=1\n")}};
+    Take(WriteVerifiedArchive(driftRoot / "war3.mpq", changedGame));
+    const auto drifted = TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members),
+        f.members[0].data, f.members[1].data, decoded, *replayed.session, driftRoot);
+    Require(!drifted.Succeeded() && !drifted.value && HasCode(drifted, "TERRAIN_JOURNAL_RESOURCE_DRIFT"),
+        "a formerly absent optional dependency rejects restore even when parsed terrain settings are unchanged");
+}
+
+void ForwardJournalSeparatesBaselineReadFailureFromResourceFallback() {
+    Fixture f(true, true); const auto directory = Directory(f); const auto intents = OrderedIntents(f);
+    auto replayed = Take(ReplayFixture(f, *f.source, intents));
+    const auto archiveJournal = Take(TerrainPathingSave::CaptureJournal(*f.source, *replayed.session));
+    const auto directoryJournal = Take(TerrainPathingSave::CaptureJournal(directory.Snapshot(), *replayed.session));
+    const auto before = Take(SerializeMapTerrain(*replayed.session->Terrain()));
+    // 完整真实基线失效不能与游戏资源缺失混为一谈，原始底层诊断也必须保留。
+    Require(IO::WriteFileBytes(directory.Snapshot().root / "war3map.w3e", Text("changed directory baseline")).Succeeded(),
+        "change only the private directory baseline after journal capture");
+    const auto changedDirectory = TerrainPathingSave::RestoreJournal(directory.Snapshot(), MapDocument::FromMembers(f.members),
+        f.members[0].data, f.members[1].data, directoryJournal, *replayed.session, f.game);
+    Require(!changedDirectory.Succeeded() && !changedDirectory.value
+        && HasCode(changedDirectory, "TERRAIN_REPLAY_SOURCE_READ_FAILED")
+        && HasCode(changedDirectory, "TERRAIN_PATHING_RESOURCE_CHANGED"),
+        "directory source identity failure is explicitly fatal and retains its original diagnostic");
+    Require(IO::WriteFileBytes(f.source->SourcePath(), Text("changed archive baseline")).Succeeded(),
+        "change only the private archive baseline after journal capture");
+    const auto changedArchive = TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members),
+        f.members[0].data, f.members[1].data, archiveJournal, *replayed.session, f.game);
+    Require(!changedArchive.Succeeded() && !changedArchive.value
+        && HasCode(changedArchive, "TERRAIN_REPLAY_SOURCE_READ_FAILED") && HasCode(changedArchive, "SOURCE_CHANGED"),
+        "archive source identity failure is explicitly fatal and retains its original diagnostic");
+    Require(Take(SerializeMapTerrain(*replayed.session->Terrain())) == before,
+        "failed baseline reads do not mutate or publish a partial replay");
+}
+
+void ForwardJournalPreservesSavedRestrictionOverlapAndUndo() {
+    Fixture f(true, true);
+    // 原创来源先明确含不可飞P=4，随后声明S=6，刻意制造P/S重叠。
+    for (std::size_t i = 16; i < f.members[1].data.size(); ++i) f.members[1].data[i] |= std::byte{4};
+    f.source = std::make_unique<MapArchiveSession>(Take(MapArchiveSession::Open(
+        Take(WriteVerifiedArchive(f.root / "protected-source.w3x", f.members)).path)));
+    f.edits = Session(f);
+    TerrainBrush restriction; restriction.kind = TerrainBrushKind::PathingRestriction;
+    restriction.radius = 0; restriction.pathingRestrictions = 6; restriction.value = true;
+    const TerrainStrokePoint point{256, 256};
+    Require(f.edits->EditTerrain(restriction, std::span(&point, 1), false).Succeeded(), "overlapping saved intent is a real command");
+    const auto plan = Take(TerrainPathingSave::PrepareForSave(*f.source, *f.edits, f.game));
+    auto replacements = f.edits->Replacements();
+    Require(plan.InstallPathingOutput(*f.edits, replacements).Succeeded(), "freeze the actual native saved restriction output");
+    const auto written = Take(f.source->SaveCandidate(f.root / "saved-restriction.w3x", replacements));
+    auto saved = Take(MapArchiveSession::Open(written.path));
+    Require(plan.VerifyReadback(saved).Succeeded() && plan.CommitSaved(*f.edits, MapDocument::FromArchive(saved)).Succeeded(),
+        "nonzero savedS comes only from the real save/readback baseline");
+    f.source = std::make_unique<MapArchiveSession>(std::move(saved));
+    const auto terrain = Take(f.source->ReadMember("war3map.w3e"));
+    const auto pathing = Take(f.source->ReadMember("war3map.wpm"));
+    const auto original = MapDocument::FromArchive(*f.source);
+    const auto savedDraft = Take(f.edits->SerializePathingRestrictionDraft());
+    const auto layers = Take(DecodePathingRestrictionLayers(*f.edits->Terrain(), pathing, pathing, savedDraft));
+    Require(std::any_of(layers.savedIntent.begin(), layers.savedIntent.end(), [](auto value) { return value == std::byte{6}; }),
+        "the tested journal baseline has nonzero savedS");
+    bool overlap = false;
+    for (std::size_t i = 0; i < layers.savedIntent.size(); ++i)
+        overlap = overlap || (layers.savedIntent[i] & layers.protectedSource[i]) != std::byte{0};
+    Require(overlap, "protected P and saved S overlap in the tested baseline");
+    restriction.value = false;
+    Require(f.edits->EditTerrain(restriction, std::span(&point, 1), false).Succeeded(), "new prefix erases only saved project intent");
+    const auto erasedDraft = Take(f.edits->SerializePathingRestrictionDraft());
+    const auto rules = f.Rules();
+    TerrainWaterBrush water; water.size = 1; water.randomSeed = 881;
+    auto prepared = Take(PrepareTerrainWaterEdit(*f.edits, f.Document(), f.Binding(), rules,
+        TerrainWaterStrokeOptions{water.kind, water.shape, water.size, water.cliffTexture, water.randomSeed, true},
+        std::span(&f.point, 1), false));
+    Require(ApplyTerrainEdit(*f.edits, f.Document(), prepared).Succeeded(), "water follows the restriction erase in the same typed prefix");
+    const auto journal = Take(TerrainPathingSave::CaptureJournal(*f.source, *f.edits));
+    Require(journal.strokes.size() == 2 && journal.baselinePathingLayers == savedDraft,
+        "journal starts at actual savedS, not the final erased currentS");
+    auto raw = std::make_unique<MapDataEditSession>(original);
+    Require(raw->AttachTerrain(terrain).Succeeded() && raw->AttachPathing(pathing).Succeeded(), "attach fresh raw baseline");
+    auto finalTerrain = Take(SerializeMapTerrain(*f.edits->Terrain()));
+    auto finalPathing = pathing;
+    for (const auto& member : f.edits->Replacements()) {
+        if (member.name == "war3map.wpm") finalPathing = member.data;
+        else if (member.name == "war3map.doo") Require(raw->SetSerialized(MapDataKind::Doodads, member.data).Succeeded(), "restore full raw DOO");
+    }
+    Require(raw->SetTerrainAndPathingDraft(finalTerrain, finalPathing, Take(f.edits->SerializePathingRestrictionDraft())).Succeeded(),
+        "restore full raw output with its actual P/savedS/currentS");
+    auto restored = Take(TerrainPathingSave::RestoreJournal(*f.source, original, terrain, pathing, journal, *raw, f.game));
+    Require(restored.receipts.size() == 2 && restored.session->MatchesTerrainJournalDraft(*raw), "nonzero savedS fully matches the owned replay result");
+    Require(restored.session->Replay(restored.receipts.back(), false).Succeeded()
+        && Take(restored.session->SerializePathingRestrictionDraft()) == erasedDraft, "water Undo retains erased S and protected P");
+    Require(restored.session->Replay(restored.receipts.front(), false).Succeeded()
+        && Take(restored.session->SerializePathingRestrictionDraft()) == savedDraft, "erase Undo restores savedS including its overlap with P");
+    Require(!restored.session->IsDirty(), "undoing the complete restored prefix returns to the real saved baseline");
+    TerrainReplayLimits tight; tight.maximumCandidateBytes = 1;
+    const auto denied = TerrainPathingSave::RestoreJournal(*f.source, original, terrain, pathing, journal, *raw, f.game, tight);
+    Require(!denied.Succeeded() && !denied.value && HasCode(denied, "TERRAIN_REPLAY_BUDGET"), "raw resident memory is precharged before replay or final comparison");
+}
 } // namespace
 
 int main() {
@@ -641,6 +794,9 @@ int main() {
         DirectSaveRejectsEveryConflictingOrdinaryField();
         DirectSaveUsesOrderedWaterAndOriginalScriptGate();
         DirectSaveAllowsSpecialWaterDeletionWithoutPlacementFollow();
+        ForwardJournalRestoresOwnedSpecialDeletionAndRejectsDrift();
+        ForwardJournalSeparatesBaselineReadFailureFromResourceFallback();
+        ForwardJournalPreservesSavedRestrictionOverlapAndUndo();
         std::cout << "TerrainWaterEditServiceTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

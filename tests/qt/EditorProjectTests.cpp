@@ -4,6 +4,7 @@
 #include "ProjectQuerySources.h"
 #include "MapSaveJob.h"
 #include "ProjectSaveJob.h"
+#include "Commands/MapDataCommands.h"
 #include "War3MapCore/Script/ScriptSaveBundle.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
@@ -18,11 +19,13 @@
 #include "War3MapCore/MapData/MapPlacements.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/Services/TerrainMinimapSave.h"
+#include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/Services/CampaignService.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
 #include "../../src/Core/Mpq/MpqCrypt.h"
 #include "../MapDataFixtures.h"
 #include "SyntheticObjectCatalogFixture.h"
+#include "TerrainWaterEditFixture.h"
 
 #include <QCoreApplication>
 #include <QFile>
@@ -44,6 +47,7 @@
 #include <array>
 #include <atomic>
 #include <cstring>
+#include <map>
 #include <stdexcept>
 
 using namespace War3Map;
@@ -341,6 +345,74 @@ std::unique_ptr<MapSaveJob> FreezeNativePathingQtJob(EditorProject& project, con
         project.editRevision_.Current(), project.luaMapTargetGeneration_};
     return job;
 }
+
+std::vector<MapArchiveMember> TerrainJournalWaterMembers() {
+    auto members = NativePathingQtMembers();
+    const auto water = Tests::TerrainWaterMembers();
+    for (auto& member : members) {
+        if (member.name == "war3map.w3e") member.data = water.front().data;
+        if (member.name == "war3map.wpm")
+            std::fill(member.data.begin() + 16, member.data.end(), std::byte{0x51});
+        if (member.name == "TerrainArt\\CliffTypes.slk") member.data = water[3].data;
+        if (member.name == "UI\\MiscData.txt") member.data = Tests::WaterText(
+            "[Terrain]\nMaxSlope=90\nMinHeight=-256\nMaxHeight=1536\n"
+            "[Water]\nDeepLevelPathing=64\n[CameraMargins]\nLeft=0\nRight=0\nBottom=0\nTop=0\n");
+    }
+    // 必需的实际Water资源只放入合成游戏MPQ；缺失/漂移测试不修改工程基线或raw草稿。
+    std::erase_if(members, [](const auto& member) { return member.name == "TerrainArt\\Water.slk"; });
+    members.push_back({"war3mapUnits.doo", Tests::WaterTake(MapData::UnitPlacements{}.Serialize())});
+    return members;
+}
+
+std::vector<MapArchiveMember> TerrainJournalWaterGameMembers() {
+    auto members = NativePathingQtMembers();
+    std::erase_if(members, [](const auto& member) { return member.name != "TerrainArt\\Water.slk"; });
+    members.push_back({"fixture.txt", Tests::WaterText("owned journal game resource")});
+    return members;
+}
+
+Result<Services::TerrainReplayCandidate> ReplayTerrainJournalWater(EditorProject& project) {
+    const auto terrain = project.archiveSession_->ReadMember("war3map.w3e");
+    if (!terrain.Succeeded()) return {{}, terrain.diagnostics};
+    const auto pathing = project.archiveSession_->ReadMember("war3map.wpm");
+    if (!pathing.Succeeded()) return {{}, pathing.diagnostics};
+    MapData::TerrainStrokeIntent stroke; stroke.points = {{512, 512}};
+    stroke.waterBrush = MapData::TerrainWaterStrokeOptions{};
+    stroke.waterBrush->kind = MapData::TerrainWaterBrushKind::Deep;
+    stroke.waterBrush->shape = MapData::TerrainBrushShape::Square;
+    return Services::TerrainPathingSave::ReplayStrokes(*project.archiveSession_, *project.mapDocument_,
+        *terrain.value, *pathing.value, std::span(&stroke, 1), project.war3GameRoot_);
+}
+
+std::map<std::string, std::vector<std::byte>> TerrainJournalDraftBytes(const MapData::MapDataEditSession& edits) {
+    std::map<std::string, std::vector<std::byte>> result;
+    for (auto& member : edits.Replacements()) result.emplace(std::move(member.name), std::move(member.data));
+    return result;
+}
+
+bool BindPreparedTerrainJournal(EditorProject& project, PreparedProjectOpen& candidate,
+    const std::filesystem::path& gameRoot) {
+    // 本夹具没有物编/触发器覆盖；沿MainWindow的相同顺序安装真实候选与保存身份。
+    if (!candidate.map || candidate.recovery || !candidate.mapDataEdits) return false;
+    const auto source = candidate.sourceMapMatchesBaseline ? candidate.sourceMapPath : candidate.BaselinePath();
+    if (!BindTerrainSaveProject(project, source)) return false;
+    const auto originalMapScopes = project.editRevision_.Current();
+    project.war3GameRoot_ = gameRoot;
+    project.recordedSourceMapPath_ = candidate.sourceMapPath;
+    project.restoredFiles_ = std::move(candidate.extraction);
+    project.mapEdits_ = std::move(candidate.mapDataEdits);
+    project.terrainJournalWarning_ = candidate.terrainJournalWarning;
+    if (project.mapDataUndoStack_) for (auto& receipt : candidate.terrainReceipts)
+        project.mapDataUndoStack_->push(new MapDataEditCommand(project, std::move(receipt), "Restored water", "恢复工程水刷"));
+    project.lastProjectFingerprint_ = project.ProjectFingerprint();
+    project.projectFilePath_ = candidate.sourcePath; project.projectFileSha256_ = candidate.sourceSha256;
+    const auto scopes = project.CaptureEditScopes();
+    if (!scopes) return false;
+    project.editTrackingReady_ = project.editRevision_.Reset(*scopes, *scopes, originalMapScopes).Succeeded();
+    project.editTrackingFailed_ = !project.editTrackingReady_;
+    project.UpdateEditDirtyFlags();
+    return project.editTrackingReady_;
+}
 }
 
 class EditorProjectTests final : public QObject {
@@ -359,6 +431,14 @@ private slots:
     void SaveAndRecoveryWorkWithoutUndoWidgets();
     void PreparedOpenPreservesSessionAndCleansCancelledFiles();
     void MapDataOverlaySurvivesProjectSaveAndPreflight();
+    void TerrainJournalProjectRoundtripAndStrictManifest();
+    void TerrainJournalEqualOutputStillTracksUndoPrefix();
+    void TerrainJournalWaterFallbackKeepsRawAndWarning_data();
+    void TerrainJournalWaterFallbackKeepsRawAndWarning();
+    void TerrainJournalProjectSavesKeepCoreMapBaseline();
+    void TerrainJournalEqualOutputMapSaveClearsHistoryDirty();
+    void TerrainJournalRestoredWaterSavesAndReadsBack_data();
+    void TerrainJournalRestoredWaterSavesAndReadsBack();
     void GeneratedObjectsSurviveCommitAndSecondSave();
     void NativeCloneOriginsSurviveProjectRestore();
     void PendingNativeCloneOriginsSurviveMissingOrEmptyMember();
@@ -2428,6 +2508,358 @@ void EditorProjectTests::MapDataOverlaySurvivesProjectSaveAndPreflight() {
     QCOMPARE(replacements.size(), std::size_t{1});
     QCOMPARE(replacements.front().data, *overlay.value);
     QVERIFY(project.directorySnapshot_->VerifyUnchanged().Succeeded());
+}
+
+void EditorProjectTests::TerrainJournalProjectRoundtripAndStrictManifest() {
+    QTemporaryDir root; QVERIFY(root.isValid()); QVERIFY(QDir(root.path()).mkpath("source"));
+    const auto source = std::filesystem::path(root.filePath("source/map.w3x").toStdWString());
+    QVERIFY(WriteVerifiedArchive(source, TerrainSaveMembers()).Succeeded());
+    EditorProject project; QVERIFY(BindTerrainSaveProject(project, source));
+    QVERIFY(RaiseTerrainSaveProject(project));
+    const auto firstTerrain = MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()); QVERIFY(firstTerrain.Succeeded());
+    QVERIFY(RaiseTerrainSaveProject(project, 16));
+    const auto finalTerrain = MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()); QVERIFY(finalTerrain.Succeeded());
+    const auto target = std::filesystem::path(root.filePath("journal.forge").toStdWString());
+    const auto saved = project.SaveProjectToPath(target);
+    QVERIFY2(saved.Succeeded(), saved.diagnostics.empty() ? "save journal" : saved.diagnostics.front().message.c_str());
+    auto opened = MapArchiveSession::Open(target); QVERIFY(opened.Succeeded());
+    QVERIFY(opened.value->HasMember("overlay/editor/terrain-strokes.bin"));
+    const auto json = opened.value->ReadMember("project.json"); QVERIFY(json.Succeeded());
+    auto manifest = QJsonDocument::fromJson(QByteArray(reinterpret_cast<const char*>(json.value->data()), static_cast<qsizetype>(json.value->size()))).object();
+    QCOMPARE(manifest["terrainStrokeJournal"].toInt(), 1);
+    auto prepared = PrepareProjectOpen(target);
+    QVERIFY2(prepared.Succeeded(), prepared.diagnostics.empty() ? "restore journal" : prepared.diagnostics.front().message.c_str());
+    QCOMPARE((*prepared.value)->terrainReceipts.size(), std::size_t{2});
+    QVERIFY((*prepared.value)->terrainJournalWarning.empty());
+    EditorProject restored; QVERIFY(BindTerrainSaveProject(restored, source));
+    QUndoStack undo; restored.mapDataUndoStack_ = &undo;
+    restored.mapEdits_ = std::move((*prepared.value)->mapDataEdits);
+    for (const auto& receipt : (*prepared.value)->terrainReceipts)
+        undo.push(new MapDataEditCommand(restored, receipt, "Restored terrain", "恢复工程笔划"));
+    QCOMPARE(undo.count(), 2); QCOMPARE(undo.index(), 2);
+    undo.undo(); QCOMPARE(MapData::SerializeMapTerrain(*restored.mapEdits_->Terrain()).value, firstTerrain.value);
+    undo.redo(); QCOMPARE(MapData::SerializeMapTerrain(*restored.mapEdits_->Terrain()).value, finalTerrain.value);
+
+    auto files = opened.value->Members();
+    for (auto& member : files) if (member.name == "overlay/editor/terrain-strokes.bin") member.data[0] ^= std::byte{1};
+    const auto corrupt = std::filesystem::path(root.filePath("corrupt.forge").toStdWString());
+    QVERIFY(WriteVerifiedArchive(corrupt, files).Succeeded());
+    const auto oldIdentity = project.mapEdits_->SessionIdentity(), oldRevision = project.mapEdits_->Revision();
+    QVERIFY(!PrepareProjectOpen(corrupt).Succeeded());
+    QCOMPARE(project.mapEdits_->SessionIdentity(), oldIdentity); QCOMPARE(project.mapEdits_->Revision(), oldRevision);
+    QCOMPARE(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, finalTerrain.value);
+
+    // 旧工程保持raw完整恢复；删除声明和载荷后不能推断typed谱系。
+    files = opened.value->Members();
+    files.erase(std::remove_if(files.begin(), files.end(), [](const auto& member) {
+        return member.name == "overlay/editor/terrain-strokes.bin";
+    }), files.end());
+    manifest.remove("terrainStrokeJournal");
+    const auto legacyJson = QJsonDocument(manifest).toJson(QJsonDocument::Compact);
+    for (auto& member : files) if (member.name == "project.json") {
+        const auto bytes = std::as_bytes(std::span(legacyJson.data(), static_cast<std::size_t>(legacyJson.size())));
+        member.data.assign(bytes.begin(), bytes.end());
+    }
+    const auto legacy = std::filesystem::path(root.filePath("legacy.forge").toStdWString());
+    QVERIFY(WriteVerifiedArchive(legacy, files).Succeeded());
+    auto old = PrepareProjectOpen(legacy); QVERIFY(old.Succeeded());
+    QVERIFY((*old.value)->terrainReceipts.empty());
+    QCOMPARE(MapData::SerializeMapTerrain(*(*old.value)->mapDataEdits->Terrain()).value, finalTerrain.value);
+    QVERIFY(!(*old.value)->mapDataEdits->ExportTerrainStrokeJournal().Succeeded());
+    // 单独存在的声明/载荷必须拒绝，不能默默降级。
+    manifest["terrainStrokeJournal"] = 1;
+    const auto missingJson = QJsonDocument(manifest).toJson(QJsonDocument::Compact);
+    for (auto& member : files) if (member.name == "project.json") {
+        const auto bytes = std::as_bytes(std::span(missingJson.data(), static_cast<std::size_t>(missingJson.size())));
+        member.data.assign(bytes.begin(), bytes.end());
+    }
+    const auto missing = std::filesystem::path(root.filePath("missing.forge").toStdWString());
+    QVERIFY(WriteVerifiedArchive(missing, files).Succeeded()); QVERIFY(!PrepareProjectOpen(missing).Succeeded());
+}
+
+void EditorProjectTests::TerrainJournalEqualOutputStillTracksUndoPrefix() {
+    QTemporaryDir root; QVERIFY(root.isValid()); QVERIFY(QDir(root.path()).mkpath("source"));
+    const auto source = std::filesystem::path(root.filePath("source/map.w3x").toStdWString());
+    QVERIFY(WriteVerifiedArchive(source, TerrainSaveMembers()).Succeeded());
+    EditorProject project; QVERIFY(BindTerrainSaveProject(project, source));
+    const auto original = project.ProjectFingerprint();
+    QVERIFY(RaiseTerrainSaveProject(project, 16));
+    MapData::TerrainBrush lower; lower.kind = MapData::TerrainBrushKind::Lower; lower.radius = 0; lower.strength = 16;
+    const MapData::TerrainStrokePoint point{512, 512};
+    QVERIFY(project.mapEdits_->EditTerrain(lower, std::span(&point, 1), false).Succeeded());
+    QVERIFY(project.ObserveMapDataEdit("回到相同地形字节，保留可撤销前缀"));
+    QVERIFY(project.mapEdits_->Replacements().empty());
+    QVERIFY(project.ProjectFingerprint() != original);
+    const auto target = std::filesystem::path(root.filePath("equal-output.forge").toStdWString());
+    QVERIFY(project.SaveProjectToPath(target).Succeeded());
+    auto opened = MapArchiveSession::Open(target); QVERIFY(opened.Succeeded());
+    QVERIFY(!opened.value->HasMember("overlay/map/war3map.w3e") && opened.value->HasMember("overlay/editor/terrain-strokes.bin"));
+    auto prepared = PrepareProjectOpen(target); QVERIFY(prepared.Succeeded());
+    QCOMPARE((*prepared.value)->terrainReceipts.size(), std::size_t{2});
+    QVERIFY((*prepared.value)->mapDataEdits->Replacements().empty());
+    QVERIFY((*prepared.value)->mapDataEdits->Replay((*prepared.value)->terrainReceipts.back(), false).Succeeded());
+    QVERIFY(!(*prepared.value)->mapDataEdits->Replacements().empty());
+    // 新的普通大笔划仍完整保存raw，不能让journal4096点域反向限制既有UI编辑。
+    std::vector<MapData::TerrainStrokePoint> points(4097, point);
+    QVERIFY(project.mapEdits_->EditTerrain(lower, points, false).Succeeded());
+    QVERIFY(project.ObserveMapDataEdit("超journal点域的完整普通草稿"));
+    const auto oversized = std::filesystem::path(root.filePath("oversized-raw.forge").toStdWString());
+    QVERIFY(project.SaveProjectToPath(oversized).Succeeded());
+    auto raw = MapArchiveSession::Open(oversized); QVERIFY(raw.Succeeded());
+    QVERIFY(!raw.value->HasMember("overlay/editor/terrain-strokes.bin"));
+    const auto bytes = raw.value->ReadMember("overlay/map/war3map.w3e"); QVERIFY(bytes.Succeeded());
+    QCOMPARE(bytes.value, MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value);
+}
+
+void EditorProjectTests::TerrainJournalWaterFallbackKeepsRawAndWarning_data() {
+    QTest::addColumn<bool>("resourceDrift");
+    QTest::newRow("required-water-resource-missing") << false;
+    QTest::newRow("required-water-resource-drift") << true;
+}
+
+void EditorProjectTests::TerrainJournalWaterFallbackKeepsRawAndWarning() {
+    QFETCH(bool, resourceDrift);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto source = std::filesystem::path(root.filePath("source.w3x").toStdWString());
+    const auto game = std::filesystem::path(root.filePath("game").toStdWString());
+    QVERIFY(std::filesystem::create_directory(game));
+    QVERIFY(WriteVerifiedArchive(source, TerrainJournalWaterMembers()).Succeeded());
+    QVERIFY(WriteVerifiedArchive(game / "war3.mpq", TerrainJournalWaterGameMembers()).Succeeded());
+    const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
+    EditorProject project; QVERIFY(BindTerrainSaveProject(project, source)); project.war3GameRoot_ = game;
+    auto replayed = ReplayTerrainJournalWater(project);
+    QVERIFY2(replayed.Succeeded(), replayed.diagnostics.empty() ? "water replay" : replayed.diagnostics.front().message.c_str());
+    project.mapEdits_ = std::move(replayed.value->session); QVERIFY(project.ObserveMapDataEdit("实际游戏Water资源水刷"));
+    const auto draft = TerrainJournalDraftBytes(*project.mapEdits_); QVERIFY(!draft.empty());
+    const auto restrictions = project.mapEdits_->SerializePathingRestrictionDraft(); QVERIFY(restrictions.Succeeded());
+    const auto target = std::filesystem::path(root.filePath("water.forge").toStdWString());
+    QVERIFY(project.SaveProjectToPath(target).Succeeded());
+    auto complete = PrepareProjectOpen(target, game); QVERIFY(complete.Succeeded());
+    QCOMPARE((*complete.value)->terrainReceipts.size(), std::size_t{1});
+    QVERIFY((*complete.value)->terrainJournalWarning.empty());
+
+    const auto changedGame = std::filesystem::path(root.filePath("changed-game").toStdWString());
+    QVERIFY(std::filesystem::create_directory(changedGame));
+    auto changedMembers = TerrainJournalWaterGameMembers();
+    if (resourceDrift) {
+        // 合法SLK只增加空白：最终规则值不变也不能绕过真实依赖字节身份。
+        changedMembers.front().data.push_back(std::byte{'\n'});
+    } else {
+        changedMembers.erase(changedMembers.begin());
+    }
+    QVERIFY(WriteVerifiedArchive(changedGame / "war3.mpq", changedMembers).Succeeded());
+    auto fallback = PrepareProjectOpen(target, changedGame);
+    QVERIFY2(fallback.Succeeded(), fallback.diagnostics.empty() ? "raw fallback" : fallback.diagnostics.front().message.c_str());
+    QVERIFY(HasReadDiagnostic(fallback, "TERRAIN_JOURNAL_DRAFT_ONLY"));
+    QVERIFY((*fallback.value)->terrainReceipts.empty() && !(*fallback.value)->terrainJournalWarning.empty());
+    QCOMPARE(TerrainJournalDraftBytes(*(*fallback.value)->mapDataEdits), draft);
+    QCOMPARE((*fallback.value)->mapDataEdits->SerializePathingRestrictionDraft().value, restrictions.value);
+    QVERIFY(!(*fallback.value)->mapDataEdits->ExportTerrainStrokeJournal().Succeeded());
+
+    EditorProject restored; QVERIFY(BindPreparedTerrainJournal(restored, **fallback.value, changedGame));
+    const auto warning = restored.terrainJournalWarning_;
+    const auto resaved = std::filesystem::path(root.filePath("raw-resaved.forge").toStdWString());
+    const auto saved = restored.SaveProjectToPath(resaved); QVERIFY(saved.Succeeded());
+    QVERIFY(HasReadDiagnostic(saved, "TERRAIN_JOURNAL_DRAFT_ONLY"));
+    const auto raw = MapArchiveSession::Open(resaved); QVERIFY(raw.Succeeded());
+    QVERIFY(!raw.value->HasMember("overlay/editor/terrain-strokes.bin"));
+    for (const auto& [name, bytes] : draft) QCOMPARE(raw.value->ReadMember("overlay/map/" + name).value, std::optional(bytes));
+    // 恢复了正确游戏目录后仍是已明确降级的raw草稿，不能从输出重新发明笔划来源。
+    auto reopened = PrepareProjectOpen(resaved, game); QVERIFY(reopened.Succeeded());
+    QVERIFY(HasReadDiagnostic(reopened, "TERRAIN_JOURNAL_DRAFT_ONLY"));
+    QCOMPARE((*reopened.value)->terrainJournalWarning, warning);
+    QVERIFY((*reopened.value)->terrainReceipts.empty());
+    QCOMPARE(TerrainJournalDraftBytes(*(*reopened.value)->mapDataEdits), draft);
+    QCOMPARE((*reopened.value)->mapDataEdits->SerializePathingRestrictionDraft().value, restrictions.value);
+    QCOMPARE(Sha256File(source).value, sourceSha.value);
+}
+
+void EditorProjectTests::TerrainJournalProjectSavesKeepCoreMapBaseline() {
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto source = std::filesystem::path(root.filePath("source.w3x").toStdWString());
+    QVERIFY(WriteVerifiedArchive(source, TerrainSaveMembers()).Succeeded());
+    const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
+    EditorProject project; QVERIFY(BindTerrainSaveProject(project, source));
+    const auto mapBaseline = project.editRevision_.Baseline(EditSaveTarget::Map); QVERIFY(mapBaseline);
+    const auto session = project.mapEdits_->SessionIdentity(), sourceRevision = project.mapEdits_->TerrainSourceRevision();
+    QVERIFY(RaiseTerrainSaveProject(project, 16));
+    const auto first = MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()); QVERIFY(first.Succeeded());
+    const auto firstJournal = project.mapEdits_->TerrainJournalStateFingerprint();
+    const auto manual = std::filesystem::path(root.filePath("manual.forge").toStdWString());
+    const auto saved = project.SaveProjectToPath(manual); QVERIFY(saved.Succeeded());
+    QCOMPARE(project.mapEdits_->SessionIdentity(), session); QCOMPARE(project.mapEdits_->TerrainSourceRevision(), sourceRevision);
+    QCOMPARE(project.mapEdits_->TerrainJournalStateFingerprint(), firstJournal);
+    QCOMPARE(project.editRevision_.Baseline(EditSaveTarget::Map)->scopes, mapBaseline->scopes);
+    QVERIFY(project.HasUnsavedMapChanges() && !project.editRevision_.IsDirty(EditSaveTarget::Project));
+
+    QVERIFY(RaiseTerrainSaveProject(project, 8));
+    const auto secondReceipt = project.mapEdits_->LastEdit();
+    const auto secondJournal = project.mapEdits_->TerrainJournalStateFingerprint();
+    const auto revision = project.mapEdits_->Revision();
+    const auto recovery = std::filesystem::path(root.filePath("recovery.forge").toStdWString());
+    const auto recovered = project.SaveProjectToPath(recovery, true); QVERIFY(recovered.Succeeded());
+    QCOMPARE(project.projectFilePath_, saved.value->path); QCOMPARE(project.projectFileSha256_, saved.value->sha256);
+    QCOMPARE(project.mapEdits_->Revision(), revision); QCOMPARE(project.mapEdits_->TerrainSourceRevision(), sourceRevision);
+    QCOMPARE(project.mapEdits_->TerrainJournalStateFingerprint(), secondJournal);
+    const auto recoveryPrefix = project.mapEdits_->ExportTerrainStrokeJournal(); QVERIFY(recoveryPrefix.Succeeded());
+    QCOMPARE(recoveryPrefix.value->strokes.size(), std::size_t{2});
+    QCOMPARE(project.editRevision_.Baseline(EditSaveTarget::Map)->scopes, mapBaseline->scopes);
+    QVERIFY(project.HasUnsavedMapChanges() && project.editRevision_.IsDirty(EditSaveTarget::Project));
+    auto recoveryOpen = PrepareProjectOpen(recovery); QVERIFY(recoveryOpen.Succeeded());
+    QVERIFY((*recoveryOpen.value)->recovery); QCOMPARE((*recoveryOpen.value)->terrainReceipts.size(), std::size_t{2});
+
+    const auto overwritten = project.SaveProjectToPath(manual); QVERIFY(overwritten.Succeeded() && overwritten.value->backupPath);
+    QCOMPARE(project.mapEdits_->TerrainJournalStateFingerprint(), secondJournal);
+    QCOMPARE(project.editRevision_.Baseline(EditSaveTarget::Map)->scopes, mapBaseline->scopes);
+    // Qt式逆命令仍可约简到第一笔，证明两类工程保存均未把笔划变成地图保存边界。
+    QVERIFY(project.mapEdits_->Replay(secondReceipt, false).Succeeded());
+    QCOMPARE(project.mapEdits_->TerrainJournalStateFingerprint(), firstJournal);
+    QCOMPARE(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, first.value);
+    QVERIFY(project.ObserveMapDataEdit("工程保存后撤销第二笔"));
+    QVERIFY(project.editRevision_.IsDirty(EditSaveTarget::Project) && project.HasUnsavedMapChanges());
+    QCOMPARE(Sha256File(source).value, sourceSha.value);
+}
+
+void EditorProjectTests::TerrainJournalEqualOutputMapSaveClearsHistoryDirty() {
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto members = TerrainSaveMembers();
+    const auto source = std::filesystem::path(root.filePath("source.w3x").toStdWString());
+    QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
+    const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
+    EditorProject project; QVERIFY(BindTerrainSaveProject(project, source));
+    QVERIFY(!project.HasUnsavedMapChanges() && !project.editRevision_.IsDirty(EditSaveTarget::Map));
+    QVERIFY(project.mapEdits_->Replacements().empty() && !project.mapEdits_->CanUndo());
+    QVERIFY(RaiseTerrainSaveProject(project, 16));
+    MapData::TerrainBrush lower; lower.kind = MapData::TerrainBrushKind::Lower; lower.radius = 0; lower.strength = 16;
+    const MapData::TerrainStrokePoint point{512, 512};
+    QVERIFY(project.mapEdits_->EditTerrain(lower, std::span(&point, 1), false).Succeeded());
+    QVERIFY(project.ObserveMapDataEdit("最终raw相同但仍有两笔可撤销历史"));
+    QVERIFY(project.mapEdits_->Replacements().empty());
+    const auto prefix = project.mapEdits_->ExportTerrainStrokeJournal(); QVERIFY(prefix.Succeeded());
+    QCOMPARE(prefix.value->strokes.size(), std::size_t{2});
+    // MainWindow保存动作与退出提示共同使用此门；raw为空不能使正常“保存地图”提前返回。
+    QVERIFY(project.HasUnsavedMapChanges() && project.editRevision_.IsDirty(EditSaveTarget::Map));
+    const auto forge = std::filesystem::path(root.filePath("equal-output.forge").toStdWString());
+    QVERIFY(project.SaveProjectToPath(forge).Succeeded());
+    QVERIFY(project.HasUnsavedMapChanges() && !project.editRevision_.IsDirty(EditSaveTarget::Project));
+
+    // 仅沿既有夹具替代脚本准备；真实原位写出、回读、Commit及Core地图基线提交均执行生产路径。
+    auto job = FreezeNativePathingQtJob(project, source); QVERIFY(job && !job->terrainDerivationRequired);
+    QVERIFY(job->replacements.empty() && job->removals.empty() && !job->pathingRestrictionDraft);
+    job->inPlace = true;
+    job->inPlaceOptions.backupDirectory = std::filesystem::path(root.filePath("backups").toStdWString());
+    QVERIFY(std::filesystem::create_directory(job->inPlaceOptions.backupDirectory));
+    const auto session = project.mapEdits_->SessionIdentity();
+    EditorProject::RunMapSave(*job);
+    QVERIFY2(job->succeeded, job->diagnostics.empty() ? "equal output map save" : job->diagnostics.back().message.c_str());
+    QVERIFY(job->nextSession && !job->terrainSavePlan);
+    for (const auto& member : members) QCOMPARE(job->nextSession->ReadMember(member.name).value, std::optional(member.data));
+    QVERIFY(project.CommitMapSave(*job));
+    QCOMPARE(project.mapEdits_->SessionIdentity(), session);
+    QVERIFY(!project.HasUnsavedMapChanges() && !project.editRevision_.IsDirty(EditSaveTarget::Map));
+    const auto savedPrefix = project.mapEdits_->ExportTerrainStrokeJournal(); QVERIFY(savedPrefix.Succeeded());
+    QVERIFY(savedPrefix.value->strokes.empty() && project.mapEdits_->Replacements().empty());
+    QVERIFY(project.editRevision_.IsDirty(EditSaveTarget::Project));
+    QVERIFY(!job->backup.empty()); QCOMPARE(Sha256File(job->backup).value, sourceSha.value);
+
+    const auto savedMapSha = Sha256File(source); QVERIFY(savedMapSha.Succeeded());
+    QVERIFY(project.SaveProjectToPath(forge).Succeeded());
+    const auto archived = MapArchiveSession::Open(forge); QVERIFY(archived.Succeeded());
+    QVERIFY(!archived.value->HasMember("overlay/editor/terrain-strokes.bin")
+        && !archived.value->HasMember("overlay/map/war3map.w3e") && !archived.value->HasMember("overlay/map/war3map.wpm"));
+    const auto baseline = archived.value->ReadMember("baseline/source.w3x"); QVERIFY(baseline.Succeeded());
+    QCOMPARE(Sha256(*baseline.value).value, savedMapSha.value);
+    auto opened = PrepareProjectOpen(forge); QVERIFY(opened.Succeeded());
+    QVERIFY((*opened.value)->terrainReceipts.empty() && (*opened.value)->terrainJournalWarning.empty());
+    EditorProject restored; QVERIFY(BindPreparedTerrainJournal(restored, **opened.value, {}));
+    QVERIFY(!restored.HasUnsavedMapChanges() && !restored.editRevision_.IsDirty(EditSaveTarget::Map));
+    QVERIFY(restored.mapEdits_->Replacements().empty() && !restored.mapEdits_->CanUndo());
+}
+
+void EditorProjectTests::TerrainJournalRestoredWaterSavesAndReadsBack_data() {
+    QTest::addColumn<bool>("inPlace");
+    QTest::newRow("restored-water-save-as") << false;
+    QTest::newRow("restored-water-save-in-place") << true;
+}
+
+void EditorProjectTests::TerrainJournalRestoredWaterSavesAndReadsBack() {
+    QFETCH(bool, inPlace);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto source = std::filesystem::path(root.filePath("source.w3x").toStdWString());
+    const auto game = std::filesystem::path(root.filePath("game").toStdWString());
+    QVERIFY(std::filesystem::create_directory(game));
+    QVERIFY(WriteVerifiedArchive(source, TerrainJournalWaterMembers()).Succeeded());
+    QVERIFY(WriteVerifiedArchive(game / "war3.mpq", TerrainJournalWaterGameMembers()).Succeeded());
+    const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
+    EditorProject project; QVERIFY(BindTerrainSaveProject(project, source)); project.war3GameRoot_ = game;
+    const auto sourceWpm = project.archiveSession_->ReadMember("war3map.wpm"); QVERIFY(sourceWpm.Succeeded());
+    const auto script = project.archiveSession_->ReadMember("war3map.j"); QVERIFY(script.Succeeded());
+    auto replayed = ReplayTerrainJournalWater(project);
+    QVERIFY2(replayed.Succeeded(), replayed.diagnostics.empty() ? "water replay" : replayed.diagnostics.front().message.c_str());
+    project.mapEdits_ = std::move(replayed.value->session); QVERIFY(project.ObserveMapDataEdit("可恢复水刷保存夹具"));
+    const auto waterTerrain = MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()); QVERIFY(waterTerrain.Succeeded());
+    const auto forge = std::filesystem::path(root.filePath("water.forge").toStdWString());
+    QVERIFY(project.SaveProjectToPath(forge).Succeeded());
+    auto opened = PrepareProjectOpen(forge, game); QVERIFY(opened.Succeeded());
+    QVERIFY(HasReadDiagnostic(opened, "TERRAIN_JOURNAL_RESTORED"));
+    EditorProject restored; QUndoStack undo; restored.mapDataUndoStack_ = &undo;
+    QVERIFY(BindPreparedTerrainJournal(restored, **opened.value, game));
+    QCOMPARE(undo.count(), 1); QCOMPARE(undo.index(), 1);
+    const auto journal = restored.mapEdits_->TerrainJournalStateFingerprint();
+    undo.undo(); QVERIFY(restored.mapEdits_->Replacements().empty());
+    undo.redo(); QCOMPARE(MapData::SerializeMapTerrain(*restored.mapEdits_->Terrain()).value, waterTerrain.value);
+    QCOMPARE(restored.mapEdits_->TerrainJournalStateFingerprint(), journal);
+
+    const auto forgeAs = std::filesystem::path(root.filePath("water-save-as.forge").toStdWString());
+    QVERIFY(restored.SaveProjectToPath(forgeAs).Succeeded());
+    QVERIFY(RaiseTerrainSaveProject(restored, 1));
+    PushMapDataEdit(restored, "Raised after restore", "恢复后普通地形笔划"); QCOMPARE(undo.count(), 2);
+    const auto finalTerrain = MapData::SerializeMapTerrain(*restored.mapEdits_->Terrain()); QVERIFY(finalTerrain.Succeeded());
+    const auto savedAgain = restored.SaveProjectToPath(forgeAs); QVERIFY(savedAgain.Succeeded() && savedAgain.value->backupPath);
+    auto reopened = PrepareProjectOpen(forgeAs, game); QVERIFY(reopened.Succeeded());
+    QCOMPARE((*reopened.value)->terrainReceipts.size(), std::size_t{2});
+    QCOMPARE(MapData::SerializeMapTerrain(*(*reopened.value)->mapDataEdits->Terrain()).value, finalTerrain.value);
+
+    // 未安装脚本工具链时真实Prepare仍须拒绝；下方沿既有合法worker夹具验证领域保存与回读。
+    restored.compilerDataRoot_.clear(); restored.activeUiDataRoot_.clear(); restored.uiDataRoot_.clear();
+    const auto blocked = std::filesystem::path(root.filePath("script-blocked.w3x").toStdWString());
+    QVERIFY(!restored.PrepareMapSave(blocked, false));
+    QVERIFY(ModelHasCode(*restored.diagnosticsModel_, "REPACK_SCRIPT_REJECTED")); QVERIFY(!std::filesystem::exists(blocked));
+    const auto session = restored.mapEdits_->SessionIdentity();
+    const auto target = inPlace ? source : std::filesystem::path(root.filePath("water-saved.w3x").toStdWString());
+    auto job = FreezeNativePathingQtJob(restored, target); QVERIFY(job && job->terrainDerivationRequired);
+    job->terrainSessionSnapshot = restored.mapEdits_->FreezeForSave(); job->minimapGameRoot = game;
+    if (inPlace) {
+        job->inPlace = true;
+        job->inPlaceOptions.backupDirectory = std::filesystem::path(root.filePath("backups").toStdWString());
+        QVERIFY(std::filesystem::create_directory(job->inPlaceOptions.backupDirectory));
+    }
+    InstallMapSaveDerivedPreparation(*job); EditorProject::RunMapSave(*job);
+    QVERIFY2(job->succeeded, job->diagnostics.empty() ? "restored native worker" : job->diagnostics.back().message.c_str());
+    QVERIFY(job->nextSession && job->terrainSavePlan && job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded());
+    const auto map = MapArchiveSession::Open(target); QVERIFY(map.Succeeded());
+    QCOMPARE(map.value->ReadMember("war3map.w3e").value, finalTerrain.value);
+    QCOMPARE(map.value->ReadMember("war3map.j").value, script.value);
+    const auto savedWpm = map.value->ReadMember("war3map.wpm"); QVERIFY(savedWpm.Succeeded()); QVERIFY(savedWpm.value != sourceWpm.value);
+    for (const auto& member : job->replacements) QCOMPARE(map.value->ReadMember(member.name).value, std::optional(member.data));
+    QVERIFY(restored.CommitMapSave(*job));
+    QCOMPARE(restored.mapEdits_->SessionIdentity(), session); QCOMPARE(restored.sourceArchivePath_, target);
+    QVERIFY(!restored.HasUnsavedMapChanges() && restored.mapEdits_->Replacements().empty());
+    const auto rebasedPrefix = restored.mapEdits_->ExportTerrainStrokeJournal(); QVERIFY(rebasedPrefix.Succeeded());
+    QVERIFY(rebasedPrefix.value->strokes.empty());
+    if (inPlace) {
+        QVERIFY(!job->backup.empty()); QCOMPARE(Sha256File(job->backup).value, sourceSha.value);
+    } else QCOMPARE(Sha256File(source).value, sourceSha.value);
+
+    // 真实地图保存后才建立新journal来源；新工程只需重放保存之后的一笔。
+    QVERIFY(RaiseTerrainSaveProject(restored, 1));
+    PushMapDataEdit(restored, "Raised after map save", "地图保存后的新笔划");
+    const auto next = std::filesystem::path(root.filePath("new-baseline.forge").toStdWString());
+    QVERIFY(restored.SaveProjectToPath(next).Succeeded());
+    auto nextOpen = PrepareProjectOpen(next, game); QVERIFY(nextOpen.Succeeded());
+    QCOMPARE((*nextOpen.value)->terrainReceipts.size(), std::size_t{1});
+    QCOMPARE(MapData::SerializeMapTerrain(*(*nextOpen.value)->mapDataEdits->Terrain()).value,
+        MapData::SerializeMapTerrain(*restored.mapEdits_->Terrain()).value);
 }
 
 void EditorProjectTests::MapOnlyLibraryKeepsGlobalSettings() {

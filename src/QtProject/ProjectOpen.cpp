@@ -5,6 +5,7 @@
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/Workspace.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/Resources/ImportTable.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
@@ -37,7 +38,8 @@ std::filesystem::path PreparedProjectOpen::BaselinePath() const {
     return root / (map ? "baseline/source.w3x" : "baseline/workspace");
 }
 
-Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(const std::filesystem::path& path) {
+Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(const std::filesystem::path& path,
+    const std::filesystem::path& gameRoot) {
     using PreparedResult = Result<std::unique_ptr<PreparedProjectOpen>>;
     const auto fail = [](const QString& message) {
         return PreparedResult::Failure("工程", "PROJECT_OPEN_FAILED", message.toStdString());
@@ -268,6 +270,25 @@ Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(const std::files
         if (!parsed.Succeeded() || !parsed.value) return fail(QObject::tr("工程地图数据来源不完整"));
         dataDocument = std::move(*parsed.value);
     }
+    constexpr std::string_view terrainJournalMember = "overlay/editor/terrain-strokes.bin";
+    const bool hasTerrainJournal = archive.HasMember(terrainJournalMember);
+    if (hasTerrainJournal != manifest.contains("terrainStrokeJournal")
+        || (hasTerrainJournal && (!manifest["terrainStrokeJournal"].isDouble() || manifest["terrainStrokeJournal"].toDouble() != 1)))
+        return fail(QObject::tr("地形前向记录声明、载荷或版本不完整"));
+    if (manifest.contains("terrainJournalWarning") && (!manifest["terrainJournalWarning"].isString()
+        || manifest["terrainJournalWarning"].toString().size() > 1024))
+        return fail(QObject::tr("地形草稿恢复警告格式无效"));
+    std::string terrainJournalWarning = manifest["terrainJournalWarning"].toString().toStdString();
+    std::optional<MapData::TerrainStrokeJournal> terrainJournal;
+    if (hasTerrainJournal) {
+        const auto payload = archive.ReadMember(terrainJournalMember);
+        if (!payload.Succeeded() || !payload.value) return fail(QObject::tr("地形前向记录无法读取"));
+        auto decoded = MapData::DecodeTerrainStrokeJournal(*payload.value);
+        if (!decoded.Succeeded() || !decoded.value) return {{}, decoded.diagnostics};
+        terrainJournal = std::move(*decoded.value);
+    }
+    std::vector<std::byte> journalSourceTerrain, journalSourcePathing;
+    std::vector<MapData::MapDataEditSession::EditReceipt> terrainReceipts;
     auto mapDataEdits = std::make_unique<MapData::MapDataEditSession>(*dataDocument);
     {
         // 地形基线与覆盖：基线读取或解析失败时，存在地形覆盖的工程不能恢复。
@@ -300,6 +321,18 @@ Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(const std::files
         const bool attached = terrain.Succeeded() && terrain.value && mapDataEdits->AttachTerrain(*terrain.value).Succeeded();
         const bool pathingAttached = attached && pathing.Succeeded() && pathing.value
             && mapDataEdits->AttachPathing(*pathing.value).Succeeded();
+        if (terrainJournal) {
+            if (!attached || !pathingAttached) return fail(QObject::tr("地形前向记录缺少可验证的实际 W3E/WPM 基线"));
+            const auto actualSha = baseline ? baseline->SourceSha256() : workspace->Snapshot().aggregateSha256;
+            if (terrainJournal->sourceSha256 != actualSha) return fail(QObject::tr("地形前向记录绑定了另一份工程基线"));
+            // APR绑定原W3E/原WPM；先严格核格式和P/savedS，再允许资源缺失时降raw。
+            if (!terrainJournal->baselinePathingLayers.empty()) {
+                const auto layers = MapData::DecodePathingRestrictionLayers(*mapDataEdits->Terrain(), *pathing.value,
+                    *pathing.value, terrainJournal->baselinePathingLayers);
+                if (!layers.Succeeded()) return {{}, layers.diagnostics};
+            }
+            journalSourceTerrain = *terrain.value; journalSourcePathing = *pathing.value;
+        }
         const bool terrainOverlay = archive.HasMember("overlay/map/war3map.w3e");
         const bool pathingOverlay = archive.HasMember("overlay/map/war3map.wpm");
         const bool restrictionDraft = archive.HasMember("overlay/editor/pathing-restrictions.bin");
@@ -359,6 +392,31 @@ Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(const std::files
         const auto status = mapDataEdits->Remove(static_cast<MapDataKind>(found - nativeDataNames.begin()));
         if (!status.Succeeded()) return fail(QObject::tr("工程地图删除条目不能安全应用"));
     }
+    if (terrainJournal) {
+        auto restored = baseline
+            ? Services::TerrainPathingSave::RestoreJournal(*baseline, *dataDocument, journalSourceTerrain,
+                journalSourcePathing, *terrainJournal, *mapDataEdits, gameRoot)
+            : Services::TerrainPathingSave::RestoreJournal(workspace->Snapshot(), *dataDocument, journalSourceTerrain,
+                journalSourcePathing, *terrainJournal, *mapDataEdits, gameRoot);
+        if (restored.Succeeded() && restored.value) {
+            // 工厂已复核全部owners及来源；保持同一堆对象，真实回执中的session地址不变。
+            terrainReceipts = std::move(restored.value->receipts);
+            mapDataEdits = std::move(restored.value->session);
+        } else {
+            const bool invalid = std::any_of(restored.diagnostics.begin(), restored.diagnostics.end(), [](const auto& diagnostic) {
+                return diagnostic.code == "TERRAIN_JOURNAL_INVALID" || diagnostic.code == "TERRAIN_JOURNAL_BASELINE_MISMATCH"
+                    || diagnostic.code == "TERRAIN_REPLAY_SOURCE_MISMATCH" || diagnostic.code == "TERRAIN_REPLAY_SOURCE_READ_FAILED"
+                    || diagnostic.code == "TERRAIN_JOURNAL_OUTPUT_MISMATCH";
+            });
+            if (invalid) return {{}, restored.diagnostics};
+            if (baseline) {
+                // 资源owner可能早于工厂末端来源回读失败；降raw前仍须确证完整实际基线未变。
+                const auto unchanged = baseline->VerifySourceUnchanged();
+                if (!unchanged.Succeeded()) return {{}, unchanged.diagnostics};
+            }
+            terrainJournalWarning = "草稿已完整保留；水刷资源缺失、依赖变化或重放预算不足，水刷来源未恢复。";
+        }
+    }
     std::vector<AssetEdit> assetEdits;
     for (const auto& value : manifest["assetEdits"].toArray()) {
         const auto record = value.toObject();
@@ -396,8 +454,23 @@ Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(const std::files
     candidate->catalog = std::move(catalog);
     candidate->imports = std::move(imports);
     candidate->mapDataEdits = std::move(mapDataEdits);
+    candidate->terrainReceipts = std::move(terrainReceipts);
+    candidate->terrainJournalWarning = terrainJournalWarning;
     candidate->assetEdits = std::move(assetEdits);
-    return PreparedResult::Success(std::move(candidate));
+    auto result = PreparedResult::Success(std::move(candidate));
+    if (terrainJournal && terrainJournalWarning.empty()) {
+        Diagnostic info;
+        info.severity = DiagnosticSeverity::Info; info.subsystem = "Terrain.Journal";
+        info.code = "TERRAIN_JOURNAL_RESTORED";
+        info.message = "前向笔划已从实际来源重放并核对完整草稿，可撤销本次恢复的地形前缀。地图保存仍须通过原生派生与回读检查。";
+        result.diagnostics.push_back(std::move(info));
+    }
+    if (!terrainJournalWarning.empty()) {
+        auto warning = Status::Failure("Terrain.Journal", "TERRAIN_JOURNAL_DRAFT_ONLY", terrainJournalWarning);
+        for (auto& diagnostic : warning.diagnostics) diagnostic.severity = DiagnosticSeverity::Warning;
+        result.diagnostics = std::move(warning.diagnostics);
+    }
+    return result;
 }
 
 } // namespace War3Map::QtProject
