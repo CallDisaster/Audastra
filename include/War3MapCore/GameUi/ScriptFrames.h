@@ -8,6 +8,7 @@
 #include "War3MapCore/Types.h"
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -16,6 +17,7 @@
 // 地图脚本创建的界面：在脚本里找创建框架的调用，以及同一语句块中紧随其后、参数为常量的设置，
 // 得到每个框架刚创建完时的样子。条件分支和其他函数里的调用只记录位置；参数不是常量的设置
 // 标为动态，不猜取值；不认识的界面调用按函数归并列出。
+// 原版界面对象（计时器窗口、对话框、排行榜、多面板）同样按创建处识别，由游戏按固定规则摆放。
 namespace War3Map::GameUi {
 
 // 脚本界面根节点名：脚本创建的框架挂在它下面，根节点铺满屏幕。
@@ -41,6 +43,14 @@ enum class ScriptFrameTarget : std::uint8_t {
     Named,     // 按名字取的 fdf 框架
 };
 
+// 脚本创建的对象：界面框架，或游戏按固定规则摆放的原版界面对象。
+enum class ScriptObjectKind : std::uint8_t { Frame, TimerDialog, Dialog, Leaderboard, Multiboard };
+
+// 原版界面对象用的界面模板（TimerDialog、ScriptDialog、Leaderboard、Multiboard）；框架为空。
+[[nodiscard]] std::string_view ScriptObjectTemplate(ScriptObjectKind object) noexcept;
+// 稳定的英文标识：frame、timer-dialog、dialog、leaderboard、multiboard。
+[[nodiscard]] std::string_view ScriptObjectKindName(ScriptObjectKind object) noexcept;
+
 struct ScriptFrameRef {
     ScriptFrameTarget target = ScriptFrameTarget::Unknown;
     std::string name;
@@ -57,6 +67,7 @@ struct ScriptAnchor {
 
 struct ScriptFrame {
     UiApiFamily family = UiApiFamily::Blizzard;
+    ScriptObjectKind object = ScriptObjectKind::Frame;
     ScriptCallSite created;
     // 保存框架的变量原文（去掉空白），如 udg_CastBar、udg_Bars[i]；结果未保存时为空。
     std::string variable;
@@ -72,8 +83,12 @@ struct ScriptFrame {
     std::optional<float> width;
     std::optional<float> height;
     std::optional<std::string> texture;
+    // 框架文字；原版界面对象为计时器窗口标题、对话框消息、排行榜标签或多面板标题。
     std::optional<std::string> text;
+    // 原版界面对象创建时不显示（BJ 版本创建即显示），显示与否由各自的 Display 调用决定。
     std::optional<bool> visible;
+    // 对话框按钮文字，按添加顺序。
+    std::vector<std::string> buttons;
     // 参数不是常量、没有应用的设置，形如 “SetAbsolutePoint 第 12 行”。
     std::vector<std::string> dynamic;
     // 创建语句块之外作用在同一变量上的调用（运行时改变外观）。
@@ -100,6 +115,8 @@ struct ScriptFramePlan {
     std::vector<ScriptFrame> frames;
     std::vector<ScriptUiCallGroup> calls;
     std::vector<Diagnostic> diagnostics;
+    // 地图字符串表（war3map.wts）：显示时把整段为 TRIGSTR_编号 的文字换成表里的内容，计划里保留原文。
+    std::map<std::uint32_t, std::string> strings;
 };
 
 // 只分析 JASS 脚本；Lua 脚本记 Info 诊断。
@@ -110,6 +127,8 @@ struct ScriptFramePlan {
 
 // 把脚本框架挂到界面树上（根节点名 kScriptRoot）；没有框架时不建根，返回 kNoNode。
 // 引用游戏代码区域时须先调用 FrameTree::AddGameCodeAreas，否则 GameUI 按屏幕处理、其他区域报告缺失。
+// 原版界面对象按游戏规则排布：显示中的计时器窗口在右上角向左排开，多面板、排行榜依次在其下，
+// 对话框居中于世界画面，按钮自上而下排列、高度随内容。
 std::uint32_t AddScriptFrames(FrameTree& tree, const FrameLibrary& library, const UiSkin* skin,
     const ScriptFramePlan& plan, std::vector<Diagnostic>& diagnostics);
 

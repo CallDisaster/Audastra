@@ -3,6 +3,7 @@
 #include "EditorProject.h"
 #include "War3MapCore/Game/GameDataSource.h"
 #include "War3MapCore/Image/TextureImage.h"
+#include "War3MapCore/MapData/MapAuxiliary.h"
 #include "War3MapCore/Text/TextUtil.h"
 
 #include <QObject>
@@ -195,6 +196,12 @@ GameUiDefinitions LoadGameUiDefinitions(GameUiReader& reader) {
         for (const auto& toc : plan.tocs) library->LoadToc(read, toc, "map");
         result.tocCalls = std::move(plan.calls);
         result.scriptFrames = GameUi::FindScriptFrames(scripts);
+        // 脚本文字常写成 TRIGSTR_编号，显示时查地图字符串表（同样取最近一次保存的版本）。
+        if (auto strings = reader.ReadMapMember("war3map.wts", kMaxScriptBytes); strings.Succeeded() && strings.value) {
+            if (auto table = MapData::ParseStringTable(*strings.value); table.value) {
+                for (auto& entry : table.value->entries) result.scriptFrames.strings[entry.id] = std::move(entry.value);
+            }
+        }
         mapDiagnostics.insert(mapDiagnostics.end(), result.scriptFrames.diagnostics.begin(),
             result.scriptFrames.diagnostics.end());
         result.scripts = std::move(scripts);

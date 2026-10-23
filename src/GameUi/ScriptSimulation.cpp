@@ -437,8 +437,11 @@ private:
                 std::to_string(call.line) + " 行");
             return;
         }
-        if (!detail::IsSetter(spec->kind) || call.argumentCount == 0) return;
-        const auto frames = FramesOf(Pool().Argument(call, 0));
+        if (!detail::IsSetter(spec->kind) || spec->targetArg < 0 ||
+            static_cast<std::uint32_t>(spec->targetArg) >= call.argumentCount) {
+            return;
+        }
+        const auto frames = FramesOf(Pool().Argument(call, static_cast<std::uint32_t>(spec->targetArg)));
         if (frames.empty()) {
             NoteOnce("GAMEUI_SIMULATION_UNTRACED", std::string(call.text) + " 第 " + std::to_string(call.line) +
                 " 行作用的框架不是脚本创建后保存的变量，模拟跳过");
@@ -460,12 +463,17 @@ private:
             break;
         case CallKind::SetSize: value(1, Type::Real); value(2, Type::Real); break;
         case CallKind::SetWidth: case CallKind::SetHeight: value(1, Type::Real); break;
-        case CallKind::SetTexture: case CallKind::SetText: value(1, Type::String); break;
-        case CallKind::SetVisible: case CallKind::SetHidden: value(1, Type::Boolean); break;
+        case CallKind::SetTexture: value(1, Type::String); break;
+        case CallKind::SetText: case CallKind::AddButton:
+            if (spec->valueArg >= 0) value(static_cast<std::uint32_t>(spec->valueArg), Type::String);
+            break;
+        case CallKind::SetVisible: case CallKind::SetHidden:
+            if (spec->valueArg >= 0) value(static_cast<std::uint32_t>(spec->valueArg), Type::Boolean);
+            break;
         default: break;
         }
         for (const std::uint32_t frame : frames) {
-            if (detail::ApplyFrameCall(result_.frames[frame], spec->kind, args, relative)) {
+            if (detail::ApplyFrameCall(result_.frames[frame], *spec, args, relative)) {
                 touched_.insert(frame);
                 ++result_.appliedCalls;
             } else {
@@ -507,6 +515,15 @@ private:
             std::string key;
             if (target.kind == ExprKind::Name) key = std::string(target.text);
             else if (target.kind == ExprKind::Index) key = detail::CompactSource(SourceOf(target));
+            // 返回句柄的界面设置（如 DialogAddButton）：执行界面效果，返回值不模拟。
+            const Expr* assigned = statement.value >= 0 ? &Unwrap(statement.value) : nullptr;
+            if (assigned && assigned->kind == ExprKind::Call && assigned->left < 0) {
+                if (const auto spec = detail::LookupCall(assigned->text); spec && detail::IsSetter(spec->kind)) {
+                    Call(statement.value);
+                    if (!key.empty()) env_.erase(key);
+                    return;
+                }
+            }
             if (key.empty()) return;
             if (auto value = Eval(statement.value, StaticType(statement.target))) env_[key] = std::move(*value);
             else env_.erase(key);

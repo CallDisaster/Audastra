@@ -501,6 +501,18 @@ void GameUiModule::UpdateProperties() {
         row(script, tr("创建调用"), QStringLiteral("%1（%2）").arg(Text(frame.created.call),
             Text(std::string(UiApiFamilyName(frame.family)))));
         if (!frame.variable.empty()) row(script, tr("变量"), Text(frame.variable));
+        switch (frame.object) {
+        case ScriptObjectKind::TimerDialog: row(script, tr("对象"), tr("计时器窗口")); break;
+        case ScriptObjectKind::Dialog: row(script, tr("对象"), tr("对话框")); break;
+        case ScriptObjectKind::Leaderboard: row(script, tr("对象"), tr("排行榜")); break;
+        case ScriptObjectKind::Multiboard: row(script, tr("对象"), tr("多面板")); break;
+        default: break;
+        }
+        if (!frame.buttons.empty()) {
+            QStringList buttons;
+            for (const auto& button : frame.buttons) buttons.push_back(button.empty() ? tr("（运行时文字）") : Text(button));
+            row(script, tr("按钮"), buttons.join(QStringLiteral("、")));
+        }
         if (frame.nameDynamic) row(script, tr("框架名"), tr("运行时拼出"));
         QString parent = tr("未确定");
         if (frame.parent.target == ScriptFrameTarget::CodeArea || frame.parent.target == ScriptFrameTarget::Named ||

@@ -5,6 +5,7 @@
 #include "War3MapCore/GameUi/GameCodeLayout.h"
 #include "War3MapCore/GameUi/MapUiFiles.h"
 #include "War3MapCore/GameUi/ScriptFrames.h"
+#include "War3MapCore/MapData/MapAuxiliary.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
 #include "War3MapCore/Text/TextUtil.h"
 
@@ -131,6 +132,7 @@ nlohmann::json ScriptFrameJson(std::size_t index, const ScriptFrame& frame) {
     nlohmann::json json{{"index", index}, {"family", UiApiFamilyName(frame.family)}, {"created", SiteJson(frame.created)},
         {"name", frame.name}, {"name_dynamic", frame.nameDynamic}, {"parent", RefJson(frame.parent)},
         {"runtime_calls", frame.runtimeCalls}};
+    if (frame.object != ScriptObjectKind::Frame) json["object"] = ScriptObjectKindName(frame.object);
     if (!frame.variable.empty()) json["variable"] = frame.variable;
     if (!frame.frameType.empty()) json["type"] = frame.frameType;
     if (!frame.templateName.empty()) json["template"] = frame.templateName;
@@ -145,6 +147,7 @@ nlohmann::json ScriptFrameJson(std::size_t index, const ScriptFrame& frame) {
     if (frame.texture) json["texture"] = *frame.texture;
     if (frame.text) json["text"] = *frame.text;
     if (frame.visible) json["visible"] = *frame.visible;
+    if (!frame.buttons.empty()) json["buttons"] = frame.buttons;
     if (!frame.dynamic.empty()) json["dynamic"] = frame.dynamic;
     if (!frame.runtimeSamples.empty()) {
         auto& samples = json["runtime_samples"] = nlohmann::json::array();
@@ -246,6 +249,15 @@ int RunGameUiInspect(int argc, wchar_t* argv[]) {
         }
         scriptPlan = FindScriptFrames(scripts);
         AppendDiagnostics(diagnostics, scriptPlan.diagnostics);
+        if (map->HasFile("war3map.wts")) {
+            auto bytes = map->ReadFileBounded("war3map.wts", kMaxScriptBytes);
+            AppendDiagnostics(diagnostics, bytes.diagnostics);
+            if (bytes.Succeeded() && bytes.value) {
+                if (auto table = MapData::ParseStringTable(*bytes.value); table.value) {
+                    for (auto& entry : table.value->entries) scriptPlan.strings[entry.id] = std::move(entry.value);
+                }
+            }
+        }
     }
     UiSkin skin;
     if (auto bytes = reader(kSkinPath); bytes.Succeeded() && bytes.value) {
