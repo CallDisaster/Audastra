@@ -1434,7 +1434,7 @@ void EditorProjectTests::NativePathingWorkerPreflightAndFailure_data() {
     QTest::addColumn<QString>("scenario");
     QTest::newRow("preflight-executes-final-derivation") << QStringLiteral("preflight");
     QTest::newRow("missing-pathing-rule-is-not-minimap-fallback") << QStringLiteral("missing-rule");
-    QTest::newRow("special-pathing-is-not-minimap-fallback") << QStringLiteral("special");
+    QTest::newRow("special-pathing-missing-resources-is-not-minimap-fallback") << QStringLiteral("special");
     QTest::newRow("empty-pathing-declaration-is-rejected") << QStringLiteral("empty-declaration");
     QTest::newRow("late-edit-rejects-front-state-commit") << QStringLiteral("late-edit");
     QTest::newRow("missing-readback-rejects-front-state-commit") << QStringLiteral("missing-readback");
@@ -1481,9 +1481,15 @@ void EditorProjectTests::NativePathingWorkerPreflightAndFailure() {
         if (rejectsBeforeWrite) {
             QVERIFY(!job->succeeded && !job->minimapPreserve && !std::filesystem::exists(target));
             QVERIFY(!HasReadDiagnostic(*job, "MINIMAP_GENERATION_SKIPPED"));
-            const auto code = scenario == "empty-declaration" ? "PATHING_DRAFT_MISSING"
-                : scenario == "special" ? "TERRAIN_NATIVE_SPECIAL_UNSUPPORTED" : "TERRAIN_PATHING_RESOURCE_MISSING";
+            // 特殊模型已可使用实际元数据重建；这个夹具刻意没有对象表，仍须在写出前拒绝。
+            const auto code = scenario == "empty-declaration" ? "PATHING_DRAFT_MISSING" : "TERRAIN_PATHING_RESOURCE_MISSING";
             QVERIFY(HasReadDiagnostic(*job, code));
+            if (scenario == "special") {
+                QVERIFY(std::any_of(job->diagnostics.begin(), job->diagnostics.end(), [](const auto& diagnostic) {
+                    return diagnostic.code == "TERRAIN_PATHING_RESOURCE_MISSING"
+                        && diagnostic.message.find("Units/DestructableData.slk") != std::string::npos;
+                }));
+            }
             QVERIFY(!project.CommitMapSave(*job));
         } else {
             QVERIFY2(job->succeeded, job->diagnostics.empty() ? "worker failed" : job->diagnostics.back().message.c_str());
