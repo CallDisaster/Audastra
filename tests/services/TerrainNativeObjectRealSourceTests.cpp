@@ -360,7 +360,7 @@ void FixedRotationUsesPublicSave(const MapArchiveSession& original, const std::f
             || match.definition->repeat || match.definition->data
             || Text::LowerAscii(match.definition->sourceTable) != "doodaddata"
             || (match.definition->nativeValueType != NativeValueType::Real && match.definition->nativeValueType != NativeValueType::Unreal)) continue;
-        parent = object.key.rawcode; path = candidatePath; field = match.modification; wire = match.definition->nativeValueType;
+        parent = object.key.rawcode; path = candidatePath; field = match.modification; wire = *match.definition->nativeValueType;
         std::cout << "fixed_rotation_object=" << parent << " path=" << path << " field=" << field.fieldId
             << " wire=" << static_cast<int>(wire) << " winner=" << file.value->archiveName
             << " bytes=" << file.value->bytes.size() << " sha256=" << Take(Sha256(file.value->bytes)) << '\n';
