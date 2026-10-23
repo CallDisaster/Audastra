@@ -203,7 +203,7 @@ void SharedReplayPreservesOrderSpecialDeletionAndCompleteDirectoryOutput() {
     Fixture f(true, true); const auto directory = Directory(f); const auto intents = OrderedIntents(f);
     auto archiveResult = Take(ReplayFixture(f, *f.source, intents));
     auto directoryResult = Take(ReplayFixture(f, directory.Snapshot(), intents));
-    const auto* archive = archiveResult.session.get(); const auto* workspace = directoryResult.session.get();
+    const auto* archive = archiveResult.session.get(); auto* const workspace = directoryResult.session.get();
     Require(archiveResult.waterOwners.size() == 2 && directoryResult.waterOwners.size() == 2, "each water stroke captures a separate actual resource owner");
     Require(Take(SerializeMapTerrain(*archive->Terrain())) == Take(SerializeMapTerrain(*workspace->Terrain()))
         && archive->SerializePathingRestrictionDraft().value == workspace->SerializePathingRestrictionDraft().value,
