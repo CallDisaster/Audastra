@@ -220,10 +220,11 @@ void UniformDoodad(Fixture& fixture, bool overlap = false, bool fractional = fal
     UniformDoodadExpectedFootprint(fixture.Member("war3map.wpm"), overlap);
 }
 
-Bytes DoodadOverride(const char* path = nullptr, std::string field = "dpt0") {
+Bytes DoodadOverride(const char* path = nullptr, std::string field = "dpt0", bool custom = false) {
     auto document = Take(NativeObjectDocument::CreateEmpty(ObjectType::Doodad));
-    Check(document.AddOriginalObject("Doo0"));
-    if (path) Check(document.AddModification({ObjectType::Doodad, "Doo0"}, {std::move(field)},
+    if (custom) Check(document.AddCustomObject("NewD", "Doo0"));
+    else Check(document.AddOriginalObject("Doo0"));
+    if (path) Check(document.AddModification({ObjectType::Doodad, custom ? "NewD" : "Doo0"}, {std::move(field)},
         NativeValueType::String, std::string(path)));
     return Take(NativeObjectCodec(ObjectType::Doodad).Serialize(document));
 }
@@ -653,6 +654,61 @@ void UniformDoodadsSaveWaterGroundAndCliffs() {
     }
 }
 
+void NativeDoodadFootprintsUseTheNormalSaveAndUndoChain() {
+    // 覆盖继承、显式改路径、显式清空；旧/新WPM均为独立完整字节预期。
+    for (const bool custom : {false, true}) for (const unsigned mode : {0u, 1u, 2u}) {
+        Fixture f; UniformDoodad(f);
+        if (custom) {
+            auto placements = Take(ParseDoodadPlacements(f.Member("war3map.doo")));
+            placements.doodads.front().rawcode = "NewD";
+            f.Member("war3map.doo") = Take(placements.Serialize());
+        }
+        if (mode == 1) f.Member("Doodads/Doodads.slk") = Slk({"doodID", "code", "pathTex", "category"},
+            {{"Doo0", "Doo0", "PathTextures/unused-parent.tga", "E"}});
+        f.members.push_back({"war3map.w3d", DoodadOverride(mode == 0 ? nullptr : mode == 1 ? kUniformDoodadTexture.data() : "", "dpt0", custom)});
+        f.members.push_back({"Doodads/DoodadMetaData.slk", DoodadMetadata()});
+        if (mode == 2) std::fill(f.Member("war3map.wpm").begin() + 16, f.Member("war3map.wpm").end(), std::byte{0x19});
+        f.Open(); f.Paint();
+        const auto owner = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, kBudget));
+        Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, owner.CaptureBudgetBytes()));
+        Require(!TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, owner.CaptureBudgetBytes() - 1).Succeeded(),
+            "native path and standard inheritance share the exact cumulative budget");
+        const auto plan = f.Plan();
+        const auto output = f.Output(plan);
+        auto saved = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(f.root / "native-frozen.w3x", output)).path));
+        unsigned sequence = 0;
+        for (const auto* name : {"war3map.w3d", "Doodads/DoodadMetaData.slk", "Doodads/Doodads.slk"}) {
+            auto changed = f.Member(name);
+            if (std::string_view(name) == "war3map.w3d") changed = DoodadOverride(mode == 2 ? kUniformDoodadTexture.data() : "", "dpt0", custom);
+            else changed.push_back(std::byte{'\n'});
+            auto altered = output; altered.push_back({name, changed});
+            Require(!plan.VerifyForSave(*f.edits, f.archive->SourceSha256(), altered).Succeeded(),
+                "native record, metadata and actual standard parent stay frozen");
+            const std::array<MemberReplacement, 1> replacement{{{name, changed}}};
+            const auto tampered = Take(MapArchiveSession::Open(Take(saved.SaveCandidate(
+                f.root / ("native-tampered-" + std::to_string(sequence++) + ".w3x"), replacement)).path));
+            Require(!plan.VerifyReadback(tampered).Succeeded(), "native inheritance is also checked on independent readback");
+        }
+        auto deep = f.ExpectedPathing(true), shallow = f.ExpectedPathing(false);
+        if (mode != 2) { UniformDoodadExpectedFootprint(deep); UniformDoodadExpectedFootprint(shallow); }
+        f.SaveExpected("native-deep.w3x", f.ExpectedTerrain(true), deep);
+        Require(f.edits->Undo(), "undo saved native doodad terrain");
+        f.SaveExpected("native-shallow.w3x", f.ExpectedTerrain(false), shallow);
+        Require(f.edits->Redo(), "redo saved native doodad terrain");
+        f.SaveExpected("native-deep-again.w3x", f.ExpectedTerrain(true), deep);
+    }
+    Fixture bad; UniformDoodad(bad);
+    bad.members.push_back({"war3map.w3d", DoodadOverride(kUniformDoodadTexture.data())});
+    bad.members.push_back({"Doodads/DoodadMetaData.slk", DoodadMetadata()});
+    bad.Member("war3map.wpm")[16] ^= std::byte{0x04}; bad.Open(); bad.Paint();
+    const auto sha = bad.archive->SourceSha256();
+    const auto gate = bad.Plan().SaveGate();
+    Require(!gate.Succeeded() && HasCode(gate, "TERRAIN_PATHING_SOURCE_UNEXPLAINED"),
+        "native nonempty path cannot bypass unexplained source WPM");
+    Require(Take(Sha256File(bad.archive->SourcePath())) == sha && bad.edits->IsDirty(),
+        "failed native terrain save preserves source and unsaved draft");
+}
+
 void UniformDoodadTextureIsFrozenAndBudgeted() {
     Fixture f; UniformDoodad(f); f.Open(); f.Paint();
     const auto owner = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, kBudget));
@@ -793,7 +849,7 @@ void PatternedDoodadsUseTheNormalSaveAndUndoChain() {
         constexpr std::array<unsigned, 6> masks{0,0xc2,8,0x0c,4,0xca};
         for (unsigned i=0; i<masks.size(); ++i) wpm[16+(15+i/2)*32+16+i%2] |= static_cast<std::byte>(masks[i]);
     };
-    for (const unsigned operation : {0u,1u,2u}) {
+    for (const unsigned nativeKind : {0u,1u,2u}) for (const unsigned operation : {0u,1u,2u}) {
         Fixture f; StandardDoodad(f);
         f.Member("Doodads/Doodads.slk") = Slk({"doodID","code","pathTex","category","fixedRot"},
             {{"Doo0","Doo0",std::string(kUniformDoodadTexture),"E","-1"}});
@@ -801,6 +857,15 @@ void PatternedDoodadsUseTheNormalSaveAndUndoChain() {
         texture[16]=std::byte{24}; texture[17]=std::byte{32};
         for (unsigned b : {0,0,0, 1,0,0, 0,1,0, 0,0,1, 1,1,0, 1,0,1}) texture.push_back(static_cast<std::byte>(b));
         f.members.push_back({std::string(kUniformDoodadTexture),texture});
+        if (nativeKind != 0) {
+            f.members.push_back({"war3map.w3d", DoodadOverride(kUniformDoodadTexture.data(), "dpt0", nativeKind == 2)});
+            f.members.push_back({"Doodads/DoodadMetaData.slk", DoodadMetadata()});
+            if (nativeKind == 2) {
+                auto placements = Take(ParseDoodadPlacements(f.Member("war3map.doo")));
+                placements.doodads.front().rawcode = "NewD";
+                f.Member("war3map.doo") = Take(placements.Serialize());
+            }
+        }
         if (operation != 0) {
             f.original.header.groundTilesets.push_back("Tg02");
             for (auto& vertex:f.original.vertices) vertex.textureAndFlagsRaw=0;
@@ -856,6 +921,7 @@ int main() {
         MapAndGameMetadataWinnersRemainBound();
         DirectoryRecipePreservesReplayAndSourceChecks();
         UniformDoodadsSaveWaterGroundAndCliffs();
+        NativeDoodadFootprintsUseTheNormalSaveAndUndoChain();
         UniformDoodadTextureIsFrozenAndBudgeted();
         UniformDoodadGameTextureWinnerRemainsBound();
         UniformDoodadLongestPathHasAnExactCaptureBudget();

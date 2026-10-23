@@ -173,8 +173,9 @@ void ValidateDoodadAddress(const ObjectFieldDefinition& field) {
         || !field.nativeValueType)
         Fail("TERRAIN_NATIVE_OBJECT_METADATA", "装饰物字段需要DoodadData中的明确非重复零索引地址：" + field.fieldId);
 }
-std::string_view DoodadOriginalPath(const StandardObjectEntry& standard, const ObjectRecord& original,
-    const NativeObjectDocument& document, const ObjectFieldSchema& schema, std::string_view fallback) {
+std::string_view EffectiveDoodadPath(const StandardObjectEntry& standard, const ObjectRecord& original,
+    const NativeObjectDocument& document, const ObjectFieldSchema& schema, std::string_view fallback,
+    bool& poseModified) {
     ObjectFieldContext context;
     context.rawcode = standard.key.rawcode; context.baseCode = standard.Field("code");
     const auto field = schema.MatchSourceField(ObjectType::Doodad, "pathtex", context);
@@ -206,6 +207,7 @@ std::string_view DoodadOriginalPath(const StandardObjectEntry& standard, const O
             || !addresses.emplace(modification.key.fieldId, modification.key.variation.value_or(0),
                 modification.key.dataIndex.value_or(0)).second)
             Fail("TERRAIN_NATIVE_OBJECT_DOODAD_TYPE", "装饰物覆盖必须是唯一、类型明确且两索引为零的字段：" + standard.key.rawcode);
+        if (match.sourceKey == "category" || match.sourceKey == "fixedrot") poseModified = true;
         if (match.sourceKey != "pathtex") continue;
         if (overridden || match.definition != field.definition)
             Fail("TERRAIN_NATIVE_OBJECT_METADATA", "装饰物pathTex覆盖存在重复或别名。");
@@ -269,7 +271,8 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeDestructablePathing(std
         const auto* doodads = dynamic_cast<const NativeObjectDocument*>(doodadOwner.get());
         const auto destructableIndex = Index(destructables), doodadIndex = Index(doodads);
         std::set<std::string_view> inspected;
-        std::map<std::string_view, std::string_view, std::less<>> footprintPaths;
+        // path和标准父ID均借用同次解析的owner，最终结果另拥有字符串。
+        std::map<std::string_view, std::pair<std::string_view, std::string_view>, std::less<>> footprintPaths;
         for (const auto rawcode : placedRawcodes) {
             if (!Rawcode(rawcode)) Fail("TERRAIN_NATIVE_OBJECT_ID", "摆放记录rawcode无效。");
             if (!inspected.insert(rawcode).second) continue;
@@ -282,17 +285,25 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeDestructablePathing(std
             if ((standardDoodad || nativeDoodad) && (standard || native))
                 Fail("TERRAIN_NATIVE_OBJECT_CLASS_AMBIGUOUS", "摆放对象同时命中装饰物与可破坏物：" + std::string(rawcode));
             if (standardDoodad || nativeDoodad) {
-                if (!standardDoodad || (nativeDoodad && nativeDoodad->parentRawcode))
-                    Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "普通装饰物仅支持标准对象及其Original覆盖：" + std::string(rawcode));
+                if (nativeDoodad && nativeDoodad->parentRawcode) {
+                    const auto& parent = *nativeDoodad->parentRawcode;
+                    if (standardDoodad || doodadIndex.contains(parent) || destructableIndex.contains(parent)
+                        || catalog.Find(ObjectType::Destructable, parent))
+                        Fail("TERRAIN_NATIVE_OBJECT_INHERITANCE", "普通装饰物仅支持无原生父覆盖的一层标准继承：" + std::string(rawcode));
+                    standardDoodad = catalog.Find(ObjectType::Doodad, parent);
+                }
+                if (!standardDoodad)
+                    Fail("TERRAIN_NATIVE_OBJECT_INHERITANCE", "普通装饰物没有唯一标准父对象：" + std::string(rawcode));
                 // 原版明确禁用pathTex时，在加载贴图前清空占地宽高，注册器不写静态层。
                 // Field()会合并缺失与空值，故直接检查单元格是否存在；不再次解码或归一化。
                 const auto path = standardDoodad->fields.find("pathtex");
                 if (path == standardDoodad->fields.end())
                     Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "标准装饰物缺少明确pathTex单元格：" + std::string(rawcode));
                 std::string_view value = path->second;
+                bool poseModified = false;
                 if (nativeDoodad) {
                     if (!inputs[5])
-                        Fail("TERRAIN_NATIVE_OBJECT_DOODAD_METADATA_REQUIRED", "标准装饰物Original需要同一owner补捕获实际DoodadMetaData后完整重验。");
+                        Fail("TERRAIN_NATIVE_OBJECT_DOODAD_METADATA_REQUIRED", "装饰物原生覆盖需要同一owner补捕获实际DoodadMetaData后完整重验。");
                     if (!doodadSchema) {
                         const auto cells = UniqueTable(*inputs[5], "id");
                         auto options = schemaOptions;
@@ -300,11 +311,11 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeDestructablePathing(std
                         doodadSchema = Take(ObjectFieldSchema::Load(reader, options));
                         ValidateSchemaSource(cells, *doodadSchema, ObjectType::Doodad);
                     }
-                    value = DoodadOriginalPath(*standardDoodad, *nativeDoodad, *doodads, *doodadSchema, value);
+                    value = EffectiveDoodadPath(*standardDoodad, *nativeDoodad, *doodads, *doodadSchema, value, poseModified);
                 }
                 if (!value.empty() && value != "_" && value != "none") {
-                    if (nativeDoodad)
-                        Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "普通装饰物Original的非空占地尚未接入静态通行：" + std::string(rawcode));
+                    if (poseModified)
+                        Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "非空占地的类别或fixedRot原生覆盖尚未接入，不能沿用标准姿态：" + std::string(rawcode));
                     const auto category = standardDoodad->fields.find("category");
                     if (category == standardDoodad->fields.end() || category->second.size() != 1
                         || static_cast<unsigned char>(category->second.front()) < 33
@@ -319,7 +330,7 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeDestructablePathing(std
                     if (outputWork > maximumWorkingBytes - work)
                         Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "装饰物占地结果超过累计剩余预算。");
                     work += outputWork;
-                    footprintPaths.emplace(rawcode, value);
+                    footprintPaths.emplace(rawcode, std::pair{value, std::string_view(standardDoodad->key.rawcode)});
                 }
                 continue;
             }
@@ -366,9 +377,9 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeDestructablePathing(std
         MapData::TerrainNativeObjectPathing result;
         result.workBytes = work;
         result.footprints.reserve(footprintPaths.size());
-        for (const auto& [rawcode, path] : footprintPaths)
-            result.footprints.push_back({std::string(rawcode), std::string(path), 2,
-                FixedRotation(catalog.Find(ObjectType::Doodad, rawcode)->Field("fixedrot"))});
+        for (const auto& [rawcode, resolved] : footprintPaths)
+            result.footprints.push_back({std::string(rawcode), std::string(resolved.first), 2,
+                FixedRotation(catalog.Find(ObjectType::Doodad, resolved.second)->Field("fixedrot"))});
         return Result<MapData::TerrainNativeObjectPathing>::Success(std::move(result));
     } catch (Failure& failure) { return {{}, std::move(failure.diagnostics)}; }
     catch (const std::bad_alloc&) { return Result<MapData::TerrainNativeObjectPathing>::Failure(kSubsystem, "TERRAIN_NATIVE_OBJECT_BUDGET", "严格对象解析内存分配失败。"); }

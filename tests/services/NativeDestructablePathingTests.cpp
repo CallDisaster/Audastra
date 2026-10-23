@@ -566,8 +566,8 @@ void StandardDoodadsDoNotIgnoreNativeOverridesOrOtherObjects() {
         } else if (mode == 2) Check(document.AddCustomObject("D001", "D002"));
         else { Check(document.AddCustomObject("C001", "D001")); placed = "C001"; }
         fixture.SetNative(document);
-        Rejected(fixture.Validate({placed}), mode < 2 ? "TERRAIN_NATIVE_OBJECT_DOODAD_METADATA_REQUIRED" : "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED",
-            "相关Original需要实际第六来源；Custom仍不在允许范围");
+        Rejected(fixture.Validate({placed}), mode == 2 ? "TERRAIN_NATIVE_OBJECT_INHERITANCE" : "TERRAIN_NATIVE_OBJECT_DOODAD_METADATA_REQUIRED",
+            "相关原生记录需要实际元数据；与标准ID冲突的Custom仍拒绝");
     }
     for (const unsigned mode : {0u, 1u, 2u}) {
         Fixture fixture; prepare(fixture);
@@ -800,7 +800,9 @@ void NonemptyDoodadInspectionKeepsTheNarrowSourceDomain() {
         original.SetNative(document);
         if (mode != 3) Rejected(original.Inspect(), "TERRAIN_NATIVE_OBJECT_DOODAD_METADATA_REQUIRED", "相关Original仍需要实际第六来源");
         original.AddDoodadMetadata();
-        Rejected(original.Inspect(), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "空/无关字段/非空Original及Custom均不得进入标准非空首域");
+        if (mode == 3) Rejected(original.Inspect(), "TERRAIN_NATIVE_OBJECT_INHERITANCE", "Custom不能覆盖已有标准ID");
+        else Require(Take(original.Inspect()).footprints.size() == 1,
+            "完整元数据证明Original只保留或覆盖pathTex且不改姿态后，可返回非空实际路径");
     }
     for (const std::string value : {"", "_", "none"}) {
         Fixture cleared; prepare(cleared); cleared.doodads[0].erase("category"); cleared.Tables();
@@ -842,6 +844,46 @@ void PatternedFootprintReceivesTheActualFixedRotation() {
             "missing or ambiguous rotation is not defaulted; pixel owner decides whether angle matters");
     }
 }
+
+void DoodadOverridesUseBoundedStandardInheritance() {
+    for (const bool custom : {false, true}) for (const char* path : {"PathTextures\\changed.tga", ""}) {
+        Fixture f;
+        f.doodads[0]["pathTex"] = "PathTextures\\base.tga";
+        f.doodads[0]["category"] = "E"; f.doodads[0]["fixedRot"] = "90"; f.Tables(); f.AddDoodadMetadata();
+        auto document = Empty(ObjectType::Doodad);
+        const std::string id = custom ? "C001" : "D001";
+        if (custom) Check(document.AddCustomObject(id, "D001")); else Check(document.AddOriginalObject(id));
+        Modification(document, id, "Dt00", NativeValueType::String, std::string(path));
+        f.SetNative(document); const auto before = f.sources[kW3d].bytes;
+        const auto parsed = Take(f.Inspect({id, id}));
+        if (*path) {
+            Require(parsed.footprints.size() == 1 && parsed.footprints[0].rawcode == id
+                && parsed.footprints[0].pathTexture == path && parsed.footprints[0].fixedRotationDegrees == 90.0f,
+                "native path uses the placed ID and standard parent's actual rotation");
+        } else Require(parsed.footprints.empty(), "explicit custom empty path does not fall back to nonempty parent");
+        Take(f.Inspect({id, id}, parsed.workBytes));
+        Rejected(f.Inspect({id, id}, parsed.workBytes - 1), "TERRAIN_NATIVE_OBJECT_BUDGET", "inherited output remains budgeted");
+        Require(f.sources[kW3d].bytes == before, "inspection does not rewrite native custom records");
+        if (custom) {
+            Check(document.AddOriginalObject("D001")); f.SetNative(document);
+            Rejected(f.Inspect({id}), "TERRAIN_NATIVE_OBJECT_INHERITANCE", "custom parent with any native override remains unsupported");
+        }
+    }
+    for (const auto* key : {"category", "fixedRot"}) {
+        Fixture f; f.doodads[0]["pathTex"] = "PathTextures\\base.tga"; f.doodads[0]["category"] = "E";
+        f.doodadMetadata.push_back({{"ID", "Pos0"}, {"field", key}, {"slk", "DoodadData"}, {"type", "string"}, {"repeat", "0"}});
+        f.Tables(); f.AddDoodadMetadata();
+        auto document = Empty(ObjectType::Doodad); Check(document.AddOriginalObject("D001"));
+        Modification(document, "D001", "Pos0", NativeValueType::String, std::string("0")); f.SetNative(document);
+        Rejected(f.Inspect(), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "native pose override cannot borrow the standard pose");
+        Modification(document, "D001", "Dt00", NativeValueType::String, std::string{}); f.SetNative(document);
+        Require(Take(f.Inspect()).footprints.empty(), "explicit zero footprint has no rotation contribution");
+    }
+    Fixture chain; chain.doodads[0]["pathTex"] = "_"; chain.Tables(); chain.AddDoodadMetadata();
+    auto document = Empty(ObjectType::Doodad);
+    Check(document.AddCustomObject("C001", "D001")); Check(document.AddCustomObject("C002", "C001")); chain.SetNative(document);
+    Rejected(chain.Inspect({"C002"}), "TERRAIN_NATIVE_OBJECT_INHERITANCE", "recursive custom inheritance remains explicit and refused");
+}
 } // namespace
 
 int main() {
@@ -862,6 +904,7 @@ int main() {
         NonemptyDoodadInspectionOwnsUniqueBoundedResults();
         NonemptyDoodadInspectionKeepsTheNarrowSourceDomain();
         PatternedFootprintReceivesTheActualFixedRotation();
+        DoodadOverridesUseBoundedStandardInheritance();
         std::cout << "native destructable pathing: typed fields, bounded inheritance, unique sources and rejection paths passed\n";
         return 0;
     } catch (const std::exception& error) {
