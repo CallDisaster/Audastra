@@ -142,12 +142,12 @@ void SpecialWaterDeletionUsesPublicSave(const MapArchiveSession& original,
         << " native_editor_verified=false game_verified=false\n";
 }
 
-void DryRampRemovalUsesPublicSave(const MapArchiveSession& original,
+void DryRampChangeUsesPublicSave(const MapArchiveSession& original,
     const std::filesystem::path& directory, const std::filesystem::path& tool,
     const std::filesystem::path& game, const DoodadPlacements& doodads,
-    const std::vector<std::byte>& w3b, const std::vector<std::byte>& script) {
-    const auto scenario = directory / "dry-ramp-remove";
-    Require(std::filesystem::create_directory(scenario), "exclusive dry ramp removal scenario");
+    const std::vector<std::byte>& w3b, const std::vector<std::byte>& script, bool create) {
+    const auto scenario = directory / (create ? "dry-ramp-create" : "dry-ramp-remove");
+    Require(std::filesystem::create_directory(scenario), "exclusive dry ramp change scenario");
     auto before = *Take(ParseMapTerrain(Take(original.ReadMember("war3map.w3e")))).Snapshot();
     Require(before.header.width > 34 && before.header.height > 33, "dry ramp fixture fits the original terrain");
     for (std::uint32_t y = 0; y < before.header.height; ++y) for (std::uint32_t x = 0; x < before.header.width; ++x) {
@@ -155,7 +155,7 @@ void DryRampRemovalUsesPublicSave(const MapArchiveSession& original,
         Require(!vertex.HasWater() && !vertex.IsRamp(), "original dry ramp fixture starts without water or ramps");
         vertex.cliffAndLayerRaw = static_cast<std::uint8_t>((vertex.cliffAndLayerRaw & 0xf0) | (x <= 31 ? 3 : 2));
     }
-    for (const auto x : {31u, 32u, 33u}) before.vertices[32 * before.header.width + x].textureAndFlagsRaw |= 0x10;
+    if (!create) for (const auto x : {31u, 32u, 33u}) before.vertices[32 * before.header.width + x].textureAndFlagsRaw |= 0x10;
     RefreshTerrainDerived(before, 0, 0, before.header.width, before.header.height);
     const auto beforeW3e = Take(SerializeMapTerrain(before));
     const auto doo = Take(doodads.Serialize());
@@ -164,13 +164,16 @@ void DryRampRemovalUsesPublicSave(const MapArchiveSession& original,
     const auto rules = Take(TerrainPathingSave::CaptureNative(seeded, before, before, game, kSaveBytes));
     const auto oldNative = Take(rules.GenerateNative(before, kSaveBytes));
     auto after = before;
-    for (const auto x : {31u, 32u, 33u}) after.vertices[32 * after.header.width + x].textureAndFlagsRaw &= 0xef;
+    for (const auto x : {31u, 32u, 33u}) {
+        auto& flags = after.vertices[32 * after.header.width + x].textureAndFlagsRaw;
+        flags = static_cast<std::uint8_t>(create ? flags | 0x10 : flags & 0xef);
+    }
     const auto afterW3e = Take(SerializeMapTerrain(after));
     const std::array<MemberReplacement, 1> afterMembers{{{"war3map.w3e", afterW3e}}};
     const auto expectedArchive = Take(MapArchiveSession::Open(Take(seeded.SaveCandidate(scenario / "expected-inputs.w3x", afterMembers)).path));
     const auto newRules = Take(TerrainPathingSave::CaptureNative(expectedArchive, after, after, game, kSaveBytes));
     const auto newNative = Take(newRules.GenerateNative(after, kSaveBytes));
-    Require(oldNative != newNative, "real dry ramp removal changes native pathing beyond the original cliff wall");
+    Require(oldNative != newNative, "real dry ramp change updates native pathing at the cliff wall");
     auto oldWpm = Take(seeded.ReadMember("war3map.wpm"));
     Require(oldWpm.size() == oldNative.size() + 16 && newNative.size() == oldNative.size(), "real ramp pathing dimensions");
     auto expectedWpm = oldWpm;
@@ -185,19 +188,19 @@ void DryRampRemovalUsesPublicSave(const MapArchiveSession& original,
     request.sourceMap = source.SourcePath(); request.targetCandidate = scenario / "saved.w3x";
     request.toolRoot = tool; request.gameRoot = game; request.expectedSourceSha256 = source.SourceSha256();
     request.expectedTerrainSha256 = Take(Sha256(beforeW3e));
-    MapEditTerrainStroke stroke; stroke.brush.kind = TerrainBrushKind::Ramp; stroke.brush.value = false;
+    MapEditTerrainStroke stroke; stroke.brush.kind = TerrainBrushKind::Ramp; stroke.brush.value = create;
     stroke.points = {{before.header.offset[0] + 31.5 * 128, before.header.offset[1] + 32 * 128}};
     request.terrainStrokes = {stroke};
     const auto saved = Take(SaveMapEditCandidate(request));
     const auto readback = Take(MapArchiveSession::Open(saved.candidate));
     Require(saved.scriptPreserved && Take(readback.ReadMember("war3map.j")) == script, "public dry ramp save preserves checked script");
     Require(Take(readback.ReadMember("war3map.w3e")) == afterW3e && Take(readback.ReadMember("war3map.wpm")) == expectedWpm,
-        "public dry ramp removal reads back complete coupled W3E and WPM");
+        "public dry ramp change reads back complete coupled W3E and WPM");
     Require(Take(readback.ReadMember("war3map.doo")) == doo && Take(readback.ReadMember("war3map.w3b")) == w3b,
         "public dry ramp save preserves native ordinary objects");
     Check(newRules.VerifyReadback(readback, kSaveBytes));
     Require(Take(Sha256File(source.SourcePath())) == source.SourceSha256(), "public dry ramp save leaves source untouched");
-    std::cout << "public_dry_ramp_remove_passed source_sha256=" << source.SourceSha256()
+    std::cout << (create ? "public_dry_ramp_create_passed source_sha256=" : "public_dry_ramp_remove_passed source_sha256=") << source.SourceSha256()
         << " candidate_sha256=" << saved.candidateSha256 << " native_editor_verified=false game_verified=false\n";
 }
 
@@ -448,7 +451,8 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
             }
         }
         SpecialWaterDeletionUsesPublicSave(original, directory.path, tool, game, uniformRawcode, doodads, w3b, sourceScript);
-        DryRampRemovalUsesPublicSave(original, directory.path, tool, game, doodads, w3b, sourceScript);
+        for (const bool createRamp : {false, true})
+            DryRampChangeUsesPublicSave(original, directory.path, tool, game, doodads, w3b, sourceScript, createRamp);
     } catch (...) {
         directory.keep = true;
         std::cerr << "Real-source failure artifacts preserved at " << IO::PathUtf8(directory.path) << '\n';
