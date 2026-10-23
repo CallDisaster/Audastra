@@ -759,10 +759,9 @@ void ForwardJournalPreservesSavedRestrictionOverlapAndUndo() {
     Require(f.edits->EditTerrain(restriction, std::span(&point, 1), false).Succeeded(), "new prefix erases only saved project intent");
     const auto erasedDraft = Take(f.edits->SerializePathingRestrictionDraft());
     const auto rules = f.Rules();
-    TerrainWaterBrush water; water.size = 1; water.randomSeed = 881;
+    TerrainWaterStrokeOptions water; water.cliffTexture = 1; water.randomSeed = 881;
     auto prepared = Take(PrepareTerrainWaterEdit(*f.edits, f.Document(), f.Binding(), rules,
-        TerrainWaterStrokeOptions{water.kind, water.shape, water.size, water.cliffTexture, water.randomSeed, true},
-        std::span(&f.point, 1), false));
+        water, std::span(&f.point, 1), false));
     Require(ApplyTerrainEdit(*f.edits, f.Document(), prepared).Succeeded(), "water follows the restriction erase in the same typed prefix");
     const auto journal = Take(TerrainPathingSave::CaptureJournal(*f.source, *f.edits));
     Require(journal.strokes.size() == 2 && journal.baselinePathingLayers == savedDraft,
