@@ -593,6 +593,34 @@ void DirectSaveUsesOrderedWaterAndOriginalScriptGate() {
         Require(HasCode(heightOnly, "SAVE_NO_TERRAIN_CHANGE"), "water-height on dry ground remains distinct from creating shallow or deep water");
     }
 }
+
+void DirectSaveAllowsSpecialWaterDeletionWithoutPlacementFollow() {
+    for (const auto kind : {TerrainWaterBrushKind::Shallow, TerrainWaterBrushKind::Deep}) {
+        Fixture f(true, true); auto request = f.Request();
+        auto& stroke = request.terrainStrokes.front();
+        stroke.waterBrush->kind = kind; stroke.followDoodads = false;
+        TerrainStrokeIntent intent;
+        intent.waterBrush = stroke.waterBrush; intent.points = {f.point}; intent.followDoodads = false;
+        const auto replayed = Take(ReplayFixture(f, *f.source, std::span(&intent, 1)));
+        const auto replacements = replayed.session->Replacements();
+        Require(std::any_of(replacements.begin(), replacements.end(), [](const auto& member) {
+                return member.name == "war3map.doo";
+            }) && std::none_of(replacements.begin(), replacements.end(), [](const auto& member) {
+                return member.name == "war3mapUnits.doo";
+            }), "water without placement follow replaces special DOO but never Units");
+        const auto specials = Take(replayed.session->Snapshot(MapDataKind::Doodads, kResourceBudget)).Doodads()->specialDoodads;
+        Require(specials.size() == 2 && specials[0].position == (std::array<std::int32_t, 2>{28, 28})
+            && specials[1].position == (std::array<std::int32_t, 2>{24, 24}),
+            "the direct-save fixture actually deletes duplicate special records with native swap-last ordering");
+        const auto prepared = SaveMapEditCandidate(request);
+        Require(!prepared.Succeeded() && !prepared.value && HasCode(prepared, "SCRIPT_TOOLCHAIN_MISSING")
+            && !HasCode(prepared, "SAVE_EDIT_SCOPE_INVALID"),
+            "public save permits proven special-water deletion without placement follow and reaches the original script gate");
+        Require(Take(Sha256File(f.source->SourcePath())) == f.source->SourceSha256()
+            && !std::filesystem::exists(request.targetCandidate),
+            "the missing compiler leaves the original archive intact and publishes no special-water candidate");
+    }
+}
 } // namespace
 
 int main() {
@@ -609,6 +637,7 @@ int main() {
         SavedWaterStrokeUndoAndRedoRebaseAgainstEachSavedSource();
         DirectSaveRejectsEveryConflictingOrdinaryField();
         DirectSaveUsesOrderedWaterAndOriginalScriptGate();
+        DirectSaveAllowsSpecialWaterDeletionWithoutPlacementFollow();
         std::cout << "TerrainWaterEditServiceTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
