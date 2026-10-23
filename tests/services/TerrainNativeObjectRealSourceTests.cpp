@@ -63,8 +63,8 @@ void SpecialWaterDeletionUsesPublicSave(const MapArchiveSession& original,
     const std::filesystem::path& directory, const std::filesystem::path& tool,
     const std::filesystem::path& game, const std::string& rawcode,
     const DoodadPlacements& ordinary, const std::vector<std::byte>& w3b,
-    const std::vector<std::byte>& script) {
-    const auto scenario = directory / "special-water-delete";
+    const std::vector<std::byte>& script, bool repeat = false) {
+    const auto scenario = directory / (repeat ? "special-water-delete-sequence" : "special-water-delete");
     Require(std::filesystem::create_directory(scenario), "exclusive special water deletion scenario");
     const auto parsed = Take(ParseMapTerrain(Take(original.ReadMember("war3map.w3e"))));
     const auto before = *parsed.Snapshot();
@@ -80,12 +80,24 @@ void SpecialWaterDeletionUsesPublicSave(const MapArchiveSession& original,
     const TerrainStrokePoint point{before.header.offset[0] + 32 * 128, before.header.offset[1] + 32 * 128};
     const auto anchor = Take(CaptureTerrainWaterStrokeAnchor(before, point));
     const TerrainWaterBrush brush{TerrainWaterBrushKind::Shallow, TerrainBrushShape::Square, 1, 0, 42, anchor};
-    const auto candidate = Take(PrepareTerrainWaterStroke(before, *brushResources.WaterBrushRules(), brush,
+    auto candidate = Take(PrepareTerrainWaterStroke(before, *brushResources.WaterBrushRules(), brush,
         std::span(&point, 1), placements, brushResources.WaterSpecialShapes()));
     Require(candidate.result.removedSpecialSourceRecords == std::vector<std::uint32_t>{0}
         && candidate.doodads.specialDoodads.size() == 1
         && candidate.doodads.specialDoodads.front().position == placements.specialDoodads.back().position,
         "actual water stroke removes the intersected model and retains the distant swap-last model");
+    if (repeat) {
+        const auto nextResources = Take(TerrainPathingSave::CaptureWaterBrushRules(seeded, before,
+            candidate.terrain, candidate.doodads, game, true, kSaveBytes));
+        const TerrainStrokePoint next{before.header.offset[0] + 44 * 128, before.header.offset[1] + 44 * 128};
+        const auto nextAnchor = Take(CaptureTerrainWaterStrokeAnchor(candidate.terrain, next));
+        const TerrainWaterBrush nextBrush{TerrainWaterBrushKind::Shallow, TerrainBrushShape::Square, 1, 0, 43, nextAnchor};
+        auto second = Take(PrepareTerrainWaterStroke(candidate.terrain, *nextResources.WaterBrushRules(), nextBrush,
+            std::span(&next, 1), candidate.doodads, nextResources.WaterSpecialShapes()));
+        Require(second.result.removedSpecialSourceRecords == std::vector<std::uint32_t>{0}
+            && second.doodads.specialDoodads.empty(), "second stroke consumes the current swap-last DOO state");
+        candidate = std::move(second);
+    }
     const auto afterDoo = Take(candidate.doodads.Serialize());
     const auto afterW3e = Take(SerializeMapTerrain(candidate.terrain));
     const auto oldRules = Take(TerrainPathingSave::CaptureNative(seeded, before, before, game, kSaveBytes));
@@ -119,6 +131,11 @@ void SpecialWaterDeletionUsesPublicSave(const MapArchiveSession& original,
     TerrainWaterStrokeOptions options;
     options.shape = TerrainBrushShape::Square; options.randomSeed = 42;
     stroke.waterBrush = options; request.terrainStrokes = {stroke};
+    if (repeat) {
+        stroke.points = {{44, 44}};
+        stroke.waterBrush->randomSeed = 43;
+        request.terrainStrokes.push_back(stroke);
+    }
     const auto saved = Take(SaveMapEditCandidate(request));
     const auto readback = Take(MapArchiveSession::Open(saved.candidate));
     Require(saved.scriptPreserved && Take(readback.ReadMember("war3map.j")) == script,
@@ -137,7 +154,7 @@ void SpecialWaterDeletionUsesPublicSave(const MapArchiveSession& original,
     Check(newRules.VerifyReadback(readback, kSaveBytes));
     Require(Take(Sha256File(source.SourcePath())) == source.SourceSha256(),
         "public water deletion leaves its original map copy untouched");
-    std::cout << "public_special_water_delete_passed object=" << rawcode
+    std::cout << (repeat ? "public_special_water_delete_sequence_passed object=" : "public_special_water_delete_passed object=") << rawcode
         << " source_sha256=" << source.SourceSha256() << " candidate_sha256=" << saved.candidateSha256
         << " native_editor_verified=false game_verified=false\n";
 }
@@ -451,6 +468,7 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
             }
         }
         SpecialWaterDeletionUsesPublicSave(original, directory.path, tool, game, uniformRawcode, doodads, w3b, sourceScript);
+        SpecialWaterDeletionUsesPublicSave(original, directory.path, tool, game, uniformRawcode, doodads, w3b, sourceScript, true);
         for (const bool createRamp : {false, true})
             DryRampChangeUsesPublicSave(original, directory.path, tool, game, doodads, w3b, sourceScript, createRamp);
     } catch (...) {
