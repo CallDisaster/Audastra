@@ -451,8 +451,9 @@ std::vector<MapArchiveMember> FixedRotationQtMembers(bool custom, float degrees,
     for (auto& member : members) if (member.name == "war3map.doo") member.data = *doo.value;
     // 独立文字矩阵：wire角0先吸附XY。fixedRot=0得到2×4起点(16,14)，90得到4×2起点(15,15)。
     // 标准270具有不同矩阵；忽略覆盖或按最终角度重新吸附均不能得到这些完整WPM。
-    constexpr std::array<std::uint8_t, 8> zero{0, 6, 4, 0x35, 2, 0, 0x31, 4};
-    constexpr std::array<std::uint8_t, 8> ninety{0x31, 2, 4, 0, 4, 0, 0x35, 6};
+    // 此处直接写文件位：内部blue04→WPM08、green02→04、red31→C2，混色35→CA、06→0C。
+    constexpr std::array<std::uint8_t, 8> zero{0, 0x0c, 8, 0xca, 4, 0, 0xc2, 8};
+    constexpr std::array<std::uint8_t, 8> ninety{0xc2, 4, 8, 0, 8, 0, 0xca, 0x0c};
     const bool forceZero = degrees == 0;
     const auto& matrix = forceZero ? zero : ninety;
     const std::size_t x0 = forceZero ? 16 : 15, y0 = forceZero ? 14 : 15, width = forceZero ? 2 : 4;
@@ -1887,8 +1888,8 @@ void EditorProjectTests::FixedRotationNormalSaveAndUndoRedo() {
     QFETCH(bool, custom); QFETCH(float, degrees); QFETCH(bool, inPlace);
     const auto members = FixedRotationQtMembers(custom, degrees); QVERIFY(!members.empty());
     // 字面矩阵的代表点同时区分标准270回退、有效零覆盖和90覆盖；完整结果由共用循环逐字核对。
-    QCOMPARE(members[2].data[16 + 15 * 32 + 15], degrees == 0 ? std::byte{0x19} : std::byte{0x39});
-    QCOMPARE(members[2].data[16 + 14 * 32 + 17], degrees == 0 ? std::byte{0x1f} : std::byte{0x19});
+    QCOMPARE(members[2].data[16 + 15 * 32 + 15], degrees == 0 ? std::byte{0x19} : std::byte{0xdb});
+    QCOMPARE(members[2].data[16 + 14 * 32 + 17], degrees == 0 ? std::byte{0x1d} : std::byte{0x19});
     CheckNativeDoodadNormalSaveAndUndoRedo(members, inPlace);
 }
 
