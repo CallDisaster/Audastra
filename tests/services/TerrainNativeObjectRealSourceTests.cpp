@@ -162,8 +162,9 @@ void SpecialWaterDeletionUsesPublicSave(const MapArchiveSession& original,
 void DryRampChangeUsesPublicSave(const MapArchiveSession& original,
     const std::filesystem::path& directory, const std::filesystem::path& tool,
     const std::filesystem::path& game, const DoodadPlacements& doodads,
-    const std::vector<std::byte>& w3b, const std::vector<std::byte>& script, bool create) {
-    const auto scenario = directory / (create ? "dry-ramp-create" : "dry-ramp-remove");
+    const std::vector<std::byte>& w3b, const std::vector<std::byte>& script, bool create, bool distantWater = false) {
+    const auto scenario = directory / (std::string(create ? "dry-ramp-create" : "dry-ramp-remove")
+        + (distantWater ? "-with-distant-water" : ""));
     Require(std::filesystem::create_directory(scenario), "exclusive dry ramp change scenario");
     auto before = *Take(ParseMapTerrain(Take(original.ReadMember("war3map.w3e")))).Snapshot();
     Require(before.header.width > 34 && before.header.height > 33, "dry ramp fixture fits the original terrain");
@@ -173,6 +174,11 @@ void DryRampChangeUsesPublicSave(const MapArchiveSession& original,
         vertex.cliffAndLayerRaw = static_cast<std::uint8_t>((vertex.cliffAndLayerRaw & 0xf0) | (x <= 31 ? 3 : 2));
     }
     if (!create) for (const auto x : {31u, 32u, 33u}) before.vertices[32 * before.header.width + x].textureAndFlagsRaw |= 0x10;
+    if (distantWater) {
+        auto& wet = before.vertices[4 * before.header.width + 4];
+        wet.textureAndFlagsRaw |= 0x40;
+        wet.waterHeightAndFlagsRaw = static_cast<std::uint16_t>((wet.groundHeightRaw & 0x3fff) + 1024);
+    }
     RefreshTerrainDerived(before, 0, 0, before.header.width, before.header.height);
     const auto beforeW3e = Take(SerializeMapTerrain(before));
     const auto doo = Take(doodads.Serialize());
@@ -218,7 +224,8 @@ void DryRampChangeUsesPublicSave(const MapArchiveSession& original,
     Check(newRules.VerifyReadback(readback, kSaveBytes));
     Require(Take(Sha256File(source.SourcePath())) == source.SourceSha256(), "public dry ramp save leaves source untouched");
     std::cout << (create ? "public_dry_ramp_create_passed source_sha256=" : "public_dry_ramp_remove_passed source_sha256=") << source.SourceSha256()
-        << " candidate_sha256=" << saved.candidateSha256 << " native_editor_verified=false game_verified=false\n";
+        << " candidate_sha256=" << saved.candidateSha256 << " distant_water=" << distantWater
+        << " native_editor_verified=false game_verified=false\n";
 }
 
 void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const std::filesystem::path& game) {
@@ -469,8 +476,8 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         }
         SpecialWaterDeletionUsesPublicSave(original, directory.path, tool, game, uniformRawcode, doodads, w3b, sourceScript);
         SpecialWaterDeletionUsesPublicSave(original, directory.path, tool, game, uniformRawcode, doodads, w3b, sourceScript, true);
-        for (const bool createRamp : {false, true})
-            DryRampChangeUsesPublicSave(original, directory.path, tool, game, doodads, w3b, sourceScript, createRamp);
+        for (const bool distantWater : {false, true}) for (const bool createRamp : {false, true})
+            DryRampChangeUsesPublicSave(original, directory.path, tool, game, doodads, w3b, sourceScript, createRamp, distantWater);
     } catch (...) {
         directory.keep = true;
         std::cerr << "Real-source failure artifacts preserved at " << IO::PathUtf8(directory.path) << '\n';
