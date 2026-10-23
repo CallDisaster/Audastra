@@ -50,7 +50,7 @@ std::size_t Accepted(const Result<std::size_t>& result, std::string_view label) 
     return *result.value;
 }
 
-void Rejected(const Result<std::size_t>& result, std::string_view code, std::string_view label) {
+template<class T> void Rejected(const Result<T>& result, std::string_view code, std::string_view label) {
     const bool error = std::any_of(result.diagnostics.begin(), result.diagnostics.end(), [](const auto& diagnostic) {
         return diagnostic.severity == DiagnosticSeverity::Error;
     });
@@ -185,6 +185,10 @@ struct Fixture {
     }
     Result<std::size_t> Validate(std::initializer_list<std::string_view> ids = {"S002"}, std::size_t budget = kWorkingBytes) const {
         return ValidateNativeDestructablePathing(std::span(ids.begin(), ids.size()), sources, budget);
+    }
+    Result<MapData::TerrainNativeObjectPathing> Inspect(std::initializer_list<std::string_view> ids = {"D001"},
+        std::size_t budget = kWorkingBytes) const {
+        return InspectNativeDestructablePathing(std::span(ids.begin(), ids.size()), sources, budget);
     }
 };
 
@@ -716,6 +720,111 @@ void CompleteSourcesAndWorkingBudget() {
     std::reverse(reordered.sources.begin(), reordered.sources.end());
     Accepted(reordered.Validate(), "来源按逻辑名字绑定，不依赖调用者排列");
 }
+
+void NonemptyDoodadInspectionOwnsUniqueBoundedResults() {
+    Fixture fixture;
+    const std::string path = "PathTextures\\SyntheticUniform.tga";
+    fixture.doodads[0]["pathTex"] = path; fixture.doodads[0]["category"] = "E";
+    fixture.doodads.push_back({{"doodID", "D002"}, {"pathTex", path}, {"category", "c"}});
+    fixture.Tables();
+    auto result = Take(fixture.Inspect({"D002", "S002", "D001", "D002"}));
+    Require(result.footprints.size() == 2 && result.footprints[0].rawcode == "D001"
+        && result.footprints[1].rawcode == "D002", "相同rawcode只列一次，不同rawcode共用路径仍各自列出并稳定排序");
+    for (const auto& footprint : result.footprints)
+        Require(footprint.pathTexture == path && footprint.snapCells == 2, "实际路径原样保留，非C与小写c均为2格");
+    Require(Take(fixture.Inspect({"D002", "S002", "D001", "D002"}, result.workBytes)).workBytes == result.workBytes,
+        "包含临时索引、拥有字符串和最终结构的精确预算可以重用");
+    Rejected(fixture.Inspect({"D002", "S002", "D001", "D002"}, result.workBytes - 1),
+        "TERRAIN_NATIVE_OBJECT_BUDGET", "少一字节不能返回部分占地列表");
+    Rejected(fixture.Validate({"D001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "旧接口仍拒绝非空占地");
+    std::reverse(fixture.sources.begin(), fixture.sources.end());
+    Require(Take(fixture.Inspect({"D001"})).footprints.front().pathTexture == path, "结构化解析仍按来源名字绑定");
+    fixture.sources.clear(); fixture.doodads.clear();
+    Require(result.footprints[0].pathTexture == path && result.footprints[1].rawcode == "D002",
+        "返回字符串拥有内容，不借用catalog或调用方来源的生命周期");
+
+    for (const std::string value : {"", "_", "none"}) {
+        Fixture disabled; disabled.doodads[0]["pathTex"] = value; disabled.Tables();
+        const auto inspection = Take(disabled.Inspect());
+        Require(inspection.footprints.empty() && inspection.workBytes == Accepted(disabled.Validate({"D001"}), "旧无占地域"),
+            "旧无占地域不要求类别、不分配占地结果且两入口工作额度一致");
+    }
+    for (const std::string value : {std::string("NONE"), std::string(" none "), std::string("\"none\""), std::string(4096, 'p')}) {
+        Fixture literal; literal.doodads[0]["pathTex"] = value; literal.doodads[0]["category"] = "E"; literal.Tables();
+        const auto inspection = Take(literal.Inspect());
+        Require(inspection.footprints.size() == 1 && inspection.footprints[0].pathTexture == value,
+            "非禁用路径不经trim/二次解码，真实资源是否可用留给owner");
+        Take(literal.Inspect({"D001"}, inspection.workBytes));
+        Rejected(literal.Inspect({"D001"}, inspection.workBytes - 1), "TERRAIN_NATIVE_OBJECT_BUDGET", "长路径也完整计入返回预算");
+    }
+    Fixture many; many.doodads.clear();
+    std::vector<std::string> ids;
+    for (unsigned i = 0; i < 32; ++i) {
+        const auto id = "D0" + std::to_string(i / 10) + std::to_string(i % 10);
+        ids.push_back(id); many.doodads.push_back({{"doodID", id}, {"pathTex", path}, {"category", "E"}});
+    }
+    many.Tables();
+    std::vector<std::string_view> placed;
+    for (const auto& id : ids) { placed.push_back(id); placed.push_back(id); }
+    const auto inspection = Take(InspectNativeDestructablePathing(placed, many.sources, kWorkingBytes));
+    Require(inspection.footprints.size() == ids.size(), "多对象只预留并返回唯一rawcode列表");
+    Take(InspectNativeDestructablePathing(placed, many.sources, inspection.workBytes));
+    Rejected(InspectNativeDestructablePathing(placed, many.sources, inspection.workBytes - 1),
+        "TERRAIN_NATIVE_OBJECT_BUDGET", "多对象累计结果预算少一字节仍拒绝整批");
+}
+
+void NonemptyDoodadInspectionKeepsTheNarrowSourceDomain() {
+    const auto prepare = [](Fixture& fixture) {
+        fixture.doodads[0]["pathTex"] = "PathTextures\\synthetic.tga";
+        fixture.doodads[0]["category"] = "E"; fixture.Tables();
+    };
+    Fixture missing; prepare(missing); missing.doodads[0].erase("category"); missing.Tables();
+    Rejected(missing.Inspect(), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "非空占地不能猜缺失类别");
+    missing.doodads.push_back({{"doodID", "D002"}, {"category", "E"}, {"pathTex", "_"}}); missing.Tables();
+    Rejected(missing.Inspect(), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "有category列但目标行缺格也不能猜类别");
+    for (const std::string category : {"", "_", "C", "CC", " C", "C ", "\"C\"", " ", "\t", "\x7f", "\xc3\xa9"}) {
+        Fixture invalid; prepare(invalid); invalid.doodads[0]["category"] = category; invalid.Tables();
+        const auto result = invalid.Inspect();
+        Rejected(result, "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "类别必须是明确非C、非_的单可打印ASCII字符");
+        if (category == "C") Require(std::any_of(result.diagnostics.begin(), result.diagnostics.end(), [](const auto& diagnostic) {
+            return diagnostic.message.find("类别目录") != std::string::npos;
+        }), "C类明确说明尚缺实际类别目录绑定");
+    }
+    for (const unsigned mode : {0u, 1u, 2u, 3u}) {
+        Fixture original; prepare(original);
+        auto document = Empty(ObjectType::Doodad);
+        if (mode == 3) Check(document.AddCustomObject("D001", "D002"));
+        else Check(document.AddOriginalObject("D001"));
+        if (mode == 1) Modification(document, "D001", "Nm00", NativeValueType::String, std::string("display"));
+        if (mode == 2) Modification(document, "D001", "Dt00", NativeValueType::String, std::string("PathTextures\\synthetic.tga"));
+        original.SetNative(document);
+        if (mode != 3) Rejected(original.Inspect(), "TERRAIN_NATIVE_OBJECT_DOODAD_METADATA_REQUIRED", "相关Original仍需要实际第六来源");
+        original.AddDoodadMetadata();
+        Rejected(original.Inspect(), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "空/无关字段/非空Original及Custom均不得进入标准非空首域");
+    }
+    for (const std::string value : {"", "_", "none"}) {
+        Fixture cleared; prepare(cleared); cleared.doodads[0].erase("category"); cleared.Tables();
+        auto document = Empty(ObjectType::Doodad); Check(document.AddOriginalObject("D001"));
+        Modification(document, "D001", "Dt00", NativeValueType::String, value);
+        cleared.SetNative(document); cleared.AddDoodadMetadata();
+        Require(Take(cleared.Inspect()).footprints.empty(), "Original明确清空标准非空占地继续走旧域，不新增category要求");
+    }
+    Fixture unrelated; prepare(unrelated);
+    auto document = Empty(ObjectType::Doodad); Check(document.AddOriginalObject("D002")); unrelated.SetNative(document);
+    Require(Take(unrelated.Inspect()).footprints.size() == 1 && unrelated.sources.size() == 5,
+        "无关W3D不引入第六来源，也不拒绝标准非空对象");
+    for (const auto* later : {"NONE", "S001"}) {
+        Fixture mixed; prepare(mixed);
+        Rejected(mixed.Inspect({"D001", later}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "前面的占地描述不能掩盖后续未知或walkable对象");
+        Rejected(mixed.Inspect({later, "D001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "整批拒绝不依赖对象顺序");
+    }
+    Fixture ambiguous; prepare(ambiguous); ambiguous.destructables.push_back({{"destructableID", "D001"}, {"walkable", "0"}}); ambiguous.Tables();
+    Rejected(ambiguous.Inspect(), "TERRAIN_NATIVE_OBJECT_CLASS_AMBIGUOUS", "新增占地结果不能绕开跨类别唯一性");
+    Fixture w3b; prepare(w3b); w3b.SetNative(Original("D001"));
+    Rejected(w3b.Inspect(), "TERRAIN_NATIVE_OBJECT_CLASS_AMBIGUOUS", "同rawcode的W3B仍拒绝类别歧义");
+    Fixture broken; prepare(broken); broken.sources[kW3d] = {"war3map.w3d", true, TextBytes("broken")};
+    Rejected(broken.Inspect(), {}, "未知或损坏W3D不能因为标准表非空而跳过");
+}
 } // namespace
 
 int main() {
@@ -733,6 +842,8 @@ int main() {
         StandardDoodadsDoNotIgnoreNativeOverridesOrOtherObjects();
         DoodadOriginalUsesExactMetadataAndStrings();
         CompleteSourcesAndWorkingBudget();
+        NonemptyDoodadInspectionOwnsUniqueBoundedResults();
+        NonemptyDoodadInspectionKeepsTheNarrowSourceDomain();
         std::cout << "native destructable pathing: typed fields, bounded inheritance, unique sources and rejection paths passed\n";
         return 0;
     } catch (const std::exception& error) {

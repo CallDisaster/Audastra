@@ -210,7 +210,7 @@ std::string_view DoodadOriginalPath(const StandardObjectEntry& standard, const O
 }
 } // namespace
 
-Result<std::size_t> ValidateNativeDestructablePathing(std::span<const std::string_view> placedRawcodes,
+Result<MapData::TerrainNativeObjectPathing> InspectNativeDestructablePathing(std::span<const std::string_view> placedRawcodes,
     std::span<const ArchiveExactMember> sources, std::size_t maximumWorkingBytes) {
     try {
         constexpr std::array<std::string_view, 6> paths{"war3map.w3b", "war3map.w3d", "units/destructabledata.slk",
@@ -260,6 +260,7 @@ Result<std::size_t> ValidateNativeDestructablePathing(std::span<const std::strin
         const auto* doodads = dynamic_cast<const NativeObjectDocument*>(doodadOwner.get());
         const auto destructableIndex = Index(destructables), doodadIndex = Index(doodads);
         std::set<std::string_view> inspected;
+        std::map<std::string_view, std::string_view, std::less<>> footprintPaths;
         for (const auto rawcode : placedRawcodes) {
             if (!Rawcode(rawcode)) Fail("TERRAIN_NATIVE_OBJECT_ID", "摆放记录rawcode无效。");
             if (!inspected.insert(rawcode).second) continue;
@@ -292,8 +293,25 @@ Result<std::size_t> ValidateNativeDestructablePathing(std::span<const std::strin
                     }
                     value = DoodadOriginalPath(*standardDoodad, *nativeDoodad, *doodads, *doodadSchema, value);
                 }
-                if (!value.empty() && value != "_" && value != "none")
-                    Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "普通装饰物的pathTex未明确禁用占地：" + std::string(rawcode));
+                if (!value.empty() && value != "_" && value != "none") {
+                    if (nativeDoodad)
+                        Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "普通装饰物Original的非空占地尚未接入静态通行：" + std::string(rawcode));
+                    const auto category = standardDoodad->fields.find("category");
+                    if (category == standardDoodad->fields.end() || category->second.size() != 1
+                        || static_cast<unsigned char>(category->second.front()) < 33
+                        || static_cast<unsigned char>(category->second.front()) > 126 || category->second == "_")
+                        Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "非空占地需要标准装饰物的明确单可打印ASCII类别，不能推测缺失类别：" + std::string(rawcode));
+                    if (category->second == "C")
+                        Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "C类装饰物的非空占地需要实际类别目录绑定，尚未接入：" + std::string(rawcode));
+                    // 临时索引节点、最终vector元素及两个拥有内容的字符串均先预留；
+                    // 完整分类后一次性分配最终vector，避免逐项增长遗漏额外容量。
+                    const auto outputWork = sizeof(std::string_view) * 5 + sizeof(MapData::TerrainNativeDoodadPathingType)
+                        + rawcode.size() + value.size() + 2;
+                    if (outputWork > maximumWorkingBytes - work)
+                        Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "装饰物占地结果超过累计剩余预算。");
+                    work += outputWork;
+                    footprintPaths.emplace(rawcode, value);
+                }
                 continue;
             }
             if (!standard && !native)
@@ -336,9 +354,27 @@ Result<std::size_t> ValidateNativeDestructablePathing(std::span<const std::strin
                 if (value != "0") Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "walkable可破坏物尚未接入静态通行：" + std::string(rawcode));
             }
         }
-        return Result<std::size_t>::Success(work);
+        MapData::TerrainNativeObjectPathing result;
+        result.workBytes = work;
+        result.footprints.reserve(footprintPaths.size());
+        for (const auto& [rawcode, path] : footprintPaths)
+            result.footprints.push_back({std::string(rawcode), std::string(path), 2});
+        return Result<MapData::TerrainNativeObjectPathing>::Success(std::move(result));
     } catch (Failure& failure) { return {{}, std::move(failure.diagnostics)}; }
-    catch (const std::bad_alloc&) { return Result<std::size_t>::Failure(kSubsystem, "TERRAIN_NATIVE_OBJECT_BUDGET", "严格对象解析内存分配失败。"); }
+    catch (const std::bad_alloc&) { return Result<MapData::TerrainNativeObjectPathing>::Failure(kSubsystem, "TERRAIN_NATIVE_OBJECT_BUDGET", "严格对象解析内存分配失败。"); }
+    catch (const std::length_error&) { return Result<MapData::TerrainNativeObjectPathing>::Failure(kSubsystem, "TERRAIN_NATIVE_OBJECT_BUDGET", "严格对象解析容器容量不足。"); }
+}
+
+Result<std::size_t> ValidateNativeDestructablePathing(std::span<const std::string_view> placedRawcodes,
+    std::span<const ArchiveExactMember> sources, std::size_t maximumWorkingBytes) {
+    try {
+        auto inspected = InspectNativeDestructablePathing(placedRawcodes, sources, maximumWorkingBytes);
+        if (!inspected.Succeeded() || !inspected.value) return {{}, std::move(inspected.diagnostics)};
+        if (!inspected.value->footprints.empty())
+            return Result<std::size_t>::Failure(kSubsystem, "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED",
+                "普通装饰物的pathTex未明确禁用占地：" + inspected.value->footprints.front().rawcode);
+        return Result<std::size_t>::Success(inspected.value->workBytes);
+    } catch (const std::bad_alloc&) { return Result<std::size_t>::Failure(kSubsystem, "TERRAIN_NATIVE_OBJECT_BUDGET", "严格对象解析内存分配失败。"); }
     catch (const std::length_error&) { return Result<std::size_t>::Failure(kSubsystem, "TERRAIN_NATIVE_OBJECT_BUDGET", "严格对象解析容器容量不足。"); }
 }
 } // namespace War3Map::ObjectData
