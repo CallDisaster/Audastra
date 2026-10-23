@@ -64,7 +64,9 @@ QRect GameUiPixelRect(const FrameRect& rect, const FrameTreeOptions& options, do
 
 GameUiModule::GameUiModule(QtProject::EditorProject& project) : project_(project), roots_(kDefaultRoots) {
     connect(&project_, &QtProject::EditorProject::MapDocumentChanged, this, &GameUiModule::ScheduleReload);
-    connect(&project_, &QtProject::EditorProject::ImportsChanged, this, &GameUiModule::ScheduleReload);
+    connect(&project_, &QtProject::EditorProject::ImportsChanged, this, [this] {
+        if (!stagingOwnImport_) ScheduleReload();
+    });
     connect(&project_, &QtProject::EditorProject::WorldEditStringsChanged, this, &GameUiModule::ScheduleReload);
 }
 

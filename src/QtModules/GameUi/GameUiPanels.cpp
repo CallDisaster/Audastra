@@ -12,7 +12,9 @@
 #include <QHeaderView>
 #include <QLineEdit>
 #include <QMenu>
+#include <QAction>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QStandardItemModel>
 #include <QTreeWidget>
@@ -187,6 +189,7 @@ void GameUiModule::BuildToolbar(QWidget* page, QVBoxLayout* layout) {
     for (QWidget* widget : std::initializer_list<QWidget*>{raceBox_, versionBox_, aspectBox_, showContent_, showBounds_, showNames_, showHiddenButton_})
         row->addWidget(widget);
     row->addStretch(1);
+    for (QWidget* widget : BuildAuthoringControls(toolbar)) row->addWidget(widget);
     row->addWidget(addRootBox_);
     row->addWidget(reload);
     layout->addWidget(toolbar);
@@ -272,6 +275,8 @@ void GameUiModule::BuildPage() {
     properties_->setHeaderLabels({tr("属性"), tr("值")});
     properties_->header()->setSectionResizeMode(QHeaderView::Interactive);
     properties_->header()->resizeSection(0, 128);
+    properties_->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed |
+        QAbstractItemView::SelectedClicked);
     properties_->setRootIsDecorated(true);
     properties_->setWordWrap(true);
     rightLayout->addWidget(rawFields_, 0, Qt::AlignRight);
@@ -320,7 +325,23 @@ void GameUiModule::BuildPage() {
         menu.exec(nodes_->viewport()->mapToGlobal(position));
     });
     connect(canvas_, &GameUiCanvas::NodeClicked, this, [this](std::uint32_t node) { SelectNode(node); });
+    connect(canvas_, &GameUiCanvas::NodeDragged, this, [this](std::uint32_t node, double dx, double dy) {
+        QString error;
+        if (!MoveDescriptionFrame(node, dx, dy, &error)) ReportAuthoring(error);
+    });
     connect(rawFields_, &QCheckBox::toggled, this, &GameUiModule::UpdateProperties);
+    connect(properties_, &QTreeWidget::itemChanged, this, &GameUiModule::OnPropertyEdited);
+    // Delete 删除所选的描述框架（节点树与画布上都可用）。
+    for (QWidget* target : std::initializer_list<QWidget*>{nodes_, canvas_}) {
+        auto* remove = new QAction(target);
+        remove->setShortcut(QKeySequence::Delete);
+        remove->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+        target->addAction(remove);
+        connect(remove, &QAction::triggered, this, [this] {
+            QString error;
+            if (!RemoveSelectedDescriptionFrame(&error) && !error.isEmpty()) ReportAuthoring(error);
+        });
+    }
 
     if (!pendingView_.isEmpty()) {
         const QJsonObject state = std::exchange(pendingView_, {});
@@ -431,7 +452,9 @@ void GameUiModule::SelectNode(std::uint32_t node) {
 
 void GameUiModule::UpdateProperties() {
     UpdateDescriptionPanel();
+    UpdateAuthoringControls();
     if (!properties_) return;
+    const QSignalBlocker block(properties_);  // 填表不算编辑
     properties_->clear();
     if (!tree_ || selected_ == kNoNode || selected_ >= tree_->Nodes().size()) return;
     const FrameNode& node = tree_->Nodes()[selected_];
@@ -511,6 +534,7 @@ void GameUiModule::UpdateProperties() {
             if (frame->value.binding) row(own, tr("进度取自"), BindingText(*frame->value.binding));
             if (frame->visible.binding) row(own, tr("显示取自"), BindingText(*frame->visible.binding));
             if (!frame->text.empty()) row(own, tr("文字模板"), Text(frame->text));
+            AddEditableRows(group(tr("编辑")), *frame);
         }
         row(own, tr("当前显示"), node.hidden ? tr("隐藏") : tr("显示"));
         if (node.fill) row(own, tr("当前进度"), Number(*node.fill));
@@ -593,6 +617,7 @@ std::vector<Diagnostic> GameUiModule::Problems() const {
     problems.insert(problems.end(), sceneDiagnostics_.begin(), sceneDiagnostics_.end());
     problems.insert(problems.end(), simulationDiagnostics_.begin(), simulationDiagnostics_.end());
     if (simulation_) problems.insert(problems.end(), simulation_->diagnostics.begin(), simulation_->diagnostics.end());
+    problems.insert(problems.end(), authoringDiagnostics_.begin(), authoringDiagnostics_.end());
     if (const ScriptFramePlan* plan = ScriptFrames(); plan && roots_.contains(QString::fromLatin1(kScriptRoot.data(),
             static_cast<qsizetype>(kScriptRoot.size())), Qt::CaseInsensitive)) {
         const auto calls = ScriptCallDiagnostics(*plan);

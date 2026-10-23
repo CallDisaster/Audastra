@@ -11,6 +11,7 @@
 #include <QTest>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
+#include <QUndoStack>
 
 #include <algorithm>
 
@@ -67,6 +68,7 @@ private slots:
     void CanvasDrawsAndHitsTextures();
     void SimulationDrivesScriptFrames();
     void DescriptionPreviewDrivesFrames();
+    void AuthoringStagesDescriptionImport();
 };
 
 void GameUiModuleTests::BuildsSceneFromDefinitions() {
@@ -344,6 +346,79 @@ void GameUiModuleTests::DescriptionPreviewDrivesFrames() {
 
     QVERIFY(module.SelectFrame(QStringLiteral("ConsoleUI")));
     QVERIFY(panel->isHidden());
+}
+
+void GameUiModuleTests::AuthoringStagesDescriptionImport() {
+    QtProject::EditorProject project;
+    Modules::GameUiModule module(project);
+    auto* page = module.Widget();
+    module.LoadDefinitionsForTesting(SyntheticDefinitions());
+    const auto staged = [&project]() -> std::shared_ptr<const std::vector<std::byte>> {
+        for (const auto& entry : project.AssetEntries()) {
+            if (entry.path.compare(QStringLiteral("AudastraUI\\Hud.json"), Qt::CaseInsensitive) == 0) return entry.ownedPayload;
+        }
+        return nullptr;
+    };
+    const auto frame = [&module](const char* id) { return FindUiFrame(*module.Description(QStringLiteral("Hud")), id); };
+    const auto selectedName = [&module] { return module.Tree()->Nodes()[module.SelectedNode()].name; };
+
+    QString error;
+    QVERIFY(!module.CreateDescription(QStringLiteral("9bad"), {}, &error));
+    QVERIFY2(module.CreateDescription(QStringLiteral("Hud"), QStringLiteral("状态栏"), &error), qPrintable(error));
+    QVERIFY(staged());
+    QCOMPARE(selectedName(), std::string("Hud"));
+    QVERIFY(!module.CreateDescription(QStringLiteral("Hud"), {}, &error));
+
+    QCOMPARE(module.AddDescriptionFrame(UiFrameType::Bar, &error), QStringLiteral("bar1"));
+    QCOMPARE(selectedName(), std::string("bar1"));
+    QVERIFY(module.Tree()->Nodes()[module.SelectedNode()].layout == LayoutState::Placed);
+
+    // 属性表里改宽度：下一轮事件生效。
+    auto* properties = page->findChild<QTreeWidget*>(QStringLiteral("gameUiProperties"));
+    QVERIFY(properties);
+    const auto field = [properties](const QString& label) -> QTreeWidgetItem* {
+        for (QTreeWidgetItemIterator it(properties); *it; ++it) {
+            if ((*it)->text(0) == label && ((*it)->flags() & Qt::ItemIsEditable)) return *it;
+        }
+        return nullptr;
+    };
+    QVERIFY(field(QStringLiteral("宽")));
+    field(QStringLiteral("宽"))->setText(1, QStringLiteral("0.2"));
+    QCoreApplication::processEvents();
+    QCOMPARE(frame("bar1")->width, std::optional<double>(0.2));
+    field(QStringLiteral("宽"))->setText(1, QStringLiteral("wide"));
+    QCoreApplication::processEvents();
+    QCOMPARE(frame("bar1")->width, std::optional<double>(0.2));
+    auto* problems = page->findChild<QStandardItemModel*>(QStringLiteral("gameUiProblemModel"));
+    QVERIFY(HasProblem(problems, QStringLiteral("AUI_AUTHORING")));
+
+    const float left = module.Tree()->Nodes()[module.SelectedNode()].rect.left;
+    QVERIFY2(module.MoveDescriptionFrame(module.SelectedNode(), 0.05, -0.02, &error), qPrintable(error));
+    QCOMPARE(frame("bar1")->anchors[0].x, 0.05);
+    QCOMPARE(frame("bar1")->anchors[0].y, -0.02);
+    QVERIFY(qAbs(module.Tree()->Nodes()[module.SelectedNode()].rect.left - left - 0.05f) < 1e-5f);
+
+    QCOMPARE(module.AddDescriptionFrame(UiFrameType::Text, &error), QStringLiteral("text1"));
+    QCOMPARE(frame("bar1")->children.size(), std::size_t{1});
+    QVERIFY(module.RemoveSelectedDescriptionFrame(&error));
+    QVERIFY(!frame("text1"));
+    QCOMPARE(selectedName(), std::string("Hud"));
+
+    // 不合法的编辑什么都不改。
+    const auto before = *staged();
+    QVERIFY(!module.EditDescription(QStringLiteral("Hud"),
+        QStringLiteral(R"([{"op":"set_frame","frame":"bar1","fields":{"value":"missing"}}])"), {}, &error));
+    QVERIFY(error.contains(QStringLiteral("missing")));
+    QCOMPARE(*staged(), before);
+
+    // 放进地图的是规范文本；撤销栈里每次修改一步。
+    const std::string text = SerializeUiDescription(*module.Description(QStringLiteral("Hud")));
+    QCOMPARE(std::string(reinterpret_cast<const char*>(before.data()), before.size()), text);
+    QVERIFY(project.AssetUndoStack());
+    QCOMPARE(project.AssetUndoStack()->count(), 6);
+    project.AssetUndoStack()->undo();
+    QVERIFY(staged());
+    QVERIFY(*staged() != before);
 }
 
 int main(int argc, char** argv) {

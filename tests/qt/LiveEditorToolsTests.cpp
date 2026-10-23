@@ -318,6 +318,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "entities_copy", "entities_create", "entities_delete", "entities_query", "entities_rotate", "entities_set_fields",
         "export_campaign_member",
         "feedback.draft", "feedback.list", "feedback.status",
+        "game_ui_description_create", "game_ui_description_edit", "game_ui_description_read",
         "game_ui_nodes_query", "game_ui_preview_set", "game_ui_render", "game_ui_simulate", "game_ui_view_read", "game_ui_view_set",
         "get_terrain_edit_state",
         "imports_add", "imports_get", "imports_list", "imports_remove", "lua_file_read", "lua_file_write", "lua_files_list",
@@ -334,7 +335,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{80});
+    QCOMPARE(expected.size(), qsizetype{83});
     for (const auto& definition : Mcp::AuxiliaryToolDefinitions()) {
         QCOMPARE(definition.permission, Mcp::ToolPermission::Edit);
         int matches = 0;
@@ -2391,10 +2392,20 @@ void LiveEditorToolsTests::GameUiToolsUseHostAndValidateArguments() {
     auto badHidden = args; badHidden["show_hidden"] = "yes";
     QVERIFY(!f.tools->Invoke("game_ui_view_set", badHidden).value("ok").toBool());
     QCOMPARE(received.size(), qsizetype{3});
+    // 编写：edits 须是编辑对象数组。
+    auto edit = args; edit["description"] = "CastBar";
+    edit["edits"] = QJsonArray{QJsonObject{{"op", "remove_frame"}, {"frame", "fill"}}};
+    QVERIFY(f.tools->Invoke("game_ui_description_edit", edit).value("ok").toBool());
+    QCOMPARE(received.size(), qsizetype{4});
+    auto badEdits = edit; badEdits["edits"] = QJsonArray{"remove fill"};
+    QVERIFY(!f.tools->Invoke("game_ui_description_edit", badEdits).value("ok").toBool());
+    QCOMPARE(received.size(), qsizetype{4});
     Mcp::ToolPolicy policy; policy.allowEdit = false; f.tools->SetPolicy(policy);
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_view_set"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_simulate"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_preview_set"));
+    QVERIFY(!Names(f.tools->Tools()).contains("game_ui_description_edit"));
+    QVERIFY(Names(f.tools->Tools()).contains("game_ui_description_read"));
     QVERIFY(Names(f.tools->Tools()).contains("game_ui_render"));
 }
 

@@ -15,6 +15,7 @@ add_library(War3MapGameUi STATIC
     ScriptValue.cpp
     UiDescription.cpp
     UiDescriptionCheck.cpp
+    UiDescriptionEdit.cpp
     UiDescriptionText.cpp
     UiDescriptionTree.cpp
     UiSkin.cpp)

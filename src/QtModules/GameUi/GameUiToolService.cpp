@@ -4,6 +4,7 @@
 
 #include <QBuffer>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QThread>
 
 #include <algorithm>
@@ -312,6 +313,29 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
             module->SetSimulationValues(InputValues(args.value("values").toObject()));
         }
         binding.insert("simulation", SimulationJson(*module));
+        return binding;
+    }
+
+    if (name == QLatin1String("game_ui_description_read") || name == QLatin1String("game_ui_description_create") ||
+        name == QLatin1String("game_ui_description_edit")) {
+        if (!module->Tree()) return Failure("GAME_UI_LOADING", QObject::tr("界面定义仍在读取，请稍后重试。"));
+        const QString id = args.value("description").toString();
+        QString error;
+        if (name == QLatin1String("game_ui_description_create") &&
+            !module->CreateDescription(id, args.value("label").toString(), &error)) {
+            return Failure("GAME_UI_DESCRIPTION", error);
+        }
+        if (name == QLatin1String("game_ui_description_edit")) {
+            const QString edits = QString::fromUtf8(QJsonDocument(args.value("edits").toArray()).toJson(QJsonDocument::Compact));
+            if (!module->EditDescription(id, edits, QObject::tr("界面 %1：Agent 修改").arg(id), &error))
+                return Failure("GAME_UI_DESCRIPTION", error);
+        }
+        const auto& files = module->Descriptions();
+        const auto file = std::find_if(files.begin(), files.end(),
+            [&](const GameUiDescriptionFile& candidate) { return Text(candidate.description.id) == id; });
+        if (file == files.end()) return Failure("GAME_UI_DESCRIPTION", QObject::tr("地图里没有界面描述 %1。").arg(id));
+        binding.insert("path", Text(file->path));
+        binding.insert("text", Text(SerializeUiDescription(file->description)));
         return binding;
     }
 

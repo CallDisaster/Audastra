@@ -600,6 +600,12 @@ UiFrame* FindUiFrame(UiDescription& description, std::string_view id) {
     return FindIn(description.frames, id);
 }
 
+std::string SerializeUiFrame(const UiFrame& frame) {
+    OrderedJson json = FrameJson(frame);
+    json.erase("children");
+    return json.dump(-1, ' ', false, OrderedJson::error_handler_t::replace);
+}
+
 std::string UiDescriptionMemberPath(std::string_view id) {
     return std::string(kUiDescriptionFolder) + std::string(id) + ".json";
 }

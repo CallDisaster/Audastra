@@ -3,7 +3,7 @@
 qt_add_library(War3MapQtModuleGameUi STATIC
     GameUiModule.cpp GameUiModule.h GameUiPanels.cpp
     GameUiCanvas.cpp GameUiCanvas.h
-    GameUiDescriptionPreview.cpp GameUiInputs.h
+    GameUiAuthoring.cpp GameUiDescriptionPreview.cpp GameUiInputs.h
     GameUiSimulation.cpp GameUiSources.cpp GameUiSources.h
     GameUiToolService.cpp GameUiToolService.h)
 add_library(War3MapEditor::QtModuleGameUi ALIAS War3MapQtModuleGameUi)

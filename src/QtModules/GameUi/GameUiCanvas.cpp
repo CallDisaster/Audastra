@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace War3Map::Modules {
 namespace {
@@ -119,6 +120,7 @@ void GameUiCanvas::SetShowContent(bool show) { showContent_ = show; update(); }
 void GameUiCanvas::SetShowBounds(bool show) { showBounds_ = show; update(); }
 void GameUiCanvas::SetShowNames(bool show) { showNames_ = show; update(); }
 void GameUiCanvas::SetSelected(std::uint32_t node) { selected_ = node; update(); }
+void GameUiCanvas::SetDraggable(bool draggable) { draggable_ = draggable; }
 
 QRectF GameUiCanvas::ScreenRect() const {
     const QRectF available = QRectF(rect()).adjusted(kMargin, kMargin, -kMargin, -kMargin);
@@ -373,6 +375,10 @@ void GameUiCanvas::PaintOverlays(QPainter& painter, const QRectF& screen) const 
             painter.setPen(QPen(palette().color(QPalette::Accent), 2.0));
             painter.setBrush(Qt::NoBrush);
             painter.drawRect(selected.adjusted(1, 1, -1, -1));
+            if (dragging_ && dragNode_ == selected_) {
+                painter.setPen(QPen(palette().color(QPalette::Accent), 1.0, Qt::DashLine));
+                painter.drawRect(selected.translated(dragOffset_).adjusted(0.5, 0.5, -0.5, -0.5));
+            }
         }
     }
     painter.restore();
@@ -420,10 +426,36 @@ std::uint32_t GameUiCanvas::NodeAt(const QPointF& position) const {
 
 void GameUiCanvas::mousePressEvent(QMouseEvent* event) {
     if (event->button() != Qt::LeftButton) return QWidget::mousePressEvent(event);
-    emit NodeClicked(NodeAt(event->position()));
+    const std::uint32_t node = NodeAt(event->position());
+    emit NodeClicked(node);
+    // 点中的节点被选中且可拖动时，准备拖动。
+    dragNode_ = draggable_ && node != kNoNode && node == selected_ ? node : kNoNode;
+    dragStart_ = event->position();
+    dragOffset_ = {};
+    dragging_ = false;
+}
+
+void GameUiCanvas::mouseReleaseEvent(QMouseEvent* event) {
+    if (event->button() != Qt::LeftButton || dragNode_ == kNoNode) return QWidget::mouseReleaseEvent(event);
+    const std::uint32_t node = std::exchange(dragNode_, kNoNode);
+    const bool moved = std::exchange(dragging_, false);
+    update();
+    const QRectF screen = ScreenRect();
+    if (!moved || !tree_ || screen.isEmpty()) return;
+    const auto& options = tree_->Options();
+    const auto snap = [](double value) { return std::round(value * 1000.0) / 1000.0; };
+    const double dx = snap(dragOffset_.x() / screen.width() * options.screenWidth);
+    const double dy = snap(-dragOffset_.y() / screen.height() * options.screenHeight);
+    if (dx != 0.0 || dy != 0.0) emit NodeDragged(node, dx, dy);
 }
 
 void GameUiCanvas::mouseMoveEvent(QMouseEvent* event) {
+    if (dragNode_ != kNoNode && (event->buttons() & Qt::LeftButton)) {
+        dragOffset_ = event->position() - dragStart_;
+        if (!dragging_ && dragOffset_.manhattanLength() >= 4.0) dragging_ = true;
+        if (dragging_) update();
+        return;
+    }
     const std::uint32_t node = NodeAt(event->position());
     if (!tree_ || node == kNoNode) {
         setToolTip({});

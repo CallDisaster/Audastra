@@ -1,5 +1,6 @@
 #include "War3MapCore/GameUi/FrameDraw.h"
 #include "War3MapCore/GameUi/UiDescription.h"
+#include "War3MapCore/GameUi/UiDescriptionEdit.h"
 
 #include <cmath>
 #include <iostream>
@@ -293,6 +294,54 @@ void TestGameArea() {
     Require(HasCode(missing, "AUI_ANCHOR_AREA") && NodeNamed(bare, "tip").anchors.empty(), "area missing reported");
 }
 
+void TestEdits() {
+    const UiDescription base = Parse(kCastBar);
+    auto edited = ApplyUiEdits(base, R"([
+  {"op": "add_frame", "parent": "back", "frame": {"id": "hint", "type": "text", "text": "按 Esc 打断", "anchors": [{"point": "TOP", "to": "back", "toPoint": "BOTTOM"}]}},
+  {"op": "set_frame", "frame": "fill", "fields": {"width": 0.15, "texture": "Other"}},
+  {"op": "set_frame", "frame": "label", "fields": {"id": "caption", "label": null}},
+  {"op": "set_frame", "frame": "back", "fields": {"visible": null}},
+  {"op": "move_frame", "frame": "hint", "parent": null, "index": 0},
+  {"op": "set_description", "label": "施法条"}
+])");
+    Require(edited.value.has_value(), "edits apply");
+    const UiDescription& after = *edited.value;
+    Require(after.label == "施法条" && after.frames.size() == 2 && after.frames[0].id == "hint", "moved to top level first");
+    Require(FindUiFrame(after, "fill")->width == std::optional<double>(0.15) && FindUiFrame(after, "fill")->texture == "Other",
+        "fields replaced");
+    Require(FindUiFrame(after, "caption") && !FindUiFrame(after, "label"), "renamed");
+    Require(after.states[0].overrides[1].frame == "caption", "state reference follows rename");
+    Require(!FindUiFrame(after, "back")->visible.binding && FindUiFrame(after, "back")->visible.literal, "null removes field");
+    Require(base.frames[0].children.size() == 2 && FindUiFrame(base, "label"), "base untouched");
+
+    auto removed = ApplyUiEdits(base, R"([{"op": "remove_frame", "frame": "fill"}])");
+    Require(removed.value && !FindUiFrame(*removed.value, "fill") && removed.value->states[0].overrides.size() == 1,
+        "removal drops the frame's state overrides");
+
+    // 整组不生效：任一步出错、或结果不合法。
+    Require(HasCode(ApplyUiEdits(base, R"([{"op": "add_frame", "frame": {"id": "fill", "type": "panel"}}])").diagnostics, "AUI_EDIT"),
+        "duplicate id rejected");
+    Require(HasCode(ApplyUiEdits(base, R"([{"op": "set_frame", "frame": "nope", "fields": {}}])").diagnostics, "AUI_EDIT"),
+        "unknown frame rejected");
+    Require(HasCode(ApplyUiEdits(base, R"([{"op": "set_frame", "frame": "back", "fields": {"children": []}}])").diagnostics, "AUI_EDIT"),
+        "children not settable");
+    Require(HasCode(ApplyUiEdits(base, R"([{"op": "move_frame", "frame": "back", "parent": "fill"}])").diagnostics, "AUI_EDIT"),
+        "cannot move into own subtree");
+    Require(HasCode(ApplyUiEdits(base, R"([{"op": "explode"}])").diagnostics, "AUI_EDIT"), "unknown op");
+    Require(HasCode(ApplyUiEdits(base, "[").diagnostics, "AUI_EDIT"), "invalid json");
+    Require(HasCode(ApplyUiEdits(base, R"([{"op": "set_frame", "frame": "fill", "fields": {"width": "wide"}}])").diagnostics, "AUI_TYPE"),
+        "result checked by the strict reader");
+    auto anchored = ApplyUiEdits(base, R"([
+  {"op": "add_frame", "frame": {"id": "tip", "type": "text", "text": "x", "anchors": [{"point": "TOP", "to": "fill"}]}},
+  {"op": "remove_frame", "frame": "fill"}
+])");
+    Require(!anchored.value && HasCode(anchored.diagnostics, "AUI_ANCHOR_TARGET"), "anchor references must be fixed first");
+
+    Require(NewUiDescription("Raid", "团队").value.has_value(), "new description");
+    Require(!NewUiDescription("9bad", "").value.has_value(), "new description needs a valid id");
+    Require(NextUiFrameId(base, "fill") == "fill1" && NextUiFrameId(base, "text") == "text1", "next free id");
+}
+
 } // namespace
 
 int main() {
@@ -303,6 +352,7 @@ int main() {
         TestTree();
         TestRepeat();
         TestGameArea();
+        TestEdits();
     } catch (const std::exception& error) {
         std::cerr << "FAILED: " << error.what() << "\n";
         return 1;

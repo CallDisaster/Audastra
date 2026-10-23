@@ -172,6 +172,8 @@ struct UiDescription {
 [[nodiscard]] Result<UiDescription> ParseUiDescription(std::string_view text, std::string_view source = {});
 // 规范输出：固定字段顺序、省略默认值、两空格缩进、LF 换行；解析后再输出逐字节不变。
 [[nodiscard]] std::string SerializeUiDescription(const UiDescription& description);
+// 单个框架的规范 JSON（不含子框架，单行），供编辑时取出字段改写。
+[[nodiscard]] std::string SerializeUiFrame(const UiFrame& frame);
 // 检查编号、引用与取值。解析时已调用；编辑后保存前再调用。
 [[nodiscard]] std::vector<Diagnostic> ValidateUiDescription(const UiDescription& description);
 
