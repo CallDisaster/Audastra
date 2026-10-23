@@ -1,0 +1,132 @@
+#include "War3MapCore/MapData/TerrainUniformDoodadFootprint.h"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <limits>
+
+namespace War3Map::MapData {
+namespace {
+constexpr auto kSubsystem = "Terrain.UniformDoodadFootprint";
+constexpr std::uint32_t kMaximumSide = 256;
+constexpr double kMaximumPosition = 16777216.0;
+static_assert(std::numeric_limits<float>::is_iec559 && std::numeric_limits<float>::digits == 24);
+static_assert(std::numeric_limits<double>::is_iec559 && std::numeric_limits<double>::digits == 53);
+
+bool ValidAttributes(std::uint8_t value) {
+    // 红通道总是同时置0x31，不能把外部提供的不完整位组合当作解码结果。
+    const auto red = value & 0x31;
+    return (value & ~0x37u) == 0 && (red == 0 || red == 0x31);
+}
+
+std::int64_t ProjectAxis(float position, float origin, std::uint32_t side,
+    std::uint8_t snapCells, bool secondAxis) {
+    const float grid = static_cast<float>(snapCells) * 32.0f;
+    const bool half = (side / snapCells) % 2 != 0;
+    const double bias = half ? 0.0 : 0.5;
+    const double delta = static_cast<double>(position) - origin;
+    // 原版次轴先将差值及倒数落为F32；主轴保留中间精度。
+    // 当前XY是32的整数倍，origin为128的整数倍，且幅值有界；所有差值、
+    // 64/128的商和半格都是精确二进制数，不依赖x87精度档位或舍入方向。
+    const float secondaryDelta = static_cast<float>(delta);
+    const float secondaryReciprocal = static_cast<float>(1.0 / grid);
+    const double quotient = secondAxis
+        ? static_cast<double>(secondaryDelta) * secondaryReciprocal : delta / grid;
+    const double snappedBase = std::floor(quotient + bias) * grid + origin;
+    // 主轴的基点先落F32，次轴在加半格后才落F32，保留两条原始路径。
+    const float primaryBase = static_cast<float>(snappedBase);
+    const float snapped = static_cast<float>((secondAxis ? snappedBase : primaryBase)
+        + (half ? grid * 0.5 : 0.0));
+    float start = static_cast<float>(static_cast<double>(snapped) - side * 16.0);
+    if (side % 2 == 0) start = static_cast<float>(static_cast<double>(start) + 16.0);
+    // 负半格须向零，不能用floor。已验证的幅值使结果远小于int64上限。
+    return static_cast<std::int64_t>((static_cast<double>(start) - origin) / 32.0);
+}
+} // namespace
+
+Result<TerrainUniformDoodadFootprint> DecodeUniformDoodadFootprintTga(
+    std::span<const std::byte> bytes) {
+    using Return = Result<TerrainUniformDoodadFootprint>;
+    const auto fail = [](const char* code, const char* message) { return Return::Failure(kSubsystem, code, message); };
+    if (bytes.size() < 18) return fail("TERRAIN_UNIFORM_TGA_TRUNCATED", "通行贴图的TGA文件头不完整。");
+    const auto byte = [&bytes](std::size_t at) { return std::to_integer<unsigned>(bytes[at]); };
+    const auto word = [&byte](std::size_t at) { return byte(at) | (byte(at + 1) << 8); };
+    const auto depth = byte(16), descriptor = byte(17);
+    if (byte(0) != 0 || byte(1) != 0 || byte(2) != 2 || word(3) != 0 || word(5) != 0
+        || byte(7) != 0 || word(8) != 0 || word(10) != 0 || (depth != 24 && depth != 32)
+        || (descriptor & 0xd0u) != 0 || (descriptor & 15u) != (depth == 32 ? 8u : 0u))
+        return fail("TERRAIN_UNIFORM_TGA_FORMAT",
+            "通行贴图仅支持无ID和色表、原点坐标为零、左原点无交错的未压缩24位RGB或32位RGBA TGA。");
+    const auto width = word(12), height = word(14);
+    if (width == 0 || width != height || width > kMaximumSide)
+        return fail("TERRAIN_UNIFORM_TGA_DIMENSIONS", "通行贴图必须是边长1至256像素的正方形。");
+    const std::size_t pixelBytes = depth / 8;
+    const std::size_t count = static_cast<std::size_t>(width) * height;
+    const std::size_t pixelEnd = 18 + count * pixelBytes;
+    if (bytes.size() < pixelEnd)
+        return fail("TERRAIN_UNIFORM_TGA_TRUNCATED", "通行贴图的TGA像素载荷不完整。");
+    if (bytes.size() != pixelEnd) {
+        // 已证实际资源使用两个零offset加TRUEVISION-XFILE.\0；不忽略未知尾随区。
+        constexpr std::array<unsigned char, 26> footer{
+            0, 0, 0, 0, 0, 0, 0, 0, 'T', 'R', 'U', 'E', 'V', 'I', 'S', 'I', 'O', 'N',
+            '-', 'X', 'F', 'I', 'L', 'E', '.', 0};
+        if (bytes.size() - pixelEnd != footer.size()
+            || !std::equal(footer.begin(), footer.end(), bytes.begin() + pixelEnd,
+                [](unsigned char expected, std::byte actual) { return expected == std::to_integer<unsigned>(actual); }))
+            return fail("TERRAIN_UNIFORM_TGA_TRAILING", "通行贴图含未支持或不完整的TGA附加区。");
+    }
+    const std::array<unsigned, 4> first{byte(18), byte(19), byte(20), depth == 32 ? byte(21) : 255u};
+    for (std::size_t index = 1, at = 18 + pixelBytes; index < count; ++index, at += pixelBytes) {
+        if (byte(at) != first[0] || byte(at + 1) != first[1] || byte(at + 2) != first[2]
+            || (depth == 32 && byte(at + 3) != first[3]))
+            return fail("TERRAIN_UNIFORM_TGA_NONUNIFORM", "通行贴图不是完整BGRA一致的均匀像素，不能作为同色占地保存。");
+    }
+    const auto attributes = static_cast<std::uint8_t>((first[2] ? 0x31 : 0)
+        | (first[1] ? 0x02 : 0) | (first[0] ? 0x04 : 0));
+    return Return::Success({width, attributes});
+}
+
+Status AddUniformDoodadFootprint(std::span<std::uint8_t> staticAttributes, const TerrainHeader& terrain,
+    const DoodadPlacement& placement, const TerrainUniformDoodadFootprint& footprint, std::uint8_t snapCells) {
+    const auto fail = [](const char* code, const char* message) { return Status::Failure(kSubsystem, code, message); };
+    if (terrain.version != 11 || terrain.width < 2 || terrain.height < 2
+        || terrain.width > 2049 || terrain.height > 2049)
+        return fail("TERRAIN_UNIFORM_GRID_SHAPE", "同色占地需要完整经典v11地形和有效顶点尺寸。");
+    const auto columns = static_cast<std::size_t>(terrain.width - 1) * 4;
+    const auto rows = static_cast<std::size_t>(terrain.height - 1) * 4;
+    if (staticAttributes.size() != columns * rows)
+        return fail("TERRAIN_UNIFORM_GRID_SHAPE", "静态对象通行层长度与完整地形通行网格不符。");
+    for (std::size_t axis = 0; axis < 2; ++axis) {
+        const double first = terrain.offset[axis];
+        const auto vertices = axis == 0 ? terrain.width : terrain.height;
+        const double last = first + static_cast<double>(vertices - 1) * 128.0;
+        if (!std::isfinite(first) || std::fmod(first, 128.0) != 0.0 || first < -32768.0 || last > 32640.0)
+            return fail("TERRAIN_UNIFORM_COORDINATE_DOMAIN", "地形偏移须128对齐，全部顶点XY须处于原版九位坐标域。");
+        const double position = placement.position[axis];
+        if (!std::isfinite(position) || std::abs(position) > kMaximumPosition
+            || std::fmod(position, 32.0) != 0.0)
+            return fail("TERRAIN_UNIFORM_COORDINATE_DOMAIN", "同色占地实例XY须在已证明的32世界格点上，且绝对值不超过2^24。");
+    }
+    if (!std::isfinite(placement.position[2])
+        || std::any_of(placement.scale.begin(), placement.scale.end(), [](float value) { return !std::isfinite(value); })
+        || !std::isfinite(placement.rotation) || placement.rotation < -360.0f || placement.rotation > 360.0f)
+        return fail("TERRAIN_UNIFORM_PLACEMENT_DOMAIN", "同色占地姿态须有限，旋转须处于已支持的[-360,360]范围。");
+    if (footprint.side == 0 || footprint.side > kMaximumSide || !ValidAttributes(footprint.attributes))
+        return fail("TERRAIN_UNIFORM_FOOTPRINT", "同色占地尺寸或原版通道属性组合无效。");
+    if (snapCells != 2 && snapCells != 4)
+        return fail("TERRAIN_UNIFORM_SNAP_CELLS", "同色占地吸附网格只能使用实际类别确定的2格或4格。");
+    const auto x0 = ProjectAxis(placement.position[0], terrain.offset[0], footprint.side, snapCells, false);
+    const auto y0 = ProjectAxis(placement.position[1], terrain.offset[1], footprint.side, snapCells, true);
+    const auto firstX = std::max<std::int64_t>(0, x0), firstY = std::max<std::int64_t>(0, y0);
+    const auto lastX = std::min<std::int64_t>(static_cast<std::int64_t>(columns), x0 + footprint.side);
+    const auto lastY = std::min<std::int64_t>(static_cast<std::int64_t>(rows), y0 + footprint.side);
+    // 此后无失败分支。均匀像素使逐像素裁边可化为相同的矩形，不移动原起点。
+    for (auto y = firstY; y < lastY; ++y) {
+        const auto row = static_cast<std::size_t>(y) * columns;
+        for (auto x = firstX; x < lastX; ++x)
+            staticAttributes[row + static_cast<std::size_t>(x)] |= footprint.attributes;
+    }
+    return Status::Ok();
+}
+
+} // namespace War3Map::MapData
