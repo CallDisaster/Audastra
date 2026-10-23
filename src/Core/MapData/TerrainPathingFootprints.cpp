@@ -83,17 +83,23 @@ Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& read
         std::map<std::string_view, Type, std::less<>> byRawcode;
         std::map<std::string_view, std::vector<Instance>, std::less<>> groups;
         for (const auto& type : types) {
-            // 当前typed owner只产出明确非C类别；4格原语须等类别目录来源接通。
-            if (type.rawcode.size() != 4 || type.snapCells != 2
+            if (type.rawcode.size() != 4
+                || (type.gridPolicy != TerrainDoodadGridPolicy::TwoCells
+                    && type.gridPolicy != TerrainDoodadGridPolicy::RequireTwoAndFourEquivalent)
                 || !byRawcode.emplace(type.rawcode, Type{&type, FootprintPath(type.pathTexture)}).second)
                 Fail("TERRAIN_NATIVE_FOOTPRINT_LAYOUT", "占地类型没有唯一rawcode或属于尚未捕获的吸附类别。");
         }
+        std::size_t invariantInstances = 0;
         for (const auto& placement : placements) {
             const auto found = byRawcode.find(placement.rawcode);
             if (found == byRawcode.end()) continue; // 已由同次严格分类器解释的零贡献类型。
             found->second.used = true;
             groups[found->second.path].push_back({&placement, found->second.value});
+            if (found->second.value->gridPolicy == TerrainDoodadGridPolicy::RequireTwoAndFourEquivalent) ++invariantInstances;
         }
+        // 每个实际实例先预收两个小矩形/optional及固定投影、比较工作，不分配两份整图。
+        // 按实例累计而不按rawcode或共享TGA计一次；原像素写入仍另按完整矩形收费。
+        reserve(invariantInstances, TerrainUniformGridInvariantBudgetBytes);
         for (const auto& [rawcode, type] : byRawcode)
             if (!type.used) Fail("TERRAIN_NATIVE_FOOTPRINT_LAYOUT", "占地类型没有对应的实际摆放：" + std::string(rawcode));
         std::vector<std::string> names;
@@ -112,6 +118,11 @@ Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& read
                 }
                 const auto& instances = groups.at(names[index]);
                 const auto pixels = std::size_t{parsed.value->width} * parsed.value->height;
+                if ((!parsed.value->uniform || parsed.value->width != parsed.value->height)
+                    && std::any_of(instances.begin(), instances.end(), [](const auto& instance) {
+                        return instance.type->gridPolicy == TerrainDoodadGridPolicy::RequireTwoAndFourEquivalent;
+                    }))
+                    Fail("TERRAIN_NATIVE_FOOTPRINT_GRID_DOMAIN", "C类网格等价域仅接受实际完整BGRA同色的正方形TGA：" + names[index]);
                 // 内存额度不代表运算额度。即使全部实例重叠，也先按完整矩形限制
                 // 像素工作，避免小DOO借256²贴图在保存线程产生无界写入。
                 if (pixelWrites > capturedMaximumBytes_
@@ -119,8 +130,11 @@ Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& read
                     Fail("TERRAIN_NATIVE_FOOTPRINT_WORK", "占地实例的累计像素写入超过本次保存工作上限。");
                 pixelWrites += instances.size() * pixels;
                 for (const auto& instance : instances) {
-                    auto status = AddDoodadFootprint(nativeStaticAttributes_, header,
-                        *instance.placement, *parsed.value, instance.type->snapCells, instance.type->fixedRotationDegrees);
+                    auto status = instance.type->gridPolicy == TerrainDoodadGridPolicy::RequireTwoAndFourEquivalent
+                        ? AddGridInvariantUniformDoodadFootprint(nativeStaticAttributes_, header,
+                            *instance.placement, {parsed.value->width, parsed.value->uniformAttributes})
+                        : AddDoodadFootprint(nativeStaticAttributes_, header,
+                            *instance.placement, *parsed.value, 2, instance.type->fixedRotationDegrees);
                     for (auto& diagnostic : status.diagnostics) diagnostic.message = instance.placement->rawcode
                         + " #" + std::to_string(instance.placement->creationId) + " " + names[index] + "：" + diagnostic.message;
                     Check(std::move(status));
@@ -163,7 +177,7 @@ Status TerrainPathingResources::CaptureSpecialFootprints(const MemberReader& rea
         std::map<std::string_view, Type, std::less<>> byRawcode;
         std::map<std::string, Image, std::less<>> images;
         for (const auto& type : types) {
-            if (type.rawcode.size() != 4 || type.snapCells != 0 || type.fixedRotationDegrees)
+            if (type.rawcode.size() != 4 || type.gridPolicy != TerrainDoodadGridPolicy::SpecialTerrain || type.fixedRotationDegrees)
                 Fail("TERRAIN_SPECIAL_LAYOUT", "特殊地形类型不能带普通装饰物旋转或吸附规则。");
             const auto path = type.pathTexture.empty() ? std::string{} : FootprintPath(type.pathTexture);
             if (!byRawcode.emplace(type.rawcode, Type{path}).second)

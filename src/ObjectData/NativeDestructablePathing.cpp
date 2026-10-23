@@ -336,8 +336,6 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
                         || static_cast<unsigned char>(category->second.front()) < 33
                         || static_cast<unsigned char>(category->second.front()) > 126 || category->second == "_")
                         Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "非空占地需要标准装饰物的明确单可打印ASCII类别，不能推测缺失类别：" + std::string(rawcode));
-                    if (category->second == "C")
-                        Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "C类装饰物的非空占地需要实际类别目录绑定，尚未接入：" + std::string(rawcode));
                     // 临时索引节点、最终vector元素及两个拥有内容的字符串均先预留；
                     // 完整分类后一次性分配最终vector，避免逐项增长遗漏额外容量。
                     const auto outputWork = sizeof(std::string_view) * 5 + sizeof(MapData::TerrainNativeDoodadPathingType)
@@ -392,12 +390,16 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
         MapData::TerrainNativeObjectPathing result;
         result.workBytes = work;
         result.footprints.reserve(footprintPaths.size());
-        for (const auto& [rawcode, resolved] : footprintPaths)
-            result.footprints.push_back({std::string(rawcode), std::string(resolved.first), 2,
-                FixedRotation(catalog.Find(ObjectType::Doodad, resolved.second)->Field("fixedrot"))});
+        for (const auto& [rawcode, resolved] : footprintPaths) {
+            const auto* standard = catalog.Find(ObjectType::Doodad, resolved.second);
+            const auto policy = standard->Field("category") == "C"
+                ? MapData::TerrainDoodadGridPolicy::RequireTwoAndFourEquivalent : MapData::TerrainDoodadGridPolicy::TwoCells;
+            result.footprints.push_back({std::string(rawcode), std::string(resolved.first), policy,
+                FixedRotation(standard->Field("fixedrot"))});
+        }
         result.specialFootprints.reserve(specialPaths.size());
         for (const auto& [rawcode, path] : specialPaths)
-            result.specialFootprints.push_back({std::string(rawcode), std::string(path), 0, std::nullopt});
+            result.specialFootprints.push_back({std::string(rawcode), std::string(path), MapData::TerrainDoodadGridPolicy::SpecialTerrain, std::nullopt});
         return Result<MapData::TerrainNativeObjectPathing>::Success(std::move(result));
     } catch (Failure& failure) { return {{}, std::move(failure.diagnostics)}; }
     catch (const std::bad_alloc&) { return Result<MapData::TerrainNativeObjectPathing>::Failure(kSubsystem, "TERRAIN_NATIVE_OBJECT_BUDGET", "严格对象解析内存分配失败。"); }

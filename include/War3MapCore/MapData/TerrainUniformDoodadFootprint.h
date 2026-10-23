@@ -35,4 +35,13 @@ struct TerrainUniformDoodadFootprint {
     const DoodadPlacement& placement, const TerrainUniformDoodadFootprint& footprint,
     std::uint8_t snapCells);
 
+// owner须先确认实际TGA完整BGRA同色且正方形；这里复用既有2/4格投影，
+// 两种投影均合法且该实例的完整地图内贡献相同才OR一次。先比较再与其它实例合并，
+// 零属性或双空贡献仍必须经过全部姿态/浮点和两次投影检查。失败不改目标。
+// 成功路径无分配；捕获owner须逐实例预收双投影描述符和固定计算的保守预算。
+inline constexpr std::size_t TerrainUniformGridInvariantBudgetBytes = 256;
+[[nodiscard]] Status AddGridInvariantUniformDoodadFootprint(
+    std::span<std::uint8_t> staticAttributes, const TerrainHeader& terrain,
+    const DoodadPlacement& placement, const TerrainUniformDoodadFootprint& footprint);
+
 } // namespace War3Map::MapData

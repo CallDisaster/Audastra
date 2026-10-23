@@ -10,8 +10,9 @@ namespace War3Map::ObjectData {
 // 可破坏物只接受明确非walkable的标准对象、原版覆盖或单层标准父继承；普通装饰物
 // 接受标准对象、v2 Original覆盖及无父覆盖的一层Custom继承。原生记录缺少第六项实际
 // DoodadMetaData时返回TERRAIN_NATIVE_OBJECT_DOODAD_METADATA_REQUIRED，供可信owner
-// 精确补捕获一次后完整重验；其它错误不能用于重试。category为明确非C、非_的
-// 单可打印ASCII字符且没有原生姿态覆盖时，返回生效非空占地路径、标准fixedRot及2格吸附；
+// 精确补捕获一次后完整重验；其它错误不能用于重试。category为明确非_的
+// 单可打印ASCII字符且没有原生姿态覆盖时，返回生效路径及标准fixedRot；非C请求2格，
+// C仅请求Core逐实例证明2/4格完整贡献相同，不将字面C当成已证4格类别身份。
 // owner仍须验证真实贴图、摆放注册及旧WPM，不能仅凭此结果允许保存。
 [[nodiscard]] Result<MapData::TerrainNativeObjectPathing> InspectNativeDestructablePathing(
     std::span<const std::string_view> placedRawcodes, std::span<const ArchiveExactMember> sources,
