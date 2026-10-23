@@ -223,8 +223,12 @@ QJsonObject NodeJson(const FrameTree& tree, const FrameNode& node, double aspect
         QJsonObject script{{"created", SiteText(frame.created)}, {"function", Text(frame.created.function)},
             {"call", Text(frame.created.call)}, {"family", Text(std::string(UiApiFamilyName(frame.family)))},
             {"runtime_calls", static_cast<qint64>(frame.runtimeCalls)}};
+        if (frame.object != ScriptObjectKind::Frame) script.insert("object", Text(std::string(ScriptObjectKindName(frame.object))));
         if (!frame.variable.empty()) script.insert("variable", Text(frame.variable));
         if (frame.visible) script.insert("visible", *frame.visible);
+        QJsonArray buttons;
+        for (const auto& button : frame.buttons) buttons.append(Text(button));
+        if (!buttons.isEmpty()) script.insert("buttons", buttons);
         QJsonArray dynamic;
         for (const auto& item : frame.dynamic) dynamic.append(Text(item));
         if (!dynamic.isEmpty()) script.insert("dynamic", dynamic);

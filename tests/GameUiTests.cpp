@@ -655,6 +655,85 @@ endfunction
     Require(FindScriptFrames({}).frames.empty(), "no scripts, no frames");
 }
 
+void TestScriptClassicObjects() {
+    // 原创脚本：BJ 计时器窗口（创建即显示，经 GetLastCreated 存入变量）、原生计时器窗口与对话框。
+    const MapScriptText script{"war3map.j", ScriptLanguage::Jass, R"(globals
+    timerdialog array udg_Bars
+    timerdialog udg_Wait = null
+    dialog udg_Pick = null
+    timer udg_T = null
+endglobals
+function InitBoards takes nothing returns nothing
+    call CreateTimerDialogBJ(udg_T, "TRIGSTR_007")
+    set udg_Bars[0] = GetLastCreatedTimerDialogBJ()
+    set udg_Wait = CreateTimerDialog(udg_T)
+    call TimerDialogSetTitle(udg_Wait, "Wait")
+    set udg_Pick = DialogCreate()
+    call DialogSetMessage(udg_Pick, "Pick")
+    call DialogAddButton(udg_Pick, "TRIGSTR_008", 0)
+    call DialogAddButton(udg_Pick, I2S(2), 0)
+    call DialogDisplay(Player(0), udg_Pick, true)
+endfunction
+function Later takes nothing returns nothing
+    call TimerDialogDisplay(udg_Wait, true)
+endfunction
+)"};
+    auto plan = FindScriptFrames({script});
+    Require(plan.frames.size() == 3, "three classic objects");
+    const ScriptFrame& boss = FrameCreatedAt(plan, 8);
+    Require(boss.object == ScriptObjectKind::TimerDialog && boss.variable == "udg_Bars[0]" && boss.name == "udg_Bars[0]" &&
+            boss.templateName == "TimerDialog",
+        "BJ timer dialog bound through GetLastCreated");
+    Require(boss.visible && *boss.visible && boss.text && *boss.text == "TRIGSTR_007", "BJ creation shows with its title");
+    const ScriptFrame& wait = FrameCreatedAt(plan, 10);
+    Require(wait.visible && !*wait.visible && wait.text && *wait.text == "Wait" && wait.runtimeCalls == 1,
+        "native timer dialog stays hidden until displayed");
+    const ScriptFrame& pick = FrameCreatedAt(plan, 12);
+    Require(pick.object == ScriptObjectKind::Dialog && pick.visible && *pick.visible && pick.text && *pick.text == "Pick",
+        "dialog displayed in the same block; display takes the dialog as its second argument");
+    Require(pick.buttons == std::vector<std::string>{"TRIGSTR_008", ""} && pick.dynamic.size() == 1,
+        "buttons kept in order; runtime text reported");
+
+    plan.strings[7] = "Boss";
+    plan.strings[8] = "Easy";
+    const std::string text =
+        "Frame \"FRAME\" \"TimerDialog\" { Width 0.17, Height 0.03,\n"
+        "    Frame \"TEXT\" \"TimerDialogValue\" { Anchor RIGHT, -0.01, 0.0, }\n"
+        "    Frame \"TEXT\" \"TimerDialogTitle\" { Anchor LEFT, 0.01, 0.0, }\n"
+        "}\n"
+        "Frame \"DIALOG\" \"ScriptDialog\" { Width 0.288, Height 0.112,\n"
+        "    Frame \"TEXT\" \"ScriptDialogText\" { Font \"MasterFont\", 0.015, Anchor TOP, 0.0, -0.03, }\n"
+        "}\n"
+        "Frame \"GLUETEXTBUTTON\" \"ScriptDialogButton\" { Width 0.228, Height 0.035,\n"
+        "    Frame \"TEXT\" \"ScriptDialogButtonText\" { SetAllPoints, }\n"
+        "}\n";
+    auto parsed = ParseFdf(text, "UI\\Classic.fdf");
+    Require(parsed.Succeeded(), "classic fixture parses");
+    FrameLibrary library;
+    library.AddParsed(std::move(*parsed.value), "game");
+    FrameTree tree;
+    std::vector<Diagnostic> diagnostics;
+    (void)AddScriptFrames(tree, library, nullptr, plan, diagnostics);
+    (void)tree.Layout();
+
+    // 计时器窗口在世界画面右上角，标题按字符串表显示。
+    RequireRect(NodeNamed(tree, "udg_Bars[0]"), 0.625f, 0.535f, 0.795f, 0.565f, "timer dialog at its game position");
+    Require(NodeNamed(tree, "TimerDialogTitle").text->text == "Boss", "title resolved from the string table");
+    Require(NodeNamed(tree, "udg_Wait").hidden && !NodeNamed(tree, "udg_Bars[0]").hidden, "visibility from creation");
+
+    // 对话框：消息 1 行（0.015）+ 2 个按钮，合计 0.159，取到 0.192；上下边距平分 0.0465。
+    RequireRect(NodeNamed(tree, "udg_Pick"), 0.256f, 0.259f, 0.544f, 0.451f, "dialog grows to the next 0.048 step");
+    std::vector<const FrameNode*> buttons;
+    for (const auto& node : tree.Nodes()) {
+        if (node.name == "ScriptDialogButton") buttons.push_back(&node);
+    }
+    Require(buttons.size() == 2, "one button node per added button");
+    RequireRect(*buttons[0], 0.286f, 0.3435f, 0.514f, 0.3785f, "first button below the message");
+    RequireRect(*buttons[1], 0.286f, 0.3055f, 0.514f, 0.3405f, "next button 0.003 lower");
+    const FrameNode& label = tree.Nodes()[buttons[0]->children.front()];
+    Require(label.text && label.text->text == "Easy", "button text resolved");
+}
+
 const SimulationInput* InputNamed(const SimulationResult& result, std::string_view key) {
     for (const auto& input : result.inputs) {
         if (input.key == key) return &input;
@@ -747,6 +826,7 @@ int main() {
         TestGameCodeLayout();
         TestMapTocs();
         TestScriptFrames();
+        TestScriptClassicObjects();
         TestScriptSimulation();
         std::cout << "Game UI tests passed\n";
         return 0;

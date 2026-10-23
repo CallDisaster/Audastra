@@ -10,6 +10,10 @@ namespace {
 constexpr auto kBlz = UiApiFamily::Blizzard;
 constexpr auto kDz = UiApiFamily::Dz;
 constexpr auto kMh = UiApiFamily::MemHack;
+constexpr auto kTimerDialog = ScriptObjectKind::TimerDialog;
+constexpr auto kDialog = ScriptObjectKind::Dialog;
+constexpr auto kLeaderboard = ScriptObjectKind::Leaderboard;
+constexpr auto kMultiboard = ScriptObjectKind::Multiboard;
 
 // 认识的界面函数。设置类调用的第 0 个参数都是框架；参数位置与各接口的公开声明一致。
 constexpr CallSpec kCalls[] = {
@@ -86,6 +90,43 @@ constexpr CallSpec kCalls[] = {
     {.name = "MHFrame_Hide", .family = kMh, .kind = CallKind::SetHidden},
     {.name = "MHFrame_LoadTOC", .family = kMh, .kind = CallKind::LoadToc},
     {.name = "MHFrame_Destroy", .family = kMh, .kind = CallKind::FrameOther},
+
+    // 原版界面对象：作用对象与取值参数按各函数的公开声明。
+    {.name = "CreateTimerDialog", .kind = CallKind::Create, .object = kTimerDialog},
+    {.name = "CreateTimerDialogBJ", .kind = CallKind::Create, .object = kTimerDialog, .titleArg = 1, .shown = true},
+    {.name = "GetLastCreatedTimerDialogBJ", .kind = CallKind::LastCreated, .object = kTimerDialog},
+    {.name = "TimerDialogSetTitle", .kind = CallKind::SetText},
+    {.name = "TimerDialogSetTitleBJ", .kind = CallKind::SetText},
+    {.name = "TimerDialogDisplay", .kind = CallKind::SetVisible},
+    {.name = "TimerDialogDisplayBJ", .kind = CallKind::SetVisible, .targetArg = 1, .valueArg = 0},
+    {.name = "DestroyTimerDialog", .kind = CallKind::FrameOther},
+    {.name = "DialogCreate", .kind = CallKind::Create, .object = kDialog},
+    {.name = "DialogSetMessage", .kind = CallKind::SetText},
+    {.name = "DialogSetMessageBJ", .kind = CallKind::SetText},
+    {.name = "DialogAddButton", .kind = CallKind::AddButton},
+    {.name = "DialogAddButtonBJ", .kind = CallKind::AddButton},
+    {.name = "DialogAddButtonWithHotkeyBJ", .kind = CallKind::AddButton},
+    {.name = "DialogAddQuitButton", .kind = CallKind::AddButton, .valueArg = 2},
+    {.name = "DialogClear", .kind = CallKind::ClearButtons},
+    {.name = "DialogClearBJ", .kind = CallKind::ClearButtons},
+    {.name = "DialogDisplay", .kind = CallKind::SetVisible, .targetArg = 1, .valueArg = 2},
+    {.name = "DialogDisplayBJ", .kind = CallKind::SetVisible, .targetArg = 1, .valueArg = 0},
+    {.name = "DialogDestroy", .kind = CallKind::FrameOther},
+    {.name = "CreateLeaderboard", .kind = CallKind::Create, .object = kLeaderboard},
+    {.name = "CreateLeaderboardBJ", .kind = CallKind::Create, .object = kLeaderboard, .titleArg = 1, .shown = true},
+    {.name = "GetLastCreatedLeaderboard", .kind = CallKind::LastCreated, .object = kLeaderboard},
+    {.name = "LeaderboardSetLabel", .kind = CallKind::SetText},
+    {.name = "LeaderboardSetLabelBJ", .kind = CallKind::SetText},
+    {.name = "LeaderboardDisplay", .kind = CallKind::SetVisible},
+    {.name = "LeaderboardDisplayBJ", .kind = CallKind::SetVisible, .targetArg = 1, .valueArg = 0},
+    {.name = "DestroyLeaderboard", .kind = CallKind::FrameOther},
+    {.name = "CreateMultiboard", .kind = CallKind::Create, .object = kMultiboard},
+    {.name = "CreateMultiboardBJ", .kind = CallKind::Create, .object = kMultiboard, .titleArg = 2, .shown = true},
+    {.name = "GetLastCreatedMultiboard", .kind = CallKind::LastCreated, .object = kMultiboard},
+    {.name = "MultiboardSetTitleText", .kind = CallKind::SetText},
+    {.name = "MultiboardDisplay", .kind = CallKind::SetVisible},
+    {.name = "MultiboardDisplayBJ", .kind = CallKind::SetVisible, .targetArg = 1, .valueArg = 0},
+    {.name = "DestroyMultiboard", .kind = CallKind::FrameOther},
 };
 
 // 表外但属于界面函数族的名字：Get/Is 开头视为只读，其余列为不认识。
@@ -145,7 +186,7 @@ std::optional<CallSpec> LookupCall(std::string_view name) {
 }
 
 bool IsSetter(CallKind kind) noexcept {
-    return kind >= CallKind::SetAbsPoint && kind <= CallKind::SetHidden;
+    return kind >= CallKind::SetAbsPoint && kind <= CallKind::ClearButtons;
 }
 
 std::optional<std::string> OriginArea(std::string_view constant, std::optional<float> index) {
@@ -185,9 +226,11 @@ std::optional<ScriptFrameRef> FrameRefOfCall(const CallSpec& spec, const std::ve
     return ScriptFrameRef{ScriptFrameTarget::CodeArea, std::move(*area), 0};
 }
 
-bool ApplyFrameCall(ScriptFrame& frame, CallKind kind, const std::vector<std::optional<ScriptValue>>& args,
+bool ApplyFrameCall(ScriptFrame& frame, const CallSpec& spec, const std::vector<std::optional<ScriptValue>>& args,
     const ScriptFrameRef& relative) {
+    const CallKind kind = spec.kind;
     const auto argument = [&](std::size_t i) { return i < args.size() ? args[i] : std::nullopt; };
+    const auto value = [&] { return spec.valueArg < 0 ? std::nullopt : argument(static_cast<std::size_t>(spec.valueArg)); };
     const auto upsert = [&](ScriptAnchor anchor) {
         for (auto& existing : frame.anchors) {
             if (existing.point == anchor.point) {
@@ -251,18 +294,26 @@ bool ApplyFrameCall(ScriptFrame& frame, CallKind kind, const std::vector<std::op
         }
         return false;
     case CallKind::SetText:
-        if (auto text = StringOf(argument(1))) {
+        if (auto text = StringOf(value())) {
             frame.text = std::move(*text);
             return true;
         }
         return false;
     case CallKind::SetVisible:
     case CallKind::SetHidden:
-        if (const auto flag = BooleanOf(argument(1))) {
+        if (const auto flag = BooleanOf(value())) {
             frame.visible = kind == CallKind::SetVisible ? *flag : !*flag;
             return true;
         }
         return false;
+    case CallKind::AddButton: {
+        auto text = StringOf(value());
+        frame.buttons.push_back(text.value_or(std::string()));
+        return text.has_value();
+    }
+    case CallKind::ClearButtons:
+        frame.buttons.clear();
+        return true;
     default:
         return false;
     }

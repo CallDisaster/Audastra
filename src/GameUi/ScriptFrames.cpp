@@ -77,6 +77,9 @@ private:
     void Nested(const Scope& scope, std::int32_t index, BlockFrames& block);
     std::optional<std::uint32_t> Create(const Scope& scope, const CallSpec& spec, std::int32_t index,
         const std::string& key, BlockFrames& block);
+    void CreateObject(const Scope& scope, const CallSpec& spec, const Expr& call, ScriptFrame& frame);
+    void Bind(const Scope& scope, std::int32_t target, const std::string& key, std::uint32_t id, BlockFrames& block);
+    std::optional<std::uint32_t> LastCreated(const Scope& scope, std::int32_t index, const BlockFrames& block) const;
     void Apply(const Scope& scope, const CallSpec& spec, std::int32_t index, BlockFrames& block);
     bool ApplyTo(const Scope& scope, ScriptFrame& frame, const CallSpec& spec, const Expr& call, const BlockFrames& block);
     void Group(const std::string& function, UiApiFamily family, ScriptUiCallReason reason, ScriptCallSite site);
@@ -227,8 +230,11 @@ void Analyzer::Block(const Scope& scope, const std::vector<std::int32_t>& statem
             if (local.init < 0) continue;
             const Expr& init = Unwrap(scope, local.init);
             const auto spec = init.kind == ExprKind::Call && init.left < 0 ? LookupCall(init.text) : std::nullopt;
+            const std::string key = std::string(scope.function) + "::" + std::string(local.name);
             if (spec && spec->kind == CallKind::Create) {
-                (void)Create(scope, *spec, local.init, std::string(scope.function) + "::" + std::string(local.name), block);
+                (void)Create(scope, *spec, local.init, key, block);
+            } else if (const auto last = LastCreated(scope, local.init, block)) {
+                Bind(scope, -1, key, *last, block);
             } else {
                 Nested(scope, local.init, block);
             }
@@ -248,6 +254,10 @@ void Analyzer::Statement(const Scope& scope, std::int32_t index, BlockFrames& bl
         const auto spec = value.kind == ExprKind::Call && value.left < 0 ? LookupCall(value.text) : std::nullopt;
         if (spec && spec->kind == CallKind::Create) {
             (void)Create(scope, *spec, statement.value, key, block);
+            return;
+        }
+        if (const auto last = key.empty() ? std::nullopt : LastCreated(scope, statement.value, block)) {
+            Bind(scope, statement.target, key, *last, block);
             return;
         }
         if (!key.empty()) {
@@ -351,6 +361,15 @@ std::optional<std::uint32_t> Analyzer::Create(const Scope& scope, const CallSpec
         const auto separator = key.find("::");
         frame.variable = separator == std::string::npos ? key : key.substr(separator + 2);
     }
+    if (spec.object != ScriptObjectKind::Frame) {
+        CreateObject(scope, spec, call, frame);
+        const auto id = static_cast<std::uint32_t>(plan_.frames.size());
+        plan_.frames.push_back(std::move(frame));
+        // BJ 版本记为“最近创建”，供同一语句块里的 GetLastCreated… 取用。
+        if (spec.shown) block["#last:" + std::to_string(static_cast<int>(spec.object))] = id;
+        if (!key.empty()) Bind(scope, -1, key, id, block);
+        return id;
+    }
     if (spec.typeArg >= 0) {
         if (const auto type = StringOf(argument(spec.typeArg))) frame.frameType = *type;
         else frame.dynamic.push_back("框架类型 第 " + std::to_string(call.line) + " 行");
@@ -384,15 +403,53 @@ std::optional<std::uint32_t> Analyzer::Create(const Scope& scope, const CallSpec
     return id;
 }
 
+void Analyzer::CreateObject(const Scope& scope, const CallSpec& spec, const Expr& call, ScriptFrame& frame) {
+    frame.object = spec.object;
+    frame.templateName = std::string(ScriptObjectTemplate(spec.object));
+    frame.name = frame.variable.empty() ? frame.templateName : frame.variable;
+    frame.visible = spec.shown;
+    if (spec.titleArg >= 0 && static_cast<std::uint32_t>(spec.titleArg) < call.argumentCount) {
+        if (auto title = StringOf(Eval(scope, scope.pool.Argument(call, static_cast<std::uint32_t>(spec.titleArg))))) {
+            frame.text = std::move(*title);
+        } else {
+            frame.dynamic.push_back("标题 第 " + std::to_string(call.line) + " 行");
+        }
+    }
+}
+
+// 变量指向已有的脚本对象（target 为赋值目标表达式，局部变量声明时为 -1）。
+void Analyzer::Bind(const Scope& scope, std::int32_t target, const std::string& key, std::uint32_t id, BlockFrames& block) {
+    block[key] = id;
+    keyFrames_[key] = id;
+    baseFrames_[target >= 0 ? BaseKey(scope, target) : key.substr(0, key.find('['))].push_back(id);
+    ScriptFrame& frame = plan_.frames[id];
+    if (frame.variable.empty()) {
+        const auto separator = key.find("::");
+        frame.variable = separator == std::string::npos ? key : key.substr(separator + 2);
+        if (frame.object != ScriptObjectKind::Frame) frame.name = frame.variable;
+    }
+}
+
+// GetLastCreated… 调用：同一语句块里最近一次 BJ 创建的同类对象。
+std::optional<std::uint32_t> Analyzer::LastCreated(const Scope& scope, std::int32_t index, const BlockFrames& block) const {
+    if (index < 0) return std::nullopt;
+    const Expr& expr = Unwrap(scope, index);
+    if (expr.kind != ExprKind::Call || expr.left >= 0) return std::nullopt;
+    const auto spec = LookupCall(expr.text);
+    if (!spec || spec->kind != CallKind::LastCreated) return std::nullopt;
+    const auto found = block.find("#last:" + std::to_string(static_cast<int>(spec->object)));
+    return found == block.end() ? std::nullopt : std::optional<std::uint32_t>(found->second);
+}
+
 void Analyzer::Apply(const Scope& scope, const CallSpec& spec, std::int32_t index, BlockFrames& block) {
     const Expr& call = Unwrap(scope, index);
-    if (call.argumentCount == 0) return;
-    const std::int32_t target = scope.pool.Argument(call, 0);
-    std::optional<std::uint32_t> frame;
+    if (spec.targetArg < 0 || static_cast<std::uint32_t>(spec.targetArg) >= call.argumentCount) return;
+    const std::int32_t target = scope.pool.Argument(call, static_cast<std::uint32_t>(spec.targetArg));
+    std::optional<std::uint32_t> frame = LastCreated(scope, target, block);
     const std::string key = VarKey(scope, target);
-    if (const auto found = key.empty() ? block.end() : block.find(key); found != block.end()) {
+    if (const auto found = frame || key.empty() ? block.end() : block.find(key); found != block.end()) {
         frame = found->second;
-    } else {
+    } else if (!frame) {
         // 按名字取到同一语句块里刚创建的框架。
         const ScriptFrameRef ref = Ref(scope, target, block);
         if (ref.target == ScriptFrameTarget::Script && Unwrap(scope, target).kind == ExprKind::Call) {
@@ -415,12 +472,12 @@ bool Analyzer::ApplyTo(const Scope& scope, ScriptFrame& frame, const CallSpec& s
     const BlockFrames& block) {
     std::vector<std::optional<ScriptValue>> args;
     for (std::uint32_t i = 0; i < call.argumentCount; ++i) {
-        args.push_back(i == 0 ? std::nullopt : Eval(scope, scope.pool.Argument(call, i)));
+        args.push_back(static_cast<std::int32_t>(i) == spec.targetArg ? std::nullopt : Eval(scope, scope.pool.Argument(call, i)));
     }
     ScriptFrameRef relative;
     if (spec.kind == CallKind::SetPoint && call.argumentCount > 2) relative = Ref(scope, scope.pool.Argument(call, 2), block);
     if (spec.kind == CallKind::SetAllPoints && call.argumentCount > 1) relative = Ref(scope, scope.pool.Argument(call, 1), block);
-    return detail::ApplyFrameCall(frame, spec.kind, args, relative);
+    return detail::ApplyFrameCall(frame, spec, args, relative);
 }
 
 void Analyzer::Finish() {
@@ -449,6 +506,26 @@ void Analyzer::Finish() {
 }
 
 } // namespace
+
+std::string_view ScriptObjectTemplate(ScriptObjectKind object) noexcept {
+    switch (object) {
+    case ScriptObjectKind::TimerDialog: return "TimerDialog";
+    case ScriptObjectKind::Dialog: return "ScriptDialog";
+    case ScriptObjectKind::Leaderboard: return "Leaderboard";
+    case ScriptObjectKind::Multiboard: return "Multiboard";
+    default: return {};
+    }
+}
+
+std::string_view ScriptObjectKindName(ScriptObjectKind object) noexcept {
+    switch (object) {
+    case ScriptObjectKind::TimerDialog: return "timer-dialog";
+    case ScriptObjectKind::Dialog: return "dialog";
+    case ScriptObjectKind::Leaderboard: return "leaderboard";
+    case ScriptObjectKind::Multiboard: return "multiboard";
+    default: return "frame";
+    }
+}
 
 std::string_view UiApiFamilyName(UiApiFamily family) noexcept {
     switch (family) {
