@@ -513,6 +513,11 @@ void GameUiModule::UpdateProperties() {
             for (const auto& button : frame.buttons) buttons.push_back(button.empty() ? tr("（运行时文字）") : Text(button));
             row(script, tr("按钮"), buttons.join(QStringLiteral("、")));
         }
+        if (frame.board) {
+            QString size = tr("%1 行 × %2 列").arg(frame.board->rows).arg(frame.board->columns);
+            if (frame.board->minimized) size += tr("，最小化");
+            row(script, tr("行列"), size);
+        }
         if (frame.nameDynamic) row(script, tr("框架名"), tr("运行时拼出"));
         QString parent = tr("未确定");
         if (frame.parent.target == ScriptFrameTarget::CodeArea || frame.parent.target == ScriptFrameTarget::Named ||

@@ -229,6 +229,21 @@ QJsonObject NodeJson(const FrameTree& tree, const FrameNode& node, double aspect
         QJsonArray buttons;
         for (const auto& button : frame.buttons) buttons.append(Text(button));
         if (!buttons.isEmpty()) script.insert("buttons", buttons);
+        if (frame.board) {
+            // 格子文字只回前 kBoardRowsOut 行、kBoardColumnsOut 列，其余以 values_truncated 标明。
+            constexpr std::uint32_t kBoardRowsOut = 32;
+            constexpr std::uint32_t kBoardColumnsOut = 16;
+            const ScriptBoard& board = *frame.board;
+            QJsonArray values;
+            for (std::uint32_t r = 0; r < std::min(board.rows, kBoardRowsOut); ++r) {
+                QJsonArray cells;
+                for (std::uint32_t c = 0; c < std::min(board.columns, kBoardColumnsOut); ++c) cells.append(Text(board.At(r, c)->value));
+                values.append(cells);
+            }
+            script.insert("board", QJsonObject{{"rows", static_cast<qint64>(board.rows)},
+                {"columns", static_cast<qint64>(board.columns)}, {"minimized", board.minimized}, {"values", values},
+                {"values_truncated", board.rows > kBoardRowsOut || board.columns > kBoardColumnsOut}});
+        }
         QJsonArray dynamic;
         for (const auto& item : frame.dynamic) dynamic.append(Text(item));
         if (!dynamic.isEmpty()) script.insert("dynamic", dynamic);

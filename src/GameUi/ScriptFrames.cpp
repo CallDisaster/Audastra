@@ -63,6 +63,12 @@ private:
         ScriptCallSite site;
         UiApiFamily family = UiApiFamily::Blizzard;
     };
+    // 多面板格子：所在多面板（本语句块里确定时）、多面板变量基名与行列（常量时）。
+    struct ItemRef {
+        std::optional<std::uint32_t> frame;
+        std::string boardKey;
+        std::optional<detail::BoardCell> cell;
+    };
 
     const Expr& Unwrap(const Scope& scope, std::int32_t index) const;
     std::optional<ScriptValue> Eval(const Scope& scope, std::int32_t index) const;
@@ -80,6 +86,9 @@ private:
     void CreateObject(const Scope& scope, const CallSpec& spec, const Expr& call, ScriptFrame& frame);
     void Bind(const Scope& scope, std::int32_t target, const std::string& key, std::uint32_t id, BlockFrames& block);
     std::optional<std::uint32_t> LastCreated(const Scope& scope, std::int32_t index, const BlockFrames& block) const;
+    void BindItem(const Scope& scope, const std::string& key, std::int32_t index, BlockFrames& block);
+    ItemRef ResolveItem(const Scope& scope, std::int32_t index, const BlockFrames& block) const;
+    void ApplyItem(const Scope& scope, const CallSpec& spec, std::int32_t index, BlockFrames& block);
     void Apply(const Scope& scope, const CallSpec& spec, std::int32_t index, BlockFrames& block);
     bool ApplyTo(const Scope& scope, ScriptFrame& frame, const CallSpec& spec, const Expr& call, const BlockFrames& block);
     void Group(const std::string& function, UiApiFamily family, ScriptUiCallReason reason, ScriptCallSite site);
@@ -90,6 +99,7 @@ private:
     std::unordered_map<std::string, std::vector<std::uint32_t>> baseFrames_;  // 变量基名或 name:名字 → 框架
     std::unordered_map<std::string, std::size_t> groups_;
     std::vector<Pending> pending_;
+    std::vector<ItemRef> items_;  // 语句块里 “#item:变量” 指向的格子
     bool limitReported_ = false;
 };
 
@@ -233,6 +243,8 @@ void Analyzer::Block(const Scope& scope, const std::vector<std::int32_t>& statem
             const std::string key = std::string(scope.function) + "::" + std::string(local.name);
             if (spec && spec->kind == CallKind::Create) {
                 (void)Create(scope, *spec, local.init, key, block);
+            } else if (spec && spec->kind == CallKind::BoardGetItem) {
+                BindItem(scope, key, local.init, block);
             } else if (const auto last = LastCreated(scope, local.init, block)) {
                 Bind(scope, -1, key, *last, block);
             } else {
@@ -256,6 +268,11 @@ void Analyzer::Statement(const Scope& scope, std::int32_t index, BlockFrames& bl
             (void)Create(scope, *spec, statement.value, key, block);
             return;
         }
+        if (spec && spec->kind == CallKind::BoardGetItem) {
+            BindItem(scope, key, statement.value, block);
+            Nested(scope, statement.value, block);
+            return;
+        }
         if (const auto last = key.empty() ? std::nullopt : LastCreated(scope, statement.value, block)) {
             Bind(scope, statement.target, key, *last, block);
             return;
@@ -271,6 +288,7 @@ void Analyzer::Statement(const Scope& scope, std::int32_t index, BlockFrames& bl
             } else {
                 block.erase(key);
             }
+            block.erase("#item:" + key);
         }
         Nested(scope, statement.value, block);
         return;
@@ -408,12 +426,76 @@ void Analyzer::CreateObject(const Scope& scope, const CallSpec& spec, const Expr
     frame.templateName = std::string(ScriptObjectTemplate(spec.object));
     frame.name = frame.variable.empty() ? frame.templateName : frame.variable;
     frame.visible = spec.shown;
-    if (spec.titleArg >= 0 && static_cast<std::uint32_t>(spec.titleArg) < call.argumentCount) {
-        if (auto title = StringOf(Eval(scope, scope.pool.Argument(call, static_cast<std::uint32_t>(spec.titleArg))))) {
-            frame.text = std::move(*title);
-        } else {
-            frame.dynamic.push_back("标题 第 " + std::to_string(call.line) + " 行");
+    const auto argument = [&](std::int8_t position) -> std::optional<ScriptValue> {
+        if (position < 0 || static_cast<std::uint32_t>(position) >= call.argumentCount) return std::nullopt;
+        return Eval(scope, scope.pool.Argument(call, static_cast<std::uint32_t>(position)));
+    };
+    if (spec.titleArg >= 0) {
+        if (auto title = StringOf(argument(spec.titleArg))) frame.text = std::move(*title);
+        else frame.dynamic.push_back("标题 第 " + std::to_string(call.line) + " 行");
+    }
+    if (spec.object == ScriptObjectKind::Multiboard) {
+        frame.board.emplace();
+        if (spec.rowsArg >= 0 || spec.columnsArg >= 0) {
+            // CreateMultiboardBJ 依次设置行数、列数。
+            const auto rows = NumberOf(argument(spec.rowsArg));
+            const auto columns = NumberOf(argument(spec.columnsArg));
+            if (rows && columns) {
+                frame.board->Resize(static_cast<std::uint32_t>(std::max(0.0f, *rows)), 0);
+                frame.board->Resize(frame.board->rows, static_cast<std::uint32_t>(std::max(0.0f, *columns)));
+            } else {
+                frame.dynamic.push_back("行列数 第 " + std::to_string(call.line) + " 行");
+            }
         }
+    }
+}
+
+// 保存 MultiboardGetItem 结果的变量：格子所在的多面板与行列。
+void Analyzer::BindItem(const Scope& scope, const std::string& key, std::int32_t index, BlockFrames& block) {
+    if (key.empty()) return;
+    block["#item:" + key] = static_cast<std::uint32_t>(items_.size());
+    items_.push_back(ResolveItem(scope, index, block));
+}
+
+// MultiboardGetItem(多面板, 行, 列) 调用对应的格子；多面板不在本语句块里时只记它的变量基名。
+Analyzer::ItemRef Analyzer::ResolveItem(const Scope& scope, std::int32_t index, const BlockFrames& block) const {
+    ItemRef item;
+    const Expr& call = Unwrap(scope, index);
+    if (call.argumentCount < 3) return item;
+    const std::int32_t board = scope.pool.Argument(call, 0);
+    item.frame = LastCreated(scope, board, block);
+    if (!item.frame) {
+        const std::string key = VarKey(scope, board);
+        if (const auto found = key.empty() ? block.end() : block.find(key); found != block.end()) item.frame = found->second;
+    }
+    item.boardKey = BaseKey(scope, board);
+    item.cell = detail::BoardCellOf(Eval(scope, scope.pool.Argument(call, 1)), Eval(scope, scope.pool.Argument(call, 2)));
+    return item;
+}
+
+// 作用在单个格子上的设置：格子来自保存 MultiboardGetItem 结果的变量，或直接写在参数里的 MultiboardGetItem。
+void Analyzer::ApplyItem(const Scope& scope, const CallSpec& spec, std::int32_t index, BlockFrames& block) {
+    const Expr& call = Unwrap(scope, index);
+    if (call.argumentCount == 0) return;
+    const std::int32_t target = scope.pool.Argument(call, 0);
+    const Expr& expr = Unwrap(scope, target);
+    std::optional<ItemRef> item;
+    if (expr.kind == ExprKind::Call && expr.left < 0) {
+        if (const auto inner = LookupCall(expr.text); inner && inner->kind == CallKind::BoardGetItem) {
+            item = ResolveItem(scope, target, block);
+        }
+    } else if (const std::string key = VarKey(scope, target); !key.empty()) {
+        if (const auto found = block.find("#item:" + key); found != block.end()) item = items_[found->second];
+    }
+    if (!item || !item->frame) {
+        pending_.push_back(Pending{item ? item->boardKey : BaseKey(scope, target), Site(scope, call), spec.family});
+        return;
+    }
+    ScriptFrame& board = plan_.frames[*item->frame];
+    std::vector<std::optional<ScriptValue>> args;
+    for (std::uint32_t i = 0; i < call.argumentCount; ++i) args.push_back(i == 0 ? std::nullopt : Eval(scope, scope.pool.Argument(call, i)));
+    if (!item->cell || !detail::ApplyBoardCall(board, spec, args, item->cell)) {
+        board.dynamic.push_back(std::string(call.text) + " 第 " + std::to_string(call.line) + " 行");
     }
 }
 
@@ -442,6 +524,10 @@ std::optional<std::uint32_t> Analyzer::LastCreated(const Scope& scope, std::int3
 }
 
 void Analyzer::Apply(const Scope& scope, const CallSpec& spec, std::int32_t index, BlockFrames& block) {
+    if (spec.kind == CallKind::BoardItems && spec.board == detail::BoardScope::Item) {
+        ApplyItem(scope, spec, index, block);
+        return;
+    }
     const Expr& call = Unwrap(scope, index);
     if (spec.targetArg < 0 || static_cast<std::uint32_t>(spec.targetArg) >= call.argumentCount) return;
     const std::int32_t target = scope.pool.Argument(call, static_cast<std::uint32_t>(spec.targetArg));
@@ -506,6 +592,38 @@ void Analyzer::Finish() {
 }
 
 } // namespace
+
+ScriptBoardItem* ScriptBoard::At(std::uint32_t row, std::uint32_t column) {
+    if (row >= rows || column >= columns) return nullptr;
+    return &items[static_cast<std::size_t>(row) * columns + column];
+}
+
+const ScriptBoardItem* ScriptBoard::At(std::uint32_t row, std::uint32_t column) const {
+    return const_cast<ScriptBoard*>(this)->At(row, column);
+}
+
+bool ScriptBoard::Resize(std::uint32_t newRows, std::uint32_t newColumns) {
+    const bool fits = newRows <= kMaxBoardRows && newColumns <= kMaxBoardColumns;
+    newRows = std::min(newRows, kMaxBoardRows);
+    newColumns = std::min(newColumns, kMaxBoardColumns);
+    // 游戏先按行数增删整行（新行复制默认值），再按列数增删每行的格子（新格子不带文字）。
+    ScriptBoardItem newColumn = defaults;
+    newColumn.value.clear();
+    std::vector<ScriptBoardItem> resized;
+    resized.reserve(static_cast<std::size_t>(newRows) * newColumns);
+    for (std::uint32_t r = 0; r < newRows; ++r) {
+        for (std::uint32_t c = 0; c < newColumns; ++c) {
+            if (r < rows && c < columns) resized.push_back(items[static_cast<std::size_t>(r) * columns + c]);
+            else if (c < columns) resized.push_back(defaults);
+            else resized.push_back(newColumn);
+        }
+    }
+    items = std::move(resized);
+    rows = newRows;
+    columns = newColumns;
+    if (!fits) clipped = true;
+    return fits;
+}
 
 std::string_view ScriptObjectTemplate(ScriptObjectKind object) noexcept {
     switch (object) {

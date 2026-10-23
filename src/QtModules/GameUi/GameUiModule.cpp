@@ -214,6 +214,7 @@ void GameUiModule::RebuildScene() {
     if (definitions_ && definitions_->library) {
         UiSkin skin;
         skin.SetGameSkins(definitions_->gameSkins);
+        skin.SetMiscUi(definitions_->miscUi);
         if (!definitions_->mapSkin.empty()) skin.SetMapSkin(definitions_->mapSkin);
         FrameTreeOptions options;
         options.race = race_.toStdString();

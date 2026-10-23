@@ -29,6 +29,7 @@ constexpr std::size_t kMaxUiFileBytes = 8u * 1024u * 1024u;
 constexpr std::size_t kMaxScriptBytes = 64u * 1024u * 1024u;
 constexpr const char* kTocPath = "UI\\FrameDef\\FrameDef.toc";
 constexpr const char* kSkinPath = "UI\\war3skins.txt";
+constexpr const char* kMiscUiPath = "UI\\MiscUI.txt";
 constexpr const char* kMapSkinPath = "war3mapSkin.txt";
 
 std::string Utf8(const std::filesystem::path& path) {
@@ -148,6 +149,22 @@ nlohmann::json ScriptFrameJson(std::size_t index, const ScriptFrame& frame) {
     if (frame.text) json["text"] = *frame.text;
     if (frame.visible) json["visible"] = *frame.visible;
     if (!frame.buttons.empty()) json["buttons"] = frame.buttons;
+    if (frame.board) {
+        const ScriptBoard& board = *frame.board;
+        auto& out = json["board"] = {{"rows", board.rows}, {"columns", board.columns}, {"minimized", board.minimized}};
+        auto& items = out["items"] = nlohmann::json::array();
+        for (std::uint32_t r = 0; r < board.rows; ++r) {
+            auto row = nlohmann::json::array();
+            for (std::uint32_t c = 0; c < board.columns; ++c) {
+                const ScriptBoardItem& item = *board.At(r, c);
+                nlohmann::json cell{{"value", item.value}, {"width", item.width}, {"show_value", item.showValue},
+                    {"show_icon", item.showIcon}, {"color", {item.color[0], item.color[1], item.color[2], item.color[3]}}};
+                if (item.icon) cell["icon"] = *item.icon;
+                row.push_back(std::move(cell));
+            }
+            items.push_back(std::move(row));
+        }
+    }
     if (!frame.dynamic.empty()) json["dynamic"] = frame.dynamic;
     if (!frame.runtimeSamples.empty()) {
         auto& samples = json["runtime_samples"] = nlohmann::json::array();
@@ -262,6 +279,11 @@ int RunGameUiInspect(int argc, wchar_t* argv[]) {
     UiSkin skin;
     if (auto bytes = reader(kSkinPath); bytes.Succeeded() && bytes.value) {
         skin.SetGameSkins(BytesToText(*bytes.value));
+    } else {
+        AppendDiagnostics(diagnostics, bytes.diagnostics);
+    }
+    if (auto bytes = reader(kMiscUiPath); bytes.Succeeded() && bytes.value) {
+        skin.SetMiscUi(BytesToText(*bytes.value));
     } else {
         AppendDiagnostics(diagnostics, bytes.diagnostics);
     }

@@ -1,6 +1,7 @@
 #include "War3MapCore/GameUi/FrameDraw.h"
 #include "War3MapCore/GameUi/UiDescription.h"
 #include "War3MapCore/GameUi/UiDescriptionEdit.h"
+#include "GameUiTestSupport.h"
 
 #include <cmath>
 #include <iostream>
@@ -11,33 +12,13 @@ namespace {
 
 using namespace War3Map;
 using namespace War3Map::GameUi;
-
-void Require(bool condition, const char* reason) {
-    if (!condition) throw std::runtime_error(reason);
-}
-
-bool Near(float a, float b) {
-    return std::fabs(a - b) < 1e-5f;
-}
-
-bool HasCode(const std::vector<Diagnostic>& diagnostics, std::string_view code) {
-    for (const auto& diagnostic : diagnostics) {
-        if (diagnostic.code == code) return true;
-    }
-    return false;
-}
+using namespace War3Map::GameUi::Testing;
 
 bool HasMessage(const std::vector<Diagnostic>& diagnostics, std::string_view text) {
     for (const auto& diagnostic : diagnostics) {
         if (diagnostic.message.find(text) != std::string::npos) return true;
     }
     return false;
-}
-
-const FrameNode& NodeNamed(const FrameTree& tree, std::string_view name) {
-    const auto id = tree.FindByName(name);
-    if (!id) throw std::runtime_error("node missing: " + std::string(name));
-    return tree.Nodes()[*id];
 }
 
 // 原创读条描述：底框、按进度裁剪的填充、技能名与剩余时间，以及“打断”状态。

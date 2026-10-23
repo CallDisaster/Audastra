@@ -256,6 +256,8 @@ void FrameTree::Build(BuildContext& context, const FdfDefinition& definition, co
         std::any_of(node.properties.begin(), node.properties.end(),
             [](const FdfProperty& property) { return PropertyIs(property, "decoratefilenames"); });
 
+    const bool hasPoints = std::any_of(node.properties.begin(), node.properties.end(),
+        [](const FdfProperty& property) { return PropertyIs(property, "setpoint") || PropertyIs(property, "anchor"); });
     for (const auto& property : node.properties) {
         if (PropertyIs(property, "width")) {
             node.width = PropertyNumber(property, 0);
@@ -276,7 +278,8 @@ void FrameTree::Build(BuildContext& context, const FdfDefinition& definition, co
                 context.diagnostics.push_back(MakeDiagnostic(DiagnosticSeverity::Warning, "GAMEUI_SETPOINT_INVALID",
                     file + " 第 " + std::to_string(property.line) + " 行：SetPoint 的定位点无法识别"));
             }
-        } else if (PropertyIs(property, "setallpoints")) {
+        } else if (PropertyIs(property, "setallpoints") && !hasPoints) {
+            // 游戏只在定义里没有 SetPoint/Anchor 时才执行 SetAllPoints（如多面板标题栏两者都写，以 SetPoint 为准）。
             const std::string target = property.values.empty() ? std::string() : property.values[0].text;
             UpsertAnchor(node.anchors, FrameAnchor{FramePoint::TopLeft, target, FramePoint::TopLeft, 0.0f, 0.0f});
             UpsertAnchor(node.anchors, FrameAnchor{FramePoint::BottomRight, target, FramePoint::BottomRight, 0.0f, 0.0f});

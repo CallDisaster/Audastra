@@ -119,6 +119,192 @@ void LayoutDialog(FrameTree& tree, const FrameLibrary& library, const UiSkin* sk
     }
 }
 
+FrameAnchor AnchorTo(const FrameTree& tree, FramePoint point, std::uint32_t target, FramePoint relativePoint, float x, float y) {
+    FrameAnchor anchor{point, tree.Nodes()[target].name, relativePoint, x, y};
+    anchor.targetNode = target;
+    return anchor;
+}
+
+void PlaceAt(FrameTree& tree, std::uint32_t node, FrameAnchor anchor) {
+    FrameNode& target = tree.MutableNode(node);
+    target.anchors.clear();
+    target.anchors.push_back(std::move(anchor));
+}
+
+// 文字宽度的近似值（核心层没有字体度量）：中日韩等多字节字符按一个字号宽，其余按 0.55 个字号；
+// |c 颜色码、|r 不占宽度。
+float ApproxTextWidth(std::string_view text, float fontHeight) {
+    float width = 0.0f;
+    for (std::size_t i = 0; i < text.size();) {
+        if (text[i] == '|' && i + 1 < text.size()) {
+            const char code = static_cast<char>(text[i + 1] | 0x20);
+            if (code == 'c' && i + 10 <= text.size()) {
+                i += 10;
+                continue;
+            }
+            if (code == 'r' || code == 'n') {
+                i += 2;
+                continue;
+            }
+        }
+        const auto lead = static_cast<unsigned char>(text[i]);
+        const std::size_t length = lead < 0x80 ? 1 : (lead >> 5) == 6 ? 2 : (lead >> 4) == 14 ? 3 : 4;
+        width += length == 1 ? fontHeight * 0.55f : fontHeight;
+        i += length;
+    }
+    return width;
+}
+
+TextureInfo SkinTexture(const FrameTree& tree, const UiSkin* skin, const std::string& key) {
+    TextureInfo texture;
+    texture.key = key;
+    texture.path = key;
+    texture.source = "literal";
+    if (skin) {
+        if (const auto found = skin->Lookup(key, tree.Options().race, tree.Options().expansion)) {
+            texture.path = found->value;
+            texture.source = found->source;
+        }
+    }
+    texture.path = EnsureTextureExtension(texture.path);
+    return texture;
+}
+
+// 多面板按游戏代码排布（1.27a 多面板刷新与列表行布局）：
+// 列表宽 = Σ(第一行各格宽 + 0.002)，格宽默认 0.03；标题栏宽取 “标题文字宽 + 0.03” 与 “列表宽 − 最小化按钮宽”
+// 的较大者（最小化时只看文字）；背板高 = 0.014 × 行数 + 0.012。第 r 行的左上角在列表左上角右 0.01、下
+// 0.001 + 0.014r，行高 0.013；同一行的格子依次右接，间隔 0.001。显示图标时图标 0.011 见方、中心在格子左边
+// 右 0.005，文字从图标右侧 0.005 开始；文字字号取 MiscUI 的 FontHeights LeaderBoard。最小化时背板与列表不显示。
+void LayoutMultiboard(FrameTree& tree, const UiSkin* skin, std::uint32_t root, const ScriptFrame& frame,
+    const ScriptFramePlan& plan, std::vector<Diagnostic>& diagnostics) {
+    const std::string name = tree.Nodes()[root].name;
+    const auto button = FindDescendant(tree, root, "MultiboardMinimizeButton");
+    const auto titleBar = FindDescendant(tree, root, "MultiboardTitleBackdrop");
+    const auto title = FindDescendant(tree, root, "MultiboardTitle");
+    const auto backdrop = FindDescendant(tree, root, "MultiboardBackdrop");
+    const auto list = FindDescendant(tree, root, "MultiboardListContainer");
+    if (!frame.board || !button || !titleBar || !title || !backdrop || !list) {
+        diagnostics.push_back(MakeDiagnostic(DiagnosticSeverity::Warning, "GAMEUI_SCRIPT_TEMPLATE_MISSING",
+            name + " 的多面板模板缺少标题栏、背板或列表，未画出内容"));
+        return;
+    }
+    const ScriptBoard& board = *frame.board;
+    if (board.clipped) {
+        diagnostics.push_back(MakeDiagnostic(DiagnosticSeverity::Info, "GAMEUI_SCRIPT_BOARD_CLIPPED",
+            name + " 的行列超过预览上限，只画前 " + std::to_string(kMaxBoardRows) + " 行、" +
+                std::to_string(kMaxBoardColumns) + " 列"));
+    }
+    float listWidth = 0.0f;
+    for (std::uint32_t c = 0; c < board.columns; ++c) listWidth += (board.rows > 0 ? board.At(0, c)->width : 0.0f) + 0.002f;
+    const auto& titleText = tree.Nodes()[*title].text;
+    const float titleFont = titleText && titleText->fontHeight > 0.0f ? titleText->fontHeight : 0.011f;
+    const std::string caption = frame.text ? DisplayText(plan, *frame.text) : std::string();
+    const float buttonWidth = tree.Nodes()[root].width.value_or(0.024f);
+    tree.MutableNode(*titleBar).width =
+        std::max(ApproxTextWidth(caption, titleFont) + 0.03f, board.minimized ? 0.0f : listWidth - buttonWidth);
+    tree.MutableNode(*backdrop).height = 0.014f * static_cast<float>(board.rows) + 0.012f;
+    if (board.minimized) {
+        tree.MutableNode(*backdrop).hidden = true;
+        tree.MutableNode(*list).hidden = true;
+        if (const auto face = FindDescendant(tree, *button, "ButtonBackdropTemplate")) {
+            tree.MutableNode(*face).texture = SkinTexture(tree, skin, "MultiboardMaximizeButtonEnabled");
+        }
+        return;
+    }
+
+    TextInfo font;
+    font.fontKey = "MasterFont";
+    font.fontPath = font.fontKey;
+    if (skin) {
+        if (const auto found = skin->Lookup(font.fontKey, tree.Options().race, tree.Options().expansion)) font.fontPath = found->value;
+    }
+    font.fontHeight = skin ? skin->FontHeight("LeaderBoard").value_or(0.011f) : 0.011f;
+    font.justifyH = "JUSTIFYLEFT";
+    font.justifyV = "JUSTIFYMIDDLE";
+    font.source = "script";
+    const TextureInfo defaultIcon = SkinTexture(tree, skin, "MultiboardDefaultIcon");
+    for (std::uint32_t r = 0; r < board.rows; ++r) {
+        float x = 0.01f + 0.001f;
+        const float y = -(0.001f + 0.014f * static_cast<float>(r));
+        for (std::uint32_t c = 0; c < board.columns; ++c) {
+            const ScriptBoardItem& item = *board.At(r, c);
+            FrameNode cell;
+            cell.parent = *list;
+            cell.frameType = "FRAME";
+            cell.name = "MultiboardItem_r" + std::to_string(r + 1) + "_c" + std::to_string(c + 1);
+            cell.width = item.width;
+            cell.height = 0.013f;
+            cell.anchors.push_back(AnchorTo(tree, FramePoint::TopLeft, *list, FramePoint::TopLeft, x, y));
+            x += item.width + 0.001f;
+            const std::uint32_t cellId = tree.AddFrame(std::move(cell));
+            std::optional<std::uint32_t> iconId;
+            if (item.showIcon) {
+                FrameNode icon;
+                icon.parent = cellId;
+                icon.frameType = "BACKDROP";
+                icon.name = tree.Nodes()[cellId].name + "_Icon";
+                icon.width = 0.011f;
+                icon.height = 0.011f;
+                icon.anchors.push_back(AnchorTo(tree, FramePoint::Center, cellId, FramePoint::Left, 0.005f, 0.0f));
+                if (item.icon) {
+                    TextureInfo texture;
+                    texture.key = *item.icon;
+                    texture.path = EnsureTextureExtension(*item.icon);
+                    texture.source = "script";
+                    icon.texture = std::move(texture);
+                } else {
+                    icon.texture = defaultIcon;
+                }
+                iconId = tree.AddFrame(std::move(icon));
+            }
+            if (!item.showValue || item.value.empty()) continue;
+            FrameNode text;
+            text.parent = cellId;
+            text.frameType = "TEXT";
+            text.name = tree.Nodes()[cellId].name + "_Text";
+            text.text = font;
+            text.text->text = DisplayText(plan, item.value);
+            for (std::size_t i = 0; i < 4; ++i) text.text->color[i] = static_cast<float>(item.color[i]) / 255.0f;
+            text.anchors.push_back(iconId ? AnchorTo(tree, FramePoint::Left, *iconId, FramePoint::Right, 0.005f, 0.00001f)
+                                          : AnchorTo(tree, FramePoint::Left, cellId, FramePoint::Left, 0.0f, 0.00001f));
+            text.anchors.push_back(AnchorTo(tree, FramePoint::Right, cellId, FramePoint::Right, 0.0f, 0.00001f));
+            (void)tree.AddFrame(std::move(text));
+        }
+    }
+}
+
+// 显示中的原版界面对象按游戏规则排开（GameCodeLayout 里是各自单独出现时的位置）：计时器窗口自右向左
+// 间隔 0.002；多面板在第一个计时器窗口下 0.001；排行榜在多面板背板下 0.005（多面板最小化时在其按钮下），
+// 没有多面板时在第一个计时器窗口下 0.001。游戏同时只显示一个多面板、一个排行榜，取脚本中最后一个。
+void StackShownObjects(FrameTree& tree, const ScriptFramePlan& plan, const std::vector<std::uint32_t>& nodeOf) {
+    std::vector<std::uint32_t> timers;
+    std::optional<std::uint32_t> board;
+    std::optional<std::uint32_t> leaderboard;
+    for (std::uint32_t i = 0; i < plan.frames.size(); ++i) {
+        const ScriptFrame& frame = plan.frames[i];
+        if (!frame.visible || !*frame.visible || nodeOf[i] == kNoNode) continue;
+        if (frame.object == ScriptObjectKind::TimerDialog) timers.push_back(nodeOf[i]);
+        else if (frame.object == ScriptObjectKind::Multiboard) board = i;
+        else if (frame.object == ScriptObjectKind::Leaderboard) leaderboard = nodeOf[i];
+    }
+    for (std::size_t k = 1; k < timers.size(); ++k) {
+        PlaceAt(tree, timers[k], AnchorTo(tree, FramePoint::Right, timers[k - 1], FramePoint::Left, -0.002f, 0.0f));
+    }
+    if (board && !timers.empty()) {
+        PlaceAt(tree, nodeOf[*board], AnchorTo(tree, FramePoint::TopRight, timers.front(), FramePoint::BottomRight, 0.0f, -0.001f));
+    }
+    if (!leaderboard) return;
+    if (board) {
+        const ScriptFrame& frame = plan.frames[*board];
+        const bool minimized = frame.board && frame.board->minimized;
+        if (const auto under = FindDescendant(tree, nodeOf[*board], minimized ? "MultiboardMinimizeButton" : "MultiboardBackdrop")) {
+            PlaceAt(tree, *leaderboard, AnchorTo(tree, FramePoint::TopRight, *under, FramePoint::BottomRight, 0.0f, -0.005f));
+        }
+    } else if (!timers.empty()) {
+        PlaceAt(tree, *leaderboard, AnchorTo(tree, FramePoint::TopRight, timers.front(), FramePoint::BottomRight, 0.0f, -0.001f));
+    }
+}
+
 } // namespace
 
 std::vector<Diagnostic> ScriptCallDiagnostics(const ScriptFramePlan& plan) {
@@ -203,8 +389,7 @@ std::uint32_t AddScriptFrames(FrameTree& tree, const FrameLibrary& library, cons
             node.texture = std::move(texture);
         }
         if (frame.object != ScriptObjectKind::Frame) {
-            // 原版界面对象：游戏按固定位置摆放（多个同时显示时的排开规则见 GameCodeLayout），
-            // 预览按各自单独显示时的位置画。
+            // 原版界面对象：先放到各自单独显示时的位置，全部建好后再按显示中的对象排开。
             node.anchors.clear();
             if (const auto placement = KnownRootPlacement(frame.templateName)) {
                 for (FrameAnchor anchor : placement->anchors) {
@@ -217,6 +402,7 @@ std::uint32_t AddScriptFrames(FrameTree& tree, const FrameLibrary& library, cons
                 if (const auto title = FindDescendant(tree, *id, TitleNode(frame.object))) SetText(tree, *title, DisplayText(plan, *frame.text));
             }
             if (frame.object == ScriptObjectKind::Dialog) LayoutDialog(tree, library, skin, *id, frame, plan, diagnostics);
+            if (frame.object == ScriptObjectKind::Multiboard) LayoutMultiboard(tree, skin, *id, frame, plan, diagnostics);
         } else if (frame.text) {
             // 按钮类框架的文字在它的文字子框架上。
             std::uint32_t textNode = *id;
@@ -269,6 +455,7 @@ std::uint32_t AddScriptFrames(FrameTree& tree, const FrameLibrary& library, cons
             else node.anchors.push_back(std::move(resolved));
         }
     }
+    StackShownObjects(tree, plan, nodeOf);
     return rootId;
 }
 

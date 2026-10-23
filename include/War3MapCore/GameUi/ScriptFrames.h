@@ -7,6 +7,7 @@
 #include "War3MapCore/GameUi/UiSkin.h"
 #include "War3MapCore/Types.h"
 
+#include <array>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -65,6 +66,35 @@ struct ScriptAnchor {
     float y = 0.0f;
 };
 
+// 多面板的一个格子（游戏多面板元素的数据）；默认值与游戏新建多面板一致。
+struct ScriptBoardItem {
+    std::string value;
+    std::optional<std::string> icon;  // 为空时用皮肤键 MultiboardDefaultIcon 的图标
+    float width = 0.03f;
+    bool showValue = true;
+    bool showIcon = true;
+    std::array<std::uint8_t, 4> color{255, 255, 255, 255};  // 红、绿、蓝、不透明度
+};
+
+// 多面板内容。新增的行复制默认值的全部内容；新增的列复制默认值但文字为空（与游戏一致）。
+struct ScriptBoard {
+    std::uint32_t rows = 0;
+    std::uint32_t columns = 0;
+    bool minimized = false;
+    bool clipped = false;                // 脚本设置的行列超过预览上限，只保留上限以内
+    ScriptBoardItem defaults;            // SetItems… 设置的值，新格子沿用
+    std::vector<ScriptBoardItem> items;  // 按行存放，rows × columns 个
+
+    [[nodiscard]] ScriptBoardItem* At(std::uint32_t row, std::uint32_t column);
+    [[nodiscard]] const ScriptBoardItem* At(std::uint32_t row, std::uint32_t column) const;
+    // 改变行数、列数；超出上限时截到上限、记 clipped 并返回 false。
+    bool Resize(std::uint32_t rows, std::uint32_t columns);
+};
+
+// 预览保留的多面板行列上限（游戏不限，超出部分不画）。
+inline constexpr std::uint32_t kMaxBoardRows = 128;
+inline constexpr std::uint32_t kMaxBoardColumns = 32;
+
 struct ScriptFrame {
     UiApiFamily family = UiApiFamily::Blizzard;
     ScriptObjectKind object = ScriptObjectKind::Frame;
@@ -89,6 +119,8 @@ struct ScriptFrame {
     std::optional<bool> visible;
     // 对话框按钮文字，按添加顺序。
     std::vector<std::string> buttons;
+    // 多面板的行列与格子；其他对象为空。
+    std::optional<ScriptBoard> board;
     // 参数不是常量、没有应用的设置，形如 “SetAbsolutePoint 第 12 行”。
     std::vector<std::string> dynamic;
     // 创建语句块之外作用在同一变量上的调用（运行时改变外观）。
@@ -128,7 +160,7 @@ struct ScriptFramePlan {
 // 把脚本框架挂到界面树上（根节点名 kScriptRoot）；没有框架时不建根，返回 kNoNode。
 // 引用游戏代码区域时须先调用 FrameTree::AddGameCodeAreas，否则 GameUI 按屏幕处理、其他区域报告缺失。
 // 原版界面对象按游戏规则排布：显示中的计时器窗口在右上角向左排开，多面板、排行榜依次在其下，
-// 对话框居中于世界画面，按钮自上而下排列、高度随内容。
+// 对话框居中于世界画面，按钮自上而下排列、高度随内容；多面板按行列画出格子（图标与文字）。
 std::uint32_t AddScriptFrames(FrameTree& tree, const FrameLibrary& library, const UiSkin* skin,
     const ScriptFramePlan& plan, std::vector<Diagnostic>& diagnostics);
 
