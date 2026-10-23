@@ -2,20 +2,13 @@
 
 #include "War3MapCore/EditorSession.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
+#include "War3MapCore/MapData/TerrainStrokeIntent.h"
 
 namespace War3Map::Services { class TerrainPathingSave; }
 
 namespace War3Map::MapData {
 
 class TerrainSavePlan;
-
-struct TerrainStrokeIntent {
-    TerrainBrush brush;
-    std::vector<TerrainStrokePoint> points;
-    bool followDoodads = false;
-    // 只有选项；anchor始终从本笔当前地形的第一点重新捕获。
-    std::optional<TerrainWaterStrokeOptions> waterBrush;
-};
 
 // 独立目录事务只接受从原 W3E/WPM 重放并逐字节证明的最终地形状态。
 // 协议不能提供任意成员 bytes，未证实派生一致性的地形不能密封为可保存覆盖。

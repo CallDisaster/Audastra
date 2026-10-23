@@ -13,14 +13,33 @@ struct TerrainReplayLimits {
 };
 
 struct TerrainReplayCandidate {
-    std::shared_ptr<MapData::MapDataEditSession> session;
+    std::unique_ptr<MapData::MapDataEditSession> session;
     std::vector<MapData::TerrainPathingResources> waterOwners;
+    std::vector<MapData::MapDataEditSession::EditReceipt> receipts;
 };
 
 // Qt、CLI和MCP共用的薄适配：Core捕获实际来源，ObjectData读取严格typed覆盖，
 // 仍由同一个TerrainSavePlan逐格验证旧WPM、安装输出和核对最终回读。
 class TerrainPathingSave {
 public:
+    // journal只持typed意图和身份；实际来源、资源、私有special谱系仍从owned replay重建。
+    [[nodiscard]] static Result<MapData::TerrainStrokeJournal> CaptureJournal(const MapArchiveSession& source,
+        const MapData::MapDataEditSession& edits);
+    [[nodiscard]] static Result<MapData::TerrainStrokeJournal> CaptureJournal(const WorkspaceSnapshot& source,
+        const MapData::MapDataEditSession& edits);
+    // Prepare冻结前缀和无Undo历史的只读基线；worker实际读取source后补齐来源身份。
+    [[nodiscard]] static Result<MapData::TerrainStrokeJournal> CaptureJournal(const MapArchiveSession& source,
+        const MapData::MapDataEditSession& frozenBaseline, MapData::TerrainStrokeJournal prefix);
+    [[nodiscard]] static Result<MapData::TerrainStrokeJournal> CaptureJournal(const WorkspaceSnapshot& source,
+        const MapData::MapDataEditSession& frozenBaseline, MapData::TerrainStrokeJournal prefix);
+    [[nodiscard]] static Result<TerrainReplayCandidate> RestoreJournal(const MapArchiveSession& source,
+        const MapDocument& original, std::span<const std::byte> terrain, std::span<const std::byte> pathing,
+        const MapData::TerrainStrokeJournal& journal, const MapData::MapDataEditSession& expectedDraft,
+        const std::filesystem::path& gameRoot, const TerrainReplayLimits& limits = {});
+    [[nodiscard]] static Result<TerrainReplayCandidate> RestoreJournal(const WorkspaceSnapshot& source,
+        const MapDocument& original, std::span<const std::byte> terrain, std::span<const std::byte> pathing,
+        const MapData::TerrainStrokeJournal& journal, const MapData::MapDataEditSession& expectedDraft,
+        const std::filesystem::path& gameRoot, const TerrainReplayLimits& limits = {});
     // 从实际来源重新构造独立候选；失败不返回部分会话，不接收活动会话。
     // 1..128笔/累计4096点；每笔水刷均重新捕获实际资源和当前DOO，不接受输出身份。
     [[nodiscard]] static Result<TerrainReplayCandidate> ReplayStrokes(

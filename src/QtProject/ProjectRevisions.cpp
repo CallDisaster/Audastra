@@ -110,6 +110,7 @@ Result<Services::ProjectContentChangesContext> EditorProject::CaptureContentChan
 }
 
 void EditorProject::ResetEditTracking() {
+    terrainJournalWarning_.clear();
     scalarUiNotice_.reset(); editTrackingUiBaseline_.reset();
     changeBaselineGeneration_ = 0;
     editTrackingReady_ = false;

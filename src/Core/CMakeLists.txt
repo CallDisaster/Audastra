@@ -50,6 +50,7 @@ add_library(War3MapCore STATIC
     MapData/TerrainRampEditing.cpp
     MapData/TerrainWaterBrush.cpp
     MapData/TerrainPatchCodec.cpp
+    MapData/TerrainStrokeJournal.cpp
     MapData/TerrainSavePlan.cpp
     MapData/TerrainSavePlanPathing.cpp
     MapData/TerrainNativePathing.cpp

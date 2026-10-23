@@ -414,6 +414,7 @@ public:
     std::shared_ptr<Services::CampaignSession> campaignScope_;
     std::unique_ptr<MapDocument> mapDocument_;
     std::unique_ptr<MapData::MapDataEditSession> mapEdits_;
+    std::string terrainJournalWarning_; // raw草稿降级说明；仅显示/持久化，不参与来源授权。
     QUndoStack* mapDataUndoStack_ = nullptr; // 设置、实例、声音共用一次序列化编辑历史。
     std::unique_ptr<DirectoryWorkspace> directorySnapshot_;
 

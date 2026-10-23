@@ -10,6 +10,7 @@
 #include "RecoveryBackupCleanup.h"
 #include "RecoveryExitDialog.h"
 #include "ProjectOpen.h"
+#include "Commands/MapDataCommands.h"
 #include "TriggerModels.h"
 #include "Icons/IconProvider.h"
 #include "War3MapCore/CapabilityRegistry.h"
@@ -91,13 +92,16 @@ bool MainWindow::SaveEditorProjectToPath(const std::filesystem::path& target, bo
     if (!written.Succeeded()) return false;
     if (written.value->backupPath) AddDiagnostic(tr("信息"), tr("工程"), tr("PROJECT_BACKUP_SAVED"),
         tr("上一版工程：%1").arg(Path(*written.value->backupPath)));
-    statusBar()->showMessage(recovery ? tr("已保存恢复点")
-        : tr("工程已保存 · %1").arg(Path(target.filename())), 5000);
+    const bool draftOnly = std::any_of(written.diagnostics.begin(), written.diagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.code == "TERRAIN_JOURNAL_DRAFT_ONLY";
+    });
+    statusBar()->showMessage(draftOnly ? tr("工程草稿已保存 · 水刷来源未恢复")
+        : recovery ? tr("已保存恢复点") : tr("工程已保存 · %1").arg(Path(target.filename())), draftOnly ? 15000 : 5000);
     return true;
 }
 
 bool MainWindow::OpenEditorProjectPath(const std::filesystem::path& path) {
-    auto prepared = War3Map::QtProject::PrepareProjectOpen(path);
+    auto prepared = War3Map::QtProject::PrepareProjectOpen(path, project_->war3GameRoot_);
     if (!prepared.Succeeded()) {
         for (const auto& diagnostic : prepared.diagnostics)
             AddDiagnostic(tr("错误"), tr("工程"), ProjectText(diagnostic.code), ProjectText(diagnostic.message));
@@ -118,6 +122,10 @@ bool MainWindow::OpenEditorProjectPath(const std::filesystem::path& path) {
     const auto originalMapScopes = project_->editRevision_.Current();
     project_->restoredFiles_ = std::move(candidate.extraction); // 会话结束后自动回收提取目录。
     project_->mapEdits_ = std::move(candidate.mapDataEdits);
+    project_->terrainJournalWarning_ = candidate.terrainJournalWarning;
+    if (project_->mapDataUndoStack_) for (auto& receipt : candidate.terrainReceipts)
+        project_->mapDataUndoStack_->push(new War3Map::QtProject::MapDataEditCommand(*project_, std::move(receipt),
+            tr("恢复的地形笔划"), "恢复工程地形前向笔划"));
     objectsModule_->DetachDocuments();
     for (int i = 0; i < 7; ++i) {
         if (!objects[i]) continue;
@@ -162,7 +170,12 @@ bool MainWindow::OpenEditorProjectPath(const std::filesystem::path& path) {
     }
     RefreshProjectWatch();
     UpdateStatusBar();
-    statusBar()->showMessage(tr("工程已恢复 · %1").arg(Path(path.filename())), 5000);
+    for (const auto& diagnostic : prepared.diagnostics)
+        AddDiagnostic(diagnostic.severity == DiagnosticSeverity::Warning ? tr("警告") : tr("信息"), tr("工程"),
+            ProjectText(diagnostic.code), ProjectText(diagnostic.message));
+    statusBar()->showMessage(candidate.terrainJournalWarning.empty()
+        ? tr("工程已恢复 · %1").arg(Path(path.filename())) : tr("工程草稿已恢复 · 水刷来源未恢复"),
+        candidate.terrainJournalWarning.empty() ? 5000 : 15000);
     return true;
 }
 

@@ -1,6 +1,7 @@
 #include "ProjectSaveJob.h"
 #include "PendingImportPayload.h"
 #include "War3MapCore/VerifiedFile.h"
+#include "War3MapCore/Services/TerrainPathingSave.h"
 
 #include <QJsonDocument>
 #include <QTemporaryDir>
@@ -63,6 +64,9 @@ void ProjectSaveJob::ReleaseRunLeases() noexcept {
     overlays_.clear();
     imports_.clear();
     nativeBaselines_.clear();
+    terrainJournalPrefix_.reset();
+    terrainJournalBaseline_.reset();
+    terrainJournalPayload_.clear();
     manifest_ = {};
     if (recovery_) ReleaseCommitLeases();
 }
@@ -148,6 +152,26 @@ void EditorProject::RunProjectSave(ProjectSaveJob& job) {
                     }
                 }
             }
+            if (job.terrainJournalPrefix_) {
+                if (stopped(ProjectSaveStage::Verify)) return {{}, ProjectSaveCancelledStatus().diagnostics};
+                auto captured = job.archive_
+                    ? Services::TerrainPathingSave::CaptureJournal(*job.archive_, *job.terrainJournalBaseline_, std::move(*job.terrainJournalPrefix_))
+                    : Services::TerrainPathingSave::CaptureJournal(job.directory_->Snapshot(), *job.terrainJournalBaseline_, std::move(*job.terrainJournalPrefix_));
+                auto encoded = captured.Succeeded() && captured.value
+                    ? MapData::EncodeTerrainStrokeJournal(*captured.value)
+                    : Result<std::vector<std::byte>>{{}, captured.diagnostics};
+                job.terrainJournalPrefix_.reset(); job.terrainJournalBaseline_.reset();
+                if (encoded.Succeeded() && encoded.value) {
+                    job.terrainJournalPayload_ = std::move(*encoded.value);
+                    job.manifest_["terrainStrokeJournal"] = 1;
+                } else {
+                    const auto text = tr("草稿已完整保留；前向记录超预算或来源无法表达，水刷来源未恢复。");
+                    job.manifest_["terrainJournalWarning"] = text;
+                    auto warning = Status::Failure("Terrain.Journal", "TERRAIN_JOURNAL_DRAFT_ONLY", text.toStdString());
+                    for (auto& diagnostic : warning.diagnostics) diagnostic.severity = DiagnosticSeverity::Warning;
+                    job.warnings_ = std::move(warning.diagnostics);
+                }
+            }
             if (job.recovery_) job.sourceLease_.reset();
             for (auto& member : job.overlays_) {
                 if (stopped(ProjectSaveStage::Build)) return {{}, ProjectSaveCancelledStatus().diagnostics};
@@ -167,6 +191,28 @@ void EditorProject::RunProjectSave(ProjectSaveJob& job) {
             }
             if (!job.archive_ && (!job.directory_ || !job.directory_->VerifyUnchanged(control).Succeeded()))
                 return Failed(tr("源工作区在工程保存期间发生变化"));
+            if (!job.terrainJournalPayload_.empty()) {
+                const auto manifestBytes = QJsonDocument(job.manifest_).toJson(QJsonDocument::Compact).size();
+                constexpr std::uint64_t limit = 512ull * 1024 * 1024;
+                if (job.terrainJournalPayload_.size() <= limit - total
+                    && static_cast<std::uint64_t>(manifestBytes) <= limit - total - job.terrainJournalPayload_.size()) {
+                    if (!append("overlay/editor/terrain-strokes.bin", std::move(job.terrainJournalPayload_)))
+                        return Failed(tr("工程超过容量限制"));
+                } else {
+                    // 原raw草稿优先；不能让新增journal反向缩小既有工程可保存范围。
+                    job.manifest_.remove("terrainStrokeJournal");
+                    const auto text = tr("草稿已完整保留；工程容量预算不足，前向笔划及水刷来源未恢复。");
+                    job.manifest_["terrainJournalWarning"] = text;
+                    auto warning = Status::Failure("Terrain.Journal", "TERRAIN_JOURNAL_DRAFT_ONLY", text.toStdString());
+                    for (auto& diagnostic : warning.diagnostics) diagnostic.severity = DiagnosticSeverity::Warning;
+                    job.warnings_ = std::move(warning.diagnostics);
+                    job.terrainJournalPayload_.clear();
+                }
+            }
+            // 新journal警告不能挤掉原本恰能保存的raw；返回warning仍由调用方展示。
+            if (job.manifest_.contains("terrainJournalWarning")
+                && static_cast<std::uint64_t>(QJsonDocument(job.manifest_).toJson(QJsonDocument::Compact).size()) > kProjectBytes - total)
+                job.manifest_.remove("terrainJournalWarning");
             if (!append("project.json", Bytes(QJsonDocument(job.manifest_).toJson(QJsonDocument::Compact))))
                 return Failed(tr("工程超过容量限制"));
             return ProjectStore::Save(job.target_, files, job.options_);

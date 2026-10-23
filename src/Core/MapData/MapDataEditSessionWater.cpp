@@ -168,6 +168,12 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
             followDoodads, true, true, false, &doodads, specialChanged);
         if (prepared.value) {
             prepared.value->waterBrush_ = brush;
+            const auto fingerprint = resources.WaterBrushDependencyFingerprint();
+            if (fingerprint.Succeeded() && fingerprint.value) {
+                prepared.value->waterRulesSha256_ = *fingerprint.value;
+                prepared.value->waterIntentOptions_ = TerrainWaterStrokeOptions{brush.kind, brush.shape, brush.size,
+                    brush.cliffTexture, brush.randomSeed, resources.WaterBrushRules()->enforceWaterLimits};
+            } // 旧Core空special兼容捕获仍可编辑；它不能生成可持久化的可信水刷记录。
             prepared.value->waterResult_ = candidate.value->result;
             prepared.value->waterPreparationWork_ = work;
             prepared.value->waterPreparationBytes_ = finalBytes;

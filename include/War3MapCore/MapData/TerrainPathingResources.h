@@ -58,6 +58,8 @@ public:
     // 调用方须将冻结current的canonical W3E身份与落笔前Session核对；不是after身份。
     [[nodiscard]] std::string_view WaterBrushInputSha256() const noexcept { return waterBrushInputSha_; }
     [[nodiscard]] std::size_t WaterBrushInputBytes() const noexcept { return waterBrushInputBytes_; }
+    // 实际成功owner的完整依赖/winner/absence及本笔输入摘要；不能代替VerifyReadback。
+    [[nodiscard]] Result<std::string> WaterBrushDependencyFingerprint() const;
     // 仅真实水刷规则owner可验证捕获时的source/current；分别比较canonical W3E身份。
     // 不读盘、不授予保存资格；宿主另复核实际资源来源与Session修订。
     [[nodiscard]] Status VerifyWaterBrushInput(const TerrainGridSnapshot& sourceTerrain,
