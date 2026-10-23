@@ -30,6 +30,7 @@ struct TerrainStrokeJournal {
     std::vector<TerrainJournalStroke> strokes;
 };
 
+[[nodiscard]] Status ValidateTerrainStrokeJournal(const TerrainStrokeJournal& journal);
 [[nodiscard]] Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJournal& journal);
 [[nodiscard]] Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byte> bytes);
 

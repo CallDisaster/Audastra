@@ -63,7 +63,7 @@ void StrictCodecRoundtripAndMalformedInputs() {
 struct SessionFixture {
     TerrainGridSnapshot terrain;
     Bytes terrainBytes, pathing;
-    MapDataEditSession session{MapDocument{}};
+    MapDataEditSession session{MapDocument::FromMembers({})};
     TerrainStrokePoint point{512, 512};
     SessionFixture() {
         terrain.header.width = terrain.header.height = 9;

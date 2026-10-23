@@ -167,15 +167,21 @@ Result<std::unique_ptr<ProjectSaveJob>> EditorProject::PrepareProjectSave(
                 job->manifest_["pathingRestrictions"] = static_cast<int>(restrictionVersion);
             }
             std::string journalWarning = terrainJournalWarning_;
-            auto prefix = mapEdits_->ExportTerrainStrokeJournal();
-            if (prefix.Succeeded() && prefix.value && !prefix.value->strokes.empty()) {
-                // 不在UI线程做全图SHA/MPQ/目录读取。只冻结有界前缀和无历史基线，
-                // worker借本job来源租约补实际member身份，绝不访问活动会话。
-                job->terrainJournalPrefix_ = std::move(*prefix.value);
-                job->terrainJournalBaseline_ = mapEdits_->FreezeForSave();
-                // 旧raw草稿不能因后续一笔可表达命令清除未恢复警告。
-            } else if (mapEdits_->RequiresTerrainStrokeJournal()) {
-                journalWarning = "草稿已完整保留；历史跨保存边界、混合编辑或超出前向记录预算，水刷来源未恢复。";
+            try {
+                auto prefix = mapEdits_->ExportTerrainStrokeJournal();
+                if (prefix.Succeeded() && prefix.value && !prefix.value->strokes.empty()) {
+                    // 不在UI线程做全图SHA/MPQ/目录读取。只冻结有界前缀和无历史基线，
+                    // worker借本job来源租约补实际member身份，绝不访问活动会话。
+                    auto baseline = mapEdits_->FreezeForSave();
+                    job->terrainJournalPrefix_ = std::move(*prefix.value);
+                    job->terrainJournalBaseline_ = std::move(baseline);
+                    // 旧raw草稿不能因后续一笔可表达命令清除未恢复警告。
+                } else if (mapEdits_->RequiresTerrainStrokeJournal() || (!prefix.Succeeded() && mapEdits_->Terrain())) {
+                    journalWarning = "草稿已完整保留；历史跨保存边界、混合编辑或超出前向记录预算，前向笔划及水刷来源未恢复。";
+                }
+            } catch (const std::exception&) {
+                job->terrainJournalPrefix_.reset(); job->terrainJournalBaseline_.reset();
+                journalWarning = "草稿已完整保留；前向记录冻结超过可用预算，前向笔划及水刷来源未恢复。";
             }
             if (!journalWarning.empty()) {
                 job->manifest_["terrainJournalWarning"] = Text(journalWarning);

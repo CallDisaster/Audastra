@@ -338,6 +338,14 @@ Result<TerrainReplayCandidate> RestoreJournal(const Source& source, const MapDoc
     const MapData::TerrainStrokeJournal& journal, const MapData::MapDataEditSession& expected,
     const std::filesystem::path& gameRoot, const TerrainReplayLimits& limits,
     const std::string& sourceSha, Reader&& reader) {
+    const TerrainReplayLimits hard;
+    if (!limits.maximumResourceBytes || limits.maximumResourceBytes > hard.maximumResourceBytes
+        || !limits.maximumWork || limits.maximumWork > hard.maximumWork
+        || !limits.maximumCandidateBytes || limits.maximumCandidateBytes > hard.maximumCandidateBytes)
+        return Result<TerrainReplayCandidate>::Failure("Terrain.Replay", "TERRAIN_REPLAY_LIMITS", "重放预算只能收紧且不能为零。");
+    // 结构校验不编码、不分配64MiB临时wire；随后直接预收同一总预算。
+    const auto valid = MapData::ValidateTerrainStrokeJournal(journal);
+    if (!valid.Succeeded()) return {{}, valid.diagnostics};
     auto remaining = limits;
     const auto rawCost = expected.MeasureTerrainJournalDraft(limits.maximumCandidateBytes, limits.maximumWork);
     if (!rawCost.Succeeded() || !rawCost.value) return {{}, rawCost.diagnostics};
@@ -345,11 +353,21 @@ Result<TerrainReplayCandidate> RestoreJournal(const Source& source, const MapDoc
     remaining.maximumWork -= rawCost.value->comparisonWork;
     if (!remaining.maximumCandidateBytes || !remaining.maximumWork)
         return Result<TerrainReplayCandidate>::Failure("Terrain.Journal", "TERRAIN_REPLAY_BUDGET", "raw草稿未给完整重放保留候选或工作预算。");
-    // API也可被非Qt宿主调用，先走同一严格codec检查，不信任调用者构造的结构。
-    {
-        const auto encoded = MapData::EncodeTerrainStrokeJournal(journal);
-        if (!encoded.Succeeded()) return {{}, encoded.diagnostics};
-    }
+    const auto charge = [](std::size_t& budget, std::size_t count, std::size_t element) {
+        if (count > budget / element) return false;
+        budget -= count * element; return true;
+    };
+    // owned factory现有接口接收连续typed intents；在复制任何点之前预收该有界副本。
+    if (!charge(remaining.maximumCandidateBytes, journal.strokes.size(), sizeof(MapData::TerrainStrokeIntent)))
+        return Result<TerrainReplayCandidate>::Failure("Terrain.Journal", "TERRAIN_REPLAY_BUDGET", "前向笔划副本超过候选预算。");
+    for (const auto& stroke : journal.strokes)
+        if (!charge(remaining.maximumCandidateBytes, stroke.intent.points.size(), sizeof(MapData::TerrainStrokePoint))
+            || !charge(remaining.maximumCandidateBytes, stroke.intent.brush.groundTexture.size(), 1)
+            || !charge(remaining.maximumWork, stroke.intent.points.size(), 2)
+            || !charge(remaining.maximumWork, 1, 64))
+            return Result<TerrainReplayCandidate>::Failure("Terrain.Journal", "TERRAIN_REPLAY_BUDGET", "前向点序列复制或工作预算不足。");
+    if (!remaining.maximumCandidateBytes || !remaining.maximumWork)
+        return Result<TerrainReplayCandidate>::Failure("Terrain.Journal", "TERRAIN_REPLAY_BUDGET", "前向笔划副本未留下完整重放预算。");
     std::vector<MapData::TerrainStrokeIntent> intents;
     intents.reserve(journal.strokes.size());
     for (const auto& stroke : journal.strokes) intents.push_back(stroke.intent);

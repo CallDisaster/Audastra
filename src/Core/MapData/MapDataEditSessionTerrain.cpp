@@ -417,26 +417,50 @@ Result<MapDataEditSession::TerrainJournalDraftCost> MapDataEditSession::MeasureT
         return !value || (add(cost.retainedBytes, maximumBytes, value->capacity())
             && (!compare || add(cost.comparisonWork, maximumWork, value->size())));
     };
+    const auto header = [&](const TerrainHeader& value) {
+        for (const auto* table : {&value.groundTilesets, &value.cliffTilesets}) {
+            if (!add(cost.retainedBytes, maximumBytes, table->capacity(), sizeof(std::string))) return false;
+            for (const auto& id : *table) if (!add(cost.retainedBytes, maximumBytes, id.capacity())) return false;
+        }
+        return true;
+    };
+    const auto special = [&](const auto& value) {
+        if (!value) return true;
+        if (!add(cost.retainedBytes, maximumBytes, value->capacity(), sizeof(SpecialDoodadPlacement))) return false;
+        for (const auto& item : *value) if (!add(cost.retainedBytes, maximumBytes, item.rawcode.capacity())) return false;
+        return true;
+    };
+    if (!add(cost.comparisonWork, maximumWork, 1024)
+        || !special(specialDoodads_) || !special(savedSpecialDoodads_)) return fail();
     for (std::size_t i = 0; i < original_.size(); ++i) {
         if (!bytes(original_[i]) || !bytes(current_[i])) return fail();
-        if (preservedSources_[i]) for (const auto& member : preservedSources_[i]->sources)
-            if (!add(cost.retainedBytes, maximumBytes, member.data.capacity())
-                || !add(cost.comparisonWork, maximumWork, member.data.size())) return fail();
+        if (preservedSources_[i]) {
+            if (!add(cost.retainedBytes, maximumBytes, preservedSources_[i]->sources.capacity(), sizeof(MapArchiveMember))) return fail();
+            for (const auto& member : preservedSources_[i]->sources)
+                if (!add(cost.retainedBytes, maximumBytes, member.data.capacity())
+                    || !add(cost.retainedBytes, maximumBytes, member.name.capacity())
+                    || !add(cost.comparisonWork, maximumWork, member.data.size())) return fail();
+        }
     }
     for (const auto& grid : {terrainOriginal_, terrain_}) if (grid) {
         if (!add(cost.retainedBytes, maximumBytes, grid->vertices.capacity(), sizeof(TerrainVertex))
             || !add(cost.retainedBytes, maximumBytes, grid->tiles.capacity(), sizeof(TerrainTile))
-            || !add(cost.comparisonWork, maximumWork, grid->vertices.size(), 8)) return fail();
+            || !header(grid->header) || !add(cost.comparisonWork, maximumWork, grid->vertices.size(), 8)) return fail();
         for (const auto& table : {&grid->header.groundTilesets, &grid->header.cliffTilesets})
-            for (const auto& id : *table) if (!add(cost.retainedBytes, maximumBytes, id.capacity())
-                || !add(cost.comparisonWork, maximumWork, id.size())) return fail();
+            for (const auto& id : *table) if (!add(cost.comparisonWork, maximumWork, id.size())) return fail();
     }
     if (!bytes(pathingOriginal_) || !bytes(pathing_) || !bytes(pathingProtected_)
         || !bytes(originalPathingRestrictions_) || !bytes(pathingRestrictions_)) return fail();
     // expected可来自API宿主。已有raw历史也计驻留，不能先克隆巨型DOO/WTS再报不符。
     if (history_.size() > 4096) return fail();
+    if (!add(cost.retainedBytes, maximumBytes, history_.capacity(), sizeof(std::shared_ptr<const Command>))) return fail();
     for (const auto& command : history_) {
-        if (!add(cost.retainedBytes, maximumBytes, 1, sizeof(Command))) return fail();
+        if (!add(cost.retainedBytes, maximumBytes, 1, sizeof(Command))
+            || !add(cost.retainedBytes, maximumBytes, command->changes.capacity(), sizeof(MemberChange))
+            || !add(cost.retainedBytes, maximumBytes, command->terrain.capacity(), sizeof(TerrainChunk))
+            || !special(command->specialBefore) || !special(command->specialAfter)
+            || (command->headerBefore && !header(*command->headerBefore))
+            || (command->headerAfter && !header(*command->headerAfter))) return fail();
         for (const auto& member : command->changes) if (!bytes(member.before, false) || !bytes(member.after, false)) return fail();
         for (const auto& chunk : command->terrain)
             if (!add(cost.retainedBytes, maximumBytes, chunk.before.capacity())
@@ -445,6 +469,11 @@ Result<MapDataEditSession::TerrainJournalDraftCost> MapDataEditSession::MeasureT
             || !bytes(command->restrictionBefore, false) || !bytes(command->restrictionAfter, false)) return fail();
         if (command->terrainStroke && !add(cost.retainedBytes, maximumBytes,
             command->terrainStroke->intent.points.capacity(), sizeof(TerrainStrokePoint))) return fail();
+        if (command->placements) {
+            if (!add(cost.retainedBytes, maximumBytes, command->placements->capacity(), sizeof(PlacementRowLineage))) return fail();
+            for (const auto& row : *command->placements)
+                if (!add(cost.retainedBytes, maximumBytes, row.beforeToAfter.capacity(), sizeof(std::optional<std::uint32_t>))) return fail();
+        }
     }
     return Output::Success(cost);
 }

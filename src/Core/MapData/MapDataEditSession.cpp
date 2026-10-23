@@ -727,6 +727,10 @@ void MapDataEditSession::CommitSavedBaseline(const MapDocument& saved,
 }
 
 Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainStrokeJournal() const {
+    return ExportTerrainStrokeJournalInternal(true);
+}
+
+Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainStrokeJournalInternal(bool baselineLayers) const {
     using Output = Result<TerrainStrokeJournal>;
     const auto fail = [](const char* code) {
         return Output::Failure("Terrain.Journal", code, "草稿已保留；当前历史不能表达为保存基线后的完整前向笔划，水刷来源未恢复。");
@@ -761,7 +765,7 @@ Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainStrokeJournal() co
         if (!count || count > 4096 - points) return fail("TERRAIN_JOURNAL_BUDGET");
         points += count; journal.strokes.push_back(*command->terrainStroke);
     }
-    if (!journal.strokes.empty()) {
+    if (baselineLayers && !journal.strokes.empty()) {
         if (!terrainOriginal_ || !pathingOriginal_ || !pathingProtected_ || !originalPathingRestrictions_)
             return fail("TERRAIN_JOURNAL_BASELINE_MISSING");
         auto layers = EncodePathingRestrictionDraft(*terrainOriginal_, *pathingOriginal_, *pathingOriginal_,
@@ -805,7 +809,9 @@ Status MapDataEditSession::VerifyTerrainJournalBaseline(std::span<const ArchiveE
 }
 
 std::string MapDataEditSession::TerrainJournalStateFingerprint() const {
-    auto journal = ExportTerrainStrokeJournal();
+    // 原始来源和P/savedS/S已有独立scope；CAS这里只编码有界typed前缀，
+    // 不为每次Observe重复构造最大64MiB的APR和journal副本。
+    auto journal = ExportTerrainStrokeJournalInternal(false);
     const std::string required = RequiresTerrainStrokeJournal() ? "required:" : "optional:";
     if (!journal.Succeeded() || !journal.value)
         return required + (journal.diagnostics.empty() ? "unavailable" : journal.diagnostics.front().code);

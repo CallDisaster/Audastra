@@ -99,6 +99,10 @@ template<class T> Result<T> Failed() {
 }
 } // namespace
 
+Status ValidateTerrainStrokeJournal(const TerrainStrokeJournal& journal) {
+    return Valid(journal) ? Status::Ok() : Status{Failed<TerrainStrokeJournal>().diagnostics};
+}
+
 Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJournal& journal) {
     if (!Valid(journal)) return Failed<std::vector<std::byte>>();
     try {

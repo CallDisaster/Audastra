@@ -684,6 +684,70 @@ void ForwardJournalRestoresOwnedSpecialDeletionAndRejectsDrift() {
     Require(!drifted.Succeeded() && !drifted.value && HasCode(drifted, "TERRAIN_JOURNAL_RESOURCE_DRIFT"),
         "a formerly absent optional dependency rejects restore even when parsed terrain settings are unchanged");
 }
+
+void ForwardJournalPreservesSavedRestrictionOverlapAndUndo() {
+    Fixture f(true, true);
+    // 原创来源先明确含不可飞P=4，随后声明S=6，刻意制造P/S重叠。
+    for (std::size_t i = 16; i < f.members[1].data.size(); ++i) f.members[1].data[i] |= std::byte{4};
+    f.source = std::make_unique<MapArchiveSession>(Take(MapArchiveSession::Open(
+        Take(WriteVerifiedArchive(f.root / "protected-source.w3x", f.members)).path)));
+    f.edits = Session(f);
+    TerrainBrush restriction; restriction.kind = TerrainBrushKind::PathingRestriction;
+    restriction.radius = 0; restriction.pathingRestrictions = 6; restriction.value = true;
+    const TerrainStrokePoint point{256, 256};
+    Require(f.edits->EditTerrain(restriction, std::span(&point, 1), false).Succeeded(), "overlapping saved intent is a real command");
+    const auto plan = Take(TerrainPathingSave::PrepareForSave(*f.source, *f.edits, f.game));
+    auto replacements = f.edits->Replacements();
+    Require(plan.InstallPathingOutput(*f.edits, replacements).Succeeded(), "freeze the actual native saved restriction output");
+    const auto written = Take(f.source->SaveCandidate(f.root / "saved-restriction.w3x", replacements));
+    auto saved = Take(MapArchiveSession::Open(written.path));
+    Require(plan.VerifyReadback(saved).Succeeded() && plan.CommitSaved(*f.edits, MapDocument::FromArchive(saved)).Succeeded(),
+        "nonzero savedS comes only from the real save/readback baseline");
+    f.source = std::make_unique<MapArchiveSession>(std::move(saved));
+    const auto terrain = Take(f.source->ReadMember("war3map.w3e"));
+    const auto pathing = Take(f.source->ReadMember("war3map.wpm"));
+    const auto original = MapDocument::FromArchive(*f.source);
+    const auto savedDraft = Take(f.edits->SerializePathingRestrictionDraft());
+    const auto layers = Take(DecodePathingRestrictionLayers(*f.edits->Terrain(), pathing, pathing, savedDraft));
+    Require(std::any_of(layers.savedIntent.begin(), layers.savedIntent.end(), [](auto value) { return value == std::byte{6}; }),
+        "the tested journal baseline has nonzero savedS");
+    bool overlap = false;
+    for (std::size_t i = 0; i < layers.savedIntent.size(); ++i)
+        overlap = overlap || (layers.savedIntent[i] & layers.protectedSource[i]) != std::byte{0};
+    Require(overlap, "protected P and saved S overlap in the tested baseline");
+    restriction.value = false;
+    Require(f.edits->EditTerrain(restriction, std::span(&point, 1), false).Succeeded(), "new prefix erases only saved project intent");
+    const auto erasedDraft = Take(f.edits->SerializePathingRestrictionDraft());
+    const auto rules = f.Rules();
+    TerrainWaterBrush water; water.size = 1; water.randomSeed = 881;
+    auto prepared = Take(PrepareTerrainWaterEdit(*f.edits, f.Document(), f.Binding(), rules,
+        TerrainWaterStrokeOptions{water.kind, water.shape, water.size, water.cliffTexture, water.randomSeed, true},
+        std::span(&f.point, 1), false));
+    Require(ApplyTerrainEdit(*f.edits, f.Document(), prepared).Succeeded(), "water follows the restriction erase in the same typed prefix");
+    const auto journal = Take(TerrainPathingSave::CaptureJournal(*f.source, *f.edits));
+    Require(journal.strokes.size() == 2 && journal.baselinePathingLayers == savedDraft,
+        "journal starts at actual savedS, not the final erased currentS");
+    auto raw = std::make_unique<MapDataEditSession>(original);
+    Require(raw->AttachTerrain(terrain).Succeeded() && raw->AttachPathing(pathing).Succeeded(), "attach fresh raw baseline");
+    auto finalTerrain = Take(SerializeMapTerrain(*f.edits->Terrain()));
+    auto finalPathing = pathing;
+    for (const auto& member : f.edits->Replacements()) {
+        if (member.name == "war3map.wpm") finalPathing = member.data;
+        else if (member.name == "war3map.doo") Require(raw->SetSerialized(MapDataKind::Doodads, member.data).Succeeded(), "restore full raw DOO");
+    }
+    Require(raw->SetTerrainAndPathingDraft(finalTerrain, finalPathing, Take(f.edits->SerializePathingRestrictionDraft())).Succeeded(),
+        "restore full raw output with its actual P/savedS/currentS");
+    auto restored = Take(TerrainPathingSave::RestoreJournal(*f.source, original, terrain, pathing, journal, *raw, f.game));
+    Require(restored.receipts.size() == 2 && restored.session->MatchesTerrainJournalDraft(*raw), "nonzero savedS fully matches the owned replay result");
+    Require(restored.session->Replay(restored.receipts.back(), false).Succeeded()
+        && Take(restored.session->SerializePathingRestrictionDraft()) == erasedDraft, "water Undo retains erased S and protected P");
+    Require(restored.session->Replay(restored.receipts.front(), false).Succeeded()
+        && Take(restored.session->SerializePathingRestrictionDraft()) == savedDraft, "erase Undo restores savedS including its overlap with P");
+    Require(!restored.session->IsDirty(), "undoing the complete restored prefix returns to the real saved baseline");
+    TerrainReplayLimits tight; tight.maximumCandidateBytes = 1;
+    const auto denied = TerrainPathingSave::RestoreJournal(*f.source, original, terrain, pathing, journal, *raw, f.game, tight);
+    Require(!denied.Succeeded() && !denied.value && HasCode(denied, "TERRAIN_REPLAY_BUDGET"), "raw resident memory is precharged before replay or final comparison");
+}
 } // namespace
 
 int main() {
@@ -702,6 +766,7 @@ int main() {
         DirectSaveUsesOrderedWaterAndOriginalScriptGate();
         DirectSaveAllowsSpecialWaterDeletionWithoutPlacementFollow();
         ForwardJournalRestoresOwnedSpecialDeletionAndRejectsDrift();
+        ForwardJournalPreservesSavedRestrictionOverlapAndUndo();
         std::cout << "TerrainWaterEditServiceTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

@@ -272,6 +272,7 @@ private:
         bool nativeRebuild = false) const;
     [[nodiscard]] Status VerifyTerrainDoodadChange(std::span<const std::byte> before,
         std::span<const std::byte> after) const;
+    [[nodiscard]] Result<TerrainStrokeJournal> ExportTerrainStrokeJournalInternal(bool baselineLayers) const;
     [[nodiscard]] Status PrepareUnits(const UnitPlacements& value, std::vector<MemberChange>& changes) const;
     [[nodiscard]] Status DeserializeAndApply(MapDataKind kind, std::span<const std::byte> bytes,
         bool linkStartLocations);
