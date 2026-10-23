@@ -320,6 +320,9 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         std::string originalDoodadRawcode, originalDoodadPath;
         std::string uniformRawcode, uniformPath;
         Game::GameFileContents uniformSource;
+        std::string categoryCRawcode, categoryCPath;
+        Game::GameFileContents categoryCSource;
+        std::uint32_t categoryCSide = 0;
         std::string patternedRawcode, patternedPath;
         Game::GameFileContents patternedSource;
         ModificationKey walkable, doodadPathField;
@@ -372,6 +375,25 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         std::cout << "uniform_path=" << uniformPath << " winner=" << uniformSource.archiveName
             << " bytes=" << uniformSource.bytes.size() << " sha256=" << Take(Sha256(uniformSource.bytes)) << '\n';
         for (const auto& object : catalog.Entries()) {
+            if (object.key.type != ObjectType::Doodad || object.Field("category") != "C"
+                || catalog.Find(ObjectType::Destructable, object.key.rawcode)) continue;
+            const auto path = std::string(object.Field("pathtex"));
+            if (!Text::LowerAscii(path).ends_with(".tga")) continue;
+            auto file = mounted.ReadFileBoundedWithSource(path, 512u * 1024u);
+            if (!file.Succeeded() || !file.value) continue;
+            const auto decoded = DecodeUniformDoodadFootprintTga(file.value->bytes);
+            if (!decoded.Succeeded() || !decoded.value || !decoded.value->attributes
+                || decoded.value->side % 4 || decoded.value->side > 8) continue;
+            categoryCRawcode = object.key.rawcode; categoryCPath = path;
+            categoryCSide = decoded.value->side;
+            categoryCSource = std::move(*file.value); break;
+        }
+        Require(!categoryCRawcode.empty(), "actual game table has a C doodad with a supported nonzero uniform TGA");
+        Require(!original.HasMember(categoryCPath), "C fixture captures its actual game-winning TGA");
+        std::cout << "category_c_object=" << categoryCRawcode << " path=" << categoryCPath
+            << " winner=" << categoryCSource.archiveName << " bytes=" << categoryCSource.bytes.size()
+            << " sha256=" << Take(Sha256(categoryCSource.bytes)) << '\n';
+        for (const auto& object : catalog.Entries()) {
             if (object.key.type != ObjectType::Doodad || catalog.Find(ObjectType::Destructable, object.key.rawcode)) continue;
             const auto category=object.Field("category"), fixed=object.Field("fixedrot");
             if(category.size()!=1 || category[0]<0x21 || category[0]>0x7e || category=="_" || category=="C" || fixed.empty()) continue;
@@ -415,18 +437,18 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         const auto expectedW3e = Take(SerializeMapTerrain(after));
         const bool hasW3d = original.HasMember("war3map.w3d");
         const auto sourceW3d = hasW3d ? Take(original.ReadMember("war3map.w3d")) : std::vector<std::byte>{};
-        // 九场景复用一次原创地图创建、脚本编译和实际表捕获；特殊DOO也走公开保存。
-        constexpr std::array<const char*, 9> scenarioNames{"destructable", "mixed-doodad", "original-doodad", "uniform-doodad",
-            "patterned-doodad", "original-patterned", "custom-patterned", "custom-cleared", "special-doodad"};
+        // 十场景复用一次原创地图创建、脚本编译和实际表捕获；特殊DOO与C类均走公开保存。
+        constexpr std::array<const char*, 10> scenarioNames{"destructable", "mixed-doodad", "original-doodad", "uniform-doodad",
+            "patterned-doodad", "original-patterned", "custom-patterned", "custom-cleared", "special-doodad", "category-c-uniform"};
         for (unsigned index = 0; index < scenarioNames.size(); ++index) {
-            const bool withSpecial = index == 8;
+            const bool withSpecial = index == 8, withCategoryC = index == 9;
             const bool withDoodad = index != 0 && !withSpecial, withOriginal = index == 2 || index == 5, withUniform = index == 3;
             const bool withPattern = index == 4 || index == 5 || index == 6, withCustom = index == 6 || index == 7;
             const bool withNative = withOriginal || withCustom;
-            const std::string selectedDoodad = withCustom ? "Zr01" : withPattern ? patternedRawcode : withUniform ? uniformRawcode
+            const std::string selectedDoodad = withCategoryC ? categoryCRawcode : withCustom ? "Zr01" : withPattern ? patternedRawcode : withUniform ? uniformRawcode
                 : withOriginal ? originalDoodadRawcode : doodadRawcode;
             auto nativeW3d = originalDoodadW3d;
-            if (index >= 5 && !withSpecial) {
+            if (index >= 5 && !withSpecial && !withCategoryC) {
                 const auto& parent = withPattern ? patternedRawcode : uniformRawcode;
                 auto document = Take(NativeObjectDocument::CreateEmpty(ObjectType::Doodad));
                 if (withCustom) {
@@ -444,6 +466,11 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
             if (withSpecial) placements.specialDoodads.push_back({uniformRawcode, 0, {34,32}});
             if (withDoodad) {
                 auto added = placed; added.rawcode = selectedDoodad; added.creationId = 2;
+                if (withCategoryC) {
+                    // 8像素取origin+128*k；4像素另加64，令两种合法吸附具有同一中心。
+                    const float phase = categoryCSide == 4 ? 64.0f : 0.0f;
+                    added.position[0] += 256 + phase; added.position[1] += 256 + phase;
+                }
                 if (withUniform || withPattern) {
                     // 非格点摆放，与水位修改区分离，避免静态位掩盖真实变化。
                     added.position[0] += 256.5f; added.position[1] += 0.25f;
@@ -465,7 +492,7 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
             std::cout << "selected_object=" << rawcode << " metadata_field=" << walkable.fieldId
                 << " doodad=" << (withDoodad ? selectedDoodad : "absent") << " original=" << withOriginal << " custom=" << withCustom
                 << " special=" << (withSpecial ? uniformRawcode : "absent")
-                << " standard_pathTex=" << (withPattern ? patternedPath : (withUniform || withCustom || withSpecial) ? uniformPath : withOriginal ? originalDoodadPath : withDoodad ? doodadPath : "not-applicable")
+                << " standard_pathTex=" << (withCategoryC ? categoryCPath : withPattern ? patternedPath : (withUniform || withCustom || withSpecial) ? uniformPath : withOriginal ? originalDoodadPath : withDoodad ? doodadPath : "not-applicable")
                 << " pathTex_field=" << (withNative ? pathField(withPattern ? patternedRawcode : uniformRawcode).fieldId : "not-applicable")
                 << " captured_bytes=" << rules.SourceBytes() << " cumulative_capture_budget=" << rules.CaptureBudgetBytes() << '\n';
             auto wpm = Take(seeded.ReadMember("war3map.wpm"));
