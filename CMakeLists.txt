@@ -80,6 +80,7 @@ add_subdirectory(src/Runtime)
 add_subdirectory(src/ScriptBuild)
 include(cmake/AudastraWarcraftRuntime.cmake)
 add_subdirectory(src/UiLibrary)
+add_subdirectory(src/GameUi)
 add_subdirectory(src/Services)
 # 静态库存工具仅供显式审计，便携发行不附带本机运行库或该工具。
 add_executable(audastra-lua-api-inventory EXCLUDE_FROM_ALL tools/runtime/DumpRuntimeLuaApi.cpp)
