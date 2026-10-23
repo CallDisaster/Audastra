@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -14,6 +15,7 @@ struct TerrainNativeDoodadPathingType {
     std::string rawcode;
     std::string pathTexture;
     std::uint8_t snapCells = 2; // 实际category为C时为4，其余明确类别为2。
+    std::optional<float> fixedRotationDegrees; // 实际fixedRot；缺失时只支持旋转无关的同色正方形。
 };
 
 struct TerrainNativeObjectPathing {

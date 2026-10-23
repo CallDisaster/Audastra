@@ -1,7 +1,7 @@
 #include "War3MapCore/MapData/TerrainPathingResources.h"
 
 #include "War3MapCore/MapData/MapPlacements.h"
-#include "War3MapCore/MapData/TerrainUniformDoodadFootprint.h"
+#include "War3MapCore/MapData/TerrainDoodadFootprint.h"
 #include "War3MapCore/Text/TextUtil.h"
 
 #include <algorithm>
@@ -59,7 +59,7 @@ Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& read
             || types.size() > placements.size())
             Fail("TERRAIN_NATIVE_FOOTPRINT_LAYOUT", "占地输入需要完整经典地形尺寸及实际摆放类型集合。");
         struct Type { const TerrainNativeDoodadPathingType* value; std::string path; bool used = false; };
-        struct Instance { const DoodadPlacement* placement; std::uint8_t snapCells; };
+        struct Instance { const DoodadPlacement* placement; const TerrainNativeDoodadPathingType* type; };
         // 类型解析已预留自身输出；这里另计两棵树的节点、名称列表、精确读取结果、
         // 依赖及其增长容量。字符串按最大经典路径的双倍容量预留六份：归一化、
         // 名称、reader名称、canonical临时、依赖名称和归档/SHA；分组key只借用path。
@@ -91,7 +91,7 @@ Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& read
             const auto found = byRawcode.find(placement.rawcode);
             if (found == byRawcode.end()) continue; // 已由同次严格分类器解释的零贡献类型。
             found->second.used = true;
-            groups[found->second.path].push_back({&placement, found->second.value->snapCells});
+            groups[found->second.path].push_back({&placement, found->second.value});
         }
         for (const auto& [rawcode, type] : byRawcode)
             if (!type.used) Fail("TERRAIN_NATIVE_FOOTPRINT_LAYOUT", "占地类型没有对应的实际摆放：" + std::string(rawcode));
@@ -104,13 +104,13 @@ Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& read
         Check(CaptureResourceMembers(reader, names, names.size(),
             [&](std::size_t index, bool present, std::vector<std::byte>&& bytes) {
                 if (!present) Fail("TERRAIN_NATIVE_FOOTPRINT_MISSING", "缺少实际占地贴图：" + names[index]);
-                auto parsed = DecodeUniformDoodadFootprintTga(bytes);
+                auto parsed = DecodeDoodadFootprintTga(bytes);
                 if (!parsed.Succeeded() || !parsed.value) {
                     for (auto& diagnostic : parsed.diagnostics) diagnostic.message = names[index] + "：" + diagnostic.message;
                     throw Failure{std::move(parsed.diagnostics)};
                 }
                 const auto& instances = groups.at(names[index]);
-                const auto pixels = std::size_t{parsed.value->side} * parsed.value->side;
+                const auto pixels = std::size_t{parsed.value->width} * parsed.value->height;
                 // 内存额度不代表运算额度。即使全部实例重叠，也先按完整矩形限制
                 // 像素工作，避免小DOO借256²贴图在保存线程产生无界写入。
                 if (pixelWrites > capturedMaximumBytes_
@@ -118,8 +118,8 @@ Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& read
                     Fail("TERRAIN_NATIVE_FOOTPRINT_WORK", "占地实例的累计像素写入超过本次保存工作上限。");
                 pixelWrites += instances.size() * pixels;
                 for (const auto& instance : instances) {
-                    auto status = AddUniformDoodadFootprint(nativeStaticAttributes_, header,
-                        *instance.placement, *parsed.value, instance.snapCells);
+                    auto status = AddDoodadFootprint(nativeStaticAttributes_, header,
+                        *instance.placement, *parsed.value, instance.type->snapCells, instance.type->fixedRotationDegrees);
                     for (auto& diagnostic : status.diagnostics) diagnostic.message = instance.placement->rawcode
                         + " #" + std::to_string(instance.placement->creationId) + " " + names[index] + "：" + diagnostic.message;
                     Check(std::move(status));

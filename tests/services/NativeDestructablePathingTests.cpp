@@ -825,6 +825,23 @@ void NonemptyDoodadInspectionKeepsTheNarrowSourceDomain() {
     Fixture broken; prepare(broken); broken.sources[kW3d] = {"war3map.w3d", true, TextBytes("broken")};
     Rejected(broken.Inspect(), {}, "未知或损坏W3D不能因为标准表非空而跳过");
 }
+
+void PatternedFootprintReceivesTheActualFixedRotation() {
+    for (const auto* value : {"-1", "0", "90", "270", "360"}) {
+        Fixture f; f.doodads[0]["pathTex"]="PathTextures\\pattern.tga";
+        f.doodads[0]["category"]="E"; f.doodads[0]["fixedRot"]=value; f.Tables();
+        const auto result=Take(f.Inspect());
+        Require(result.footprints.size()==1 && result.footprints[0].fixedRotationDegrees==std::stof(value),
+            "fixedRot comes from the actual typed standard row");
+    }
+    for (const auto* value : {"", "_", "90tail", " 90", "nan", "inf", "\"90\""}) {
+        Fixture f; f.doodads[0]["pathTex"]="PathTextures\\pattern.tga";
+        f.doodads[0]["category"]="E"; f.doodads[0]["fixedRot"]=value; f.Tables();
+        const auto result=Take(f.Inspect());
+        Require(!result.footprints[0].fixedRotationDegrees,
+            "missing or ambiguous rotation is not defaulted; pixel owner decides whether angle matters");
+    }
+}
 } // namespace
 
 int main() {
@@ -844,6 +861,7 @@ int main() {
         CompleteSourcesAndWorkingBudget();
         NonemptyDoodadInspectionOwnsUniqueBoundedResults();
         NonemptyDoodadInspectionKeepsTheNarrowSourceDomain();
+        PatternedFootprintReceivesTheActualFixedRotation();
         std::cout << "native destructable pathing: typed fields, bounded inheritance, unique sources and rejection paths passed\n";
         return 0;
     } catch (const std::exception& error) {

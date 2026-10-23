@@ -1,7 +1,8 @@
-#include "War3MapCore/MapData/TerrainUniformDoodadFootprint.h"
+#include "War3MapCore/MapData/TerrainDoodadFootprint.h"
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cfenv>
 #include <cmath>
 #include <limits>
@@ -44,7 +45,7 @@ double OutwardFloat(double value, bool upper) {
 }
 
 std::optional<std::int64_t> ProjectAxis(float position, float origin, std::uint32_t side,
-    std::uint8_t snapCells, bool secondAxis) {
+    std::uint8_t snapCells, bool secondAxis, std::uint32_t projectedSide) {
     const float grid = static_cast<float>(snapCells) * 32.0f;
     const bool half = (side / snapCells) % 2 != 0;
     const double bias = half ? 0.0 : 0.5;
@@ -67,16 +68,39 @@ std::optional<std::int64_t> ProjectAxis(float position, float origin, std::uint3
     const float primaryBase = static_cast<float>(snappedBase);
     const float snapped = static_cast<float>((secondAxis ? snappedBase : primaryBase)
         + (half ? grid * 0.5 : 0.0));
-    float start = static_cast<float>(static_cast<double>(snapped) - side * 16.0);
-    if (side % 2 == 0) start = static_cast<float>(static_cast<double>(start) + 16.0);
+    float start = static_cast<float>(static_cast<double>(snapped) - projectedSide * 16.0);
+    if (projectedSide % 2 == 0) start = static_cast<float>(static_cast<double>(start) + 16.0);
     // 负半格须向零，不能用floor。已验证的幅值使结果远小于int64上限。
     return static_cast<std::int64_t>((static_cast<double>(start) - origin) / 32.0);
 }
+// 原版初始化使用两个binary32常量相乘再落存；不能用double的pi/180替代。
+constexpr float kRadiansPerDegree = std::bit_cast<float>(std::uint32_t{0x3c8efa36});
+std::optional<unsigned> QuarterTurn(float radians) {
+    double lower = radians, upper = radians;
+    const double turnLow = OutwardFloat(static_cast<double>(kRadiansPerDegree) * 360, false);
+    const double turnHigh = OutwardFloat(static_cast<double>(kRadiansPerDegree) * 360, true);
+    for (unsigned iterations = 0; lower < 0; ++iterations) {
+        if (upper >= 0 || iterations >= 59) return std::nullopt;
+        lower = OutwardFloat(lower + turnLow, false);
+        upper = OutwardFloat(upper + turnHigh, true);
+    }
+    const double quarterLow = OutwardFloat(static_cast<double>(kRadiansPerDegree) * 90, false);
+    const double quarterHigh = OutwardFloat(static_cast<double>(kRadiansPerDegree) * 90, true);
+    const double lo = std::trunc(OutwardFloat(OutwardFloat(lower / quarterHigh, false) + 0.5, false));
+    const double hi = std::trunc(OutwardFloat(OutwardFloat(upper / quarterLow, true) + 0.5, true));
+    if (lo != hi) return std::nullopt;
+    return static_cast<unsigned>(lo) % 4;
+}
+
+std::uint8_t PixelAttributes(std::span<const std::byte> pixel) {
+    return static_cast<std::uint8_t>((pixel[2] != std::byte{} ? 0x31 : 0)
+        | (pixel[1] != std::byte{} ? 2 : 0) | (pixel[0] != std::byte{} ? 4 : 0));
+}
 } // namespace
 
-Result<TerrainUniformDoodadFootprint> DecodeUniformDoodadFootprintTga(
+Result<TerrainDoodadFootprint> DecodeDoodadFootprintTga(
     std::span<const std::byte> bytes) {
-    using Return = Result<TerrainUniformDoodadFootprint>;
+    using Return = Result<TerrainDoodadFootprint>;
     const auto fail = [](const char* code, const char* message) { return Return::Failure(kSubsystem, code, message); };
     if (bytes.size() < 18) return fail("TERRAIN_UNIFORM_TGA_TRUNCATED", "通行贴图的TGA文件头不完整。");
     const auto byte = [&bytes](std::size_t at) { return std::to_integer<unsigned>(bytes[at]); };
@@ -88,8 +112,8 @@ Result<TerrainUniformDoodadFootprint> DecodeUniformDoodadFootprintTga(
         return fail("TERRAIN_UNIFORM_TGA_FORMAT",
             "通行贴图仅支持无ID和色表、原点坐标为零、左原点无交错的未压缩24位RGB或32位RGBA TGA。");
     const auto width = word(12), height = word(14);
-    if (width == 0 || width != height || width > kMaximumSide)
-        return fail("TERRAIN_UNIFORM_TGA_DIMENSIONS", "通行贴图必须是边长1至256像素的正方形。");
+    if (width == 0 || height == 0 || width > kMaximumSide || height > kMaximumSide)
+        return fail("TERRAIN_UNIFORM_TGA_DIMENSIONS", "通行贴图的宽高必须分别为1至256像素。");
     const std::size_t pixelBytes = depth / 8;
     const std::size_t count = static_cast<std::size_t>(width) * height;
     const std::size_t pixelEnd = 18 + count * pixelBytes;
@@ -106,18 +130,30 @@ Result<TerrainUniformDoodadFootprint> DecodeUniformDoodadFootprintTga(
             return fail("TERRAIN_UNIFORM_TGA_TRAILING", "通行贴图含未支持或不完整的TGA附加区。");
     }
     const std::array<unsigned, 4> first{byte(18), byte(19), byte(20), depth == 32 ? byte(21) : 255u};
+    bool uniform = true;
     for (std::size_t index = 1, at = 18 + pixelBytes; index < count; ++index, at += pixelBytes) {
         if (byte(at) != first[0] || byte(at + 1) != first[1] || byte(at + 2) != first[2]
-            || (depth == 32 && byte(at + 3) != first[3]))
-            return fail("TERRAIN_UNIFORM_TGA_NONUNIFORM", "通行贴图不是完整BGRA一致的均匀像素，不能作为同色占地保存。");
+            || (depth == 32 && byte(at + 3) != first[3])) { uniform = false; break; }
     }
-    const auto attributes = static_cast<std::uint8_t>((first[2] ? 0x31 : 0)
-        | (first[1] ? 0x02 : 0) | (first[0] ? 0x04 : 0));
-    return Return::Success({width, attributes});
+    return Return::Success({width, height, bytes.subspan(18, count * pixelBytes),
+        static_cast<std::uint8_t>(pixelBytes), (descriptor & 0x20u) != 0, uniform,
+        PixelAttributes(bytes.subspan(18, pixelBytes))});
 }
 
-Status AddUniformDoodadFootprint(std::span<std::uint8_t> staticAttributes, const TerrainHeader& terrain,
-    const DoodadPlacement& placement, const TerrainUniformDoodadFootprint& footprint, std::uint8_t snapCells) {
+Result<TerrainUniformDoodadFootprint> DecodeUniformDoodadFootprintTga(std::span<const std::byte> bytes) {
+    using Return = Result<TerrainUniformDoodadFootprint>;
+    auto decoded = DecodeDoodadFootprintTga(bytes);
+    if (!decoded.Succeeded() || !decoded.value) return {{}, std::move(decoded.diagnostics)};
+    if (decoded.value->width != decoded.value->height)
+        return Return::Failure(kSubsystem, "TERRAIN_UNIFORM_TGA_DIMENSIONS", "同色占地接口需要正方形贴图。");
+    if (!decoded.value->uniform)
+        return Return::Failure(kSubsystem, "TERRAIN_UNIFORM_TGA_NONUNIFORM", "同色占地接口需要完整BGRA一致的像素。");
+    return Return::Success({decoded.value->width, decoded.value->uniformAttributes});
+}
+
+namespace {
+Status ValidatePlacement(std::span<std::uint8_t> staticAttributes, const TerrainHeader& terrain,
+    const DoodadPlacement& placement, std::uint8_t snapCells) {
     const auto fail = [](const char* code, const char* message) { return Status::Failure(kSubsystem, code, message); };
     if (terrain.version != 11 || terrain.width < 2 || terrain.height < 2
         || terrain.width > 2049 || terrain.height > 2049)
@@ -142,12 +178,23 @@ Status AddUniformDoodadFootprint(std::span<std::uint8_t> staticAttributes, const
         || std::any_of(placement.scale.begin(), placement.scale.end(), [](float value) { return !std::isfinite(value); })
         || !std::isfinite(placement.rotation) || placement.rotation < -360.0f || placement.rotation > 360.0f)
         return fail("TERRAIN_UNIFORM_PLACEMENT_DOMAIN", "同色占地姿态须有限，旋转须处于已支持的[-360,360]范围。");
-    if (footprint.side == 0 || footprint.side > kMaximumSide || !ValidAttributes(footprint.attributes))
-        return fail("TERRAIN_UNIFORM_FOOTPRINT", "同色占地尺寸或原版通道属性组合无效。");
     if (snapCells != 2 && snapCells != 4)
         return fail("TERRAIN_UNIFORM_SNAP_CELLS", "同色占地吸附网格只能使用实际类别确定的2格或4格。");
-    const auto x0 = ProjectAxis(placement.position[0], terrain.offset[0], footprint.side, snapCells, false);
-    const auto y0 = ProjectAxis(placement.position[1], terrain.offset[1], footprint.side, snapCells, true);
+    return Status::Ok();
+}
+} // namespace
+
+Status AddUniformDoodadFootprint(std::span<std::uint8_t> staticAttributes, const TerrainHeader& terrain,
+    const DoodadPlacement& placement, const TerrainUniformDoodadFootprint& footprint, std::uint8_t snapCells) {
+    const auto fail = [](const char* code, const char* message) { return Status::Failure(kSubsystem, code, message); };
+    auto valid = ValidatePlacement(staticAttributes, terrain, placement, snapCells);
+    if (!valid.Succeeded()) return valid;
+    if (footprint.side == 0 || footprint.side > kMaximumSide || !ValidAttributes(footprint.attributes))
+        return fail("TERRAIN_UNIFORM_FOOTPRINT", "同色占地尺寸或原版通道属性组合无效。");
+    const auto columns = static_cast<std::size_t>(terrain.width - 1) * 4;
+    const auto rows = static_cast<std::size_t>(terrain.height - 1) * 4;
+    const auto x0 = ProjectAxis(placement.position[0], terrain.offset[0], footprint.side, snapCells, false, footprint.side);
+    const auto y0 = ProjectAxis(placement.position[1], terrain.offset[1], footprint.side, snapCells, true, footprint.side);
     if (!x0 || !y0)
         return fail("TERRAIN_UNIFORM_SNAP_AMBIGUOUS", "同色占地坐标靠近吸附边界，原版浮点舍入的结果不能唯一确定。");
     const auto firstX = std::max<std::int64_t>(0, *x0), firstY = std::max<std::int64_t>(0, *y0);
@@ -158,6 +205,67 @@ Status AddUniformDoodadFootprint(std::span<std::uint8_t> staticAttributes, const
         const auto row = static_cast<std::size_t>(y) * columns;
         for (auto x = firstX; x < lastX; ++x)
             staticAttributes[row + static_cast<std::size_t>(x)] |= footprint.attributes;
+    }
+    return Status::Ok();
+}
+
+Status AddDoodadFootprint(std::span<std::uint8_t> staticAttributes, const TerrainHeader& terrain,
+    const DoodadPlacement& placement, const TerrainDoodadFootprint& footprint, std::uint8_t snapCells,
+    std::optional<float> fixedRotationDegrees) {
+    const auto fail = [](const char* code, const char* message) { return Status::Failure(kSubsystem, code, message); };
+    if (footprint.width == 0 || footprint.height == 0 || footprint.width > kMaximumSide || footprint.height > kMaximumSide
+        || (footprint.pixelBytes != 3 && footprint.pixelBytes != 4)
+        || footprint.pixels.size() != std::size_t{footprint.width} * footprint.height * footprint.pixelBytes)
+        return fail("TERRAIN_DOODAD_FOOTPRINT", "占地像素视图与尺寸或格式不符。");
+    if (footprint.uniform && footprint.width == footprint.height)
+        return AddUniformDoodadFootprint(staticAttributes, terrain, placement,
+            {footprint.width, footprint.uniformAttributes}, snapCells);
+    auto valid = ValidatePlacement(staticAttributes, terrain, placement, snapCells);
+    if (!valid.Succeeded()) return valid;
+    if (!fixedRotationDegrees || !std::isfinite(*fixedRotationDegrees)
+        || *fixedRotationDegrees < -360 || *fixedRotationDegrees > 360)
+        return fail("TERRAIN_DOODAD_FIXED_ROTATION", "图案或矩形占地需要实际、有限且处于[-360,360]的fixedRot字段。");
+    const auto snapTurn = QuarterTurn(placement.rotation);
+    if (!snapTurn)
+        return fail("TERRAIN_DOODAD_ANGLE_AMBIGUOUS", "占地旋转靠近原版四方向取整边界，无法唯一确定。");
+    auto drawTurn = snapTurn;
+    if (*fixedRotationDegrees >= 0) {
+        const double angle = static_cast<double>(*fixedRotationDegrees) * kRadiansPerDegree;
+        const auto lower = QuarterTurn(static_cast<float>(OutwardFloat(angle, false)));
+        const auto upper = QuarterTurn(static_cast<float>(OutwardFloat(angle, true)));
+        if (!lower || lower != upper)
+            return fail("TERRAIN_DOODAD_ANGLE_AMBIGUOUS", "fixedRot旋转靠近原版四方向取整边界，无法唯一确定。");
+        drawTurn = lower;
+    }
+    const auto snapWidth = *snapTurn % 2 ? footprint.width : footprint.height;
+    const auto snapHeight = *snapTurn % 2 ? footprint.height : footprint.width;
+    const auto width = *drawTurn % 2 ? footprint.width : footprint.height;
+    const auto height = *drawTurn % 2 ? footprint.height : footprint.width;
+    const auto x0 = ProjectAxis(placement.position[0], terrain.offset[0], snapWidth, snapCells, false, width);
+    const auto y0 = ProjectAxis(placement.position[1], terrain.offset[1], snapHeight, snapCells, true, height);
+    if (!x0 || !y0)
+        return fail("TERRAIN_UNIFORM_SNAP_AMBIGUOUS", "占地坐标靠近原版吸附边界，无法唯一确定。");
+    const auto columns = static_cast<std::size_t>(terrain.width - 1) * 4;
+    const auto rows = static_cast<std::size_t>(terrain.height - 1) * 4;
+    const auto lastX = std::min<std::int64_t>(columns, *x0 + width);
+    const auto lastY = std::min<std::int64_t>(rows, *y0 + height);
+    // 四档索引访问原图；裁剪只改变目标范围，不重新排列贴图原点。
+    for (auto y = std::max<std::int64_t>(0, *y0); y < lastY; ++y) {
+        for (auto x = std::max<std::int64_t>(0, *x0); x < lastX; ++x) {
+            const auto dx = static_cast<std::uint32_t>(x - *x0), dy = static_cast<std::uint32_t>(y - *y0);
+            std::uint32_t source = 0;
+            switch (*drawTurn) {
+            case 0: source = dy + dx * height; break;
+            case 1: source = width - 1 - dx + dy * width; break;
+            case 2: source = width * height - dx * height - dy - 1; break;
+            case 3: source = dx + width * (height - 1 - dy); break;
+            }
+            const auto sx = source % footprint.width, sy = source / footprint.width;
+            const auto fileRow = footprint.topOrigin ? sy : footprint.height - 1 - sy;
+            const auto at = (std::size_t{fileRow} * footprint.width + sx) * footprint.pixelBytes;
+            staticAttributes[static_cast<std::size_t>(y) * columns + static_cast<std::size_t>(x)]
+                |= PixelAttributes(footprint.pixels.subspan(at, footprint.pixelBytes));
+        }
     }
     return Status::Ok();
 }

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cmath>
 #include <map>
 #include <new>
 #include <set>
@@ -33,6 +34,14 @@ template<class T> T Take(Result<T> result) {
 }
 bool Rawcode(std::string_view value) {
     return value.size() == 4 && std::all_of(value.begin(), value.end(), [](unsigned char c) { return c >= 33 && c <= 126; });
+}
+std::optional<float> FixedRotation(std::string_view value) {
+    if (value.empty()) return std::nullopt;
+    float result = 0;
+    const auto parsed = std::from_chars(value.data(), value.data() + value.size(), result);
+    if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || !std::isfinite(result))
+        return std::nullopt;
+    return result;
 }
 std::string_view TextBytes(std::span<const std::byte> bytes) {
     if (bytes.empty()) return {};
@@ -358,7 +367,8 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeDestructablePathing(std
         result.workBytes = work;
         result.footprints.reserve(footprintPaths.size());
         for (const auto& [rawcode, path] : footprintPaths)
-            result.footprints.push_back({std::string(rawcode), std::string(path), 2});
+            result.footprints.push_back({std::string(rawcode), std::string(path), 2,
+                FixedRotation(catalog.Find(ObjectType::Doodad, rawcode)->Field("fixedrot"))});
         return Result<MapData::TerrainNativeObjectPathing>::Success(std::move(result));
     } catch (Failure& failure) { return {{}, std::move(failure.diagnostics)}; }
     catch (const std::bad_alloc&) { return Result<MapData::TerrainNativeObjectPathing>::Failure(kSubsystem, "TERRAIN_NATIVE_OBJECT_BUDGET", "严格对象解析内存分配失败。"); }

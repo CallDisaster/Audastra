@@ -750,7 +750,7 @@ void UniformDoodadRejectionDoesNotWeakenOldSaves() {
         if (mode == 2) { texture[12] = std::byte{2}; texture.resize(18 + 2 * 4 * 3); }
         f.Open(); f.Paint();
         const auto capture = TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, kBudget);
-        Require(!capture.Succeeded() && !capture.value, "truncated, nonuniform and nonsquare textures cannot become footprint owners");
+        Require(!capture.Succeeded() && !capture.value, "truncated textures or angle-dependent textures without actual fixedRot cannot become footprint owners");
     }
     for (const auto axis : {0u, 1u}) {
         Fixture f; UniformDoodad(f);
@@ -785,6 +785,62 @@ void UniformDoodadRejectionDoesNotWeakenOldSaves() {
         "zero-footprint saves do not read or budget unrelated pathing textures");
     old.Save("zero-footprint-unrelated-texture.w3x", true);
 }
+
+void PatternedDoodadsUseTheNormalSaveAndUndoChain() {
+    const auto addExpected = [](Bytes& wpm) {
+        // top-origin源矩阵(黑蓝绿/红青紫)，wire零角在(512,512)吸附到(544,544)。
+        // 原版映射为2x3(黑红/蓝青/绿紫)，从(16,15)开始；这些是WPM文件位。
+        constexpr std::array<unsigned, 6> masks{0,0xc2,8,0x0c,4,0xca};
+        for (unsigned i=0; i<masks.size(); ++i) wpm[16+(15+i/2)*32+16+i%2] |= static_cast<std::byte>(masks[i]);
+    };
+    for (const unsigned operation : {0u,1u,2u}) {
+        Fixture f; StandardDoodad(f);
+        f.Member("Doodads/Doodads.slk") = Slk({"doodID","code","pathTex","category","fixedRot"},
+            {{"Doo0","Doo0",std::string(kUniformDoodadTexture),"E","-1"}});
+        Bytes texture(18); texture[2]=std::byte{2}; texture[12]=std::byte{3}; texture[14]=std::byte{2};
+        texture[16]=std::byte{24}; texture[17]=std::byte{32};
+        for (unsigned b : {0,0,0, 1,0,0, 0,1,0, 0,0,1, 1,1,0, 1,0,1}) texture.push_back(static_cast<std::byte>(b));
+        f.members.push_back({std::string(kUniformDoodadTexture),texture});
+        if (operation != 0) {
+            f.original.header.groundTilesets.push_back("Tg02");
+            for (auto& vertex:f.original.vertices) vertex.textureAndFlagsRaw=0;
+            RefreshTerrainDerived(f.original,0,0,9,9);
+            f.Member("war3map.w3e")=Take(SerializeMapTerrain(f.original));
+            std::fill(f.Member("war3map.wpm").begin()+16,f.Member("war3map.wpm").end(),std::byte{0x51});
+            f.Member("TerrainArt/Terrain.slk")=Slk({"tileID","walkable","flyable","buildable"},
+                {{"Tg01","1","1","1"},{"Tg02","0","1","1"}});
+        }
+        addExpected(f.Member("war3map.wpm")); f.Open();
+        Bytes expectedW3e, expectedWpm;
+        if (operation==0) {
+            f.Paint(); expectedW3e=f.ExpectedTerrain(true); expectedWpm=f.ExpectedPathing(true); addExpected(expectedWpm);
+        } else {
+            TerrainBrush brush; brush.radius=0;
+            const bool cliff=operation==2;
+            if (cliff) {brush.kind=TerrainBrushKind::CliffLevel;brush.levelDelta=1;}
+            else {brush.kind=TerrainBrushKind::Texture;brush.groundTexture="Tg02";brush.variation=0;}
+            const TerrainStrokePoint point{256,512}; Take(f.edits->EditTerrain(brush,std::span(&point,1),false));
+            auto terrain=f.original;
+            if (cliff) terrain.vertices[38].cliffAndLayerRaw=3; else terrain.vertices[38].textureAndFlagsRaw=1;
+            expectedW3e=Take(SerializeMapTerrain(terrain)); expectedWpm=f.Member("war3map.wpm");
+            for (unsigned y=cliff?12:14;y<(cliff?20u:18u);++y) for(unsigned x=cliff?4:6;x<(cliff?12u:10u);++x)
+                expectedWpm[16+y*32+x]=cliff?std::byte{0xdb}:std::byte{0x53};
+        }
+        const auto owner=Take(TerrainPathingSave::CaptureNative(*f.archive,f.original,*f.edits->Terrain(),{},kBudget));
+        Take(TerrainPathingSave::CaptureNative(*f.archive,f.original,*f.edits->Terrain(),{},owner.CaptureBudgetBytes()));
+        Require(!TerrainPathingSave::CaptureNative(*f.archive,f.original,*f.edits->Terrain(),{},owner.CaptureBudgetBytes()-1).Succeeded(),
+            "pattern capture retains the exact byte budget");
+        const auto plan=f.Plan(); auto output=f.Output(plan);
+        output.push_back({"Doodads/Doodads.slk",Slk({"doodID","code","pathTex","category","fixedRot"},
+            {{"Doo0","Doo0",std::string(kUniformDoodadTexture),"E","90"}})});
+        Require(!plan.VerifyForSave(*f.edits,f.archive->SourceSha256(),output).Succeeded(),"fixedRot source change invalidates the frozen save");
+        f.SaveExpected("patterned.w3x",expectedW3e,expectedWpm);
+        Require(f.edits->Undo(),"undo saved terrain with patterned footprint");
+        f.SaveExpected("patterned-undone.w3x",f.Member("war3map.w3e"),f.Member("war3map.wpm"));
+        Require(f.edits->Redo(),"redo saved terrain with patterned footprint");
+        f.SaveExpected("patterned-redone.w3x",expectedW3e,expectedWpm);
+    }
+}
 } // namespace
 
 int main() {
@@ -805,6 +861,7 @@ int main() {
         UniformDoodadLongestPathHasAnExactCaptureBudget();
         UniformDoodadDuplicateInstancesHaveABoundedPixelWorkload();
         UniformDoodadRejectionDoesNotWeakenOldSaves();
+        PatternedDoodadsUseTheNormalSaveAndUndoChain();
         std::cout << "Native object terrain save tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
