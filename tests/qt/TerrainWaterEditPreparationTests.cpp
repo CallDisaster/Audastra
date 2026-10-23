@@ -215,82 +215,84 @@ private slots:
         QTest::newRow("save-as") << false;
         QTest::newRow("save-in-place") << true;
     }
-    void SpecialDeletionSurvivesTheQtWorker() try {
-        QFETCH(bool, inPlace);
-        QTemporaryDir directory; QVERIFY(directory.isValid());
-        const auto members = SpecialWaterSaveMembers();
-        EditorProject project; InstallTerrainWaterProject(project, directory.path().toStdWString(), true, members);
-        const auto memberBytes = [&](std::string_view name) {
-            const auto found = std::find_if(members.begin(), members.end(), [&](const auto& member) { return member.name == name; });
-            if (found == members.end()) throw std::runtime_error("missing Qt special save fixture member");
-            return found->data;
-        };
-        QVERIFY(project.mapEdits_->AttachPathing(memberBytes("war3map.wpm")).Succeeded());
-        project.ResetEditTracking();
-        auto frozen = std::make_shared<TerrainWaterEditRequest>(WaterTake(CaptureTerrainWaterEditRequest(project, true)));
-        auto captured = WaterTake(LoadTerrainWaterEditResources(frozen));
-        QCOMPARE(captured.resources.WaterSpecialShapes().size(), std::size_t{2});
-        const MapData::TerrainStrokePoint point{384, 384};
-        const MapData::TerrainWaterBrush brush{MapData::TerrainWaterBrushKind::Shallow,
-            MapData::TerrainBrushShape::Square, 1, 0, 17,
-            WaterTake(MapData::CaptureTerrainWaterStrokeAnchor(*frozen->terrain, point))};
-        auto prepared = WaterTake(project.mapEdits_->PrepareTerrainWaterEdit(captured.resources, brush, std::span(&point, 1)));
-        QVERIFY(project.mapEdits_->ApplyPreparedTerrainEdit(prepared).Succeeded());
-        QVERIFY(project.ObserveMapDataEdit("水刷删除特殊模型"));
-        const auto currentDoodads = [&] {
-            return WaterTake(project.mapEdits_->Snapshot(MapDataKind::Doodads, 1024 * 1024)).Doodads().value();
-        };
-        QCOMPARE(currentDoodads().specialDoodads.size(), std::size_t{1});
-        QCOMPARE(currentDoodads().specialDoodads.front().position, (std::array<std::int32_t, 2>{6, 6}));
-        const auto changedDoo = WaterTake(currentDoodads().Serialize());
-        const auto changedTerrain = WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
-        const auto sessionIdentity = project.mapEdits_->SessionIdentity();
-        {
-            MapSaveJob untrusted;
-            QVERIFY(untrusted.FreezeArchive(*project.archiveSession_).Succeeded());
-            untrusted.target = std::filesystem::path(directory.path().toStdWString()) / "untrusted-must-not-exist.w3x";
-            untrusted.minimapGameRoot = project.war3GameRoot_;
-            untrusted.terrainDerivationRequired = true;
-            untrusted.replacements = project.mapEdits_->Replacements();
-            EditorProject::RunMapSave(untrusted);
-            QVERIFY(!untrusted.succeeded && !std::filesystem::exists(untrusted.target));
-            QVERIFY(std::any_of(untrusted.diagnostics.begin(), untrusted.diagnostics.end(), [](const auto& diagnostic) {
-                return diagnostic.code == "TERRAIN_SPECIAL_PROVENANCE_REQUIRED";
-            }));
+    void SpecialDeletionSurvivesTheQtWorker() {
+        try {
+            QFETCH(bool, inPlace);
+            QTemporaryDir directory; QVERIFY(directory.isValid());
+            const auto members = SpecialWaterSaveMembers();
+            EditorProject project; InstallTerrainWaterProject(project, directory.path().toStdWString(), true, members);
+            const auto memberBytes = [&](std::string_view name) {
+                const auto found = std::find_if(members.begin(), members.end(), [&](const auto& member) { return member.name == name; });
+                if (found == members.end()) throw std::runtime_error("missing Qt special save fixture member");
+                return found->data;
+            };
+            QVERIFY(project.mapEdits_->AttachPathing(memberBytes("war3map.wpm")).Succeeded());
+            project.ResetEditTracking();
+            auto frozen = std::make_shared<TerrainWaterEditRequest>(WaterTake(CaptureTerrainWaterEditRequest(project, true)));
+            auto captured = WaterTake(LoadTerrainWaterEditResources(frozen));
+            QCOMPARE(captured.resources.WaterSpecialShapes().size(), std::size_t{2});
+            const MapData::TerrainStrokePoint point{384, 384};
+            const MapData::TerrainWaterBrush brush{MapData::TerrainWaterBrushKind::Shallow,
+                MapData::TerrainBrushShape::Square, 1, 0, 17,
+                WaterTake(MapData::CaptureTerrainWaterStrokeAnchor(*frozen->terrain, point))};
+            auto prepared = WaterTake(project.mapEdits_->PrepareTerrainWaterEdit(captured.resources, brush, std::span(&point, 1)));
+            QVERIFY(project.mapEdits_->ApplyPreparedTerrainEdit(prepared).Succeeded());
+            QVERIFY(project.ObserveMapDataEdit("水刷删除特殊模型"));
+            const auto currentDoodads = [&] {
+                return WaterTake(project.mapEdits_->Snapshot(MapDataKind::Doodads, 1024 * 1024)).Doodads().value();
+            };
+            QCOMPARE(currentDoodads().specialDoodads.size(), std::size_t{1});
+            QCOMPARE(currentDoodads().specialDoodads.front().position, (std::array<std::int32_t, 2>{6, 6}));
+            const auto changedDoo = WaterTake(currentDoodads().Serialize());
+            const auto changedTerrain = WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
+            const auto sessionIdentity = project.mapEdits_->SessionIdentity();
+            {
+                MapSaveJob untrusted;
+                QVERIFY(untrusted.FreezeArchive(*project.archiveSession_).Succeeded());
+                untrusted.target = std::filesystem::path(directory.path().toStdWString()) / "untrusted-must-not-exist.w3x";
+                untrusted.minimapGameRoot = project.war3GameRoot_;
+                untrusted.terrainDerivationRequired = true;
+                untrusted.replacements = project.mapEdits_->Replacements();
+                EditorProject::RunMapSave(untrusted);
+                QVERIFY(!untrusted.succeeded && !std::filesystem::exists(untrusted.target));
+                QVERIFY(std::any_of(untrusted.diagnostics.begin(), untrusted.diagnostics.end(), [](const auto& diagnostic) {
+                    return diagnostic.code == "TERRAIN_SPECIAL_PROVENANCE_REQUIRED";
+                }));
+            }
+            for (unsigned step = 0; step < 3; ++step) {
+                if (step == 1) QVERIFY(project.mapEdits_->Undo() && project.ObserveMapDataEdit("保存后撤销水刷"));
+                if (step == 2) QVERIFY(project.mapEdits_->Redo() && project.ObserveMapDataEdit("再次保存后重做水刷"));
+                const auto expectedTerrain = step == 1 ? memberBytes("war3map.w3e") : changedTerrain;
+                const auto expectedDoo = step == 1 ? memberBytes("war3map.doo") : changedDoo;
+                auto job = std::make_unique<MapSaveJob>();
+                QVERIFY(job->FreezeArchive(*project.archiveSession_).Succeeded());
+                job->target = inPlace ? project.archiveSession_->SourcePath()
+                    : std::filesystem::path(directory.path().toStdWString()) / ("saved-" + std::to_string(step) + ".w3x");
+                job->inPlace = inPlace;
+                job->inPlaceOptions.backupDirectory = std::filesystem::path(directory.path().toStdWString()) / "backups";
+                std::filesystem::create_directories(job->inPlaceOptions.backupDirectory);
+                job->minimapGameRoot = project.war3GameRoot_;
+                job->replacements = project.mapEdits_->Replacements(); job->removals = project.mapEdits_->Removals();
+                job->terrainDerivationRequired = true;
+                job->terrainSessionSnapshot = project.mapEdits_->FreezeForSave();
+                QVERIFY(job->terrainSessionSnapshot && !job->terrainSessionSnapshot->CanUndo());
+                QCOMPARE(job->terrainSessionSnapshot->SessionIdentity(), sessionIdentity);
+                QCOMPARE(job->terrainSessionSnapshot->Revision(), project.mapEdits_->Revision());
+                job->preparedRevision = MapSaveRevisionBinding{project.editRevision_.Generation(), project.editRevision_.Revision(),
+                    project.editRevision_.Current(), project.luaMapTargetGeneration_};
+                EditorProject::RunMapSave(*job);
+                QVERIFY2(job->succeeded, job->diagnostics.empty() ? "Qt special save worker failed" : job->diagnostics.back().message.c_str());
+                QVERIFY(job->terrainSavePlan && job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded());
+                QCOMPARE(WaterTake(job->nextSession->ReadMember("war3map.w3e")), expectedTerrain);
+                QCOMPARE(WaterTake(job->nextSession->ReadMember("war3map.doo")), expectedDoo);
+                if (step == 1) QCOMPARE(WaterTake(job->nextSession->ReadMember("war3map.wpm")), memberBytes("war3map.wpm"));
+                QVERIFY(project.CommitMapSave(*job));
+                QCOMPARE(project.mapEdits_->SessionIdentity(), sessionIdentity);
+                QVERIFY(!project.HasUnsavedMapChanges());
+            }
+        } catch (const std::exception& error) {
+            QFAIL(error.what());
         }
-        for (unsigned step = 0; step < 3; ++step) {
-            if (step == 1) QVERIFY(project.mapEdits_->Undo() && project.ObserveMapDataEdit("保存后撤销水刷"));
-            if (step == 2) QVERIFY(project.mapEdits_->Redo() && project.ObserveMapDataEdit("再次保存后重做水刷"));
-            const auto expectedTerrain = step == 1 ? memberBytes("war3map.w3e") : changedTerrain;
-            const auto expectedDoo = step == 1 ? memberBytes("war3map.doo") : changedDoo;
-            auto job = std::make_unique<MapSaveJob>();
-            QVERIFY(job->FreezeArchive(*project.archiveSession_).Succeeded());
-            job->target = inPlace ? project.archiveSession_->SourcePath()
-                : std::filesystem::path(directory.path().toStdWString()) / ("saved-" + std::to_string(step) + ".w3x");
-            job->inPlace = inPlace;
-            job->inPlaceOptions.backupDirectory = std::filesystem::path(directory.path().toStdWString()) / "backups";
-            std::filesystem::create_directories(job->inPlaceOptions.backupDirectory);
-            job->minimapGameRoot = project.war3GameRoot_;
-            job->replacements = project.mapEdits_->Replacements(); job->removals = project.mapEdits_->Removals();
-            job->terrainDerivationRequired = true;
-            job->terrainSessionSnapshot = project.mapEdits_->FreezeForSave();
-            QVERIFY(job->terrainSessionSnapshot && !job->terrainSessionSnapshot->CanUndo());
-            QCOMPARE(job->terrainSessionSnapshot->SessionIdentity(), sessionIdentity);
-            QCOMPARE(job->terrainSessionSnapshot->Revision(), project.mapEdits_->Revision());
-            job->preparedRevision = MapSaveRevisionBinding{project.editRevision_.Generation(), project.editRevision_.Revision(),
-                project.editRevision_.Current(), project.luaMapTargetGeneration_};
-            EditorProject::RunMapSave(*job);
-            QVERIFY2(job->succeeded, job->diagnostics.empty() ? "Qt special save worker failed" : job->diagnostics.back().message.c_str());
-            QVERIFY(job->terrainSavePlan && job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded());
-            QCOMPARE(WaterTake(job->nextSession->ReadMember("war3map.w3e")), expectedTerrain);
-            QCOMPARE(WaterTake(job->nextSession->ReadMember("war3map.doo")), expectedDoo);
-            if (step == 1) QCOMPARE(WaterTake(job->nextSession->ReadMember("war3map.wpm")), memberBytes("war3map.wpm"));
-            QVERIFY(project.CommitMapSave(*job));
-            QCOMPARE(project.mapEdits_->SessionIdentity(), sessionIdentity);
-            QVERIFY(!project.HasUnsavedMapChanges());
-        }
-    } catch (const std::exception& error) {
-        QFAIL(error.what());
     }
 };
 
