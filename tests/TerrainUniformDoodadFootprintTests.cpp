@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cfenv>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -10,6 +11,10 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+
+#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
+#include <xmmintrin.h>
+#endif
 
 namespace {
 using namespace War3Map;
@@ -76,7 +81,9 @@ void Rectangle(const std::vector<std::uint8_t>& cells, std::size_t columns,
     std::size_t x0, std::size_t y0, std::size_t x1, std::size_t y1, std::uint8_t mask, std::uint8_t base = 0) {
     for (std::size_t y = 0; y < cells.size() / columns; ++y) for (std::size_t x = 0; x < columns; ++x) {
         const auto expected = static_cast<std::uint8_t>(base | (x >= x0 && x < x1 && y >= y0 && y < y1 ? mask : 0));
-        Require(cells[y * columns + x] == expected, "every cell must match the independent literal rectangle");
+        if (cells[y * columns + x] != expected)
+            throw std::runtime_error("literal rectangle mismatch at " + std::to_string(x) + "," + std::to_string(y)
+                + ": expected " + std::to_string(expected) + ", got " + std::to_string(cells[y * columns + x]));
     }
 }
 void RefusedAdd(std::vector<std::uint8_t>& cells, const TerrainHeader& header, const DoodadPlacement& placement,
@@ -214,6 +221,97 @@ void OriginsRotationScaleAndStride() {
     Rectangle(edge, 2044, 2042, 0, 2044, 2, 4);
 }
 
+void FractionalCoordinatesHaveIndependentRectangles() {
+    struct Case { unsigned side; std::uint8_t snap; float position; std::size_t first, last; };
+    // 在原版吸附边界两侧取明确距离；预期是手工列出的完整矩形。
+    constexpr std::array cases{
+        Case{2, 2, 1.0f, 0, 2}, Case{2, 2, 31.0f, 0, 2},
+        Case{2, 2, 63.5f, 0, 2}, Case{2, 2, 64.5f, 2, 4},
+        Case{4, 2, 31.5f, 0, 3}, Case{4, 2, 32.5f, 0, 4},
+        Case{4, 2, 96.5f, 2, 6},
+        Case{2, 4, 63.5f, 0, 2}, Case{2, 4, 64.5f, 3, 5},
+        Case{2, 2, -0.5f, 0, 1}, Case{2, 2, -64.5f, 0, 0}};
+    for (const auto& example : cases) {
+        std::vector<std::uint8_t> cells(64, 0x40);
+        Check(AddUniformDoodadFootprint(cells, Header(), Placement(example.position, example.position), {example.side, 0x35}, example.snap));
+        Rectangle(cells, 8, example.first, example.first, example.last, example.last, 0x35, 0x40);
+    }
+    struct Axes { float x, y; std::size_t x0, y0, x1, y1; };
+    constexpr std::array axes{
+        Axes{64, 1, 2, 0, 4, 2}, Axes{1, 64, 0, 2, 2, 4},
+        Axes{63.5f, 64.5f, 0, 2, 2, 4}, Axes{64.5f, 63.5f, 2, 0, 4, 2},
+        Axes{-0.5f, 64.5f, 0, 2, 1, 4}, Axes{64.5f, -0.5f, 2, 0, 4, 1}};
+    for (const auto& example : axes) {
+        std::vector<std::uint8_t> cells(64);
+        Check(AddUniformDoodadFootprint(cells, Header(), Placement(example.x, example.y), {2, 4}, 2));
+        Rectangle(cells, 8, example.x0, example.y0, example.x1, example.y1, 4);
+    }
+    auto header = Header(3, 2); header.offset = {-128, 256};
+    std::vector<std::uint8_t> cells(32);
+    Check(AddUniformDoodadFootprint(cells, header, Placement(-31.5f, 320.5f), {4, 2}, 2));
+    Rectangle(cells, 8, 2, 0, 6, 4, 2);
+    // 最小正负F32也不能因向零刷除而落入旧的“32对齐”分支。
+    cells.assign(64, 0);
+    Check(AddUniformDoodadFootprint(cells, Header(), Placement(std::numeric_limits<float>::denorm_min(), 1), {4, 4}, 2));
+    Rectangle(cells, 8, 0, 0, 3, 3, 4);
+    cells.assign(64, 0);
+    Check(AddUniformDoodadFootprint(cells, Header(), Placement(-std::numeric_limits<float>::min(), 1), {2, 4}, 2));
+    Rectangle(cells, 8, 0, 0, 1, 2, 4);
+}
+
+void AmbiguousSnappingRefusesBeforeWriting() {
+    std::vector<std::uint8_t> cells(64, 0x40);
+    for (const auto side : {2u, 4u}) {
+        const float boundary = side == 2 ? 64.0f : 32.0f;
+        for (const float coordinate : {std::nextafter(boundary, 0.0f), std::nextafter(boundary, 128.0f)}) {
+            RefusedAdd(cells, Header(), Placement(coordinate, 1), {side, 4}, 2, "TERRAIN_UNIFORM_SNAP_AMBIGUOUS");
+            RefusedAdd(cells, Header(), Placement(1, coordinate), {side, 4}, 2, "TERRAIN_UNIFORM_SNAP_AMBIGUOUS");
+        }
+    }
+    for (const float coordinate : {std::nextafter(64.0f, 0.0f), std::nextafter(64.0f, 128.0f)})
+        RefusedAdd(cells, Header(), Placement(1, coordinate), {2, 0}, 4, "TERRAIN_UNIFORM_SNAP_AMBIGUOUS");
+    RefusedAdd(cells, Header(), Placement(-std::numeric_limits<float>::denorm_min(), 1), {2, 4}, 2, "TERRAIN_UNIFORM_SNAP_AMBIGUOUS");
+    for (const auto axis : {0u, 1u}) {
+        auto header = Header(); header.offset[axis] = -32768;
+        auto placement = Placement(1, 1); placement.position[axis] = 16777215;
+        RefusedAdd(cells, header, placement, {2, 4}, 2, "TERRAIN_UNIFORM_SNAP_AMBIGUOUS");
+    }
+}
+
+void NonDefaultFloatModesAreRejectedWithoutMutation() {
+    struct RestoreFloatMode {
+        std::fenv_t environment;
+#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
+        unsigned csr = _mm_getcsr();
+#endif
+        RestoreFloatMode() { Require(std::fegetenv(&environment) == 0, "capture floating point environment"); }
+        ~RestoreFloatMode() {
+            std::fesetenv(&environment);
+#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
+            _mm_setcsr(csr);
+#endif
+        }
+    };
+    std::vector<std::uint8_t> cells(64, 0x40);
+    for (const auto rounding : {FE_DOWNWARD, FE_UPWARD, FE_TOWARDZERO}) {
+        RestoreFloatMode restore;
+        Require(std::fesetround(rounding) == 0, "set test rounding mode");
+        RefusedAdd(cells, Header(), Placement(64.5f, 1), {2, 4}, 2, "TERRAIN_UNIFORM_FLOAT_ENVIRONMENT");
+        Require(std::fegetround() == rounding, "rejected calculation does not reset caller rounding mode");
+    }
+#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
+    for (const auto mask : {0x40u, 0x8000u, 0x8040u, 0x2000u, 0x4000u, 0x6000u}) {
+        RestoreFloatMode restore;
+        const auto expectedCsr = _mm_getcsr() | mask;
+        _mm_setcsr(expectedCsr);
+        RefusedAdd(cells, Header(), Placement(-std::numeric_limits<float>::min(), 1), {2, 4}, 2, "TERRAIN_UNIFORM_FLOAT_ENVIRONMENT");
+        Require(_mm_getcsr() == expectedCsr, "rejected calculation preserves caller SSE rounding, FTZ, DAZ and exception flags");
+    }
+#endif
+    Check(AddUniformDoodadFootprint(cells, Header(), Placement(64.5f, 1), {2, 4}, 2));
+    Rectangle(cells, 8, 2, 0, 4, 2, 4, 0x40);
+}
+
 void OrCompositionIsStableAcrossOrderAndOverlapCount() {
     std::vector<std::uint8_t> first(64, 0x40), reverse(64, 0x40);
     const auto header = Header();
@@ -254,8 +352,7 @@ void InvalidInputsAreAtomic() {
         auto header = goodHeader; header.offset[1] = offset;
         RefusedAdd(cells, header, goodPlacement, {2, 4}, 2, "TERRAIN_UNIFORM_COORDINATE_DOMAIN");
     }
-    for (const auto coordinate : {1.0f, 31.0f, std::nextafter(32.0f, 33.0f), std::numeric_limits<float>::denorm_min(),
-        16777248.0f, -16777248.0f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()}) {
+    for (const auto coordinate : {16777248.0f, -16777248.0f, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()}) {
         auto placement = goodPlacement; placement.position[1] = coordinate;
         RefusedAdd(cells, goodHeader, placement, {2, 4}, 2, "TERRAIN_UNIFORM_COORDINATE_DOMAIN");
     }
@@ -274,8 +371,8 @@ void InvalidInputsAreAtomic() {
         RefusedAdd(cells, goodHeader, goodPlacement, {2, mask}, 2, "TERRAIN_UNIFORM_FOOTPRINT");
     for (const auto snap : std::array<unsigned char, 5>{0, 1, 3, 5, 255})
         RefusedAdd(cells, goodHeader, goodPlacement, {2, 4}, snap, "TERRAIN_UNIFORM_SNAP_CELLS");
-    placement = goodPlacement; placement.position[1] = 1;
-    RefusedAdd(cells, goodHeader, placement, {2, 0}, 2, "TERRAIN_UNIFORM_COORDINATE_DOMAIN");
+    placement = goodPlacement; placement.position[1] = std::nextafter(64.0f, 0.0f);
+    RefusedAdd(cells, goodHeader, placement, {2, 0}, 2, "TERRAIN_UNIFORM_SNAP_AMBIGUOUS");
 }
 } // namespace
 
@@ -285,6 +382,9 @@ int main() {
         TgaBoundariesRejectBeforePixelAccess();
         NativeSnappingHasIndependentLiteralRectangles();
         OriginsRotationScaleAndStride();
+        FractionalCoordinatesHaveIndependentRectangles();
+        AmbiguousSnappingRefusesBeforeWriting();
+        NonDefaultFloatModesAreRejectedWithoutMutation();
         OrCompositionIsStableAcrossOrderAndOverlapCount();
         InvalidInputsAreAtomic();
         std::cout << "Terrain uniform doodad footprint tests passed\n";

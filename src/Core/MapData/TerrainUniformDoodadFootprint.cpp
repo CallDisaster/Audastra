@@ -2,8 +2,14 @@
 
 #include <algorithm>
 #include <array>
+#include <cfenv>
 #include <cmath>
 #include <limits>
+#include <optional>
+
+#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
+#include <xmmintrin.h>
+#endif
 
 namespace War3Map::MapData {
 namespace {
@@ -13,26 +19,50 @@ constexpr double kMaximumPosition = 16777216.0;
 static_assert(std::numeric_limits<float>::is_iec559 && std::numeric_limits<float>::digits == 24);
 static_assert(std::numeric_limits<double>::is_iec559 && std::numeric_limits<double>::digits == 53);
 
+bool SupportedFloatEnvironment() {
+    // 包络依赖IEEE渐进下溢，不能让渲染线程遗留的FTZ/DAZ把负小量当作零。
+    // 只检查调用线程，不替调用者修改舍入状态。
+    if (std::fegetround() != FE_TONEAREST) return false;
+#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
+    if ((_mm_getcsr() & 0xe040u) != 0) return false; // 同时核对SSE自己的舍入位。
+#endif
+    return true;
+}
+
 bool ValidAttributes(std::uint8_t value) {
     // 红通道总是同时置0x31，不能把外部提供的不完整位组合当作解码结果。
     const auto red = value & 0x31;
     return (value & ~0x37u) == 0 && (red == 0 || red == 0x31);
 }
 
-std::int64_t ProjectAxis(float position, float origin, std::uint32_t side,
+// x87的精度和舍入状态不由地图提供。用相邻binary32值包住一次运算的
+// PC24/53/64结果及F32落存；double结果刚好丢掉微小低位时也向外留一格。
+double OutwardFloat(double value, bool upper) {
+    const float direction = upper ? std::numeric_limits<float>::infinity()
+                                  : -std::numeric_limits<float>::infinity();
+    return static_cast<double>(std::nextafter(static_cast<float>(value), direction));
+}
+
+std::optional<std::int64_t> ProjectAxis(float position, float origin, std::uint32_t side,
     std::uint8_t snapCells, bool secondAxis) {
     const float grid = static_cast<float>(snapCells) * 32.0f;
     const bool half = (side / snapCells) % 2 != 0;
     const double bias = half ? 0.0 : 0.5;
     const double delta = static_cast<double>(position) - origin;
-    // 原版次轴先将差值及倒数落为F32；主轴保留中间精度。
-    // 当前XY是32的整数倍，origin为128的整数倍，且幅值有界；所有差值、
-    // 64/128的商和半格都是精确二进制数，不依赖x87精度档位或舍入方向。
-    const float secondaryDelta = static_cast<float>(delta);
-    const float secondaryReciprocal = static_cast<float>(1.0 / grid);
-    const double quotient = secondAxis
-        ? static_cast<double>(secondaryDelta) * secondaryReciprocal : delta / grid;
-    const double snappedBase = std::floor(quotient + bias) * grid + origin;
+    double snappedIndex;
+    if (std::fmod(position, 32.0f) == 0.0f) {
+        // 已支持的格点域仍精确计算；差值、64/128的商及半格都可精确表示。
+        snappedIndex = std::floor(delta / grid + bias);
+    } else {
+        // 原版X差值留在x87、Y差值落F32；1/grid是精确的2的幂倒数。
+        // 两轴共用更宽的包络，包含差值落存、加bias和floor实参double落存。
+        const double lower = std::floor(OutwardFloat(OutwardFloat(delta, false) / grid + bias, false));
+        const double upper = std::floor(OutwardFloat(OutwardFloat(delta, true) / grid + bias, true));
+        if (lower != upper) return std::nullopt;
+        snappedIndex = lower;
+    }
+    // 唯一格点确定后，基点、半格和尺寸修正都是有界的16/32整数倍。
+    const double snappedBase = snappedIndex * grid + origin;
     // 主轴的基点先落F32，次轴在加半格后才落F32，保留两条原始路径。
     const float primaryBase = static_cast<float>(snappedBase);
     const float snapped = static_cast<float>((secondAxis ? snappedBase : primaryBase)
@@ -96,6 +126,8 @@ Status AddUniformDoodadFootprint(std::span<std::uint8_t> staticAttributes, const
     const auto rows = static_cast<std::size_t>(terrain.height - 1) * 4;
     if (staticAttributes.size() != columns * rows)
         return fail("TERRAIN_UNIFORM_GRID_SHAPE", "静态对象通行层长度与完整地形通行网格不符。");
+    if (!SupportedFloatEnvironment())
+        return fail("TERRAIN_UNIFORM_FLOAT_ENVIRONMENT", "当前线程的浮点模式不支持占地精确吸附，需要默认舍入且保留渐进下溢。");
     for (std::size_t axis = 0; axis < 2; ++axis) {
         const double first = terrain.offset[axis];
         const auto vertices = axis == 0 ? terrain.width : terrain.height;
@@ -103,9 +135,8 @@ Status AddUniformDoodadFootprint(std::span<std::uint8_t> staticAttributes, const
         if (!std::isfinite(first) || std::fmod(first, 128.0) != 0.0 || first < -32768.0 || last > 32640.0)
             return fail("TERRAIN_UNIFORM_COORDINATE_DOMAIN", "地形偏移须128对齐，全部顶点XY须处于原版九位坐标域。");
         const double position = placement.position[axis];
-        if (!std::isfinite(position) || std::abs(position) > kMaximumPosition
-            || std::fmod(position, 32.0) != 0.0)
-            return fail("TERRAIN_UNIFORM_COORDINATE_DOMAIN", "同色占地实例XY须在已证明的32世界格点上，且绝对值不超过2^24。");
+        if (!std::isfinite(position) || std::abs(position) > kMaximumPosition)
+            return fail("TERRAIN_UNIFORM_COORDINATE_DOMAIN", "同色占地实例XY须有限，且绝对值不超过2^24。");
     }
     if (!std::isfinite(placement.position[2])
         || std::any_of(placement.scale.begin(), placement.scale.end(), [](float value) { return !std::isfinite(value); })
@@ -117,9 +148,11 @@ Status AddUniformDoodadFootprint(std::span<std::uint8_t> staticAttributes, const
         return fail("TERRAIN_UNIFORM_SNAP_CELLS", "同色占地吸附网格只能使用实际类别确定的2格或4格。");
     const auto x0 = ProjectAxis(placement.position[0], terrain.offset[0], footprint.side, snapCells, false);
     const auto y0 = ProjectAxis(placement.position[1], terrain.offset[1], footprint.side, snapCells, true);
-    const auto firstX = std::max<std::int64_t>(0, x0), firstY = std::max<std::int64_t>(0, y0);
-    const auto lastX = std::min<std::int64_t>(static_cast<std::int64_t>(columns), x0 + footprint.side);
-    const auto lastY = std::min<std::int64_t>(static_cast<std::int64_t>(rows), y0 + footprint.side);
+    if (!x0 || !y0)
+        return fail("TERRAIN_UNIFORM_SNAP_AMBIGUOUS", "同色占地坐标靠近吸附边界，原版浮点舍入的结果不能唯一确定。");
+    const auto firstX = std::max<std::int64_t>(0, *x0), firstY = std::max<std::int64_t>(0, *y0);
+    const auto lastX = std::min<std::int64_t>(static_cast<std::int64_t>(columns), *x0 + footprint.side);
+    const auto lastY = std::min<std::int64_t>(static_cast<std::int64_t>(rows), *y0 + footprint.side);
     // 此后无失败分支。均匀像素使逐像素裁边可化为相同的矩形，不移动原起点。
     for (auto y = firstY; y < lastY; ++y) {
         const auto row = static_cast<std::size_t>(y) * columns;

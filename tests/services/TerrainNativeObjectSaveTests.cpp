@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <initializer_list>
 #include <iostream>
@@ -195,20 +196,25 @@ Bytes UniformDoodadTexture(std::uint16_t side = 4) {
 }
 void UniformDoodadExpectedFootprint(Bytes& wpm, bool overlap = false) {
     // 手写原版预期：4x4/BGR ff00ff的内部35编码为ca；与作者11及浅/深水、干地均合成db。
-    // 中心512、g=2的起点为14；第二中心576的起点为16，重复摆放不能改变完整OR结果。
+    // 中心512、g=2的起点为14；第二中心576的起点为16。加0.5/0.25后仍为同一矩形。
     for (std::size_t y = 14; y < 18; ++y) for (std::size_t x = 14; x < (overlap ? 20u : 18u); ++x)
         wpm[16 + y * 32 + x] = std::byte{0xdb};
 }
-void UniformDoodad(Fixture& fixture, bool overlap = false) {
+void UniformDoodad(Fixture& fixture, bool overlap = false, bool fractional = false) {
     StandardDoodad(fixture);
     fixture.Member("Doodads/Doodads.slk") = Slk({"doodID", "code", "pathTex", "category"},
         {{"Doo0", "Doo0", std::string(kUniformDoodadTexture), "E"}});
     fixture.members.push_back({std::string(kUniformDoodadTexture), UniformDoodadTexture()});
-    if (overlap) {
+    if (overlap || fractional) {
         auto placements = Take(ParseDoodadPlacements(fixture.Member("war3map.doo")));
-        auto duplicate = placements.doodads.front(); duplicate.creationId = 3;
-        placements.doodads.push_back(duplicate);
-        duplicate.position[0] = 576; duplicate.creationId = 4; placements.doodads.push_back(duplicate);
+        if (overlap) {
+            auto duplicate = placements.doodads.front(); duplicate.creationId = 3;
+            placements.doodads.push_back(duplicate);
+            duplicate.position[0] = 576; duplicate.creationId = 4; placements.doodads.push_back(duplicate);
+        }
+        if (fractional) for (auto& placement : placements.doodads) {
+            placement.position[0] += 0.5f; placement.position[1] += 0.25f;
+        }
         fixture.Member("war3map.doo") = Take(placements.Serialize());
     }
     UniformDoodadExpectedFootprint(fixture.Member("war3map.wpm"), overlap);
@@ -605,7 +611,7 @@ void DirectoryRecipePreservesReplayAndSourceChecks() {
 }
 
 void UniformDoodadsSaveWaterGroundAndCliffs() {
-    Fixture water; UniformDoodad(water, true); water.Open(); water.Paint();
+    Fixture water; UniformDoodad(water, true, true); water.Open(); water.Paint();
     auto deep = water.ExpectedPathing(true), shallow = water.ExpectedPathing(false);
     UniformDoodadExpectedFootprint(deep, true); UniformDoodadExpectedFootprint(shallow, true);
     water.SaveExpected("uniform-water.w3x", water.ExpectedTerrain(true), deep);
@@ -615,7 +621,7 @@ void UniformDoodadsSaveWaterGroundAndCliffs() {
     water.SaveExpected("uniform-water-redone.w3x", water.ExpectedTerrain(true), deep);
 
     for (const bool cliff : {false, true}) {
-        Fixture f; UniformDoodad(f);
+        Fixture f; UniformDoodad(f, false, true);
         f.original.header.groundTilesets.push_back("Tg02");
         for (auto& vertex : f.original.vertices) vertex.textureAndFlagsRaw = 0;
         RefreshTerrainDerived(f.original, 0, 0, 9, 9);
@@ -745,6 +751,24 @@ void UniformDoodadRejectionDoesNotWeakenOldSaves() {
         f.Open(); f.Paint();
         const auto capture = TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, kBudget);
         Require(!capture.Succeeded() && !capture.value, "truncated, nonuniform and nonsquare textures cannot become footprint owners");
+    }
+    for (const auto axis : {0u, 1u}) {
+        Fixture f; UniformDoodad(f);
+        auto placements = Take(ParseDoodadPlacements(f.Member("war3map.doo")));
+        placements.doodads.front().position[axis] = std::nextafter(544.0f, 512.0f);
+        f.Member("war3map.doo") = Take(placements.Serialize());
+        f.Open(); f.Paint();
+        const auto sourceSha = Take(Sha256File(f.archive->SourcePath()));
+        const auto terrainDraft = Take(SerializeMapTerrain(*f.edits->Terrain()));
+        const auto capture = TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, kBudget);
+        Require(!capture.Succeeded() && !capture.value && HasCode(capture, "TERRAIN_UNIFORM_SNAP_AMBIGUOUS"),
+            "ambiguous object coordinates cannot create a partial native footprint owner");
+        const auto plan = f.Plan();
+        Require(!plan.SaveGate().Succeeded() && HasCode(plan.SaveGate(), "TERRAIN_UNIFORM_SNAP_AMBIGUOUS"),
+            "the normal save gate preserves the precise coordinate failure");
+        Require(Take(Sha256File(f.archive->SourcePath())) == sourceSha && f.edits->IsDirty()
+            && Take(SerializeMapTerrain(*f.edits->Terrain())) == terrainDraft,
+            "coordinate rejection preserves the original archive and unsaved terrain draft");
     }
     for (const auto& [offset, mask] : std::array<std::pair<std::size_t, unsigned>, 3>{{{16, 0x06}, {16, 0x88}, {16 + 16 * 32 + 16, 0x60}}}) {
         Fixture f; UniformDoodad(f); f.Member("war3map.wpm")[offset] ^= static_cast<std::byte>(mask); f.Open(); f.Paint();

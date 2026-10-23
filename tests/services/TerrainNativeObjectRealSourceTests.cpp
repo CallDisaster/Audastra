@@ -184,7 +184,10 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
             auto placements = doodads;
             if (withDoodad) {
                 auto added = placed; added.rawcode = selectedDoodad; added.creationId = 2;
-                if (withUniform) added.position[0] += 256; // 占地与水位修改区分离，避免静态位掩盖真实变化。
+                if (withUniform) {
+                    // 非格点摆放，与水位修改区分离，避免静态位掩盖真实变化。
+                    added.position[0] += 256.5f; added.position[1] += 0.25f;
+                }
                 placements.doodads.push_back(added);
                 if (withUniform) {
                     added.creationId = 3; added.position[0] += 64;
