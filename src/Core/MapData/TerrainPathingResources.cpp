@@ -282,19 +282,21 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureWaterBrushRules(
 Status TerrainPathingResources::CaptureResourceMembers(const MemberReader& reader,
     std::span<const std::string> names, std::size_t requiredCount, const ResourceVisitor& visitor) {
     auto checked = Guard<bool>([&] {
-        if (sourceBytes_ > capturedMaximumBytes_ || requiredCount > names.size()
+        if (sourceBytes_ > capturedMaximumBytes_ || objectWorkBytes_ > capturedMaximumBytes_ - sourceBytes_
+            || requiredCount > names.size()
             || names.size() > std::numeric_limits<std::size_t>::max() / kTableBytes)
             Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "通行资源成员列表或累计额度无效。");
+        const auto remaining = [&] { return capturedMaximumBytes_ - sourceBytes_ - objectWorkBytes_; };
         ArchiveExactMemberLimits limits;
         limits.memberCount = names.size();
-        limits.memberBytes = std::min(kTableBytes, capturedMaximumBytes_ - sourceBytes_);
-        limits.totalBytes = std::min(names.size() * kTableBytes, capturedMaximumBytes_ - sourceBytes_);
+        limits.memberBytes = std::min(kTableBytes, remaining());
+        limits.totalBytes = std::min(names.size() * kTableBytes, remaining());
         auto captured = Take(reader(names, limits));
         if (captured.size() != names.size())
             Fail("TERRAIN_PATHING_RESOURCE_MISSING", "精确资源捕获未返回完整成员集合。");
         // 地图成员整批保留后才读取游戏回退；两类调用共享同一存储/解码预算。
         for (const auto& member : captured) {
-            if (member.bytes.size() > capturedMaximumBytes_ - sourceBytes_)
+            if (member.bytes.size() > remaining())
                 Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "通行表与配置超过保存计划剩余预算。");
             sourceBytes_ += member.bytes.size();
         }
@@ -313,9 +315,9 @@ Status TerrainPathingResources::CaptureResourceMembers(const MemberReader& reade
                     dependency.gameAbsent = true;
                 } else {
                     auto file = Take(game->ReadFileBoundedWithSource(names[i],
-                        std::min(kTableBytes, capturedMaximumBytes_ - sourceBytes_)));
+                        std::min(kTableBytes, remaining())));
                     bytes = std::move(file.bytes); dependency.gameArchive = std::move(file.archiveName);
-                    if (bytes.size() > capturedMaximumBytes_ - sourceBytes_)
+                    if (bytes.size() > remaining())
                         Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "通行表与配置超过保存计划剩余预算。");
                     sourceBytes_ += bytes.size(); present = true;
                 }
@@ -534,9 +536,15 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
                 if (!captured.Succeeded()) throw Failure{captured.diagnostics};
                 validated = (*validator)(rawcodes, objectSources, maximumBytes - result.sourceBytes_);
             }
-            result.objectWorkBytes_ = Take(std::move(validated));
+            auto objectPathing = Take(std::move(validated));
+            result.objectWorkBytes_ = objectPathing.workBytes;
             if (result.objectWorkBytes_ > maximumBytes - result.sourceBytes_)
                 Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "严格物编解析超过保存计划剩余预算。");
+            if (!objectPathing.footprints.empty()) {
+                const auto captured = result.CaptureNativeFootprints(reader, before.header,
+                    doodads->doodads, objectPathing.footprints);
+                if (!captured.Succeeded()) throw Failure{captured.diagnostics};
+            }
         }
         if (needs.water) {
             if (!deepThreshold)
@@ -763,8 +771,8 @@ Result<std::vector<std::byte>> TerrainPathingResources::GenerateNative(const Ter
         TerrainNativePathingInput input;
         input.terrain = &terrain; input.playableBounds = *nativeBounds_;
         input.groundRules = nativeGround_; input.water = waterRules_;
-        // 本批只接受已证明selector2处处为零的完整对象集合。Units普通层4/8
-        // 不进入保存；DOO分类与walkable=false由CaptureNative的实际表证明。
+        input.staticAttributes = nativeStaticAttributes_;
+        // selector2来自完整对象集合与同次实际占地资源；Units普通层4/8不进入保存。
         return Take(GenerateTerrainNativePathing(input, maximumBytes));
     });
 }
@@ -882,7 +890,8 @@ std::size_t TerrainPathingResources::OwnedCapacityBytes() const noexcept {
     for (const auto& value : dependencies_)
         bytes += value.name.capacity() + value.sha256.capacity() + value.gameArchive.capacity() + 3;
     for (const auto& [name, properties] : ground_) { (void)properties; bytes += name.capacity() + 1 + 128; }
-    bytes += nativeGround_.capacity() * sizeof(TerrainNativeGroundRule) + nativeDoodads_.capacity();
+    bytes += nativeGround_.capacity() * sizeof(TerrainNativeGroundRule) + nativeDoodads_.capacity()
+        + nativeStaticAttributes_.capacity();
     for (const auto& rule : nativeGround_) bytes += rule.rawcode.capacity() + 1;
     for (const auto& sha : nativeTerrainSha_) bytes += sha.capacity() + 1;
     bytes += waterBrushInputSha_.capacity() + 1;

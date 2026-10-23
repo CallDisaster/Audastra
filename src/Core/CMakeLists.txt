@@ -54,6 +54,8 @@ add_library(War3MapCore STATIC
     MapData/TerrainSavePlanPathing.cpp
     MapData/TerrainNativePathing.cpp
     MapData/TerrainPathingResources.cpp
+    MapData/TerrainPathingFootprints.cpp
+    MapData/TerrainUniformDoodadFootprint.cpp
     Text/TextUtil.cpp
     Text/SourceEncoding.cpp
     Text/SlkCells.cpp

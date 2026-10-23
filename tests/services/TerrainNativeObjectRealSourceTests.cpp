@@ -2,6 +2,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/MapPlacements.h"
+#include "War3MapCore/MapData/TerrainUniformDoodadFootprint.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
 #include "War3MapCore/ObjectData/ObjectFieldSchema.h"
 #include "War3MapCore/ObjectData/StandardObjectCatalog.h"
@@ -97,6 +98,8 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         std::string rawcode;
         std::string doodadRawcode, doodadPath;
         std::string originalDoodadRawcode, originalDoodadPath;
+        std::string uniformRawcode, uniformPath;
+        Game::GameFileContents uniformSource;
         ModificationKey walkable, doodadPathField;
         for (const auto& object : catalog.Entries()) {
             if (object.key.type != ObjectType::Destructable || object.Field("walkable") != "0"
@@ -131,6 +134,23 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
             originalDoodadRawcode = object.key.rawcode; originalDoodadPath = path->second; doodadPathField = field.modification; break;
         }
         Require(!originalDoodadRawcode.empty(), "actual metadata contains a standard doodad whose nonempty pathTex can be explicitly overridden");
+        for (const auto& object : catalog.Entries()) {
+            if (object.key.type != ObjectType::Doodad || catalog.Find(ObjectType::Destructable, object.key.rawcode)) continue;
+            const auto category = object.Field("category");
+            if (category.size() != 1 || category[0] < 0x21 || category[0] > 0x7e
+                || category == "_" || category == "C") continue;
+            const auto path = std::string(object.Field("pathtex"));
+            if (!Text::LowerAscii(path).ends_with(".tga")) continue;
+            auto file = mounted.ReadFileBoundedWithSource(path, 512u * 1024u);
+            if (!file.Succeeded() || !file.value) continue;
+            const auto decoded = DecodeUniformDoodadFootprintTga(file.value->bytes);
+            if (!decoded.Succeeded() || !decoded.value || !decoded.value->attributes || decoded.value->side > 4) continue;
+            uniformRawcode = object.key.rawcode; uniformPath = path; uniformSource = std::move(*file.value); break;
+        }
+        Require(!uniformRawcode.empty(), "actual game table has a non-C standard doodad with a supported nonempty uniform TGA");
+        Require(!original.HasMember(uniformPath), "uniform fixture must capture the actual game-winning TGA");
+        std::cout << "uniform_path=" << uniformPath << " winner=" << uniformSource.archiveName
+            << " bytes=" << uniformSource.bytes.size() << " sha256=" << Take(Sha256(uniformSource.bytes)) << '\n';
         auto originalDoodad = Take(NativeObjectDocument::CreateEmpty(ObjectType::Doodad));
         Check(originalDoodad.AddOriginalObject(originalDoodadRawcode));
         Check(originalDoodad.AddModification({ObjectType::Doodad, originalDoodadRawcode}, doodadPathField, NativeValueType::String, std::string{}));
@@ -155,16 +175,21 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         const auto expectedW3e = Take(SerializeMapTerrain(after));
         const bool hasW3d = original.HasMember("war3map.w3d");
         const auto sourceW3d = hasW3d ? Take(original.ReadMember("war3map.w3d")) : std::vector<std::byte>{};
-        // 三场景复用一次原创地图创建、脚本编译和实际表捕获；只修改自己的摆放/覆盖。
-        for (const unsigned index : {0u, 1u, 2u}) {
-            const bool withDoodad = index != 0, withOriginal = index == 2;
-            const auto& selectedDoodad = withOriginal ? originalDoodadRawcode : doodadRawcode;
-            const auto scenario = directory.path / (withOriginal ? "original-doodad" : withDoodad ? "mixed-doodad" : "destructable");
+        // 四场景复用一次原创地图创建、脚本编译和实际表捕获；只修改自己的摆放/覆盖。
+        for (const unsigned index : {0u, 1u, 2u, 3u}) {
+            const bool withDoodad = index != 0, withOriginal = index == 2, withUniform = index == 3;
+            const auto& selectedDoodad = withUniform ? uniformRawcode : withOriginal ? originalDoodadRawcode : doodadRawcode;
+            const auto scenario = directory.path / (withUniform ? "uniform-doodad" : withOriginal ? "original-doodad" : withDoodad ? "mixed-doodad" : "destructable");
             Require(std::filesystem::create_directory(scenario), "exclusive real-source scenario directory");
             auto placements = doodads;
             if (withDoodad) {
                 auto added = placed; added.rawcode = selectedDoodad; added.creationId = 2;
-                placements.doodads.push_back(std::move(added));
+                if (withUniform) added.position[0] += 256; // 占地与水位修改区分离，避免静态位掩盖真实变化。
+                placements.doodads.push_back(added);
+                if (withUniform) {
+                    added.creationId = 3; added.position[0] += 64;
+                    placements.doodads.push_back(std::move(added));
+                }
             }
             const auto doo = Take(placements.Serialize());
             std::vector<MemberReplacement> seed{{"war3map.w3e", beforeW3e}, {"war3map.doo", doo}, {"war3map.w3b", w3b}};
@@ -176,7 +201,7 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
             Require(oldNative != newNative, "each public save scenario crosses a real water pathing threshold");
             std::cout << "selected_object=" << rawcode << " metadata_field=" << walkable.fieldId
                 << " doodad=" << (withDoodad ? selectedDoodad : "absent") << " original=" << withOriginal
-                << " standard_pathTex=" << (withOriginal ? originalDoodadPath : withDoodad ? doodadPath : "not-applicable")
+                << " standard_pathTex=" << (withUniform ? uniformPath : withOriginal ? originalDoodadPath : withDoodad ? doodadPath : "not-applicable")
                 << " pathTex_field=" << (withOriginal ? doodadPathField.fieldId : "not-applicable")
                 << " captured_bytes=" << rules.SourceBytes() << " cumulative_capture_budget=" << rules.CaptureBudgetBytes() << '\n';
             auto wpm = Take(seeded.ReadMember("war3map.wpm"));

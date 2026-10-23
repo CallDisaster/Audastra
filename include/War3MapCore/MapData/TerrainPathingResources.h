@@ -3,6 +3,7 @@
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/MapData/MapTerrain.h"
 #include "War3MapCore/MapData/TerrainNativePathing.h"
+#include "War3MapCore/MapData/TerrainNativeObjectPathing.h"
 #include "War3MapCore/MapData/TerrainWaterBrush.h"
 #include "War3MapCore/Workspace.h"
 
@@ -12,6 +13,8 @@
 namespace War3Map::Services { class TerrainPathingSave; }
 
 namespace War3Map::MapData {
+
+struct DoodadPlacement;
 
 // 实际读取的地形语义输入；只能由真实地图/游戏来源建立。
 // 旧Capture证明等价修改；CaptureNative另捕获完整生成输入，仍由保存计划
@@ -79,8 +82,8 @@ private:
     friend class Services::TerrainPathingSave;
     TerrainPathingResources() = default;
     // 只有Services可信适配器可提供解析器；输入只能是同一次实际捕获的字节。
-    // 成功值为已经在maximumBytes内预留的解析工作量，不是外部资格布尔。
-    using NativeObjectValidator = std::function<Result<std::size_t>(
+    // 成功值仅描述同次实际来源中的对象语义及解析预留，不是外部资格布尔。
+    using NativeObjectValidator = std::function<Result<TerrainNativeObjectPathing>(
         std::span<const std::string_view>, std::span<const ArchiveExactMember>, std::size_t)>;
     [[nodiscard]] static Result<TerrainPathingResources> CaptureNativeWithObjects(const MapArchiveSession& source,
         const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
@@ -101,6 +104,8 @@ private:
     using ResourceVisitor = std::function<void(std::size_t, bool, std::vector<std::byte>&&)>;
     [[nodiscard]] Status CaptureResourceMembers(const MemberReader& reader,
         std::span<const std::string> names, std::size_t requiredCount, const ResourceVisitor& visitor);
+    [[nodiscard]] Status CaptureNativeFootprints(const MemberReader& reader, const TerrainHeader& header,
+        std::span<const DoodadPlacement> placements, std::span<const TerrainNativeDoodadPathingType> types);
     [[nodiscard]] Status VerifyReadbackMembers(const MemberReader& reader, std::size_t maximumBytes) const;
     [[nodiscard]] Status VerifyGameDependencies(std::size_t remainingBytes) const;
     struct Dependency {
@@ -124,6 +129,7 @@ private:
     std::size_t waterBrushInputBytes_ = 0;
     std::optional<TerrainNativePlayableBounds> nativeBounds_;
     std::vector<std::byte> nativeDoodads_;
+    std::vector<std::uint8_t> nativeStaticAttributes_;
     std::array<std::string, 2> nativeTerrainSha_;
     std::array<std::size_t, 2> nativeTerrainBytes_{};
 };
