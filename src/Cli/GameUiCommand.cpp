@@ -4,6 +4,7 @@
 #include "War3MapCore/GameUi/FrameTree.h"
 #include "War3MapCore/GameUi/GameCodeLayout.h"
 #include "War3MapCore/GameUi/MapUiFiles.h"
+#include "War3MapCore/GameUi/ScriptFrames.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
 #include "War3MapCore/Text/TextUtil.h"
 
@@ -38,7 +39,7 @@ int InvalidArguments(std::string_view reason) {
     std::cerr << "GameUi: ARGUMENTS_INVALID: " << reason << '\n'
               << "usage: game-ui-inspect <war3-root> [--race Human|Orc|NightElf|Undead] [--classic] [--map <map>]"
                  " [--frame <name>]...\n"
-              << "  未指定 --frame 时展开 ConsoleUI、ResourceBarFrame、UpperButtonBarFrame。\n";
+              << "  未指定 --frame 时展开 ConsoleUI、GameUI、ResourceBarFrame、UpperButtonBarFrame、MapScriptUI。\n";
     return 2;
 }
 
@@ -86,6 +87,7 @@ nlohmann::json NodeJson(const FrameNode& node) {
     if (!node.autoFillBy.empty()) json["auto_fill_by"] = node.autoFillBy;
     if (!node.codeLabel.empty()) json["code_area"] = node.codeLabel;
     if (node.codePlaced) json["placed_by"] = "game-code";
+    if (node.scriptFrame) json["script_frame"] = *node.scriptFrame;
     if (!node.anchors.empty()) {
         auto& anchors = json["anchors"] = nlohmann::json::array();
         for (const auto& anchor : node.anchors) {
@@ -102,6 +104,61 @@ nlohmann::json NodeJson(const FrameNode& node) {
             {"color", node.text->color}, {"justify_h", node.text->justifyH}, {"justify_v", node.text->justifyV}};
     }
     return json;
+}
+
+const char* TargetName(ScriptFrameTarget target) {
+    switch (target) {
+    case ScriptFrameTarget::Screen: return "screen";
+    case ScriptFrameTarget::CodeArea: return "code-area";
+    case ScriptFrameTarget::Script: return "script";
+    case ScriptFrameTarget::Named: return "named";
+    default: return "unknown";
+    }
+}
+
+nlohmann::json RefJson(const ScriptFrameRef& ref) {
+    nlohmann::json json{{"target", TargetName(ref.target)}};
+    if (!ref.name.empty()) json["name"] = ref.name;
+    if (ref.target == ScriptFrameTarget::Script) json["frame"] = ref.frame;
+    return json;
+}
+
+nlohmann::json SiteJson(const ScriptCallSite& site) {
+    return {{"script", site.scriptFile}, {"line", site.line}, {"function", site.function}, {"call", site.call}};
+}
+
+nlohmann::json ScriptFrameJson(std::size_t index, const ScriptFrame& frame) {
+    nlohmann::json json{{"index", index}, {"family", UiApiFamilyName(frame.family)}, {"created", SiteJson(frame.created)},
+        {"name", frame.name}, {"name_dynamic", frame.nameDynamic}, {"parent", RefJson(frame.parent)},
+        {"runtime_calls", frame.runtimeCalls}};
+    if (!frame.variable.empty()) json["variable"] = frame.variable;
+    if (!frame.frameType.empty()) json["type"] = frame.frameType;
+    if (!frame.templateName.empty()) json["template"] = frame.templateName;
+    if (frame.clearPoints) json["clear_points"] = true;
+    auto& anchors = json["anchors"] = nlohmann::json::array();
+    for (const auto& anchor : frame.anchors) {
+        anchors.push_back({{"point", FramePointName(anchor.point)}, {"relative", RefJson(anchor.relative)},
+            {"relative_point", FramePointName(anchor.relativePoint)}, {"x", anchor.x}, {"y", anchor.y}});
+    }
+    if (frame.width) json["width"] = *frame.width;
+    if (frame.height) json["height"] = *frame.height;
+    if (frame.texture) json["texture"] = *frame.texture;
+    if (frame.text) json["text"] = *frame.text;
+    if (frame.visible) json["visible"] = *frame.visible;
+    if (!frame.dynamic.empty()) json["dynamic"] = frame.dynamic;
+    if (!frame.runtimeSamples.empty()) {
+        auto& samples = json["runtime_samples"] = nlohmann::json::array();
+        for (const auto& sample : frame.runtimeSamples) samples.push_back(SiteJson(sample));
+    }
+    return json;
+}
+
+const char* ReasonName(ScriptUiCallReason reason) {
+    switch (reason) {
+    case ScriptUiCallReason::UntracedTarget: return "untraced-target";
+    case ScriptUiCallReason::Unknown: return "unknown";
+    default: return "not-previewed";
+    }
 }
 
 void AppendDiagnostics(nlohmann::json& target, const std::vector<Diagnostic>& diagnostics) {
@@ -132,7 +189,9 @@ int RunGameUiInspect(int argc, wchar_t* argv[]) {
             return InvalidArguments("无法识别的参数");
         }
     }
-    if (frames.empty()) frames = {"ConsoleUI", std::string(kGameCodeRoot), "ResourceBarFrame", "UpperButtonBarFrame"};
+    if (frames.empty()) {
+        frames = {"ConsoleUI", std::string(kGameCodeRoot), "ResourceBarFrame", "UpperButtonBarFrame", std::string(kScriptRoot)};
+    }
 
     nlohmann::json diagnostics = nlohmann::json::array();
     auto game = Game::GameDataSource::Mount(root);
@@ -164,6 +223,7 @@ int RunGameUiInspect(int argc, wchar_t* argv[]) {
     FrameLibrary library;
     library.LoadToc(reader, kTocPath, "game");
     nlohmann::json tocCalls = nlohmann::json::array();
+    ScriptFramePlan scriptPlan;
     if (map) {
         // 游戏只执行一份 JASS 脚本（先根目录再 scripts 目录）；Lua 地图另有 war3map.lua。
         std::vector<MapScriptText> scripts;
@@ -184,6 +244,8 @@ int RunGameUiInspect(int argc, wchar_t* argv[]) {
             tocCalls.push_back({{"function", call.function}, {"path", call.path}, {"script", call.scriptFile},
                 {"line", call.line}});
         }
+        scriptPlan = FindScriptFrames(scripts);
+        AppendDiagnostics(diagnostics, scriptPlan.diagnostics);
     }
     UiSkin skin;
     if (auto bytes = reader(kSkinPath); bytes.Succeeded() && bytes.value) {
@@ -200,23 +262,46 @@ int RunGameUiInspect(int argc, wchar_t* argv[]) {
 
     FrameTree tree(options);
     nlohmann::json roots = nlohmann::json::array();
+    bool scriptRoot = false;
     for (const auto& frame : frames) {
         if (Text::LowerAscii(frame) == Text::LowerAscii(kGameCodeRoot)) {
             roots.push_back({{"name", frame}, {"id", tree.AddGameCodeAreas()}});
+            continue;
+        }
+        if (Text::LowerAscii(frame) == Text::LowerAscii(kScriptRoot)) {
+            scriptRoot = true;
             continue;
         }
         auto instantiated = tree.Instantiate(library, &skin, frame);
         AppendDiagnostics(diagnostics, instantiated.diagnostics);
         if (instantiated.value) roots.push_back({{"name", frame}, {"id", *instantiated.value}});
     }
+    // 脚本框架可以锚在游戏代码区域上，放在其他根之后展开。
+    if (scriptRoot) {
+        std::vector<Diagnostic> added;
+        if (const auto id = AddScriptFrames(tree, library, &skin, scriptPlan, added); id != kNoNode) {
+            roots.push_back({{"name", std::string(kScriptRoot)}, {"id", id}});
+        }
+        AppendDiagnostics(diagnostics, added);
+    }
     AppendDiagnostics(diagnostics, tree.Layout());
+    nlohmann::json scriptFrames = nlohmann::json::array();
+    for (std::size_t i = 0; i < scriptPlan.frames.size(); ++i) scriptFrames.push_back(ScriptFrameJson(i, scriptPlan.frames[i]));
+    nlohmann::json scriptCalls = nlohmann::json::array();
+    for (const auto& group : scriptPlan.calls) {
+        nlohmann::json samples = nlohmann::json::array();
+        for (const auto& sample : group.samples) samples.push_back(SiteJson(sample));
+        scriptCalls.push_back({{"function", group.function}, {"family", UiApiFamilyName(group.family)},
+            {"reason", ReasonName(group.reason)}, {"count", group.count}, {"samples", samples}});
+    }
 
     nlohmann::json nodes = nlohmann::json::array();
     for (const auto& node : tree.Nodes()) nodes.push_back(NodeJson(node));
     const nlohmann::json response{{"ok", true}, {"game_root", Utf8(root)}, {"map", mapPath ? Utf8(*mapPath) : ""},
         {"race", options.race}, {"expansion", options.expansion},
         {"screen", {options.screenWidth, options.screenHeight}}, {"files", library.Files().size()},
-        {"templates", library.TemplateCount()}, {"strings", library.StringCount()}, {"toc_calls", tocCalls}, {"roots", roots},
+        {"templates", library.TemplateCount()}, {"strings", library.StringCount()}, {"toc_calls", tocCalls},
+        {"script_frames", scriptFrames}, {"script_calls", scriptCalls}, {"roots", roots},
         {"nodes", nodes}, {"diagnostics", diagnostics}};
     // 界面文字按 UTF-8 原样输出；无效字节替换显示，不影响节点结构。
     std::cout << response.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << '\n';

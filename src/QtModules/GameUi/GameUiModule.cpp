@@ -22,10 +22,11 @@ namespace {
 
 using namespace War3Map::GameUi;
 
-// 代码区域紧跟控制台：画在控制台贴图之上、资源栏等界面之下。
+// 代码区域紧跟控制台：画在控制台贴图之上、资源栏等界面之下。脚本界面总在最后展开，画在最上层。
 const QString kCodeRoot = QString::fromLatin1(kGameCodeRoot.data(), static_cast<qsizetype>(kGameCodeRoot.size()));
+const QString kScriptRootName = QString::fromLatin1(kScriptRoot.data(), static_cast<qsizetype>(kScriptRoot.size()));
 const QStringList kDefaultRoots{QStringLiteral("ConsoleUI"), kCodeRoot, QStringLiteral("ResourceBarFrame"),
-    QStringLiteral("UpperButtonBarFrame")};
+    QStringLiteral("UpperButtonBarFrame"), kScriptRootName};
 
 // 同一份字体数据在进程内只登记一次；返回字体族名，失败为空。
 QString RegisterFont(const std::vector<std::byte>& bytes) {
@@ -137,6 +138,8 @@ void GameUiModule::LoadDefinitionsForTesting(GameUiDefinitions definitions) {
 
 void GameUiModule::ApplyDefinitions(GameUiDefinitions definitions) {
     loadDiagnostics_ = definitions.diagnostics;
+    // 脚本可能已变化：之前的模拟不再对应，停止。
+    ResetSimulation();
     definitions_ = std::move(definitions);
     if (addRootBox_) {
         const QString typed = addRootBox_->currentText();
@@ -146,6 +149,7 @@ void GameUiModule::ApplyDefinitions(GameUiDefinitions definitions) {
         addRootBox_->setEditText(typed);
     }
     RebuildScene();
+    UpdateSimulationPanel();
 }
 
 QStringList GameUiModule::MapTemplates() const {
@@ -159,10 +163,17 @@ QStringList GameUiModule::MapTemplates() const {
     return names;
 }
 
+const GameUi::ScriptFramePlan* GameUiModule::ScriptFrames() const {
+    if (simulatedPlan_) return &*simulatedPlan_;
+    return definitions_ ? &definitions_->scriptFrames : nullptr;
+}
+
 QStringList GameUiModule::AvailableTemplates() const {
     if (!definitions_ || !definitions_->library) return {};
-    // 地图自带的界面排在前面，其后是游戏代码区域与游戏界面。
-    QStringList names = MapTemplates();
+    // 地图脚本界面与地图自带的界面排在前面，其后是游戏代码区域与游戏界面。
+    QStringList names;
+    if (!definitions_->scriptFrames.frames.empty()) names.push_back(kScriptRootName);
+    names += MapTemplates();
     names.push_back(kCodeRoot);
     const auto& files = definitions_->library->Files();
     for (const auto& entry : definitions_->library->Templates()) {
@@ -203,8 +214,13 @@ void GameUiModule::RebuildScene() {
                 tree->AddGameCodeAreas();
                 continue;
             }
+            if (root.compare(kScriptRootName, Qt::CaseInsensitive) == 0) continue;
             auto created = tree->Instantiate(*definitions_->library, &skin, root.toStdString());
             sceneDiagnostics_.insert(sceneDiagnostics_.end(), created.diagnostics.begin(), created.diagnostics.end());
+        }
+        // 脚本框架可以锚在游戏代码区域上，所以在其他根之后展开。
+        if (roots_.contains(kScriptRootName, Qt::CaseInsensitive)) {
+            (void)AddScriptFrames(*tree, *definitions_->library, &skin, *ScriptFrames(), sceneDiagnostics_);
         }
         const auto layout = tree->Layout();
         sceneDiagnostics_.insert(sceneDiagnostics_.end(), layout.begin(), layout.end());
@@ -323,7 +339,9 @@ bool GameUiModule::AddRoot(const QString& name) {
     const QString trimmed = name.trimmed();
     if (trimmed.isEmpty() || !definitions_ || !definitions_->library) return false;
     QString canonical = kCodeRoot;
-    if (trimmed.compare(kCodeRoot, Qt::CaseInsensitive) != 0) {
+    if (trimmed.compare(kScriptRootName, Qt::CaseInsensitive) == 0) {
+        canonical = kScriptRootName;
+    } else if (trimmed.compare(kCodeRoot, Qt::CaseInsensitive) != 0) {
         const auto found = definitions_->library->FindTemplate(trimmed.toStdString());
         if (!found || found->definition->kind != DefinitionKind::Frame) return false;
         canonical = Text(found->definition->name);

@@ -18,13 +18,6 @@ Diagnostic MakeDiagnostic(DiagnosticSeverity severity, const char* code, std::st
     return Diagnostic{severity, kSubsystem, code, std::move(message), std::nullopt};
 }
 
-std::string EnsureTextureExtension(std::string path) {
-    const std::size_t slash = path.find_last_of("\\/");
-    const std::size_t dot = path.find_last_of('.');
-    if (!path.empty() && (dot == std::string::npos || (slash != std::string::npos && dot < slash))) path += ".blp";
-    return path;
-}
-
 int PointColumn(FramePoint point) {
     return static_cast<int>(point) % 3;  // 0 左，1 中，2 右
 }
@@ -107,6 +100,13 @@ bool IsTextNode(const FrameNode& node) {
     return node.kind == DefinitionKind::Frame && Text::LowerAscii(node.frameType) == "text";
 }
 
+std::string EnsureTextureExtension(std::string path) {
+    const std::size_t slash = path.find_last_of("\\/");
+    const std::size_t dot = path.find_last_of('.');
+    if (!path.empty() && (dot == std::string::npos || (slash != std::string::npos && dot < slash))) path += ".blp";
+    return path;
+}
+
 struct FrameTree::BuildContext {
     const FrameLibrary& library;
     const UiSkin* skin = nullptr;
@@ -176,8 +176,10 @@ std::uint32_t FrameTree::AddNode(FrameNode node) {
     return id;
 }
 
-Result<std::uint32_t> FrameTree::Instantiate(const FrameLibrary& library, const UiSkin* skin,
-    std::string_view templateName, const std::optional<RootPlacement>& placement) {
+std::uint32_t FrameTree::AddFrame(FrameNode node) { return AddNode(std::move(node)); }
+
+Result<std::uint32_t> FrameTree::InstantiateUnder(const FrameLibrary& library, const UiSkin* skin,
+    std::string_view templateName, std::uint32_t parent) {
     const auto found = library.FindTemplate(templateName);
     if (!found) {
         return Result<std::uint32_t>::Failure(kSubsystem, "GAMEUI_TEMPLATE_MISSING",
@@ -186,30 +188,37 @@ Result<std::uint32_t> FrameTree::Instantiate(const FrameLibrary& library, const 
     BuildContext context{library, skin, {}, {}, false};
     const auto rootId = static_cast<std::uint32_t>(nodes_.size());
     context.templateStack.push_back(Text::LowerAscii(found->definition->name));
-    Build(context, *found->definition, library.Files()[found->fileIndex]->file.path, kScreenNode, {}, 0);
-    if (rootId < nodes_.size()) {
-        const auto known = placement ? std::nullopt : KnownRootPlacement(templateName);
-        const auto& effective = placement ? placement : known;
-        if (effective) {
-            FrameNode& root = nodes_[rootId];
-            root.anchors.clear();
-            if (effective->fillScreen) {
-                root.anchors.push_back(FrameAnchor{FramePoint::TopLeft, {}, FramePoint::TopLeft, 0.0f, 0.0f});
-                root.anchors.push_back(FrameAnchor{FramePoint::BottomRight, {}, FramePoint::BottomRight, 0.0f, 0.0f});
-            }
-            for (const auto& anchor : effective->anchors) UpsertAnchor(root.anchors, anchor);
-            if (effective->width) root.width = effective->width;
-            if (effective->height) root.height = effective->height;
-            root.codePlaced = known.has_value();
-        } else if (nodes_[rootId].anchors.empty()) {
-            context.diagnostics.push_back(MakeDiagnostic(DiagnosticSeverity::Info, "GAMEUI_ROOT_PLACEMENT_UNKNOWN",
-                std::string(templateName) + " 的位置由游戏代码决定，尚未取得，暂不显示"));
-        }
-    }
+    Build(context, *found->definition, library.Files()[found->fileIndex]->file.path, parent, {}, 0);
     Result<std::uint32_t> result;
-    result.value = rootId;
     result.diagnostics = std::move(context.diagnostics);
+    // 节点已达上限时 Build 已记录诊断，不返回编号。
+    if (rootId < nodes_.size()) result.value = rootId;
     return result;
+}
+
+Result<std::uint32_t> FrameTree::Instantiate(const FrameLibrary& library, const UiSkin* skin,
+    std::string_view templateName, const std::optional<RootPlacement>& placement) {
+    auto built = InstantiateUnder(library, skin, templateName, kScreenNode);
+    if (!built.value) return built;
+    const std::uint32_t rootId = *built.value;
+    const auto known = placement ? std::nullopt : KnownRootPlacement(templateName);
+    const auto& effective = placement ? placement : known;
+    if (effective) {
+        FrameNode& root = nodes_[rootId];
+        root.anchors.clear();
+        if (effective->fillScreen) {
+            root.anchors.push_back(FrameAnchor{FramePoint::TopLeft, {}, FramePoint::TopLeft, 0.0f, 0.0f});
+            root.anchors.push_back(FrameAnchor{FramePoint::BottomRight, {}, FramePoint::BottomRight, 0.0f, 0.0f});
+        }
+        for (const auto& anchor : effective->anchors) UpsertAnchor(root.anchors, anchor);
+        if (effective->width) root.width = effective->width;
+        if (effective->height) root.height = effective->height;
+        root.codePlaced = known.has_value();
+    } else if (nodes_[rootId].anchors.empty()) {
+        built.diagnostics.push_back(MakeDiagnostic(DiagnosticSeverity::Info, "GAMEUI_ROOT_PLACEMENT_UNKNOWN",
+            std::string(templateName) + " 的位置由游戏代码决定，尚未取得，暂不显示"));
+    }
+    return built;
 }
 
 void FrameTree::Build(BuildContext& context, const FdfDefinition& definition, const std::string& file,
@@ -487,6 +496,13 @@ std::uint32_t FrameTree::AddGameCodeAreas() {
     return rootId;
 }
 
+std::optional<std::uint32_t> FrameTree::FindCodeArea(std::string_view id) const {
+    for (const auto& node : nodes_) {
+        if (!node.codeLabel.empty() && node.name == id) return node.id;
+    }
+    return std::nullopt;
+}
+
 std::optional<std::uint32_t> FrameTree::FindByName(std::string_view name) const {
     const std::string key = Text::LowerAscii(name);
     for (const auto& node : nodes_) {
@@ -531,7 +547,9 @@ void FrameTree::Solve(std::uint32_t id, std::vector<std::uint8_t>& state, std::v
     for (std::size_t i = 0; i < anchors.size(); ++i) {
         FrameAnchor& anchor = anchors[i];
         std::optional<std::uint32_t> target;
-        if (anchor.relativeName.empty()) {
+        if (anchor.targetNode != kNoNode && anchor.targetNode < nodes_.size()) {
+            target = anchor.targetNode;
+        } else if (anchor.relativeName.empty()) {
             target = parent;
         } else {
             target = FindRelative(id, anchor.relativeName);

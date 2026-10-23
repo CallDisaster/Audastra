@@ -63,6 +63,51 @@ const char* LayoutName(LayoutState state) {
     }
 }
 
+QString SiteText(const ScriptCallSite& site) {
+    return QStringLiteral("%1:%2").arg(Text(site.scriptFile)).arg(site.line);
+}
+
+const char* ReasonName(ScriptUiCallReason reason) {
+    switch (reason) {
+    case ScriptUiCallReason::UntracedTarget: return "untraced-target";
+    case ScriptUiCallReason::Unknown: return "unknown";
+    default: return "not-previewed";
+    }
+}
+
+const char* ValueTypeName(SimulationValueType type) {
+    switch (type) {
+    case SimulationValueType::Text: return "text";
+    case SimulationValueType::Boolean: return "boolean";
+    default: return "number";
+    }
+}
+
+QJsonObject SimulationJson(const GameUiModule& module) {
+    QJsonObject json{{"function", module.SimulationFunction()}};
+    const SimulationResult* result = module.Simulation();
+    if (!result) return json;
+    QJsonArray inputs;
+    for (const auto& input : result->inputs) {
+        QJsonObject row{{"key", Text(input.key)}, {"label", Text(input.label)}, {"type", ValueTypeName(input.type)},
+            {"value", Text(input.value)}, {"line", static_cast<qint64>(input.line)}};
+        if (input.integer) row.insert("integer", true);
+        if (input.condition) row.insert("condition", true);
+        inputs.append(row);
+    }
+    json.insert("inputs", inputs);
+    QJsonArray touched;
+    for (const std::uint32_t frame : result->touched) {
+        if (frame < result->frames.size()) touched.append(Text(result->frames[frame].name));
+    }
+    json.insert("touched", touched);
+    json.insert("applied_calls", static_cast<qint64>(result->appliedCalls));
+    QJsonArray notes;
+    for (const auto& diagnostic : result->diagnostics) notes.append(Text(diagnostic.message));
+    if (!notes.isEmpty()) json.insert("notes", notes);
+    return json;
+}
+
 QJsonArray StringArray(const QStringList& values, int limit) {
     QJsonArray array;
     for (qsizetype i = 0; i < values.size() && i < limit; ++i) array.append(values[i]);
@@ -86,15 +131,42 @@ QJsonObject View(const GameUiModule& module, QJsonObject result) {
     const QStringList mapTemplates = module.MapTemplates();
     result.insert("map_templates", StringArray(mapTemplates, kMaxListed));
     result.insert("map_template_count", mapTemplates.size());
+    if (const ScriptFramePlan* plan = module.ScriptFrames()) {
+        result.insert("script_frame_count", static_cast<qint64>(plan->frames.size()));
+        QJsonArray calls;
+        for (std::size_t i = 0; i < plan->calls.size() && i < static_cast<std::size_t>(kMaxListed); ++i) {
+            const auto& group = plan->calls[i];
+            QJsonArray sites;
+            for (const auto& sample : group.samples) sites.append(SiteText(sample));
+            calls.append(QJsonObject{{"function", Text(group.function)},
+                {"family", Text(std::string(UiApiFamilyName(group.family)))}, {"reason", ReasonName(group.reason)},
+                {"count", static_cast<qint64>(group.count)}, {"sites", sites}});
+        }
+        result.insert("script_calls", calls);
+    }
+    result.insert("simulation_functions", StringArray(module.SimulationFunctions(), kMaxListed));
+    result.insert("simulation", SimulationJson(module));
     return result;
 }
 
-QJsonObject NodeJson(const FrameTree& tree, const FrameNode& node, double aspect) {
+QJsonObject NodeJson(const FrameTree& tree, const FrameNode& node, double aspect, const ScriptFramePlan* plan) {
     QJsonObject row{{"id", static_cast<qint64>(node.id)}, {"name", Text(node.name)}, {"kind", KindName(node.kind)},
         {"type", Text(node.frameType)}, {"layout", LayoutName(node.layout)},
         {"parent", node.parent == kScreenNode || node.parent == kNoNode ? QJsonValue() : QJsonValue(static_cast<qint64>(node.parent))}};
     if (!node.codeLabel.empty()) row.insert("code_area", Text(node.codeLabel));
     if (node.codePlaced) row.insert("placed_by", "game-code");
+    if (node.scriptFrame && plan && *node.scriptFrame < plan->frames.size()) {
+        const ScriptFrame& frame = plan->frames[*node.scriptFrame];
+        QJsonObject script{{"created", SiteText(frame.created)}, {"function", Text(frame.created.function)},
+            {"call", Text(frame.created.call)}, {"family", Text(std::string(UiApiFamilyName(frame.family)))},
+            {"runtime_calls", static_cast<qint64>(frame.runtimeCalls)}};
+        if (!frame.variable.empty()) script.insert("variable", Text(frame.variable));
+        if (frame.visible) script.insert("visible", *frame.visible);
+        QJsonArray dynamic;
+        for (const auto& item : frame.dynamic) dynamic.append(Text(item));
+        if (!dynamic.isEmpty()) script.insert("dynamic", dynamic);
+        row.insert("script", script);
+    }
     if (!node.templateName.empty()) row.insert("template", Text(node.templateName));
     if (!node.sourceFile.empty()) row.insert("source", QStringLiteral("%1:%2").arg(Text(node.sourceFile)).arg(node.sourceLine));
     if (node.layout == LayoutState::Placed || node.layout == LayoutState::SizeFromContent) {
@@ -158,6 +230,30 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
         return View(*module, binding);
     }
 
+    if (name == QLatin1String("game_ui_simulate")) {
+        if (!module->ScriptFrames()) return Failure("GAME_UI_LOADING", QObject::tr("界面定义仍在读取，请稍后重试。"));
+        if (args.contains("function") && args.value("function").toString() != module->SimulationFunction()) {
+            QString error;
+            if (!module->SetSimulation(args.value("function").toString(), &error)) return Failure("GAME_UI_SIMULATION", error);
+        }
+        if (args.contains("values")) {
+            if (module->SimulationFunction().isEmpty())
+                return Failure("GAME_UI_SIMULATION", QObject::tr("未选择模拟函数，不能设置输入。"));
+            std::map<std::string, std::string> values;
+            const QJsonObject given = args.value("values").toObject();
+            for (auto it = given.begin(); it != given.end(); ++it) {
+                const QJsonValue& value = it.value();
+                const QString text = value.isBool() ? (value.toBool() ? QStringLiteral("true") : QStringLiteral("false"))
+                    : value.isDouble()             ? QString::number(value.toDouble(), 'g', 17)
+                                                   : value.toString();
+                values[it.key().toStdString()] = text.toStdString();
+            }
+            module->SetSimulationValues(values);
+        }
+        binding.insert("simulation", SimulationJson(*module));
+        return binding;
+    }
+
     if (!module->Tree()) return Failure("GAME_UI_LOADING", QObject::tr("界面定义仍在读取，请稍后重试。"));
     const FrameTree& tree = *module->Tree();
     if (name == QLatin1String("game_ui_nodes_query")) {
@@ -172,7 +268,8 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
                 !Text(node.codeLabel).contains(needle, Qt::CaseInsensitive)) {
                 continue;
             }
-            if (matched >= offset && rows.size() < limit) rows.append(NodeJson(tree, node, module->Aspect()));
+            if (matched >= offset && rows.size() < limit)
+                rows.append(NodeJson(tree, node, module->Aspect(), module->ScriptFrames()));
             ++matched;
         }
         binding.insert("rows", rows);

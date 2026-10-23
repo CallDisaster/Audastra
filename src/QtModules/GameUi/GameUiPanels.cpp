@@ -75,6 +75,7 @@ QString LayoutText(LayoutState state) {
 
 QString SkinSourceText(const std::string& source) {
     if (source == "literal") return QObject::tr("直接路径");
+    if (source == "script") return QObject::tr("地图脚本");
     if (source == "map:customskin") return QObject::tr("地图皮肤 CustomSkin");
     if (source.rfind("game:", 0) == 0) return QObject::tr("游戏皮肤 [%1]").arg(Text(source.substr(5)));
     return Text(source);
@@ -84,6 +85,7 @@ QString TextSourceText(const std::string& source) {
     if (source == "map:framedef") return QObject::tr("地图 FrameDef");
     if (source == "fdf") return QObject::tr("界面文字表");
     if (source == "literal") return QObject::tr("原文");
+    if (source == "script") return QObject::tr("地图脚本");
     return Text(source);
 }
 
@@ -248,7 +250,15 @@ void GameUiModule::BuildPage() {
     properties_->setRootIsDecorated(true);
     properties_->setWordWrap(true);
     rightLayout->addWidget(rawFields_, 0, Qt::AlignRight);
-    rightLayout->addWidget(properties_, 1);
+    auto* rightSplit = new QSplitter(Qt::Vertical, right);
+    rightSplit->setObjectName(QStringLiteral("gameUiRightSplit"));
+    rightSplit->setChildrenCollapsible(false);
+    rightSplit->addWidget(properties_);
+    BuildSimulationPanel(rightSplit);
+    rightSplit->addWidget(simulationPanel_);
+    rightSplit->setStretchFactor(0, 3);
+    rightSplit->setStretchFactor(1, 2);
+    rightLayout->addWidget(rightSplit, 1);
 
     mainSplit_->setStretchFactor(0, 0);
     mainSplit_->setStretchFactor(1, 1);
@@ -425,7 +435,36 @@ void GameUiModule::UpdateProperties() {
     }
     if (!node.templateName.empty()) row(basic, tr("继承模板"), Text(node.templateName));
     if (!node.layer.empty()) row(basic, tr("绘制层"), Text(node.layer));
-    if (!node.sourceFile.empty()) {
+    const ScriptFramePlan* plan = ScriptFrames();
+    if (node.scriptFrame && plan && *node.scriptFrame < plan->frames.size()) {
+        const ScriptFrame& frame = plan->frames[*node.scriptFrame];
+        const auto site = [](const ScriptCallSite& call) {
+            return QStringLiteral("%1:%2  %3").arg(Text(call.scriptFile)).arg(call.line).arg(Text(call.function));
+        };
+        auto* script = group(tr("地图脚本"));
+        row(script, tr("创建位置"), site(frame.created));
+        row(script, tr("创建调用"), QStringLiteral("%1（%2）").arg(Text(frame.created.call),
+            Text(std::string(UiApiFamilyName(frame.family)))));
+        if (!frame.variable.empty()) row(script, tr("变量"), Text(frame.variable));
+        if (frame.nameDynamic) row(script, tr("框架名"), tr("运行时拼出"));
+        QString parent = tr("未确定");
+        if (frame.parent.target == ScriptFrameTarget::CodeArea || frame.parent.target == ScriptFrameTarget::Named ||
+            frame.parent.target == ScriptFrameTarget::Script) {
+            parent = Text(frame.parent.name);
+        }
+        row(script, tr("父框架"), parent);
+        row(script, tr("创建后显示"), !frame.visible ? tr("默认显示") : (*frame.visible ? tr("显示") : tr("隐藏")));
+        if (!frame.dynamic.empty()) {
+            QStringList items;
+            for (const auto& item : frame.dynamic) items.push_back(Text(item));
+            row(script, tr("未还原的设置"), items.join(QStringLiteral("；")));
+        }
+        if (frame.runtimeCalls > 0) {
+            QStringList lines;
+            for (const auto& call : frame.runtimeSamples) lines.push_back(QStringLiteral("%1 %2").arg(Text(call.call)).arg(call.line));
+            row(script, tr("运行时调用"), tr("%1 处：%2").arg(frame.runtimeCalls).arg(lines.join(QStringLiteral("，"))));
+        }
+    } else if (!node.sourceFile.empty()) {
         row(basic, tr("定义位置"), QStringLiteral("%1:%2").arg(Text(node.sourceFile)).arg(node.sourceLine));
         if (definitions_ && definitions_->library) {
             for (const auto& file : definitions_->library->Files()) {
@@ -501,6 +540,13 @@ std::vector<Diagnostic> GameUiModule::Problems() const {
     if (!sourceNote_.isEmpty()) add(DiagnosticSeverity::Info, "GAMEUI_MAP_LAYER", sourceNote_);
     problems.insert(problems.end(), loadDiagnostics_.begin(), loadDiagnostics_.end());
     problems.insert(problems.end(), sceneDiagnostics_.begin(), sceneDiagnostics_.end());
+    problems.insert(problems.end(), simulationDiagnostics_.begin(), simulationDiagnostics_.end());
+    if (simulation_) problems.insert(problems.end(), simulation_->diagnostics.begin(), simulation_->diagnostics.end());
+    if (const ScriptFramePlan* plan = ScriptFrames(); plan && roots_.contains(QString::fromLatin1(kScriptRoot.data(),
+            static_cast<qsizetype>(kScriptRoot.size())), Qt::CaseInsensitive)) {
+        const auto calls = ScriptCallDiagnostics(*plan);
+        problems.insert(problems.end(), calls.begin(), calls.end());
+    }
     for (auto it = assetErrors_.constBegin(); it != assetErrors_.constEnd(); ++it)
         add(DiagnosticSeverity::Warning, "GAMEUI_ASSET_UNREADABLE", QStringLiteral("%1：%2").arg(it.key(), it.value()));
     return problems;

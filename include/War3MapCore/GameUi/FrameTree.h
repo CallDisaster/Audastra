@@ -38,6 +38,8 @@ struct FrameAnchor {
     float y = 0.0f;
     // 布局时解析出的目标节点。
     std::uint32_t relativeNode = kNoNode;
+    // 事先确定的目标节点（地图脚本直接引用的框架、屏幕）；为 kNoNode 时按 relativeName 查找。
+    std::uint32_t targetNode = kNoNode;
 };
 
 enum class LayoutState : std::uint8_t {
@@ -95,10 +97,15 @@ struct FrameNode {
     std::string codeLabel;
     // 锚点来自游戏代码的摆放，而不是 fdf。
     bool codePlaced = false;
+    // 地图脚本创建的框架：在 ScriptFramePlan::frames 中的下标。
+    std::optional<std::uint32_t> scriptFrame;
 };
 
 // String 与 TEXT 框架：没有尺寸时由文字内容决定大小。
 [[nodiscard]] bool IsTextNode(const FrameNode& node);
+
+// 贴图路径没有扩展名时补 .blp（与游戏读取一致）。
+[[nodiscard]] std::string EnsureTextureExtension(std::string path);
 
 struct FrameTreeOptions {
     std::string race = "Human";
@@ -125,8 +132,19 @@ public:
     [[nodiscard]] Result<std::uint32_t> Instantiate(const FrameLibrary& library, const UiSkin* skin,
         std::string_view templateName, const std::optional<RootPlacement>& placement = std::nullopt);
 
+    // 在 parent 下展开模板（地图脚本按模板创建框架），不套用根框架摆放；返回新节点编号。
+    [[nodiscard]] Result<std::uint32_t> InstantiateUnder(const FrameLibrary& library, const UiSkin* skin,
+        std::string_view templateName, std::uint32_t parent);
+
+    // 直接添加一个节点（parent 须已存在）；返回节点编号。
+    std::uint32_t AddFrame(FrameNode node);
+    // 供调用方在布局前改写节点（脚本对框架的设置）。
+    [[nodiscard]] FrameNode& MutableNode(std::uint32_t id) { return nodes_[id]; }
+
     // 在屏幕下挂出游戏代码直接创建的区域（根节点名为 kGameCodeRoot）；重复调用返回已有的根。
     std::uint32_t AddGameCodeAreas();
+    // 按标识查游戏代码区域（含 kGameCodeRoot 本身）。
+    [[nodiscard]] std::optional<std::uint32_t> FindCodeArea(std::string_view id) const;
 
     // 计算全部节点的矩形；返回本次布局的诊断。
     [[nodiscard]] std::vector<Diagnostic> Layout();

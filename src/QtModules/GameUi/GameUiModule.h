@@ -3,6 +3,7 @@
 #include "GameUiSources.h"
 #include "Modules/EditorModule.h"
 #include "War3MapCore/GameUi/FrameDraw.h"
+#include "War3MapCore/GameUi/ScriptSimulation.h"
 
 #include <QHash>
 #include <QImage>
@@ -15,8 +16,10 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 class QCheckBox;
@@ -25,6 +28,7 @@ class QLineEdit;
 class QPushButton;
 class QSplitter;
 class QStandardItemModel;
+class QTableWidget;
 class QTreeWidget;
 class QTreeWidgetItem;
 class QVBoxLayout;
@@ -76,6 +80,15 @@ public:
     [[nodiscard]] std::vector<Diagnostic> Problems() const;
     // 定义来自地图界面目录的模板名（按名字排序）。
     [[nodiscard]] QStringList MapTemplates() const;
+    // 地图脚本创建的界面（模拟中为模拟后的样子）；定义未读入时为空。
+    [[nodiscard]] const GameUi::ScriptFramePlan* ScriptFrames() const;
+    // 预览模拟：可模拟的函数、当前函数（未模拟为空）。function 为空时停止模拟；失败时 error 给出原因。
+    [[nodiscard]] QStringList SimulationFunctions() const;
+    [[nodiscard]] QString SimulationFunction() const;
+    bool SetSimulation(const QString& function, QString* error = nullptr);
+    // 合并输入值并重新模拟。
+    void SetSimulationValues(const std::map<std::string, std::string>& values);
+    [[nodiscard]] const GameUi::SimulationResult* Simulation() const;
     [[nodiscard]] bool IsLoading() const noexcept { return definitionsPending_ || assetsPending_; }
     [[nodiscard]] QImage RenderImage(const QSize& size) const;
     void Reload();
@@ -101,6 +114,10 @@ private:
     void UpdateProperties();
     void UpdateProblems();
     void SelectNode(std::uint32_t node);
+    void BuildSimulationPanel(QWidget* parent);
+    void RunSimulation();
+    void UpdateSimulationPanel();
+    void ResetSimulation();
     void OnItemChanged(QTreeWidgetItem* item, int column);
     [[nodiscard]] QString NodeKey(std::uint32_t node) const;
 
@@ -150,6 +167,16 @@ private:
     bool populating_ = false;
     std::uint32_t selected_ = GameUi::kNoNode;
     QString selectedKey_;
+
+    std::optional<GameUi::ScriptSimulator> simulator_;
+    std::optional<GameUi::SimulationResult> simulation_;
+    std::optional<GameUi::ScriptFramePlan> simulatedPlan_;
+    std::map<std::string, std::string> simulationValues_;
+    std::vector<Diagnostic> simulationDiagnostics_;
+    QWidget* simulationPanel_ = nullptr;
+    QComboBox* simulationBox_ = nullptr;
+    QTableWidget* simulationInputs_ = nullptr;
+    QStringList simulationKeys_;
 };
 
 } // namespace War3Map::Modules

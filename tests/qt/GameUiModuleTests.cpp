@@ -4,7 +4,9 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QStandardItemModel>
+#include <QTableWidget>
 #include <QTest>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
@@ -60,6 +62,7 @@ private slots:
     void RootsRaceAndVisibility();
     void ViewStateRoundTrip();
     void CanvasDrawsAndHitsTextures();
+    void SimulationDrivesScriptFrames();
 };
 
 void GameUiModuleTests::BuildsSceneFromDefinitions() {
@@ -213,6 +216,62 @@ void GameUiModuleTests::CanvasDrawsAndHitsTextures() {
     // 透明贴图处退回到包含该点的最小框架。
     const auto right = canvas.NodeAt(screen.center() + QPointF(screen.width() / 4.0, 0));
     QCOMPARE(tree.Nodes()[right].name, std::string("Root"));
+}
+
+void GameUiModuleTests::SimulationDrivesScriptFrames() {
+    // 原创脚本：初始化时创建血条，更新函数按单位生命百分比改宽度。
+    const std::string script = R"(globals
+    framehandle udg_Bar = null
+    unit udg_Unit = null
+endglobals
+function InitBar takes nothing returns nothing
+    set udg_Bar = BlzCreateFrameByType("BACKDROP", "Bar", BlzGetOriginFrame(ORIGIN_FRAME_GAME_UI, 0), "", 0)
+    call BlzFrameSetAbsPoint(udg_Bar, FRAMEPOINT_BOTTOMLEFT, 0.3, 0.2)
+    call BlzFrameSetSize(udg_Bar, 0.2, 0.02)
+endfunction
+function UpdateBar takes nothing returns nothing
+    call BlzFrameSetSize(udg_Bar, 0.2 * GetUnitLifePercent(udg_Unit) / 100.0, 0.02)
+endfunction
+)";
+    QtProject::EditorProject project;
+    Modules::GameUiModule module(project);
+    auto* page = module.Widget();
+    auto definitions = SyntheticDefinitions();
+    definitions.scripts.push_back({"war3map.j", ScriptLanguage::Jass, script});
+    definitions.scriptFrames = FindScriptFrames(definitions.scripts);
+    module.LoadDefinitionsForTesting(std::move(definitions));
+    QCOMPARE(module.SimulationFunctions(), QStringList{QStringLiteral("UpdateBar")});
+    const auto barWidth = [&module] {
+        if (!module.SelectFrame(QStringLiteral("Bar"))) return -1.0f;
+        return module.Tree()->Nodes()[module.SelectedNode()].rect.Width();
+    };
+    QVERIFY(qAbs(barWidth() - 0.2f) < 1e-4f);
+
+    auto* box = page->findChild<QComboBox*>(QStringLiteral("gameUiSimulationFunction"));
+    QVERIFY(box);
+    QCOMPARE(box->count(), 2);
+    box->setCurrentIndex(box->findData(QStringLiteral("UpdateBar")));
+    QCOMPARE(module.SimulationFunction(), QStringLiteral("UpdateBar"));
+    auto* inputs = page->findChild<QTableWidget*>(QStringLiteral("gameUiSimulationInputs"));
+    QVERIFY(inputs);
+    QCOMPARE(inputs->rowCount(), 1);
+    QVERIFY(module.Simulation());
+    QCOMPARE(module.Simulation()->inputs.front().key, std::string("GetUnitLifePercent(udg_Unit)"));
+
+    module.SetSimulationValues({{"GetUnitLifePercent(udg_Unit)", "50"}});
+    QVERIFY(qAbs(barWidth() - 0.1f) < 1e-4f);
+    // 输入集合不变：编辑器保留，不重建。
+    QWidget* editor = inputs->cellWidget(0, 1);
+    module.SetSimulationValues({{"GetUnitLifePercent(udg_Unit)", "25"}});
+    QCOMPARE(inputs->cellWidget(0, 1), editor);
+    QVERIFY(qAbs(barWidth() - 0.05f) < 1e-4f);
+
+    QString error;
+    QVERIFY(!module.SetSimulation(QStringLiteral("NoSuchFunction"), &error));
+    QVERIFY(!error.isEmpty());
+    QVERIFY(module.SimulationFunction().isEmpty());
+    QCOMPARE(box->currentIndex(), 0);
+    QVERIFY(qAbs(barWidth() - 0.2f) < 1e-4f);
 }
 
 int main(int argc, char** argv) {

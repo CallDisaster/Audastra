@@ -70,6 +70,8 @@ public:
     [[nodiscard]] bool MatchesSources(const WorldTerrainSources& sources) const;
     // 动画缓存必须记录真实命中的游戏 MPQ 层/地图覆盖，而非笼统的 Game 来源。
     [[nodiscard]] Result<Render::AnimationResource> ReadAnimationResource(std::string_view path, std::uint64_t maxBytes);
+    // 直接读已验证归档里的地图数据成员（如 war3map.j）：地图数据不在资源清单里，不经资源层查找。
+    [[nodiscard]] Result<std::vector<std::byte>> ReadMapArchiveMember(std::string_view path, std::size_t maxBytes);
 private:
     WorldResourceReader();
     struct State;

@@ -1,6 +1,8 @@
 #include "War3MapCore/GameUi/FrameDraw.h"
 #include "War3MapCore/GameUi/GameCodeLayout.h"
 #include "War3MapCore/GameUi/MapUiFiles.h"
+#include "War3MapCore/GameUi/ScriptFrames.h"
+#include "War3MapCore/GameUi/ScriptSimulation.h"
 
 #include <cmath>
 #include <cstring>
@@ -518,6 +520,209 @@ void TestMapTocs() {
         "script order first, unreferenced map toc last, no duplicate by case");
     Require(HasCode(plan.diagnostics, "GAMEUI_MAP_TOC_DYNAMIC") && HasCode(plan.diagnostics, "GAMEUI_MAP_TOC_UNREFERENCED"),
         "dynamic call and unreferenced toc reported");
+    const MapScriptText memHack{"war3map.j", ScriptLanguage::Jass,
+        "function A takes nothing returns nothing\n    call MHFrame_LoadTOC(\"ui\\\\mh.toc\")\nendfunction\n"};
+    const auto memHackCalls = FindTocLoadCalls(memHack);
+    Require(memHackCalls.size() == 1 && memHackCalls[0].path == "ui\\mh.toc", "MemHack toc loader");
+}
+
+const ScriptFrame& FrameCreatedAt(const ScriptFramePlan& plan, std::uint32_t line) {
+    for (const auto& frame : plan.frames) {
+        if (frame.created.line == line) return frame;
+    }
+    throw std::runtime_error("script frame missing at line " + std::to_string(line));
+}
+
+const ScriptUiCallGroup* CallGroup(const ScriptFramePlan& plan, std::string_view function) {
+    for (const auto& group : plan.calls) {
+        if (group.function == function) return &group;
+    }
+    return nullptr;
+}
+
+void TestScriptFrames() {
+    // 原创小脚本：三类接口各用一种写法；包装函数本身不算使用方。
+    const MapScriptText script{"war3map.j", ScriptLanguage::Jass, R"(globals
+    integer udg_Back = 0
+    integer udg_Label = 0
+    integer array udg_Bars
+    constant real BAR_Y = 0.19
+endglobals
+function MHFrame_CreateEx takes string type_name, string name, string base_frame, integer parent, integer priority, integer id returns integer
+    call MHFrame_SetText(parent, "wrapper body is not a use")
+    return 0
+endfunction
+function InitUi takes nothing returns nothing
+    local integer i = 0
+    set udg_Back = MHFrame_CreateEx("BACKDROP", "Back", "", MHUI_GetGameUI(), 1000, 0)
+    call MHFrame_SetTexture(udg_Back, "UI\\Back.blp", false)
+    call MHFrame_SetSize(udg_Back, 0.2, 0.02)
+    call MHFrame_SetAbsolutePoint(udg_Back, 0x4, 0.4, BAR_Y)
+    call MHFrame_Hide(udg_Back, true)
+    set udg_Label = DzCreateFrameByTagName("TEXT", "Label", DzGetGameUI(), "", 0)
+    call DzFrameSetPoint(udg_Label, 3, udg_Back, 3, 0.01, 0.0)
+    call DzFrameSetSize(udg_Label, 0.1, 0.012)
+    call DzFrameSetText(udg_Label, "Cast")
+    loop
+        exitwhen i >= 2
+        set udg_Bars[i] = BlzCreateFrameByType("BACKDROP", "Bar" + I2S(i), BlzGetOriginFrame(ORIGIN_FRAME_GAME_UI, 0), "", 0)
+        call BlzFrameSetAbsPoint(udg_Bars[i], FRAMEPOINT_BOTTOMLEFT, 0.1, 0.1 * i)
+        call BlzFrameSetSize(udg_Bars[i], 0.05, -(-0.01))
+        set i = i + 1
+    endloop
+    if udg_Back != 0 then
+        call MHFrame_SetWidth(udg_Back, 0.5)
+    endif
+    call DzFrameHideInterface()
+    call DzFrameShow(DzFrameFindByName("ConsoleUI", 0), false)
+    call MHUI_DrawMoveSpeed(true)
+    call DzFrameSetAlpha(udg_Label, 128)
+endfunction
+function Later takes nothing returns nothing
+    call MHFrame_Hide(udg_Back, false)
+    call DzFrameSetText(udg_Label, I2S(3))
+endfunction
+)"};
+    const auto plan = FindScriptFrames({script});
+    Require(plan.frames.size() == 3, "three frames created by script; wrapper body skipped");
+
+    const ScriptFrame& back = FrameCreatedAt(plan, 13);
+    Require(back.family == UiApiFamily::MemHack && back.variable == "udg_Back" && back.name == "Back" &&
+            back.frameType == "BACKDROP" && back.templateName.empty(),
+        "MemHack frame by type with literal name");
+    Require(back.parent.target == ScriptFrameTarget::CodeArea && back.parent.name == "GameUI", "parent is the game UI");
+    Require(back.texture && *back.texture == "UI\\Back.blp", "texture literal decoded");
+    Require(back.width && Near(*back.width, 0.2f) && back.height && Near(*back.height, 0.02f),
+        "size from the same block; width set inside if is not applied");
+    Require(back.anchors.size() == 1 && back.anchors[0].point == FramePoint::Center &&
+            back.anchors[0].relative.target == ScriptFrameTarget::Screen && Near(back.anchors[0].y, 0.19f),
+        "absolute point with hex point index and global constant");
+    Require(back.visible && !*back.visible, "hidden at creation");
+    Require(back.runtimeCalls == 2, "conditional width and later show are runtime calls");
+    Require(back.runtimeFunctions == std::vector<std::string>{"InitUi", "Later"}, "functions with runtime calls listed once");
+
+    const ScriptFrame& label = FrameCreatedAt(plan, 18);
+    Require(label.family == UiApiFamily::Dz && label.text && *label.text == "Cast", "DzAPI text frame");
+    Require(label.anchors.size() == 1 && label.anchors[0].point == FramePoint::Left &&
+            label.anchors[0].relative.target == ScriptFrameTarget::Script && label.anchors[0].relative.frame == 0 &&
+            Near(label.anchors[0].x, 0.01f),
+        "relative point to another script frame");
+    Require(label.runtimeCalls == 1, "text set from another function is a runtime call");
+
+    const ScriptFrame& bar = FrameCreatedAt(plan, 24);
+    Require(bar.nameDynamic && bar.variable == "udg_Bars[i]", "loop-created frame keeps its variable");
+    Require(bar.anchors.empty() && bar.dynamic.size() == 1, "non-constant y is reported, not guessed");
+    Require(bar.width && Near(*bar.width, 0.05f) && bar.height && Near(*bar.height, 0.01f), "constant folding of unary minus");
+    Require(bar.parent.target == ScriptFrameTarget::CodeArea && bar.parent.name == "GameUI", "origin frame resolved");
+
+    const auto* hide = CallGroup(plan, "DzFrameHideInterface");
+    Require(hide && hide->reason == ScriptUiCallReason::NotPreviewed && hide->count == 1, "known call not previewed");
+    const auto* show = CallGroup(plan, "DzFrameShow");
+    Require(show && show->reason == ScriptUiCallReason::UntracedTarget, "stock frame by name is untraced");
+    const auto* speed = CallGroup(plan, "MHUI_DrawMoveSpeed");
+    Require(speed && speed->reason == ScriptUiCallReason::Unknown && speed->samples[0].line == 34, "unknown call listed");
+    const auto* alpha = CallGroup(plan, "DzFrameSetAlpha");
+    Require(alpha && alpha->reason == ScriptUiCallReason::Unknown, "unlisted family call listed as unknown");
+    Require(!CallGroup(plan, "MHFrame_SetText"), "wrapper bodies are not analysed");
+    Require(ScriptCallDiagnostics(plan).size() == plan.calls.size(), "one problem row per call group");
+
+    FrameLibrary library;
+    FrameTree tree;
+    tree.AddGameCodeAreas();
+    std::vector<Diagnostic> diagnostics;
+    const auto root = AddScriptFrames(tree, library, nullptr, plan, diagnostics);
+    Require(root != kNoNode && tree.Nodes()[root].name == kScriptRoot, "script root added");
+    (void)tree.Layout();
+    const FrameNode& backNode = NodeNamed(tree, "Back");
+    Require(backNode.scriptFrame && *backNode.scriptFrame == 0, "node keeps its script frame index");
+    RequireRect(backNode, 0.3f, 0.18f, 0.5f, 0.2f, "absolute center with script size");
+    Require(backNode.texture && backNode.texture->source == "script", "texture comes from the script");
+    const FrameNode& labelNode = NodeNamed(tree, "Label");
+    RequireRect(labelNode, 0.31f, 0.184f, 0.41f, 0.196f, "anchored to the other script frame");
+    Require(labelNode.text && labelNode.text->text == "Cast", "text node shows script text");
+    Require(tree.Nodes()[tree.FindByName("udg_Bars[i]").value()].layout == LayoutState::Unplaced,
+        "frame without constant position stays unplaced");
+    Require(FindScriptFrames({}).frames.empty(), "no scripts, no frames");
+}
+
+const SimulationInput* InputNamed(const SimulationResult& result, std::string_view key) {
+    for (const auto& input : result.inputs) {
+        if (input.key == key) return &input;
+    }
+    return nullptr;
+}
+
+void TestScriptSimulation() {
+    // 原创读条脚本：创建在一个函数里，更新在另一个函数里，依赖计时器、数组与本地玩家判断。
+    const MapScriptText script{"war3map.j", ScriptLanguage::Jass, R"(globals
+    integer udg_Fill = 0
+    integer udg_Text = 0
+    real udg_Ratio = 0.0
+    boolean array udg_Channel
+    string array udg_Name
+    integer udg_Local = 0
+    timer udg_Clock = null
+endglobals
+function InitBar takes nothing returns nothing
+    set udg_Fill = MHFrame_CreateEx("BACKDROP", "Fill", "", MHUI_GetGameUI(), 1000, 0)
+    call MHFrame_SetSize(udg_Fill, 0.2, 0.012)
+    call MHFrame_SetAbsolutePoint(udg_Fill, 3, 0.3, 0.19)
+    call MHFrame_Hide(udg_Fill, true)
+    set udg_Text = MHFrame_CreateEx("TEXT", "Label", "", MHUI_GetGameUI(), 1001, 0)
+    call MHFrame_SetAbsolutePoint(udg_Text, 4, 0.4, 0.19)
+endfunction
+function UpdateBar takes nothing returns nothing
+    local real left = 3.0 - TimerGetElapsed(udg_Clock)
+    if udg_Channel[udg_Local] then
+        call MHFrame_SetTexture(udg_Fill, "TeamColor09.blp", false)
+    else
+        call MHFrame_SetTexture(udg_Fill, "TeamColor04.blp", false)
+    endif
+    call MHFrame_Hide(udg_Fill, false)
+    set udg_Ratio = left / 3.0
+    call MHFrame_SetWidth(udg_Fill, 0.2 * udg_Ratio)
+    call MHFrame_SetText(udg_Text, udg_Name[udg_Local] + "  " + R2SW(left, 1, 1))
+    if GetLocalPlayer() == Player(0) then
+        call MHFrame_SetHeight(udg_Fill, 0.02)
+    endif
+endfunction
+)"};
+    const auto plan = FindScriptFrames({script});
+    Require(plan.frames.size() == 2, "two frames for simulation");
+    Require(SimulationFunctions(plan) == std::vector<std::string>{"UpdateBar"}, "update function offered for simulation");
+
+    auto prepared = ScriptSimulator::Prepare({script}, plan, "UpdateBar");
+    Require(prepared.value.has_value(), "simulator prepared");
+    const ScriptSimulator& simulator = *prepared.value;
+
+    const auto defaults = simulator.Run({});
+    Require(defaults.inputs.size() == 4, "timer, channel flag, name and local-player condition are inputs");
+    const auto* elapsed = InputNamed(defaults, "TimerGetElapsed(udg_Clock)");
+    Require(elapsed && elapsed->type == SimulationValueType::Number && !elapsed->integer, "unknown call result is a number input");
+    const auto* channel = InputNamed(defaults, "udg_Channel[udg_Local]");
+    Require(channel && channel->type == SimulationValueType::Boolean, "declared boolean array is a boolean input");
+    const auto* name = InputNamed(defaults, "udg_Name[udg_Local]");
+    Require(name && name->type == SimulationValueType::Text, "declared string array is a text input");
+    const auto* local = InputNamed(defaults, "if:29");
+    Require(local && local->condition && local->type == SimulationValueType::Boolean,
+        "handle comparison becomes a branch choice");
+    const ScriptFrame& fill = defaults.frames[0];
+    Require(fill.texture && *fill.texture == "TeamColor04.blp", "else branch by default");
+    Require(fill.visible && *fill.visible, "shown by the update");
+    Require(fill.width && Near(*fill.width, 0.2f) && fill.height && Near(*fill.height, 0.012f), "full bar at zero elapsed");
+    Require(defaults.frames[1].text && *defaults.frames[1].text == "  3.0", "R2SW formats like the game");
+    Require(defaults.touched == std::vector<std::uint32_t>{0, 1}, "both frames touched");
+
+    const auto changed = simulator.Run({{"TimerGetElapsed(udg_Clock)", "1.5"}, {"udg_Channel[udg_Local]", "true"},
+        {"udg_Name[udg_Local]", "Hex"}, {"if:29", "true"}});
+    Require(changed.frames[0].texture && *changed.frames[0].texture == "TeamColor09.blp", "channel branch chosen");
+    Require(changed.frames[0].width && Near(*changed.frames[0].width, 0.1f), "width follows the elapsed input");
+    Require(changed.frames[0].height && Near(*changed.frames[0].height, 0.02f), "branch input selects the then branch");
+    Require(changed.frames[1].text && *changed.frames[1].text == "Hex  1.5", "text built from inputs");
+    Require(plan.frames[0].texture == std::nullopt, "plan itself is not modified");
+
+    auto missing = ScriptSimulator::Prepare({script}, plan, "NoSuchFunction");
+    Require(!missing.value && HasCode(missing.diagnostics, "GAMEUI_SIMULATION_FUNCTION_MISSING"), "missing function reported");
 }
 
 } // namespace
@@ -531,6 +736,8 @@ int main() {
         TestDrawList();
         TestGameCodeLayout();
         TestMapTocs();
+        TestScriptFrames();
+        TestScriptSimulation();
         std::cout << "Game UI tests passed\n";
         return 0;
     } catch (const std::exception& error) {

@@ -3,6 +3,7 @@
 #include "WorldTerrainAssets.h"
 #include "War3MapCore/GameUi/FrameLibrary.h"
 #include "War3MapCore/GameUi/MapUiFiles.h"
+#include "War3MapCore/GameUi/ScriptFrames.h"
 #include "War3MapCore/Image/BlpImage.h"
 
 #include <QString>
@@ -40,6 +41,8 @@ public:
     GameUiReader& operator=(const GameUiReader&) = delete;
 
     [[nodiscard]] Result<GameUiFile> Read(const std::string& path);
+    // 地图归档里的地图数据成员（脚本等不属于资源层的文件）；没有地图层或不存在时失败。
+    [[nodiscard]] Result<std::vector<std::byte>> ReadMapMember(const std::string& path, std::size_t maxBytes);
     [[nodiscard]] bool HasMapLayer() const noexcept { return sources_.map.has_value(); }
     // 地图层（含会话导入）的全部文件路径；没有地图层时为空。
     [[nodiscard]] std::vector<std::string> MapFiles() const;
@@ -60,6 +63,8 @@ struct GameUiDefinitions {
     std::string gameSkins;
     std::string mapSkin;
     std::vector<GameUi::TocLoadCall> tocCalls;  // 地图脚本中加载界面目录的调用
+    GameUi::ScriptFramePlan scriptFrames;       // 地图脚本创建的界面
+    std::vector<GameUi::MapScriptText> scripts;  // 地图脚本原文（预览模拟用）
     std::vector<Diagnostic> diagnostics;
 };
 [[nodiscard]] GameUiDefinitions LoadGameUiDefinitions(GameUiReader& reader);

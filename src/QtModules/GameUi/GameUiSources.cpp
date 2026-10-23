@@ -6,6 +6,7 @@
 
 #include <QObject>
 
+#include <algorithm>
 #include <set>
 
 namespace War3Map::Modules {
@@ -95,6 +96,13 @@ Result<GameUiFile> GameUiReader::Read(const std::string& path) {
     return Result<GameUiFile>::Success(std::move(file));
 }
 
+Result<std::vector<std::byte>> GameUiReader::ReadMapMember(const std::string& path, std::size_t maxBytes) {
+    if (const auto opened = Open(); !opened.Succeeded()) return {std::nullopt, opened.diagnostics};
+    if (!state_->world) return Result<std::vector<std::byte>>::Failure("GameUi", "GAMEUI_NO_MAP_LAYER", "没有打开地图");
+    if (const auto current = state_->world->VerifyCurrentSource(); !current.Succeeded()) return {std::nullopt, current.diagnostics};
+    return state_->world->ReadMapArchiveMember(path, maxBytes);
+}
+
 std::vector<std::string> GameUiReader::MapFiles() const {
     std::vector<std::string> files;
     if (!sources_.map) return files;
@@ -106,20 +114,24 @@ std::vector<std::string> GameUiReader::MapFiles() const {
 namespace {
 
 // 游戏只执行一份 JASS 脚本（先找根目录，再找 scripts 目录）；Lua 地图另有 war3map.lua。
+// 脚本是地图数据、不在资源清单里，直接从已验证的地图归档读取（即最近一次保存的脚本）。
 std::vector<GameUi::MapScriptText> ReadMapScripts(GameUiReader& reader, std::vector<Diagnostic>& diagnostics) {
     std::vector<GameUi::MapScriptText> scripts;
     bool jass = false;
     for (const auto& candidate : GameUi::MapScriptPaths()) {
         if (candidate.language == GameUi::ScriptLanguage::Jass && jass) continue;
         const std::string path(candidate.path);
-        auto file = reader.Read(path);
-        if (!file.Succeeded() || !file.value || !file.value->fromMap) continue;
-        if (file.value->bytes.size() > kMaxScriptBytes) {
-            diagnostics.push_back(Diagnostic{DiagnosticSeverity::Warning, "GameUi", "GAMEUI_MAP_SCRIPT_TOO_LARGE",
-                path + " 超过脚本大小上限，未查找其中加载的界面目录", std::nullopt});
+        auto file = reader.ReadMapMember(path, kMaxScriptBytes);
+        if (!file.Succeeded() || !file.value) {
+            const bool missing = std::any_of(file.diagnostics.begin(), file.diagnostics.end(),
+                [](const Diagnostic& diagnostic) { return diagnostic.code == "WORLD_MAP_MEMBER_MISSING"; });
+            if (!missing) {
+                diagnostics.push_back(Diagnostic{DiagnosticSeverity::Warning, "GameUi", "GAMEUI_MAP_SCRIPT_UNREADABLE",
+                    path + " 读取失败或超过脚本大小上限，未分析其中的界面调用", std::nullopt});
+            }
             continue;
         }
-        scripts.push_back({path, candidate.language, GameUi::BytesToText(file.value->bytes)});
+        scripts.push_back({path, candidate.language, GameUi::BytesToText(*file.value)});
         if (candidate.language == GameUi::ScriptLanguage::Jass) jass = true;
     }
     return scripts;
@@ -140,10 +152,15 @@ GameUiDefinitions LoadGameUiDefinitions(GameUiReader& reader) {
     library->LoadToc(read, kTocPath, "game");
     std::vector<Diagnostic> mapDiagnostics;
     if (reader.HasMapLayer()) {
-        auto plan = GameUi::PlanMapTocs(reader.MapFiles(), ReadMapScripts(reader, mapDiagnostics));
+        auto scripts = ReadMapScripts(reader, mapDiagnostics);
+        auto plan = GameUi::PlanMapTocs(reader.MapFiles(), scripts);
         mapDiagnostics.insert(mapDiagnostics.end(), plan.diagnostics.begin(), plan.diagnostics.end());
         for (const auto& toc : plan.tocs) library->LoadToc(read, toc, "map");
         result.tocCalls = std::move(plan.calls);
+        result.scriptFrames = GameUi::FindScriptFrames(scripts);
+        mapDiagnostics.insert(mapDiagnostics.end(), result.scriptFrames.diagnostics.begin(),
+            result.scriptFrames.diagnostics.end());
+        result.scripts = std::move(scripts);
     }
     result.diagnostics = library->Diagnostics();
     result.diagnostics.insert(result.diagnostics.end(), mapDiagnostics.begin(), mapDiagnostics.end());

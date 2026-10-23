@@ -332,6 +332,12 @@ Status WorldResourceReader::VerifyCurrentSource() const {
         "地图资源来源已被替换，请重新加载地形。");
 }
 
+Result<std::vector<std::byte>> WorldResourceReader::ReadMapArchiveMember(std::string_view path, std::size_t maxBytes) {
+    if (!state_->archive || !state_->archive->HasFile(path))
+        return Result<std::vector<std::byte>>::Failure("World", "WORLD_MAP_MEMBER_MISSING", "地图归档里没有 " + std::string(path));
+    return state_->archive->ReadFileBounded(path, maxBytes);
+}
+
 Result<Render::AnimationResource> WorldResourceReader::ReadAnimationResource(std::string_view path, std::uint64_t maxBytes) {
     using Output = Result<Render::AnimationResource>;
     if (maxBytes > kResourceLimit) maxBytes = kResourceLimit;

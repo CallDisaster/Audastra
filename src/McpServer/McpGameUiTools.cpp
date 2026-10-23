@@ -7,6 +7,10 @@ namespace War3Map::Mcp {
 namespace {
 constexpr int kMaxRoots = 16;
 constexpr int kMaxNameLength = 128;
+constexpr int kMaxFunctionLength = 256;
+constexpr int kMaxSimulationValues = 200;
+constexpr int kMaxSimulationKey = 512;
+constexpr int kMaxSimulationText = 4096;
 
 QJsonObject IdSchema() { return {{"type", "string"}, {"pattern", "^(0|[1-9][0-9]*)$"}, {"maxLength", 20}}; }
 QJsonObject NameSchema() { return {{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxNameLength}}; }
@@ -30,20 +34,39 @@ bool ValidInteger(const QJsonValue& value, int minimum, int maximum) {
     const double number = value.toDouble();
     return value.isDouble() && std::isfinite(number) && std::floor(number) == number && number >= minimum && number <= maximum;
 }
+
+// 模拟输入：键为输入标识，值为文字、有限数值或布尔值。
+bool ValidSimulationValues(const QJsonValue& value) {
+    if (!value.isObject() || value.toObject().size() > kMaxSimulationValues) return false;
+    const auto values = value.toObject();
+    for (auto it = values.begin(); it != values.end(); ++it) {
+        if (it.key().isEmpty() || it.key().size() > kMaxSimulationKey || it.key().contains(QChar::Null)) return false;
+        const auto& item = it.value();
+        if (item.isString()) {
+            if (item.toString().size() > kMaxSimulationText || item.toString().contains(QChar::Null)) return false;
+        } else if (item.isDouble()) {
+            if (!std::isfinite(item.toDouble())) return false;
+        } else if (!item.isBool()) {
+            return false;
+        }
+    }
+    return true;
+}
 } // namespace
 
 std::vector<ToolDefinition> GameUiToolDefinitions() {
     std::vector<ToolDefinition> tools;
-    for (const auto* name : {"game_ui_view_read", "game_ui_view_set", "game_ui_nodes_query", "game_ui_render"}) {
+    for (const auto* name : {"game_ui_view_read", "game_ui_view_set", "game_ui_nodes_query", "game_ui_render", "game_ui_simulate"}) {
         ToolDefinition tool; tool.name = name;
-        tool.permission = tool.name == "game_ui_view_set" ? ToolPermission::Edit : ToolPermission::Query;
+        tool.permission = tool.name == "game_ui_view_set" || tool.name == "game_ui_simulate" ? ToolPermission::Edit
+                                                                                              : ToolPermission::Query;
         QJsonObject properties{{"project_identity", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 128}}},
             {"expected_revision", IdSchema()}};
         QJsonArray required{"project_identity", "expected_revision"};
         if (tool.name == "game_ui_view_read") {
-            tool.description = "读取界面工作区的预览设置（种族、版本、宽高比、根界面）、读取状态、问题与地图自带界面列表";
+            tool.description = "读取界面工作区的预览设置（种族、版本、宽高比、根界面）、读取状态、问题、地图自带界面列表，以及地图脚本创建的界面数量与预览未还原的界面调用";
         } else if (tool.name == "game_ui_view_set") {
-            tool.description = "设置界面预览：种族、版本、宽高比、增删根界面（GameUI 为游戏代码区域）、只显示某节点；只改预览，不改地图";
+            tool.description = "设置界面预览：种族、版本、宽高比、增删根界面（GameUI 为游戏代码区域，MapScriptUI 为地图脚本创建的界面）、只显示某节点；只改预览，不改地图";
             properties.insert("race", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"Human", "Orc", "NightElf", "Undead"}}});
             properties.insert("expansion", QJsonObject{{"type", "boolean"}});
             properties.insert("aspect", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"16:9", "16:10", "4:3"}}});
@@ -51,10 +74,16 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
             properties.insert("remove_roots", NameListSchema());
             properties.insert("show_only", NameSchema());
         } else if (tool.name == "game_ui_nodes_query") {
-            tool.description = "按名称或中文名分页查询界面节点：游戏内名称、类型、位置（屏幕单位与 1080p 像素）、锚点、贴图与文字来源";
+            tool.description = "按名称或中文名分页查询界面节点：游戏内名称、类型、位置（屏幕单位与 1080p 像素）、锚点、贴图与文字来源；脚本创建的节点附创建位置、变量与未还原的设置";
             properties.insert("name_contains", QJsonObject{{"type", "string"}, {"maxLength", kMaxNameLength}});
             properties.insert("offset", IntegerSchema(0, 1000000));
             properties.insert("limit", IntegerSchema(1, 200));
+        } else if (tool.name == "game_ui_simulate") {
+            tool.description = "界面预览模拟：选一个运行时改变脚本框架的函数（见 game_ui_view_read 的 simulation_functions），"
+                "按输入值执行其中的赋值、条件、循环与界面设置；之后的节点查询与绘图显示模拟结果。function 为空字符串时停止模拟；"
+                "values 按输入键给值（文字、数值或布尔）。只改预览，不执行脚本其他效果，不改地图";
+            properties.insert("function", QJsonObject{{"type", "string"}, {"maxLength", kMaxFunctionLength}});
+            properties.insert("values", QJsonObject{{"type", "object"}, {"maxProperties", kMaxSimulationValues}});
         } else {
             tool.description = "按当前预览设置绘制游戏界面 PNG（与界面工作区同一画法，不含边框与名称标记）";
             properties.insert("width", IntegerSchema(320, 2560));
@@ -106,6 +135,13 @@ QJsonObject InvokeGameUiTool(const QString& name, const QJsonObject& args, const
         if (!ValidInteger(args.value(key), schema.value("minimum").toInt(), schema.value("maximum").toInt()))
             return Failure("GAME_UI_ARGUMENT", "数值参数超出范围。");
     }
+    if (args.contains("function")) {
+        const auto value = args.value("function");
+        if (!value.isString() || value.toString().size() > kMaxFunctionLength || value.toString().contains(QChar::Null))
+            return Failure("GAME_UI_ARGUMENT", "function 必须是不超过 256 字的函数名。");
+    }
+    if (args.contains("values") && !ValidSimulationValues(args.value("values")))
+        return Failure("GAME_UI_ARGUMENT", "values 最多 200 项；键为非空输入标识，值为文字、有限数值或布尔值。");
     if (!host.invoke) return Failure("GAME_UI_UNSUPPORTED", "此宿主没有界面工作区；请连接编辑器MCP端口。");
     return host.invoke(name, args);
 }
