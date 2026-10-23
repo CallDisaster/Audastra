@@ -16,6 +16,8 @@
 namespace War3Map::Mcp {
 
 QJsonObject DiagnosticsJson(const std::vector<Diagnostic>& diagnostics);
+// 查询结果附带的旁路诊断：只放前 3 条与总数，避免每次查询都带上整批同类警告。
+void InsertMapObjectReferenceDiagnostics(QJsonObject& result, const std::vector<Diagnostic>& diagnostics);
 QJsonObject Failure(std::string code, std::string message);
 QJsonObject Failure(const Status& status);
 template <typename T>

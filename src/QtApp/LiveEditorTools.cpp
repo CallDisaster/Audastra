@@ -449,7 +449,7 @@ private:
         result.insert("revision", QString::number(project_.editRevision_.Revision()));
         result.insert("document_generation", QString::number(generation_));
         result.insert("content_scope", "gui-visible-document");
-        result.insert("map_object_reference_diagnostics", Mcp::DiagnosticsJson(references.diagnostics).value("diagnostics"));
+        Mcp::InsertMapObjectReferenceDiagnostics(result, references.diagnostics);
         return result;
     }
 
@@ -1104,20 +1104,23 @@ private:
         if (busy_ || project_.savingMap_) return Mcp::Failure("LIVE_EDITOR_BUSY", "当前地图正在写入。");
         const auto check = CheckContext(arguments, true, false);
         if (!check.value("ok").toBool()) return check;
-        const auto kindText = arguments.value("kind").toString(QStringLiteral("action"));
-        Trigger::UiDefinitionKind kind = Trigger::UiDefinitionKind::Unknown;
-        if (kindText == QStringLiteral("event")) kind = Trigger::UiDefinitionKind::Event;
-        if (kindText == QStringLiteral("condition")) kind = Trigger::UiDefinitionKind::Condition;
-        if (kindText == QStringLiteral("action")) kind = Trigger::UiDefinitionKind::Action;
-        if (kindText == QStringLiteral("call")) kind = Trigger::UiDefinitionKind::Call;
-        if (kind == Trigger::UiDefinitionKind::Unknown) return Mcp::Failure("LIVE_EDITOR_CATALOG_KIND", "仅支持 event/condition/action/call。");
+        // 不给 kind 时按事件、条件、动作、函数依次搜索全部种类；签名前缀标明种类。
+        std::vector<Trigger::UiDefinitionKind> kinds;
+        const auto kindText = arguments.value("kind").toString();
+        if (kindText.isEmpty()) kinds = {Trigger::UiDefinitionKind::Event, Trigger::UiDefinitionKind::Condition,
+            Trigger::UiDefinitionKind::Action, Trigger::UiDefinitionKind::Call};
+        else if (kindText == QStringLiteral("event")) kinds = {Trigger::UiDefinitionKind::Event};
+        else if (kindText == QStringLiteral("condition")) kinds = {Trigger::UiDefinitionKind::Condition};
+        else if (kindText == QStringLiteral("action")) kinds = {Trigger::UiDefinitionKind::Action};
+        else if (kindText == QStringLiteral("call")) kinds = {Trigger::UiDefinitionKind::Call};
+        else return Mcp::Failure("LIVE_EDITOR_CATALOG_KIND", "仅支持 event/condition/action/call。");
         const int start = arguments.value("start").toInt(0), limit = arguments.value("limit").toInt(64);
         const QString search = arguments.value("search").toString();
         if (start < 0 || limit < 1 || limit > 128 || search.size() > 256)
             return Mcp::Failure("LIVE_EDITOR_QUERY_BUDGET", "目录分页要求 start>=0、limit=1..128、search<=256字符。");
         QJsonArray rows;
         qint64 matched = 0;
-        for (const auto* definition : project_.uiCatalog_->Definitions(kind)) {
+        for (const auto kind : kinds) for (const auto* definition : project_.uiCatalog_->Definitions(kind)) {
             const auto name = QString::fromStdString(definition->name);
             if (!name.contains(search, Qt::CaseInsensitive)) continue;
             const auto index = matched++;
@@ -1366,7 +1369,8 @@ private:
         AddTool("editor_query_trigger_graph",
             "查询作者当前可见的触发器（T）结构；ecas 表可用 functions（精确函数名）或 ui_layer（函数库层，如 WarVK）筛选；"
             "trigger_text 表配 trigger_id 把整个触发器导出为紧凑 T 写法；feature_text 表配 category_id 把整个类别导出为功能写法；"
-            "presets 表（可配 type）列预设；function_examples 表配 functions 给出本图里的真实用法原句", Mcp::ToolPermission::Query,
+            "presets 表（可配 type）列预设；function_examples 表配 functions 给出本图里的真实用法原句；"
+            "outline 表一次列出全部类别和触发器的名字与编号，可用 match 按名字筛选", Mcp::ToolPermission::Query,
             Schema(query, {"project_identity", "expected_revision", "table"}), [this](const QJsonObject& arguments) { return Query(arguments); });
         auto edit = Mcp::GraphOperationSchema();
         auto properties = edit.value("properties").toObject();
@@ -1401,7 +1405,7 @@ private:
         catalog.insert("kind", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"event", "condition", "action", "call"}}});
         catalog.insert("search", StringSchema()); catalog.insert("start", QJsonObject{{"type", "integer"}});
         catalog.insert("limit", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 128}});
-        AddTool("editor_get_ui_catalog", "查询当前地图实际生效的 T 函数签名", Mcp::ToolPermission::Query,
+        AddTool("editor_get_ui_catalog", "查询当前地图实际生效的 T 函数签名；不给 kind 时搜索事件、条件、动作和函数全部种类", Mcp::ToolPermission::Query,
             Schema(catalog, {"project_identity", "expected_revision"}), [this](const QJsonObject& arguments) { return Catalog(arguments); });
         registeredNames_.sort();
     }
