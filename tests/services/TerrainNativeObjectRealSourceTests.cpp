@@ -12,6 +12,7 @@
 #include "War3MapCore/Services/MapEditSaveService.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/Text/TextUtil.h"
+#include "TerrainWalkableBridgeRealTests.h"
 
 #include <Windows.h>
 #include <algorithm>
@@ -739,6 +740,7 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         const auto playableDeep = PlayableWaterUsesPublicSave(original, directory.path, tool, game, true);
         Require(playableShallow != playableDeep, "playable shallow and deep water must not produce identical pathing");
         FixedRotationUsesPublicSave(original, directory.path, tool, game, catalog, schema, mounted);
+        TerrainSaveTests::CheckRealWalkableBridgeSave(original, directory.path, tool, game, catalog, mounted);
     } catch (...) {
         directory.keep = true;
         std::cerr << "Real-source failure artifacts preserved at " << IO::PathUtf8(directory.path) << '\n';
