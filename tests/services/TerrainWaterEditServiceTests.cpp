@@ -685,6 +685,32 @@ void ForwardJournalRestoresOwnedSpecialDeletionAndRejectsDrift() {
         "a formerly absent optional dependency rejects restore even when parsed terrain settings are unchanged");
 }
 
+void ForwardJournalSeparatesBaselineReadFailureFromResourceFallback() {
+    Fixture f(true, true); const auto directory = Directory(f); const auto intents = OrderedIntents(f);
+    auto replayed = Take(ReplayFixture(f, *f.source, intents));
+    const auto archiveJournal = Take(TerrainPathingSave::CaptureJournal(*f.source, *replayed.session));
+    const auto directoryJournal = Take(TerrainPathingSave::CaptureJournal(directory.Snapshot(), *replayed.session));
+    const auto before = Take(SerializeMapTerrain(*replayed.session->Terrain()));
+    // 完整真实基线失效不能与游戏资源缺失混为一谈，原始底层诊断也必须保留。
+    Require(IO::WriteFileBytes(directory.Snapshot().root / "war3map.w3e", Text("changed directory baseline")).Succeeded(),
+        "change only the private directory baseline after journal capture");
+    const auto changedDirectory = TerrainPathingSave::RestoreJournal(directory.Snapshot(), MapDocument::FromMembers(f.members),
+        f.members[0].data, f.members[1].data, directoryJournal, *replayed.session, f.game);
+    Require(!changedDirectory.Succeeded() && !changedDirectory.value
+        && HasCode(changedDirectory, "TERRAIN_REPLAY_SOURCE_READ_FAILED")
+        && HasCode(changedDirectory, "TERRAIN_PATHING_RESOURCE_CHANGED"),
+        "directory source identity failure is explicitly fatal and retains its original diagnostic");
+    Require(IO::WriteFileBytes(f.source->SourcePath(), Text("changed archive baseline")).Succeeded(),
+        "change only the private archive baseline after journal capture");
+    const auto changedArchive = TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members),
+        f.members[0].data, f.members[1].data, archiveJournal, *replayed.session, f.game);
+    Require(!changedArchive.Succeeded() && !changedArchive.value
+        && HasCode(changedArchive, "TERRAIN_REPLAY_SOURCE_READ_FAILED") && HasCode(changedArchive, "SOURCE_CHANGED"),
+        "archive source identity failure is explicitly fatal and retains its original diagnostic");
+    Require(Take(SerializeMapTerrain(*replayed.session->Terrain())) == before,
+        "failed baseline reads do not mutate or publish a partial replay");
+}
+
 void ForwardJournalPreservesSavedRestrictionOverlapAndUndo() {
     Fixture f(true, true);
     // 原创来源先明确含不可飞P=4，随后声明S=6，刻意制造P/S重叠。
@@ -766,6 +792,7 @@ int main() {
         DirectSaveUsesOrderedWaterAndOriginalScriptGate();
         DirectSaveAllowsSpecialWaterDeletionWithoutPlacementFollow();
         ForwardJournalRestoresOwnedSpecialDeletionAndRejectsDrift();
+        ForwardJournalSeparatesBaselineReadFailureFromResourceFallback();
         ForwardJournalPreservesSavedRestrictionOverlapAndUndo();
         std::cout << "TerrainWaterEditServiceTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

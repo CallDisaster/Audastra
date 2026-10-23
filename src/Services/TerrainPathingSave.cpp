@@ -89,6 +89,10 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& sourc
             }(); // 外层DOO解析快照先释放，再进入水刷事务自己的已预算解析/候选阶段。
             if (!resources.Succeeded() || !resources.value) return {{}, resources.diagnostics};
             if (journal) {
+                const auto digestBytes = resources.value->WaterBrushDependencyBudgetBytes();
+                if (!digestBytes || digestBytes > limits.maximumCandidateBytes - historyBytes
+                    || !reserve(work, limits.maximumWork, digestBytes, 3))
+                    return fail("TERRAIN_REPLAY_BUDGET", "水刷依赖摘要的临时wire或累计编码/散列工作超出预算。");
                 const auto digest = resources.value->WaterBrushDependencyFingerprint();
                 if (!digest.Succeeded() || !digest.value || *digest.value != journal->strokes[strokeIndex].rulesSha256)
                     return fail("TERRAIN_JOURNAL_RESOURCE_DRIFT", "水刷实际依赖、winner或缺失项已变化，未安装记录中的任何前缀。");
@@ -215,6 +219,20 @@ Result<TerrainReplayCandidate> CreateReplay(const Source& source, const MapDocum
     using Output = Result<TerrainReplayCandidate>;
     const auto mismatch = [] { return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_SOURCE_MISMATCH", "原始W3E/WPM、地图成员或已证缺失项与实际来源不一致。"); };
     const auto budgetFailure = [] { return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_BUDGET", "实际来源、会话基线或累计重放预算超限。"); };
+    const auto sourceReadFailure = [](std::vector<Diagnostic> diagnostics) {
+        // 只有精确读取自身的容量不足允许回退完整raw；实际基线的身份、结构或I/O失败须硬拒。
+        // 资源owner在Replay内另有捕获边界，不能按通用Mpq/IO子系统混判其资源缺失。
+        const bool budgetOnly = !diagnostics.empty() && std::all_of(diagnostics.begin(), diagnostics.end(), [](const auto& diagnostic) {
+            return (diagnostic.subsystem == "MapArchiveSession" && diagnostic.code == "EXACT_MEMBER_LIMIT")
+                || (diagnostic.subsystem == "Mpq" && diagnostic.code == "FILE_READ_BUDGET_EXCEEDED")
+                || (diagnostic.subsystem == "VerifiedFile" && diagnostic.code == "VERIFIED_FILE_BUDGET_EXCEEDED")
+                || (diagnostic.subsystem == "Terrain.PathingResources" && diagnostic.code == "TERRAIN_PATHING_RESOURCE_BUDGET");
+        });
+        if (budgetOnly) return Output{{}, std::move(diagnostics)};
+        auto failure = Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_SOURCE_READ_FAILED", "实际地图基线无法完整验证，未恢复或安装任何前缀。");
+        for (auto& diagnostic : diagnostics) failure.diagnostics.push_back(std::move(diagnostic));
+        return failure;
+    };
     const TerrainReplayLimits hard;
     if (!limits.maximumResourceBytes || limits.maximumResourceBytes > hard.maximumResourceBytes
         || !limits.maximumWork || limits.maximumWork > hard.maximumWork
@@ -267,7 +285,7 @@ Result<TerrainReplayCandidate> CreateReplay(const Source& source, const MapDocum
     sourceLimits.totalBytes = std::min({sourceLimits.totalBytes, limits.maximumResourceBytes, limits.maximumCandidateBytes});
     sourceLimits.memberBytes = sourceLimits.totalBytes;
     auto actual = reader(names, sourceLimits);
-    if (!actual.Succeeded() || !actual.value) return {{}, actual.diagnostics};
+    if (!actual.Succeeded() || !actual.value) return sourceReadFailure(std::move(actual.diagnostics));
     if (!SourceMatches(original, terrain, pathing, *actual.value)) return mismatch();
     if (journal) {
         if (journal->sourceSha256 != sha || journal->members.size() != actual.value->size())
@@ -300,7 +318,7 @@ Result<TerrainReplayCandidate> CreateReplay(const Source& source, const MapDocum
     auto replayed = Replay(source, *candidate, *baseline, pathing.size(), strokes, gameRoot, remainingLimits, sha, journal, &receipts);
     if (!replayed.Succeeded() || !replayed.value) return {{}, replayed.diagnostics};
     auto finalSource = reader(names, sourceLimits);
-    if (!finalSource.Succeeded() || !finalSource.value) return {{}, finalSource.diagnostics};
+    if (!finalSource.Succeeded() || !finalSource.value) return sourceReadFailure(std::move(finalSource.diagnostics));
     if (!SourceMatches(original, terrain, pathing, *finalSource.value)) return mismatch();
     return Output::Success({std::move(candidate), std::move(*replayed.value), std::move(receipts)});
 }

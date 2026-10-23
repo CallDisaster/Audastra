@@ -405,9 +405,15 @@ Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(const std::files
         } else {
             const bool invalid = std::any_of(restored.diagnostics.begin(), restored.diagnostics.end(), [](const auto& diagnostic) {
                 return diagnostic.code == "TERRAIN_JOURNAL_INVALID" || diagnostic.code == "TERRAIN_JOURNAL_BASELINE_MISMATCH"
-                    || diagnostic.code == "TERRAIN_REPLAY_SOURCE_MISMATCH" || diagnostic.code == "TERRAIN_JOURNAL_OUTPUT_MISMATCH";
+                    || diagnostic.code == "TERRAIN_REPLAY_SOURCE_MISMATCH" || diagnostic.code == "TERRAIN_REPLAY_SOURCE_READ_FAILED"
+                    || diagnostic.code == "TERRAIN_JOURNAL_OUTPUT_MISMATCH";
             });
             if (invalid) return {{}, restored.diagnostics};
+            if (baseline) {
+                // 资源owner可能早于工厂末端来源回读失败；降raw前仍须确证完整实际基线未变。
+                const auto unchanged = baseline->VerifySourceUnchanged();
+                if (!unchanged.Succeeded()) return {{}, unchanged.diagnostics};
+            }
             terrainJournalWarning = "草稿已完整保留；水刷资源缺失、依赖变化或重放预算不足，水刷来源未恢复。";
         }
     }
