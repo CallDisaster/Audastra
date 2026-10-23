@@ -413,7 +413,7 @@ QJsonValue OptionalIndex(const TriggerDocument& document, const std::optional<st
 QJsonObject QueryDocumentImpl(const TriggerDocument& document, const UiCatalog& catalog,
     const MapObjectReferenceSnapshot* mapObjects, const QJsonObject& request, const GraphNameResolver& names = {}) {
     Object(request, {"table"}, {"start", "limit", "schema_version", "argument_ids", "variable_ids", "include_replacement_guard",
-        "functions", "ui_layer", "trigger_id", "category_id", "type"});
+        "functions", "ui_layer", "trigger_id", "category_id", "type", "match"});
     if (request.contains("schema_version") && Integer(request, "schema_version") != 1) throw GraphJsonError("未知图 schema_version。");
     const auto table = String(request, "table");
     if (table == "trigger_text") {
@@ -444,6 +444,36 @@ QJsonObject QueryDocumentImpl(const TriggerDocument& document, const UiCatalog& 
         return {{"ok", true}, {"schema_version", 1}, {"binding", BindingJson(*binding.value)}, {"table", "feature_text"},
             {"category", RefJson(GraphRecordKind::Category, categoryRef)}, {"name", QString::fromStdString(category->name.text)},
             {"text", QString::fromStdString(*text.value)}};
+    }
+    if (table == "outline") {
+        // 目录总览：类别按文档顺序，每个类别列出触发器名与编号；match 按名字筛选（类别名命中时列出全部触发器）。
+        Object(request, {"table"}, {"schema_version", "match", "category_id"});
+        const auto match = request.contains("match") ? QString::fromStdString(String(request, "match")) : QString{};
+        const auto contains = [&](const std::string& text) {
+            return match.isEmpty() || QString::fromStdString(text).contains(match, Qt::CaseInsensitive);
+        };
+        const auto only = request.contains("category_id") ? std::optional<StableId>(Id(request, "category_id")) : std::nullopt;
+        QJsonArray rows;
+        std::size_t listed = 0;
+        for (const auto& category : document.categories) {
+            if (only && category.id != *only) continue;
+            const bool whole = !match.isEmpty() && contains(category.name.text);
+            QJsonArray triggers;
+            for (const auto& trigger : document.triggers) {
+                if (trigger.categoryId != category.categoryId || (!whole && !contains(trigger.name.text))) continue;
+                QJsonObject row{{"id", QString::number(trigger.id)}, {"name", QString::fromStdString(trigger.name.text)}};
+                if (trigger.type == 1) row.insert("comment", true);
+                if (!trigger.enabled) row.insert("enabled", false);
+                if (trigger.initiallyClosed) row.insert("initially_on", false);
+                triggers.append(row);
+            }
+            if (!match.isEmpty() && !whole && triggers.isEmpty()) continue;
+            listed += static_cast<std::size_t>(triggers.size());
+            rows.append(QJsonObject{{"id", QString::number(category.id)}, {"name", QString::fromStdString(category.name.text)},
+                {"triggers", triggers}});
+        }
+        return {{"ok", true}, {"schema_version", 1}, {"table", "outline"}, {"categories", rows},
+            {"trigger_count", QString::number(listed)}};
     }
     if (table == "presets") {
         // 函数库预设（固定选项），可按参数类型筛选；写紧凑 T 时直接写预设名。
@@ -713,7 +743,7 @@ QJsonObject QueryPage(McpWorkspace& workspace, const QJsonObject& request) {
         CaptureWorkspaceNameResolver(workspace, workspace.VisibleDocument(), mapObjects));
     result.insert("revision", RevisionJson(workspace.Revision()));
     result.insert("content_scope", workspace.HasActiveTransaction() ? "visible-transaction" : "committed-directory");
-    result.insert("map_object_reference_diagnostics", DiagnosticsJson(capturedObjects.diagnostics).value("diagnostics"));
+    InsertMapObjectReferenceDiagnostics(result, capturedObjects.diagnostics);
     return result;
 }
 
@@ -888,13 +918,13 @@ QJsonObject GraphQueryProperties() {
     const auto id = QJsonObject{{"type", "string"}, {"pattern", "^[1-9][0-9]*$"}};
     return {{"schema_version", QJsonObject{{"type", "integer"}, {"enum", QJsonArray{1}}}},
         {"table", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"categories", "variables", "triggers", "ecas", "arguments",
-            "map_objects", "trigger_text", "feature_text", "presets", "function_examples"}}}},
+            "map_objects", "trigger_text", "feature_text", "presets", "function_examples", "outline"}}}},
         {"start", QJsonObject{{"type", "integer"}, {"minimum", 0}}}, {"limit", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 128}}},
         {"argument_ids", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 16}, {"uniqueItems", true}, {"items", id}}},
         {"variable_ids", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 16}, {"uniqueItems", true}, {"items", id}}},
         {"include_replacement_guard", QJsonObject{{"type", "boolean"}}}, {"functions", EcaFunctionFilterSchema()},
         {"ui_layer", QJsonObject{{"type", "string"}, {"minLength", 1}}}, {"trigger_id", id}, {"category_id", id},
-        {"type", QJsonObject{{"type", "string"}, {"minLength", 1}}}};
+        {"type", QJsonObject{{"type", "string"}, {"minLength", 1}}}, {"match", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 128}}}};
 }
 
 QJsonObject GraphOperationSchema() {
@@ -918,7 +948,8 @@ void RegisterTriggerGraphTools(McpServer& server) {
     query.name = "query_trigger_graph";
     query.description = "分页查询 GUI 图；ecas 可用 functions（精确函数名）或 ui_layer（函数库层）筛选后再分页；arguments 可用 argument_ids 定点查询最多16项，并通过 include_replacement_guard 取得共用核心的原位替换资格；"
         "trigger_text 表配 trigger_id 把整个触发器导出为紧凑 T 写法；feature_text 表配 category_id 把整个类别（触发器与引用的变量）导出为功能写法；"
-        "presets 表（可配 type）列出函数库预设；function_examples 表配 functions 给出这些函数在本图里的真实用法原句。";
+        "presets 表（可配 type）列出函数库预设；function_examples 表配 functions 给出这些函数在本图里的真实用法原句；"
+        "outline 表一次列出全部类别和触发器的名字与编号，可用 match 按名字筛选。";
     query.inputSchema = BasicSchema(GraphQueryProperties(), {"table"});
     query.maxResponseBytes = kResponseBytes;
     query.handler = [&server](const QJsonObject& request) -> QJsonValue {

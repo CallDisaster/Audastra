@@ -393,6 +393,12 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
     QVERIFY2(catalog.value("ok").toBool(), qPrintable(Explain(catalog)));
     QCOMPARE(catalog.value("rows").toArray()[0].toObject().value("name").toString(), QStringLiteral("DoNothing"));
     QVERIFY(!catalog.value("rows").toArray()[0].toObject().value("signature").toString().isEmpty());
+    // 不给 kind 时搜索全部种类（夹具目录只有动作）。
+    request = f.Context(); request.insert("search", "DoNothing");
+    const auto anyRows = f.tools->Invoke("editor_get_ui_catalog", request).value("rows").toArray();
+    QVERIFY(std::any_of(anyRows.begin(), anyRows.end(), [](const QJsonValue& row) {
+        return row.toObject().value("signature").toString().startsWith(QStringLiteral("action:DoNothing("));
+    }));
     // 活动编辑器真正的 code.check 接线：独立正文只检语法，不执行未知 native、不写地图。
     // 查询权限足够，不能为了检查正文授予编辑/保存或外部运行权限。
     Mcp::ToolPolicy queryOnly;
@@ -515,6 +521,17 @@ void LiveEditorToolsTests::BindingTokenReplacesIdentityFields() {
     const auto queried = f.tools->Invoke("editor_query_trigger_graph", QJsonObject{{"binding_token", next}, {"table", "triggers"}});
     QVERIFY2(queried.value("ok").toBool(), qPrintable(Explain(queried)));
     QCOMPARE(queried.value("binding_token").toString(), next);
+    const auto outline = f.tools->Invoke("editor_query_trigger_graph", QJsonObject{{"binding_token", next}, {"table", "outline"}});
+    QVERIFY2(outline.value("ok").toBool(), qPrintable(Explain(outline)));
+    const auto categories = outline.value("categories").toArray();
+    QVERIFY(!categories.isEmpty() && outline.value("trigger_count").toString().toInt() == static_cast<int>(f.project.triggerDocument_->triggers.size()));
+    const auto first = categories.first().toObject().value("triggers").toArray().first().toObject();
+    const auto byName = f.tools->Invoke("editor_query_trigger_graph",
+        QJsonObject{{"binding_token", next}, {"table", "outline"}, {"match", first.value("name").toString()}});
+    QVERIFY(byName.value("trigger_count").toString().toInt() >= 1);
+    const auto none = f.tools->Invoke("editor_query_trigger_graph",
+        QJsonObject{{"binding_token", next}, {"table", "outline"}, {"match", "没有这样的名字"}});
+    QVERIFY(none.value("ok").toBool() && none.value("categories").toArray().isEmpty());
 }
 
 void LiveEditorToolsTests::StaleAndInvalidBatchesAreAtomic() {

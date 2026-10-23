@@ -273,6 +273,8 @@ actions:
 - 地图对象：预放单位/物品 `gg_unit_`/`gg_item_`、脚本创建的可破坏物 `gg_dest_`、区域 `gg_rct_`、镜头 `gg_cam_`、声音 `gg_snd_`（音乐按字符串）都可直接引用；名字与类型以 `query_trigger_graph` 的 `map_objects` 表为准。
 - 触发器、区域、镜头、声音参数也可以直接写显示名，如 `` AddTriggerEvent(`9-1 技能命中`, ...) ``、`` GetRectCenter(`Arena`) ``，按保存时的命名规则换成 `gg_trg_`/`gg_rct_`/`gg_cam_`/`gg_snd_` 全局。触发器名须唯一，同名多个时报错让你写 `gg_trg_` 生成名。导出（`trigger_text`、`feature_text`、预览差异）时这几类参数也写成显示名；只有一个生成名对应多个对象时保留生成名。中文名按字节换成下划线，字数相同的两个名字可能生成同一个脚本名，保存和整图检查会报 `TRIGGER_SCRIPT_NAME_DUPLICATE` / `OBJECT_SCRIPT_NAME_DUPLICATE` 并指出是哪两个，改名其中一个即可。
 - 预设名写错时，报错会列出这个参数类型的前几个预设；全部预设用 `{"table": "presets", "type": "<类型>"}` 查（可分页 `start`/`limit`）。
+- 先看地图有哪些类别和触发器，用 `{"table": "outline"}`：一次列出全部类别和其中触发器的名字与编号；加 `"match": "沃金"` 只列名字含该词的触发器（类别名命中时列出整个类别），加 `category_id` 只看一个类别。
+- 查函数签名用编辑器端口的 `editor_get_ui_catalog`：不给 `kind` 时搜索事件、条件、动作和函数全部种类，签名前缀（`event:`、`condition:`、`action:`、`call:`）标明种类。
 - 不确定某个函数怎么写，用 `{"table": "function_examples", "functions": ["函数名", ...]}` 查地图里现成的写法：每个函数最多返回 `limit` 条（默认 4，上限 16），带触发器名和导出文本行号，可直接照抄后改参数。
 - `?` 是 WE 里“参数未设置”（编辑器里的红色空参数），只能留在禁用的语句里；启用的语句写 `?` 会报 `TRIGGER_GRAPH_ARGUMENT_UNSET`。
 - 代码类参数（如 `CustomScriptCode`、YDWE 局部变量名所在的参数）只接受标识符（如 `loc_u`）或函数库预设；`replace_trigger_text` 可以原样保留该触发器里已有的代码和已有的不规范固定值，但不能改写、新写，也不能挪到别的触发器（报 `TRIGGER_GRAPH_CODE_UNSUPPORTED` 等）。需要新代码时先问作者。

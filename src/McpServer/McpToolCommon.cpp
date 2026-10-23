@@ -28,6 +28,12 @@ QJsonObject DiagnosticsJson(const std::vector<Diagnostic>& diagnostics) {
     }
     return QJsonObject{{"ok", false}, {"diagnostics", values}};
 }
+void InsertMapObjectReferenceDiagnostics(QJsonObject& result, const std::vector<Diagnostic>& diagnostics) {
+    const std::vector<Diagnostic> head(diagnostics.begin(), diagnostics.begin() + static_cast<std::ptrdiff_t>((std::min)(diagnostics.size(), std::size_t{3})));
+    result.insert("map_object_reference_diagnostics", DiagnosticsJson(head).value("diagnostics"));
+    if (diagnostics.size() > head.size())
+        result.insert("map_object_reference_diagnostics_total", static_cast<qint64>(diagnostics.size()));
+}
 
 QJsonObject Failure(std::string code, std::string message) {
     return DiagnosticsJson(std::vector<Diagnostic>{Diagnostic{
