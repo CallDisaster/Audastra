@@ -747,6 +747,9 @@ void RegisteredWaterHostRetainsOrderedReplayAndCompleteDirectoryOutput() {
         archiveRequest.uiRoot = root / "ui"; archiveRequest.toolRoot = root / "missing-toolchain";
         archiveRequest.minimapChoice = TerrainMinimapSaveChoice::Preserve;
         const auto pending = workspace->ExportArchiveCandidate(transaction, revision, archiveRequest);
+        if (!pending.Succeeded())
+            for (const auto& diagnostic : pending.diagnostics)
+                std::cerr << diagnostic.code << ": " << diagnostic.message << '\n';
         Expect(!pending.Succeeded() && std::any_of(pending.diagnostics.begin(), pending.diagnostics.end(),
             [](const auto& item) { return item.code == "SCRIPT_TOOLCHAIN_MISSING"; })
             && !std::filesystem::exists(archiveRequest.targetCandidate) && workspace->HasActiveTransaction(),

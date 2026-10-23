@@ -584,6 +584,9 @@ void DirectSaveUsesOrderedWaterAndOriginalScriptGate() {
         raise.brush.kind = TerrainBrushKind::Raise; raise.brush.radius = 0; raise.brush.strength = 16;
         request.terrainStrokes.insert(request.terrainStrokes.begin(), raise);
         const auto prepared = SaveMapEditCandidate(request);
+        if (!HasCode(prepared, "SCRIPT_TOOLCHAIN_MISSING"))
+            for (const auto& diagnostic : prepared.diagnostics)
+                std::cerr << diagnostic.code << ": " << diagnostic.message << '\n';
         Require(HasCode(prepared, "SCRIPT_TOOLCHAIN_MISSING"), "ordinary plus water strokes reach the unchanged supervised script gate");
         Require(Take(Sha256File(f.source->SourcePath())) == f.source->SourceSha256() && !std::filesystem::exists(request.targetCandidate),
             "missing compiler cannot publish the internally prepared water candidate");
