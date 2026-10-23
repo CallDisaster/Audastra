@@ -2,6 +2,7 @@
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
+#include "War3MapCore/Services/TerrainEditService.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
 
 #include <Windows.h>
@@ -148,7 +149,7 @@ struct Fixture {
         Check(plan.SaveGate()); auto output = edits->Replacements(); Check(plan.InstallPathingOutput(*edits, output));
         Check(plan.VerifyForSave(*edits, archive->SourceSha256(), output)); return output;
     }
-    void SaveExpected(const char* name, const Bytes& terrain, const Bytes& pathing) {
+    void SaveExpected(const char* name, const Bytes& terrain, const Bytes& pathing, const Bytes* doodads = nullptr) {
         const auto sourcePath = archive->SourcePath();
         const auto sourceSha = Take(Sha256File(sourcePath));
         const auto plan = Plan(); Check(plan.SaveGate()); Require(plan.RebuiltPathing(), "native pathing rebuilt");
@@ -157,8 +158,10 @@ struct Fixture {
         Check(plan.VerifyReadback(saved));
         Require(Take(saved.ReadMember("war3map.w3e")) == terrain, "full independent W3E expected bytes");
         Require(Take(saved.ReadMember("war3map.wpm")) == pathing, "full independent WPM expected bytes");
-        for (const auto& member : members) if (member.name != "war3map.w3e" && member.name != "war3map.wpm")
-            Require(Take(saved.ReadMember(member.name)) == member.data, "all unrelated members preserved exactly");
+        for (const auto& member : members) if (member.name != "war3map.w3e" && member.name != "war3map.wpm") {
+            const auto& expected = doodads && member.name == "war3map.doo" ? *doodads : member.data;
+            Require(Take(saved.ReadMember(member.name)) == expected, "all expected DOO and unrelated members preserved exactly");
+        }
         Require(Take(Sha256File(sourcePath)) == sourceSha, "save does not rewrite source archive");
         Check(plan.CommitSaved(*edits, MapDocument::FromArchive(saved)));
         Require(!edits->IsDirty(), "verified saved source becomes the clean baseline");
@@ -856,7 +859,8 @@ void PatternedDoodadsUseTheNormalSaveAndUndoChain() {
             {{"Doo0","Doo0",std::string(kUniformDoodadTexture),"E","-1"}});
         Bytes texture(18); texture[2]=std::byte{2}; texture[12]=std::byte{3}; texture[14]=std::byte{2};
         texture[16]=std::byte{24}; texture[17]=std::byte{32};
-        for (unsigned b : {0,0,0, 1,0,0, 0,1,0, 0,0,1, 1,1,0, 1,0,1}) texture.push_back(static_cast<std::byte>(b));
+        constexpr std::array<std::uint8_t, 18> pixels{0,0,0, 1,0,0, 0,1,0, 0,0,1, 1,1,0, 1,0,1};
+        for (const auto b : pixels) texture.push_back(static_cast<std::byte>(b));
         f.members.push_back({std::string(kUniformDoodadTexture),texture});
         if (nativeKind != 0) {
             f.members.push_back({"war3map.w3d", DoodadOverride(kUniformDoodadTexture.data(), "dpt0", nativeKind == 2)});
@@ -991,6 +995,144 @@ void SpecialDoodadsSaveWaterGroundAndCliffs() {
     Require(bad.edits->IsDirty() && Take(Sha256File(bad.archive->SourcePath())) == originalSha,
         "special-model refusal preserves the source and unsaved terrain");
 }
+
+void SharedSpecialAndOrdinaryResourcesRoundTripOnce() {
+    Fixture f; SpecialDoodad(f);
+    auto& texture = f.Member(kUniformDoodadTexture);
+    std::fill(texture.begin() + 18, texture.end(), std::byte{0});
+    std::fill(f.Member("war3map.wpm").begin() + 16, f.Member("war3map.wpm").end(), std::byte{0x19});
+    f.Member("Doodads/Doodads.slk") = Slk({"doodID", "code", "pathTex", "category", "fixedRot"},
+        {{"Doo0", "Doo0", std::string(kUniformDoodadTexture), "C", "45"},
+         {"Ord0", "Ord0", std::string(kUniformDoodadTexture), "E", "-1"}});
+    auto placements = Take(ParseDoodadPlacements(f.Member("war3map.doo")));
+    DoodadPlacement ordinary; ordinary.rawcode = "Ord0"; ordinary.position = {512, 512, 0};
+    ordinary.scale = {1, 1, 1}; ordinary.flags = 2; ordinary.creationId = 1;
+    placements.doodads.push_back(ordinary);
+    f.Member("war3map.doo") = Take(placements.Serialize());
+    f.Open(); f.Paint();
+    // 完整独立字节预期：黑色占地图不阻挡，所有地格从浅水08变为深水0a，保护11保留。
+    // 普通/特殊对象共用贴图，水规则/MaxHeight共用配置，最终成员回读不能重复请求同名来源。
+    f.Save("shared-dependencies-deep.w3x", true);
+    Require(f.edits->Undo(), "undo saved water with shared ordinary/special dependencies");
+    f.Save("shared-dependencies-undone.w3x", false);
+    Require(f.edits->Redo(), "redo saved water with shared ordinary/special dependencies");
+    f.Save("shared-dependencies-redone.w3x", true);
+}
+
+void SpecialWaterDeleteFixture(Fixture& f) {
+    SpecialDoodad(f, true);
+    f.Member("UI/MiscData.txt") = Text("[Terrain]\nMaxSlope=90\nMinHeight=-256\nMaxHeight=1536\n"
+        "[Water]\nDeepLevelPathing=64\n[CameraMargins]\nLeft=0\nRight=0\nBottom=0\nTop=0\n");
+    f.members.push_back({"TerrainArt/CliffTypes.slk", Slk({"cliffID"}, {{"Cl01"}})});
+    f.Member("Doodads/Doodads.slk") = Slk({"doodID", "code", "pathTex", "category", "fixedRot"},
+        {{"Doo0", "Doo0", std::string(kUniformDoodadTexture), "C", "45"},
+         {"Doo1", "Doo1", std::string(kUniformDoodadTexture), "C", "45"},
+         {"Doo2", "Doo2", std::string(kUniformDoodadTexture), "C", "45"},
+         {"Ord0", "Ord0", "_", "E", "-1"}});
+    auto placements = Take(ParseDoodadPlacements(f.Member("war3map.doo")));
+    placements.specialDoodads.push_back({"Doo1", 0, {5, 5}});
+    placements.specialDoodads.push_back({"Doo2", 0, {6, 5}});
+    DoodadPlacement ordinary; ordinary.rawcode = "Ord0"; ordinary.position = {512, 512, 37};
+    ordinary.scale = {1, 1.25f, 0.75f}; ordinary.rotation = 0.625f; ordinary.flags = 2;
+    ordinary.lifePercent = 83; ordinary.creationId = 912;
+    PlacementItemSet drops; drops.items = {{"gold", 70}, {"lmbr", 30}};
+    ordinary.itemSets.push_back(std::move(drops)); placements.doodads.push_back(std::move(ordinary));
+    f.Member("war3map.doo") = Take(placements.Serialize());
+    // 两个保留项在远区，使用独立字面通行列；不能从待测special/native生成器制作旧WPM。
+    constexpr std::array<std::uint8_t, 4> dry{0x11, 0x19, 0x15, 0xd3};
+    for (unsigned y = 20; y < 24; ++y) for (unsigned x = 20; x < 28; ++x)
+        f.Member("war3map.wpm")[16 + y * 32 + x] = static_cast<std::byte>(dry[(x - 20) % 4]);
+    f.Open();
+}
+
+void SpecialWaterDeletionUsesTheNormalSaveAndUndoChain() {
+    Fixture f; SpecialWaterDeleteFixture(f);
+    const auto currentDoodads = [&] {
+        const auto document = Take(f.edits->Snapshot(MapDataKind::Doodads, kBudget));
+        Require(document.Doodads().has_value(), "bounded DOO snapshot parses the actual current ordinary and special segments");
+        return *document.Doodads();
+    };
+    const auto originalTerrain = f.Member("war3map.w3e"), originalPathing = f.Member("war3map.wpm");
+    const auto originalDoodads = f.Member("war3map.doo");
+    const auto before = currentDoodads();
+    auto expectedDoodads = before;
+    expectedDoodads.specialDoodads = {before.specialDoodads[2], before.specialDoodads[1]};
+    const auto deletedDoodads = Take(expectedDoodads.Serialize());
+    const auto rules = Take(TerrainPathingSave::CaptureWaterBrushRules(*f.archive, f.original,
+        *f.edits->Terrain(), before, f.gameRoot, true, kBudget));
+    const Services::MapDataQueryBinding document{"special-water-save", 1, 0, f.archive->SourceSha256()};
+    const Services::TerrainEditBinding binding{document, f.edits->SessionIdentity(), f.edits->Revision(), f.edits->TerrainSourceRevision()};
+    TerrainWaterStrokeOptions options; options.shape = TerrainBrushShape::Square; options.randomSeed = 1;
+    const TerrainStrokePoint point{256, 256};
+    const auto compatibility = TerrainPathingResources::CaptureWaterBrushRules(*f.archive, f.original,
+        *f.edits->Terrain(), f.gameRoot, true, kBudget);
+    Require(!compatibility.Succeeded() || !compatibility.value
+        || !Services::PrepareTerrainWaterEdit(*f.edits, document, binding, *compatibility.value,
+            options, std::span(&point, 1), false).Succeeded(),
+        "Core compatibility capture cannot qualify a real nonempty special set without the Services resource adapter");
+    const auto prepared = Take(Services::PrepareTerrainWaterEdit(*f.edits, document, binding, rules,
+        options, std::span(&point, 1), false));
+    Require(f.edits->Revision() == 0 && !f.edits->CanUndo() && Take(currentDoodads().Serialize()) == originalDoodads,
+        "resource capture and service preparation do not publish the special deletion");
+    Take(Services::ApplyTerrainEdit(*f.edits, document, prepared));
+    Require(f.edits->Revision() == 1 && f.edits->CanUndo() && Take(currentDoodads().Serialize()) == deletedDoodads,
+        "one water command commits full ordinary bytes and special swap-last order [source2,source1]");
+    Require(f.edits->Terrain()->vertices[2 * 9 + 2].CliffLevel() == 1
+        && f.edits->Terrain()->vertices[2 * 9 + 2].HasWater(), "the deletion belongs to a real shallow-water cliff edit");
+    const auto waterTerrain = Take(SerializeMapTerrain(*f.edits->Terrain()));
+    auto expectedPathing = originalPathing;
+    // 四个地格围住低一层的湿顶点：(4..11)^2为悬崖db，最近中心(6..9)^2为深判定1b。
+    // 原special0占地(8..11)^2被这些真实地形位替换；远处special1/2仍保留原四列。
+    for (unsigned y = 4; y < 12; ++y) for (unsigned x = 4; x < 12; ++x)
+        expectedPathing[16 + y * 32 + x] = std::byte{0xdb};
+    for (unsigned y = 6; y < 10; ++y) for (unsigned x = 6; x < 10; ++x)
+        expectedPathing[16 + y * 32 + x] = std::byte{0x1b};
+
+    const auto frozen = f.Plan(); const auto output = f.Output(frozen);
+    const auto doodadOutput = std::find_if(output.begin(), output.end(), [](const auto& member) { return member.name == "war3map.doo"; });
+    Require(doodadOutput != output.end() && doodadOutput->data == deletedDoodads,
+        "normal terrain output carries the complete coupled DOO replacement");
+    auto substituted = output;
+    const auto substitute = std::find_if(substituted.begin(), substituted.end(), [](const auto& member) { return member.name == "war3map.doo"; });
+    substitute->data = originalDoodads;
+    Require(!frozen.VerifyForSave(*f.edits, f.archive->SourceSha256(), substituted).Succeeded(),
+        "final-output CAS rejects restoring the deleted special row after preparation");
+    auto reordered = expectedDoodads;
+    std::reverse(reordered.specialDoodads.begin(), reordered.specialDoodads.end());
+    substitute->data = Take(reordered.Serialize());
+    Require(!frozen.VerifyForSave(*f.edits, f.archive->SourceSha256(), substituted).Succeeded(),
+        "final-output CAS binds surviving special order as well as the surviving row identities");
+    auto readback = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(f.root / "special-water-frozen.w3x", output)).path));
+    Check(frozen.VerifyReadback(readback));
+    Require(Take(readback.ReadMember("war3map.wpm")) == expectedPathing
+        && Take(readback.ReadMember("war3map.doo")) == deletedDoodads,
+        "independent readback proves old special G0 and remaining-special plus terrain G1 use different DOO sets");
+    const std::array<MemberReplacement, 1> restored{{{"war3map.doo", originalDoodads}}};
+    const auto wrongDoodads = Take(MapArchiveSession::Open(Take(readback.SaveCandidate(f.root / "special-water-reinserted.w3x", restored)).path));
+    Require(!frozen.VerifyReadback(wrongDoodads).Succeeded(), "readback CAS also rejects reinserted deleted special records");
+
+    for (const bool ordinary : {false, true}) {
+        auto unrecorded = currentDoodads();
+        if (ordinary) unrecorded.doodads.front().lifePercent = 24;
+        else unrecorded.specialDoodads.pop_back();
+        Check(f.edits->EditDoodads(unrecorded));
+        const auto refused = TerrainPathingSave::PrepareForSave(*f.archive, *f.edits, f.gameRoot);
+        Require(!refused.Succeeded() || !refused.value || !refused.value->SaveGate().Succeeded(),
+            "water deletion authority never authorizes an independent ordinary or special EditDoodads command");
+        Require(!frozen.VerifyForSave(*f.edits, f.archive->SourceSha256(), output).Succeeded(),
+            "an independent DOO edit also invalidates the already frozen session revision");
+        Require(f.edits->Undo() && Take(currentDoodads().Serialize()) == deletedDoodads,
+            "undo unrecorded object edit restores exactly the authorized water DOO state");
+    }
+    Check(rules.VerifyReadback(*f.archive, kBudget));
+    f.SaveExpected("special-water-saved.w3x", waterTerrain, expectedPathing, &deletedDoodads);
+    Require(f.edits->Undo() && Take(SerializeMapTerrain(*f.edits->Terrain())) == originalTerrain
+        && Take(currentDoodads().Serialize()) == originalDoodads, "saved water Undo restores W3E and complete original DOO tail together");
+    f.SaveExpected("special-water-undo-saved.w3x", originalTerrain, originalPathing, &originalDoodads);
+    Require(f.edits->Redo() && Take(SerializeMapTerrain(*f.edits->Terrain())) == waterTerrain
+        && Take(currentDoodads().Serialize()) == deletedDoodads, "saved water Redo restores exact special order and ordinary data without rerunning deletion");
+    f.SaveExpected("special-water-redo-saved.w3x", waterTerrain, expectedPathing, &deletedDoodads);
+}
 } // namespace
 
 int main() {
@@ -1014,6 +1156,8 @@ int main() {
         UniformDoodadRejectionDoesNotWeakenOldSaves();
         PatternedDoodadsUseTheNormalSaveAndUndoChain();
         SpecialDoodadsSaveWaterGroundAndCliffs();
+        SharedSpecialAndOrdinaryResourcesRoundTripOnce();
+        SpecialWaterDeletionUsesTheNormalSaveAndUndoChain();
         std::cout << "Native object terrain save tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

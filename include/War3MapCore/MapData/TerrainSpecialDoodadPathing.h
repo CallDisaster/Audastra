@@ -1,6 +1,7 @@
 #pragma once
 
 #include "War3MapCore/MapData/TerrainDoodadFootprint.h"
+#include "War3MapCore/MapData/TerrainWaterBrush.h"
 
 namespace War3Map::MapData {
 
@@ -10,6 +11,11 @@ struct TerrainSpecialDoodadPathingInput {
     const SpecialDoodadPlacement* placement = nullptr;
     std::optional<TerrainDoodadFootprint> footprint;
 };
+
+// 与通行层共用同一alpha解码和资格检查，供真实水刷owner建立逐记录形状。
+[[nodiscard]] Result<std::vector<TerrainWaterSpecialDoodadShape>> DescribeTerrainSpecialDoodads(
+    const TerrainGridSnapshot& terrain, std::span<const TerrainSpecialDoodadPathingInput> inputs,
+    std::uint8_t maximumCliffLevel, std::size_t maximumWorkingBytes);
 
 // 完整WPM大小的特殊层：bit0表示覆盖，0xCE是原版通道==255的禁止位。
 // 保留登记顺序的首个覆盖；旧/新地形的层级图案都必须与alpha一致，

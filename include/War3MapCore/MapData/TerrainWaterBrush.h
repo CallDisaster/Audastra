@@ -67,6 +67,7 @@ struct TerrainWaterSpecialDoodadShape {
     std::array<std::int32_t, 2> position;
     std::uint32_t x0, y0, x1, y1;
     std::vector<std::int8_t> relativeCliffLevels;
+    bool hasFootprint = true;
 };
 
 struct TerrainWaterBrushLimits {
@@ -82,6 +83,7 @@ struct TerrainWaterBrushResult {
     TerrainStrokeResult processed; // 实际读取/处理范围，可能大于 changed 和原始笔刷。
     std::size_t changedVertices = 0, work = 0;
     std::uint32_t finalRandomState = 0;
+    std::vector<std::uint32_t> removedSpecialSourceRecords;
     // 结构性后续工作；本纯 Core 返回值不授予 WPM/DOO/对象或整图保存资格。
     bool requiresPathingRebuild = false;
     bool requiresObjectValidityRefresh = false;
@@ -90,6 +92,7 @@ struct TerrainWaterBrushResult {
 struct TerrainWaterStrokeCandidate {
     TerrainGridSnapshot terrain;
     TerrainWaterBrushResult result;
+    DoodadPlacements doodads;
 };
 
 [[nodiscard]] Result<TerrainWaterStrokeAnchor> CaptureTerrainWaterStrokeAnchor(

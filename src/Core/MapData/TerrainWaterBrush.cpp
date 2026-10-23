@@ -85,7 +85,11 @@ public:
           width_(candidate.header.width), height_(candidate.header.height), blockWidth_((width_ - 2) / 4 + 1),
           blockHeight_((height_ - 2) / 4 + 1), marker_(candidate.vertices.size()), visited_(candidate.vertices.size()),
           random_(brush.randomSeed), slopeTangent_(static_cast<float>(std::tan(double(rules.maxSlopeDegrees) * kDegreeFactor))) {
-        (void)doodads;
+        shapeBySource_.resize(shapes.size());
+        liveSpecial_.reserve(shapes.size());
+        for (const auto& shape : shapes) shapeBySource_[shape.sourceRecordIndex] = &shape;
+        for (std::uint32_t i = 0; i < doodads.specialDoodads.size(); ++i) liveSpecial_.push_back(i);
+        result_.removedSpecialSourceRecords.reserve(shapes.size());
         result_.work = initialWork;
     }
 
@@ -121,7 +125,7 @@ public:
             ApplyCliff(*center, targetLevel);
         }
         // 岸线和第二轮层级收敛仍可改写 L；提交前再次核对最终实际处理域。
-        CheckSpecialDoodads();
+        CheckSpecialDoodads(false);
         // 只比较实际访问过的记录；没有全图坡道或未知位拒绝。
         Work(grid_.vertices.size());
         for (std::uint32_t y = 0; y < height_; ++y) for (std::uint32_t x = 0; x < width_; ++x) {
@@ -138,7 +142,7 @@ public:
             result_.requiresObjectValidityRefresh = true;
         }
         result_.finalRandomState = random_;
-        return result_;
+        return std::move(result_);
     }
 
 private:
@@ -147,6 +151,8 @@ private:
     const TerrainWaterLoadedRules& rules_;
     const TerrainWaterBrush& brush_;
     std::span<const TerrainWaterSpecialDoodadShape> shapes_;
+    std::vector<const TerrainWaterSpecialDoodadShape*> shapeBySource_;
+    std::vector<std::uint32_t> liveSpecial_;
     const TerrainWaterBrushLimits& limits_;
     std::uint32_t width_, height_, blockWidth_, blockHeight_;
     std::vector<std::uint8_t> marker_, visited_;
@@ -338,22 +344,36 @@ private:
             auto local = NewBlocks(); Gather(local, nx, ny); ConvergeCliffs(local, *conflict);
         }
     }
-    void CheckSpecialDoodads() {
-        for (const auto& shape : shapes_) {
+    void CheckSpecialDoodads(bool remove = true) {
+        // 5F3560先收集XY，5F3450逐次查当前首项，5F3290再末项覆盖。
+        // 不按最初索引删除，不去重XY，也不把扫描阶段与删除阶段交织。
+        std::vector<std::array<std::int32_t, 2>> pending;
+        pending.reserve(liveSpecial_.size());
+        for (const auto source : liveSpecial_) {
+            const auto& shape = *shapeBySource_[source];
             Work();
-            bool intersects = false;
-            for (auto x = shape.x0; x <= shape.x1 && !intersects; ++x)
-                for (auto y = shape.y0; y <= shape.y1; ++y) { Work(); if (visited_[Index(x, y)]) { intersects = true; break; } }
-            if (!intersects) continue;
+            if (!shape.hasFootprint) continue;
             const auto columns = shape.x1 - shape.x0 + 1;
-            // 资源形态核验不扩展实际处理域，避免相邻 special 因输入顺序被级联纳入。
             const int base = int(Inspect(shape.x0, shape.y0).CliffLevel()) - shape.relativeCliffLevels.front();
-            for (auto x = shape.x0; x <= shape.x1; ++x) for (auto y = shape.y0; y <= shape.y1; ++y) {
+            bool matches = true;
+            for (auto x = shape.x0; x <= shape.x1 && matches; ++x) for (auto y = shape.y0; y <= shape.y1; ++y) {
+                Work();
                 const auto index = std::size_t(y - shape.y0) * columns + x - shape.x0;
-                if (Inspect(x, y).CliffLevel() != base + shape.relativeCliffLevels[index])
-                    Reject("TERRAIN_WATER_SPECIAL_DOODAD_DELETE", "水刷需要删除 DOO special 记录 "
-                        + std::to_string(shape.sourceRecordIndex) + "（" + shape.rawcode + "）；当前有限域不修改该集合。");
+                if (Inspect(x, y).CliffLevel() != base + shape.relativeCliffLevels[index]) { matches = false; break; }
             }
+            if (matches) continue;
+            if (!remove) Reject("TERRAIN_WATER_SPECIAL_DOODAD_DELETE", "后续岸线使剩余特殊模型失配，不能另加原版没有的删除阶段。");
+            pending.push_back(shape.position);
+        }
+        for (const auto& position : pending) {
+            auto found = liveSpecial_.end();
+            for (auto it = liveSpecial_.begin(); it != liveSpecial_.end(); ++it) {
+                Work();
+                if (shapeBySource_[*it]->position == position) { found = it; break; }
+            }
+            if (found == liveSpecial_.end()) continue;
+            result_.removedSpecialSourceRecords.push_back(*found);
+            *found = liveSpecial_.back(); liveSpecial_.pop_back();
         }
     }
     void CleanWater(const DirtyBlocks& blocks) {
@@ -531,7 +551,32 @@ std::size_t ValidateInputs(const TerrainGridSnapshot& terrain, const TerrainWate
     add(terrain.vertices.size(), sizeof(TerrainVertex) + 2);
     add(terrain.tiles.size(), sizeof(TerrainTile));
     add(terrain.header.groundTilesets.size() + terrain.header.cliffTilesets.size(), sizeof(std::string) + 4);
-    add(shapes.size(), sizeof(std::uint8_t));
+    add(shapes.size(), sizeof(std::uint8_t) + sizeof(void*) + 2 * sizeof(std::uint32_t) + sizeof(std::array<std::int32_t, 2>));
+    // 候选会复制整个DOO，而不只复制special尾。先按实际展开结构计量并收费，
+    // 再调用无分配的共享wire计量器；禁止为检查预算先序列化或复制嵌套记录。
+    add(1, sizeof(DoodadPlacements));
+    add(doodads.OriginalBytes().size(), 1); charge(doodads.OriginalBytes().size());
+    add(doodads.doodads.size(), sizeof(DoodadPlacement)); charge(doodads.doodads.size());
+    add(doodads.specialDoodads.size(), sizeof(SpecialDoodadPlacement)); charge(doodads.specialDoodads.size());
+    const auto string = [&](const std::string& value) { add(value.size() + 1, 1); charge(value.size()); };
+    for (const auto& placement : doodads.doodads) {
+        string(placement.rawcode);
+        if (placement.skinId) string(*placement.skinId);
+        add(placement.itemSets.size(), sizeof(PlacementItemSet)); charge(placement.itemSets.size());
+        for (const auto& set : placement.itemSets) {
+            add(set.items.size(), sizeof(PlacementItemChoice)); charge(set.items.size());
+            for (const auto& item : set.items) string(item.rawcode);
+        }
+    }
+    for (const auto& placement : doodads.specialDoodads) string(placement.rawcode);
+    PlacementReadLimits placementLimits;
+    placementLimits.maxBytes = std::min(placementLimits.maxBytes, limits.maximumCandidateBytes);
+    placementLimits.maxPlacements = std::min(placementLimits.maxPlacements, limits.maximumWork);
+    placementLimits.maxNestedRecords = std::min(placementLimits.maxNestedRecords, limits.maximumWork);
+    const auto projection = MeasureClassicPlacementWire(doodads, {}, placementLimits);
+    if (!projection.Succeeded() || !projection.value)
+        Reject("TERRAIN_WATER_SPECIAL_DOODAD_FACTS", "装饰物输入不在完整经典往返及本笔预算内。");
+    charge(projection.value->placementCount); charge(projection.value->nestedRecordCount);
     add(std::size_t((terrain.header.width - 2) / 4 + 1) * ((terrain.header.height - 2) / 4 + 1), 3 * (sizeof(std::uint32_t) + 1));
     add(limits.maximumRecursionDepth, 64);
     charge(shapes.size() * 2);
@@ -542,9 +587,19 @@ std::size_t ValidateInputs(const TerrainGridSnapshot& terrain, const TerrainWate
         shapeSeen[shape.sourceRecordIndex] = true; const auto& source = doodads.specialDoodads[shape.sourceRecordIndex];
         if (shape.rawcode.size() != 4 || source.rawcode.size() != 4 || shape.rawcode != source.rawcode
             || shape.variation != source.variation || shape.position != source.position
-            || shape.x0 >= shape.x1 || shape.y0 >= shape.y1 || shape.x1 >= terrain.header.width || shape.y1 >= terrain.header.height
-            || shape.relativeCliffLevels.size() != std::uint64_t(shape.x1 - shape.x0 + 1) * (shape.y1 - shape.y0 + 1))
+            || (!shape.hasFootprint && !shape.relativeCliffLevels.empty())
+            || (shape.hasFootprint && (shape.x0 >= shape.x1 || shape.y0 >= shape.y1 || shape.x1 >= terrain.header.width || shape.y1 >= terrain.header.height
+            || shape.relativeCliffLevels.size() != std::uint64_t(shape.x1 - shape.x0 + 1) * (shape.y1 - shape.y0 + 1))))
             Reject("TERRAIN_WATER_SPECIAL_DOODAD_FACTS", "DOO special 资源形态与源记录或地图范围不一致。");
+        if (!shape.hasFootprint) continue;
+        const auto columns = shape.x1 - shape.x0 + 1;
+        const int base = int(terrain.vertices[std::size_t(shape.y0) * terrain.header.width + shape.x0].CliffLevel()) - shape.relativeCliffLevels.front();
+        for (auto y = shape.y0; y <= shape.y1; ++y) for (auto x = shape.x0; x <= shape.x1; ++x) {
+            charge();
+            const auto relative = shape.relativeCliffLevels[std::size_t(y - shape.y0) * columns + x - shape.x0];
+            if (relative < 0 || relative > 2 || terrain.vertices[std::size_t(y) * terrain.header.width + x].CliffLevel() != base + relative)
+                Reject("TERRAIN_WATER_SPECIAL_DOODAD_SOURCE_SHAPE", "原特殊模型形状已失配，不能借水刷清理坏源数据。");
+        }
     }
     if (!terrain.tiles.empty() && terrain.tiles.size() != std::uint64_t(terrain.header.width - 1) * (terrain.header.height - 1))
         Reject("TERRAIN_WATER_SOURCE_DERIVED", "源地形地格索引数量不自洽。");
@@ -631,7 +686,22 @@ Result<TerrainWaterStrokeCandidate> PrepareTerrainWaterStroke(const TerrainGridS
         auto candidate = source;
         WaterTransaction transaction(candidate, rules, brush, doodads, specialShapes, limits, initialWork);
         auto result = transaction.Run(points, source);
-        return Result<TerrainWaterStrokeCandidate>::Success({std::move(candidate), std::move(result)});
+        if (!result.removedSpecialSourceRecords.empty()
+            && std::any_of(specialShapes.begin(), specialShapes.end(), [](const auto& shape) { return !shape.hasFootprint; }))
+            Reject("TERRAIN_WATER_SPECIAL_RUNTIME_SET", "需要删除特殊模型，但当前DOO含不进入原版运行时列表的空占地记录；本批尚不改写此混合集合。");
+        auto nextDoodads = doodads;
+        for (const auto sourceIndex : result.removedSpecialSourceRecords) {
+            // 回执记录实际源身份；依相同XY次序重放末项覆盖，保留普通段及其全部字段。
+            const auto position = doodads.specialDoodads[sourceIndex].position;
+            const auto found = std::find_if(nextDoodads.specialDoodads.begin(), nextDoodads.specialDoodads.end(),
+                [&](const auto& item) {
+                    if (result.work == limits.maximumWork) Reject("TERRAIN_WATER_WORK_BUDGET", "特殊模型候选重放超过本笔工作量预算。");
+                    ++result.work;
+                    return item.position == position;
+                });
+            if (found != nextDoodads.specialDoodads.end()) { *found = nextDoodads.specialDoodads.back(); nextDoodads.specialDoodads.pop_back(); }
+        }
+        return Result<TerrainWaterStrokeCandidate>::Success({std::move(candidate), std::move(result), std::move(nextDoodads)});
     } catch (const Rejection& error) { return Result<TerrainWaterStrokeCandidate>::Failure(std::string(kSubsystem), error.code, error.text); }
     catch (const std::bad_alloc&) { return Result<TerrainWaterStrokeCandidate>::Failure(std::string(kSubsystem), "TERRAIN_WATER_ALLOCATION", "水刷候选分配失败，原地形未修改。"); }
     catch (const std::length_error&) { return Result<TerrainWaterStrokeCandidate>::Failure(std::string(kSubsystem), "TERRAIN_WATER_ALLOCATION", "水刷候选超出容器容量，原地形未修改。"); }
@@ -643,6 +713,8 @@ Result<TerrainWaterBrushResult> ApplyTerrainWaterStroke(TerrainGridSnapshot& ter
     auto prepared = PrepareTerrainWaterStroke(terrain, rules, brush, points, doodads, specialShapes, limits);
     if (!prepared.Succeeded() || !prepared.value)
         return {std::nullopt, std::move(prepared.diagnostics)};
+    if (!prepared.value->result.removedSpecialSourceRecords.empty())
+        return Result<TerrainWaterBrushResult>::Failure(std::string(kSubsystem), "TERRAIN_WATER_SPECIAL_DOODAD_DELETE", "此兼容入口不能同时提交DOO删除，请使用完整水刷候选事务。");
     terrain = std::move(prepared.value->terrain);
     return Result<TerrainWaterBrushResult>::Success(std::move(prepared.value->result));
 }

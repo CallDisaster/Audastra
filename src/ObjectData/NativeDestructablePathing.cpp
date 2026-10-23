@@ -321,13 +321,13 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
                 }
                 const bool nonempty = !value.empty() && value != "_" && value != "none";
                 if (special) {
-                    const auto path = nonempty ? value : std::string_view{};
+                    const auto specialPath = nonempty ? value : std::string_view{};
                     const auto outputWork = sizeof(std::string_view) * 5 + sizeof(MapData::TerrainNativeDoodadPathingType)
-                        + rawcode.size() + path.size() + 2;
+                        + rawcode.size() + specialPath.size() + 2;
                     if (outputWork > maximumWorkingBytes - work)
                         Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "特殊地形占地结果超过累计剩余预算。");
                     work += outputWork;
-                    specialPaths.emplace(rawcode, path);
+                    specialPaths.emplace(rawcode, specialPath);
                 } else if (nonempty) {
                     if (poseModified)
                         Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "非空占地的类别或fixedRot原生覆盖尚未接入，不能沿用标准姿态：" + std::string(rawcode));

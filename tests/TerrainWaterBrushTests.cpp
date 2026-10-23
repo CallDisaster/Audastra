@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -33,6 +34,10 @@ TerrainVertex& At(TerrainGridSnapshot& grid, std::uint32_t x, std::uint32_t y) {
     return grid.vertices[std::size_t(y) * grid.header.width + x];
 }
 
+const TerrainVertex& At(const TerrainGridSnapshot& grid, std::uint32_t x, std::uint32_t y) {
+    return grid.vertices[std::size_t(y) * grid.header.width + x];
+}
+
 TerrainWaterLoadedRules Rules(bool enforce = true) {
     // 这是测试明确提供的配置，不是产品默认值。
     return {90.0f, -2048.0f, 2047.0f, 0.0f, 128.0f, 14, enforce, {{"Ldrt", true}}, {"CLdi", "CLgr"}};
@@ -55,6 +60,47 @@ std::vector<std::byte> Bytes(const TerrainGridSnapshot& grid) {
     auto result = SerializeMapTerrain(grid); Require(result.Succeeded(), "fixture serializes"); return *result.value;
 }
 
+std::vector<std::byte> DoodadBytes(const DoodadPlacements& doodads) {
+    const auto result = doodads.Serialize(); Require(result.Succeeded(), "owned DOO fixture serializes"); return *result.value;
+}
+
+DoodadPlacements SpecialFixture(std::initializer_list<SpecialDoodadPlacement> special) {
+    auto doodads = EmptyDoodads();
+    DoodadPlacement ordinary;
+    ordinary.rawcode = "LTlt"; ordinary.variation = 3; ordinary.position = {123.5f, 456.25f, -17.0f};
+    ordinary.rotation = 0.75f; ordinary.scale = {1.0f, 1.25f, 0.5f}; ordinary.flags = 2;
+    ordinary.lifePercent = 87; ordinary.creationId = 971;
+    PlacementItemSet drops; drops.items = {{"gold", 73}, {"lmbr", 27}};
+    ordinary.itemSets.push_back(std::move(drops));
+    doodads.doodads.push_back(ordinary); doodads.specialDoodads.assign(special);
+    const auto wire = DoodadBytes(doodads);
+    auto parsed = ParseDoodadPlacements(wire);
+    Require(parsed.Succeeded(), "nonempty owned DOO fixture parses before the brush");
+    return std::move(*parsed.value);
+}
+
+TerrainWaterSpecialDoodadShape FlatSpecialShape(const DoodadPlacements& doodads, std::uint32_t source,
+    std::uint32_t width = 1, std::uint32_t height = 1) {
+    const auto& row = doodads.specialDoodads[source];
+    const auto x = static_cast<std::uint32_t>(row.position[0]), y = static_cast<std::uint32_t>(row.position[1]);
+    return {source, row.rawcode, row.variation, row.position, x, y, x + width, y + height,
+        std::vector<std::int8_t>(std::size_t(width + 1) * (height + 1), 0)};
+}
+
+void SpecialOrder(const DoodadPlacements& actual, const DoodadPlacements& source,
+    std::initializer_list<std::uint32_t> expectedSourceOrder, const char* message) {
+    auto expected = source; expected.specialDoodads.clear();
+    for (const auto row : expectedSourceOrder) expected.specialDoodads.push_back(source.specialDoodads[row]);
+    Require(DoodadBytes(actual) == DoodadBytes(expected), message);
+}
+
+void SourceUnchanged(const TerrainGridSnapshot& terrain, const std::vector<std::byte>& terrainBefore,
+    const DoodadPlacements& doodads, const std::vector<std::byte>& doodadsBefore) {
+    Require(Bytes(terrain) == terrainBefore && DoodadBytes(doodads) == doodadsBefore
+        && doodads.OriginalBytes() == doodadsBefore,
+        "preparation preserves source W3E fields, DOO records and original parsed DOO bytes");
+}
+
 void OwnedCandidateMatchesApplyAndPreservesInput() {
     const auto doodads = EmptyDoodads();
     const std::array points{TerrainStrokePoint{1024, 1024}, TerrainStrokePoint{1280, 1152}};
@@ -75,7 +121,9 @@ void OwnedCandidateMatchesApplyAndPreservesInput() {
         Require(sameRange(a.changed, b.changed) && sameRange(a.processed, b.processed)
             && a.changedVertices == b.changedVertices && a.work == b.work && a.finalRandomState == b.finalRandomState
             && a.requiresPathingRebuild == b.requiresPathingRebuild
-            && a.requiresObjectValidityRefresh == b.requiresObjectValidityRefresh,
+            && a.requiresObjectValidityRefresh == b.requiresObjectValidityRefresh
+            && a.removedSpecialSourceRecords == b.removedSpecialSourceRecords
+            && DoodadBytes(prepared.value->doodads) == DoodadBytes(doodads),
             "owned and in-place adapters retain exact ranges, budgets, random stream and derived work flags");
     }
     auto source = Flat(); const auto brush = Brush(source); const auto original = Bytes(source);
@@ -218,26 +266,90 @@ void PropagationAndDepthBudget() {
         "ordered convergence reaches beyond the one-vertex brush and its immediate neighbor");
 }
 
-void SpecialDoodadFactsAndImpact() {
-    const TerrainStrokePoint point{1024, 1024}; auto grid = Flat(); auto brush = Brush(grid);
-    auto doodads = EmptyDoodads(); doodads.specialDoodads.push_back({"YTfb", 0, {28, 28}});
-    TerrainWaterSpecialDoodadShape far{0, "YTfb", 0, {28, 28}, 28, 28, 29, 29, {0, 1, 0, 0}};
-    Require(ApplyTerrainWaterStroke(grid, Rules(), brush, std::span(&point, 1), doodads, std::span(&far, 1)).Succeeded(),
-        "unrelated special record mismatch is outside the actual processing region");
-    grid = Flat(); brush = Brush(grid); doodads.specialDoodads.front().position = {8, 8};
-    TerrainWaterSpecialDoodadShape local{0, "YTfb", 0, {8, 8}, 8, 8, 9, 9, {0, 0, 0, 0}};
-    const auto original = Bytes(grid);
-    const auto rejected = ApplyTerrainWaterStroke(grid, Rules(), brush, std::span(&point, 1), doodads, std::span(&local, 1));
-    Require(!rejected.Succeeded() && Bytes(grid) == original, "actual special deletion requirement rejects before input commit");
-    Require(std::any_of(rejected.diagnostics.begin(), rejected.diagnostics.end(), [](const auto& diagnostic) {
-        return diagnostic.code == "TERRAIN_WATER_SPECIAL_DOODAD_DELETE";
-    }), "special deletion is a concrete structured diagnostic");
-    local.relativeCliffLevels = {0, 1, 1, 1};
-    Require(ApplyTerrainWaterStroke(grid, Rules(), brush, std::span(&point, 1), doodads, std::span(&local, 1)).Succeeded(),
-        "an impacted special record whose relative levels still match needs no deletion");
+void SpecialDoodadDeletesFirstMiddleAndLast() {
+    const TerrainStrokePoint point{1024, 1024};
+    for (const auto kind : {TerrainWaterBrushKind::Shallow, TerrainWaterBrushKind::Deep}) {
+        for (std::uint32_t removed = 0; removed < 3; ++removed) {
+            auto grid = Flat(); const auto brush = Brush(grid, kind);
+            auto doodads = SpecialFixture({{"S000", 0, {24, 24}}, {"S001", 1, {26, 26}}, {"S002", 2, {28, 28}}});
+            doodads.specialDoodads[removed].position = {8, 8};
+            auto reparsed = ParseDoodadPlacements(DoodadBytes(doodads));
+            Require(reparsed.Succeeded(), "changed owned fixture has actual initial DOO bytes");
+            doodads = std::move(*reparsed.value);
+            std::array shapes{FlatSpecialShape(doodads, 2), FlatSpecialShape(doodads, 0), FlatSpecialShape(doodads, 1)};
+            const auto terrainBefore = Bytes(grid), doodadsBefore = DoodadBytes(doodads);
+            const auto result = PrepareTerrainWaterStroke(grid, Rules(), brush, std::span(&point, 1), doodads, shapes);
+            Require(result.Succeeded() && result.value
+                && result.value->result.removedSpecialSourceRecords == std::vector<std::uint32_t>{removed},
+                "first, middle and last deletions report the actual source row, independently of shape input order");
+            Require(At(result.value->terrain, 8, 8).CliffLevel() == (kind == TerrainWaterBrushKind::Shallow ? 1 : 0)
+                && result.value->result.requiresPathingRebuild && result.value->result.requiresObjectValidityRefresh,
+                "successful special deletion retains the water transaction and both derived-work requirements");
+            if (removed == 0) SpecialOrder(result.value->doodads, doodads, {2, 1}, "first deletion swaps the last row into slot zero");
+            if (removed == 1) SpecialOrder(result.value->doodads, doodads, {0, 2}, "middle deletion swaps the last row into the hole");
+            if (removed == 2) SpecialOrder(result.value->doodads, doodads, {0, 1}, "last deletion simply shrinks the live special array");
+            SourceUnchanged(grid, terrainBefore, doodads, doodadsBefore);
+        }
+    }
 }
 
-void SpecialDoodadRejectsLateShoreChange() {
+void SpecialDoodadMultiDeleteUsesCollectedSourceOrder() {
+    const TerrainStrokePoint point{1024, 1024}; auto grid = Flat(); const auto brush = Brush(grid);
+    const auto doodads = SpecialFixture({{"S000", 0, {8, 8}}, {"S001", 1, {24, 24}},
+        {"S002", 2, {7, 8}}, {"S003", 3, {26, 26}}, {"S004", 4, {8, 7}}});
+    // 所有输入形态在平源上有效。三个单格各含 (8,8)，刷后才失配；shape 参数故意倒序。
+    const std::array shapes{FlatSpecialShape(doodads, 4), FlatSpecialShape(doodads, 3), FlatSpecialShape(doodads, 2),
+        FlatSpecialShape(doodads, 1), FlatSpecialShape(doodads, 0)};
+    const auto terrainBefore = Bytes(grid), doodadsBefore = DoodadBytes(doodads);
+    const auto result = PrepareTerrainWaterStroke(grid, Rules(), brush, std::span(&point, 1), doodads, shapes);
+    Require(result.Succeeded() && result.value
+        && result.value->result.removedSpecialSourceRecords == std::vector<std::uint32_t>{0, 2, 4},
+        "collect all mismatching XY in current DOO order before performing any swap-last deletion");
+    // 手写序列：[0,1,2,3,4] -> [4,1,2,3] -> [4,1,3] -> [3,1]。
+    SpecialOrder(result.value->doodads, doodads, {3, 1},
+        "multiple deletions retain the exact swap-last order instead of stable erase or source sorting");
+    SourceUnchanged(grid, terrainBefore, doodads, doodadsBefore);
+}
+
+void SpecialDoodadDuplicateXyUsesCurrentFirstRow() {
+    const TerrainStrokePoint point{1024, 1024}; auto grid = Flat(); const auto brush = Brush(grid);
+    const auto doodads = SpecialFixture({{"S000", 0, {8, 8}}, {"S001", 1, {8, 8}}, {"S002", 2, {8, 8}}});
+    const std::array shapes{FlatSpecialShape(doodads, 1), FlatSpecialShape(doodads, 2), FlatSpecialShape(doodads, 0)};
+    const auto terrainBefore = Bytes(grid), doodadsBefore = DoodadBytes(doodads);
+    const auto result = PrepareTerrainWaterStroke(grid, Rules(), brush, std::span(&point, 1), doodads, shapes);
+    Require(result.Succeeded() && result.value
+        && result.value->result.removedSpecialSourceRecords == std::vector<std::uint32_t>{0, 2, 1},
+        "three equal-XY requests delete current first rows 0, then swapped row 2, then row 1");
+    SpecialOrder(result.value->doodads, doodads, {}, "all equal-XY special records are removed while ordinary DOO records survive");
+    SourceUnchanged(grid, terrainBefore, doodads, doodadsBefore);
+
+    const auto pair = SpecialFixture({{"S000", 0, {8, 8}}, {"S001", 1, {8, 8}}});
+    const auto pairBefore = DoodadBytes(pair);
+    const std::array pairShapes{FlatSpecialShape(pair, 1), FlatSpecialShape(pair, 0)};
+    const auto pairResult = PrepareTerrainWaterStroke(grid, Rules(), brush, std::span(&point, 1), pair, pairShapes);
+    Require(pairResult.Succeeded() && pairResult.value
+        && pairResult.value->result.removedSpecialSourceRecords == std::vector<std::uint32_t>{0, 1},
+        "two equal-XY source records each consume one request instead of XY deduplication");
+    SpecialOrder(pairResult.value->doodads, pair, {}, "two equal-XY records are both deleted");
+    SourceUnchanged(grid, terrainBefore, pair, pairBefore);
+}
+
+void SpecialDoodadRepeatedPointsDoNotDeleteTwice() {
+    auto grid = Flat(); const auto brush = Brush(grid);
+    const auto doodads = SpecialFixture({{"S000", 0, {8, 8}}, {"S001", 1, {20, 20}}, {"S002", 2, {28, 28}}});
+    const std::array shapes{FlatSpecialShape(doodads, 2), FlatSpecialShape(doodads, 0), FlatSpecialShape(doodads, 1)};
+    const std::array points{TerrainStrokePoint{1024, 1024}, TerrainStrokePoint{1024, 1024},
+        TerrainStrokePoint{2560, 2560}, TerrainStrokePoint{2560, 2560}, TerrainStrokePoint{1024, 1024}};
+    const auto terrainBefore = Bytes(grid), doodadsBefore = DoodadBytes(doodads);
+    const auto result = PrepareTerrainWaterStroke(grid, Rules(), brush, points, doodads, shapes);
+    Require(result.Succeeded() && result.value
+        && result.value->result.removedSpecialSourceRecords == std::vector<std::uint32_t>{0, 1},
+        "later stroke points use the live special set and never delete an already removed source row again");
+    SpecialOrder(result.value->doodads, doodads, {2}, "repeated points retain the single unrelated special row exactly");
+    SourceUnchanged(grid, terrainBefore, doodads, doodadsBefore);
+}
+
+void SpecialDoodadDeletesAfterLateShoreChange() {
     const TerrainStrokePoint point{1024, 1024};
     auto grid = Flat();
     At(grid, 8, 8).textureAndFlagsRaw |= 0x40;
@@ -254,15 +366,16 @@ void SpecialDoodadRejectsLateShoreChange() {
         && At(unrestricted, 8, 9).CliffLevel() == 7 && At(unrestricted, 9, 9).CliffLevel() == 7,
         "dry-shore cleanup raises the three level-four corners to seven after initial convergence");
 
-    auto doodads = EmptyDoodads();
-    doodads.specialDoodads.push_back({"YTfb", 0, {8, 8}});
+    const auto doodads = SpecialFixture({{"YTfb", 0, {8, 8}}});
+    const auto doodadsBefore = DoodadBytes(doodads);
     const TerrainWaterSpecialDoodadShape shape{0, "YTfb", 0, {8, 8}, 8, 8, 9, 9, {2, 0, 0, 0}};
     // 源角为 {2,0,0,0}；首轮收敛后 {6,4,4,4} 仍匹配，岸线处理后 {6,7,7,7} 不再匹配。
-    const auto result = ApplyTerrainWaterStroke(grid, Rules(), brush, std::span(&point, 1), doodads, std::span(&shape, 1));
-    Require(!result.Succeeded() && Bytes(grid) == source, "late special deletion requirement rolls back the entire candidate");
-    Require(std::any_of(result.diagnostics.begin(), result.diagnostics.end(), [](const auto& diagnostic) {
-        return diagnostic.code == "TERRAIN_WATER_SPECIAL_DOODAD_DELETE";
-    }), "late shore rejection reports the concrete special deletion diagnostic");
+    const auto result = PrepareTerrainWaterStroke(grid, Rules(), brush, std::span(&point, 1), doodads, std::span(&shape, 1));
+    Require(result.Succeeded() && result.value && Bytes(result.value->terrain) == Bytes(unrestricted)
+        && result.value->result.removedSpecialSourceRecords == std::vector<std::uint32_t>{0},
+        "final special check catches shore changes after the initially matching convergence shape");
+    SpecialOrder(result.value->doodads, doodads, {}, "late shore mismatch removes the special row in the owned candidate");
+    SourceUnchanged(grid, source, doodads, doodadsBefore);
 }
 
 void SpecialDoodadChecksDoNotExpandProcessing() {
@@ -272,21 +385,117 @@ void SpecialDoodadChecksDoNotExpandProcessing() {
     At(source, 8, 8).waterHeightAndFlagsRaw = 8192; // 已湿锚点保持 L=2，无岸线改层。
     const auto brush = Brush(source);
     const auto original = Bytes(source);
-    auto doodads = EmptyDoodads();
-    doodads.specialDoodads.push_back({"YTfb", 0, {8, 8}});
-    doodads.specialDoodads.push_back({"YTfb", 0, {28, 28}});
-    // 第一个匹配形态跨至远区；第二个不匹配形态只与它相交，不与真实笔刷处理域相交。
+    const auto doodads = SpecialFixture({{"YTfb", 0, {8, 8}}, {"YTfb", 0, {28, 28}}});
+    const auto doodadsBefore = DoodadBytes(doodads);
+    // 第一个匹配形态跨至远区；两项源形态均有效，读取形态不应扩大真实笔刷处理域。
     const TerrainWaterSpecialDoodadShape bridge{0, "YTfb", 0, {8, 8}, 8, 8, 28, 28, std::vector<std::int8_t>(21 * 21, 0)};
-    const TerrainWaterSpecialDoodadShape far{1, "YTfb", 0, {28, 28}, 28, 28, 29, 29, {0, 1, 0, 0}};
+    const TerrainWaterSpecialDoodadShape far{1, "YTfb", 0, {28, 28}, 28, 28, 29, 29, {0, 0, 0, 0}};
     std::array shapes{bridge, far};
     for (int order = 0; order < 2; ++order) {
-        auto grid = source;
-        const auto result = ApplyTerrainWaterStroke(grid, Rules(false), brush, std::span(&point, 1), doodads, shapes);
-        Require(result.Succeeded() && Bytes(grid) == original, "special validation order does not enroll an unrelated mismatch");
-        Require(result.value->processed.x1 < 28 && result.value->processed.y1 < 28,
+        const auto result = PrepareTerrainWaterStroke(source, Rules(false), brush, std::span(&point, 1), doodads, shapes);
+        Require(result.Succeeded() && result.value && Bytes(result.value->terrain) == original
+            && result.value->result.removedSpecialSourceRecords.empty(), "matching local and far shapes retain every special record");
+        SpecialOrder(result.value->doodads, doodads, {0, 1}, "a no-deletion candidate preserves complete DOO bytes and order");
+        Require(result.value->result.processed.x1 < 28 && result.value->result.processed.y1 < 28,
             "pure special validation does not expand the actual processed bounds");
+        SourceUnchanged(source, original, doodads, doodadsBefore);
         std::reverse(shapes.begin(), shapes.end());
     }
+}
+
+void OrdinaryDoodadExpansionIsBudgetedBeforeCopy() {
+    auto terrain = Flat(9); const auto original = Bytes(terrain);
+    const auto brush = Brush(terrain, TerrainWaterBrushKind::Shallow, TerrainBrushShape::Square, 4, 4);
+    const TerrainStrokePoint point{512, 512};
+    auto doodads = SpecialFixture({});
+    doodads.doodads.front().itemSets.front().items.assign(4096, {"gold", 100});
+    TerrainWaterBrushLimits memory; memory.maximumCandidateBytes = 64 * 1024;
+    const auto tooLarge = PrepareTerrainWaterStroke(terrain, Rules(), brush, std::span(&point, 1), doodads, {}, memory);
+    Require(!tooLarge.Succeeded() && !tooLarge.value && !tooLarge.diagnostics.empty()
+        && tooLarge.diagnostics.front().code == "TERRAIN_WATER_MEMORY_BUDGET" && Bytes(terrain) == original,
+        "nested ordinary DOO expansion is measured before candidate copy or wire serialization");
+    TerrainWaterBrushLimits work; work.maximumWork = 1000;
+    const auto tooMuchWork = PrepareTerrainWaterStroke(terrain, Rules(), brush, std::span(&point, 1), doodads, {}, work);
+    Require(!tooMuchWork.Succeeded() && !tooMuchWork.value && !tooMuchWork.diagnostics.empty()
+        && tooMuchWork.diagnostics.front().code == "TERRAIN_WATER_WORK_BUDGET"
+        && doodads.doodads.front().itemSets.front().items.size() == 4096 && Bytes(terrain) == original,
+        "nested ordinary DOO traversal cannot bypass the per-stroke work cap");
+}
+
+void SpecialDoodadSourceFactsAndFailuresAreAtomic() {
+    const TerrainStrokePoint point{1024, 1024}; auto grid = Flat(); const auto brush = Brush(grid);
+    const auto doodads = SpecialFixture({{"S000", 0, {8, 8}}, {"S001", 1, {28, 28}}});
+    const std::array validShapes{FlatSpecialShape(doodads, 0), FlatSpecialShape(doodads, 1)};
+    const auto terrainBefore = Bytes(grid), doodadsBefore = DoodadBytes(doodads);
+    const auto refused = [&](const auto& result, const char* code) {
+        Require(!result.Succeeded() && !result.value && std::any_of(result.diagnostics.begin(), result.diagnostics.end(),
+            [&](const auto& diagnostic) { return diagnostic.code == code; }),
+            "failed special transaction publishes no partial terrain, DOO candidate or deletion list and reports its cause");
+        SourceUnchanged(grid, terrainBefore, doodads, doodadsBefore);
+    };
+    auto invalid = validShapes; invalid[1].relativeCliffLevels = {0, 1, 0, 0};
+    refused(PrepareTerrainWaterStroke(grid, Rules(), brush, std::span(&point, 1), doodads, invalid),
+        "TERRAIN_WATER_SPECIAL_DOODAD_SOURCE_SHAPE");
+    // 即使不在笔刷附近，源形态失配也不能被当作本笔造成的合法删除。
+    invalid = validShapes; invalid[0].relativeCliffLevels = {0, 1, 0, 0};
+    refused(PrepareTerrainWaterStroke(grid, Rules(), brush, std::span(&point, 1), doodads, invalid),
+        "TERRAIN_WATER_SPECIAL_DOODAD_SOURCE_SHAPE");
+    invalid = validShapes; invalid[1].sourceRecordIndex = 0;
+    refused(PrepareTerrainWaterStroke(grid, Rules(), brush, std::span(&point, 1), doodads, invalid),
+        "TERRAIN_WATER_SPECIAL_DOODAD_FACTS");
+    invalid = validShapes; invalid[1].rawcode = "BAD!";
+    refused(PrepareTerrainWaterStroke(grid, Rules(), brush, std::span(&point, 1), doodads, invalid),
+        "TERRAIN_WATER_SPECIAL_DOODAD_FACTS");
+    invalid = validShapes; invalid[1].relativeCliffLevels.pop_back();
+    refused(PrepareTerrainWaterStroke(grid, Rules(), brush, std::span(&point, 1), doodads, invalid),
+        "TERRAIN_WATER_SPECIAL_DOODAD_FACTS");
+    refused(PrepareTerrainWaterStroke(grid, Rules(), brush, std::span(&point, 1), doodads, std::span(validShapes).first(1)),
+        "TERRAIN_WATER_SPECIAL_DOODAD_FACTS");
+
+    auto missingRules = Rules(); missingRules.availableCliffTilesets.clear();
+    refused(PrepareTerrainWaterStroke(grid, missingRules, brush, std::span(&point, 1), doodads, validShapes),
+        "TERRAIN_WATER_CLIFF_RESOURCE");
+    TerrainWaterBrushLimits memory; memory.maximumCandidateBytes = 1;
+    refused(PrepareTerrainWaterStroke(grid, Rules(), brush, std::span(&point, 1), doodads, validShapes, memory),
+        "TERRAIN_WATER_MEMORY_BUDGET");
+    TerrainWaterBrushLimits work; work.maximumWork = 4500;
+    refused(PrepareTerrainWaterStroke(grid, Rules(), brush, std::span(&point, 1), doodads, validShapes, work),
+        "TERRAIN_WATER_WORK_BUDGET");
+
+    auto late = grid; At(late, 20, 20).textureAndFlagsRaw |= 0x10;
+    RefreshTerrainDerived(late, 0, 0, 33, 33); const auto lateBefore = Bytes(late);
+    const std::array points{point, TerrainStrokePoint{2560, 2560}};
+    const auto lateResult = PrepareTerrainWaterStroke(late, Rules(), brush, points, doodads, validShapes);
+    Require(!lateResult.Succeeded() && !lateResult.value, "a later terrain failure hides the earlier special deletion candidate");
+    SourceUnchanged(late, lateBefore, doodads, doodadsBefore);
+}
+
+void SpecialDoodadDuplicateXyCannotLeaveInvalidSurvivor() {
+    auto grid = Flat(); const auto brush = Brush(grid); const TerrainStrokePoint point{1024, 1024};
+    const auto doodads = SpecialFixture({{"S000", 0, {6, 6}}, {"S001", 1, {6, 6}}});
+    const std::array shapes{FlatSpecialShape(doodads, 0), FlatSpecialShape(doodads, 1, 3, 3)};
+    const auto terrainBefore = Bytes(grid), doodadsBefore = DoodadBytes(doodads);
+    // 窄形态四角留平；宽形态包含新水顶点而失配。一次 XY 请求按原版先删源0，源1仍不合法。
+    const auto result = PrepareTerrainWaterStroke(grid, Rules(), brush, std::span(&point, 1), doodads, shapes);
+    Require(!result.Succeeded() && !result.value && std::any_of(result.diagnostics.begin(), result.diagnostics.end(),
+        [](const auto& diagnostic) { return diagnostic.code == "TERRAIN_WATER_SPECIAL_DOODAD_DELETE"; }),
+        "current-first XY deletion must refuse an invalid surviving sibling instead of performing a second cleanup phase");
+    SourceUnchanged(grid, terrainBefore, doodads, doodadsBefore);
+}
+
+void SpecialDoodadLegacyApplyCannotDiscardOwnedDeletion() {
+    auto grid = Flat(); const auto brush = Brush(grid); const TerrainStrokePoint point{1024, 1024};
+    const auto doodads = SpecialFixture({{"S000", 0, {8, 8}}});
+    const auto shape = FlatSpecialShape(doodads, 0);
+    const auto terrainBefore = Bytes(grid), doodadsBefore = DoodadBytes(doodads);
+    const auto prepared = PrepareTerrainWaterStroke(grid, Rules(), brush, std::span(&point, 1), doodads, std::span(&shape, 1));
+    Require(prepared.Succeeded() && prepared.value
+        && prepared.value->result.removedSpecialSourceRecords == std::vector<std::uint32_t>{0},
+        "owned preparation exposes the coupled DOO deletion before the compatibility adapter is checked");
+    const auto applied = ApplyTerrainWaterStroke(grid, Rules(), brush, std::span(&point, 1), doodads, std::span(&shape, 1));
+    Require(!applied.Succeeded() && !applied.value,
+        "terrain-only Apply cannot commit W3E while silently losing its required special-DOO deletion");
+    SourceUnchanged(grid, terrainBefore, doodads, doodadsBefore);
 }
 
 void HeightFalloffIndependentBoundaries() {
@@ -327,8 +536,12 @@ int main() {
     try {
         OwnedCandidateMatchesApplyAndPreservesInput();
         DryAnchorAndExactCoupling(); WetAnchorExactStepAndFixedStroke(); WaterLimitsAndOrderedShore();
-        AtomicFailureAndLocalDomain(); PropagationAndDepthBudget(); SpecialDoodadFactsAndImpact();
-        SpecialDoodadRejectsLateShoreChange(); SpecialDoodadChecksDoNotExpandProcessing(); HeightFalloffIndependentBoundaries();
-        std::cout << "TerrainWaterBrush: 9 scenario groups passed\n"; return 0;
+        AtomicFailureAndLocalDomain(); PropagationAndDepthBudget(); SpecialDoodadDeletesFirstMiddleAndLast();
+        SpecialDoodadMultiDeleteUsesCollectedSourceOrder(); SpecialDoodadDuplicateXyUsesCurrentFirstRow();
+        SpecialDoodadRepeatedPointsDoNotDeleteTwice(); SpecialDoodadDeletesAfterLateShoreChange();
+        SpecialDoodadChecksDoNotExpandProcessing(); OrdinaryDoodadExpansionIsBudgetedBeforeCopy(); SpecialDoodadSourceFactsAndFailuresAreAtomic();
+        SpecialDoodadDuplicateXyCannotLeaveInvalidSurvivor(); SpecialDoodadLegacyApplyCannotDiscardOwnedDeletion();
+        HeightFalloffIndependentBoundaries();
+        std::cout << "TerrainWaterBrush: 17 scenario groups passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << "TerrainWaterBrush: " << error.what() << '\n'; return 1; }
 }

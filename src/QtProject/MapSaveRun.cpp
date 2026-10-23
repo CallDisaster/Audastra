@@ -56,7 +56,7 @@ Status InstallPreservedMinimap(MapSaveJob& job, const MapData::MapDataEditSessio
     return Status::Ok();
 }
 
-Status PrepareWorkerDerivedInputs(MapSaveJob& job, std::unique_ptr<MapData::MapDataEditSession>& edits,
+Status PrepareWorkerDerivedInputs(MapSaveJob& job, std::shared_ptr<const MapData::MapDataEditSession>& edits,
     bool& terrainPrepared) {
     const auto reject = [](const char* code, const char* message) {
         return Status::Failure("TerrainMinimapSave.Qt", code, message);
@@ -90,85 +90,90 @@ Status PrepareWorkerDerivedInputs(MapSaveJob& job, std::unique_ptr<MapData::MapD
         }) != 1)))
         return reject("MINIMAP_SAVE_DOMAIN", "worker补建只接受真实独立另存任务与唯一高度W3E，拒绝测试副本或混合领域。");
 
-    // FromArchive仅复制七类MapData原生成员，不复制整幅地图。保留原有
-    // Invalid/Ambiguous/Partial基线，不能以空MapDocument伪造DOO等成员不存在。
-    // raw intake沿既有64MiB帽；解析/私有session/撤销历史沿各codec原上限，
-    // 属于Qt重建工作，在helper的128MiB容器账之外，不宣称全保存/RSS上限。
-    constexpr std::array<std::string_view, 8> nativeNames{
-        "war3map.w3i", "table/w3i.ini", "war3mapUnits.doo", "war3map.doo",
-        "war3map.w3r", "war3map.w3c", "war3map.w3s", "war3map.wts"};
-    constexpr auto maximumRaw = MapData::TerrainSavePlanLimits{}.maximumBytes;
-    const auto maximumW3e = job.terrainDerivationRequired ? maximumRaw
-        : Render::TerrainMinimapAssetCaptureLimits{}.maxCurrentW3eBytes;
-    std::vector<std::string> exactNativeNames;
-    for (const auto name : nativeNames) exactNativeNames.emplace_back(name);
-    ArchiveExactMemberLimits nativeLimits;
-    nativeLimits.memberCount = nativeNames.size(); nativeLimits.memberBytes = maximumRaw; nativeLimits.totalBytes = maximumRaw;
-    auto native = job.archive->CaptureExactMembers(exactNativeNames, nativeLimits);
-    if (!native.Succeeded() || !native.value) return {native.diagnostics};
-    std::vector<MapArchiveMember> nativeMembers;
-    for (auto& member : *native.value) if (member.present) nativeMembers.push_back({member.name, std::move(member.bytes)});
-    // 依赖明确名字捕获，DOO未列在(listfile)中也不能被误认成缺失。
-    edits = std::make_unique<MapData::MapDataEditSession>(MapDocument::FromMembers(nativeMembers));
-    std::vector<std::byte> sourceTerrain, sourcePathing;
-    {
-        const std::array<std::string, 2> names{"war3map.w3e", "war3map.wpm"};
-        ArchiveExactMemberLimits limits;
-        // 地形保存沿Core的64MiB原始输入帽；仅小地图请求仍沿原4MiB帽。
-        // 后续小地图单元独立执行其预算，不因地形保存而扩大生成器容量。
-        limits.memberCount = names.size(); limits.memberBytes = maximumW3e; limits.totalBytes = maximumRaw;
-        auto captured = job.archive->CaptureExactMembers(names, limits);
-        if (!captured.Succeeded() || !captured.value) return {captured.diagnostics};
-        if (!(*captured.value)[0].present || !(*captured.value)[1].present)
-            return reject("MINIMAP_SAVE_SOURCE", "worker重建必须准确读到原W3E和WPM，不能把未知或缺失当作空来源。");
-        const auto terrain = edits->AttachTerrain((*captured.value)[0].bytes);
-        if (!terrain.Succeeded()) return terrain;
-        const auto pathing = edits->AttachPathing((*captured.value)[1].bytes);
-        if (!pathing.Succeeded()) return pathing;
+    if (job.terrainSessionSnapshot) {
+        edits = job.terrainSessionSnapshot;
+    } else {
+        // FromArchive仅复制七类MapData原生成员，不复制整幅地图。保留原有
+        // Invalid/Ambiguous/Partial基线，不能以空MapDocument伪造DOO等成员不存在。
+        // raw intake沿既有64MiB帽；解析/私有session/撤销历史沿各codec原上限，
+        // 属于Qt重建工作，在helper的128MiB容器账之外，不宣称全保存/RSS上限。
+        constexpr std::array<std::string_view, 8> nativeNames{
+            "war3map.w3i", "table/w3i.ini", "war3mapUnits.doo", "war3map.doo",
+            "war3map.w3r", "war3map.w3c", "war3map.w3s", "war3map.wts"};
+        constexpr auto maximumRaw = MapData::TerrainSavePlanLimits{}.maximumBytes;
+        const auto maximumW3e = job.terrainDerivationRequired ? maximumRaw
+            : Render::TerrainMinimapAssetCaptureLimits{}.maxCurrentW3eBytes;
+        std::vector<std::string> exactNativeNames;
+        for (const auto name : nativeNames) exactNativeNames.emplace_back(name);
+        ArchiveExactMemberLimits nativeLimits;
+        nativeLimits.memberCount = nativeNames.size(); nativeLimits.memberBytes = maximumRaw; nativeLimits.totalBytes = maximumRaw;
+        auto native = job.archive->CaptureExactMembers(exactNativeNames, nativeLimits);
+        if (!native.Succeeded() || !native.value) return {native.diagnostics};
+        std::vector<MapArchiveMember> nativeMembers;
+        for (auto& member : *native.value) if (member.present) nativeMembers.push_back({member.name, std::move(member.bytes)});
+        // 依赖明确名字捕获，DOO未列在(listfile)中也不能被误认成缺失。
+        auto restoredSession = std::make_shared<MapData::MapDataEditSession>(MapDocument::FromMembers(nativeMembers));
+        std::vector<std::byte> sourceTerrain, sourcePathing;
+        {
+            const std::array<std::string, 2> names{"war3map.w3e", "war3map.wpm"};
+            ArchiveExactMemberLimits limits;
+            // 地形保存沿Core的64MiB原始输入帽；仅小地图请求仍沿原4MiB帽。
+            // 后续小地图单元独立执行其预算，不因地形保存而扩大生成器容量。
+            limits.memberCount = names.size(); limits.memberBytes = maximumW3e; limits.totalBytes = maximumRaw;
+            auto captured = job.archive->CaptureExactMembers(names, limits);
+            if (!captured.Succeeded() || !captured.value) return {captured.diagnostics};
+            if (!(*captured.value)[0].present || !(*captured.value)[1].present)
+                return reject("MINIMAP_SAVE_SOURCE", "worker重建必须准确读到原W3E和WPM，不能把未知或缺失当作空来源。");
+            const auto terrain = restoredSession->AttachTerrain((*captured.value)[0].bytes);
+            if (!terrain.Succeeded()) return terrain;
+            const auto pathing = restoredSession->AttachPathing((*captured.value)[1].bytes);
+            if (!pathing.Succeeded()) return pathing;
+            if (job.pathingRestrictionDraft) {
+                sourceTerrain = std::move((*captured.value)[0].bytes);
+                sourcePathing = std::move((*captured.value)[1].bytes);
+            }
+        } // 在SetTerrain/Capture/Build之前释放本轮源raw临时缓冲。
+        const MemberReplacement* terrainOutput = nullptr;
+        const MemberReplacement* pathingOutput = nullptr;
+        const std::array<std::pair<std::string_view, MapDataKind>, 7> editableMembers{{
+            {"war3map.w3i", MapDataKind::Settings}, {"war3mapunits.doo", MapDataKind::Units},
+            {"war3map.doo", MapDataKind::Doodads}, {"war3map.w3r", MapDataKind::Regions},
+            {"war3map.w3c", MapDataKind::Cameras}, {"war3map.w3s", MapDataKind::Sounds}, {"war3map.wts", MapDataKind::Strings}}};
+        for (const auto& member : job.replacements) {
+            const auto key = MinimapMemberName(member.name);
+            if (key == "war3map.w3e") {
+                if (terrainOutput) return reject("TERRAIN_SAVE_OUTPUT_CONFLICT", "保存列表重复替换地形成员。");
+                terrainOutput = &member;
+            } else if (key == "war3map.wpm") {
+                if (pathingOutput) return reject("TERRAIN_SAVE_OUTPUT_CONFLICT", "保存列表重复替换通行成员。");
+                pathingOutput = &member;
+            } else for (const auto& [name, kind] : editableMembers) if (key == name) {
+                const auto restored = restoredSession->SetSerialized(kind, member.data);
+                if (!restored.Succeeded()) return restored;
+            }
+        }
+        if (terrainOutput && terrainOutput->data.size() > maximumW3e)
+            return reject("MINIMAP_SAVE_BUDGET", "worker地形输入超过本次原始输入额度。");
         if (job.pathingRestrictionDraft) {
-            sourceTerrain = std::move((*captured.value)[0].bytes);
-            sourcePathing = std::move((*captured.value)[1].bytes);
-        }
-    } // 在SetTerrain/Capture/Build之前释放本轮源raw临时缓冲。
-    const MemberReplacement* terrainOutput = nullptr;
-    const MemberReplacement* pathingOutput = nullptr;
-    const std::array<std::pair<std::string_view, MapDataKind>, 7> editableMembers{{
-        {"war3map.w3i", MapDataKind::Settings}, {"war3mapunits.doo", MapDataKind::Units},
-        {"war3map.doo", MapDataKind::Doodads}, {"war3map.w3r", MapDataKind::Regions},
-        {"war3map.w3c", MapDataKind::Cameras}, {"war3map.w3s", MapDataKind::Sounds}, {"war3map.wts", MapDataKind::Strings}}};
-    for (const auto& member : job.replacements) {
-        const auto key = MinimapMemberName(member.name);
-        if (key == "war3map.w3e") {
-            if (terrainOutput) return reject("TERRAIN_SAVE_OUTPUT_CONFLICT", "保存列表重复替换地形成员。");
-            terrainOutput = &member;
-        } else if (key == "war3map.wpm") {
-            if (pathingOutput) return reject("TERRAIN_SAVE_OUTPUT_CONFLICT", "保存列表重复替换通行成员。");
-            pathingOutput = &member;
-        } else for (const auto& [name, kind] : editableMembers) if (key == name) {
-            const auto restored = edits->SetSerialized(kind, member.data);
+            const auto restored = restoredSession->SetTerrainAndPathingDraft(
+                terrainOutput ? terrainOutput->data : sourceTerrain,
+                pathingOutput ? pathingOutput->data : sourcePathing, *job.pathingRestrictionDraft);
+            if (!restored.Succeeded()) return restored;
+        } else if (terrainOutput) {
+            const auto restored = pathingOutput ? restoredSession->SetTerrainAndPathing(terrainOutput->data, pathingOutput->data)
+                                                : restoredSession->SetTerrain(terrainOutput->data);
+            if (!restored.Succeeded()) return restored;
+        } else if (pathingOutput) {
+            const auto restored = restoredSession->SetPathing(pathingOutput->data);
             if (!restored.Succeeded()) return restored;
         }
+        for (const auto& removed : job.removals) for (const auto& [name, kind] : editableMembers)
+            if (MinimapMemberName(removed) == name) {
+                const auto restored = restoredSession->Remove(kind);
+                if (!restored.Succeeded()) return restored;
+            }
+        edits = std::move(restoredSession);
     }
-    if (terrainOutput && terrainOutput->data.size() > maximumW3e)
-        return reject("MINIMAP_SAVE_BUDGET", "worker地形输入超过本次原始输入额度。");
-    if (job.pathingRestrictionDraft) {
-        const auto restored = edits->SetTerrainAndPathingDraft(
-            terrainOutput ? terrainOutput->data : sourceTerrain,
-            pathingOutput ? pathingOutput->data : sourcePathing, *job.pathingRestrictionDraft);
-        if (!restored.Succeeded()) return restored;
-    } else if (terrainOutput) {
-        const auto restored = pathingOutput ? edits->SetTerrainAndPathing(terrainOutput->data, pathingOutput->data)
-                                            : edits->SetTerrain(terrainOutput->data);
-        if (!restored.Succeeded()) return restored;
-    } else if (pathingOutput) {
-        const auto restored = edits->SetPathing(pathingOutput->data);
-        if (!restored.Succeeded()) return restored;
-    }
-    for (const auto& removed : job.removals) for (const auto& [name, kind] : editableMembers)
-        if (MinimapMemberName(removed) == name) {
-            const auto restored = edits->Remove(kind);
-            if (!restored.Succeeded()) return restored;
-        }
     if (job.terrainDerivationRequired) {
         auto prepared = Services::TerrainPathingSave::PrepareForSave(*job.archive, *edits, job.minimapGameRoot);
         if (!prepared.Succeeded() || !prepared.value) return {std::move(prepared.diagnostics)};
@@ -225,7 +230,8 @@ Status PrepareWorkerDerivedInputs(MapSaveJob& job, std::unique_ptr<MapData::MapD
 Status PrepareWorkerDerived(MapSaveJob& job) {
     // 若输入捕获本身超出生成器预算，仍由同一个能力分类决定能否保留。
     // 该临时会话只绑定本次 worker；编辑器代际仍由 Commit 的原门禁核对。
-    auto edits = std::make_unique<MapData::MapDataEditSession>(MapDocument::FromMembers({}));
+    std::shared_ptr<const MapData::MapDataEditSession> edits =
+        std::make_shared<MapData::MapDataEditSession>(MapDocument::FromMembers({}));
     bool terrainPrepared = false;
     auto status = PrepareWorkerDerivedInputs(job, edits, terrainPrepared);
     if (!status.Succeeded()) {

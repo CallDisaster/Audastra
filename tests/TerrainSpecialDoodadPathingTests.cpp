@@ -49,7 +49,7 @@ void ChannelsAndOriginsHaveLiteralExpectations() {
         {0,0,254,0}, {0,254,0,0}, {254,0,0,0}, {0,0,0,0},
         {0,0,1,0}, {0,1,0,0}, {1,0,0,0}, {127,127,127,0},
         {255,0,255,0}, {255,255,0,0}, {0,255,255,0}, {0,0,0,0}}};
-    constexpr std::array<unsigned, 16> masks{0xcb,0x0d,0xc7,1, 1,1,1,1, 1,1,1,1, 0xc3,5,9,0xcf};
+    constexpr std::array<std::uint8_t, 16> masks{0xcb,0x0d,0xc7,1, 1,1,1,1, 1,1,1,1, 0xc3,5,9,0xcf};
     const auto terrain = Terrain(); const auto placed = Placement();
     for (const bool top : {false, true}) for (const bool alpha : {false, true}) {
         const auto bytes = Texture(pixels, top, alpha); const auto original = bytes;

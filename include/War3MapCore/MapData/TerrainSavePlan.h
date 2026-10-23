@@ -97,7 +97,7 @@ private:
     // 仅Services工厂可提供。只在既有原版重建分支按剩余额度捕获，
     // 不接受协议布尔、外部对象结论或任意输出字节。
     using NativeResourceCapture = std::function<Result<TerrainPathingResources>(
-        const TerrainGridSnapshot&, const TerrainGridSnapshot&, std::size_t)>;
+        const TerrainGridSnapshot&, const TerrainGridSnapshot&, const std::vector<std::byte>*, std::size_t)>;
     TerrainSavePlan() = default;
     [[nodiscard]] static Result<TerrainSavePlan> PrepareArchive(const MapArchiveSession& source,
         const MapDataEditSession& edits, const TerrainSavePlanLimits& limits,

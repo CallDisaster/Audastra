@@ -317,6 +317,7 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
     std::vector<MapArchiveMember> auxiliarySaveMembers;
     if (mapEdits_ && mapEdits_->IsDirty()) {
         job->terrainDerivationRequired = !explicitMinimap && MapData::TerrainSavePlan::HasTerrainChanges(*mapEdits_);
+        if (job->terrainDerivationRequired) job->terrainSessionSnapshot = mapEdits_->FreezeForSave();
         // 原始成员与APR完整意图随任务冻结；worker在脚本/模板最终列表形成后
         // 才建立地形计划。这里只准备输入，不把尚未执行的通行门标记为通过。
         auto restrictions = mapEdits_->SerializePathingRestrictionDraft();

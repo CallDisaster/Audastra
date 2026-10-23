@@ -42,6 +42,9 @@ Result<TerrainPatch> TerrainPatchCodec::SealWithPlan(const MapDocument& original
     const TerrainSavePlan* prepared) {
     if (strokes.empty() || strokes.size() > 128)
         return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_STROKE_BUDGET", "地形目录事务需要 1 到 128 笔原始命令。");
+    if (current.specialDoodads_ != current.savedSpecialDoodads_)
+        return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_WATER_REPLAY_UNSUPPORTED",
+            "此目录事务尚未序列化水刷原始命令，不能从DOO/W3E覆盖恢复特殊模型删除授权；请通过当前地图会话的正常保存或另存完成。");
     std::size_t pointCount = 0;
     for (const auto& stroke : strokes) {
         if (stroke.points.empty() || stroke.points.size() > 4096 - pointCount)

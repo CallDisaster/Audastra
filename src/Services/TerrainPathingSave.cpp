@@ -1,6 +1,7 @@
 #include "War3MapCore/Services/TerrainPathingSave.h"
 
 #include "War3MapCore/ObjectData/NativeDestructablePathing.h"
+#include "War3MapCore/MapData/MapDataEditSession.h"
 
 #include <new>
 
@@ -16,19 +17,19 @@ template<class T, class Function> Result<T> Guard(Function&& function) {
 
 Result<MapData::TerrainPathingResources> TerrainPathingSave::CaptureNative(const MapArchiveSession& source,
     const MapData::TerrainGridSnapshot& before, const MapData::TerrainGridSnapshot& after,
-    const std::filesystem::path& gameRoot, std::size_t maximumBytes) {
+    const std::filesystem::path& gameRoot, std::size_t maximumBytes, const std::vector<std::byte>* currentDoodads) {
     return Guard<MapData::TerrainPathingResources>([&] {
         return MapData::TerrainPathingResources::CaptureNativeWithObjects(source, before, after, gameRoot,
-            maximumBytes, ObjectData::InspectNativeTerrainObjects);
+            maximumBytes, ObjectData::InspectNativeTerrainObjects, currentDoodads);
     });
 }
 
 Result<MapData::TerrainPathingResources> TerrainPathingSave::CaptureNative(const WorkspaceSnapshot& source,
     const MapData::TerrainGridSnapshot& before, const MapData::TerrainGridSnapshot& after,
-    const std::filesystem::path& gameRoot, std::size_t maximumBytes) {
+    const std::filesystem::path& gameRoot, std::size_t maximumBytes, const std::vector<std::byte>* currentDoodads) {
     return Guard<MapData::TerrainPathingResources>([&] {
         return MapData::TerrainPathingResources::CaptureNativeWithObjects(source, before, after, gameRoot,
-            maximumBytes, ObjectData::InspectNativeTerrainObjects);
+            maximumBytes, ObjectData::InspectNativeTerrainObjects, currentDoodads);
     });
 }
 
@@ -36,8 +37,8 @@ Result<MapData::TerrainSavePlan> TerrainPathingSave::PrepareForSave(const MapArc
     const MapData::MapDataEditSession& edits, const std::filesystem::path& gameRoot,
     const MapData::TerrainSavePlanLimits& limits) {
     return Guard<MapData::TerrainSavePlan>([&] {
-        const MapData::TerrainSavePlan::NativeResourceCapture capture = [&](const auto& before, const auto& after, auto maximumBytes) {
-            return CaptureNative(source, before, after, gameRoot, maximumBytes);
+        const MapData::TerrainSavePlan::NativeResourceCapture capture = [&](const auto& before, const auto& after, const auto& doodads, auto maximumBytes) {
+            return CaptureNative(source, before, after, gameRoot, maximumBytes, doodads);
         };
         return MapData::TerrainSavePlan::PrepareArchive(source, edits, limits, &gameRoot, &capture);
     });
@@ -47,10 +48,42 @@ Result<MapData::TerrainSavePlan> TerrainPathingSave::PrepareForSave(const Worksp
     const MapData::MapDataEditSession& edits, const std::filesystem::path& gameRoot,
     const MapData::TerrainSavePlanLimits& limits) {
     return Guard<MapData::TerrainSavePlan>([&] {
-        const MapData::TerrainSavePlan::NativeResourceCapture capture = [&](const auto& before, const auto& after, auto maximumBytes) {
-            return CaptureNative(source, before, after, gameRoot, maximumBytes);
+        const MapData::TerrainSavePlan::NativeResourceCapture capture = [&](const auto& before, const auto& after, const auto& doodads, auto maximumBytes) {
+            return CaptureNative(source, before, after, gameRoot, maximumBytes, doodads);
         };
         return MapData::TerrainSavePlan::PrepareWorkspace(source, edits, limits, &gameRoot, &capture);
+    });
+}
+
+Result<MapData::TerrainPathingResources> TerrainPathingSave::CaptureWaterBrushRules(const MapArchiveSession& source,
+    const MapData::TerrainGridSnapshot& sourceTerrain, const MapData::TerrainGridSnapshot& currentTerrain,
+    const MapData::DoodadPlacements& currentDoodads, const std::filesystem::path& gameRoot,
+    bool enforceWaterLimits, std::size_t maximumBytes) {
+    return Guard<MapData::TerrainPathingResources>([&]() -> Result<MapData::TerrainPathingResources> {
+        auto rules = MapData::TerrainPathingResources::CaptureWaterBrushRules(source, sourceTerrain, currentTerrain,
+            gameRoot, enforceWaterLimits, maximumBytes);
+        if (!rules.Succeeded() || !rules.value) return rules;
+        const auto bound = rules.value->CaptureWaterSpecialInputs([&](auto names, const auto& limits) {
+            return source.CaptureExactMembers(names, limits);
+        }, currentTerrain, currentDoodads, ObjectData::InspectNativeTerrainObjects);
+        if (!bound.Succeeded()) return {{}, bound.diagnostics};
+        return rules;
+    });
+}
+
+Result<MapData::TerrainPathingResources> TerrainPathingSave::CaptureWaterBrushRules(const WorkspaceSnapshot& source,
+    const MapData::TerrainGridSnapshot& sourceTerrain, const MapData::TerrainGridSnapshot& currentTerrain,
+    const MapData::DoodadPlacements& currentDoodads, const std::filesystem::path& gameRoot,
+    bool enforceWaterLimits, std::size_t maximumBytes) {
+    return Guard<MapData::TerrainPathingResources>([&]() -> Result<MapData::TerrainPathingResources> {
+        auto rules = MapData::TerrainPathingResources::CaptureWaterBrushRules(source, sourceTerrain, currentTerrain,
+            gameRoot, enforceWaterLimits, maximumBytes);
+        if (!rules.Succeeded() || !rules.value) return rules;
+        const auto bound = rules.value->CaptureWaterSpecialInputs([&](auto names, const auto& limits) {
+            return MapData::TerrainPathingResources::ReadDirectoryMembers(source, names, limits);
+        }, currentTerrain, currentDoodads, ObjectData::InspectNativeTerrainObjects);
+        if (!bound.Succeeded()) return {{}, bound.diagnostics};
+        return rules;
     });
 }
 

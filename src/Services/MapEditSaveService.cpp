@@ -727,8 +727,14 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                 if (!points.Succeeded() || !points.value) return Forward(points.diagnostics);
                 if (stroke.waterBrush) {
                     // 原始来源保持grid；本笔规则必须绑定此前有序笔划之后的当前草稿。
-                    auto resources = MapData::TerrainPathingResources::CaptureWaterBrushRules(source, *grid,
-                        *edits.Terrain(), request.gameRoot, stroke.waterBrush->enforceWaterLimits,
+                    auto currentDoo = edits.Snapshot(MapDataKind::Doodads, MapData::TerrainSavePlanLimits{}.maximumBytes);
+                    if (!currentDoo.Succeeded() || !currentDoo.value) return Forward(currentDoo.diagnostics);
+                    const MapData::DoodadPlacements emptyDoo;
+                    const auto& doodads = currentDoo.value->Doodads();
+                    if (!doodads && currentDoo.value->Member(MapDataKind::Doodads).state != MapDataState::Missing)
+                        return Fail("SAVE_WATER_DOODADS_UNAVAILABLE", "水刷需要当前完整DOO，不能以空集合替代未知来源。");
+                    auto resources = TerrainPathingSave::CaptureWaterBrushRules(source, *grid,
+                        *edits.Terrain(), doodads ? *doodads : emptyDoo, request.gameRoot, stroke.waterBrush->enforceWaterLimits,
                         MapData::TerrainSavePlanLimits{}.maximumBytes);
                     if (!resources.Succeeded() || !resources.value) return Forward(resources.diagnostics);
                     const TerrainEditBinding binding{terrainDocument, edits.SessionIdentity(), edits.Revision(), edits.TerrainSourceRevision()};

@@ -17,10 +17,18 @@ public:
         const MapData::TerrainSavePlanLimits& limits = {});
     [[nodiscard]] static Result<MapData::TerrainPathingResources> CaptureNative(const MapArchiveSession& source,
         const MapData::TerrainGridSnapshot& before, const MapData::TerrainGridSnapshot& after,
-        const std::filesystem::path& gameRoot, std::size_t maximumBytes);
+        const std::filesystem::path& gameRoot, std::size_t maximumBytes, const std::vector<std::byte>* currentDoodads = nullptr);
     [[nodiscard]] static Result<MapData::TerrainPathingResources> CaptureNative(const WorkspaceSnapshot& source,
         const MapData::TerrainGridSnapshot& before, const MapData::TerrainGridSnapshot& after,
-        const std::filesystem::path& gameRoot, std::size_t maximumBytes);
+        const std::filesystem::path& gameRoot, std::size_t maximumBytes, const std::vector<std::byte>* currentDoodads = nullptr);
+    [[nodiscard]] static Result<MapData::TerrainPathingResources> CaptureWaterBrushRules(const MapArchiveSession& source,
+        const MapData::TerrainGridSnapshot& sourceTerrain, const MapData::TerrainGridSnapshot& currentTerrain,
+        const MapData::DoodadPlacements& currentDoodads, const std::filesystem::path& gameRoot,
+        bool enforceWaterLimits, std::size_t maximumBytes);
+    [[nodiscard]] static Result<MapData::TerrainPathingResources> CaptureWaterBrushRules(const WorkspaceSnapshot& source,
+        const MapData::TerrainGridSnapshot& sourceTerrain, const MapData::TerrainGridSnapshot& currentTerrain,
+        const MapData::DoodadPlacements& currentDoodads, const std::filesystem::path& gameRoot,
+        bool enforceWaterLimits, std::size_t maximumBytes);
     [[nodiscard]] static Result<TerrainPatch> Seal(const MapDocument& original,
         std::span<const std::byte> terrain, std::span<const std::byte> pathing,
         const WorkspaceSnapshot& source, const MapData::MapDataEditSession& current,

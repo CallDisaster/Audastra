@@ -4,6 +4,7 @@
 #include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/Services/MapEditSaveService.h"
 #include "War3MapCore/Services/TerrainEditService.h"
+#include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
 
 #include <Windows.h>
@@ -112,7 +113,10 @@ struct Fixture {
     }
     ~Fixture() { std::error_code error; std::filesystem::remove_all(root, error); }
     TerrainPathingResources Rules(bool enforce = true) const {
-        return Take(TerrainPathingResources::CaptureWaterBrushRules(*source, grid, *edits->Terrain(), game, enforce, kResourceBudget));
+        const auto current = Take(edits->Snapshot(MapDataKind::Doodads, kResourceBudget));
+        Require(current.Doodads().has_value(), "service rule capture reads a bounded current DOO snapshot");
+        return Take(TerrainPathingSave::CaptureWaterBrushRules(*source, grid, *edits->Terrain(),
+            *current.Doodads(), game, enforce, kResourceBudget));
     }
     MapDataQueryBinding Document() const { return {"water-service", 1, 0, source->SourceSha256()}; }
     TerrainEditBinding Binding() const { return {Document(), edits->SessionIdentity(), edits->Revision(), edits->TerrainSourceRevision()}; }

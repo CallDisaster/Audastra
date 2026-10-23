@@ -1226,7 +1226,7 @@ void WorldModule::StartTerrainRender() {
                 }
                 auto candidate = MapData::PrepareTerrainWaterStroke(*request.source,
                     *request.waterCapture->resources.WaterBrushRules(), *request.waterBrush, request.points,
-                    request.waterCapture->request->doodads);
+                    request.waterCapture->request->doodads, request.waterCapture->resources.WaterSpecialShapes());
                 if (!candidate.Succeeded()) { result->diagnostics = std::move(candidate.diagnostics); return; }
                 auto previewContext = shadowContext;
                 if (!candidate.value->result.changed.Empty() && previewContext.terrainRelation != WorldShadowTerrainRelation::Unknown)

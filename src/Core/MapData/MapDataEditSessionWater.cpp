@@ -72,6 +72,12 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
         || !reserve(liveBytes, limits.maximumCandidateBytes, doodadWireBytes, 10)
         || !reserve(work, limits.maximumWork, doodadWireBytes, 2)
         || liveBytes == limits.maximumCandidateBytes || work == limits.maximumWork) return budgetFailure();
+    if (current_[doodadIndex] && original_[doodadIndex] && current_[doodadIndex] != original_[doodadIndex]) {
+        // 私有谱系复核会同时解析旧/新DOO并临时还原special段；撤销后的集合也可能比当前磁盘大。
+        if (!reserve(parseBytes, limits.maximumCandidateBytes, original_[doodadIndex]->size(), 32)
+            || !reserve(work, limits.maximumWork, original_[doodadIndex]->size(), 8)
+            || !reserve(work, limits.maximumWork, doodadWireBytes, 8)) return budgetFailure();
+    }
 
     try {
         const auto bound = resources.VerifyWaterBrushInput(*terrainOriginal_, *terrain_);
@@ -82,12 +88,17 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
             if (!parsed.Succeeded() || !parsed.value) return {{}, std::move(parsed.diagnostics)};
             doodads = std::move(*parsed.value);
         }
-        // 本批尚无special资源形状捕获器，实际非空记录必须交算法明确拒绝，不能删掉或伪造空DOO。
+        const auto objectBound = resources.VerifyWaterBrushDoodads(doodads, original_[doodadIndex] ? std::span<const std::byte>{*original_[doodadIndex]} : std::span<const std::byte>{});
+        if (!objectBound.Succeeded()) return {{}, objectBound.diagnostics};
+        if (current_[doodadIndex] && original_[doodadIndex]) {
+            const auto provenance = VerifyTerrainDoodadChange(*original_[doodadIndex], *current_[doodadIndex]);
+            if (!provenance.Succeeded()) return {{}, provenance.diagnostics};
+        }
         auto algorithmLimits = limits;
         algorithmLimits.maximumCandidateBytes -= liveBytes;
         algorithmLimits.maximumWork -= work;
         auto candidate = PrepareTerrainWaterStroke(*terrain_, *resources.WaterBrushRules(), brush,
-            points, doodads, {}, algorithmLimits);
+            points, doodads, resources.WaterSpecialShapes(), algorithmLimits);
         if (!candidate.Succeeded() || !candidate.value) return {{}, std::move(candidate.diagnostics)};
         // result.work已包括算法输入检查、唯一候选复制、全图差分与派生刷新，不重复收费。
         if (!reserve(work, limits.maximumWork, candidate.value->result.work, 1)) return budgetFailure();
@@ -140,19 +151,21 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
                 || !reserve(work, limits.maximumWork, pathing_->size(), 2)
                 || !reserve(work, limits.maximumWork, area + blightCells, 1)) return budgetFailure();
         }
-        if (followDoodads && !changed.Empty()) {
+        const bool specialChanged = !candidate.value->result.removedSpecialSourceRecords.empty();
+        if (specialChanged || (followDoodads && !changed.Empty())) {
             // 只在确实进入跟随分支时预留序列化/回读峰值。DOO已持有的10倍wire不重复收费。
             if (!reserve(finalBytes, limits.maximumCandidateBytes, doodadWireBytes, 54)
                 || !reserve(work, limits.maximumWork, doodadWireBytes, 4)) return budgetFailure();
-            for (const auto index : {unitIndex, Index(MapDataKind::Settings)})
+            if (followDoodads) for (const auto index : {unitIndex, Index(MapDataKind::Settings)})
                 if (current_[index] && (!reserve(finalBytes, limits.maximumCandidateBytes, current_[index]->size(), 64)
                     || !reserve(work, limits.maximumWork, current_[index]->size(), 4))) return budgetFailure();
         }
+        doodads = std::move(candidate.value->doodads);
         auto next = std::make_shared<TerrainGridSnapshot>(std::move(candidate.value->terrain));
         // 水刷保存须另跑CaptureNative/G0/G1。这里若预跑等价保存门，会在拒绝水变化
         // 之前先解析并扫描整份WPM；省去这次重复工作，明确保持NOT_INSPECTED而非成功。
         auto prepared = PrepareTerrainCandidate(std::move(next), candidate.value->result.changed, points,
-            followDoodads, true, true, false, &doodads);
+            followDoodads, true, true, false, &doodads, specialChanged);
         if (prepared.value) {
             prepared.value->waterBrush_ = brush;
             prepared.value->waterResult_ = candidate.value->result;

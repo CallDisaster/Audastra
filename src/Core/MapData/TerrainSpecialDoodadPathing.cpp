@@ -49,6 +49,48 @@ void Validate(const TerrainGridSnapshot& grid, const SpecialDoodadPlacement& pla
 }
 } // namespace
 
+Result<std::vector<TerrainWaterSpecialDoodadShape>> DescribeTerrainSpecialDoodads(
+    const TerrainGridSnapshot& terrain, std::span<const TerrainSpecialDoodadPathingInput> inputs,
+    std::uint8_t maximumCliffLevel, std::size_t maximumWorkingBytes) {
+    using Output = Result<std::vector<TerrainWaterSpecialDoodadShape>>;
+    try {
+        const auto& header = terrain.header;
+        if (header.version != 11 || header.width < 2 || header.height < 2 || header.width > 2049 || header.height > 2049
+            || terrain.vertices.size() != std::size_t{header.width} * header.height || maximumCliffLevel > 14)
+            Fail("TERRAIN_SPECIAL_LAYOUT", "特殊形状需要完整经典地形和实际0..14层上限。");
+        constexpr auto perShape = sizeof(TerrainWaterSpecialDoodadShape) + 16;
+        if (inputs.size() > maximumWorkingBytes / perShape)
+            Fail("TERRAIN_SPECIAL_BUDGET", "特殊模型形状列表超过预算。");
+        std::size_t used = inputs.size() * perShape;
+        std::vector<TerrainWaterSpecialDoodadShape> result; result.reserve(inputs.size());
+        for (std::size_t index = 0; index < inputs.size(); ++index) {
+            const auto& input = inputs[index];
+            if (!input.placement) Fail("TERRAIN_SPECIAL_LAYOUT", "特殊形状缺少原始记录。");
+            const auto& placement = *input.placement;
+            if (placement.rawcode.size() != 4) Fail("TERRAIN_SPECIAL_LAYOUT", "特殊形状rawcode必须为四字节。");
+            TerrainWaterSpecialDoodadShape shape;
+            shape.sourceRecordIndex = static_cast<std::uint32_t>(index);
+            shape.rawcode = placement.rawcode; shape.variation = placement.variation; shape.position = placement.position;
+            shape.hasFootprint = input.footprint.has_value();
+            if (input.footprint) {
+                const auto& image = *input.footprint;
+                Validate(terrain, placement, image, maximumCliffLevel);
+                shape.x0 = static_cast<std::uint32_t>(placement.position[0]); shape.y0 = static_cast<std::uint32_t>(placement.position[1]);
+                shape.x1 = shape.x0 + image.width / 4; shape.y1 = shape.y0 + image.height / 4;
+                const auto count = std::size_t(shape.x1 - shape.x0 + 1) * (shape.y1 - shape.y0 + 1);
+                if (count > maximumWorkingBytes - used) Fail("TERRAIN_SPECIAL_BUDGET", "特殊模型alpha形状超过预算。");
+                used += count; shape.relativeCliffLevels.reserve(count);
+                for (unsigned y = 0; y <= image.height / 4; ++y) for (unsigned x = 0; x <= image.width / 4; ++x)
+                    shape.relativeCliffLevels.push_back(static_cast<std::int8_t>(Elevation(image, x, y)));
+            }
+            result.push_back(std::move(shape));
+        }
+        return Output::Success(std::move(result));
+    } catch (Failure& failure) { return {{}, std::move(failure.diagnostics)}; }
+    catch (const std::bad_alloc&) { return Output::Failure(kSubsystem, "TERRAIN_SPECIAL_BUDGET", "特殊形状分配失败。"); }
+    catch (const std::length_error&) { return Output::Failure(kSubsystem, "TERRAIN_SPECIAL_BUDGET", "特殊形状超过容器容量。"); }
+}
+
 Result<std::vector<std::uint8_t>> BuildTerrainSpecialDoodadPathing(const TerrainGridSnapshot& before,
     const TerrainGridSnapshot& after, std::span<const TerrainSpecialDoodadPathingInput> inputs,
     std::uint8_t maximumCliffLevel, std::size_t maximumWorkingBytes) {

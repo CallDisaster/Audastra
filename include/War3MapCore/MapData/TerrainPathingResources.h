@@ -15,6 +15,7 @@ namespace War3Map::Services { class TerrainPathingSave; }
 namespace War3Map::MapData {
 
 struct DoodadPlacement;
+enum class TerrainNativeStage { Before, After };
 
 // 实际读取的地形语义输入；只能由真实地图/游戏来源建立。
 // 旧Capture证明等价修改；CaptureNative另捕获完整生成输入，仍由保存计划
@@ -65,6 +66,10 @@ public:
     // 身份缓冲在生成输出前释放；maximumBytes分别约束该缓冲和生成输出。
     [[nodiscard]] Result<std::vector<std::byte>> GenerateNative(const TerrainGridSnapshot& terrain,
         std::size_t maximumBytes) const;
+    [[nodiscard]] Result<std::vector<std::byte>> GenerateNative(const TerrainGridSnapshot& terrain,
+        TerrainNativeStage stage, std::size_t maximumBytes) const;
+    [[nodiscard]] std::span<const TerrainWaterSpecialDoodadShape> WaterSpecialShapes() const noexcept { return waterSpecialShapes_; }
+    [[nodiscard]] Status VerifyWaterBrushDoodads(const DoodadPlacements& doodads, std::span<const std::byte> source = {}) const;
     [[nodiscard]] bool EquivalentGround(std::string_view before, std::string_view after) const;
     // 无坡道顶点的原版 D=0/1/2 和严格覆水状态都必须相等；不使用显示网格高度。
     [[nodiscard]] bool EquivalentWater(const TerrainVertex& before, const TerrainVertex& after) const;
@@ -87,19 +92,23 @@ private:
         std::span<const std::string_view>, std::span<const std::string_view>, std::span<const ArchiveExactMember>, std::size_t)>;
     [[nodiscard]] static Result<TerrainPathingResources> CaptureNativeWithObjects(const MapArchiveSession& source,
         const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
-        const std::filesystem::path& gameRoot, std::size_t maximumBytes, const NativeObjectValidator& validator);
+        const std::filesystem::path& gameRoot, std::size_t maximumBytes, const NativeObjectValidator& validator, const std::vector<std::byte>* currentDoodads = nullptr);
     [[nodiscard]] static Result<TerrainPathingResources> CaptureNativeWithObjects(const WorkspaceSnapshot& source,
         const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
-        const std::filesystem::path& gameRoot, std::size_t maximumBytes, const NativeObjectValidator& validator);
+        const std::filesystem::path& gameRoot, std::size_t maximumBytes, const NativeObjectValidator& validator, const std::vector<std::byte>* currentDoodads = nullptr);
     using MemberReader = std::function<Result<std::vector<ArchiveExactMember>>(
         std::span<const std::string>, const ArchiveExactMemberLimits&)>;
     [[nodiscard]] static Result<TerrainPathingResources> CaptureInputs(const MemberReader& reader,
         const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
         const std::filesystem::path& gameRoot, std::size_t maximumBytes, bool native,
-        const NativeObjectValidator* validator = nullptr);
+        const NativeObjectValidator* validator = nullptr, const std::vector<std::byte>* currentDoodads = nullptr);
     [[nodiscard]] static Result<TerrainPathingResources> CaptureWaterBrushInputs(const MemberReader& reader,
         const TerrainGridSnapshot& sourceTerrain, const TerrainGridSnapshot& currentTerrain,
         const std::filesystem::path& gameRoot, bool enforceWaterLimits, std::size_t maximumBytes);
+    [[nodiscard]] static Result<std::vector<ArchiveExactMember>> ReadDirectoryMembers(const WorkspaceSnapshot& source,
+        std::span<const std::string> names, const ArchiveExactMemberLimits& limits);
+    [[nodiscard]] Status CaptureWaterSpecialInputs(const MemberReader& reader,
+        const TerrainGridSnapshot& terrain, const DoodadPlacements& doodads, const NativeObjectValidator& validator);
     // requiredCount之前的成员必须有实际winner；余项允许缺失并固定缺失身份。
     using ResourceVisitor = std::function<void(std::size_t, bool, std::vector<std::byte>&&)>;
     [[nodiscard]] Status CaptureResourceMembers(const MemberReader& reader,
@@ -107,9 +116,9 @@ private:
     [[nodiscard]] Status CaptureNativeFootprints(const MemberReader& reader, const TerrainHeader& header,
         std::span<const DoodadPlacement> placements, std::span<const TerrainNativeDoodadPathingType> types);
     [[nodiscard]] Status CaptureSpecialFootprints(const MemberReader& reader,
-        const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
+        const TerrainGridSnapshot& terrain,
         std::span<const SpecialDoodadPlacement> placements, std::span<const TerrainNativeDoodadPathingType> types,
-        std::uint8_t maximumCliffLevel);
+        std::uint8_t maximumCliffLevel, std::size_t stage);
     [[nodiscard]] Result<std::uint8_t> CaptureSpecialCliffLimit(const MemberReader& reader);
     [[nodiscard]] Status VerifyReadbackMembers(const MemberReader& reader, std::size_t maximumBytes) const;
     [[nodiscard]] Status VerifyGameDependencies(std::size_t remainingBytes) const;
@@ -133,10 +142,13 @@ private:
     std::string waterBrushInputSha_;
     std::size_t waterBrushInputBytes_ = 0;
     std::optional<TerrainNativePlayableBounds> nativeBounds_;
-    std::vector<std::byte> nativeDoodads_;
+    std::vector<std::byte> nativeDoodads_, nativeAfterDoodads_;
+    bool nativeDoodadsFrozen_ = false;
+    std::string waterBrushDoodadsSha_;
+    std::vector<TerrainWaterSpecialDoodadShape> waterSpecialShapes_;
     std::vector<std::uint8_t> nativeStaticAttributes_;
-    std::vector<std::uint8_t> nativeSpecialAttributes_;
-    std::size_t nativeSpecialCount_ = 0;
+    std::array<std::vector<std::uint8_t>, 2> nativeSpecialAttributes_;
+    std::array<std::size_t, 2> nativeSpecialCount_{};
     std::array<std::string, 2> nativeTerrainSha_;
     std::array<std::size_t, 2> nativeTerrainBytes_{};
 };

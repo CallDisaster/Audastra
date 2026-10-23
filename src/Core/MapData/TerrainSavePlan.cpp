@@ -111,7 +111,8 @@ template<class Function> Result<TerrainSavePlan> Guard(Function&& function) {
 } // namespace
 
 bool TerrainSavePlan::HasTerrainChanges(const MapDataEditSession& edits) noexcept {
-    return edits.TerrainDirty() || edits.pathing_ != edits.pathingOriginal_;
+    return edits.TerrainDirty() || edits.pathing_ != edits.pathingOriginal_
+        || edits.specialDoodads_ != edits.savedSpecialDoodads_;
 }
 
 Result<TerrainSavePlan> TerrainSavePlan::Prepare(const MapArchiveSession& source,
@@ -281,7 +282,8 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
             plan.saveGate_ = Status::Ok();
         }
     }
-    plan.pathingInvariant_ = edits.terrain_->header.groundTilesets != edits.terrainOriginal_->header.groundTilesets
+    plan.pathingInvariant_ = edits.specialDoodads_ != edits.savedSpecialDoodads_;
+    plan.pathingInvariant_ = plan.pathingInvariant_ || edits.terrain_->header.groundTilesets != edits.terrainOriginal_->header.groundTilesets
         || edits.terrain_->header.usesCustomTileset != edits.terrainOriginal_->header.usesCustomTileset;
     if (edits.pathing_->size() == edits.pathingOriginal_->size())
         for (std::size_t i = 16; i < edits.pathing_->size(); ++i)

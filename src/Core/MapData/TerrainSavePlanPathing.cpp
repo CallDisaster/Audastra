@@ -29,7 +29,9 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
     if (!shape.Succeeded()) return {{}, shape.diagnostics};
     if ((!source && !workspace) || total > limits.maximumBytes)
         return Output::Failure(kSubsystem, "TERRAIN_PATHING_REBUILD_SOURCE", "通行重建缺少唯一来源或剩余预算。");
-    auto captured = nativeCapture ? (*nativeCapture)(*edits.terrainOriginal_, *edits.terrain_, limits.maximumBytes - total) : source
+    const auto& currentDoodads = edits.current_[MapDataEditSession::Index(MapDataKind::Doodads)];
+    auto captured = nativeCapture ? (*nativeCapture)(*edits.terrainOriginal_, *edits.terrain_,
+        currentDoodads ? &*currentDoodads : nullptr, limits.maximumBytes - total) : source
         ? TerrainPathingResources::CaptureNative(*source, *edits.terrainOriginal_, *edits.terrain_, gameRoot, limits.maximumBytes - total)
         : TerrainPathingResources::CaptureNative(*workspace, *edits.terrainOriginal_, *edits.terrain_, gameRoot, limits.maximumBytes - total);
     if (!captured.Succeeded() || !captured.value) return {{}, std::move(captured.diagnostics)};
@@ -46,7 +48,7 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
     const auto cells = oldWpm.size() - 16;
     // 先完整验证原图；不通过 source & ~S 反推原版贡献，S可以与地形贡献重叠。
     {
-        auto original = captured.value->GenerateNative(*edits.terrainOriginal_, limits.maximumBytes - total);
+        auto original = captured.value->GenerateNative(*edits.terrainOriginal_, TerrainNativeStage::Before, limits.maximumBytes - total);
         if (!original.Succeeded() || !original.value) return {{}, std::move(original.diagnostics)};
         if (original.value->size() != cells || savedIntent.size() != cells || intent.size() != cells)
             return Output::Failure(kSubsystem, "TERRAIN_PATHING_REBUILD_SHAPE", "原版通行重算与来源WPM或限制意图大小不一致。");
@@ -63,7 +65,7 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
                     + "；保留原图，请核对外部通行修改或尚未支持的对象规则。");
         }
     }
-    auto generated = captured.value->GenerateNative(*edits.terrain_, limits.maximumBytes - total);
+    auto generated = captured.value->GenerateNative(*edits.terrain_, TerrainNativeStage::After, limits.maximumBytes - total);
     if (!generated.Succeeded() || !generated.value) return {{}, std::move(generated.diagnostics)};
     if (generated.value->size() != cells)
         return Output::Failure(kSubsystem, "TERRAIN_PATHING_REBUILD_SHAPE", "新通行重算与来源网格大小不一致。");
@@ -134,6 +136,11 @@ Status TerrainSavePlan::CommitSaved(MapDataEditSession& edits, const MapDocument
         || !edits.pathingRestrictions_ || !SameSha(*edits.pathingOriginal_, members_[1].sourceSha256)
         || !SameSha(*edits.pathing_, pathingDraftSha256_) || !SameSha(*edits.pathingRestrictions_, pathingIntentSha256_))
         return Reject("TERRAIN_PATHING_COMMIT_STALE", "保存后的通行基线与前台来源、草稿或限制意图不一致。");
+    const auto& doodads = edits.current_[MapDataEditSession::Index(MapDataKind::Doodads)];
+    if (!doodads || doodads->size() != invariantMembers_[2].outputBytes
+        || !SameSha(*doodads, invariantMembers_[2].outputSha256)
+        || !saved.Doodads() || saved.Doodads()->OriginalBytes() != *doodads)
+        return Reject("TERRAIN_PATHING_COMMIT_STALE", "保存后的DOO与冻结输出或前台完整特殊集合不一致，编辑基线保持不变。");
     const auto original = SerializeMapTerrain(*edits.terrainOriginal_);
     const auto current = SerializeMapTerrain(*edits.terrain_);
     if (!original.Succeeded() || !original.value) return {original.diagnostics};

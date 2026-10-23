@@ -3,6 +3,7 @@
 #include "EditorProject.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/VerifiedFile.h"
+#include "War3MapCore/Services/TerrainPathingSave.h"
 
 #include <QDir>
 #include <algorithm>
@@ -161,10 +162,10 @@ Result<TerrainWaterEditCapture> LoadTerrainWaterEditResources(std::shared_ptr<co
         auto terrain = MapData::ParseMapTerrain(*bytes.value);
         if (!terrain.Succeeded()) return {std::nullopt, std::move(terrain.diagnostics)};
         auto resources = archive
-            ? MapData::TerrainPathingResources::CaptureWaterBrushRules(*archive, *terrain.value->Snapshot(),
-                *request->terrain, request->gameRoot, request->enforceWaterLimits, request->maximumBytes)
-            : MapData::TerrainPathingResources::CaptureWaterBrushRules(*request->directory, *terrain.value->Snapshot(),
-                *request->terrain, request->gameRoot, request->enforceWaterLimits, request->maximumBytes);
+            ? Services::TerrainPathingSave::CaptureWaterBrushRules(*archive, *terrain.value->Snapshot(),
+                *request->terrain, request->doodads, request->gameRoot, request->enforceWaterLimits, request->maximumBytes)
+            : Services::TerrainPathingSave::CaptureWaterBrushRules(*request->directory, *terrain.value->Snapshot(),
+                *request->terrain, request->doodads, request->gameRoot, request->enforceWaterLimits, request->maximumBytes);
         if (!resources.Succeeded()) return {std::nullopt, std::move(resources.diagnostics)};
         const auto input = resources.value->VerifyWaterBrushInput(*terrain.value->Snapshot(), *request->terrain);
         if (!input.Succeeded()) return {std::nullopt, input.diagnostics};

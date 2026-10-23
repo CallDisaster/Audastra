@@ -98,6 +98,8 @@ public:
     };
     explicit MapDataEditSession(const MapDocument& source);
     MapDataEditSession(const MapDataEditSession&) = delete; // 会话身份与回执地址不能被复制。
+    // 只冻结真实会话的保存输入；不提供可编辑副本，不从持久化字节恢复私有事务身份。
+    [[nodiscard]] std::shared_ptr<const MapDataEditSession> FreezeForSave() const;
     MapDataEditSession& operator=(const MapDataEditSession&) = delete;
 
     [[nodiscard]] Status EditSettings(const MapSettings& value);
@@ -214,6 +216,7 @@ private:
         bool logicalForward = true;
         bool replayed = false;
         std::shared_ptr<const std::vector<PlacementRowLineage>> placements;
+        std::shared_ptr<const std::vector<SpecialDoodadPlacement>> specialBefore, specialAfter;
     };
     [[nodiscard]] Status Apply(MapDataKind kind, Result<std::vector<std::byte>> serialized);
     [[nodiscard]] Status Prepare(MapDataKind kind, Result<std::vector<std::byte>> serialized,
@@ -233,7 +236,7 @@ private:
     [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainCandidate(
         std::shared_ptr<const TerrainGridSnapshot> next, const TerrainStrokeResult& changed,
         std::span<const TerrainStrokePoint> points, bool followDoodads, bool shaping,
-        bool synchronizeBlight, bool inspectSaveGate, DoodadPlacements* parsedDoodads = nullptr) const;
+        bool synchronizeBlight, bool inspectSaveGate, DoodadPlacements* parsedDoodads = nullptr, bool specialChanged = false) const;
     [[nodiscard]] Status SetTerrainAndPathingInternal(std::span<const std::byte> terrainBytes,
         std::span<const std::byte> pathingBytes, std::span<const std::byte> restrictionDraft);
     [[nodiscard]] Status VerifyTerrainCandidateForSave(
@@ -244,6 +247,8 @@ private:
         const std::vector<std::byte>* restrictions = nullptr,
         const std::optional<std::vector<std::byte>>* units = nullptr,
         bool nativeRebuild = false) const;
+    [[nodiscard]] Status VerifyTerrainDoodadChange(std::span<const std::byte> before,
+        std::span<const std::byte> after) const;
     [[nodiscard]] Status PrepareUnits(const UnitPlacements& value, std::vector<MemberChange>& changes) const;
     [[nodiscard]] Status DeserializeAndApply(MapDataKind kind, std::span<const std::byte> bytes,
         bool linkStartLocations);
@@ -253,6 +258,8 @@ private:
         std::optional<std::vector<std::byte>> pathing,
         std::shared_ptr<const std::vector<std::byte>> protectedPathing);
     [[nodiscard]] static std::size_t Index(MapDataKind kind) noexcept;
+    struct SaveSnapshotTag {};
+    MapDataEditSession(const MapDataEditSession& source, SaveSnapshotTag);
 
     std::array<MapDataState, 7> states_{};
     std::array<std::string, 7> memberNames_{};
@@ -266,6 +273,8 @@ private:
     std::uint64_t sessionIdentity_ = 0, nextCommandIdentity_ = 1;
     std::uint64_t terrainSourceRevision_ = 0;
     EditReceipt lastApplied_;
+    // 只由真实来源构造、可信水刷更新；与Command一起撤销，保存只移动基线，不丢历史身份。
+    std::shared_ptr<const std::vector<SpecialDoodadPlacement>> specialDoodads_, savedSpecialDoodads_;
     std::shared_ptr<const TerrainGridSnapshot> terrainOriginal_;
     std::shared_ptr<const TerrainGridSnapshot> terrain_;
     std::optional<std::vector<std::byte>> pathingOriginal_;

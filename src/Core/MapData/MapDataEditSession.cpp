@@ -76,6 +76,10 @@ MapDataEditSession::MapDataEditSession(const MapDocument& source) {
         current_[i] = original_[i];
         if (!original_[i] && member.state != MapDataState::Missing) preservedSources_[i] = member;
     }
+    if (source.Doodads()) specialDoodads_ = std::make_shared<const std::vector<SpecialDoodadPlacement>>(source.Doodads()->specialDoodads);
+    else if (states_[Index(MapDataKind::Doodads)] == MapDataState::Missing)
+        specialDoodads_ = std::make_shared<const std::vector<SpecialDoodadPlacement>>();
+    savedSpecialDoodads_ = specialDoodads_;
 }
 
 Status MapDataEditSession::Apply(MapDataKind kind, Result<std::vector<std::byte>> serialized) {
@@ -153,6 +157,9 @@ Status MapDataEditSession::CommitCommand(Command value, const std::function<Stat
     if (static_cast<bool>(value.restrictionBefore) != static_cast<bool>(value.restrictionAfter)
         || (value.restrictionBefore && pathingRestrictions_ != value.restrictionBefore))
         return Status::Failure("MapData.Edit", "MAP_PATHING_STALE", "限制意图层已改变，不能提交旧笔划");
+    if (static_cast<bool>(value.specialBefore) != static_cast<bool>(value.specialAfter)
+        || (value.specialBefore && value.specialBefore != specialDoodads_))
+        return Status::Failure("MapData.Edit", "TERRAIN_SPECIAL_STATE_STALE", "特殊模型事务来源已变，未提交任何成员。");
     value.beforeRevision = revision_; value.afterRevision = revision_ + 1;
     auto command = std::make_shared<const Command>(std::move(value));
     // 在触碰历史或覆盖前完成可能抛出异常的分配，关联成员与地形不能部分提交。
@@ -194,6 +201,7 @@ Status MapDataEditSession::CommitCommand(Command value, const std::function<Stat
     for (std::size_t i = 0; i < command->changes.size(); ++i)
         current_[Index(command->changes[i].kind)].swap(next[i]);
     terrain_ = std::move(nextTerrain);
+    if (command->specialAfter) specialDoodads_ = command->specialAfter;
     if (command->pathingAfter) pathing_.swap(nextPathing);
     if (nextRestrictions) pathingRestrictions_.swap(nextRestrictions);
     cursor_ = history_.size();
@@ -540,6 +548,8 @@ Status MapDataEditSession::Replay(const EditReceipt& receipt, bool forward) {
     Command command;
     command.sessionIdentity = source.sessionIdentity; command.logicalIdentity = source.logicalIdentity;
     command.replayed = true;
+    command.specialBefore = forward ? source.specialBefore : source.specialAfter;
+    command.specialAfter = forward ? source.specialAfter : source.specialBefore;
     command.logicalForward = source.logicalForward == forward; command.placements = source.placements;
     for (const auto& change : source.changes) {
         const auto& expected = forward ? change.before : change.after;
@@ -601,6 +611,7 @@ void MapDataEditSession::Restore(const Command& command, bool forward) {
     for (std::size_t i = 0; i < command.changes.size(); ++i)
         current_[Index(command.changes[i].kind)].swap(next[i]);
     terrain_ = std::move(nextTerrain);
+    if (command.specialAfter) specialDoodads_ = forward ? command.specialAfter : command.specialBefore;
     if (command.pathingAfter) pathing_.swap(nextPathing);
     if (nextRestrictions) pathingRestrictions_.swap(nextRestrictions);
 }
@@ -651,6 +662,20 @@ std::vector<std::string> MapDataEditSession::Removals() const {
     return names;
 }
 
+MapDataEditSession::MapDataEditSession(const MapDataEditSession& source, SaveSnapshotTag)
+    : states_(source.states_), memberNames_(source.memberNames_), original_(source.original_), current_(source.current_),
+      preservedSources_(source.preservedSources_), revision_(source.revision_), sessionIdentity_(source.sessionIdentity_),
+      nextCommandIdentity_(source.nextCommandIdentity_), terrainSourceRevision_(source.terrainSourceRevision_),
+      specialDoodads_(source.specialDoodads_), savedSpecialDoodads_(source.savedSpecialDoodads_),
+      terrainOriginal_(source.terrainOriginal_), terrain_(source.terrain_), pathingOriginal_(source.pathingOriginal_),
+      pathing_(source.pathing_), pathingProtected_(source.pathingProtected_), pathingRestrictions_(source.pathingRestrictions_),
+      originalPathingRestrictions_(source.originalPathingRestrictions_) {}
+
+std::shared_ptr<const MapDataEditSession> MapDataEditSession::FreezeForSave() const {
+    // 不复制Undo历史/回执地址；快照只读且与前台共享不可变地形和私有special状态。
+    return std::shared_ptr<const MapDataEditSession>(new MapDataEditSession(*this, SaveSnapshotTag{}));
+}
+
 void MapDataEditSession::CommitSaved(const MapDocument& saved) {
     CommitSavedBaseline(saved, pathing_, pathingProtected_);
 }
@@ -661,6 +686,18 @@ void MapDataEditSession::CommitSavedBaseline(const MapDocument& saved,
     // 所有复制在交换前完成，分配失败时连来源代际也保持不变。
     auto original = current_;
     auto originalPathing = pathing;
+    auto savedSpecial = specialDoodads_;
+    if (const auto& placed = saved.Doodads(); placed) {
+        const auto& actual = placed->specialDoodads;
+        const bool same = savedSpecial && actual.size() == savedSpecial->size()
+            && std::equal(actual.begin(), actual.end(), savedSpecial->begin(), [](const auto& a, const auto& b) {
+                return a.rawcode == b.rawcode && a.variation == b.variation && a.position == b.position;
+            });
+        // 独立的合法物编保存可建立新来源；相同可信集合保持原指针，保存后Undo仍识别原命令。
+        if (!same) savedSpecial = std::make_shared<const std::vector<SpecialDoodadPlacement>>(actual);
+    } else if (saved.Member(MapDataKind::Doodads).state == MapDataState::Missing && savedSpecial && !savedSpecial->empty()) {
+        savedSpecial = std::make_shared<const std::vector<SpecialDoodadPlacement>>();
+    }
     std::array<MapDataState, 7> states{};
     std::array<std::optional<MapMemberState>, 7> preservedSources{};
     for (std::size_t i = 0; i < states_.size(); ++i) {
@@ -677,6 +714,7 @@ void MapDataEditSession::CommitSavedBaseline(const MapDocument& saved,
     states_.swap(states);
     preservedSources_.swap(preservedSources);
     terrainOriginal_ = terrain_;
+    specialDoodads_ = savedSpecialDoodads_ = std::move(savedSpecial);
     // 不从P|A反推来源P，已保存意图S单独保留。
     originalPathingRestrictions_ = pathingRestrictions_;
     if (terrainSourceRevision_ != std::numeric_limits<std::uint64_t>::max()) ++terrainSourceRevision_;

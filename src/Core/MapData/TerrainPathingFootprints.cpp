@@ -136,9 +136,9 @@ Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& read
 }
 
 Status TerrainPathingResources::CaptureSpecialFootprints(const MemberReader& reader,
-    const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
+    const TerrainGridSnapshot& terrain,
     std::span<const SpecialDoodadPlacement> placements, std::span<const TerrainNativeDoodadPathingType> types,
-    std::uint8_t maximumCliffLevel) {
+    std::uint8_t maximumCliffLevel, std::size_t stage) {
     try {
         const auto reserve = [&](std::size_t count, std::size_t each) {
             if (sourceBytes_ > capturedMaximumBytes_ || objectWorkBytes_ > capturedMaximumBytes_ - sourceBytes_
@@ -146,10 +146,10 @@ Status TerrainPathingResources::CaptureSpecialFootprints(const MemberReader& rea
                 Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "特殊地形捕获超过累计剩余预算。");
             objectWorkBytes_ += count * each;
         };
-        struct Type { std::string path; bool used = false; };
+        struct Type { std::string path; };
         struct Image { std::vector<std::byte> bytes; TerrainDoodadFootprint decoded; };
-        if (types.empty() || types.size() > placements.size() || before.header.width < 2 || before.header.height < 2
-            || before.header.width > 2049 || before.header.height > 2049)
+        if (types.empty() || stage > 1 || terrain.header.width < 2 || terrain.header.height < 2
+            || terrain.header.width > 2049 || terrain.header.height > 2049)
             Fail("TERRAIN_SPECIAL_LAYOUT", "特殊地形类型必须覆盖同次DOO的全部记录。");
         constexpr auto links = 4 * sizeof(void*);
         constexpr auto perType = sizeof(std::pair<const std::string_view, Type>) + links
@@ -157,9 +157,9 @@ Status TerrainPathingResources::CaptureSpecialFootprints(const MemberReader& rea
             + sizeof(ArchiveExactMember) + 2 * sizeof(Dependency) + 6 * 2 * std::size_t{260};
         reserve(types.size(), perType);
         reserve(placements.size(), sizeof(TerrainSpecialDoodadPathingInput));
-        const auto width = std::size_t{before.header.width - 1} * 4;
-        const auto height = std::size_t{before.header.height - 1} * 4;
-        reserve(width, height);
+        const auto width = std::size_t{terrain.header.width - 1} * 4;
+        const auto height = std::size_t{terrain.header.height - 1} * 4;
+        if (!waterBrushRules_) reserve(width, height);
         std::map<std::string_view, Type, std::less<>> byRawcode;
         std::map<std::string, Image, std::less<>> images;
         for (const auto& type : types) {
@@ -184,15 +184,19 @@ Status TerrainPathingResources::CaptureSpecialFootprints(const MemberReader& rea
         for (const auto& placement : placements) {
             const auto found = byRawcode.find(placement.rawcode);
             if (found == byRawcode.end()) Fail("TERRAIN_SPECIAL_LAYOUT", "特殊DOO有未解释的rawcode：" + placement.rawcode);
-            found->second.used = true;
             inputs.push_back({&placement, found->second.path.empty() ? std::nullopt
                 : std::optional{images.at(found->second.path).decoded}});
         }
-        for (const auto& [rawcode, type] : byRawcode)
-            if (!type.used) Fail("TERRAIN_SPECIAL_LAYOUT", "特殊类型没有对应实际记录：" + std::string(rawcode));
-        nativeSpecialAttributes_ = Take(BuildTerrainSpecialDoodadPathing(before, after, inputs, maximumCliffLevel, capturedMaximumBytes_));
-        reserve(nativeSpecialAttributes_.capacity() - width * height, 1);
-        nativeSpecialCount_ = placements.size();
+        if (waterBrushRules_) {
+            const auto remaining = capturedMaximumBytes_ - sourceBytes_ - objectWorkBytes_;
+            waterSpecialShapes_ = Take(DescribeTerrainSpecialDoodads(terrain, inputs, maximumCliffLevel, remaining));
+            reserve(waterSpecialShapes_.capacity(), sizeof(TerrainWaterSpecialDoodadShape));
+            for (const auto& shape : waterSpecialShapes_) reserve(shape.relativeCliffLevels.capacity() + shape.rawcode.capacity() + 1, 1);
+        } else {
+            nativeSpecialAttributes_[stage] = Take(BuildTerrainSpecialDoodadPathing(terrain, terrain, inputs, maximumCliffLevel, capturedMaximumBytes_));
+            reserve(nativeSpecialAttributes_[stage].capacity() - width * height, 1);
+            nativeSpecialCount_[stage] = placements.size();
+        }
         return Status::Ok();
     } catch (Failure& failure) { return {std::move(failure.diagnostics)}; }
     catch (const std::bad_alloc&) { return Status::Failure(kSubsystem, "TERRAIN_NATIVE_OBJECT_BUDGET", "特殊地形捕获分配失败。"); }

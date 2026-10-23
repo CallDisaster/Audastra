@@ -435,7 +435,7 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
 Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerrainCandidate(
     std::shared_ptr<const TerrainGridSnapshot> next, const TerrainStrokeResult& changed,
     std::span<const TerrainStrokePoint> points, bool followDoodads, bool shaping,
-    bool synchronizeBlight, bool inspectSaveGate, DoodadPlacements* parsedDoodads) const {
+    bool synchronizeBlight, bool inspectSaveGate, DoodadPlacements* parsedDoodads, bool specialChanged) const {
     Command command;
     if (!changed.Empty()) command.terrain = DiffChunks<TerrainChunk>(*terrain_, *next, changed.x0, changed.y0, changed.x1, changed.y1);
     if (changed.headerChanged) { command.headerBefore = terrain_->header; command.headerAfter = next->header; }
@@ -525,6 +525,23 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
             }
         }
         if (!lineage.empty()) command.placements = std::make_shared<const std::vector<PlacementRowLineage>>(std::move(lineage));
+    }
+    if (specialChanged) {
+        if (!parsedDoodads || !specialDoodads_)
+            return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "TERRAIN_SPECIAL_STATE_UNAVAILABLE", "特殊模型删除缺少可信来源状态。");
+        // 普通Z联动可能已生成同一DOO替换；最终只保留一份完整原子成员。
+        command.changes.erase(std::remove_if(command.changes.begin(), command.changes.end(),
+            [](const auto& item) { return item.kind == MapDataKind::Doodads; }), command.changes.end());
+        if (const auto status = Prepare(MapDataKind::Doodads, parsedDoodads->Serialize(), command.changes); !status.Succeeded())
+            return {{}, status.diagnostics};
+        command.specialBefore = specialDoodads_;
+        command.specialAfter = std::make_shared<const std::vector<SpecialDoodadPlacement>>(parsedDoodads->specialDoodads);
+        if (!command.placements) {
+            PlacementRowLineage lineage; lineage.kind = MapDataKind::Doodads;
+            lineage.beforeCount = lineage.afterCount = static_cast<std::uint32_t>(parsedDoodads->doodads.size());
+            for (std::uint32_t i = 0; i < lineage.beforeCount; ++i) lineage.beforeToAfter.emplace_back(i);
+            command.placements = std::make_shared<const std::vector<PlacementRowLineage>>(std::vector{std::move(lineage)});
+        }
     }
     const auto doodadChange = std::find_if(command.changes.begin(), command.changes.end(),
         [](const auto& change) { return change.kind == MapDataKind::Doodads; });
@@ -616,6 +633,28 @@ Status MapDataEditSession::VerifyTerrainSourceBaseline(std::span<const std::byte
     return Status::Ok();
 }
 
+Status MapDataEditSession::VerifyTerrainDoodadChange(std::span<const std::byte> before,
+    std::span<const std::byte> after) const {
+    if (std::equal(before.begin(), before.end(), after.begin(), after.end())) return Status::Ok();
+    const auto same = [](const auto& a, const auto& b) {
+        return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](const auto& x, const auto& y) {
+            return x.rawcode == y.rawcode && x.variation == y.variation && x.position == y.position;
+        });
+    };
+    auto original = ParseDoodadPlacements(before), current = ParseDoodadPlacements(after);
+    if (!original.Succeeded() || !original.value) return {original.diagnostics};
+    if (!current.Succeeded() || !current.value) return {current.diagnostics};
+    if (!specialDoodads_ || !savedSpecialDoodads_
+        || !same(original.value->specialDoodads, *savedSpecialDoodads_)
+        || !same(current.value->specialDoodads, *specialDoodads_))
+        return Status::Failure("MapData.Edit", "TERRAIN_SPECIAL_PROVENANCE_REQUIRED", "特殊模型集合未由本会话可信水刷事务生成或恢复；请撤销该摆放修改，或从实际地图来源重放水刷。");
+    // 只替回已由私有命令身份核对的special段，普通DOO仍逐字执行原来的仅Z检查。
+    current.value->specialDoodads = original.value->specialDoodads;
+    const auto normalized = current.value->Serialize();
+    if (!normalized.Succeeded() || !normalized.value) return {normalized.diagnostics};
+    return VerifyDoodadPlacementElevationOnly(before, *normalized.value);
+}
+
 Status MapDataEditSession::VerifyTerrainCandidateForSave(
     const std::shared_ptr<const TerrainGridSnapshot>& terrain,
     const std::optional<std::vector<std::byte>>& pathing,
@@ -625,7 +664,8 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
     const auto reject = [](const char* reason) {
         return Status::Failure("MapData.Edit", "MAP_TERRAIN_PATHING_UNVERIFIED", reason);
     };
-    if (!TerrainDiffers(terrain, terrainOriginal_) && pathing == pathingOriginal_) return Status::Ok();
+    if (!TerrainDiffers(terrain, terrainOriginal_) && pathing == pathingOriginal_
+        && specialDoodads_ == savedSpecialDoodads_) return Status::Ok();
     if (!terrain || !terrainOriginal_ || !pathing || !pathingOriginal_)
         return reject("已修改地形但缺少源 W3E 或唯一可验证的 WPM，拒绝正式地图保存");
     if (!pathingProtected_ || !originalPathingRestrictions_ || !pathingRestrictions_)
@@ -646,13 +686,15 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
             result.diagnostics.insert(result.diagnostics.end(), status.diagnostics.begin(), status.diagnostics.end());
             return result;
         };
-        const auto doo = check(MapDataKind::Doodads, doodads, [](const auto& before, const auto& after) {
-            return VerifyDoodadPlacementElevationOnly(before, after);
+        const auto doo = check(MapDataKind::Doodads, doodads, [&](const auto& before, const auto& after) {
+            return nativeRebuild ? VerifyTerrainDoodadChange(before, after) : VerifyDoodadPlacementElevationOnly(before, after);
         });
         if (!doo.Succeeded()) return doo;
         return check(MapDataKind::Units, units ? *units : current_[Index(MapDataKind::Units)],
             [](const auto& before, const auto& after) { return VerifyUnitPlacementElevationOnly(before, after); });
     };
+    if (specialDoodads_ != savedSpecialDoodads_ && !nativeRebuild)
+        return reject("可信水刷改变了特殊模型集合，必须分别重算旧/新DOO的完整通行贡献。");
     if (!TerrainDiffers(terrain, terrainOriginal_)) {
         if (const auto checked = checkPlacements(); !checked.Succeeded()) return checked;
         return PathingBlightDeltaMatchesTerrain(*pathingOriginal_, *pathing, *terrainOriginal_, *terrain, kPathingRestrictionBits)
