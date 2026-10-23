@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <initializer_list>
 #include <iostream>
 #include <memory>
@@ -184,9 +185,11 @@ void StandardDoodad(Fixture& fixture, bool mixed = false) {
     fixture.Member("Doodads/Doodads.slk") = Slk({"doodID", "code", "pathTex"}, {{"Doo0", "Doo0", "_"}});
 }
 
-Bytes UniformDoodadTexture() {
-    Bytes bytes(18 + 4 * 4 * 3, std::byte{0});
-    bytes[2] = std::byte{2}; bytes[12] = bytes[14] = std::byte{4}; bytes[16] = std::byte{24};
+Bytes UniformDoodadTexture(std::uint16_t side = 4) {
+    Bytes bytes(18 + std::size_t{side} * side * 3, std::byte{0});
+    bytes[2] = std::byte{2}; bytes[16] = std::byte{24};
+    bytes[12] = bytes[14] = static_cast<std::byte>(side & 255);
+    bytes[13] = bytes[15] = static_cast<std::byte>(side >> 8);
     for (std::size_t at = 18; at < bytes.size(); at += 3) bytes[at] = bytes[at + 2] = std::byte{0xff};
     return bytes;
 }
@@ -701,6 +704,38 @@ void UniformDoodadGameTextureWinnerRemainsBound() {
     Check(owner.VerifyFrozenOutput(output, {}));
 }
 
+void UniformDoodadLongestPathHasAnExactCaptureBudget() {
+    Fixture f; UniformDoodad(f);
+    const std::string prefix = "PathTextures/";
+    const auto path = prefix + std::string(259 - prefix.size() - 4, 'p') + ".tga";
+    Require(path.size() == 259, "exercise the longest supported relative footprint path");
+    for (auto& member : f.members) if (member.name == kUniformDoodadTexture) member.name = path;
+    f.Member("Doodads/Doodads.slk") = Slk({"doodID", "code", "pathTex", "category"}, {{"Doo0", "Doo0", path, "E"}});
+    f.Open(); f.Paint();
+    const auto owner = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, kBudget));
+    const auto exact = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, owner.CaptureBudgetBytes()));
+    Require(exact.CaptureBudgetBytes() == owner.CaptureBudgetBytes(), "long path storage is included in the reusable exact budget");
+    const auto shortBudget = TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, owner.CaptureBudgetBytes() - 1);
+    Require(!shortBudget.Succeeded() && !shortBudget.value, "one missing byte rejects long path capture without a partial owner");
+}
+
+void UniformDoodadDuplicateInstancesHaveABoundedPixelWorkload() {
+    Fixture f; UniformDoodad(f);
+    f.Member(kUniformDoodadTexture) = UniformDoodadTexture(256);
+    auto placements = Take(ParseDoodadPlacements(f.Member("war3map.doo")));
+    const auto placed = placements.doodads.front();
+    placements.doodads.assign(129, placed);
+    for (std::size_t i = 0; i < placements.doodads.size(); ++i) placements.doodads[i].creationId = static_cast<std::int32_t>(i + 1);
+    f.Member("war3map.doo") = Take(placements.Serialize());
+    // 256²占地覆盖整个32²网格；原WPM由独立规则手写，不让损坏原图抢先触发拒绝。
+    auto& wpm = f.Member("war3map.wpm"); std::fill(wpm.begin() + 16, wpm.end(), std::byte{0xdb});
+    f.Open(); f.Paint();
+    // 重复实例仍须逐个计费：129×256² = 8 MiB + 65536，不能只按纹理或唯一落点计一次。
+    const auto captured = TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, kBudget);
+    Require(!captured.Succeeded() && !captured.value && HasCode(captured, "TERRAIN_NATIVE_FOOTPRINT_WORK"),
+        "duplicate instances exceeding the cumulative pixel workload return the specific work limit failure");
+}
+
 void UniformDoodadRejectionDoesNotWeakenOldSaves() {
     for (const unsigned mode : {0u, 1u, 2u}) {
         Fixture f; UniformDoodad(f); auto& texture = f.Member(kUniformDoodadTexture);
@@ -743,6 +778,8 @@ int main() {
         UniformDoodadsSaveWaterGroundAndCliffs();
         UniformDoodadTextureIsFrozenAndBudgeted();
         UniformDoodadGameTextureWinnerRemainsBound();
+        UniformDoodadLongestPathHasAnExactCaptureBudget();
+        UniformDoodadDuplicateInstancesHaveABoundedPixelWorkload();
         UniformDoodadRejectionDoesNotWeakenOldSaves();
         std::cout << "Native object terrain save tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
