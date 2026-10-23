@@ -13,13 +13,14 @@
 #include <new>
 #include <set>
 #include <stdexcept>
+#include <tuple>
 
 namespace War3Map::ObjectData {
 namespace {
 constexpr const char* kSubsystem = "Terrain.NativeObjects";
 constexpr std::size_t kTableBytes = 2u * 1024u * 1024u;
 constexpr std::size_t kRows = 4096, kCells = 262144, kCellBytes = 4096;
-// 原字节之外，为现有codec的wire/public双存储、三个表loader及字符串/节点
+// 原字节之外，为现有codec的wire/public双存储、三至四个表loader及字符串/节点
 // 同时存活预留保守额度；不是提升parser限额，也不是进程峰值内存测量。
 constexpr std::size_t kWorkPerInputByte = 64;
 struct Failure { std::vector<Diagnostic> diagnostics; };
@@ -71,19 +72,26 @@ Text::SlkCells UniqueTable(const ArchiveExactMember& input, std::string_view idH
     }
     return std::move(*parsed.value);
 }
-void ValidateSchemaSource(const Text::SlkCells& cells, const ObjectFieldSchema& schema) {
+void ValidateSchemaSource(const Text::SlkCells& cells, const ObjectFieldSchema& schema, ObjectType type) {
     std::map<std::string, int, std::less<>> columns;
     for (const auto& [column, name] : cells.at(1)) columns.emplace(Text::LowerAscii(name), column);
+    std::size_t doodadPathFields = 0;
     for (const auto& [rowNumber, row] : cells) {
         if (rowNumber == 1) continue;
-        const auto* field = schema.FindNative(ObjectType::Destructable, row.at(1));
-        if (!field) continue;
         const auto logical = [&](std::string_view name) -> std::string_view {
             const auto column = columns.find(name);
             if (column == columns.end()) return {};
             const auto value = row.find(column->second);
             return value == row.end() ? std::string_view{} : value->second;
         };
+        const auto* field = schema.FindNative(type, row.at(1));
+        // schema会丢弃slk为空的行，适用过滤也未经此处原版getter证明；
+        // pathTex的原始候选不能因此消失后形成假的“唯一字段”。
+        if (type == ObjectType::Doodad && Text::LowerAscii(logical("field")) == "pathtex") {
+            if (++doodadPathFields != 1 || !field)
+                Fail("TERRAIN_NATIVE_OBJECT_METADATA", "实际DoodadMetaData的pathTex候选缺失绑定或不唯一。");
+        }
+        if (!field) continue;
         // 普通schema的历史Token处理不能作为保存资格的再次解码。
         // 绑定键必须与严格SLK读取的一次解码逻辑值相同，不能剥掉字面引号或空白后获得地址。
         for (const auto& [name, column] : columns) {
@@ -101,6 +109,8 @@ void ValidateSchemaSource(const Text::SlkCells& cells, const ObjectFieldSchema& 
             if (logical(name).find('"') != std::string_view::npos)
                 Fail("TERRAIN_NATIVE_OBJECT_METADATA", "元数据适用对象列表含未支持的字面引号：" + field->fieldId);
     }
+    if (type == ObjectType::Doodad && doodadPathFields != 1)
+        Fail("TERRAIN_NATIVE_OBJECT_METADATA", "实际DoodadMetaData没有唯一的显式pathTex字段。");
 }
 std::unique_ptr<CodecDocument> Native(const ArchiveExactMember& source, ObjectType type) {
     if (!source.present) {
@@ -126,7 +136,7 @@ ObjectIndex Index(const NativeObjectDocument* document) {
     }
     return result;
 }
-void ValidateAddress(const ObjectFieldDefinition& field) {
+void ValidateMetadataNumbers(const ObjectFieldDefinition& field) {
     for (const auto* name : {"repeat", "data", "index", "appendindex", "effectindex"}) {
         const auto found = field.metadata.find(name);
         if (found == field.metadata.end()) continue;
@@ -134,32 +144,92 @@ void ValidateAddress(const ObjectFieldDefinition& field) {
         std::int32_t value = 0;
         const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
         if (text.empty() || parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
-            Fail("TERRAIN_NATIVE_OBJECT_METADATA", "walkable元数据索引不是完整整数：" + std::string(name));
+            Fail("TERRAIN_NATIVE_OBJECT_METADATA", "元数据索引不是完整整数：" + field.fieldId + "." + name);
     }
+}
+void ValidateAddress(const ObjectFieldDefinition& field) {
+    ValidateMetadataNumbers(field);
     if (Text::LowerAscii(field.sourceTable) != "destructabledata" || field.repeat != 0 || field.data != 0
         || (Text::LowerAscii(field.valueType) != "bool" && Text::LowerAscii(field.valueType) != "int")
         || field.nativeValueType != NativeValueType::Int32)
         Fail("TERRAIN_NATIVE_OBJECT_METADATA", "walkable必须是DestructableData中的唯一非重复Int32字段。");
+}
+void ValidateDoodadAddress(const ObjectFieldDefinition& field) {
+    ValidateMetadataNumbers(field);
+    // 原版Doodad metadata的第二索引getter恒0；repeat=0才查询variation=0。
+    // 不以通用schema的默认值吞掉坏文本，也不扩张到其支持的非零data/变体域。
+    if (!field.metadata.contains("repeat") || field.repeat != 0 || field.data != 0
+        || Text::LowerAscii(field.sourceTable) != "doodads" || field.sourceField.empty()
+        || !field.nativeValueType)
+        Fail("TERRAIN_NATIVE_OBJECT_METADATA", "装饰物字段需要Doodads中的明确非重复零索引地址：" + field.fieldId);
+}
+std::string_view DoodadOriginalPath(const StandardObjectEntry& standard, const ObjectRecord& original,
+    const NativeObjectDocument& document, const ObjectFieldSchema& schema, std::string_view fallback) {
+    ObjectFieldContext context;
+    context.rawcode = standard.key.rawcode; context.baseCode = standard.Field("code");
+    const auto field = schema.MatchSourceField(ObjectType::Doodad, "pathtex", context);
+    if (!field.definition || !field.safeToEdit || field.sourceKey != "pathtex" || field.sourceIndex)
+        Fail("TERRAIN_NATIVE_OBJECT_METADATA", "pathTex没有适用于该装饰物的唯一元数据地址：" + standard.key.rawcode);
+    ValidateDoodadAddress(*field.definition);
+    if (Text::LowerAscii(field.definition->sourceField) != "pathtex"
+        || field.definition->nativeValueType != NativeValueType::String)
+        Fail("TERRAIN_NATIVE_OBJECT_METADATA", "pathTex必须是实际Doodads中的String字段。");
+    // MatchSourceField不返回无变体后缀的repeat字段，故另外排除同名及data拼接别名。
+    for (const auto& candidate : schema.Definitions()) {
+        if (candidate.objectType != ObjectType::Doodad || &candidate == field.definition) continue;
+        auto key = Text::LowerAscii(candidate.sourceField);
+        const bool sameField = key == "pathtex";
+        if (candidate.data > 0 && candidate.data <= 26) key += static_cast<char>('a' + candidate.data - 1);
+        if (sameField || key == "pathtex")
+            Fail("TERRAIN_NATIVE_OBJECT_METADATA", "多个装饰物元数据字段可能映射pathTex：" + candidate.fieldId);
+    }
+    const ObjectModification* overridden = nullptr;
+    std::set<std::tuple<std::string_view, std::uint32_t, std::uint32_t>> addresses;
+    for (const auto& modification : original.modifications) {
+        const auto match = schema.MatchNativeField(ObjectType::Doodad, modification.key, context);
+        if (!match.definition || !match.safeToEdit || match.sourceIndex)
+            Fail("TERRAIN_NATIVE_OBJECT_METADATA", "装饰物修改字段没有可靠的唯一地址：" + modification.key.fieldId);
+        ValidateDoodadAddress(*match.definition);
+        if (modification.key.level.value_or(0) != 0 || modification.key.variation.value_or(0) != 0
+            || modification.key.dataIndex.value_or(0) != 0 || modification.valueWasOpaque
+            || document.ModificationValueType(original.key, modification.key) != match.definition->nativeValueType
+            || !addresses.emplace(modification.key.fieldId, modification.key.variation.value_or(0),
+                modification.key.dataIndex.value_or(0)).second)
+            Fail("TERRAIN_NATIVE_OBJECT_DOODAD_TYPE", "装饰物覆盖必须是唯一、类型明确且两索引为零的字段：" + standard.key.rawcode);
+        if (match.sourceKey != "pathtex") continue;
+        if (overridden || match.definition != field.definition)
+            Fail("TERRAIN_NATIVE_OBJECT_METADATA", "装饰物pathTex覆盖存在重复或别名。");
+        overridden = &modification;
+    }
+    if (!overridden) return fallback;
+    const auto* value = std::get_if<std::string>(&overridden->value);
+    if (!value) Fail("TERRAIN_NATIVE_OBJECT_DOODAD_TYPE", "pathTex覆盖不是实际String值。");
+    // 显式空串在原版getter命中后即返回，不能因empty而回退标准非空占地。
+    return *value;
 }
 } // namespace
 
 Result<std::size_t> ValidateNativeDestructablePathing(std::span<const std::string_view> placedRawcodes,
     std::span<const ArchiveExactMember> sources, std::size_t maximumWorkingBytes) {
     try {
-        constexpr std::array<std::string_view, 5> paths{"war3map.w3b", "war3map.w3d", "units/destructabledata.slk",
-            "doodads/doodads.slk", "units/destructablemetadata.slk"};
-        if (sources.size() != paths.size()) Fail("TERRAIN_NATIVE_OBJECT_SOURCE", "严格对象捕获必须包含完整五项来源。");
+        constexpr std::array<std::string_view, 6> paths{"war3map.w3b", "war3map.w3d", "units/destructabledata.slk",
+            "doodads/doodads.slk", "units/destructablemetadata.slk", "doodads/doodadmetadata.slk"};
+        if (sources.size() != 5 && sources.size() != paths.size())
+            Fail("TERRAIN_NATIVE_OBJECT_SOURCE", "严格对象捕获需要完整五项基础来源和至多一项DoodadMetaData。");
         std::array<const ArchiveExactMember*, paths.size()> inputs{};
         std::size_t work = 0;
         for (const auto& source : sources) {
             const auto name = Text::LowerAscii(source.name);
             const auto found = std::find(paths.begin(), paths.end(), name);
             if (found == paths.end() || inputs[found - paths.begin()]) Fail("TERRAIN_NATIVE_OBJECT_SOURCE", "严格对象来源重复或越界。");
+            if (!source.present && !source.bytes.empty()) Fail("TERRAIN_NATIVE_OBJECT_SOURCE", "缺失对象来源却携带字节。");
             inputs[found - paths.begin()] = &source;
             if (source.bytes.size() > (maximumWorkingBytes - work) / kWorkPerInputByte)
                 Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "原生对象与实际表的解析工作超过累计剩余预算。");
             work += source.bytes.size() * kWorkPerInputByte;
         }
+        if (std::any_of(inputs.begin(), inputs.begin() + 5, [](const auto* input) { return !input; }))
+            Fail("TERRAIN_NATIVE_OBJECT_SOURCE", "严格对象捕获缺少基础来源。");
         if (placedRawcodes.size() > (maximumWorkingBytes - work) / (sizeof(std::string_view) * 4))
             Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "摆放分类工作超过累计剩余预算。");
         work += placedRawcodes.size() * sizeof(std::string_view) * 4;
@@ -167,7 +237,7 @@ Result<std::size_t> ValidateNativeDestructablePathing(std::span<const std::strin
         const auto metadataCells = UniqueTable(*inputs[4], "id");
         const auto reader = [&](const std::string& path) -> Result<std::vector<std::byte>> {
             const auto name = Text::LowerAscii(path);
-            for (const auto* input : inputs) if (Text::LowerAscii(input->name) == name && input->present)
+            for (const auto* input : inputs) if (input && Text::LowerAscii(input->name) == name && input->present)
                 return Result<std::vector<std::byte>>::Success(input->bytes);
             return Result<std::vector<std::byte>>::Failure(kSubsystem, "TERRAIN_NATIVE_OBJECT_SOURCE", "解析器请求了未捕获的对象来源。");
         };
@@ -182,7 +252,8 @@ Result<std::size_t> ValidateNativeDestructablePathing(std::span<const std::strin
         schemaOptions.stringFiles.clear(); schemaOptions.worldEditDataFile.clear(); schemaOptions.unitEditorDataFile.clear();
         schemaOptions.maximumFileBytes = kTableBytes;
         const auto schema = Take(ObjectFieldSchema::Load(reader, schemaOptions));
-        ValidateSchemaSource(metadataCells, schema);
+        ValidateSchemaSource(metadataCells, schema, ObjectType::Destructable);
+        std::optional<ObjectFieldSchema> doodadSchema;
         const auto destructableOwner = Native(*inputs[0], ObjectType::Destructable), doodadOwner = Native(*inputs[1], ObjectType::Doodad);
         const auto* destructables = dynamic_cast<const NativeObjectDocument*>(destructableOwner.get());
         const auto* doodads = dynamic_cast<const NativeObjectDocument*>(doodadOwner.get());
@@ -195,17 +266,32 @@ Result<std::size_t> ValidateNativeDestructablePathing(std::span<const std::strin
             const auto record = destructableIndex.find(rawcode);
             const auto* native = record == destructableIndex.end() ? nullptr : record->second;
             const auto* standardDoodad = catalog.Find(ObjectType::Doodad, rawcode);
-            const bool nativeDoodad = doodadIndex.contains(rawcode);
+            const auto doodadRecord = doodadIndex.find(rawcode);
+            const auto* nativeDoodad = doodadRecord == doodadIndex.end() ? nullptr : doodadRecord->second;
             if ((standardDoodad || nativeDoodad) && (standard || native))
                 Fail("TERRAIN_NATIVE_OBJECT_CLASS_AMBIGUOUS", "摆放对象同时命中装饰物与可破坏物：" + std::string(rawcode));
             if (standardDoodad || nativeDoodad) {
-                if (!standardDoodad || nativeDoodad)
-                    Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "普通装饰物仅支持无原生覆盖的标准对象：" + std::string(rawcode));
+                if (!standardDoodad || (nativeDoodad && nativeDoodad->parentRawcode))
+                    Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "普通装饰物仅支持标准对象及其Original覆盖：" + std::string(rawcode));
                 // 原版明确禁用pathTex时，在加载贴图前清空占地宽高，注册器不写静态层。
                 // Field()会合并缺失与空值，故直接检查单元格是否存在；不再次解码或归一化。
                 const auto path = standardDoodad->fields.find("pathtex");
-                if (path == standardDoodad->fields.end()
-                    || (!path->second.empty() && path->second != "_" && path->second != "none"))
+                if (path == standardDoodad->fields.end())
+                    Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "标准装饰物缺少明确pathTex单元格：" + std::string(rawcode));
+                std::string_view value = path->second;
+                if (nativeDoodad) {
+                    if (!inputs[5])
+                        Fail("TERRAIN_NATIVE_OBJECT_DOODAD_METADATA_REQUIRED", "标准装饰物Original需要同一owner补捕获实际DoodadMetaData后完整重验。");
+                    if (!doodadSchema) {
+                        const auto cells = UniqueTable(*inputs[5], "id");
+                        auto options = schemaOptions;
+                        options.sources = {{ObjectType::Doodad, "Doodads/DoodadMetaData.slk"}};
+                        doodadSchema = Take(ObjectFieldSchema::Load(reader, options));
+                        ValidateSchemaSource(cells, *doodadSchema, ObjectType::Doodad);
+                    }
+                    value = DoodadOriginalPath(*standardDoodad, *nativeDoodad, *doodads, *doodadSchema, value);
+                }
+                if (!value.empty() && value != "_" && value != "none")
                     Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "普通装饰物的pathTex未明确禁用占地：" + std::string(rawcode));
                 continue;
             }

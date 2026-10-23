@@ -519,7 +519,22 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
             std::vector<std::string_view> rawcodes;
             rawcodes.reserve(doodads->doodads.size());
             for (const auto& object : doodads->doodads) rawcodes.emplace_back(object.rawcode);
-            result.objectWorkBytes_ = Take((*validator)(rawcodes, objectSources, maximumBytes - result.sourceBytes_));
+            auto validated = (*validator)(rawcodes, objectSources, maximumBytes - result.sourceBytes_);
+            // 旧五项域不增加依赖；只有可信adapter的精确单一请求才补捕获新域所需表。
+            // 首轮解析临时对象已释放，补捕获后按新的剩余额度从头重验，最多一次。
+            if (!validated.value && validated.diagnostics.size() == 1
+                && validated.diagnostics.front().severity == DiagnosticSeverity::Error
+                && validated.diagnostics.front().subsystem == "Terrain.NativeObjects"
+                && validated.diagnostics.front().code == "TERRAIN_NATIVE_OBJECT_DOODAD_METADATA_REQUIRED") {
+                const std::array<std::string, 1> extra{"Doodads/DoodadMetaData.slk"};
+                const auto captured = result.CaptureResourceMembers(reader, extra, extra.size(),
+                    [&](std::size_t, bool present, std::vector<std::byte>&& bytes) {
+                        objectSources.push_back({extra[0], present, std::move(bytes)});
+                    });
+                if (!captured.Succeeded()) throw Failure{captured.diagnostics};
+                validated = (*validator)(rawcodes, objectSources, maximumBytes - result.sourceBytes_);
+            }
+            result.objectWorkBytes_ = Take(std::move(validated));
             if (result.objectWorkBytes_ > maximumBytes - result.sourceBytes_)
                 Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "严格物编解析超过保存计划剩余预算。");
         }

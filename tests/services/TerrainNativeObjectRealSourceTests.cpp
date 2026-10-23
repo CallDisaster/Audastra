@@ -70,7 +70,8 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         auto before = *parsed.Snapshot();
         Require(before.header.width > 32 && before.header.height > 32, "original map contains the edited center");
         auto mounted = Take(Game::GameDataSource::MountStrict(game, before.header.mainTileset));
-        constexpr std::array<const char*, 3> names{"Units/DestructableData.slk", "Doodads/Doodads.slk", "Units/DestructableMetaData.slk"};
+        constexpr std::array<const char*, 4> names{"Units/DestructableData.slk", "Doodads/Doodads.slk",
+            "Units/DestructableMetaData.slk", "Doodads/DoodadMetaData.slk"};
         std::array<Game::GameFileContents, names.size()> captured;
         for (std::size_t i = 0; i < names.size(); ++i) {
             captured[i] = Take(mounted.ReadFileBoundedWithSource(names[i], 2u * 1024u * 1024u));
@@ -89,13 +90,14 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         catalogOptions.rejectInvalidPresentSources = true;
         const auto catalog = Take(StandardObjectCatalog::Load(reader, catalogOptions));
         ObjectFieldSchemaOptions schemaOptions;
-        schemaOptions.sources = {{ObjectType::Destructable, names[2]}};
+        schemaOptions.sources = {{ObjectType::Destructable, names[2]}, {ObjectType::Doodad, names[3]}};
         schemaOptions.stringFiles.clear(); schemaOptions.worldEditDataFile.clear(); schemaOptions.unitEditorDataFile.clear();
         schemaOptions.maximumFileBytes = 2u * 1024u * 1024u;
         const auto schema = Take(ObjectFieldSchema::Load(reader, schemaOptions));
         std::string rawcode;
         std::string doodadRawcode, doodadPath;
-        ModificationKey walkable;
+        std::string originalDoodadRawcode, originalDoodadPath;
+        ModificationKey walkable, doodadPathField;
         for (const auto& object : catalog.Entries()) {
             if (object.key.type != ObjectType::Destructable || object.Field("walkable") != "0"
                 || catalog.Find(ObjectType::Doodad, object.key.rawcode)) continue;
@@ -116,6 +118,23 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
             doodadRawcode = object.key.rawcode; doodadPath = path->second; break;
         }
         Require(!doodadRawcode.empty(), "actual game table contains a uniquely classified standard doodad with explicitly disabled pathTex");
+        for (const auto& object : catalog.Entries()) {
+            if (object.key.type != ObjectType::Doodad || catalog.Find(ObjectType::Destructable, object.key.rawcode)) continue;
+            const auto path = object.fields.find("pathtex");
+            if (path == object.fields.end() || path->second.empty() || path->second == "_" || path->second == "none") continue;
+            ObjectFieldContext context; context.rawcode = object.key.rawcode; context.baseCode = object.Field("code");
+            const auto field = schema.MatchSourceField(ObjectType::Doodad, "pathtex", context);
+            if (!field.definition || !field.safeToEdit || field.sourceKey != "pathtex" || field.sourceIndex
+                || field.definition->nativeValueType != NativeValueType::String || field.definition->repeat != 0
+                || field.definition->data != 0 || Text::LowerAscii(field.definition->sourceTable) != "doodads"
+                || Text::LowerAscii(field.definition->sourceField) != "pathtex") continue;
+            originalDoodadRawcode = object.key.rawcode; originalDoodadPath = path->second; doodadPathField = field.modification; break;
+        }
+        Require(!originalDoodadRawcode.empty(), "actual metadata contains a standard doodad whose nonempty pathTex can be explicitly overridden");
+        auto originalDoodad = Take(NativeObjectDocument::CreateEmpty(ObjectType::Doodad));
+        Check(originalDoodad.AddOriginalObject(originalDoodadRawcode));
+        Check(originalDoodad.AddModification({ObjectType::Doodad, originalDoodadRawcode}, doodadPathField, NativeValueType::String, std::string{}));
+        const auto originalDoodadW3d = Take(NativeObjectCodec(ObjectType::Doodad).Serialize(originalDoodad));
         auto native = Take(NativeObjectDocument::CreateEmpty(ObjectType::Destructable));
         Check(native.AddOriginalObject(rawcode));
         Check(native.AddModification({ObjectType::Destructable, rawcode}, walkable, NativeValueType::Int32, std::int32_t{0}));
@@ -136,24 +155,29 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         const auto expectedW3e = Take(SerializeMapTerrain(after));
         const bool hasW3d = original.HasMember("war3map.w3d");
         const auto sourceW3d = hasW3d ? Take(original.ReadMember("war3map.w3d")) : std::vector<std::byte>{};
-        // 两场景复用一次原创地图创建、脚本编译和实际表捕获；只增添自己的摆放记录。
-        for (const bool withDoodad : {false, true}) {
-            const auto scenario = directory.path / (withDoodad ? "mixed-doodad" : "destructable");
+        // 三场景复用一次原创地图创建、脚本编译和实际表捕获；只修改自己的摆放/覆盖。
+        for (const unsigned index : {0u, 1u, 2u}) {
+            const bool withDoodad = index != 0, withOriginal = index == 2;
+            const auto& selectedDoodad = withOriginal ? originalDoodadRawcode : doodadRawcode;
+            const auto scenario = directory.path / (withOriginal ? "original-doodad" : withDoodad ? "mixed-doodad" : "destructable");
             Require(std::filesystem::create_directory(scenario), "exclusive real-source scenario directory");
             auto placements = doodads;
             if (withDoodad) {
-                auto added = placed; added.rawcode = doodadRawcode; added.creationId = 2;
+                auto added = placed; added.rawcode = selectedDoodad; added.creationId = 2;
                 placements.doodads.push_back(std::move(added));
             }
             const auto doo = Take(placements.Serialize());
-            const std::array<MemberReplacement, 3> seed{{{"war3map.w3e", beforeW3e}, {"war3map.doo", doo}, {"war3map.w3b", w3b}}};
+            std::vector<MemberReplacement> seed{{"war3map.w3e", beforeW3e}, {"war3map.doo", doo}, {"war3map.w3b", w3b}};
+            if (withOriginal) seed.push_back({"war3map.w3d", originalDoodadW3d});
             auto seeded = Take(MapArchiveSession::Open(Take(original.SaveCandidate(scenario / "seeded.w3x", seed)).path));
             const auto rules = Take(TerrainPathingSave::CaptureNative(seeded, before, after, game, kSaveBytes));
             const auto oldNative = Take(rules.GenerateNative(before, kSaveBytes));
             const auto newNative = Take(rules.GenerateNative(after, kSaveBytes));
             Require(oldNative != newNative, "each public save scenario crosses a real water pathing threshold");
             std::cout << "selected_object=" << rawcode << " metadata_field=" << walkable.fieldId
-                << " doodad=" << (withDoodad ? doodadRawcode : "absent") << " pathTex=" << (withDoodad ? doodadPath : "not-applicable")
+                << " doodad=" << (withDoodad ? selectedDoodad : "absent") << " original=" << withOriginal
+                << " standard_pathTex=" << (withOriginal ? originalDoodadPath : withDoodad ? doodadPath : "not-applicable")
+                << " pathTex_field=" << (withOriginal ? doodadPathField.fieldId : "not-applicable")
                 << " captured_bytes=" << rules.SourceBytes() << " cumulative_capture_budget=" << rules.CaptureBudgetBytes() << '\n';
             auto wpm = Take(seeded.ReadMember("war3map.wpm"));
             Require(wpm.size() == oldNative.size() + 16 && oldNative.size() == newNative.size(), "real pathing shape matches original fixture");
@@ -182,15 +206,18 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
             Require(Take(readback.ReadMember("war3map.j")) == sourceScript, "public save preserves every source script byte");
             Require(Take(readback.ReadMember("war3map.w3b")) == w3b && Take(readback.ReadMember("war3map.doo")) == doo,
                 "public save preserves native object and placement bytes");
-            Require(readback.HasMember("war3map.w3d") == hasW3d && (!hasW3d || Take(readback.ReadMember("war3map.w3d")) == sourceW3d),
+            Require(readback.HasMember("war3map.w3d") == (withOriginal || hasW3d)
+                && (!(withOriginal || hasW3d) || Take(readback.ReadMember("war3map.w3d")) == (withOriginal ? originalDoodadW3d : sourceW3d)),
                 "public save preserves W3D content or its actual absence");
             Require(Take(Sha256File(source.SourcePath())) == sourceSha, "public save leaves the source map untouched");
             Check(rules.VerifyReadback(readback, kSaveBytes));
             std::cout << "public_map_edit_save_passed source_sha256=" << sourceSha << " candidate_sha256=" << saved.candidateSha256
                 << " native_editor_verified=false game_verified=false\n";
-            if (withDoodad) {
+            if (withOriginal) {
                 auto overrideDocument = Take(NativeObjectDocument::CreateEmpty(ObjectType::Doodad));
-                Check(overrideDocument.AddOriginalObject(doodadRawcode));
+                Check(overrideDocument.AddOriginalObject(selectedDoodad));
+                Check(overrideDocument.AddModification({ObjectType::Doodad, selectedDoodad}, doodadPathField,
+                    NativeValueType::String, originalDoodadPath));
                 const std::array<MemberReplacement, 1> related{{{"war3map.w3d", Take(NativeObjectCodec(ObjectType::Doodad).Serialize(overrideDocument))}}};
                 const auto overridden = Take(MapArchiveSession::Open(Take(source.SaveCandidate(scenario / "related-override.w3x", related)).path));
                 auto blocked = request;
@@ -199,11 +226,11 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
                 const auto rejected = SaveMapEditCandidate(blocked);
                 Require(!rejected.Succeeded() && !rejected.value && std::any_of(rejected.diagnostics.begin(), rejected.diagnostics.end(), [](const auto& diagnostic) {
                     return diagnostic.code == "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED";
-                }), "public save must reject even an empty Original override on the actual standard doodad");
+                }), "public save must reject actual nonempty pathTex instead of falling back to an empty override");
                 Require(!std::filesystem::exists(blocked.targetCandidate), "refused public save must not produce a candidate");
                 Require(Take(Sha256File(overridden.SourcePath())) == overridden.SourceSha256()
                     && Take(Sha256File(source.SourcePath())) == sourceSha, "refused public save preserves both source copies");
-                std::cout << "related_doodad_override_refused source_sha256=" << overridden.SourceSha256() << '\n';
+                std::cout << "nonempty_doodad_override_refused source_sha256=" << overridden.SourceSha256() << '\n';
             }
         }
     } catch (...) {

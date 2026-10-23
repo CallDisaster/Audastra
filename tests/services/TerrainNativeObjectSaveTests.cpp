@@ -182,10 +182,20 @@ void StandardDoodad(Fixture& fixture, bool mixed = false) {
     fixture.Member("Doodads/Doodads.slk") = Slk({"doodID", "code", "pathTex"}, {{"Doo0", "Doo0", "_"}});
 }
 
-Bytes DoodadOverride() {
+Bytes DoodadOverride(const char* path = nullptr, std::string field = "dpt0") {
     auto document = Take(NativeObjectDocument::CreateEmpty(ObjectType::Doodad));
     Check(document.AddOriginalObject("Doo0"));
+    if (path) Check(document.AddModification({ObjectType::Doodad, "Doo0"}, {std::move(field)},
+        NativeValueType::String, std::string(path)));
     return Take(NativeObjectCodec(ObjectType::Doodad).Serialize(document));
+}
+Bytes DoodadMetadata(std::string field = "dpt0") {
+    return Slk({"ID", "field", "slk", "type", "repeat"}, {{std::move(field), "pathTex", "Doodads", "pathingTexture", "0"}});
+}
+void AddDoodadOriginal(Fixture& fixture) {
+    fixture.Member("Doodads/Doodads.slk") = Slk({"doodID", "code", "pathTex"}, {{"Doo0", "Doo0", "PathTextures\\synthetic.tga"}});
+    fixture.members.push_back({"war3map.w3d", DoodadOverride("")});
+    fixture.members.push_back({"Doodads/DoodadMetaData.slk", DoodadMetadata()});
 }
 
 void StandardDoodadsUseTheNormalSaveAndUndoChain() {
@@ -225,13 +235,14 @@ void StandardDoodadsUseTheNormalSaveAndUndoChain() {
     Fixture overridden; StandardDoodad(overridden); overridden.members.push_back({"war3map.w3d", DoodadOverride()});
     overridden.Open(); overridden.Paint();
     const auto refused = overridden.Plan();
-    Require(!refused.SaveGate().Succeeded() && HasCode(refused.SaveGate(), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED"),
-        "normal save rejects even an empty Original override on the placed doodad");
+    Require(!refused.SaveGate().Succeeded() && HasCode(refused.SaveGate(), "TERRAIN_PATHING_RESOURCE_MISSING"),
+        "Original without actual metadata and known fallback source must still refuse");
 }
 
 void StandardDoodadsAllowActualCliffAndGroundPathingChanges() {
-    for (const bool cliff : {false, true}) {
+    for (const bool cliff : {false, true}) for (const bool original : {false, true}) {
         Fixture f; StandardDoodad(f, true);
+        if (original) AddDoodadOriginal(f);
         f.original.header.groundTilesets.push_back("Tg02");
         for (auto& vertex : f.original.vertices) vertex.textureAndFlagsRaw = 0;
         RefreshTerrainDerived(f.original, 0, 0, 9, 9);
@@ -258,6 +269,104 @@ void StandardDoodadsAllowActualCliffAndGroundPathingChanges() {
         Require(f.edits->Redo(), "redo saved mixed-object cliff/material edit");
         f.SaveExpected("doodad-dry-redone.w3x", Take(SerializeMapTerrain(expectedTerrain)), expectedPathing);
     }
+}
+
+void DoodadOriginalUsesTheNormalSaveAndUndoChain() {
+    Fixture f; StandardDoodad(f, true); AddDoodadOriginal(f); f.Open(); f.Paint();
+    const auto owner = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, kBudget));
+    Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, owner.CaptureBudgetBytes()));
+    const auto shortBudget = TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, owner.CaptureBudgetBytes() - 1);
+    Require(!shortBudget.Succeeded() && HasCode(shortBudget, "TERRAIN_NATIVE_OBJECT_BUDGET"),
+        "sixth source is subtracted before the complete second validation work reservation");
+    const auto plan = f.Plan(); const auto output = f.Output(plan);
+    auto saved = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(f.root / "original-verified.w3x", output)).path));
+    Check(plan.VerifyReadback(saved));
+    unsigned sequence = 0;
+    for (const auto* name : {"war3map.w3d", "Doodads/DoodadMetaData.slk"}) {
+        auto changed = name == std::string_view("war3map.w3d") ? DoodadOverride("none") : f.Member(name);
+        if (name != std::string_view("war3map.w3d")) changed.push_back(std::byte{'\n'});
+        auto altered = output; altered.push_back({name, changed});
+        Require(!plan.VerifyForSave(*f.edits, f.archive->SourceSha256(), altered).Succeeded(), "even semantically equivalent sixth-source/W3D changes invalidate freeze");
+        const std::array<MemberReplacement, 1> replacement{{{name, changed}}};
+        auto tampered = Take(MapArchiveSession::Open(Take(saved.SaveCandidate(
+            f.root / ("original-changed-" + std::to_string(sequence++) + ".w3x"), replacement)).path));
+        Require(!plan.VerifyReadback(tampered).Succeeded(), "independent readback binds sixth-source/W3D bytes");
+        const std::array<std::string, 1> removed{name};
+        Require(!plan.VerifyForSave(*f.edits, f.archive->SourceSha256(), output, removed).Succeeded(), "sixth-source/W3D removal invalidates freeze");
+        auto deleted = Take(MapArchiveSession::Open(Take(saved.SaveCandidate(
+            f.root / ("original-removed-" + std::to_string(sequence++) + ".w3x"), {}, removed)).path));
+        Require(!plan.VerifyReadback(deleted).Succeeded(), "sixth-source/W3D absence invalidates readback");
+    }
+    auto aliases = output;
+    aliases.push_back({"Doodads/DoodadMetaData.slk", f.Member("Doodads/DoodadMetaData.slk")});
+    aliases.push_back({"DOODADS/DOODADMETADATA.SLK", f.Member("Doodads/DoodadMetaData.slk")});
+    Require(!plan.VerifyForSave(*f.edits, f.archive->SourceSha256(), aliases).Succeeded(), "sixth-source aliases cannot duplicate the frozen dependency");
+    const auto directory = f.Directory(); const auto workspace = Take(DirectoryWorkspace::Open(directory));
+    const TerrainStrokeIntent intent{f.Water(), {f.point}, false};
+    const auto seal = [&] { return TerrainPathingSave::Seal(MapDocument::FromMembers(f.members), f.Member("war3map.w3e"),
+        f.Member("war3map.wpm"), workspace.Snapshot(), *f.edits, std::span(&intent, 1)); };
+    Take(seal());
+    auto changed = f.Member("Doodads/DoodadMetaData.slk"); changed.push_back(std::byte{'\n'});
+    Check(IO::WriteFileBytes(directory / "Doodads/DoodadMetaData.slk", changed));
+    Require(!seal().Succeeded(), "directory recipe rejects changed sixth source");
+    f.Save("original-deep.w3x", true);
+    Require(f.edits->Undo(), "undo saved Original water edit"); f.Save("original-shallow.w3x", false);
+    Require(f.edits->Redo(), "redo saved Original water edit"); f.Save("original-deep-again.w3x", true);
+
+    Fixture fallback; StandardDoodad(fallback); fallback.members.push_back({"war3map.w3d", DoodadOverride()});
+    fallback.members.push_back({"Doodads/DoodadMetaData.slk", DoodadMetadata()}); fallback.Open(); fallback.Paint();
+    fallback.Save("empty-original.w3x", true);
+    Fixture old; StandardDoodad(old); AddDoodadOriginal(old); old.Member("war3map.wpm")[16] |= std::byte{0x04}; old.Open(); old.Paint();
+    const auto unexplained = old.Plan();
+    Require(!unexplained.SaveGate().Succeeded() && HasCode(unexplained.SaveGate(), "TERRAIN_PATHING_SOURCE_UNEXPLAINED"),
+        "Original metadata does not bypass old WPM provenance checks");
+}
+
+void DoodadMetadataIsDemandLoadedAndWinnerBound() {
+    Fixture old; StandardDoodad(old);
+    auto unrelated = Take(NativeObjectDocument::CreateEmpty(ObjectType::Doodad)); Check(unrelated.AddOriginalObject("Doo1"));
+    old.members.push_back({"war3map.w3d", Take(NativeObjectCodec(ObjectType::Doodad).Serialize(unrelated))});
+    old.Open(); old.Paint();
+    const auto oldOwner = Take(TerrainPathingSave::CaptureNative(*old.archive, old.original, *old.edits->Terrain(), {}, kBudget));
+    old.members.push_back({"Doodads/DoodadMetaData.slk", Text("not a valid table and must not be requested")});
+    old.Open(); old.Paint();
+    const auto sameOwner = Take(TerrainPathingSave::CaptureNative(*old.archive, old.original, *old.edits->Terrain(), {}, kBudget));
+    Require(oldOwner.SourceBytes() == sameOwner.SourceBytes() && oldOwner.CaptureBudgetBytes() == sameOwner.CaptureBudgetBytes(),
+        "unrelated W3D preserves exactly the five-source domain and budget with unknown game fallback");
+    old.Save("unrelated-w3d.w3x", true);
+
+    Fixture f; StandardDoodad(f); AddDoodadOriginal(f); f.Open(); f.Paint();
+    const auto game = f.root / "game"; Require(std::filesystem::create_directory(game), "private doodad game fixture");
+    const std::array<MapArchiveMember, 1> gameMembers{{{"Doodads/DoodadMetaData.slk", DoodadMetadata("alt0")}}};
+    Take(WriteVerifiedArchive(game / "war3.mpq", gameMembers));
+    auto owner = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), game, kBudget));
+    Check(owner.VerifyFrozenOutput(f.edits->Replacements(), {}));
+    std::erase_if(f.members, [](const auto& member) { return member.name == "Doodads/DoodadMetaData.slk"; });
+    f.Open(); f.Paint();
+    const auto mismatch = TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), game, kBudget);
+    Require(!mismatch.Succeeded() && HasCode(mismatch, "TERRAIN_NATIVE_OBJECT_METADATA")
+        && !HasCode(mismatch, "TERRAIN_NATIVE_OBJECT_DOODAD_METADATA_REQUIRED"), "actual game winner mismatch is terminal after one capture");
+    f.Member("war3map.w3d") = DoodadOverride("", "alt0"); f.Open(); f.Paint();
+    owner = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), game, kBudget));
+    auto inserted = f.edits->Replacements();
+    Check(owner.VerifyFrozenOutput(inserted, {}));
+    const auto baseline = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(f.root / "game-sixth.w3x", inserted)).path));
+    Check(owner.VerifyReadback(baseline, kBudget));
+    inserted.push_back({"Doodads/DoodadMetaData.slk", DoodadMetadata("alt0")});
+    const auto metadataChanged = [](const Status& status) {
+        return !status.Succeeded() && std::any_of(status.diagnostics.begin(), status.diagnostics.end(), [](const auto& diagnostic) {
+            return diagnostic.code == "TERRAIN_PATHING_RESOURCE_CHANGED"
+                && diagnostic.message.find("doodads/doodadmetadata.slk") != std::string::npos;
+        });
+    };
+    Require(metadataChanged(owner.VerifyFrozenOutput(inserted, {})), "map import cannot replace a captured game metadata winner");
+    const auto changed = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(f.root / "inserted-sixth.w3x", inserted)).path));
+    Require(metadataChanged(owner.VerifyReadback(changed, kBudget)), "readback rejects metadata insertion with the correct after W3E");
+    const auto gameBytes = Take(IO::ReadFileBytes(game / "war3.mpq"));
+    Check(IO::WriteFileBytes(game / "war3.mpq", Text("damaged synthetic archive")));
+    Require(!owner.VerifyFrozenOutput(f.edits->Replacements(), {}).Succeeded(), "sixth-source game bytes remain bound until publication");
+    Check(IO::WriteFileBytes(game / "war3.mpq", gameBytes));
+    Check(owner.VerifyFrozenOutput(f.edits->Replacements(), {}));
 }
 
 void TypedOverrideUsesTheNormalSaveAndUndoChain() {
@@ -467,6 +576,8 @@ int main() {
     try {
         StandardDoodadsUseTheNormalSaveAndUndoChain();
         StandardDoodadsAllowActualCliffAndGroundPathingChanges();
+        DoodadOriginalUsesTheNormalSaveAndUndoChain();
+        DoodadMetadataIsDemandLoadedAndWinnerBound();
         TypedOverrideUsesTheNormalSaveAndUndoChain();
         MissingW3bStillUsesStrictClassificationAndTheSaveChain();
         DependencyReplacementRemovalAndReadbackStayBound();

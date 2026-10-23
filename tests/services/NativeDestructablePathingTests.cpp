@@ -22,7 +22,7 @@ using namespace War3Map::ObjectData;
 using Bytes = std::vector<std::byte>;
 using Row = std::map<std::string, std::string>;
 constexpr std::size_t kWorkingBytes = 4u * 1024u * 1024u;
-constexpr std::size_t kW3b = 0, kW3d = 1, kDestructables = 2, kDoodads = 3, kMetadata = 4;
+constexpr std::size_t kW3b = 0, kW3d = 1, kDestructables = 2, kDoodads = 3, kMetadata = 4, kDoodadMetadata = 5;
 
 void Require(bool value, std::string_view message) {
     if (!value) throw std::runtime_error(std::string(message));
@@ -156,6 +156,9 @@ struct Fixture {
         {{"ID", "X001"}, {"field", "walkable"}, {"slk", "DestructableData"}, {"type", "bool"},
             {"repeat", "0"}, {"data", "0"}, {"index", "-1"}, {"appendindex", "0"}, {"effectindex", "0"}},
         {{"ID", "Pth0"}, {"field", "pathTex"}, {"slk", "DestructableData"}, {"type", "pathingTexture"}}};
+    std::vector<Row> doodadMetadata{
+        {{"ID", "Dt00"}, {"field", "pathTex"}, {"slk", "Doodads"}, {"type", "pathingTexture"}, {"repeat", "0"}},
+        {{"ID", "Nm00"}, {"field", "Name"}, {"slk", "Doodads"}, {"type", "string"}, {"repeat", "0"}}};
     std::vector<ArchiveExactMember> sources;
 
     Fixture() {
@@ -168,6 +171,11 @@ struct Fixture {
         sources[kDestructables].bytes = Table("destructableID", destructables);
         sources[kDoodads].bytes = Table("doodID", doodads);
         sources[kMetadata].bytes = Table("ID", metadata);
+        if (sources.size() > kDoodadMetadata) sources[kDoodadMetadata].bytes = Table("ID", doodadMetadata);
+    }
+    void AddDoodadMetadata() {
+        Require(sources.size() == kDoodadMetadata, "第六来源只追加一次");
+        sources.push_back({"Doodads/DoodadMetaData.slk", true, Table("ID", doodadMetadata)});
     }
     void SetNative(const NativeObjectDocument& document) {
         Require(document.Type() == ObjectType::Destructable || document.Type() == ObjectType::Doodad, "夹具原生类别");
@@ -554,8 +562,8 @@ void StandardDoodadsDoNotIgnoreNativeOverridesOrOtherObjects() {
         } else if (mode == 2) Check(document.AddCustomObject("D001", "D002"));
         else { Check(document.AddCustomObject("C001", "D001")); placed = "C001"; }
         fixture.SetNative(document);
-        Rejected(fixture.Validate({placed}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED",
-            "相关W3D空Original/展示字段/Custom均不在标准doodad无覆盖范围");
+        Rejected(fixture.Validate({placed}), mode < 2 ? "TERRAIN_NATIVE_OBJECT_DOODAD_METADATA_REQUIRED" : "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED",
+            "相关Original需要实际第六来源；Custom仍不在允许范围");
     }
     for (const unsigned mode : {0u, 1u, 2u}) {
         Fixture fixture; prepare(fixture);
@@ -576,6 +584,100 @@ void StandardDoodadsDoNotIgnoreNativeOverridesOrOtherObjects() {
         "前面的无占地doodad成功不能跳过后面的walkable破坏物");
     Rejected(mixed.Validate({"S001", "D001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "混合对象拒绝不依赖顺序");
     Rejected(mixed.Validate({"D001", "NONE"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "无占地对象后面的未知rawcode仍拒绝");
+}
+
+void DoodadOriginalUsesExactMetadataAndStrings() {
+    const auto original = [](std::string_view field, NativeValueType type, Value value) {
+        auto document = Empty(ObjectType::Doodad); Check(document.AddOriginalObject("D001"));
+        Modification(document, "D001", std::string(field), type, std::move(value)); return document;
+    };
+    const auto prepare = [](Fixture& fixture) {
+        fixture.doodads[0]["pathTex"] = "PathTextures\\synthetic.tga";
+        fixture.Tables(); fixture.AddDoodadMetadata();
+    };
+    for (const std::string field : {"Dt00", "Ab9Z"}) for (const std::string value : {"", "_", "none"}) {
+        Fixture fixture; fixture.doodadMetadata[0]["ID"] = field;
+        if (field == "Ab9Z") fixture.doodadMetadata[0]["data"] = "0";
+        prepare(fixture);
+        fixture.SetNative(original(field, NativeValueType::String, value));
+        const auto bytes = fixture.sources[kW3d].bytes;
+        const auto work = Accepted(fixture.Validate({"D001", "S002"}), "String零索引覆盖标准非空pathTex，空串不回退");
+        Accepted(fixture.Validate({"D001", "S002"}, work), "六来源精确工作额度");
+        Rejected(fixture.Validate({"D001", "S002"}, work - 1), "TERRAIN_NATIVE_OBJECT_BUDGET", "新增来源也计入解析工作额度");
+        Require(fixture.sources[kW3d].bytes == bytes, "读取Original不改写任何原生字节");
+        Rejected(fixture.Validate({"D001", "S001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "Original成功后仍检查混合对象");
+    }
+    for (const bool displayOnly : {false, true}) {
+        Fixture fixture; prepare(fixture); fixture.doodads[0]["pathTex"] = "_"; fixture.Tables();
+        auto document = Empty(ObjectType::Doodad); Check(document.AddOriginalObject("D001"));
+        if (displayOnly) Modification(document, "D001", "Nm00", NativeValueType::String, std::string("display"));
+        fixture.SetNative(document);
+        Accepted(fixture.Validate({"D001"}), "空Original或确定无关字段回退标准显式pathTex");
+        fixture.doodads[0]["pathTex"] = "PathTextures\\synthetic.tga"; fixture.Tables();
+        Rejected(fixture.Validate({"D001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "无目标修改不能清空标准占地");
+    }
+    for (const std::string value : {"PathTextures\\synthetic.tga", "NONE", "None", " ", "none ", " _", "\"\"", "\"none\""}) {
+        Fixture fixture; prepare(fixture); fixture.doodads[0]["pathTex"] = "_"; fixture.Tables();
+        fixture.SetNative(original("Dt00", NativeValueType::String, value));
+        Rejected(fixture.Validate({"D001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "显式覆盖不因非法/非空值回退或再次归一化");
+    }
+    Fixture wrongType; prepare(wrongType); wrongType.SetNative(original("Dt00", NativeValueType::Int32, std::int32_t{0}));
+    Rejected(wrongType.Validate({"D001"}), "TERRAIN_NATIVE_OBJECT_DOODAD_TYPE", "wire整数0不能冒充空字符串");
+    for (const auto offset : {28u, 32u}) {
+        Fixture indexed; prepare(indexed); indexed.SetNative(original("Dt00", NativeValueType::String, std::string{}));
+        Require(indexed.sources[kW3d].bytes.size() == 45, "v2单空String修改有两个索引");
+        Put32(indexed.sources[kW3d].bytes, offset, 1);
+        Rejected(indexed.Validate({"D001"}), {}, "任一非零wire索引都不能忽略后回退");
+    }
+    Fixture duplicate; prepare(duplicate);
+    auto repeated = original("Dt00", NativeValueType::String, std::string{});
+    Modification(repeated, "D001", "Nm00", NativeValueType::String, std::string{});
+    duplicate.SetNative(repeated); Require(duplicate.sources[kW3d].bytes.size() == 66, "两个空字符串v2记录布局");
+    PutId(duplicate.sources[kW3d].bytes, 41, "Dt00");
+    Rejected(duplicate.Validate({"D001"}), "TERRAIN_NATIVE_OBJECT_DOCUMENT", "重复精确地址不可取首条或末条");
+
+    for (const auto& [key, value] : std::vector<std::pair<std::string, std::string>>{
+        {"slk", "Profile"}, {"type", "int"}, {"repeat", "1"}, {"repeat", "bad"}, {"data", "1"},
+        {"data", "0tail"}, {"index", "bad"}, {"field", "\"pathTex\""}, {"repeat", "\"0\""}}) {
+        Fixture fixture; prepare(fixture); fixture.doodadMetadata[0][key] = value; fixture.Tables();
+        fixture.SetNative(original("Dt00", NativeValueType::String, std::string{}));
+        Rejected(fixture.Validate({"D001"}), "TERRAIN_NATIVE_OBJECT_METADATA", "metadata不可因默认或二次解码获得地址");
+    }
+    for (const unsigned mode : {0u, 1u, 2u, 3u, 4u, 5u}) {
+        Fixture fixture; prepare(fixture);
+        if (mode == 0) fixture.doodadMetadata[0].erase("repeat");
+        else {
+            auto alias = fixture.doodadMetadata[0]; alias["ID"] = "Als0";
+            if (mode == 2) alias["repeat"] = "1";
+            if (mode == 3) { alias["field"] = "pathTe"; alias["data"] = "24"; }
+            if (mode == 4) alias["slk"] = "";
+            if (mode == 5) alias["notspecific"] = "D001";
+            fixture.doodadMetadata.push_back(std::move(alias));
+        }
+        fixture.Tables(); fixture.SetNative(original("Dt00", NativeValueType::String, std::string{}));
+        Rejected(fixture.Validate({"D001"}), "TERRAIN_NATIVE_OBJECT_METADATA", "缺repeat和别名均拒绝，含变体/data拼接/被loader或适用规则过滤的行");
+    }
+    Fixture unknown; prepare(unknown); unknown.SetNative(original("No00", NativeValueType::String, std::string{}));
+    Rejected(unknown.Validate({"D001"}), "TERRAIN_NATIVE_OBJECT_METADATA", "未知修改不能视为不影响占地");
+    Fixture otherBadIndex; prepare(otherBadIndex); otherBadIndex.doodadMetadata[1]["index"] = "broken"; otherBadIndex.Tables();
+    otherBadIndex.SetNative(original("Nm00", NativeValueType::String, std::string("display")));
+    Rejected(otherBadIndex.Validate({"D001"}), "TERRAIN_NATIVE_OBJECT_METADATA", "拟跳过的展示字段也不能吞掉坏索引文本");
+    Fixture reordered; prepare(reordered); reordered.SetNative(original("Dt00", NativeValueType::String, std::string{}));
+    std::reverse(reordered.sources.begin(), reordered.sources.end());
+    Accepted(reordered.Validate({"D001"}), "六项来源仍按实际名字绑定而不依赖顺序");
+    Fixture replaced; prepare(replaced); replaced.sources[kMetadata] = replaced.sources.back(); replaced.sources.pop_back();
+    Rejected(replaced.Validate({"D001"}), "TERRAIN_NATIVE_OBJECT_SOURCE", "合法第六来源不能顶替五项基础来源");
+    Fixture missing; prepare(missing); missing.SetNative(original("Dt00", NativeValueType::String, std::string{}));
+    missing.sources.pop_back();
+    Rejected(missing.Validate({"D001"}), "TERRAIN_NATIVE_OBJECT_DOODAD_METADATA_REQUIRED", "只在未捕获第六项时请求一次补来源");
+    missing.sources.push_back({"Doodads/DoodadMetaData.slk", false, {}});
+    Rejected(missing.Validate({"D001"}), "TERRAIN_NATIVE_OBJECT_TABLE_MISSING", "已捕获且缺失的第六项是终态失败");
+    missing.sources.back().present = true;
+    Rejected(missing.Validate({"D001"}), "TERRAIN_NATIVE_OBJECT_TABLE_MISSING", "已捕获空表不能继续请求来源");
+    missing.sources.back().bytes = TextBytes("broken");
+    Rejected(missing.Validate({"D001"}), {}, "损坏第六项不可回退");
+    missing.sources.back().bytes.resize(2u * 1024u * 1024u + 1);
+    Rejected(missing.Validate({"D001"}, 256u * 1024u * 1024u), "TERRAIN_NATIVE_OBJECT_BUDGET", "新表保持单表上限");
 }
 
 void CompleteSourcesAndWorkingBudget() {
@@ -628,6 +730,7 @@ int main() {
         MissingW3bStillRequiresUniqueClassification();
         StandardDoodadsRequireExplicitDisabledPathing();
         StandardDoodadsDoNotIgnoreNativeOverridesOrOtherObjects();
+        DoodadOriginalUsesExactMetadataAndStrings();
         CompleteSourcesAndWorkingBudget();
         std::cout << "native destructable pathing: typed fields, bounded inheritance, unique sources and rejection paths passed\n";
         return 0;
