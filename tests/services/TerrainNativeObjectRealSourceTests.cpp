@@ -276,7 +276,7 @@ void DryRampChangeUsesPublicSave(const MapArchiveSession& original,
         << " native_editor_verified=false game_verified=false\n";
 }
 
-void PlayableWaterUsesPublicSave(const MapArchiveSession& original,
+std::vector<std::byte> PlayableWaterUsesPublicSave(const MapArchiveSession& original,
     const std::filesystem::path& directory, const std::filesystem::path& tool,
     const std::filesystem::path& game, bool deep) {
     const auto scenario = directory / (deep ? "playable-deep-water" : "playable-shallow-water");
@@ -327,6 +327,7 @@ void PlayableWaterUsesPublicSave(const MapArchiveSession& original,
         << " candidate_sha256=" << saved.candidateSha256
         << " unit_orders=manual units=(-512,0),(-512,512) target=(512,0) control=(512,512)"
         << " native_editor_verified=false game_verified=false\n";
+    return expectedWpm;
 }
 
 void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const std::filesystem::path& game) {
@@ -639,7 +640,9 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         SpecialWaterDeletionUsesPublicSave(original, directory.path, tool, game, uniformRawcode, doodads, w3b, sourceScript, true);
         for (const bool distantWater : {false, true}) for (const bool createRamp : {false, true})
             DryRampChangeUsesPublicSave(original, directory.path, tool, game, doodads, w3b, sourceScript, createRamp, distantWater);
-        for (const bool deep : {false, true}) PlayableWaterUsesPublicSave(original, directory.path, tool, game, deep);
+        const auto playableShallow = PlayableWaterUsesPublicSave(original, directory.path, tool, game, false);
+        const auto playableDeep = PlayableWaterUsesPublicSave(original, directory.path, tool, game, true);
+        Require(playableShallow != playableDeep, "playable shallow and deep water must not produce identical pathing");
     } catch (...) {
         directory.keep = true;
         std::cerr << "Real-source failure artifacts preserved at " << IO::PathUtf8(directory.path) << '\n';
