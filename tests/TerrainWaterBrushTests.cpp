@@ -349,7 +349,7 @@ void SpecialDoodadRepeatedPointsDoNotDeleteTwice() {
     SourceUnchanged(grid, terrainBefore, doodads, doodadsBefore);
 }
 
-void SpecialDoodadDeletesAfterLateShoreChange() {
+void SpecialDoodadRejectsLateShoreChange() {
     const TerrainStrokePoint point{1024, 1024};
     auto grid = Flat();
     At(grid, 8, 8).textureAndFlagsRaw |= 0x40;
@@ -371,10 +371,11 @@ void SpecialDoodadDeletesAfterLateShoreChange() {
     const TerrainWaterSpecialDoodadShape shape{0, "YTfb", 0, {8, 8}, 8, 8, 9, 9, {2, 0, 0, 0}};
     // 源角为 {2,0,0,0}；首轮收敛后 {6,4,4,4} 仍匹配，岸线处理后 {6,7,7,7} 不再匹配。
     const auto result = PrepareTerrainWaterStroke(grid, Rules(), brush, std::span(&point, 1), doodads, std::span(&shape, 1));
-    Require(result.Succeeded() && result.value && Bytes(result.value->terrain) == Bytes(unrestricted)
-        && result.value->result.removedSpecialSourceRecords == std::vector<std::uint32_t>{0},
-        "final special check catches shore changes after the initially matching convergence shape");
-    SpecialOrder(result.value->doodads, doodads, {}, "late shore mismatch removes the special row in the owned candidate");
+    // 原版删除阶段在岸线处理之前；最终核对只能拒绝，不能补做第二轮删除。
+    Require(!result.Succeeded() && !result.value
+        && std::any_of(result.diagnostics.begin(), result.diagnostics.end(), [](const auto& diagnostic) {
+            return diagnostic.code == "TERRAIN_WATER_SPECIAL_DOODAD_DELETE";
+        }), "final special check rejects a shore mismatch after the original deletion phase");
     SourceUnchanged(grid, source, doodads, doodadsBefore);
 }
 
@@ -538,7 +539,7 @@ int main() {
         DryAnchorAndExactCoupling(); WetAnchorExactStepAndFixedStroke(); WaterLimitsAndOrderedShore();
         AtomicFailureAndLocalDomain(); PropagationAndDepthBudget(); SpecialDoodadDeletesFirstMiddleAndLast();
         SpecialDoodadMultiDeleteUsesCollectedSourceOrder(); SpecialDoodadDuplicateXyUsesCurrentFirstRow();
-        SpecialDoodadRepeatedPointsDoNotDeleteTwice(); SpecialDoodadDeletesAfterLateShoreChange();
+        SpecialDoodadRepeatedPointsDoNotDeleteTwice(); SpecialDoodadRejectsLateShoreChange();
         SpecialDoodadChecksDoNotExpandProcessing(); OrdinaryDoodadExpansionIsBudgetedBeforeCopy(); SpecialDoodadSourceFactsAndFailuresAreAtomic();
         SpecialDoodadDuplicateXyCannotLeaveInvalidSurvivor(); SpecialDoodadLegacyApplyCannotDiscardOwnedDeletion();
         HeightFalloffIndependentBoundaries();

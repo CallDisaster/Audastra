@@ -211,7 +211,7 @@ private slots:
         QTest::newRow("save-as") << false;
         QTest::newRow("save-in-place") << true;
     }
-    void SpecialDeletionSurvivesTheQtWorker() {
+    void SpecialDeletionSurvivesTheQtWorker() try {
         QFETCH(bool, inPlace);
         QTemporaryDir directory; QVERIFY(directory.isValid());
         const auto members = SpecialWaterSaveMembers();
@@ -285,6 +285,8 @@ private slots:
             QCOMPARE(project.mapEdits_->SessionIdentity(), sessionIdentity);
             QVERIFY(!project.HasUnsavedMapChanges());
         }
+    } catch (const std::exception& error) {
+        QFAIL(error.what());
     }
 };
 
