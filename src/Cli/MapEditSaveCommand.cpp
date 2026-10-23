@@ -189,8 +189,18 @@ std::optional<Services::MapEditTerrainStroke> ParseStroke(wchar_t** argv, int in
         stroke.brush.kind = MapData::TerrainBrushKind::WaterHeight; stroke.brush.waterHeight = *height;
         return stroke;
     }
+    if (kind == L"ramp") {
+        const std::wstring_view value(argv[index + 6]);
+        if (shape != L"circle" || *radius != 0 || (value != L"true" && value != L"false")) {
+            error = "ramp requires circle, radius 0 and a true or false value; its three-point dry step is checked by the shared planner";
+            return std::nullopt;
+        }
+        stroke.brush.kind = MapData::TerrainBrushKind::Ramp;
+        stroke.brush.value = value == L"true";
+        return stroke;
+    }
     if (kind != L"raise" && kind != L"lower" && kind != L"smooth") {
-        error = "stroke kind must be raise, lower, smooth, texture, or water-height";
+        error = "stroke kind must be raise, lower, smooth, texture, water-height, or ramp";
         return std::nullopt;
     }
     const auto strength = ParseNumber<float>(argv[index + 6]);

@@ -49,6 +49,8 @@
 
 命令行的 `map-edit-save` 可以使用 `--stroke texture circle 32 32 0 Lgrs` 更换地面贴图，或使用 `--stroke water-height circle 32 32 0 170` 调整已有水面基础高度；其余地图路径、来源 SHA 和工具来源参数仍按命令帮助填写。MCP 的 `save_map_edit_candidate` 使用 `kind:"texture"` 与 `ground_texture`，或 `kind:"water_height"` 与 `water_height`；所有入口都会执行相同的通行检查。
 
+一级干地直坡使用 `--stroke ramp circle 32 32 0 true` 创建、`--stroke ramp circle 32 32 0 false` 移除。坐标是台阶所在的顶点索引；半径固定为0，三点形态及完整干地直台阶邻域由共用坡道规划器检查，不使用高度或强度参数。MCP 对应 `kind:"ramp"`、`shape:"circle"`、`radius:0`、`set_ramp:true` 或 `false`，并明确提供 `point_space`、`points` 和 `follow_doodads:false`；布尔值不能写成字符串或数字。附近有水、边界、地高不齐、拐角、多级悬崖或不完整旧坡道时仍会拒绝。已有湿坡道参与通行保存的能力不扩大这个编辑范围。
+
 新建水面使用独立的命令参数：`--water-stroke shallow circle 32 32 1 0 42 true`。依次填写浅水/深水（`shallow`/`deep`）、形状、起点顶点坐标、尺寸（1..8）、已有悬崖贴图槽位（0..14）、随机种子（uint32）以及是否限制水位（`true`/`false`）。相同输入和种子可以重放得到相同笔划。
 
 MCP 的 `save_map_edit_candidate` 对应 `kind:"shallow_water"` 或 `kind:"deep_water"`，显式填写 `shape`、`point_space`、`size`、`cliff_texture`、`seed`、`enforce_water_limits`、`points` 与 `follow_doodads:false`。起点基准和地形规则由保存服务从实际地图取得，不接受调用方提供。`water_height` 仍只用于已有水面高度调整。

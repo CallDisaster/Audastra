@@ -100,7 +100,7 @@ void PrintUsage() {
         << "war3-map-cli terrain-snapshot <map-archive>\n"
         << "war3-map-cli terrain-block <map-archive> <source-sha256> <terrain-sha256> <x> <y> <width> <height>\n"
         << "war3-map-cli terrain-blight-save <source-map> <source-sha256> <terrain-sha256> <ydwe-root> <war3-root> <vertex-x> <vertex-y> <radius-0..16> <set|clear> <new-candidate.w3x> [--layer <id> ...]\n"
-        << "war3-map-cli map-edit-save <source-map> <source-sha256> <terrain-sha256> <ydwe-root> <war3-root> <new-candidate.w3x> --stroke <raise|lower|smooth|texture|water-height> <circle|square> <vertex-x> <vertex-y> <radius-0..16> <strength|rawcode|water-height> [--stroke ...] [--layer <id> ...]\n"
+        << "war3-map-cli map-edit-save <source-map> <source-sha256> <terrain-sha256> <ydwe-root> <war3-root> <new-candidate.w3x> --stroke <raise|lower|smooth|texture|water-height|ramp> <circle|square> <vertex-x> <vertex-y> <radius-0..16;ramp:0> <strength|rawcode|water-height|ramp:true/false> [--stroke ...] [--layer <id> ...]\n"
         << "war3-map-cli map-edit-save <source-map> <source-sha256> - <ydwe-root> <war3-root> <new-candidate.w3x> --field <kind> <row> <row-key> <member-sha256> <field-id> <expected-raw> <new-value> [--field ...] [--layer <id> ...]\n"
         << "war3-map-cli map-edit-save <source-map> <source-sha256> - <ydwe-root> <war3-root> <new-candidate.w3x> --copy-source <units|doodads> <row> <row-key> <member-sha256> [--copy-source ...] --copy-offset <dx> <dy> <dz> [--layer <id> ...]\n"
         << "war3-map-cli map-edit-save <source-map> <source-sha256> - <ydwe-root> <war3-root> <new-candidate.w3x> --rotate <units|doodads> <row> <row-key> <member-sha256> <degrees> [--layer <id> ...]\n"

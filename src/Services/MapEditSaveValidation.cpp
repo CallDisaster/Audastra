@@ -120,6 +120,7 @@ Status ValidateStrokes(std::span<const MapEditTerrainStroke> strokes) {
             case MapData::TerrainBrushKind::Smooth:
             case MapData::TerrainBrushKind::CliffLevel:
             case MapData::TerrainBrushKind::WaterHeight:
+            case MapData::TerrainBrushKind::Ramp:
             case MapData::TerrainBrushKind::PathingRestriction:
                 break;
             default:

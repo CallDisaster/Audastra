@@ -106,6 +106,35 @@ void NativeWaterUsesExplicitTypedArguments() {
     Rejected(Invoke(args), "requires eight arguments");
 }
 
+void RampUsesExplicitBooleanAndTheSharedSaveGate() {
+    const auto base = [] {
+        auto args = Arguments();
+        args.insert(args.end(), {L"--stroke", L"ramp", L"circle", L"4", L"4", L"0", L"true"});
+        return args;
+    };
+    auto args = base();
+    for (const auto value : {L"true", L"false"}) {
+        args[14] = value;
+        const auto result = Invoke(args);
+        Require(result.exitCode != 0 && result.output.empty()
+            && result.error.find("SOURCE_LEASE_FAILED") != std::string::npos
+            && result.error.find("SAVE_STROKE_KIND") == std::string::npos,
+            "typed ramp creation and removal must pass shared stroke validation and reach actual source checks");
+    }
+    for (const auto value : {L"1", L"0", L"True", L"set", L"nan"}) {
+        args = base(); args[14] = value;
+        Rejected(Invoke(args), "ramp requires circle, radius 0 and a true or false value");
+    }
+    args = base(); args[13] = L"1";
+    Rejected(Invoke(args), "ramp requires circle, radius 0 and a true or false value");
+    args = base(); args[10] = L"square";
+    Rejected(Invoke(args), "ramp requires circle, radius 0 and a true or false value");
+    args = base(); args[9] = L"boundary";
+    Rejected(Invoke(args), "stroke kind must be");
+    args = base(); args.pop_back();
+    Rejected(Invoke(args), "requires six arguments");
+}
+
 } // namespace
 
 int main() {
@@ -113,6 +142,7 @@ int main() {
         LegacyMinimapSwitchesAreRemoved();
         TypedTextureAndWaterReachTheSaveService();
         NativeWaterUsesExplicitTypedArguments();
+        RampUsesExplicitBooleanAndTheSharedSaveGate();
         std::cout << "Map edit save CLI minimap option gates passed\n";
         return 0;
     } catch (const std::exception& error) {
