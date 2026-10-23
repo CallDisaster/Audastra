@@ -2,6 +2,7 @@
 
 #include "EditorProject.h"
 #include "GameUiCanvas.h"
+#include "War3MapCore/GameUi/GameCodeLayout.h"
 #include "War3MapCore/GameUi/UiSkin.h"
 
 #include <QComboBox>
@@ -14,12 +15,16 @@
 #include <QThread>
 #include <QTimer>
 
+#include <cmath>
+
 namespace War3Map::Modules {
 namespace {
 
 using namespace War3Map::GameUi;
 
-const QStringList kDefaultRoots{QStringLiteral("ConsoleUI"), QStringLiteral("ResourceBarFrame"),
+// 代码区域紧跟控制台：画在控制台贴图之上、资源栏等界面之下。
+const QString kCodeRoot = QString::fromLatin1(kGameCodeRoot.data(), static_cast<qsizetype>(kGameCodeRoot.size()));
+const QStringList kDefaultRoots{QStringLiteral("ConsoleUI"), kCodeRoot, QStringLiteral("ResourceBarFrame"),
     QStringLiteral("UpperButtonBarFrame")};
 
 // 同一份字体数据在进程内只登记一次；返回字体族名，失败为空。
@@ -46,6 +51,14 @@ QImage ToQImage(const Image::DecodedImage& decoded) {
 QString Text(const std::string& text) { return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())); }
 
 } // namespace
+
+QRect GameUiPixelRect(const FrameRect& rect, const FrameTreeOptions& options, double aspect, int height) {
+    const double width = height * aspect;
+    const double x = rect.left / options.screenWidth * width;
+    const double y = (options.screenHeight - rect.top) / options.screenHeight * height;
+    return QRect(qRound(x), qRound(y), qRound(rect.Width() / options.screenWidth * width),
+        qRound(rect.Height() / options.screenHeight * height));
+}
 
 GameUiModule::GameUiModule(QtProject::EditorProject& project) : project_(project), roots_(kDefaultRoots) {
     connect(&project_, &QtProject::EditorProject::MapDocumentChanged, this, &GameUiModule::ScheduleReload);
@@ -135,13 +148,42 @@ void GameUiModule::ApplyDefinitions(GameUiDefinitions definitions) {
     RebuildScene();
 }
 
-QStringList GameUiModule::AvailableTemplates() const {
+QStringList GameUiModule::MapTemplates() const {
     QStringList names;
     if (!definitions_ || !definitions_->library) return names;
+    const auto& files = definitions_->library->Files();
     for (const auto& entry : definitions_->library->Templates()) {
-        if (entry.definition->kind == DefinitionKind::Frame) names.push_back(Text(entry.definition->name));
+        if (entry.definition->kind == DefinitionKind::Frame && files[entry.fileIndex]->origin == "map")
+            names.push_back(Text(entry.definition->name));
     }
     return names;
+}
+
+QStringList GameUiModule::AvailableTemplates() const {
+    if (!definitions_ || !definitions_->library) return {};
+    // 地图自带的界面排在前面，其后是游戏代码区域与游戏界面。
+    QStringList names = MapTemplates();
+    names.push_back(kCodeRoot);
+    const auto& files = definitions_->library->Files();
+    for (const auto& entry : definitions_->library->Templates()) {
+        if (entry.definition->kind == DefinitionKind::Frame && files[entry.fileIndex]->origin != "map")
+            names.push_back(Text(entry.definition->name));
+    }
+    return names;
+}
+
+double GameUiModule::Aspect() const {
+    return canvas_ ? canvas_->Aspect() : pendingView_.value(QStringLiteral("aspect")).toDouble(16.0 / 9.0);
+}
+
+void GameUiModule::SetAspect(double aspect) {
+    if (!aspectBox_) {
+        pendingView_.insert(QStringLiteral("aspect"), aspect);
+        return;
+    }
+    for (int i = 0; i < aspectBox_->count(); ++i) {
+        if (std::abs(aspectBox_->itemData(i).toDouble() - aspect) < 0.01) aspectBox_->setCurrentIndex(i);
+    }
 }
 
 void GameUiModule::RebuildScene() {
@@ -157,6 +199,10 @@ void GameUiModule::RebuildScene() {
         options.expansion = expansion_;
         auto tree = std::make_unique<FrameTree>(options);
         for (const QString& root : roots_) {
+            if (root.compare(kCodeRoot, Qt::CaseInsensitive) == 0) {
+                tree->AddGameCodeAreas();
+                continue;
+            }
             auto created = tree->Instantiate(*definitions_->library, &skin, root.toStdString());
             sceneDiagnostics_.insert(sceneDiagnostics_.end(), created.diagnostics.begin(), created.diagnostics.end());
         }
@@ -276,9 +322,12 @@ void GameUiModule::ApplyAssets(std::vector<GameUiAsset> assets) {
 bool GameUiModule::AddRoot(const QString& name) {
     const QString trimmed = name.trimmed();
     if (trimmed.isEmpty() || !definitions_ || !definitions_->library) return false;
-    const auto found = definitions_->library->FindTemplate(trimmed.toStdString());
-    if (!found || found->definition->kind != DefinitionKind::Frame) return false;
-    const QString canonical = Text(found->definition->name);
+    QString canonical = kCodeRoot;
+    if (trimmed.compare(kCodeRoot, Qt::CaseInsensitive) != 0) {
+        const auto found = definitions_->library->FindTemplate(trimmed.toStdString());
+        if (!found || found->definition->kind != DefinitionKind::Frame) return false;
+        canonical = Text(found->definition->name);
+    }
     if (!roots_.contains(canonical, Qt::CaseInsensitive)) {
         roots_.push_back(canonical);
         RebuildScene();

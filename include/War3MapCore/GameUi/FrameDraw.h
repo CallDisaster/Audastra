@@ -44,12 +44,13 @@ struct TextDraw {
     JustifyV justifyV = JustifyV::Middle;
 };
 
-enum class DrawKind : std::uint8_t { Image, Text };
+// CodeArea：游戏代码自行绘制的区域（小地图、头像等），没有界面文件可画；显示层画占位框，游戏内跳过。
+enum class DrawKind : std::uint8_t { Image, Text, CodeArea };
 
 struct FrameDrawCommand {
     std::uint32_t node = kNoNode;
     DrawKind kind = DrawKind::Image;
-    ImageDraw image;
+    ImageDraw image;  // CodeArea 只用其中的 rect
     TextDraw text;
 };
 

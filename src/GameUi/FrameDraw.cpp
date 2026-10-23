@@ -87,7 +87,13 @@ private:
             list_.stateOnlyNodes.push_back(id);
             return;
         }
-        if (IsVisibleLayout(node)) EmitFrame(node);
+        if (IsVisibleLayout(node)) {
+            if (!node.codeLabel.empty()) {
+                if (node.children.empty()) PushCodeArea(node);
+            } else {
+                EmitFrame(node);
+            }
+        }
         EmitLayered(node);
         for (const std::uint32_t child : node.children) {
             if (Node(child).kind == DefinitionKind::Frame) Visit(child);
@@ -210,6 +216,14 @@ private:
         command.node = node;
         command.kind = DrawKind::Image;
         command.image = std::move(image);
+        list_.commands.push_back(std::move(command));
+    }
+
+    void PushCodeArea(const FrameNode& node) {
+        FrameDrawCommand command;
+        command.node = node.id;
+        command.kind = DrawKind::CodeArea;
+        command.image.rect = node.rect;
         list_.commands.push_back(std::move(command));
     }
 

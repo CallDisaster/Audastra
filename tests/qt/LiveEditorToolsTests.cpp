@@ -307,6 +307,7 @@ private slots:
     void ProjectSearchCallbackReplacementStopsOldRequest();
     void ProjectSearchOwnerDeletionKeepsInvocationAlive();
     void ViewportToolsUseActualHostAndRejectStaleIdentity();
+    void GameUiToolsUseHostAndValidateArguments();
 };
 
 void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
@@ -317,6 +318,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "entities_copy", "entities_create", "entities_delete", "entities_query", "entities_rotate", "entities_set_fields",
         "export_campaign_member",
         "feedback.draft", "feedback.list", "feedback.status",
+        "game_ui_nodes_query", "game_ui_render", "game_ui_view_read", "game_ui_view_set",
         "get_terrain_edit_state",
         "imports_add", "imports_get", "imports_list", "imports_remove", "lua_file_read", "lua_file_write", "lua_files_list",
         "lua_test_hot_reload", "lua_test_reload_result",
@@ -332,7 +334,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{74});
+    QCOMPARE(expected.size(), qsizetype{78});
     for (const auto& definition : Mcp::AuxiliaryToolDefinitions()) {
         QCOMPARE(definition.permission, Mcp::ToolPermission::Edit);
         int matches = 0;
@@ -2343,6 +2345,37 @@ void LiveEditorToolsTests::ViewportToolsUseActualHostAndRejectStaleIdentity() {
     Mcp::ToolPolicy policy; policy.allowEdit = false; f.tools->SetPolicy(policy);
     QVERIFY(!Names(f.tools->Tools()).contains("world_viewport_camera_set"));
     QVERIFY(Names(f.tools->Tools()).contains("world_viewport_camera_read"));
+}
+
+void LiveEditorToolsTests::GameUiToolsUseHostAndValidateArguments() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    const auto state = f.tools->Invoke("editor_state", {});
+    QJsonObject args{{"project_identity", state.value("project_identity")}, {"expected_revision", state.value("revision")}};
+    QCOMPARE(ErrorCode(f.tools->Invoke("game_ui_view_read", args)), QString("GAME_UI_UNSUPPORTED"));
+    QStringList received;
+    f.tools->SetGameUiHandler([&received](const QString& name, const QJsonObject& arguments) {
+        received.append(name + QLatin1Char(':') + arguments.value("race").toString());
+        return QJsonObject{{"ok", true}};
+    });
+    auto set = args; set["race"] = "Orc"; set["add_roots"] = QJsonArray{"EscMenuMainPanel"};
+    QVERIFY(f.tools->Invoke("game_ui_view_set", set).value("ok").toBool());
+    QCOMPARE(received, QStringList{"game_ui_view_set:Orc"});
+    // 取值越界、未知种类与未知参数在到达宿主前被拒绝。
+    auto badRace = args; badRace["race"] = "Naga";
+    QVERIFY(!f.tools->Invoke("game_ui_view_set", badRace).value("ok").toBool());
+    auto badSize = args; badSize["width"] = 99999;
+    QCOMPARE(ErrorCode(f.tools->Invoke("game_ui_render", badSize)), QString("GAME_UI_ARGUMENT"));
+    auto tooMany = args; QJsonArray roots; for (int i = 0; i < 17; ++i) roots.append(QStringLiteral("R%1").arg(i));
+    tooMany["add_roots"] = roots;
+    QCOMPARE(ErrorCode(f.tools->Invoke("game_ui_view_set", tooMany)), QString("GAME_UI_ARGUMENT"));
+    auto unknown = args; unknown["path"] = "injected";
+    QVERIFY(!f.tools->Invoke("game_ui_nodes_query", unknown).value("ok").toBool());
+    auto stale = args; stale["expected_revision"] = "9999";
+    QCOMPARE(ErrorCode(f.tools->Invoke("game_ui_view_read", stale)), QString("LIVE_EDITOR_REVISION_CONFLICT"));
+    QCOMPARE(received.size(), qsizetype{1});
+    Mcp::ToolPolicy policy; policy.allowEdit = false; f.tools->SetPolicy(policy);
+    QVERIFY(!Names(f.tools->Tools()).contains("game_ui_view_set"));
+    QVERIFY(Names(f.tools->Tools()).contains("game_ui_render"));
 }
 
 QTEST_GUILESS_MAIN(LiveEditorToolsTests)

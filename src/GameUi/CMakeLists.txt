@@ -1,12 +1,15 @@
-# 游戏界面（fdf/toc、皮肤、实例树与布局）。只依赖 Core，不依赖 Qt；编辑器与命令行共用。
+# 游戏界面（fdf/toc、皮肤、实例树与布局，地图脚本加载的界面目录）。不依赖 Qt；编辑器与命令行共用。
+# 查找地图脚本里的加载调用时复用 JASS / Lua 词法分析。
 add_library(War3MapGameUi STATIC
     FrameDefinitionParser.cpp
     FrameDraw.cpp
     FrameLibrary.cpp
     FrameTree.cpp
+    GameCodeLayout.cpp
+    MapUiFiles.cpp
     UiSkin.cpp)
 add_library(War3MapEditor::GameUi ALIAS War3MapGameUi)
-target_link_libraries(War3MapGameUi PUBLIC War3MapEditor::Core)
+target_link_libraries(War3MapGameUi PUBLIC War3MapEditor::Core PRIVATE War3MapEditor::Jass War3MapEditor::Lua)
 target_compile_definitions(War3MapGameUi PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 if(MSVC)
     target_compile_options(War3MapGameUi PRIVATE /W4 /permissive- /utf-8)

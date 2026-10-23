@@ -29,6 +29,7 @@ if(TARGET Qt6::Core)
         McpLuaTestTools.cpp
         McpLuaFileTools.cpp McpLuaFileTools.h
         McpWorldViewportTools.cpp
+        McpGameUiTools.cpp McpGameUiTools.h
         McpObjectTools.cpp
         McpToolObjects.cpp
         McpVariableTools.cpp

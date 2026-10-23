@@ -9,6 +9,7 @@
 #include <QJsonObject>
 #include <QObject>
 #include <QPointer>
+#include <QRect>
 #include <QSet>
 #include <QStringList>
 
@@ -33,6 +34,10 @@ namespace War3Map::QtProject { class EditorProject; }
 namespace War3Map::UiKit { class ProblemList; }
 namespace War3Map::Modules {
 class GameUiCanvas;
+
+// 屏幕单位矩形换算为指定画面高度下的像素矩形（左上为原点），画面宽 = 高 × 宽高比。
+[[nodiscard]] QRect GameUiPixelRect(const GameUi::FrameRect& rect, const GameUi::FrameTreeOptions& options, double aspect,
+    int height = 1080);
 
 // 游戏界面工作区：按游戏界面定义与种族皮肤展开界面树，显示原版贴图、文字和字体，
 // 列出每个节点在游戏中的名字、类型、来源与位置。只读；不修改地图。
@@ -62,6 +67,15 @@ public:
     // 只显示该节点（隐藏其同级节点），父节点一并显示。
     void ShowOnly(std::uint32_t node);
     [[nodiscard]] std::uint32_t SelectedNode() const noexcept { return selected_; }
+    [[nodiscard]] QString Race() const { return race_; }
+    [[nodiscard]] bool Expansion() const noexcept { return expansion_; }
+    // 画面宽高比（宽/高）；页面未创建时为默认 16:9。
+    [[nodiscard]] double Aspect() const;
+    void SetAspect(double aspect);
+    // 问题列表的内容：游戏目录、地图层、定义与布局诊断、读不出的贴图与字体。
+    [[nodiscard]] std::vector<Diagnostic> Problems() const;
+    // 定义来自地图界面目录的模板名（按名字排序）。
+    [[nodiscard]] QStringList MapTemplates() const;
     [[nodiscard]] bool IsLoading() const noexcept { return definitionsPending_ || assetsPending_; }
     [[nodiscard]] QImage RenderImage(const QSize& size) const;
     void Reload();

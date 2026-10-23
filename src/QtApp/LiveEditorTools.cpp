@@ -2,6 +2,7 @@
 #include "LiveEditorAuxiliaryTools.h"
 #include "McpLuaTestTools.h"
 #include "McpLuaFileTools.h"
+#include "McpGameUiTools.h"
 #include "McpWorldViewportTools.h"
 #include "McpCampaignTools.h"
 #include "LiveObjectTools.h"
@@ -275,6 +276,9 @@ public:
     void SetMapTestHandler(std::function<QJsonObject(const QString&, const QJsonObject&)> handler) { mapTest_ = std::move(handler); }
     void SetWorldViewportHandler(std::function<QJsonObject(const QString&, const QJsonObject&)> handler) {
         worldViewport_ = std::move(handler);
+    }
+    void SetGameUiHandler(std::function<QJsonObject(const QString&, const QJsonObject&)> handler) {
+        gameUi_ = std::move(handler);
     }
     void SetBeforeWrite(std::function<bool()> handler) { beforeWrite_ = std::move(handler); }
     void SetProjectSearchQuery(ProjectSearchRevisionQuery revision, ProjectSearchPageQuery query) {
@@ -1203,6 +1207,15 @@ private:
                     return Mcp::InvokeWorldViewportTool(name, args, {worldViewport_});
                 }, definition.maxRequestIdBytes, definition.maxResponseBytes, definition.pngImageResult);
         }
+        for (auto definition : Mcp::GameUiToolDefinitions()) {
+            const auto name = definition.name;
+            AddTool(name, definition.description, definition.permission, definition.inputSchema,
+                [this, name](const QJsonObject& args) {
+                    const auto check = CheckContext(args, false, false);
+                    if (!check.value("ok").toBool()) return check;
+                    return Mcp::InvokeGameUiTool(name, args, {gameUi_});
+                }, definition.maxRequestIdBytes, definition.maxResponseBytes, definition.pngImageResult);
+        }
         for (auto definition : Mcp::LuaTestToolDefinitions()) {
             const auto name = definition.name;
             AddTool(name, definition.description, definition.permission, definition.inputSchema,
@@ -1419,6 +1432,7 @@ private:
     std::function<QJsonObject(bool)> luaTest_;
     std::function<QJsonObject(const QString&, const QJsonObject&)> mapTest_;
     std::function<QJsonObject(const QString&, const QJsonObject&)> worldViewport_;
+    std::function<QJsonObject(const QString&, const QJsonObject&)> gameUi_;
     ProjectSearchRevisionQuery projectSearchRevision_;
     ProjectSearchPageQuery projectSearchQuery_;
     std::shared_ptr<const int> projectSearchToken_;
@@ -1447,6 +1461,9 @@ void LiveEditorTools::SetLuaTestHandler(std::function<QJsonObject(bool)> handler
 void LiveEditorTools::SetMapTestHandler(std::function<QJsonObject(const QString&, const QJsonObject&)> handler) { impl_->SetMapTestHandler(std::move(handler)); }
 void LiveEditorTools::SetWorldViewportHandler(std::function<QJsonObject(const QString&, const QJsonObject&)> handler) {
     impl_->SetWorldViewportHandler(std::move(handler));
+}
+void LiveEditorTools::SetGameUiHandler(std::function<QJsonObject(const QString&, const QJsonObject&)> handler) {
+    impl_->SetGameUiHandler(std::move(handler));
 }
 void LiveEditorTools::SetBeforeWrite(std::function<bool()> handler) { impl_->SetBeforeWrite(std::move(handler)); }
 void LiveEditorTools::SetProjectSearchQuery(ProjectSearchRevisionQuery revision, ProjectSearchPageQuery query) {

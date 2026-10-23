@@ -1,5 +1,6 @@
 #include "War3MapCore/GameUi/FrameTree.h"
 
+#include "War3MapCore/GameUi/GameCodeLayout.h"
 #include "War3MapCore/Text/TextUtil.h"
 
 #include <algorithm>
@@ -106,12 +107,6 @@ bool IsTextNode(const FrameNode& node) {
     return node.kind == DefinitionKind::Frame && Text::LowerAscii(node.frameType) == "text";
 }
 
-std::optional<RootPlacement> KnownRootPlacement(std::string_view templateName) {
-    // ConsoleUI 在 fdf 中没有尺寸，游戏创建后铺满整个屏幕。
-    if (Text::LowerAscii(templateName) == "consoleui") return RootPlacement{true, {}};
-    return std::nullopt;
-}
-
 struct FrameTree::BuildContext {
     const FrameLibrary& library;
     const UiSkin* skin = nullptr;
@@ -193,15 +188,19 @@ Result<std::uint32_t> FrameTree::Instantiate(const FrameLibrary& library, const 
     context.templateStack.push_back(Text::LowerAscii(found->definition->name));
     Build(context, *found->definition, library.Files()[found->fileIndex]->file.path, kScreenNode, {}, 0);
     if (rootId < nodes_.size()) {
-        const auto effective = placement ? placement : KnownRootPlacement(templateName);
+        const auto known = placement ? std::nullopt : KnownRootPlacement(templateName);
+        const auto& effective = placement ? placement : known;
         if (effective) {
-            nodes_[rootId].anchors.clear();
+            FrameNode& root = nodes_[rootId];
+            root.anchors.clear();
             if (effective->fillScreen) {
-                nodes_[rootId].anchors.push_back(FrameAnchor{FramePoint::TopLeft, {}, FramePoint::TopLeft, 0.0f, 0.0f});
-                nodes_[rootId].anchors.push_back(
-                    FrameAnchor{FramePoint::BottomRight, {}, FramePoint::BottomRight, 0.0f, 0.0f});
+                root.anchors.push_back(FrameAnchor{FramePoint::TopLeft, {}, FramePoint::TopLeft, 0.0f, 0.0f});
+                root.anchors.push_back(FrameAnchor{FramePoint::BottomRight, {}, FramePoint::BottomRight, 0.0f, 0.0f});
             }
-            for (const auto& anchor : effective->anchors) UpsertAnchor(nodes_[rootId].anchors, anchor);
+            for (const auto& anchor : effective->anchors) UpsertAnchor(root.anchors, anchor);
+            if (effective->width) root.width = effective->width;
+            if (effective->height) root.height = effective->height;
+            root.codePlaced = known.has_value();
         } else if (nodes_[rootId].anchors.empty()) {
             context.diagnostics.push_back(MakeDiagnostic(DiagnosticSeverity::Info, "GAMEUI_ROOT_PLACEMENT_UNKNOWN",
                 std::string(templateName) + " 的位置由游戏代码决定，尚未取得，暂不显示"));
@@ -452,10 +451,40 @@ std::optional<std::uint32_t> FrameTree::FindRelative(std::uint32_t from, std::st
         if (current != from && Text::LowerAscii(nodes_[current].name) == key) return current;
         for (auto it = nodes_[current].children.rbegin(); it != nodes_[current].children.rend(); ++it) stack.push_back(*it);
     }
+    // 代码区域在游戏里没有名字，fdf 按名字引用时找不到它们。
+    const bool fromCode = !nodes_[from].codeLabel.empty();
     for (const auto& node : nodes_) {
-        if (node.id != from && Text::LowerAscii(node.name) == key) return node.id;
+        if (node.id != from && (fromCode || node.codeLabel.empty()) && Text::LowerAscii(node.name) == key) return node.id;
     }
     return std::nullopt;
+}
+
+std::uint32_t FrameTree::AddGameCodeAreas() {
+    for (const std::uint32_t child : nodes_[kScreenNode].children) {
+        if (!nodes_[child].codeLabel.empty() && nodes_[child].name == kGameCodeRoot) return child;
+    }
+    FrameNode root;
+    root.parent = kScreenNode;
+    root.frameType = "CGameUI";
+    root.name = std::string(kGameCodeRoot);
+    root.codeLabel = "游戏界面";
+    root.codePlaced = true;
+    root.anchors.push_back(FrameAnchor{FramePoint::TopLeft, {}, FramePoint::TopLeft, 0.0f, 0.0f});
+    root.anchors.push_back(FrameAnchor{FramePoint::BottomRight, {}, FramePoint::BottomRight, 0.0f, 0.0f});
+    const std::uint32_t rootId = AddNode(std::move(root));
+    for (const auto& area : GameCodeAreas()) {
+        FrameNode node;
+        node.parent = rootId;
+        node.frameType = std::string(area.className);
+        node.name = std::string(area.id);
+        node.codeLabel = std::string(area.label);
+        node.codePlaced = true;
+        node.anchors = area.anchors;
+        node.width = area.width;
+        node.height = area.height;
+        AddNode(std::move(node));
+    }
+    return rootId;
 }
 
 std::optional<std::uint32_t> FrameTree::FindByName(std::string_view name) const {

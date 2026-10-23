@@ -30,6 +30,8 @@ namespace {
 using namespace War3Map::GameUi;
 
 constexpr int kNodeRole = Qt::UserRole + 1;
+// 节点名（代码区域显示中文名，搜索仍可按标识查）。
+constexpr int kNameRole = Qt::UserRole + 2;
 
 QString Text(const std::string& text) { return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())); }
 QString Number(float value) { return QString::number(static_cast<double>(value), 'f', 4); }
@@ -43,6 +45,7 @@ QString RaceLabel(const QString& race) {
 }
 
 QString DisplayName(const FrameNode& node) {
+    if (!node.codeLabel.empty()) return Text(node.codeLabel);
     if (!node.name.empty()) return Text(node.name);
     switch (node.kind) {
     case DefinitionKind::Texture: return QObject::tr("（贴图）");
@@ -304,6 +307,7 @@ void GameUiModule::PopulateTree() {
             const bool state = stateOnly.contains(node.id);
             item->setText(2, state ? tr("状态显示") : node.layout == LayoutState::Placed ? QString() : LayoutText(node.layout));
             item->setData(0, kNodeRole, node.id);
+            item->setData(0, kNameRole, Text(node.name));
             item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
             item->setCheckState(0, hiddenKeys_.contains(NodeKey(node.id)) ? Qt::Unchecked : Qt::Checked);
             if (state || node.layout == LayoutState::Unplaced || node.layout == LayoutState::Cycle) {
@@ -325,7 +329,8 @@ void GameUiModule::ApplyFilter() {
         bool any = false;
         for (int i = 0; i < item->childCount(); ++i) any = visit(item->child(i)) || any;
         const bool match = needle.isEmpty() || item->text(0).contains(needle, Qt::CaseInsensitive) ||
-            item->text(1).contains(needle, Qt::CaseInsensitive);
+            item->text(1).contains(needle, Qt::CaseInsensitive) ||
+            item->data(0, kNameRole).toString().contains(needle, Qt::CaseInsensitive);
         item->setHidden(!(match || any));
         if (!needle.isEmpty() && any) item->setExpanded(true);
         return match || any;
@@ -408,27 +413,38 @@ void GameUiModule::UpdateProperties() {
     };
 
     auto* basic = group(tr("节点"));
-    row(basic, tr("游戏内名称"), node.name.empty() ? QStringLiteral("—") : Text(node.name));
-    row(basic, tr("类型"), TypeText(node));
+    if (!node.codeLabel.empty()) {
+        // 代码区域在游戏里没有界面名，只能经游戏代码取得。
+        row(basic, tr("名称"), Text(node.codeLabel));
+        row(basic, tr("游戏内名称"), QStringLiteral("—"));
+        row(basic, tr("标识"), Text(node.name));
+        row(basic, tr("游戏类"), node.frameType.empty() ? QStringLiteral("—") : Text(node.frameType));
+    } else {
+        row(basic, tr("游戏内名称"), node.name.empty() ? QStringLiteral("—") : Text(node.name));
+        row(basic, tr("类型"), TypeText(node));
+    }
     if (!node.templateName.empty()) row(basic, tr("继承模板"), Text(node.templateName));
     if (!node.layer.empty()) row(basic, tr("绘制层"), Text(node.layer));
-    if (!node.sourceFile.empty()) row(basic, tr("定义位置"), QStringLiteral("%1:%2").arg(Text(node.sourceFile)).arg(node.sourceLine));
+    if (!node.sourceFile.empty()) {
+        row(basic, tr("定义位置"), QStringLiteral("%1:%2").arg(Text(node.sourceFile)).arg(node.sourceLine));
+        if (definitions_ && definitions_->library) {
+            for (const auto& file : definitions_->library->Files()) {
+                if (file->file.path != node.sourceFile) continue;
+                row(basic, tr("定义来源"), file->origin == "map" ? tr("地图界面目录") : tr("游戏界面目录"));
+                break;
+            }
+        }
+    }
     row(basic, tr("布局"), LayoutText(node.layout));
+    if (node.codePlaced) row(basic, tr("定位来源"), tr("游戏代码（1.27a）"));
     if (!node.autoFillBy.empty()) row(basic, tr("由父控件铺满"), Text(node.autoFillBy));
     if (node.layout == LayoutState::Placed || node.layout == LayoutState::SizeFromContent) {
         const FrameRect& r = node.rect;
         row(basic, tr("位置"), tr("左 %1  下 %2  右 %3  上 %4").arg(Number(r.left), Number(r.bottom), Number(r.right), Number(r.top)));
         row(basic, tr("尺寸"), QStringLiteral("%1 × %2").arg(Number(r.Width()), Number(r.Height())));
-        if (canvas_) {
-            const double height = 1080.0;
-            const double width = height * canvas_->Aspect();
-            const auto& options = tree_->Options();
-            const double x = r.left / options.screenWidth * width;
-            const double y = (options.screenHeight - r.top) / options.screenHeight * height;
-            row(basic, tr("像素"), tr("%1×1080：x %2  y %3  宽 %4  高 %5").arg(qRound(width))
-                .arg(qRound(x)).arg(qRound(y)).arg(qRound(r.Width() / options.screenWidth * width))
-                .arg(qRound(r.Height() / options.screenHeight * height)));
-        }
+        const QRect pixels = GameUiPixelRect(r, tree_->Options(), Aspect());
+        row(basic, tr("像素"), tr("%1×1080：x %2  y %3  宽 %4  高 %5").arg(qRound(1080.0 * Aspect()))
+            .arg(pixels.x()).arg(pixels.y()).arg(pixels.width()).arg(pixels.height()));
     }
     if (!node.anchors.empty()) {
         auto* anchors = group(tr("锚点"));
@@ -476,19 +492,27 @@ void GameUiModule::UpdateProperties() {
     }
 }
 
+std::vector<Diagnostic> GameUiModule::Problems() const {
+    std::vector<Diagnostic> problems;
+    const auto add = [&](DiagnosticSeverity severity, const char* code, const QString& message) {
+        problems.push_back(Diagnostic{severity, "GameUi", code, message.toStdString(), std::nullopt});
+    };
+    if (project_.war3GameRoot_.empty()) add(DiagnosticSeverity::Error, "GAMEUI_GAME_ROOT_MISSING", tr("未设置游戏目录"));
+    if (!sourceNote_.isEmpty()) add(DiagnosticSeverity::Info, "GAMEUI_MAP_LAYER", sourceNote_);
+    problems.insert(problems.end(), loadDiagnostics_.begin(), loadDiagnostics_.end());
+    problems.insert(problems.end(), sceneDiagnostics_.begin(), sceneDiagnostics_.end());
+    for (auto it = assetErrors_.constBegin(); it != assetErrors_.constEnd(); ++it)
+        add(DiagnosticSeverity::Warning, "GAMEUI_ASSET_UNREADABLE", QStringLiteral("%1：%2").arg(it.key(), it.value()));
+    return problems;
+}
+
 void GameUiModule::UpdateProblems() {
     if (!problemModel_) return;
     problemModel_->removeRows(0, problemModel_->rowCount());
-    const auto add = [this](const QString& severity, const QString& message, const QString& code) {
-        problemModel_->appendRow({new QStandardItem(severity), new QStandardItem(message), new QStandardItem(code)});
-    };
-    if (project_.war3GameRoot_.empty()) add(tr("错误"), tr("未设置游戏目录"), QStringLiteral("GAMEUI_GAME_ROOT_MISSING"));
-    if (!sourceNote_.isEmpty()) add(tr("信息"), sourceNote_, QStringLiteral("GAMEUI_MAP_LAYER"));
-    for (const auto* list : {&loadDiagnostics_, &sceneDiagnostics_}) {
-        for (const auto& diagnostic : *list) add(SeverityText(diagnostic.severity), Text(diagnostic.message), Text(diagnostic.code));
+    for (const auto& problem : Problems()) {
+        problemModel_->appendRow({new QStandardItem(SeverityText(problem.severity)), new QStandardItem(Text(problem.message)),
+            new QStandardItem(Text(problem.code))});
     }
-    for (auto it = assetErrors_.constBegin(); it != assetErrors_.constEnd(); ++it)
-        add(tr("警告"), QStringLiteral("%1：%2").arg(it.key(), it.value()), QStringLiteral("GAMEUI_ASSET_UNREADABLE"));
     if (problems_) problems_->SetState(IsLoading() ? tr("读取中…") : QString());
 }
 

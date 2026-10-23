@@ -2,6 +2,7 @@
 
 #include "WorldTerrainAssets.h"
 #include "War3MapCore/GameUi/FrameLibrary.h"
+#include "War3MapCore/GameUi/MapUiFiles.h"
 #include "War3MapCore/Image/BlpImage.h"
 
 #include <QString>
@@ -27,6 +28,7 @@ struct GameUiSources {
 struct GameUiFile {
     std::vector<std::byte> bytes;
     std::string origin;  // 实际命中的来源，如地图、会话导入或游戏包名
+    bool fromMap = false;  // 命中地图或会话导入（不是游戏包）
 };
 
 // 只在一个后台线程上使用；首次读取时才挂载游戏包或打开地图解析器。
@@ -39,6 +41,8 @@ public:
 
     [[nodiscard]] Result<GameUiFile> Read(const std::string& path);
     [[nodiscard]] bool HasMapLayer() const noexcept { return sources_.map.has_value(); }
+    // 地图层（含会话导入）的全部文件路径；没有地图层时为空。
+    [[nodiscard]] std::vector<std::string> MapFiles() const;
     [[nodiscard]] const GameUiSources& Sources() const noexcept { return sources_; }
 
 private:
@@ -49,11 +53,13 @@ private:
     std::unique_ptr<State> state_;
 };
 
-// 界面定义：FrameDef.toc 全部 fdf（地图导入的同名文件覆盖游戏文件）、游戏皮肤表与地图皮肤表。
+// 界面定义：FrameDef.toc 全部 fdf（地图导入的同名文件覆盖游戏文件），再读地图脚本加载的界面目录
+// 与地图里的 .toc（来源记为 map）；游戏皮肤表与地图皮肤表。
 struct GameUiDefinitions {
     std::shared_ptr<const GameUi::FrameLibrary> library;
     std::string gameSkins;
     std::string mapSkin;
+    std::vector<GameUi::TocLoadCall> tocCalls;  // 地图脚本中加载界面目录的调用
     std::vector<Diagnostic> diagnostics;
 };
 [[nodiscard]] GameUiDefinitions LoadGameUiDefinitions(GameUiReader& reader);

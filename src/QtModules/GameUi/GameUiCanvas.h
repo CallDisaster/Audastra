@@ -61,6 +61,8 @@ private:
         std::vector<HitBox>* hits) const;
     void PaintText(QPainter& painter, const QRectF& screen, const GameUi::FrameDrawCommand& command,
         std::vector<HitBox>* hits) const;
+    void PaintCodeArea(QPainter& painter, const QRectF& screen, const GameUi::FrameDrawCommand& command,
+        std::vector<HitBox>* hits) const;
     void PaintOverlays(QPainter& painter, const QRectF& screen) const;
     [[nodiscard]] QRectF NodePixelRect(const QRectF& screen, std::uint32_t node) const;
 

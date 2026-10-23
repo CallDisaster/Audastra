@@ -91,6 +91,10 @@ struct FrameNode {
     FrameRect rect;
     LayoutState layout = LayoutState::Unplaced;
     FramePoint contentAnchor = FramePoint::Center;  // SizeFromContent 时文字对齐的定位点
+    // 游戏代码直接创建的区域（无 fdf 模板）的中文名；非空即代码区域。
+    std::string codeLabel;
+    // 锚点来自游戏代码的摆放，而不是 fdf。
+    bool codePlaced = false;
 };
 
 // String 与 TEXT 框架：没有尺寸时由文字内容决定大小。
@@ -103,23 +107,26 @@ struct FrameTreeOptions {
     float screenHeight = 0.6f;
 };
 
-// 自带界面根节点在游戏代码里的摆放（fdf 中没有）；锚点一律相对屏幕。
+// 根框架在 fdf 之外的摆放（游戏代码或调用方给定）；锚点一律相对屏幕，尺寸为空时沿用定义。
 struct RootPlacement {
     bool fillScreen = false;
     std::vector<FrameAnchor> anchors;
+    std::optional<float> width;
+    std::optional<float> height;
 };
-
-// 已确认的自带界面根摆放；未列出的根框架由游戏代码定位，需游戏内取得后补入。
-[[nodiscard]] std::optional<RootPlacement> KnownRootPlacement(std::string_view templateName);
 
 class FrameTree {
 public:
     explicit FrameTree(FrameTreeOptions options = {});
 
     // 按顶层模板名实例化一个根框架，挂在屏幕节点下；返回根节点编号。
-    // placement 为空时先查 KnownRootPlacement，再用定义自身的锚点（相对屏幕）；都没有时记 Info 诊断。
+    // placement 为空时先查游戏代码摆放（KnownRootPlacement），再用定义自身的锚点（相对屏幕）；
+    // 都没有时记 Info 诊断。
     [[nodiscard]] Result<std::uint32_t> Instantiate(const FrameLibrary& library, const UiSkin* skin,
         std::string_view templateName, const std::optional<RootPlacement>& placement = std::nullopt);
+
+    // 在屏幕下挂出游戏代码直接创建的区域（根节点名为 kGameCodeRoot）；重复调用返回已有的根。
+    std::uint32_t AddGameCodeAreas();
 
     // 计算全部节点的矩形；返回本次布局的诊断。
     [[nodiscard]] std::vector<Diagnostic> Layout();

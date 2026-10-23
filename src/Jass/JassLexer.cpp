@@ -356,6 +356,30 @@ bool ValidStringEscapes(std::string_view literal) noexcept {
     return true;
 }
 
+std::optional<std::string> StringLiteralValue(std::string_view literal) {
+    if (literal.size() < 2 || literal.front() != '"' || literal.back() != '"') return std::nullopt;
+    std::string value;
+    value.reserve(literal.size() - 2);
+    for (std::size_t i = 1; i + 1 < literal.size(); ++i) {
+        if (literal[i] != '\\') {
+            value.push_back(literal[i]);
+            continue;
+        }
+        if (i + 2 >= literal.size()) return std::nullopt;
+        switch (literal[++i]) {
+        case 'b': value.push_back('\b'); break;
+        case 't': value.push_back('\t'); break;
+        case 'n': value.push_back('\n'); break;
+        case 'f': value.push_back('\f'); break;
+        case 'r': value.push_back('\r'); break;
+        case '"': value.push_back('"'); break;
+        case '\\': value.push_back('\\'); break;
+        default: return std::nullopt;
+        }
+    }
+    return value;
+}
+
 bool ValidStringEscapes(std::string_view literal, Text::SourceEncoding encoding) {
     LexerSource source(literal, encoding);
     if (literal.size() < 2 || literal.front() != '"' || literal.back() != '"') return false;

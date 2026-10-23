@@ -13,6 +13,8 @@
 #include "WorldEffectsSettingsPage.h"
 #include "WorldModule.h"
 #include "WorldViewportToolService.h"
+#include "GameUiModule.h"
+#include "GameUiToolService.h"
 #include "RecoveryPreferences.h"
 #include "../QtCommon/ApplicationPaths.h"
 #include "FeedbackClient.h"
@@ -285,6 +287,11 @@ void MainWindow::SetupAgentWorkspace(bool readUserConfiguration) {
     });
     state->tools->SetWorldViewportHandler([viewportTools](const QString& name, const QJsonObject& arguments) {
         return viewportTools->Invoke(name, arguments);
+    });
+    const QPointer<War3Map::Modules::GameUiModule> gameUi(gameUiModule_);
+    auto gameUiTools = std::make_shared<War3Map::Modules::GameUiToolService>([gameUi]() { return gameUi.data(); });
+    state->tools->SetGameUiHandler([gameUiTools](const QString& name, const QJsonObject& arguments) {
+        return gameUiTools->Invoke(name, arguments);
     });
     connect(state->controller.get(), &War3Map::Agent::AgentController::Event, state, [state](const QJsonObject& event) {
         // Live broker already emits authoritative changes for both AI and HTTP calls.

@@ -77,6 +77,12 @@ void GameUiModuleTests::BuildsSceneFromDefinitions() {
     QVERIFY(FindItem(nodes, QStringLiteral("ConsoleUI")));
     QVERIFY(FindItem(nodes, QStringLiteral("ConsoleTile")));
     QCOMPARE(FindItem(nodes, QStringLiteral("ConsoleText"))->text(2), QStringLiteral("随文字"));
+    // 默认带出游戏代码区域：树里显示中文名，按标识也能选中。
+    QVERIFY(module.Roots().contains(QStringLiteral("GameUI")));
+    QVERIFY(module.AvailableTemplates().contains(QStringLiteral("GameUI")));
+    QVERIFY(FindItem(nodes, QStringLiteral("小地图")));
+    QVERIFY(module.SelectFrame(QStringLiteral("CommandBar")));
+    QCOMPARE(module.Tree()->Nodes()[module.SelectedNode()].frameType, std::string("CCommandBar"));
 
     // 默认根中合成定义里没有的两个界面如实报告缺失。
     auto* problems = page->findChild<QStandardItemModel*>(QStringLiteral("gameUiProblemModel"));
@@ -139,8 +145,12 @@ void GameUiModuleTests::RootsRaceAndVisibility() {
     module.ShowOnly(*module.Tree()->FindByName("ConsoleText"));
     QCOMPARE(FindItem(nodes, QStringLiteral("ConsoleText"))->checkState(0), Qt::Checked);
     QCOMPARE(FindItem(nodes, QStringLiteral("层 BACKGROUND"))->checkState(0), Qt::Unchecked);
-    QCOMPARE(module.DrawList().commands.size(), std::size_t{1});
-    QVERIFY(module.DrawList().commands[0].kind == DrawKind::Text);
+    std::vector<FrameDrawCommand> content;
+    for (const auto& command : module.DrawList().commands) {
+        if (command.kind != DrawKind::CodeArea) content.push_back(command);
+    }
+    QCOMPARE(content.size(), std::size_t{1});
+    QVERIFY(content[0].kind == DrawKind::Text);
     QCOMPARE(module.Tree()->Nodes()[module.SelectedNode()].name, std::string("ConsoleText"));
 }
 

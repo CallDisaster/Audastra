@@ -2,7 +2,10 @@
 
 #include "War3MapCore/Game/GameDataSource.h"
 #include "War3MapCore/GameUi/FrameTree.h"
+#include "War3MapCore/GameUi/GameCodeLayout.h"
+#include "War3MapCore/GameUi/MapUiFiles.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
+#include "War3MapCore/Text/TextUtil.h"
 
 #include <nlohmann/json.hpp>
 
@@ -20,6 +23,8 @@ using namespace War3Map::GameUi;
 
 // 单个界面文件的读取上限；游戏最大的 fdf 不到 200 KiB。
 constexpr std::size_t kMaxUiFileBytes = 8u * 1024u * 1024u;
+// 地图脚本只用于查找加载界面目录的调用。
+constexpr std::size_t kMaxScriptBytes = 64u * 1024u * 1024u;
 constexpr const char* kTocPath = "UI\\FrameDef\\FrameDef.toc";
 constexpr const char* kSkinPath = "UI\\war3skins.txt";
 constexpr const char* kMapSkinPath = "war3mapSkin.txt";
@@ -79,6 +84,8 @@ nlohmann::json NodeJson(const FrameNode& node) {
     if (node.height) json["height"] = *node.height;
     if (node.layout == LayoutState::SizeFromContent) json["content_anchor"] = FramePointName(node.contentAnchor);
     if (!node.autoFillBy.empty()) json["auto_fill_by"] = node.autoFillBy;
+    if (!node.codeLabel.empty()) json["code_area"] = node.codeLabel;
+    if (node.codePlaced) json["placed_by"] = "game-code";
     if (!node.anchors.empty()) {
         auto& anchors = json["anchors"] = nlohmann::json::array();
         for (const auto& anchor : node.anchors) {
@@ -125,7 +132,7 @@ int RunGameUiInspect(int argc, wchar_t* argv[]) {
             return InvalidArguments("无法识别的参数");
         }
     }
-    if (frames.empty()) frames = {"ConsoleUI", "ResourceBarFrame", "UpperButtonBarFrame"};
+    if (frames.empty()) frames = {"ConsoleUI", std::string(kGameCodeRoot), "ResourceBarFrame", "UpperButtonBarFrame"};
 
     nlohmann::json diagnostics = nlohmann::json::array();
     auto game = Game::GameDataSource::Mount(root);
@@ -156,6 +163,28 @@ int RunGameUiInspect(int argc, wchar_t* argv[]) {
 
     FrameLibrary library;
     library.LoadToc(reader, kTocPath, "game");
+    nlohmann::json tocCalls = nlohmann::json::array();
+    if (map) {
+        // 游戏只执行一份 JASS 脚本（先根目录再 scripts 目录）；Lua 地图另有 war3map.lua。
+        std::vector<MapScriptText> scripts;
+        bool jass = false;
+        for (const auto& candidate : MapScriptPaths()) {
+            const std::string path(candidate.path);
+            if ((candidate.language == ScriptLanguage::Jass && jass) || !map->HasFile(path)) continue;
+            auto bytes = map->ReadFileBounded(path, kMaxScriptBytes);
+            AppendDiagnostics(diagnostics, bytes.diagnostics);
+            if (!bytes.Succeeded() || !bytes.value) continue;
+            scripts.push_back({path, candidate.language, BytesToText(*bytes.value)});
+            if (candidate.language == ScriptLanguage::Jass) jass = true;
+        }
+        const auto plan = PlanMapTocs(map->ListFiles(), scripts);
+        AppendDiagnostics(diagnostics, plan.diagnostics);
+        for (const auto& toc : plan.tocs) library.LoadToc(reader, toc, "map");
+        for (const auto& call : plan.calls) {
+            tocCalls.push_back({{"function", call.function}, {"path", call.path}, {"script", call.scriptFile},
+                {"line", call.line}});
+        }
+    }
     UiSkin skin;
     if (auto bytes = reader(kSkinPath); bytes.Succeeded() && bytes.value) {
         skin.SetGameSkins(BytesToText(*bytes.value));
@@ -172,6 +201,10 @@ int RunGameUiInspect(int argc, wchar_t* argv[]) {
     FrameTree tree(options);
     nlohmann::json roots = nlohmann::json::array();
     for (const auto& frame : frames) {
+        if (Text::LowerAscii(frame) == Text::LowerAscii(kGameCodeRoot)) {
+            roots.push_back({{"name", frame}, {"id", tree.AddGameCodeAreas()}});
+            continue;
+        }
         auto instantiated = tree.Instantiate(library, &skin, frame);
         AppendDiagnostics(diagnostics, instantiated.diagnostics);
         if (instantiated.value) roots.push_back({{"name", frame}, {"id", *instantiated.value}});
@@ -183,7 +216,7 @@ int RunGameUiInspect(int argc, wchar_t* argv[]) {
     const nlohmann::json response{{"ok", true}, {"game_root", Utf8(root)}, {"map", mapPath ? Utf8(*mapPath) : ""},
         {"race", options.race}, {"expansion", options.expansion},
         {"screen", {options.screenWidth, options.screenHeight}}, {"files", library.Files().size()},
-        {"templates", library.TemplateCount()}, {"strings", library.StringCount()}, {"roots", roots},
+        {"templates", library.TemplateCount()}, {"strings", library.StringCount()}, {"toc_calls", tocCalls}, {"roots", roots},
         {"nodes", nodes}, {"diagnostics", diagnostics}};
     // 界面文字按 UTF-8 原样输出；无效字节替换显示，不影响节点结构。
     std::cout << response.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) << '\n';

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -77,6 +78,8 @@ struct LexOptions {
 // 字符串字面量（含引号）中的转义是否都有效（\b \t \n \f \r \" \\）。
 [[nodiscard]] bool ValidStringEscapes(std::string_view literal) noexcept;
 [[nodiscard]] bool ValidStringEscapes(std::string_view literal, Text::SourceEncoding encoding);
+// 字符串字面量（含引号）的值：按上述转义解码，其余字节原样；转义无效时为空。
+[[nodiscard]] std::optional<std::string> StringLiteralValue(std::string_view literal);
 
 // 两个内部lexer共用的按原字节读取器。空编码只保留旧逐字节行为；新模式有16MiB输入预算。
 // 仅缓存最近一个标量，不保留整篇解码表，也不成为新的预处理/保存通道。

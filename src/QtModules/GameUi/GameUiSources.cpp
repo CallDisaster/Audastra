@@ -17,6 +17,8 @@ constexpr const char* kMapSkinPath = "war3mapSkin.txt";
 // 界面文本与贴图的单文件上限；游戏最大的界面贴图不到 1 MiB，中文字体约 10 MiB。
 constexpr std::size_t kMaxUiFileBytes = 16u * 1024u * 1024u;
 constexpr std::size_t kMaxFontBytes = 32u * 1024u * 1024u;
+// 地图脚本只用于查找加载界面目录的调用；超大脚本不读。
+constexpr std::size_t kMaxScriptBytes = 64u * 1024u * 1024u;
 
 std::string OriginLabel(const Resources::ResolvedResource& resource) {
     switch (resource.location.layer) {
@@ -81,7 +83,9 @@ Result<GameUiFile> GameUiReader::Read(const std::string& path) {
         if (!current.Succeeded()) return {std::nullopt, current.diagnostics};
         auto resource = state_->world->Resolver().Read(path);
         if (!resource.Succeeded() || !resource.value) return {std::nullopt, std::move(resource.diagnostics)};
-        GameUiFile file{std::move(resource.value->bytes), OriginLabel(*resource.value)};
+        const auto layer = resource.value->location.layer;
+        GameUiFile file{std::move(resource.value->bytes), OriginLabel(*resource.value),
+            layer == Resources::ResourceLayer::SessionOverride || layer == Resources::ResourceLayer::MapImport};
         return Result<GameUiFile>::Success(std::move(file));
     }
     auto data = state_->game->ReadFileBoundedWithSource(path, kMaxFontBytes);
@@ -90,6 +94,38 @@ Result<GameUiFile> GameUiReader::Read(const std::string& path) {
         QObject::tr("游戏 · %1").arg(QString::fromStdString(data.value->archiveName)).toStdString()};
     return Result<GameUiFile>::Success(std::move(file));
 }
+
+std::vector<std::string> GameUiReader::MapFiles() const {
+    std::vector<std::string> files;
+    if (!sources_.map) return files;
+    files.reserve(sources_.map->entries.size());
+    for (const auto& entry : sources_.map->entries) files.push_back(entry.path);
+    return files;
+}
+
+namespace {
+
+// 游戏只执行一份 JASS 脚本（先找根目录，再找 scripts 目录）；Lua 地图另有 war3map.lua。
+std::vector<GameUi::MapScriptText> ReadMapScripts(GameUiReader& reader, std::vector<Diagnostic>& diagnostics) {
+    std::vector<GameUi::MapScriptText> scripts;
+    bool jass = false;
+    for (const auto& candidate : GameUi::MapScriptPaths()) {
+        if (candidate.language == GameUi::ScriptLanguage::Jass && jass) continue;
+        const std::string path(candidate.path);
+        auto file = reader.Read(path);
+        if (!file.Succeeded() || !file.value || !file.value->fromMap) continue;
+        if (file.value->bytes.size() > kMaxScriptBytes) {
+            diagnostics.push_back(Diagnostic{DiagnosticSeverity::Warning, "GameUi", "GAMEUI_MAP_SCRIPT_TOO_LARGE",
+                path + " 超过脚本大小上限，未查找其中加载的界面目录", std::nullopt});
+            continue;
+        }
+        scripts.push_back({path, candidate.language, GameUi::BytesToText(file.value->bytes)});
+        if (candidate.language == GameUi::ScriptLanguage::Jass) jass = true;
+    }
+    return scripts;
+}
+
+} // namespace
 
 GameUiDefinitions LoadGameUiDefinitions(GameUiReader& reader) {
     GameUiDefinitions result;
@@ -102,7 +138,15 @@ GameUiDefinitions LoadGameUiDefinitions(GameUiReader& reader) {
         return Result<std::vector<std::byte>>::Success(std::move(file.value->bytes));
     };
     library->LoadToc(read, kTocPath, "game");
+    std::vector<Diagnostic> mapDiagnostics;
+    if (reader.HasMapLayer()) {
+        auto plan = GameUi::PlanMapTocs(reader.MapFiles(), ReadMapScripts(reader, mapDiagnostics));
+        mapDiagnostics.insert(mapDiagnostics.end(), plan.diagnostics.begin(), plan.diagnostics.end());
+        for (const auto& toc : plan.tocs) library->LoadToc(read, toc, "map");
+        result.tocCalls = std::move(plan.calls);
+    }
     result.diagnostics = library->Diagnostics();
+    result.diagnostics.insert(result.diagnostics.end(), mapDiagnostics.begin(), mapDiagnostics.end());
     if (auto skins = read(kSkinPath); skins.Succeeded() && skins.value) {
         result.gameSkins = GameUi::BytesToText(*skins.value);
     } else {

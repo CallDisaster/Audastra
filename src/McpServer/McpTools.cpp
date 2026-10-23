@@ -11,6 +11,7 @@
 #include "McpTerrainEditTools.h"
 #include "McpLuaTestTools.h"
 #include "McpLuaFileTools.h"
+#include "McpGameUiTools.h"
 #include "McpWorldViewportTools.h"
 
 namespace War3Map::Mcp {
@@ -23,6 +24,7 @@ void RegisterAllTools(McpServer& server) {
     RegisterLuaTestTools(server);
     RegisterLuaFileTools(server);
     RegisterWorldViewportTools(server);
+    RegisterGameUiTools(server);
     RegisterReadOnlyTools(server);
     RegisterArchiveIdentityTools(server);
     RegisterArchiveMemberTools(server);

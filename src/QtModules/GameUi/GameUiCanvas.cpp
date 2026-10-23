@@ -175,7 +175,8 @@ void GameUiCanvas::PaintScene(QPainter& painter, const QRectF& screen, bool over
     painter.setClipRect(screen);
     for (const auto& command : list_.commands) {
         if (command.kind == DrawKind::Image) PaintImage(painter, screen, command, hits);
-        else PaintText(painter, screen, command, hits);
+        else if (command.kind == DrawKind::Text) PaintText(painter, screen, command, hits);
+        else PaintCodeArea(painter, screen, command, hits);
     }
     painter.restore();
     if (overlays) PaintOverlays(painter, screen);
@@ -285,6 +286,33 @@ void GameUiCanvas::PaintText(QPainter& painter, const QRectF& screen, const Fram
     }
 }
 
+// 游戏代码自行绘制的区域：虚线占位框加中文名。
+void GameUiCanvas::PaintCodeArea(QPainter& painter, const QRectF& screen, const FrameDrawCommand& command,
+    std::vector<HitBox>* hits) const {
+    const QRectF area = ToPixelRect(screen, tree_->Options(), command.image.rect);
+    if (showContent_ || !hits) {
+        painter.save();
+        QColor line = palette().color(QPalette::PlaceholderText);
+        line.setAlpha(170);
+        painter.setPen(QPen(line, 1.0, Qt::DashLine));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRect(area.adjusted(0.5, 0.5, -0.5, -0.5));
+        QFont small = font();
+        small.setPixelSize(std::max(9, static_cast<int>(screen.height() / 64.0)));
+        painter.setFont(small);
+        painter.setPen(line);
+        const QRectF inner = area.adjusted(3, 2, -3, -2);
+        const QString label = QFontMetricsF(small).elidedText(
+            QString::fromStdString(tree_->Nodes()[command.node].codeLabel), Qt::ElideRight, inner.width());
+        // 大区域（世界画面、聊天消息等）互相重叠且左上角挤在一起，名字写在右下角。
+        const bool large = area.width() * area.height() > screen.width() * screen.height() * 0.2;
+        painter.setClipRect(area, Qt::IntersectClip);
+        painter.drawText(inner, (large ? Qt::AlignRight | Qt::AlignBottom : Qt::AlignLeft | Qt::AlignTop), label);
+        painter.restore();
+    }
+    if (hits) hits->push_back({command.node, area, nullptr, {}});
+}
+
 QRectF GameUiCanvas::NodePixelRect(const QRectF& screen, std::uint32_t node) const {
     if (!tree_ || node >= tree_->Nodes().size()) return {};
     QRectF result;
@@ -307,8 +335,9 @@ void GameUiCanvas::PaintOverlays(QPainter& painter, const QRectF& screen) const 
     painter.setPen(QPen(UiKit::ToQColor(UiKit::ThemeManager::Theme({}).colors.red), 1.0, Qt::DashLine));
     painter.setBrush(Qt::NoBrush);
     for (const auto& hit : hits_) {
-        if (!hit.image && hit.node < tree_->Nodes().size() && tree_->Nodes()[hit.node].text == std::nullopt)
-            painter.drawRect(hit.rect.adjusted(0.5, 0.5, -0.5, -0.5));
+        if (hit.image || hit.node >= tree_->Nodes().size()) continue;
+        const FrameNode& node = tree_->Nodes()[hit.node];
+        if (node.text == std::nullopt && node.codeLabel.empty()) painter.drawRect(hit.rect.adjusted(0.5, 0.5, -0.5, -0.5));
     }
     if (showBounds_) {
         QColor line = palette().color(QPalette::PlaceholderText);
@@ -325,8 +354,9 @@ void GameUiCanvas::PaintOverlays(QPainter& painter, const QRectF& screen) const 
         painter.setFont(small);
         const QFontMetricsF metrics(small);
         for (const auto& node : tree_->Nodes()) {
+            // 代码区域的占位框已写中文名。
             if (node.id == kScreenNode || node.kind != DefinitionKind::Frame || node.name.empty() ||
-                node.layout != LayoutState::Placed) {
+                !node.codeLabel.empty() || node.layout != LayoutState::Placed) {
                 continue;
             }
             const QRectF frame = ToPixelRect(screen, options, node.rect);
@@ -349,8 +379,19 @@ void GameUiCanvas::PaintOverlays(QPainter& painter, const QRectF& screen) const 
 }
 
 std::uint32_t GameUiCanvas::NodeAt(const QPointF& position) const {
+    const auto isCodeArea = [&](const HitBox& hit) {
+        return tree_ && hit.node < tree_->Nodes().size() && !tree_->Nodes()[hit.node].codeLabel.empty();
+    };
+    // 代码区域互相重叠（聊天消息几乎占满中部），压在其上的界面内容优先；只剩代码区域时取最小的一个。
+    const HitBox* codeHit = nullptr;
     for (auto it = hits_.rbegin(); it != hits_.rend(); ++it) {
         if (!it->rect.contains(position)) continue;
+        if (isCodeArea(*it)) {
+            const double area = it->rect.width() * it->rect.height();
+            if (!codeHit || area < codeHit->rect.width() * codeHit->rect.height()) codeHit = &*it;
+            continue;
+        }
+        if (codeHit) return codeHit->node;
         if (!it->image) return it->node;
         const QPointF texel = it->toImage.map(position);
         const int width = it->image->width();
@@ -359,6 +400,7 @@ std::uint32_t GameUiCanvas::NodeAt(const QPointF& position) const {
         const int y = ((static_cast<int>(std::floor(texel.y())) % height) + height) % height;
         if (qAlpha(it->image->pixel(x, y)) >= 16) return it->node;
     }
+    if (codeHit) return codeHit->node;
     if (!tree_) return kNoNode;
     // 透明处退回到包含该点的最小框架。
     const QRectF screen = ScreenRect();
@@ -388,7 +430,9 @@ void GameUiCanvas::mouseMoveEvent(QMouseEvent* event) {
         return;
     }
     const FrameNode& frame = tree_->Nodes()[node];
-    const QString name = frame.name.empty() ? QString::fromStdString(frame.frameType) : QString::fromStdString(frame.name);
+    const QString name = !frame.codeLabel.empty() ? QString::fromStdString(frame.codeLabel)
+        : frame.name.empty()                      ? QString::fromStdString(frame.frameType)
+                                                  : QString::fromStdString(frame.name);
     setToolTip(frame.frameType.empty() ? name : QStringLiteral("%1 · %2").arg(name, QString::fromStdString(frame.frameType)));
 }
 

@@ -1,4 +1,6 @@
 #include "War3MapCore/GameUi/FrameDraw.h"
+#include "War3MapCore/GameUi/GameCodeLayout.h"
+#include "War3MapCore/GameUi/MapUiFiles.h"
 
 #include <cmath>
 #include <cstring>
@@ -416,6 +418,108 @@ void TestDrawList() {
     Require(BuildDrawList(tree, options).commands.empty(), "hidden root hides everything");
 }
 
+void RequireRect(const FrameNode& node, float left, float bottom, float right, float top, const char* reason) {
+    Require(node.layout == LayoutState::Placed && Near(node.rect.left, left) && Near(node.rect.bottom, bottom) &&
+            Near(node.rect.right, right) && Near(node.rect.top, top),
+        reason);
+}
+
+void TestGameCodeLayout() {
+    const std::string text =
+        "Frame \"SIMPLEFRAME\" \"ResourceBarFrame\" { Width 0.3, Height 0.03, }\n"
+        "Frame \"FRAME\" \"EscMenuMainPanel\" {\n"
+        "    SetAllPoints,\n"
+        "    Frame \"FRAME\" \"ReturnButton\" {\n"
+        "        Width 0.2, Height 0.03,\n"
+        "        SetPoint BOTTOM, \"EscMenuMainPanel\", BOTTOM, 0.0, 0.03,\n"
+        "    }\n"
+        "}\n"
+        "Frame \"FRAME\" \"QuestDialog\" { Width 0.48, Height 0.4, }\n"
+        "Frame \"FRAME\" \"MapPanel\" { Width 0.1, Height 0.1, SetPoint BOTTOM, \"Minimap\", TOP, 0.0, 0.0, }\n";
+    auto parsed = ParseFdf(text, "UI\\Code.fdf");
+    Require(parsed.Succeeded(), "code layout fixture parses");
+    FrameLibrary library;
+    library.AddParsed(std::move(*parsed.value), "game");
+    FrameTree tree;
+    for (const char* name : {"ResourceBarFrame", "EscMenuMainPanel", "QuestDialog"}) {
+        const auto created = tree.Instantiate(library, nullptr, name);
+        Require(created.Succeeded() && !HasCode(created.diagnostics, "GAMEUI_ROOT_PLACEMENT_UNKNOWN"),
+            "game-code placement known");
+    }
+    const auto codeRoot = tree.AddGameCodeAreas();
+    Require(tree.AddGameCodeAreas() == codeRoot, "code areas added once");
+    Require(tree.Instantiate(library, nullptr, "MapPanel").Succeeded(), "instantiate map panel");
+    const auto layout = tree.Layout();
+
+    RequireRect(NodeNamed(tree, "ResourceBarFrame"), 0.5f, 0.57f, 0.8f, 0.6f, "resource bar at top right");
+    Require(NodeNamed(tree, "ResourceBarFrame").codePlaced, "placement marked as game code");
+    // Esc 菜单面板随背景框：0.288×0.384，中心在屏幕中心上方 0.06。
+    RequireRect(NodeNamed(tree, "EscMenuMainPanel"), 0.256f, 0.168f, 0.544f, 0.552f, "esc menu follows backdrop");
+    RequireRect(NodeNamed(tree, "ReturnButton"), 0.3f, 0.198f, 0.5f, 0.228f, "return button inside the box");
+    RequireRect(NodeNamed(tree, "QuestDialog"), 0.16f, 0.164f, 0.64f, 0.564f, "quest dialog centered and raised");
+
+    RequireRect(NodeNamed(tree, "Minimap"), 0.009375f, 0.006875f, 0.14875f, 0.145f, "minimap");
+    RequireRect(NodeNamed(tree, "CommandBar"), 0.618125f, 0.002f, 0.792625f, 0.131f, "command card");
+    RequireRect(NodeNamed(tree, "InventoryButton1"), 0.51625f, 0.08062500f, 0.5475f, 0.111875f, "first item slot");
+    RequireRect(NodeNamed(tree, "InventoryButton6"), 0.55625f, 0.0043750f, 0.5875f, 0.035625f, "last item slot");
+    RequireRect(NodeNamed(tree, "UnitMessage"), 0.051875f, 0.2305f, 0.551875f, 0.4805f, "unit message above message");
+    RequireRect(NodeNamed(tree, "ChatEditBar"), 0.2f, 0.13f, 0.6f, 0.16f, "chat edit bar");
+    RequireRect(NodeNamed(tree, "ChatMessage"), 0.00625f, 0.2f, 0.78f, 0.6f, "chat messages");
+    Require(!NodeNamed(tree, "Minimap").codeLabel.empty() && NodeNamed(tree, "Minimap").frameType == "CMinimap",
+        "code area label and class");
+    // 代码区域在游戏里没有名字，fdf 按名字引用不到。
+    Require(NodeNamed(tree, "MapPanel").layout == LayoutState::Unplaced && HasCode(layout, "GAMEUI_ANCHOR_TARGET_MISSING"),
+        "fdf cannot anchor to code areas by name");
+
+    const FrameDrawList list = BuildDrawList(tree);
+    std::size_t areas = 0;
+    for (const auto& command : list.commands) {
+        if (command.kind != DrawKind::CodeArea) continue;
+        ++areas;
+        Require(command.node != codeRoot, "code root itself not drawn");
+    }
+    Require(areas == GameCodeAreas().size(), "each code area drawn as placeholder");
+    FrameDrawOptions options;
+    options.hidden.insert(codeRoot);
+    for (const auto& command : BuildDrawList(tree, options).commands) {
+        Require(command.kind != DrawKind::CodeArea, "hidden code root hides its areas");
+    }
+}
+
+void TestMapTocs() {
+    const MapScriptText jass{"war3map.j", ScriptLanguage::Jass,
+        "function InitUi takes nothing returns nothing\n"
+        "    // call DzLoadToc(\"ui\\\\commented.toc\")\n"
+        "    call DzLoadToc(\"ui\\\\my.toc\")\n"
+        "    call BJDebugMsg(\"DzLoadToc(x)\")\n"
+        "    call DzLoadToc(\"ui\\\\\" + s + \".toc\")\n"
+        "    call BlzLoadTOCFile(\"UI\\\\Extra.toc\")\n"
+        "endfunction\n"};
+    const auto calls = FindTocLoadCalls(jass);
+    Require(calls.size() == 3, "comment and string text are not calls");
+    Require(calls[0].function == "DzLoadToc" && calls[0].path == "ui\\my.toc" && calls[0].line == 3,
+        "literal argument decoded with its line");
+    Require(calls[1].path.empty(), "concatenated argument is dynamic");
+    Require(calls[2].function == "BlzLoadTOCFile" && calls[2].path == "UI\\Extra.toc", "native toc loader");
+
+    const MapScriptText lua{"war3map.lua", ScriptLanguage::Lua,
+        "-- DzLoadToc('commented.toc')\n"
+        "DzLoadToc('ui\\\\lua.toc')\n"
+        "DzLoadToc \"ui\\\\bare.toc\"\n"
+        "lib.DzLoadToc('field.toc')\n"
+        "local f = DzLoadToc\n"};
+    const auto luaCalls = FindTocLoadCalls(lua);
+    Require(luaCalls.size() == 2 && luaCalls[0].path == "ui\\lua.toc" && luaCalls[1].path == "ui\\bare.toc",
+        "lua call forms; field access and function reference skipped");
+
+    const auto plan = PlanMapTocs({"UI\\MY.toc", "ui\\spare.toc", "war3map.j", "ui\\my.fdf"}, {jass});
+    Require(plan.tocs.size() == 3 && plan.tocs[0] == "ui\\my.toc" && plan.tocs[1] == "UI\\Extra.toc" &&
+            plan.tocs[2] == "ui\\spare.toc",
+        "script order first, unreferenced map toc last, no duplicate by case");
+    Require(HasCode(plan.diagnostics, "GAMEUI_MAP_TOC_DYNAMIC") && HasCode(plan.diagnostics, "GAMEUI_MAP_TOC_UNREFERENCED"),
+        "dynamic call and unreferenced toc reported");
+}
+
 } // namespace
 
 int main() {
@@ -425,6 +529,8 @@ int main() {
         TestLibrary();
         TestTree();
         TestDrawList();
+        TestGameCodeLayout();
+        TestMapTocs();
         std::cout << "Game UI tests passed\n";
         return 0;
     } catch (const std::exception& error) {

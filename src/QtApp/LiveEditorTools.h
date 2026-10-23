@@ -42,6 +42,7 @@ public:
     // map_test_start / map_test_stop / map_test_eval：参数已校验，返回工具结果。
     void SetMapTestHandler(std::function<QJsonObject(const QString&, const QJsonObject&)> handler);
     void SetWorldViewportHandler(std::function<QJsonObject(const QString&, const QJsonObject&)> handler);
+    void SetGameUiHandler(std::function<QJsonObject(const QString&, const QJsonObject&)> handler);
     // 可信窗口注入与 UI 相同的同步 owned-page 查询；不存借用 context 或跨调用 span。
     void SetProjectSearchQuery(ProjectSearchRevisionQuery revision, ProjectSearchPageQuery query);
     void SetPolicy(Mcp::ToolPolicy policy);
