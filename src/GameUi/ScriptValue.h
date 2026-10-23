@@ -12,8 +12,8 @@
 namespace War3Map::GameUi::detail {
 
 struct ScriptValue {
-    enum class Kind : std::uint8_t { Number, String, Boolean, Point, Origin } kind = Kind::Number;
-    double number = 0.0;
+    enum class Kind : std::uint8_t { Number, String, Boolean, Point, Origin, Player } kind = Kind::Number;
+    double number = 0.0;   // Number 的值、Player 的玩家序号
     bool integer = false;  // JASS integer（除法取整）
     std::string text;      // String 内容、Origin 常量名
     bool boolean = false;
@@ -22,11 +22,12 @@ struct ScriptValue {
     [[nodiscard]] static ScriptValue Number(double value, bool integer = false);
     [[nodiscard]] static ScriptValue String(std::string value);
     [[nodiscard]] static ScriptValue Boolean(bool value);
+    [[nodiscard]] static ScriptValue Player(std::int32_t index);
 };
 
 // 字面量表达式（整数、实数、字符串、布尔）的值；其他表达式为空。
 [[nodiscard]] std::optional<ScriptValue> LiteralValue(const Jass::detail::Expr& expr);
-// FRAMEPOINT_* 与 ORIGIN_FRAME_* 常量名。
+// 界面参数用到的游戏常量：FRAMEPOINT_*、ORIGIN_FRAME_*，以及中立玩家序号、排行榜排序方式等整数常量。
 [[nodiscard]] std::optional<ScriptValue> FrameConstant(std::string_view name);
 [[nodiscard]] std::optional<ScriptValue> ApplyUnary(Jass::detail::Operator op, ScriptValue operand);
 // 数值运算两边都是整数时按整数算（除法向零取整）；字符串只支持 +；比较与逻辑运算得布尔值。
@@ -39,7 +40,7 @@ struct ScriptValue {
 [[nodiscard]] std::string CompactSource(std::string_view text);
 
 using NameLookup = std::function<std::optional<ScriptValue>(std::string_view name)>;
-// 只含字面量、名字（交给 lookup）、括号、一元/二元运算和 ConvertFramePointType、I2R 的表达式的值；
+// 只含字面量、名字（交给 lookup）、括号、一元/二元运算和 ConvertFramePointType、I2R、Player 的表达式的值；
 // 其他表达式或 lookup 查不到的名字为空。
 [[nodiscard]] std::optional<ScriptValue> FoldExpression(const Jass::detail::SyntaxPool& pool, std::int32_t index,
     const NameLookup& lookup);
@@ -48,5 +49,7 @@ using NameLookup = std::function<std::optional<ScriptValue>(std::string_view nam
 [[nodiscard]] std::optional<float> NumberOf(const std::optional<ScriptValue>& value);
 [[nodiscard]] std::optional<std::string> StringOf(const std::optional<ScriptValue>& value);
 [[nodiscard]] std::optional<bool> BooleanOf(const std::optional<ScriptValue>& value);
+// Player(n) 的 n；不是玩家或序号为负时为空。
+[[nodiscard]] std::optional<std::uint32_t> PlayerOf(const std::optional<ScriptValue>& value);
 
 } // namespace War3Map::GameUi::detail

@@ -3,7 +3,6 @@
 #include "War3MapCore/GameUi/GameCodeLayout.h"
 
 #include <algorithm>
-#include <functional>
 #include <unordered_map>
 
 namespace War3Map::GameUi::detail {
@@ -16,6 +15,13 @@ constexpr auto kTimerDialog = ScriptObjectKind::TimerDialog;
 constexpr auto kDialog = ScriptObjectKind::Dialog;
 constexpr auto kLeaderboard = ScriptObjectKind::Leaderboard;
 constexpr auto kMultiboard = ScriptObjectKind::Multiboard;
+constexpr auto kLbRemove = LeaderboardOp::Remove;
+constexpr auto kLbLabel = LeaderboardOp::Label;
+constexpr auto kLbValue = LeaderboardOp::Value;
+constexpr auto kLbItemStyle = LeaderboardOp::ItemStyle;
+constexpr auto kLbLabelColor = LeaderboardOp::LabelColor;
+constexpr auto kLbValueColor = LeaderboardOp::ValueColor;
+constexpr auto kLbSort = LeaderboardOp::Sort;
 
 // 认识的界面函数。设置类调用的第 0 个参数都是框架；参数位置与各接口的公开声明一致。
 constexpr CallSpec kCalls[] = {
@@ -118,10 +124,72 @@ constexpr CallSpec kCalls[] = {
     {.name = "CreateLeaderboardBJ", .kind = CallKind::Create, .object = kLeaderboard, .titleArg = 1, .shown = true},
     {.name = "GetLastCreatedLeaderboard", .kind = CallKind::LastCreated, .object = kLeaderboard},
     {.name = "LeaderboardSetLabel", .kind = CallKind::SetText},
-    {.name = "LeaderboardSetLabelBJ", .kind = CallKind::SetText},
+    {.name = "LeaderboardSetLabelBJ", .kind = CallKind::SetText, .leaderboardBj = true},
     {.name = "LeaderboardDisplay", .kind = CallKind::SetVisible},
     {.name = "LeaderboardDisplayBJ", .kind = CallKind::SetVisible, .targetArg = 1, .valueArg = 0},
+    {.name = "LeaderboardAddItem", .kind = CallKind::Leaderboard, .playerArg = 3},
+    {.name = "LeaderboardAddItemBJ", .kind = CallKind::Leaderboard, .targetArg = 1, .valueArg = 2, .playerArg = 0,
+        .leaderboardBj = true},
+    {.name = "LeaderboardRemoveItem", .kind = CallKind::Leaderboard, .leaderboard = kLbRemove, .indexArg = 1},
+    {.name = "LeaderboardRemovePlayerItem", .kind = CallKind::Leaderboard, .leaderboard = kLbRemove, .playerArg = 1},
+    {.name = "LeaderboardRemovePlayerItemBJ", .kind = CallKind::Leaderboard, .targetArg = 1, .leaderboard = kLbRemove,
+        .playerArg = 0, .leaderboardBj = true},
+    {.name = "LeaderboardClear", .kind = CallKind::Leaderboard, .leaderboard = LeaderboardOp::Clear},
+    {.name = "LeaderboardSetSizeByItemCount", .kind = CallKind::Leaderboard, .leaderboard = LeaderboardOp::Size},
+    {.name = "LeaderboardSetStyle", .kind = CallKind::Leaderboard, .leaderboard = LeaderboardOp::Style},
+    {.name = "LeaderboardSetStyleBJ", .kind = CallKind::Leaderboard, .leaderboard = LeaderboardOp::Style},
+    {.name = "LeaderboardSetItemLabel", .kind = CallKind::Leaderboard, .valueArg = 2, .leaderboard = kLbLabel,
+        .indexArg = 1},
+    {.name = "LeaderboardSetItemValue", .kind = CallKind::Leaderboard, .valueArg = 2, .leaderboard = kLbValue,
+        .indexArg = 1},
+    {.name = "LeaderboardSetItemStyle", .kind = CallKind::Leaderboard, .valueArg = 2, .leaderboard = kLbItemStyle,
+        .indexArg = 1},
+    {.name = "LeaderboardSetItemLabelColor", .kind = CallKind::Leaderboard, .valueArg = 2,
+        .leaderboard = kLbLabelColor, .indexArg = 1},
+    {.name = "LeaderboardSetItemValueColor", .kind = CallKind::Leaderboard, .valueArg = 2,
+        .leaderboard = kLbValueColor, .indexArg = 1},
+    {.name = "LeaderboardSetLabelColor", .kind = CallKind::Leaderboard, .leaderboard = kLbLabelColor},
+    {.name = "LeaderboardSetValueColor", .kind = CallKind::Leaderboard, .leaderboard = kLbValueColor},
+    {.name = "LeaderboardSetLabelColorBJ", .kind = CallKind::Leaderboard, .percent = true,
+        .leaderboard = kLbLabelColor},
+    {.name = "LeaderboardSetValueColorBJ", .kind = CallKind::Leaderboard, .percent = true,
+        .leaderboard = kLbValueColor},
+    {.name = "LeaderboardSetPlayerItemLabelBJ", .kind = CallKind::Leaderboard, .targetArg = 1, .valueArg = 2,
+        .leaderboard = kLbLabel, .playerArg = 0},
+    {.name = "LeaderboardSetPlayerItemValueBJ", .kind = CallKind::Leaderboard, .targetArg = 1, .valueArg = 2,
+        .leaderboard = kLbValue, .playerArg = 0},
+    {.name = "LeaderboardSetPlayerItemStyleBJ", .kind = CallKind::Leaderboard, .targetArg = 1, .valueArg = 2,
+        .leaderboard = kLbItemStyle, .playerArg = 0},
+    {.name = "LeaderboardSetPlayerItemLabelColorBJ", .kind = CallKind::Leaderboard, .targetArg = 1, .valueArg = 2,
+        .percent = true, .leaderboard = kLbLabelColor, .playerArg = 0},
+    {.name = "LeaderboardSetPlayerItemValueColorBJ", .kind = CallKind::Leaderboard, .targetArg = 1, .valueArg = 2,
+        .percent = true, .leaderboard = kLbValueColor, .playerArg = 0},
+    {.name = "LeaderboardSortItemsByValue", .kind = CallKind::Leaderboard, .leaderboard = kLbSort},
+    {.name = "LeaderboardSortItemsByPlayer", .kind = CallKind::Leaderboard, .leaderboard = kLbSort,
+        .sort = LeaderboardSort::Player},
+    {.name = "LeaderboardSortItemsByLabel", .kind = CallKind::Leaderboard, .leaderboard = kLbSort,
+        .sort = LeaderboardSort::Label},
+    {.name = "LeaderboardSortItemsBJ", .kind = CallKind::Leaderboard, .leaderboard = kLbSort,
+        .sort = LeaderboardSort::ByArgument},
+    {.name = "LeaderboardSortItemsByPlayerBJ", .kind = CallKind::Leaderboard, .leaderboard = kLbSort,
+        .sort = LeaderboardSort::Player},
+    {.name = "LeaderboardSortItemsByLabelBJ", .kind = CallKind::Leaderboard, .leaderboard = kLbSort,
+        .sort = LeaderboardSort::Label},
+    {.name = "LeaderboardGetItemCount", .kind = CallKind::Query},
+    {.name = "LeaderboardGetItemCountBJ", .kind = CallKind::Query},
+    {.name = "LeaderboardHasPlayerItem", .kind = CallKind::Query},
+    {.name = "LeaderboardHasPlayerItemBJ", .kind = CallKind::Query},
+    {.name = "LeaderboardGetPlayerIndex", .kind = CallKind::Query},
+    {.name = "LeaderboardGetPlayerIndexBJ", .kind = CallKind::Query},
+    {.name = "LeaderboardGetIndexedPlayerBJ", .kind = CallKind::Query},
+    {.name = "LeaderboardGetLabelText", .kind = CallKind::Query},
+    {.name = "IsLeaderboardDisplayed", .kind = CallKind::Query},
+    {.name = "PlayerGetLeaderboard", .kind = CallKind::Query},
+    {.name = "PlayerGetLeaderboardBJ", .kind = CallKind::Query},
+    {.name = "PlayerSetLeaderboard", .kind = CallKind::Other},
+    {.name = "ForceSetLeaderboardBJ", .kind = CallKind::Other},
     {.name = "DestroyLeaderboard", .kind = CallKind::FrameOther},
+    {.name = "DestroyLeaderboardBJ", .kind = CallKind::FrameOther},
     {.name = "CreateMultiboard", .kind = CallKind::Create, .object = kMultiboard},
     {.name = "CreateMultiboardBJ", .kind = CallKind::Create, .object = kMultiboard, .titleArg = 2, .shown = true,
         .rowsArg = 1, .columnsArg = 0},
@@ -228,7 +296,7 @@ std::optional<CallSpec> LookupCall(std::string_view name) {
 }
 
 bool IsSetter(CallKind kind) noexcept {
-    return kind >= CallKind::SetAbsPoint && kind <= CallKind::BoardItems;
+    return kind >= CallKind::SetAbsPoint && kind <= CallKind::Leaderboard;
 }
 
 std::vector<ArgumentSlot> ValueArguments(const CallSpec& spec) {
@@ -254,6 +322,29 @@ std::vector<ArgumentSlot> ValueArguments(const CallSpec& spec) {
             for (int i = 0; i < 4; ++i) slots.push_back({at(i), spec.percent ? T::Real : T::Integer});
             break;
         }
+        return slots;
+    }
+    case CallKind::Leaderboard: {
+        std::vector<ArgumentSlot> slots;
+        if (spec.indexArg >= 0) slots.push_back({static_cast<std::uint32_t>(spec.indexArg), T::Integer});
+        if (spec.playerArg >= 0) slots.push_back({static_cast<std::uint32_t>(spec.playerArg), T::Player});
+        const auto add = [&](int count, ArgumentType type) {
+            for (int i = 0; i < count; ++i) slots.push_back({at(i), type});
+        };
+        switch (spec.leaderboard) {
+        case LeaderboardOp::Add: add(1, T::String); slots.push_back({at(1), T::Integer}); break;
+        case LeaderboardOp::Remove: case LeaderboardOp::Clear: break;
+        case LeaderboardOp::Size: case LeaderboardOp::Value: add(1, T::Integer); break;
+        case LeaderboardOp::Label: add(1, T::String); break;
+        case LeaderboardOp::Style: add(4, T::Boolean); break;
+        case LeaderboardOp::ItemStyle: add(3, T::Boolean); break;
+        case LeaderboardOp::LabelColor: case LeaderboardOp::ValueColor: add(4, spec.percent ? T::Real : T::Integer); break;
+        case LeaderboardOp::Sort:
+            if (spec.sort == LeaderboardSort::ByArgument) add(1, T::Integer);
+            slots.push_back({at(spec.sort == LeaderboardSort::ByArgument ? 1 : 0), T::Boolean});
+            break;
+        }
+        std::sort(slots.begin(), slots.end(), [](const ArgumentSlot& a, const ArgumentSlot& b) { return a.index < b.index; });
         return slots;
     }
     default: return {};
@@ -298,7 +389,7 @@ std::optional<ScriptFrameRef> FrameRefOfCall(const CallSpec& spec, const std::ve
 }
 
 bool ApplyFrameCall(ScriptFrame& frame, const CallSpec& spec, const std::vector<std::optional<ScriptValue>>& args,
-    const ScriptFrameRef& relative) {
+    const ScriptFrameRef& relative, const TriggerStrings& strings) {
     const CallKind kind = spec.kind;
     const auto argument = [&](std::size_t i) { return i < args.size() ? args[i] : std::nullopt; };
     const auto value = [&] { return spec.valueArg < 0 ? std::nullopt : argument(static_cast<std::size_t>(spec.valueArg)); };
@@ -367,6 +458,7 @@ bool ApplyFrameCall(ScriptFrame& frame, const CallSpec& spec, const std::vector<
     case CallKind::SetText:
         if (auto text = StringOf(value())) {
             frame.text = std::move(*text);
+            LeaderboardLabelChanged(frame, spec, strings);
             return true;
         }
         return false;
@@ -390,121 +482,11 @@ bool ApplyFrameCall(ScriptFrame& frame, const CallSpec& spec, const std::vector<
     case CallKind::BoardMinimize:
     case CallKind::BoardItems:
         return ApplyBoardCall(frame, spec, args);
+    case CallKind::Leaderboard:
+        return ApplyLeaderboardCall(frame, spec, args, strings);
     default:
         return false;
     }
-}
-
-std::optional<BoardCell> BoardCellOf(const std::optional<ScriptValue>& row, const std::optional<ScriptValue>& column) {
-    const auto r = NumberOf(row);
-    const auto c = NumberOf(column);
-    if (!r || !c || *r < 0.0f || *c < 0.0f) return std::nullopt;
-    return BoardCell{static_cast<std::uint32_t>(*r), static_cast<std::uint32_t>(*c)};
-}
-
-bool ApplyBoardCall(ScriptFrame& frame, const CallSpec& spec, const std::vector<std::optional<ScriptValue>>& args,
-    std::optional<BoardCell> item) {
-    if (!frame.board) return false;
-    ScriptBoard& board = *frame.board;
-    const auto argument = [&](int i) { return i >= 0 && static_cast<std::size_t>(i) < args.size() ? args[i] : std::nullopt; };
-    const auto value = [&](int offset) { return argument(spec.valueArg + offset); };
-    switch (spec.kind) {
-    case CallKind::BoardRows:
-    case CallKind::BoardColumns: {
-        const auto count = NumberOf(value(0));
-        if (!count) return false;
-        // 游戏按无符号数处理，负数视为 0 行（预览不画）。
-        const auto n = static_cast<std::uint32_t>(std::max(0.0f, *count));
-        if (spec.kind == CallKind::BoardRows) board.Resize(n, board.columns);
-        else board.Resize(board.rows, n);
-        return true;
-    }
-    case CallKind::BoardMinimize:
-        if (const auto flag = BooleanOf(value(0))) {
-            board.minimized = *flag;
-            return true;
-        }
-        return false;
-    case CallKind::BoardItems: break;
-    default: return false;
-    }
-
-    // 先取齐参数，再作用到格子上。
-    std::function<void(ScriptBoardItem&)> set;
-    switch (spec.property) {
-    case BoardProperty::Value:
-    case BoardProperty::Icon: {
-        auto text = StringOf(value(0));
-        if (!text) return false;
-        if (spec.property == BoardProperty::Value) set = [text = *text](ScriptBoardItem& cell) { cell.value = text; };
-        else set = [text = *text](ScriptBoardItem& cell) { cell.icon = text; };
-        break;
-    }
-    case BoardProperty::Width: {
-        auto width = NumberOf(value(0));
-        if (!width) return false;
-        // BJ 版本的宽度是屏幕宽度的百分比（除以 100 后交给原生函数）。
-        const float w = spec.percent ? *width / 100.0f : *width;
-        set = [w](ScriptBoardItem& cell) { cell.width = w; };
-        break;
-    }
-    case BoardProperty::Style: {
-        const auto showValue = BooleanOf(value(0));
-        const auto showIcon = BooleanOf(value(1));
-        if (!showValue || !showIcon) return false;
-        set = [v = *showValue, i = *showIcon](ScriptBoardItem& cell) {
-            cell.showValue = v;
-            cell.showIcon = i;
-        };
-        break;
-    }
-    case BoardProperty::Color: {
-        std::array<std::uint8_t, 4> color{};
-        for (int i = 0; i < 4; ++i) {
-            const auto component = NumberOf(value(i));
-            if (!component) return false;
-            if (spec.percent) {
-                // PercentTo255：百分比乘 2.55 取整并限制在 0..255；第四个分量是透明度。
-                const float percent = i == 3 ? 100.0f - *component : *component;
-                color[i] = static_cast<std::uint8_t>(std::clamp(static_cast<int>(percent * 255.0f * 0.01f), 0, 255));
-            } else {
-                // 原生函数只取每个分量的低 8 位。
-                color[i] = static_cast<std::uint8_t>(static_cast<std::int64_t>(*component) & 0xFF);
-            }
-        }
-        set = [color](ScriptBoardItem& cell) { cell.color = color; };
-        break;
-    }
-    }
-
-    switch (spec.board) {
-    case BoardScope::All:
-        set(board.defaults);
-        for (auto& cell : board.items) set(cell);
-        return true;
-    case BoardScope::Item: {
-        if (!item) return false;
-        ScriptBoardItem* cell = board.At(item->row, item->column);
-        if (!cell) return false;
-        set(*cell);
-        return true;
-    }
-    case BoardScope::ColumnRow: {
-        // 列、行从 1 起，0 表示全部；超出现有行列时游戏不做任何事。
-        const auto column = NumberOf(argument(1));
-        const auto row = NumberOf(argument(2));
-        if (!column || !row) return false;
-        for (std::uint32_t r = 0; r < board.rows; ++r) {
-            if (*row != 0.0f && static_cast<std::int64_t>(*row) != static_cast<std::int64_t>(r) + 1) continue;
-            for (std::uint32_t c = 0; c < board.columns; ++c) {
-                if (*column != 0.0f && static_cast<std::int64_t>(*column) != static_cast<std::int64_t>(c) + 1) continue;
-                set(*board.At(r, c));
-            }
-        }
-        return true;
-    }
-    }
-    return false;
 }
 
 } // namespace War3Map::GameUi::detail

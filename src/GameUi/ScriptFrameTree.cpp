@@ -3,7 +3,6 @@
 #include "War3MapCore/GameUi/GameCodeLayout.h"
 
 #include <algorithm>
-#include <charconv>
 #include <cmath>
 
 // 脚本框架挂到界面树上，以及预览未还原的界面调用的问题行。
@@ -14,16 +13,8 @@ Diagnostic MakeDiagnostic(DiagnosticSeverity severity, const char* code, std::st
     return Diagnostic{severity, "GameUi", code, std::move(message), std::nullopt};
 }
 
-// 整段为 TRIGSTR_编号 的文字换成地图字符串表里的内容；表里没有时原样显示。
 std::string DisplayText(const ScriptFramePlan& plan, const std::string& text) {
-    constexpr std::string_view prefix = "TRIGSTR_";
-    if (text.size() <= prefix.size() || !text.starts_with(prefix)) return text;
-    std::uint32_t id = 0;
-    const char* end = text.data() + text.size();
-    const auto [stop, error] = std::from_chars(text.data() + prefix.size(), end, id);
-    if (error != std::errc() || stop != end) return text;
-    const auto found = plan.strings.find(id);
-    return found == plan.strings.end() ? text : found->second;
+    return ResolveTriggerString(plan.strings, text);
 }
 
 std::optional<std::uint32_t> FindDescendant(const FrameTree& tree, std::uint32_t node, std::string_view name) {
@@ -170,6 +161,21 @@ TextureInfo SkinTexture(const FrameTree& tree, const UiSkin* skin, const std::st
     return texture;
 }
 
+// 多面板与排行榜的文字：MasterFont，字号取 MiscUI 的 FontHeights LeaderBoard。
+TextInfo BoardFont(const FrameTree& tree, const UiSkin* skin, std::string justifyH) {
+    TextInfo font;
+    font.fontKey = "MasterFont";
+    font.fontPath = font.fontKey;
+    if (skin) {
+        if (const auto found = skin->Lookup(font.fontKey, tree.Options().race, tree.Options().expansion)) font.fontPath = found->value;
+    }
+    font.fontHeight = skin ? skin->FontHeight("LeaderBoard").value_or(0.011f) : 0.011f;
+    font.justifyH = std::move(justifyH);
+    font.justifyV = "JUSTIFYMIDDLE";
+    font.source = "script";
+    return font;
+}
+
 // 多面板按游戏代码排布（1.27a 多面板刷新与列表行布局）：
 // 列表宽 = Σ(第一行各格宽 + 0.002)，格宽默认 0.03；标题栏宽取 “标题文字宽 + 0.03” 与 “列表宽 − 最小化按钮宽”
 // 的较大者（最小化时只看文字）；背板高 = 0.014 × 行数 + 0.012。第 r 行的左上角在列表左上角右 0.01、下
@@ -212,16 +218,7 @@ void LayoutMultiboard(FrameTree& tree, const UiSkin* skin, std::uint32_t root, c
         return;
     }
 
-    TextInfo font;
-    font.fontKey = "MasterFont";
-    font.fontPath = font.fontKey;
-    if (skin) {
-        if (const auto found = skin->Lookup(font.fontKey, tree.Options().race, tree.Options().expansion)) font.fontPath = found->value;
-    }
-    font.fontHeight = skin ? skin->FontHeight("LeaderBoard").value_or(0.011f) : 0.011f;
-    font.justifyH = "JUSTIFYLEFT";
-    font.justifyV = "JUSTIFYMIDDLE";
-    font.source = "script";
+    const TextInfo font = BoardFont(tree, skin, "JUSTIFYLEFT");
     const TextureInfo defaultIcon = SkinTexture(tree, skin, "MultiboardDefaultIcon");
     for (std::uint32_t r = 0; r < board.rows; ++r) {
         float x = 0.01f + 0.001f;
@@ -270,6 +267,130 @@ void LayoutMultiboard(FrameTree& tree, const UiSkin* skin, std::uint32_t root, c
             text.anchors.push_back(AnchorTo(tree, FramePoint::Right, cellId, FramePoint::Right, 0.0f, 0.00001f));
             (void)tree.AddFrame(std::move(text));
         }
+    }
+}
+
+// 排行榜按游戏代码排布（1.27a 排行榜与列表框）：高 = 0.013 × 行数 + 0.001 + 0.043（不显示标题时 0.035），
+// 行数是 LeaderboardSetSizeByItemCount 的值按无符号数与 24 取小（负数即 24）。显示标题时列表左上角在标题左下
+// 角左 0.02、下 0.002，否则在背板左上角下 0.011；列表右下角在背板右下角下 0.001。列表的行位数 =
+// (列表高 − 0.001) ÷ 0.013 取整，每行高 0.012、左右各缩进 0.01，第 r 行在列表顶下 0.001 + 0.013r。
+// 一项里名字左端在行左 0.005；数值右对齐，右端在图标左 0.004 或行右 0.005；名字右端在数值左 0.02（没有数值
+// 时在图标左 0.02 或行右 0.005）。图标 0.01 见方、中心在行右端左 0.005，衬底为 0.015 见方的
+// EscMenuCheckBoxPushedBackground，图标是玩家的队伍颜色贴图；名字与数值默认用玩家的队伍颜色。
+void LayoutLeaderboard(FrameTree& tree, const UiSkin* skin, std::uint32_t root, const ScriptFrame& frame,
+    const ScriptFramePlan& plan, std::vector<Diagnostic>& diagnostics) {
+    const std::string name = tree.Nodes()[root].name;
+    const auto title = FindDescendant(tree, root, "LeaderboardTitle");
+    const auto backdrop = FindDescendant(tree, root, "LeaderboardBackdrop");
+    const auto list = FindDescendant(tree, root, "LeaderboardListContainer");
+    if (!frame.leaderboard || !title || !backdrop || !list) {
+        diagnostics.push_back(MakeDiagnostic(DiagnosticSeverity::Warning, "GAMEUI_SCRIPT_TEMPLATE_MISSING",
+            name + " 的排行榜模板缺少标题、背板或列表，未画出内容"));
+        return;
+    }
+    const ScriptLeaderboard& board = *frame.leaderboard;
+    if (board.clipped) {
+        diagnostics.push_back(MakeDiagnostic(DiagnosticSeverity::Info, "GAMEUI_SCRIPT_BOARD_CLIPPED",
+            name + " 的项数超过预览上限，只保留前 " + std::to_string(kMaxLeaderboardItems) + " 项"));
+    }
+    if (board.sortTies) {
+        diagnostics.push_back(MakeDiagnostic(DiagnosticSeverity::Info, "GAMEUI_SCRIPT_LEADERBOARD_SORT",
+            name + " 排序时有相同的键，游戏里这些项的先后可能与预览不同"));
+    }
+    const auto size = static_cast<std::uint32_t>(board.size);
+    const float height = 0.013f * static_cast<float>(std::min(size, 24u)) + 0.001f + (board.showTitle ? 0.043f : 0.035f);
+    tree.MutableNode(root).height = height;
+    FrameNode& titleNode = tree.MutableNode(*title);
+    titleNode.hidden = !board.showTitle;
+    // 核心层不量文字：标题高按字号算。
+    const float titleHeight = titleNode.text && titleNode.text->fontHeight > 0.0f ? titleNode.text->fontHeight : 0.011f;
+    titleNode.height = titleHeight;
+    FrameNode& listNode = tree.MutableNode(*list);
+    listNode.anchors.clear();
+    listNode.anchors.push_back(board.showTitle
+            ? AnchorTo(tree, FramePoint::TopLeft, *title, FramePoint::BottomLeft, -0.02f, -0.002f)
+            : AnchorTo(tree, FramePoint::TopLeft, *backdrop, FramePoint::TopLeft, 0.0f, -0.011f));
+    listNode.anchors.push_back(AnchorTo(tree, FramePoint::BottomRight, *backdrop, FramePoint::BottomRight, 0.0f, -0.001f));
+    const float listHeight = height - (board.showTitle ? 0.015f + titleHeight + 0.002f : 0.011f) + 0.001f;
+    const auto slots = static_cast<std::size_t>(std::max(0.0f, (listHeight - 0.001f) / 0.013f));
+
+    const TextInfo labelFont = BoardFont(tree, skin, "JUSTIFYLEFT");
+    const TextInfo valueFont = BoardFont(tree, skin, "JUSTIFYRIGHT");
+    const TextureInfo iconBack = SkinTexture(tree, skin, "EscMenuCheckBoxPushedBackground");
+    const auto colorOf = [](const std::optional<std::array<std::uint8_t, 4>>& own, const TeamColor* team) {
+        const std::array<std::uint8_t, 4> rgba = own ? *own : team ? team->rgba : std::array<std::uint8_t, 4>{255, 255, 255, 255};
+        std::array<float, 4> color{};
+        for (std::size_t i = 0; i < 4; ++i) color[i] = static_cast<float>(rgba[i]) / 255.0f;
+        return color;
+    };
+    const auto square = [&](std::uint32_t parent, std::string nodeName, float side, std::uint32_t row) {
+        FrameNode node;
+        node.parent = parent;
+        node.frameType = "BACKDROP";
+        node.name = std::move(nodeName);
+        node.width = side;
+        node.height = side;
+        node.anchors.push_back(AnchorTo(tree, FramePoint::Center, row, FramePoint::Right, -0.005f, 0.0f));
+        return node;
+    };
+    for (std::size_t r = 0; r < std::min(slots, board.items.size()); ++r) {
+        const ScriptLeaderboardItem& item = board.items[r];
+        const TeamColor* team = item.player && skin ? skin->PlayerTeamColor(*item.player) : nullptr;
+        const float y = -(0.001f + 0.013f * static_cast<float>(r));
+        FrameNode row;
+        row.parent = *list;
+        row.frameType = "FRAME";
+        row.name = "LeaderboardItem_" + std::to_string(r + 1);
+        row.height = 0.012f;
+        row.anchors.push_back(AnchorTo(tree, FramePoint::TopLeft, *list, FramePoint::TopLeft, 0.01f, y));
+        row.anchors.push_back(AnchorTo(tree, FramePoint::TopRight, *list, FramePoint::TopRight, -0.01f, y));
+        const std::uint32_t rowId = tree.AddFrame(std::move(row));
+        const std::string rowName = tree.Nodes()[rowId].name;
+        std::optional<std::uint32_t> iconId;
+        if (item.showIcon) {
+            FrameNode back = square(rowId, rowName + "_IconBackground", 0.015f, rowId);
+            back.texture = iconBack;
+            (void)tree.AddFrame(std::move(back));
+            FrameNode icon = square(rowId, rowName + "_Icon", 0.01f, rowId);
+            if (team && !team->path.empty()) {
+                TextureInfo texture;
+                texture.key = "TeamColor";
+                texture.path = team->path;
+                texture.source = "skin";
+                icon.texture = std::move(texture);
+            }
+            iconId = tree.AddFrame(std::move(icon));
+        }
+        std::optional<std::uint32_t> valueId;
+        if (item.showValue) {
+            const std::string number = std::to_string(item.value);
+            FrameNode value;
+            value.parent = rowId;
+            value.frameType = "TEXT";
+            value.name = rowName + "_Value";
+            value.text = valueFont;
+            value.text->text = number;
+            value.text->color = colorOf(item.valueColor, team);
+            value.width = ApproxTextWidth(number, valueFont.fontHeight);
+            value.height = 0.012f;
+            value.anchors.push_back(iconId ? AnchorTo(tree, FramePoint::Right, *iconId, FramePoint::Left, -0.004f, 0.00002f)
+                                           : AnchorTo(tree, FramePoint::Right, rowId, FramePoint::Right, -0.005f, 0.0f));
+            valueId = tree.AddFrame(std::move(value));
+        }
+        if (!item.showLabel) continue;
+        FrameNode label;
+        label.parent = rowId;
+        label.frameType = "TEXT";
+        label.name = rowName + "_Label";
+        label.text = labelFont;
+        label.text->text = DisplayText(plan, item.label);
+        label.text->color = colorOf(item.labelColor, team);
+        label.height = 0.012f;
+        label.anchors.push_back(AnchorTo(tree, FramePoint::Left, rowId, FramePoint::Left, 0.005f, 0.0f));
+        label.anchors.push_back(valueId ? AnchorTo(tree, FramePoint::Right, *valueId, FramePoint::Left, -0.02f, 0.0f)
+                                : iconId ? AnchorTo(tree, FramePoint::Right, *iconId, FramePoint::Left, -0.02f, 0.0f)
+                                         : AnchorTo(tree, FramePoint::Right, rowId, FramePoint::Right, -0.005f, 0.0f));
+        (void)tree.AddFrame(std::move(label));
     }
 }
 
@@ -403,6 +524,7 @@ std::uint32_t AddScriptFrames(FrameTree& tree, const FrameLibrary& library, cons
             }
             if (frame.object == ScriptObjectKind::Dialog) LayoutDialog(tree, library, skin, *id, frame, plan, diagnostics);
             if (frame.object == ScriptObjectKind::Multiboard) LayoutMultiboard(tree, skin, *id, frame, plan, diagnostics);
+            if (frame.object == ScriptObjectKind::Leaderboard) LayoutLeaderboard(tree, skin, *id, frame, plan, diagnostics);
         } else if (frame.text) {
             // 按钮类框架的文字在它的文字子框架上。
             std::uint32_t textNode = *id;

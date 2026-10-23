@@ -518,6 +518,11 @@ void GameUiModule::UpdateProperties() {
             if (frame.board->minimized) size += tr("，最小化");
             row(script, tr("行列"), size);
         }
+        if (frame.leaderboard) {
+            // 游戏按无符号数取行数，负数即 24 行。
+            const auto rows = std::min(static_cast<std::uint32_t>(frame.leaderboard->size), 24u);
+            row(script, tr("项"), tr("%1 项，显示 %2 行").arg(frame.leaderboard->items.size()).arg(rows));
+        }
         if (frame.nameDynamic) row(script, tr("框架名"), tr("运行时拼出"));
         QString parent = tr("未确定");
         if (frame.parent.target == ScriptFrameTarget::CodeArea || frame.parent.target == ScriptFrameTarget::Named ||

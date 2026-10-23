@@ -35,11 +35,12 @@ Diagnostic MakeDiagnostic(DiagnosticSeverity severity, const char* code, std::st
     return Diagnostic{severity, kSubsystem, code, std::move(message), std::nullopt};
 }
 
-// 脚本里声明的类型；句柄类型（timer、unit…）不能作为输入。
-enum class Type : std::uint8_t { Unknown, Integer, Real, String, Boolean };
+// 脚本里声明的类型；句柄类型（timer、unit…）不能作为输入，玩家按序号输入。
+enum class Type : std::uint8_t { Unknown, Integer, Real, String, Boolean, Player };
 
 Type TypeOf(std::string_view jassType) {
     if (jassType == "integer") return Type::Integer;
+    if (jassType == "player") return Type::Player;
     if (jassType == "real") return Type::Real;
     if (jassType == "string") return Type::String;
     if (jassType == "boolean") return Type::Boolean;
@@ -51,6 +52,7 @@ Type TypeOfValue(const ScriptValue& value) {
     case ScriptValue::Kind::Number: return value.integer ? Type::Integer : Type::Real;
     case ScriptValue::Kind::String: return Type::String;
     case ScriptValue::Kind::Boolean: return Type::Boolean;
+    case ScriptValue::Kind::Player: return Type::Player;
     default: return Type::Unknown;
     }
 }
@@ -190,7 +192,12 @@ private:
     std::optional<ScriptValue> Input(const std::string& key, std::string_view label, Type type, std::uint32_t line,
         bool condition = false) {
         if (type == Type::Unknown) return std::nullopt;
-        if (const auto found = inputIndex_.find(key); found != inputIndex_.end()) return Parse(result_.inputs[found->second]);
+        // 玩家输入的是序号。
+        const auto parse = [type](const SimulationInput& input) {
+            ScriptValue value = Parse(input);
+            return type == Type::Player ? ScriptValue::Player(static_cast<std::int32_t>(value.number)) : value;
+        };
+        if (const auto found = inputIndex_.find(key); found != inputIndex_.end()) return parse(result_.inputs[found->second]);
         if (result_.inputs.size() >= kMaxInputs) {
             if (!inputLimitReported_) {
                 result_.diagnostics.push_back(MakeDiagnostic(DiagnosticSeverity::Warning, "GAMEUI_SIMULATION_INPUT_LIMIT",
@@ -205,14 +212,14 @@ private:
         input.type = type == Type::String ? SimulationValueType::Text
             : type == Type::Boolean       ? SimulationValueType::Boolean
                                           : SimulationValueType::Number;
-        input.integer = type == Type::Integer;
+        input.integer = type == Type::Integer || type == Type::Player;
         input.line = line;
         input.condition = condition;
         input.value = input.type == SimulationValueType::Boolean ? "false" : input.type == SimulationValueType::Number ? "0" : "";
         if (const auto given = values_.find(key); given != values_.end()) input.value = given->second;
         inputIndex_.emplace(key, result_.inputs.size());
         result_.inputs.push_back(std::move(input));
-        return Parse(result_.inputs.back());
+        return parse(result_.inputs.back());
     }
 
     static ScriptValue Parse(const SimulationInput& input) {
@@ -372,6 +379,10 @@ private:
                 }
                 return std::nullopt;
             }
+            if (expr.text == "Player" && expr.argumentCount == 1) {
+                const auto number = detail::NumberOf(Eval(Pool().Argument(expr, 0), Type::Integer));
+                return number ? std::optional<ScriptValue>(ScriptValue::Player(static_cast<std::int32_t>(*number))) : std::nullopt;
+            }
             if (NativeReturn(expr.text)) return Native(expr, hint);
             // 其他函数的返回值：作为输入。
             return Input(detail::CompactSource(SourceOf(expr)), SourceOf(expr), hint, expr.line);
@@ -460,7 +471,7 @@ private:
         if (spec->kind == CallKind::SetPoint && call.argumentCount > 2) relative = RefOf(Pool().Argument(call, 2));
         if (spec->kind == CallKind::SetAllPoints && call.argumentCount > 1) relative = RefOf(Pool().Argument(call, 1));
         for (const std::uint32_t frame : frames) {
-            if (detail::ApplyFrameCall(result_.frames[frame], *spec, args, relative)) {
+            if (detail::ApplyFrameCall(result_.frames[frame], *spec, args, relative, state_.plan.strings)) {
                 touched_.insert(frame);
                 ++result_.appliedCalls;
             } else {
@@ -478,6 +489,7 @@ private:
             const Type type = slot.type == detail::ArgumentType::Integer ? Type::Integer
                 : slot.type == detail::ArgumentType::Real                ? Type::Real
                 : slot.type == detail::ArgumentType::Boolean             ? Type::Boolean
+                : slot.type == detail::ArgumentType::Player              ? Type::Player
                                                                          : Type::String;
             args[slot.index] = Eval(Pool().Argument(call, slot.index), type);
         }

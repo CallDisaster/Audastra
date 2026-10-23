@@ -3,6 +3,7 @@
 #include "War3MapCore/GameUi/ScriptSimulation.h"
 #include "GameUiTestSupport.h"
 
+#include <cstring>
 #include <iostream>
 #include <string>
 
@@ -258,12 +259,173 @@ void TestScriptMultiboard() {
     Require(face.texture && face.texture->path == "UI\\Max.blp", "minimized board shows the maximize button");
 }
 
+// 原创排行榜脚本：BJ 添加（同一玩家再加时替换）、按玩家改样式与颜色、排序；原生创建、样式与行数。
+const MapScriptText kLeaderboardScript{"war3map.j", ScriptLanguage::Jass, R"(globals
+    leaderboard udg_Rank = null
+    leaderboard udg_Raw = null
+    integer udg_Kills = 0
+endglobals
+function InitRank takes nothing returns nothing
+    call CreateLeaderboardBJ(GetPlayersAll(), "Kills")
+    set udg_Rank = GetLastCreatedLeaderboard()
+    call LeaderboardAddItemBJ(Player(0), udg_Rank, "Red", 3)
+    call LeaderboardAddItemBJ(Player(1), udg_Rank, "Blue", 8)
+    call LeaderboardAddItemBJ(Player(PLAYER_NEUTRAL_AGGRESSIVE), udg_Rank, "Creeps", 5)
+    call LeaderboardAddItemBJ(Player(0), udg_Rank, "Red", 6)
+    call LeaderboardSetPlayerItemStyleBJ(Player(1), udg_Rank, true, true, true)
+    call LeaderboardSetPlayerItemValueColorBJ(Player(12), udg_Rank, 0, 100, 0, 0)
+    call LeaderboardSortItemsBJ(udg_Rank, bj_SORTTYPE_SORTBYVALUE, false)
+    set udg_Raw = CreateLeaderboard()
+    call LeaderboardDisplay(udg_Raw, true)
+    call LeaderboardAddItem(udg_Raw, "A", 1, Player(2))
+    call LeaderboardAddItem(udg_Raw, "B", 1, Player(3))
+    call LeaderboardSortItemsByValue(udg_Raw, true)
+    call LeaderboardSetStyle(udg_Raw, false, false, true, false)
+    call LeaderboardSetSizeByItemCount(udg_Raw, 2)
+    call LeaderboardRemoveItem(udg_Raw, 5)
+    call LeaderboardAddItemBJ(GetTriggerPlayer(), udg_Raw, "X", 1)
+endfunction
+function Score takes player p returns nothing
+    call LeaderboardSetPlayerItemValueBJ(p, udg_Rank, udg_Kills)
+endfunction
+)"};
+
+void TestScriptLeaderboard() {
+    auto plan = FindScriptFrames({kLeaderboardScript});
+    Require(plan.frames.size() == 2, "two leaderboards");
+    const ScriptFrame& rank = FrameCreatedAt(plan, 7);
+    Require(rank.leaderboard && rank.text && *rank.text == "Kills" && rank.leaderboard->showTitle, "BJ label shows the title");
+    const auto& items = rank.leaderboard->items;
+    Require(items.size() == 3 && rank.leaderboard->size == 3, "re-adding a player replaces its item; BJ resizes to the count");
+    Require(items[0].label == "Blue" && items[0].value == 8 && items[1].label == "Red" && items[1].value == 6 &&
+            items[2].label == "Creeps" && items[2].player == 12u,
+        "sorted by value, descending");
+    Require(items[0].showIcon && !items[1].showIcon && items[0].showLabel && items[0].showValue, "item style by player");
+    Require((items[2].valueColor == std::array<std::uint8_t, 4>{0, 255, 0, 255}) && !items[2].labelColor,
+        "value colour by player, percentages converted");
+    Require(!rank.leaderboard->sortTies && rank.dynamic.empty() && rank.runtimeCalls == 1, "init fully applied");
+
+    const ScriptFrame& raw = FrameCreatedAt(plan, 16);
+    Require(raw.leaderboard && raw.text && raw.text->empty() && raw.visible && *raw.visible, "native leaderboard, empty label");
+    const ScriptLeaderboard& rawBoard = *raw.leaderboard;
+    Require(rawBoard.items.size() == 3 && rawBoard.items[0].label == "A" && rawBoard.items[1].label == "B" &&
+            rawBoard.sortTies,
+        "equal values keep their order and are reported");
+    Require(!rawBoard.showTitle && !rawBoard.items[0].showLabel && rawBoard.items[0].showValue && !rawBoard.items[2].showLabel,
+        "style hides the title and names, also for later items");
+    Require(!rawBoard.items[2].player && rawBoard.size == 2 && raw.dynamic.size() == 1,
+        "unknown player still adds an item; BJ resize subtracts one for an empty label");
+
+    // 标签是字符串表里的空字符串：游戏载入时替换为空，标题不显示，BJ 行数减一；计划保留原文。
+    const MapScriptText emptyLabel{"war3map.j", ScriptLanguage::Jass, R"(function Init takes nothing returns nothing
+    call CreateLeaderboardBJ(GetPlayersAll(), "TRIGSTR_005")
+    call LeaderboardAddItemBJ(Player(0), GetLastCreatedLeaderboard(), "TRIGSTR_007", 0)
+    call LeaderboardAddItemBJ(Player(1), GetLastCreatedLeaderboard(), "TRIGSTR_006", 0)
+    call LeaderboardSortItemsByLabel(GetLastCreatedLeaderboard(), true)
+endfunction
+)"};
+    const auto untitled = FindScriptFrames({emptyLabel}, {{5, ""}, {6, "Alpha"}, {7, "Beta"}});
+    const ScriptLeaderboard& hidden = *untitled.frames.at(0).leaderboard;
+    Require(!hidden.showTitle && hidden.size == 1 && *untitled.frames[0].text == "TRIGSTR_005",
+        "empty table string hides the title and shortens the BJ size");
+    Require(hidden.items[0].label == "TRIGSTR_006" && hidden.items[1].label == "TRIGSTR_007", "label sort uses table text");
+
+    // 模拟：参数玩家与击杀数作为输入，按玩家找到项。
+    auto prepared = ScriptSimulator::Prepare({kLeaderboardScript}, plan, "Score");
+    Require(prepared.value.has_value(), "simulator prepared");
+    const auto result = prepared.value->Run({{"p", "1"}, {"udg_Kills", "9"}});
+    Require(result.frames[0].leaderboard->items[0].value == 9 && result.appliedCalls == 1, "player input picks Blue's item");
+
+    // 队伍颜色：先找 .tga 再找 .blp，取第一个像素；序号 16 及以上取最后一种。
+    UiSkin colorSkin;
+    colorSkin.SetGameSkins("[Default]\nTeamColors=2\nTeamColor=Test\\TC\n");
+    const std::string tga{"\0\0\2\0\0\0\0\0\0\0\0\0\1\0\1\0\x20\x28\x30\x20\x10\xff", 22};
+    std::vector<Diagnostic> colorDiagnostics;
+    const auto colors = ReadTeamColors(colorSkin, [&](const std::string& path) -> std::optional<std::vector<std::byte>> {
+        if (path != "Test\\TC00.tga") return std::nullopt;
+        std::vector<std::byte> bytes(tga.size());
+        std::memcpy(bytes.data(), tga.data(), bytes.size());
+        return bytes;
+    }, colorDiagnostics);
+    Require(colors.size() == 2 && (colors[0].rgba == std::array<std::uint8_t, 4>{0x10, 0x20, 0x30, 0xff}) &&
+            colors[0].path == "Test\\TC00.tga",
+        "first pixel of the tga");
+    Require(colors[1].path.empty() && HasCode(colorDiagnostics, "GAMEUI_TEAM_COLOR"), "missing texture reported");
+    colorSkin.SetTeamColors(colors);
+    Require(colorSkin.PlayerTeamColor(2) == colorSkin.PlayerTeamColor(0) && colorSkin.PlayerTeamColor(15) == colorSkin.PlayerTeamColor(1) &&
+            colorSkin.PlayerTeamColor(20) == colorSkin.PlayerTeamColor(1),
+        "player colour index wraps below 16; 16 and above take the last colour");
+
+    // 排布：两个排行榜都单独位于右上角（不与其他对象排开），按项数与标题定高。
+    const std::string text =
+        "Frame \"FRAME\" \"Leaderboard\" { Width 0.17, Height 0.2,\n"
+        "    Frame \"BACKDROP\" \"LeaderboardBackdrop\" { SetAllPoints, }\n"
+        "    Frame \"TEXT\" \"LeaderboardTitle\" { SetPoint TOPLEFT, \"LeaderboardBackdrop\", TOPLEFT, 0.02, -0.015,\n"
+        "        FrameFont \"MasterFont\", 0.011, \"\", }\n"
+        "    Frame \"FRAME\" \"LeaderboardListContainer\" {\n"
+        "        SetPoint TOPLEFT, \"LeaderboardTitle\", BOTTOMLEFT, -0.02, -0.002,\n"
+        "        SetPoint BOTTOMRIGHT, \"LeaderboardBackdrop\", BOTTOMRIGHT, 0.0, 0.001,\n"
+        "    }\n"
+        "}\n";
+    auto parsed = ParseFdf(text, "UI\\Leaderboard.fdf");
+    Require(parsed.Succeeded(), "leaderboard fixture parses");
+    FrameLibrary library;
+    library.AddParsed(std::move(*parsed.value), "game");
+    UiSkin skin;
+    skin.SetGameSkins("[Default]\nMasterFont=Fonts\\Test.ttf\nEscMenuCheckBoxPushedBackground=UI\\Check\n");
+    skin.SetMiscUi("[FontHeights]\nLeaderBoard=0.009\n");
+    std::vector<TeamColor> team(16);
+    for (std::uint32_t i = 0; i < team.size(); ++i) {
+        team[i].rgba = {static_cast<std::uint8_t>(i * 10), 0, 0, 255};
+        team[i].path = "TC" + std::to_string(i) + ".blp";
+    }
+    skin.SetTeamColors(team);
+    FrameTree tree;
+    std::vector<Diagnostic> diagnostics;
+    (void)AddScriptFrames(tree, library, &skin, plan, diagnostics);
+    (void)tree.Layout();
+    Require(HasCode(diagnostics, "GAMEUI_SCRIPT_LEADERBOARD_SORT"), "tie reported");
+
+    // 3 行、显示标题：高 0.013×3+0.001+0.043=0.083。列表 0.056 高，(0.056−0.001)÷0.013 取 4 个行位。
+    RequireRect(NodeNamed(tree, "udg_Rank"), 0.625f, 0.482f, 0.795f, 0.565f, "height from size and title");
+    RequireRect(Descendant(tree, "udg_Rank", "LeaderboardListContainer"), 0.625f, 0.481f, 0.795f, 0.537f,
+        "list below the title, 0.001 past the backdrop");
+    RequireRect(Descendant(tree, "udg_Rank", "LeaderboardItem_1"), 0.635f, 0.524f, 0.785f, 0.536f, "first row 0.01 in");
+    RequireRect(Descendant(tree, "udg_Rank", "LeaderboardItem_3"), 0.635f, 0.498f, 0.785f, 0.510f, "third row 0.026 lower");
+    const FrameNode& icon = Descendant(tree, "udg_Rank", "LeaderboardItem_1_Icon");
+    RequireRect(icon, 0.775f, 0.525f, 0.785f, 0.535f, "icon centred 0.005 left of the row end");
+    Require(icon.texture && icon.texture->path == "TC1.blp", "icon is the player's team colour texture");
+    RequireRect(Descendant(tree, "udg_Rank", "LeaderboardItem_1_IconBackground"), 0.7725f, 0.5225f, 0.7875f, 0.5375f,
+        "0.015 icon backing");
+    const FrameNode& value = Descendant(tree, "udg_Rank", "LeaderboardItem_1_Value");
+    Require(value.text && value.text->text == "8" && value.text->justifyH == "JUSTIFYRIGHT" && Near(value.rect.right, 0.771f),
+        "value right-aligned 0.004 left of the icon");
+    const FrameNode& label = Descendant(tree, "udg_Rank", "LeaderboardItem_1_Label");
+    Require(label.text && label.text->text == "Blue" && Near(label.rect.left, 0.640f) &&
+            Near(label.rect.right, value.rect.left - 0.02f) && Near(label.text->color[0], 10.0f / 255.0f),
+        "label from the row start to 0.02 before the value, in the player's colour");
+    const FrameNode& creeps = Descendant(tree, "udg_Rank", "LeaderboardItem_3_Value");
+    Require(Near(creeps.text->color[1], 1.0f) && Near(creeps.text->color[0], 0.0f) && Near(creeps.rect.right, 0.780f),
+        "own value colour; without icon the value ends 0.005 before the row end");
+    Require(Near(Descendant(tree, "udg_Rank", "LeaderboardItem_3_Label").text->color[0], 120.0f / 255.0f),
+        "neutral player colour");
+
+    // 行数 2、不显示标题：高 0.026+0.001+0.035=0.062；列表在背板顶下 0.011，行位 3 个，三项都显示。
+    RequireRect(NodeNamed(tree, "udg_Raw"), 0.625f, 0.503f, 0.795f, 0.565f, "untitled height");
+    Require(Descendant(tree, "udg_Raw", "LeaderboardTitle").hidden, "title hidden");
+    RequireRect(Descendant(tree, "udg_Raw", "LeaderboardItem_1"), 0.635f, 0.541f, 0.785f, 0.553f, "rows start under the top");
+    Require(ChildNamed(tree, *tree.FindByName("udg_Raw"), "LeaderboardItem_3") != kNoNode &&
+            ChildNamed(tree, *tree.FindByName("udg_Raw"), "LeaderboardItem_1_Label") == kNoNode,
+        "a third slot shows the third item; names hidden");
+}
+
 } // namespace
 
 int main() {
     try {
         TestScriptClassicObjects();
         TestScriptMultiboard();
+        TestScriptLeaderboard();
         std::cout << "Game UI object tests passed\n";
         return 0;
     } catch (const std::exception& error) {

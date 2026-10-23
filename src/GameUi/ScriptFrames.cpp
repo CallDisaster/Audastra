@@ -8,6 +8,7 @@
 #include "../Jass/JassParser.h"
 
 #include <algorithm>
+#include <charconv>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -434,6 +435,12 @@ void Analyzer::CreateObject(const Scope& scope, const CallSpec& spec, const Expr
         if (auto title = StringOf(argument(spec.titleArg))) frame.text = std::move(*title);
         else frame.dynamic.push_back("标题 第 " + std::to_string(call.line) + " 行");
     }
+    if (spec.object == ScriptObjectKind::Leaderboard) {
+        // 新建的排行榜标签为空、不显示标题。
+        frame.leaderboard.emplace();
+        if (spec.titleArg < 0) frame.text = std::string();
+        frame.leaderboard->showTitle = frame.text && !ResolveTriggerString(plan_.strings, *frame.text).empty();
+    }
     if (spec.object == ScriptObjectKind::Multiboard) {
         frame.board.emplace();
         if (spec.rowsArg >= 0 || spec.columnsArg >= 0) {
@@ -563,7 +570,7 @@ bool Analyzer::ApplyTo(const Scope& scope, ScriptFrame& frame, const CallSpec& s
     ScriptFrameRef relative;
     if (spec.kind == CallKind::SetPoint && call.argumentCount > 2) relative = Ref(scope, scope.pool.Argument(call, 2), block);
     if (spec.kind == CallKind::SetAllPoints && call.argumentCount > 1) relative = Ref(scope, scope.pool.Argument(call, 1), block);
-    return detail::ApplyFrameCall(frame, spec, args, relative);
+    return detail::ApplyFrameCall(frame, spec, args, relative, plan_.strings);
 }
 
 void Analyzer::Finish() {
@@ -653,8 +660,20 @@ std::string_view UiApiFamilyName(UiApiFamily family) noexcept {
     }
 }
 
-ScriptFramePlan FindScriptFrames(const std::vector<MapScriptText>& scripts) {
+std::string ResolveTriggerString(const TriggerStrings& strings, const std::string& text) {
+    constexpr std::string_view prefix = "TRIGSTR_";
+    if (text.size() <= prefix.size() || !text.starts_with(prefix)) return text;
+    std::uint32_t id = 0;
+    const char* end = text.data() + text.size();
+    const auto [stop, error] = std::from_chars(text.data() + prefix.size(), end, id);
+    if (error != std::errc() || stop != end) return text;
+    const auto found = strings.find(id);
+    return found == strings.end() ? text : found->second;
+}
+
+ScriptFramePlan FindScriptFrames(const std::vector<MapScriptText>& scripts, TriggerStrings strings) {
     ScriptFramePlan plan;
+    plan.strings = std::move(strings);
     Analyzer analyzer(plan);
     for (const auto& script : scripts) {
         if (script.language == ScriptLanguage::Lua) {

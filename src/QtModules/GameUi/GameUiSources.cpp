@@ -196,13 +196,14 @@ GameUiDefinitions LoadGameUiDefinitions(GameUiReader& reader) {
         mapDiagnostics.insert(mapDiagnostics.end(), plan.diagnostics.begin(), plan.diagnostics.end());
         for (const auto& toc : plan.tocs) library->LoadToc(read, toc, "map");
         result.tocCalls = std::move(plan.calls);
-        result.scriptFrames = GameUi::FindScriptFrames(scripts);
-        // 脚本文字常写成 TRIGSTR_编号，显示时查地图字符串表（同样取最近一次保存的版本）。
+        // 脚本文字常写成 TRIGSTR_编号，查地图字符串表（同样取最近一次保存的版本）。
+        GameUi::TriggerStrings triggerStrings;
         if (auto strings = reader.ReadMapMember("war3map.wts", kMaxScriptBytes); strings.Succeeded() && strings.value) {
             if (auto table = MapData::ParseStringTable(*strings.value); table.value) {
-                for (auto& entry : table.value->entries) result.scriptFrames.strings[entry.id] = std::move(entry.value);
+                for (auto& entry : table.value->entries) triggerStrings[entry.id] = std::move(entry.value);
             }
         }
+        result.scriptFrames = GameUi::FindScriptFrames(scripts, std::move(triggerStrings));
         mapDiagnostics.insert(mapDiagnostics.end(), result.scriptFrames.diagnostics.begin(),
             result.scriptFrames.diagnostics.end());
         result.scripts = std::move(scripts);
@@ -226,6 +227,15 @@ GameUiDefinitions LoadGameUiDefinitions(GameUiReader& reader) {
             result.mapSkin = GameUi::BytesToText(*mapSkin.value);
         }
     }
+    GameUi::UiSkin skin;
+    skin.SetGameSkins(result.gameSkins);
+    if (!result.mapSkin.empty()) skin.SetMapSkin(result.mapSkin);
+    // 没有游戏皮肤表时前面已有诊断，不再逐项报告队伍颜色。
+    if (skin.HasGameSkins()) result.teamColors = GameUi::ReadTeamColors(skin, [&read](const std::string& path) -> std::optional<std::vector<std::byte>> {
+        auto file = read(path);
+        if (!file.Succeeded() || !file.value) return std::nullopt;
+        return std::move(*file.value);
+    }, result.diagnostics);
     result.library = std::move(library);
     return result;
 }
