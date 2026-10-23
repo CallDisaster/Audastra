@@ -84,7 +84,7 @@ private:
     // 只有Services可信适配器可提供解析器；输入只能是同一次实际捕获的字节。
     // 成功值仅描述同次实际来源中的对象语义及解析预留，不是外部资格布尔。
     using NativeObjectValidator = std::function<Result<TerrainNativeObjectPathing>(
-        std::span<const std::string_view>, std::span<const ArchiveExactMember>, std::size_t)>;
+        std::span<const std::string_view>, std::span<const std::string_view>, std::span<const ArchiveExactMember>, std::size_t)>;
     [[nodiscard]] static Result<TerrainPathingResources> CaptureNativeWithObjects(const MapArchiveSession& source,
         const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
         const std::filesystem::path& gameRoot, std::size_t maximumBytes, const NativeObjectValidator& validator);
@@ -106,6 +106,11 @@ private:
         std::span<const std::string> names, std::size_t requiredCount, const ResourceVisitor& visitor);
     [[nodiscard]] Status CaptureNativeFootprints(const MemberReader& reader, const TerrainHeader& header,
         std::span<const DoodadPlacement> placements, std::span<const TerrainNativeDoodadPathingType> types);
+    [[nodiscard]] Status CaptureSpecialFootprints(const MemberReader& reader,
+        const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
+        std::span<const SpecialDoodadPlacement> placements, std::span<const TerrainNativeDoodadPathingType> types,
+        std::uint8_t maximumCliffLevel);
+    [[nodiscard]] Result<std::uint8_t> CaptureSpecialCliffLimit(const MemberReader& reader);
     [[nodiscard]] Status VerifyReadbackMembers(const MemberReader& reader, std::size_t maximumBytes) const;
     [[nodiscard]] Status VerifyGameDependencies(std::size_t remainingBytes) const;
     struct Dependency {
@@ -130,6 +135,8 @@ private:
     std::optional<TerrainNativePlayableBounds> nativeBounds_;
     std::vector<std::byte> nativeDoodads_;
     std::vector<std::uint8_t> nativeStaticAttributes_;
+    std::vector<std::uint8_t> nativeSpecialAttributes_;
+    std::size_t nativeSpecialCount_ = 0;
     std::array<std::string, 2> nativeTerrainSha_;
     std::array<std::size_t, 2> nativeTerrainBytes_{};
 };

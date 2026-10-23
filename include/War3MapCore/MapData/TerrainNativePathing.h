@@ -62,13 +62,16 @@ struct TerrainNativePathingInput {
     // 来源捕获者负责证明该集合完整；这里不解释 DOO 或忽略未知对象。
     std::span<const std::uint8_t> staticAttributes;
     std::size_t specialDoodadCount = 0;
+    // 完整special段及其实际贴图生成的逐格层。bit0为覆盖，0xCE为禁止位，
+    // 覆盖时替换普通地面/悬崖查询，仍受可玩范围、边界和水规则约束。
+    std::span<const std::uint8_t> specialAttributes;
 };
 
 // 只返回 row-major 的原版六位 0xEE，不带 WPM 文件头、不混入源 WPM 或
 // 工程限制。绑定输入、旧基线比较、0x11 保留及事务回读归统一保存计划。
 // maximumBytes 限制输出占用；当前算法不另建与地图等大的临时网格。
 // 支持普通无坡道悬崖；地形偏移须128对齐，所有顶点世界XY须落在
-// 原版九位坐标打包的 [-32768,32640] 内。特殊地形覆盖、坡道、
+// 原版九位坐标打包的 [-32768,32640] 内。未提供完整特殊地形层、坡道、
 // 未知字段、不完整规则或未闭合的坐标/范围精度明确失败，绝不返回部分网格。
 [[nodiscard]] Result<std::vector<std::byte>> GenerateTerrainNativePathing(
     const TerrainNativePathingInput& input, std::size_t maximumBytes = 64 * 1024 * 1024);

@@ -19,7 +19,7 @@ Result<MapData::TerrainPathingResources> TerrainPathingSave::CaptureNative(const
     const std::filesystem::path& gameRoot, std::size_t maximumBytes) {
     return Guard<MapData::TerrainPathingResources>([&] {
         return MapData::TerrainPathingResources::CaptureNativeWithObjects(source, before, after, gameRoot,
-            maximumBytes, ObjectData::InspectNativeDestructablePathing);
+            maximumBytes, ObjectData::InspectNativeTerrainObjects);
     });
 }
 
@@ -28,7 +28,7 @@ Result<MapData::TerrainPathingResources> TerrainPathingSave::CaptureNative(const
     const std::filesystem::path& gameRoot, std::size_t maximumBytes) {
     return Guard<MapData::TerrainPathingResources>([&] {
         return MapData::TerrainPathingResources::CaptureNativeWithObjects(source, before, after, gameRoot,
-            maximumBytes, ObjectData::InspectNativeDestructablePathing);
+            maximumBytes, ObjectData::InspectNativeTerrainObjects);
     });
 }
 

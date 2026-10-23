@@ -21,6 +21,9 @@ struct TerrainNativeDoodadPathingType {
 struct TerrainNativeObjectPathing {
     std::size_t workBytes = 0;
     std::vector<TerrainNativeDoodadPathingType> footprints;
+    // 特殊DOO按地格坐标加载，不使用普通对象的旋转/吸附。空pathTexture也列出，
+    // 仅表示实际getter明确禁用；调用方须与完整special记录一一绑定。
+    std::vector<TerrainNativeDoodadPathingType> specialFootprints;
 };
 
 } // namespace War3Map::MapData

@@ -884,6 +884,32 @@ void DoodadOverridesUseBoundedStandardInheritance() {
     Check(document.AddCustomObject("C001", "D001")); Check(document.AddCustomObject("C002", "C001")); chain.SetNative(document);
     Rejected(chain.Inspect({"C002"}), "TERRAIN_NATIVE_OBJECT_INHERITANCE", "recursive custom inheritance remains explicit and refused");
 }
+
+void SpecialDoodadFieldsDoNotBorrowOrdinaryPoseRules() {
+    Fixture f;
+    f.doodads[0]["pathTex"] = "PathTextures\\special.tga";
+    f.doodads[0]["category"] = "C"; f.doodads[0]["fixedRot"] = "45";
+    f.Tables();
+    const std::array<std::string_view, 2> ids{"D001", "D001"};
+    auto result = Take(InspectNativeTerrainObjects({}, ids, f.sources, kWorkingBytes));
+    Require(result.footprints.empty() && result.specialFootprints.size() == 1
+        && result.specialFootprints.front().pathTexture == "PathTextures\\special.tga"
+        && result.specialFootprints.front().snapCells == 0 && !result.specialFootprints.front().fixedRotationDegrees,
+        "special records use actual pathTex but no ordinary category/rotation/snap rule");
+    Take(InspectNativeTerrainObjects({}, ids, f.sources, result.workBytes));
+    Rejected(InspectNativeTerrainObjects({}, ids, f.sources, result.workBytes-1), "TERRAIN_NATIVE_OBJECT_BUDGET", "special output has an exact bounded parse budget");
+    Rejected(InspectNativeTerrainObjects(ids, ids, f.sources, kWorkingBytes), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED",
+        "same rawcode in special cannot exempt its ordinary C-category placement");
+    auto document = Empty(ObjectType::Doodad); Check(document.AddCustomObject("C001", "D001"));
+    Modification(document, "C001", "Dt00", NativeValueType::String, std::string{}); f.SetNative(document); f.AddDoodadMetadata();
+    const std::array<std::string_view, 1> custom{"C001"};
+    result = Take(InspectNativeTerrainObjects({}, custom, f.sources, kWorkingBytes));
+    Require(result.specialFootprints.size() == 1 && result.specialFootprints[0].pathTexture.empty(),
+        "explicit disabled special path remains bound to the actual custom record");
+    const std::array<std::string_view, 1> wrong{"S002"};
+    Rejected(InspectNativeTerrainObjects({}, wrong, f.sources, kWorkingBytes), "TERRAIN_NATIVE_OBJECT_CLASS_AMBIGUOUS",
+        "special DOO cannot borrow destructable zero-walkable proof");
+}
 } // namespace
 
 int main() {
@@ -905,6 +931,7 @@ int main() {
         NonemptyDoodadInspectionKeepsTheNarrowSourceDomain();
         PatternedFootprintReceivesTheActualFixedRotation();
         DoodadOverridesUseBoundedStandardInheritance();
+        SpecialDoodadFieldsDoNotBorrowOrdinaryPoseRules();
         std::cout << "native destructable pathing: typed fields, bounded inheritance, unique sources and rejection paths passed\n";
         return 0;
     } catch (const std::exception& error) {

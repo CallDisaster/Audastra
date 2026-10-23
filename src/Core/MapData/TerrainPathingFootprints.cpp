@@ -2,6 +2,7 @@
 
 #include "War3MapCore/MapData/MapPlacements.h"
 #include "War3MapCore/MapData/TerrainDoodadFootprint.h"
+#include "War3MapCore/MapData/TerrainSpecialDoodadPathing.h"
 #include "War3MapCore/Text/TextUtil.h"
 
 #include <algorithm>
@@ -132,6 +133,70 @@ Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& read
     } catch (const std::length_error&) {
         return Status::Failure(kSubsystem, "TERRAIN_NATIVE_OBJECT_BUDGET", "非空占地捕获超过容器容量。");
     }
+}
+
+Status TerrainPathingResources::CaptureSpecialFootprints(const MemberReader& reader,
+    const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
+    std::span<const SpecialDoodadPlacement> placements, std::span<const TerrainNativeDoodadPathingType> types,
+    std::uint8_t maximumCliffLevel) {
+    try {
+        const auto reserve = [&](std::size_t count, std::size_t each) {
+            if (sourceBytes_ > capturedMaximumBytes_ || objectWorkBytes_ > capturedMaximumBytes_ - sourceBytes_
+                || count > (capturedMaximumBytes_ - sourceBytes_ - objectWorkBytes_) / each)
+                Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "特殊地形捕获超过累计剩余预算。");
+            objectWorkBytes_ += count * each;
+        };
+        struct Type { std::string path; bool used = false; };
+        struct Image { std::vector<std::byte> bytes; TerrainDoodadFootprint decoded; };
+        if (types.empty() || types.size() > placements.size() || before.header.width < 2 || before.header.height < 2
+            || before.header.width > 2049 || before.header.height > 2049)
+            Fail("TERRAIN_SPECIAL_LAYOUT", "特殊地形类型必须覆盖同次DOO的全部记录。");
+        constexpr auto links = 4 * sizeof(void*);
+        constexpr auto perType = sizeof(std::pair<const std::string_view, Type>) + links
+            + sizeof(std::pair<const std::string, Image>) + links + sizeof(std::string)
+            + sizeof(ArchiveExactMember) + 2 * sizeof(Dependency) + 6 * 2 * std::size_t{260};
+        reserve(types.size(), perType);
+        reserve(placements.size(), sizeof(TerrainSpecialDoodadPathingInput));
+        const auto width = std::size_t{before.header.width - 1} * 4;
+        const auto height = std::size_t{before.header.height - 1} * 4;
+        reserve(width, height);
+        std::map<std::string_view, Type, std::less<>> byRawcode;
+        std::map<std::string, Image, std::less<>> images;
+        for (const auto& type : types) {
+            if (type.rawcode.size() != 4 || type.snapCells != 0 || type.fixedRotationDegrees)
+                Fail("TERRAIN_SPECIAL_LAYOUT", "特殊地形类型不能带普通装饰物旋转或吸附规则。");
+            const auto path = type.pathTexture.empty() ? std::string{} : FootprintPath(type.pathTexture);
+            if (!byRawcode.emplace(type.rawcode, Type{path}).second)
+                Fail("TERRAIN_SPECIAL_LAYOUT", "特殊地形类型rawcode重复。");
+            if (!path.empty()) images.try_emplace(path);
+        }
+        std::vector<std::string> names; names.reserve(images.size());
+        for (const auto& [path, image] : images) { (void)image; names.push_back(path); }
+        Check(CaptureResourceMembers(reader, names, names.size(),
+            [&](std::size_t index, bool present, std::vector<std::byte>&& bytes) {
+                if (!present) Fail("TERRAIN_NATIVE_FOOTPRINT_MISSING", "缺少特殊地形实际占地贴图：" + names[index]);
+                auto& image = images.at(names[index]);
+                image.decoded = Take(DecodeDoodadFootprintTga(bytes));
+                // 源字节额度已由CaptureResourceMembers预留，移入稳定map节点保活借用像素。
+                image.bytes = std::move(bytes);
+            }));
+        std::vector<TerrainSpecialDoodadPathingInput> inputs; inputs.reserve(placements.size());
+        for (const auto& placement : placements) {
+            const auto found = byRawcode.find(placement.rawcode);
+            if (found == byRawcode.end()) Fail("TERRAIN_SPECIAL_LAYOUT", "特殊DOO有未解释的rawcode：" + placement.rawcode);
+            found->second.used = true;
+            inputs.push_back({&placement, found->second.path.empty() ? std::nullopt
+                : std::optional{images.at(found->second.path).decoded}});
+        }
+        for (const auto& [rawcode, type] : byRawcode)
+            if (!type.used) Fail("TERRAIN_SPECIAL_LAYOUT", "特殊类型没有对应实际记录：" + std::string(rawcode));
+        nativeSpecialAttributes_ = Take(BuildTerrainSpecialDoodadPathing(before, after, inputs, maximumCliffLevel, capturedMaximumBytes_));
+        reserve(nativeSpecialAttributes_.capacity() - width * height, 1);
+        nativeSpecialCount_ = placements.size();
+        return Status::Ok();
+    } catch (Failure& failure) { return {std::move(failure.diagnostics)}; }
+    catch (const std::bad_alloc&) { return Status::Failure(kSubsystem, "TERRAIN_NATIVE_OBJECT_BUDGET", "特殊地形捕获分配失败。"); }
+    catch (const std::length_error&) { return Status::Failure(kSubsystem, "TERRAIN_NATIVE_OBJECT_BUDGET", "特殊地形捕获超过容量。"); }
 }
 
 } // namespace War3Map::MapData

@@ -268,9 +268,13 @@ Result<std::vector<std::byte>> GenerateTerrainNativePathing(
             Fail("TERRAIN_NATIVE_BOUNDS", "通行生成需要有限、未取整且有效的世界可玩范围与地形偏移。");
         CheckPackedCoordinates(header);
         const auto projection = PrepareBounds(bounds);
-        if (input.specialDoodadCount != 0)
+        if ((input.specialDoodadCount != 0 && input.specialAttributes.size() != cells)
+            || (input.specialDoodadCount == 0 && !input.specialAttributes.empty()))
             Fail("TERRAIN_NATIVE_SPECIAL_UNSUPPORTED", "地图含 " + std::to_string(input.specialDoodadCount)
-                + " 条特殊地形摆放，尚未接入其原版通行贴图覆盖。");
+                + " 条特殊地形摆放，但未提供与完整记录对应的实际通行层。");
+        for (const auto value : input.specialAttributes)
+            if ((value & 0x30) || (value != 0 && !(value & 1)))
+                Fail("TERRAIN_NATIVE_SPECIAL_FLAGS", "特殊地形通行层含未知位或缺少覆盖标记。");
         if (!input.staticAttributes.empty() && input.staticAttributes.size() != cells)
             Fail("TERRAIN_NATIVE_STATIC_DIMENSIONS", "静态对象层必须为空或完整覆盖全部通行格。");
         for (std::size_t i = 0; i < input.staticAttributes.size(); ++i) if (input.staticAttributes[i] & 0x80)
@@ -315,7 +319,18 @@ Result<std::vector<std::byte>> GenerateTerrainNativePathing(
                 const auto corner = (localY >= 2 ? 2 : 0) + (localX >= 2 ? 1 : 0);
                 const auto output = (y * 4 + localY) * width + x * 4 + localX;
                 const auto objects = input.staticAttributes.empty() ? std::uint8_t{0} : input.staticAttributes[output];
-                result[output] = static_cast<std::byte>(EncodeStatic(objects) | ((objects & 0x40) ? 0 : terrainMasks[corner]));
+                auto mask = terrainMasks[corner];
+                const auto special = input.specialAttributes.empty() ? std::uint8_t{0} : input.specialAttributes[output];
+                if ((special & 1) && playable) {
+                    // 5E8540先查边界和水，再分派special；special不读取地面表或普通悬崖。
+                    mask = static_cast<std::uint8_t>((special & 0xce) | (corners[corner]->IsBlight() ? 0x20 : 0));
+                    if (input.water && input.water->impassable && water[corner].depth != 0) mask |= 0xca;
+                    else {
+                        if (water[corner].depth == 2) mask |= 0x02;
+                        if (water[corner].depth != 0) mask |= 0x08;
+                    }
+                }
+                result[output] = static_cast<std::byte>(EncodeStatic(objects) | ((objects & 0x40) ? 0 : mask));
             }
         }
         return result;

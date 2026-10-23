@@ -64,6 +64,7 @@ Bytes ZeroOverride(std::string field = "p001", bool custom = false) {
 
 struct Fixture {
     std::filesystem::path root;
+    std::filesystem::path gameRoot;
     TerrainGridSnapshot original;
     std::vector<MapArchiveMember> members;
     std::unique_ptr<MapArchiveSession> archive;
@@ -130,7 +131,7 @@ struct Fixture {
     }
     void Paint() { Take(edits->EditTerrain(Water(), std::span(&point, 1), false)); }
     TerrainSavePlan Plan(const TerrainSavePlanLimits& limits = {}) const {
-        return Take(TerrainPathingSave::PrepareForSave(*archive, *edits, {}, limits));
+        return Take(TerrainPathingSave::PrepareForSave(*archive, *edits, gameRoot, limits));
     }
     Bytes ExpectedTerrain(bool deep) const {
         auto expected = original;
@@ -535,8 +536,8 @@ void NativeObjectsDoNotWeakenSourceCasOrOldPathingChecks() {
     placements.specialDoodads.push_back({"Spc0", 0, {1, 1}});
     special.Member("war3map.doo") = Take(placements.Serialize()); special.Open(); special.Paint();
     const auto refused = special.Plan();
-    Require(!refused.SaveGate().Succeeded() && HasCode(refused.SaveGate(), "TERRAIN_NATIVE_SPECIAL_UNSUPPORTED"),
-        "special DOO never inherits normal typed object qualification");
+    Require(!refused.SaveGate().Succeeded() && HasCode(refused.SaveGate(), "TERRAIN_NATIVE_OBJECT_INHERITANCE"),
+        "unknown special rawcode never inherits normal typed object qualification");
     Fixture limited; limited.Paint();
     const auto owner = Take(TerrainPathingSave::CaptureNative(*limited.archive, limited.original, *limited.edits->Terrain(), {}, kBudget));
     const auto budget = TerrainPathingSave::CaptureNative(*limited.archive, limited.original, *limited.edits->Terrain(), {}, owner.SourceBytes());
@@ -906,6 +907,90 @@ void PatternedDoodadsUseTheNormalSaveAndUndoChain() {
         f.SaveExpected("patterned-redone.w3x",expectedW3e,expectedWpm);
     }
 }
+
+void SpecialDoodad(Fixture& f, bool dry = false) {
+    // 原创特殊地形：每行黑、蓝、绿、红；alpha全0，地格(2,2)仅覆盖一个地格。
+    DoodadPlacements placements; placements.specialDoodads.push_back({"Doo0", 0, {2,2}});
+    f.Member("war3map.doo") = Take(placements.Serialize());
+    f.Member("Doodads/Doodads.slk") = Slk({"doodID", "code", "pathTex", "category", "fixedRot"},
+        {{"Doo0", "Doo0", std::string(kUniformDoodadTexture), "C", "45"}});
+    Bytes texture(18); texture[2] = std::byte{2}; texture[12] = texture[14] = std::byte{4};
+    texture[16] = std::byte{32}; texture[17] = std::byte{40};
+    for (unsigned y = 0; y < 4; ++y) for (unsigned x = 0; x < 4; ++x)
+        for (const unsigned value : {x == 1 ? 255u : 0u, x == 2 ? 255u : 0u, x == 3 ? 255u : 0u, 0u})
+            texture.push_back(static_cast<std::byte>(value));
+    f.members.push_back({std::string(kUniformDoodadTexture), std::move(texture)});
+    auto& config = f.Member("UI/MiscData.txt"); const auto extra = Text("[Terrain]\nMaxHeight=1536\n");
+    config.insert(config.end(), extra.begin(), extra.end());
+    // 严格可证明的缺失来源来自自己的最小归档，不把未知本机回退当作缺失。
+    f.gameRoot = f.root / "game"; Require(std::filesystem::create_directory(f.gameRoot), "private special game fallback");
+    const std::array<MapArchiveMember, 1> gameMembers{{{"synthetic-marker.txt", Text("original fixture")}}};
+    Take(WriteVerifiedArchive(f.gameRoot / "war3.mpq", gameMembers));
+    if (dry) {
+        for (auto& vertex : f.original.vertices) vertex.textureAndFlagsRaw = 0;
+        RefreshTerrainDerived(f.original, 0, 0, 9, 9);
+        f.Member("war3map.w3e") = Take(SerializeMapTerrain(f.original));
+        std::fill(f.Member("war3map.wpm").begin()+16, f.Member("war3map.wpm").end(), std::byte{0x51});
+    }
+    constexpr std::array<unsigned, 4> shallow{0x19,0x19,0x1d,0xdb}, dryMask{0x11,0x19,0x15,0xd3};
+    for (unsigned y = 8; y < 12; ++y) for (unsigned x = 8; x < 12; ++x)
+        f.Member("war3map.wpm")[16+y*32+x] = static_cast<std::byte>((dry ? dryMask : shallow)[x-8]);
+}
+
+void SpecialDoodadsSaveWaterGroundAndCliffs() {
+    for (const unsigned operation : {0u,1u,2u}) {
+        Fixture f; SpecialDoodad(f, operation != 0);
+        f.original.header.groundTilesets.push_back("Tg02");
+        f.Member("war3map.w3e") = Take(SerializeMapTerrain(f.original));
+        f.Member("TerrainArt/Terrain.slk") = Slk({"tileID","walkable","flyable","buildable"},
+            {{"Tg01","1","1","1"},{"Tg02","0","1","1"}});
+        f.Open();
+        auto terrain = f.original; auto pathing = f.Member("war3map.wpm");
+        if (operation == 0) {
+            f.Paint();
+            for (auto& vertex : terrain.vertices) vertex.waterHeightAndFlagsRaw = 8192 + 80 * 4;
+            std::fill(pathing.begin()+16, pathing.end(), std::byte{0x1b});
+            constexpr std::array<unsigned,4> deep{0x1b,0x1b,0x1f,0xdb};
+            for (unsigned y=8; y<12; ++y) for (unsigned x=8; x<12; ++x) pathing[16+y*32+x] = static_cast<std::byte>(deep[x-8]);
+        } else {
+            const bool cliff = operation == 2;
+            TerrainBrush brush; brush.radius = 0;
+            if (cliff) { brush.kind = TerrainBrushKind::CliffLevel; brush.levelDelta = 1; }
+            else { brush.kind = TerrainBrushKind::Texture; brush.groundTexture = "Tg02"; brush.variation = 0; }
+            const TerrainStrokePoint point{768,768}; Take(f.edits->EditTerrain(brush, std::span(&point,1), false));
+            if (cliff) terrain.vertices[60].cliffAndLayerRaw = 3; else terrain.vertices[60].textureAndFlagsRaw = 1;
+            for (unsigned y=cliff?20:22; y<(cliff?28u:26u); ++y) for (unsigned x=cliff?20:22; x<(cliff?28u:26u); ++x)
+                pathing[16+y*32+x] = cliff ? std::byte{0xdb} : std::byte{0x53};
+        }
+        const auto expected = Take(SerializeMapTerrain(terrain));
+        const auto owner = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot, kBudget));
+        Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot, owner.CaptureBudgetBytes()));
+        Require(!TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot, owner.CaptureBudgetBytes()-1).Succeeded(),
+            "special profile, texture, decoded layer and inputs share an exact bounded capture");
+        const auto plan = f.Plan(); const auto output = f.Output(plan);
+        auto stale = output; stale.push_back({"Units/MiscData.txt", Text("[Terrain]\nMaxHeight=1536\n")});
+        Require(!plan.VerifyForSave(*f.edits, f.archive->SourceSha256(), stale).Succeeded(),
+            "previously absent special profile cannot be inserted into frozen output");
+        auto changedTexture = f.Member(kUniformDoodadTexture); changedTexture[18] = std::byte{255};
+        const MemberReplacement changed{std::string(kUniformDoodadTexture), changedTexture};
+        auto tampered = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(f.root / "special-tampered.w3x", std::span(&changed,1))).path));
+        Require(!owner.VerifyReadback(tampered, kBudget).Succeeded(), "readback binds actual special TGA bytes");
+        f.SaveExpected("special-edited.w3x", expected, pathing);
+        Require(f.edits->Undo(), "undo terrain with preserved special models");
+        f.SaveExpected("special-undone.w3x", f.Member("war3map.w3e"), f.Member("war3map.wpm"));
+        Require(f.edits->Redo(), "redo terrain with preserved special models");
+        f.SaveExpected("special-redone.w3x", expected, pathing);
+    }
+    Fixture bad; SpecialDoodad(bad, true); bad.Open();
+    TerrainBrush cliff; cliff.kind = TerrainBrushKind::CliffLevel; cliff.radius = 0; cliff.levelDelta = 1;
+    const TerrainStrokePoint point{256,256}; Take(bad.edits->EditTerrain(cliff, std::span(&point,1), false));
+    const auto originalSha = bad.archive->SourceSha256();
+    const auto refusal = bad.Plan().SaveGate();
+    Require(!refusal.Succeeded() && HasCode(refusal, "TERRAIN_SPECIAL_CLIFF_CHANGED"),
+        "cliff edit that would delete the special model is refused explicitly");
+    Require(bad.edits->IsDirty() && Take(Sha256File(bad.archive->SourcePath())) == originalSha,
+        "special-model refusal preserves the source and unsaved terrain");
+}
 } // namespace
 
 int main() {
@@ -928,6 +1013,7 @@ int main() {
         UniformDoodadDuplicateInstancesHaveABoundedPixelWorkload();
         UniformDoodadRejectionDoesNotWeakenOldSaves();
         PatternedDoodadsUseTheNormalSaveAndUndoChain();
+        SpecialDoodadsSaveWaterGroundAndCliffs();
         std::cout << "Native object terrain save tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

@@ -407,7 +407,7 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
                     if (!member.present) Fail("TERRAIN_NATIVE_DOODADS_MISSING", "尚未证明缺失DOO等价于完整空对象集合。");
                     PlacementReadLimits placementLimits; placementLimits.maxBytes = maximumBytes;
                     doodads = Take(ParseDoodadPlacements(member.bytes, placementLimits));
-                    if (!doodads->specialDoodads.empty())
+                    if (!doodads->specialDoodads.empty() && !validator)
                         Fail("TERRAIN_NATIVE_SPECIAL_UNSUPPORTED", "war3map.doo 特殊地形记录0（地格"
                             + std::to_string(doodads->specialDoodads.front().position[0]) + ","
                             + std::to_string(doodads->specialDoodads.front().position[1]) + "）尚未接入原版通行重建。");
@@ -427,7 +427,7 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
                 Fail(nativeOverrides ? "TERRAIN_NATIVE_OBJECT_OVERRIDE_UNSUPPORTED" : "TERRAIN_NATIVE_OBJECT_ADAPTER_REQUIRED",
                     "非空普通DOO需要严格对象解析适配，不能只凭可破坏物单表证明类别和静态贡献。");
         }
-        const bool typedObjects = native && !doodads->doodads.empty() && validator;
+        const bool typedObjects = native && (!doodads->doodads.empty() || !doodads->specialDoodads.empty()) && validator;
         if (typedObjects) {
             // 有无W3B均核对实际对象类别；W3D缺失也固定身份，不能用新导入遮蔽分类。
             const std::array<std::string, 1> names{"war3map.w3d"};
@@ -516,12 +516,16 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
         if (!resources.Succeeded()) throw Failure{resources.diagnostics};
         if (typedObjects) {
             // 在reserve之前检查列表额度；validator的累计工作预留包括这块空间。
-            if (doodads->doodads.size() > (maximumBytes - result.sourceBytes_) / (sizeof(std::string_view) * 4))
+            const auto records = doodads->doodads.size() + doodads->specialDoodads.size();
+            if (records > (maximumBytes - result.sourceBytes_) / (sizeof(std::string_view) * 4))
                 Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "摆放分类列表超过剩余解析预算。");
             std::vector<std::string_view> rawcodes;
             rawcodes.reserve(doodads->doodads.size());
             for (const auto& object : doodads->doodads) rawcodes.emplace_back(object.rawcode);
-            auto validated = (*validator)(rawcodes, objectSources, maximumBytes - result.sourceBytes_);
+            std::vector<std::string_view> specialRawcodes;
+            specialRawcodes.reserve(doodads->specialDoodads.size());
+            for (const auto& object : doodads->specialDoodads) specialRawcodes.emplace_back(object.rawcode);
+            auto validated = (*validator)(rawcodes, specialRawcodes, objectSources, maximumBytes - result.sourceBytes_);
             // 旧五项域不增加依赖；只有可信adapter的精确单一请求才补捕获新域所需表。
             // 首轮解析临时对象已释放，补捕获后按新的剩余额度从头重验，最多一次。
             if (!validated.value && validated.diagnostics.size() == 1
@@ -534,7 +538,7 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
                         objectSources.push_back({extra[0], present, std::move(bytes)});
                     });
                 if (!captured.Succeeded()) throw Failure{captured.diagnostics};
-                validated = (*validator)(rawcodes, objectSources, maximumBytes - result.sourceBytes_);
+                validated = (*validator)(rawcodes, specialRawcodes, objectSources, maximumBytes - result.sourceBytes_);
             }
             auto objectPathing = Take(std::move(validated));
             result.objectWorkBytes_ = objectPathing.workBytes;
@@ -543,6 +547,14 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
             if (!objectPathing.footprints.empty()) {
                 const auto captured = result.CaptureNativeFootprints(reader, before.header,
                     doodads->doodads, objectPathing.footprints);
+                if (!captured.Succeeded()) throw Failure{captured.diagnostics};
+            }
+            if (!doodads->specialDoodads.empty()) {
+                const bool nonempty = std::any_of(objectPathing.specialFootprints.begin(), objectPathing.specialFootprints.end(),
+                    [](const auto& type) { return !type.pathTexture.empty(); });
+                const auto maximumLevel = nonempty ? Take(result.CaptureSpecialCliffLimit(reader)) : std::uint8_t{0};
+                const auto captured = result.CaptureSpecialFootprints(reader, before, after,
+                    doodads->specialDoodads, objectPathing.specialFootprints, maximumLevel);
                 if (!captured.Succeeded()) throw Failure{captured.diagnostics};
             }
         }
@@ -717,6 +729,45 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureWaterBrushInputs
     });
 }
 
+Result<std::uint8_t> TerrainPathingResources::CaptureSpecialCliffLimit(const MemberReader& reader) {
+    return Guard<std::uint8_t>([&] {
+        std::vector<std::string> names;
+        names.reserve(kClassicProfiles.size() + 1);
+        for (const auto& profile : kClassicProfiles) names.emplace_back(profile.path);
+        names.emplace_back("war3mapMisc.txt");
+        // 与水刷使用同一完整初始化profile集合；不能只看MiscData的一处默认值。
+        constexpr std::size_t perSource = sizeof(ArchiveExactMember) + 2 * sizeof(Dependency) + 8 * 260;
+        if (sourceBytes_ > capturedMaximumBytes_ || objectWorkBytes_ > capturedMaximumBytes_ - sourceBytes_
+            || names.size() > (capturedMaximumBytes_ - sourceBytes_ - objectWorkBytes_) / perSource)
+            Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "特殊地形层级配置超过剩余捕获预算。");
+        objectWorkBytes_ += names.size() * perSource;
+        std::optional<float> maximum;
+        bool unconditional = false;
+        auto status = CaptureResourceMembers(reader, names, 0, [&](std::size_t i, bool present, std::vector<std::byte>&& bytes) {
+            if (!present) return;
+            if (i == kClassicProfiles.size())
+                Fail("TERRAIN_SPECIAL_RULE_SOURCE", "war3mapMisc.txt不属于已闭合的特殊地形初始化规则链。");
+            std::string_view text;
+            if (!bytes.empty()) text = {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+            if (text.starts_with("\xef\xbb\xbf")) text.remove_prefix(3);
+            if (text.find('\0') != std::string_view::npos)
+                Fail("TERRAIN_SPECIAL_RULE_SOURCE", "特殊地形配置含未知NUL/编码：" + names[i]);
+            Text::VisitProfileFields(text, [&](std::string_view section, std::string_view key, std::string_view value) {
+                if (section != "terrain" || key != "maxheight") return;
+                SameScalar(maximum, Number(value, "Terrain.MaxHeight"), "Terrain.MaxHeight");
+                unconditional |= kClassicProfiles[i].alwaysLoad;
+            });
+        });
+        if (!status.Succeeded()) throw Failure{std::move(status.diagnostics)};
+        if (!maximum || !unconditional)
+            Fail("TERRAIN_SPECIAL_RULE_SOURCE", "特殊地形需要固定加载链中明确的Terrain.MaxHeight。");
+        const auto level = std::trunc((static_cast<double>(*maximum) + 256.0) / 128.0);
+        if (level < 0 || level > 14)
+            Fail("TERRAIN_SPECIAL_RULE_SOURCE", "实际特殊地形层级上限超出0..14支持域。");
+        return static_cast<std::uint8_t>(level);
+    });
+}
+
 Status TerrainPathingResources::VerifyWaterBrushInput(const TerrainGridSnapshot& sourceTerrain,
     const TerrainGridSnapshot& currentTerrain) const {
     auto checked = Guard<bool>([&] {
@@ -772,6 +823,7 @@ Result<std::vector<std::byte>> TerrainPathingResources::GenerateNative(const Ter
         input.terrain = &terrain; input.playableBounds = *nativeBounds_;
         input.groundRules = nativeGround_; input.water = waterRules_;
         input.staticAttributes = nativeStaticAttributes_;
+        input.specialDoodadCount = nativeSpecialCount_; input.specialAttributes = nativeSpecialAttributes_;
         // selector2来自完整对象集合与同次实际占地资源；Units普通层4/8不进入保存。
         return Take(GenerateTerrainNativePathing(input, maximumBytes));
     });
@@ -891,7 +943,7 @@ std::size_t TerrainPathingResources::OwnedCapacityBytes() const noexcept {
         bytes += value.name.capacity() + value.sha256.capacity() + value.gameArchive.capacity() + 3;
     for (const auto& [name, properties] : ground_) { (void)properties; bytes += name.capacity() + 1 + 128; }
     bytes += nativeGround_.capacity() * sizeof(TerrainNativeGroundRule) + nativeDoodads_.capacity()
-        + nativeStaticAttributes_.capacity();
+        + nativeStaticAttributes_.capacity() + nativeSpecialAttributes_.capacity();
     for (const auto& rule : nativeGround_) bytes += rule.rawcode.capacity() + 1;
     for (const auto& sha : nativeTerrainSha_) bytes += sha.capacity() + 1;
     bytes += waterBrushInputSha_.capacity() + 1;

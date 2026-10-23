@@ -17,6 +17,12 @@ namespace War3Map::ObjectData {
     std::span<const std::string_view> placedRawcodes, std::span<const ArchiveExactMember> sources,
     std::size_t maximumWorkingBytes);
 
+// 特殊DOO共用实际DoodadData字段继承；其pathTex与普通对象分开返回，
+// 不借用普通占地的category/fixedRot或RGB非零规则。
+[[nodiscard]] Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(
+    std::span<const std::string_view> placedRawcodes, std::span<const std::string_view> specialRawcodes,
+    std::span<const ArchiveExactMember> sources, std::size_t maximumWorkingBytes);
+
 // 无占地兼容入口使用同一解析器，仍拒绝任何非空占地；成功值为解析工作预留。
 [[nodiscard]] Result<std::size_t> ValidateNativeDestructablePathing(
     std::span<const std::string_view> placedRawcodes, std::span<const ArchiveExactMember> sources,

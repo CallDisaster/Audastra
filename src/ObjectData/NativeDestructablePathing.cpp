@@ -221,8 +221,8 @@ std::string_view EffectiveDoodadPath(const StandardObjectEntry& standard, const 
 }
 } // namespace
 
-Result<MapData::TerrainNativeObjectPathing> InspectNativeDestructablePathing(std::span<const std::string_view> placedRawcodes,
-    std::span<const ArchiveExactMember> sources, std::size_t maximumWorkingBytes) {
+Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::span<const std::string_view> placedRawcodes,
+    std::span<const std::string_view> specialRawcodes, std::span<const ArchiveExactMember> sources, std::size_t maximumWorkingBytes) {
     try {
         constexpr std::array<std::string_view, 6> paths{"war3map.w3b", "war3map.w3d", "units/destructabledata.slk",
             "doodads/doodads.slk", "units/destructablemetadata.slk", "doodads/doodadmetadata.slk"};
@@ -242,9 +242,10 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeDestructablePathing(std
         }
         if (std::any_of(inputs.begin(), inputs.begin() + 5, [](const auto* input) { return !input; }))
             Fail("TERRAIN_NATIVE_OBJECT_SOURCE", "严格对象捕获缺少基础来源。");
-        if (placedRawcodes.size() > (maximumWorkingBytes - work) / (sizeof(std::string_view) * 4))
+        const auto availableRecords = (maximumWorkingBytes - work) / (sizeof(std::string_view) * 4);
+        if (placedRawcodes.size() > availableRecords || specialRawcodes.size() > availableRecords - placedRawcodes.size())
             Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "摆放分类工作超过累计剩余预算。");
-        work += placedRawcodes.size() * sizeof(std::string_view) * 4;
+        work += (placedRawcodes.size() + specialRawcodes.size()) * sizeof(std::string_view) * 4;
         UniqueTable(*inputs[2], "destructableid"); UniqueTable(*inputs[3], "doodid");
         const auto metadataCells = UniqueTable(*inputs[4], "id");
         const auto reader = [&](const std::string& path) -> Result<std::vector<std::byte>> {
@@ -270,12 +271,15 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeDestructablePathing(std
         const auto* destructables = dynamic_cast<const NativeObjectDocument*>(destructableOwner.get());
         const auto* doodads = dynamic_cast<const NativeObjectDocument*>(doodadOwner.get());
         const auto destructableIndex = Index(destructables), doodadIndex = Index(doodads);
-        std::set<std::string_view> inspected;
+        std::set<std::pair<bool, std::string_view>> inspected;
         // path和标准父ID均借用同次解析的owner，最终结果另拥有字符串。
         std::map<std::string_view, std::pair<std::string_view, std::string_view>, std::less<>> footprintPaths;
-        for (const auto rawcode : placedRawcodes) {
+        std::map<std::string_view, std::string_view, std::less<>> specialPaths;
+        for (std::size_t row = 0; row < placedRawcodes.size() + specialRawcodes.size(); ++row) {
+            const bool special = row >= placedRawcodes.size();
+            const auto rawcode = special ? specialRawcodes[row - placedRawcodes.size()] : placedRawcodes[row];
             if (!Rawcode(rawcode)) Fail("TERRAIN_NATIVE_OBJECT_ID", "摆放记录rawcode无效。");
-            if (!inspected.insert(rawcode).second) continue;
+            if (!inspected.emplace(special, rawcode).second) continue;
             const auto* standard = catalog.Find(ObjectType::Destructable, rawcode);
             const auto record = destructableIndex.find(rawcode);
             const auto* native = record == destructableIndex.end() ? nullptr : record->second;
@@ -284,7 +288,9 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeDestructablePathing(std
             const auto* nativeDoodad = doodadRecord == doodadIndex.end() ? nullptr : doodadRecord->second;
             if ((standardDoodad || nativeDoodad) && (standard || native))
                 Fail("TERRAIN_NATIVE_OBJECT_CLASS_AMBIGUOUS", "摆放对象同时命中装饰物与可破坏物：" + std::string(rawcode));
-            if (standardDoodad || nativeDoodad) {
+            if (special || standardDoodad || nativeDoodad) {
+                if (special && (standard || native))
+                    Fail("TERRAIN_NATIVE_OBJECT_CLASS_AMBIGUOUS", "特殊地形记录不能按可破坏物解释：" + std::string(rawcode));
                 if (nativeDoodad && nativeDoodad->parentRawcode) {
                     const auto& parent = *nativeDoodad->parentRawcode;
                     if (standardDoodad || doodadIndex.contains(parent) || destructableIndex.contains(parent)
@@ -313,7 +319,16 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeDestructablePathing(std
                     }
                     value = EffectiveDoodadPath(*standardDoodad, *nativeDoodad, *doodads, *doodadSchema, value, poseModified);
                 }
-                if (!value.empty() && value != "_" && value != "none") {
+                const bool nonempty = !value.empty() && value != "_" && value != "none";
+                if (special) {
+                    const auto path = nonempty ? value : std::string_view{};
+                    const auto outputWork = sizeof(std::string_view) * 5 + sizeof(MapData::TerrainNativeDoodadPathingType)
+                        + rawcode.size() + path.size() + 2;
+                    if (outputWork > maximumWorkingBytes - work)
+                        Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "特殊地形占地结果超过累计剩余预算。");
+                    work += outputWork;
+                    specialPaths.emplace(rawcode, path);
+                } else if (nonempty) {
                     if (poseModified)
                         Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "非空占地的类别或fixedRot原生覆盖尚未接入，不能沿用标准姿态：" + std::string(rawcode));
                     const auto category = standardDoodad->fields.find("category");
@@ -380,10 +395,18 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeDestructablePathing(std
         for (const auto& [rawcode, resolved] : footprintPaths)
             result.footprints.push_back({std::string(rawcode), std::string(resolved.first), 2,
                 FixedRotation(catalog.Find(ObjectType::Doodad, resolved.second)->Field("fixedrot"))});
+        result.specialFootprints.reserve(specialPaths.size());
+        for (const auto& [rawcode, path] : specialPaths)
+            result.specialFootprints.push_back({std::string(rawcode), std::string(path), 0, std::nullopt});
         return Result<MapData::TerrainNativeObjectPathing>::Success(std::move(result));
     } catch (Failure& failure) { return {{}, std::move(failure.diagnostics)}; }
     catch (const std::bad_alloc&) { return Result<MapData::TerrainNativeObjectPathing>::Failure(kSubsystem, "TERRAIN_NATIVE_OBJECT_BUDGET", "严格对象解析内存分配失败。"); }
     catch (const std::length_error&) { return Result<MapData::TerrainNativeObjectPathing>::Failure(kSubsystem, "TERRAIN_NATIVE_OBJECT_BUDGET", "严格对象解析容器容量不足。"); }
+}
+
+Result<MapData::TerrainNativeObjectPathing> InspectNativeDestructablePathing(std::span<const std::string_view> placedRawcodes,
+    std::span<const ArchiveExactMember> sources, std::size_t maximumWorkingBytes) {
+    return InspectNativeTerrainObjects(placedRawcodes, {}, sources, maximumWorkingBytes);
 }
 
 Result<std::size_t> ValidateNativeDestructablePathing(std::span<const std::string_view> placedRawcodes,

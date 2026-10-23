@@ -198,17 +198,18 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         const auto expectedW3e = Take(SerializeMapTerrain(after));
         const bool hasW3d = original.HasMember("war3map.w3d");
         const auto sourceW3d = hasW3d ? Take(original.ReadMember("war3map.w3d")) : std::vector<std::byte>{};
-        // 八场景复用一次原创地图创建、脚本编译和实际表捕获；原对象及自定义对象均走公开保存。
-        constexpr std::array<const char*, 8> scenarioNames{"destructable", "mixed-doodad", "original-doodad", "uniform-doodad",
-            "patterned-doodad", "original-patterned", "custom-patterned", "custom-cleared"};
+        // 九场景复用一次原创地图创建、脚本编译和实际表捕获；特殊DOO也走公开保存。
+        constexpr std::array<const char*, 9> scenarioNames{"destructable", "mixed-doodad", "original-doodad", "uniform-doodad",
+            "patterned-doodad", "original-patterned", "custom-patterned", "custom-cleared", "special-doodad"};
         for (unsigned index = 0; index < scenarioNames.size(); ++index) {
-            const bool withDoodad = index != 0, withOriginal = index == 2 || index == 5, withUniform = index == 3;
-            const bool withPattern = index == 4 || index == 5 || index == 6, withCustom = index >= 6;
+            const bool withSpecial = index == 8;
+            const bool withDoodad = index != 0 && !withSpecial, withOriginal = index == 2 || index == 5, withUniform = index == 3;
+            const bool withPattern = index == 4 || index == 5 || index == 6, withCustom = index == 6 || index == 7;
             const bool withNative = withOriginal || withCustom;
             const std::string selectedDoodad = withCustom ? "Zr01" : withPattern ? patternedRawcode : withUniform ? uniformRawcode
                 : withOriginal ? originalDoodadRawcode : doodadRawcode;
             auto nativeW3d = originalDoodadW3d;
-            if (index >= 5) {
+            if (index >= 5 && !withSpecial) {
                 const auto& parent = withPattern ? patternedRawcode : uniformRawcode;
                 auto document = Take(NativeObjectDocument::CreateEmpty(ObjectType::Doodad));
                 if (withCustom) {
@@ -223,6 +224,7 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
             const auto scenario = directory.path / scenarioNames[index];
             Require(std::filesystem::create_directory(scenario), "exclusive real-source scenario directory");
             auto placements = doodads;
+            if (withSpecial) placements.specialDoodads.push_back({uniformRawcode, 0, {34,32}});
             if (withDoodad) {
                 auto added = placed; added.rawcode = selectedDoodad; added.creationId = 2;
                 if (withUniform || withPattern) {
@@ -245,7 +247,8 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
             Require(oldNative != newNative, "each public save scenario crosses a real water pathing threshold");
             std::cout << "selected_object=" << rawcode << " metadata_field=" << walkable.fieldId
                 << " doodad=" << (withDoodad ? selectedDoodad : "absent") << " original=" << withOriginal << " custom=" << withCustom
-                << " standard_pathTex=" << (withPattern ? patternedPath : (withUniform || withCustom) ? uniformPath : withOriginal ? originalDoodadPath : withDoodad ? doodadPath : "not-applicable")
+                << " special=" << (withSpecial ? uniformRawcode : "absent")
+                << " standard_pathTex=" << (withPattern ? patternedPath : (withUniform || withCustom || withSpecial) ? uniformPath : withOriginal ? originalDoodadPath : withDoodad ? doodadPath : "not-applicable")
                 << " pathTex_field=" << (withNative ? pathField(withPattern ? patternedRawcode : uniformRawcode).fieldId : "not-applicable")
                 << " captured_bytes=" << rules.SourceBytes() << " cumulative_capture_budget=" << rules.CaptureBudgetBytes() << '\n';
             auto wpm = Take(seeded.ReadMember("war3map.wpm"));

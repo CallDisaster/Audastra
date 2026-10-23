@@ -153,6 +153,12 @@ foreach(service_test IN ITEMS MapArchiveSession MapBackupInspection ProjectStore
     add_test(NAME core-${service_test} COMMAND war3-map-${service_test}-tests)
 endforeach()
 
+add_executable(war3-map-TerrainSpecialDoodadPathing-tests TerrainSpecialDoodadPathingTests.cpp)
+target_link_libraries(war3-map-TerrainSpecialDoodadPathing-tests PRIVATE War3MapEditor::Core)
+target_compile_definitions(war3-map-TerrainSpecialDoodadPathing-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(war3-map-TerrainSpecialDoodadPathing-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME core-TerrainSpecialDoodadPathing COMMAND war3-map-TerrainSpecialDoodadPathing-tests)
+
 foreach(backup_group IN ITEMS inventory identity budgets reparse)
     add_test(NAME core-map-backup-${backup_group} COMMAND war3-map-MapBackupInspection-tests ${backup_group})
     set_tests_properties(core-map-backup-${backup_group} PROPERTIES TIMEOUT 45)
