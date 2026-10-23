@@ -638,7 +638,8 @@ void ForwardJournalRestoresOwnedSpecialDeletionAndRejectsDrift() {
         f.members[0].data, f.members[1].data, decoded, *replayed.session, f.game));
     Require(restored.receipts.size() == intents.size() && restored.waterOwners.size() == 2
         && restored.session->RequiresTerrainStrokeJournal(), "only actual replay restores special deletion lineage");
-    Require(TerrainPathingSave::PrepareForSave(*f.source, *restored.session, f.game).Succeeded(),
+    const auto restoredPlan = Take(TerrainPathingSave::PrepareForSave(*f.source, *restored.session, f.game));
+    Require(restoredPlan.SaveGate().Succeeded(),
         "restored private special lineage reaches the unchanged native save plan");
     Require(restored.session->Replay(restored.receipts.back(), false).Succeeded()
         && Take(restored.session->ExportTerrainStrokeJournal()).strokes.size() == 2,
@@ -662,11 +663,21 @@ void ForwardJournalRestoresOwnedSpecialDeletionAndRejectsDrift() {
     Require(raw->SetTerrain(before).Succeeded(), "old terrain draft remains readable");
     for (const auto& member : replayed.session->Replacements()) if (member.name == "war3map.doo")
         Require(raw->SetSerialized(MapDataKind::Doodads, member.data).Succeeded(), "complete final raw DOO remains readable");
-    Require(!raw->RequiresTerrainStrokeJournal()
-        && !TerrainPathingSave::PrepareForSave(*f.source, *raw, f.game).Succeeded(),
+    Require(!raw->RequiresTerrainStrokeJournal(), "raw overlay does not acquire private special lineage");
+    // Prepare成功只表示完整计划；真正的保存门及最终写出门都必须拒绝缺少私有来源的DOO。
+    const auto rawPlan = Take(TerrainPathingSave::PrepareForSave(*f.source, *raw, f.game));
+    Require(!rawPlan.SaveGate().Succeeded() && !rawPlan.RebuiltPathing()
+        && HasCode(rawPlan.SaveGate(), "TERRAIN_SPECIAL_PROVENANCE_REQUIRED"),
         "raw overlay and matching bytes cannot install private special provenance");
-    Require(TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members), f.members[0].data,
-        f.members[1].data, decoded, *raw, f.game).Succeeded(), "raw draft can only gain provenance through complete owned replay");
+    const auto rawOutput = raw->Replacements();
+    const auto rawSave = rawPlan.VerifyForSave(*raw, f.source->SourceSha256(), rawOutput);
+    Require(!rawSave.Succeeded() && HasCode(rawSave, "TERRAIN_SPECIAL_PROVENANCE_REQUIRED"),
+        "the final save gate also rejects the raw matching special output");
+    auto restoredRaw = Take(TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members), f.members[0].data,
+        f.members[1].data, decoded, *raw, f.game));
+    const auto restoredRawPlan = Take(TerrainPathingSave::PrepareForSave(*f.source, *restoredRaw.session, f.game));
+    Require(restoredRaw.session->RequiresTerrainStrokeJournal() && restoredRawPlan.SaveGate().Succeeded(),
+        "raw draft can only gain provenance through complete owned replay");
     TerrainReplayLimits tight; tight.maximumWork = 1;
     const auto overBudget = TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members),
         f.members[0].data, f.members[1].data, decoded, *replayed.session, f.game, tight);
