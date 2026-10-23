@@ -298,7 +298,7 @@ void PlayableWaterUsesPublicSave(const MapArchiveSession& original,
     MapEditTerrainStroke stroke; stroke.pointSpace = MapEditPointSpace::TerrainVertex; stroke.points = {{32, 32}};
     TerrainWaterStrokeOptions options;
     options.kind = deep ? TerrainWaterBrushKind::Deep : TerrainWaterBrushKind::Shallow;
-    options.shape = TerrainBrushShape::Square; options.size = 2; options.cliffTexture = 0; options.seed = 42;
+    options.shape = TerrainBrushShape::Square; options.size = 2; options.cliffTexture = 0; options.randomSeed = 42;
     options.enforceWaterLimits = true; stroke.waterBrush = options; request.terrainStrokes = {stroke};
     const auto saved = Take(SaveMapEditCandidate(request));
     const auto readback = Take(MapArchiveSession::Open(saved.candidate));
