@@ -143,15 +143,15 @@ struct Fixture {
         Check(plan.SaveGate()); auto output = edits->Replacements(); Check(plan.InstallPathingOutput(*edits, output));
         Check(plan.VerifyForSave(*edits, archive->SourceSha256(), output)); return output;
     }
-    void Save(const char* name, bool deep) {
+    void SaveExpected(const char* name, const Bytes& terrain, const Bytes& pathing) {
         const auto sourcePath = archive->SourcePath();
         const auto sourceSha = Take(Sha256File(sourcePath));
         const auto plan = Plan(); Check(plan.SaveGate()); Require(plan.RebuiltPathing(), "native pathing rebuilt");
         const auto output = Output(plan);
         auto saved = Take(MapArchiveSession::Open(Take(archive->SaveCandidate(root / name, output)).path));
         Check(plan.VerifyReadback(saved));
-        Require(Take(saved.ReadMember("war3map.w3e")) == ExpectedTerrain(deep), "full independent W3E expected bytes");
-        Require(Take(saved.ReadMember("war3map.wpm")) == ExpectedPathing(deep), "full independent WPM expected bytes");
+        Require(Take(saved.ReadMember("war3map.w3e")) == terrain, "full independent W3E expected bytes");
+        Require(Take(saved.ReadMember("war3map.wpm")) == pathing, "full independent WPM expected bytes");
         for (const auto& member : members) if (member.name != "war3map.w3e" && member.name != "war3map.wpm")
             Require(Take(saved.ReadMember(member.name)) == member.data, "all unrelated members preserved exactly");
         Require(Take(Sha256File(sourcePath)) == sourceSha, "save does not rewrite source archive");
@@ -159,6 +159,7 @@ struct Fixture {
         Require(!edits->IsDirty(), "verified saved source becomes the clean baseline");
         archive = std::make_unique<MapArchiveSession>(std::move(saved));
     }
+    void Save(const char* name, bool deep) { SaveExpected(name, ExpectedTerrain(deep), ExpectedPathing(deep)); }
     std::filesystem::path Directory() const {
         const auto directory = root / "directory"; Require(std::filesystem::create_directory(directory), "private directory fixture");
         for (const auto& member : members) {
@@ -168,6 +169,96 @@ struct Fixture {
         return directory;
     }
 };
+
+void StandardDoodad(Fixture& fixture, bool mixed = false) {
+    auto placements = Take(ParseDoodadPlacements(fixture.Member("war3map.doo")));
+    auto doodad = placements.doodads.front(); doodad.rawcode = "Doo0"; doodad.creationId = 2;
+    if (!mixed) {
+        placements.doodads.clear();
+        std::erase_if(fixture.members, [](const auto& member) { return member.name == "war3map.w3b"; });
+    }
+    placements.doodads.push_back(std::move(doodad));
+    fixture.Member("war3map.doo") = Take(placements.Serialize());
+    fixture.Member("Doodads/Doodads.slk") = Slk({"doodID", "code", "pathTex"}, {{"Doo0", "Doo0", "_"}});
+}
+
+Bytes DoodadOverride() {
+    auto document = Take(NativeObjectDocument::CreateEmpty(ObjectType::Doodad));
+    Check(document.AddOriginalObject("Doo0"));
+    return Take(NativeObjectCodec(ObjectType::Doodad).Serialize(document));
+}
+
+void StandardDoodadsUseTheNormalSaveAndUndoChain() {
+    Fixture f; StandardDoodad(f); f.Open(); f.Paint();
+    const auto owner = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, kBudget));
+    const auto plan = f.Plan(); const auto output = f.Output(plan);
+    Check(owner.VerifyFrozenOutput(output, {}));
+    auto saved = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(f.root / "doodad-correct.w3x", output)).path));
+    Check(plan.VerifyReadback(saved));
+    const std::array<MemberReplacement, 2> changes{{
+        {"Doodads/Doodads.slk", Slk({"doodID", "code", "pathTex"}, {{"Doo0", "Doo0", "none"}})},
+        {"war3map.w3d", DoodadOverride()}}};
+    for (std::size_t i = 0; i < changes.size(); ++i) {
+        auto altered = output; altered.push_back(changes[i]);
+        Require(!owner.VerifyFrozenOutput(altered, {}).Succeeded(), "doodad fields and missing W3D remain source-bound even for semantically empty pathTex");
+        const auto tampered = Take(MapArchiveSession::Open(Take(saved.SaveCandidate(
+            f.root / ("doodad-changed-" + std::to_string(i) + ".w3x"), std::span(&changes[i], 1))).path));
+        Require(!owner.VerifyReadback(tampered, kBudget).Succeeded(), "doodad dependency changes must fail independent readback");
+    }
+    const auto directory = f.Directory();
+    const auto workspace = Take(DirectoryWorkspace::Open(directory));
+    const TerrainStrokeIntent intent{f.Water(), {f.point}, false};
+    Take(TerrainPathingSave::Seal(MapDocument::FromMembers(f.members), f.Member("war3map.w3e"), f.Member("war3map.wpm"),
+        workspace.Snapshot(), *f.edits, std::span(&intent, 1)));
+    Check(IO::WriteFileBytes(directory / "war3map.w3d", DoodadOverride()));
+    Require(!TerrainPathingSave::Seal(MapDocument::FromMembers(f.members), f.Member("war3map.w3e"), f.Member("war3map.wpm"),
+        workspace.Snapshot(), *f.edits, std::span(&intent, 1)).Succeeded(), "directory recipe cannot add an unexamined doodad override");
+    f.Save("doodad-deep.w3x", true);
+    Require(f.edits->Undo(), "undo saved doodad water edit"); f.Save("doodad-shallow.w3x", false);
+    Require(f.edits->Redo(), "redo saved doodad water edit"); f.Save("doodad-deep-again.w3x", true);
+
+    Fixture mixed; StandardDoodad(mixed, true); mixed.Open(); mixed.Paint(); mixed.Save("mixed-deep.w3x", true);
+    Fixture old; StandardDoodad(old); old.Member("war3map.wpm")[16] |= std::byte{0x04}; old.Open(); old.Paint();
+    const auto unexplained = old.Plan();
+    Require(!unexplained.SaveGate().Succeeded() && HasCode(unexplained.SaveGate(), "TERRAIN_PATHING_SOURCE_UNEXPLAINED"),
+        "standard zero-footprint doodad must not hide unexplained source WPM bits");
+    Fixture overridden; StandardDoodad(overridden); overridden.members.push_back({"war3map.w3d", DoodadOverride()});
+    overridden.Open(); overridden.Paint();
+    const auto refused = overridden.Plan();
+    Require(!refused.SaveGate().Succeeded() && HasCode(refused.SaveGate(), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED"),
+        "normal save rejects even an empty Original override on the placed doodad");
+}
+
+void StandardDoodadsAllowActualCliffAndGroundPathingChanges() {
+    for (const bool cliff : {false, true}) {
+        Fixture f; StandardDoodad(f, true);
+        f.original.header.groundTilesets.push_back("Tg02");
+        for (auto& vertex : f.original.vertices) vertex.textureAndFlagsRaw = 0;
+        RefreshTerrainDerived(f.original, 0, 0, 9, 9);
+        f.Member("war3map.w3e") = Take(SerializeMapTerrain(f.original));
+        std::fill(f.Member("war3map.wpm").begin() + 16, f.Member("war3map.wpm").end(), std::byte{0x51});
+        f.Member("TerrainArt/Terrain.slk") = Slk({"tileID", "walkable", "flyable", "buildable"},
+            {{"Tg01", "1", "1", "1"}, {"Tg02", "0", "1", "1"}});
+        f.Open();
+        TerrainBrush brush; brush.radius = 0;
+        if (cliff) { brush.kind = TerrainBrushKind::CliffLevel; brush.levelDelta = 1; }
+        else { brush.kind = TerrainBrushKind::Texture; brush.groundTexture = "Tg02"; brush.variation = 0; }
+        Take(f.edits->EditTerrain(brush, std::span(&f.point, 1), false));
+        auto expectedTerrain = f.original;
+        if (cliff) expectedTerrain.vertices[40].cliffAndLayerRaw = 3;
+        else expectedTerrain.vertices[40].textureAndFlagsRaw = 1;
+        auto expectedPathing = f.Member("war3map.wpm");
+        // 独立预期：中心悬崖影响四个地格的8x8；地面属性只影响最近顶点的4x4。
+        const std::size_t low = cliff ? 12 : 14, high = cliff ? 20 : 18;
+        for (auto y = low; y < high; ++y) for (auto x = low; x < high; ++x)
+            expectedPathing[16 + y * 32 + x] = cliff ? std::byte{0xdb} : std::byte{0x53};
+        f.SaveExpected(cliff ? "doodad-cliff.w3x" : "doodad-ground.w3x", Take(SerializeMapTerrain(expectedTerrain)), expectedPathing);
+        Require(f.edits->Undo(), "undo saved mixed-object cliff/material edit");
+        f.SaveExpected("doodad-dry-restored.w3x", f.Member("war3map.w3e"), f.Member("war3map.wpm"));
+        Require(f.edits->Redo(), "redo saved mixed-object cliff/material edit");
+        f.SaveExpected("doodad-dry-redone.w3x", Take(SerializeMapTerrain(expectedTerrain)), expectedPathing);
+    }
+}
 
 void TypedOverrideUsesTheNormalSaveAndUndoChain() {
     for (const bool custom : {false, true}) {
@@ -374,6 +465,8 @@ void DirectoryRecipePreservesReplayAndSourceChecks() {
 
 int main() {
     try {
+        StandardDoodadsUseTheNormalSaveAndUndoChain();
+        StandardDoodadsAllowActualCliffAndGroundPathingChanges();
         TypedOverrideUsesTheNormalSaveAndUndoChain();
         MissingW3bStillUsesStrictClassificationAndTheSaveChain();
         DependencyReplacementRemovalAndReadbackStayBound();

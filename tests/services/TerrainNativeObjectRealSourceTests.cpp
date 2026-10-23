@@ -94,6 +94,7 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         schemaOptions.maximumFileBytes = 2u * 1024u * 1024u;
         const auto schema = Take(ObjectFieldSchema::Load(reader, schemaOptions));
         std::string rawcode;
+        std::string doodadRawcode, doodadPath;
         ModificationKey walkable;
         for (const auto& object : catalog.Entries()) {
             if (object.key.type != ObjectType::Destructable || object.Field("walkable") != "0"
@@ -108,6 +109,13 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
             rawcode = object.key.rawcode; walkable = field.modification; break;
         }
         Require(!rawcode.empty(), "actual metadata contains an unambiguous standard nonwalkable destructable");
+        for (const auto& object : catalog.Entries()) {
+            if (object.key.type != ObjectType::Doodad || catalog.Find(ObjectType::Destructable, object.key.rawcode)) continue;
+            const auto path = object.fields.find("pathtex");
+            if (path == object.fields.end() || (!path->second.empty() && path->second != "_" && path->second != "none")) continue;
+            doodadRawcode = object.key.rawcode; doodadPath = path->second; break;
+        }
+        Require(!doodadRawcode.empty(), "actual game table contains a uniquely classified standard doodad with explicitly disabled pathTex");
         auto native = Take(NativeObjectDocument::CreateEmpty(ObjectType::Destructable));
         Check(native.AddOriginalObject(rawcode));
         Check(native.AddModification({ObjectType::Destructable, rawcode}, walkable, NativeValueType::Int32, std::int32_t{0}));
@@ -116,56 +124,88 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         placed.rawcode = rawcode; placed.creationId = 1; placed.flags = 2; placed.scale = {1, 1, 1};
         placed.position = {before.header.offset[0] + 32 * 128, before.header.offset[1] + 32 * 128, 0};
         doodads.doodads.push_back(placed);
-        const auto doo = Take(doodads.Serialize());
         for (auto& vertex : before.vertices) {
             vertex.textureAndFlagsRaw |= 0x40;
             vertex.waterHeightAndFlagsRaw = static_cast<std::uint16_t>((vertex.waterHeightAndFlagsRaw & 0xc000) | (8192 + 160 * 4));
         }
         RefreshTerrainDerived(before, 0, 0, before.header.width, before.header.height);
         const auto beforeW3e = Take(SerializeMapTerrain(before));
-        const std::array<MemberReplacement, 3> seed{{{"war3map.w3e", beforeW3e}, {"war3map.doo", doo}, {"war3map.w3b", w3b}}};
-        auto seeded = Take(MapArchiveSession::Open(Take(original.SaveCandidate(directory.path / "seeded.w3x", seed)).path));
         auto after = before;
         const auto center = std::size_t{32} * before.header.width + 32;
         after.vertices[center].waterHeightAndFlagsRaw = static_cast<std::uint16_t>((after.vertices[center].waterHeightAndFlagsRaw & 0xc000) | 8192);
         const auto expectedW3e = Take(SerializeMapTerrain(after));
-        const auto rules = Take(TerrainPathingSave::CaptureNative(seeded, before, after, game, kSaveBytes));
-        const auto oldNative = Take(rules.GenerateNative(before, kSaveBytes));
-        const auto newNative = Take(rules.GenerateNative(after, kSaveBytes));
-        Require(oldNative != newNative, "selected water edit crosses a real pathing threshold");
-        std::cout << "selected_object=" << rawcode << " metadata_field=" << walkable.fieldId
-            << " captured_bytes=" << rules.SourceBytes() << " cumulative_capture_budget=" << rules.CaptureBudgetBytes() << '\n';
-        auto wpm = Take(seeded.ReadMember("war3map.wpm"));
-        Require(wpm.size() == oldNative.size() + 16 && oldNative.size() == newNative.size(), "real pathing shape matches original fixture");
-        auto expectedWpm = wpm;
-        for (std::size_t i = 0; i < oldNative.size(); ++i) {
-            wpm[i + 16] = (wpm[i + 16] & std::byte{0x11}) | oldNative[i];
-            expectedWpm[i + 16] = (wpm[i + 16] & std::byte{0x11}) | newNative[i];
+        const bool hasW3d = original.HasMember("war3map.w3d");
+        const auto sourceW3d = hasW3d ? Take(original.ReadMember("war3map.w3d")) : std::vector<std::byte>{};
+        // 两场景复用一次原创地图创建、脚本编译和实际表捕获；只增添自己的摆放记录。
+        for (const bool withDoodad : {false, true}) {
+            const auto scenario = directory.path / (withDoodad ? "mixed-doodad" : "destructable");
+            Require(std::filesystem::create_directory(scenario), "exclusive real-source scenario directory");
+            auto placements = doodads;
+            if (withDoodad) {
+                auto added = placed; added.rawcode = doodadRawcode; added.creationId = 2;
+                placements.doodads.push_back(std::move(added));
+            }
+            const auto doo = Take(placements.Serialize());
+            const std::array<MemberReplacement, 3> seed{{{"war3map.w3e", beforeW3e}, {"war3map.doo", doo}, {"war3map.w3b", w3b}}};
+            auto seeded = Take(MapArchiveSession::Open(Take(original.SaveCandidate(scenario / "seeded.w3x", seed)).path));
+            const auto rules = Take(TerrainPathingSave::CaptureNative(seeded, before, after, game, kSaveBytes));
+            const auto oldNative = Take(rules.GenerateNative(before, kSaveBytes));
+            const auto newNative = Take(rules.GenerateNative(after, kSaveBytes));
+            Require(oldNative != newNative, "each public save scenario crosses a real water pathing threshold");
+            std::cout << "selected_object=" << rawcode << " metadata_field=" << walkable.fieldId
+                << " doodad=" << (withDoodad ? doodadRawcode : "absent") << " pathTex=" << (withDoodad ? doodadPath : "not-applicable")
+                << " captured_bytes=" << rules.SourceBytes() << " cumulative_capture_budget=" << rules.CaptureBudgetBytes() << '\n';
+            auto wpm = Take(seeded.ReadMember("war3map.wpm"));
+            Require(wpm.size() == oldNative.size() + 16 && oldNative.size() == newNative.size(), "real pathing shape matches original fixture");
+            auto expectedWpm = wpm;
+            for (std::size_t i = 0; i < oldNative.size(); ++i) {
+                wpm[i + 16] = (wpm[i + 16] & std::byte{0x11}) | oldNative[i];
+                expectedWpm[i + 16] = (wpm[i + 16] & std::byte{0x11}) | newNative[i];
+            }
+            // 此原图一致性夹具复用生成器，只验证实际资源和公开保存链；不是原版算法对照。
+            const std::array<MemberReplacement, 1> pathing{{{"war3map.wpm", std::move(wpm)}}};
+            auto source = Take(MapArchiveSession::Open(Take(seeded.SaveCandidate(scenario / "source.w3x", pathing)).path));
+            const auto sourceSha = Take(Sha256File(source.SourcePath()));
+            MapEditSaveRequest request;
+            request.sourceMap = source.SourcePath(); request.targetCandidate = scenario / "saved.w3x";
+            request.toolRoot = tool; request.gameRoot = game;
+            request.expectedSourceSha256 = source.SourceSha256(); request.expectedTerrainSha256 = Take(Sha256(beforeW3e));
+            MapEditTerrainStroke stroke;
+            stroke.pointSpace = MapEditPointSpace::TerrainVertex; stroke.points = {{32, 32}};
+            stroke.brush.kind = TerrainBrushKind::WaterHeight; stroke.brush.radius = 0; stroke.brush.waterHeight = 0;
+            request.terrainStrokes = {stroke}; // 保留Automatic，覆盖最终小地图准备的正常保存路径。
+            const auto saved = Take(SaveMapEditCandidate(request));
+            Require(saved.scriptPreserved, "public terrain save preserves the original checked script");
+            const auto readback = Take(MapArchiveSession::Open(saved.candidate));
+            Require(Take(readback.ReadMember("war3map.w3e")) == expectedW3e, "complete independently edited W3E matches public output");
+            Require(Take(readback.ReadMember("war3map.wpm")) == expectedWpm, "complete WPM matches frozen actual source rules");
+            Require(Take(readback.ReadMember("war3map.j")) == sourceScript, "public save preserves every source script byte");
+            Require(Take(readback.ReadMember("war3map.w3b")) == w3b && Take(readback.ReadMember("war3map.doo")) == doo,
+                "public save preserves native object and placement bytes");
+            Require(readback.HasMember("war3map.w3d") == hasW3d && (!hasW3d || Take(readback.ReadMember("war3map.w3d")) == sourceW3d),
+                "public save preserves W3D content or its actual absence");
+            Require(Take(Sha256File(source.SourcePath())) == sourceSha, "public save leaves the source map untouched");
+            Check(rules.VerifyReadback(readback, kSaveBytes));
+            std::cout << "public_map_edit_save_passed source_sha256=" << sourceSha << " candidate_sha256=" << saved.candidateSha256
+                << " native_editor_verified=false game_verified=false\n";
+            if (withDoodad) {
+                auto overrideDocument = Take(NativeObjectDocument::CreateEmpty(ObjectType::Doodad));
+                Check(overrideDocument.AddOriginalObject(doodadRawcode));
+                const std::array<MemberReplacement, 1> related{{{"war3map.w3d", Take(NativeObjectCodec(ObjectType::Doodad).Serialize(overrideDocument))}}};
+                const auto overridden = Take(MapArchiveSession::Open(Take(source.SaveCandidate(scenario / "related-override.w3x", related)).path));
+                auto blocked = request;
+                blocked.sourceMap = overridden.SourcePath(); blocked.expectedSourceSha256 = overridden.SourceSha256();
+                blocked.targetCandidate = scenario / "must-not-exist.w3x";
+                const auto rejected = SaveMapEditCandidate(blocked);
+                Require(!rejected.Succeeded() && !rejected.value && std::any_of(rejected.diagnostics.begin(), rejected.diagnostics.end(), [](const auto& diagnostic) {
+                    return diagnostic.code == "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED";
+                }), "public save must reject even an empty Original override on the actual standard doodad");
+                Require(!std::filesystem::exists(blocked.targetCandidate), "refused public save must not produce a candidate");
+                Require(Take(Sha256File(overridden.SourcePath())) == overridden.SourceSha256()
+                    && Take(Sha256File(source.SourcePath())) == sourceSha, "refused public save preserves both source copies");
+                std::cout << "related_doodad_override_refused source_sha256=" << overridden.SourceSha256() << '\n';
+            }
         }
-        // 此原图一致性夹具复用生成器，只验证实际资源和公开保存链；不是原版算法对照。
-        const std::array<MemberReplacement, 1> pathing{{{"war3map.wpm", std::move(wpm)}}};
-        auto source = Take(MapArchiveSession::Open(Take(seeded.SaveCandidate(directory.path / "source.w3x", pathing)).path));
-        const auto sourceSha = Take(Sha256File(source.SourcePath()));
-        MapEditSaveRequest request;
-        request.sourceMap = source.SourcePath(); request.targetCandidate = directory.path / "saved.w3x";
-        request.toolRoot = tool; request.gameRoot = game;
-        request.expectedSourceSha256 = source.SourceSha256(); request.expectedTerrainSha256 = Take(Sha256(beforeW3e));
-        MapEditTerrainStroke stroke;
-        stroke.pointSpace = MapEditPointSpace::TerrainVertex; stroke.points = {{32, 32}};
-        stroke.brush.kind = TerrainBrushKind::WaterHeight; stroke.brush.radius = 0; stroke.brush.waterHeight = 0;
-        request.terrainStrokes = {stroke}; // 保留Automatic，覆盖最终小地图准备的正常保存路径。
-        const auto saved = Take(SaveMapEditCandidate(request));
-        Require(saved.scriptPreserved, "public terrain save preserves the original checked script");
-        const auto readback = Take(MapArchiveSession::Open(saved.candidate));
-        Require(Take(readback.ReadMember("war3map.w3e")) == expectedW3e, "complete independently edited W3E matches public output");
-        Require(Take(readback.ReadMember("war3map.wpm")) == expectedWpm, "complete WPM matches frozen actual source rules");
-        Require(Take(readback.ReadMember("war3map.j")) == sourceScript, "public save preserves every source script byte");
-        Require(Take(readback.ReadMember("war3map.w3b")) == w3b && Take(readback.ReadMember("war3map.doo")) == doo,
-            "public save preserves native object and placement bytes");
-        Require(Take(Sha256File(source.SourcePath())) == sourceSha, "public save leaves the source map untouched");
-        Check(rules.VerifyReadback(readback, kSaveBytes));
-        std::cout << "public_map_edit_save_passed source_sha256=" << sourceSha << " candidate_sha256=" << saved.candidateSha256
-            << " native_editor_verified=false game_verified=false\n";
     } catch (...) {
         directory.keep = true;
         std::cerr << "Real-source failure artifacts preserved at " << IO::PathUtf8(directory.path) << '\n';

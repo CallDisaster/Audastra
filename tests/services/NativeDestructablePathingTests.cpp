@@ -473,7 +473,7 @@ void CrossClassAndUnsupportedInheritance() {
     Rejected(noBase.Validate({"NONE"}), "TERRAIN_NATIVE_OBJECT_INHERITANCE", "Original记录不是标准对象定义本身");
     Fixture unknown;
     Rejected(unknown.Validate({"NONE"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "未知摆放不能视为零静态贡献");
-    Rejected(unknown.Validate({"D001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "普通doodad继续拒绝");
+    Rejected(unknown.Validate({"D001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "普通doodad缺少明确pathTex字段仍拒绝");
     Rejected(unknown.Validate({"s002"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "rawcode大小写不能折叠");
     Rejected(unknown.Validate({"bad"}), "TERRAIN_NATIVE_OBJECT_ID", "坏摆放rawcode不能跳过");
 }
@@ -501,6 +501,81 @@ void MissingW3bStillRequiresUniqueClassification() {
         Rejected(sameNative.Validate(), "TERRAIN_NATIVE_OBJECT_CLASS_AMBIGUOUS",
             "没有W3B时仍须读取W3D的Original和Custom同名分类来源");
     }
+}
+
+void StandardDoodadsRequireExplicitDisabledPathing() {
+    for (const std::string path : {"", "_", "none"}) {
+        Fixture fixture;
+        fixture.doodads[0]["pathTex"] = path;
+        fixture.Tables();
+        Accepted(fixture.Validate({"D001", "S002", "D001"}), "明确禁用pathTex的标准doodad可与非walkable破坏物混合");
+        fixture.sources[kW3b] = {"war3map.w3b", false, {}};
+        Accepted(fixture.Validate({"D001"}), "无W3B时仍核对明确的doodad字段");
+        const auto work = Accepted(fixture.Validate({"D001"}), "新域工作预算基线");
+        Accepted(fixture.Validate({"D001"}, work), "新域精确工作预算允许");
+        Rejected(fixture.Validate({"D001"}, work - 1), "TERRAIN_NATIVE_OBJECT_BUDGET", "新域预算不足不能返回部分资格");
+    }
+    for (const std::string path : {"NONE", "None", " none", "none ", " _", "_\t", " ", "0",
+            "\"\"", "\"_\"", "\"none\"", "PathTextures\\synthetic.tga"}) {
+        Fixture fixture;
+        fixture.doodads[0]["pathTex"] = path;
+        fixture.doodads[0]["walkable"] = "0";
+        fixture.Tables();
+        Rejected(fixture.Validate({"D001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED",
+            "walkable=0不能代替doodad占地证明，也不能修剪/再次解码pathTex取得资格");
+    }
+    Fixture missingColumn;
+    Rejected(missingColumn.Validate({"D001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "缺失pathTex列不等于显式空值");
+    Fixture missingCell;
+    missingCell.doodads.push_back({{"doodID", "D002"}, {"pathTex", "_"}});
+    missingCell.Tables();
+    Rejected(missingCell.Validate({"D001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "已有pathTex列但该行未提供单元格仍拒绝");
+}
+
+void StandardDoodadsDoNotIgnoreNativeOverridesOrOtherObjects() {
+    const auto prepare = [](Fixture& fixture) {
+        fixture.doodads[0]["pathTex"] = "_";
+        fixture.Tables();
+    };
+    for (const bool unrelated : {false, true}) {
+        Fixture fixture; prepare(fixture);
+        auto document = Empty(ObjectType::Doodad);
+        if (unrelated) Check(document.AddOriginalObject("D002"));
+        fixture.SetNative(document);
+        Accepted(fixture.Validate({"D001"}), "空W3D或无关对象覆盖不等于当前doodad被覆盖");
+    }
+    for (const unsigned mode : {0u, 1u, 2u, 3u}) {
+        Fixture fixture; prepare(fixture);
+        auto document = Empty(ObjectType::Doodad);
+        std::string placed = "D001";
+        if (mode < 2) {
+            Check(document.AddOriginalObject("D001"));
+            if (mode == 1) Modification(document, "D001", "dnam", NativeValueType::String, std::string("display-only"));
+        } else if (mode == 2) Check(document.AddCustomObject("D001", "D002"));
+        else { Check(document.AddCustomObject("C001", "D001")); placed = "C001"; }
+        fixture.SetNative(document);
+        Rejected(fixture.Validate({placed}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED",
+            "相关W3D空Original/展示字段/Custom均不在标准doodad无覆盖范围");
+    }
+    for (const unsigned mode : {0u, 1u, 2u}) {
+        Fixture fixture; prepare(fixture);
+        if (mode == 0) {
+            fixture.destructables.push_back({{"destructableID", "D001"}, {"walkable", "0"}});
+            fixture.Tables();
+        } else {
+            auto document = Empty();
+            if (mode == 1) Check(document.AddOriginalObject("D001"));
+            else Check(document.AddCustomObject("D001", "S002"));
+            fixture.SetNative(document);
+        }
+        Rejected(fixture.Validate({"D001"}), "TERRAIN_NATIVE_OBJECT_CLASS_AMBIGUOUS",
+            "无占地doodad同名Destructable或W3B仍不能猜类别优先级");
+    }
+    Fixture mixed; prepare(mixed);
+    Rejected(mixed.Validate({"D001", "S001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED",
+        "前面的无占地doodad成功不能跳过后面的walkable破坏物");
+    Rejected(mixed.Validate({"S001", "D001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "混合对象拒绝不依赖顺序");
+    Rejected(mixed.Validate({"D001", "NONE"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "无占地对象后面的未知rawcode仍拒绝");
 }
 
 void CompleteSourcesAndWorkingBudget() {
@@ -551,6 +626,8 @@ int main() {
         NativeDamageAndDuplicates();
         CrossClassAndUnsupportedInheritance();
         MissingW3bStillRequiresUniqueClassification();
+        StandardDoodadsRequireExplicitDisabledPathing();
+        StandardDoodadsDoNotIgnoreNativeOverridesOrOtherObjects();
         CompleteSourcesAndWorkingBudget();
         std::cout << "native destructable pathing: typed fields, bounded inheritance, unique sources and rejection paths passed\n";
         return 0;

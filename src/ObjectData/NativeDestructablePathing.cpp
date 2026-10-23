@@ -194,10 +194,23 @@ Result<std::size_t> ValidateNativeDestructablePathing(std::span<const std::strin
             const auto* standard = catalog.Find(ObjectType::Destructable, rawcode);
             const auto record = destructableIndex.find(rawcode);
             const auto* native = record == destructableIndex.end() ? nullptr : record->second;
-            const bool doodad = catalog.Find(ObjectType::Doodad, rawcode) || doodadIndex.contains(rawcode);
-            if (doodad || (!standard && !native))
-                Fail(doodad && (standard || native) ? "TERRAIN_NATIVE_OBJECT_CLASS_AMBIGUOUS" : "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED",
-                    "摆放对象未唯一分类为可破坏物：" + std::string(rawcode));
+            const auto* standardDoodad = catalog.Find(ObjectType::Doodad, rawcode);
+            const bool nativeDoodad = doodadIndex.contains(rawcode);
+            if ((standardDoodad || nativeDoodad) && (standard || native))
+                Fail("TERRAIN_NATIVE_OBJECT_CLASS_AMBIGUOUS", "摆放对象同时命中装饰物与可破坏物：" + std::string(rawcode));
+            if (standardDoodad || nativeDoodad) {
+                if (!standardDoodad || nativeDoodad)
+                    Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "普通装饰物仅支持无原生覆盖的标准对象：" + std::string(rawcode));
+                // 原版明确禁用pathTex时，在加载贴图前清空占地宽高，注册器不写静态层。
+                // Field()会合并缺失与空值，故直接检查单元格是否存在；不再次解码或归一化。
+                const auto path = standardDoodad->fields.find("pathtex");
+                if (path == standardDoodad->fields.end()
+                    || (!path->second.empty() && path->second != "_" && path->second != "none"))
+                    Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "普通装饰物的pathTex未明确禁用占地：" + std::string(rawcode));
+                continue;
+            }
+            if (!standard && !native)
+                Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "摆放对象没有已知的唯一标准类别：" + std::string(rawcode));
             if (native && native->parentRawcode) {
                 const auto& parent = *native->parentRawcode;
                 if (standard || destructableIndex.contains(parent) || doodadIndex.contains(parent)
