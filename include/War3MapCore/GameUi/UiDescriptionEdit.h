@@ -15,6 +15,7 @@
 //       改 id 时同步改锚点、状态与事件里的引用；children 用 add/move/remove 改
 //   {"op": "move_frame", "frame": "fill", "parent": null, "index": 2}
 //   {"op": "remove_frame", "frame": "fill"}   连同子框架；指向它们的状态覆盖与事件一并删除，锚点引用须先改掉
+//   {"op": "rename_value", "from": "hp", "to": "health"}   框架的取值与文字模板（含状态覆盖文字）一并改
 //   {"op": "set_values" | "set_states" | "set_events", "values" | "states" | "events": [...]}   整体替换
 namespace War3Map::GameUi {
 

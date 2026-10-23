@@ -111,6 +111,14 @@ std::optional<RootPlacement> KnownRootPlacement(std::string_view templateName) {
     }
     if (key == "questdialog") return at(P::Center, P::Center, 0.0f, 0.064f);
     if (key == "chatdialog" || key == "logdialog") return at(P::Center, P::Center, 0.0f, 0.05f);
+    // 以下几项游戏相对世界画面定位；世界画面上沿在屏幕顶下 0.02、下沿在屏幕底上 0.13，左右贴屏幕，
+    // 这里换算成相对屏幕。右上角从上到下依次为计时器窗口、多面板、排行榜，表中是各自单独出现时的位置；
+    // 多个计时器窗口向左排开（右边贴前一个的左边，间隔 0.002），多面板在第一个计时器窗口下 0.001，
+    // 排行榜在多面板下 0.005（有计时器窗口而无多面板时在其下 0.001）。
+    if (key == "timerdialog" || key == "leaderboard") return at(P::TopRight, P::TopRight, -0.005f, -0.035f);
+    if (key == "multiboard") return at(P::TopRight, P::TopRight, 0.0001f, -0.0232f);
+    // 脚本对话框（DialogDisplay）居中于世界画面。
+    if (key == "scriptdialog") return at(P::Center, P::Center, 0.0f, 0.055f);
     return std::nullopt;
 }
 

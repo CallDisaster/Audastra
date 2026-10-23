@@ -10,6 +10,7 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QTabWidget>
 #include <QTextStream>
 #include <QWidget>
 
@@ -40,7 +41,7 @@ int main(int argc, char** argv) {
     if (arguments.size() < 3) {
         out << "usage: audastra-game-ui-capture <war3-root> <out-dir> [--map MAP] [--race R] [--classic] [--frame NAME]... "
                "[--only NAME]... [--select NAME] [--bounds] [--names] [--simulate FUNC] [--set KEY=VALUE]... "
-               "[--import ARCHIVE_PATH=FILE]... [--ui-state ID=STATE] [--ui-set ID:KEY=VALUE]... [--show-hidden]\n";
+               "[--import ARCHIVE_PATH=FILE]... [--ui-state ID=STATE] [--ui-set ID:KEY=VALUE]... [--show-hidden] [--ui-tab N]\n";
         return 2;
     }
     War3Map::UiKit::ApplyApplicationFont(War3Map::UiKit::LoadFonts(War3Map::UiKit::DefaultFontDirectory()));
@@ -95,6 +96,7 @@ int main(int argc, char** argv) {
     }
     QString select;
     QString simulate;
+    int uiTab = -1;
     std::map<std::string, std::string> simulationValues;
     for (qsizetype i = 3; i < arguments.size(); ++i) {
         const QString& argument = arguments[i];
@@ -108,6 +110,7 @@ int main(int argc, char** argv) {
         else if (argument == QLatin1String("--simulate") && hasValue) simulate = arguments[++i];
         else if (argument == QLatin1String("--import") && hasValue) ++i;
         else if (argument == QLatin1String("--show-hidden")) module.SetShowHidden(true);
+        else if (argument == QLatin1String("--ui-tab") && hasValue) uiTab = arguments[++i].toInt();
         else if ((argument == QLatin1String("--ui-state") || argument == QLatin1String("--ui-set")) && hasValue) {
             // --ui-state 界面=状态；--ui-set 界面:数值键=值
             const QString spec = arguments[++i];
@@ -156,6 +159,8 @@ int main(int argc, char** argv) {
         }
     }
     if (!select.isEmpty() && !module.SelectFrame(select)) out << "select not found: " << select << '\n';
+    // --ui-tab：界面描述面板的页（0 预览、1 数值、2 状态、3 事件）。
+    if (auto* tabs = page->findChild<QTabWidget*>(QStringLiteral("gameUiDescriptionTabs")); tabs && uiTab >= 0) tabs->setCurrentIndex(uiTab);
     QApplication::processEvents();
     const bool pageSaved = page->grab().save(output.filePath(QStringLiteral("workspace.png")));
     const bool canvasSaved = module.RenderImage(QSize(1920, 1080)).save(output.filePath(QStringLiteral("game-ui-1920x1080.png")));

@@ -10,6 +10,7 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QTabWidget>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
@@ -17,6 +18,7 @@
 #include <charconv>
 
 // 界面工作区的界面描述预览：切换状态、拖动数值，看地图自己的界面在各种取值下的样子。只改预览，不改地图。
+// 数值、状态与事件的定义在同一面板的其他页里编辑（GameUiDescriptionData.cpp）。
 namespace War3Map::Modules {
 namespace {
 
@@ -144,7 +146,10 @@ void GameUiModule::BuildDescriptionPanel(QWidget* parent) {
     descriptionStateBox_->setObjectName(QStringLiteral("gameUiDescriptionState"));
     header->addWidget(descriptionStateBox_);
     layout->addLayout(header);
-    descriptionInputs_ = new QTableWidget(0, 2, descriptionPanel_);
+    descriptionTabs_ = new QTabWidget(descriptionPanel_);
+    descriptionTabs_->setObjectName(QStringLiteral("gameUiDescriptionTabs"));
+    descriptionTabs_->setDocumentMode(true);
+    descriptionInputs_ = new QTableWidget(0, 2, descriptionTabs_);
     descriptionInputs_->setObjectName(QStringLiteral("gameUiDescriptionInputs"));
     descriptionInputs_->setHorizontalHeaderLabels({tr("数值"), tr("值")});
     descriptionInputs_->verticalHeader()->setVisible(false);
@@ -153,7 +158,9 @@ void GameUiModule::BuildDescriptionPanel(QWidget* parent) {
     descriptionInputs_->horizontalHeader()->resizeSection(0, 120);
     descriptionInputs_->setSelectionMode(QAbstractItemView::NoSelection);
     descriptionInputs_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    layout->addWidget(descriptionInputs_, 1);
+    descriptionTabs_->addTab(descriptionInputs_, tr("预览"));
+    BuildDescriptionData(descriptionTabs_);
+    layout->addWidget(descriptionTabs_, 1);
     connect(descriptionStateBox_, &QComboBox::currentIndexChanged, this, [this](int index) {
         if (!descriptionPanelFor_.isEmpty()) (void)SetDescriptionState(descriptionPanelFor_, descriptionStateBox_->itemData(index).toString());
     });
@@ -173,14 +180,15 @@ void GameUiModule::UpdateDescriptionPanel() {
         return;
     }
     const UiInstanceState preview = DescriptionPreview(id);
-    const bool rebuild = descriptionPanelFor_ != id;
+    const bool raw = rawFields_ && rawFields_->isChecked();
+    const bool rebuild = descriptionPanelFor_ != id || descriptionRaw_ != raw;
     {
         const QSignalBlocker block(descriptionStateBox_);
         if (rebuild) {
             descriptionStateBox_->clear();
             descriptionStateBox_->addItem(tr("基础状态"), QString());
             for (const auto& state : description->states) {
-                descriptionStateBox_->addItem(state.label.empty() ? Text(state.id) : Text(state.label), Text(state.id));
+                descriptionStateBox_->addItem(raw || state.label.empty() ? Text(state.id) : Text(state.label), Text(state.id));
             }
         }
         const int index = descriptionStateBox_->findData(Text(preview.state));
@@ -188,16 +196,20 @@ void GameUiModule::UpdateDescriptionPanel() {
         descriptionStateBox_->setEnabled(!description->states.empty());
     }
     // 同一份描述：保留编辑器，拖动过程中不重建。
-    if (!rebuild) return;
+    if (!rebuild) {
+        SyncDescriptionStateRow(*description, false);
+        return;
+    }
     descriptionPanelFor_ = id;
-    descriptionTitle_->setText(description->label.empty() ? id : QStringLiteral("%1  %2").arg(Text(description->label), id));
+    descriptionRaw_ = raw;
+    descriptionTitle_->setText(raw || description->label.empty() ? id : QStringLiteral("%1  %2").arg(Text(description->label), id));
     descriptionInputs_->setRowCount(0);
     for (const auto& value : description->values) {
         const std::uint32_t cells = value.size == 0 ? 1 : value.size;
         for (std::uint32_t cell = 0; cell < cells; ++cell) {
             const std::optional<std::uint32_t> index = value.size == 0 ? std::nullopt : std::optional<std::uint32_t>(cell);
             const std::string key = index ? value.id + "[" + std::to_string(cell) + "]" : value.id;
-            QString label = value.label.empty() ? Text(value.id) : Text(value.label);
+            QString label = raw || value.label.empty() ? Text(value.id) : Text(value.label);
             if (index) label += QStringLiteral("[%1]").arg(cell);
             const int row = descriptionInputs_->rowCount();
             descriptionInputs_->insertRow(row);
@@ -224,6 +236,24 @@ void GameUiModule::UpdateDescriptionPanel() {
         }
     }
     descriptionInputs_->resizeRowsToContents();
+    UpdateDescriptionData(*description);
+}
+
+// 描述改过后，去掉预览里已不存在或不再合法的状态与数值。
+void GameUiModule::PruneDescriptionPreview(const UiDescription& description) {
+    const auto found = descriptionStates_.find(description.id);
+    if (found == descriptionStates_.end()) return;
+    UiInstanceState& preview = found->second;
+    if (!preview.state.empty() && std::none_of(description.states.begin(), description.states.end(),
+                                      [&](const UiState& state) { return state.id == preview.state; })) {
+        preview.state.clear();
+    }
+    std::erase_if(preview.values, [&](const auto& entry) {
+        const auto parsed = ParseKey(entry.first);
+        const UiValue* value = parsed ? FindValue(description, parsed->id) : nullptr;
+        if (!value || (value->size == 0) != !parsed->index || (parsed->index && *parsed->index >= value->size)) return true;
+        return !NormalizeUiValue(value->type, entry.second).has_value();
+    });
 }
 
 } // namespace War3Map::Modules

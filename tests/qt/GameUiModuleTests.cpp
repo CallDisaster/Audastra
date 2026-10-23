@@ -69,6 +69,7 @@ private slots:
     void SimulationDrivesScriptFrames();
     void DescriptionPreviewDrivesFrames();
     void AuthoringStagesDescriptionImport();
+    void DescriptionDataTablesEdit();
 };
 
 void GameUiModuleTests::BuildsSceneFromDefinitions() {
@@ -419,6 +420,116 @@ void GameUiModuleTests::AuthoringStagesDescriptionImport() {
     project.AssetUndoStack()->undo();
     QVERIFY(staged());
     QVERIFY(*staged() != before);
+}
+
+void GameUiModuleTests::DescriptionDataTablesEdit() {
+    QtProject::EditorProject project;
+    Modules::GameUiModule module(project);
+    auto* page = module.Widget();
+    module.LoadDefinitionsForTesting(SyntheticDefinitions());
+    QString error;
+    QVERIFY2(module.CreateDescription(QStringLiteral("Cast"), {}, &error), qPrintable(error));
+    QCOMPARE(module.AddDescriptionFrame(UiFrameType::Bar, &error), QStringLiteral("bar1"));
+    const auto description = [&module] { return module.Description(QStringLiteral("Cast")); };
+    const auto click = [page](const char* name) {
+        auto* button = page->findChild<QPushButton*>(QLatin1String(name));
+        QVERIFY(button);
+        button->click();
+        QCoreApplication::processEvents();
+    };
+    // 选择列：打开单元的编辑器，像作者一样从列表里选。
+    const auto choose = [](QTableWidget* table, int row, int column, const QString& value) {
+        table->setCurrentCell(row, column);
+        table->editItem(table->item(row, column));
+        auto* box = table->viewport()->findChild<QComboBox*>();
+        QVERIFY(box);
+        const int index = box->findData(value);
+        QVERIFY(index >= 0);
+        box->setCurrentIndex(index);
+        emit box->activated(index);
+        QCoreApplication::processEvents();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);  // 关掉的编辑器
+    };
+    auto* values = page->findChild<QTableWidget*>(QStringLiteral("gameUiValueTable"));
+    auto* states = page->findChild<QTableWidget*>(QStringLiteral("gameUiStateTable"));
+    auto* overrides = page->findChild<QTableWidget*>(QStringLiteral("gameUiOverrideTable"));
+    auto* events = page->findChild<QTableWidget*>(QStringLiteral("gameUiEventTable"));
+    QVERIFY(values && states && overrides && events);
+
+    // 数值：添加、改名（框架取值跟着改）、改默认值、改类型。
+    click("gameUiAddValue");
+    QCOMPARE(description()->values.size(), std::size_t{1});
+    QCOMPARE(values->item(0, 0)->text(), QStringLiteral("value1"));
+    QVERIFY2(module.EditDescription(QStringLiteral("Cast"),
+                 QStringLiteral(R"([{"op":"set_frame","frame":"bar1","fields":{"value":"value1"}}])"), {}, &error),
+        qPrintable(error));
+    values->item(0, 0)->setText(QStringLiteral("progress"));
+    QCoreApplication::processEvents();
+    QCOMPARE(description()->values[0].id, std::string("progress"));
+    QCOMPARE(FindUiFrame(*description(), "bar1")->value.binding->value, std::string("progress"));
+    values->item(0, 4)->setText(QStringLiteral("2.6"));
+    QCoreApplication::processEvents();
+    QCOMPARE(description()->values[0].defaultValue, std::string("2.6"));
+    choose(values, 0, 2, QStringLiteral("integer"));
+    QVERIFY(description()->values[0].type == UiValueType::Integer);
+    QCOMPARE(description()->values[0].defaultValue, std::string("3"));
+    QCOMPARE(values->item(0, 2)->text(), QStringLiteral("整数"));
+    // 布尔默认值是单元自带的勾选。
+    click("gameUiAddValue");
+    choose(values, 1, 2, QStringLiteral("boolean"));
+    QVERIFY(description()->values[1].type == UiValueType::Boolean);
+    values->item(1, 4)->setCheckState(Qt::Checked);
+    QCoreApplication::processEvents();
+    QCOMPARE(description()->values[1].defaultValue, std::string("true"));
+    // 不是数值：报告并恢复表格。
+    values->item(0, 5)->setText(QStringLiteral("low"));
+    QCoreApplication::processEvents();
+    QVERIFY(!description()->values[0].min);
+    QCOMPARE(values->item(0, 5)->text(), QString());
+    QVERIFY(HasProblem(page->findChild<QStandardItemModel*>(QStringLiteral("gameUiProblemModel")), QStringLiteral("AUI_AUTHORING")));
+
+    // 状态：新状态直接预览；覆盖跟着所选框架；改名后预览跟着走。
+    click("gameUiAddState");
+    QCOMPARE(description()->states.size(), std::size_t{1});
+    QCOMPARE(module.DescriptionPreview(QStringLiteral("Cast")).state, std::string("state1"));
+    QVERIFY(module.SelectFrame(QStringLiteral("bar1")));
+    click("gameUiAddOverride");
+    QCOMPARE(description()->states[0].overrides.size(), std::size_t{1});
+    QCOMPARE(description()->states[0].overrides[0].frame, std::string("bar1"));
+    overrides->item(0, 4)->setText(QStringLiteral("0.5"));
+    QCoreApplication::processEvents();
+    QCOMPARE(description()->states[0].overrides[0].value, std::optional<double>(0.5));
+    const auto bar = module.Tree()->FindByName("bar1");
+    QVERIFY(bar && module.Tree()->Nodes()[*bar].fill);
+    QVERIFY(qAbs(*module.Tree()->Nodes()[*bar].fill - 0.5f) < 1e-5f);
+    states->item(0, 0)->setText(QStringLiteral("interrupted"));
+    QCoreApplication::processEvents();
+    QCOMPARE(description()->states[0].id, std::string("interrupted"));
+    QCOMPARE(module.DescriptionPreview(QStringLiteral("Cast")).state, std::string("interrupted"));
+
+    // 事件：按钮默认点击，可改触发与删除。
+    QCOMPARE(module.AddDescriptionFrame(UiFrameType::Button, &error), QStringLiteral("button1"));
+    click("gameUiAddEvent");
+    QCOMPARE(description()->events.size(), std::size_t{1});
+    QVERIFY(description()->events[0].frame == "button1" && description()->events[0].kind == UiEventKind::Click);
+    choose(events, 0, 2, QStringLiteral("leave"));
+    QVERIFY(description()->events[0].kind == UiEventKind::Leave);
+    choose(events, 0, 1, QStringLiteral("bar1"));
+    QCOMPARE(description()->events[0].frame, std::string("bar1"));
+    events->setCurrentCell(0, 0);
+    click("gameUiRemoveEvent");
+    QVERIFY(description()->events.empty());
+
+    // 删除状态：预览回到基础状态。
+    states->setCurrentCell(0, 0);
+    click("gameUiRemoveState");
+    QVERIFY(description()->states.empty());
+    QVERIFY(module.DescriptionPreview(QStringLiteral("Cast")).state.empty());
+
+    // 原始字段：表头与取值换成文件里的写法。
+    page->findChild<QCheckBox*>(QStringLiteral("showRawFields"))->setChecked(true);
+    QCOMPARE(values->horizontalHeaderItem(0)->text(), QStringLiteral("id"));
+    QCOMPARE(values->item(0, 2)->text(), QStringLiteral("integer"));
 }
 
 int main(int argc, char** argv) {

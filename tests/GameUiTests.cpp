@@ -437,13 +437,18 @@ void TestGameCodeLayout() {
         "    }\n"
         "}\n"
         "Frame \"FRAME\" \"QuestDialog\" { Width 0.48, Height 0.4, }\n"
+        "Frame \"FRAME\" \"TimerDialog\" { Width 0.17, Height 0.03, }\n"
+        "Frame \"FRAME\" \"Multiboard\" { Width 0.024, Height 0.024, }\n"
+        "Frame \"FRAME\" \"Leaderboard\" { Width 0.17, Height 0.2, }\n"
+        "Frame \"DIALOG\" \"ScriptDialog\" { Width 0.288, Height 0.112, }\n"
         "Frame \"FRAME\" \"MapPanel\" { Width 0.1, Height 0.1, SetPoint BOTTOM, \"Minimap\", TOP, 0.0, 0.0, }\n";
     auto parsed = ParseFdf(text, "UI\\Code.fdf");
     Require(parsed.Succeeded(), "code layout fixture parses");
     FrameLibrary library;
     library.AddParsed(std::move(*parsed.value), "game");
     FrameTree tree;
-    for (const char* name : {"ResourceBarFrame", "EscMenuMainPanel", "QuestDialog"}) {
+    for (const char* name : {"ResourceBarFrame", "EscMenuMainPanel", "QuestDialog", "TimerDialog", "Multiboard", "Leaderboard",
+             "ScriptDialog"}) {
         const auto created = tree.Instantiate(library, nullptr, name);
         Require(created.Succeeded() && !HasCode(created.diagnostics, "GAMEUI_ROOT_PLACEMENT_UNKNOWN"),
             "game-code placement known");
@@ -459,6 +464,11 @@ void TestGameCodeLayout() {
     RequireRect(NodeNamed(tree, "EscMenuMainPanel"), 0.256f, 0.168f, 0.544f, 0.552f, "esc menu follows backdrop");
     RequireRect(NodeNamed(tree, "ReturnButton"), 0.3f, 0.198f, 0.5f, 0.228f, "return button inside the box");
     RequireRect(NodeNamed(tree, "QuestDialog"), 0.16f, 0.164f, 0.64f, 0.564f, "quest dialog centered and raised");
+    // 右上角一组与脚本对话框相对世界画面（上沿在屏幕顶下 0.02，下沿在屏幕底上 0.13）。
+    RequireRect(NodeNamed(tree, "TimerDialog"), 0.625f, 0.535f, 0.795f, 0.565f, "timer dialog under the resource bar");
+    RequireRect(NodeNamed(tree, "Multiboard"), 0.7761f, 0.5528f, 0.8001f, 0.5768f, "multiboard at top right");
+    RequireRect(NodeNamed(tree, "Leaderboard"), 0.625f, 0.365f, 0.795f, 0.565f, "leaderboard at top right");
+    RequireRect(NodeNamed(tree, "ScriptDialog"), 0.256f, 0.299f, 0.544f, 0.411f, "script dialog centered on the world view");
 
     RequireRect(NodeNamed(tree, "Minimap"), 0.009375f, 0.006875f, 0.14875f, 0.145f, "minimap");
     RequireRect(NodeNamed(tree, "CommandBar"), 0.618125f, 0.002f, 0.792625f, 0.131f, "command card");
