@@ -38,14 +38,18 @@ std::vector<MapArchiveMember> SpecialWaterSaveMembers() {
     auto pathing = WaterText("MP3W");
     for (const auto value : {0u, 32u, 32u}) for (unsigned shift = 0; shift < 32; shift += 8)
         pathing.push_back(static_cast<std::byte>((value >> shift) & 255));
-    pathing.resize(16 + 32 * 32, std::byte{0x11});
+    // 干地禁止水行；两个纯黑特殊贴图仅在各自4x4通行区覆盖原生六位。
+    pathing.resize(16 + 32 * 32, std::byte{0x51});
+    for (const auto ground : {3u, 6u}) for (unsigned y = ground * 4; y < ground * 4 + 4; ++y)
+        for (unsigned x = ground * 4; x < ground * 4 + 4; ++x) pathing[16 + y * 32 + x] = std::byte{0x11};
     MapData::MapSettings settings; settings.formatVersion = 25; settings.custom.emplace();
     settings.tileset = 'L'; settings.playableWidth = settings.playableHeight = 8; settings.flags |= 0x400;
     MapData::DoodadPlacements placements;
     placements.specialDoodads = {{"Doo0", 0, {3, 3}}, {"Doo0", 0, {6, 6}}};
-    // 独立旧WPM预期：纯黑RGB不贡献阻断，alpha0要求平层；0x11为作者既有保护位。
+    // 独立旧WPM预期保留0x11作者保护位；alpha0要求平层，TGA描述符明确8位alpha。
     std::vector<std::byte> texture(18 + 4 * 4 * 4);
     texture[2] = std::byte{2}; texture[12] = texture[14] = std::byte{4}; texture[16] = std::byte{32};
+    texture[17] = std::byte{8};
     members.push_back({"war3map.wpm", std::move(pathing)});
     members.push_back({"war3map.w3i", WaterTake(settings.Serialize())});
     members.push_back({"war3map.doo", WaterTake(placements.Serialize())});
