@@ -697,6 +697,11 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
             if (result.objectWorkBytes_ > maximumBytes - result.sourceBytes_)
                 Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "严格物编解析超过保存计划剩余预算。");
             if (!objectPathing.footprints.empty()) {
+                const bool walkable = std::any_of(objectPathing.footprints.begin(), objectPathing.footprints.end(),
+                    [](const auto& type) { return type.contribution == TerrainNativeFootprintContribution::WalkableTerrainSuppression; });
+                // 首域冻结整个DOO而非手写字段白名单；桥Z跟随及special删除也不能混入。
+                if (walkable && result.nativeDoodads_ != result.nativeAfterDoodads_)
+                    Fail("TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED", "含可行走对象的地形保存须保持完整DOO字节不变；请撤销摆放跟随或特殊模型删除。");
                 const auto captured = result.CaptureNativeFootprints(reader, before.header,
                     doodads->doodads, objectPathing.footprints);
                 if (!captured.Succeeded()) throw Failure{captured.diagnostics};

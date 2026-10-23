@@ -14,7 +14,12 @@ enum class TerrainDoodadGridPolicy : std::uint8_t {
     SpecialTerrain
 };
 
-// 严格物编解析器从同次捕获的实际来源解释出的普通装饰物类型。
+enum class TerrainNativeFootprintContribution : std::uint8_t {
+    StaticRgbAttributes,
+    WalkableTerrainSuppression
+};
+
+// 严格物编解析器从同次捕获的实际来源解释出的对象占地类型。
 // 不包含外部“已验证”标记，也不授予保存资格；owner仍须捕获实际占地贴图，
 // 复现实例注册、解释旧WPM并核对最终来源。只列有占地的唯一rawcode。
 struct TerrainNativeDoodadPathingType {
@@ -24,6 +29,8 @@ struct TerrainNativeDoodadPathingType {
     // 该策略不授予类别身份或保存资格；SpecialTerrain仅供原特殊DOO链消费。
     TerrainDoodadGridPolicy gridPolicy = TerrainDoodadGridPolicy::TwoCells;
     std::optional<float> fixedRotationDegrees; // 实际fixedRot；缺失时只支持旋转无关的同色正方形。
+    // 普通destructable的RGB属于selector4；walkable占地只向selector2加入控制位。
+    TerrainNativeFootprintContribution contribution = TerrainNativeFootprintContribution::StaticRgbAttributes;
 };
 
 struct TerrainNativeObjectPathing {

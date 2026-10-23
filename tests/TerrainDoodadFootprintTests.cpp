@@ -118,6 +118,47 @@ void ClippingOverlapAndFailureAtomicity() {
     Check(AddDoodadFootprint(high, Header(), Placement(0.786f), image, 2, -1.0f));
     Require(low != high, "angles on opposite sides of the boundary select different matrices");
 }
+void WalkableSuppressionSharesProjectionWithoutRgbBits() {
+    constexpr auto contribution = TerrainNativeFootprintContribution::WalkableTerrainSuppression;
+    // 与RGB投影测试分别书写字面预期；黑像素不抑制，所有其它颜色都只贡献40。
+    constexpr std::array<std::array<std::uint8_t,6>,4> matrices{{
+        {0,0x40,0x40,0x40,0x40,0x40}, {0x40,0x40,0,0x40,0x40,0x40},
+        {0x40,0x40,0x40,0x40,0x40,0}, {0x40,0x40,0x40,0,0x40,0x40}}};
+    constexpr std::array<float,4> angles{0,1.57079637f,3.14159274f,4.712389f};
+    for (bool top : {false,true}) for (bool alpha : {false,true}) {
+        const auto bytes = Pattern(top,alpha); const auto original = bytes;
+        const auto image = Take(DecodeDoodadFootprintTga(bytes));
+        for (unsigned q=0; q<4; ++q) {
+            std::vector<std::uint8_t> actual(256,2), expected(256,2);
+            const auto x = q%2 ? 3u : 4u, y = q%2 ? 4u : 3u, width = q%2 ? 3u : 2u;
+            for (std::size_t i=0; i<6; ++i) expected[(y+i/width)*16+x+i%width] |= matrices[q][i];
+            Check(AddDoodadFootprint(actual,Header(),Placement(angles[q]),image,2,-1.0f,contribution));
+            Require(actual==expected,"walkable projection preserves other static attributes and writes only literal control40");
+            Check(AddDoodadFootprint(actual,Header(),Placement(angles[q]),image,2,-1.0f,contribution));
+            Require(actual==expected,"duplicate bridges do not erase or multiply the static contribution");
+        }
+        std::vector<std::uint8_t> cropped(256,0), expected(256,0); expected[0]=0x40;
+        Check(AddDoodadFootprint(cropped,Header(),Placement(0,-64,-64),image,2,-1.0f,contribution));
+        Require(cropped==expected,"walkable clipping retains the original nonzero source pixel");
+        const auto before=cropped;
+        Require(!AddDoodadFootprint(cropped,Header(),Placement(),image,2,-1.0f,
+            static_cast<TerrainNativeFootprintContribution>(255)).Succeeded(),"unknown contribution is rejected");
+        Require(cropped==before && bytes==original,"invalid contribution is atomic and borrowed pixels remain unchanged");
+    }
+    auto uniform=Pattern(true,true,2,2);
+    for (unsigned i=0;i<4;++i) {
+        uniform[18+i*4]=std::byte{1}; uniform[19+i*4]=uniform[20+i*4]=uniform[21+i*4]=std::byte{};
+    }
+    const auto colored=Take(DecodeDoodadFootprintTga(uniform));
+    std::vector<std::uint8_t> actual(256,0), expected(256,0);
+    for (unsigned y=4;y<6;++y) for (unsigned x=4;x<6;++x) expected[y*16+x]=0x40;
+    Check(AddDoodadFootprint(actual,Header(),Placement(0.785398185f),colored,2,0.0f,contribution));
+    Require(actual==expected,"complete uniform square uses the common rectangle and nonzero RGB with alpha0 suppresses");
+    for (unsigned i=0;i<4;++i) { uniform[18+i*4]=std::byte{}; uniform[21+i*4]=std::byte{255}; }
+    std::fill(actual.begin(),actual.end(),0);
+    Check(AddDoodadFootprint(actual,Header(),Placement(),Take(DecodeDoodadFootprintTga(uniform)),2,0.0f,contribution));
+    Require(std::all_of(actual.begin(),actual.end(),[](auto value){return value==0;}),"uniform black with opaque alpha contributes no suppression");
+}
 void AlphaAffectsUniformityAndOldDomainRemainsValid() {
     Bytes bytes(18+2*2*4,std::byte{1});
     std::fill(bytes.begin(),bytes.begin()+18,std::byte{});
@@ -142,6 +183,7 @@ void AlphaAffectsUniformityAndOldDomainRemainsValid() {
 int main() {
     try {
         RotationsOriginsAndChannels(); FixedRotationUsesEarlierSnapDimensions();
+        WalkableSuppressionSharesProjectionWithoutRgbBits();
         ClippingOverlapAndFailureAtomicity(); AlphaAffectsUniformityAndOldDomainRemainsValid();
         std::cout << "Native patterned doodad footprints passed\n"; return 0;
     } catch(const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }

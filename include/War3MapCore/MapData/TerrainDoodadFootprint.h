@@ -1,6 +1,7 @@
 #pragma once
 
 #include "War3MapCore/MapData/TerrainUniformDoodadFootprint.h"
+#include "War3MapCore/MapData/TerrainNativeObjectPathing.h"
 
 #include <optional>
 
@@ -24,9 +25,12 @@ struct TerrainDoodadFootprint {
 // 缺失字段只允许旋转不影响结果的同色正方形。先按wire角度吸附，之后才按
 // fixedRot决定像素方向；不能用最终角度反推此前的XY吸附。临界角度/坐标拒绝。
 // 其余坐标域、原子失败、只读浮点环境与既有同色接口一致。
+// WalkableTerrainSuppression将非零RGB属性映射为内部0x40；不写RGB低位，
+// alpha仍参与原版完整同色判定。此纯投影接口不授予对象或保存资格。
 [[nodiscard]] Status AddDoodadFootprint(std::span<std::uint8_t> staticAttributes,
     const TerrainHeader& terrain, const DoodadPlacement& placement,
     const TerrainDoodadFootprint& footprint, std::uint8_t snapCells,
-    std::optional<float> fixedRotationDegrees);
+    std::optional<float> fixedRotationDegrees,
+    TerrainNativeFootprintContribution contribution = TerrainNativeFootprintContribution::StaticRgbAttributes);
 
 } // namespace War3Map::MapData

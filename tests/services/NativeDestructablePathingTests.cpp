@@ -193,6 +193,14 @@ struct Fixture {
     }
 };
 
+Fixture WalkableBridgeFixture() {
+    Fixture fixture;
+    fixture.destructables[0]["pathTex"] = "PathTextures\\SyntheticBridge.tga";
+    fixture.destructables[0]["fixedRot"] = "-1";
+    fixture.Tables();
+    return fixture;
+}
+
 void TypedOriginalAndMetadataIdentity() {
     for (const std::string field : {"X001", "Ab9z"}) {
         Fixture fixture;
@@ -247,7 +255,7 @@ void StandardAndSingleParentContext() {
 
 void WalkableValuesAndWireTypes() {
     Fixture fixture;
-    Rejected(fixture.Validate({"S001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "标准true仍需真实静态通行实现");
+    Rejected(fixture.Validate({"S001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "标准true缺少明确路径和固定角度仍拒绝");
     for (const auto value : {std::int32_t{1}, std::int32_t{-1}, std::int32_t{2}}) {
         fixture.SetNative(Original("S002", "X001", NativeValueType::Int32, value));
         Rejected(fixture.Validate(), value == 1 ? "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED" : "TERRAIN_NATIVE_OBJECT_WALKABLE_TYPE",
@@ -971,6 +979,158 @@ void NativeDoodadRotationUsesExactValuesAndSources() {
     Rejected(category.Inspect(), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "even a valid fixedRot does not authorize native category overrides");
 }
 
+void WalkableBridgeInspectionOwnsUniqueBoundedResults() {
+    auto fixture = WalkableBridgeFixture();
+    const std::string path = "PathTextures\\SyntheticBridge.tga";
+    fixture.destructables.push_back({{"destructableID", "B001"}, {"walkable", "1"}, {"pathTex", path}, {"fixedRot", "90.25"}});
+    fixture.doodads[0]["pathTex"] = path;
+    fixture.doodads[0]["category"] = "E";
+    fixture.doodads[0]["fixedRot"] = "0";
+    fixture.Tables();
+    const auto w3bBefore = fixture.sources[kW3b].bytes;
+    const auto tableBefore = fixture.sources[kDestructables].bytes;
+    const auto ids = {std::string_view{"S001"}, std::string_view{"D001"}, std::string_view{"B001"},
+        std::string_view{"S002"}, std::string_view{"S001"}};
+    auto result = Take(fixture.Inspect(ids));
+    Require(result.footprints.size() == 3 && result.specialFootprints.empty()
+        && result.footprints[0].rawcode == "B001" && result.footprints[1].rawcode == "D001"
+        && result.footprints[2].rawcode == "S001", "桥按唯一rawcode合并并排序，普通RGB与零贡献对象仍各守原类别");
+    for (const auto index : {0u, 2u}) {
+        const auto& bridge = result.footprints[index];
+        Require(bridge.pathTexture == path && bridge.gridPolicy == MapData::TerrainDoodadGridPolicy::TwoCells
+            && bridge.contribution == MapData::TerrainNativeFootprintContribution::WalkableTerrainSuppression,
+            "标准walkable1描述符拥有实际路径、2格策略和terrain抑制贡献，不输出普通RGB属性");
+    }
+    Require(result.footprints[0].fixedRotationDegrees == 90.25f && result.footprints[2].fixedRotationDegrees == -1.0f
+        && result.footprints[1].contribution == MapData::TerrainNativeFootprintContribution::StaticRgbAttributes,
+        "桥实际fixedRot随类型返回，混合普通doodad仍是RGB贡献");
+    Require(Take(fixture.Inspect(ids, result.workBytes)).workBytes == result.workBytes,
+        "桥描述符和拥有字符串计入可重用的精确工作预算");
+    Rejected(fixture.Inspect(ids, result.workBytes - 1), "TERRAIN_NATIVE_OBJECT_BUDGET", "少一字节不能返回部分桥或普通占地");
+    Rejected(fixture.Inspect(ids, 0), "TERRAIN_NATIVE_OBJECT_BUDGET", "桥解析零预算仍拒绝");
+    Rejected(fixture.Validate({"S001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "旧zero-only入口仍拒绝桥的非空贡献");
+    Require(fixture.sources[kW3b].bytes == w3bBefore && fixture.sources[kDestructables].bytes == tableBefore,
+        "桥描述符解析不回写原生对象或标准表");
+    std::reverse(fixture.sources.begin(), fixture.sources.end());
+    Require(Take(fixture.Inspect({"S001", "S001"})).footprints.size() == 1,
+        "来源顺序不改变桥身份，相同rawcode的重复摆放只返回一个类型描述符");
+    fixture.sources.clear(); fixture.destructables.clear(); fixture.doodads.clear();
+    Require(result.footprints[0].rawcode == "B001" && result.footprints[0].pathTexture == path
+        && result.footprints[2].pathTexture == path && result.footprints[2].fixedRotationDegrees == -1.0f,
+        "桥结果的rawcode和路径不借用来源或catalog生命周期");
+
+    auto zero = WalkableBridgeFixture();
+    zero.destructables[0]["walkable"] = "0"; zero.Tables();
+    Require(Take(zero.Inspect({"S001"})).footprints.empty(), "显式标准walkable0保持旧零贡献域，不因存在pathTex变成桥");
+    Accepted(zero.Validate({"S001"}), "旧zero-only入口仍接受walkable0");
+}
+
+void WalkableBridgeRequiresExplicitStandardFields() {
+    for (const std::string field : {"pathTex", "fixedRot"}) {
+        auto missing = WalkableBridgeFixture();
+        missing.destructables[0].erase(field); missing.Tables();
+        Rejected(missing.Inspect({"S001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "桥不能用缺失标准字段推导默认路径或角度");
+        missing.destructables[0][field + "Unknown"] = field == "pathTex" ? "PathTextures\\SyntheticBridge.tga" : "90";
+        missing.Tables();
+        Rejected(missing.Inspect({"S001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "相似但未知的标准字段名不能代替pathTex或fixedRot");
+    }
+    for (const std::string value : {"", "_", "none"}) {
+        auto fixture = WalkableBridgeFixture();
+        fixture.destructables[0]["pathTex"] = value; fixture.Tables();
+        Rejected(fixture.Inspect({"S001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "walkable1的空或明确禁用路径不能冒充已支持桥");
+    }
+    for (const std::string value : {"", "unknown", "nan", "NaN", "inf", "-inf", "1e39", "-361", "361", "90tail", " 90", "90 "}) {
+        auto fixture = WalkableBridgeFixture();
+        fixture.destructables[0]["fixedRot"] = value; fixture.Tables();
+        Rejected(fixture.Inspect({"S001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "桥fixedRot须完整解析为有限且在支持范围内的标准值");
+    }
+    for (const auto& [text, expected] : std::vector<std::pair<std::string, float>>{
+        {"-360", -360.0f}, {"-1", -1.0f}, {"-0", -0.0f}, {"0", 0.0f}, {"90.25", 90.25f}, {"360", 360.0f}}) {
+        auto fixture = WalkableBridgeFixture();
+        fixture.destructables[0]["fixedRot"] = text; fixture.Tables();
+        const auto result = Take(fixture.Inspect({"S001"}));
+        Require(result.footprints.size() == 1 && result.footprints[0].fixedRotationDegrees
+            && std::bit_cast<std::uint32_t>(*result.footprints[0].fixedRotationDegrees) == std::bit_cast<std::uint32_t>(expected),
+            "桥标准fixedRot保留边界、负值及有符号零，不回退为默认朝向");
+    }
+    for (const std::string value : {"", "true", "false", "-1", "2", "1tail"}) {
+        auto fixture = WalkableBridgeFixture();
+        fixture.destructables[0]["walkable"] = value; fixture.Tables();
+        Rejected(fixture.Inspect({"S001"}), "TERRAIN_NATIVE_OBJECT_WALKABLE_TYPE", "非显式0/1的标准walkable不能借路径获得桥描述符");
+    }
+    auto missingWalkable = WalkableBridgeFixture();
+    missingWalkable.destructables[0].erase("walkable"); missingWalkable.Tables();
+    Rejected(missingWalkable.Inspect({"S001"}), "TERRAIN_NATIVE_OBJECT_WALKABLE_TYPE", "缺失标准walkable不能推断为可行走桥");
+    auto mixed = WalkableBridgeFixture();
+    Rejected(mixed.Inspect({"S001", "NONE"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "有效桥不能掩盖同批后续未知对象");
+    Rejected(mixed.Inspect({"NONE", "S001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "桥批量拒绝不依赖摆放顺序");
+}
+
+void WalkableBridgeRejectsRelevantNativeRecordsAndClassCollisions() {
+    for (const unsigned mode : {0u, 1u, 2u, 3u}) {
+        auto fixture = WalkableBridgeFixture();
+        auto document = Empty();
+        const std::string placed = mode == 3 ? "B001" : "S001";
+        if (mode == 3) Check(document.AddCustomObject(placed, "S001"));
+        else Check(document.AddOriginalObject(placed));
+        if (mode == 1) Modification(document, placed, "X001", NativeValueType::Int32, std::int32_t{1});
+        if (mode == 2) Modification(document, placed, "Pth0", NativeValueType::String, std::string("PathTextures\\SyntheticBridge.tga"));
+        fixture.SetNative(document);
+        Rejected(fixture.Inspect({placed}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED",
+            "相关W3B空Original、typed true、相同路径覆盖和单层继承均不在标准桥首域");
+    }
+    auto unrelated = WalkableBridgeFixture();
+    auto w3b = Empty();
+    Check(w3b.AddOriginalObject("S002"));
+    Check(w3b.AddCustomObject("B001", "S003"));
+    unrelated.SetNative(w3b);
+    auto w3d = Empty(ObjectType::Doodad);
+    Check(w3d.AddOriginalObject("D002")); unrelated.SetNative(w3d);
+    Require(Take(unrelated.Inspect({"S001", "S002"})).footprints.size() == 1 && unrelated.sources.size() == 5,
+        "其它对象W3B/W3D记录不拒绝标准桥，也不请求无关DoodadMetaData");
+    unrelated.sources[kW3b] = {"war3map.w3b", false, {}};
+    Require(Take(unrelated.Inspect({"S001"})).footprints.size() == 1, "准确Missing W3B与合法无关W3B均允许标准桥");
+
+    auto duplicate = WalkableBridgeFixture();
+    duplicate.destructables.push_back(duplicate.destructables[0]); duplicate.Tables();
+    Rejected(duplicate.Inspect({"S001"}), "TERRAIN_NATIVE_OBJECT_ID", "桥标准行必须唯一，不能依赖loader覆盖重复定义");
+    auto sameStandard = WalkableBridgeFixture();
+    sameStandard.doodads.push_back({{"doodID", "S001"}, {"pathTex", "_"}}); sameStandard.Tables();
+    Rejected(sameStandard.Inspect({"S001"}), "TERRAIN_NATIVE_OBJECT_CLASS_AMBIGUOUS", "同名标准Doodad即使无占地也不能借桥身份");
+    for (const bool custom : {false, true}) {
+        auto fixture = WalkableBridgeFixture();
+        auto document = Empty(ObjectType::Doodad);
+        if (custom) Check(document.AddCustomObject("S001", "D001"));
+        else Check(document.AddOriginalObject("S001"));
+        fixture.SetNative(document);
+        Rejected(fixture.Inspect({"S001"}), "TERRAIN_NATIVE_OBJECT_CLASS_AMBIGUOUS", "同名W3D Original或Custom都先拒绝类别歧义");
+    }
+}
+
+void WalkableBridgeGridUsesWireRawcodeFallback() {
+    for (const std::string rawcode : {"S001", "Sc01", "CS01"}) {
+        for (const std::string category : {"", "C", "E", "_", "unknown"}) {
+            auto fixture = WalkableBridgeFixture();
+            fixture.destructables[0]["destructableID"] = rawcode;
+            fixture.destructables[0]["code"] = "BC01";
+            if (!category.empty()) fixture.destructables[0]["category"] = category;
+            fixture.Tables();
+            const auto result = Take(fixture.Inspect({rawcode}));
+            Require(result.footprints.size() == 1 && result.footprints[0].rawcode == rawcode
+                && result.footprints[0].gridPolicy == MapData::TerrainDoodadGridPolicy::TwoCells,
+                "缺同名Doodad时仅wire rawcode第二字符决定非C回退，Destructable.category和code不能改网格");
+        }
+    }
+    for (const std::string rawcode : {"SC01", "BC01", "CC01"}) {
+        auto fixture = WalkableBridgeFixture();
+        fixture.destructables[0]["destructableID"] = rawcode;
+        fixture.destructables[0]["category"] = "E";
+        fixture.destructables[0]["code"] = "B001"; fixture.Tables();
+        Rejected(fixture.Inspect({rawcode}), "TERRAIN_WALKABLE_DESTRUCTABLE_GRID",
+            "wire第二字符C仍拒绝，不能用Destructable.category或code伪造已证明2格");
+    }
+}
+
 void SpecialDoodadFieldsDoNotBorrowOrdinaryPoseRules() {
     Fixture f;
     f.doodads[0]["pathTex"] = "PathTextures\\special.tga";
@@ -1022,6 +1182,10 @@ int main() {
         PatternedFootprintReceivesTheActualFixedRotation();
         DoodadOverridesUseBoundedStandardInheritance();
         NativeDoodadRotationUsesExactValuesAndSources();
+        WalkableBridgeInspectionOwnsUniqueBoundedResults();
+        WalkableBridgeRequiresExplicitStandardFields();
+        WalkableBridgeRejectsRelevantNativeRecordsAndClassCollisions();
+        WalkableBridgeGridUsesWireRawcodeFallback();
         SpecialDoodadFieldsDoNotBorrowOrdinaryPoseRules();
         std::cout << "native destructable pathing: typed fields, bounded inheritance, unique sources and rejection paths passed\n";
         return 0;

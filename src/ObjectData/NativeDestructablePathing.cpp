@@ -257,6 +257,7 @@ struct ResolvedDoodadFootprint {
     std::string_view path;
     MapData::TerrainDoodadGridPolicy gridPolicy;
     std::optional<float> rotation;
+    MapData::TerrainNativeFootprintContribution contribution = MapData::TerrainNativeFootprintContribution::StaticRgbAttributes;
 };
 } // namespace
 
@@ -422,21 +423,48 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
                     Fail("TERRAIN_NATIVE_OBJECT_WALKABLE_TYPE", "walkable原生覆盖不是唯一无索引Int32：" + std::string(rawcode));
                 overridden = &modification;
             }
+            bool walkable = false;
             if (overridden) {
                 const auto* value = std::get_if<std::int32_t>(&overridden->value);
                 if (!value || (*value != 0 && *value != 1)) Fail("TERRAIN_NATIVE_OBJECT_WALKABLE_TYPE", "walkable覆盖必须是Int32的0或1。");
-                if (*value != 0) Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "walkable可破坏物尚未接入静态通行：" + std::string(rawcode));
+                walkable = *value != 0;
             } else {
                 const auto value = standard->Field("walkable");
                 if (value != "0" && value != "1") Fail("TERRAIN_NATIVE_OBJECT_WALKABLE_TYPE", "标准walkable缺失或不是显式0/1：" + std::string(rawcode));
-                if (value != "0") Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "walkable可破坏物尚未接入静态通行：" + std::string(rawcode));
+                walkable = value != "0";
+            }
+            if (walkable) {
+                // 生存桥首域不解释W3B覆盖或自定义继承；同rawcode的Doodad/W3D已在上方排除。
+                // 其它对象的W3B仍按各自来源解析，不把整份W3B是否存在当作桥资格。
+                if (native || standard->key.rawcode != rawcode)
+                    Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "可行走对象仅支持没有相关W3B记录的唯一标准类型：" + std::string(rawcode));
+                const auto path = standard->fields.find("pathtex");
+                const auto rotation = FixedRotation(standard->Field("fixedrot"));
+                if (path == standard->fields.end() || path->second.empty() || path->second == "_" || path->second == "none"
+                    || !rotation || *rotation < -360 || *rotation > 360)
+                    Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "可行走标准对象需要非空pathTex和明确有限的[-360,360] fixedRot：" + std::string(rawcode));
+                // 5496D0向Doodads目录查询category；这里已证明无同名Doodad行/原生覆盖。
+                // 其缺行getter先清空字符串，因此502580回退到wire DWORD>>8的低字节。
+                // 426890按小端原样读DWORD，该字节就是文件rawcode的第二个字符。
+                // 非C无论类别目录是否包含该字符都不能命中502600，故确定采用2格。
+                if (rawcode[1] == 'C')
+                    Fail("TERRAIN_WALKABLE_DESTRUCTABLE_GRID", "可行走对象的C类别回退尚未绑定最终目录，不能确定吸附网格：" + std::string(rawcode));
+                const auto outputWork = sizeof(std::string_view) * 3 + sizeof(ResolvedDoodadFootprint)
+                    + sizeof(MapData::TerrainNativeDoodadPathingType) + rawcode.size() + path->second.size() + 2;
+                if (outputWork > maximumWorkingBytes - work)
+                    Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "可行走对象占地结果超过累计剩余预算。");
+                work += outputWork;
+                footprintPaths.emplace(rawcode, ResolvedDoodadFootprint{path->second,
+                    MapData::TerrainDoodadGridPolicy::TwoCells, rotation,
+                    MapData::TerrainNativeFootprintContribution::WalkableTerrainSuppression});
             }
         }
         MapData::TerrainNativeObjectPathing result;
         result.workBytes = work;
         result.footprints.reserve(footprintPaths.size());
         for (const auto& [rawcode, resolved] : footprintPaths) {
-            result.footprints.push_back({std::string(rawcode), std::string(resolved.path), resolved.gridPolicy, resolved.rotation});
+            result.footprints.push_back({std::string(rawcode), std::string(resolved.path), resolved.gridPolicy, resolved.rotation,
+                resolved.contribution});
         }
         result.specialFootprints.reserve(specialPaths.size());
         for (const auto& [rawcode, path] : specialPaths)
@@ -459,7 +487,7 @@ Result<std::size_t> ValidateNativeDestructablePathing(std::span<const std::strin
         if (!inspected.Succeeded() || !inspected.value) return {{}, std::move(inspected.diagnostics)};
         if (!inspected.value->footprints.empty())
             return Result<std::size_t>::Failure(kSubsystem, "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED",
-                "普通装饰物的pathTex未明确禁用占地：" + inspected.value->footprints.front().rawcode);
+                "对象的pathTex未明确禁用占地，不能由零贡献兼容接口授予保存资格：" + inspected.value->footprints.front().rawcode);
         return Result<std::size_t>::Success(inspected.value->workBytes);
     } catch (const std::bad_alloc&) { return Result<std::size_t>::Failure(kSubsystem, "TERRAIN_NATIVE_OBJECT_BUDGET", "严格对象解析内存分配失败。"); }
     catch (const std::length_error&) { return Result<std::size_t>::Failure(kSubsystem, "TERRAIN_NATIVE_OBJECT_BUDGET", "严格对象解析容器容量不足。"); }

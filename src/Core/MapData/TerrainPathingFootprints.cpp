@@ -88,11 +88,20 @@ Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& read
                     && type.gridPolicy != TerrainDoodadGridPolicy::RequireTwoAndFourEquivalent)
                 || !byRawcode.emplace(type.rawcode, Type{&type, FootprintPath(type.pathTexture)}).second)
                 Fail("TERRAIN_NATIVE_FOOTPRINT_LAYOUT", "占地类型没有唯一rawcode或属于尚未捕获的吸附类别。");
+            if ((type.contribution != TerrainNativeFootprintContribution::StaticRgbAttributes
+                    && type.contribution != TerrainNativeFootprintContribution::WalkableTerrainSuppression)
+                || (type.contribution == TerrainNativeFootprintContribution::WalkableTerrainSuppression
+                    && type.gridPolicy != TerrainDoodadGridPolicy::TwoCells))
+                Fail("TERRAIN_NATIVE_FOOTPRINT_LAYOUT", "占地贡献类别或可行走对象吸附策略未经同次来源解释。");
         }
         std::size_t invariantInstances = 0;
         for (const auto& placement : placements) {
             const auto found = byRawcode.find(placement.rawcode);
             if (found == byRawcode.end()) continue; // 已由同次严格分类器解释的零贡献类型。
+            if (found->second.value->contribution == TerrainNativeFootprintContribution::WalkableTerrainSuppression
+                && (placement.flags != 2 || placement.lifePercent != 100))
+                Fail("TERRAIN_WALKABLE_DESTRUCTABLE_STATE", "可行走对象仅支持wire flags=2且lifePercent=100的完整生存实例："
+                    + placement.rawcode + " #" + std::to_string(placement.creationId));
             found->second.used = true;
             groups[found->second.path].push_back({&placement, found->second.value});
             if (found->second.value->gridPolicy == TerrainDoodadGridPolicy::RequireTwoAndFourEquivalent) ++invariantInstances;
@@ -134,7 +143,8 @@ Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& read
                         ? AddGridInvariantUniformDoodadFootprint(nativeStaticAttributes_, header,
                             *instance.placement, {parsed.value->width, parsed.value->uniformAttributes})
                         : AddDoodadFootprint(nativeStaticAttributes_, header,
-                            *instance.placement, *parsed.value, 2, instance.type->fixedRotationDegrees);
+                            *instance.placement, *parsed.value, 2, instance.type->fixedRotationDegrees,
+                            instance.type->contribution);
                     for (auto& diagnostic : status.diagnostics) diagnostic.message = instance.placement->rawcode
                         + " #" + std::to_string(instance.placement->creationId) + " " + names[index] + "：" + diagnostic.message;
                     Check(std::move(status));
@@ -177,7 +187,8 @@ Status TerrainPathingResources::CaptureSpecialFootprints(const MemberReader& rea
         std::map<std::string_view, Type, std::less<>> byRawcode;
         std::map<std::string, Image, std::less<>> images;
         for (const auto& type : types) {
-            if (type.rawcode.size() != 4 || type.gridPolicy != TerrainDoodadGridPolicy::SpecialTerrain || type.fixedRotationDegrees)
+            if (type.rawcode.size() != 4 || type.gridPolicy != TerrainDoodadGridPolicy::SpecialTerrain || type.fixedRotationDegrees
+                || type.contribution != TerrainNativeFootprintContribution::StaticRgbAttributes)
                 Fail("TERRAIN_SPECIAL_LAYOUT", "特殊地形类型不能带普通装饰物旋转或吸附规则。");
             const auto path = type.pathTexture.empty() ? std::string{} : FootprintPath(type.pathTexture);
             if (!byRawcode.emplace(type.rawcode, Type{path}).second)

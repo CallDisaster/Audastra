@@ -213,10 +213,9 @@ void AddUniformRectangle(std::span<std::uint8_t> attributes, const TerrainHeader
             attributes[row + static_cast<std::size_t>(x)] |= value;
     }
 }
-} // namespace
-
-Status AddUniformDoodadFootprint(std::span<std::uint8_t> staticAttributes, const TerrainHeader& terrain,
-    const DoodadPlacement& placement, const TerrainUniformDoodadFootprint& footprint, std::uint8_t snapCells) {
+Status AddUniformFootprint(std::span<std::uint8_t> staticAttributes, const TerrainHeader& terrain,
+    const DoodadPlacement& placement, const TerrainUniformDoodadFootprint& footprint, std::uint8_t snapCells,
+    TerrainNativeFootprintContribution contribution) {
     const auto fail = [](const char* code, const char* message) { return Status::Failure(kSubsystem, code, message); };
     auto valid = ValidatePlacement(staticAttributes, terrain, placement, snapCells);
     if (!valid.Succeeded()) return valid;
@@ -226,8 +225,17 @@ Status AddUniformDoodadFootprint(std::span<std::uint8_t> staticAttributes, const
     if (!rectangle)
         return fail("TERRAIN_UNIFORM_SNAP_AMBIGUOUS", "同色占地坐标靠近吸附边界，原版浮点舍入的结果不能唯一确定。");
     // 此后无失败分支。均匀像素使逐像素裁边可化为相同的矩形，不移动原起点。
-    AddUniformRectangle(staticAttributes, terrain, *rectangle, footprint.attributes);
+    const auto attributes = contribution == TerrainNativeFootprintContribution::WalkableTerrainSuppression
+        ? static_cast<std::uint8_t>(footprint.attributes ? 0x40 : 0) : footprint.attributes;
+    AddUniformRectangle(staticAttributes, terrain, *rectangle, attributes);
     return Status::Ok();
+}
+} // namespace
+
+Status AddUniformDoodadFootprint(std::span<std::uint8_t> staticAttributes, const TerrainHeader& terrain,
+    const DoodadPlacement& placement, const TerrainUniformDoodadFootprint& footprint, std::uint8_t snapCells) {
+    return AddUniformFootprint(staticAttributes, terrain, placement, footprint, snapCells,
+        TerrainNativeFootprintContribution::StaticRgbAttributes);
 }
 
 Status AddGridInvariantUniformDoodadFootprint(std::span<std::uint8_t> staticAttributes, const TerrainHeader& terrain,
@@ -251,15 +259,18 @@ Status AddGridInvariantUniformDoodadFootprint(std::span<std::uint8_t> staticAttr
 
 Status AddDoodadFootprint(std::span<std::uint8_t> staticAttributes, const TerrainHeader& terrain,
     const DoodadPlacement& placement, const TerrainDoodadFootprint& footprint, std::uint8_t snapCells,
-    std::optional<float> fixedRotationDegrees) {
+    std::optional<float> fixedRotationDegrees, TerrainNativeFootprintContribution contribution) {
     const auto fail = [](const char* code, const char* message) { return Status::Failure(kSubsystem, code, message); };
+    if (contribution != TerrainNativeFootprintContribution::StaticRgbAttributes
+        && contribution != TerrainNativeFootprintContribution::WalkableTerrainSuppression)
+        return fail("TERRAIN_DOODAD_FOOTPRINT_CONTRIBUTION", "占地贡献类别不属于已解释的静态RGB或可行走地形抑制。");
     if (footprint.width == 0 || footprint.height == 0 || footprint.width > kMaximumSide || footprint.height > kMaximumSide
         || (footprint.pixelBytes != 3 && footprint.pixelBytes != 4)
         || footprint.pixels.size() != std::size_t{footprint.width} * footprint.height * footprint.pixelBytes)
         return fail("TERRAIN_DOODAD_FOOTPRINT", "占地像素视图与尺寸或格式不符。");
     if (footprint.uniform && footprint.width == footprint.height)
-        return AddUniformDoodadFootprint(staticAttributes, terrain, placement,
-            {footprint.width, footprint.uniformAttributes}, snapCells);
+        return AddUniformFootprint(staticAttributes, terrain, placement,
+            {footprint.width, footprint.uniformAttributes}, snapCells, contribution);
     auto valid = ValidatePlacement(staticAttributes, terrain, placement, snapCells);
     if (!valid.Succeeded()) return valid;
     if (!fixedRotationDegrees || !std::isfinite(*fixedRotationDegrees)
@@ -303,8 +314,10 @@ Status AddDoodadFootprint(std::span<std::uint8_t> staticAttributes, const Terrai
             const auto sx = source % footprint.width, sy = source / footprint.width;
             const auto fileRow = footprint.topOrigin ? sy : footprint.height - 1 - sy;
             const auto at = (std::size_t{fileRow} * footprint.width + sx) * footprint.pixelBytes;
-            staticAttributes[static_cast<std::size_t>(y) * columns + static_cast<std::size_t>(x)]
-                |= PixelAttributes(footprint.pixels.subspan(at, footprint.pixelBytes));
+            const auto rgb = PixelAttributes(footprint.pixels.subspan(at, footprint.pixelBytes));
+            const auto attributes = contribution == TerrainNativeFootprintContribution::WalkableTerrainSuppression
+                ? static_cast<std::uint8_t>(rgb ? 0x40 : 0) : rgb;
+            staticAttributes[static_cast<std::size_t>(y) * columns + static_cast<std::size_t>(x)] |= attributes;
         }
     }
     return Status::Ok();

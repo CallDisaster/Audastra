@@ -1357,6 +1357,129 @@ void SpecialWaterDeletionUsesTheNormalSaveAndUndoChain() {
     f.SaveExpected("special-water-redo-saved.w3x", waterTerrain, expectedPathing, &deletedDoodads);
 }
 
+constexpr std::string_view kBridgeTexture = "PathTextures/synthetic-bridge.tga";
+constexpr std::string_view kBridgeBlockerTexture = "PathTextures/synthetic-bridge-blocker.tga";
+void WalkableBridge(Fixture& f, bool blackPixel = false, bool duplicate = false) {
+    auto placements = Take(ParseDoodadPlacements(f.Member("war3map.doo")));
+    auto& bridge = placements.doodads.front(); bridge.rawcode="Br01"; bridge.position={544,512,0};
+    bridge.flags=2; bridge.lifePercent=100;
+    auto blocker=bridge; blocker.rawcode="Bl01"; blocker.position[0]=512; blocker.creationId=2;
+    placements.doodads.push_back(blocker);
+    if (duplicate) { auto second=placements.doodads.front(); second.creationId=3; placements.doodads.push_back(second); }
+    f.Member("war3map.doo")=Take(placements.Serialize());
+    f.Member("Units/DestructableData.slk")=Slk({"destructableID","code","walkable","pathTex","fixedRot"},
+        {{"Br01","Br01","1",std::string(kBridgeTexture),"0"}});
+    f.Member("Doodads/Doodads.slk")=Slk({"doodID","code","pathTex","category","fixedRot"},
+        {{"Bl01","Bl01",std::string(kBridgeBlockerTexture),"E","-1"}});
+    Bytes texture(18+16*4,std::byte{}); texture[2]=std::byte{2}; texture[12]=texture[14]=std::byte{4};
+    texture[16]=std::byte{32}; texture[17]=std::byte{40};
+    for (unsigned i=0;i<16;++i) texture[18+i*4]=texture[19+i*4]=texture[20+i*4]=std::byte{255};
+    if (blackPixel) {
+        texture[18]=texture[19]=texture[20]=std::byte{}; texture[21]=std::byte{255};
+    }
+    f.members.push_back({std::string(kBridgeTexture),std::move(texture)});
+    Bytes blockerTexture(18+16*3,std::byte{}); blockerTexture[2]=std::byte{2};
+    blockerTexture[12]=blockerTexture[14]=std::byte{4}; blockerTexture[16]=std::byte{24};
+    for (unsigned i=0;i<16;++i) blockerTexture[19+i*3]=std::byte{255};
+    f.members.push_back({std::string(kBridgeBlockerTexture),std::move(blockerTexture)});
+    // 原fixture中的Dst0/W3B覆盖与桥无关；允许保留其它对象的记录。
+    auto& wpm=f.Member("war3map.wpm");
+    for (unsigned y=14;y<18;++y) for (unsigned x=14;x<18;++x) wpm[16+y*32+x]=std::byte{0x1d};
+    for (unsigned y=14;y<18;++y) for (unsigned x=16;x<20;++x)
+        if (!(blackPixel && x==16 && y==14)) wpm[16+y*32+x]=x<18 ? std::byte{0x15} : std::byte{0x11};
+}
+Bytes BridgeExpectedPathing(Fixture& f, bool deep, bool blackPixel) {
+    auto expected=f.ExpectedPathing(deep);
+    // 独立字面文件位：G=04来自绿色普通doodad；桥只移除terrain08/0a。
+    for (unsigned y=14;y<18;++y) for (unsigned x=14;x<18;++x)
+        expected[16+y*32+x]=deep ? std::byte{0x1f} : std::byte{0x1d};
+    for (unsigned y=14;y<18;++y) for (unsigned x=16;x<20;++x)
+        if (!(blackPixel && x==16 && y==14)) expected[16+y*32+x]=x<18 ? std::byte{0x15} : std::byte{0x11};
+    return expected;
+}
+void WalkableBridgesUseTheNormalSaveAndUndoChain() {
+    for (const bool black : {false,true}) {
+        Fixture f; WalkableBridge(f,black,true); f.Open(); f.Paint();
+        const auto deep=BridgeExpectedPathing(f,true,black), shallow=BridgeExpectedPathing(f,false,black);
+        Require(shallow==f.Member("war3map.wpm"),"literal bridge source and independent expected bytes agree");
+        f.SaveExpected("bridge-deep.w3x",f.ExpectedTerrain(true),deep);
+        Require(f.edits->Undo(),"undo saved bridge map water change");
+        f.SaveExpected("bridge-shallow.w3x",f.ExpectedTerrain(false),shallow);
+        Require(f.edits->Redo(),"redo saved bridge map water change");
+        f.SaveExpected("bridge-deep-again.w3x",f.ExpectedTerrain(true),deep);
+    }
+}
+void WalkableBridgesPreserveOverlappingSavedRestrictionIntent() {
+    Fixture f; WalkableBridge(f); f.Open();
+    TerrainBrush restriction; restriction.kind=TerrainBrushKind::PathingRestriction;
+    restriction.shape=TerrainBrushShape::Square; restriction.size=1; restriction.pathingRestrictions=0x06; restriction.value=1;
+    const TerrainStrokePoint overlap{544,512};
+    Take(f.edits->EditTerrain(restriction,std::span(&overlap,1),false)); f.Paint();
+    auto restricted=BridgeExpectedPathing(f,true,false); restricted[16+16*32+17]=std::byte{0x17};
+    f.SaveExpected("bridge-saved-restriction.w3x",f.ExpectedTerrain(true),restricted);
+    Require(f.edits->Undo(),"undo water after restriction save retains declared saved intent");
+    restriction.value=0; Take(f.edits->EditTerrain(restriction,std::span(&overlap,1),false));
+    const auto removed=BridgeExpectedPathing(f,false,false);
+    Require(removed[16+16*32+17]==std::byte{0x15},"U11 G04 savedS06 currentS00 yields literal15, not11");
+    f.SaveExpected("bridge-removed-restriction.w3x",f.ExpectedTerrain(false),removed);
+}
+void WalkableBridgeStateAndWholeDoodadFreezeRejectBeforePublication() {
+    for (const unsigned mode : {0u,1u,2u,3u,4u,5u,6u}) {
+        Fixture f; WalkableBridge(f);
+        auto placements=Take(ParseDoodadPlacements(f.Member("war3map.doo")));
+        if (mode<4) placements.doodads[0].flags=std::array<std::uint8_t,4>{0,1,3,4}[mode];
+        else placements.doodads[0].lifePercent=std::array<std::uint8_t,3>{0,50,99}[mode-4];
+        f.Member("war3map.doo")=Take(placements.Serialize()); f.Open(); f.Paint();
+        const auto sourceSha=Take(Sha256File(f.archive->SourcePath()));
+        const auto draft=Take(SerializeMapTerrain(*f.edits->Terrain())); const auto plan=f.Plan();
+        Require(!plan.SaveGate().Succeeded() && HasCode(plan.SaveGate(),"TERRAIN_WALKABLE_DESTRUCTABLE_STATE"),
+            "unsupported bridge flags or life cannot receive a save gate");
+        Require(Take(Sha256File(f.archive->SourcePath()))==sourceSha && f.edits->IsDirty()
+            && Take(SerializeMapTerrain(*f.edits->Terrain()))==draft,"bridge state refusal preserves original and unsaved draft");
+    }
+    for (const unsigned row : {0u,1u}) {
+        Fixture f; WalkableBridge(f); f.Open(); f.Paint();
+        auto placements=Take(ParseDoodadPlacements(f.Member("war3map.doo"))); placements.doodads[row].position[2]=16;
+        Check(f.edits->EditDoodads(placements)); const auto plan=f.Plan();
+        Require(!plan.SaveGate().Succeeded() && HasCode(plan.SaveGate(),"TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED"),
+            "whole DOO freeze rejects both bridge Z and an unrelated ordinary object's Z");
+    }
+}
+void WalkableBridgeSourceAndResourceDependenciesRemainBound() {
+    Fixture f; WalkableBridge(f,true); f.Open(); f.Paint();
+    const auto owner=Take(TerrainPathingSave::CaptureNative(*f.archive,f.original,*f.edits->Terrain(),{},kBudget));
+    auto changed=f.Member(kBridgeTexture); changed[21]=std::byte{};
+    const MemberReplacement replacement{std::string(kBridgeTexture),changed};
+    Require(!owner.VerifyFrozenOutput(std::span(&replacement,1),{}).Succeeded(),"bridge TGA alpha bytes remain frozen even when RGB mask is unchanged");
+    const std::array<std::string,1> removed{std::string(kBridgeTexture)};
+    Require(!owner.VerifyFrozenOutput({},removed).Succeeded(),"bridge TGA removal cannot fall back to an unknown winner");
+    auto changedPlan=f.Plan(); auto output=f.Output(changedPlan); output.push_back(replacement);
+    Require(!changedPlan.VerifyForSave(*f.edits,f.archive->SourceSha256(),output).Succeeded(),"public plan rechecks bridge resource replacements");
+    Fixture unexplained; WalkableBridge(unexplained); unexplained.Member("war3map.wpm")[16+16*32+18]^=std::byte{2};
+    unexplained.Open(); unexplained.Paint(); const auto refused=unexplained.Plan();
+    Require(!refused.SaveGate().Succeeded() && HasCode(refused.SaveGate(),"TERRAIN_PATHING_SOURCE_UNEXPLAINED"),
+        "bridge support cannot hide unexplained old WPM bits under the suppressed terrain");
+    TerrainSavePlanLimits limits; limits.maximumBytes=owner.CaptureBudgetBytes();
+    const auto bounded=TerrainPathingSave::PrepareForSave(*f.archive,*f.edits,f.gameRoot,limits);
+    Require(!bounded.Succeeded() || (bounded.value && !bounded.value->SaveGate().Succeeded()),
+        "capture bytes alone do not waive the complete save-plan output budget");
+    const auto& diagnostics=bounded.Succeeded() && bounded.value ? bounded.value->SaveGate().diagnostics : bounded.diagnostics;
+    Require(std::any_of(diagnostics.begin(),diagnostics.end(),[](const auto& diagnostic) {
+        return diagnostic.code.find("BUDGET")!=std::string::npos;
+    }),"bridge budget refusal must identify a budget gate rather than an unrelated failure");
+}
+void WalkableBridgesUseTheDirectoryRecipe() {
+    Fixture f; WalkableBridge(f,true); f.Open(); const auto directory=f.Directory();
+    const auto workspace=Take(DirectoryWorkspace::Open(directory)); f.Paint();
+    const TerrainStrokeIntent intent{f.Water(),{f.point},false};
+    const auto patch=Take(TerrainPathingSave::Seal(MapDocument::FromMembers(f.members),f.Member("war3map.w3e"),
+        f.Member("war3map.wpm"),workspace.Snapshot(),*f.edits,std::span(&intent,1)));
+    const auto found=std::find_if(patch.Files().begin(),patch.Files().end(),[](const auto& file){return file.relativePath.filename()=="war3map.wpm";});
+    Require(found!=patch.Files().end() && found->replacement==BridgeExpectedPathing(f,true,true),
+        "directory replay shares the bridge layer and complete independent WPM expected bytes");
+    Require(Take(IO::ReadFileBytes(directory/"war3map.doo"))==f.Member("war3map.doo"),"directory sealing preserves full source DOO");
+}
+
 void ExistingDryRampsComposeWithOrdinaryAndSpecialSaveLayers() {
     for (const bool special : {false, true}) {
         Fixture f; SpecialDoodad(f, true);
@@ -1428,6 +1551,11 @@ int main() {
         SharedSpecialAndOrdinaryResourcesRoundTripOnce();
         SpecialWaterDeletionUsesTheNormalSaveAndUndoChain();
         ExistingDryRampsComposeWithOrdinaryAndSpecialSaveLayers();
+        WalkableBridgesUseTheNormalSaveAndUndoChain();
+        WalkableBridgesPreserveOverlappingSavedRestrictionIntent();
+        WalkableBridgeStateAndWholeDoodadFreezeRejectBeforePublication();
+        WalkableBridgeSourceAndResourceDependenciesRemainBound();
+        WalkableBridgesUseTheDirectoryRecipe();
         std::cout << "Native object terrain save tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
