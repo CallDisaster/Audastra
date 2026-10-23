@@ -59,7 +59,7 @@ struct TerrainWaterBrush {
 
 // 由实际解析的 DOO special 记录及其已加载资源生成。范围是地格半开区间；
 // relativeCliffLevels 是 (width+1)*(height+1) 个顶点的行优先相对层级。
-// Core 按实际处理区域检查，范围外的特殊记录不会因为已有层级不匹配而拒绝本笔。
+// 先核对全部实际源形状；原版删除阶段按当前顺序扫描完整已加载集合，不扩大地形处理区。
 struct TerrainWaterSpecialDoodadShape {
     std::uint32_t sourceRecordIndex;
     std::string rawcode;
@@ -100,8 +100,9 @@ struct TerrainWaterStrokeCandidate {
 
 // owned W3E 候选内依原顺序执行水面、扩大平台、层级/palette/variation、岸线、
 // 荒芜、越界地高衰减和 palette 传播。旧坡道/未知位只在实际访问区域拒绝。
-// specialShapes 必须与实际解析的 special 记录一一对应；需要删除的相交记录明确拒绝。
-// 只复制一次source，返回独占候选；成功或失败均不修改source。
+// specialShapes 必须与实际解析的 special 记录一一对应；形状失配项依原阶段删除，
+// 同时返回完整DOO候选和实际源记录回执。未闭合的空占地混合集合仍明确拒绝。
+// 地形source只复制一次；成功或失败均不修改输入地形或DOO。
 [[nodiscard]] Result<TerrainWaterStrokeCandidate> PrepareTerrainWaterStroke(
     const TerrainGridSnapshot& source, const TerrainWaterLoadedRules& rules, const TerrainWaterBrush& brush,
     std::span<const TerrainStrokePoint> points, const DoodadPlacements& doodads,
