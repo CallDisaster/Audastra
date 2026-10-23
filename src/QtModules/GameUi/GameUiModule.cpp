@@ -15,6 +15,7 @@
 #include <QThread>
 #include <QTimer>
 
+#include <algorithm>
 #include <cmath>
 
 namespace War3Map::Modules {
@@ -141,6 +142,13 @@ void GameUiModule::ApplyDefinitions(GameUiDefinitions definitions) {
     // 脚本可能已变化：之前的模拟不再对应，停止。
     ResetSimulation();
     definitions_ = std::move(definitions);
+    // 预览数值按描述编号保留（重新读取后接着看），已不存在的描述丢弃。
+    for (auto it = descriptionStates_.begin(); it != descriptionStates_.end();) {
+        const bool exists = std::any_of(definitions_->descriptions.begin(), definitions_->descriptions.end(),
+            [&](const GameUiDescriptionFile& file) { return file.description.id == it->first; });
+        it = exists ? std::next(it) : descriptionStates_.erase(it);
+    }
+    descriptionPanelFor_.clear();
     if (addRootBox_) {
         const QString typed = addRootBox_->currentText();
         addRootBox_->clear();
@@ -222,6 +230,11 @@ void GameUiModule::RebuildScene() {
         if (roots_.contains(kScriptRootName, Qt::CaseInsensitive)) {
             (void)AddScriptFrames(*tree, *definitions_->library, &skin, *ScriptFrames(), sceneDiagnostics_);
         }
+        // 地图自己的界面描述总是显示；同样可以锚在游戏代码区域上，所以最后展开。
+        for (const auto& file : definitions_->descriptions) {
+            (void)AddUiDescription(*tree, *definitions_->library, &skin, file.description,
+                descriptionStates_[file.description.id], sceneDiagnostics_);
+        }
         const auto layout = tree->Layout();
         sceneDiagnostics_.insert(sceneDiagnostics_.end(), layout.begin(), layout.end());
         tree_ = std::move(tree);
@@ -245,6 +258,7 @@ void GameUiModule::RebuildScene() {
 
 void GameUiModule::RebuildDrawList() {
     FrameDrawOptions options;
+    options.drawScriptHidden = showHidden_;
     if (tree_ && !hiddenKeys_.isEmpty()) {
         for (const auto& node : tree_->Nodes()) {
             if (node.id != kScreenNode && hiddenKeys_.contains(NodeKey(node.id))) options.hidden.insert(node.id);
@@ -402,6 +416,7 @@ QJsonObject GameUiModule::SaveViewState() const {
     if (showContent_) state.insert(QStringLiteral("content"), showContent_->isChecked());
     if (showBounds_) state.insert(QStringLiteral("bounds"), showBounds_->isChecked());
     if (showNames_) state.insert(QStringLiteral("names"), showNames_->isChecked());
+    state.insert(QStringLiteral("showHidden"), showHidden_);
     if (mainSplit_) state.insert(QStringLiteral("mainSplit"), QString::fromLatin1(mainSplit_->saveState().toBase64()));
     if (centerSplit_) state.insert(QStringLiteral("centerSplit"), QString::fromLatin1(centerSplit_->saveState().toBase64()));
     return state;
@@ -417,6 +432,8 @@ void GameUiModule::RestoreViewState(const QJsonObject& state) {
     }
     if (const QString race = state.value(QStringLiteral("race")).toString(); !race.isEmpty()) race_ = race;
     expansion_ = state.value(QStringLiteral("expansion")).toBool(expansion_);
+    showHidden_ = state.value(QStringLiteral("showHidden")).toBool(showHidden_);
+    if (showHiddenButton_) showHiddenButton_->setChecked(showHidden_);
     if (!page_) {
         pendingView_ = state;
     } else {

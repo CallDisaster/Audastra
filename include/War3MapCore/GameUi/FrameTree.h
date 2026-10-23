@@ -69,6 +69,13 @@ struct TextInfo {
     std::string justifyV;
 };
 
+// 自有界面描述（audastra.ui）生成的节点：所属描述、框架编号与重复实例下标。
+struct UiFrameLink {
+    std::string description;
+    std::string frame;  // 描述根节点为空
+    std::optional<std::uint32_t> instance;
+};
+
 struct FrameNode {
     std::uint32_t id = 0;
     std::uint32_t parent = kNoNode;
@@ -99,6 +106,12 @@ struct FrameNode {
     bool codePlaced = false;
     // 地图脚本创建的框架：在 ScriptFramePlan::frames 中的下标。
     std::optional<std::uint32_t> scriptFrame;
+    std::optional<UiFrameLink> uiFrame;
+    // 脚本或界面描述把它设为隐藏：游戏中连同子框架都不显示。
+    bool hidden = false;
+    // 进度条：texture 按比例从左向右裁剪（0..1，与游戏状态条一致），background 整块画在下面。
+    std::optional<float> fill;
+    std::optional<TextureInfo> background;
 };
 
 // String 与 TEXT 框架：没有尺寸时由文字内容决定大小。

@@ -77,7 +77,9 @@ public:
 
 private:
     const FrameNode& Node(std::uint32_t id) const { return tree_.Nodes()[id]; }
-    bool Hidden(std::uint32_t id) const { return options_.hidden.contains(id); }
+    bool Hidden(std::uint32_t id) const {
+        return options_.hidden.contains(id) || (!options_.drawScriptHidden && Node(id).hidden);
+    }
 
     void Visit(std::uint32_t id) {
         if (Hidden(id)) return;
@@ -134,8 +136,24 @@ private:
             if (node.texture) PushImage(node.id, MakeImage(*node.texture, node.rect));
             PushText(node);
         } else if (type == "simplestatusbar") {
+            if (node.background) PushImage(node.id, MakeImage(*node.background, node.rect));
+            if (node.texture) PushFill(node);
+        } else if (node.uiFrame && type == "gluetextbutton") {
+            // 界面描述的按钮只有常态贴图与文字；游戏界面文件里的按钮由子框架绘制。
             if (node.texture) PushImage(node.id, MakeImage(*node.texture, node.rect));
+            PushText(node);
         }
+    }
+
+    // 状态条填充：矩形与贴图横向按同一比例裁剪，贴图不被压缩。
+    void PushFill(const FrameNode& node) {
+        const float fill = std::clamp(node.fill.value_or(1.0f), 0.0f, 1.0f);
+        if (fill <= 0.0f) return;
+        TextureInfo texture = *node.texture;
+        texture.texCoord[1] = texture.texCoord[0] + (texture.texCoord[1] - texture.texCoord[0]) * fill;
+        FrameRect rect = node.rect;
+        rect.right = rect.left + rect.Width() * fill;
+        PushImage(node.id, MakeImage(texture, rect));
     }
 
     void EmitBackdrop(const FrameNode& node) {

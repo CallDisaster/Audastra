@@ -24,6 +24,7 @@
 
 class QCheckBox;
 class QComboBox;
+class QLabel;
 class QLineEdit;
 class QPushButton;
 class QSplitter;
@@ -89,6 +90,16 @@ public:
     // 合并输入值并重新模拟。
     void SetSimulationValues(const std::map<std::string, std::string>& values);
     [[nodiscard]] const GameUi::SimulationResult* Simulation() const;
+    // 地图导入的自有界面描述（按编号排序；定义未读入时为空）与各自的预览状态、数值。
+    [[nodiscard]] const std::vector<GameUiDescriptionFile>& Descriptions() const;
+    [[nodiscard]] const GameUi::UiDescription* Description(const QString& id) const;
+    [[nodiscard]] GameUi::UiInstanceState DescriptionPreview(const QString& id) const;
+    // 切换预览状态（空为基础状态）、合并预览数值（键为 编号 或 编号[下标]）。不合法时整批不改并给出原因。
+    bool SetDescriptionState(const QString& id, const QString& state, QString* error = nullptr);
+    bool SetDescriptionValues(const QString& id, const std::map<std::string, std::string>& values, QString* error = nullptr);
+    // 也画脚本或描述设为隐藏的框架。
+    [[nodiscard]] bool ShowHidden() const noexcept { return showHidden_; }
+    void SetShowHidden(bool show);
     [[nodiscard]] bool IsLoading() const noexcept { return definitionsPending_ || assetsPending_; }
     [[nodiscard]] QImage RenderImage(const QSize& size) const;
     void Reload();
@@ -118,6 +129,8 @@ private:
     void RunSimulation();
     void UpdateSimulationPanel();
     void ResetSimulation();
+    void BuildDescriptionPanel(QWidget* parent);
+    void UpdateDescriptionPanel();
     void OnItemChanged(QTreeWidgetItem* item, int column);
     [[nodiscard]] QString NodeKey(std::uint32_t node) const;
 
@@ -131,6 +144,7 @@ private:
     QPushButton* showContent_ = nullptr;
     QPushButton* showBounds_ = nullptr;
     QPushButton* showNames_ = nullptr;
+    QPushButton* showHiddenButton_ = nullptr;
     QLineEdit* search_ = nullptr;
     QTreeWidget* nodes_ = nullptr;
     GameUiCanvas* canvas_ = nullptr;
@@ -177,6 +191,14 @@ private:
     QComboBox* simulationBox_ = nullptr;
     QTableWidget* simulationInputs_ = nullptr;
     QStringList simulationKeys_;
+
+    std::map<std::string, GameUi::UiInstanceState> descriptionStates_;
+    bool showHidden_ = false;
+    QWidget* descriptionPanel_ = nullptr;
+    QLabel* descriptionTitle_ = nullptr;
+    QComboBox* descriptionStateBox_ = nullptr;
+    QTableWidget* descriptionInputs_ = nullptr;
+    QString descriptionPanelFor_;  // 面板当前对应的描述编号
 };
 
 } // namespace War3Map::Modules

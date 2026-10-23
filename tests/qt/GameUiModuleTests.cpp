@@ -5,11 +5,14 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QPushButton>
 #include <QStandardItemModel>
 #include <QTableWidget>
 #include <QTest>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
+
+#include <algorithm>
 
 using namespace War3Map;
 using namespace War3Map::GameUi;
@@ -63,6 +66,7 @@ private slots:
     void ViewStateRoundTrip();
     void CanvasDrawsAndHitsTextures();
     void SimulationDrivesScriptFrames();
+    void DescriptionPreviewDrivesFrames();
 };
 
 void GameUiModuleTests::BuildsSceneFromDefinitions() {
@@ -272,6 +276,74 @@ endfunction
     QVERIFY(module.SimulationFunction().isEmpty());
     QCOMPARE(box->currentIndex(), 0);
     QVERIFY(qAbs(barWidth() - 0.2f) < 1e-4f);
+}
+
+void GameUiModuleTests::DescriptionPreviewDrivesFrames() {
+    // 原创界面描述：底框随“显示”开关，填充随进度；“充满”状态换贴图并填满。
+    auto parsed = ParseUiDescription(R"({"format": "audastra.ui", "version": 1, "id": "Bar",
+  "values": [{"id": "progress", "type": "real", "min": 0, "max": 1, "default": 0.5}, {"id": "shown", "type": "boolean", "default": true}],
+  "frames": [{"id": "back", "type": "backdrop", "anchors": [{"point": "CENTER", "to": "screen"}], "width": 0.2, "height": 0.02,
+    "texture": "Back", "visible": "shown",
+    "children": [{"id": "fill", "type": "bar", "anchors": [{"point": "TOPLEFT"}, {"point": "BOTTOMRIGHT"}], "texture": "Fill", "value": "progress"}]}],
+  "states": [{"id": "full", "label": "充满", "set": [{"frame": "fill", "texture": "Full", "value": 1}]}]})");
+    QVERIFY(parsed.value);
+    QtProject::EditorProject project;
+    Modules::GameUiModule module(project);
+    auto* page = module.Widget();
+    auto definitions = SyntheticDefinitions();
+    definitions.descriptions.push_back({"AudastraUI\\Bar.json", std::move(*parsed.value)});
+    module.LoadDefinitionsForTesting(std::move(definitions));
+    QCOMPARE(module.Descriptions().size(), std::size_t{1});
+    const auto node = [&module](const char* name) -> const FrameNode& {
+        return module.Tree()->Nodes()[*module.Tree()->FindByName(name)];
+    };
+    const auto commands = [&module, &node](const char* name) {
+        const std::uint32_t id = node(name).id;
+        return std::count_if(module.DrawList().commands.begin(), module.DrawList().commands.end(),
+            [id](const FrameDrawCommand& command) { return command.node == id; });
+    };
+    QVERIFY(qAbs(*node("fill").fill - 0.5f) < 1e-6f);
+
+    auto* panel = page->findChild<QWidget*>(QStringLiteral("gameUiDescription"));
+    QVERIFY(panel);
+    QVERIFY(module.SelectFrame(QStringLiteral("fill")));
+    QVERIFY(!panel->isHidden());
+    auto* inputs = page->findChild<QTableWidget*>(QStringLiteral("gameUiDescriptionInputs"));
+    QVERIFY(inputs);
+    QCOMPARE(inputs->rowCount(), 2);
+    QWidget* editor = inputs->cellWidget(0, 1);
+
+    QString error;
+    QVERIFY(module.SetDescriptionValues(QStringLiteral("Bar"), {{"progress", "0.25"}}, &error));
+    QVERIFY(qAbs(*node("fill").fill - 0.25f) < 1e-6f);
+    QCOMPARE(inputs->cellWidget(0, 1), editor);
+    // 不合法的输入整批拒绝，预览不变。
+    QVERIFY(!module.SetDescriptionValues(QStringLiteral("Bar"), {{"progress", "0.9"}, {"shown", "maybe"}}, &error));
+    QVERIFY(!error.isEmpty());
+    QVERIFY(!module.SetDescriptionValues(QStringLiteral("Bar"), {{"nope", "1"}}, &error));
+    QVERIFY(qAbs(*node("fill").fill - 0.25f) < 1e-6f);
+
+    auto* state = page->findChild<QComboBox*>(QStringLiteral("gameUiDescriptionState"));
+    QVERIFY(state);
+    QCOMPARE(state->count(), 2);
+    state->setCurrentIndex(1);
+    QCOMPARE(module.DescriptionPreview(QStringLiteral("Bar")).state, std::string("full"));
+    QCOMPARE(node("fill").texture->path, std::string("Full.blp"));
+    QVERIFY(qAbs(*node("fill").fill - 1.0f) < 1e-6f);
+    QVERIFY(!module.SetDescriptionState(QStringLiteral("Bar"), QStringLiteral("missing"), &error));
+
+    // 隐藏：游戏中不显示，打开“显示隐藏”后照画。
+    QVERIFY(module.SetDescriptionValues(QStringLiteral("Bar"), {{"shown", "false"}}, &error));
+    QVERIFY(node("back").hidden);
+    QCOMPARE(commands("back"), 0);
+    auto* showHidden = page->findChild<QPushButton*>(QStringLiteral("gameUiShowHidden"));
+    QVERIFY(showHidden);
+    showHidden->setChecked(true);
+    QVERIFY(module.ShowHidden());
+    QVERIFY(commands("back") > 0);
+
+    QVERIFY(module.SelectFrame(QStringLiteral("ConsoleUI")));
+    QVERIFY(panel->isHidden());
 }
 
 int main(int argc, char** argv) {

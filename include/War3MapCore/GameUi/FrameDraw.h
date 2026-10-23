@@ -57,6 +57,8 @@ struct FrameDrawCommand {
 struct FrameDrawOptions {
     // 隐藏的节点连同其子树都不绘制。
     std::unordered_set<std::uint32_t> hidden;
+    // 也画脚本或描述设为隐藏的节点（FrameNode::hidden），便于编辑时查看。
+    bool drawScriptHidden = false;
 };
 
 struct FrameDrawList {

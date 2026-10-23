@@ -1,5 +1,7 @@
 #include "GameUiModule.h"
 
+#include "GameUiInputs.h"
+
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -26,8 +28,10 @@ QString Text(const std::string& text) { return QString::fromUtf8(text.data(), st
 
 constexpr int kSliderSteps = 1000;
 
-// 数值输入：滑块（拖动）与数字框（精确）同步。滑块范围按初值定，数字框不限。
-QWidget* NumberEditor(const SimulationInput& input, QWidget* parent, std::function<void(const QString&)> changed) {
+} // namespace
+
+QWidget* GameUiNumberEditor(double initial, bool integer, std::optional<double> low, std::optional<double> high,
+    QWidget* parent, std::function<void(const QString&)> changed) {
     auto* editor = new QWidget(parent);
     auto* layout = new QHBoxLayout(editor);
     layout->setContentsMargins(2, 0, 2, 0);
@@ -35,26 +39,27 @@ QWidget* NumberEditor(const SimulationInput& input, QWidget* parent, std::functi
     auto* slider = new QSlider(Qt::Horizontal, editor);
     auto* spin = new QDoubleSpinBox(editor);
     spin->setRange(-1.0e6, 1.0e6);
-    spin->setDecimals(input.integer ? 0 : 3);
-    spin->setSingleStep(input.integer ? 1.0 : 0.01);
+    spin->setDecimals(integer ? 0 : 3);
+    spin->setSingleStep(integer ? 1.0 : 0.01);
     spin->setKeyboardTracking(false);
     spin->setButtonSymbols(QAbstractSpinBox::NoButtons);
     spin->setFixedWidth(spin->fontMetrics().horizontalAdvance(QStringLiteral("-000000.000")) + 12);
-    const double initial = QString::fromStdString(input.value).toDouble();
     spin->setValue(initial);
-    const double high = std::max(input.integer ? 10.0 : 1.0, std::ceil(std::fabs(initial) * 2.0));
-    const double low = initial < 0.0 ? -high : 0.0;
+    if (!low || !high || *high <= *low) {
+        high = std::max(integer ? 10.0 : 1.0, std::ceil(std::fabs(initial) * 2.0));
+        low = initial < 0.0 ? -*high : 0.0;
+    }
     slider->setRange(0, kSliderSteps);
-    const auto toSlider = [low, high](double value) {
+    const auto toSlider = [low = *low, high = *high](double value) {
         return static_cast<int>(std::lround((std::clamp(value, low, high) - low) / (high - low) * kSliderSteps));
     };
     slider->setValue(toSlider(initial));
-    QObject::connect(slider, &QSlider::valueChanged, spin, [spin, low, high, integer = input.integer](int position) {
+    QObject::connect(slider, &QSlider::valueChanged, spin, [spin, low = *low, high = *high, integer](int position) {
         double value = low + (high - low) * position / kSliderSteps;
         if (integer) value = std::round(value);
         spin->setValue(value);
     });
-    QObject::connect(spin, &QDoubleSpinBox::valueChanged, editor, [slider, toSlider, changed, integer = input.integer](double value) {
+    QObject::connect(spin, &QDoubleSpinBox::valueChanged, editor, [slider, toSlider, changed, integer](double value) {
         const QSignalBlocker block(slider);
         slider->setValue(toSlider(value));
         changed(integer ? QString::number(static_cast<long long>(std::llround(value))) : QString::number(value, 'g', 9));
@@ -63,8 +68,6 @@ QWidget* NumberEditor(const SimulationInput& input, QWidget* parent, std::functi
     layout->addWidget(spin);
     return editor;
 }
-
-} // namespace
 
 QStringList GameUiModule::SimulationFunctions() const {
     QStringList names;
@@ -198,7 +201,8 @@ void GameUiModule::UpdateSimulationPanel() {
         const auto changed = [this, key](const QString& value) { SetSimulationValues({{key, value.toStdString()}}); };
         QWidget* editor = nullptr;
         if (input.type == SimulationValueType::Number) {
-            editor = NumberEditor(input, simulationInputs_, changed);
+            editor = GameUiNumberEditor(QString::fromStdString(input.value).toDouble(), input.integer, std::nullopt,
+                std::nullopt, simulationInputs_, changed);
         } else if (input.type == SimulationValueType::Boolean) {
             auto* box = new QCheckBox(simulationInputs_);
             box->setChecked(input.value == "true");

@@ -318,7 +318,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "entities_copy", "entities_create", "entities_delete", "entities_query", "entities_rotate", "entities_set_fields",
         "export_campaign_member",
         "feedback.draft", "feedback.list", "feedback.status",
-        "game_ui_nodes_query", "game_ui_render", "game_ui_simulate", "game_ui_view_read", "game_ui_view_set",
+        "game_ui_nodes_query", "game_ui_preview_set", "game_ui_render", "game_ui_simulate", "game_ui_view_read", "game_ui_view_set",
         "get_terrain_edit_state",
         "imports_add", "imports_get", "imports_list", "imports_remove", "lua_file_read", "lua_file_write", "lua_files_list",
         "lua_test_hot_reload", "lua_test_reload_result",
@@ -334,7 +334,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{79});
+    QCOMPARE(expected.size(), qsizetype{80});
     for (const auto& definition : Mcp::AuxiliaryToolDefinitions()) {
         QCOMPARE(definition.permission, Mcp::ToolPermission::Edit);
         int matches = 0;
@@ -2383,9 +2383,18 @@ void LiveEditorToolsTests::GameUiToolsUseHostAndValidateArguments() {
     auto longName = args; longName["function"] = QString(300, QLatin1Char('F'));
     QCOMPARE(ErrorCode(f.tools->Invoke("game_ui_simulate", longName)), QString("GAME_UI_ARGUMENT"));
     QCOMPARE(received.size(), qsizetype{2});
+    // 界面描述预览：编号必填，显示隐藏须为布尔。
+    auto preview = args; preview["description"] = "CastBar"; preview["state"] = ""; preview["values"] = QJsonObject{{"hp[2]", 0.5}};
+    QVERIFY(f.tools->Invoke("game_ui_preview_set", preview).value("ok").toBool());
+    QCOMPARE(received.size(), qsizetype{3});
+    QVERIFY(!f.tools->Invoke("game_ui_preview_set", args).value("ok").toBool());
+    auto badHidden = args; badHidden["show_hidden"] = "yes";
+    QVERIFY(!f.tools->Invoke("game_ui_view_set", badHidden).value("ok").toBool());
+    QCOMPARE(received.size(), qsizetype{3});
     Mcp::ToolPolicy policy; policy.allowEdit = false; f.tools->SetPolicy(policy);
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_view_set"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_simulate"));
+    QVERIFY(!Names(f.tools->Tools()).contains("game_ui_preview_set"));
     QVERIFY(Names(f.tools->Tools()).contains("game_ui_render"));
 }
 

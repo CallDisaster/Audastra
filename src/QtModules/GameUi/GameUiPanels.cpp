@@ -76,6 +76,7 @@ QString LayoutText(LayoutState state) {
 QString SkinSourceText(const std::string& source) {
     if (source == "literal") return QObject::tr("直接路径");
     if (source == "script") return QObject::tr("地图脚本");
+    if (source == "description") return QObject::tr("界面描述");
     if (source == "map:customskin") return QObject::tr("地图皮肤 CustomSkin");
     if (source.rfind("game:", 0) == 0) return QObject::tr("游戏皮肤 [%1]").arg(Text(source.substr(5)));
     return Text(source);
@@ -86,7 +87,29 @@ QString TextSourceText(const std::string& source) {
     if (source == "fdf") return QObject::tr("界面文字表");
     if (source == "literal") return QObject::tr("原文");
     if (source == "script") return QObject::tr("地图脚本");
+    if (source == "description") return QObject::tr("界面描述");
     return Text(source);
+}
+
+QString UiTypeText(UiFrameType type) {
+    switch (type) {
+    case UiFrameType::Backdrop: return QObject::tr("背景");
+    case UiFrameType::Text: return QObject::tr("文字");
+    case UiFrameType::Bar: return QObject::tr("进度条");
+    case UiFrameType::Button: return QObject::tr("按钮");
+    case UiFrameType::Template: return QObject::tr("模板");
+    default: return QObject::tr("容器");
+    }
+}
+
+QString BindingText(const UiBinding& binding) {
+    QString text = Text(binding.value);
+    if (binding.perInstance) text += QStringLiteral("[]");
+    else if (binding.index) text += QStringLiteral("[%1]").arg(*binding.index);
+    if (binding.scale != 1.0) text += QStringLiteral(" ×%1").arg(binding.scale);
+    if (binding.offset != 0.0) text += QStringLiteral(" %1%2").arg(binding.offset > 0.0 ? QStringLiteral("+") : QString()).arg(binding.offset);
+    if (binding.invert) text += QObject::tr("（取反）");
+    return text;
 }
 
 QString ColorText(const std::array<float, 4>& color) {
@@ -148,6 +171,7 @@ void GameUiModule::BuildToolbar(QWidget* page, QVBoxLayout* layout) {
     showContent_ = Toggle(toolbar, "gameUiShowContent", tr("渲染"), true);
     showBounds_ = Toggle(toolbar, "gameUiShowBounds", tr("边框"), false);
     showNames_ = Toggle(toolbar, "gameUiShowNames", tr("名称"), false);
+    showHiddenButton_ = Toggle(toolbar, "gameUiShowHidden", tr("显示隐藏"), showHidden_);
     addRootBox_ = new QComboBox(toolbar);
     addRootBox_->setObjectName(QStringLiteral("gameUiAddRoot"));
     addRootBox_->setEditable(true);
@@ -160,7 +184,7 @@ void GameUiModule::BuildToolbar(QWidget* page, QVBoxLayout* layout) {
     auto* reload = new QPushButton(tr("重新读取"), toolbar);
     reload->setObjectName(QStringLiteral("gameUiReload"));
 
-    for (QWidget* widget : std::initializer_list<QWidget*>{raceBox_, versionBox_, aspectBox_, showContent_, showBounds_, showNames_})
+    for (QWidget* widget : std::initializer_list<QWidget*>{raceBox_, versionBox_, aspectBox_, showContent_, showBounds_, showNames_, showHiddenButton_})
         row->addWidget(widget);
     row->addStretch(1);
     row->addWidget(addRootBox_);
@@ -173,6 +197,7 @@ void GameUiModule::BuildToolbar(QWidget* page, QVBoxLayout* layout) {
     connect(showContent_, &QPushButton::toggled, this, [this](bool on) { canvas_->SetShowContent(on); });
     connect(showBounds_, &QPushButton::toggled, this, [this](bool on) { canvas_->SetShowBounds(on); });
     connect(showNames_, &QPushButton::toggled, this, [this](bool on) { canvas_->SetShowNames(on); });
+    connect(showHiddenButton_, &QPushButton::toggled, this, [this](bool on) { SetShowHidden(on); });
     const auto add = [this] {
         if (AddRoot(addRootBox_->currentText())) addRootBox_->setEditText({});
     };
@@ -254,10 +279,13 @@ void GameUiModule::BuildPage() {
     rightSplit->setObjectName(QStringLiteral("gameUiRightSplit"));
     rightSplit->setChildrenCollapsible(false);
     rightSplit->addWidget(properties_);
+    BuildDescriptionPanel(rightSplit);
+    rightSplit->addWidget(descriptionPanel_);
     BuildSimulationPanel(rightSplit);
     rightSplit->addWidget(simulationPanel_);
     rightSplit->setStretchFactor(0, 3);
     rightSplit->setStretchFactor(1, 2);
+    rightSplit->setStretchFactor(2, 2);
     rightLayout->addWidget(rightSplit, 1);
 
     mainSplit_->setStretchFactor(0, 0);
@@ -315,12 +343,15 @@ void GameUiModule::PopulateTree() {
             item->setText(0, DisplayName(node));
             item->setText(1, TypeText(node));
             const bool state = stateOnly.contains(node.id);
-            item->setText(2, state ? tr("状态显示") : node.layout == LayoutState::Placed ? QString() : LayoutText(node.layout));
+            item->setText(2, state         ? tr("状态显示")
+                             : node.hidden ? tr("隐藏")
+                             : node.layout == LayoutState::Placed ? QString()
+                                                                  : LayoutText(node.layout));
             item->setData(0, kNodeRole, node.id);
             item->setData(0, kNameRole, Text(node.name));
             item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
             item->setCheckState(0, hiddenKeys_.contains(NodeKey(node.id)) ? Qt::Unchecked : Qt::Checked);
-            if (state || node.layout == LayoutState::Unplaced || node.layout == LayoutState::Cycle) {
+            if (state || node.hidden || node.layout == LayoutState::Unplaced || node.layout == LayoutState::Cycle) {
                 for (int column = 0; column < 3; ++column) item->setForeground(column, dim);
             }
             items[node.id] = item;
@@ -399,6 +430,7 @@ void GameUiModule::SelectNode(std::uint32_t node) {
 }
 
 void GameUiModule::UpdateProperties() {
+    UpdateDescriptionPanel();
     if (!properties_) return;
     properties_->clear();
     if (!tree_ || selected_ == kNoNode || selected_ >= tree_->Nodes().size()) return;
@@ -464,6 +496,24 @@ void GameUiModule::UpdateProperties() {
             for (const auto& call : frame.runtimeSamples) lines.push_back(QStringLiteral("%1 %2").arg(Text(call.call)).arg(call.line));
             row(script, tr("运行时调用"), tr("%1 处：%2").arg(frame.runtimeCalls).arg(lines.join(QStringLiteral("，"))));
         }
+    } else if (node.uiFrame) {
+        const UiDescription* description = Description(Text(node.uiFrame->description));
+        const auto named = [](const std::string& label, const std::string& id) {
+            return label.empty() ? Text(id) : QStringLiteral("%1  %2").arg(Text(label), Text(id));
+        };
+        auto* own = group(tr("界面描述"));
+        row(own, tr("界面"), description ? named(description->label, description->id) : Text(node.uiFrame->description));
+        row(own, tr("文件"), Text(node.sourceFile));
+        if (const UiFrame* frame = description ? FindUiFrame(*description, node.uiFrame->frame) : nullptr) {
+            row(own, tr("框架"), named(frame->label, frame->id));
+            row(own, tr("种类"), UiTypeText(frame->type));
+            if (node.uiFrame->instance) row(own, tr("重复实例"), QString::number(*node.uiFrame->instance));
+            if (frame->value.binding) row(own, tr("进度取自"), BindingText(*frame->value.binding));
+            if (frame->visible.binding) row(own, tr("显示取自"), BindingText(*frame->visible.binding));
+            if (!frame->text.empty()) row(own, tr("文字模板"), Text(frame->text));
+        }
+        row(own, tr("当前显示"), node.hidden ? tr("隐藏") : tr("显示"));
+        if (node.fill) row(own, tr("当前进度"), Number(*node.fill));
     } else if (!node.sourceFile.empty()) {
         row(basic, tr("定义位置"), QStringLiteral("%1:%2").arg(Text(node.sourceFile)).arg(node.sourceLine));
         if (definitions_ && definitions_->library) {
@@ -507,6 +557,7 @@ void GameUiModule::UpdateProperties() {
         if (!info.alphaMode.empty()) row(item, tr("混合"), Text(info.alphaMode));
     };
     if (node.texture) texture(tr("贴图"), *node.texture);
+    if (node.background) texture(tr("底图"), *node.background);
     if (node.edge) texture(tr("边框贴图"), *node.edge);
     if (node.text) {
         const TextInfo& info = *node.text;
