@@ -471,6 +471,68 @@ std::vector<MapArchiveMember> FixedRotationQtMembers(bool custom, float degrees,
     return members;
 }
 
+std::vector<MapArchiveMember> WalkableDestructableQtMembers(bool patterned) {
+    auto members = NativePathingQtMembers();
+    if (members.empty()) return {};
+    const auto parsed = MapData::ParseMapTerrain(members[1].data);
+    if (!parsed.Succeeded() || !parsed.value) return {};
+    auto terrain = *parsed.value->Snapshot();
+    terrain.header.groundTilesets.push_back("Tg02");
+    const auto wire = MapData::SerializeMapTerrain(terrain);
+    if (!wire.Succeeded() || !wire.value) return {};
+    members[1].data = *wire.value;
+    for (auto& member : members) if (member.name == "TerrainArt\\Terrain.slk")
+        member.data = NativeDoodadQtTable({"tileID", "dir", "file", "walkable", "flyable", "buildable"},
+            {{"Tg01", "Fixture", "Ground", "1", "1", "1"}, {"Tg02", "Fixture", "Ground", "0", "1", "1"}});
+    members.push_back({"Units/DestructableData.slk", NativeDoodadQtTable(
+        {"destructableID", "code", "walkable", "pathTex", "fixedRot"},
+        {{"Br01", "Br01", "1", "PathTextures/bridge.tga", "0"}})});
+    members.push_back({"Units/DestructableMetaData.slk", NativeDoodadQtTable(
+        {"ID", "field", "slk", "type", "repeat", "data", "index"},
+        {{"p001", "walkable", "DestructableData", "bool", "0", "0", "-1"}})});
+    members.push_back({"Doodads/Doodads.slk", NativeDoodadQtTable(
+        {"doodID", "code", "pathTex", "category", "fixedRot"},
+        {{"Bl01", "Bl01", "PathTextures/blocker.tga", "E", "0"}})});
+    const auto texture = [](bool bridge, bool pattern) {
+        std::vector<std::byte> bytes(18 + 4 * 4 * 4, std::byte{0});
+        bytes[2] = std::byte{2}; bytes[12] = bytes[14] = std::byte{4};
+        bytes[16] = std::byte{32}; bytes[17] = std::byte{40};
+        for (std::size_t y = 0; y < 4; ++y) for (std::size_t x = 0; x < 4; ++x) {
+            const auto at = 18 + (y * 4 + x) * 4;
+            const bool corner = (x == 0 || x == 3) && (y == 0 || y == 3);
+            if (bridge && pattern && corner) bytes[at + 3] = std::byte{255};
+            else if (bridge) {
+                // 非零RGB、alpha=0应仅抑制terrain；RGB不能泄漏成普通静态阻挡位。
+                bytes[at] = bytes[at + 1] = bytes[at + 2] = std::byte{255};
+            } else bytes[at + 1] = std::byte{255};
+        }
+        return bytes;
+    };
+    members.push_back({"PathTextures/bridge.tga", texture(true, patterned)});
+    members.push_back({"PathTextures/blocker.tga", texture(false, false)});
+    MapData::DoodadPlacements placements;
+    MapData::DoodadPlacement placed;
+    placed.rawcode = "Br01"; placed.position = {544, 512, 0}; placed.scale = {1, 1, 1};
+    placed.flags = 2; placed.lifePercent = 100; placed.creationId = 1;
+    placements.doodads.push_back(placed);
+    placed.rawcode = "Bl01"; placed.position = {512, 512, 0}; placed.creationId = 2;
+    placements.doodads.push_back(placed);
+    const auto doo = placements.Serialize();
+    if (!doo.Succeeded() || !doo.value) return {};
+    for (auto& member : members) if (member.name == "war3map.doo") member.data = *doo.value;
+    // 独立字面来源矩阵：桥x16..19/y14..17仅去掉terrain08，普通green x14..17仍加04。
+    // pattern四角黑色但alpha=255，必须保留浅水19；对称四角不依赖旋转方向。
+    for (std::size_t y = 14; y < 18; ++y) for (std::size_t x = 16; x < 20; ++x) {
+        const bool corner = (x == 16 || x == 19) && (y == 14 || y == 17);
+        members[2].data[16 + y * 32 + x] = patterned && corner ? std::byte{0x19} : std::byte{0x11};
+    }
+    for (std::size_t y = 14; y < 18; ++y) for (std::size_t x = 14; x < 18; ++x)
+        members[2].data[16 + y * 32 + x] |= std::byte{4};
+    return members;
+}
+
+enum class NativeDoodadQtMutation { None, FollowHeight, ResourceReplacement, SourceDrift };
+
 std::vector<MapArchiveMember> TerrainJournalWaterMembers() {
     auto members = NativePathingQtMembers();
     const auto water = Tests::TerrainWaterMembers();
@@ -585,6 +647,10 @@ private slots:
     void FixedRotationNormalSaveAndUndoRedo();
     void FixedRotationWorkerRejectsBeforeWrite_data();
     void FixedRotationWorkerRejectsBeforeWrite();
+    void WalkableDestructableNormalSaveAndUndoRedo_data();
+    void WalkableDestructableNormalSaveAndUndoRedo();
+    void WalkableDestructableWorkerRejectsBeforeWrite_data();
+    void WalkableDestructableWorkerRejectsBeforeWrite();
     void PathingIntentLateEditStalesFrozenProject();
     void LegacyPathingIntentProjectKeepsStrictCompatibility();
     void TerrainSavePrepareStillRequiresToolchain();
@@ -610,9 +676,10 @@ private slots:
     void ProjectRestoreReadsUnlistedTerrainAndPathing();
     void ProjectRestoreKeepsMissingAndUnreadableTerrainDistinct();
 private:
-    void CheckNativeDoodadNormalSaveAndUndoRedo(const std::vector<MapArchiveMember>& members, bool inPlace);
+    void CheckNativeDoodadNormalSaveAndUndoRedo(const std::vector<MapArchiveMember>& members, bool inPlace,
+        bool textureChange = false, const std::vector<std::byte>* expectedEditedPathing = nullptr);
     void CheckNativeDoodadWorkerRejectsBeforeWrite(const std::vector<MapArchiveMember>& members, bool inPlace,
-        const char* expectedCode);
+        const char* expectedCode, NativeDoodadQtMutation mutation = NativeDoodadQtMutation::None);
 };
 
 void EditorProjectTests::UnlistedTerrainReadPreservesNamedInventory() {
@@ -1745,25 +1812,35 @@ void EditorProjectTests::CGridInvariantNormalSaveAndUndoRedo() {
     CheckNativeDoodadNormalSaveAndUndoRedo(members, inPlace);
 }
 
-void EditorProjectTests::CheckNativeDoodadNormalSaveAndUndoRedo(const std::vector<MapArchiveMember>& members, bool inPlace) {
+void EditorProjectTests::CheckNativeDoodadNormalSaveAndUndoRedo(const std::vector<MapArchiveMember>& members, bool inPlace,
+    bool textureChange, const std::vector<std::byte>* expectedEditedPathing) {
     QTemporaryDir root; QVERIFY(root.isValid());
     const auto source = std::filesystem::path(root.filePath("native-doodad-source.w3x").toStdWString());
     QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
     const auto originalSha = Sha256File(source); QVERIFY(originalSha.Succeeded());
     EditorProject project; QUndoStack undo; project.mapDataUndoStack_ = &undo;
-    QVERIFY(BindTerrainSaveProject(project, source)); QVERIFY(DeepenNativePathingQtProject(project));
-    PushMapDataEdit(project, "Native doodad water depth", "已有装饰物占地上的水深编辑");
+    QVERIFY(BindTerrainSaveProject(project, source));
+    if (textureChange) {
+        MapData::TerrainBrush brush; brush.kind = MapData::TerrainBrushKind::Texture;
+        brush.radius = 0; brush.groundTexture = "Tg02"; brush.variation = 0;
+        const MapData::TerrainStrokePoint point{512, 512};
+        const auto edited = project.mapEdits_->EditTerrain(brush, std::span(&point, 1), false);
+        QVERIFY2(edited.Succeeded(), ReadDiagnosticText(edited).c_str());
+        QVERIFY(project.ObserveMapDataEdit("已有占地上的不可行走贴图编辑"));
+    } else QVERIFY(DeepenNativePathingQtProject(project));
+    PushMapDataEdit(project, "Native footprint terrain edit", "已有占地上的地形编辑");
     QCOMPARE(undo.count(), 1); QCOMPARE(undo.index(), 1);
     const auto session = project.mapEdits_->SessionIdentity();
     const auto parsed = MapData::ParseMapTerrain(members[1].data); QVERIFY(parsed.Succeeded() && parsed.value);
     auto deepGrid = *parsed.value->Snapshot();
-    deepGrid.vertices[4 * 9 + 4].waterHeightAndFlagsRaw = 8192 + 80 * 4;
+    if (textureChange) deepGrid.vertices[4 * 9 + 4].textureAndFlagsRaw = 0x41;
+    else deepGrid.vertices[4 * 9 + 4].waterHeightAndFlagsRaw = 8192 + 80 * 4;
     MapData::RefreshTerrainDerived(deepGrid, 0, 0, 9, 9);
     const auto deepTerrain = MapData::SerializeMapTerrain(deepGrid); QVERIFY(deepTerrain.Succeeded());
     QCOMPARE(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, deepTerrain.value);
-    auto deepPathing = members[2].data;
-    // 原创占地的完整静态矩阵已独立写入来源；最近顶点深水再追加02，其余格保留。
-    for (std::size_t y = 14; y <= 17; ++y) for (std::size_t x = 14; x <= 17; ++x)
+    auto deepPathing = expectedEditedPathing ? *expectedEditedPathing : members[2].data;
+    // 原创占地的完整矩阵由调用者独立提供；普通装饰物仍沿既有深水追加02的预期。
+    if (!expectedEditedPathing) for (std::size_t y = 14; y <= 17; ++y) for (std::size_t x = 14; x <= 17; ++x)
         deepPathing[16 + y * 32 + x] |= std::byte{2};
     // 不借占地支持放宽脚本门；仅沿既有合法worker夹具替代脚本准备，领域保存走生产链。
     project.compilerDataRoot_.clear(); project.activeUiDataRoot_.clear(); project.uiDataRoot_.clear();
@@ -1795,7 +1872,7 @@ void EditorProjectTests::CheckNativeDoodadNormalSaveAndUndoRedo(const std::vecto
             QVERIFY(std::filesystem::create_directory(job->inPlaceOptions.backupDirectory));
         }
         InstallMapSaveDerivedPreparation(*job); EditorProject::RunMapSave(*job);
-        QVERIFY2(job->succeeded, job->diagnostics.empty() ? "native doodad worker" : job->diagnostics.back().message.c_str());
+        QVERIFY2(job->succeeded, ReadDiagnosticText(*job).c_str());
         QVERIFY(job->nextSession && job->terrainSavePlan && job->terrainSavePlan->RebuiltPathing());
         QVERIFY(job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded());
         const auto readback = MapArchiveSession::Open(target); QVERIFY(readback.Succeeded());
@@ -1837,14 +1914,31 @@ void EditorProjectTests::CGridVariantWorkerRejectsBeforeWrite() {
 }
 
 void EditorProjectTests::CheckNativeDoodadWorkerRejectsBeforeWrite(const std::vector<MapArchiveMember>& members,
-    bool inPlace, const char* expectedCode) {
+    bool inPlace, const char* expectedCode, NativeDoodadQtMutation mutation) {
     QTemporaryDir root; QVERIFY(root.isValid());
     const auto source = std::filesystem::path(root.filePath("native-doodad-source.w3x").toStdWString());
     const auto target = inPlace ? source : std::filesystem::path(root.filePath("must-not-exist.w3x").toStdWString());
     QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
     const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
     EditorProject project; QUndoStack undo; project.mapDataUndoStack_ = &undo;
-    QVERIFY(BindTerrainSaveProject(project, source)); QVERIFY(DeepenNativePathingQtProject(project));
+    QVERIFY(BindTerrainSaveProject(project, source));
+    if (mutation == NativeDoodadQtMutation::FollowHeight) {
+        MapData::TerrainBrush brush; brush.kind = MapData::TerrainBrushKind::Raise;
+        brush.radius = 0; brush.strength = 32;
+        const MapData::TerrainStrokePoint point{512, 512};
+        const auto edited = project.mapEdits_->EditTerrain(brush, std::span(&point, 1), true);
+        QVERIFY2(edited.Succeeded(), ReadDiagnosticText(edited).c_str());
+        QVERIFY(project.ObserveMapDataEdit("桥Z随地形改变"));
+        QVERIFY(project.mapEdits_->Snapshot().Doodads()->doodads[0].position[2] != 0);
+        PushMapDataEdit(project, "Bridge followed terrain height", "桥摆放高度随地形改变");
+        // 纯高度通行不变仍属既有快路径；再改成深水，明确进入本单元的Native重建门。
+        brush.kind = MapData::TerrainBrushKind::WaterHeight; brush.waterHeight = 160;
+        const auto deepened = project.mapEdits_->EditTerrain(brush, std::span(&point, 1), false);
+        QVERIFY2(deepened.Succeeded(), ReadDiagnosticText(deepened).c_str());
+        QVERIFY(project.ObserveMapDataEdit("已有桥Z变化与实际深水重建组合"));
+        QCOMPARE(project.mapEdits_->Terrain()->vertices[4 * 9 + 4].groundHeightRaw, std::uint16_t{8320});
+        QCOMPARE(project.mapEdits_->Terrain()->vertices[4 * 9 + 4].waterHeightAndFlagsRaw, std::uint16_t{8832});
+    } else QVERIFY(DeepenNativePathingQtProject(project));
     PushMapDataEdit(project, "Rejected native doodad water depth", "非法装饰物来源必须在写出前拒绝");
     const auto* archive = project.archiveSession_.get(); const auto* edits = project.mapEdits_.get();
     const auto session = project.mapEdits_->SessionIdentity();
@@ -1852,6 +1946,8 @@ void EditorProjectTests::CheckNativeDoodadWorkerRejectsBeforeWrite(const std::ve
     const auto revision = project.mapEdits_->Revision();
     const auto command = project.mapEdits_->LastEdit().CommandIdentity();
     const auto terrain = MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()); QVERIFY(terrain.Succeeded());
+    const auto placementSnapshot = project.mapEdits_->Snapshot(); QVERIFY(placementSnapshot.Doodads());
+    const auto doodadBytes = placementSnapshot.Doodads()->Serialize(); QVERIFY(doodadBytes.Succeeded() && doodadBytes.value);
     const auto draft = TerrainJournalDraftBytes(*project.mapEdits_);
     const auto scopes = project.editRevision_.Current();
     const auto baseline = project.editRevision_.Baseline(EditSaveTarget::Map); QVERIFY(baseline);
@@ -1863,10 +1959,23 @@ void EditorProjectTests::CheckNativeDoodadWorkerRejectsBeforeWrite(const std::ve
         job->inPlaceOptions.backupDirectory = std::filesystem::path(root.filePath("backups").toStdWString());
         QVERIFY(std::filesystem::create_directory(job->inPlaceOptions.backupDirectory));
     }
+    auto expectedSourceSha = sourceSha.value;
+    if (mutation == NativeDoodadQtMutation::ResourceReplacement) {
+        const auto texture = std::find_if(members.begin(), members.end(),
+            [](const auto& member) { return member.name == "PathTextures/bridge.tga"; });
+        QVERIFY(texture != members.end());
+        auto changed = texture->data; changed[18] ^= std::byte{1};
+        job->replacements.push_back({texture->name, std::move(changed)});
+    } else if (mutation == NativeDoodadQtMutation::SourceDrift) {
+        QFile external(QString::fromStdWString(source.wstring()));
+        QVERIFY(external.open(QIODevice::WriteOnly | QIODevice::Append));
+        QCOMPARE(external.write("x"), qint64{1}); external.close();
+        const auto driftedSha = Sha256File(source); QVERIFY(driftedSha.Succeeded() && driftedSha.value != sourceSha.value);
+        expectedSourceSha = driftedSha.value;
+    }
     InstallMapSaveDerivedPreparation(*job); EditorProject::RunMapSave(*job);
     QVERIFY(!job->succeeded && !job->nextSession && !job->terrainReadbackStatus && job->written.empty());
-    QVERIFY2(HasReadDiagnostic(*job, expectedCode),
-        job->diagnostics.empty() ? "native doodad must report its exact gate" : job->diagnostics.back().message.c_str());
+    QVERIFY2(HasReadDiagnostic(*job, expectedCode), ReadDiagnosticText(*job).c_str());
     QVERIFY(!project.CommitMapSave(*job)); QVERIFY(job->backup.empty());
     if (inPlace) QVERIFY(std::filesystem::is_empty(job->inPlaceOptions.backupDirectory));
     else QVERIFY(!std::filesystem::exists(target));
@@ -1875,14 +1984,17 @@ void EditorProjectTests::CheckNativeDoodadWorkerRejectsBeforeWrite(const std::ve
     QCOMPARE(project.mapEdits_->TerrainSourceRevision(), sourceRevision); QCOMPARE(project.mapEdits_->Revision(), revision);
     QCOMPARE(project.mapEdits_->LastEdit().CommandIdentity(), command);
     QCOMPARE(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, terrain.value);
+    QCOMPARE(project.mapEdits_->Snapshot().Doodads()->Serialize().value, doodadBytes.value);
     QCOMPARE(TerrainJournalDraftBytes(*project.mapEdits_), draft);
     QCOMPARE(project.editRevision_.Generation(), trackingGeneration); QCOMPARE(project.editRevision_.Revision(), trackingRevision);
     QCOMPARE(project.editRevision_.Current(), scopes);
     QCOMPARE(project.editRevision_.Baseline(EditSaveTarget::Map)->revision, baseline->revision);
     QCOMPARE(project.editRevision_.Baseline(EditSaveTarget::Map)->scopes, baseline->scopes);
     QVERIFY(project.HasUnsavedMapChanges() && project.mapEdits_->CanUndo());
-    QCOMPARE(undo.count(), 1); QCOMPARE(undo.index(), 1);
-    QCOMPARE(Sha256File(source).value, sourceSha.value);
+    const int expectedUndoCount = mutation == NativeDoodadQtMutation::FollowHeight ? 2 : 1;
+    QCOMPARE(undo.count(), expectedUndoCount); QCOMPARE(undo.index(), expectedUndoCount);
+    QVERIFY(undo.canUndo() && !undo.canRedo());
+    QCOMPARE(Sha256File(source).value, expectedSourceSha);
 }
 
 void EditorProjectTests::FixedRotationNormalSaveAndUndoRedo_data() {
@@ -1925,6 +2037,86 @@ void EditorProjectTests::FixedRotationWorkerRejectsBeforeWrite() {
     const auto members = FixedRotationQtMembers(custom, degrees, wrongWireType); QVERIFY(!members.empty());
     const auto expectedCode = code.toUtf8();
     CheckNativeDoodadWorkerRejectsBeforeWrite(members, inPlace, expectedCode.constData());
+}
+
+void EditorProjectTests::WalkableDestructableNormalSaveAndUndoRedo_data() {
+    QTest::addColumn<bool>("patterned"); QTest::addColumn<bool>("textureChange"); QTest::addColumn<bool>("inPlace");
+    for (const bool patterned : {false, true}) for (const bool textureChange : {false, true}) for (const bool inPlace : {false, true}) {
+        const auto name = QString("walkable-%1-%2-%3").arg(patterned ? "black-corners" : "uniform")
+            .arg(textureChange ? "texture" : "water").arg(inPlace ? "in-place" : "save-as").toUtf8();
+        QTest::newRow(name.constData()) << patterned << textureChange << inPlace;
+    }
+}
+
+void EditorProjectTests::WalkableDestructableNormalSaveAndUndoRedo() {
+    QFETCH(bool, patterned); QFETCH(bool, textureChange); QFETCH(bool, inPlace);
+    auto members = WalkableDestructableQtMembers(patterned); QVERIFY(!members.empty());
+    // 其它rawcode的空W3B记录不能使标准桥失去资格；桥本身没有任何W3B记录。
+    auto unrelated = ObjectData::NativeObjectDocument::CreateEmpty(ObjectData::ObjectType::Destructable);
+    QVERIFY(unrelated.Succeeded() && unrelated.value);
+    QVERIFY(unrelated.value->AddOriginalObject("Un01").Succeeded());
+    const auto unrelatedWire = ObjectData::NativeObjectCodec(ObjectData::ObjectType::Destructable).Serialize(*unrelated.value);
+    QVERIFY(unrelatedWire.Succeeded() && unrelatedWire.value);
+    if (patterned) members.push_back({"war3map.w3b", *unrelatedWire.value});
+    QCOMPARE(members[2].data[16 + 15 * 32 + 14], std::byte{0x1d}); // 仅普通阻挡。
+    QCOMPARE(members[2].data[16 + 15 * 32 + 16], std::byte{0x15}); // 桥不能抹掉普通阻挡04。
+    QCOMPARE(members[2].data[16 + 15 * 32 + 18], std::byte{0x11}); // RGB不能泄漏为C2/04/08。
+    QCOMPARE(members[2].data[16 + 14 * 32 + 19], patterned ? std::byte{0x19} : std::byte{0x11});
+    auto changedPathing = members[2].data;
+    // 水深与walkable=0贴图都仅在最近顶点4×4增加02；桥非黑像素必须抑制这层。
+    // 这是独立字面矩阵，不调用Capture/Generate/ProjectFootprint作为oracle。
+    for (std::size_t y = 14; y < 18; ++y) for (std::size_t x = 14; x < 18; ++x) {
+        const bool suppressed = x >= 16 && !(patterned && x == 16 && (y == 14 || y == 17));
+        if (!suppressed) changedPathing[16 + y * 32 + x] |= std::byte{2};
+    }
+    QCOMPARE(changedPathing[16 + 15 * 32 + 14], std::byte{0x1f});
+    QCOMPARE(changedPathing[16 + 15 * 32 + 16], std::byte{0x15});
+    QCOMPARE(changedPathing[16 + 14 * 32 + 16], patterned ? std::byte{0x1f} : std::byte{0x15});
+    CheckNativeDoodadNormalSaveAndUndoRedo(members, inPlace, textureChange, &changedPathing);
+}
+
+void EditorProjectTests::WalkableDestructableWorkerRejectsBeforeWrite_data() {
+    QTest::addColumn<QString>("scenario"); QTest::addColumn<bool>("inPlace"); QTest::addColumn<QString>("code");
+    for (const bool inPlace : {false, true}) {
+        const auto add = [&](const char* scenario, const char* code) {
+            const auto name = QString("walkable-%1-%2").arg(scenario).arg(inPlace ? "in-place" : "save-as").toUtf8();
+            QTest::newRow(name.constData()) << QString::fromLatin1(scenario) << inPlace << QString::fromLatin1(code);
+        };
+        for (const auto* state : {"flags-zero", "flags-one", "flags-three", "flags-unknown", "dead", "damaged", "life-unknown"})
+            add(state, "TERRAIN_WALKABLE_DESTRUCTABLE_STATE");
+        add("related-empty-w3b", "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED");
+        add("follow-z", "TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED");
+        add("pathing-resource-drift", "TERRAIN_PATHING_RESOURCE_CHANGED");
+        add("source-drift", "SOURCE_CHANGED");
+    }
+}
+
+void EditorProjectTests::WalkableDestructableWorkerRejectsBeforeWrite() {
+    QFETCH(QString, scenario); QFETCH(bool, inPlace); QFETCH(QString, code);
+    auto members = WalkableDestructableQtMembers(false); QVERIFY(!members.empty());
+    const auto doo = std::find_if(members.begin(), members.end(), [](const auto& member) { return member.name == "war3map.doo"; });
+    QVERIFY(doo != members.end());
+    auto placements = MapData::ParseDoodadPlacements(doo->data); QVERIFY(placements.Succeeded() && placements.value);
+    auto& bridge = placements.value->doodads[0];
+    if (scenario == "flags-zero") bridge.flags = 0;
+    else if (scenario == "flags-one") bridge.flags = 1;
+    else if (scenario == "flags-three") bridge.flags = 3;
+    else if (scenario == "flags-unknown") bridge.flags = 255;
+    else if (scenario == "dead") bridge.lifePercent = 0;
+    else if (scenario == "damaged") bridge.lifePercent = 99;
+    else if (scenario == "life-unknown") bridge.lifePercent = 255;
+    const auto wire = placements.value->Serialize(); QVERIFY(wire.Succeeded() && wire.value); doo->data = *wire.value;
+    if (scenario == "related-empty-w3b") {
+        auto related = ObjectData::NativeObjectDocument::CreateEmpty(ObjectData::ObjectType::Destructable);
+        QVERIFY(related.Succeeded() && related.value); QVERIFY(related.value->AddOriginalObject("Br01").Succeeded());
+        const auto native = ObjectData::NativeObjectCodec(ObjectData::ObjectType::Destructable).Serialize(*related.value);
+        QVERIFY(native.Succeeded() && native.value); members.push_back({"war3map.w3b", *native.value});
+    }
+    const auto mutation = scenario == "follow-z" ? NativeDoodadQtMutation::FollowHeight
+        : scenario == "pathing-resource-drift" ? NativeDoodadQtMutation::ResourceReplacement
+        : scenario == "source-drift" ? NativeDoodadQtMutation::SourceDrift : NativeDoodadQtMutation::None;
+    const auto expectedCode = code.toUtf8();
+    CheckNativeDoodadWorkerRejectsBeforeWrite(members, inPlace, expectedCode.constData(), mutation);
 }
 
 void EditorProjectTests::PathingIntentLateEditStalesFrozenProject() {
