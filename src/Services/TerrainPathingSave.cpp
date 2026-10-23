@@ -247,7 +247,9 @@ Result<TerrainReplayCandidate> CreateReplay(const Source& source, const MapDocum
         "war3mapUnits.doo", "war3map.doo", "war3map.w3r", "war3map.w3c", "war3map.w3s", "war3map.wts"};
     ArchiveExactMemberLimits sourceLimits;
     sourceLimits.memberCount = names.size();
-    sourceLimits.totalBytes = std::min(MapData::TerrainSavePlanLimits{}.maximumBytes, sourceBytes);
+    // 解码后的基线已在上面预收；精确读取还要核对MPQ存储大小，压缩成员可比解码结果大。
+    // 不用sourceBytes缩紧存储读取帽，仍受exact原硬限及调用方资源/候选帽约束。
+    sourceLimits.totalBytes = std::min({sourceLimits.totalBytes, limits.maximumResourceBytes, limits.maximumCandidateBytes});
     sourceLimits.memberBytes = sourceLimits.totalBytes;
     auto actual = reader(names, sourceLimits);
     if (!actual.Succeeded() || !actual.value) return {{}, actual.diagnostics};
