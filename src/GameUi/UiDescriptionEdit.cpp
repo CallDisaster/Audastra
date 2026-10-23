@@ -67,6 +67,7 @@ public:
         if (op == "set_frame") return Keys(edit, {"op", "frame", "fields"}) && SetFrame(edit);
         if (op == "move_frame") return Keys(edit, {"op", "frame", "parent", "index"}) && MoveFrame(edit);
         if (op == "remove_frame") return Keys(edit, {"op", "frame"}) && RemoveFrame(edit);
+        if (op == "rename_value") return Keys(edit, {"op", "from", "to"}) && RenameValue(edit);
         if (op == "set_values") return Keys(edit, {"op", "values"}) && Replace(edit, "values");
         if (op == "set_states") return Keys(edit, {"op", "states"}) && Replace(edit, "states");
         if (op == "set_events") return Keys(edit, {"op", "events"}) && Replace(edit, "events");
@@ -244,6 +245,76 @@ private:
             if (events.empty()) document_.erase("events");
         }
         return true;
+    }
+
+    // 改数值编号：同步框架的取值（进度、显示）与文字模板（框架文字、状态覆盖文字）。
+    bool RenameValue(const Json& edit) {
+        if (!edit.contains("from") || !edit["from"].is_string() || !edit.contains("to") || !edit["to"].is_string()) {
+            return Fail("from、to 应为数值编号");
+        }
+        const std::string from = edit["from"].get<std::string>();
+        const std::string to = edit["to"].get<std::string>();
+        if (!IsValidUiId(to)) return Fail(to + " 不是合法编号");
+        Json* found = nullptr;
+        if (document_.contains("values") && document_["values"].is_array()) {
+            for (auto& value : document_["values"]) {
+                if (!value.is_object() || !value.contains("id")) continue;
+                if (Is(value["id"], from)) found = &value;
+                else if (Is(value["id"], to)) return Fail("数值编号 " + to + " 已存在");
+            }
+        }
+        if (!found) return Fail("数值 " + from + " 不存在");
+        (*found)["id"] = to;
+        const auto rebind = [&](Json& binding) {
+            Json& reference = binding.is_object() && binding.contains("value") ? binding["value"] : binding;
+            if (!reference.is_string()) return;
+            const std::string text = reference.get<std::string>();
+            const auto parsed = detail::ParseUiValueReference(text);
+            if (parsed && parsed->id == from) reference = to + text.substr(from.size());
+        };
+        const auto retext = [&](Json& holder) {
+            if (!holder.contains("text") || !holder["text"].is_string()) return;
+            if (auto text = RenameInTemplate(holder["text"].get_ref<const std::string&>(), from, to)) holder["text"] = std::move(*text);
+        };
+        ForEachFrame(Frames(), [&](Json& frame) {
+            if (frame.contains("value")) rebind(frame["value"]);
+            if (frame.contains("visible")) rebind(frame["visible"]);
+            retext(frame);
+        });
+        if (document_.contains("states") && document_["states"].is_array()) {
+            for (auto& state : document_["states"]) {
+                if (!state.contains("set") || !state["set"].is_array()) continue;
+                for (auto& entry : state["set"]) retext(entry);
+            }
+        }
+        return true;
+    }
+
+    // 模板里取到 from 的地方换成 to；没有可换的或模板本身不合法（由读取器报错）时为空。
+    static std::optional<std::string> RenameInTemplate(std::string_view text, const std::string& from, const std::string& to) {
+        const auto pieces = detail::ParseUiTextTemplate(text, nullptr);
+        if (!pieces) return std::nullopt;
+        bool changed = false;
+        std::string result;
+        for (const auto& piece : *pieces) {
+            if (!piece.reference) {
+                for (const char c : piece.literal) {
+                    if (c == '{' || c == '}') result.push_back(c);
+                    result.push_back(c);
+                }
+                continue;
+            }
+            const bool hit = piece.reference->id == from;
+            changed = changed || hit;
+            result += '{';
+            result += hit ? to : piece.reference->id;
+            if (piece.reference->perInstance) result += "[]";
+            else if (piece.reference->index) result += "[" + std::to_string(*piece.reference->index) + "]";
+            if (piece.decimals) result += ":" + std::to_string(*piece.decimals);
+            result += '}';
+        }
+        if (!changed) return std::nullopt;
+        return result;
     }
 
     bool Replace(const Json& edit, const char* key) {

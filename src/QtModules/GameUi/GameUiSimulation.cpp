@@ -181,6 +181,9 @@ void GameUiModule::UpdateSimulationPanel() {
         const int index = simulationBox_->findData(SimulationFunction());
         simulationBox_->setCurrentIndex(index < 0 ? 0 : index);
     }
+    // 不模拟时只留选择这一行，空间让给上面的面板。
+    simulationInputs_->setVisible(simulation_.has_value());
+    simulationPanel_->setMaximumHeight(simulation_ ? QWIDGETSIZE_MAX : simulationPanel_->layout()->sizeHint().height());
     QStringList keys;
     if (simulation_) {
         for (const auto& input : simulation_->inputs) keys.push_back(Text(input.key));

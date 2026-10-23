@@ -1,6 +1,7 @@
 #include "GameUiModule.h"
 
 #include "EditorProject.h"
+#include "GameUiAuthoringJson.h"
 #include "GameUiCanvas.h"
 #include "War3MapCore/GameUi/UiDescriptionEdit.h"
 
@@ -31,10 +32,6 @@ using namespace War3Map::GameUi;
 QString Text(const std::string& text) { return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())); }
 
 constexpr int kFieldRole = Qt::UserRole + 40;
-
-QString Compact(const QJsonArray& edits) {
-    return QString::fromUtf8(QJsonDocument(edits).toJson(QJsonDocument::Compact));
-}
 
 const char* IdPrefix(UiFrameType type) {
     switch (type) {
@@ -90,10 +87,7 @@ QString FirstMessage(const std::vector<Diagnostic>& diagnostics) {
     return messages.isEmpty() ? QObject::tr("修改不合法") : messages.join(QStringLiteral("；"));
 }
 
-QJsonArray AnchorsOf(const UiFrame& frame) {
-    const auto json = QJsonDocument::fromJson(QByteArray::fromStdString(SerializeUiFrame(frame))).object();
-    return json.value(QStringLiteral("anchors")).toArray();
-}
+QJsonArray AnchorsOf(const UiFrame& frame) { return FrameObject(frame).value(QStringLiteral("anchors")).toArray(); }
 
 double Round4(double value) { return std::round(value * 10000.0) / 10000.0; }
 
@@ -121,6 +115,7 @@ bool GameUiModule::StageDescription(UiDescription description, bool create, cons
     if (!problem.isEmpty()) return fail(problem);
     if (existing != files.end()) {
         existing->description = std::move(description);
+        PruneDescriptionPreview(existing->description);
     } else {
         files.push_back({path.toStdString(), std::move(description)});
         std::sort(files.begin(), files.end(), [](const auto& a, const auto& b) { return a.description.id < b.description.id; });
@@ -168,7 +163,7 @@ QString GameUiModule::AddDescriptionFrame(UiFrameType type, QString* error) {
     const QString frameId = Text(NextUiFrameId(*description, IdPrefix(type)));
     QJsonObject edit{{"op", "add_frame"}, {"frame", DefaultFrame(type, frameId)}};
     if (!link.frame.empty()) edit.insert("parent", Text(link.frame));
-    if (!EditDescription(id, Compact({edit}), tr("界面 %1：添加 %2").arg(id, frameId), error)) return {};
+    if (!EditDescription(id, CompactEdits({edit}), tr("界面 %1：添加 %2").arg(id, frameId), error)) return {};
     if (!SelectFrame(frameId)) (void)SelectFrame(frameId + QStringLiteral("#0"));
     return frameId;
 }
@@ -182,7 +177,7 @@ bool GameUiModule::RemoveSelectedDescriptionFrame(QString* error) {
     const UiFrameLink link = *tree_->Nodes()[selected_].uiFrame;
     const QString id = Text(link.description);
     const QJsonObject edit{{"op", "remove_frame"}, {"frame", Text(link.frame)}};
-    if (!EditDescription(id, Compact({edit}), tr("界面 %1：删除 %2").arg(id, Text(link.frame)), error)) return false;
+    if (!EditDescription(id, CompactEdits({edit}), tr("界面 %1：删除 %2").arg(id, Text(link.frame)), error)) return false;
     (void)SelectFrame(id);
     return true;
 }
@@ -212,7 +207,7 @@ bool GameUiModule::MoveDescriptionFrame(std::uint32_t node, double dx, double dy
         }
     }
     const QJsonObject edit{{"op", "set_frame"}, {"frame", Text(link.frame)}, {"fields", QJsonObject{{"anchors", anchors}}}};
-    return EditDescription(id, Compact({edit}), tr("界面 %1：移动 %2").arg(id, Text(link.frame)), error);
+    return EditDescription(id, CompactEdits({edit}), tr("界面 %1：移动 %2").arg(id, Text(link.frame)), error);
 }
 
 void GameUiModule::ReportAuthoring(const QString& error) {
@@ -391,17 +386,33 @@ void GameUiModule::OnPropertyEdited(QTreeWidgetItem* item, int column) {
     } else {
         fields.insert(key, text.isEmpty() && key != QLatin1String("id") ? QJsonValue(QJsonValue::Null) : QJsonValue(text));
     }
-    // 修改会重建属性树（删掉正在发出信号的这一行），放到下一轮事件里做。
+    if (!error.isEmpty()) {
+        ReportAuthoring(error);
+        QTimer::singleShot(0, this, &GameUiModule::UpdateProperties);  // 恢复成描述里的值
+        return;
+    }
     const QString frameId = Text(frame->id);
-    const QString label = tr("界面 %1：改 %2 的 %3").arg(id, frameId, item->text(0));
     const QJsonObject edit{{"op", "set_frame"}, {"frame", frameId}, {"fields", fields}};
-    QTimer::singleShot(0, this, [this, id, label, edit, error, key, text]() mutable {
-        if (error.isEmpty() && EditDescription(id, Compact({edit}), label, &error)) {
-            if (key == QLatin1String("id") && !SelectFrame(text)) (void)SelectFrame(text + QStringLiteral("#0"));
+    std::function<void()> after;
+    if (key == QLatin1String("id")) {
+        after = [this, text] {
+            if (!SelectFrame(text)) (void)SelectFrame(text + QStringLiteral("#0"));
+        };
+    }
+    CommitDescriptionEdits(id, {edit}, tr("界面 %1：改 %2 的 %3").arg(id, frameId, item->text(0)), std::move(after));
+}
+
+void GameUiModule::CommitDescriptionEdits(const QString& id, const QJsonArray& edits, const QString& undoLabel,
+    std::function<void()> after) {
+    QTimer::singleShot(0, this, [this, id, edits, undoLabel, after = std::move(after)] {
+        QString error;
+        if (EditDescription(id, CompactEdits(edits), undoLabel, &error)) {
+            if (after) after();
             return;
         }
         ReportAuthoring(error);
-        UpdateProperties();  // 恢复成描述里的值
+        descriptionPanelFor_.clear();
+        UpdateProperties();  // 属性树与表格恢复成描述里的值
     });
 }
 

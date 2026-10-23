@@ -337,6 +337,22 @@ void TestEdits() {
 ])");
     Require(!anchored.value && HasCode(anchored.diagnostics, "AUI_ANCHOR_TARGET"), "anchor references must be fixed first");
 
+    // 改数值编号：取值与文字模板（含状态覆盖）跟着改，其余文字原样。
+    auto renamed = ApplyUiEdits(base, R"([
+  {"op": "set_frame", "frame": "label", "fields": {"text": "{{{spell}}} {remain:1}"}},
+  {"op": "rename_value", "from": "spell", "to": "spellName"},
+  {"op": "rename_value", "from": "casting", "to": "shown"}
+])");
+    Require(renamed.value.has_value(), "rename value applies");
+    Require(FindUiFrame(*renamed.value, "label")->text == "{{{spellName}}} {remain:1}", "template renamed, braces kept");
+    Require(renamed.value->states[0].overrides[1].text == std::optional<std::string>("{spellName}  打断"), "state text renamed");
+    Require(FindUiFrame(*renamed.value, "back")->visible.binding->value == "shown", "binding renamed");
+    Require(HasCode(ApplyUiEdits(base, R"([{"op": "rename_value", "from": "spell", "to": "remain"}])").diagnostics, "AUI_EDIT"),
+        "rename onto existing value rejected");
+    Require(HasCode(ApplyUiEdits(base, R"([{"op": "rename_value", "from": "nope", "to": "x"}])").diagnostics, "AUI_EDIT"),
+        "rename of unknown value rejected");
+    Require(!ApplyUiEdits(base, R"([{"op": "set_values", "values": []}])").value, "removing a bound value is rejected");
+
     Require(NewUiDescription("Raid", "团队").value.has_value(), "new description");
     Require(!NewUiDescription("9bad", "").value.has_value(), "new description needs a valid id");
     Require(NextUiFrameId(base, "fill") == "fill1" && NextUiFrameId(base, "text") == "text1", "next free id");

@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -25,11 +26,13 @@
 
 class QCheckBox;
 class QComboBox;
+class QJsonArray;
 class QLabel;
 class QLineEdit;
 class QPushButton;
 class QSplitter;
 class QStandardItemModel;
+class QTabWidget;
 class QTableWidget;
 class QToolButton;
 class QTreeWidget;
@@ -142,6 +145,17 @@ private:
     void ResetSimulation();
     void BuildDescriptionPanel(QWidget* parent);
     void UpdateDescriptionPanel();
+    void PruneDescriptionPreview(const GameUi::UiDescription& description);
+    void BuildDescriptionData(QTabWidget* tabs);
+    void UpdateDescriptionData(const GameUi::UiDescription& description);
+    void SyncDescriptionStateRow(const GameUi::UiDescription& description, bool refill);
+    void FillStateOverrides();
+    // 改面板所示描述的一个列表（values、states、events，或 set＝所选状态的覆盖）后整组写回；change 返回 false 时不改，
+    // 带原因时报告并恢复表格。
+    void ChangeDescriptionList(const QString& list, const std::function<bool(QJsonArray&, QString*)>& change,
+        const QString& what, std::function<void()> after = {});
+    // 修改会重建属性树与表格（删掉正在发出信号的单元），放到下一轮事件里提交；失败时报告并恢复。
+    void CommitDescriptionEdits(const QString& id, const QJsonArray& edits, const QString& undoLabel, std::function<void()> after = {});
     QList<QWidget*> BuildAuthoringControls(QWidget* toolbar);
     void UpdateAuthoringControls();
     bool StageDescription(GameUi::UiDescription description, bool create, const QString& undoLabel, QString* error);
@@ -216,6 +230,14 @@ private:
     QComboBox* descriptionStateBox_ = nullptr;
     QTableWidget* descriptionInputs_ = nullptr;
     QString descriptionPanelFor_;  // 面板当前对应的描述编号
+    bool descriptionRaw_ = false;  // 面板按原始字段显示
+    QTabWidget* descriptionTabs_ = nullptr;
+    QTableWidget* valueTable_ = nullptr;
+    QTableWidget* stateTable_ = nullptr;
+    QTableWidget* overrideTable_ = nullptr;
+    QWidget* overridePage_ = nullptr;
+    QTableWidget* eventTable_ = nullptr;
+    int stateRow_ = 0;  // 状态页所选状态
 
     bool stagingOwnImport_ = false;  // 自己放入描述文件引发的导入变化：已就地更新，不整体重读
     std::vector<Diagnostic> authoringDiagnostics_;
