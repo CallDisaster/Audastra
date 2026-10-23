@@ -684,7 +684,7 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
             || (before.cliffAndLayerRaw != after.cliffAndLayerRaw && ((!resources && !nativeRebuild)
                 || (cliffTextureChanged && !nativeRebuild)))
             || ((before.textureAndFlagsRaw ^ after.textureAndFlagsRaw)
-                & ~(kBlightBit | ((resources || nativeRebuild) ? 0x0f : 0) | (nativeRebuild ? 0x40 : 0))) != 0)
+                & ~(kBlightBit | ((resources || nativeRebuild) ? 0x0f : 0) | (nativeRebuild ? 0x50 : 0))) != 0)
             return reject("地形修改包含尚未验证的悬崖、坡道、水标志或边界变化，不能保留原 WPM");
         if (before.GroundVariation() != after.GroundVariation() && after.GroundVariation() > 17)
             return reject("新地面变体不在已支持的 0 到 17 范围内，未知变体只能原样保留");
