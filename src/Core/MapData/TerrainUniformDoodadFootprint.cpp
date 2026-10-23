@@ -96,10 +96,7 @@ std::uint8_t PixelAttributes(std::span<const std::byte> pixel) {
     return static_cast<std::uint8_t>((pixel[2] != std::byte{} ? 0x31 : 0)
         | (pixel[1] != std::byte{} ? 2 : 0) | (pixel[0] != std::byte{} ? 4 : 0));
 }
-} // namespace
-
-Result<TerrainDoodadFootprint> DecodeDoodadFootprintTga(
-    std::span<const std::byte> bytes) {
+Result<TerrainDoodadFootprint> DecodeFootprintTga(std::span<const std::byte> bytes, bool requireSquare) {
     using Return = Result<TerrainDoodadFootprint>;
     const auto fail = [](const char* code, const char* message) { return Return::Failure(kSubsystem, code, message); };
     if (bytes.size() < 18) return fail("TERRAIN_UNIFORM_TGA_TRUNCATED", "通行贴图的TGA文件头不完整。");
@@ -114,6 +111,8 @@ Result<TerrainDoodadFootprint> DecodeDoodadFootprintTga(
     const auto width = word(12), height = word(14);
     if (width == 0 || height == 0 || width > kMaximumSide || height > kMaximumSide)
         return fail("TERRAIN_UNIFORM_TGA_DIMENSIONS", "通行贴图的宽高必须分别为1至256像素。");
+    if (requireSquare && width != height)
+        return fail("TERRAIN_UNIFORM_TGA_DIMENSIONS", "同色占地接口需要正方形贴图。");
     const std::size_t pixelBytes = depth / 8;
     const std::size_t count = static_cast<std::size_t>(width) * height;
     const std::size_t pixelEnd = 18 + count * pixelBytes;
@@ -139,13 +138,16 @@ Result<TerrainDoodadFootprint> DecodeDoodadFootprintTga(
         static_cast<std::uint8_t>(pixelBytes), (descriptor & 0x20u) != 0, uniform,
         PixelAttributes(bytes.subspan(18, pixelBytes))});
 }
+} // namespace
+
+Result<TerrainDoodadFootprint> DecodeDoodadFootprintTga(std::span<const std::byte> bytes) {
+    return DecodeFootprintTga(bytes, false);
+}
 
 Result<TerrainUniformDoodadFootprint> DecodeUniformDoodadFootprintTga(std::span<const std::byte> bytes) {
     using Return = Result<TerrainUniformDoodadFootprint>;
-    auto decoded = DecodeDoodadFootprintTga(bytes);
+    auto decoded = DecodeFootprintTga(bytes, true);
     if (!decoded.Succeeded() || !decoded.value) return {{}, std::move(decoded.diagnostics)};
-    if (decoded.value->width != decoded.value->height)
-        return Return::Failure(kSubsystem, "TERRAIN_UNIFORM_TGA_DIMENSIONS", "同色占地接口需要正方形贴图。");
     if (!decoded.value->uniform)
         return Return::Failure(kSubsystem, "TERRAIN_UNIFORM_TGA_NONUNIFORM", "同色占地接口需要完整BGRA一致的像素。");
     return Return::Success({decoded.value->width, decoded.value->uniformAttributes});
