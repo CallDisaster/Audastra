@@ -149,6 +149,14 @@ stdio 是 UTF-8 **newline JSON-RPC**：每行一条完整 JSON，响应以换行
 
 初始化失败仍可能握手、列工具。只有 `get_revision` 返回成功且 `identity_current=true`，才说明现存 workspace/UI 来源通过本次复核。展开目录需要完整 WTG/WCT 双文件（`map/war3map.wtg`+`map/war3map.wct`，或根目录同名双文件）和可解析的 Catalog。
 
+### 编辑器端口：binding_token
+
+连接正在运行的编辑器时，`editor_state`、触发器查询以及每次修改成功的结果里都有 `binding_token`。凡是要求 `project_identity`、`expected_revision`（和触发器修改的 `expected`）的工具，都可以只传 `binding_token`，三者由编辑器代填。
+
+- 修改成功后结果里是新的 `binding_token`，连续修改直接用它，不必再查一次。
+- 地图被你或作者改过、重新打开后，旧令牌返回 `LIVE_EDITOR_REVISION_CONFLICT`，重新读 `editor_state`。
+- 令牌和那三项不能同时给（`LIVE_EDITOR_IDENTITY_AMBIGUOUS`）；两样都不给返回 `LIVE_EDITOR_IDENTITY_REQUIRED`。
+
 ### 地图数据查询身份
 
 入口为 `get_revision` → `describe_map_data` → `query_map_data_page`，参数以 `tools/list` 返回 schema 为准：

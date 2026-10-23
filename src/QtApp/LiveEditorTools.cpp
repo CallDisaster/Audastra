@@ -241,6 +241,23 @@ const char* RecordKind(Trigger::GraphRecordKind kind) {
 }
 } // namespace
 
+QJsonObject WithBindingToken(QJsonObject schema, QStringList* tokenFields) {
+    auto properties = schema.value("properties").toObject();
+    if (!properties.contains("project_identity") || !properties.contains("expected_revision")) return schema;
+    properties.insert("binding_token", QJsonObject{{"type", "string"}, {"maxLength", 64},
+        {"description", "editor_state 等结果里的 binding_token；可代替 project_identity、expected_revision 和 expected"}});
+    schema.insert("properties", properties);
+    QJsonArray required;
+    for (const auto& field : schema.value("required").toArray()) {
+        const auto text = field.toString();
+        if (text == "project_identity" || text == "expected_revision" || text == "expected") {
+            if (tokenFields) tokenFields->append(text);
+        } else required.append(field);
+    }
+    schema.insert("required", required);
+    return schema;
+}
+
 class LiveEditorTools::Impl {
 public:
     Impl(EditorProject& project, LiveEditorTools& owner) : project_(project), owner_(owner), ownerHandle_(&owner) {
@@ -362,6 +379,49 @@ private:
             }
         }
         return {{"ok", true}};
+    }
+
+    // 当前触发器绑定按（工程身份, 修订）缓存；缓存过期只会让令牌代填旧绑定，图编辑仍会按实际绑定拒绝。
+    std::optional<Trigger::TriggerGraphBinding> CurrentBinding() {
+        if (!project_.triggerDocument_ || !project_.uiCatalog_) return std::nullopt;
+        const auto key = projectIdentity_ + QLatin1Char('|') + QString::number(project_.editRevision_.Revision());
+        if (bindingKey_ == key && cachedBinding_) return cachedBinding_;
+        const auto references = project_.CaptureTriggerMapObjectReferences();
+        const auto* objects = references.Succeeded() && references.value && !(*references.value)->References().empty()
+            ? references.value->get() : nullptr;
+        const auto binding = Trigger::CaptureTriggerGraphBinding(*project_.triggerDocument_, *project_.uiCatalog_, objects);
+        if (!binding.Succeeded() || !binding.value) return std::nullopt;
+        bindingKey_ = key; cachedBinding_ = *binding.value;
+        return cachedBinding_;
+    }
+    // 绑定令牌：工程身份、修订和触发器绑定合成的短串，写工具可用它代替三项身份参数。
+    QString BindingToken() {
+        SyncIdentity();
+        const auto binding = CurrentBinding();
+        const auto text = (projectIdentity_ + QLatin1Char('|') + QString::number(project_.editRevision_.Revision()) + QLatin1Char('|')
+            + (binding ? QString::fromUtf8(QJsonDocument(Binding(*binding)).toJson(QJsonDocument::Compact)) : QString{})).toStdString();
+        const auto sha = Sha256(std::as_bytes(std::span(text.data(), text.size())));
+        return sha.Succeeded() ? QStringLiteral("bt1-") + QString::fromStdString(sha.value->substr(0, 32)) : QString{};
+    }
+    QJsonObject ExpandBindingToken(QJsonObject& arguments, bool withBinding, const QStringList& requiredFields) {
+        if (!arguments.contains("binding_token")) {
+            for (const auto& field : requiredFields) if (!arguments.contains(field))
+                return Mcp::Failure("LIVE_EDITOR_IDENTITY_REQUIRED", "缺少 " + field.toStdString() + "；也可以只传 binding_token。");
+            return {};
+        }
+        for (const auto* field : {"project_identity", "expected_revision", "expected"}) if (arguments.contains(field))
+            return Mcp::Failure("LIVE_EDITOR_IDENTITY_AMBIGUOUS", std::string("binding_token 不能和 ") + field + " 同时给出。");
+        if (!arguments.value("binding_token").isString() || arguments.value("binding_token").toString() != BindingToken())
+            return Mcp::Failure("LIVE_EDITOR_REVISION_CONFLICT", "binding_token 已过期：地图已被修改或重新打开；重新读取 editor_state。");
+        arguments.remove("binding_token");
+        arguments.insert("project_identity", projectIdentity_);
+        arguments.insert("expected_revision", QString::number(project_.editRevision_.Revision()));
+        if (withBinding) {
+            const auto binding = CurrentBinding();
+            if (!binding) return Mcp::Failure("LIVE_EDITOR_TRIGGERS_UNAVAILABLE", "当前地图未加载完整的触发器和 UI 定义。");
+            arguments.insert("expected", Binding(*binding));
+        }
+        return {};
     }
 
     QJsonObject Write(const QJsonObject& arguments, bool triggers, const std::function<QJsonObject()>& action) {
@@ -1082,7 +1142,14 @@ private:
         tool.maxResponseBytes = maxResponseBytes;
         tool.maxRequestIdBytes = maxRequestIdBytes;
         tool.pngImageResult = pngImageResult;
-        tool.handler = [this, name = std::move(name), title = std::move(title), handler = std::move(handler)](const QJsonObject& arguments) -> QJsonValue {
+        // 带身份的工具都可改用 binding_token：schema 里这几个字段不再必填，缺失时由下面的入口检查。
+        QStringList tokenFields;
+        tool.inputSchema = WithBindingToken(std::move(tool.inputSchema), &tokenFields);
+        const auto properties = tool.inputSchema.value("properties").toObject();
+        const bool tokenable = properties.contains("binding_token");
+        const bool withBinding = properties.contains("expected");
+        tool.handler = [this, name = std::move(name), title = std::move(title), handler = std::move(handler),
+                           tokenable, withBinding, tokenFields](const QJsonObject& arguments) -> QJsonValue {
             const auto owner = ownerHandle_;
             const auto invoke = handler;
             const auto toolName = name; const auto toolTitle = title;
@@ -1093,7 +1160,15 @@ private:
             if (!owner) return Mcp::Failure("LIVE_EDITOR_HOST_UNAVAILABLE", "活动地图工具宿主已关闭。");
             QElapsedTimer timer; timer.start();
             QJsonObject result;
-            try { result = invoke(arguments); }
+            try {
+                auto expanded = arguments;
+                const auto rejected = tokenable ? ExpandBindingToken(expanded, withBinding, tokenFields) : QJsonObject{};
+                result = rejected.isEmpty() ? invoke(expanded) : rejected;
+                if (owner && result.value("ok").toBool() && result.contains("project_identity")) {
+                    const auto token = BindingToken();
+                    if (!token.isEmpty()) result.insert("binding_token", token);
+                }
+            }
             catch (const std::exception& failure) { result = Mcp::Failure("LIVE_EDITOR_EXCEPTION", failure.what()); }
             if (!owner) return result;
             // PNG仅交付请求方；活动日志不再次复制Base64正文。
@@ -1343,6 +1418,8 @@ private:
     ProjectSearchRevisionQuery projectSearchRevision_;
     ProjectSearchPageQuery projectSearchQuery_;
     std::shared_ptr<const int> projectSearchToken_;
+    QString bindingKey_;
+    std::optional<Trigger::TriggerGraphBinding> cachedBinding_;
     QStringList registeredNames_;
     bool busy_ = false;
     QString projectIdentity_;

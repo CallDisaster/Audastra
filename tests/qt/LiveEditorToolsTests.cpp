@@ -54,6 +54,7 @@
 using namespace War3Map;
 using namespace War3Map::Trigger;
 using War3Map::QtApp::LiveEditorTools;
+using War3Map::QtApp::WithBindingToken;
 using War3Map::QtProject::EditorProject;
 
 namespace {
@@ -271,6 +272,7 @@ private slots:
     void CampaignToolsShareSchemasAndPolicy();
     void BatchKeepsDocumentAndExistingUndoCommands();
     void StaleAndInvalidBatchesAreAtomic();
+    void BindingTokenReplacesIdentityFields();
     void SourceAndUiDriftRefuseBeforePublishing();
     void SelectedLayersRemainWritable();
     void GenerationRotatesIdentity();
@@ -337,7 +339,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         for (const auto& value : f.tools->Tools()) {
             const auto tool = value.toObject();
             if (tool.value("name") != definition.name) continue;
-            ++matches; QCOMPARE(tool.value("inputSchema").toObject(), definition.inputSchema);
+            ++matches; QCOMPARE(tool.value("inputSchema").toObject(), WithBindingToken(definition.inputSchema));
         }
         QCOMPARE(matches, 1);
     }
@@ -439,7 +441,7 @@ void LiveEditorToolsTests::CampaignToolsShareSchemasAndPolicy() {
         for (const auto& value : liveTools) {
             const auto tool = value.toObject();
             if (tool.value("name").toString() != definition.name) continue;
-            ++matches; QCOMPARE(tool.value("inputSchema").toObject(), definition.inputSchema);
+            ++matches; QCOMPARE(tool.value("inputSchema").toObject(), WithBindingToken(definition.inputSchema));
         }
         QCOMPARE(matches, 1);
     }
@@ -491,6 +493,28 @@ void LiveEditorToolsTests::BatchKeepsDocumentAndExistingUndoCommands() {
     QCOMPARE(f.project.triggerDocument_.get(), document);
     const auto remainingCode = document->wct.customCode.ToBytes(); QVERIFY(remainingCode.Succeeded());
     QVERIFY(*remainingCode.value == *authorCode.value);
+}
+
+void LiveEditorToolsTests::BindingTokenReplacesIdentityFields() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    const auto token = f.tools->Invoke("editor_state", {}).value("binding_token").toString();
+    QVERIFY(token.startsWith(QStringLiteral("bt1-")));
+    const auto* row = TriggerDocumentEditor::FindTrigger(*f.project.triggerDocument_, f.trigger);
+    const QJsonArray operations{SetField(f.trigger, "description", QString::fromStdString(row->description.text), QStringLiteral("令牌说明"))};
+    QJsonObject request{{"binding_token", token}, {"operations", operations}};
+    auto mixed = request; mixed.insert("expected_revision", "0");
+    QCOMPARE(ErrorCode(f.tools->Invoke("editor_edit_trigger_graph", mixed)), QStringLiteral("LIVE_EDITOR_IDENTITY_AMBIGUOUS"));
+    QCOMPARE(ErrorCode(f.tools->Invoke("editor_edit_trigger_graph", QJsonObject{{"operations", operations}})),
+        QStringLiteral("LIVE_EDITOR_IDENTITY_REQUIRED"));
+    const auto edited = f.tools->Invoke("editor_edit_trigger_graph", request);
+    QVERIFY2(edited.value("ok").toBool(), qPrintable(Explain(edited)));
+    const auto next = edited.value("binding_token").toString();
+    QVERIFY(next.startsWith(QStringLiteral("bt1-")) && next != token);
+    QCOMPARE(ErrorCode(f.tools->Invoke("editor_edit_trigger_graph", request)), QStringLiteral("LIVE_EDITOR_REVISION_CONFLICT"));
+    QCOMPARE(f.project.triggerUndoStack_->count(), 1);
+    const auto queried = f.tools->Invoke("editor_query_trigger_graph", QJsonObject{{"binding_token", next}, {"table", "triggers"}});
+    QVERIFY2(queried.value("ok").toBool(), qPrintable(Explain(queried)));
+    QCOMPARE(queried.value("binding_token").toString(), next);
 }
 
 void LiveEditorToolsTests::StaleAndInvalidBatchesAreAtomic() {
@@ -712,7 +736,7 @@ void LiveEditorToolsTests::ObjectToolsShareSchemasAndUndo() {
         for (const auto& value : f.tools->Tools()) {
             const auto tool = value.toObject();
             if (tool.value("name") != definition.name) continue;
-            found = true; QCOMPARE(tool.value("inputSchema").toObject(), definition.inputSchema);
+            found = true; QCOMPARE(tool.value("inputSchema").toObject(), WithBindingToken(definition.inputSchema));
         }
         QVERIFY2(found, qPrintable(definition.name));
     }
@@ -787,7 +811,7 @@ void LiveEditorToolsTests::VariableToolsShareSchemasAndOriginalUndo() {
         for (const auto& value : f.tools->Tools()) {
             const auto tool = value.toObject();
             if (tool.value("name") != definition.name) continue;
-            found = true; QCOMPARE(tool.value("inputSchema").toObject(), definition.inputSchema);
+            found = true; QCOMPARE(tool.value("inputSchema").toObject(), WithBindingToken(definition.inputSchema));
         }
         QVERIFY2(found, qPrintable(definition.name));
     }
@@ -1225,7 +1249,7 @@ void LiveEditorToolsTests::TerrainToolsKeepSessionPreviewAndOriginalUndo() {
     for (const auto& definition : Mcp::TerrainEditToolDefinitions()) {
         bool found = false;
         for (const auto& entry : f.tools->Tools()) if (entry.toObject().value("name") == definition.name) {
-            QCOMPARE(entry.toObject().value("inputSchema").toObject(), definition.inputSchema); found = true;
+            QCOMPARE(entry.toObject().value("inputSchema").toObject(), WithBindingToken(definition.inputSchema)); found = true;
         }
         QVERIFY(found);
     }
@@ -1312,7 +1336,7 @@ void LiveEditorToolsTests::EntityFieldsUseOriginalSessionAndAtomicUndo() {
         bool found = false;
         for (const auto& value : f.tools->Tools()) {
             const auto tool = value.toObject(); if (tool.value("name") != definition.name) continue;
-            found = true; QCOMPARE(tool.value("inputSchema").toObject(), definition.inputSchema);
+            found = true; QCOMPARE(tool.value("inputSchema").toObject(), WithBindingToken(definition.inputSchema));
         }
         QVERIFY(found);
     }
@@ -1484,7 +1508,7 @@ void LiveEditorToolsTests::PlacementToolsKeepAuthorEditsAndOriginalUndo() {
         bool found = false;
         for (const auto& value : f.tools->Tools()) {
             const auto tool = value.toObject(); if (tool.value("name") != definition.name) continue;
-            found = true; QCOMPARE(tool.value("inputSchema").toObject(), definition.inputSchema);
+            found = true; QCOMPARE(tool.value("inputSchema").toObject(), WithBindingToken(definition.inputSchema));
         }
         QVERIFY(found);
     }
@@ -1554,7 +1578,7 @@ void LiveEditorToolsTests::SpatialEntityQueriesShareSchemasAndObserveOriginalUnd
         bool found = false;
         for (const auto& value : f.tools->Tools()) {
             const auto tool = value.toObject(); if (tool.value("name") != definition.name) continue;
-            found = true; QCOMPARE(tool.value("inputSchema").toObject(), definition.inputSchema);
+            found = true; QCOMPARE(tool.value("inputSchema").toObject(), WithBindingToken(definition.inputSchema));
             QVERIFY(definition.inputSchema.value("properties").toObject().value("filter").toObject()
                 .value("properties").toObject().contains("world_rect"));
         }
@@ -1743,7 +1767,7 @@ void LiveEditorToolsTests::ImportMetadataUsesSourceAndCurrentAssetOverlay() {
             return item.toObject().value("name").toString() == definition.name;
         });
         QVERIFY(found != tools.end());
-        QCOMPARE(found->toObject().value("inputSchema").toObject(), definition.inputSchema);
+        QCOMPARE(found->toObject().value("inputSchema").toObject(), WithBindingToken(definition.inputSchema));
     }
     QtProject::AssetState assets;
     assets.edits.push_back({"resource/alpha.bin", "resource/beta.bin"});
@@ -1791,7 +1815,7 @@ void LiveEditorToolsTests::LuaFileToolsShareAssetUndoAndRejectStaleText() {
             return item.toObject().value("name").toString() == definition.name;
         });
         QVERIFY(found != tools.end());
-        QCOMPARE(found->toObject().value("inputSchema").toObject(), definition.inputSchema);
+        QCOMPARE(found->toObject().value("inputSchema").toObject(), WithBindingToken(definition.inputSchema));
     }
     const auto list = f.tools->Invoke("lua_files_list", f.Context());
     QVERIFY2(list.value("ok").toBool(), qPrintable(Explain(list)));

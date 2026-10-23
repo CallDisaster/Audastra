@@ -19,6 +19,10 @@ namespace War3Map::QtProject { class EditorProject; }
 
 namespace War3Map::QtApp {
 
+// 带 project_identity / expected_revision 的工具 schema 增加 binding_token，并把身份字段（及 expected）移出必填；
+// 移出的字段写入 tokenFields，由调用入口在未给令牌时检查。
+QJsonObject WithBindingToken(QJsonObject schema, QStringList* tokenFields = nullptr);
+
 // 嵌入 AI 和外部 MCP 共用的活动文档适配。借用唯一 GUI project，
 // 不打开另一份 McpWorkspace；所有调用须在 GUI 线程串行。
 class LiveEditorTools final : public QObject {
