@@ -1,6 +1,7 @@
 #include "TerrainWaterEditPreparation.h"
 #include "TerrainWaterEditFixture.h"
 #include "MapSaveJob.h"
+#include "War3MapCore/Hash.h"
 #include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
 
@@ -69,6 +70,36 @@ std::vector<MapArchiveMember> SpecialWaterSaveMembers() {
 class TerrainWaterEditPreparationTests final : public QObject {
     Q_OBJECT
 private slots:
+    void OpenedAliasIdentityIsVerifiedWithoutDoodadCapture() {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        EditorProject project;
+        InstallTerrainWaterProject(project, directory.path().toStdWString(), true);
+        const auto originalPath = project.sourceArchivePath_;
+        const auto alias = std::filesystem::path(directory.filePath("opened-alias.w3x").toStdWString());
+        const auto replacement = std::filesystem::path(directory.filePath("other-same-content.w3x").toStdWString());
+        const auto originalSha = Sha256File(originalPath); QVERIFY(originalSha.Succeeded());
+        std::error_code error;
+        std::filesystem::copy_file(originalPath, replacement, error); QVERIFY2(!error, error.message().c_str());
+        std::filesystem::create_hard_link(originalPath, alias, error); QVERIFY2(!error, error.message().c_str());
+        project.sourceArchivePath_ = alias;
+        auto request = CaptureTerrainWaterEditRequest(project, true, 64u * 1024u * 1024u, false);
+        QVERIFY(request.Succeeded()); QVERIFY(!request.value->doodadsCaptured);
+        QVERIFY(TerrainWaterEditRequestCurrent(project, *request.value, true));
+        QVERIFY(VerifyTerrainWaterEditRequestSourcePath(*request.value).Succeeded());
+        // 只有用户打开的别名换到另一份逐字节相同的文件；旧canonical归档仍完整且未变化。
+        QVERIFY(std::filesystem::remove(alias, error)); QVERIFY2(!error, error.message().c_str());
+        std::filesystem::create_hard_link(replacement, alias, error); QVERIFY2(!error, error.message().c_str());
+        QCOMPARE(Sha256File(originalPath).value, originalSha.value);
+        QCOMPARE(Sha256File(alias).value, originalSha.value);
+        QVERIFY(TerrainWaterEditRequestCurrent(project, *request.value, true));
+        const auto changed = VerifyTerrainWaterEditRequestSourcePath(*request.value);
+        QVERIFY(!changed.Succeeded());
+        QVERIFY(std::any_of(changed.diagnostics.begin(), changed.diagnostics.end(), [](const auto& diagnostic) {
+            return diagnostic.code == "TERRAIN_WATER_SOURCE_CHANGED";
+        }));
+        auto identityOnly = std::make_shared<TerrainWaterEditRequest>(std::move(*request.value));
+        QVERIFY(!LoadTerrainWaterEditResources(identityOnly).Succeeded()); // 未捕获DOO不能被误用为水刷空对象。
+    }
     void ActualSourceAndFrozenPreview_data() {
         QTest::addColumn<bool>("archive");
         QTest::newRow("directory") << false;

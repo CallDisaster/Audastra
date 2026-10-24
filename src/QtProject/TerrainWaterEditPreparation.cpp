@@ -32,7 +32,7 @@ Status VerifySourcePath(const TerrainWaterEditRequest& request) {
         && std::filesystem::equivalent(openedPath, request.sourcePath, error);
     if (error || !same)
         return Status::Failure("Terrain.Water", "TERRAIN_WATER_SOURCE_CHANGED",
-            "当前打开路径与水刷来源快照不再指向同一文件或目录，请重新打开地图。");
+            "当前打开路径与地形编辑来源快照不再指向同一文件或目录，请重新打开地图。");
     return Status::Ok();
 }
 
@@ -55,6 +55,10 @@ Result<std::vector<std::byte>> ReadDirectoryTerrain(const WorkspaceSnapshot& sou
     return bytes;
 }
 } // namespace
+
+Status VerifyTerrainWaterEditRequestSourcePath(const TerrainWaterEditRequest& request) {
+    return VerifySourcePath(request);
+}
 
 Result<TerrainWaterEditRequest> CaptureTerrainWaterEditRequest(const EditorProject& project,
     bool enforceWaterLimits, std::size_t maximumBytes, bool captureDoodads) {
@@ -142,7 +146,7 @@ Result<TerrainWaterEditCapture> LoadTerrainWaterEditResources(std::shared_ptr<co
     if (!request || !request->terrain || !request->doodadsCaptured || !request->maximumBytes || request->maximumBytes > kMaximumBytes)
         return Capture::Failure("Terrain.Water", "TERRAIN_WATER_CAPTURE_INVALID", "水刷来源请求无效。");
     try {
-        const auto path = VerifySourcePath(*request);
+        const auto path = VerifyTerrainWaterEditRequestSourcePath(*request);
         if (!path.Succeeded()) return {std::nullopt, path.diagnostics};
         const auto archive = request->archive;
         Result<std::vector<std::byte>> bytes;
@@ -185,7 +189,7 @@ Status VerifyTerrainWaterEditResources(const TerrainWaterEditCapture& capture) {
         return Status::Failure("Terrain.Water", "TERRAIN_WATER_CAPTURE_INVALID", "水刷缺少捕获的真实规则。");
     try {
         const auto& request = *capture.request;
-        const auto path = VerifySourcePath(request);
+        const auto path = VerifyTerrainWaterEditRequestSourcePath(request);
         if (!path.Succeeded()) return path;
         if (request.archive) return capture.resources.VerifySourceInputs(*request.archive, request.maximumBytes);
         if (request.directory) return capture.resources.VerifySourceInputs(*request.directory, request.maximumBytes);

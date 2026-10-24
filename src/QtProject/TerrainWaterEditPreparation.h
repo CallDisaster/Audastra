@@ -34,6 +34,8 @@ struct TerrainWaterEditCapture {
 // 只比较已捕获身份，不在鼠标事件里重新打开、读取或散列整张地图。
 [[nodiscard]] bool TerrainWaterEditRequestCurrent(const EditorProject& project,
     const TerrainWaterEditRequest& request, bool enforceWaterLimits);
+// 后台只读核对用户打开的路径仍指向冻结来源；不读取DOO或重新捕获工程。
+[[nodiscard]] Status VerifyTerrainWaterEditRequestSourcePath(const TerrainWaterEditRequest& request);
 // 后台入口：归档和目录使用同一个Core规则捕获，不读取渲染缓存或注册表。
 [[nodiscard]] Result<TerrainWaterEditCapture> LoadTerrainWaterEditResources(
     std::shared_ptr<const TerrainWaterEditRequest> request);

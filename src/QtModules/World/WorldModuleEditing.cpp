@@ -1237,12 +1237,20 @@ void WorldModule::EditTerrainTextureSlot(bool cliff, bool append) {
     auto* thread = QThread::create([ownedRequest, frozen = std::move(*frozen.value), selectedTable,
         slot = static_cast<std::uint32_t>(slot), rawcode, append, prepared] {
         try {
+            if (ownedRequest) {
+                const auto sourcePath = QtProject::VerifyTerrainWaterEditRequestSourcePath(*ownedRequest);
+                if (!sourcePath.Succeeded()) { *prepared = {std::nullopt, sourcePath.diagnostics}; return; }
+            }
             // 原有“追加槽”只保留raw工程能力；既有槽必须实际读取map/game赢家后记录FTJ6。
             *prepared = append ? frozen->PrepareTerrainTextureSlot(selectedTable, slot, rawcode)
                 : ownedRequest->archive ? Services::TerrainPathingSave::PrepareTextureSlot(*ownedRequest->archive, *frozen,
                     selectedTable, slot, rawcode, ownedRequest->gameRoot, ownedRequest->maximumBytes)
                 : Services::TerrainPathingSave::PrepareTextureSlot(*ownedRequest->directory, *frozen,
                     selectedTable, slot, rawcode, ownedRequest->gameRoot, ownedRequest->maximumBytes);
+            if (ownedRequest && prepared->Succeeded()) {
+                const auto sourcePath = QtProject::VerifyTerrainWaterEditRequestSourcePath(*ownedRequest);
+                if (!sourcePath.Succeeded()) *prepared = {std::nullopt, sourcePath.diagnostics};
+            }
         } catch (const std::exception&) {
             *prepared = Result<MapData::MapDataEditSession::PreparedTerrainEdit>::Failure("World.TerrainPalette",
                 "WORLD_PALETTE_PREPARATION_FAILED", "贴图来源或候选准备失败，地图未修改。");
