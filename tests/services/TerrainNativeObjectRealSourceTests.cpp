@@ -17,6 +17,7 @@
 #include "TerrainWalkableBridgeRealTests.h"
 #include "TerrainGroundBrushRealTests.h"
 #include "TerrainExistingRampWaterRealTests.h"
+#include "TerrainPlayableBoundsRealTests.h"
 #include "TerrainShadowRealTests.h"
 #include "TerrainCategoryDirectoryRealTests.h"
 
@@ -483,6 +484,7 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
             TerrainSaveTests::CheckRealExistingRampCliffSave(original, directory.path, tool, game);
             TerrainSaveTests::CheckRealExistingRampWaterSave(original, directory.path, tool, game);
             TerrainSaveTests::CheckRealCornerRampSave(original, directory.path, tool, game);
+            TerrainSaveTests::CheckRealPlayableBoundsSave(original, directory.path, tool, game);
             return;
         }
         if (group == RealSaveGroup::Shadows) {
