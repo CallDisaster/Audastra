@@ -2485,6 +2485,7 @@ void MixedObjectAndResourceSavesUseActualPathingDependencies() {
 }
 #include "TerrainOrdinaryDoodadSaveCases.h"
 #include "TerrainOrdinarySpecialSaveCases.h"
+#include "TerrainOrdinaryJournalSaveCases.h"
 } // namespace
 
 int main() {
@@ -2542,6 +2543,9 @@ int main() {
         OrdinarySpecialMutationsUseBothStagesAndSavedHistory();
         OrdinarySpecialProofKeepsPrivateSourcesAndFrozenOutput();
         OrdinarySpecialProofKeepsCompleteBridgeFreeze();
+        OrdinaryJournalRecoveryPreservesBothOperationOrders();
+        OrdinaryJournalRecoveryRejectsTamperingAndPublicPlaceholders();
+        OrdinaryJournalRecoveryRetainsRepeatedInterleaving();
         std::cout << "Native object terrain save tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
