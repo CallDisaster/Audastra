@@ -988,6 +988,8 @@ private slots:
     void PlacementHeightAndSavedPathingWorkerRoundtrip();
     void NativePathingWorkerRebuildsAndRebinds_data();
     void NativePathingWorkerRebuildsAndRebinds();
+    void TerrainUnitPlacementNativeSave_data();
+    void TerrainUnitPlacementNativeSave();
     void NativePathingWorkerPreflightAndFailure_data();
     void NativePathingWorkerPreflightAndFailure();
     void CGridInvariantNormalSaveAndUndoRedo_data();
@@ -2109,6 +2111,99 @@ void EditorProjectTests::NativePathingWorkerRebuildsAndRebinds() {
     QCOMPARE(project.mapEdits_->Terrain()->vertices[4 * 9 + 4].waterBaseHeight, 80.0f);
     QVERIFY(project.HasUnsavedMapChanges());
     QCOMPARE(project.mapEdits_->SessionIdentity(), sessionIdentity);
+}
+
+void EditorProjectTests::TerrainUnitPlacementNativeSave_data() {
+    QTest::addColumn<int>("operation"); QTest::addColumn<bool>("inPlace");
+    for (int operation = 0; operation < 4; ++operation) for (const bool inPlace : {false, true}) {
+        const auto row = QString("unit-%1-%2").arg(operation).arg(inPlace ? "in-place" : "save-as").toUtf8();
+        QTest::newRow(row.constData()) << operation << inPlace;
+    }
+}
+
+void EditorProjectTests::TerrainUnitPlacementNativeSave() {
+    QFETCH(int, operation); QFETCH(bool, inPlace);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    auto members = NativePathingQtMembers(); QVERIFY(!members.empty());
+    MapData::UnitPlacements units;
+    MapData::UnitPlacement originalUnit;
+    originalUnit.rawcode = "hfoo"; originalUnit.position = {256, 384, 0};
+    originalUnit.scale = {1, 1, 1}; originalUnit.owner = 0; originalUnit.creationId = 7;
+    originalUnit.hitPoints = 73; originalUnit.mana = 29; originalUnit.unknownOwnerBytes = {17, 23};
+    units.units.push_back(originalUnit);
+    auto untouched = originalUnit; untouched.creationId = 19; untouched.owner = 2;
+    untouched.position = {768, 640, 0}; untouched.rotation = 0.75f;
+    units.units.push_back(untouched);
+    const auto originalWire = units.Serialize(); QVERIFY(originalWire.Succeeded() && originalWire.value);
+    members.push_back({"war3mapUnits.doo", *originalWire.value});
+    members.push_back({"war3mapMap.tga", Tests::WaterText("author minimap remains untouched")});
+    const auto source = std::filesystem::path(root.filePath("units-and-water.w3x").toStdWString());
+    QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
+    const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
+    EditorProject project; QVERIFY(BindTerrainSaveProject(project, source));
+    QVERIFY(DeepenNativePathingQtProject(project));
+    if (operation == 0) units.units[0].position = {448, 576, 0};
+    else if (operation == 1) units.units[0].rotation = 1.25f;
+    else if (operation == 2) {
+        auto clone = units.units[0]; clone.creationId = 37; clone.position = {640, 256, 0};
+        units.units.push_back(std::move(clone));
+    } else units.units.erase(units.units.begin());
+    const auto editedWire = units.Serialize(); QVERIFY(editedWire.Succeeded() && editedWire.value);
+    QVERIFY(project.mapEdits_->EditUnits(units).Succeeded());
+    QVERIFY(project.ObserveMapDataEdit("同次保存地形和单位摆放"));
+    QVERIFY(!project.mapEdits_->VerifyTerrainPathingForSave().Succeeded()); // 旧保原通行门不放宽。
+    const auto expectedTerrain = MapData::SerializeMapTerrain(*project.mapEdits_->Terrain());
+    QVERIFY(expectedTerrain.Succeeded() && expectedTerrain.value);
+    auto expectedPathing = members[2].data;
+    for (std::size_t y = 14; y <= 17; ++y) for (std::size_t x = 14; x <= 17; ++x)
+        expectedPathing[16 + y * 32 + x] = std::byte{0x1b};
+    const auto session = project.mapEdits_->SessionIdentity();
+    for (int phase = 0; phase < 3; ++phase) {
+        if (phase == 1) {
+            QVERIFY(project.mapEdits_->Undo() && project.ObserveMapDataEdit("撤销已保存的单位摆放"));
+            QVERIFY(project.mapEdits_->Undo() && project.ObserveMapDataEdit("撤销已保存的地形"));
+        }
+        if (phase == 2) {
+            QVERIFY(project.mapEdits_->Redo() && project.ObserveMapDataEdit("重做已保存的地形"));
+            QVERIFY(project.mapEdits_->Redo() && project.ObserveMapDataEdit("重做已保存的单位摆放"));
+        }
+        const auto& expectedUnits = phase == 1 ? *originalWire.value : *editedWire.value;
+        const auto beforeSource = project.sourceArchivePath_;
+        const auto beforeSha = Sha256File(beforeSource); QVERIFY(beforeSha.Succeeded());
+        const auto revision = project.mapEdits_->TerrainSourceRevision();
+        const auto target = inPlace ? beforeSource
+            : std::filesystem::path(root.filePath(QString("units-saved-%1.w3x").arg(phase)).toStdWString());
+        // 此夹具仅替代脚本工具链；实际派生、写出、回读及前台提交使用生产链。
+        auto job = FreezeNativePathingQtJob(project, target); QVERIFY(job && job->terrainDerivationRequired);
+        job->terrainSessionSnapshot = project.mapEdits_->FreezeForSave();
+        if (inPlace) {
+            job->inPlace = true;
+            job->inPlaceOptions.backupDirectory = std::filesystem::path(root.filePath(QString("backup-%1").arg(phase)).toStdWString());
+            QVERIFY(std::filesystem::create_directory(job->inPlaceOptions.backupDirectory));
+        }
+        InstallMapSaveDerivedPreparation(*job); EditorProject::RunMapSave(*job);
+        QVERIFY2(job->succeeded, ReadDiagnosticText(*job).c_str());
+        QVERIFY(job->terrainSavePlan && job->terrainSavePlan->RebuiltPathing());
+        QVERIFY(job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded());
+        QCOMPARE(job->nextSession->ReadMember("war3mapUnits.doo").value, std::optional(expectedUnits));
+        QCOMPARE(job->nextSession->ReadMember("war3map.w3e").value,
+            phase == 1 ? std::optional(members[1].data) : expectedTerrain.value);
+        QCOMPARE(job->nextSession->ReadMember("war3map.wpm").value,
+            std::optional(phase == 1 ? members[2].data : expectedPathing));
+        for (const auto& member : members) if (member.name != "war3map.w3e" && member.name != "war3map.wpm"
+            && member.name != "war3mapUnits.doo" && member.name != "war3map.mmp")
+            QCOMPARE(job->nextSession->ReadMember(member.name).value, std::optional(member.data));
+        QVERIFY(project.CommitMapSave(*job));
+        QCOMPARE(project.mapEdits_->SessionIdentity(), session);
+        QVERIFY(project.mapEdits_->TerrainSourceRevision() > revision);
+        QVERIFY(!project.mapEdits_->IsDirty() && !project.HasUnsavedMapChanges());
+        const auto savedDocument = project.mapEdits_->Snapshot();
+        const auto readback = savedDocument.Units(); QVERIFY(readback);
+        QCOMPARE(readback->Serialize().value, std::optional(expectedUnits));
+        if (inPlace) { QVERIFY(!job->backup.empty()); QCOMPARE(Sha256File(job->backup).value, beforeSha.value); }
+        else QCOMPARE(Sha256File(beforeSource).value, beforeSha.value);
+    }
+    if (!inPlace) QCOMPARE(Sha256File(source).value, sourceSha.value);
 }
 
 void EditorProjectTests::NativePathingWorkerPreflightAndFailure_data() {
@@ -5038,12 +5133,13 @@ int main(int argc, char** argv) {
         if (!arguments[index].startsWith("--case-group=")) { ++index; continue; }
         if (!group.isEmpty()) return 2;
         group = arguments.takeAt(index).mid(qsizetype(sizeof("--case-group=") - 1));
-        if (group != "base" && group != "native-pathing" && group != "derived") return 2;
+        if (group != "base" && group != "native-pathing" && group != "derived" && group != "terrain-units") return 2;
     }
     if (!group.isEmpty()) {
         // 按实际Qt槽自动分区，新增测试默认进入base，不能因手写函数清单漏跑。
         // 单组保留原30秒上限；不传分组参数时仍可直接运行完整套件。
         const auto groupOf = [](const QByteArray& name) {
+            if (name.startsWith("TerrainUnitPlacement")) return QStringLiteral("terrain-units");
             for (const auto* prefix : {"TerrainShadow", "AutomaticMinimap", "MissingMinimap", "DeclaredMissingMinimap"})
                 if (name.startsWith(prefix)) return QStringLiteral("derived");
             for (const auto* prefix : {"CGrid", "EffectiveDoodad", "FixedRotation", "Walkable", "NativePathing",

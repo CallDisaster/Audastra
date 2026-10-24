@@ -303,7 +303,8 @@ add_test(NAME services-terrain-native-object-save COMMAND audastra-terrain-nativ
 
 add_executable(audastra-terrain-native-object-real-tests
     TerrainNativeObjectRealSourceTests.cpp TerrainWalkableBridgeRealTests.cpp TerrainGroundBrushRealTests.cpp
-    TerrainCategoryDirectoryRealTests.cpp TerrainExistingRampWaterRealTests.cpp TerrainPlayableBoundsRealTests.cpp TerrainShadowRealTests.cpp)
+    TerrainCategoryDirectoryRealTests.cpp TerrainExistingRampWaterRealTests.cpp TerrainPlayableBoundsRealTests.cpp TerrainShadowRealTests.cpp
+    TerrainUnitPlacementRealTests.cpp)
 target_link_libraries(audastra-terrain-native-object-real-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(audastra-terrain-native-object-real-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(audastra-terrain-native-object-real-tests PRIVATE /W4 /permissive- /utf-8)
@@ -311,7 +312,9 @@ add_test(NAME services-terrain-native-object-real COMMAND audastra-terrain-nativ
 set_tests_properties(services-terrain-native-object-real PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
 add_test(NAME services-terrain-existing-ramp-real COMMAND audastra-terrain-native-object-real-tests --existing-ramps)
 add_test(NAME services-terrain-shadow-real COMMAND audastra-terrain-native-object-real-tests --shadows)
+add_test(NAME services-terrain-units-real COMMAND audastra-terrain-native-object-real-tests --unit-placement)
 set_tests_properties(services-terrain-existing-ramp-real services-terrain-shadow-real PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
+set_tests_properties(services-terrain-units-real PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
 
 add_executable(war3-map-import-inventory-tests ImportInventoryQueryTests.cpp)
 target_link_libraries(war3-map-import-inventory-tests PRIVATE War3MapEditor::Services)

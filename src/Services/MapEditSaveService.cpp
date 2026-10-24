@@ -32,6 +32,21 @@ namespace {
 using SaveResult = Result<MapEditSaveReceipt>;
 using namespace MapEditValidation;
 
+// 静态WPM不含单位管理器贡献；只接已有类型化单位事务，不扩大DOO占地域。
+bool UnitsOnlyPlacementOperation(const MapEditPlacementOperation& operation) {
+    return std::visit([](const auto& value) {
+        using T = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<T, MapEditPlacementCopy> || std::is_same_v<T, MapEditPlacementDelete>) {
+            return !value.sources.empty() && std::all_of(value.sources.begin(), value.sources.end(),
+                [](const auto& source) { return source.file == MapData::PlacementFile::Units; });
+        } else if constexpr (std::is_same_v<T, MapEditPlacementRotation>) {
+            return value.source.file == MapData::PlacementFile::Units;
+        } else if constexpr (std::is_same_v<T, MapEditPlacementCreate>) {
+            return std::holds_alternative<std::vector<MapData::UnitPlacement>>(value.records);
+        } else return false;
+    }, operation);
+}
+
 constexpr std::array kObjectTypes{
     ObjectData::ObjectType::Unit, ObjectData::ObjectType::Ability, ObjectData::ObjectType::Item,
     ObjectData::ObjectType::Buff, ObjectData::ObjectType::Upgrade, ObjectData::ObjectType::Doodad,
@@ -602,6 +617,12 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         const bool auxiliaryRequest = request.auxiliaryTransaction != nullptr;
         const bool terrainCompanion = terrainRequest && (fieldRequest || objectRequest)
             && !placementRequest && !triggerRequest && !auxiliaryRequest;
+        const bool terrainUnitPlacementCompanion = terrainRequest && placementRequest
+            && !fieldRequest && !objectRequest && !triggerRequest && !auxiliaryRequest
+            && UnitsOnlyPlacementOperation(request.placementEdit);
+        if (terrainUnitPlacementCompanion && std::any_of(request.terrainStrokes.begin(), request.terrainStrokes.end(),
+            [](const auto& stroke) { return stroke.followDoodads; }))
+            return Fail("SAVE_TERRAIN_PLACEMENT_FOLLOW_CONFLICT", "单位摆放事务与地形合并保存时，不同时执行随地面高度跟随；请分开提交。");
         if (terrainRequest && fieldRequest && std::any_of(request.fieldEdits.begin(), request.fieldEdits.end(),
             [](const auto& operation) {
                 return operation.edit.kind != MapDataKind::Settings
@@ -636,15 +657,15 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         if (static_cast<int>(fieldRequest) + static_cast<int>(placementRequest)
             + static_cast<int>(terrainRequest) + static_cast<int>(triggerRequest) + static_cast<int>(objectRequest) + static_cast<int>(auxiliaryRequest)
             - static_cast<int>(objectRequest && request.triggerTransaction != nullptr)
-            - static_cast<int>(terrainCompanion) != (shadowOnly ? 0 : 1))
-            return Fail("SAVE_OPERATION_SCOPE_INVALID", "一次保存只能提交一个领域操作、同源触发器与物编事务，或地形及一种受支持的说明/物编修改。");
+            - static_cast<int>(terrainCompanion) - static_cast<int>(terrainUnitPlacementCompanion) != (shadowOnly ? 0 : 1))
+            return Fail("SAVE_OPERATION_SCOPE_INVALID", "一次保存只能提交一个领域操作、同源触发器与物编事务，或地形及一种受支持的说明、物编或单位摆放修改。");
         const auto bounded = shadowOnly ? Status::Ok() : fieldRequest ? ValidateFieldOperations(request.fieldEdits)
             : placementRequest ? ValidatePlacementOperation(request.placementEdit)
             : request.triggerEdits ? Trigger::ValidateTriggerEditBatch(*request.triggerEdits)
             : (request.triggerTransaction || objectRequest || auxiliaryRequest) ? Status::Ok()
                                          : ValidateStrokes(request.terrainStrokes);
         if (!bounded.Succeeded()) return Forward(bounded.diagnostics);
-        if (terrainCompanion) {
+        if (terrainCompanion || terrainUnitPlacementCompanion) {
             const auto strokes = ValidateStrokes(request.terrainStrokes);
             if (!strokes.Succeeded()) return Forward(strokes.diagnostics);
         }
@@ -863,6 +884,20 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                     if (!sha.Succeeded() || !sha.value) return Forward(sha.diagnostics);
                     receipt.savedSha256 = *sha.value;
                 }
+            } else if (terrainUnitPlacementCompanion) {
+                if (companionMembers.size() != 1 || companionMembers.front().name != "war3mapUnits.doo")
+                    return Fail("SAVE_TERRAIN_PLACEMENT_SCOPE_INVALID", "地形只能合并唯一的单位摆放成员；开始位置联动设置或其它成员请分开保存。");
+                const auto companion = edits.Snapshot(MapDataKind::Units, MapData::PlacementReadLimits{}.maxBytes);
+                if (!companion.Succeeded() || !companion.value) return Forward(companion.diagnostics);
+                if (!companion.value->Units())
+                    return Fail("SAVE_TERRAIN_PLACEMENT_SCOPE_INVALID", "单位摆放事务缺少完整可读取的单位候选。");
+                const auto committed = terrainReplay->EditUnits(*companion.value->Units());
+                if (!committed.Succeeded()) return Forward(committed.diagnostics);
+                replacements = terrainReplay->Replacements();
+                const auto final = std::find_if(replacements.begin(), replacements.end(),
+                    [](const auto& member) { return member.name == "war3mapUnits.doo"; });
+                if (final == replacements.end() || final->data != companionMembers.front().data)
+                    return Fail("SAVE_TERRAIN_PLACEMENT_SCOPE_INVALID", "合并后的完整单位成员与已核对的摆放事务不一致。");
             } else if (objectRequest) {
                 replacements.insert(replacements.end(), std::make_move_iterator(companionMembers.begin()),
                     std::make_move_iterator(companionMembers.end()));
