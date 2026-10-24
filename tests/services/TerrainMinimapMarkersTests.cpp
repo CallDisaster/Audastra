@@ -151,7 +151,7 @@ void ExactOrderCoordinatesAndReadback() {
         Require(markers.records[i].colorBgra == color, "矿商店白色，sloc使用实例owner的实际整图均色");
     }
     Require(std::any_of(owner->Dependencies().begin(), owner->Dependencies().end(), [](const auto& dependency) {
-        return dependency.name == "startup:ui/war3skins.txt" && dependency.source == TerrainMinimapMarkerSource::Game
+        return dependency.name == "startup:UI\\WAR3SKINS.TXT" && dependency.source == TerrainMinimapMarkerSource::Game
             && dependency.gameContainer == "war3.mpq" && !dependency.sha256.empty();
     }), "启动皮肤身份来自真实game包，不被地图同名文件冒充");
     std::vector<MemberReplacement> output{{"war3map.mmp", owner->Bytes()}};

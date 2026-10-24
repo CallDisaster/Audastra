@@ -111,7 +111,7 @@ struct Context {
                 if (found->second->data.size() > limits.maximumFileBytes)
                     Fail("TERRAIN_MMP_BUDGET", "MMP最终依赖超过单文件预算：" + name);
                 Charge(sourceBytes, found->second->data.size(), limits.maximumSourceBytes);
-                Charge(workingBytes, found->second->data.size(), limits.maximumWorkingBytes);
+                Charge(workingBytes, found->second->data.size(), limits.maximumWorkingBytes, 2); // 保活原字及散列chunk
                 files.emplace(key, ArchiveExactMember{name, true, found->second->data});
             } else if (removals.contains(key)) files.emplace(key, ArchiveExactMember{name, false, {}});
             else wanted.push_back(name);
@@ -119,10 +119,10 @@ struct Context {
         if (wanted.empty()) return;
         ArchiveExactMemberLimits exact;
         exact.memberCount = 128; exact.memberBytes = limits.maximumFileBytes;
-        exact.totalBytes = std::min(limits.maximumSourceBytes - sourceBytes, limits.maximumWorkingBytes - workingBytes);
+        exact.totalBytes = std::min(limits.maximumSourceBytes - sourceBytes, (limits.maximumWorkingBytes - workingBytes) / 2);
         for (auto& member : Take(source.CaptureExactMembers(wanted, exact))) {
             Charge(sourceBytes, member.bytes.size(), limits.maximumSourceBytes);
-            Charge(workingBytes, member.bytes.size(), limits.maximumWorkingBytes);
+            Charge(workingBytes, member.bytes.size(), limits.maximumWorkingBytes, 2);
             files.emplace(Canonical(member.name), std::move(member));
         }
     }
@@ -143,9 +143,9 @@ struct Context {
             if (game->HasFile(std::string(name))) {
                 auto read = Take(game->ReadFileBoundedWithSource(std::string(name),
                     std::min({limits.maximumFileBytes, limits.maximumSourceBytes - sourceBytes,
-                        limits.maximumWorkingBytes - workingBytes})));
+                        (limits.maximumWorkingBytes - workingBytes) / 2})));
                 Charge(sourceBytes, read.bytes.size(), limits.maximumSourceBytes);
-                Charge(workingBytes, read.bytes.size(), limits.maximumWorkingBytes);
+                Charge(workingBytes, read.bytes.size(), limits.maximumWorkingBytes, 2);
                 file.present = true; file.bytes = std::move(read.bytes);
                 identity.source = TerrainMinimapMarkerSource::Game; identity.gameContainer = std::move(read.archiveName);
             }
@@ -172,9 +172,9 @@ struct Context {
         if (game->HasFile(std::string(name))) {
             auto read = Take(game->ReadFileBoundedWithSource(std::string(name),
                 std::min({limits.maximumFileBytes, limits.maximumSourceBytes - sourceBytes,
-                    limits.maximumWorkingBytes - workingBytes})));
+                    (limits.maximumWorkingBytes - workingBytes) / 2})));
             Charge(sourceBytes, read.bytes.size(), limits.maximumSourceBytes);
-            Charge(workingBytes, read.bytes.size(), limits.maximumWorkingBytes);
+            Charge(workingBytes, read.bytes.size(), limits.maximumWorkingBytes, 2);
             file.present = true; file.bytes = std::move(read.bytes);
             identity.source = TerrainMinimapMarkerSource::Game; identity.gameContainer = std::move(read.archiveName);
             identity.bytes = file.bytes.size(); identity.sha256 = Take(Sha256(file.bytes));
@@ -411,6 +411,8 @@ Text::ProfileSections Profile(Context& context, const ArchiveExactMember& file) 
 
 std::optional<std::array<double, 4>> CameraMargins(Context& context, const MapSettings& settings) {
     if (settings.flags & 0x400u) return {};
+    const std::vector<std::string> names{"UI/MiscData.txt", "UI/WorldEditData.txt"};
+    context.Phase(names);
     Text::ProfileSections configuration;
     for (const auto path : {"UI/MiscData.txt", "UI/WorldEditData.txt"}) {
         auto profile = Profile(context, context.Required(path, true));
@@ -504,10 +506,6 @@ Captured CaptureMarkers(const MapArchiveSession& source, const std::filesystem::
         if (!IsClassicPlacementVersion(placements.version, placements.subversion))
             Fail("TERRAIN_MMP_UNITS_LAYOUT", "正式MMP只消费完整经典无皮肤单位表。");
     }
-    const std::vector<std::string> fixed{"UI/MiscData.txt", "UI/WorldEditData.txt", "UI/UnitEditorData.txt",
-        "Units/UnitData.slk", "Units/UnitBalance.slk", "Units/UnitUI.slk", "Units/UnitAbilities.slk",
-        "Units/AbilityData.slk", "Units/UnitMetaData.slk", "Units/ItemData.slk", "war3map.w3u", "war3map.w3a"};
-    context.Phase(fixed);
     const auto playable = Take(NativeMinimapPlayableRectangle(*grid, settings, CameraMargins(context, settings)));
     const auto frame = Take(NativeMinimapFrame(*grid, playable));
     std::vector<NativeMinimapMarkerCandidate> candidates;
@@ -523,14 +521,18 @@ Captured CaptureMarkers(const MapArchiveSession& source, const std::filesystem::
         return unit.rawcode != "sloc";
     });
     if (ordinary) {
+        const std::vector<std::string> semantic{"UI/UnitEditorData.txt", "Units/UnitData.slk", "Units/UnitBalance.slk",
+            "Units/UnitUI.slk", "Units/UnitAbilities.slk", "Units/AbilityData.slk", "Units/UnitMetaData.slk",
+            "Units/ItemData.slk", "war3map.w3u", "war3map.w3a"};
+        context.Phase(semantic);
         UnitSemantics semantics(context);
         for (const auto& unit : placements.units)
             if (const auto type = semantics.Type(unit)) append(unit, *type, {255, 255, 255, 255});
     }
     const auto colors = TeamColors(context, placements.units);
     for (const auto& unit : placements.units) if (unit.rawcode == "sloc") append(unit, 2, colors.at(unit.owner));
+    Charge(context.workingBytes, 8 + candidates.size() * 16, limits.maximumWorkingBytes, 2);
     const auto generated = Take(BuildNativeMinimapMarkers(frame, candidates, limits.markers));
-    Charge(context.workingBytes, 8 + generated.records.size() * 16, limits.maximumWorkingBytes, 2);
     Captured output;
     output.bytes = Take(SerializeMapMinimapMarkers(generated, limits.markers)); output.count = generated.records.size();
     for (auto& [key, dependency] : context.facts) { (void)key; output.dependencies.push_back(std::move(dependency)); }
@@ -545,10 +547,15 @@ Status AllocationFailure() {
 void RequireInstalled(const MapArchiveSession& source, std::span<const MemberReplacement> replacements,
     std::span<const std::string> removals, std::span<const std::byte> expected) {
     const auto name = Canonical("war3map.mmp");
-    for (const auto& removal : removals) if (Canonical(removal) == name)
-        Fail("TERRAIN_MMP_OUTPUT_REMOVED", "正式MMP不能同时列为删除。");
+    for (const auto& removal : removals) {
+        const auto path = Resources::CanonicalImportPath(removal);
+        if (path.Succeeded() && path.value && *path.value == name)
+            Fail("TERRAIN_MMP_OUTPUT_REMOVED", "正式MMP不能同时列为删除。");
+    }
     const MemberReplacement* output = nullptr;
-    for (const auto& member : replacements) if (Canonical(member.name) == name) {
+    for (const auto& member : replacements) {
+        const auto path = Resources::CanonicalImportPath(member.name);
+        if (!path.Succeeded() || !path.value || *path.value != name) continue;
         if (output) Fail("TERRAIN_MMP_FINAL_CONFLICT", "最终视图有重复MMP。");
         output = &member;
     }
