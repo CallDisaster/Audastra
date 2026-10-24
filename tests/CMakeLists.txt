@@ -415,7 +415,7 @@ add_test(NAME terrain-edit-inspection COMMAND war3-terrain-edit-inspection-tests
 
 add_executable(war3-map-terrain-ramp-height-view-tests TerrainRampHeightViewTests.cpp)
 target_link_libraries(war3-map-terrain-ramp-height-view-tests PRIVATE War3MapEditor::RenderSupport War3MapEditor::Services)
-target_compile_definitions(war3-map-terrain-ramp-height-view-tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_definitions(war3-map-terrain-ramp-height-view-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-terrain-ramp-height-view-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME terrain-ramp-height-view COMMAND war3-map-terrain-ramp-height-view-tests)
 set_tests_properties(terrain-ramp-height-view PROPERTIES TIMEOUT 60)
