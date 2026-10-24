@@ -11,7 +11,9 @@
 #include <atomic>
 #include <bit>
 #include <cstring>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 
 namespace {
@@ -20,6 +22,13 @@ using namespace War3Map::MapData;
 using namespace War3Map::Services;
 using Bytes = std::vector<std::byte>;
 void Require(bool value, const char* why) { if (!value) throw std::runtime_error(why); }
+void RequireF32Bits(float actual, std::uint32_t expected, const char* why) {
+    std::ostringstream detail;
+    detail << why << ": actual=" << std::setprecision(17) << actual << " (0x" << std::hex
+        << std::bit_cast<std::uint32_t>(actual) << "), expected=0x" << expected;
+    std::cout << detail.str() << '\n';
+    if (std::bit_cast<std::uint32_t>(actual) != expected) throw std::runtime_error(detail.str());
+}
 template<class T> T Take(Result<T> result) {
     if (!result.Succeeded() || !result.value) {
         std::string message;
@@ -157,6 +166,18 @@ struct Fixture {
         if (found == members.end()) members.push_back({std::move(name), std::move(bytes)}); else found->data = std::move(bytes);
     }
     void Erase(std::string_view name) { std::erase_if(members, [&](const auto& item) { return item.name == name; }); }
+    void ReplaceBaseGameArchive(std::span<const MapArchiveMember> replacementMembers) {
+        // 只替换本夹具自建的固定base文件；生产writer仍须拒绝任何已存在目标。
+        const auto target = game / "war3.mpq";
+        Require(std::filesystem::canonical(game).parent_path() == std::filesystem::canonical(root)
+            && std::filesystem::is_regular_file(std::filesystem::symlink_status(target)),
+            "仅允许替换原创receiver夹具内自有的普通war3.mpq");
+        const auto replacement = Take(WriteVerifiedArchive(
+            root / ("replacement-game-" + std::to_string(sequence++) + ".mpq"), replacementMembers));
+        if (!ReplaceFileW(target.c_str(), replacement.path.c_str(), nullptr, REPLACEFILE_IGNORE_MERGE_ERRORS, nullptr, nullptr))
+            throw std::runtime_error("替换原创receiver游戏归档失败：" + std::to_string(GetLastError()));
+        Require(Take(Sha256File(target)) == replacement.sha256, "替换后原创游戏归档必须与已验证候选一致");
+    }
     auto Capture(std::span<const MemberReplacement> output = {}, const TerrainShadowReceiverLimits& limits = {}) const {
         auto casters = Take(TerrainShadowCasterResources::Capture(*source, game, output));
         auto light = Take(TerrainShadowResources::Capture(game, Game::NativeEditorStartupRules::Classic127aExpansion, 16u * 1024u * 1024u));
@@ -191,7 +212,11 @@ void OrderedAndSaved() {
     Require(emptyLast.receiverHeights == lastMiss.receiverHeights, "最后零长度list组仍返回false，不能丢空组沿用旧命中");
     fixture.Set(std::string(kOne), Model(3000, false, 128, false, true)); fixture.Open();
     const auto negative = Take(Take(fixture.Capture())->Sample());
-    Require(negative.receiverHeights.front() == 3000.1f, "原strip保留；signed交距为负也参与最小值");
+    // 独立IEEE F32算式：原角度常量得到cos=-1.6292068494294654e-7，首三角
+    // det=-16383.999283832974，inverse=0xb8800000，交距=-439.9999694824219
+    // (0xc3dbffff)。第二三角v=-3.725290298461914e-8，须拒绝。
+    // 最终F32(2560-t+0.1)=3000.099853515625，不能用理想平面3000.1f造expected。
+    RequireF32Bits(negative.receiverHeights.front(), 0x453b8199u, "原strip保留；signed交距为负也参与最小值");
     fixture.Set(std::string(kOne), Model(64, false, 256)); fixture.Open();
     const auto overhang = Take(Take(fixture.Capture())->Sample());
     Require(overhang.receiverHeights[4] == 64.1f, "普通格向上扫描同block模型，不能只采当前格ground");
@@ -303,7 +328,7 @@ void FrozenSources() {
         "TERRAIN_SHADOW_RECEIVER_PROFILE_STALE");
 
     fixture.Erase(kZero); fixture.Erase(kOne); fixture.Open();
-    Take(WriteVerifiedArchive(fixture.game / "war3.mpq", std::vector<MapArchiveMember>{{std::string(kZero), Model(64)}}));
+    fixture.ReplaceBaseGameArchive(std::vector<MapArchiveMember>{{std::string(kZero), Model(64)}});
     const auto gameOwner = Take(fixture.Capture());
     const auto gameModel = std::find_if(gameOwner->Dependencies().begin(), gameOwner->Dependencies().end(),
         [](const auto& fact) { return fact.source == TerrainShadowCasterSource::Game; });
@@ -323,7 +348,7 @@ void ActualGameRootCannotBeMixedWithAnotherCasterOwner() {
     Check(IO::WriteFileBytes(otherGame / "WorldEditData.txt", profile));
     Require(Take(IO::ReadFileBytes(fixture.game / "WorldEditData.txt", 4096)) == profile,
         "错root回归的两个真实目录必须具有相同profile字节，不能仅靠光照数值差异拒绝");
-    Take(WriteVerifiedArchive(fixture.game / "war3.mpq", std::vector<MapArchiveMember>{{std::string(kZero), Model(64)}}));
+    fixture.ReplaceBaseGameArchive(std::vector<MapArchiveMember>{{std::string(kZero), Model(64)}});
     Take(WriteVerifiedArchive(otherGame / "war3.mpq", std::vector<MapArchiveMember>{{std::string(kZero), Model(200)}}));
     const auto casters = Take(TerrainShadowCasterResources::Capture(*fixture.source, fixture.game));
     const auto otherCasters = Take(TerrainShadowCasterResources::Capture(*fixture.source, otherGame));
