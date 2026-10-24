@@ -72,7 +72,8 @@ std::optional<Vec3> RayDirection(const Vec3& origin, const Vec3& light) {
     const double squared = dz * dzStored + dy * dy + dx * dx;
     if (!std::isfinite(squared) || squared == 0) return std::nullopt;
     const float inverse = static_cast<float>(1.0 / std::sqrt(squared));
-    Vec3 result{static_cast<float>(dx * inverse), static_cast<float>(dy * inverse), static_cast<float>(dz * inverse)};
+    Vec3 result{static_cast<float>(dx * inverse), static_cast<float>(dy * inverse),
+        static_cast<float>(static_cast<double>(dzStored) * inverse)};
     for (const auto value : result) if (!std::isfinite(value)) return std::nullopt;
     return result;
 }
