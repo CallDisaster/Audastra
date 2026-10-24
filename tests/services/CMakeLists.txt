@@ -300,6 +300,12 @@ target_compile_definitions(audastra-terrain-water-edit-service-tests PRIVATE NOM
 target_compile_options(audastra-terrain-water-edit-service-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-terrain-water-edit COMMAND audastra-terrain-water-edit-service-tests)
 
+add_executable(audastra-terrain-wet-corner-service-tests TerrainWetCornerRampServiceTests.cpp)
+target_link_libraries(audastra-terrain-wet-corner-service-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(audastra-terrain-wet-corner-service-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-terrain-wet-corner-service-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-terrain-wet-corner COMMAND audastra-terrain-wet-corner-service-tests)
+
 add_executable(audastra-native-destructable-pathing-tests NativeDestructablePathingTests.cpp)
 target_link_libraries(audastra-native-destructable-pathing-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(audastra-native-destructable-pathing-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
