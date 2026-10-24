@@ -24,7 +24,8 @@ Status MaterializeTerrainJournalPlacements(TerrainStrokeJournal& journal) {
     };
     for (const auto& stroke : journal.strokes) {
         const auto variants = unsigned(stroke.frozenDoodads.has_value()) + unsigned(stroke.ordinaryDoodads.has_value())
-            + unsigned(stroke.frozenUnits.has_value()) + unsigned(stroke.units.has_value());
+            + unsigned(stroke.frozenUnits.has_value()) + unsigned(stroke.units.has_value())
+            + unsigned(stroke.frozenStartLocations.has_value()) + unsigned(stroke.startLocations.has_value());
         if (!variants) continue;
         if (variants != 1 || !IsTerrainDoodadsJournalPlaceholder(stroke.intent)
             || !stroke.rulesSha256.empty() || stroke.cliffEnforceWaterLimits) return fail();
@@ -32,6 +33,24 @@ Status MaterializeTerrainJournalPlacements(TerrainStrokeJournal& journal) {
         if (stroke.frozenUnits && !chargeFrozen(*stroke.frozenUnits, MeasureTerrainUnitsJournalEdit)) return fail();
         if (stroke.ordinaryDoodads && !chargeDelta(*stroke.ordinaryDoodads, ValidateTerrainDoodadsJournalEdit)) return fail();
         if (stroke.units && !chargeDelta(*stroke.units, ValidateTerrainUnitsJournalEdit)) return fail();
+        if (stroke.frozenStartLocations) {
+            const auto& frozen = *stroke.frozenStartLocations;
+            if (!frozen.RetainedBytes() || frozen.UnitsBefore().empty() || frozen.UnitsAfter().empty()
+                || frozen.SettingsBefore().empty() || frozen.SettingsAfter().empty()
+                || frozen.RetainedBytes() > maximum - frozenBytes) return fail();
+            frozenBytes += frozen.RetainedBytes();
+            const auto cost = MeasureTerrainStartLocationsJournalEdit(frozen.UnitsBefore().size(), frozen.UnitsAfter().size(),
+                frozen.SettingsBefore().size(), frozen.SettingsAfter().size(), maximum, remainingWork);
+            if (!cost.Succeeded() || !cost.value) return fail();
+            remainingWork -= cost.value->work;
+        }
+        if (stroke.startLocations) {
+            const auto& edit = *stroke.startLocations;
+            if (!ValidateTerrainStartLocationsJournalEdit(edit).Succeeded() || edit.units.inserted.size() > available) return fail();
+            available -= edit.units.inserted.size();
+            if (edit.settings.inserted.size() > available) return fail();
+            available -= edit.settings.inserted.size();
+        }
     }
     // 冻结Command连同谱系最多64MiB、codec峰值64MiB、最终wire/baseline各64MiB，
     // 与原来的512MiB工程候选帽一致。逐项释放别名，不再回UI读取活动历史。
@@ -48,6 +67,13 @@ Status MaterializeTerrainJournalPlacements(TerrainStrokeJournal& journal) {
             if (!edit.Succeeded() || !edit.value) return {edit.diagnostics};
             available -= edit.value->inserted.size();
             stroke.units = std::move(*edit.value); stroke.frozenUnits.reset();
+        } else if (stroke.frozenStartLocations) {
+            const auto& frozen = *stroke.frozenStartLocations;
+            auto edit = BuildTerrainStartLocationsJournalEdit(frozen.UnitsBefore(), frozen.UnitsAfter(),
+                frozen.SettingsBefore(), frozen.SettingsAfter(), available);
+            if (!edit.Succeeded() || !edit.value) return {edit.diagnostics};
+            available -= edit.value->units.inserted.size() + edit.value->settings.inserted.size();
+            stroke.startLocations = std::move(*edit.value); stroke.frozenStartLocations.reset();
         }
     }
     return Status::Ok();

@@ -168,8 +168,9 @@ void UnitsJournalFreezesRealCommandsAndRestoresReceipts() {
         "attach full start-location source");
     Require(linkedHot.EditUnits(start).Succeeded() && linkedHot.Revision() == 1,
         "ordinary editor still commits start-location Units and W3I atomically");
-    Require(!linkedHot.ExportTerrainStrokeJournal().Succeeded(),
-        "two-member start-location transaction stays explicitly unexpressible, never skips its W3I effect");
+    const auto linkedJournal = Take(linkedHot.ExportTerrainStrokeJournal());
+    Require(linkedJournal.strokes.size() == 1 && linkedJournal.strokes.front().frozenStartLocations,
+        "two-member start-location transaction freezes both complete members for FTJA, never skips its W3I effect");
     MapDataEditSession linkedCold{MapDocument::FromMembers(linkedMembers)};
     const auto rejected = linkedCold.ReplayTerrainJournalUnits(startEdit, 64u * 1024u * 1024u, 64u * 1024u * 1024u);
     Require(!rejected.Succeeded() && !linkedCold.IsDirty() && linkedCold.Revision() == 0,

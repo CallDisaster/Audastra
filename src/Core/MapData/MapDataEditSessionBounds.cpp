@@ -87,8 +87,8 @@ bool MapDataEditSession::HasTerrainBoundsChanges() const noexcept {
 Status MapDataEditSession::VerifyTerrainSettingsForSave() const try {
     const auto& before = original_[Index(MapDataKind::Settings)];
     const auto& after = current_[Index(MapDataKind::Settings)];
-    if (!boundsState_) return ValidateTerrainSettingsPathingChange(before, after);
-    if (!savedBoundsState_ || !before || !after || !terrainOriginal_ || !terrain_
+    if (!boundsState_ && ValidateTerrainSettingsPathingChange(before, after).Succeeded()) return Status::Ok();
+    if (!before || !after || (boundsState_ && (!savedBoundsState_ || !terrainOriginal_ || !terrain_))
         || before->size() > 1024u * 1024u || after->size() > 1024u * 1024u)
         return Refuse("TERRAIN_BOUNDS_STATE_UNAVAILABLE", "地图范围缺少完整可信保存状态。");
     auto original = MapSettings::Parse(*before), current = MapSettings::Parse(*after);
@@ -99,10 +99,12 @@ Status MapDataEditSession::VerifyTerrainSettingsForSave() const try {
     const auto oldWire = original.value->Serialize(), currentWire = current.value->Serialize();
     if (!oldWire.Succeeded() || !oldWire.value || *oldWire.value != *before
         || !currentWire.Succeeded() || !currentWire.value || *currentWire.value != *after
-        || !savedBoundsState_->Matches(*original.value, *terrainOriginal_)
-        || !boundsState_->Matches(*current.value, *terrain_))
+        || (boundsState_ && (!savedBoundsState_->Matches(*original.value, *terrainOriginal_)
+            || !boundsState_->Matches(*current.value, *terrain_))))
         return Refuse("TERRAIN_BOUNDS_STATE_CHANGED", "范围字段或MapEdge已脱离可信命令状态，不能通过原始字节覆写保存。");
-    savedBoundsState_->RestoreGeometry(*current.value);
+    if (boundsState_) savedBoundsState_->RestoreGeometry(*current.value);
+    const auto starts = NormalizeTerrainStartLocationsForSave(*current.value, *original.value);
+    if (!starts.Succeeded()) return starts;
     auto normalized = current.value->Serialize();
     if (!normalized.Succeeded() || !normalized.value) return {normalized.diagnostics};
     return ValidateTerrainSettingsPathingChange(before, normalized.value);

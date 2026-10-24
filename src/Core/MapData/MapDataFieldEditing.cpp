@@ -259,7 +259,7 @@ struct MapDataFieldEditingAccess {
             ++changedCount;
             Status prepared;
             if (kind == MapDataKind::Units) {
-                prepared = session.PrepareUnits(*plan.After().Units(), command.changes);
+                prepared = session.PrepareUnits(*plan.After().Units(), command.changes, true, &command);
                 if (!prepared.Succeeded()) return prepared;
                 const auto count = plan.Before().Units()->units.size();
                 if (count > std::numeric_limits<std::uint32_t>::max())
