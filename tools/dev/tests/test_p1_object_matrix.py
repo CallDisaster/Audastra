@@ -2,8 +2,10 @@
 import copy
 import importlib.util
 import json
+import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 spec = importlib.util.spec_from_file_location("matrix", Path(__file__).parents[1] / "p1-object-matrix.py")
 matrix = importlib.util.module_from_spec(spec)
@@ -292,6 +294,35 @@ class ObjectMatrixTests(unittest.TestCase):
         candidate["server_sha256"] = "e" * 64
         with self.assertRaisesRegex(matrix.MatrixError, "VERIFY_SOURCE_OR_CATALOG_CHANGED"):
             matrix.verify_bindings(self.plan, candidate)
+
+
+class CatalogArchiveBindingTests(unittest.TestCase):
+    def test_optional_local_archive_and_its_bytes_participate_in_catalog_binding(self):
+        with tempfile.TemporaryDirectory(prefix="audastra-catalog-archive-test-") as temporary:
+            root = Path(temporary)
+            game, ydwe = root / "game", root / "metadata"
+            game.mkdir()
+            (ydwe / "ui").mkdir(parents=True)
+            (ydwe / "ui" / "owned.txt").write_bytes(b"original metadata fixture")
+            (game / "war3.mpq").write_bytes(b"owned base archive identity only")
+            (game / "war3x.mpq").write_bytes(b"owned expansion archive identity only")
+            args = SimpleNamespace(war3_root=game, ydwe_root=ydwe)
+            missing = matrix.catalog_inputs(args)
+            self.assertEqual([row["name"] for row in missing["game_archives"]], ["war3.mpq", "war3x.mpq"])
+            local = game / "War3Local.MPQ"
+            local.write_bytes(b"owned optional local identity only")
+            first = matrix.catalog_inputs(args)
+            self.assertNotEqual(first, missing)
+            self.assertEqual(first["game_archives"][-1]["name"], "war3local.mpq")
+            self.assertEqual(first["game_archives"][-1]["sha256"], matrix.probe.sha(local))
+            local.write_bytes(b"changed optional local identity only")
+            changed = matrix.catalog_inputs(args)
+            self.assertNotEqual(first["game_archives"][-1]["sha256"], changed["game_archives"][-1]["sha256"])
+            self.assertEqual(first["ydwe_ui_inventory_sha256"], changed["ydwe_ui_inventory_sha256"])
+            for name in ("war3xlocal.mpq", "war3patch.mpq"):
+                (game / name).write_bytes(b"owned higher archive identity only")
+            self.assertEqual([row["name"] for row in matrix.catalog_inputs(args)["game_archives"]],
+                ["war3.mpq", "war3x.mpq", "war3local.mpq", "war3xlocal.mpq", "war3patch.mpq"])
 
 
 if __name__ == "__main__":

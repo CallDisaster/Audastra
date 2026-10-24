@@ -15,17 +15,18 @@
 namespace War3Map::Game {
 namespace {
 
-// 核心 MPQ，按加载优先级从低到高。查找时反向（patch 优先）。
-constexpr std::array<const char*, 4> kCoreArchives{
+// 经典 1.27a 归档层，按加载优先级从低到高；不代表原版完整的文件来源搜索。
+constexpr std::array<std::string_view, 5> kCoreArchives{
     "war3.mpq",      // 基础
     "war3x.mpq",     // 资料片
-    "war3xlocal.mpq",// 本地化
+    "war3local.mpq", // 基础本地化，高于资料片基础包
+    "war3xlocal.mpq",// 资料片本地化
     "war3patch.mpq", // 补丁（最高优先级）
 };
 
 // 在目录中按大小写不敏感方式查找实际文件名（Windows 通常不敏感，但保持稳健）。
 Result<std::filesystem::path> ResolveArchivePath(
-    const std::filesystem::path& root, const char* archiveName, bool strict = false) {
+    const std::filesystem::path& root, std::string_view archiveName, bool strict = false) {
     using PathResult = Result<std::filesystem::path>;
     const std::filesystem::path direct = root / archiveName;
     std::error_code ec;
@@ -52,7 +53,7 @@ Result<std::filesystem::path> ResolveArchivePath(
         }
     }
     // 回退：遍历目录做大小写不敏感匹配。
-    std::string target = archiveName;
+    std::string target(archiveName);
     for (char& c : target) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     ec.clear();
     for (std::filesystem::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
@@ -74,6 +75,10 @@ Result<std::filesystem::path> ResolveArchivePath(
 }
 
 } // namespace
+
+std::span<const std::string_view> GameDataSource::CoreArchiveNames() noexcept {
+    return kCoreArchives;
+}
 
 bool GameRootValidation::Usable() const noexcept {
     // war3.mpq 与 war3x.mpq 是图标资源的主要来源，二者可打开即可用。
@@ -111,7 +116,7 @@ GameRootValidation GameDataSource::Validate(const std::filesystem::path& war3Roo
         return validation;
     }
 
-    for (const char* archiveName : kCoreArchives) {
+    for (const auto archiveName : CoreArchiveNames()) {
         GameArchiveInfo info;
         info.fileName = archiveName;
         const auto resolved = ResolveArchivePath(war3Root, archiveName);
@@ -187,7 +192,8 @@ Result<GameDataSource> GameDataSource::MountImpl(const std::filesystem::path& wa
     source.root_ = war3Root;
 
     // 按优先级从高到低挂载（patch 在前）。
-    for (auto it = kCoreArchives.rbegin(); it != kCoreArchives.rend(); ++it) {
+    const auto names = CoreArchiveNames();
+    for (auto it = names.rbegin(); it != names.rend(); ++it) {
         auto resolved = ResolveArchivePath(war3Root, *it, strict);
         if (!resolved.Succeeded()) {
             Result<GameDataSource> failure;

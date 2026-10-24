@@ -364,7 +364,8 @@ def apply_plan(server, plan, bindings):
 
 def catalog_inputs(args):
     archives = []
-    for name in ("war3.mpq", "war3x.mpq", "war3xlocal.mpq", "war3patch.mpq"):
+    # 仅绑定经典归档层；不把此清单称为 loose/前缀视图的完整原版来源。
+    for name in ("war3.mpq", "war3x.mpq", "war3local.mpq", "war3xlocal.mpq", "war3patch.mpq"):
         matches = [p for p in args.war3_root.iterdir() if p.name.lower() == name]
         require(len(matches) <= 1, "CATALOG_ARCHIVE_ALIAS_AMBIGUOUS")
         if matches:

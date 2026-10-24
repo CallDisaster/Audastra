@@ -447,6 +447,45 @@ void StaticReadProvenanceRecordsMapDiskAndActualGameContainers() {
             [](const auto& diagnostic) { return diagnostic.code == "WORLD_ASSET_READ"; }),
         "unreadable selected session file cannot fall back to a real map or game member");
 }
+
+void OptionalLocalArchiveParticipatesInWorldSourceLeases() {
+    for (const bool present : {false, true}) {
+        QTemporaryDir directory; Require(directory.isValid(), "local source lease temporary directory");
+        auto sources = Fixture(std::filesystem::path(directory.path().toStdWString()) / L"source.w3x");
+        sources.gameRoot = sources.archivePath.parent_path() / L"game";
+        Require(std::filesystem::create_directory(sources.gameRoot), "create original local source game directory");
+        const std::vector<Mpq::MpqBuildFile> base{{"LocalSource.bin", {std::byte{1}}}};
+        const std::vector<Mpq::MpqBuildFile> expansion{{"LocalSource.bin", {std::byte{2}}}};
+        const std::vector<Mpq::MpqBuildFile> local{{"LocalSource.bin", {std::byte{3}}}};
+        Require(Mpq::WriteMpqArchive(sources.gameRoot / L"war3.mpq", base).Succeeded()
+            && Mpq::WriteMpqArchive(sources.gameRoot / L"war3x.mpq", expansion).Succeeded(), "write lower original game archive layers");
+        const auto localPath = sources.gameRoot / L"war3local.mpq";
+        if (present) Require(Mpq::WriteMpqArchive(localPath, local).Succeeded(), "write original optional local game archive");
+        const auto reader = WorldResourceReader::Open(sources); Require(reader.Succeeded(), "open optional-local world reader");
+        const auto read = (*reader.value)->Resolver().Read("LocalSource.bin");
+        Require(read.Succeeded() && read.value && read.value->location.readProvenance
+            && read.value->bytes == (present ? local.front().data : expansion.front().data)
+            && read.value->location.readProvenance->containerIdentity == (present ? "war3local.mpq" : "war3x.mpq"),
+            "world resource content and actual winning source include the optional local archive");
+        Require((*reader.value)->VerifyCurrentSource().Succeeded(), "fresh optional-local source lease verifies");
+        if (present) {
+            const auto before = Sha256File(localPath); Require(before.Succeeded(), "hash leased local archive");
+            const auto writer = CreateFileW(localPath.c_str(), GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            const auto error = GetLastError();
+            if (writer != INVALID_HANDLE_VALUE) CloseHandle(writer);
+            Require(writer == INVALID_HANDLE_VALUE && error == ERROR_SHARING_VIOLATION,
+                "actual local game source is protected by the same deny-write archive lease domain");
+            Require(Sha256File(localPath).value == before.value && (*reader.value)->VerifyCurrentSource().Succeeded(),
+                "refused local source write keeps the actual source identity valid");
+        } else {
+            Require(Mpq::WriteMpqArchive(localPath, local).Succeeded(), "add previously absent optional local archive");
+            const auto stale = (*reader.value)->VerifyCurrentSource();
+            Require(!stale.Succeeded() && !stale.diagnostics.empty() && stale.diagnostics.front().code == "WORLD_ASSET_SOURCE_CHANGED",
+                "adding a higher-priority local archive invalidates the old world source even when it was absent at capture");
+        }
+    }
+}
 }
 int main(int argc, char** argv) {
     QCoreApplication application(argc, argv);
@@ -458,6 +497,7 @@ int main(int argc, char** argv) {
         ReplacementUndoRedoAndBranchesInvalidateLongLivedKeys();
         WeakVersionsRejectAliasesAndKeepCompleteBatchesStable();
         StaticReadProvenanceRecordsMapDiskAndActualGameContainers();
+        OptionalLocalArchiveParticipatesInWorldSourceLeases();
         std::cout << "world-resource-reader: source lease, owned payload and cache identity regressions passed\n";
         return 0;
     } catch (const std::exception& error) {

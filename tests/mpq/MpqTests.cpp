@@ -22,6 +22,7 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
@@ -31,10 +32,12 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -1618,6 +1621,96 @@ void TestGameBoundedReadPriority() {
             "missing across all mounted archives must retain game-source diagnostic");
 }
 
+void TestGameCoreArchivePrecedence() {
+    using War3Map::Game::GameDataSource;
+    using namespace War3Map::Mpq;
+    TempDirectory temp;
+    // 各层独立写入相同成员；逐层加入才能分别证明 local>x、xlocal>local、patch>xlocal。
+    const std::array<std::pair<const char*, const char*>, 5> layers{{
+        {"war3.mpq", "base"}, {"war3x.mpq", "expansion"},
+        {"War3Local.MPQ", "base-local-payload"}, {"war3xlocal.mpq", "expansion-local"},
+        {"war3patch.mpq", "patch"}}};
+    for (std::size_t index = 0; index < layers.size(); ++index) {
+        const auto expected = TextBytes(layers[index].second);
+        std::vector<MpqBuildFile> files{{"same.bin", expected, false}};
+        if (index == 2) files.push_back({"local-only.bin", TextBytes("local-only"), false});
+        Require(WriteMpqArchive(temp.Path() / layers[index].first, files).Succeeded(), "write competing original core layer");
+        const auto mounted = GameDataSource::MountStrict(temp.Path());
+        Require(mounted.Succeeded() && mounted.value && mounted.value->MountedCount() == index + 1,
+            "every present optional core layer joins the actual mount");
+        const auto source = std::string(index == 2 ? "war3local.mpq" : layers[index].first);
+        const auto direct = mounted.value->ReadFile("same.bin");
+        const auto head = mounted.value->ReadFileHead("same.bin", 3);
+        const auto read = mounted.value->ReadFileBoundedWithSource("same.bin", expected.size());
+        Require(direct.Succeeded() && direct.value == std::optional(expected)
+            && head.Succeeded() && head.value == std::optional(std::vector<std::byte>(expected.begin(), expected.begin() + 3))
+            && read.Succeeded() && read.value && read.value->bytes == expected && read.value->archiveName == source,
+            "all read entrances agree on the actual core archive priority and canonical source identity");
+        const auto listed = mounted.value->ListFilesWithSource();
+        Require(listed.Succeeded() && listed.value, "competing core layer names remain enumerable");
+        const auto winner = std::find_if(listed.value->begin(), listed.value->end(),
+            [](const auto& file) { return file.path == "same.bin"; });
+        Require(winner != listed.value->end() && winner->archiveName == source,
+            "resource inventory reports the same winning core layer as the content read");
+        if (index == 1) {
+            const auto validation = GameDataSource::Validate(temp.Path());
+            const auto local = std::find_if(validation.archives.begin(), validation.archives.end(),
+                [](const auto& archive) { return archive.fileName == "war3local.mpq"; });
+            Require(validation.Usable() && local != validation.archives.end() && !local->present,
+                "absent base-local archive is reported but never becomes a new game-root requirement");
+        }
+        if (index == 2) {
+            const auto limited = mounted.value->ReadFileBounded("same.bin", 9);
+            Require(!limited.Succeeded() && !limited.value && HasDiagnostic(limited.diagnostics, "FILE_READ_BUDGET_EXCEEDED"),
+                "an over-budget local winner never falls back to the shorter expansion/base member");
+        }
+        if (index >= 2) {
+            const auto localOnly = mounted.value->ReadFileBoundedWithSource("local-only.bin", 10);
+            Require(localOnly.Succeeded() && localOnly.value && localOnly.value->bytes == TextBytes("local-only")
+                && localOnly.value->archiveName == "war3local.mpq",
+                "base-local-only members stay available beneath optional higher layers");
+        }
+    }
+    const auto names = GameDataSource::CoreArchiveNames();
+    const auto validation = GameDataSource::Validate(temp.Path());
+    Require(validation.Usable() && validation.archives.size() == names.size(),
+        "validation and preview-lease public archive domain includes all readable core layers");
+    for (std::size_t index = 0; index < names.size(); ++index)
+        Require(validation.archives[index].fileName == names[index] && validation.archives[index].opened,
+            "shared archive-domain entries resolve to the same real files, including mixed-case local name");
+}
+
+void TestGameLocalArchiveStrictBoundary() {
+    using War3Map::Game::GameDataSource;
+    using namespace War3Map::Mpq;
+    TempDirectory temp;
+    const std::vector<MpqBuildFile> files{{"same.bin", TextBytes("lower"), false}};
+    Require(WriteMpqArchive(temp.Path() / "war3.mpq", files).Succeeded()
+        && WriteMpqArchive(temp.Path() / "war3x.mpq", files).Succeeded(), "write lower layers for optional local boundary");
+    const auto local = temp.Path() / "war3local.mpq";
+    WriteAll(local, TextBytes("present corrupt optional local archive"));
+    const auto strict = GameDataSource::MountStrict(temp.Path());
+    Require(!strict.Succeeded() && !strict.value && HasDiagnostic(strict.diagnostics, "archive-open-failed"),
+        "strict mounting refuses a present corrupt local archive rather than silently showing expansion bytes");
+    const auto compatible = GameDataSource::Mount(temp.Path());
+    Require(compatible.Succeeded() && compatible.value && compatible.value->MountedCount() == 2
+        && compatible.value->ReadFile("same.bin").value == std::optional(TextBytes("lower")),
+        "legacy best-effort mount keeps its existing skip-corrupt compatibility contract");
+    std::filesystem::remove(local);
+    std::filesystem::create_directory(local);
+    const auto notFile = GameDataSource::MountStrict(temp.Path());
+    Require(!notFile.Succeeded() && HasDiagnostic(notFile.diagnostics, "archive-not-file"),
+        "a local archive directory is not accepted as an absent optional file");
+    std::filesystem::remove(local);
+    Require(WriteMpqArchive(local, files).Succeeded(), "write original local lease fixture");
+    const auto exclusive = CreateFileW(local.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    Require(exclusive != INVALID_HANDLE_VALUE, "exclusive temporary local lease opens");
+    const auto unavailable = GameDataSource::MountStrict(temp.Path());
+    CloseHandle(exclusive);
+    Require(!unavailable.Succeeded() && HasDiagnostic(unavailable.diagnostics, "archive-open-failed"),
+        "sharing-denied local archive remains an error instead of a lower-layer fallback");
+}
+
 void TestGameStrictMount() {
     using War3Map::Game::GameDataSource;
     TempDirectory temp;
@@ -2155,6 +2248,8 @@ int main() {
         TestBoundedArchiveReads();
         TestEmptySectorChecksumLayout();
         TestGameBoundedReadPriority();
+        TestGameCoreArchivePrecedence();
+        TestGameLocalArchiveStrictBoundary();
         TestGameStrictMount();
         TestOwnedTilesetArchive();
         TestGameExtractTilesetCommand();

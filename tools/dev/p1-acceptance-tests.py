@@ -44,6 +44,23 @@ class TemporaryFiles(unittest.TestCase):
 
 
 class SandboxTests(TemporaryFiles):
+    def test_default_profile_preserves_optional_local_archive_without_requiring_it(self):
+        source = self.root / "source"
+        for name in sandbox.DEFAULT_PROFILE["required"]:
+            self.file("source/" + name, b"synthetic non-executable profile placeholder")
+        absent = sandbox.prepare(source, self.root / "without-local", sandbox.DEFAULT_PROFILE)
+        self.assertIn("War3Local.mpq", absent["missing_optional"])
+        self.assertFalse((self.root / "without-local" / "War3Local.mpq").exists())
+        local = self.file("source/War3Local.mpq", b"owned optional archive identity placeholder")
+        before = support.sha256(local)
+        present = sandbox.prepare(source, self.root / "with-local", sandbox.DEFAULT_PROFILE)
+        self.assertNotIn("War3Local.mpq", present["missing_optional"])
+        self.assertEqual((self.root / "with-local" / "War3Local.mpq").read_bytes(), local.read_bytes())
+        self.assertEqual(support.sha256(local), before)
+        localRow = next(row for row in present["files"] if row["path"] == "War3Local.mpq")
+        self.assertEqual(localRow["sha256"], before)
+        self.assertFalse(present["runtime_validated"])
+
     def test_missing_required_is_reported_and_not_copied(self):
         source = self.root / "source"
         source.mkdir()

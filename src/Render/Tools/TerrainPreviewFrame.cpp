@@ -215,8 +215,8 @@ struct GameArchiveLease {
 };
 
 std::vector<std::unique_ptr<GameArchiveLease>> LockGameArchives(const fs::path& root) {
-    // GameDataSource 的实际优先级；首个命中成员就是唯一读取来源。
-    constexpr std::array<std::string_view, 4> known{"war3patch.mpq", "war3xlocal.mpq", "war3x.mpq", "war3.mpq"};
+    // 与挂载、校验共用归档域，避免新增可读取的归档却漏掉稳定来源租约。
+    const auto known = War3Map::Game::GameDataSource::CoreArchiveNames();
     std::map<std::string, fs::path, std::less<>> paths;
     std::error_code error;
     for (fs::directory_iterator at(root, error), end; !error && at != end; at.increment(error)) {
@@ -231,8 +231,9 @@ std::vector<std::unique_ptr<GameArchiveLease>> LockGameArchives(const fs::path& 
     Require(paths.contains("war3.mpq") && paths.contains("war3x.mpq"),
         "game root must contain base and expansion MPQ files");
     std::vector<std::unique_ptr<GameArchiveLease>> leases;
-    for (const auto name : known) if (const auto found = paths.find(name); found != paths.end())
-        leases.push_back(std::make_unique<GameArchiveLease>(std::string(name), found->second));
+    for (auto it = known.rbegin(); it != known.rend(); ++it)
+        if (const auto found = paths.find(*it); found != paths.end())
+            leases.push_back(std::make_unique<GameArchiveLease>(std::string(*it), found->second));
     return leases;
 }
 

@@ -19,7 +19,7 @@ _spec.loader.exec_module(support)
 DEFAULT_PROFILE = {
     "required": ["war3.exe", "Game.dll", "Storm.dll", "War3.mpq", "War3x.mpq", "War3xlocal.mpq", "War3Patch.mpq",
                  "Mss32.dll", "ijl15.dll", "msvcr120.dll"],
-    "optional": ["Warcraft III.exe", "blizzard.ax", "Movies"],
+    "optional": ["Warcraft III.exe", "blizzard.ax", "Movies", "War3Local.mpq"],
 }
 
 

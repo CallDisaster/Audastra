@@ -6,13 +6,15 @@
 #include <cstddef>
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace War3Map::Game {
 
 // 魔兽争霸3 安装目录下的核心 MPQ，按加载优先级从低到高排列。
-// 查找文件时从高优先级（patch）向低（base）回退，与游戏一致。
+// 仅描述经典 1.27a 归档层的 patch 至 base 顺序，不代表原版完整来源搜索。
 struct GameArchiveInfo {
     std::string fileName;   // 如 "war3.mpq"
     bool present = false;   // 文件是否存在
@@ -53,6 +55,10 @@ public:
     GameDataSource& operator=(const GameDataSource&) = delete;
     ~GameDataSource() = default;
 
+    // 经典 1.27a 核心归档层，按查找优先级从低到高；归档可缺失。
+    // 挂载、校验和预览来源租约共用此名单，不包含 loose 文件、Storm 前缀视图或地图覆盖。
+    [[nodiscard]] static std::span<const std::string_view> CoreArchiveNames() noexcept;
+
     // 仅检查目录下的 MPQ 状态，不长期持有句柄。用于路径前置校验。
     [[nodiscard]] static GameRootValidation Validate(
         const std::filesystem::path& war3Root);
@@ -75,7 +81,7 @@ public:
     // 是否存在指定归档内文件（不区分大小写，'/' 与 '\\' 等价）。
     [[nodiscard]] bool HasFile(const std::string& name) const;
 
-    // 按优先级（patch>local>x>base）读取文件的解压内容。
+    // 按归档优先级（patch>xlocal>local>x>base）读取文件的解压内容。
     [[nodiscard]] Result<std::vector<std::byte>> ReadFile(const std::string& name) const;
     // 同优先级完整读取，命中归档在分配/解压前检查存储与解压大小；超限或损坏不回退低层。
     [[nodiscard]] Result<std::vector<std::byte>> ReadFileBounded(
