@@ -2524,6 +2524,7 @@ void MixedObjectAndResourceSavesUseActualPathingDependencies() {
     }
 }
 #include "TerrainOrdinaryDoodadSaveCases.h"
+#include "TerrainDoodadColorSaveCases.h"
 #include "TerrainOrdinarySpecialSaveCases.h"
 #include "TerrainOrdinaryJournalSaveCases.h"
 #include "TerrainUnitsJournalSaveCases.h"
@@ -2579,6 +2580,7 @@ int main() {
         WalkableBridgesUseTheDirectoryRecipe();
         MixedObjectAndResourceSavesUseActualPathingDependencies();
         OrdinaryDoodadMutationsUseBothSaveStages();
+        OrdinaryDoodadColorsUseBothNativeSaveStages();
         OrdinaryDoodadMoveSurvivesZeroNetTerrainAndHistory();
         OrdinaryDoodadSaveKeepsActualDependenciesAndBudgets();
         OrdinaryMutationsDoNotAcquireSpecialOrBridgeAuthority();

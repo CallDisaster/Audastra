@@ -1524,6 +1524,7 @@ void SpecialDoodadFieldsDoNotBorrowOrdinaryPoseRules() {
     Rejected(InspectNativeTerrainObjects({}, wrong, f.sources, kWorkingBytes), "TERRAIN_NATIVE_OBJECT_CLASS_AMBIGUOUS",
         "special DOO cannot borrow destructable zero-walkable proof");
 }
+#include "NativeDoodadNonPathFieldCases.h"
 } // namespace
 
 int main() {
@@ -1559,6 +1560,7 @@ int main() {
         WalkableCustomBridgeOnlyRejectsSelectorsOnUsedFields();
         WalkableBridgeGridUsesWireRawcodeFallback();
         SpecialDoodadFieldsDoNotBorrowOrdinaryPoseRules();
+        DoodadRepeatedColorFieldsPreservePathing();
         std::cout << "native destructable pathing: typed fields, bounded inheritance, unique sources and rejection paths passed\n";
         return 0;
     } catch (const std::exception& error) {
