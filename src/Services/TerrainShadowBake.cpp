@@ -58,7 +58,7 @@ Result<std::shared_ptr<const TerrainShadowBake>> TerrainShadowBake::Capture(cons
             Fail("TERRAIN_SHADOW_LIMITS", "阴影计算预算只能收紧非零硬上限。");
         if (cancellation.stop_requested()) Fail("TERRAIN_SHADOW_CANCELLED", "阴影计算已取消，原阴影保留。");
         auto owner = std::shared_ptr<TerrainShadowBake>(new TerrainShadowBake);
-        owner->sourceSha256_ = source.SourceSha256();
+        owner->sourceSha256_ = source.SourceSha256(); owner->limits_ = limits;
         TerrainShadowCasterLimits casterLimits;
         casterLimits.maximumSourceBytes = std::min(casterLimits.maximumSourceBytes, limits.maximumSourceBytes);
         casterLimits.maximumWorkingBytes = std::min(casterLimits.maximumWorkingBytes, limits.maximumWorkingBytes);
@@ -157,6 +157,7 @@ Result<std::shared_ptr<const TerrainShadowBake>> TerrainShadowBake::Capture(cons
             shadow.intensities.push_back(projection.terrainShadowBits[i] ? 0xff : 0);
         }
         owner->bytes_ = Take(MapData::SerializeMapShadow(shadow));
+        owner->workingBytes_ = working;
         if (cancellation.stop_requested()) Fail("TERRAIN_SHADOW_CANCELLED", "阴影计算已取消，未返回部分输出。");
         return Output::Success(std::move(owner));
     } catch (Failure& failure) { Output result; result.diagnostics = std::move(failure.diagnostics); return result; }
@@ -174,12 +175,26 @@ Status TerrainShadowBake::VerifyFrozenOutput(const MapArchiveSession& source,
     if (source.SourceSha256() != sourceSha256_)
         return Status::Failure(kSubsystem, "TERRAIN_SHADOW_SOURCE_STALE", "阴影任务与当前归档来源不同。");
     const auto output = CheckOutput(replacements, removals, bytes_); if (!output.Succeeded()) return output;
-    const auto direction = light_->VerifySources(light_->CaptureBudgetBytes()); if (!direction.Succeeded()) return direction;
-    return receivers_->VerifySources(source, replacements, removals);
+    if (workingBytes_ >= limits_.maximumWorkingBytes)
+        return Status::Failure(kSubsystem, "TERRAIN_SHADOW_BUDGET", "驻留阴影结果未留下最终来源复核的临时预算。");
+    TerrainShadowCasterVerificationLimits verification;
+    verification.maximumSourceBytes = std::min(verification.maximumSourceBytes, limits_.maximumSourceBytes);
+    verification.maximumWorkingBytes = limits_.maximumWorkingBytes - workingBytes_;
+    const auto direction = light_->VerifySources(std::min(light_->CaptureBudgetBytes(), verification.maximumWorkingBytes));
+    if (!direction.Succeeded()) return direction;
+    return receivers_->VerifySources(source, replacements, removals, verification);
 }
 Status TerrainShadowBake::VerifyReadback(const MapArchiveSession& saved) const {
-    const auto direction = light_->VerifySources(light_->CaptureBudgetBytes()); if (!direction.Succeeded()) return direction;
-    const auto dependencies = receivers_->VerifyReadback(saved); if (!dependencies.Succeeded()) return dependencies;
+    if (workingBytes_ >= limits_.maximumWorkingBytes)
+        return Status::Failure(kSubsystem, "TERRAIN_SHADOW_BUDGET", "驻留阴影结果未留下保存回读的临时预算。");
+    TerrainShadowCasterVerificationLimits verification;
+    verification.maximumSourceBytes = std::min(verification.maximumSourceBytes, limits_.maximumSourceBytes);
+    verification.maximumWorkingBytes = limits_.maximumWorkingBytes - workingBytes_;
+    const auto direction = light_->VerifySources(std::min(light_->CaptureBudgetBytes(), verification.maximumWorkingBytes));
+    if (!direction.Succeeded()) return direction;
+    const auto dependencies = receivers_->VerifyReadback(saved, verification); if (!dependencies.Succeeded()) return dependencies;
+    if (bytes_.size() > verification.maximumWorkingBytes / 2)
+        return Status::Failure(kSubsystem, "TERRAIN_SHADOW_BUDGET", "实际SHD回读的存储与解码缓冲超过剩余临时预算。");
     const std::array<std::string, 1> names{"war3map.shd"};
     ArchiveExactMemberLimits limits;
     limits.memberCount = 1; limits.memberBytes = limits.totalBytes = bytes_.size();

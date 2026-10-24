@@ -74,12 +74,13 @@ struct Writer {
 // 原创合法MDX，保存与射线的expected只用下方独立字面值；不调用正式采样器造expected。
 // 原局部面x=-128..0、y=0..width，原版-90度旋转后覆盖x=0..width、y=0..128。
 Bytes Model(float height, bool lastMiss = false, float width = 128, bool dynamic = false, bool strip = false,
-    bool emptyLastGroup = false) {
+    bool emptyLastGroup = false, unsigned textureCount = 1) {
     Writer w; w.Tag("MDLX"); w.Tag("VERS"); w.U32(4); w.U32(800);
     w.Tag("MODL"); { const auto chunk = w.Begin(); w.Fixed("AuthoredReceiver", 80); w.Fixed("", 260); w.Extent(height); w.U32(0); w.End(chunk); }
     w.Tag("SEQS"); { const auto chunk = w.Begin(); w.Fixed("Stand", 80); w.U32(0); w.U32(1000);
         w.F32(0); w.U32(0); w.F32(0); w.U32(0); w.Extent(height); w.End(chunk); }
-    w.Tag("TEXS"); w.U32(268); w.U32(0); w.Fixed("Fixture/Unused.blp", 260); w.U32(0);
+    w.Tag("TEXS"); w.U32(268 * textureCount);
+    for (unsigned i = 0; i < textureCount; ++i) { w.U32(0); w.Fixed("Fixture/Unused.blp", 260); w.U32(0); }
     w.Tag("MTLS"); { const auto chunk = w.Begin(), material = w.Begin(); w.U32(0); w.U32(0); w.Tag("LAYS"); w.U32(1);
         const auto layer = w.Begin(); w.U32(0); w.U32(0); w.U32(0); w.U32(UINT32_MAX); w.U32(0); w.F32(0);
         w.End(layer, true); w.End(material, true); w.End(chunk); }
@@ -393,6 +394,26 @@ void GuardsAndOrdinary() {
     special.Set("war3map.doo", Take(placements.Serialize())); special.Open();
     Rejected(special.Capture(), "TERRAIN_SHADOW_SPECIAL_GEOMETRY");
 }
+void BoundedSourceAndReadbackVerification() {
+    Fixture fixture;
+    // 每个有效MDX约69KiB，两个变体及缺失项都须复核。256KiB容得下一项
+    // stored/decoded缓冲，却容不下旧复核所保留的两份模型缓存与解析工作。
+    fixture.Set(std::string(kZero), Model(64, false, 128, false, false, false, 256));
+    fixture.Set(std::string(kOne), Model(96, false, 128, false, false, false, 256)); fixture.Open();
+    const auto owner = Take(fixture.Capture());
+    TerrainShadowCasterVerificationLimits scratch; scratch.maximumWorkingBytes = 256u * 1024u;
+    Require(owner->WorkingBytes() > scratch.maximumWorkingBytes, "窄复核额度小于完整接收面捕获工作量");
+    TerrainShadowReceiverLimits recapture; recapture.maximumWorkingBytes = scratch.maximumWorkingBytes;
+    Rejected(fixture.Capture({}, recapture));
+    Check(owner->VerifySources(*fixture.source, {}, {}, scratch));
+    const auto candidate = Take(fixture.source->SaveCandidate(fixture.root / "bounded-receiver-readback.w3x", {}));
+    const auto saved = Take(MapArchiveSession::Open(candidate.path)); Check(owner->VerifyReadback(saved, scratch));
+    auto tiny = scratch; tiny.maximumWorkingBytes = 1;
+    Rejected(owner->VerifySources(*fixture.source, {}, {}, tiny)); Rejected(owner->VerifyReadback(saved, tiny));
+    tiny = scratch; tiny.maximumFileBytes = 1; Rejected(owner->VerifyReadback(saved, tiny));
+    const std::vector<MemberReplacement> late{{std::string(kTwo), Model(128)}};
+    Rejected(owner->VerifySources(*fixture.source, late, {}, scratch), "TERRAIN_SHADOW_RECEIVER_DEPENDENCY_STALE");
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -401,7 +422,7 @@ int main(int argc, char** argv) {
         Require(group == "ordered" || group == "sources" || group == "guards" || group == "all", "未知测试分组");
         if (group == "ordered" || group == "all") { OrderedAndSaved(); CompleteCliffBakeUsesProductionSaveAndGuards(); }
         if (group == "sources" || group == "all") { FrozenSources(); ActualGameRootCannotBeMixedWithAnotherCasterOwner(); }
-        if (group == "guards" || group == "all") GuardsAndOrdinary();
+        if (group == "guards" || group == "all") { GuardsAndOrdinary(); BoundedSourceAndReadbackVerification(); }
         std::cout << "terrain shadow receiver " << group << " passed\n"; return 0;
     } catch (const std::exception& failure) { std::cerr << failure.what() << '\n'; return 1; }
 }

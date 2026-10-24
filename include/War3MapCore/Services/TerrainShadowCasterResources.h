@@ -7,6 +7,7 @@
 #include <array>
 #include <memory>
 #include <stop_token>
+#include <utility>
 
 namespace War3Map::Services {
 
@@ -16,6 +17,16 @@ struct TerrainShadowCasterLimits {
     std::size_t maximumWorkingBytes = 512u * 1024u * 1024u;
     std::size_t maximumPlacements = 65536;
     std::size_t maximumModels = 4096;
+};
+
+// 仅复核事实的读取/临时存储上限；调用方传入扣除所有驻留owner后的剩余额。
+// 默认仍受捕获时总工作预算约束，不允许在旧owner旁再建立一个完整副本。
+// source计依赖解压正文，working计本服务正文双缓冲/索引；MPQ挂载元数据沿用
+// 底层读取器独立硬限，这不是全进程RSS或源归档散列I/O总量的限制。
+struct TerrainShadowCasterVerificationLimits {
+    std::size_t maximumSourceBytes = 64u * 1024u * 1024u;
+    std::size_t maximumFileBytes = 32u * 1024u * 1024u;
+    std::size_t maximumWorkingBytes = 512u * 1024u * 1024u;
 };
 
 enum class TerrainShadowCasterSource { Missing, Map, Game };
@@ -70,13 +81,14 @@ public:
     // 累计捕获的解压正文。MPQ读取另检查存储与解压长度；此计数不是最小准入预算。
     [[nodiscard]] std::size_t SourceBytes() const noexcept { return sourceBytes_; }
     [[nodiscard]] std::size_t WorkingBytes() const noexcept { return workingBytes_; }
-    // 同一冻结最终成员视图重新捕获，核源归档、实际winner/absence与每份原字节。
+    // 同一冻结最终成员视图逐项复核，核源归档、实际winner/absence与每份原字节。
     // 不接caller的“已验证”开关；真实I/O错误或来源变化保持失败。
     [[nodiscard]] Status VerifySources(const MapArchiveSession& source,
         std::span<const MemberReplacement> replacements = {}, std::span<const std::string> removals = {},
-        std::stop_token cancellation = {}) const;
+        std::stop_token cancellation = {}, const TerrainShadowCasterVerificationLimits& limits = {}) const;
     // 保存结果从真实归档重新读取；允许归档SHA改变，所有被消费依赖须仍相同。
-    [[nodiscard]] Status VerifyReadback(const MapArchiveSession& saved, std::stop_token cancellation = {}) const;
+    [[nodiscard]] Status VerifyReadback(const MapArchiveSession& saved, std::stop_token cancellation = {},
+        const TerrainShadowCasterVerificationLimits& limits = {}) const;
 
 private:
     TerrainShadowCasterResources() = default;
@@ -85,6 +97,8 @@ private:
     std::filesystem::path gameRootIdentity_;
     TerrainShadowCasterLimits limits_;
     std::vector<TerrainShadowCasterDependency> inputs_;
+    // 与inputs_同序，直接封存Capture实际使用的fallback与单文件上限，不重写路径分类规则。
+    std::vector<std::pair<bool, std::size_t>> inputReadLimits_;
     std::vector<TerrainShadowCasterInstance> casters_;
     std::vector<TerrainShadowCasterModel> models_;
     std::vector<MapData::SpecialDoodadPlacement> special_;

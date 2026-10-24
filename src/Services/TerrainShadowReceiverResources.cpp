@@ -21,6 +21,7 @@
 namespace War3Map::Services {
 namespace {
 constexpr const char* kSubsystem = "Terrain.ShadowReceivers";
+constexpr std::size_t kDependencyMetadataBytes = 1024 + 64 + 256;
 using Vec3 = std::array<float, 3>;
 struct Failure { std::vector<Diagnostic> diagnostics; };
 [[noreturn]] void Fail(const char* code, std::string message) {
@@ -66,9 +67,9 @@ public:
         for (const auto& item : output) {
             if (item.name.size() > ArchiveExactMemberLimits{}.pathBytes)
                 Fail("TERRAIN_SHADOW_RECEIVER_BUDGET", "最终资源成员名超过路径预算。");
+            Charge(working, item.name.size() + 128, limits_.maximumWorkingBytes, 4);
             const auto key = Resources::CanonicalImportPath(item.name);
             if (!key.Succeeded() || !key.value) continue;
-            Charge(working, key.value->size() + 128, limits_.maximumWorkingBytes, 4);
             if (!seen.insert(*key.value).second)
                 Fail("TERRAIN_SHADOW_RECEIVER_FINAL_CONFLICT", "最终资源视图含重复替换成员。");
             replacements_.emplace(*key.value, &item);
@@ -76,21 +77,28 @@ public:
         for (const auto& item : removed) {
             if (item.size() > ArchiveExactMemberLimits{}.pathBytes)
                 Fail("TERRAIN_SHADOW_RECEIVER_BUDGET", "最终删除成员名超过路径预算。");
+            Charge(working, item.size() + 128, limits_.maximumWorkingBytes, 4);
             const auto key = Resources::CanonicalImportPath(item);
             if (!key.Succeeded() || !key.value) continue;
-            Charge(working, key.value->size() + 128, limits_.maximumWorkingBytes, 4);
             if (!seen.insert(*key.value).second)
                 Fail("TERRAIN_SHADOW_RECEIVER_FINAL_CONFLICT", "最终资源同时替换/删除或重复删除。");
             removals_.insert(*key.value);
         }
+        Charge(working, (source.SourcePath().native().size() + 1) * sizeof(std::filesystem::path::value_type) + 512,
+            limits_.maximumWorkingBytes, 4);
         Check(guard_.Watch(source.SourcePath()));
     }
     const ArchiveExactMember& Read(std::string_view name) {
         Cancel(cancellation_);
+        if (name.size() > ArchiveExactMemberLimits{}.pathBytes)
+            Fail("TERRAIN_SHADOW_RECEIVER_BUDGET", "接收面路径超过预算。");
+        auto pathWorking = working;
+        Charge(pathWorking, name.size() + 128, limits_.maximumWorkingBytes, 4);
         const auto key = Canonical(name);
         if (const auto found = files_.find(key); found != files_.end()) return found->second;
         if (files_.size() >= 32768)
             Fail("TERRAIN_SHADOW_RECEIVER_BUDGET", "接收面的来源记录数超过硬上限。");
+        Charge(working, key.size() + kDependencyMetadataBytes, limits_.maximumWorkingBytes, 4);
         const auto available = std::min({limits_.maximumFileBytes, limits_.maximumSourceBytes - sourceBytes,
             (limits_.maximumWorkingBytes - working) / 2});
         ArchiveExactMember file{std::string(name), false, {}};
@@ -118,11 +126,18 @@ public:
         }
         Charge(sourceBytes, file.bytes.size(), limits_.maximumSourceBytes);
         Charge(working, file.bytes.size(), limits_.maximumWorkingBytes, 2);
-        Charge(working, key.size() + fact.gameContainer.size() + 256, limits_.maximumWorkingBytes, 4);
+        if (fact.gameContainer.size() > 1024)
+            Fail("TERRAIN_SHADOW_RECEIVER_BUDGET", "接收面实际容器身份超过有界支持范围。");
         fact.bytes = file.bytes.size();
         if (file.present) fact.sha256 = Take(Sha256(file.bytes));
         facts.emplace(key, std::move(fact));
         return files_.emplace(key, std::move(file)).first->second;
+    }
+    void Release(std::string_view name) {
+        const auto found = files_.find(name);
+        if (found == files_.end()) return;
+        working -= found->second.bytes.size() * 2 + (found->first.size() + kDependencyMetadataBytes) * 4;
+        facts.erase(facts.find(name)); files_.erase(found);
     }
     void Verify() { Check(guard_.Verify()); Check(source_.VerifySourceUnchanged()); }
     void ReserveWorking(std::size_t count, std::size_t multiple = 1) {
@@ -228,6 +243,43 @@ struct TerrainShadowReceiverResources::State {
     std::size_t sourceBytes = 0, working = 0, work = 0;
     bool ordinary = true;
 
+    TerrainShadowCasterVerificationLimits VerificationBudget(const TerrainShadowCasterVerificationLimits& requested) const {
+        const TerrainShadowCasterVerificationLimits hard;
+        if (requested.maximumSourceBytes > hard.maximumSourceBytes || requested.maximumFileBytes > hard.maximumFileBytes
+            || requested.maximumWorkingBytes > hard.maximumWorkingBytes)
+            Fail("TERRAIN_SHADOW_RECEIVER_LIMITS", "接收面来源复核只能收紧硬上限。");
+        if (!requested.maximumSourceBytes || !requested.maximumFileBytes || !requested.maximumWorkingBytes
+            || working >= limits.maximumWorkingBytes)
+            Fail("TERRAIN_SHADOW_RECEIVER_BUDGET", "驻留接收面未留下来源复核的读取或临时工作预算。");
+        return {std::min(requested.maximumSourceBytes, limits.maximumSourceBytes),
+            std::min(requested.maximumFileBytes, limits.maximumFileBytes),
+            std::min(requested.maximumWorkingBytes, limits.maximumWorkingBytes - working)};
+    }
+    void VerifyInputs(const MapArchiveSession& source, std::span<const MemberReplacement> replacements,
+        std::span<const std::string> removals, const TerrainShadowCasterVerificationLimits& scratch,
+        const char* staleCode) const {
+        if (ordinary) return;
+        {
+            const auto light = Take(MapData::TerrainShadowResources::Capture(gameRoot,
+                Game::NativeEditorStartupRules::Classic127aExpansion,
+                std::min(scratch.maximumSourceBytes, scratch.maximumWorkingBytes)));
+            if (light.DependencyFingerprint() != lightFingerprint)
+                Fail("TERRAIN_SHADOW_RECEIVER_PROFILE_STALE", "实际MaxHeight/profile来源已变化。");
+        }
+        auto readLimits = limits;
+        readLimits.maximumSourceBytes = scratch.maximumSourceBytes;
+        readLimits.maximumFileBytes = scratch.maximumFileBytes;
+        readLimits.maximumWorkingBytes = scratch.maximumWorkingBytes;
+        Inputs inputs(source, gameRoot, casters->Terrain().header.mainTileset, replacements, removals, readLimits, {});
+        for (const auto& dependency : dependencies) {
+            (void)inputs.Read(dependency.name);
+            if (inputs.facts.at(dependency.name) != dependency)
+                Fail(staleCode, "接收面模型、表或实际winner/absence已变化：" + dependency.name);
+            inputs.Release(dependency.name);
+        }
+        inputs.Verify();
+    }
+
     void Tick(std::size_t count, std::stop_token cancellation) {
         Cancel(cancellation); Charge(work, count, limits.maximumWork);
     }
@@ -319,7 +371,11 @@ Result<std::shared_ptr<const TerrainShadowReceiverResources>> TerrainShadowRecei
         auto state = std::make_shared<State>(); state->casters = std::move(casters);
         state->sourceSha = source.SourceSha256(); state->gameRoot = state->casters->GameRoot(); state->limits = limits;
         // 核对借用owner确属同一最终地图视图，不接受别的图或旧替换列表。
-        Check(state->casters->VerifySources(source, replacements, removals, cancellation));
+        TerrainShadowCasterVerificationLimits verification;
+        verification.maximumSourceBytes = std::min(verification.maximumSourceBytes, limits.maximumSourceBytes);
+        verification.maximumFileBytes = std::min(verification.maximumFileBytes, limits.maximumFileBytes);
+        verification.maximumWorkingBytes = limits.maximumWorkingBytes;
+        Check(state->casters->VerifySources(source, replacements, removals, cancellation, verification));
         if (terrain.header.version != 11 || terrain.header.width < 2 || terrain.header.height < 2
             || terrain.header.width > 2049 || terrain.header.height > 2049
             || terrain.vertices.size() != static_cast<std::size_t>(terrain.header.width) * terrain.header.height)
@@ -568,46 +624,25 @@ Result<MapData::TerrainShadowReceiverGrid> TerrainShadowReceiverResources::Sampl
 }
 
 Status TerrainShadowReceiverResources::VerifySources(const MapArchiveSession& source,
-    std::span<const MemberReplacement> replacements, std::span<const std::string> removals) const {
+    std::span<const MemberReplacement> replacements, std::span<const std::string> removals,
+    const TerrainShadowCasterVerificationLimits& limits) const {
     try {
         if (source.SourceSha256() != state_->sourceSha)
             Fail("TERRAIN_SHADOW_RECEIVER_SOURCE_STALE", "接收面来自另一份地图归档。");
-        Check(state_->casters->VerifySources(source, replacements, removals));
-        if (!state_->ordinary) {
-            const auto light = Take(MapData::TerrainShadowResources::Capture(state_->gameRoot,
-                Game::NativeEditorStartupRules::Classic127aExpansion, state_->limits.maximumSourceBytes));
-            if (light.DependencyFingerprint() != state_->lightFingerprint)
-                Fail("TERRAIN_SHADOW_RECEIVER_PROFILE_STALE", "实际MaxHeight/profile来源已变化。");
-            Inputs inputs(source, state_->gameRoot, state_->casters->Terrain().header.mainTileset,
-                replacements, removals, state_->limits, {});
-            for (const auto& dependency : state_->dependencies) {
-                (void)inputs.Read(dependency.name);
-                if (inputs.facts.at(dependency.name) != dependency)
-                    Fail("TERRAIN_SHADOW_RECEIVER_DEPENDENCY_STALE", "接收面模型、表或实际winner/absence已变化：" + dependency.name);
-            }
-            inputs.Verify();
-        }
+        const auto scratch = state_->VerificationBudget(limits);
+        Check(state_->casters->VerifySources(source, replacements, removals, {}, scratch));
+        state_->VerifyInputs(source, replacements, removals, scratch, "TERRAIN_SHADOW_RECEIVER_DEPENDENCY_STALE");
         return Status::Ok();
     } catch (Failure& failure) { return {std::move(failure.diagnostics)}; }
     catch (const std::bad_alloc&) { return Status::Failure(kSubsystem, "TERRAIN_SHADOW_RECEIVER_ALLOCATION", "接收面来源复核分配失败。"); }
     catch (const std::length_error&) { return Status::Failure(kSubsystem, "TERRAIN_SHADOW_RECEIVER_ALLOCATION", "接收面来源复核容量异常。"); }
 }
-Status TerrainShadowReceiverResources::VerifyReadback(const MapArchiveSession& saved) const {
+Status TerrainShadowReceiverResources::VerifyReadback(const MapArchiveSession& saved,
+    const TerrainShadowCasterVerificationLimits& limits) const {
     try {
-        Check(state_->casters->VerifyReadback(saved));
-        if (!state_->ordinary) {
-            const auto light = Take(MapData::TerrainShadowResources::Capture(state_->gameRoot,
-                Game::NativeEditorStartupRules::Classic127aExpansion, state_->limits.maximumSourceBytes));
-            if (light.DependencyFingerprint() != state_->lightFingerprint)
-                Fail("TERRAIN_SHADOW_RECEIVER_PROFILE_STALE", "保存回读时实际MaxHeight/profile来源已变化。");
-            Inputs inputs(saved, state_->gameRoot, state_->casters->Terrain().header.mainTileset, {}, {}, state_->limits, {});
-            for (const auto& dependency : state_->dependencies) {
-                (void)inputs.Read(dependency.name);
-                if (inputs.facts.at(dependency.name) != dependency)
-                    Fail("TERRAIN_SHADOW_RECEIVER_READBACK_STALE", "保存结果的接收面资源与冻结集合不同：" + dependency.name);
-            }
-            inputs.Verify();
-        }
+        const auto scratch = state_->VerificationBudget(limits);
+        Check(state_->casters->VerifyReadback(saved, {}, scratch));
+        state_->VerifyInputs(saved, {}, {}, scratch, "TERRAIN_SHADOW_RECEIVER_READBACK_STALE");
         return Status::Ok();
     } catch (Failure& failure) { return {std::move(failure.diagnostics)}; }
     catch (const std::bad_alloc&) { return Status::Failure(kSubsystem, "TERRAIN_SHADOW_RECEIVER_ALLOCATION", "接收面回读分配失败。"); }

@@ -458,6 +458,24 @@ void CaptureBudgetsCancellationAndManualConflictsPreserveSource() {
     fixture.VerifySource();
 }
 
+void FinalVerificationUsesTheRemainingBakeBudget() {
+    Fixture fixture(false);
+    const auto casters = Take(TerrainShadowCasterResources::Capture(*fixture.source, fixture.game));
+    const auto light = Take(TerrainShadowResources::Capture(fixture.game,
+        Game::NativeEditorStartupRules::Classic127aExpansion, 16u * 1024u * 1024u));
+    constexpr std::size_t spare = 64u * 1024u;
+    Require(light.CaptureBudgetBytes() > spare, "实际完整profile复核工作必须大于本测试提供的额外预算");
+    TerrainShadowBakeLimits limits;
+    limits.maximumWorkingBytes = casters->WorkingBytes() + light.CaptureBudgetBytes() + spare;
+    const auto bake = Take(TerrainShadowBake::Capture(*fixture.source, fixture.game, {}, {}, limits));
+    const std::vector<MemberReplacement> output{{"war3map.shd", bake->Bytes()}};
+    // 捕获与编码能完成，但其owner仍驻留，最后复核不能再独占整个Bake额度。
+    Rejected(bake->VerifyFrozenOutput(*fixture.source, output), "TERRAIN_CATEGORY_BUDGET");
+    const auto candidate = Take(fixture.source->SaveCandidate(fixture.root / "bounded-bake-readback.w3x", output));
+    Rejected(bake->VerifyReadback(Take(MapArchiveSession::Open(candidate.path))), "TERRAIN_CATEGORY_BUDGET");
+    fixture.VerifySource();
+}
+
 void AdmissionClonesPlanAndReadbackKeepsItsOtherMembers() {
     Fixture fixture; auto edits = std::make_unique<MapDataEditSession>(MapDocument::FromArchive(*fixture.source));
     Check(edits->AttachTerrain(fixture.Member("war3map.w3e"))); Check(edits->AttachPathing(fixture.Member("war3map.wpm")));
@@ -492,6 +510,7 @@ int main() {
         FinalCallbackCannotChangeOutputOwnerTerrainOrActualDirection();
         PublicationProgressCannotTamperAfterEarlierChecks();
         CaptureBudgetsCancellationAndManualConflictsPreserveSource();
+        FinalVerificationUsesTheRemainingBakeBudget();
         AdmissionClonesPlanAndReadbackKeepsItsOtherMembers();
         std::cout << "TerrainShadowBakeTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

@@ -24,6 +24,8 @@ namespace War3Map::Services {
 namespace {
 constexpr const char* kSubsystem = "Terrain.ShadowCasters";
 constexpr std::size_t kTableBytes = 2u * 1024u * 1024u;
+// 每项先预收map节点、路径、SHA、读取策略和有界容器winner字符串，再读正文。
+constexpr std::size_t kDependencyMetadataBytes = 1024 + 64 + 256;
 struct Failure { std::vector<Diagnostic> diagnostics; };
 [[noreturn]] void Fail(const char* code, std::string message) {
     throw Failure{Status::Failure(kSubsystem, code, std::move(message)).diagnostics};
@@ -50,6 +52,26 @@ void Validate(const TerrainShadowCasterLimits& limits) {
         || !limits.maximumModels || limits.maximumModels > hard.maximumModels)
         Fail("TERRAIN_SHADOW_CASTER_LIMITS", "阴影模型捕获只能收紧非零硬上限。");
 }
+void Validate(const TerrainShadowCasterVerificationLimits& limits) {
+    const TerrainShadowCasterVerificationLimits hard;
+    if (limits.maximumSourceBytes > hard.maximumSourceBytes || limits.maximumFileBytes > hard.maximumFileBytes
+        || limits.maximumWorkingBytes > hard.maximumWorkingBytes)
+        Fail("TERRAIN_SHADOW_CASTER_LIMITS", "阴影来源复核只能收紧硬上限。");
+    if (!limits.maximumSourceBytes || !limits.maximumFileBytes || !limits.maximumWorkingBytes)
+        Fail("TERRAIN_SHADOW_CASTER_BUDGET", "阴影来源复核没有剩余读取或临时工作预算。");
+}
+std::filesystem::path ActualGameRoot(const std::filesystem::path& gameRoot) {
+    if (gameRoot.empty()) return {};
+    std::error_code pathError;
+    if (gameRoot.native().size() > 32767)
+        Fail("TERRAIN_SHADOW_CASTER_GAME_ROOT", "阴影模型游戏来源路径超过有界支持范围。");
+    auto identity = std::filesystem::canonical(gameRoot, pathError);
+    if (pathError || !std::filesystem::is_directory(identity, pathError) || pathError)
+        Fail("TERRAIN_SHADOW_CASTER_GAME_ROOT", "阴影模型不能固定实际游戏来源目录身份。");
+    if (identity.native().size() > 32767)
+        Fail("TERRAIN_SHADOW_CASTER_GAME_ROOT", "阴影模型规范游戏来源路径超过有界支持范围。");
+    return identity;
+}
 std::string Canonical(std::string_view name) { return Take(Resources::CanonicalImportPath(name)); }
 std::string_view TextBytes(std::span<const std::byte> bytes) {
     if (bytes.empty()) return {};
@@ -63,7 +85,7 @@ std::string_view TextBytes(std::span<const std::byte> bytes) {
 struct Context {
     const MapArchiveSession& source;
     const TerrainShadowCasterLimits& limits;
-    std::filesystem::path gameRoot;
+    const std::filesystem::path& gameRoot;
     std::stop_token cancellation;
     Render::AnimationSourceGuard guard;
     std::optional<Game::GameDataSource> game;
@@ -72,6 +94,7 @@ struct Context {
     std::set<std::string, std::less<>> removals;
     std::map<std::string, ArchiveExactMember, std::less<>> files;
     std::map<std::string, TerrainShadowCasterDependency, std::less<>> facts;
+    std::map<std::string, std::pair<bool, std::size_t>, std::less<>> readLimits;
     std::size_t sourceBytes = 0, workingBytes = 0;
 
     Context(const MapArchiveSession& archive, const std::filesystem::path& root,
@@ -86,6 +109,8 @@ struct Context {
         for (const auto& item : output) {
             if (item.name.size() > ArchiveExactMemberLimits{}.pathBytes)
                 Fail("TERRAIN_SHADOW_CASTER_BUDGET", "最终资源成员名超过路径预算。");
+            // canonical、seen和最终索引可能同时驻留，必须在分配前预收。
+            Charge(workingBytes, item.name.size() + 128, limits.maximumWorkingBytes, 4);
             const auto key = Resources::CanonicalImportPath(item.name);
             if (!key.Succeeded() || !key.value) continue; // 无关非ASCII文件由普通保存链验证。
             Charge(pathBytes, key.value->size(), ArchiveExactMemberLimits{}.totalPathBytes, 4);
@@ -96,6 +121,7 @@ struct Context {
         for (const auto& name : removed) {
             if (name.size() > ArchiveExactMemberLimits{}.pathBytes)
                 Fail("TERRAIN_SHADOW_CASTER_BUDGET", "最终删除成员名超过路径预算。");
+            Charge(workingBytes, name.size() + 128, limits.maximumWorkingBytes, 4);
             const auto key = Resources::CanonicalImportPath(name);
             if (!key.Succeeded() || !key.value) continue;
             Charge(pathBytes, key.value->size(), ArchiveExactMemberLimits{}.totalPathBytes, 4);
@@ -103,7 +129,8 @@ struct Context {
                 Fail("TERRAIN_SHADOW_CASTER_FINAL_CONFLICT", "最终资源成员同时替换/删除或重复删除。");
             removals.insert(*key.value);
         }
-        Charge(workingBytes, pathBytes, limits.maximumWorkingBytes);
+        Charge(workingBytes, (source.SourcePath().native().size() + 1) * sizeof(std::filesystem::path::value_type) + 512,
+            limits.maximumWorkingBytes, 4);
         Check(guard.Watch(source.SourcePath()));
     }
     // 固定来源及全部已解析模型名按批捕获，避免每个DOO实例都对整份源图重新散列。
@@ -146,10 +173,13 @@ struct Context {
         Cancel(cancellation);
         if (name.size() > ArchiveExactMemberLimits{}.pathBytes)
             Fail("TERRAIN_SHADOW_CASTER_BUDGET", "阴影模型路径超过预算。");
+        auto pathWorking = workingBytes;
+        Charge(pathWorking, name.size() + 128, limits.maximumWorkingBytes, 4);
         const auto key = Canonical(name);
+        if (facts.contains(key)) return files.at(key);
+        Charge(workingBytes, key.size() + kDependencyMetadataBytes, limits.maximumWorkingBytes, 4);
         if (!files.contains(key)) { const std::array<std::string, 1> names{std::string(name)}; Phase(names, maximumFile); }
         auto& file = files.at(key);
-        if (facts.contains(key)) return file;
         const auto allowed = std::min({maximumFile ? maximumFile : limits.maximumFileBytes, limits.maximumFileBytes,
             limits.maximumSourceBytes - sourceBytes, (limits.maximumWorkingBytes - workingBytes) / 2});
         if (file.bytes.size() > (maximumFile ? maximumFile : limits.maximumFileBytes))
@@ -171,11 +201,19 @@ struct Context {
             }
         }
         identity.bytes = file.bytes.size();
+        if (identity.gameContainer.size() > 1024)
+            Fail("TERRAIN_SHADOW_CASTER_BUDGET", "阴影依赖的实际容器身份超过有界支持范围。");
         if (file.present) identity.sha256 = Take(Sha256(file.bytes));
-        Charge(workingBytes, key.size() + identity.gameContainer.size() + identity.sha256.size() + 256,
-            limits.maximumWorkingBytes, 4);
+        readLimits.emplace(key, std::pair{gameFallback, maximumFile});
         facts.emplace(key, std::move(identity));
         return file;
+    }
+    void Release(std::string_view name) {
+        // 复核按项消费，累计读取不退还；正文与本项临时事实比较完即释放。
+        const auto found = files.find(name);
+        if (found == files.end()) return;
+        workingBytes -= found->second.bytes.size() * 2 + (found->first.size() + kDependencyMetadataBytes) * 4;
+        facts.erase(facts.find(name)); readLimits.erase(readLimits.find(name)); files.erase(found);
     }
     const ArchiveExactMember& Required(std::string_view name, bool gameFallback, std::size_t maximumFile = 0) {
         const auto& file = Read(name, gameFallback, maximumFile);
@@ -187,6 +225,40 @@ struct Context {
         Charge(workingBytes, bytes, limits.maximumWorkingBytes, multiple);
     }
 };
+
+void VerifyDependencies(const MapArchiveSession& source, const std::filesystem::path& gameRoot,
+    const std::filesystem::path& gameRootIdentity, std::uint8_t tileset,
+    std::span<const TerrainShadowCasterDependency> dependencies,
+    std::span<const std::pair<bool, std::size_t>> readLimits,
+    std::span<const MemberReplacement> replacements, std::span<const std::string> removals,
+    const TerrainShadowCasterLimits& captureLimits, std::size_t residentBytes,
+    const TerrainShadowCasterVerificationLimits& verificationLimits, std::stop_token cancellation,
+    const char* staleCode) {
+    Validate(verificationLimits);
+    auto limits = captureLimits;
+    limits.maximumSourceBytes = std::min(limits.maximumSourceBytes, verificationLimits.maximumSourceBytes);
+    limits.maximumFileBytes = std::min(limits.maximumFileBytes, verificationLimits.maximumFileBytes);
+    if (residentBytes >= limits.maximumWorkingBytes)
+        Fail("TERRAIN_SHADOW_CASTER_BUDGET", "驻留阴影模型未留下来源复核的临时预算。");
+    limits.maximumWorkingBytes = std::min(limits.maximumWorkingBytes - residentBytes, verificationLimits.maximumWorkingBytes);
+    Context context(source, gameRoot, limits, replacements, removals, cancellation);
+    context.ParseReserve((gameRoot.native().size() + gameRootIdentity.native().size() + 2)
+        * sizeof(std::filesystem::path::value_type), 2);
+    if (ActualGameRoot(gameRoot) != gameRootIdentity || dependencies.size() != readLimits.size())
+        Fail(staleCode, "阴影模型的实际游戏目录身份或封存依赖策略已变化。");
+    context.tileset = tileset;
+    for (std::size_t index = 0; index < dependencies.size(); ++index) {
+        const auto& dependency = dependencies[index];
+        const auto [fallback, maximumFile] = readLimits[index];
+        (void)context.Read(dependency.name, fallback, maximumFile);
+        if (context.facts.at(dependency.name) != dependency)
+            Fail(staleCode, "阴影模型的最终成员或实际资源来源已变化：" + dependency.name);
+        context.Release(dependency.name);
+    }
+    Cancel(cancellation); Check(context.guard.Verify()); Check(source.VerifySourceUnchanged());
+    if (ActualGameRoot(gameRoot) != gameRootIdentity)
+        Fail(staleCode, "阴影模型游戏来源路径在复核期间改变了实际目录。");
+}
 
 struct Table {
     Text::SlkCells cells;
@@ -271,17 +343,7 @@ Result<std::shared_ptr<const TerrainShadowCasterResources>> TerrainShadowCasterR
     const TerrainShadowCasterLimits& limits, std::stop_token cancellation) {
     try {
         Validate(limits);
-        std::filesystem::path gameRootIdentity;
-        if (!gameRoot.empty()) {
-            std::error_code pathError;
-            if (gameRoot.native().size() > 32767)
-                Fail("TERRAIN_SHADOW_CASTER_GAME_ROOT", "阴影模型游戏来源路径超过有界支持范围。");
-            gameRootIdentity = std::filesystem::canonical(gameRoot, pathError);
-            if (pathError || !std::filesystem::is_directory(gameRootIdentity, pathError) || pathError)
-                Fail("TERRAIN_SHADOW_CASTER_GAME_ROOT", "阴影模型不能固定实际游戏来源目录身份。");
-            if (gameRootIdentity.native().size() > 32767)
-                Fail("TERRAIN_SHADOW_CASTER_GAME_ROOT", "阴影模型规范游戏来源路径超过有界支持范围。");
-        }
+        auto gameRootIdentity = ActualGameRoot(gameRoot);
         Context context(source, gameRoot, limits, replacements, removals, cancellation);
         context.ParseReserve((gameRootIdentity.native().size() + 1) * sizeof(std::filesystem::path::value_type), 2);
         auto owner = std::shared_ptr<TerrainShadowCasterResources>(new TerrainShadowCasterResources);
@@ -397,8 +459,12 @@ Result<std::shared_ptr<const TerrainShadowCasterResources>> TerrainShadowCasterR
             }
         }
         Cancel(cancellation); Check(context.guard.Verify()); Check(source.VerifySourceUnchanged());
-        owner->inputs_.reserve(context.facts.size());
-        for (auto& [name, dependency] : context.facts) owner->inputs_.push_back(std::move(dependency));
+        context.ParseReserve(context.facts.size(), sizeof(TerrainShadowCasterDependency) + sizeof(std::pair<bool, std::size_t>));
+        owner->inputs_.reserve(context.facts.size()); owner->inputReadLimits_.reserve(context.facts.size());
+        for (auto& [name, dependency] : context.facts) {
+            owner->inputReadLimits_.push_back(context.readLimits.at(name));
+            owner->inputs_.push_back(std::move(dependency));
+        }
         owner->sourceBytes_ = context.sourceBytes; owner->workingBytes_ = context.workingBytes;
         return Result<std::shared_ptr<const TerrainShadowCasterResources>>::Success(std::move(owner));
     } catch (Failure& failure) {
@@ -415,21 +481,26 @@ Result<std::shared_ptr<const TerrainShadowCasterResources>> TerrainShadowCasterR
 
 Status TerrainShadowCasterResources::VerifySources(const MapArchiveSession& source,
     std::span<const MemberReplacement> replacements, std::span<const std::string> removals,
-    std::stop_token cancellation) const {
+    std::stop_token cancellation, const TerrainShadowCasterVerificationLimits& limits) const {
     if (source.SourceSha256() != sourceSha256_)
         return Status::Failure(kSubsystem, "TERRAIN_SHADOW_CASTER_SOURCE_STALE", "阴影模型捕获来自另一份源归档。");
-    const auto current = Capture(source, gameRoot_, replacements, removals, limits_, cancellation);
-    if (!current.Succeeded() || !current.value) return Status{current.diagnostics};
-    if ((*current.value)->gameRootIdentity_ != gameRootIdentity_ || (*current.value)->inputs_ != inputs_)
-        return Status::Failure(kSubsystem, "TERRAIN_SHADOW_CASTER_DEPENDENCY_STALE", "阴影模型的最终成员或实际资源来源已变化。");
-    return Status::Ok();
+    try {
+        VerifyDependencies(source, gameRoot_, gameRootIdentity_, terrain_->header.mainTileset, inputs_, inputReadLimits_,
+            replacements, removals, limits_, workingBytes_, limits, cancellation, "TERRAIN_SHADOW_CASTER_DEPENDENCY_STALE");
+        return Status::Ok();
+    } catch (Failure& failure) { return {std::move(failure.diagnostics)}; }
+    catch (const std::bad_alloc&) { return Status::Failure(kSubsystem, "TERRAIN_SHADOW_CASTER_MEMORY", "阴影模型来源复核分配失败。"); }
+    catch (const std::length_error&) { return Status::Failure(kSubsystem, "TERRAIN_SHADOW_CASTER_BUDGET", "阴影模型来源复核容量异常。"); }
 }
-Status TerrainShadowCasterResources::VerifyReadback(const MapArchiveSession& saved, std::stop_token cancellation) const {
-    const auto current = Capture(saved, gameRoot_, {}, {}, limits_, cancellation);
-    if (!current.Succeeded() || !current.value) return Status{current.diagnostics};
-    if ((*current.value)->gameRootIdentity_ != gameRootIdentity_ || (*current.value)->inputs_ != inputs_)
-        return Status::Failure(kSubsystem, "TERRAIN_SHADOW_CASTER_READBACK_STALE", "真实输出归档的阴影模型依赖与冻结捕获不一致。");
-    return Status::Ok();
+Status TerrainShadowCasterResources::VerifyReadback(const MapArchiveSession& saved, std::stop_token cancellation,
+    const TerrainShadowCasterVerificationLimits& limits) const {
+    try {
+        VerifyDependencies(saved, gameRoot_, gameRootIdentity_, terrain_->header.mainTileset, inputs_, inputReadLimits_,
+            {}, {}, limits_, workingBytes_, limits, cancellation, "TERRAIN_SHADOW_CASTER_READBACK_STALE");
+        return Status::Ok();
+    } catch (Failure& failure) { return {std::move(failure.diagnostics)}; }
+    catch (const std::bad_alloc&) { return Status::Failure(kSubsystem, "TERRAIN_SHADOW_CASTER_MEMORY", "阴影模型保存回读分配失败。"); }
+    catch (const std::length_error&) { return Status::Failure(kSubsystem, "TERRAIN_SHADOW_CASTER_BUDGET", "阴影模型保存回读容量异常。"); }
 }
 
 } // namespace War3Map::Services

@@ -29,8 +29,10 @@ public:
     [[nodiscard]] Result<MapData::TerrainShadowReceiverGrid> Sample(
         const MapData::TerrainShadowRebuildLimits& limits = {}, std::stop_token cancellation = {}) const;
     [[nodiscard]] Status VerifySources(const MapArchiveSession& source,
-        std::span<const MemberReplacement> replacements = {}, std::span<const std::string> removals = {}) const;
-    [[nodiscard]] Status VerifyReadback(const MapArchiveSession& saved) const;
+        std::span<const MemberReplacement> replacements = {}, std::span<const std::string> removals = {},
+        const TerrainShadowCasterVerificationLimits& limits = {}) const;
+    [[nodiscard]] Status VerifyReadback(const MapArchiveSession& saved,
+        const TerrainShadowCasterVerificationLimits& limits = {}) const;
     [[nodiscard]] std::span<const TerrainShadowCasterDependency> Dependencies() const noexcept;
     [[nodiscard]] std::size_t RecordCount() const noexcept;
     // 仅本owner新增的资源/有效工作存储；借用caster/light由调用方原预算计入。

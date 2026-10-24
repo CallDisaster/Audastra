@@ -45,6 +45,9 @@ private:
     std::vector<std::byte> bytes_;
     std::uint32_t width_ = 0, height_ = 0;
     std::size_t casterCount_ = 0;
+    TerrainShadowBakeLimits limits_;
+    // 捕获结束时保守保留工作高水位，最终验证在此驻留量之外分配临时缓冲。
+    std::size_t workingBytes_ = 0;
     std::optional<MapData::TerrainShadowResources> light_;
     std::shared_ptr<const TerrainShadowCasterResources> casters_;
     std::shared_ptr<const TerrainShadowReceiverResources> receivers_;
