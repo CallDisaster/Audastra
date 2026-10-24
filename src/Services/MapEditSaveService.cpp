@@ -813,7 +813,8 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             task.prepareFinalDerived = [&task, &finalEdits, &request, &terrainPlan, &minimapSave,
                 &minimapPreserve, &minimapInputFailure, nativeCaptureFailed, terrainRequest](MapSaveTask&) mutable -> Status {
                 if (terrainRequest) {
-                    auto prepared = TerrainPathingSave::PrepareForSave(*task.archive, finalEdits, request.gameRoot);
+                    auto prepared = TerrainPathingSave::PrepareForSave(*task.archive, finalEdits, request.gameRoot,
+                        {}, task.replacements, task.removals);
                     if (!prepared.Succeeded() || !prepared.value) return {std::move(prepared.diagnostics)};
                     terrainPlan = std::make_shared<const MapData::TerrainSavePlan>(std::move(*prepared.value));
                     const auto installed = terrainPlan->InstallPathingOutput(finalEdits, task.replacements);

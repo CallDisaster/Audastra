@@ -2135,6 +2135,67 @@ void ExistingDryRampsComposeWithOrdinaryAndSpecialSaveLayers() {
         f.SaveExpected("dry-ramp-layered-redone.w3x", expectedTerrain, pathing);
     }
 }
+void MixedObjectAndResourceSavesUseActualPathingDependencies() {
+    const auto unitBytes = [](std::int32_t life) {
+        auto document = Take(NativeObjectDocument::CreateEmpty(ObjectType::Unit));
+        Check(document.AddOriginalObject("hfoo"));
+        Check(document.AddModification({ObjectType::Unit, "hfoo"}, {"uhpm"}, NativeValueType::Int32, life));
+        return Take(NativeObjectCodec(ObjectType::Unit).Serialize(document));
+    };
+    for (const bool existing : {false, true}) {
+        Fixture f;
+        if (existing) f.members.push_back({"war3map.w3u", unitBytes(0)});
+        f.Open(); f.Paint();
+        const auto sourceSha = Take(Sha256File(f.archive->SourcePath()));
+        auto output = f.edits->Replacements();
+        output.push_back({"war3map.w3u", unitBytes(1)});
+        output.push_back({"war3mapImported/independent.blp", Text("independent author resource")});
+        const auto plan = Take(TerrainPathingSave::PrepareForSave(*f.archive, *f.edits, f.gameRoot, {}, output));
+        Check(plan.SaveGate()); Require(plan.RebuiltPathing(), "mixed save replays complete source pathing before allowing unit HP");
+        Check(plan.InstallPathingOutput(*f.edits, output));
+        Check(plan.VerifyForSave(*f.edits, f.archive->SourceSha256(), output));
+        const auto target = f.root / "mixed.w3x";
+        auto saved = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(target, output)).path));
+        Check(plan.VerifyReadback(saved));
+        Require(Take(saved.ReadMember("war3map.w3u")) == unitBytes(1), "mixed unit HP is written exactly");
+        Require(Take(saved.ReadMember("war3map.w3e")) == f.ExpectedTerrain(true), "mixed save keeps complete independently expected terrain");
+        Require(Take(saved.ReadMember("war3map.wpm")) == f.ExpectedPathing(true), "mixed save keeps complete independently expected WPM");
+        Require(Take(saved.ReadMember("war3mapImported/independent.blp")) == output.back().data,
+            "unrelated import is preserved in the same save");
+        Require(Take(Sha256File(f.archive->SourcePath())) == sourceSha, "mixed save leaves source untouched");
+
+        auto mutated = output;
+        const auto unit = std::find_if(mutated.begin(), mutated.end(), [](const auto& member) { return member.name == "war3map.w3u"; });
+        unit->data = unitBytes(2);
+        Require(!plan.VerifyFrozenOutput(f.archive->SourceSha256(), mutated).Succeeded(), "final unit output cannot change after preparation");
+        mutated = output;
+        std::erase_if(mutated, [](const auto& member) { return member.name == "war3map.w3u"; });
+        Require(!plan.VerifyFrozenOutput(f.archive->SourceSha256(), mutated).Succeeded(), "prepared unit output cannot be silently omitted");
+        Require(!plan.VerifyFrozenOutput(std::string(64, '0'), output).Succeeded(), "mixed save retains source identity check");
+        Require(f.edits->Undo(), "mixed terrain edit remains undoable");
+        Require(!plan.VerifyForSave(*f.edits, f.archive->SourceSha256(), output).Succeeded(), "mixed save retains revision check");
+    }
+    for (const bool remove : {false, true}) {
+        Fixture f; f.Paint();
+        auto output = f.edits->Replacements();
+        std::vector<std::string> removals;
+        if (remove) removals.push_back("TerrainArt/Terrain.slk");
+        else output.push_back({"TerrainArt/Terrain.slk",
+            Slk({"tileID", "walkable", "flyable", "buildable"}, {{"Tg01", "0", "1", "1"}})});
+        const auto plan = Take(TerrainPathingSave::PrepareForSave(*f.archive, *f.edits, f.gameRoot, {}, output, removals));
+        Check(plan.SaveGate()); Check(plan.InstallPathingOutput(*f.edits, output));
+        Require(!plan.VerifyForSave(*f.edits, f.archive->SourceSha256(), output, removals).Succeeded(),
+            "actual static pathing dependency replacement or removal is still refused");
+        Require(!std::filesystem::exists(f.root / "refused.w3x"), "dependency refusal does not publish partial output");
+    }
+    {
+        Fixture f; f.Member("war3map.wpm")[16] |= std::byte{0x04}; f.Open(); f.Paint();
+        auto output = f.edits->Replacements(); output.push_back({"war3map.w3u", unitBytes(1)});
+        const auto plan = Take(TerrainPathingSave::PrepareForSave(*f.archive, *f.edits, f.gameRoot, {}, output));
+        Require(!plan.SaveGate().Succeeded() && HasCode(plan.SaveGate(), "TERRAIN_PATHING_SOURCE_UNEXPLAINED"),
+            "mixed save keeps the exact old-WPM rejection and its useful diagnostic");
+    }
+}
 } // namespace
 
 int main() {
@@ -2179,6 +2240,7 @@ int main() {
         WalkableBridgeStateAndWholeDoodadFreezeRejectBeforePublication();
         WalkableBridgeSourceAndResourceDependenciesRemainBound();
         WalkableBridgesUseTheDirectoryRecipe();
+        MixedObjectAndResourceSavesUseActualPathingDependencies();
         std::cout << "Native object terrain save tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

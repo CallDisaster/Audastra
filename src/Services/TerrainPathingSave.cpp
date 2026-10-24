@@ -480,23 +480,25 @@ Result<MapData::TerrainPathingResources> TerrainPathingSave::CaptureNative(const
 
 Result<MapData::TerrainSavePlan> TerrainPathingSave::PrepareForSave(const MapArchiveSession& source,
     const MapData::MapDataEditSession& edits, const std::filesystem::path& gameRoot,
-    const MapData::TerrainSavePlanLimits& limits) {
+    const MapData::TerrainSavePlanLimits& limits, std::span<const MemberReplacement> finalMembers,
+    std::span<const std::string> finalRemovals) {
     return Guard<MapData::TerrainSavePlan>([&] {
         const MapData::TerrainSavePlan::NativeResourceCapture capture = [&](const auto& before, const auto& after, const auto& doodads, auto maximumBytes) {
             return CaptureNative(source, before, after, gameRoot, maximumBytes, doodads);
         };
-        return MapData::TerrainSavePlan::PrepareArchive(source, edits, limits, &gameRoot, &capture);
+        return MapData::TerrainSavePlan::PrepareArchive(source, edits, limits, &gameRoot, &capture, finalMembers, finalRemovals);
     });
 }
 
 Result<MapData::TerrainSavePlan> TerrainPathingSave::PrepareForSave(const WorkspaceSnapshot& source,
     const MapData::MapDataEditSession& edits, const std::filesystem::path& gameRoot,
-    const MapData::TerrainSavePlanLimits& limits) {
+    const MapData::TerrainSavePlanLimits& limits, std::span<const MemberReplacement> finalMembers,
+    std::span<const std::string> finalRemovals) {
     return Guard<MapData::TerrainSavePlan>([&] {
         const MapData::TerrainSavePlan::NativeResourceCapture capture = [&](const auto& before, const auto& after, const auto& doodads, auto maximumBytes) {
             return CaptureNative(source, before, after, gameRoot, maximumBytes, doodads);
         };
-        return MapData::TerrainSavePlan::PrepareWorkspace(source, edits, limits, &gameRoot, &capture);
+        return MapData::TerrainSavePlan::PrepareWorkspace(source, edits, limits, &gameRoot, &capture, finalMembers, finalRemovals);
     });
 }
 

@@ -101,10 +101,12 @@ private:
     TerrainSavePlan() = default;
     [[nodiscard]] static Result<TerrainSavePlan> PrepareArchive(const MapArchiveSession& source,
         const MapDataEditSession& edits, const TerrainSavePlanLimits& limits,
-        const std::filesystem::path* gameRoot, const NativeResourceCapture* nativeCapture = nullptr);
+        const std::filesystem::path* gameRoot, const NativeResourceCapture* nativeCapture = nullptr,
+        std::span<const MemberReplacement> finalMembers = {}, std::span<const std::string> finalRemovals = {});
     [[nodiscard]] static Result<TerrainSavePlan> PrepareWorkspace(const WorkspaceSnapshot& source,
         const MapDataEditSession& edits, const TerrainSavePlanLimits& limits,
-        const std::filesystem::path* gameRoot, const NativeResourceCapture* nativeCapture = nullptr);
+        const std::filesystem::path* gameRoot, const NativeResourceCapture* nativeCapture = nullptr,
+        std::span<const MemberReplacement> finalMembers = {}, std::span<const std::string> finalRemovals = {});
     [[nodiscard]] Status VerifyMissingMinimapEligibility(const MapDataEditSession& edits) const;
     [[nodiscard]] Status AdmitMissingMinimap(const MapDataEditSession& edits, std::vector<std::byte> generatedBytes);
     // 正常保存的自动小地图重建：仍受同一正式地形保存门和会话绑定约束，
@@ -114,7 +116,8 @@ private:
     [[nodiscard]] static Result<TerrainSavePlan> Complete(TerrainSavePlan plan,
         const MapDataEditSession& edits, const TerrainSavePlanLimits& limits, std::size_t sourceBytes,
         const MapArchiveSession* source = nullptr, const std::filesystem::path* gameRoot = nullptr,
-        const WorkspaceSnapshot* workspace = nullptr, const NativeResourceCapture* nativeCapture = nullptr);
+        const WorkspaceSnapshot* workspace = nullptr, const NativeResourceCapture* nativeCapture = nullptr,
+        std::span<const MemberReplacement> finalMembers = {}, std::span<const std::string> finalRemovals = {});
     [[nodiscard]] Result<std::vector<std::byte>> RebuildPathing(const MapDataEditSession& edits,
         const MapArchiveSession* source, const WorkspaceSnapshot* workspace,
         const std::filesystem::path& gameRoot, const TerrainSavePlanLimits& limits, std::size_t& bytes,

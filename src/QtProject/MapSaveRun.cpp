@@ -175,7 +175,8 @@ Status PrepareWorkerDerivedInputs(MapSaveJob& job, std::shared_ptr<const MapData
         edits = std::move(restoredSession);
     }
     if (job.terrainDerivationRequired) {
-        auto prepared = Services::TerrainPathingSave::PrepareForSave(*job.archive, *edits, job.minimapGameRoot);
+        auto prepared = Services::TerrainPathingSave::PrepareForSave(*job.archive, *edits, job.minimapGameRoot,
+            {}, job.replacements, job.removals);
         if (!prepared.Succeeded() || !prepared.value) return {std::move(prepared.diagnostics)};
         const auto installed = prepared.value->InstallPathingOutput(*edits, job.replacements);
         if (!installed.Succeeded()) return installed;

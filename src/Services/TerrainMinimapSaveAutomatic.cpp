@@ -360,7 +360,8 @@ Result<std::shared_ptr<const TerrainMinimapSave>> TerrainMinimapSave::PrepareAut
             (void)Available(limits, Add(Add(retainedBytes, kReadReserve), existingPlan->OwnedCapacityBytes()));
         }
         auto plan = existingPlan ? std::make_shared<MapData::TerrainSavePlan>(*existingPlan)
-            : std::make_shared<MapData::TerrainSavePlan>(Take(TerrainPathingSave::PrepareForSave(*task.archive, edits, gameRoot, planLimits)));
+            : std::make_shared<MapData::TerrainSavePlan>(Take(TerrainPathingSave::PrepareForSave(*task.archive, edits, gameRoot,
+                planLimits, task.replacements, task.removals)));
         Check(plan->VerifyForSave(edits, task.sourceSha256, task.replacements, task.removals));
         auto terrain = Take(Render::CaptureTerrainMinimapAssets(*task.archive, edits, gameRoot,
             limits.assets, Render::TerrainMinimapRangePolicy::ClassicPlayable, task.replacements, task.removals));

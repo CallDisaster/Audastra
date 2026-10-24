@@ -57,6 +57,12 @@ bool ValidSha(std::string_view sha) {
     });
 }
 
+bool IndependentMember(std::string_view name) {
+    return name == "war3map.wtg" || name == "war3map.wct" || name == "war3map.w3r" || name == "war3map.w3c"
+        || name == "war3map.w3s" || name == "war3map.wts" || name == "war3map.imp"
+        || name.ends_with(".j") || name.ends_with(".lua") || name.ends_with(".dll");
+}
+
 void AddBytes(std::size_t bytes, std::size_t& total, const TerrainSavePlanLimits& limits) {
     if (total > limits.maximumBytes || bytes > limits.maximumBytes - total)
         throw Failure{Reject("TERRAIN_SAVE_PLAN_BUDGET", "地形保存计划超过来源与输出的累计字节预算。").diagnostics};
@@ -127,7 +133,8 @@ Result<TerrainSavePlan> TerrainSavePlan::PrepareForSave(const MapArchiveSession&
 
 Result<TerrainSavePlan> TerrainSavePlan::PrepareArchive(const MapArchiveSession& source,
     const MapDataEditSession& edits, const TerrainSavePlanLimits& limits, const std::filesystem::path* gameRoot,
-    const NativeResourceCapture* nativeCapture) {
+    const NativeResourceCapture* nativeCapture, std::span<const MemberReplacement> finalMembers,
+    std::span<const std::string> finalRemovals) {
     return Guard([&]() {
         CheckLimits(limits);
         TerrainSavePlan plan;
@@ -163,7 +170,7 @@ Result<TerrainSavePlan> TerrainSavePlan::PrepareArchive(const MapArchiveSession&
                 member.sourceBytes = static_cast<std::size_t>(*identity.byteSize); member.sourceSha256 = identity.sha256;
             }
         }
-        return Complete(std::move(plan), edits, limits, total, &source, gameRoot, nullptr, nativeCapture);
+        return Complete(std::move(plan), edits, limits, total, &source, gameRoot, nullptr, nativeCapture, finalMembers, finalRemovals);
     });
 }
 
@@ -179,7 +186,8 @@ Result<TerrainSavePlan> TerrainSavePlan::PrepareForSave(const WorkspaceSnapshot&
 
 Result<TerrainSavePlan> TerrainSavePlan::PrepareWorkspace(const WorkspaceSnapshot& source,
     const MapDataEditSession& edits, const TerrainSavePlanLimits& limits, const std::filesystem::path* gameRoot,
-    const NativeResourceCapture* nativeCapture) {
+    const NativeResourceCapture* nativeCapture, std::span<const MemberReplacement> finalMembers,
+    std::span<const std::string> finalRemovals) {
     return Guard([&]() {
         CheckLimits(limits);
         TerrainSavePlan plan;
@@ -221,14 +229,15 @@ Result<TerrainSavePlan> TerrainSavePlan::PrepareWorkspace(const WorkspaceSnapsho
                 member.sourceSha256 = entry.sha256;
             }
         }
-        return Complete(std::move(plan), edits, limits, total, nullptr, gameRoot, &source, nativeCapture);
+        return Complete(std::move(plan), edits, limits, total, nullptr, gameRoot, &source, nativeCapture, finalMembers, finalRemovals);
     });
 }
 
 Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
     const MapDataEditSession& edits, const TerrainSavePlanLimits& limits, std::size_t total,
     const MapArchiveSession* sourceArchive, const std::filesystem::path* gameRoot, const WorkspaceSnapshot* workspace,
-    const NativeResourceCapture* nativeCapture) {
+    const NativeResourceCapture* nativeCapture, std::span<const MemberReplacement> finalMembers,
+    std::span<const std::string> finalRemovals) {
     if (!ValidSha(plan.sourceSha256_))
         return Result<TerrainSavePlan>::Failure(std::string(kSubsystem), "TERRAIN_SAVE_PLAN_SOURCE_INVALID",
             "地形保存计划需要有效的来源 SHA-256。");
@@ -244,6 +253,33 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
     auto original = TerrainBytes(*edits.terrainOriginal_, total, limits);
     RequireStatus(MatchBytes(plan.members_[0], original, false));
     RequireStatus(MatchBytes(plan.members_[1], *edits.pathingOriginal_, false));
+    // 原WPM等价证明只覆盖旧资源。混合物编/导入时改用完整旧WPM重现，
+    // 再冻结实际静态通行依赖；不能靠文件扩展名或调用者布尔声明资源无关。
+    if (finalMembers.size() > 4096 || finalRemovals.size() > 4096 - finalMembers.size())
+        return Result<TerrainSavePlan>::Failure(std::string(kSubsystem), "TERRAIN_SAVE_PLAN_BUDGET", "最终混合成员数量超过4096。");
+    bool mixedProof = false;
+    for (const auto& member : finalMembers) {
+        const auto key = Canonical(member.name);
+        if (IndependentMember(key) || std::any_of(kNames.begin(), kNames.end(), [&](auto name) { return Canonical(name) == key; })) continue;
+        const auto known = std::find_if(kInvariantNames.begin(), kInvariantNames.end(), [&](auto name) { return Canonical(name) == key; });
+        if (known == kInvariantNames.end()) { mixedProof = true; continue; }
+        const auto index = static_cast<std::size_t>(known - kInvariantNames.begin());
+        if (index < 3) continue; // 范围与摆放继续由会话形状检查精确核对。
+        const auto& baseline = plan.invariantMembers_[index];
+        AddBytes(member.data.size(), total, limits);
+        mixedProof |= baseline.sourceState != TerrainSaveSourceState::Present
+            || baseline.sourceBytes != member.data.size() || baseline.sourceSha256 != Take(Sha256(member.data));
+    }
+    for (const auto& member : finalRemovals) {
+        const auto key = Canonical(member);
+        if (IndependentMember(key) || std::any_of(kNames.begin(), kNames.end(), [&](auto name) { return Canonical(name) == key; })) continue;
+        const auto known = std::find_if(kInvariantNames.begin(), kInvariantNames.end(), [&](auto name) { return Canonical(name) == key; });
+        if (known == kInvariantNames.end()) mixedProof = true;
+        else if (known - kInvariantNames.begin() >= 3
+            && plan.invariantMembers_[known - kInvariantNames.begin()].sourceState == TerrainSaveSourceState::Present)
+            mixedProof = true;
+    }
+    mixedProof = mixedProof && plan.terrainChanged_;
     plan.saveGate_ = edits.VerifyTerrainPathingForSave();
     if (plan.saveGate_.Succeeded() && !edits.TerrainDirty() && edits.pathing_ != edits.pathingOriginal_) {
         const bool savedIntent = std::any_of(edits.originalPathingRestrictions_->begin(),
@@ -271,7 +307,7 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
             edits.current_[MapDataEditSession::Index(MapDataKind::Doodads)], plan.pathingResources_.get());
     }
     std::optional<std::vector<std::byte>> rebuiltPathing;
-    if (!plan.saveGate_.Succeeded() && gameRoot && (sourceArchive || workspace)) {
+    if ((!plan.saveGate_.Succeeded() || mixedProof) && gameRoot && (sourceArchive || workspace)) {
         auto rebuilt = plan.RebuildPathing(edits, sourceArchive, workspace, *gameRoot, limits, total, nativeCapture);
         if (!rebuilt.Succeeded() || !rebuilt.value) {
             plan.saveGate_ = rebuilt.diagnostics.empty()
@@ -282,6 +318,8 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
             plan.saveGate_ = Status::Ok();
         }
     }
+    if (mixedProof && !plan.RebuiltPathing() && plan.saveGate_.Succeeded())
+        plan.saveGate_ = Reject("TERRAIN_SAVE_MIXED_INPUTS_UNVERIFIED", "混合物编或导入修改需要完整原通行重现与实际依赖检查，当前未取得完整结果。");
     plan.pathingInvariant_ = edits.specialDoodads_ != edits.savedSpecialDoodads_;
     plan.pathingInvariant_ = plan.pathingInvariant_ || edits.terrain_->header.groundTilesets != edits.terrainOriginal_->header.groundTilesets
         || edits.terrain_->header.usesCustomTileset != edits.terrainOriginal_->header.usesCustomTileset;
@@ -323,6 +361,19 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
                 source.outputBytes = currentBytes->size();
                 source.outputSha256 = Take(Sha256(*currentBytes));
                 source.action = TerrainSaveMemberAction::WriteEdited;
+            }
+        }
+        if (mixedProof && plan.RebuiltPathing()) {
+            // mode3只包含terrain(1)+static DOO(2)。七类物编仍精确冻结最终输出；
+            // W3B/W3D等实际静态依赖另由资源owner拒绝未重新解释的覆盖。
+            for (auto& member : plan.invariantMembers_) {
+                if (std::find(kInvariantNames.begin() + 3, kInvariantNames.end(), member.name) == kInvariantNames.end()) continue;
+                for (const auto& replacement : finalMembers) if (Canonical(replacement.name) == member.name) {
+                    AddBytes(replacement.data.size(), total, limits);
+                    member.outputBytes = replacement.data.size();
+                    member.outputSha256 = Take(Sha256(replacement.data));
+                    if (member.outputSha256 != member.sourceSha256) member.action = TerrainSaveMemberAction::WriteEdited;
+                }
             }
         }
     }
@@ -562,24 +613,19 @@ Status TerrainSavePlan::VerifyFrozenOutput(std::string_view sourceSha256,
                 return Reject("TERRAIN_SAVE_PLAN_OUTPUT_MISSING", "保存任务缺少已核对的摆放高度输出：" + member.name);
             }
         }
-        const auto additionalSafe = [](const std::string& name) {
-            return name == "war3map.wtg" || name == "war3map.wct" || name == "war3map.w3r" || name == "war3map.w3c"
-                || name == "war3map.w3s" || name == "war3map.wts" || name == "war3map.imp"
-                || name.ends_with(".j") || name.ends_with(".lua") || name.ends_with(".dll");
-        };
         const auto frozenInput = [&](const std::string& name) {
             return std::any_of(members_.begin(), members_.end(), [&](const auto& member) { return Canonical(member.name) == name; })
                 || std::any_of(invariantMembers_.begin(), invariantMembers_.end(), [&](const auto& member) { return Canonical(member.name) == name; });
         };
         for (const auto& replacement : replacements) {
             const auto key = Canonical(replacement.name);
-            if (!frozenInput(key) && !additionalSafe(key))
+            if (!frozenInput(key) && !IndependentMember(key) && !RebuiltPathing())
                 return Reject("TERRAIN_SAVE_PLAN_HEIGHT_RESOURCE_SCOPE",
                     "地形保留原WPM时不能同时导入或覆盖资源；请先单独保存资源变更：" + replacement.name);
         }
         for (const auto& removed : removals) {
             const auto key = Canonical(removed);
-            if (!frozenInput(key) && !additionalSafe(key))
+            if (!frozenInput(key) && !IndependentMember(key) && !RebuiltPathing())
                 return Reject("TERRAIN_SAVE_PLAN_HEIGHT_RESOURCE_SCOPE",
                     "地形保留原WPM时不能同时删除资源：" + removed);
         }
@@ -629,7 +675,7 @@ Status TerrainSavePlan::VerifyReadback(const MapArchiveSession& saved, const Ter
     if (pathingInvariant_) for (std::size_t index = 0; index < invariantMembers_.size(); ++index) {
         const auto& member = invariantMembers_[index];
         const auto& actual = (*captured.value)[kNames.size() + index];
-        if (actual.present != (member.sourceState == TerrainSaveSourceState::Present))
+        if (actual.present != member.outputSha256.has_value())
             return Reject("TERRAIN_SAVE_PLAN_INVARIANT_CHANGED", "保存后的范围/摆放/物编依赖存在性不同：" + member.name);
         if (actual.present) {
             const auto matched = MatchBytes(member, actual.bytes, true);

@@ -52,10 +52,12 @@ public:
         const std::filesystem::path& gameRoot, const TerrainReplayLimits& limits = {});
     [[nodiscard]] static Result<MapData::TerrainSavePlan> PrepareForSave(const MapArchiveSession& source,
         const MapData::MapDataEditSession& edits, const std::filesystem::path& gameRoot,
-        const MapData::TerrainSavePlanLimits& limits = {});
+        const MapData::TerrainSavePlanLimits& limits = {},
+        std::span<const MemberReplacement> finalMembers = {}, std::span<const std::string> finalRemovals = {});
     [[nodiscard]] static Result<MapData::TerrainSavePlan> PrepareForSave(const WorkspaceSnapshot& source,
         const MapData::MapDataEditSession& edits, const std::filesystem::path& gameRoot,
-        const MapData::TerrainSavePlanLimits& limits = {});
+        const MapData::TerrainSavePlanLimits& limits = {},
+        std::span<const MemberReplacement> finalMembers = {}, std::span<const std::string> finalRemovals = {});
     [[nodiscard]] static Result<MapData::TerrainPathingResources> CaptureNative(const MapArchiveSession& source,
         const MapData::TerrainGridSnapshot& before, const MapData::TerrainGridSnapshot& after,
         const std::filesystem::path& gameRoot, std::size_t maximumBytes, const std::vector<std::byte>* currentDoodads = nullptr);
