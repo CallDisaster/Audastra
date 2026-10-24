@@ -88,7 +88,8 @@ Resources::TerrainTableSnapshot ActualCliffTable(const Game::GameDataSource& gam
         return Result<Resources::ResourceReadResult>::Success({std::move(read.value->bytes), std::move(origin)});
     };
     Check(resolver.AddSource(std::move(source)));
-    return Take(Resources::CaptureTerrainTable(resolver, "TerrainArt/CliffTypes.slk", "cliffID"));
+    // 表头保留原版cliffID字节；共享表服务的列查询键与生产调用一致使用小写。
+    return Take(Resources::CaptureTerrainTable(resolver, "TerrainArt/CliffTypes.slk", "cliffid"));
 }
 std::string Field(const Resources::TerrainTableRow& row, std::string_view key) {
     const auto found = row.fields.find(key);
