@@ -80,7 +80,7 @@ struct WetFixture : Fixture {
             if (member.name == "TerrainArt/Water.slk")
                 member.data = Slk({"waterID", "height", "impassable"}, {{"LSha", "0.25", "0"}});
             if (member.name == "UI/MiscData.txt")
-                member.data = Text("[Terrain]\nMaxSlope=90\nMinHeight=-256\nMaxHeight=1536\n[Water]\nDeepLevelPathing=64\n"
+                member.data = ::War3Map::TerrainCornerRampFixtures::Text("[Terrain]\nMaxSlope=90\nMinHeight=-256\nMaxHeight=1536\n[Water]\nDeepLevelPathing=64\n"
                     "[CameraMargins]\nLeft=0\nRight=0\nBottom=0\nTop=0\n");
         }
         source = std::make_unique<MapArchiveSession>(Take(MapArchiveSession::Open(
