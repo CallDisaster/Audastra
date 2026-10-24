@@ -107,6 +107,11 @@ void BoundsColdRecoveryRetainsWholeDraftAndDescriptionFields() {
     Check(recovered.session->VerifyTerrainSettingsForSave());
     Require(Take(Services::TerrainPathingSave::CaptureJournal(*f.archive, *recovered.session)).strokes.size() == 2,
         "recovered description bridge remains expressible for another cold recovery");
+    Require(recovered.receipts.size() == 3, "description bridge is explicitly included in the recovered shared Undo receipts");
+    for (auto i = recovered.receipts.rbegin(); i != recovered.receipts.rend(); ++i) Check(recovered.session->Replay(*i, false));
+    Require(!recovered.session->IsDirty(), "Qt-equivalent reverse receipt replay restores complete source after cold recovery");
+    for (const auto& receipt : recovered.receipts) Check(recovered.session->Replay(receipt, true));
+    Require(recovered.session->MatchesTerrainJournalDraft(raw), "Qt-equivalent receipt redo recreates exact raw W3I/W3E/WPM");
     auto changedRules = journal; changedRules.strokes[0].rulesSha256[0] = changedRules.strokes[0].rulesSha256[0] == '0' ? '1' : '0';
     Require(!Services::TerrainPathingSave::RestoreJournal(*f.archive, original, f.members[0].data,
         f.members[1].data, changedRules, raw, {}).Succeeded(), "changed actual dependency digest cannot install a prefix");

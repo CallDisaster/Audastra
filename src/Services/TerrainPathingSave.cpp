@@ -482,8 +482,11 @@ Result<TerrainReplayCandidate> RestoreJournal(const Source& source, const MapDoc
     auto candidate = CreateReplay(source, original, terrain, pathing, intents, gameRoot, remaining, sourceSha,
         std::forward<Reader>(reader), &journal);
     if (!candidate.Succeeded() || !candidate.value) return candidate;
+    const auto beforeDescriptions = candidate.value->session->Revision();
     const auto descriptions = candidate.value->session->RestoreTerrainJournalDescriptions(expected, descriptionBytes, descriptionWork);
     if (!descriptions.Succeeded()) return {{}, descriptions.diagnostics};
+    if (candidate.value->session->Revision() != beforeDescriptions)
+        candidate.value->receipts.push_back(candidate.value->session->LastEdit());
     // W3E/WPM、完整DOO/Units和所有其它成员/删除、P/savedS/currentS必须共同相等。
     if (!candidate.value->session->MatchesTerrainJournalDraft(expected))
         return Result<TerrainReplayCandidate>::Failure("Terrain.Journal", "TERRAIN_JOURNAL_OUTPUT_MISMATCH",
