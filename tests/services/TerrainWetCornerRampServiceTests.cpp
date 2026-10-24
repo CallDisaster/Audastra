@@ -137,14 +137,25 @@ void WetTypedHistoryPreservesVersionsAndExactColdRecovery() {
 }
 
 void WetFormalSaveAsAndInPlaceRetainUndoRedo() {
-    for (const bool inPlace : {false, true}) for (const bool blightAbove : {false, true}) {
-        WetFixture f({ThresholdCase::SurfaceEquality, blightAbove}); const auto rules = f.Rules(); const auto brush = CornerBrush();
+    for (const bool inPlace : {false, true}) for (const bool blightAbove : {false, true})
+        for (const auto threshold : {ThresholdCase::SurfaceEquality, ThresholdCase::DeepEquality})
+        for (const bool follow : {false, true}) {
+        WetFixture f({threshold, blightAbove}); const auto rules = f.Rules(); const auto brush = CornerBrush();
         const auto originalPath = f.source->SourcePath(); const auto originalSha = f.source->SourceSha256();
         const auto sessionIdentity = f.edits->SessionIdentity();
         Take(ApplyTerrainEdit(*f.edits, f.Document(), Take(PrepareTerrainCornerRampEdit(*f.edits,
-            f.Document(), f.Binding(), rules, brush, std::span(&f.point, 1), true))));
+            f.Document(), f.Binding(), rules, brush, std::span(&f.point, 1), follow))));
+        const auto checkState = [&](bool created) {
+            const auto snapshot = f.edits->Snapshot();
+            Require(snapshot.Units() && snapshot.Doodads() && snapshot.Units()->units.size() == 3
+                && snapshot.Doodads()->doodads.size() == 3
+                && Take(SerializeMapTerrain(*f.edits->Terrain())) == f.TerrainLiteral(created)
+                && Take(snapshot.Units()->Serialize()) == Take(f.UnitsLiteral(created && follow).Serialize())
+                && Take(snapshot.Doodads()->Serialize()) == Take(f.DoodadsLiteral(created && follow).Serialize()),
+                "wet formal history preserves complete nonempty actor payloads and only applies explicitly requested ground following");
+        };
         const auto save = [&](bool created, const char* target) {
-            f.CheckState(*f.edits, created);
+            checkState(created);
             const auto plan = Take(TerrainPathingSave::PrepareForSave(*f.source, *f.edits, f.game));
             Require(plan.SaveGate().Succeeded(), "wet formal save requires complete actual native G0/G1 comparison");
             MapSaveTask task; Require(task.FreezeArchive(*f.source).Succeeded(), "wet save freezes exact source archive");
@@ -164,8 +175,8 @@ void WetFormalSaveAsAndInPlaceRetainUndoRedo() {
             Require(plan.VerifyReadback(actual).Succeeded()
                 && Take(actual.ReadMember("war3map.w3e")) == f.TerrainLiteral(created)
                 && Take(actual.ReadMember("war3map.wpm")) == WetPathingLiteral(f.wet, created)
-                && Take(actual.ReadMember("war3mapUnits.doo")) == Take(f.UnitsLiteral(created).Serialize())
-                && Take(actual.ReadMember("war3map.doo")) == Take(f.DoodadsLiteral(created).Serialize()),
+                && Take(actual.ReadMember("war3mapUnits.doo")) == Take(f.UnitsLiteral(created && follow).Serialize())
+                && Take(actual.ReadMember("war3map.doo")) == Take(f.DoodadsLiteral(created && follow).Serialize()),
                 "reopened formal archive matches full independent wet W3E/WPM and both DOO streams");
             for (const auto& member : f.members) if (member.name != "war3map.w3e" && member.name != "war3map.wpm"
                 && member.name != "war3mapUnits.doo" && member.name != "war3map.doo")
