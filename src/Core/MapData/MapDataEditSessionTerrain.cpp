@@ -946,7 +946,12 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
         && oldHeader.version == 11 && oldHeader.mainTileset == newHeader.mainTileset
         && oldHeader.width == newHeader.width && oldHeader.height == newHeader.height
         && std::bit_cast<std::uint64_t>(oldHeader.offset) == std::bit_cast<std::uint64_t>(newHeader.offset)
-        && oldHeader.cliffTilesets == newHeader.cliffTilesets && !newHeader.groundTilesets.empty()
+        // 悬崖槽替换不改WPM几何规则，但仍须走实际旧/新行绑定及完整G0/G1。
+        // 表尾追加/删除和“保留原通行”路径不借此扩大资格。
+        && (oldHeader.cliffTilesets == newHeader.cliffTilesets
+            || (nativeRebuild && !newHeader.cliffTilesets.empty() && newHeader.cliffTilesets.size() <= 15
+                && oldHeader.cliffTilesets.size() == newHeader.cliffTilesets.size()))
+        && !newHeader.groundTilesets.empty()
         && newHeader.groundTilesets.size() <= 16;
     if ((!SameHeader(newHeader, oldHeader) && !resourceHeader)
         || terrain->vertices.size() != terrainOriginal_->vertices.size())
