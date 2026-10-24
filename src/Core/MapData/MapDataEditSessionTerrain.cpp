@@ -736,6 +736,12 @@ Result<TerrainStrokeResult> MapDataEditSession::ApplyPreparedTerrainEdit(const P
             stroke.intent.waterBrush = plan.waterIntentOptions_; stroke.rulesSha256 = plan.waterRulesSha256_;
         } else {
             stroke.intent.brush = plan.brush_;
+            if (plan.brush_.kind == TerrainBrushKind::CliffLevel) {
+                stroke.rulesSha256 = plan.waterRulesSha256_;
+                stroke.cliffEnforceWaterLimits = plan.cliffEnforceWaterLimits_;
+                // 规则摘要缺失时可编辑，但不能伪装成旧算法并持久化成可重放记录。
+                if (plan.waterResult_ && (!stroke.cliffEnforceWaterLimits || stroke.rulesSha256.empty())) expressible = false;
+            }
             if (plan.brush_.anchor) {
                 const auto anchor = CaptureTerrainStrokeAnchor(*plan.before_, plan.points_.front());
                 expressible = anchor.Succeeded() && anchor.value

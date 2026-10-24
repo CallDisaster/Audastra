@@ -1,4 +1,5 @@
 #include "War3MapCore/MapData/TerrainWaterBrush.h"
+#include "War3MapCore/MapData/TerrainCliffEditing.h"
 #include "TerrainWaterBrushInternal.h"
 
 #include <algorithm>
@@ -59,6 +60,17 @@ void ValidateVertex(const TerrainVertex& vertex, std::uint32_t x, std::uint32_t 
 
 struct GridPoint { std::uint32_t x, y; };
 
+// 两种公开命令共用字段算法，但保留各自语义与锚点；无水模式不伪造水刷种类。
+struct StructuralBrush {
+    TerrainBrushShape shape;
+    std::uint32_t size;
+    std::uint8_t cliffTexture;
+    std::uint32_t randomSeed;
+    TerrainWaterStrokeAnchor anchor;
+    std::optional<TerrainWaterBrushKind> waterKind;
+    int cliffDelta = 0;
+};
+
 std::optional<GridPoint> Snap(const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point) {
     const double x = (point.x - terrain.header.offset[0]) / 128.0;
     const double y = (point.y - terrain.header.offset[1]) / 128.0;
@@ -76,10 +88,10 @@ struct DirtyBlocks {
     explicit DirtyBlocks(std::size_t count) : present(count) { entries.reserve(count); }
 };
 
-class WaterTransaction {
+class StructuralTransaction {
 public:
-    WaterTransaction(TerrainGridSnapshot& candidate, const TerrainWaterLoadedRules& rules,
-        const TerrainWaterBrush& brush, const DoodadPlacements& doodads,
+    StructuralTransaction(TerrainGridSnapshot& candidate, const TerrainWaterLoadedRules& rules,
+        const StructuralBrush& brush, const DoodadPlacements& doodads,
         std::span<const TerrainWaterSpecialDoodadShape> shapes, const TerrainWaterBrushLimits& limits, std::size_t initialWork)
         : grid_(candidate), rules_(rules), brush_(brush), shapes_(shapes), limits_(limits),
           width_(candidate.header.width), height_(candidate.header.height), blockWidth_((width_ - 2) / 4 + 1),
@@ -98,30 +110,33 @@ public:
         const double anchorGround = anchorBase + 128.0 * (int(brush_.anchor.cliffLevel) - 2);
         const double uniformWater = brush_.anchor.hasWater
             ? double(brush_.anchor.waterHeightRaw) / 4.0 - 2048.0 : anchorGround;
-        const auto waterRaw = Encode(uniformWater);
-        int targetLevel = int(brush_.anchor.cliffLevel) - (brush_.kind == TerrainWaterBrushKind::Deep ? 2 : 1);
-        if (brush_.anchor.hasWater) {
+        const auto waterRaw = brush_.waterKind ? Encode(uniformWater) : std::uint16_t{0};
+        int targetLevel = int(brush_.anchor.cliffLevel) + brush_.cliffDelta;
+        if (brush_.waterKind) targetLevel = int(brush_.anchor.cliffLevel) - (*brush_.waterKind == TerrainWaterBrushKind::Deep ? 2 : 1);
+        if (brush_.waterKind && brush_.anchor.hasWater) {
             const double target = uniformWater + rules_.waterLayerOffset
-                - (brush_.kind == TerrainWaterBrushKind::Deep ? rules_.deepWaterThreshold : 0.0);
+                - (*brush_.waterKind == TerrainWaterBrushKind::Deep ? rules_.deepWaterThreshold : 0.0);
             targetLevel = int(brush_.anchor.cliffLevel) + Truncate((target - anchorGround) / 128.0);
             if (anchorGround > target) --targetLevel; // 整步负差也明确多减一级。
         }
         for (const auto& point : points) {
             const auto center = Snap(grid_, point);
             if (!center) Reject("TERRAIN_WATER_OUTSIDE", "水刷落点位于地图外，整笔未修改。");
-            Footprint(*center, brush_.size, [&](auto x, auto y) {
-                auto next = Read(x, y);
-                next.textureAndFlagsRaw |= 0x40;
-                next.waterHeightAndFlagsRaw = static_cast<std::uint16_t>((next.waterHeightAndFlagsRaw & 0xc000) | waterRaw);
-                Commit(x, y, next);
-            });
-            auto platform = NewBlocks();
-            Footprint(*center, brush_.size + 2, [&](auto x, auto y) {
-                auto next = Read(x, y); next.groundHeightRaw = brush_.anchor.groundHeightRaw;
-                Commit(x, y, next); Gather(platform, x, y);
-            });
-            EachBlock(platform, [&](auto x, auto y) { LimitRaw(x, y); });
-            ClearMarkers();
+            if (brush_.waterKind) {
+                Footprint(*center, brush_.size, [&](auto x, auto y) {
+                    auto next = Read(x, y);
+                    next.textureAndFlagsRaw |= 0x40;
+                    next.waterHeightAndFlagsRaw = static_cast<std::uint16_t>((next.waterHeightAndFlagsRaw & 0xc000) | waterRaw);
+                    Commit(x, y, next);
+                });
+                auto platform = NewBlocks();
+                Footprint(*center, brush_.size + 2, [&](auto x, auto y) {
+                    auto next = Read(x, y); next.groundHeightRaw = brush_.anchor.groundHeightRaw;
+                    Commit(x, y, next); Gather(platform, x, y);
+                });
+                EachBlock(platform, [&](auto x, auto y) { LimitRaw(x, y); });
+                ClearMarkers();
+            }
             ApplyCliff(*center, targetLevel);
         }
         // 岸线和第二轮层级收敛仍可改写 L；提交前再次核对最终实际处理域。
@@ -149,7 +164,7 @@ private:
     struct Frame { std::uint32_t x, y, depth; int next = 0, level = 0; std::uint8_t palette = 0; };
     TerrainGridSnapshot& grid_;
     const TerrainWaterLoadedRules& rules_;
-    const TerrainWaterBrush& brush_;
+    const StructuralBrush& brush_;
     std::span<const TerrainWaterSpecialDoodadShape> shapes_;
     std::vector<const TerrainWaterSpecialDoodadShape*> shapeBySource_;
     std::vector<std::uint32_t> liveSpecial_;
@@ -499,7 +514,7 @@ private:
     }
 };
 
-std::size_t ValidateInputs(const TerrainGridSnapshot& terrain, const TerrainWaterLoadedRules& rules, const TerrainWaterBrush& brush,
+std::size_t ValidateInputs(const TerrainGridSnapshot& terrain, const TerrainWaterLoadedRules& rules, const StructuralBrush& brush,
     std::span<const TerrainStrokePoint> points, const DoodadPlacements& doodads,
     std::span<const TerrainWaterSpecialDoodadShape> shapes, const TerrainWaterBrushLimits& limits) {
     ValidateGrid(terrain); const TerrainWaterBrushLimits hard;
@@ -516,7 +531,8 @@ std::size_t ValidateInputs(const TerrainGridSnapshot& terrain, const TerrainWate
     };
     if (points.empty() || points.size() > limits.maximumPoints) Reject("TERRAIN_WATER_POINTS", "水刷点数量不在显式预算内。");
     if (brush.size < 1 || brush.size > 8 || (brush.shape != TerrainBrushShape::Circle && brush.shape != TerrainBrushShape::Square)
-        || (brush.kind != TerrainWaterBrushKind::Shallow && brush.kind != TerrainWaterBrushKind::Deep))
+        || (brush.waterKind && *brush.waterKind != TerrainWaterBrushKind::Shallow && *brush.waterKind != TerrainWaterBrushKind::Deep)
+        || (!brush.waterKind && (brush.cliffDelta < -1 || brush.cliffDelta > 1)))
         Reject("TERRAIN_WATER_BRUSH", "水刷种类、形状或经典尺寸非法。");
     const std::array numeric{rules.maxSlopeDegrees, rules.minHeight, rules.maxHeight, rules.waterLayerOffset, rules.deepWaterThreshold};
     if (std::any_of(numeric.begin(), numeric.end(), [](auto value) { return !std::isfinite(value); })
@@ -678,13 +694,14 @@ Result<TerrainWaterStrokeAnchor> CaptureTerrainWaterStrokeAnchor(const TerrainGr
     } catch (const Rejection& error) { return Result<TerrainWaterStrokeAnchor>::Failure(std::string(kSubsystem), error.code, error.text); }
 }
 
-Result<TerrainWaterStrokeCandidate> PrepareTerrainWaterStroke(const TerrainGridSnapshot& source, const TerrainWaterLoadedRules& rules,
-    const TerrainWaterBrush& brush, std::span<const TerrainStrokePoint> points, const DoodadPlacements& doodads,
+namespace {
+Result<TerrainWaterStrokeCandidate> PrepareStructuralStroke(const TerrainGridSnapshot& source, const TerrainWaterLoadedRules& rules,
+    const StructuralBrush& brush, std::span<const TerrainStrokePoint> points, const DoodadPlacements& doodads,
     std::span<const TerrainWaterSpecialDoodadShape> specialShapes, const TerrainWaterBrushLimits& limits) {
     try {
         const auto initialWork = ValidateInputs(source, rules, brush, points, doodads, specialShapes, limits);
         auto candidate = source;
-        WaterTransaction transaction(candidate, rules, brush, doodads, specialShapes, limits, initialWork);
+        StructuralTransaction transaction(candidate, rules, brush, doodads, specialShapes, limits, initialWork);
         auto result = transaction.Run(points, source);
         if (!result.removedSpecialSourceRecords.empty()
             && std::any_of(specialShapes.begin(), specialShapes.end(), [](const auto& shape) { return !shape.hasFootprint; }))
@@ -705,6 +722,22 @@ Result<TerrainWaterStrokeCandidate> PrepareTerrainWaterStroke(const TerrainGridS
     } catch (const Rejection& error) { return Result<TerrainWaterStrokeCandidate>::Failure(std::string(kSubsystem), error.code, error.text); }
     catch (const std::bad_alloc&) { return Result<TerrainWaterStrokeCandidate>::Failure(std::string(kSubsystem), "TERRAIN_WATER_ALLOCATION", "水刷候选分配失败，原地形未修改。"); }
     catch (const std::length_error&) { return Result<TerrainWaterStrokeCandidate>::Failure(std::string(kSubsystem), "TERRAIN_WATER_ALLOCATION", "水刷候选超出容器容量，原地形未修改。"); }
+}
+} // namespace
+
+Result<TerrainWaterStrokeCandidate> PrepareTerrainWaterStroke(const TerrainGridSnapshot& source, const TerrainWaterLoadedRules& rules,
+    const TerrainWaterBrush& brush, std::span<const TerrainStrokePoint> points, const DoodadPlacements& doodads,
+    std::span<const TerrainWaterSpecialDoodadShape> specialShapes, const TerrainWaterBrushLimits& limits) {
+    return PrepareStructuralStroke(source, rules, {brush.shape, brush.size, brush.cliffTexture, brush.randomSeed,
+        brush.anchor, brush.kind}, points, doodads, specialShapes, limits);
+}
+
+Result<TerrainWaterStrokeCandidate> PrepareTerrainCliffStroke(const TerrainGridSnapshot& source, const TerrainWaterLoadedRules& rules,
+    const TerrainCliffBrush& brush, std::span<const TerrainStrokePoint> points, const DoodadPlacements& doodads,
+    std::span<const TerrainWaterSpecialDoodadShape> specialShapes, const TerrainWaterBrushLimits& limits) {
+    return PrepareStructuralStroke(source, rules, {brush.shape, brush.size, brush.cliffTexture, brush.randomSeed,
+        {brush.anchor.groundHeightRaw, 0, brush.anchor.cliffLevel, false}, {}, brush.levelDelta},
+        points, doodads, specialShapes, limits);
 }
 
 Result<TerrainWaterBrushResult> ApplyTerrainWaterStroke(TerrainGridSnapshot& terrain, const TerrainWaterLoadedRules& rules,

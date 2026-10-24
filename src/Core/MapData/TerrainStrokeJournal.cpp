@@ -37,7 +37,9 @@ bool ValidStroke(const TerrainJournalStroke& stroke, std::size_t& points) {
     case TerrainBrushKind::PathingRestriction: break;
     default: return false;
     }
-    if (!intent.waterBrush) return stroke.rulesSha256.empty();
+    if (!intent.waterBrush) return (stroke.rulesSha256.empty() && !stroke.cliffEnforceWaterLimits)
+        || (brush.kind == TerrainBrushKind::CliffLevel && stroke.cliffEnforceWaterLimits.has_value() && Sha(stroke.rulesSha256));
+    if (stroke.cliffEnforceWaterLimits) return false;
     const TerrainBrush neutral;
     if (brush.kind != neutral.kind || brush.shape != neutral.shape || brush.radius != neutral.radius
         || brush.groundTexture != neutral.groundTexture || brush.cliffTexture != neutral.cliffTexture
@@ -107,7 +109,9 @@ Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJou
     if (!Valid(journal)) return Failed<std::vector<std::byte>>();
     try {
         Wire wire;
-        wire.Number(0x314a5446, 4); // FTJ1，小端固定版本；无扩展/尾部。
+        const bool nativeCliffs = std::any_of(journal.strokes.begin(), journal.strokes.end(),
+            [](const auto& stroke) { return stroke.cliffEnforceWaterLimits.has_value(); });
+        wire.Number(nativeCliffs ? 0x324a5446 : 0x314a5446, 4); // 无新悬崖时继续逐字输出FTJ1。
         wire.Text(journal.sourceSha256);
         wire.Number(journal.members.size(), 1);
         for (const auto& member : journal.members) {
@@ -132,6 +136,10 @@ Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJou
                 wire.Number(water.size, 4); wire.Number(water.cliffTexture, 1); wire.Number(water.randomSeed, 4);
                 wire.Number(water.enforceWaterLimits, 1);
             }
+            if (nativeCliffs) {
+                wire.Number(stroke.cliffEnforceWaterLimits.has_value(), 1);
+                if (stroke.cliffEnforceWaterLimits) wire.Number(*stroke.cliffEnforceWaterLimits, 1);
+            }
             wire.Text(stroke.rulesSha256); wire.Number(intent.points.size(), 4);
             for (const auto& point : intent.points) {
                 wire.Number(std::bit_cast<std::uint64_t>(point.x), 8); wire.Number(std::bit_cast<std::uint64_t>(point.y), 8);
@@ -146,7 +154,8 @@ Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byt
     if (bytes.size() > TerrainJournalMaximumBytes) return Failed<TerrainStrokeJournal>();
     try {
         Reader reader{bytes}; TerrainStrokeJournal journal;
-        if (reader.Number(4) != 0x314a5446) return Failed<TerrainStrokeJournal>();
+        const auto version = reader.Number(4);
+        if (version != 0x314a5446 && version != 0x324a5446) return Failed<TerrainStrokeJournal>();
         journal.sourceSha256 = reader.Text(64);
         if (reader.Number(1) != TerrainJournalMemberNames.size()) return Failed<TerrainStrokeJournal>();
         for (std::size_t i = 0; i < TerrainJournalMemberNames.size(); ++i) {
@@ -175,6 +184,7 @@ Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byt
                 water.cliffTexture = static_cast<std::uint8_t>(reader.Number(1)); water.randomSeed = static_cast<std::uint32_t>(reader.Number(4));
                 water.enforceWaterLimits = reader.Bool(); intent.waterBrush = water;
             }
+            if (version == 0x324a5446 && reader.Bool()) stroke.cliffEnforceWaterLimits = reader.Bool();
             stroke.rulesSha256 = reader.Text(64);
             const auto pointCount = reader.Number(4);
             if (!pointCount || pointCount > 4096 - points || pointCount > (reader.bytes.size() - reader.cursor) / 16)
@@ -186,7 +196,10 @@ Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byt
             }
             journal.strokes.push_back(std::move(stroke));
         }
-        if (reader.cursor != bytes.size() || !Valid(journal)) return Failed<TerrainStrokeJournal>();
+        if (reader.cursor != bytes.size() || !Valid(journal)
+            || (version == 0x324a5446 && std::none_of(journal.strokes.begin(), journal.strokes.end(),
+                [](const auto& stroke) { return stroke.cliffEnforceWaterLimits.has_value(); })))
+            return Failed<TerrainStrokeJournal>();
         return Result<TerrainStrokeJournal>::Success(std::move(journal));
     } catch (const std::bad_alloc&) { return Failed<TerrainStrokeJournal>(); }
       catch (const std::length_error&) { return Failed<TerrainStrokeJournal>(); }

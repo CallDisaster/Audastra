@@ -1,5 +1,6 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/TerrainPathingResources.h"
+#include "War3MapCore/MapData/TerrainCliffEditing.h"
 
 #include <algorithm>
 #include <new>
@@ -10,7 +11,25 @@ namespace War3Map::MapData {
 Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerrainWaterEdit(
     const TerrainPathingResources& resources, const TerrainWaterBrush& brush,
     std::span<const TerrainStrokePoint> points, bool followDoodads, const TerrainWaterBrushLimits& limits) const {
+    return PrepareTerrainStructuralEdit(resources, &brush, nullptr, points, followDoodads, limits);
+}
+
+Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerrainCliffEdit(
+    const TerrainPathingResources& resources, const TerrainBrush& brush,
+    std::span<const TerrainStrokePoint> points, bool followDoodads, const TerrainWaterBrushLimits& limits) const {
+    if (brush.kind != TerrainBrushKind::CliffLevel || brush.levelDelta < -1 || brush.levelDelta > 1
+        || (!brush.size && brush.radius > 7) || (brush.size && (*brush.size < 1 || *brush.size > 8)))
+        return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "TERRAIN_CLIFF_BRUSH",
+            "原版悬崖入口需要CliffLevel、-1/0/+1层级变化及经典1到8尺寸。");
+    return PrepareTerrainStructuralEdit(resources, nullptr, &brush, points, followDoodads, limits);
+}
+
+Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerrainStructuralEdit(
+    const TerrainPathingResources& resources, const TerrainWaterBrush* water, const TerrainBrush* cliff,
+    std::span<const TerrainStrokePoint> points, bool followDoodads, const TerrainWaterBrushLimits& limits) const {
     using Output = Result<PreparedTerrainEdit>;
+    if ((water == nullptr) == (cliff == nullptr))
+        return Output::Failure("MapData.Edit", "TERRAIN_STRUCTURAL_BRUSH", "一次地形事务必须明确选择水刷或普通悬崖。");
     const auto budgetFailure = [] {
         return Output::Failure("MapData.Edit", "TERRAIN_WATER_SESSION_BUDGET",
             "水刷地形候选、撤销区块、通行性或摆放联动超出本笔预算，尚未修改会话。");
@@ -97,8 +116,16 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
         auto algorithmLimits = limits;
         algorithmLimits.maximumCandidateBytes -= liveBytes;
         algorithmLimits.maximumWork -= work;
-        auto candidate = PrepareTerrainWaterStroke(*terrain_, *resources.WaterBrushRules(), brush,
-            points, doodads, resources.WaterSpecialShapes(), algorithmLimits);
+        auto candidate = [&]() -> Result<TerrainWaterStrokeCandidate> {
+            if (water) return PrepareTerrainWaterStroke(*terrain_, *resources.WaterBrushRules(), *water,
+                points, doodads, resources.WaterSpecialShapes(), algorithmLimits);
+            auto anchor = CaptureTerrainStrokeAnchor(*terrain_, points.front());
+            if (!anchor.Succeeded() || !anchor.value) return {{}, std::move(anchor.diagnostics)};
+            const TerrainCliffBrush brush{cliff->shape, cliff->size.value_or(cliff->radius + 1), cliff->cliffTexture,
+                cliff->seed, cliff->anchor.value_or(*anchor.value), cliff->levelDelta};
+            return PrepareTerrainCliffStroke(*terrain_, *resources.WaterBrushRules(), brush,
+                points, doodads, resources.WaterSpecialShapes(), algorithmLimits);
+        }();
         if (!candidate.Succeeded() || !candidate.value) return {{}, std::move(candidate.diagnostics)};
         // result.work已包括算法输入检查、唯一候选复制、全图差分与派生刷新，不重复收费。
         if (!reserve(work, limits.maximumWork, candidate.value->result.work, 1)) return budgetFailure();
@@ -167,7 +194,8 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
         auto prepared = PrepareTerrainCandidate(std::move(next), candidate.value->result.changed, points,
             followDoodads, true, true, false, &doodads, specialChanged);
         if (prepared.value) {
-            prepared.value->waterBrush_ = brush;
+            if (water) prepared.value->waterBrush_ = *water;
+            else prepared.value->brush_ = *cliff;
             const auto digestBytes = resources.WaterBrushDependencyBudgetBytes();
             auto journalPeak = finalBytes, journalWork = work;
             if (points.size() <= 4096 && digestBytes
@@ -178,8 +206,9 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
                 const auto fingerprint = resources.WaterBrushDependencyFingerprint();
                 if (fingerprint.Succeeded() && fingerprint.value) {
                     prepared.value->waterRulesSha256_ = *fingerprint.value;
-                    prepared.value->waterIntentOptions_ = TerrainWaterStrokeOptions{brush.kind, brush.shape, brush.size,
-                        brush.cliffTexture, brush.randomSeed, resources.WaterBrushRules()->enforceWaterLimits};
+                    if (cliff) prepared.value->cliffEnforceWaterLimits_ = resources.WaterBrushRules()->enforceWaterLimits;
+                    if (water) prepared.value->waterIntentOptions_ = TerrainWaterStrokeOptions{water->kind, water->shape, water->size,
+                        water->cliffTexture, water->randomSeed, resources.WaterBrushRules()->enforceWaterLimits};
                 }
             } // 旧Core兼容owner、超域或journal额外预算不足仍可编辑，但不记录typed来源。
             prepared.value->waterResult_ = candidate.value->result;

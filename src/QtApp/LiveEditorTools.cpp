@@ -866,6 +866,19 @@ private:
                     return Status::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "水刷实际来源或会话已变化。");
                 return QtProject::VerifyTerrainWaterEditResources(*waterCapture);
             };
+            host.prepareCliff = [this, &waterCapture](const Mcp::TerrainEditToolContext& current, const auto& binding,
+                const MapData::TerrainBrush& brush, auto points, bool follow) -> Result<Services::PreparedTerrainEdit> {
+                auto request = QtProject::CaptureTerrainWaterEditRequest(project_, true);
+                if (!request.Succeeded() || !request.value) return {{}, request.diagnostics};
+                auto loaded = QtProject::LoadTerrainWaterEditResources(
+                    std::make_shared<const QtProject::TerrainWaterEditRequest>(std::move(*request.value)));
+                if (!loaded.Succeeded() || !loaded.value) return {{}, loaded.diagnostics};
+                waterCapture = std::move(*loaded.value);
+                if (!QtProject::TerrainWaterEditRequestCurrent(project_, *waterCapture->request, true))
+                    return Result<Services::PreparedTerrainEdit>::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "悬崖准备期间来源或会话已经变化。");
+                return Services::PrepareTerrainCliffEdit(*current.session, current.document, binding,
+                    waterCapture->resources, brush, points, follow);
+            };
             host.apply = [this, &context](const Services::PreparedTerrainEdit& plan,
                 const std::function<Status(const MapData::MapDataEditSession::EditReceipt&)>& validate)
                 -> Result<MapData::TerrainStrokeResult> {

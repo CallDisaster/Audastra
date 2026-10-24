@@ -478,6 +478,49 @@ void WaterServiceCandidatesPassNativePlanAndIndependentArchiveReadback() {
     }
 }
 
+void NativeCliffSavesAndRestoresWithoutUpgradingLegacyHistory() {
+    Fixture f;
+    TerrainStrokeIntent intent; intent.brush.kind = TerrainBrushKind::CliffLevel;
+    intent.brush.size = 1; intent.brush.cliffTexture = 1; intent.brush.levelDelta = 1; intent.brush.seed = 1;
+    intent.points = {f.point};
+    auto replayed = Take(ReplayFixture(f, *f.source, std::span(&intent, 1)));
+    const auto after = Take(SerializeMapTerrain(*replayed.session->Terrain()));
+    const auto journal = Take(replayed.session->ExportTerrainStrokeJournal());
+    Require(journal.strokes.size() == 1 && journal.strokes.front().cliffEnforceWaterLimits == true
+        && !journal.strokes.front().intent.waterBrush, "fresh ordinary cliff replay captures native rules without pretending to be water");
+    const auto restored = Take(TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members),
+        f.members[0].data, f.members[1].data, journal, *replayed.session, f.game));
+    Require(Take(SerializeMapTerrain(*restored.session->Terrain())) == after, "native cliff project restoration preserves exact edited terrain");
+    auto drift = journal; drift.strokes.front().rulesSha256.assign(64, 'd');
+    Require(HasCode(TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members),
+        f.members[0].data, f.members[1].data, drift, *replayed.session, f.game), "TERRAIN_JOURNAL_RESOURCE_DRIFT"),
+        "native cliff restoration binds actual rule dependencies");
+    const auto plan = Take(TerrainPathingSave::PrepareForSave(*f.source, *replayed.session, f.game));
+    Require(plan.SaveGate().Succeeded() && plan.RebuiltPathing(), "ordinary cliff enters the normal native save plan");
+    auto replacements = replayed.session->Replacements();
+    Require(plan.InstallPathingOutput(*replayed.session, replacements).Succeeded()
+        && plan.VerifyForSave(*replayed.session, f.source->SourceSha256(), replacements).Succeeded(), "cliff output uses the same final save gate");
+    const auto written = Take(f.source->SaveCandidate(f.root / "native-cliff.w3x", replacements));
+    const auto saved = Take(MapArchiveSession::Open(written.path));
+    Require(plan.VerifyReadback(saved).Succeeded() && Take(saved.ReadMember("war3map.w3e")) == after,
+        "independently reopened native cliff archive has exact W3E and WPM identities");
+    auto expectedWpm = f.members[1].data;
+    for (std::size_t y = 60; y < 68; ++y) for (std::size_t x = 60; x < 68; ++x)
+        expectedWpm[16 + y * 128 + x] = std::byte{0xdb};
+    Require(Take(saved.ReadMember("war3map.wpm")) == expectedWpm,
+        "four native cliff cells match the complete independently stated pathing mask and author restrictions");
+
+    auto legacy = Session(f);
+    Take(legacy->EditTerrain(intent.brush, intent.points, false));
+    const auto oldJournal = Take(legacy->ExportTerrainStrokeJournal());
+    Require(oldJournal.strokes.front().rulesSha256.empty() && !oldJournal.strokes.front().cliffEnforceWaterLimits,
+        "old ordinary cliff keeps its explicit legacy identity");
+    const auto oldRestored = Take(TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members),
+        f.members[0].data, f.members[1].data, oldJournal, *legacy, f.game));
+    Require(Take(SerializeMapTerrain(*oldRestored.session->Terrain())) == Take(SerializeMapTerrain(*legacy->Terrain())),
+        "legacy project is replayed by its original algorithm instead of silently adopting native neighbour writes");
+}
+
 void SavedWaterStrokeUndoAndRedoRebaseAgainstEachSavedSource() {
     for (const auto kind : {TerrainWaterBrushKind::Shallow, TerrainWaterBrushKind::Deep}) {
         Fixture f(true);
@@ -800,6 +843,7 @@ int main() {
         OneAnchorAndWholePointSequenceShareCoreCommand();
         OrderedSourceAndOptionsCannotBeSubstituted();
         WaterServiceCandidatesPassNativePlanAndIndependentArchiveReadback();
+        NativeCliffSavesAndRestoresWithoutUpgradingLegacyHistory();
         SavedWaterStrokeUndoAndRedoRebaseAgainstEachSavedSource();
         DirectSaveRejectsEveryConflictingOrdinaryField();
         DirectSaveUsesOrderedWaterAndOriginalScriptGate();

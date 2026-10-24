@@ -302,21 +302,25 @@ QJsonObject InvokeTerrainEditTool(const QString& name, const QJsonObject& argume
         }
         const bool dryRun = Boolean(arguments, "dry_run", true);
         const auto water = WaterOptions(arguments.value("brush"));
+        const auto brush = water ? MapData::TerrainBrush{} : Brush(arguments.value("brush"));
+        const bool cliff = !water && brush.kind == MapData::TerrainBrushKind::CliffLevel;
         if (water && (!host.prepareWater || !host.verifyWater))
             return Failure("TERRAIN_WATER_HOST_UNAVAILABLE", "宿主未接入实际来源水刷捕获与提交前复核。");
+        if (cliff && (!host.prepareCliff || !host.verifyWater))
+            return Failure("TERRAIN_CLIFF_HOST_UNAVAILABLE", "宿主未接入普通悬崖的实际规则捕获与提交前复核。");
         const auto prepared = water
             ? host.prepareWater(context, binding, *water, points, Boolean(arguments, "follow_doodads", false))
-            : PrepareTerrainEdit(*context.session, context.document, binding,
-                Brush(arguments.value("brush")), points, Boolean(arguments, "follow_doodads", false));
+            : cliff ? host.prepareCliff(context, binding, brush, points, Boolean(arguments, "follow_doodads", false))
+            : PrepareTerrainEdit(*context.session, context.document, binding, brush, points, Boolean(arguments, "follow_doodads", false));
         if (!prepared.Succeeded() || !prepared.value) return Failure(prepared);
-        if (water) { const auto verified = host.verifyWater(); if (!verified.Succeeded()) return Failure(verified); }
+        if (water || cliff) { const auto verified = host.verifyWater(); if (!verified.Succeeded()) return Failure(verified); }
         QJsonObject body{{"ok", true}, {"dry_run", dryRun}, {"applied", false}, {"binding_before", bindingJson},
             {"scope", Scope(context)}, {"changes", ChangedJson(prepared.value->Plan())},
             {"terrain_pathing_gate", GateJson(prepared.value->Plan().TerrainPathingGate())}, {"map_saved", false}};
         if (dryRun || !prepared.value->Plan().HasChanges()) return Stamp(std::move(body), identity);
         if (!host.apply) return Failure("TERRAIN_EDIT_UNSUPPORTED", "宿主尚未接通同一事务的地形提交。");
         const auto validate = [&](const MapDataEditSession::EditReceipt& receipt) -> Status {
-            if (water) { const auto verified = host.verifyWater(); if (!verified.Succeeded()) return verified; }
+            if (water || cliff) { const auto verified = host.verifyWater(); if (!verified.Succeeded()) return verified; }
             if (Identity(host) != identity || receipt.SessionIdentity() != context.session->SessionIdentity()
                 || receipt.BeforeRevision() != binding.terrainRevision)
                 return Status::Failure("MCP.Terrain", "TERRAIN_EDIT_STALE", "提交前工程、来源或原地形修订变化。");

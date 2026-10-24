@@ -78,7 +78,7 @@ public:
         // 水刷使用自己的完整锚点与随机序列，不能当成普通高度笔刷重放。
         [[nodiscard]] const TerrainWaterBrush* WaterBrush() const noexcept { return waterBrush_ ? &*waterBrush_ : nullptr; }
         [[nodiscard]] const TerrainWaterBrushResult* WaterResult() const noexcept { return waterResult_ ? &*waterResult_ : nullptr; }
-        // 水刷来源检查、算法及事务准备的工作量预算结算；普通笔刷为0，算法计数仍在WaterResult中。
+        // 水刷/原版悬崖来源检查、算法及事务准备的预算结算；其他笔刷为0，算法计数在WaterResult中。
         [[nodiscard]] std::size_t WaterPreparationWork() const noexcept { return waterPreparationWork_; }
         // 本笔已预收的临时候选/撤销/联动峰值；不能把已释放临时网格累计当成历史。
         [[nodiscard]] std::size_t WaterPreparationBytes() const noexcept { return waterPreparationBytes_; }
@@ -99,6 +99,7 @@ public:
         std::optional<TerrainWaterBrushResult> waterResult_;
         std::optional<TerrainWaterStrokeOptions> waterIntentOptions_;
         std::string waterRulesSha256_;
+        std::optional<bool> cliffEnforceWaterLimits_;
         std::size_t waterPreparationWork_ = 0;
         std::size_t waterPreparationBytes_ = 0;
         std::vector<TerrainStrokePoint> points_;
@@ -172,6 +173,10 @@ public:
     // limits同时约束水刷候选和事务额外内存；保存资格仍由原生G0/G1计划决定。
     [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainWaterEdit(const TerrainPathingResources& resources,
         const TerrainWaterBrush& brush, std::span<const TerrainStrokePoint> points,
+        bool followDoodads = true, const TerrainWaterBrushLimits& limits = {}) const;
+    // 普通悬崖使用真实规则和与水刷共用的原版邻接/清理事务；仍记录普通CliffLevel意图。
+    [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainCliffEdit(const TerrainPathingResources& resources,
+        const TerrainBrush& brush, std::span<const TerrainStrokePoint> points,
         bool followDoodads = true, const TerrainWaterBrushLimits& limits = {}) const;
     [[nodiscard]] Result<TerrainStrokeResult> ApplyPreparedTerrainEdit(const PreparedTerrainEdit& plan,
         const std::function<Status(const EditReceipt&)>& prepublish = {});
@@ -254,6 +259,9 @@ private:
     [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainEditInternal(const TerrainBrush& brush,
         std::span<const TerrainStrokePoint> points, bool followDoodads, bool inspectSaveGate,
         std::size_t maximumLevelPropagationWork = TerrainLevelPropagationMaximumWork) const;
+    [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainStructuralEdit(const TerrainPathingResources& resources,
+        const TerrainWaterBrush* water, const TerrainBrush* cliff, std::span<const TerrainStrokePoint> points,
+        bool followDoodads, const TerrainWaterBrushLimits& limits) const;
     [[nodiscard]] Result<PreparedTerrainEdit> PreparePathingRestrictionEdit(const TerrainBrush& brush,
         std::span<const TerrainStrokePoint> points, bool followDoodads, bool inspectSaveGate) const;
     [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainCandidate(

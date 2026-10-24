@@ -39,6 +39,14 @@ void RegisterTerrainEditTools(McpServer& server) {
                 return waterOwner ? workspace->VerifyTerrainWaterResources(*waterOwner)
                     : Status::Failure("MCP", "TERRAIN_WATER_SOURCE_REQUIRED", "缺少本笔实际水刷资源。");
             };
+            host.prepareCliff = [workspace, &waterOwner](const TerrainEditToolContext& context, const auto& binding,
+                const MapData::TerrainBrush& brush, auto points, bool follow) -> Result<Services::PreparedTerrainEdit> {
+                auto captured = workspace->CaptureTerrainWaterResources(true);
+                if (!captured.Succeeded() || !captured.value) return {{}, captured.diagnostics};
+                waterOwner = std::move(*captured.value);
+                return Services::PrepareTerrainCliffEdit(*context.session, context.document, binding,
+                    *waterOwner, brush, points, follow);
+            };
             return InvokeTerrainEditTool(name, arguments, host);
         };
         server.RegisterTool(std::move(definition));

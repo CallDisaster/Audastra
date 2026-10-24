@@ -38,6 +38,7 @@
 #include <QSpinBox>
 
 #include <algorithm>
+#include <type_traits>
 #include <cmath>
 #include <limits>
 
@@ -776,6 +777,10 @@ void WorldModule::StartTerrainStroke(double x, double y) {
         terrainToggle_->setChecked(false);
         return;
     }
+    if (CurrentBrushKind() == MapData::TerrainBrushKind::CliffLevel && !WaterBrushCaptureCurrent()) {
+        QueueWaterBrushCapture();
+        selectionStatus_->setText(tr("请等待悬崖规则就绪后重新落笔")); return;
+    }
     if (const auto kind = CurrentWaterBrushKind()) {
         if (!WaterBrushCaptureCurrent()) {
             QueueWaterBrushCapture();
@@ -851,6 +856,7 @@ void WorldModule::StartTerrainStroke(double x, double y) {
         return;
     }
     brush.anchor = *anchor.value;
+    if (brush.kind == MapData::TerrainBrushKind::CliffLevel) strokeWaterCapture_ = waterCapture_;
     strokeBase_ = std::move(source);
     strokeRevision_ = project_.mapEdits_->Revision();
     strokeBrush_ = std::move(brush);
@@ -923,7 +929,7 @@ void WorldModule::ExtendTerrainStroke(double x, double y) {
             added = true;
         }
         if (strokePoints_.size() == 65536) {
-            if ((pathing || strokeWaterBrush_) && (gx != tx || gy != ty)) {
+            if ((pathing || strokeWaterCapture_) && (gx != tx || gy != ty)) {
                 CancelTerrainStroke(); selectionStatus_->setText(tr("笔划超过采样预算，本笔已取消")); return;
             }
             selectionStatus_->setText(tr("笔划已达到 65536 个采样点，请松开后继续"));
@@ -942,24 +948,26 @@ void WorldModule::FinishTerrainStroke() {
     const auto before = project_.mapEdits_->Revision();
     const bool pathing = strokeBrush_.kind == MapData::TerrainBrushKind::PathingRestriction;
     const bool water = strokeWaterBrush_.has_value();
-    if ((pathing || water) && before != strokeRevision_) {
+    const bool structural = water || strokeBrush_.kind == MapData::TerrainBrushKind::CliffLevel;
+    if ((pathing || structural) && before != strokeRevision_) {
         CancelTerrainStroke(); selectionStatus_->setText(tr("地形编辑修订已变化，请重新落笔")); return;
     }
-    if (water && (!strokeWaterCapture_ || !QtProject::TerrainWaterEditRequestCurrent(project_,
+    if (structural && (!strokeWaterCapture_ || !QtProject::TerrainWaterEditRequestCurrent(project_,
             *strokeWaterCapture_->request, terrainEnforceWaterLimits_->isChecked()))) {
         CancelTerrainStroke(); InvalidateWaterBrushCapture(); QueueWaterBrushCapture();
-        selectionStatus_->setText(tr("水刷来源已变化，请等待规则更新后重新落笔")); return;
+        selectionStatus_->setText(tr("地形规则来源已变化，请等待更新后重新落笔")); return;
     }
     const auto terrainBefore = project_.mapEdits_->Terrain();
-    if (water) {
+    if (structural) {
         auto commit = std::make_shared<WaterBrushCommit>(WaterBrushCommit{strokeWaterCapture_,
-            *strokeWaterBrush_, std::move(strokePoints_), terrainToggle_->isChecked()});
+            water ? decltype(WaterBrushCommit::brush){*strokeWaterBrush_} : decltype(WaterBrushCommit::brush){strokeBrush_},
+            std::move(strokePoints_), terrainToggle_->isChecked()});
         strokeBase_.reset(); strokePoints_.clear(); strokeWaterBrush_.reset(); strokeWaterCapture_.reset();
         ++terrainRenderSerial_; pendingTerrainRender_.reset();
         // toggled(false)同步调用Cancel；先关控件，再发布pending事务，避免自行取消。
         terrainToggle_->setChecked(false); terrainToggle_->setEnabled(false);
         waterCommit_ = std::move(commit); waterCommitPending_ = true;
-        terrainWaterBrushStatus_->setText(tr("正在核对本笔水面资源…"));
+        terrainWaterBrushStatus_->setText(tr("正在核对本笔地形规则…"));
         StartTerrainRender(); return;
     }
     auto edited = project_.mapEdits_->EditTerrain(strokeBrush_, strokePoints_, true);
@@ -996,8 +1004,11 @@ void WorldModule::StartWaterBrushCommit() {
         else {
             // live Session只在GUI线程使用。最终Prepare一次，来源I/O已在worker完成。
             QElapsedTimer timer; timer.start();
-            auto plan = project_.mapEdits_->PrepareTerrainWaterEdit(request->capture->resources,
-                request->brush, request->points, true);
+            auto plan = std::visit([&](const auto& brush) {
+                if constexpr (std::is_same_v<std::decay_t<decltype(brush)>, MapData::TerrainWaterBrush>)
+                    return project_.mapEdits_->PrepareTerrainWaterEdit(request->capture->resources, brush, request->points, true);
+                else return project_.mapEdits_->PrepareTerrainCliffEdit(request->capture->resources, brush, request->points, true);
+            }, request->brush);
             terrainWaterBrushStatus_->setProperty("prepareMilliseconds", timer.elapsed());
             if (plan.Succeeded()) edited = project_.mapEdits_->ApplyPreparedTerrainEdit(*plan.value);
             else edited.diagnostics = std::move(plan.diagnostics);

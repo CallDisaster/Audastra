@@ -570,7 +570,7 @@ void WorldModule::UpdateTerrainBrushControls() {
     const std::array sections{std::pair{terrainTextureSection_, kind == MapData::TerrainBrushKind::Texture},
         std::pair{terrainCliffSection_, waterBrush || kind == MapData::TerrainBrushKind::CliffLevel || kind == MapData::TerrainBrushKind::CliffTexture},
         std::pair{terrainWaterSection_, kind == MapData::TerrainBrushKind::WaterHeight},
-        std::pair{terrainWaterBrushSection_, waterBrush},
+        std::pair{terrainWaterBrushSection_, NeedsStructuralBrushRules()},
         std::pair{terrainRampSection_, kind == MapData::TerrainBrushKind::Ramp},
         std::pair{terrainBlightSection_, kind == MapData::TerrainBrushKind::Blight},
         std::pair{terrainBoundarySection_, kind == MapData::TerrainBrushKind::Boundary},

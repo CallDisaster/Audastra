@@ -475,21 +475,21 @@ void WorldModule::ConnectEditing() {
     });
     connect(terrainToggle_, &QPushButton::toggled, this, [this](bool shown) {
         if (shown && placeToggle_->isChecked()) placeToggle_->setChecked(false);
-        viewport_->SetBrushMode(shown && (!CurrentWaterBrushKind() || WaterBrushCaptureCurrent()));
+        viewport_->SetBrushMode(shown && (!NeedsStructuralBrushRules() || WaterBrushCaptureCurrent()));
         if (shown) { StopPlacing(); ClearSelection(); RefreshTerrainPalette(); UpdateOverlay(); }
         else CancelTerrainStroke();
         UpdateToolState();
         UpdateSelectionText();
         UpdateWaterFrameControl();
-        if (shown && CurrentWaterBrushKind()) QueueWaterBrushCapture();
+        if (shown && NeedsStructuralBrushRules()) QueueWaterBrushCapture();
     });
     connect(terrainKinds_, &QButtonGroup::idToggled, this, [this](int, bool on) {
         if (!on) return;
         CancelTerrainStroke();
         UpdateTerrainBrushControls();
         UpdateToolHint();
-        if (CurrentWaterBrushKind()) QueueWaterBrushCapture();
-        viewport_->SetBrushMode(terrainToggle_->isChecked() && (!CurrentWaterBrushKind() || WaterBrushCaptureCurrent()));
+        if (NeedsStructuralBrushRules()) QueueWaterBrushCapture();
+        viewport_->SetBrushMode(terrainToggle_->isChecked() && (!NeedsStructuralBrushRules() || WaterBrushCaptureCurrent()));
     });
     connect(assetBrowser_, &WorldAssetBrowser::PlacementRequested, this, [this](const QtApp::ObjectViewEntry& entry, const WorldAssetBinding& binding) {
         if (binding == WorldAssetBinding{MapKey(), generation_, project_.mapEdits_ ? project_.mapEdits_->Revision() : 0}) ChoosePlacement(entry);

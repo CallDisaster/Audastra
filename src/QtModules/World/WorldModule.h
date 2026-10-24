@@ -1,4 +1,5 @@
 #pragma once
+#include <variant>
 
 #include "Modules/EditorModule.h"
 #include "War3MapCore/MapData/MapTerrain.h"
@@ -215,6 +216,9 @@ private:
     void EditTerrainTextureSlot(bool cliff, bool append);
     [[nodiscard]] MapData::TerrainBrushKind CurrentBrushKind() const;
     [[nodiscard]] std::optional<MapData::TerrainWaterBrushKind> CurrentWaterBrushKind() const;
+    [[nodiscard]] bool NeedsStructuralBrushRules() const {
+        return CurrentWaterBrushKind().has_value() || CurrentBrushKind() == MapData::TerrainBrushKind::CliffLevel;
+    }
     [[nodiscard]] bool WaterBrushCaptureCurrent() const;
     void QueueWaterBrushCapture();
     void StartWaterBrushCapture();
@@ -549,7 +553,7 @@ private:
     bool waterCapturePending_ = false;
     struct WaterBrushCommit {
         std::shared_ptr<const QtProject::TerrainWaterEditCapture> capture;
-        MapData::TerrainWaterBrush brush;
+        std::variant<MapData::TerrainWaterBrush, MapData::TerrainBrush> brush;
         std::vector<MapData::TerrainStrokePoint> points;
         bool resumeBrush = false;
     };

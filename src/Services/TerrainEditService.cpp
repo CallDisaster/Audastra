@@ -109,6 +109,23 @@ Result<PreparedTerrainEdit> PrepareTerrainWaterEdit(const MapData::MapDataEditSe
     return Result<PreparedTerrainEdit>::Success(std::move(prepared));
 }
 
+Result<PreparedTerrainEdit> PrepareTerrainCliffEdit(const MapData::MapDataEditSession& session,
+    const MapDataQueryBinding& document, const TerrainEditBinding& expected,
+    const MapData::TerrainPathingResources& resources, const MapData::TerrainBrush& brush,
+    std::span<const MapData::TerrainStrokePoint> points, bool followDoodads,
+    const MapData::TerrainWaterBrushLimits& limits) {
+    if (const auto checked = CheckExpected(session, document, expected); !checked.Succeeded()) return {{}, checked.diagnostics};
+    if (points.empty() || points.size() > TerrainEditMaximumPoints)
+        return Result<PreparedTerrainEdit>::Failure("Terrain.Edit", "TERRAIN_EDIT_POINT_BUDGET", "单次地形编辑需要 1 到 4096 个采样点。");
+    for (const auto& point : points) {
+        const auto checked = session.InspectTerrainPoint(point);
+        if (!checked.Succeeded() || !checked.value) return {{}, checked.diagnostics};
+    }
+    auto plan = session.PrepareTerrainCliffEdit(resources, brush, points, followDoodads, limits);
+    if (!plan.Succeeded() || !plan.value) return {{}, std::move(plan.diagnostics)};
+    return Result<PreparedTerrainEdit>::Success(PreparedTerrainEdit(expected, std::move(*plan.value)));
+}
+
 Result<MapData::TerrainStrokeResult> ApplyTerrainEdit(MapData::MapDataEditSession& session,
     const MapDataQueryBinding& document, const PreparedTerrainEdit& prepared,
     const std::function<Status(const MapData::MapDataEditSession::EditReceipt&)>& prepublish) {

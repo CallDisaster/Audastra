@@ -20,8 +20,10 @@ struct TerrainJournalMember {
 };
 struct TerrainJournalStroke {
     TerrainStrokeIntent intent;
-    // 实际水刷资源owner的依赖摘要；普通笔刷为空。不是来源授权。
+    // 实际水刷/原版悬崖规则owner的依赖摘要；旧普通笔刷为空。不是来源授权。
     std::string rulesSha256;
+    // 仅新原版CliffLevel；与digest成对。FTJ1旧悬崖保持旧算法，不能静默升级。
+    std::optional<bool> cliffEnforceWaterLimits;
 };
 struct TerrainStrokeJournal {
     std::string sourceSha256;

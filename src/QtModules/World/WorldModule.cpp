@@ -21,6 +21,7 @@
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
+#include "War3MapCore/MapData/TerrainCliffEditing.h"
 #include "War3MapCore/Render/SceneEnvironment.h"
 
 #include "Widgets/ElidedLabel.h"
@@ -1049,18 +1050,18 @@ void WorldModule::InvalidateWaterBrushCapture() {
     waterCapturePending_ = false;
     waterCapture_.reset(); waterCaptureRequest_.reset();
     if (terrainWaterBrushStatus_) terrainWaterBrushStatus_->setProperty("ready", false);
-    if (viewport_ && CurrentWaterBrushKind()) viewport_->SetBrushMode(false);
+    if (viewport_ && NeedsStructuralBrushRules()) viewport_->SetBrushMode(false);
 }
 
 void WorldModule::QueueWaterBrushCapture() {
-    if (!page_ || !CurrentWaterBrushKind() || strokeBase_ || waterCommit_ || !terrainEnforceWaterLimits_) return;
+    if (!page_ || !NeedsStructuralBrushRules() || strokeBase_ || waterCommit_ || !terrainEnforceWaterLimits_) return;
     const bool enforce = terrainEnforceWaterLimits_->isChecked();
     if (WaterBrushCaptureCurrent()) return;
     if (waterCaptureRequest_ && QtProject::TerrainWaterEditRequestCurrent(project_, *waterCaptureRequest_, enforce)) return;
     InvalidateWaterBrushCapture();
     auto request = QtProject::CaptureTerrainWaterEditRequest(project_, enforce);
     if (!request.Succeeded()) {
-        terrainWaterBrushStatus_->setText(tr("水刷不可用：%1").arg(DiagnosticText(request.diagnostics)));
+        terrainWaterBrushStatus_->setText(tr("地形规则不可用：%1").arg(DiagnosticText(request.diagnostics)));
         return;
     }
     waterCaptureRequest_ = std::make_shared<QtProject::TerrainWaterEditRequest>(std::move(*request.value));
@@ -1101,7 +1102,7 @@ void WorldModule::StartWaterBrushCapture() {
                 waterCapture_ = std::make_shared<QtProject::TerrainWaterEditCapture>(std::move(*result->value));
                 terrainWaterBrushStatus_->setText(tr("水面规则已就绪"));
                 terrainWaterBrushStatus_->setProperty("ready", true);
-                if (CurrentWaterBrushKind() && terrainToggle_->isChecked()) viewport_->SetBrushMode(true);
+                if (NeedsStructuralBrushRules() && terrainToggle_->isChecked()) viewport_->SetBrushMode(true);
             }
         }
         StartTerrainRender();
@@ -1219,14 +1220,24 @@ void WorldModule::StartTerrainRender() {
         if (request.selectedWaterFrame)
             *result = RebuildWorldTerrain(*request.source, *cache, keepCliffs, request.selectedWaterFrame, blightPolicy, representation, shadowContext);
         else if (request.preview) {
-            if (request.waterBrush) {
+            if (request.waterBrush || request.brush.kind == MapData::TerrainBrushKind::CliffLevel) {
                 if (!request.waterCapture || !request.waterCapture->resources.WaterBrushRules()) {
                     result->diagnostics = Status::Failure("Terrain.Water", "TERRAIN_WATER_PREVIEW_INPUT",
                         "水刷预览缺少本笔冻结的规则或装饰物来源。").diagnostics; return;
                 }
-                auto candidate = MapData::PrepareTerrainWaterStroke(*request.source,
-                    *request.waterCapture->resources.WaterBrushRules(), *request.waterBrush, request.points,
-                    request.waterCapture->request->doodads, request.waterCapture->resources.WaterSpecialShapes());
+                auto candidate = [&]() {
+                    const auto& capture = *request.waterCapture;
+                    const auto& rules = *capture.resources.WaterBrushRules();
+                    if (request.waterBrush) return MapData::PrepareTerrainWaterStroke(*request.source, rules,
+                        *request.waterBrush, request.points, capture.request->doodads, capture.resources.WaterSpecialShapes());
+                    const auto& brush = request.brush;
+                    if (!brush.anchor) return Result<MapData::TerrainWaterStrokeCandidate>::Failure("Terrain.Cliff",
+                        "TERRAIN_CLIFF_PREVIEW_ANCHOR", "悬崖预览缺少本笔冻结起点。");
+                    return MapData::PrepareTerrainCliffStroke(*request.source, rules,
+                        {brush.shape, brush.size.value_or(brush.radius + 1), brush.cliffTexture, brush.seed,
+                            *brush.anchor, brush.levelDelta}, request.points, capture.request->doodads,
+                        capture.resources.WaterSpecialShapes());
+                }();
                 if (!candidate.Succeeded()) { result->diagnostics = std::move(candidate.diagnostics); return; }
                 auto previewContext = shadowContext;
                 if (!candidate.value->result.changed.Empty() && previewContext.terrainRelation != WorldShadowTerrainRelation::Unknown)

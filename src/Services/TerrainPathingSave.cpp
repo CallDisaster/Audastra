@@ -66,7 +66,11 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& sourc
         const auto beforeRevision = candidate.Revision();
         if (!candidate.Terrain()) return fail("TERRAIN_REPLAY_UNAVAILABLE", "重放候选缺少当前地形。");
         const TerrainEditBinding binding{document, candidate.SessionIdentity(), candidate.Revision(), candidate.TerrainSourceRevision()};
-        if (stroke.waterBrush) {
+        const bool nativeCliff = !stroke.waterBrush && stroke.brush.kind == MapData::TerrainBrushKind::CliffLevel
+            && (!journal || journal->strokes[strokeIndex].cliffEnforceWaterLimits.has_value());
+        if (stroke.waterBrush || nativeCliff) {
+            const bool enforceWaterLimits = stroke.waterBrush ? stroke.waterBrush->enforceWaterLimits
+                : journal ? *journal->strokes[strokeIndex].cliffEnforceWaterLimits : true;
             const auto remaining = std::min(MapData::TerrainSavePlanLimits{}.maximumBytes,
                 std::min(limits.maximumResourceBytes - resourceBytes, limits.maximumResourceBytes - ownedResources));
             if (!remaining || historyBytes == limits.maximumCandidateBytes || work == limits.maximumWork)
@@ -85,7 +89,7 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& sourc
                     return Result<MapData::TerrainPathingResources>::Failure("Terrain.Replay", "TERRAIN_REPLAY_DOODADS_UNAVAILABLE", "未知DOO不能按空集合捕获水刷资源。");
                 const MapData::DoodadPlacements empty;
                 return TerrainPathingSave::CaptureWaterBrushRules(source, sourceTerrain, *candidate.Terrain(),
-                    doodads ? *doodads : empty, gameRoot, stroke.waterBrush->enforceWaterLimits, remaining);
+                    doodads ? *doodads : empty, gameRoot, enforceWaterLimits, remaining);
             }(); // 外层DOO解析快照先释放，再进入水刷事务自己的已预算解析/候选阶段。
             if (!resources.Succeeded() || !resources.value) return {{}, resources.diagnostics};
             if (journal) {
@@ -104,8 +108,11 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& sourc
             waterLimits.maximumCandidateBytes = std::min(waterLimits.maximumCandidateBytes, limits.maximumCandidateBytes - historyBytes);
             waterLimits.maximumWork = std::min(waterLimits.maximumWork, limits.maximumWork - work);
             if (!waterLimits.maximumWork) return fail("TERRAIN_REPLAY_BUDGET", "整个序列的工作预算已用尽。");
-            auto plan = PrepareTerrainWaterEdit(candidate, document, binding, *resources.value,
-                *stroke.waterBrush, stroke.points, stroke.followDoodads, waterLimits);
+            auto plan = stroke.waterBrush
+                ? PrepareTerrainWaterEdit(candidate, document, binding, *resources.value,
+                    *stroke.waterBrush, stroke.points, stroke.followDoodads, waterLimits)
+                : PrepareTerrainCliffEdit(candidate, document, binding, *resources.value,
+                    stroke.brush, stroke.points, stroke.followDoodads, waterLimits);
             if (!plan.Succeeded() || !plan.value) return {{}, plan.diagnostics};
             if (!reserve(work, limits.maximumWork, plan.value->Plan().WaterPreparationWork())
                 || !reserve(work, limits.maximumWork, candidate.Terrain()->vertices.size(), 4)

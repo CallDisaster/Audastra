@@ -366,6 +366,30 @@ void FullSizeStrokeUsesActualPhaseBudget() {
         Require(f.edits->Undo() && !f.edits->IsDirty(), "full-size budgeted transaction remains one complete Undo");
     }
 }
+void OrdinaryCliffUsesOneNativeSessionTransaction() {
+    Fixture f(false, true);
+    const auto before = Take(SerializeMapTerrain(*f.edits->Terrain()));
+    const auto rules = f.Rules(*f.edits);
+    TerrainBrush brush; brush.kind = TerrainBrushKind::CliffLevel; brush.size = 1;
+    brush.cliffTexture = 1; brush.levelDelta = 1; brush.seed = 1;
+    const auto plan = Take(f.edits->PrepareTerrainCliffEdit(rules, brush, std::span(&f.point, 1), true));
+    Require(!plan.WaterBrush() && plan.Brush().kind == TerrainBrushKind::CliffLevel && plan.WaterResult(),
+        "ordinary cliff has its own public intent and shared native preparation result");
+    Require(Take(SerializeMapTerrain(*f.edits->Terrain())) == before, "prepare leaves source session intact");
+    Take(f.edits->ApplyPreparedTerrainEdit(plan));
+    const auto after = Take(SerializeMapTerrain(*f.edits->Terrain()));
+    const auto snapshot = f.edits->Snapshot();
+    Require(snapshot.Units()->units.front().position[2] == 170
+        && snapshot.Doodads()->doodads.front().position[2] == 165, "both placement groups follow the native 128-unit cliff change");
+    const auto journal = Take(f.edits->ExportTerrainStrokeJournal());
+    Require(journal.strokes.size() == 1 && !journal.strokes.front().intent.waterBrush
+        && journal.strokes.front().intent.brush.kind == TerrainBrushKind::CliffLevel
+        && journal.strokes.front().cliffEnforceWaterLimits == true && journal.strokes.front().rulesSha256.size() == 64,
+        "project recovery retains ordinary cliff, actual rule identity and water-limit setting");
+    Require(f.edits->Undo() && Take(SerializeMapTerrain(*f.edits->Terrain())) == before, "one undo restores complete native cliff");
+    Require(f.edits->Redo() && Take(SerializeMapTerrain(*f.edits->Terrain())) == after, "one redo restores exact native bytes");
+    Require(!f.edits->ApplyPreparedTerrainEdit(plan).Succeeded(), "prepared native cliff rejects stale session revision");
+}
 } // namespace
 
 int main() {
@@ -378,6 +402,7 @@ int main() {
         UserRestrictionsAndSeedRemainIndependent();
         LargerOriginalTerrainRecordsPreparationCost();
         FullSizeStrokeUsesActualPhaseBudget();
+        OrdinaryCliffUsesOneNativeSessionTransaction();
         std::cout << "TerrainWaterSessionTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

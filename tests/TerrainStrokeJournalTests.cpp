@@ -29,7 +29,7 @@ void StrictCodecRoundtripAndMalformedInputs() {
         Require(!DecodeTerrainStrokeJournal(std::span(wire).first(size)).Succeeded(), "every truncated record fails closed");
     auto changed = wire; changed.push_back(std::byte{0});
     Require(!DecodeTerrainStrokeJournal(changed).Succeeded(), "unknown trailing extension rejected");
-    changed = wire; changed[3] = std::byte{'2'};
+    changed = wire; changed[3] = std::byte{'3'};
     Require(!DecodeTerrainStrokeJournal(changed).Succeeded(), "unknown version rejected");
     changed = wire; changed[88] = std::byte{2};
     Require(!DecodeTerrainStrokeJournal(changed).Succeeded(), "nonboolean member presence rejected");
@@ -58,6 +58,29 @@ void StrictCodecRoundtripAndMalformedInputs() {
     Require(EncodeTerrainStrokeJournal(invalid).Succeeded(), "water options have independent neutral ordinary brush");
     water.intent.brush.seed = 1;
     Require(!EncodeTerrainStrokeJournal(invalid).Succeeded(), "water ordinary conflicts rejected");
+}
+
+void NativeCliffVersionAndOptionsRemainExplicit() {
+    auto journal = Journal(); auto& stroke = journal.strokes.front();
+    stroke.intent.brush.kind = TerrainBrushKind::CliffLevel;
+    const auto legacy = Take(EncodeTerrainStrokeJournal(journal));
+    Require(legacy[3] == std::byte{'1'}, "legacy ordinary cliff retains FTJ1 encoding");
+    Require(!Take(DecodeTerrainStrokeJournal(legacy)).strokes.front().cliffEnforceWaterLimits,
+        "legacy cliff cannot acquire native rule semantics during decoding");
+    stroke.rulesSha256.assign(64, 'd');
+    Require(!EncodeTerrainStrokeJournal(journal).Succeeded(), "native cliff digest alone cannot omit its water-limit option");
+    stroke.cliffEnforceWaterLimits = false;
+    const auto wire = Take(EncodeTerrainStrokeJournal(journal));
+    Require(wire[3] == std::byte{'2'}, "native cliff opts into FTJ2 explicitly");
+    const auto decoded = Take(DecodeTerrainStrokeJournal(wire));
+    Require(decoded.strokes.front().cliffEnforceWaterLimits == false
+        && decoded.strokes.front().rulesSha256 == std::string(64, 'd')
+        && !decoded.strokes.front().intent.waterBrush, "ordinary cliff and disabled water limits roundtrip independently of water brush");
+    Require(Take(EncodeTerrainStrokeJournal(decoded)) == wire, "FTJ2 canonical bytes roundtrip");
+    for (std::size_t size = 0; size < wire.size(); ++size)
+        Require(!DecodeTerrainStrokeJournal(std::span(wire).first(size)).Succeeded(), "every FTJ2 truncation fails closed");
+    stroke.intent.brush.kind = TerrainBrushKind::Raise;
+    Require(!EncodeTerrainStrokeJournal(journal).Succeeded(), "non-cliff cannot impersonate native cliff rules");
 }
 
 struct SessionFixture {
@@ -121,7 +144,8 @@ void OversizedUiStrokeAndOpaqueDraftRemainEditable() {
 
 int main() {
     try {
-        StrictCodecRoundtripAndMalformedInputs(); LogicalQtReplayAndSavedBoundary(); OversizedUiStrokeAndOpaqueDraftRemainEditable();
+        StrictCodecRoundtripAndMalformedInputs(); NativeCliffVersionAndOptionsRemainExplicit();
+        LogicalQtReplayAndSavedBoundary(); OversizedUiStrokeAndOpaqueDraftRemainEditable();
         std::cout << "TerrainStrokeJournalTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
