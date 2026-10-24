@@ -1198,6 +1198,70 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
     Require(terrain.Succeeded() && terrain.value, "read real source W3E");
     const auto terrainSha = Sha256(*terrain.value);
     Require(terrainSha.Succeeded() && terrainSha.value, "hash real source W3E");
+    const auto sourceMap = MapDocument::FromArchive(*source.value);
+    const auto sourceSettings = source.value->ReadMember("war3map.w3i");
+    const auto sourcePathing = source.value->ReadMember("war3map.wpm");
+    Require(sourceSettings.Succeeded() && sourceSettings.value && sourcePathing.Succeeded() && sourcePathing.value
+        && sourceMap.Settings() && sourceMap.Settings()->formatVersion == 25, "freeze original classic settings and pathing");
+    const auto settingsIdentity = Sha256(*sourceSettings.value);
+    const auto sourcePathingIdentity = Sha256(*sourcePathing.value);
+    const auto descriptionRow = MapData::MapFieldRowKey(sourceMap, MapDataKind::Settings, 0);
+    Require(settingsIdentity.Succeeded() && settingsIdentity.value && sourcePathingIdentity.Succeeded() && sourcePathingIdentity.value
+        && descriptionRow.Succeeded() && descriptionRow.value, "bind mixed settings row and member identities");
+    const std::array descriptionValues{std::pair{"map_name", "Mixed terrain settings"}, std::pair{"author", "Fixture author"},
+        std::pair{"description", "Height and four settings in one save"}, std::pair{"recommended_players", "2-4"}};
+    std::vector<MapEditFieldOperation> descriptionEdits;
+    // classic v25头后紧跟这四个NUL字符串；独立拼出完整预期W3I，不调用字段writer生成oracle。
+    Require(sourceSettings.value->size() >= 12, "classic settings has its fixed header");
+    std::vector<std::byte> expectedSettings(sourceSettings.value->begin(), sourceSettings.value->begin() + 12);
+    std::size_t originalSettingsOffset = 12;
+    for (const auto& [fieldId, text] : descriptionValues) {
+        const auto* field = MapData::FindMapField(MapDataKind::Settings, fieldId);
+        Require(field != nullptr, "resolve mixed description field");
+        const auto before = MapData::ReadMapField(sourceMap, MapDataKind::Settings, 0, *field);
+        const auto afterValue = MapData::ParseMapFieldInput(*field, text);
+        Require(before.Succeeded() && before.value && afterValue.Succeeded() && afterValue.value
+            && !before.value->bytes.starts_with("TRIGSTR_"), "bind direct original description strings");
+        descriptionEdits.push_back({*settingsIdentity.value, {MapDataKind::Settings, 0, *descriptionRow.value,
+            fieldId, *before.value, *afterValue.value}});
+        const auto end = std::find(sourceSettings.value->begin() + originalSettingsOffset, sourceSettings.value->end(), std::byte{0});
+        Require(end != sourceSettings.value->end(), "find original description string boundary");
+        originalSettingsOffset = static_cast<std::size_t>(end - sourceSettings.value->begin()) + 1;
+        const auto value = Bytes(text);
+        expectedSettings.insert(expectedSettings.end(), value.begin(), value.end()); expectedSettings.push_back(std::byte{0});
+    }
+    expectedSettings.insert(expectedSettings.end(), sourceSettings.value->begin() + originalSettingsOffset, sourceSettings.value->end());
+    const auto verifyMixedSettings = [&](const MapArchiveSession& saved, const MapEditSaveReceipt& receipt,
+        std::span<const std::byte> baselineTerrain) {
+        const auto actualSettings = saved.ReadMember("war3map.w3i"), actualPathing = saved.ReadMember("war3map.wpm");
+        Require(actualSettings.Succeeded() && actualSettings.value && *actualSettings.value == expectedSettings,
+            "mixed save independently rereads all four final settings and preserves the complete W3I tail");
+        const auto actualScript = saved.ReadMember("war3map.j");
+        Require(actualScript.Succeeded() && actualScript.value
+            && std::string(reinterpret_cast<const char*>(actualScript.value->data()), actualScript.value->size())
+                .find(descriptionValues.front().second) != std::string::npos
+            && !receipt.scriptPreserved && receipt.appliedFieldEditCount == 4 && receipt.appliedStrokeCount == 1,
+            "mixed save rebuilds the real script with the final map name and receipts both input domains");
+        Require(actualPathing.Succeeded() && actualPathing.value && *actualPathing.value == *sourcePathing.value
+            && receipt.savedPathingSha256 == *sourcePathingIdentity.value,
+            "mixed description save preserves actual flat-height WPM and binds its final digest");
+        const auto baselineGrid = MapData::ParseMapTerrain(baselineTerrain);
+        Require(baselineGrid.Succeeded() && baselineGrid.value, "read this mixed request's actual terrain baseline");
+        const auto& header = baselineGrid.value->Snapshot()->header;
+        const auto heightOffset = 37 + 4 * (header.groundTilesets.size() + header.cliffTilesets.size())
+            + 7 * (32 * static_cast<std::size_t>(header.width) + 32);
+        Require(heightOffset + 1 < baselineTerrain.size(), "bind the exact raised vertex in the original wire");
+        std::vector<std::byte> expectedTerrain(baselineTerrain.begin(), baselineTerrain.end());
+        const auto raw = std::to_integer<unsigned>(expectedTerrain[heightOffset])
+            | (std::to_integer<unsigned>(expectedTerrain[heightOffset + 1]) << 8);
+        Require(raw <= 0x3ffb, "flat source leaves room for one world unit");
+        expectedTerrain[heightOffset] = static_cast<std::byte>((raw + 4) & 255);
+        expectedTerrain[heightOffset + 1] = static_cast<std::byte>((raw + 4) >> 8);
+        const auto actualTerrain = saved.ReadMember("war3map.w3e");
+        Require(actualTerrain.Succeeded() && actualTerrain.value && *actualTerrain.value == expectedTerrain
+            && ObjectV1MemberHash(*actualTerrain.value) == receipt.savedTerrainSha256,
+            "mixed description save changes only the requested height's two bytes and binds its final digest");
+    };
     const std::array<std::string, 6> preservedNames{
         "war3map.shd", "war3map.mmp", "war3map.wtg", "war3map.wct", "war3map.j", "war3map.doo"};
     const auto originalIdentities = source.value->DescribeExactMemberIdentities(source.value->SourceSha256(), preservedNames);
@@ -1212,31 +1276,43 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
     stroke.brush.radius = 0; stroke.brush.strength = 1;
     stroke.pointSpace = MapEditPointSpace::TerrainVertex; stroke.points = {{32, 32}};
     request.terrainStrokes = {stroke};
+    request.fieldEdits = descriptionEdits;
     request.minimapChoice = TerrainMinimapSaveChoice::Preserve;
     request.targetCandidate = directory.Path() / "preserved.w3x";
+    auto staleMixed = request;
+    staleMixed.expectedTerrainSha256 = std::string(64, '0');
+    staleMixed.targetCandidate = directory.Path() / "mixed-stale-rejected.w3x";
+    const auto staleMixedResult = SaveMapEditCandidate(staleMixed);
+    Require(!staleMixedResult.Succeeded() && HasCode(staleMixedResult.diagnostics, "SAVE_TERRAIN_STALE")
+        && !std::filesystem::exists(staleMixed.targetCandidate)
+        && Sha256File(sourcePath).value == std::optional(request.expectedSourceSha256),
+        "mixed Preserve request rejects stale terrain before publishing and preserves its source");
     const auto preserved = SaveMapEditCandidate(request);
-    Require(preserved.Succeeded() && preserved.value && preserved.value->scriptPreserved
+    Require(preserved.Succeeded() && preserved.value && !preserved.value->scriptPreserved
         && !preserved.value->generatedMissingMinimap,
-        "default service path saves height without generating a minimap receipt");
+        "Preserve saves height and all four description fields without a late attach or minimap generation");
     auto preservedArchive = MapArchiveSession::Open(request.targetCandidate);
     const std::array<std::string, 1> minimapNames{"war3mapMap.blp"};
     Require(preservedArchive.Succeeded() && preservedArchive.value, "independently reopen default candidate");
+    verifyMixedSettings(*preservedArchive.value, *preserved.value, *terrain.value);
     const auto preservedIdentity = preservedArchive.value->DescribeExactMemberIdentities(
         preservedArchive.value->SourceSha256(), minimapNames);
     Require(preservedIdentity.Succeeded() && preservedIdentity.value
         && !preservedIdentity.value->members[0].present, "default save retains exact MapBLP absence");
-    const auto verifyPreservedMembers = [&](const MapArchiveSession& saved) {
+    const auto verifyPreservedMembers = [&](const MapArchiveSession& saved, bool scriptUnchanged = true) {
         const auto identities = saved.DescribeExactMemberIdentities(saved.SourceSha256(), preservedNames);
         Require(identities.Succeeded() && identities.value, "independent exact old-member readback");
         for (std::size_t index = 0; index < preservedNames.size(); ++index) {
+            if (!scriptUnchanged && preservedNames[index] == "war3map.j") continue;
             const auto& before = originalIdentities.value->members[index];
             const auto& after = identities.value->members[index];
             Require(before.present == after.present && before.byteSize == after.byteSize && before.sha256 == after.sha256,
                 "SHD/MMP/WTG/WCT/JASS/DOO must retain original bytes or proven absence");
         }
     };
-    verifyPreservedMembers(*preservedArchive.value);
+    verifyPreservedMembers(*preservedArchive.value, false);
 
+    request.fieldEdits.clear();
     request.minimapChoice = TerrainMinimapSaveChoice::Automatic;
     request.targetCandidate = directory.Path() / "terrain-auto.w3x";
     const auto terrainAutomatic = SaveMapEditCandidate(request);
@@ -1427,18 +1503,20 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
         "partial settings save must preserve accurate terrain absence");
 
     request.minimapChoice = TerrainMinimapSaveChoice::GenerateMissingGroundOnly;
+    request.fieldEdits = descriptionEdits;
     request.targetCandidate = directory.Path() / "generated.w3x";
     const auto generated = SaveMapEditCandidate(request);
     if (!generated.Succeeded()) for (const auto& note : generated.diagnostics) std::cerr << note.code << ": " << note.message << '\n';
-    Require(generated.Succeeded() && generated.value && generated.value->scriptPreserved
+    Require(generated.Succeeded() && generated.value && !generated.value->scriptPreserved
         && generated.value->generatedMissingMinimap,
-        "explicit service path must publish and independently verify the missing MapBLP");
+        "explicit ground-only path saves height and four description fields before publishing the missing MapBLP");
     Require(generated.value->savedTerrainSha256 == preserved.value->savedTerrainSha256
         && generated.value->savedPathingSha256 == preserved.value->savedPathingSha256,
         "minimap choice cannot change the real paired terrain outcome");
     const auto& receipt = *generated.value->generatedMissingMinimap;
     auto candidate = MapArchiveSession::Open(request.targetCandidate);
     Require(candidate.Succeeded() && candidate.value, "independently reopen generated candidate from disk");
+    verifyMixedSettings(*candidate.value, *generated.value, *terrain.value);
     const auto blp = candidate.value->ReadMember("war3mapMap.blp");
     Require(blp.Succeeded() && blp.value, "read actual generated MapBLP");
     const auto decoded = Image::DecodeBlp(*blp.value);
@@ -1453,9 +1531,10 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
         && receipt.rangePolicy == Render::TerrainMinimapRangePolicy::FullW3e
         && receipt.manifestSha256.size() == 64, "receipt binds encoded bytes and actual decoded mip0 separately");
     // 当前是顶视unlit ground-only策略；高度变化不要求改变输出像素，也不声称原版小地图等价。
-    verifyPreservedMembers(*candidate.value);
+    verifyPreservedMembers(*candidate.value, false);
     for (const auto& member : members) {
-        if (member.name == "war3map.w3e" || member.name == "(listfile)") continue;
+        if (member.name == "war3map.w3e" || member.name == "war3map.w3i" || member.name == "war3map.j"
+            || member.name == "(listfile)") continue;
         const auto saved = candidate.value->ReadMember(member.name);
         Require(saved.Succeeded() && saved.value && *saved.value == member.data,
             "generated MapBLP preserves WPM, SHD, markers, triggers and unrelated original members");
@@ -1474,6 +1553,7 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
     Require(standardTerrainSha.Succeeded() && standardTerrainSha.value, "bind unchanged standard source terrain SHA");
     request.sourceMap = standardPath; request.expectedSourceSha256 = standardSource.value->SourceSha256();
     request.expectedTerrainSha256 = *standardTerrainSha.value;
+    request.fieldEdits.clear();
     request.minimapChoice = TerrainMinimapSaveChoice::GenerateMissingGroundOnly;
     request.targetCandidate = directory.Path() / "standard-old-choice-rejected.w3x";
     const auto standardOld = SaveMapEditCandidate(request);
@@ -1485,11 +1565,12 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
     Require(standardPreserved.Succeeded() && standardPreserved.value && !standardPreserved.value->generatedMissingMinimap,
         "standard source default save continues to preserve missing MapBLP");
     request.minimapChoice = TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly;
+    request.fieldEdits = descriptionEdits;
     request.targetCandidate = directory.Path() / "standard-declared-generated.w3x";
     const auto standardGenerated = SaveMapEditCandidate(request);
     if (!standardGenerated.Succeeded()) for (const auto& note : standardGenerated.diagnostics)
         std::cerr << "declared missing-minimap: " << note.code << ": " << note.message << '\n';
-    Require(standardGenerated.Succeeded() && standardGenerated.value && standardGenerated.value->scriptPreserved
+    Require(standardGenerated.Succeeded() && standardGenerated.value && !standardGenerated.value->scriptPreserved
         && standardGenerated.value->generatedMissingMinimap
         && standardGenerated.value->generatedMissingMinimap->rangePolicy
             == Render::TerrainMinimapRangePolicy::DeclaredW3iMarginsExteriorMapEdge
@@ -1498,6 +1579,7 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
         "new explicit choice binds actual declared manifest without changing paired terrain outcome");
     auto standardCandidate = MapArchiveSession::Open(request.targetCandidate);
     Require(standardCandidate.Succeeded() && standardCandidate.value, "independently reopen declared standard candidate");
+    verifyMixedSettings(*standardCandidate.value, *standardGenerated.value, *standardTerrain.value);
     const auto standardBlp = standardCandidate.value->ReadMember("war3mapMap.blp");
     Require(standardBlp.Succeeded() && standardBlp.value, "read declared actual BLP");
     const auto standardDecoded = Image::DecodeBlp(*standardBlp.value);
@@ -1523,10 +1605,11 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
             == standardAfter.value->Snapshot()->vertices[index].waterHeightAndFlagsRaw,
             "declared service never clears or changes source/current water or MapEdge flags");
     for (const auto& member : standardMembers) {
-        if (member.name == "war3map.w3e" || member.name == "(listfile)") continue;
+        if (member.name == "war3map.w3e" || member.name == "war3map.w3i" || member.name == "war3map.j"
+            || member.name == "(listfile)") continue;
         const auto saved = standardCandidate.value->ReadMember(member.name);
         Require(saved.Succeeded() && saved.value && *saved.value == member.data,
-            "declared save preserves W3I, WPM, JASS, triggers and every other original member");
+            "declared mixed save preserves WPM, triggers and every unrelated original member");
     }
     const auto standardAfterSha = Sha256File(standardPath);
     Require(standardAfterSha.Succeeded() && standardAfterSha.value && *standardAfterSha.value == request.expectedSourceSha256,

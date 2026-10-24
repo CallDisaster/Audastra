@@ -697,20 +697,25 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         std::shared_ptr<const TerrainMinimapSave> minimapSave;
         std::shared_ptr<const TerrainMinimapPreserveGuard> minimapPreserve;
 
-        // Automatic 小地图需要一个稳定的源地形会话。必须在任何
+        // 地形笔划和Automatic小地图需要一个稳定的源地形会话。必须在任何
         // settings/物编/摆放编辑前附加 W3E/WPM，否则最终派生阶段再附加
-        // 会撞上 MapDataEditSession 的 AttachLate 门禁。准确缺失的局部归档
-        // 保持未附加，后续 RequiresAutomaticGeneration 会按真实成员决定是否跳过。
-        if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic) {
+        // 会撞上 MapDataEditSession 的 AttachLate 门禁。笔划必须有完整来源；
+        // 仅Automatic的局部归档可以保持未附加，后续按真实成员决定是否跳过生成。
+        if (terrainRequest || request.minimapChoice == TerrainMinimapSaveChoice::Automatic) {
             const std::array<std::string, 2> names{"war3map.w3e", "war3map.wpm"};
             const auto members = source.CaptureExactMembers(names);
-            if (!members.Succeeded() || !members.value)
+            if (!members.Succeeded() || !members.value) {
+                if (terrainRequest) return Forward(members.diagnostics);
                 minimapInputFailure.insert(minimapInputFailure.end(), members.diagnostics.begin(), members.diagnostics.end());
-            else if ((*members.value)[0].present && (*members.value)[1].present) {
+            } else if ((*members.value)[0].present && (*members.value)[1].present) {
                 auto attached = edits.AttachTerrain((*members.value)[0].bytes);
                 if (attached.Succeeded()) attached = edits.AttachPathing((*members.value)[1].bytes);
-                if (!attached.Succeeded())
+                if (!attached.Succeeded()) {
+                    if (terrainRequest) return Forward(attached.diagnostics);
                     minimapInputFailure.insert(minimapInputFailure.end(), attached.diagnostics.begin(), attached.diagnostics.end());
+                }
+            } else if (terrainRequest) {
+                return Fail("SAVE_TERRAIN_PATHING_MISSING", "源地图必须同时包含唯一可读取的 W3E 和 WPM。");
             } else if (shadowOnly && (*members.value)[0].present && !(*members.value)[1].present) {
                 // 独立阴影计算不消费WPM。这里只接受准确捕获证明的缺失，不能
                 // 将损坏、读取失败或未知来源当成缺失，也不为生成图像伪造WPM。
