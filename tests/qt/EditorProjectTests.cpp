@@ -4895,7 +4895,9 @@ void EditorProjectTests::PaletteWaterProjectColdRestoreAndNativeSave() {
     std::vector<std::byte> texture(18 + 16 * 3, std::byte{});
     texture[2] = std::byte{2}; texture[12] = texture[14] = std::byte{4}; texture[16] = std::byte{24};
     members.push_back({"PathTextures/zero-special.tga", std::move(texture)});
-    const auto source = std::filesystem::path(root.filePath("source.w3x").toStdWString());
+    const auto sourceDirectory = std::filesystem::path(root.filePath("map").toStdWString());
+    QVERIFY(std::filesystem::create_directory(sourceDirectory));
+    const auto source = sourceDirectory / "source.w3x";
     const auto game = std::filesystem::path(root.filePath("game").toStdWString());
     QVERIFY(std::filesystem::create_directory(game));
     QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
