@@ -9,6 +9,7 @@
 #include "War3MapCore/MapData/MapShadow.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
+#include "War3MapCore/ObjectData/NativeObjectCodec.h"
 #include "War3MapCore/Services/MapSaveService.h"
 #include "War3MapCore/Services/TerrainShadowCasterResources.h"
 
@@ -16,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstring>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
@@ -70,6 +72,76 @@ void Put32(Bytes& bytes, std::uint32_t value) {
 Bytes Pathing() {
     auto bytes = Text("MP3W"); Put32(bytes, 0); Put32(bytes, kSide); Put32(bytes, kSide);
     bytes.resize(16 + kSide * kSide, std::byte{0x40}); return bytes;
+}
+
+Bytes Slk(const std::vector<std::string>& columns, const std::vector<std::vector<std::string>>& rows) {
+    std::string text = "ID;PWXL;N;E\n";
+    const auto append = [&](const auto& cells, std::size_t y) {
+        for (std::size_t x = 0; x < cells.size(); ++x)
+            text += "C;X" + std::to_string(x + 1) + ";Y" + std::to_string(y) + ";K\"" + cells[x] + "\"\n";
+    };
+    append(columns, 1); for (std::size_t i = 0; i < rows.size(); ++i) append(rows[i], i + 2);
+    return Text(text + "E\n");
+}
+
+// 原创MDX v800，与纯CPU模型测试使用同一合法块布局，但几何及字面SHD
+// 独立定义在本保存测试中；不借模型投影器或正式Bake制造expected。
+struct ModelWriter {
+    Bytes bytes;
+    void Raw(const void* data, std::size_t count) {
+        const auto* first = static_cast<const std::byte*>(data); bytes.insert(bytes.end(), first, first + count);
+    }
+    void Tag(const char* value) { Raw(value, 4); }
+    void U32(std::uint32_t value) { Raw(&value, 4); }
+    void U16(std::uint16_t value) { Raw(&value, 2); }
+    void F32(float value) { Raw(&value, 4); }
+    void Fixed(const char* value, std::size_t count) {
+        std::vector<char> text(count, 0); std::memcpy(text.data(), value, std::min(count, std::strlen(value))); Raw(text.data(), count);
+    }
+    std::size_t Begin() { const auto at = bytes.size(); U32(0); return at; }
+    void End(std::size_t at, bool inclusive = false) {
+        const auto size = static_cast<std::uint32_t>(bytes.size() - at - (inclusive ? 0 : 4));
+        std::memcpy(bytes.data() + at, &size, 4);
+    }
+    void Extent(float radius) {
+        F32(radius); F32(0); F32(0); F32(0); F32(128); F32(128); F32(128);
+    }
+};
+Bytes CasterModel(bool dynamic = false, bool sequenceSphere = false) {
+    ModelWriter w;
+    w.Tag("MDLX"); w.Tag("VERS"); w.U32(4); w.U32(800);
+    w.Tag("MODL"); { const auto chunk = w.Begin(); w.Fixed("AuthoredSaveCaster", 80); w.Fixed("", 260);
+        w.Extent(sequenceSphere ? 0.0f : 256.0f); w.U32(0); w.End(chunk); }
+    w.Tag("SEQS"); { const auto chunk = w.Begin(); w.Fixed("Stand", 80); w.U32(0); w.U32(1000);
+        w.F32(0); w.U32(0); w.F32(0); w.U32(0); w.Extent(256); w.End(chunk); }
+    w.Tag("TEXS"); w.U32(268); w.U32(0); w.Fixed("Fixture\\UnusedTexture.blp", 260); w.U32(0);
+    w.Tag("MTLS"); { const auto chunk = w.Begin(), material = w.Begin();
+        w.U32(0); w.U32(0); w.Tag("LAYS"); w.U32(1); const auto layer = w.Begin();
+        w.U32(0); w.U32(0); w.U32(0); w.U32(UINT32_MAX); w.U32(0); w.F32(1);
+        w.End(layer, true); w.End(material, true); w.End(chunk); }
+    w.Tag("GEOS"); { const auto chunk = w.Begin(), geoset = w.Begin();
+        w.Tag("VRTX"); w.U32(3);
+        for (const auto& point : std::array<std::array<float, 3>, 3>{{{0,0,64}, {128,0,64}, {0,128,64}}})
+            for (const auto value : point) w.F32(value);
+        w.Tag("NRMS"); w.U32(3); for (unsigned i = 0; i < 3; ++i) { w.F32(0); w.F32(0); w.F32(1); }
+        w.Tag("PTYP"); w.U32(1); w.U32(4); w.Tag("PCNT"); w.U32(1); w.U32(3);
+        w.Tag("PVTX"); w.U32(3); w.U16(0); w.U16(1); w.U16(2);
+        w.Tag("GNDX"); w.U32(3); for (unsigned i = 0; i < 3; ++i) { const char zero = 0; w.Raw(&zero, 1); }
+        w.Tag("MTGC"); w.U32(1); w.U32(1); w.Tag("MATS"); w.U32(1); w.U32(0);
+        w.U32(0); w.U32(0); w.U32(0); w.Extent(256); w.U32(0);
+        w.Tag("UVAS"); w.U32(1); w.Tag("UVBS"); w.U32(3);
+        for (unsigned i = 0; i < 3; ++i) { w.F32(0); w.F32(0); }
+        w.End(geoset, true); w.End(chunk); }
+    w.Tag("GEOA"); { const auto chunk = w.Begin(), item = w.Begin();
+        w.F32(1); w.U32(0); w.F32(1); w.F32(1); w.F32(1); w.U32(0); w.End(item, true); w.End(chunk); }
+    w.Tag("BONE"); { const auto chunk = w.Begin(), node = w.Begin();
+        w.Fixed("Caster", 80); w.U32(0); w.U32(UINT32_MAX); w.U32(0);
+        if (dynamic) {
+            w.Tag("KGTR"); w.U32(1); w.U32(0); w.U32(UINT32_MAX); w.U32(0); w.F32(0); w.F32(0); w.F32(0);
+        }
+        w.End(node, true); w.U32(UINT32_MAX); w.U32(UINT32_MAX); w.End(chunk); }
+    w.Tag("PIVT"); w.U32(12); w.F32(0); w.F32(0); w.F32(0);
+    return std::move(w.bytes);
 }
 
 // 独立字面预期，不调用采样器、投影器或SHD编码器制造expected。
@@ -147,6 +219,52 @@ struct Fixture {
     }
 };
 
+struct CasterFixture : Fixture {
+    DoodadPlacements placements;
+    explicit CasterFixture(bool dynamic = false, bool sequenceSphere = false) {
+        Direction("[Light]\nDirection=3,0,-4\n[Terrain]\nMinHeight=-4096\nMaxHeight=4096\n");
+        DoodadPlacement placement;
+        placement.rawcode = "C001"; placement.position = {256, 256, 0}; placement.scale = {2, 2, 2};
+        placement.rotation = 0; placement.variation = 0; placement.flags = 2;
+        placement.lifePercent = 100; placement.creationId = 1; placements.doodads.push_back(placement);
+        Set("war3map.doo", Take(placements.Serialize()));
+        Set("war3mapUnits.doo", Take(UnitPlacements{}.Serialize()));
+        Set("Units/DestructableData.slk", Slk({"DestructableID"}, {{"D001"}}));
+        Set("Doodads/Doodads.slk", Table());
+        Set("Fixture/Plane.mdx", CasterModel(dynamic, sequenceSphere));
+        for (const auto type : {ObjectData::ObjectType::Destructable, ObjectData::ObjectType::Doodad}) {
+            const auto empty = Take(ObjectData::NativeObjectDocument::CreateEmpty(type));
+            Set(type == ObjectData::ObjectType::Destructable ? "war3map.w3b" : "war3map.w3d",
+                Take(ObjectData::NativeObjectCodec(type).Serialize(empty)));
+        }
+        const std::array<MapArchiveMember, 1> gameMembers{{{"Fixture/Unused.bin", Text("unrelated lower game source")}}};
+        Take(WriteVerifiedArchive(game / "war3.mpq", gameMembers));
+        source.reset(); source = std::make_unique<MapArchiveSession>(Take(MapArchiveSession::Open(
+            Take(WriteVerifiedArchive(root / "caster-source.w3x", members)).path)));
+        sourceSha = source->SourceSha256();
+    }
+    static Bytes Table(bool shadow = true) {
+        return Slk({"doodID", "shadow", "file", "numVar", "defScale", "maxPitch", "maxRoll", "fixedRot", "floats"},
+            {{"C001", shadow ? "1" : "0", "Fixture/Plane", "1", "0.5", "0", "0", "-1", "0"}});
+    }
+    void Set(std::string_view name, Bytes bytes) {
+        const auto member = std::find_if(members.begin(), members.end(), [&](const auto& item) { return item.name == name; });
+        if (member == members.end()) members.push_back({std::string(name), std::move(bytes)});
+        else member->data = std::move(bytes);
+    }
+};
+
+// 地面receiver=0.1，平移(256,256)，wire scale2 * defScale0.5 = 1。
+// 射线在z64平面向西移0.75*(64-0.1)=47.925，三角条件为
+// x>=303.925、y>=256、x+y<=687.925。32步长像素中心恰好有以下10个。
+// sphere包围所有这些点，且它们与对称anchor同在512区块内，不依赖筛选例外。
+Bytes ExpectedCasterShadow() {
+    Bytes bytes(kSide * kSide, std::byte{0});
+    for (std::size_t y = 8; y <= 11; ++y)
+        for (std::size_t x = 9; x <= 20 - y; ++x) bytes[y * kSide + x] = std::byte{0xff};
+    return bytes;
+}
+
 MemberReplacement& ShadowOutput(MapSaveTask& task) {
     const auto found = std::find_if(task.replacements.begin(), task.replacements.end(),
         [](const auto& member) { return member.name == "war3map.shd"; });
@@ -188,6 +306,87 @@ void OrdinarySaveRetainsOriginalShadowAndDoesNotNeedGameProfiles() {
         && Take(task.nextSession->ReadMember("Fixture/Unrelated.bin")) == unrelated,
         "普通保存保留全部旧SHD哨兵并保存普通编辑");
     fixture.VerifySource();
+}
+
+void ActualStaticCasterWritesLiteralNonzeroShadow() {
+    for (const bool sequenceSphere : {false, true}) {
+        CasterFixture fixture(false, sequenceSphere);
+        const auto resources = Take(TerrainShadowCasterResources::Capture(*fixture.source, fixture.game));
+        const std::array<float, 12> expectedMatrix{1,0,0,256, 0,1,0,256, 0,0,1,0};
+        Require(resources->Casters().size() == 1 && resources->Models().size() == 1
+            && resources->Casters()[0].nativeMatrix == expectedMatrix
+            && resources->Casters()[0].defaultScale == 0.5f
+            && resources->Casters()[0].placement.scale == std::array<float,3>{2,2,2}
+            && resources->Models()[0].path == "Fixture/Plane.mdx"
+            && resources->Models()[0].bytes == fixture.Member("Fixture/Plane.mdx"),
+            "真实DOO和map-winning表/模型必须产生独立的原生矩阵，不借预览或资格布尔值");
+        Require(std::any_of(resources->Dependencies().begin(), resources->Dependencies().end(), [](const auto& input) {
+            return input.name == "FIXTURE\\PLANE.MDX" && input.source == TerrainShadowCasterSource::Map && !input.sha256.empty();
+        }), "模型原字必须绑定真实地图winner与SHA");
+        MapSaveTask task; fixture.Freeze(task); fixture.Prepare(task); MapSaveService::Run(task);
+        if (!task.succeeded) Check({task.diagnostics});
+        const auto expected = ExpectedCasterShadow();
+        Require(task.succeeded && task.nextSession && task.terrainShadow && task.terrainShadow->CasterCount() == 1
+            && task.terrainShadow->Width() == kSide && task.terrainShadow->Height() == kSide
+            && task.terrainShadow->Bytes() == expected
+            && std::count(expected.begin(), expected.end(), std::byte{0xff}) == 10,
+            "正式filtered Bake必须合成完整32x32、仅10像素FF的独立几何字面SHD");
+        const auto saved = Take(MapArchiveSession::Open(task.written));
+        Require(Take(saved.ReadMember("war3map.shd")) == expected,
+            "完整非零SHD须从实际MPQ重开读回，不能只检查内存owner");
+        const auto parsed = Take(ParseMapShadow(Take(saved.ReadMember("war3map.shd")), kSide, kSide));
+        Require(std::all_of(parsed.intensities.begin(), parsed.intensities.end(), [](auto value) { return value == 0 || value == 255; }),
+            "模型与地形持久bit0合成后只写00/FF");
+        for (const auto& member : fixture.members) if (member.name != "war3map.shd")
+            Require(Take(saved.ReadMember(member.name)) == member.data, "非零投影不能改写任何无关源成员或其真实资源表/模型");
+        Check(task.terrainShadow->VerifyFrozenOutput(*fixture.source, task.replacements));
+        Check(task.terrainShadow->VerifyReadback(saved)); fixture.VerifySource();
+    }
+}
+
+void MissingActualHeightBoundsAndDynamicCastersNeverPublish() {
+    for (const bool dynamic : {false, true}) {
+        CasterFixture fixture(dynamic);
+        if (!dynamic) fixture.Direction("[Light]\nDirection=3,0,-4\n");
+        const auto expectedCode = dynamic ? "TERRAIN_SHADOW_CASTER_DYNAMIC" : "TERRAIN_SHADOW_HEIGHT_BOUNDS_UNKNOWN";
+        Rejected(TerrainShadowBake::Capture(*fixture.source, fixture.game), expectedCode);
+        MapSaveTask task; fixture.Freeze(task); fixture.Prepare(task); MapSaveService::Run(task);
+        fixture.VerifyDenied(task); HasCode(task.diagnostics, expectedCode);
+        Require(!task.terrainShadow && Take(fixture.source->ReadMember("war3map.shd")) == fixture.Member("war3map.shd"),
+            "缺实际高度来源或静态资格失败不能返回部分owner，旧SHD和源图必须保留");
+    }
+}
+
+enum class CasterTamper { Model, Table, Placement, HeightBounds };
+void AlterCaster(CasterFixture& fixture, MapSaveTask& task, CasterTamper tamper) {
+    Require(task.terrainShadow && task.terrainShadow->CasterCount() == 1,
+        "来源漂移夹具必须先实际生成非空caster owner");
+    switch (tamper) {
+    case CasterTamper::Model: {
+        auto model = fixture.Member("Fixture/Plane.mdx"); model[24] = std::byte{'X'}; // 仅MODL名字，不改变静态几何资格。
+        task.replacements.push_back({"Fixture/Plane.mdx", std::move(model)}); break;
+    }
+    case CasterTamper::Table: task.replacements.push_back({"Doodads/Doodads.slk", CasterFixture::Table(false)}); break;
+    case CasterTamper::Placement: {
+        auto placed = fixture.placements; placed.doodads.front().position[0] = 288;
+        task.replacements.push_back({"war3map.doo", Take(placed.Serialize())}); break;
+    }
+    case CasterTamper::HeightBounds:
+        fixture.Direction("[Light]\nDirection=3,0,-4\n[Terrain]\nMinHeight=-4096\nMaxHeight=4097\n"); break;
+    }
+}
+void FinalCallbacksCannotDriftCasterGeometryTablesPlacementsOrHeightSources() {
+    for (const bool late : {false, true}) {
+        for (const auto tamper : {CasterTamper::Model, CasterTamper::Table, CasterTamper::Placement, CasterTamper::HeightBounds}) {
+            CasterFixture fixture; MapSaveTask task; fixture.Freeze(task); fixture.Prepare(task); bool reached = false;
+            if (!late) task.beforePublish = [&] { reached = true; AlterCaster(fixture, task, tamper); return Status::Ok(); };
+            MapSaveService::Run(task, [&](std::string_view stage) {
+                if (late && stage == "archive-candidate") { reached = true; AlterCaster(fixture, task, tamper); }
+            });
+            Require(reached, "必须实际到达非空caster生成后的最后或发布展示回调，不能由早期失败冒充来源复核");
+            fixture.VerifyDenied(task);
+        }
+    }
 }
 
 enum class Tamper { Shadow, Owner, Terrain, Direction };
@@ -287,6 +486,9 @@ int main() {
     try {
         ExplicitBakeWritesCompleteLiteralShadowAndPreservesOtherMembers();
         OrdinarySaveRetainsOriginalShadowAndDoesNotNeedGameProfiles();
+        ActualStaticCasterWritesLiteralNonzeroShadow();
+        MissingActualHeightBoundsAndDynamicCastersNeverPublish();
+        FinalCallbacksCannotDriftCasterGeometryTablesPlacementsOrHeightSources();
         FinalCallbackCannotChangeOutputOwnerTerrainOrActualDirection();
         PublicationProgressCannotTamperAfterEarlierChecks();
         CaptureBudgetsCancellationAndManualConflictsPreserveSource();
