@@ -852,8 +852,10 @@ void ExistingCornerWaterSequenceFollowsRestoresAndSavesEveryHistoryState() {
         Require(states[0].terrain == originalTerrain && states[0].pathing == originalPathing,
             "full combined source W3E/WPM matches its frozen initial state");
         // 湿浅刷维持L2/S32，地高仍64，应保持Z；湿深刷降到L1/H=-96。
-        // 干浅/深分别降到L1/H=-96与L0/H=-224，两笔各用自己的原始B32+S32锚点。
-        const std::array<float, 2> deltas{wet ? 0.0f : -160.0f, wet ? -160.0f : -288.0f};
+        // 干浅刷为L1/H=-96。干深刷先请求L0，但5F0990将八邻干岸升至L3，
+        // 随后的57FD40层级差收敛把中心恢复至L1，因此最终同为H=-96。
+        // 两笔仍各从未改过的原始B32+S32锚点开始，源有效地高为64。
+        const std::array<float, 2> deltas{wet ? 0.0f : -160.0f, -160.0f};
         for (std::size_t index = 0; index < centers.size(); ++index) {
             const auto rules = f.Rules();
             const TerrainStrokePoint point{double(centers[index][0] * 128), double(centers[index][1] * 128)};
@@ -868,6 +870,9 @@ void ExistingCornerWaterSequenceFollowsRestoresAndSavesEveryHistoryState() {
                 && brush->anchor.hasWater == wet && (!wet || brush->anchor.waterHeightRaw == 8576),
                 "each ordered water stroke starts at its own intact dry or physically shallow S32 corner");
             Take(ApplyTerrainEdit(*f.edits, f.Document(), prepared)); states[index + 1] = captureState();
+            const auto& waterCenter = f.edits->Terrain()->vertices[centers[index][1] * 33 + centers[index][0]];
+            Require(waterCenter.groundHeightRaw == 8320 && waterCenter.CliffLevel() == (wet && index == 0 ? 2 : 1),
+                "ordered water centers obey the independent final raw base and shore-converged layer");
             Require(states[index + 1].terrain != states[index].terrain, "both ordered strokes really change complete terrain");
             Require((states[index + 1].units != states[index].units) == (deltas[index] != 0)
                 && (states[index + 1].doodads != states[index].doodads) == (deltas[index] != 0),
