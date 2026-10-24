@@ -2160,7 +2160,7 @@ void MixedObjectAndResourceSavesUseActualPathingDependencies() {
         Require(Take(saved.ReadMember("war3map.w3u")) == unitBytes(1), "mixed unit HP is written exactly");
         Require(Take(saved.ReadMember("war3map.w3e")) == f.ExpectedTerrain(true), "mixed save keeps complete independently expected terrain");
         Require(Take(saved.ReadMember("war3map.wpm")) == f.ExpectedPathing(true), "mixed save keeps complete independently expected WPM");
-        Require(Take(saved.ReadMember("war3mapImported/independent.blp")) == output.back().data,
+        Require(Take(saved.ReadMember("war3mapImported/independent.blp")) == Text("independent author resource"),
             "unrelated import is preserved in the same save");
         Require(Take(Sha256File(f.archive->SourcePath())) == sourceSha, "mixed save leaves source untouched");
 
