@@ -301,8 +301,12 @@ QWidget* WorldModule::BuildTerrainPage() {
     terrainCliffDeltas_->button(1)->setChecked(true);
     auto* replaceCliff = new QPushButton(tr("替换悬崖贴图…"), terrainCliffSection_);
     replaceCliff->setObjectName(QStringLiteral("worldTerrainReplaceCliffTexture"));
-    cliff->addWidget(replaceCliff);
+    auto* addCliff = new QPushButton(tr("添加悬崖贴图…"), terrainCliffSection_);
+    addCliff->setObjectName(QStringLiteral("worldTerrainAddCliffTexture"));
+    auto* cliffButtons = new QHBoxLayout; cliffButtons->addWidget(replaceCliff); cliffButtons->addWidget(addCliff);
+    cliff->addLayout(cliffButtons);
     connect(replaceCliff, &QPushButton::clicked, this, [this] { EditTerrainTextureSlot(true, false); });
+    connect(addCliff, &QPushButton::clicked, this, [this] { EditTerrainTextureSlot(true, true); });
     column->addWidget(terrainCliffSection_);
 
     terrainWaterSection_ = Surface(terrainPalette_);
