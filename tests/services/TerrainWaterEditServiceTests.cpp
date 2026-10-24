@@ -1203,6 +1203,7 @@ void ForwardJournalPreservesSavedRestrictionOverlapAndUndo() {
     const auto denied = TerrainPathingSave::RestoreJournal(*f.source, original, terrain, pathing, journal, *raw, f.game, tight);
     Require(!denied.Succeeded() && !denied.value && HasCode(denied, "TERRAIN_REPLAY_BUDGET"), "raw resident memory is precharged before replay or final comparison");
 }
+#include "TerrainRemoveWaterSaveCases.h"
 } // namespace
 
 int main() {
@@ -1229,6 +1230,9 @@ int main() {
         ForwardJournalRestoresOwnedSpecialDeletionAndRejectsDrift();
         ForwardJournalSeparatesBaselineReadFailureFromResourceFallback();
         ForwardJournalPreservesSavedRestrictionOverlapAndUndo();
+        RemoveWaterReplayAndNativeSaveKeepOldContributionsBound();
+        RemoveWaterStillRequiresOldWaterRulesAndExplainedPathing();
+        RemoveWaterDirectSaveKeepsTheExistingScriptGate();
         std::cout << "TerrainWaterEditServiceTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

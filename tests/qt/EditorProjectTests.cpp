@@ -992,6 +992,8 @@ private slots:
     void PlacementHeightAndSavedPathingWorkerRoundtrip();
     void NativePathingWorkerRebuildsAndRebinds_data();
     void NativePathingWorkerRebuildsAndRebinds();
+    void NativePathingRemoveWaterProjectRoundtripAndSave_data();
+    void NativePathingRemoveWaterProjectRoundtripAndSave();
     void TerrainUnitPlacementNativeSave_data();
     void TerrainUnitPlacementNativeSave();
     void BoundaryNativeSave_data();
@@ -1081,6 +1083,7 @@ private:
 };
 
 #include "EditorProjectOrdinaryDoodadRecoveryCases.h"
+#include "EditorProjectRemoveWaterCases.h"
 
 void EditorProjectTests::UnlistedTerrainReadPreservesNamedInventory() {
     QTemporaryDir root; QVERIFY(root.isValid());
