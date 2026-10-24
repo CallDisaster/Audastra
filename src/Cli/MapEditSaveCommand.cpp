@@ -216,6 +216,26 @@ std::optional<Services::MapEditTerrainStroke> ParseStroke(wchar_t** argv, int in
     return stroke;
 }
 
+// 角坡使用世界坐标，保留默认笔刷字段；四分区规范点由共用Core检查，不在CLI吸附。
+std::optional<Services::MapEditTerrainStroke> ParseCornerRamp(wchar_t** argv, int index, std::string& error) {
+    const auto x = ParseNumber<double>(argv[index + 1]);
+    const auto y = ParseNumber<double>(argv[index + 2]);
+    const std::wstring_view value(argv[index + 3]);
+    constexpr double maximumCoordinate = 16777216;
+    if (!x || !y || !std::isfinite(*x) || !std::isfinite(*y)
+        || std::abs(*x) > maximumCoordinate || std::abs(*y) > maximumCoordinate
+        || (value != L"true" && value != L"false")) {
+        error = "--corner-ramp requires finite world x/y within +/-16777216 and true or false";
+        return std::nullopt;
+    }
+    Services::MapEditTerrainStroke stroke;
+    stroke.pointSpace = Services::MapEditPointSpace::World;
+    stroke.brush.kind = MapData::TerrainBrushKind::CornerRamp;
+    stroke.brush.value = value == L"true";
+    stroke.points.push_back({*x, *y});
+    return stroke;
+}
+
 // --water-stroke <shallow|deep> <circle|square> <vertex-x> <vertex-y>
 //                <size-1..8> <cliff-slot-0..14> <seed-u32> <enforce-limits:true|false>
 std::optional<Services::MapEditTerrainStroke> ParseWaterStroke(wchar_t** argv, int index, std::string& error) {
@@ -390,6 +410,13 @@ int RunMapEditSave(int argc, wchar_t** argv) {
             if (!stroke) return Invalid(error);
             request.terrainStrokes.push_back(std::move(*stroke));
             index += 7;
+        } else if (flag == L"--corner-ramp") {
+            if (index + 3 >= argc) return Invalid("--corner-ramp requires world x, world y, and true or false");
+            if (request.terrainStrokes.size() >= 128) return Invalid("at most 128 ordered strokes are allowed");
+            auto stroke = ParseCornerRamp(argv, index, error);
+            if (!stroke) return Invalid(error);
+            request.terrainStrokes.push_back(std::move(*stroke));
+            index += 4;
         } else if (flag == L"--water-stroke") {
             if (index + 8 >= argc) return Invalid("--water-stroke requires eight arguments");
             if (request.terrainStrokes.size() >= 128) return Invalid("at most 128 ordered strokes are allowed");

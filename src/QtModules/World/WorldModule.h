@@ -217,8 +217,10 @@ private:
     [[nodiscard]] MapData::TerrainBrushKind CurrentBrushKind() const;
     [[nodiscard]] std::optional<MapData::TerrainWaterBrushKind> CurrentWaterBrushKind() const;
     [[nodiscard]] bool NeedsStructuralBrushRules() const {
-        return CurrentWaterBrushKind().has_value() || CurrentBrushKind() == MapData::TerrainBrushKind::CliffLevel;
+        return CurrentWaterBrushKind().has_value() || CurrentBrushKind() == MapData::TerrainBrushKind::CliffLevel
+            || CurrentBrushKind() == MapData::TerrainBrushKind::CornerRamp;
     }
+    [[nodiscard]] bool StructuralBrushEnforceWaterLimits() const;
     [[nodiscard]] bool WaterBrushCaptureCurrent() const;
     void QueueWaterBrushCapture();
     void StartWaterBrushCapture();
@@ -556,6 +558,7 @@ private:
         std::variant<MapData::TerrainWaterBrush, MapData::TerrainBrush> brush;
         std::vector<MapData::TerrainStrokePoint> points;
         bool resumeBrush = false;
+        std::shared_ptr<const MapData::MapDataEditSession> frozen;
     };
     std::shared_ptr<const WaterBrushCommit> waterCommit_;
     bool waterCommitPending_ = false;

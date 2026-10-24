@@ -207,6 +207,24 @@ void FacadeRejectsUnknownTypesBoundsAndStaleSources() {
     Expect(!unavailable.value("ok").toBool() && unavailable.value("diagnostics").toArray().size() == 1
         && unavailable.value("diagnostics").toArray()[0].toObject().value("code") == "TERRAIN_WATER_HOST_UNAVAILABLE",
         "water without an actual resource-capture host refuses explicitly");
+    auto corner = request; corner["brush"] = QJsonObject{{"kind", "corner_ramp"}, {"value", true}};
+    corner["points"] = QJsonArray{QJsonObject{{"x", 1056}, {"y", 1056}}};
+    const auto unboundCorner = InvokeTerrainEditTool("edit_terrain_stroke", corner, fixture.Host());
+    Expect(!unboundCorner.value("ok").toBool()
+        && unboundCorner.value("diagnostics").toArray()[0].toObject().value("code") == "TERRAIN_CORNER_RAMP_HOST_UNAVAILABLE",
+        "corner ramp must require actual rules even in a dry run");
+    for (const char* field : {"size", "shape", "anchor", "strength", "enforce_water_limits"}) {
+        auto conflict = corner; auto fields = conflict.value("brush").toObject(); fields[field] = 1; conflict["brush"] = fields;
+        const auto result = InvokeTerrainEditTool("edit_terrain_stroke", conflict, fixture.Host());
+        Expect(!result.value("ok").toBool()
+            && result.value("diagnostics").toArray()[0].toObject().value("code") == "TERRAIN_ARGUMENT_UNKNOWN",
+            "corner ramp rejects hidden ordinary brush options before capture");
+    }
+    auto twoCorners = corner; auto points = corner.value("points").toArray(); points.append(points.at(0)); twoCorners["points"] = points;
+    const auto tooManyCorners = InvokeTerrainEditTool("edit_terrain_stroke", twoCorners, fixture.Host());
+    Expect(!tooManyCorners.value("ok").toBool()
+        && tooManyCorners.value("diagnostics").toArray()[0].toObject().value("code") == "TERRAIN_CORNER_RAMP_POINT_COUNT",
+        "corner ramp rejects multiple points without mutating session or invoking an owner");
     for (const char* field : {"shape", "size", "cliff_texture", "seed", "enforce_water_limits"}) {
         auto incomplete = invalid; auto water = incomplete.value("brush").toObject(); water.remove(field); incomplete["brush"] = water;
         const auto missing = InvokeTerrainEditTool("edit_terrain_stroke", incomplete, fixture.Host());

@@ -31,6 +31,7 @@
 #include "../MapDataFixtures.h"
 #include "SyntheticObjectCatalogFixture.h"
 #include "TerrainWaterEditFixture.h"
+#include "../TerrainCornerRampFixtures.h"
 
 #include <QCoreApplication>
 #include <QFile>
@@ -970,6 +971,8 @@ private slots:
     void TerrainJournalEqualOutputMapSaveClearsHistoryDirty();
     void TerrainJournalRestoredWaterSavesAndReadsBack_data();
     void TerrainJournalRestoredWaterSavesAndReadsBack();
+    void CornerRampProjectColdRestoreAndNativeSave_data();
+    void CornerRampProjectColdRestoreAndNativeSave();
     void GeneratedObjectsSurviveCommitAndSecondSave();
     void NativeCloneOriginsSurviveProjectRestore();
     void PendingNativeCloneOriginsSurviveMissingOrEmptyMember();
@@ -4685,6 +4688,88 @@ void EditorProjectTests::TerrainJournalRestoredWaterSavesAndReadsBack() {
     QCOMPARE((*nextOpen.value)->terrainReceipts.size(), std::size_t{1});
     QCOMPARE(MapData::SerializeMapTerrain(*(*nextOpen.value)->mapDataEdits->Terrain()).value,
         MapData::SerializeMapTerrain(*restored.mapEdits_->Terrain()).value);
+}
+
+void EditorProjectTests::CornerRampProjectColdRestoreAndNativeSave_data() {
+    QTest::addColumn<bool>("inPlace");
+    QTest::newRow("corner-project-save-as") << false;
+    QTest::newRow("corner-project-save-in-place") << true;
+}
+
+void EditorProjectTests::CornerRampProjectColdRestoreAndNativeSave() {
+    QFETCH(bool, inPlace);
+    TerrainCornerRampFixtures::Fixture fixture;
+    const auto source = fixture.source->SourcePath(), game = fixture.game;
+    const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
+    EditorProject project; project.war3GameRoot_ = game;
+    QVERIFY(BindTerrainSaveProject(project, source));
+    QUndoStack originalUndo; project.mapDataUndoStack_ = &originalUndo;
+    const auto snapshot = project.mapEdits_->Snapshot(); QVERIFY(snapshot.Doodads());
+    const auto rules = Services::TerrainPathingSave::CaptureWaterBrushRules(*project.archiveSession_,
+        fixture.grid, *project.mapEdits_->Terrain(), *snapshot.Doodads(), game, true, TerrainCornerRampFixtures::kBudget);
+    QVERIFY2(rules.Succeeded(), ReadDiagnosticText(rules).c_str());
+    const auto frozen = project.mapEdits_->FreezeForSave(TerrainCornerRampFixtures::kBudget);
+    QVERIFY(frozen.Succeeded());
+    MapData::TerrainBrush brush; brush.kind = MapData::TerrainBrushKind::CornerRamp; brush.value = true;
+    const auto prepared = (*frozen.value)->PrepareTerrainCornerRampEdit(*rules.value, brush, std::span(&fixture.point, 1), true);
+    QVERIFY2(prepared.Succeeded(), ReadDiagnosticText(prepared).c_str());
+    QVERIFY(project.mapEdits_->ApplyPreparedTerrainEdit(*prepared.value).Succeeded());
+    QVERIFY(project.ObserveMapDataEdit("拐角坡道工程夹具"));
+    PushMapDataEdit(project, "Corner ramp", "拐角坡道及摆放联动"); QCOMPARE(originalUndo.count(), 1);
+    fixture.CheckState(*project.mapEdits_, true);
+    const auto forge = fixture.root / "corner.forge";
+    const auto saved = project.SaveProjectToPath(forge);
+    QVERIFY2(saved.Succeeded(), ReadDiagnosticText(saved).c_str());
+    QCOMPARE(Sha256File(source).value, sourceSha.value);
+
+    // 真正写盘后重新解析工程及来源，不能用内存journal回放代替冷恢复。
+    auto opened = PrepareProjectOpen(forge, game); QVERIFY2(opened.Succeeded(), ReadDiagnosticText(opened).c_str());
+    QVERIFY(HasReadDiagnostic(opened, "TERRAIN_JOURNAL_RESTORED"));
+    QCOMPARE((*opened.value)->terrainReceipts.size(), std::size_t{1});
+    EditorProject restored; QUndoStack undo; restored.mapDataUndoStack_ = &undo;
+    QVERIFY(BindPreparedTerrainJournal(restored, **opened.value, game));
+    QCOMPARE(undo.count(), 1); QCOMPARE(undo.index(), 1);
+    fixture.CheckState(*restored.mapEdits_, true);
+    const auto journal = restored.mapEdits_->ExportTerrainStrokeJournal(); QVERIFY(journal.Succeeded());
+    const auto wire = MapData::EncodeTerrainStrokeJournal(*journal.value); QVERIFY(wire.Succeeded());
+    QCOMPARE(wire.value->at(3), std::byte{'4'});
+    undo.undo(); fixture.CheckState(*restored.mapEdits_, false);
+    undo.redo(); fixture.CheckState(*restored.mapEdits_, true);
+    const auto forgeAs = fixture.root / "corner-copy.forge";
+    const auto savedAs = restored.SaveProjectToPath(forgeAs);
+    QVERIFY2(savedAs.Succeeded(), ReadDiagnosticText(savedAs).c_str());
+    auto reopened = PrepareProjectOpen(forgeAs, game); QVERIFY(reopened.Succeeded());
+    QCOMPARE((*reopened.value)->terrainReceipts.size(), std::size_t{1});
+    fixture.CheckState(*(*reopened.value)->mapDataEdits, true);
+
+    // 这里只替代已有脚本准备夹具；派生、归档、回读和前台提交均为真实生产入口。
+    const auto session = restored.mapEdits_->SessionIdentity();
+    for (int state = 0; state < 3; ++state) {
+        if (state == 1) undo.undo();
+        if (state == 2) undo.redo();
+        const bool created = state != 1;
+        fixture.CheckState(*restored.mapEdits_, created);
+        const auto target = inPlace ? source : fixture.root / ("corner-saved-" + std::to_string(state) + ".w3x");
+        const auto beforeSha = restored.archiveSession_->SourceSha256();
+        auto job = FreezeNativePathingQtJob(restored, target); QVERIFY(job && job->terrainDerivationRequired);
+        job->terrainSessionSnapshot = restored.mapEdits_->FreezeForSave(); job->minimapGameRoot = game;
+        job->inPlace = inPlace; job->inPlaceOptions.backupDirectory = fixture.root / "backups";
+        InstallMapSaveDerivedPreparation(*job); EditorProject::RunMapSave(*job);
+        QVERIFY2(job->succeeded, ReadDiagnosticText(*job).c_str());
+        QVERIFY(job->terrainSavePlan && job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded());
+        const auto actual = MapArchiveSession::Open(target); QVERIFY(actual.Succeeded());
+        QCOMPARE(actual.value->ReadMember("war3map.w3e").value, std::optional(fixture.TerrainLiteral(created)));
+        QCOMPARE(actual.value->ReadMember("war3map.wpm").value, std::optional(TerrainCornerRampFixtures::PathingLiteral(created)));
+        QCOMPARE(actual.value->ReadMember("war3mapUnits.doo").value, fixture.UnitsLiteral(created).Serialize().value);
+        QCOMPARE(actual.value->ReadMember("war3map.doo").value, fixture.DoodadsLiteral(created).Serialize().value);
+        QCOMPARE(actual.value->ReadMember("war3map.j").value, fixture.source->ReadMember("war3map.j").value);
+        QVERIFY(restored.CommitMapSave(*job));
+        QCOMPARE(restored.mapEdits_->SessionIdentity(), session);
+        QVERIFY(!restored.HasUnsavedMapChanges() && restored.mapEdits_->Replacements().empty());
+        if (inPlace) { QVERIFY(!job->backup.empty()); QCOMPARE(Sha256File(job->backup).value, std::optional(beforeSha)); }
+        else QCOMPARE(Sha256File(source).value, sourceSha.value);
+        QCOMPARE(undo.count(), 1);
+    }
 }
 
 void EditorProjectTests::MapOnlyLibraryKeepsGlobalSettings() {

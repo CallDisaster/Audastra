@@ -149,6 +149,30 @@ void RampUsesExplicitBooleanAndTheSharedSaveGate() {
     Rejected(Invoke(args), "requires six arguments");
 }
 
+void CornerRampUsesOneWorldPointAndStrictBoolean() {
+    const auto base = [] {
+        auto args = Arguments();
+        args.insert(args.end(), {L"--corner-ramp", L"1056", L"1056", L"true"});
+        return args;
+    };
+    for (const auto value : {L"true", L"false"}) {
+        auto args = base(); args[11] = value;
+        const auto result = Invoke(args);
+        Require(result.exitCode != 0 && result.output.empty()
+            && result.error.find("SOURCE_LEASE_FAILED") != std::string::npos
+            && result.error.find("SAVE_STROKE_KIND") == std::string::npos,
+            "corner creation/removal must reach the actual shared map source gate");
+    }
+    for (const auto value : {L"nan", L"inf", L"16777217", L"-16777217"}) {
+        auto args = base(); args[9] = value;
+        Rejected(Invoke(args), "requires finite world");
+    }
+    auto args = base(); args[11] = L"1";
+    Rejected(Invoke(args), "requires finite world");
+    args = base(); args.pop_back();
+    Rejected(Invoke(args), "requires world x, world y");
+}
+
 } // namespace
 
 int main() {
@@ -158,6 +182,7 @@ int main() {
         TypedTextureAndWaterReachTheSaveService();
         NativeWaterUsesExplicitTypedArguments();
         RampUsesExplicitBooleanAndTheSharedSaveGate();
+        CornerRampUsesOneWorldPointAndStrictBoolean();
         std::cout << "Map edit save CLI minimap option gates passed\n";
         return 0;
     } catch (const std::exception& error) {

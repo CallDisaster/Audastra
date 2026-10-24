@@ -424,7 +424,7 @@ void TestNormalSaveTextureAndWaterSchema() {
     McpServer server; RegisterAllTools(server);
     const auto response = server.HandleMessage(R"({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}})");
     Expect(response && !response->error, "terrain save tool list must be available");
-    bool texture = false, water = false, waterBrush = false, ramp = false;
+    bool texture = false, water = false, waterBrush = false, ramp = false, corner = false;
     for (const auto& tool : response->result.toObject().value("tools").toArray()) {
         if (tool.toObject().value("name") != "save_map_edit_candidate") continue;
         const auto properties = tool.toObject().value("inputSchema").toObject().value("properties").toObject();
@@ -442,6 +442,15 @@ void TestNormalSaveTextureAndWaterSchema() {
                     && fields.value("radius").toObject().value("const").toInt(-1) == 0
                     && !fields.contains("strength") && !fields.contains("water_height") && !fields.contains("set_blight");
             }
+            if (kind == "corner_ramp") {
+                const auto required = variant.toObject().value("required").toArray();
+                corner = fields.size() == 5 && required.size() == 5
+                    && required.contains("set_ramp") && fields.value("set_ramp").toObject().value("type") == "boolean"
+                    && fields.value("point_space").toObject().value("const") == "world"
+                    && fields.value("points").toObject().value("maxItems").toInt() == 1
+                    && fields.value("follow_doodads").toObject().value("const") == false
+                    && !variant.toObject().value("additionalProperties").toBool(true);
+            }
             const auto kinds = fields.value("kind").toObject().value("enum").toArray();
             if (kinds.contains("shallow_water") && kinds.contains("deep_water")) {
                 const auto required = variant.toObject().value("required").toArray();
@@ -456,6 +465,7 @@ void TestNormalSaveTextureAndWaterSchema() {
     Expect(texture && water, "normal save must expose typed texture and water parameters without overloading strength");
     Expect(waterBrush, "new shallow/deep water must expose explicit replay options and no caller-supplied anchor or rules");
     Expect(ramp, "ramp save schema requires a real set_ramp boolean, circle and radius0 without height or blight aliases");
+    Expect(corner, "corner schema only exposes one world point, explicit set_ramp and no caller-supplied brush or rules");
 }
 
 void TestRampSaveTransport() {
@@ -499,6 +509,36 @@ void TestRampSaveTransport() {
     Code(call(invalid), "MCP_MAP_EDIT_TERRAIN_FOLLOW_UNSUPPORTED");
     Expect(!std::filesystem::exists(fixture.root / "ramp-candidate.w3x"),
         "ramp transport failure must not publish a partial candidate");
+}
+
+void TestCornerRampSaveTransport() {
+    Fixture fixture; McpServer server; RegisterAllTools(server);
+    ScopedSaveRoots roots; roots.Set(fixture.ui);
+    const QJsonObject stroke{{"kind", "corner_ramp"}, {"point_space", "world"}, {"set_ramp", true},
+        {"points", QJsonArray{QJsonObject{{"x", 1056}, {"y", 1056}}}}, {"follow_doodads", false}};
+    QJsonObject args{{"source_map_path", QString::fromStdWString((fixture.root / "missing.w3x").wstring())},
+        {"output_path", QString::fromStdWString((fixture.root / "corner-candidate.w3x").wstring())},
+        {"expected_source_sha256", QString(64, 'a')}, {"expected_terrain_sha256", QString(64, 'b')}};
+    const auto call = [&](QJsonObject value) {
+        args["terrain_strokes"] = QJsonArray{value}; return Call(server, "save_map_edit_candidate", args);
+    };
+    for (const bool enabled : {true, false}) {
+        auto valid = stroke; valid["set_ramp"] = enabled; Code(call(valid), "SOURCE_LEASE_FAILED");
+    }
+    auto invalid = stroke; invalid["point_space"] = "terrain_vertex";
+    Code(call(invalid), "MCP_MAP_EDIT_TERRAIN_SPACE_INVALID");
+    invalid = stroke; invalid["set_ramp"] = "true";
+    Code(call(invalid), "MCP_MAP_EDIT_TERRAIN_RAMP_INVALID");
+    invalid = stroke; invalid.remove("set_ramp");
+    Code(call(invalid), "MCP_MAP_EDIT_TERRAIN_RAMP_INVALID");
+    invalid = stroke; invalid["points"] = QJsonArray{QJsonObject{{"x", 1056}, {"y", 1056}},
+        QJsonObject{{"x", 992}, {"y", 1056}}};
+    Code(call(invalid), "MCP_MAP_EDIT_TERRAIN_POINTS_INVALID");
+    for (const auto field : {"shape", "radius", "size", "strength", "anchor", "loaded_rules", "enforce_water_limits"}) {
+        invalid = stroke; invalid[field] = 1; Code(call(invalid), "MCP_MAP_EDIT_FIELD_UNSUPPORTED");
+    }
+    Expect(!std::filesystem::exists(fixture.root / "corner-candidate.w3x"),
+        "corner transport failures must never create an output map");
 }
 
 void TestNativeWaterSaveTransport() {
@@ -579,6 +619,7 @@ int main(int argc, char** argv) {
         TestNormalSaveTextureAndWaterSchema();
         TestNativeWaterSaveTransport();
         TestRampSaveTransport();
+        TestCornerRampSaveTransport();
         TestTypedReadAndSourcePreservation();
         TestStaleBindingsAndLifetime();
         TestTransactionsAndFailures();

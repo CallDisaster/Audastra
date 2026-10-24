@@ -777,9 +777,10 @@ void WorldModule::StartTerrainStroke(double x, double y) {
         terrainToggle_->setChecked(false);
         return;
     }
-    if (CurrentBrushKind() == MapData::TerrainBrushKind::CliffLevel && !WaterBrushCaptureCurrent()) {
+    if ((CurrentBrushKind() == MapData::TerrainBrushKind::CliffLevel
+            || CurrentBrushKind() == MapData::TerrainBrushKind::CornerRamp) && !WaterBrushCaptureCurrent()) {
         QueueWaterBrushCapture();
-        selectionStatus_->setText(tr("请等待悬崖规则就绪后重新落笔")); return;
+        selectionStatus_->setText(tr("请等待地形规则就绪后重新落笔")); return;
     }
     if (const auto kind = CurrentWaterBrushKind()) {
         if (!WaterBrushCaptureCurrent()) {
@@ -812,6 +813,19 @@ void WorldModule::StartTerrainStroke(double x, double y) {
         ExtendTerrainStroke(x, y); UpdateSelectionText(); return;
     }
     strokeWaterBrush_.reset(); strokeWaterCapture_.reset();
+    if (CurrentBrushKind() == MapData::TerrainBrushKind::CornerRamp) {
+        const auto point = MapData::SnapTerrainCornerRampPoint(*source, {x, y});
+        const auto plan = point ? MapData::PlanTerrainCornerRamp(*source, *point)
+            : Result<MapData::TerrainCornerRampPlan>::Failure("Terrain.Ramp", "TERRAIN_CORNER_RAMP_OUTSIDE", "落点超出地图。");
+        if (!plan.Succeeded()) {
+            selectionStatus_->setText(tr("不能创建或移除拐角坡道：%1").arg(WorldDiagnosticText(plan.diagnostics))); return;
+        }
+        strokeBrush_ = {}; strokeBrush_.kind = MapData::TerrainBrushKind::CornerRamp;
+        strokeBrush_.value = terrainRampModes_->checkedId() != 0;
+        strokeBase_ = std::move(source); strokeRevision_ = project_.mapEdits_->Revision();
+        strokeWaterCapture_ = waterCapture_; strokePoints_ = {*point};
+        QueueTerrainRender(strokeBase_, true); UpdateSelectionText(); return;
+    }
     MapData::TerrainBrush brush;
     brush.kind = CurrentBrushKind();
     brush.shape = static_cast<MapData::TerrainBrushShape>(std::max(0, terrainShapes_->checkedId()));
@@ -868,6 +882,8 @@ void WorldModule::StartTerrainStroke(double x, double y) {
 
 void WorldModule::ExtendTerrainStroke(double x, double y) {
     if (!strokeBase_ || !std::isfinite(x) || !std::isfinite(y)) return;
+    // 拐角坡道每次按下只处理一个规范落点；拖动不能隐式扩成多笔事务。
+    if (strokeBrush_.kind == MapData::TerrainBrushKind::CornerRamp) return;
     if (strokeBrush_.kind == MapData::TerrainBrushKind::Ramp) {
         // 坡道按所在悬崖格取法向；吸附到最近顶点会把高侧半格错误移到平地。
         // 保留原落点，拖动按半格补采样；Core 仍对整笔预检，坏点不能留下半笔修改。
@@ -949,20 +965,29 @@ void WorldModule::FinishTerrainStroke() {
     const auto before = project_.mapEdits_->Revision();
     const bool pathing = strokeBrush_.kind == MapData::TerrainBrushKind::PathingRestriction;
     const bool water = strokeWaterBrush_.has_value();
-    const bool structural = water || strokeBrush_.kind == MapData::TerrainBrushKind::CliffLevel;
+    const bool corner = strokeBrush_.kind == MapData::TerrainBrushKind::CornerRamp;
+    const bool structural = water || corner || strokeBrush_.kind == MapData::TerrainBrushKind::CliffLevel;
     if ((pathing || structural) && before != strokeRevision_) {
         CancelTerrainStroke(); selectionStatus_->setText(tr("地形编辑修订已变化，请重新落笔")); return;
     }
     if (structural && (!strokeWaterCapture_ || !QtProject::TerrainWaterEditRequestCurrent(project_,
-            *strokeWaterCapture_->request, terrainEnforceWaterLimits_->isChecked()))) {
+            *strokeWaterCapture_->request, StructuralBrushEnforceWaterLimits()))) {
         CancelTerrainStroke(); InvalidateWaterBrushCapture(); QueueWaterBrushCapture();
         selectionStatus_->setText(tr("地形规则来源已变化，请等待更新后重新落笔")); return;
     }
     const auto terrainBefore = project_.mapEdits_->Terrain();
     if (structural) {
+        std::shared_ptr<const MapData::MapDataEditSession> frozen;
+        if (corner) {
+            auto captured = project_.mapEdits_->FreezeForSave(MapData::TerrainWaterBrushLimits{}.maximumCandidateBytes);
+            if (!captured.Succeeded()) {
+                CancelTerrainStroke(); selectionStatus_->setText(WorldDiagnosticText(captured.diagnostics)); return;
+            }
+            frozen = std::move(*captured.value);
+        }
         auto commit = std::make_shared<WaterBrushCommit>(WaterBrushCommit{strokeWaterCapture_,
             water ? decltype(WaterBrushCommit::brush){*strokeWaterBrush_} : decltype(WaterBrushCommit::brush){strokeBrush_},
-            std::move(strokePoints_), terrainToggle_->isChecked()});
+            std::move(strokePoints_), terrainToggle_->isChecked(), std::move(frozen)});
         strokeBase_.reset(); strokePoints_.clear(); strokeWaterBrush_.reset(); strokeWaterCapture_.reset();
         ++terrainRenderSerial_; pendingTerrainRender_.reset();
         // toggled(false)同步调用Cancel；先关控件，再发布pending事务，避免自行取消。
@@ -983,13 +1008,23 @@ void WorldModule::StartWaterBrushCommit() {
     const auto generation = generation_;
     auto status = std::make_shared<Status>();
     auto elapsed = std::make_shared<qint64>(0);
-    auto* worker = QThread::create([request, status, elapsed] {
+    auto cornerPlan = std::make_shared<Result<MapData::MapDataEditSession::PreparedTerrainEdit>>();
+    auto prepareElapsed = std::make_shared<qint64>(0);
+    auto* worker = QThread::create([request, status, elapsed, cornerPlan, prepareElapsed] {
         QElapsedTimer timer; timer.start();
         *status = QtProject::VerifyTerrainWaterEditResources(*request->capture);
         *elapsed = timer.elapsed();
+        if (request->frozen && status->Succeeded()) {
+            timer.restart();
+            const auto& brush = std::get<MapData::TerrainBrush>(request->brush);
+            *cornerPlan = request->frozen->PrepareTerrainCornerRampEdit(request->capture->resources, brush, request->points, true);
+            *prepareElapsed = timer.elapsed();
+            // 候选计算期间来源也可能变化；发布前重验实际归档，GUI只做修订CAS。
+            if (cornerPlan->Succeeded()) *status = QtProject::VerifyTerrainWaterEditResources(*request->capture);
+        }
     });
     worker_ = worker;
-    connect(worker, &QThread::finished, this, [this, request, generation, status, elapsed] {
+    connect(worker, &QThread::finished, this, [this, request, generation, status, elapsed, cornerPlan, prepareElapsed] {
         worker_ = nullptr;
         if (reloadQueued_) { Refresh(); return; }
         if (!page_ || generation != generation_) return;
@@ -997,11 +1032,16 @@ void WorldModule::StartWaterBrushCommit() {
         waterCommit_.reset();
         terrainWaterBrushStatus_->setProperty("verifyMilliseconds", *elapsed);
         const bool current = QtProject::TerrainWaterEditRequestCurrent(project_, *request->capture->request,
-            terrainEnforceWaterLimits_->isChecked());
+            StructuralBrushEnforceWaterLimits());
         Result<MapData::TerrainStrokeResult> edited;
         if (!current) edited.diagnostics = Status::Failure("Terrain.Water", "TERRAIN_WATER_COMMIT_STALE",
             "水刷等待核验时地图或资源修订已变化，本笔未提交。").diagnostics;
         else if (!status->Succeeded()) edited.diagnostics = status->diagnostics;
+        else if (request->frozen) {
+            terrainWaterBrushStatus_->setProperty("prepareMilliseconds", *prepareElapsed);
+            if (cornerPlan->Succeeded()) edited = project_.mapEdits_->ApplyPreparedTerrainEdit(*cornerPlan->value);
+            else edited.diagnostics = std::move(cornerPlan->diagnostics);
+        }
         else {
             // live Session只在GUI线程使用。最终Prepare一次，来源I/O已在worker完成。
             QElapsedTimer timer; timer.start();
@@ -1258,14 +1298,17 @@ void WorldModule::UpdateOverlay() {
     if (brushCursor_ && terrain && CurrentTool() == Tool::Terrain) {
         MapData::TerrainBrush brush;
         brush.kind = CurrentBrushKind();
-        brush.size = static_cast<std::uint32_t>(terrainRadius_->value());
+        const bool corner = brush.kind == MapData::TerrainBrushKind::CornerRamp;
+        if (!corner) brush.size = static_cast<std::uint32_t>(terrainRadius_->value());
         const bool pathing = brush.kind == MapData::TerrainBrushKind::PathingRestriction;
         const double size = pathing ? MapData::kPathingCellSize : MapData::TerrainGridSnapshot::tileSize;
         const MapData::TerrainStrokePoint point{(*brushCursor_)[0], (*brushCursor_)[1]};
-        if (const auto footprint = pathing ? MapData::GetPathingRestrictionFootprint(terrain->header, brush, point)
-                                          : MapData::GetTerrainBrushFootprint(*terrain, brush, point)) {
+        const auto snapped = corner ? MapData::SnapTerrainCornerRampPoint(*terrain, point) : std::optional{point};
+        if (const auto footprint = !snapped ? std::nullopt : pathing
+                ? MapData::GetPathingRestrictionFootprint(terrain->header, brush, *snapped)
+                : MapData::GetTerrainBrushFootprint(*terrain, brush, *snapped)) {
             const double cx = footprint->centerX, cy = footprint->centerY, extent = footprint->radius;
-            if (brush.kind == MapData::TerrainBrushKind::Ramp) {
+            if (brush.kind == MapData::TerrainBrushKind::Ramp || corner) {
                 const auto& origin = terrain->header.offset;
                 Render::AppendGroundRectangle(lines, terrain,
                     static_cast<float>(origin[0] + (footprint->x0 - 0.5) * size),
