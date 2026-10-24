@@ -5,6 +5,7 @@
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/MapPlacements.h"
 #include "War3MapCore/MapData/MapSettings.h"
+#include "War3MapCore/MapData/NativeEditorProfileInputs.h"
 #include "War3MapCore/MapData/PlacementElevationInvariant.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
 #include "War3MapCore/Resources/TerrainTable.h"
@@ -66,38 +67,6 @@ Result<std::string> TerrainPathingResources::WaterBrushDependencyFingerprint() c
 namespace {
 constexpr auto kSubsystem = "Terrain.PathingResources";
 constexpr std::size_t kTableBytes = 2 * 1024 * 1024;
-struct ClassicProfileInput { const char* path; bool alwaysLoad; };
-// 本编辑器采用的完整经典固定初始化链；不声称是任意运行中编辑器的最终profile。
-constexpr std::array<ClassicProfileInput, 56> kClassicProfiles{{
-    {"Units/MiscData.txt", false}, {"Units/MiscGame.txt", false},
-    {"UI/MiscData.txt", true}, {"UI/WorldEditData.txt", true},
-    {"UI/WorldEditStrings.txt", false}, {"UI/WorldEditGameStrings.txt", true},
-    {"UI/UnitEditorData.txt", false}, {"UI/AIEditorData.txt", false},
-    {"UI/WorldEditLayout.txt", false}, {"Units/CommandFunc.txt", false},
-    {"Units/CommandStrings.txt", false}, {"UI/TriggerData.txt", false},
-    {"UI/TriggerStrings.txt", false}, {"Units/HumanUnitStrings.txt", false},
-    {"Units/NeutralUnitStrings.txt", false}, {"Units/NightElfUnitStrings.txt", false},
-    {"Units/OrcUnitStrings.txt", false}, {"Units/UndeadUnitStrings.txt", false},
-    {"Units/CampaignUnitStrings.txt", false}, {"Units/UnitGlobalStrings.txt", false},
-    {"Units/HumanUnitFunc.txt", false}, {"Units/NeutralUnitFunc.txt", false},
-    {"Units/NightElfUnitFunc.txt", false}, {"Units/OrcUnitFunc.txt", false},
-    {"Units/UndeadUnitFunc.txt", false}, {"Units/CampaignUnitFunc.txt", false},
-    {"Units/ItemStrings.txt", false}, {"Units/ItemFunc.txt", false},
-    {"Units/HumanAbilityFunc.txt", false}, {"Units/NeutralAbilityFunc.txt", false},
-    {"Units/NightElfAbilityFunc.txt", false}, {"Units/OrcAbilityFunc.txt", false},
-    {"Units/UndeadAbilityFunc.txt", false}, {"Units/CommonAbilityFunc.txt", false},
-    {"Units/ItemAbilityFunc.txt", false}, {"Units/CampaignAbilityFunc.txt", false},
-    {"Units/HumanAbilityStrings.txt", false}, {"Units/NeutralAbilityStrings.txt", false},
-    {"Units/NightElfAbilityStrings.txt", false}, {"Units/OrcAbilityStrings.txt", false},
-    {"Units/UndeadAbilityStrings.txt", false}, {"Units/CommonAbilityStrings.txt", false},
-    {"Units/ItemAbilityStrings.txt", false}, {"Units/CampaignAbilityStrings.txt", false},
-    {"Units/HumanUpgradeFunc.txt", false}, {"Units/OrcUpgradeFunc.txt", false},
-    {"Units/UndeadUpgradeFunc.txt", false}, {"Units/NightElfUpgradeFunc.txt", false},
-    {"Units/CampaignUpgradeFunc.txt", false}, {"Units/NeutralUpgradeFunc.txt", false},
-    {"Units/HumanUpgradeStrings.txt", false}, {"Units/OrcUpgradeStrings.txt", false},
-    {"Units/UndeadUpgradeStrings.txt", false}, {"Units/NightElfUpgradeStrings.txt", false},
-    {"Units/CampaignUpgradeStrings.txt", false}, {"Units/NeutralUpgradeStrings.txt", false},
-}};
 struct Failure { std::vector<Diagnostic> diagnostics; };
 
 [[noreturn]] void Fail(const char* code, std::string message) {
@@ -1124,6 +1093,10 @@ Status TerrainPathingResources::VerifyGameDependencies(std::size_t remainingByte
                 Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "游戏通行输入的实际来源或内容已经改变：" + dependency.name);
             remainingBytes -= actual.bytes.size();
         }
+        if (nativeCategoryDirectory_) {
+            const auto status = nativeCategoryDirectory_->VerifySources(remainingBytes);
+            if (!status.Succeeded()) throw Failure{status.diagnostics};
+        }
         return true;
     });
     return {std::move(checked.diagnostics)};
@@ -1142,6 +1115,7 @@ std::size_t TerrainPathingResources::OwnedCapacityBytes() const noexcept {
     for (const auto& rule : nativeGround_) bytes += rule.rawcode.capacity() + 1;
     for (const auto& sha : nativeTerrainSha_) bytes += sha.capacity() + 1;
     bytes += waterBrushInputSha_.capacity() + 1;
+    if (nativeCategoryDirectory_) bytes += nativeCategoryDirectory_->OwnedCapacityBytes();
     if (waterBrushRules_) {
         bytes += waterBrushRules_->groundRules.capacity() * sizeof(TerrainWaterGroundRule)
             + waterBrushRules_->availableCliffTilesets.capacity() * sizeof(std::string);

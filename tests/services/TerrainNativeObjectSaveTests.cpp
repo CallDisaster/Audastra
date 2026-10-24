@@ -232,6 +232,10 @@ void CGridExpectedFootprint(Bytes& wpm, bool duplicate = false) {
 }
 void CGridDoodad(Fixture& fixture, bool duplicate = false) {
     StandardDoodad(fixture);
+    fixture.gameRoot = fixture.root / "game";
+    Require(std::filesystem::create_directory(fixture.gameRoot), "private actual startup source root");
+    Take(WriteVerifiedArchive(fixture.gameRoot / "war3.mpq", std::vector<MapArchiveMember>{
+        {"UI/WorldEditData.txt", Text("[DoodadCategories]\nC=Custom\n")}}));
     fixture.Member("Doodads/Doodads.slk") = Slk({"doodID", "code", "pathTex", "category", "fixedRot"},
         {{"Doo0", "Doo0", std::string(kUniformDoodadTexture), "C", "270"}});
     Bytes texture(18 + 8 * 8 * 4); texture[2] = std::byte{2};
@@ -680,7 +684,7 @@ void UniformDoodadsSaveWaterGroundAndCliffs() {
     }
 }
 
-void GridInvariantCUsesTheNormalSaveAndUndoChain() {
+void StartupCategoryCUsesTheNormalSaveAndUndoChain() {
     Fixture water; CGridDoodad(water, true); water.Open(); water.Paint();
     auto deep = water.ExpectedPathing(true), shallow = water.ExpectedPathing(false);
     CGridExpectedFootprint(deep, true); CGridExpectedFootprint(shallow, true);
@@ -718,12 +722,12 @@ void GridInvariantCUsesTheNormalSaveAndUndoChain() {
     }
 }
 
-void GridInvariantCBudgetSourcesAndInheritanceStayBound() {
+void StartupCategoryCBudgetSourcesAndInheritanceStayBound() {
     Fixture f; CGridDoodad(f, true); f.Open(); f.Paint();
-    const auto owner = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, kBudget));
-    Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, owner.CaptureBudgetBytes()));
-    const auto shortBudget = TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, owner.CaptureBudgetBytes() - 1);
-    Require(!shortBudget.Succeeded() && !shortBudget.value, "C dual projections share the original exact cumulative budget");
+    const auto owner = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot, kBudget));
+    Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot, owner.CaptureBudgetBytes()));
+    const auto shortBudget = TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot, owner.CaptureBudgetBytes() - 1);
+    Require(!shortBudget.Succeeded() && !shortBudget.value, "C source snapshot and projection share the exact cumulative budget");
     const auto plan = f.Plan(); const auto output = f.Output(plan);
     auto changed = f.Member(kUniformDoodadTexture);
     for (std::size_t at = 21; at < changed.size(); at += 4) changed[at] = std::byte{255};
@@ -735,9 +739,9 @@ void GridInvariantCBudgetSourcesAndInheritanceStayBound() {
     f.Member("Doodads/Doodads.slk") = Slk({"doodID", "code", "pathTex", "category", "fixedRot"},
         {{"Doo0", "Doo0", std::string(kUniformDoodadTexture), "E", "270"}});
     f.Open(); f.Paint();
-    const auto nonC = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, kBudget));
-    Require(owner.CaptureBudgetBytes() == nonC.CaptureBudgetBytes() + 2 * TerrainUniformGridInvariantBudgetBytes,
-        "dual-projection descriptors and fixed work are precharged for both instances, not just their shared rawcode");
+    const auto nonC = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot, kBudget));
+    Require(owner.CaptureBudgetBytes() > nonC.CaptureBudgetBytes(),
+        "startup category sources and parser work are charged in addition to ordinary footprint work");
     for (const bool custom : {false, true}) {
         Fixture inherited; CGridDoodad(inherited);
         if (custom) {
@@ -752,50 +756,88 @@ void GridInvariantCBudgetSourcesAndInheritanceStayBound() {
     }
 }
 
-void GridInvariantCRejectsPerInstanceDifferencesAndUnsupportedImages() {
-    for (const unsigned mode : {0u, 1u, 2u, 3u, 4u, 5u}) {
-        Fixture f; CGridDoodad(f, true);
+void StartupCategoryCChoosesTheActualGridAndFreezesItsSources() {
+    for (unsigned mode = 0; mode < 4; ++mode) {
+        Fixture f; CGridDoodad(f);
+        std::filesystem::remove(f.gameRoot / "war3.mpq");
+        const bool four = mode == 0;
+        Take(WriteVerifiedArchive(f.gameRoot / "war3.mpq", std::vector<MapArchiveMember>{
+            {"UI/WorldEditData.txt", Text(mode == 0 ? "[DoodadCategories]\nC=Custom\n"
+                : mode == 1 ? "[DoodadCategories]\nc=Custom\n" : "[Other]\nC=ignored\n")}}));
+        if (mode == 3) std::filesystem::remove(f.gameRoot / "war3.mpq");
+        // 地图中故意存在大写C；它不是启动目录的输入。
+        f.Member("UI/WorldEditData.txt") = Text("[DoodadCategories]\nC=map-must-not-qualify\n");
         auto placements = Take(ParseDoodadPlacements(f.Member("war3map.doo")));
-        std::string_view code = "TERRAIN_UNIFORM_GRID_VARIANT";
-        if (mode < 3) placements.doodads.back().position[mode == 1 ? 1 : 0] += 32;
-        if (mode == 2) {
-            // 此路径先于synthetic读取；16x16非C绿色贡献已覆盖后一个C实例的全部差异域。
-            auto cover = placements.doodads.back(); cover.rawcode = "Cov0"; cover.position = {256, 256, 0}; cover.creationId = 4;
-            placements.doodads.push_back(cover);
-            f.Member("Doodads/Doodads.slk") = Slk({"doodID", "code", "pathTex", "category", "fixedRot"},
-                {{"Doo0", "Doo0", std::string(kUniformDoodadTexture), "C", "270"},
-                 {"Cov0", "Cov0", "PathTextures/aaa-cover.tga", "E", "-1"}});
-            auto coverTexture = f.Member(kUniformDoodadTexture); coverTexture.resize(18 + 16 * 16 * 4);
-            coverTexture[12] = coverTexture[14] = std::byte{16};
-            for (std::size_t at = 18; at < coverTexture.size(); at += 4) coverTexture[at + 1] = std::byte{255};
-            f.members.push_back({"PathTextures/aaa-cover.tga", std::move(coverTexture)});
-        }
-        if (mode == 3) { f.Member(kUniformDoodadTexture).back() = std::byte{1}; code = "TERRAIN_NATIVE_FOOTPRINT_GRID_DOMAIN"; }
-        if (mode == 4) {
-            auto& texture = f.Member(kUniformDoodadTexture); texture.resize(18 + 16 * 8 * 4); texture[12] = std::byte{16};
-            for (std::size_t at = 18; at < texture.size(); at += 4) texture[at + 1] = std::byte{255};
-            code = "TERRAIN_NATIVE_FOOTPRINT_GRID_DOMAIN";
-        }
-        if (mode == 5) {
-            auto& texture = f.Member(kUniformDoodadTexture); std::fill(texture.begin() + 18, texture.end(), std::byte{0});
-            placements.doodads.back().position[0] = std::nextafter(288.0f, 256.0f);
-            code = "TERRAIN_UNIFORM_SNAP_AMBIGUOUS";
-        }
-        f.Member("war3map.doo") = Take(placements.Serialize()); f.Open(); f.Paint();
-        const auto sha = f.archive->SourceSha256(); const auto draft = Take(SerializeMapTerrain(*f.edits->Terrain()));
-        const auto captured = TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, kBudget);
-        Require(!captured.Succeeded() && !captured.value && HasCode(captured, code),
-            "each C instance must independently prove its supported image and both complete contributions");
-        const auto gate = f.Plan().SaveGate();
-        Require(!gate.Succeeded() && HasCode(gate, code) && !HasCode(gate, "TERRAIN_PATHING_SOURCE_UNEXPLAINED"),
-            "per-instance ambiguity or difference is refused before the old WPM compatibility comparison");
-        Require(Take(Sha256File(f.archive->SourcePath())) == sha && f.edits->IsDirty()
-            && Take(SerializeMapTerrain(*f.edits->Terrain())) == draft, "rejection keeps source and complete unsaved draft intact");
+        placements.doodads.front().position = {544, 544, 0};
+        f.Member("war3map.doo") = Take(placements.Serialize());
+        const auto expected = [&](bool deep) {
+            auto result = f.ExpectedPathing(deep);
+            // 8x8 at544：4格中心512→[12,20)，2格中心576→[14,22)。
+            const unsigned low = four ? 12 : 14;
+            for (unsigned y = low; y < low + 8; ++y) for (unsigned x = low; x < low + 8; ++x)
+                result[16 + y * 32 + x] |= std::byte{4};
+            return result;
+        };
+        f.Member("war3map.wpm") = expected(false);
+        f.Open(); f.Paint();
+        const auto owner = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot, kBudget));
+        const auto output = f.Output(f.Plan());
+        const auto saved = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(f.root / "startup-c-candidate.w3x", output)).path));
+        Check(owner.VerifyReadback(saved, kBudget));
+        const auto directory = Take(DirectoryWorkspace::Open(f.Directory()));
+        const auto directoryOwner = Take(TerrainPathingSave::CaptureNative(directory.Snapshot(), f.original,
+            *f.edits->Terrain(), f.gameRoot, kBudget));
+        Check(directoryOwner.VerifyFrozenOutput(output, {}));
+        auto expectedNative = expected(true);
+        auto encoded = Take(owner.GenerateNative(*f.edits->Terrain(), kBudget));
+        Require(encoded.size() == 32 * 32, "complete native selector grid");
+        // 原生生成输出不携作者11位；逐格比较其实际selector结果。
+        for (std::size_t i = 0; i < encoded.size(); ++i)
+            Require((std::to_integer<unsigned char>(encoded[i]) & 0xee)
+                == (std::to_integer<unsigned char>(expectedNative[16 + i]) & 0xee), "actual startup source selects the independent full native grid");
+        f.SaveExpected("startup-c-saved.w3x", f.ExpectedTerrain(true), expected(true));
+        Require(f.edits->Undo(), "undo saved C terrain with an actual startup source");
+        f.SaveExpected("startup-c-undone.w3x", f.ExpectedTerrain(false), expected(false));
+        Require(f.edits->Redo(), "redo saved C terrain with an actual startup source");
+        f.SaveExpected("startup-c-redone.w3x", f.ExpectedTerrain(true), expected(true));
+
+        const auto changed = Text("[DoodadCategories]\nC=same-qualification-different-source\n");
+        Check(IO::WriteFileBytes(f.gameRoot / "WorldEditData.txt", changed));
+        Require(!owner.VerifyFrozenOutput(output, {}).Succeeded() && !owner.VerifyReadback(saved, kBudget).Succeeded()
+            && !directoryOwner.VerifyFrozenOutput(output, {}).Succeeded(), "new higher loose source invalidates both archive and directory owners before/after save");
+        Require(f.edits->Undo(), "source-CAS refusal leaves saved undo history available");
     }
-    Fixture bad; CGridDoodad(bad); bad.Member("war3map.wpm")[16] ^= std::byte{4}; bad.Open(); bad.Paint();
-    const auto gate = bad.Plan().SaveGate();
-    Require(!gate.Succeeded() && HasCode(gate, "TERRAIN_PATHING_SOURCE_UNEXPLAINED"),
-        "supported C contributions do not weaken the original full source WPM explanation gate");
+    Fixture unknown; CGridDoodad(unknown); unknown.gameRoot.clear(); unknown.Open(); unknown.Paint();
+    const auto missing = unknown.Plan().SaveGate();
+    Require(!missing.Succeeded() && HasCode(missing, "TERRAIN_CATEGORY_SOURCE_REQUIRED"), "unknown startup input cannot fall back to two cells");
+    Fixture unexplained; CGridDoodad(unexplained); unexplained.Member("war3map.wpm")[16] ^= std::byte{4};
+    unexplained.Open(); unexplained.Paint();
+    Require(HasCode(unexplained.Plan().SaveGate(), "TERRAIN_PATHING_SOURCE_UNEXPLAINED"), "source directory does not weaken original full WPM explanation");
+}
+
+void StartupCategoryCPatternedRectangleUsesTheNormalSaveChain() {
+    Fixture f; CGridDoodad(f);
+    Bytes texture(18 + 8 * 4 * 3); texture[2] = std::byte{2}; texture[12] = std::byte{8};
+    texture[14] = std::byte{4}; texture[16] = std::byte{24}; texture[17] = std::byte{32};
+    for (std::size_t at = 18; at < texture.size(); at += 3) texture[at + 1] = std::byte{255};
+    texture[19] = std::byte{0}; texture[20] = std::byte{255}; // 原图左上红，其余绿。
+    f.Member(kUniformDoodadTexture) = std::move(texture);
+    auto placements = Take(ParseDoodadPlacements(f.Member("war3map.doo")));
+    placements.doodads.front().position = {544,544,0}; placements.doodads.front().rotation = 4.712389f;
+    f.Member("war3map.doo") = Take(placements.Serialize());
+    const auto expected = [&](bool deep) {
+        auto result = f.ExpectedPathing(deep);
+        // 4格：宽8为偶，X中心512；高4为奇，Y中心576。270度使原图左上到左下。
+        for (unsigned y = 16; y < 20; ++y) for (unsigned x = 12; x < 20; ++x)
+            result[16 + y * 32 + x] |= x == 12 && y == 19 ? std::byte{2} : std::byte{4};
+        return result;
+    };
+    f.Member("war3map.wpm") = expected(false); f.Open(); f.Paint();
+    f.SaveExpected("startup-c-pattern.w3x", f.ExpectedTerrain(true), expected(true));
+    Require(f.edits->Undo(), "undo saved C patterned rectangle");
+    f.SaveExpected("startup-c-pattern-undone.w3x", f.ExpectedTerrain(false), expected(false));
+    Require(f.edits->Redo(), "redo saved C patterned rectangle");
+    f.SaveExpected("startup-c-pattern-redone.w3x", f.ExpectedTerrain(true), expected(true));
 }
 
 void NativeDoodadFootprintsUseTheNormalSaveAndUndoChain() {
@@ -1895,9 +1937,10 @@ int main() {
         MapAndGameMetadataWinnersRemainBound();
         DirectoryRecipePreservesReplayAndSourceChecks();
         UniformDoodadsSaveWaterGroundAndCliffs();
-        GridInvariantCUsesTheNormalSaveAndUndoChain();
-        GridInvariantCBudgetSourcesAndInheritanceStayBound();
-        GridInvariantCRejectsPerInstanceDifferencesAndUnsupportedImages();
+        StartupCategoryCUsesTheNormalSaveAndUndoChain();
+        StartupCategoryCBudgetSourcesAndInheritanceStayBound();
+        StartupCategoryCChoosesTheActualGridAndFreezesItsSources();
+        StartupCategoryCPatternedRectangleUsesTheNormalSaveChain();
         NativeDoodadFootprintsUseTheNormalSaveAndUndoChain();
         UniformDoodadTextureIsFrozenAndBudgeted();
         UniformDoodadGameTextureWinnerRemainsBound();

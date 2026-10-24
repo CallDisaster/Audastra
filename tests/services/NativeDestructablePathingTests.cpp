@@ -810,10 +810,10 @@ void NonemptyDoodadInspectionKeepsTheNarrowSourceDomain() {
         Rejected(result, "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "类别必须是明确非_的单可打印ASCII字符");
     }
     Fixture categoryC; prepare(categoryC); categoryC.doodads[0]["category"] = "C"; categoryC.Tables();
-    const auto invariant = Take(categoryC.Inspect());
-    Require(invariant.footprints.size() == 1
-        && invariant.footprints.front().gridPolicy == MapData::TerrainDoodadGridPolicy::RequireTwoAndFourEquivalent,
-        "字面C只请求逐实例双网格等价验证，不签发已证4格身份");
+    const auto startup = Take(categoryC.Inspect());
+    Require(startup.footprints.size() == 1
+        && startup.footprints.front().gridPolicy == MapData::TerrainDoodadGridPolicy::StartupCategoryC,
+        "字面C只请求Core捕获真实启动类别目录后选择网格");
     Rejected(categoryC.Validate({"D001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "旧无占地兼容入口仍拒绝C非空占地");
     for (const unsigned mode : {0u, 1u, 2u, 3u}) {
         Fixture original; prepare(original);
@@ -984,7 +984,7 @@ void NativeDoodadRotationUsesExactValuesAndSources() {
     Fixture category; prepare(category); category.doodads[0]["category"] = "C"; category.Tables();
     auto document = Empty(ObjectType::Doodad); Check(document.AddOriginalObject("D001"));
     Modification(document, "D001", "Rot0", NativeValueType::Unreal, 90.0f); category.SetNative(document);
-    Require(Take(category.Inspect()).footprints[0].gridPolicy == MapData::TerrainDoodadGridPolicy::RequireTwoAndFourEquivalent,
+    Require(Take(category.Inspect()).footprints[0].gridPolicy == MapData::TerrainDoodadGridPolicy::StartupCategoryC,
         "a numeric override does not promote C to a verified four-cell grid");
     category.doodadMetadata.push_back({{"ID", "Cat0"}, {"field", "category"}, {"slk", "DoodadData"}, {"type", "string"}, {"repeat", "0"}});
     category.Tables(); Modification(document, "D001", "Cat0", NativeValueType::String, std::string("E")); category.SetNative(document);
@@ -1380,7 +1380,7 @@ void SpecialDoodadFieldsDoNotBorrowOrdinaryPoseRules() {
     Rejected(InspectNativeTerrainObjects({}, ids, f.sources, result.workBytes-1), "TERRAIN_NATIVE_OBJECT_BUDGET", "special output has an exact bounded parse budget");
     const auto shared = Take(InspectNativeTerrainObjects(ids, ids, f.sources, kWorkingBytes));
     Require(shared.footprints.size() == 1 && shared.specialFootprints.size() == 1
-        && shared.footprints.front().gridPolicy == MapData::TerrainDoodadGridPolicy::RequireTwoAndFourEquivalent
+        && shared.footprints.front().gridPolicy == MapData::TerrainDoodadGridPolicy::StartupCategoryC
         && shared.specialFootprints.front().gridPolicy == MapData::TerrainDoodadGridPolicy::SpecialTerrain,
         "同rawcode普通C与special仍各自绑定独立策略，special不能豁免普通实例证明");
     auto document = Empty(ObjectType::Doodad); Check(document.AddCustomObject("C001", "D001"));

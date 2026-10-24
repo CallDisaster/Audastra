@@ -1,6 +1,7 @@
 #pragma once
 
 #include "War3MapCore/MapArchiveSession.h"
+#include "War3MapCore/Game/NativeDoodadCategoryDirectory.h"
 #include "War3MapCore/MapData/MapTerrain.h"
 #include "War3MapCore/MapData/TerrainNativePathing.h"
 #include "War3MapCore/MapData/TerrainNativeObjectPathing.h"
@@ -83,7 +84,7 @@ public:
     [[nodiscard]] Status VerifyReadback(const MapArchiveSession& saved, std::size_t maximumBytes) const;
     [[nodiscard]] Status VerifyReadback(const WorkspaceSnapshot& saved, std::size_t maximumBytes) const;
     [[nodiscard]] std::size_t SourceBytes() const noexcept { return sourceBytes_; }
-    // 原字节读取和严格物编解析的累计工作预留；保存计划还需计入输出缓冲。
+    // 原字节读取、严格物编解析与启动类别目录的累计工作预留；保存计划还需计入输出缓冲。
     [[nodiscard]] std::size_t CaptureBudgetBytes() const noexcept { return sourceBytes_ + objectWorkBytes_; }
     [[nodiscard]] std::size_t OwnedCapacityBytes() const noexcept;
 
@@ -134,6 +135,7 @@ private:
         bool gameAbsent = false;
     };
     std::vector<Dependency> dependencies_;
+    std::optional<Game::NativeDoodadCategoryDirectory> nativeCategoryDirectory_;
     std::map<std::string, std::array<bool, 3>, std::less<>> ground_;
     std::filesystem::path gameRoot_;
     std::uint8_t tileset_ = 0;

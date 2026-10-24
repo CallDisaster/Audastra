@@ -677,7 +677,7 @@ Result<MpqArchive> MpqArchive::OpenParsed(std::unique_ptr<Impl> impl, const MpqO
             }
         }
 
-        impl->LoadListfile();
+        if (limits.loadListfile) impl->LoadListfile();
         return Result<MpqArchive>::Success(MpqArchive(std::move(impl)));
     } catch (const std::exception &exception) {
         return Result<MpqArchive>::Failure("Mpq", "OPEN_EXCEPTION", exception.what());

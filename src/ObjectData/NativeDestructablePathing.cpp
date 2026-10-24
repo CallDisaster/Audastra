@@ -483,7 +483,7 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
                         Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "装饰物占地结果超过累计剩余预算。");
                     work += outputWork;
                     const auto policy = category->second == "C"
-                        ? MapData::TerrainDoodadGridPolicy::RequireTwoAndFourEquivalent : MapData::TerrainDoodadGridPolicy::TwoCells;
+                        ? MapData::TerrainDoodadGridPolicy::StartupCategoryC : MapData::TerrainDoodadGridPolicy::TwoCells;
                     footprintPaths.emplace(rawcode, ResolvedDoodadFootprint{value, policy,
                         EffectiveDoodadRotation(*standardDoodad, rotationOverride, doodadSchema ? &*doodadSchema : nullptr)});
                 }

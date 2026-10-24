@@ -252,7 +252,7 @@ Status AddGridInvariantUniformDoodadFootprint(std::span<std::uint8_t> staticAttr
         return fail("TERRAIN_UNIFORM_SNAP_AMBIGUOUS", "同色占地的2格或4格投影不能唯一确定，未合并实例贡献。");
     // 相同非零属性的完整贡献由裁剪矩形唯一决定；必须在接触已有OR层之前比较。
     if (footprint.attributes != 0 && !(two->Empty() && four->Empty()) && *two != *four)
-        return fail("TERRAIN_UNIFORM_GRID_VARIANT", "该实例的2格与4格完整地图内占地贡献不同，尚不能保存C类占地。");
+        return fail("TERRAIN_UNIFORM_GRID_VARIANT", "该实例的2格与4格完整地图内占地贡献不同。");
     AddUniformRectangle(staticAttributes, terrain, *two, footprint.attributes);
     return Status::Ok();
 }

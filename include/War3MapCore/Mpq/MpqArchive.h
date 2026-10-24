@@ -91,6 +91,8 @@ struct MpqOpenLimits {
     std::uint32_t maxBlockTableEntries = 1u << 20;
     std::size_t maxStrictMemberCount =
         (std::numeric_limits<std::size_t>::max)();
+    // 仅按明确成员名读取的owner可跳过清单；不影响按名字的哈希查找。
+    bool loadListfile = true;
 };
 
 // 只读 MPQ format v0 归档读取器。完全自研：加密表、哈希、解密、头/哈希表/块表、

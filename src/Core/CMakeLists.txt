@@ -69,6 +69,7 @@ add_library(War3MapCore STATIC
     CompatibilityProfile.cpp
     EditorSession.cpp
     Game/GameDataSource.cpp
+    Game/NativeDoodadCategoryDirectory.cpp
     Game/WorldEditStringLoader.cpp
     Game/WorldEditStrings.cpp
     Hash.cpp

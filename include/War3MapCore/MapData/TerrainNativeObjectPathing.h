@@ -10,7 +10,7 @@ namespace War3Map::MapData {
 
 enum class TerrainDoodadGridPolicy : std::uint8_t {
     TwoCells,
-    RequireTwoAndFourEquivalent,
+    StartupCategoryC,
     SpecialTerrain
 };
 
@@ -25,8 +25,8 @@ enum class TerrainNativeFootprintContribution : std::uint8_t {
 struct TerrainNativeDoodadPathingType {
     std::string rawcode;
     std::string pathTexture;
-    // C的最终类别目录尚未绑定，只请求Core逐实例证明两种合法网格贡献相同。
-    // 该策略不授予类别身份或保存资格；SpecialTerrain仅供原特殊DOO链消费。
+    // C请求Core从真实fresh-startup类别目录选择2/4；此枚举不提供目录资格。
+    // SpecialTerrain仅供原特殊DOO链消费。
     TerrainDoodadGridPolicy gridPolicy = TerrainDoodadGridPolicy::TwoCells;
     std::optional<float> fixedRotationDegrees; // 实际fixedRot；缺失时只支持旋转无关的同色正方形。
     // 普通destructable的RGB属于selector4；walkable占地只向selector2加入控制位。
