@@ -1,6 +1,7 @@
 #pragma once
 
 #include "War3MapCore/MapData/MapPlacements.h"
+#include "War3MapCore/MapData/TerrainPlacementJournalDelta.h"
 
 #include <memory>
 
@@ -8,12 +9,7 @@ namespace War3Map::MapData {
 
 // FTJ7仅表示完整DOO的一次普通段改变，不表示来源授权或任意成员补丁。
 // 旧完整SHA是CAS；新完整SHA与两个长度约束单段替换的完整结果。
-struct TerrainDoodadsJournalEdit {
-    std::string beforeSha256, afterSha256;
-    std::uint32_t beforeBytes = 0, afterBytes = 0;
-    std::uint32_t prefixBytes = 0, removedBytes = 0;
-    std::vector<std::byte> inserted;
-};
+struct TerrainDoodadsJournalEdit : TerrainPlacementJournalDelta {};
 
 class MapDataEditSession;
 struct TerrainStrokeIntent;

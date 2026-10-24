@@ -388,7 +388,8 @@ Status MapDataEditSession::EditPlacementRows(const MapDocument& source, const Un
     return CommitCommand(std::move(command), prepublish);
 }
 
-Status MapDataEditSession::PrepareUnits(const UnitPlacements& value, std::vector<MemberChange>& changes) const {
+Status MapDataEditSession::PrepareUnits(const UnitPlacements& value, std::vector<MemberChange>& changes,
+    bool allowLinkedSettings) const {
     const auto prepared = changes.size();
     auto status = Prepare(MapDataKind::Units, value.Serialize(), changes);
     if (!status.Succeeded() || changes.size() == prepared) return status;
@@ -422,6 +423,10 @@ Status MapDataEditSession::PrepareUnits(const UnitPlacements& value, std::vector
     for (const auto& unit : value.units)
         if (unit.rawcode == "sloc" && !existingStarts.contains(unit.creationId)) movedStarts.push_back(&unit);
     if (movedStarts.empty()) return Status::Ok();
+    // FTJ9只承载Units单成员。先由同一联动规则识别，再在读取/解析W3I前拒绝，
+    // 不能消耗未预收的设置codec预算或省略起点同步后提交部分Units。
+    if (!allowLinkedSettings)
+        return StartFailure("TERRAIN_JOURNAL_UNITS_LINKED_SETTINGS", "Units恢复记录不能省略起始位置联动的地图设置。");
     const auto& settingsBytes = current_[Index(MapDataKind::Settings)];
     if (!settingsBytes)
         return StartFailure("MAP_START_SETTINGS_UNAVAILABLE", "地图玩家设置缺失或来源不明确，不能同步起始位置");
@@ -859,7 +864,8 @@ Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainStrokeJournalInter
             journal.strokes.push_back(std::move(bounds)); continue;
         }
         if (!command->terrainStroke) {
-            if (command->changes.size() == 1 && command->changes.front().kind == MapDataKind::Doodads
+            if (command->changes.size() == 1
+                && (command->changes.front().kind == MapDataKind::Doodads || command->changes.front().kind == MapDataKind::Units)
                 && command->changes.front().before && command->changes.front().after && command->terrain.empty()
                 && !command->headerBefore && !command->headerAfter && !command->pathingBefore && !command->pathingAfter
                 && !command->restrictionBefore && !command->restrictionAfter && !command->specialBefore && !command->specialAfter
@@ -883,12 +889,17 @@ Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainStrokeJournalInter
                         if (!retain(lineage.beforeToAfter.capacity(), sizeof(std::optional<std::uint32_t>)))
                             return fail("TERRAIN_JOURNAL_BUDGET");
                 }
-                FrozenTerrainDoodadsJournalEdit frozen;
-                frozen.before_ = std::shared_ptr<const std::vector<std::byte>>(command, &*change.before);
-                frozen.after_ = std::shared_ptr<const std::vector<std::byte>>(command, &*change.after);
-                frozen.sessionIdentity_ = command->sessionIdentity; frozen.logicalIdentity_ = command->logicalIdentity;
-                frozen.retainedBytes_ = frozenBytes - retainedBefore;
-                TerrainJournalStroke ordinary; ordinary.frozenDoodads = std::move(frozen);
+                const auto freeze = [&]<class Frozen>() {
+                    Frozen frozen;
+                    frozen.before_ = std::shared_ptr<const std::vector<std::byte>>(command, &*change.before);
+                    frozen.after_ = std::shared_ptr<const std::vector<std::byte>>(command, &*change.after);
+                    frozen.sessionIdentity_ = command->sessionIdentity; frozen.logicalIdentity_ = command->logicalIdentity;
+                    frozen.retainedBytes_ = frozenBytes - retainedBefore;
+                    return frozen;
+                };
+                TerrainJournalStroke ordinary;
+                if (change.kind == MapDataKind::Doodads) ordinary.frozenDoodads = freeze.template operator()<FrozenTerrainDoodadsJournalEdit>();
+                else ordinary.frozenUnits = freeze.template operator()<FrozenTerrainUnitsJournalEdit>();
                 journal.strokes.push_back(std::move(ordinary)); continue;
             }
             // 四说明字段不影响资源/地形重放。正文已由raw W3I保存，不能重复序列化
@@ -959,17 +970,21 @@ std::string MapDataEditSession::TerrainJournalStateFingerprint() const {
     journal.value->sourceSha256.assign(64, '0');
     for (std::size_t i = 0; i < TerrainJournalMemberNames.size(); ++i)
         journal.value->members.push_back({std::string(TerrainJournalMemberNames[i]), i < 2, i < 2 ? std::string(64, '0') : std::string{}, 0});
-    if (std::any_of(journal.value->strokes.begin(), journal.value->strokes.end(), [](const auto& stroke) { return stroke.frozenDoodads.has_value(); })) {
+    if (std::any_of(journal.value->strokes.begin(), journal.value->strokes.end(), [](const auto& stroke) {
+        return stroke.frozenDoodads.has_value() || stroke.frozenUnits.has_value(); })) {
         // CAS只在当前会话比较：不可变真实command的session/logicalIdentity一一绑定正文。
         // 保留有序variant与typed笔划摘要；Undo归并回同一活动前缀时令牌也精确回原值。
         // 不物化delta、不读DOO，后台持久化仍必须重新完整SHA/codec。
-        std::string scope = "FTJ7-command-scope:";
+        std::string scope = "FTJ9-command-scope:";
         std::vector<TerrainJournalStroke> typed;
         typed.reserve(journal.value->strokes.size());
         for (auto& stroke : journal.value->strokes) {
             if (stroke.frozenDoodads) {
                 scope += "D:" + std::to_string(stroke.frozenDoodads->SessionIdentity()) + ":"
                     + std::to_string(stroke.frozenDoodads->LogicalIdentity()) + ";";
+            } else if (stroke.frozenUnits) {
+                scope += "U:" + std::to_string(stroke.frozenUnits->SessionIdentity()) + ":"
+                    + std::to_string(stroke.frozenUnits->LogicalIdentity()) + ";";
             } else { scope += "T;"; typed.push_back(std::move(stroke)); }
         }
         journal.value->strokes = std::move(typed);
