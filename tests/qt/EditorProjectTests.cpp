@@ -531,6 +531,102 @@ std::vector<MapArchiveMember> WalkableDestructableQtMembers(bool patterned) {
     return members;
 }
 
+struct WalkableOriginalQtFixture {
+    std::vector<MapArchiveMember> members;
+    std::vector<std::byte> editedPathing;
+};
+
+WalkableOriginalQtFixture WalkableDestructableOriginalQtMembers(std::string_view scenario) {
+    using namespace ObjectData;
+    WalkableOriginalQtFixture fixture{WalkableDestructableQtMembers(false), {}};
+    auto& members = fixture.members;
+    if (members.empty()) return {};
+    const bool combined = scenario == "combined";
+    const bool renamed = scenario == "renamed-real";
+    const bool rectangular = combined || renamed || scenario.starts_with("rotation-");
+    const bool overrideWalkable = combined || scenario == "walkable";
+    const bool overridePath = combined || scenario == "path";
+    const std::string walkableId = renamed ? "Qw01" : "bwal";
+    const std::string pathId = renamed ? "Qp01" : "bptx";
+    const std::string rotationId = renamed ? "Qr01" : "bfxr";
+    const float degrees = scenario == "rotation-negative" ? -1.0f : scenario == "rotation-zero" ? 0.0f : 90.25f;
+    for (auto& member : members) {
+        if (member.name == "Units/DestructableData.slk")
+            member.data = NativeDoodadQtTable({"destructableID", "code", "walkable", "pathTex", "fixedRot"},
+                {{"Br01", "Br01", overrideWalkable ? "0" : "1",
+                    overridePath ? "PathTextures/unused-standard-bridge.tga" : "PathTextures/bridge.tga", rectangular ? "270" : "0"}});
+        // 实际Destructable metadata没有repeat/data列；scalar地址是明确index=0。
+        // 一行改用不同ID及Real，确保保存资格来自本次metadata而非硬编码bwal/bptx/bfxr。
+        // 空Original复用旧夹具的单一walkable metadata，不替未使用的path/rotation补资格。
+        if (member.name == "Units/DestructableMetaData.slk" && scenario != "empty")
+            member.data = NativeDoodadQtTable({"ID", "field", "slk", "type", "index"},
+                {{walkableId, "walkable", "DestructableData", "bool", "0"},
+                    {pathId, "pathTex", "DestructableData", "pathingTexture", "0"},
+                    {rotationId, "fixedRot", "DestructableData", renamed ? "real" : "unreal", "0"}});
+    }
+    if (overridePath) {
+        const auto texture = std::find_if(members.begin(), members.end(), [](const auto& member) { return member.name == "PathTextures/bridge.tga"; });
+        if (texture == members.end()) return {};
+        auto unused = texture->data;
+        std::fill(unused.begin() + 18, unused.end(), std::byte{}); // 标准全黑，不抑制terrain；有效覆盖的非黑占地有真实差别。
+        members.push_back({"PathTextures/unused-standard-bridge.tga", std::move(unused)});
+    }
+    auto native = NativeObjectDocument::CreateEmpty(ObjectType::Destructable);
+    if (!native.Succeeded() || !native.value || !native.value->AddOriginalObject("Br01").Succeeded()) return {};
+    if (overrideWalkable && !native.value->AddModification({ObjectType::Destructable, "Br01"}, {walkableId},
+        NativeValueType::Int32, std::int32_t{1}).Succeeded()) return {};
+    if (overridePath && !native.value->AddModification({ObjectType::Destructable, "Br01"}, {pathId},
+        NativeValueType::String, std::string("PathTextures/bridge.tga")).Succeeded()) return {};
+    if (rectangular && !native.value->AddModification({ObjectType::Destructable, "Br01"}, {rotationId},
+        renamed ? NativeValueType::Real : NativeValueType::Unreal, degrees).Succeeded()) return {};
+    const auto nativeWire = NativeObjectCodec(ObjectType::Destructable).Serialize(*native.value);
+    if (!nativeWire.Succeeded() || !nativeWire.value) return {};
+    members.push_back({"war3map.w3b", *nativeWire.value});
+    std::array<bool, 32 * 32> suppressed{};
+    if (rectangular) {
+        // 原创顶原点4x2纹理，按文件顺序黑/白/白/白、白/白/黑/白；alpha不授予抑制。
+        std::vector<std::byte> texture(18 + 8 * 4, std::byte{});
+        texture[2] = std::byte{2}; texture[12] = std::byte{4}; texture[14] = std::byte{2};
+        texture[16] = std::byte{32}; texture[17] = std::byte{40};
+        constexpr std::array<bool, 8> colored{false, true, true, true, true, true, false, true};
+        for (std::size_t i = 0; i < colored.size(); ++i) {
+            const auto at = 18 + i * 4;
+            if (colored[i]) texture[at] = texture[at + 1] = texture[at + 2] = std::byte{255};
+            else texture[at + 3] = std::byte{255};
+        }
+        for (auto& member : members) {
+            if (member.name == "PathTextures/bridge.tga") member.data = texture;
+            if (member.name == "war3map.doo") {
+                auto placements = MapData::ParseDoodadPlacements(member.data);
+                if (!placements.Succeeded() || !placements.value) return {};
+                auto& bridge = placements.value->doodads.front(); bridge.position = {512, 512, 0};
+                bridge.rotation = 1.57079637f; // wire90先吸附；fixedRot=0不能反过来改变吸附。
+                const auto wire = placements.value->Serialize();
+                if (!wire.Succeeded() || !wire.value) return {};
+                member.data = *wire.value;
+            }
+        }
+        // 独立字面矩阵：wire90吸附后，负值/90.25是(14,16)的4x2，零覆盖是(15,15)的2x4。
+        // 标准270为另外的黑格布局；忽略覆盖、把零视为缺失或按最终角重新吸附都不能通过。
+        constexpr std::array<bool, 8> zero{false, true, true, true, true, false, true, true};
+        constexpr std::array<bool, 8> ninety{true, true, true, false, true, false, true, true};
+        const auto& mask = degrees == 0 ? zero : ninety;
+        const std::size_t x0 = degrees == 0 ? 15 : 14, y0 = degrees == 0 ? 15 : 16, width = degrees == 0 ? 2 : 4;
+        for (std::size_t i = 0; i < mask.size(); ++i) suppressed[(y0 + i / width) * 32 + x0 + i % width] = mask[i];
+        std::fill(members[2].data.begin() + 16, members[2].data.end(), std::byte{0x19});
+        for (std::size_t i = 0; i < suppressed.size(); ++i) if (suppressed[i]) members[2].data[16 + i] = std::byte{0x11};
+        for (std::size_t y = 14; y < 18; ++y) for (std::size_t x = 14; x < 18; ++x)
+            members[2].data[16 + y * 32 + x] |= std::byte{4};
+    } else {
+        for (std::size_t y = 14; y < 18; ++y) for (std::size_t x = 16; x < 20; ++x) suppressed[y * 32 + x] = true;
+    }
+    fixture.editedPathing = members[2].data;
+    // 水深或walkable0贴图仅向中心4x4追加02；桥不能清除普通阻挡04或来源保留位11。
+    for (std::size_t y = 14; y < 18; ++y) for (std::size_t x = 14; x < 18; ++x)
+        if (!suppressed[y * 32 + x]) fixture.editedPathing[16 + y * 32 + x] |= std::byte{2};
+    return fixture;
+}
+
 enum class NativeDoodadQtMutation { None, FollowHeight, ResourceReplacement, SourceDrift };
 
 std::vector<MapArchiveMember> TerrainJournalWaterMembers() {
@@ -649,6 +745,10 @@ private slots:
     void FixedRotationWorkerRejectsBeforeWrite();
     void WalkableDestructableNormalSaveAndUndoRedo_data();
     void WalkableDestructableNormalSaveAndUndoRedo();
+    void WalkableDestructableOriginalSaveAndUndoRedo_data();
+    void WalkableDestructableOriginalSaveAndUndoRedo();
+    void WalkableDestructableOriginalWorkerRejectsBeforeWrite_data();
+    void WalkableDestructableOriginalWorkerRejectsBeforeWrite();
     void WalkableDestructableWorkerRejectsBeforeWrite_data();
     void WalkableDestructableWorkerRejectsBeforeWrite();
     void PathingIntentLateEditStalesFrozenProject();
@@ -2075,6 +2175,126 @@ void EditorProjectTests::WalkableDestructableNormalSaveAndUndoRedo() {
     CheckNativeDoodadNormalSaveAndUndoRedo(members, inPlace, textureChange, &changedPathing);
 }
 
+void EditorProjectTests::WalkableDestructableOriginalSaveAndUndoRedo_data() {
+    QTest::addColumn<QString>("scenario"); QTest::addColumn<bool>("textureChange"); QTest::addColumn<bool>("inPlace");
+    for (const auto* scenario : {"empty", "walkable", "path", "rotation-negative", "rotation-zero", "rotation-unreal", "renamed-real", "combined"})
+        for (const bool textureChange : {false, true}) for (const bool inPlace : {false, true}) {
+            const auto name = QString("walkable-original-%1-%2-%3").arg(scenario)
+                .arg(textureChange ? "texture" : "water").arg(inPlace ? "in-place" : "save-as").toUtf8();
+            QTest::newRow(name.constData()) << QString::fromLatin1(scenario) << textureChange << inPlace;
+        }
+}
+
+void EditorProjectTests::WalkableDestructableOriginalSaveAndUndoRedo() {
+    QFETCH(QString, scenario); QFETCH(bool, textureChange); QFETCH(bool, inPlace);
+    const auto fixture = WalkableDestructableOriginalQtMembers(scenario.toStdString()); QVERIFY(!fixture.members.empty());
+    const auto w3b = std::find_if(fixture.members.begin(), fixture.members.end(), [](const auto& member) { return member.name == "war3map.w3b"; });
+    QVERIFY(w3b != fixture.members.end());
+    auto parsed = ObjectData::NativeObjectCodec(ObjectData::ObjectType::Destructable).Parse(w3b->data);
+    QVERIFY(parsed.Succeeded());
+    const auto* native = dynamic_cast<const ObjectData::NativeObjectDocument*>(parsed.document.get()); QVERIFY(native);
+    QCOMPARE(native->Version(), 2); QCOMPARE(native->OriginalObjectCount(), std::size_t{1});
+    QCOMPARE(native->CustomObjectCount(), std::size_t{0});
+    const auto* bridge = native->FindObject({ObjectData::ObjectType::Destructable, "Br01"}); QVERIFY(bridge);
+    QCOMPARE(bridge->modifications.size(), scenario == "empty" ? std::size_t{0} : scenario == "combined" ? std::size_t{3} : std::size_t{1});
+    if (scenario.startsWith("rotation-") || scenario == "renamed-real" || scenario == "combined") {
+        // 两点加完整字面WPM核对，区分zero与wire90/90.25，并保留普通green阻挡04。
+        QCOMPARE(fixture.members[2].data[16 + 15 * 32 + 16], scenario == "rotation-zero" ? std::byte{0x15} : std::byte{0x1d});
+        QCOMPARE(fixture.members[2].data[16 + 16 * 32 + 14], scenario == "rotation-zero" ? std::byte{0x1d} : std::byte{0x15});
+    }
+    // 旧related-empty-w3b拒绝行改为成功覆盖：两种保存方式都必须经过保存后Qt Undo/Redo。
+    // 共用循环还逐字保留W3B、metadata、完整DOO和其它成员，核对来源SHA及in-place备份。
+    CheckNativeDoodadNormalSaveAndUndoRedo(fixture.members, inPlace, textureChange, &fixture.editedPathing);
+}
+
+void EditorProjectTests::WalkableDestructableOriginalWorkerRejectsBeforeWrite_data() {
+    QTest::addColumn<QString>("scenario"); QTest::addColumn<bool>("inPlace"); QTest::addColumn<QString>("code");
+    for (const bool inPlace : {false, true}) {
+        const auto add = [&](const char* scenario, const char* code) {
+            const auto name = QString("walkable-original-%1-%2").arg(scenario).arg(inPlace ? "in-place" : "save-as").toUtf8();
+            QTest::newRow(name.constData()) << QString::fromLatin1(scenario) << inPlace << QString::fromLatin1(code);
+        };
+        for (const auto* scenario : {"custom", "other-field", "path-empty", "path-underscore", "path-none"})
+            add(scenario, "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED");
+        for (const auto* scenario : {"walkable-wire-real", "walkable-value-two"})
+            add(scenario, "TERRAIN_NATIVE_OBJECT_WALKABLE_TYPE");
+        for (const auto* scenario : {"path-wire-int", "rotation-wire-real"})
+            add(scenario, "TERRAIN_NATIVE_OBJECT_BRIDGE_TYPE");
+        for (const auto* scenario : {"metadata-path-table", "metadata-path-index", "metadata-rotation-alias", "metadata-repeat", "metadata-data", "metadata-missing-index"})
+            add(scenario, "TERRAIN_NATIVE_OBJECT_METADATA");
+        for (const auto* scenario : {"rotation-above-domain", "rotation-below-domain"})
+            add(scenario, "TERRAIN_DOODAD_FIXED_ROTATION");
+        add("rotation-ambiguous", "TERRAIN_DOODAD_ANGLE_AMBIGUOUS");
+        add("follow-z", "TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED");
+        add("pathing-resource-drift", "TERRAIN_PATHING_RESOURCE_CHANGED");
+        add("source-drift", "SOURCE_CHANGED");
+    }
+}
+
+void EditorProjectTests::WalkableDestructableOriginalWorkerRejectsBeforeWrite() {
+    using namespace ObjectData;
+    QFETCH(QString, scenario); QFETCH(bool, inPlace); QFETCH(QString, code);
+    auto fixture = WalkableDestructableOriginalQtMembers("combined"); auto& members = fixture.members; QVERIFY(!members.empty());
+    auto w3b = std::find_if(members.begin(), members.end(), [](const auto& member) { return member.name == "war3map.w3b"; });
+    QVERIFY(w3b != members.end());
+    auto parsed = NativeObjectCodec(ObjectType::Destructable).Parse(w3b->data); QVERIFY(parsed.Succeeded());
+    auto* native = dynamic_cast<NativeObjectDocument*>(parsed.document.get()); QVERIFY(native);
+    const ObjectKey bridge{ObjectType::Destructable, "Br01"};
+    const auto replace = [&](std::string field, NativeValueType type, Value value) {
+        return native->RemoveModification(bridge, {field}).Succeeded()
+            && native->AddModification(bridge, {field}, type, std::move(value)).Succeeded();
+    };
+    if (scenario == "custom") {
+        auto custom = NativeObjectDocument::CreateEmpty(ObjectType::Destructable); QVERIFY(custom.Succeeded() && custom.value);
+        QVERIFY(custom.value->AddCustomObject("Zb01", "Br01").Succeeded());
+        const auto* original = native->FindObject(bridge); QVERIFY(original);
+        for (const auto& modification : original->modifications) {
+            const auto type = native->ModificationValueType(bridge, modification.key); QVERIFY(type);
+            QVERIFY(custom.value->AddModification({ObjectType::Destructable, "Zb01"}, modification.key, *type, modification.value).Succeeded());
+        }
+        *native = std::move(*custom.value);
+        auto doo = std::find_if(members.begin(), members.end(), [](const auto& member) { return member.name == "war3map.doo"; });
+        QVERIFY(doo != members.end());
+        auto placements = MapData::ParseDoodadPlacements(doo->data); QVERIFY(placements.Succeeded() && placements.value);
+        placements.value->doodads.front().rawcode = "Zb01";
+        const auto wire = placements.value->Serialize(); QVERIFY(wire.Succeeded() && wire.value); doo->data = *wire.value;
+    } else if (scenario == "other-field")
+        QVERIFY(native->AddModification(bridge, {"bnam"}, NativeValueType::String, std::string("Bridge name")).Succeeded());
+    else if (scenario == "walkable-wire-real") QVERIFY(replace("bwal", NativeValueType::Real, 1.0f));
+    else if (scenario == "walkable-value-two") QVERIFY(replace("bwal", NativeValueType::Int32, std::int32_t{2}));
+    else if (scenario == "path-wire-int") QVERIFY(replace("bptx", NativeValueType::Int32, std::int32_t{1}));
+    else if (scenario == "rotation-wire-real") QVERIFY(replace("bfxr", NativeValueType::Real, 90.25f));
+    else if (scenario == "path-empty" || scenario == "path-underscore" || scenario == "path-none")
+        QVERIFY(replace("bptx", NativeValueType::String, std::string(scenario == "path-empty" ? "" : scenario == "path-underscore" ? "_" : "none")));
+    else if (scenario == "rotation-above-domain" || scenario == "rotation-below-domain" || scenario == "rotation-ambiguous")
+        QVERIFY(replace("bfxr", NativeValueType::Unreal, scenario == "rotation-above-domain" ? 361.0f : scenario == "rotation-below-domain" ? -361.0f : 45.0f));
+    const auto wire = NativeObjectCodec(ObjectType::Destructable).Serialize(*native); QVERIFY(wire.Succeeded() && wire.value);
+    w3b->data = *wire.value;
+    if (scenario.startsWith("metadata-") || scenario == "other-field") {
+        std::vector<std::string> columns{"ID", "field", "slk", "type", "index"};
+        std::vector<std::vector<std::string>> rows{
+            {"bwal", "walkable", "DestructableData", "bool", "0"},
+            {"bptx", "pathTex", "DestructableData", "pathingTexture", "0"},
+            {"bfxr", "fixedRot", "DestructableData", "unreal", "0"}};
+        if (scenario == "metadata-path-table") rows[1][2] = "DoodadData";
+        else if (scenario == "metadata-path-index") rows[1][4] = "1";
+        else if (scenario == "metadata-rotation-alias") rows.push_back({"bxr2", "fixedRot", "DestructableData", "unreal", "0"});
+        else if (scenario == "metadata-repeat" || scenario == "metadata-data") {
+            columns.push_back(scenario == "metadata-repeat" ? "repeat" : "data");
+            for (auto& row : rows) row.push_back("0"); rows[2].back() = "1";
+        } else if (scenario == "metadata-missing-index") {
+            columns.pop_back(); for (auto& row : rows) row.pop_back();
+        } else if (scenario == "other-field") rows.push_back({"bnam", "Name", "DestructableData", "string", "0"});
+        auto metadata = std::find_if(members.begin(), members.end(), [](const auto& member) { return member.name == "Units/DestructableMetaData.slk"; });
+        QVERIFY(metadata != members.end()); metadata->data = NativeDoodadQtTable(columns, rows);
+    }
+    const auto mutation = scenario == "follow-z" ? NativeDoodadQtMutation::FollowHeight
+        : scenario == "pathing-resource-drift" ? NativeDoodadQtMutation::ResourceReplacement
+        : scenario == "source-drift" ? NativeDoodadQtMutation::SourceDrift : NativeDoodadQtMutation::None;
+    const auto expectedCode = code.toUtf8();
+    CheckNativeDoodadWorkerRejectsBeforeWrite(members, inPlace, expectedCode.constData(), mutation);
+}
+
 void EditorProjectTests::WalkableDestructableWorkerRejectsBeforeWrite_data() {
     QTest::addColumn<QString>("scenario"); QTest::addColumn<bool>("inPlace"); QTest::addColumn<QString>("code");
     for (const bool inPlace : {false, true}) {
@@ -2084,7 +2304,6 @@ void EditorProjectTests::WalkableDestructableWorkerRejectsBeforeWrite_data() {
         };
         for (const auto* state : {"flags-zero", "flags-one", "flags-three", "flags-unknown", "dead", "damaged", "life-unknown"})
             add(state, "TERRAIN_WALKABLE_DESTRUCTABLE_STATE");
-        add("related-empty-w3b", "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED");
         add("follow-z", "TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED");
         add("pathing-resource-drift", "TERRAIN_PATHING_RESOURCE_CHANGED");
         add("source-drift", "SOURCE_CHANGED");
@@ -2106,12 +2325,6 @@ void EditorProjectTests::WalkableDestructableWorkerRejectsBeforeWrite() {
     else if (scenario == "damaged") bridge.lifePercent = 99;
     else if (scenario == "life-unknown") bridge.lifePercent = 255;
     const auto wire = placements.value->Serialize(); QVERIFY(wire.Succeeded() && wire.value); doo->data = *wire.value;
-    if (scenario == "related-empty-w3b") {
-        auto related = ObjectData::NativeObjectDocument::CreateEmpty(ObjectData::ObjectType::Destructable);
-        QVERIFY(related.Succeeded() && related.value); QVERIFY(related.value->AddOriginalObject("Br01").Succeeded());
-        const auto native = ObjectData::NativeObjectCodec(ObjectData::ObjectType::Destructable).Serialize(*related.value);
-        QVERIFY(native.Succeeded() && native.value); members.push_back({"war3map.w3b", *native.value});
-    }
     const auto mutation = scenario == "follow-z" ? NativeDoodadQtMutation::FollowHeight
         : scenario == "pathing-resource-drift" ? NativeDoodadQtMutation::ResourceReplacement
         : scenario == "source-drift" ? NativeDoodadQtMutation::SourceDrift : NativeDoodadQtMutation::None;
