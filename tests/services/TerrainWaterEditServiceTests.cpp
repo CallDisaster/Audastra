@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -637,8 +638,40 @@ void NativeCornerWaterRestoresSavesAndRejectsUnexplainedLiteralPathing() {
         // 湿起点保留R=-32成为浅水；四个所属地格均阻断，仍是0xca+作者0x11。
         if (!wet) for (std::size_t y = 62; y < 66; ++y) for (std::size_t x = 62; x < 66; ++x)
             expected[16 + y * 128 + x] = std::byte{0x1b};
-        Require(plan.VerifyReadback(saved).Succeeded() && Take(saved.ReadMember("war3map.w3e")) == after
-            && Take(saved.ReadMember("war3map.wpm")) == expected, "independent archive readback matches every literal G1 byte");
+        const auto readback = plan.VerifyReadback(saved);
+        if (!readback.Succeeded()) {
+            std::cerr << (wet ? "wet" : "dry") << " corner water plan readback failed:\n";
+            for (const auto& diagnostic : readback.diagnostics)
+                std::cerr << diagnostic.code << ": " << diagnostic.message << '\n';
+        }
+        Require(readback.Succeeded(), "independent archive readback verifies the frozen native save plan");
+        const auto requireExactBytes = [&](const Bytes& actual, const Bytes& expectedBytes,
+            const char* member, const char* message, bool pathing) {
+            if (actual != expectedBytes) {
+                const auto difference = std::mismatch(actual.begin(), actual.end(), expectedBytes.begin(), expectedBytes.end());
+                const auto offset = static_cast<std::size_t>(difference.first - actual.begin());
+                const auto byteText = [](std::byte value) {
+                    constexpr char digits[] = "0123456789abcdef";
+                    const auto byte = std::to_integer<unsigned>(value);
+                    return std::string{"0x"} + digits[byte >> 4] + digits[byte & 15];
+                };
+                std::cerr << (wet ? "wet" : "dry") << " corner water " << member
+                    << " differs: actual bytes=" << actual.size() << ", expected bytes=" << expectedBytes.size()
+                    << ", first offset=" << offset;
+                if (pathing && offset >= 16) {
+                    const auto x = (offset - 16) % 128, y = (offset - 16) / 128;
+                    std::cerr << ", WPM=(" << x << ',' << y << "), terrain cell=(" << x / 4 << ',' << y / 4
+                        << "), nearest vertex=(" << (x + 2) / 4 << ',' << (y + 2) / 4 << ')';
+                }
+                std::cerr << ", actual=" << (offset < actual.size() ? byteText(actual[offset]) : "<end>")
+                    << ", expected=" << (offset < expectedBytes.size() ? byteText(expectedBytes[offset]) : "<end>") << '\n';
+            }
+            Require(actual == expectedBytes, message);
+        };
+        requireExactBytes(Take(saved.ReadMember("war3map.w3e")), after, "war3map.w3e",
+            "independent archive readback matches every edited W3E byte", false);
+        requireExactBytes(Take(saved.ReadMember("war3map.wpm")), expected, "war3map.wpm",
+            "independent archive readback matches every literal G1 byte", true);
         Require(f.edits->Undo() && Take(SerializeMapTerrain(*f.edits->Terrain())) == f.members[0].data
             && f.edits->Redo() && Take(SerializeMapTerrain(*f.edits->Terrain())) == after, "ordinary save planning preserves the real Undo/Redo command");
         // 来源中一个干地格故意丢失原生0x40；可解析WPM也不能获得保存资格。
