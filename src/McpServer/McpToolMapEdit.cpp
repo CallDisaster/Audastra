@@ -136,6 +136,7 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
         return result;
     }
     const bool blight = kind.toString() == "blight";
+    const bool boundary = kind.toString() == "boundary";
     const bool ramp = kind.toString() == "ramp";
     const bool corner = kind.toString() == "corner_ramp";
     const bool texture = kind.toString() == "texture", water = kind.toString() == "water_height";
@@ -145,6 +146,7 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
     Services::MapEditTerrainStroke stroke;
     MapData::TerrainWaterStrokeOptions waterOptions;
     if (blight) stroke.brush.kind = MapData::TerrainBrushKind::Blight;
+    else if (boundary) stroke.brush.kind = MapData::TerrainBrushKind::Boundary;
     else if (ramp) stroke.brush.kind = MapData::TerrainBrushKind::Ramp;
     else if (corner) stroke.brush.kind = MapData::TerrainBrushKind::CornerRamp;
     else if (kind.toString() == "raise") stroke.brush.kind = MapData::TerrainBrushKind::Raise;
@@ -158,7 +160,7 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
         ? MapData::TerrainWaterBrushKind::Shallow : MapData::TerrainWaterBrushKind::Deep;
     else {
         error = Failure("MCP_MAP_EDIT_TERRAIN_KIND_UNSUPPORTED",
-            "当前接受 raise/lower/smooth/blight/ramp/corner_ramp/texture/cliff_level/cliff_texture/water_height/shallow_water/deep_water；通行性仍由同一保存服务核验。");
+            "当前接受 raise/lower/smooth/blight/boundary/ramp/corner_ramp/texture/cliff_level/cliff_texture/water_height/shallow_water/deep_water；通行性仍由同一保存服务核验。");
         return std::nullopt;
     }
     if (!OnlyFields(object, corner
@@ -172,6 +174,9 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
             : cliffTexture
             ? std::initializer_list<std::string_view>{"kind", "shape", "point_space", "size", "cliff_texture",
                   "points", "follow_doodads"}
+            : boundary
+            ? std::initializer_list<std::string_view>{"kind", "shape", "point_space", "radius",
+                  "points", "follow_doodads", "value"}
             : blight
             ? std::initializer_list<std::string_view>{"kind", "shape", "point_space", "radius",
                   "points", "follow_doodads", "set_blight"}
@@ -281,7 +286,14 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
         return std::nullopt;
     }
     stroke.followDoodads = false;
-    if (blight || ramp || corner) {
+    if (boundary) {
+        const auto value = object.value("value");
+        if (!value.isBool()) {
+            error = Failure("MCP_MAP_EDIT_TERRAIN_BOUNDARY_INVALID", "边界笔刷必须显式指定 value 布尔值。");
+            return std::nullopt;
+        }
+        stroke.brush.value = value.toBool();
+    } else if (blight || ramp || corner) {
         const auto set = object.value(blight ? "set_blight" : "set_ramp");
         if (!set.isBool()) {
             error = Failure(!blight ? "MCP_MAP_EDIT_TERRAIN_RAMP_INVALID" : "MCP_MAP_EDIT_TERRAIN_BLIGHT_INVALID",
@@ -639,6 +651,9 @@ QJsonObject TerrainStrokeSchema() {
     QJsonObject blight = shared;
     blight["kind"] = QJsonObject{{"type", "string"}, {"const", "blight"}};
     blight["set_blight"] = QJsonObject{{"type", "boolean"}};
+    QJsonObject boundary = shared;
+    boundary["kind"] = QJsonObject{{"type", "string"}, {"const", "boundary"}};
+    boundary["value"] = QJsonObject{{"type", "boolean"}};
     QJsonObject ramp = shared;
     ramp["kind"] = QJsonObject{{"type", "string"}, {"const", "ramp"}};
     ramp["shape"] = QJsonObject{{"type", "string"}, {"const", "circle"}};
@@ -672,14 +687,15 @@ QJsonObject TerrainStrokeSchema() {
     cliff["level_delta"] = QJsonObject{{"type", "integer"}, {"minimum", -1}, {"maximum", 1}};
     cliff["seed"] = QJsonObject{{"type", "integer"}, {"minimum", 0}, {"maximum", 4294967295.0}};
     const QJsonArray required{"kind", "shape", "point_space", "radius", "points", "follow_doodads"};
-    QJsonArray heightRequired = required, blightRequired = required, rampRequired = required,
+    QJsonArray heightRequired = required, blightRequired = required, boundaryRequired = required, rampRequired = required,
         textureRequired = required, waterRequired = required;
     heightRequired.append("strength");
     blightRequired.append("set_blight");
+    boundaryRequired.append("value");
     rampRequired.append("set_ramp");
     textureRequired.append("ground_texture"); waterRequired.append("water_height");
     return {{"oneOf", QJsonArray{BasicSchema(height, heightRequired),
-        BasicSchema(smooth, heightRequired), BasicSchema(blight, blightRequired),
+        BasicSchema(smooth, heightRequired), BasicSchema(blight, blightRequired), BasicSchema(boundary, boundaryRequired),
         BasicSchema(ramp, rampRequired), corner, bounds,
         BasicSchema(texture, textureRequired), BasicSchema(water, waterRequired),
         BasicSchema(cliff, {"kind", "shape", "point_space", "size", "cliff_texture", "level_delta", "seed", "points", "follow_doodads"}),
@@ -807,6 +823,7 @@ void RegisterMapEditSaveTool(McpServer& server) {
         "水位限制固定启用。cliff_texture只改已有palette槽位，不接受层级、种子、锚点或规则，仍须完整通行重建资格。"
         "已有水位、浅/深水、一级干地直坡和拐角坡道；直坡须circle/radius=0，拐角坡道只接受单个规范world落点，"
         "两者均须明确set_ramp布尔值，几何和实际规则仍由共用规划器核验。"
+        "boundary通过显式value布尔值绘制或清除地形边界；playable_bounds通过整数半开地格矩形设置可玩范围。"
         "共用通行性门禁最终裁决。地物跟随和其他笔刷拒绝。工具/游戏根只读可信宿主环境变量；"
         "可选 ui_root 明确指定独立 UI 元数据绝对目录，仍提交到同一保存服务，不推断或回退工具/UI 来源。"
         "携带 transaction_id/expected_revision 时保存已经 preview/validate 的完整 GUI 事务，"

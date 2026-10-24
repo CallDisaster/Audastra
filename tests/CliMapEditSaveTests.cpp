@@ -188,10 +188,46 @@ void RampUsesExplicitBooleanAndTheSharedSaveGate() {
     Rejected(Invoke(args), "ramp requires circle, radius 0 and a true or false value");
     args = base(); args[10] = L"square";
     Rejected(Invoke(args), "ramp requires circle, radius 0 and a true or false value");
-    args = base(); args[9] = L"boundary";
+    args = base(); args[9] = L"unsupported";
     Rejected(Invoke(args), "stroke kind must be");
     args = base(); args.pop_back();
     Rejected(Invoke(args), "requires six arguments");
+}
+
+void BoundaryUsesStrictBooleanAndSharedOrderedSave() {
+    const auto base = [] {
+        auto args = Arguments();
+        args.insert(args.end(), {L"--stroke", L"boundary", L"circle", L"4", L"4", L"0", L"true"});
+        return args;
+    };
+    for (const auto value : {L"true", L"false"}) for (const auto shape : {L"circle", L"square"})
+        for (const auto radius : {L"0", L"16"}) {
+            auto args = base(); args[14] = value; args[10] = shape; args[13] = radius;
+            const auto result = Invoke(args);
+            Require(result.exitCode != 0 && result.output.empty()
+                && result.error.find("SOURCE_LEASE_FAILED") != std::string::npos
+                && result.error.find("SAVE_STROKE_KIND") == std::string::npos,
+                "boundary paint/clear must pass typed validation and reach the shared source gate");
+        }
+    for (const auto value : {L"1", L"0", L"True", L"set", L"nan"}) {
+        auto args = base(); args[14] = value; Rejected(Invoke(args), "boundary value must be true or false");
+    }
+    for (const auto radius : {L"-1", L"17", L"0.5"}) {
+        auto args = base(); args[13] = radius; Rejected(Invoke(args), "radius must be 0..16");
+    }
+    for (const auto x : {L"-1", L"1.5", L"4294967296"}) {
+        auto args = base(); args[11] = x; Rejected(Invoke(args), "unsigned vertex indices");
+    }
+    auto args = base(); args[10] = L"triangle"; Rejected(Invoke(args), "stroke shape must be circle or square");
+    args = base(); args.pop_back(); Rejected(Invoke(args), "requires six arguments");
+    args = base(); args.push_back(L"extra"); Rejected(Invoke(args), "unknown map-edit-save option");
+    args = base(); args.insert(args.end(), {L"--terrain-bounds", L"1", L"2", L"17", L"14"});
+    Require(Invoke(args).error.find("SOURCE_LEASE_FAILED") != std::string::npos,
+        "boundary and playable bounds retain distinct intents in one ordered save request");
+    args = Arguments();
+    for (unsigned i = 0; i < 129; ++i)
+        args.insert(args.end(), {L"--stroke", L"boundary", L"square", L"4", L"4", L"0", L"false"});
+    Rejected(Invoke(args), "at most 128 ordered strokes");
 }
 
 void CornerRampUsesOneWorldPointAndStrictBoolean() {
@@ -252,6 +288,7 @@ int main() {
         NativeWaterUsesExplicitTypedArguments();
         CliffUsesTypedClassicSizeAndDoesNotAliasTextureToLevel();
         RampUsesExplicitBooleanAndTheSharedSaveGate();
+        BoundaryUsesStrictBooleanAndSharedOrderedSave();
         CornerRampUsesOneWorldPointAndStrictBoolean();
         BoundsUseIntegerHalfOpenCellsAndShareOrderedCommandLimit();
         std::cout << "Map edit save CLI minimap option gates passed\n";

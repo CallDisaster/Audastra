@@ -425,7 +425,7 @@ void TestNormalSaveTextureAndWaterSchema() {
     const auto response = server.HandleMessage(R"({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}})");
     Expect(response && !response->error, "terrain save tool list must be available");
     bool texture = false, water = false, waterBrush = false, ramp = false, corner = false, bounds = false;
-    bool cliffLevel = false, cliffTexture = false;
+    bool cliffLevel = false, cliffTexture = false, boundary = false;
     for (const auto& tool : response->result.toObject().value("tools").toArray()) {
         if (tool.toObject().value("name") != "save_map_edit_candidate") continue;
         const auto properties = tool.toObject().value("inputSchema").toObject().value("properties").toObject();
@@ -442,6 +442,16 @@ void TestNormalSaveTextureAndWaterSchema() {
                     && fields.value("radius").toObject().contains("const")
                     && fields.value("radius").toObject().value("const").toInt(-1) == 0
                     && !fields.contains("strength") && !fields.contains("water_height") && !fields.contains("set_blight");
+            }
+            if (kind == "boundary") {
+                const auto required = variant.toObject().value("required").toArray();
+                boundary = fields.size() == 7 && required.size() == 7 && required.contains("value")
+                    && fields.value("value").toObject().value("type") == "boolean"
+                    && fields.value("radius").toObject().value("minimum").toInt(-1) == 0
+                    && fields.value("radius").toObject().value("maximum").toInt() == 16
+                    && fields.value("shape").toObject().value("enum").toArray() == QJsonArray{"circle", "square"}
+                    && fields.value("follow_doodads").toObject().value("const") == false
+                    && !variant.toObject().value("additionalProperties").toBool(true);
             }
             if (kind == "corner_ramp") {
                 const auto required = variant.toObject().value("required").toArray();
@@ -492,6 +502,7 @@ void TestNormalSaveTextureAndWaterSchema() {
     Expect(corner, "corner schema only exposes one world point, explicit set_ramp and no caller-supplied brush or rules");
     Expect(bounds, "bounds schema only exposes integer half-open cell edges without fake points, rules or object movement");
     Expect(cliffLevel && cliffTexture, "cliff level and pure texture expose distinct strict classic-size contracts");
+    Expect(boundary, "boundary schema only exposes its explicit boolean and bounded brush fields");
 }
 
 void TestPlayableBoundsSaveTransport() {
@@ -547,7 +558,7 @@ void TestRampSaveTransport() {
     Code(call(invalid), "MCP_INTEGER_REQUIRED");
     invalid = stroke; invalid["radius"] = 0.5;
     Code(call(invalid), "MCP_INTEGER_INVALID");
-    invalid = stroke; invalid["kind"] = "boundary";
+    invalid = stroke; invalid["kind"] = "unsupported";
     Code(call(invalid), "MCP_MAP_EDIT_TERRAIN_KIND_UNSUPPORTED");
     invalid = stroke; invalid["shape"] = "square";
     Code(call(invalid), "MCP_MAP_EDIT_TERRAIN_SHAPE_INVALID");
@@ -559,6 +570,51 @@ void TestRampSaveTransport() {
     Code(call(invalid), "MCP_MAP_EDIT_TERRAIN_FOLLOW_UNSUPPORTED");
     Expect(!std::filesystem::exists(fixture.root / "ramp-candidate.w3x"),
         "ramp transport failure must not publish a partial candidate");
+}
+
+void TestBoundarySaveTransport() {
+    Fixture fixture; McpServer server; RegisterAllTools(server); ScopedSaveRoots roots; roots.Set(fixture.ui);
+    const QJsonObject stroke{{"kind", "boundary"}, {"shape", "circle"}, {"point_space", "terrain_vertex"}, {"radius", 0},
+        {"value", true}, {"points", QJsonArray{QJsonObject{{"x", 4}, {"y", 4}}}}, {"follow_doodads", false}};
+    QJsonObject args{{"source_map_path", QString::fromStdWString((fixture.root / "missing.w3x").wstring())},
+        {"output_path", QString::fromStdWString((fixture.root / "boundary-candidate.w3x").wstring())},
+        {"expected_source_sha256", QString(64, 'a')}, {"expected_terrain_sha256", QString(64, 'b')}};
+    const auto call = [&](QJsonObject value) {
+        args["terrain_strokes"] = QJsonArray{value}; return Call(server, "save_map_edit_candidate", args);
+    };
+    for (const bool enabled : {true, false}) for (const auto shape : {"circle", "square"})
+        for (const auto space : {"world", "terrain_vertex"}) for (const int radius : {0, 16}) {
+            auto valid = stroke; valid["value"] = enabled; valid["shape"] = shape;
+            valid["point_space"] = space; valid["radius"] = radius; Code(call(valid), "SOURCE_LEASE_FAILED");
+        }
+    for (const auto value : {QJsonValue("true"), QJsonValue(1), QJsonValue(0), QJsonValue(QJsonValue::Null)}) {
+        auto invalid = stroke; invalid["value"] = value; Code(call(invalid), "MCP_MAP_EDIT_TERRAIN_BOUNDARY_INVALID");
+    }
+    auto invalid = stroke; invalid.remove("value"); Code(call(invalid), "MCP_MAP_EDIT_TERRAIN_BOUNDARY_INVALID");
+    for (const int radius : {-1, 17}) {
+        invalid = stroke; invalid["radius"] = radius; Code(call(invalid), "MCP_MAP_EDIT_TERRAIN_RADIUS_INVALID");
+    }
+    invalid = stroke; invalid["radius"] = "0"; Code(call(invalid), "MCP_INTEGER_REQUIRED");
+    invalid = stroke; invalid["radius"] = 0.5; Code(call(invalid), "MCP_INTEGER_INVALID");
+    invalid = stroke; invalid["shape"] = "triangle"; Code(call(invalid), "MCP_MAP_EDIT_TERRAIN_SHAPE_INVALID");
+    invalid = stroke; invalid["point_space"] = "cell"; Code(call(invalid), "MCP_MAP_EDIT_TERRAIN_SPACE_INVALID");
+    for (const auto field : {"set_ramp", "set_blight", "set_boundary", "strength", "water_height", "west", "east",
+            "map_edge", "size", "anchor", "loaded_rules"}) {
+        invalid = stroke; invalid[field] = true; Code(call(invalid), "MCP_MAP_EDIT_FIELD_UNSUPPORTED");
+    }
+    invalid = stroke; invalid["follow_doodads"] = true; Code(call(invalid), "MCP_MAP_EDIT_TERRAIN_FOLLOW_UNSUPPORTED");
+    invalid = stroke; invalid["follow_doodads"] = "false"; Code(call(invalid), "MCP_MAP_EDIT_TERRAIN_FOLLOW_UNSUPPORTED");
+    for (const auto x : {QJsonValue(-1), QJsonValue(1.5), QJsonValue("4")}) {
+        invalid = stroke; invalid["points"] = QJsonArray{QJsonObject{{"x", x}, {"y", 4}}};
+        Code(call(invalid), "MCP_MAP_EDIT_TERRAIN_POINT_INVALID");
+    }
+    invalid = stroke; invalid["points"] = QJsonArray{}; Code(call(invalid), "MCP_MAP_EDIT_TERRAIN_POINTS_INVALID");
+    invalid = stroke; invalid["points"] = QJsonArray{QJsonObject{{"x", 4}, {"y", 4}, {"map_edge", true}}};
+    Code(call(invalid), "MCP_MAP_EDIT_FIELD_UNSUPPORTED");
+    QJsonArray tooMany;
+    for (unsigned i = 0; i < 129; ++i) tooMany.append(stroke);
+    args["terrain_strokes"] = tooMany; Code(Call(server, "save_map_edit_candidate", args), "MCP_MAP_EDIT_TERRAIN_STROKES_INVALID");
+    Expect(!std::filesystem::exists(fixture.root / "boundary-candidate.w3x"), "refused boundary never publishes a partial candidate");
 }
 
 void TestCornerRampSaveTransport() {
@@ -727,6 +783,7 @@ int main(int argc, char** argv) {
         TestNativeWaterSaveTransport();
         TestCliffSaveTransport();
         TestRampSaveTransport();
+        TestBoundarySaveTransport();
         TestCornerRampSaveTransport();
         TestPlayableBoundsSaveTransport();
         TestTypedReadAndSourcePreservation();
