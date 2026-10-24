@@ -188,12 +188,13 @@ void OrdinaryMutationsDoNotAcquireSpecialOrBridgeAuthority() {
         Require(!f.Plan().SaveGate().Succeeded(), "ordinary proof never authorizes raw special deletion, order or variation changes");
         Require(f.edits->IsDirty() && f.edits->CanUndo(), "special refusal preserves pending edits and Undo");
     }
-    // 复用已有原创桥来源；完整普通段仍逐字冻结，包括没有占地的兄弟实例。
+    // 复用已有原创桥来源；桥记录不动，无关普通物的Z变化仍须完整保存读回。
     Fixture bridge; WalkableBridge(bridge); bridge.Open(); bridge.Paint();
-    auto changed = OrdinaryCurrent(bridge); changed.doodads.back().position[0] += 128;
+    auto changed = OrdinaryCurrent(bridge); changed.doodads.back().position[2] += 128;
     Check(bridge.edits->EditDoodads(changed));
-    Require(HasCode(bridge.Plan().SaveGate(), "TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED"),
-        "ordinary two-stage support never weakens the complete-ordinary-wire gate on walkable bridges");
+    const auto wire = Take(changed.Serialize());
+    bridge.SaveExpected("ordinary-z-alongside-fixed-bridge.w3x", bridge.ExpectedTerrain(true),
+        BridgeExpectedPathing(bridge, true, false), &wire, true);
 }
 
 void OrdinaryMoveThenNativeWaterUsesTheCurrentDoodadOwner() {

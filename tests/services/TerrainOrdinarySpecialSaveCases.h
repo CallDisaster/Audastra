@@ -176,6 +176,16 @@ void OrdinarySpecialProofKeepsCompleteBridgeFreeze() {
     for (const bool moveFirst : {false, true}) {
         Fixture f; BridgeSpecialWaterFixture(f);
         const auto sourceSha = f.archive->SourceSha256();
+        const auto sourcePath = f.archive->SourcePath();
+        const auto originalWire = f.Member("war3map.doo"), originalTerrain = f.Member("war3map.w3e");
+        auto moved = OrdinaryCurrent(f);
+        const auto originalOrdinary = std::find_if(moved.doodads.begin(), moved.doodads.end(),
+            [](const auto& record) { return record.rawcode == "Ord0"; });
+        Require(originalOrdinary != moved.doodads.end(), "bridge fixture contains an unrelated zero-footprint instance");
+        originalOrdinary->position[0] += 128; const auto movedWire = Take(moved.Serialize());
+        auto waterOnly = OrdinaryCurrent(f);
+        waterOnly.specialDoodads = {waterOnly.specialDoodads[2], waterOnly.specialDoodads[1]};
+        const auto waterOnlyWire = Take(waterOnly.Serialize());
         const auto moveNonBridge = [&] {
             auto placed = OrdinaryCurrent(f);
             const auto ordinary = std::find_if(placed.doodads.begin(), placed.doodads.end(),
@@ -186,13 +196,34 @@ void OrdinarySpecialProofKeepsCompleteBridgeFreeze() {
         if (moveFirst) moveNonBridge();
         PaintBridgeSpecialWater(f);
         if (!moveFirst) moveNonBridge();
-        Require(OrdinaryCurrent(f).specialDoodads.size() == 2, "bridge refusal is tested after a real trusted deletion");
+        Require(OrdinaryCurrent(f).specialDoodads.size() == 2, "bridge mixed save follows a real trusted deletion");
         const auto draft = Take(OrdinaryCurrent(f).Serialize());
-        const auto refused = f.Plan().SaveGate();
-        Require(!refused.Succeeded() && HasCode(refused, "TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED"),
-            "a bridge still freezes the entire ordinary wire including nonbridge siblings in either command order");
+        const auto waterTerrain = Take(SerializeMapTerrain(*f.edits->Terrain()));
+        auto waterPathing = f.Member("war3map.wpm");
+        for (unsigned y = 4; y < 12; ++y) for (unsigned x = 4; x < 12; ++x)
+            waterPathing[16 + y * 32 + x] = std::byte{0xdb};
+        for (unsigned y = 6; y < 10; ++y) for (unsigned x = 6; x < 10; ++x)
+            waterPathing[16 + y * 32 + x] = std::byte{0x1b};
+        BridgeSpecialExpectedLayers(waterPathing);
         Require(f.edits->CanUndo() && f.edits->IsDirty() && Take(OrdinaryCurrent(f).Serialize()) == draft
-            && Take(Sha256File(f.archive->SourcePath())) == sourceSha,
-            "bridge refusal preserves complete pending edits, history and original map bytes");
+            && Take(Sha256File(sourcePath)) == sourceSha,
+            "mixed qualification preserves complete pending edits, history and original map bytes");
+        f.SaveExpected("bridge-special-unrelated-final.w3x", waterTerrain, waterPathing, &draft, true);
+        Require(f.edits->Undo(), "mixed bridge save retains the latest ordinary or trusted water command for Undo");
+        const auto& intermediateWire = moveFirst ? movedWire : waterOnlyWire;
+        Require(Take(OrdinaryCurrent(f).Serialize()) == intermediateWire,
+            "Undo restores the exact independent ordinary/special endpoint in either operation order");
+        f.SaveExpected("bridge-special-unrelated-undo.w3x", moveFirst ? originalTerrain : waterTerrain,
+            moveFirst ? f.Member("war3map.wpm") : waterPathing, &intermediateWire, true);
+        Require(f.edits->Undo() && Take(OrdinaryCurrent(f).Serialize()) == originalWire,
+            "second Undo restores all original bridge, ordinary and special bytes");
+        f.SaveExpected("bridge-special-unrelated-original.w3x", originalTerrain,
+            f.Member("war3map.wpm"), &originalWire, true);
+        Require(f.edits->Redo(), "first independent command remains redoable after original native save");
+        f.SaveExpected("bridge-special-unrelated-redo-one.w3x", moveFirst ? originalTerrain : waterTerrain,
+            moveFirst ? f.Member("war3map.wpm") : waterPathing, &intermediateWire, true);
+        Require(f.edits->Redo(), "both independent commands remain redoable across native source rebases");
+        f.SaveExpected("bridge-special-unrelated-redone.w3x", waterTerrain, waterPathing, &draft, true);
+        Require(Take(Sha256File(sourcePath)) == sourceSha, "mixed bridge saves preserve actual original source archive");
     }
 }

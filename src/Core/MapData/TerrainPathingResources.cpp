@@ -117,6 +117,52 @@ bool SameOrdinaryDoodadWire(std::span<const std::byte> before, const DoodadPlace
     const auto oldPrefix = prefix(before, original), newPrefix = prefix(after, current);
     return !oldPrefix.empty() && std::equal(oldPrefix.begin(), oldPrefix.end(), newPrefix.begin(), newPrefix.end());
 }
+bool SameWalkableDoodadWire(std::span<const std::byte> before, const DoodadPlacements& original,
+    std::span<const std::byte> after, const DoodadPlacements& current,
+    std::span<const TerrainNativeDoodadPathingType> sortedTypes) {
+    if (original.recordLayout != PlacementRecordLayout::Classic || current.recordLayout != PlacementRecordLayout::Classic
+        || !IsClassicPlacementVersion(original.version, original.subversion)
+        || original.version != current.version || original.subversion != current.subversion
+        || original.specialVersion != 0 || current.specialVersion != 0)
+        return false;
+    struct Cursor {
+        std::span<const std::byte> bytes;
+        const DoodadPlacements* parsed;
+        std::size_t row = 0, offset = 16, end = 0;
+    };
+    const auto cursor = [](std::span<const std::byte> bytes, const DoodadPlacements& parsed) {
+        if (bytes.size() < 24 || parsed.specialDoodads.size() > (bytes.size() - 24) / 16)
+            Fail("TERRAIN_NATIVE_FOOTPRINT_LAYOUT", "完整经典DOO不足以定位普通记录原字。");
+        return Cursor{bytes, &parsed, 0, 16, bytes.size() - 8 - parsed.specialDoodads.size() * 16};
+    };
+    auto old = cursor(before, original), changed = cursor(after, current);
+    const auto next = [&](Cursor& stage) -> std::optional<std::span<const std::byte>> {
+        while (stage.row < stage.parsed->doodads.size()) {
+            const auto& row = stage.parsed->doodads[stage.row++];
+            if (stage.offset > stage.end)
+                Fail("TERRAIN_NATIVE_FOOTPRINT_LAYOUT", "普通DOO记录超出已解析原字段。");
+            PlacementReadLimits limits; limits.maxBytes = stage.end - stage.offset;
+            // 不复制、重写或再次解析成员；长度来自同一个经典writer字段流。
+            const auto projected = Take(MeasureClassicDoodadRecordWire(row,
+                stage.parsed->version, stage.parsed->subversion, limits));
+            const auto wire = stage.bytes.subspan(stage.offset, projected.byteLength);
+            stage.offset += projected.byteLength;
+            const auto type = std::lower_bound(sortedTypes.begin(), sortedTypes.end(), row.rawcode,
+                [](const auto& value, const auto& rawcode) { return value.rawcode < rawcode; });
+            if (type != sortedTypes.end() && type->rawcode == row.rawcode
+                && type->contribution == TerrainNativeFootprintContribution::WalkableTerrainSuppression)
+                return wire;
+        }
+        if (stage.offset != stage.end)
+            Fail("TERRAIN_NATIVE_FOOTPRINT_LAYOUT", "普通DOO原字边界与完整经典解析不一致。");
+        return std::nullopt;
+    };
+    for (;;) {
+        const auto a = next(old), b = next(changed);
+        if (!a || !b) return !a && !b;
+        if (!std::equal(a->begin(), a->end(), b->begin(), b->end())) return false;
+    }
+}
 std::string_view Ground(const TerrainHeader& header, const TerrainVertex& vertex) {
     const auto index = vertex.GroundTextureIndex();
     return index < header.groundTilesets.size() ? std::string_view(header.groundTilesets[index]) : std::string_view{};
@@ -715,13 +761,17 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
             if (result.objectWorkBytes_ > maximumBytes - result.sourceBytes_)
                 Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "严格物编解析超过保存计划剩余预算。");
             if (!objectPathing.footprints.empty()) {
+                // 复用已预收的类型输出原地排序，供桥记录原字核对二分查询；不另建分类表。
+                std::sort(objectPathing.footprints.begin(), objectPathing.footprints.end(),
+                    [](const auto& a, const auto& b) { return a.rawcode < b.rawcode; });
                 const bool walkable = std::any_of(objectPathing.footprints.begin(), objectPathing.footprints.end(),
                     [](const auto& type) { return type.contribution == TerrainNativeFootprintContribution::WalkableTerrainSuppression; });
-                // special删除仅重建地形覆盖，不写普通桥的投影来源。普通段仍逐字冻结，
-                // 含桥Z和其它普通对象的Z；尾段变化的保存资格另由会话私有水刷谱系核验。
-                if (walkable && result.nativeDoodads_ != result.nativeAfterDoodads_
-                    && !SameOrdinaryDoodadWire(result.nativeDoodads_, *doodads, result.nativeAfterDoodads_, *afterDoodads))
-                    Fail("TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED", "含可行走对象的地形保存须保持完整普通DOO原字不变；特殊尾段仅允许会话可信水刷事务。");
+                // 只冻结同次严格分类的可行走对象完整原字及相对顺序，包括Z/嵌套掉落；
+                // 其它普通实例仍走完整G0/G1重建。special资格另由私有水刷谱系核验。
+                if (walkable && !sameOrdinary
+                    && !SameWalkableDoodadWire(result.nativeDoodads_, *doodads,
+                        result.nativeAfterDoodads_, *afterDoodads, objectPathing.footprints))
+                    Fail("TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED", "可行走对象的完整普通DOO记录与相对顺序须保持原字不变；特殊尾段仅允许会话可信水刷事务。");
                 const auto captured = result.CaptureNativeFootprints(reader, before.header,
                     doodads->doodads, sameOrdinary ? std::nullopt
                         : std::optional{std::span<const DoodadPlacement>(afterDoodads->doodads)}, objectPathing.footprints);

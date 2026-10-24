@@ -269,6 +269,26 @@ Result<PlacementWireProjection> MeasureClassicPlacementAppend(const DoodadPlacem
     return MeasureAppend(placements, appended, limits);
 }
 
+Result<PlacementWireProjection> MeasureClassicDoodadRecordWire(const DoodadPlacement& placement,
+    std::int32_t version, std::int32_t subversion, const PlacementReadLimits& limits) {
+    try {
+        if (!IsClassicPlacementVersion(version, subversion))
+            throw Detail::WriteFailure{"PLACEMENT_VERSION_UNSUPPORTED", "单条装饰物计量仅支持经典 TFT 8/11 与混乱之治 7/9。"};
+        PlacementWireSink writer(limits);
+        writer.AddRecords(1, false);
+        Doodad(writer, placement, limits, Roc(version));
+        return Result<PlacementWireProjection>::Success(writer.Finish());
+    } catch (const Detail::WriteFailure& error) {
+        return Failure<PlacementWireProjection>("war3map.doo", error);
+    } catch (const std::bad_alloc&) {
+        return Result<PlacementWireProjection>::Failure("MapPlacements.Write", "PLACEMENT_ALLOCATION_FAILED",
+            "单条装饰物计量诊断内存分配失败");
+    } catch (const std::length_error&) {
+        return Result<PlacementWireProjection>::Failure("MapPlacements.Write", "PLACEMENT_CONTAINER_LIMIT",
+            "单条装饰物计量诊断超过容器容量");
+    }
+}
+
 Result<PlacementWireProjection> MeasureClassicPlacementWire(const UnitPlacements& placements,
     std::span<const std::uint32_t> appendedSourceRows, const PlacementReadLimits& limits) {
     try {

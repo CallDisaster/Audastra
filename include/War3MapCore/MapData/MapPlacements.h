@@ -127,6 +127,11 @@ struct PlacementWireProjection {
 [[nodiscard]] Result<PlacementWireProjection> MeasureClassicPlacementAppend(
     const DoodadPlacements& placements, std::span<const DoodadPlacement> appended,
     const PlacementReadLimits& limits = {});
+// 只计量一条完整普通 DOO 记录，不包含头、普通数量或特殊尾；复用唯一 writer
+// 的字段遍历且不分配输出。调用方可据此在已完整解析的经典原成员中定位原字切片。
+[[nodiscard]] Result<PlacementWireProjection> MeasureClassicDoodadRecordWire(
+    const DoodadPlacement& placement, std::int32_t version, std::int32_t subversion,
+    const PlacementReadLimits& limits = {});
 
 // 经典后端读写的实例格式：TFT v8/subversion 11，以及混乱之治 v7/subversion 9
 // （单位少掉落物品表编号与英雄三围，装饰物少掉落物品字段；写出时这些字段须为默认值）。
