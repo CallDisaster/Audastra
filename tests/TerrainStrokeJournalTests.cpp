@@ -6,15 +6,21 @@
 #include <algorithm>
 #include <iostream>
 #include <limits>
+#include <source_location>
 #include <stdexcept>
+#include <string>
 
 namespace {
 using namespace War3Map;
 using namespace War3Map::MapData;
 using Bytes = std::vector<std::byte>;
 void Require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
-template<class T> T Take(Result<T> value) {
-    if (!value.Succeeded() || !value.value) throw std::runtime_error("journal fixture operation failed");
+template<class T> T Take(Result<T> value, const std::source_location& location = std::source_location::current()) {
+    if (!value.Succeeded() || !value.value) {
+        std::string message = std::string(location.function_name()) + ":" + std::to_string(location.line());
+        for (const auto& diagnostic : value.diagnostics) message += "\n" + diagnostic.code + ": " + diagnostic.message;
+        throw std::runtime_error(message + "\njournal fixture operation failed");
+    }
     return std::move(*value.value);
 }
 TerrainStrokeJournal Journal() {
@@ -346,8 +352,8 @@ void RemoveWaterUsesTheOrdinaryJournalOpcode() {
         && !decoded.strokes.front().intent.waterBrush && decoded.strokes.front().rulesSha256.empty()
         && Take(EncodeTerrainStrokeJournal(decoded)) == wire,
         "removal replays as an ordinary brush without inventing native-water ownership");
-    auto unknown = decoded; unknown.strokes.front().intent.brush.kind = static_cast<TerrainBrushKind>(15);
-    Require(!EncodeTerrainStrokeJournal(unknown).Succeeded(), "the next unknown ordinary opcode stays rejected");
+    auto unknown = decoded; unknown.strokes.front().intent.brush.kind = static_cast<TerrainBrushKind>(255);
+    Require(!EncodeTerrainStrokeJournal(unknown).Succeeded(), "an unregistered ordinary opcode stays rejected");
     TerrainJournalStroke water; water.intent.waterBrush = TerrainWaterStrokeOptions{};
     water.intent.points = journal.strokes.front().intent.points; water.rulesSha256.assign(64, 'd');
     journal.strokes.insert(journal.strokes.begin(), water);

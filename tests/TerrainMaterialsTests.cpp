@@ -446,6 +446,13 @@ void TestMaterialPreviewUsesActualFullRampHeights() {
                 || (expectedHeight == 96 && (x == 3 || y == 3))) vertex.cliffAndLayerRaw = 3;
         }
         MapData::RefreshTerrainDerived(terrain, 0, 0, 5, 5);
+        // RefreshTerrainDerived只刷新顶点派生值；材质入口需要完整的4×4原格拓扑。
+        Rejected(BuildTerrainMaterialPreview(terrain, fixture.resolver, {}, TerrainLighting{false}, {}, false, 12),
+            "TERRAIN_MATERIAL_PREVIEW_GRID");
+        for (unsigned y = 0; y < 4; ++y) for (unsigned x = 0; x < 4; ++x) {
+            const auto sw = y * 5 + x;
+            terrain.tiles.push_back({{sw, sw + 1, sw + 5, sw + 6}});
+        }
         const auto exact = BuildTerrainMaterialPreview(terrain, fixture.resolver, {}, TerrainLighting{false}, {}, false, 12);
         if (!exact.Succeeded()) for (const auto& diagnostic : exact.diagnostics)
             std::cerr << diagnostic.code << ": " << diagnostic.message << '\n';
