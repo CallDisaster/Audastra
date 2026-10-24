@@ -36,6 +36,7 @@ add_library(War3MapCore STATIC
     MapData/MapFields.cpp
     MapData/MapDataEditSessionTerrain.cpp
     MapData/MapDataEditSessionBounds.cpp
+    MapData/MapDataEditSessionStartLocations.cpp
     MapData/MapDataEditSessionWater.cpp
     MapData/MapDataEditSessionTerrainQuery.cpp
     MapData/MapDataEditSessionTerrainInternal.h
@@ -60,6 +61,8 @@ add_library(War3MapCore STATIC
     MapData/TerrainClassicUnits.cpp
     MapData/TerrainDoodadsJournal.cpp
     MapData/TerrainUnitsJournal.cpp
+    MapData/TerrainStartLocations.cpp
+    MapData/TerrainStartLocationsJournal.cpp
     MapData/TerrainPlacementJournal.cpp
     MapData/MapDataEditSessionTerrainJournal.cpp
     MapData/TerrainSavePlan.cpp

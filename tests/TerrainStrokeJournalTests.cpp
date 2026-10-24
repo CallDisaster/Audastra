@@ -1,5 +1,6 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/TerrainClassicDoodads.h"
+#include "War3MapCore/MapData/TerrainStartLocations.h"
 #include "War3MapCore/Hash.h"
 
 #include <algorithm>
@@ -360,6 +361,8 @@ void RemoveWaterUsesTheOrdinaryJournalOpcode() {
 
 #include "TerrainDoodadsJournalCases.h"
 #include "TerrainUnitsJournalCases.h"
+#include "TerrainStartLocationsJournalCases.h"
+#include "TerrainStartLocationsSessionCases.h"
 #include "TerrainGroundPaletteAppendCases.h"
 
 void LogicalQtReplayAndSavedBoundary() {
@@ -413,6 +416,14 @@ int main() {
         UnitsJournalDeltaPreservesCompleteClassicPayload();
         UnitsJournalCodecKeepsOrderedClosedVariants();
         UnitsJournalFreezesRealCommandsAndRestoresReceipts();
+        StartLocationsJournalDeltaPreservesCompletePayload();
+        StartLocationsJournalRejectsUnlinkedAndMalformedMembers();
+        StartLocationsJournalIdentitySettingsRemainStrict();
+        StartLocationsJournalCanonicalDescriptionsCompose();
+        StartLocationsJournalCodecKeepsClosedFTJAVariant();
+        StartLocationsCommandsPreservePrivateProofAndUndo();
+        StartLocationsReplayRequiresRealLinkageAndKeepsBaselineHistory();
+        StartLocationsComposeWithDescriptionsAndGroundFollowing();
         GroundPaletteAppendUsesAnExplicitFTJ6Algorithm();
         RawGroundAppendRetainsUndoWithoutInventingJournalAuthority();
         LogicalQtReplayAndSavedBoundary(); OversizedUiStrokeAndOpaqueDraftRemainEditable();

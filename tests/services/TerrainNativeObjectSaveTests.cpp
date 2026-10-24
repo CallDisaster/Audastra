@@ -2528,6 +2528,7 @@ void MixedObjectAndResourceSavesUseActualPathingDependencies() {
 #include "TerrainOrdinarySpecialSaveCases.h"
 #include "TerrainOrdinaryJournalSaveCases.h"
 #include "TerrainUnitsJournalSaveCases.h"
+#include "TerrainStartLocationsSaveCases.h"
 #include "TerrainBridgeOrdinarySaveCases.h"
 #include "TerrainGroundPaletteAppendSaveCases.h"
 } // namespace
@@ -2593,6 +2594,7 @@ int main() {
         OrdinaryJournalRecoveryRetainsRepeatedInterleaving();
         UnitsJournalRecoveryRetainsWaterBothOrdersAndCompleteRaw();
         UnitsJournalInterleavingRejectsSourceOrderBudgetAndFinalDrift();
+        StartLocationsJournalRequiresCompletePrivateReplayAndFinalRaw();
         BridgeAllowsOnlyUnrelatedOrdinaryMutationsThroughFormalHistory();
         BridgeRecordBytesOrderAndClassificationRemainMandatory();
         BridgeOrdinaryFrozenOutputSourcesAndBudgetRemainBound();
