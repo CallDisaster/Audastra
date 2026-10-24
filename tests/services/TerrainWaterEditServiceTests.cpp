@@ -877,6 +877,14 @@ void ExistingCornerWaterSequenceFollowsRestoresAndSavesEveryHistoryState() {
             for (std::size_t row = 0; row < 3; ++row) {
                 const auto delta = row <= index ? deltas[row] : 0.0f;
                 expectedUnits.units[row].position[2] += delta; expectedDoodads.doodads[row].position[2] += delta;
+                if (snapshot.Units()->units[row].position[2] != units.units[row].position[2] + delta
+                    || snapshot.Doodads()->doodads[row].position[2] != doodads.doodads[row].position[2] + delta) {
+                    std::cerr << (wet ? "wet" : "dry") << " followed water stroke=" << index << " row=" << row
+                        << " unit Z=" << snapshot.Units()->units[row].position[2]
+                        << " expected=" << units.units[row].position[2] + delta
+                        << " doodad Z=" << snapshot.Doodads()->doodads[row].position[2]
+                        << " expected=" << doodads.doodads[row].position[2] + delta << '\n';
+                }
                 Require(snapshot.Units()->units[row].position[2] == units.units[row].position[2] + delta
                     && snapshot.Doodads()->doodads[row].position[2] == doodads.doodads[row].position[2] + delta,
                     "literal per-corner Z deltas preserve offsets and every unrelated placement");
