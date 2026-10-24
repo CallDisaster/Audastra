@@ -114,7 +114,8 @@ void OrdinaryDoodadsJournalVersionAndStrictVariants() {
 void OrdinaryDoodadsFreezeKeepsRealCommandScopeAndUndo() {
     SessionFixture grid;
     const auto original = OrdinaryJournalDoodads(); const auto before = Take(original.Serialize());
-    MapDataEditSession session{MapDocument::FromMembers({{"war3map.doo", before}})};
+    const std::vector<MapArchiveMember> sourceMembers{{"war3map.doo", before}};
+    MapDataEditSession session{MapDocument::FromMembers(sourceMembers)};
     Require(session.AttachTerrain(grid.terrainBytes).Succeeded() && session.AttachPathing(grid.pathing).Succeeded(), "attach journal ordinary source");
     auto moved = original; moved.doodads.front().position[0] = 512;
     Require(session.EditDoodads(moved).Succeeded(), "real ordinary transaction accepted");
@@ -148,7 +149,7 @@ void OrdinaryDoodadsFreezeKeepsRealCommandScopeAndUndo() {
     Require(MaterializeTerrainJournalDoodads(frozen).Succeeded() && !frozen.strokes.front().frozenDoodads
         && frozen.strokes.front().ordinaryDoodads, "background materialization replaces alias with actual SHA and delta");
     const auto wire = Take(EncodeTerrainStrokeJournal(frozen)); Require(wire[3] == std::byte{'7'}, "materialized ordinary command selects FTJ7");
-    MapDataEditSession restored{MapDocument::FromMembers({{"war3map.doo", before}})};
+    MapDataEditSession restored{MapDocument::FromMembers(sourceMembers)};
     const auto& edit = *frozen.strokes.front().ordinaryDoodads;
     const auto cost = Take(MeasureTerrainDoodadsJournalEdit(edit.beforeBytes, edit.afterBytes, 64u * 1024u * 1024u, 64u * 1024u * 1024u));
     Require(!restored.ReplayTerrainJournalDoodads(edit, 1, cost.work).Succeeded() && !restored.IsDirty(),
