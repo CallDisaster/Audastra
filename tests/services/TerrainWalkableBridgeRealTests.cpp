@@ -35,15 +35,17 @@ void CheckBridgeNativeOverrides(const MapArchiveSession& source, const TerrainGr
     const ObjectData::StandardObjectEntry& object, const ObjectData::ObjectFieldSchema& schema,
     const ObjectData::StandardObjectCatalog& catalog, const MapEditSaveRequest& baseRequest) {
     using namespace ObjectData;
-    std::string customRawcode;
-    for (const char suffix : std::string_view("0123456789")) {
-        const auto candidate = std::string("ZbR") + suffix;
-        if (!catalog.Find(ObjectType::Destructable, candidate) && !catalog.Find(ObjectType::Doodad, candidate)) {
-            customRawcode = candidate;
-            break;
+    std::array<std::string, 2> customRawcodes;
+    for (std::size_t category = 0; category < customRawcodes.size(); ++category) {
+        for (const char suffix : std::string_view("0123456789")) {
+            const auto candidate = std::string(category ? "ZCR" : "ZbR") + suffix;
+            if (!catalog.Find(ObjectType::Destructable, candidate) && !catalog.Find(ObjectType::Doodad, candidate)) {
+                customRawcodes[category] = candidate;
+                break;
+            }
         }
+        Require(!customRawcodes[category].empty(), "actual custom bridge has a unique test rawcode for each category");
     }
-    Require(!customRawcode.empty(), "actual custom bridge has a unique non-C test rawcode");
     ObjectFieldContext context; context.rawcode = object.key.rawcode; context.baseCode = object.Field("code");
     const std::array<const char*, 3> names{"walkable", "pathtex", "fixedrot"};
     std::array<ObjectFieldMatch, names.size()> fields;
@@ -64,12 +66,13 @@ void CheckBridgeNativeOverrides(const MapArchiveSession& source, const TerrainGr
     std::cout << "walkable_bridge_override_fields=" << fields[0].modification.fieldId << ','
         << fields[1].modification.fieldId << ',' << fields[2].modification.fieldId
         << " fixed_rot_wire=" << static_cast<int>(*fields[2].definition->nativeValueType) << '\n';
-    for (const bool custom : {false, true}) for (const bool explicitFields : {false, true}) {
-        const auto scenario = directory / (std::string(custom ? "custom-" : "original-")
+    for (const unsigned kind : {0u, 1u, 2u}) for (const bool explicitFields : {false, true}) {
+        const bool custom = kind != 0, categoryC = kind == 2;
+        const auto scenario = directory / (std::string(categoryC ? "custom-c-" : custom ? "custom-" : "original-")
             + (explicitFields ? "typed-fields" : "empty"));
         Require(std::filesystem::create_directory(scenario), "exclusive actual bridge original scenario");
         auto document = Take(NativeObjectDocument::CreateEmpty(ObjectType::Destructable));
-        const ObjectKey key{ObjectType::Destructable, custom ? customRawcode : object.key.rawcode};
+        const ObjectKey key{ObjectType::Destructable, custom ? customRawcodes[categoryC ? 1 : 0] : object.key.rawcode};
         if (custom) Check(document.AddCustomObject(key.rawcode, object.key.rawcode));
         else Check(document.AddOriginalObject(key.rawcode));
         if (explicitFields) {
@@ -84,11 +87,28 @@ void CheckBridgeNativeOverrides(const MapArchiveSession& source, const TerrainGr
         Require(placements.doodads.size() == 1 && placements.doodads.front().rawcode == object.key.rawcode,
             "actual bridge native scenarios replace only their single synthetic placement identity");
         placements.doodads.front().rawcode = key.rawcode;
+        if (categoryC) {
+            // 覆盖非原点摆放的C类桥；两种网格的独立字节预期由Core小矩阵验证。
+            placements.doodads.front().position[0] += 32;
+            placements.doodads.front().position[1] += 32;
+            Require(key.rawcode[1] == 'C' && !catalog.Find(ObjectType::Doodad, key.rawcode),
+                "custom bridge category comes from the placed new ID with no doodad category to inherit");
+        }
         const std::array<MemberReplacement, 2> replacement{{{"war3map.w3b", nativeBytes},
             {"war3map.doo", Take(placements.Serialize())}}};
         const auto seeded = Take(MapArchiveSession::Open(Take(source.SaveCandidate(scenario / "seeded.w3x", replacement)).path));
         const auto rules = Take(TerrainPathingSave::CaptureNative(seeded, before, before, game, kSaveBytes));
         const auto oldNative = Take(rules.GenerateNative(before, kSaveBytes));
+        if (categoryC) {
+            const DoodadPlacements empty;
+            const std::array<MemberReplacement, 1> noBridge{{{"war3map.doo", Take(empty.Serialize())}}};
+            const auto control = Take(MapArchiveSession::Open(Take(seeded.SaveCandidate(scenario / "unbridged.w3x", noBridge)).path));
+            const auto controlRules = Take(TerrainPathingSave::CaptureNative(control, before, before, game, kSaveBytes));
+            Require(oldNative != Take(controlRules.GenerateNative(before, kSaveBytes)),
+                "actual shifted C bridge suppresses nonzero terrain contribution");
+            Require(Take(Sha256File(control.SourcePath())) == control.SourceSha256(),
+                "actual C bridge control source remains unchanged");
+        }
         auto wpm = Take(source.ReadMember("war3map.wpm"));
         Require(wpm.size() == oldNative.size() + 16, "actual bridge override WPM dimensions");
         for (std::size_t i = 0; i < oldNative.size(); ++i) wpm[i + 16] = (wpm[i + 16] & std::byte{0x11}) | oldNative[i];
@@ -117,9 +137,12 @@ void CheckBridgeNativeOverrides(const MapArchiveSession& source, const TerrainGr
         std::cout << "walkable_bridge_" << (custom ? "custom" : "original")
             << "_save=" << (explicitFields ? "typed-fields" : "empty") << " rawcode=" << key.rawcode
             << " parent=" << (custom ? object.key.rawcode : "-")
+            << " placed_category_c=" << categoryC
             << " source_sha256=" << input.SourceSha256() << " candidate_sha256=" << saved.candidateSha256
             << " independent_wpm_oracle=false native_editor_verified=false game_verified=false\n";
     }
+    Require(Take(Sha256File(source.SourcePath())) == source.SourceSha256(),
+        "all actual bridge override scenarios preserve their shared source");
 }
 }
 
