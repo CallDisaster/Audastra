@@ -2535,7 +2535,15 @@ void LiveEditorToolsTests::GameUiToolsUseHostAndValidateArguments() {
     QVERIFY(!f.tools->Invoke("game_ui_party_system", badRange).value("ok").toBool());
     auto badHeroes = party; badHeroes["auto_heroes"] = "yes";
     QVERIFY(!f.tools->Invoke("game_ui_party_system", badHeroes).value("ok").toBool());
-    QCOMPARE(received.size(), qsizetype{7});
+    auto buffs = party; buffs["buffs"] = QJsonArray{"B000", "B001"};
+    buffs["frame"] = QJsonObject{{"description", "Party"}, {"shown", "shown"}, {"buff_icons", QJsonArray{"buff1", "buff2"}}};
+    QVERIFY(f.tools->Invoke("game_ui_party_system", buffs).value("ok").toBool());
+    QCOMPARE(received.size(), qsizetype{8});
+    auto badBuff = buffs; badBuff["buffs"] = QJsonArray{"B0"};
+    QVERIFY(!f.tools->Invoke("game_ui_party_system", badBuff).value("ok").toBool());
+    auto badIcons = buffs; badIcons["frame"] = QJsonObject{{"description", "Party"}, {"shown", "shown"}, {"buff_icons", "buff1"}};
+    QVERIFY(!f.tools->Invoke("game_ui_party_system", badIcons).value("ok").toBool());
+    QCOMPARE(received.size(), qsizetype{8});
     Mcp::ToolPolicy policy; policy.allowEdit = false; f.tools->SetPolicy(policy);
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_view_set"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_simulate"));

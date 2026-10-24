@@ -431,6 +431,8 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
         request.dead = frame.value("dead").toString();
         request.outOfRange = frame.value("out_of_range").toString();
         request.select = frame.value("select").toString();
+        for (const auto& icon : frame.value("buff_icons").toArray()) request.buffIcons.append(icon.toString());
+        for (const auto& buff : args.value("buffs").toArray()) request.buffs.append(buff.toString());
         if (args.value("name_source").toString() == QLatin1String("unit")) request.nameSource = PartyNameSource::Unit;
         request.farRange = args.value("far_range").toDouble(request.farRange);
         request.autoHeroes = args.value("auto_heroes").toBool(true);
@@ -446,6 +448,7 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
         binding.insert("member_variable", generated->memberVariable);
         binding.insert("join_trigger", generated->joinTrigger);
         binding.insert("leave_trigger", generated->leaveTrigger);
+        binding.insert("registration_kept", generated->registrationKept);
         return binding;
     }
 

@@ -1,6 +1,8 @@
 #include "GameUiModule.h"
 
+#include "EditorProject.h"
 #include "Modules/ModuleHost.h"
+#include "ObjectViewEntries.h"
 #include "War3MapCore/GameUi/UiPresets.h"
 
 #include <QCheckBox>
@@ -9,6 +11,7 @@
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QListWidget>
 #include <QPushButton>
 
 #include <algorithm>
@@ -184,6 +187,21 @@ void GameUiModule::ShowPartySystemDialog() {
     autoHeroes->setObjectName(QStringLiteral("gameUiPartyAutoHeroes"));
     autoHeroes->setChecked(true);
     ui.form->addRow(QString(), autoHeroes);
+    // 增减益：勾选的图标数值按列表顺序显示；要显示的增减益从物编目录选，有序。
+    auto* buffIcons = new QListWidget(&ui.dialog);
+    buffIcons->setObjectName(QStringLiteral("gameUiPartyBuffIcons"));
+    buffIcons->setMaximumHeight(96);
+    ui.form->addRow(tr("增减益图标"), buffIcons);
+    auto* buffs = new QtApp::OrderedObjectListWidget(project_.iconProvider_.get(), &ui.dialog);
+    buffs->setObjectName(QStringLiteral("gameUiPartyBuffs"));
+    QVector<QtApp::ObjectViewEntry> buffEntries;
+    for (auto& entry : QtApp::BuildObjectViewEntries(project_)) {
+        if (entry.kind == QLatin1String("buff")) buffEntries.push_back(std::move(entry));
+    }
+    buffs->SetEntries(buffEntries);
+    buffs->SetKindFilter(QStringLiteral("buff"));
+    buffs->SetInlineCatalogEnabled(true);
+    ui.form->addRow(tr("增减益"), buffs);
 
     FillDescriptions(frame, Descriptions(), {}, tr("新建团队框架"), "party");
     // 其余数值按“显示”数组的格数筛选。
@@ -201,6 +219,17 @@ void GameUiModule::ShowPartySystemDialog() {
         FillValues(name, cells, UiValueType::String, size, true, {"name", "label"});
         FillValues(dead, cells, UiValueType::Boolean, size, true, {"dead"});
         FillValues(outOfRange, cells, UiValueType::Boolean, size, true, {"far", "range", "outofrange"});
+        buffIcons->clear();
+        if (cells) {
+            for (const auto& value : cells->values) {
+                if (value.type != UiValueType::String || value.size != size) continue;
+                auto* item = new QListWidgetItem(Labeled(value.label, value.id), buffIcons);
+                item->setData(Qt::UserRole, Text(value.id));
+                item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+                const bool icon = value.id.starts_with("buff") || value.id.starts_with("icon");
+                item->setCheckState(icon ? Qt::Checked : Qt::Unchecked);
+            }
+        }
         select->clear();
         select->addItem(tr("无"), QString());
         if (cells) {
@@ -220,7 +249,9 @@ void GameUiModule::ShowPartySystemDialog() {
             Prefer(shown, {"shown", "visible", "show"});
         }
         refillCells();
-        for (QWidget* box : std::initializer_list<QWidget*>{shown, health, mana, name, dead, outOfRange, select}) box->setEnabled(description != nullptr);
+        for (QWidget* box : std::initializer_list<QWidget*>{shown, health, mana, name, dead, outOfRange, select, buffIcons}) {
+            box->setEnabled(description != nullptr);
+        }
     };
     connect(frame, &QComboBox::currentIndexChanged, &ui.dialog, refill);
     connect(shown, &QComboBox::currentIndexChanged, &ui.dialog, refillCells);
@@ -233,6 +264,7 @@ void GameUiModule::ShowPartySystemDialog() {
     request.nameSource = static_cast<PartyNameSource>(nameSource->currentData().toInt());
     request.farRange = range->value();
     request.autoHeroes = autoHeroes->isChecked();
+    request.buffs = buffs->Ids();
     QString error;
     if (request.frame.startsWith(QLatin1Char('+'))) {
         const auto created = CreateFromPreset(QStringLiteral("party"), &error);
@@ -249,6 +281,7 @@ void GameUiModule::ShowPartySystemDialog() {
         request.dead = Text(kDead);
         request.outOfRange = Text(kFar);
         request.select = Text(kSelect);
+        for (const auto icon : kBuffs) request.buffIcons.append(Text(icon));
     } else {
         request.shown = shown->currentData().toString();
         request.health = health->currentData().toString();
@@ -257,6 +290,9 @@ void GameUiModule::ShowPartySystemDialog() {
         request.dead = dead->currentData().toString();
         request.outOfRange = outOfRange->currentData().toString();
         request.select = select->currentData().toString();
+        for (int i = 0; i < buffIcons->count(); ++i) {
+            if (buffIcons->item(i)->checkState() == Qt::Checked) request.buffIcons.append(buffIcons->item(i)->data(Qt::UserRole).toString());
+        }
     }
     const auto generated = GeneratePartySystem(request, false, &error);
     if (!generated) {

@@ -114,6 +114,9 @@ UiDescription Party() {
     d.values = {Value(id(kShown), "显示", UiValueType::Boolean, "false", kSlots), Value(id(kHealth), "生命", UiValueType::Real, "1", kSlots),
         Value(id(kMana), "法力", UiValueType::Real, "1", kSlots), Value(id(kName), "名字", UiValueType::String, "", kSlots),
         Value(id(kDead), "死亡", UiValueType::Boolean, "false", kSlots), Value(id(kFar), "过远", UiValueType::Boolean, "false", kSlots)};
+    for (std::size_t i = 0; i < kBuffs.size(); ++i) {
+        d.values.push_back(Value(id(kBuffs[i]), "增减益 " + std::to_string(i + 1), UiValueType::String, "", kSlots));
+    }
     UiFrame slot;
     slot.id = "slot";
     slot.label = "队员";
@@ -141,6 +144,21 @@ UiDescription Party() {
     pick.type = UiFrameType::Button;
     pick.anchors = {Anchor(FramePoint::TopLeft), Anchor(FramePoint::BottomRight)};
     slot.children.push_back(std::move(pick));
+    // 增减益图标排在格子右侧；图标数值为空时不显示。
+    for (std::size_t i = 0; i < kBuffs.size(); ++i) {
+        UiFrame icon;
+        icon.id = "icon" + std::to_string(i + 1);
+        icon.label = "增减益 " + std::to_string(i + 1);
+        icon.type = UiFrameType::Backdrop;
+        icon.texture = "{" + id(kBuffs[i]) + "[]}";
+        icon.width = 0.016;
+        icon.height = 0.016;
+        icon.anchors = {i == 0 ? Anchor(FramePoint::Left, UiAnchorTarget::Parent, FramePoint::Right, 0.002)
+                               : Anchor(FramePoint::Left, UiAnchorTarget::Frame, FramePoint::Right, 0.001)};
+        if (i > 0) icon.anchors.front().targetId = "icon" + std::to_string(i);
+        icon.visible.binding = Bind(id(kBuffs[i]), true);
+        slot.children.push_back(std::move(icon));
+    }
     d.frames = {std::move(slot)};
     d.events = {UiEvent{id(kSelect), "pick", UiEventKind::Click}};
     return d;

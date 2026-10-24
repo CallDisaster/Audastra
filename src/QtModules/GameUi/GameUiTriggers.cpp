@@ -1,6 +1,7 @@
 #include "GameUiModule.h"
 
 #include "EditorProject.h"
+#include "ObjectNames.h"
 #include "TriggerCommands.h"
 #include "War3MapCore/GameUi/CastTriggers.h"
 #include "War3MapCore/GameUi/PartyTriggers.h"
@@ -168,10 +169,23 @@ std::optional<GameUiModule::PartySystemGeneration> GameUiModule::GeneratePartySy
 
     PartySystemOptions options;
     options.frame = PartyFrameBinding{description, request.shown.toStdString(), request.health.toStdString(), request.mana.toStdString(),
-        request.name.toStdString(), request.dead.toStdString(), request.outOfRange.toStdString(), request.select.toStdString()};
+        request.name.toStdString(), request.dead.toStdString(), request.outOfRange.toStdString(), request.select.toStdString(), {}};
+    for (const auto& icon : request.buffIcons) options.frame.buffIcons.push_back(icon.toStdString());
     options.nameSource = request.nameSource;
     options.farRange = request.farRange;
     options.autoHeroes = request.autoHeroes;
+    const bool kept = !request.buffIcons.isEmpty() && std::any_of(triggers.begin(), triggers.end(), [&](const Trigger::TriggerRecord& row) {
+        return row.name.text == PartyTriggerName(options.name, "登记", "Register");
+    });
+    options.includeRegistration = !kept;
+    // 登记的图标取自物编（地图覆盖与原版目录）。
+    if (!kept) {
+        for (const auto& code : request.buffs) {
+            const auto icon = ResolveProjectObjectPresentation(project_, ObjectData::ObjectKey{ObjectData::ObjectType::Buff, code.toStdString()}).iconPath;
+            if (icon.isEmpty()) return fail(tr("增减益 %1 在物编里没有图标").arg(code));
+            options.buffs.push_back(PartyBuff{code.toStdString(), icon.toStdString()});
+        }
+    }
     auto plan = GameUi::GeneratePartySystem(options);
     if (!plan.Succeeded()) return fail(FirstMessage(plan.diagnostics));
 
@@ -183,6 +197,7 @@ std::optional<GameUiModule::PartySystemGeneration> GameUiModule::GeneratePartySy
     result.memberVariable = Text(plan.value->memberVariable);
     result.joinTrigger = Text(plan.value->joinTrigger);
     result.leaveTrigger = Text(plan.value->leaveTrigger);
+    result.registrationKept = kept;
     if (preview) return result;
     std::vector<Trigger::GraphEditOperation> operations;
     operations.emplace_back(Trigger::GraphApplyFeatureText{std::string(kPartyTriggerCategory), plan.value->featureText, {}, std::nullopt});

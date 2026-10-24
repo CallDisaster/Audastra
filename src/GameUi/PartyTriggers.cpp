@@ -52,6 +52,7 @@ public:
             return failure;
         }
         Variables();
+        if (Buffs() && o_.includeRegistration) text_.Trigger(Name("登记", "Register"), {}, Registration(), {}, "init");
         // 被运行的触发器写在前面。
         text_.Trigger(Name("加入", "Join"), {}, Join());
         text_.Trigger(Name("移出", "Leave"), {}, Leave());
@@ -77,11 +78,13 @@ public:
         plan.memberVariable = "AUP_Member";
         plan.joinTrigger = Name("加入", "Join");
         plan.leaveTrigger = Name("移出", "Leave");
+        if (Buffs()) plan.registrationTrigger = Name("登记", "Register");
         return Result<PartySystemPlan>::Success(std::move(plan));
     }
 
 private:
     [[nodiscard]] const UiDescription& d() const { return *b_.description; }
+    [[nodiscard]] bool Buffs() const { return !b_.buffIcons.empty(); }
     void Error(const char* code, const std::string& message) { errors_.push_back(Note(DiagnosticSeverity::Error, code, message)); }
 
     [[nodiscard]] std::string Name(std::string_view role, std::string_view key) const { return PartyTriggerName(o_.name, role, key); }
@@ -119,6 +122,30 @@ private:
             Error("AUP_OPTION_INVALID", "过远距离应在 100 到 100000 之间");
         }
         if (!b_.select.empty()) CheckSelect();
+        CheckBuffs();
+    }
+
+    void CheckBuffs() {
+        for (std::size_t i = 0; i < b_.buffIcons.size(); ++i) {
+            if (const auto problem = CheckValueBinding(d(), b_.buffIcons[i], UiValueType::String, slots_, "字符串")) Error("AUP_FRAME_INVALID", *problem);
+            for (std::size_t j = 0; j < i; ++j) {
+                if (b_.buffIcons[j] == b_.buffIcons[i]) Error("AUP_FRAME_INVALID", "图标数值 " + b_.buffIcons[i] + " 绑定了两次");
+            }
+        }
+        if (!Buffs()) {
+            if (!o_.buffs.empty()) Error("AUP_OPTION_INVALID", "登记了增减益，但没有绑定图标数值");
+            return;
+        }
+        if (o_.buffs.size() > 64) Error("AUP_BUFF_INVALID", "最多登记 64 个增减益");
+        for (std::size_t i = 0; i < o_.buffs.size(); ++i) {
+            const PartyBuff& buff = o_.buffs[i];
+            const std::string at = "第 " + std::to_string(i + 1) + " 个增减益（" + buff.buff + "）：";
+            if (!ValidRawcode(buff.buff)) Error("AUP_BUFF_INVALID", at + "增减益码应为 4 个字符");
+            if (!UsableLabel(buff.icon)) Error("AUP_BUFF_INVALID", at + "需要图标路径");
+            for (std::size_t j = 0; j < i; ++j) {
+                if (o_.buffs[j].buff == buff.buff) Error("AUP_BUFF_INVALID", at + "已在第 " + std::to_string(j + 1) + " 个登记");
+            }
+        }
     }
 
     void CheckSelect() {
@@ -157,6 +184,25 @@ private:
             var("DY", "real", false, "0");
         }
         if (!b_.select.empty()) var("Click", "integer", false, "0");
+        if (Buffs()) {
+            var("BuffCount", "integer", false, "0");
+            var("BuffCode", "buffcode", true);
+            var("BuffIcon", "string", true);
+            var("BuffHit", "string", true);
+            var("BuffN", "integer", false, "0");
+            var("BuffI", "integer", false, "0");
+        }
+    }
+
+    Lines Registration() const {
+        Lines out{Call("CommentString", {Quote("每个增减益一组：增减益、图标路径；每格按这里的顺序显示队员身上有的增减益")}),
+            Set(V("BuffCount"), std::to_string(o_.buffs.size()))};
+        for (std::size_t i = 0; i < o_.buffs.size(); ++i) {
+            const std::string index = std::to_string(i + 1);
+            out.push_back(Set(At("BuffCode", index), "'" + o_.buffs[i].buff + "'"));
+            out.push_back(Set(At("BuffIcon", index), Quote(o_.buffs[i].icon)));
+        }
+        return out;
     }
 
     // AUP_Member 在名单里的格子 → AUP_Found（不在为 0）。
@@ -243,9 +289,24 @@ private:
             Append(filled, If({CompareInt(V("Self"), "OperatorGreater", "0"), CompareReal(distance, "OperatorGreater", Real(o_.farRange * o_.farRange))},
                 {Set(at(b_.outOfRange), "true")}));
         }
+        if (Buffs()) Append(filled, BuffIcons(unit, at));
         Append(out, ForLoopVar(V("I"), "1", std::to_string(slots_),
             If({CompareInt(V("I"), "OperatorLessEq", V("Count"))}, filled, {Set(at(b_.shown), "false")})));
         out.push_back(Call("ConditionalTriggerExecute", {TriggerRef(UiTriggerName(d(), "更新", "Update"))}));
+        return out;
+    }
+
+    // 按登记顺序收集队员身上的增减益图标，填进各图标数值，多出的为空。
+    template <typename CellRef>
+    Lines BuffIcons(const std::string& unit, const CellRef& at) const {
+        const std::string slots = std::to_string(b_.buffIcons.size());
+        Lines out;
+        for (std::size_t k = 1; k <= b_.buffIcons.size(); ++k) out.push_back(Set(At("BuffHit", std::to_string(k)), Quote("")));
+        out.push_back(Set(V("BuffN"), "0"));
+        Append(out, ForLoopVar(V("BuffI"), "1", V("BuffCount"),
+            If({CompareInt(V("BuffN"), "OperatorLess", slots), IsTrue(Call("UnitHasBuffBJ", {unit, At("BuffCode", V("BuffI"))}))},
+                {Set(V("BuffN"), Int(V("BuffN"), "OperatorAdd", "1")), Set(At("BuffHit", V("BuffN")), At("BuffIcon", V("BuffI")))})));
+        for (std::size_t k = 0; k < b_.buffIcons.size(); ++k) out.push_back(Set(at(b_.buffIcons[k]), At("BuffHit", std::to_string(k + 1))));
         return out;
     }
 

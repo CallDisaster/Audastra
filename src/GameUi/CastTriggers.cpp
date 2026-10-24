@@ -24,12 +24,6 @@ Lines LoopVar(std::string_view variable, std::string_view from, std::string_view
     return ForLoopVar(V(variable), from, to, body);
 }
 
-bool ValidRawcode(std::string_view code) {
-    return code.size() == 4 && std::all_of(code.begin(), code.end(), [](unsigned char c) {
-        return c > 0x20 && c < 0x7f && c != '\'' && c != '\\';
-    });
-}
-
 // 每格记录的数组：名字、类型。派发复制到第 0 格的是前 8 个（效果触发器的参数来源）。
 struct SlotArray {
     std::string_view name;

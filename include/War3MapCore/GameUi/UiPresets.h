@@ -3,6 +3,7 @@
 #include "War3MapCore/GameUi/UiDescription.h"
 #include "War3MapCore/Types.h"
 
+#include <array>
 #include <cstdint>
 #include <string_view>
 #include <vector>
@@ -17,7 +18,7 @@ struct UiPreset {
 };
 
 // castbar：读条条（显示、进度、技能名、剩余秒数；引导、打断两个状态）。
-// party：团队框架（5 格，每格名字、血条、蓝条、死亡与过远标记，按数组取值；点格子发 select 事件）。
+// party：团队框架（5 格，每格名字、血条、蓝条、死亡与过远标记、右侧 4 个增减益图标，按数组取值；点格子发 select 事件）。
 [[nodiscard]] const std::vector<UiPreset>& UiPresets();
 
 // castbar 模板的数值与状态编号（绑定读条系统用）。
@@ -40,6 +41,7 @@ inline constexpr std::string_view kName = "name";
 inline constexpr std::string_view kDead = "dead";
 inline constexpr std::string_view kFar = "far";
 inline constexpr std::string_view kSelect = "select";
+inline constexpr std::array<std::string_view, 4> kBuffs{"buff1", "buff2", "buff3", "buff4"};  // 增减益图标路径（文字）
 } // namespace PartyPreset
 
 // 按模板新建描述；label 为空时用模板名。模板不存在或编号无效时失败。

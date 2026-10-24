@@ -816,7 +816,7 @@ void GameUiModuleTests::CreatesFromPresets() {
     QCOMPARE(presets->count(), 3);
     QVERIFY(presets->findData(QStringLiteral("castbar")) > 0 && presets->findData(QStringLiteral("party")) > 0);
     QVERIFY2(module.CreateDescription(QStringLiteral("Party"), {}, &error, QStringLiteral("party")), qPrintable(error));
-    QCOMPARE(module.Description(QStringLiteral("Party"))->values.size(), std::size_t{6});
+    QCOMPARE(module.Description(QStringLiteral("Party"))->values.size(), std::size_t{10});
     QCOMPARE(module.Description(QStringLiteral("Party"))->events.size(), std::size_t{1});
     QCOMPARE(module.Description(QStringLiteral("Party"))->label, std::string("团队框架"));
     QVERIFY(module.SelectFrame(QStringLiteral("slot#4")));
@@ -887,6 +887,23 @@ void GameUiModuleTests::GeneratesPartySystem() {
     request.dead = id(kName);
     QVERIFY(!module.GeneratePartySystem(request, false, &error));
     QCOMPARE(project.triggerUndoStack_->count(), undo + 1);
+
+    // 增减益：图标取自物编，取不到时拒绝；生成登记触发器，再次生成时保留作者的登记。
+    request.dead = id(kDead);
+    for (const auto icon : kBuffs) request.buffIcons.append(id(icon));
+    request.buffs = {QStringLiteral("Bxxx")};
+    QVERIFY(!module.GeneratePartySystem(request, true, &error));
+    QVERIFY(error.contains(QStringLiteral("Bxxx")));
+    request.buffs.clear();
+    const auto withBuffs = module.GeneratePartySystem(request, false, &error);
+    QVERIFY2(withBuffs, qPrintable(error));
+    QCOMPARE(withBuffs->triggers.size(), qsizetype{8});
+    QVERIFY(!withBuffs->registrationKept);
+    request.buffs = {QStringLiteral("Bxxx")};
+    const auto again = module.GeneratePartySystem(request, true, &error);
+    QVERIFY2(again, qPrintable(error));
+    QVERIFY(again->registrationKept);
+    QCOMPARE(again->triggers.size(), qsizetype{7});
 }
 
 int main(int argc, char** argv) {

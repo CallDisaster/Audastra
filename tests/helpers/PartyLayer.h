@@ -12,7 +12,7 @@ inline Catalog::Layer PartyLayer() {
     layer.define =
         "[TriggerTypes]\n"
         "unitstate=0,0,0,UnitState\nunittype=0,0,0,UnitType\nmapcontrol=0,0,1,MapControl\nplayerslotstate=0,0,1,PlayerSlotState\n"
-        "rect=0,1,1,Rect\ngroup=0,1,0,Group\n"
+        "rect=0,1,1,Rect\ngroup=0,1,0,Group\nbuffcode=1,1,1,Buff,integer\n"
         "[TriggerParams]\n"
         "UnitStateLife=0,unitstate,UNIT_STATE_LIFE,Life\nUnitStateMaxLife=0,unitstate,UNIT_STATE_MAX_LIFE,MaxLife\n"
         "UnitStateMana=0,unitstate,UNIT_STATE_MANA,Mana\nUnitStateMaxMana=0,unitstate,UNIT_STATE_MAX_MANA,MaxMana\n"
@@ -28,6 +28,7 @@ inline Catalog::Layer PartyLayer() {
         "[ForGroupMultiple]\n[[.args]]\ntype=group\n"
         "[SelectUnitForPlayerSingle]\n[[.args]]\ntype=unit\n[[.args]]\ntype=player\n";
     layer.call =
+        "[UnitHasBuffBJ]\nreturns=boolean\n[[.args]]\ntype=unit\n[[.args]]\ntype=buffcode\n"
         "[GetUnitStateSwap]\nreturns=real\n[[.args]]\ntype=unitstate\n[[.args]]\ntype=unit\n"
         "[IsUnitType]\nreturns=boolean\n[[.args]]\ntype=unit\n[[.args]]\ntype=unittype\n"
         "[IsUnitIllusionBJ]\nreturns=boolean\n[[.args]]\ntype=unit\n"

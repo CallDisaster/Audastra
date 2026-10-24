@@ -301,18 +301,26 @@ private:
         return false;
     }
 
-    // 改贴图：按钮常态贴图在子框架上。
-    std::optional<std::string> Texture(const FrameInfo& info, const std::string& path) {
+    // 改贴图：按钮常态贴图在子框架上。expression 为贴图路径的表达式。
+    std::optional<std::string> TextureCall(const FrameInfo& info, const std::string& expression) {
         switch (info.frame->type) {
         case UiFrameType::Backdrop:
         case UiFrameType::Bar:
-            return Call("AudastraUISetTexture", {Self(info), Quote(path), "false"});
+            return Call("AudastraUISetTexture", {Self(info), expression, "false"});
         case UiFrameType::Button:
-            return Call("AudastraUISetTexture", {Child(info, "AudastraButtonBackdrop"), Quote(path), "false"});
+            return Call("AudastraUISetTexture", {Child(info, "AudastraButtonBackdrop"), expression, "false"});
         default:
             Error("框架 " + info.frame->id + " 是 " + std::string(UiFrameTypeName(info.frame->type)) + "，没有贴图");
             return std::nullopt;
         }
+    }
+    std::optional<std::string> Texture(const FrameInfo& info, const std::string& path) { return TextureCall(info, Quote(path)); }
+
+    // 创建时设的固定贴图；写了取值模板的贴图由更新块设。
+    void FixedTexture(const FrameInfo& info, Lines& out) {
+        const std::string& texture = info.frame->texture;
+        if (texture.empty() || HasReferences(texture)) return;
+        if (auto line = Texture(info, texture)) out.push_back(*line);
     }
 
     Lines Properties(const FrameInfo& info) {
@@ -327,24 +335,18 @@ private:
         }
         switch (frame.type) {
         case UiFrameType::Backdrop:
-            if (!frame.texture.empty()) {
-                if (auto line = Texture(info, frame.texture)) out.push_back(*line);
-            }
+            FixedTexture(info, out);
             break;
         case UiFrameType::Bar:
             out.push_back(Call("AudastraUISetLimits", {Self(info), "0", "1"}));
-            if (!frame.texture.empty()) {
-                if (auto line = Texture(info, frame.texture)) out.push_back(*line);
-            }
+            FixedTexture(info, out);
             if (!frame.background.empty()) {
                 out.push_back(Call("AudastraUISetTexture", {Child(info, "AudastraBarBackground"), Quote(frame.background), "false"}));
             }
             if (!frame.value.binding) out.push_back(Call("AudastraUISetValue", {Self(info), Real(frame.value.literal)}));
             break;
         case UiFrameType::Button:
-            if (!frame.texture.empty()) {
-                if (auto line = Texture(info, frame.texture)) out.push_back(*line);
-            }
+            FixedTexture(info, out);
             if (!frame.pushed.empty()) {
                 out.push_back(Call("AudastraUISetTexture", {Child(info, "AudastraButtonPushed"), Quote(frame.pushed), "false"}));
             }
@@ -461,8 +463,8 @@ private:
             condition = Call("OperatorCompareReal", {*ref, "OperatorNotEqual", "0"});
             break;
         case UiValueType::String:
-            Error("框架 " + info.frame->id + " 的显示绑定到文字数值 " + spec->id);
-            return {};
+            condition = Call("OperatorCompareString", {*ref, "OperatorNotEqualENE", Quote("")});
+            break;
         }
         const std::string on = binding.invert ? "false" : "true";
         const std::string off = binding.invert ? "true" : "false";
@@ -489,6 +491,11 @@ private:
         if ((frame.type == UiFrameType::Text || frame.type == UiFrameType::Button) && HasReferences(frame.text)) {
             if (auto text = TextExpression(info, frame.text)) {
                 Append(out, Guarded(info, Property::Text, {Call("AudastraUISetText", {TextTarget(info), *text})}));
+            }
+        }
+        if (!frame.texture.empty() && HasReferences(frame.texture)) {
+            if (auto expression = TextExpression(info, frame.texture)) {
+                if (auto line = TextureCall(info, *expression)) Append(out, Guarded(info, Property::Texture, {*line}));
             }
         }
         if (frame.type == UiFrameType::Bar && frame.value.binding) {
@@ -557,8 +564,8 @@ private:
                     if (frame.texture.empty()) {
                         warnings_.push_back(Note(DiagnosticSeverity::Warning, "AUI_TRIGGER_TEXTURE_RESTORE",
                             "框架 " + frame.id + " 原本没有贴图，回到基础状态时保留状态设的贴图"));
-                    } else if (auto line = Texture(info, frame.texture)) {
-                        statements.push_back(*line);
+                    } else if (!HasReferences(frame.texture)) {
+                        if (auto line = Texture(info, frame.texture)) statements.push_back(*line);
                     }
                     break;
                 case Property::Text:

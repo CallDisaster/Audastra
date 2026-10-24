@@ -41,7 +41,7 @@ struct UiValue {
 };
 
 // 属性取自数值：写作 "编号"、"编号[]"（重复实例自己的格）或 "编号[下标]"。
-// 数值按 值×scale+offset 换算；布尔可取反。
+// 数值按 值×scale+offset 换算；布尔可取反。显示开关取文字数值时，非空为显示。
 struct UiBinding {
     std::string value;
     bool perInstance = false;
@@ -105,7 +105,7 @@ struct UiFrame {
     std::vector<UiAnchor> anchors;
     std::optional<double> width;
     std::optional<double> height;
-    std::string texture;     // Backdrop 背景、Bar 填充、Button 常态
+    std::string texture;     // Backdrop 背景、Bar 填充、Button 常态；可写文字模板（如 {icon[]}）按数值换贴图
     std::string background;  // Bar 底图
     std::string pushed;      // Button 按下
     std::string text;        // Text / Button 文字模板：{编号}、{编号:小数位}、{编号[]}；{{ }} 为花括号本身

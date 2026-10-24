@@ -2,6 +2,7 @@
 
 #include "War3MapCore/Types.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -111,6 +112,13 @@ inline void Append(Lines& out, const Lines& in, int depth = 0) {
 // 用自己的整数变量循环（不用 bj_forLoopAIndex），被运行的触发器里的“循环 A”不会打乱它。结束值每轮重新求。
 [[nodiscard]] inline Lines ForLoopVar(const std::string& variable, std::string_view from, std::string_view to, const Lines& body) {
     return Block(Call("ForLoopVarMultiple", {variable, std::string(from), std::string(to)}), "actions", body);
+}
+
+// 可写成 'XXXX' 字面量的四字码：可见 ASCII，不含单引号与反斜杠。
+[[nodiscard]] inline bool ValidRawcode(std::string_view code) {
+    return code.size() == 4 && std::all_of(code.begin(), code.end(), [](unsigned char c) {
+        return c > 0x20 && c < 0x7f && c != '\'' && c != '\\';
+    });
 }
 
 // 触发器引用（触发器名作参数）。

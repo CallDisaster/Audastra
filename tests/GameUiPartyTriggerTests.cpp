@@ -148,6 +148,58 @@ void TestAppliedAndCompiled() {
     }
 }
 
+// 增减益：登记触发器列出增减益与图标，每格按登记顺序填进图标数值；模板的图标框架按数值换贴图、为空时隐藏。
+void TestBuffs() {
+    const UiDescription d = PartyDescription();
+    PartySystemOptions options = FullBinding(d);
+    for (const auto id : PartyPreset::kBuffs) options.frame.buffIcons.emplace_back(id);
+    options.buffs = {PartyBuff{"B000", "ReplaceableTextures\\CommandButtons\\BTNHeal"}, PartyBuff{"B001", "ReplaceableTextures\\CommandButtons\\BTNSlow"}};
+
+    PartySystemOptions bad = options;
+    bad.buffs.push_back(PartyBuff{"B0", ""});
+    bad.buffs.push_back(PartyBuff{"B000", "x"});
+    bad.frame.buffIcons.push_back("buff1");
+    const auto refused = GeneratePartySystem(bad);
+    Require(!refused.Succeeded() && refused.diagnostics.size() == 4, "增减益码、图标、重复登记、重复绑定一起报：" + First(refused.diagnostics));
+    PartySystemOptions unbound = FullBinding(d);
+    unbound.buffs = options.buffs;
+    Require(!GeneratePartySystem(unbound).Succeeded(), "登记了增减益却没有图标数值");
+
+    const auto plan = GeneratePartySystem(options);
+    Require(plan.Succeeded(), "带增减益生成：" + First(plan.diagnostics));
+    Require(plan.value->triggers.size() == 8 && plan.value->triggers.front() == "团队 登记 Party_Register"
+            && plan.value->registrationTrigger == "团队 登记 Party_Register",
+        "登记触发器在最前");
+    const std::string& text = plan.value->featureText;
+    for (const char* part : {"触发器 团队 登记 Party_Register (init):", "SetVariable(udg_AUP_BuffCode[2], 'B001')",
+             "UnitHasBuffBJ(udg_AUP_Unit[udg_AUP_I], udg_AUP_BuffCode[udg_AUP_BuffI])",
+             "OperatorCompareInteger(udg_AUP_BuffN, OperatorLess, 4)",
+             "SetVariable(udg_AUIV_party_buff2[OperatorInt(udg_AUP_I, OperatorSubtract, 1)], udg_AUP_BuffHit[2])"}) {
+        Require(Contains(text, part), std::string("生成文本缺少：") + part);
+    }
+    PartySystemOptions keep = options;
+    keep.includeRegistration = false;
+    const auto kept = GeneratePartySystem(keep);
+    Require(kept.Succeeded() && kept.value->triggers.size() == 7 && !Contains(kept.value->featureText, "Party_Register (init)"),
+        "已有登记时不再生成登记");
+
+    Fixture f;
+    const auto ui = GenerateUiTriggers(d);
+    Require(ui.Succeeded(), "界面触发器：" + First(ui.diagnostics));
+    Require(Contains(ui.value->featureText, "AudastraUISetTexture(udg_AUI_party_icon1[GetForLoopIndexA()], udg_AUIV_party_buff1[GetForLoopIndexA()]"),
+        "图标贴图在更新里按数值设置");
+    Require(Contains(ui.value->featureText, "OperatorCompareString(udg_AUIV_party_buff1[GetForLoopIndexA()], OperatorNotEqualENE, \"\")"),
+        "图标数值为空时隐藏");
+    Require(f.Apply(kUiTriggerCategory, ui.value->featureText).Succeeded(), "写进界面触发器");
+    const auto applied = f.Apply(kPartyTriggerCategory, plan.value->featureText);
+    Require(applied.Succeeded(), "带增减益写入：" + First(applied.diagnostics));
+    Require(f.Trigger("团队 登记 Party_Register")->runOnInit != 0, "登记在地图初始化时运行");
+    const std::string script = f.Script();
+    for (const char* part : {"set udg_AUP_BuffCode[1] = 'B000'", "UnitHasBuffBJ(udg_AUP_Unit[udg_AUP_I], udg_AUP_BuffCode[udg_AUP_BuffI])"}) {
+        Require(Contains(script, part), std::string("脚本缺少：") + part);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -156,6 +208,7 @@ int main() {
         TestRefusals();
         TestGeneratedText();
         TestAppliedAndCompiled();
+        TestBuffs();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

@@ -255,6 +255,37 @@ void TestRepeat() {
     Require(tree.Nodes()[NodeNamed(tree, "title").anchors[0].targetNode].name == "slot#0", "outside reference uses first instance");
 }
 
+// 贴图写取值模板按数值换图；文字数值作显示开关时非空为显示。
+void TestTextureTemplate() {
+    const UiDescription description = Parse(R"({
+  "format": "audastra.ui", "version": 1, "id": "Buffs",
+  "values": [{"id": "icon", "type": "string", "size": 2}],
+  "frames": [
+    {"id": "slot", "type": "backdrop", "repeat": {"count": 2, "dx": 0.02},
+     "anchors": [{"point": "CENTER", "to": "screen"}], "width": 0.016, "height": 0.016,
+     "texture": "ReplaceableTextures\\CommandButtons\\{icon[]}", "visible": "icon[]"}
+  ]
+})");
+    UiInstanceState state;
+    state.values["icon[0]"] = "BTNHeal";
+    const FrameLibrary library;
+    FrameTree tree;
+    std::vector<Diagnostic> diagnostics;
+    (void)AddUiDescription(tree, library, nullptr, description, state, diagnostics);
+    const FrameNode& first = NodeNamed(tree, "slot#0");
+    const FrameNode& second = NodeNamed(tree, "slot#1");
+    Require(first.texture && first.texture->key == "ReplaceableTextures\\CommandButtons\\BTNHeal", "texture follows the value");
+    Require(!first.hidden && second.hidden, "empty text value hides the frame");
+    Require(ParseUiDescription(SerializeUiDescription(description)).Succeeded(), "templated texture round trip");
+    const auto renamed = ApplyUiEdits(description, R"([{"op": "rename_value", "from": "icon", "to": "badge"}])");
+    Require(renamed.value && FindUiFrame(*renamed.value, "slot")->texture == "ReplaceableTextures\\CommandButtons\\{badge[]}",
+        "renaming a value updates texture templates");
+
+    const auto bad = Errors(R"({"format": "audastra.ui", "version": 1, "id": "Bad",
+  "frames": [{"id": "b", "type": "backdrop", "anchors": [{"point": "CENTER"}], "texture": "{missing}"}]})");
+    Require(HasMessage(bad, "missing"), "texture template references must exist");
+}
+
 void TestGameArea() {
     const UiDescription description = Parse(R"({
   "format": "audastra.ui", "version": 1, "id": "Hint",
@@ -348,6 +379,7 @@ int main() {
         TestValues();
         TestTree();
         TestRepeat();
+        TestTextureTemplate();
         TestGameArea();
         TestEdits();
     } catch (const std::exception& error) {

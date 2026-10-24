@@ -154,10 +154,13 @@ public:
     std::optional<CastSystemGeneration> GenerateCastSystem(const CastSystemRequest& request, bool preview, QString* error = nullptr);
     // 团队框架（PartyTriggers.h）：整批写进触发器编辑器的“团队框架”类别，走触发器撤销栈。frame 为绑定的界面描述编号，
     // 其界面触发器须已生成；其余为界面的数值与事件编号，空为不绑定（shown 必填）。绑定过远或点选时需要 YDWE 的
-    // GetLocalPlayer（过远还要 RemoveLocation）。preview 为真时只给出生成结果，不改地图。
+    // GetLocalPlayer（过远还要 RemoveLocation）。buffIcons 为增减益图标数值（按显示顺序），buffs 为登记的增减益码，
+    // 图标取自物编；地图里已有登记触发器时保留它，buffs 不写入（registrationKept 为真）。preview 为真时只给出生成结果，不改地图。
     struct PartySystemRequest {
         QString frame;
         QString shown, health, mana, name, dead, outOfRange, select;
+        QStringList buffIcons;
+        QStringList buffs;
         GameUi::PartyNameSource nameSource = GameUi::PartyNameSource::Player;
         double farRange = 1200.0;
         bool autoHeroes = true;
@@ -168,6 +171,7 @@ public:
         QStringList variables;
         std::uint32_t slotCount = 0;
         QString memberVariable, joinTrigger, leaveTrigger;
+        bool registrationKept = false;
     };
     std::optional<PartySystemGeneration> GeneratePartySystem(const PartySystemRequest& request, bool preview, QString* error = nullptr);
     [[nodiscard]] bool IsLoading() const noexcept { return definitionsPending_ || assetsPending_; }
