@@ -299,7 +299,9 @@ class ObjectMatrixTests(unittest.TestCase):
 class CatalogArchiveBindingTests(unittest.TestCase):
     def test_optional_local_archive_and_its_bytes_participate_in_catalog_binding(self):
         with tempfile.TemporaryDirectory(prefix="audastra-catalog-archive-test-") as temporary:
-            root = Path(temporary)
+            # Windows TEMP 可能带 8.3 别名；与真实 CLI 一样先固定 canonical 根，
+            # 不能把 resolve 后的成员与未规范化的根比较，再绕开 inventory 的越界门。
+            root = Path(temporary).resolve(strict=True)
             game, ydwe = root / "game", root / "metadata"
             game.mkdir()
             (ydwe / "ui").mkdir(parents=True)
@@ -307,6 +309,9 @@ class CatalogArchiveBindingTests(unittest.TestCase):
             (game / "war3.mpq").write_bytes(b"owned base archive identity only")
             (game / "war3x.mpq").write_bytes(b"owned expansion archive identity only")
             args = SimpleNamespace(war3_root=game, ydwe_root=ydwe)
+            self.assertEqual(args.war3_root, args.war3_root.resolve(strict=True))
+            self.assertEqual(args.ydwe_root / "ui", (args.ydwe_root / "ui").resolve(strict=True))
+            self.assertEqual([row["path"] for row in matrix.probe.inventory(args.ydwe_root / "ui")], ["owned.txt"])
             missing = matrix.catalog_inputs(args)
             self.assertEqual([row["name"] for row in missing["game_archives"]], ["war3.mpq", "war3x.mpq"])
             local = game / "War3Local.MPQ"
