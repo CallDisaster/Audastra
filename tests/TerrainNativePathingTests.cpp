@@ -343,8 +343,28 @@ void CliffSentinelTransitionsRequireFlatKnownNeighborhoods() {
     Require(!IsNativeTerrainCliffSentinelTransition(fixture.grid, invalid, center), "slot15-to-slot15 is not material resolution");
     invalid = changed; invalid.vertices.pop_back();
     Require(!IsNativeTerrainCliffSentinelTransition(fixture.grid, invalid, center), "truncated grid is rejected before indexing");
-    invalid = changed; invalid.header.cliffTilesets[0] = "Cl02";
-    Require(!IsNativeTerrainCliffSentinelTransition(fixture.grid, invalid, center), "changing the palette table does not qualify");
+    auto replaced = changed; replaced.header.cliffTilesets[0] = "Cl02";
+    Require(IsNativeTerrainCliffSentinelTransition(fixture.grid, replaced, center)
+        && IsNativeTerrainCliffSentinelTransition(replaced, fixture.grid, center),
+        "same-count cliff replacement is geometrically valid; actual rows are checked by the resource owner");
+    auto appended = changed; appended.header.cliffTilesets.push_back("Cl02");
+    appended.vertices[center].cliffAndLayerRaw = 0x11;
+    Require(IsNativeTerrainCliffSentinelTransition(fixture.grid, appended, center)
+        && IsNativeTerrainCliffSentinelTransition(appended, fixture.grid, center),
+        "a complete tail append may resolve slot15 to the actual newly available concrete slot");
+    input.terrain = &appended;
+    Require(Take(GenerateTerrainNativePathing(input)) == generated,
+        "valid cliff table changes preserve every independently generated terrain pathing cell");
+    for (unsigned mode = 0; mode < 4; ++mode) {
+        invalid = appended;
+        if (mode == 0) invalid.header.cliffTilesets.front() = "ClXX";
+        if (mode == 1) invalid.header.cliffTilesets.clear();
+        if (mode == 2) invalid.header.cliffTilesets.resize(16, "ClXX");
+        if (mode == 3) invalid.header.cliffTilesets.pop_back();
+        Require(!IsNativeTerrainCliffSentinelTransition(fixture.grid, invalid, center)
+            && !IsNativeTerrainCliffSentinelTransition(invalid, fixture.grid, center),
+            "non-prefix growth, empty or oversized tables and missing concrete slots reject in both directions");
+    }
     Require(!IsNativeTerrainCliffSentinelTransition(fixture.grid, changed, fixture.grid.vertices.size()),
         "out-of-range changed vertex is rejected before indexing");
 }
