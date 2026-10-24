@@ -383,6 +383,87 @@ void BoundedDependencyVerification() {
     Rejected(noSpare->VerifySources(*f.source), "TERRAIN_SHADOW_CASTER_BUDGET");
     Rejected(noSpare->VerifyReadback(saved), "TERRAIN_SHADOW_CASTER_BUDGET");
 }
+void BatchedDependencyVerificationPreservesEveryFact() {
+    Fixture f;
+    constexpr std::size_t modelCount = 300, modelBytes = 4096;
+    std::vector<std::vector<std::string>> rows;
+    std::vector<MapArchiveMember> gameMembers;
+    f.placements.doodads.clear(); f.Erase("Fixture/Caster1.mdx");
+    f.Erase("war3map.w3b"); f.Erase("war3map.w3d");
+    const auto suffix = [](std::size_t index) {
+        const auto value = std::to_string(index);
+        return std::string(3 - value.size(), '0') + value;
+    };
+    for (std::size_t index = 0; index < modelCount; ++index) {
+        const auto number = suffix(index), id = "M" + number, path = "Fixture/Batch/Model" + number;
+        rows.push_back({id, "1", path, "1", "1", "0", "0", "-1", "0"});
+        f.placements.doodads.push_back(Placement(id, 0, 128 + 128 * float(index % 6), std::int32_t(index + 1)));
+        MapArchiveMember member{path + ".mdx", Bytes(modelBytes, std::byte{0x51})};
+        const auto marker = Text("authored source-only model " + number);
+        std::copy(marker.begin(), marker.end(), member.data.begin());
+        if (index % 2) gameMembers.push_back(std::move(member));
+        else f.members.push_back(std::move(member));
+    }
+    f.Member("war3map.doo") = Take(f.placements.Serialize());
+    f.Member("Doodads/Doodads.slk") = Slk({"doodID", "shadow", "file", "numVar", "defScale",
+        "maxPitch", "maxRoll", "fixedRot", "floats"}, rows);
+    // 这些游戏层同名成员不能填补map-only原生表的缺失事实。
+    gameMembers.push_back({"war3map.w3b", Text("must not fill map-only absence")});
+    gameMembers.push_back({"war3map.w3d", Text("must not fill map-only absence")});
+    Take(WriteVerifiedArchive(f.game / "War3Patch.mpq", gameMembers)); f.Open();
+    const auto owner = f.Capture();
+    Require(owner->Models().size() == modelCount && owner->Dependencies().size() > 256,
+        "原创独立模型与缺失表必须跨过exact读取256项硬界");
+    Require(f.Dependency(*owner, "WAR3MAP.W3B").source == TerrainShadowCasterSource::Missing
+        && f.Dependency(*owner, "WAR3MAP.W3D").source == TerrainShadowCasterSource::Missing,
+        "跨批复核保留原生表map-only缺失策略");
+    for (std::size_t index = 0; index < modelCount; ++index) {
+        const auto& dependency = f.Dependency(*owner, "FIXTURE\\BATCH\\MODEL" + suffix(index) + ".MDX");
+        Require(dependency.bytes == modelBytes && dependency.sha256.size() == 64
+            && dependency.source == (index % 2 ? TerrainShadowCasterSource::Game : TerrainShadowCasterSource::Map)
+            && dependency.gameContainer == (index % 2 ? "war3patch.mpq" : ""),
+            "每个跨批依赖分别保留全文SHA和实际map/game winner");
+    }
+    Check(owner->VerifySources(*f.source));
+    const auto candidate = Take(f.source->SaveCandidate(f.root / "many-dependencies.w3x", {}));
+    const auto saved = Take(MapArchiveSession::Open(candidate.path));
+    Check(owner->VerifyReadback(saved));
+    TerrainShadowCasterVerificationLimits scratch; scratch.maximumWorkingBytes = 256u * 1024u;
+    Require(owner->WorkingBytes() > scratch.maximumWorkingBytes,
+        "批复核窄预算不足以重新建立完整owner");
+    Check(owner->VerifySources(*f.source, {}, {}, {}, scratch));
+    Check(owner->VerifyReadback(saved, {}, scratch));
+    // 首项和末项都要完整比较；末项来自游戏，把相同正文提到地图层也须拒绝。
+    std::vector<MemberReplacement> changed{{"Fixture/Batch/Model000.mdx", f.Member("Fixture/Batch/Model000.mdx")}};
+    changed[0].data.back() = std::byte{0x52};
+    Rejected(owner->VerifySources(*f.source, changed, {}, {}, scratch), "TERRAIN_SHADOW_CASTER_DEPENDENCY_STALE");
+    changed[0] = {"Fixture/Batch/Model299.mdx", gameMembers[modelCount / 2 - 1].data};
+    Rejected(owner->VerifySources(*f.source, changed, {}, {}, scratch), "TERRAIN_SHADOW_CASTER_DEPENDENCY_STALE");
+    const auto moved = Take(f.source->SaveCandidate(f.root / "changed-final-winner.w3x", changed));
+    Rejected(owner->VerifyReadback(Take(MapArchiveSession::Open(moved.path)), {}, scratch),
+        "TERRAIN_SHADOW_CASTER_READBACK_STALE");
+    const auto empty = Take(NativeObjectDocument::CreateEmpty(ObjectType::Destructable));
+    changed[0] = {"war3map.w3b", Take(NativeObjectCodec(ObjectType::Destructable).Serialize(empty))};
+    Rejected(owner->VerifySources(*f.source, changed, {}, {}, scratch), "TERRAIN_SHADOW_CASTER_DEPENDENCY_STALE");
+    changed[0] = {"Doodads/Doodads.slk", Bytes(2u * 1024u * 1024u + 1, std::byte{0x53})};
+    Rejected(owner->VerifySources(*f.source, changed), "TERRAIN_SHADOW_CASTER_BUDGET");
+    auto exhausted = scratch; exhausted.maximumSourceBytes = 256 * modelBytes;
+    Rejected(owner->VerifySources(*f.source, {}, {}, {}, exhausted));
+    Rejected(owner->VerifyReadback(saved, {}, exhausted));
+    // 容得下单项而非全批时应成功；连一项metadata也容不下则准确拒绝。
+    auto tiny = scratch; tiny.maximumWorkingBytes = 4096;
+    Rejected(owner->VerifySources(*f.source, {}, {}, {}, tiny), "TERRAIN_SHADOW_CASTER_BUDGET");
+    tiny = scratch; tiny.maximumFileBytes = modelBytes - 1;
+    Rejected(owner->VerifyReadback(saved, {}, tiny), "TERRAIN_SHADOW_CASTER_BUDGET");
+    std::stop_source cancelled; cancelled.request_stop();
+    Rejected(owner->VerifyReadback(saved, cancelled.get_token(), scratch), "TERRAIN_SHADOW_CASTER_CANCELLED");
+    // 真实游戏归档的末项正文改变、winner保持相同，仍须命中全文SHA变化。
+    gameMembers[modelCount / 2 - 1].data.back() = std::byte{0x54};
+    const auto changedPatch = Take(WriteVerifiedArchive(f.root / "changed-patch.mpq", gameMembers));
+    Check(IO::WriteFileBytes(f.game / "War3Patch.mpq", Take(IO::ReadFileBytes(changedPatch.path))));
+    Rejected(owner->VerifySources(*f.source, {}, {}, {}, scratch), "TERRAIN_SHADOW_CASTER_DEPENDENCY_STALE");
+    Rejected(owner->VerifyReadback(saved, {}, scratch), "TERRAIN_SHADOW_CASTER_READBACK_STALE");
+}
 } // namespace
 
 int main() {
@@ -390,7 +471,7 @@ int main() {
         ActualClassificationAndExactInstances(); FinalViewAndPublicationIdentity(); GameWinnerAndKnownAbsence();
         ActualTilesetAndFinalTableOverrides(); UnsupportedAndCorruptAreNotEmpty(); EmptyAndSpecialListsRemainExplicit();
         StrictVariationAndUniqueModelLimit(); NativeTransformAndSurfaceRefusals(); LimitsCancellationAndRealSourceDrift();
-        StoredAndDecodedSourceBudgets(); BoundedDependencyVerification();
+        StoredAndDecodedSourceBudgets(); BoundedDependencyVerification(); BatchedDependencyVerificationPreservesEveryFact();
         std::cout << "TerrainShadowCasterResourcesTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

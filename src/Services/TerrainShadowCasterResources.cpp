@@ -169,7 +169,8 @@ struct Context {
         }
         flush();
     }
-    const ArchiveExactMember& Read(std::string_view name, bool gameFallback, std::size_t maximumFile = 0) {
+    const ArchiveExactMember& Read(std::string_view name, bool gameFallback, std::size_t maximumFile = 0,
+        bool metadataPrepaid = false) {
         Cancel(cancellation);
         if (name.size() > ArchiveExactMemberLimits{}.pathBytes)
             Fail("TERRAIN_SHADOW_CASTER_BUDGET", "阴影模型路径超过预算。");
@@ -177,7 +178,12 @@ struct Context {
         Charge(pathWorking, name.size() + 128, limits.maximumWorkingBytes, 4);
         const auto key = Canonical(name);
         if (facts.contains(key)) return files.at(key);
-        Charge(workingBytes, key.size() + kDependencyMetadataBytes, limits.maximumWorkingBytes, 4);
+        // 只有内部复核批次在Phase分配前为整批预收metadata。不是外部来源资格，
+        // 也不能借此跳过实际成员读取或后面的完整winner/SHA检查。
+        if (metadataPrepaid) {
+            if (!files.contains(key))
+                Fail("TERRAIN_SHADOW_CASTER_BUDGET", "阴影依赖复核批次没有完整预捕获成员。");
+        } else Charge(workingBytes, key.size() + kDependencyMetadataBytes, limits.maximumWorkingBytes, 4);
         if (!files.contains(key)) { const std::array<std::string, 1> names{std::string(name)}; Phase(names, maximumFile); }
         auto& file = files.at(key);
         const auto allowed = std::min({maximumFile ? maximumFile : limits.maximumFileBytes, limits.maximumFileBytes,
@@ -247,13 +253,53 @@ void VerifyDependencies(const MapArchiveSession& source, const std::filesystem::
     if (ActualGameRoot(gameRoot) != gameRootIdentity || dependencies.size() != readLimits.size())
         Fail(staleCode, "阴影模型的实际游戏目录身份或封存依赖策略已变化。");
     context.tileset = tileset;
-    for (std::size_t index = 0; index < dependencies.size(); ++index) {
-        const auto& dependency = dependencies[index];
-        const auto [fallback, maximumFile] = readLimits[index];
-        (void)context.Read(dependency.name, fallback, maximumFile);
-        if (context.facts.at(dependency.name) != dependency)
-            Fail(staleCode, "阴影模型的最终成员或实际资源来源已变化：" + dependency.name);
-        context.Release(dependency.name);
+    for (std::size_t first = 0; first < dependencies.size();) {
+        Cancel(cancellation);
+        const auto fileMaximum = [&](std::size_t index) {
+            const auto requested = readLimits[index].second;
+            return std::min(requested ? requested : limits.maximumFileBytes, limits.maximumFileBytes);
+        };
+        const auto maximumFile = fileMaximum(first);
+        const auto available = limits.maximumWorkingBytes - context.workingBytes;
+        const auto sourceAvailable = limits.maximumSourceBytes - context.sourceBytes;
+        std::size_t end = first, metadata = 0, bodies = 0, transient = 0;
+        // 先按封存的实际正文长度规划，不分配或重新解析owner。正文双缓冲、
+        // 全批files/facts/readLimits节点、两份名字vector及canonical暂存均先预收。
+        // 若实际文件变大，底层stored/decoded硬限仍在读取前拒绝，不按旧长度放行。
+        while (end < dependencies.size() && end - first < ArchiveExactMemberLimits{}.memberCount
+            && fileMaximum(end) == maximumFile) {
+            const auto& dependency = dependencies[end];
+            const auto nameBytes = dependency.name.size();
+            if (nameBytes > ArchiveExactMemberLimits{}.pathBytes || dependency.bytes > maximumFile)
+                Fail("TERRAIN_SHADOW_CASTER_BUDGET", "阴影依赖复核超过单文件或路径预算。");
+            const auto entryMetadata = (nameBytes + kDependencyMetadataBytes) * 4;
+            const auto nextTransient = std::max(transient, (nameBytes + 128) * 4);
+            if (nextTransient > available) break;
+            const auto afterTransient = available - nextTransient;
+            if (metadata > afterTransient || entryMetadata > afterTransient - metadata) break;
+            const auto bodyMaximum = (afterTransient - metadata - entryMetadata) / 2;
+            if (bodies > bodyMaximum || dependency.bytes > bodyMaximum - bodies
+                || bodies > sourceAvailable || dependency.bytes > sourceAvailable - bodies) break;
+            metadata += entryMetadata; bodies += dependency.bytes; transient = nextTransient; ++end;
+        }
+        if (end == first)
+            Fail("TERRAIN_SHADOW_CASTER_BUDGET", "阴影来源复核剩余额度容不下一份完整依赖及其索引。");
+        // 这些预收在分配batch/Phase的vector和map之前发生；每批最多256项。
+        context.ParseReserve(metadata, 1);
+        std::vector<std::string> names; names.reserve(end - first);
+        for (auto index = first; index < end; ++index) names.push_back(dependencies[index].name);
+        context.Phase(names, maximumFile);
+        for (auto index = first; index < end; ++index) {
+            const auto& dependency = dependencies[index];
+            const auto [fallback, originalMaximum] = readLimits[index];
+            (void)context.Read(dependency.name, fallback, originalMaximum, true);
+            if (context.facts.at(dependency.name) != dependency)
+                Fail(staleCode, "阴影模型的最终成员或实际资源来源已变化：" + dependency.name);
+        }
+        // 整批比较完成再退还正文/metadata工作量；sourceBytes累计不退，
+        // 下一批继续消费同一次复核的剩余额，不给每批重新发一份预算。
+        for (auto index = first; index < end; ++index) context.Release(dependencies[index].name);
+        first = end;
     }
     Cancel(cancellation); Check(context.guard.Verify()); Check(source.VerifySourceUnchanged());
     if (ActualGameRoot(gameRoot) != gameRootIdentity)
