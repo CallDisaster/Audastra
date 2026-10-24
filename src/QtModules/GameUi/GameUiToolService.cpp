@@ -354,7 +354,7 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
         const QString id = args.value("description").toString();
         QString error;
         if (name == QLatin1String("game_ui_description_create") &&
-            !module->CreateDescription(id, args.value("label").toString(), &error)) {
+            !module->CreateDescription(id, args.value("label").toString(), &error, args.value("preset").toString())) {
             return Failure("GAME_UI_DESCRIPTION", error);
         }
         if (name == QLatin1String("game_ui_description_edit")) {
@@ -388,6 +388,34 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
             warnings.append(QJsonObject{{"code", Text(warning.code)}, {"message", Text(warning.message)}});
         }
         binding.insert("warnings", warnings);
+        return binding;
+    }
+
+    if (name == QLatin1String("game_ui_cast_system")) {
+        const bool preview = args.value("preview").toBool();
+        GameUiModule::CastSystemRequest request;
+        for (const auto& item : args.value("abilities").toArray()) {
+            const QJsonObject ability = item.toObject();
+            request.abilities.push_back(CastAbility{ability.value("ability").toString().toStdString(), ability.value("cast").toDouble(),
+                ability.value("channel").toDouble(), ability.value("tick").toDouble(), ability.value("effect").toString().toStdString()});
+        }
+        const QJsonObject bar = args.value("bar").toObject();
+        request.bar = bar.value("description").toString();
+        request.visible = bar.value("visible").toString();
+        request.progress = bar.value("progress").toString();
+        request.text = bar.value("text").toString();
+        request.remaining = bar.value("remaining").toString();
+        request.channel = bar.value("channel").toString();
+        request.interrupted = bar.value("interrupted").toString();
+        QString error;
+        const auto generated = module->GenerateCastSystem(request, preview, &error);
+        if (!generated) return Failure("GAME_UI_CAST_SYSTEM", error);
+        binding.insert("applied", !preview);
+        binding.insert("category", Text(std::string(kCastTriggerCategory)));
+        binding.insert("feature_text", generated->featureText);
+        binding.insert("triggers", QJsonArray::fromStringList(generated->triggers));
+        binding.insert("variables", QJsonArray::fromStringList(generated->variables));
+        binding.insert("registration_kept", generated->registrationKept);
         return binding;
     }
 

@@ -2,6 +2,7 @@
 
 #include "GameUiSources.h"
 #include "Modules/EditorModule.h"
+#include "War3MapCore/GameUi/CastTriggers.h"
 #include "War3MapCore/GameUi/FrameDraw.h"
 #include "War3MapCore/GameUi/ScriptSimulation.h"
 
@@ -111,7 +112,8 @@ public:
     void SetShowHidden(bool show);
     // 编写地图界面描述。编辑先按 audastra.ui 的规则检查，再作为导入文件 AudastraUI\<编号>.json 放进地图的待保存修改，
     // 与导入文件同一撤销栈和保存流程。失败时给出原因，什么都不改。edits 的写法见 UiDescriptionEdit.h。
-    bool CreateDescription(const QString& id, const QString& label, QString* error = nullptr);
+    // preset 为起始模板编号（UiPresets.h，如 castbar、party），空为空白描述。
+    bool CreateDescription(const QString& id, const QString& label, QString* error = nullptr, const QString& preset = {});
     bool EditDescription(const QString& id, const QString& edits, const QString& undoLabel, QString* error = nullptr);
     // 在所选描述框架下（选中描述根节点时为顶层）添加一个框架并选中它；返回新框架编号，失败为空。
     QString AddDescriptionFrame(GameUi::UiFrameType type, QString* error = nullptr);
@@ -134,6 +136,21 @@ public:
         std::vector<Diagnostic> warnings;
     };
     std::optional<TriggerGeneration> GenerateDescriptionTriggers(const QString& id, bool preview, QString* error = nullptr);
+    // 读条系统（CastTriggers.h）：整批写进触发器编辑器的“读条系统”类别，走触发器撤销栈。地图里已有登记触发器时保留它，
+    // abilities 不写入（registrationKept 为真）。bar 为绑定的界面描述编号，其界面触发器须已生成；空为不绑定。
+    // 需要 YDWE 的“运行触发器（带参数）”。preview 为真时只给出生成结果，不改地图。
+    struct CastSystemRequest {
+        std::vector<GameUi::CastAbility> abilities;
+        QString bar;
+        QString visible, progress, text, remaining, channel, interrupted;  // 界面的数值与状态编号
+    };
+    struct CastSystemGeneration {
+        QString featureText;
+        QStringList triggers;
+        QStringList variables;
+        bool registrationKept = false;
+    };
+    std::optional<CastSystemGeneration> GenerateCastSystem(const CastSystemRequest& request, bool preview, QString* error = nullptr);
     [[nodiscard]] bool IsLoading() const noexcept { return definitionsPending_ || assetsPending_; }
     [[nodiscard]] QImage RenderImage(const QSize& size) const;
     void Reload();
@@ -177,6 +194,7 @@ private:
     // 修改会重建属性树与表格（删掉正在发出信号的单元），放到下一轮事件里提交；失败时报告并恢复。
     void CommitDescriptionEdits(const QString& id, const QJsonArray& edits, const QString& undoLabel, std::function<void()> after = {});
     QList<QWidget*> BuildAuthoringControls(QWidget* toolbar);
+    void ShowCastSystemDialog();
     void UpdateAuthoringControls();
     bool StageDescription(GameUi::UiDescription description, bool create, const QString& undoLabel, QString* error);
     QString AddFrameObject(QJsonObject frame, const char* idPrefix, QString* error);
@@ -273,6 +291,7 @@ private:
     QToolButton* addFrameButton_ = nullptr;
     QPushButton* removeFrameButton_ = nullptr;
     QPushButton* generateTriggersButton_ = nullptr;
+    QPushButton* castSystemButton_ = nullptr;
 };
 
 } // namespace War3Map::Modules

@@ -1,4 +1,5 @@
 #include "AudastraUiCatalog.h"
+#include "CastSpellLayer.h"
 #include "EditorProject.h"
 #include "GameUiCanvas.h"
 #include "GameUiModule.h"
@@ -74,6 +75,8 @@ private slots:
     void DescriptionDataTablesEdit();
     void GeneratesDescriptionTriggers();
     void FramePropertiesEditLayoutAndText();
+    void GeneratesCastSystem();
+    void CreatesFromPresets();
 };
 
 void GameUiModuleTests::BuildsSceneFromDefinitions() {
@@ -734,6 +737,89 @@ void GameUiModuleTests::FramePropertiesEditLayoutAndText() {
     QVERIFY(field(QStringLiteral("模板")));
     choose(field(QStringLiteral("模板")), QStringLiteral("ConsoleUI"));
     QCOMPARE(frame("template1")->templateName, std::string("ConsoleUI"));
+}
+
+void GameUiModuleTests::GeneratesCastSystem() {
+    QtProject::EditorProject project;
+    Modules::GameUiModule module(project);
+    (void)module.Widget();
+    module.LoadDefinitionsForTesting(SyntheticDefinitions());
+    QString error;
+    Modules::GameUiModule::CastSystemRequest request;
+    QVERIFY(!module.GenerateCastSystem(request, true, &error));
+    QVERIFY(error.contains(QStringLiteral("触发器")));
+
+    AudastraUiTest::Catalog files;
+    files.extra = AudastraUiTest::SpellLayer();
+    const auto loaded = files.Load();
+    QVERIFY2(loaded.empty(), loaded.c_str());
+    project.uiCatalog_ = std::make_unique<Trigger::UiCatalog>(std::move(*files.catalog));
+    project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>(std::move(*files.document));
+    project.triggerUndoStack_ = new QUndoStack(&project);
+    const auto count = [&project] {
+        const auto& doc = *project.triggerDocument_;
+        const auto category = std::find_if(doc.categories.begin(), doc.categories.end(),
+            [](const auto& row) { return row.name.text == kCastTriggerCategory; });
+        if (category == doc.categories.end()) return -1;
+        return static_cast<int>(std::count_if(doc.triggers.begin(), doc.triggers.end(),
+            [&](const auto& row) { return row.categoryId == category->categoryId; }));
+    };
+
+    // 预览不改地图；生成一次撤销。
+    const auto preview = module.GenerateCastSystem(request, true, &error);
+    QVERIFY2(preview, qPrintable(error));
+    QCOMPARE(preview->triggers.size(), qsizetype{11});
+    QVERIFY(!preview->registrationKept);
+    QCOMPARE(count(), -1);
+    QVERIFY2(module.GenerateCastSystem(request, false, &error), qPrintable(error));
+    QCOMPARE(count(), 11);
+    QCOMPARE(project.triggerUndoStack_->count(), 1);
+
+    // 再次生成：登记触发器已在，保留作者的登记。
+    request.abilities = {GameUi::CastAbility{"A000", 1.0, 0.0, 0.0, "missing"}};
+    const auto again = module.GenerateCastSystem(request, true, &error);
+    QVERIFY2(again, qPrintable(error));
+    QVERIFY(again->registrationKept);
+    QCOMPARE(again->triggers.size(), qsizetype{10});
+
+    // 读条条：界面触发器须先生成。
+    QVERIFY2(module.CreateDescription(QStringLiteral("Bar"), QStringLiteral("施法条"), &error), qPrintable(error));
+    QVERIFY2(module.EditDescription(QStringLiteral("Bar"), QStringLiteral(
+        R"([{"op":"set_values","values":[{"id":"shown","type":"boolean","default":false},{"id":"progress","type":"real","default":0}]},)"
+        R"({"op":"add_frame","frame":{"id":"fill","type":"bar","width":0.2,"height":0.02,"value":"progress","visible":"shown",)"
+        R"("anchors":[{"point":"CENTER"}]}}])"), {}, &error), qPrintable(error));
+    request.abilities.clear();
+    request.bar = QStringLiteral("Bar");
+    request.visible = QStringLiteral("shown");
+    request.progress = QStringLiteral("progress");
+    QVERIFY(!module.GenerateCastSystem(request, false, &error));
+    QVERIFY(error.contains(QStringLiteral("Bar")));
+    QVERIFY2(module.GenerateDescriptionTriggers(QStringLiteral("Bar"), false, &error), qPrintable(error));
+    const auto bound = module.GenerateCastSystem(request, false, &error);
+    QVERIFY2(bound, qPrintable(error));
+    QVERIFY(bound->featureText.contains(QStringLiteral("udg_AUIV_Bar_progress")));
+    QCOMPARE(count(), 12);
+}
+
+void GameUiModuleTests::CreatesFromPresets() {
+    QtProject::EditorProject project;
+    Modules::GameUiModule module(project);
+    auto* page = module.Widget();
+    module.LoadDefinitionsForTesting(SyntheticDefinitions());
+    QString error;
+    // 新建界面菜单里的模板列表与 Core 的模板一致。
+    auto* presets = page->findChild<QComboBox*>(QStringLiteral("gameUiNewDescriptionPreset"));
+    QVERIFY(presets);
+    QCOMPARE(presets->count(), 3);
+    QVERIFY(presets->findData(QStringLiteral("castbar")) > 0 && presets->findData(QStringLiteral("party")) > 0);
+    QVERIFY2(module.CreateDescription(QStringLiteral("Party"), {}, &error, QStringLiteral("party")), qPrintable(error));
+    QCOMPARE(module.Description(QStringLiteral("Party"))->values.size(), std::size_t{4});
+    QCOMPARE(module.Description(QStringLiteral("Party"))->label, std::string("团队框架"));
+    QVERIFY(module.SelectFrame(QStringLiteral("slot#4")));
+    QVERIFY2(module.CreateDescription(QStringLiteral("Bar"), QStringLiteral("施法条"), &error, QStringLiteral("castbar")), qPrintable(error));
+    QCOMPARE(module.Description(QStringLiteral("Bar"))->states.size(), std::size_t{2});
+    QVERIFY(!module.CreateDescription(QStringLiteral("Other"), {}, &error, QStringLiteral("nothing")));
+    QVERIFY(!module.Description(QStringLiteral("Other")));
 }
 
 int main(int argc, char** argv) {
