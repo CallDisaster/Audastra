@@ -31,9 +31,10 @@ struct TerrainShadowCasterLimits : TerrainShadowRebuildLimits {
     std::size_t maximumInstances = 65536;
     std::size_t maximumModelBytes = 128u * 1024u * 1024u;
     std::size_t maximumTriangles = 1024u * 1024u;
-    // 自有局部及单实例世界三角形缓存，不含借用字节与 ParseMdx 内部存储。
-    // ParseMdx 另遵守其固定输入/顶点/节点硬上限；编译每次只持有一个模型。
+    // 自有局部及单实例世界三角形缓存；解析、编译各自另有预算。
+    // 三份有效存储会并存，正式宿主须从同一个working预算分别分配。
     std::size_t maximumGeometryBytes = 128u * 1024u * 1024u;
+    std::size_t maximumParsedBytes = 32u * 1024u * 1024u;
     std::size_t maximumCompiledBytes = 32u * 1024u * 1024u;
 };
 

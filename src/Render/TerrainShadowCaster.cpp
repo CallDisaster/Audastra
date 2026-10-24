@@ -193,7 +193,8 @@ static Output ProjectCasters(const TerrainShadowHeightSamples& samples,
         || limits.maximumSampleBytes > hard.maximumSampleBytes || limits.maximumWork > hard.maximumWork
         || limits.maximumModels > hard.maximumModels || limits.maximumInstances > hard.maximumInstances
         || limits.maximumModelBytes > hard.maximumModelBytes || limits.maximumTriangles > hard.maximumTriangles
-        || limits.maximumGeometryBytes > hard.maximumGeometryBytes || limits.maximumCompiledBytes > hard.maximumCompiledBytes)
+        || limits.maximumGeometryBytes > hard.maximumGeometryBytes || limits.maximumParsedBytes > hard.maximumParsedBytes
+        || limits.maximumCompiledBytes > hard.maximumCompiledBytes)
         return Reject("TERRAIN_SHADOW_CASTER_LIMITS", "静态阴影caster只能收紧硬预算。");
     if (!samples.width || !samples.height || samples.width % 4 || samples.height % 4)
         return Reject("TERRAIN_SHADOW_CASTER_DIMENSIONS", "caster需要每地格四像素的完整receiver网格。");
@@ -253,20 +254,31 @@ static Output ProjectCasters(const TerrainShadowHeightSamples& samples,
             if (input.bytes.size() > limits.maximumModelBytes - inputBytes || !consume(input.bytes.size()))
                 return Reject("TERRAIN_SHADOW_CASTER_BUDGET", "caster模型字节或解析工作超过预算。");
             inputBytes += input.bytes.size();
-            auto parsed = Render::ParseMdx(input.bytes);
-            if (!parsed.Succeeded()) return {std::nullopt, std::move(parsed.diagnostics)};
+            if (!consume(input.bytes.size()))
+                return Reject("TERRAIN_SHADOW_CASTER_BUDGET", "caster第二遍解析超过工作预算。");
+            auto parsed = Render::ParseMdxNoControllerStaticBudgeted(input.bytes, limits.maximumParsedBytes);
+            if (!parsed.Succeeded()) {
+                for (const auto& diagnostic : parsed.diagnostics) {
+                    if (diagnostic.code == "MDX_STATIC_PARSE_UNQUALIFIED")
+                        return Reject("TERRAIN_SHADOW_CASTER_DYNAMIC", "模型含动态或未解释语义，不能以显示姿态烘焙。");
+                    if (diagnostic.code == "MDX_STATIC_PARSE_BUDGET")
+                        return Reject("TERRAIN_SHADOW_CASTER_BUDGET", "caster解析有效存储超过预算。");
+                }
+                return {std::nullopt, std::move(parsed.diagnostics)};
+            }
+            const auto& parsedModel = parsed.value->model;
             auto digest = Sha256(input.bytes);
             if (!digest.Succeeded()) return {std::nullopt, std::move(digest.diagnostics)};
             // 独立原字节重新编译，不接受caller的已静态/缓存资格。这里的source
             // 仅为进程内身份；资源winner、SHA及最终修订须由Services捕获证明。
-            auto compiled = War3RenderCore::CompileMdxModel(*parsed.value,
+            auto compiled = War3RenderCore::CompileMdxModel(parsedModel,
                 {static_cast<std::uint64_t>(index + 1), 1}, {std::string(input.path), "terrain-shadow-cpu", std::move(*digest.value)},
                 limits.maximumCompiledBytes);
             if (!compiled.Succeeded()) return {std::nullopt, std::move(compiled.diagnostics)};
             if (!compiled.value->UsesNoControllerStatic())
                 return Reject("TERRAIN_SHADOW_CASTER_DYNAMIC", "模型未通过整模型无控制器静态资格，不能以显示姿态烘焙。");
             std::size_t visibleTriangles = 0;
-            for (const auto& geoset : parsed.value->geosets) {
+            for (const auto& geoset : parsedModel.geosets) {
                 if (cancellation.stop_requested()) return Reject("TERRAIN_SHADOW_CASTER_CANCELLED", "caster geoset检查已取消。");
                 if (!consume()) return Reject("TERRAIN_SHADOW_CASTER_BUDGET", "caster geoset检查超过工作预算。");
                 if (geoset.selectionFlags != 0)
@@ -292,7 +304,7 @@ static Output ProjectCasters(const TerrainShadowHeightSamples& samples,
                 model.sphere = *sphere;
             }
             model.triangles.reserve(visibleTriangles);
-            for (const auto& geoset : parsed.value->geosets) {
+            for (const auto& geoset : parsedModel.geosets) {
                 if (geoset.animation && geoset.animation->staticAlpha == 0) continue;
                 for (std::size_t at = 0; at < geoset.indices.size(); at += 3) {
                     if (cancellation.stop_requested()) return Reject("TERRAIN_SHADOW_CASTER_CANCELLED", "caster几何提取已取消。");

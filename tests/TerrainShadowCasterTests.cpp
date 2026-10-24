@@ -182,6 +182,8 @@ void BudgetsAndCancellationDiscardEntireCandidate() {
     limits = {}; limits.maximumInstances = 0; Refused(fixture.Run(limits), "TERRAIN_SHADOW_CASTER_BUDGET");
     limits = {}; limits.maximumModelBytes = fixture.bytes.size() - 1; Refused(fixture.Run(limits), "TERRAIN_SHADOW_CASTER_BUDGET");
     limits = {}; limits.maximumGeometryBytes = 1; Refused(fixture.Run(limits), "TERRAIN_SHADOW_CASTER_BUDGET");
+    limits = {}; limits.maximumParsedBytes = 1; Refused(fixture.Run(limits), "TERRAIN_SHADOW_CASTER_BUDGET");
+    limits = {}; ++limits.maximumParsedBytes; Refused(fixture.Run(limits), "TERRAIN_SHADOW_CASTER_LIMITS");
     limits = {}; limits.maximumCompiledBytes = 1; Refused(fixture.Run(limits));
     std::stop_source stop; stop.request_stop(); Refused(fixture.Run({}, stop.get_token()), "TERRAIN_SHADOW_CASTER_CANCELLED");
     fixture.heights[7] = std::numeric_limits<float>::quiet_NaN(); Refused(fixture.Run(), "TERRAIN_SHADOW_CASTER_HEIGHT");
