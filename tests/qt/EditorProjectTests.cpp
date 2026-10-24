@@ -1035,6 +1035,8 @@ private slots:
     void TerrainShadowWorkerFailureCannotUseMinimapFallback();
     void AutomaticMinimapDefaultPrepareAndSaveCopy_data();
     void AutomaticMinimapDefaultPrepareAndSaveCopy();
+    void AutomaticMinimapFinalSettingsDerivedWorkerAndCommit_data();
+    void AutomaticMinimapFinalSettingsDerivedWorkerAndCommit();
     void MissingMinimapWorkerReadbackGatesCommit_data();
     void MissingMinimapWorkerReadbackGatesCommit();
     void MissingMinimapPrepareKeepsDefaultAndRejectsMixedChanges();
@@ -3506,6 +3508,141 @@ void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
     QVERIFY(!second->minimapSave);
     auto unchanged = MapArchiveSession::Open(secondTarget); QVERIFY(unchanged.Succeeded());
     QCOMPARE(unchanged.value->ReadMember("war3mapMap.blp").value, std::optional(generated));
+}
+
+void EditorProjectTests::AutomaticMinimapFinalSettingsDerivedWorkerAndCommit_data() {
+    QTest::addColumn<bool>("inPlace");
+    QTest::newRow("height-and-name-save-as") << false;
+    QTest::newRow("height-and-name-in-place") << true;
+}
+
+void EditorProjectTests::AutomaticMinimapFinalSettingsDerivedWorkerAndCommit() {
+    QFETCH(bool, inPlace);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    auto members = DeclaredMissingMinimapQtMembers();
+    members[0].data[73] |= std::byte{4}; // flags0x400，原始可玩矩形[1,2,5,7]。
+    for (auto& member : members) if (member.name == "TerrainArt\\CliffTypes.slk")
+        member.data = NativeDoodadQtTable(
+            {"cliffID", "texDir", "texFile", "cliffModelDir", "rampModelDir", "groundTile", "cliffClass"},
+            {{"Cl01", "Fixture", "Cliff", "Cliff", "Ramp", "Tg01", "0"}});
+    const auto atlas = std::find_if(members.begin(), members.end(), [](const auto& member) {
+        return member.name == "Fixture\\Ground.blp";
+    });
+    QVERIFY(atlas != members.end());
+    const auto cliff = atlas->data;
+    members.push_back({"Fixture\\Cliff.blp", cliff});
+    members.push_back({"UI\\MiscData.txt", Tests::WaterText("[Water]\nDeepLevelPathing=64\n")});
+    members.push_back({"UI\\WorldEditData.txt", Tests::WaterText("[CameraMargins]\nLeft=0\nRight=0\nBottom=0\nTop=0\n")});
+    MapData::UnitPlacements units;
+    MapData::UnitPlacement start; start.rawcode = "sloc"; start.position = {512, 384, 0};
+    start.scale = {1, 1, 1}; start.owner = 0; start.creationId = 1; units.units.push_back(start);
+    const auto unitBytes = units.Serialize(); QVERIFY(unitBytes.Succeeded() && unitBytes.value);
+    members.push_back({"war3mapUnits.doo", *unitBytes.value});
+    // 原创单像素TGA；开始位置在4x5可玩区中的MMP坐标独立手算为(179,205)。
+    std::vector<std::byte> teamColor(21);
+    teamColor[2] = std::byte{2}; teamColor[12] = teamColor[14] = std::byte{1};
+    teamColor[16] = std::byte{24}; teamColor[17] = std::byte{0x20};
+    teamColor[18] = std::byte{3}; teamColor[19] = std::byte{2}; teamColor[20] = std::byte{1};
+    members.push_back({"Fixture\\TeamColor00.tga", std::move(teamColor)});
+    const auto source = std::filesystem::path(root.filePath("final-settings-source.w3x").toStdWString());
+    QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
+    const auto originalSha = Sha256File(source); QVERIFY(originalSha.Succeeded());
+    const auto game = std::filesystem::path(root.filePath("game").toStdWString());
+    QVERIFY(std::filesystem::create_directory(game));
+    QVERIFY(WriteVerifiedArchive(game / "war3.mpq", std::vector<MapArchiveMember>{
+        {"UI\\war3skins.txt", Tests::WaterText("[Default]\nTeamColor=Fixture/TeamColor\n")}}).Succeeded());
+    EditorProject project; QUndoStack undo; project.mapDataUndoStack_ = &undo;
+    QVERIFY(BindTerrainSaveProject(project, source)); project.war3GameRoot_ = game;
+    const auto session = project.mapEdits_->SessionIdentity();
+    const auto parsedSettings = MapData::MapSettings::Parse(members[0].data); QVERIFY(parsedSettings.Succeeded());
+    auto settings = *parsedSettings.value; settings.mapName = "Qt final settings and terrain worker fixture";
+    QVERIFY(project.mapEdits_->EditSettings(settings).Succeeded());
+    QVERIFY(project.ObserveMapDataEdit("同次地形保存修改地图名称"));
+    PushMapDataEdit(project, "Map name", "同次地形保存修改地图名称");
+    const auto finalSettings = settings.Serialize(); QVERIFY(finalSettings.Succeeded());
+    QVERIFY(*finalSettings.value != members[0].data);
+    QVERIFY(RaiseDeclaredMinimapProject(project, 10));
+    PushMapDataEdit(project, "Terrain height", "同次地图名称与地形高度编辑");
+    QCOMPARE(undo.count(), 2); QCOMPARE(undo.index(), 2);
+    auto raised = members[1].data;
+    // radius0在(384,512)仅抬高vertex(3,4)10世界单位，原始8192变为8232。
+    raised[45 + (4 * 9 + 3) * 7] = std::byte{0x28};
+    raised[45 + (4 * 9 + 3) * 7 + 1] = std::byte{0x20};
+    QCOMPARE(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, std::optional(raised));
+    MapDataFixtures::Fixture expectedMarkers;
+    expectedMarkers.UInt(0); expectedMarkers.UInt(1); expectedMarkers.UInt(2);
+    expectedMarkers.UInt(179); expectedMarkers.UInt(205);
+    expectedMarkers.Byte(3); expectedMarkers.Byte(2); expectedMarkers.Byte(1); expectedMarkers.Byte(255);
+    std::optional<std::vector<std::byte>> firstMinimap;
+    for (int phase = 0; phase < 3; ++phase) {
+        if (phase == 1) { undo.undo(); QCOMPARE(undo.index(), 1); QVERIFY(undo.canRedo()); }
+        else if (phase == 2) { undo.redo(); QCOMPARE(undo.index(), 2); QVERIFY(undo.canUndo()); }
+        const auto& expectedTerrain = phase == 1 ? members[1].data : raised;
+        const auto current = project.mapEdits_->Snapshot(); QVERIFY(current.Settings());
+        QCOMPARE(current.Settings()->mapName, settings.mapName);
+        QCOMPARE(current.Settings()->Serialize().value, finalSettings.value);
+        QCOMPARE(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, std::optional(expectedTerrain));
+        QVERIFY(project.HasUnsavedMapChanges());
+        const auto beforeSource = project.sourceArchivePath_;
+        const auto beforeSha = Sha256File(beforeSource); QVERIFY(beforeSha.Succeeded());
+        const auto beforeRevision = project.mapEdits_->Revision();
+        const auto beforeSourceRevision = project.mapEdits_->TerrainSourceRevision();
+        const auto target = inPlace ? beforeSource
+            : std::filesystem::path(root.filePath(QString("final-settings-saved-%1.w3x").arg(phase)).toStdWString());
+        // 沿既有脚本准备夹具；本例只证明真实Qt派生worker/回读/Commit，
+        // 不冒充生产Prepare或外部脚本工具链验收。快照直接来自实际当前会话。
+        auto job = FreezeNativePathingQtJob(project, target, Services::TerrainMinimapSaveChoice::Automatic);
+        QVERIFY(job && job->terrainDerivationRequired);
+        job->terrainSessionSnapshot = project.mapEdits_->FreezeForSave();
+        const auto frozen = job->terrainSessionSnapshot->Snapshot(); QVERIFY(frozen.Settings());
+        QCOMPARE(frozen.Settings()->Serialize().value, finalSettings.value);
+        if (inPlace) {
+            job->inPlace = true;
+            job->inPlaceOptions.backupDirectory = std::filesystem::path(root.filePath(QString("backups-%1").arg(phase)).toStdWString());
+            QVERIFY(std::filesystem::create_directory(job->inPlaceOptions.backupDirectory));
+        }
+        InstallMapSaveDerivedPreparation(*job); EditorProject::RunMapSave(*job);
+        QVERIFY2(job->succeeded, ReadDiagnosticText(*job).c_str());
+        QVERIFY(job->nextSession && job->terrainSavePlan && job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded());
+        QVERIFY(job->minimapSave && job->minimapSave->ClassicManifest() && !job->minimapPreserve);
+        QVERIFY(!HasReadDiagnostic(*job, "MINIMAP_GENERATION_SKIPPED"));
+        QCOMPARE(job->minimapSave->Plan(), job->terrainSavePlan);
+        QCOMPARE(job->terrainSavePlan->Revision(), beforeRevision);
+        QCOMPARE(job->terrainSavePlan->TerrainSourceRevision(), beforeSourceRevision);
+        QVERIFY((job->minimapSave->ClassicManifest()->sourceRectangle == std::array<std::uint32_t, 4>{1, 2, 5, 7}));
+        QCOMPARE(job->minimapSave->Manifest().encodedMipCount, 1u);
+        QCOMPARE(job->minimapSave->DecodedMip0().width, 256u); QCOMPARE(job->minimapSave->DecodedMip0().height, 256u);
+        QVERIFY(job->minimapMarkers && job->minimapMarkers->MarkerCount() == 1);
+        const auto dependencies = job->minimapMarkers->Dependencies();
+        const auto settingsDependency = std::find_if(dependencies.begin(), dependencies.end(), [](const auto& dependency) {
+            return dependency.name == "WAR3MAP.W3I";
+        });
+        QVERIFY(settingsDependency != dependencies.end());
+        QCOMPARE(std::optional(settingsDependency->sha256), Sha256(*finalSettings.value).value);
+        // worker不能提前修改前台基线；最终三个文件由真实输出归档独立回读。
+        QCOMPARE(project.mapEdits_->Revision(), beforeRevision);
+        QCOMPARE(project.mapEdits_->TerrainSourceRevision(), beforeSourceRevision);
+        const auto saved = MapArchiveSession::Open(target); QVERIFY(saved.Succeeded());
+        QCOMPARE(saved.value->ReadMember("war3map.w3i").value, finalSettings.value);
+        QCOMPARE(saved.value->ReadMember("war3map.w3e").value, std::optional(expectedTerrain));
+        QCOMPARE(saved.value->ReadMember("war3map.wpm").value, std::optional(members[2].data));
+        QCOMPARE(saved.value->ReadMember("war3map.mmp").value, std::optional(expectedMarkers.bytes));
+        const auto generated = job->minimapSave->MinimapReplacement().data;
+        QCOMPARE(saved.value->ReadMember("war3mapMap.blp").value, std::optional(generated));
+        QVERIFY(job->minimapSave->VerifyReadback(*job, *saved.value).Succeeded());
+        QVERIFY(job->minimapMarkers->VerifyReadback(*saved.value).Succeeded());
+        if (phase == 0) firstMinimap = generated;
+        else if (phase == 2) QCOMPARE(std::optional(generated), firstMinimap);
+        QVERIFY(project.CommitMapSave(*job));
+        QCOMPARE(project.mapEdits_->SessionIdentity(), session); QCOMPARE(project.sourceArchivePath_, target);
+        QVERIFY(project.mapEdits_->TerrainSourceRevision() > beforeSourceRevision);
+        QVERIFY(!project.mapEdits_->IsDirty() && !project.HasUnsavedMapChanges());
+        QCOMPARE(project.mapEdits_->Snapshot().Settings()->mapName, settings.mapName);
+        QCOMPARE(undo.count(), 2); QCOMPARE(undo.index(), phase == 1 ? 1 : 2);
+        if (inPlace) { QVERIFY(!job->backup.empty()); QCOMPARE(Sha256File(job->backup).value, beforeSha.value); }
+        else QCOMPARE(Sha256File(beforeSource).value, beforeSha.value);
+    }
+    if (!inPlace) QCOMPARE(Sha256File(source).value, originalSha.value);
 }
 
 void EditorProjectTests::MissingMinimapWorkerReadbackGatesCommit_data() {
