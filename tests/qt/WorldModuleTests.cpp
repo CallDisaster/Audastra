@@ -831,6 +831,8 @@ private slots:
     void TerrainBrushPreservesCameraAndModels();
     void TerrainBrushUsesSharedTransactionAndUndo();
     void TerrainRemoveWaterUsesOrdinaryStrokeAndUndo();
+    void TerrainOrdinaryBrushWithoutCliffSlotsKeepsJournal_data();
+    void TerrainOrdinaryBrushWithoutCliffSlotsKeepsJournal();
     void TerrainWaterBrushUsesFrozenPrefixAndSharedUndo_data();
     void TerrainWaterBrushUsesFrozenPrefixAndSharedUndo();
     void TerrainWaterBrushRejectsChangedInputs();
@@ -3852,6 +3854,106 @@ void WorldModuleTests::TerrainRemoveWaterUsesOrdinaryStrokeAndUndo() {
     QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), before);
     project.mapDataUndoStack_->redo();
     QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), after);
+}
+
+void WorldModuleTests::TerrainOrdinaryBrushWithoutCliffSlotsKeepsJournal_data() {
+    QTest::addColumn<int>("kind");
+    QTest::addColumn<QString>("buttonName");
+    QTest::newRow("raise") << static_cast<int>(MapData::TerrainBrushKind::Raise) << QStringLiteral("worldTerrainBrushRaise");
+    QTest::newRow("texture") << static_cast<int>(MapData::TerrainBrushKind::Texture) << QStringLiteral("worldTerrainBrushTexture");
+    QTest::newRow("blight") << static_cast<int>(MapData::TerrainBrushKind::Blight) << QStringLiteral("worldTerrainBrushBlight");
+}
+
+void WorldModuleTests::TerrainOrdinaryBrushWithoutCliffSlotsKeepsJournal() {
+    QFETCH(int, kind); QFETCH(QString, buttonName);
+    const auto brushKind = static_cast<MapData::TerrainBrushKind>(kind);
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    auto members = Tests::TerrainWaterMembers();
+    auto grid = *Tests::WaterTake(MapData::ParseMapTerrain(members.front().data)).Snapshot();
+    grid.header.cliffTilesets.clear();
+    for (auto& vertex : grid.vertices) vertex.cliffAndLayerRaw = 0xf2;
+    MapData::RefreshTerrainDerived(grid, 0, 0, 9, 9);
+    members.front().data = Tests::WaterTake(MapData::SerializeMapTerrain(grid));
+    QByteArray pathingWire("MP3W", 4); Append32(pathingWire, 0); Append32(pathingWire, 32); Append32(pathingWire, 32);
+    pathingWire.append(QByteArray(32 * 32, char(0x40)));
+    const auto pathing = Tests::WaterText(std::string_view(pathingWire.constData(), static_cast<std::size_t>(pathingWire.size())));
+    members.push_back({"war3map.wpm", pathing});
+    QtProject::EditorProject project;
+    Tests::InstallTerrainWaterProject(project, directory.path().toStdWString(), false, members);
+    QVERIFY(project.mapEdits_->AttachPathing(pathing).Succeeded());
+    BackendState state; activeBackend = &state;
+    state.viewProjection = {1.0f / 512, 0, 0, 0, 0, 1.0f / 512, 0, 0,
+        0, 0, -1.0f / 4096, 0, -1, -1, 0.5f, 1};
+    WorldModule module(project, &backend);
+    auto* page = module.Widget(); auto* viewport = module.Viewport(); state.viewport = viewport;
+    page->resize(900, 600); page->show(); QTRY_COMPARE(viewport->VertexCount(), std::size_t{81});
+    auto* cliff = page->findChild<QComboBox*>("worldTerrainCliffTexture");
+    auto* toggle = page->findChild<QPushButton*>("worldTerrainToggle");
+    auto* size = page->findChild<QSpinBox*>("worldTerrainRadius");
+    auto* strength = page->findChild<QDoubleSpinBox*>("worldTerrainStrength");
+    auto* variation = page->findChild<QComboBox*>("worldTerrainVariation");
+    auto* button = page->findChild<QToolButton*>(buttonName);
+    QVERIFY(cliff && toggle && size && strength && variation && button);
+    QCOMPARE(cliff->count(), 0); QCOMPARE(cliff->currentIndex(), -1);
+    const auto before = Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
+    // 中性槽仅供不消费它的笔刷；实际悬崖类型工具不能绕过无槽拒绝。
+    auto* cliffBrush = page->findChild<QToolButton*>("worldTerrainBrushCliffTexture"); QVERIFY(cliffBrush);
+    cliffBrush->click(); QTRY_VERIFY(toggle->isEnabled()); toggle->click();
+    viewport->TerrainStrokeStarted(512, 512); viewport->TerrainStrokeFinished();
+    QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), before);
+    QVERIFY(!toggle->isChecked());
+    button->click(); QVERIFY(button->isChecked()); size->setValue(1); strength->setValue(6.25);
+    variation->setCurrentIndex(variation->findData(1));
+    QTRY_VERIFY(toggle->isEnabled()); toggle->click(); QVERIFY(viewport->BrushMode());
+    const auto frameReady = [&] {
+        return state.completed.frameCount > 0 && state.completed.surfaceEpoch == state.surfaceEpoch
+            && state.completed.sceneEpoch == state.sceneEpoch && state.completed.viewEpoch == state.viewEpoch
+            && state.completed.documentRevision == viewport->DocumentRevision();
+    };
+    QTRY_VERIFY(frameReady());
+    const double dpr = viewport->devicePixelRatioF();
+    const QPointF center(state.completed.width / (2 * dpr), state.completed.height / (2 * dpr));
+    Mouse(*viewport, QEvent::MouseMove, center, Qt::NoButton, Qt::NoButton);
+    QTRY_VERIFY(viewport->HoverCoordinate().has_value()); QTRY_VERIFY(frameReady());
+    Mouse(*viewport, QEvent::MouseButtonPress, center, Qt::LeftButton, Qt::LeftButton);
+    Mouse(*viewport, QEvent::MouseButtonRelease, center, Qt::LeftButton, Qt::NoButton);
+    QTRY_COMPARE(project.mapDataUndoStack_->count(), 1);
+    const auto after = Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
+    QVERIFY(after != before);
+    const auto& vertex = project.mapEdits_->Terrain()->vertices[4 * 9 + 4];
+    if (brushKind == MapData::TerrainBrushKind::Raise) QVERIFY(vertex.groundHeightRaw > grid.vertices[4 * 9 + 4].groundHeightRaw);
+    else if (brushKind == MapData::TerrainBrushKind::Texture) QCOMPARE(vertex.GroundVariation(), std::uint8_t{1});
+    else QVERIFY(vertex.IsBlight());
+    const auto journal = Services::TerrainPathingSave::CaptureJournal(project.directorySnapshot_->Snapshot(), *project.mapEdits_);
+    QVERIFY(journal.Succeeded()); QCOMPARE(journal.value->strokes.size(), std::size_t{1});
+    const auto& intent = journal.value->strokes.front().intent;
+    QCOMPARE(intent.brush.kind, brushKind); QCOMPARE(intent.brush.cliffTexture, std::uint8_t{0});
+    QVERIFY(!intent.waterBrush && !intent.brush.anchor);
+    const auto encoded = MapData::EncodeTerrainStrokeJournal(*journal.value); QVERIFY(encoded.Succeeded());
+    const auto decoded = MapData::DecodeTerrainStrokeJournal(*encoded.value); QVERIFY(decoded.Succeeded());
+    QCOMPARE(decoded.value->strokes.front().intent.brush.cliffTexture, std::uint8_t{0});
+    const auto replayed = Services::TerrainPathingSave::RestoreJournal(project.directorySnapshot_->Snapshot(),
+        *project.mapDocument_, members.front().data, pathing, *decoded.value, *project.mapEdits_, project.war3GameRoot_);
+    QVERIFY(replayed.Succeeded()); QCOMPARE(replayed.value->receipts.size(), std::size_t{1});
+    QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*replayed.value->session->Terrain())), after);
+    const auto changedMembers = project.mapEdits_->Replacements();
+    const auto sameOutput = [&](const MapData::MapDataEditSession& edits) {
+        const auto actual = edits.Replacements();
+        if (actual.size() != changedMembers.size()) return false;
+        for (std::size_t i = 0; i < actual.size(); ++i)
+            if (actual[i].name != changedMembers[i].name || actual[i].data != changedMembers[i].data) return false;
+        return true;
+    };
+    QVERIFY(sameOutput(*replayed.value->session)); // 荒芜的完整WPM随同恢复。
+    QVERIFY(replayed.value->session->Undo());
+    QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*replayed.value->session->Terrain())), before);
+    QVERIFY(replayed.value->session->Replacements().empty());
+    QVERIFY(replayed.value->session->Redo()); QVERIFY(sameOutput(*replayed.value->session));
+    project.mapDataUndoStack_->undo();
+    QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), before);
+    QVERIFY(project.mapEdits_->Replacements().empty());
+    project.mapDataUndoStack_->redo(); QVERIFY(sameOutput(*project.mapEdits_));
 }
 
 void WorldModuleTests::TerrainBrushUsesSharedTransactionAndUndo() {

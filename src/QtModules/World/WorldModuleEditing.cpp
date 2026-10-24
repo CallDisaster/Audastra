@@ -838,7 +838,12 @@ void WorldModule::StartTerrainStroke(double x, double y) {
         : brush.kind == MapData::TerrainBrushKind::PathingRestriction ? terrainPathingModes_ : terrainBlightModes_)->checkedId() != 0;
     brush.pathingRestrictions = static_cast<std::uint8_t>(terrainPathingTypes_->checkedId());
     brush.levelDelta = terrainCliffDeltas_->checkedId();
-    brush.cliffTexture = static_cast<std::uint8_t>(terrainCliffTexture_->currentIndex());
+    const int cliffTextureIndex = terrainCliffTexture_->currentIndex();
+    const bool usesCliffTexture = brush.kind == MapData::TerrainBrushKind::CliffLevel
+        || brush.kind == MapData::TerrainBrushKind::CliffTexture;
+    // 普通笔刷不消费隐藏的悬崖槽；无槽时保留中性值，避免-1转255污染前向记录。
+    // 真正的悬崖笔刷仍携带原索引，继续由下方缺槽检查拒绝。
+    brush.cliffTexture = static_cast<std::uint8_t>(cliffTextureIndex < 0 && !usesCliffTexture ? 0 : cliffTextureIndex);
     brush.waterHeight = static_cast<float>(terrainWaterHeight_->value());
     const int variation = terrainVariation_->currentData().toInt();
     if (variation >= 0) brush.variation = static_cast<std::uint8_t>(variation);
