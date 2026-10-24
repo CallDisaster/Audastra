@@ -541,7 +541,8 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
 Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerrainCandidate(
     std::shared_ptr<const TerrainGridSnapshot> next, const TerrainStrokeResult& changed,
     std::span<const TerrainStrokePoint> points, bool followDoodads, bool shaping,
-    bool synchronizeBlight, bool inspectSaveGate, DoodadPlacements* parsedDoodads, bool specialChanged) const {
+    bool synchronizeBlight, bool inspectSaveGate, DoodadPlacements* parsedDoodads, bool specialChanged,
+    std::optional<std::uint8_t> nativeMaximumCliffLevel, std::size_t maximumNativeFollowWork) const {
     Command command;
     if (!changed.Empty()) command.terrain = DiffChunks<TerrainChunk>(*terrain_, *next, changed.x0, changed.y0, changed.x1, changed.y1);
     if (changed.headerChanged) { command.headerBefore = terrain_->header; command.headerAfter = next->header; }
@@ -569,26 +570,42 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
     }
     const auto& doodadBytes = current_[Index(MapDataKind::Doodads)];
     const auto& unitBytes = current_[Index(MapDataKind::Units)];
+    std::size_t nativeFollowWork = 0;
     if (followDoodads && shaping && !command.terrain.empty()) {
-        // 层级变化还可能改变相邻坡道中点；再外扩一格覆盖这些中点周围的地面插值。
+        // 完整R/S分类还可读取第二圈；层级变化影响两格外的坡道及其插值地格。
         const double tile = TerrainGridSnapshot::tileSize;
-        const double left = next->header.offset[0] + (static_cast<double>(changed.x0) - 2) * tile;
-        const double bottom = next->header.offset[1] + (static_cast<double>(changed.y0) - 2) * tile;
-        const double right = next->header.offset[0] + (static_cast<double>(changed.x1) + 1) * tile;
-        const double top = next->header.offset[1] + (static_cast<double>(changed.y1) + 1) * tile;
+        const double halo = nativeMaximumCliffLevel ? 3 : 2;
+        const double left = next->header.offset[0] + (static_cast<double>(changed.x0) - halo) * tile;
+        const double bottom = next->header.offset[1] + (static_cast<double>(changed.y0) - halo) * tile;
+        const double right = next->header.offset[0] + (static_cast<double>(changed.x1) + halo - 1) * tile;
+        const double top = next->header.offset[1] + (static_cast<double>(changed.y1) + halo - 1) * tile;
+        bool unavailableHeight = false;
         // 保持与地面的相对高度：Z 加上该点地面高度的变化量，飞行高度等偏移不变。
-        const auto follow = [&](auto& placements) {
+        const auto follow = [&](auto& placements) -> Result<bool> {
             bool moved = false;
             for (auto& placement : placements) {
                 const double x = placement.position[0], y = placement.position[1];
                 if (x < left || x > right || y < bottom || y > top) continue;
-                const auto before = SampleGroundHeight(*terrain_, x, y, TerrainHeightSource::RawWithRamps);
-                const auto after = SampleGroundHeight(*next, x, y, TerrainHeightSource::RawWithRamps);
-                if (!before || !after || *before == *after) continue;
+                // 地图外放置不属于地表；扩展分类halo不能把既有外置物变成拒绝原因。
+                if (x < next->header.offset[0] || y < next->header.offset[1]
+                    || x > next->header.offset[0] + (next->header.width - 1) * tile
+                    || y > next->header.offset[1] + (next->header.height - 1) * tile) continue;
+                if (nativeMaximumCliffLevel) {
+                    // 前后各四角，每次完整分类至多512操作；只对实际采样点提前收费。
+                    constexpr std::size_t queryWork = 8 * 512;
+                    if (queryWork > maximumNativeFollowWork - nativeFollowWork)
+                        return Result<bool>::Failure("MapData.Edit", "TERRAIN_WATER_SESSION_BUDGET",
+                            "地物完整坡道高度跟随超出本笔预算，尚未修改会话。");
+                    nativeFollowWork += queryWork;
+                }
+                const auto before = SampleGroundHeight(*terrain_, x, y, TerrainHeightSource::RawWithRamps, nativeMaximumCliffLevel);
+                const auto after = SampleGroundHeight(*next, x, y, TerrainHeightSource::RawWithRamps, nativeMaximumCliffLevel);
+                if (!before || !after) { unavailableHeight |= nativeMaximumCliffLevel.has_value(); continue; }
+                if (*before == *after) continue;
                 placement.position[2] += *after - *before;
                 moved = true;
             }
-            return moved;
+            return Result<bool>::Success(moved);
         };
         const auto fail = [](std::vector<Diagnostic> diagnostics) {
             Result<PreparedTerrainEdit> failed; failed.diagnostics = std::move(diagnostics); return failed;
@@ -612,7 +629,9 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
                 ownedDoodads = std::move(*parsed.value);
                 parsedDoodads = &*ownedDoodads;
             }
-            if (follow(parsedDoodads->doodads)) {
+            const auto followed = follow(parsedDoodads->doodads);
+            if (!followed.Succeeded() || !followed.value) return fail(followed.diagnostics);
+            if (*followed.value) {
                 if (const auto status = Prepare(MapDataKind::Doodads, parsedDoodads->Serialize(), command.changes); !status.Succeeded())
                     return fail(status.diagnostics);
                 keepRows(MapDataKind::Doodads, parsedDoodads->doodads.size());
@@ -624,12 +643,17 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
             if (!units.Succeeded() || !units.value)
                 return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "MAP_UNITS_UNSAFE",
                     "单位放置无法解析，不能让单位随地面高度变化");
-            if (follow(units.value->units)) {
+            const auto followed = follow(units.value->units);
+            if (!followed.Succeeded() || !followed.value) return fail(followed.diagnostics);
+            if (*followed.value) {
                 if (const auto status = Prepare(MapDataKind::Units, units.value->Serialize(), command.changes); !status.Succeeded())
                     return fail(status.diagnostics);
                 keepRows(MapDataKind::Units, units.value->units.size());
             }
         }
+        if (unavailableHeight)
+            return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "TERRAIN_CLIFF_FOLLOW_HEIGHT",
+                "实际跟随地物的坡道高度邻域无法完整验证，整笔未修改。");
         if (!lineage.empty()) command.placements = std::make_shared<const std::vector<PlacementRowLineage>>(std::move(lineage));
     }
     if (specialChanged) {
@@ -667,6 +691,7 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
         : Status::Failure("MapData.Edit", "TERRAIN_SAVE_GATE_NOT_INSPECTED", "此落笔尚未检查地形保存资格。");
     prepared.points_.assign(points.begin(), points.end());
     prepared.followDoodads_ = followDoodads;
+    prepared.waterPreparationWork_ = nativeFollowWork;
     prepared.command_ = std::make_shared<const Command>(std::move(command));
     return Result<PreparedTerrainEdit>::Success(std::move(prepared));
 }
@@ -744,7 +769,7 @@ Result<TerrainStrokeResult> MapDataEditSession::ApplyPreparedTerrainEdit(const P
             }
             if (plan.brush_.anchor) {
                 const auto anchor = CaptureTerrainStrokeAnchor(*plan.before_, plan.points_.front());
-                expressible = anchor.Succeeded() && anchor.value
+                expressible = expressible && anchor.Succeeded() && anchor.value
                     && anchor.value->groundHeightRaw == plan.brush_.anchor->groundHeightRaw
                     && anchor.value->cliffLevel == plan.brush_.anchor->cliffLevel;
             }

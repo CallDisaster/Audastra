@@ -6,6 +6,7 @@ namespace War3Map::MapData {
 
 // 普通悬崖笔划：固定起点层级，使用真实地形规则及与水刷共用的原版后处理。
 // 不建立水面、不执行水刷的扩大原始地高平台。
+// 已有干/湿坡道按完整原版分类取有效地高，并仅清除失效ramp位；不创建新坡道。
 struct TerrainCliffBrush {
     TerrainBrushShape shape = TerrainBrushShape::Circle;
     std::uint32_t size = 1;

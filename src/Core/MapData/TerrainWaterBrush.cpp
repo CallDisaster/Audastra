@@ -1,5 +1,6 @@
 #include "War3MapCore/MapData/TerrainWaterBrush.h"
 #include "War3MapCore/MapData/TerrainCliffEditing.h"
+#include "War3MapCore/MapData/TerrainNativePathing.h"
 #include "TerrainWaterBrushInternal.h"
 
 #include <algorithm>
@@ -50,12 +51,12 @@ void ValidateGrid(const TerrainGridSnapshot& terrain) {
         Reject("TERRAIN_WATER_LAYOUT", "水刷需要完整、有限坐标的经典 W3E v11 地形。");
 }
 
-void ValidateVertex(const TerrainVertex& vertex, std::uint32_t x, std::uint32_t y) {
+void ValidateVertex(const TerrainVertex& vertex, std::uint32_t x, std::uint32_t y, bool allowRamp = false) {
     const auto where = [&] { return "（" + std::to_string(x) + "," + std::to_string(y) + "）"; };
     if (vertex.extendedTextureLayout || vertex.textureFlagsExtensionRaw || vertex.groundHeightRaw > 0x3fff
         || vertex.UnknownWaterFlags())
         Reject("TERRAIN_WATER_VERTEX_DOMAIN", "实际水刷处理区含未知高度/布局位" + where());
-    if (vertex.IsRamp()) Reject("TERRAIN_WATER_RAMP_DOMAIN", "实际水刷处理区含尚未支持的旧坡道" + where());
+    if (vertex.IsRamp() && !allowRamp) Reject("TERRAIN_WATER_RAMP_DOMAIN", "实际水刷处理区含尚未支持的旧坡道" + where());
 }
 
 struct GridPoint { std::uint32_t x, y; };
@@ -183,7 +184,7 @@ private:
         result_.work += count;
     }
     TerrainVertex& Inspect(std::uint32_t x, std::uint32_t y) {
-        Work(); auto& vertex = grid_.vertices[Index(x, y)]; ValidateVertex(vertex, x, y);
+        Work(); auto& vertex = grid_.vertices[Index(x, y)]; ValidateVertex(vertex, x, y, !brush_.waterKind);
         if (vertex.CliffTextureIndex() != 15 && vertex.CliffTextureIndex() >= grid_.header.cliffTilesets.size())
             Reject("TERRAIN_WATER_CLIFF_RESOURCE", "实际处理点的悬崖 palette 不在源 W3E 表中。");
         return vertex;
@@ -191,6 +192,21 @@ private:
     TerrainVertex& Read(std::uint32_t x, std::uint32_t y) {
         auto& vertex = Inspect(x, y);
         visited_[Index(x, y)] = 1; Include(result_.processed, x, y); return vertex;
+    }
+    TerrainNativeRampState RampState(std::uint32_t x, std::uint32_t y) {
+        // 九角各读自己的最多25点邻域，另含分类/高度判定；固定上界预收，
+        // 实际字段检查也纳入本笔处理域。绝不缓存编辑前标签用于动态清理。
+        Work(512);
+        for (int dx = -2; dx <= 2; ++dx) for (int dy = -2; dy <= 2; ++dy)
+            if (Inside(int(x) + dx, int(y) + dy))
+                (void)Read(std::uint32_t(int(x) + dx), std::uint32_t(int(y) + dy));
+        auto state = QueryNativeTerrainRamp(grid_, rules_.maximumCliffLevel, x, y);
+        if (!state.Succeeded() || !state.value)
+            Reject("TERRAIN_CLIFF_RAMP_DOMAIN", "实际旧坡道分类邻域含未支持字段，整笔未修改。");
+        return *state.value;
+    }
+    double GroundAt(std::uint32_t x, std::uint32_t y, const TerrainVertex& vertex) {
+        return vertex.IsRamp() ? double(static_cast<float>(Ground(vertex))) + RampState(x, y).heightOffset : Ground(vertex);
     }
     DirtyBlocks NewBlocks() { Work(BlockCount()); return DirtyBlocks(BlockCount()); }
     bool Commit(std::uint32_t x, std::uint32_t y, const TerrainVertex& next) {
@@ -393,7 +409,7 @@ private:
     }
     void CleanWater(const DirtyBlocks& blocks) {
         if (rules_.enforceWaterLimits) EachBlock(blocks, [&](auto x, auto y) {
-            auto next = Read(x, y); const double ground = Ground(next);
+            auto next = Read(x, y); const double ground = GroundAt(x, y, next);
             if (next.HasWater()) {
                 bool remove = Water(next) + rules_.waterLayerOffset < ground;
                 if (!remove) for (int dx = -1; dx <= 1 && !remove; ++dx) for (int dy = -1; dy <= 1; ++dy) {
@@ -423,11 +439,15 @@ private:
             auto rule = rules_.groundRules.begin();
             for (; rule != rules_.groundRules.end(); ++rule) { Work(); if (rule->rawcode == rawcode) break; }
             if (rule == rules_.groundRules.end()) Reject("TERRAIN_WATER_BLIGHT_RESOURCE", "荒芜处理点缺少已加载地面资源规则：" + rawcode);
-            bool clear = !rule->permitsBlight || (next.HasWater() && Water(next) + rules_.waterLayerOffset > Ground(next));
-            for (int dx = 0; dx <= 1 && !clear; ++dx) for (int dy = 0; dy <= 1; ++dy) {
+            bool clear = !rule->permitsBlight || (next.HasWater() && Water(next) + rules_.waterLayerOffset > GroundAt(x, y, next));
+            // 57E5C0(a4=1)：有坡道邻格时只查5A82D0(mode1)，不能再混入raw悬崖或special。
+            const auto ramp = !clear && !brush_.waterKind ? RampState(x, y) : TerrainNativeRampState{};
+            if (!clear && ramp.belongsToRampCell) clear = ramp.hasUnblockedRampCell;
+            for (int dx = 0; dx <= 1 && !clear && !ramp.belongsToRampCell; ++dx) for (int dy = 0; dy <= 1; ++dy) {
                 const int cx = int(x) - dx, cy = int(y) - dy;
                 if (CliffCell(cx, cy)) { clear = true; break; }
-                for (const auto& shape : shapes_) {
+                for (const auto source : liveSpecial_) {
+                    const auto& shape = *shapeBySource_[source];
                     Work(); if (cx >= int(shape.x0) && cx < int(shape.x1) && cy >= int(shape.y0) && cy < int(shape.y1)) { clear = true; break; }
                 }
                 if (clear) break;
@@ -437,7 +457,7 @@ private:
     }
     void HeightFalloff(const DirtyBlocks& blocks) {
         EachBlock(blocks, [&](auto x, auto y) {
-            const auto center = TerrainWaterBrushDetail::MakeHeightFalloffCenter(Ground(Read(x, y)), rules_.minHeight, rules_.maxHeight);
+            const auto center = TerrainWaterBrushDetail::MakeHeightFalloffCenter(GroundAt(x, y, Read(x, y)), rules_.minHeight, rules_.maxHeight);
             if (!center) return;
             if (!std::isfinite(center->radiusSquared) || center->radiusSquared <= 0 || center->extent > 32767)
                 Reject("TERRAIN_WATER_FALLOFF_DOMAIN", "地高衰减范围超出有限数值域。");
@@ -449,7 +469,7 @@ private:
                 const auto weight = TerrainWaterBrushDetail::HeightFalloffWeight(*center, dx * dx + dy * dy);
                 if (!weight) continue;
                 auto next = Read(std::uint32_t(nx), std::uint32_t(ny));
-                if (!TerrainWaterBrushDetail::HeightFalloffWrites(Ground(next), rules_.minHeight, rules_.maxHeight, *weight)) continue;
+                if (!TerrainWaterBrushDetail::HeightFalloffWrites(GroundAt(std::uint32_t(nx), std::uint32_t(ny), next), rules_.minHeight, rules_.maxHeight, *weight)) continue;
                 next.groundHeightRaw = Encode(Base(next) + *weight); Commit(std::uint32_t(nx), std::uint32_t(ny), next);
             }
         });
@@ -480,7 +500,7 @@ private:
             auto next = Read(x, y); int low = 0;
             if (rules_.enforceWaterLimits && next.HasWater()) {
                 const float surface = static_cast<float>(Water(next) + rules_.waterLayerOffset);
-                low = std::max(0, int(next.CliffLevel()) - (Truncate((Ground(next) - double(surface)) / 128.0) + 2));
+                low = std::max(0, int(next.CliffLevel()) - (Truncate((GroundAt(x, y, next) - double(surface)) / 128.0) + 2));
             }
             target = std::max(std::min(target, int(rules_.maximumCliffLevel)), low);
             if (target == next.CliffLevel() && next.CliffTextureIndex() == brush_.cliffTexture) return;
@@ -501,8 +521,15 @@ private:
                     RepairConflict(std::uint32_t(x), std::uint32_t(y), int(majority - oldLevels.begin()));
         }
         ConvergeCliffs(blocks, brush_.cliffTexture);
-        // 清坡道入口的每个实际访问点仍作域检查；不扫描或拒绝无关坡道。
-        EachBlock(blocks, [&](auto x, auto y) { (void)Read(x, y); });
+        // 5A8BF0：按脏块x外/y内在live网格分类，只清除已不属于含R/S地格的旧位。
+        // 水刷仍在Read中拒绝旧坡道，其锚点G尚未扩域；普通悬崖复用已闭合查询。
+        EachBlock(blocks, [&](auto x, auto y) {
+            auto next = Read(x, y);
+            if (next.IsRamp() && !RampState(x, y).belongsToRampCell) {
+                next.textureAndFlagsRaw &= static_cast<std::uint8_t>(~0x10);
+                Commit(x, y, next);
+            }
+        });
         CheckSpecialDoodads(); CleanWater(blocks); CleanBlight(blocks); HeightFalloff(blocks);
         const int radius = int(brush_.size) - 1;
         for (int x = std::max(0, int(center.x) - radius); x < std::min(int(width_), int(center.x) + radius + 1); ++x)

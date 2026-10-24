@@ -267,7 +267,9 @@ private:
     [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainCandidate(
         std::shared_ptr<const TerrainGridSnapshot> next, const TerrainStrokeResult& changed,
         std::span<const TerrainStrokePoint> points, bool followDoodads, bool shaping,
-        bool synchronizeBlight, bool inspectSaveGate, DoodadPlacements* parsedDoodads = nullptr, bool specialChanged = false) const;
+        bool synchronizeBlight, bool inspectSaveGate, DoodadPlacements* parsedDoodads = nullptr, bool specialChanged = false,
+        std::optional<std::uint8_t> nativeMaximumCliffLevel = {},
+        std::size_t maximumNativeFollowWork = std::numeric_limits<std::size_t>::max()) const;
     [[nodiscard]] Status SetTerrainAndPathingInternal(std::span<const std::byte> terrainBytes,
         std::span<const std::byte> pathingBytes, std::span<const std::byte> restrictionDraft);
     [[nodiscard]] Status VerifyTerrainCandidateForSave(

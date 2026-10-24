@@ -521,6 +521,56 @@ void NativeCliffSavesAndRestoresWithoutUpgradingLegacyHistory() {
         "legacy project is replayed by its original algorithm instead of silently adopting native neighbour writes");
 }
 
+void NativeCornerCliffSavesAndRestoresLiteralPathing() {
+    Fixture f;
+    for (std::size_t y = 15; y <= 17; ++y) for (std::size_t x = 15; x <= 17; ++x) {
+        auto& vertex = f.grid.vertices[y * 33 + x]; vertex.textureAndFlagsRaw |= 0x10;
+        if (x == 17 && y == 17) vertex.cliffAndLayerRaw = 3;
+    }
+    RefreshTerrainDerived(f.grid, 0, 0, 33, 33);
+    f.members[0].data = Take(SerializeMapTerrain(f.grid));
+    const auto block = [](Bytes& bytes, std::size_t cellX, std::size_t cellY) {
+        for (std::size_t y = cellY * 4; y < cellY * 4 + 4; ++y)
+            for (std::size_t x = cellX * 4; x < cellX * 4 + 4; ++x)
+                bytes[16 + y * 128 + x] = std::byte{0xdb};
+    };
+    // 原创S32图的LLL/LSR/LRH角分类：只有五个R单角或无R/S的高角地格阻断。
+    // 整份G0来自字面地格集合，不调用待测分类或WPM生成器制造基线。
+    for (const auto cell : std::array<std::array<std::size_t, 2>, 5>{
+        {{17, 15}, {17, 16}, {15, 17}, {16, 17}, {17, 17}}}) block(f.members[1].data, cell[0], cell[1]);
+    f.source = std::make_unique<MapArchiveSession>(Take(MapArchiveSession::Open(
+        Take(WriteVerifiedArchive(f.root / "corner-source.w3x", f.members)).path)));
+    f.edits = Session(f);
+    TerrainStrokeIntent intent; intent.brush.kind = TerrainBrushKind::CliffLevel;
+    intent.brush.size = 1; intent.brush.cliffTexture = 1; intent.brush.levelDelta = 1; intent.brush.seed = 1;
+    intent.points = {f.point};
+    auto replayed = Take(ReplayFixture(f, *f.source, std::span(&intent, 1)));
+    Require(replayed.session->Terrain()->vertices[16 * 33 + 16].CliffLevel() == 3
+        && !replayed.session->Terrain()->vertices[15 * 33 + 15].IsRamp(),
+        "ordinary cliff raises the corner center and clears only the newly isolated old L bit");
+    const auto after = Take(SerializeMapTerrain(*replayed.session->Terrain()));
+    const auto journal = Take(TerrainPathingSave::CaptureJournal(*f.source, *replayed.session));
+    const auto restored = Take(TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members),
+        f.members[0].data, f.members[1].data, journal, *replayed.session, f.game));
+    Require(Take(SerializeMapTerrain(*restored.session->Terrain())) == after,
+        "project restoration reproduces native corner-ramp cleanup and neighbor writes");
+    const auto plan = Take(TerrainPathingSave::PrepareForSave(*f.source, *replayed.session, f.game));
+    auto replacements = replayed.session->Replacements();
+    Require(plan.SaveGate().Succeeded() && plan.RebuiltPathing()
+        && plan.InstallPathingOutput(*replayed.session, replacements).Succeeded()
+        && plan.VerifyForSave(*replayed.session, f.source->SourceSha256(), replacements).Succeeded(),
+        "edited corner ramp passes the same final native save gate");
+    const auto written = Take(f.source->SaveCandidate(f.root / "native-corner-cliff.w3x", replacements));
+    const auto saved = Take(MapArchiveSession::Open(written.path));
+    auto expected = f.members[1].data;
+    // S变H后其西南、西、南三个地格阻断；东北双R地格仍可通行，其余五格不变。
+    for (const auto cell : std::array<std::array<std::size_t, 2>, 3>{
+        {{15, 15}, {16, 15}, {15, 16}}}) block(expected, cell[0], cell[1]);
+    Require(plan.VerifyReadback(saved).Succeeded() && Take(saved.ReadMember("war3map.w3e")) == after
+        && Take(saved.ReadMember("war3map.wpm")) == expected,
+        "reopened native corner candidate matches exact W3E and all independently stated WPM bytes");
+}
+
 void SavedWaterStrokeUndoAndRedoRebaseAgainstEachSavedSource() {
     for (const auto kind : {TerrainWaterBrushKind::Shallow, TerrainWaterBrushKind::Deep}) {
         Fixture f(true);
@@ -844,6 +894,7 @@ int main() {
         OrderedSourceAndOptionsCannotBeSubstituted();
         WaterServiceCandidatesPassNativePlanAndIndependentArchiveReadback();
         NativeCliffSavesAndRestoresWithoutUpgradingLegacyHistory();
+        NativeCornerCliffSavesAndRestoresLiteralPathing();
         SavedWaterStrokeUndoAndRedoRebaseAgainstEachSavedSource();
         DirectSaveRejectsEveryConflictingOrdinaryField();
         DirectSaveUsesOrderedWaterAndOriginalScriptGate();

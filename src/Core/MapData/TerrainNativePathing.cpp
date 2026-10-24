@@ -285,17 +285,7 @@ std::vector<char> RampLabels(const TerrainGridSnapshot& terrain, std::uint8_t ma
 
 // 5A8460(a4=0)/5A7FA0：S的种类使用同一快照九点的完整角分类，
 // 每个角分类仍读取自己的邻域；不能只用中心原始ramp位或四个地格角。
-double RampHeightOffset(const TerrainGridSnapshot& terrain, std::span<const char> labels,
-    std::size_t x, std::size_t y) {
-    const auto columns = static_cast<std::size_t>(terrain.header.width);
-    const char center = labels[y * columns + x];
-    if (center == 'R') return 64.0;
-    if (center != 'S') return 0.0; // H在a4=0时同样为零。
-    if (x == 0 || y == 0 || x + 1 >= columns || y + 1 >= terrain.header.height)
-        return 0.0; // 5A7FA0缺任一邻点返回-1，5A8460因而返回0。
-    std::array<char, 9> nine{};
-    for (std::size_t dx = 0; dx < 3; ++dx) for (std::size_t dy = 0; dy < 3; ++dy)
-        nine[dx * 3 + dy] = labels[(y + dy - 1) * columns + x + dx - 1];
+double SpecialRampHeightOffset(const std::array<char, 9>& nine) {
     int lowCount = 0, highCount = 0;
     std::size_t lastLow = 0, lastHigh = 0;
     for (const auto at : {0u, 2u, 6u, 8u}) {
@@ -312,6 +302,19 @@ double RampHeightOffset(const TerrainGridSnapshot& terrain, std::span<const char
     if (lowCount == 2 && highCount == 2 && nine[8 - lastLow] == 'L'
         && nine[1] == 'R' && nine[7] == 'R' && nine[3] == 'R' && nine[5] == 'R') return 64.0;
     return 0.0;
+}
+
+double RampHeightOffset(const TerrainGridSnapshot& terrain, std::span<const char> labels,
+    std::size_t x, std::size_t y) {
+    const auto columns = static_cast<std::size_t>(terrain.header.width);
+    const char center = labels[y * columns + x];
+    if (center == 'R') return 64.0;
+    if (center != 'S' || x == 0 || y == 0 || x + 1 >= columns || y + 1 >= terrain.header.height)
+        return 0.0; // H(a4=0)或5A7FA0缺邻点时为零。
+    std::array<char, 9> nine{};
+    for (std::size_t dx = 0; dx < 3; ++dx) for (std::size_t dy = 0; dy < 3; ++dy)
+        nine[dx * 3 + dy] = labels[(y + dy - 1) * columns + x + dx - 1];
+    return SpecialRampHeightOffset(nine);
 }
 
 std::uint8_t TerrainMask(const TerrainVertex& nearest, const TerrainNativeWaterState& water,
@@ -341,6 +344,47 @@ Result<TerrainNativeWaterState> ClassifyNativeTerrainWater(
 Result<std::vector<char>> ClassifyNativeDryRampCorners(
     const TerrainGridSnapshot& terrain, std::uint8_t maximumCliffLevel, std::size_t maximumBytes) {
     return Guard<std::vector<char>>([&] { return RampLabels(terrain, maximumCliffLevel, maximumBytes, true); });
+}
+
+Result<TerrainNativeRampState> QueryNativeTerrainRamp(const TerrainGridSnapshot& terrain,
+    std::uint8_t maximumCliffLevel, std::uint32_t x, std::uint32_t y) {
+    return Guard<TerrainNativeRampState>([&] {
+        const auto& h = terrain.header;
+        if (h.version != 11 || h.width < 2 || h.height < 2 || h.width > 2049 || h.height > 2049
+            || terrain.vertices.size() != std::size_t(h.width) * h.height || x >= h.width || y >= h.height)
+            Fail("TERRAIN_NATIVE_DIMENSIONS", "坡道点查询需要完整经典网格内的有效坐标。");
+        if (maximumCliffLevel > 14)
+            Fail("TERRAIN_NATIVE_RAMP_RULE_MISSING", "坡道查询需要实际0到14最大层级规则。");
+        for (int dx = -2; dx <= 2; ++dx) for (int dy = -2; dy <= 2; ++dy) {
+            const int nx = int(x) + dx, ny = int(y) + dy;
+            if (nx < 0 || ny < 0 || nx >= int(h.width) || ny >= int(h.height)) continue;
+            CheckVertex(terrain.vertices[std::size_t(ny) * h.width + nx], true,
+                std::pair{std::size_t(nx), std::size_t(ny)});
+        }
+        const NativeRampClassifier classifier(terrain, maximumCliffLevel);
+        std::array<char, 9> nine{};
+        for (int dx = -1; dx <= 1; ++dx) for (int dy = -1; dy <= 1; ++dy) {
+            const int nx = int(x) + dx, ny = int(y) + dy;
+            nine[std::size_t((dx + 1) * 3 + dy + 1)] = nx < 0 || ny < 0 || nx >= int(h.width) || ny >= int(h.height)
+                ? '!' : classifier.Classify(nx, ny);
+        }
+        const auto corner = nine[4];
+        const float offset = corner == 'R' ? 64.0f
+            : corner == 'S' && x && y && x + 1 < h.width && y + 1 < h.height
+                ? static_cast<float>(SpecialRampHeightOffset(nine)) : 0.0f;
+        bool belongs = false, unblocked = false;
+        for (int dx = 0; dx <= 1; ++dx) for (int dy = 0; dy <= 1; ++dy) {
+            const int cellX = int(x) - 1 + dx, cellY = int(y) - 1 + dy;
+            if (cellX < 0 || cellY < 0 || cellX + 1 >= int(h.width) || cellY + 1 >= int(h.height)) continue;
+            unsigned weight = 0;
+            for (int cx = 0; cx <= 1; ++cx) for (int cy = 0; cy <= 1; ++cy) {
+                const auto label = nine[std::size_t((dx + cx) * 3 + dy + cy)];
+                weight += label == 'R' ? 1u : label == 'S' ? 2u : 0u;
+            }
+            belongs |= weight != 0; unblocked |= weight > 1;
+        }
+        return TerrainNativeRampState{corner, offset, belongs, unblocked};
+    });
 }
 
 bool IsNativeTerrainCliffSentinelTransition(

@@ -1,4 +1,6 @@
 #include "War3MapCore/MapData/TerrainCliffEditing.h"
+#include "War3MapCore/MapData/TerrainNativePathing.h"
+#include "War3MapCore/MapData/TerrainRampEditing.h"
 
 #include <algorithm>
 #include <iostream>
@@ -74,9 +76,74 @@ void SpecialDeletionAndAtomicFailures() {
     Require(Take(SerializeMapTerrain(source)) == original && doodads.specialDoodads.size() == 1,
         "all rejection paths preserve original terrain and DOO");
 }
+void ExistingRampsUseCompleteGroundAndClearOnlyInvalidBits() {
+    const TerrainStrokePoint point{1024, 1024};
+    auto isolated = Flat(); isolated.vertices[8 * 17 + 8].textureAndFlagsRaw |= 0x10;
+    auto brush = Brush(isolated); brush.levelDelta = 0;
+    const auto cleared = Take(PrepareTerrainCliffStroke(isolated, Rules(), brush, std::span(&point, 1), {}));
+    Require(!cleared.terrain.vertices[8 * 17 + 8].IsRamp(), "native cleanup clears an isolated old L ramp bit");
+    auto edge = Flat();
+    for (auto& vertex : edge.vertices) vertex.groundHeightRaw = 8192;
+    for (std::size_t y = 7; y <= 9; ++y) {
+        auto& vertex = edge.vertices[y * 17]; vertex.textureAndFlagsRaw |= 0x10;
+        if (y == 9) vertex.cliffAndLayerRaw = 3;
+    }
+    const TerrainStrokePoint edgePoint{0, 1024};
+    brush = Brush(edge); brush.levelDelta = 0;
+    const auto edgeEdited = Take(PrepareTerrainCliffStroke(edge, Rules(), brush, std::span(&edgePoint, 1), {}));
+    Require(edgeEdited.terrain.vertices[8 * 17].IsRamp()
+        && SampleGroundHeight(edgeEdited.terrain, 0, 1024, TerrainHeightSource::RawWithRamps, 14) == 64,
+        "ordinary cliff retains a valid NS R64 when the EW neighbors lie outside the map");
+    for (const int offset : {32, 64, 96}) {
+        auto source = Flat();
+        for (auto& vertex : source.vertices) vertex.groundHeightRaw = 8192;
+        for (std::size_t y = 7; y <= 9; ++y) for (std::size_t x = 7; x <= 9; ++x) {
+            auto& vertex = source.vertices[y * 17 + x]; vertex.textureAndFlagsRaw |= 0x10;
+            if ((offset == 32 && x == 9 && y == 9)
+                || (offset == 64 && ((x == 7 && y == 7) || (x == 9 && y == 9)))
+                || (offset == 96 && (x == 9 || y == 9))) vertex.cliffAndLayerRaw = 3;
+        }
+        RefreshTerrainDerived(source, 0, 0, 17, 17);
+        Require(TerrainRampHeightOffset(source, 8, 8, 14) == float(offset)
+            && SampleGroundHeight(source, point.x, point.y, TerrainHeightSource::RawWithRamps, 14) == float(offset),
+            "exact editable ground uses the independent S32/64/96 oracle");
+        brush = Brush(source); brush.levelDelta = 0;
+        const auto retained = Take(PrepareTerrainCliffStroke(source, Rules(), brush, std::span(&point, 1), {}));
+        for (std::size_t i = 0; i < source.vertices.size(); ++i)
+            Require(retained.terrain.vertices[i].IsRamp() == source.vertices[i].IsRamp(),
+                "a valid corner ramp keeps every preexisting ramp bit without creating any new one");
+        if (offset == 32) {
+            auto blighted = source;
+            blighted.vertices[7 * 17 + 7].textureAndFlagsRaw |= 0x20;
+            const auto low = Take(QueryNativeTerrainRamp(blighted, 14, 7, 7));
+            Require(low.corner == 'L' && low.hasUnblockedRampCell,
+                "low flat corner belongs to the independently stated open S32 cell");
+            const auto cleaned = Take(PrepareTerrainCliffStroke(blighted, Rules(), brush, std::span(&point, 1), {}));
+            Require(!cleaned.terrain.vertices[7 * 17 + 7].IsBlight(),
+                "native blight predicate clears a flat L corner through mode1 rather than raw layer difference");
+        }
+        auto wet = source;
+        for (auto& vertex : wet.vertices) {
+            vertex.textureAndFlagsRaw |= 0x40; vertex.waterHeightAndFlagsRaw = 8192 + 300 * 4;
+        }
+        auto limitedRules = Rules(); limitedRules.enforceWaterLimits = true;
+        brush = Brush(wet); brush.levelDelta = -1;
+        const auto limited = Take(PrepareTerrainCliffStroke(wet, limitedRules, brush, std::span(&point, 1), {}));
+        Require(limited.terrain.vertices[8 * 17 + 8].CliffLevel() == (offset == 32 ? 2 : 1),
+            "wet native cliff lower bound includes the existing complete ramp ground");
+        TerrainWaterBrush water{TerrainWaterBrushKind::Shallow, TerrainBrushShape::Square, 1, 1, 1,
+            {8192, std::uint16_t(8192 + 300 * 4), 2, true}};
+        Require(!CaptureTerrainWaterStrokeAnchor(wet, point).Succeeded()
+            && !PrepareTerrainWaterStroke(wet, limitedRules, water, std::span(&point, 1), {}).Succeeded(),
+            "water brush continues to reject its unexpanded old-ramp anchor domain");
+        source.vertices[6 * 17 + 6].waterHeightAndFlagsRaw |= 0x8000;
+        Require(!SampleGroundHeight(source, point.x, point.y, TerrainHeightSource::RawWithRamps, 14),
+            "native follow sampling rejects an unknown second-halo input instead of using zero lift");
+    }
+}
 } // namespace
 int main() {
-    try { LiteralNativeNeighbourWrites(); SpecialDeletionAndAtomicFailures();
+    try { LiteralNativeNeighbourWrites(); SpecialDeletionAndAtomicFailures(); ExistingRampsUseCompleteGroundAndClearOnlyInvalidBits();
         std::cout << "TerrainCliffEditingTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

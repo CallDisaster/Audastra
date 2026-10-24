@@ -1,4 +1,5 @@
 #include "War3MapCore/MapData/TerrainRampEditing.h"
+#include "War3MapCore/MapData/TerrainNativePathing.h"
 
 #include <algorithm>
 #include <cmath>
@@ -142,6 +143,14 @@ std::optional<float> TerrainRampHeightOffset(const TerrainGridSnapshot& terrain,
     if (y > 0 && y + 1 < terrain.header.height)
         return interpolate(at(x, y - 1), at(x, y + 1));
     return std::nullopt;
+}
+
+std::optional<float> TerrainRampHeightOffset(const TerrainGridSnapshot& terrain, std::uint32_t x,
+    std::uint32_t y, std::uint8_t maximumCliffLevel) {
+    if (!Consistent(terrain) || x >= terrain.header.width || y >= terrain.header.height
+        || !terrain.vertices[std::size_t(y) * terrain.header.width + x].IsRamp()) return std::nullopt;
+    const auto state = QueryNativeTerrainRamp(terrain, maximumCliffLevel, x, y);
+    return state.Succeeded() && state.value ? std::optional<float>{state.value->heightOffset} : std::nullopt;
 }
 
 } // namespace War3Map::MapData

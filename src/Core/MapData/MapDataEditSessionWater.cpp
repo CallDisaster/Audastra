@@ -192,8 +192,10 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
         // 水刷保存须另跑CaptureNative/G0/G1。这里若预跑等价保存门，会在拒绝水变化
         // 之前先解析并扫描整份WPM；省去这次重复工作，明确保持NOT_INSPECTED而非成功。
         auto prepared = PrepareTerrainCandidate(std::move(next), candidate.value->result.changed, points,
-            followDoodads, true, true, false, &doodads, specialChanged);
+            followDoodads, true, true, false, &doodads, specialChanged, resources.WaterBrushRules()->maximumCliffLevel,
+            limits.maximumWork - work);
         if (prepared.value) {
+            if (!reserve(work, limits.maximumWork, prepared.value->waterPreparationWork_, 1)) return budgetFailure();
             if (water) prepared.value->waterBrush_ = *water;
             else prepared.value->brush_ = *cliff;
             const auto digestBytes = resources.WaterBrushDependencyBudgetBytes();

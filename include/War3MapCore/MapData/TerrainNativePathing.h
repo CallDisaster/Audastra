@@ -51,6 +51,20 @@ struct TerrainNativeWaterState {
     const TerrainGridSnapshot& terrain, std::uint8_t maximumCliffLevel,
     std::size_t maximumBytes = 64 * 1024 * 1024);
 
+struct TerrainNativeRampState {
+    char corner = '!';
+    float heightOffset = 0;
+    // 5A82D0(mode=0)：至少一个相邻有效地格含R/S角；用于只清除失效的旧坡道位。
+    bool belongsToRampCell = false;
+    // 5A82D0(mode=1)：相邻含R/S地格至少一个角权总和>1，即5A8570返回0。
+    bool hasUnblockedRampCell = false;
+};
+
+// 读取当前快照最多第二圈邻域，干/湿地共用完整分类；不分配全图标签。
+// maximumCliffLevel必须来自实际Terrain规则，不猜默认最大值。
+[[nodiscard]] Result<TerrainNativeRampState> QueryNativeTerrainRamp(
+    const TerrainGridSnapshot& terrain, std::uint8_t maximumCliffLevel, std::uint32_t x, std::uint32_t y);
+
 // slot15 是未选悬崖材质的哨兵，不是第16个材质。只允许其所在侧的四个
 // 相邻地格全平、双侧完整3×3无坡道/边界/未知字段时，与实际有效槽互转。
 // 对称检查保留保存后撤销的能力；它不授予资源来源或WPM保存资格，调用方

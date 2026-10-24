@@ -1,5 +1,6 @@
 #include "War3MapCore/MapData/TerrainEditing.h"
 #include "War3MapCore/MapData/TerrainRampEditing.h"
+#include "War3MapCore/MapData/TerrainNativePathing.h"
 
 #include <algorithm>
 #include <array>
@@ -348,9 +349,10 @@ std::optional<TerrainStrokePoint> NearestTerrainGroundStandable(const TerrainGri
     return best;
 }
 
-std::optional<float> SampleGroundHeight(const TerrainGridSnapshot& terrain, double x, double y, TerrainHeightSource source) {
+std::optional<float> SampleGroundHeight(const TerrainGridSnapshot& terrain, double x, double y, TerrainHeightSource source,
+    std::optional<std::uint8_t> maximumCliffLevel) {
     const auto width = terrain.header.width, height = terrain.header.height;
-    if (!Consistent(terrain) || !std::isfinite(x) || !std::isfinite(y)
+    if (!Consistent(terrain) || !std::isfinite(x) || !std::isfinite(y) || (maximumCliffLevel && *maximumCliffLevel > 14)
         || (source != TerrainHeightSource::StoredPositions && source != TerrainHeightSource::RawWithRamps)) return std::nullopt;
     const bool raw = source == TerrainHeightSource::RawWithRamps;
     const auto& position = terrain.vertices.front().position;
@@ -359,14 +361,21 @@ std::optional<float> SampleGroundHeight(const TerrainGridSnapshot& terrain, doub
     if (!(u >= 0 && v >= 0 && u <= width - 1 && v <= height - 1)) return std::nullopt;
     const auto column = std::min(static_cast<std::uint32_t>(u), width - 2), row = std::min(static_cast<std::uint32_t>(v), height - 2);
     const double fu = u - column, fv = v - row;
-    const auto z = [&](std::uint32_t dx, std::uint32_t dy) {
+    const auto z = [&](std::uint32_t dx, std::uint32_t dy) -> std::optional<double> {
         const auto vx = column + dx, vy = row + dy;
         const auto& vertex = terrain.vertices[static_cast<std::size_t>(vy) * width + vx];
-        return raw ? GroundZ(vertex.groundHeightRaw, vertex.CliffLevel()) + TerrainRampHeightOffset(terrain, vx, vy).value_or(0)
-                   : static_cast<double>(vertex.position[2]);
+        if (!raw) return static_cast<double>(vertex.position[2]);
+        if (maximumCliffLevel) {
+            const auto state = QueryNativeTerrainRamp(terrain, *maximumCliffLevel, vx, vy);
+            if (!state.Succeeded() || !state.value) return std::nullopt;
+            return GroundZ(vertex.groundHeightRaw, vertex.CliffLevel()) + state.value->heightOffset;
+        }
+        return GroundZ(vertex.groundHeightRaw, vertex.CliffLevel()) + TerrainRampHeightOffset(terrain, vx, vy).value_or(0);
     };
-    const double result = fu + fv <= 1 ? z(0, 0) + fu * (z(1, 0) - z(0, 0)) + fv * (z(0, 1) - z(0, 0))
-                                        : z(1, 1) + (1 - fu) * (z(0, 1) - z(1, 1)) + (1 - fv) * (z(1, 0) - z(1, 1));
+    const auto sw = z(0, 0), se = z(1, 0), nw = z(0, 1), ne = z(1, 1);
+    if (!sw || !se || !nw || !ne) return std::nullopt;
+    const double result = fu + fv <= 1 ? *sw + fu * (*se - *sw) + fv * (*nw - *sw)
+                                      : *ne + (1 - fu) * (*nw - *ne) + (1 - fv) * (*se - *ne);
     if (!std::isfinite(result)) return std::nullopt;
     return static_cast<float>(result);
 }

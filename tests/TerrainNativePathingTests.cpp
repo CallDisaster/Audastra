@@ -208,6 +208,9 @@ void WetRampOffsetsAndStrictWaterHaveLiteralOracles() {
         vertex.textureAndFlagsRaw = 0x10; vertex.cliffAndLayerRaw = x < 2 ? 2 : 3;
     }
     checkThresholds(r, 6, 64, 4 * 16 + 4);
+    const auto queriedR = Take(QueryNativeTerrainRamp(r.grid, 14, 1, 1));
+    Require(queriedR.corner == 'R' && queriedR.heightOffset == 64 && queriedR.belongsToRampCell,
+        "bounded live R query has the independent64-unit offset and a containing ramp cell");
     Require(Take(r.Generate(281)) == Take(r.Generate()), "wet ramp output and full labels fit the exact combined budget");
     Refused(r.Generate(280), "TERRAIN_NATIVE_BUDGET");
     for (const int offset : {32, 64, 96}) {
@@ -223,6 +226,9 @@ void WetRampOffsetsAndStrictWaterHaveLiteralOracles() {
             : "AAAAA" "ALRHA" "ARSHA" "AHHHA" "AAAAA";
         Require(Take(ClassifyNativeDryRampCorners(s.grid, 14)) == std::vector<char>(literal.begin(), literal.end()),
             "independent complete corner labels distinguish the three S height cases");
+        const auto queried = Take(QueryNativeTerrainRamp(s.grid, 14, 2, 2));
+        Require(queried.corner == 'S' && queried.heightOffset == offset && queried.belongsToRampCell,
+            "bounded S query matches independently stated32/64/96 height and cell membership");
         checkThresholds(s, 12, offset, 8 * 16 + 8);
         if (offset == 32) {
             s.water = TerrainNativeWaterRules{0, 200, false};
@@ -243,9 +249,14 @@ void WetRampOffsetsAndStrictWaterHaveLiteralOracles() {
             const auto outer = s.grid.vertices[5];
             s.grid.vertices[5].textureAndFlagsRaw |= 0x10;
             s.grid.vertices[5].cliffAndLayerRaw = 3;
+            Require(Take(QueryNativeTerrainRamp(s.grid, 14, 2, 2)).heightOffset == 0,
+                "bounded point query reads second-halo corner inputs from the current revision");
             Require(Take(s.Generate())[8 * 16 + 8] == std::byte{0x0a},
                 "a second-halo change alters a corner classification and invalidates S height without changing the center raw nine");
             s.grid.vertices[5] = outer;
+            s.grid.vertices[0].waterHeightAndFlagsRaw |= 0x8000;
+            Refused(QueryNativeTerrainRamp(s.grid, 14, 2, 2), "TERRAIN_NATIVE_VERTEX_FLAGS");
+            s.grid.vertices[0].waterHeightAndFlagsRaw &= 0x7fff;
             Require(Take(s.Generate())[8 * 16 + 8] == std::byte{0x48},
                 "restored snapshot rebuilds its own labels without leaking the prior revision's S subtype");
         }
@@ -267,6 +278,11 @@ void WetRampOffsetsAndStrictWaterHaveLiteralOracles() {
     edge.grid.vertices[3].waterHeightAndFlagsRaw = 8192 + 128 * 4;
     Require(Take(edge.Generate())[4 * 8] == std::byte{0x0a},
         "edge R still reaches deep water at exactly its effective ground plus64");
+    const auto queriedEdge = Take(QueryNativeTerrainRamp(edge.grid, 14, 0, 1));
+    Require(queriedEdge.corner == 'R' && queriedEdge.heightOffset == 64 && queriedEdge.belongsToRampCell,
+        "bounded query retains original missing-neighbor rules at the map edge");
+    Refused(QueryNativeTerrainRamp(edge.grid, 15, 0, 1), "TERRAIN_NATIVE_RAMP_RULE_MISSING");
+    Refused(QueryNativeTerrainRamp(edge.grid, 14, 3, 1), "TERRAIN_NATIVE_DIMENSIONS");
 }
 
 void CliffSentinelTransitionsRequireFlatKnownNeighborhoods() {

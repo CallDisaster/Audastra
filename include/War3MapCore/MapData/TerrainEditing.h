@@ -22,8 +22,11 @@ enum class TerrainHeightSource { StoredPositions, RawWithRamps };
 
 // 地面高度（与渲染拾取同一三角剖分）；越界或非有限输入为空。
 // 显示副本已经抬升坡道，默认直接采样 position；编辑会话应显式选择 RawWithRamps。
+// native结构编辑须传已捕获的最大层级，使用完整R/S偏移且遇未知邻域返回空。
+// 无规则的兼容调用仍只识别既有直坡中点，不授予复杂坡道编辑/保存资格。
 [[nodiscard]] std::optional<float> SampleGroundHeight(const TerrainGridSnapshot& terrain, double x, double y,
-    TerrainHeightSource source = TerrainHeightSource::StoredPositions);
+    TerrainHeightSource source = TerrainHeightSource::StoredPositions,
+    std::optional<std::uint8_t> maximumCliffLevel = {});
 
 enum class TerrainBrushKind {
     Texture,      // 地面贴图：设定贴图并按静态地图统计权重随机变体

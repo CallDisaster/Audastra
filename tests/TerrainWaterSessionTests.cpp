@@ -390,6 +390,94 @@ void OrdinaryCliffUsesOneNativeSessionTransaction() {
     Require(f.edits->Redo() && Take(SerializeMapTerrain(*f.edits->Terrain())) == after, "one redo restores exact native bytes");
     Require(!f.edits->ApplyPreparedTerrainEdit(plan).Succeeded(), "prepared native cliff rejects stale session revision");
 }
+void NativeCliffFollowsCompleteCornerRampHeight() {
+    Fixture f(false, true);
+    for (std::size_t y = 15; y <= 17; ++y) for (std::size_t x = 15; x <= 17; ++x) {
+        auto& vertex = f.grid.vertices[y * 33 + x]; vertex.textureAndFlagsRaw |= 0x10;
+        if (x == 17 && y == 17) vertex.cliffAndLayerRaw = 3;
+    }
+    RefreshTerrainDerived(f.grid, 0, 0, 33, 33);
+    SetMember(f.members, "war3map.w3e", Take(SerializeMapTerrain(f.grid)));
+    f.source = std::make_unique<MapArchiveSession>(Take(MapArchiveSession::Open(
+        Take(WriteVerifiedArchive(f.directory / "corner-source.w3x", f.members)).path)));
+    f.edits = f.Session();
+    const auto before = Take(SerializeMapTerrain(*f.edits->Terrain()));
+    const auto rules = f.Rules(*f.edits);
+    Require(SampleGroundHeight(f.grid, f.point.x, f.point.y, TerrainHeightSource::RawWithRamps,
+        rules.WaterBrushRules()->maximumCliffLevel) == 64,
+        "source corner S32 plus raw ground32 has literal effective height64");
+    TerrainBrush brush; brush.kind = TerrainBrushKind::CliffLevel; brush.size = 1;
+    brush.cliffTexture = 1; brush.levelDelta = 1; brush.seed = 1;
+    const auto prepared = Take(f.edits->PrepareTerrainCliffEdit(rules, brush, std::span(&f.point, 1), true));
+    Take(f.edits->ApplyPreparedTerrainEdit(prepared));
+    const auto after = Take(SerializeMapTerrain(*f.edits->Terrain()));
+    const auto snapshot = f.edits->Snapshot();
+    // 中心从L2/S32的64变为L3/H的160，实际地高差96；轴向近似会错误给128。
+    Require(snapshot.Units()->units.front().position[2] == 138
+        && snapshot.Doodads()->doodads.front().position[2] == 133,
+        "both DOO groups follow the independent96-unit S32-to-H height delta");
+    Require(snapshot.Units()->units.back().position[2] == 52, "unrelated placement keeps its original Z");
+    Require(f.edits->Undo() && Take(SerializeMapTerrain(*f.edits->Terrain())) == before
+        && f.edits->Snapshot().Units()->units.front().position[2] == 42,
+        "one Undo restores old corner ramp and both ground offsets");
+    Require(f.edits->Redo() && Take(SerializeMapTerrain(*f.edits->Terrain())) == after
+        && f.edits->Snapshot().Doodads()->doodads.front().position[2] == 133,
+        "one Redo restores exact corner bytes and ground offsets");
+}
+void NativeCliffWithoutRuleDigestCannotBecomeLegacyJournal() {
+    Fixture f(false, false); const auto rules = f.Rules(*f.edits);
+    TerrainBrush brush; brush.kind = TerrainBrushKind::CliffLevel; brush.size = 1;
+    brush.cliffTexture = 1; brush.levelDelta = 1; brush.seed = 1;
+    brush.anchor = Take(CaptureTerrainStrokeAnchor(*f.edits->Terrain(), f.point));
+    const Unchanged initial(*f.edits);
+    const auto full = Take(f.edits->PrepareTerrainCliffEdit(rules, brush, std::span(&f.point, 1), false));
+    const auto digestWork = rules.WaterBrushDependencyBudgetBytes() * 3;
+    Require(digestWork && full.WaterPreparationWork() > digestWork, "native rule digest has a separate actual work allowance");
+    TerrainWaterBrushLimits limits; limits.maximumWork = full.WaterPreparationWork() - digestWork;
+    const auto bounded = Take(f.edits->PrepareTerrainCliffEdit(rules, brush, std::span(&f.point, 1), false, limits));
+    initial.Verify(*f.edits);
+    Require(bounded.HasChanges() && bounded.WaterPreparationWork() == limits.maximumWork,
+        "native cliff can remain an ordinary draft when only extra journal work is unavailable");
+    Take(f.edits->ApplyPreparedTerrainEdit(bounded));
+    Require(f.edits->IsDirty() && HasCode(f.edits->ExportTerrainStrokeJournal(), "TERRAIN_JOURNAL_HISTORY_UNEXPRESSIBLE"),
+        "a matching caller anchor cannot turn a native cliff without rule digest into legacy replay provenance");
+    Require(f.edits->Undo() && !f.edits->IsDirty(), "unrecordable native draft still keeps its complete Undo");
+}
+void NativeFollowChargesOnlyActualInMapSamples() {
+    std::array<std::size_t, 2> costs{};
+    for (std::size_t nearby = 0; nearby < costs.size(); ++nearby) {
+        Fixture f(false, true);
+        auto doodads = Take(ParseDoodadPlacements(Member(f.members, "war3map.doo")));
+        DoodadPlacement distant = doodads.doodads.front(); distant.position = {0, 0, 61};
+        for (std::uint32_t i = 0; i < 4096; ++i) {
+            distant.creationId = 100 + i; doodads.doodads.push_back(distant);
+        }
+        if (nearby) doodads.doodads.back().position = {float(f.point.x), float(f.point.y), 61};
+        SetMember(f.members, "war3map.doo", Take(doodads.Serialize()));
+        f.source = std::make_unique<MapArchiveSession>(Take(MapArchiveSession::Open(
+            Take(WriteVerifiedArchive(f.directory / "many-placements.w3x", f.members)).path)));
+        f.edits = f.Session(); const auto rules = f.Rules(*f.edits); const Unchanged initial(*f.edits);
+        TerrainBrush brush; brush.kind = TerrainBrushKind::CliffLevel; brush.size = 1;
+        brush.cliffTexture = 1; brush.levelDelta = 1; brush.seed = 1;
+        const auto plan = Take(f.edits->PrepareTerrainCliffEdit(rules, brush, std::span(&f.point, 1), true));
+        costs[nearby] = plan.WaterPreparationWork();
+        const auto digestWork = rules.WaterBrushDependencyBudgetBytes() * 3;
+        Require(digestWork && costs[nearby] > digestWork, "follow accounting and optional journal work stay separately bounded");
+        TerrainWaterBrushLimits exact; exact.maximumWork = costs[nearby] - digestWork;
+        const auto bounded = Take(f.edits->PrepareTerrainCliffEdit(rules, brush, std::span(&f.point, 1), true, exact));
+        Require(bounded.WaterPreparationWork() == exact.maximumWork, "actual follow cost repeats at its exact non-journal boundary");
+        --exact.maximumWork;
+        Require(HasCode(f.edits->PrepareTerrainCliffEdit(rules, brush, std::span(&f.point, 1), true, exact),
+            "TERRAIN_WATER_SESSION_BUDGET"), "one unit below actual follow cost rejects before the final height query");
+        initial.Verify(*f.edits);
+        Take(f.edits->ApplyPreparedTerrainEdit(plan));
+        const auto snapshot = f.edits->Snapshot(); const auto actual = snapshot.Doodads();
+        Require(actual->doodads.size() == 4097 && actual->doodads[1].position[2] == 61
+            && actual->doodads.back().position[2] == (nearby ? 189 : 61),
+            "thousands of far placements remain complete while only real near placements follow");
+    }
+    Require(costs[1] == costs[0] + 8 * 512, "one extra actual placement adds exactly one bounded before-and-after query charge");
+}
 } // namespace
 
 int main() {
@@ -403,6 +491,9 @@ int main() {
         LargerOriginalTerrainRecordsPreparationCost();
         FullSizeStrokeUsesActualPhaseBudget();
         OrdinaryCliffUsesOneNativeSessionTransaction();
+        NativeCliffFollowsCompleteCornerRampHeight();
+        NativeCliffWithoutRuleDigestCannotBecomeLegacyJournal();
+        NativeFollowChargesOnlyActualInMapSamples();
         std::cout << "TerrainWaterSessionTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

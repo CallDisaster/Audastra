@@ -24,4 +24,9 @@ struct TerrainRampPlan {
 [[nodiscard]] std::optional<float> TerrainRampHeightOffset(
     const TerrainGridSnapshot& terrain, std::uint32_t x, std::uint32_t y);
 
+// 已捕获实际Terrain.MaxHeight规则时使用完整原版R/S分类；不猜默认最大层级。
+// 非坡道或无法验证的邻域返回空；合法H/L/!等无偏移坡道返回0。
+[[nodiscard]] std::optional<float> TerrainRampHeightOffset(
+    const TerrainGridSnapshot& terrain, std::uint32_t x, std::uint32_t y, std::uint8_t maximumCliffLevel);
+
 } // namespace War3Map::MapData
