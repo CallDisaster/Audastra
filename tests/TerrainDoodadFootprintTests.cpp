@@ -8,6 +8,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -38,6 +39,23 @@ Bytes Pattern(bool top = true, bool alpha = false, unsigned width = 3, unsigned 
         if (alpha) bytes.push_back(std::byte{}); // alpha零不清掉通行像素。
     }
     return bytes;
+}
+Bytes RawRle(const Bytes& source) {
+    Bytes bytes(source.begin(), source.begin() + 18); bytes[2] = std::byte{10};
+    const auto stride = std::to_integer<unsigned>(source[16]) / 8;
+    std::size_t at = 18;
+    while (at < source.size()) {
+        const auto pixels = std::min<std::size_t>(128, (source.size() - at) / stride);
+        bytes.push_back(static_cast<std::byte>(pixels - 1));
+        bytes.insert(bytes.end(), source.begin() + at, source.begin() + at + pixels * stride);
+        at += pixels * stride;
+    }
+    return bytes;
+}
+void StandardFooter(Bytes& bytes) {
+    constexpr std::array<unsigned char, 26> footer{0,0,0,0,0,0,0,0,
+        'T','R','U','E','V','I','S','I','O','N','-','X','F','I','L','E','.',0};
+    for (const auto byte : footer) bytes.push_back(static_cast<std::byte>(byte));
 }
 TerrainHeader Header() { TerrainHeader h; h.width = h.height = 5; return h; }
 DoodadPlacement Placement(float radians = 0, float x = 128, float y = 128) {
@@ -179,8 +197,102 @@ void AlphaAffectsUniformityAndOldDomainRemainsValid() {
     Require(actual==before,"alpha-sensitive rejection is atomic");
     auto truncated=bytes; truncated.pop_back(); Require(!DecodeDoodadFootprintTga(truncated).Succeeded(),"truncated image refuses");
     auto right=bytes; right[17]|=std::byte{16}; Require(!DecodeDoodadFootprintTga(right).Succeeded(),"unproved right origin refuses");
-    auto rle=bytes; rle[2]=std::byte{10}; Require(!DecodeDoodadFootprintTga(rle).Succeeded(),"unproved RLE refuses");
+    auto rle=RawRle(bytes); Require(!DecodeDoodadFootprintTga(rle).Succeeded(),"legacy borrowed entry still refuses RLE");
     auto large=bytes; large[13]=std::byte{1}; Require(!DecodeDoodadFootprintTga(large).Succeeded(),"width over budget refuses");
+}
+void RleUsesOwnedPixelsAndPreservesLiteralProjection() {
+    constexpr std::array<std::array<std::uint8_t,6>,4> matrices{{
+        {0,0x31,4,6,2,0x35}, {2,4,0,0x35,6,0x31},
+        {0x35,2,6,4,0x31,0}, {0x31,6,0x35,0,4,2}}};
+    constexpr std::array<float,4> angles{0,1.57079637f,3.14159274f,4.712389f};
+    for (const bool top : {false,true}) for (const bool alpha : {false,true}) {
+        const auto raw = Pattern(top,alpha); auto encoded = RawRle(raw);
+        if (top) StandardFooter(encoded);
+        const auto original = encoded;
+        auto image = Take(DecodeDoodadFootprintTgaBudgeted(encoded, raw.size() - 18));
+        const auto* allocation = image.decodedPixels.get();
+        Require(allocation != nullptr && image.decodedBytes == raw.size()-18
+            && image.footprint.pixels.data() == allocation, "RLE owns its exact decoded payload");
+        auto moved = std::move(image);
+        Require(moved.decodedPixels.get() == allocation && moved.footprint.pixels.data() == allocation,
+            "moving the result preserves the pixel span and owner");
+        Require(std::equal(moved.footprint.pixels.begin(), moved.footprint.pixels.end(), raw.begin()+18, raw.end()),
+            "24-bit BGR and 32-bit BGRA unpack unchanged in file order");
+        for (unsigned q=0; q<4; ++q) {
+            std::vector<std::uint8_t> actual(256,0x40);
+            Check(AddDoodadFootprint(actual,Header(),Placement(angles[q]),moved.footprint,2,-1.0f));
+            Require(actual == Expected(q%2?3:4,q%2?4:3,q%2?3:2,matrices[q]),
+                "cross-row raw RLE preserves independent rectangular rotation and origin expectations");
+        }
+        Require(encoded == original, "RLE decoding and projection do not change the frozen source");
+        std::fill(encoded.begin(),encoded.end(),std::byte{});
+        Require(std::equal(moved.footprint.pixels.begin(), moved.footprint.pixels.end(), raw.begin()+18, raw.end()),
+            "RLE pixels do not borrow the compressed input");
+        const auto uncompressed = Take(DecodeDoodadFootprintTgaBudgeted(raw,0));
+        Require(!uncompressed.decodedPixels && uncompressed.decodedBytes == 0
+            && uncompressed.footprint.pixels.data() == raw.data()+18,
+            "type2 needs no decoded budget and remains zero-copy");
+    }
+}
+void RlePacketBoundsUniformityAndBudget() {
+    // 4x2：原样黑/蓝、重复四个绿（跨行）、原样红/蓝红。
+    auto encoded = Pattern(true,true,4,2); encoded.resize(18); encoded[2]=std::byte{10};
+    const std::array<unsigned,23> packets{1, 0,0,0,255, 1,0,0,0,
+        0x83, 0,1,0,0, 1, 0,0,1,0, 1,0,1,0};
+    for (const auto byte : packets) encoded.push_back(static_cast<std::byte>(byte));
+    auto image=Take(DecodeDoodadFootprintTgaBudgeted(encoded,32));
+    const std::array<unsigned,32> expected{0,0,0,255, 1,0,0,0, 0,1,0,0, 0,1,0,0,
+        0,1,0,0, 0,1,0,0, 0,0,1,0, 1,0,1,0};
+    Require(std::equal(expected.begin(),expected.end(),image.footprint.pixels.begin(),
+        [](unsigned left,std::byte right){return left==std::to_integer<unsigned>(right);}),
+        "mixed raw and repeated packets decode across row boundaries");
+    const auto denied=DecodeDoodadFootprintTgaBudgeted(encoded,31);
+    Require(!denied.Succeeded() && !denied.value && denied.diagnostics.front().code=="TERRAIN_DOODAD_TGA_DECODE_BUDGET",
+        "one-byte-short decoded budget returns no partial image");
+    auto uniform=Pattern(true,true,2,2); uniform.resize(18); uniform[2]=std::byte{10};
+    uniform.insert(uniform.end(),{std::byte{0x83},std::byte{1},std::byte{},std::byte{},std::byte{255}});
+    image=Take(DecodeDoodadFootprintTgaBudgeted(uniform,16));
+    Require(image.footprint.uniform && image.footprint.uniformAttributes==4,"repeated BGRA is uniform");
+    auto alpha=Pattern(true,true,2,2);
+    for (std::size_t at=18;at<alpha.size();at+=4) {
+        alpha[at]=std::byte{1}; alpha[at+1]=alpha[at+2]=alpha[at+3]=std::byte{};
+    }
+    alpha[21]=std::byte{255};
+    Require(!Take(DecodeDoodadFootprintTgaBudgeted(RawRle(alpha),16)).footprint.uniform,
+        "equal RLE RGB with unequal alpha never becomes uniform");
+    for (const unsigned count : {1u,128u}) for (const bool repeat : {false,true}) {
+        auto raw=Pattern(true,false,count,1), packet=RawRle(raw);
+        if (repeat) {
+            packet.resize(18); packet.push_back(static_cast<std::byte>(0x80u | (count-1)));
+            packet.insert(packet.end(),{std::byte{1},std::byte{},std::byte{}});
+        }
+        const auto decoded=Take(DecodeDoodadFootprintTgaBudgeted(packet,count*3));
+        Require(decoded.footprint.pixels.size()==count*3 && decoded.footprint.uniform==(repeat || count==1),
+            count==1 ? "single-pixel packet is accepted" : "128-pixel packet is accepted");
+    }
+    const auto reject=[&](Bytes bytes,const char* code) {
+        const auto before=bytes;
+        const auto result=DecodeDoodadFootprintTgaBudgeted(bytes,1024);
+        Require(!result.Succeeded() && !result.value && result.diagnostics.front().code==code,
+            "invalid RLE reports the precise refusal and no image");
+        Require(bytes==before,"invalid RLE leaves source bytes unchanged");
+    };
+    auto bad=uniform; bad.resize(18); reject(bad,"TERRAIN_UNIFORM_TGA_TRUNCATED");
+    bad=uniform; bad.pop_back(); reject(bad,"TERRAIN_UNIFORM_TGA_TRUNCATED");
+    bad=RawRle(Pattern()); bad.pop_back(); reject(bad,"TERRAIN_UNIFORM_TGA_TRUNCATED");
+    bad=uniform; bad[18]=std::byte{0x84}; reject(bad,"TERRAIN_DOODAD_TGA_RLE_OVERRUN");
+    bad=uniform; bad[18]=std::byte{4}; reject(bad,"TERRAIN_DOODAD_TGA_RLE_OVERRUN");
+    bad=uniform; bad.push_back(std::byte{}); reject(bad,"TERRAIN_UNIFORM_TGA_TRAILING");
+    bad=uniform; StandardFooter(bad); bad[bad.size()-26]=std::byte{1}; reject(bad,"TERRAIN_UNIFORM_TGA_TRAILING");
+    bad=uniform; StandardFooter(bad); bad.pop_back(); reject(bad,"TERRAIN_UNIFORM_TGA_TRAILING");
+    for (const auto field : {0u,1u,7u,8u,10u}) {
+        bad=uniform; bad[field]=std::byte{1}; reject(bad,"TERRAIN_UNIFORM_TGA_FORMAT");
+    }
+    for (const auto bit : {0x10u,0x40u,0x80u}) {
+        bad=uniform; bad[17]|=static_cast<std::byte>(bit); reject(bad,"TERRAIN_UNIFORM_TGA_FORMAT");
+    }
+    Require(!DecodeDoodadFootprintTga(uniform).Succeeded() && !DecodeUniformDoodadFootprintTga(uniform).Succeeded(),
+        "legacy and special-compatible decoders keep the old type2-only domain");
 }
 } // namespace
 int main() {
@@ -188,6 +300,7 @@ int main() {
         RotationsOriginsAndChannels(); FixedRotationUsesEarlierSnapDimensions();
         WalkableSuppressionSharesProjectionWithoutRgbBits();
         ClippingOverlapAndFailureAtomicity(); AlphaAffectsUniformityAndOldDomainRemainsValid();
+        RleUsesOwnedPixelsAndPreservesLiteralProjection(); RlePacketBoundsUniformityAndBudget();
         std::cout << "Native patterned doodad footprints passed\n"; return 0;
     } catch(const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }

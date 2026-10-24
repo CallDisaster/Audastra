@@ -6,6 +6,7 @@
 #include <cfenv>
 #include <cmath>
 #include <limits>
+#include <new>
 #include <optional>
 
 #if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
@@ -96,18 +97,20 @@ std::uint8_t PixelAttributes(std::span<const std::byte> pixel) {
     return static_cast<std::uint8_t>((pixel[2] != std::byte{} ? 0x31 : 0)
         | (pixel[1] != std::byte{} ? 2 : 0) | (pixel[0] != std::byte{} ? 4 : 0));
 }
-Result<TerrainDoodadFootprint> DecodeFootprintTga(std::span<const std::byte> bytes, bool requireSquare) {
-    using Return = Result<TerrainDoodadFootprint>;
+Result<TerrainDoodadFootprintImage> DecodeFootprintTga(std::span<const std::byte> bytes,
+    bool requireSquare, bool allowRle, std::size_t maximumDecodedBytes) {
+    using Return = Result<TerrainDoodadFootprintImage>;
     const auto fail = [](const char* code, const char* message) { return Return::Failure(kSubsystem, code, message); };
     if (bytes.size() < 18) return fail("TERRAIN_UNIFORM_TGA_TRUNCATED", "通行贴图的TGA文件头不完整。");
     const auto byte = [&bytes](std::size_t at) { return std::to_integer<unsigned>(bytes[at]); };
     const auto word = [&byte](std::size_t at) { return byte(at) | (byte(at + 1) << 8); };
-    const auto depth = byte(16), descriptor = byte(17);
-    if (byte(0) != 0 || byte(1) != 0 || byte(2) != 2 || word(3) != 0 || word(5) != 0
+    const auto depth = byte(16), descriptor = byte(17), imageType = byte(2);
+    const bool rle = imageType == 10 && allowRle;
+    if (byte(0) != 0 || byte(1) != 0 || (imageType != 2 && !rle) || word(3) != 0 || word(5) != 0
         || byte(7) != 0 || word(8) != 0 || word(10) != 0 || (depth != 24 && depth != 32)
         || (descriptor & 0xd0u) != 0 || (descriptor & 15u) != (depth == 32 ? 8u : 0u))
         return fail("TERRAIN_UNIFORM_TGA_FORMAT",
-            "通行贴图仅支持无ID和色表、原点坐标为零、左原点无交错的未压缩24位RGB或32位RGBA TGA。");
+            "通行贴图须为无ID和色表、原点坐标为零、左原点无交错的24位RGB或32位RGBA TGA；仅普通预算入口允许type10 RLE。");
     const auto width = word(12), height = word(14);
     if (width == 0 || height == 0 || width > kMaximumSide || height > kMaximumSide)
         return fail("TERRAIN_UNIFORM_TGA_DIMENSIONS", "通行贴图的宽高必须分别为1至256像素。");
@@ -115,9 +118,30 @@ Result<TerrainDoodadFootprint> DecodeFootprintTga(std::span<const std::byte> byt
         return fail("TERRAIN_UNIFORM_TGA_DIMENSIONS", "同色占地接口需要正方形贴图。");
     const std::size_t pixelBytes = depth / 8;
     const std::size_t count = static_cast<std::size_t>(width) * height;
-    const std::size_t pixelEnd = 18 + count * pixelBytes;
-    if (bytes.size() < pixelEnd)
-        return fail("TERRAIN_UNIFORM_TGA_TRUNCATED", "通行贴图的TGA像素载荷不完整。");
+    const std::size_t decodedBytes = count * pixelBytes;
+    std::size_t pixelEnd = 18;
+    if (rle) {
+        // 原版按整图剩余像素处理包，包可以跨行。先完整前扫，不在坏包或预算
+        // 不足时分配候选缓冲；不把footer误当可忽略的剩余压缩载荷。
+        std::size_t remaining = count;
+        while (remaining != 0) {
+            if (pixelEnd == bytes.size())
+                return fail("TERRAIN_UNIFORM_TGA_TRUNCATED", "通行贴图的RLE包头不完整。");
+            const auto packet = byte(pixelEnd++);
+            const std::size_t pixels = (packet & 0x7fu) + 1;
+            if (pixels > remaining)
+                return fail("TERRAIN_DOODAD_TGA_RLE_OVERRUN", "通行贴图的RLE包超过整图剩余像素。");
+            const auto payload = (packet & 0x80u) != 0 ? pixelBytes : pixels * pixelBytes;
+            if (payload > bytes.size() - pixelEnd)
+                return fail("TERRAIN_UNIFORM_TGA_TRUNCATED", "通行贴图的RLE包像素载荷不完整。");
+            pixelEnd += payload;
+            remaining -= pixels;
+        }
+    } else {
+        pixelEnd += decodedBytes;
+        if (bytes.size() < pixelEnd)
+            return fail("TERRAIN_UNIFORM_TGA_TRUNCATED", "通行贴图的TGA像素载荷不完整。");
+    }
     if (bytes.size() != pixelEnd) {
         // 已证实际资源使用两个零offset加TRUEVISION-XFILE.\0；不忽略未知尾随区。
         constexpr std::array<unsigned char, 26> footer{
@@ -128,29 +152,66 @@ Result<TerrainDoodadFootprint> DecodeFootprintTga(std::span<const std::byte> byt
                 [](unsigned char expected, std::byte actual) { return expected == std::to_integer<unsigned>(actual); }))
             return fail("TERRAIN_UNIFORM_TGA_TRAILING", "通行贴图含未支持或不完整的TGA附加区。");
     }
-    const std::array<unsigned, 4> first{byte(18), byte(19), byte(20), depth == 32 ? byte(21) : 255u};
-    bool uniform = true;
-    for (std::size_t index = 1, at = 18 + pixelBytes; index < count; ++index, at += pixelBytes) {
-        if (byte(at) != first[0] || byte(at + 1) != first[1] || byte(at + 2) != first[2]
-            || (depth == 32 && byte(at + 3) != first[3])) { uniform = false; break; }
+    TerrainDoodadFootprintImage image;
+    auto pixels = bytes.subspan(18, rle ? 0 : decodedBytes);
+    if (rle) {
+        if (decodedBytes > maximumDecodedBytes)
+            return fail("TERRAIN_DOODAD_TGA_DECODE_BUDGET", "通行贴图RLE解包像素超过同次捕获剩余预算。");
+        try { image.decodedPixels = std::make_unique<std::byte[]>(decodedBytes); }
+        catch (const std::bad_alloc&) {
+            return fail("TERRAIN_DOODAD_TGA_DECODE_BUDGET", "通行贴图RLE解包缓冲分配失败。");
+        }
+        image.decodedBytes = decodedBytes;
+        std::size_t source = 18, target = 0;
+        while (target < decodedBytes) {
+            const auto packet = byte(source++);
+            const std::size_t packetPixels = (packet & 0x7fu) + 1;
+            if ((packet & 0x80u) != 0) {
+                for (std::size_t index = 0; index < packetPixels; ++index) {
+                    std::copy_n(bytes.data() + source, pixelBytes, image.decodedPixels.get() + target);
+                    target += pixelBytes;
+                }
+                source += pixelBytes;
+            } else {
+                const auto payload = packetPixels * pixelBytes;
+                std::copy_n(bytes.data() + source, payload, image.decodedPixels.get() + target);
+                source += payload; target += payload;
+            }
+        }
+        pixels = {image.decodedPixels.get(), decodedBytes};
     }
-    return Return::Success({width, height, bytes.subspan(18, count * pixelBytes),
+    const auto pixelByte = [&pixels](std::size_t at) { return std::to_integer<unsigned>(pixels[at]); };
+    const std::array<unsigned, 4> first{pixelByte(0), pixelByte(1), pixelByte(2), depth == 32 ? pixelByte(3) : 255u};
+    bool uniform = true;
+    for (std::size_t index = 1, at = pixelBytes; index < count; ++index, at += pixelBytes) {
+        if (pixelByte(at) != first[0] || pixelByte(at + 1) != first[1] || pixelByte(at + 2) != first[2]
+            || (depth == 32 && pixelByte(at + 3) != first[3])) { uniform = false; break; }
+    }
+    image.footprint = {width, height, pixels,
         static_cast<std::uint8_t>(pixelBytes), (descriptor & 0x20u) != 0, uniform,
-        PixelAttributes(bytes.subspan(18, pixelBytes))});
+        PixelAttributes(pixels.first(pixelBytes))};
+    return Return::Success(std::move(image));
 }
 } // namespace
 
 Result<TerrainDoodadFootprint> DecodeDoodadFootprintTga(std::span<const std::byte> bytes) {
-    return DecodeFootprintTga(bytes, false);
+    auto decoded = DecodeFootprintTga(bytes, false, false, 0);
+    if (!decoded.Succeeded() || !decoded.value) return {{}, std::move(decoded.diagnostics)};
+    return Result<TerrainDoodadFootprint>::Success(decoded.value->footprint);
+}
+
+Result<TerrainDoodadFootprintImage> DecodeDoodadFootprintTgaBudgeted(
+    std::span<const std::byte> bytes, std::size_t maximumDecodedBytes) {
+    return DecodeFootprintTga(bytes, false, true, maximumDecodedBytes);
 }
 
 Result<TerrainUniformDoodadFootprint> DecodeUniformDoodadFootprintTga(std::span<const std::byte> bytes) {
     using Return = Result<TerrainUniformDoodadFootprint>;
-    auto decoded = DecodeFootprintTga(bytes, true);
+    auto decoded = DecodeFootprintTga(bytes, true, false, 0);
     if (!decoded.Succeeded() || !decoded.value) return {{}, std::move(decoded.diagnostics)};
-    if (!decoded.value->uniform)
+    if (!decoded.value->footprint.uniform)
         return Return::Failure(kSubsystem, "TERRAIN_UNIFORM_TGA_NONUNIFORM", "同色占地接口需要完整BGRA一致的像素。");
-    return Return::Success({decoded.value->width, decoded.value->uniformAttributes});
+    return Return::Success({decoded.value->footprint.width, decoded.value->footprint.uniformAttributes});
 }
 
 namespace {

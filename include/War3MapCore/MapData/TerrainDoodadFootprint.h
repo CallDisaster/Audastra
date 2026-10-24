@@ -3,6 +3,7 @@
 #include "War3MapCore/MapData/TerrainUniformDoodadFootprint.h"
 #include "War3MapCore/MapData/TerrainNativeObjectPathing.h"
 
+#include <memory>
 #include <optional>
 
 namespace War3Map::MapData {
@@ -20,6 +21,20 @@ struct TerrainDoodadFootprint {
 
 // 与同色占地共用格式校验，允许1..256的矩形和不同像素。
 [[nodiscard]] Result<TerrainDoodadFootprint> DecodeDoodadFootprintTga(std::span<const std::byte> bytes);
+
+// 普通对象的有界扩展入口：type2仍零拷贝借用bytes，type10持有恰好decodedBytes的
+// 解包像素。结果只能移动，移动后footprint的span仍有效；结果存活期间不得释放
+// decodedPixels，type2还须保持原bytes有效。特殊地形和旧同色入口仍只接受type2。
+struct TerrainDoodadFootprintImage {
+    TerrainDoodadFootprint footprint;
+    std::unique_ptr<std::byte[]> decodedPixels;
+    std::size_t decodedBytes = 0;
+};
+
+// maximumDecodedBytes只约束新增像素存储；调用者另计仍并存的原始TGA与其它工作。
+// 分配前核对额度、完整包流及附加区；失败不返回部分图像。
+[[nodiscard]] Result<TerrainDoodadFootprintImage> DecodeDoodadFootprintTgaBudgeted(
+    std::span<const std::byte> bytes, std::size_t maximumDecodedBytes);
 
 // fixedRotationDegrees必须来自实际生效fixedRot字段；负值表示不强制角度。
 // 缺失字段只允许旋转不影响结果的同色正方形。先按wire角度吸附，之后才按

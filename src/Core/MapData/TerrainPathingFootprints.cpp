@@ -124,13 +124,20 @@ Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& read
         Check(CaptureResourceMembers(reader, names, names.size(),
             [&](std::size_t index, bool present, std::vector<std::byte>&& bytes) {
                 if (!present) Fail("TERRAIN_NATIVE_FOOTPRINT_MISSING", "缺少实际占地贴图：" + names[index]);
-                auto parsed = DecodeDoodadFootprintTga(bytes);
+                // 原始成员已计sourceBytes_且仍存活；只把同次剩余额度交给RLE
+                // 分配前预检。解包结果在此组全部实例投影完成前持有像素。
+                reserve(0, 1);
+                auto parsed = DecodeDoodadFootprintTgaBudgeted(bytes,
+                    capturedMaximumBytes_ - sourceBytes_ - objectWorkBytes_);
                 if (!parsed.Succeeded() || !parsed.value) {
                     for (auto& diagnostic : parsed.diagnostics) diagnostic.message = names[index] + "：" + diagnostic.message;
                     throw Failure{std::move(parsed.diagnostics)};
                 }
+                // 按各张图累计预留，不因组末scratch释放而循环复用额度。
+                reserve(parsed.value->decodedBytes, 1);
+                const auto& footprint = parsed.value->footprint;
                 const auto& instances = groups.at(names[index]);
-                const auto pixels = std::size_t{parsed.value->width} * parsed.value->height;
+                const auto pixels = std::size_t{footprint.width} * footprint.height;
                 // 内存额度不代表运算额度。即使全部实例重叠，也先按完整矩形限制
                 // 像素工作，避免小DOO借256²贴图在保存线程产生无界写入。
                 if (pixelWrites > capturedMaximumBytes_
@@ -141,7 +148,7 @@ Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& read
                     const auto snapCells = instance.type->gridPolicy == TerrainDoodadGridPolicy::StartupCategoryC
                         ? nativeCategoryDirectory_->CategoryCSnapCells() : std::uint8_t{2};
                     auto status = AddDoodadFootprint(nativeStaticAttributes_, header,
-                        *instance.placement, *parsed.value, snapCells, instance.type->fixedRotationDegrees,
+                        *instance.placement, footprint, snapCells, instance.type->fixedRotationDegrees,
                         instance.type->contribution);
                     for (auto& diagnostic : status.diagnostics) diagnostic.message = instance.placement->rawcode
                         + " #" + std::to_string(instance.placement->creationId) + " " + names[index] + "：" + diagnostic.message;
