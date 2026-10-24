@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <array>
 #include <exception>
+#include <iterator>
 #include <set>
 #include <type_traits>
 #include <utility>
@@ -599,6 +600,15 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         const bool triggerRequest = request.triggerEdits.has_value() || request.triggerTransaction != nullptr;
         const bool objectRequest = !request.objectTransactions.empty();
         const bool auxiliaryRequest = request.auxiliaryTransaction != nullptr;
+        const bool terrainCompanion = terrainRequest && (fieldRequest || objectRequest)
+            && !placementRequest && !triggerRequest && !auxiliaryRequest;
+        if (terrainRequest && fieldRequest && std::any_of(request.fieldEdits.begin(), request.fieldEdits.end(),
+            [](const auto& operation) {
+                return operation.edit.kind != MapDataKind::Settings
+                    || (operation.edit.field != "map_name" && operation.edit.field != "author"
+                        && operation.edit.field != "description" && operation.edit.field != "recommended_players");
+            }))
+            return Fail("SAVE_TERRAIN_FIELD_SCOPE_INVALID", "地形笔划只能与地图名称、作者、说明和建议人数的字段操作合并。");
         const bool shadowOnly = request.rebuildTerrainShadow && !fieldRequest && !placementRequest
             && !terrainRequest && !triggerRequest && !objectRequest && !auxiliaryRequest;
         if (request.minimapChoice != TerrainMinimapSaveChoice::Automatic
@@ -618,20 +628,26 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             return Fail("SAVE_SOURCE_COMPANION_WITHOUT_OBJECTS", "未变化的触发器配对封印只能伴随非空物编保存事务。");
         if (request.sourceMap.empty() || request.targetCandidate.empty() || request.toolRoot.empty()
             || request.gameRoot.empty() || !ValidSha(request.expectedSourceSha256)
-            || ((fieldRequest || placementRequest || triggerRequest || objectRequest || auxiliaryRequest) ? !request.expectedTerrainSha256.empty()
-                : !ValidSha(request.expectedTerrainSha256))) {
+            || ((terrainRequest || (!fieldRequest && !placementRequest && !triggerRequest && !objectRequest && !auxiliaryRequest))
+                ? !ValidSha(request.expectedTerrainSha256)
+                : !request.expectedTerrainSha256.empty())) {
             return Fail("SAVE_REQUEST_INVALID", "地图路径、数据根、源 SHA 和当前操作所需的成员 SHA 必须有效。");
         }
         if (static_cast<int>(fieldRequest) + static_cast<int>(placementRequest)
             + static_cast<int>(terrainRequest) + static_cast<int>(triggerRequest) + static_cast<int>(objectRequest) + static_cast<int>(auxiliaryRequest)
-            - static_cast<int>(objectRequest && request.triggerTransaction != nullptr) != (shadowOnly ? 0 : 1))
-            return Fail("SAVE_OPERATION_SCOPE_INVALID", "一次保存只能提交一个领域操作或同源的完整触发器与物编封印事务。");
+            - static_cast<int>(objectRequest && request.triggerTransaction != nullptr)
+            - static_cast<int>(terrainCompanion) != (shadowOnly ? 0 : 1))
+            return Fail("SAVE_OPERATION_SCOPE_INVALID", "一次保存只能提交一个领域操作、同源触发器与物编事务，或地形及一种受支持的说明/物编修改。");
         const auto bounded = shadowOnly ? Status::Ok() : fieldRequest ? ValidateFieldOperations(request.fieldEdits)
             : placementRequest ? ValidatePlacementOperation(request.placementEdit)
             : request.triggerEdits ? Trigger::ValidateTriggerEditBatch(*request.triggerEdits)
             : (request.triggerTransaction || objectRequest || auxiliaryRequest) ? Status::Ok()
                                          : ValidateStrokes(request.terrainStrokes);
         if (!bounded.Succeeded()) return Forward(bounded.diagnostics);
+        if (terrainCompanion) {
+            const auto strokes = ValidateStrokes(request.terrainStrokes);
+            if (!strokes.Succeeded()) return Forward(strokes.diagnostics);
+        }
         auto opened = MapArchiveSession::Open(request.sourceMap);
         if (!opened.Succeeded() || !opened.value) return Forward(std::move(opened.diagnostics));
         auto& source = *opened.value;
@@ -660,7 +676,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             // 触发器/物编有自己的来源封印和解析链。这里的其它 native 成员
             // 只用于小地图，不能因它们超出生成预算而阻止本领域合法保存。
             // 失败仍交共用分类；来源/I/O等错误不会被当作空地图接受。
-            if (request.minimapChoice != TerrainMinimapSaveChoice::Automatic || (!triggerRequest && !objectRequest))
+            if (terrainRequest || request.minimapChoice != TerrainMinimapSaveChoice::Automatic || (!triggerRequest && !objectRequest))
                 return Forward(capturedNative.diagnostics);
             minimapInputFailure = capturedNative.diagnostics;
         }
@@ -723,7 +739,8 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             if (*terrainSha.value != request.expectedTerrainSha256)
                 return Fail("SAVE_TERRAIN_STALE", "W3E SHA-256 与阴影计算请求不符，请重新获取地形快照。");
             originalTerrainShaValue = savedTerrainShaValue = *terrainSha.value;
-        } else if (!triggerRequest && !auxiliaryRequest) {
+        }
+        if (terrainRequest) {
             if (!source.HasMember("war3map.w3e") || !source.HasMember("war3map.wpm")) {
                 return Fail("SAVE_TERRAIN_PATHING_MISSING", "源地图必须同时包含唯一可读取的 W3E 和 WPM。");
             }
@@ -759,6 +776,9 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             if (!terrainReplay->IsDirty()) {
                 return Fail("SAVE_NO_TERRAIN_CHANGE", "全部笔划结束后地形与源图相同；未生成空改动候选。");
             }
+            // 领域候选已各自核对原成员SHA、前值和完整写出范围。先独立检查地形
+            // 输出，再将有类型的说明表装入同一会话；物编仍交最终通行来源门核对。
+            auto companionMembers = std::move(replacements);
             replacements = terrainReplay->Replacements();
             if (replacements.empty() || replacements.size() > 4 || !terrainReplay->Removals().empty())
                 return Fail("SAVE_EDIT_SCOPE_INVALID", "地形事务生成了空替换、过多成员或删除成员。");
@@ -797,6 +817,22 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             originalTerrainShaValue = *terrainSha.value;
             savedTerrainShaValue = *savedTerrainSha.value;
             savedPathingShaValue = *savedPathingSha.value;
+            if (fieldRequest) {
+                for (const auto& member : companionMembers) {
+                    const auto kind = member.name == "war3map.w3i" ? MapDataKind::Settings
+                        : member.name == "war3map.wts" ? MapDataKind::Strings : MapDataKind::Count;
+                    if (kind == MapDataKind::Count)
+                        return Fail("SAVE_TERRAIN_FIELD_SCOPE_INVALID", "地图说明生成了未获允许的伴随成员。");
+                    const auto parsed = MapData::ParseMapFieldTable(kind, member.data);
+                    if (!parsed.Succeeded() || !parsed.value) return Forward(parsed.diagnostics);
+                    const auto committed = CommitTable(*terrainReplay, *parsed.value, kind);
+                    if (!committed.Succeeded()) return Forward(committed.diagnostics);
+                }
+                replacements = terrainReplay->Replacements();
+            } else if (objectRequest) {
+                replacements.insert(replacements.end(), std::make_move_iterator(companionMembers.begin()),
+                    std::make_move_iterator(companionMembers.end()));
+            }
         }
         // 原版通行生成在最终脚本完成后执行；此时还未取得最终替换列表，
         // 不把“须重建通行”提前当成不能保存。其它领域仍走原保存门。

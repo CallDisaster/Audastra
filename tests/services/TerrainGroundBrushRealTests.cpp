@@ -156,9 +156,10 @@ void CheckRealGroundBrushSave(const MapArchiveSession& original,
             << " mmp_sha256=" << Take(Sha256(actualMarkerBytes)) << " mmp_version=0 mmp_records=" << actualMarkers.records.size()
             << " native_editor_verified=false game_verified=false\n";
     };
-    for (const unsigned mode : {0u, 1u, 2u}) {
-        const bool cliff = mode == 1, mixed = mode == 2;
-        const auto scenario = directory / (mixed ? "playable-mixed-unit-terrain" : cliff ? "playable-cliff" : "playable-pathing-texture");
+    for (const unsigned mode : {0u, 1u, 2u, 3u}) {
+        const bool cliff = mode == 1, mixed = mode == 2, renamed = mode == 3;
+        const auto scenario = directory / (renamed ? "playable-mixed-settings-terrain"
+            : mixed ? "playable-mixed-unit-terrain" : cliff ? "playable-cliff" : "playable-pathing-texture");
         Require(std::filesystem::create_directory(scenario), "exclusive ground brush scenario");
         std::vector<MemberReplacement> seeded{{"war3map.wpm", baseline},
             {"war3map.shd", shadowBytes}, {"war3map.mmp", markerBytes}};
@@ -177,6 +178,21 @@ void CheckRealGroundBrushSave(const MapArchiveSession& original,
         request.toolRoot = tool; request.gameRoot = game;
         request.expectedSourceSha256 = source.SourceSha256(); request.expectedTerrainSha256 = Take(Sha256(beforeBytes));
         std::vector<std::byte> expectedUnits;
+        std::vector<std::byte> expectedSettings;
+        if (renamed) {
+            const auto settingsBytes = Take(source.ReadMember("war3map.w3i"));
+            const std::array<MapArchiveMember, 1> settingsMembers{{{"war3map.w3i", settingsBytes}}};
+            const auto settingsMap = MapDocument::FromMembers(settingsMembers);
+            const auto* field = FindMapField(MapDataKind::Settings, "map_name");
+            Require(field != nullptr, "shared map-name field is writable");
+            const auto beforeName = Take(ReadMapField(settingsMap, MapDataKind::Settings, 0, *field));
+            const auto afterName = Take(ParseMapFieldInput(*field, "Terrain texture and final map name"));
+            request.fieldEdits = {{Take(Sha256(settingsBytes)), {MapDataKind::Settings, 0,
+                Take(MapFieldRowKey(settingsMap, MapDataKind::Settings, 0)), "map_name", beforeName, afterName}}};
+            auto expected = Take(MapSettings::Parse(settingsBytes));
+            expected.mapName = "Terrain texture and final map name";
+            expectedSettings = Take(expected.Serialize());
+        }
         if (mixed) {
             using namespace ObjectData;
             const auto originalUnits = Take(source.ReadMember("war3map.w3u"));
@@ -212,8 +228,34 @@ void CheckRealGroundBrushSave(const MapArchiveSession& original,
             && planned.result.x1 <= 39 && planned.result.y1 <= 39, "ground edit stays inside the independent oracle window");
         std::vector<MemberReplacement> markerInputs{{"war3map.w3e", Take(SerializeMapTerrain(planned.terrain))}};
         if (mixed) markerInputs.push_back({"war3map.w3u", expectedUnits});
+        if (renamed) markerInputs.push_back({"war3map.w3i", expectedSettings});
         const auto expectedMarkerOwner = Take(TerrainMinimapMarkers::Capture(source, game, markerInputs));
         Require(expectedMarkerOwner->Bytes() != markerBytes, "normal save must replace synthetic stale marker sentinels");
+        if (mixed || renamed) {
+            const auto reject = [&](MapEditSaveRequest bad, std::string_view code, const char* filename) {
+                bad.targetCandidate = scenario / filename;
+                bool progressed = false;
+                const auto rejected = SaveMapEditCandidate(bad, [&](std::string_view) { progressed = true; });
+                Require(!rejected.Succeeded() && !rejected.value && !progressed
+                    && !std::filesystem::exists(bad.targetCandidate)
+                    && std::any_of(rejected.diagnostics.begin(), rejected.diagnostics.end(), [&](const auto& diagnostic) {
+                        return diagnostic.code == code;
+                    }), "invalid mixed input rejects before script preparation or candidate publication");
+            };
+            auto stale = request;
+            stale.expectedTerrainSha256[0] = stale.expectedTerrainSha256[0] == '0' ? '1' : '0';
+            reject(stale, "SAVE_TERRAIN_STALE", "stale-terrain-must-not-exist.w3x");
+            auto missing = request; missing.expectedTerrainSha256.clear();
+            reject(missing, "SAVE_REQUEST_INVALID", "missing-terrain-sha-must-not-exist.w3x");
+            auto invalidStroke = request; invalidStroke.terrainStrokes.front().points.clear();
+            reject(invalidStroke, "SAVE_STROKE_POINTS", "empty-stroke-must-not-exist.w3x");
+            auto extraDomain = request; extraDomain.placementEdit = MapEditPlacementRotation{};
+            reject(extraDomain, "SAVE_OPERATION_SCOPE_INVALID", "extra-domain-must-not-exist.w3x");
+            if (renamed) {
+                auto range = request; range.fieldEdits.front().edit.field = "playable_width";
+                reject(range, "SAVE_TERRAIN_FIELD_SCOPE_INVALID", "mixed-range-must-not-exist.w3x");
+            }
+        }
         const auto saved = Take(SaveMapEditCandidate(request));
         const auto readback = Take(MapArchiveSession::Open(saved.candidate));
         const auto afterBytes = Take(readback.ReadMember("war3map.w3e"));
@@ -228,12 +270,17 @@ void CheckRealGroundBrushSave(const MapArchiveSession& original,
         }
         Require(expected != baseline && Take(readback.ReadMember("war3map.wpm")) == expected,
             "complete saved WPM matches independent local dry bytes and unchanged exterior");
-        if (!mixed) Require(saved.scriptPreserved, "ground save preserves the compiled playable initialization");
-        else Require(Take(readback.ReadMember("war3map.w3u")) == expectedUnits, "public mixed save reads back HP zero to one exactly");
+        if (!mixed && !renamed) Require(saved.scriptPreserved, "ground save preserves the compiled playable initialization");
+        if (mixed) Require(Take(readback.ReadMember("war3map.w3u")) == expectedUnits, "public mixed save reads back HP zero to one exactly");
+        if (renamed) Require(Take(readback.ReadMember("war3map.w3i")) == expectedSettings
+            && saved.appliedFieldEditCount == 1 && saved.appliedStrokeCount == 1 && saved.generatedMissingMinimap.has_value(),
+            "real script preparation and automatic minimap consume the final typed settings alongside terrain");
         for (const auto& member : source.Members()) {
             const auto name = Text::LowerAscii(member.name);
             if (name == "war3map.w3e" || name == "war3map.wpm" || name == "war3mapmap.blp" || name == "war3map.mmp") continue;
-            if (mixed && (name == "war3map.w3u" || name == "war3map.j" || name == "scripts/war3map.j")) continue;
+            if ((mixed || renamed) && (name == "war3map.j" || name == "scripts/war3map.j")) continue;
+            if (mixed && name == "war3map.w3u") continue;
+            if (renamed && name == "war3map.w3i") continue;
             Require(Take(readback.ReadMember(member.name)) == member.data, "ground save preserves every unrelated member");
         }
         verifyDerived(readback, "saved", cliff ? "cliff" : "texture", expectedMarkerOwner->Bytes());

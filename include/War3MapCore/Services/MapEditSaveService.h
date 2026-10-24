@@ -148,7 +148,9 @@ struct MapEditSaveReceipt {
     std::optional<MapEditMinimapReceipt> generatedMissingMinimap;
 };
 
-// 仅接受一种有界领域操作，或同源的完整触发器与物编封印事务；旧触发器批次不能混用。
+// 接受一种有界领域操作，或同源的完整触发器与物编封印事务；旧触发器批次不能混用。
+// 地形笔划也可带一种伴随修改：四个地图说明字段，或冻结物编事务。两类输入分别验证，
+// 同时绑定源图与W3E SHA，并经最终通行来源检查；不混入摆放、触发器或区域/镜头事务。
 // 源归档及目标成员 SHA 绑定到请求；WPM 语义由编辑会话验证；
 // 最终成员、脚本和物编均经同一 MapSaveService 审核，候选回读成功才返回回执。
 [[nodiscard]] Result<MapEditSaveReceipt> SaveMapEditCandidate(
