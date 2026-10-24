@@ -4,7 +4,9 @@
 #include "War3MapCore/MapData/MapPlacements.h"
 #include "War3MapCore/MapData/MapTerrain.h"
 
+#include <array>
 #include <memory>
+#include <stop_token>
 
 namespace War3Map::Services {
 
