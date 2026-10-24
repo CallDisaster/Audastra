@@ -1038,7 +1038,18 @@ Status TerrainPathingResources::VerifyReadback(const WorkspaceSnapshot& saved, s
     }, maximumBytes);
 }
 
-Status TerrainPathingResources::VerifyReadbackMembers(const MemberReader& reader, std::size_t maximumBytes) const {
+Status TerrainPathingResources::VerifySourceInputs(const MapArchiveSession& source, std::size_t maximumBytes) const {
+    return VerifyReadbackMembers([&](auto names, const auto& limits) { return source.CaptureExactMembers(names, limits); }, maximumBytes, true);
+}
+
+Status TerrainPathingResources::VerifySourceInputs(const WorkspaceSnapshot& source, std::size_t maximumBytes) const {
+    return VerifyReadbackMembers([&](auto names, const auto& limits) {
+        return Guard<std::vector<ArchiveExactMember>>([&] { return DirectoryMembers(source, names, limits); });
+    }, maximumBytes, true);
+}
+
+Status TerrainPathingResources::VerifyReadbackMembers(const MemberReader& reader, std::size_t maximumBytes,
+    bool sourceInputs) const {
     auto checked = Guard<bool>([&] {
         if (sourceBytes_ > maximumBytes)
             Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "地形成员回读后剩余额度不足以复核通行输入。");
@@ -1057,7 +1068,7 @@ Status TerrainPathingResources::VerifyReadbackMembers(const MemberReader& reader
             if (actual[i].present != expected.mapPresent)
                 Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "保存回读的通行输入不同：" + expected.name);
             if (actual[i].present) {
-                if (nativeBounds_ && expected.name == "war3map.doo") {
+                if (!sourceInputs && nativeBounds_ && expected.name == "war3map.doo") {
                     if (nativeDoodadsFrozen_) {
                         if (actual[i].bytes != nativeAfterDoodads_) Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "回读DOO不是冻结的新阶段集合。");
                     } else {
@@ -1065,8 +1076,8 @@ Status TerrainPathingResources::VerifyReadbackMembers(const MemberReader& reader
                         if (!status.Succeeded()) throw Failure{status.diagnostics};
                     }
                 } else {
-                    const bool terrainOutput = nativeBounds_ && expected.name == "war3map.w3e";
-                    const bool settingsOutput = nativeBounds_ && expected.name == "war3map.w3i" && nativeSettingsOutputSha_;
+                    const bool terrainOutput = !sourceInputs && nativeBounds_ && expected.name == "war3map.w3e";
+                    const bool settingsOutput = !sourceInputs && nativeBounds_ && expected.name == "war3map.w3i" && nativeSettingsOutputSha_;
                     const auto size = terrainOutput ? nativeTerrainBytes_[1]
                         : settingsOutput ? nativeSettingsOutputBytes_ : expected.bytes;
                     const auto& sha = terrainOutput ? nativeTerrainSha_[1]

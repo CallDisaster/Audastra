@@ -563,6 +563,11 @@ void NativeCaptureBindsFullRulesAndBothTerrainRevisions() {
     const auto source = fixture.Write(directory.path / "native.w3x");
     auto after = fixture.grid; after.vertices[40].variationRaw = 1;
     const auto captured = Take(TerrainPathingResources::CaptureNative(source, fixture.grid, after, {}, 1024 * 1024));
+    Check(captured.VerifySourceInputs(source, 1024 * 1024));
+    Require(!captured.VerifyReadback(source, 1024 * 1024).Succeeded(),
+        "an edited after-stage cannot be mistaken for the still-original source archive");
+    Require(!captured.VerifySourceInputs(source, captured.SourceBytes() - 1).Succeeded(),
+        "source verification keeps the complete capture byte budget");
     Require(!captured.VerifyWaterBrushInput(fixture.grid, after).Succeeded(),
         "native save resources do not grant editing rule input identity");
     const auto beforeGrid = Take(captured.GenerateNative(fixture.grid, 1024 * 1024));
@@ -578,6 +583,8 @@ void NativeCaptureBindsFullRulesAndBothTerrainRevisions() {
     Require(!captured.VerifyFrozenOutput(replacements, std::vector<std::string>{"war3map.w3i"}).Succeeded(), "native W3I source cannot disappear");
     const auto saved = Take(MapArchiveSession::Open(Take(source.SaveCandidate(directory.path / "native-saved.w3x", replacements)).path));
     Check(captured.VerifyReadback(saved, 1024 * 1024));
+    Require(!captured.VerifySourceInputs(saved, 1024 * 1024).Succeeded(),
+        "saved after-stage bytes cannot impersonate the captured original archive");
     Require(!captured.VerifyReadback(saved, captured.SourceBytes() - 1).Succeeded(), "native metadata consumes readback budget");
     const auto preserveOnly = Take(TerrainPathingResources::Capture(source, fixture.grid, fixture.grid, {}, 1024 * 1024));
     Require(!preserveOnly.GenerateNative(fixture.grid, 1024 * 1024).Succeeded(), "equivalence capture does not grant full generation");
@@ -905,8 +912,21 @@ void NativeDirectoryCaptureUsesTheSameFrozenResources() {
     const auto captured = Take(TerrainPathingResources::CaptureNative(workspace.Snapshot(), fixture.grid, fixture.grid, {}, 1024 * 1024));
     Require(Take(captured.GenerateNative(fixture.grid, 1024 * 1024)).front() == std::byte{0x40}, "directory uses same actual ground rules");
     Check(captured.VerifyReadback(workspace.Snapshot(), 1024 * 1024));
+    auto after = fixture.grid; after.vertices[40].variationRaw = 1;
+    const auto edited = Take(TerrainPathingResources::CaptureNative(workspace.Snapshot(), fixture.grid, after, {}, 1024 * 1024));
+    Check(edited.VerifySourceInputs(workspace.Snapshot(), 1024 * 1024));
+    Require(!edited.VerifyReadback(workspace.Snapshot(), 1024 * 1024).Succeeded(),
+        "directory source is checked against Before, never the different future W3E");
+    Check(IO::WriteFileBytes(root / "war3map.w3e", Take(SerializeMapTerrain(after))));
+    const auto saved = Take(DirectoryWorkspace::Open(root));
+    Check(edited.VerifyReadback(saved.Snapshot(), 1024 * 1024));
+    Require(!edited.VerifySourceInputs(saved.Snapshot(), 1024 * 1024).Succeeded(),
+        "saved directory output cannot impersonate the original capture");
     Check(IO::WriteFileBytes(root / "TerrainArt/Terrain.slk", GroundTable("0")));
     Require(!captured.VerifyReadback(workspace.Snapshot(), 1024 * 1024).Succeeded(), "directory source drift cannot reuse old identity");
+    Require(!edited.VerifyReadback(saved.Snapshot(), 1024 * 1024).Succeeded()
+        && !edited.VerifySourceInputs(saved.Snapshot(), 1024 * 1024).Succeeded(),
+        "directory source drift cannot reuse old identity in either verification phase");
 }
 } // namespace
 

@@ -275,7 +275,7 @@ void BoundsFacadeUsesActualResourcesCasAndSharedUndo() {
         owner = std::move(*captured.value);
         return PrepareTerrainBoundsEdit(*context.session, context.document, binding, *owner, intent);
     };
-    host.verifyBounds = [&] { return owner ? owner->VerifyReadback(*fixture.archive, 64u * 1024u * 1024u)
+    host.verifyBounds = [&] { return owner ? owner->VerifySourceInputs(*fixture.archive, 64u * 1024u * 1024u)
         : Status::Failure("Test", "NO_ACTUAL_OWNER", "missing native owner"); };
     host.applyBounds = [&](const auto& prepared, const auto& validate) { return ApplyTerrainBoundsEdit(*fixture.edits, document(), prepared, validate); };
     const auto state = InvokeTerrainEditTool("get_terrain_edit_state", {}, host);
@@ -303,6 +303,20 @@ void BoundsFacadeUsesActualResourcesCasAndSharedUndo() {
     Expect(fixture.edits->Undo() && !fixture.edits->IsDirty(), "shared bounds Undo restores complete source");
     Expect(fixture.edits->Redo() && TerrainTake(SerializeMapTerrain(*fixture.edits->Terrain())) == after,
         "shared bounds Redo restores exact output bytes");
+    const auto current = InvokeTerrainEditTool("get_terrain_edit_state", {}, host);
+    auto second = write; second["expected_revision"] = QString::number(fixture.edits->Revision());
+    second["terrain_binding"] = current.value("terrain_binding");
+    second["west"] = 2; second["south"] = 2; second["east"] = 8; second["north"] = 6;
+    const auto revision = fixture.edits->Revision();
+    const auto appliedAgain = InvokeTerrainEditTool("edit_terrain_bounds", second, host);
+    Expect(appliedAgain.value("ok").toBool() && appliedAgain.value("applied").toBool()
+        && fixture.edits->Revision() == revision + 1,
+        "a second real bounds command verifies original sources instead of requiring the unsaved first output");
+    const auto secondTerrain = TerrainTake(SerializeMapTerrain(*fixture.edits->Terrain()));
+    Expect(fixture.edits->Undo() && TerrainTake(SerializeMapTerrain(*fixture.edits->Terrain())) == after,
+        "second bounds Undo restores the first owned draft");
+    Expect(fixture.edits->Redo() && TerrainTake(SerializeMapTerrain(*fixture.edits->Terrain())) == secondTerrain,
+        "second bounds Redo restores the complete second mask");
 }
 
 void CodecProvesSourceIntentAndNetBytes() {

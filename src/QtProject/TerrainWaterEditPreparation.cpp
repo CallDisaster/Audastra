@@ -169,8 +169,8 @@ Result<TerrainWaterEditCapture> LoadTerrainWaterEditResources(std::shared_ptr<co
         if (!resources.Succeeded()) return {std::nullopt, std::move(resources.diagnostics)};
         const auto input = resources.value->VerifyWaterBrushInput(*terrain.value->Snapshot(), *request->terrain);
         if (!input.Succeeded()) return {std::nullopt, input.diagnostics};
-        const auto verified = archive ? resources.value->VerifyReadback(*archive, request->maximumBytes)
-                                      : resources.value->VerifyReadback(*request->directory, request->maximumBytes);
+        const auto verified = archive ? resources.value->VerifySourceInputs(*archive, request->maximumBytes)
+                                      : resources.value->VerifySourceInputs(*request->directory, request->maximumBytes);
         if (!verified.Succeeded()) return {std::nullopt, verified.diagnostics};
         return Capture::Success({std::move(request), std::move(*resources.value)});
     } catch (const std::exception&) {
@@ -185,8 +185,8 @@ Status VerifyTerrainWaterEditResources(const TerrainWaterEditCapture& capture) {
         const auto& request = *capture.request;
         const auto path = VerifySourcePath(request);
         if (!path.Succeeded()) return path;
-        if (request.archive) return capture.resources.VerifyReadback(*request.archive, request.maximumBytes);
-        if (request.directory) return capture.resources.VerifyReadback(*request.directory, request.maximumBytes);
+        if (request.archive) return capture.resources.VerifySourceInputs(*request.archive, request.maximumBytes);
+        if (request.directory) return capture.resources.VerifySourceInputs(*request.directory, request.maximumBytes);
         return Status::Failure("Terrain.Water", "TERRAIN_WATER_SOURCE_REQUIRED", "水刷缺少真实来源。");
     } catch (const std::exception&) {
         return Status::Failure("Terrain.Water", "TERRAIN_WATER_VERIFY_FAILED", "水刷来源复核失败，本笔未提交。");

@@ -954,6 +954,9 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
     // 按源图到当前 W3E 的最终原始净差判定；工程恢复没有可靠的笔刷来源身份，
     // 不能只检查 Raise/Lower/Smooth 枚举来保护 UI 与 Agent 共用的保存路径。
     bool invariantChanged = !SameHeader(newHeader, oldHeader);
+    // 上方已完整核对私有范围状态绑定的旧/新W3I与全部MapEdge位。
+    // 仅原版G0/G1重建可消费该可信0x4000变化，未知0x8000及无owner草稿仍拒绝。
+    const auto protectedWaterFlags = nativeRebuild && boundsState_ ? 0x8000u : 0xc000u;
     for (std::size_t index = 0; index < terrain->vertices.size(); ++index) {
         const auto& before = terrainOriginal_->vertices[index];
         const auto& after = terrain->vertices[index];
@@ -961,7 +964,7 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
         const bool cliffChanged = before.CliffLevel() != after.CliffLevel();
         const bool cliffVariationChanged = before.CliffVariation() != after.CliffVariation();
         const bool cliffTextureChanged = before.CliffTextureIndex() != after.CliffTextureIndex();
-        if ((waterChanged && ((!resources && !nativeRebuild) || ((before.waterHeightAndFlagsRaw ^ after.waterHeightAndFlagsRaw) & 0xc000) != 0))
+        if ((waterChanged && ((!resources && !nativeRebuild) || ((before.waterHeightAndFlagsRaw ^ after.waterHeightAndFlagsRaw) & protectedWaterFlags) != 0))
             || (cliffVariationChanged && !nativeRebuild)
             || (before.cliffAndLayerRaw != after.cliffAndLayerRaw && ((!resources && !nativeRebuild)
                 || (cliffTextureChanged && !nativeRebuild)))

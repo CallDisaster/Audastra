@@ -242,7 +242,7 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& sourc
     }
     // 捕获之后可能发生来源变更；全部owners复核到同一实际来源后才返回候选。
     for (const auto& owner : owners) {
-        const auto checked = owner.VerifyReadback(source, MapData::TerrainSavePlanLimits{}.maximumBytes);
+        const auto checked = owner.VerifySourceInputs(source, MapData::TerrainSavePlanLimits{}.maximumBytes);
         if (!checked.Succeeded()) return {{}, checked.diagnostics};
     }
     return Output::Success(std::move(owners));
