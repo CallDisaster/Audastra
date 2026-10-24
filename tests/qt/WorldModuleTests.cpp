@@ -841,7 +841,7 @@ private slots:
     void TerrainWaterBrushDropsCancelledCommit_data();
     void TerrainWaterBrushDropsCancelledCommit();
     void TerrainTextureSlotUsesSharedTransaction();
-    void TerrainTextureSlotAppendNeedsNoGame();
+    void TerrainTextureSlotAppendRejectsMissingSource();
     void TerrainTextureSlotWorkerRejectsStale_data();
     void TerrainTextureSlotWorkerRejectsStale();
     void TerrainTextureSlotWorkerSurvivesModuleDestruction();
@@ -4115,7 +4115,7 @@ void WorldModuleTests::TerrainTextureSlotUsesSharedTransaction() {
     QCOMPARE(project.mapDataUndoStack_->count(), 1); // 过期对话框不能覆盖外部编辑或增加撤销项。
 }
 
-void WorldModuleTests::TerrainTextureSlotAppendNeedsNoGame() {
+void WorldModuleTests::TerrainTextureSlotAppendRejectsMissingSource() {
     QTemporaryDir directory; QVERIFY(directory.isValid());
     const auto source = TerrainBytes(); QVERIFY(Write(directory.filePath("war3map.w3e"), source));
     QtProject::EditorProject project; project.projectRoot_ = directory.path().toStdWString();
@@ -4131,13 +4131,13 @@ void WorldModuleTests::TerrainTextureSlotAppendNeedsNoGame() {
     page->resize(900, 600); page->show(); QTRY_COMPARE(module.Viewport()->VertexCount(), std::size_t{6});
     auto* append = page->findChild<QPushButton*>("worldTerrainAddTexture"); QVERIFY(append);
     const auto original = Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
-    const auto originalSlotCount = project.mapEdits_->Terrain()->header.groundTilesets.size();
+    const auto revision = project.mapEdits_->Revision();
     AcceptTerrainPaletteDialog(page, QStringLiteral("Tg02")); append->click();
     QTRY_VERIFY(!page->property("terrainPalettePending").toBool());
-    QCOMPARE(page->property("terrainPaletteOutcome").toString(), QStringLiteral("applied"));
-    QCOMPARE(project.mapEdits_->Terrain()->header.groundTilesets.size(), originalSlotCount + 1);
-    QCOMPARE(project.mapDataUndoStack_->count(), 1); QVERIFY(project.war3GameRoot_.empty());
-    project.mapDataUndoStack_->undo(); QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), original);
+    QCOMPARE(page->property("terrainPaletteOutcome").toString(), QStringLiteral("failed"));
+    QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), original);
+    QCOMPARE(project.mapEdits_->Revision(), revision);
+    QCOMPARE(project.mapDataUndoStack_->count(), 0); QVERIFY(project.war3GameRoot_.empty());
 }
 
 void WorldModuleTests::TerrainTextureSlotWorkerRejectsStale_data() {

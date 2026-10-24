@@ -1724,10 +1724,27 @@ void WalkableBridgeSpecialDeletionKeepsOrdinaryAndProvenanceGates() {
         if (mode == 7) changed.doodads[0].itemSets[0].items[0].chance += 1;
         if (mode == 8) changed.doodads[0].itemSets[0].items[0].rawcode = "drop";
         if (mode == 9) changed.doodads[2].rotation = -0.0f;
-        const auto wire = Take(changed.Serialize());
-        const auto refused = TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot, kBudget, &wire);
-        Require(!refused.Succeeded() && HasCode(refused, "TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED"),
-            "special deletion cannot authorize any ordinary wire change: Z, flags, XY, angle, order, count, nested drops or signed zero");
+        if (mode == 0) {
+            const auto wire = Take(changed.Serialize());
+            const auto refused = TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot, kBudget, &wire);
+            Require(!refused.Succeeded() && HasCode(refused, "TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED"),
+                "special deletion cannot authorize a bridge record change");
+        } else {
+            Fixture ordinary; BridgeSpecialWaterFixture(ordinary); PaintBridgeSpecialWater(ordinary);
+            Check(ordinary.edits->EditDoodads(changed));
+            auto expected = ordinary.Member("war3map.wpm");
+            for (unsigned y = 4; y < 12; ++y) for (unsigned x = 4; x < 12; ++x)
+                expected[16 + y * 32 + x] = std::byte{0xdb};
+            for (unsigned y = 6; y < 10; ++y) for (unsigned x = 6; x < 10; ++x)
+                expected[16 + y * 32 + x] = std::byte{0x1b};
+            BridgeSpecialExpectedLayers(expected);
+            if (mode == 6) for (unsigned y = 6; y < 10; ++y) for (unsigned x = 8; x < 12; ++x)
+                expected[16 + y * 32 + x] &= std::byte{0xfb};
+            const auto wire = Take(changed.Serialize());
+            const auto name = "bridge-special-ordinary-" + std::to_string(mode) + ".w3x";
+            ordinary.SaveExpected(name.c_str(),
+                Take(SerializeMapTerrain(*ordinary.edits->Terrain())), expected, &wire, true);
+        }
     }
     for (const bool reorder : {false, true}) {
         auto changed = deleted;
@@ -2120,8 +2137,15 @@ void BridgeOriginalDependenciesAndOldPathingRemainBound() {
             Fixture changed; PatternedBridgeOriginal(changed, 90, NativeValueType::Unreal, custom); changed.Open(); changed.Paint();
             auto placements = Take(ParseDoodadPlacements(changed.Member("war3map.doo"))); placements.doodads[row].position[2] = 16;
             Check(changed.edits->EditDoodads(placements));
-            const auto gate = changed.Plan().SaveGate();
-            Require(!gate.Succeeded() && HasCode(gate, "TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED"), "Original bridge still freezes the entire DOO including unrelated ordinary Z");
+            if (row == 0) {
+                const auto gate = changed.Plan().SaveGate();
+                Require(!gate.Succeeded() && HasCode(gate, "TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED"),
+                    "Original bridge record remains frozen");
+            } else {
+                const auto wire = Take(placements.Serialize());
+                changed.SaveExpected("bridge-original-unrelated-z.w3x", changed.ExpectedTerrain(true),
+                    BridgeOriginalExpectedPathing(changed, true, true), &wire, true);
+            }
         }
         Fixture unexplained; PatternedBridgeOriginal(unexplained, 90, NativeValueType::Unreal, custom);
         unexplained.Member("war3map.wpm")[16 + 16 * 32 + 18] ^= std::byte{2};
@@ -2301,9 +2325,15 @@ void WalkableBridgeStateAndWholeDoodadFreezeRejectBeforePublication() {
     for (const unsigned row : {0u,1u}) {
         Fixture f; WalkableBridge(f); f.Open(); f.Paint();
         auto placements=Take(ParseDoodadPlacements(f.Member("war3map.doo"))); placements.doodads[row].position[2]=16;
-        Check(f.edits->EditDoodads(placements)); const auto plan=f.Plan();
-        Require(!plan.SaveGate().Succeeded() && HasCode(plan.SaveGate(),"TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED"),
-            "whole DOO freeze rejects both bridge Z and an unrelated ordinary object's Z");
+        Check(f.edits->EditDoodads(placements));
+        if (row == 0) {
+            const auto plan=f.Plan();
+            Require(!plan.SaveGate().Succeeded() && HasCode(plan.SaveGate(),"TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED"),
+                "bridge Z remains frozen");
+        } else {
+            const auto wire=Take(placements.Serialize());
+            f.SaveExpected("bridge-unrelated-z.w3x", f.ExpectedTerrain(true), BridgeExpectedPathing(f,true,false), &wire, true);
+        }
     }
 }
 void WalkableBridgeSourceAndResourceDependenciesRemainBound() {
@@ -2486,6 +2516,7 @@ void MixedObjectAndResourceSavesUseActualPathingDependencies() {
 #include "TerrainOrdinaryDoodadSaveCases.h"
 #include "TerrainOrdinarySpecialSaveCases.h"
 #include "TerrainOrdinaryJournalSaveCases.h"
+#include "TerrainBridgeOrdinarySaveCases.h"
 } // namespace
 
 int main() {
@@ -2546,6 +2577,9 @@ int main() {
         OrdinaryJournalRecoveryPreservesBothOperationOrders();
         OrdinaryJournalRecoveryRejectsTamperingAndPublicPlaceholders();
         OrdinaryJournalRecoveryRetainsRepeatedInterleaving();
+        BridgeAllowsOnlyUnrelatedOrdinaryMutationsThroughFormalHistory();
+        BridgeRecordBytesOrderAndClassificationRemainMandatory();
+        BridgeOrdinaryFrozenOutputSourcesAndBudgetRemainBound();
         std::cout << "Native object terrain save tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

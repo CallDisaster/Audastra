@@ -48,7 +48,7 @@ Result<TerrainNativeDoodadsProof> TerrainNativeDoodadsProof::Prepare(
                 "普通对象组合修改须保持原DOO头版本，不能借特殊模型谱系转换记录格式。");
         // 两份special分别匹配同一会话的saved/current私有集合；这允许水刷的
         // 删除与Undo/Redo恢复和普通XY修改同存，不从相同尾段字节重建授权。
-        // 原版owner仍分别生成普通/special的G0/G1，并独立冻结桥的完整普通段。
+        // 原版owner仍分别生成普通/special的G0/G1，并冻结桥记录的完整原字及相对顺序。
         auto oldSha = Sha256(*before), currentSha = Sha256(*after);
         if (!oldSha.Succeeded() || !oldSha.value) return {{}, std::move(oldSha.diagnostics)};
         if (!currentSha.Succeeded() || !currentSha.value) return {{}, std::move(currentSha.diagnostics)};

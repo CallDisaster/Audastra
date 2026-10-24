@@ -4894,7 +4894,12 @@ void EditorProjectTests::PaletteWaterProjectColdRestoreAndNativeSave() {
         {{"Doo0", "Doo0", "PathTextures/zero-special.tga", "C", "45"},
             {"Doo1", "Doo1", "PathTextures/zero-special.tga", "C", "45"},
             {"Doo2", "Doo2", "PathTextures/zero-special.tga", "C", "45"}})});
-    // 独立全黑4x4 RGB占地不改变G0，却提供特殊模型的真实1格范围。
+    // 特殊模型的全黑4x4占地替换地面通行，去掉原干地unfloat；保留作者11。
+    for (auto& member : members) if (member.name == "war3map.wpm") {
+        for (const auto [x0, y0] : std::array<std::pair<unsigned, unsigned>, 3>{{{8, 8}, {20, 20}, {24, 20}}})
+            for (unsigned y = y0; y < y0 + 4; ++y) for (unsigned x = x0; x < x0 + 4; ++x)
+                member.data[16 + y * 32 + x] = std::byte{0x11};
+    }
     std::vector<std::byte> texture(18 + 16 * 3, std::byte{});
     texture[2] = std::byte{2}; texture[12] = texture[14] = std::byte{4}; texture[16] = std::byte{24};
     members.push_back({"PathTextures/zero-special.tga", std::move(texture)});

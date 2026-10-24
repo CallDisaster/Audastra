@@ -109,6 +109,8 @@ void RequireWriteFailure(const War3Map::Result<T>& result, std::string_view code
     Require(result.diagnostics.size() == 1 && result.diagnostics[0].code == code, "incorrect writer diagnostic code");
 }
 
+#include "TerrainWalkableDoodadWireCases.h"
+
 void CheckUnits() {
     const auto fixture = Units();
     auto parsed = ParseUnitPlacements(fixture.bytes);
@@ -326,6 +328,7 @@ int main() {
         CheckBudgetsAndEmpty();
         CheckVersionedSkinReadOnly();
         CheckWritablePlacements();
+        CheckClassicDoodadRecordWireMeasurement();
         std::cout << "Map placements parser tests passed\n";
         return 0;
     } catch (const std::exception& error) {
