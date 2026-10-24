@@ -1035,7 +1035,11 @@ void TestFinalSettingsCaptureUsesActualCurrentOutput() {
     Rejected(budget);
     Require(std::any_of(budget.diagnostics.begin(), budget.diagnostics.end(), [](const auto& d) { return d.code == "TERRAIN_ASSETS_BUDGET"; }),
         "少一个字节须命中分配前设置峰值预算门");
-    auto saved = Saved(fixture, source, "final-settings-saved.w3x", output);
+    // 合成归档写入器只接受 ASCII 成员名；上面的非 ASCII 覆盖专门验证捕获时
+    // 不扫描无关成员，回读夹具用同内容的 ASCII 名称，不改变真实 W3I 依赖。
+    auto archiveOutput = output;
+    archiveOutput.back().name = "Unrelated\\File.txt";
+    auto saved = Saved(fixture, source, "final-settings-saved.w3x", archiveOutput);
     Require(VerifyTerrainMinimapAssetsReadback(captured, saved).Succeeded()
         && Take(saved.ReadMember("war3map.w3i")) == finalSettings
         && Take(Sha256File(source.SourcePath())) == sourceSha,

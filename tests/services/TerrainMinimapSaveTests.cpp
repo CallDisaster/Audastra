@@ -710,7 +710,7 @@ void AutomaticInvalidFinalRectangleRemainsARealFailure() {
     Require(fixture.edits.EditSerialized(MapDataKind::Settings, finalSettings).Succeeded(), "建立可序列化但空相机矩形的设置");
     MapSaveTask task; fixture.Freeze(task);
     Rejected(TerrainMinimapSave::PrepareAutomaticOrPreserve(task, fixture.edits, fixture.gameRoot),
-        "NATIVE_MMP_PLAYABLE_EMPTY");
+        "CLASSIC_MINIMAP_PLAYABLE_EMPTY");
     Require(!task.executed && !std::filesystem::exists(task.target), "无效最终矩形不能以保留原图警告掩盖");
 }
 
