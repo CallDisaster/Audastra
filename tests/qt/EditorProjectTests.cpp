@@ -20,6 +20,7 @@
 #include "War3MapCore/MapData/MapPlacements.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/Services/TerrainMinimapSave.h"
+#include "War3MapCore/Services/TerrainMinimapMarkers.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/Services/CampaignService.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
@@ -1602,6 +1603,9 @@ void EditorProjectTests::TerrainSaveReadbackGatesCommit() {
     job->preparedRevision = MapSaveRevisionBinding{project.editRevision_.Generation(), project.editRevision_.Revision(),
         project.editRevision_.Current()};
     job->terrainSavePlan = originalPlan;
+    // 本夹具专门覆盖已冻结计划的Run/回读/Commit边界，不重跑派生准备。
+    // 普通保存的图标重建另在worker集成用例中覆盖。
+    job->derivedPreparationInstalled = true;
     const auto& diagnostics = originalPlan->Diagnostics();
     job->diagnostics.insert(job->diagnostics.end(), diagnostics.begin(), diagnostics.end());
     QVERIFY(originalPlan->VerifyForSave(*project.mapEdits_, job->sourceSha256, job->replacements, job->removals).Succeeded());
@@ -2000,12 +2004,16 @@ void EditorProjectTests::NativePathingWorkerRebuildsAndRebinds() {
     const auto point = project.mapEdits_->InspectTerrainPoint({512, 512}); QVERIFY(point.Succeeded() && point.value);
     QCOMPARE(point.value->pathingFlags, 0x1b); QCOMPARE(point.value->originalPathingFlags, 0x1b);
     QVERIFY(!project.mapEdits_->IsDirty() && !project.HasUnsavedMapChanges());
-    for (const auto* preserved : {"war3map.shd", "war3map.mmp", "war3map.j"}) {
+    for (const auto* preserved : {"war3map.shd", "war3map.j"}) {
         const auto original = std::find_if(members.begin(), members.end(),
             [preserved](const auto& member) { return member.name == preserved; });
         QVERIFY(original != members.end());
         QCOMPARE(project.archiveSession_->ReadMember(preserved).value, std::optional(original->data));
     }
+    // 原创夹具没有单位；完整v0 MMP是两个I32零，不沿用原来的零长度哨兵。
+    QVERIFY(job->minimapMarkers && job->minimapMarkers->MarkerCount() == 0);
+    QCOMPARE(project.archiveSession_->ReadMember("war3map.mmp").value,
+        std::optional(std::vector<std::byte>(8, std::byte{0})));
     if (mode == 1) {
         QVERIFY(!job->backup.empty()); QCOMPARE(Sha256File(job->backup).value, originalSha.value);
     } else QCOMPARE(Sha256File(source).value, originalSha.value);
@@ -2339,8 +2347,12 @@ void EditorProjectTests::CheckNativeDoodadNormalSaveAndUndoRedo(const std::vecto
         const auto readback = MapArchiveSession::Open(target); QVERIFY(readback.Succeeded());
         QCOMPARE(readback.value->ReadMember("war3map.w3e").value, std::optional(expectedTerrain));
         QCOMPARE(readback.value->ReadMember("war3map.wpm").value, std::optional(expectedPathing));
-        for (const auto& member : members) if (member.name != "war3map.w3e" && member.name != "war3map.wpm")
+        for (const auto& member : members) if (member.name != "war3map.w3e" && member.name != "war3map.wpm"
+            && member.name != "war3map.mmp")
             QCOMPARE(readback.value->ReadMember(member.name).value, std::optional(member.data));
+        QVERIFY(job->minimapMarkers && job->minimapMarkers->MarkerCount() == 0);
+        QCOMPARE(readback.value->ReadMember("war3map.mmp").value,
+            std::optional(std::vector<std::byte>(8, std::byte{0})));
         QVERIFY(project.CommitMapSave(*job));
         QCOMPARE(project.mapEdits_->SessionIdentity(), session); QCOMPARE(project.sourceArchivePath_, target);
         QVERIFY(project.mapEdits_->TerrainSourceRevision() > beforeRevision);
@@ -2699,7 +2711,7 @@ void EditorProjectTests::WalkableDestructableOriginalWorkerRejectsBeforeWrite_da
             add(scenario, "TERRAIN_DOODAD_FIXED_ROTATION");
         add("rotation-ambiguous", "TERRAIN_DOODAD_ANGLE_AMBIGUOUS");
         add("follow-z", "TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED");
-        add("pathing-resource-drift", "TERRAIN_SAVE_PLAN_HEIGHT_RESOURCE_SCOPE");
+        add("pathing-resource-drift", "TERRAIN_PATHING_RESOURCE_CHANGED");
         add("source-drift", "SOURCE_CHANGED");
     }
 }
@@ -2822,7 +2834,7 @@ void EditorProjectTests::WalkableDestructableCustomWorkerRejectsBeforeWrite_data
         add("rotation-wire-real", "TERRAIN_NATIVE_OBJECT_BRIDGE_TYPE");
         add("rotation-above-domain", "TERRAIN_DOODAD_FIXED_ROTATION");
         add("follow-z", "TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED");
-        add("pathing-resource-drift", "TERRAIN_SAVE_PLAN_HEIGHT_RESOURCE_SCOPE");
+        add("pathing-resource-drift", "TERRAIN_PATHING_RESOURCE_CHANGED");
         add("source-drift", "SOURCE_CHANGED");
     }
 }
@@ -2999,7 +3011,7 @@ void EditorProjectTests::WalkableDestructableWorkerRejectsBeforeWrite_data() {
         for (const auto* state : {"flags-zero", "flags-one", "flags-three", "flags-unknown", "dead", "damaged", "life-unknown"})
             add(state, "TERRAIN_WALKABLE_DESTRUCTABLE_STATE");
         add("follow-z", "TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED");
-        add("pathing-resource-drift", "TERRAIN_SAVE_PLAN_HEIGHT_RESOURCE_SCOPE");
+        add("pathing-resource-drift", "TERRAIN_PATHING_RESOURCE_CHANGED");
         add("source-drift", "SOURCE_CHANGED");
     }
 }
@@ -3130,7 +3142,7 @@ void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy_data() {
     QTest::newRow("worker-withdraw-apr3") << false << false << 2 << false;
     QTest::newRow("worker-bad-apr-identity") << false << false << 3 << false;
     QTest::newRow("worker-saved-apr3-and-placement-height") << true << true << 4 << false;
-    QTest::newRow("worker-saved-apr3-height-resource-rejected") << true << true << 4 << true;
+    QTest::newRow("worker-saved-apr3-height-unrelated-import") << true << true << 4 << true;
 }
 
 void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
@@ -3190,7 +3202,9 @@ void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
             || !declaration.Succeeded() || !declaration.value) return {};
         job->target = destination; job->replacements = project.mapEdits_->Replacements();
         job->pathingRestrictionDraft = std::make_shared<const std::vector<std::byte>>(std::move(*declaration.value));
-        job->terrainSavePlan = std::make_shared<const MapData::TerrainSavePlan>(std::move(*plan.value));
+        // 与生产Prepare相同：冻结完整输入，由worker按同一会话建立派生计划。
+        job->terrainDerivationRequired = MapData::TerrainSavePlan::HasTerrainChanges(*project.mapEdits_);
+        if (job->terrainDerivationRequired) job->terrainSessionSnapshot = project.mapEdits_->FreezeForSave();
         job->preparedRevision = MapSaveRevisionBinding{project.editRevision_.Generation(), project.editRevision_.Revision(), project.editRevision_.Current()};
         const auto* task = job.get();
         job->beforePublish = [task] {
@@ -3244,17 +3258,9 @@ void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
     const auto commandBeforeRun = project.mapEdits_->LastEdit().CommandIdentity();
     const auto archiveBeforeRun = project.archiveSession_->SourceSha256();
     EditorProject::RunMapSave(*job);
-    if (pathingPhase == 4 && injectResource) {
-        QVERIFY(!job->succeeded && HasReadDiagnostic(*job, "TERRAIN_SAVE_PLAN_HEIGHT_RESOURCE_SCOPE"));
-        QVERIFY(!job->minimapPreserve && !std::filesystem::exists(target));
-        QVERIFY(!project.CommitMapSave(*job));
-        QCOMPARE(project.archiveSession_->SourceSha256(), archiveBeforeRun);
-        QCOMPARE(project.mapEdits_->Revision(), revisionBeforeRun);
-        QCOMPARE(project.mapEdits_->LastEdit().CommandIdentity(), commandBeforeRun);
-        QVERIFY(project.mapEdits_->IsDirty() && project.mapEdits_->CanUndo());
-        QCOMPARE(Sha256File(source).value, sourceSha.value);
-        return;
-    }
+    QCOMPARE(project.archiveSession_->SourceSha256(), archiveBeforeRun);
+    QCOMPARE(project.mapEdits_->Revision(), revisionBeforeRun);
+    QCOMPARE(project.mapEdits_->LastEdit().CommandIdentity(), commandBeforeRun);
     if (pathingPhase == 3) {
         QVERIFY(!job->succeeded && HasReadDiagnostic(*job, "PATHING_DRAFT_IDENTITY"));
         QVERIFY(!job->minimapPreserve && !std::filesystem::exists(target));
@@ -3276,6 +3282,7 @@ void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
             QCOMPARE(project.mapEdits_->InspectTerrainPoint({80, 48}).value->pathingFlags, 0x8a);
         }
         auto saved = MapArchiveSession::Open(target); QVERIFY(saved.Succeeded() && saved.value);
+        if (injectResource) QCOMPARE(saved.value->ReadMember("Fixture\\NewIcon.blp").value, std::optional(text("unused resource")));
         QCOMPARE(saved.value->HasMember("war3mapMap.blp"), existing);
         if (existing) QCOMPARE(saved.value->ReadMember("war3mapMap.blp").value, std::optional(oldMinimap));
         QCOMPARE(Sha256File(source).value, sourceSha.value);
