@@ -2068,8 +2068,16 @@ void EditorProjectTests::CheckNativeDoodadWorkerRejectsBeforeWrite(const std::ve
         job->replacements.push_back({texture->name, std::move(changed)});
     } else if (mutation == NativeDoodadQtMutation::SourceDrift) {
         QFile external(QString::fromStdWString(source.wstring()));
-        QVERIFY(external.open(QIODevice::WriteOnly | QIODevice::Append));
-        QCOMPARE(external.write("x"), qint64{1}); external.close();
+        // 与既有来源变化用例一致，原位改一个字节；不追加尾部，也不替换文件身份。
+        QVERIFY2(external.open(QIODevice::ReadWrite), qPrintable(external.errorString()));
+        const auto originalSize = external.size();
+        QVERIFY2(external.seek(32), qPrintable(external.errorString()));
+        char changedByte = 0; QCOMPARE(external.read(&changedByte, 1), qint64{1});
+        changedByte ^= 1;
+        QVERIFY2(external.seek(32), qPrintable(external.errorString()));
+        QCOMPARE(external.write(&changedByte, 1), qint64{1});
+        QVERIFY2(external.flush(), qPrintable(external.errorString()));
+        QCOMPARE(external.size(), originalSize); external.close();
         const auto driftedSha = Sha256File(source); QVERIFY(driftedSha.Succeeded() && driftedSha.value != sourceSha.value);
         expectedSourceSha = driftedSha.value;
     }
@@ -2226,7 +2234,7 @@ void EditorProjectTests::WalkableDestructableOriginalWorkerRejectsBeforeWrite_da
             add(scenario, "TERRAIN_DOODAD_FIXED_ROTATION");
         add("rotation-ambiguous", "TERRAIN_DOODAD_ANGLE_AMBIGUOUS");
         add("follow-z", "TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED");
-        add("pathing-resource-drift", "TERRAIN_PATHING_RESOURCE_CHANGED");
+        add("pathing-resource-drift", "TERRAIN_SAVE_PLAN_HEIGHT_RESOURCE_SCOPE");
         add("source-drift", "SOURCE_CHANGED");
     }
 }
@@ -2305,7 +2313,7 @@ void EditorProjectTests::WalkableDestructableWorkerRejectsBeforeWrite_data() {
         for (const auto* state : {"flags-zero", "flags-one", "flags-three", "flags-unknown", "dead", "damaged", "life-unknown"})
             add(state, "TERRAIN_WALKABLE_DESTRUCTABLE_STATE");
         add("follow-z", "TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED");
-        add("pathing-resource-drift", "TERRAIN_PATHING_RESOURCE_CHANGED");
+        add("pathing-resource-drift", "TERRAIN_SAVE_PLAN_HEIGHT_RESOURCE_SCOPE");
         add("source-drift", "SOURCE_CHANGED");
     }
 }
@@ -2320,7 +2328,8 @@ void EditorProjectTests::WalkableDestructableWorkerRejectsBeforeWrite() {
     if (scenario == "flags-zero") bridge.flags = 0;
     else if (scenario == "flags-one") bridge.flags = 1;
     else if (scenario == "flags-three") bridge.flags = 3;
-    else if (scenario == "flags-unknown") bridge.flags = 255;
+    // >=0x20属于经典布局拒绝；0x1f可解析，才能检验未知桥状态的专用门。
+    else if (scenario == "flags-unknown") bridge.flags = 0x1f;
     else if (scenario == "dead") bridge.lifePercent = 0;
     else if (scenario == "damaged") bridge.lifePercent = 99;
     else if (scenario == "life-unknown") bridge.lifePercent = 255;
