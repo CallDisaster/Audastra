@@ -363,31 +363,45 @@ static Output ProjectCasters(const TerrainShadowHeightSamples& samples,
                 world.push_back(transformed);
             }
             if (world.empty()) continue;
-            for (std::uint32_t y = 0; y < samples.height; ++y) {
-                for (std::uint32_t x = 0; x < samples.width; ++x) {
-                    if (cancellation.stop_requested()) return Reject("TERRAIN_SHADOW_CASTER_CANCELLED", "caster射线已取消。");
-                    if (!consume()) return Reject("TERRAIN_SHADOW_CASTER_BUDGET", "caster像素检查超过工作预算。");
-                    const auto pixel = static_cast<std::size_t>(y) * samples.width + x;
-                    if (candidate.casterShadowBits[pixel]) continue;
-                    if (filters && !BlockContainsCaster(x,y,samples.width,samples.height,worldOrigin,*blockDirection,anchor)) continue;
-                    const Vec3 origin{static_cast<float>(static_cast<double>(worldOrigin[0]) + x * 32.0 + 16.0),
-                        static_cast<float>(static_cast<double>(worldOrigin[1]) + y * 32.0 + 16.0), samples.receiverHeights[pixel]};
-                    const auto end = RayEnd(origin, samples.lightDirection);
-                    if (filters && !SegmentMeetsSphere(origin,end,worldSphere)) continue;
-                    const auto direction = RayDirection(origin, end);
-                    if (!direction) return Reject("TERRAIN_SHADOW_CASTER_LIGHT", "caster长线端点不能形成有限非零射线。");
-                    float minimum = std::numeric_limits<float>::max();
-                    bool hit = false;
-                    for (const auto& triangle : world) {
-                        if (!consume()) return Reject("TERRAIN_SHADOW_CASTER_BUDGET", "caster三角形射线超过工作预算。");
-                        const auto distance = IntersectSigned(origin, *direction, triangle);
-                        if (!distance) continue;
-                        if (!std::isfinite(*distance))
-                            return Reject("TERRAIN_SHADOW_CASTER_INTERSECTION", "caster交距不能表示为有限F32。");
-                        hit = true;
-                        minimum = std::min(minimum, *distance);
+            // 原版候选取决于16×16 receiver块。每块只筛一次，远caster不再
+            // 消耗整幅逐像素预算。普通无filters参考仍按原逐行像素顺序。
+            const std::uint32_t tileWidth = filters ? 16 : samples.width;
+            const std::uint32_t tileHeight = filters ? 16 : 1;
+            for (std::uint32_t blockY = 0; blockY < samples.height; blockY += tileHeight) {
+                for (std::uint32_t blockX = 0; blockX < samples.width; blockX += tileWidth) {
+                    if (filters) {
+                        if (cancellation.stop_requested()) return Reject("TERRAIN_SHADOW_CASTER_CANCELLED", "caster区块筛选已取消。");
+                        if (!consume()) return Reject("TERRAIN_SHADOW_CASTER_BUDGET", "caster区块检查超过工作预算。");
+                        if (!BlockContainsCaster(blockX,blockY,samples.width,samples.height,worldOrigin,*blockDirection,anchor)) continue;
                     }
-                    if (hit && minimum > 0) candidate.casterShadowBits[pixel] = 1;
+                    const auto endY = std::min(samples.height, blockY + tileHeight);
+                    const auto endX = std::min(samples.width, blockX + tileWidth);
+                    for (std::uint32_t y = blockY; y < endY; ++y) {
+                        for (std::uint32_t x = blockX; x < endX; ++x) {
+                            if (cancellation.stop_requested()) return Reject("TERRAIN_SHADOW_CASTER_CANCELLED", "caster射线已取消。");
+                            if (!consume()) return Reject("TERRAIN_SHADOW_CASTER_BUDGET", "caster像素检查超过工作预算。");
+                            const auto pixel = static_cast<std::size_t>(y) * samples.width + x;
+                            if (candidate.casterShadowBits[pixel]) continue;
+                            const Vec3 origin{static_cast<float>(static_cast<double>(worldOrigin[0]) + x * 32.0 + 16.0),
+                                static_cast<float>(static_cast<double>(worldOrigin[1]) + y * 32.0 + 16.0), samples.receiverHeights[pixel]};
+                            const auto end = RayEnd(origin, samples.lightDirection);
+                            if (filters && !SegmentMeetsSphere(origin,end,worldSphere)) continue;
+                            const auto direction = RayDirection(origin, end);
+                            if (!direction) return Reject("TERRAIN_SHADOW_CASTER_LIGHT", "caster长线端点不能形成有限非零射线。");
+                            float minimum = std::numeric_limits<float>::max();
+                            bool hit = false;
+                            for (const auto& triangle : world) {
+                                if (!consume()) return Reject("TERRAIN_SHADOW_CASTER_BUDGET", "caster三角形射线超过工作预算。");
+                                const auto distance = IntersectSigned(origin, *direction, triangle);
+                                if (!distance) continue;
+                                if (!std::isfinite(*distance))
+                                    return Reject("TERRAIN_SHADOW_CASTER_INTERSECTION", "caster交距不能表示为有限F32。");
+                                hit = true;
+                                minimum = std::min(minimum, *distance);
+                            }
+                            if (hit && minimum > 0) candidate.casterShadowBits[pixel] = 1;
+                        }
+                    }
                 }
             }
         }

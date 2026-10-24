@@ -246,13 +246,36 @@ void NativeBlockYEndpointUsesReceiverBlockX() {
         "receiver block(1,0) includes anchor in blockY1 because native endY is blockX+directionY");
     Require(result.casterShadowBits[0] == 0, "receiver blockX0 retains its own X candidate restriction");
 }
+
+void DistantCastersConsumeBlocksBeforePixels() {
+    const auto bytes = Model();
+    const TerrainShadowCasterModelInput model{"block-budget.mdx",bytes};
+    constexpr std::uint32_t width = 1024, height = 1024;
+    std::vector<float> heights(static_cast<std::size_t>(width) * height, 0);
+    const TerrainShadowHeightSamples samples{width,height,heights,{0,0,1}};
+    std::vector<TerrainShadowCasterInstanceInput> instances(129,{0,Identity});
+    for (std::size_t index = 0; index + 1 < instances.size(); ++index) {
+        instances[index].nativeMatrix[3] = 1000000;
+        instances[index].nativeMatrix[7] = 1000000;
+    }
+    TerrainShadowCasterLimits limits; limits.maximumWork = 1700000;
+    const auto result = Take(ProjectFilteredStaticTerrainShadowCasters(samples,{-128,-128},std::span(&model,1),
+        instances,{0,0},limits));
+    // 手算：中心=(-112+32x,-112+32y)，三角形x/y>=0、x+y<=128。
+    // 因此仅像素x,y>=4且x+y<=11命中；远处实例不贡献任何bit。
+    std::vector<std::uint8_t> expected(heights.size(),0);
+    for (std::uint32_t y = 4; y <= 7; ++y)
+        for (std::uint32_t x = 4; x + y <= 11; ++x) expected[static_cast<std::size_t>(y) * width + x] = 1;
+    Require(result.casterShadowBits == expected, "many distant casters retain independently derived million-pixel output under block work budget");
+    Require(result.work < limits.maximumWork, "distant casters must consume bounded block checks without whole-image pixel checks");
+}
 } // namespace
 
 int main() {
     try {
         SignedMinimumAndDoubleSidedEdges(); MatrixLayoutAndIndependentModels();
         QualificationAndVisibilityAreFailClosed(); BudgetsAndCancellationDiscardEntireCandidate();
-        NativeSphereAndBlockFiltersAreRequired(); NativeBlockYEndpointUsesReceiverBlockX();
+        NativeSphereAndBlockFiltersAreRequired(); NativeBlockYEndpointUsesReceiverBlockX(); DistantCastersConsumeBlocksBeforePixels();
         std::cout << "Static terrain shadow caster CPU tests passed\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
