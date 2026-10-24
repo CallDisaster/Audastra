@@ -55,8 +55,9 @@ void CheckRealTerrainUnitPlacementSave(const MapArchiveSession& original,
     footman.rawcode = "hfoo"; footman.position = {-1024, -256, 0}; footman.scale = {1, 1, 1};
     footman.owner = 0; footman.creationId = 7; footman.hitPoints = 73; footman.mana = 29;
     footman.unknownOwnerBytes = {17, 23}; baseline.units.push_back(footman);
-    auto building = footman; building.rawcode = "hhou"; building.creationId = 19;
+    auto building = footman; building.rawcode = "ngol"; building.creationId = 19;
     building.position = {768, 640, 0}; building.hitPoints = -1; building.mana = -1;
+    building.owner = 15; building.gold = 12500;
     baseline.units.push_back(building);
     auto item = building; item.rawcode = "ratf"; item.creationId = 23; item.owner = 15;
     item.position = {512, -768, 0}; baseline.units.push_back(item);
@@ -85,8 +86,8 @@ void CheckRealTerrainUnitPlacementSave(const MapArchiveSession& original,
         const auto source = Take(MapArchiveSession::Open(Take(original.SaveCandidate(scenario / "source.w3x", seeded)).path));
         const auto map = MapDocument::FromArchive(source);
         Require(map.Units() && map.Units()->units.size() == 3, "source contains all three classic placed kinds");
-        MapEditPlacementSource selected{PlacementFile::Units, 0,
-            Take(MapFieldRowKey(map, MapDataKind::Units, 0)), Take(Sha256(unitsBytes))};
+        MapEditPlacementSource selected{PlacementFile::Units, 1,
+            Take(MapFieldRowKey(map, MapDataKind::Units, 1)), Take(Sha256(unitsBytes))};
         MapEditSaveRequest request;
         request.sourceMap = source.SourcePath(); request.targetCandidate = scenario / "saved.w3x";
         request.toolRoot = tool; request.gameRoot = game;
@@ -97,23 +98,28 @@ void CheckRealTerrainUnitPlacementSave(const MapArchiveSession& original,
         auto expectedUnits = baseline;
         if (operation == 0) {
             request.placementEdit = MapEditPlacementRotation{selected, 1.25f};
-            expectedUnits.units[0].rotation = 1.25f;
+            expectedUnits.units[1].rotation = 1.25f;
         } else if (operation == 1) {
             request.placementEdit = MapEditPlacementCopy{{selected}, {256, 128, 0}};
-            auto clone = footman; clone.creationId = 24; clone.position = {-768, -128, 0};
+            auto clone = building; clone.creationId = 24; clone.position = {1024, 768, 0};
             expectedUnits.units.push_back(clone);
         } else if (operation == 2) {
-            auto added = footman; added.rawcode = "hpea"; added.position = {-256, 768, 0}; added.creationId = 997;
+            auto added = building; added.position = {-256, 768, 0}; added.creationId = 997;
             request.placementEdit = MapEditPlacementCreate{selected.expectedMemberSha256, std::vector<UnitPlacement>{added}};
             added.creationId = 24; expectedUnits.units.push_back(added);
         } else {
             request.placementEdit = MapEditPlacementDelete{{selected}};
-            expectedUnits.units.erase(expectedUnits.units.begin());
+            expectedUnits.units.erase(expectedUnits.units.begin() + 1);
         }
         const auto expectedUnitBytes = Take(expectedUnits.Serialize());
         const std::array<MemberReplacement, 2> finalInputs{{
             {"war3map.w3e", expectedTerrain}, {"war3mapUnits.doo", expectedUnitBytes}}};
         const auto markerOwner = Take(TerrainMinimapMarkers::Capture(source, game, finalInputs));
+        const auto originalMarkers = Take(TerrainMinimapMarkers::Capture(source, game));
+        Require(originalMarkers->MarkerCount() == 1 && markerOwner->MarkerCount() == (operation == 0 ? 1 : operation == 3 ? 0 : 2),
+            "the actual gold-mine type supplies a nonempty and independently counted marker fixture");
+        Require((markerOwner->Bytes() == originalMarkers->Bytes()) == (operation == 0),
+            "copy, create and delete change the final MMP; rotation alone preserves its marker");
         const auto saved = Take(SaveMapEditCandidate(request));
         const auto readback = Take(MapArchiveSession::Open(saved.candidate));
         Require(!saved.scriptPreserved && saved.appliedStrokeCount == 1 && saved.appliedPlacementCount == 1,
@@ -129,9 +135,9 @@ void CheckRealTerrainUnitPlacementSave(const MapArchiveSession& original,
         for (const auto& unit : expectedUnits.units)
             Require(script.find(ScriptPlacement(unit)) != std::string::npos, "compiled script creates every final object at its final XY");
         if (operation == 3)
-            Require(script.find(ScriptPlacement(footman)) == std::string::npos, "compiled placed-object script omits the deleted unit");
+            Require(script.find(ScriptPlacement(building)) == std::string::npos, "compiled placed-object script omits the deleted unit");
         if (operation == 0)
-            Require(script.find("'hfoo', -1024.0, -256.0, 71.620") != std::string::npos,
+            Require(script.find("'ngol', 768.0, 640.0, 71.620") != std::string::npos,
                 "compiled script contains the final F32 radians-to-degrees rotation");
         for (const auto& member : source.Members()) {
             const auto name = Text::LowerAscii(member.name);
