@@ -419,6 +419,36 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
         return binding;
     }
 
+    if (name == QLatin1String("game_ui_party_system")) {
+        const bool preview = args.value("preview").toBool();
+        const QJsonObject frame = args.value("frame").toObject();
+        GameUiModule::PartySystemRequest request;
+        request.frame = frame.value("description").toString();
+        request.shown = frame.value("shown").toString();
+        request.health = frame.value("health").toString();
+        request.mana = frame.value("mana").toString();
+        request.name = frame.value("name").toString();
+        request.dead = frame.value("dead").toString();
+        request.outOfRange = frame.value("out_of_range").toString();
+        request.select = frame.value("select").toString();
+        if (args.value("name_source").toString() == QLatin1String("unit")) request.nameSource = PartyNameSource::Unit;
+        request.farRange = args.value("far_range").toDouble(request.farRange);
+        request.autoHeroes = args.value("auto_heroes").toBool(true);
+        QString error;
+        const auto generated = module->GeneratePartySystem(request, preview, &error);
+        if (!generated) return Failure("GAME_UI_PARTY_SYSTEM", error);
+        binding.insert("applied", !preview);
+        binding.insert("category", Text(std::string(kPartyTriggerCategory)));
+        binding.insert("feature_text", generated->featureText);
+        binding.insert("triggers", QJsonArray::fromStringList(generated->triggers));
+        binding.insert("variables", QJsonArray::fromStringList(generated->variables));
+        binding.insert("slots", static_cast<qint64>(generated->slotCount));
+        binding.insert("member_variable", generated->memberVariable);
+        binding.insert("join_trigger", generated->joinTrigger);
+        binding.insert("leave_trigger", generated->leaveTrigger);
+        return binding;
+    }
+
     if (name == QLatin1String("game_ui_preview_set")) {
         if (!module->Tree()) return Failure("GAME_UI_LOADING", QObject::tr("界面定义仍在读取，请稍后重试。"));
         const QString id = args.value("description").toString();

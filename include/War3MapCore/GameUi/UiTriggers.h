@@ -50,6 +50,8 @@ struct UiTriggerPlan {
 // 生成的触发器名：<界面名> <用途> <界面编号>_<键>；界面名为显示名（不可用时为编号）。
 // 用途与键：创建/Create、更新/Update、“状态 <状态名>”/State_<状态编号>、基础状态/BaseState。
 [[nodiscard]] std::string UiTriggerName(const UiDescription& description, std::string_view role, std::string_view key);
+// 某个状态的触发器名（用途为“状态 <状态名>”，状态名不可用时为编号）。
+[[nodiscard]] std::string UiStateTriggerName(const UiDescription& description, const UiState& state);
 // 界面事件名：<界面编号>.<事件编号>。
 [[nodiscard]] std::string UiEventKey(std::string_view description, std::string_view event);
 

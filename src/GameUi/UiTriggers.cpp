@@ -104,10 +104,7 @@ public:
         auto named = [&](std::string_view role, const std::string& key) { return UiTriggerName(d_, role, key); };
         trigger(named("创建", "Create"), {Call("TriggerRegisterTimerEventSingle", {"0"})}, create);
         trigger(named("更新", "Update"), {}, refresh);
-        for (const auto& state : d_.states) {
-            const std::string role = "状态 " + (UsableLabel(state.label) ? state.label : state.id);
-            trigger(named(role, "State_" + state.id), {}, State(state));
-        }
+        for (const auto& state : d_.states) trigger(UiStateTriggerName(d_, state), {}, State(state));
         if (!d_.states.empty()) trigger(named("基础状态", "BaseState"), {}, BaseState(update));
         plan.featureText = text.Text();
         plan.variables = std::move(text.variables);
@@ -704,6 +701,10 @@ std::string UiStateVariableName(std::string_view description) {
 std::string UiTriggerName(const UiDescription& description, std::string_view role, std::string_view key) {
     const std::string& name = UsableLabel(description.label) ? description.label : description.id;
     return name + " " + std::string(role) + " " + description.id + "_" + std::string(key);
+}
+
+std::string UiStateTriggerName(const UiDescription& description, const UiState& state) {
+    return UiTriggerName(description, "状态 " + (UsableLabel(state.label) ? state.label : state.id), "State_" + state.id);
 }
 
 std::string UiEventKey(std::string_view description, std::string_view event) {

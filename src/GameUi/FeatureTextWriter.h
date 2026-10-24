@@ -67,6 +67,26 @@ inline void Append(Lines& out, const Lines& in, int depth = 0) {
     return out + ')';
 }
 
+// 常用运算、比较与赋值（TriggerData 的函数名）。
+[[nodiscard]] inline std::string Int(std::string_view a, std::string_view op, std::string_view b) {
+    return Call("OperatorInt", {std::string(a), std::string(op), std::string(b)});
+}
+[[nodiscard]] inline std::string Arith(std::string_view a, std::string_view op, std::string_view b) {
+    return Call("OperatorReal", {std::string(a), std::string(op), std::string(b)});
+}
+[[nodiscard]] inline std::string CompareInt(std::string_view a, std::string_view op, std::string_view b) {
+    return Call("OperatorCompareInteger", {std::string(a), std::string(op), std::string(b)});
+}
+[[nodiscard]] inline std::string CompareReal(std::string_view a, std::string_view op, std::string_view b) {
+    return Call("OperatorCompareReal", {std::string(a), std::string(op), std::string(b)});
+}
+[[nodiscard]] inline std::string IsTrue(std::string_view value) {
+    return Call("OperatorCompareBoolean", {std::string(value), "OperatorEqualENE", "true"});
+}
+[[nodiscard]] inline std::string Set(std::string_view target, std::string_view value) {
+    return Call("SetVariable", {std::string(target), std::string(value)});
+}
+
 [[nodiscard]] inline Lines If(const Lines& conditions, const Lines& then, const Lines& otherwise = {}) {
     Lines out{"IfThenElseMultiple() {", "    if:"};
     Append(out, conditions, 2);
@@ -86,6 +106,11 @@ inline void Append(Lines& out, const Lines& in, int depth = 0) {
     Append(out, body, 2);
     out.push_back("}");
     return out;
+}
+
+// 用自己的整数变量循环（不用 bj_forLoopAIndex），被运行的触发器里的“循环 A”不会打乱它。结束值每轮重新求。
+[[nodiscard]] inline Lines ForLoopVar(const std::string& variable, std::string_view from, std::string_view to, const Lines& body) {
+    return Block(Call("ForLoopVarMultiple", {variable, std::string(from), std::string(to)}), "actions", body);
 }
 
 // 触发器引用（触发器名作参数）。

@@ -3,6 +3,7 @@
 #include "EditorProject.h"
 #include "TriggerCommands.h"
 #include "War3MapCore/GameUi/CastTriggers.h"
+#include "War3MapCore/GameUi/PartyTriggers.h"
 #include "War3MapCore/GameUi/UiSkin.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
@@ -11,7 +12,7 @@
 #include <algorithm>
 #include <cstring>
 
-// 界面描述与读条系统 → 自然 T：生成文本由 Core（UiTriggers、CastTriggers）给出，这里补上工作区里才有的输入
+// 界面描述、读条系统与团队框架 → 自然 T：生成文本由 Core（UiTriggers、CastTriggers、PartyTriggers）给出，这里补上工作区里才有的输入
 // （界面目录、皮肤字体、地图界面目录、已有的触发器），经共用的触发器事务写进各自的类别，界面触发器的基础模板放进地图。
 namespace War3Map::Modules {
 namespace {
@@ -140,6 +141,52 @@ std::optional<GameUiModule::CastSystemGeneration> GameUiModule::GenerateCastSyst
     std::vector<Trigger::GraphEditOperation> operations;
     operations.emplace_back(Trigger::GraphApplyFeatureText{std::string(kCastTriggerCategory), plan.value->featureText, {}, std::nullopt});
     const auto applied = QtProject::PublishTriggerGraphOperations(project_, std::move(operations), tr("生成读条系统"));
+    if (!applied.Succeeded()) return fail(FirstMessage(applied.diagnostics));
+    return result;
+}
+
+std::optional<GameUiModule::PartySystemGeneration> GameUiModule::GeneratePartySystem(const PartySystemRequest& request, bool preview,
+    QString* error) {
+    const auto fail = [error](const QString& message) -> std::optional<PartySystemGeneration> {
+        if (error) *error = message;
+        return std::nullopt;
+    };
+    if (!project_.uiCatalog_ || !project_.triggerDocument_) return fail(tr("当前地图没有可编辑的触发器"));
+    const bool local = !request.outOfRange.isEmpty() || !request.select.isEmpty();
+    if (local && !project_.uiCatalog_->Find(Trigger::UiDefinitionKind::Call, "GetLocalPlayer"))
+        return fail(tr("触发器函数库里没有 YDWE 的“本地玩家”，团队框架的过远与点选要用它"));
+    if (!request.outOfRange.isEmpty() && !project_.uiCatalog_->Find(Trigger::UiDefinitionKind::Action, "RemoveLocation"))
+        return fail(tr("触发器函数库里没有 YDWE 的“清除点”，团队框架算过远要用它"));
+    if (!definitions_) return fail(tr("界面定义仍在读取"));
+    const UiDescription* description = Description(request.frame);
+    if (!description) return fail(tr("地图里没有界面描述 %1").arg(request.frame));
+    const auto& triggers = project_.triggerDocument_->triggers;
+    if (std::none_of(triggers.begin(), triggers.end(), [&](const Trigger::TriggerRecord& row) {
+            return row.name.text == UiTriggerName(*description, "更新", "Update");
+        }))
+        return fail(tr("先为界面 %1 生成触发器").arg(request.frame));
+
+    PartySystemOptions options;
+    options.frame = PartyFrameBinding{description, request.shown.toStdString(), request.health.toStdString(), request.mana.toStdString(),
+        request.name.toStdString(), request.dead.toStdString(), request.outOfRange.toStdString(), request.select.toStdString()};
+    options.nameSource = request.nameSource;
+    options.farRange = request.farRange;
+    options.autoHeroes = request.autoHeroes;
+    auto plan = GameUi::GeneratePartySystem(options);
+    if (!plan.Succeeded()) return fail(FirstMessage(plan.diagnostics));
+
+    PartySystemGeneration result;
+    result.featureText = Text(plan.value->featureText);
+    for (const auto& name : plan.value->triggers) result.triggers.append(Text(name));
+    for (const auto& name : plan.value->variables) result.variables.append(Text(name));
+    result.slotCount = plan.value->slotCount;
+    result.memberVariable = Text(plan.value->memberVariable);
+    result.joinTrigger = Text(plan.value->joinTrigger);
+    result.leaveTrigger = Text(plan.value->leaveTrigger);
+    if (preview) return result;
+    std::vector<Trigger::GraphEditOperation> operations;
+    operations.emplace_back(Trigger::GraphApplyFeatureText{std::string(kPartyTriggerCategory), plan.value->featureText, {}, std::nullopt});
+    const auto applied = QtProject::PublishTriggerGraphOperations(project_, std::move(operations), tr("生成团队框架"));
     if (!applied.Succeeded()) return fail(FirstMessage(applied.diagnostics));
     return result;
 }
