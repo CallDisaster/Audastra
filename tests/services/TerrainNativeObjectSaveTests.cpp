@@ -157,12 +157,21 @@ struct Fixture {
         Check(plan.VerifyForSave(*edits, archive->SourceSha256(), output)); return output;
     }
     void SaveExpected(const char* name, const Bytes& terrain, const Bytes& pathing, const Bytes* doodads = nullptr,
-        bool formal = false) {
+        bool formal = false, bool expectRebuilt = true) {
         const auto sourcePath = archive->SourcePath();
         const auto sourceSha = Take(Sha256File(sourcePath));
         const auto identity = edits->SessionIdentity(), revision = edits->Revision(), sourceRevision = edits->TerrainSourceRevision();
         const auto plan = Plan(); Check(plan.SaveGate());
-        if (!plan.RebuiltPathing()) throw std::runtime_error(std::string("native pathing rebuilt: ") + name);
+        if (plan.RebuiltPathing() != expectRebuilt)
+            throw std::runtime_error(std::string("native pathing rebuild expectation: ") + name);
+        if (!expectRebuilt) {
+            const auto& member = plan.Members()[1];
+            Require(member.name == "war3map.wpm" && member.action == TerrainSaveMemberAction::Preserve
+                && member.sourceSha256.has_value() && member.sourceSha256 == member.outputSha256,
+                "elevation-only save preserves the source pathing member identity");
+            for (const auto& replacement : plan.Replacements())
+                Require(replacement.name != "war3map.wpm", "elevation-only plan has no pathing replacement");
+        }
         const auto output = Output(plan);
         auto written = root / name;
         if (formal) {

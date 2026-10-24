@@ -69,10 +69,12 @@ void BridgeAllowsOnlyUnrelatedOrdinaryMutationsThroughFormalHistory() {
         }
         f.SaveExpected("bridge-ordinary-final.w3x", f.ExpectedTerrain(true), expectedAfter, &finalWire, true);
         Require(f.edits->Undo(), "unrelated ordinary mutation remains undoable after bridge native save");
+        // 首次保存已建立地形基线；仅普通物Z的Undo/Redo精确保留原WPM。
+        // 其它字段即使产生相同WPM，也必须重新完成G0/G1证明。
         f.SaveExpected("bridge-ordinary-undone.w3x", f.ExpectedTerrain(true),
-            BridgeOrdinaryExpectedPathing(f, true), &originalWire, true);
+            BridgeOrdinaryExpectedPathing(f, true), &originalWire, true, operation != 1);
         Require(f.edits->Redo(), "unrelated ordinary mutation remains redoable after native source rebase");
-        f.SaveExpected("bridge-ordinary-redone.w3x", f.ExpectedTerrain(true), expectedAfter, &finalWire, true);
+        f.SaveExpected("bridge-ordinary-redone.w3x", f.ExpectedTerrain(true), expectedAfter, &finalWire, true, operation != 1);
     }
     // ROC没有掉落字段；同一writer长度投影仍须精确定位42字节记录。
     Fixture roc; WalkableBridge(roc);
