@@ -134,11 +134,14 @@ Result<MapDataEditSession::PreparedTerrainBoundsEdit> MapDataEditSession::Prepar
         cost += count * element; return true;
     };
     const auto vertices = terrain_->vertices.size();
+    const auto digestBytes = resources.TerrainBoundsDependencyBudgetBytes();
+    if (!digestBytes || vertices > maximumWork / 16
+        || digestBytes > (maximumWork - vertices * 16) / 3)
+        return fail("TERRAIN_BOUNDS_BUDGET", "范围规则摘要或累计工作超过本次预算。");
     if (!reserve(vertices, 3 * sizeof(TerrainVertex) + 28)
         || !reserve(terrain_->tiles.size(), 3 * sizeof(TerrainTile))
         || !reserve(oldSettings->size(), 8) || !reserve(currentSettings->size(), 8)
-        || !reserve((vertices + 7) / 8, 4)
-        || vertices > maximumWork / 16)
+        || !reserve((vertices + 7) / 8, 4) || !reserve(digestBytes, 2))
         return fail("TERRAIN_BOUNDS_BUDGET", "范围候选、撤销或逐顶点检查超出本次预算。");
     const auto input = resources.VerifyTerrainBoundsInput(*terrainOriginal_, *terrain_, *oldSettings);
     if (!input.Succeeded()) return {{}, input.diagnostics};
@@ -165,7 +168,8 @@ Result<MapDataEditSession::PreparedTerrainBoundsEdit> MapDataEditSession::Prepar
     prepared.before_ = terrain_; prepared.beforeBounds_ = boundsState_;
     prepared.sessionIdentity_ = sessionIdentity_; prepared.revision_ = revision_; prepared.sourceRevision_ = terrainSourceRevision_;
     prepared.intent_ = intent; prepared.cameraBounds_ = projected.value->cameraBounds;
-    prepared.changedEdges_ = *edges.value; prepared.preparationBytes_ = cost; prepared.preparationWork_ = vertices * 16;
+    prepared.changedEdges_ = *edges.value; prepared.preparationBytes_ = cost;
+    prepared.preparationWork_ = vertices * 16 + digestBytes * 3;
     if (beforeState->Equivalent(*afterState)) return Output::Success(std::move(prepared));
     const TerrainStrokeResult changed{0, 0, next->header.width, next->header.height};
     auto candidate = PrepareTerrainCandidate(next, changed, {}, false, false, false, false);
@@ -173,7 +177,7 @@ Result<MapDataEditSession::PreparedTerrainBoundsEdit> MapDataEditSession::Prepar
     auto command = *candidate.value->command_;
     const auto settings = Prepare(MapDataKind::Settings, projected.value->Serialize(), command.changes, true);
     if (!settings.Succeeded()) return {{}, settings.diagnostics};
-    auto fingerprint = resources.TerrainBoundsDependencyFingerprint();
+    auto fingerprint = resources.TerrainBoundsDependencyFingerprint(digestBytes);
     if (!fingerprint.Succeeded() || !fingerprint.value) return {{}, fingerprint.diagnostics};
     command.boundsBefore = std::move(beforeState); command.boundsAfter = std::move(afterState);
     command.boundsIntent = intent; command.boundsRulesSha256 = std::move(*fingerprint.value);
@@ -183,6 +187,27 @@ Result<MapDataEditSession::PreparedTerrainBoundsEdit> MapDataEditSession::Prepar
     return Result<PreparedTerrainBoundsEdit>::Failure("MapData.Edit", "TERRAIN_BOUNDS_BUDGET", "范围候选内存不足，未修改会话。");
 } catch (const std::length_error&) {
     return Result<PreparedTerrainBoundsEdit>::Failure("MapData.Edit", "TERRAIN_BOUNDS_BUDGET", "范围候选容量超限，未修改会话。");
+}
+
+std::size_t MapDataEditSession::PreparedTerrainBoundsEdit::RetainedCommandBytes() const noexcept {
+    if (!command_) return 0;
+    auto bytes = sizeof(Command) + 64 + 2 * sizeof(std::shared_ptr<void>);
+    const auto add = [&](std::size_t count, std::size_t element = 1) {
+        const auto maximum = std::numeric_limits<std::size_t>::max();
+        bytes = element && count > (maximum - bytes) / element ? maximum : bytes + count * element;
+    };
+    add(command_->terrain.capacity(), sizeof(TerrainChunk));
+    for (const auto& chunk : command_->terrain) { add(chunk.before.capacity()); add(chunk.after.capacity()); }
+    add(command_->changes.capacity(), sizeof(MemberChange));
+    for (const auto& change : command_->changes) {
+        if (change.before) add(change.before->capacity());
+        if (change.after) add(change.after->capacity());
+    }
+    for (const auto* state : {&command_->boundsBefore, &command_->boundsAfter}) if (*state) {
+        add(sizeof(TerrainBoundsState) + 64); add((*state)->mapEdges.capacity());
+    }
+    add(command_->boundsRulesSha256.capacity() + 1);
+    return bytes;
 }
 
 Status MapDataEditSession::ApplyPreparedTerrainBoundsEdit(const PreparedTerrainBoundsEdit& plan,

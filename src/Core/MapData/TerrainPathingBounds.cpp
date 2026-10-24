@@ -41,21 +41,32 @@ Status TerrainPathingResources::VerifyTerrainBoundsInput(const TerrainGridSnapsh
     return Refuse("TERRAIN_BOUNDS_BUDGET", "范围输入身份容量超限，未修改会话。");
 }
 
-Result<std::string> TerrainPathingResources::TerrainBoundsDependencyFingerprint() const try {
+std::size_t TerrainPathingResources::TerrainBoundsDependencyBudgetBytes() const noexcept {
     if (!nativeBounds_ || !nativeCameraMargins_ || dependencies_.size() > 4096)
-        return Result<std::string>::Failure("Terrain.Journal", "TERRAIN_BOUNDS_RULES_UNAVAILABLE", "范围记录缺少实际原版规则。");
-    std::vector<std::byte> wire;
-    std::size_t budget = 512;
+        return 0;
+    constexpr std::size_t maximum = 1024u * 1024u;
+    std::size_t budget = 8 + std::string_view("terrain-bounds-dependencies-v1").size() + 4 * 8 + 8;
+    const auto add = [&](std::size_t bytes) {
+        if (bytes > maximum - budget) return false;
+        budget += bytes; return true;
+    };
+    for (const auto& sha : nativeTerrainSha_) if (!add(8) || !add(sha.size()) || !add(8)) return 0;
     for (const auto& dependency : dependencies_) {
         for (const auto* value : {&dependency.name, &dependency.sha256, &dependency.gameArchive}) {
-            if (value->size() > 1024u * 1024u - budget)
-                return Result<std::string>::Failure("Terrain.Journal", "TERRAIN_BOUNDS_BUDGET", "范围规则摘要超出预算。");
-            budget += value->size();
+            if (!add(8) || !add(value->size())) return 0;
         }
-        if (64 > 1024u * 1024u - budget)
-            return Result<std::string>::Failure("Terrain.Journal", "TERRAIN_BOUNDS_BUDGET", "范围规则摘要超出预算。");
-        budget += 64;
+        if (!add(4 * 8)) return 0;
     }
+    return budget;
+}
+
+Result<std::string> TerrainPathingResources::TerrainBoundsDependencyFingerprint(std::size_t maximumBytes) const try {
+    const auto budget = TerrainBoundsDependencyBudgetBytes();
+    if (!budget)
+        return Result<std::string>::Failure("Terrain.Journal", "TERRAIN_BOUNDS_RULES_UNAVAILABLE", "范围记录缺少实际原版规则或依赖摘要超过硬上限。");
+    if (budget > maximumBytes)
+        return Result<std::string>::Failure("Terrain.Journal", "TERRAIN_BOUNDS_BUDGET", "范围规则摘要超过本次剩余预算。");
+    std::vector<std::byte> wire;
     wire.reserve(budget);
     const auto number = [&](std::uint64_t value) {
         for (unsigned i = 0; i < 8; ++i) wire.push_back(std::byte((value >> (i * 8)) & 255));

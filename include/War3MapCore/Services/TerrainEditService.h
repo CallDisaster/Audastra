@@ -28,6 +28,10 @@ struct TerrainEditState {
 inline constexpr std::size_t TerrainQueryMaximumPoints = 256;
 inline constexpr std::size_t TerrainEditMaximumPoints = 4096;
 
+// 只核文档/会话CAS，不扫描地形和派生WPM；用于已在worker准备的密封命令发布。
+[[nodiscard]] Status ValidateTerrainEditBinding(const MapData::MapDataEditSession& session,
+    const MapDataQueryBinding& document, const TerrainEditBinding& expected);
+
 class PreparedTerrainEdit {
 public:
     [[nodiscard]] const TerrainEditBinding& Binding() const noexcept { return binding_; }

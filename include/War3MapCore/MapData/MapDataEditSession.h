@@ -118,6 +118,7 @@ public:
         [[nodiscard]] std::size_t ChangedMapEdges() const noexcept { return changedEdges_; }
         [[nodiscard]] std::size_t PreparationBytes() const noexcept { return preparationBytes_; }
         [[nodiscard]] std::size_t PreparationWork() const noexcept { return preparationWork_; }
+        [[nodiscard]] std::size_t RetainedCommandBytes() const noexcept;
         [[nodiscard]] const std::array<float, 8>& CameraBounds() const noexcept { return cameraBounds_; }
     private:
         friend class MapDataEditSession;

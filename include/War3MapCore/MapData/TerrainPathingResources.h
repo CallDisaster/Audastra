@@ -94,7 +94,10 @@ public:
     }
     [[nodiscard]] Status VerifyTerrainBoundsInput(const TerrainGridSnapshot& sourceTerrain,
         const TerrainGridSnapshot& currentTerrain, std::span<const std::byte> sourceSettings) const;
-    [[nodiscard]] Result<std::string> TerrainBoundsDependencyFingerprint() const;
+    // 无分配预收实际来源摘要wire；0表示实际owner无效或超过硬上限。
+    [[nodiscard]] std::size_t TerrainBoundsDependencyBudgetBytes() const noexcept;
+    [[nodiscard]] Result<std::string> TerrainBoundsDependencyFingerprint(
+        std::size_t maximumBytes = 1024u * 1024u) const;
 
 private:
     friend class Services::TerrainPathingSave;

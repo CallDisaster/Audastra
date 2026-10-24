@@ -125,6 +125,10 @@ void BoundsSaveHasLiteralFullByteOraclesAndSavedUndo() {
 void PreparationNoOpStaleAndPrepublishAreAtomic() {
     Fixture f;
     const auto owner = f.Capture();
+    const auto digestBytes = owner.TerrainBoundsDependencyBudgetBytes();
+    Require(digestBytes > 512 && owner.TerrainBoundsDependencyFingerprint(digestBytes).Succeeded()
+        && !owner.TerrainBoundsDependencyFingerprint(digestBytes - 1).Succeeded(),
+        "actual dependency wire is premeasured and enforces exact and one-byte-low budgets");
     const auto noOp = Take(f.edits->PrepareTerrainBoundsEdit(owner, {{0, 0, 10, 8}}));
     Require(!noOp.HasChanges(), "already canonical full bounds form a no-op");
     Check(f.edits->ApplyPreparedTerrainBoundsEdit(noOp)); Require(f.edits->Revision() == 0 && !f.edits->CanUndo(), "no-op consumes no revision or history");

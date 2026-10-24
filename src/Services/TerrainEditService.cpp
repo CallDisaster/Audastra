@@ -36,6 +36,11 @@ Status CheckExpected(const MapData::MapDataEditSession& session, const MapDataQu
 
 } // namespace
 
+Status ValidateTerrainEditBinding(const MapData::MapDataEditSession& session,
+    const MapDataQueryBinding& document, const TerrainEditBinding& expected) {
+    return CheckExpected(session, document, expected);
+}
+
 Result<TerrainEditState> CaptureTerrainEditState(const MapData::MapDataEditSession& session,
     const MapDataQueryBinding& document) {
     if (const auto checked = CheckDocument(document); !checked.Succeeded()) return {{}, checked.diagnostics};
