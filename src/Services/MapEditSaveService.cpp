@@ -917,7 +917,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             task.beforePublish = [&source, resources = std::move(waterRuleResources), previous = std::move(task.beforePublish)]() {
                 if (previous) { const auto checked = previous(); if (!checked.Succeeded()) return checked; }
                 for (const auto& owner : resources) {
-                    const auto checked = owner.VerifyReadback(source, MapData::TerrainSavePlanLimits{}.maximumBytes);
+                    const auto checked = owner.VerifySourceInputs(source, MapData::TerrainSavePlanLimits{}.maximumBytes);
                     if (!checked.Succeeded()) return checked;
                 }
                 return Status::Ok();
