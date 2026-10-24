@@ -975,6 +975,8 @@ private slots:
     void TerrainJournalRestoredWaterSavesAndReadsBack();
     void PaletteWaterProjectColdRestoreAndNativeSave_data();
     void PaletteWaterProjectColdRestoreAndNativeSave();
+    void OrdinaryDoodadProjectRawColdRestoreAndNativeSave_data();
+    void OrdinaryDoodadProjectRawColdRestoreAndNativeSave();
     void CornerRampProjectColdRestoreAndNativeSave_data();
     void CornerRampProjectColdRestoreAndNativeSave();
     void PlayableBoundsProjectColdRestoreAndNativeSave_data();
@@ -1077,6 +1079,8 @@ private:
         const char* expectedCode, NativeDoodadQtMutation mutation = NativeDoodadQtMutation::None,
         const std::filesystem::path& gameRoot = {}, const std::function<Status()>& beforePublish = {});
 };
+
+#include "EditorProjectOrdinaryDoodadRecoveryCases.h"
 
 void EditorProjectTests::UnlistedTerrainReadPreservesNamedInventory() {
     QTemporaryDir root; QVERIFY(root.isValid());
@@ -5312,12 +5316,13 @@ int main(int argc, char** argv) {
         if (!group.isEmpty()) return 2;
         group = arguments.takeAt(index).mid(qsizetype(sizeof("--case-group=") - 1));
         if (group != "base" && group != "native-pathing" && group != "derived" && group != "terrain-units"
-            && group != "terrain-palette") return 2;
+            && group != "terrain-palette" && group != "terrain-doodads") return 2;
     }
     if (!group.isEmpty()) {
         // 按实际Qt槽自动分区，新增测试默认进入base，不能因手写函数清单漏跑。
         // 单组保留原30秒上限；不传分组参数时仍可直接运行完整套件。
         const auto groupOf = [](const QByteArray& name) {
+            if (name.startsWith("OrdinaryDoodadProject")) return QStringLiteral("terrain-doodads");
             if (name.startsWith("PaletteWaterProject")) return QStringLiteral("terrain-palette");
             if (name.startsWith("TerrainUnitPlacement") || name.startsWith("BoundaryNative")) return QStringLiteral("terrain-units");
             for (const auto* prefix : {"TerrainShadow", "AutomaticMinimap", "MissingMinimap", "DeclaredMissingMinimap"})
