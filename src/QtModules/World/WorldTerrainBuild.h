@@ -55,6 +55,7 @@ struct WorldTerrainLoaded {
     WorldTerrainMesh mesh;
     std::shared_ptr<const MapData::TerrainGridSnapshot> rawTerrain; // 解析后的原始 W3E，显式水帧重建不二次抬高坡道
     std::shared_ptr<const MapData::TerrainGridSnapshot> terrain; // 显示与拾取用（含坡道抬高）
+    std::shared_ptr<const WorldTerrainHeightRules> heightRules; // 同一显示任务的实际规则，不是默认层级。
     std::shared_ptr<const Render::TerrainGroundMesh> ground;
     std::shared_ptr<const Render::TerrainCliffs> cliffs; // 只与贴图地面一起使用（地面已隐藏被覆盖的格）
     std::shared_ptr<const Render::SceneEnvironment> environment; // 模型光照、雾、静态阴影
@@ -71,6 +72,8 @@ struct WorldTerrainLoaded {
 // 水面样式、地形光照、悬崖类型与已读取的悬崖模型文件。同一时刻只能由一个线程使用。
 struct WorldTerrainCache {
     std::unique_ptr<WorldResourceReader> reader;
+    std::shared_ptr<const WorldTerrainHeightRules> heightRules;
+    std::optional<std::uint8_t> heightRulesTileset;
     MapData::TerrainHeader header; // atlases 对应的贴图表
     std::vector<std::shared_ptr<const Render::TerrainAtlasSnapshot>> atlases;
     std::shared_ptr<const Render::TerrainAtlasSnapshot> blightAtlas;

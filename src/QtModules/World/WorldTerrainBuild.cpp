@@ -3,6 +3,7 @@
 #include <QObject>
 
 #include <array>
+#include <algorithm>
 #include <bit>
 #include <exception>
 
@@ -42,15 +43,45 @@ Result<Render::TerrainCliffs> BuildCliffs(const MapData::TerrainGridSnapshot& sh
 }
 
 // 显示副本（坡道抬高）与高度网格；超出逐格贴图预算时只给高度预览。
-Result<WorldTerrainLoaded> Shape(const MapData::TerrainGridSnapshot& raw) {
+bool HasRamps(const MapData::TerrainGridSnapshot& raw) {
+    return std::any_of(raw.vertices.begin(), raw.vertices.end(), [](const auto& vertex) { return vertex.IsRamp(); });
+}
+
+Status PrepareHeightRules(const MapData::TerrainGridSnapshot& raw, WorldTerrainCache& cache) {
+    if (!cache.reader) return Status::Ok();
+    if (cache.heightRules && cache.heightRulesTileset == raw.header.mainTileset)
+        return cache.reader->VerifyHeightRules(*cache.heightRules);
+    cache.heightRules.reset(); cache.heightRulesTileset.reset();
+    if (!HasRamps(raw)) return Status::Ok();
+    auto captured = cache.reader->CaptureHeightRules(raw.header.mainTileset);
+    if (!captured.Succeeded() || !captured.value) return {captured.diagnostics};
+    cache.heightRules = std::move(*captured.value);
+    cache.heightRulesTileset = raw.header.mainTileset;
+    return Status::Ok();
+}
+
+Result<WorldTerrainLoaded> Shape(const MapData::TerrainGridSnapshot& raw,
+    const std::shared_ptr<const WorldTerrainHeightRules>& heightRules = {}) {
     auto shown = std::make_shared<MapData::TerrainGridSnapshot>(raw);
-    Render::ApplyRampHeights(*shown);
+    if (heightRules) {
+        const auto maximum = heightRules->HeightMaximumCliffLevel();
+        if (!maximum) return Result<WorldTerrainLoaded>::Failure("World", "WORLD_HEIGHT_RULE_UNAVAILABLE", "坡道高度缺少实际规则owner。");
+        const auto applied = Render::ApplyRampHeights(*shown, *maximum);
+        if (!applied.Succeeded()) return {{}, applied.diagnostics};
+    } else Render::ApplyRampHeights(*shown);
     auto mesh = BuildWorldTerrainMesh(*shown);
     if (!mesh.Succeeded()) return {std::nullopt, std::move(mesh.diagnostics)};
     WorldTerrainLoaded loaded;
     loaded.mesh = std::move(*mesh.value);
     loaded.terrain = std::move(shown);
-    return Result<WorldTerrainLoaded>::Success(std::move(loaded));
+    loaded.heightRules = heightRules;
+    auto result = Result<WorldTerrainLoaded>::Success(std::move(loaded));
+    if (!heightRules && HasRamps(raw)) {
+        result.value->materialNote = QObject::tr("缺少实际Terrain.MaxHeight来源，坡道显示与拾取仅为旧直坡近似。");
+        result.diagnostics.push_back({DiagnosticSeverity::Warning, "World", "TERRAIN_HEIGHT_APPROXIMATE",
+            "缺少同地图实际Terrain.MaxHeight来源，坡道显示与拾取仅为旧直坡近似。", std::nullopt});
+    }
+    return result;
 }
 
 bool Textured(const WorldTerrainLoaded& loaded) {
@@ -97,6 +128,7 @@ void Surface(WorldTerrainLoaded& loaded, WorldTerrainCache& cache, std::shared_p
         cache.header = header;
     }
     QStringList notes = cache.notes;
+    if (!loaded.materialNote.isEmpty()) notes.prepend(loaded.materialNote);
     notes << cache.atlasNotes;
     loaded.environment = cache.environment;
     if (cache.atlases.empty()) { loaded.materialNote = notes.join(QLatin1Char('\n')); return; }
@@ -214,7 +246,16 @@ Result<WorldTerrainLoaded> LoadWorldTerrain(std::span<const std::byte> bytes, co
         const auto terrain = MapData::ParseMapTerrain(bytes);
         if (!terrain.Succeeded()) return {std::nullopt, terrain.diagnostics};
         auto raw = terrain.value->Snapshot();
-        auto shaped = Shape(*raw);
+        std::shared_ptr<WorldTerrainCache> created;
+        if (sources.Succeeded()) {
+            auto reader = WorldResourceReader::Open(*sources.value);
+            if (!reader.Succeeded()) return {std::nullopt, std::move(reader.diagnostics)};
+            created = std::make_shared<WorldTerrainCache>();
+            created->reader = std::move(*reader.value);
+            const auto ready = PrepareHeightRules(*raw, *created);
+            if (!ready.Succeeded()) return {{}, ready.diagnostics};
+        }
+        auto shaped = Shape(*raw, created ? created->heightRules : nullptr);
         if (!shaped.Succeeded()) return shaped;
         auto& loaded = *shaped.value;
         loaded.rawTerrain = std::move(raw);
@@ -223,17 +264,17 @@ Result<WorldTerrainLoaded> LoadWorldTerrain(std::span<const std::byte> bytes, co
             // 目录资源尚未接入时保留高度预览；身份失效、读取失败和预算拒绝不能伪装成成功。
             if (sources.diagnostics.size() != 1 || sources.diagnostics.front().code != "WORLD_ASSET_DIRECTORY_UNSUPPORTED")
                 return {std::nullopt, sources.diagnostics};
-            loaded.materialNote = WorldDiagnosticText(sources.diagnostics);
+            if (!loaded.materialNote.isEmpty()) loaded.materialNote += QLatin1Char('\n');
+            loaded.materialNote += WorldDiagnosticText(sources.diagnostics);
             return shaped;
         }
-        auto reader = WorldResourceReader::Open(*sources.value);
-        if (!reader.Succeeded()) return {std::nullopt, std::move(reader.diagnostics)};
-        auto created = std::make_shared<WorldTerrainCache>();
-        created->reader = std::move(*reader.value);
         created->shadowObservation = loaded.shadowObservation;
         if (!Textured(loaded)) {
-            loaded.materialNote = QObject::tr("地表网格超过逐格贴图预算，当前显示高度预览");
+            if (!loaded.materialNote.isEmpty()) loaded.materialNote += QLatin1Char('\n');
+            loaded.materialNote += QObject::tr("地表网格超过逐格贴图预算，当前显示高度预览");
             // 高度预览也持有来源租约，UI 提交前仍须复核，不因贴图预算跳过身份检查。
+            const auto current = created->reader->VerifyCurrentSource();
+            if (!current.Succeeded()) return {{}, current.diagnostics};
             if (cache) *cache = std::move(created);
             return shaped;
         }
@@ -256,6 +297,10 @@ Result<WorldTerrainLoaded> LoadWorldTerrain(std::span<const std::byte> bytes, co
         Surface(loaded, *created, nullptr, nullptr, blightPolicy, representation);
         if (const auto current = created->reader->VerifyCurrentSource(); !current.Succeeded())
             return {std::nullopt, current.diagnostics};
+        if (created->heightRules) {
+            const auto current = created->reader->VerifyHeightRules(*created->heightRules);
+            if (!current.Succeeded()) return {{}, current.diagnostics};
+        }
         if (cache) *cache = std::move(created);
         return shaped;
     } catch (const std::exception&) {
@@ -272,7 +317,9 @@ Result<WorldTerrainLoaded> RebuildWorldTerrain(const MapData::TerrainGridSnapsho
             const auto current = cache.reader->VerifyCurrentSource();
             if (!current.Succeeded()) return {std::nullopt, current.diagnostics};
         }
-        auto shaped = Shape(raw);
+        const auto ready = PrepareHeightRules(raw, cache);
+        if (!ready.Succeeded()) return {{}, ready.diagnostics};
+        auto shaped = Shape(raw, cache.heightRules);
         if (!shaped.Succeeded()) return shaped;
         shaped.value->shadowObservation = cache.shadowObservation;
         if (shadowContext) shaped.value->shadowObservation.context = *shadowContext;
@@ -285,7 +332,8 @@ Result<WorldTerrainLoaded> RebuildWorldTerrain(const MapData::TerrainGridSnapsho
             if (selectedWaterFrame)
                 return Result<WorldTerrainLoaded>::Failure("World", "WORLD_WATER_FRAME_UNAVAILABLE",
                     "当前地形仅可显示高度预览，不能确认水面帧已绘制。");
-            shaped.value->materialNote = QObject::tr("地表网格超过逐格贴图预算，当前显示高度预览");
+            if (!shaped.value->materialNote.isEmpty()) shaped.value->materialNote += QLatin1Char('\n');
+            shaped.value->materialNote += QObject::tr("地表网格超过逐格贴图预算，当前显示高度预览");
             return shaped;
         }
         std::optional<Render::TerrainWaterStyle> selected;
@@ -305,6 +353,10 @@ Result<WorldTerrainLoaded> RebuildWorldTerrain(const MapData::TerrainGridSnapsho
                 return Result<WorldTerrainLoaded>::Failure("World", "WORLD_WATER_FRAME_RENDER",
                     "所选水面帧已读取，但地形网格未能绘制水面；保留上一帧。");
             shaped.value->selectedWater = std::move(selected);
+        }
+        if (cache.heightRules && cache.reader) {
+            const auto current = cache.reader->VerifyHeightRules(*cache.heightRules);
+            if (!current.Succeeded()) return {{}, current.diagnostics};
         }
         return shaped;
     } catch (const std::exception&) {

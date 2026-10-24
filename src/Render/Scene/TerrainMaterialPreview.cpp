@@ -66,7 +66,8 @@ void WarnUnavailable(std::vector<Diagnostic>& warnings, std::string_view id,
 Result<TerrainMaterialPreview> BuildTerrainMaterialPreview(
     const MapData::TerrainGridSnapshot& terrain, const Resources::ResourceResolver& resolver,
     const TerrainMaterialPreviewLimits& limits, const TerrainLighting& lighting,
-    std::optional<std::uint32_t> waterFrameIndex, bool includeCliffs) {
+    std::optional<std::uint32_t> waterFrameIndex, bool includeCliffs,
+    std::optional<std::uint8_t> actualMaximumCliffLevel) {
     try {
         if (limits.maxTiles == 0 || limits.maxTiles > kMaxTiles
             || limits.maxGroundAtlases == 0 || limits.maxGroundAtlases > kMaxAtlases
@@ -109,7 +110,7 @@ Result<TerrainMaterialPreview> BuildTerrainMaterialPreview(
         if (includeCliffs) {
             auto cliffLimits = limits.cliffs;
             cliffLimits.maxTiles = std::min(cliffLimits.maxTiles, limits.maxTiles);
-            auto built = BuildTerrainCliffPreview(terrain, *catalog.value, resolver, cliffLimits);
+            auto built = BuildTerrainCliffPreview(terrain, *catalog.value, resolver, cliffLimits, actualMaximumCliffLevel);
             if (!built.Succeeded()) return {std::nullopt, std::move(built.diagnostics)};
             warnings.insert(warnings.end(), std::make_move_iterator(built.diagnostics.begin()),
                 std::make_move_iterator(built.diagnostics.end()));
@@ -166,7 +167,17 @@ Result<TerrainMaterialPreview> BuildTerrainMaterialPreview(
         }
 
         auto shaped = terrain;
-        const auto rampAdjusted = ApplyRampHeights(shaped);
+        std::size_t rampAdjusted = 0;
+        if (actualMaximumCliffLevel) {
+            const auto adjusted = ApplyRampHeights(shaped, *actualMaximumCliffLevel);
+            if (!adjusted.Succeeded()) return {{}, adjusted.diagnostics};
+            rampAdjusted = *adjusted.value;
+        } else {
+            rampAdjusted = ApplyRampHeights(shaped);
+            if (std::any_of(terrain.vertices.begin(), terrain.vertices.end(), [](const auto& vertex) { return vertex.IsRamp(); }))
+                warnings.push_back({DiagnosticSeverity::Warning, "TerrainMaterialPreview", "TERRAIN_HEIGHT_APPROXIMATE",
+                    "未提供实际Terrain.MaxHeight，坡道高度仅为旧直坡近似。", std::nullopt});
+        }
         if (cliffs && cliffs->rampAdjustedVertices != rampAdjusted)
             return Fail("TERRAIN_MATERIAL_PREVIEW_CLIFF_SHAPE", "悬崖与地表的坡道高度修正不一致。");
         const auto* waterStyle = water && water->style ? &*water->style : nullptr;

@@ -1,7 +1,10 @@
 #include "War3MapCore/Game/GameDataSource.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapData/MapTerrain.h"
+#include "War3MapCore/MapData/TerrainPathingResources.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
+#include "War3MapCore/MapData/NativeEditorProfileInputs.h"
+#include "War3MapCore/Render/AnimationSourceGuard.h"
 #include "War3MapCore/Render/TerrainCliffs.h"
 #include "War3MapCore/Render/TerrainMaterialPreview.h"
 #include "War3MapCore/Render/TerrainPreviewMesh.h"
@@ -144,14 +147,14 @@ Options ParseOptions(int argc, wchar_t** argv) {
         "--expected-terrain-sha256 <sha> --output <new.bmp> "
         "--target-x <x> --target-y <y> --target-z <z> --distance <units> "
         "--yaw <radians> --pitch <radians> --width <pixels> --height <pixels> [--plugin <dll>] "
-        "[--surface ground --game-root <absolute-game-root> [--water-frame <zero-based-index>] [--cliffs 1]]");
+        "[--surface ground|height] [--game-root <absolute-game-root>] [--water-frame <zero-based-index>] [--cliffs 1]");
     Require(LowerSha256(options.sourceSha256) && LowerSha256(options.terrainSha256),
         "expected SHA-256 values must be 64 lowercase hexadecimal digits");
     Require(options.map.is_absolute() && options.output.is_absolute() &&
         (!options.hasPlugin || options.plugin.is_absolute()) &&
         (!options.hasGameRoot || options.gameRoot.is_absolute()), "paths must be absolute");
-    Require(options.groundSurface == options.hasGameRoot,
-        "--surface ground requires --game-root; --game-root is only valid with --surface ground");
+    Require(!options.groundSurface || options.hasGameRoot,
+        "--surface ground requires --game-root; height preview may use --game-root for actual ramp height rules");
     Require((!options.waterFrameIndex && !options.includeCliffs) || options.groundSurface,
         "--water-frame and --cliffs are only valid with --surface ground");
     Require(options.output.extension() == L".bmp", "output path must end in .bmp");
@@ -373,6 +376,7 @@ struct GroundMaterialData {
     std::vector<AssetRead> assets;
     std::string assetFingerprint;
     std::string waterFrameArchive;
+    std::string heightRulesFingerprint;
 };
 
 void PrintDiagnostics(std::string_view prefix, const std::vector<War3Map::Diagnostic>& diagnostics) {
@@ -380,9 +384,64 @@ void PrintDiagnostics(std::string_view prefix, const std::vector<War3Map::Diagno
         std::cerr << prefix << '=' << diagnostic.code << ' ' << diagnostic.message << '\n';
 }
 
+std::optional<War3Map::MapData::TerrainPathingResources> CapturePreviewHeightRules(
+    const War3Map::MapData::TerrainGridSnapshot& terrain, const War3Map::Mpq::MpqArchive& mapArchive,
+    const fs::path& gameRoot, War3Map::Render::AnimationSourceGuard& sourceGuard) {
+    using namespace War3Map;
+    if (!std::any_of(terrain.vertices.begin(), terrain.vertices.end(), [](const auto& vertex) { return vertex.IsRamp(); }))
+        return std::nullopt;
+    const auto game = sourceGuard.WatchGameRoot(gameRoot);
+    if (!game.Succeeded()) {
+        PrintDiagnostics("height_rule_error", game.diagnostics);
+        Fail("native ramp height game sources could not be locked");
+    }
+    for (const auto& profile : MapData::kClassicProfiles) {
+        const auto loose = sourceGuard.Watch(gameRoot / fs::u8path(profile.path), true);
+        if (!loose.Succeeded()) {
+            PrintDiagnostics("height_rule_error", loose.diagnostics);
+            Fail("native ramp height loose source identity could not be locked");
+        }
+    }
+    const MapData::TerrainPathingResources::HeightSourceReader reader = [&](auto names, const auto& limits)
+        -> Result<std::vector<ArchiveExactMember>> {
+        using Output = Result<std::vector<ArchiveExactMember>>;
+        if (names.size() > limits.memberCount)
+            return Output::Failure("TerrainPreview", "TERRAIN_HEIGHT_RULE_BUDGET", "高度规则成员数量超出读取预算。");
+        std::vector<ArchiveExactMember> members;
+        members.reserve(names.size());
+        std::size_t used = 0;
+        for (const auto& name : names) {
+            ArchiveExactMember member{name, mapArchive.HasFile(name), {}};
+            if (member.present) {
+                const auto remaining = std::min(limits.memberBytes, limits.totalBytes - used);
+                auto read = mapArchive.ReadFileBounded(name, remaining);
+                if (!read.Succeeded() || !read.value) return {{}, read.diagnostics};
+                if (read.value->size() > remaining)
+                    return Output::Failure("TerrainPreview", "TERRAIN_HEIGHT_RULE_BUDGET", "高度规则正文超出累计读取预算。");
+                used += read.value->size(); member.bytes = std::move(*read.value);
+            }
+            members.push_back(std::move(member));
+        }
+        return Result<std::vector<ArchiveExactMember>>::Success(std::move(members));
+    };
+    auto rules = MapData::TerrainPathingResources::CaptureHeightRules(reader, terrain.header.mainTileset,
+        gameRoot, 64u * 1024u * 1024u);
+    if (!rules.Succeeded() || !rules.value) {
+        PrintDiagnostics("height_rule_error", rules.diagnostics);
+        Fail("native ramp height rules could not be captured from the actual map/game sources");
+    }
+    const auto verified = rules.value->VerifyHeightRuleSources(reader, 64u * 1024u * 1024u);
+    if (!verified.Succeeded()) {
+        PrintDiagnostics("height_rule_error", verified.diagnostics);
+        Fail("native ramp height source identity changed during capture");
+    }
+    return std::move(*rules.value);
+}
+
 GroundMaterialData BuildGroundMaterialData(const War3Map::MapData::TerrainGridSnapshot& terrain,
     const War3Map::Mpq::MpqArchive& mapArchive, const fs::path& gameRoot,
-    std::optional<std::uint32_t> waterFrameIndex, bool includeCliffs) {
+    std::optional<std::uint32_t> waterFrameIndex, bool includeCliffs,
+    War3Map::Render::AnimationSourceGuard& heightGuard) {
     using namespace War3Map;
     auto mounted = Game::GameDataSource::MountStrict(gameRoot, terrain.header.mainTileset);
     if (!mounted.Succeeded()) {
@@ -431,7 +490,9 @@ GroundMaterialData BuildGroundMaterialData(const War3Map::MapData::TerrainGridSn
     };
     Require(resolver.AddSource(std::move(gameSource)).Succeeded(), "could not register game resource source");
 
-    auto built = Render::BuildTerrainMaterialPreview(terrain, resolver, {}, {}, waterFrameIndex, includeCliffs);
+    const auto heightRules = CapturePreviewHeightRules(terrain, mapArchive, gameRoot, heightGuard);
+    const auto maximum = heightRules ? heightRules->HeightMaximumCliffLevel() : std::nullopt;
+    auto built = Render::BuildTerrainMaterialPreview(terrain, resolver, {}, {}, waterFrameIndex, includeCliffs, maximum);
     if (!built.Succeeded()) {
         PrintDiagnostics("ground_scene_error", built.diagnostics);
         Fail("ground material scene could not be built without invalid or unreported fallback");
@@ -439,6 +500,11 @@ GroundMaterialData BuildGroundMaterialData(const War3Map::MapData::TerrainGridSn
     Require(built.value->coverage.texturedTiles != 0 && !built.value->ground.textures.empty(),
         "ground material scene has no textured ground tiles");
     GroundMaterialData data;
+    if (heightRules) {
+        const auto fingerprint = heightRules->HeightRuleDependencyFingerprint();
+        Require(fingerprint.Succeeded() && fingerprint.value, "native ramp height source fingerprint is unavailable");
+        data.heightRulesFingerprint = *fingerprint.value;
+    }
     data.preview = std::move(*built.value);
     data.diagnostics = std::move(built.diagnostics);
     if (data.preview.cliffs && !data.preview.cliffs->geometry.meshes.empty()) {
@@ -475,6 +541,7 @@ GroundMaterialData BuildGroundMaterialData(const War3Map::MapData::TerrainGridSn
         identity.append(value);
     };
     append(Utf8(gameRoot));
+    append(data.heightRulesFingerprint);
     for (const auto& asset : data.assets) {
         append(asset.layer); append(asset.path); append(asset.sha256);
     }
@@ -594,27 +661,42 @@ int Run(const Options& options) {
     Require(parsed.Succeeded(), "W3E terrain could not be parsed without semantic guesses");
     std::optional<War3Map::Render::TerrainPreviewMesh> heightMesh;
     std::optional<GroundMaterialData> material;
+    War3Map::Render::AnimationSourceGuard heightGuard;
     std::vector<std::unique_ptr<GameArchiveLease>> gameLeases;
     fs::path gameRoot;
+    std::string heightRulesFingerprint;
     std::size_t rampAdjusted = 0;
-    if (options.groundSurface) {
+    if (options.hasGameRoot) {
         std::error_code error;
         gameRoot = fs::canonical(options.gameRoot, error);
         Require(!error && fs::is_directory(gameRoot), "--game-root must resolve to an existing game directory");
         gameLeases = LockGameArchives(gameRoot);
+    }
+    if (options.groundSurface) {
         material.emplace(BuildGroundMaterialData(*parsed.value->Snapshot(), *archive.value, gameRoot,
-            options.waterFrameIndex, options.includeCliffs));
+            options.waterFrameIndex, options.includeCliffs, heightGuard));
         rampAdjusted = material->preview.rampAdjustedVertices;
+        heightRulesFingerprint = material->heightRulesFingerprint;
     } else {
         auto shown = *parsed.value->Snapshot();
-        rampAdjusted = War3Map::Render::ApplyRampHeights(shown);
+        const auto rules = gameRoot.empty() ? std::optional<War3Map::MapData::TerrainPathingResources>{}
+            : CapturePreviewHeightRules(shown, *archive.value, gameRoot, heightGuard);
+        if (rules) {
+            const auto adjusted = War3Map::Render::ApplyRampHeights(shown, *rules->HeightMaximumCliffLevel());
+            if (!adjusted.Succeeded()) PrintDiagnostics("height_preview_error", adjusted.diagnostics);
+            Require(adjusted.Succeeded(), "native ramp height preview failed without a partial frame");
+            rampAdjusted = *adjusted.value;
+            const auto fingerprint = rules->HeightRuleDependencyFingerprint();
+            Require(fingerprint.Succeeded() && fingerprint.value, "native ramp height source fingerprint is unavailable");
+            heightRulesFingerprint = *fingerprint.value;
+        } else rampAdjusted = War3Map::Render::ApplyRampHeights(shown);
         auto mesh = War3Map::Render::BuildTerrainPreviewMesh(shown);
         Require(mesh.Succeeded() && !mesh.value->vertices.empty() && !mesh.value->indices.empty(),
             "height-color preview mesh could not be built within renderer limits");
         heightMesh = std::move(*mesh.value);
     }
     const auto revision = RenderRevision(options.sourceSha256,
-        material ? options.terrainSha256 + ':' + material->assetFingerprint : options.terrainSha256);
+        material ? options.terrainSha256 + ':' + material->assetFingerprint : options.terrainSha256 + ':' + heightRulesFingerprint);
 
     wchar_t executable[MAX_PATH]{};
     const auto count = GetModuleFileNameW(nullptr, executable, MAX_PATH);
@@ -686,6 +768,9 @@ int Run(const Options& options) {
     const auto sourceAfter = War3Map::Sha256Handle(source.handle);
     Require(sourceAfter.Succeeded() && *sourceAfter.value == options.sourceSha256,
         "map source changed before screenshot publication");
+    const auto heightSourcesAfter = heightGuard.Verify();
+    if (!heightSourcesAfter.Succeeded()) PrintDiagnostics("height_rule_error", heightSourcesAfter.diagnostics);
+    Require(heightSourcesAfter.Succeeded(), "native ramp height sources changed before screenshot publication");
     SaveBmpNew(options.output, rgba, options.width, options.height);
     const auto imageSha = War3Map::Sha256File(options.output);
     Require(imageSha.Succeeded(), "published BMP could not be hashed");
@@ -706,6 +791,13 @@ int Run(const Options& options) {
         << ",\"includes_water\":" << (renderedWater ? "true" : "false")
         << ",\"includes_entities\":false"
         << ",\"ramp_height_adjusted_vertices\":" << rampAdjusted
+        << ",\"ramp_height_rules_sha256\":";
+    if (heightRulesFingerprint.empty()) std::cout << "null";
+    else JsonString(std::cout, heightRulesFingerprint);
+    const auto rawTerrain = parsed.value->Snapshot();
+    std::cout << ",\"ramp_height_approximate\":" << (heightRulesFingerprint.empty()
+        && std::any_of(rawTerrain->vertices.begin(), rawTerrain->vertices.end(),
+            [](const auto& vertex) { return vertex.IsRamp(); }) ? "true" : "false")
         << ",\"terrain_binding\":{\"document_id\":";
     JsonString(std::cout, "archive-readonly:" + options.sourceSha256);
     std::cout << ",\"document_generation\":\"1\",\"revision\":\"0\",\"source_sha256\":";

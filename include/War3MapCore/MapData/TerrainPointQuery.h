@@ -18,6 +18,7 @@ struct TerrainPointSample {
     std::optional<std::uint8_t> pathingFlags; // 当前静态 WPM 原始位，不等于游戏动态寻路结果。
     std::optional<std::uint8_t> originalPathingFlags;
     std::uint8_t addedPathingRestrictions = 0; // 本工程声明的 0x02/0x04/0x08，包含与来源限制重叠的意图。
+    bool groundHeightApproximate = false; // 缺实际层级规则且本点插值涉及坡道；不得用于精确摆放。
 };
 
 } // namespace War3Map::MapData

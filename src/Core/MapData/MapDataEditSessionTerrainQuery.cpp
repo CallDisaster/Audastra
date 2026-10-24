@@ -1,17 +1,34 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
+#include "War3MapCore/MapData/TerrainNativePathing.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace War3Map::MapData {
 
-Result<TerrainPointSample> MapDataEditSession::InspectTerrainPoint(const TerrainStrokePoint& point) const {
+Result<TerrainPointSample> MapDataEditSession::InspectTerrainPoint(const TerrainStrokePoint& point,
+    std::optional<std::uint8_t> actualMaximumCliffLevel) const {
     if (!terrain_)
         return Result<TerrainPointSample>::Failure("MapData.Edit", "MAP_TERRAIN_UNAVAILABLE", "当前会话没有地形。");
-    const auto sampled = SampleGroundHeight(*terrain_, point.x, point.y, TerrainHeightSource::RawWithRamps);
-    if (!sampled)
-        return Result<TerrainPointSample>::Failure("MapData.Edit", "TERRAIN_QUERY_COORDINATE", "查询坐标非有限数或不在地形范围内。");
+    if (actualMaximumCliffLevel && *actualMaximumCliffLevel > 14)
+        return Result<TerrainPointSample>::Failure("MapData.Edit", "TERRAIN_HEIGHT_RULE_UNAVAILABLE", "实际地形层级上限不在0..14支持域内。");
     const auto u = (point.x - terrain_->header.offset[0]) / TerrainGridSnapshot::tileSize;
     const auto v = (point.y - terrain_->header.offset[1]) / TerrainGridSnapshot::tileSize;
+    const auto sampled = SampleGroundHeight(*terrain_, point.x, point.y, TerrainHeightSource::RawWithRamps, actualMaximumCliffLevel);
+    if (!sampled) {
+        // 有效坐标上的规则/邻域错误保留原诊断，不能误报为坐标越界。
+        const auto width = terrain_->header.width, height = terrain_->header.height;
+        if (actualMaximumCliffLevel && width >= 2 && height >= 2 && std::isfinite(u) && std::isfinite(v)
+            && u >= 0 && v >= 0 && u <= width - 1 && v <= height - 1) {
+            const auto x = std::min(static_cast<std::uint32_t>(u), width - 2);
+            const auto y = std::min(static_cast<std::uint32_t>(v), height - 2);
+            for (std::uint32_t dy = 0; dy < 2; ++dy) for (std::uint32_t dx = 0; dx < 2; ++dx) {
+                const auto state = QueryNativeTerrainRamp(*terrain_, *actualMaximumCliffLevel, x + dx, y + dy);
+                if (!state.Succeeded() || !state.value) return {{}, state.diagnostics};
+            }
+        }
+        return Result<TerrainPointSample>::Failure("MapData.Edit", "TERRAIN_QUERY_COORDINATE", "查询坐标非有限数或不在地形范围内。");
+    }
     TerrainPointSample output;
     output.point = point; output.groundHeight = *sampled;
     output.vertexX = static_cast<std::uint32_t>(std::round(u));
@@ -40,7 +57,18 @@ Result<TerrainPointSample> MapDataEditSession::InspectTerrainPoint(const Terrain
             }
         }
     }
-    return Result<TerrainPointSample>::Success(std::move(output));
+    auto result = Result<TerrainPointSample>::Success(std::move(output));
+    if (!actualMaximumCliffLevel) {
+        const auto x = std::min(static_cast<std::uint32_t>(u), terrain_->header.width - 2);
+        const auto y = std::min(static_cast<std::uint32_t>(v), terrain_->header.height - 2);
+        bool ramp = false;
+        for (std::uint32_t dy = 0; dy < 2; ++dy) for (std::uint32_t dx = 0; dx < 2; ++dx)
+            ramp |= terrain_->vertices[static_cast<std::size_t>(y + dy) * terrain_->header.width + x + dx].IsRamp();
+        result.value->groundHeightApproximate = ramp;
+        if (ramp) result.diagnostics.push_back({DiagnosticSeverity::Warning, "MapData.Edit", "TERRAIN_HEIGHT_APPROXIMATE",
+            "未提供同地图实际Terrain.MaxHeight来源，此坡道点高度仅为旧直坡近似。", std::nullopt});
+    }
+    return result;
 }
 
 } // namespace War3Map::MapData

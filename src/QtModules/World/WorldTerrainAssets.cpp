@@ -5,6 +5,7 @@
 #include "War3MapCore/Render/AnimationSourceGuard.h"
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
+#include "War3MapCore/MapData/NativeEditorProfileInputs.h"
 #include "War3MapCore/Render/TerrainMaterials.h"
 #include "War3MapCore/Resources/ImportTable.h"
 #include "War3MapCore/Text/TextUtil.h"
@@ -170,15 +171,15 @@ std::uint64_t ResourceStampNs() noexcept {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count());
 }
-Result<std::vector<std::byte>> ReadDisk(const std::filesystem::path& path) {
+Result<std::vector<std::byte>> ReadDisk(const std::filesystem::path& path, std::size_t maximumBytes = kResourceLimit) {
     ReadLease lease(path);
     LARGE_INTEGER size{};
     if (lease.handle == INVALID_HANDLE_VALUE || !GetFileSizeEx(lease.handle, &size) ||
-        size.QuadPart < 0 || size.QuadPart > kResourceLimit)
-        return Result<std::vector<std::byte>>::Failure("World", "WORLD_ASSET_READ", "导入地形资源无法锁定或超过 16 MiB。");
+        size.QuadPart < 0 || static_cast<std::uint64_t>(size.QuadPart) > std::min(maximumBytes, kResourceLimit))
+        return Result<std::vector<std::byte>>::Failure("World", "WORLD_ASSET_READ", "导入地形资源无法锁定或超过读取预算。");
     const auto hash = Sha256Handle(lease.handle);
     if (!hash.Succeeded()) return {std::nullopt, hash.diagnostics};
-    return ReadVerifiedFile(path, *hash.value, kResourceLimit);
+    return ReadVerifiedFile(path, *hash.value, std::min(maximumBytes, kResourceLimit));
 }
 
 std::string ResourcePathText(const std::filesystem::path& path) {
@@ -310,6 +311,8 @@ struct WorldResourceReader::State {
     std::optional<Game::GameDataSource> game;
     Resources::ResourceResolver resolver;
     Render::AnimationSourceGuard animationGuard;
+    std::shared_ptr<const Render::AnimationSourceGuard> heightGuard; // 冻结后随高度owner发布；复用仅复核文件身份。
+    std::string heightRuleFingerprint;
     bool animationReads = false;
 };
 
@@ -328,14 +331,114 @@ Status WorldResourceReader::VerifyCurrentSource() const {
     ReadLease current(state_->sources.archivePath);
     if (current.handle == INVALID_HANDLE_VALUE || !state_->lease)
         return Status::Failure("World", "WORLD_ASSET_SOURCE_CHANGED", "地图资源来源已不可验证，请重新加载地形。");
-    return SameFile(*state_->lease, current) ? state_->animationGuard.Verify() : Status::Failure("World", "WORLD_ASSET_SOURCE_CHANGED",
+    if (!SameFile(*state_->lease, current)) return Status::Failure("World", "WORLD_ASSET_SOURCE_CHANGED",
         "地图资源来源已被替换，请重新加载地形。");
+    const auto animation = state_->animationGuard.Verify();
+    return animation.Succeeded() && state_->heightGuard ? state_->heightGuard->Verify() : animation;
 }
 
 Result<std::vector<std::byte>> WorldResourceReader::ReadMapArchiveMember(std::string_view path, std::size_t maxBytes) {
     if (!state_->archive || !state_->archive->HasFile(path))
         return Result<std::vector<std::byte>>::Failure("World", "WORLD_MAP_MEMBER_MISSING", "地图归档里没有 " + std::string(path));
     return state_->archive->ReadFileBounded(path, maxBytes);
+}
+
+Result<std::vector<ArchiveExactMember>> WorldResourceReader::ReadHeightMembers(
+    std::span<const std::string> names, const ArchiveExactMemberLimits& limits) const try {
+    using Output = Result<std::vector<ArchiveExactMember>>;
+    if (!state_->archive || names.size() > limits.memberCount)
+        return Output::Failure("World", "WORLD_HEIGHT_RULE_SOURCE", "坡道高度规则缺少已锁定地图来源或成员预算。");
+    std::vector<ArchiveExactMember> output;
+    output.reserve(names.size());
+    std::size_t used = 0;
+    for (const auto& name : names) {
+        const auto key = Resources::CanonicalImportPath(name);
+        if (!key.Succeeded() || !key.value) return {{}, key.diagnostics};
+        const auto found = state_->entries.find(*key.value);
+        const bool present = found != state_->entries.end()
+            || (!state_->listedArchive.contains(*key.value) && state_->archive->HasFile(*key.value));
+        ArchiveExactMember member{name, present, {}};
+        if (present) {
+            const auto remaining = std::min(limits.memberBytes, limits.totalBytes - used);
+            Result<std::vector<std::byte>> read;
+            if (found != state_->entries.end() && found->second.ownedPayload) {
+                if (found->second.ownedPayload->size() > remaining)
+                    return Output::Failure("World", "WORLD_HEIGHT_RULE_BUDGET", "会话坡道高度规则超过读取预算。");
+                read = Result<std::vector<std::byte>>::Success(*found->second.ownedPayload);
+            } else if (found != state_->entries.end() && !found->second.diskPath.empty())
+                read = ReadDisk(found->second.diskPath, remaining);
+            else read = state_->archive->ReadFileBounded(
+                found == state_->entries.end() ? *key.value : found->second.archivePath, remaining);
+            if (!read.Succeeded() || !read.value) return {{}, read.diagnostics};
+            if (read.value->size() > remaining)
+                return Output::Failure("World", "WORLD_HEIGHT_RULE_BUDGET", "坡道高度规则超过累计读取预算。");
+            used += read.value->size(); member.bytes = std::move(*read.value);
+        }
+        output.push_back(std::move(member));
+    }
+    return Output::Success(std::move(output));
+} catch (const std::bad_alloc&) {
+    return Result<std::vector<ArchiveExactMember>>::Failure("World", "WORLD_HEIGHT_RULE_BUDGET", "坡道高度规则来源读取分配失败。");
+}
+
+Result<std::shared_ptr<const WorldTerrainHeightRules>> WorldResourceReader::CaptureHeightRules(std::uint8_t tileset) {
+    using Output = Result<std::shared_ptr<const WorldTerrainHeightRules>>;
+    const auto current = VerifyCurrentSource();
+    if (!current.Succeeded()) return {{}, current.diagnostics};
+    auto guard = std::make_shared<Render::AnimationSourceGuard>();
+    const auto map = guard->Watch(state_->sources.archivePath);
+    if (!map.Succeeded()) return {{}, map.diagnostics};
+    bool needsGame = false;
+    // 和Core同一固定profile清单；owned覆盖由sources保活，磁盘覆盖持有拒写租约。
+    // 游戏同名loose入口在捕获时拒绝，此处登记其缺失，后来出现即使缓存失效。
+    for (const auto& profile : MapData::kClassicProfiles) {
+        const auto key = Resources::CanonicalImportPath(profile.path);
+        if (!key.Succeeded() || !key.value) return {{}, key.diagnostics};
+        if (!state_->sources.gameRoot.empty()) {
+            const auto absent = guard->Watch(state_->sources.gameRoot / std::filesystem::u8path(profile.path), true);
+            if (!absent.Succeeded()) return {{}, absent.diagnostics};
+        }
+        const auto found = state_->entries.find(*key.value);
+        needsGame |= found == state_->entries.end()
+            && (state_->listedArchive.contains(*key.value) || !state_->archive->HasFile(*key.value));
+        if (found != state_->entries.end() && !found->second.ownedPayload && !found->second.diskPath.empty()) {
+            const auto file = guard->Watch(found->second.diskPath);
+            if (!file.Succeeded()) return {{}, file.diagnostics};
+        }
+    }
+    if (needsGame && !state_->sources.gameRoot.empty()) {
+        const auto game = guard->WatchGameRoot(state_->sources.gameRoot);
+        if (!game.Succeeded()) return {{}, game.diagnostics};
+    }
+    auto captured = MapData::TerrainPathingResources::CaptureHeightRules(
+        [this](auto names, const auto& limits) { return ReadHeightMembers(names, limits); },
+        tileset, state_->sources.gameRoot, 64u * 1024u * 1024u);
+    if (!captured.Succeeded() || !captured.value) return {{}, captured.diagnostics};
+    const auto content = captured.value->VerifyHeightRuleSources(
+        [this](auto names, const auto& limits) { return ReadHeightMembers(names, limits); }, 64u * 1024u * 1024u);
+    if (!content.Succeeded()) return {{}, content.diagnostics};
+    const auto fingerprint = captured.value->HeightRuleDependencyFingerprint();
+    if (!fingerprint.Succeeded() || !fingerprint.value) return {{}, fingerprint.diagnostics};
+    const auto stable = guard->Verify();
+    if (!stable.Succeeded()) return {{}, stable.diagnostics};
+    auto owner = std::shared_ptr<const WorldTerrainHeightRules>(
+        new WorldTerrainHeightRules(std::move(*captured.value), guard));
+    state_->heightGuard = std::move(guard);
+    state_->heightRuleFingerprint = *fingerprint.value;
+    const auto verified = VerifyHeightRules(*owner);
+    if (!verified.Succeeded()) return {{}, verified.diagnostics};
+    return Output::Success(std::move(owner));
+}
+
+Status WorldResourceReader::VerifyHeightRules(const WorldTerrainHeightRules& rules) const {
+    const auto current = VerifyCurrentSource();
+    if (!current.Succeeded()) return current;
+    const auto fingerprint = rules.rules_.HeightRuleDependencyFingerprint();
+    if (!fingerprint.Succeeded() || !fingerprint.value) return {fingerprint.diagnostics};
+    if (state_->heightRuleFingerprint.empty() || *fingerprint.value != state_->heightRuleFingerprint
+        || rules.sources_ != state_->heightGuard)
+        return Status::Failure("World", "WORLD_HEIGHT_RULE_SOURCE", "坡道高度规则并非此世界来源读取器捕获，未复用其它地图的规则。");
+    return rules.VerifyCurrentSource();
 }
 
 Result<Render::AnimationResource> WorldResourceReader::ReadAnimationResource(std::string_view path, std::uint64_t maxBytes) {

@@ -60,13 +60,15 @@ Result<std::vector<MapData::TerrainPointSample>> QueryTerrainPoints(const MapDat
     if (points.empty() || points.size() > TerrainQueryMaximumPoints)
         return Result<Output>::Failure("Terrain.Edit", "TERRAIN_QUERY_POINT_BUDGET", "单次地形查询需要 1 到 256 个坐标。");
     Output output;
+    std::vector<Diagnostic> diagnostics;
     output.reserve(points.size());
     for (const auto& point : points) {
         auto sampled = session.InspectTerrainPoint(point);
         if (!sampled.Succeeded() || !sampled.value) return {{}, std::move(sampled.diagnostics)};
+        if (sampled.value->groundHeightApproximate && diagnostics.empty()) diagnostics = sampled.diagnostics;
         output.push_back(std::move(*sampled.value));
     }
-    return Result<Output>::Success(std::move(output));
+    return {std::move(output), std::move(diagnostics)};
 }
 
 Result<PreparedTerrainEdit> PrepareTerrainEdit(const MapData::MapDataEditSession& session,

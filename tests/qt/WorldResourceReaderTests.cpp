@@ -5,6 +5,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/Mpq/MpqWriter.h"
+#include "War3MapCore/MapData/NativeEditorProfileInputs.h"
 
 #include <QCoreApplication>
 #include <QFile>
@@ -486,6 +487,99 @@ void OptionalLocalArchiveParticipatesInWorldSourceLeases() {
         }
     }
 }
+
+WorldTerrainSources HeightFixture(const std::filesystem::path& path, bool complete) {
+    std::vector<Mpq::MpqBuildFile> files;
+    for (const auto& profile : MapData::kClassicProfiles)
+        if (complete || std::string_view(profile.path) == "UI/MiscData.txt")
+            files.push_back({profile.path, *Payload(std::string_view(profile.path) == "UI/MiscData.txt"
+                ? "[Terrain]\nMaxHeight=1280\n" : "")});
+    Require(Mpq::WriteMpqArchive(path, files).Succeeded(), "write original map height profile fixture");
+    const auto digest = Sha256File(path); Require(digest.Succeeded(), "hash height fixture");
+    WorldTerrainSources sources; sources.archivePath = path; sources.archiveSha = *digest.value; sources.mainTileset = 'L';
+    for (const auto& file : files)
+        sources.entries.push_back({file.name, file.name, {}, static_cast<std::int64_t>(file.data.size())});
+    return sources;
+}
+
+void HeightOwnerUsesActualMapAndOwnedWinnersWithoutReaderLifetime() {
+    QTemporaryDir directory; Require(directory.isValid(), "height owner temporary directory");
+    const auto fixture = HeightFixture(std::filesystem::path(directory.path().toStdWString()) / L"height.w3x", true);
+    QtProject::EditorProject project; BindProject(project, fixture);
+    const auto sources = Capture(project);
+    auto reader = WorldResourceReader::Open(sources); Require(reader.Succeeded(), "open map height reader");
+    const auto mapRules = (*reader.value)->CaptureHeightRules('L');
+    Require(mapRules.Succeeded() && mapRules.value && (*mapRules.value)->HeightMaximumCliffLevel() == 12,
+        "complete map profiles provide actual nondefault M without any game root");
+    Require((*reader.value)->VerifyHeightRules(**mapRules.value).Succeeded(), "captured map owner verifies through its reader");
+    auto other = WorldResourceReader::Open(sources); Require(other.Succeeded(), "open distinct reader for the same source");
+    Require(!(*other.value)->VerifyHeightRules(**mapRules.value).Succeeded(), "same map does not forge another reader's height capability");
+    Import(project, QStringLiteral("UI/MiscData.txt"), Payload("[Terrain]\nMaxHeight=1024\n"));
+    const auto ownedSources = Capture(project);
+    Require(!SameWorldTerrainSources(sources, ownedSources), "owned profile replacement invalidates world capture identity");
+    auto ownedReader = WorldResourceReader::Open(ownedSources); Require(ownedReader.Succeeded(), "open owned height reader");
+    const auto ownedRules = (*ownedReader.value)->CaptureHeightRules('L');
+    Require(ownedRules.Succeeded() && (*ownedRules.value)->HeightMaximumCliffLevel() == 10,
+        "owned profile wins over an actual map profile rather than using the map's old maximum");
+    ownedReader.value->reset(); reader.value->reset(); other.value->reset();
+    Require((*ownedRules.value)->VerifyCurrentSource().Succeeded() && (*mapRules.value)->VerifyCurrentSource().Succeeded(),
+        "immutable height owner retains independent read leases after mutable readers are destroyed");
+    const auto writer = CreateFileW(sources.archivePath.c_str(), GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    const auto error = GetLastError();
+    if (writer != INVALID_HANDLE_VALUE) CloseHandle(writer);
+    Require(writer == INVALID_HANDLE_VALUE && error == ERROR_SHARING_VIOLATION,
+        "published height owner still denies writes to the actual map source");
+}
+
+void HeightDiskGuardIsImmutableAndTracksReplacements() {
+    QTemporaryDir directory; Require(directory.isValid(), "height disk guard temporary directory");
+    auto sources = HeightFixture(std::filesystem::path(directory.path().toStdWString()) / L"height.w3x", true);
+    const auto disk = sources.archivePath.parent_path() / L"profile.txt";
+    { QFile output(QString::fromStdWString(disk.wstring())); Require(output.open(QIODevice::WriteOnly)
+        && output.write("[Terrain]\nMaxHeight=1024\n") == 25, "write disk profile fixture"); }
+    auto& entry = Entry(sources, "UI/MiscData.txt"); entry.diskPath = disk; entry.size = 25;
+    auto reader = WorldResourceReader::Open(sources); Require(reader.Succeeded(), "open disk height reader");
+    const auto captured = (*reader.value)->CaptureHeightRules('L');
+    Require(captured.Succeeded() && (*captured.value)->HeightMaximumCliffLevel() == 10, "session disk profile is the actual winner");
+    reader.value->reset();
+    Require((*captured.value)->VerifyCurrentSource().Succeeded(), "disk height source survives reader destruction");
+    const auto writer = CreateFileW(disk.c_str(), GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    const auto error = GetLastError();
+    if (writer != INVALID_HANDLE_VALUE) CloseHandle(writer);
+    Require(writer == INVALID_HANDLE_VALUE && error == ERROR_SHARING_VIOLATION, "published height owner locks actual disk profile against writes");
+    const auto retained = disk.parent_path() / L"retained-profile.txt";
+    Require(MoveFileExW(disk.c_str(), retained.c_str(), 0) != FALSE, "rename original test profile while delete-sharing lease survives");
+    { QFile replacement(QString::fromStdWString(disk.wstring())); Require(replacement.open(QIODevice::WriteOnly)
+        && replacement.write("[Terrain]\nMaxHeight=1280\n") == 25, "install distinct test profile at the old path"); }
+    const auto stale = (*captured.value)->VerifyCurrentSource();
+    Require(!stale.Succeeded() && stale.diagnostics.front().code == "WORLD_ASSET_SOURCE_CHANGED",
+        "old immutable owner rejects replacement profile path without a reread or content SHA");
+}
+
+void HeightRulesRespectGameFallbackAndHigherLayerAbsence() {
+    QTemporaryDir directory; Require(directory.isValid(), "height fallback temporary directory");
+    auto sources = HeightFixture(std::filesystem::path(directory.path().toStdWString()) / L"height.w3x", false);
+    sources.gameRoot = sources.archivePath.parent_path() / L"game";
+    Require(std::filesystem::create_directory(sources.gameRoot), "create height game source root");
+    std::vector<Mpq::MpqBuildFile> base;
+    for (const auto& profile : MapData::kClassicProfiles)
+        base.push_back({profile.path, *Payload(std::string_view(profile.path) == "UI/MiscData.txt"
+            ? "[Terrain]\nMaxHeight=1536\n" : "")});
+    const std::vector<Mpq::MpqBuildFile> expansion{{"Unrelated.bin", {std::byte{1}}}}, local{{"Unrelated.bin", {std::byte{2}}}};
+    Require(Mpq::WriteMpqArchive(sources.gameRoot / L"war3.mpq", base).Succeeded()
+        && Mpq::WriteMpqArchive(sources.gameRoot / L"war3x.mpq", expansion).Succeeded(),
+        "write original game profiles and expansion");
+    auto reader = WorldResourceReader::Open(sources); Require(reader.Succeeded(), "open fallback height source");
+    const auto rules = (*reader.value)->CaptureHeightRules('L');
+    Require(rules.Succeeded() && (*rules.value)->HeightMaximumCliffLevel() == 12,
+        "map profile wins while other fixed-chain profiles use strict game fallback");
+    reader.value->reset();
+    Require(Mpq::WriteMpqArchive(sources.gameRoot / L"war3local.mpq", local).Succeeded(),
+        "add higher-priority original test game archive");
+    Require(!(*rules.value)->VerifyCurrentSource().Succeeded(), "published height guard notices a new higher-priority game archive");
+}
 }
 int main(int argc, char** argv) {
     QCoreApplication application(argc, argv);
@@ -498,6 +592,9 @@ int main(int argc, char** argv) {
         WeakVersionsRejectAliasesAndKeepCompleteBatchesStable();
         StaticReadProvenanceRecordsMapDiskAndActualGameContainers();
         OptionalLocalArchiveParticipatesInWorldSourceLeases();
+        HeightOwnerUsesActualMapAndOwnedWinnersWithoutReaderLifetime();
+        HeightDiskGuardIsImmutableAndTracksReplacements();
+        HeightRulesRespectGameFallbackAndHigherLayerAbsence();
         std::cout << "world-resource-reader: source lease, owned payload and cache identity regressions passed\n";
         return 0;
     } catch (const std::exception& error) {

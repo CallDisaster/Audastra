@@ -80,14 +80,25 @@ bool MissingOnly(const std::vector<Diagnostic>& diagnostics) {
 
 PreviewResult WithCatalog(const MapData::TerrainGridSnapshot& terrain,
     const TerrainMaterialCatalog& catalog, const Resources::ResourceResolver& resolver,
-    const TerrainCliffPreviewLimits& limits, std::size_t candidates) {
+    const TerrainCliffPreviewLimits& limits, std::size_t candidates,
+    std::optional<std::uint8_t> actualMaximumCliffLevel) {
     TerrainCliffPreview preview;
+    std::vector<Diagnostic> notes;
     preview.candidateTiles = candidates;
     auto shaped = terrain;
-    preview.rampAdjustedVertices = ApplyRampHeights(shaped);
+    if (actualMaximumCliffLevel) {
+        const auto adjusted = ApplyRampHeights(shaped, *actualMaximumCliffLevel);
+        if (!adjusted.Succeeded()) return {{}, adjusted.diagnostics};
+        preview.rampAdjustedVertices = *adjusted.value;
+    } else {
+        preview.rampAdjustedVertices = ApplyRampHeights(shaped);
+        if (std::any_of(terrain.vertices.begin(), terrain.vertices.end(), [](const auto& vertex) { return vertex.IsRamp(); }))
+            notes.push_back({DiagnosticSeverity::Warning, kSubsystem, "TERRAIN_HEIGHT_APPROXIMATE",
+                "未提供实际Terrain.MaxHeight，坡道高度仅为旧直坡近似。", std::nullopt});
+    }
     if (candidates == 0) {
         preview.geometry.coveredTiles.assign(terrain.tiles.size(), 0);
-        return PreviewResult::Success(std::move(preview));
+        return {std::move(preview), std::move(notes)};
     }
     if (catalog.tables[1].canonicalPath.empty())
         return Failure("TERRAIN_CLIFF_PREVIEW_CATALOG", "悬崖目录没有 CliffTypes.slk 的来源身份。");
@@ -98,7 +109,6 @@ PreviewResult WithCatalog(const MapData::TerrainGridSnapshot& terrain,
 
     std::size_t attemptedPaths = 0, totalModelBytes = 0;
     std::vector<Diagnostic> fatal;
-    std::vector<Diagnostic> notes;
     const auto reject = [&](const char* code, std::string message) -> Result<std::vector<std::byte>> {
         if (fatal.empty()) fatal.push_back({DiagnosticSeverity::Error, kSubsystem, code, std::move(message), std::nullopt});
         return {std::nullopt, fatal};
@@ -193,14 +203,15 @@ PreviewResult Checked(Operation operation) {
 } // namespace
 
 Result<TerrainCliffPreview> BuildTerrainCliffPreview(const MapData::TerrainGridSnapshot& terrain,
-    const Resources::ResourceResolver& resolver, const TerrainCliffPreviewLimits& limits) {
+    const Resources::ResourceResolver& resolver, const TerrainCliffPreviewLimits& limits,
+    std::optional<std::uint8_t> actualMaximumCliffLevel) {
     return Checked([&] {
         auto counted = CountCandidates(terrain, limits);
         if (!counted.Succeeded()) return PreviewResult{std::nullopt, std::move(counted.diagnostics)};
-        if (*counted.value == 0) return WithCatalog(terrain, {}, resolver, limits, 0);
+        if (*counted.value == 0) return WithCatalog(terrain, {}, resolver, limits, 0, actualMaximumCliffLevel);
         auto catalog = LoadTerrainMaterialCatalog(resolver, limits.materials);
         if (!catalog.Succeeded()) return PreviewResult{std::nullopt, std::move(catalog.diagnostics)};
-        auto result = WithCatalog(terrain, *catalog.value, resolver, limits, *counted.value);
+        auto result = WithCatalog(terrain, *catalog.value, resolver, limits, *counted.value, actualMaximumCliffLevel);
         result.diagnostics.insert(result.diagnostics.begin(),
             std::make_move_iterator(catalog.diagnostics.begin()), std::make_move_iterator(catalog.diagnostics.end()));
         return result;
@@ -209,11 +220,11 @@ Result<TerrainCliffPreview> BuildTerrainCliffPreview(const MapData::TerrainGridS
 
 Result<TerrainCliffPreview> BuildTerrainCliffPreview(const MapData::TerrainGridSnapshot& terrain,
     const TerrainMaterialCatalog& catalog, const Resources::ResourceResolver& resolver,
-    const TerrainCliffPreviewLimits& limits) {
+    const TerrainCliffPreviewLimits& limits, std::optional<std::uint8_t> actualMaximumCliffLevel) {
     return Checked([&] {
         auto counted = CountCandidates(terrain, limits);
         if (!counted.Succeeded()) return PreviewResult{std::nullopt, std::move(counted.diagnostics)};
-        return WithCatalog(terrain, catalog, resolver, limits, *counted.value);
+        return WithCatalog(terrain, catalog, resolver, limits, *counted.value, actualMaximumCliffLevel);
     });
 }
 

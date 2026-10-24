@@ -69,6 +69,10 @@ struct TerrainCliffs {
 // 把该坡道顶点抬到两端层级的平均值（通常 +64）。原始快照不含此调整；渲染、拾取与悬崖使用
 // 调整后的副本。返回调整的顶点数，并更新网格的高度边界。
 std::size_t ApplyRampHeights(MapData::TerrainGridSnapshot& terrain);
+// 实际Terrain.MaxHeight已捕获时使用与编辑/保存相同的完整R/S高度。
+// 全部查询成功后才改显示position；失败不留下部分抬高，不改原始W3E字段。
+[[nodiscard]] Result<std::size_t> ApplyRampHeights(MapData::TerrainGridSnapshot& terrain,
+    std::uint8_t actualMaximumCliffLevel, std::size_t maximumBytes = 64u * 1024u * 1024u);
 
 // 模型文件名中的四个层级字母（西南、西北、东北、东南）；差值超过 2 时返回空。
 [[nodiscard]] std::optional<std::string> CliffShapeName(std::uint8_t southWest, std::uint8_t northWest,

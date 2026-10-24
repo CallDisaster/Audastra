@@ -25,6 +25,17 @@ enum class TerrainNativeStage { Before, After };
 // CaptureWaterBrushRules仅捕获编辑规则，不建立保存资格。
 class TerrainPathingResources {
 public:
+    // 只读显示/查询适配：回调须读取宿主冻结的同一地图/会话覆盖，缺失项才回退gameRoot。
+    // 复用原生profile加载与来源owner；不读取DOO/水表，不建立任何地图保存资格。
+    using HeightSourceReader = std::function<Result<std::vector<ArchiveExactMember>>(
+        std::span<const std::string>, const ArchiveExactMemberLimits&)>;
+    [[nodiscard]] static Result<TerrainPathingResources> CaptureHeightRules(const HeightSourceReader& reader,
+        std::uint8_t tileset, const std::filesystem::path& gameRoot, std::size_t maximumBytes);
+    [[nodiscard]] std::optional<std::uint8_t> HeightMaximumCliffLevel() const noexcept {
+        return heightRulesOnly_ ? nativeMaximumCliffLevel_ : std::nullopt;
+    }
+    [[nodiscard]] Status VerifyHeightRuleSources(const HeightSourceReader& reader, std::size_t maximumBytes) const;
+    [[nodiscard]] Result<std::string> HeightRuleDependencyFingerprint() const;
     [[nodiscard]] static bool Needed(const TerrainGridSnapshot& before, const TerrainGridSnapshot& after);
     [[nodiscard]] static Result<TerrainPathingResources> Capture(const MapArchiveSession& source,
         const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
@@ -120,8 +131,7 @@ private:
     [[nodiscard]] static Result<TerrainPathingResources> CaptureNativeWithObjects(const WorkspaceSnapshot& source,
         const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
         const std::filesystem::path& gameRoot, std::size_t maximumBytes, const NativeObjectValidator& validator, const std::vector<std::byte>* currentDoodads = nullptr);
-    using MemberReader = std::function<Result<std::vector<ArchiveExactMember>>(
-        std::span<const std::string>, const ArchiveExactMemberLimits&)>;
+    using MemberReader = HeightSourceReader;
     [[nodiscard]] static Result<TerrainPathingResources> CaptureInputs(const MemberReader& reader,
         const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
         const std::filesystem::path& gameRoot, std::size_t maximumBytes, bool native,
@@ -167,6 +177,8 @@ private:
     std::vector<TerrainNativeGroundRule> nativeGround_;
     std::optional<TerrainNativeWaterRules> waterRules_;
     std::optional<std::uint8_t> nativeMaximumCliffLevel_;
+    bool heightRulesOnly_ = false;
+    std::string heightRuleFingerprint_; // 捕获时计算一次；显示任务复用不重复散列来源正文。
     std::optional<TerrainWaterLoadedRules> waterBrushRules_;
     std::string waterBrushInputSha_;
     std::size_t waterBrushInputBytes_ = 0;
