@@ -166,7 +166,8 @@ void CheckRealTerrainShadowSave(const MapArchiveSession& original,
     absentRequest.targetCandidate = scenario / "saved-without-pathing-or-minimap.w3x";
     Require(absentRequest.minimapChoice == TerrainMinimapSaveChoice::Automatic,
         "missing-WPM shadow regression uses the actual public default automatic minimap choice");
-    const auto absentSaved = Take(SaveMapEditCandidate(absentRequest));
+    const auto absentResult = SaveMapEditCandidate(absentRequest);
+    const auto absentSaved = Take(absentResult);
     const auto absentReadback = Take(MapArchiveSession::Open(absentSaved.candidate));
     verifyAbsent(absentReadback);
     const auto absentShadow = Take(absentReadback.ReadMember("war3map.shd"));
@@ -179,7 +180,7 @@ void CheckRealTerrainShadowSave(const MapArchiveSession& original,
         && absentSaved.appliedStrokeCount == 0 && absentSaved.editedMembers.empty(),
         "shadow-only missing-WPM result does not invent terrain/pathing/image edits or replace the authored script");
     const auto warning = [&](std::string_view code) {
-        return std::any_of(absentSaved.diagnostics.begin(), absentSaved.diagnostics.end(), [&](const auto& diagnostic) {
+        return std::any_of(absentResult.diagnostics.begin(), absentResult.diagnostics.end(), [&](const auto& diagnostic) {
             return diagnostic.severity == DiagnosticSeverity::Warning && diagnostic.code == code;
         });
     };
