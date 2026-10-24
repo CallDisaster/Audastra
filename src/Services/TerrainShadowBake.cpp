@@ -171,9 +171,13 @@ Status TerrainShadowBake::VerifyFrozenOutput(const MapArchiveSession& source,
 Status TerrainShadowBake::VerifyReadback(const MapArchiveSession& saved) const {
     const auto direction = light_->VerifySources(light_->CaptureBudgetBytes()); if (!direction.Succeeded()) return direction;
     const auto dependencies = casters_->VerifyReadback(saved); if (!dependencies.Succeeded()) return dependencies;
-    const auto bytes = saved.ReadMember("war3map.shd", bytes_.size());
-    if (!bytes.Succeeded() || !bytes.value) return {bytes.diagnostics};
-    if (*bytes.value != bytes_) return Status::Failure(kSubsystem, "TERRAIN_SHADOW_READBACK_STALE", "实际保存的SHD与本次计算结果不一致。");
+    const std::array<std::string, 1> names{"war3map.shd"};
+    ArchiveExactMemberLimits limits;
+    limits.memberCount = 1; limits.memberBytes = limits.totalBytes = bytes_.size();
+    const auto members = saved.CaptureExactMembers(names, limits);
+    if (!members.Succeeded() || !members.value) return {members.diagnostics};
+    if (!(*members.value)[0].present || (*members.value)[0].bytes != bytes_)
+        return Status::Failure(kSubsystem, "TERRAIN_SHADOW_READBACK_STALE", "实际保存的SHD与本次计算结果不一致。");
     return Status::Ok();
 }
 
