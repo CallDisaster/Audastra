@@ -2140,8 +2140,14 @@ void EditorProjectTests::EffectiveDoodadCategoryWorkerRejectsBeforeWrite() {
         QVERIFY(w3d != members.end());
         auto parsed = NativeObjectCodec(ObjectType::Doodad).Parse(w3d->data); QVERIFY(parsed.Succeeded());
         auto* native = dynamic_cast<NativeObjectDocument*>(parsed.document.get()); QVERIFY(native);
-        QVERIFY(native->RemoveModification({ObjectType::Doodad, rawcode}, {"dcat"}).Succeeded());
-        QVERIFY(native->AddModification({ObjectType::Doodad, rawcode}, {"dcat"}, NativeValueType::Int32, std::int32_t{67}).Succeeded());
+        const ObjectKey object{ObjectType::Doodad, rawcode};
+        const auto* record = native->FindObject(object); QVERIFY(record && record->modifications.size() == 1);
+        // 解析键含显式零索引；删除前复制完整身份，不能以省略索引的键替代。
+        const auto categoryKey = record->modifications.front().key;
+        QVERIFY(categoryKey.fieldId == "dcat" && !categoryKey.level && categoryKey.dataIndex == 0u && categoryKey.variation == 0u);
+        QVERIFY(native->RemoveModification(object, categoryKey).Succeeded());
+        QVERIFY(native->AddModification(object, categoryKey, NativeValueType::Int32, std::int32_t{67}).Succeeded());
+        QCOMPARE(native->ModificationValueType(object, categoryKey), std::optional{NativeValueType::Int32});
         const auto wire = NativeObjectCodec(ObjectType::Doodad).Serialize(*native); QVERIFY(wire.Succeeded() && wire.value);
         w3d->data = *wire.value;
     } else if (scenario == "selector" || scenario == "duplicate-category-address") {
