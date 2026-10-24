@@ -3,6 +3,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/TerrainPathingResources.h"
+#include "War3MapCore/MapData/TerrainNativeUnitsProof.h"
 #include "War3MapCore/Resources/ImportTable.h"
 
 #include <algorithm>
@@ -24,8 +25,26 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
     const MapArchiveSession* source, const WorkspaceSnapshot* workspace, const std::filesystem::path& gameRoot,
     const TerrainSavePlanLimits& limits, std::size_t& total, const NativeResourceCapture* nativeCapture) {
     using Output = Result<std::vector<std::byte>>;
+    std::optional<TerrainNativeUnitsProof> unitsProof;
+    const auto& sourceUnits = edits.original_[MapDataEditSession::Index(MapDataKind::Units)];
+    const auto& currentUnits = edits.current_[MapDataEditSession::Index(MapDataKind::Units)];
+    if (sourceUnits != currentUnits) {
+        if (!sourceUnits || !currentUnits)
+            return Output::Failure(kSubsystem, "TERRAIN_NATIVE_UNITS_EXISTENCE", "地形组合保存不能新增或删除整个Units成员；已存在成员内的实例可编辑。");
+        if (total > limits.maximumBytes)
+            return Output::Failure(kSubsystem, "TERRAIN_SAVE_PLAN_BUDGET", "地形计划没有剩余Units核对预算。");
+        auto required = TerrainNativeUnitsProof::RequiredWorkingBytes(
+            sourceUnits->size(), currentUnits->size(), limits.maximumBytes - total);
+        if (!required.Succeeded() || !required.value) return {{}, std::move(required.diagnostics)};
+        total += *required.value; // 在parser、writer及其歧义试读分配前预收。
+        auto proof = TerrainNativeUnitsProof::Prepare(*sourceUnits, *currentUnits, sourceSha256_,
+            edits.SessionIdentity(), edits.Revision(), edits.TerrainSourceRevision(), *required.value);
+        if (!proof.Succeeded() || !proof.value) return {{}, std::move(proof.diagnostics)};
+        unitsProof = std::move(*proof.value);
+    }
     const auto shape = edits.VerifyTerrainCandidateForSave(edits.terrain_, edits.pathing_,
-        edits.current_[MapDataEditSession::Index(MapDataKind::Doodads)], nullptr, nullptr, nullptr, true);
+        edits.current_[MapDataEditSession::Index(MapDataKind::Doodads)], nullptr, nullptr, nullptr, true,
+        unitsProof ? &*unitsProof : nullptr);
     if (!shape.Succeeded()) return {{}, shape.diagnostics};
     if ((!source && !workspace) || total > limits.maximumBytes)
         return Output::Failure(kSubsystem, "TERRAIN_PATHING_REBUILD_SOURCE", "通行重建缺少唯一来源或剩余预算。");
@@ -145,6 +164,13 @@ Status TerrainSavePlan::CommitSaved(MapDataEditSession& edits, const MapDocument
         || !SameSha(*doodads, invariantMembers_[2].outputSha256)
         || !saved.Doodads() || saved.Doodads()->OriginalBytes() != *doodads)
         return Reject("TERRAIN_PATHING_COMMIT_STALE", "保存后的DOO与冻结输出或前台完整特殊集合不一致，编辑基线保持不变。");
+    const auto& units = edits.current_[MapDataEditSession::Index(MapDataKind::Units)];
+    const auto& unitsOutput = invariantMembers_[1];
+    if ((units.has_value() != unitsOutput.outputSha256.has_value())
+        || (units && (units->size() != unitsOutput.outputBytes || !SameSha(*units, unitsOutput.outputSha256)
+            || !saved.Units() || saved.Units()->OriginalBytes() != *units))
+        || (!units && saved.Member(MapDataKind::Units).state != MapDataState::Missing))
+        return Reject("TERRAIN_PATHING_COMMIT_STALE", "保存后的Units与冻结完整输出或前台成员不同，编辑基线保持不变。");
     const auto original = SerializeMapTerrain(*edits.terrainOriginal_);
     const auto current = SerializeMapTerrain(*edits.terrain_);
     if (!original.Succeeded() || !original.value) return {original.diagnostics};

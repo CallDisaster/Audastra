@@ -4,6 +4,7 @@
 #include "War3MapCore/MapData/MapPathing.h"
 #include "War3MapCore/MapData/PlacementElevationInvariant.h"
 #include "War3MapCore/MapData/TerrainNativePathing.h"
+#include "War3MapCore/MapData/TerrainNativeUnitsProof.h"
 #include "War3MapCore/MapData/TerrainPathingResources.h"
 
 #include <algorithm>
@@ -884,7 +885,8 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
     const std::optional<std::vector<std::byte>>& pathing,
     const std::optional<std::vector<std::byte>>& doodads,
     const TerrainPathingResources* resources, const std::vector<std::byte>* restrictions,
-    const std::optional<std::vector<std::byte>>* units, bool nativeRebuild) const {
+    const std::optional<std::vector<std::byte>>* units, bool nativeRebuild,
+    const TerrainNativeUnitsProof* nativeUnits) const {
     const auto reject = [](const char* reason) {
         return Status::Failure("MapData.Edit", "MAP_TERRAIN_PATHING_UNVERIFIED", reason);
     };
@@ -921,7 +923,13 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
         });
         if (!doo.Succeeded()) return doo;
         return check(MapDataKind::Units, units ? *units : current_[Index(MapDataKind::Units)],
-            [](const auto& before, const auto& after) { return VerifyUnitPlacementElevationOnly(before, after); });
+            [&](const auto& before, const auto& after) {
+                // 证明只能由完整native保存链按剩余额度构造；普通不变性检查
+                // 保持仅Z规则。此处不把Units动态占地错误烘焙到静态WPM。
+                return nativeRebuild && nativeUnits
+                    ? nativeUnits->Verify(before, after, SessionIdentity(), Revision(), TerrainSourceRevision())
+                    : VerifyUnitPlacementElevationOnly(before, after);
+            });
     };
     if (specialDoodads_ != savedSpecialDoodads_ && !nativeRebuild)
         return reject("可信水刷改变了特殊模型集合，必须分别重算旧/新DOO的完整通行贡献。");
