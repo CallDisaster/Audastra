@@ -66,6 +66,7 @@
 #include <QScrollBar>
 #include <QMouseEvent>
 #include <QPushButton>
+#include <QPointer>
 #include <QSignalSpy>
 #include <QStandardItemModel>
 #include <QSemaphore>
@@ -3901,7 +3902,7 @@ void WorldModuleTests::TerrainTextureSlotUsesSharedTransaction() {
     auto* page = module.Widget(); state.viewport = module.Viewport(); page->resize(900, 600); page->show();
     QTRY_COMPARE(module.Viewport()->VertexCount(), std::size_t{81});
     auto* replace = page->findChild<QPushButton*>("worldTerrainReplaceTexture"); QVERIFY(replace);
-    const auto original = *MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value;
+    const auto original = Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
     bool accepted = false;
     QTimer::singleShot(0, page, [&] {
         if (auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget())) {
@@ -3914,9 +3915,10 @@ void WorldModuleTests::TerrainTextureSlotUsesSharedTransaction() {
     QCOMPARE(project.mapEdits_->Terrain()->header.groundTilesets.front(), std::string("Tg02"));
     QCOMPARE(project.mapDataUndoStack_->count(), 1);
     const auto exported = project.mapEdits_->ExportTerrainStrokeJournal(); QVERIFY(exported.Succeeded());
+    QVERIFY(exported.value); QVERIFY(!exported.value->strokes.empty());
     QVERIFY(exported.value->strokes.front().intent.palette.has_value());
     project.mapDataUndoStack_->undo();
-    QCOMPARE(*MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, original);
+    QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), original);
     project.mapDataUndoStack_->redo();
     QCOMPARE(project.mapEdits_->Terrain()->header.groundTilesets.front(), std::string("Tg02"));
     QTRY_VERIFY(page->findChild<QPushButton*>("worldTerrainToggle")->isEnabled());
@@ -3951,11 +3953,11 @@ void WorldModuleTests::TerrainTextureSlotAppendNeedsNoGame() {
     page->resize(900, 600); page->show(); QTRY_COMPARE(module.Viewport()->VertexCount(), std::size_t{6});
     auto* append = page->findChild<QPushButton*>("worldTerrainAddTexture"); QVERIFY(append);
     const auto original = Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
-    const auto slots = project.mapEdits_->Terrain()->header.groundTilesets.size();
+    const auto originalSlotCount = project.mapEdits_->Terrain()->header.groundTilesets.size();
     AcceptTerrainPaletteDialog(page, QStringLiteral("Tg02")); append->click();
     QTRY_VERIFY(!page->property("terrainPalettePending").toBool());
     QCOMPARE(page->property("terrainPaletteOutcome").toString(), QStringLiteral("applied"));
-    QCOMPARE(project.mapEdits_->Terrain()->header.groundTilesets.size(), slots + 1);
+    QCOMPARE(project.mapEdits_->Terrain()->header.groundTilesets.size(), originalSlotCount + 1);
     QCOMPARE(project.mapDataUndoStack_->count(), 1); QVERIFY(project.war3GameRoot_.empty());
     project.mapDataUndoStack_->undo(); QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), original);
 }
