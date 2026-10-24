@@ -362,7 +362,9 @@ void BoundedDependencyVerification() {
     TerrainShadowCasterVerificationLimits scratch; scratch.maximumWorkingBytes = 160u * 1024u;
     Require(owner->WorkingBytes() > scratch.maximumWorkingBytes, "窄复核额度必须小于完整owner捕获工作量");
     TerrainShadowCasterLimits full; full.maximumWorkingBytes = scratch.maximumWorkingBytes;
-    Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, {}, {}, full), "TERRAIN_SHADOW_CASTER_BUDGET");
+    // 完整捕获为当前剩余工作量折算stored/decoded读取额度；第二阶段模型批次
+    // 在MPQ解压前即拒绝64KiB正文，不必等到更外层caster累计Charge才报错。
+    Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, {}, {}, full), "FILE_READ_BUDGET_EXCEEDED");
     Check(owner->VerifySources(*f.source, {}, {}, {}, scratch));
     const auto candidate = Take(f.source->SaveCandidate(f.root / "bounded-readback.w3x", {}));
     const auto saved = Take(MapArchiveSession::Open(candidate.path));

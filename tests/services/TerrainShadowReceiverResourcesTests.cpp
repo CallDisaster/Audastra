@@ -466,8 +466,10 @@ void BoundedSourceAndReadbackVerification() {
     const auto saved = Take(MapArchiveSession::Open(candidate.path)); Check(owner->VerifyReadback(saved, scratch));
     Rejected(owner->VerifyReadback(saved, insufficient), "TERRAIN_CATEGORY_BUDGET");
     auto tiny = scratch; tiny.maximumWorkingBytes = 1;
-    Rejected(owner->VerifySources(*fixture.source, {}, {}, tiny), "TERRAIN_SHADOW_BUDGET");
-    Rejected(owner->VerifyReadback(saved, tiny), "TERRAIN_SHADOW_BUDGET");
+    // receiver先复核其caster owner；1字节不能容纳该层的路径/依赖元数据，
+    // 必须原样保留先行的caster预算拒绝，不能假定稍后的光照profile才失败。
+    Rejected(owner->VerifySources(*fixture.source, {}, {}, tiny), "TERRAIN_SHADOW_CASTER_BUDGET");
+    Rejected(owner->VerifyReadback(saved, tiny), "TERRAIN_SHADOW_CASTER_BUDGET");
     tiny = scratch; tiny.maximumFileBytes = 1; Rejected(owner->VerifyReadback(saved, tiny));
     const std::vector<MemberReplacement> late{{std::string(kTwo), Model(128)}};
     Rejected(owner->VerifySources(*fixture.source, late, {}, scratch), "TERRAIN_SHADOW_RECEIVER_DEPENDENCY_STALE");
