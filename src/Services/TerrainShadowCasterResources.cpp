@@ -271,9 +271,22 @@ Result<std::shared_ptr<const TerrainShadowCasterResources>> TerrainShadowCasterR
     const TerrainShadowCasterLimits& limits, std::stop_token cancellation) {
     try {
         Validate(limits);
+        std::filesystem::path gameRootIdentity;
+        if (!gameRoot.empty()) {
+            std::error_code pathError;
+            if (gameRoot.native().size() > 32767)
+                Fail("TERRAIN_SHADOW_CASTER_GAME_ROOT", "阴影模型游戏来源路径超过有界支持范围。");
+            gameRootIdentity = std::filesystem::canonical(gameRoot, pathError);
+            if (pathError || !std::filesystem::is_directory(gameRootIdentity, pathError) || pathError)
+                Fail("TERRAIN_SHADOW_CASTER_GAME_ROOT", "阴影模型不能固定实际游戏来源目录身份。");
+            if (gameRootIdentity.native().size() > 32767)
+                Fail("TERRAIN_SHADOW_CASTER_GAME_ROOT", "阴影模型规范游戏来源路径超过有界支持范围。");
+        }
         Context context(source, gameRoot, limits, replacements, removals, cancellation);
+        context.ParseReserve((gameRootIdentity.native().size() + 1) * sizeof(std::filesystem::path::value_type), 2);
         auto owner = std::shared_ptr<TerrainShadowCasterResources>(new TerrainShadowCasterResources);
         owner->sourceSha256_ = source.SourceSha256(); owner->gameRoot_ = gameRoot; owner->limits_ = limits;
+        owner->gameRootIdentity_ = std::move(gameRootIdentity);
         const std::array<std::string, 2> initial{"war3map.w3e", "war3map.doo"}; context.Phase(initial);
         const auto& terrain = context.Required("war3map.w3e", false);
         context.ParseReserve(terrain.bytes.size());
@@ -407,14 +420,14 @@ Status TerrainShadowCasterResources::VerifySources(const MapArchiveSession& sour
         return Status::Failure(kSubsystem, "TERRAIN_SHADOW_CASTER_SOURCE_STALE", "阴影模型捕获来自另一份源归档。");
     const auto current = Capture(source, gameRoot_, replacements, removals, limits_, cancellation);
     if (!current.Succeeded() || !current.value) return Status{current.diagnostics};
-    if ((*current.value)->inputs_ != inputs_)
+    if ((*current.value)->gameRootIdentity_ != gameRootIdentity_ || (*current.value)->inputs_ != inputs_)
         return Status::Failure(kSubsystem, "TERRAIN_SHADOW_CASTER_DEPENDENCY_STALE", "阴影模型的最终成员或实际资源来源已变化。");
     return Status::Ok();
 }
 Status TerrainShadowCasterResources::VerifyReadback(const MapArchiveSession& saved, std::stop_token cancellation) const {
     const auto current = Capture(saved, gameRoot_, {}, {}, limits_, cancellation);
     if (!current.Succeeded() || !current.value) return Status{current.diagnostics};
-    if ((*current.value)->inputs_ != inputs_)
+    if ((*current.value)->gameRootIdentity_ != gameRootIdentity_ || (*current.value)->inputs_ != inputs_)
         return Status::Failure(kSubsystem, "TERRAIN_SHADOW_CASTER_READBACK_STALE", "真实输出归档的阴影模型依赖与冻结捕获不一致。");
     return Status::Ok();
 }

@@ -303,9 +303,21 @@ Result<std::shared_ptr<const TerrainShadowReceiverResources>> TerrainShadowRecei
             Fail("TERRAIN_SHADOW_RECEIVER_LIMITS", "接收面预算只能收紧非零硬上限。");
         Cancel(cancellation);
         if (!casters) Fail("TERRAIN_SHADOW_RECEIVER_SOURCE", "接收面缺少实际地形与DOO来源。");
+        // 公共Capture也必须闭合同一游戏目录，不能借A目录筛出的caster集合
+        // 配B目录的cliff/profile。规范路径及实际目录等价性均由文件系统给出。
+        if (gameRoot.empty() != casters->GameRoot().empty())
+            Fail("TERRAIN_SHADOW_RECEIVER_GAME_ROOT", "接收面与借用阴影模型未使用同一实际游戏目录。");
+        if (!gameRoot.empty()) {
+            std::error_code pathError;
+            if (gameRoot.native().size() > 32767)
+                Fail("TERRAIN_SHADOW_RECEIVER_GAME_ROOT", "接收面游戏来源路径超过有界支持范围。");
+            const auto actualRoot = std::filesystem::canonical(gameRoot, pathError);
+            if (pathError || !std::filesystem::equivalent(actualRoot, casters->GameRoot(), pathError) || pathError)
+                Fail("TERRAIN_SHADOW_RECEIVER_GAME_ROOT", "接收面与借用阴影模型的实际游戏目录不同或无法核对。");
+        }
         const auto& terrain = casters->Terrain();
         auto state = std::make_shared<State>(); state->casters = std::move(casters);
-        state->sourceSha = source.SourceSha256(); state->gameRoot = gameRoot; state->limits = limits;
+        state->sourceSha = source.SourceSha256(); state->gameRoot = state->casters->GameRoot(); state->limits = limits;
         // 核对借用owner确属同一最终地图视图，不接受别的图或旧替换列表。
         Check(state->casters->VerifySources(source, replacements, removals, cancellation));
         if (terrain.header.version != 11 || terrain.header.width < 2 || terrain.header.height < 2
@@ -339,7 +351,7 @@ Result<std::shared_ptr<const TerrainShadowReceiverResources>> TerrainShadowRecei
         // 借用的light也必须来自本次实际gameRoot；检查真实profile，不接受
         // 调用者从别的游戏目录递来的数值或来源对象。普通面不消费此输入。
         {
-            const auto actualLight = Take(MapData::TerrainShadowResources::Capture(gameRoot,
+            const auto actualLight = Take(MapData::TerrainShadowResources::Capture(state->gameRoot,
                 Game::NativeEditorStartupRules::Classic127aExpansion,
                 std::min(limits.maximumSourceBytes, limits.maximumWorkingBytes)));
             if (actualLight.DependencyFingerprint() != light.DependencyFingerprint())
@@ -349,7 +361,7 @@ Result<std::shared_ptr<const TerrainShadowReceiverResources>> TerrainShadowRecei
         if (maximumLevel < 0 || maximumLevel > 14)
             Fail("TERRAIN_SHADOW_RECEIVER_PROFILE", "实际MaxHeight派生的悬崖上限不在0..14支持域。");
         state->lightFingerprint = light.DependencyFingerprint();
-        Inputs inputs(source, gameRoot, terrain.header.mainTileset, replacements, removals, limits, cancellation);
+        Inputs inputs(source, state->gameRoot, terrain.header.mainTileset, replacements, removals, limits, cancellation);
         const auto rows = CliffRows(inputs);
         const auto width = terrain.header.width - 1, height = terrain.header.height - 1, blockWidth = (width + 3) / 4;
         Charge(inputs.working, static_cast<std::size_t>(blockWidth) * ((height + 3) / 4), limits.maximumWorkingBytes,

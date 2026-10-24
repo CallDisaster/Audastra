@@ -313,6 +313,54 @@ void FrozenSources() {
     Rejected(gameOwner->VerifySources(*fixture.source));
 }
 
+void ActualGameRootCannotBeMixedWithAnotherCasterOwner() {
+    Fixture fixture;
+    fixture.Erase(kZero); fixture.Erase(kOne); fixture.Open();
+    const auto otherGame = fixture.root / "second-game";
+    Require(std::filesystem::create_directory(otherGame), "创建第二个原创游戏来源目录");
+    const auto profile = Text("[Light]\nDirection=3,0,-4\n[Terrain]\nMaxHeight=1536\nMinHeight=-256\n");
+    Check(IO::WriteFileBytes(otherGame / "WorldEditData.txt", profile));
+    Require(Take(IO::ReadFileBytes(fixture.game / "WorldEditData.txt", 4096)) == profile,
+        "错root回归的两个真实目录必须具有相同profile字节，不能仅靠光照数值差异拒绝");
+    Take(WriteVerifiedArchive(fixture.game / "war3.mpq", std::vector<MapArchiveMember>{{std::string(kZero), Model(64)}}));
+    Take(WriteVerifiedArchive(otherGame / "war3.mpq", std::vector<MapArchiveMember>{{std::string(kZero), Model(200)}}));
+    const auto casters = Take(TerrainShadowCasterResources::Capture(*fixture.source, fixture.game));
+    const auto otherCasters = Take(TerrainShadowCasterResources::Capture(*fixture.source, otherGame));
+    const auto light = Take(TerrainShadowResources::Capture(fixture.game,
+        Game::NativeEditorStartupRules::Classic127aExpansion, 16u * 1024u * 1024u));
+    const auto otherLight = Take(TerrainShadowResources::Capture(otherGame,
+        Game::NativeEditorStartupRules::Classic127aExpansion, 16u * 1024u * 1024u));
+    std::error_code pathError;
+    Require(casters->GameRoot().is_absolute()
+        && std::filesystem::equivalent(casters->GameRoot(), fixture.game, pathError) && !pathError,
+        "caster只读身份须固定于捕获时实际存在的规范目录");
+    const auto own = Take(TerrainShadowReceiverResources::Capture(*fixture.source, fixture.game, casters, light));
+    const auto other = Take(TerrainShadowReceiverResources::Capture(*fixture.source, otherGame, otherCasters, otherLight));
+    Require(Take(own->Sample()).receiverHeights.front() == 64.1f
+        && Take(other->Sample()).receiverHeights.front() == 200.1f,
+        "两个原创游戏目录各自正确绑定实际不同的模型winner");
+    // B的light/profile与receiver根均一致，唯一错配是借了A的caster owner。
+    // 不能等到profile漂移检查再偶然拒绝，更不能把A的DOO筛选与B的模型混成成功。
+    Rejected(TerrainShadowReceiverResources::Capture(*fixture.source, otherGame, casters, otherLight),
+        "TERRAIN_SHADOW_RECEIVER_GAME_ROOT");
+    Rejected(TerrainShadowReceiverResources::Capture(*fixture.source, fixture.game, otherCasters, light),
+        "TERRAIN_SHADOW_RECEIVER_GAME_ROOT");
+    Rejected(TerrainShadowReceiverResources::Capture(*fixture.source, {}, casters, light),
+        "TERRAIN_SHADOW_RECEIVER_GAME_ROOT");
+    const auto mapOnlyCasters = Take(TerrainShadowCasterResources::Capture(*fixture.source, {}));
+    Require(mapOnlyCasters->GameRoot().empty(), "没有配置游戏来源的caster保持空身份");
+    Rejected(TerrainShadowReceiverResources::Capture(*fixture.source, fixture.game, mapOnlyCasters, light),
+        "TERRAIN_SHADOW_RECEIVER_GAME_ROOT");
+    const auto alias = fixture.game / ".." / fixture.game.filename() / ".";
+    const auto equivalent = Take(TerrainShadowReceiverResources::Capture(*fixture.source, alias, casters, light));
+    const auto aliasCasters = Take(TerrainShadowCasterResources::Capture(*fixture.source, alias));
+    const auto equivalentOwner = Take(TerrainShadowReceiverResources::Capture(*fixture.source, fixture.game, aliasCasters, light));
+    Require(Take(equivalent->Sample()).receiverHeights == Take(own->Sample()).receiverHeights
+        && Take(equivalentOwner->Sample()).receiverHeights == Take(own->Sample()).receiverHeights,
+        "同一实际目录的等价路径在receiver/caster任一侧都正确可用");
+    Check(equivalent->VerifySources(*fixture.source));
+}
+
 void GuardsAndOrdinary() {
     Fixture ordinary(true); const auto owner = Take(ordinary.Capture());
     Require(owner->RecordCount() == 0 && owner->Dependencies().empty() && owner->SourceBytes() == 0,
@@ -352,7 +400,7 @@ int main(int argc, char** argv) {
         const std::string_view group = argc > 1 ? argv[1] : "all";
         Require(group == "ordered" || group == "sources" || group == "guards" || group == "all", "未知测试分组");
         if (group == "ordered" || group == "all") { OrderedAndSaved(); CompleteCliffBakeUsesProductionSaveAndGuards(); }
-        if (group == "sources" || group == "all") FrozenSources();
+        if (group == "sources" || group == "all") { FrozenSources(); ActualGameRootCannotBeMixedWithAnotherCasterOwner(); }
         if (group == "guards" || group == "all") GuardsAndOrdinary();
         std::cout << "terrain shadow receiver " << group << " passed\n"; return 0;
     } catch (const std::exception& failure) { std::cerr << failure.what() << '\n'; return 1; }

@@ -60,6 +60,9 @@ public:
     [[nodiscard]] std::span<const TerrainShadowCasterInstance> Casters() const noexcept { return casters_; }
     [[nodiscard]] std::span<const TerrainShadowCasterModel> Models() const noexcept { return models_; }
     [[nodiscard]] const MapData::TerrainGridSnapshot& Terrain() const noexcept { return *terrain_; }
+    // 捕获时从实际目录固定的规范身份。只读，不由调用方补一个已验证标记；
+    // 空路径只表示本owner未配置游戏来源，不能与另一目录的receiver混用。
+    [[nodiscard]] const std::filesystem::path& GameRoot() const noexcept { return gameRootIdentity_; }
     [[nodiscard]] std::span<const MapData::SpecialDoodadPlacement> SpecialDoodads() const noexcept { return special_; }
     [[nodiscard]] std::span<const TerrainShadowCasterDependency> Dependencies() const noexcept { return inputs_; }
     [[nodiscard]] std::size_t DestructableCount() const noexcept { return destructableCount_; }
@@ -79,6 +82,7 @@ private:
     TerrainShadowCasterResources() = default;
     std::string sourceSha256_;
     std::filesystem::path gameRoot_;
+    std::filesystem::path gameRootIdentity_;
     TerrainShadowCasterLimits limits_;
     std::vector<TerrainShadowCasterDependency> inputs_;
     std::vector<TerrainShadowCasterInstance> casters_;
