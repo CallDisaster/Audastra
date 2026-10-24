@@ -495,6 +495,12 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
                         || before.header.cliffTilesets.size() != after.header.cliffTilesets.size()))
                 || before.vertices.size() != after.vertices.size())
                 Fail("TERRAIN_NATIVE_SOURCE_SHAPE", "原版通行重建要求旧/新经典地形尺寸、偏移与主地形集不变；悬崖表只允许1到15项的同数量槽替换。");
+            if (before.header.cliffTilesets != after.header.cliffTilesets) {
+                const auto& palette = after.header.cliffTilesets;
+                for (auto slot = palette.begin(); slot != palette.end(); ++slot)
+                    if (std::find(palette.begin(), slot, *slot) != slot)
+                        Fail("TERRAIN_NATIVE_CLIFF_PALETTE_AMBIGUOUS", "修改后的悬崖贴图表含重复rawcode：" + *slot);
+            }
             // 槽索引没有变化也可能已换材质。每个替换槽（包括未使用槽）都绑定
             // 实际旧/新CliffTypes行；不从预览模型、变体回退或目录名推导通行。
             for (std::size_t slot = 0; slot < before.header.cliffTilesets.size(); ++slot) {

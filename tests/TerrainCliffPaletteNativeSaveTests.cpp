@@ -193,8 +193,10 @@ void ResourceIdentityBudgetAndFrozenOutputsStayStrict() {
     const auto output = Take(SerializeMapTerrain(*fixture.edits->Terrain()));
     const std::vector<MemberReplacement> replacement{{"war3map.w3e", output}, {"TerrainArt/CliffTypes.slk", changed}};
     Require(!owner.VerifyFrozenOutput(replacement, {}).Succeeded(), "frozen output cannot change an actual cliff table");
+    const std::vector<MemberReplacement> terrainOnly{{"war3map.w3e", output}};
+    Check(owner.VerifyFrozenOutput(terrainOnly, {}));
     const std::vector<std::string> removal{"TerrainArt\\CliffTypes.slk"};
-    Require(!owner.VerifyFrozenOutput({}, removal).Succeeded(), "canonical table deletion cannot drop a bound dependency");
+    Require(!owner.VerifyFrozenOutput(terrainOnly, removal).Succeeded(), "canonical table deletion cannot drop a bound dependency");
     const std::vector<MemberReplacement> duplicateOverrides{{"war3map.w3e", output},
         {"TerrainArt/CliffTypes.slk", CompleteRows()}, {"terrainart\\clifftypes.slk", CompleteRows()}};
     Require(!owner.VerifyFrozenOutput(duplicateOverrides, {}).Succeeded(),
@@ -285,6 +287,29 @@ void PaletteCountAndOriginalWpmRemainProtected() {
     Require(!unsupported.SaveGate().Succeeded(),
         "palette support cannot authorize a new unsupported cliff variation hidden in the same draft");
 }
+
+void ChangedPaletteRejectsDuplicateIdsWithoutCleaningHistoricalTables() {
+    Fixture fixture; Prepare(fixture, true);
+    const auto before = *fixture.edits->Terrain();
+    auto duplicate = before; duplicate.header.cliffTilesets[1] = "Cl01";
+    Check(fixture.edits->SetTerrain(Take(SerializeMapTerrain(duplicate))));
+    const auto owner = TerrainPathingResources::CaptureNative(*fixture.archive, before,
+        *fixture.edits->Terrain(), {}, maximumBytes);
+    Require(!owner.Succeeded() && HasCode({owner.diagnostics}, "TERRAIN_NATIVE_CLIFF_PALETTE_AMBIGUOUS"),
+        "raw project input cannot bypass the UI duplicate-palette refusal");
+    const auto plan = Take(TerrainSavePlan::PrepareForSave(*fixture.archive, *fixture.edits, {}));
+    Require(HasCode(plan.SaveGate(), "TERRAIN_NATIVE_CLIFF_PALETTE_AMBIGUOUS"),
+        "normal save explicitly rejects a newly duplicated cliff palette");
+
+    fixture.members[0].data = Take(SerializeMapTerrain(duplicate)); Reopen(fixture, "historical-duplicate.w3x");
+    const auto historical = *fixture.edits->Terrain();
+    const auto unchanged = Take(TerrainPathingResources::CaptureNative(*fixture.archive, historical,
+        historical, {}, maximumBytes));
+    const Bytes expectedNative(40 * 32, std::byte{0x40});
+    Require(Take(unchanged.GenerateNative(historical, maximumBytes)) == expectedNative
+        && Take(SerializeMapTerrain(*fixture.edits->Terrain())) == fixture.members[0].data,
+        "unchanged historical duplicate slots stay byte-identical and retain the previous native domain");
+}
 } // namespace
 
 int main() {
@@ -296,6 +321,7 @@ int main() {
         ResourceIdentityBudgetAndFrozenOutputsStayStrict();
         DirectoryAliasesAndChangedSourceAreRejected();
         PaletteCountAndOriginalWpmRemainProtected();
+        ChangedPaletteRejectsDuplicateIdsWithoutCleaningHistoricalTables();
         std::cout << "terrain cliff palette native save tests passed\n"; return 0;
     } catch (const std::exception& exception) { std::cerr << exception.what() << '\n'; return 1; }
 }
