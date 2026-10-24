@@ -40,6 +40,7 @@ Services::MapDataQueryBinding BoundsDocument(const Request& request) {
 }
 
 Status VerifyBoundsSource(const Request& request, const MapData::TerrainPathingResources* owner = nullptr) {
+    // 此处复核原始来源；草稿已有范围修改时，不能按保存输出的After地形验来源。
     const auto& opened = request.archivePath.empty() ? request.projectRoot : request.archivePath;
     std::error_code error;
     if (!std::filesystem::equivalent(opened, request.sourcePath, error) || error)
@@ -47,11 +48,11 @@ Status VerifyBoundsSource(const Request& request, const MapData::TerrainPathingR
     if (request.archive) {
         const auto source = request.archive->VerifySourceUnchanged();
         if (!source.Succeeded()) return source;
-        return owner ? owner->VerifyReadback(*request.archive, request.maximumBytes) : Status::Ok();
+        return owner ? owner->VerifySourceInputs(*request.archive, request.maximumBytes) : Status::Ok();
     }
     if (!request.directory)
         return BoundsFailure("WORLD_BOUNDS_SOURCE_REQUIRED", "地图范围缺少可复核的真实来源。");
-    return owner ? owner->VerifyReadback(*request.directory, request.maximumBytes) : Status::Ok();
+    return owner ? owner->VerifySourceInputs(*request.directory, request.maximumBytes) : Status::Ok();
 }
 
 Result<std::vector<std::byte>> ReadBoundsSourceTerrain(const Request& request) {

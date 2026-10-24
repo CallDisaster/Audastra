@@ -92,6 +92,7 @@ template<class Output, class Work> Output RunLiveBoundsWorker(Work work) {
 
 Status VerifyLiveBoundsResources(const QtProject::TerrainWaterEditRequest& request,
     const MapData::TerrainPathingResources* resources = nullptr) {
+    // 此处复核原始来源；草稿已有范围修改时，不能按保存输出的After地形验来源。
     const auto& opened = request.archivePath.empty() ? request.projectRoot : request.archivePath;
     std::error_code error;
     if (!std::filesystem::equivalent(opened, request.sourcePath, error) || error)
@@ -99,11 +100,11 @@ Status VerifyLiveBoundsResources(const QtProject::TerrainWaterEditRequest& reque
     if (request.archive) {
         const auto checked = request.archive->VerifySourceUnchanged();
         if (!checked.Succeeded()) return checked;
-        return resources ? resources->VerifyReadback(*request.archive, request.maximumBytes) : Status::Ok();
+        return resources ? resources->VerifySourceInputs(*request.archive, request.maximumBytes) : Status::Ok();
     }
     if (!request.directory)
         return Status::Failure("QtApp.Live", "LIVE_BOUNDS_SOURCE_REQUIRED", "地图范围缺少实际来源快照。");
-    return resources ? resources->VerifyReadback(*request.directory, request.maximumBytes) : Status::Ok();
+    return resources ? resources->VerifySourceInputs(*request.directory, request.maximumBytes) : Status::Ok();
 }
 
 Result<LiveBoundsPreparation> PrepareLiveBounds(

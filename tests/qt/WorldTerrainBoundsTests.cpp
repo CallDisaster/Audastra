@@ -140,7 +140,18 @@ void WorldTerrainBoundsTests::AppliesOneTransactionAndUndo() {
     c.read->click(); QTRY_VERIFY_WITH_TIMEOUT(!c.Busy(), 15000); QVERIFY2(c.Ready(), qPrintable(c.status->text()));
     QCOMPARE(c.west->value(), 2); QCOMPARE(c.north->value(), 29);
     c.apply->click(); QTRY_VERIFY_WITH_TIMEOUT(!c.Busy(), 15000);
-    QCOMPARE(c.Outcome(), QStringLiteral("unchanged")); QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QVERIFY2(c.Outcome() == QStringLiteral("unchanged"), qPrintable(c.status->text()));
+    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    QVERIFY2(c.Ready(), qPrintable(c.status->text()));
+    // 当前W3E已与磁盘来源不同；第二个真实命令仍从原source和当前草稿分别捕获，
+    // 不能把来源复核误作保存输出回读，也不能跳过来源而只让no-op通过。
+    c.Set(3, 4, 29, 28); QVERIFY(c.apply->isEnabled()); c.apply->click(); QTRY_VERIFY_WITH_TIMEOUT(!c.Busy(), 15000);
+    QVERIFY2(c.Outcome() == QStringLiteral("applied"), qPrintable(c.status->text()));
+    QCOMPARE(project.mapDataUndoStack_->count(), 2);
+    const auto secondTerrain = Terrain(project), secondSettings = Settings(project);
+    QVERIFY(secondTerrain != afterTerrain); QVERIFY(secondSettings != afterSettings);
+    project.mapDataUndoStack_->undo(); QCOMPARE(Terrain(project), afterTerrain); QCOMPARE(Settings(project), afterSettings);
+    project.mapDataUndoStack_->redo(); QCOMPARE(Terrain(project), secondTerrain); QCOMPARE(Settings(project), secondSettings);
 }
 
 void WorldTerrainBoundsTests::RejectsChangedRevision() {
