@@ -1946,10 +1946,10 @@ void BridgeOriginalRejectsUnsupportedValuesAndMetadata() {
         refuse(f, "TERRAIN_NATIVE_OBJECT_METADATA");
     }
     {
-        Fixture f; WalkableBridge(f); BridgeOriginal(f, {{"bnam", NativeValueType::String, std::string("renamed")}});
+        Fixture f; WalkableBridge(f); BridgeOriginal(f, {{"bsuf", NativeValueType::String, std::string("suffix")}});
         f.Member("Units/DestructableMetaData.slk") = Slk({"ID", "field", "slk", "type", "index"},
             {{"bwlk", "walkable", "DestructableData", "bool", "0"}, {"bptx", "pathTex", "DestructableData", "pathingTexture", "0"},
-             {"brot", "fixedRot", "DestructableData", "unreal", "0"}, {"bnam", "Name", "DestructableData", "string", "0"}});
+             {"brot", "fixedRot", "DestructableData", "unreal", "0"}, {"bsuf", "EditorSuffix", "DestructableData", "string", "0"}});
         refuse(f, "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED");
     }
     {
@@ -1958,6 +1958,7 @@ void BridgeOriginalRejectsUnsupportedValuesAndMetadata() {
         const auto* document = dynamic_cast<const NativeObjectDocument*>(parsed.document.get());
         Require(document != nullptr, "parent override refusal fixture has a native document");
         auto changed = *document; Check(changed.AddOriginalObject("Br01"));
+        Check(changed.AddModification({ObjectType::Destructable, "Br01"}, {"bwlk"}, NativeValueType::Int32, std::int32_t{1}));
         f.Member("war3map.w3b") = Take(NativeObjectCodec(ObjectType::Destructable).Serialize(changed));
         refuse(f, "TERRAIN_NATIVE_OBJECT_INHERITANCE");
     }
@@ -2071,9 +2072,9 @@ void BridgeCustomRejectsUnsupportedValuesMetadataAndParents() {
     }
     for (const bool unknown : {false, true}) {
         Fixture f; WalkableBridge(f);
-        BridgeOriginal(f, {{unknown ? "zzzz" : "bnam", NativeValueType::String, std::string("renamed")}}, true);
+        BridgeOriginal(f, {{unknown ? "zzzz" : "bsuf", NativeValueType::String, std::string("suffix")}}, true);
         if (!unknown) f.Member("Units/DestructableMetaData.slk") = Slk({"ID", "field", "slk", "type", "index"},
-            {{"bwlk", "walkable", "DestructableData", "bool", "0"}, {"bnam", "Name", "DestructableData", "string", "0"}});
+            {{"bwlk", "walkable", "DestructableData", "bool", "0"}, {"bsuf", "EditorSuffix", "DestructableData", "string", "0"}});
         refuse(f, unknown ? "TERRAIN_NATIVE_OBJECT_METADATA" : "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED");
     }
     for (unsigned mode = 0; mode < 8; ++mode) {
@@ -2083,7 +2084,10 @@ void BridgeCustomRejectsUnsupportedValuesMetadataAndParents() {
             const auto* document = dynamic_cast<const NativeObjectDocument*>(parsed.document.get());
             Require(document != nullptr, "Custom parent refusal fixture has a native document");
             auto changed = *document;
-            if (mode == 0) Check(changed.AddOriginalObject("Br01"));
+            if (mode == 0) {
+                Check(changed.AddOriginalObject("Br01"));
+                Check(changed.AddModification({ObjectType::Destructable, "Br01"}, {"bwlk"}, NativeValueType::Int32, std::int32_t{1}));
+            }
             else Check(changed.AddCustomObject("Br01", "Dst0"));
             f.Member("war3map.w3b") = Take(NativeObjectCodec(ObjectType::Destructable).Serialize(changed));
         }

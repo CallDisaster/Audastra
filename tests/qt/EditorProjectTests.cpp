@@ -2963,7 +2963,7 @@ void EditorProjectTests::WalkableDestructableOriginalWorkerRejectsBeforeWrite_da
         };
         for (const auto* scenario : {"other-field", "path-empty", "path-underscore", "path-none"})
             add(scenario, "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED");
-        add("parent-original", "TERRAIN_NATIVE_OBJECT_INHERITANCE");
+        add("parent-with-fields", "TERRAIN_NATIVE_OBJECT_INHERITANCE");
         for (const auto* scenario : {"walkable-wire-real", "walkable-value-two"})
             add(scenario, "TERRAIN_NATIVE_OBJECT_WALKABLE_TYPE");
         for (const auto* scenario : {"path-wire-int", "rotation-wire-real"})
@@ -2992,7 +2992,7 @@ void EditorProjectTests::WalkableDestructableOriginalWorkerRejectsBeforeWrite() 
         return native->RemoveModification(bridge, {field}).Succeeded()
             && native->AddModification(bridge, {field}, type, std::move(value)).Succeeded();
     };
-    if (scenario == "parent-original") {
+    if (scenario == "parent-with-fields") {
         auto custom = NativeObjectDocument::CreateEmpty(ObjectType::Destructable); QVERIFY(custom.Succeeded() && custom.value);
         QVERIFY(custom.value->AddCustomObject("Zb01", "Br01").Succeeded());
         const auto* original = native->FindObject(bridge); QVERIFY(original);
@@ -3001,6 +3001,7 @@ void EditorProjectTests::WalkableDestructableOriginalWorkerRejectsBeforeWrite() 
             QVERIFY(custom.value->AddModification({ObjectType::Destructable, "Zb01"}, modification.key, *type, modification.value).Succeeded());
         }
         QVERIFY(custom.value->AddOriginalObject("Br01").Succeeded());
+        QVERIFY(custom.value->AddModification(bridge, {"bwal"}, NativeValueType::Int32, std::int32_t{1}).Succeeded());
         *native = std::move(*custom.value);
         auto doo = std::find_if(members.begin(), members.end(), [](const auto& member) { return member.name == "war3map.doo"; });
         QVERIFY(doo != members.end());
@@ -3008,7 +3009,7 @@ void EditorProjectTests::WalkableDestructableOriginalWorkerRejectsBeforeWrite() 
         placements.value->doodads.front().rawcode = "Zb01";
         const auto wire = placements.value->Serialize(); QVERIFY(wire.Succeeded() && wire.value); doo->data = *wire.value;
     } else if (scenario == "other-field")
-        QVERIFY(native->AddModification(bridge, {"bnam"}, NativeValueType::String, std::string("Bridge name")).Succeeded());
+        QVERIFY(native->AddModification(bridge, {"bsuf"}, NativeValueType::String, std::string("Bridge suffix")).Succeeded());
     else if (scenario == "walkable-wire-real") QVERIFY(replace("bwal", NativeValueType::Real, 1.0f));
     else if (scenario == "walkable-value-two") QVERIFY(replace("bwal", NativeValueType::Int32, std::int32_t{2}));
     else if (scenario == "path-wire-int") QVERIFY(replace("bptx", NativeValueType::Int32, std::int32_t{1}));
@@ -3033,7 +3034,7 @@ void EditorProjectTests::WalkableDestructableOriginalWorkerRejectsBeforeWrite() 
             for (auto& row : rows) row.push_back("0"); rows[2].back() = "1";
         } else if (scenario == "metadata-missing-index") {
             columns.pop_back(); for (auto& row : rows) row.pop_back();
-        } else if (scenario == "other-field") rows.push_back({"bnam", "Name", "DestructableData", "string", "0"});
+        } else if (scenario == "other-field") rows.push_back({"bsuf", "EditorSuffix", "DestructableData", "string", "0"});
         auto metadata = std::find_if(members.begin(), members.end(), [](const auto& member) { return member.name == "Units/DestructableMetaData.slk"; });
         QVERIFY(metadata != members.end()); metadata->data = NativeDoodadQtTable(columns, rows);
     }

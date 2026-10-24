@@ -1050,6 +1050,13 @@ void NativeDoodadRotationUsesExactValuesAndSources() {
             Require(f.sources[kW3d].bytes == before, "effective pose inspection does not rewrite native records");
             if (custom) {
                 Check(document.AddOriginalObject("D001")); f.SetNative(document);
+                const auto emptyParent = Take(f.Inspect({id}));
+                Require(emptyParent.footprints.size() == 1 && emptyParent.footprints[0].rawcode == id
+                    && emptyParent.footprints[0].pathTexture == parsed.footprints[0].pathTexture
+                    && emptyParent.footprints[0].fixedRotationDegrees
+                    && std::bit_cast<std::uint32_t>(*emptyParent.footprints[0].fixedRotationDegrees) == std::bit_cast<std::uint32_t>(value),
+                    "a zero-field Original parent preserves the exact Custom footprint and rotation");
+                Modification(document, "D001", "Rot0", type, 180.0f); f.SetNative(document);
                 Rejected(f.Inspect({id}), "TERRAIN_NATIVE_OBJECT_INHERITANCE", "numeric getter does not authorize a native-overridden parent");
             }
         }
