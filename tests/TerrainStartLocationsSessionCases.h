@@ -109,9 +109,12 @@ void StartLocationsComposeWithDescriptionsAndGroundFollowing() {
             && hot.Redo() && hot.VerifyTerrainSettingsForSave().Succeeded(), "follow command Undo/Redo owns same private start chain");
     }
     for (const bool unrelatedPlayerField : {false, true}) {
+        SessionFixture grid;
         const std::vector<MapArchiveMember> members{{"war3mapUnits.doo", Take(StartJournalUnits().Serialize())},
             {"war3map.w3i", Take(StartJournalSettings().Serialize())}};
         MapDataEditSession hot{MapDocument::FromMembers(members)};
+        Require(hot.AttachTerrain(grid.terrainBytes).Succeeded() && hot.AttachPathing(grid.pathing).Succeeded(),
+            "attach complete baseline before the combined player-page transaction");
         auto value = StartJournalSettings(); value.players[0].startX = 512; value.mapName = "linked name";
         value.author = "linked author"; value.description = "same command"; value.recommendedPlayers = "two players";
         if (unrelatedPlayerField) value.players[0].race = 4;
@@ -122,6 +125,21 @@ void StartLocationsComposeWithDescriptionsAndGroundFollowing() {
             auto journal = Take(hot.ExportTerrainStrokeJournal());
             Require(journal.strokes.size() == 1 && journal.strokes[0].frozenStartLocations.has_value(),
                 "same player-page transaction freezes both members with genuine private ownership");
+            Require(!journal.baselinePathingLayers.empty(), "start journal retains its actual terrain and pathing baseline");
+            // 同样的起点事务没有真实地形/通行基线时，不能借单位和W3I原字授予恢复资格。
+            MapDataEditSession unbound{MapDocument::FromMembers(members)};
+            Require(unbound.EditSettings(value).Succeeded() && unbound.VerifyTerrainSettingsForSave().Succeeded(),
+                "unattached start transaction remains editable without fabricating a terrain source");
+            const auto unboundRevision = unbound.Revision();
+            const auto unboundUnits = Take(unbound.Snapshot().Units()->Serialize());
+            const auto unboundSettings = Take(unbound.Snapshot().Settings()->Serialize());
+            const auto missing = unbound.ExportTerrainStrokeJournal();
+            Require(!missing.Succeeded() && !missing.value && std::any_of(missing.diagnostics.begin(), missing.diagnostics.end(),
+                [](const auto& diagnostic) { return diagnostic.code == "TERRAIN_JOURNAL_BASELINE_MISSING"; }),
+                "missing real terrain and pathing baseline still rejects journal export");
+            Require(unbound.Revision() == unboundRevision && Take(unbound.Snapshot().Units()->Serialize()) == unboundUnits
+                && Take(unbound.Snapshot().Settings()->Serialize()) == unboundSettings && unbound.VerifyTerrainSettingsForSave().Succeeded(),
+                "failed journal export preserves the complete editable start transaction");
             Require(hot.Undo() && hot.VerifyTerrainSettingsForSave().Succeeded()
                 && hot.Redo() && hot.VerifyTerrainSettingsForSave().Succeeded(),
                 "one Undo restores all four descriptions and actual start linkage together");
