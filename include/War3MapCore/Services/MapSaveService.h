@@ -27,6 +27,7 @@ namespace War3Map::Services {
 
 class ObjectTransactionSnapshot;
 class TerrainMinimapMarkers;
+class TerrainShadowBake;
 
 inline constexpr std::size_t kMapSaveObjectTypeCount = 7;
 
@@ -100,6 +101,8 @@ struct MapSaveTask {
     std::function<Status(MapSaveTask&)> prepareFinalDerived;
     // 实际来源生成的MMP owner，通用保存服务在发布前与回读阶段核对。
     std::shared_ptr<const TerrainMinimapMarkers> minimapMarkers;
+    // 仅作者显式计算时存在；普通保存不自动重算阴影。
+    std::shared_ptr<const TerrainShadowBake> terrainShadow;
 
     // 宿主事务 lease 的最终复核：派生文件完成后、归档发布前执行。失败保留全部
     // 冻结输入并拒绝写出；源归档本身仍由归档服务独立验证。

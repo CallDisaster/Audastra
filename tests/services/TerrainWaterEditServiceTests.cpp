@@ -1,4 +1,5 @@
 #include "War3MapCore/Hash.h"
+#include "TerrainCliffJournalTests.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/TerrainPathingResources.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
@@ -968,6 +969,7 @@ void ForwardJournalPreservesSavedRestrictionOverlapAndUndo() {
 
 int main() {
     try {
+        War3Map::TerrainSaveTests::CheckTerrainCliffJournalContracts();
         SharedReplayPreservesOrderSpecialDeletionAndCompleteDirectoryOutput();
         ReplayBudgetsAndTamperedIntentDoNotPublish();
         ReplayAggregateResourceLimitRejectsOnlyTheSequence();

@@ -1,4 +1,5 @@
 #include "War3MapCore/Services/MapSaveService.h"
+#include "War3MapCore/Services/TerrainShadowBake.h"
 #include "War3MapCore/Services/TerrainMinimapMarkers.h"
 #include "War3MapCore/Services/LuaTestReloadController.h"
 #include "War3MapCore/Services/MapObjectReferenceCapture.h"
@@ -448,20 +449,34 @@ void MapSaveService::Execute(MapSaveTask& task, const Progress& progress, bool p
             task.luaTestMapBinding = *binding.value;
         }
 
+        const auto frozenMarkers = task.minimapMarkers;
+        const auto frozenShadow = task.terrainShadow;
         if (task.beforePublish) {
             const auto guard = task.beforePublish();
             Append(task.diagnostics, guard.diagnostics);
             if (!guard.Succeeded()) return;
         }
-        // 其它领域的最后核对也完成后再检查图标，防止回调后留下未核对的输出变化。
-        if (task.minimapMarkers) {
-            const auto checked = task.minimapMarkers->VerifyFrozenOutput(*task.archive, task.replacements, task.removals);
-            Append(task.diagnostics, checked.diagnostics);
-            if (!checked.Succeeded()) return;
-        }
+        const auto verifyDerived = [&]() {
+            if (task.minimapMarkers != frozenMarkers || task.terrainShadow != frozenShadow) {
+                Error(task, "SAVE_DERIVED_OWNER_CHANGED", "发布前回调改变了派生文件来源，保存已取消。");
+                return false;
+            }
+            if (frozenMarkers) {
+                const auto checked = frozenMarkers->VerifyFrozenOutput(*task.archive, task.replacements, task.removals);
+                Append(task.diagnostics, checked.diagnostics);
+                if (!checked.Succeeded()) return false;
+            }
+            if (frozenShadow) {
+                const auto checked = frozenShadow->VerifyFrozenOutput(*task.archive, task.replacements, task.removals);
+                Append(task.diagnostics, checked.diagnostics);
+                if (!checked.Succeeded()) return false;
+            }
+            return true;
+        };
 
         if (preflight) {
             Report(progress, "archive-preflight");
+            if (!verifyDerived()) return;
             const auto checked = task.archive->PreflightSave(task.replacements, task.removals,
                 task.inPlace ? std::filesystem::path{} : task.target);
             Append(task.diagnostics, checked.diagnostics);
@@ -471,6 +486,7 @@ void MapSaveService::Execute(MapSaveTask& task, const Progress& progress, bool p
         ArchiveSaveResult written;
         if (task.inPlace) {
             Report(progress, "archive-in-place");
+            if (!verifyDerived()) return;
             auto saved = task.archive->SaveInPlace(task.replacements, task.removals, task.inPlaceOptions);
             if (!saved.Succeeded() || !saved.value) {
                 Append(task.diagnostics, saved.diagnostics);
@@ -485,6 +501,7 @@ void MapSaveService::Execute(MapSaveTask& task, const Progress& progress, bool p
             task.prunedBackups = saved.value->prunedBackups.size();
         } else {
             Report(progress, "archive-candidate");
+            if (!verifyDerived()) return;
             auto candidate = task.archive->SaveCandidate(task.target, task.replacements, task.removals);
             if (!candidate.Succeeded() || !candidate.value) {
                 Append(task.diagnostics, candidate.diagnostics);
@@ -506,8 +523,13 @@ void MapSaveService::Execute(MapSaveTask& task, const Progress& progress, bool p
             return;
         }
         task.nextSession = std::make_unique<MapArchiveSession>(std::move(*next.value));
-        if (task.minimapMarkers) {
-            const auto checked = task.minimapMarkers->VerifyReadback(*task.nextSession);
+        if (frozenMarkers) {
+            const auto checked = frozenMarkers->VerifyReadback(*task.nextSession);
+            Append(task.diagnostics, checked.diagnostics);
+            if (!checked.Succeeded()) return;
+        }
+        if (frozenShadow) {
+            const auto checked = frozenShadow->VerifyReadback(*task.nextSession);
             Append(task.diagnostics, checked.diagnostics);
             if (!checked.Succeeded()) return;
         }

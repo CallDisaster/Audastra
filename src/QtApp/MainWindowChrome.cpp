@@ -131,6 +131,14 @@ void MainWindow::BuildHeader() {
     saveMapAction_->setEnabled(false);
     RegisterCommandAction("file.save.map", saveMapInPlaceAction_, tr("工程"));
     RegisterCommandAction("file.save.map.copy", saveMapAction_, tr("工程"));
+    auto* calculateShadows = fileMenu->addAction(tr("计算阴影并保存"));
+    calculateShadows->setObjectName("calculateTerrainShadowsAction");
+    calculateShadows->setToolTip(tr("按当前地形和装饰物模型重新计算静态阴影，然后保存地图"));
+    calculateShadows->setEnabled(false);
+    connect(calculateShadows, &QAction::triggered, this, [this] {
+        (void)RunMapSave({}, true, true, false, false, War3Map::Services::TerrainMinimapSaveChoice::Automatic, true);
+    });
+    RegisterCommandAction("map.terrain.shadows", calculateShadows, tr("地形"));
     testMapAction_ = MenuAction(this, "lucide/play", tr("测试"), tr("测试地图 · F9"));
     testMapAction_->setObjectName(QStringLiteral("testMapAction"));
     testMapAction_->setShortcut(QKeySequence(Qt::Key_F9));

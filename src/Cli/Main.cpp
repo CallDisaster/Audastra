@@ -108,6 +108,7 @@ void PrintUsage() {
         << "war3-map-cli map-trigger-text <source-map> <source-sha256> <ui-root> <global|trigger> <trigger-id-or-0> <utf8-offset> <limit-4..65536> [--catalog-sha256 <sha>] [--layer <id> ...]\n"
         << "  map-edit-save --ui-root <ui-data-root> binds a separate UI catalog; compiler root and its safety checks stay unchanged.\n"
         << "  map-edit-save --lua-map-target <configuration> uses a SHA-bound Lua profile and checker for explicit v31 Lua saving.\n"
+        << "  map-edit-save --rebuild-shadows explicitly recomputes SHD from source terrain and game resources; requires terrain SHA, may be used without strokes. Unsupported receivers/casters are rejected; ordinary save preserves SHD.\n"
         << "  --source-encoding <absolute-file> utf8|gbk; --include-access <absolute-path> directory|file utf8|gbk|auto required|optional. Include access does not add search or injection roots.\n"
         << "  1..16 ordered strokes; vertex coordinates; doodads stay fixed. Other brush kinds require a future explicit CLI schema.\n"
         << "war3-map-cli archive-session-inspect <map-archive> [--expected-source-sha256 <64hex>] [--member <internal-path> ...]\n"

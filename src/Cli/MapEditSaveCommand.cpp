@@ -269,7 +269,11 @@ int RunMapEditSave(int argc, wchar_t** argv) {
     for (int index = 8; index < argc;) {
         const std::wstring_view flag(argv[index]);
         std::string error;
-        if (flag == L"--ui-root") {
+        if (flag == L"--rebuild-shadows") {
+            if (request.rebuildTerrainShadow) return Invalid("--rebuild-shadows may appear only once");
+            request.rebuildTerrainShadow = true;
+            ++index;
+        } else if (flag == L"--ui-root") {
             if (index + 1 >= argc || argv[index + 1][0] == L'\0' || !request.uiRoot.empty())
                 return Invalid("--ui-root requires one nonempty UI data root");
             request.uiRoot = argv[index + 1];
@@ -428,7 +432,7 @@ int RunMapEditSave(int argc, wchar_t** argv) {
     if (rotation) request.placementEdit = std::move(*rotation);
     else if (copyOffset) request.placementEdit = Services::MapEditPlacementCopy{std::move(copySources), *copyOffset};
     if (request.terrainStrokes.empty() && request.fieldEdits.empty()
-        && std::holds_alternative<std::monostate>(request.placementEdit) && !request.triggerEdits)
+        && std::holds_alternative<std::monostate>(request.placementEdit) && !request.triggerEdits && !request.rebuildTerrainShadow)
         return Invalid("at least one bounded edit operation is required");
     auto saved = Services::SaveMapEditCandidate(request);
     PrintDiagnostics(saved.diagnostics);

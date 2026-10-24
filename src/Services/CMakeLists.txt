@@ -57,6 +57,8 @@ add_library(War3MapServices STATIC
     TerrainMinimapSave.cpp
     TerrainMinimapMarkers.cpp
     TerrainMinimapMarkersSave.cpp
+    TerrainShadowCasterResources.cpp
+    TerrainShadowBake.cpp
     TerrainMinimapSaveAutomatic.cpp
     TerrainMinimapSaveFallback.cpp
     TerrainPathingRestrictionCandidate.cpp

@@ -394,6 +394,32 @@ void TestBlightSaveForwardsServiceDiagnosticsAndRejectsActiveOverlay() {
         "active overlay refusal produced a candidate");
 }
 
+void TestShadowSaveTransport() {
+    Fixture fixture; McpServer server; RegisterAllTools(server);
+    auto args = BlightSaveArgs(fixture);
+    args.remove("vertex_x"); args.remove("vertex_y"); args.remove("radius"); args.remove("set_blight");
+    auto invalid = args; invalid.remove("expected_terrain_sha256");
+    InvalidParams(server, "save_terrain_shadow_candidate", invalid);
+    invalid = args; invalid["game_root"] = QString::fromStdWString(fixture.ui.wstring());
+    InvalidParams(server, "save_terrain_shadow_candidate", invalid);
+    invalid = args; invalid["shadow_bytes"] = "untrusted replacement";
+    InvalidParams(server, "save_terrain_shadow_candidate", invalid);
+    ScopedSaveRoots roots;
+    Code(Call(server, "save_terrain_shadow_candidate", args), "MCP_SAVE_HOST_CONFIG_MISSING");
+    roots.Set(fixture.ui);
+    Code(Call(server, "save_terrain_shadow_candidate", args), "SOURCE_LEASE_FAILED");
+    Expect(!std::filesystem::exists(fixture.root / "candidate.w3x"), "shadow preparation failure wrote a candidate");
+    fixture.Open(server);
+    const auto revision = server.Workspace()->Revision();
+    auto transaction = server.Workspace()->BeginEdit(revision);
+    Expect(transaction.Succeeded() && transaction.value, "shadow fixture transaction failed");
+    Code(Call(server, "save_terrain_shadow_candidate", args), "MCP_TERRAIN_TRANSACTION_ACTIVE");
+    Expect(server.Workspace()->Rollback(*transaction.value, revision).Succeeded(), "shadow fixture rollback failed");
+    WriteText(fixture.root / "candidate.w3x", "existing user output");
+    Code(Call(server, "save_terrain_shadow_candidate", args), "MCP_OUTPUT_EXISTS");
+    Expect(std::filesystem::file_size(fixture.root / "candidate.w3x") == 20, "shadow overwrote occupied candidate");
+}
+
 void TestNormalSaveTextureAndWaterSchema() {
     McpServer server; RegisterAllTools(server);
     const auto response = server.HandleMessage(R"({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}})");
@@ -559,6 +585,7 @@ int main(int argc, char** argv) {
         TestSchemaAndBudgets();
         TestBlightSaveTransportRejectsInvalidAndOccupiedCandidates();
         TestBlightSaveForwardsServiceDiagnosticsAndRejectsActiveOverlay();
+        TestShadowSaveTransport();
         std::cout << "MCP terrain directory identity, typed JSON and bounded queries passed\n";
         return 0;
     } catch (const std::exception& error) {

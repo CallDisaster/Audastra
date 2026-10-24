@@ -92,6 +92,8 @@ struct MapEditSaveRequest {
     std::vector<MapEditTerrainStroke> terrainStrokes;
     // 普通保存根据本次实际地图变化自动重建小地图；不接客户端图像或SHA。
     TerrainMinimapSaveChoice minimapChoice = TerrainMinimapSaveChoice::Automatic;
+    // 原版独立“计算阴影”操作；普通保存沿用已有SHD。
+    bool rebuildTerrainShadow = false;
     std::vector<MapEditFieldOperation> fieldEdits;
     MapEditPlacementOperation placementEdit;
     // 一个领域批次与地图 SHA 同时绑定，不能提供任意 WTG/WCT/脚本成员字节。

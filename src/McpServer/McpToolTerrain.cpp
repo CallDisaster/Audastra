@@ -2,6 +2,7 @@
 #include "McpTerrain.h"
 
 #include "War3MapCore/Services/TerrainBlightSaveService.h"
+#include "War3MapCore/Services/MapEditSaveService.h"
 
 #include <QJsonDocument>
 
@@ -221,6 +222,55 @@ void RegisterTerrainTools(McpServer& server) {
         return result;
     };
     server.RegisterTool(std::move(saveBlight));
+
+    ToolDefinition shadows;
+    shadows.name = "save_terrain_shadow_candidate";
+    shadows.permission = ToolPermission::Save;
+    shadows.description = "从实际W3E、装饰物与游戏光方向显式计算阴影，经过共用脚本保存门写出新地图副本。"
+        "须绑定源图和W3E SHA；工具与游戏目录只读宿主配置。不支持的地形/投影模型明确拒绝，"
+        "不影响普通保存保留原SHD。结果不代表原版重开或实际游戏验收。";
+    shadows.inputSchema = BasicSchema({
+        {"source_map_path", QJsonObject{{"type", "string"}}},
+        {"output_path", QJsonObject{{"type", "string"}}},
+        {"expected_source_sha256", shaSchema}, {"expected_terrain_sha256", shaSchema}},
+        {"source_map_path", "output_path", "expected_source_sha256", "expected_terrain_sha256"});
+    shadows.handler = [&server](const QJsonObject& parameters) -> QJsonValue {
+        if (server.Workspace() && server.Workspace()->HasActiveTransaction())
+            return Failure("MCP_TERRAIN_TRANSACTION_ACTIVE", "活动事务尚未结束，阴影副本保存不会包含该overlay。");
+        auto source = ParseAbsolutePath(parameters, "source_map_path");
+        auto output = ParseAbsolutePath(parameters, "output_path");
+        if (!source.Succeeded()) return Failure(source);
+        if (!output.Succeeded()) return Failure(output);
+        const auto sourceSha = parameters.value("expected_source_sha256").toString().toStdString();
+        const auto terrainSha = parameters.value("expected_terrain_sha256").toString().toStdString();
+        if (!IsLowerHexSha256(sourceSha) || !IsLowerHexSha256(terrainSha))
+            return Failure("MCP_TERRAIN_IDENTITY_INVALID", "源图和W3E都必须绑定64位小写SHA-256。");
+        std::error_code pathError;
+        const auto targetStatus = std::filesystem::symlink_status(*output.value, pathError);
+        if (!pathError && targetStatus.type() != std::filesystem::file_type::not_found)
+            return Failure("MCP_OUTPUT_EXISTS", "候选路径已存在，请使用新文件。");
+        if (pathError && pathError != std::errc::no_such_file_or_directory)
+            return Failure("MCP_OUTPUT_PATH_INVALID", "无法确认候选路径状态。");
+        auto toolRoot = HostConfiguredSaveRoot("FORGE_MCP_YDWE_ROOT");
+        auto gameRoot = HostConfiguredSaveRoot("FORGE_MCP_WAR3_ROOT");
+        if (!toolRoot.Succeeded()) return Failure(toolRoot);
+        if (!gameRoot.Succeeded()) return Failure(gameRoot);
+        Services::MapEditSaveRequest request;
+        request.sourceMap = *source.value; request.targetCandidate = *output.value;
+        request.toolRoot = *toolRoot.value; request.gameRoot = *gameRoot.value;
+        request.expectedSourceSha256 = sourceSha; request.expectedTerrainSha256 = terrainSha;
+        request.rebuildTerrainShadow = true;
+        const auto saved = Services::SaveMapEditCandidate(request);
+        if (!saved.Succeeded() || !saved.value) return Failure(saved);
+        QJsonObject result{{"ok", true}, {"candidate_kind", "mpq-map-archive"},
+            {"output_path", QString::fromStdWString(saved.value->candidate.wstring())},
+            {"source_sha256", QString::fromStdString(saved.value->sourceSha256)},
+            {"candidate_sha256", QString::fromStdString(saved.value->candidateSha256)},
+            {"shadow_rebuilt", true}, {"native_editor_verified", false}, {"game_runtime_verified", false}};
+        if (!saved.diagnostics.empty()) result["diagnostics"] = DiagnosticsJson(saved.diagnostics).value("diagnostics");
+        return result;
+    };
+    server.RegisterTool(std::move(shadows));
 }
 
 } // namespace War3Map::Mcp

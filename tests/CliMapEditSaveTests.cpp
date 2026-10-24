@@ -59,6 +59,20 @@ void LegacyMinimapSwitchesAreRemoved() {
     Rejected(Invoke(arguments), "unknown map-edit-save option");
 }
 
+void ShadowCalculationUsesTheSharedSaveService() {
+    auto arguments = Arguments(); arguments.push_back(L"--rebuild-shadows");
+    const auto result = Invoke(arguments);
+    Require(result.exitCode != 0 && result.output.empty()
+        && result.error.find("SOURCE_LEASE_FAILED") != std::string::npos,
+        "explicit shadow calculation without strokes must reach the shared source identity gate");
+    arguments.push_back(L"--rebuild-shadows");
+    Rejected(Invoke(arguments), "may appear only once");
+    arguments = Arguments(); arguments[4] = L"-"; arguments.push_back(L"--rebuild-shadows");
+    const auto missing = Invoke(arguments);
+    Require(missing.exitCode != 0 && missing.error.find("SAVE_REQUEST_INVALID") != std::string::npos,
+        "shadow-only save must require the actual W3E identity");
+}
+
 void TypedTextureAndWaterReachTheSaveService() {
     const auto stroke = [](std::wstring kind, std::wstring value) {
         auto args = Arguments();
@@ -140,6 +154,7 @@ void RampUsesExplicitBooleanAndTheSharedSaveGate() {
 int main() {
     try {
         LegacyMinimapSwitchesAreRemoved();
+        ShadowCalculationUsesTheSharedSaveService();
         TypedTextureAndWaterReachTheSaveService();
         NativeWaterUsesExplicitTypedArguments();
         RampUsesExplicitBooleanAndTheSharedSaveGate();

@@ -14,6 +14,8 @@
 #include "War3MapCore/Text/TextUtil.h"
 #include "TerrainWalkableBridgeRealTests.h"
 #include "TerrainGroundBrushRealTests.h"
+#include "TerrainExistingRampWaterRealTests.h"
+#include "TerrainShadowRealTests.h"
 #include "TerrainCategoryDirectoryRealTests.h"
 
 #include <Windows.h>
@@ -428,7 +430,9 @@ void FixedRotationUsesPublicSave(const MapArchiveSession& original, const std::f
     }
 }
 
-void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const std::filesystem::path& game) {
+enum class RealSaveGroup { Objects, ExistingRamps, Shadows };
+void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const std::filesystem::path& game,
+    RealSaveGroup group) {
     OwnedDirectory directory;
     try {
         MapCreateRequest create;
@@ -446,6 +450,15 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         const auto created = Take(CreateMapCandidate(create));
         Require(created.scriptRebuilt, "original map has a real-toolchain checked script");
         auto original = Take(MapArchiveSession::Open(created.path));
+        if (group == RealSaveGroup::ExistingRamps) {
+            TerrainSaveTests::CheckRealExistingRampCliffSave(original, directory.path, tool, game);
+            TerrainSaveTests::CheckRealExistingRampWaterSave(original, directory.path, tool, game);
+            return;
+        }
+        if (group == RealSaveGroup::Shadows) {
+            TerrainSaveTests::CheckRealTerrainShadowSave(original, directory.path, tool, game);
+            return;
+        }
         const auto sourceScript = Take(original.ReadMember("war3map.j"));
         const auto parsed = Take(ParseMapTerrain(Take(original.ReadMember("war3map.w3e"))));
         auto before = *parsed.Snapshot();
@@ -723,7 +736,6 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         FixedRotationUsesPublicSave(original, directory.path, tool, game, catalog, schema, mounted);
         TerrainSaveTests::CheckRealWalkableBridgeSave(original, directory.path, tool, game, catalog, schema, mounted);
         TerrainSaveTests::CheckRealGroundBrushSave(original, directory.path, tool, game, mounted);
-        TerrainSaveTests::CheckRealExistingRampCliffSave(original, directory.path, tool, game);
     } catch (...) {
         directory.keep = true;
         std::cerr << "Real-source failure artifacts preserved at " << IO::PathUtf8(directory.path) << '\n';
@@ -732,14 +744,18 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
 }
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     try {
+        RealSaveGroup group = RealSaveGroup::Objects;
+        if (argc == 2 && std::string_view(argv[1]) == "--existing-ramps") group = RealSaveGroup::ExistingRamps;
+        else if (argc == 2 && std::string_view(argv[1]) == "--shadows") group = RealSaveGroup::Shadows;
+        else Require(argc == 1, "expected no arguments, --existing-ramps or --shadows");
         const auto tool = EnvironmentPath(L"FORGE_YDWE_ROOT");
         const auto game = EnvironmentPath(L"FORGE_WORLD_GAME_ROOT");
         if (tool.empty() || game.empty()) {
             std::cout << "SKIP native object public save: FORGE_YDWE_ROOT / FORGE_WORLD_GAME_ROOT unset\n";
             return 77;
         }
-        RealResourcesUsePublicMapEditSave(tool, game); return 0;
+        RealResourcesUsePublicMapEditSave(tool, game, group); return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

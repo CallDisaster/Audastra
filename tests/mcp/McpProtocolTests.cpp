@@ -68,7 +68,7 @@ void TestToolSurface() {
             "get_revision", "begin_edit", "create_trigger", "append_root_eca",
             "append_argument_call", "set_scalar_argument", "preview_edit",
             "validate_edit", "export_map_candidate", "rollback_edit",
-            "install_generated_warvk_module", "save_terrain_blight_candidate",
+            "install_generated_warvk_module", "save_terrain_blight_candidate", "save_terrain_shadow_candidate",
             "get_terrain_edit_state", "query_terrain_points", "edit_terrain_stroke",
             "describe_map_data", "query_map_data_page", "save_map_edit_candidate", "query_map_trigger_text", "capture_model_animation", "project_search",
             "query_map_archive_member_identities", "query_trigger_graph", "edit_trigger_graph",
@@ -106,6 +106,14 @@ void TestToolSurface() {
         if (tool.value("name") == "imports_add" || tool.value("name") == "lua_file_write") {
             Expect(tool.value("description").toString().startsWith(QStringLiteral("仅编辑器 MCP 端口可用")),
                 "standalone server must mark editor-only tools in their description");
+        }
+        if (tool.value("name") == "save_terrain_shadow_candidate") {
+            const auto schema = tool.value("inputSchema").toObject();
+            const auto properties = schema.value("properties").toObject();
+            Expect(schema.value("required").toArray().contains("expected_source_sha256")
+                && schema.value("required").toArray().contains("expected_terrain_sha256")
+                && !properties.contains("game_root") && !properties.contains("tool_root"),
+                "shadow save binds actual source and terrain without accepting caller resource roots");
         }
         if (tool.value("name") != "save_terrain_blight_candidate") continue;
         const QJsonObject schema = tool.value("inputSchema").toObject();

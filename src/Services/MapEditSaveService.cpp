@@ -1,4 +1,5 @@
 #include "War3MapCore/Services/MapEditSaveService.h"
+#include "War3MapCore/Services/TerrainShadowBake.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/Services/TerrainMinimapMarkersSave.h"
 #include "MapEditSaveValidation.h"
@@ -598,6 +599,8 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         const bool triggerRequest = request.triggerEdits.has_value() || request.triggerTransaction != nullptr;
         const bool objectRequest = !request.objectTransactions.empty();
         const bool auxiliaryRequest = request.auxiliaryTransaction != nullptr;
+        const bool shadowOnly = request.rebuildTerrainShadow && !fieldRequest && !placementRequest
+            && !terrainRequest && !triggerRequest && !objectRequest && !auxiliaryRequest;
         if (request.minimapChoice != TerrainMinimapSaveChoice::Automatic
             && request.minimapChoice != TerrainMinimapSaveChoice::Preserve
             && request.minimapChoice != TerrainMinimapSaveChoice::GenerateMissingGroundOnly
@@ -606,6 +609,9 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         if (request.minimapChoice != TerrainMinimapSaveChoice::Preserve
             && request.minimapChoice != TerrainMinimapSaveChoice::Automatic && !terrainRequest)
             return Fail("SAVE_MINIMAP_SCOPE_INVALID", "补建缺失小地图只能伴随非空干地高度另存事务。");
+        if (request.rebuildTerrainShadow && request.minimapChoice != TerrainMinimapSaveChoice::Automatic
+            && request.minimapChoice != TerrainMinimapSaveChoice::Preserve)
+            return Fail("TERRAIN_SHADOW_MINIMAP_CONFLICT", "显式计算阴影不能与旧的单独补建小地图选项混用。");
         if (request.triggerEdits && request.triggerTransaction)
             return Fail("SAVE_TRIGGER_INPUT_CONFLICT", "触发器批次与完整冻结事务不能在同一次保存中混用。");
         if (request.triggerTransaction && request.triggerTransaction->IsSourceCompanion() && !objectRequest)
@@ -618,9 +624,9 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         }
         if (static_cast<int>(fieldRequest) + static_cast<int>(placementRequest)
             + static_cast<int>(terrainRequest) + static_cast<int>(triggerRequest) + static_cast<int>(objectRequest) + static_cast<int>(auxiliaryRequest)
-            - static_cast<int>(objectRequest && request.triggerTransaction != nullptr) != 1)
+            - static_cast<int>(objectRequest && request.triggerTransaction != nullptr) != (shadowOnly ? 0 : 1))
             return Fail("SAVE_OPERATION_SCOPE_INVALID", "一次保存只能提交一个领域操作或同源的完整触发器与物编封印事务。");
-        const auto bounded = fieldRequest ? ValidateFieldOperations(request.fieldEdits)
+        const auto bounded = shadowOnly ? Status::Ok() : fieldRequest ? ValidateFieldOperations(request.fieldEdits)
             : placementRequest ? ValidatePlacementOperation(request.placementEdit)
             : request.triggerEdits ? Trigger::ValidateTriggerEditBatch(*request.triggerEdits)
             : (request.triggerTransaction || objectRequest || auxiliaryRequest) ? Status::Ok()
@@ -701,6 +707,15 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         } else if (objectRequest) {
             const auto applied = ApplyObjectTransactions(request, source, replacements, editedMembers);
             if (!applied.Succeeded()) return Forward(applied.diagnostics);
+        } else if (shadowOnly) {
+            // 计算阴影本身不重放空笔划，也不要求原图有WPM；W3E仍须逐字绑定。
+            const auto terrainBytes = source.ReadMember("war3map.w3e");
+            if (!terrainBytes.Succeeded() || !terrainBytes.value) return Forward(terrainBytes.diagnostics);
+            const auto terrainSha = Sha256(*terrainBytes.value);
+            if (!terrainSha.Succeeded() || !terrainSha.value) return Forward(terrainSha.diagnostics);
+            if (*terrainSha.value != request.expectedTerrainSha256)
+                return Fail("SAVE_TERRAIN_STALE", "W3E SHA-256 与阴影计算请求不符，请重新获取地形快照。");
+            originalTerrainShaValue = savedTerrainShaValue = *terrainSha.value;
         } else if (!triggerRequest && !auxiliaryRequest) {
             if (!source.HasMember("war3map.w3e") || !source.HasMember("war3map.wpm")) {
                 return Fail("SAVE_TERRAIN_PATHING_MISSING", "源地图必须同时包含唯一可读取的 W3E 和 WPM。");
@@ -846,6 +861,10 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                     || request.minimapChoice == TerrainMinimapSaveChoice::Preserve) {
                     const auto markers = PrepareTerrainMinimapMarkers(task, request.gameRoot, &finalEdits, terrainPlan);
                     if (!markers.Succeeded()) return markers;
+                }
+                if (request.rebuildTerrainShadow) {
+                    const auto shadow = PrepareTerrainShadowBake(task, request.gameRoot, &finalEdits, terrainPlan);
+                    if (!shadow.Succeeded()) return shadow;
                 }
                 if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic) {
                     auto prepared = (minimapInputFailure.empty() || (!automaticRequired && !nativeCaptureFailed))

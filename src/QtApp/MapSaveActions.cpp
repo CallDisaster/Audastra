@@ -65,7 +65,7 @@ QString ChangedMembers(const MapSaveJob& job) {
         {"war3map.w3i", "地图设置"}, {"war3map.w3s", "声音"}, {"war3map.w3r", "区域"},
         {"war3map.w3c", "镜头"}, {"war3mapUnits.doo", "单位与物品摆放"}, {"war3map.doo", "地物摆放"},
         {"war3map.w3e", "地形"}, {"war3map.wpm", "通行性"}, {"war3map.wts", "字符串表"},
-        {"war3mapMap.blp", "地形小地图"}};
+        {"war3mapMap.blp", "地形小地图"}, {"war3map.shd", "阴影"}, {"war3map.mmp", "小地图图标"}};
     QStringList labels;
     for (const auto& [member, label] : known)
         if (std::any_of(job.replacements.begin(), job.replacements.end(), [member](const auto& r) { return r.name == member; }))
@@ -77,9 +77,11 @@ QString ChangedMembers(const MapSaveJob& job) {
 }
 
 bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, bool background, bool testSnapshot, bool testHotReload,
-    War3Map::Services::TerrainMinimapSaveChoice minimapChoice) {
+    War3Map::Services::TerrainMinimapSaveChoice minimapChoice, bool rebuildTerrainShadow) {
     // 测试快照绝不能进入原地保存分支，也不能把当前工程切换到测试副本。
     if ((testSnapshot && inPlace) || (testHotReload && !testSnapshot)) return false;
+    if (rebuildTerrainShadow && (testSnapshot || testHotReload
+        || (CurrentModule() == "campaign" && campaignModule_->Session()))) return false;
     if (project_->savingMap_) return false;
     if (writingRecovery_ && recoveryWorker_) {
         // 恢复 Store 持有来源保护句柄，Ctrl+S 要等它释放后才可替换原图。
@@ -155,6 +157,7 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         reportFailure(tr("地图未保存：保存准备未通过"));
         return false;
     }
+    job->rebuildTerrainShadow = rebuildTerrainShadow;
     if (testHotReload) {
         if (!job->script || !job->script->luaTarget) {
             project_->AddDiagnostic(tr("错误"), tr("测试"), QStringLiteral("LUA_RELOAD_PROFILE_REQUIRED"),

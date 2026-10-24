@@ -8,7 +8,7 @@
 #include <span>
 
 namespace War3Map { class MapDocument; }
-namespace War3Map::Services { class TerrainMinimapSave; class TerrainPathingSave; class TerrainMinimapMarkers; }
+namespace War3Map::Services { class TerrainMinimapSave; class TerrainPathingSave; class TerrainMinimapMarkers; class TerrainShadowBake; }
 
 namespace War3Map::MapData {
 
@@ -95,6 +95,7 @@ private:
     friend class Services::TerrainMinimapSave;
     friend class Services::TerrainPathingSave;
     friend class Services::TerrainMinimapMarkers;
+    friend class Services::TerrainShadowBake;
     // 仅Services工厂可提供。只在既有原版重建分支按剩余额度捕获，
     // 不接受协议布尔、外部对象结论或任意输出字节。
     using NativeResourceCapture = std::function<Result<TerrainPathingResources>(
@@ -114,6 +115,7 @@ private:
     // 但允许源图已有非空 BLP，输出会精确替换该成员；不改变 WPM/SHD/MMP 资格。
     [[nodiscard]] Status AdmitGeneratedMinimap(const MapDataEditSession& edits, std::vector<std::byte> generatedBytes);
     [[nodiscard]] Status AdmitGeneratedMarkers(const MapDataEditSession& edits, std::vector<std::byte> generatedBytes);
+    [[nodiscard]] Status AdmitGeneratedShadow(const MapDataEditSession& edits, std::span<const std::byte> generatedBytes);
     [[nodiscard]] std::size_t OwnedCapacityBytes() const noexcept;
     [[nodiscard]] static Result<TerrainSavePlan> Complete(TerrainSavePlan plan,
         const MapDataEditSession& edits, const TerrainSavePlanLimits& limits, std::size_t sourceBytes,

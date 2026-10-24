@@ -4,6 +4,7 @@
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/MapMinimapMarkers.h"
+#include "War3MapCore/MapData/MapShadow.h"
 #include "War3MapCore/MapData/PathingSavePolicy.h"
 #include "War3MapCore/MapData/TerrainPathingResources.h"
 
@@ -555,6 +556,40 @@ Status TerrainSavePlan::AdmitGeneratedMarkers(const MapDataEditSession& edits, s
     } catch (Failure& failure) { return {std::move(failure.diagnostics)}; }
     catch (const std::bad_alloc&) { return Reject("TERRAIN_MMP_ALLOCATION", "图标输出分配失败，未返回完整保存计划。"); }
     catch (const std::length_error&) { return Reject("TERRAIN_MMP_ALLOCATION", "图标输出容量异常，未返回完整保存计划。"); }
+}
+
+Status TerrainSavePlan::AdmitGeneratedShadow(const MapDataEditSession& edits, std::span<const std::byte> generatedBytes) {
+    try {
+        if (edits.SessionIdentity() != sessionIdentity_ || edits.Revision() != revision_
+            || edits.TerrainSourceRevision() != terrainSourceRevision_)
+            return Reject("TERRAIN_SAVE_PLAN_STALE", "阴影计算必须绑定当前会话、修订和地形来源。");
+        if (!saveGate_.Succeeded()) return saveGate_;
+        if (members_[2].sourceState == TerrainSaveSourceState::Unknown || !edits.Terrain())
+            return Reject("TERRAIN_SHADOW_SOURCE_UNKNOWN", "阴影保存需要明确的源成员状态和实际地形。");
+        const auto& terrain = *edits.Terrain();
+        const auto maximum = ShadowReadLimits{}.maxDimension / 4 + 1;
+        if (terrain.header.width < 2 || terrain.header.height < 2
+            || terrain.header.width > maximum || terrain.header.height > maximum)
+            return Reject("TERRAIN_SHADOW_DIMENSIONS", "阴影计算的地形尺寸超过支持范围。");
+        auto total = cumulativeBytes_;
+        AddBytes(generatedBytes.size(), total, {maximumBytes_});
+        AddBytes(generatedBytes.size(), total, {maximumBytes_}); // 独立codec检查的临时副本。
+        auto parsed = ParseMapShadow(generatedBytes, (terrain.header.width - 1) * 4, (terrain.header.height - 1) * 4);
+        if (!parsed.Succeeded()) return {std::move(parsed.diagnostics)};
+        auto sha = Take(Sha256(generatedBytes));
+        auto& member = members_[2];
+        std::erase_if(replacements_, [&](const auto& output) { return Canonical(output.name) == member.name; });
+        replacements_.push_back({member.name, {generatedBytes.begin(), generatedBytes.end()}});
+        member.outputBytes = replacements_.back().data.size(); member.outputSha256 = std::move(sha);
+        member.action = TerrainSaveMemberAction::WriteEdited;
+        member.reasonCode = "TERRAIN_SAVE_WRITE_REBUILT_SHADOW";
+        member.reason = "按实际地形、方向和对象模型显式计算阴影；发布前核对来源，保存后独立回读。";
+        std::erase_if(diagnostics_, [](const auto& diagnostic) { return diagnostic.code == "TERRAIN_SAVE_SHADOW_NOT_REBUILT"; });
+        cumulativeBytes_ = total;
+        return Status::Ok();
+    } catch (Failure& failure) { return {std::move(failure.diagnostics)}; }
+    catch (const std::bad_alloc&) { return Reject("TERRAIN_SHADOW_ALLOCATION", "阴影输出分配失败，未返回完整保存计划。"); }
+    catch (const std::length_error&) { return Reject("TERRAIN_SHADOW_ALLOCATION", "阴影输出容量异常，未返回完整保存计划。"); }
 }
 
 std::size_t TerrainSavePlan::OwnedCapacityBytes() const noexcept {

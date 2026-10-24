@@ -1,6 +1,7 @@
 #include "EditorProject.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/Services/TerrainMinimapMarkersSave.h"
+#include "War3MapCore/Services/TerrainShadowBake.h"
 #include "MapSaveJob.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
@@ -68,7 +69,14 @@ Status PrepareWorkerDerivedInputs(MapSaveJob& job, std::shared_ptr<const MapData
         || job.minimapChoice == Services::TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly;
     if (!automatic && !preserve && !explicitGeneration)
         return reject("MINIMAP_SAVE_CHOICE", "未知的单次地形小地图保存选项。");
+    if (job.rebuildTerrainShadow && explicitGeneration)
+        return reject("TERRAIN_SHADOW_MINIMAP_CONFLICT", "显式计算阴影不能与旧的单独补建小地图选项混用。");
     terrainPrepared = !job.terrainDerivationRequired;
+    const auto prepareMarkersAndShadow = [&](const MapData::MapDataEditSession* currentEdits) {
+        const auto markers = Services::PrepareTerrainMinimapMarkers(job, job.minimapGameRoot, currentEdits, job.terrainSavePlan);
+        if (!markers.Succeeded() || !job.rebuildTerrainShadow) return markers;
+        return Services::PrepareTerrainShadowBake(job, job.minimapGameRoot, currentEdits, job.terrainSavePlan);
+    };
     if (automatic) {
         const auto required = Services::TerrainMinimapSave::RequiresAutomaticGeneration(job);
         if (!required.Succeeded() || !required.value) return {required.diagnostics};
@@ -81,11 +89,11 @@ Status PrepareWorkerDerivedInputs(MapSaveJob& job, std::shared_ptr<const MapData
             const auto installed = InstallPreservedMinimap(job, *edits, std::move(*prepared.value));
             if (!installed.Succeeded()) return installed;
             if (!job.minimapPreserve) job.minimapChoice = Services::TerrainMinimapSaveChoice::Preserve;
-            return Services::PrepareTerrainMinimapMarkers(job, job.minimapGameRoot, nullptr, job.terrainSavePlan);
+            return prepareMarkersAndShadow(nullptr);
         }
     }
     if (preserve && !job.terrainDerivationRequired)
-        return Services::PrepareTerrainMinimapMarkers(job, job.minimapGameRoot, nullptr, job.terrainSavePlan);
+        return prepareMarkersAndShadow(nullptr);
     if (!job.archive || (explicitGeneration && (job.inPlace || job.testCopyOnly || job.triggerChanges || !job.objectTransactions.empty()
         || !job.removals.empty() || std::count_if(job.replacements.begin(), job.replacements.end(), [](const auto& member) {
             return MinimapMemberName(member.name) == "war3map.w3e";
@@ -196,7 +204,7 @@ Status PrepareWorkerDerivedInputs(MapSaveJob& job, std::shared_ptr<const MapData
         terrainPrepared = true;
     }
     if (automatic || preserve) {
-        const auto markers = Services::PrepareTerrainMinimapMarkers(job, job.minimapGameRoot, edits.get(), job.terrainSavePlan);
+        const auto markers = prepareMarkersAndShadow(edits.get());
         if (!markers.Succeeded()) return markers;
     }
     if (preserve) return Status::Ok();
@@ -248,6 +256,7 @@ Status PrepareWorkerDerived(MapSaveJob& job) {
     bool terrainPrepared = false;
     auto status = PrepareWorkerDerivedInputs(job, edits, terrainPrepared);
     if (!status.Succeeded()) {
+        if (job.rebuildTerrainShadow && !job.terrainShadow) return status;
         // 小地图能力不足可以保留；所需地形输入/计划没有通过时绝不能借此降级。
         if (job.minimapChoice != Services::TerrainMinimapSaveChoice::Automatic
             || (job.terrainDerivationRequired && !terrainPrepared)) return status;
@@ -273,7 +282,10 @@ void InstallMapSaveDerivedPreparation(MapSaveJob& job) {
     job.derivedPreparationInstalled = true;
     job.prepareFinalDerived = [&job, previous = std::move(job.prepareFinalDerived)](Services::MapSaveTask& task) -> Status {
         if (previous) { const auto checked = previous(task); if (!checked.Succeeded()) return checked; }
-        try { job.Report(EditorProject::tr("正在更新地形通行与小地图…")); } catch (...) {}
+        try {
+            job.Report(job.rebuildTerrainShadow ? EditorProject::tr("正在更新地形通行、小地图与阴影…")
+                : EditorProject::tr("正在更新地形通行与小地图…"));
+        } catch (...) {}
         try {
             return PrepareWorkerDerived(job);
         } catch (...) {

@@ -223,6 +223,20 @@ target_compile_options(war3-map-save-service-tests PRIVATE /W4 /permissive- /utf
 add_test(NAME services-map-save COMMAND war3-map-save-service-tests)
 
 add_executable(audastra-terrain-minimap-markers-tests TerrainMinimapMarkersTests.cpp)
+
+foreach(shadow_test IN ITEMS Resources Bake)
+    string(TOLOWER "${shadow_test}" shadow_name)
+    if(shadow_test STREQUAL "Resources")
+        set(shadow_source TerrainShadowCasterResourcesTests.cpp)
+    else()
+        set(shadow_source TerrainShadowBakeTests.cpp)
+    endif()
+    add_executable(audastra-terrain-shadow-${shadow_name}-tests ${shadow_source})
+    target_link_libraries(audastra-terrain-shadow-${shadow_name}-tests PRIVATE War3MapEditor::Services)
+    target_compile_definitions(audastra-terrain-shadow-${shadow_name}-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+    target_compile_options(audastra-terrain-shadow-${shadow_name}-tests PRIVATE /W4 /permissive- /utf-8)
+    add_test(NAME services-terrain-shadow-${shadow_name} COMMAND audastra-terrain-shadow-${shadow_name}-tests)
+endforeach()
 target_link_libraries(audastra-terrain-minimap-markers-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(audastra-terrain-minimap-markers-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(audastra-terrain-minimap-markers-tests PRIVATE /W4 /permissive- /utf-8)
@@ -262,7 +276,7 @@ target_compile_definitions(audastra-terrain-edit-service-tests PRIVATE NOMINMAX 
 target_compile_options(audastra-terrain-edit-service-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-terrain-edit COMMAND audastra-terrain-edit-service-tests)
 
-add_executable(audastra-terrain-water-edit-service-tests TerrainWaterEditServiceTests.cpp)
+add_executable(audastra-terrain-water-edit-service-tests TerrainWaterEditServiceTests.cpp TerrainCliffJournalTests.cpp)
 target_link_libraries(audastra-terrain-water-edit-service-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(audastra-terrain-water-edit-service-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(audastra-terrain-water-edit-service-tests PRIVATE /W4 /permissive- /utf-8)
@@ -282,12 +296,15 @@ add_test(NAME services-terrain-native-object-save COMMAND audastra-terrain-nativ
 
 add_executable(audastra-terrain-native-object-real-tests
     TerrainNativeObjectRealSourceTests.cpp TerrainWalkableBridgeRealTests.cpp TerrainGroundBrushRealTests.cpp
-    TerrainCategoryDirectoryRealTests.cpp)
+    TerrainCategoryDirectoryRealTests.cpp TerrainExistingRampWaterRealTests.cpp TerrainShadowRealTests.cpp)
 target_link_libraries(audastra-terrain-native-object-real-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(audastra-terrain-native-object-real-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(audastra-terrain-native-object-real-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-terrain-native-object-real COMMAND audastra-terrain-native-object-real-tests)
 set_tests_properties(services-terrain-native-object-real PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
+add_test(NAME services-terrain-existing-ramp-real COMMAND audastra-terrain-native-object-real-tests --existing-ramps)
+add_test(NAME services-terrain-shadow-real COMMAND audastra-terrain-native-object-real-tests --shadows)
+set_tests_properties(services-terrain-existing-ramp-real services-terrain-shadow-real PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
 
 add_executable(war3-map-import-inventory-tests ImportInventoryQueryTests.cpp)
 target_link_libraries(war3-map-import-inventory-tests PRIVATE War3MapEditor::Services)

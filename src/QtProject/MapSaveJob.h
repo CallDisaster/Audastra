@@ -42,6 +42,7 @@ struct MapSaveJob final : Services::MapSaveTask {
     std::shared_ptr<const MapData::TerrainSavePlan> terrainSavePlan;
     // 前台只冻结是否有地形/通行净变化；实际资源捕获与WPM生成在最终worker阶段。
     bool terrainDerivationRequired = false;
+    bool rebuildTerrainShadow = false;
     // 来自前台真实Session的只读快照；私有special身份不能由worker的SetSerialized重建。
     std::shared_ptr<const MapData::MapDataEditSession> terrainSessionSnapshot;
     bool derivedPreparationInstalled = false;

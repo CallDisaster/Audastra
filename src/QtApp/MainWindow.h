@@ -139,7 +139,8 @@ public:
     // 地图保存（MapSaveActions.cpp）：background 为真时在工作线程执行并显示进度框。
     bool RunMapSave(const std::filesystem::path& target, bool inPlace, bool background, bool testSnapshot = false,
         bool testHotReload = false,
-        War3Map::Services::TerrainMinimapSaveChoice minimapChoice = War3Map::Services::TerrainMinimapSaveChoice::Automatic);
+        War3Map::Services::TerrainMinimapSaveChoice minimapChoice = War3Map::Services::TerrainMinimapSaveChoice::Automatic,
+        bool rebuildTerrainShadow = false);
     bool SaveEditorProjectToPath(const std::filesystem::path& outputPath, bool recovery = false);
     bool OpenEditorProjectPath(const std::filesystem::path& path);
 
