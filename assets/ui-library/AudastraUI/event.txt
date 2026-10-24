@@ -1,0 +1,7 @@
+[AudastraUITriggerRegisterEvent]
+title = "界面事件"
+description = "界面事件 ${事件名} 发生"
+comment = "事件名写“界面编号.事件编号”，由“监听界面事件”关联到框架。"
+category = TC_AudastraUI
+[[.args]]
+type = string

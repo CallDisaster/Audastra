@@ -19,7 +19,8 @@ add_library(War3MapGameUi STATIC
     UiDescriptionEdit.cpp
     UiDescriptionText.cpp
     UiDescriptionTree.cpp
-    UiSkin.cpp)
+    UiSkin.cpp
+    UiTriggers.cpp)
 add_library(War3MapEditor::GameUi ALIAS War3MapGameUi)
 target_link_libraries(War3MapGameUi PUBLIC War3MapEditor::Core PRIVATE War3MapEditor::Jass War3MapEditor::Lua audastra-json)
 target_compile_definitions(War3MapGameUi PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)

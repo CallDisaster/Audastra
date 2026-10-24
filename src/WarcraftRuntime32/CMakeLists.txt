@@ -29,7 +29,9 @@ target_include_directories(audastra-warcraft-launcher PRIVATE "${CMAKE_CURRENT_L
 add_library(audastra-warcraft-bootstrap SHARED Bootstrap.cpp Bootstrap.def RuntimeLuaProbe.cpp RuntimeLuaProbe.h)
 target_link_libraries(audastra-warcraft-launcher PRIVATE audastra-detours bcrypt)
 target_link_libraries(audastra-warcraft-bootstrap PRIVATE audastra-detours audastra-own-lua-game bcrypt)
-foreach(target audastra-warcraft-launcher audastra-warcraft-bootstrap)
+# 自有界面库：调用 1.27a 自己的界面函数；内置 DLL 和地图侧加载方式确定后由它链接。
+add_library(audastra-game-ui STATIC GameUi/GameUiAbi127.cpp GameUi/GameUiLibrary.cpp)
+foreach(target audastra-warcraft-launcher audastra-warcraft-bootstrap audastra-game-ui)
     target_compile_definitions(${target} PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
     target_compile_options(${target} PRIVATE /utf-8 /W4 /permissive-)
 endforeach()
@@ -117,6 +119,12 @@ if(BUILD_TESTING)
         $<TARGET_FILE:audastra-runtime-fixture-war3> $<TARGET_FILE:audastra-runtime-fixture-game>
         $<TARGET_FILE_DIR:audastra-runtime-fixture-ydbase>)
     set_tests_properties(audastra-runtime32-fixtures PROPERTIES TIMEOUT 60)
+    add_executable(audastra-game-ui-tests fixtures/GameUiLibraryTests.cpp)
+    target_link_libraries(audastra-game-ui-tests PRIVATE audastra-game-ui)
+    target_compile_definitions(audastra-game-ui-tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(audastra-game-ui-tests PRIVATE /utf-8 /W4 /permissive-)
+    add_test(NAME audastra-game-ui COMMAND audastra-game-ui-tests)
+    set_tests_properties(audastra-game-ui PROPERTIES TIMEOUT 30)
     add_executable(audastra-own-lua-launch-tests fixtures/OwnLuaLaunchTests.cpp)
     add_dependencies(audastra-own-lua-launch-tests audastra-warcraft-launcher audastra-warcraft-bootstrap
         audastra-runtime-fixture-war3 audastra-runtime-fixture-game)
