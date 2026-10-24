@@ -126,7 +126,7 @@ void OrdinaryDoodadsFreezeKeepsRealCommandScopeAndUndo() {
         "the alias budget includes its complete immutable command rather than only copied wire");
     auto movedFrom = frozen;
     const auto keptSnapshot = std::move(*movedFrom.strokes.front().frozenDoodads);
-    Require(!MaterializeTerrainJournalDoodads(movedFrom).Succeeded(),
+    Require(!MaterializeTerrainJournalPlacements(movedFrom).Succeeded(),
         "a moved-from optional frozen payload fails without dereferencing released aliases");
     const auto state = session.TerrainJournalStateFingerprint();
     Require(state.find("mixed:") != std::string::npos, "ordinary CAS is scoped to actual immutable command identities");
@@ -146,7 +146,7 @@ void OrdinaryDoodadsFreezeKeepsRealCommandScopeAndUndo() {
     Require(!EncodeTerrainStrokeJournal(frozen).Succeeded(), "unmaterialized snapshots are never wire records");
     frozen.sourceSha256 = Journal().sourceSha256; frozen.members = Journal().members;
     frozen.members[5] = {"war3map.doo", true, Take(Sha256(before)), before.size()};
-    Require(MaterializeTerrainJournalDoodads(frozen).Succeeded() && !frozen.strokes.front().frozenDoodads
+    Require(MaterializeTerrainJournalPlacements(frozen).Succeeded() && !frozen.strokes.front().frozenDoodads
         && frozen.strokes.front().ordinaryDoodads, "background materialization replaces alias with actual SHA and delta");
     const auto wire = Take(EncodeTerrainStrokeJournal(frozen)); Require(wire[3] == std::byte{'7'}, "materialized ordinary command selects FTJ7");
     MapDataEditSession restored{MapDocument::FromMembers(sourceMembers)};

@@ -198,6 +198,9 @@ public:
     // 不恢复raw尾段来源，不接受任意成员或special改动。
     [[nodiscard]] Status ReplayTerrainJournalDoodads(const TerrainDoodadsJournalEdit& edit,
         std::size_t maximumBytes, std::size_t maximumWork);
+    // 仅完整经典Units单成员；PrepareUnits若要求W3I起始位置联动则拒绝，不安装部分命令。
+    [[nodiscard]] Status ReplayTerrainJournalUnits(const TerrainUnitsJournalEdit& edit,
+        std::size_t maximumBytes, std::size_t maximumWork);
     [[nodiscard]] bool RequiresTerrainStrokeJournal() const noexcept { return specialDoodads_ != savedSpecialDoodads_ || HasTerrainBoundsChanges(); }
     // 工程CAS专用：包含可表达状态及完整typed前缀，不读取外部来源。
     [[nodiscard]] std::string TerrainJournalStateFingerprint() const;
