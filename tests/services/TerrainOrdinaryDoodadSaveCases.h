@@ -103,7 +103,8 @@ void OrdinaryDoodadMoveSurvivesZeroNetTerrainAndHistory() {
     auto moved = OrdinaryCurrent(f); moved.doodads.front().position[0] = 640;
     const auto movedWire = Take(moved.Serialize()); Check(f.edits->EditDoodads(moved));
     f.Paint(); Require(f.edits->Undo(), "Undo the last terrain brush while retaining the preceding ordinary move");
-    Require(!f.edits->TerrainDirty() && f.edits->IsDirty() && TerrainSavePlan::HasTerrainChanges(*f.edits),
+    Require(Take(SerializeMapTerrain(*f.edits->Terrain())) == f.ExpectedTerrain(false)
+        && f.edits->IsDirty() && TerrainSavePlan::HasTerrainChanges(*f.edits),
         "zero-net terrain still enters the actual pathing save chain for a changed complete DOO");
     auto expected = f.ExpectedPathing(false); AddOrdinaryPatternExpected(expected, 20, 15);
     f.SaveExpected("ordinary-after-terrain-undo.w3x", f.ExpectedTerrain(false), expected, &movedWire, true);
