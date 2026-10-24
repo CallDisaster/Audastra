@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cctype>
+
 // 在TerrainStartLocationsJournalCases.h后包含，复用完整起点/单位/W3I夹具。
 void StartLocationsCommandsPreservePrivateProofAndUndo() {
     SessionFixture grid;
@@ -125,7 +127,23 @@ void StartLocationsComposeWithDescriptionsAndGroundFollowing() {
             auto journal = Take(hot.ExportTerrainStrokeJournal());
             Require(journal.strokes.size() == 1 && journal.strokes[0].frozenStartLocations.has_value(),
                 "same player-page transaction freezes both members with genuine private ownership");
-            Require(!journal.baselinePathingLayers.empty(), "start journal retains its actual terrain and pathing baseline");
+            // 没有附加限制时APR可按合同省略；基线资格核实际W3E/WPM及其它源成员原字。
+            std::vector<ArchiveExactMember> baseline;
+            for (const auto name : TerrainJournalMemberNames) {
+                ArchiveExactMember entry{std::string(name)};
+                if (name == "war3map.w3e") { entry.present = true; entry.bytes = grid.terrainBytes; }
+                else if (name == "war3map.wpm") { entry.present = true; entry.bytes = grid.pathing; }
+                else for (const auto& member : members) {
+                    auto canonical = member.name;
+                    std::transform(canonical.begin(), canonical.end(), canonical.begin(),
+                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                    if (canonical == name) { entry.present = true; entry.bytes = member.data; }
+                }
+                baseline.push_back(std::move(entry));
+            }
+            Require(hot.VerifyTerrainJournalBaseline(baseline).Succeeded(), "journal baseline matches complete actual source bytes");
+            baseline[1].bytes.back() ^= std::byte{1};
+            Require(!hot.VerifyTerrainJournalBaseline(baseline).Succeeded(), "changed source pathing cannot satisfy start journal baseline");
             // 同样的起点事务没有真实地形/通行基线时，不能借单位和W3I原字授予恢复资格。
             MapDataEditSession unbound{MapDocument::FromMembers(members)};
             Require(unbound.EditSettings(value).Succeeded() && unbound.VerifyTerrainSettingsForSave().Succeeded(),
