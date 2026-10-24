@@ -86,8 +86,13 @@ void EditorProjectTests::NativePathingRemoveWaterProjectRoundtripAndSave() {
         const auto actual = MapArchiveSession::Open(target); QVERIFY(actual.Succeeded());
         QCOMPARE(actual.value->ReadMember("war3map.w3e").value, dry ? dryWire.value : wetWire.value);
         QCOMPARE(actual.value->ReadMember("war3map.wpm").value, std::optional(dry ? dryWpm : originalWpm));
-        for (const auto& member : members) if (member.name != "war3map.w3e" && member.name != "war3map.wpm")
+        for (const auto& member : members) if (member.name != "war3map.w3e" && member.name != "war3map.wpm"
+            && member.name != "war3map.mmp")
             QCOMPARE(actual.value->ReadMember(member.name).value, std::optional(member.data));
+        QVERIFY(job->minimapMarkers && job->minimapMarkers->MarkerCount() == 0);
+        QCOMPARE(actual.value->ReadMember("war3map.mmp").value,
+            std::optional(std::vector<std::byte>(8, std::byte{0})));
+        QVERIFY(job->minimapMarkers->VerifyReadback(*actual.value).Succeeded());
         QVERIFY(final.CommitMapSave(*job)); QVERIFY(!final.HasUnsavedMapChanges());
         QCOMPARE(final.mapEdits_->SessionIdentity(), session); QCOMPARE(finalUndo.count(), 1);
         QCOMPARE(finalUndo.index(), dry ? 1 : 0);
