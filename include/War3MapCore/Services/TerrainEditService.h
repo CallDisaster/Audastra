@@ -57,7 +57,7 @@ private:
     friend Result<PreparedTerrainEdit> PrepareTerrainCornerRampEdit(const MapData::MapDataEditSession&,
         const MapDataQueryBinding&, const TerrainEditBinding&, const MapData::TerrainPathingResources&,
         const MapData::TerrainBrush&, std::span<const MapData::TerrainStrokePoint>, bool,
-        const MapData::TerrainWaterBrushLimits&);
+        const MapData::TerrainWaterBrushLimits&, MapData::TerrainCornerRampAlgorithm);
 };
 
 // 宿主在同一串行临界区提供实际文档身份；服务不读盘、不替宿主猜来源或修订。
@@ -86,12 +86,13 @@ private:
     const TerrainEditBinding& expected, const MapData::TerrainPathingResources& resources,
     const MapData::TerrainBrush& brush, std::span<const MapData::TerrainStrokePoint> points,
     bool followDoodads = false, const MapData::TerrainWaterBrushLimits& limits = {});
-// 单点一级干地拐角；完整规则/DOO owner、历史与原子提交和水刷共用。
+// 单点一级拐角；完整规则/DOO owner、历史与原子提交和水刷共用。
 [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainCornerRampEdit(
     const MapData::MapDataEditSession& session, const MapDataQueryBinding& document,
     const TerrainEditBinding& expected, const MapData::TerrainPathingResources& resources,
     const MapData::TerrainBrush& brush, std::span<const MapData::TerrainStrokePoint> points,
-    bool followDoodads = false, const MapData::TerrainWaterBrushLimits& limits = {});
+    bool followDoodads = false, const MapData::TerrainWaterBrushLimits& limits = {},
+    MapData::TerrainCornerRampAlgorithm algorithm = MapData::TerrainCornerRampAlgorithm::WetTerrain);
 [[nodiscard]] Result<MapData::TerrainStrokeResult> ApplyTerrainEdit(
     MapData::MapDataEditSession& session, const MapDataQueryBinding& document,
     const PreparedTerrainEdit& prepared,

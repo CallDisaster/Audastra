@@ -32,6 +32,7 @@ struct TerrainJournalStroke {
     // FTJ6新增独立palette变体，复用实际owner的完整规则/来源摘要；不携带验证位。
     // 水算法由intent.waterBrush.algorithm显式决定：FTJ1/2固定v1，FTJ3/4逐水笔记录v1/v2。
     // FTJ4沿用FTJ3正文布局，新增独立CornerRamp=13，必需单点/实际规则与完整DOO摘要。
+    // FTJ8沿用FTJ7变体，在CornerRamp的kind后写algorithm字节；旧FTJ4–7固定algorithm1。
     // 实际水刷/原版悬崖规则owner的依赖摘要；旧普通笔刷为空。不是来源授权。
     std::string rulesSha256;
     // 仅新原版CliffLevel；与digest成对。FTJ1旧悬崖保持旧算法，不能静默升级。

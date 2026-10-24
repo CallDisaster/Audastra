@@ -29,6 +29,9 @@ bool Rawcode(std::string_view value) {
     return value.size() == 4 && std::all_of(value.begin(), value.end(), [](unsigned char c) { return c >= 32 && c <= 126; });
 }
 bool ValidStroke(const TerrainJournalStroke& stroke, std::size_t& points) {
+    if ((stroke.intent.brush.kind != TerrainBrushKind::CornerRamp || stroke.intent.waterBrush
+            || stroke.intent.bounds || stroke.intent.palette || stroke.ordinaryDoodads || stroke.frozenDoodads)
+        && stroke.intent.cornerRampAlgorithm != TerrainCornerRampAlgorithm::DryOnly) return false;
     if (stroke.frozenDoodads) return false;
     if (stroke.ordinaryDoodads)
         return IsTerrainDoodadsJournalPlaceholder(stroke.intent) && stroke.rulesSha256.empty()
@@ -75,6 +78,8 @@ bool ValidStroke(const TerrainJournalStroke& stroke, std::size_t& points) {
     }
     if (!intent.waterBrush && brush.kind == TerrainBrushKind::CornerRamp)
         return intent.points.size() == 1 && IsCanonicalTerrainCornerRampBrush(brush)
+            && (intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::DryOnly
+                || intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::WetTerrain)
             && Sha(stroke.rulesSha256) && !stroke.cliffEnforceWaterLimits;
     if (!intent.waterBrush) return (stroke.rulesSha256.empty() && !stroke.cliffEnforceWaterLimits)
         || (brush.kind == TerrainBrushKind::CliffLevel && stroke.cliffEnforceWaterLimits.has_value() && Sha(stroke.rulesSha256));
@@ -158,13 +163,16 @@ Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJou
                 && stroke.intent.waterBrush->algorithm == TerrainWaterAlgorithm::NativeRamps; });
         const bool cornerRamps = std::any_of(journal.strokes.begin(), journal.strokes.end(),
             [](const auto& stroke) { return stroke.intent.brush.kind == TerrainBrushKind::CornerRamp; });
+        const bool wetCorners = std::any_of(journal.strokes.begin(), journal.strokes.end(),
+            [](const auto& stroke) { return stroke.intent.brush.kind == TerrainBrushKind::CornerRamp
+                && stroke.intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::WetTerrain; });
         const bool bounds = std::any_of(journal.strokes.begin(), journal.strokes.end(),
             [](const auto& stroke) { return stroke.intent.bounds.has_value(); });
         const bool palettes = std::any_of(journal.strokes.begin(), journal.strokes.end(),
             [](const auto& stroke) { return stroke.intent.palette.has_value(); });
         const bool doodads = std::any_of(journal.strokes.begin(), journal.strokes.end(),
             [](const auto& stroke) { return stroke.ordinaryDoodads.has_value(); });
-        wire.Number(doodads ? 0x374a5446 : palettes ? 0x364a5446 : bounds ? 0x354a5446 : cornerRamps ? 0x344a5446 : nativeWater ? 0x334a5446 : nativeCliffs ? 0x324a5446 : 0x314a5446, 4);
+        wire.Number(wetCorners ? 0x384a5446 : doodads ? 0x374a5446 : palettes ? 0x364a5446 : bounds ? 0x354a5446 : cornerRamps ? 0x344a5446 : nativeWater ? 0x334a5446 : nativeCliffs ? 0x324a5446 : 0x314a5446, 4);
         wire.Text(journal.sourceSha256);
         wire.Number(journal.members.size(), 1);
         for (const auto& member : journal.members) {
@@ -173,7 +181,7 @@ Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJou
         wire.Bytes(journal.baselinePathingLayers);
         wire.Number(journal.strokes.size(), 4);
         for (const auto& stroke : journal.strokes) {
-            if (bounds || palettes || doodads) {
+            if (bounds || palettes || doodads || wetCorners) {
                 wire.Number(stroke.ordinaryDoodads ? 3 : stroke.intent.palette ? 2 : stroke.intent.bounds ? 1 : 0, 1);
                 if (stroke.ordinaryDoodads) {
                     const auto& value = *stroke.ordinaryDoodads;
@@ -196,7 +204,10 @@ Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJou
                 }
             }
             const auto& intent = stroke.intent; const auto& brush = intent.brush;
-            wire.Number(static_cast<unsigned>(brush.kind), 1); wire.Number(static_cast<unsigned>(brush.shape), 1);
+            wire.Number(static_cast<unsigned>(brush.kind), 1);
+            if (wetCorners && brush.kind == TerrainBrushKind::CornerRamp)
+                wire.Number(static_cast<unsigned>(intent.cornerRampAlgorithm), 1);
+            wire.Number(static_cast<unsigned>(brush.shape), 1);
             wire.Number(brush.radius, 4); wire.Text(brush.groundTexture); wire.Number(brush.cliffTexture, 1);
             wire.Number(static_cast<std::uint32_t>(brush.levelDelta), 4); wire.Number(brush.value, 1);
             wire.Number(std::bit_cast<std::uint32_t>(brush.strength), 4); wire.Number(brush.seed, 4);
@@ -210,9 +221,9 @@ Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJou
                 wire.Number(static_cast<unsigned>(water.kind), 1); wire.Number(static_cast<unsigned>(water.shape), 1);
                 wire.Number(water.size, 4); wire.Number(water.cliffTexture, 1); wire.Number(water.randomSeed, 4);
                 wire.Number(water.enforceWaterLimits, 1);
-                if (nativeWater || cornerRamps || bounds || palettes || doodads) wire.Number(static_cast<unsigned>(water.algorithm), 1);
+                if (nativeWater || cornerRamps || bounds || palettes || doodads || wetCorners) wire.Number(static_cast<unsigned>(water.algorithm), 1);
             }
-            if (nativeCliffs || nativeWater || cornerRamps || bounds || palettes || doodads) {
+            if (nativeCliffs || nativeWater || cornerRamps || bounds || palettes || doodads || wetCorners) {
                 wire.Number(stroke.cliffEnforceWaterLimits.has_value(), 1);
                 if (stroke.cliffEnforceWaterLimits) wire.Number(*stroke.cliffEnforceWaterLimits, 1);
             }
@@ -231,7 +242,7 @@ Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byt
     try {
         Reader reader{bytes}; TerrainStrokeJournal journal;
         const auto version = reader.Number(4);
-        if (version != 0x314a5446 && version != 0x324a5446 && version != 0x334a5446 && version != 0x344a5446 && version != 0x354a5446 && version != 0x364a5446 && version != 0x374a5446)
+        if (version != 0x314a5446 && version != 0x324a5446 && version != 0x334a5446 && version != 0x344a5446 && version != 0x354a5446 && version != 0x364a5446 && version != 0x374a5446 && version != 0x384a5446)
             return Failed<TerrainStrokeJournal>();
         journal.sourceSha256 = reader.Text(64);
         if (reader.Number(1) != TerrainJournalMemberNames.size()) return Failed<TerrainStrokeJournal>();
@@ -246,9 +257,9 @@ Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byt
         std::size_t points = 0;
         for (std::size_t i = 0; i < count; ++i) {
             TerrainJournalStroke stroke; auto& intent = stroke.intent; auto& brush = intent.brush;
-            if (version == 0x354a5446 || version == 0x364a5446 || version == 0x374a5446) {
+            if (version == 0x354a5446 || version == 0x364a5446 || version == 0x374a5446 || version == 0x384a5446) {
                 const auto kind = reader.Number(1);
-                if (kind > (version == 0x374a5446 ? 3u : version == 0x364a5446 ? 2u : 1u)) return Failed<TerrainStrokeJournal>();
+                if (kind > ((version == 0x374a5446 || version == 0x384a5446) ? 3u : version == 0x364a5446 ? 2u : 1u)) return Failed<TerrainStrokeJournal>();
                 if (kind == 3) {
                     TerrainDoodadsJournalEdit edit;
                     edit.beforeSha256 = reader.Text(64); edit.afterSha256 = reader.Text(64);
@@ -276,8 +287,15 @@ Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byt
                     journal.strokes.push_back(std::move(stroke)); continue;
                 }
             }
-            brush.kind = static_cast<TerrainBrushKind>(reader.Number(1)); brush.shape = static_cast<TerrainBrushShape>(reader.Number(1));
-            if (brush.kind == TerrainBrushKind::CornerRamp && version != 0x344a5446 && version != 0x354a5446 && version != 0x364a5446 && version != 0x374a5446) return Failed<TerrainStrokeJournal>();
+            brush.kind = static_cast<TerrainBrushKind>(reader.Number(1));
+            if (brush.kind == TerrainBrushKind::CornerRamp) {
+                if (version != 0x344a5446 && version != 0x354a5446 && version != 0x364a5446 && version != 0x374a5446 && version != 0x384a5446)
+                    return Failed<TerrainStrokeJournal>();
+                // 旧记录不含版本字节，永久保留原干地接受域。
+                intent.cornerRampAlgorithm = version == 0x384a5446
+                    ? static_cast<TerrainCornerRampAlgorithm>(reader.Number(1)) : TerrainCornerRampAlgorithm::DryOnly;
+            }
+            brush.shape = static_cast<TerrainBrushShape>(reader.Number(1));
             brush.radius = static_cast<std::uint32_t>(reader.Number(4)); brush.groundTexture = reader.Text(4);
             brush.cliffTexture = static_cast<std::uint8_t>(reader.Number(1));
             brush.levelDelta = std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(reader.Number(4))); brush.value = reader.Bool();
@@ -292,7 +310,7 @@ Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byt
                 water.cliffTexture = static_cast<std::uint8_t>(reader.Number(1)); water.randomSeed = static_cast<std::uint32_t>(reader.Number(4));
                 water.enforceWaterLimits = reader.Bool();
                 // FTJ1/2的水语义固定为旧flat算法，资源摘要不能授予新算法版本。
-                water.algorithm = (version == 0x334a5446 || version == 0x344a5446 || version == 0x354a5446 || version == 0x364a5446 || version == 0x374a5446) ? static_cast<TerrainWaterAlgorithm>(reader.Number(1))
+                water.algorithm = (version == 0x334a5446 || version == 0x344a5446 || version == 0x354a5446 || version == 0x364a5446 || version == 0x374a5446 || version == 0x384a5446) ? static_cast<TerrainWaterAlgorithm>(reader.Number(1))
                     : TerrainWaterAlgorithm::LegacyFlat;
                 intent.waterBrush = water;
             }
@@ -327,6 +345,10 @@ Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byt
             return Failed<TerrainStrokeJournal>();
         if (version == 0x374a5446 && std::none_of(journal.strokes.begin(), journal.strokes.end(),
             [](const auto& stroke) { return stroke.ordinaryDoodads.has_value(); }))
+            return Failed<TerrainStrokeJournal>();
+        if (version == 0x384a5446 && std::none_of(journal.strokes.begin(), journal.strokes.end(),
+            [](const auto& stroke) { return stroke.intent.brush.kind == TerrainBrushKind::CornerRamp
+                && stroke.intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::WetTerrain; }))
             return Failed<TerrainStrokeJournal>();
         return Result<TerrainStrokeJournal>::Success(std::move(journal));
     } catch (const std::bad_alloc&) { return Failed<TerrainStrokeJournal>(); }

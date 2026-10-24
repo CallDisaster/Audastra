@@ -12,7 +12,8 @@ void FrozenServiceCandidateRestoresOneAtomicCommand() {
     Require(!f.edits->FreezeForSave(1).Succeeded(), "frozen raw source is bounded before copying");
     const auto frozen = Take(f.edits->FreezeForSave(kBudget));
     Require(frozen->Terrain() == f.edits->Terrain() && frozen->SessionIdentity() == f.edits->SessionIdentity(), "frozen worker shares immutable source and actual identity");
-    const auto prepared = Take(PrepareTerrainCornerRampEdit(*frozen, f.Document(), f.Binding(), rules, brush, std::span(&f.point, 1), true));
+    const auto prepared = Take(PrepareTerrainCornerRampEdit(*frozen, f.Document(), f.Binding(), rules, brush,
+        std::span(&f.point, 1), true, {}, TerrainCornerRampAlgorithm::DryOnly));
     Require(prepared.Plan().TerrainPreview() && Take(SerializeMapTerrain(*prepared.Plan().TerrainPreview())) == f.TerrainLiteral(true)
         && f.edits->Revision() == revision && !f.edits->IsDirty() && !prepared.Plan().TerrainPathingGate().Succeeded(),
         "worker exposes the same sealed candidate without consuming revision or granting save");
@@ -47,7 +48,7 @@ void FormalSaveAsAndInPlaceRetainCompleteHistory() {
         Fixture f; const auto originalSha = f.source->SourceSha256(); const auto sessionId = f.edits->SessionIdentity();
         const auto rules = f.Rules(); const auto brush = CornerBrush();
         Take(ApplyTerrainEdit(*f.edits, f.Document(), Take(PrepareTerrainCornerRampEdit(*f.edits,
-            f.Document(), f.Binding(), rules, brush, std::span(&f.point, 1), true))));
+            f.Document(), f.Binding(), rules, brush, std::span(&f.point, 1), true, {}, TerrainCornerRampAlgorithm::DryOnly))));
         const auto save = [&](bool created, const char* target) {
             f.CheckState(*f.edits, created);
             const auto plan = Take(TerrainPathingSave::PrepareForSave(*f.source, *f.edits, f.game));

@@ -27,7 +27,8 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
 
 Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerrainStructuralEdit(
     const TerrainPathingResources& resources, const TerrainWaterBrush* water, const TerrainBrush* cliff,
-    std::span<const TerrainStrokePoint> points, bool followDoodads, const TerrainWaterBrushLimits& limits) const {
+    std::span<const TerrainStrokePoint> points, bool followDoodads, const TerrainWaterBrushLimits& limits,
+    TerrainCornerRampAlgorithm cornerAlgorithm) const {
     using Output = Result<PreparedTerrainEdit>;
     if ((water == nullptr) == (cliff == nullptr))
         return Output::Failure("MapData.Edit", "TERRAIN_STRUCTURAL_BRUSH", "一次地形事务必须明确选择水刷、普通悬崖或拐角坡道。");
@@ -127,7 +128,7 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
             if (water) return PrepareTerrainWaterStroke(*terrain_, *resources.WaterBrushRules(), *water,
                 points, doodads, resources.WaterSpecialShapes(), algorithmLimits);
             if (corner) return PrepareTerrainCornerRampStroke(*terrain_, *resources.WaterBrushRules(), *cliff,
-                points, doodads, resources.WaterSpecialShapes(), algorithmLimits);
+                points, doodads, resources.WaterSpecialShapes(), algorithmLimits, cornerAlgorithm);
             auto anchor = CaptureTerrainStrokeAnchor(*terrain_, points.front());
             if (!anchor.Succeeded() || !anchor.value) return {{}, std::move(anchor.diagnostics)};
             const TerrainCliffBrush brush{cliff->shape, cliff->size.value_or(cliff->radius + 1), cliff->cliffTexture,
@@ -208,7 +209,10 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
             if (water) {
                 prepared.value->waterBrush_ = *water;
                 prepared.value->waterAnchorVerified_ = water->algorithm == TerrainWaterAlgorithm::NativeRamps;
-            } else prepared.value->brush_ = *cliff;
+            } else {
+                prepared.value->brush_ = *cliff;
+                if (corner) prepared.value->cornerRampAlgorithm_ = cornerAlgorithm;
+            }
             const auto digestBytes = resources.WaterBrushDependencyBudgetBytes();
             auto journalPeak = finalBytes, journalWork = work;
             if (points.size() <= 4096 && digestBytes
@@ -241,14 +245,15 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
 
 Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerrainCornerRampEdit(
     const TerrainPathingResources& resources, const TerrainBrush& brush,
-    std::span<const TerrainStrokePoint> points, bool followDoodads, const TerrainWaterBrushLimits& limits) const {
+    std::span<const TerrainStrokePoint> points, bool followDoodads, const TerrainWaterBrushLimits& limits,
+    TerrainCornerRampAlgorithm algorithm) const {
     if (!IsCanonicalTerrainCornerRampBrush(brush) || points.size() != 1)
         return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "TERRAIN_CORNER_RAMP_BRUSH",
             "拐角坡道只接受单个canonical落点和创建/移除选项。");
     if (!resources.WaterBrushRules() || !resources.WaterBrushRules()->enforceWaterLimits)
         return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "TERRAIN_CORNER_RAMP_RULE_OWNER",
             "拐角坡道必须使用固定enforceWaterLimits=true的实际完整规则owner，供typed恢复精确重现。");
-    return PrepareTerrainStructuralEdit(resources, nullptr, &brush, points, followDoodads, limits);
+    return PrepareTerrainStructuralEdit(resources, nullptr, &brush, points, followDoodads, limits, algorithm);
 }
 
 } // namespace War3Map::MapData

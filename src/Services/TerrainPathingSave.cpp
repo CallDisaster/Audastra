@@ -153,6 +153,9 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& sourc
             || journal->strokes[inputIndex].units.has_value());
         ++inputIndex;
         if (ordinary) continue;
+        if ((stroke.brush.kind != MapData::TerrainBrushKind::CornerRamp || stroke.waterBrush || stroke.bounds || stroke.palette)
+            && stroke.cornerRampAlgorithm != MapData::TerrainCornerRampAlgorithm::DryOnly)
+            return fail("TERRAIN_REPLAY_CORNER_ALGORITHM", "非拐角命令不能携带拐角算法版本。");
         if (stroke.palette) {
             if (!PaletteCommand(stroke)) return fail("TERRAIN_REPLAY_PALETTE_CONFLICT", "贴图表记录仅接受既有槽替换或Ground表尾追加，不能携带笔刷、范围或采样点。");
             continue;
@@ -370,7 +373,7 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& sourc
                 ? PrepareTerrainWaterEdit(candidate, document, binding, *resources.value,
                     *stroke.waterBrush, stroke.points, stroke.followDoodads, waterLimits)
                 : cornerRamp ? PrepareTerrainCornerRampEdit(candidate, document, binding, *resources.value,
-                    stroke.brush, stroke.points, stroke.followDoodads, waterLimits)
+                    stroke.brush, stroke.points, stroke.followDoodads, waterLimits, stroke.cornerRampAlgorithm)
                 : PrepareTerrainCliffEdit(candidate, document, binding, *resources.value,
                     stroke.brush, stroke.points, stroke.followDoodads, waterLimits);
             if (!plan.Succeeded() || !plan.value) return {{}, plan.diagnostics};
@@ -516,6 +519,9 @@ Result<TerrainReplayCandidate> CreateReplay(const Source& source, const MapDocum
             || journal->strokes[inputIndex].units.has_value());
         ++inputIndex;
         if (ordinary) continue;
+        if ((stroke.brush.kind != MapData::TerrainBrushKind::CornerRamp || stroke.waterBrush || stroke.bounds || stroke.palette)
+            && stroke.cornerRampAlgorithm != MapData::TerrainCornerRampAlgorithm::DryOnly)
+            return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_CORNER_ALGORITHM", "非拐角命令不能携带拐角算法版本。");
         if (stroke.palette) {
             if (!PaletteCommand(stroke)) return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_PALETTE_CONFLICT", "贴图表记录仅接受既有槽替换或Ground表尾追加，不能携带笔刷、范围或采样点。");
             continue;
