@@ -7,6 +7,7 @@
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/Services/MapSaveService.h"
 #include "War3MapCore/Services/TerrainShadowCasterResources.h"
+#include "War3MapCore/Services/TerrainShadowReceiverResources.h"
 #include "War3MapCore/Text/TextUtil.h"
 
 #include <algorithm>
@@ -75,11 +76,19 @@ Result<std::shared_ptr<const TerrainShadowBake>> TerrainShadowBake::Capture(cons
         if (input == owner->casters_->Dependencies().end() || input->sha256.empty())
             Fail("TERRAIN_SHADOW_SOURCE_UNKNOWN", "阴影计算缺少实际最终地形身份。");
         owner->terrainSha256_ = input->sha256;
+        TerrainShadowReceiverLimits receiverLimits;
+        receiverLimits.maximumSourceBytes = std::min(receiverLimits.maximumSourceBytes, limits.maximumSourceBytes - sourceBytes);
+        receiverLimits.maximumWorkingBytes = std::min(receiverLimits.maximumWorkingBytes, limits.maximumWorkingBytes - working);
+        receiverLimits.maximumWork = std::min(receiverLimits.maximumWork, limits.maximumWork - work);
+        owner->receivers_ = Take(TerrainShadowReceiverResources::Capture(source, gameRoot, owner->casters_, *owner->light_,
+            replacements, removals, receiverLimits, cancellation));
+        Charge(sourceBytes, owner->receivers_->SourceBytes(), limits.maximumSourceBytes);
+        Charge(working, owner->receivers_->WorkingBytes(), limits.maximumWorkingBytes);
+        Charge(work, owner->receivers_->Work(), limits.maximumWork);
         auto terrainLimits = limits.terrain;
         terrainLimits.maximumSampleBytes = std::min(terrainLimits.maximumSampleBytes, limits.maximumWorkingBytes - working);
         terrainLimits.maximumWork = std::min(terrainLimits.maximumWork, limits.maximumWork - work);
-        auto receiver = Take(MapData::SampleOrdinaryTerrainShadowHeights(owner->casters_->Terrain(),
-            owner->casters_->SpecialDoodads(), terrainLimits, cancellation));
+        auto receiver = Take(owner->receivers_->Sample(terrainLimits, cancellation));
         Charge(work, receiver.work, limits.maximumWork);
         Charge(working, receiver.receiverHeights.size(), limits.maximumWorkingBytes, sizeof(float));
         terrainLimits.maximumWork = std::min(terrainLimits.maximumWork, limits.maximumWork - work);
@@ -166,11 +175,11 @@ Status TerrainShadowBake::VerifyFrozenOutput(const MapArchiveSession& source,
         return Status::Failure(kSubsystem, "TERRAIN_SHADOW_SOURCE_STALE", "阴影任务与当前归档来源不同。");
     const auto output = CheckOutput(replacements, removals, bytes_); if (!output.Succeeded()) return output;
     const auto direction = light_->VerifySources(light_->CaptureBudgetBytes()); if (!direction.Succeeded()) return direction;
-    return casters_->VerifySources(source, replacements, removals);
+    return receivers_->VerifySources(source, replacements, removals);
 }
 Status TerrainShadowBake::VerifyReadback(const MapArchiveSession& saved) const {
     const auto direction = light_->VerifySources(light_->CaptureBudgetBytes()); if (!direction.Succeeded()) return direction;
-    const auto dependencies = casters_->VerifyReadback(saved); if (!dependencies.Succeeded()) return dependencies;
+    const auto dependencies = receivers_->VerifyReadback(saved); if (!dependencies.Succeeded()) return dependencies;
     const std::array<std::string, 1> names{"war3map.shd"};
     ArchiveExactMemberLimits limits;
     limits.memberCount = 1; limits.memberBytes = limits.totalBytes = bytes_.size();

@@ -11,6 +11,7 @@ namespace War3Map::MapData { class MapDataEditSession; class TerrainSavePlan; }
 namespace War3Map::Services {
 
 class TerrainShadowCasterResources;
+class TerrainShadowReceiverResources;
 struct MapSaveTask;
 
 struct TerrainShadowBakeLimits {
@@ -46,6 +47,7 @@ private:
     std::size_t casterCount_ = 0;
     std::optional<MapData::TerrainShadowResources> light_;
     std::shared_ptr<const TerrainShadowCasterResources> casters_;
+    std::shared_ptr<const TerrainShadowReceiverResources> receivers_;
 };
 
 // 最终脚本/物编列表形成后调用；失败不自动保留，因为这是作者显式请求的计算。
