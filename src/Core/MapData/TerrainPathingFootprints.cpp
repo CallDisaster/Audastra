@@ -24,11 +24,14 @@ template<class T> T Take(Result<T> result) {
     if (!result.Succeeded() || !result.value) throw Failure{std::move(result.diagnostics)};
     return std::move(*result.value);
 }
-std::string FootprintPath(std::string_view path) {
+std::string FootprintPath(std::string_view path, bool allowBlpFallback = false) {
     if (path.empty() || path.size() >= 260)
         Fail("TERRAIN_NATIVE_FOOTPRINT_PATH", "占地贴图路径为空或超出经典路径容量。");
     auto result = Text::LowerAscii(path);
     std::replace(result.begin(), result.end(), '\\', '/');
+    // 原版先去掉扩展名，完整查找TGA后才查找BLP。普通占地允许两种已知
+    // 声明，内部统一按首选TGA分组；特殊地形仍保留其独立的TGA域。
+    if (allowBlpFallback && result.ends_with(".blp")) result.replace(result.size() - 4, 4, ".tga");
     if (!result.ends_with(".tga") || result.front() == '/' || result.find(':') != std::string::npos)
         Fail("TERRAIN_NATIVE_FOOTPRINT_FORMAT", "当前非空占地仅支持原版首选TGA路径：" + result);
     std::size_t start = 0;
@@ -74,14 +77,14 @@ Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& read
         struct Type { const TerrainNativeDoodadPathingType* value; std::string path; bool used = false; };
         struct Instance { const DoodadPlacement* placement; const TerrainNativeDoodadPathingType* type; bool after; };
         // 类型解析已预留自身输出；这里另计两棵树的节点、名称列表、精确读取结果、
-        // 依赖及其增长容量。字符串按最大经典路径的双倍容量预留六份：归一化、
-        // 名称、reader名称、canonical临时、依赖名称和归档/SHA；分组key只借用path。
+        // 依赖及其增长容量。TGA与BLP两轮的名称、读取元数据、依赖及字符串
+        // 都预收；缺失TGA也保留完整来源身份。分组key只借用归一化path。
         constexpr auto nodeLinks = 4 * sizeof(void*);
         constexpr auto stringStorage = 2 * std::size_t{260};
         constexpr auto perType = sizeof(std::pair<const std::string_view, Type>) + nodeLinks
             + sizeof(std::pair<const std::string_view, std::vector<Instance>>) + nodeLinks
-            + sizeof(std::string) + sizeof(ArchiveExactMember) + 2 * sizeof(Dependency)
-            + 6 * stringStorage;
+            + 2 * (sizeof(std::string) + sizeof(ArchiveExactMember) + 2 * sizeof(Dependency))
+            + sizeof(std::size_t) + 12 * stringStorage;
         reserve(types.size(), perType);
         // vector按至多双倍容量计费；重复实例仍必须完整参与，不能只按rawcode计一次。
         reserve(placements.size() + (afterPlacements ? afterPlacements->size() : 0), 2 * sizeof(Instance));
@@ -103,7 +106,7 @@ Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& read
             if (type.rawcode.size() != 4
                 || (type.gridPolicy != TerrainDoodadGridPolicy::TwoCells
                     && type.gridPolicy != TerrainDoodadGridPolicy::StartupCategoryC)
-                || !byRawcode.emplace(type.rawcode, Type{&type, FootprintPath(type.pathTexture)}).second)
+                || !byRawcode.emplace(type.rawcode, Type{&type, FootprintPath(type.pathTexture, true)}).second)
                 Fail("TERRAIN_NATIVE_FOOTPRINT_LAYOUT", "占地类型没有唯一rawcode或属于尚未捕获的吸附类别。");
             if (type.contribution != TerrainNativeFootprintContribution::StaticRgbAttributes
                     && type.contribution != TerrainNativeFootprintContribution::WalkableTerrainSuppression)
@@ -128,19 +131,20 @@ Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& read
         std::vector<std::string> names;
         names.reserve(groups.size());
         for (const auto& [path, instances] : groups) { (void)instances; names.emplace_back(path); }
+        std::vector<std::string> fallbackNames;
+        std::vector<std::size_t> fallbackIndices;
+        fallbackNames.reserve(groups.size()); fallbackIndices.reserve(groups.size());
         std::size_t pixelWrites = 0;
-        // 沿原owner读取map优先的实际TGA；缺失、坏图和来源歧义均拒绝。
-        // 每张只读取/扫描一次，多个rawcode和所有重复摆放均共享该次像素解释。
-        Check(CaptureResourceMembers(reader, names, names.size(),
-            [&](std::size_t index, bool present, std::vector<std::byte>&& bytes) {
-                if (!present) Fail("TERRAIN_NATIVE_FOOTPRINT_MISSING", "缺少实际占地贴图：" + names[index]);
-                // 原始成员已计sourceBytes_且仍存活；只把同次剩余额度交给RLE
-                // 分配前预检。解包结果在此组全部实例投影完成前持有像素。
+        const auto project = [&](std::size_t index, std::string_view actualName,
+            std::vector<std::byte>&& bytes, bool blp) {
+                // 原始成员已计sourceBytes_且仍存活；只把同次剩余额度交给
+                // RLE或BLP的分配前预检。两阶段所有实例共享同一解码结果。
                 reserve(0, 1);
-                auto parsed = DecodeDoodadFootprintTgaBudgeted(bytes,
-                    capturedMaximumBytes_ - sourceBytes_ - objectWorkBytes_);
+                const auto remaining = capturedMaximumBytes_ - sourceBytes_ - objectWorkBytes_;
+                auto parsed = blp ? DecodeDoodadFootprintBlpBudgeted(bytes, remaining)
+                                  : DecodeDoodadFootprintTgaBudgeted(bytes, remaining);
                 if (!parsed.Succeeded() || !parsed.value) {
-                    for (auto& diagnostic : parsed.diagnostics) diagnostic.message = names[index] + "：" + diagnostic.message;
+                    for (auto& diagnostic : parsed.diagnostics) diagnostic.message = std::string(actualName) + "：" + diagnostic.message;
                     throw Failure{std::move(parsed.diagnostics)};
                 }
                 // 按各张图累计预留，不因组末scratch释放而循环复用额度。
@@ -162,9 +166,22 @@ Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& read
                         *instance.placement, footprint, snapCells, instance.type->fixedRotationDegrees,
                         instance.type->contribution);
                     for (auto& diagnostic : status.diagnostics) diagnostic.message = instance.placement->rawcode
-                        + " #" + std::to_string(instance.placement->creationId) + " " + names[index] + "：" + diagnostic.message;
+                        + " #" + std::to_string(instance.placement->creationId) + " " + std::string(actualName) + "：" + diagnostic.message;
                     Check(std::move(status));
                 }
+        };
+        // 先在地图和游戏中完整查找TGA。只有已证缺失才回退BLP；坏TGA或
+        // 暂不支持的TGA保持明确拒绝，不用回退掩盖格式问题。
+        Check(CaptureResourceMembers(reader, names, 0,
+            [&](std::size_t index, bool present, std::vector<std::byte>&& bytes) {
+                if (present) { project(index, names[index], std::move(bytes), false); return; }
+                auto fallback = names[index]; fallback.replace(fallback.size() - 4, 4, ".blp");
+                fallbackNames.push_back(std::move(fallback)); fallbackIndices.push_back(index);
+            }));
+        if (!fallbackNames.empty()) Check(CaptureResourceMembers(reader, fallbackNames, fallbackNames.size(),
+            [&](std::size_t index, bool present, std::vector<std::byte>&& bytes) {
+                if (!present) Fail("TERRAIN_NATIVE_FOOTPRINT_MISSING", "缺少实际占地贴图：" + fallbackNames[index]);
+                project(fallbackIndices[index], fallbackNames[index], std::move(bytes), true);
             }));
         return Status::Ok();
     } catch (Failure& failure) { return {std::move(failure.diagnostics)}; }

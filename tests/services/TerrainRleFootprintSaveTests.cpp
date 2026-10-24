@@ -1,4 +1,5 @@
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/Image/BlpImage.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
 
@@ -174,11 +175,78 @@ void SpecialFootprintsKeepTheType2OnlyDomain() {
         "ordinary RLE support does not expand special terrain footprint decoding");
     Require(!std::filesystem::exists(f.root/"candidate.w3x"),"unsupported special RLE publishes no candidate");
 }
+
+Bytes BlpTexture(bool transparent) {
+    Image::DecodedImage image; image.width = image.height = 4;
+    image.rgba.resize(4 * 4 * 4);
+    for (std::size_t at = 0; at < image.rgba.size(); at += 4) {
+        image.rgba[at] = image.rgba[at + 2] = std::byte{255};
+        image.rgba[at + 3] = transparent ? std::byte{} : std::byte{255};
+    }
+    return Take(Image::EncodeBlpPaletted(image));
+}
+void BlpFallbackKeepsTgaAbsenceAndExactWinner() {
+    constexpr std::string_view blpName = "PathTextures/rle-footprint.blp";
+    for (bool transparent : {false,true}) {
+        Fixture f(true,true);
+        std::erase_if(f.members, [](const auto& member) { return member.name == kTexture; });
+        const auto texture = BlpTexture(transparent);
+        f.members.push_back({std::string(blpName),texture}); f.Open(); f.Paint();
+        const auto plan = Take(TerrainPathingSave::PrepareForSave(*f.source,*f.edits,f.game));
+        Check(plan.SaveGate()); Require(plan.RebuiltPathing(), "missing TGA with actual BLP uses the normal native save plan");
+        auto output = f.edits->Replacements(); Check(plan.InstallPathingOutput(*f.edits,output));
+        Check(plan.VerifyForSave(*f.edits,f.source->SourceSha256(),output));
+        auto saved = Take(MapArchiveSession::Open(Take(f.source->SaveCandidate(f.root/"blp.w3x",output)).path));
+        Check(plan.VerifyReadback(saved));
+        auto expected = f.Member("war3map.wpm"); std::fill(expected.begin()+16,expected.end(),std::byte{0x1b});
+        for (std::size_t y=14; y<18; ++y) for (std::size_t x=14; x<18; ++x) expected[16+y*32+x]=std::byte{0xdb};
+        Require(Take(saved.ReadMember("war3map.wpm")) == expected && Take(saved.ReadMember(blpName)) == texture,
+            "literal complete deep-water WPM retains magenta RGB even when BLP alpha is zero");
+        const MemberReplacement newlyPresent{std::string(kTexture),Texture(true,true,false)};
+        auto samePixels = Take(MapArchiveSession::Open(Take(saved.SaveCandidate(f.root/"new-tga.w3x",std::span(&newlyPresent,1))).path));
+        Require(!plan.VerifyReadback(samePixels).Succeeded(), "higher-priority TGA presence cannot reuse a BLP proof even with identical pixels");
+        auto changedTexture = texture; changedTexture.back() ^= std::byte{1};
+        const MemberReplacement changed{std::string(blpName),std::move(changedTexture)};
+        auto changedArchive = Take(MapArchiveSession::Open(Take(saved.SaveCandidate(f.root/"changed-blp.w3x",std::span(&changed,1))).path));
+        Require(!plan.VerifyReadback(changedArchive).Succeeded(), "BLP source wire participates in exact final readback");
+        // TGA先在地图和游戏中完整查找，之后才考虑地图BLP，不把后缀顺序当来源顺序。
+        Require(std::filesystem::remove(f.game/"war3.mpq"), "remove only this fixture's placeholder archive before replacing it");
+        Take(WriteVerifiedArchive(f.game/"war3.mpq",std::vector<MapArchiveMember>{{std::string(kTexture),Texture(true,true,false)}}));
+        Require(!plan.VerifyReadback(saved).Succeeded(), "new game TGA changes the winning extension despite the same map BLP");
+    }
+    Fixture malformed(true,true);
+    malformed.members.push_back({std::string(blpName),BlpTexture(false)});
+    malformed.Member(kTexture).resize(17); malformed.Open(); malformed.Paint();
+    const auto rejected = TerrainPathingSave::PrepareForSave(*malformed.source,*malformed.edits,malformed.game);
+    const auto rejectedGate = rejected.value ? rejected.value->SaveGate() : Status{rejected.diagnostics};
+    Require(!rejectedGate.Succeeded() && HasCode(rejectedGate,"TERRAIN_UNIFORM_TGA_TRUNCATED"),
+        "present malformed TGA is diagnosed by the save gate rather than silently interpreted as an absent extension");
+    Fixture preference(false,true);
+    preference.Member("Doodads/Doodads.slk") = Slk({"doodID","code","pathTex","category","fixedRot"},
+        {{"Doo0","Doo0",std::string(blpName),"E","-1"}});
+    std::erase_if(preference.members, [](const auto& member) { return member.name == kTexture; });
+    preference.members.push_back({std::string(blpName),BlpTexture(false)});
+    auto clearTexture = Texture(false,true,false);
+    std::fill(clearTexture.begin()+18,clearTexture.end(),std::byte{});
+    Require(std::filesystem::remove(preference.game/"war3.mpq"), "replace only this fixture's private base archive");
+    Take(WriteVerifiedArchive(preference.game/"war3.mpq",std::vector<MapArchiveMember>{{std::string(kTexture),std::move(clearTexture)}}));
+    auto& oldWpm = preference.Member("war3map.wpm");
+    std::fill(oldWpm.begin()+16,oldWpm.end(),std::byte{0x19});
+    preference.Open(); preference.Paint();
+    const auto preferred = Take(TerrainPathingSave::PrepareForSave(*preference.source,*preference.edits,preference.game));
+    auto output = preference.edits->Replacements(); Check(preferred.InstallPathingOutput(*preference.edits,output));
+    auto expected = oldWpm; std::fill(expected.begin()+16,expected.end(),std::byte{0x1b});
+    const auto result = std::find_if(output.begin(),output.end(),[](const auto& item) { return item.name == "war3map.wpm"; });
+    Require(result != output.end() && result->data == expected,
+        "even a BLP-declared path tries the complete game TGA winner before the magenta map BLP");
+}
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     try {
-        OrdinaryRleUsesTheNormalSaveIdentityAndReadback(); SpecialFootprintsKeepTheType2OnlyDomain();
-        std::cout<<"Ordinary RLE footprint save contracts passed\n"; return 0;
+        if (argc == 2 && std::string_view(argv[1]) == "--blp") BlpFallbackKeepsTgaAbsenceAndExactWinner();
+        else if (argc == 1) { OrdinaryRleUsesTheNormalSaveIdentityAndReadback(); SpecialFootprintsKeepTheType2OnlyDomain(); }
+        else throw std::runtime_error("unknown footprint save test group");
+        std::cout<<"Ordinary footprint save contracts passed\n"; return 0;
     } catch (const std::exception& exception) { std::cerr<<exception.what()<<'\n'; return 1; }
 }

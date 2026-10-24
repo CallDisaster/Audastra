@@ -228,6 +228,8 @@ target_compile_definitions(audastra-terrain-rle-footprint-save-tests PRIVATE NOM
 target_compile_options(audastra-terrain-rle-footprint-save-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-terrain-rle-footprint-save COMMAND audastra-terrain-rle-footprint-save-tests)
 set_tests_properties(services-terrain-rle-footprint-save PROPERTIES TIMEOUT 60)
+add_test(NAME services-terrain-blp-footprint-save COMMAND audastra-terrain-rle-footprint-save-tests --blp)
+set_tests_properties(services-terrain-blp-footprint-save PROPERTIES TIMEOUT 60)
 
 add_executable(audastra-terrain-minimap-markers-tests TerrainMinimapMarkersTests.cpp)
 
