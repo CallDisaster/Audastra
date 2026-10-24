@@ -1531,6 +1531,7 @@ void SpecialDoodadFieldsDoNotBorrowOrdinaryPoseRules() {
         "special DOO cannot borrow destructable zero-walkable proof");
 }
 #include "NativeDoodadNonPathFieldCases.h"
+#include "TerrainEmptyParentCases.h"
 } // namespace
 
 int main() {
@@ -1567,6 +1568,7 @@ int main() {
         WalkableBridgeGridUsesWireRawcodeFallback();
         SpecialDoodadFieldsDoNotBorrowOrdinaryPoseRules();
         DoodadRepeatedColorFieldsPreservePathing();
+        EmptyOriginalParentsKeepExactStandardInheritance();
         std::cout << "native destructable pathing: typed fields, bounded inheritance, unique sources and rejection paths passed\n";
         return 0;
     } catch (const std::exception& error) {
