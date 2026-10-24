@@ -4991,8 +4991,10 @@ void EditorProjectTests::PlayableBoundsProjectColdRestoreAndNativeSave() {
     QVERIFY(BindPreparedTerrainJournal(restored, **opened.value, game));
     QCOMPARE(undo.count(), 3); QCOMPARE(undo.index(), 3);
     QCOMPARE(TerrainJournalDraftBytes(*restored.mapEdits_), finalDraft);
-    const auto journal = restored.mapEdits_->ExportTerrainStrokeJournal(); QVERIFY(journal.Succeeded());
-    const auto wire = MapData::EncodeTerrainStrokeJournal(*journal.value); QVERIFY(wire.Succeeded());
+    const auto journal = Services::TerrainPathingSave::CaptureJournal(*restored.archiveSession_, *restored.mapEdits_);
+    QVERIFY2(journal.Succeeded(), ReadDiagnosticText(journal).c_str());
+    const auto wire = MapData::EncodeTerrainStrokeJournal(*journal.value);
+    QVERIFY2(wire.Succeeded(), ReadDiagnosticText(wire).c_str());
     QCOMPARE(wire.value->at(3), std::byte{'5'});
     undo.undo(); QCOMPARE(restored.mapEdits_->Snapshot().Settings()->author, std::string{});
     undo.undo(); QCOMPARE(MapData::SerializeMapTerrain(*restored.mapEdits_->Terrain()).value, std::optional(boundsTerrain));

@@ -230,13 +230,13 @@ void WorldTerrainBoundsTests::RejectsGameResourceWinnerDrift() {
     F::Fixture fixture; auto members = fixture.members;
     std::erase_if(members, [](const auto& member) { return member.name == "UI/WorldEditData.txt"; });
     QtProject::EditorProject project; Install(project, fixture, true, &members);
-    std::filesystem::create_directories(project.war3GameRoot_ / "UI");
-    QVERIFY(IO::WriteFileBytes(project.war3GameRoot_ / "UI/WorldEditData.txt", F::Text("[Other]\nValue=1\n")).Succeeded());
+    QVERIFY(WriteVerifiedArchive(project.war3GameRoot_ / "War3x.mpq",
+        std::vector<MapArchiveMember>{{"UI/WorldEditData.txt", F::Text("[Other]\nValue=1\n")}}).Succeeded());
     WorldModule module(project, nullptr); Controls c(module.Widget());
     c.read->click(); QTRY_VERIFY_WITH_TIMEOUT(!c.Busy(), 15000); QVERIFY2(c.Ready(), qPrintable(c.status->text()));
     const auto beforeTerrain = Terrain(project), beforeSettings = Settings(project);
-    std::filesystem::create_directories(project.war3GameRoot_ / "UI");
-    QVERIFY(IO::WriteFileBytes(project.war3GameRoot_ / "UI/WorldEditData.txt", F::Text("[Other]\nValue=2\n")).Succeeded());
+    QVERIFY(WriteVerifiedArchive(project.war3GameRoot_ / "War3Patch.mpq",
+        std::vector<MapArchiveMember>{{"UI/WorldEditData.txt", F::Text("[Other]\nValue=2\n")}}).Succeeded());
     c.Set(2, 3, 30, 29); c.apply->click(); QTRY_VERIFY_WITH_TIMEOUT(!c.Busy(), 15000);
     QCOMPARE(c.Outcome(), QStringLiteral("failed")); QVERIFY(!c.Ready());
     QCOMPARE(Terrain(project), beforeTerrain); QCOMPARE(Settings(project), beforeSettings); QCOMPARE(project.mapDataUndoStack_->count(), 0);
