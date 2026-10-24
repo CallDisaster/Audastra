@@ -717,6 +717,79 @@ WalkableNativeQtFixture WalkableDestructableNativeQtMembers(std::string_view sce
     return fixture;
 }
 
+WalkableNativeQtFixture WalkableCategoryCNativeQtMembers(bool four, bool custom, bool typed, bool turned) {
+    using namespace ObjectData;
+    const std::string rawcode = custom ? "NC01" : "BC01", parent = custom ? "Br01" : rawcode;
+    auto fixture = WalkableDestructableNativeQtMembers("combined", custom ? rawcode : std::string{}, parent);
+    auto& members = fixture.members;
+    if (members.empty()) return {};
+    auto native = NativeObjectDocument::CreateEmpty(ObjectType::Destructable);
+    if (!native.Succeeded() || !native.value) return {};
+    if (!(custom ? native.value->AddCustomObject(rawcode, parent) : native.value->AddOriginalObject(rawcode)).Succeeded()) return {};
+    if (typed) {
+        if (!native.value->AddModification({ObjectType::Destructable, rawcode}, {"bwal"},
+            NativeValueType::Int32, std::int32_t{1}).Succeeded()) return {};
+        if (!native.value->AddModification({ObjectType::Destructable, rawcode}, {"bptx"},
+            NativeValueType::String, std::string("PathTextures/bridge.tga")).Succeeded()) return {};
+        if (!native.value->AddModification({ObjectType::Destructable, rawcode}, {"bfxr"},
+            NativeValueType::Unreal, turned ? 90.0f : 0.0f).Succeeded()) return {};
+    }
+    const auto nativeWire = NativeObjectCodec(ObjectType::Destructable).Serialize(*native.value);
+    if (!nativeWire.Succeeded() || !nativeWire.value) return {};
+    // 原创top-origin 4x2：黑/红/绿/蓝、蓝/黑/绿/红；非黑alpha0，黑alpha255。
+    std::vector<std::byte> texture(18 + 8 * 4, std::byte{});
+    texture[2] = std::byte{2}; texture[12] = std::byte{4}; texture[14] = std::byte{2};
+    texture[16] = std::byte{32}; texture[17] = std::byte{40};
+    constexpr std::array<std::array<unsigned, 3>, 8> colors{{
+        {0, 0, 0}, {0, 0, 255}, {0, 255, 0}, {255, 0, 0},
+        {255, 0, 0}, {0, 0, 0}, {0, 255, 0}, {0, 0, 255}}};
+    for (std::size_t i = 0; i < colors.size(); ++i) {
+        for (std::size_t channel = 0; channel < 3; ++channel)
+            texture[18 + i * 4 + channel] = static_cast<std::byte>(colors[i][channel]);
+        texture[21 + i * 4] = colors[i] == std::array<unsigned, 3>{0, 0, 0} ? std::byte{255} : std::byte{};
+    }
+    for (auto& member : members) {
+        if (member.name == "Units/DestructableData.slk") {
+            // category故意为E；C桥必须用DOO自己的第二字节，不能借可破坏物category或父ID。
+            member.data = NativeDoodadQtTable({"destructableID", "code", "walkable", "pathTex", "fixedRot", "category"},
+                {{parent, parent, typed ? "0" : "1", typed ? "PathTextures/unused-standard-bridge.tga" : "PathTextures/bridge.tga",
+                    typed ? (turned ? "0" : "90") : (turned ? "90" : "0"), "E"}});
+        } else if (member.name == "war3map.w3b") member.data = *nativeWire.value;
+        else if (member.name == "PathTextures/bridge.tga") member.data = texture;
+        else if (member.name == "war3map.doo") {
+            auto placements = MapData::ParseDoodadPlacements(member.data);
+            if (!placements.Succeeded() || !placements.value || placements.value->doodads.size() != 2) return {};
+            auto& bridge = placements.value->doodads.front();
+            bridge.rawcode = rawcode; bridge.position = {544, 544, 0}; bridge.rotation = 0.0f;
+            const auto wire = placements.value->Serialize();
+            if (!wire.Succeeded() || !wire.value) return {};
+            member.data = *wire.value;
+        } else if (member.name == "UI\\WorldEditData.txt") {
+            // 地图含C不授予启动来源身份；实际无C的游戏目录仍必须选择2格。
+            member.data = Tests::WaterText("[CameraMargins]\nLeft=0\nRight=0\nBottom=0\nTop=0\n"
+                "[DoodadCategories]\nC=map-cannot-certify-startup\n");
+        }
+    }
+    // 全矩阵字面oracle：wire0先吸附，fixedRot0/90只旋转图案；不用产品投影/生成器。
+    // four仅选测试期望；保存资格必须由调用者创建的真实startup MPQ捕获。
+    constexpr std::array<bool, 8> zero{false, true, true, false, true, true, true, true};
+    constexpr std::array<bool, 8> ninety{true, true, true, false, true, true, false, true};
+    const auto& mask = turned ? ninety : zero;
+    const std::size_t width = turned ? 4 : 2;
+    const std::size_t x0 = turned ? (four ? 14 : 15) : (four ? 15 : 16), y0 = turned ? 17 : 16;
+    std::array<bool, 32 * 32> suppressed{};
+    for (std::size_t i = 0; i < mask.size(); ++i) suppressed[(y0 + i / width) * 32 + x0 + i % width] = mask[i];
+    auto& oldPathing = members[2].data;
+    std::fill(oldPathing.begin() + 16, oldPathing.end(), std::byte{0x19});
+    for (std::size_t i = 0; i < suppressed.size(); ++i) if (suppressed[i]) oldPathing[16 + i] = std::byte{0x11};
+    for (std::size_t y = 14; y < 18; ++y) for (std::size_t x = 14; x < 18; ++x)
+        oldPathing[16 + y * 32 + x] |= std::byte{4};
+    fixture.editedPathing = oldPathing;
+    for (std::size_t y = 14; y < 18; ++y) for (std::size_t x = 14; x < 18; ++x)
+        if (!suppressed[y * 32 + x]) fixture.editedPathing[16 + y * 32 + x] |= std::byte{2};
+    return fixture;
+}
+
 bool SetCustomBridgeQtSelectorMetadata(std::vector<MapArchiveMember>& members, std::string_view scenario) {
     std::vector<std::vector<std::string>> rows{
         {"bwal", "walkable", "DestructableData", "bool", "0", "", ""},
@@ -877,6 +950,14 @@ private slots:
     void WalkableDestructableCustomSaveAndUndoRedo();
     void WalkableDestructableCustomWorkerRejectsBeforeWrite_data();
     void WalkableDestructableCustomWorkerRejectsBeforeWrite();
+    void WalkableCategoryCNormalSaveAndUndoRedo_data();
+    void WalkableCategoryCNormalSaveAndUndoRedo();
+    void WalkableCategoryCUnavailableRejectsBeforeWrite_data();
+    void WalkableCategoryCUnavailableRejectsBeforeWrite();
+    void WalkableCategoryCSourceDriftRejectsBeforeWrite_data();
+    void WalkableCategoryCSourceDriftRejectsBeforeWrite();
+    void WalkableCategoryCOldGridRejectsBeforeWrite_data();
+    void WalkableCategoryCOldGridRejectsBeforeWrite();
     void WalkableDestructableWorkerRejectsBeforeWrite_data();
     void WalkableDestructableWorkerRejectsBeforeWrite();
     void NativeObjectCatalogReadLeaseBlocksSourceWrite();
@@ -2734,7 +2815,7 @@ void EditorProjectTests::WalkableDestructableCustomWorkerRejectsBeforeWrite_data
         };
         for (const auto* scenario : {"used-walkable-use", "used-walkable-exclude", "used-path-use", "used-path-exclude", "used-rotation-use", "used-rotation-exclude"})
             add(scenario, "TERRAIN_NATIVE_OBJECT_METADATA");
-        add("child-c", "TERRAIN_WALKABLE_DESTRUCTABLE_GRID");
+        add("child-c", "TERRAIN_CATEGORY_SOURCE_REQUIRED");
         add("parent-custom", "TERRAIN_NATIVE_OBJECT_INHERITANCE");
         add("parent-doodad", "TERRAIN_NATIVE_OBJECT_INHERITANCE");
         add("child-doodad-collision", "TERRAIN_NATIVE_OBJECT_CLASS_AMBIGUOUS");
@@ -2784,6 +2865,128 @@ void EditorProjectTests::WalkableDestructableCustomWorkerRejectsBeforeWrite() {
         : scenario == "source-drift" ? NativeDoodadQtMutation::SourceDrift : NativeDoodadQtMutation::None;
     const auto expectedCode = code.toUtf8();
     CheckNativeDoodadWorkerRejectsBeforeWrite(members, inPlace, expectedCode.constData(), mutation);
+}
+
+void EditorProjectTests::WalkableCategoryCNormalSaveAndUndoRedo_data() {
+    QTest::addColumn<bool>("custom"); QTest::addColumn<bool>("typed"); QTest::addColumn<bool>("four");
+    QTest::addColumn<bool>("turned"); QTest::addColumn<bool>("textureChange"); QTest::addColumn<bool>("inPlace");
+    struct Row { const char* name; bool custom, typed, four, turned, texture; };
+    // 代表矩阵覆盖Original/Custom、空/实际覆盖、两种真实startup、0/90与两种地形编辑。
+    constexpr std::array<Row, 4> rows{{
+        {"original-empty-c4-zero", false, false, true, false, false},
+        {"original-typed-c2-90", false, true, false, true, true},
+        {"custom-empty-c2-zero", true, false, false, false, false},
+        {"custom-typed-c4-90", true, true, true, true, true}}};
+    for (const auto& row : rows) for (const bool inPlace : {false, true}) {
+        const auto name = QString("walkable-c-grid-%1-%2").arg(row.name, inPlace ? "in-place" : "save-as").toUtf8();
+        QTest::newRow(name.constData()) << row.custom << row.typed << row.four << row.turned << row.texture << inPlace;
+    }
+}
+
+void EditorProjectTests::WalkableCategoryCNormalSaveAndUndoRedo() {
+    using namespace ObjectData;
+    QFETCH(bool, custom); QFETCH(bool, typed); QFETCH(bool, four);
+    QFETCH(bool, turned); QFETCH(bool, textureChange); QFETCH(bool, inPlace);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto game = std::filesystem::path(root.filePath("startup-game").toStdWString());
+    QVERIFY(WriteStartupCategoryQtGame(game, four ? "[DoodadCategories]\nC=bridge\n" : "[DoodadCategories]\nE=known-no-C\n"));
+    const auto fixture = WalkableCategoryCNativeQtMembers(four, custom, typed, turned); QVERIFY(!fixture.members.empty());
+    const auto otherGrid = WalkableCategoryCNativeQtMembers(!four, custom, typed, turned); QVERIFY(!otherGrid.members.empty());
+    QVERIFY(fixture.members[2].data != otherGrid.members[2].data);
+    QVERIFY(fixture.editedPathing != otherGrid.editedPathing);
+    const auto w3b = std::find_if(fixture.members.begin(), fixture.members.end(), [](const auto& member) { return member.name == "war3map.w3b"; });
+    QVERIFY(w3b != fixture.members.end());
+    auto parsed = NativeObjectCodec(ObjectType::Destructable).Parse(w3b->data); QVERIFY(parsed.Succeeded());
+    const auto* native = dynamic_cast<const NativeObjectDocument*>(parsed.document.get()); QVERIFY(native);
+    QCOMPARE(native->Version(), 2);
+    QCOMPARE(native->OriginalObjectCount(), custom ? std::size_t{0} : std::size_t{1});
+    QCOMPARE(native->CustomObjectCount(), custom ? std::size_t{1} : std::size_t{0});
+    const auto* bridge = native->FindObject({ObjectType::Destructable, custom ? "NC01" : "BC01"}); QVERIFY(bridge);
+    QCOMPARE(bridge->modifications.size(), typed ? std::size_t{3} : std::size_t{0});
+    if (custom) { QVERIFY(bridge->parentRawcode); QCOMPARE(*bridge->parentRawcode, std::string("Br01")); }
+    // 共用Qt循环实际比较全WPM/W3E及每个其它成员，核source磁盘SHA、备份和保存后的Undo/Redo。
+    CheckNativeDoodadNormalSaveAndUndoRedo(fixture.members, inPlace, textureChange, &fixture.editedPathing, game);
+}
+
+void EditorProjectTests::WalkableCategoryCUnavailableRejectsBeforeWrite_data() {
+    QTest::addColumn<bool>("rootIsFile"); QTest::addColumn<bool>("inPlace");
+    for (const bool rootIsFile : {false, true}) for (const bool inPlace : {false, true}) {
+        const auto row = QString("walkable-c-startup-%1-%2").arg(rootIsFile ? "root-is-file" : "root-required",
+            inPlace ? "in-place" : "save-as").toUtf8();
+        QTest::newRow(row.constData()) << rootIsFile << inPlace;
+    }
+}
+
+void EditorProjectTests::WalkableCategoryCUnavailableRejectsBeforeWrite() {
+    QFETCH(bool, rootIsFile); QFETCH(bool, inPlace);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    std::filesystem::path game;
+    if (rootIsFile) {
+        game = std::filesystem::path(root.filePath("not-a-directory").toStdWString());
+        QFile file(QString::fromStdWString(game.wstring())); QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write("owned non-directory source"), qint64{26}); file.close();
+    }
+    const auto fixture = WalkableCategoryCNativeQtMembers(true, true, true, false); QVERIFY(!fixture.members.empty());
+    CheckNativeDoodadWorkerRejectsBeforeWrite(fixture.members, inPlace,
+        rootIsFile ? "TERRAIN_CATEGORY_SOURCE_UNKNOWN" : "TERRAIN_CATEGORY_SOURCE_REQUIRED", NativeDoodadQtMutation::None, game);
+}
+
+void EditorProjectTests::WalkableCategoryCSourceDriftRejectsBeforeWrite_data() {
+    QTest::addColumn<bool>("four"); QTest::addColumn<bool>("loose"); QTest::addColumn<bool>("inPlace");
+    for (const bool four : {false, true}) for (const bool loose : {false, true}) for (const bool inPlace : {false, true}) {
+        const auto row = QString("walkable-c-source-%1-%2-%3").arg(four ? "c4" : "c2")
+            .arg(loose ? "same-result-loose-winner" : "same-result-profile-bytes").arg(inPlace ? "in-place" : "save-as").toUtf8();
+        QTest::newRow(row.constData()) << four << loose << inPlace;
+    }
+}
+
+void EditorProjectTests::WalkableCategoryCSourceDriftRejectsBeforeWrite() {
+    QFETCH(bool, four); QFETCH(bool, loose); QFETCH(bool, inPlace);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto game = std::filesystem::path(root.filePath("startup-game").toStdWString());
+    const std::string profile = four ? "[DoodadCategories]\nC=bridge\n" : "[DoodadCategories]\nE=known-no-C\n";
+    QVERIFY(WriteStartupCategoryQtGame(game, profile));
+    const auto fixture = WalkableCategoryCNativeQtMembers(four, true, true, true); QVERIFY(!fixture.members.empty());
+    int mutations = 0;
+    const auto mutate = [&]() -> Status {
+        ++mutations;
+        const auto fail = [] { return Status::Failure("Test", "CATEGORY_FIXTURE_MUTATION_FAILED", "无法建立C桥实际启动来源漂移。"); };
+        if (loose) {
+            // 最终C选择及profile内容不变，只有winner由MPQ改为原先缺席的basename来源。
+            QFile file(QString::fromStdWString((game / "WorldEditData.txt").wstring()));
+            const auto bytes = QByteArray::fromStdString(profile);
+            if (!file.open(QIODevice::WriteOnly | QIODevice::NewOnly) || file.write(bytes) != bytes.size() || !file.flush()) return fail();
+            return Status::Ok();
+        }
+        const auto target = game / "war3.mpq";
+        if (!std::filesystem::remove(target)) return fail();
+        const std::vector<MapArchiveMember> replacement{{"UI/WorldEditData.txt", Tests::WaterText(
+            four ? "[DoodadCategories]\nC=changed-bytes-same-C\n" : "[DoodadCategories]\nE=changed-bytes-still-no-C\n")}};
+        auto written = WriteVerifiedArchive(target, replacement);
+        return written.Succeeded() ? Status::Ok() : Status{std::move(written.diagnostics)};
+    };
+    CheckNativeDoodadWorkerRejectsBeforeWrite(fixture.members, inPlace, "TERRAIN_CATEGORY_SOURCE_CHANGED",
+        NativeDoodadQtMutation::None, game, mutate);
+    QCOMPARE(mutations, 1);
+}
+
+void EditorProjectTests::WalkableCategoryCOldGridRejectsBeforeWrite_data() {
+    QTest::addColumn<bool>("four"); QTest::addColumn<bool>("inPlace");
+    for (const bool four : {false, true}) for (const bool inPlace : {false, true}) {
+        const auto row = QString("walkable-c-wrong-old-grid-%1-%2").arg(four ? "c4" : "c2", inPlace ? "in-place" : "save-as").toUtf8();
+        QTest::newRow(row.constData()) << four << inPlace;
+    }
+}
+
+void EditorProjectTests::WalkableCategoryCOldGridRejectsBeforeWrite() {
+    QFETCH(bool, four); QFETCH(bool, inPlace);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto game = std::filesystem::path(root.filePath("startup-game").toStdWString());
+    QVERIFY(WriteStartupCategoryQtGame(game, four ? "[DoodadCategories]\nC=bridge\n" : "[DoodadCategories]\nE=known-no-C\n"));
+    const auto fixture = WalkableCategoryCNativeQtMembers(!four, true, true, false); QVERIFY(!fixture.members.empty());
+    // wrong-grid有明确差异；不能把不匹配网格贡献当成作者保护位从旧WPM吞掉。
+    CheckNativeDoodadWorkerRejectsBeforeWrite(fixture.members, inPlace, "TERRAIN_PATHING_SOURCE_UNEXPLAINED",
+        NativeDoodadQtMutation::None, game);
 }
 
 void EditorProjectTests::WalkableDestructableWorkerRejectsBeforeWrite_data() {
