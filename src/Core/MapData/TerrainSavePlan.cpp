@@ -1,4 +1,5 @@
 #include "War3MapCore/MapData/TerrainSavePlan.h"
+#include "War3MapCore/MapData/TerrainEditInspection.h"
 
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
@@ -354,11 +355,12 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
             if (originalBytes) RequireStatus(MatchBytes(source, *originalBytes, false));
             const auto& currentBytes = edits.current_[MapDataEditSession::Index(kinds[index])];
             if (currentBytes != originalBytes) {
-                // 保存门已核对两DOO仅Z改变；这里先核真实原字节，再冻结该次确切输出。
-                // 不把当前字节伪装成源，也不允许后台省略或二次改写摆放成员。
-                if (index == 0 || !currentBytes || !originalBytes)
+                // 保存门核对两DOO仅Z及W3I四个说明字段的窄域；这里先核真实
+                // 原字节，再冻结该次确切输出，不允许后台省略或二次改写。
+                if (!currentBytes || !originalBytes)
                     return Result<TerrainSavePlan>::Failure(std::string(kSubsystem), "TERRAIN_SAVE_PLAN_INVARIANT_CHANGED",
                         "范围或摆放成员存在性改变，无法保持原通行：" + source.name);
+                if (index == 0) RequireStatus(ValidateTerrainSettingsPathingChange(originalBytes, currentBytes));
                 AddBytes(currentBytes->size(), total, limits);
                 source.outputBytes = currentBytes->size();
                 source.outputSha256 = Take(Sha256(*currentBytes));

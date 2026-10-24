@@ -17,6 +17,13 @@ class MapDataEditSession;
 [[nodiscard]] Status ValidateTerrainSettingsSourceBaseline(
     const MapDataEditSession& edits, bool exists, std::span<const std::byte> bytes);
 
+// 地形与地图说明同次保存的窄域：完整、可精确往返的经典W3I v25只可改变
+// 名称、作者、说明和建议人数。可玩范围、玩家、环境及其余字段须逐字不变。
+// 相同原字（包括同为缺失）不解析；不同原字的两成员各限1MiB，未知尾部拒绝。
+[[nodiscard]] Status ValidateTerrainSettingsPathingChange(
+    const std::optional<std::vector<std::byte>>& before,
+    const std::optional<std::vector<std::byte>>& after);
+
 struct TerrainInspectionLimits {
     // 捕获五成员原/现唯一拥有字节的累计预算，调用方只能收紧。
     // 未改成员共享同一份只读字节。此预算不是地图实例数量上限。

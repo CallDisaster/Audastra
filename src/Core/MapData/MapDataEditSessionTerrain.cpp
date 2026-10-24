@@ -1,4 +1,5 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
+#include "War3MapCore/MapData/TerrainEditInspection.h"
 #include "MapDataEditSessionTerrainInternal.h"
 #include "War3MapCore/MapData/MapPathing.h"
 #include "War3MapCore/MapData/PlacementElevationInvariant.h"
@@ -884,8 +885,9 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
         *pathingProtected_, *originalPathingRestrictions_, restrictions ? *restrictions : *pathingRestrictions_);
     if (!layers.Succeeded()) return layers;
     const auto checkPlacements = [&]() -> Status {
-        if (current_[Index(MapDataKind::Settings)] != original_[Index(MapDataKind::Settings)])
-            return reject("地形通行不变保存不能同时修改可玩范围");
+        const auto settings = ValidateTerrainSettingsPathingChange(original_[Index(MapDataKind::Settings)],
+            current_[Index(MapDataKind::Settings)]);
+        if (!settings.Succeeded()) return settings;
         const auto check = [&](MapDataKind kind, const auto& current, auto verify) -> Status {
             const auto& before = original_[Index(kind)];
             if (before == current) return Status::Ok();

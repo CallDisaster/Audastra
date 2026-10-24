@@ -232,6 +232,41 @@ Status ValidateTerrainSettingsSourceBaseline(const MapDataEditSession& edits,
     }
 }
 
+Status ValidateTerrainSettingsPathingChange(const std::optional<std::vector<std::byte>>& before,
+    const std::optional<std::vector<std::byte>>& after) {
+    if (before == after) return Status::Ok();
+    const auto reject = [] {
+        return Status::Failure("MapData.Edit", "TERRAIN_SETTINGS_PATHING_CHANGED",
+            "地形同次保存仅允许修改地图名称、作者、说明和建议人数；范围及其它设置请分开保存。");
+    };
+    // 先限制实际输入，再解析两份可变长设置。此门不扩大通常设置保存的容量。
+    constexpr std::size_t maximumBytes = 1024u * 1024u;
+    if (!before || !after || before->size() > maximumBytes || after->size() > maximumBytes)
+        return reject();
+    try {
+        auto original = MapSettings::Parse(*before), current = MapSettings::Parse(*after);
+        if (!original.Succeeded() || !original.value || !current.Succeeded() || !current.value
+            || original.value->formatVersion != 25 || current.value->formatVersion != 25
+            || !original.value->FullyParsed() || !current.value->FullyParsed()) return reject();
+        const auto originalWire = original.value->Serialize(), currentWire = current.value->Serialize();
+        if (!originalWire.Succeeded() || !originalWire.value || *originalWire.value != *before
+            || !currentWire.Succeeded() || !currentWire.value || *currentWire.value != *after) return reject();
+        // 从当前完整结构只替回四个说明字段，再与来源全文比较；不列举可能遗漏的
+        // 通行字段，也不容许未知数据、浮点bit变化或其它字段被规范化后静默通过。
+        current.value->mapName = original.value->mapName;
+        current.value->author = original.value->author;
+        current.value->description = original.value->description;
+        current.value->recommendedPlayers = original.value->recommendedPlayers;
+        const auto normalized = current.value->Serialize();
+        return normalized.Succeeded() && normalized.value && *normalized.value == *before
+            ? Status::Ok() : reject();
+    } catch (const std::bad_alloc&) {
+        return Status::Failure("MapData.Edit", "TERRAIN_SETTINGS_PATHING_ALLOCATION", "地图说明与地形的合并检查内存不足，原编辑保留。");
+    } catch (const std::length_error&) {
+        return Status::Failure("MapData.Edit", "TERRAIN_SETTINGS_PATHING_ALLOCATION", "地图说明与地形的合并检查超过容器容量，原编辑保留。");
+    }
+}
+
 Result<TerrainEditInspection> CaptureTerrainEditInspection(const MapArchiveSession& source,
     const MapDataEditSession& edits, const TerrainInspectionLimits& limits) {
     try {

@@ -1,6 +1,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
+#include "War3MapCore/MapData/TerrainEditInspection.h"
 #include "War3MapCore/MapData/TerrainPatchCodec.h"
 #include "War3MapCore/MapData/TerrainPathingResources.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
@@ -548,6 +549,70 @@ void DirectoryRecipeUsesGeneratedWpm() {
         "directory save seals actual generated WPM, not the editor draft");
     Require(Take(IO::ReadFileBytes(directory / "war3map.wpm")) == f.members[1].data, "sealing leaves the source untouched");
 }
+
+void DescriptiveSettingsSaveAlongsideTerrainWithoutChangingThePlayableArea() {
+    for (const bool rebuild : {false, true}) {
+        Fixture f(false);
+        auto settings = Take(MapSettings::Parse(f.members[2].data));
+        settings.mapName = "Renamed terrain fixture";
+        settings.author = "Fixture author";
+        settings.description = "A longer description accompanying the same terrain save";
+        settings.recommendedPlayers = "2-4";
+        Check(f.edits->EditSettings(settings));
+        if (rebuild) {
+            TerrainBrush brush; brush.kind = TerrainBrushKind::Texture; brush.radius = 0; brush.groundTexture = "Tg02";
+            f.Paint(brush);
+        } else {
+            TerrainBrush brush; brush.kind = TerrainBrushKind::Raise; brush.radius = 0; brush.strength = 4;
+            f.Paint(brush);
+        }
+        const auto expectedSettings = Take(settings.Serialize());
+        f.Save(rebuild ? "descriptions-material.w3x" : "descriptions-height.w3x", rebuild);
+        Require(Take(f.archive->ReadMember("war3map.w3i")) == expectedSettings,
+            "normal terrain save publishes every descriptive setting as the exact final W3I");
+        Require(f.edits->Undo(), "undo terrain after a committed descriptive-settings save");
+        f.Save("descriptions-undo.w3x", rebuild);
+        Require(Take(f.archive->ReadMember("war3map.w3i")) == expectedSettings,
+            "undoing terrain preserves the independently edited and saved descriptions");
+        Require(f.edits->Undo(), "undo descriptions across their saved baseline");
+        f.Save("descriptions-original.w3x", false);
+        Require(Take(f.archive->ReadMember("war3map.w3i")) == f.members[2].data,
+            "description-only undo still saves and roundtrips the original W3I exactly");
+    }
+
+    Fixture baseline(false);
+    const std::optional<Bytes> before{baseline.members[2].data};
+    const auto sourceSettings = Take(MapSettings::Parse(*before));
+    const auto refused = [&](auto change) {
+        auto altered = sourceSettings;
+        change(altered);
+        const std::optional<Bytes> after{Take(altered.Serialize())};
+        Require(!ValidateTerrainSettingsPathingChange(before, after).Succeeded(),
+            "mixed terrain must reject every non-description settings change");
+    };
+    refused([](auto& value) { ++value.saves; });
+    refused([](auto& value) { ++value.editorVersion; });
+    refused([](auto& value) { value.cameraBounds[0] = 32; });
+    refused([](auto& value) { ++value.cameraMargins[0]; });
+    refused([](auto& value) { ++value.playableWidth; });
+    refused([](auto& value) { value.flags ^= 0x400; });
+    refused([](auto& value) { value.tileset = 'A'; });
+    refused([](auto& value) { value.environment.waterColor.red = 40; });
+    refused([](auto& value) { value.players.emplace_back(); });
+    refused([](auto& value) { value.custom->randomUnits.emplace_back(); });
+    auto malformed = *before; malformed.push_back(std::byte{0x7f});
+    Require(!ValidateTerrainSettingsPathingChange(before, malformed).Succeeded(), "unknown W3I tails cannot gain mixed save permission");
+    Require(!ValidateTerrainSettingsPathingChange(before, std::nullopt).Succeeded(), "mixed settings deletion remains rejected");
+    auto empty = std::optional<Bytes>{Bytes{}};
+    Require(!ValidateTerrainSettingsPathingChange(before, empty).Succeeded(), "present empty W3I is distinct from missing and valid settings");
+
+    Fixture bad(false);
+    auto changed = sourceSettings; ++changed.cameraMargins[0];
+    Check(bad.edits->EditSettings(changed));
+    TerrainBrush brush; brush.kind = TerrainBrushKind::Raise; brush.radius = 0; brush.strength = 4;
+    bad.Paint(brush);
+    Require(!bad.Plan().SaveGate().Succeeded(), "real terrain plan cannot bypass the unchanged playable-area requirement");
+}
 }
 
 int main() {
@@ -563,6 +628,7 @@ int main() {
         MaterialsAndCliffsRebuildThePathing();
         UnexplainedSourceAndOutputTamperingRefuse();
         DirectoryRecipeUsesGeneratedWpm();
+        DescriptiveSettingsSaveAlongsideTerrainWithoutChangingThePlayableArea();
         std::cout << "Native terrain save tests passed\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
