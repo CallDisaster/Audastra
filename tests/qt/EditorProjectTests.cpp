@@ -351,6 +351,7 @@ std::unique_ptr<MapSaveJob> FreezeNativePathingQtJob(EditorProject& project, con
     const auto draft = project.mapEdits_->SerializePathingRestrictionDraft();
     if (!draft.Succeeded() || !draft.value || !job->FreezeArchive(*project.archiveSession_).Succeeded()) return {};
     job->target = target; job->minimapChoice = minimap;
+    job->minimapGameRoot = project.war3GameRoot_;
     job->replacements = project.mapEdits_->Replacements(); job->removals = project.mapEdits_->Removals();
     job->terrainDerivationRequired = MapData::TerrainSavePlan::HasTerrainChanges(*project.mapEdits_);
     // 与生产Prepare一致：没有意图层时不传声明；显式传入的空声明仍由worker拒绝。
@@ -407,14 +408,48 @@ std::vector<MapArchiveMember> CGridInvariantQtMembers(int divergentAxis = -1, bo
     if (!wire.Succeeded() || !wire.value) return {};
     for (auto& member : members) if (member.name == "war3map.doo") member.data = *wire.value;
     // 独立格子预期：8x8在256和512中心起点为4、12；+32使snap2起点多2格，snap4仍为12。
-    // 非等价阴例的来源选择snap2的合法结果，不调用产品投影或生成器制造WPM。
+    // 偏移行字面写snap2来源；实际C启动目录选snap4时由完整旧WPM解释门裁决。
     const auto footprint = [&](std::size_t x0, std::size_t y0, std::size_t side) {
         for (std::size_t y = y0; y < y0 + side; ++y) for (std::size_t x = x0; x < x0 + side; ++x)
             members[2].data[16 + y * 32 + x] |= std::byte{4};
     };
     footprint(4, 4, 8);
     footprint(divergentAxis == 0 ? 14 : 12, divergentAxis == 1 ? 14 : 12, 8);
-    if (occluded) footprint(8, 8, 16); // 此非C实例完全遮住第二C实例两种网格的差异。
+    if (occluded) footprint(8, 8, 16); // 非C实例遮住差异，两个来源矩阵等价时允许按实际目录保存。
+    return members;
+}
+
+bool WriteStartupCategoryQtGame(const std::filesystem::path& gameRoot, std::string_view profile) {
+    if (!std::filesystem::create_directory(gameRoot)) return false;
+    // 空文本表示固定启动profile全缺席；资格仍由实际目录捕获，不传调用方hasC。
+    if (profile.empty()) return true;
+    const std::vector<MapArchiveMember> members{{"UI/WorldEditData.txt", Tests::WaterText(profile)}};
+    return WriteVerifiedArchive(gameRoot / "war3.mpq", members).Succeeded();
+}
+
+std::vector<MapArchiveMember> StartupCategoryCQtMembers(std::size_t footprintStart) {
+    auto members = CGridInvariantQtMembers();
+    if (members.empty() || (footprintStart != 12 && footprintStart != 14)) return {};
+    const auto doo = std::find_if(members.begin(), members.end(),
+        [](const auto& member) { return member.name == "war3map.doo"; });
+    if (doo == members.end()) return {};
+    auto parsed = MapData::ParseDoodadPlacements(doo->data);
+    if (!parsed.Succeeded() || !parsed.value || parsed.value->doodads.empty()) return {};
+    auto placed = parsed.value->doodads.front(); placed.position = {544, 544, 0};
+    parsed.value->doodads = {placed};
+    const auto wire = parsed.value->Serialize();
+    if (!wire.Succeeded() || !wire.value) return {};
+    doo->data = *wire.value;
+    // 纯字面矩阵：同一544中心，实际目录含C时[12,20)^2，否则[14,22)^2。
+    // 不调用任何产品吸附/占地生成器来制造来源或期望。
+    std::fill(members[2].data.begin() + 16, members[2].data.end(), std::byte{0x19});
+    for (std::size_t y = footprintStart; y < footprintStart + 8; ++y)
+        for (std::size_t x = footprintStart; x < footprintStart + 8; ++x)
+            members[2].data[16 + y * 32 + x] |= std::byte{4};
+    // 地图同名profile刻意含C；不能替代真实gameRoot启动来源的缺席或小写c。
+    for (auto& member : members) if (member.name == "UI\\WorldEditData.txt")
+        member.data = Tests::WaterText("[CameraMargins]\nLeft=0\nRight=0\nBottom=0\nTop=0\n"
+            "[DoodadCategories]\nC=map-must-not-select-grid\n");
     return members;
 }
 
@@ -778,8 +813,14 @@ private slots:
     void NativePathingWorkerPreflightAndFailure();
     void CGridInvariantNormalSaveAndUndoRedo_data();
     void CGridInvariantNormalSaveAndUndoRedo();
-    void CGridVariantWorkerRejectsBeforeWrite_data();
-    void CGridVariantWorkerRejectsBeforeWrite();
+    void CGridStartupDirectoryNormalSaveAndUndoRedo_data();
+    void CGridStartupDirectoryNormalSaveAndUndoRedo();
+    void CGridVariantSourceUsesActualDirectory_data();
+    void CGridVariantSourceUsesActualDirectory();
+    void CGridStartupDirectoryDriftRejectsBeforeWrite_data();
+    void CGridStartupDirectoryDriftRejectsBeforeWrite();
+    void CGridStartupDirectoryUnavailableRejectsBeforeWrite_data();
+    void CGridStartupDirectoryUnavailableRejectsBeforeWrite();
     void FixedRotationNormalSaveAndUndoRedo_data();
     void FixedRotationNormalSaveAndUndoRedo();
     void FixedRotationWorkerRejectsBeforeWrite_data();
@@ -823,9 +864,11 @@ private slots:
     void ProjectRestoreKeepsMissingAndUnreadableTerrainDistinct();
 private:
     void CheckNativeDoodadNormalSaveAndUndoRedo(const std::vector<MapArchiveMember>& members, bool inPlace,
-        bool textureChange = false, const std::vector<std::byte>* expectedEditedPathing = nullptr);
+        bool textureChange = false, const std::vector<std::byte>* expectedEditedPathing = nullptr,
+        const std::filesystem::path& gameRoot = {});
     void CheckNativeDoodadWorkerRejectsBeforeWrite(const std::vector<MapArchiveMember>& members, bool inPlace,
-        const char* expectedCode, NativeDoodadQtMutation mutation = NativeDoodadQtMutation::None);
+        const char* expectedCode, NativeDoodadQtMutation mutation = NativeDoodadQtMutation::None,
+        const std::filesystem::path& gameRoot = {}, const std::function<Status()>& beforePublish = {});
 };
 
 void EditorProjectTests::UnlistedTerrainReadPreservesNamedInventory() {
@@ -1952,20 +1995,49 @@ void EditorProjectTests::CGridInvariantNormalSaveAndUndoRedo_data() {
 
 void EditorProjectTests::CGridInvariantNormalSaveAndUndoRedo() {
     QFETCH(bool, inPlace);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto game = std::filesystem::path(root.filePath("startup-game").toStdWString());
+    QVERIFY(WriteStartupCategoryQtGame(game, "[DoodadCategories]\nC=custom\n"));
     const auto members = CGridInvariantQtMembers(); QVERIFY(!members.empty());
     QCOMPARE(members[2].data[16 + 12 * 32 + 12], std::byte{0x1d});
     QCOMPARE(members[2].data[16 + 14 * 32 + 14] | std::byte{2}, std::byte{0x1f});
-    CheckNativeDoodadNormalSaveAndUndoRedo(members, inPlace);
+    CheckNativeDoodadNormalSaveAndUndoRedo(members, inPlace, false, nullptr, game);
+}
+
+void EditorProjectTests::CGridStartupDirectoryNormalSaveAndUndoRedo_data() {
+    QTest::addColumn<QString>("profile"); QTest::addColumn<int>("footprintStart"); QTest::addColumn<bool>("inPlace");
+    const std::pair<const char*, const char*> profiles[]{
+        {"uppercase-C", "[DoodadCategories]\nC=custom\n"},
+        {"no-C", "[DoodadCategories]\nE=environment\n"},
+        {"lowercase-c", "[DoodadCategories]\nc=custom\n"}, {"profile-absent", ""}};
+    for (const auto& [name, text] : profiles) for (const bool inPlace : {false, true}) {
+        const auto row = QString("c-startup-%1-%2").arg(name, inPlace ? "in-place" : "save-as").toUtf8();
+        QTest::newRow(row.constData()) << QString::fromUtf8(text) << (std::string_view(name) == "uppercase-C" ? 12 : 14) << inPlace;
+    }
+}
+
+void EditorProjectTests::CGridStartupDirectoryNormalSaveAndUndoRedo() {
+    QFETCH(QString, profile); QFETCH(int, footprintStart); QFETCH(bool, inPlace);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto game = std::filesystem::path(root.filePath("startup-game").toStdWString());
+    QVERIFY(WriteStartupCategoryQtGame(game, profile.toStdString()));
+    const auto members = StartupCategoryCQtMembers(static_cast<std::size_t>(footprintStart)); QVERIFY(!members.empty());
+    const auto other = StartupCategoryCQtMembers(footprintStart == 12 ? 14 : 12); QVERIFY(!other.empty());
+    QVERIFY(members[2].data != other[2].data);
+    QCOMPARE(members[2].data[16 + 12 * 32 + 12], footprintStart == 12 ? std::byte{0x1d} : std::byte{0x19});
+    QCOMPARE(members[2].data[16 + 21 * 32 + 21], footprintStart == 14 ? std::byte{0x1d} : std::byte{0x19});
+    CheckNativeDoodadNormalSaveAndUndoRedo(members, inPlace, false, nullptr, game);
 }
 
 void EditorProjectTests::CheckNativeDoodadNormalSaveAndUndoRedo(const std::vector<MapArchiveMember>& members, bool inPlace,
-    bool textureChange, const std::vector<std::byte>* expectedEditedPathing) {
+    bool textureChange, const std::vector<std::byte>* expectedEditedPathing, const std::filesystem::path& gameRoot) {
     QTemporaryDir root; QVERIFY(root.isValid());
     const auto source = std::filesystem::path(root.filePath("native-doodad-source.w3x").toStdWString());
     QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
     const auto originalSha = Sha256File(source); QVERIFY(originalSha.Succeeded());
     EditorProject project; QUndoStack undo; project.mapDataUndoStack_ = &undo;
     QVERIFY(BindTerrainSaveProject(project, source));
+    project.war3GameRoot_ = gameRoot;
     if (textureChange) {
         MapData::TerrainBrush brush; brush.kind = MapData::TerrainBrushKind::Texture;
         brush.radius = 0; brush.groundTexture = "Tg02"; brush.variation = 0;
@@ -2041,26 +2113,107 @@ void EditorProjectTests::CheckNativeDoodadNormalSaveAndUndoRedo(const std::vecto
     if (!inPlace) QCOMPARE(Sha256File(source).value, originalSha.value);
 }
 
-void EditorProjectTests::CGridVariantWorkerRejectsBeforeWrite_data() {
+void EditorProjectTests::CGridVariantSourceUsesActualDirectory_data() {
     QTest::addColumn<int>("axis"); QTest::addColumn<bool>("occluded"); QTest::addColumn<bool>("inPlace");
-    QTest::newRow("c-grid-x-variant-copy") << 0 << false << false;
-    QTest::newRow("c-grid-y-variant-in-place") << 1 << false << true;
-    QTest::newRow("c-grid-x-variant-hidden-by-other-object") << 0 << true << false;
-    QTest::newRow("c-grid-y-variant-hidden-in-place") << 1 << true << true;
+    QTest::newRow("c-startup-x-source-wpm-mismatch-copy") << 0 << false << false;
+    QTest::newRow("c-startup-y-source-wpm-mismatch-in-place") << 1 << false << true;
+    QTest::newRow("c-startup-x-occluded-source-equivalent-copy") << 0 << true << false;
+    QTest::newRow("c-startup-y-occluded-source-equivalent-in-place") << 1 << true << true;
 }
 
-void EditorProjectTests::CGridVariantWorkerRejectsBeforeWrite() {
+void EditorProjectTests::CGridVariantSourceUsesActualDirectory() {
     QFETCH(int, axis); QFETCH(bool, occluded); QFETCH(bool, inPlace);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto game = std::filesystem::path(root.filePath("startup-game").toStdWString());
+    QVERIFY(WriteStartupCategoryQtGame(game, "[DoodadCategories]\nC=custom\n"));
     const auto members = CGridInvariantQtMembers(axis, occluded); QVERIFY(!members.empty());
     if (occluded) {
         const auto sameAggregate = CGridInvariantQtMembers(-1, true); QVERIFY(!sameAggregate.empty());
-        QCOMPARE(members[2].data, sameAggregate[2].data); // 先证明本阴例的OR遮差前提确实成立。
+        QCOMPARE(members[2].data, sameAggregate[2].data);
+        // 已从实际启动目录确定snap4，OR相同不再因另一未采用网格而拒绝。
+        CheckNativeDoodadNormalSaveAndUndoRedo(members, inPlace, false, nullptr, game);
+    } else {
+        // 来源WPM手写snap2；实际启动目录选snap4，必须按完整旧WPM解释门拒绝。
+        CheckNativeDoodadWorkerRejectsBeforeWrite(members, inPlace, "TERRAIN_PATHING_SOURCE_UNEXPLAINED",
+            NativeDoodadQtMutation::None, game);
     }
-    CheckNativeDoodadWorkerRejectsBeforeWrite(members, inPlace, "TERRAIN_UNIFORM_GRID_VARIANT");
+}
+
+void EditorProjectTests::CGridStartupDirectoryDriftRejectsBeforeWrite_data() {
+    QTest::addColumn<QString>("drift"); QTest::addColumn<bool>("inPlace");
+    for (const auto* drift : {"same-category-profile-bytes", "remove-category", "add-patch", "add-local",
+            "add-basename", "add-relative"}) for (const bool inPlace : {false, true}) {
+        const auto row = QString("c-startup-drift-%1-%2").arg(drift, inPlace ? "in-place" : "save-as").toUtf8();
+        QTest::newRow(row.constData()) << QString::fromUtf8(drift) << inPlace;
+    }
+}
+
+void EditorProjectTests::CGridStartupDirectoryDriftRejectsBeforeWrite() {
+    QFETCH(QString, drift); QFETCH(bool, inPlace);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto game = std::filesystem::path(root.filePath("startup-game").toStdWString());
+    constexpr std::string_view originalProfile = "[DoodadCategories]\nC=custom\n";
+    QVERIFY(WriteStartupCategoryQtGame(game, originalProfile));
+    const auto members = StartupCategoryCQtMembers(12); QVERIFY(!members.empty());
+    int mutationCalls = 0;
+    const auto mutate = [&]() -> Status {
+        ++mutationCalls;
+        const auto fail = [] { return Status::Failure("Test", "CATEGORY_FIXTURE_MUTATION_FAILED", "无法建立实际启动来源漂移。"); };
+        if (drift == "add-basename" || drift == "add-relative") {
+            const auto directory = drift == "add-relative" ? game / "UI" : game;
+            if (drift == "add-relative" && !std::filesystem::create_directory(directory)) return fail();
+            QFile loose(QString::fromStdWString((directory / "WorldEditData.txt").wstring()));
+            const auto bytes = QByteArray::fromStdString(std::string(originalProfile));
+            if (!loose.open(QIODevice::WriteOnly | QIODevice::NewOnly) || loose.write(bytes) != bytes.size() || !loose.flush())
+                return fail();
+            return Status::Ok();
+        }
+        std::string profile(originalProfile);
+        auto target = game / "war3.mpq";
+        if (drift == "same-category-profile-bytes") profile = "[DoodadCategories]\nC=changed-value-same-category\n";
+        else if (drift == "remove-category") profile = "[DoodadCategories]\nE=environment\n";
+        else if (drift == "add-patch") target = game / "war3patch.mpq";
+        else if (drift == "add-local") target = game / "war3local.mpq";
+        else return fail();
+        if (target.filename() == "war3.mpq" && !std::filesystem::remove(target)) return fail();
+        // local只新增一个无关成员，仍须因五包入口从absent变present而拒绝。
+        const std::vector<MapArchiveMember> replacement{{drift == "add-local" ? "owned-unrelated.bin" : "UI/WorldEditData.txt",
+            Tests::WaterText(profile)}};
+        auto written = WriteVerifiedArchive(target, replacement);
+        return written.Succeeded() ? Status::Ok() : Status{std::move(written.diagnostics)};
+    };
+    CheckNativeDoodadWorkerRejectsBeforeWrite(members, inPlace, "TERRAIN_CATEGORY_SOURCE_CHANGED",
+        NativeDoodadQtMutation::None, game, mutate);
+    QCOMPARE(mutationCalls, 1);
+}
+
+void EditorProjectTests::CGridStartupDirectoryUnavailableRejectsBeforeWrite_data() {
+    QTest::addColumn<bool>("rootIsFile"); QTest::addColumn<bool>("inPlace");
+    for (const bool rootIsFile : {false, true}) for (const bool inPlace : {false, true}) {
+        const auto row = QString("c-startup-%1-%2").arg(rootIsFile ? "root-is-file" : "root-required",
+            inPlace ? "in-place" : "save-as").toUtf8();
+        QTest::newRow(row.constData()) << rootIsFile << inPlace;
+    }
+}
+
+void EditorProjectTests::CGridStartupDirectoryUnavailableRejectsBeforeWrite() {
+    QFETCH(bool, rootIsFile); QFETCH(bool, inPlace);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    std::filesystem::path game;
+    if (rootIsFile) {
+        game = std::filesystem::path(root.filePath("not-a-directory").toStdWString());
+        QFile file(QString::fromStdWString(game.wstring())); QVERIFY(file.open(QIODevice::WriteOnly));
+        QCOMPARE(file.write("owned non-directory source"), qint64{26}); file.close();
+    }
+    const auto members = StartupCategoryCQtMembers(12); QVERIFY(!members.empty());
+    CheckNativeDoodadWorkerRejectsBeforeWrite(members, inPlace,
+        rootIsFile ? "TERRAIN_CATEGORY_SOURCE_UNKNOWN" : "TERRAIN_CATEGORY_SOURCE_REQUIRED",
+        NativeDoodadQtMutation::None, game);
 }
 
 void EditorProjectTests::CheckNativeDoodadWorkerRejectsBeforeWrite(const std::vector<MapArchiveMember>& members,
-    bool inPlace, const char* expectedCode, NativeDoodadQtMutation mutation) {
+    bool inPlace, const char* expectedCode, NativeDoodadQtMutation mutation, const std::filesystem::path& gameRoot,
+    const std::function<Status()>& beforePublish) {
     QTemporaryDir root; QVERIFY(root.isValid());
     const auto source = std::filesystem::path(root.filePath("native-doodad-source.w3x").toStdWString());
     const auto target = inPlace ? source : std::filesystem::path(root.filePath("must-not-exist.w3x").toStdWString());
@@ -2090,6 +2243,7 @@ void EditorProjectTests::CheckNativeDoodadWorkerRejectsBeforeWrite(const std::ve
     };
     EditorProject project; QUndoStack undo; project.mapDataUndoStack_ = &undo;
     QVERIFY2(BindTerrainSaveProject(project, source, beforeLoad), qPrintable(sourceDriftError));
+    project.war3GameRoot_ = gameRoot;
     QCOMPARE(project.archiveSession_->SourceSha256(), *sourceSha.value);
     if (mutation == NativeDoodadQtMutation::SourceDrift) {
         QVERIFY(expectedSourceSha != sourceSha.value);
@@ -2139,6 +2293,14 @@ void EditorProjectTests::CheckNativeDoodadWorkerRejectsBeforeWrite(const std::ve
         QVERIFY(texture != members.end());
         auto changed = texture->data; changed[18] ^= std::byte{1};
         job->replacements.push_back({texture->name, std::move(changed)});
+    }
+    if (beforePublish) {
+        const auto* task = job.get();
+        job->beforePublish = [task, beforePublish] {
+            if (!task->terrainSavePlan)
+                return Status::Failure("Test", "CATEGORY_FIXTURE_NO_PLAN", "来源漂移必须发生在真实保存计划捕获之后。");
+            return beforePublish();
+        };
     }
     InstallMapSaveDerivedPreparation(*job); EditorProject::RunMapSave(*job);
     QVERIFY(!job->succeeded && !job->nextSession && !job->terrainReadbackStatus && job->written.empty());
