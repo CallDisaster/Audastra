@@ -100,6 +100,22 @@ void ObserverScanHasItsOwnAggregateBudget() {
     Require(exact >= category.CaptureBudgetBytes() + profile.size(),
         "SHD capture accounts at least one additional visit to every actual profile byte");
 }
+
+void CasterHeightBoundsUseSameFirstValueAppendChain() {
+    Fixture f;
+    f.Loose("MiscGame.txt", "[Terrain]\nMaxHeight=\"+2048\",9999\n");
+    f.Loose("WorldEditData.txt", "[Light]\nDirection=0,0,-1\n[Terrain]\nMaxHeight=99\nMinHeight=-512\n");
+    const auto owner = f.Capture();
+    Require(owner.TerrainHeightBounds() == std::optional(std::array<float,2>{2048,-512}),
+        "caster height bounds consume first appended value from the same actual startup chain");
+    f.Loose("WorldEditData.txt", "[Light]\nDirection=0,0,-1\n[Terrain]\nMinHeight=-511\n");
+    Require(!owner.VerifySources(kBudget).Succeeded(), "height-only actual source drift invalidates the owner");
+    for (const auto invalid : {"MaxHeight=NaN\nMinHeight=-512\n", "MaxHeight=2048\n", "MaxHeight=\"1\"junk\nMinHeight=0\n"}) {
+        Fixture missing;
+        missing.Loose("WorldEditData.txt", std::string("[Light]\nDirection=0,0,-1\n[Terrain]\n") + invalid);
+        Require(!missing.Capture().TerrainHeightBounds(), "unknown caster height bounds do not invent defaults or break no-caster light");
+    }
+}
 } // namespace
 
 int main() {
@@ -108,6 +124,7 @@ int main() {
         NativeRawKeysAndActualWinnerArePreserved();
         UnknownDirectionDoesNotInventDefaults();
         ObserverScanHasItsOwnAggregateBudget();
+        CasterHeightBoundsUseSameFirstValueAppendChain();
         std::cout << "Terrain shadow actual profile resources tests passed\n";
         return 0;
     } catch (const std::exception& error) {

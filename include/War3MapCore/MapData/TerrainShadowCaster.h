@@ -16,6 +16,14 @@ struct TerrainShadowCasterInstanceInput {
     // 宿主 ModelInstanceTransform 的行主序 3×4；不是原版内存中列主序
     // 48 字节的直接副本。来源捕获者须证明与实际摆放世界变换相同。
     std::array<float, 12> nativeMatrix{};
+    // 实际DOO scale * 实际标准表defaultScale，各轴F32；原版球半径用
+    // 三轴普通max。正式来源owner提供，不能从舍入后的矩阵反推。
+    std::array<float, 3> actualScale{1, 1, 1};
+};
+
+struct TerrainShadowCasterFilterInputs {
+    // 同Light startup owner实际捕获的[Terrain] MaxHeight/MinHeight。
+    float maximumTerrainHeight = 0, minimumTerrainHeight = 0;
 };
 
 struct TerrainShadowCasterLimits : TerrainShadowRebuildLimits {
@@ -51,6 +59,18 @@ struct TerrainShadowCasterProjection {
     const TerrainShadowHeightSamples& samples, const std::array<float, 2>& worldOrigin,
     std::span<const TerrainShadowCasterModelInput> models,
     std::span<const TerrainShadowCasterInstanceInput> instances,
+    const TerrainShadowCasterLimits& limits = {}, std::stop_token cancellation = {});
+
+// 正式静态子集：额外重现45F3B0 MODL/首SEQS sphere、46F7F0有限线段
+// 球筛选，以及560E60/560FB0的512区块/128 anchor halo候选筛选。
+// 原版Y终点使用receiver blockX + directionY；此处保持该真实行为。
+// 只接受有限正scale与已证明无控制器模型；资源集合、变换和profile的
+// 实际来源完整性仍须由Services owner在保存前后校验。
+[[nodiscard]] Result<TerrainShadowCasterProjection> ProjectFilteredStaticTerrainShadowCasters(
+    const TerrainShadowHeightSamples& samples, const std::array<float, 2>& worldOrigin,
+    std::span<const TerrainShadowCasterModelInput> models,
+    std::span<const TerrainShadowCasterInstanceInput> instances,
+    const TerrainShadowCasterFilterInputs& filters,
     const TerrainShadowCasterLimits& limits = {}, std::stop_token cancellation = {});
 
 } // namespace War3Map::MapData

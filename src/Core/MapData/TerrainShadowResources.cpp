@@ -27,13 +27,19 @@ bool EqualAscii(std::string_view a, std::string_view b) {
 
 // 409FA0保持行首section/key、不trim；40A190按CSV追加值，带引号时剥外引号。
 // 这里只接收完整有限数字子集；拒绝未知数值语法，绝不选择默认方向。
-Status AppendDirection(std::span<const std::byte> bytes, std::array<float, 3>& values, std::size_t& count) {
+struct HeightBoundsRead {
+    std::array<float, 2> values{};
+    std::array<bool, 2> seen{}, valid{};
+};
+
+Status AppendDirection(std::span<const std::byte> bytes, std::array<float, 3>& values, std::size_t& count,
+    HeightBoundsRead& heights) {
     auto text = bytes.empty() ? std::string_view{}
         : std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size());
     if (text.find('\0') != std::string_view::npos || text.starts_with("\xff\xfe") || text.starts_with("\xfe\xff"))
         return Status::Failure(kSubsystem, "TERRAIN_SHADOW_PROFILE_ENCODING", "方向profile含NUL或不支持的宽字符编码。");
     if (text.starts_with("\xef\xbb\xbf")) text.remove_prefix(3);
-    bool light = false;
+    bool light = false, terrain = false;
     while (!text.empty()) {
         const auto end = text.find_first_of("\r\n");
         const auto line = text.substr(0, end);
@@ -41,10 +47,39 @@ Status AppendDirection(std::span<const std::byte> bytes, std::array<float, 3>& v
         if (line.empty() || line.starts_with("//")) continue;
         if (line.front() == '[') {
             const auto close = line.find(']');
-            if (close != std::string_view::npos) light = EqualAscii(line.substr(1, close - 1), "light");
+            if (close != std::string_view::npos) {
+                light = EqualAscii(line.substr(1, close - 1), "light");
+                terrain = EqualAscii(line.substr(1, close - 1), "terrain");
+            }
             continue;
         }
         const auto equal = line.find('=');
+        if (terrain && equal != std::string_view::npos && equal + 1 < line.size()) {
+            const auto key = line.substr(0, equal);
+            const auto axis = EqualAscii(key, "maxheight") ? 0u : EqualAscii(key, "minheight") ? 1u : 2u;
+            if (axis < 2 && !heights.seen[axis]) {
+                heights.seen[axis] = true;
+                auto token = line.substr(equal + 1);
+                bool syntax = true;
+                if (token.front() == '"') {
+                    token.remove_prefix(1);
+                    const auto close = token.find('"');
+                    syntax = close != std::string_view::npos
+                        && (close + 1 == token.size() || token[close + 1] == ',');
+                    token = token.substr(0, close);
+                } else token = token.substr(0, token.find(','));
+                token = Text::TrimCWhitespace(token);
+                if (token.starts_with('+')) {
+                    token.remove_prefix(1);
+                    if (token.starts_with('+') || token.starts_with('-')) syntax = false;
+                }
+                float number = 0;
+                const auto parsed = std::from_chars(token.data(), token.data() + token.size(), number);
+                heights.valid[axis] = syntax && !token.empty() && parsed.ec == std::errc{}
+                    && parsed.ptr == token.data() + token.size() && std::isfinite(number);
+                heights.values[axis] = number;
+            }
+        }
         if (!light || equal == std::string_view::npos || equal + 1 == line.size()
             || !EqualAscii(line.substr(0, equal), "direction")) continue;
         auto remaining = line.substr(equal + 1);
@@ -90,14 +125,17 @@ Result<TerrainShadowResources> TerrainShadowResources::Capture(const std::filesy
     TerrainShadowResources result;
     std::array<float, 3> editorDirection{};
     std::size_t count = 0;
+    HeightBoundsRead heights;
     auto captured = Game::NativeDoodadCategoryDirectory::CaptureWithProfiles(gameRoot, rules, maximumBytes - kOwnerBytes,
-        [&](std::string_view, std::span<const std::byte> bytes) { return AppendDirection(bytes, editorDirection, count); });
+        [&](std::string_view, std::span<const std::byte> bytes) { return AppendDirection(bytes, editorDirection, count, heights); });
     if (!captured.Succeeded() || !captured.value) return {{}, std::move(captured.diagnostics)};
     if (count != editorDirection.size())
         return Output::Failure(kSubsystem, "TERRAIN_SHADOW_LIGHT", "完整经典profile追加链未提供Direction前三value，不能猜默认方向。");
     auto direction = PrepareTerrainShadowLightDirection(editorDirection);
     if (!direction.Succeeded() || !direction.value) return {{}, std::move(direction.diagnostics)};
     result.lightDirection_ = *direction.value;
+    if (heights.seen[0] && heights.seen[1] && heights.valid[0] && heights.valid[1])
+        result.terrainHeightBounds_ = heights.values;
 
     // 有界长度前缀摘要包括实际来源winner、known absence与正文SHA；不是路径猜测。
     std::vector<std::byte> wire;

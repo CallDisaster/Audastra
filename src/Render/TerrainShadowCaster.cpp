@@ -4,7 +4,9 @@
 #include "War3RenderCore/CompiledModel.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <new>
 #include <stdexcept>
@@ -17,10 +19,43 @@ namespace {
 using Vec3 = std::array<float, 3>;
 using Output = Result<TerrainShadowCasterProjection>;
 struct Triangle { std::array<Vec3, 3> vertices; };
-struct ModelTriangles { std::vector<Triangle> triangles; };
+struct Sphere { Vec3 center{}; float radius = 0; };
+struct ModelTriangles { std::vector<Triangle> triangles; Sphere sphere; };
 
 Output Reject(const char* code, const char* message) {
     return Output::Failure("MapTerrain.Shadow", code, message);
+}
+
+// 共享解析模型不保留SEQS extent；仅从已经完整Parse/Compile过的同份
+// 原字节回读。重复顶层块的原版覆盖/追加语义不在本子集内，明确拒绝。
+std::optional<Sphere> SourceSphere(std::span<const std::byte> bytes) {
+    const auto u32 = [&](std::size_t at) { std::uint32_t value = 0; std::memcpy(&value,bytes.data()+at,4); return value; };
+    const auto f32 = [&](std::size_t at) { return std::bit_cast<float>(u32(at)); };
+    std::array<std::uint32_t,16> seen{};
+    std::size_t seenCount = 0, modl = 0, sequence = 0;
+    for (std::size_t at = 4; at < bytes.size();) {
+        if (bytes.size() - at < 8 || seenCount == seen.size()) return {};
+        const auto tag = u32(at), size = u32(at+4);
+        if (size > bytes.size() - at - 8 || std::find(seen.begin(),seen.begin()+seenCount,tag) != seen.begin()+seenCount) return {};
+        seen[seenCount++] = tag;
+        if (tag == 0x4c444f4du) { if (size != 372) return {}; modl = at+8+340; }
+        if (tag == 0x53514553u && size != 0) { if (size < 132 || size % 132 != 0) return {}; sequence = at+8+104; }
+        at += 8 + size;
+    }
+    if (!modl) return {};
+    auto extent = modl;
+    if (std::abs(f32(modl)) < 0x1p-22 && sequence) extent = sequence;
+    Sphere sphere;
+    sphere.radius = f32(extent);
+    if (!std::isfinite(sphere.radius) || sphere.radius < 0 || sphere.radius > 16777216) return {};
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        const float minimum = f32(extent+4+axis*4), maximum = f32(extent+16+axis*4);
+        if (!std::isfinite(minimum) || !std::isfinite(maximum)
+            || std::abs(minimum) > 16777216 || std::abs(maximum) > 16777216) return {};
+        const float sum = static_cast<float>(static_cast<double>(minimum) + maximum);
+        sphere.center[axis] = static_cast<float>(static_cast<double>(sum) * 0.5);
+    }
+    return sphere;
 }
 
 // 695C20的F32栈存储边界；其余乘加使用double。显式double操作避免
@@ -58,13 +93,17 @@ std::optional<float> IntersectSigned(const Vec3& origin, const Vec3& direction, 
 
 // 566380先按32位端点构造长线，再归一化。不能直接把caller方向视为
 // 已归一化；每个receiver的F32端点舍入也属于本次实际射线。
-std::optional<Vec3> RayDirection(const Vec3& origin, const Vec3& light) {
+Vec3 RayEnd(const Vec3& origin, const Vec3& light) {
     Vec3 end{};
     end[0] = static_cast<float>(1280000.0 * light[0] + origin[0]);
     for (std::size_t axis = 1; axis < 3; ++axis) {
         const float delta = static_cast<float>(1280000.0 * light[axis]);
         end[axis] = static_cast<float>(static_cast<double>(delta) + origin[axis]);
     }
+    return end;
+}
+
+std::optional<Vec3> RayDirection(const Vec3& origin, const Vec3& end) {
     const double dx = static_cast<double>(end[0]) - origin[0];
     const double dy = static_cast<double>(end[1]) - origin[1];
     const double dz = static_cast<double>(end[2]) - origin[2];
@@ -78,12 +117,77 @@ std::optional<Vec3> RayDirection(const Vec3& origin, const Vec3& light) {
     return result;
 }
 
+// 46F7F0保留dot的F32回读，以及中段Y/Z投影的F32暂存；有限segment
+// 的筛选在有符号全三角形min之前执行，不能用无限line代替。
+bool SegmentMeetsSphere(const Vec3& origin, const Vec3& end, const Sphere& sphere) {
+    double ox = static_cast<double>(sphere.center[0]) - origin[0];
+    double oy = static_cast<double>(sphere.center[1]) - origin[1];
+    double oz = static_cast<double>(sphere.center[2]) - origin[2];
+    const float dx = static_cast<float>(static_cast<double>(end[0]) - origin[0]);
+    const float dy = static_cast<float>(static_cast<double>(end[1]) - origin[1]);
+    const float dz = static_cast<float>(static_cast<double>(end[2]) - origin[2]);
+    const double dot = static_cast<double>(dx) * ox + static_cast<double>(dz) * oz + static_cast<double>(dy) * oy;
+    const float dotStored = static_cast<float>(dot);
+    if (dot > 0) {
+        const double length = static_cast<double>(dz) * dz + static_cast<double>(dy) * dy + static_cast<double>(dx) * dx;
+        if (dotStored > length) { ox -= dx; oy -= dy; oz -= dz; }
+        else {
+            const double ratio = dotStored / length;
+            ox -= dx * ratio;
+            oy -= static_cast<float>(dy * ratio);
+            oz -= static_cast<float>(dz * ratio);
+        }
+    }
+    const double distance = ox * ox + oz * oz + oy * oy;
+    return distance <= static_cast<double>(sphere.radius) * sphere.radius;
+}
+
+std::optional<std::array<std::int32_t, 2>> BlockDirection(const TerrainShadowCasterFilterInputs& filters,
+    const Vec3& light) {
+    if (!std::isfinite(filters.maximumTerrainHeight) || !std::isfinite(filters.minimumTerrainHeight)
+        || std::abs(filters.maximumTerrainHeight) > 65536 || std::abs(filters.minimumTerrainHeight) > 65536
+        || filters.maximumTerrainHeight < filters.minimumTerrainHeight || light[2] == 0) return {};
+    const double span = static_cast<double>(filters.maximumTerrainHeight) - filters.minimumTerrainHeight + 384.0;
+    const double inverseZ = 1.0 / light[2];
+    const float x = static_cast<float>(span * light[0] * inverseZ);
+    const double y = inverseZ * (span * light[1]);
+    const auto index = [](double value) -> std::optional<std::int32_t> {
+        const double divided = value / 512.0;
+        // 排除原版int转换溢出域，之后blockX+offset也不会溢出。
+        if (!std::isfinite(divided) || std::abs(divided) > 1048576) return {};
+        return static_cast<std::int32_t>(divided) + (value > 0 ? 1 : 0);
+    };
+    const auto bx = index(x), by = index(y);
+    if (!bx || !by) return {};
+    return std::array<std::int32_t,2>{*bx,*by};
+}
+
+bool BlockContainsCaster(std::uint32_t x, std::uint32_t y, std::uint32_t width, std::uint32_t height,
+    const std::array<float,2>& worldOrigin, const std::array<std::int32_t,2>& direction, const Vec3& anchor) {
+    const auto nx = static_cast<std::int32_t>((width + 15) / 16);
+    const auto ny = static_cast<std::int32_t>((height + 15) / 16);
+    const auto bx = static_cast<std::int32_t>(x / 16), by = static_cast<std::int32_t>(y / 16);
+    const auto endX = bx + direction[0], endY = bx + direction[1]; // 原版560E98确实加blockX。
+    const auto minX = std::max(0, std::min(bx,endX)), maxX = std::min(nx - 1, std::max(bx,endX));
+    const auto minY = std::max(0, std::min(by,endY)), maxY = std::min(ny - 1, std::max(by,endY));
+    // 相邻block的128 halo重叠，整个矩形的anchor候选域连续；无需遍历
+    // 重复block。5E51E0先F32(origin+512)，再F32(+128)。
+    const auto lowX = static_cast<float>(static_cast<double>(worldOrigin[0]) + minX * 512.0);
+    const auto lowY = static_cast<float>(static_cast<double>(worldOrigin[1]) + minY * 512.0);
+    const auto highX = static_cast<float>(static_cast<double>(worldOrigin[0]) + maxX * 512.0);
+    const auto highY = static_cast<float>(static_cast<double>(worldOrigin[1]) + maxY * 512.0);
+    return anchor[0] >= static_cast<float>(static_cast<double>(lowX) - 128.0)
+        && anchor[1] >= static_cast<float>(static_cast<double>(lowY) - 128.0)
+        && anchor[0] <= static_cast<float>(static_cast<double>(static_cast<float>(static_cast<double>(highX) + 512.0)) + 128.0)
+        && anchor[1] <= static_cast<float>(static_cast<double>(static_cast<float>(static_cast<double>(highY) + 512.0)) + 128.0);
+}
+
 } // namespace
 
-Output ProjectStaticTerrainShadowCasters(const TerrainShadowHeightSamples& samples,
+static Output ProjectCasters(const TerrainShadowHeightSamples& samples,
     const std::array<float, 2>& worldOrigin, std::span<const TerrainShadowCasterModelInput> models,
     std::span<const TerrainShadowCasterInstanceInput> instances, const TerrainShadowCasterLimits& limits,
-    std::stop_token cancellation) {
+    std::stop_token cancellation, const TerrainShadowCasterFilterInputs* filters) {
     const TerrainShadowCasterLimits hard;
     if (limits.maximumDimension > hard.maximumDimension || limits.maximumPixels > hard.maximumPixels
         || limits.maximumSampleBytes > hard.maximumSampleBytes || limits.maximumWork > hard.maximumWork
@@ -97,6 +201,10 @@ Output ProjectStaticTerrainShadowCasters(const TerrainShadowHeightSamples& sampl
         || samples.height > limits.maximumPixels / samples.width)
         return Reject("TERRAIN_SHADOW_CASTER_BUDGET", "caster网格超过尺寸或像素预算。");
     const auto count = static_cast<std::size_t>(samples.width) * samples.height;
+    const auto blockDirection = filters ? BlockDirection(*filters, samples.lightDirection)
+        : std::optional<std::array<std::int32_t,2>>{};
+    if (filters && !blockDirection)
+        return Reject("TERRAIN_SHADOW_CASTER_FILTER", "实际地形高度profile或光线不能形成有界原版区块方向。");
     if (count > limits.maximumSampleBytes / sizeof(float))
         return Reject("TERRAIN_SHADOW_CASTER_BUDGET", "caster借用高度场超过样本预算。");
     if (samples.receiverHeights.size() != count)
@@ -177,6 +285,12 @@ Output ProjectStaticTerrainShadowCasters(const TerrainShadowHeightSamples& sampl
             if (candidate.triangles > triangleCapacity || maximumModelTriangles > triangleCapacity - candidate.triangles)
                 return Reject("TERRAIN_SHADOW_CASTER_BUDGET", "caster局部和单实例几何超过内存预算。");
             ModelTriangles model;
+            if (filters) {
+                if (!consume(input.bytes.size())) return Reject("TERRAIN_SHADOW_CASTER_BUDGET", "原始extent回读超过工作预算。");
+                const auto sphere = SourceSphere(input.bytes);
+                if (!sphere) return Reject("TERRAIN_SHADOW_CASTER_SPHERE", "模型缺少有限MODL/首SEQS sphere或含重复顶层块。");
+                model.sphere = *sphere;
+            }
             model.triangles.reserve(visibleTriangles);
             for (const auto& geoset : parsed.value->geosets) {
                 if (geoset.animation && geoset.animation->staticAlpha == 0) continue;
@@ -199,6 +313,24 @@ Output ProjectStaticTerrainShadowCasters(const TerrainShadowHeightSamples& sampl
                 return Reject("TERRAIN_SHADOW_CASTER_INSTANCE", "caster实例指向不存在的模型。");
             for (const auto value : instance.nativeMatrix) if (!std::isfinite(value))
                 return Reject("TERRAIN_SHADOW_CASTER_MATRIX", "caster实际世界矩阵含非有限数。");
+            Sphere worldSphere;
+            const Vec3 anchor{instance.nativeMatrix[3],instance.nativeMatrix[7],instance.nativeMatrix[11]};
+            if (filters) {
+                for (const auto scale : instance.actualScale) if (!std::isfinite(scale) || scale <= 0 || scale > 65536)
+                    return Reject("TERRAIN_SHADOW_CASTER_SCALE", "caster原版sphere需要实际有限正轴scale。");
+                const auto& local = geometry[instance.modelIndex].sphere;
+                worldSphere.radius = static_cast<float>(static_cast<double>(local.radius)
+                    * std::max({instance.actualScale[0],instance.actualScale[1],instance.actualScale[2]}));
+                for (std::size_t axis = 0; axis < 3; ++axis) {
+                    const auto base = axis * 4;
+                    worldSphere.center[axis] = static_cast<float>(static_cast<double>(instance.nativeMatrix[base + 2]) * local.center[2]
+                        + static_cast<double>(instance.nativeMatrix[base + 1]) * local.center[1]
+                        + static_cast<double>(instance.nativeMatrix[base]) * local.center[0] + instance.nativeMatrix[base + 3]);
+                    if (!std::isfinite(worldSphere.center[axis]) || std::abs(worldSphere.center[axis]) > 16777216
+                        || std::abs(anchor[axis]) > 16777216 || !std::isfinite(worldSphere.radius))
+                        return Reject("TERRAIN_SHADOW_CASTER_SPHERE", "caster变换sphere超出有限有界域。");
+                }
+            }
             world.clear();
             for (const auto& triangle : geometry[instance.modelIndex].triangles) {
                 if (cancellation.stop_requested()) return Reject("TERRAIN_SHADOW_CASTER_CANCELLED", "caster世界顶点转换已取消。");
@@ -208,9 +340,9 @@ Output ProjectStaticTerrainShadowCasters(const TerrainShadowHeightSamples& sampl
                     const auto& p = triangle.vertices[corner];
                     for (std::size_t axis = 0; axis < 3; ++axis) {
                         const auto base = axis * 4;
-                        const float value = static_cast<float>(static_cast<double>(instance.nativeMatrix[base]) * p[0]
+                        const float value = static_cast<float>(static_cast<double>(instance.nativeMatrix[base + 2]) * p[2]
                             + static_cast<double>(instance.nativeMatrix[base + 1]) * p[1]
-                            + static_cast<double>(instance.nativeMatrix[base + 2]) * p[2] + instance.nativeMatrix[base + 3]);
+                            + static_cast<double>(instance.nativeMatrix[base]) * p[0] + instance.nativeMatrix[base + 3]);
                         if (!std::isfinite(value) || std::abs(value) > 16777216)
                             return Reject("TERRAIN_SHADOW_CASTER_MATRIX", "caster世界顶点非有限或超出有界F32几何域。");
                         transformed.vertices[corner][axis] = value;
@@ -225,9 +357,12 @@ Output ProjectStaticTerrainShadowCasters(const TerrainShadowHeightSamples& sampl
                     if (!consume()) return Reject("TERRAIN_SHADOW_CASTER_BUDGET", "caster像素检查超过工作预算。");
                     const auto pixel = static_cast<std::size_t>(y) * samples.width + x;
                     if (candidate.casterShadowBits[pixel]) continue;
+                    if (filters && !BlockContainsCaster(x,y,samples.width,samples.height,worldOrigin,*blockDirection,anchor)) continue;
                     const Vec3 origin{static_cast<float>(static_cast<double>(worldOrigin[0]) + x * 32.0 + 16.0),
                         static_cast<float>(static_cast<double>(worldOrigin[1]) + y * 32.0 + 16.0), samples.receiverHeights[pixel]};
-                    const auto direction = RayDirection(origin, samples.lightDirection);
+                    const auto end = RayEnd(origin, samples.lightDirection);
+                    if (filters && !SegmentMeetsSphere(origin,end,worldSphere)) continue;
+                    const auto direction = RayDirection(origin, end);
                     if (!direction) return Reject("TERRAIN_SHADOW_CASTER_LIGHT", "caster长线端点不能形成有限非零射线。");
                     float minimum = std::numeric_limits<float>::max();
                     bool hit = false;
@@ -251,6 +386,20 @@ Output ProjectStaticTerrainShadowCasters(const TerrainShadowHeightSamples& sampl
     } catch (const std::length_error&) {
         return Reject("TERRAIN_SHADOW_CASTER_ALLOCATION", "caster容量不足，未返回部分候选。");
     }
+}
+
+Output ProjectStaticTerrainShadowCasters(const TerrainShadowHeightSamples& samples,
+    const std::array<float,2>& worldOrigin, std::span<const TerrainShadowCasterModelInput> models,
+    std::span<const TerrainShadowCasterInstanceInput> instances, const TerrainShadowCasterLimits& limits,
+    std::stop_token cancellation) {
+    return ProjectCasters(samples,worldOrigin,models,instances,limits,cancellation,nullptr);
+}
+
+Output ProjectFilteredStaticTerrainShadowCasters(const TerrainShadowHeightSamples& samples,
+    const std::array<float,2>& worldOrigin, std::span<const TerrainShadowCasterModelInput> models,
+    std::span<const TerrainShadowCasterInstanceInput> instances, const TerrainShadowCasterFilterInputs& filters,
+    const TerrainShadowCasterLimits& limits, std::stop_token cancellation) {
+    return ProjectCasters(samples,worldOrigin,models,instances,limits,cancellation,&filters);
 }
 
 } // namespace War3Map::MapData
