@@ -13,7 +13,8 @@ namespace War3Map::MapData {
 class MapDataEditSession;
 class TerrainSavePlan;
 
-// 仅证明同一真实会话的完整经典普通DOO修改及特殊尾段逐字不变。
+// 仅证明同一真实会话的完整经典普通DOO修改及saved/current私有特殊模型谱系。
+// 特殊集合可随可信水刷或其Undo/Redo改变；原始尾段覆写不能取得该谱系。
 // 实际对象类别、占地、旧WPM解释和G0/G1仍由保存链另行完成。
 // 此值不能由外部SHA或“已经验证”的布尔构造，也不放宽旧仅Z保存域。
 class TerrainNativeDoodadsProof {

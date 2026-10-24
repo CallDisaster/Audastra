@@ -44,11 +44,6 @@ Result<DoodadPlacements> Roundtrip(std::span<const std::byte> wire) {
             "DOO不能由唯一经典codec逐字往返，未取得普通对象编辑资格。");
     return parsed;
 }
-std::span<const std::byte> SpecialTail(std::span<const std::byte> wire, const DoodadPlacements& parsed) {
-    // 完整经典parser已核数目及EOF；尾段由version/count和每条16字节组成。
-    const auto count = 8 + parsed.specialDoodads.size() * 16;
-    return count <= wire.size() ? wire.last(count) : std::span<const std::byte>{};
-}
 }
 
 Result<std::size_t> TerrainNativeDoodadsProof::RequiredWorkingBytes(
@@ -78,11 +73,12 @@ Result<TerrainNativeDoodadsProof> TerrainNativeDoodadsProof::Prepare(
         auto current = Roundtrip(*after); if (!current.Succeeded() || !current.value) return {{}, std::move(current.diagnostics)};
         const auto provenance = session.VerifyTerrainSpecialDoodadProvenance(*old.value, *current.value);
         if (!provenance.Succeeded()) return {{}, provenance.diagnostics};
-        const auto a = SpecialTail(*before, *old.value), b = SpecialTail(*after, *current.value);
-        if (old.value->version != current.value->version || old.value->subversion != current.value->subversion
-            || a.empty() || !std::equal(a.begin(), a.end(), b.begin(), b.end()))
-            return Output::Failure(kSubsystem, "TERRAIN_NATIVE_DOODADS_SPECIAL_CHANGED",
-                "普通对象修改只能保持原DOO头版本和完整特殊尾段逐字不变；不借此恢复特殊模型删除授权。");
+        if (old.value->version != current.value->version || old.value->subversion != current.value->subversion)
+            return Output::Failure(kSubsystem, "TERRAIN_NATIVE_DOODADS_LAYOUT_CHANGED",
+                "普通对象组合修改须保持原DOO头版本，不能借特殊模型谱系转换记录格式。");
+        // 两份special分别匹配同一会话的saved/current私有集合；这允许水刷的
+        // 删除与Undo/Redo恢复和普通XY修改同存，不从相同尾段字节重建授权。
+        // 原版owner仍分别生成普通/special的G0/G1，并独立冻结桥的完整普通段。
         auto oldSha = Sha256(*before), currentSha = Sha256(*after);
         if (!oldSha.Succeeded() || !oldSha.value) return {{}, std::move(oldSha.diagnostics)};
         if (!currentSha.Succeeded() || !currentSha.value) return {{}, std::move(currentSha.diagnostics)};

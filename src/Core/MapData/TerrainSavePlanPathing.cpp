@@ -30,8 +30,7 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
     std::optional<TerrainNativeDoodadsProof> doodadsProof;
     const auto& sourceDoodads = edits.original_[MapDataEditSession::Index(MapDataKind::Doodads)];
     const auto& currentDoodads = edits.current_[MapDataEditSession::Index(MapDataKind::Doodads)];
-    if (sourceDoodads != currentDoodads && sourceDoodads && currentDoodads
-        && edits.specialDoodads_ == edits.savedSpecialDoodads_) {
+    if (sourceDoodads != currentDoodads && sourceDoodads && currentDoodads) {
         if (total > limits.maximumBytes)
             return Output::Failure(kSubsystem, "TERRAIN_SAVE_PLAN_BUDGET", "地形计划没有剩余普通DOO核对预算。");
         const auto required = TerrainNativeDoodadsProof::RequiredWorkingBytes(
