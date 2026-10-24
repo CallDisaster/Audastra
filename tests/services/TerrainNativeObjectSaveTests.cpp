@@ -2142,10 +2142,15 @@ void MixedObjectAndResourceSavesUseActualPathingDependencies() {
         Check(document.AddModification({ObjectType::Unit, "hfoo"}, {"uhpm"}, NativeValueType::Int32, life));
         return Take(NativeObjectCodec(ObjectType::Unit).Serialize(document));
     };
-    for (const bool existing : {false, true}) {
+    for (const bool existing : {false, true}) for (const bool blight : {false, true}) {
         Fixture f;
         if (existing) f.members.push_back({"war3map.w3u", unitBytes(0)});
-        f.Open(); f.Paint();
+        f.Open();
+        if (blight) {
+            TerrainBrush brush; brush.kind = TerrainBrushKind::Blight; brush.shape = TerrainBrushShape::Square;
+            brush.radius = 8; brush.value = true;
+            Take(f.edits->EditTerrain(brush, std::span(&f.point, 1), false));
+        } else f.Paint();
         const auto sourceSha = Take(Sha256File(f.archive->SourcePath()));
         auto output = f.edits->Replacements();
         output.push_back({"war3map.w3u", unitBytes(1)});
@@ -2158,8 +2163,13 @@ void MixedObjectAndResourceSavesUseActualPathingDependencies() {
         auto saved = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(target, output)).path));
         Check(plan.VerifyReadback(saved));
         Require(Take(saved.ReadMember("war3map.w3u")) == unitBytes(1), "mixed unit HP is written exactly");
-        Require(Take(saved.ReadMember("war3map.w3e")) == f.ExpectedTerrain(true), "mixed save keeps complete independently expected terrain");
-        Require(Take(saved.ReadMember("war3map.wpm")) == f.ExpectedPathing(true), "mixed save keeps complete independently expected WPM");
+        auto expectedTerrain = f.original;
+        if (blight) for (auto& vertex : expectedTerrain.vertices) vertex.textureAndFlagsRaw |= 0x20;
+        else for (auto& vertex : expectedTerrain.vertices) vertex.waterHeightAndFlagsRaw = 8192 + 80 * 4;
+        auto expectedPathing = f.ExpectedPathing(!blight);
+        if (blight) for (std::size_t i = 16; i < expectedPathing.size(); ++i) expectedPathing[i] |= std::byte{0x20};
+        Require(Take(saved.ReadMember("war3map.w3e")) == Take(SerializeMapTerrain(expectedTerrain)), "mixed save keeps complete independently expected terrain");
+        Require(Take(saved.ReadMember("war3map.wpm")) == expectedPathing, "mixed save keeps complete independently expected WPM");
         Require(Take(saved.ReadMember("war3mapImported/independent.blp")) == Text("independent author resource"),
             "unrelated import is preserved in the same save");
         Require(Take(Sha256File(f.archive->SourcePath())) == sourceSha, "mixed save leaves source untouched");
@@ -2168,6 +2178,8 @@ void MixedObjectAndResourceSavesUseActualPathingDependencies() {
         const auto unit = std::find_if(mutated.begin(), mutated.end(), [](const auto& member) { return member.name == "war3map.w3u"; });
         unit->data = unitBytes(2);
         Require(!plan.VerifyFrozenOutput(f.archive->SourceSha256(), mutated).Succeeded(), "final unit output cannot change after preparation");
+        auto wrong = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(f.root / "wrong-unit.w3x", mutated)).path));
+        Require(!plan.VerifyReadback(wrong).Succeeded(), "readback independently catches modified unit HP including blight-only saves");
         mutated = output;
         std::erase_if(mutated, [](const auto& member) { return member.name == "war3map.w3u"; });
         Require(!plan.VerifyFrozenOutput(f.archive->SourceSha256(), mutated).Succeeded(), "prepared unit output cannot be silently omitted");
