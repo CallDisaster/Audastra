@@ -6,6 +6,7 @@
 #include "War3MapCore/MapData/TerrainCliffEditing.h"
 #include "War3MapCore/MapData/TerrainRampEditing.h"
 #include "War3MapCore/ObjectData/ObjectImport.h"
+#include "War3MapCore/Script/MapScriptBuild.h"
 #include "War3MapCore/Services/ObjectTransactionSnapshot.h"
 #include "War3MapCore/Services/TerrainMinimapMarkers.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
@@ -16,6 +17,7 @@
 #include <array>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <stdexcept>
 
@@ -163,6 +165,44 @@ void CheckRealGroundBrushSave(const MapArchiveSession& original,
         Require(std::filesystem::create_directory(scenario), "exclusive ground brush scenario");
         std::vector<MemberReplacement> seeded{{"war3map.wpm", baseline},
             {"war3map.shd", shadowBytes}, {"war3map.mmp", markerBytes}};
+        std::string authorReference;
+        std::vector<std::byte> expectedStrings;
+        constexpr std::string_view originalAuthor = "Original terrain author reference";
+        constexpr std::string_view finalAuthor = "Final terrain author body";
+        if (renamed) {
+            // 在同一原创来源上加唯一引用和未改哨兵；WTS期望直接替换已知正文，
+            // 不调用产品字段层或字符串writer来生成保存后的oracle。
+            const auto captured = Take(original.CaptureExactMembers(std::array<std::string, 1>{"war3map.wts"}));
+            Require(captured.size() == 1, "capture exact original string-table presence");
+            const auto& originalStrings = captured.front().bytes;
+            const auto parsed = Take(ParseStringTable(originalStrings));
+            std::uint32_t largest = 0;
+            for (const auto& entry : parsed.entries) largest = (std::max)(largest, entry.id);
+            Require(largest <= (std::numeric_limits<std::uint32_t>::max)() - 2,
+                "original fixture has two unused string IDs");
+            const auto authorId = largest + 1;
+            authorReference = "TRIGSTR_000" + std::to_string(authorId);
+            std::string strings(originalStrings.empty() ? "" : reinterpret_cast<const char*>(originalStrings.data()),
+                originalStrings.size());
+            if (!strings.empty() && strings.back() != '\n') strings += "\r\n";
+            strings += "// terrain author reference: preserve formatting\r\nSTRING " + std::to_string(authorId)
+                + "\r\n{\r\n";
+            const auto authorOffset = strings.size();
+            strings += originalAuthor;
+            strings += "\r\n}\r\n// untouched terrain sentinel\r\nSTRING " + std::to_string(authorId + 1)
+                + "\r\n{\r\nUntouched terrain string body\r\n}\r\n";
+            auto expected = strings;
+            expected.replace(authorOffset, originalAuthor.size(), finalAuthor);
+            const auto wire = [](std::string_view text) {
+                const auto bytes = std::as_bytes(std::span(text.data(), text.size()));
+                return std::vector<std::byte>(bytes.begin(), bytes.end());
+            };
+            seeded.push_back({"war3map.wts", wire(strings)});
+            expectedStrings = wire(expected);
+            auto settings = Take(MapSettings::Parse(Take(original.ReadMember("war3map.w3i"))));
+            settings.author = authorReference;
+            seeded.push_back({"war3map.w3i", Take(settings.Serialize())});
+        }
         if (mixed) {
             using namespace ObjectData;
             auto units = Take(NativeObjectDocument::CreateEmpty(ObjectType::Unit));
@@ -181,14 +221,24 @@ void CheckRealGroundBrushSave(const MapArchiveSession& original,
         std::vector<std::byte> expectedSettings;
         if (renamed) {
             const auto settingsBytes = Take(source.ReadMember("war3map.w3i"));
-            const std::array<MapArchiveMember, 1> settingsMembers{{{"war3map.w3i", settingsBytes}}};
+            const auto stringBytes = Take(source.ReadMember("war3map.wts"));
+            const std::array<MapArchiveMember, 2> settingsMembers{{{"war3map.w3i", settingsBytes}, {"war3map.wts", stringBytes}}};
             const auto settingsMap = MapDocument::FromMembers(settingsMembers);
+            Require(settingsMap.Settings() && settingsMap.Settings()->author == authorReference
+                && Take(settingsMap.ResolveString(authorReference)) == originalAuthor,
+                "original mixed source binds the exact zero-padded author reference to its unique WTS body");
             const auto* field = FindMapField(MapDataKind::Settings, "map_name");
             Require(field != nullptr, "shared map-name field is writable");
             const auto beforeName = Take(ReadMapField(settingsMap, MapDataKind::Settings, 0, *field));
             const auto afterName = Take(ParseMapFieldInput(*field, "Terrain texture and final map name"));
             request.fieldEdits = {{Take(Sha256(settingsBytes)), {MapDataKind::Settings, 0,
                 Take(MapFieldRowKey(settingsMap, MapDataKind::Settings, 0)), "map_name", beforeName, afterName}}};
+            const auto* author = FindMapField(MapDataKind::Settings, "author");
+            Require(author != nullptr, "shared author field is writable through its existing WTS reference");
+            request.fieldEdits.push_back({Take(Sha256(settingsBytes)), {MapDataKind::Settings, 0,
+                Take(MapFieldRowKey(settingsMap, MapDataKind::Settings, 0)), "author",
+                Take(ReadMapField(settingsMap, MapDataKind::Settings, 0, *author)),
+                Take(ParseMapFieldInput(*author, finalAuthor))}});
             auto expected = Take(MapSettings::Parse(settingsBytes));
             expected.mapName = "Terrain texture and final map name";
             expectedSettings = Take(expected.Serialize());
@@ -273,14 +323,31 @@ void CheckRealGroundBrushSave(const MapArchiveSession& original,
         if (!mixed && !renamed) Require(saved.scriptPreserved, "ground save preserves the compiled playable initialization");
         if (mixed) Require(Take(readback.ReadMember("war3map.w3u")) == expectedUnits, "public mixed save reads back HP zero to one exactly");
         if (renamed) Require(Take(readback.ReadMember("war3map.w3i")) == expectedSettings
-            && saved.appliedFieldEditCount == 1 && saved.appliedStrokeCount == 1 && saved.generatedMissingMinimap.has_value(),
+            && Take(readback.ReadMember("war3map.wts")) == expectedStrings
+            && saved.appliedFieldEditCount == 2 && saved.appliedStrokeCount == 1 && saved.generatedMissingMinimap.has_value(),
             "real script preparation and automatic minimap consume the final typed settings alongside terrain");
+        if (renamed) {
+            const auto map = MapDocument::FromArchive(readback);
+            Require(map.Settings() && map.Settings()->author == authorReference
+                && Take(map.ResolveString(authorReference)) == finalAuthor,
+                "independent reopen preserves the author reference and only replaces the exact requested WTS body");
+            const auto script = Take(readback.ReadMember(Script::MapScriptMemberName(readback)));
+            const std::string_view scriptText(reinterpret_cast<const char*>(script.data()), script.size());
+            Require(!saved.scriptPreserved && scriptText.find("Terrain texture and final map name") != std::string_view::npos,
+                "compiled final script contains the new map name instead of preserving the source script");
+            const auto minimap = Take(readback.ReadMember("war3mapMap.blp"));
+            Require(minimap.size() == saved.generatedMissingMinimap->encodedBlpBytes
+                && Take(Sha256(minimap)) == saved.generatedMissingMinimap->encodedBlpSha256
+                && saved.generatedMissingMinimap->width == 256 && saved.generatedMissingMinimap->height == 256
+                && saved.generatedMissingMinimap->encodedMipCount == 1,
+                "actual generated single-mip BLP independently reads back with the helper receipt identity");
+        }
         for (const auto& member : source.Members()) {
             const auto name = Text::LowerAscii(member.name);
             if (name == "war3map.w3e" || name == "war3map.wpm" || name == "war3mapmap.blp" || name == "war3map.mmp") continue;
             if ((mixed || renamed) && (name == "war3map.j" || name == "scripts/war3map.j")) continue;
             if (mixed && name == "war3map.w3u") continue;
-            if (renamed && name == "war3map.w3i") continue;
+            if (renamed && (name == "war3map.w3i" || name == "war3map.wts")) continue;
             Require(Take(readback.ReadMember(member.name)) == member.data, "ground save preserves every unrelated member");
         }
         verifyDerived(readback, "saved", cliff ? "cliff" : "texture", expectedMarkerOwner->Bytes());
