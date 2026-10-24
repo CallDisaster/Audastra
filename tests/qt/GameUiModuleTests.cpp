@@ -73,6 +73,7 @@ private slots:
     void AuthoringStagesDescriptionImport();
     void DescriptionDataTablesEdit();
     void GeneratesDescriptionTriggers();
+    void FramePropertiesEditLayoutAndText();
 };
 
 void GameUiModuleTests::BuildsSceneFromDefinitions() {
@@ -611,6 +612,128 @@ void GameUiModuleTests::GeneratesDescriptionTriggers() {
     QVERIFY(!module.GenerateDescriptionTriggers(QStringLiteral("Cast"), false, &error));
     QVERIFY(error.contains(QStringLiteral("Minimap")));
     QVERIFY(!category() && project.triggerUndoStack_->index() == 0);
+}
+
+void GameUiModuleTests::FramePropertiesEditLayoutAndText() {
+    QtProject::EditorProject project;
+    Modules::GameUiModule module(project);
+    auto* page = module.Widget();
+    module.LoadDefinitionsForTesting(SyntheticDefinitions());
+    QString error;
+    QVERIFY2(module.CreateDescription(QStringLiteral("Hud"), {}, &error), qPrintable(error));
+    QCOMPARE(module.AddDescriptionFrame(UiFrameType::Backdrop, &error), QStringLiteral("back1"));
+    QVERIFY(module.SelectFrame(QStringLiteral("Hud")));
+    QCOMPARE(module.AddDescriptionFrame(UiFrameType::Text, &error), QStringLiteral("text1"));
+    const auto frame = [&module](const char* id) { return FindUiFrame(*module.Description(QStringLiteral("Hud")), id); };
+    auto* properties = page->findChild<QTreeWidget*>(QStringLiteral("gameUiProperties"));
+    QVERIFY(properties);
+    const auto field = [properties](const QString& label, const QString& group = {}) -> QTreeWidgetItem* {
+        for (QTreeWidgetItemIterator it(properties); *it; ++it) {
+            if ((*it)->text(0) != label || !((*it)->flags() & Qt::ItemIsEditable)) continue;
+            if (group.isEmpty() || ((*it)->parent() && (*it)->parent()->text(0) == group)) return *it;
+        }
+        return nullptr;
+    };
+    const auto edit = [](QTreeWidgetItem* item, const QString& text) {
+        QVERIFY(item);
+        item->setText(1, text);
+        QCoreApplication::processEvents();
+    };
+    // 选择类字段：像作者一样打开编辑器、从列表里选。
+    const auto open = [properties](QTreeWidgetItem* item) -> QComboBox* {
+        if (!item) return nullptr;
+        properties->setCurrentItem(item, 1);
+        properties->editItem(item, 1);
+        return properties->viewport()->findChild<QComboBox*>();
+    };
+    const auto choose = [&](QTreeWidgetItem* item, const QString& value) {
+        QComboBox* box = open(item);
+        QVERIFY(box);
+        const int index = box->findData(value);
+        QVERIFY2(index >= 0, qPrintable(value));
+        box->setCurrentIndex(index);
+        emit box->activated(index);
+        QCoreApplication::processEvents();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    };
+    const auto steps = [&project] { return project.AssetUndoStack()->count(); };
+
+    // 文字：对齐、颜色、字体。
+    QVERIFY(field(QStringLiteral("水平对齐")));
+    QCOMPARE(field(QStringLiteral("水平对齐"))->text(1), QStringLiteral("居中"));
+    choose(field(QStringLiteral("水平对齐")), QStringLiteral("left"));
+    QVERIFY(frame("text1")->justifyH == JustifyH::Left);
+    QCOMPARE(field(QStringLiteral("水平对齐"))->text(1), QStringLiteral("左"));
+    const auto before = steps();
+    choose(field(QStringLiteral("水平对齐")), QStringLiteral("left"));  // 选回同一项不产生修改
+    QCOMPARE(steps(), before);
+    choose(field(QStringLiteral("竖直对齐")), QStringLiteral("bottom"));
+    QVERIFY(frame("text1")->justifyV == JustifyV::Bottom);
+    edit(field(QStringLiteral("颜色")), QStringLiteral("#80FF0000"));
+    QCOMPARE(frame("text1")->color, (std::array<double, 4>{1.0, 0.0, 0.0, 0.502}));
+    QCOMPARE(field(QStringLiteral("颜色"))->text(1), QStringLiteral("#80FF0000"));
+    edit(field(QStringLiteral("颜色")), QStringLiteral("red"));
+    QCOMPARE(frame("text1")->color[3], 0.502);
+    edit(field(QStringLiteral("颜色")), QString());
+    QCOMPARE(frame("text1")->color, (std::array<double, 4>{1.0, 1.0, 1.0, 1.0}));
+    edit(field(QStringLiteral("字体")), QStringLiteral("Fonts\\FRIZQT__.TTF"));
+    QCOMPARE(frame("text1")->font, std::string("Fonts\\FRIZQT__.TTF"));
+
+    // 锚点：目标只列自身以外的框架；改对齐点时目标点保持不变。
+    QComboBox* targets = open(field(QStringLiteral("目标"), QStringLiteral("锚点 1")));
+    QVERIFY(targets);
+    QVERIFY(targets->findData(QStringLiteral("back1")) >= 0);
+    QVERIFY(targets->findData(QStringLiteral("text1")) < 0);
+    QVERIFY(targets->findData(QStringLiteral("game:Minimap")) >= 0);
+    emit properties->itemDelegateForColumn(1)->closeEditor(targets);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    choose(field(QStringLiteral("目标"), QStringLiteral("锚点 1")), QStringLiteral("back1"));
+    choose(field(QStringLiteral("对齐点"), QStringLiteral("锚点 1")), QStringLiteral("TOPLEFT"));
+    QCOMPARE(frame("text1")->anchors.size(), std::size_t{1});
+    QVERIFY(frame("text1")->anchors[0].target == UiAnchorTarget::Frame);
+    QCOMPARE(frame("text1")->anchors[0].targetId, std::string("back1"));
+    QVERIFY(frame("text1")->anchors[0].point == FramePoint::TopLeft);
+    QVERIFY(frame("text1")->anchors[0].targetPoint == FramePoint::Center);
+    choose(field(QStringLiteral("目标点"), QStringLiteral("锚点 1")), QStringLiteral("BOTTOMLEFT"));
+    QVERIFY(frame("text1")->anchors[0].targetPoint == FramePoint::BottomLeft);
+    edit(field(QStringLiteral("横向偏移"), QStringLiteral("锚点 1")), QStringLiteral("0.01"));
+    QCOMPARE(frame("text1")->anchors[0].x, 0.01);
+    choose(field(QStringLiteral("目标"), QStringLiteral("锚点 1")), QStringLiteral("parent"));
+    QVERIFY(frame("text1")->anchors[0].target == UiAnchorTarget::Parent);
+
+    QVERIFY2(module.AddDescriptionAnchor(&error), qPrintable(error));
+    QCOMPARE(frame("text1")->anchors.size(), std::size_t{2});
+    QVERIFY(frame("text1")->anchors[1].point == FramePoint::Center);
+    QVERIFY(field(QStringLiteral("对齐点"), QStringLiteral("锚点 2")));
+    QVERIFY2(module.RemoveDescriptionAnchor(0, &error), qPrintable(error));
+    QCOMPARE(frame("text1")->anchors.size(), std::size_t{1});
+    QVERIFY(frame("text1")->anchors[0].point == FramePoint::Center);
+    QVERIFY2(module.RemoveDescriptionAnchor(0, &error), qPrintable(error));
+    QVERIFY(frame("text1")->anchors.empty());
+    QVERIFY(!module.RemoveDescriptionAnchor(0, &error));
+
+    // 重复：填次数才有间距，清空次数即不重复。
+    QVERIFY(field(QStringLiteral("次数")));
+    QVERIFY(!field(QStringLiteral("横向间距")));
+    edit(field(QStringLiteral("次数")), QStringLiteral("3"));
+    QVERIFY(frame("text1")->repeat && frame("text1")->repeat->count == 3);
+    edit(field(QStringLiteral("横向间距")), QStringLiteral("0.02"));
+    QCOMPARE(frame("text1")->repeat->dx, 0.02);
+    edit(field(QStringLiteral("次数")), QStringLiteral("0"));
+    QCOMPARE(frame("text1")->repeat->count, 3u);
+    edit(field(QStringLiteral("次数")), QString());
+    QVERIFY(!frame("text1")->repeat);
+
+    // 模板框架：从游戏界面文件的模板添加，模板名可从列表改。
+    const QStringList templates = module.FrameTemplates();
+    QCOMPARE(templates.size(), qsizetype{2});
+    QVERIFY(templates.contains(QStringLiteral("ConsoleUI")) && templates.contains(QStringLiteral("Box")));
+    QVERIFY(module.AddDescriptionTemplate({}, &error).isEmpty());
+    QCOMPARE(module.AddDescriptionTemplate(QStringLiteral("Box"), &error), QStringLiteral("template1"));
+    QCOMPARE(frame("template1")->templateName, std::string("Box"));
+    QVERIFY(field(QStringLiteral("模板")));
+    choose(field(QStringLiteral("模板")), QStringLiteral("ConsoleUI"));
+    QCOMPARE(frame("template1")->templateName, std::string("ConsoleUI"));
 }
 
 int main(int argc, char** argv) {

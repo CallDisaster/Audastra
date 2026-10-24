@@ -25,4 +25,8 @@ namespace War3Map::Modules {
     return QJsonDocument::fromJson(QByteArray::fromStdString(GameUi::SerializeUiFrame(frame))).object();
 }
 
+[[nodiscard]] inline QJsonArray AnchorsOf(const GameUi::UiFrame& frame) {
+    return FrameObject(frame).value(QStringLiteral("anchors")).toArray();
+}
+
 } // namespace War3Map::Modules

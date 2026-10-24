@@ -330,7 +330,7 @@ void GameUiModule::BuildPage() {
         if (!MoveDescriptionFrame(node, dx, dy, &error)) ReportAuthoring(error);
     });
     connect(rawFields_, &QCheckBox::toggled, this, &GameUiModule::UpdateProperties);
-    connect(properties_, &QTreeWidget::itemChanged, this, &GameUiModule::OnPropertyEdited);
+    InstallPropertyEditors();
     // Delete 删除所选的描述框架（节点树与画布上都可用）。
     for (QWidget* target : std::initializer_list<QWidget*>{nodes_, canvas_}) {
         auto* remove = new QAction(target);

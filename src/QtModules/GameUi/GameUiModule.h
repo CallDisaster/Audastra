@@ -22,6 +22,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 class QCheckBox;
@@ -29,6 +30,7 @@ class QComboBox;
 class QJsonArray;
 class QLabel;
 class QLineEdit;
+class QPoint;
 class QPushButton;
 class QSplitter;
 class QStandardItemModel;
@@ -69,6 +71,8 @@ public:
     [[nodiscard]] const GameUi::FrameDrawList& DrawList() const noexcept { return drawList_; }
     [[nodiscard]] QStringList Roots() const { return roots_; }
     [[nodiscard]] QStringList AvailableTemplates() const;
+    // 可作为描述模板框架的模板名（AvailableTemplates 去掉脚本界面与游戏代码区域两个汇总根）。
+    [[nodiscard]] QStringList FrameTemplates() const;
     bool AddRoot(const QString& name);
     bool RemoveRoot(const QString& name);
     void SetRace(const QString& race);
@@ -111,7 +115,12 @@ public:
     bool EditDescription(const QString& id, const QString& edits, const QString& undoLabel, QString* error = nullptr);
     // 在所选描述框架下（选中描述根节点时为顶层）添加一个框架并选中它；返回新框架编号，失败为空。
     QString AddDescriptionFrame(GameUi::UiFrameType type, QString* error = nullptr);
+    // 在所选描述框架下添加游戏或地图界面文件里的模板框架。
+    QString AddDescriptionTemplate(const QString& templateName, QString* error = nullptr);
     bool RemoveSelectedDescriptionFrame(QString* error = nullptr);
+    // 给所选描述框架加一个锚点（取第一个没用过的对齐点）、删去第 index 个锚点。
+    bool AddDescriptionAnchor(QString* error = nullptr);
+    bool RemoveDescriptionAnchor(int index, QString* error = nullptr);
     // 平移描述框架的全部锚点（屏幕单位）；重复实例平移的是整组。
     bool MoveDescriptionFrame(std::uint32_t node, double dx, double dy, QString* error = nullptr);
     // 由界面描述生成自然 T（UiTriggers.h），整批写进触发器编辑器的 AudastraUI 类别，走触发器撤销栈；
@@ -170,8 +179,16 @@ private:
     QList<QWidget*> BuildAuthoringControls(QWidget* toolbar);
     void UpdateAuthoringControls();
     bool StageDescription(GameUi::UiDescription description, bool create, const QString& undoLabel, QString* error);
+    QString AddFrameObject(QJsonObject frame, const char* idPrefix, QString* error);
+    // 属性树“编辑”一组（GameUiFrameProperties.cpp）。
+    void InstallPropertyEditors();
     void AddEditableRows(QTreeWidgetItem* group, const GameUi::UiFrame& frame);
     void OnPropertyEdited(QTreeWidgetItem* item, int column);
+    void ShowPropertyMenu(const QPoint& position);
+    [[nodiscard]] const GameUi::UiFrame* SelectedDescriptionFrame(QString* descriptionId = nullptr) const;
+    // 选择类字段的可选项（显示文字、取值）；不是选择类字段时为空。
+    [[nodiscard]] QList<std::pair<QString, QString>> PropertyChoices(const QString& key) const;
+    [[nodiscard]] bool PropertyFreeText(const QString& key) const;
     void ReportAuthoring(const QString& error);
     void OnItemChanged(QTreeWidgetItem* item, int column);
     [[nodiscard]] QString NodeKey(std::uint32_t node) const;
