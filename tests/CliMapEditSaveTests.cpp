@@ -120,6 +120,51 @@ void NativeWaterUsesExplicitTypedArguments() {
     Rejected(Invoke(args), "requires eight arguments");
 }
 
+void CliffUsesTypedClassicSizeAndDoesNotAliasTextureToLevel() {
+    const auto base = [](bool textureOnly) {
+        auto args = Arguments();
+        args.insert(args.end(), {textureOnly ? L"--cliff-texture" : L"--cliff-stroke",
+            L"square", L"32", L"32", L"2", L"1"});
+        if (!textureOnly) args.insert(args.end(), {L"-1", L"4294967295"});
+        return args;
+    };
+    for (const bool textureOnly : {false, true}) {
+        const auto result = Invoke(base(textureOnly));
+        Require(result.exitCode != 0 && result.output.empty()
+            && result.error.find("SOURCE_LEASE_FAILED") != std::string::npos
+            && result.error.find("SAVE_STROKE_KIND") == std::string::npos,
+            "typed cliff level and pure texture must pass kind validation and reach the actual source gate");
+        for (const auto size : {L"0", L"9", L"1.5", L"-1"}) {
+            auto args = base(textureOnly); args[12] = size;
+            Rejected(Invoke(args), "size 1..8");
+        }
+        for (const auto slot : {L"15", L"-1", L"0.5"}) {
+            auto args = base(textureOnly); args[13] = slot;
+            Rejected(Invoke(args), "cliff slot 0..14");
+        }
+        auto args = base(textureOnly); args[10] = L"4294967296";
+        Rejected(Invoke(args), "uint32 vertex indices");
+        args = base(textureOnly); args[9] = L"triangle";
+        Rejected(Invoke(args), "shape must be circle or square");
+        args = base(textureOnly); args.pop_back();
+        Rejected(Invoke(args), textureOnly ? "requires five arguments" : "requires seven arguments");
+    }
+    for (const auto delta : {L"-2", L"2", L"0.5"}) {
+        auto args = base(false); args[14] = delta;
+        Rejected(Invoke(args), "level delta -1..1");
+    }
+    for (const auto seed : {L"-1", L"4294967296", L"1.5"}) {
+        auto args = base(false); args[15] = seed;
+        Rejected(Invoke(args), "uint32 seed");
+    }
+    auto args = base(true); args.push_back(L"4294967295");
+    Rejected(Invoke(args), "unknown map-edit-save option");
+    args = Arguments();
+    for (int i = 0; i < 129; ++i)
+        args.insert(args.end(), {L"--cliff-texture", L"circle", L"32", L"32", L"1", L"0"});
+    Rejected(Invoke(args), "at most 128 ordered strokes");
+}
+
 void RampUsesExplicitBooleanAndTheSharedSaveGate() {
     const auto base = [] {
         auto args = Arguments();
@@ -205,6 +250,7 @@ int main() {
         ShadowCalculationUsesTheSharedSaveService();
         TypedTextureAndWaterReachTheSaveService();
         NativeWaterUsesExplicitTypedArguments();
+        CliffUsesTypedClassicSizeAndDoesNotAliasTextureToLevel();
         RampUsesExplicitBooleanAndTheSharedSaveGate();
         CornerRampUsesOneWorldPointAndStrictBoolean();
         BoundsUseIntegerHalfOpenCellsAndShareOrderedCommandLimit();

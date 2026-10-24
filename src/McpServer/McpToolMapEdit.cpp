@@ -139,6 +139,8 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
     const bool ramp = kind.toString() == "ramp";
     const bool corner = kind.toString() == "corner_ramp";
     const bool texture = kind.toString() == "texture", water = kind.toString() == "water_height";
+    const bool cliffLevel = kind.toString() == "cliff_level", cliffTexture = kind.toString() == "cliff_texture";
+    const bool cliffBrush = cliffLevel || cliffTexture;
     const bool newWater = kind.toString() == "shallow_water" || kind.toString() == "deep_water";
     Services::MapEditTerrainStroke stroke;
     MapData::TerrainWaterStrokeOptions waterOptions;
@@ -150,11 +152,13 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
     else if (kind.toString() == "smooth") stroke.brush.kind = MapData::TerrainBrushKind::Smooth;
     else if (texture) stroke.brush.kind = MapData::TerrainBrushKind::Texture;
     else if (water) stroke.brush.kind = MapData::TerrainBrushKind::WaterHeight;
+    else if (cliffLevel) stroke.brush.kind = MapData::TerrainBrushKind::CliffLevel;
+    else if (cliffTexture) stroke.brush.kind = MapData::TerrainBrushKind::CliffTexture;
     else if (newWater) waterOptions.kind = kind.toString() == "shallow_water"
         ? MapData::TerrainWaterBrushKind::Shallow : MapData::TerrainWaterBrushKind::Deep;
     else {
         error = Failure("MCP_MAP_EDIT_TERRAIN_KIND_UNSUPPORTED",
-            "当前接受 raise/lower/smooth/blight/ramp/corner_ramp/texture/water_height/shallow_water/deep_water；通行性仍由同一保存服务核验。");
+            "当前接受 raise/lower/smooth/blight/ramp/corner_ramp/texture/cliff_level/cliff_texture/water_height/shallow_water/deep_water；通行性仍由同一保存服务核验。");
         return std::nullopt;
     }
     if (!OnlyFields(object, corner
@@ -162,6 +166,12 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
             : newWater
             ? std::initializer_list<std::string_view>{"kind", "shape", "point_space", "size", "cliff_texture",
                   "seed", "enforce_water_limits", "points", "follow_doodads"}
+            : cliffLevel
+            ? std::initializer_list<std::string_view>{"kind", "shape", "point_space", "size", "cliff_texture",
+                  "level_delta", "seed", "points", "follow_doodads"}
+            : cliffTexture
+            ? std::initializer_list<std::string_view>{"kind", "shape", "point_space", "size", "cliff_texture",
+                  "points", "follow_doodads"}
             : blight
             ? std::initializer_list<std::string_view>{"kind", "shape", "point_space", "radius",
                   "points", "follow_doodads", "set_blight"}
@@ -229,6 +239,30 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
         waterOptions.randomSeed = static_cast<std::uint32_t>(seed);
         waterOptions.enforceWaterLimits = enforce.toBool();
         stroke.waterBrush = waterOptions;
+    } else if (cliffBrush) {
+        const auto size = Integer(object, "size", error);
+        if (!size) return std::nullopt;
+        const auto slot = Integer(object, "cliff_texture", error);
+        if (!slot) return std::nullopt;
+        if (*size < 1 || *size > 8 || *slot < 0 || *slot > 14) {
+            error = Failure("MCP_MAP_EDIT_TERRAIN_CLIFF_BRUSH_INVALID", "悬崖笔刷须指定整数 size=1..8 与 cliff_texture=0..14；实际槽位仍由源图核验。");
+            return std::nullopt;
+        }
+        stroke.brush.size = static_cast<std::uint32_t>(*size);
+        stroke.brush.cliffTexture = static_cast<std::uint8_t>(*slot);
+        if (cliffLevel) {
+            const auto delta = Integer(object, "level_delta", error);
+            if (!delta) return std::nullopt;
+            const auto seedValue = object.value("seed");
+            const auto seed = seedValue.toDouble(-1);
+            if (*delta < -1 || *delta > 1 || !seedValue.isDouble() || !std::isfinite(seed)
+                || std::trunc(seed) != seed || seed < 0 || seed > 4294967295.0) {
+                error = Failure("MCP_MAP_EDIT_TERRAIN_CLIFF_BRUSH_INVALID", "悬崖层级须指定整数 level_delta=-1..1 与 uint32 seed；水位限制固定启用。");
+                return std::nullopt;
+            }
+            stroke.brush.levelDelta = *delta;
+            stroke.brush.seed = static_cast<std::uint32_t>(seed);
+        }
     } else if (!corner) {
         const auto radius = Integer(object, "radius", error);
         if (!radius) return std::nullopt;
@@ -272,7 +306,7 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
             return std::nullopt;
         }
         stroke.brush.waterHeight = *height;
-    } else if (!newWater) {
+    } else if (!newWater && !cliffBrush) {
         auto strength = FiniteFloat(object, "strength", error);
         if (!strength) return std::nullopt;
         const bool smooth = stroke.brush.kind == MapData::TerrainBrushKind::Smooth;
@@ -628,6 +662,15 @@ QJsonObject TerrainStrokeSchema() {
     newWater["cliff_texture"] = QJsonObject{{"type", "integer"}, {"minimum", 0}, {"maximum", 14}};
     newWater["seed"] = QJsonObject{{"type", "integer"}, {"minimum", 0}, {"maximum", 4294967295.0}};
     newWater["enforce_water_limits"] = QJsonObject{{"type", "boolean"}};
+    QJsonObject cliff = shared;
+    cliff.remove("radius");
+    cliff["size"] = QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 8}};
+    cliff["cliff_texture"] = QJsonObject{{"type", "integer"}, {"minimum", 0}, {"maximum", 14}};
+    QJsonObject cliffTexture = cliff;
+    cliffTexture["kind"] = QJsonObject{{"type", "string"}, {"const", "cliff_texture"}};
+    cliff["kind"] = QJsonObject{{"type", "string"}, {"const", "cliff_level"}};
+    cliff["level_delta"] = QJsonObject{{"type", "integer"}, {"minimum", -1}, {"maximum", 1}};
+    cliff["seed"] = QJsonObject{{"type", "integer"}, {"minimum", 0}, {"maximum", 4294967295.0}};
     const QJsonArray required{"kind", "shape", "point_space", "radius", "points", "follow_doodads"};
     QJsonArray heightRequired = required, blightRequired = required, rampRequired = required,
         textureRequired = required, waterRequired = required;
@@ -639,6 +682,8 @@ QJsonObject TerrainStrokeSchema() {
         BasicSchema(smooth, heightRequired), BasicSchema(blight, blightRequired),
         BasicSchema(ramp, rampRequired), corner, bounds,
         BasicSchema(texture, textureRequired), BasicSchema(water, waterRequired),
+        BasicSchema(cliff, {"kind", "shape", "point_space", "size", "cliff_texture", "level_delta", "seed", "points", "follow_doodads"}),
+        BasicSchema(cliffTexture, {"kind", "shape", "point_space", "size", "cliff_texture", "points", "follow_doodads"}),
         BasicSchema(newWater, {"kind", "shape", "point_space", "size", "cliff_texture", "seed",
             "enforce_water_limits", "points", "follow_doodads"})}}};
 }
@@ -758,6 +803,8 @@ void RegisterMapEditSaveTool(McpServer& server) {
     tool.description = "从独立 MPQ 源图按 SHA 绑定，保存字段、地形或 1..256 项通用触发器批次到新候选图。"
         "字段按 describe_map_data 的字段目录寻址（kind/row/field），须回传 query_map_data_page 给出的 row_key、"
         "成员 SHA 与字段 raw 前值；只有 writable 字段可写。地形支持荒芜、升高、降低、平滑、地面贴图、"
+        "悬崖层级与纯悬崖材质；cliff_level须显式给出size=1..8、cliff_texture=0..14、level_delta=-1..1和uint32 seed，"
+        "水位限制固定启用。cliff_texture只改已有palette槽位，不接受层级、种子、锚点或规则，仍须完整通行重建资格。"
         "已有水位、浅/深水、一级干地直坡和拐角坡道；直坡须circle/radius=0，拐角坡道只接受单个规范world落点，"
         "两者均须明确set_ramp布尔值，几何和实际规则仍由共用规划器核验。"
         "共用通行性门禁最终裁决。地物跟随和其他笔刷拒绝。工具/游戏根只读可信宿主环境变量；"

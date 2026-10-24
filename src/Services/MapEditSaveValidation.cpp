@@ -138,6 +138,8 @@ Status ValidateStrokes(std::span<const MapEditTerrainStroke> strokes) {
             case MapData::TerrainBrushKind::Plateau:
             case MapData::TerrainBrushKind::Smooth:
             case MapData::TerrainBrushKind::CliffLevel:
+            // 仅接纳意图；换材质的净差仍须真实CliffTypes行、旧变体及完整native WPM重建门。
+            case MapData::TerrainBrushKind::CliffTexture:
             case MapData::TerrainBrushKind::WaterHeight:
             case MapData::TerrainBrushKind::Ramp:
             case MapData::TerrainBrushKind::CornerRamp:
