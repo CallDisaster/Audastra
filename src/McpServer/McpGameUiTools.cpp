@@ -59,7 +59,7 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
     std::vector<ToolDefinition> tools;
     for (const auto* name : {"game_ui_view_read", "game_ui_view_set", "game_ui_nodes_query", "game_ui_render", "game_ui_simulate",
              "game_ui_preview_set", "game_ui_description_read", "game_ui_description_create", "game_ui_description_edit",
-             "game_ui_description_triggers"}) {
+             "game_ui_description_triggers", "game_ui_cast_system"}) {
         ToolDefinition tool; tool.name = name;
         const bool query = tool.name == "game_ui_view_read" || tool.name == "game_ui_nodes_query" || tool.name == "game_ui_render"
                            || tool.name == "game_ui_description_read";
@@ -118,6 +118,26 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
             properties.insert("description", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
             properties.insert("preview", QJsonObject{{"type", "boolean"}});
             required.append("description");
+        } else if (tool.name == "game_ui_cast_system") {
+            tool.description = "生成读条系统的自然 T，整批写进触发器编辑器的“读条系统”类别，走触发器撤销栈：登记（技能、读条秒数、引导秒数、"
+                "跳间隔、效果触发器）、按施法事件记录每个施法者、引导每跳与打断判定，并在完成、每跳、打断时用 YDWE 运行触发器参数块"
+                "运行效果触发器，参数名：施法单位、目标单位、目标X、目标Y、技能、等级、阶段（1 完成 2 每跳 3 打断）、跳数。"
+                "地图里已有登记触发器时保留它，abilities 不写入（结果 registration_kept 为 true）。"
+                "bar 绑定一份已生成界面触发器的界面描述作读条条：visible（布尔）与 progress（实数）必填，text（字符串）、remaining（实数）、"
+                "channel 与 interrupted（状态）可空。需要 YDWE 函数库。preview 为 true 时只返回生成的功能写法，不改地图";
+            properties.insert("abilities", QJsonObject{{"type", "array"}, {"maxItems", 64}, {"items", QJsonObject{{"type", "object"},
+                {"properties", QJsonObject{{"ability", QJsonObject{{"type", "string"}, {"minLength", 4}, {"maxLength", 4}}},
+                    {"cast", QJsonObject{{"type", "number"}, {"minimum", 0}, {"maximum", 3600}}},
+                    {"channel", QJsonObject{{"type", "number"}, {"minimum", 0}, {"maximum", 3600}}},
+                    {"tick", QJsonObject{{"type", "number"}, {"minimum", 0}, {"maximum", 3600}}},
+                    {"effect", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 256}}}}},
+                {"required", QJsonArray{"ability", "effect"}}, {"additionalProperties", false}}}});
+            QJsonObject barProperties;
+            for (const char* key : {"description", "visible", "progress", "text", "remaining", "channel", "interrupted"})
+                barProperties.insert(key, QJsonObject{{"type", "string"}, {"maxLength", kMaxUiIdLength}});
+            properties.insert("bar", QJsonObject{{"type", "object"}, {"properties", barProperties},
+                {"required", QJsonArray{"description", "visible", "progress"}}, {"additionalProperties", false}});
+            properties.insert("preview", QJsonObject{{"type", "boolean"}});
         } else if (tool.name == "game_ui_preview_set") {
             tool.description = "地图界面描述的预览：切换状态（空字符串为基础状态）、按 编号 或 编号[下标] 给数值（文字、数值或布尔），"
                 "之后的节点查询与绘图显示这组取值。整批检查，任何一项不合法都不改。只改预览，不改地图";
@@ -197,6 +217,40 @@ QJsonObject InvokeGameUiTool(const QString& name, const QJsonObject& args, const
         const auto value = args.value("function");
         if (!value.isString() || value.toString().size() > kMaxFunctionLength || value.toString().contains(QChar::Null))
             return Failure("GAME_UI_ARGUMENT", "function 必须是不超过 256 字的函数名。");
+    }
+    if (args.contains("abilities")) {
+        const auto value = args.value("abilities");
+        const QJsonArray abilities = value.toArray();
+        const auto validAbility = [](const QJsonValue& item) {
+            if (!item.isObject()) return false;
+            const QJsonObject ability = item.toObject();
+            for (auto it = ability.begin(); it != ability.end(); ++it) {
+                if (it.key() == QLatin1String("ability") || it.key() == QLatin1String("effect")) {
+                    const QString text = it.value().toString();
+                    if (!it.value().isString() || text.contains(QChar::Null)
+                        || (it.key() == QLatin1String("ability") ? text.size() != 4 : text.isEmpty() || text.size() > 256)) return false;
+                } else if (it.key() == QLatin1String("cast") || it.key() == QLatin1String("channel") || it.key() == QLatin1String("tick")) {
+                    const double number = it.value().toDouble(-1.0);
+                    if (!it.value().isDouble() || !std::isfinite(number) || number < 0.0 || number > 3600.0) return false;
+                } else {
+                    return false;
+                }
+            }
+            return ability.contains("ability") && ability.contains("effect");
+        };
+        if (!value.isArray() || abilities.size() > 64 || !std::all_of(abilities.begin(), abilities.end(), validAbility))
+            return Failure("GAME_UI_ARGUMENT", "abilities 最多 64 项；每项有 4 字符 ability、非空 effect，秒数为 0 到 3600 的数值。");
+    }
+    if (args.contains("bar")) {
+        const auto value = args.value("bar");
+        const QJsonObject bar = value.toObject();
+        const auto barProperties = properties.value("bar").toObject().value("properties").toObject();
+        bool valid = value.isObject() && bar.contains("description") && bar.contains("visible") && bar.contains("progress");
+        for (auto it = bar.begin(); valid && it != bar.end(); ++it) {
+            valid = barProperties.contains(it.key()) && it.value().isString() && it.value().toString().size() <= kMaxUiIdLength
+                && !it.value().toString().contains(QChar::Null);
+        }
+        if (!valid) return Failure("GAME_UI_ARGUMENT", "bar 需要 description、visible、progress，各项为不超过 64 字的编号。");
     }
     if (args.contains("values") && !ValidSimulationValues(args.value("values")))
         return Failure("GAME_UI_ARGUMENT", "values 最多 200 项；键为非空输入标识，值为文字、有限数值或布尔值。");

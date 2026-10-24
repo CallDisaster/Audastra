@@ -3,7 +3,7 @@
 qt_add_library(War3MapQtModuleGameUi STATIC
     GameUiModule.cpp GameUiModule.h GameUiPanels.cpp
     GameUiCanvas.cpp GameUiCanvas.h
-    GameUiAuthoring.cpp GameUiAuthoringJson.h GameUiChoice.cpp GameUiChoice.h GameUiDescriptionData.cpp GameUiDescriptionPreview.cpp GameUiFrameProperties.cpp GameUiInputs.h
+    GameUiAuthoring.cpp GameUiAuthoringJson.h GameUiCastDialog.cpp GameUiChoice.cpp GameUiChoice.h GameUiDescriptionData.cpp GameUiDescriptionPreview.cpp GameUiFrameProperties.cpp GameUiInputs.h
     GameUiSimulation.cpp GameUiSources.cpp GameUiSources.h
     GameUiToolService.cpp GameUiToolService.h GameUiTriggers.cpp)
 add_library(War3MapEditor::QtModuleGameUi ALIAS War3MapQtModuleGameUi)

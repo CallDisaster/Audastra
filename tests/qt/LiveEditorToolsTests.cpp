@@ -320,7 +320,8 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "entities_copy", "entities_create", "entities_delete", "entities_query", "entities_rotate", "entities_set_fields",
         "export_campaign_member",
         "feedback.draft", "feedback.list", "feedback.status",
-        "game_ui_description_create", "game_ui_description_edit", "game_ui_description_read", "game_ui_description_triggers",
+        "game_ui_cast_system", "game_ui_description_create", "game_ui_description_edit", "game_ui_description_read",
+        "game_ui_description_triggers",
         "game_ui_nodes_query", "game_ui_preview_set", "game_ui_render", "game_ui_simulate", "game_ui_view_read", "game_ui_view_set",
         "get_terrain_edit_state",
         "imports_add", "imports_get", "imports_list", "imports_remove", "lua_file_read", "lua_file_write", "lua_files_list",
@@ -337,7 +338,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{84});
+    QCOMPARE(expected.size(), qsizetype{85});
     for (const auto& definition : Mcp::AuxiliaryToolDefinitions()) {
         QCOMPARE(definition.permission, Mcp::ToolPermission::Edit);
         int matches = 0;
@@ -2504,12 +2505,26 @@ void LiveEditorToolsTests::GameUiToolsUseHostAndValidateArguments() {
     QVERIFY(!f.tools->Invoke("game_ui_description_triggers", badPreview).value("ok").toBool());
     QVERIFY(!f.tools->Invoke("game_ui_description_triggers", args).value("ok").toBool());
     QCOMPARE(received.size(), qsizetype{5});
+    // 读条系统：登记项与读条条的形状在到达宿主前检查。
+    auto cast = args; cast["preview"] = true;
+    cast["abilities"] = QJsonArray{QJsonObject{{"ability", "A000"}, {"cast", 1.5}, {"effect", "效果"}}};
+    cast["bar"] = QJsonObject{{"description", "CastBar"}, {"visible", "shown"}, {"progress", "progress"}};
+    QVERIFY(f.tools->Invoke("game_ui_cast_system", cast).value("ok").toBool());
+    QCOMPARE(received.size(), qsizetype{6});
+    auto badAbility = cast; badAbility["abilities"] = QJsonArray{QJsonObject{{"ability", "A0"}, {"effect", "效果"}}};
+    QVERIFY(!f.tools->Invoke("game_ui_cast_system", badAbility).value("ok").toBool());
+    auto badSeconds = cast; badSeconds["abilities"] = QJsonArray{QJsonObject{{"ability", "A000"}, {"tick", -1}, {"effect", "效果"}}};
+    QVERIFY(!f.tools->Invoke("game_ui_cast_system", badSeconds).value("ok").toBool());
+    auto badBar = cast; badBar["bar"] = QJsonObject{{"description", "CastBar"}, {"visible", "shown"}};
+    QVERIFY(!f.tools->Invoke("game_ui_cast_system", badBar).value("ok").toBool());
+    QCOMPARE(received.size(), qsizetype{6});
     Mcp::ToolPolicy policy; policy.allowEdit = false; f.tools->SetPolicy(policy);
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_view_set"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_simulate"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_preview_set"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_description_edit"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_description_triggers"));
+    QVERIFY(!Names(f.tools->Tools()).contains("game_ui_cast_system"));
     QVERIFY(Names(f.tools->Tools()).contains("game_ui_description_read"));
     QVERIFY(Names(f.tools->Tools()).contains("game_ui_render"));
 }
