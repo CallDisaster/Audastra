@@ -94,6 +94,12 @@ Status PrepareWorkerDerivedInputs(MapSaveJob& job, std::shared_ptr<const MapData
 
     if (job.terrainSessionSnapshot) {
         edits = job.terrainSessionSnapshot;
+        if (job.pathingRestrictionDraft) {
+            const auto declaration = edits->SerializePathingRestrictionDraft();
+            if (!declaration.Succeeded() || !declaration.value) return {declaration.diagnostics};
+            if (*declaration.value != *job.pathingRestrictionDraft)
+                return reject("PATHING_DRAFT_IDENTITY", "冻结的通行限制声明与保存会话不一致，本次未写出地图。");
+        }
     } else {
         // FromArchive仅复制七类MapData原生成员，不复制整幅地图。保留原有
         // Invalid/Ambiguous/Partial基线，不能以空MapDocument伪造DOO等成员不存在。

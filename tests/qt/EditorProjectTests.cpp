@@ -3142,7 +3142,7 @@ void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy_data() {
     QTest::newRow("worker-withdraw-apr3") << false << false << 2 << false;
     QTest::newRow("worker-bad-apr-identity") << false << false << 3 << false;
     QTest::newRow("worker-saved-apr3-and-placement-height") << true << true << 4 << false;
-    QTest::newRow("worker-saved-apr3-height-unrelated-import") << true << true << 4 << true;
+    QTest::newRow("worker-saved-apr3-unexplained-source-rejected") << true << true << 4 << true;
 }
 
 void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
@@ -3261,6 +3261,16 @@ void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
     QCOMPARE(project.archiveSession_->SourceSha256(), archiveBeforeRun);
     QCOMPARE(project.mapEdits_->Revision(), revisionBeforeRun);
     QCOMPARE(project.mapEdits_->LastEdit().CommandIdentity(), commandBeforeRun);
+    if (pathingPhase == 4 && injectResource) {
+        // 此夹具故意保留缺少通行字段的表和未解析特殊模型，不能把它用作
+        // 已完整解释旧WPM的混合保存正例。真实资源混合保存由独立专项覆盖。
+        QVERIFY(!job->succeeded && HasReadDiagnostic(*job, "TERRAIN_PATHING_PROPERTY_MISSING"));
+        QVERIFY(!job->minimapPreserve && !std::filesystem::exists(target));
+        QVERIFY(!project.CommitMapSave(*job));
+        QVERIFY(project.mapEdits_->IsDirty() && project.mapEdits_->CanUndo());
+        QCOMPARE(Sha256File(source).value, sourceSha.value);
+        return;
+    }
     if (pathingPhase == 3) {
         QVERIFY(!job->succeeded && HasReadDiagnostic(*job, "PATHING_DRAFT_IDENTITY"));
         QVERIFY(!job->minimapPreserve && !std::filesystem::exists(target));
