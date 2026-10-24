@@ -18,10 +18,13 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/MapTerrain.h"
 #include "War3MapCore/MapData/MapPlacements.h"
+#include "War3MapCore/MapData/MapSettings.h"
+#include "War3MapCore/MapData/MapShadow.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/Services/TerrainMinimapSave.h"
 #include "War3MapCore/Services/TerrainMinimapMarkers.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
+#include "War3MapCore/Services/TerrainShadowBake.h"
 #include "War3MapCore/Services/CampaignService.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
 #include "../../src/Core/Mpq/MpqCrypt.h"
@@ -373,6 +376,65 @@ std::vector<std::byte> NativeDoodadQtTable(const std::vector<std::string>& colum
     append(columns, 1);
     for (std::size_t y = 0; y < rows.size(); ++y) append(rows[y], y + 2);
     return Tests::WaterText(text + "E\n");
+}
+
+std::vector<MapArchiveMember> TerrainShadowQtMembers(bool ridge, bool caster, bool authoredMinimap = true) {
+    auto members = TerrainSaveMembers();
+    if (members.empty()) return {};
+    MapData::MapSettings settings;
+    settings.formatVersion = 25; settings.custom.emplace(); settings.flags = 0x400;
+    settings.tileset = 'L'; settings.playableWidth = settings.playableHeight = 8;
+    const auto settingsBytes = settings.Serialize();
+    if (!settingsBytes.Succeeded() || !settingsBytes.value) return {};
+    members[0].data = *settingsBytes.value;
+    auto terrain = MapData::ParseMapTerrain(members[1].data);
+    if (!terrain.Succeeded() || !terrain.value) return {};
+    auto grid = *terrain.value->Snapshot();
+    if (ridge) for (std::size_t y = 0; y < 9; ++y) grid.vertices[y * 9 + 4].groundHeightRaw = 10240;
+    MapData::RefreshTerrainDerived(grid, 0, 0, 9, 9);
+    const auto wire = MapData::SerializeMapTerrain(grid);
+    if (!wire.Succeeded() || !wire.value) return {};
+    members[1].data = *wire.value; members[3].data.assign(32 * 32, std::byte{0x7d});
+    MapData::DoodadPlacements placements;
+    if (caster) {
+        MapData::DoodadPlacement placed;
+        placed.rawcode = "Sh01"; placed.position = {256, 256, 0}; placed.scale = {1, 1, 1};
+        placements.doodads.push_back(placed);
+        members.push_back({"Units/DestructableData.slk", NativeDoodadQtTable({"destructableID"}, {{"Dst0"}})});
+        members.push_back({"Doodads/Doodads.slk", NativeDoodadQtTable(
+            {"doodID", "shadow", "defScale", "maxPitch", "maxRoll", "fixedRot", "floats", "numVar", "file"},
+            {{"Sh01", "1", "1", "0", "0", "-1", "0", "1", "Fixture/ShadowCaster"}})});
+        // 捕获owner冻结真实成员原字；本例在非空caster缺高度边界时、模型解析前拒绝，不能当模型oracle。
+        members.push_back({"Fixture/ShadowCaster.mdx", Tests::WaterText("original bounded caster bytes")});
+    }
+    const auto doo = placements.Serialize();
+    if (!doo.Succeeded() || !doo.value) return {};
+    members.push_back({"war3map.doo", *doo.value});
+    if (authoredMinimap) members.push_back({"war3mapMap.tga", Tests::WaterText("authored Qt minimap sentinel")});
+    return members;
+}
+
+std::filesystem::path TerrainShadowQtGame(const QString& directory, bool withDirection) {
+    const auto game = directory + "/shadow-game";
+    if (!QDir().mkpath(game)) return {};
+    const auto path = std::filesystem::path(game.toStdWString());
+    const std::vector<MapArchiveMember> gameMembers{{"fixture.txt", Tests::WaterText("private Qt shadow source")}};
+    if (!WriteVerifiedArchive(path / "war3.mpq", gameMembers).Succeeded()) return {};
+    if (withDirection) {
+        QFile profile(game + "/WorldEditData.txt");
+        const QByteArray text("[Light]\nDirection=3,0,-4\n");
+        if (!profile.open(QIODevice::WriteOnly | QIODevice::NewOnly) || profile.write(text) != text.size()) return {};
+    }
+    return path;
+}
+
+std::vector<std::byte> LiteralTerrainShadowQtExpected(bool ridge) {
+    // 独立原字：512高的x=4脊线、Direction=3,0,-4；32×32 receiver的x17..26被覆盖。
+    // 不调用产品采样器、投影器或SHD编码器制造expected。
+    std::vector<std::byte> expected(32 * 32, std::byte{0});
+    if (ridge) for (std::size_t y = 0; y < 32; ++y)
+        for (std::size_t x = 17; x <= 26; ++x) expected[y * 32 + x] = std::byte{0xff};
+    return expected;
 }
 
 std::vector<MapArchiveMember> CGridInvariantQtMembers(int divergentAxis = -1, bool occluded = false) {
@@ -965,6 +1027,12 @@ private slots:
     void PathingIntentLateEditStalesFrozenProject();
     void LegacyPathingIntentProjectKeepsStrictCompatibility();
     void TerrainSavePrepareStillRequiresToolchain();
+    void TerrainShadowWorkerExplicitRequest_data();
+    void TerrainShadowWorkerExplicitRequest();
+    void TerrainShadowWorkerOrdinarySavePreserves_data();
+    void TerrainShadowWorkerOrdinarySavePreserves();
+    void TerrainShadowWorkerFailureCannotUseMinimapFallback_data();
+    void TerrainShadowWorkerFailureCannotUseMinimapFallback();
     void AutomaticMinimapDefaultPrepareAndSaveCopy_data();
     void AutomaticMinimapDefaultPrepareAndSaveCopy();
     void MissingMinimapWorkerReadbackGatesCommit_data();
@@ -3130,6 +3198,125 @@ void EditorProjectTests::LegacyPathingIntentProjectKeepsStrictCompatibility() {
         QVERIFY((*edits.SerializePathingRestrictionDraft().value)[3] == std::byte{2});
         QVERIFY(edits.VerifyTerrainPathingForSave().Succeeded());
     }
+}
+
+void EditorProjectTests::TerrainShadowWorkerExplicitRequest_data() {
+    QTest::addColumn<bool>("ridge"); QTest::addColumn<bool>("automatic");
+    QTest::newRow("flat-preserve") << false << false;
+    QTest::newRow("ridge-preserve") << true << false;
+    QTest::newRow("flat-automatic-author-tga") << false << true;
+    QTest::newRow("ridge-automatic-author-tga") << true << true;
+}
+
+void EditorProjectTests::TerrainShadowWorkerExplicitRequest() {
+    QFETCH(bool, ridge); QFETCH(bool, automatic);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto members = TerrainShadowQtMembers(ridge, false); QVERIFY(!members.empty());
+    const auto source = std::filesystem::path(root.filePath("original-shadow.w3x").toStdWString());
+    const auto target = std::filesystem::path(root.filePath("calculated-shadow.w3x").toStdWString());
+    QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
+    const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
+    EditorProject project; QVERIFY(BindTerrainSaveProject(project, source));
+    project.war3GameRoot_ = TerrainShadowQtGame(root.path(), true); QVERIFY(!project.war3GameRoot_.empty());
+    auto job = FreezeNativePathingQtJob(project, target, automatic ? Services::TerrainMinimapSaveChoice::Automatic
+        : Services::TerrainMinimapSaveChoice::Preserve);
+    QVERIFY(job && !job->terrainDerivationRequired && !job->rebuildTerrainShadow && !job->terrainShadow);
+    job->rebuildTerrainShadow = true;
+    int previousCalls = 0;
+    job->prepareFinalDerived = [&](Services::MapSaveTask&) { ++previousCalls; return Status::Ok(); };
+    InstallMapSaveDerivedPreparation(*job); InstallMapSaveDerivedPreparation(*job);
+    QCOMPARE(previousCalls, 0); QVERIFY(!job->terrainShadow && !job->terrainSavePlan && !std::filesystem::exists(target));
+    // 复用既有freeze仅跳过脚本工具链准备，实际最终worker、发布、归档回读及提交均走生产入口。
+    EditorProject::RunMapSave(*job);
+    QVERIFY2(job->succeeded, ReadDiagnosticText(*job).c_str()); QCOMPARE(previousCalls, 1);
+    QVERIFY(job->executed && job->nextSession && job->terrainShadow);
+    QCOMPARE(job->terrainShadow->Width(), 32u); QCOMPARE(job->terrainShadow->Height(), 32u);
+    QCOMPARE(job->terrainShadow->CasterCount(), std::size_t{0});
+    const auto expected = LiteralTerrainShadowQtExpected(ridge);
+    QCOMPARE(job->terrainShadow->Bytes(), expected);
+    QCOMPARE(std::count_if(job->replacements.begin(), job->replacements.end(),
+        [](const auto& member) { return member.name == "war3map.shd"; }), 1);
+    auto saved = MapArchiveSession::Open(target); QVERIFY(saved.Succeeded() && saved.value);
+    const auto shadow = saved.value->ReadMember("war3map.shd"); QVERIFY(shadow.Succeeded() && shadow.value);
+    QCOMPARE(*shadow.value, expected); QVERIFY(job->terrainShadow->VerifyReadback(*saved.value).Succeeded());
+    const auto parsed = MapData::ParseMapShadow(*shadow.value, 32, 32); QVERIFY(parsed.Succeeded() && parsed.value);
+    QCOMPARE(parsed.value->width, 32u); QCOMPARE(parsed.value->height, 32u); QCOMPARE(parsed.value->intensities.size(), std::size_t{1024});
+    for (const auto& member : members) if (member.name != "war3map.shd" && member.name != "war3map.mmp")
+        QCOMPARE(saved.value->ReadMember(member.name).value, std::optional(member.data));
+    QVERIFY(project.CommitMapSave(*job)); QVERIFY(!project.HasUnsavedMapChanges());
+    QCOMPARE(Sha256File(source).value, sourceSha.value);
+}
+
+void EditorProjectTests::TerrainShadowWorkerOrdinarySavePreserves_data() {
+    QTest::addColumn<bool>("caster"); QTest::addColumn<bool>("automatic");
+    QTest::newRow("plain-preserve-no-direction") << false << false;
+    QTest::newRow("plain-automatic-no-direction") << false << true;
+    QTest::newRow("caster-preserve-no-direction") << true << false;
+    QTest::newRow("caster-automatic-no-direction") << true << true;
+}
+
+void EditorProjectTests::TerrainShadowWorkerOrdinarySavePreserves() {
+    QFETCH(bool, caster); QFETCH(bool, automatic);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto members = TerrainShadowQtMembers(false, caster); QVERIFY(!members.empty());
+    const auto source = std::filesystem::path(root.filePath("ordinary-shadow.w3x").toStdWString());
+    const auto target = std::filesystem::path(root.filePath("ordinary-copy.w3x").toStdWString());
+    QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
+    const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
+    EditorProject project; QVERIFY(BindTerrainSaveProject(project, source));
+    project.war3GameRoot_ = TerrainShadowQtGame(root.path(), false); QVERIFY(!project.war3GameRoot_.empty());
+    auto job = FreezeNativePathingQtJob(project, target, automatic ? Services::TerrainMinimapSaveChoice::Automatic
+        : Services::TerrainMinimapSaveChoice::Preserve);
+    QVERIFY(job && !job->rebuildTerrainShadow && !job->terrainShadow);
+    EditorProject::RunMapSave(*job); QVERIFY2(job->succeeded, ReadDiagnosticText(*job).c_str());
+    QVERIFY(!job->rebuildTerrainShadow && !job->terrainShadow);
+    QVERIFY(std::none_of(job->replacements.begin(), job->replacements.end(),
+        [](const auto& member) { return member.name == "war3map.shd"; }));
+    auto saved = MapArchiveSession::Open(target); QVERIFY(saved.Succeeded() && saved.value);
+    for (const auto& member : members) if (member.name != "war3map.mmp")
+        QCOMPARE(saved.value->ReadMember(member.name).value, std::optional(member.data));
+    QVERIFY(!HasReadDiagnostic(*job, "TERRAIN_SHADOW_LIGHT")
+        && !HasReadDiagnostic(*job, "TERRAIN_SHADOW_HEIGHT_BOUNDS_UNKNOWN"));
+    QVERIFY(project.CommitMapSave(*job)); QCOMPARE(Sha256File(source).value, sourceSha.value);
+}
+
+void EditorProjectTests::TerrainShadowWorkerFailureCannotUseMinimapFallback_data() {
+    QTest::addColumn<QString>("mode");
+    QTest::newRow("caster-no-bounds-with-author-tga") << QStringLiteral("caster-existing");
+    QTest::newRow("caster-no-bounds-without-minimap") << QStringLiteral("caster-missing");
+    QTest::newRow("missing-direction") << QStringLiteral("no-direction");
+    QTest::newRow("conflicting-explicit-minimap") << QStringLiteral("minimap-conflict");
+}
+
+void EditorProjectTests::TerrainShadowWorkerFailureCannotUseMinimapFallback() {
+    QFETCH(QString, mode);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const bool caster = mode.startsWith("caster-");
+    const auto members = TerrainShadowQtMembers(false, caster, mode != "caster-missing"); QVERIFY(!members.empty());
+    const auto source = std::filesystem::path(root.filePath("unsupported-shadow.w3x").toStdWString());
+    const auto target = std::filesystem::path(root.filePath("must-not-publish.w3x").toStdWString());
+    QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
+    const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
+    EditorProject project; QVERIFY(BindTerrainSaveProject(project, source));
+    project.war3GameRoot_ = TerrainShadowQtGame(root.path(), mode != "no-direction"); QVERIFY(!project.war3GameRoot_.empty());
+    const auto generation = project.editRevision_.Generation(), revision = project.editRevision_.Revision();
+    const auto terrain = project.mapEdits_->Terrain(); const auto archiveSha = project.archiveSession_->SourceSha256();
+    auto job = FreezeNativePathingQtJob(project, target, mode == "minimap-conflict"
+        ? Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly : Services::TerrainMinimapSaveChoice::Automatic);
+    QVERIFY(job && !job->rebuildTerrainShadow); job->rebuildTerrainShadow = true;
+    EditorProject::RunMapSave(*job);
+    const auto expectedCode = caster ? "TERRAIN_SHADOW_HEIGHT_BOUNDS_UNKNOWN"
+        : mode == "no-direction" ? "TERRAIN_SHADOW_LIGHT" : "TERRAIN_SHADOW_MINIMAP_CONFLICT";
+    QVERIFY2(!job->succeeded && HasReadDiagnostic(*job, expectedCode), ReadDiagnosticText(*job).c_str());
+    QVERIFY(job->executed && !job->nextSession && job->written.empty() && job->backup.empty() && !job->terrainShadow);
+    QVERIFY(!job->minimapSave && !std::filesystem::exists(target));
+    // 原TGA的合法保留guard可能已安装；它不能把随后显式阴影失败改成成功或发布。
+    if (mode == "caster-missing" || mode == "minimap-conflict") QVERIFY(!job->minimapPreserve);
+    QVERIFY(!HasReadDiagnostic(*job, "MINIMAP_GENERATION_SKIPPED"));
+    QVERIFY(!project.CommitMapSave(*job));
+    QCOMPARE(project.editRevision_.Generation(), generation); QCOMPARE(project.editRevision_.Revision(), revision);
+    QCOMPARE(project.mapEdits_->Terrain(), terrain); QCOMPARE(project.archiveSession_->SourceSha256(), archiveSha);
+    QCOMPARE(Sha256File(source).value, sourceSha.value);
 }
 
 void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy_data() {
