@@ -29,6 +29,9 @@
 #include "Commands/TriggerCommands.h"
 
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/Services/TerrainBoundsEditService.h"
+#include "War3MapCore/Services/TerrainPathingSave.h"
+#include "War3MapCore/VerifiedFile.h"
 #include "War3MapCore/Services/CodeCheckProject.h"
 #include "War3MapCore/Trigger/TriggerTextDiff.h"
 #include "War3MapCore/MapArchiveSession.h"
@@ -62,6 +65,100 @@ namespace War3Map::QtApp {
 namespace {
 using QtProject::EditorProject;
 using Trigger::TriggerDocument;
+
+struct LiveBoundsPreparation {
+    std::shared_ptr<const QtProject::TerrainWaterEditRequest> request;
+    MapData::TerrainPathingResources resources;
+    Services::PreparedTerrainBoundsEdit prepared;
+};
+
+template<class Output, class Work> Output RunLiveBoundsWorker(Work work) {
+    auto result = std::make_shared<Output>();
+    QEventLoop loop;
+    auto thread = std::unique_ptr<QThread>(QThread::create([result, work = std::move(work)] {
+        try { *result = work(); }
+        catch (const std::exception&) {
+            result->diagnostics = Status::Failure("QtApp.Live", "LIVE_BOUNDS_WORKER_FAILED",
+                "地图范围后台读取或准备失败，活动地图未被本次请求修改。").diagnostics;
+        }
+    }));
+    QObject::connect(thread.get(), &QThread::finished, &loop, &QEventLoop::quit, Qt::QueuedConnection);
+    thread->start(QThread::LowPriority);
+    // 同步工具仍持busy租约；只处理绘制/状态事件，不在等待时接受新GUI手势。
+    loop.exec(QEventLoop::ExcludeUserInputEvents);
+    thread->wait();
+    return std::move(*result);
+}
+
+Status VerifyLiveBoundsResources(const QtProject::TerrainWaterEditRequest& request,
+    const MapData::TerrainPathingResources* resources = nullptr) {
+    const auto& opened = request.archivePath.empty() ? request.projectRoot : request.archivePath;
+    std::error_code error;
+    if (!std::filesystem::equivalent(opened, request.sourcePath, error) || error)
+        return Status::Failure("QtApp.Live", "LIVE_BOUNDS_SOURCE_CHANGED", "当前地图打开路径不再属于范围来源。");
+    if (request.archive) {
+        const auto checked = request.archive->VerifySourceUnchanged();
+        if (!checked.Succeeded()) return checked;
+        return resources ? resources->VerifyReadback(*request.archive, request.maximumBytes) : Status::Ok();
+    }
+    if (!request.directory)
+        return Status::Failure("QtApp.Live", "LIVE_BOUNDS_SOURCE_REQUIRED", "地图范围缺少实际来源快照。");
+    return resources ? resources->VerifyReadback(*request.directory, request.maximumBytes) : Status::Ok();
+}
+
+Result<LiveBoundsPreparation> PrepareLiveBounds(
+    std::shared_ptr<const QtProject::TerrainWaterEditRequest> request,
+    std::shared_ptr<const MapData::MapDataEditSession> frozen, const Services::TerrainEditBinding& binding,
+    const MapData::TerrainBoundsEditIntent& intent) {
+    using Output = Result<LiveBoundsPreparation>;
+    auto verified = VerifyLiveBoundsResources(*request);
+    if (!verified.Succeeded()) return {{}, verified.diagnostics};
+    Result<std::vector<std::byte>> bytes;
+    if (request->archive) {
+        const std::array<std::string, 1> names{"war3map.w3e"};
+        ArchiveExactMemberLimits limits;
+        limits.memberBytes = limits.totalBytes = request->maximumBytes;
+        auto members = request->archive->CaptureExactMembers(names, limits);
+        if (!members.Succeeded()) return {{}, std::move(members.diagnostics)};
+        if (members.value->size() != 1 || !members.value->front().present)
+            return Output::Failure("QtApp.Live", "LIVE_BOUNDS_TERRAIN_MISSING", "范围编辑缺少实际来源地形。");
+        bytes = Result<std::vector<std::byte>>::Success(std::move(members.value->front().bytes));
+    } else {
+        const WorkspaceFile* selected = nullptr;
+        for (const auto& file : request->directory->files) {
+            const auto path = QString::fromStdWString(file.relativePath.generic_wstring()).toCaseFolded();
+            if (path != QStringLiteral("war3map.w3e") && path != QStringLiteral("map/war3map.w3e")) continue;
+            if (selected) return Output::Failure("QtApp.Live", "LIVE_BOUNDS_TERRAIN_AMBIGUOUS", "目录地形来源有冲突。");
+            selected = &file;
+        }
+        if (!selected || selected->size > request->maximumBytes)
+            return Output::Failure("QtApp.Live", "LIVE_BOUNDS_TERRAIN_BUDGET", "目录地形缺失或超出范围读取预算。");
+        bytes = ReadVerifiedFile(request->sourcePath / selected->relativePath, selected->sha256, request->maximumBytes);
+        if (bytes.Succeeded() && bytes.value->size() != selected->size)
+            return Output::Failure("QtApp.Live", "LIVE_BOUNDS_SOURCE_CHANGED", "来源地形长度已经变化。");
+    }
+    if (!bytes.Succeeded()) return {{}, std::move(bytes.diagnostics)};
+    auto terrain = MapData::ParseMapTerrain(*bytes.value);
+    if (!terrain.Succeeded()) return {{}, std::move(terrain.diagnostics)};
+    auto doodads = frozen->Snapshot(MapDataKind::Doodads, request->maximumBytes);
+    if (!doodads.Succeeded()) return {{}, std::move(doodads.diagnostics)};
+    const auto& member = doodads.value->Member(MapDataKind::Doodads);
+    const std::vector<std::byte>* currentDoodads = nullptr;
+    if (member.state == MapDataState::Ready && member.sources.size() == 1) currentDoodads = &member.sources.front().data;
+    else if (member.state != MapDataState::Missing || !member.sources.empty())
+        return Output::Failure("QtApp.Live", "LIVE_BOUNDS_DOODADS_UNAVAILABLE", "范围编辑需要完整当前装饰物来源。");
+    auto resources = request->archive
+        ? Services::TerrainPathingSave::CaptureNative(*request->archive, *terrain.value->Snapshot(), *request->terrain,
+            request->gameRoot, request->maximumBytes, currentDoodads)
+        : Services::TerrainPathingSave::CaptureNative(*request->directory, *terrain.value->Snapshot(), *request->terrain,
+            request->gameRoot, request->maximumBytes, currentDoodads);
+    if (!resources.Succeeded()) return {{}, std::move(resources.diagnostics)};
+    auto prepared = Services::PrepareTerrainBoundsEdit(*frozen, binding.document, binding, *resources.value, intent);
+    if (!prepared.Succeeded()) return {{}, std::move(prepared.diagnostics)};
+    verified = VerifyLiveBoundsResources(*request, &*resources.value);
+    if (!verified.Succeeded()) return {{}, std::move(verified.diagnostics)};
+    return Output::Success({std::move(request), std::move(*resources.value), std::move(*prepared.value)});
+}
 
 QJsonObject StringSchema() { return {{"type", "string"}}; }
 QJsonObject IdentityProperties() {
@@ -845,6 +942,10 @@ private:
         const auto invoke = [&] {
             Mcp::TerrainEditToolHost host;
             std::optional<QtProject::TerrainWaterEditCapture> waterCapture;
+            std::shared_ptr<const LiveBoundsPreparation> boundsCapture;
+            bool boundsPublishing = false;
+            const QPointer<EditorProject> boundsProject(&project_);
+            QScopedValueRollback<bool> boundsLease(busy_, busy_ || name == QStringLiteral("edit_terrain_bounds"));
             host.identity = [this] { return State(); };
             host.context = context;
             host.prepareWater = [this, &waterCapture](const Mcp::TerrainEditToolContext& current, const auto& binding,
@@ -891,6 +992,70 @@ private:
                     return Result<Services::PreparedTerrainEdit>::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "角坡准备期间来源或会话已经变化。");
                 return Services::PrepareTerrainCornerRampEdit(*current.session, current.document, binding,
                     waterCapture->resources, brush, points, follow);
+            };
+            host.prepareBounds = [this, &boundsCapture, boundsProject](const Mcp::TerrainEditToolContext& current,
+                const Services::TerrainEditBinding& binding, const MapData::TerrainBoundsEditIntent& intent)
+                -> Result<Services::PreparedTerrainBoundsEdit> {
+                if (!boundsProject || !ownerHandle_ || project_.mapEdits_.get() != current.session)
+                    return Result<Services::PreparedTerrainBoundsEdit>::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "活动范围会话已经变化。");
+                auto request = QtProject::CaptureTerrainWaterEditRequest(project_, true);
+                if (!request.Succeeded()) return {{}, std::move(request.diagnostics)};
+                auto frozen = project_.mapEdits_->FreezeForSave(512u * 1024u * 1024u);
+                if (!frozen.Succeeded()) return {{}, std::move(frozen.diagnostics)};
+                const auto owned = std::make_shared<const QtProject::TerrainWaterEditRequest>(std::move(*request.value));
+                auto loaded = RunLiveBoundsWorker<Result<LiveBoundsPreparation>>([owned,
+                    frozen = std::move(*frozen.value), binding, intent] { return PrepareLiveBounds(owned, frozen, binding, intent); });
+                if (!loaded.Succeeded()) return {{}, std::move(loaded.diagnostics)};
+                if (!boundsProject || !ownerHandle_ || !QtProject::TerrainWaterEditRequestCurrent(project_, *owned, true))
+                    return Result<Services::PreparedTerrainBoundsEdit>::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "范围后台准备期间来源或会话已经变化。");
+                boundsCapture = std::make_shared<const LiveBoundsPreparation>(std::move(*loaded.value));
+                return Result<Services::PreparedTerrainBoundsEdit>::Success(boundsCapture->prepared);
+            };
+            host.verifyBounds = [this, &boundsCapture, &boundsPublishing, boundsProject] {
+                const auto capture = boundsCapture;
+                const auto current = [&] {
+                    return boundsProject && ownerHandle_ && capture && !project_.savingMap_
+                        && QtProject::TerrainWaterEditRequestCurrent(project_, *capture->request, true);
+                };
+                if (!current()) return Status::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "范围实际来源或会话已经变化。");
+                // 最后一次实际回读已在进入Core Apply前完成；命令栈内只同步CAS，
+                // 不能让事件循环替换正在提交的unique_ptr会话。
+                if (boundsPublishing) return Status::Ok();
+                const auto checked = RunLiveBoundsWorker<Status>([capture] {
+                    return VerifyLiveBoundsResources(*capture->request, &capture->resources);
+                });
+                if (!checked.Succeeded()) return checked;
+                return current() ? Status::Ok() : Status::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "范围来源复核期间会话已经变化。");
+            };
+            host.applyBounds = [this, &context, &host, &boundsCapture, &boundsPublishing, boundsProject](const Services::PreparedTerrainBoundsEdit& plan,
+                const std::function<Status(const MapData::MapDataEditSession::EditReceipt&)>& validate) -> Status {
+                if (!boundsProject || !ownerHandle_ || !project_.mapEdits_ || !project_.mapDataUndoStack_ || !boundsCapture)
+                    return Status::Failure("QtApp.Live", "LIVE_EDITOR_UNDO_UNAVAILABLE", "范围会话或共用地图撤销栈不可用。");
+                const auto verified = host.verifyBounds();
+                if (!verified.Succeeded()) return verified;
+                const auto current = context();
+                if (!current.Succeeded()) return {current.diagnostics};
+                QScopedValueRollback<bool> publishing(boundsPublishing, true);
+                const auto before = project_.mapEdits_->Revision();
+                std::unique_ptr<QtProject::MapDataEditCommand> undo;
+                const auto applied = Services::ApplyTerrainBoundsEdit(*project_.mapEdits_, current.value->document, plan,
+                    [&](const auto& receipt) {
+                        if (validate) {
+                            const auto accepted = validate(receipt);
+                            if (!accepted.Succeeded()) return accepted;
+                        }
+                        if (!boundsProject || !ownerHandle_ || !QtProject::TerrainWaterEditRequestCurrent(project_, *boundsCapture->request, true))
+                            return Status::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "范围发布前活动会话已经变化。");
+                        try { undo = std::make_unique<QtProject::MapDataEditCommand>(project_, receipt,
+                            QObject::tr("AI 地图可玩范围"), "MCP 修改地图可玩范围"); }
+                        catch (const std::exception&) { return Status::Failure("QtApp.Live", "LIVE_BOUNDS_UNDO_FAILED", "无法准备共用撤销记录，范围未修改。"); }
+                        return Status::Ok();
+                    });
+                if (!applied.Succeeded() || project_.mapEdits_->Revision() == before) return applied;
+                (void)project_.ObserveMapDataEdit("MCP 修改地图可玩范围");
+                project_.mapDataUndoStack_->push(undo.release());
+                if (ownerHandle_) emit owner_.Changed();
+                return applied;
             };
             host.apply = [this, &context](const Services::PreparedTerrainEdit& plan,
                 const std::function<Status(const MapData::MapDataEditSession::EditReceipt&)>& validate)
