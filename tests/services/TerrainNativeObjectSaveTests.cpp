@@ -161,7 +161,8 @@ struct Fixture {
         const auto sourcePath = archive->SourcePath();
         const auto sourceSha = Take(Sha256File(sourcePath));
         const auto identity = edits->SessionIdentity(), revision = edits->Revision(), sourceRevision = edits->TerrainSourceRevision();
-        const auto plan = Plan(); Check(plan.SaveGate()); Require(plan.RebuiltPathing(), "native pathing rebuilt");
+        const auto plan = Plan(); Check(plan.SaveGate());
+        if (!plan.RebuiltPathing()) throw std::runtime_error(std::string("native pathing rebuilt: ") + name);
         const auto output = Output(plan);
         auto written = root / name;
         if (formal) {
