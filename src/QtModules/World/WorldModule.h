@@ -225,6 +225,10 @@ private:
     void QueueWaterBrushCapture();
     void StartWaterBrushCapture();
     void InvalidateWaterBrushCapture();
+    [[nodiscard]] QWidget* BuildTerrainBoundsControls(QWidget* parent);
+    void UpdateTerrainBoundsControls();
+    void InvalidateTerrainBoundsControls();
+    void StartTerrainBoundsTask(bool apply);
     // UI标识不进入Core普通笔刷枚举；浅水/深水只调用独立水刷事务。
     static constexpr int kShallowWaterBrushId = 1000, kDeepWaterBrushId = 1001;
     [[nodiscard]] QString TerrainName(const std::string& raw, const std::string& rawcode) const;
@@ -437,6 +441,16 @@ private:
     Tool shownTool_ = Tool::Select;
     QPointer<QThread> worker_;
     QPointer<QThread> modelWorker_;
+    QPointer<QThread> terrainBoundsWorker_;
+    QWidget* terrainBoundsSection_ = nullptr;
+    std::array<QSpinBox*, 4> terrainBoundsFields_{}; // 西、南、东、北；地格半开矩形。
+    QPushButton* terrainBoundsRead_ = nullptr;
+    QPushButton* terrainBoundsApply_ = nullptr;
+    QLabel* terrainBoundsStatus_ = nullptr;
+    std::shared_ptr<const QtProject::TerrainWaterEditRequest> terrainBoundsReadRequest_;
+    std::array<float, 4> terrainBoundsMargins_{};
+    std::string terrainBoundsRulesSha_;
+    std::uint64_t terrainBoundsSerial_ = 0;
     WorldSelectionPresenter* selectionPresenter_ = nullptr;
     WorldBuildingSplatPresenter* buildingSplatPresenter_ = nullptr;
     WorldModelBugPlaceholderPresenter* bugPlaceholderPresenter_ = nullptr;

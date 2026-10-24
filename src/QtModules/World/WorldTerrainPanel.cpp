@@ -403,6 +403,7 @@ QWidget* WorldModule::BuildTerrainPage() {
     strengthRow->addWidget(terrainStrengthSlider_, 1); strengthRow->addWidget(terrainStrength_);
     strength->addLayout(strengthRow);
     column->addWidget(terrainStrengthSection_);
+    column->addWidget(BuildTerrainBoundsControls(terrainPalette_));
     column->addStretch(1);
     scroll->setWidget(terrainPalette_);
 
@@ -490,6 +491,7 @@ void WorldModule::RefreshTerrainPalette() {
         viewport_->VertexCount() == source->vertices.size());
     if (!terrainToggle_->isEnabled() && terrainToggle_->isChecked()) terrainToggle_->setChecked(false);
     UpdateTerrainBrushControls();
+    UpdateTerrainBoundsControls();
     UpdateToolState();
 }
 

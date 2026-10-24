@@ -260,6 +260,7 @@ WorldModule::WorldModule(QtProject::EditorProject& project, const War3RenderPlug
     connect(&project_, &QtProject::EditorProject::ObjectDocumentsReplaced, this, &WorldModule::Refresh);
     connect(&project_, &QtProject::EditorProject::SourceStateChanged, this, [this] {
         CancelTerrainStroke(); InvalidateWaterBrushCapture(); QueueWaterBrushCapture();
+        InvalidateTerrainBoundsControls();
     });
     for (auto* stack : project_.objectUndoStacks_)
         if (stack) connect(stack, &QUndoStack::indexChanged, this, &WorldModule::Refresh);
@@ -442,6 +443,7 @@ WorldViewport* WorldModule::ViewportForTools() const {
 }
 
 void WorldModule::Refresh() {
+    InvalidateTerrainBoundsControls();
     ++selectionCatalogRevision_;
     if (premPresenter_) premPresenter_->Clear();
     if (animation_) animation_->Clear();
@@ -1014,6 +1016,7 @@ void WorldModule::RefreshPlacements() {
 
 void WorldModule::RefreshMapEdits() {
     if (!page_ || !viewport_) return;
+    InvalidateTerrainBoundsControls();
     InvalidateWaterBrushCapture();
     RefreshAssetBrowser();
     // push() 的首次 redo 不改动地图，只同步发出 indexChanged；最终地形已经在 FinishTerrainStroke

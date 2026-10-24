@@ -492,6 +492,14 @@ set_tests_properties(qt-terrain-water-edit PROPERTIES TIMEOUT 60
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
 qt_add_executable(war3-map-world-module-tests WorldModuleTests.cpp)
+
+qt_add_executable(audastra-world-terrain-bounds-tests WorldTerrainBoundsTests.cpp)
+target_link_libraries(audastra-world-terrain-bounds-tests PRIVATE War3MapEditor::QtModuleWorld Qt6::Test)
+target_compile_definitions(audastra-world-terrain-bounds-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-world-terrain-bounds-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME qt-world-terrain-bounds COMMAND audastra-world-terrain-bounds-tests)
+set_tests_properties(qt-world-terrain-bounds PROPERTIES TIMEOUT 90
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_PLUGIN_PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>/../plugins")
 target_link_libraries(war3-map-world-module-tests PRIVATE War3MapEditor::QtModuleWorld
     War3MapEditor::QtModuleMapEntities War3MapEditor::QtModuleMapSettings Qt6::Test War3RenderCore::SkinInput)
 target_compile_definitions(war3-map-world-module-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
