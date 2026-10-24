@@ -5,6 +5,7 @@
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/Services/MapEditSaveService.h"
+#include "War3MapCore/Services/MapSaveService.h"
 #include "War3MapCore/Services/TerrainEditService.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
@@ -728,6 +729,174 @@ void SavedWaterStrokeUndoAndRedoRebaseAgainstEachSavedSource() {
     }
 }
 
+void ExistingCornerWaterSequenceFollowsRestoresAndSavesEveryHistoryState() {
+    for (const bool wet : {false, true}) {
+        Fixture f(true);
+        const std::array<std::array<std::size_t, 2>, 2> centers{{{12, 12}, {22, 22}}};
+        const auto member = [&](std::string_view name) -> Bytes& {
+            const auto found = std::find_if(f.members.begin(), f.members.end(),
+                [&](const auto& item) { return item.name == name; });
+            Require(found != f.members.end(), "combined ramp history member exists"); return found->data;
+        };
+        for (const auto& center : centers) {
+            for (auto y = center[1] - 1; y <= center[1] + 1; ++y)
+                for (auto x = center[0] - 1; x <= center[0] + 1; ++x) {
+                    auto& vertex = f.grid.vertices[y * 33 + x]; vertex.textureAndFlagsRaw |= 0x10;
+                    if (x == center[0] + 1 && y == center[1] + 1) vertex.cliffAndLayerRaw = 3;
+                }
+        }
+        // 统一旧水面避免岸线外扩成为第二个待测因素；两处S32均被R=96实际浅覆水。
+        if (wet) for (auto& vertex : f.grid.vertices) {
+            vertex.textureAndFlagsRaw |= 0x40; vertex.waterHeightAndFlagsRaw = 8576;
+        }
+        RefreshTerrainDerived(f.grid, 0, 0, 33, 33); member("war3map.w3e") = Take(SerializeMapTerrain(f.grid));
+        UnitPlacements units; DoodadPlacements doodads;
+        for (std::size_t row = 0; row < 3; ++row) {
+            const float x = row < 2 ? float(centers[row][0] * 128) : 0;
+            const float y = row < 2 ? float(centers[row][1] * 128) : 0;
+            UnitPlacement unit; unit.rawcode = "u001"; unit.creationId = static_cast<std::int32_t>(10 + row);
+            unit.position = {x, y, row == 0 ? 42.0f : row == 1 ? 72.0f : 52.0f}; unit.scale = {1, 1, 1};
+            units.units.push_back(unit);
+            DoodadPlacement doodad; doodad.rawcode = "Dst0"; doodad.creationId = static_cast<std::int32_t>(20 + row);
+            doodad.position = {x, y, row == 0 ? 37.0f : row == 1 ? 67.0f : 57.0f}; doodad.scale = {1, 1, 1};
+            doodads.doodads.push_back(doodad);
+        }
+        member("war3mapUnits.doo") = Take(units.Serialize()); member("war3map.doo") = Take(doodads.Serialize());
+        // 实际标准目录明确Dst0为非walkable可破坏物；不扩大对象或模型的支持域。
+        f.members.push_back({"Units/DestructableData.slk", Slk({"destructableID", "code", "walkable"}, {{"Dst0", "Dst0", "0"}})});
+        f.members.push_back({"Doodads/Doodads.slk", Slk({"doodID", "code"}, {{"Doo0", "Doo0"}})});
+        f.members.push_back({"Units/DestructableMetaData.slk", Slk({"ID", "field", "slk", "type", "repeat", "data", "index"},
+            {{"dwlk", "walkable", "DestructableData", "bool", "0", "0", "-1"}})});
+        f.source = std::make_unique<MapArchiveSession>(Take(MapArchiveSession::Open(
+            Take(WriteVerifiedArchive(f.root / "ramp-sequence-seed.w3x", f.members)).path)));
+        // 本专项检验完整保存/历史编排。G0/G1复用产品原生生成器，不能称独立native oracle；
+        // S32地高、每笔Z差、完整DOO原字及保存后往返一致性另外独立断言。
+        const auto initialNative = Take(TerrainPathingSave::CaptureNative(*f.source, f.grid, f.grid, f.game, kResourceBudget));
+        const auto initialCells = Take(initialNative.GenerateNative(f.grid, kResourceBudget));
+        Require(initialCells.size() == member("war3map.wpm").size() - 16, "combined source has complete generated G0");
+        for (std::size_t i = 0; i < initialCells.size(); ++i)
+            member("war3map.wpm")[i + 16] = (member("war3map.wpm")[i + 16] & std::byte{0x11}) | initialCells[i];
+        f.source = std::make_unique<MapArchiveSession>(Take(MapArchiveSession::Open(
+            Take(WriteVerifiedArchive(f.root / "ramp-sequence-source.w3x", f.members)).path)));
+        f.edits = Session(f); const auto sessionIdentity = f.edits->SessionIdentity();
+        const auto originalTerrain = member("war3map.w3e"), originalPathing = member("war3map.wpm");
+        struct State { Bytes terrain, pathing, units, doodads; };
+        const auto captureState = [&]() {
+            const auto snapshot = f.edits->Snapshot();
+            State state{Take(SerializeMapTerrain(*f.edits->Terrain())), originalPathing,
+                Take(snapshot.Units()->Serialize()), Take(snapshot.Doodads()->Serialize())};
+            const auto native = Take(TerrainPathingSave::CaptureNative(*f.source, f.grid, *f.edits->Terrain(),
+                f.game, kResourceBudget, &state.doodads));
+            const auto cells = Take(native.GenerateNative(*f.edits->Terrain(), TerrainNativeStage::After, kResourceBudget));
+            Require(cells.size() == state.pathing.size() - 16, "combined expected G1 covers all native cells");
+            for (std::size_t i = 0; i < cells.size(); ++i)
+                state.pathing[i + 16] = (state.pathing[i + 16] & std::byte{0x11}) | cells[i];
+            return state;
+        };
+        std::array<State, 3> states; states[0] = captureState();
+        Require(states[0].terrain == originalTerrain && states[0].pathing == originalPathing,
+            "full combined source W3E/WPM matches its frozen initial state");
+        // 湿浅刷维持L2/S32，地高仍64，应保持Z；湿深刷降到L1/H=-96。
+        // 干浅/深分别降到L1/H=-96与L0/H=-224，两笔各用自己的原始B32+S32锚点。
+        const std::array<float, 2> deltas{wet ? 0.0f : -160.0f, wet ? -160.0f : -288.0f};
+        for (std::size_t index = 0; index < centers.size(); ++index) {
+            const auto rules = f.Rules();
+            const TerrainStrokePoint point{double(centers[index][0] * 128), double(centers[index][1] * 128)};
+            TerrainWaterStrokeOptions water; water.kind = index ? TerrainWaterBrushKind::Deep : TerrainWaterBrushKind::Shallow;
+            water.shape = TerrainBrushShape::Square; water.size = 1; water.cliffTexture = 1;
+            water.randomSeed = index ? 991 : 17;
+            const auto prepared = Take(PrepareTerrainWaterEdit(*f.edits, f.Document(), f.Binding(), rules, water,
+                std::span(&point, 1), true));
+            const auto* brush = prepared.Plan().WaterBrush();
+            Require(brush && brush->algorithm == TerrainWaterAlgorithm::NativeRamps
+                && brush->anchor.groundHeightRaw == 8320 && brush->anchor.rampHeightOffset == 32
+                && brush->anchor.hasWater == wet && (!wet || brush->anchor.waterHeightRaw == 8576),
+                "each ordered water stroke starts at its own intact dry or physically shallow S32 corner");
+            Take(ApplyTerrainEdit(*f.edits, f.Document(), prepared)); states[index + 1] = captureState();
+            Require(states[index + 1].terrain != states[index].terrain, "both ordered strokes really change complete terrain");
+            Require((states[index + 1].units != states[index].units) == (deltas[index] != 0)
+                && (states[index + 1].doodads != states[index].doodads) == (deltas[index] != 0),
+                "both complete DOO groups move exactly when the literal ground height changes");
+            const auto snapshot = f.edits->Snapshot();
+            auto expectedUnits = units; auto expectedDoodads = doodads;
+            for (std::size_t row = 0; row < 3; ++row) {
+                const auto delta = row <= index ? deltas[row] : 0.0f;
+                expectedUnits.units[row].position[2] += delta; expectedDoodads.doodads[row].position[2] += delta;
+                Require(snapshot.Units()->units[row].position[2] == units.units[row].position[2] + delta
+                    && snapshot.Doodads()->doodads[row].position[2] == doodads.doodads[row].position[2] + delta,
+                    "literal per-corner Z deltas preserve offsets and every unrelated placement");
+            }
+            Require(states[index + 1].units == Take(expectedUnits.Serialize())
+                && states[index + 1].doodads == Take(expectedDoodads.Serialize()),
+                "complete placement bytes change only the independently expected literal Z fields");
+            Require(!f.edits->ApplyPreparedTerrainEdit(prepared.Plan()).Succeeded(), "combined sequence retains revision CAS for each native anchor");
+        }
+        const auto journal = Take(TerrainPathingSave::CaptureJournal(*f.source, *f.edits));
+        const auto wire = Take(EncodeTerrainStrokeJournal(journal));
+        Require(wire[3] == std::byte{'3'} && journal.strokes.size() == 2
+            && journal.strokes[0].intent.followDoodads && journal.strokes[1].intent.followDoodads
+            && journal.strokes[0].intent.waterBrush->kind == TerrainWaterBrushKind::Shallow
+            && journal.strokes[1].intent.waterBrush->kind == TerrainWaterBrushKind::Deep,
+            "the full actual followed sequence records two ordered water commands in FTJ3");
+        auto restored = Take(TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromArchive(*f.source),
+            originalTerrain, originalPathing, Take(DecodeTerrainStrokeJournal(wire)), *f.edits, f.game));
+        const auto matches = [&](const MapDataEditSession& session, const State& expected) {
+            const auto snapshot = session.Snapshot();
+            return Take(SerializeMapTerrain(*session.Terrain())) == expected.terrain
+                && Take(snapshot.Units()->Serialize()) == expected.units && Take(snapshot.Doodads()->Serialize()) == expected.doodads;
+        };
+        Require(restored.receipts.size() == 2 && restored.session->MatchesTerrainJournalDraft(*f.edits)
+            && matches(*restored.session, states[2]), "FTJ3 restores the complete same terrain, both DOO groups and private command lineage");
+        Require(restored.session->Undo() && matches(*restored.session, states[1])
+            && restored.session->Undo() && matches(*restored.session, states[0])
+            && restored.session->Redo() && matches(*restored.session, states[1])
+            && restored.session->Redo() && matches(*restored.session, states[2]),
+            "restored two-command history independently walks every complete intermediate state");
+        std::vector<std::pair<std::filesystem::path, std::string>> sources{{f.source->SourcePath(), f.source->SourceSha256()}};
+        const auto saveAndCommit = [&](const char* name, std::size_t index) {
+            Require(matches(*f.edits, states[index]), "save starts from the precise expected complete history state");
+            const auto plan = Take(TerrainPathingSave::PrepareForSave(*f.source, *f.edits, f.game));
+            Require(plan.SaveGate().Succeeded(), "each ramp history state obtains a fresh valid save plan");
+            MapSaveTask task; Require(task.FreezeArchive(*f.source).Succeeded(), "freeze actual current ramp history archive");
+            task.target = f.root / name; task.replacements = f.edits->Replacements();
+            Require(plan.InstallPathingOutput(*f.edits, task.replacements).Succeeded(), "install the complete current native pathing output");
+            task.beforePublish = [&] { return plan.VerifyForSave(*f.edits, task.sourceSha256, task.replacements, task.removals); };
+            MapSaveService::Run(task);
+            if (!task.succeeded) for (const auto& diagnostic : task.diagnostics)
+                std::cerr << diagnostic.code << ": " << diagnostic.message << '\n';
+            Require(task.executed && task.succeeded && task.nextSession, "public save worker publishes and reopens the ramp history state");
+            auto saved = Take(MapArchiveSession::Open(task.written));
+            Require(plan.VerifyReadback(saved).Succeeded()
+                && Take(saved.ReadMember("war3map.w3e")) == states[index].terrain
+                && Take(saved.ReadMember("war3map.wpm")) == states[index].pathing
+                && Take(saved.ReadMember("war3mapUnits.doo")) == states[index].units
+                && Take(saved.ReadMember("war3map.doo")) == states[index].doodads,
+                "independent archive reopening matches every full frozen W3E/WPM/Units/DOO byte");
+            for (const auto& item : f.members) if (item.name != "war3map.w3e" && item.name != "war3map.wpm"
+                && item.name != "war3mapUnits.doo" && item.name != "war3map.doo")
+                Require(Take(saved.ReadMember(item.name)) == item.data, "ramp history saving preserves every unrelated authored member");
+            for (const auto& [path, sha] : sources) Require(Take(Sha256File(path)) == sha, "later saves preserve every earlier complete source archive");
+            const auto revision = f.edits->Revision(), sourceRevision = f.edits->TerrainSourceRevision();
+            Require(plan.CommitSaved(*f.edits, MapDocument::FromArchive(saved)).Succeeded()
+                && !f.edits->IsDirty() && f.edits->Replacements().empty()
+                && f.edits->SessionIdentity() == sessionIdentity && f.edits->Revision() == revision
+                && f.edits->TerrainSourceRevision() == sourceRevision + 1,
+                "formal save rebases the same session without adding commands or losing history");
+            sources.emplace_back(saved.SourcePath(), saved.SourceSha256());
+            f.source = std::make_unique<MapArchiveSession>(std::move(saved));
+        };
+        saveAndCommit("ramp-sequence-final.w3x", 2);
+        Require(f.edits->Undo(), "Undo deep after final ramp save"); saveAndCommit("ramp-sequence-undo-deep.w3x", 1);
+        Require(f.edits->Undo() && !f.edits->CanUndo(), "Undo shallow after saving the first Undo");
+        saveAndCommit("ramp-sequence-undo-both.w3x", 0);
+        Require(f.edits->Redo(), "Redo shallow after saving both Undos"); saveAndCommit("ramp-sequence-redo-shallow.w3x", 1);
+        Require(f.edits->Redo() && !f.edits->CanRedo(), "Redo deep after saving the first Redo");
+        saveAndCommit("ramp-sequence-redo-both.w3x", 2);
+        std::cout << "existing_s32_water_history wet=" << wet << " ordered_strokes=2 formal_saves=5 ftj=3"
+            << " expected_wpm_uses_product_generator=true native_oracle=false game_verified=false\n";
+    }
+}
+
 void DirectSaveRejectsEveryConflictingOrdinaryField() {
     Fixture f;
     const std::vector<std::function<void(TerrainBrush&)>> conflicts{
@@ -983,6 +1152,7 @@ int main() {
         NativeCornerCliffSavesAndRestoresLiteralPathing();
         NativeCornerWaterRestoresSavesAndRejectsUnexplainedLiteralPathing();
         SavedWaterStrokeUndoAndRedoRebaseAgainstEachSavedSource();
+        ExistingCornerWaterSequenceFollowsRestoresAndSavesEveryHistoryState();
         DirectSaveRejectsEveryConflictingOrdinaryField();
         DirectSaveUsesOrderedWaterAndOriginalScriptGate();
         DirectSaveAllowsSpecialWaterDeletionWithoutPlacementFollow();
