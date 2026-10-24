@@ -7,11 +7,14 @@ namespace War3Map::ObjectData {
 
 // 只解释捕获者已持有的原字节，不读取磁盘、不生成通行、不授予保存资格。
 // 要求W3B/W3D（缺失也显式提供）、两类SLK和DestructableMetaData五项基础来源。
-// 可破坏物只接受明确非walkable的标准对象、原版覆盖或单层标准父继承；普通装饰物
+// 非walkable可破坏物接受标准对象、原版覆盖或单层标准父继承；walkable桥仅接受唯一标准
+// 对象及v2 Original的空记录或精确walkable/pathTex/fixedRot覆盖，不接受Custom。其覆盖
+// 字段须按实际DestructableMetaData唯一绑定到零索引标量，并保持wire类型；实例及完整DOO
+// 冻结、实际占地和旧WPM仍由owner核实。普通装饰物
 // 接受标准对象、v2 Original覆盖及无父覆盖的一层Custom继承。原生记录缺少第六项实际
 // DoodadMetaData时返回TERRAIN_NATIVE_OBJECT_DOODAD_METADATA_REQUIRED，供可信owner
 // 精确补捕获一次后完整重验；其它错误不能用于重试。category为明确非_的
-// 单可打印ASCII字符且没有原生姿态覆盖时，返回生效路径及标准fixedRot；非C请求2格，
+// 单可打印ASCII字符时，返回生效路径及实际fixedRot；非C请求2格，
 // C仅请求Core逐实例证明2/4格完整贡献相同，不将字面C当成已证4格类别身份。
 // owner仍须验证真实贴图、摆放注册及旧WPM，不能仅凭此结果允许保存。
 [[nodiscard]] Result<MapData::TerrainNativeObjectPathing> InspectNativeDestructablePathing(

@@ -253,6 +253,90 @@ std::optional<float> EffectiveDoodadRotation(const StandardObjectEntry& standard
         Fail("TERRAIN_DOODAD_FIXED_ROTATION", "非空占地的fixedRot原生覆盖须有限且处于[-360,360]。");
     return *value;
 }
+const ObjectFieldDefinition& UniqueBridgeField(const Text::SlkCells& cells, const ObjectFieldSchema& schema,
+    const ObjectFieldContext& context, std::string_view key) {
+    const auto match = schema.MatchSourceField(ObjectType::Destructable, key, context);
+    if (!match.definition || !match.safeToEdit || match.sourceKey != key || match.sourceIndex)
+        Fail("TERRAIN_NATIVE_OBJECT_METADATA", std::string(key) + "没有适用于标准桥的唯一元数据地址：" + context.rawcode);
+    const auto& field = *match.definition;
+    ValidateMetadataNumbers(field);
+    // 原版DestructableMetaData是平面表，实际三字段index均为0，没有Doodad的repeat列。
+    // 显式非零索引、重复或拼接元数据不属于本单元；缺失index也不能猜成0。
+    if (Text::LowerAscii(field.sourceTable) != "destructabledata" || !field.metadata.contains("index")
+        || field.index != 0 || field.repeat != 0 || field.data != 0 || field.appendIndex != 0 || field.effectIndex != 0)
+        Fail("TERRAIN_NATIVE_OBJECT_METADATA", "标准桥覆盖需要DestructableData中的明确零索引标量字段：" + field.fieldId);
+    if (key == "walkable") ValidateAddress(field);
+    else if (key == "pathtex" && field.nativeValueType != NativeValueType::String)
+        Fail("TERRAIN_NATIVE_OBJECT_METADATA", "标准桥pathTex必须是实际DestructableData中的String字段。");
+    else if (key == "fixedrot" && field.nativeValueType != NativeValueType::Real && field.nativeValueType != NativeValueType::Unreal)
+        Fail("TERRAIN_NATIVE_OBJECT_METADATA", "标准桥fixedRot必须是实际DestructableData中的Real或Unreal字段。");
+    std::size_t candidates = 0;
+    const auto& header = cells.at(1);
+    const auto column = std::find_if(header.begin(), header.end(), [](const auto& cell) {
+        return Text::LowerAscii(cell.second) == "field";
+    });
+    if (column == header.end()) Fail("TERRAIN_NATIVE_OBJECT_METADATA", "标准桥元数据缺少field列。");
+    for (const auto& [number, row] : cells) {
+        if (number == 1) continue;
+        const auto actual = row.find(column->first);
+        if (actual == row.end() || Text::LowerAscii(actual->second) != key) continue;
+        if (++candidates != 1 || schema.FindNative(ObjectType::Destructable, row.at(1)) != &field)
+            Fail("TERRAIN_NATIVE_OBJECT_METADATA", "标准桥元数据含未绑定或重复的" + std::string(key) + "候选。");
+    }
+    if (candidates != 1) Fail("TERRAIN_NATIVE_OBJECT_METADATA", "标准桥元数据缺少显式" + std::string(key) + "候选。");
+    for (const auto& candidate : schema.Definitions()) {
+        if (candidate.objectType != ObjectType::Destructable || &candidate == &field) continue;
+        auto candidateKey = Text::LowerAscii(candidate.sourceField);
+        const bool sameField = candidateKey == key;
+        if (candidate.data > 0 && candidate.data <= 26) candidateKey += static_cast<char>('a' + candidate.data - 1);
+        if (sameField || candidateKey == key)
+            Fail("TERRAIN_NATIVE_OBJECT_METADATA", "多个可破坏物字段可能映射标准桥的" + std::string(key) + "：" + candidate.fieldId);
+    }
+    return field;
+}
+void ApplyBridgeOriginal(const ObjectRecord& original, const NativeObjectDocument& document,
+    const StandardObjectEntry& standard, const ObjectFieldSchema& schema, const Text::SlkCells& cells,
+    std::optional<std::string_view>& path, std::optional<float>& rotation) {
+    ObjectFieldContext context;
+    context.rawcode = standard.key.rawcode; context.baseCode = standard.Field("code");
+    std::set<std::string_view> addresses;
+    for (const auto& modification : original.modifications) {
+        const auto match = schema.MatchNativeField(ObjectType::Destructable, modification.key, context);
+        if (!match.definition)
+            Fail("TERRAIN_NATIVE_OBJECT_METADATA", "标准桥覆盖含未知元数据字段：" + modification.key.fieldId);
+        if (match.sourceKey != "walkable" && match.sourceKey != "pathtex" && match.sourceKey != "fixedrot")
+            Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "标准桥Original仅支持walkable、pathTex和fixedRot覆盖：" + modification.key.fieldId);
+        const auto& field = UniqueBridgeField(cells, schema, context, match.sourceKey);
+        if (!match.safeToEdit || match.definition != &field || match.sourceIndex)
+            Fail("TERRAIN_NATIVE_OBJECT_METADATA", "标准桥覆盖没有可靠的唯一标量地址：" + modification.key.fieldId);
+        if (modification.key.level || modification.key.variation || modification.key.dataIndex || modification.valueWasOpaque
+            || document.ModificationValueType(original.key, modification.key) != field.nativeValueType
+            || !addresses.emplace(field.fieldId).second)
+            Fail("TERRAIN_NATIVE_OBJECT_BRIDGE_TYPE", "标准桥覆盖必须是唯一、wire类型与元数据一致的无索引值：" + modification.key.fieldId);
+        if (match.sourceKey == "walkable") {
+            ValidateAddress(field);
+            const auto* value = std::get_if<std::int32_t>(&modification.value);
+            if (!value || *value != 1)
+                Fail("TERRAIN_NATIVE_OBJECT_BRIDGE_TYPE", "存活桥的walkable覆盖必须是Int32的1。");
+        } else if (match.sourceKey == "pathtex") {
+            if (field.nativeValueType != NativeValueType::String)
+                Fail("TERRAIN_NATIVE_OBJECT_METADATA", "标准桥pathTex必须是实际DestructableData中的String字段。");
+            const auto* value = std::get_if<std::string>(&modification.value);
+            if (!value) Fail("TERRAIN_NATIVE_OBJECT_BRIDGE_TYPE", "标准桥pathTex覆盖不是实际String值。");
+            // 516FE0命中Original后直接走5B8A00；明确空串也不能回退标准占地。
+            path = *value;
+        } else {
+            if (field.nativeValueType != NativeValueType::Real && field.nativeValueType != NativeValueType::Unreal)
+                Fail("TERRAIN_NATIVE_OBJECT_METADATA", "标准桥fixedRot必须是实际DestructableData中的Real或Unreal字段。");
+            const auto* value = std::get_if<float>(&modification.value);
+            if (!value) Fail("TERRAIN_NATIVE_OBJECT_BRIDGE_TYPE", "标准桥fixedRot覆盖不是实际F32值。");
+            if (!std::isfinite(*value) || *value < -360 || *value > 360)
+                Fail("TERRAIN_DOODAD_FIXED_ROTATION", "标准桥fixedRot原生覆盖须有限且处于[-360,360]。");
+            // 503340经767D24+1C进入517180，wire1/2按实际metadata读取F32；0/负值均保留。
+            rotation = *value;
+        }
+    }
+}
 struct ResolvedDoodadFootprint {
     std::string_view path;
     MapData::TerrainDoodadGridPolicy gridPolicy;
@@ -434,15 +518,18 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
                 walkable = value != "0";
             }
             if (walkable) {
-                // 生存桥首域不解释W3B覆盖或自定义继承；同rawcode的Doodad/W3D已在上方排除。
-                // 其它对象的W3B仍按各自来源解析，不把整份W3B是否存在当作桥资格。
-                if (native || standard->key.rawcode != rawcode)
-                    Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "可行走对象仅支持没有相关W3B记录的唯一标准类型：" + std::string(rawcode));
-                const auto path = standard->fields.find("pathtex");
-                const auto rotation = FixedRotation(standard->Field("fixedrot"));
-                if (path == standard->fields.end() || path->second.empty() || path->second == "_" || path->second == "none"
+                // 标准桥只扩展v2 Original；Custom的wire身份及继承仍未进入已证域。
+                // 同rawcode的Doodad/W3D已在上方排除，其它对象的W3B不影响此资格。
+                if (standard->key.rawcode != rawcode || (native && native->parentRawcode))
+                    Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "可行走对象仅支持唯一标准类型及其Original覆盖：" + std::string(rawcode));
+                const auto standardPath = standard->fields.find("pathtex");
+                std::optional<std::string_view> path;
+                if (standardPath != standard->fields.end()) path = standardPath->second;
+                auto rotation = FixedRotation(standard->Field("fixedrot"));
+                if (native) ApplyBridgeOriginal(*native, *destructables, *standard, schema, metadataCells, path, rotation);
+                if (!path || path->empty() || *path == "_" || *path == "none"
                     || !rotation || *rotation < -360 || *rotation > 360)
-                    Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "可行走标准对象需要非空pathTex和明确有限的[-360,360] fixedRot：" + std::string(rawcode));
+                    Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "可行走标准对象需要有效的非空pathTex和明确有限的[-360,360] fixedRot：" + std::string(rawcode));
                 // 5496D0向Doodads目录查询category；这里已证明无同名Doodad行/原生覆盖。
                 // 其缺行getter先清空字符串，因此502580回退到wire DWORD>>8的低字节。
                 // 426890按小端原样读DWORD，该字节就是文件rawcode的第二个字符。
@@ -450,11 +537,11 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
                 if (rawcode[1] == 'C')
                     Fail("TERRAIN_WALKABLE_DESTRUCTABLE_GRID", "可行走对象的C类别回退尚未绑定最终目录，不能确定吸附网格：" + std::string(rawcode));
                 const auto outputWork = sizeof(std::string_view) * 3 + sizeof(ResolvedDoodadFootprint)
-                    + sizeof(MapData::TerrainNativeDoodadPathingType) + rawcode.size() + path->second.size() + 2;
+                    + sizeof(MapData::TerrainNativeDoodadPathingType) + rawcode.size() + path->size() + 2;
                 if (outputWork > maximumWorkingBytes - work)
                     Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "可行走对象占地结果超过累计剩余预算。");
                 work += outputWork;
-                footprintPaths.emplace(rawcode, ResolvedDoodadFootprint{path->second,
+                footprintPaths.emplace(rawcode, ResolvedDoodadFootprint{*path,
                     MapData::TerrainDoodadGridPolicy::TwoCells, rotation,
                     MapData::TerrainNativeFootprintContribution::WalkableTerrainSuppression});
             }

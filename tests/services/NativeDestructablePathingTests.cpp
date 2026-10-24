@@ -201,6 +201,17 @@ Fixture WalkableBridgeFixture() {
     return fixture;
 }
 
+Fixture BridgeOriginalFixture() {
+    auto fixture = WalkableBridgeFixture();
+    // 实际DestructableMetaData的平面布局：index=0，无repeat/data列；字段ID不写死。
+    fixture.metadata = {
+        {{"ID", "X001"}, {"field", "walkable"}, {"slk", "DestructableData"}, {"type", "bool"}, {"index", "0"}},
+        {{"ID", "Pth0"}, {"field", "pathTex"}, {"slk", "DestructableData"}, {"type", "pathingTexture"}, {"index", "0"}},
+        {{"ID", "Rot0"}, {"field", "fixedRot"}, {"slk", "DestructableData"}, {"type", "unreal"}, {"index", "0"}}};
+    fixture.Tables();
+    return fixture;
+}
+
 void TypedOriginalAndMetadataIdentity() {
     for (const std::string field : {"X001", "Ab9z"}) {
         Fixture fixture;
@@ -219,7 +230,7 @@ void TypedOriginalAndMetadataIdentity() {
     fixture.SetNative(Original("S001", "x001"));
     Rejected(fixture.Validate({"S001"}), "TERRAIN_NATIVE_OBJECT_METADATA", "原生字段ID区分大小写");
     fixture.SetNative(Original("S001", "Pth0", NativeValueType::String, std::string("0")));
-    Rejected(fixture.Validate({"S001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "其它字段的字符串0不冒充walkable覆盖");
+    Rejected(fixture.Validate({"S001"}), "TERRAIN_NATIVE_OBJECT_METADATA", "其它字段字符串0不能借缺失标量地址冒充walkable覆盖");
 }
 
 void StandardAndSingleParentContext() {
@@ -256,6 +267,7 @@ void StandardAndSingleParentContext() {
 void WalkableValuesAndWireTypes() {
     Fixture fixture;
     Rejected(fixture.Validate({"S001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "标准true缺少明确路径和固定角度仍拒绝");
+    fixture.metadata[0]["index"] = "0"; fixture.Tables();
     for (const auto value : {std::int32_t{1}, std::int32_t{-1}, std::int32_t{2}}) {
         fixture.SetNative(Original("S002", "X001", NativeValueType::Int32, value));
         Rejected(fixture.Validate(), value == 1 ? "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED" : "TERRAIN_NATIVE_OBJECT_WALKABLE_TYPE",
@@ -1067,18 +1079,13 @@ void WalkableBridgeRequiresExplicitStandardFields() {
 }
 
 void WalkableBridgeRejectsRelevantNativeRecordsAndClassCollisions() {
-    for (const unsigned mode : {0u, 1u, 2u, 3u}) {
-        auto fixture = WalkableBridgeFixture();
-        auto document = Empty();
-        const std::string placed = mode == 3 ? "B001" : "S001";
-        if (mode == 3) Check(document.AddCustomObject(placed, "S001"));
-        else Check(document.AddOriginalObject(placed));
-        if (mode == 1) Modification(document, placed, "X001", NativeValueType::Int32, std::int32_t{1});
-        if (mode == 2) Modification(document, placed, "Pth0", NativeValueType::String, std::string("PathTextures\\SyntheticBridge.tga"));
-        fixture.SetNative(document);
-        Rejected(fixture.Inspect({placed}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED",
-            "相关W3B空Original、typed true、相同路径覆盖和单层继承均不在标准桥首域");
-    }
+    auto original = WalkableBridgeFixture();
+    auto emptyOriginal = Empty(); Check(emptyOriginal.AddOriginalObject("S001")); original.SetNative(emptyOriginal);
+    Require(Take(original.Inspect({"S001"})).footprints.size() == 1,
+        "空Original没有实际覆盖时沿用标准桥，不强求未使用字段的metadata地址");
+    auto custom = BridgeOriginalFixture();
+    auto inherited = Empty(); Check(inherited.AddCustomObject("B001", "S001")); custom.SetNative(inherited);
+    Rejected(custom.Inspect({"B001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "单层自定义桥仍未取得wire身份与网格资格");
     auto unrelated = WalkableBridgeFixture();
     auto w3b = Empty();
     Check(w3b.AddOriginalObject("S002"));
@@ -1105,6 +1112,126 @@ void WalkableBridgeRejectsRelevantNativeRecordsAndClassCollisions() {
         fixture.SetNative(document);
         Rejected(fixture.Inspect({"S001"}), "TERRAIN_NATIVE_OBJECT_CLASS_AMBIGUOUS", "同名W3D Original或Custom都先拒绝类别歧义");
     }
+}
+
+void WalkableBridgeOriginalUsesEffectiveFields() {
+    for (const auto wire : {NativeValueType::Real, NativeValueType::Unreal}) {
+        for (const float degrees : {-360.0f, -1.0f, 0.0f, 90.25f, 360.0f}) {
+            auto fixture = BridgeOriginalFixture();
+            fixture.metadata[0]["ID"] = "Wlk9"; fixture.metadata[1]["ID"] = "Pat9"; fixture.metadata[2]["ID"] = "Ang9";
+            fixture.metadata[2]["type"] = wire == NativeValueType::Real ? "real" : "unreal";
+            fixture.destructables[0]["walkable"] = "0";
+            fixture.destructables[0]["pathTex"] = "_";
+            fixture.destructables[0]["fixedRot"] = "invalid fallback";
+            fixture.Tables();
+            auto document = Original("S001", "Wlk9", NativeValueType::Int32, std::int32_t{1});
+            const std::string path = "PathTextures\\overridden;\"literal\".tga";
+            Modification(document, "S001", "Pat9", NativeValueType::String, path);
+            Modification(document, "S001", "Ang9", wire, degrees);
+            fixture.SetNative(document);
+            const auto source = fixture.sources;
+            const auto result = Take(fixture.Inspect({"S001", "S001"}));
+            Require(result.footprints.size() == 1 && result.footprints.front().rawcode == "S001"
+                && result.footprints.front().pathTexture == path && result.footprints.front().fixedRotationDegrees == degrees
+                && result.footprints.front().gridPolicy == MapData::TerrainDoodadGridPolicy::TwoCells
+                && result.footprints.front().contribution == MapData::TerrainNativeFootprintContribution::WalkableTerrainSuppression,
+                "Original用实际metadata三字段覆盖矛盾标准值；wire1/2、显式零和负角均不回退或归一化");
+            for (std::size_t i = 0; i < source.size(); ++i)
+                Require(source[i].bytes == fixture.sources[i].bytes, "桥Original解析不能重写任何来源");
+            Take(fixture.Inspect({"S001", "S001"}, result.workBytes));
+            Rejected(fixture.Inspect({"S001", "S001"}, result.workBytes - 1), "TERRAIN_NATIVE_OBJECT_BUDGET",
+                "Original字段及输出仍使用同一累计解析预算");
+        }
+    }
+    for (const unsigned kind : {0u, 1u, 2u}) {
+        auto fixture = BridgeOriginalFixture();
+        auto document = Empty(); Check(document.AddOriginalObject("S001"));
+        if (kind == 0) Modification(document, "S001", "X001", NativeValueType::Int32, std::int32_t{1});
+        if (kind == 1) Modification(document, "S001", "Pth0", NativeValueType::String, std::string("PathTextures\\only-path.tga"));
+        if (kind == 2) Modification(document, "S001", "Rot0", NativeValueType::Unreal, 0.0f);
+        fixture.SetNative(document);
+        const auto result = Take(fixture.Inspect({"S001"}));
+        Require(result.footprints.front().pathTexture == (kind == 1 ? "PathTextures\\only-path.tga" : "PathTextures\\SyntheticBridge.tga")
+            && result.footprints.front().fixedRotationDegrees == (kind == 2 ? 0.0f : -1.0f),
+            "未修改字段才沿用标准桥值，各单字段Original均可独立解释");
+    }
+    auto nonwalkable = BridgeOriginalFixture();
+    nonwalkable.SetNative(Original("S001", "X001", NativeValueType::Int32, std::int32_t{0}));
+    Require(Take(nonwalkable.Inspect({"S001"})).footprints.empty(), "walkable=0覆盖仍属于既有零贡献域");
+    Accepted(nonwalkable.Validate({"S001"}), "旧兼容入口仍接受明确零贡献覆盖");
+}
+
+void WalkableBridgeOriginalRejectsUnknownOrInexactValues() {
+    for (const std::string path : {"", "_", "none"}) {
+        auto fixture = BridgeOriginalFixture();
+        fixture.SetNative(Original("S001", "Pth0", NativeValueType::String, path));
+        Rejected(fixture.Inspect({"S001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "明确禁用的Original pathTex不能回退标准非空桥");
+    }
+    for (const float degrees : {-360.25f, 360.25f}) {
+        auto fixture = BridgeOriginalFixture();
+        fixture.SetNative(Original("S001", "Rot0", NativeValueType::Unreal, degrees));
+        Rejected(fixture.Inspect({"S001"}), "TERRAIN_DOODAD_FIXED_ROTATION", "Original fixedRot须有限且不扩大现有角度域");
+    }
+    for (const std::uint32_t bits : {0x7fc00000u, 0x7f800000u, 0xff800000u}) {
+        auto fixture = BridgeOriginalFixture();
+        fixture.SetNative(Original("S001", "Rot0", NativeValueType::Unreal, 0.0f));
+        auto& bytes = fixture.sources[kW3b].bytes;
+        // serializer拒绝非有限值；直接改经典v2单Original/单modifier的实际F32载荷。
+        Require(bytes.size() == 40 && bytes[20] == std::byte{'R'} && bytes[24] == std::byte{2}, "非有限桥角夹具地址须明确");
+        Put32(bytes, 28, bits);
+        Rejected(fixture.Inspect({"S001"}), "TERRAIN_DOODAD_FIXED_ROTATION", "Original fixedRot非有限wire不得被接受");
+    }
+    for (const auto wire : {NativeValueType::Int32, NativeValueType::Real, NativeValueType::Unreal}) {
+        auto fixture = BridgeOriginalFixture();
+        const Value value = wire == NativeValueType::Int32 ? Value{std::int32_t{0}} : Value{0.0f};
+        fixture.SetNative(Original("S001", "Pth0", wire, value));
+        Rejected(fixture.Inspect({"S001"}), "TERRAIN_NATIVE_OBJECT_BRIDGE_TYPE", "pathTex数值wire不能冒充metadata String");
+    }
+    for (const auto wire : {NativeValueType::Int32, NativeValueType::Real, NativeValueType::String}) {
+        auto fixture = BridgeOriginalFixture();
+        const Value value = wire == NativeValueType::String ? Value{std::string("0")}
+            : wire == NativeValueType::Int32 ? Value{std::int32_t{0}} : Value{0.0f};
+        fixture.SetNative(Original("S001", "Rot0", wire, value));
+        Rejected(fixture.Inspect({"S001"}), "TERRAIN_NATIVE_OBJECT_BRIDGE_TYPE", "fixedRot即使同为F32，wire1也不能冒充metadata Unreal wire2");
+    }
+    auto unsupported = BridgeOriginalFixture();
+    unsupported.metadata.push_back({{"ID", "Name"}, {"field", "Name"}, {"slk", "DestructableData"}, {"type", "string"}, {"index", "0"}});
+    unsupported.Tables(); unsupported.SetNative(Original("S001", "Name", NativeValueType::String, std::string("bridge")));
+    Rejected(unsupported.Inspect({"S001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "其它已知Original字段没有静态注册证据仍不放行");
+    unsupported.SetNative(Original("S001", "ZZZ9", NativeValueType::String, std::string("bridge")));
+    Rejected(unsupported.Inspect({"S001"}), "TERRAIN_NATIVE_OBJECT_METADATA", "未知Original字段不能由标准walkable授予资格");
+}
+
+void WalkableBridgeOriginalRequiresUniqueScalarMetadata() {
+    for (const std::size_t field : {std::size_t{1}, std::size_t{2}}) {
+        for (const auto& [key, value] : std::array{std::pair{"slk", "OtherData"}, std::pair{"index", "1"},
+            std::pair{"repeat", "1"}, std::pair{"data", "1"}, std::pair{"appendindex", "1"},
+            std::pair{"effectindex", "1"}, std::pair{"index", "0tail"}}) {
+            auto fixture = BridgeOriginalFixture();
+            fixture.metadata[field][key] = value; fixture.Tables();
+            fixture.SetNative(field == 1 ? Original("S001", "Pth0", NativeValueType::String, std::string("PathTextures\\new.tga"))
+                : Original("S001", "Rot0", NativeValueType::Unreal, 90.0f));
+            Rejected(fixture.Inspect({"S001"}), "TERRAIN_NATIVE_OBJECT_METADATA", "Original不能使用未知表、非零或坏文本metadata标量地址");
+        }
+        auto missing = BridgeOriginalFixture();
+        missing.metadata[field].erase("index"); missing.Tables();
+        missing.SetNative(field == 1 ? Original("S001", "Pth0", NativeValueType::String, std::string("PathTextures\\new.tga"))
+            : Original("S001", "Rot0", NativeValueType::Unreal, 90.0f));
+        Rejected(missing.Inspect({"S001"}), "TERRAIN_NATIVE_OBJECT_METADATA", "缺失index不猜为原版明确0");
+        for (const std::string table : {"DestructableData", ""}) {
+            auto duplicate = BridgeOriginalFixture();
+            auto alias = duplicate.metadata[field]; alias["ID"] = "Dup9"; alias["slk"] = table;
+            duplicate.metadata.push_back(alias); duplicate.Tables();
+            duplicate.SetNative(field == 1 ? Original("S001", "Pth0", NativeValueType::String, std::string("PathTextures\\new.tga"))
+                : Original("S001", "Rot0", NativeValueType::Unreal, 90.0f));
+            Rejected(duplicate.Inspect({"S001"}), "TERRAIN_NATIVE_OBJECT_METADATA", "schema丢弃的缺表候选也不能制造虚假唯一地址");
+        }
+    }
+    auto alias = BridgeOriginalFixture();
+    alias.metadata.push_back({{"ID", "Als9"}, {"field", "pathte"}, {"slk", "DestructableData"},
+        {"type", "pathingTexture"}, {"index", "0"}, {"data", "24"}});
+    alias.Tables(); alias.SetNative(Original("S001", "Pth0", NativeValueType::String, std::string("PathTextures\\new.tga")));
+    Rejected(alias.Inspect({"S001"}), "TERRAIN_NATIVE_OBJECT_METADATA", "data拼接别名不能与标准桥pathTex共存后被忽略");
 }
 
 void WalkableBridgeGridUsesWireRawcodeFallback() {
@@ -1185,6 +1312,9 @@ int main() {
         WalkableBridgeInspectionOwnsUniqueBoundedResults();
         WalkableBridgeRequiresExplicitStandardFields();
         WalkableBridgeRejectsRelevantNativeRecordsAndClassCollisions();
+        WalkableBridgeOriginalUsesEffectiveFields();
+        WalkableBridgeOriginalRejectsUnknownOrInexactValues();
+        WalkableBridgeOriginalRequiresUniqueScalarMetadata();
         WalkableBridgeGridUsesWireRawcodeFallback();
         SpecialDoodadFieldsDoNotBorrowOrdinaryPoseRules();
         std::cout << "native destructable pathing: typed fields, bounded inheritance, unique sources and rejection paths passed\n";
