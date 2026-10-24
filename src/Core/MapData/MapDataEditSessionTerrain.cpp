@@ -816,6 +816,10 @@ Result<TerrainStrokeResult> MapDataEditSession::ApplyPreparedTerrainEdit(const P
                 stroke.intent.cornerRampAlgorithm = plan.cornerRampAlgorithm_;
                 expressible = expressible && plan.points_.size() == 1 && plan.waterResult_ && !stroke.rulesSha256.empty();
             }
+            if (plan.brush_.kind == TerrainBrushKind::StraightRamp) {
+                stroke.rulesSha256 = plan.waterRulesSha256_;
+                expressible = expressible && plan.points_.size() == 1 && plan.waterResult_ && !stroke.rulesSha256.empty();
+            }
             if (plan.brush_.anchor) {
                 const auto anchor = CaptureTerrainStrokeAnchor(*plan.before_, plan.points_.front());
                 expressible = expressible && anchor.Succeeded() && anchor.value

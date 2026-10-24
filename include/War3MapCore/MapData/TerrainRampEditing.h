@@ -9,6 +9,8 @@ struct TerrainRampPlan {
     // 从高端向低端排列：一个高端、一个中点、一个低端。
     std::array<std::uint32_t, 3> vertexIndices{};
     TerrainBrushFootprint footprint;
+    std::uint32_t highX = 0, highY = 0;
+    int directionX = 0, directionY = 0;
 };
 
 // 当前只支持原始地高一致、干地、一级直线台阶。拐角和不规则邻接明确拒绝。
@@ -19,6 +21,17 @@ struct TerrainRampPlan {
 // 整笔预检后统一修改 ramp 位；失败不留部分笔划，仍须经过会话的保存门。
 [[nodiscard]] Result<TerrainStrokeResult> ApplyTerrainRampStroke(
     TerrainGridSnapshot& terrain, bool enabled, std::span<const TerrainStrokePoint> points);
+
+// 新直坡单点模式使用与拐角相同的每轴32/96落点；旧多点Ramp不改变接受域。
+[[nodiscard]] std::optional<TerrainStrokePoint> SnapTerrainStraightRampPoint(
+    const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point);
+[[nodiscard]] bool IsCanonicalTerrainStraightRampBrush(const TerrainBrush& brush) noexcept;
+[[nodiscard]] Result<TerrainRampPlan> PlanTerrainStraightRamp(
+    const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point);
+[[nodiscard]] Result<TerrainWaterStrokeCandidate> PrepareTerrainStraightRampStroke(
+    const TerrainGridSnapshot& source, const TerrainWaterLoadedRules& rules, const TerrainBrush& brush,
+    std::span<const TerrainStrokePoint> points, const DoodadPlacements& doodads,
+    std::span<const TerrainWaterSpecialDoodadShape> specialShapes = {}, const TerrainWaterBrushLimits& limits = {});
 
 struct TerrainCornerRampPlan {
     // x外/y内，从高端向两个低端方向各延伸两格。

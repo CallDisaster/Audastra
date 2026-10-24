@@ -44,6 +44,7 @@ enum class TerrainBrushKind {
     PathingRestriction, // WPM 附加限制草稿：仅由 MapDataEditSession 应用，不改变 W3E
     CornerRamp,   // 一级九点外角；单点canonical输入，须走实际规则的独立结构事务。
     RemoveWater,  // 移除水面：仅清 HasWater，保留地高、水原始高度与其它原始字段。
+    StraightRamp, // 一级三点直坡，单点实际规则事务；支持含水，保留旧Ramp与旧历史语义。
 };
 
 enum class TerrainBrushShape { Circle, Square };

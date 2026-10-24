@@ -33,6 +33,7 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
     if ((water == nullptr) == (cliff == nullptr))
         return Output::Failure("MapData.Edit", "TERRAIN_STRUCTURAL_BRUSH", "一次地形事务必须明确选择水刷、普通悬崖或拐角坡道。");
     const bool corner = cliff && cliff->kind == TerrainBrushKind::CornerRamp;
+    const bool straight = cliff && cliff->kind == TerrainBrushKind::StraightRamp;
     const auto budgetFailure = [] {
         return Output::Failure("MapData.Edit", "TERRAIN_WATER_SESSION_BUDGET",
             "水刷地形候选、撤销区块、通行性或摆放联动超出本笔预算，尚未修改会话。");
@@ -129,6 +130,8 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
                 points, doodads, resources.WaterSpecialShapes(), algorithmLimits);
             if (corner) return PrepareTerrainCornerRampStroke(*terrain_, *resources.WaterBrushRules(), *cliff,
                 points, doodads, resources.WaterSpecialShapes(), algorithmLimits, cornerAlgorithm);
+            if (straight) return PrepareTerrainStraightRampStroke(*terrain_, *resources.WaterBrushRules(), *cliff,
+                points, doodads, resources.WaterSpecialShapes(), algorithmLimits);
             auto anchor = CaptureTerrainStrokeAnchor(*terrain_, points.front());
             if (!anchor.Succeeded() || !anchor.value) return {{}, std::move(anchor.diagnostics)};
             const TerrainCliffBrush brush{cliff->shape, cliff->size.value_or(cliff->radius + 1), cliff->cliffTexture,
@@ -223,7 +226,7 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
                 const auto fingerprint = resources.WaterBrushDependencyFingerprint();
                 if (fingerprint.Succeeded() && fingerprint.value) {
                     prepared.value->waterRulesSha256_ = *fingerprint.value;
-                    if (cliff && !corner) prepared.value->cliffEnforceWaterLimits_ = resources.WaterBrushRules()->enforceWaterLimits;
+                    if (cliff && !corner && !straight) prepared.value->cliffEnforceWaterLimits_ = resources.WaterBrushRules()->enforceWaterLimits;
                     if (water) prepared.value->waterIntentOptions_ = TerrainWaterStrokeOptions{water->kind, water->shape, water->size,
                         water->cliffTexture, water->randomSeed, resources.WaterBrushRules()->enforceWaterLimits, water->algorithm};
                 }
@@ -231,6 +234,9 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
             if (corner && prepared.value->waterRulesSha256_.empty())
                 return Output::Failure("MapData.Edit", "TERRAIN_CORNER_RAMP_JOURNAL_REQUIRED",
                     "拐角坡道必须保留实际规则和完整DOO的typed恢复身份；缺失依赖或预算时整笔拒绝。");
+            if (straight && prepared.value->waterRulesSha256_.empty())
+                return Output::Failure("MapData.Edit", "TERRAIN_STRAIGHT_RAMP_JOURNAL_REQUIRED",
+                    "一级直坡必须保留实际规则和完整DOO的typed恢复身份；缺失依赖或预算时整笔拒绝。");
             prepared.value->waterResult_ = candidate.value->result;
             prepared.value->waterPreparationWork_ = work;
             prepared.value->waterPreparationBytes_ = finalBytes;
@@ -254,6 +260,18 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
         return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "TERRAIN_CORNER_RAMP_RULE_OWNER",
             "拐角坡道必须使用固定enforceWaterLimits=true的实际完整规则owner，供typed恢复精确重现。");
     return PrepareTerrainStructuralEdit(resources, nullptr, &brush, points, followDoodads, limits, algorithm);
+}
+
+Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerrainStraightRampEdit(
+    const TerrainPathingResources& resources, const TerrainBrush& brush,
+    std::span<const TerrainStrokePoint> points, bool followDoodads, const TerrainWaterBrushLimits& limits) const {
+    if (!IsCanonicalTerrainStraightRampBrush(brush) || points.size() != 1)
+        return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "TERRAIN_STRAIGHT_RAMP_BRUSH",
+            "一级直坡只接受单个canonical落点和创建/移除选项。");
+    if (!resources.WaterBrushRules() || !resources.WaterBrushRules()->enforceWaterLimits)
+        return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "TERRAIN_STRAIGHT_RAMP_RULE_OWNER",
+            "一级直坡必须使用固定enforceWaterLimits=true的实际完整规则owner，供typed恢复精确重现。");
+    return PrepareTerrainStructuralEdit(resources, nullptr, &brush, points, followDoodads, limits);
 }
 
 } // namespace War3Map::MapData

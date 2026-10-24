@@ -351,9 +351,10 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& sourc
         const bool nativeCliff = !stroke.waterBrush && stroke.brush.kind == MapData::TerrainBrushKind::CliffLevel
             && (!journal || journal->strokes[strokeIndex].cliffEnforceWaterLimits.has_value());
         const bool cornerRamp = !stroke.waterBrush && stroke.brush.kind == MapData::TerrainBrushKind::CornerRamp;
-        if (stroke.waterBrush || nativeCliff || cornerRamp) {
+        const bool straightRamp = !stroke.waterBrush && stroke.brush.kind == MapData::TerrainBrushKind::StraightRamp;
+        if (stroke.waterBrush || nativeCliff || cornerRamp || straightRamp) {
             const bool enforceWaterLimits = stroke.waterBrush ? stroke.waterBrush->enforceWaterLimits
-                : cornerRamp ? true : journal ? *journal->strokes[strokeIndex].cliffEnforceWaterLimits : true;
+                : cornerRamp || straightRamp ? true : journal ? *journal->strokes[strokeIndex].cliffEnforceWaterLimits : true;
             const auto remaining = std::min(MapData::TerrainSavePlanLimits{}.maximumBytes,
                 std::min(limits.maximumResourceBytes - resourceBytes, limits.maximumResourceBytes - ownedResources));
             if (!remaining || historyBytes == limits.maximumCandidateBytes || work == limits.maximumWork)
@@ -396,6 +397,8 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& sourc
                     *stroke.waterBrush, stroke.points, stroke.followDoodads, waterLimits)
                 : cornerRamp ? PrepareTerrainCornerRampEdit(candidate, document, binding, *resources.value,
                     stroke.brush, stroke.points, stroke.followDoodads, waterLimits, stroke.cornerRampAlgorithm)
+                : straightRamp ? PrepareTerrainStraightRampEdit(candidate, document, binding, *resources.value,
+                    stroke.brush, stroke.points, stroke.followDoodads, waterLimits)
                 : PrepareTerrainCliffEdit(candidate, document, binding, *resources.value,
                     stroke.brush, stroke.points, stroke.followDoodads, waterLimits);
             if (!plan.Succeeded() || !plan.value) return {{}, plan.diagnostics};
