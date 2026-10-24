@@ -1,4 +1,5 @@
 #include "War3MapCore/MapData/TerrainPathingResources.h"
+#include "TerrainPaletteEditInternal.h"
 
 #include "War3MapCore/Game/GameDataSource.h"
 #include "War3MapCore/Hash.h"
@@ -540,22 +541,23 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
                 || before.header.width != after.header.width || before.header.height != after.header.height
                 || before.header.offset != after.header.offset || before.header.mainTileset != after.header.mainTileset
                 || (before.header.cliffTilesets != after.header.cliffTilesets
-                    && (after.header.cliffTilesets.empty() || after.header.cliffTilesets.size() > 15
-                        || before.header.cliffTilesets.size() != after.header.cliffTilesets.size()))
+                    && !TerrainPaletteEditDetail::SupportsCliffTableDelta(before.header.cliffTilesets, after.header.cliffTilesets))
                 || before.vertices.size() != after.vertices.size())
-                Fail("TERRAIN_NATIVE_SOURCE_SHAPE", "原版通行重建要求旧/新经典地形尺寸、偏移与主地形集不变；悬崖表只允许1到15项的同数量槽替换。");
+                Fail("TERRAIN_NATIVE_SOURCE_SHAPE", "原版通行重建要求旧/新经典地形尺寸、偏移与主地形集不变；悬崖表只允许1到15项的同数量槽替换或完整前缀型末尾增减。");
             if (before.header.cliffTilesets != after.header.cliffTilesets) {
                 const auto& palette = after.header.cliffTilesets;
                 for (auto slot = palette.begin(); slot != palette.end(); ++slot)
                     if (std::find(palette.begin(), slot, *slot) != slot)
                         Fail("TERRAIN_NATIVE_CLIFF_PALETTE_AMBIGUOUS", "修改后的悬崖贴图表含重复rawcode：" + *slot);
             }
-            // 槽索引没有变化也可能已换材质。每个替换槽（包括未使用槽）都绑定
-            // 实际旧/新CliffTypes行；不从预览模型、变体回退或目录名推导通行。
-            for (std::size_t slot = 0; slot < before.header.cliffTilesets.size(); ++slot) {
-                if (before.header.cliffTilesets[slot] == after.header.cliffTilesets[slot]) continue;
-                cliffs.insert(before.header.cliffTilesets[slot]);
-                cliffs.insert(after.header.cliffTilesets[slot]);
+            // 未使用的替换、追加或撤回槽也分别绑定实际旧/新CliffTypes行。
+            // 不从预览模型、变体回退或目录名推导通行。
+            const auto& oldCliffs = before.header.cliffTilesets;
+            const auto& newCliffs = after.header.cliffTilesets;
+            for (std::size_t slot = 0; slot < std::max(oldCliffs.size(), newCliffs.size()); ++slot) {
+                if (slot < oldCliffs.size() && slot < newCliffs.size() && oldCliffs[slot] == newCliffs[slot]) continue;
+                if (slot < oldCliffs.size()) cliffs.insert(oldCliffs[slot]);
+                if (slot < newCliffs.size()) cliffs.insert(newCliffs[slot]);
             }
             for (const auto* grid : {&before, &after}) for (const auto& vertex : grid->vertices) {
                 nativeRamp = nativeRamp || vertex.IsRamp();

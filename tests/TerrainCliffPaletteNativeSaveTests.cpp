@@ -263,11 +263,58 @@ void DirectoryAliasesAndChangedSourceAreRejected() {
 void PaletteCountAndOriginalWpmRemainProtected() {
     Fixture fixture; Prepare(fixture);
     const auto before = *fixture.edits->Terrain();
-    for (const auto count : {0u, 2u, 16u}) {
+    for (const auto count : {0u, 16u}) {
         auto after = before; after.header.cliffTilesets.resize(count, "Cl02");
         const auto owner = TerrainPathingResources::CaptureNative(*fixture.archive, before, after, {}, maximumBytes);
         Require(!owner.Succeeded() && HasCode({owner.diagnostics}, "TERRAIN_NATIVE_SOURCE_SHAPE"),
-            "palette deletion, append and sentinel-slot overflow remain outside this save domain");
+            "empty cliff tables and sentinel-slot overflow remain outside this save domain");
+    }
+    {
+        Fixture tail; Prepare(tail);
+        const auto original = tail.members[0].data;
+        auto expected = original; expected[9] = std::byte{1}; expected[21] = std::byte{2};
+        const Bytes appended{std::byte{'C'}, std::byte{'l'}, std::byte{'0'}, std::byte{'2'}};
+        expected.insert(expected.begin() + 29, appended.begin(), appended.end());
+        Replace(tail, 1, "Cl02");
+        Require(Take(SerializeMapTerrain(*tail.edits->Terrain())) == expected,
+            "tail append updates literal count/custom fields and inserts one rawcode without touching vertices");
+        tail.Save("palette-tail-appended.w3x");
+        Require(Take(tail.archive->ReadMember("war3map.w3e")) == expected, "tail append reaches the ordinary save output");
+        RequireOtherMembersPreserved(tail);
+        Require(tail.edits->Undo(), "saved cliff tail append remains undoable"); tail.Save("palette-tail-retracted.w3x");
+        Require(Take(tail.archive->ReadMember("war3map.w3e")) == original,
+            "saved Undo retracts only the real appended tail and restores complete original bytes");
+        Require(tail.edits->Redo(), "tail withdrawal preserves Redo"); tail.Save("palette-tail-restored.w3x");
+        Require(Take(tail.archive->ReadMember("war3map.w3e")) == expected, "saved Redo restores exact appended bytes");
+    }
+    {
+        Fixture middle; Prepare(middle);
+        auto original = *middle.edits->Terrain(); original.header.cliffTilesets = {"Cl01", "Cl02", "Cl03"};
+        middle.members[0].data = Take(SerializeMapTerrain(original)); Reopen(middle, "three-cliff-source.w3x");
+        auto after = original; after.header.cliffTilesets = {"Cl01", "Cl03"};
+        const auto removed = TerrainPathingResources::CaptureNative(*middle.archive, original, after, {}, maximumBytes);
+        Require(!removed.Succeeded() && HasCode({removed.diagnostics}, "TERRAIN_NATIVE_SOURCE_SHAPE"),
+            "middle deletion cannot masquerade as an Undo tail withdrawal");
+        after.header.cliffTilesets = {"Cl02", "Cl03", "Cl04", "Cl01"};
+        const auto reordered = TerrainPathingResources::CaptureNative(*middle.archive, original, after, {}, maximumBytes);
+        Require(!reordered.Succeeded() && HasCode({reordered.diagnostics}, "TERRAIN_NATIVE_SOURCE_SHAPE"),
+            "count-changing reordering cannot masquerade as a tail append");
+    }
+    {
+        auto flat = before;
+        for (auto& vertex : flat.vertices) { vertex.cliffAndLayerRaw = 0xf2; vertex.variationRaw = 0; }
+        auto selected = flat; selected.header.cliffTilesets.push_back("Cl02");
+        constexpr std::size_t index = 4 * 11 + 5;
+        selected.vertices[index].cliffAndLayerRaw = 0x12;
+        Require(IsNativeTerrainCliffSentinelTransition(flat, selected, index)
+            && IsNativeTerrainCliffSentinelTransition(selected, flat, index),
+            "flat sentinel selection accepts a newly appended concrete material in either saved direction");
+        auto dangling = flat; dangling.vertices[index + 1].cliffAndLayerRaw = 0x12;
+        Require(!IsNativeTerrainCliffSentinelTransition(selected, dangling, index),
+            "tail withdrawal rejects a neighbor still referencing a removed slot using its own table length");
+        auto diagonal = flat; diagonal.vertices[index + 12].cliffAndLayerRaw = 0xf3;
+        Require(!IsNativeTerrainCliffSentinelTransition(diagonal, selected, index),
+            "appended resources do not weaken the full nine-point flat-sentinel condition");
     }
     fixture.members[1].data[16] ^= std::byte{0x04}; Reopen(fixture, "unexplained-wpm.w3x");
     Replace(fixture, 0, "Cl02");

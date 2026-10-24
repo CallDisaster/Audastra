@@ -1,6 +1,7 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/TerrainEditInspection.h"
 #include "MapDataEditSessionTerrainInternal.h"
+#include "TerrainPaletteEditInternal.h"
 #include "War3MapCore/MapData/MapPathing.h"
 #include "War3MapCore/MapData/PlacementElevationInvariant.h"
 #include "War3MapCore/MapData/TerrainNativePathing.h"
@@ -856,12 +857,12 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
     command.headerAfter = next->header;
     if (resources) {
         const auto& palette = table == TerrainTextureTable::Ground ? terrain_->header.groundTilesets : terrain_->header.cliffTilesets;
-        const bool appendGround = table == TerrainTextureTable::Ground && slot == palette.size() && slot < 16;
-        if (!terrainOriginal_ || (!appendGround && slot >= palette.size())
+        const bool append = slot == palette.size() && slot < (table == TerrainTextureTable::Ground ? 16u : 15u);
+        if (!terrainOriginal_ || (!append && slot >= palette.size())
             || terrain_->header.groundTilesets.empty() || terrain_->header.groundTilesets.size() > 16
             || terrain_->header.cliffTilesets.empty() || terrain_->header.cliffTilesets.size() > 15)
             return Output::Failure("Terrain.Journal", "TERRAIN_PALETTE_JOURNAL_DOMAIN",
-                "可信贴图记录只支持既有槽替换或16槽以内的Ground表尾追加。");
+                "可信贴图记录只支持既有槽替换、16槽以内的地面表尾追加或15槽以内的悬崖表尾追加。");
         const auto bound = resources->VerifyWaterBrushInput(*terrainOriginal_, *next);
         if (!bound.Succeeded()) return {{}, bound.diagnostics};
         const auto index = Index(MapDataKind::Doodads);
@@ -878,8 +879,8 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
         const auto digest = resources->WaterBrushDependencyFingerprint();
         if (!digest.Succeeded() || !digest.value) return {{}, digest.diagnostics};
         TerrainJournalStroke stroke;
-        stroke.intent.palette = TerrainPaletteEditIntent{table, slot, appendGround ? std::string{} : palette[slot], rawcode,
-            static_cast<std::uint8_t>(appendGround ? 2 : 1)};
+        stroke.intent.palette = TerrainPaletteEditIntent{table, slot, append ? std::string{} : palette[slot], rawcode,
+            static_cast<std::uint8_t>(append ? (table == TerrainTextureTable::Ground ? 2 : 3) : 1)};
         stroke.rulesSha256 = *digest.value;
         command.terrainStroke = std::move(stroke);
     }
@@ -1032,11 +1033,10 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
         && oldHeader.version == 11 && oldHeader.mainTileset == newHeader.mainTileset
         && oldHeader.width == newHeader.width && oldHeader.height == newHeader.height
         && std::bit_cast<std::uint64_t>(oldHeader.offset) == std::bit_cast<std::uint64_t>(newHeader.offset)
-        // 悬崖槽替换不改WPM几何规则，但仍须走实际旧/新行绑定及完整G0/G1。
-        // 表尾追加/删除和“保留原通行”路径不借此扩大资格。
+        // 悬崖表替换或严格前缀型末尾增减仍须实际旧/新行绑定及完整G0/G1。
+        // 撤回末尾槽供保存后Undo；不放行中段删除、重排或“保留原通行”路径。
         && (oldHeader.cliffTilesets == newHeader.cliffTilesets
-            || (nativeRebuild && !newHeader.cliffTilesets.empty() && newHeader.cliffTilesets.size() <= 15
-                && oldHeader.cliffTilesets.size() == newHeader.cliffTilesets.size()))
+            || (nativeRebuild && TerrainPaletteEditDetail::SupportsCliffTableDelta(oldHeader.cliffTilesets, newHeader.cliffTilesets)))
         && !newHeader.groundTilesets.empty()
         && newHeader.groundTilesets.size() <= 16;
     if ((!SameHeader(newHeader, oldHeader) && !resourceHeader)

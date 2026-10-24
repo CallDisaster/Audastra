@@ -1228,8 +1228,11 @@ void WorldModule::EditTerrainTextureSlot(bool cliff, bool append) {
     if (!project_.mapEdits_ || !project_.mapDataUndoStack_ || strokeBase_ || waterCommit_ || terrainPaletteWorker_ || project_.savingMap_) return;
     const auto source = project_.mapEdits_->Terrain();
     if (!source || source != rawTerrain_) return;
-    if (cliff && append) { selectionStatus_->setText(tr("悬崖贴图只能替换已有槽位，不能追加。")); return; }
     const auto& table = cliff ? source->header.cliffTilesets : source->header.groundTilesets;
+    if (append && table.size() >= (cliff ? 15u : 16u)) {
+        selectionStatus_->setText(cliff ? tr("悬崖贴图已达到15个槽位，不能追加。") : tr("地面贴图已达到16个槽位，不能追加。"));
+        return;
+    }
     const int slot = append ? static_cast<int>(table.size())
         : (cliff ? terrainCliffTexture_->currentIndex() : terrainSwatches_->checkedId());
     if (slot < 0 || (!append && static_cast<std::size_t>(slot) >= table.size())) return;
@@ -1269,7 +1272,7 @@ void WorldModule::EditTerrainTextureSlot(bool cliff, bool append) {
                 const auto sourcePath = QtProject::VerifyTerrainWaterEditRequestSourcePath(*ownedRequest);
                 if (!sourcePath.Succeeded()) { *prepared = {std::nullopt, sourcePath.diagnostics}; return; }
             }
-            // 替换与Ground表尾追加共用实际map/game来源；都不能从raw草稿制造恢复资格。
+            // 替换与地面/悬崖表尾追加共用实际map/game来源，不能从raw草稿制造恢复资格。
             *prepared = ownedRequest->archive ? Services::TerrainPathingSave::PrepareTextureSlot(*ownedRequest->archive, *frozen,
                     selectedTable, slot, rawcode, ownedRequest->gameRoot, ownedRequest->maximumBytes)
                 : Services::TerrainPathingSave::PrepareTextureSlot(*ownedRequest->directory, *frozen,
