@@ -15,7 +15,10 @@ namespace War3Map::ObjectData {
 // 冻结、实际占地和旧WPM仍由owner核实。普通装饰物
 // 接受标准对象、v2 Original覆盖及无父覆盖的一层Custom继承。原生记录缺少第六项实际
 // DoodadMetaData时返回TERRAIN_NATIVE_OBJECT_DOODAD_METADATA_REQUIRED，供可信owner
-// 精确补捕获一次后完整重验；其它错误不能用于重试。普通category覆盖须绑定实际唯一
+// 精确补捕获一次后完整重验；其它错误不能用于重试。
+// 已有vertR/G/B颜色记录可只读保留：实际唯一DoodadData/Int32、repeat=10/index=0、
+// variation=1..10及第二索引0；仍完整核对codec、全部覆盖与原始元数据别名，
+// 不开放通用物编变体写回，也不允许未知重复字段取得占地资格。普通category覆盖须绑定实际唯一
 // String标量元数据，无覆盖沿标准父；缺格/空串或首字节'_'按DOO新ID第二字节回退，
 // 其它值只取原始首字节；标准WESTRING_类别因未捕获本地化来源而拒绝。
 // 支持可打印ASCII首字节：非C请求2格，C请求Core捕获实际
