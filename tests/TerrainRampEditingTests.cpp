@@ -222,7 +222,8 @@ void NativeCornerUnsupportedDomainsRejectAtomically() {
     const TerrainStrokePoint point{1056, 1056};
     const auto rejects = [&](const TerrainGridSnapshot& terrain) {
         const auto before = *SerializeMapTerrain(terrain).value;
-        Require(!PrepareTerrainCornerRampStroke(terrain, CornerRules(), brush, std::span(&point, 1), doodads).Succeeded(), "unsupported corner domain rejects");
+        Require(!PrepareTerrainCornerRampStroke(terrain, CornerRules(), brush, std::span(&point, 1), doodads,
+            {}, {}, TerrainCornerRampAlgorithm::DryOnly).Succeeded(), "legacy unsupported corner domain rejects");
         Require(*SerializeMapTerrain(terrain).value == before, "domain rejection preserves complete source");
     };
     auto terrain = Corner(); terrain.vertices[8 * 17 + 8].textureAndFlagsRaw |= 0x10; rejects(terrain);
