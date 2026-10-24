@@ -182,8 +182,11 @@ void GroundAppendSixteenthEntryAndResourceFailuresStayBounded() {
     Require(appended.headerChanged && last.edits->Terrain()->header.groundTilesets.size() == 16,
         "actual captured properties permit the last encodable ground slot");
     const auto revision = last.edits->Revision();
-    Require(!TerrainPathingSave::EditTextureSlot(*last.archive, *last.edits, TerrainTextureTable::Ground, 16, "Tg17", last.gameRoot).Succeeded()
-        && last.edits->Revision() == revision, "the seventeenth slot is rejected without publishing a command");
+    const auto overflow = TerrainPathingSave::EditTextureSlot(*last.archive, *last.edits,
+        TerrainTextureTable::Ground, 16, "Tg17", last.gameRoot);
+    Require(!overflow.Succeeded() && HasCode(overflow, "TERRAIN_PALETTE_JOURNAL_DOMAIN")
+        && last.edits->Revision() == revision,
+        "the seventeenth slot is rejected by the slot limit before trying to resolve its resources");
     const auto fullJournal = Take(TerrainPathingSave::CaptureJournal(*last.archive, *last.edits));
     auto fullRaw = OrdinaryJournalRawDraft(last);
     auto full = Take(TerrainPathingSave::RestoreJournal(*last.archive, MapDocument::FromMembers(last.members),
