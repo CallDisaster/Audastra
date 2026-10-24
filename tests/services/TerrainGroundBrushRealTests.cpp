@@ -4,6 +4,8 @@
 #include "War3MapCore/MapData/MapMinimapMarkers.h"
 #include "War3MapCore/MapData/MapShadow.h"
 #include "War3MapCore/MapData/TerrainCliffEditing.h"
+#include "War3MapCore/ObjectData/ObjectImport.h"
+#include "War3MapCore/Services/ObjectTransactionSnapshot.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/Text/SlkCells.h"
 #include "War3MapCore/Text/TextUtil.h"
@@ -150,17 +152,39 @@ void CheckRealGroundBrushSave(const MapArchiveSession& original,
             << " mmp_sha256=" << Take(Sha256(actualMarkerBytes)) << " mmp_version=0 mmp_records=3"
             << " native_editor_verified=false game_verified=false\n";
     };
-    for (const bool cliff : {false, true}) {
-        const auto scenario = directory / (cliff ? "playable-cliff" : "playable-pathing-texture");
+    for (const unsigned mode : {0u, 1u, 2u}) {
+        const bool cliff = mode == 1, mixed = mode == 2;
+        const auto scenario = directory / (mixed ? "playable-mixed-unit-terrain" : cliff ? "playable-cliff" : "playable-pathing-texture");
         Require(std::filesystem::create_directory(scenario), "exclusive ground brush scenario");
-        const std::array<MemberReplacement, 3> seeded{{{"war3map.wpm", baseline},
-            {"war3map.shd", shadowBytes}, {"war3map.mmp", markerBytes}}};
+        std::vector<MemberReplacement> seeded{{"war3map.wpm", baseline},
+            {"war3map.shd", shadowBytes}, {"war3map.mmp", markerBytes}};
+        if (mixed) {
+            using namespace ObjectData;
+            auto units = Take(NativeObjectDocument::CreateEmpty(ObjectType::Unit));
+            Require(units.AddCustomObject("uM01", "hfoo").Succeeded(), "seed original custom unit for mixed save");
+            Require(units.AddModification({ObjectType::Unit, "uM01"}, {"uhpm"}, NativeValueType::Int32, std::int32_t{0}).Succeeded(),
+                "seed unit HP zero before editing");
+            seeded.push_back({"war3map.w3u", Take(NativeObjectCodec(ObjectType::Unit).Serialize(units))});
+        }
         const auto source = Take(MapArchiveSession::Open(Take(original.SaveCandidate(scenario / "source.w3x", seeded)).path));
         verifyDerived(source, "source", cliff ? "cliff" : "texture");
         MapEditSaveRequest request;
         request.sourceMap = source.SourcePath(); request.targetCandidate = scenario / "saved.w3x";
         request.toolRoot = tool; request.gameRoot = game;
         request.expectedSourceSha256 = source.SourceSha256(); request.expectedTerrainSha256 = Take(Sha256(beforeBytes));
+        std::vector<std::byte> expectedUnits;
+        if (mixed) {
+            using namespace ObjectData;
+            const auto originalUnits = Take(source.ReadMember("war3map.w3u"));
+            auto parsed = LniObjectCodec(ObjectType::Unit).Parse(Take(ConvertNativeObjectDataToLni(ObjectType::Unit, originalUnits)));
+            const auto* lni = parsed.Succeeded() ? dynamic_cast<const LniObjectDocument*>(parsed.document.get()) : nullptr;
+            Require(lni != nullptr, "project actual baseline into shared editable unit document");
+            auto edited = *lni;
+            Require(edited.SetModification({ObjectType::Unit, "uM01"}, {"uhpm"}, std::int32_t{1}).Succeeded(), "edit unit HP zero to one");
+            auto transaction = Take(ObjectTransactionSnapshot::Freeze(edited, originalUnits, source.SourceSha256()));
+            expectedUnits.assign(transaction->EncodedNative().begin(), transaction->EncodedNative().end());
+            request.objectTransactions.push_back(std::move(transaction));
+        }
         MapEditTerrainStroke stroke;
         stroke.pointSpace = MapEditPointSpace::TerrainVertex; stroke.points = {{32, 32}};
         stroke.brush.shape = TerrainBrushShape::Square; stroke.brush.radius = 2;
@@ -196,10 +220,12 @@ void CheckRealGroundBrushSave(const MapArchiveSession& original,
         }
         Require(expected != baseline && Take(readback.ReadMember("war3map.wpm")) == expected,
             "complete saved WPM matches independent local dry bytes and unchanged exterior");
-        Require(saved.scriptPreserved, "ground save preserves the compiled playable initialization");
+        if (!mixed) Require(saved.scriptPreserved, "ground save preserves the compiled playable initialization");
+        else Require(Take(readback.ReadMember("war3map.w3u")) == expectedUnits, "public mixed save reads back HP zero to one exactly");
         for (const auto& member : source.Members()) {
             const auto name = Text::LowerAscii(member.name);
             if (name == "war3map.w3e" || name == "war3map.wpm" || name == "war3mapmap.blp") continue;
+            if (mixed && (name == "war3map.w3u" || name == "war3map.j" || name == "scripts/war3map.j")) continue;
             Require(Take(readback.ReadMember(member.name)) == member.data, "ground save preserves every unrelated member");
         }
         verifyDerived(readback, "saved", cliff ? "cliff" : "texture");
