@@ -1488,9 +1488,14 @@ void SpecialWaterDeletionUsesTheNormalSaveAndUndoChain() {
         if (ordinary) unrecorded.doodads.front().lifePercent = 24;
         else unrecorded.specialDoodads.pop_back();
         Check(f.edits->EditDoodads(unrecorded));
-        const auto refused = TerrainPathingSave::PrepareForSave(*f.archive, *f.edits, f.gameRoot);
-        Require(!refused.Succeeded() || !refused.value || !refused.value->SaveGate().Succeeded(),
-            "water deletion authority never authorizes an independent ordinary or special EditDoodads command");
+        const auto prepared = TerrainPathingSave::PrepareForSave(*f.archive, *f.edits, f.gameRoot);
+        if (ordinary) {
+            Require(prepared.Succeeded() && prepared.value && prepared.value->SaveGate().Succeeded(),
+                "ordinary edit obtains its own complete two-stage proof alongside the private water special lineage");
+        } else {
+            Require(!prepared.Succeeded() || !prepared.value || !prepared.value->SaveGate().Succeeded(),
+                "private water deletion lineage never authorizes raw special edits");
+        }
         Require(!frozen.VerifyForSave(*f.edits, f.archive->SourceSha256(), output).Succeeded(),
             "an independent DOO edit also invalidates the already frozen session revision");
         Require(f.edits->Undo() && Take(currentDoodads().Serialize()) == deletedDoodads,
@@ -2479,6 +2484,7 @@ void MixedObjectAndResourceSavesUseActualPathingDependencies() {
     }
 }
 #include "TerrainOrdinaryDoodadSaveCases.h"
+#include "TerrainOrdinarySpecialSaveCases.h"
 } // namespace
 
 int main() {
@@ -2533,6 +2539,9 @@ int main() {
         OrdinaryDoodadSaveKeepsActualDependenciesAndBudgets();
         OrdinaryMutationsDoNotAcquireSpecialOrBridgeAuthority();
         OrdinaryMoveThenNativeWaterUsesTheCurrentDoodadOwner();
+        OrdinarySpecialMutationsUseBothStagesAndSavedHistory();
+        OrdinarySpecialProofKeepsPrivateSourcesAndFrozenOutput();
+        OrdinarySpecialProofKeepsCompleteBridgeFreeze();
         std::cout << "Native object terrain save tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
