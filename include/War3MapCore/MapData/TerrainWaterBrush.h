@@ -111,7 +111,7 @@ struct TerrainWaterStrokeCandidate {
 // owned W3E 候选内依原顺序执行水面、扩大平台、层级/palette/variation、岸线、
 // 荒芜、越界地高衰减和 palette 传播。v2允许已验证的旧坡道；v1仍在实际访问区拒绝。
 // specialShapes 必须与实际解析的 special 记录一一对应；形状失配项依原阶段删除，
-// 同时返回完整DOO候选和实际源记录回执。未闭合的空占地混合集合仍明确拒绝。
+// 同时返回完整DOO候选和实际源记录回执；空占地记录不进入删除运行时集合，原字保留。
 // 地形source只复制一次；成功或失败均不修改输入地形或DOO。
 [[nodiscard]] Result<TerrainWaterStrokeCandidate> PrepareTerrainWaterStroke(
     const TerrainGridSnapshot& source, const TerrainWaterLoadedRules& rules, const TerrainWaterBrush& brush,

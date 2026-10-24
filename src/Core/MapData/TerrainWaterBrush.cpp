@@ -105,7 +105,9 @@ public:
         shapeBySource_.resize(shapes.size());
         liveSpecial_.reserve(shapes.size());
         for (const auto& shape : shapes) shapeBySource_[shape.sourceRecordIndex] = &shape;
-        for (std::uint32_t i = 0; i < doodads.specialDoodads.size(); ++i) liveSpecial_.push_back(i);
+        // 原版只把有实际占地的记录加入运行时数组；空pathTex仍属于原始DOO。
+        for (std::uint32_t i = 0; i < doodads.specialDoodads.size(); ++i)
+            if (shapeBySource_[i]->hasFootprint) liveSpecial_.push_back(i);
         result_.removedSpecialSourceRecords.reserve(shapes.size());
         result_.work = initialWork;
     }
@@ -165,6 +167,23 @@ public:
         }
         result_.finalRandomState = random_;
         return std::move(result_);
+    }
+
+    void WriteSpecialOutput(const DoodadPlacements& source, DoodadPlacements& candidate,
+        TerrainWaterBrushResult& result) const {
+        if (result.removedSpecialSourceRecords.empty()) return;
+        if (source.specialDoodads.size() > limits_.maximumWork - result.work)
+            Reject("TERRAIN_WATER_WORK_BUDGET", "特殊模型候选映射超过本笔工作量预算。");
+        result.work += source.specialDoodads.size();
+        // active子序列使用原版swap-last后的源记录顺序。空占地不参与XY查找、
+        // 删除或末项覆盖，仍逐字保留其记录及相互顺序，不仿照原版保存时丢弃。
+        std::size_t write = 0, active = 0;
+        for (std::size_t i = 0; i < source.specialDoodads.size(); ++i) {
+            if (!shapeBySource_[i]->hasFootprint) candidate.specialDoodads[write++] = source.specialDoodads[i];
+            else if (active < liveSpecial_.size())
+                candidate.specialDoodads[write++] = source.specialDoodads[liveSpecial_[active++]];
+        }
+        candidate.specialDoodads.resize(write);
     }
 
 private:
@@ -863,21 +882,8 @@ Result<TerrainWaterStrokeCandidate> PrepareStructuralStroke(const TerrainGridSna
         auto candidate = source;
         StructuralTransaction transaction(candidate, rules, brush, doodads, specialShapes, limits, initialWork);
         auto result = transaction.Run(points, source);
-        if (!result.removedSpecialSourceRecords.empty()
-            && std::any_of(specialShapes.begin(), specialShapes.end(), [](const auto& shape) { return !shape.hasFootprint; }))
-            Reject("TERRAIN_WATER_SPECIAL_RUNTIME_SET", "需要删除特殊模型，但当前DOO含不进入原版运行时列表的空占地记录；本批尚不改写此混合集合。");
         auto nextDoodads = doodads;
-        for (const auto sourceIndex : result.removedSpecialSourceRecords) {
-            // 回执记录实际源身份；依相同XY次序重放末项覆盖，保留普通段及其全部字段。
-            const auto position = doodads.specialDoodads[sourceIndex].position;
-            const auto found = std::find_if(nextDoodads.specialDoodads.begin(), nextDoodads.specialDoodads.end(),
-                [&](const auto& item) {
-                    if (result.work == limits.maximumWork) Reject("TERRAIN_WATER_WORK_BUDGET", "特殊模型候选重放超过本笔工作量预算。");
-                    ++result.work;
-                    return item.position == position;
-                });
-            if (found != nextDoodads.specialDoodads.end()) { *found = nextDoodads.specialDoodads.back(); nextDoodads.specialDoodads.pop_back(); }
-        }
+        transaction.WriteSpecialOutput(doodads, nextDoodads, result);
         return Result<TerrainWaterStrokeCandidate>::Success({std::move(candidate), std::move(result), std::move(nextDoodads)});
     } catch (const Rejection& error) { return Result<TerrainWaterStrokeCandidate>::Failure(std::string(kSubsystem), error.code, error.text); }
     catch (const std::bad_alloc&) { return Result<TerrainWaterStrokeCandidate>::Failure(std::string(kSubsystem), "TERRAIN_WATER_ALLOCATION", "水刷候选分配失败，原地形未修改。"); }
