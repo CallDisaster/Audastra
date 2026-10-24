@@ -448,15 +448,16 @@ void MapSaveService::Execute(MapSaveTask& task, const Progress& progress, bool p
             task.luaTestMapBinding = *binding.value;
         }
 
-        if (task.minimapMarkers) {
-            const auto checked = task.minimapMarkers->VerifyFrozenOutput(*task.archive, task.replacements, task.removals);
-            Append(task.diagnostics, checked.diagnostics);
-            if (!checked.Succeeded()) return;
-        }
         if (task.beforePublish) {
             const auto guard = task.beforePublish();
             Append(task.diagnostics, guard.diagnostics);
             if (!guard.Succeeded()) return;
+        }
+        // 其它领域的最后核对也完成后再检查图标，防止回调后留下未核对的输出变化。
+        if (task.minimapMarkers) {
+            const auto checked = task.minimapMarkers->VerifyFrozenOutput(*task.archive, task.replacements, task.removals);
+            Append(task.diagnostics, checked.diagnostics);
+            if (!checked.Succeeded()) return;
         }
 
         if (preflight) {
