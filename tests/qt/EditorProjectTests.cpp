@@ -4883,7 +4883,9 @@ void EditorProjectTests::PlayableBoundsProjectColdRestoreAndNativeSave() {
     const auto source = fixture.archive->SourcePath();
     const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
     const auto game = fixture.directory / "game"; QVERIFY(std::filesystem::create_directory(game));
-    QVERIFY(WriteVerifiedArchive(game / "war3.mpq", {{"fixture.txt", AudastraTest::TerrainBounds::Text("owned bounds resources")}}).Succeeded());
+    const std::array<MapArchiveMember, 1> gameMembers{{
+        {"fixture.txt", AudastraTest::TerrainBounds::Text("owned bounds resources")}}};
+    QVERIFY(WriteVerifiedArchive(game / "war3.mpq", gameMembers).Succeeded());
     EditorProject project; project.war3GameRoot_ = game;
     QVERIFY(BindTerrainSaveProject(project, source));
     QUndoStack initialUndo; project.mapDataUndoStack_ = &initialUndo;
