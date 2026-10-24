@@ -10,12 +10,14 @@ add_library(War3MapGameUi STATIC
     FrameTree.cpp
     GameCodeLayout.cpp
     MapUiFiles.cpp
+    PartyTriggers.cpp
     ScriptFrames.cpp
     ScriptFrameTree.cpp
     ScriptObjectCalls.cpp
     ScriptSimulation.cpp
     ScriptUiApi.cpp
     ScriptValue.cpp
+    UiBindingCheck.h
     UiDescription.cpp
     UiDescriptionCheck.cpp
     UiDescriptionEdit.cpp

@@ -3,6 +3,8 @@
 #include "EditorProject.h"
 #include "GameUiCanvas.h"
 #include "GameUiModule.h"
+#include "PartyLayer.h"
+#include "War3MapCore/GameUi/UiPresets.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 
 #include <QApplication>
@@ -77,6 +79,7 @@ private slots:
     void FramePropertiesEditLayoutAndText();
     void GeneratesCastSystem();
     void CreatesFromPresets();
+    void GeneratesPartySystem();
 };
 
 void GameUiModuleTests::BuildsSceneFromDefinitions() {
@@ -750,7 +753,7 @@ void GameUiModuleTests::GeneratesCastSystem() {
     QVERIFY(error.contains(QStringLiteral("触发器")));
 
     AudastraUiTest::Catalog files;
-    files.extra = AudastraUiTest::SpellLayer();
+    files.extras = {AudastraUiTest::SpellLayer()};
     const auto loaded = files.Load();
     QVERIFY2(loaded.empty(), loaded.c_str());
     project.uiCatalog_ = std::make_unique<Trigger::UiCatalog>(std::move(*files.catalog));
@@ -813,13 +816,94 @@ void GameUiModuleTests::CreatesFromPresets() {
     QCOMPARE(presets->count(), 3);
     QVERIFY(presets->findData(QStringLiteral("castbar")) > 0 && presets->findData(QStringLiteral("party")) > 0);
     QVERIFY2(module.CreateDescription(QStringLiteral("Party"), {}, &error, QStringLiteral("party")), qPrintable(error));
-    QCOMPARE(module.Description(QStringLiteral("Party"))->values.size(), std::size_t{4});
+    QCOMPARE(module.Description(QStringLiteral("Party"))->values.size(), std::size_t{10});
+    QCOMPARE(module.Description(QStringLiteral("Party"))->events.size(), std::size_t{1});
     QCOMPARE(module.Description(QStringLiteral("Party"))->label, std::string("团队框架"));
     QVERIFY(module.SelectFrame(QStringLiteral("slot#4")));
     QVERIFY2(module.CreateDescription(QStringLiteral("Bar"), QStringLiteral("施法条"), &error, QStringLiteral("castbar")), qPrintable(error));
     QCOMPARE(module.Description(QStringLiteral("Bar"))->states.size(), std::size_t{2});
     QVERIFY(!module.CreateDescription(QStringLiteral("Other"), {}, &error, QStringLiteral("nothing")));
     QVERIFY(!module.Description(QStringLiteral("Other")));
+}
+
+void GameUiModuleTests::GeneratesPartySystem() {
+    QtProject::EditorProject project;
+    Modules::GameUiModule module(project);
+    auto* page = module.Widget();
+    module.LoadDefinitionsForTesting(SyntheticDefinitions());
+    QVERIFY(page->findChild<QPushButton*>(QStringLiteral("gameUiPartySystem")));
+    QString error;
+    using namespace GameUi::PartyPreset;
+    const auto id = [](std::string_view value) { return QString::fromLatin1(value.data(), static_cast<qsizetype>(value.size())); };
+    Modules::GameUiModule::PartySystemRequest request;
+    request.frame = QStringLiteral("Party");
+    request.shown = id(kShown);
+    QVERIFY(!module.GeneratePartySystem(request, true, &error));
+    QVERIFY(error.contains(QStringLiteral("触发器")));
+
+    AudastraUiTest::Catalog files;
+    files.extras = {AudastraUiTest::SpellLayer(), AudastraUiTest::PartyLayer()};
+    const auto loaded = files.Load();
+    QVERIFY2(loaded.empty(), loaded.c_str());
+    project.uiCatalog_ = std::make_unique<Trigger::UiCatalog>(std::move(*files.catalog));
+    project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>(std::move(*files.document));
+    project.triggerUndoStack_ = new QUndoStack(&project);
+    const auto count = [&project] {
+        const auto& doc = *project.triggerDocument_;
+        const auto category = std::find_if(doc.categories.begin(), doc.categories.end(),
+            [](const auto& row) { return row.name.text == kPartyTriggerCategory; });
+        if (category == doc.categories.end()) return -1;
+        return static_cast<int>(std::count_if(doc.triggers.begin(), doc.triggers.end(),
+            [&](const auto& row) { return row.categoryId == category->categoryId; }));
+    };
+
+    // 界面描述与它的界面触发器都须先有。
+    QVERIFY(!module.GeneratePartySystem(request, true, &error));
+    QVERIFY(error.contains(QStringLiteral("Party")));
+    QVERIFY2(module.CreateDescription(QStringLiteral("Party"), QStringLiteral("队伍"), &error, QStringLiteral("party")), qPrintable(error));
+    request.health = id(kHealth);
+    request.mana = id(kMana);
+    request.name = id(kName);
+    request.dead = id(kDead);
+    request.outOfRange = id(kFar);
+    request.select = id(kSelect);
+    QVERIFY(!module.GeneratePartySystem(request, true, &error));
+    QVERIFY(error.contains(QStringLiteral("Party")));
+    QVERIFY2(module.GenerateDescriptionTriggers(QStringLiteral("Party"), false, &error), qPrintable(error));
+
+    // 预览不改地图；生成一次撤销。
+    const auto preview = module.GeneratePartySystem(request, true, &error);
+    QVERIFY2(preview, qPrintable(error));
+    QCOMPARE(preview->triggers.size(), qsizetype{7});
+    QCOMPARE(preview->slotCount, std::uint32_t{5});
+    QCOMPARE(preview->joinTrigger, QStringLiteral("团队 加入 Party_Join"));
+    QCOMPARE(count(), -1);
+    const int undo = project.triggerUndoStack_->count();
+    QVERIFY2(module.GeneratePartySystem(request, false, &error), qPrintable(error));
+    QCOMPARE(count(), 7);
+    QCOMPARE(project.triggerUndoStack_->count(), undo + 1);
+
+    // 不合法的绑定整体拒绝，不改地图。
+    request.dead = id(kName);
+    QVERIFY(!module.GeneratePartySystem(request, false, &error));
+    QCOMPARE(project.triggerUndoStack_->count(), undo + 1);
+
+    // 增减益：图标取自物编，取不到时拒绝；生成登记触发器，再次生成时保留作者的登记。
+    request.dead = id(kDead);
+    for (const auto icon : kBuffs) request.buffIcons.append(id(icon));
+    request.buffs = {QStringLiteral("Bxxx")};
+    QVERIFY(!module.GeneratePartySystem(request, true, &error));
+    QVERIFY(error.contains(QStringLiteral("Bxxx")));
+    request.buffs.clear();
+    const auto withBuffs = module.GeneratePartySystem(request, false, &error);
+    QVERIFY2(withBuffs, qPrintable(error));
+    QCOMPARE(withBuffs->triggers.size(), qsizetype{8});
+    QVERIFY(!withBuffs->registrationKept);
+    request.buffs = {QStringLiteral("Bxxx")};
+    const auto again = module.GeneratePartySystem(request, true, &error);
+    QVERIFY2(again, qPrintable(error));
+    QVERIFY(again->registrationKept);
+    QCOMPARE(again->triggers.size(), qsizetype{7});
 }
 
 int main(int argc, char** argv) {

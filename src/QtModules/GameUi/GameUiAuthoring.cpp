@@ -363,8 +363,11 @@ QList<QWidget*> GameUiModule::BuildAuthoringControls(QWidget* toolbar) {
     castSystemButton_ = new QPushButton(tr("读条系统"), toolbar);
     castSystemButton_->setObjectName(QStringLiteral("gameUiCastSystem"));
     connect(castSystemButton_, &QPushButton::clicked, this, &GameUiModule::ShowCastSystemDialog);
+    partySystemButton_ = new QPushButton(tr("团队框架"), toolbar);
+    partySystemButton_->setObjectName(QStringLiteral("gameUiPartySystem"));
+    connect(partySystemButton_, &QPushButton::clicked, this, &GameUiModule::ShowPartySystemDialog);
     UpdateAuthoringControls();
-    return {newDescriptionButton_, addFrameButton_, removeFrameButton_, generateTriggersButton_, castSystemButton_};
+    return {newDescriptionButton_, addFrameButton_, removeFrameButton_, generateTriggersButton_, castSystemButton_, partySystemButton_};
 }
 
 void GameUiModule::UpdateAuthoringControls() {

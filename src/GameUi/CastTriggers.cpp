@@ -1,6 +1,7 @@
 #include "War3MapCore/GameUi/CastTriggers.h"
 
 #include "FeatureTextWriter.h"
+#include "UiBindingCheck.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 
 #include <algorithm>
@@ -19,29 +20,8 @@ constexpr std::string_view kKey = "Cast";
 std::string V(std::string_view name) { return "udg_AUC_" + std::string(name); }
 std::string At(std::string_view name, std::string_view index) { return V(name) + "[" + std::string(index) + "]"; }
 
-std::string Int(std::string_view a, std::string_view op, std::string_view b) {
-    return Call("OperatorInt", {std::string(a), std::string(op), std::string(b)});
-}
-std::string Arith(std::string_view a, std::string_view op, std::string_view b) {
-    return Call("OperatorReal", {std::string(a), std::string(op), std::string(b)});
-}
-std::string CompareInt(std::string_view a, std::string_view op, std::string_view b) {
-    return Call("OperatorCompareInteger", {std::string(a), std::string(op), std::string(b)});
-}
-std::string CompareReal(std::string_view a, std::string_view op, std::string_view b) {
-    return Call("OperatorCompareReal", {std::string(a), std::string(op), std::string(b)});
-}
-std::string Set(std::string_view target, std::string_view value) {
-    return Call("SetVariable", {std::string(target), std::string(value)});
-}
 Lines LoopVar(std::string_view variable, std::string_view from, std::string_view to, const Lines& body) {
-    return Block(Call("ForLoopVarMultiple", {V(variable), std::string(from), std::string(to)}), "actions", body);
-}
-
-bool ValidRawcode(std::string_view code) {
-    return code.size() == 4 && std::all_of(code.begin(), code.end(), [](unsigned char c) {
-        return c > 0x20 && c < 0x7f && c != '\'' && c != '\\';
-    });
+    return ForLoopVar(V(variable), from, to, body);
 }
 
 // 每格记录的数组：名字、类型。派发复制到第 0 格的是前 8 个（效果触发器的参数来源）。
@@ -132,21 +112,14 @@ private:
                 if (required) Error("AUC_BAR_INVALID", std::string("读条条需要") + what + "数值");
                 return;
             }
-            const auto found = std::find_if(d.values.begin(), d.values.end(), [&](const UiValue& v) { return v.id == id; });
-            if (found == d.values.end()) Error("AUC_BAR_INVALID", "界面 " + d.id + " 没有数值 " + id);
-            else if (found->type != type || found->size != 0) {
-                Error("AUC_BAR_INVALID", "界面 " + d.id + " 的数值 " + id + " 应为" + what + "单值");
-            }
+            if (const auto problem = CheckValueBinding(d, id, type, 0, what)) Error("AUC_BAR_INVALID", *problem);
         };
         value(bar.visible, UiValueType::Boolean, "布尔", true);
         value(bar.progress, UiValueType::Real, "实数", true);
         value(bar.text, UiValueType::String, "字符串", false);
         value(bar.remaining, UiValueType::Real, "实数", false);
         for (const std::string* state : {&bar.channel, &bar.interrupted}) {
-            if (state->empty()) continue;
-            if (std::none_of(d.states.begin(), d.states.end(), [&](const UiState& s) { return s.id == *state; })) {
-                Error("AUC_BAR_INVALID", "界面 " + d.id + " 没有状态 " + *state);
-            }
+            if (!state->empty() && !FindState(d, *state)) Error("AUC_BAR_INVALID", "界面 " + d.id + " 没有状态 " + *state);
         }
         if (!std::isfinite(bar.flashSeconds) || bar.flashSeconds < 0.0 || bar.flashSeconds > 10.0) {
             Error("AUC_BAR_INVALID", "打断提示时长应在 0 到 10 秒之间");
@@ -358,8 +331,7 @@ private:
             return Call("ConditionalTriggerExecute", {TriggerRef(UiTriggerName(d, role, key))});
         };
         const auto state = [&](const std::string& id) {
-            const auto found = std::find_if(d.states.begin(), d.states.end(), [&](const UiState& s) { return s.id == id; });
-            return runUi("状态 " + (UsableLabel(found->label) ? found->label : found->id), "State_" + id);
+            return Call("ConditionalTriggerExecute", {TriggerRef(UiStateTriggerName(d, *FindState(d, id)))});
         };
         const bool hasStates = !d.states.empty();
         const std::string slot = V("ShowSlot");

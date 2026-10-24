@@ -1,5 +1,6 @@
 #include "War3MapCore/GameUi/UiDescription.h"
 
+#include "UiBindingCheck.h"
 #include "War3MapCore/GameUi/GameCodeLayout.h"
 
 #include <algorithm>
@@ -110,8 +111,11 @@ private:
     bool Flag(const UiFlag& flag, std::optional<std::uint32_t> instance) const {
         if (!flag.binding) return flag.literal;
         const auto text = BoundText(*flag.binding, instance);
+        const UiValue* spec = detail::FindValue(description_, flag.binding->value);
         bool on = false;
-        if (text) {
+        if (text && spec && spec->type == UiValueType::String) {
+            on = !text->empty();
+        } else if (text) {
             if (*text == "true" || *text == "false") {
                 on = *text == "true";
             } else {
@@ -165,7 +169,7 @@ private:
         if (frame.height) node.height = static_cast<float>(*frame.height);
         const UiStateOverride* change = Override(frame.id);
         node.hidden = !(change && change->visible ? *change->visible : Flag(frame.visible, instance));
-        const std::string& texture = change && change->texture ? *change->texture : frame.texture;
+        const std::string texture = change && change->texture ? *change->texture : FormatUiText(description_, state_, frame.texture, instance);
         if (!texture.empty()) node.texture = Texture(texture);
         if (!frame.background.empty()) node.background = Texture(frame.background);
         if (frame.type == UiFrameType::Bar) {

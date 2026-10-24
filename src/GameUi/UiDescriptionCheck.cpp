@@ -115,7 +115,6 @@ private:
     void CheckBinding(const UiBinding& binding, const FrameInfo& info, const std::string& path, bool flag) {
         const UiValue* value = CheckReference(binding.value, binding.perInstance, binding.index, info, path);
         if (!value) return;
-        if (flag && value->type == UiValueType::String) Error(path, "AUI_VALUE_TYPE", "显示开关不能取文字数值");
         if (!flag && (value->type == UiValueType::String || value->type == UiValueType::Boolean)) {
             Error(path, "AUI_VALUE_TYPE", "进度只能取实数或整数数值");
         }
@@ -175,6 +174,7 @@ private:
         if (frame.value.binding) CheckBinding(*frame.value.binding, info, path + "/value", false);
         if (frame.visible.binding) CheckBinding(*frame.visible.binding, info, path + "/visible", true);
         if (!frame.text.empty()) CheckText(frame.text, info, path + "/text");
+        if (!frame.texture.empty()) CheckText(frame.texture, info, path + "/texture");
     }
 
     void CheckStates() {

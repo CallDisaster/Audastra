@@ -1,12 +1,9 @@
-#include "AudastraUiCatalog.h"
 #include "CastSpellLayer.h"
+#include "TriggerSystemFixture.h"
 #include "War3MapCore/GameUi/CastTriggers.h"
 #include "War3MapCore/GameUi/UiPresets.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
-#include "War3MapCore/Script/MapScript.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
-#include "War3MapCore/Trigger/TriggerGraphEditing.h"
-#include "War3MapCore/Trigger/TriggerTextNotation.h"
 
 #include <Windows.h>
 #include <algorithm>
@@ -21,47 +18,12 @@ using namespace War3Map;
 using namespace War3Map::GameUi;
 using namespace War3Map::Trigger;
 
-void Require(bool value, const std::string& message) {
-    if (!value) throw std::runtime_error(message);
-}
-std::string First(const std::vector<Diagnostic>& diagnostics) {
-    return diagnostics.empty() ? std::string("（无诊断）") : diagnostics.front().code + " " + diagnostics.front().message;
-}
-bool Contains(std::string_view text, std::string_view part) { return text.find(part) != std::string_view::npos; }
+using AudastraUiTest::Contains;
+using AudastraUiTest::First;
+using AudastraUiTest::Require;
 
-struct Fixture {
-    AudastraUiTest::Catalog files;
-    UiCatalog catalog;
-    TriggerDocument doc;
-
-    Fixture() {
-        files.extra = AudastraUiTest::SpellLayer();
-        const auto error = files.Load();
-        Require(error.empty(), error);
-        catalog = std::move(*files.catalog);
-        doc = std::move(*files.document);
-    }
-
-    Result<TriggerGraphEditReceipt> Apply(std::string_view category, const std::string& text) {
-        const auto binding = CaptureTriggerGraphBinding(doc, catalog);
-        Require(binding.Succeeded(), "capture binding");
-        TriggerGraphEditBatch batch{*binding.value, {}};
-        batch.operations.emplace_back(GraphApplyFeatureText{std::string(category), text, {}, std::nullopt});
-        return ApplyTriggerGraphEditBatch(doc, catalog, batch);
-    }
-
-    [[nodiscard]] const TriggerRecord* Trigger(std::string_view name) const {
-        const auto found = std::find_if(doc.triggers.begin(), doc.triggers.end(), [&](const auto& row) { return row.name.text == name; });
-        return found == doc.triggers.end() ? nullptr : &*found;
-    }
-
-    [[nodiscard]] std::string Text(std::string_view name) const {
-        const TriggerRecord* trigger = Trigger(name);
-        Require(trigger != nullptr, "没有触发器 " + std::string(name));
-        const auto text = RenderTriggerText(doc, catalog, trigger->id, 1u << 20, nullptr, nullptr);
-        Require(text.Succeeded() && text.value, "导出 " + std::string(name) + "：" + First(text.diagnostics));
-        return *text.value;
-    }
+struct Fixture : AudastraUiTest::SystemFixture {
+    Fixture() : SystemFixture({AudastraUiTest::SpellLayer()}) {}
 };
 
 // 两个效果触发器：读到参数后写进变量，证明参数块的名字能被效果触发器取到。
@@ -125,14 +87,7 @@ void TestGeneratedText() {
         "不生成登记触发器时其余照常");
 }
 
-std::string GeneratedScript(const Fixture& f) {
-    Script::MapScriptInputs inputs;
-    inputs.triggers = &f.doc;
-    inputs.catalog = &f.catalog;
-    const auto generated = Script::GenerateMapScript(inputs);
-    Require(generated.Succeeded(), "整图脚本生成：" + First(generated.diagnostics));
-    return generated.text;
-}
+std::string GeneratedScript(const Fixture& f) { return f.Script(); }
 
 void TestAppliedAndCompiled() {
     Fixture f;

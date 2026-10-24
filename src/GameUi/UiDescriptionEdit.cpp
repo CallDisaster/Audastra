@@ -247,7 +247,7 @@ private:
         return true;
     }
 
-    // 改数值编号：同步框架的取值（进度、显示）与文字模板（框架文字、状态覆盖文字）。
+    // 改数值编号：同步框架的取值（进度、显示）与模板（框架文字与贴图、状态覆盖文字）。
     bool RenameValue(const Json& edit) {
         if (!edit.contains("from") || !edit["from"].is_string() || !edit.contains("to") || !edit["to"].is_string()) {
             return Fail("from、to 应为数值编号");
@@ -272,19 +272,20 @@ private:
             const auto parsed = detail::ParseUiValueReference(text);
             if (parsed && parsed->id == from) reference = to + text.substr(from.size());
         };
-        const auto retext = [&](Json& holder) {
-            if (!holder.contains("text") || !holder["text"].is_string()) return;
-            if (auto text = RenameInTemplate(holder["text"].get_ref<const std::string&>(), from, to)) holder["text"] = std::move(*text);
+        const auto retemplate = [&](Json& holder, const char* key) {
+            if (!holder.contains(key) || !holder[key].is_string()) return;
+            if (auto text = RenameInTemplate(holder[key].get_ref<const std::string&>(), from, to)) holder[key] = std::move(*text);
         };
         ForEachFrame(Frames(), [&](Json& frame) {
             if (frame.contains("value")) rebind(frame["value"]);
             if (frame.contains("visible")) rebind(frame["visible"]);
-            retext(frame);
+            retemplate(frame, "text");
+            retemplate(frame, "texture");
         });
         if (document_.contains("states") && document_["states"].is_array()) {
             for (auto& state : document_["states"]) {
                 if (!state.contains("set") || !state["set"].is_array()) continue;
-                for (auto& entry : state["set"]) retext(entry);
+                for (auto& entry : state["set"]) retemplate(entry, "text");
             }
         }
         return true;

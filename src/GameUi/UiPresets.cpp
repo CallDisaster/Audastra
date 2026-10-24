@@ -105,12 +105,18 @@ UiDescription CastBar() {
     return d;
 }
 
-// 团队框架：屏幕左侧一列 5 格，每格名字、血条（绿）、蓝条（蓝）；各值按格取数组。
+// 团队框架：屏幕左侧一列 5 格，每格名字、血条（绿）、蓝条（蓝），死亡时血条上显示“死亡”，过远时右上角显示“远”；
+// 各值按格取数组。点格子发 select 事件。
 UiDescription Party() {
-    constexpr std::uint32_t kSlots = 5;
+    using namespace PartyPreset;
+    const auto id = [](std::string_view value) { return std::string(value); };
     UiDescription d;
-    d.values = {Value("shown", "显示", UiValueType::Boolean, "false", kSlots), Value("hp", "生命", UiValueType::Real, "1", kSlots),
-        Value("mp", "法力", UiValueType::Real, "1", kSlots), Value("name", "名字", UiValueType::String, "", kSlots)};
+    d.values = {Value(id(kShown), "显示", UiValueType::Boolean, "false", kSlots), Value(id(kHealth), "生命", UiValueType::Real, "1", kSlots),
+        Value(id(kMana), "法力", UiValueType::Real, "1", kSlots), Value(id(kName), "名字", UiValueType::String, "", kSlots),
+        Value(id(kDead), "死亡", UiValueType::Boolean, "false", kSlots), Value(id(kFar), "过远", UiValueType::Boolean, "false", kSlots)};
+    for (std::size_t i = 0; i < kBuffs.size(); ++i) {
+        d.values.push_back(Value(id(kBuffs[i]), "增减益 " + std::to_string(i + 1), UiValueType::String, "", kSlots));
+    }
     UiFrame slot;
     slot.id = "slot";
     slot.label = "队员";
@@ -119,12 +125,42 @@ UiDescription Party() {
     slot.width = 0.12;
     slot.height = 0.04;
     slot.anchors = {Anchor(FramePoint::TopLeft, UiAnchorTarget::Screen, std::nullopt, 0.01, -0.13)};
-    slot.visible.binding = Bind("shown", true);
+    slot.visible.binding = Bind(id(kShown), true);
     slot.repeat = UiRepeat{kSlots, 0.0, -0.044};
-    slot.children = {Text("name", "名字", "{name[]}", JustifyH::Left, Anchor(FramePoint::TopLeft, UiAnchorTarget::Parent, std::nullopt, 0.005, -0.003), 0.11, 0.012),
-        Bar("hp", "生命", 6, "hp", true, Anchor(FramePoint::TopLeft, UiAnchorTarget::Parent, std::nullopt, 0.005, -0.016), 0.11, 0.012),
-        Bar("mp", "法力", 1, "mp", true, Anchor(FramePoint::TopLeft, UiAnchorTarget::Parent, std::nullopt, 0.005, -0.029), 0.11, 0.006)};
+    UiFrame hp = Bar("hp", "生命", 6, id(kHealth), true, Anchor(FramePoint::TopLeft, UiAnchorTarget::Parent, std::nullopt, 0.005, -0.016), 0.11, 0.012);
+    UiFrame dead = Text("dead", "死亡", "死亡", JustifyH::Center, Anchor(FramePoint::Center), 0.11, 0.012);
+    dead.visible.binding = Bind(id(kDead), true);
+    hp.children = {std::move(dead)};
+    UiFrame distant = Text("far", "过远", "远", JustifyH::Right, Anchor(FramePoint::TopRight, UiAnchorTarget::Parent, std::nullopt, -0.005, -0.003), 0.03, 0.012);
+    distant.visible.binding = Bind(id(kFar), true);
+    slot.children = {Text("name", "名字", "{" + id(kName) + "[]}", JustifyH::Left,
+                         Anchor(FramePoint::TopLeft, UiAnchorTarget::Parent, std::nullopt, 0.005, -0.003), 0.08, 0.012),
+        std::move(distant), std::move(hp),
+        Bar("mp", "法力", 1, id(kMana), true, Anchor(FramePoint::TopLeft, UiAnchorTarget::Parent, std::nullopt, 0.005, -0.029), 0.11, 0.006)};
+    // 点击事件只能挂在按钮上：一个无贴图的按钮盖满整格。
+    UiFrame pick;
+    pick.id = "pick";
+    pick.label = "点选";
+    pick.type = UiFrameType::Button;
+    pick.anchors = {Anchor(FramePoint::TopLeft), Anchor(FramePoint::BottomRight)};
+    slot.children.push_back(std::move(pick));
+    // 增减益图标排在格子右侧；图标数值为空时不显示。
+    for (std::size_t i = 0; i < kBuffs.size(); ++i) {
+        UiFrame icon;
+        icon.id = "icon" + std::to_string(i + 1);
+        icon.label = "增减益 " + std::to_string(i + 1);
+        icon.type = UiFrameType::Backdrop;
+        icon.texture = "{" + id(kBuffs[i]) + "[]}";
+        icon.width = 0.016;
+        icon.height = 0.016;
+        icon.anchors = {i == 0 ? Anchor(FramePoint::Left, UiAnchorTarget::Parent, FramePoint::Right, 0.002)
+                               : Anchor(FramePoint::Left, UiAnchorTarget::Frame, FramePoint::Right, 0.001)};
+        if (i > 0) icon.anchors.front().targetId = "icon" + std::to_string(i);
+        icon.visible.binding = Bind(id(kBuffs[i]), true);
+        slot.children.push_back(std::move(icon));
+    }
     d.frames = {std::move(slot)};
+    d.events = {UiEvent{id(kSelect), "pick", UiEventKind::Click}};
     return d;
 }
 

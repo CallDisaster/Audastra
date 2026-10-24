@@ -338,7 +338,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "feedback.draft", "feedback.list", "feedback.status",
         "game_ui_cast_system", "game_ui_description_create", "game_ui_description_edit", "game_ui_description_read",
         "game_ui_description_triggers",
-        "game_ui_nodes_query", "game_ui_preview_set", "game_ui_render", "game_ui_simulate", "game_ui_view_read", "game_ui_view_set",
+        "game_ui_nodes_query", "game_ui_party_system", "game_ui_preview_set", "game_ui_render", "game_ui_simulate", "game_ui_view_read", "game_ui_view_set",
         "get_terrain_edit_state",
         "imports_add", "imports_get", "imports_list", "imports_remove", "lua_file_read", "lua_file_write", "lua_files_list",
         "lua_test_hot_reload", "lua_test_reload_result",
@@ -354,7 +354,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{85});
+    QCOMPARE(expected.size(), qsizetype{86});
     for (const auto& definition : Mcp::AuxiliaryToolDefinitions()) {
         QCOMPARE(definition.permission, Mcp::ToolPermission::Edit);
         int matches = 0;
@@ -2640,6 +2640,30 @@ void LiveEditorToolsTests::GameUiToolsUseHostAndValidateArguments() {
     auto badBar = cast; badBar["bar"] = QJsonObject{{"description", "CastBar"}, {"visible", "shown"}};
     QVERIFY(!f.tools->Invoke("game_ui_cast_system", badBar).value("ok").toBool());
     QCOMPARE(received.size(), qsizetype{6});
+    // 团队框架：绑定对象、名字来源、距离与布尔项的形状在到达宿主前检查。
+    auto party = args; party["preview"] = true; party["name_source"] = "unit"; party["far_range"] = 900; party["auto_heroes"] = false;
+    party["frame"] = QJsonObject{{"description", "Party"}, {"shown", "shown"}, {"out_of_range", "far"}, {"select", "select"}};
+    QVERIFY(f.tools->Invoke("game_ui_party_system", party).value("ok").toBool());
+    QCOMPARE(received.size(), qsizetype{7});
+    auto noShown = party; noShown["frame"] = QJsonObject{{"description", "Party"}};
+    QVERIFY(!f.tools->Invoke("game_ui_party_system", noShown).value("ok").toBool());
+    auto badKey = party; badKey["frame"] = QJsonObject{{"description", "Party"}, {"shown", "shown"}, {"far", "far"}};
+    QVERIFY(!f.tools->Invoke("game_ui_party_system", badKey).value("ok").toBool());
+    auto badSource = party; badSource["name_source"] = "hero";
+    QVERIFY(!f.tools->Invoke("game_ui_party_system", badSource).value("ok").toBool());
+    auto badRange = party; badRange["far_range"] = 50;
+    QVERIFY(!f.tools->Invoke("game_ui_party_system", badRange).value("ok").toBool());
+    auto badHeroes = party; badHeroes["auto_heroes"] = "yes";
+    QVERIFY(!f.tools->Invoke("game_ui_party_system", badHeroes).value("ok").toBool());
+    auto buffs = party; buffs["buffs"] = QJsonArray{"B000", "B001"};
+    buffs["frame"] = QJsonObject{{"description", "Party"}, {"shown", "shown"}, {"buff_icons", QJsonArray{"buff1", "buff2"}}};
+    QVERIFY(f.tools->Invoke("game_ui_party_system", buffs).value("ok").toBool());
+    QCOMPARE(received.size(), qsizetype{8});
+    auto badBuff = buffs; badBuff["buffs"] = QJsonArray{"B0"};
+    QVERIFY(!f.tools->Invoke("game_ui_party_system", badBuff).value("ok").toBool());
+    auto badIcons = buffs; badIcons["frame"] = QJsonObject{{"description", "Party"}, {"shown", "shown"}, {"buff_icons", "buff1"}};
+    QVERIFY(!f.tools->Invoke("game_ui_party_system", badIcons).value("ok").toBool());
+    QCOMPARE(received.size(), qsizetype{8});
     Mcp::ToolPolicy policy; policy.allowEdit = false; f.tools->SetPolicy(policy);
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_view_set"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_simulate"));
@@ -2647,6 +2671,7 @@ void LiveEditorToolsTests::GameUiToolsUseHostAndValidateArguments() {
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_description_edit"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_description_triggers"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_cast_system"));
+    QVERIFY(!Names(f.tools->Tools()).contains("game_ui_party_system"));
     QVERIFY(Names(f.tools->Tools()).contains("game_ui_description_read"));
     QVERIFY(Names(f.tools->Tools()).contains("game_ui_render"));
 }

@@ -3,6 +3,7 @@
 #include "GameUiSources.h"
 #include "Modules/EditorModule.h"
 #include "War3MapCore/GameUi/CastTriggers.h"
+#include "War3MapCore/GameUi/PartyTriggers.h"
 #include "War3MapCore/GameUi/FrameDraw.h"
 #include "War3MapCore/GameUi/ScriptSimulation.h"
 
@@ -151,6 +152,28 @@ public:
         bool registrationKept = false;
     };
     std::optional<CastSystemGeneration> GenerateCastSystem(const CastSystemRequest& request, bool preview, QString* error = nullptr);
+    // 团队框架（PartyTriggers.h）：整批写进触发器编辑器的“团队框架”类别，走触发器撤销栈。frame 为绑定的界面描述编号，
+    // 其界面触发器须已生成；其余为界面的数值与事件编号，空为不绑定（shown 必填）。绑定过远或点选时需要 YDWE 的
+    // GetLocalPlayer（过远还要 RemoveLocation）。buffIcons 为增减益图标数值（按显示顺序），buffs 为登记的增减益码，
+    // 图标取自物编；地图里已有登记触发器时保留它，buffs 不写入（registrationKept 为真）。preview 为真时只给出生成结果，不改地图。
+    struct PartySystemRequest {
+        QString frame;
+        QString shown, health, mana, name, dead, outOfRange, select;
+        QStringList buffIcons;
+        QStringList buffs;
+        GameUi::PartyNameSource nameSource = GameUi::PartyNameSource::Player;
+        double farRange = 1200.0;
+        bool autoHeroes = true;
+    };
+    struct PartySystemGeneration {
+        QString featureText;
+        QStringList triggers;
+        QStringList variables;
+        std::uint32_t slotCount = 0;
+        QString memberVariable, joinTrigger, leaveTrigger;
+        bool registrationKept = false;
+    };
+    std::optional<PartySystemGeneration> GeneratePartySystem(const PartySystemRequest& request, bool preview, QString* error = nullptr);
     [[nodiscard]] bool IsLoading() const noexcept { return definitionsPending_ || assetsPending_; }
     [[nodiscard]] QImage RenderImage(const QSize& size) const;
     void Reload();
@@ -195,6 +218,9 @@ private:
     void CommitDescriptionEdits(const QString& id, const QJsonArray& edits, const QString& undoLabel, std::function<void()> after = {});
     QList<QWidget*> BuildAuthoringControls(QWidget* toolbar);
     void ShowCastSystemDialog();
+    void ShowPartySystemDialog();
+    // 按模板新建一份界面描述（编号为模板名，重名时加序号）并生成它的界面触发器；返回新编号。
+    std::optional<QString> CreateFromPreset(const QString& preset, QString* error);
     void UpdateAuthoringControls();
     bool StageDescription(GameUi::UiDescription description, bool create, const QString& undoLabel, QString* error);
     QString AddFrameObject(QJsonObject frame, const char* idPrefix, QString* error);
@@ -292,6 +318,7 @@ private:
     QPushButton* removeFrameButton_ = nullptr;
     QPushButton* generateTriggersButton_ = nullptr;
     QPushButton* castSystemButton_ = nullptr;
+    QPushButton* partySystemButton_ = nullptr;
 };
 
 } // namespace War3Map::Modules

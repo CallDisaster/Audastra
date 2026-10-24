@@ -212,7 +212,7 @@ QList<std::pair<QString, QString>> GameUiModule::PropertyChoices(const QString& 
     if (key == QLatin1String("visible")) {
         GameUiOptions options{{raw ? QStringLiteral("true") : tr("显示"), QStringLiteral("true")},
             {raw ? QStringLiteral("false") : tr("隐藏"), QStringLiteral("false")}};
-        options += valueIds({UiValueType::Boolean});
+        options += valueIds({UiValueType::Boolean, UiValueType::String});  // 文字数值非空为显示
         return options;
     }
     if (key == QLatin1String("value")) return valueIds({UiValueType::Real, UiValueType::Integer});
