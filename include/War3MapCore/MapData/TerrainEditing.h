@@ -42,6 +42,7 @@ enum class TerrainBrushKind {
     Ramp,         // 一级干地直坡：整段三点创建/移除，value 决定是否创建，不使用尺寸或形状
     Boundary,     // 边界标志：仅修改 W3E 0x80；保留外缘与 WPM，原生保存仍须通过派生数据门
     PathingRestriction, // WPM 附加限制草稿：仅由 MapDataEditSession 应用，不改变 W3E
+    CornerRamp,   // 一级干地九点外角；单点canonical输入，须走实际规则的独立结构事务。
 };
 
 enum class TerrainBrushShape { Circle, Square };

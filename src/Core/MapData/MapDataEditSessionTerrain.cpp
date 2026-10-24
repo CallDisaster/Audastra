@@ -681,6 +681,7 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
     const auto& candidateUnits = unitChange == command.changes.end() ? unitBytes : unitChange->after;
     PreparedTerrainEdit prepared;
     prepared.before_ = terrain_;
+    prepared.after_ = next;
     prepared.sessionIdentity_ = sessionIdentity_; prepared.revision_ = revision_;
     prepared.sourceRevision_ = terrainSourceRevision_;
     prepared.changed_ = changed;
@@ -776,6 +777,10 @@ Result<TerrainStrokeResult> MapDataEditSession::ApplyPreparedTerrainEdit(const P
                 stroke.cliffEnforceWaterLimits = plan.cliffEnforceWaterLimits_;
                 // 规则摘要缺失时可编辑，但不能伪装成旧算法并持久化成可重放记录。
                 if (plan.waterResult_ && (!stroke.cliffEnforceWaterLimits || stroke.rulesSha256.empty())) expressible = false;
+            }
+            if (plan.brush_.kind == TerrainBrushKind::CornerRamp) {
+                stroke.rulesSha256 = plan.waterRulesSha256_;
+                expressible = expressible && plan.points_.size() == 1 && plan.waterResult_ && !stroke.rulesSha256.empty();
             }
             if (plan.brush_.anchor) {
                 const auto anchor = CaptureTerrainStrokeAnchor(*plan.before_, plan.points_.front());

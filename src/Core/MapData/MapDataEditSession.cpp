@@ -9,6 +9,8 @@
 #include <atomic>
 #include <bit>
 #include <cctype>
+#include <new>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -677,6 +679,35 @@ MapDataEditSession::MapDataEditSession(const MapDataEditSession& source, SaveSna
 std::shared_ptr<const MapDataEditSession> MapDataEditSession::FreezeForSave() const {
     // 不复制Undo历史/回执地址；快照只读且与前台共享不可变地形和私有special状态。
     return std::shared_ptr<const MapDataEditSession>(new MapDataEditSession(*this, SaveSnapshotTag{}));
+}
+
+Result<std::shared_ptr<const MapDataEditSession>> MapDataEditSession::FreezeForSave(std::size_t maximumBytes) const {
+    using Output = Result<std::shared_ptr<const MapDataEditSession>>;
+    const auto fail = [] { return Output::Failure("MapData.Edit", "MAP_SAVE_SNAPSHOT_BUDGET", "冻结会话的原生成员、WPM或诊断复制超过显式预算。"); };
+    std::size_t bytes = 0;
+    const auto add = [&](std::size_t count, std::size_t element = 1) {
+        if (element && count > (maximumBytes - bytes) / element) return false;
+        bytes += count * element; return true;
+    };
+    const auto text = [&](const auto& value) { return add(value.capacity() + 1, sizeof(typename std::decay_t<decltype(value)>::value_type)); };
+    if (!add(1, sizeof(MapDataEditSession) + 64)) return fail();
+    for (std::size_t i = 0; i < original_.size(); ++i) {
+        if (!text(memberNames_[i]) || (original_[i] && !add(original_[i]->capacity()))
+            || (current_[i] && !add(current_[i]->capacity()))) return fail();
+        if (!preservedSources_[i]) continue;
+        const auto& state = *preservedSources_[i];
+        if (!text(state.memberName) || !add(state.sources.capacity(), sizeof(MapArchiveMember))
+            || !add(state.diagnostics.capacity(), sizeof(Diagnostic))) return fail();
+        for (const auto& member : state.sources) if (!text(member.name) || !add(member.data.capacity())) return fail();
+        for (const auto& diagnostic : state.diagnostics) {
+            if (!text(diagnostic.subsystem) || !text(diagnostic.code) || !text(diagnostic.message)) return fail();
+            if (diagnostic.origin && (!text(diagnostic.origin->fingerprint) || !text(diagnostic.origin->source.native()))) return fail();
+        }
+    }
+    if ((pathingOriginal_ && !add(pathingOriginal_->capacity())) || (pathing_ && !add(pathing_->capacity()))) return fail();
+    try { return Output::Success(FreezeForSave()); }
+    catch (const std::bad_alloc&) { return fail(); }
+    catch (const std::length_error&) { return fail(); }
 }
 
 void MapDataEditSession::CommitSaved(const MapDocument& saved) {

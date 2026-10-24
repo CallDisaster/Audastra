@@ -86,11 +86,14 @@ public:
         [[nodiscard]] std::size_t RetainedCommandBytes() const noexcept;
         [[nodiscard]] std::span<const TerrainStrokePoint> Points() const noexcept { return points_; }
         [[nodiscard]] bool FollowDoodads() const noexcept { return followDoodads_; }
+        // 同一密封候选的只读地形；预览不消费事务或授予保存资格。
+        [[nodiscard]] std::shared_ptr<const TerrainGridSnapshot> TerrainPreview() const noexcept { return after_; }
     private:
         friend class MapDataEditSession;
         PreparedTerrainEdit() = default;
         std::shared_ptr<const Command> command_;
         std::shared_ptr<const TerrainGridSnapshot> before_;
+        std::shared_ptr<const TerrainGridSnapshot> after_;
         std::uint64_t sessionIdentity_ = 0, revision_ = 0, sourceRevision_ = 0;
         TerrainStrokeResult changed_;
         Status terrainPathingGate_;
@@ -110,6 +113,8 @@ public:
     MapDataEditSession(const MapDataEditSession&) = delete; // 会话身份与回执地址不能被复制。
     // 只冻结真实会话的保存输入；不提供可编辑副本，不从持久化字节恢复私有事务身份。
     [[nodiscard]] std::shared_ptr<const MapDataEditSession> FreezeForSave() const;
+    // 在分配前预收快照实际复制的成员/WPM/诊断，地形与私有special仍共享只读所有权。
+    [[nodiscard]] Result<std::shared_ptr<const MapDataEditSession>> FreezeForSave(std::size_t maximumBytes) const;
     MapDataEditSession& operator=(const MapDataEditSession&) = delete;
 
     [[nodiscard]] Status EditSettings(const MapSettings& value);
@@ -177,6 +182,9 @@ public:
         bool followDoodads = true, const TerrainWaterBrushLimits& limits = {}) const;
     // 普通悬崖使用真实规则和与水刷共用的原版邻接/清理事务；仍记录普通CliffLevel意图。
     [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainCliffEdit(const TerrainPathingResources& resources,
+        const TerrainBrush& brush, std::span<const TerrainStrokePoint> points,
+        bool followDoodads = true, const TerrainWaterBrushLimits& limits = {}) const;
+    [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainCornerRampEdit(const TerrainPathingResources& resources,
         const TerrainBrush& brush, std::span<const TerrainStrokePoint> points,
         bool followDoodads = true, const TerrainWaterBrushLimits& limits = {}) const;
     [[nodiscard]] Result<TerrainStrokeResult> ApplyPreparedTerrainEdit(const PreparedTerrainEdit& plan,

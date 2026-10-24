@@ -1,5 +1,6 @@
 #include "MapEditSaveValidation.h"
 #include "War3MapCore/MapData/PathingRestrictionEditing.h"
+#include "War3MapCore/MapData/TerrainRampEditing.h"
 
 #include <algorithm>
 #include <cmath>
@@ -123,11 +124,15 @@ Status ValidateStrokes(std::span<const MapEditTerrainStroke> strokes) {
             case MapData::TerrainBrushKind::CliffLevel:
             case MapData::TerrainBrushKind::WaterHeight:
             case MapData::TerrainBrushKind::Ramp:
+            case MapData::TerrainBrushKind::CornerRamp:
             case MapData::TerrainBrushKind::PathingRestriction:
                 break;
             default:
                 return Status::Failure("MapEdit.Save", "SAVE_STROKE_KIND", "地形笔刷种类未获识别。");
             }
+            if (stroke.brush.kind == MapData::TerrainBrushKind::CornerRamp
+                && (!MapData::IsCanonicalTerrainCornerRampBrush(stroke.brush) || stroke.points.size() != 1))
+                return Status::Failure("MapEdit.Save", "SAVE_STROKE_CORNER_RAMP", "拐角坡道只接受单个canonical点及创建/移除选项。");
             if (stroke.brush.kind == MapData::TerrainBrushKind::PathingRestriction
                 && (!stroke.brush.pathingRestrictions || (stroke.brush.pathingRestrictions & ~MapData::kPathingRestrictionBits) != 0))
                 return Status::Failure("MapEdit.Save", "PATHING_RESTRICTION_FLAGS", "通行笔划只允许不可走、不可飞和不可建限制。");
