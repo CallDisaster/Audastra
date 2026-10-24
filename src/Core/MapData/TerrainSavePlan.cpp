@@ -3,6 +3,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
+#include "War3MapCore/MapData/MapMinimapMarkers.h"
 #include "War3MapCore/MapData/PathingSavePolicy.h"
 #include "War3MapCore/MapData/TerrainPathingResources.h"
 
@@ -526,6 +527,34 @@ Status TerrainSavePlan::AdmitGeneratedMinimap(const MapDataEditSession& edits, s
     } catch (const std::length_error&) {
         return Reject("TERRAIN_SAVE_PLAN_ALLOCATION", "自动小地图重建容量异常；调用方必须丢弃此部分计划。");
     }
+}
+
+Status TerrainSavePlan::AdmitGeneratedMarkers(const MapDataEditSession& edits, std::vector<std::byte> generatedBytes) {
+    try {
+        if (edits.SessionIdentity() != sessionIdentity_ || edits.Revision() != revision_
+            || edits.TerrainSourceRevision() != terrainSourceRevision_)
+            return Reject("TERRAIN_SAVE_PLAN_STALE", "图标重建必须绑定当前会话、修订和地形来源。");
+        if (!saveGate_.Succeeded()) return saveGate_;
+        if (members_[3].sourceState == TerrainSaveSourceState::Unknown)
+            return Reject("TERRAIN_MMP_SOURCE_STALE", "图标保存需要准确已知的源成员状态。");
+        auto total = cumulativeBytes_;
+        AddBytes(generatedBytes.size(), total, {maximumBytes_});
+        auto parsed = ParseMapMinimapMarkers(generatedBytes);
+        if (!parsed.Succeeded()) return {std::move(parsed.diagnostics)};
+        auto sha = Take(Sha256(generatedBytes));
+        auto& member = members_[3];
+        std::erase_if(replacements_, [&](const auto& output) { return Canonical(output.name) == member.name; });
+        replacements_.push_back({member.name, std::move(generatedBytes)});
+        member.outputBytes = replacements_.back().data.size(); member.outputSha256 = std::move(sha);
+        member.action = TerrainSaveMemberAction::WriteEdited;
+        member.reasonCode = "TERRAIN_SAVE_WRITE_REBUILT_MARKERS";
+        member.reason = "按最终单位、能力、可玩区与实际玩家色重建图标；来源与输出仍须复核。";
+        std::erase_if(diagnostics_, [](const auto& diagnostic) { return diagnostic.code == "TERRAIN_SAVE_MARKERS_NOT_REBUILT"; });
+        cumulativeBytes_ = total;
+        return Status::Ok();
+    } catch (Failure& failure) { return {std::move(failure.diagnostics)}; }
+    catch (const std::bad_alloc&) { return Reject("TERRAIN_MMP_ALLOCATION", "图标输出分配失败，未返回完整保存计划。"); }
+    catch (const std::length_error&) { return Reject("TERRAIN_MMP_ALLOCATION", "图标输出容量异常，未返回完整保存计划。"); }
 }
 
 std::size_t TerrainSavePlan::OwnedCapacityBytes() const noexcept {

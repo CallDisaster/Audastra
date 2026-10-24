@@ -1,4 +1,5 @@
 #include "War3MapCore/Services/MapSaveService.h"
+#include "War3MapCore/Services/TerrainMinimapMarkers.h"
 #include "War3MapCore/Services/LuaTestReloadController.h"
 #include "War3MapCore/Services/MapObjectReferenceCapture.h"
 #include "War3MapCore/Services/ObjectTransactionSnapshot.h"
@@ -447,6 +448,11 @@ void MapSaveService::Execute(MapSaveTask& task, const Progress& progress, bool p
             task.luaTestMapBinding = *binding.value;
         }
 
+        if (task.minimapMarkers) {
+            const auto checked = task.minimapMarkers->VerifyFrozenOutput(*task.archive, task.replacements, task.removals);
+            Append(task.diagnostics, checked.diagnostics);
+            if (!checked.Succeeded()) return;
+        }
         if (task.beforePublish) {
             const auto guard = task.beforePublish();
             Append(task.diagnostics, guard.diagnostics);
@@ -499,6 +505,11 @@ void MapSaveService::Execute(MapSaveTask& task, const Progress& progress, bool p
             return;
         }
         task.nextSession = std::make_unique<MapArchiveSession>(std::move(*next.value));
+        if (task.minimapMarkers) {
+            const auto checked = task.minimapMarkers->VerifyReadback(*task.nextSession);
+            Append(task.diagnostics, checked.diagnostics);
+            if (!checked.Succeeded()) return;
+        }
         task.succeeded = true;
     } catch (const std::exception&) {
         Error(task, "SAVE_INTERNAL_CPP_EXCEPTION", archiveWritten

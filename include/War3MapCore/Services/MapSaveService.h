@@ -26,6 +26,7 @@
 namespace War3Map::Services {
 
 class ObjectTransactionSnapshot;
+class TerrainMinimapMarkers;
 
 inline constexpr std::size_t kMapSaveObjectTypeCount = 7;
 
@@ -97,6 +98,8 @@ struct MapSaveTask {
     // 可信宿主的派生文件准备：脚本/模板的最终成员已确定后执行一次，
     // 小地图等派生文件必须消费这一份列表。失败或异常都不得发布归档。
     std::function<Status(MapSaveTask&)> prepareFinalDerived;
+    // 实际来源生成的MMP owner，通用保存服务在发布前与回读阶段核对。
+    std::shared_ptr<const TerrainMinimapMarkers> minimapMarkers;
 
     // 宿主事务 lease 的最终复核：派生文件完成后、归档发布前执行。失败保留全部
     // 冻结输入并拒绝写出；源归档本身仍由归档服务独立验证。

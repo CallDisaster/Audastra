@@ -42,6 +42,8 @@ add_library(War3MapCore STATIC
     MapData/MapTerrain.cpp
     MapData/MapPathing.cpp
     MapData/MapMinimapMarkers.cpp
+    MapData/NativeMinimapMarkers.cpp
+    MapData/TerrainShadowRebuild.cpp
     MapData/MapShadow.cpp
     MapData/TerrainEditing.cpp
     MapData/PathingRestrictionEditing.cpp

@@ -4,6 +4,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapData/MapTerrain.h"
 #include "War3MapCore/MapData/MapSettings.h"
+#include "War3MapCore/MapData/NativeMinimapMarkers.h"
 #include "War3MapCore/Render/ClassicMinimapTerrainRules.h"
 
 #include <algorithm>
@@ -201,37 +202,20 @@ std::array<std::uint32_t, 4> PlayableRectangle(const TerrainMinimapInput& input,
     if (!input.sourceW3i || input.sourceW3i->empty())
         Fail("CLASSIC_MINIMAP_W3I_MISSING", "原版可玩区需要同源的非空W3I。");
     const auto settings = Take(MapData::MapSettings::Parse(*input.sourceW3i));
-    if (!settings.FullyParsed() || settings.formatVersion != 25)
-        Fail("CLASSIC_MINIMAP_W3I_LAYOUT", "原版可玩区需要完整classic v25 W3I。");
-    std::array<double, 4> rectangle{};
-    if ((settings.flags & 0x400u) != 0) {
-        // 原版由补足边距构造相机边界，再加回CameraMargins；两者抵消。
-        rectangle = {static_cast<double>(settings.cameraMargins[0]), static_cast<double>(settings.cameraMargins[2]),
-            static_cast<double>(width) - settings.cameraMargins[1], static_cast<double>(height) - settings.cameraMargins[3]};
-    } else {
-        if (!input.classicColors || !input.classicColors->cameraMarginsConfigured)
-            Fail("CLASSIC_MINIMAP_CAMERA_CONFIG", "自定义相机边界需要实际CameraMargins配置。");
-        const auto& margins = input.classicColors->cameraMargins;
-        for (const auto value : margins) if (!std::isfinite(value) || value < 0 || value > 65536)
-            Fail("CLASSIC_MINIMAP_CAMERA_CONFIG", "CameraMargins必须是有界非负数。");
-        // W3I前两个角经原版0/3/2/1重排后供5E6D00取矩形；另两角不参与min/max。
-        const double west = settings.cameraBounds[0], south = settings.cameraBounds[1],
-            east = settings.cameraBounds[2], north = settings.cameraBounds[3];
-        rectangle = {(west - grid.header.offset[0]) / 128.0 - margins[0],
-            (south - grid.header.offset[1]) / 128.0 - margins[2],
-            (east - grid.header.offset[0]) / 128.0 + margins[1],
-            (north - grid.header.offset[1]) / 128.0 + margins[3]};
+    std::optional<std::array<double, 4>> margins;
+    if (input.classicColors && input.classicColors->cameraMarginsConfigured) margins = input.classicColors->cameraMargins;
+    auto rectangle = MapData::NativeMinimapPlayableRectangle(grid, settings, margins);
+    if (!rectangle.Succeeded() || !rectangle.value) {
+        if (rectangle.diagnostics.empty()) Fail("CLASSIC_MINIMAP_CAMERA_BOUNDS", "原版可玩区没有返回结果。");
+        const auto& diagnostic = rectangle.diagnostics.front();
+        // 保留已有BLP调用方的公开诊断；坐标算法与MMP共用唯一实现。
+        const auto code = diagnostic.code == "NATIVE_MMP_PLAYABLE_LAYOUT" ? "CLASSIC_MINIMAP_W3I_LAYOUT"
+            : diagnostic.code == "NATIVE_MMP_CAMERA_CONFIG" ? "CLASSIC_MINIMAP_CAMERA_CONFIG"
+            : diagnostic.code == "NATIVE_MMP_PLAYABLE_EMPTY" ? "CLASSIC_MINIMAP_PLAYABLE_EMPTY"
+            : "CLASSIC_MINIMAP_CAMERA_BOUNDS";
+        Fail(code, diagnostic.message);
     }
-    std::array<std::uint32_t, 4> result{};
-    for (std::size_t i = 0; i < result.size(); ++i) {
-        if (!std::isfinite(rectangle[i])) Fail("CLASSIC_MINIMAP_CAMERA_BOUNDS", "可玩区换算含非有限坐标。");
-        const double maximum = i % 2 ? height : width;
-        // 5E7140：先clamp世界边界，再按tile+0.5截断，右/上为半开终点。
-        result[i] = static_cast<std::uint32_t>(std::clamp(rectangle[i], 0.0, maximum) + 0.5);
-    }
-    if (result[0] >= result[2] || result[1] >= result[3])
-        Fail("CLASSIC_MINIMAP_PLAYABLE_EMPTY", "实际可玩区域为空，不能生成小地图。");
-    return result;
+    return *rectangle.value;
 }
 
 void Mix(std::array<std::uint8_t, 4>& color, const std::array<std::uint8_t, 4>& overlay) {

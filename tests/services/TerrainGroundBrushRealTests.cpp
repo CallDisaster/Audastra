@@ -6,6 +6,7 @@
 #include "War3MapCore/MapData/TerrainCliffEditing.h"
 #include "War3MapCore/ObjectData/ObjectImport.h"
 #include "War3MapCore/Services/ObjectTransactionSnapshot.h"
+#include "War3MapCore/Services/TerrainMinimapMarkers.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/Text/SlkCells.h"
 #include "War3MapCore/Text/TextUtil.h"
@@ -109,7 +110,7 @@ void CheckRealGroundBrushSave(const MapArchiveSession& original,
     auto baseline = Take(original.ReadMember("war3map.wpm"));
     Require(baseline.size() == 16 + 256 * 256 && oldNative.size() == 256 * 256, "manual ground pathing dimensions");
     for (std::size_t i = 0; i < oldNative.size(); ++i) baseline[i + 16] = (baseline[i + 16] & std::byte{0x11}) | oldNative[i];
-    // 完整二值非零影图与多条v0图标只验证现有保原字合同，不冒充原版烘焙/图标生成。
+    // SHD保原字；MMP源哨兵在正常保存时须被实际来源生成的完整结果替换。
     ShadowGridSnapshot shadow;
     shadow.width = (before.header.width - 1) * 4; shadow.height = (before.header.height - 1) * 4;
     shadow.intensities.resize(std::size_t{shadow.width} * shadow.height, 0);
@@ -122,14 +123,15 @@ void CheckRealGroundBrushSave(const MapArchiveSession& original,
     markers.records = {{0, {31, 43}, {0x11, 0x44, 0xaa, 0xff}},
         {1, {177, 67}, {0xaa, 0xbb, 0x44, 0xff}}, {2, {91, 213}, {0x44, 0x11, 0xcc, 0xff}}};
     const auto markerBytes = Take(SerializeMapMinimapMarkers(markers));
-    const auto verifyDerived = [&](const MapArchiveSession& archive, const char* phase, const char* kind) {
+    const auto verifyDerived = [&](const MapArchiveSession& archive, const char* phase, const char* kind,
+        const std::vector<std::byte>& expectedMarkers) {
         Require(archive.HasMember("war3map.shd") && archive.HasMember("war3map.mmp"),
             "ground derived fixture retains both populated members");
         const auto actualShadowBytes = Take(archive.ReadMember("war3map.shd"));
         const auto actualMarkerBytes = Take(archive.ReadMember("war3map.mmp"));
         Require(actualShadowBytes.size() == std::size_t{shadow.width} * shadow.height
-            && actualShadowBytes == shadowBytes && actualMarkerBytes.size() == 8 + 3 * 16
-            && actualMarkerBytes == markerBytes, "ground derived members retain complete sizes and exact fixture bytes");
+            && actualShadowBytes == shadowBytes && actualMarkerBytes == expectedMarkers,
+            "ground derived members retain SHD and contain the exact expected complete MMP");
         const auto actualShadow = Take(ParseMapShadow(actualShadowBytes, shadow.width, shadow.height));
         const auto nonzero = std::count(actualShadow.intensities.begin(), actualShadow.intensities.end(), std::uint8_t{255});
         Require(actualShadow.width == shadow.width && actualShadow.height == shadow.height && nonzero == 37
@@ -138,18 +140,19 @@ void CheckRealGroundBrushSave(const MapArchiveSession& original,
                 [](auto value) { return value == 0 || value == 255; }),
             "full-size asymmetric shadow contains exactly the authored nonzero binary mask");
         const auto actualMarkers = Take(ParseMapMinimapMarkers(actualMarkerBytes));
-        Require(actualMarkers.version == 0 && actualMarkers.records.size() == 3,
-            "ground marker fixture is complete v0 with three records");
-        for (std::size_t i = 0; i < markers.records.size(); ++i) {
-            const auto& expectedMarker = markers.records[i]; const auto& actualMarker = actualMarkers.records[i];
+        const auto expected = Take(ParseMapMinimapMarkers(expectedMarkers));
+        Require(actualMarkers.version == 0 && actualMarkers.records.size() == expected.records.size(),
+            "ground marker result is complete v0 with expected record count");
+        for (std::size_t i = 0; i < expected.records.size(); ++i) {
+            const auto& expectedMarker = expected.records[i]; const auto& actualMarker = actualMarkers.records[i];
             Require(actualMarker.typeRaw == expectedMarker.typeRaw && actualMarker.positionRaw == expectedMarker.positionRaw
                 && actualMarker.colorBgra == expectedMarker.colorBgra,
-                "ground marker records retain their exact order, type, coordinates and colors");
+                "ground marker records have their exact expected order, type, coordinates and colors");
         }
         std::cout << "ground_derived_members kind=" << kind << " phase=" << phase << " archive_sha256=" << archive.SourceSha256()
             << " shd_present=true shd_bytes=" << actualShadowBytes.size() << " shd_sha256=" << Take(Sha256(actualShadowBytes))
             << " shd_nonzero=" << nonzero << " mmp_present=true mmp_bytes=" << actualMarkerBytes.size()
-            << " mmp_sha256=" << Take(Sha256(actualMarkerBytes)) << " mmp_version=0 mmp_records=3"
+            << " mmp_sha256=" << Take(Sha256(actualMarkerBytes)) << " mmp_version=0 mmp_records=" << actualMarkers.records.size()
             << " native_editor_verified=false game_verified=false\n";
     };
     for (const unsigned mode : {0u, 1u, 2u}) {
@@ -167,7 +170,7 @@ void CheckRealGroundBrushSave(const MapArchiveSession& original,
             seeded.push_back({"war3map.w3u", Take(NativeObjectCodec(ObjectType::Unit).Serialize(units))});
         }
         const auto source = Take(MapArchiveSession::Open(Take(original.SaveCandidate(scenario / "source.w3x", seeded)).path));
-        verifyDerived(source, "source", cliff ? "cliff" : "texture");
+        verifyDerived(source, "source", cliff ? "cliff" : "texture", markerBytes);
         MapEditSaveRequest request;
         request.sourceMap = source.SourcePath(); request.targetCandidate = scenario / "saved.w3x";
         request.toolRoot = tool; request.gameRoot = game;
@@ -206,6 +209,10 @@ void CheckRealGroundBrushSave(const MapArchiveSession& original,
         }
         Require(!planned.result.Empty() && planned.result.x0 >= 25 && planned.result.y0 >= 25
             && planned.result.x1 <= 39 && planned.result.y1 <= 39, "ground edit stays inside the independent oracle window");
+        std::vector<MemberReplacement> markerInputs{{"war3map.w3e", Take(SerializeMapTerrain(planned.terrain))}};
+        if (mixed) markerInputs.push_back({"war3map.w3u", expectedUnits});
+        const auto expectedMarkerOwner = Take(TerrainMinimapMarkers::Capture(source, game, markerInputs));
+        Require(expectedMarkerOwner->Bytes() != markerBytes, "normal save must replace synthetic stale marker sentinels");
         const auto saved = Take(SaveMapEditCandidate(request));
         const auto readback = Take(MapArchiveSession::Open(saved.candidate));
         const auto afterBytes = Take(readback.ReadMember("war3map.w3e"));
@@ -224,11 +231,12 @@ void CheckRealGroundBrushSave(const MapArchiveSession& original,
         else Require(Take(readback.ReadMember("war3map.w3u")) == expectedUnits, "public mixed save reads back HP zero to one exactly");
         for (const auto& member : source.Members()) {
             const auto name = Text::LowerAscii(member.name);
-            if (name == "war3map.w3e" || name == "war3map.wpm" || name == "war3mapmap.blp") continue;
+            if (name == "war3map.w3e" || name == "war3map.wpm" || name == "war3mapmap.blp" || name == "war3map.mmp") continue;
             if (mixed && (name == "war3map.w3u" || name == "war3map.j" || name == "scripts/war3map.j")) continue;
             Require(Take(readback.ReadMember(member.name)) == member.data, "ground save preserves every unrelated member");
         }
-        verifyDerived(readback, "saved", cliff ? "cliff" : "texture");
+        verifyDerived(readback, "saved", cliff ? "cliff" : "texture", expectedMarkerOwner->Bytes());
+        Require(expectedMarkerOwner->VerifyReadback(readback).Succeeded(), "actual final marker dependencies survive public save");
         Require(Take(Sha256File(source.SourcePath())) == source.SourceSha256(), "ground save leaves source untouched");
         std::cout << "playable_ground_save_passed kind=" << (cliff ? "cliff" : "texture")
             << " texture=" << (cliff ? "unchanged" : texture) << " source_sha256=" << source.SourceSha256()

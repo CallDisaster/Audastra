@@ -55,6 +55,8 @@ add_library(War3MapServices STATIC
     LuaCandidateProfile.cpp
     TerrainBlightSaveService.cpp
     TerrainMinimapSave.cpp
+    TerrainMinimapMarkers.cpp
+    TerrainMinimapMarkersSave.cpp
     TerrainMinimapSaveAutomatic.cpp
     TerrainMinimapSaveFallback.cpp
     TerrainPathingRestrictionCandidate.cpp

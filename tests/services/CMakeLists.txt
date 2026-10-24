@@ -222,6 +222,12 @@ target_compile_definitions(war3-map-save-service-tests PRIVATE NOMINMAX UNICODE 
 target_compile_options(war3-map-save-service-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-map-save COMMAND war3-map-save-service-tests)
 
+add_executable(audastra-terrain-minimap-markers-tests TerrainMinimapMarkersTests.cpp)
+target_link_libraries(audastra-terrain-minimap-markers-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(audastra-terrain-minimap-markers-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-terrain-minimap-markers-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-terrain-minimap-markers COMMAND audastra-terrain-minimap-markers-tests)
+
 add_executable(war3-map-lua-map-save-tests LuaMapSaveTests.cpp)
 audastra_use_test_lua(war3-map-lua-map-save-tests)
 target_link_libraries(war3-map-lua-map-save-tests PRIVATE War3MapEditor::Services)

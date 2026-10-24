@@ -1,5 +1,6 @@
 #include "EditorProject.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
+#include "War3MapCore/Services/TerrainMinimapMarkersSave.h"
 #include "MapSaveJob.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
@@ -80,10 +81,11 @@ Status PrepareWorkerDerivedInputs(MapSaveJob& job, std::shared_ptr<const MapData
             const auto installed = InstallPreservedMinimap(job, *edits, std::move(*prepared.value));
             if (!installed.Succeeded()) return installed;
             if (!job.minimapPreserve) job.minimapChoice = Services::TerrainMinimapSaveChoice::Preserve;
-            return Status::Ok();
+            return Services::PrepareTerrainMinimapMarkers(job, job.minimapGameRoot, nullptr, job.terrainSavePlan);
         }
     }
-    if (preserve && !job.terrainDerivationRequired) return Status::Ok();
+    if (preserve && !job.terrainDerivationRequired)
+        return Services::PrepareTerrainMinimapMarkers(job, job.minimapGameRoot, nullptr, job.terrainSavePlan);
     if (!job.archive || (explicitGeneration && (job.inPlace || job.testCopyOnly || job.triggerChanges || !job.objectTransactions.empty()
         || !job.removals.empty() || std::count_if(job.replacements.begin(), job.replacements.end(), [](const auto& member) {
             return MinimapMemberName(member.name) == "war3map.w3e";
@@ -174,7 +176,7 @@ Status PrepareWorkerDerivedInputs(MapSaveJob& job, std::shared_ptr<const MapData
             }
         edits = std::move(restoredSession);
     }
-    if (job.terrainDerivationRequired) {
+    if (job.terrainDerivationRequired || (automatic && !job.terrainSavePlan)) {
         auto prepared = Services::TerrainPathingSave::PrepareForSave(*job.archive, *edits, job.minimapGameRoot,
             {}, job.replacements, job.removals);
         if (!prepared.Succeeded() || !prepared.value) return {std::move(prepared.diagnostics)};
@@ -187,11 +189,15 @@ Status PrepareWorkerDerivedInputs(MapSaveJob& job, std::shared_ptr<const MapData
         job.diagnostics.insert(job.diagnostics.end(), diagnostics.begin(), diagnostics.end());
         terrainPrepared = true;
     }
+    if (automatic || preserve) {
+        const auto markers = Services::PrepareTerrainMinimapMarkers(job, job.minimapGameRoot, edits.get(), job.terrainSavePlan);
+        if (!markers.Succeeded()) return markers;
+    }
     if (preserve) return Status::Ok();
     std::shared_ptr<const Services::TerrainMinimapSave> minimap;
     if (automatic) {
         auto prepared = Services::TerrainMinimapSave::PrepareAutomaticOrPreserve(job, *edits, job.minimapGameRoot, {},
-            job.terrainDerivationRequired ? job.terrainSavePlan : nullptr);
+            job.terrainSavePlan);
         if (!prepared.Succeeded() || !prepared.value) return {std::move(prepared.diagnostics)};
         job.diagnostics.insert(job.diagnostics.end(), prepared.diagnostics.begin(), prepared.diagnostics.end());
         minimap = prepared.value->generated;
@@ -257,8 +263,7 @@ Status PrepareWorkerDerived(MapSaveJob& job) {
 } // namespace
 
 void InstallMapSaveDerivedPreparation(MapSaveJob& job) {
-    if (job.derivedPreparationInstalled || (!job.terrainDerivationRequired
-        && job.minimapChoice == Services::TerrainMinimapSaveChoice::Preserve)) return;
+    if (job.derivedPreparationInstalled) return;
     job.derivedPreparationInstalled = true;
     job.prepareFinalDerived = [&job, previous = std::move(job.prepareFinalDerived)](Services::MapSaveTask& task) -> Status {
         if (previous) { const auto checked = previous(task); if (!checked.Succeeded()) return checked; }

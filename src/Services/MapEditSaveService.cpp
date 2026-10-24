@@ -1,5 +1,6 @@
 #include "War3MapCore/Services/MapEditSaveService.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
+#include "War3MapCore/Services/TerrainMinimapMarkersSave.h"
 #include "MapEditSaveValidation.h"
 
 #include "War3MapCore/Hash.h"
@@ -809,7 +810,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
 
         // 小地图/地形派生必须在最终脚本和模板替换完成后准备，避免其原字
         // 门禁看到过期的 replacements。回调只在共用保存服务的一次最终阶段执行。
-        if (terrainRequest || request.minimapChoice != TerrainMinimapSaveChoice::Preserve) {
+        {
             task.prepareFinalDerived = [&task, &finalEdits, &request, &terrainPlan, &minimapSave,
                 &minimapPreserve, &minimapInputFailure, nativeCaptureFailed, terrainRequest](MapSaveTask&) mutable -> Status {
                 if (terrainRequest) {
@@ -828,6 +829,23 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                     if (!required.Succeeded() || !required.value)
                         minimapInputFailure.insert(minimapInputFailure.end(), required.diagnostics.begin(), required.diagnostics.end());
                     else automaticRequired = *required.value;
+                }
+                // MMP先进入同一个计划，之后MapBLP工厂复制计划时保留该完整输出。
+                if (!terrainPlan && automaticRequired && minimapInputFailure.empty()
+                    && request.minimapChoice == TerrainMinimapSaveChoice::Automatic) {
+                    auto prepared = TerrainPathingSave::PrepareForSave(*task.archive, finalEdits, request.gameRoot,
+                        {}, task.replacements, task.removals);
+                    if (prepared.Succeeded() && prepared.value && prepared.value->SaveGate().Succeeded())
+                        terrainPlan = std::make_shared<const MapData::TerrainSavePlan>(std::move(*prepared.value));
+                    else {
+                        const auto& notes = prepared.value ? prepared.value->SaveGate().diagnostics : prepared.diagnostics;
+                        minimapInputFailure.insert(minimapInputFailure.end(), notes.begin(), notes.end());
+                    }
+                }
+                if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic
+                    || request.minimapChoice == TerrainMinimapSaveChoice::Preserve) {
+                    const auto markers = PrepareTerrainMinimapMarkers(task, request.gameRoot, &finalEdits, terrainPlan);
+                    if (!markers.Succeeded()) return markers;
                 }
                 if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic) {
                     auto prepared = (minimapInputFailure.empty() || (!automaticRequired && !nativeCaptureFailed))
