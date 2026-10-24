@@ -3,6 +3,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapData/MapMinimapMarkers.h"
 #include "War3MapCore/MapData/MapShadow.h"
+#include "War3MapCore/MapData/TerrainCliffEditing.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/Text/SlkCells.h"
 #include "War3MapCore/Text/TextUtil.h"
@@ -168,7 +169,17 @@ void CheckRealGroundBrushSave(const MapArchiveSession& original,
         else { stroke.brush.groundTexture = texture; stroke.brush.seed = 42; }
         request.terrainStrokes = {stroke};
         const TerrainStrokePoint world{before.header.offset[0] + 32 * 128, before.header.offset[1] + 32 * 128};
-        const auto planned = Take(PrepareTerrainStroke(before, stroke.brush, std::span(&world, 1)));
+        auto planned = Take(PrepareTerrainStroke(before, stroke.brush, std::span(&world, 1)));
+        if (cliff) {
+            const auto doodads = Take(ParseDoodadPlacements(Take(source.ReadMember("war3map.doo"))));
+            const auto resources = Take(TerrainPathingSave::CaptureWaterBrushRules(source, before, before, doodads, game, true, kBytes));
+            Require(resources.WaterBrushRules() != nullptr, "native cliff captures actual structural brush rules");
+            const TerrainCliffBrush brush{stroke.brush.shape, stroke.brush.radius + 1, stroke.brush.cliffTexture,
+                stroke.brush.seed, Take(CaptureTerrainStrokeAnchor(before, world)), stroke.brush.levelDelta};
+            auto native = Take(PrepareTerrainCliffStroke(before, *resources.WaterBrushRules(), brush,
+                std::span(&world, 1), doodads, resources.WaterSpecialShapes()));
+            planned.terrain = std::move(native.terrain); planned.result = native.result.changed;
+        }
         Require(!planned.result.Empty() && planned.result.x0 >= 25 && planned.result.y0 >= 25
             && planned.result.x1 <= 39 && planned.result.y1 <= 39, "ground edit stays inside the independent oracle window");
         const auto saved = Take(SaveMapEditCandidate(request));
