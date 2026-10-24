@@ -186,16 +186,35 @@ void CheckRealCornerRampSave(const MapArchiveSession& original,
     const auto doodads = Take(ParseDoodadPlacements(Take(original.ReadMember("war3map.doo"))));
     Require(doodads.doodads.empty() && doodads.specialDoodads.empty(), "corner seed has no unaccounted placement contribution");
     const auto shadowBytes = Take(SerializeMapShadow(ShadowFixture(originalTerrain)));
-    for (const int dx : {-1, 1}) for (const int dy : {-1, 1}) {
-        const auto scenario = directory / (std::string("playable-corner-ramp-")
+    const auto waterResources = Take(TerrainPathingSave::CaptureWaterBrushRules(original,
+        originalTerrain, originalTerrain, doodads, game, true, kBytes));
+    Require(waterResources.WaterBrushRules(), "corner scenarios capture actual water and maximum-level rules");
+    const double waterOffset = waterResources.WaterBrushRules()->waterLayerOffset;
+    for (const bool wet : {false, true}) for (const int dx : {-1, 1}) for (const int dy : {-1, 1}) {
+        const auto scenario = directory / (std::string(wet ? "playable-wet-corner-ramp-" : "playable-corner-ramp-")
             + (dx > 0 ? "east-" : "west-") + (dy > 0 ? "north" : "south"));
         Require(std::filesystem::create_directory(scenario), "exclusive actual corner scenario");
         auto before = originalTerrain;
         for (int y = 0; y < 65; ++y) for (int x = 0; x < 65; ++x) {
             auto& vertex = before.vertices[std::size_t(y) * 65 + x];
-            Require(!vertex.IsRamp() && !vertex.HasWater(), "original corner seed is dry and has no ramp");
+            Require(!vertex.IsRamp() && !vertex.HasWater() && !vertex.IsBlight(),
+                "original corner seed is dry, has no ramp or blight");
             const bool high = (x - 32) * dx <= 0 && (y - 32) * dy <= 0;
             vertex.cliffAndLayerRaw = std::uint8_t(high ? 3 : 2);
+        }
+        if (wet) {
+            const double rawGround = (double(before.vertices[32 * 65 + 32].groundHeightRaw) - 8192.0) * 0.25;
+            const double encoded = std::trunc((rawGround + 64.0 - waterOffset) * 4.0 + 8192.0);
+            Require(std::isfinite(encoded) && encoded >= 0 && encoded <= 16383,
+                "actual water offset permits a bounded authored wet corner surface");
+            const double surface = (encoded - 8192.0) * 0.25 + waterOffset;
+            Require(surface > rawGround + 32 && surface < rawGround + 96,
+                "wet corner uses a measured surface crossing the new S32 and R64 heights");
+            for (unsigned y = 24; y <= 40; ++y) for (unsigned x = 24; x <= 40; ++x) {
+                auto& vertex = before.vertices[std::size_t(y) * 65 + x];
+                vertex.waterHeightAndFlagsRaw = std::uint16_t(encoded);
+                vertex.textureAndFlagsRaw |= 0x40;
+            }
         }
         RefreshTerrainDerived(before, 0, 0, 65, 65);
         auto after = before;
@@ -249,7 +268,7 @@ void CheckRealCornerRampSave(const MapArchiveSession& original,
             }
             Require(Take(Sha256File(current.SourcePath())) == current.SourceSha256()
                 && Take(Sha256File(original.SourcePath())) == original.SourceSha256(), "corner keeps every source immutable");
-            std::cout << "playable_corner_ramp_save_passed dx=" << dx << " dy=" << dy << " create=" << create
+            std::cout << "playable_corner_ramp_save_passed wet=" << wet << " dx=" << dx << " dy=" << dy << " create=" << create
                 << " source_sha256=" << current.SourceSha256() << " candidate_sha256=" << saved.candidateSha256
                 << " w3e_sha256=" << Take(Sha256(expectedTerrain)) << " wpm_sha256=" << Take(Sha256(create ? expectedWpm : originalWpm))
                 << " actual_rules_sha256=" << Take(rules.WaterBrushDependencyFingerprint())
