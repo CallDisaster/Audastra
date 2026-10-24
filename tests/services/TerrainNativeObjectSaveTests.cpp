@@ -1956,13 +1956,16 @@ void CategoryCBridgesUseTheSharedSaveAndUndoChain() {
 void CategoryCBridgeSourcesAndOldPathingStayBound() {
     for (const bool four : {false, true}) {
         Fixture f; CategoryCBridge(f, four, true); f.Open(); f.Paint();
-        const auto owner = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot, kBudget));
-        Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot, owner.CaptureBudgetBytes()));
-        Require(!TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot, owner.CaptureBudgetBytes() - 1).Succeeded(),
+        // 与正常保存plan相同，绑定最终DOO；未提供它的独立捕获仍允许普通对象仅Z变化。
+        const auto& currentDoodads = f.Member("war3map.doo");
+        const auto owner = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot, kBudget, &currentDoodads));
+        Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot, owner.CaptureBudgetBytes(), &currentDoodads));
+        Require(!TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot, owner.CaptureBudgetBytes() - 1, &currentDoodads).Succeeded(),
             "C桥startup来源与抑制层共享精确捕获预算");
         const auto plan = f.Plan(); const auto output = f.Output(plan);
         auto saved = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(f.root / "c-bridge-frozen.w3x", output)).path));
         Check(owner.VerifyReadback(saved, kBudget));
+        Check(plan.VerifyReadback(saved));
         for (const auto* name : {"Units/DestructableMetaData.slk", "war3map.w3b", "war3map.doo"}) {
             auto changed = f.Member(name);
             if (name == std::string_view("Units/DestructableMetaData.slk")) changed.push_back(std::byte{'\n'});
@@ -1977,12 +1980,17 @@ void CategoryCBridgeSourcesAndOldPathingStayBound() {
                 Check(replacement.SetModification({ObjectType::Destructable, "BC01"}, {"brot"}, Value{0.0f}));
                 changed = Take(NativeObjectCodec(ObjectType::Destructable).Serialize(replacement));
             }
+            Require(changed != f.Member(name), "C桥冻结负例须实际变更来源成员字节");
             auto altered = output; altered.push_back({name, changed});
-            Require(!owner.VerifyFrozenOutput(altered, {}).Succeeded(), "C桥不放宽实际metadata/W3B及完整DOO冻结");
+            Require(!owner.VerifyFrozenOutput(altered, {}).Succeeded(),
+                ("C桥不放宽实际metadata/W3B及完整DOO冻结：" + std::string(name)).c_str());
+            Require(!plan.VerifyForSave(*f.edits, f.archive->SourceSha256(), altered).Succeeded(),
+                "正常保存plan须拒绝同一冻结成员变化");
             const std::array<MemberReplacement, 1> replacement{{{name, changed}}};
             auto tampered = Take(MapArchiveSession::Open(Take(saved.SaveCandidate(f.root / (std::string(name) == "war3map.w3b"
                 ? "c-bridge-native-changed.w3x" : std::string(name) == "war3map.doo" ? "c-bridge-doo-changed.w3x" : "c-bridge-meta-changed.w3x"), replacement)).path));
             Require(!owner.VerifyReadback(tampered, kBudget).Succeeded(), "C桥独立回读拒绝来源或无关摆放Z变化");
+            Require(!plan.VerifyReadback(tampered).Succeeded(), "正常保存plan独立回读拒绝同一冻结成员变化");
         }
         Check(IO::WriteFileBytes(f.gameRoot / "WorldEditData.txt",
             Text(four ? "[DoodadCategories]\nC=same-C-new-source\n" : "[DoodadCategories]\nE=same-no-C-new-source\n")));
@@ -1990,10 +1998,10 @@ void CategoryCBridgeSourcesAndOldPathingStayBound() {
             "相同最终C选择不能代替startup来源CAS");
     }
     Fixture unknown; CategoryCBridge(unknown, true); unknown.gameRoot.clear(); unknown.Open(); unknown.Paint();
-    const auto sourceSha = unknown.archive->SourceSha256();
+    const auto sourceSha = Take(Sha256File(unknown.archive->SourcePath()));
     const auto draft = unknown.ExpectedTerrain(true);
     Require(HasCode(unknown.Plan().SaveGate(), "TERRAIN_CATEGORY_SOURCE_REQUIRED") && unknown.edits->CanUndo()
-        && unknown.edits->IsDirty() && unknown.archive->SourceSha256() == sourceSha
+        && unknown.edits->IsDirty() && Take(Sha256File(unknown.archive->SourcePath())) == sourceSha
         && Take(SerializeMapTerrain(*unknown.edits->Terrain())) == draft, "未知startup拒绝C桥保存并保留完整草稿与来源");
     for (const bool four : {false, true}) {
         Fixture wrongGrid; CategoryCBridge(wrongGrid, four);
